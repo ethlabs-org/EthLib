@@ -13,8 +13,9 @@ At Deneb and Electra the node held the blobs of the block, and their proofs matc
 
 At Fulu the node got every column that it samples for the block, and each column was valid.
 
-That reads the columns that the block source returns as those that the node samples, as
-`validateDataAvailability_ok_of_fulu` says.
+That reads the columns that the block source returns as those that the node samples.
+
+`validateDataAvailability_ok_of_fulu` says so.
 
 From Gloas the check of a block passes, and the data comes with the payload.
 
@@ -22,10 +23,10 @@ There every payload that the store counts as verified passed the check of its co
 
 That check runs against the bid in the state after its block, as the store keeps it.
 
-Every known block that builds on the payload of its parent finds that payload verified, except the
-anchor.
+Every known block other than the anchor that builds on its parent's payload finds it verified.
 
 So the head and every block of its chain that the store holds passed the check, except the anchor.
+
 When the head is a full node, its payload passed the check too.
 -/
 
@@ -208,11 +209,11 @@ Each known block other than the anchor passed the availability check, for some b
 
 Each known block other than the anchor has a known parent.
 
-From Gloas each verified payload passed the check of its columns, against the bid in the state
-after its block.
+From Gloas each verified payload passed the check of its columns.
 
-Each known block other than the anchor that builds on the payload of its parent finds that payload
-verified. -/
+That check runs against the bid in the state after its block.
+
+Each known block other than the anchor that builds on its parent's payload finds it verified. -/
 structure DataChecked (anchorRoot : Root) (store : Store preset fork) : Prop where
   blocks : ∀ {root : Root} {block : BeaconBlock preset fork}, store.blocks[root]? = some block →
     root = anchorRoot ∨ ∃ sources : BlockSources preset fork,
@@ -399,8 +400,9 @@ namespace Store
 
 The head is the justified block, or a viable node, whose block the store holds.
 
-A full node is viable only as the child of the pending node of its block, when its payload is
-verified. -/
+A full node is viable only as the child of the pending node of its block.
+
+That child exists only when its payload is verified. -/
 theorem getHead_known_verified {head : ForkChoiceNode} (found : store.getHead config = .ok head) :
     (∃ block, store.blocks[head.root]? = some block) ∧
       ∀ gloas : .glamsterdam ≤ fork, head.payloadStatus = .full →
@@ -444,11 +446,13 @@ So did every block that the store holds, which includes each block of the chain 
 
 The anchor block is the only exception: the store takes it on trust.
 
-At Fulu the check means that the block source returned every column that the node samples, each
-valid, as `validateDataAvailability_ok_of_fulu` says.
+At Fulu the check means that the block source returned every column that the node samples.
 
-From Gloas a full head has a payload that passed the check of its columns, against the bid in the
-state after its block. -/
+Each of them was valid, as `validateDataAvailability_ok_of_fulu` says.
+
+From Gloas a full head has a payload that passed the check of its columns.
+
+That check runs against the bid in the state after its block. -/
 theorem Store.Reachable.getHead_dataChecked {head : ForkChoiceNode}
     (reachable : Store.Reachable config anchorState anchorBlock store)
     (found : store.getHead config = .ok head) :
