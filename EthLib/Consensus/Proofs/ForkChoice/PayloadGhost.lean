@@ -21,13 +21,15 @@ That is the pending node in the slot of its block, and later the empty or the fu
 
 The empty and the full node of a block of the previous slot are payload decisions.
 
-There the payload committee and the proposer decide: such a node weighs nothing, and the tie
-between the two goes to a tiebreak of their own.
+There the payload committee and the proposer decide, so such a node weighs nothing.
+
+The tie between the two goes to a tiebreak of their own.
 
 The plain model holds away from these decisions.
 
-The walk of the model by an order with overrides covers them: it gives each decision its weight
-and its tiebreak, and keeps the order of every other node.
+The walk of the model by an order with overrides covers them.
+
+It gives each decision its weight and its tiebreak, and keeps the order of every other node.
 
 When the store applies the boost, it counts as one more vote.
 
@@ -427,8 +429,9 @@ theorem mem_children_nodeView {nodes : List ForkChoiceNode} (gloas : .glamsterda
 abbrev nodeOrder : Option Root × Status → Lex (ℕ × ℕ) :=
   nodeKey rootValue
 
-/-- From Gloas, the order in which the store compares two weighed nodes: by weight, then by root
-as bytes, then by tiebreaker. -/
+/-- From Gloas, the order in which the store compares two weighed nodes.
+
+It is by weight, then by root as bytes, then by tiebreaker. -/
 abbrev weighedKey (y : WeightedNode) : Lex (ℕ × Lex (ℕ × ℕ)) :=
   toLex (y.2.1.toNat, toLex (rootValue (some y.1.root), y.2.2.toNat))
 
@@ -536,8 +539,9 @@ private theorem getHeadFrom_eq_ghostBy_of_gloas_of_keys {ν : Type}
     exact ih source ‹_› (below.trans ⟨1, step⟩) walk
 
 
-/-- From Gloas, the walk of the store ends where LMD-GHOST over nodes ends, in a model of its
-weights.
+/-- From Gloas, the walk of the store ends where LMD-GHOST over nodes ends.
+
+That holds in any model of its weights.
 
 The model has the blocks of the view.
 
@@ -698,8 +702,9 @@ theorem getHead_eq_ghost_withBoost_of_gloas {nodes : List ForkChoiceNode} {head 
 
 The empty and the full node of a block of the previous slot weigh nothing in the store.
 
-The tie between them goes to a tiebreak of their own, which the proposer and the payload committee
-decide, and not to their status numbers.
+The tie between them goes to a tiebreak of their own, not to their status numbers.
+
+The proposer and the payload committee decide it.
 
 The model keeps every other node, and overrides the weight and the tiebreak of these nodes. -/
 
@@ -792,8 +797,9 @@ theorem decisionKey_empty_ne_full (gloas : .glamsterdam ≤ fork)
 
 /-- From Gloas, the walk of the store ends where the walk of the model with decisions ends.
 
-The model has the blocks of the view, and each node that is not a decision weighs in it what the
-store computes.
+The model has the blocks of the view.
+
+Each node that is not a decision weighs in it what the store computes.
 
 The decisions of the previous slot weigh 0, and take their own tiebreak.
 
@@ -880,11 +886,13 @@ private theorem getHeadFrom_eq_ghostBy_decisionKey {ν : Type} {V : Finset ν} {
       obtain ⟨_, _⟩ := b
       simp_all
 
-/-- From Gloas, the walk of the store ends where LMD-GHOST over nodes with the boost and the
-decisions of the previous slot ends.
+/-- From Gloas, the walk of the store ends where LMD-GHOST over nodes ends.
 
-The boost is a vote for the pending node of the boosted block, with the score of the boost as its
-stake.
+The model has the boost and the payload decisions of the previous slot.
+
+The boost is a vote for the pending node of the boosted block.
+
+Its stake is the score of the boost.
 
 A payload decision of the previous slot weighs 0, and takes its own tiebreak.
 
@@ -908,8 +916,9 @@ theorem getHeadFrom_eq_ghostBy_withBoost_of_gloas {nodes : List ForkChoiceNode}
     getWeight_eq_weight_withBoost_of_gloas gloas decision justifiedState found nodes computed
 
 variable (lower) in
-/-- From Gloas, the head of the store is the head of LMD-GHOST over nodes with the boost and the
-decisions of the previous slot.
+/-- From Gloas, the head of the store is the head of LMD-GHOST over nodes.
+
+The model has the boost and the payload decisions of the previous slot.
 
 Each known block must sit at a later slot than its known parent, and some node must be viable.
 
@@ -919,15 +928,17 @@ Its voters are the validators active and not slashed in the justified state.
 
 Its stakes are their effective balances, and an equivocator has no vote.
 
-The boost is one more vote, for the pending node of the boosted block, and its stake is the score
-of the boost.
+The boost is one more vote, for the pending node of the boosted block.
+
+Its stake is the score of the boost.
 
 A child is greater by weight, then by root as bytes, then by status number.
 
 A payload decision of the previous slot weighs 0 instead, and takes its own tiebreak.
 
-Its tiebreak is 1 for the empty node, and for the full node 2 when the proposer should build on the
-payload, and 0 otherwise. -/
+Its tiebreak is 1 for the empty node.
+
+For the full node it is 2 when the proposer should build on the payload, and 0 otherwise. -/
 theorem getHead_eq_ghostBy_withBoost_of_gloas {nodes : List ForkChoiceNode}
     {head : ForkChoiceNode} (gloas : .glamsterdam ≤ fork)
     (justifiedState : store.checkpointState store.justifiedCheckpoint = .ok state)
