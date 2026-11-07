@@ -373,4 +373,62 @@ theorem Reaches.cachedRoot_ancestor {fork : Fork} {state next cached : BeaconSta
     · exact .inr ⟨_, head.step (.block engine signed validateResult notDue' applied), tail, zero⟩
   · exact .inr zero
 
+theorem ChainAncestor.extendChain {start middle after : ForkedBeaconState preset}
+    {first second : Root} (ancestor : ChainAncestor config checks start middle first second)
+    (chain : Reaches config checks middle after) :
+    ChainAncestor config checks start after first second := by
+  obtain ⟨run⟩ := chain
+  induction run with
+  | nil => exact ancestor
+  | snoc _ step more => exact more.extend step
+
+theorem ZeroRootFound.extendChain {start middle after : ForkedBeaconState preset}
+    (found : ZeroRootFound config checks start middle) (chain : Reaches config checks middle after) :
+    ZeroRootFound config checks start after :=
+  have ⟨state, head, tail, zero⟩ := found
+  ⟨state, head, tail.trans chain, zero⟩
+
+/-- Two roots that a state of a chain holds for two slots: the earlier descends to the later.
+
+Both slots are from the start of the chain on, before the end, and still in the buffer.
+
+The root of the earlier slot is an ancestor of the root of the later slot, along the parent
+links of the blocks from the caching of the earlier slot on.
+
+Or a state of the chain has the zero root. -/
+theorem Reaches.blockRoots_ancestor {start after : ForkedBeaconState preset}
+    (chain : Reaches config checks start after) {earlier later : Slot} {root root' : Root}
+    (fromStart : start.state.slot.toNat ≤ earlier.toNat) (ordered : earlier.toNat < later.toNat)
+    (written : later.toNat < after.state.slot.toNat)
+    (recent : after.state.slot.toNat ≤ earlier.toNat + preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
+    (read : readCircular after.state.blockRoots.elements earlier = .ok root)
+    (read' : readCircular after.state.blockRoots.elements later = .ok root') :
+    ∃ (fork : Fork) (state cached : BeaconState preset fork),
+      CachesSlot config checks start after earlier state cached ∧
+      (ChainAncestor config checks ⟨fork, state⟩ after root root' ∨
+        ZeroRootFound config checks ⟨fork, state⟩ after) := by
+  -- The later slot was cached by one slot step of the chain.
+  obtain ⟨fork', state', cached', ⟨atLater, cachedOk', next', nextOk', notDue', head', tail'⟩,
+    ⟨laterRoot, laterRootOk, laterRead⟩, -⟩ :=
+    chain.roots_written (by omega) written (by omega)
+  rw [read'] at laterRead
+  cases laterRead
+  -- The earlier slot was cached before it, and its entry has not changed since.
+  obtain ⟨fork, state, cached, ⟨atEarlier, cachedOk, next, nextOk, notDue, head, tail⟩,
+    ⟨earlierRoot, earlierRootOk, earlierRead⟩, -⟩ :=
+    head'.roots_written fromStart (by simp only; rw [atLater]; exact ordered)
+      (by simp only; rw [atLater]; omega)
+  have later' : Reaches config checks ⟨fork', state'⟩ after :=
+    ((Reaches.refl _).step (.slot notDue' nextOk')).trans tail'
+  have stable := (later'.roots_stable (slot := earlier) (by simp only; rw [atLater]; exact ordered)
+    recent).1
+  rw [read, earlierRead] at stable
+  cases stable
+  refine ⟨fork, state, cached, ⟨atEarlier, cachedOk, next, nextOk, notDue, head,
+    tail.trans later'⟩, ?_⟩
+  rcases tail.cachedRoot_ancestor notDue nextOk cachedOk cachedOk' earlierRootOk laterRootOk with
+    ancestor | zero
+  · exact .inl (ancestor.extendChain later')
+  · exact .inr (zero.extendChain later')
+
 end EthLib.Consensus

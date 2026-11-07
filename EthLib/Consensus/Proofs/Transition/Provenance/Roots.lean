@@ -191,11 +191,13 @@ theorem Reaches.slot_le {start after : ForkedBeaconState preset}
 
 The step starts at `state`, whose slot is that slot, and its caching gives `cached`.
 
+No upgrade is due at `state`, since a slot step runs only after the upgrades due.
+
 The chain runs from its start to `state`, and on from the state after the step. -/
 def CachesSlot (config : Config) (checks : SignatureChecks) (start after : ForkedBeaconState preset)
     (slot : Slot) {fork : Fork} (state cached : BeaconState preset fork) : Prop :=
   state.slot = slot ∧ processSlot state = .ok cached ∧
-    ∃ next, advanceSlot config checks state = .ok next ∧
+    ∃ next, advanceSlot config checks state = .ok next ∧ upgradeDue config ⟨fork, state⟩ = false ∧
       Reaches config checks start ⟨fork, state⟩ ∧ Reaches config checks ⟨fork, next⟩ after
 
 theorem CachesSlot.extend {start middle after : ForkedBeaconState preset} {slot : Slot}
@@ -203,8 +205,8 @@ theorem CachesSlot.extend {start middle after : ForkedBeaconState preset} {slot 
     (caches : CachesSlot config checks start middle slot state cached)
     (step : Step config checks middle after) :
     CachesSlot config checks start after slot state cached :=
-  have ⟨atSlot, cachedOk, next, nextOk, head, tail⟩ := caches
-  ⟨atSlot, cachedOk, next, nextOk, head, tail.step step⟩
+  have ⟨atSlot, cachedOk, next, nextOk, notDue, head, tail⟩ := caches
+  ⟨atSlot, cachedOk, next, nextOk, notDue, head, tail.step step⟩
 
 /-- Two different slots less than the length of the buffer apart take different entries. -/
 theorem mod_ne_of_lt {n earlier later : UInt64} (before : earlier.toNat < later.toNat)
@@ -258,7 +260,7 @@ theorem Reaches.roots_written {start after : ForkedBeaconState preset}
       · -- This step cached the slot.
         have same : state.slot = slot := UInt64.toNat_inj.mp here.symm
         subst same
-        refine ⟨fork, state, cached, ⟨rfl, cachedOk, next, computed, middleChain, .refl _⟩,
+        refine ⟨fork, state, cached, ⟨rfl, cachedOk, next, computed, notDue, middleChain, .refl _⟩,
           ⟨blockRoot, blockRootOk, ?_⟩, ⟨stateRoot, stateRootOk, ?_⟩⟩
         · exact readCircular_writeCircular blockWrite
         · exact readCircular_writeCircular stateWrite
@@ -291,6 +293,46 @@ theorem Reaches.roots_written {start after : ForkedBeaconState preset}
       rw [blockRoots, stateRoots]
       exact ⟨fork', state', cached', caches.extend (.block engine signed validateResult notDue computed),
         blockPart, statePart⟩
+
+/-- An entry of the two buffers stays along a chain while it is still in the buffers.
+
+The chain runs from a state past the entry's slot to a state at most `N` slots after it. -/
+theorem Reaches.roots_stable {start after : ForkedBeaconState preset}
+    (chain : Reaches config checks start after) {slot : Slot}
+    (written : slot.toNat < start.state.slot.toNat)
+    (recent : after.state.slot.toNat ≤ slot.toNat + preset.SLOTS_PER_HISTORICAL_ROOT.toNat) :
+    readCircular after.state.blockRoots.elements slot =
+        readCircular start.state.blockRoots.elements slot ∧
+      readCircular after.state.stateRoots.elements slot =
+        readCircular start.state.stateRoots.elements slot := by
+  obtain ⟨run⟩ := chain
+  induction run with
+  | nil => exact ⟨rfl, rfl⟩
+  | @snoc middle last run step more =>
+    have middleLe := Reaches.slot_le (config := config) (checks := checks) ⟨run⟩
+    have lastLe := stepRelation_slot.step step
+    obtain ⟨blockSame, stateSame⟩ := more (by omega)
+    rw [← blockSame, ← stateSame]
+    cases step with
+    | @slot fork state next notDue computed =>
+      obtain ⟨cached, cachedOk, nextSlot, -, blockRoots, stateRoots⟩ := advanceSlot_roots computed
+      obtain ⟨_, _, _, _, _, stateWrite, blockWrite, _⟩ := processSlot_roots cachedOk
+      simp only at middleLe recent nextSlot ⊢
+      have other : state.slot % preset.SLOTS_PER_HISTORICAL_ROOT ≠
+          slot % preset.SLOTS_PER_HISTORICAL_ROOT :=
+        mod_ne_of_lt (by omega) (by omega)
+      rw [blockRoots, stateRoots, readCircular_writeCircular_of_ne blockWrite other,
+        readCircular_writeCircular_of_ne stateWrite other]
+      exact ⟨rfl, rfl⟩
+    | upgrade due computed =>
+      obtain ⟨-, -, blockRoots, stateRoots⟩ := upgradeNext_roots computed
+      rw [blockRoots, stateRoots]
+      exact ⟨rfl, rfl⟩
+    | block engine signed validateResult notDue computed =>
+      obtain ⟨-, -, -, -, -, blockRoots, stateRoots, -⟩ := applySignedBlock_roots computed
+      simp only
+      rw [blockRoots, stateRoots]
+      exact ⟨rfl, rfl⟩
 
 /-! ## The latest header -/
 
