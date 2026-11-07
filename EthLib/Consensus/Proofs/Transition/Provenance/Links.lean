@@ -247,4 +247,49 @@ theorem JustifiedBy.ancestor {start after : ForkedBeaconState preset} {first sec
     rw [Except.ok.inj read']
     exact .inl .refl
 
+/-- A slot step of a chain cached a header whose root is zero.
+
+That header is the latest block's, with its state root filled, so its root is that block's root.
+
+A zero root is a preimage of zero under the hash, which no one is known to find.
+
+This records the cryptographic event instead of assuming it cannot happen. -/
+def ZeroHeaderFound (config : Config) (checks : SignatureChecks)
+    (start after : ForkedBeaconState preset) : Prop :=
+  ∃ (slot : Slot) (fork : Fork) (state cached : BeaconState preset fork),
+    CachesSlot config checks start after slot state cached ∧
+    SszType.hashTreeRoot cached.latestBlockHeader = .ok (Vector.replicate 32 0)
+
+/-- The target root of a weighing call is not zero, or a header of the chain has the zero root.
+
+The call reads the root of the first slot of the checkpoint's epoch.
+
+That slot is from the start of the chain on, for example from genesis, whose slot is zero.
+
+A slot step of the chain cached that slot, and the root is the root of the header it cached.
+
+The buffer of roots must span two epochs. -/
+theorem JustifiedBy.target_nonzero {start after : ForkedBeaconState preset}
+    {checkpoint : Checkpoint}
+    (wide : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
+    (justified : JustifiedBy config checks start after checkpoint)
+    (fromStart : start.state.slot.toNat ≤
+      checkpoint.epoch.toNat * preset.SLOTS_PER_EPOCH.toNat) :
+    checkpoint.root ≠ Vector.replicate 32 0 ∨ ZeroHeaderFound config checks start after := by
+  obtain ⟨fork, state, cached, _, next, _, head, notDue, nextOk, tail, _, cachedOk, _, later,
+    recent, _, _, rootOk⟩ := justified
+  obtain ⟨slot, slotEq, below, near, read⟩ := processSlot_read wide cachedOk later recent rootOk
+  -- A slot step before the call cached that slot, and wrote the root of its header.
+  obtain ⟨fork', state', cached', ⟨atSlot, cachedOk', next', nextOk', notDue', head', tail'⟩,
+    ⟨root, rootOk', written⟩, -⟩ :=
+    head.roots_written (by rw [slotEq]; exact fromStart) below near
+  rw [read] at written
+  cases written
+  by_cases zero : checkpoint.root = Vector.replicate 32 0
+  · have toAfter : Reaches config checks ⟨fork', next'⟩ after :=
+      tail'.trans (((Reaches.refl _).step (.slot notDue nextOk)).trans tail)
+    exact .inr ⟨slot, fork', state', cached', ⟨atSlot, cachedOk', next', nextOk', notDue', head',
+      toAfter⟩, zero ▸ rootOk'⟩
+  · exact .inl zero
+
 end EthLib.Consensus
