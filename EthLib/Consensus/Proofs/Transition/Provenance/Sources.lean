@@ -540,4 +540,106 @@ theorem Reaches.justificationBit {start after : ForkedBeaconState preset}
       · exact .inl atStart
       · exact .inr ⟨checkpoint, epoch, justified.extend theStep⟩
 
+/-! ## Finalization -/
+
+/-- A weighing call of a chain finalized a checkpoint by one of its four rules.
+
+The rules read the new justification bits, which the state after the slot step holds.
+
+- The old current justified checkpoint, when bits 0 to 2 are set and it is two epochs back,
+  or bits 0 and 1 are set and it is one epoch back.
+- Otherwise the old previous justified checkpoint, when bits 1 to 3 are set and it is three
+  epochs back, or bits 1 and 2 are set and it is two epochs back.
+
+Bit `i` stands for the epoch `i` epochs before the current epoch of the call. -/
+def FinalizedBy (config : Config) (checks : SignatureChecks) (start after : ForkedBeaconState preset)
+    (checkpoint : Checkpoint) : Prop :=
+  ∃ (fork : Fork) (state cached weighed next : BeaconState preset fork),
+    Reaches config checks start ⟨fork, state⟩ ∧ upgradeDue config ⟨fork, state⟩ = false ∧
+    advanceSlot config checks state = .ok next ∧ Reaches config checks ⟨fork, next⟩ after ∧
+    ClosesEpoch preset state ∧ processSlot state = .ok cached ∧
+    processJustificationAndFinalization cached = .ok weighed ∧
+    GENESIS_EPOCH + 1 < getCurrentEpoch cached ∧
+    next.justificationBits = weighed.justificationBits ∧
+    ((checkpoint = cached.currentJustifiedCheckpoint ∧
+        ((next.justificationBits.bits[0] && next.justificationBits.bits[1] &&
+            next.justificationBits.bits[2] &&
+            decide (cached.currentJustifiedCheckpoint.epoch.toNat + 2 =
+              (getCurrentEpoch cached).toNat)) ||
+          (next.justificationBits.bits[0] && next.justificationBits.bits[1] &&
+            decide (cached.currentJustifiedCheckpoint.epoch.toNat + 1 =
+              (getCurrentEpoch cached).toNat))) = true) ∨
+      (checkpoint = cached.previousJustifiedCheckpoint ∧
+        ((next.justificationBits.bits[1] && next.justificationBits.bits[2] &&
+            next.justificationBits.bits[3] &&
+            decide (cached.previousJustifiedCheckpoint.epoch.toNat + 3 =
+              (getCurrentEpoch cached).toNat)) ||
+          (next.justificationBits.bits[1] && next.justificationBits.bits[2] &&
+            decide (cached.previousJustifiedCheckpoint.epoch.toNat + 2 =
+              (getCurrentEpoch cached).toNat))) = true))
+
+theorem FinalizedBy.extend {start middle after : ForkedBeaconState preset} {checkpoint : Checkpoint}
+    (finalized : FinalizedBy config checks start middle checkpoint)
+    (step : Step config checks middle after) : FinalizedBy config checks start after checkpoint :=
+  have ⟨fork, state, cached, weighed, next, head, notDue, nextOk, tail, rest⟩ := finalized
+  ⟨fork, state, cached, weighed, next, head, notDue, nextOk, tail.step step, rest⟩
+
+/-- Where the finalized checkpoint of a chain's end comes from.
+
+It is the start's, or the last weighing call that changed it finalized it by one of its rules.
+-/
+theorem Reaches.finalized {start after : ForkedBeaconState preset}
+    (chain : Reaches config checks start after) :
+    after.state.finalizedCheckpoint = start.state.finalizedCheckpoint ∨
+      FinalizedBy config checks start after after.state.finalizedCheckpoint := by
+  obtain ⟨run⟩ := chain
+  induction run with
+  | nil => exact .inl rfl
+  | @snoc middle last run step more =>
+    have middleChain : Reaches config checks start middle := ⟨run⟩
+    cases step with
+    | @slot fork state next notDue computed =>
+      have theStep : Step config checks ⟨fork, state⟩ ⟨fork, next⟩ := .slot notDue computed
+      obtain ⟨cached, cachedOk, -, -, -, -, closing⟩ := advanceSlot_history computed
+      have cachedSame : cached.finalizedCheckpoint = state.finalizedCheckpoint := by
+        obtain ⟨_, _, _, _, rfl⟩ := processSlot_ok cachedOk
+        rfl
+      split at closing
+      · next closes =>
+        obtain ⟨weighed, weighedOk, bitsSame, -, -, finalizedSame⟩ := closing
+        simp only at more ⊢
+        rw [finalizedSame]
+        rcases processJustificationAndFinalization_weighs weighedOk with ⟨_, rfl⟩ |
+          ⟨later, _, _, _, _, _, _, _, _, _, _, weighs⟩
+        · rw [cachedSame]
+          exact more.imp id (·.extend theStep)
+        obtain ⟨_, _, _, _, _, _, _, _, _, finalizedRule, -⟩ :=
+          weighJustificationAndFinalization_eq weighs
+        rw [← bitsSame] at finalizedRule
+        split at finalizedRule
+        · next byCurrent =>
+          exact .inr ⟨fork, state, cached, weighed, next, middleChain, notDue, computed, .refl _,
+            closes, cachedOk, weighedOk, later, bitsSame, .inl ⟨finalizedRule, byCurrent⟩⟩
+        · split at finalizedRule
+          · next byPrevious =>
+            exact .inr ⟨fork, state, cached, weighed, next, middleChain, notDue, computed,
+              .refl _, closes, cachedOk, weighedOk, later, bitsSame,
+              .inr ⟨finalizedRule, byPrevious⟩⟩
+          · rw [finalizedRule, cachedSame]
+            exact more.imp id (·.extend theStep)
+      · obtain ⟨-, -, -, finalizedSame⟩ := closing
+        simp only at more ⊢
+        rw [finalizedSame]
+        exact more.imp id (·.extend theStep)
+    | @upgrade _ post due computed =>
+      have same := upgradeNext_history computed
+      simp only [BeaconState.history, Prod.mk.injEq] at same
+      rw [same.2.2.2.2.2.2.2]
+      exact more.imp id (·.extend (.upgrade due computed))
+    | @block fork engine signed validateResult state post notDue computed =>
+      have frame := frame_processBlock (applySignedBlock_ok computed).2.1
+      simp only at more ⊢
+      rw [frame.finalized]
+      exact more.imp id (·.extend (.block engine signed validateResult notDue computed))
+
 end EthLib.Consensus
