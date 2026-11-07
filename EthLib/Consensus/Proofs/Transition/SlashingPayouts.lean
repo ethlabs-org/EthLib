@@ -1,5 +1,6 @@
 module
 
+public import EthLib.Consensus.Proofs.Transition.EffectiveBalanceCap
 public import EthLib.Consensus.Proofs.Transition.Lifecycle
 public import EthLib.Consensus.Proofs.Transition.SlashingBalances
 
@@ -41,6 +42,10 @@ They form a `SlashingLedger`, which pays no validator twice.
 Each validator it pays is not slashed at the start, and is slashed at the end.
 
 From Gloas this needs a registry below `2^64` validators, as in `Lifecycle`.
+
+Along a chain from genesis each reward is at most the cap of the fork over its quotient.
+
+So the payouts of a run add up to at most `slashingRewardBound` per validator they pay.
 -/
 
 @[expose] public section
@@ -1002,5 +1007,129 @@ theorem SlashingPayout.Valid.balances {payout : SlashingPayout preset}
                 initialSlashingPenalty preset payout.fork payout.validator else 0) +
             (if position = proposer.toNat then payout.reward.toNat else 0) :=
   slashValidator_balances valid.found valid.called
+
+/-! ## The size of the rewards -/
+
+/-- The operations of a block run on a state under the cap, if the block starts under it. -/
+theorem capKept_operationsInput (caps : EffectiveBalanceCaps preset)
+    {engine : ExecutionEngine preset fork} {state input : BeaconState preset fork}
+    {block : BeaconBlock preset fork}
+    (computed : operationsInput config checks engine state block = .ok input) :
+    CapKept state input := by
+  unfold operationsInput at computed
+  split at computed
+  · simp only [bind_ok_iff] at computed
+    obtain ⟨paid, paidOk, headed, headedOk, executed, executedOk, revealed, revealedOk,
+      votedOk⟩ := computed
+    have paidKept : CapKept state paid := by
+      split at paidOk
+      · exact capKept_processParentExecutionPayload caps paidOk
+      · cases paidOk
+        exact .refl _
+    have executedKept : CapKept headed executed := by
+      split at executedOk
+      · exact capKept_processBlockExecution executedOk
+      · cases executedOk
+        exact .refl _
+    have votedKept : CapKept revealed input := by
+      split at votedOk
+      · exact capKept_processEth1Data votedOk
+      · cases votedOk
+        exact .refl _
+    exact paidKept.trans <| (capKept_processBlockHeader headedOk).trans <|
+      executedKept.trans <| (capKept_processRandao revealedOk).trans votedKept
+  · simp only [bind_ok_iff] at computed
+    obtain ⟨headed, headedOk, revealed, revealedOk, votedOk⟩ := computed
+    exact (capKept_processBlockHeader headedOk).trans <|
+      (capKept_processRandao revealedOk).trans (capKept_processEth1Data votedOk)
+
+/-- Each call of `slashValidator` in a block runs on a state under the cap.
+
+The block must start under the cap. -/
+theorem BlockPaid.capped (caps : EffectiveBalanceCaps preset)
+    {engine : ExecutionEngine preset fork} {state : BeaconState preset fork}
+    {block : BeaconBlock preset fork} {payout : SlashingPayout preset}
+    (paid : BlockPaid config checks engine state block payout)
+    (capped : EffectiveBalancesCapped state) : EffectiveBalancesCapped payout.before := by
+  obtain ⟨input, proposers, inputOk, proposersOk, paid⟩ := paid
+  have atInput := (capKept_operationsInput caps inputOk).kept capped
+  rcases paid with ⟨_, _, _, before, _, _, _, prefixOk, _, _, rfl⟩ |
+    ⟨_, _, _, atSlashing, _, prefixOk, ⟨_, _, _, atStep, _, _, _, stepsOk, _, _, _, rfl⟩⟩
+  · exact (CapKept.foldlM (fun _ _ _ ok => capKept_processProposerSlashing ok) prefixOk).kept
+      atInput
+  · have atProposers :=
+      (CapKept.foldlM (fun _ _ _ ok => capKept_processProposerSlashing ok) proposersOk).kept
+        atInput
+    have atAttester :=
+      (CapKept.foldlM (fun _ _ _ ok => capKept_processAttesterSlashing ok) prefixOk).kept
+        atProposers
+    exact foldlM_ok_invariant (fun step => EffectiveBalancesCapped step.1)
+      (fun _ _ _ before ok => (capKept_slashIfSlashable ok).kept before)
+      (show EffectiveBalancesCapped (atSlashing, false).1 from atAttester) stepsOk
+
+/-- Along a run from a reachable state, each payout runs on a state under the cap. -/
+theorem Run.capped_of_slashingPayouts (caps : EffectiveBalanceCaps preset)
+    {start after : ForkedBeaconState preset} (reachable : Reachable config checks start)
+    (run : Run config checks start after) {payout : SlashingPayout preset}
+    (member : payout ∈ run.slashingPayouts) : EffectiveBalancesCapped payout.before := by
+  obtain ⟨before, _, head, step, _, _, pays⟩ := (run.mem_slashingPayouts payout).mp member
+  have capped := Reachable.effectiveBalancesCapped caps (reachable.reaches ⟨head⟩)
+  cases step with
+  | slot _ _ => exact pays.elim
+  | upgrade _ _ => exact pays.elim
+  | block _ _ _ _ _ => exact BlockPaid.capped caps pays capped
+
+/-- The largest reward of one slashing at any fork, in Gwei.
+
+Before Electra it is `MAX_EFFECTIVE_BALANCE / WHISTLEBLOWER_REWARD_QUOTIENT`.
+
+From Electra it is `MAX_EFFECTIVE_BALANCE_ELECTRA / WHISTLEBLOWER_REWARD_QUOTIENT_ELECTRA`. -/
+def slashingRewardBound (preset : Preset) : Nat :=
+  max (preset.MAX_EFFECTIVE_BALANCE.toNat / preset.WHISTLEBLOWER_REWARD_QUOTIENT.toNat)
+    (preset.MAX_EFFECTIVE_BALANCE_ELECTRA.toNat /
+      preset.WHISTLEBLOWER_REWARD_QUOTIENT_ELECTRA.toNat)
+
+/-- The reward of a slashing on a state under the cap is at most the bound. -/
+theorem SlashingPayout.reward_le (caps : EffectiveBalanceCaps preset)
+    {payout : SlashingPayout preset} (valid : payout.Valid config)
+    (capped : EffectiveBalancesCapped payout.before) :
+    payout.reward.toNat ≤ slashingRewardBound preset := by
+  have bound := UInt64.le_iff_toNat_le.mp (capped.get valid.found)
+  simp only [SlashingPayout.reward, whistleblowerReward, UInt64.toNat_div, slashingRewardBound]
+  unfold withdrawalMaxEffectiveBalance at bound
+  by_cases electra : Base.Fork.pectra ≤ payout.fork
+  · -- From Electra the largest effective balance is at most `MAX_EFFECTIVE_BALANCE_ELECTRA`.
+    simp only [electra, ↓reduceIte, getMaxEffectiveBalance] at bound
+    have largest : payout.validator.effectiveBalance.toNat ≤
+        preset.MAX_EFFECTIVE_BALANCE_ELECTRA.toNat := by
+      split at bound
+      · exact bound
+      · exact Nat.le_trans bound (UInt64.le_iff_toNat_le.mp caps.activation_le_electra)
+    simp only [parameters, ge_iff_le, electra, ↓reduceIte]
+    exact Nat.le_trans (Nat.div_le_div_right largest) (Nat.le_max_right _ _)
+  · simp only [electra, ↓reduceIte] at bound
+    simp only [parameters, ge_iff_le, electra, ↓reduceIte]
+    exact Nat.le_trans (Nat.div_le_div_right bound) (Nat.le_max_left _ _)
+
+/-- Along a run from a reachable state, the payouts add up to at most one bound per payout.
+
+The payouts pay distinct validators, so this is at most one bound per validator slashed. -/
+theorem Run.slashingRewards_le (caps : EffectiveBalanceCaps preset)
+    {start after : ForkedBeaconState preset} (reachable : Reachable config checks start)
+    (run : Run config checks start after) (small : after.state.validators.data.size < 2 ^ 64) :
+    (run.slashingPayouts.map (·.reward.toNat)).sum ≤
+      run.slashingPayouts.length * slashingRewardBound preset := by
+  have each : ∀ payout ∈ run.slashingPayouts,
+      payout.reward.toNat ≤ slashingRewardBound preset := fun payout member =>
+    SlashingPayout.reward_le caps ((run.slashingLedger small).valid payout member)
+      (run.capped_of_slashingPayouts caps reachable member)
+  generalize run.slashingPayouts = payouts at each ⊢
+  induction payouts with
+  | nil => simp
+  | cons payout rest more =>
+    have head := each payout List.mem_cons_self
+    have tail := more (fun other member => each other (List.mem_cons_of_mem _ member))
+    simp only [List.map_cons, List.sum_cons, List.length_cons, Nat.add_mul, Nat.one_mul]
+    omega
 
 end EthLib.Consensus
