@@ -5,21 +5,23 @@ public import EthLib.Consensus.Proofs.Transition.ForkBoundary
 /-!
 # Proofs: the steps that keep the record of history
 
-Four fields of a state record its history.
+Five fields of a state record its history.
 
+- The slot.
 - The latest block header.
 - The circular buffer of block roots.
 - The circular buffer of state roots.
 - The justification bits.
 
-Only four functions write them.
+Only five functions write them.
 
+- `advanceSlot` moves the slot on.
 - `processSlot` writes the two buffers, and fills the state root of the header.
 - `processBlockHeader` writes the header of a new block.
 - `weighJustificationAndFinalization` writes the justification bits.
-- The upgrades copy all four fields.
+- The upgrades copy all five fields.
 
-This file proves that every other step of a block or an epoch keeps the four fields.
+This file proves that every other step of a block or an epoch keeps the five fields.
 
 That is what lets a value in a buffer be traced back to the step that wrote it.
 -/
@@ -34,15 +36,16 @@ variable {preset : Preset} {fork : Base.Fork} {config : Config} {checks : Signat
   {engine : ExecutionEngine preset fork}
   {state after : BeaconState preset fork}
 
-/-- The four fields that record history: the latest header, the two buffers of roots, the bits.
--/
+/-- The fields that record history: the slot, the latest header, the two buffers of roots and
+the justification bits. -/
 def BeaconState.history (state : BeaconState preset fork) :
-    BeaconBlockHeader × RootedVector Root preset.SLOTS_PER_HISTORICAL_ROOT.toNat ×
+    Slot × BeaconBlockHeader × RootedVector Root preset.SLOTS_PER_HISTORICAL_ROOT.toNat ×
       RootedVector Root preset.SLOTS_PER_HISTORICAL_ROOT.toNat ×
       Bitvector JUSTIFICATION_BITS_LENGTH.toNat :=
-  (state.latestBlockHeader, state.blockRoots, state.stateRoots, state.justificationBits)
+  (state.slot, state.latestBlockHeader, state.blockRoots, state.stateRoots,
+    state.justificationBits)
 
-/-- A step that keeps the latest header, the buffers of roots and the justification bits. -/
+/-- A step that keeps the slot, the latest header, the buffers of roots and the bits. -/
 def Kept (state after : BeaconState preset fork) : Prop :=
   after.history = state.history
 
@@ -52,19 +55,22 @@ theorem Kept.trans {first second third : BeaconState preset fork} (one : Kept fi
     (two : Kept second third) : Kept first third :=
   Eq.trans two one
 
-theorem Kept.latestBlockHeader (kept : Kept state after) :
-    after.latestBlockHeader = state.latestBlockHeader :=
+theorem Kept.slot (kept : Kept state after) : after.slot = state.slot :=
   congrArg Prod.fst kept
 
-theorem Kept.blockRoots (kept : Kept state after) : after.blockRoots = state.blockRoots :=
+theorem Kept.latestBlockHeader (kept : Kept state after) :
+    after.latestBlockHeader = state.latestBlockHeader :=
   congrArg (·.2.1) kept
 
-theorem Kept.stateRoots (kept : Kept state after) : after.stateRoots = state.stateRoots :=
+theorem Kept.blockRoots (kept : Kept state after) : after.blockRoots = state.blockRoots :=
   congrArg (·.2.2.1) kept
+
+theorem Kept.stateRoots (kept : Kept state after) : after.stateRoots = state.stateRoots :=
+  congrArg (·.2.2.2.1) kept
 
 theorem Kept.justificationBits (kept : Kept state after) :
     after.justificationBits = state.justificationBits :=
-  congrArg (·.2.2.2) kept
+  congrArg (·.2.2.2.2) kept
 
 /-- A fold whose every step keeps the history keeps it. -/
 theorem Kept.foldlM {α ε : Type} {step : BeaconState preset fork → α → Except ε _}
@@ -1183,9 +1189,9 @@ theorem kept_queueCompoundingExcess {electra : .pectra ≤ fork} {index : Nat}
   · cases computed
     rfl
 
-/-- An upgrade copies the latest header, the two buffers of roots and the justification bits.
+/-- An upgrade copies the slot, the latest header, the two buffers of roots and the bits.
 
-The four fields have the same type at every fork, so the statement compares them directly. -/
+The five fields have the same type at every fork, so the statement compares them directly. -/
 theorem upgradeNext_history {pre : ForkedBeaconState preset}
     {post : {post : ForkedBeaconState preset // pre.fork < post.fork}}
     (computed : upgradeNext config checks pre = .ok post) :
