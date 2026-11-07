@@ -471,7 +471,7 @@ def BeaconBlock.toHeader (block : BeaconBlock preset fork) (bodyRoot : Root) :
 
 The header is that of the last block, with one of three state roots.
 
-- Zero, while the chain is still at the slot of the block.
+- Zero, while the chain is still at the state after the block.
 - The root of the state after the block, which a validated block names as its state root.
 - Any root, but then the state after the block has the zero root.
 
@@ -482,8 +482,7 @@ theorem HeaderSettled.of_block {fork : Fork} {engine : ExecutionEngine preset fo
     (notDue : upgradeDue config ⟨fork, state⟩ = false)
     (applied : applySignedBlock config checks engine state signed validateResult = .ok post)
     (settled : HeaderSettled config checks ⟨fork, post⟩ after (signed.message.header bodyRoot)) :
-    (after.state.latestBlockHeader = signed.message.header bodyRoot ∧
-        after.state.slot = post.slot) ∨
+    (after = ⟨fork, post⟩ ∧ post.latestBlockHeader = signed.message.header bodyRoot) ∨
       (∃ root, hashTreeRoot post = .ok root ∧
         after.state.latestBlockHeader = { signed.message.header bodyRoot with stateRoot := root } ∧
         (validateResult = true → root = signed.message.stateRoot)) ∨
@@ -496,12 +495,14 @@ theorem HeaderSettled.of_block {fork : Fork} {engine : ExecutionEngine preset fo
   have headerSlot : post.latestBlockHeader.slot = post.slot := by
     rw [written, postSlot]
     exact blockSlot
-  obtain ⟨_, stateRoot, current, first | ⟨_, middle, root, head, _, middleSlot, rootOk, filled⟩⟩ :=
-    settled
+  obtain ⟨chain, stateRoot, current, first | ⟨_, middle, root, head, _, middleSlot, rootOk,
+    filled⟩⟩ := settled
   · obtain ⟨same, nonzero | atSlot⟩ := first
     · exact absurd rfl nonzero
-    · refine .inl ⟨?_, atSlot⟩
-      rw [current, same]
+    · -- The chain has not left the block's slot, so it is still at the state after the block.
+      have stays := chain.eq_of_slot_after_block postNotDue headerSlot atSlot
+      subst stays
+      exact .inl ⟨rfl, by rw [current, same]⟩
   · -- The first caching after the block started from the state after the block.
     have same := head.eq_of_slot_after_block postNotDue headerSlot middleSlot
     subst same

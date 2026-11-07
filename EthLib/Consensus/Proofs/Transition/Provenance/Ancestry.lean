@@ -3,6 +3,7 @@ module
 public import EthLib.Consensus.Proofs.Containers.Misc
 public import EthLib.Consensus.Proofs.Transition.Provenance.Roots
 public import EthLib.Serialization.Proofs.Ssz.Typed.Root
+public import Mathlib.Logic.Relation
 
 /-!
 # Proofs: parent roots, and the hash evidence that replaces collision-freedom
@@ -135,14 +136,14 @@ theorem Reaches.parentRoot {start : ForkedBeaconState preset} {fork : Fork}
   · exact .inl ⟨settled, parent⟩
   · refine .inr ⟨fork', engine', signed', validateResult', state', post', bodyRoot, head, notDue',
       applied', bodyRootOk, settled.1, ?_⟩
-    rcases settled.of_block notDue' applied' with ⟨header, sameSlot⟩ | ⟨root, rootOk, header,
+    rcases settled.of_block notDue' applied' with ⟨same, header⟩ | ⟨root, rootOk, header,
       validated⟩ | zero
     · -- A block at the slot of the previous one is not newer than it.
       exfalso
       obtain ⟨headerSlot, -, -, -, postSlot, -⟩ := applySignedBlock_roots applied'
-      simp only at header sameSlot
+      cases same
       have : state.latestBlockHeader.slot = state.slot := by
-        rw [header, sameSlot, postSlot]
+        rw [header, postSlot]
         exact headerSlot
       rw [this, blockSlot] at newer
       exact UInt64.lt_irrefl _ newer
@@ -150,5 +151,226 @@ theorem Reaches.parentRoot {start : ForkedBeaconState preset} {fork : Fork}
       rw [header] at parent
       exact .inl ⟨root, rootOk, parent, validated⟩
     · exact .inr zero
+
+/-! ## Ancestry along a chain -/
+
+/-- A state of a chain has the zero root.
+
+The caching of a slot reads the zero root as an unfilled header, so the header can take the
+root of a later state.
+
+This records the cryptographic event instead of assuming it cannot happen. -/
+def ZeroRootFound (config : Config) (checks : SignatureChecks)
+    (start after : ForkedBeaconState preset) : Prop :=
+  ∃ middle, Reaches config checks start middle ∧ Reaches config checks middle after ∧
+    hashTreeRoot middle.state = .ok (Vector.replicate 32 0)
+
+theorem ZeroRootFound.extend {start middle after : ForkedBeaconState preset}
+    (found : ZeroRootFound config checks start middle) (step : Step config checks middle after) :
+    ZeroRootFound config checks start after :=
+  have ⟨state, head, tail, zero⟩ := found
+  ⟨state, head, tail.step step, zero⟩
+
+/-- A block step of a chain links its parent root to its own root.
+
+Its own root is that of its header, with the root of the state after it as state root.
+
+That is the root the next caching stores, unless the state after it has the zero root. -/
+def ChainBlock (config : Config) (checks : SignatureChecks) (start after : ForkedBeaconState preset)
+    (parentRoot root : Root) : Prop :=
+  ∃ (fork : Fork) (engine : ExecutionEngine preset fork) (signed : SignedBeaconBlock preset fork)
+    (validateResult : Bool) (state post : BeaconState preset fork) (bodyRoot stateRoot : Root),
+    Reaches config checks start ⟨fork, state⟩ ∧ upgradeDue config ⟨fork, state⟩ = false ∧
+    applySignedBlock config checks engine state signed validateResult = .ok post ∧
+    Reaches config checks ⟨fork, post⟩ after ∧
+    hashTreeRoot signed.message.body = .ok bodyRoot ∧ hashTreeRoot post = .ok stateRoot ∧
+    signed.message.parentRoot = parentRoot ∧
+    hashTreeRoot { signed.message.header bodyRoot with stateRoot } = .ok root
+
+theorem ChainBlock.extend {start middle after : ForkedBeaconState preset} {parentRoot root : Root}
+    (block : ChainBlock config checks start middle parentRoot root)
+    (step : Step config checks middle after) : ChainBlock config checks start after parentRoot root :=
+  have ⟨fork, engine, signed, validateResult, state, post, bodyRoot, stateRoot, head, notDue,
+    applied, tail, rest⟩ := block
+  ⟨fork, engine, signed, validateResult, state, post, bodyRoot, stateRoot, head, notDue, applied,
+    tail.step step, rest⟩
+
+/-- One root is an ancestor of another along the parent links of the blocks of a chain. -/
+def ChainAncestor (config : Config) (checks : SignatureChecks)
+    (start after : ForkedBeaconState preset) : Root → Root → Prop :=
+  Relation.ReflTransGen (ChainBlock config checks start after)
+
+theorem ChainAncestor.extend {start middle after : ForkedBeaconState preset} {first second : Root}
+    (ancestor : ChainAncestor config checks start middle first second)
+    (step : Step config checks middle after) :
+    ChainAncestor config checks start after first second :=
+  Relation.ReflTransGen.mono (fun _ _ (block : ChainBlock config checks start middle _ _) =>
+    block.extend step) _ _ ancestor
+
+/-- A filled header keeps its state root. -/
+theorem fillStateRoot_of_ne {header : BeaconBlockHeader} {stateRoot : Root}
+    (filled : header.stateRoot ≠ Vector.replicate 32 0) :
+    fillStateRoot header stateRoot = header := by
+  simp [fillStateRoot, filled]
+
+/-- How the latest header of a chain's state relates to the header cached at its first step.
+
+- No block ran since, and the cached header, whose state root is filled, stays.
+- Or a block ran since, its header is settled, and its parent descends from the cached root.
+- Or a state of the chain has the zero root. -/
+def HeaderSince (config : Config) (checks : SignatureChecks) (start after : ForkedBeaconState preset)
+    (cached : BeaconBlockHeader) (root : Root) : Prop :=
+  (after.state.latestBlockHeader = cached ∧ cached.stateRoot ≠ Vector.replicate 32 0) ∨
+    (∃ (fork : Fork) (engine : ExecutionEngine preset fork)
+      (signed : SignedBeaconBlock preset fork) (validateResult : Bool)
+      (state post : BeaconState preset fork) (bodyRoot : Root),
+      Reaches config checks start ⟨fork, state⟩ ∧ upgradeDue config ⟨fork, state⟩ = false ∧
+      applySignedBlock config checks engine state signed validateResult = .ok post ∧
+      hashTreeRoot signed.message.body = .ok bodyRoot ∧
+      HeaderSettled config checks ⟨fork, post⟩ after (signed.message.header bodyRoot) ∧
+      ChainAncestor config checks start after root signed.message.parentRoot) ∨
+    ZeroRootFound config checks start after
+
+/-- Along a chain, the block root that a later slot caches descends from the one cached first.
+
+The chain starts at `state`, whose slot step caches `cached`.
+
+It reaches `after`, whose caching would give `cachedLater`.
+
+The root of `cachedLater`'s header descends from the root of `cached`'s header, along the
+parent links of the blocks of the chain.
+
+Or a state of the chain has the zero root. -/
+theorem Reaches.cachedRoot_ancestor {fork : Fork} {state next cached : BeaconState preset fork}
+    {after : ForkedBeaconState preset} (notDue : upgradeDue config ⟨fork, state⟩ = false)
+    (computed : advanceSlot config checks state = .ok next)
+    (chain : Reaches config checks ⟨fork, next⟩ after)
+    (cachedOk : processSlot state = .ok cached)
+    {cachedLater : BeaconState preset after.fork}
+    (laterOk : processSlot after.state = .ok cachedLater) {root rootLater : Root}
+    (rootOk : hashTreeRoot cached.latestBlockHeader = .ok root)
+    (rootLaterOk : hashTreeRoot cachedLater.latestBlockHeader = .ok rootLater) :
+    ChainAncestor config checks ⟨fork, state⟩ after root rootLater ∨
+      ZeroRootFound config checks ⟨fork, state⟩ after := by
+  have first : Reaches config checks ⟨fork, state⟩ ⟨fork, next⟩ :=
+    (Reaches.refl _).step (.slot notDue computed)
+  -- After the first step, the header is the cached one, filled unless the state's root is zero.
+  have start : HeaderSince config checks ⟨fork, state⟩ ⟨fork, next⟩ cached.latestBlockHeader
+      root := by
+    obtain ⟨cached', cachedOk', -, nextHeader, -, -⟩ := advanceSlot_roots computed
+    cases cachedOk.symm.trans cachedOk'
+    obtain ⟨stateRoot, -, stateRootOk, header, -⟩ := processSlot_roots cachedOk
+    by_cases filled : cached.latestBlockHeader.stateRoot = Vector.replicate 32 0
+    · -- An unfilled header after caching means the state had the zero root.
+      refine .inr (.inr ⟨⟨fork, state⟩, .refl _, first, ?_⟩)
+      rw [header] at filled
+      unfold fillStateRoot at filled
+      split at filled
+      · simp only at filled
+        rw [filled] at stateRootOk
+        exact stateRootOk
+      · contradiction
+    · exact .inl ⟨nextHeader, filled⟩
+  obtain ⟨run⟩ := chain
+  -- The relation holds at every state of the run.
+  have holds : ∀ {last : ForkedBeaconState preset}, Run config checks ⟨fork, next⟩ last →
+      HeaderSince config checks ⟨fork, state⟩ last cached.latestBlockHeader root := by
+    intro last run
+    induction run with
+    | nil => exact start
+    | @snoc middle last run step more =>
+      have middleChain : Reaches config checks ⟨fork, state⟩ middle := first.trans ⟨run⟩
+      cases step with
+      | @slot fork' state' next' notDue' computed' =>
+        have theStep : Step config checks ⟨fork', state'⟩ ⟨fork', next'⟩ :=
+          .slot notDue' computed'
+        rcases more with ⟨same, filled⟩ | ⟨fork'', engine, signed, validateResult, state'', post,
+          bodyRoot, head, notDue'', applied, bodyRootOk, settled, ancestor⟩ | zero
+        · obtain ⟨cached', cachedOk', -, nextHeader, -, -⟩ := advanceSlot_roots computed'
+          obtain ⟨_, -, -, header, -⟩ := processSlot_roots cachedOk'
+          refine .inl ⟨?_, filled⟩
+          simp only at same ⊢
+          rw [nextHeader, header, same, fillStateRoot_of_ne filled]
+        · exact .inr (.inl ⟨fork'', engine, signed, validateResult, state'', post, bodyRoot, head,
+            notDue'', applied, bodyRootOk, settled.slot notDue' computed',
+            ancestor.extend theStep⟩)
+        · exact .inr (.inr (zero.extend theStep))
+      | @upgrade _ post due computed' =>
+        have theStep : Step config checks middle post.val := .upgrade due computed'
+        have header := (upgradeNext_roots computed').2.1
+        rcases more with ⟨same, filled⟩ | ⟨fork'', engine, signed, validateResult, state'',
+          post', bodyRoot, head, notDue'', applied, bodyRootOk, settled, ancestor⟩ | zero
+        · exact .inl ⟨header.trans same, filled⟩
+        · exact .inr (.inl ⟨fork'', engine, signed, validateResult, state'', post', bodyRoot, head,
+            notDue'', applied, bodyRootOk, settled.upgrade due computed',
+            ancestor.extend theStep⟩)
+        · exact .inr (.inr (zero.extend theStep))
+      | @block fork' engine signed validateResult state' post notDue' computed' =>
+        have theStep : Step config checks ⟨fork', state'⟩ ⟨fork', post⟩ :=
+          .block engine signed validateResult notDue' computed'
+        obtain ⟨blockSlot, newer, parent, ⟨bodyRoot, bodyRootOk, written⟩, -⟩ :=
+          applySignedBlock_roots computed'
+        -- The block's own header settles from the state after it.
+        have settled : HeaderSettled config checks ⟨fork', post⟩ ⟨fork', post⟩
+            (signed.message.header bodyRoot) :=
+          ⟨.refl _, _, written, .inl ⟨rfl, .inr rfl⟩⟩
+        have newChain : Reaches config checks ⟨fork, state⟩ ⟨fork', post⟩ :=
+          middleChain.step theStep
+        rcases more with ⟨same, filled⟩ | ⟨fork'', engine', signed', validateResult', state'',
+          post', bodyRoot', head, notDue'', applied, bodyRootOk', settled', ancestor⟩ | zero
+        · -- The block's parent is the cached header.
+          simp only at same
+          rw [same, rootOk] at parent
+          cases parent
+          exact .inr (.inl ⟨fork', engine, signed, validateResult, state', post, bodyRoot,
+            middleChain, notDue', computed', bodyRootOk, settled, .refl⟩)
+        · -- The block's parent is the previous block, whose parent descends from the root.
+          have tail := settled'.1
+          rcases settled'.of_block notDue'' applied with ⟨same, header⟩ | ⟨stateRoot,
+            stateRootOk, header, -⟩ | zero
+          · -- The chain is still at the state after the previous block: no block is newer.
+            exfalso
+            obtain ⟨previousSlot, -, -, -, previousPostSlot, -⟩ := applySignedBlock_roots applied
+            cases same
+            rw [header, blockSlot] at newer
+            simp only [BeaconBlock.header] at newer
+            rw [previousSlot, ← previousPostSlot] at newer
+            exact UInt64.lt_irrefl _ newer
+          · simp only at header
+            rw [header] at parent
+            have link : ChainBlock config checks ⟨fork, state⟩ ⟨fork', post⟩
+                signed'.message.parentRoot signed.message.parentRoot :=
+              ⟨fork'', engine', signed', validateResult', state'', post', bodyRoot', stateRoot, head,
+                notDue'', applied, tail.step theStep, bodyRootOk', stateRootOk, rfl, parent⟩
+            exact .inr (.inl ⟨fork', engine, signed, validateResult, state', post, bodyRoot,
+              middleChain, notDue', computed', bodyRootOk, settled,
+              (ancestor.extend theStep).tail link⟩)
+          · exact .inr (.inr ⟨_, head.step (.block engine' signed' validateResult' notDue'' applied),
+              tail.step theStep, zero⟩)
+        · exact .inr (.inr (zero.extend theStep))
+  obtain ⟨stateRoot, -, stateRootOk, laterHeader, -⟩ := processSlot_roots laterOk
+  rw [laterHeader] at rootLaterOk
+  rcases holds run with ⟨same, filled⟩ | ⟨fork', engine, signed, validateResult, state', post,
+    bodyRoot, head, notDue', applied, bodyRootOk, settled, ancestor⟩ | zero
+  · -- No block ran: the cached header stays, and so does its root.
+    rw [same, fillStateRoot_of_ne filled, rootOk] at rootLaterOk
+    cases rootLaterOk
+    exact .inl .refl
+  · have tail := settled.1
+    rcases settled.of_block notDue' applied with ⟨rfl, header⟩ | ⟨root', root'Ok, header, -⟩ | zero
+    · -- The chain is at the state after the block, so the caching fills the block's header.
+      rw [header] at rootLaterOk
+      simp only [fillStateRoot, BeaconBlock.header, ↓reduceIte] at rootLaterOk
+      exact .inl (ancestor.tail ⟨fork', engine, signed, validateResult, state', post, bodyRoot,
+        stateRoot, head, notDue', applied, tail, bodyRootOk, stateRootOk, rfl, rootLaterOk⟩)
+    · by_cases unfilled : root' = Vector.replicate 32 0
+      · subst unfilled
+        exact .inr ⟨_, head.step (.block engine signed validateResult notDue' applied), tail,
+          root'Ok⟩
+      · rw [header, fillStateRoot_of_ne unfilled] at rootLaterOk
+        exact .inl (ancestor.tail ⟨fork', engine, signed, validateResult, state', post, bodyRoot,
+          root', head, notDue', applied, tail, bodyRootOk, root'Ok, rfl, rootLaterOk⟩)
+    · exact .inr ⟨_, head.step (.block engine signed validateResult notDue' applied), tail, zero⟩
+  · exact .inr zero
 
 end EthLib.Consensus
