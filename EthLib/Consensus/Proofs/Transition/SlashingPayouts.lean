@@ -34,6 +34,8 @@ So along a chain each validator is paid for at most once.
 
 This file records each call as a `SlashingPayout`, along any run of the chain.
 
+The payouts of a run are exactly its calls of `slashValidator`, in order.
+
 They form a `SlashingLedger`, which pays no validator twice.
 
 Each validator it pays is not slashed at the start, and is slashed at the end.
@@ -602,5 +604,403 @@ theorem Run.slashingLedger {start : ForkedBeaconState preset} :
     exact (run.slashingLedger middleSmall).append (step.slashingLedger small)
       (fun _ flag => (stepRelation_registryLifecycle.run run).keeps_slashed middleSmall flag)
       (fun _ flag => stepLifecycle.keeps_slashed small flag)
+
+/-! ## Each call of the chain is a payout -/
+
+/-- A step of an attester slashing, reached from the start of its steps, that slashes.
+
+The payout records the state of that step, the state after it, the index and the validator. -/
+def IndexPaid (config : Config) (indices : List ValidatorIndex)
+    (step : BeaconState preset fork × Bool) (payout : SlashingPayout preset) : Prop :=
+  ∃ (earlier : List ValidatorIndex) (index : ValidatorIndex) (later : List ValidatorIndex)
+    (atStep : BeaconState preset fork × Bool) (after : BeaconState preset fork)
+    (validator : Validator),
+    indices = earlier ++ index :: later ∧
+    earlier.foldlM (slashIfSlashable config) step = .ok atStep ∧
+    getValidator atStep.1 index = .ok validator ∧
+    isSlashableValidator validator (getCurrentEpoch atStep.1) = true ∧
+    slashIfSlashable config atStep index = .ok (after, true) ∧
+    payout = ⟨fork, atStep.1, after, index, validator⟩
+
+/-- The payouts of the steps of an attester slashing are exactly the steps that slash. -/
+theorem indexSlashingPayouts_complete (indices : List ValidatorIndex)
+    {step after : BeaconState preset fork × Bool} {payouts : List (SlashingPayout preset)}
+    (computed : indices.foldlM (slashIfSlashable config) step = .ok after)
+    (collected : indexSlashingPayouts config indices step = .ok (after, payouts))
+    (payout : SlashingPayout preset) :
+    payout ∈ payouts ↔ IndexPaid config indices step payout := by
+  induction indices generalizing step payouts with
+  | nil =>
+    cases computed
+    cases collected
+    simp [IndexPaid]
+  | cons index rest more =>
+    obtain ⟨middle, first, tail⟩ := bind_ok_iff.mp computed
+    obtain ⟨paid, paidOk, _⟩ := indexSlashingPayouts_ok rest tail
+    have read := first
+    simp only [slashIfSlashable, bind_ok_iff, liftAccessor_ok] at read
+    obtain ⟨validator, found, action⟩ := read
+    have tailIff := more tail paidOk
+    -- A later step of the original list, reached through this one.
+    have later : ∀ {earlier index' later' atStep after' validator'},
+        rest = earlier ++ index' :: later' →
+        earlier.foldlM (slashIfSlashable config) middle = .ok atStep →
+        (getValidator atStep.1 index' = .ok validator' ∧
+          isSlashableValidator validator' (getCurrentEpoch atStep.1) = true ∧
+          slashIfSlashable config atStep index' = .ok (after', true) ∧
+          payout = ⟨fork, atStep.1, after', index', validator'⟩) →
+        IndexPaid config (index :: rest) step payout :=
+      fun {earlier index' later' atStep after' validator'} split prefixOk fields =>
+        ⟨index :: earlier, index', later', atStep, after', validator', by simp [split],
+          bind_ok_iff.mpr ⟨middle, first, prefixOk⟩, fields⟩
+    -- A step reached through this one is a step of the rest.
+    have ofLater : ∀ {head earlier index' later' atStep after' validator'},
+        index :: rest = (head :: earlier) ++ index' :: later' →
+        (head :: earlier).foldlM (slashIfSlashable config) step = .ok atStep →
+        (getValidator atStep.1 index' = .ok validator' ∧
+          isSlashableValidator validator' (getCurrentEpoch atStep.1) = true ∧
+          slashIfSlashable config atStep index' = .ok (after', true) ∧
+          payout = ⟨fork, atStep.1, after', index', validator'⟩) →
+        IndexPaid config rest middle payout := by
+      intro head earlier index' later' atStep after' validator' split prefixOk fields
+      simp only [List.cons_append, List.cons.injEq] at split
+      obtain ⟨rfl, splitTail⟩ := split
+      obtain ⟨next, headOk, restOk⟩ := bind_ok_iff.mp prefixOk
+      have same := Except.ok.inj (headOk.symm.trans first)
+      subst next
+      exact ⟨earlier, index', later', atStep, after', validator', splitTail, restOk, fields⟩
+    by_cases slashable : isSlashableValidator validator (getCurrentEpoch step.1) = true
+    · simp only [slashable, ↓reduceIte, bind_ok_iff, liftAccessor_ok, pure, Except.pure,
+        Except.ok.injEq] at action
+      obtain ⟨slashed, called, rfl⟩ := action
+      have recorded : payouts = ⟨fork, step.1, slashed, index, validator⟩ :: paid := by
+        have expected : indexSlashingPayouts config (index :: rest) step =
+            .ok (after, ⟨fork, step.1, slashed, index, validator⟩ :: paid) := by
+          simp [indexSlashingPayouts, first, found, liftAccessor, Except.mapError, paidOk,
+            slashable, slashingPayout, bind, Except.bind, pure, Except.pure]
+        exact (congrArg Prod.snd (Except.ok.inj (collected.symm.trans expected)))
+      subst recorded
+      constructor
+      · intro member
+        rcases List.mem_cons.mp member with rfl | member
+        · exact ⟨[], index, rest, step, slashed, validator, rfl, rfl, found, slashable, first, rfl⟩
+        · obtain ⟨earlier, index', later', atStep, after', validator', split, prefixOk, fields⟩ :=
+            tailIff.mp member
+          exact later split prefixOk fields
+      · rintro ⟨earlier, index', later', atStep, after', validator', split, prefixOk, fields⟩
+        cases earlier with
+        | nil =>
+          simp only [List.nil_append, List.cons.injEq] at split
+          obtain ⟨rfl, _⟩ := split
+          cases prefixOk
+          obtain ⟨readOk, _, call, rfl⟩ := fields
+          have sameValidator := Except.ok.inj (readOk.symm.trans found)
+          have sameCall := Except.ok.inj (call.symm.trans first)
+          simp only [Prod.mk.injEq] at sameCall
+          rw [sameValidator, sameCall.1]
+          exact List.mem_cons_self
+        | cons head earlier =>
+          exact List.mem_cons_of_mem _ (tailIff.mpr (ofLater split prefixOk fields))
+    · have same : middle = step := by
+        simpa [slashable, pure, Except.pure] using action.symm
+      subst same
+      have recorded : payouts = paid := by
+        have expected : indexSlashingPayouts config (index :: rest) middle = .ok (after, paid) := by
+          simp [indexSlashingPayouts, first, found, liftAccessor, Except.mapError, paidOk,
+            slashable, bind, Except.bind, pure, Except.pure]
+        exact (congrArg Prod.snd (Except.ok.inj (collected.symm.trans expected)))
+      subst recorded
+      constructor
+      · intro member
+        obtain ⟨earlier, index', later', atStep, after', validator', split, prefixOk, fields⟩ :=
+          tailIff.mp member
+        exact later split prefixOk fields
+      · rintro ⟨earlier, index', later', atStep, after', validator', split, prefixOk, fields⟩
+        cases earlier with
+        | nil =>
+          simp only [List.nil_append, List.cons.injEq] at split
+          obtain ⟨rfl, _⟩ := split
+          cases prefixOk
+          obtain ⟨readOk, mayBe, _⟩ := fields
+          have sameValidator := Except.ok.inj (readOk.symm.trans found)
+          exact absurd (sameValidator ▸ mayBe) slashable
+        | cons head earlier =>
+          exact tailIff.mpr (ofLater split prefixOk fields)
+
+/-- A proposer slashing, reached from the start of the list, and the payout of its call. -/
+def ProposerPaid (config : Config) (checks : SignatureChecks)
+    (slashings : List ProposerSlashing) (state : BeaconState preset fork)
+    (payout : SlashingPayout preset) : Prop :=
+  ∃ (earlier : List ProposerSlashing) (slashing : ProposerSlashing)
+    (later : List ProposerSlashing) (before after : BeaconState preset fork)
+    (validator : Validator),
+    slashings = earlier ++ slashing :: later ∧
+    earlier.foldlM (processProposerSlashing config checks) state = .ok before ∧
+    processProposerSlashing config checks before slashing = .ok after ∧
+    getValidator before slashing.signedHeader1.message.proposerIndex = .ok validator ∧
+    payout = ⟨fork, before, after, slashing.signedHeader1.message.proposerIndex, validator⟩
+
+/-- The payouts of the proposer slashings are exactly their calls. -/
+theorem proposerSlashingPayouts_complete (slashings : List ProposerSlashing)
+    {state after : BeaconState preset fork} {payouts : List (SlashingPayout preset)}
+    (computed : slashings.foldlM (processProposerSlashing config checks) state = .ok after)
+    (collected : proposerSlashingPayouts config checks slashings state = .ok (after, payouts))
+    (payout : SlashingPayout preset) :
+    payout ∈ payouts ↔ ProposerPaid config checks slashings state payout := by
+  induction slashings generalizing state payouts with
+  | nil =>
+    cases computed
+    cases collected
+    simp [ProposerPaid]
+  | cons slashing rest more =>
+    obtain ⟨middle, first, tail⟩ := bind_ok_iff.mp computed
+    obtain ⟨paid, paidOk, _⟩ := proposerSlashingPayouts_ok rest tail
+    obtain ⟨_, _, _, validator, found, _⟩ := processProposerSlashing_checks first
+    have recorded : payouts =
+        ⟨fork, state, middle, slashing.signedHeader1.message.proposerIndex, validator⟩ :: paid := by
+      have expected : proposerSlashingPayouts config checks (slashing :: rest) state =
+          .ok (after, ⟨fork, state, middle, slashing.signedHeader1.message.proposerIndex,
+            validator⟩ :: paid) := by
+        simp [proposerSlashingPayouts, first, slashingPayout, found, liftAccessor,
+          Except.mapError, paidOk, bind, Except.bind, pure, Except.pure]
+      exact congrArg Prod.snd (Except.ok.inj (collected.symm.trans expected))
+    subst recorded
+    have tailIff := more tail paidOk
+    constructor
+    · intro member
+      rcases List.mem_cons.mp member with rfl | member
+      · exact ⟨[], slashing, rest, state, middle, validator, rfl, rfl, first, found, rfl⟩
+      · obtain ⟨earlier, item, later, before, after', validator', split, prefixOk, fields⟩ :=
+          tailIff.mp member
+        exact ⟨slashing :: earlier, item, later, before, after', validator', by simp [split],
+          bind_ok_iff.mpr ⟨middle, first, prefixOk⟩, fields⟩
+    · rintro ⟨earlier, item, later, before, after', validator', split, prefixOk, called, read,
+        rfl⟩
+      cases earlier with
+      | nil =>
+        simp only [List.nil_append, List.cons.injEq] at split
+        obtain ⟨rfl, _⟩ := split
+        cases prefixOk
+        have samePost := Except.ok.inj (called.symm.trans first)
+        have sameValidator := Except.ok.inj (read.symm.trans found)
+        subst samePost sameValidator
+        exact List.mem_cons_self
+      | cons head earlier =>
+        simp only [List.cons_append, List.cons.injEq] at split
+        obtain ⟨rfl, splitTail⟩ := split
+        obtain ⟨next, headOk, restOk⟩ := bind_ok_iff.mp prefixOk
+        have same := Except.ok.inj (headOk.symm.trans first)
+        subst next
+        exact List.mem_cons_of_mem _ (tailIff.mpr
+          ⟨earlier, item, later, before, after', validator', splitTail, restOk, called, read, rfl⟩)
+
+/-- A step that slashes, inside an attester slashing reached from the start of the list. -/
+def AttesterPaid (config : Config) (checks : SignatureChecks)
+    (slashings : List (AttesterSlashing preset fork)) (state : BeaconState preset fork)
+    (payout : SlashingPayout preset) : Prop :=
+  ∃ (earlier : List (AttesterSlashing preset fork)) (slashing : AttesterSlashing preset fork)
+    (later : List (AttesterSlashing preset fork)) (atSlashing : BeaconState preset fork),
+    slashings = earlier ++ slashing :: later ∧
+    earlier.foldlM (processAttesterSlashing config checks) state = .ok atSlashing ∧
+    IndexPaid config (slashingIndices slashing) (atSlashing, false) payout
+
+/-- The payouts of the attester slashings are exactly their steps that slash. -/
+theorem attesterSlashingPayouts_complete (slashings : List (AttesterSlashing preset fork))
+    {state after : BeaconState preset fork} {payouts : List (SlashingPayout preset)}
+    (computed : slashings.foldlM (processAttesterSlashing config checks) state = .ok after)
+    (collected : attesterSlashingPayouts config checks slashings state = .ok (after, payouts))
+    (payout : SlashingPayout preset) :
+    payout ∈ payouts ↔ AttesterPaid config checks slashings state payout := by
+  induction slashings generalizing state payouts with
+  | nil =>
+    cases computed
+    cases collected
+    simp [AttesterPaid]
+  | cons slashing rest more =>
+    obtain ⟨middle, first, tail⟩ := bind_ok_iff.mp computed
+    obtain ⟨paid, paidOk, _⟩ := attesterSlashingPayouts_ok rest tail
+    have read := first
+    simp only [processAttesterSlashing, bind_ok_iff, ensure_ok_iff] at read
+    obtain ⟨_, _, _, _, _, _, _, _, _, _, folded, foldOk, _⟩ := read
+    obtain ⟨head, headOk, _⟩ := indexSlashingPayouts_ok _ foldOk
+    have recorded : payouts = head ++ paid := by
+      have expected : attesterSlashingPayouts config checks (slashing :: rest) state =
+          .ok (after, head ++ paid) := by
+        simp [attesterSlashingPayouts, first, headOk, paidOk, bind, Except.bind, pure,
+          Except.pure]
+      exact congrArg Prod.snd (Except.ok.inj (collected.symm.trans expected))
+    subst recorded
+    have headIff := indexSlashingPayouts_complete _ foldOk headOk payout
+    have tailIff := more tail paidOk
+    constructor
+    · intro member
+      rcases List.mem_append.mp member with member | member
+      · exact ⟨[], slashing, rest, state, rfl, rfl, headIff.mp member⟩
+      · obtain ⟨earlier, item, later, atSlashing, split, prefixOk, fields⟩ := tailIff.mp member
+        exact ⟨slashing :: earlier, item, later, atSlashing, by simp [split],
+          bind_ok_iff.mpr ⟨middle, first, prefixOk⟩, fields⟩
+    · rintro ⟨earlier, item, later, atSlashing, split, prefixOk, fields⟩
+      cases earlier with
+      | nil =>
+        simp only [List.nil_append, List.cons.injEq] at split
+        obtain ⟨rfl, _⟩ := split
+        cases prefixOk
+        exact List.mem_append.mpr (.inl (headIff.mpr fields))
+      | cons head earlier =>
+        simp only [List.cons_append, List.cons.injEq] at split
+        obtain ⟨rfl, splitTail⟩ := split
+        obtain ⟨next, headOk, restOk⟩ := bind_ok_iff.mp prefixOk
+        have same := Except.ok.inj (headOk.symm.trans first)
+        subst next
+        exact List.mem_append.mpr (.inr (tailIff.mpr
+          ⟨earlier, item, later, atSlashing, splitTail, restOk, fields⟩))
+
+/-- A call of `slashValidator` in the operations of a block.
+
+The operations run on the state that `operationsInput` gives.
+
+The call is in a proposer slashing, or in an attester slashing after all the proposer slashings.
+-/
+def BlockPaid (config : Config) (checks : SignatureChecks) (engine : ExecutionEngine preset fork)
+    (state : BeaconState preset fork) (block : BeaconBlock preset fork)
+    (payout : SlashingPayout preset) : Prop :=
+  ∃ input proposers,
+    operationsInput config checks engine state block = .ok input ∧
+    block.body.proposerSlashings.data.toList.foldlM (processProposerSlashing config checks)
+      input = .ok proposers ∧
+    (ProposerPaid config checks block.body.proposerSlashings.data.toList input payout ∨
+      AttesterPaid config checks block.body.attesterSlashings.data.toList proposers payout)
+
+/-- The payouts of a successful block are exactly the calls of `slashValidator` in it. -/
+theorem blockSlashingPayouts_complete {engine : ExecutionEngine preset fork}
+    {state after : BeaconState preset fork} {block : BeaconBlock preset fork}
+    {payouts : List (SlashingPayout preset)}
+    (computed : processBlock config checks engine state block = .ok after)
+    (collected : blockSlashingPayouts config checks engine state block = .ok payouts)
+    (payout : SlashingPayout preset) :
+    payout ∈ payouts ↔ BlockPaid config checks engine state block payout := by
+  obtain ⟨input, operated, inputOk, operatedOk, _, _⟩ := processBlock_operations computed
+  obtain ⟨proposers, attesters, proposersOk, attestersOk, _⟩ :=
+    processOperations_slashings operatedOk
+  obtain ⟨first, firstOk, _⟩ := proposerSlashingPayouts_ok _ proposersOk
+  obtain ⟨second, secondOk, _⟩ := attesterSlashingPayouts_ok _ attestersOk
+  have recorded : payouts = first ++ second := by
+    have expected : blockSlashingPayouts config checks engine state block = .ok (first ++ second) :=
+      by simp [blockSlashingPayouts, inputOk, firstOk, secondOk, bind, Except.bind, pure,
+        Except.pure]
+    exact Except.ok.inj (collected.symm.trans expected)
+  subst recorded
+  have firstIff := proposerSlashingPayouts_complete _ proposersOk firstOk payout
+  have secondIff := attesterSlashingPayouts_complete _ attestersOk secondOk payout
+  constructor
+  · intro member
+    exact ⟨input, proposers, inputOk, proposersOk,
+      (List.mem_append.mp member).imp firstIff.mp secondIff.mp⟩
+  · rintro ⟨input', proposers', inputOk', proposersOk', paid⟩
+    have same := Except.ok.inj (inputOk'.symm.trans inputOk)
+    subst same
+    have same := Except.ok.inj (proposersOk'.symm.trans proposersOk)
+    subst same
+    exact List.mem_append.mpr (paid.imp firstIff.mpr secondIff.mpr)
+
+/-- A call of `slashValidator` in one step of a chain: in the operations of a block step. -/
+def Step.Pays {before after : ForkedBeaconState preset}
+    (payout : SlashingPayout preset) : Step config checks before after → Prop
+  | .slot _ _ => False
+  | .upgrade _ _ => False
+  | .block (state := state) engine signed _ _ _ =>
+    BlockPaid config checks engine state signed.message payout
+
+/-- The payouts of a step are exactly its calls of `slashValidator`. -/
+theorem Step.mem_slashingPayouts {before after : ForkedBeaconState preset}
+    (step : Step config checks before after) (payout : SlashingPayout preset) :
+    payout ∈ step.slashingPayouts ↔ step.Pays payout := by
+  cases step with
+  | slot _ _ => simp [Step.slashingPayouts, Step.Pays]
+  | upgrade _ _ => simp [Step.slashingPayouts, Step.Pays]
+  | block engine signed validateResult _ computed =>
+    have blockOk := (applySignedBlock_ok computed).2.1
+    obtain ⟨payouts, collected, _⟩ := blockSlashingPayouts_ok blockOk
+    simp only [Step.slashingPayouts, Step.Pays, collected]
+    exact blockSlashingPayouts_complete blockOk collected payout
+
+private theorem Run.length_append {start middle : ForkedBeaconState preset}
+    (head : Run config checks start middle) :
+    ∀ {after : ForkedBeaconState preset} (tail : Run config checks middle after),
+      (head.append tail).length = head.length + tail.length
+  | _, .nil => rfl
+  | _, .snoc tail _ => by
+    simp only [Run.append, Run.length, Run.length_append head tail, Nat.add_assoc]
+
+theorem Run.slashingPayouts_append {start middle : ForkedBeaconState preset}
+    (head : Run config checks start middle) :
+    ∀ {after : ForkedBeaconState preset} (tail : Run config checks middle after),
+      (head.append tail).slashingPayouts = head.slashingPayouts ++ tail.slashingPayouts
+  | _, .nil => by simp [Run.append, Run.slashingPayouts]
+  | _, .snoc tail step => by
+    simp [Run.append, Run.slashingPayouts, Run.slashingPayouts_append head tail]
+
+/-- The payouts of a run are exactly the calls of `slashValidator` in its steps.
+
+Each payout is a call in one step.
+
+The run splits there into the steps before, that step, and the steps after. -/
+theorem Run.mem_slashingPayouts {start : ForkedBeaconState preset} :
+    ∀ {after : ForkedBeaconState preset} (run : Run config checks start after)
+      (payout : SlashingPayout preset),
+      payout ∈ run.slashingPayouts ↔
+        ∃ (before next : ForkedBeaconState preset) (head : Run config checks start before)
+          (step : Step config checks before next) (tail : Run config checks next after),
+          run = (head.snoc step).append tail ∧ step.Pays payout
+  | _, .nil, payout => by
+    simp only [Run.slashingPayouts, List.not_mem_nil, false_iff]
+    rintro ⟨before, next, head, step, tail, same, _⟩
+    -- A run with a step has at least one step, and the empty run has none.
+    have lengths := congrArg Run.length same
+    simp only [Run.length, Run.length_append] at lengths
+    omega
+  | _, .snoc run last, payout => by
+    simp only [Run.slashingPayouts, List.mem_append]
+    constructor
+    · rintro (earlier | now)
+      · obtain ⟨before, next, head, step, tail, rfl, pays⟩ :=
+          (Run.mem_slashingPayouts run payout).mp earlier
+        exact ⟨before, next, head, step, tail.snoc last, rfl, pays⟩
+      · exact ⟨_, _, run, last, .nil, rfl, (last.mem_slashingPayouts payout).mp now⟩
+    · rintro ⟨before, next, head, step, tail, same, pays⟩
+      have split := congrArg Run.slashingPayouts same
+      rw [Run.slashingPayouts_append] at split
+      simp only [Run.slashingPayouts] at split
+      have member : payout ∈ run.slashingPayouts ++ last.slashingPayouts := by
+        rw [split]
+        exact List.mem_append_left _ (List.mem_append_right _
+          ((step.mem_slashingPayouts payout).mpr pays))
+      exact List.mem_append.mp member
+
+/-- Each call of `slashValidator` along a run is paid exactly once.
+
+The registry at the end of the run must be below `2^64`. -/
+theorem Run.count_slashingPayouts {start after : ForkedBeaconState preset}
+    (run : Run config checks start after) (small : after.state.validators.data.size < 2 ^ 64)
+    {payout : SlashingPayout preset} (member : payout ∈ run.slashingPayouts) :
+    (run.slashingPayouts.map (·.index)).count payout.index = 1 :=
+  (run.slashingLedger small).nodup.count_of_mem (List.mem_map.mpr ⟨payout, member, rfl⟩)
+
+/-- The balances after a payout, at every index.
+
+The slashed validator pays its first penalty, then the proposer gets the reward.
+
+`slashValidator_payout` splits the reward into its proposer and whistleblower parts. -/
+theorem SlashingPayout.Valid.balances {payout : SlashingPayout preset}
+    (valid : payout.Valid config) :
+    ∃ (penalized : BeaconState preset payout.fork) (proposer : ValidatorIndex),
+      getBeaconProposerIndex penalized = .ok proposer ∧
+      ∀ position, (payout.after.balances.data[position]?).map UInt64.toNat =
+        (payout.before.balances.data[position]?).map fun balance =>
+          balance.toNat -
+              (if position = payout.index.toNat then
+                initialSlashingPenalty preset payout.fork payout.validator else 0) +
+            (if position = proposer.toNat then payout.reward.toNat else 0) :=
+  slashValidator_balances valid.found valid.called
 
 end EthLib.Consensus
