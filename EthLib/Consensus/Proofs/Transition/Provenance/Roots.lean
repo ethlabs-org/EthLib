@@ -247,7 +247,7 @@ theorem Reaches.roots_written {start after : ForkedBeaconState preset}
   | @snoc middle last run step more =>
     have middleChain : Reaches config checks start middle := ⟨run⟩
     cases step with
-    | @slot fork state next computed =>
+    | @slot fork state next notDue computed =>
       obtain ⟨cached, cachedOk, nextSlot, header, blockRoots, stateRoots⟩ :=
         advanceSlot_roots computed
       obtain ⟨stateRoot, blockRoot, stateRootOk, _, blockRootOk, stateWrite, blockWrite, _⟩ :=
@@ -269,7 +269,7 @@ theorem Reaches.roots_written {start after : ForkedBeaconState preset}
         have other : state.slot % preset.SLOTS_PER_HISTORICAL_ROOT ≠
             slot % preset.SLOTS_PER_HISTORICAL_ROOT :=
           mod_ne_of_lt (by simp only at *; omega) (by simp only at *; omega)
-        refine ⟨fork', state', cached', caches.extend (.slot computed),
+        refine ⟨fork', state', cached', caches.extend (.slot notDue computed),
           ⟨blockRoot', blockRootOk', ?_⟩, ⟨stateRoot', stateRootOk', ?_⟩⟩
         · rw [readCircular_writeCircular_of_ne blockWrite other]
           exact blockRead
@@ -282,14 +282,14 @@ theorem Reaches.roots_written {start after : ForkedBeaconState preset}
         more written recent
       rw [blockRoots, stateRoots]
       exact ⟨fork', state', cached', caches.extend (.upgrade due computed), blockPart, statePart⟩
-    | block engine signed validateResult computed =>
+    | block engine signed validateResult notDue computed =>
       obtain ⟨-, -, -, -, slotSame, blockRoots, stateRoots, -⟩ := applySignedBlock_roots computed
       simp only at written recent ⊢
       rw [slotSame] at written recent
       obtain ⟨fork', state', cached', caches, blockPart, statePart⟩ :=
         more written recent
       rw [blockRoots, stateRoots]
-      exact ⟨fork', state', cached', caches.extend (.block engine signed validateResult computed),
+      exact ⟨fork', state', cached', caches.extend (.block engine signed validateResult notDue computed),
         blockPart, statePart⟩
 
 /-! ## The latest header -/
@@ -335,12 +335,13 @@ theorem HeaderSettled.base {base : ForkedBeaconState preset} :
 theorem HeaderSettled.slot {base : ForkedBeaconState preset} {fork : Fork}
     {state next : BeaconState preset fork} {header : BeaconBlockHeader}
     (settled : HeaderSettled config checks base ⟨fork, state⟩ header)
+    (notDue : upgradeDue config ⟨fork, state⟩ = false)
     (computed : advanceSlot config checks state = .ok next) :
     HeaderSettled config checks base ⟨fork, next⟩ header := by
   obtain ⟨chain, stateRoot, current, settledRoot⟩ := settled
   obtain ⟨cached, cachedOk, nextSlot, nextHeader, -, -⟩ := advanceSlot_roots computed
   obtain ⟨root, -, rootOk, cachedHeader, -⟩ := processSlot_roots cachedOk
-  have step : Step config checks ⟨fork, state⟩ ⟨fork, next⟩ := .slot computed
+  have step : Step config checks ⟨fork, state⟩ ⟨fork, next⟩ := .slot notDue computed
   refine ⟨chain.step step, ?_⟩
   simp only at current nextSlot ⊢
   rw [nextHeader, cachedHeader, current]
@@ -396,7 +397,7 @@ theorem Reaches.latestBlockHeader {start after : ForkedBeaconState preset}
     HeaderSettled config checks start after start.state.latestBlockHeader ∨
       ∃ (fork : Fork) (engine : ExecutionEngine preset fork) (signed : SignedBeaconBlock preset fork)
         (validateResult : Bool) (state post : BeaconState preset fork) (bodyRoot : Root),
-        Reaches config checks start ⟨fork, state⟩ ∧
+        Reaches config checks start ⟨fork, state⟩ ∧ upgradeDue config ⟨fork, state⟩ = false ∧
         applySignedBlock config checks engine state signed validateResult = .ok post ∧
         hashTreeRoot signed.message.body = .ok bodyRoot ∧
         HeaderSettled config checks ⟨fork, post⟩ after (signed.message.header bodyRoot) := by
@@ -405,23 +406,110 @@ theorem Reaches.latestBlockHeader {start after : ForkedBeaconState preset}
   | nil => exact .inl HeaderSettled.base
   | @snoc middle last run step more =>
     cases step with
-    | slot computed =>
+    | slot notDue computed =>
       rcases more with settled | ⟨fork, engine, signed, validateResult, state, post, bodyRoot,
-        head, applied, bodyRootOk, settled⟩
-      · exact .inl (settled.slot computed)
-      · exact .inr ⟨fork, engine, signed, validateResult, state, post, bodyRoot, head, applied,
-          bodyRootOk, settled.slot computed⟩
+        head, blockNotDue, applied, bodyRootOk, settled⟩
+      · exact .inl (settled.slot notDue computed)
+      · exact .inr ⟨fork, engine, signed, validateResult, state, post, bodyRoot, head, blockNotDue,
+          applied, bodyRootOk, settled.slot notDue computed⟩
     | upgrade due computed =>
       rcases more with settled | ⟨fork, engine, signed, validateResult, state, post, bodyRoot,
-        head, applied, bodyRootOk, settled⟩
+        head, blockNotDue, applied, bodyRootOk, settled⟩
       · exact .inl (settled.upgrade due computed)
-      · exact .inr ⟨fork, engine, signed, validateResult, state, post, bodyRoot, head, applied,
-          bodyRootOk, settled.upgrade due computed⟩
-    | block engine signed validateResult computed =>
+      · exact .inr ⟨fork, engine, signed, validateResult, state, post, bodyRoot, head, blockNotDue,
+          applied, bodyRootOk, settled.upgrade due computed⟩
+    | block engine signed validateResult notDue computed =>
       -- The block writes its own header, so the header settles from the state after it.
       obtain ⟨-, -, -, ⟨bodyRoot, bodyRootOk, written⟩, -⟩ := applySignedBlock_roots computed
-      refine .inr ⟨_, engine, signed, validateResult, _, _, bodyRoot, ⟨run⟩, computed,
+      refine .inr ⟨_, engine, signed, validateResult, _, _, bodyRoot, ⟨run⟩, notDue, computed,
         bodyRootOk, ?_⟩
       exact ⟨.refl _, _, written, .inl ⟨rfl, .inr rfl⟩⟩
+
+/-- After a block, the chain stays at the state after the block until its next slot step.
+
+No upgrade is due there, since none was due when the block ran.
+
+No second block runs at that slot, since a block must come after the latest one. -/
+theorem Reaches.eq_of_slot_after_block {fork : Fork} {post : BeaconState preset fork}
+    {after : ForkedBeaconState preset} (chain : Reaches config checks ⟨fork, post⟩ after)
+    (notDue : upgradeDue config ⟨fork, post⟩ = false)
+    (headerSlot : post.latestBlockHeader.slot = post.slot)
+    (sameSlot : after.state.slot = post.slot) : after = ⟨fork, post⟩ := by
+  obtain ⟨run⟩ := chain
+  induction run with
+  | nil => rfl
+  | @snoc middle last run step more =>
+    have middleLe := Reaches.slot_le (config := config) (checks := checks) ⟨run⟩
+    have lastLe := stepRelation_slot.step step
+    simp only at middleLe lastLe sameSlot
+    have middleSlot : middle.state.slot = post.slot := by
+      apply UInt64.toNat_inj.mp
+      rw [sameSlot] at lastLe
+      omega
+    have same := more middleSlot
+    subst same
+    cases step with
+    | slot _ computed =>
+      have := advanceSlot_slot computed
+      simp only at sameSlot
+      rw [sameSlot] at this
+      omega
+    | upgrade due _ =>
+      rw [notDue] at due
+      cases due
+    | block _ _ _ _ computed =>
+      obtain ⟨blockSlot, newer, -⟩ := applySignedBlock_roots computed
+      rw [blockSlot, headerSlot] at newer
+      exact absurd newer (UInt64.lt_irrefl _)
+
+/-- The header of a block, with the state root that the block names. -/
+def BeaconBlock.toHeader (block : BeaconBlock preset fork) (bodyRoot : Root) :
+    BeaconBlockHeader :=
+  { block.header bodyRoot with stateRoot := block.stateRoot }
+
+/-- Where the latest header of a chain's end comes from, once a block step wrote it.
+
+The header is that of the last block, with one of three state roots.
+
+- Zero, while the chain is still at the slot of the block.
+- The root of the state after the block, which a validated block names as its state root.
+- Any root, but then the state after the block has the zero root.
+
+The last case is the zero-root alternative: it records a state whose SSZ root is zero. -/
+theorem HeaderSettled.of_block {fork : Fork} {engine : ExecutionEngine preset fork}
+    {signed : SignedBeaconBlock preset fork} {validateResult : Bool}
+    {state post : BeaconState preset fork} {bodyRoot : Root} {after : ForkedBeaconState preset}
+    (notDue : upgradeDue config ⟨fork, state⟩ = false)
+    (applied : applySignedBlock config checks engine state signed validateResult = .ok post)
+    (settled : HeaderSettled config checks ⟨fork, post⟩ after (signed.message.header bodyRoot)) :
+    (after.state.latestBlockHeader = signed.message.header bodyRoot ∧
+        after.state.slot = post.slot) ∨
+      (∃ root, hashTreeRoot post = .ok root ∧
+        after.state.latestBlockHeader = { signed.message.header bodyRoot with stateRoot := root } ∧
+        (validateResult = true → root = signed.message.stateRoot)) ∨
+      hashTreeRoot post = .ok (Vector.replicate 32 0) := by
+  obtain ⟨blockSlot, -, -, ⟨_, _, written⟩, postSlot, -, -, validated⟩ :=
+    applySignedBlock_roots applied
+  have postNotDue : upgradeDue config ⟨fork, post⟩ = false := by
+    rw [upgradeDue_of_slot postSlot]
+    exact notDue
+  have headerSlot : post.latestBlockHeader.slot = post.slot := by
+    rw [written, postSlot]
+    exact blockSlot
+  obtain ⟨_, stateRoot, current, first | ⟨_, middle, root, head, _, middleSlot, rootOk, filled⟩⟩ :=
+    settled
+  · obtain ⟨same, nonzero | atSlot⟩ := first
+    · exact absurd rfl nonzero
+    · refine .inl ⟨?_, atSlot⟩
+      rw [current, same]
+  · -- The first caching after the block started from the state after the block.
+    have same := head.eq_of_slot_after_block postNotDue headerSlot middleSlot
+    subst same
+    rcases filled with rfl | zero
+    · exact .inr (.inl ⟨stateRoot, rootOk, current, fun validate => by
+        have := validated validate
+        rw [this] at rootOk
+        exact (Except.ok.inj rootOk).symm⟩)
+    · exact .inr (.inr (zero ▸ rootOk))
 
 end EthLib.Consensus
