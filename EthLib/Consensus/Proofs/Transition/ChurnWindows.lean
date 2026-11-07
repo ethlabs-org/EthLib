@@ -1,6 +1,7 @@
 module
 
 public import EthLib.Consensus.Proofs.Transition.Cohorts
+public import EthLib.Consensus.Proofs.Transition.EffectiveBalanceCap
 public import EthLib.Consensus.WeakSubjectivity
 
 /-!
@@ -35,7 +36,11 @@ That limit counts only the validators active then.
 
 The cap here counts the whole later registry, since later churn limits may be larger.
 
-The bound counts validators, not stake.
+The bound counts validators.
+
+Each effective balance is at most `MAX_EFFECTIVE_BALANCE` before Electra.
+
+So the stake that leaves or joins is at most the count times that maximum.
 
 The last epoch `E'` must be below the far future epoch.
 -/
@@ -331,38 +336,23 @@ theorem leavingCount_le {state : BeaconState preset fork} {after : BeaconState p
   · rw [step.exitEpoch exitSet]
     exact wasActive.2
 
-/-- At most `n * cap` validators join the active set over `n` epochs, before Electra. -/
-theorem joiningCount_le {state : BeaconState preset fork} {after : BeaconState preset fork'}
-    (lifecycle : RegistryLifecycle state after) (small : after.validators.data.size < 2 ^ 64)
-    (past : PastCohortsKept state after) (activations : ActivationCohorts config after)
-    (finite : (getCurrentEpoch after).toNat < 2 ^ 64 - 1) :
-    joiningCount state after ≤
-      ((getCurrentEpoch after).toNat - (getCurrentEpoch state).toNat) *
-        churnCap config after.validators.data.size := by
-  have ordered := currentEpoch_le_of_next past.1
-  set start := (getCurrentEpoch state).toNat
-  set last := (getCurrentEpoch after).toNat
-  have window := countP_window_le (·.activationEpoch) after.validators.data.toList start
-    (churnCap config after.validators.data.size) (fun epoch late below =>
-      activations.bounded epoch (fun far => by rw [far, toNat_farFutureEpoch] at below; omega)
-        (fun genesis => by rw [genesis] at late; simp [GENESIS_EPOCH] at late))
-      (last - start) (by omega)
-  refine Nat.le_trans ?_ window
-  rw [countP_eq_range _ after.validators.data.toList, Array.length_toList]
-  refine countP_range_le (Nat.le_refl _) fun index inside holds => ?_
-  simp only [Bool.and_eq_true, Bool.not_eq_true'] at holds
-  obtain ⟨isActive, wasNotActive⟩ := holds
-  unfold activeAt at isActive wasNotActive
-  obtain ⟨later, laterFound⟩ : ∃ later, after.validators.data[index]? = some later :=
-    ⟨_, Array.getElem?_eq_getElem inside⟩
-  rw [laterFound, Option.any_some, isActiveValidator_iff] at isActive
-  simp only [Array.getElem?_toList, laterFound, Option.any_some, decide_eq_true_eq]
-  refine ⟨?_, by omega⟩
+/-- A validator active later, at an epoch from the first state's on, was activated after that epoch.
+
+It must not have been active at the first state's epoch. -/
+theorem activationEpoch_after_of_active {state : BeaconState preset fork}
+    {after : BeaconState preset fork'} (lifecycle : RegistryLifecycle state after)
+    (small : after.validators.data.size < 2 ^ 64) (past : PastCohortsKept state after)
+    {index : Nat} {later : Validator} (laterFound : after.validators.data[index]? = some later)
+    {epoch : Nat} (active : later.activationEpoch.toNat ≤ epoch ∧ epoch < later.exitEpoch.toNat)
+    (late : (getCurrentEpoch state).toNat ≤ epoch)
+    (wasNotActive : activeAt state (getCurrentEpoch state) index = false) :
+    (getCurrentEpoch state).toNat < later.activationEpoch.toNat := by
+  have exitBound := UInt64.toNat_lt later.exitEpoch
   have activationFinite : later.activationEpoch ≠ FAR_FUTURE_EPOCH := by
     intro far
-    rw [far, toNat_farFutureEpoch] at isActive
+    rw [far, toNat_farFutureEpoch] at active
     omega
-  -- The activation epoch is after the first epoch: set before and kept, or set since.
+  unfold activeAt at wasNotActive
   cases found : state.validators.data[index]? with
   | none =>
     have fresh := nextActivationEpoch_le_of_activationEpoch_set lifecycle small past laterFound
@@ -391,13 +381,168 @@ theorem joiningCount_le {state : BeaconState preset fork} {after : BeaconState p
         have exitSet : validator.exitEpoch ≠ FAR_FUTURE_EPOCH := fun far => by
           rw [far, toNat_farFutureEpoch] at exitedEarly
           omega
-        rw [step.exitEpoch exitSet] at isActive
+        rw [step.exitEpoch exitSet] at active
         omega
       have : isActiveValidator validator (getCurrentEpoch state) = true := by
         rw [isActiveValidator_iff]
         omega
       rw [this] at wasNotActive
       cases wasNotActive
+
+/-- At most `n * cap` validators join the active set over `n` epochs, before Electra. -/
+theorem joiningCount_le {state : BeaconState preset fork} {after : BeaconState preset fork'}
+    (lifecycle : RegistryLifecycle state after) (small : after.validators.data.size < 2 ^ 64)
+    (past : PastCohortsKept state after) (activations : ActivationCohorts config after)
+    (finite : (getCurrentEpoch after).toNat < 2 ^ 64 - 1) :
+    joiningCount state after ≤
+      ((getCurrentEpoch after).toNat - (getCurrentEpoch state).toNat) *
+        churnCap config after.validators.data.size := by
+  have ordered := currentEpoch_le_of_next past.1
+  set start := (getCurrentEpoch state).toNat
+  set last := (getCurrentEpoch after).toNat
+  have window := countP_window_le (·.activationEpoch) after.validators.data.toList start
+    (churnCap config after.validators.data.size) (fun epoch late below =>
+      activations.bounded epoch (fun far => by rw [far, toNat_farFutureEpoch] at below; omega)
+        (fun genesis => by rw [genesis] at late; simp [GENESIS_EPOCH] at late))
+      (last - start) (by omega)
+  refine Nat.le_trans ?_ window
+  rw [countP_eq_range _ after.validators.data.toList, Array.length_toList]
+  refine countP_range_le (Nat.le_refl _) fun index inside holds => ?_
+  simp only [Bool.and_eq_true, Bool.not_eq_true'] at holds
+  obtain ⟨isActive, wasNotActive⟩ := holds
+  unfold activeAt at isActive wasNotActive
+  obtain ⟨later, laterFound⟩ : ∃ later, after.validators.data[index]? = some later :=
+    ⟨_, Array.getElem?_eq_getElem inside⟩
+  rw [laterFound, Option.any_some, isActiveValidator_iff] at isActive
+  simp only [Array.getElem?_toList, laterFound, Option.any_some, decide_eq_true_eq]
+  exact ⟨activationEpoch_after_of_active lifecycle small past laterFound isActive (by omega)
+    (by unfold activeAt; exact wasNotActive), by omega⟩
+
+/-- The validators active at the previous or current epoch of a later state, and not earlier.
+
+Earlier is the current epoch of the first state. -/
+def joiningCountPrev (state : BeaconState preset fork) (after : BeaconState preset fork') : Nat :=
+  (List.range after.validators.data.size).countP fun index =>
+    (activeAt after (getPreviousEpoch after) index ||
+        activeAt after (getCurrentEpoch after) index) &&
+      !activeAt state (getCurrentEpoch state) index
+
+/-- At most `n * cap` validators active at a later state's previous or current epoch are new.
+
+New means not active at the first state's epoch.
+
+The later state must be in a later epoch.
+
+At the same epoch, validators that exit at that epoch are active at the previous epoch only. -/
+theorem joiningCountPrev_le {state : BeaconState preset fork} {after : BeaconState preset fork'}
+    (lifecycle : RegistryLifecycle state after) (small : after.validators.data.size < 2 ^ 64)
+    (past : PastCohortsKept state after) (activations : ActivationCohorts config after)
+    (finite : (getCurrentEpoch after).toNat < 2 ^ 64 - 1)
+    (later : (getCurrentEpoch state).toNat < (getCurrentEpoch after).toNat) :
+    joiningCountPrev state after ≤
+      ((getCurrentEpoch after).toNat - (getCurrentEpoch state).toNat) *
+        churnCap config after.validators.data.size := by
+  set start := (getCurrentEpoch state).toNat
+  set last := (getCurrentEpoch after).toNat
+  have previous := getPreviousEpoch_toNat after
+  have window := countP_window_le (·.activationEpoch) after.validators.data.toList start
+    (churnCap config after.validators.data.size) (fun epoch late below =>
+      activations.bounded epoch (fun far => by rw [far, toNat_farFutureEpoch] at below; omega)
+        (fun genesis => by rw [genesis] at late; simp [GENESIS_EPOCH] at late))
+      (last - start) (by omega)
+  refine Nat.le_trans ?_ window
+  rw [countP_eq_range _ after.validators.data.toList, Array.length_toList]
+  refine countP_range_le (Nat.le_refl _) fun index inside holds => ?_
+  simp only [Bool.and_eq_true, Bool.not_eq_true', Bool.or_eq_true] at holds
+  obtain ⟨isActive, wasNotActive⟩ := holds
+  obtain ⟨validator, found⟩ : ∃ validator, after.validators.data[index]? = some validator :=
+    ⟨_, Array.getElem?_eq_getElem inside⟩
+  simp only [Array.getElem?_toList, found, Option.any_some, decide_eq_true_eq]
+  unfold activeAt at isActive
+  rw [found, Option.any_some, Option.any_some, isActiveValidator_iff, isActiveValidator_iff,
+    previous] at isActive
+  rcases isActive with active | active
+  · exact ⟨activationEpoch_after_of_active lifecycle small past found active (by omega)
+      wasNotActive, by omega⟩
+  · exact ⟨activationEpoch_after_of_active lifecycle small past found active (by omega)
+      wasNotActive, by omega⟩
+
+/-- In the first state's own epoch, the new validators of the previous or current epoch are few.
+
+They are at most one exit cohort.
+
+They were active at the previous epoch and exit at the current one. -/
+theorem joiningCountPrev_le_of_eq {state : BeaconState preset fork}
+    {after : BeaconState preset fork'}
+    (lifecycle : RegistryLifecycle state after) (small : after.validators.data.size < 2 ^ 64)
+    (past : PastCohortsKept state after) (exits : ExitCohortsBounded config after)
+    (finite : (getCurrentEpoch after).toNat < 2 ^ 64 - 1)
+    (same : (getCurrentEpoch state).toNat = (getCurrentEpoch after).toNat) :
+    joiningCountPrev state after ≤ max 1 (churnCap config after.validators.data.size) := by
+  have previous := getPreviousEpoch_toNat after
+  refine Nat.le_trans ?_ (exits (getCurrentEpoch after) fun far => by
+    rw [far, toNat_farFutureEpoch] at finite
+    omega)
+  unfold exitCohort
+  rw [countP_eq_range _ after.validators.data.toList, Array.length_toList]
+  refine countP_range_le (Nat.le_refl _) fun index inside holds => ?_
+  simp only [Bool.and_eq_true, Bool.not_eq_true', Bool.or_eq_true] at holds
+  obtain ⟨isActive, wasNotActive⟩ := holds
+  obtain ⟨later, found⟩ : ∃ later, after.validators.data[index]? = some later :=
+    ⟨_, Array.getElem?_eq_getElem inside⟩
+  simp only [Array.getElem?_toList, found, Option.any_some, beq_iff_eq]
+  have exitBound := UInt64.toNat_lt later.exitEpoch
+  unfold activeAt at isActive
+  rw [found, Option.any_some, Option.any_some, isActiveValidator_iff, isActiveValidator_iff,
+    previous] at isActive
+  -- No new validator is active at the current epoch, nor at a previous epoch equal to it.
+  have notCurrent : ∀ at_ : Nat, (getCurrentEpoch state).toNat ≤ at_ →
+      ¬(later.activationEpoch.toNat ≤ at_ ∧ at_ < later.exitEpoch.toNat ∧
+        at_ ≤ (getCurrentEpoch state).toNat) := fun at_ late ⟨activated, live, early⟩ => by
+    have := activationEpoch_after_of_active lifecycle small past found ⟨activated, live⟩ late
+      wasNotActive
+    omega
+  rcases isActive with active | active
+  · by_cases zero : (getCurrentEpoch after).toNat = 0
+    · exact absurd ⟨active.1, active.2, by omega⟩ (notCurrent _ (by omega))
+    have activationFinite : later.activationEpoch ≠ FAR_FUTURE_EPOCH := fun far => by
+      rw [far, toNat_farFutureEpoch] at active
+      omega
+    unfold activeAt at wasNotActive
+    cases earlier : state.validators.data[index]? with
+    | none =>
+      have fresh := nextActivationEpoch_le_of_activationEpoch_set lifecycle small past found
+        activationFinite (fun _ absent => by rw [earlier] at absent; cases absent)
+      unfold nextActivationEpoch at fresh
+      omega
+    | some validator =>
+      obtain ⟨kept, keptFound, step⟩ := lifecycle.validators small index validator earlier
+      rw [found] at keptFound
+      cases keptFound
+      rw [earlier, Option.any_some] at wasNotActive
+      by_cases activationSet : validator.activationEpoch = FAR_FUTURE_EPOCH
+      · have fresh := nextActivationEpoch_le_of_activationEpoch_set lifecycle small past found
+          activationFinite (fun other otherFound => by
+            rw [earlier] at otherFound
+            cases otherFound
+            exact activationSet)
+        unfold nextActivationEpoch at fresh
+        omega
+      · -- Activated before, so it exited by the first epoch, and after the previous one.
+        have activationSame := step.activationEpoch activationSet
+        have exited : validator.exitEpoch.toNat ≤ (getCurrentEpoch state).toNat := by
+          by_contra notExited
+          have : isActiveValidator validator (getCurrentEpoch state) = true := by
+            rw [isActiveValidator_iff, ← activationSame]
+            omega
+          rw [this] at wasNotActive
+          cases wasNotActive
+        have exitSet : validator.exitEpoch ≠ FAR_FUTURE_EPOCH := fun far => by
+          rw [far, toNat_farFutureEpoch] at exited
+          omega
+        have exitSame := step.exitEpoch exitSet
+        exact UInt64.toNat_inj.mp (by rw [exitSame] at active ⊢; omega)
+  · exact absurd ⟨active.1, active.2, by omega⟩ (notCurrent _ (by omega))
 
 /-! ## Along chains, and within the weak subjectivity period -/
 
@@ -451,6 +596,144 @@ theorem Reaches.churn_le_of_epochs_le {start after : ForkedBeaconState preset} {
   exact ⟨Nat.le_trans (chain.leavingCount_le reachable early finite)
       (Nat.mul_le_mul_right _ span),
     Nat.le_trans (chain.joiningCount_le reachable early finite) (Nat.mul_le_mul_right _ span)⟩
+
+/-! ## Stake -/
+
+/-- The effective balance of the validator at a position of the registry, or zero. -/
+def effectiveAt (state : BeaconState preset fork) (index : Nat) : Nat :=
+  ((state.validators.data[index]?).map (·.effectiveBalance.toNat)).getD 0
+
+/-- The effective balance, in the first state, of the validators that leave the active set. -/
+def leavingStake (state : BeaconState preset fork) (after : BeaconState preset fork') : Nat :=
+  (((List.range state.validators.data.size).filter fun index =>
+    activeAt state (getCurrentEpoch state) index &&
+      !activeAt after (getCurrentEpoch after) index).map (effectiveAt state)).sum
+
+/-- The effective balance, in the later state, of the validators that join the active set. -/
+def joiningStake (state : BeaconState preset fork) (after : BeaconState preset fork') : Nat :=
+  (((List.range after.validators.data.size).filter fun index =>
+    activeAt after (getCurrentEpoch after) index &&
+      !activeAt state (getCurrentEpoch state) index).map (effectiveAt after)).sum
+
+/-- The effective balance, in the later state, of the validators that `joiningCountPrev` counts. -/
+def joiningStakePrev (state : BeaconState preset fork) (after : BeaconState preset fork') : Nat :=
+  (((List.range after.validators.data.size).filter fun index =>
+    (activeAt after (getPreviousEpoch after) index ||
+        activeAt after (getCurrentEpoch after) index) &&
+      !activeAt state (getCurrentEpoch state) index).map (effectiveAt after)).sum
+
+theorem sum_map_filter_le {test : Nat → Bool} {value : Nat → Nat} {bound : Nat} :
+    ∀ list : List Nat, (∀ item ∈ list, value item ≤ bound) →
+      ((list.filter test).map value).sum ≤ list.countP test * bound
+  | [], _ => by simp
+  | head :: rest, le => by
+    have tail := sum_map_filter_le (test := test) rest fun item member =>
+      le item (List.mem_cons_of_mem _ member)
+    have first := le head List.mem_cons_self
+    simp only [List.filter_cons, List.countP_cons]
+    split
+    · simp only [List.map_cons, List.sum_cons, Nat.succ_mul]
+      omega
+    · simpa using tail
+
+/-- Before Electra, each effective balance of a capped state is at most the maximum. -/
+theorem effectiveAt_le_max {state : BeaconState preset fork}
+    (capped : EffectiveBalancesCapped state) (before : fork < .pectra) (index : Nat) :
+    effectiveAt state index ≤ preset.MAX_EFFECTIVE_BALANCE.toNat := by
+  unfold effectiveAt
+  cases found : state.validators.data[index]? with
+  | none => exact Nat.zero_le _
+  | some validator =>
+    exact UInt64.le_iff_toNat_le.mp (capped.le_max before (Array.mem_of_getElem? found))
+
+/-- Along a chain from a reachable state, at most `n * max 1 cap` top balances leave in `n` epochs.
+
+The chain must stay before Electra, and the top balance is `MAX_EFFECTIVE_BALANCE`. -/
+theorem Reaches.leavingStake_le {start after : ForkedBeaconState preset}
+    (caps : EffectiveBalanceCaps preset) (reachable : Reachable config checks start)
+    (chain : Reaches config checks start after) (early : after.fork < .pectra)
+    (finite : (getCurrentEpoch after.state).toNat < 2 ^ 64 - 1) :
+    leavingStake start.state after.state ≤
+      ((getCurrentEpoch after.state).toNat - (getCurrentEpoch start.state).toNat) *
+        max 1 (churnCap config after.state.validators.data.size) *
+        preset.MAX_EFFECTIVE_BALANCE.toNat := by
+  have startEarly : start.fork < .pectra :=
+    Nat.lt_of_le_of_lt (chain.pastCohorts reachable.cohorts).1 early
+  refine Nat.le_trans (sum_map_filter_le _ fun index _ =>
+    effectiveAt_le_max (reachable.effectiveBalancesCapped caps) startEarly index)
+    (Nat.mul_le_mul_right _ (chain.leavingCount_le reachable early finite))
+
+/-- Along a chain from a reachable state, at most `n * cap` top balances join in `n` epochs.
+
+The chain must stay before Electra, and the top balance is `MAX_EFFECTIVE_BALANCE`. -/
+theorem Reaches.joiningStake_le {start after : ForkedBeaconState preset}
+    (caps : EffectiveBalanceCaps preset) (reachable : Reachable config checks start)
+    (chain : Reaches config checks start after) (early : after.fork < .pectra)
+    (finite : (getCurrentEpoch after.state).toNat < 2 ^ 64 - 1) :
+    joiningStake start.state after.state ≤
+      ((getCurrentEpoch after.state).toNat - (getCurrentEpoch start.state).toNat) *
+        churnCap config after.state.validators.data.size *
+        preset.MAX_EFFECTIVE_BALANCE.toNat :=
+  Nat.le_trans (sum_map_filter_le _ fun index _ =>
+    effectiveAt_le_max
+      (Reachable.effectiveBalancesCapped caps (ReachableFrom.reaches reachable chain)) early
+      index)
+    (Nat.mul_le_mul_right _ (chain.joiningCount_le reachable early finite))
+
+/-- Along a chain from a reachable state, at most `n * cap` top balances are new in `n` epochs.
+
+They are those that `joiningStakePrev` counts, and the chain ends at a later epoch.
+
+The chain must stay before Electra, and the top balance is `MAX_EFFECTIVE_BALANCE`. -/
+theorem Reaches.joiningStakePrev_le {start after : ForkedBeaconState preset}
+    (caps : EffectiveBalanceCaps preset) (reachable : Reachable config checks start)
+    (chain : Reaches config checks start after) (early : after.fork < .pectra)
+    (finite : (getCurrentEpoch after.state).toNat < 2 ^ 64 - 1)
+    (later : (getCurrentEpoch start.state).toNat < (getCurrentEpoch after.state).toNat) :
+    joiningStakePrev start.state after.state ≤
+      ((getCurrentEpoch after.state).toNat - (getCurrentEpoch start.state).toNat) *
+        churnCap config after.state.validators.data.size *
+        preset.MAX_EFFECTIVE_BALANCE.toNat :=
+  Nat.le_trans (sum_map_filter_le _ fun index _ =>
+    effectiveAt_le_max
+      (Reachable.effectiveBalancesCapped caps (ReachableFrom.reaches reachable chain)) early
+      index)
+    (Nat.mul_le_mul_right _ (EthLib.Consensus.joiningCountPrev_le chain.registryLifecycle
+      (Nat.lt_of_le_of_lt (after.state.validators.bound (Nat.lt_trans early (by decide)))
+        (UInt64.toNat_lt _))
+      ((chain.pastCohorts reachable.cohorts).2 early)
+      ((Reachable.cohorts (ReachableFrom.reaches reachable chain) early).2) finite later))
+
+/-- Along a chain from a reachable state, at most `n * cap + max 1 cap` top balances are new.
+
+Here `n` is the number of epochs of the chain.
+
+They are those that `joiningStakePrev` counts, and the chain may end in the same epoch.
+
+The extra cohort is needed only then, for the validators that exit at that epoch. -/
+theorem Reaches.joiningStakePrev_le_add {start after : ForkedBeaconState preset}
+    (caps : EffectiveBalanceCaps preset) (reachable : Reachable config checks start)
+    (chain : Reaches config checks start after) (early : after.fork < .pectra)
+    (finite : (getCurrentEpoch after.state).toNat < 2 ^ 64 - 1) :
+    joiningStakePrev start.state after.state ≤
+      (((getCurrentEpoch after.state).toNat - (getCurrentEpoch start.state).toNat) *
+          churnCap config after.state.validators.data.size +
+        max 1 (churnCap config after.state.validators.data.size)) *
+        preset.MAX_EFFECTIVE_BALANCE.toNat := by
+  have past := (chain.pastCohorts reachable.cohorts).2 early
+  have ordered := currentEpoch_le_of_next past.1
+  by_cases later : (getCurrentEpoch start.state).toNat < (getCurrentEpoch after.state).toNat
+  · refine Nat.le_trans (chain.joiningStakePrev_le caps reachable early finite later) ?_
+    exact Nat.mul_le_mul_right _ (Nat.le_add_right _ _)
+  · have afterReachable := ReachableFrom.reaches reachable chain
+    refine Nat.le_trans (sum_map_filter_le _ fun index _ =>
+      effectiveAt_le_max (Reachable.effectiveBalancesCapped caps afterReachable) early index)
+      (Nat.mul_le_mul_right _ (Nat.le_trans (EthLib.Consensus.joiningCountPrev_le_of_eq
+        chain.registryLifecycle
+        (Nat.lt_of_le_of_lt (after.state.validators.bound (Nat.lt_trans early (by decide)))
+          (UInt64.toNat_lt _))
+        past (Reachable.cohorts afterReachable early).1 finite (by omega))
+        (Nat.le_add_left _ _)))
 
 /-! ## The churn limit of the first state does not bound a window
 
