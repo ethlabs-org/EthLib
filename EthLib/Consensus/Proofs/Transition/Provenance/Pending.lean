@@ -223,9 +223,9 @@ theorem Reaches.pending {start after : ForkedBeaconState preset}
       cases fork <;>
         simp only [upgradeNext, bind_ok_iff, pure, Except.pure, Except.ok.injEq, throw,
           throwThe, MonadExceptOf.throw, reduceCtorEq] at computed
-      all_goals first
-        | (obtain ⟨_, _, rfl⟩ := computed; exact absurd before (by dsimp only; decide))
-        | (subst computed; exact absurd before (by dsimp only; decide))
+      all_goals
+        obtain ⟨_, _, rfl⟩ := computed
+        exact absurd before (by dsimp only; decide)
     | @block fork engine signed validateResult state post notDue computed =>
       have theStep : Step config checks ⟨fork, state⟩ ⟨fork, post⟩ :=
         .block engine signed validateResult notDue computed
