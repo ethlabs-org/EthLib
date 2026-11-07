@@ -656,12 +656,36 @@ theorem votesKept_processSyncAggregate {altair : .altair ≤ fork} {aggregate : 
 
 /-! ## Blocks -/
 
+/-- Two states agree on what an attestation and a weighing read of history.
+
+That is the slot, the block roots, and the two justified checkpoints. -/
+structure SameReads (state after : BeaconState preset fork) : Prop where
+  slot : after.slot = state.slot
+  blockRoots : after.blockRoots = state.blockRoots
+  previousJustifiedCheckpoint :
+    after.previousJustifiedCheckpoint = state.previousJustifiedCheckpoint
+  currentJustifiedCheckpoint : after.currentJustifiedCheckpoint = state.currentJustifiedCheckpoint
+
+theorem SameReads.trans {first second third : BeaconState preset fork}
+    (one : SameReads first second) (two : SameReads second third) : SameReads first third :=
+  ⟨two.slot.trans one.slot, two.blockRoots.trans one.blockRoots,
+    two.previousJustifiedCheckpoint.trans one.previousJustifiedCheckpoint,
+    two.currentJustifiedCheckpoint.trans one.currentJustifiedCheckpoint⟩
+
+theorem Kept.sameReads (kept : Kept state after) : SameReads state after :=
+  ⟨kept.slot, kept.blockRoots, kept.previousJustifiedCheckpoint, kept.currentJustifiedCheckpoint⟩
+
+theorem sameReads_processBlockHeader {block : BeaconBlock preset fork}
+    (computed : processBlockHeader state block = .ok after) : SameReads state after := by
+  obtain ⟨_, _, rfl⟩ := processBlockHeader_eq computed
+  exact ⟨rfl, rfl, rfl, rfl⟩
+
 /-- The operations of a block add votes only in their attestations.
 
 The steps before the attestations and the steps after them add none. -/
 theorem processOperations_votes {body : BeaconBlockBody preset fork} {parentSlot : Slot}
     (computed : processOperations config checks state body parentSlot = .ok after) :
-    ∃ before attested, VotesKept state before ∧ before.slot = state.slot ∧
+    ∃ before attested, VotesKept state before ∧ Kept state before ∧
       body.attestations.data.toList.foldlM (processAttestation config checks · parentSlot ·)
         before = .ok attested ∧
       VotesKept attested after := by
@@ -674,8 +698,8 @@ theorem processOperations_votes {body : BeaconBlockBody preset fork} {parentSlot
     exact ⟨_, _,
       (VotesKept.foldlM (fun _ _ _ ok => votesKept_processProposerSlashing ok) proposersOk).trans
         (VotesKept.foldlM (fun _ _ _ ok => votesKept_processAttesterSlashing ok) attestersOk),
-      ((Frame.foldlM (fun _ _ _ ok => frame_processProposerSlashing ok) proposersOk).trans
-        (Frame.foldlM (fun _ _ _ ok => frame_processAttesterSlashing ok) attestersOk)).slot,
+      (Kept.foldlM (fun _ _ _ ok => kept_processProposerSlashing ok) proposersOk).trans
+        (Kept.foldlM (fun _ _ _ ok => kept_processAttesterSlashing ok) attestersOk),
       attestedOk,
       (VotesKept.foldlM (fun _ _ _ ok => votesKept_processVoluntaryExit ok) exitsOk).trans <|
       (VotesKept.foldlM (fun _ _ _ ok => votesKept_processBlsToExecutionChange ok) changesOk).trans <|
@@ -700,8 +724,8 @@ theorem processOperations_votes {body : BeaconBlockBody preset fork} {parentSlot
   exact ⟨_, _,
     (VotesKept.foldlM (fun _ _ _ ok => votesKept_processProposerSlashing ok) proposersOk).trans
       (VotesKept.foldlM (fun _ _ _ ok => votesKept_processAttesterSlashing ok) attestersOk),
-    ((Frame.foldlM (fun _ _ _ ok => frame_processProposerSlashing ok) proposersOk).trans
-      (Frame.foldlM (fun _ _ _ ok => frame_processAttesterSlashing ok) attestersOk)).slot,
+    (Kept.foldlM (fun _ _ _ ok => kept_processProposerSlashing ok) proposersOk).trans
+      (Kept.foldlM (fun _ _ _ ok => kept_processAttesterSlashing ok) attestersOk),
     attestedOk,
     (VotesKept.foldlM (fun _ _ _ ok => votesKept_processDeposit ok) depositedOk).trans <|
     (VotesKept.foldlM (fun _ _ _ ok => votesKept_processVoluntaryExit ok) exitsOk).trans <|
@@ -712,7 +736,7 @@ theorem processOperations_votes {body : BeaconBlockBody preset fork} {parentSlot
 They run with the slot of the latest block before this one. -/
 theorem processBlock_votes {block : BeaconBlock preset fork}
     (computed : processBlock config checks engine state block = .ok after) :
-    ∃ before attested, VotesKept state before ∧ before.slot = state.slot ∧
+    ∃ before attested, VotesKept state before ∧ SameReads state before ∧
       block.body.attestations.data.toList.foldlM
         (processAttestation config checks · state.latestBlockHeader.slot ·) before = .ok attested ∧
       VotesKept attested after := by
@@ -743,39 +767,39 @@ theorem processBlock_votes {block : BeaconBlock preset fork}
       · exact votesKept_processEth1Data votedOk
       · cases votedOk
         exact VotesKept.refl _
-    obtain ⟨before, attested, head, headSlot, folded, tail⟩ := processOperations_votes operatedOk
-    -- Every step before the attestations keeps the slot.
-    have slot : voted.slot = state.slot := by
-      have paidFrame : Frame state paid := by
+    obtain ⟨before, attested, head, headKept, folded, tail⟩ := processOperations_votes operatedOk
+    -- Every step before the attestations keeps what they read.
+    have reads : SameReads state voted := by
+      have paidKept : Kept state paid := by
         split at paidOk
-        · exact frame_processParentExecutionPayload paidOk
+        · exact kept_processParentExecutionPayload paidOk
         · cases paidOk
-          exact Frame.refl _
-      have executedFrame : Frame headed executed := by
+          exact Kept.refl _
+      have executedKept : Kept headed executed := by
         split at executedOk
-        · exact frame_processBlockExecution executedOk
+        · exact kept_processBlockExecution executedOk
         · cases executedOk
-          exact Frame.refl _
-      have votedFrame : Frame revealed voted := by
+          exact Kept.refl _
+      have votedKept : Kept revealed voted := by
         split at votedOk
-        · exact frame_processEth1Data votedOk
+        · exact kept_processEth1Data votedOk
         · cases votedOk
-          exact Frame.refl _
-      exact (paidFrame.trans <| (frame_processBlockHeader headedOk).trans <| executedFrame.trans <|
-        (frame_processRandao revealedOk).trans votedFrame).slot
+          exact Kept.refl _
+      exact paidKept.sameReads.trans <| (sameReads_processBlockHeader headedOk).trans <|
+        (executedKept.trans <| (kept_processRandao revealedOk).trans votedKept).sameReads
     exact ⟨before, attested, paidVotes.trans <| headedVotes.trans <| executedVotes.trans <|
-      (votesKept_processRandao revealedOk).trans <| votedVotes.trans head, headSlot.trans slot,
-      folded, tail.trans (votesKept_processSyncAggregate synced)⟩
+      (votesKept_processRandao revealedOk).trans <| votedVotes.trans head,
+      reads.trans headKept.sameReads, folded, tail.trans (votesKept_processSyncAggregate synced)⟩
   simp only [bind_ok_iff] at computed
   obtain ⟨headed, headerOk, revealed, randaoOk, voted, eth1Ok, operationsOk⟩ := computed
   have headedVotes : VotesKept state headed := by
     obtain ⟨_, _, rfl⟩ := processBlockHeader_eq headerOk
     exact .of_votes rfl
-  obtain ⟨before, attested, head, headSlot, folded, tail⟩ := processOperations_votes operationsOk
-  have slot : voted.slot = state.slot := ((frame_processBlockHeader headerOk).trans <|
-    (frame_processRandao randaoOk).trans (frame_processEth1Data eth1Ok)).slot
+  obtain ⟨before, attested, head, headKept, folded, tail⟩ := processOperations_votes operationsOk
+  have reads : SameReads state voted := (sameReads_processBlockHeader headerOk).trans
+    ((kept_processRandao randaoOk).trans (kept_processEth1Data eth1Ok)).sameReads
   exact ⟨before, attested, headedVotes.trans <| (votesKept_processRandao randaoOk).trans <|
-    (votesKept_processEth1Data eth1Ok).trans head, headSlot.trans slot, folded, tail⟩
+    (votesKept_processEth1Data eth1Ok).trans head, reads.trans headKept.sameReads, folded, tail⟩
 
 /-! ## The steps of an epoch -/
 

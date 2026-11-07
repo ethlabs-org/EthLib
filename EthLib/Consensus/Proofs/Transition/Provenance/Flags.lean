@@ -77,7 +77,7 @@ theorem foldlM_processAttestation_flags (altair : .altair ≤ fork) {parentSlot 
           attestations = pre ++ attestation :: suf ∧
           pre.foldlM (processAttestation config checks · parentSlot ·) first = .ok site ∧
           processAttestation config checks site parentSlot attestation = .ok recorded ∧
-          site.slot = first.slot ∧ attestation.data.target.epoch = flagsEpoch site current ∧
+          Kept first site ∧ attestation.data.target.epoch = flagsEpoch site current ∧
           AttestationFlagged config checks site parentSlot attestation index flagIndex
   | [], first, attested, computed, _, _, flags, _, found, set => by
     simp only [List.foldlM_nil, pure, Except.pure, Except.ok.injEq] at computed
@@ -86,7 +86,6 @@ theorem foldlM_processAttestation_flags (altair : .altair ≤ fork) {parentSlot 
   | attestation :: rest, first, attested, computed, current, index, flags, flagIndex, found, set => by
     simp only [List.foldlM_cons, bind_ok_iff] at computed
     obtain ⟨middle, step, folded⟩ := computed
-    have frame := frame_processAttestation step
     have stepAltair : processAttestationAltair config checks first attestation altair parentSlot =
         .ok middle := by
       unfold processAttestation at step
@@ -124,11 +123,11 @@ theorem foldlM_processAttestation_flags (altair : .altair ≤ fork) {parentSlot 
             exact .inl (lists.2 index old flagIndex oldFound oldSet)
       rcases origin with before | ⟨epoch, who, added⟩
       · exact .inl before
-      · exact .inr ⟨[], attestation, rest, first, middle, rfl, rfl, step, rfl, epoch,
+      · exact .inr ⟨[], attestation, rest, first, middle, rfl, rfl, step, Kept.refl _, epoch,
           earned, attesters, indexed, earnedOk, attestersOk, who, added, indexedOk, valid⟩
     · -- A later attestation set it, from a state at the same slot.
       refine .inr ⟨attestation :: pre, later, suf, site, recorded, by rw [split]; rfl, ?_, laterOk,
-        siteSlot.trans frame.slot, epoch, flagged⟩
+        (kept_processAttestation step).trans siteSlot, epoch, flagged⟩
       simp only [List.foldlM_cons, bind_ok_iff]
       exact ⟨middle, step, prefixOk⟩
 
@@ -171,7 +170,7 @@ def FlagSetBy (config : Config) (checks : SignatureChecks) (start after : Forked
     pre.foldlM (processAttestation config checks · state.latestBlockHeader.slot ·) first =
       .ok site ∧
     processAttestation config checks site state.latestBlockHeader.slot attestation = .ok recorded ∧
-    site.slot = state.slot ∧ attestation.data.target.epoch = epoch ∧
+    SameReads state site ∧ attestation.data.target.epoch = epoch ∧
     AttestationFlagged config checks site state.latestBlockHeader.slot attestation index flagIndex
 
 /-- Where a flag of a chain's end came from. -/
@@ -347,7 +346,7 @@ theorem Reaches.flags {start after : ForkedBeaconState preset}
         .block engine signed validateResult notDue computed
       obtain ⟨-, processed, -⟩ := applySignedBlock_ok computed
       have postSlot := processBlock_slot processed
-      obtain ⟨first, attested, head, firstSlot, folded, tail⟩ := processBlock_votes processed
+      obtain ⟨first, attested, head, firstReads, folded, tail⟩ := processBlock_votes processed
       have attestedFlag : ∃ old, (epochFlags attested altair current)[index]? = some old ∧
           hasFlag old flagIndex = true := by
         cases current
@@ -368,10 +367,10 @@ theorem Reaches.flags {start after : ForkedBeaconState preset}
         rw [flagsEpoch_of_slot postSlot]
         exact (more altair current index oldest flagIndex oldestFound oldestSet).extend theStep
       · -- An attestation of the block set it.
-        rw [flagsEpoch_of_slot postSlot, ← flagsEpoch_of_slot (siteSlot.trans firstSlot)]
+        rw [flagsEpoch_of_slot postSlot, ← flagsEpoch_of_slot (firstReads.trans (Kept.sameReads siteSlot)).slot]
         exact .inr (.inr ⟨fork, engine, signed, validateResult, state, post, first, site, recorded,
           pre, suf,
           attestation, middleChain, notDue, computed, .refl _, head, split, prefixOk, siteOk,
-          siteSlot.trans firstSlot, epoch, flagged⟩)
+          firstReads.trans (Kept.sameReads siteSlot), epoch, flagged⟩)
 
 end EthLib.Consensus

@@ -66,7 +66,7 @@ theorem foldlM_processAttestation_pending (before : fork < .altair) {parentSlot 
           attestations = pre ++ attestation :: suf ∧
           pre.foldlM (processAttestation config checks · parentSlot ·) first = .ok site ∧
           processAttestation config checks site parentSlot attestation = .ok recorded ∧
-          site.slot = first.slot ∧ attestation.data.target.epoch = flagsEpoch site current ∧
+          Kept first site ∧ attestation.data.target.epoch = flagsEpoch site current ∧
           AttestationRecorded config checks site attestation pending
   | [], first, attested, computed, _, _, member => by
     simp only [List.foldlM_nil, pure, Except.pure, Except.ok.injEq] at computed
@@ -75,7 +75,6 @@ theorem foldlM_processAttestation_pending (before : fork < .altair) {parentSlot 
   | attestation :: rest, first, attested, computed, current, pending, member => by
     simp only [List.foldlM_cons, bind_ok_iff] at computed
     obtain ⟨middle, step, folded⟩ := computed
-    have frame := frame_processAttestation step
     rcases foldlM_processAttestation_pending before folded current pending member with old |
       ⟨pre, later, suf, site, recorded, split, prefixOk, laterOk, siteSlot, epoch, written⟩
     · -- The attestation was there after this one: it was there before, or this one wrote it.
@@ -106,11 +105,11 @@ theorem foldlM_processAttestation_pending (before : fork < .altair) {parentSlot 
             exact .inl old
       rcases origin with before | ⟨epoch, rfl⟩
       · exact .inl before
-      · exact .inr ⟨[], attestation, rest, first, middle, rfl, rfl, step, rfl, epoch,
+      · exact .inr ⟨[], attestation, rest, first, middle, rfl, rfl, step, Kept.refl _, epoch,
           indexed, bits, data, delay, proposer, indexedOk, valid⟩
     · -- A later attestation wrote it, from a state at the same slot.
       refine .inr ⟨attestation :: pre, later, suf, site, recorded, by rw [split]; rfl, ?_, laterOk,
-        siteSlot.trans frame.slot, epoch, written⟩
+        (kept_processAttestation step).trans siteSlot, epoch, written⟩
       simp only [List.foldlM_cons, bind_ok_iff]
       exact ⟨middle, step, prefixOk⟩
 
@@ -141,7 +140,7 @@ def PendingRecordedBy (config : Config) (checks : SignatureChecks)
     pre.foldlM (processAttestation config checks · state.latestBlockHeader.slot ·) first =
       .ok site ∧
     processAttestation config checks site state.latestBlockHeader.slot attestation = .ok recorded ∧
-    site.slot = state.slot ∧ attestation.data.target.epoch = epoch ∧
+    SameReads state site ∧ attestation.data.target.epoch = epoch ∧
     AttestationRecorded config checks site attestation pending
 
 /-- Where a pending attestation of a chain's end came from. -/
@@ -231,7 +230,7 @@ theorem Reaches.pending {start after : ForkedBeaconState preset}
         .block engine signed validateResult notDue computed
       obtain ⟨-, processed, -⟩ := applySignedBlock_ok computed
       have postSlot := processBlock_slot processed
-      obtain ⟨first, attested, head, firstSlot, folded, tail⟩ := processBlock_votes processed
+      obtain ⟨first, attested, head, firstReads, folded, tail⟩ := processBlock_votes processed
       simp only at member postSlot before ⊢
       have attestedMember : pending ∈ epochPending attested before current := by
         cases current
@@ -250,9 +249,9 @@ theorem Reaches.pending {start after : ForkedBeaconState preset}
         rw [flagsEpoch_of_slot postSlot]
         exact (more before current stateMember).extend theStep
       · -- An attestation of the block recorded it.
-        rw [flagsEpoch_of_slot postSlot, ← flagsEpoch_of_slot (siteSlot.trans firstSlot)]
+        rw [flagsEpoch_of_slot postSlot, ← flagsEpoch_of_slot (firstReads.trans (Kept.sameReads siteSlot)).slot]
         exact .inr ⟨fork, engine, signed, validateResult, state, post, first, site, recorded,
           pre, suf, attestation, middleChain, notDue, computed, .refl _, head, split, prefixOk,
-          siteOk, siteSlot.trans firstSlot, epoch, written⟩
+          siteOk, firstReads.trans (Kept.sameReads siteSlot), epoch, written⟩
 
 end EthLib.Consensus

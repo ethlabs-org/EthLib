@@ -94,7 +94,7 @@ def SignedTarget (config : Config) (checks : SignatureChecks) (start after : For
     pre.foldlM (processAttestation config checks · state.latestBlockHeader.slot ·) first =
       .ok site ∧
     processAttestation config checks site state.latestBlockHeader.slot attestation = .ok recorded ∧
-    site.slot = state.slot ∧ attestation.data = data ∧
+    SameReads state site ∧ attestation.data = data ∧
     getIndexedAttestation site attestation = .ok indexed ∧ index ∈ indexed.attestingIndices.data ∧
     indexed.data = data ∧ isValidIndexedAttestation config checks site indexed = .ok true ∧
     data.source = (if data.target.epoch = getCurrentEpoch site then site.currentJustifiedCheckpoint
