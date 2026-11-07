@@ -292,4 +292,136 @@ theorem Reaches.roots_written {start after : ForkedBeaconState preset}
       exact ⟨fork', state', cached', caches.extend (.block engine signed validateResult computed),
         blockPart, statePart⟩
 
+/-! ## The latest header -/
+
+/-- The header that a block writes: its fields, the root of its body, and a zero state root. -/
+def BeaconBlock.header (block : BeaconBlock preset fork) (bodyRoot : Root) : BeaconBlockHeader :=
+  { slot := block.slot, proposerIndex := block.proposerIndex, parentRoot := block.parentRoot,
+    stateRoot := Vector.replicate 32 0, bodyRoot }
+
+/-- The latest header of `after` is `header`, written at `base`, with its state root settled.
+
+A chain runs from `base` to `after`.
+
+The latest header of `after` is `header` with some state root `r`.
+
+- Either `r` is the state root of `header`.
+  It is then not zero, or the chain has not left the slot of `base`.
+- Or `header` had a zero state root, and the first caching after `base` filled it.
+  That caching started from a state `middle` at the slot of `base`.
+  Then `r` is the root of `middle`, or `middle` has the zero root.
+
+A zero root leaves the header unfilled, and a later caching fills it again.
+
+So the zero root of `middle` is the one case in which `r` can be the root of a later state. -/
+def HeaderSettled (config : Config) (checks : SignatureChecks)
+    (base after : ForkedBeaconState preset) (header : BeaconBlockHeader) : Prop :=
+  Reaches config checks base after ∧
+    ∃ stateRoot, after.state.latestBlockHeader = { header with stateRoot } ∧
+      ((stateRoot = header.stateRoot ∧
+          (header.stateRoot ≠ Vector.replicate 32 0 ∨ after.state.slot = base.state.slot)) ∨
+        (header.stateRoot = Vector.replicate 32 0 ∧
+          ∃ middle root, Reaches config checks base middle ∧
+            Reaches config checks middle after ∧ middle.state.slot = base.state.slot ∧
+            hashTreeRoot middle.state = .ok root ∧
+            (stateRoot = root ∨ root = Vector.replicate 32 0)))
+
+/-- At its base, a header is settled. -/
+theorem HeaderSettled.base {base : ForkedBeaconState preset} :
+    HeaderSettled config checks base base base.state.latestBlockHeader :=
+  ⟨.refl _, _, rfl, .inl ⟨rfl, .inr rfl⟩⟩
+
+/-- A slot step keeps a header settled. -/
+theorem HeaderSettled.slot {base : ForkedBeaconState preset} {fork : Fork}
+    {state next : BeaconState preset fork} {header : BeaconBlockHeader}
+    (settled : HeaderSettled config checks base ⟨fork, state⟩ header)
+    (computed : advanceSlot config checks state = .ok next) :
+    HeaderSettled config checks base ⟨fork, next⟩ header := by
+  obtain ⟨chain, stateRoot, current, settledRoot⟩ := settled
+  obtain ⟨cached, cachedOk, nextSlot, nextHeader, -, -⟩ := advanceSlot_roots computed
+  obtain ⟨root, -, rootOk, cachedHeader, -⟩ := processSlot_roots cachedOk
+  have step : Step config checks ⟨fork, state⟩ ⟨fork, next⟩ := .slot computed
+  refine ⟨chain.step step, ?_⟩
+  simp only at current nextSlot ⊢
+  rw [nextHeader, cachedHeader, current]
+  unfold fillStateRoot
+  rcases settledRoot with ⟨rfl, nonzero | sameSlot⟩ | ⟨zero, middle, middleRoot, head, tail,
+    middleSlot, middleRootOk, filled⟩
+  · -- A filled header stays.
+    simp only [nonzero, ↓reduceIte]
+    exact ⟨header.stateRoot, rfl, .inl ⟨rfl, .inl nonzero⟩⟩
+  · by_cases zero : header.stateRoot = Vector.replicate 32 0
+    · -- The first caching after the base fills the header.
+      simp only [zero, ↓reduceIte]
+      exact ⟨root, rfl, .inr ⟨by first | exact zero | trivial, ⟨fork, state⟩, root, chain,
+        Reaches.refl _ |>.step step,
+        sameSlot, rootOk, .inl rfl⟩⟩
+    · simp only [zero, ↓reduceIte]
+      exact ⟨header.stateRoot, rfl, .inl ⟨rfl, .inl zero⟩⟩
+  · by_cases unfilled : stateRoot = Vector.replicate 32 0
+    · -- An unfilled header after the first caching means the zero root.
+      subst unfilled
+      simp only [↓reduceIte]
+      refine ⟨root, rfl, .inr ⟨zero, middle, middleRoot, head, tail.step step, middleSlot,
+        middleRootOk, .inr ?_⟩⟩
+      rcases filled with same | zeroRoot
+      · exact same.symm
+      · exact zeroRoot
+    · simp only [unfilled, ↓reduceIte]
+      exact ⟨stateRoot, rfl, .inr ⟨zero, middle, middleRoot, head, tail.step step, middleSlot,
+        middleRootOk, filled⟩⟩
+
+/-- An upgrade keeps a header settled. -/
+theorem HeaderSettled.upgrade {base pre : ForkedBeaconState preset}
+    {post : {post : ForkedBeaconState preset // pre.fork < post.fork}}
+    {header : BeaconBlockHeader} (settled : HeaderSettled config checks base pre header)
+    (due : upgradeDue config pre = true) (computed : upgradeNext config checks pre = .ok post) :
+    HeaderSettled config checks base post.val header := by
+  obtain ⟨chain, stateRoot, current, settledRoot⟩ := settled
+  obtain ⟨slotSame, headerSame, -, -⟩ := upgradeNext_roots computed
+  have step : Step config checks pre post.val := .upgrade due computed
+  refine ⟨chain.step step, stateRoot, headerSame.trans current, ?_⟩
+  rw [slotSame]
+  rcases settledRoot with first | ⟨zero, middle, root, head, tail, rest⟩
+  · exact .inl first
+  · exact .inr ⟨zero, middle, root, head, tail.step step, rest⟩
+
+/-- Where the latest header of a chain's end comes from.
+
+Either no block step wrote it, and it is the header of the start, settled.
+
+Or the last block step wrote it: the header of that block, settled from the state after it. -/
+theorem Reaches.latestBlockHeader {start after : ForkedBeaconState preset}
+    (chain : Reaches config checks start after) :
+    HeaderSettled config checks start after start.state.latestBlockHeader ∨
+      ∃ (fork : Fork) (engine : ExecutionEngine preset fork) (signed : SignedBeaconBlock preset fork)
+        (validateResult : Bool) (state post : BeaconState preset fork) (bodyRoot : Root),
+        Reaches config checks start ⟨fork, state⟩ ∧
+        applySignedBlock config checks engine state signed validateResult = .ok post ∧
+        hashTreeRoot signed.message.body = .ok bodyRoot ∧
+        HeaderSettled config checks ⟨fork, post⟩ after (signed.message.header bodyRoot) := by
+  obtain ⟨run⟩ := chain
+  induction run with
+  | nil => exact .inl HeaderSettled.base
+  | @snoc middle last run step more =>
+    cases step with
+    | slot computed =>
+      rcases more with settled | ⟨fork, engine, signed, validateResult, state, post, bodyRoot,
+        head, applied, bodyRootOk, settled⟩
+      · exact .inl (settled.slot computed)
+      · exact .inr ⟨fork, engine, signed, validateResult, state, post, bodyRoot, head, applied,
+          bodyRootOk, settled.slot computed⟩
+    | upgrade due computed =>
+      rcases more with settled | ⟨fork, engine, signed, validateResult, state, post, bodyRoot,
+        head, applied, bodyRootOk, settled⟩
+      · exact .inl (settled.upgrade due computed)
+      · exact .inr ⟨fork, engine, signed, validateResult, state, post, bodyRoot, head, applied,
+          bodyRootOk, settled.upgrade due computed⟩
+    | block engine signed validateResult computed =>
+      -- The block writes its own header, so the header settles from the state after it.
+      obtain ⟨-, -, -, ⟨bodyRoot, bodyRootOk, written⟩, -⟩ := applySignedBlock_roots computed
+      refine .inr ⟨_, engine, signed, validateResult, _, _, bodyRoot, ⟨run⟩, computed,
+        bodyRootOk, ?_⟩
+      exact ⟨.refl _, _, written, .inl ⟨rfl, .inr rfl⟩⟩
+
 end EthLib.Consensus
