@@ -98,6 +98,7 @@ public import EthLib.Consensus.Proofs.Transition.ExitStake
 public import EthLib.Consensus.Proofs.Transition.Execution
 public import EthLib.Consensus.Proofs.Transition.FfgVotes
 public import EthLib.Consensus.Proofs.Transition.ForkBoundary
+public import EthLib.Consensus.Proofs.Transition.GainedBound
 public import EthLib.Consensus.Proofs.Transition.Genesis
 public import EthLib.Consensus.Proofs.Transition.Invariants
 public import EthLib.Consensus.Proofs.Transition.Lifecycle
