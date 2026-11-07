@@ -2,6 +2,7 @@ module
 
 public import EthLib.Consensus.Proofs.Transition.Provenance.Links
 public import EthLib.Consensus.Proofs.Transition.Provenance.Pending
+public import EthLib.Consensus.Proofs.ShufflePermutation
 import all Init.Data.List.Control
 
 /-!
@@ -108,6 +109,68 @@ theorem mem_getMatchingTargetAttestations (before : fork < .altair) {epoch : Epo
     by_cases current : epoch = getCurrentEpoch state
     · simpa [current] using inSource
     · simpa [current] using inSource
+
+/-! ## Committees -/
+
+/-- Each position that the shuffle gives is below the number of indices it shuffles. -/
+theorem lt_of_mem_computeShuffledPermutation {count : UInt64} {seed : Bytes32}
+    {shuffled : Array UInt64}
+    (computed : computeShuffledPermutation preset count seed = .ok shuffled)
+    {position : UInt64} (member : position ∈ shuffled) : position.toNat < count.toNat := by
+  obtain ⟨fits, rfl⟩ := computeShuffledPermutation_ok computed
+  obtain ⟨index, inside, read⟩ := Array.mem_iff_getElem.mp member
+  have size := Shuffle.shuffledPositions_size preset.SHUFFLE_ROUND_COUNT.toNat seed count.toNat
+  have entry := Shuffle.shuffledPositions_getElem (rounds := preset.SHUFFLE_ROUND_COUNT.toNat)
+    (seed := seed) (lt := size ▸ inside)
+  rw [Array.getElem?_eq_getElem inside, read, Option.some.injEq] at entry
+  have below := Shuffle.shuffledIndex_lt (rounds := preset.SHUFFLE_ROUND_COUNT.toNat)
+    (seed := seed) (size ▸ inside)
+  have small : Shuffle.shuffledIndex preset.SHUFFLE_ROUND_COUNT.toNat seed count.toNat index <
+      2 ^ 64 := by omega
+  rw [entry, UInt64.toNat_ofNat_of_lt' small]
+  exact below
+
+/-- Each member of a committee is active in the epoch of its slot. -/
+theorem mem_getBeaconCommittee {slot : Slot} {index : CommitteeIndex}
+    {committee : Array ValidatorIndex}
+    (computed : getBeaconCommittee state slot index = .ok committee)
+    {member : ValidatorIndex} (inCommittee : member ∈ committee) :
+    member ∈ getActiveValidatorIndices state (computeEpochAtSlot preset slot) := by
+  simp only [getBeaconCommittee, beaconCommitteeOf, bind_ok_iff, mapError_ok_iff] at computed
+  obtain ⟨seed, _, shuffled, shuffledOk, _, _, _, _, cut⟩ := computed
+  set active := (getActiveValidatorIndices state (computeEpochAtSlot preset slot)).toArray
+  -- Every shuffled position is below the number of active validators.
+  have positions : ∀ position ∈ shuffled, position.toNat < active.size := fun position inside =>
+    Nat.lt_of_lt_of_le (lt_of_mem_computeShuffledPermutation shuffledOk inside)
+      (by rw [UInt64.toNat_ofNat']; exact Nat.mod_le _ _)
+  simp only [shuffledCommittee, bind, Except.bind] at cut
+  split at cut
+  · cases cut
+  split at cut
+  swap
+  · simp [throw, throwThe, MonadExceptOf.throw] at cut
+  split at cut
+  · simp [throw, throwThe, MonadExceptOf.throw] at cut
+  rename_i inRange
+  simp only [pure, Except.pure, Except.ok.injEq] at cut
+  subst cut
+  simp only [List.mem_toArray, List.mem_map, List.mem_range] at inCommittee
+  obtain ⟨offset, below, rfl⟩ := inCommittee
+  -- The cut is within the active validators, so there is at least one.
+  have nonempty : 0 < active.size := by
+    rcases Nat.eq_zero_or_pos active.size with empty | positive
+    · exfalso
+      rw [empty, Nat.zero_mul, Nat.zero_div, Nat.zero_mul, Nat.zero_div] at below
+      exact Nat.not_lt_zero _ below
+    · exact positive
+  have chosen : ∀ position, (shuffled.getD position 0).toNat < active.size := fun position => by
+    rw [Array.getD_eq_getD_getElem?]
+    cases read : shuffled[position]? with
+    | none => exact nonempty
+    | some found => exact positions found (Array.mem_of_getElem? read)
+  rw [Array.getD_eq_getD_getElem?, Array.getElem?_eq_getElem (chosen _)]
+  exact List.mem_toArray.mp (Array.getElem_mem (chosen _))
+
 
 /-! ## Along a chain -/
 
@@ -238,6 +301,8 @@ That attestation was held by the start of the chain.
 
 Otherwise a block of the chain included it, and the voter signed its data, checked at the site.
 
+The voter is a member of the attestation's committee, so it is active in the checkpoint's epoch.
+
 That data has the checkpoint as target, since the call compares the target root.
 
 Its source is the call's source, except for a target in epoch 1, as from Altair. -/
@@ -255,6 +320,7 @@ theorem JustifiedBy.pending_voters_signed {start after : ForkedBeaconState prese
       (fork < .altair → ∀ index ∈ voters,
         (∃ pending, PendingAtStart start pending) ∨
         ∃ data, data.target = checkpoint ∧
+          index ∈ getActiveValidatorIndices cached checkpoint.epoch ∧
           SignedVote config checks start ⟨fork, state⟩ index data ∧
           (data.source = recordSource cached checkpoint.epoch ∨
             (checkpoint.epoch.toNat = 1 ∧ ∃ (fork' : Fork) (epochOne : BeaconState preset fork'),
@@ -354,6 +420,9 @@ theorem JustifiedBy.pending_voters_signed {start after : ForkedBeaconState prese
   -- So the call finds the signers that the site found.
   simp only [getPendingAttestingIndices, bind_ok_iff] at signersOk
   obtain ⟨committee, committeeOk, attestersOk⟩ := signersOk
+  -- The voter is in the committee, so it is active in the target epoch, in the call's state.
+  have active := mem_getBeaconCommittee committeeOk (mem_of_committeeAttesters attestersOk inSigners)
+  rw [dataEq, ← slotEpoch] at active
   rw [dataEq, toCached.getBeaconCommittee, ← (toFirst.trans toSite).getBeaconCommittee]
     at committeeOk
   rw [bitsEq] at attestersOk
@@ -378,7 +447,7 @@ theorem JustifiedBy.pending_voters_signed {start after : ForkedBeaconState prese
       by rw [attesting]; exact List.mem_toArray.mpr (mem_sortedSet.mpr inSigners),
       indexedData, valid, source⟩
   rw [← cachedEpoch, ← cachedPrevious] at recent
-  exact .inr ⟨attestation.data, target, vote,
+  exact .inr ⟨attestation.data, target, active, vote,
     vote.source_link (by rw [target]) cachedOk later recent⟩
 
 /-! ## From genesis -/
@@ -442,6 +511,7 @@ theorem JustifiedBy.pending_voters_signed_of_genesis {start after : ForkedBeacon
       getBlockRoot cached checkpoint.epoch = .ok checkpoint.root ∧
       (fork < .altair → ∀ index ∈ voters,
         ∃ data, data.target = checkpoint ∧
+          index ∈ getActiveValidatorIndices cached checkpoint.epoch ∧
           SignedVote config checks start ⟨fork, state⟩ index data ∧
           data.source = recordSource cached checkpoint.epoch) := by
   obtain ⟨fork, state, cached, voters, head, toAfter, cachedOk, later, recent, counted, passes,
@@ -449,10 +519,10 @@ theorem JustifiedBy.pending_voters_signed_of_genesis {start after : ForkedBeacon
   refine ⟨fork, state, cached, voters, head, toAfter, cachedOk, later, recent, counted, passes,
     rootOk, fun before index member => ?_⟩
   rcases signers before index member with ⟨pending, startBefore, current, held⟩ |
-    ⟨data, target, signed, source⟩
+    ⟨data, target, active, signed, source⟩
   · rw [genesis_epochPending genesis startBefore current] at held
     simp at held
-  refine ⟨data, target, signed, ?_⟩
+  refine ⟨data, target, active, signed, ?_⟩
   rcases source with same | exception
   · exact same
   · exact recordSource_of_epochOne ⟨start, genesis, .refl _⟩ cachedOk later recent exception
