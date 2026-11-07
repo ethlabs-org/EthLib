@@ -155,4 +155,141 @@ theorem applySignedBlock_roots {signed : SignedBeaconBlock preset fork} {validat
     headedKept.slot, headedKept.blockRoots.trans paidKept.blockRoots,
     headedKept.stateRoots.trans paidKept.stateRoots, validated⟩
 
+/-- An upgrade keeps the slot, the latest header and the two buffers. -/
+theorem upgradeNext_roots {pre : ForkedBeaconState preset}
+    {post : {post : ForkedBeaconState preset // pre.fork < post.fork}}
+    (computed : upgradeNext config checks pre = .ok post) :
+    post.val.state.slot = pre.state.slot ∧
+      post.val.state.latestBlockHeader = pre.state.latestBlockHeader ∧
+      post.val.state.blockRoots = pre.state.blockRoots ∧
+      post.val.state.stateRoots = pre.state.stateRoots := by
+  have same := upgradeNext_history computed
+  simp only [BeaconState.history, Prod.mk.injEq] at same
+  exact ⟨same.1, same.2.1, same.2.2.1, same.2.2.2.1⟩
+
+/-! ## Chains -/
+
+/-- Along a chain the slot never decreases. -/
+theorem stepRelation_slot :
+    StepRelation config checks fun (forked after : ForkedBeaconState preset) =>
+      forked.state.slot.toNat ≤ after.state.slot.toNat where
+  refl _ := Nat.le_refl _
+  trans first second := Nat.le_trans first second
+  advanceSlot computed := by
+    simp only [advanceSlot_slot computed]
+    omega
+  upgradeNext _ computed := Nat.le_of_eq (by rw [(upgradeNext_roots computed).1])
+  applySignedBlock computed :=
+    Nat.le_of_eq (by simp only [(applySignedBlock_roots computed).2.2.2.2.1])
+
+theorem Reaches.slot_le {start after : ForkedBeaconState preset}
+    (chain : Reaches config checks start after) :
+    start.state.slot.toNat ≤ after.state.slot.toNat :=
+  stepRelation_slot.reaches chain
+
+/-- A chain caches a slot at one of its slot steps.
+
+The step starts at `state`, whose slot is that slot, and its caching gives `cached`.
+
+The chain runs from its start to `state`, and on from the state after the step. -/
+def CachesSlot (config : Config) (checks : SignatureChecks) (start after : ForkedBeaconState preset)
+    (slot : Slot) {fork : Fork} (state cached : BeaconState preset fork) : Prop :=
+  state.slot = slot ∧ processSlot state = .ok cached ∧
+    ∃ next, advanceSlot config checks state = .ok next ∧
+      Reaches config checks start ⟨fork, state⟩ ∧ Reaches config checks ⟨fork, next⟩ after
+
+theorem CachesSlot.extend {start middle after : ForkedBeaconState preset} {slot : Slot}
+    {fork : Fork} {state cached : BeaconState preset fork}
+    (caches : CachesSlot config checks start middle slot state cached)
+    (step : Step config checks middle after) :
+    CachesSlot config checks start after slot state cached :=
+  have ⟨atSlot, cachedOk, next, nextOk, head, tail⟩ := caches
+  ⟨atSlot, cachedOk, next, nextOk, head, tail.step step⟩
+
+/-- Two different slots less than the length of the buffer apart take different entries. -/
+theorem mod_ne_of_lt {n earlier later : UInt64} (before : earlier.toNat < later.toNat)
+    (near : later.toNat < earlier.toNat + n.toNat) : later % n ≠ earlier % n := by
+  intro same
+  have same := congrArg UInt64.toNat same
+  rw [UInt64.toNat_mod, UInt64.toNat_mod] at same
+  have := Nat.sub_mod_eq_zero_of_mod_eq same
+  have positive : 0 < later.toNat - earlier.toNat := by omega
+  obtain ⟨k, hk⟩ := Nat.dvd_of_mod_eq_zero this
+  rcases k with _ | k
+  · omega
+  · rw [Nat.mul_succ] at hk
+    omega
+
+/-- Where an entry of the two buffers of roots comes from.
+
+Take a chain, and a slot from the start of the chain up to the slot before its end.
+
+The entry must still be in the buffer: the end is at most `N` slots after that slot.
+
+Then one slot step of the chain cached that slot.
+
+The block root is the root of the latest header after that caching.
+
+The state root is the root of the state that the caching started from. -/
+theorem Reaches.roots_written {start after : ForkedBeaconState preset}
+    (chain : Reaches config checks start after) {slot : Slot}
+    (fromStart : start.state.slot.toNat ≤ slot.toNat) (written : slot.toNat < after.state.slot.toNat)
+    (recent : after.state.slot.toNat ≤ slot.toNat + preset.SLOTS_PER_HISTORICAL_ROOT.toNat) :
+    ∃ (fork : Fork) (state cached : BeaconState preset fork),
+      CachesSlot config checks start after slot state cached ∧
+      (∃ root, hashTreeRoot cached.latestBlockHeader = .ok root ∧
+        readCircular after.state.blockRoots.elements slot = .ok root) ∧
+      (∃ root, hashTreeRoot state = .ok root ∧
+        readCircular after.state.stateRoots.elements slot = .ok root) := by
+  obtain ⟨run⟩ := chain
+  induction run with
+  | nil => omega
+  | @snoc middle last run step more =>
+    have middleChain : Reaches config checks start middle := ⟨run⟩
+    cases step with
+    | @slot fork state next computed =>
+      obtain ⟨cached, cachedOk, nextSlot, header, blockRoots, stateRoots⟩ :=
+        advanceSlot_roots computed
+      obtain ⟨stateRoot, blockRoot, stateRootOk, _, blockRootOk, stateWrite, blockWrite, _⟩ :=
+        processSlot_roots cachedOk
+      simp only at written recent nextSlot ⊢
+      rw [blockRoots, stateRoots]
+      by_cases here : slot.toNat = state.slot.toNat
+      · -- This step cached the slot.
+        have same : state.slot = slot := UInt64.toNat_inj.mp here.symm
+        subst same
+        refine ⟨fork, state, cached, ⟨rfl, cachedOk, next, computed, middleChain, .refl _⟩,
+          ⟨blockRoot, blockRootOk, ?_⟩, ⟨stateRoot, stateRootOk, ?_⟩⟩
+        · exact readCircular_writeCircular blockWrite
+        · exact readCircular_writeCircular stateWrite
+      · -- An earlier step cached it, and this step writes another entry.
+        obtain ⟨fork', state', cached', caches, ⟨blockRoot', blockRootOk', blockRead⟩,
+          ⟨stateRoot', stateRootOk', stateRead⟩⟩ :=
+          more (by simp only; omega) (by simp only; omega)
+        have other : state.slot % preset.SLOTS_PER_HISTORICAL_ROOT ≠
+            slot % preset.SLOTS_PER_HISTORICAL_ROOT :=
+          mod_ne_of_lt (by simp only at *; omega) (by simp only at *; omega)
+        refine ⟨fork', state', cached', caches.extend (.slot computed),
+          ⟨blockRoot', blockRootOk', ?_⟩, ⟨stateRoot', stateRootOk', ?_⟩⟩
+        · rw [readCircular_writeCircular_of_ne blockWrite other]
+          exact blockRead
+        · rw [readCircular_writeCircular_of_ne stateWrite other]
+          exact stateRead
+    | upgrade due computed =>
+      obtain ⟨slotSame, _, blockRoots, stateRoots⟩ := upgradeNext_roots computed
+      rw [slotSame] at written recent
+      obtain ⟨fork', state', cached', caches, blockPart, statePart⟩ :=
+        more written recent
+      rw [blockRoots, stateRoots]
+      exact ⟨fork', state', cached', caches.extend (.upgrade due computed), blockPart, statePart⟩
+    | block engine signed validateResult computed =>
+      obtain ⟨-, -, -, -, slotSame, blockRoots, stateRoots, -⟩ := applySignedBlock_roots computed
+      simp only at written recent ⊢
+      rw [slotSame] at written recent
+      obtain ⟨fork', state', cached', caches, blockPart, statePart⟩ :=
+        more written recent
+      rw [blockRoots, stateRoots]
+      exact ⟨fork', state', cached', caches.extend (.block engine signed validateResult computed),
+        blockPart, statePart⟩
+
 end EthLib.Consensus
