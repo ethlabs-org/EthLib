@@ -1,0 +1,188 @@
+module
+
+public import EthLib.Consensus.Proofs.Transition.Provenance.Settled
+
+/-!
+# Proofs: the source block of a weighing call is an ancestor of its target block
+
+A weighing call reads its target root from the block roots, for the first slot of the target's
+epoch.
+
+Its source is a checkpoint that an earlier call justified, with a root read the same way.
+
+Along one chain, a root read for an earlier slot is an ancestor of a root read for a later one,
+following the parent links of the blocks of the chain.
+
+So the source block is an ancestor of the target block.
+
+The source may instead be the checkpoint of genesis, whose root is zero by convention.
+
+A state of the chain may also have the zero root, which the statement keeps as evidence.
+-/
+
+@[expose] public section
+
+namespace EthLib.Consensus
+
+open Base Uint64 Serialization.Ssz
+
+variable {preset : Preset} {fork : Base.Fork} {config : Config} {checks : SignatureChecks}
+  {state after : BeaconState preset fork}
+
+/-- A genesis state is at slot 0, and its three checkpoints are the genesis checkpoint.
+
+That checkpoint has epoch 0 and the zero root. -/
+theorem genesis_state {forked : ForkedBeaconState preset} (genesis : Genesis config checks forked) :
+    forked.state.slot = GENESIS_SLOT ∧
+      forked.state.previousJustifiedCheckpoint = ⟨GENESIS_EPOCH, Vector.replicate 32 0⟩ ∧
+      forked.state.currentJustifiedCheckpoint = ⟨GENESIS_EPOCH, Vector.replicate 32 0⟩ ∧
+      forked.state.finalizedCheckpoint = ⟨GENESIS_EPOCH, Vector.replicate 32 0⟩ := by
+  obtain ⟨⟨_, _, _, computed⟩, _⟩ := genesis
+  unfold initializeBeaconStateFromEth1 at computed
+  split at computed
+  · cases computed
+  simp only [bind_ok_iff, ensure_ok_iff, liftSsz_ok, pure, Except.pure,
+    Except.ok.injEq] at computed
+  obtain ⟨_, _, _, _, _, _, deposited, depositedOk, activated, activatedOk, root, _, same⟩ :=
+    computed
+  have frame := (Frame.foldlM (fun _ _ _ ok => frame_genesisDeposit ok) depositedOk).trans
+    (Frame.foldlM (fun _ _ _ ok => frame_activateAtGenesis ok) activatedOk)
+  rw [← same]
+  exact ⟨frame.slot, frame.previousJustified, frame.currentJustified, frame.finalized⟩
+
+/-- The caching of a slot keeps the slot, the registry and the balances.
+
+So a weighing call weighs the validators and balances of the state of the chain before it. -/
+theorem processSlot_keeps {cached : BeaconState preset fork}
+    (cachedOk : processSlot state = .ok cached) :
+    cached.slot = state.slot ∧ cached.validators = state.validators ∧
+      cached.balances = state.balances := by
+  obtain ⟨_, _, _, _, rfl⟩ := processSlot_ok cachedOk
+  exact ⟨rfl, rfl, rfl⟩
+
+/-- From Altair, the voters a call counts for an epoch are active in that epoch. -/
+theorem TargetVoters.active (altair : .altair ≤ fork) {epoch : Epoch}
+    {voters : List ValidatorIndex} (counted : TargetVoters state epoch voters) :
+    ∀ index ∈ voters, index ∈ getActiveValidatorIndices state epoch := by
+  simp only [TargetVoters, altair, ↓reduceDIte] at counted
+  exact fun index member => (mem_getUnslashedParticipatingIndices counted index member).1
+
+/-- A root that a weighing call reads is the root its state held before the caching.
+
+The call reads the first slot of the previous or the current epoch.
+
+The buffer of roots must span two epochs, so the caching wrote another entry. -/
+theorem processSlot_read
+    (wide : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
+    {cached : BeaconState preset fork} (cachedOk : processSlot state = .ok cached)
+    (later : GENESIS_EPOCH + 1 < getCurrentEpoch cached) {epoch : Epoch} {root : Root}
+    (recent : epoch = getPreviousEpoch cached ∨ epoch = getCurrentEpoch cached)
+    (rootOk : getBlockRoot cached epoch = .ok root) :
+    ∃ slot : Slot, slot.toNat = epoch.toNat * preset.SLOTS_PER_EPOCH.toNat ∧
+      slot.toNat < state.slot.toNat ∧
+      state.slot.toNat ≤ slot.toNat + preset.SLOTS_PER_HISTORICAL_ROOT.toNat ∧
+      readCircular state.blockRoots.elements slot = .ok root := by
+  obtain ⟨slot, slotEq, below, near, read⟩ := getBlockRoot_ok rootOk
+  have sameSlot : cached.slot = state.slot := processSlot_slot cachedOk
+  obtain ⟨_, blockRoot, _, _, _, _, blockWrite, _⟩ := processSlot_roots cachedOk
+  have epochs : (getCurrentEpoch cached).toNat ≤ epoch.toNat + 1 := by
+    have := getPreviousEpoch_toNat cached
+    rcases recent with same | same <;> rw [same] <;> omega
+  have epochNat := getCurrentEpoch_toNat cached
+  rw [sameSlot] at epochNat near below
+  have spe : 0 < preset.SLOTS_PER_EPOCH.toNat := by
+    -- With no slot in an epoch, every epoch is the genesis epoch, which weighs nothing.
+    rcases Nat.eq_zero_or_pos preset.SLOTS_PER_EPOCH.toNat with zero | positive
+    · rw [zero, Nat.div_zero] at epochNat
+      have weighs := UInt64.lt_iff_toNat_lt.mp later
+      rw [epochNat] at weighs
+      simp [GENESIS_EPOCH] at weighs
+    · exact positive
+  -- The state is in the epoch or the one after, so at most two epochs past the slot.
+  have other : state.slot % preset.SLOTS_PER_HISTORICAL_ROOT ≠
+      slot % preset.SLOTS_PER_HISTORICAL_ROOT := by
+    refine mod_ne_of_lt below ?_
+    have inEpoch : state.slot.toNat < preset.SLOTS_PER_EPOCH.toNat *
+        (state.slot.toNat / preset.SLOTS_PER_EPOCH.toNat + 1) := Nat.lt_mul_div_succ _ spe
+    have bound : preset.SLOTS_PER_EPOCH.toNat *
+          (state.slot.toNat / preset.SLOTS_PER_EPOCH.toNat + 1) ≤
+        preset.SLOTS_PER_EPOCH.toNat * (epoch.toNat + 2) :=
+      Nat.mul_le_mul_left _ (by omega)
+    have expand : preset.SLOTS_PER_EPOCH.toNat * (epoch.toNat + 2) =
+        epoch.toNat * preset.SLOTS_PER_EPOCH.toNat + 2 * preset.SLOTS_PER_EPOCH.toNat := by
+      rw [Nat.mul_add, Nat.mul_comm]
+      omega
+    omega
+  refine ⟨slot, slotEq, below, near, ?_⟩
+  rw [← readCircular_writeCircular_of_ne blockWrite other]
+  exact read
+
+/-- The source block of a weighing call is an ancestor of its target block.
+
+Take a chain from genesis, and a call of it at `state`, whose caching gives `cached`.
+
+The buffer of roots must span two epochs.
+
+The call's source for the checkpoint's epoch has the zero root of genesis.
+
+Or its root is an ancestor of the checkpoint's root, along the parent links of the chain's
+blocks.
+
+Or a state of the chain has the zero root. -/
+theorem JustifiedBy.source_ancestor {start after : ForkedBeaconState preset}
+    {checkpoint : Checkpoint}
+    (wide : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
+    (genesis : Genesis config checks start)
+    (justified : JustifiedBy config checks start after checkpoint) :
+    ∃ (fork : Fork) (state cached : BeaconState preset fork),
+      Reaches config checks start ⟨fork, state⟩ ∧
+      Reaches config checks ⟨fork, state⟩ after ∧ processSlot state = .ok cached ∧
+      (checkpoint.epoch = getPreviousEpoch cached ∨ checkpoint.epoch = getCurrentEpoch cached) ∧
+      ((recordSource cached checkpoint.epoch).root = Vector.replicate 32 0 ∨
+        ChainAncestor config checks start after (recordSource cached checkpoint.epoch).root
+          checkpoint.root ∨
+        ZeroRootFound config checks start after) := by
+  obtain ⟨fork, state, cached, _, next, _, head, notDue, nextOk, tail, _, cachedOk, _, later,
+    recent, _, _, rootOk⟩ := justified
+  have toAfter : Reaches config checks ⟨fork, state⟩ after :=
+    ((Reaches.refl _).step (.slot notDue nextOk)).trans tail
+  refine ⟨fork, state, cached, head, toAfter, cachedOk, recent, ?_⟩
+  obtain ⟨startSlot, startPrevious, startCurrent, startFinalized⟩ := genesis_state genesis
+  have cachedSame : cached.previousJustifiedCheckpoint = state.previousJustifiedCheckpoint ∧
+      cached.currentJustifiedCheckpoint = state.currentJustifiedCheckpoint ∧
+      getCurrentEpoch cached = getCurrentEpoch state := by
+    obtain ⟨_, _, _, _, rfl⟩ := processSlot_ok cachedOk
+    exact ⟨rfl, rfl, rfl⟩
+  -- The source is one of the state's justified checkpoints, so the start's or a call's.
+  have sourceIs : JustifiedOrStart config checks start ⟨fork, state⟩
+      (recordSource cached checkpoint.epoch) := by
+    obtain ⟨-, previous, current⟩ := head.checkpoints
+    unfold recordSource
+    rw [cachedSame.1, cachedSame.2.1]
+    split
+    · exact current
+    · exact previous
+  rcases sourceIs with same | same | same | ⟨fork', state', cached', _, next', voters', head',
+    notDue', nextOk', tail', _, cachedOk', _, later', recent', _, _, rootOk'⟩
+  · exact .inl (by rw [same, startFinalized])
+  · exact .inl (by rw [same, startPrevious])
+  · exact .inl (by rw [same, startCurrent])
+  -- The source root and the target root are reads of the chain, for slots in order.
+  right
+  obtain ⟨slot', slotEq', below', near', read'⟩ :=
+    processSlot_read wide cachedOk' later' recent' rootOk'
+  obtain ⟨slot, slotEq, below, near, read⟩ := processSlot_read wide cachedOk later recent rootOk
+  have sourceBefore := recordSource_epoch_lt (forked := ⟨fork, state⟩)
+    (reachable := ⟨start, genesis, head⟩) cachedOk later recent
+  -- The source's slot is before the target's, and from genesis on.
+  have ordered : slot'.toNat ≤ slot.toNat := by
+    rw [slotEq', slotEq]
+    exact Nat.mul_le_mul_right _ (Nat.le_of_lt sourceBefore)
+  have toState : Reaches config checks ⟨fork', state'⟩ ⟨fork, state⟩ :=
+    ((Reaches.refl _).step (.slot notDue' nextOk')).trans tail'
+  rcases head'.reads_ancestor toState (by rw [startSlot]; exact Nat.zero_le _) ordered
+    read' below' near' read below near with ancestor | zero
+  · exact .inl (ancestor.extendChain toAfter)
+  · exact .inr (zero.extendChain toAfter)
+
+end EthLib.Consensus

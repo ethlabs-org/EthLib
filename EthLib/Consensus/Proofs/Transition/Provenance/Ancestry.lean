@@ -431,6 +431,40 @@ theorem Reaches.cachedRoot_ancestor {fork : Fork} {state next cached : BeaconSta
     · exact .inr ⟨_, head.step (.block engine signed validateResult notDue' applied), tail, zero⟩
   · exact .inr zero
 
+/-- A block step of a chain from a later start is a block step of the chain from an earlier one.
+-/
+theorem ChainBlock.prefix {first start after : ForkedBeaconState preset} {parentRoot root : Root}
+    (head : Reaches config checks first start)
+    (block : ChainBlock config checks start after parentRoot root) :
+    ChainBlock config checks first after parentRoot root :=
+  have ⟨fork, engine, signed, validateResult, state, post, bodyRoot, stateRoot, chain, rest⟩ :=
+    block
+  ⟨fork, engine, signed, validateResult, state, post, bodyRoot, stateRoot, head.trans chain, rest⟩
+
+theorem ChainAncestor.prefix {first start after : ForkedBeaconState preset} {root root' : Root}
+    (head : Reaches config checks first start)
+    (ancestor : ChainAncestor config checks start after root root') :
+    ChainAncestor config checks first after root root' :=
+  Relation.ReflTransGen.mono (fun _ _ (block : ChainBlock config checks start after _ _) =>
+    block.prefix head) _ _ ancestor
+
+theorem ZeroRootFound.prefix {first start after : ForkedBeaconState preset}
+    (head : Reaches config checks first start) (found : ZeroRootFound config checks start after) :
+    ZeroRootFound config checks first after :=
+  have ⟨middle, chain, tail, zero⟩ := found
+  ⟨middle, head.trans chain, tail, zero⟩
+
+/-- Ancestry along the blocks of a chain is ancestry along any larger set of parent links.
+
+So the ancestry of one history lifts to the ancestry of the union of several histories. -/
+theorem ChainAncestor.lift {start after : ForkedBeaconState preset}
+    {links : Root → Root → Prop}
+    (subset : ∀ parentRoot root, ChainBlock config checks start after parentRoot root →
+      links parentRoot root) {root root' : Root}
+    (ancestor : ChainAncestor config checks start after root root') :
+    Relation.ReflTransGen links root root' :=
+  Relation.ReflTransGen.mono subset _ _ ancestor
+
 theorem ChainAncestor.extendChain {start middle after : ForkedBeaconState preset}
     {first second : Root} (ancestor : ChainAncestor config checks start middle first second)
     (chain : Reaches config checks middle after) :
@@ -488,5 +522,57 @@ theorem Reaches.blockRoots_ancestor {start after : ForkedBeaconState preset}
     ancestor | zero
   · exact .inl (ancestor.extendChain later')
   · exact .inr (zero.extendChain later')
+
+/-- Two roots read at two states of one chain, for slots in order: the earlier is an ancestor.
+
+The chain runs from `start` to `middle`, where one root is read, then on to `after`, where the
+other is read.
+
+Each read is of an entry still in the buffer, and the first slot is from the start on.
+
+The first root is an ancestor of the second along the parent links of the chain's blocks.
+
+Or a state of the chain has the zero root. -/
+theorem Reaches.reads_ancestor {start middle after : ForkedBeaconState preset}
+    (head : Reaches config checks start middle) (tail : Reaches config checks middle after)
+    {slot slot' : Slot} {root root' : Root}
+    (fromStart : start.state.slot.toNat ≤ slot.toNat) (ordered : slot.toNat ≤ slot'.toNat)
+    (read : readCircular middle.state.blockRoots.elements slot = .ok root)
+    (inside : slot.toNat < middle.state.slot.toNat)
+    (recent : middle.state.slot.toNat ≤ slot.toNat + preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
+    (read' : readCircular after.state.blockRoots.elements slot' = .ok root')
+    (inside' : slot'.toNat < after.state.slot.toNat)
+    (recent' : after.state.slot.toNat ≤ slot'.toNat + preset.SLOTS_PER_HISTORICAL_ROOT.toNat) :
+    ChainAncestor config checks start after root root' ∨
+      ZeroRootFound config checks start after := by
+  by_cases later : middle.state.slot.toNat ≤ slot'.toNat
+  · -- The second slot was cached after the first read, by a step of the second part.
+    obtain ⟨fork, state, cached, ⟨_, cachedOk, next, nextOk, notDue, headOne, tailOne⟩,
+      ⟨root1, root1Ok, read1⟩, -⟩ := head.roots_written fromStart inside recent
+    rw [read] at read1
+    cases read1
+    obtain ⟨fork', state', cached', ⟨_, cachedOk', next', nextOk', notDue', headTwo, tailTwo⟩,
+      ⟨root2, root2Ok, read2⟩, -⟩ := tail.roots_written later inside' recent'
+    rw [read'] at read2
+    cases read2
+    have toLater : Reaches config checks ⟨fork', state'⟩ after :=
+      ((Reaches.refl _).step (.slot notDue' nextOk')).trans tailTwo
+    rcases (tailOne.trans headTwo).cachedRoot_ancestor notDue nextOk cachedOk cachedOk' root1Ok
+      root2Ok with ancestor | zero
+    · exact .inl ((ancestor.prefix headOne).extendChain toLater)
+    · exact .inr ((zero.prefix headOne).extendChain toLater)
+  · -- Both slots were cached before the first read, and the second entry stayed.
+    have stable := (tail.roots_stable (slot := slot') (by omega) recent').1
+    rw [read'] at stable
+    rcases Nat.lt_or_ge slot.toNat slot'.toNat with before | same
+    · rcases head.blockRoots_ancestor fromStart before (by omega) recent read stable.symm with
+        ⟨fork, state, cached, ⟨_, _, _, _, _, headOne, _⟩, ancestor | zero⟩
+      · exact .inl ((ancestor.prefix headOne).extendChain tail)
+      · exact .inr ((zero.prefix headOne).extendChain tail)
+    · have sameSlot : slot = slot' := UInt64.toNat_inj.mp (by omega)
+      subst sameSlot
+      rw [read] at stable
+      cases stable
+      exact .inl .refl
 
 end EthLib.Consensus

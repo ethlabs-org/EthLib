@@ -188,6 +188,46 @@ theorem JustifiedOrStart.extendChain {start middle after : ForkedBeaconState pre
   | nil => exact justified
   | snoc _ step more => exact more.extend step
 
+/-- The source that a weighing call gives an epoch is earlier than that epoch.
+
+The call reads a state reached from genesis, after its caching. -/
+theorem recordSource_epoch_lt {forked : ForkedBeaconState preset}
+    (reachable : Reachable config checks forked) {cached : BeaconState preset forked.fork}
+    (cachedOk : processSlot forked.state = .ok cached)
+    (later : GENESIS_EPOCH + 1 < getCurrentEpoch cached) {epoch : Epoch}
+    (recent : epoch = getPreviousEpoch cached ∨ epoch = getCurrentEpoch cached) :
+    (recordSource cached epoch).epoch.toNat < epoch.toNat := by
+  have holds : Invariant forked.state := reachable.invariant
+  have settled : PreviousSettled forked.state := reachable.previousSettled
+  have cachedSame : cached.previousJustifiedCheckpoint =
+        forked.state.previousJustifiedCheckpoint ∧
+      cached.currentJustifiedCheckpoint = forked.state.currentJustifiedCheckpoint ∧
+      getCurrentEpoch cached = getCurrentEpoch forked.state := by
+    obtain ⟨_, _, _, _, rfl⟩ := processSlot_ok cachedOk
+    exact ⟨rfl, rfl, rfl⟩
+  have cachedPrevious : getPreviousEpoch cached = getPreviousEpoch forked.state := by
+    unfold getPreviousEpoch
+    rw [cachedSame.2.2]
+  unfold recordSource
+  rw [cachedSame.1, cachedSame.2.1, cachedSame.2.2]
+  rw [cachedSame.2.2, cachedPrevious] at recent
+  rw [cachedSame.2.2] at later
+  have laterNat := UInt64.lt_iff_toNat_lt.mp later
+  change 0 + 1 < _ at laterNat
+  have previousNat := getPreviousEpoch_toNat forked.state
+  split
+  · next isCurrent =>
+    -- The current justified epoch is at most the previous epoch.
+    have justifiedLe := UInt64.le_iff_toNat_le.mp holds.settled
+    rw [isCurrent]
+    omega
+  · next notCurrent =>
+    -- The previous justified checkpoint is two epochs back.
+    have previousLe := settled.2 (by omega)
+    have isPrevious := recent.resolve_right notCurrent
+    rw [isPrevious]
+    omega
+
 /-- The source of a weighing call is justified, and earlier than its target.
 
 Take a chain from a state reached from genesis, and a call of it that justified a checkpoint.
@@ -210,42 +250,18 @@ theorem JustifiedBy.source {start after : ForkedBeaconState preset} {checkpoint 
   have toAfter : Reaches config checks ⟨fork, state⟩ after :=
     ((Reaches.refl _).step (.slot notDue nextOk)).trans tail
   have stateReachable : Reachable config checks ⟨fork, state⟩ := reachable.reaches head
-  have holds : Invariant state := stateReachable.invariant
-  have settled : PreviousSettled state := stateReachable.previousSettled
   have cachedSame : cached.previousJustifiedCheckpoint = state.previousJustifiedCheckpoint ∧
-      cached.currentJustifiedCheckpoint = state.currentJustifiedCheckpoint ∧
-      getCurrentEpoch cached = getCurrentEpoch state := by
+      cached.currentJustifiedCheckpoint = state.currentJustifiedCheckpoint := by
     obtain ⟨_, _, _, _, rfl⟩ := processSlot_ok cachedOk
-    exact ⟨rfl, rfl, rfl⟩
-  have cachedPrevious : getPreviousEpoch cached = getPreviousEpoch state := by
-    unfold getPreviousEpoch
-    rw [cachedSame.2.2]
+    exact ⟨rfl, rfl⟩
   obtain ⟨-, previousJustified, currentJustified⟩ := head.checkpoints
   refine ⟨fork, state, cached, head, toAfter, cachedOk, recent, ?_, ?_⟩
   · unfold recordSource
-    rw [cachedSame.1, cachedSame.2.1]
+    rw [cachedSame.1, cachedSame.2]
     split
     · exact currentJustified.extendChain toAfter
     · exact previousJustified.extendChain toAfter
-  · unfold recordSource
-    rw [cachedSame.1, cachedSame.2.1, cachedSame.2.2]
-    rw [cachedSame.2.2, cachedPrevious] at recent
-    rw [cachedSame.2.2] at later
-    have laterNat := UInt64.lt_iff_toNat_lt.mp later
-    change 0 + 1 < _ at laterNat
-    have previousNat := getPreviousEpoch_toNat state
-    split
-    · next isCurrent =>
-      -- The current justified epoch is at most the previous epoch.
-      have justifiedLe := UInt64.le_iff_toNat_le.mp holds.settled
-      rw [isCurrent]
-      omega
-    · next notCurrent =>
-      -- The previous justified checkpoint is two epochs back.
-      have previousLe := settled.2 (by omega)
-      have isPrevious := recent.resolve_right notCurrent
-      rw [isPrevious]
-      omega
+  · exact recordSource_epoch_lt stateReachable cachedOk later recent
 
 /-- From genesis, a counted voter of a weighing call signed the call's link, with no exception.
 
