@@ -88,6 +88,7 @@ public import EthLib.Consensus.Proofs.Transition.Invariants
 public import EthLib.Consensus.Proofs.Transition.Operations
 public import EthLib.Consensus.Proofs.Transition.ParentPayload
 public import EthLib.Consensus.Proofs.Transition.Payload
+public import EthLib.Consensus.Proofs.Transition.Provenance.Ancestry
 public import EthLib.Consensus.Proofs.Transition.Provenance.Attestations
 public import EthLib.Consensus.Proofs.Transition.Provenance.Flags
 public import EthLib.Consensus.Proofs.Transition.Provenance.Justification
