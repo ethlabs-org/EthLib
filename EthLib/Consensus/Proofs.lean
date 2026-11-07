@@ -92,6 +92,7 @@ public import EthLib.Consensus.Proofs.Transition.Provenance.Attestations
 public import EthLib.Consensus.Proofs.Transition.Provenance.Flags
 public import EthLib.Consensus.Proofs.Transition.Provenance.Justification
 public import EthLib.Consensus.Proofs.Transition.Provenance.Kept
+public import EthLib.Consensus.Proofs.Transition.Provenance.Pending
 public import EthLib.Consensus.Proofs.Transition.Provenance.Roots
 public import EthLib.Consensus.Proofs.Transition.Provenance.Votes
 public import EthLib.Consensus.Proofs.Transition.Provenance.Weighing
