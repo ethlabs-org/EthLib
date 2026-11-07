@@ -105,8 +105,9 @@ At an epoch boundary the call reads the caching of the state's slot.
 
 A store may also call the weighing directly on a state, which it then reads as it is.
 
-Either way the read state differs from the state at most in the two buffers of roots, the latest
-header and the availability of payloads. -/
+Either way the read state differs from the state at most in a few fields.
+
+They are the two buffers of roots, the latest header and the availability of payloads. -/
 def ReadsFrom (state cached : BeaconState preset fork) : Prop :=
   processSlot state = .ok cached ∨ cached = state
 
@@ -147,7 +148,8 @@ Its root is the root `cached` held for the epoch's first slot.
 The first two epochs weigh nothing, so the current epoch of `cached` is at least two.
 
 Naming the call lets several facts speak about the same `cached` and `voters`. -/
-def WeighingCall (config : Config) (checks : SignatureChecks) (start after : ForkedBeaconState preset)
+def WeighingCall (config : Config) (checks : SignatureChecks)
+    (start after : ForkedBeaconState preset)
     (fork : Fork) (state cached weighed next : BeaconState preset fork)
     (voters : List ValidatorIndex) (checkpoint : Checkpoint) : Prop :=
   Reaches config checks start ⟨fork, state⟩ ∧ upgradeDue config ⟨fork, state⟩ = false ∧
@@ -160,7 +162,8 @@ def WeighingCall (config : Config) (checks : SignatureChecks) (start after : For
     getBlockRoot cached checkpoint.epoch = .ok checkpoint.root
 
 /-- A weighing call of a chain justified a checkpoint. -/
-def JustifiedBy (config : Config) (checks : SignatureChecks) (start after : ForkedBeaconState preset)
+def JustifiedBy (config : Config) (checks : SignatureChecks)
+    (start after : ForkedBeaconState preset)
     (checkpoint : Checkpoint) : Prop :=
   ∃ (fork : Fork) (state cached weighed next : BeaconState preset fork)
     (voters : List ValidatorIndex),
@@ -173,48 +176,57 @@ variable {start after : ForkedBeaconState preset} {fork : Fork}
   {checkpoint : Checkpoint}
 
 theorem justifiedBy
-    (call : WeighingCall config checks start after fork state cached weighed next voters checkpoint) :
+    (call : WeighingCall config checks start after fork state cached weighed next voters
+      checkpoint) :
     JustifiedBy config checks start after checkpoint :=
   ⟨fork, state, cached, weighed, next, voters, call⟩
 
 theorem head
-    (call : WeighingCall config checks start after fork state cached weighed next voters checkpoint) :
+    (call : WeighingCall config checks start after fork state cached weighed next voters
+      checkpoint) :
     Reaches config checks start ⟨fork, state⟩ :=
   call.1
 
 /-- The chain runs from the call's state to the end. -/
 theorem toAfter
-    (call : WeighingCall config checks start after fork state cached weighed next voters checkpoint) :
+    (call : WeighingCall config checks start after fork state cached weighed next voters
+      checkpoint) :
     Reaches config checks ⟨fork, state⟩ after :=
   ((Reaches.refl _).step (.slot call.2.1 call.2.2.1)).trans call.2.2.2.1
 
 theorem cachedOk
-    (call : WeighingCall config checks start after fork state cached weighed next voters checkpoint) :
+    (call : WeighingCall config checks start after fork state cached weighed next voters
+      checkpoint) :
     processSlot state = .ok cached :=
   call.2.2.2.2.2.1
 
 theorem later
-    (call : WeighingCall config checks start after fork state cached weighed next voters checkpoint) :
+    (call : WeighingCall config checks start after fork state cached weighed next voters
+      checkpoint) :
     GENESIS_EPOCH + 1 < getCurrentEpoch cached :=
   call.2.2.2.2.2.2.2.1
 
 theorem recent
-    (call : WeighingCall config checks start after fork state cached weighed next voters checkpoint) :
+    (call : WeighingCall config checks start after fork state cached weighed next voters
+      checkpoint) :
     checkpoint.epoch = getPreviousEpoch cached ∨ checkpoint.epoch = getCurrentEpoch cached :=
   call.2.2.2.2.2.2.2.2.1
 
 theorem counted
-    (call : WeighingCall config checks start after fork state cached weighed next voters checkpoint) :
+    (call : WeighingCall config checks start after fork state cached weighed next voters
+      checkpoint) :
     TargetVoters cached checkpoint.epoch voters :=
   call.2.2.2.2.2.2.2.2.2.1
 
 theorem passes
-    (call : WeighingCall config checks start after fork state cached weighed next voters checkpoint) :
+    (call : WeighingCall config checks start after fork state cached weighed next voters
+      checkpoint) :
     PassesThreshold cached voters :=
   call.2.2.2.2.2.2.2.2.2.2.1
 
 theorem rootOk
-    (call : WeighingCall config checks start after fork state cached weighed next voters checkpoint) :
+    (call : WeighingCall config checks start after fork state cached weighed next voters
+      checkpoint) :
     getBlockRoot cached checkpoint.epoch = .ok checkpoint.root :=
   call.2.2.2.2.2.2.2.2.2.2.2
 
@@ -258,7 +270,8 @@ variable {start after : ForkedBeaconState preset} {fork : Fork}
   {state cached weighed : BeaconState preset fork} {voters : List ValidatorIndex}
   {checkpoint : Checkpoint}
 
-theorem head (call : CallRecord config checks start after fork state cached weighed voters checkpoint) :
+theorem head (call : CallRecord config checks start after fork state cached weighed voters
+  checkpoint) :
     Reaches config checks start ⟨fork, state⟩ :=
   call.1
 
@@ -311,12 +324,14 @@ theorem extendChain {last : ForkedBeaconState preset}
 
 end CallRecord
 
-/-- A weighing call at an epoch boundary is a call of the weighing, on the state before the slot
-step, which it reads after the caching. -/
+/-- A weighing call at an epoch boundary is a call of the weighing on the state before the step.
+
+It reads that state after the caching. -/
 theorem WeighingCall.record {start after : ForkedBeaconState preset} {fork : Fork}
     {state cached weighed next : BeaconState preset fork} {voters : List ValidatorIndex}
     {checkpoint : Checkpoint}
-    (call : WeighingCall config checks start after fork state cached weighed next voters checkpoint) :
+    (call : WeighingCall config checks start after fork state cached weighed next voters
+      checkpoint) :
     CallRecord config checks start after fork state cached weighed voters checkpoint :=
   have ⟨head, _, _, _, _, cachedOk, weighedOk, rest⟩ := call
   ⟨head, call.toAfter, .inl cachedOk, weighedOk, rest⟩
@@ -342,8 +357,9 @@ def AllCheckpoints (holds : Checkpoint → Prop) (state : BeaconState preset for
 
 /-- Where the checkpoints of a chain's end come from.
 
-Each of the finalized, previous justified and current justified checkpoints is one of the
-start's three checkpoints, or a weighing call of the chain justified it. -/
+Each of the finalized, previous justified and current justified checkpoints is one of the start's.
+
+Or a weighing call of the chain justified it. -/
 theorem Reaches.checkpoints {start after : ForkedBeaconState preset}
     (chain : Reaches config checks start after) :
     AllCheckpoints (JustifiedOrStart config checks start after) after.state := by

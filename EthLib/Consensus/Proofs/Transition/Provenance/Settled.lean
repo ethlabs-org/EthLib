@@ -17,8 +17,9 @@ The previous justified checkpoint is at least two epochs back, from epoch 2 on.
 
 In epochs 0 and 1 it is the genesis checkpoint, as is the current justified one.
 
-The reason is that the call at the end of an epoch makes the old current justified checkpoint
-the previous one, and the current one is at most the previous epoch.
+The call at the end of an epoch makes the old current justified checkpoint the previous one.
+
+The current one is at most the previous epoch.
 
 The first two epochs weigh nothing, so their checkpoints stay those of genesis.
 -/
@@ -57,9 +58,11 @@ theorem genesis_previousSettled {forked : ForkedBeaconState preset}
   have frame := (Frame.foldlM (fun _ _ _ ok => frame_genesisDeposit ok) depositedOk).trans
     (Frame.foldlM (fun _ _ _ ok => frame_activateAtGenesis ok) activatedOk)
   have slot : forked.state.slot = GENESIS_SLOT := by rw [← same]; exact frame.slot
-  have previous : forked.state.previousJustifiedCheckpoint = ⟨GENESIS_EPOCH, Vector.replicate 32 0⟩ := by
+  have previous :
+      forked.state.previousJustifiedCheckpoint = ⟨GENESIS_EPOCH, Vector.replicate 32 0⟩ := by
     rw [← same]; exact frame.previousJustified
-  have current : forked.state.currentJustifiedCheckpoint = ⟨GENESIS_EPOCH, Vector.replicate 32 0⟩ := by
+  have current :
+      forked.state.currentJustifiedCheckpoint = ⟨GENESIS_EPOCH, Vector.replicate 32 0⟩ := by
     rw [← same]; exact frame.currentJustified
   have epoch : (getCurrentEpoch forked.state).toNat = 0 := by
     rw [getCurrentEpoch_toNat, slot]
@@ -232,8 +235,9 @@ theorem recordSource_epoch_lt {forked : ForkedBeaconState preset}
 
 Take a chain from a state reached from genesis, and a call of it that justified a checkpoint.
 
-The call's source for the checkpoint's epoch is one of the start's checkpoints, or a call of the
-chain justified it.
+The call's source for the checkpoint's epoch is one of the start's checkpoints.
+
+Or a call of the chain justified it.
 
 Its epoch is below the checkpoint's. -/
 theorem CallRecord.source {start after : ForkedBeaconState preset} {fork : Fork}
@@ -262,7 +266,8 @@ theorem CallRecord.source {start after : ForkedBeaconState preset} {fork : Fork}
 theorem WeighingCall.source {start after : ForkedBeaconState preset} {fork : Fork}
     {state cached weighed next : BeaconState preset fork} {voters : List ValidatorIndex}
     {checkpoint : Checkpoint} (reachable : Reachable config checks start)
-    (call : WeighingCall config checks start after fork state cached weighed next voters checkpoint) :
+    (call : WeighingCall config checks start after fork state cached weighed next voters
+      checkpoint) :
     JustifiedOrStart config checks start after (recordSource cached checkpoint.epoch) ∧
       (recordSource cached checkpoint.epoch).epoch.toNat < checkpoint.epoch.toNat :=
   call.record.source reachable
@@ -361,7 +366,8 @@ theorem WeighingCall.voters_signed_of_reachable {start after : ForkedBeaconState
     {voters : List ValidatorIndex} {checkpoint : Checkpoint}
     (wide : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
     (reachable : Reachable config checks start)
-    (call : WeighingCall config checks start after fork state cached weighed next voters checkpoint) :
+    (call : WeighingCall config checks start after fork state cached weighed next voters
+      checkpoint) :
     .altair ≤ fork → ∀ index ∈ voters,
       FlagAtStart start index.toNat TIMELY_TARGET_FLAG_INDEX ∨
       FlagFromAltairUpgrade config checks start ⟨fork, state⟩ index.toNat
@@ -393,6 +399,7 @@ theorem JustifiedBy.voters_signed_of_reachable {start after : ForkedBeaconState 
           data.source = recordSource cached checkpoint.epoch) := by
   obtain ⟨fork, state, cached, _, _, voters, call⟩ := justified
   exact ⟨fork, state, cached, voters, call.head, call.toAfter, call.cachedOk, call.later,
-    call.recent, call.counted, call.passes, call.rootOk, call.voters_signed_of_reachable wide reachable⟩
+    call.recent, call.counted, call.passes, call.rootOk,
+    call.voters_signed_of_reachable wide reachable⟩
 
 end EthLib.Consensus
