@@ -173,6 +173,37 @@ theorem weighJustificationAndFinalization_eq {total previous current : Gwei}
         exact firstEq
   · rfl
 
+/-- An epoch that passes the test at a weighing call has its first block root read by the call.
+
+That holds for the previous epoch even when the current one passes too and overwrites it. -/
+theorem weighJustificationAndFinalization_roots {total previous current : Gwei}
+    (computed : weighJustificationAndFinalization state total previous current = .ok after) :
+    (2 * total.toNat ≤ 3 * previous.toNat →
+        ∃ root, getBlockRoot state (getPreviousEpoch state) = .ok root) ∧
+      (2 * total.toNat ≤ 3 * current.toNat →
+        ∃ root, getBlockRoot state (getCurrentEpoch state) = .ok root) := by
+  simp only [weighJustificationAndFinalization, bind_ok_iff, liftAccessor_ok, liftArith,
+    mapError_ok_iff, mulChecked_ok_iff, pure, Except.pure, Except.ok.injEq] at computed
+  obtain ⟨previousWeight, ⟨_, previousEq⟩, threshold, ⟨_, thresholdEq⟩, first, firstOk,
+    currentWeight, ⟨_, currentEq⟩, second, secondOk, -⟩ := computed
+  have two : (2 : UInt64).toNat = 2 := rfl
+  have three : (3 : UInt64).toNat = 3 := rfl
+  refine ⟨fun passes => ?_, fun passes => ?_⟩
+  · have test : threshold ≤ previousWeight := by
+      rw [UInt64.le_iff_toNat_le, thresholdEq, previousEq, two, three]
+      omega
+    have read := justifyCheckpoint_eq firstOk
+    simp only [test, decide_true, ↓reduceIte] at read
+    obtain ⟨root, rootOk, -⟩ := read
+    exact ⟨root, rootOk⟩
+  · have test : threshold ≤ currentWeight := by
+      rw [UInt64.le_iff_toNat_le, thresholdEq, currentEq, two, three]
+      omega
+    have read := justifyCheckpoint_eq secondOk
+    simp only [test, decide_true, ↓reduceIte] at read
+    obtain ⟨root, rootOk, -⟩ := read
+    exact ⟨root, rootOk⟩
+
 /-! ## The weighing at an epoch boundary -/
 
 /-- The voters for the first block of an epoch that a weighing counts, by the rule of the fork.
