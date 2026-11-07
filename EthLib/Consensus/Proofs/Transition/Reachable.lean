@@ -1,10 +1,11 @@
 module
 
+public import EthLib.Consensus.Proofs.Containers.Block
 public import EthLib.Consensus.Proofs.Transition.ForkBoundary
 public import EthLib.Consensus.Proofs.Transition.Genesis
 
 /-!
-# Proofs: reachable states, and lifting a step property to whole chains
+# Proofs: runs, reachable states, and lifting a step property to whole chains
 
 A chain runs three kinds of step on a beacon state.
 
@@ -12,9 +13,17 @@ A chain runs three kinds of step on a beacon state.
 - One upgrade: `upgradeNext`, run by `processUpgrades` when the next fork is due.
 - One block: `applySignedBlock`, run by `stateTransitionAcross` once the state is at its slot.
 
+`Step` is one such step, with its inputs, and `Run` is a sequence of steps.
+
+A run is data: it lists the blocks and the states that the chain passes through.
+
+`Reaches` says that a run exists from one state to another.
+
+Each successful call of `processSlotsAcross` or `stateTransitionAcross` gives a run.
+
 Take a relation between two states that is reflexive and transitive.
 
-When every such step satisfies it, it holds between the two ends of every chain.
+When every step satisfies it, it holds between the two ends of every run.
 
 That is the one lemma behind every invariant of the state transition.
 
@@ -24,9 +33,13 @@ A relation may need a property of the state before each step, such as an invaria
 
 It then carries that property along.
 
-`Reaches` is the chain itself: empty slots and valid blocks, from one forked state to another.
+`ReachableFrom` starts the runs at any state of a set of anchors.
 
-`Reachable` starts it at a genesis state that launches the chain.
+`Reachable` takes the genesis states that launch the chain as the anchors.
+
+Induction over reachable states may assume, at each step, that the state before it is reachable.
+
+So each invariant already proved is a free premise for the next one.
 -/
 
 @[expose] public section
@@ -215,44 +228,246 @@ theorem ofGuarded {holds : ForkedBeaconState preset → Prop}
 
 end StepRelation
 
-/-! ## Chains and reachable states -/
+/-! ## Steps and runs -/
 
-/-- One forked state leads to another by empty slots and valid blocks.
+/-- One step of a chain: one slot, one due upgrade, or one block on a state of its own fork.
 
-Each empty-slot run and each block may cross fork boundaries on the way.
+A block step keeps its execution engine, its signed block and whether it validated the result. -/
+inductive Step (config : Config) (checks : SignatureChecks) :
+    ForkedBeaconState preset → ForkedBeaconState preset → Type where
+  | slot {fork : Fork} {state after : BeaconState preset fork} :
+    EthLib.Consensus.advanceSlot config checks state = .ok after →
+    Step config checks ⟨fork, state⟩ ⟨fork, after⟩
+  | upgrade {pre : ForkedBeaconState preset}
+    {post : {post : ForkedBeaconState preset // pre.fork < post.fork}} :
+    upgradeDue config pre = true → EthLib.Consensus.upgradeNext config checks pre = .ok post →
+    Step config checks pre post.val
+  | block {fork : Fork} (engine : ExecutionEngine preset fork)
+    (signed : SignedBeaconBlock preset fork) (validateResult : Bool)
+    {state after : BeaconState preset fork} :
+    EthLib.Consensus.applySignedBlock config checks engine state signed validateResult =
+      .ok after →
+    Step config checks ⟨fork, state⟩ ⟨fork, after⟩
+
+/-- A sequence of steps from one forked state to another, the last step at the end. -/
+inductive Run (config : Config) (checks : SignatureChecks) (start : ForkedBeaconState preset) :
+    ForkedBeaconState preset → Type where
+  | nil : Run config checks start start
+  | snoc {middle after : ForkedBeaconState preset} :
+    Run config checks start middle → Step config checks middle after →
+    Run config checks start after
+
+namespace Run
+
+variable {start : ForkedBeaconState preset}
+
+/-- The states that a run passes through, in order, from its start to its end. -/
+def states : {after : ForkedBeaconState preset} → Run config checks start after →
+    List (ForkedBeaconState preset)
+  | _, .nil => [start]
+  | after, .snoc run _ => run.states ++ [after]
+
+/-- The number of steps of a run. -/
+def length : {after : ForkedBeaconState preset} → Run config checks start after → Nat
+  | _, .nil => 0
+  | _, .snoc run _ => run.length + 1
+
+/-- A run followed by another run. -/
+def append {middle : ForkedBeaconState preset} (head : Run config checks start middle) :
+    {after : ForkedBeaconState preset} → Run config checks middle after →
+    Run config checks start after
+  | _, .nil => head
+  | _, .snoc tail step => .snoc (head.append tail) step
+
+theorem start_mem_states {after : ForkedBeaconState preset} :
+    ∀ run : Run config checks start after, start ∈ run.states
+  | .nil => List.mem_singleton_self _
+  | .snoc run _ => List.mem_append_left _ (start_mem_states run)
+
+theorem end_mem_states {after : ForkedBeaconState preset} :
+    ∀ run : Run config checks start after, after ∈ run.states
+  | .nil => List.mem_singleton_self _
+  | .snoc _ _ => List.mem_append_right _ (List.mem_singleton_self _)
+
+theorem length_states {after : ForkedBeaconState preset} :
+    ∀ run : Run config checks start after, run.states.length = run.length + 1
+  | .nil => rfl
+  | .snoc run _ => by simp [states, length, length_states run]
+
+end Run
+
+namespace StepRelation
+
+variable {relates : ForkedBeaconState preset → ForkedBeaconState preset → Prop}
+
+/-- Each step satisfies a step relation. -/
+theorem step (steps : StepRelation config checks relates) {before after : ForkedBeaconState preset}
+    (step : Step config checks before after) : relates before after := by
+  cases step with
+  | slot computed => exact steps.advanceSlot computed
+  | upgrade due computed => exact steps.upgradeNext due computed
+  | block _ _ _ computed => exact steps.applySignedBlock computed
+
+/-- A step relation holds between the two ends of a run. -/
+theorem run (steps : StepRelation config checks relates) {start : ForkedBeaconState preset} :
+    ∀ {after : ForkedBeaconState preset}, Run config checks start after → relates start after
+  | _, .nil => steps.refl _
+  | _, .snoc run last => steps.trans (steps.run run) (steps.step last)
+
+/-- A step relation holds from the start of a run to every state it passes through. -/
+theorem run_states (steps : StepRelation config checks relates) {start : ForkedBeaconState preset} :
+    ∀ {after : ForkedBeaconState preset} (run : Run config checks start after),
+      ∀ state ∈ run.states, relates start state
+  | _, .nil, state, member => by
+    rw [List.mem_singleton.mp member]
+    exact steps.refl _
+  | _, .snoc run last, state, member => by
+    rcases List.mem_append.mp member with earlier | now
+    · exact steps.run_states run state earlier
+    · rw [List.mem_singleton.mp now]
+      exact steps.trans (steps.run run) (steps.step last)
+
+end StepRelation
+
+/-! ## Chains -/
+
+/-- One forked state leads to another by a run of steps.
+
+The steps are slots, due upgrades and valid blocks.
 
 A block may run with any execution engine and with or without validating the result. -/
-inductive Reaches (config : Config) (checks : SignatureChecks) (start : ForkedBeaconState preset) :
-    ForkedBeaconState preset → Prop where
-  | refl : Reaches config checks start start
-  | slots {forked after : ForkedBeaconState preset} {slot : Slot} :
-    Reaches config checks start forked →
-    processSlotsAcross config checks forked slot = .ok after →
-    Reaches config checks start after
-  | block {forked : ForkedBeaconState preset} {fork : Fork} {engine : ExecutionEngine preset fork}
-    {signed : SignedBeaconBlock preset fork} {validateResult : Bool}
-    {after : BeaconState preset fork} :
-    Reaches config checks start forked →
-    stateTransitionAcross config checks engine forked signed validateResult = .ok after →
-    Reaches config checks start ⟨fork, after⟩
+def Reaches (config : Config) (checks : SignatureChecks) (start after : ForkedBeaconState preset) :
+    Prop :=
+  Nonempty (Run config checks start after)
 
-/-- A step relation holds between the two ends of every chain. -/
-theorem StepRelation.reaches {relates : ForkedBeaconState preset → ForkedBeaconState preset → Prop}
-    (steps : StepRelation config checks relates) {start after : ForkedBeaconState preset}
-    (chain : Reaches config checks start after) : relates start after := by
-  induction chain with
-  | refl => exact steps.refl _
-  | slots _ computed before => exact steps.trans before (steps.processSlotsAcross computed)
-  | block _ computed before => exact steps.trans before (steps.stateTransitionAcross computed)
+theorem Reaches.refl (start : ForkedBeaconState preset) : Reaches config checks start start :=
+  ⟨.nil⟩
 
 /-- A chain followed by another chain is a chain. -/
 theorem Reaches.trans {first second third : ForkedBeaconState preset}
     (head : Reaches config checks first second) (tail : Reaches config checks second third) :
-    Reaches config checks first third := by
-  induction tail with
-  | refl => exact head
-  | slots _ computed more => exact .slots more computed
-  | block _ computed more => exact .block more computed
+    Reaches config checks first third :=
+  have ⟨head⟩ := head
+  have ⟨tail⟩ := tail
+  ⟨head.append tail⟩
+
+theorem Reaches.step {start before after : ForkedBeaconState preset}
+    (chain : Reaches config checks start before) (step : Step config checks before after) :
+    Reaches config checks start after :=
+  have ⟨run⟩ := chain
+  ⟨.snoc run step⟩
+
+/-- Reaching is itself a step relation, so each chain function gives a chain. -/
+theorem stepRelation_reaches :
+    StepRelation config checks (Reaches (preset := preset) config checks) where
+  refl := Reaches.refl
+  trans := Reaches.trans
+  advanceSlot computed := (Reaches.refl _).step (.slot computed)
+  upgradeNext due computed := (Reaches.refl _).step (.upgrade due computed)
+  applySignedBlock computed := (Reaches.refl _).step (.block _ _ _ computed)
+
+/-- A chain followed by empty slots, with the upgrades on the way, is a chain. -/
+theorem Reaches.slots {start forked after : ForkedBeaconState preset} {slot : Slot}
+    (chain : Reaches config checks start forked)
+    (computed : processSlotsAcross config checks forked slot = .ok after) :
+    Reaches config checks start after :=
+  chain.trans (stepRelation_reaches.processSlotsAcross computed)
+
+/-- A chain followed by a valid block, from a state that may be of an earlier fork, is a chain. -/
+theorem Reaches.block {start forked : ForkedBeaconState preset} {fork : Fork}
+    {engine : ExecutionEngine preset fork} {signed : SignedBeaconBlock preset fork}
+    {validateResult : Bool} {after : BeaconState preset fork}
+    (chain : Reaches config checks start forked)
+    (computed :
+      stateTransitionAcross config checks engine forked signed validateResult = .ok after) :
+    Reaches config checks start ⟨fork, after⟩ :=
+  chain.trans (stepRelation_reaches.stateTransitionAcross computed)
+
+/-- A valid block is a chain of slots and upgrades to its slot, then the block step. -/
+theorem Reaches.of_stateTransitionAcross {fork : Fork} {engine : ExecutionEngine preset fork}
+    {forked : ForkedBeaconState preset} {signed : SignedBeaconBlock preset fork}
+    {validateResult : Bool} {after : BeaconState preset fork}
+    (computed :
+      stateTransitionAcross config checks engine forked signed validateResult = .ok after) :
+    ∃ advanced : BeaconState preset fork,
+      Reaches config checks forked ⟨fork, advanced⟩ ∧
+      applySignedBlock config checks engine advanced signed validateResult = .ok after :=
+  have ⟨advanced, slotsOk, applied⟩ := stateTransitionAcross_ok computed
+  ⟨advanced, stepRelation_reaches.processSlotsAcross slotsOk, applied⟩
+
+/-- A property that fails at the start of a chain and holds at its end starts to hold at one step.
+
+The chain splits there into a chain to the state before the step, the step, and a chain after it.
+-/
+theorem Reaches.split {holds : ForkedBeaconState preset → Prop}
+    {start after : ForkedBeaconState preset} (chain : Reaches config checks start after)
+    (notStart : ¬holds start) (atEnd : holds after) :
+    ∃ before next, Reaches config checks start before ∧ ¬holds before ∧
+      Nonempty (Step config checks before next) ∧ holds next ∧
+      Reaches config checks next after := by
+  obtain ⟨run⟩ := chain
+  induction run with
+  | nil => exact absurd atEnd notStart
+  | @snoc middle last run step more =>
+    by_cases earlier : holds middle
+    · obtain ⟨before, next, head, notBefore, one, holdsNext, tail⟩ := more earlier
+      exact ⟨before, next, head, notBefore, one, holdsNext, tail.step step⟩
+    · exact ⟨middle, last, ⟨run⟩, earlier, ⟨step⟩, atEnd, .refl _⟩
+
+/-- A step relation holds between the two ends of every chain. -/
+theorem StepRelation.reaches {relates : ForkedBeaconState preset → ForkedBeaconState preset → Prop}
+    (steps : StepRelation config checks relates) {start after : ForkedBeaconState preset}
+    (chain : Reaches config checks start after) : relates start after :=
+  have ⟨run⟩ := chain
+  steps.run run
+
+/-! ## Reachable states -/
+
+/-- A state that a chain reaches from one of a set of anchor states.
+
+The anchors may be genesis states, the first states of a later fork, or checkpoint states. -/
+def ReachableFrom (config : Config) (checks : SignatureChecks)
+    (anchor : ForkedBeaconState preset → Prop) (forked : ForkedBeaconState preset) : Prop :=
+  ∃ start, anchor start ∧ Reaches config checks start forked
+
+namespace ReachableFrom
+
+variable {anchor : ForkedBeaconState preset → Prop}
+
+theorem of_anchor {forked : ForkedBeaconState preset} (anchored : anchor forked) :
+    ReachableFrom config checks anchor forked :=
+  ⟨forked, anchored, .refl _⟩
+
+theorem step {before after : ForkedBeaconState preset}
+    (reachable : ReachableFrom config checks anchor before)
+    (step : Step config checks before after) : ReachableFrom config checks anchor after :=
+  have ⟨start, anchored, chain⟩ := reachable
+  ⟨start, anchored, chain.step step⟩
+
+theorem reaches {before after : ForkedBeaconState preset}
+    (reachable : ReachableFrom config checks anchor before)
+    (chain : Reaches config checks before after) : ReachableFrom config checks anchor after :=
+  have ⟨start, anchored, head⟩ := reachable
+  ⟨start, anchored, head.trans chain⟩
+
+/-- Induction over reachable states.
+
+The step may assume that the state before it is reachable.
+
+So every invariant already proved holds there. -/
+theorem induction {holds : ForkedBeaconState preset → Prop}
+    (anchors : ∀ forked, anchor forked → holds forked)
+    (step : ∀ {before after : ForkedBeaconState preset},
+      ReachableFrom config checks anchor before → holds before →
+      Step config checks before after → holds after)
+    {forked : ForkedBeaconState preset} (reachable : ReachableFrom config checks anchor forked) :
+    holds forked := by
+  obtain ⟨start, anchored, ⟨run⟩⟩ := reachable
+  induction run with
+  | nil => exact anchors start anchored
+  | snoc run last more => exact step ⟨start, anchored, ⟨run⟩⟩ more last
+
+end ReachableFrom
 
 /-- A genesis state that launches the chain.
 
@@ -269,7 +484,19 @@ def Genesis (config : Config) (checks : SignatureChecks) (forked : ForkedBeaconS
 /-- A state that a chain from a genesis state reaches. -/
 def Reachable (config : Config) (checks : SignatureChecks) (forked : ForkedBeaconState preset) :
     Prop :=
-  ∃ genesis, Genesis config checks genesis ∧ Reaches config checks genesis forked
+  ReachableFrom config checks (Genesis config checks) forked
+
+/-- Induction over the states that a chain from genesis reaches.
+
+The step may assume that the state before it is reachable. -/
+theorem Reachable.induction {holds : ForkedBeaconState preset → Prop}
+    (genesis : ∀ forked, Genesis config checks forked → holds forked)
+    (step : ∀ {before after : ForkedBeaconState preset},
+      Reachable config checks before → holds before →
+      Step config checks before after → holds after)
+    {forked : ForkedBeaconState preset} (reachable : Reachable config checks forked) :
+    holds forked :=
+  ReachableFrom.induction genesis step reachable
 
 /-- A property that holds at genesis and that every step keeps holds in every reachable state. -/
 theorem Reachable.of_preserves {holds : ForkedBeaconState preset → Prop}
@@ -279,6 +506,63 @@ theorem Reachable.of_preserves {holds : ForkedBeaconState preset → Prop}
     holds forked :=
   have ⟨start, launched, chain⟩ := reachable
   steps.reaches chain (genesis start launched)
+
+/-- A proof-of-work block with no deposits gives a genesis state that launches the chain.
+
+The configuration must ask for no genesis validators.
+
+The time of the block must be late enough.
+
+The genesis state has no validators.
+
+With deposits, the Merkle proof and the signature of each deposit must check.
+
+This theorem does not attempt that.
+
+The preset needs the nonzero sizes that give the empty block body a root. -/
+theorem genesis_of_no_deposits [NeZero preset.BYTES_PER_LOGS_BLOOM.toNat]
+    [NeZero preset.SYNC_COMMITTEE_SIZE.toNat] [NeZero preset.MAX_COMMITTEES_PER_SLOT.toNat]
+    [NeZero preset.PTC_SIZE.toNat] [NeZero preset.INCLUSION_LIST_COMMITTEE_SIZE.toNat]
+    (checks : SignatureChecks) (eth1BlockHash : Hash32) (eth1Timestamp : UInt64)
+    (noValidators : config.MIN_GENESIS_ACTIVE_VALIDATOR_COUNT = 0)
+    (fits : eth1Timestamp.toNat + config.GENESIS_DELAY.toNat < 2 ^ 64)
+    (late : config.MIN_GENESIS_TIME ≤ eth1Timestamp + config.GENESIS_DELAY) :
+    ∃ state : BeaconState preset .phase0, Genesis config checks ⟨.phase0, state⟩ := by
+  obtain ⟨bodyRoot, bodyOk⟩ := Serialization.Ssz.SszType.hashTreeRoot_total
+    (emptyBody (preset := preset) (fork := .phase0) (by decide))
+  let empty := emptyGenesisState (preset := preset) config (by decide : Fork.phase0 < .altair)
+    (eth1Timestamp + config.GENESIS_DELAY) eth1BlockHash 0 bodyRoot
+  obtain ⟨validatorsRoot, validatorsOk⟩ :=
+    Serialization.Ssz.SszType.hashTreeRoot_total empty.validators
+  have added : Uint64.addChecked eth1Timestamp config.GENESIS_DELAY =
+      .ok (eth1Timestamp + config.GENESIS_DELAY) := by
+    simp [Uint64.addChecked, fits]
+  refine ⟨{ empty with genesisValidatorsRoot := validatorsRoot },
+    ⟨eth1BlockHash, eth1Timestamp, #[], ?_⟩, ?_⟩
+  · have noValidator : (List.range empty.validators.data.size).foldlM activateAtGenesis empty =
+        .ok empty := rfl
+    simp only [initializeBeaconStateFromEth1, show ¬Fork.altair ≤ Fork.phase0 by decide,
+      ↓reduceDIte, liftAccessor, liftArith, liftSsz, added, bodyOk, Except.mapError, bind,
+      Except.bind, ensure, Array.size_empty, Nat.toUInt64_eq, pure, Except.pure]
+    simp only [show (0 : Nat) < 2 ^ 64 by decide, ↓reduceIte, List.zipIdx_nil,
+      List.foldlM_nil, pure, Except.pure]
+    rw [show UInt64.ofNat 0 = 0 from rfl]
+    erw [noValidator]
+    simp only [validatorsOk, empty]
+  · simp [isValidGenesisState, empty, emptyGenesisState, noValidators, late]
+
+/-- A genesis state exists for some configuration.
+
+That configuration is mainnet with no minimum count of genesis validators. -/
+theorem genesis_exists [NeZero preset.BYTES_PER_LOGS_BLOOM.toNat]
+    [NeZero preset.SYNC_COMMITTEE_SIZE.toNat] [NeZero preset.MAX_COMMITTEES_PER_SLOT.toNat]
+    [NeZero preset.PTC_SIZE.toNat] [NeZero preset.INCLUSION_LIST_COMMITTEE_SIZE.toNat]
+    (checks : SignatureChecks) :
+    ∃ (config : Config) (forked : ForkedBeaconState preset), Genesis config checks forked :=
+  have ⟨state, launched⟩ := genesis_of_no_deposits
+    (config := { Config.mainnet with MIN_GENESIS_ACTIVE_VALIDATOR_COUNT := 0 }) checks
+    (Vector.replicate 32 0) 1606219200 rfl (by decide) (by decide)
+  ⟨_, _, launched⟩
 
 /-! ## The invariant of the state transition -/
 
@@ -302,17 +586,25 @@ theorem stepRelation_invariant :
       have frame := frame_processBlock (applySignedBlock_ok computed).2.1
       ⟨frame.invariant holds, frame.finalized ▸ UInt64.le_refl _⟩)
 
+/-- Every state reachable from anchors that satisfy the invariant satisfies it. -/
+theorem ReachableFrom.invariant {anchor : ForkedBeaconState preset → Prop}
+    (anchors : ∀ forked, anchor forked → Invariant forked.state)
+    {forked : ForkedBeaconState preset} (reachable : ReachableFrom config checks anchor forked) :
+    Invariant forked.state :=
+  have ⟨start, anchored, chain⟩ := reachable
+  (stepRelation_invariant.reaches chain (anchors start anchored)).1
+
 /-- Every reachable state satisfies the invariant of the state transition. -/
 theorem Reachable.invariant {forked : ForkedBeaconState preset}
-    (reachable : Reachable config checks forked) : Invariant forked.state := by
-  obtain ⟨start, ⟨⟨_, _, _, initialized⟩, _⟩, chain⟩ := reachable
-  have holds := (initializeBeaconStateFromEth1_invariant initialized).2
-  exact (stepRelation_invariant.reaches chain holds).1
+    (reachable : Reachable config checks forked) : Invariant forked.state :=
+  ReachableFrom.invariant (fun _ ⟨⟨_, _, _, initialized⟩, _⟩ =>
+    (initializeBeaconStateFromEth1_invariant initialized).2) reachable
 
-/-- Along a chain between reachable states, the finalized epoch never decreases. -/
+/-- Along a chain from a state that satisfies the invariant, the finalized epoch never decreases.
+-/
 theorem Reaches.finalized_le {start after : ForkedBeaconState preset}
-    (reachable : Reachable config checks start) (chain : Reaches config checks start after) :
+    (holds : Invariant start.state) (chain : Reaches config checks start after) :
     start.state.finalizedCheckpoint.epoch ≤ after.state.finalizedCheckpoint.epoch :=
-  (stepRelation_invariant.reaches chain reachable.invariant).2
+  (stepRelation_invariant.reaches chain holds).2
 
 end EthLib.Consensus
