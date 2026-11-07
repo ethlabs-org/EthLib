@@ -19,7 +19,9 @@ A run is data: it lists the blocks and the states that the chain passes through.
 
 `Reaches` says that a run exists from one state to another.
 
-Each successful call of `processSlotsAcross` or `stateTransitionAcross` gives a run.
+A slot or a block runs only when no upgrade is due, so due upgrades always run first.
+
+From a state with no upgrade due, `processSlotsAcross` and `stateTransitionAcross` give runs.
 
 Take a relation between two states that is reflexive and transitive.
 
@@ -234,14 +236,15 @@ end StepRelation
 
 A block step keeps its execution engine, its signed block and whether it validated the result.
 
-A slot or block step may start at a state at which an upgrade is due.
+A slot or a block runs only at a state at which no upgrade is due, so due upgrades run first.
 
-The chain functions take such a step only at their start, so runs cover every chain they compute.
+The chain functions run them first too, except at their own start.
 
-`Reaches.of_stateTransitionAcross_not_due` gives the stronger fact for a computed block. -/
+So a chain function gives a run when no upgrade is due at the state it starts from. -/
 inductive Step (config : Config) (checks : SignatureChecks) :
     ForkedBeaconState preset → ForkedBeaconState preset → Type where
   | slot {fork : Fork} {state after : BeaconState preset fork} :
+    upgradeDue config ⟨fork, state⟩ = false →
     EthLib.Consensus.advanceSlot config checks state = .ok after →
     Step config checks ⟨fork, state⟩ ⟨fork, after⟩
   | upgrade {pre : ForkedBeaconState preset}
@@ -251,6 +254,7 @@ inductive Step (config : Config) (checks : SignatureChecks) :
   | block {fork : Fork} (engine : ExecutionEngine preset fork)
     (signed : SignedBeaconBlock preset fork) (validateResult : Bool)
     {state after : BeaconState preset fork} :
+    upgradeDue config ⟨fork, state⟩ = false →
     EthLib.Consensus.applySignedBlock config checks engine state signed validateResult =
       .ok after →
     Step config checks ⟨fork, state⟩ ⟨fork, after⟩
@@ -310,9 +314,9 @@ variable {relates : ForkedBeaconState preset → ForkedBeaconState preset → Pr
 theorem step (steps : StepRelation config checks relates) {before after : ForkedBeaconState preset}
     (step : Step config checks before after) : relates before after := by
   cases step with
-  | slot computed => exact steps.advanceSlot computed
+  | slot _ computed => exact steps.advanceSlot computed
   | upgrade due computed => exact steps.upgradeNext due computed
-  | block _ _ _ computed => exact steps.applySignedBlock computed
+  | block _ _ _ _ computed => exact steps.applySignedBlock computed
 
 /-- A step relation holds between the two ends of a run. -/
 theorem run (steps : StepRelation config checks relates) {start : ForkedBeaconState preset} :
@@ -363,44 +367,6 @@ theorem Reaches.step {start before after : ForkedBeaconState preset}
   have ⟨run⟩ := chain
   ⟨.snoc run step⟩
 
-/-- Reaching is itself a step relation, so each chain function gives a chain. -/
-theorem stepRelation_reaches :
-    StepRelation config checks (Reaches (preset := preset) config checks) where
-  refl := Reaches.refl
-  trans := Reaches.trans
-  advanceSlot computed := (Reaches.refl _).step (.slot computed)
-  upgradeNext due computed := (Reaches.refl _).step (.upgrade due computed)
-  applySignedBlock computed := (Reaches.refl _).step (.block _ _ _ computed)
-
-/-- A chain followed by empty slots, with the upgrades on the way, is a chain. -/
-theorem Reaches.slots {start forked after : ForkedBeaconState preset} {slot : Slot}
-    (chain : Reaches config checks start forked)
-    (computed : processSlotsAcross config checks forked slot = .ok after) :
-    Reaches config checks start after :=
-  chain.trans (stepRelation_reaches.processSlotsAcross computed)
-
-/-- A chain followed by a valid block, from a state that may be of an earlier fork, is a chain. -/
-theorem Reaches.block {start forked : ForkedBeaconState preset} {fork : Fork}
-    {engine : ExecutionEngine preset fork} {signed : SignedBeaconBlock preset fork}
-    {validateResult : Bool} {after : BeaconState preset fork}
-    (chain : Reaches config checks start forked)
-    (computed :
-      stateTransitionAcross config checks engine forked signed validateResult = .ok after) :
-    Reaches config checks start ⟨fork, after⟩ :=
-  chain.trans (stepRelation_reaches.stateTransitionAcross computed)
-
-/-- A valid block is a chain of slots and upgrades to its slot, then the block step. -/
-theorem Reaches.of_stateTransitionAcross {fork : Fork} {engine : ExecutionEngine preset fork}
-    {forked : ForkedBeaconState preset} {signed : SignedBeaconBlock preset fork}
-    {validateResult : Bool} {after : BeaconState preset fork}
-    (computed :
-      stateTransitionAcross config checks engine forked signed validateResult = .ok after) :
-    ∃ advanced : BeaconState preset fork,
-      Reaches config checks forked ⟨fork, advanced⟩ ∧
-      applySignedBlock config checks engine advanced signed validateResult = .ok after :=
-  have ⟨advanced, slotsOk, applied⟩ := stateTransitionAcross_ok computed
-  ⟨advanced, stepRelation_reaches.processSlotsAcross slotsOk, applied⟩
-
 /-- A property that fails at the start of a chain and holds at its end starts to hold at one step.
 
 The chain splits there into a chain to the state before the step, the step, and a chain after it.
@@ -419,6 +385,116 @@ theorem Reaches.split {holds : ForkedBeaconState preset → Prop}
     · obtain ⟨before, next, head, notBefore, one, holdsNext, tail⟩ := more earlier
       exact ⟨before, next, head, notBefore, one, holdsNext, tail.step step⟩
     · exact ⟨middle, last, ⟨run⟩, earlier, ⟨step⟩, atEnd, .refl _⟩
+
+/-! ## Chains of the chain functions -/
+
+/-- Whether an upgrade is due depends only on the fork and the slot. -/
+theorem upgradeDue_of_slot {fork : Fork} {state after : BeaconState preset fork}
+    (slot : after.slot = state.slot) :
+    upgradeDue config ⟨fork, after⟩ = upgradeDue config ⟨fork, state⟩ := by
+  simp [upgradeDue, slot]
+
+/-- The upgrades due at a slot are a chain, and leave no upgrade due. -/
+theorem Reaches.processUpgrades {forked after : ForkedBeaconState preset}
+    (computed : processUpgrades config checks forked = .ok after) :
+    Reaches config checks forked after ∧ upgradeDue config after = false := by
+  fun_induction EthLib.Consensus.processUpgrades config checks forked generalizing after with
+  | case1 forked due more =>
+    obtain ⟨step, stepOk, rest⟩ := bind_ok_iff.mp computed
+    obtain ⟨chain, notDue⟩ := more step rest
+    exact ⟨((Reaches.refl _).step (.upgrade due stepOk)).trans chain, notDue⟩
+  | case2 forked notDue =>
+    cases computed
+    exact ⟨.refl _, by simpa using notDue⟩
+
+/-- One slot, then the upgrades due at the slot it reaches, from a state with no upgrade due. -/
+theorem Reaches.advanceSlotAcross {forked after : ForkedBeaconState preset}
+    (notDue : upgradeDue config forked = false)
+    (computed : advanceSlotAcross config checks forked = .ok after) :
+    Reaches config checks forked after ∧ upgradeDue config after = false := by
+  obtain ⟨fork, state⟩ := forked
+  obtain ⟨advanced, advancedOk, upgraded⟩ := bind_ok_iff.mp computed
+  obtain ⟨chain, afterNotDue⟩ := Reaches.processUpgrades upgraded
+  exact ⟨((Reaches.refl _).step (.slot notDue advancedOk)).trans chain, afterNotDue⟩
+
+theorem Reaches.advanceSlotsAcross :
+    ∀ {count : Nat} {forked after : ForkedBeaconState preset},
+      upgradeDue config forked = false →
+      advanceSlotsAcross config checks count forked = .ok after →
+      Reaches config checks forked after ∧ upgradeDue config after = false
+  | 0, forked, after, notDue, computed => by
+    simp only [EthLib.Consensus.advanceSlotsAcross, pure, Except.pure,
+      Except.ok.injEq] at computed
+    subst computed
+    exact ⟨.refl _, notDue⟩
+  | count + 1, forked, after, notDue, computed => by
+    rw [EthLib.Consensus.advanceSlotsAcross, bind_ok_iff] at computed
+    obtain ⟨next, nextOk, rest⟩ := computed
+    obtain ⟨head, nextNotDue⟩ := Reaches.advanceSlotAcross notDue nextOk
+    obtain ⟨tail, afterNotDue⟩ := Reaches.advanceSlotsAcross nextNotDue rest
+    exact ⟨head.trans tail, afterNotDue⟩
+
+/-- Advancing to a later slot, with the upgrades on the way, from a state with no upgrade due. -/
+theorem Reaches.processSlotsAcross {forked after : ForkedBeaconState preset} {slot : Slot}
+    (notDue : upgradeDue config forked = false)
+    (computed : processSlotsAcross config checks forked slot = .ok after) :
+    Reaches config checks forked after ∧ upgradeDue config after = false := by
+  simp only [EthLib.Consensus.processSlotsAcross, bind_ok_iff, ensure_ok_iff] at computed
+  obtain ⟨_, _, advanced⟩ := computed
+  exact Reaches.advanceSlotsAcross notDue advanced
+
+/-- A valid block, from a state with no upgrade due that may be of an earlier fork.
+
+The block runs on the state at its slot, at which no upgrade is due. -/
+theorem Reaches.of_stateTransitionAcross {fork : Fork} {engine : ExecutionEngine preset fork}
+    {forked : ForkedBeaconState preset} {signed : SignedBeaconBlock preset fork}
+    {validateResult : Bool} {after : BeaconState preset fork}
+    (notDue : upgradeDue config forked = false)
+    (computed :
+      stateTransitionAcross config checks engine forked signed validateResult = .ok after) :
+    ∃ advanced : BeaconState preset fork,
+      Reaches config checks forked ⟨fork, advanced⟩ ∧
+      upgradeDue config ⟨fork, advanced⟩ = false ∧
+      applySignedBlock config checks engine advanced signed validateResult = .ok after := by
+  obtain ⟨advanced, slotsOk, applied⟩ := stateTransitionAcross_ok computed
+  obtain ⟨chain, advancedNotDue⟩ := Reaches.processSlotsAcross notDue slotsOk
+  exact ⟨advanced, chain, advancedNotDue, applied⟩
+
+/-- A valid block from a state with no upgrade due is a chain, after which none is due. -/
+theorem Reaches.stateTransitionAcross {fork : Fork} {engine : ExecutionEngine preset fork}
+    {forked : ForkedBeaconState preset} {signed : SignedBeaconBlock preset fork}
+    {validateResult : Bool} {after : BeaconState preset fork}
+    (notDue : upgradeDue config forked = false)
+    (computed :
+      stateTransitionAcross config checks engine forked signed validateResult = .ok after) :
+    Reaches config checks forked ⟨fork, after⟩ ∧ upgradeDue config ⟨fork, after⟩ = false := by
+  obtain ⟨advanced, chain, advancedNotDue, applied⟩ :=
+    Reaches.of_stateTransitionAcross notDue computed
+  -- The block keeps the slot, so no upgrade is due after it either.
+  have slot := (frame_processBlock (applySignedBlock_ok applied).2.1).slot
+  exact ⟨chain.step (.block _ _ _ advancedNotDue applied),
+    (upgradeDue_of_slot slot).trans advancedNotDue⟩
+
+/-- A chain followed by empty slots, with the upgrades on the way, is a chain.
+
+No upgrade may be due where the slots start. -/
+theorem Reaches.slots {start forked after : ForkedBeaconState preset} {slot : Slot}
+    (chain : Reaches config checks start forked) (notDue : upgradeDue config forked = false)
+    (computed : EthLib.Consensus.processSlotsAcross config checks forked slot = .ok after) :
+    Reaches config checks start after :=
+  chain.trans (Reaches.processSlotsAcross notDue computed).1
+
+/-- A chain followed by a valid block, from a state that may be of an earlier fork, is a chain.
+
+No upgrade may be due where the block's slots start. -/
+theorem Reaches.block {start forked : ForkedBeaconState preset} {fork : Fork}
+    {engine : ExecutionEngine preset fork} {signed : SignedBeaconBlock preset fork}
+    {validateResult : Bool} {after : BeaconState preset fork}
+    (chain : Reaches config checks start forked) (notDue : upgradeDue config forked = false)
+    (computed : EthLib.Consensus.stateTransitionAcross config checks engine forked signed
+      validateResult = .ok after) :
+    Reaches config checks start ⟨fork, after⟩ :=
+  chain.trans (Reaches.stateTransitionAcross notDue computed).1
 
 /-- The upgrades due at a slot leave no upgrade due. -/
 theorem processUpgrades_not_due {forked after : ForkedBeaconState preset}
@@ -446,29 +522,6 @@ theorem advanceSlotsAcross_not_due :
     rw [advanceSlotsAcross, bind_ok_iff] at computed
     obtain ⟨_, _, rest⟩ := computed
     exact advanceSlotsAcross_not_due rest
-
-/-- A valid block runs on a state at which no upgrade is due.
-
-The slots to the block, with the upgrades on the way, come first. -/
-theorem Reaches.of_stateTransitionAcross_not_due {fork : Fork}
-    {engine : ExecutionEngine preset fork} {forked : ForkedBeaconState preset}
-    {signed : SignedBeaconBlock preset fork} {validateResult : Bool}
-    {after : BeaconState preset fork}
-    (computed :
-      stateTransitionAcross config checks engine forked signed validateResult = .ok after) :
-    ∃ advanced : BeaconState preset fork,
-      Reaches config checks forked ⟨fork, advanced⟩ ∧
-      upgradeDue config ⟨fork, advanced⟩ = false ∧
-      applySignedBlock config checks engine advanced signed validateResult = .ok after := by
-  obtain ⟨advanced, slotsOk, applied⟩ := stateTransitionAcross_ok computed
-  refine ⟨advanced, stepRelation_reaches.processSlotsAcross slotsOk, ?_, applied⟩
-  simp only [processSlotsAcross, bind_ok_iff, ensure_ok_iff] at slotsOk
-  obtain ⟨_, later, advancedOk⟩ := slotsOk
-  have positive := UInt64.lt_iff_toNat_lt.mp later
-  obtain ⟨count, equal⟩ : ∃ count, signed.message.slot.toNat - forked.state.slot.toNat =
-      count + 1 := ⟨_, (Nat.succ_pred_eq_of_pos (by omega)).symm⟩
-  rw [equal] at advancedOk
-  exact advanceSlotsAcross_not_due advancedOk
 
 /-- A step relation holds between the two ends of every chain. -/
 theorem StepRelation.reaches {relates : ForkedBeaconState preset → ForkedBeaconState preset → Prop}
