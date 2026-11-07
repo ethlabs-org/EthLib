@@ -33,8 +33,9 @@ open Base Uint64 Serialization.Ssz
 variable {preset : Preset} {fork : Base.Fork} {config : Config} {checks : SignatureChecks}
   {state after : BeaconState preset fork}
 
-/-- An attestation earns the timely-target flag only when its target root is the state's root
-for the first slot of its target's epoch. -/
+/-- An attestation earns the timely-target flag only when its target root is the state's.
+
+That is the state's root for the first slot of its target's epoch. -/
 theorem getAttestationParticipationFlagIndices_target {data : AttestationData}
     {inclusionDelay : UInt64} {parentSlot : Slot} {flags : List UInt64}
     (computed :
@@ -80,7 +81,8 @@ Its indexed form names the validator among its attesters, and is valid at the si
 Its source is the justified checkpoint of its target's epoch at the site.
 
 Its target root is the site's root for the first slot of its target's epoch. -/
-def SignedTarget (config : Config) (checks : SignatureChecks) (start after : ForkedBeaconState preset)
+def SignedTarget (config : Config) (checks : SignatureChecks)
+    (start after : ForkedBeaconState preset)
     (index : ValidatorIndex) (data : AttestationData) : Prop :=
   ∃ (fork : Fork) (engine : ExecutionEngine preset fork) (signed : SignedBeaconBlock preset fork)
     (validateResult : Bool) (state post first site recorded : BeaconState preset fork)
@@ -158,7 +160,7 @@ theorem TargetVoters.origin {start : ForkedBeaconState preset} {checkpoint : Che
     {fork : Fork} {state cached : BeaconState preset fork}
     {voters : List ValidatorIndex} (altair : .altair ≤ fork)
     (head : Reaches config checks start ⟨fork, state⟩)
-    (cachedOk : processSlot state = .ok cached)
+    (reads : ReadsFrom state cached)
     (recent : checkpoint.epoch = getPreviousEpoch cached ∨
       checkpoint.epoch = getCurrentEpoch cached)
     (counted : TargetVoters cached checkpoint.epoch voters)
@@ -173,10 +175,11 @@ theorem TargetVoters.origin {start : ForkedBeaconState preset} {checkpoint : Che
   -- The caching keeps the flags and the slot, so the voter had the flag before it.
   have epochSame : getCurrentEpoch cached = getCurrentEpoch state := by
     unfold getCurrentEpoch
-    rw [processSlot_slot cachedOk]
-  have flagsSame : cached.currentEpochParticipation altair = state.currentEpochParticipation altair ∧
+    rw [reads.slot]
+  have flagsSame :
+      cached.currentEpochParticipation altair = state.currentEpochParticipation altair ∧
       cached.previousEpochParticipation altair = state.previousEpochParticipation altair := by
-    obtain ⟨_, _, _, _, same⟩ := processSlot_ok cachedOk
+    obtain ⟨_, _, _, _, same⟩ := reads.eq
     subst same
     exact ⟨rfl, rfl⟩
   rw [epochSame, flagsSame.1, flagsSame.2] at found
@@ -221,8 +224,9 @@ theorem TargetVoters.origin {start : ForkedBeaconState preset} {checkpoint : Che
 
 /-- The record of a weighing call that justified a checkpoint, with the origin of its voters.
 
-From Altair each counted voter signed data with the checkpoint's epoch as target, checked at
-an actual site, unless its flag came from the start or from the upgrade to Altair.
+From Altair each counted voter signed data with the checkpoint's epoch as target, at a site.
+
+Or its flag came from the start or from the upgrade to Altair.
 
 Before Altair the voters come from pending attestations; this statement says nothing of them. -/
 theorem JustifiedBy.voters {start after : ForkedBeaconState preset} {checkpoint : Checkpoint}
@@ -241,8 +245,9 @@ theorem JustifiedBy.voters {start after : ForkedBeaconState preset} {checkpoint 
           SignedTarget config checks start ⟨fork, state⟩ index data) := by
   obtain ⟨fork, state, cached, _, next, voters, head, notDue, nextOk, tail, _, cachedOk, _, _,
     recent, counted, passes, rootOk⟩ := justified
-  exact ⟨fork, state, cached, voters, head, (Reaches.refl _).step (.slot notDue nextOk) |>.trans tail,
+  exact ⟨fork, state, cached, voters, head,
+    (Reaches.refl _).step (.slot notDue nextOk) |>.trans tail,
     cachedOk, recent, counted, passes, rootOk,
-    fun altair _ member => TargetVoters.origin altair head cachedOk recent counted member⟩
+    fun altair _ member => TargetVoters.origin altair head (.inl cachedOk) recent counted member⟩
 
 end EthLib.Consensus
