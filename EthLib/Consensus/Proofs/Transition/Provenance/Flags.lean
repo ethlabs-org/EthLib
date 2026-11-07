@@ -83,14 +83,16 @@ theorem foldlM_processAttestation_flags (altair : .altair ≤ fork) {parentSlot 
     simp only [List.foldlM_nil, pure, Except.pure, Except.ok.injEq] at computed
     subst computed
     exact .inl ⟨flags, found, set⟩
-  | attestation :: rest, first, attested, computed, current, index, flags, flagIndex, found, set => by
+  | attestation :: rest, first, attested, computed, current, index, flags, flagIndex, found,
+    set => by
     simp only [List.foldlM_cons, bind_ok_iff] at computed
     obtain ⟨middle, step, folded⟩ := computed
     have stepAltair : processAttestationAltair config checks first attestation altair parentSlot =
         .ok middle := by
       unfold processAttestation at step
       simpa only [altair, ↓reduceDIte] using step
-    rcases foldlM_processAttestation_flags altair folded current index flags flagIndex found set with
+    rcases foldlM_processAttestation_flags altair folded current index flags flagIndex found
+      set with
       ⟨old, oldFound, oldSet⟩ |
       ⟨pre, later, suf, site, recorded, split, prefixOk, laterOk, siteSlot, epoch, flagged⟩
     · -- The flag was there after this attestation: it was there before, or this one set it.
@@ -141,7 +143,9 @@ def FlagAtStart (start : ForkedBeaconState preset) (index : Nat) (flagIndex : UI
 
 /-- The chain crossed the upgrade to Altair, and the upgrade set a flag of a validator.
 
-The upgrade turns the pending attestations of the previous epoch into flags of that epoch. -/
+The upgrade turns the pending attestations of the previous epoch into flags of that epoch.
+
+The upgrade is a step of the chain, from `pre` to `post`. -/
 def FlagFromAltairUpgrade (config : Config) (checks : SignatureChecks)
     (start after : ForkedBeaconState preset) (index : Nat) (flagIndex : UInt64) (epoch : Epoch) :
     Prop :=
@@ -150,7 +154,8 @@ def FlagFromAltairUpgrade (config : Config) (checks : SignatureChecks)
     Reaches config checks start ⟨.phase0, pre⟩ ∧ upgradeToAltair config pre = .ok post ∧
     Reaches config checks ⟨.altair, post⟩ after ∧
     (post.previousEpochParticipation (by decide)).data[index]? = some flags ∧
-    hasFlag flags flagIndex = true ∧ epoch = getPreviousEpoch post
+    hasFlag flags flagIndex = true ∧ epoch = getPreviousEpoch post ∧
+    Reaches config checks ⟨.phase0, pre⟩ ⟨.altair, post⟩
 
 /-- A block of a chain included an attestation that set a flag of a validator.
 
@@ -194,7 +199,8 @@ theorem FlagOrigin.extend {start middle after : ForkedBeaconState preset} {index
       pre, suf, attestation, head, notDue, applied, tail.step step, rest⟩)
 
 /-- Every flag of a chain's end has an origin, with the epoch of the list that holds it. -/
-def FlagsTraced (config : Config) (checks : SignatureChecks) (start after : ForkedBeaconState preset) :
+def FlagsTraced (config : Config) (checks : SignatureChecks)
+    (start after : ForkedBeaconState preset) :
     Prop :=
   ∀ (altair : .altair ≤ after.fork) (current : Bool) (index : Nat) (flags : ParticipationFlags)
     (flagIndex : UInt64), (epochFlags after.state altair current)[index]? = some flags →
@@ -330,7 +336,8 @@ theorem Reaches.flags {start after : ForkedBeaconState preset}
         rw [← Array.foldlM_toList] at folded
         obtain ⟨participation, rfl, -⟩ := foldlM_translateAttestation folded
         cases current
-        · exact .inr (.inl ⟨state, _, flags, middleChain, upgradedOk, .refl _, found, set, rfl⟩)
+        · exact .inr (.inl ⟨state, _, flags, middleChain, upgradedOk, .refl _, found, set, rfl,
+            (Reaches.refl _).step theStep⟩)
         · -- The current list starts with no flag.
           obtain ⟨-, zeros, -⟩ := carryFields_of_lt_altair (config := config) (post := .altair)
             state (by decide) (by decide) (by decide) (by decide)
@@ -367,7 +374,8 @@ theorem Reaches.flags {start after : ForkedBeaconState preset}
         rw [flagsEpoch_of_slot postSlot]
         exact (more altair current index oldest flagIndex oldestFound oldestSet).extend theStep
       · -- An attestation of the block set it.
-        rw [flagsEpoch_of_slot postSlot, ← flagsEpoch_of_slot (firstReads.trans (Kept.sameReads siteSlot)).slot]
+        rw [flagsEpoch_of_slot postSlot,
+          ← flagsEpoch_of_slot (firstReads.trans (Kept.sameReads siteSlot)).slot]
         exact .inr (.inr ⟨fork, engine, signed, validateResult, state, post, first, site, recorded,
           pre, suf,
           attestation, middleChain, notDue, computed, .refl _, head, split, prefixOk, siteOk,
