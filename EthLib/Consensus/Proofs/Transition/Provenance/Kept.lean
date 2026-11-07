@@ -5,23 +5,24 @@ public import EthLib.Consensus.Proofs.Transition.ForkBoundary
 /-!
 # Proofs: the steps that keep the record of history
 
-Five fields of a state record its history.
+Eight fields of a state record its history.
 
 - The slot.
 - The latest block header.
 - The circular buffer of block roots.
 - The circular buffer of state roots.
 - The justification bits.
+- The previous justified, current justified and finalized checkpoints.
 
 Only five functions write them.
 
 - `advanceSlot` moves the slot on.
 - `processSlot` writes the two buffers, and fills the state root of the header.
 - `processBlockHeader` writes the header of a new block.
-- `weighJustificationAndFinalization` writes the justification bits.
-- The upgrades copy all five fields.
+- `weighJustificationAndFinalization` writes the justification bits and the checkpoints.
+- The upgrades copy all eight fields.
 
-This file proves that every other step of a block or an epoch keeps the five fields.
+This file proves that every other step of a block or an epoch keeps the eight fields.
 
 That is what lets a value in a buffer be traced back to the step that wrote it.
 -/
@@ -36,16 +37,17 @@ variable {preset : Preset} {fork : Base.Fork} {config : Config} {checks : Signat
   {engine : ExecutionEngine preset fork}
   {state after : BeaconState preset fork}
 
-/-- The fields that record history: the slot, the latest header, the two buffers of roots and
-the justification bits. -/
+/-- The fields that record history: the slot, the latest header, the two buffers of roots, the
+justification bits and the three checkpoints. -/
 def BeaconState.history (state : BeaconState preset fork) :
     Slot × BeaconBlockHeader × RootedVector Root preset.SLOTS_PER_HISTORICAL_ROOT.toNat ×
       RootedVector Root preset.SLOTS_PER_HISTORICAL_ROOT.toNat ×
-      Bitvector JUSTIFICATION_BITS_LENGTH.toNat :=
+      Bitvector JUSTIFICATION_BITS_LENGTH.toNat × Checkpoint × Checkpoint × Checkpoint :=
   (state.slot, state.latestBlockHeader, state.blockRoots, state.stateRoots,
-    state.justificationBits)
+    state.justificationBits, state.previousJustifiedCheckpoint, state.currentJustifiedCheckpoint,
+    state.finalizedCheckpoint)
 
-/-- A step that keeps the slot, the latest header, the buffers of roots and the bits. -/
+/-- A step that keeps every field of the history. -/
 def Kept (state after : BeaconState preset fork) : Prop :=
   after.history = state.history
 
@@ -70,7 +72,19 @@ theorem Kept.stateRoots (kept : Kept state after) : after.stateRoots = state.sta
 
 theorem Kept.justificationBits (kept : Kept state after) :
     after.justificationBits = state.justificationBits :=
-  congrArg (·.2.2.2.2) kept
+  congrArg (·.2.2.2.2.1) kept
+
+theorem Kept.previousJustifiedCheckpoint (kept : Kept state after) :
+    after.previousJustifiedCheckpoint = state.previousJustifiedCheckpoint :=
+  congrArg (·.2.2.2.2.2.1) kept
+
+theorem Kept.currentJustifiedCheckpoint (kept : Kept state after) :
+    after.currentJustifiedCheckpoint = state.currentJustifiedCheckpoint :=
+  congrArg (·.2.2.2.2.2.2.1) kept
+
+theorem Kept.finalizedCheckpoint (kept : Kept state after) :
+    after.finalizedCheckpoint = state.finalizedCheckpoint :=
+  congrArg (·.2.2.2.2.2.2.2) kept
 
 /-- A fold whose every step keeps the history keeps it. -/
 theorem Kept.foldlM {α ε : Type} {step : BeaconState preset fork → α → Except ε _}
@@ -1189,9 +1203,9 @@ theorem kept_queueCompoundingExcess {electra : .pectra ≤ fork} {index : Nat}
   · cases computed
     rfl
 
-/-- An upgrade copies the slot, the latest header, the two buffers of roots and the bits.
+/-- An upgrade copies every field of the history.
 
-The five fields have the same type at every fork, so the statement compares them directly. -/
+The fields have the same type at every fork, so the statement compares them directly. -/
 theorem upgradeNext_history {pre : ForkedBeaconState preset}
     {post : {post : ForkedBeaconState preset // pre.fork < post.fork}}
     (computed : upgradeNext config checks pre = .ok post) :
