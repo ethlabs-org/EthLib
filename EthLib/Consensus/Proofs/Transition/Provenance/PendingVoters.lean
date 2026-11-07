@@ -203,4 +203,259 @@ theorem Reaches.shuffleKept {start after : ForkedBeaconState preset}
       exact ⟨rfl, kept.trans (ShuffleKept.processBlock before lookahead finite middleBound
         stateNear processed)⟩
 
+/-- A chain that ends before Altair stays in one fork: every upgrade leads to Altair or later. -/
+theorem Reaches.fork_eq_of_before {start after : ForkedBeaconState preset}
+    (chain : Reaches config checks start after) (before : after.fork < .altair) :
+    start.fork = after.fork := by
+  obtain ⟨run⟩ := chain
+  induction run with
+  | nil => rfl
+  | @snoc middle last run step more =>
+    cases step with
+    | slot _ _ => exact more before
+    | @upgrade _ post due computed =>
+      exfalso
+      obtain ⟨fork, state⟩ := middle
+      cases fork <;>
+        simp only [upgradeNext, bind_ok_iff, pure, Except.pure, Except.ok.injEq, throw,
+          throwThe, MonadExceptOf.throw, reduceCtorEq] at computed
+      all_goals
+        obtain ⟨_, _, rfl⟩ := computed
+        exact absurd before (by dsimp only; decide)
+    | block _ _ _ _ _ => exact more before
+
+/-! ## The counted voters signed the call's link -/
+
+/-- Before Altair, a counted voter of a weighing call signed the call's link.
+
+Take a weighing call of a chain that justified a checkpoint, at a fork before Altair.
+
+The buffer of mixes must be longer than `MIN_SEED_LOOKAHEAD + 2`.
+
+Each counted voter is a signer of a pending attestation of the checkpoint's epoch.
+
+That attestation was held by the start of the chain.
+
+Otherwise a block of the chain included it, and the voter signed its data, checked at the site.
+
+That data has the checkpoint as target, since the call compares the target root.
+
+Its source is the call's source, except for a target in epoch 1, as from Altair. -/
+theorem JustifiedBy.pending_voters_signed {start after : ForkedBeaconState preset}
+    {checkpoint : Checkpoint}
+    (lookahead : preset.MIN_SEED_LOOKAHEAD.toNat + 2 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
+    (justified : JustifiedBy config checks start after checkpoint) :
+    ∃ (fork : Fork) (state cached : BeaconState preset fork) (voters : List ValidatorIndex),
+      Reaches config checks start ⟨fork, state⟩ ∧
+      Reaches config checks ⟨fork, state⟩ after ∧ processSlot state = .ok cached ∧
+      GENESIS_EPOCH + 1 < getCurrentEpoch cached ∧
+      (checkpoint.epoch = getPreviousEpoch cached ∨ checkpoint.epoch = getCurrentEpoch cached) ∧
+      TargetVoters cached checkpoint.epoch voters ∧ PassesThreshold cached voters ∧
+      getBlockRoot cached checkpoint.epoch = .ok checkpoint.root ∧
+      (fork < .altair → ∀ index ∈ voters,
+        (∃ pending, PendingAtStart start pending) ∨
+        ∃ data, data.target = checkpoint ∧
+          SignedVote config checks start ⟨fork, state⟩ index data ∧
+          (data.source = recordSource cached checkpoint.epoch ∨
+            (checkpoint.epoch.toNat = 1 ∧ ∃ (fork' : Fork) (epochOne : BeaconState preset fork'),
+              Reaches config checks start ⟨fork', epochOne⟩ ∧
+              Reaches config checks ⟨fork', epochOne⟩ ⟨fork, state⟩ ∧
+              (getCurrentEpoch epochOne).toNat = 1 ∧
+              data.source = epochOne.currentJustifiedCheckpoint))) := by
+  obtain ⟨fork, state, cached, _, next, voters, head, notDue, nextOk, tail, _, cachedOk, _, later,
+    recent, counted, passes, rootOk⟩ := justified
+  refine ⟨fork, state, cached, voters, head,
+    (Reaches.refl _).step (.slot notDue nextOk) |>.trans tail, cachedOk, later, recent, counted,
+    passes, rootOk, fun before index member => ?_⟩
+  simp only [TargetVoters, not_le_of_before before (Nat.le_refl _), ↓reduceDIte] at counted
+  obtain ⟨attestations, matching, unslashed⟩ := counted
+  obtain ⟨pending, pendingMember, signers, signersOk, inSigners⟩ :=
+    mem_getUnslashedAttestingIndices unslashed member
+  obtain ⟨listed, rootRead⟩ := mem_getMatchingTargetAttestations before matching pendingMember
+  have targetRoot : pending.data.target.root = checkpoint.root :=
+    Except.ok.inj (rootRead.symm.trans rootOk)
+  -- The caching keeps the pending attestations and the epoch.
+  have cachedSame : cached.slot = state.slot ∧
+      epochPending cached before = epochPending state before := by
+    obtain ⟨_, _, _, _, rfl⟩ := processSlot_ok cachedOk
+    exact ⟨rfl, rfl⟩
+  have cachedEpoch : getCurrentEpoch cached = getCurrentEpoch state := by
+    simp only [getCurrentEpoch, cachedSame.1]
+  have cachedPrevious : getPreviousEpoch cached = getPreviousEpoch state := by
+    unfold getPreviousEpoch
+    rw [cachedEpoch]
+  rw [cachedSame.2, cachedEpoch] at listed
+  rw [cachedEpoch, cachedPrevious] at recent
+  have listEpoch : flagsEpoch state (decide (checkpoint.epoch = getCurrentEpoch state)) =
+      checkpoint.epoch := by
+    unfold flagsEpoch
+    by_cases isCurrent : checkpoint.epoch = getCurrentEpoch state
+    · simp [isCurrent]
+    · simp only [isCurrent, decide_false, Bool.false_eq_true, ↓reduceIte]
+      exact (recent.resolve_right isCurrent).symm
+  have origin := head.pending before _ listed
+  rw [listEpoch] at origin
+  rcases origin with atStart | ⟨fork', engine, block, validateResult, blockState, post, first,
+    site, recorded, pre, suf, attestation, blockHead, blockNotDue, applied, blockTail, votesKept,
+    shuffleNear, split, prefixOk, siteOk, reads, epochEq, recordedFacts⟩
+  · exact .inl ⟨pending, atStart⟩
+  obtain ⟨indexed, bitsEq, dataEq, -, -, indexedOk, valid⟩ := recordedFacts
+  -- The block ran in the same fork as the call, before Altair.
+  have sameFork : fork' = fork := blockTail.fork_eq_of_before before
+  subst sameFork
+  obtain ⟨siteRecent, slotEpoch, _, _, _, _, source⟩ := processAttestation_checks before siteOk
+  rw [epochEq] at siteRecent slotEpoch
+  have siteEpoch : getCurrentEpoch site = getCurrentEpoch blockState := by
+    simp only [getCurrentEpoch, reads.slot]
+  have sitePrevious : getPreviousEpoch site = getPreviousEpoch blockState := by
+    unfold getPreviousEpoch
+    rw [siteEpoch]
+  rw [siteEpoch, sitePrevious] at siteRecent
+  -- The block is in the target's epoch or the one after, and so is the call.
+  have blockBound : checkpoint.epoch ≤ getCurrentEpoch blockState := by
+    apply UInt64.le_iff_toNat_le.mpr
+    have := getPreviousEpoch_toNat blockState
+    rcases siteRecent with same | same <;> rw [same] <;> omega
+  have blockNear : (getCurrentEpoch blockState).toNat ≤ checkpoint.epoch.toNat + 1 := by
+    have := getPreviousEpoch_toNat blockState
+    rcases siteRecent with same | same <;> rw [same] <;> omega
+  have stateNear : (getCurrentEpoch state).toNat ≤ checkpoint.epoch.toNat + 1 := by
+    have := getPreviousEpoch_toNat state
+    rcases recent with same | same <;> rw [same] <;> omega
+  -- The epoch is before the far future, since the slot after the call's state exists.
+  have finite : checkpoint.epoch ≠ FAR_FUTURE_EPOCH := by
+    intro far
+    have farNat : FAR_FUTURE_EPOCH.toNat = 2 ^ 64 - 1 := rfl
+    have nextSlot := advanceSlot_slot nextOk
+    have nextLt := next.slot.toNat_lt
+    have epochNat := getCurrentEpoch_toNat state
+    have divLe := Nat.div_le_self state.slot.toNat preset.SLOTS_PER_EPOCH.toNat
+    have previousNat := getPreviousEpoch_toNat state
+    have epochLe : checkpoint.epoch.toNat ≤ (getCurrentEpoch state).toNat := by
+      rcases recent with same | same <;> rw [same] <;> omega
+    rw [far, farNat] at epochLe
+    omega
+  -- The inputs of the shuffle are the same at the site and at the call, as at the block's start.
+  obtain ⟨-, processed, -⟩ := applySignedBlock_ok applied
+  have toFirst := shuffleNear before lookahead _ finite blockBound blockNear
+  have toSite : ShuffleKept checkpoint.epoch first site :=
+    foldlM_ok_invariant (ShuffleKept checkpoint.epoch first)
+      (fun _ _ _ held ok => held.trans (ShuffleKept.processAttestation before ok))
+      (ShuffleKept.refl _) prefixOk
+  have toPost := ShuffleKept.processBlock before lookahead finite blockBound blockNear processed
+  have postBound : checkpoint.epoch ≤ getCurrentEpoch post := by
+    unfold getCurrentEpoch at blockBound ⊢
+    rw [processBlock_slot processed]
+    exact blockBound
+  obtain ⟨_, toState⟩ := blockTail.shuffleKept before lookahead finite postBound stateNear
+  have toCached : ShuffleKept checkpoint.epoch blockState cached :=
+    toPost.trans (toState.trans (ShuffleKept.processSlot cachedOk))
+  rw [slotEpoch] at toFirst toSite toCached
+  -- So the call finds the signers that the site found.
+  simp only [getPendingAttestingIndices, bind_ok_iff] at signersOk
+  obtain ⟨committee, committeeOk, attestersOk⟩ := signersOk
+  rw [dataEq, toCached.getBeaconCommittee, ← (toFirst.trans toSite).getBeaconCommittee]
+    at committeeOk
+  rw [bitsEq] at attestersOk
+  have attestingOk : getAttestingIndices site attestation = .ok (sortedSet signers) := by
+    have notElectra : ¬Fork.pectra ≤ fork' := not_le_of_before before (by decide)
+    simp only [getAttestingIndices, notElectra, ↓reduceDIte, bind, Except.bind, committeeOk,
+      attestersOk, pure, Except.pure]
+  obtain ⟨indexed', indexedOk', attesting, indexedData, -⟩ :=
+    getIndexedAttestation_of_getAttestingIndices attestingOk
+  cases indexedOk.symm.trans indexedOk'
+  have target : attestation.data.target = checkpoint := by
+    rw [dataEq] at targetRoot
+    cases checkpoint
+    cases dataTarget : attestation.data.target
+    rw [dataTarget] at epochEq targetRoot
+    simp only at epochEq targetRoot
+    rw [epochEq, targetRoot]
+  have vote : SignedVote config checks start ⟨fork', state⟩ index attestation.data :=
+    ⟨fork', engine, block, validateResult, blockState, post, first, site, recorded, pre, suf,
+      attestation, indexed, blockHead, blockNotDue, applied, blockTail, votesKept, split, prefixOk,
+      siteOk, reads, rfl, indexedOk,
+      by rw [attesting]; exact List.mem_toArray.mpr (mem_sortedSet.mpr inSigners),
+      indexedData, valid, source⟩
+  rw [← cachedEpoch, ← cachedPrevious] at recent
+  exact .inr ⟨attestation.data, target, vote,
+    vote.source_link (by rw [target]) cachedOk later recent⟩
+
+/-! ## From genesis -/
+
+/-- A deposit at genesis adds no vote. -/
+theorem votesKept_genesisDeposit {beforeHeze : fork < .hegota} {leaves : Array DepositData}
+    {entry : Deposit × Nat}
+    (computed : genesisDeposit config checks beforeHeze leaves state entry = .ok after) :
+    VotesKept state after := by
+  simp only [genesisDeposit, bind_ok_iff] at computed
+  obtain ⟨depositRoot, _, deposited⟩ := computed
+  exact (VotesKept.of_votes (state := state)
+    (after := { state with eth1Data := fun _ => { state.eth1Data beforeHeze with depositRoot } })
+    rfl).trans (votesKept_processDeposit deposited)
+
+/-- A genesis state holds no pending attestation.
+
+Its lists start empty, and neither the deposits nor the activations at genesis add a vote. -/
+theorem genesis_epochPending {forked : ForkedBeaconState preset}
+    (genesis : Genesis config checks forked) (before : forked.fork < .altair) (current : Bool) :
+    epochPending forked.state before current = #[] := by
+  obtain ⟨⟨_, _, _, computed⟩, _⟩ := genesis
+  unfold initializeBeaconStateFromEth1 at computed
+  split at computed
+  · cases computed
+  simp only [bind_ok_iff, ensure_ok_iff, liftSsz_ok, pure, Except.pure,
+    Except.ok.injEq] at computed
+  obtain ⟨_, _, _, _, _, _, deposited, depositedOk, activated, activatedOk, root, _, same⟩ :=
+    computed
+  have kept := (VotesKept.foldlM (fun _ _ _ ok => votesKept_genesisDeposit ok) depositedOk).trans
+    (VotesKept.foldlM (fun _ _ _ ok => by
+      simp only [activateAtGenesis, bind_ok_iff, liftAccessor_ok] at ok
+      obtain ⟨_, _, _, _, set⟩ := ok
+      exact votesKept_setValidator set) activatedOk)
+  rw [← same]
+  cases current
+  · simp only [epochPending, Bool.false_eq_true, ↓reduceIte]
+    rw [show ({ activated with genesisValidatorsRoot := root } : BeaconState preset _).previousEpochAttestations
+      = activated.previousEpochAttestations from rfl, kept.previousEpochAttestations]
+    rfl
+  · simp only [epochPending, ↓reduceIte]
+    rw [show ({ activated with genesisValidatorsRoot := root } : BeaconState preset _).currentEpochAttestations
+      = activated.currentEpochAttestations from rfl, kept.currentEpochAttestations]
+    rfl
+
+/-- From genesis, before Altair, a counted voter of a weighing call signed the call's link.
+
+The voter's data has the checkpoint as target and the call's source as source, with no exception.
+-/
+theorem JustifiedBy.pending_voters_signed_of_genesis {start after : ForkedBeaconState preset}
+    {checkpoint : Checkpoint}
+    (lookahead : preset.MIN_SEED_LOOKAHEAD.toNat + 2 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
+    (genesis : Genesis config checks start)
+    (justified : JustifiedBy config checks start after checkpoint) :
+    ∃ (fork : Fork) (state cached : BeaconState preset fork) (voters : List ValidatorIndex),
+      Reaches config checks start ⟨fork, state⟩ ∧
+      Reaches config checks ⟨fork, state⟩ after ∧ processSlot state = .ok cached ∧
+      GENESIS_EPOCH + 1 < getCurrentEpoch cached ∧
+      (checkpoint.epoch = getPreviousEpoch cached ∨ checkpoint.epoch = getCurrentEpoch cached) ∧
+      TargetVoters cached checkpoint.epoch voters ∧ PassesThreshold cached voters ∧
+      getBlockRoot cached checkpoint.epoch = .ok checkpoint.root ∧
+      (fork < .altair → ∀ index ∈ voters,
+        ∃ data, data.target = checkpoint ∧
+          SignedVote config checks start ⟨fork, state⟩ index data ∧
+          data.source = recordSource cached checkpoint.epoch) := by
+  obtain ⟨fork, state, cached, voters, head, toAfter, cachedOk, later, recent, counted, passes,
+    rootOk, signers⟩ := justified.pending_voters_signed lookahead
+  refine ⟨fork, state, cached, voters, head, toAfter, cachedOk, later, recent, counted, passes,
+    rootOk, fun before index member => ?_⟩
+  rcases signers before index member with ⟨pending, startBefore, current, held⟩ |
+    ⟨data, target, signed, source⟩
+  · rw [genesis_epochPending genesis startBefore current] at held
+    simp at held
+  refine ⟨data, target, signed, ?_⟩
+  rcases source with same | exception
+  · exact same
+  · exact recordSource_of_epochOne ⟨start, genesis, .refl _⟩ cachedOk later recent exception
+
+
 end EthLib.Consensus
