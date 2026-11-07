@@ -382,4 +382,162 @@ theorem JustifiedBy.voters_signed {start after : ForkedBeaconState preset}
           omega
         exact (chainB.previousJustified_of_next_epoch next weighs).symm
 
+/-! ## Justification bits -/
+
+/-- A block keeps the justification bits. -/
+theorem applySignedBlock_bits {engine : ExecutionEngine preset fork}
+    {signed : SignedBeaconBlock preset fork} {validateResult : Bool}
+    (computed : applySignedBlock config checks engine state signed validateResult = .ok after) :
+    after.justificationBits = state.justificationBits := by
+  obtain ⟨-, processed, -⟩ := applySignedBlock_ok computed
+  obtain ⟨paid, headed, paidKept, headedOk, headedKept⟩ := processBlock_kept processed
+  obtain ⟨_, _, rfl⟩ := processBlockHeader_eq headedOk
+  exact headedKept.justificationBits.trans paidKept.justificationBits
+
+/-- A state after a weighing call is at least in epoch three.
+
+The call reads epoch two or later, and closes that epoch. -/
+theorem JustifiedBy.late {start after : ForkedBeaconState preset} {checkpoint : Checkpoint}
+    (justified : JustifiedBy config checks start after checkpoint) :
+    3 ≤ (getCurrentEpoch after.state).toNat := by
+  obtain ⟨fork, state, cached, _, next, _, _, _, nextOk, tail, closes, cachedOk, _, later, _⟩ :=
+    justified
+  have nextEpoch := epoch_of_closes (advanceSlot_slot nextOk) closes
+  have cachedEpoch : getCurrentEpoch cached = getCurrentEpoch state := by
+    simp only [getCurrentEpoch, processSlot_slot cachedOk]
+  have laterNat := UInt64.lt_iff_toNat_lt.mp later
+  rw [cachedEpoch] at laterNat
+  change 0 + 1 < _ at laterNat
+  have := tail.epoch_le
+  simp only at this
+  omega
+
+/-- Where a set justification bit of a chain's end comes from.
+
+Bit `i` stands for the epoch `i` epochs before the previous epoch.
+
+Either the start of the chain had some bit set, or a weighing call of the chain justified a
+checkpoint of that epoch. -/
+theorem Reaches.justificationBit {start after : ForkedBeaconState preset}
+    (chain : Reaches config checks start after) (index : Nat)
+    (inside : index < JUSTIFICATION_BITS_LENGTH.toNat)
+    (set : after.state.justificationBits.bits[index] = true) :
+    (∃ (other : Nat) (inside : other < JUSTIFICATION_BITS_LENGTH.toNat),
+        start.state.justificationBits.bits[other] = true) ∨
+      ∃ checkpoint : Checkpoint,
+        checkpoint.epoch.toNat + index = (getPreviousEpoch after.state).toNat ∧
+        JustifiedBy config checks start after checkpoint := by
+  obtain ⟨run⟩ := chain
+  induction run generalizing index with
+  | nil => exact .inl ⟨index, inside, set⟩
+  | @snoc middle last run step more =>
+    have middleChain : Reaches config checks start middle := ⟨run⟩
+    cases step with
+    | @slot fork state next notDue computed =>
+      have theStep : Step config checks ⟨fork, state⟩ ⟨fork, next⟩ := .slot notDue computed
+      obtain ⟨cached, cachedOk, stepSlot, -, -, -, closing⟩ := advanceSlot_history computed
+      have cachedSame : cached.justificationBits = state.justificationBits ∧
+          getCurrentEpoch cached = getCurrentEpoch state := by
+        obtain ⟨_, _, _, _, rfl⟩ := processSlot_ok cachedOk
+        exact ⟨rfl, rfl⟩
+      split at closing
+      · next closes =>
+        obtain ⟨weighed, weighedOk, bitsSame, -, -, -⟩ := closing
+        simp only at set ⊢
+        rw [bitsSame] at set
+        have previousNext := getPreviousEpoch_of_closes stepSlot closes
+        rcases processJustificationAndFinalization_bits weighedOk with ⟨early, rfl⟩ |
+          ⟨later, bit0, bit1, bit2, bit3⟩
+        · -- The first two epochs keep the bits; no call ran before them.
+          rw [cachedSame.1] at set
+          rcases more index inside set with atStart | ⟨checkpoint, -, justified⟩
+          · exact .inl atStart
+          · exfalso
+            have := justified.late
+            have earlyNat := UInt64.le_iff_toNat_le.mp early
+            rw [cachedSame.2] at earlyNat
+            change _ ≤ 0 + 1 at earlyNat
+            simp only at this
+            omega
+        · rw [cachedSame.2] at later
+          have laterNat := UInt64.lt_iff_toNat_lt.mp later
+          change 0 + 1 < _ at laterNat
+          have previousMiddle := getPreviousEpoch_toNat state
+          rw [previousNext]
+          -- A bit the call set stands for a checkpoint it justified.
+          have record : ∀ {epoch : Epoch} {voters root},
+              (epoch = getPreviousEpoch cached ∨ epoch = getCurrentEpoch cached) →
+              TargetVoters cached epoch voters → PassesThreshold cached voters →
+              getBlockRoot cached epoch = .ok root →
+              JustifiedBy config checks start ⟨fork, next⟩ ⟨epoch, root⟩ :=
+            fun recent votersAre passes rootOk =>
+              ⟨fork, state, cached, weighed, next, _, middleChain, notDue, computed, .refl _,
+                closes, cachedOk, weighedOk, by rw [cachedSame.2]; exact later, recent, votersAre,
+                passes, rootOk⟩
+          have cachedPrevious : getPreviousEpoch cached = getPreviousEpoch state := by
+            unfold getPreviousEpoch
+            rw [cachedSame.2]
+          -- A bit moved from before stands for the same epoch, one place further back.
+          have moved : ∀ (older : Nat) (olderInside : older < JUSTIFICATION_BITS_LENGTH.toNat),
+              state.justificationBits.bits[older] = true →
+              (∃ (other : Nat) (inside : other < JUSTIFICATION_BITS_LENGTH.toNat),
+                  start.state.justificationBits.bits[other] = true) ∨
+                ∃ checkpoint : Checkpoint,
+                  checkpoint.epoch.toNat + (older + 1) = (getCurrentEpoch state).toNat ∧
+                  JustifiedBy config checks start ⟨fork, next⟩ checkpoint := by
+            intro older olderInside old
+            rcases more older olderInside old with atStart | ⟨checkpoint, epoch, justified⟩
+            · exact .inl atStart
+            · exact .inr ⟨checkpoint, by simp only at epoch; omega, justified.extend theStep⟩
+          rcases index with _ | _ | _ | _ | index
+          · obtain ⟨voters, root, votersAre, passes, rootOk⟩ := bit0 set
+            exact .inr ⟨⟨_, root⟩, by simp only [cachedSame.2, Nat.add_zero],
+              record (.inr rfl) votersAre passes rootOk⟩
+          · rcases bit1 set with ⟨voters, root, votersAre, passes, rootOk⟩ | old
+            · refine .inr ⟨⟨_, root⟩, ?_, record (.inl rfl) votersAre passes rootOk⟩
+              simp only
+              rw [cachedPrevious, previousMiddle]
+              omega
+            · exact moved 0 (by decide) (cachedSame.1 ▸ old)
+          · rw [bit2] at set
+            exact moved 1 (by decide) (cachedSame.1 ▸ set)
+          · rw [bit3] at set
+            exact moved 2 (by decide) (cachedSame.1 ▸ set)
+          · exact absurd inside (by simp [JUSTIFICATION_BITS_LENGTH])
+      · next notClosing =>
+        obtain ⟨bitsSame, -, -, -⟩ := closing
+        simp only at set ⊢
+        rw [bitsSame] at set
+        have sameEpoch := epoch_of_open stepSlot notClosing
+        have previousSame : getPreviousEpoch next = getPreviousEpoch state := by
+          unfold getPreviousEpoch
+          rw [sameEpoch]
+        rw [previousSame]
+        rcases more index inside set with atStart | ⟨checkpoint, epoch, justified⟩
+        · exact .inl atStart
+        · exact .inr ⟨checkpoint, epoch, justified.extend theStep⟩
+    | @upgrade _ post due computed =>
+      have theStep : Step config checks middle post.val := .upgrade due computed
+      have same := upgradeNext_history computed
+      simp only [BeaconState.history, Prod.mk.injEq] at same
+      have previousSame : getPreviousEpoch post.val.state = getPreviousEpoch middle.state := by
+        simp only [getPreviousEpoch, getCurrentEpoch, same.1]
+      rw [same.2.2.2.2.1] at set
+      rw [previousSame]
+      rcases more index inside set with atStart | ⟨checkpoint, epoch, justified⟩
+      · exact .inl atStart
+      · exact .inr ⟨checkpoint, epoch, justified.extend theStep⟩
+    | @block fork engine signed validateResult state post notDue computed =>
+      have theStep : Step config checks ⟨fork, state⟩ ⟨fork, post⟩ :=
+        .block engine signed validateResult notDue computed
+      have postSlot := processBlock_slot (applySignedBlock_ok computed).2.1
+      have previousSame : getPreviousEpoch post = getPreviousEpoch state := by
+        simp only [getPreviousEpoch, getCurrentEpoch, postSlot]
+      simp only at set ⊢
+      rw [applySignedBlock_bits computed] at set
+      rw [previousSame]
+      rcases more index inside set with atStart | ⟨checkpoint, epoch, justified⟩
+      · exact .inl atStart
+      · exact .inr ⟨checkpoint, epoch, justified.extend theStep⟩
+
 end EthLib.Consensus

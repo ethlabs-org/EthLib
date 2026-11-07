@@ -323,4 +323,49 @@ theorem processJustificationAndFinalization_justified
       exact .inr ⟨_, previousVoters, root, .inl rfl, previousIs, by omega, rootOk, eq⟩
     · exact .inl justified
 
+/-- What one weighing call writes into the justification bits, at an epoch boundary.
+
+In the first two epochs the call writes nothing.
+
+Otherwise the newest bit is set when the current epoch's voters pass the test.
+
+The next bit is set when the previous epoch's voters pass, or when the newest bit was set.
+
+The two oldest bits are the old bits moved one place.
+
+A passing epoch has its first block root read by the call. -/
+theorem processJustificationAndFinalization_bits
+    (computed : processJustificationAndFinalization state = .ok after) :
+    (getCurrentEpoch state ≤ GENESIS_EPOCH + 1 ∧ after = state) ∨
+      (GENESIS_EPOCH + 1 < getCurrentEpoch state ∧
+        (after.justificationBits.bits[0] = true →
+          ∃ voters root, TargetVoters state (getCurrentEpoch state) voters ∧
+            PassesThreshold state voters ∧
+            getBlockRoot state (getCurrentEpoch state) = .ok root) ∧
+        (after.justificationBits.bits[1] = true →
+          (∃ voters root, TargetVoters state (getPreviousEpoch state) voters ∧
+            PassesThreshold state voters ∧
+            getBlockRoot state (getPreviousEpoch state) = .ok root) ∨
+          state.justificationBits.bits[0] = true) ∧
+        after.justificationBits.bits[2] = state.justificationBits.bits[1] ∧
+        after.justificationBits.bits[3] = state.justificationBits.bits[2]) := by
+  rcases processJustificationAndFinalization_weighs computed with early |
+    ⟨later, previousVoters, currentVoters, total, previous, current, previousIs, currentIs,
+      totalOk, previousOk, currentOk, weighed⟩
+  · exact .inl early
+  obtain ⟨_, _, _, bit0, bit1, bit2, bit3, -⟩ := weighJustificationAndFinalization_eq weighed
+  obtain ⟨previousRoot, currentRoot⟩ := weighJustificationAndFinalization_roots weighed
+  have totalEq := getTotalBalance_toNat totalOk
+  have previousEq := getTotalBalance_toNat previousOk
+  have currentEq := getTotalBalance_toNat currentOk
+  refine .inr ⟨later, fun set => ?_, fun set => ?_, bit2, bit3⟩
+  · rw [bit0, decide_eq_true_iff] at set
+    obtain ⟨root, rootOk⟩ := currentRoot set
+    exact ⟨currentVoters, root, currentIs, by unfold PassesThreshold; omega, rootOk⟩
+  · rw [bit1, Bool.or_eq_true, decide_eq_true_iff] at set
+    rcases set with passes | old
+    · obtain ⟨root, rootOk⟩ := previousRoot passes
+      exact .inl ⟨previousVoters, root, previousIs, by unfold PassesThreshold; omega, rootOk⟩
+    · exact .inr old
+
 end EthLib.Consensus
