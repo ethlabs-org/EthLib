@@ -354,7 +354,7 @@ theorem HeaderSettled.slot {base : ForkedBeaconState preset} {fork : Fork}
   · by_cases zero : header.stateRoot = Vector.replicate 32 0
     · -- The first caching after the base fills the header.
       simp only [zero, ↓reduceIte]
-      exact ⟨root, rfl, .inr ⟨by first | exact zero | trivial, ⟨fork, state⟩, root, chain,
+      exact ⟨root, rfl, .inr ⟨trivial, ⟨fork, state⟩, root, chain,
         Reaches.refl _ |>.step step,
         sameSlot, rootOk, .inl rfl⟩⟩
     · simp only [zero, ↓reduceIte]
