@@ -225,7 +225,10 @@ The epochs of the buffer of roots must span two epochs: `2 * SLOTS_PER_EPOCH ≤
 
 Each counted voter signed attestation data whose target is the checkpoint.
 
-Its source is the call's source for that epoch, except for a target in epoch 1.
+Its source is the call's source for that epoch.
+
+For a target in epoch 1 the source may instead be the current justified checkpoint of a state of
+epoch 1 of the chain, since the end of epoch 1 weighs nothing.
 
 The flag may also come from the start of the chain, or from the upgrade to Altair. -/
 theorem JustifiedBy.voters_signed {start after : ForkedBeaconState preset}
@@ -245,7 +248,12 @@ theorem JustifiedBy.voters_signed {start after : ForkedBeaconState preset}
           TIMELY_TARGET_FLAG_INDEX checkpoint.epoch ∨
         ∃ data, data.target = checkpoint ∧
           SignedTarget config checks start ⟨fork, state⟩ index data ∧
-          (data.source = recordSource cached checkpoint.epoch ∨ checkpoint.epoch.toNat = 1)) := by
+          (data.source = recordSource cached checkpoint.epoch ∨
+            (checkpoint.epoch.toNat = 1 ∧ ∃ (fork' : Fork) (epochOne : BeaconState preset fork'),
+              Reaches config checks start ⟨fork', epochOne⟩ ∧
+              Reaches config checks ⟨fork', epochOne⟩ ⟨fork, state⟩ ∧
+              (getCurrentEpoch epochOne).toNat = 1 ∧
+              data.source = epochOne.currentJustifiedCheckpoint))) := by
   obtain ⟨fork, state, cached, _, next, voters, head, notDue, nextOk, tail, closes, cachedOk,
     _, later, recent, counted, passes, rootOk⟩ := justified
   refine ⟨fork, state, cached, voters, head,
@@ -372,7 +380,9 @@ theorem JustifiedBy.voters_signed {start after : ForkedBeaconState preset}
       rw [ite_eq_left_of_eq_true _ _ (eq_true targetIsSite),
         ite_eq_right_of_eq_false _ _ (eq_false notState)]
       by_cases first : checkpoint.epoch.toNat = 1
-      · exact .inr first
+      · refine .inr ⟨first, forkB, stateB, headB, chainB, ?_, rfl⟩
+        rw [← targetIsSite]
+        exact first
       · left
         have next : (getCurrentEpoch state).toNat = (getCurrentEpoch stateB).toNat + 1 := by
           omega
