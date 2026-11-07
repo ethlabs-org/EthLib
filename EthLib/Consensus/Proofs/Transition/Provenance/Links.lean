@@ -185,4 +185,66 @@ theorem JustifiedBy.source_ancestor {start after : ForkedBeaconState preset}
   · exact .inl (ancestor.extendChain toAfter)
   · exact .inr (zero.extendChain toAfter)
 
+/-- A checkpoint that a call justified is read again at the end of the chain, while still in
+the buffer. -/
+theorem JustifiedBy.read_at_end {start after : ForkedBeaconState preset} {checkpoint : Checkpoint}
+    (wide : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
+    (justified : JustifiedBy config checks start after checkpoint)
+    (recentEnd : after.state.slot.toNat ≤
+      checkpoint.epoch.toNat * preset.SLOTS_PER_EPOCH.toNat +
+        preset.SLOTS_PER_HISTORICAL_ROOT.toNat) :
+    ∃ slot : Slot, slot.toNat = checkpoint.epoch.toNat * preset.SLOTS_PER_EPOCH.toNat ∧
+      slot.toNat < after.state.slot.toNat ∧
+      readCircular after.state.blockRoots.elements slot = .ok checkpoint.root := by
+  obtain ⟨fork, state, cached, _, next, _, _, notDue, nextOk, tail, _, cachedOk, _, later,
+    recent, _, _, rootOk⟩ := justified
+  obtain ⟨slot, slotEq, below, _, read⟩ := processSlot_read wide cachedOk later recent rootOk
+  have toAfter : Reaches config checks ⟨fork, state⟩ after :=
+    ((Reaches.refl _).step (.slot notDue nextOk)).trans tail
+  have stateLe := toAfter.slot_le
+  simp only at stateLe
+  have stable := (toAfter.roots_stable (slot := slot) below (by rw [slotEq]; exact recentEnd)).1
+  rw [read] at stable
+  exact ⟨slot, slotEq, by omega, stable⟩
+
+/-- Two checkpoints that calls of one chain justified: the earlier block is an ancestor.
+
+The chain starts at genesis, and both checkpoints are still in the buffer at its end.
+
+The buffer of roots must span two epochs.
+
+The earlier checkpoint's root is an ancestor of the later one's, along the parent links of the
+blocks of a chain from genesis to the end.
+
+Or a state of that chain has the zero root. -/
+theorem JustifiedBy.ancestor {start after : ForkedBeaconState preset} {first second : Checkpoint}
+    (wide : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
+    (genesis : Genesis config checks start)
+    (firstJustified : JustifiedBy config checks start after first)
+    (secondJustified : JustifiedBy config checks start after second)
+    (ordered : first.epoch.toNat ≤ second.epoch.toNat)
+    (recentEnd : after.state.slot.toNat ≤
+      first.epoch.toNat * preset.SLOTS_PER_EPOCH.toNat +
+        preset.SLOTS_PER_HISTORICAL_ROOT.toNat) :
+    ChainAncestor config checks start after first.root second.root ∨
+      ZeroRootFound config checks start after := by
+  obtain ⟨slot, slotEq, below, read⟩ := firstJustified.read_at_end wide recentEnd
+  have slotOrder : first.epoch.toNat * preset.SLOTS_PER_EPOCH.toNat ≤
+      second.epoch.toNat * preset.SLOTS_PER_EPOCH.toNat := Nat.mul_le_mul_right _ ordered
+  obtain ⟨slot', slotEq', below', read'⟩ := secondJustified.read_at_end wide (by omega)
+  have chain : Reaches config checks start after := by
+    obtain ⟨_, _, _, _, _, _, head, notDue, nextOk, tail, _⟩ := firstJustified
+    exact head.trans (((Reaches.refl _).step (.slot notDue nextOk)).trans tail)
+  have startSlot := (genesis_state genesis).1
+  rcases Nat.lt_or_ge slot.toNat slot'.toNat with before | same
+  · rcases chain.blockRoots_ancestor (by rw [startSlot]; exact Nat.zero_le _) before below'
+      (by omega) read read' with ⟨_, _, _, ⟨_, _, _, _, _, head, _⟩, ancestor | zero⟩
+    · exact .inl (ancestor.prefix head)
+    · exact .inr (zero.prefix head)
+  · have sameSlot : slot = slot' := UInt64.toNat_inj.mp (by omega)
+    subst sameSlot
+    rw [read] at read'
+    rw [Except.ok.inj read']
+    exact .inl .refl
+
 end EthLib.Consensus
