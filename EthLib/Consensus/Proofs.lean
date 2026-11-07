@@ -87,6 +87,8 @@ public import EthLib.Consensus.Proofs.Transition.DepositChurn
 public import EthLib.Consensus.Proofs.Transition.DepositCredits
 public import EthLib.Consensus.Proofs.Transition.EffectiveBalanceCap
 public import EthLib.Consensus.Proofs.Transition.EffectiveBalanceCeiling
+public import EthLib.Consensus.Proofs.Transition.EffectiveBalanceDrift
+public import EthLib.Consensus.Proofs.Transition.EffectiveBalanceFloor
 public import EthLib.Consensus.Proofs.Transition.EpochJustification
 public import EthLib.Consensus.Proofs.Transition.EpochParticipation
 public import EthLib.Consensus.Proofs.Transition.EpochPending
@@ -98,6 +100,7 @@ public import EthLib.Consensus.Proofs.Transition.FfgVotes
 public import EthLib.Consensus.Proofs.Transition.ForkBoundary
 public import EthLib.Consensus.Proofs.Transition.GainedBound
 public import EthLib.Consensus.Proofs.Transition.Genesis
+public import EthLib.Consensus.Proofs.Transition.InactivityScores
 public import EthLib.Consensus.Proofs.Transition.Invariants
 public import EthLib.Consensus.Proofs.Transition.Lifecycle
 public import EthLib.Consensus.Proofs.Transition.Operations
@@ -106,6 +109,7 @@ public import EthLib.Consensus.Proofs.Transition.Payload
 public import EthLib.Consensus.Proofs.Transition.Reachable
 public import EthLib.Consensus.Proofs.Transition.Requests
 public import EthLib.Consensus.Proofs.Transition.SlashingBalances
+public import EthLib.Consensus.Proofs.Transition.SlashingPayouts
 public import EthLib.Consensus.Proofs.Transition.Slot
 public import EthLib.Consensus.Proofs.Transition.StateTransition
 public import EthLib.Consensus.Proofs.Transition.SyncAggregate
