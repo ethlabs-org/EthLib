@@ -661,7 +661,7 @@ theorem votesKept_processSyncAggregate {altair : .altair ≤ fork} {aggregate : 
 The steps before the attestations and the steps after them add none. -/
 theorem processOperations_votes {body : BeaconBlockBody preset fork} {parentSlot : Slot}
     (computed : processOperations config checks state body parentSlot = .ok after) :
-    ∃ before attested, VotesKept state before ∧
+    ∃ before attested, VotesKept state before ∧ before.slot = state.slot ∧
       body.attestations.data.toList.foldlM (processAttestation config checks · parentSlot ·)
         before = .ok attested ∧
       VotesKept attested after := by
@@ -674,6 +674,8 @@ theorem processOperations_votes {body : BeaconBlockBody preset fork} {parentSlot
     exact ⟨_, _,
       (VotesKept.foldlM (fun _ _ _ ok => votesKept_processProposerSlashing ok) proposersOk).trans
         (VotesKept.foldlM (fun _ _ _ ok => votesKept_processAttesterSlashing ok) attestersOk),
+      ((Frame.foldlM (fun _ _ _ ok => frame_processProposerSlashing ok) proposersOk).trans
+        (Frame.foldlM (fun _ _ _ ok => frame_processAttesterSlashing ok) attestersOk)).slot,
       attestedOk,
       (VotesKept.foldlM (fun _ _ _ ok => votesKept_processVoluntaryExit ok) exitsOk).trans <|
       (VotesKept.foldlM (fun _ _ _ ok => votesKept_processBlsToExecutionChange ok) changesOk).trans <|
@@ -698,6 +700,8 @@ theorem processOperations_votes {body : BeaconBlockBody preset fork} {parentSlot
   exact ⟨_, _,
     (VotesKept.foldlM (fun _ _ _ ok => votesKept_processProposerSlashing ok) proposersOk).trans
       (VotesKept.foldlM (fun _ _ _ ok => votesKept_processAttesterSlashing ok) attestersOk),
+    ((Frame.foldlM (fun _ _ _ ok => frame_processProposerSlashing ok) proposersOk).trans
+      (Frame.foldlM (fun _ _ _ ok => frame_processAttesterSlashing ok) attestersOk)).slot,
     attestedOk,
     (VotesKept.foldlM (fun _ _ _ ok => votesKept_processDeposit ok) depositedOk).trans <|
     (VotesKept.foldlM (fun _ _ _ ok => votesKept_processVoluntaryExit ok) exitsOk).trans <|
@@ -708,7 +712,7 @@ theorem processOperations_votes {body : BeaconBlockBody preset fork} {parentSlot
 They run with the slot of the latest block before this one. -/
 theorem processBlock_votes {block : BeaconBlock preset fork}
     (computed : processBlock config checks engine state block = .ok after) :
-    ∃ before attested, VotesKept state before ∧
+    ∃ before attested, VotesKept state before ∧ before.slot = state.slot ∧
       block.body.attestations.data.toList.foldlM
         (processAttestation config checks · state.latestBlockHeader.slot ·) before = .ok attested ∧
       VotesKept attested after := by
@@ -739,18 +743,39 @@ theorem processBlock_votes {block : BeaconBlock preset fork}
       · exact votesKept_processEth1Data votedOk
       · cases votedOk
         exact VotesKept.refl _
-    obtain ⟨before, attested, head, folded, tail⟩ := processOperations_votes operatedOk
+    obtain ⟨before, attested, head, headSlot, folded, tail⟩ := processOperations_votes operatedOk
+    -- Every step before the attestations keeps the slot.
+    have slot : voted.slot = state.slot := by
+      have paidFrame : Frame state paid := by
+        split at paidOk
+        · exact frame_processParentExecutionPayload paidOk
+        · cases paidOk
+          exact Frame.refl _
+      have executedFrame : Frame headed executed := by
+        split at executedOk
+        · exact frame_processBlockExecution executedOk
+        · cases executedOk
+          exact Frame.refl _
+      have votedFrame : Frame revealed voted := by
+        split at votedOk
+        · exact frame_processEth1Data votedOk
+        · cases votedOk
+          exact Frame.refl _
+      exact (paidFrame.trans <| (frame_processBlockHeader headedOk).trans <| executedFrame.trans <|
+        (frame_processRandao revealedOk).trans votedFrame).slot
     exact ⟨before, attested, paidVotes.trans <| headedVotes.trans <| executedVotes.trans <|
-      (votesKept_processRandao revealedOk).trans <| votedVotes.trans head, folded,
-      tail.trans (votesKept_processSyncAggregate synced)⟩
+      (votesKept_processRandao revealedOk).trans <| votedVotes.trans head, headSlot.trans slot,
+      folded, tail.trans (votesKept_processSyncAggregate synced)⟩
   simp only [bind_ok_iff] at computed
   obtain ⟨headed, headerOk, revealed, randaoOk, voted, eth1Ok, operationsOk⟩ := computed
   have headedVotes : VotesKept state headed := by
     obtain ⟨_, _, rfl⟩ := processBlockHeader_eq headerOk
     exact .of_votes rfl
-  obtain ⟨before, attested, head, folded, tail⟩ := processOperations_votes operationsOk
+  obtain ⟨before, attested, head, headSlot, folded, tail⟩ := processOperations_votes operationsOk
+  have slot : voted.slot = state.slot := ((frame_processBlockHeader headerOk).trans <|
+    (frame_processRandao randaoOk).trans (frame_processEth1Data eth1Ok)).slot
   exact ⟨before, attested, headedVotes.trans <| (votesKept_processRandao randaoOk).trans <|
-    (votesKept_processEth1Data eth1Ok).trans head, folded, tail⟩
+    (votesKept_processEth1Data eth1Ok).trans head, headSlot.trans slot, folded, tail⟩
 
 /-! ## The steps of an epoch -/
 
@@ -1204,5 +1229,68 @@ theorem processEpoch_votes (computed : processEpoch config checks state = .ok af
     (votesKept_processRandaoMixesReset mixedOk).trans <|
     (votesKept_processHistoricalRootsUpdate rootedOk),
     rotatesVotes_processParticipationRecordUpdates rotated, VotesKept.refl _⟩
+
+/-! ## Upgrades -/
+
+theorem votesKept_queuePreActivation {electra : .pectra ≤ fork} {index : ValidatorIndex}
+    (computed : queuePreActivation state electra index = .ok after) : VotesKept state after := by
+  simp only [queuePreActivation, bind_ok_iff, liftAccessor_ok, pure, Except.pure,
+    Except.ok.injEq] at computed
+  obtain ⟨_, -, _, -, _, -, _, set₁, _, set₂, rfl⟩ := computed
+  obtain ⟨_, rfl⟩ := setBalance_ok set₁
+  obtain ⟨_, rfl⟩ := setValidator_ok set₂
+  exact .of_votes rfl
+
+theorem votesKept_queueCompoundingExcess {electra : .pectra ≤ fork} {index : Nat}
+    (computed : queueCompoundingExcess state electra index = .ok after) : VotesKept state after := by
+  unfold queueCompoundingExcess at computed
+  split at computed
+  · split at computed
+    · exact votesKept_queueExcessActiveBalance (liftAccessor_ok.mp computed)
+    · cases computed
+      exact VotesKept.refl _
+  · cases computed
+    exact VotesKept.refl _
+
+/-- An upgrade from Altair on adds no flag: each list of flags carries over.
+
+The upgrade from Phase 0 is the one that turns pending attestations into flags. -/
+theorem upgradeNext_flags {pre : ForkedBeaconState preset}
+    {post : {post : ForkedBeaconState preset // pre.fork < post.fork}}
+    (computed : upgradeNext config checks pre = .ok post) (altair : .altair ≤ pre.fork) :
+    FlagsWithin (pre.state.previousEpochParticipation altair).data
+        (post.val.state.previousEpochParticipation (Nat.le_trans altair (Nat.le_of_lt post.2))).data ∧
+      FlagsWithin (pre.state.currentEpochParticipation altair).data
+        (post.val.state.currentEpochParticipation (Nat.le_trans altair (Nat.le_of_lt post.2))).data := by
+  obtain ⟨fork, state⟩ := pre
+  cases fork <;>
+    simp only [upgradeNext, bind_ok_iff, pure, Except.pure, Except.ok.injEq, throw,
+      throwThe, MonadExceptOf.throw, reduceCtorEq] at computed
+  · exact absurd (show Fork.altair ≤ Fork.phase0 from altair) (by decide)
+  · subst computed
+    exact ⟨.refl _, .refl _⟩
+  · subst computed
+    exact ⟨.refl _, .refl _⟩
+  · subst computed
+    exact ⟨.refl _, .refl _⟩
+  · obtain ⟨_, upgraded, rfl⟩ := computed
+    simp only [upgradeToElectra, bind_ok_iff] at upgraded
+    obtain ⟨_, -, _, -, _, -, _, -, middle, queued, compounded⟩ := upgraded
+    have kept := (VotesKept.foldlM (fun _ _ _ ok => votesKept_queuePreActivation ok) queued).trans
+      (VotesKept.foldlM (fun _ _ _ ok => votesKept_queueCompoundingExcess ok) compounded)
+    exact ⟨kept.previousEpochParticipation _, kept.currentEpochParticipation _⟩
+  · obtain ⟨_, upgraded, rfl⟩ := computed
+    simp only [upgradeToFulu, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at upgraded
+    obtain ⟨_, -, rfl⟩ := upgraded
+    exact ⟨.refl _, .refl _⟩
+  · obtain ⟨_, upgraded, rfl⟩ := computed
+    unfold upgradeToGloas at upgraded
+    obtain ⟨_, -, rest⟩ := bind_ok_iff.mp upgraded
+    obtain ⟨_, -, onboarded⟩ := bind_ok_iff.mp rest
+    obtain ⟨⟨_, _, rfl⟩, -⟩ := onboardBuildersFromPendingDeposits_spec onboarded
+    exact ⟨.refl _, .refl _⟩
+  · obtain ⟨_, upgraded, rfl⟩ := computed
+    obtain ⟨-, rfl⟩ := upgradeToHeze_ok_iff.mp upgraded
+    exact ⟨.refl _, .refl _⟩
 
 end EthLib.Consensus

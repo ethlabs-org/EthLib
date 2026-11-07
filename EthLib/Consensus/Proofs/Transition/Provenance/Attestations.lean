@@ -60,7 +60,7 @@ theorem hasFlag_eq_getLsbD (flags : ParticipationFlags) (flagIndex : UInt64) :
     simp_all
 
 /-- Setting a flag sets exactly the bit of its index modulo 8. -/
-theorem hasFlag_addFlag (flags : ParticipationFlags) (added flagIndex : UInt64) :
+theorem hasFlag_addFlag_eq (flags : ParticipationFlags) (added flagIndex : UInt64) :
     hasFlag (addFlag flags added) flagIndex =
       (hasFlag flags flagIndex || decide (added.toNat % 8 = flagIndex.toNat % 8)) := by
   simp only [addFlag, hasFlag_eq_getLsbD, UInt8.toBitVec_or, BitVec.getLsbD_or,
@@ -106,7 +106,7 @@ theorem foldlM_addFlagReward {total numerator numerator' : Gwei} {earned : List 
       · simp only [earnedFlag, and_self, ↓reduceIte] at step
         simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq, Prod.mk.injEq] at step
         obtain ⟨_, _, _, _, _, _, rfl, -⟩ := step
-        rw [hasFlag_addFlag, Bool.or_eq_true, decide_eq_true_iff] at old
+        rw [hasFlag_addFlag_eq, Bool.or_eq_true, decide_eq_true_iff] at old
         rcases old with old | same
         · exact .inl old
         · exact .inr ⟨_, earnedFlag.1, same⟩
