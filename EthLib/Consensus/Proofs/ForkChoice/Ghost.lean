@@ -9,8 +9,9 @@ public import EthLib.Consensus.Proofs.Models.ForkChoice.LmdGhost
 
 The head rule of the store is the rule of the LMD-GHOST model, before Gloas.
 
-The proposer boost counts as one more vote, for the boosted block, with the score of the boost as
-its stake.
+The proposer boost counts as one more vote, for the boosted block.
+
+The stake of that vote is the score of the boost.
 
 The model is Algorithm 3.1 of Gasper, [arXiv 2003.03052v3](https://arxiv.org/abs/2003.03052v3).
 
@@ -36,8 +37,9 @@ So when some leaf is viable, the chain of the head holds the finalized block.
 
 That is not required when the finalized epoch is genesis.
 
-When a viable block holds more than half of the stake and the boost in votes, the head descends
-from it.
+Take a viable block with more than half of the stake and the boost in votes.
+
+The head then descends from it.
 
 That holds before Gloas, when each known block sits after its known parent.
 -/
@@ -1213,8 +1215,9 @@ private theorem getAncestor_ok_of_viable_ancestor {nodes : List ForkChoiceNode}
         belowJustified
 
 variable (lower) in
-/-- When a viable block has more than half of the stake and the boost in votes, the head is in its
-subtree.
+/-- Take a viable block with more than half of the stake and the boost in votes.
+
+The head is then in its subtree.
 
 That holds before Gloas, when each known block sits after its known parent.
 
@@ -1252,8 +1255,9 @@ theorem ancestor_getHead_of_majority {nodes : List ForkChoiceNode} {node head : 
     rootValue inView belowJustified majority
   rwa [getHead_eq_ghost_withBoost lower before justifiedState tree found] at model
 
-/-- When a viable block has more than half of the stake and the boost in votes, the head descends
-from its node.
+/-- Take a viable block with more than half of the stake and the boost in votes.
+
+The head then descends from its node.
 
 The ancestor check of the store returns true from the head back to that node.
 

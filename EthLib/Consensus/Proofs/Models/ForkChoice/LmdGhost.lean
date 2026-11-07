@@ -415,24 +415,26 @@ The boost gives a timely block of the current slot the weight of an attestation 
 
 So the block and each of its ancestors gain `W_p` in weight.
 
-The source is Buterin, "Proposal for mitigation against balancing attacks to LMD GHOST",
-<https://notes.ethereum.org/@vbuterin/lmd_ghost_mitigation>, section "Proposed solution", step 3.
+The source is Buterin's [mitigation of balancing attacks][mitigation], "Proposed solution", step 3.
 
-Section 3 of Schwarz-Schilling et al., "Three Attacks on Proof-of-Stake Ethereum",
-[arXiv 2110.10086](https://arxiv.org/abs/2110.10086), gives the ex ante reorg.
+Section 3 of [Three Attacks on Proof-of-Stake Ethereum][attacks] gives the ex ante reorg.
 
-The post "Change fork choice rule to mitigate balancing and reorging attacks",
-<https://ethresear.ch/t/change-fork-choice-rule-to-mitigate-balancing-and-reorging-attacks/11127>,
-says that the boost stops most ex ante reorgs.
+A [post on balancing and reorging attacks][post] says that the boost stops most ex ante reorgs.
 
-Its section "Boosting does not mitigate all ex ante reorgs" adds the boost to the votes in the
-chain of the boosted block.
+Its section "Boosting does not mitigate all ex ante reorgs" adds the boost to the votes.
+
+There the boost counts in the chain of the boosted block.
 
 The model follows that rule: the boost is one more voter, `none`.
 
 Its latest message is the boosted block, and its stake is the score of the boost.
 
-Without a boosted block, it has no latest message. -/
+Without a boosted block, it has no latest message.
+
+[mitigation]: https://notes.ethereum.org/@vbuterin/lmd_ghost_mitigation
+[attacks]: https://arxiv.org/abs/2110.10086
+[post]: https://ethresear.ch/t/change-fork-choice-rule-to-mitigate-balancing-and-reorging-attacks/11127
+-/
 
 variable {V w G}
 
@@ -460,8 +462,9 @@ theorem stake_boostStake (score : ℕ) :
   rfl
 
 open scoped Classical in
-/-- With the boost, a block weighs its votes, plus the score when the boosted block is in its
-subtree. -/
+/-- With the boost, a block weighs its votes, plus the score.
+
+The score counts when the boosted block is in its subtree. -/
 theorem weight_withBoost (boosted : Option β) (score : ℕ) (b : β) :
     weight V.insertNone (boostStake w score) (G.withBoost boosted) b =
       weight V w G b + if ∃ m, boosted = some m ∧ T.Ancestor b m then score else 0 := by
