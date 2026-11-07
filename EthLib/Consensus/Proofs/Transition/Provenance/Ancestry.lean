@@ -2,6 +2,8 @@ module
 
 public import EthLib.Consensus.Proofs.Containers.Misc
 public import EthLib.Consensus.Proofs.Transition.Provenance.Roots
+public import EthLib.Serialization.Proofs.Ssz.Codec.RootUnfold
+public import EthLib.Serialization.Proofs.Ssz.Codec.Summary
 public import EthLib.Serialization.Proofs.Ssz.Typed.Root
 public import Mathlib.Logic.Relation
 
@@ -98,6 +100,62 @@ theorem beaconBlockHeader_root_binding {left right : BeaconBlockHeader} {root : 
       exact yMember
     obtain ⟨a, b, found⟩ := findMessageCollision_of_collision xIn yIn collision
     exact ⟨a, b, found, (findMessageCollision_valid found).2.2⟩
+
+/-! ## The root of a block and of its header -/
+
+/-- A block and its header have one root.
+
+The header holds the root of the body where the block holds the body.
+
+A container's root is built from the roots of its fields, so the two roots agree. -/
+theorem hashTreeRoot_toHeader {block : BeaconBlock preset fork} {bodyRoot : Root}
+    (bodyRootOk : hashTreeRoot block.body = .ok bodyRoot) :
+    hashTreeRoot (block.toHeader bodyRoot) = hashTreeRoot block := by
+  -- The body's root, as bytes.
+  have bodyBytes : SszType.root block.body = .ok bodyRoot.toArray := by
+    unfold SszType.hashTreeRoot at bodyRootOk
+    simp only [bind, Except.bind] at bodyRootOk
+    split at bodyRootOk
+    · cases bodyRootOk
+    · next bytes rootOk =>
+      rw [rootOk]
+      unfold toChunk at bodyRootOk
+      split at bodyRootOk
+      · cases bodyRootOk
+        rfl
+      · cases bodyRootOk
+  -- A 32-byte root is its own root.
+  have rootBytes : SszType.root bodyRoot = .ok bodyRoot.toArray :=
+    hashTreeRoot_chunk (by simp [bytesPerChunk])
+  unfold SszType.hashTreeRoot
+  congr 1
+  show (do summaryRoot (.container _) (← SszFields.roots _)) =
+    (do summaryRoot (.container _) (← SszFields.roots _))
+  simp only [SszFields.roots, bind, Except.bind, pure, Except.pure, rootBytes, bodyBytes,
+    BeaconBlock.toHeader, BeaconBlock.header]
+  -- The two containers differ only in the name of their last field.
+  have names : ∀ roots, summaryRoot (.container ["slot", "proposer_index", "parent_root",
+      "state_root", "body_root"]) roots = summaryRoot (.container ["slot", "proposer_index",
+      "parent_root", "state_root", "body"]) roots :=
+    fun _ => hashTreeRoot_container_names _ _ _ _
+  simp only [names]
+
+/-- A validated block of a chain has its own root as the root that its header takes.
+
+So along a chain of validated blocks, parent roots are the roots of the blocks themselves. -/
+theorem ChainBlock.root_of_validated {fork : Fork} {engine : ExecutionEngine preset fork}
+    {signed : SignedBeaconBlock preset fork} {state post : BeaconState preset fork}
+    {bodyRoot stateRoot root : Root}
+    (applied : applySignedBlock config checks engine state signed true = .ok post)
+    (bodyRootOk : hashTreeRoot signed.message.body = .ok bodyRoot)
+    (stateRootOk : hashTreeRoot post = .ok stateRoot)
+    (rootOk : hashTreeRoot { signed.message.header bodyRoot with stateRoot } = .ok root) :
+    hashTreeRoot signed.message = .ok root := by
+  have named := (applySignedBlock_ok applied).2.2 rfl
+  rw [named] at stateRootOk
+  cases stateRootOk
+  rw [← hashTreeRoot_toHeader bodyRootOk]
+  exact rootOk
 
 /-! ## Parent roots along a chain -/
 
