@@ -33,15 +33,17 @@ The store raises its justified and its finalized checkpoint separately, from any
 
 A block is checked only to descend from the finalized block of the store at that time.
 
-So the store can first take a justified checkpoint at epoch e+2 from one branch.
+`updateCheckpoints_of_not_lt_of_lt` keeps the justified checkpoint and takes a new finalized one.
 
-It can then take a finalized checkpoint at epoch e from another branch.
+It puts no condition on their roots.
 
-That branch has justified epoch e+1, so the justified checkpoint stays in place.
+So the handlers allow a justified checkpoint at epoch e+2 and a finalized one at e on two branches.
 
-The two checkpoints then conflict, which needs a third of the stake to sign slashable votes.
+This file does not build such a store, and does not relate the two checkpoints to slashable votes.
 
-So the store only gives a disjunction: descent, or two conflicting checkpoints from its states.
+The store gives a disjunction: the descent check passes, or both checkpoints come from kept states.
+
+The check can also fail with an error, so its failure is not a conflict in the sense of FFG.
 -/
 
 @[expose] public section
@@ -805,20 +807,22 @@ theorem Store.Reachable.finalized_le_justified (anchor : Invariant anchorState)
     store.finalizedCheckpoint.epoch ≤ store.justifiedCheckpoint.epoch :=
   (reachable.ordered anchor).1.1
 
-/-- In a reachable store, the justified block descends from the finalized block.
+/-- In a reachable store, the descent check of the justified block passes.
 
-Otherwise the two checkpoints come from states that disagree.
+Otherwise both checkpoints come from kept states.
 
-Descent means that the finalized root is the checkpoint block of the justified root.
+The check passes when the finalized root is the checkpoint block of the justified root.
 
-That checkpoint block is at the finalized epoch, and the genesis epoch counts as descent.
+That block is at the finalized epoch, and the genesis epoch passes too.
 
-Otherwise the two checkpoints conflict.
+When it does not pass, each checkpoint is the anchor checkpoint or comes from a kept state.
 
-Each is the anchor checkpoint or comes from a kept state, as `Store.Reachable.checkpointsFrom` says.
+`Store.Reachable.checkpointsFrom` says so.
 
-By accountable safety, they conflict only when some stake signed slashable votes. -/
-theorem Store.Reachable.justified_descends_or_conflicting
+A check that does not pass may have failed with an error.
+
+So this is not a conflict in the sense of FFG, and it gives no slashable votes by itself. -/
+theorem Store.Reachable.justified_descends_or_checkpointsFrom
     (reachable : Store.Reachable config anchorState anchorBlock store) :
     (store.finalizedCheckpoint.epoch = GENESIS_EPOCH ∨
       store.getCheckpointBlock store.justifiedCheckpoint.root store.finalizedCheckpoint.epoch =
