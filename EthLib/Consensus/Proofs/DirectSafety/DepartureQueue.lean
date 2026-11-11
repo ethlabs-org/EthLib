@@ -1092,6 +1092,52 @@ theorem epoch_exitTrace {fork : Fork} {s t : BeaconState preset fork}
   rw [lastEpoch, lastBalance]
   exact ⟨calls, trace, rates⟩
 
+/-- Advancing a slot preserves the linked epoch exit calls through caching and slot increment. -/
+theorem slot_exitTrace {fork : Fork} {s t : BeaconState preset fork}
+    (electra : .pectra ≤ fork) (early : fork < .glamsterdam)
+    (ok : advanceSlot config checks s = .ok t) :
+    ∃ calls, DepartureQueueTrace (s.earliestExitEpoch electra) (s.exitBalanceToConsume electra)
+      calls (t.earliestExitEpoch electra) (t.exitBalanceToConsume electra) ∧
+      ∀ call ∈ calls, call.rate.toNat ≤ config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat := by
+  simp only [advanceSlot, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at ok
+  obtain ⟨_, _, cached, cache, advanced, advance, rfl⟩ := ok
+  obtain ⟨_, _, _, _, rfl⟩ := processSlot_ok cache
+  unfold epochIfLast at advance
+  split at advance
+  · exact (epoch_exitTrace electra early advance :)
+  · cases advance; exact ⟨[], .nil _ _, by simp⟩
+
+/-- After Electra and before Gloas, upgrades carry both departure queues unchanged. -/
+theorem upgrades_departureQueues {s t : ForkedBeaconState preset}
+    (electra : .pectra ≤ s.fork) (early : t.fork < .glamsterdam)
+    (ok : processUpgrades config checks s = .ok t) (targetElectra : .pectra ≤ t.fork) :
+    departureQueues targetElectra t.state =
+      departureQueues electra s.state := by
+  fun_induction processUpgrades config checks s generalizing t with
+  | case1 s due ih =>
+    obtain ⟨next, nextOk, rest⟩ := bind_ok_iff.mp ok
+    have nextElectra := Nat.le_trans electra (Nat.le_of_lt next.property)
+    have nextEarly := Nat.lt_of_le_of_lt (processUpgrades_fork_le rest) early
+    have later := ih next nextElectra early rest targetElectra
+    rw [later]
+    obtain ⟨fork, state⟩ := s
+    have sourceEarly := Nat.lt_trans next.property nextEarly
+    have forkCases : fork = .pectra ∨ fork = .fusaka := by
+      change Fork.pectra ≤ fork at electra
+      change fork < Fork.glamsterdam at sourceEarly
+      cases fork <;> simp_all (config := { decide := true })
+      all_goals cases nextOk
+    rcases forkCases with rfl | rfl
+    · simp only [upgradeNext, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at nextOk
+      obtain ⟨_, upgraded, rfl⟩ := nextOk
+      simp only [upgradeToFulu, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at upgraded
+      obtain ⟨_, _, rfl⟩ := upgraded
+      rfl
+    · simp only [upgradeNext, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at nextOk
+      obtain ⟨_, _, rfl⟩ := nextOk
+      exact False.elim (Nat.lt_irrefl _ nextEarly)
+  | case2 s notDue => cases ok; rfl
+
 /-- Both full and partial withdrawal requests give linked, rate-bounded exit calls. -/
 theorem withdrawalRequest_exitTrace {fork : Fork} {s t : BeaconState preset fork}
     (electra : .pectra ≤ fork) (early : fork < .glamsterdam) {request : WithdrawalRequest}
@@ -1362,6 +1408,51 @@ theorem block_exitTrace {fork : Fork} {s t : BeaconState preset fork}
   rw [firstEpoch, firstBalance] at trace
   rw [lastEpoch, lastBalance]
   exact ⟨calls, trace, rates⟩
+
+/-- A selected transition after Electra supplies a linked exit-call trace. -/
+theorem step_exitTrace {x y : ForkedBeaconState preset}
+    (step : Step config checks x y) (electra : .pectra ≤ x.fork)
+    (early : y.fork < .glamsterdam) (targetElectra : .pectra ≤ y.fork) :
+    ∃ calls, DepartureQueueTrace (x.state.earliestExitEpoch electra)
+      (x.state.exitBalanceToConsume electra) calls
+      (y.state.earliestExitEpoch targetElectra) (y.state.exitBalanceToConsume targetElectra) ∧
+      ∀ call ∈ calls, call.rate.toNat ≤ config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat := by
+  have sourceEarly := Nat.lt_of_le_of_lt step.chainStep.fork_le early
+  cases step with
+  | slot ok =>
+    obtain ⟨advanced, advancedOk, upgraded⟩ := bind_ok_iff.mp ok
+    have frame := upgrades_departureQueues (s := ⟨x.fork, advanced⟩)
+      electra early upgraded targetElectra
+    obtain ⟨calls, trace, rates⟩ := slot_exitTrace electra sourceEarly advancedOk
+    have epoch := congrArg Prod.fst frame
+    have balance := congrArg (fun q => q.2.1) frame
+    change y.state.earliestExitEpoch targetElectra = advanced.earliestExitEpoch electra at epoch
+    change y.state.exitBalanceToConsume targetElectra = advanced.exitBalanceToConsume electra at balance
+    rw [epoch, balance]
+    exact ⟨calls, trace, rates⟩
+  | block engine signed due ok =>
+    exact block_exitTrace electra early (applySignedBlock_ok ok).2.1
+
+/-- A run starting after Electra has one exit queue trace, including fork upgrades. -/
+theorem run_exitTrace {x y : ForkedBeaconState preset}
+    (tail : Run config checks x y) (electra : .pectra ≤ x.fork)
+    (early : y.fork < .glamsterdam) (targetElectra : .pectra ≤ y.fork) :
+    ∃ calls, DepartureQueueTrace (x.state.earliestExitEpoch electra)
+      (x.state.exitBalanceToConsume electra) calls
+      (y.state.earliestExitEpoch targetElectra) (y.state.exitBalanceToConsume targetElectra) ∧
+      ∀ call ∈ calls, call.rate.toNat ≤ config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat := by
+  induction tail with
+  | nil => exact ⟨[], .nil _ _, by simp⟩
+  | snoc pre step ih =>
+    have middleElectra := Nat.le_trans electra (fork_le_of_chainSteps pre.chainSteps)
+    obtain ⟨first, head, firstRates⟩ := ih
+      (Nat.lt_of_le_of_lt step.chainStep.fork_le early) middleElectra
+    obtain ⟨later, last, laterRates⟩ := step_exitTrace step middleElectra early targetElectra
+    refine ⟨first ++ later, head.append last, ?_⟩
+    intro call member
+    rcases List.mem_append.mp member with member | member
+    · exact firstRates call member
+    · exact laterRates call member
 
 set_option maxHeartbeats 800000 in
 /-- A request classified as not calling churn preserves both departure queues. -/
