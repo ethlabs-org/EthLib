@@ -5,6 +5,7 @@ public import EthLib.Consensus.Proofs.ForkChoice.VoteDelivery
 public import EthLib.Consensus.Proofs.ForkChoice.BlockAgreement
 public import EthLib.Consensus.Proofs.ForkChoice.HonestCheckpoints
 public import EthLib.Consensus.Proofs.ForkChoice.VoteOrigins
+public import EthLib.Consensus.Proofs.ForkChoice.JustifiedOrigins
 public import EthLib.Consensus.Proofs.Transition.RunKept
 
 /-!
@@ -1108,6 +1109,30 @@ theorem Execution.blocks_of_endpoint_checkpoint {Δ : ℕ} (sync : e.Synchronous
   exact (e.blocks_of_partiallySynchronous sync oneBlock admitted anchored start honest receiver
     (by simpa using late) upToDate finalizedKnown
     (fun gloas => False.elim (Nat.not_le_of_lt preGloas gloas)) headKnown headCheckpoint).1
+
+omit [DecidablePred (· ∈ J)] in
+/-- Prefix agreement makes the finalized root known within the current-epoch horizon. -/
+theorem Execution.finalized_known_of_prefix {anchor : Store preset fork}
+    (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (sound : Invariant anchorState) (start : ∀ u ∈ J, e.start u = anchor)
+    (slots : 0 < config.SLOT_DURATION_MS) (anchorSlot : anchorBlock.slot = anchorState.slot)
+    (preGloas : fork < .glamsterdam)
+    {horizon : Epoch} (chain : FinalizedPrefix e horizon)
+    {w : ValidatorIndex} (receiver : w ∈ J) {k : ℕ} {epoch : Epoch}
+    (epochOk : ((e.world k).state w).getCurrentStoreEpoch config = .ok epoch)
+    (inHorizon : epoch ≤ horizon) :
+    ∃ block, ((e.world k).state w).blocks[
+      ((e.world k).state w).finalizedCheckpoint.root]? = some block := by
+  have forward := e.forwardReachable
+    (fun u hu => (start u hu) ▸ Store.ForwardReachable.anchor anchored) k w receiver
+  have justifiedLe := (forward.justified_epoch_le_current sound slots
+    (UInt64.le_of_eq anchorSlot) epochOk).1
+  have checkpoint := chain w receiver w receiver k k
+    ((e.world k).state w).justifiedCheckpoint (Or.inl rfl)
+    (forward.reachable.finalized_le_justified sound) (UInt64.le_trans justifiedLe inHorizon)
+  obtain ⟨_, block, _, held, _, _⟩ :=
+    Store.isAncestor_of_getCheckpointBlock preGloas checkpoint
+  exact ⟨block, held⟩
 
 omit [DecidablePred (· ∈ J)] in
 /-- Coverage by an earlier finalized checkpoint gives coverage by endpoint justification. -/
