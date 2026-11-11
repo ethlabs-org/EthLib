@@ -970,6 +970,32 @@ theorem Execution.finalized_epoch_le_justified_epoch {Δ : ℕ} (sync : e.Synchr
       ((e.world k).state w).justifiedCheckpoint.epoch := by
   sorry
 
+/-- A finalized checkpoint is safe when every current justification covers its epoch. -/
+theorem Execution.safeAt_finalized_of_epoch_bounds
+    (preGloas : fork < .glamsterdam) {horizon : Epoch} (chain : FinalizedPrefix e horizon)
+    {u : ValidatorIndex} (caller : u ∈ J) {n time : ℕ}
+    (bounds : ∀ w ∈ J, ∀ k, (e.world k).time = time →
+      UpToDate config checks sources (e.world k).time ((e.world k).view w)
+        ((e.world k).state w) →
+      ((e.world n).state u).finalizedCheckpoint.epoch ≤
+        ((e.world k).state w).justifiedCheckpoint.epoch ∧
+      ((e.world k).state w).justifiedCheckpoint.epoch ≤ horizon) :
+    SafeAt e time ((e.world n).state u).finalizedCheckpoint.root := by
+  intro w honest k head atTime current headOk
+  obtain ⟨lower, upper⟩ := bounds w honest k atTime current
+  have read := chain u caller w honest n k _ (Or.inl rfl) lower upper
+  obtain ⟨boundary, finalized, _, finalizedKnown, _, below⟩ :=
+    Store.isAncestor_of_getCheckpointBlock preGloas read
+  have headAbove := Store.isAncestor_getHead headOk
+  have justifiedKnown : ∃ b, ((e.world k).state w).blocks[
+      ((e.world k).state w).justifiedCheckpoint.root]? = some b := by
+    unfold Store.isAncestor at headAbove
+    rw [bind_ok_iff] at headAbove
+    obtain ⟨b, found, _⟩ := headAbove
+    exact ⟨b, Store.block_ok_iff.mp found⟩
+  obtain ⟨justified, justifiedKnown⟩ := justifiedKnown
+  exact Store.isAncestor_trans_of_lt preGloas justifiedKnown finalizedKnown headAbove below
+
 /-- Step 7, the finalized block: it is safe from one delay after an honest store holds it.
 
 The store is that of an honest validator at an event.
