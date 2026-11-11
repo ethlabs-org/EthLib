@@ -4,6 +4,8 @@ public import EthLib.Consensus.ForkChoice.FastConfirmation
 public import EthLib.Consensus.Proofs.ForkChoice.HonestDuties
 public import EthLib.Consensus.Proofs.ForkChoice.VoteRecords
 import EthLib.Consensus.Proofs.HonestAggregation
+import EthLib.Consensus.Proofs.ForkChoice.BlockStates
+import EthLib.Consensus.Proofs.ForkChoice.Checkpoints
 
 /-!
 # Statements: an honest vote reaches the latest votes of each honest store
@@ -233,7 +235,9 @@ The state of the head block names the same block at the start of the epoch as th
 
 The anchor state and block share an epoch-boundary slot.
 
-This aligns the first checkpoint in state history with the root held by the store. -/
+Every held block has a nonzero state root, so empty slots cannot refill its cached header.
+
+Reading the vote supplies a known target root, including when the head is the anchor. -/
 theorem VoteAt.data_target {anchor : Store preset fork}
     (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
     (anchorSlot : anchorBlock.slot = anchorState.slot)
@@ -242,11 +246,107 @@ theorem VoteAt.data_target {anchor : Store preset fork}
     {committeeIndex : CommitteeIndex} {time n : ℕ} {attestation : Attestation preset fork}
     {indexed : IndexedAttestation preset fork}
     (vote : VoteAt e v slot committeeIndex time n attestation indexed)
+    (nonzero : ∀ (root : Root) (block : BeaconBlock preset fork),
+      ((e.world n).state v).blocks[root]? = some block →
+        block.stateRoot ≠ Vector.replicate 32 0)
     (deadline : IsAttestationDeadline fork config genesisTimeMs slot time) {due : UInt64}
     (dueOk : getAttestationDueMs config fork = .ok due) (inSlot : due < config.SLOT_DURATION_MS) :
     ((e.world n).state v).getCheckpointBlock attestation.data.beaconBlockRoot
       attestation.data.target.epoch = .ok attestation.data.target.root := by
-  sorry
+  have _ := vote.data_head anchored (UInt64.le_of_eq anchorSlot) start honest
+    deadline dueOk inSlot
+  have reachable := e.reachable
+    (fun u hu => (start u hu) ▸ Store.Reachable.anchor anchored) n v honest
+  obtain ⟨head, block, headState, state, headOk, found, stored, advanced, made⟩ := vote.honestData
+  have stored' := Store.blockState_ok_iff.mp stored
+  obtain ⟨-, boundary, -, dataRoot, -, epoch⟩ := getAttestationData_eq_ok_iff.mp made
+  have headLe : block.slot ≤ state.slot := by
+    have le := reachable.blockState_slot_le (UInt64.le_of_eq anchorSlot) found stored'
+    unfold lookaheadState at advanced
+    split at advanced
+    · exact UInt64.le_trans le (UInt64.le_of_lt (by
+        have bounds := processSlots_slot (mapError_ok_iff.mp advanced)
+        exact bounds.2 ▸ bounds.1))
+    · simp only [pure, Except.pure, Except.ok.injEq] at advanced
+      subst state
+      exact le
+  have anchorLe : anchorState.slot ≤ state.slot := by
+    have le := reachable.anchorSlot_le_blockState stored'
+    unfold lookaheadState at advanced
+    split at advanced
+    · have bounds := processSlots_slot (mapError_ok_iff.mp advanced)
+      rw [bounds.2]
+      exact UInt64.le_trans le (UInt64.le_of_lt bounds.1)
+    · simp only [pure, Except.pure, Except.ok.injEq] at advanced
+      subst state
+      exact le
+  let first := state.slot / preset.SLOTS_PER_EPOCH * preset.SLOTS_PER_EPOCH
+  have firstOk : computeStartSlotAtEpoch preset attestation.data.target.epoch = .ok first := by
+    rw [epoch]
+    exact computeStartSlotAtEpoch_computeEpochAtSlot state.slot
+  have known : ∃ targetBlock,
+      ((e.world n).state v).blocks[attestation.data.target.root]? = some targetBlock := by
+    obtain ⟨withTarget, targetState, storing, reading, -⟩ := vote.reads
+    unfold Store.storeTargetCheckpointState at storing
+    split at storing
+    · simp only [pure, Except.pure, Except.ok.injEq] at storing
+      subst withTarget
+      obtain ⟨base, _, held, -⟩ := reachable.checkpointStatesFromBlocks
+        (Store.checkpointState_ok_iff.mp reading)
+      exact reachable.known_of_blockState held
+    · simp only [bind_ok_iff] at storing
+      obtain ⟨computedState, computed, -⟩ := storing
+      unfold Store.computeCheckpointState at computed
+      simp only [bind_ok_iff] at computed
+      obtain ⟨base, held, -⟩ := computed
+      exact reachable.known_of_blockState (Store.blockState_ok_iff.mp held)
+  rw [dataRoot]
+  unfold Store.getCheckpointBlock
+  rw [firstOk]
+  simp only [Except.mapError, bind, Except.bind]
+  change (·.root) <$> ((e.world n).state v).getAncestor ⟨head.root, .pending⟩ first = _
+  rcases getEpochBoundaryBlockRoot_eq_ok_iff.mp boundary with ⟨onBoundary, targetEq⟩ | ⟨-, read⟩
+  · have eq : first = state.slot := div_mul_eq_self_iff.mpr onBoundary
+    rw [eq, Store.getAncestor_of_le (node := ⟨head.root, .pending⟩) found headLe]
+    simp [targetEq]
+  · have read' : getBlockRootAtSlot state first = .ok attestation.data.target.root := by
+      unfold getBlockRoot at read
+      rw [← epoch, firstOk] at read
+      exact read
+    have firstAfter : anchorState.slot ≤ first := by
+      have rounded : anchorState.slot / preset.SLOTS_PER_EPOCH * preset.SLOTS_PER_EPOCH =
+          anchorState.slot := by
+        unfold isStartSlotAtEpoch computeSlotsSinceEpochStart at anchorAtBoundary
+        rw [anchorSlot, computeStartSlotAtEpoch_computeEpochAtSlot] at anchorAtBoundary
+        simp only [Except.mapError, bind, Except.bind, pure, Except.pure,
+          Except.ok.injEq, decide_eq_true_eq] at anchorAtBoundary
+        have h := (computeStartSlotAtEpoch_ok_iff.mp
+          (computeStartSlotAtEpoch_computeEpochAtSlot (preset := preset) anchorState.slot)).2
+        have le : (anchorState.slot / preset.SLOTS_PER_EPOCH *
+            preset.SLOTS_PER_EPOCH).toNat ≤ anchorState.slot.toNat := by
+          rw [h, computeEpochAtSlot, UInt64.toNat_div]
+          exact Nat.div_mul_le_self _ _
+        have zero := congrArg UInt64.toNat anchorAtBoundary
+        simp only [UInt64.toNat_sub, UInt64.toNat_zero] at zero
+        have upper := anchorState.slot.toNat_lt
+        have lower := (anchorState.slot / preset.SLOTS_PER_EPOCH *
+          preset.SLOTS_PER_EPOCH).toNat_lt
+        apply UInt64.toNat_inj.mp
+        omega
+      have mono := Nat.mul_le_mul_right preset.SLOTS_PER_EPOCH.toNat
+        (Nat.div_le_div_right (c := preset.SLOTS_PER_EPOCH.toNat)
+          (UInt64.le_iff_toNat_le.mp anchorLe))
+      have a := (computeStartSlotAtEpoch_ok_iff.mp
+        (computeStartSlotAtEpoch_computeEpochAtSlot (preset := preset) anchorState.slot)).2
+      have b := (computeStartSlotAtEpoch_ok_iff.mp firstOk).2
+      rw [rounded] at a
+      simp only [computeEpochAtSlot, UInt64.toNat_div] at a
+      rw [epoch] at b
+      simp only [getCurrentEpoch, computeEpochAtSlot, UInt64.toNat_div] at b
+      exact UInt64.le_iff_toNat_le.mpr (by omega)
+    obtain ⟨targetBlock, targetKnown⟩ := known
+    exact reachable.lookahead_history_ancestor (UInt64.le_of_eq anchorSlot) nonzero
+      stored' targetKnown advanced read' firstAfter .pending
 
 /-- From Gloas, the vote of an honest duty on the payload passes the check of its voter.
 

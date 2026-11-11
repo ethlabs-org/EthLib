@@ -199,6 +199,19 @@ theorem processSlots_latestBlockHeader_of_zero {root : Root} {slot : Slot}
   rw [eq] at advanced
   exact advanceSlots_latestBlockHeader_of_zero zero hashed nonzero advanced
 
+/-- Two nonempty slot runs from one state finish with the same header. -/
+theorem processSlots_latestBlockHeader_eq {left right : BeaconState preset fork}
+    {leftChecks rightChecks : SignatureChecks} {leftSlot rightSlot : Slot} {root : Root}
+    (hashed : SszType.hashTreeRoot state = .ok root) (nonzero : root ≠ Vector.replicate 32 0)
+    (one : processSlots config leftChecks state leftSlot = .ok left)
+    (two : processSlots config rightChecks state rightSlot = .ok right) :
+    left.latestBlockHeader = right.latestBlockHeader := by
+  by_cases zero : state.latestBlockHeader.stateRoot = Vector.replicate 32 0
+  · rw [processSlots_latestBlockHeader_of_zero zero hashed nonzero one,
+      processSlots_latestBlockHeader_of_zero zero hashed nonzero two]
+  · rw [processSlots_latestBlockHeader_of_nonzero zero one,
+      processSlots_latestBlockHeader_of_nonzero zero two]
+
 /-- A read before a slot step comes from the old buffer or the header cached at that step. -/
 theorem getBlockRootAtSlot_advanceSlot_cases {slot : Slot} {root : Root}
     (computed : advanceSlot config checks state = .ok after)
