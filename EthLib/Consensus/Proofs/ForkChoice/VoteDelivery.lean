@@ -3,6 +3,7 @@ module
 public import EthLib.Consensus.ForkChoice.FastConfirmation
 public import EthLib.Consensus.Proofs.ForkChoice.HonestDuties
 public import EthLib.Consensus.Proofs.ForkChoice.VoteRecords
+import EthLib.Consensus.Proofs.HonestAggregation
 
 /-!
 # Statements: an honest vote reaches the latest votes of each honest store
@@ -194,7 +195,37 @@ theorem VoteAt.data_head {anchor : Store preset fork}
       ∃ head block, ((e.world n).state v).getHead config = .ok head ∧
         ((e.world n).state v).blocks[head.root]? = some block ∧
         attestation.data.beaconBlockRoot = head.root ∧ block.slot ≤ slot := by
-  sorry
+  obtain ⟨startTime, due', startOk, dueOk', timeEq⟩ := deadline
+  rw [dueOk, Except.ok.injEq] at dueOk'
+  subst due'
+  have current : ((e.world n).state v).getCurrentSlot config = .ok slot := by
+    unfold Store.getCurrentSlot
+    rw [vote.genesis]
+    exact mapError_ok_iff.mpr (computeSlotAtTimeMs_inside startOk
+      (vote.upToDate.1.trans timeEq) inSlot)
+  have forward := e.forwardReachable
+    (fun u hu => (start u hu) ▸ Store.ForwardReachable.anchor anchored) n v honest
+  have positive : 0 < config.SLOT_DURATION_MS := by
+    have := UInt64.lt_iff_toNat_lt.mp inSlot
+    exact UInt64.lt_iff_toNat_lt.mpr (by simp; omega)
+  obtain ⟨currentSlot, currentOk, blocks, states⟩ :=
+    forward.slots_le_current positive anchorSlot
+  rw [current, Except.ok.injEq] at currentOk
+  subst currentSlot
+  obtain ⟨head, block, headState, state, headOk, known, stateOk, advanced, made⟩ :=
+    vote.honestData
+  have stateBound : headState.slot ≤ slot :=
+    states head.root headState (Store.blockState_ok_iff.mp stateOk)
+  have atSlot : state.slot = slot := by
+    unfold lookaheadState at advanced
+    split at advanced
+    · exact (processSlots_slot (mapError_ok_iff.mp advanced)).2
+    · simp only [pure, Except.pure, Except.ok.injEq] at advanced
+      subst state
+      exact UInt64.le_antisymm stateBound (UInt64.not_lt.mp ‹¬ headState.slot < slot›)
+  obtain ⟨-, -, dataSlot, dataRoot, -, epoch⟩ := getAttestationData_eq_ok_iff.mp made
+  exact ⟨dataSlot.trans atSlot, by simpa [getCurrentEpoch, atSlot] using epoch,
+    head, block, headOk, known, dataRoot, blocks head.root block known⟩
 
 /-- The target of an honest vote of a duty is the checkpoint block of its chain, for its voter.
 
