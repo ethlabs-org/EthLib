@@ -212,6 +212,26 @@ def DepartureCoverage {f h : Fork} (s : BeaconState preset f) (t : BeaconState p
     ∃ called ∈ calls, called.index = some i ∧ called.call.epoch = next.exitEpoch ∧
       called.call.amount = old.effectiveBalance
 
+/-- Accessor-level matching covers every existing index in a pre-Gloas registry. -/
+theorem DepartureCoverage.of_accessor {f h : Fork} {s : BeaconState preset f}
+    {t : BeaconState preset h} {calls : List IndexedDepartureCall} (early : f < .glamsterdam)
+    (covered : ∀ other old next, getValidator s other = .ok old →
+      getValidator t other = .ok next → old.exitEpoch = FAR_FUTURE_EPOCH →
+      next.exitEpoch ≠ FAR_FUTURE_EPOCH → ∃ called ∈ calls,
+        called.index = some other.toNat ∧ called.call.epoch = next.exitEpoch ∧
+          called.call.amount = old.effectiveBalance) : DepartureCoverage s t calls := by
+  intro i old next before after unset assigned
+  have inside := (Array.getElem?_eq_some_iff.mp before).1
+  have small : i < 2 ^ 64 := Nat.lt_trans inside
+    (Nat.lt_of_le_of_lt (s.validators.bound early) (UInt64.toNat_lt _))
+  have converted : i.toUInt64.toNat = i := by
+    rw [Nat.toUInt64_eq, UInt64.toNat_ofNat_of_lt' small]
+  have found : getValidator s i.toUInt64 = .ok old := by
+    simp only [getValidator, converted, before]
+  have read : getValidator t i.toUInt64 = .ok next := by
+    simp only [getValidator, converted, after]
+  simpa only [converted] using covered i.toUInt64 old next found read unset assigned
+
 /-- Coverage composes while assigned epochs and pre-scheduling effective balances persist. -/
 theorem DepartureCoverage.append {f h k : Fork} {s : BeaconState preset f}
     {t : BeaconState preset h} {u : BeaconState preset k} {first second : List IndexedDepartureCall}
@@ -234,6 +254,116 @@ theorem DepartureCoverage.append {f h k : Fork} {s : BeaconState preset f}
     subst later
     exact ⟨called, List.mem_append_left _ member, index,
       epoch.trans (kept.exitEpoch pending).symm, amount⟩
+
+/-- Effective-balance preservation supplies the balance premise of coverage composition. -/
+theorem DepartureCoverage.append_of_effectiveKept {f h k : Fork} {s : BeaconState preset f}
+    {t : BeaconState preset h} {u : BeaconState preset k} {first second : List IndexedDepartureCall}
+    (one : DepartureCoverage s t first) (two : DepartureCoverage t u second)
+    (lifeOne : RegistryLifecycle s t) (lifeTwo : RegistryLifecycle t u)
+    (balances : ∀ i, i < s.validators.data.size →
+      effectiveAt ⟨h, t⟩ i = effectiveAt ⟨f, s⟩ i) :
+    DepartureCoverage s u (first ++ second) := by
+  apply one.append two lifeOne lifeTwo
+  intro i old next before after
+  have kept := balances i (Array.getElem?_eq_some_iff.mp before).1
+  apply UInt64.toNat_inj.mp
+  simpa only [effectiveAt, before, after, Option.map_some, Option.getD_some] using kept
+
+/-- An operation that preserves exit epochs generates no departure charge. -/
+theorem DepartureCoverage.of_exit_epochs {f h : Fork} {s : BeaconState preset f}
+    {t : BeaconState preset h}
+    (epochs : ∀ (i : Nat) (old next : Validator), s.validators.data[i]? = some old →
+      t.validators.data[i]? = some next → next.exitEpoch = old.exitEpoch) :
+    DepartureCoverage s t [] := by
+  intro i old next before after unset assigned
+  exact False.elim (assigned ((epochs i old next before after).trans unset))
+
+/-- An unchanged registry needs no departure call. -/
+theorem DepartureCoverage.of_data {f h : Fork} {s : BeaconState preset f}
+    {t : BeaconState preset h} (same : t.validators.data = s.validators.data) :
+    DepartureCoverage s t [] := by
+  apply DepartureCoverage.of_exit_epochs
+  intro i old next before after
+  rw [same, before] at after
+  cases Option.some.inj after
+  rfl
+
+/-- Replacing one validator without changing its exit epoch creates no departure. -/
+theorem DepartureCoverage.setValidatorAt {f : Fork} {s t : BeaconState preset f}
+    {position : Nat} {old next : Validator}
+    (found : getValidatorAt s position = .ok old)
+    (set : s.setValidatorAt position next = .ok t) (epoch : next.exitEpoch = old.exitEpoch) :
+    DepartureCoverage s t [] := by
+  obtain ⟨inside, rfl⟩ := setValidatorAt_ok set
+  apply DepartureCoverage.of_exit_epochs
+  intro i before after read written
+  simp only [BeaconState.putValidator, Serialization.Ssz.RootedForkList.data_set,
+    Array.getElem?_set] at written
+  split at written
+  · rename_i same
+    subst i
+    have oldSame := Option.some.inj ((getValidatorAt_eq_ok_iff.mp found).symm.trans read)
+    have nextSame := Option.some.inj written
+    subst before after
+    exact epoch
+  · have same := Option.some.inj (read.symm.trans written)
+    subst after
+    rfl
+
+/-- A suffix preserving exit epochs keeps coverage without requiring unchanged balances. -/
+theorem DepartureCoverage.suffix {f h k : Fork} {s : BeaconState preset f}
+    {t : BeaconState preset h} {u : BeaconState preset k} {calls : List IndexedDepartureCall}
+    (covered : DepartureCoverage s t calls) (life : RegistryLifecycle s t)
+    (epochs : ∀ (i : Nat) (old next : Validator), t.validators.data[i]? = some old →
+      u.validators.data[i]? = some next → next.exitEpoch = old.exitEpoch) :
+    DepartureCoverage s u calls := by
+  intro i old last before after unset assigned
+  obtain ⟨middle, middleFound, _⟩ := life.validators i old before
+  have same := epochs i middle last middleFound after
+  obtain ⟨called, member, index, epoch, amount⟩ :=
+    covered i old middle before middleFound unset (same ▸ assigned)
+  exact ⟨called, member, index, epoch.trans same.symm, amount⟩
+
+/-- A fold composes concrete calls when each operation preserves pre-scheduling balances. -/
+theorem DepartureCoverage.foldlM {f : Fork} {α ε : Type}
+    {operation : BeaconState preset f → α → Except ε (BeaconState preset f)}
+    (electra : .pectra ≤ f) (cap : Nat)
+    (localTrace : ∀ s item t, operation s item = .ok t →
+      ∃ calls : List IndexedDepartureCall,
+        DepartureQueueTrace (s.earliestExitEpoch electra) (s.exitBalanceToConsume electra)
+          (calls.map (·.call)) (t.earliestExitEpoch electra) (t.exitBalanceToConsume electra) ∧
+        DepartureCoverage s t calls ∧ (∀ called ∈ calls, called.call.rate.toNat ≤ cap))
+    (lifecycle : ∀ s item t, operation s item = .ok t → RegistryLifecycle s t)
+    (effective : ∀ s item t, operation s item = .ok t →
+      ∀ i, i < s.validators.data.size → effectiveAt ⟨f, t⟩ i = effectiveAt ⟨f, s⟩ i)
+    {items : List α} {s t : BeaconState preset f}
+    (ok : items.foldlM operation s = .ok t) :
+    ∃ calls : List IndexedDepartureCall,
+      DepartureQueueTrace (s.earliestExitEpoch electra) (s.exitBalanceToConsume electra)
+        (calls.map (·.call)) (t.earliestExitEpoch electra) (t.exitBalanceToConsume electra) ∧
+      DepartureCoverage s t calls ∧ (∀ called ∈ calls, called.call.rate.toNat ≤ cap) := by
+  induction items generalizing s with
+  | nil =>
+    cases ok
+    exact ⟨[], .nil _ _, DepartureCoverage.of_data rfl, by simp⟩
+  | cons item items ih =>
+    simp only [List.foldlM_cons, bind_ok_iff] at ok
+    obtain ⟨middle, stepped, rest⟩ := ok
+    obtain ⟨first, firstTrace, firstCoverage, firstRates⟩ := localTrace s item middle stepped
+    obtain ⟨later, laterTrace, laterCoverage, laterRates⟩ := ih rest
+    refine ⟨first ++ later, ?_, ?_, ?_⟩
+    · rw [List.map_append]
+      have append {a b c : Epoch} {x y z : Gwei} {xs ys : List DepartureQueueCall}
+          (one : DepartureQueueTrace a x xs b y) (two : DepartureQueueTrace b y ys c z) :
+          DepartureQueueTrace a x (xs ++ ys) c z := by
+        induction one with
+        | nil => exact two
+        | cons call tail ih => exact .cons call (ih two)
+      exact append firstTrace laterTrace
+    · exact firstCoverage.append_of_effectiveKept laterCoverage (lifecycle _ _ _ stepped)
+        (RegistryLifecycle.foldlM lifecycle rest) (effective _ _ _ stepped)
+    · intro called member
+      exact (List.mem_append.mp member).elim (firstRates called) (laterRates called)
 
 /-- Registry coverage supplies the matching premise for every charge of a concrete step. -/
 theorem DepartureCoverage.step_charges {x y : ForkedBeaconState preset}
@@ -1084,6 +1214,68 @@ theorem initiateExit_indexedTrace {fork : Fork} {s t : BeaconState preset fork}
       subst old next
       exact ⟨_, List.mem_singleton_self _, rfl, epoch.symm, amount⟩
 
+/-- Registry ejections supply tagged calls; activation-only updates generate no charge. -/
+theorem registryEntry_indexedTrace {fork : Fork} {s t : BeaconState preset fork}
+    (electra : .pectra ≤ fork) (early : fork < .glamsterdam) {activation : Epoch} {index : Nat}
+    (ok : updateRegistryEntryElectra config activation s index = .ok t) :
+    ∃ calls : List IndexedDepartureCall,
+      DepartureQueueTrace (s.earliestExitEpoch electra) (s.exitBalanceToConsume electra)
+        (calls.map (·.call)) (t.earliestExitEpoch electra) (t.exitBalanceToConsume electra) ∧
+      DepartureCoverage s t calls ∧ (∀ called ∈ calls,
+        called.call.rate.toNat ≤ config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat) := by
+  simp only [updateRegistryEntryElectra, bind_ok_iff, liftAccessor_ok] at ok
+  obtain ⟨validator, found, ok⟩ := ok
+  split at ok
+  · simp only [bind_ok_iff, liftAccessor_ok] at ok
+    obtain ⟨epoch, _, set⟩ := ok
+    have covered := DepartureCoverage.setValidatorAt found set rfl
+    obtain ⟨_, rfl⟩ := setValidatorAt_ok set
+    exact ⟨[], .nil _ _, covered, by simp⟩
+  split at ok
+  · simp only [bind_ok_iff, liftAccessor_ok] at ok
+    obtain ⟨validatorIndex, _, exited⟩ := ok
+    obtain ⟨calls, trace, rates, covered⟩ := initiateExit_indexedTrace electra early exited
+    exact ⟨calls, trace, DepartureCoverage.of_accessor early covered, rates⟩
+  split at ok
+  · have set := liftAccessor_ok.mp ok
+    have covered := DepartureCoverage.setValidatorAt found set rfl
+    obtain ⟨_, rfl⟩ := setValidatorAt_ok set
+    exact ⟨[], .nil _ _, covered, by simp⟩
+  · cases ok
+    exact ⟨[], .nil _ _, DepartureCoverage.of_data rfl, by simp⟩
+
+/-- The Electra registry fold matches ejection charges before effective balances change. -/
+theorem registryEntries_indexedTrace {fork : Fork} {s t : BeaconState preset fork}
+    (electra : .pectra ≤ fork) (early : fork < .glamsterdam) {activation : Epoch}
+    {indices : List Nat}
+    (ok : indices.foldlM (updateRegistryEntryElectra config activation) s = .ok t) :
+    ∃ calls : List IndexedDepartureCall,
+      DepartureQueueTrace (s.earliestExitEpoch electra) (s.exitBalanceToConsume electra)
+        (calls.map (·.call)) (t.earliestExitEpoch electra) (t.exitBalanceToConsume electra) ∧
+      DepartureCoverage s t calls ∧ (∀ called ∈ calls,
+        called.call.rate.toNat ≤ config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat) := by
+  apply DepartureCoverage.foldlM electra _
+    (fun _ _ _ stepped => registryEntry_indexedTrace electra early stepped) ?_ ?_ ok
+  · intro a index b stepped
+    simp only [updateRegistryEntryElectra, bind_ok_iff, liftAccessor_ok] at stepped
+    obtain ⟨validator, found, stepped⟩ := stepped
+    split at stepped
+    · simp only [bind_ok_iff, liftAccessor_ok] at stepped
+      obtain ⟨_, _, set⟩ := stepped
+      exact .setValidatorAt found set ⟨fun _ => rfl, fun _ => rfl⟩
+    split at stepped
+    · simp only [bind_ok_iff, liftAccessor_ok] at stepped
+      obtain ⟨_, _, exited⟩ := stepped
+      exact registryLifecycle_initiateValidatorExit exited
+    split at stepped
+    · rename_i eligible
+      have far := activationEpoch_of_isEligibleForActivation eligible
+      exact .setValidatorAt found (liftAccessor_ok.mp stepped)
+        ⟨fun set => absurd far set, fun _ => rfl⟩
+    · cases stepped; exact .refl _
+  · intro a index b stepped
+    exact effectiveKept_registryElectra stepped
+
 /-- A partial withdrawal's capacity call has no departure index. -/
 theorem partialWithdrawal_indexedTrace {fork : Fork} {s t : BeaconState preset fork}
     (electra : .pectra ≤ fork) (early : fork < .glamsterdam)
@@ -1374,6 +1566,24 @@ theorem withdrawalRequest_indexedTrace {fork : Fork} {s t : BeaconState preset f
     have unchanged := getValidator_of_validators_eq registry other
     have equal := Except.ok.inj (before.symm.trans (unchanged ▸ after))
     exact False.elim (assigned (equal ▸ unset))
+
+/-- The withdrawal-request fold retains charge coverage and all capacity-consuming calls. -/
+theorem withdrawalRequests_indexedTrace {fork : Fork} {s t : BeaconState preset fork}
+    (electra : .pectra ≤ fork) (early : fork < .glamsterdam)
+    {requests : List WithdrawalRequest}
+    (ok : requests.foldlM (processWithdrawalRequest config · electra ·) s = .ok t) :
+    ∃ calls : List IndexedDepartureCall,
+      DepartureQueueTrace (s.earliestExitEpoch electra) (s.exitBalanceToConsume electra)
+        (calls.map (·.call)) (t.earliestExitEpoch electra) (t.exitBalanceToConsume electra) ∧
+      DepartureCoverage s t calls ∧ (∀ called ∈ calls,
+        called.call.rate.toNat ≤ config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat) := by
+  apply DepartureCoverage.foldlM electra _ ?_
+    (fun _ _ _ ok => registryLifecycle_processWithdrawalRequest ok) ?_ ok
+  · intro a request b stepped
+    obtain ⟨calls, trace, rates, coverage⟩ := withdrawalRequest_indexedTrace electra early stepped
+    exact ⟨calls, trace, DepartureCoverage.of_accessor early coverage, rates⟩
+  · intro a request b stepped
+    exact effectiveKept_withdrawalRequest stepped
 
 /-- Both full and partial withdrawal requests give linked, rate-bounded exit calls. -/
 theorem withdrawalRequest_exitTrace {fork : Fork} {s t : BeaconState preset fork}
