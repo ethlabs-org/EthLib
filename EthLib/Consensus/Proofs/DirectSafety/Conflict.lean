@@ -28,6 +28,35 @@ def Slashable {g a b : ForkedBeaconState preset} (left : Run config checks g a)
   ∃ d₁ d₂, AcceptedEither left right key d₁ ∧ AcceptedEither left right key d₂ ∧
     isSlashableAttestationData d₁ d₂ = true
 
+/-- Slashing operations carry evidence even when their votes were not included as attestations. -/
+def _root_.EthLib.Consensus.Step.SlashingEvidence {x y : ForkedBeaconState preset}
+    (step : Step config checks x y) (key : BLSPubkey) : Prop :=
+  match step with
+  | .slot _ => False
+  | .block _ signed _ _ =>
+    (∃ sl ∈ signed.message.body.proposerSlashings.data.toList, ∃ v,
+      x.state.validators.data[sl.signedHeader1.message.proposerIndex.toNat]? = some v ∧
+      v.pubkey = key) ∨
+    (∃ sl ∈ signed.message.body.attesterSlashings.data.toList, ∃ i ∈ slashingIndices sl, ∃ v,
+      x.state.validators.data[i.toNat]? = some v ∧ v.pubkey = key)
+
+def _root_.EthLib.Consensus.Run.SlashingEvidence {g a : ForkedBeaconState preset}
+    (run : Run config checks g a) (key : BLSPubkey) : Prop :=
+  ∃ x y, ∃ step : Step config checks x y, run.Contains step ∧ step.SlashingEvidence key
+
+/-- Accountability includes FFG conflicts and accepted proposer or attester slashing evidence. -/
+def Accountable {g a b : ForkedBeaconState preset} (left : Run config checks g a)
+    (right : Run config checks g b) (key : BLSPubkey) : Prop :=
+  Slashable left right key ∨ left.SlashingEvidence key ∨ right.SlashingEvidence key
+
+/-- A slashed flag in a reachable registry must originate in evidence on the selected history. -/
+theorem _root_.EthLib.Consensus.Run.slashed_evidence {g a : ForkedBeaconState preset}
+    (run : Run config checks g a) (genesis : Genesis (config := config) (checks := checks) g)
+    (early : a.fork < .glamsterdam) (v : Validator)
+    (member : v ∈ a.state.validators.data.toList) (slashed : v.slashed = true) :
+    run.SlashingEvidence v.pubkey := by
+  sorry
+
 /-- Both calls may be on the same run: the statement must not force one witness per branch. -/
 abbrev EitherCall {g a b : ForkedBeaconState preset} (left : Run config checks g a)
     (right : Run config checks g b) := QuorumCall left ⊕ QuorumCall right

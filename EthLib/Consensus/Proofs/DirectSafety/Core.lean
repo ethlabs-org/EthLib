@@ -31,11 +31,11 @@ noncomputable def unionStake {g a b : ForkedBeaconState preset}
     (Quorum.supported (recentKeys two.state.state) (effectiveWeight two.state.state) k))
     (recentKeys one.state.state ∪ recentKeys two.state.state)
 
-noncomputable def commonSlashable {g a b : ForkedBeaconState preset}
+noncomputable def commonAccountable {g a b : ForkedBeaconState preset}
     (left : Run config checks g a) (right : Run config checks g b)
     (one two : EitherCall left right) : Finset BLSPubkey := by
   classical
-  exact (one.voters ∩ two.voters).filter (Slashable left right)
+  exact (one.voters ∩ two.voters).filter (Accountable left right)
 
 theorem quorum_voters_recent {g a : ForkedBeaconState preset} (run : Run config checks g a)
     (parameters : Parameters preset) (genesis : Genesis (config := config) (checks := checks) g)
@@ -57,10 +57,11 @@ theorem accountable_safety_core {g a b : ForkedBeaconState preset}
     (∃ one two : EitherCall left right,
       a.state.finalizedCheckpoint.epoch.toNat ≤ one.targetEpoch ∧ one.targetEpoch ≤ j.epoch.toNat ∧
       a.state.finalizedCheckpoint.epoch.toNat ≤ two.targetEpoch ∧ two.targetEpoch ≤ j.epoch.toNat ∧
+      (∀ key ∈ one.voters ∩ two.voters, Accountable left right key) ∧
       2 * (Quorum.weight (effectiveWeight one.state.state) (activeKeys one.state.state) +
         Quorum.weight (effectiveWeight two.state.state) (activeKeys two.state.state)) ≤
         3 * Quorum.weight (fun k => min (effectiveWeight one.state.state k)
-          (effectiveWeight two.state.state k)) (commonSlashable left right one two) +
+          (effectiveWeight two.state.state k)) (commonAccountable left right one two) +
         3 * unionStake one two) ∨ HashEvidence (left.hashObjects ++ right.hashObjects) := by
   sorry
 

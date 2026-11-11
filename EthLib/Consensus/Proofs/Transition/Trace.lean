@@ -1,6 +1,7 @@
 module
 
 public import EthLib.Consensus.Proofs.Transition.Chain
+public import EthLib.Consensus.Transition.Genesis
 
 /-!
 # Selected inputs of a validated chain
@@ -17,6 +18,11 @@ namespace EthLib.Consensus
 open Base
 
 variable {preset : Preset} {config : Config} {checks : SignatureChecks}
+
+/-- Successful genesis initialization; launch-time validity is not needed for trace invariants. -/
+def Genesis (g : ForkedBeaconState preset) : Prop :=
+  ∃ hash time deposits,
+    initializeBeaconStateFromEth1 config checks hash time deposits = .ok g.state
 
 inductive Step (config : Config) (checks : SignatureChecks) :
     ForkedBeaconState preset → ForkedBeaconState preset → Type where

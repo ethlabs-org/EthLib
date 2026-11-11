@@ -22,11 +22,6 @@ open Base Serialization.Ssz.SszType
 
 variable {preset : Preset} {config : Config} {checks : SignatureChecks}
 
-def Genesis (g : ForkedBeaconState preset) : Prop :=
-  ∃ hash time deposits,
-    initializeBeaconStateFromEth1 config checks hash time deposits = .ok g.state ∧
-      isValidGenesisState config g.state = true
-
 structure Parameters (preset : Preset) : Prop where
   slots : 2 ≤ preset.SLOTS_PER_EPOCH.toNat
   roots : 4 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat

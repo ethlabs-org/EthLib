@@ -1,6 +1,6 @@
 module
 
-public import EthLib.Consensus.Proofs.DirectSafety.ChurnBounds
+public import EthLib.Consensus.Proofs.Transition.BalanceDrift
 public import EthLib.Consensus.Proofs.Transition.EpochUpdates
 
 /-!
@@ -17,7 +17,7 @@ Consolidations count both their debit and credit even though their net balance c
 
 @[expose] public section
 
-namespace EthLib.Consensus.DirectSafety
+namespace EthLib.Consensus
 
 open Base Cryptography.Bls
 
@@ -29,10 +29,12 @@ def totalBalance {fork : Fork} (s : BeaconState preset fork) : Nat := sumAmounts
 
 /-- Positive changes are summed per index, so a transfer cannot cancel a loss elsewhere. -/
 def balanceCredits {fork : Fork} (s t : BeaconState preset fork) : Nat :=
-  ∑ i ∈ Finset.range t.balances.data.size, (balanceAt ⟨fork, t⟩ i - balanceAt ⟨fork, s⟩ i)
+  ∑ i ∈ Finset.range t.balances.data.size,
+    (actualBalanceAt ⟨fork, t⟩ i - actualBalanceAt ⟨fork, s⟩ i)
 
 def balanceDebits {fork : Fork} (s t : BeaconState preset fork) : Nat :=
-  ∑ i ∈ Finset.range s.balances.data.size, (balanceAt ⟨fork, s⟩ i - balanceAt ⟨fork, t⟩ i)
+  ∑ i ∈ Finset.range s.balances.data.size,
+    (actualBalanceAt ⟨fork, s⟩ i - actualBalanceAt ⟨fork, t⟩ i)
 
 /-- Rewards and ordinary penalties are kept separate from the inactivity pass. -/
 def rewardPasses {fork : Fork} (s : BeaconState preset fork) :
@@ -53,34 +55,6 @@ theorem epoch_rewards_penalties {fork : Fork} (s t : BeaconState preset fork)
     balanceCredits s t ≤ (ordinary.map fun p => sumAmounts p.1).sum ∧
     balanceDebits s t ≤ (ordinary.map fun p => sumAmounts p.2).sum +
       sumAmounts inactivity.2 := by
-  sorry
-
-/-- Initial scores cannot be discarded when the interval starts during a leak. -/
-theorem inactivity_score_growth (hit : Bool) (leaking : Except TransitionError Bool)
-    (old next : Gwei) (ok : nextInactivityScore config hit leaking old = .ok next) :
-    next.toNat ≤ old.toNat + config.INACTIVITY_SCORE_BIAS.toNat := by
-  sorry
-
-theorem inactivity_penalty_altair {fork : Fork} (s : BeaconState preset fork)
-    (altair : .altair ≤ fork) (target : Array Bool) (penalties result : Array Gwei)
-    (i : ValidatorIndex) (v : Validator) (score : Gwei)
-    (found : getValidator s i = .ok v)
-    (read : (s.inactivityScores altair).data[i.toNat]? = some score)
-    (ok : addInactivityScorePenalty config s altair target penalties i = .ok result) :
-    sumAmounts result ≤ sumAmounts penalties +
-      v.effectiveBalance.toNat * score.toNat /
-        (config.INACTIVITY_SCORE_BIAS.toNat *
-          (EthLib.Consensus.parameters preset fork).INACTIVITY_PENALTY_QUOTIENT.toNat) := by
-  sorry
-
-theorem inactivity_penalty_phase0 {fork : Fork} (s : BeaconState preset fork)
-    (total delay : Gwei) (target : Array Bool) (penalties result : Array Gwei)
-    (i : ValidatorIndex) (v : Validator) (base : Gwei)
-    (found : getValidator s i = .ok v) (reward : getBaseReward s total i = .ok base)
-    (ok : addInactivityPenalty s total delay target penalties i = .ok result) :
-    sumAmounts result ≤ sumAmounts penalties + BASE_REWARDS_PER_EPOCH.toNat * base.toNat +
-      v.effectiveBalance.toNat * delay.toNat /
-        (EthLib.Consensus.parameters preset fork).INACTIVITY_PENALTY_QUOTIENT.toNat := by
   sorry
 
 /-- Both recipient credits are included, also when proposer and whistleblower coincide. -/
@@ -161,27 +135,34 @@ theorem deposit_credit_bound {fork : Fork} (s t : BeaconState preset fork)
     balanceDebits s t = 0 ∧ balanceCredits s t ≤ deposit.amount.toNat := by
   sorry
 
-/-- Applied pending deposits divide into churn-charged and withdrawn-key exceptions. -/
+/-- Deposits retained or postponed by the real pass are not charged in this interval. -/
+def consumedDeposits {fork : Fork} (s t : BeaconState preset fork) (electra : .pectra ≤ fork) :
+    Nat :=
+  ((s.pendingDeposits electra).data.toList.map fun d => d.amount.toNat).sum -
+    ((t.pendingDeposits electra).data.toList.map fun d => d.amount.toNat).sum
+
+/-- This covers top-ups and withdrawn-key exceptions without charging an unprocessed queue. -/
 theorem pending_deposit_bound {fork : Fork} (s t : BeaconState preset fork)
     (electra : .pectra ≤ fork)
     (ok : processPendingDeposits config checks s electra = .ok t) :
-    ∃ churn : Gwei, depositChurnLimit config s = .ok churn ∧
-      balanceCredits s t ≤ (s.depositBalanceToConsume electra).toNat + churn.toNat +
-        ((s.pendingDeposits electra).data.toList.filter fun d =>
-          Option.getD ((depositTargetStatus s (getCurrentEpoch s + 1) d.pubkey).toOption.map
-            Prod.snd) false).foldl (fun n d => n + d.amount.toNat) 0 := by
+    balanceDebits s t = 0 ∧ balanceCredits s t ≤ consumedDeposits s t electra := by
   sorry
+
+/-- The real pass removes a prefix; slashed entries are dropped without a transfer. -/
+def consumedConsolidations {fork : Fork} (s t : BeaconState preset fork)
+    (electra : .pectra ≤ fork) : Nat :=
+  (((s.pendingConsolidations electra).data.toList.take
+    ((s.pendingConsolidations electra).data.size - (t.pendingConsolidations electra).data.size)).map
+      fun c => match s.validators.data[c.sourceIndex.toNat]? with
+        | none => 0
+        | some v => if v.slashed then 0 else v.effectiveBalance.toNat).sum
 
 /-- Consolidations cannot mint balance, but a target can gain all the source's moved balance. -/
 theorem consolidation_transfer_bound {fork : Fork} (s t : BeaconState preset fork)
     (electra : .pectra ≤ fork) (ok : processPendingConsolidations s electra = .ok t) :
     totalBalance t = totalBalance s ∧
-    balanceCredits s t ≤
-      ((s.pendingConsolidations electra).data.toList.map fun c =>
-        effectiveAt ⟨fork, s⟩ c.sourceIndex.toNat).sum ∧
-    balanceDebits s t ≤
-      ((s.pendingConsolidations electra).data.toList.map fun c =>
-        effectiveAt ⟨fork, s⟩ c.sourceIndex.toNat).sum := by
+    balanceCredits s t ≤ consumedConsolidations s t electra ∧
+    balanceDebits s t ≤ consumedConsolidations s t electra := by
   sorry
 
 theorem withdrawal_debit_bound {fork : Fork} (s t : BeaconState preset fork)
@@ -202,19 +183,10 @@ theorem excess_queue_debit {fork : Fork} (s t : BeaconState preset fork)
 theorem electra_upgrade_debit (s : BeaconState preset .dencun) (t : BeaconState preset .pectra)
     (ok : upgradeToElectra config s = .ok t) :
     (∑ i ∈ Finset.range t.balances.data.size,
-      (balanceAt ⟨.pectra, t⟩ i - balanceAt ⟨.dencun, s⟩ i)) = 0 ∧
+      (actualBalanceAt ⟨.pectra, t⟩ i - actualBalanceAt ⟨.dencun, s⟩ i)) = 0 ∧
     (∑ i ∈ Finset.range s.balances.data.size,
-      (balanceAt ⟨.dencun, s⟩ i - balanceAt ⟨.pectra, t⟩ i)) ≤
+      (actualBalanceAt ⟨.dencun, s⟩ i - actualBalanceAt ⟨.pectra, t⟩ i)) ≤
       ((t.pendingDeposits (by decide)).data.toList.map fun d => d.amount.toNat).sum := by
   sorry
 
-/-- Summing per-call bounds preserves source separation over any finite epoch interval. -/
-theorem source_interval_sum {α : Type} (calls : List α)
-    (credit debit boundCredit boundDebit : α → Nat)
-    (credits : ∀ c ∈ calls, credit c ≤ boundCredit c)
-    (debits : ∀ c ∈ calls, debit c ≤ boundDebit c) :
-    (calls.map credit).sum ≤ (calls.map boundCredit).sum ∧
-      (calls.map debit).sum ≤ (calls.map boundDebit).sum := by
-  sorry
-
-end EthLib.Consensus.DirectSafety
+end EthLib.Consensus

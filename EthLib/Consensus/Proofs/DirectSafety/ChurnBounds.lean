@@ -1,6 +1,7 @@
 module
 
-public import EthLib.Consensus.Proofs.DirectSafety.BalanceBounds
+public import EthLib.Consensus.Proofs.Transition.BalanceDrift
+public import EthLib.Consensus.Proofs.DirectSafety.Drift
 
 /-!
 # Churn windows and the Electra crossing

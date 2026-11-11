@@ -6,9 +6,13 @@ public import EthLib.Serialization.Proofs.Ssz.Typed.Root
 /-!
 # Hash evidence restricted to the supplied executions
 
-The scan covers block headers and endpoint and cached states, not all reachable states.
+Collision evidence uses only the selected block headers, not full beacon-state commitments.
 
-It returns SHA-256 input collisions or an observed state or header whose root is zero.
+States are included only for the zero-root alternative.
+
+A zero state root leaves processSlot's empty-root sentinel unset.
+
+A later slot can then refill it.
 -/
 
 @[expose] public section
@@ -32,8 +36,7 @@ def HashObject.messages (object : HashObject preset) : List Bytes :=
   match object with
   | .header h => ((valueTree (SszType.desc BeaconBlockHeader) (SszType.toValue h)).toOption.map
       (fun tree => tree.messages)).getD []
-  | .state s => ((valueTree (SszType.desc (BeaconState preset s.fork))
-      (SszType.toValue s.state)).toOption.map (fun tree => tree.messages)).getD []
+  | .state _ => []
 
 def _root_.EthLib.Consensus.Step.hashObjects {before after : ForkedBeaconState preset}
     (step : Step config checks before after) : List (HashObject preset) :=
@@ -58,15 +61,6 @@ def HashEvidence (objects : List (HashObject preset)) : Prop :=
 
 theorem header_binding (objects : List (HashObject preset)) (a b : BeaconBlockHeader)
     (one : .header a ∈ objects) (two : .header b ∈ objects) (root : Root)
-    (sameA : hashTreeRoot a = .ok root) (sameB : hashTreeRoot b = .ok root) :
-    a = b ∨ HashEvidence objects := by
-  sorry
-
-theorem state_binding (objects : List (HashObject preset)) {fork : Fork}
-    (a b : BeaconState preset fork) (one : .state ⟨fork, a⟩ ∈ objects)
-    (two : .state ⟨fork, b⟩ ∈ objects) (root : Root)
-    (sizeA : CommitmentSized (SszType.desc (BeaconState preset fork)) (SszType.toValue a))
-    (sizeB : CommitmentSized (SszType.desc (BeaconState preset fork)) (SszType.toValue b))
     (sameA : hashTreeRoot a = .ok root) (sameB : hashTreeRoot b = .ok root) :
     a = b ∨ HashEvidence objects := by
   sorry

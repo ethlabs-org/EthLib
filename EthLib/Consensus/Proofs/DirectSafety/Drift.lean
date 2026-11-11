@@ -28,7 +28,7 @@ noncomputable def losing (x y : ForkedBeaconState preset) : Nat :=
     (effectiveWeight x.state k - effectiveWeight y.state k)
 
 noncomputable def gaining (x y : ForkedBeaconState preset) : Nat :=
-  ∑ k ∈ recentKeys x.state ∩ recentKeys y.state,
+  ∑ k ∈ activeKeys x.state ∩ recentKeys y.state,
     (effectiveWeight y.state k - effectiveWeight x.state k)
 
 /-- The epoch test is in the tail, not in the inherited prefix, under this slot bound. -/

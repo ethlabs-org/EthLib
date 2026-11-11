@@ -20,17 +20,18 @@ open Base Cryptography.Bls
 
 variable {preset : Preset} {config : Config} {checks : SignatureChecks}
 
-noncomputable def slashableKeys {g a b : ForkedBeaconState preset}
+noncomputable def accountableKeys {g a b : ForkedBeaconState preset}
     (left : Run config checks g a) (right : Run config checks g b)
     (reference : ForkedBeaconState preset) : Finset BLSPubkey := by
   classical
-  exact (activeKeys reference.state).filter (Slashable left right)
+  exact (activeKeys reference.state).filter (Accountable left right)
 
 /-- Order the finalized fields by epoch, with weights measured at their shared state. -/
 theorem accountable_safety {g x a b : ForkedBeaconState preset}
     (shared : Run config checks g x) (left : Run config checks x a) (right : Run config checks x b)
     (parameters : Parameters preset) (genesis : Genesis (config := config) (checks := checks) g)
     (caps : CapOrder preset) (aligned : MaxEffectiveBalancesAligned preset)
+    (withdrawalDelay : 0 < config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat)
     (earlyA : a.fork < .glamsterdam) (earlyB : b.fork < .glamsterdam)
     (enoughA : EnoughStake (shared.append left)) (enoughB : EnoughStake (shared.append right))
     (ordered : a.state.finalizedCheckpoint.epoch ≤ b.state.finalizedCheckpoint.epoch)
@@ -44,9 +45,9 @@ theorem accountable_safety {g x a b : ForkedBeaconState preset}
       right.balanceEvents high = .ok eventsB ∧
       Quorum.weight (effectiveWeight x.state) (activeKeys x.state) ≤
       3 * Quorum.weight (effectiveWeight x.state)
-        (slashableKeys (shared.append left) (shared.append right) x) +
-        2 * max (derivedDrift (config := config) x a high eventsA)
-          (derivedDrift (config := config) x b high eventsB)) ∨
+        (accountableKeys (shared.append left) (shared.append right) x) +
+        2 * max (derivedDrift (config := config) x high eventsA)
+          (derivedDrift (config := config) x high eventsB)) ∨
       HashEvidence ((shared.append left).hashObjects ++ (shared.append right).hashObjects) := by
   sorry
 
@@ -55,6 +56,7 @@ theorem accountable_safety_justified {g x a b : ForkedBeaconState preset}
     (shared : Run config checks g x) (left : Run config checks x a) (right : Run config checks x b)
     (parameters : Parameters preset) (genesis : Genesis (config := config) (checks := checks) g)
     (caps : CapOrder preset) (aligned : MaxEffectiveBalancesAligned preset)
+    (withdrawalDelay : 0 < config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat)
     (earlyA : a.fork < .glamsterdam) (earlyB : b.fork < .glamsterdam)
     (enoughA : EnoughStake (shared.append left)) (enoughB : EnoughStake (shared.append right))
     (j : Checkpoint)
@@ -67,9 +69,9 @@ theorem accountable_safety_justified {g x a b : ForkedBeaconState preset}
       right.balanceEvents j.epoch.toNat = .ok eventsB ∧
       Quorum.weight (effectiveWeight x.state) (activeKeys x.state) ≤
       3 * Quorum.weight (effectiveWeight x.state)
-        (slashableKeys (shared.append left) (shared.append right) x) +
-        2 * max (derivedDrift (config := config) x a j.epoch.toNat eventsA)
-          (derivedDrift (config := config) x b j.epoch.toNat eventsB)) ∨
+        (accountableKeys (shared.append left) (shared.append right) x) +
+        2 * max (derivedDrift (config := config) x j.epoch.toNat eventsA)
+          (derivedDrift (config := config) x j.epoch.toNat eventsB)) ∨
       HashEvidence ((shared.append left).hashObjects ++ (shared.append right).hashObjects) := by
   sorry
 

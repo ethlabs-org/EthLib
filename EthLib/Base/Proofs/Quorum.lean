@@ -48,8 +48,26 @@ theorem core_at_reference (reference s₁ s₂ bad : Finset α) (old w₁ w₂ :
       2 * (loss₁ + loss₂) + 3 * (gain₁ + gain₂) := by
   sorry
 
-theorem weight_union_inter (w : α → Nat) (s t : Finset α) :
-    weight w s + weight w t = weight w (s ∪ t) + weight w (s ∩ t) := by
+/-- Keep the quorum intersection explicit so already accountable keys are charged only once.
+
+Loss is measured only outside the accountable set; gain includes every key.
+
+Votes outside the current active denominator count in full as gains, including recent exited voters.
+
+Merely substituting this loss into core_at_reference would count accountable losses twice. -/
+theorem accountable_at_reference (reference active₁ active₂ q₁ q₂ accountable : Finset α)
+    (old w₁ w₂ : α → Nat) (loss₁ loss₂ gain₁ gain₂ : Nat)
+    (quorum₁ : 2 * weight w₁ active₁ ≤ 3 * weight w₁ q₁)
+    (quorum₂ : 2 * weight w₂ active₂ ≤ 3 * weight w₂ q₂)
+    (overlap : q₁ ∩ q₂ ⊆ accountable)
+    (lossOne : (∑ k ∈ reference \ accountable,
+      (old k - supported active₁ w₁ k)) ≤ loss₁)
+    (lossTwo : (∑ k ∈ reference \ accountable,
+      (old k - supported active₂ w₂ k)) ≤ loss₂)
+    (gainOne : (∑ k ∈ q₁, (w₁ k - supported (reference ∩ active₁) old k)) ≤ gain₁)
+    (gainTwo : (∑ k ∈ q₂, (w₂ k - supported (reference ∩ active₂) old k)) ≤ gain₂) :
+    weight old reference ≤ 3 * weight old (reference ∩ accountable) +
+      2 * (loss₁ + loss₂) + 3 * (gain₁ + gain₂) := by
   sorry
 
 end EthLib.Base.Quorum

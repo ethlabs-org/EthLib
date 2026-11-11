@@ -1,7 +1,8 @@
 module
 
-public import EthLib.Consensus.Proofs.DirectSafety.Drift
+public import EthLib.Consensus.Proofs.Transition.Trace
 public import EthLib.Consensus.Proofs.Accessors
+public import Mathlib.Algebra.BigOperators.Group.Finset.Basic
 
 /-!
 # Effective-balance changes from the actual balance path
@@ -15,13 +16,13 @@ For this reason a slot's balance path includes that intermediate state, not just
 
 @[expose] public section
 
-namespace EthLib.Consensus.DirectSafety
+namespace EthLib.Consensus
 
 open Base
 
 variable {preset : Preset} {config : Config} {checks : SignatureChecks}
 
-def balanceAt (s : ForkedBeaconState preset) (i : Nat) : Nat :=
+def actualBalanceAt (s : ForkedBeaconState preset) (i : Nat) : Nat :=
   ((s.state.balances.data[i]?).map (·.toNat)).getD 0
 
 def effectiveAt (s : ForkedBeaconState preset) (i : Nat) : Nat :=
@@ -43,11 +44,11 @@ def _root_.EthLib.Consensus.Run.balancePath {x : ForkedBeaconState preset} :
   | _, .snoc pre step => pre.balancePath ++ step.balancePath
 
 def pathCredits (i : Nat) : List (ForkedBeaconState preset) → Nat
-  | x :: y :: rest => (balanceAt y i - balanceAt x i) + pathCredits i (y :: rest)
+  | x :: y :: rest => (actualBalanceAt y i - actualBalanceAt x i) + pathCredits i (y :: rest)
   | _ => 0
 
 def pathDebits (i : Nat) : List (ForkedBeaconState preset) → Nat
-  | x :: y :: rest => (balanceAt x i - balanceAt y i) + pathDebits i (y :: rest)
+  | x :: y :: rest => (actualBalanceAt x i - actualBalanceAt y i) + pathDebits i (y :: rest)
   | _ => 0
 
 structure CapOrder (preset : Preset) : Prop where
@@ -69,7 +70,7 @@ theorem effective_loss_from_balance {g x y : ForkedBeaconState preset}
     (i : Nat) (v : Validator) (found : x.state.validators.data[i]? = some v)
     (activated : v.activationEpoch ≠ FAR_FUTURE_EPOCH) :
     effectiveAt x i - effectiveAt y i ≤
-      (effectiveAt x i - balanceAt x i) + pathDebits i tail.balancePath +
+      (effectiveAt x i - actualBalanceAt x i) + pathDebits i tail.balancePath +
         (preset.EFFECTIVE_BALANCE_INCREMENT.toNat - 1) := by
   sorry
 
@@ -77,7 +78,7 @@ theorem effective_gain_from_balance {x y : ForkedBeaconState preset}
     (tail : Run config checks x y) (early : y.fork < .glamsterdam)
     (i : Nat) (present : i < x.state.validators.data.size) :
     effectiveAt y i - effectiveAt x i ≤
-      (balanceAt x i - effectiveAt x i) + pathCredits i tail.balancePath := by
+      (actualBalanceAt x i - effectiveAt x i) + pathCredits i tail.balancePath := by
   sorry
 
 /-- New keys are bounded from their actual admission balance, not a fictitious zero receipt. -/
@@ -102,4 +103,4 @@ theorem hysteresis_gain (largest balance old next : Gwei)
     next.toNat - old.toNat ≤ balance.toNat - old.toNat := by
   sorry
 
-end EthLib.Consensus.DirectSafety
+end EthLib.Consensus
