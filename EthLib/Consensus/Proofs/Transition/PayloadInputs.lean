@@ -831,7 +831,8 @@ theorem processOperations_blockRoots_latestBlockHeader
       exact refl _
   exact trans
     (fold (fun _ _ _ ok => fromInputs (payloadInputs_processProposerSlashing ok)) proposers) <|
-    trans (fold (fun _ _ _ ok => fromInputs (payloadInputs_processAttesterSlashing ok)) attesters) <|
+    trans
+      (fold (fun _ _ _ ok => fromInputs (payloadInputs_processAttesterSlashing ok)) attesters) <|
     trans (fold (fun _ _ _ ok => fromInputs (payloadInputs_processAttestation ok)) attestations) <|
     trans (fold (fun _ _ _ ok => by
       obtain ⟨_, _, next, _, applied⟩ := processDeposit_ok ok

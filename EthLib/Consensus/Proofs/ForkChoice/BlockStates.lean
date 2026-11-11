@@ -275,6 +275,7 @@ theorem Store.Reachable.blockState_root
 /-- A history read later than the anchor state names a held block.
 
 The proof follows earlier block states until it reaches the slot run that wrote the root.
+
 For that run, the next block validates the cached header as its held parent. -/
 theorem Store.Reachable.blockState_history_known
     (reachable : Store.Reachable config anchorState anchorBlock store)
