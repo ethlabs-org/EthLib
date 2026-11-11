@@ -3593,7 +3593,8 @@ private theorem funding_pending_capacity {fork : Fork} {s t : BeaconState preset
     exact chosen)
   simpa only [selected, Finset.sum_filter, ite_not] using bound
 
-private def funding_carry (x : ForkedBeaconState preset) : Nat :=
+/-- Unspent deposit capacity retained across post-Electra operations. -/
+def funding_carry (x : ForkedBeaconState preset) : Nat :=
   if h : .pectra ≤ x.fork then (x.state.depositBalanceToConsume h).toNat else 0
 
 private def funding_deposit_credit (e : BalanceEvent preset) : Nat :=
