@@ -1,6 +1,8 @@
 module
 
 public import EthLib.Consensus.Proofs.DirectSafety.IntervalFunding
+public import EthLib.Consensus.Proofs.DirectSafety.FundingBlock
+public import EthLib.Consensus.Proofs.DirectSafety.FundingSlot
 import all EthLib.Consensus.Proofs.DirectSafety.IntervalFunding
 
 /-!
@@ -109,7 +111,8 @@ theorem active_stake_le_window {g x y : ForkedBeaconState preset}
     (events : List (BalanceEvent preset)) (replayed : tail.balanceEvents high = .ok events) :
     Quorum.weight (effectiveWeight y.state) (activeKeys y.state) ≤
       activeStakeWindow (config := config) x high events := by
-  sorry
+  exact funding_assemble shared tail genesis parameters electra early withdrawalDelay
+    high endEpoch events replayed funding_block funding_slot
 
 def exitWindow (x : ForkedBeaconState preset) (high : Nat)
     (events : List (BalanceEvent preset)) : Nat :=
