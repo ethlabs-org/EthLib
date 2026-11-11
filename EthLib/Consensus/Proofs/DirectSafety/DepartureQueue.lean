@@ -335,6 +335,39 @@ theorem DepartureCoverage.suffix {f h k : Fork} {s : BeaconState preset f}
     covered i old middle before middleFound unset (same ▸ assigned)
   exact ⟨called, member, index, epoch.trans same.symm, amount⟩
 
+/-- An uncharged suffix preserves earlier coverage even when effective balances change. -/
+theorem DepartureCoverage.suffix_of_empty {f h k : Fork} {s : BeaconState preset f}
+    {t : BeaconState preset h} {u : BeaconState preset k} {calls : List IndexedDepartureCall}
+    (covered : DepartureCoverage s t calls) (empty : DepartureCoverage t u [])
+    (lifeOne : RegistryLifecycle s t) (lifeTwo : RegistryLifecycle t u) :
+    DepartureCoverage s u calls := by
+  apply covered.suffix lifeOne
+  intro i old next before after
+  by_cases pending : old.exitEpoch = FAR_FUTURE_EPOCH
+  · by_cases assigned : next.exitEpoch = FAR_FUTURE_EPOCH
+    · exact assigned.trans pending.symm
+    · obtain ⟨_, member, _⟩ := empty i old next before after pending assigned
+      cases member
+  · obtain ⟨later, found, kept⟩ := lifeTwo.validators i old before
+    have same := Option.some.inj (found.symm.trans after)
+    subst later
+    exact kept.exitEpoch pending
+
+/-- A fold of operations assigning no exits needs no effective-balance preservation. -/
+theorem DepartureCoverage.empty_fold {f : Fork} {α ε : Type}
+    {operation : BeaconState preset f → α → Except ε (BeaconState preset f)}
+    (empty : ∀ a item b, operation a item = .ok b → DepartureCoverage a b [])
+    (life : ∀ a item b, operation a item = .ok b → RegistryLifecycle a b)
+    {s t : BeaconState preset f} {items : List α}
+    (ok : items.foldlM operation s = .ok t) : DepartureCoverage s t [] := by
+  have result := foldlM_ok_invariant
+    (fun t => DepartureCoverage s t [] ∧ RegistryLifecycle s t)
+    (fun a item b before stepped =>
+      ⟨before.1.suffix_of_empty (empty a item b stepped) before.2 (life a item b stepped),
+        before.2.trans (life a item b stepped)⟩)
+    ⟨DepartureCoverage.of_data rfl, .refl s⟩ ok
+  exact result.1
+
 /-- A fold composes concrete calls when each operation preserves pre-scheduling balances. -/
 theorem DepartureCoverage.foldlM {f : Fork} {α ε : Type}
     {operation : BeaconState preset f → α → Except ε (BeaconState preset f)}
@@ -1059,6 +1092,98 @@ theorem effectiveBalances_departureQueues {fork : Fork} {s t : BeaconState prese
   obtain ⟨_, rfl⟩ := setValidatorAt_ok set
   exact kept
 
+/-- The effective-balance pass assigns no exits and therefore preserves earlier charge amounts. -/
+theorem effectiveBalances_coverage {fork : Fork} {s t : BeaconState preset fork}
+    (ok : processEffectiveBalanceUpdates s = .ok t) : DepartureCoverage s t [] := by
+  apply DepartureCoverage.empty_fold ?_ ?_ ok
+  · intro a index b stepped
+    simp only [updateEffectiveBalance, bind_ok_iff, liftAccessor_ok] at stepped
+    obtain ⟨_, found, _, _, _, _, set⟩ := stepped
+    exact DepartureCoverage.setValidatorAt found set rfl
+  · intro a index b stepped
+    simp only [updateEffectiveBalance, bind_ok_iff, liftAccessor_ok] at stepped
+    obtain ⟨_, found, _, _, _, _, set⟩ := stepped
+    exact .setValidatorAt found set ⟨fun _ => rfl, fun _ => rfl⟩
+
+/-- Crediting a pending deposit does not assign an exit to an existing validator. -/
+theorem pendingDeposit_coverage {fork : Fork} {s t : BeaconState preset fork}
+    {deposit : PendingDeposit}
+    (ok : applyPendingDeposit config checks s deposit = .ok t) : DepartureCoverage s t [] := by
+  unfold applyPendingDeposit at ok
+  split at ok
+  · split at ok
+    · cases ok; exact DepartureCoverage.of_data rfl
+    simp only [bind_ok_iff] at ok
+    obtain ⟨_, _, ok⟩ := ok
+    split at ok
+    · apply DepartureCoverage.of_append
+      simpa only [Array.push_eq_append] using addValidatorToRegistry_validators_eq_push ok
+    · cases ok; exact DepartureCoverage.of_data rfl
+  · simp only [liftAccessor_ok, bind_ok_iff] at ok
+    obtain ⟨_, _, ok⟩ := ok
+    exact DepartureCoverage.of_data (congrArg (·.data) (increaseBalance_validators ok))
+
+/-- Pending balance transfers assign no exits, independently of pending-source provenance. -/
+theorem pendingBalances_coverage {fork : Fork} {s t : BeaconState preset fork}
+    (ok : processPendingBalances config checks s = .ok t) : DepartureCoverage s t [] := by
+  have pass {stop : PendingDeposit → Bool} {nextEpoch : Epoch} {available : Gwei} :
+      ∀ {deposits : List PendingDeposit} {state : BeaconState preset fork} {processed : Gwei}
+        {count : Nat} {postponed : Array PendingDeposit} {result},
+        passPendingDeposits config checks stop nextEpoch available state processed count
+          postponed deposits = .ok result → DepartureCoverage state result.1.state [] := by
+    intro deposits
+    induction deposits with
+    | nil => intro state processed count postponed result ok; cases ok; exact .of_data rfl
+    | cons deposit rest ih =>
+      intro state processed count postponed result ok
+      unfold passPendingDeposits at ok
+      simp only [bind, Except.bind, pure, Except.pure] at ok
+      split at ok
+      · cases ok; exact .of_data rfl
+      split at ok
+      · cases ok
+      split at ok
+      · split at ok
+        · cases ok
+        rename_i credited
+        split at ok
+        · cases ok
+        cases ok
+        exact (pendingDeposit_coverage credited).suffix_of_empty (ih ‹_›)
+          (registryLifecycle_applyPendingDeposit credited)
+          (registryLifecycle_passPendingDeposits (deposits := rest) ‹_›)
+      split at ok
+      · split at ok
+        · cases ok
+        cases ok
+        exact ih ‹_›
+      split at ok
+      · cases ok
+      split at ok
+      · cases ok; exact .of_data rfl
+      split at ok
+      · cases ok
+      rename_i credited
+      split at ok
+      · cases ok
+      cases ok
+      exact (pendingDeposit_coverage credited).suffix_of_empty (ih ‹_›)
+        (registryLifecycle_applyPendingDeposit credited)
+        (registryLifecycle_passPendingDeposits (deposits := rest) ‹_›)
+  unfold processPendingBalances at ok
+  split at ok
+  · simp only [bind_ok_iff] at ok
+    obtain ⟨middle, deposited, consolidated⟩ := ok
+    have deposits : DepartureCoverage s middle [] := by
+      unfold processPendingDeposits at deposited
+      simp only [bind, Except.bind, pure, Except.pure] at deposited
+      repeat' (split at deposited <;> try cases deposited)
+      all_goals exact (pass ‹_› :)
+    intro i old next before after unset assigned
+    rw [(processPendingConsolidations_kept consolidated).1] at after
+    exact deposits i old next before after unset assigned
+  · cases ok; exact .of_data rfl
+
 private theorem preActivation_departureQueues {fork : Fork} {s t : BeaconState preset fork}
     (electra : .pectra ≤ fork) {index : ValidatorIndex}
     (ok : queuePreActivation s electra index = .ok t) :
@@ -1600,12 +1725,14 @@ theorem registryEntries_exitTrace {fork : Fork} (electra : .pectra ≤ fork)
       · exact laterRates call member
 
 /-- An Electra epoch spends departure capacity only in the registry's exit calls. -/
-theorem epoch_exitTrace {fork : Fork} {s t : BeaconState preset fork}
+theorem epoch_indexedTrace {fork : Fork} {s t : BeaconState preset fork}
     (electra : .pectra ≤ fork) (early : fork < .glamsterdam)
     (ok : processEpoch config checks s = .ok t) :
-    ∃ calls, DepartureQueueTrace (s.earliestExitEpoch electra) (s.exitBalanceToConsume electra)
-      calls (t.earliestExitEpoch electra) (t.exitBalanceToConsume electra) ∧
-      ∀ call ∈ calls, call.rate.toNat ≤ config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat := by
+    ∃ calls : List IndexedDepartureCall,
+      DepartureQueueTrace (s.earliestExitEpoch electra) (s.exitBalanceToConsume electra)
+        (calls.map (·.call)) (t.earliestExitEpoch electra) (t.exitBalanceToConsume electra) ∧
+      DepartureCoverage s t calls ∧ (∀ called ∈ calls,
+        called.call.rate.toNat ≤ config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat) := by
   have altair : .altair ≤ fork := Nat.le_trans (by decide) electra
   have capella : .shapella ≤ fork := Nat.le_trans (by decide) electra
   have notGloas : ¬ .glamsterdam ≤ fork := Nat.not_le_of_lt early
@@ -1651,9 +1778,47 @@ theorem epoch_exitTrace {fork : Fork} {s t : BeaconState preset fork}
     rw [effectiveBalances_departureQueues electra balancedOk,
       pendingBalances_departureQueues electra pendingOk, resetFrame,
       slashingPenalties_departureQueues electra slashedOk]
-  simp only [processRegistryUpdates, electra, ↓reduceIte, bind_ok_iff] at registeredOk
-  obtain ⟨_, _, entries⟩ := registeredOk
-  obtain ⟨calls, trace, rates⟩ := registryEntries_exitTrace electra early entries
+  have entriesOk := registeredOk
+  simp only [processRegistryUpdates, electra, ↓reduceIte, bind_ok_iff] at entriesOk
+  obtain ⟨_, _, entries⟩ := entriesOk
+  obtain ⟨calls, trace, covered, rates⟩ := registryEntries_indexedTrace electra early entries
+  have headData : rewarded.validators = s.validators := by
+    rw [processRewardsAndPenalties_frame rewardedOk]
+    exact (balanceDrift_inactivity scoredOk).1.trans
+      (processJustificationAndFinalization_keeps justifiedOk).2.2.2.2.2.1
+  have resetData : reset.validators = registered.validators := by
+    rw [(balanceDrift_reset resetOk).1, balanceDrift_slashings slashedOk]
+  have resetCovered : DepartureCoverage rewarded reset calls := by
+    intro i old next a b
+    rw [resetData] at b
+    exact covered i old next a b
+  have resetLife : RegistryLifecycle rewarded reset :=
+    (registryLifecycle_processRegistryUpdates registeredOk).trans
+      (.of_data (congrArg (·.data) resetData))
+  have pendingCovered := resetCovered.suffix_of_empty (pendingBalances_coverage pendingOk)
+    resetLife (registryLifecycle_processPendingBalances pendingOk)
+  have balancedCovered := pendingCovered.suffix_of_empty (effectiveBalances_coverage balancedOk)
+    (resetLife.trans (registryLifecycle_processPendingBalances pendingOk))
+    (registryLifecycle_processEffectiveBalanceUpdates balancedOk)
+  have tailData : t.validators = balanced.validators := by
+    have rootedData := (balanceDrift_summaries rootedOk).1
+    have syncedData : synced.validators = rooted.validators := by
+      unfold processSyncCommitteeUpdates at syncedOk
+      simp only [bind, Except.bind, pure, Except.pure] at syncedOk
+      repeat' (split at syncedOk <;> try cases syncedOk)
+      all_goals rfl
+    have lookedData : t.validators = synced.validators := by
+      obtain ⟨_, looked, rfl⟩ := looked
+      split at looked
+      · simp only [liftAccessor_ok, processProposerLookahead, bind_ok_iff,
+          pure, Except.pure, Except.ok.injEq] at looked
+        obtain ⟨_, _, _, _, rfl⟩ := looked
+        rfl
+      · cases looked; rfl
+    rw [lookedData, syncedData, rootedData]
+    obtain ⟨_, _, _, _, rfl⟩ := processSlashingsReset_eq clearedOk
+    obtain ⟨_, _, _, _, _, _, rfl⟩ := processRandaoMixesReset_eq mixedOk
+    rfl
   have firstEpoch := congrArg Prod.fst head
   have firstBalance := congrArg (fun q => q.2.1) head
   have lastEpoch := congrArg Prod.fst tail
@@ -1664,7 +1829,24 @@ theorem epoch_exitTrace {fork : Fork} {s t : BeaconState preset fork}
   change t.exitBalanceToConsume electra = registered.exitBalanceToConsume electra at lastBalance
   rw [firstEpoch, firstBalance] at trace
   rw [lastEpoch, lastBalance]
-  exact ⟨calls, trace, rates⟩
+  refine ⟨calls, trace, ?_, rates⟩
+  intro i old next a b
+  rw [tailData] at b
+  apply balancedCovered i old next _ b
+  simpa only [headData] using a
+
+/-- Forgetting validator tags gives the epoch's exit-capacity trace. -/
+theorem epoch_exitTrace {fork : Fork} {s t : BeaconState preset fork}
+    (electra : .pectra ≤ fork) (early : fork < .glamsterdam)
+    (ok : processEpoch config checks s = .ok t) :
+    ∃ calls, DepartureQueueTrace (s.earliestExitEpoch electra) (s.exitBalanceToConsume electra)
+      calls (t.earliestExitEpoch electra) (t.exitBalanceToConsume electra) ∧
+      ∀ call ∈ calls, call.rate.toNat ≤ config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat := by
+  obtain ⟨calls, trace, _, rates⟩ := epoch_indexedTrace electra early ok
+  refine ⟨calls.map (·.call), trace, ?_⟩
+  intro call member
+  obtain ⟨tagged, taggedMember, rfl⟩ := List.mem_map.mp member
+  exact rates tagged taggedMember
 
 /-- Advancing a slot preserves the linked epoch exit calls through caching and slot increment. -/
 theorem slot_exitTrace {fork : Fork} {s t : BeaconState preset fork}
