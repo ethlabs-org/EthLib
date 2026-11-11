@@ -996,4 +996,12 @@ theorem Run.validatorCap_mono {x y : ForkedBeaconState preset}
         withdrawalMaxEffectiveBalance preset y.fork w :=
   (CapStep.run run activation compounding early).monotone i v found
 
+/-- The cap at an existing index cannot decrease during an epoch. -/
+theorem processEpoch_validatorCap_mono {f : Fork} {s t : BeaconState preset f}
+    (early : f < .glamsterdam) (ok : processEpoch config checks s = .ok t)
+    (i : Nat) (v : Validator) (found : s.validators.data[i]? = some v) :
+    ∃ w, t.validators.data[i]? = some w ∧
+      withdrawalMaxEffectiveBalance preset f v ≤ withdrawalMaxEffectiveBalance preset f w :=
+  (CapStep.epoch early ok).monotone i v found
+
 end EthLib.Consensus
