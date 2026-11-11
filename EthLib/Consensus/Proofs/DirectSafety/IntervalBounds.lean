@@ -2486,6 +2486,272 @@ def activeStakeWindow (x : ForkedBeaconState preset) (high : Nat)
     fundedStake x + depositWindow (config := config) x high + (events.map fundingCredit).sum
   else registryWindow x high * preset.MAX_EFFECTIVE_BALANCE_ELECTRA.toNat
 
+private theorem funding_sum_zipIdx (vs : List Validator) (f : Validator → Nat → Nat) :
+    (vs.zipIdx.map fun (v, i) => f v i).sum =
+      ∑ i ∈ Finset.range vs.length, (vs[i]?.map (fun v => f v i)).getD 0 := by
+  let weight := fun i => (vs[i]?.map (fun v => f v i)).getD 0
+  have same : vs.zipIdx.map (fun (v, i) => f v i) =
+      (vs.zipIdx.map Prod.snd).map weight := by
+    rw [List.map_map]
+    apply List.map_congr_left
+    rintro ⟨v, i⟩ member
+    have found := List.mem_zipIdx_iff_getElem?.mp member
+    simp [weight, found]
+  rw [same, List.zipIdx_map_snd]
+  rw [Finset.sum_eq_multiset_sum, Finset.range_val, ← Multiset.coe_range,
+    Multiset.map_coe, Multiset.sum_coe, List.range_eq_range']
+
+private theorem funding_active_le (x : ForkedBeaconState preset)
+    (early : x.fork < .glamsterdam) (unique : uniqueKeys x.state) :
+    Quorum.weight (effectiveWeight x.state) (activeKeys x.state) ≤ fundedStake x := by
+  have within : x.state.RegistryWithinLimit := x.state.validators.bound early
+  have foundActive {i : ValidatorIndex}
+      (member : i ∈ getActiveValidatorIndices x.state (getCurrentEpoch x.state)) :=
+    (mem_getActiveValidatorIndices within).mp member
+  have inside : ∀ i ∈ getActiveValidatorIndices x.state (getCurrentEpoch x.state),
+      i.toNat < x.state.validators.data.size := by
+    intro i member
+    obtain ⟨v, found, _⟩ := foundActive member
+    exact (Array.getElem?_eq_some_iff.mp found).1
+  rw [activeKeys, keys_weight _ _ unique inside]
+  unfold fundedStake
+  rw [funding_sum_zipIdx x.state.validators.data.toList (fun v i =>
+    if isActiveValidator v (getCurrentEpoch x.state) ||
+        decide (getCurrentEpoch x.state < v.activationEpoch) ||
+        (if electra : .pectra ≤ x.fork then
+          (x.state.pendingConsolidations electra).data.any (fun c => c.sourceIndex.toNat == i)
+          else false) then max (effectiveAt x i) (actualBalanceAt x i) else 0)]
+  simp only [Array.length_toList, Array.getElem?_toList]
+  apply Finset.sum_le_sum_of_injOn (fun i => i.toNat)
+  · intro i _ j _ eq
+    exact UInt64.toNat_inj.mp eq
+  · intro i member
+    obtain ⟨j, chosen, rfl⟩ := Finset.mem_image.mp member
+    exact Finset.mem_range.mpr (inside j (List.mem_toFinset.mp chosen))
+  · intro i member
+    obtain ⟨v, found, active⟩ := foundActive (List.mem_toFinset.mp member)
+    simp only [found, Option.map_some, Option.getD_some, active, Bool.true_or, ↓reduceIte]
+    exact (by simp [effectiveAt, found] : v.effectiveBalance.toNat ≤
+      max (effectiveAt x i.toNat) (actualBalanceAt x i.toNat))
+  · intro _ _ _
+    exact Nat.zero_le _
+
+private theorem funding_source_inactive (v : Validator) (current next : Epoch)
+    (nextEq : next.toNat = current.toNat + 1)
+    (delay : 2 ≤ config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat)
+    (ordered : v.exitEpoch.toNat + config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat ≤
+      v.withdrawableEpoch.toNat)
+    (eligible : v.withdrawableEpoch ≤ next) : isActiveValidator v current = false := by
+  have withdrawable := UInt64.le_iff_toNat_le.mp eligible
+  have exited : v.exitEpoch ≤ current := UInt64.le_iff_toNat_le.mpr (by omega)
+  simp [isActiveValidator, UInt64.not_lt.mpr exited]
+
+-- During the pass, only the unprocessed suffix supplies pending-source support.
+private def funding_potential {fork : Fork} (s : BeaconState preset fork)
+    (queue : List PendingConsolidation) : Nat :=
+  ∑ i ∈ Finset.range s.validators.data.size,
+    (s.validators.data[i]?.map fun v =>
+      if isActiveValidator v (getCurrentEpoch s) ||
+          decide (getCurrentEpoch s < v.activationEpoch) ||
+          queue.any (fun c => c.sourceIndex.toNat == i) then
+        max (effectiveAt ⟨fork, s⟩ i) (actualBalanceAt ⟨fork, s⟩ i)
+      else 0).getD 0
+
+private theorem funding_potential_eq {fork : Fork} (s : BeaconState preset fork)
+    (electra : .pectra ≤ fork) :
+    funding_potential s (s.pendingConsolidations electra).data.toList = fundedStake ⟨fork, s⟩ := by
+  unfold fundedStake
+  simp only [electra, ↓reduceDIte]
+  rw [funding_sum_zipIdx s.validators.data.toList (fun v i =>
+    if isActiveValidator v (getCurrentEpoch s) ||
+        decide (getCurrentEpoch s < v.activationEpoch) ||
+        (s.pendingConsolidations electra).data.any (fun c => c.sourceIndex.toNat == i)
+      then max (effectiveAt ⟨fork, s⟩ i) (actualBalanceAt ⟨fork, s⟩ i) else 0)]
+  simp only [funding_potential, Array.length_toList, Array.getElem?_toList, Array.any_toList]
+
+private theorem funding_potential_mono {fork : Fork} (s : BeaconState preset fork)
+    {one two : List PendingConsolidation} (included : ∀ c ∈ one, c ∈ two) :
+    funding_potential s one ≤ funding_potential s two := by
+  apply Finset.sum_le_sum
+  intro i _
+  cases found : s.validators.data[i]? with
+  | none => simp
+  | some v =>
+    simp only [found, Option.map_some, Option.getD_some]
+    have pending : one.any (fun c => c.sourceIndex.toNat == i) = true →
+        two.any (fun c => c.sourceIndex.toNat == i) = true := by
+      intro present
+      obtain ⟨c, member, eq⟩ := List.any_eq_true.mp present
+      exact List.any_eq_true.mpr ⟨c, included c member, eq⟩
+    cases active : isActiveValidator v (getCurrentEpoch s) <;>
+      cases future : decide (getCurrentEpoch s < v.activationEpoch) <;>
+      cases queued : one.any (fun c => c.sourceIndex.toNat == i) <;>
+      simp_all
+
+private theorem funding_potential_transfer {fork : Fork} {s t : BeaconState preset fork}
+    (c : PendingConsolidation) (rest : List PendingConsolidation) (v : Validator) (moved : Nat)
+    (registry : t.validators = s.validators) (slot : t.slot = s.slot)
+    (found : s.validators.data[c.sourceIndex.toNat]? = some v)
+    (inactive : isActiveValidator v (getCurrentEpoch s) = false)
+    (activated : v.activationEpoch ≤ getCurrentEpoch s)
+    (absent : ∀ d ∈ rest, d.sourceIndex ≠ c.sourceIndex)
+    (funded : moved ≤ v.effectiveBalance.toNat)
+    (balances : ∀ i, actualBalanceAt ⟨fork, t⟩ i ≤ actualBalanceAt ⟨fork, s⟩ i +
+      if i = c.targetIndex.toNat then moved else 0) :
+    funding_potential t rest ≤ funding_potential s (c :: rest) := by
+  let before := fun i => (s.validators.data[i]?.map fun w =>
+    if isActiveValidator w (getCurrentEpoch s) ||
+        decide (getCurrentEpoch s < w.activationEpoch) ||
+        (c :: rest).any (fun d => d.sourceIndex.toNat == i) then
+      max (effectiveAt ⟨fork, s⟩ i) (actualBalanceAt ⟨fork, s⟩ i) else 0).getD 0
+  let after := fun i => (t.validators.data[i]?.map fun w =>
+    if isActiveValidator w (getCurrentEpoch t) ||
+        decide (getCurrentEpoch t < w.activationEpoch) ||
+        rest.any (fun d => d.sourceIndex.toNat == i) then
+      max (effectiveAt ⟨fork, t⟩ i) (actualBalanceAt ⟨fork, t⟩ i) else 0).getD 0
+  have epoch : getCurrentEpoch t = getCurrentEpoch s := by simp [getCurrentEpoch, slot]
+  have effective : ∀ i, effectiveAt ⟨fork, t⟩ i = effectiveAt ⟨fork, s⟩ i := by
+    intro i; simp [effectiveAt, registry]
+  have point : ∀ i, after i + (if i = c.sourceIndex.toNat then moved else 0) ≤
+      before i + (if i = c.targetIndex.toNat then moved else 0) := by
+    intro i
+    by_cases source : i = c.sourceIndex.toNat
+    · subst i
+      have noSource : rest.any (fun d => d.sourceIndex.toNat == c.sourceIndex.toNat) = false := by
+        apply Bool.eq_false_iff.mpr
+        intro yes
+        obtain ⟨d, member, eq⟩ := List.any_eq_true.mp yes
+        exact absent d member (UInt64.toNat_inj.mp (by simpa using eq))
+      simp only [after, before, registry, epoch, found, Option.map_some, Option.getD_some,
+        inactive, UInt64.not_lt.mpr activated, decide_false, Bool.false_or, noSource,
+        Bool.false_eq_true, ↓reduceIte, List.any_cons, beq_self_eq_true, Bool.true_or,
+        Nat.zero_add]
+      have eff : effectiveAt ⟨fork, s⟩ c.sourceIndex.toNat = v.effectiveBalance.toNat := by
+        simp [effectiveAt, found]
+      rw [eff]
+      omega
+    · have credit := balances i
+      cases read : s.validators.data[i]? with
+      | none => simp [after, before, registry, read, source]
+      | some w =>
+        simp only [after, before, registry, epoch, read, Option.map_some, Option.getD_some,
+          effective, source, ↓reduceIte, Nat.add_zero, List.any_cons,
+          show (c.sourceIndex.toNat == i) = false by simp [Ne.symm source], Bool.false_or]
+        split <;> omega
+  have total := Finset.sum_le_sum (s := Finset.range s.validators.data.size)
+    (fun i _ => point i)
+  have inside := (Array.getElem?_eq_some_iff.mp found).1
+  simp only [Finset.sum_add_distrib, Finset.sum_ite_eq', Finset.mem_range,
+    inside, ↓reduceIte] at total
+  change (∑ i ∈ Finset.range t.validators.data.size, after i) ≤
+    ∑ i ∈ Finset.range s.validators.data.size, before i
+  rw [registry]
+  split at total <;> omega
+
+private theorem funding_transfer_balances {fork : Fork} {s lowered t : BeaconState preset fork}
+    {source target : ValidatorIndex} {amount : Gwei}
+    (debit : decreaseBalance s source amount = .ok lowered)
+    (credit : increaseBalance lowered target amount = .ok t) :
+    ∀ i, actualBalanceAt ⟨fork, t⟩ i ≤ actualBalanceAt ⟨fork, s⟩ i +
+      if i = target.toNat then amount.toNat else 0 := by
+  intro i
+  cases found : s.balances.data[i]? with
+  | some balance =>
+    obtain ⟨low, lowFound, lowEq⟩ := balance_decreaseBalance debit found
+    obtain ⟨high, highFound, highEq⟩ := balance_increaseBalance credit lowFound
+    simp only [actualBalanceAt, found, highFound, Option.map_some, Option.getD_some]
+    by_cases hs : source.toNat = i <;> by_cases ht : target.toNat = i <;>
+      simp_all <;> omega
+  | none =>
+    have size := (sameSizes_increaseBalance credit).2.trans (sameSizes_decreaseBalance debit).2
+    have outside := Array.getElem?_eq_none_iff.mp found
+    have final : t.balances.data[i]? = none := Array.getElem?_eq_none (by omega)
+    simp [actualBalanceAt, found, final]
+
+private theorem funding_pass_consolidations {fork : Fork} {next : Epoch}
+    (delay : 2 ≤ config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat) :
+    ∀ {queue : List PendingConsolidation} {s : BeaconState preset fork} {result},
+      passPendingConsolidations next s queue = .ok result →
+      next.toNat = (getCurrentEpoch s).toNat + 1 →
+      (queue.map (·.sourceIndex)).Nodup →
+      (∀ c ∈ queue, ∃ v, s.validators.data[c.sourceIndex.toNat]? = some v ∧
+        v.activationEpoch ≤ getCurrentEpoch s ∧
+        v.exitEpoch.toNat + config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat ≤
+          v.withdrawableEpoch.toNat) →
+      funding_potential result.1 (queue.drop result.2) ≤ funding_potential s queue
+  | [], s, result, ok, _, _, _ => by
+    cases ok
+    exact Nat.le_refl _
+  | c :: rest, s, result, ok, nextEq, distinct, sources => by
+    have distinct' := List.nodup_cons.mp distinct
+    obtain ⟨v, found, activated, ordered⟩ := sources c (by simp)
+    have read : getValidator s c.sourceIndex = .ok v := by simp [getValidator, found]
+    unfold passPendingConsolidations at ok
+    rw [show liftAccessor (getValidator s c.sourceIndex) =
+      (Except.ok v : Except TransitionError _) by simp [read, liftAccessor, Except.mapError]] at ok
+    simp only [bind_ok_iff, Except.ok.injEq, exists_eq_left'] at ok
+    by_cases slashed : v.slashed = true
+    · simp only [slashed, ↓reduceIte, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at ok
+      obtain ⟨result', passed, rfl⟩ := ok
+      have ih := funding_pass_consolidations delay passed nextEq distinct'.2
+        (fun d member => sources d (List.mem_cons_of_mem c member))
+      exact ih.trans (funding_potential_mono s (fun d member => List.mem_cons_of_mem c member))
+    · simp only [slashed, ↓reduceIte] at ok
+      by_cases waits : next < v.withdrawableEpoch
+      · simp only [waits, ↓reduceIte, pure, Except.pure, Except.ok.injEq] at ok
+        cases ok
+        exact Nat.le_refl _
+      · simp only [waits, ↓reduceIte, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at ok
+        obtain ⟨balance, balanceOk, ok⟩ := bind_ok_iff.mp ok
+        simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at ok
+        obtain ⟨lowered, loweredOk, raised, raisedOk, result', passed, rfl⟩ := ok
+        have debit := liftAccessor_ok.mp loweredOk
+        have credit := liftAccessor_ok.mp raisedOk
+        have registry := (increaseBalance_validators credit).trans
+          (decreaseBalance_validators debit)
+        have slot : raised.slot = s.slot :=
+          (frame_increaseBalance credit).slot.trans (frame_decreaseBalance debit).slot
+        have epoch : getCurrentEpoch raised = getCurrentEpoch s := by simp [getCurrentEpoch, slot]
+        have ih := funding_pass_consolidations delay passed (epoch ▸ nextEq) distinct'.2 (by
+          intro d member
+          obtain ⟨w, found, activated, ordered⟩ := sources d (List.mem_cons_of_mem c member)
+          exact ⟨w, by rw [registry]; exact found, epoch ▸ activated, ordered⟩)
+        have one := funding_potential_transfer c rest v (min balance v.effectiveBalance).toNat
+          registry slot found
+          (funding_source_inactive v _ _ nextEq delay ordered (UInt64.not_lt.mp waits))
+          activated (by
+            intro d member equal
+            exact distinct'.1 (List.mem_map.mpr ⟨d, member, equal⟩))
+          (UInt64.le_iff_toNat_le.mp Std.min_le_right) (funding_transfer_balances debit credit)
+        exact ih.trans one
+
+private theorem funding_consolidations {fork : Fork} {s t : BeaconState preset fork}
+    (electra : .pectra ≤ fork)
+    (delay : 2 ≤ config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat)
+    (distinct : ((s.pendingConsolidations electra).data.toList.map (·.sourceIndex)).Nodup)
+    (sources : ∀ c ∈ (s.pendingConsolidations electra).data.toList,
+      ∃ v, s.validators.data[c.sourceIndex.toNat]? = some v ∧
+        v.activationEpoch ≤ getCurrentEpoch s ∧
+        v.exitEpoch.toNat + config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat ≤
+          v.withdrawableEpoch.toNat)
+    (ok : processPendingConsolidations s electra = .ok t) :
+    fundedStake ⟨fork, t⟩ ≤ fundedStake ⟨fork, s⟩ := by
+  simp only [processPendingConsolidations, bind_ok_iff, pure, Except.pure,
+    Except.ok.injEq] at ok
+  obtain ⟨next, nextOk, result, passed, rfl⟩ := ok
+  have nextEq := (Uint64.addChecked_ok_iff.mp
+    (mapError_ok_iff.mp (liftAccessor_ok.mp nextOk))).2
+  simp only [UInt64.toNat_one] at nextEq
+  have bound := funding_pass_consolidations delay passed nextEq distinct sources
+  rw [← funding_potential_eq _ electra, ← funding_potential_eq _ electra]
+  have takeEq : ((s.pendingConsolidations electra).data.toList.drop result.2).take
+      ((s.pendingConsolidations electra).data.size - result.2) =
+      (s.pendingConsolidations electra).data.toList.drop result.2 :=
+    List.take_of_length_le (by simp)
+  convert bound using 1 <;>
+    simp only [funding_potential, Array.toList_extract, List.extract_eq_take_drop,
+      takeEq, effectiveAt, actualBalanceAt, getCurrentEpoch] <;> congr 3
+
 private theorem funding_deposit_spending {fork : Fork} {s t : BeaconState preset fork}
     (electra : .pectra ≤ fork) (early : fork < .glamsterdam)
     (ok : processPendingDeposits config checks s electra = .ok t) :
