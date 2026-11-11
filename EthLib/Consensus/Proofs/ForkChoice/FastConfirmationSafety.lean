@@ -3,11 +3,15 @@ module
 public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmationResets
 
 /-!
-# Statements: the block that the fast confirmation rule stores is safe from the next slot
+# Statements: safety of the fast confirmation rule
 
 This file states step 8 of the plan for the safety of the fast confirmation rule.
 
-The rule is that of [arXiv 2405.00549v4][fcr], and the result is its Theorem 1.
+The rule is that of [arXiv 2405.00549v4][fcr].
+
+The target is the paper's long-horizon Theorem 1.
+
+The weight and delivery interfaces are under review and are not frozen.
 
 The proofs are placeholders, and each statement may still change.
 
@@ -299,6 +303,13 @@ theorem Execution.safeAt_of_walk {Δ : ℕ} (sync : e.Synchronous Δ)
     (within : balanceSource.RegistryWithinLimit) (aligned : EffectiveBalancesAligned balanceSource)
     (increment : preset.EFFECTIVE_BALANCE_INCREMENT.toNat % 100 = 0)
     {limit shift : ℕ} (weights : WeightBounds e balanceSource (e.world n).time limit shift)
+    (compatible : ∀ member ∈ chain ++ [root], ∀ w ∈ J, ∀ k,
+      (e.world n).time ≤ (e.world k).time → (e.world k).time ≤ limit →
+      UpToDate config checks sources (e.world k).time ((e.world k).view w)
+        ((e.world k).state w) →
+      ((e.world n).state u).getCheckpointBlock member
+        ((e.world k).state w).finalizedCheckpoint.epoch =
+          .ok ((e.world k).state w).finalizedCheckpoint.root)
     (slack : ∀ member ∈ chain ++ [root], ∀ block parent firstSlot lastSlot beforeBlock
       slot participants maximum score support discount adversary,
       ((e.world n).state u).getCurrentSlot config = .ok slot →
@@ -326,7 +337,11 @@ theorem Execution.safeAt_of_walk {Δ : ℕ} (sync : e.Synchronous Δ)
     ∀ time, (e.world n).time ≤ time → time ≤ limit → SafeAt e time root := by
   sorry
 
-/-- Theorem 1: the block that the rule stores is safe from the start of the next slot.
+/-- Statement target for long-horizon safety, with interfaces still under review.
+
+The bound includes at least the next-slot boundary, so its conclusion is not an empty interval.
+
+Positive weight shift additionally requires the measured residual in `RuleBounds.slack`.
 
 An honest validator calls the rule at the events of a list, with its store up to date.
 
@@ -382,7 +397,7 @@ The call before the first slot of an epoch records the observed justified checkp
 
 It is one slot before the call that reads it, so `Execution.safeAt_observed` applies.
 
-In [verified-fast-confirmation][vfc], this is `confirmed_root_safe_from_next_slot`.
+The reference is `confirmed_root_safe_from_next_slot` in [verified-fast-confirmation][vfc].
 
 [vfc]: https://github.com/fradamt/verified-fast-confirmation -/
 theorem Execution.safeAt_confirmedRoot {Δ : ℕ} (sync : e.Synchronous Δ)
@@ -441,7 +456,8 @@ theorem Execution.safeAt_confirmedRoot {Δ : ℕ} (sync : e.Synchronous Δ)
     (lastCall : events.getLast? = some n)
     (slotOk : ((e.world n).state u).getCurrentSlot config = .ok slot)
     (nextOk : addChecked slot 1 = .ok next)
-    (followingOk : computeTimeAtSlotMs config genesisTimeMs next = .ok following) :
+    (followingOk : computeTimeAtSlotMs config genesisTimeMs next = .ok following)
+    (nonempty : following.toNat ≤ limit) :
     ∀ time, following.toNat ≤ time → time ≤ limit → SafeAt e time last.confirmedRoot := by
   sorry
 
