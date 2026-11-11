@@ -367,7 +367,7 @@ structure RuleBounds
   weights : ∀ i n fcr after balanceSource last,
     CallAt e u events first i n fcr after →
     ((e.world n).state u).checkpointState after.currentEpochObservedJustifiedCheckpoint =
-      .ok balanceSource →
+      .ok balanceSource → last ≤ limit →
     ¬CompleteEpochWithin preset config genesisTimeMs (e.world n).time last →
     WeightBounds e balanceSource (e.world n).time last shift
   /-- The measured tally exceeds the rule's conservative threshold by the weight shift.
@@ -719,9 +719,13 @@ While no complete epoch lies between the call and a time, `WeightBounds` bounds 
 
 Once one does, each receiver has the late majority of `LateMargin`.
 
-No honest store holds a block at the parent root of the anchor block.
+No honest store holds a block at the parent root of the anchor block, up to the last time.
 
-So each honest store has its parents below its blocks, which the filtered tree and the head need.
+This is an explicit exclusion of stores that hold that root, not an assumption on hashes.
+
+With it, each honest store has its parents below its blocks, by `Reachable.parentsBelow`.
+
+The filtered tree and the head need that order.
 
 The proof is a strong induction on the time, and at each time an induction along the walk.
 
@@ -814,7 +818,8 @@ theorem Execution.safeAt_of_walk {Δ : ℕ} (sync : e.Synchronous Δ)
     {limit : ℕ}
     (startSafe : ∀ time, (e.world n).time ≤ time → time ≤ limit → SafeAt e time start)
     {shift : ℕ}
-    (weights : ∀ last, ¬CompleteEpochWithin preset config genesisTimeMs (e.world n).time last →
+    (weights : ∀ last, last ≤ limit →
+      ¬CompleteEpochWithin preset config genesisTimeMs (e.world n).time last →
       WeightBounds e balanceSource (e.world n).time last shift)
     (slack : ∀ member ∈ chain ++ [root], ∀ block parent firstSlot lastSlot beforeBlock
       participants maximum score support discount adversary,
@@ -1061,7 +1066,9 @@ Each block that an honest store holds has a nonzero state root.
 
 No honest store holds a block at the parent root of the anchor block, up to the last time.
 
-So the parents of the blocks of each honest store are at lower slots.
+This excludes stores that hold that root; it is not an assumption on hashes.
+
+With it, the parents of the blocks of each honest store are at lower slots.
 
 Assumption 2 holds at each call, with that margin and a weight shift, as `RuleBounds` says.
 
