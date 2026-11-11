@@ -311,6 +311,139 @@ private theorem departureQueues_decrease {fork : Fork} {s t : BeaconState preset
   obtain ⟨_, rfl⟩ := setBalance_ok set
   rfl
 
+private theorem addValidator_departureQueues {fork : Fork} {s t : BeaconState preset fork}
+    (electra : .pectra ≤ fork) {key : Cryptography.Bls.BLSPubkey}
+    {credentials : Bytes32} {amount : Gwei}
+    (ok : addValidatorToRegistry s key credentials amount = .ok t) :
+    departureQueues electra t = departureQueues electra s := by
+  have altair : .altair ≤ fork := Nat.le_trans (by decide) electra
+  simp only [addValidatorToRegistry, altair, ↓reduceDIte,
+    addValidatorToRegistryAltair, liftAccessor_ok, bind_ok_iff,
+    pure, Except.pure, Except.ok.injEq] at ok
+  obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, rfl⟩ := ok
+  rfl
+
+private theorem pendingDeposit_departureQueues {fork : Fork} {s t : BeaconState preset fork}
+    (electra : .pectra ≤ fork) {deposit : PendingDeposit}
+    (ok : applyPendingDeposit config checks s deposit = .ok t) :
+    departureQueues electra t = departureQueues electra s := by
+  unfold applyPendingDeposit at ok
+  split at ok
+  · split at ok
+    · cases ok; rfl
+    simp only [bind_ok_iff] at ok
+    obtain ⟨_, _, ok⟩ := ok
+    split at ok
+    · exact addValidator_departureQueues electra ok
+    · cases ok; rfl
+  · simp only [liftAccessor_ok, bind_ok_iff] at ok
+    obtain ⟨_, _, ok⟩ := ok
+    exact departureQueues_increase electra ok
+
+private theorem passPendingDeposits_departureQueues {fork : Fork}
+    (electra : .pectra ≤ fork) {stop : PendingDeposit → Bool} {nextEpoch : Epoch}
+    {available : Gwei} :
+    ∀ {deposits : List PendingDeposit} {s : BeaconState preset fork} {processed : Gwei}
+      {count : Nat} {postponed : Array PendingDeposit} {pass},
+      passPendingDeposits config checks stop nextEpoch available s processed count postponed
+        deposits = .ok pass → departureQueues electra pass.1.state = departureQueues electra s
+  | [], _, _, _, _, _, ok => by cases ok; rfl
+  | deposit :: rest, s, processed, count, postponed, pass, ok => by
+    unfold passPendingDeposits at ok
+    simp only [bind, Except.bind, pure, Except.pure] at ok
+    split at ok
+    · cases ok; rfl
+    split at ok
+    · cases ok
+    split at ok
+    · split at ok
+      · cases ok
+      rename_i credited
+      split at ok
+      · cases ok
+      cases ok
+      exact (passPendingDeposits_departureQueues electra (deposits := rest) ‹_›).trans
+        (pendingDeposit_departureQueues electra credited)
+    split at ok
+    · split at ok
+      · cases ok
+      cases ok
+      exact passPendingDeposits_departureQueues electra (deposits := rest) ‹_›
+    split at ok
+    · cases ok
+    split at ok
+    · cases ok; rfl
+    split at ok
+    · cases ok
+    rename_i credited
+    split at ok
+    · cases ok
+    cases ok
+    exact (passPendingDeposits_departureQueues electra (deposits := rest) ‹_›).trans
+      (pendingDeposit_departureQueues electra credited)
+
+/-- Crediting pending deposits preserves both departure queues. -/
+theorem pendingDeposits_departureQueues {fork : Fork} {s t : BeaconState preset fork}
+    (electra : .pectra ≤ fork)
+    (ok : processPendingDeposits config checks s electra = .ok t) :
+    departureQueues electra t = departureQueues electra s := by
+  unfold processPendingDeposits at ok
+  simp only [bind, Except.bind, pure, Except.pure] at ok
+  repeat' (split at ok <;> try cases ok)
+  all_goals exact passPendingDeposits_departureQueues electra ‹_›
+
+private theorem applyWithdrawals_departureQueues {fork : Fork} {s t : BeaconState preset fork}
+    (electra : .pectra ≤ fork) (early : fork < .glamsterdam) {withdrawals : Array Withdrawal}
+    (ok : applyWithdrawals s withdrawals = .ok t) :
+    departureQueues electra t = departureQueues electra s := by
+  have notGloas : ¬ .glamsterdam ≤ fork := Nat.not_le_of_lt early
+  unfold applyWithdrawals at ok
+  rw [← Array.foldlM_toList] at ok
+  refine foldlM_ok_invariant (fun t => departureQueues electra t = departureQueues electra s)
+    ?_ rfl ok
+  intro a withdrawal b kept stepped
+  simp only [applyWithdrawal, notGloas, false_and, ↓reduceDIte] at stepped
+  exact (departureQueues_decrease electra stepped).trans kept
+
+private theorem withdrawalIndex_departureQueues {fork : Fork} {s t : BeaconState preset fork}
+    (electra : .pectra ≤ fork) {withdrawals : Array Withdrawal}
+    (ok : updateNextWithdrawalIndex s withdrawals = .ok t) :
+    departureQueues electra t = departureQueues electra s := by
+  unfold updateNextWithdrawalIndex at ok
+  split at ok
+  · simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at ok
+    obtain ⟨_, _, rfl⟩ := ok
+    rfl
+  · cases ok; rfl
+
+private theorem withdrawalValidatorIndex_departureQueues {fork : Fork}
+    {s t : BeaconState preset fork} (electra : .pectra ≤ fork)
+    {capella : .shapella ≤ fork} {withdrawals : Array Withdrawal}
+    (ok : updateNextWithdrawalValidatorIndex s capella withdrawals = .ok t) :
+    departureQueues electra t = departureQueues electra s := by
+  simp only [updateNextWithdrawalValidatorIndex, bind_ok_iff] at ok
+  obtain ⟨_, _, ok⟩ := ok
+  split at ok
+  · cases ok
+  · cases ok; rfl
+
+/-- Paying withdrawals removes balances and pending entries without resetting churn. -/
+theorem withdrawals_departureQueues {fork : Fork} {s t : BeaconState preset fork}
+    (electra : .pectra ≤ fork) (early : fork < .glamsterdam)
+    {capella : .shapella ≤ fork} {payload : Until .glamsterdam fork (ExecutionPayload preset fork)}
+    (ok : processWithdrawals s capella payload = .ok t) :
+    departureQueues electra t = departureQueues electra s := by
+  have notGloas : ¬ .glamsterdam ≤ fork := Nat.not_le_of_lt early
+  simp only [processWithdrawals, notGloas, ↓reduceDIte, bind_ok_iff, ensure_ok_iff,
+    liftAccessor_ok] at ok
+  obtain ⟨expected, _, _, _, applied⟩ := ok
+  simp only [applyExpectedWithdrawals, notGloas, electra, ↓reduceDIte, bind_ok_iff,
+    pure, Except.pure, Except.ok.injEq, exists_eq_left'] at applied
+  obtain ⟨withdrawn, paid, indexed, moved, swept⟩ := applied
+  have last := withdrawalValidatorIndex_departureQueues electra swept
+  exact last.trans ((withdrawalIndex_departureQueues electra moved).trans
+    (applyWithdrawals_departureQueues electra early paid))
+
 /-- A slashing changes the departure queues only in its initial exit scheduling call. -/
 theorem slashValidator_departureQueues {fork : Fork} {s t : BeaconState preset fork}
     (electra : .pectra ≤ fork) (early : fork < .glamsterdam)
