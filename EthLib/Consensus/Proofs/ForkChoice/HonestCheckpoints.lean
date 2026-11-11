@@ -2,6 +2,7 @@ module
 
 public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmationSets
 public import EthLib.Consensus.Proofs.ForkChoice.HonestDuties
+public import EthLib.Consensus.Proofs.Transition.Invariants
 
 /-!
 # Statements: what the fast confirmation rule asks of the checkpoints of honest stores
@@ -56,11 +57,11 @@ For the first fact the set is the honest validators, and the bound is Assumption
 
 For the second it is the honest third, and the bound is the count that the rule makes.
 
-Each bound is read in another state than the one that counts the votes.
+H reads the Byzantine bound directly in the state that counts the votes.
 
-`DriftAtMost` bounds the change of the balances between the two states by a number of Gwei.
+N transports a particular honest subset from the pulled-up head state.
 
-The two facts then hold with that number as a margin.
+`DriftAtMost` bounds that subset's adverse weight shift by a number of Gwei.
 
 Four lemmas of [verified-fast-confirmation][vfc] state these facts.
 
@@ -103,7 +104,10 @@ def Store.Counts (store : Store preset fork) (config : Config)
   ∃ (root : Root) (blockState : BeaconState preset fork),
     store.blockStates[root]? = some blockState ∧
       (state = blockState ∨
-        ∃ (checks : SignatureChecks) (slot : Slot),
+        ∃ (checks : SignatureChecks) (slot : Slot) (childRoot : Root)
+          (child : BeaconBlock preset fork),
+          store.blocks[childRoot]? = some child ∧ child.parentRoot = root ∧
+          slot ≤ child.slot ∧
           processSlots config checks blockState slot = .ok state)
 
 /-- The validators whose votes a state can count for a target.
@@ -123,20 +127,6 @@ def NotSlashed (state : BeaconState preset fork) (v : ValidatorIndex) : Prop :=
 /-- The validators that are active in the epoch of a state. -/
 def activeVoters (state : BeaconState preset fork) : Finset ValidatorIndex :=
   (getActiveValidatorIndices state (getCurrentEpoch state)).toFinset
-
-/-- No checkpoint of a state is of a later epoch than the state.
-
-The checkpoints are the finalized one and the two justified ones.
-
-The store of an anchor checks no checkpoint of the state of its anchor.
-
-A block after the anchor carries those checkpoints, and a store reads them from its state.
-
-So a statement on the justified checkpoints of a store asks this of the state of the anchor. -/
-def CheckpointsNotAhead (state : BeaconState preset fork) : Prop :=
-  state.finalizedCheckpoint.epoch ≤ getCurrentEpoch state ∧
-    state.currentJustifiedCheckpoint.epoch ≤ getCurrentEpoch state ∧
-    state.previousJustifiedCheckpoint.epoch ≤ getCurrentEpoch state
 
 /-- The balances of a state have drifted from those of a reference by at most a number of Gwei.
 
@@ -291,11 +281,12 @@ The epoch is after the given one, the epoch of the anchor.
 No voter has to sign a target here: the definition only counts stake. -/
 def HonestThirdPins
     (e : Execution (honestForkChoice config checks sources anchorState anchorBlock assignment
-      genesisTimeMs) J) (anchorEpoch : Epoch) (margin : ℕ) : Prop :=
+      genesisTimeMs) J) (anchorEpoch horizon : Epoch) (margin : ℕ) : Prop :=
   ∀ u ∈ J, ∀ n head state total epoch, ∀ voters : Finset ValidatorIndex,
     ((e.world n).state u).getPulledUpHeadState config head = .ok state →
     getTotalActiveBalance state = .ok total →
     ((e.world n).state u).getCurrentStoreEpoch config = .ok epoch →
+    epoch ≤ horizon →
     (∀ v ∈ voters, v ∈ J) → (∀ v ∈ voters, v ∈ activeVoters state) →
     total.toNat + margin < 3 * stake (fun v => balanceAt state v.toNat) voters →
     ∀ w ∈ J, ∀ k checkpoint slot, ((e.world k).state w).Justified checkpoint →
@@ -347,7 +338,7 @@ There `one_third_honest_intersects_two_thirds` and `two_quorums_intersect_honest
 [vfc]: https://github.com/fradamt/verified-fast-confirmation -/
 theorem Execution.exists_signsTarget_of_justified {anchor : Store preset fork}
     (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
-    (sound : CheckpointsNotAhead anchorState)
+    (sound : Invariant anchorState)
     {w : ValidatorIndex} (honest : w ∈ J) (start : e.start w = anchor) {k : ℕ}
     {checkpoint : Checkpoint} {slot : Slot}
     (justified : ((e.world k).state w).Justified checkpoint)
@@ -364,45 +355,40 @@ theorem Execution.exists_signsTarget_of_justified {anchor : Store preset fork}
     ∃ v, p v ∧ SignsTargetBefore e v checkpoint slot := by
   sorry
 
-/-- Each justified checkpoint has an honest vote, from Assumption 2 in a reference state.
+/-- Each justified checkpoint has an honest vote, from the bound in each counting state.
 
-The Byzantine validators hold at most the threshold of the active stake of the reference.
+The bound counts Byzantine current-or-previous-epoch voters against the active denominator.
 
 The threshold is in percent.
 
 Take each state where an honest store can count votes, up to the epoch after the horizon.
 
-It has drifted from the reference by at most the given drift.
+The threshold is strictly below two thirds, and the denominator is positive.
 
-No honest validator is slashed in such a state.
-
-The margin asks that the Byzantine stake with the drift stays below two thirds.
-
-With a threshold of 25, the drift must be below five quarters of that active stake. -/
+No comparison with a reference state's balances is needed. -/
 theorem Execution.justifiedByHonestVote [DecidablePred (· ∈ J)] {anchor : Store preset fork}
     (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
-    (sound : CheckpointsNotAhead anchorState)
+    (sound : Invariant anchorState)
     (start : ∀ w ∈ J, e.start w = anchor) {horizon : Epoch}
-    {reference : BeaconState preset fork} {threshold drift : ℕ}
-    (byzantine : ByzantineStakeAtMost (fun v => balanceAt reference v.toNat)
-      (activeVoters reference) J threshold 100)
-    (drifts : ∀ w ∈ J, ∀ k (state : BeaconState preset fork),
+    {threshold : ℕ}
+    (byzantine : ∀ w ∈ J, ∀ k (state : BeaconState preset fork) total,
       ((e.world k).state w).Counts config state →
       (getCurrentEpoch state).toNat ≤ horizon.toNat + 1 →
-      DriftAtMost reference state drift)
-    (unslashed : ∀ w ∈ J, ∀ k (state : BeaconState preset fork),
-      ((e.world k).state w).Counts config state → ∀ v ∈ J, NotSlashed state v)
-    (margin : 3 * (threshold * stake (fun v => balanceAt reference v.toNat)
-        (activeVoters reference)) + 100 * drift <
-      200 * stake (fun v => balanceAt reference v.toNat) (activeVoters reference)) :
+      getTotalActiveBalance state = .ok total →
+      100 * stake (fun v => balanceAt state v.toNat) {v ∈ quorumVoters state | v ∉ J} ≤
+        threshold * total.toNat)
+    (positive : 0 < preset.EFFECTIVE_BALANCE_INCREMENT)
+    (enough : 3 * threshold < 200) :
     JustifiedByHonestVote e anchor.justifiedCheckpoint.epoch horizon := by
   intro w honest k checkpoint slot justified slotOk after inHorizon
   refine e.exists_signsTarget_of_justified anchored sound honest (start w honest) justified slotOk
     after (· ∈ J) fun state total counts _ upper totalOk => ?_
-  have bound := byzantine.2
   have inside := UInt64.le_iff_toNat_le.mp inHorizon
-  exact (drifts w honest k state counts (by omega)).lt_two_mul_total (· ∈ J)
-    (unslashed w honest k state counts) (by omega) totalOk
+  have bound := byzantine w honest k state total counts (by omega) totalOk
+  have lower := UInt64.le_iff_toNat_le.mp (le_getTotalBalance (getTotalActiveBalance_ok totalOk))
+  have pos := UInt64.lt_iff_toNat_lt.mp positive
+  have strict := Nat.mul_lt_mul_of_pos_right enough (show 0 < total.toNat by omega)
+  nlinarith
 
 /-- An honest third signs each justified checkpoint of its epoch, with the drift as the margin.
 
@@ -419,11 +405,12 @@ No honest validator is slashed in a state where an honest store can count votes.
 That number is the margin, and it covers two epochs of drift at most. -/
 theorem Execution.honestThirdPins {anchor : Store preset fork}
     (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
-    (sound : CheckpointsNotAhead anchorState)
-    (start : ∀ w ∈ J, e.start w = anchor) {drift : ℕ}
+    (sound : Invariant anchorState)
+    (start : ∀ w ∈ J, e.start w = anchor) {horizon : Epoch} {drift : ℕ}
     (drifts : ∀ u ∈ J, ∀ n head reference epoch,
       ((e.world n).state u).getPulledUpHeadState config head = .ok reference →
       ((e.world n).state u).getCurrentStoreEpoch config = .ok epoch →
+      epoch ≤ horizon →
       ∀ w ∈ J, ∀ k (state : BeaconState preset fork),
         ((e.world k).state w).Counts config state →
         epoch.toNat ≤ (getCurrentEpoch state).toNat →
@@ -431,8 +418,8 @@ theorem Execution.honestThirdPins {anchor : Store preset fork}
         DriftAtMost reference state drift)
     (unslashed : ∀ w ∈ J, ∀ k (state : BeaconState preset fork),
       ((e.world k).state w).Counts config state → ∀ v ∈ J, NotSlashed state v) :
-    HonestThirdPins e anchor.justifiedCheckpoint.epoch drift := by
-  intro u caller n head reference total epoch voters referenceOk totalOk epochOk good active third w
+    HonestThirdPins e anchor.justifiedCheckpoint.epoch horizon drift := by
+  intro u caller n head reference total epoch voters referenceOk totalOk epochOk inHorizon good active third w
     honest k checkpoint slot justified slotOk same after
   subst same
   obtain ⟨v, member, signs⟩ := e.exists_signsTarget_of_justified anchored sound honest
@@ -447,7 +434,7 @@ theorem Execution.honestThirdPins {anchor : Store preset fork}
       (W := activeVoters reference) fun v member => List.mem_toFinset.mp member
     rw [same] at split
     simp only [stake] at third covered ⊢
-    exact (drifts u caller n head reference checkpoint.epoch referenceOk epochOk w honest k
+    exact (drifts u caller n head reference checkpoint.epoch referenceOk epochOk inHorizon w honest k
       state counts lower upper).lt_two_mul_total (· ∈ voters)
       (fun v member => unslashed w honest k state counts v (good v member))
       (by simp only [stake]; omega) stateTotalOk

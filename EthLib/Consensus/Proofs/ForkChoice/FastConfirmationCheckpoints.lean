@@ -88,22 +88,25 @@ def Checked (store : Store preset fork) (config : Config) (fcr : FastConfirmatio
     store.getCurrentStoreEpoch config = .ok epoch ∧ store.getCurrentSlot config = .ok slot ∧
     store.getBlockEpoch root = .ok rootEpoch ∧ store.getBlockEpoch start = .ok startEpoch ∧
     epoch.toNat ≤ startEpoch.toNat + 1 ∧
-    (rootEpoch = epoch → startEpoch ≠ epoch →
-      store.willCurrentTargetBeJustified config head = .ok true) ∧
-    (rootEpoch = epoch → isStartSlotAtEpoch preset slot = .ok false →
-      ∃ justification, store.unrealizedJustification head = .ok justification ∧
-        epoch.toNat ≤ justification.epoch.toNat + 1) ∧
-    (rootEpoch ≠ epoch →
+    ((startEpoch.toNat + 1 = epoch.toNat ∧ rootEpoch ≠ epoch ∧
       (∃ source, store.getVotingSource config fcr.previousSlotHead = .ok source ∧
           epoch.toNat ≤ source.epoch.toNat + 2 ∧
-          store.isAncestor ⟨fcr.previousSlotHead, .pending⟩ ⟨root, .pending⟩ = .ok true) ∨
-        ∃ source, store.getVotingSource config root = .ok source ∧
-          epoch.toNat ≤ source.epoch.toNat + 2) ∧
-    (rootEpoch ≠ epoch → isStartSlotAtEpoch preset slot = .ok false →
-      store.willNoConflictingCheckpointBeJustified config head = .ok true ∧
+          store.isAncestor ⟨fcr.previousSlotHead, .pending⟩ ⟨root, .pending⟩ = .ok true) ∧
+      (isStartSlotAtEpoch preset slot = .ok false →
+        store.willNoConflictingCheckpointBeJustified config head = .ok true ∧
         ∃ tip justification, (tip = head ∨ tip = fcr.previousSlotHead) ∧
           store.unrealizedJustification tip = .ok justification ∧
-          epoch.toNat ≤ justification.epoch.toNat + 1)
+          epoch.toNat ≤ justification.epoch.toNat + 1)) ∨
+      ((isStartSlotAtEpoch preset slot = .ok false →
+        ∃ justification, store.unrealizedJustification head = .ok justification ∧
+          epoch.toNat ≤ justification.epoch.toNat + 1) ∧
+      (rootEpoch = epoch → startEpoch ≠ epoch →
+        store.willCurrentTargetBeJustified config head = .ok true) ∧
+      (rootEpoch ≠ epoch →
+        (∃ source, store.getVotingSource config root = .ok source ∧
+          epoch.toNat ≤ source.epoch.toNat + 2) ∧
+        (isStartSlotAtEpoch preset slot = .ok false →
+          store.willNoConflictingCheckpointBeJustified config head = .ok true))))
 
 /-- Step 6, the checks: the latest confirmed block is a start, or has passed the checks.
 
@@ -191,14 +194,17 @@ Its conclusion there is `A32IncludedAtTip`.
 def TargetIncluded
     (e : Execution (honestForkChoice config checks sources anchorState anchorBlock assignment
       genesisTimeMs) J) : Prop :=
-  ∀ u ∈ J, ∀ n head state total root target first, ∀ voters : Finset ValidatorIndex,
+  ∀ u ∈ J, ∀ n head state total root rootEpoch target, ∀ voters : Finset ValidatorIndex,
     ((e.world n).state u).getPulledUpHeadState config head = .ok state →
     getTotalActiveBalance state = .ok total →
+    ((e.world n).state u).getCurrentStoreEpoch config = .ok target.epoch →
+    ((e.world n).state u).getBlockEpoch root = .ok rootEpoch →
+    rootEpoch ≤ target.epoch →
     ((e.world n).state u).getCheckpointBlock root target.epoch = .ok target.root →
     (∀ v ∈ voters, v ∈ J ∧ SignsTarget e v target) →
     2 * total.toNat ≤ 3 * stake (fun v => balanceAt state v.toNat) voters →
-    (∀ time, first ≤ time → SafeAt e time root) →
-    ∀ w ∈ J, ∀ k current, first ≤ (e.world k).time →
+    ∀ w ∈ J, ∀ k current, (e.world n).time ≤ (e.world k).time →
+      (∀ time, (e.world n).time ≤ time → time < (e.world k).time → SafeAt e time root) →
       UpToDate config checks sources (e.world k).time ((e.world k).view w)
         ((e.world k).state w) →
       ((e.world k).state w).getCurrentStoreEpoch config = .ok current →
@@ -210,17 +216,21 @@ def TargetIncluded
         ((e.world k).state w).unrealizedJustifications[seed]? = some justification ∧
         target.epoch.toNat ≤ justification.epoch.toNat
 
-/-- The rule of a validator has checked the target of the current epoch for a block before.
+/-- A block extends an origin whose target the rule checked in the block's epoch.
 
-The store is that of the validator at an event, and the block is one of its current epoch.
+The origin and the block have the same epoch, which can precede the current epoch.
 
-At an earlier event of the same epoch, the store was up to date and its head was above the block.
+The anchor is an origin without a target check.
+
+For any other origin, an earlier up-to-date call checked a head above that origin.
 
 There the rule found that the target of the epoch will be justified.
 
 Honest validators held the count of the rule for that target, with the margin.
 
-The block is safe from that event to the later one.
+The origin is safe from that event to the later one.
+
+A later block need not have existed at the event that checked the origin.
 
 A call of the rule makes that check only when it enters the epoch.
 
@@ -231,16 +241,20 @@ In [verified-fast-confirmation][vfc], `AcceptedHistoricalA32CurrentLineageAt` ho
 [vfc]: https://github.com/fradamt/verified-fast-confirmation -/
 def TargetChecked
     (e : Execution (honestForkChoice config checks sources anchorState anchorBlock assignment
-      genesisTimeMs) J) (margin : ℕ) (u : ValidatorIndex) (n : ℕ) (root : Root) : Prop :=
-  ∃ k ≤ n, ∃ head epoch,
-    UpToDate config checks sources (e.world k).time ((e.world k).view u) ((e.world k).state u) ∧
-    ((e.world k).state u).getCurrentStoreEpoch config = .ok epoch ∧
-    ((e.world n).state u).getCurrentStoreEpoch config = .ok epoch ∧
-    ((e.world k).state u).getHead config = .ok head ∧
-    ((e.world k).state u).willCurrentTargetBeJustified config head.root = .ok true ∧
-    ((e.world k).state u).isAncestor ⟨head.root, .pending⟩ ⟨root, .pending⟩ = .ok true ∧
-    HonestTargetVotes e margin u k head.root ∧
-    ∀ time, (e.world k).time ≤ time → time ≤ (e.world n).time → SafeAt e time root
+      genesisTimeMs) J) (margin : ℕ) (anchorRoot : Root) (u : ValidatorIndex) (n : ℕ)
+    (epoch : Epoch) (root : Root) : Prop :=
+  ∃ k ≤ n, ∃ origin,
+    ((e.world n).state u).getBlockEpoch root = .ok epoch ∧
+    ((e.world n).state u).getBlockEpoch origin = .ok epoch ∧
+    ((e.world n).state u).isAncestor ⟨root, .pending⟩ ⟨origin, .pending⟩ = .ok true ∧
+    (origin = anchorRoot ∨ ∃ head,
+      UpToDate config checks sources (e.world k).time ((e.world k).view u) ((e.world k).state u) ∧
+      ((e.world k).state u).getCurrentStoreEpoch config = .ok epoch ∧
+      ((e.world k).state u).getHead config = .ok head ∧
+      ((e.world k).state u).willCurrentTargetBeJustified config head.root = .ok true ∧
+      ((e.world k).state u).isAncestor ⟨head.root, .pending⟩ ⟨origin, .pending⟩ = .ok true ∧
+      HonestTargetVotes e margin u k head.root) ∧
+    ∀ time, (e.world k).time ≤ time → time ≤ (e.world n).time → SafeAt e time origin
 
 variable {e : Execution (honestForkChoice config checks sources anchorState anchorBlock assignment
   genesisTimeMs) J} [DecidablePred (· ∈ J)]
@@ -277,9 +291,12 @@ theorem Execution.honestTargetVotes_of_byzantineStakeAtMost {anchor : Store pres
     {head : Root} {state : BeaconState preset fork}
     {slot epochStart lastSlot : Slot} {total soFar : Gwei}
     {participants : Std.TreeSet ValidatorIndex}
+    (headOk : ∃ node, ((e.world n).state u).getHead config = .ok node ∧ node.root = head)
     (slotOk : ((e.world n).state u).getCurrentSlot config = .ok slot)
     (stateOk : ((e.world n).state u).getPulledUpHeadState config head = .ok state)
     (totalOk : getTotalActiveBalance state = .ok total)
+    (aligned : EffectiveBalancesAligned state)
+    (increment : preset.EFFECTIVE_BALANCE_INCREMENT.toNat % 100 = 0)
     (startOk : computeStartSlotAtEpoch preset (computeEpochAtSlot preset slot) = .ok epochStart)
     (lastOk : subChecked slot 1 = .ok lastSlot)
     (soFarOk : ((e.world n).state u).computeCommitteeWeightBetweenSlots head state epochStart
@@ -341,12 +358,13 @@ theorem Execution.coveredOrViableAt_of_checked {Δ : ℕ} (sync : e.Synchronous 
     (votes : Votes e.startTime e) (fits : DelayFits fork config genesisTimeMs Δ)
     (prompt : Prompt e) (committees : CommitteesFollow e)
     {horizon anchorEpoch : Epoch} {margin : ℕ}
-    (unique : OneJustifiedPerEpoch e horizon) (pins : HonestThirdPins e anchorEpoch margin)
+    (unique : OneJustifiedPerEpoch e horizon) (pins : HonestThirdPins e anchorEpoch horizon margin)
     (voted : JustifiedByHonestVote e anchorEpoch horizon) (included : TargetIncluded e)
     {anchor : Store preset fork}
     (anchorStore : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
     (anchored : ∀ w ∈ J, e.start w = anchor)
     (anchorOk : anchor.justifiedCheckpoint.epoch = anchorEpoch)
+    (anchorAtBoundary : isStartSlotAtEpoch preset anchorBlock.slot = .ok true)
     {u : ValidatorIndex} (caller : u ∈ J) {n : ℕ}
     (upToDate : UpToDate config checks sources (e.world n).time ((e.world n).view u)
       ((e.world n).state u))
@@ -355,17 +373,37 @@ theorem Execution.coveredOrViableAt_of_checked {Δ : ℕ} (sync : e.Synchronous 
     (checked : ((e.world n).state u).Checked config fcr head.root start root)
     (onChain : ((e.world n).state u).isAncestor ⟨head.root, .pending⟩ ⟨root, .pending⟩ =
       .ok true)
-    (previousHead : ∃ k ≤ n, ∃ previous, ((e.world k).state u).getHead config = .ok previous ∧
-      previous.root = fcr.previousSlotHead)
+    (previousHead : fcr.previousSlotHead = anchor.finalizedCheckpoint.root ∨
+      ∃ k < n, ∃ previous previousSlot currentSlot,
+        UpToDate config checks sources (e.world k).time ((e.world k).view u)
+          ((e.world k).state u) ∧
+        ((e.world k).state u).getHead config = .ok previous ∧
+        previous.root = fcr.previousSlotHead ∧
+        ((e.world k).state u).getCurrentSlot config = .ok previousSlot ∧
+        ((e.world n).state u).getCurrentSlot config = .ok currentSlot ∧
+        addChecked previousSlot 1 = .ok currentSlot)
     (targetVotes : HonestTargetVotes e margin u n head.root)
     (lineage : ∀ epoch, ((e.world n).state u).getCurrentStoreEpoch config = .ok epoch →
       ((e.world n).state u).getBlockEpoch start = .ok epoch →
-      start = anchor.finalizedCheckpoint.root ∨ TargetChecked e margin u n start)
+      TargetChecked e margin anchor.finalizedCheckpoint.root u n epoch start)
+    (previousLineage : ∀ epoch previous slot,
+      ((e.world n).state u).getCurrentStoreEpoch config = .ok epoch →
+      ((e.world n).state u).getCurrentSlot config = .ok slot →
+      isStartSlotAtEpoch preset slot = .ok true → addChecked previous 1 = .ok epoch →
+      ((e.world n).state u).getBlockEpoch start = .ok previous →
+      TargetChecked e margin anchor.finalizedCheckpoint.root u n previous start ∨
+        (((e.world n).state u).unrealizedJustification head.root =
+          .ok fcr.currentEpochObservedJustifiedCheckpoint ∧
+          start = fcr.currentEpochObservedJustifiedCheckpoint.root))
     {time : ℕ} (later : (e.world n).time ≤ time)
     (inHorizon : ∀ w ∈ J, ∀ k epoch, (e.world k).time ≤ time →
       ((e.world k).state w).getCurrentStoreEpoch config = .ok epoch → epoch ≤ horizon)
     (startSafe : ∀ earlier, (e.world n).time ≤ earlier → earlier ≤ time → SafeAt e earlier start)
-    (safe : ∀ earlier, (e.world n).time ≤ earlier → earlier < time → SafeAt e earlier root) :
+    (safe : ∀ earlier, (e.world n).time ≤ earlier → earlier < time → SafeAt e earlier root)
+    (known : ∀ w ∈ J, ∀ k, (e.world k).time = time →
+      UpToDate config checks sources (e.world k).time ((e.world k).view w)
+        ((e.world k).state w) →
+      ∃ block, ((e.world k).state w).blocks[root]? = some block) :
     CoveredOrViableAt e time root := by
   sorry
 

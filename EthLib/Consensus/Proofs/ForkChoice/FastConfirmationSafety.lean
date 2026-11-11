@@ -49,7 +49,7 @@ It takes the facts of Casper FFG as hypotheses, with a horizon.
 
 It derives the honest vote of a justified checkpoint and the honest third from Assumption 2.
 
-The balances of the stores do not change in `RuleBounds`, the simplification of this skeleton.
+`RuleBounds` bounds the adverse shift of subset weights and requires observable margin for it.
 
 The theorem does not cover a confirmed block that the rule restores after a restart.
 
@@ -97,6 +97,24 @@ theorem onFastConfirmation_checked {fcr after : FastConfirmationStore}
     (confirmed : store.onFastConfirmation config fcr = .ok after) :
     ∃ head slot start, store.getHead config = .ok head ∧
       store.getCurrentSlot config = .ok slot ∧
+      after.previousSlotHead = fcr.currentSlotHead ∧
+      after.currentSlotHead = head.root ∧
+      (∀ next, addChecked slot 1 = .ok next →
+        isStartSlotAtEpoch preset next = .ok true →
+        after.previousEpochGreatestUnrealizedCheckpoint = store.unrealizedJustifiedCheckpoint) ∧
+      (∀ next, addChecked slot 1 = .ok next →
+        isStartSlotAtEpoch preset next = .ok false →
+        after.previousEpochGreatestUnrealizedCheckpoint =
+          fcr.previousEpochGreatestUnrealizedCheckpoint) ∧
+      (isStartSlotAtEpoch preset slot = .ok true →
+        after.currentEpochObservedJustifiedCheckpoint =
+          after.previousEpochGreatestUnrealizedCheckpoint ∧
+        after.previousEpochObservedJustifiedCheckpoint =
+          fcr.currentEpochObservedJustifiedCheckpoint) ∧
+      (isStartSlotAtEpoch preset slot = .ok false →
+        after.currentEpochObservedJustifiedCheckpoint = fcr.currentEpochObservedJustifiedCheckpoint ∧
+        after.previousEpochObservedJustifiedCheckpoint =
+          fcr.previousEpochObservedJustifiedCheckpoint) ∧
       (start = fcr.confirmedRoot ∧
           store.isAncestor ⟨head.root, .pending⟩ ⟨fcr.confirmedRoot, .pending⟩ = .ok true ∧
           (isStartSlotAtEpoch preset slot = .ok true →
@@ -134,7 +152,7 @@ The calls are those of a run: one call at each event of a list, from a first sto
 
 Each call weighs with the state of its observed justified checkpoint, the source of balances.
 
-From the call to the last time, the honest stores weigh as `SameWeights` says.
+From the call to the last time, `WeightBounds` bounds the adverse shift of support margins.
 
 In the pulled-up state of the head of a call, take the committees of the epoch so far.
 
@@ -152,14 +170,44 @@ structure RuleBounds
       genesisTimeMs) J) [DecidablePred (· ∈ J)] (u : ValidatorIndex) (events : List ℕ)
     (first : FastConfirmationStore) (margin limit : ℕ) : Prop where
   /-- From each call on, the honest stores weigh as the source of balances of the call does. -/
-  weights : ∀ calls n fcr after balanceSource, events[calls]? = some n →
+  weights : ∀ calls n fcr after checkpoint balanceSource, events[calls]? = some n →
     ((events.take calls).map fun k => (e.world k).state u).foldlM
       (fun fcr store => store.onFastConfirmation config fcr) first = .ok fcr →
     ((e.world n).state u).onFastConfirmation config fcr = .ok after →
-    ((e.world n).state u).checkpointState after.currentEpochObservedJustifiedCheckpoint =
-      .ok balanceSource →
-    SameWeights e balanceSource (e.world n).time limit ∧ balanceSource.RegistryWithinLimit ∧
+    (checkpoint = after.currentEpochObservedJustifiedCheckpoint ∨
+      checkpoint = after.previousEpochObservedJustifiedCheckpoint) →
+    ((e.world n).state u).checkpointState checkpoint = .ok balanceSource →
+    WeightBounds e balanceSource (e.world n).time limit margin ∧ balanceSource.RegistryWithinLimit ∧
       EffectiveBalancesAligned balanceSource
+  /-- The measured tally exceeds the rule's conservative threshold by the weight shift.
+
+  This is an observable margin, not an assumption about the unknown honest supporters. -/
+  slack : ∀ n ∈ events, ∀ head state root block parent firstSlot lastSlot beforeBlock
+    slot participants maximum score support discount adversary,
+    ((e.world n).state u).getHead config = .ok head →
+    ((e.world n).state u).getCurrentSlot config = .ok slot →
+    ((e.world n).state u).block root = .ok block →
+    ((e.world n).state u).block block.parentRoot = .ok parent →
+    addChecked parent.slot 1 = .ok firstSlot → subChecked slot 1 = .ok lastSlot →
+    subChecked block.slot 1 = .ok beforeBlock →
+    ((e.world n).state u).getCommitteesBetweenSlots head.root firstSlot beforeBlock =
+      .ok participants →
+    ((e.world n).state u).computeCommitteeWeightBetweenSlots head.root state firstSlot lastSlot =
+      .ok maximum → computeProposerScore config state = .ok score →
+    ((e.world n).state u).isOneConfirmed config head.root state
+      (((e.world n).state u).tallyVotes state) root = .ok true →
+    ((e.world n).state u).scoreFromTally (((e.world n).state u).tallyVotes state)
+      ⟨root, .pending⟩ = .ok support →
+    ((e.world n).state u).computeEmptySlotSupportDiscount config head.root state root =
+      .ok discount →
+    ((e.world n).state u).getAdversarialWeight config head.root state root = .ok adversary →
+    maximum.toNat + score.toNat + 2 * adversary.toNat + margin <
+      discount.toNat + 2 * support.toNat
+  /-- Alignment is needed in the pulled-up state, not just the observed checkpoint state. -/
+  headAligned : ∀ n ∈ events, ∀ head state,
+    ((e.world n).state u).getHead config = .ok head →
+    ((e.world n).state u).getPulledUpHeadState config head.root = .ok state →
+    EffectiveBalancesAligned state
   /-- The Byzantine validators hold at most β of the committees of the epoch so far. -/
   byzantine : ∀ n ∈ events, ∀ head state slot epochStart lastSlot participants,
     ((e.world n).state u).getHead config = .ok head →
@@ -228,9 +276,14 @@ It is `safeFrom_find_latest_confirmed_descendant_of_selectedCoveredMarginsAt_min
 
 [vfc]: https://github.com/fradamt/verified-fast-confirmation -/
 theorem Execution.safeAt_of_walk {Δ : ℕ} (sync : e.Synchronous Δ)
+    (preGloas : fork < .glamsterdam) (admitted : BlocksAdmitted e 0 Δ)
+    (oneBlock : OneBlockPerRoot e)
+    (half : 2 * config.CONFIRMATION_BYZANTINE_THRESHOLD.toNat ≤ 100)
     (votes : Votes e.startTime e) (fits : DelayFits fork config genesisTimeMs Δ)
     (prompt : Prompt e) (committees : CommitteesFollow e) (follows : HeadFollowsSupport e)
-    {anchor : Store preset fork} (anchored : ∀ w ∈ J, e.start w = anchor)
+    {anchor : Store preset fork}
+    (anchorStore : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (anchored : ∀ w ∈ J, e.start w = anchor)
     (noVotes : anchor.latestMessages.isEmpty)
     {u : ValidatorIndex} (caller : u ∈ J) {n : ℕ}
     (upToDate : UpToDate config checks sources (e.world n).time ((e.world n).view u)
@@ -245,7 +298,27 @@ theorem Execution.safeAt_of_walk {Δ : ℕ} (sync : e.Synchronous Δ)
       head.root balanceSource (((e.world n).state u).tallyVotes balanceSource) member = .ok true)
     (within : balanceSource.RegistryWithinLimit) (aligned : EffectiveBalancesAligned balanceSource)
     (increment : preset.EFFECTIVE_BALANCE_INCREMENT.toNat % 100 = 0)
-    {limit : ℕ} (weights : SameWeights e balanceSource (e.world n).time limit)
+    {limit shift : ℕ} (weights : WeightBounds e balanceSource (e.world n).time limit shift)
+    (slack : ∀ member ∈ chain ++ [root], ∀ block parent firstSlot lastSlot beforeBlock
+      slot participants maximum score support discount adversary,
+      ((e.world n).state u).getCurrentSlot config = .ok slot →
+      ((e.world n).state u).block member = .ok block →
+      ((e.world n).state u).block block.parentRoot = .ok parent →
+      addChecked parent.slot 1 = .ok firstSlot → subChecked slot 1 = .ok lastSlot →
+      subChecked block.slot 1 = .ok beforeBlock →
+      ((e.world n).state u).getCommitteesBetweenSlots head.root firstSlot beforeBlock =
+        .ok participants →
+      ((e.world n).state u).computeCommitteeWeightBetweenSlots head.root balanceSource
+        firstSlot lastSlot = .ok maximum →
+      computeProposerScore config balanceSource = .ok score →
+      ((e.world n).state u).scoreFromTally (((e.world n).state u).tallyVotes balanceSource)
+        ⟨member, .pending⟩ = .ok support →
+      ((e.world n).state u).computeEmptySlotSupportDiscount config head.root balanceSource member =
+        .ok discount →
+      ((e.world n).state u).getAdversarialWeight config head.root balanceSource member =
+        .ok adversary →
+      maximum.toNat + score.toNat + 2 * adversary.toNat + shift <
+        discount.toNat + 2 * support.toNat)
     (startSafe : ∀ time, (e.world n).time ≤ time → time ≤ limit → SafeAt e time start)
     (viable : ∀ time, (e.world n).time ≤ time → time ≤ limit →
       (∀ earlier, (e.world n).time ≤ earlier → earlier < time → SafeAt e earlier root) →
@@ -273,7 +346,7 @@ The committees of the stores follow the assignment, and the head follows honest 
 
 Those two facts are parts of issue 1458.
 
-The blocks of honest stores arrive, as `BlocksArrive` says.
+Partial synchrony delivers blocks into views; `BlocksAdmitted` supplies handler admission.
 
 A target with an honest quorum is included within an epoch, Assumption 3.
 
@@ -283,9 +356,9 @@ The finalized block of an honest store is on the chain of each later justified c
 
 Two justified checkpoints of one epoch are the same.
 
-The Byzantine validators hold at most the threshold of the active stake of a reference state.
+Each counting state bounds Byzantine current-or-previous-epoch voters against its active stake.
 
-Each state where an honest store can count votes has drifted from it by at most the drift.
+This bound gives an honest signer directly, without a reference-state drift.
 
 The margin covers the drift of such a state from the pulled-up state of a head, over two epochs.
 
@@ -297,7 +370,7 @@ Then the block that the last call stores is safe from the start of the next slot
 
 It stays safe to the last time.
 
-The proof is an induction on the calls, with `foldlM_onFastConfirmation_confirmedRoot`.
+The proof is a direct induction on the calls, retaining the checks of each call.
 
 Its property is the three facts of the head of this file.
 
@@ -313,30 +386,34 @@ In [verified-fast-confirmation][vfc], this is `confirmed_root_safe_from_next_slo
 
 [vfc]: https://github.com/fradamt/verified-fast-confirmation -/
 theorem Execution.safeAt_confirmedRoot {Δ : ℕ} (sync : e.Synchronous Δ)
+    (half : 2 * config.CONFIRMATION_BYZANTINE_THRESHOLD.toNat ≤ 100)
     (slots : 0 < config.SLOT_DURATION_MS) (long : 1 < preset.SLOTS_PER_EPOCH)
     (votes : Votes e.startTime e) (fits : DelayFits fork config genesisTimeMs Δ)
     (prompt : Prompt e) (committees : CommitteesFollow e) (follows : HeadFollowsSupport e)
-    (arrive : BlocksArrive e Δ) (included : TargetIncluded e)
+    (preGloas : fork < .glamsterdam)
+    (oneBlock : OneBlockPerRoot e) (admitted : BlocksAdmitted e 0 Δ)
+    (included : TargetIncluded e)
     {anchor : Store preset fork}
     (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
-    (sound : CheckpointsNotAhead anchorState)
+    (sound : Invariant anchorState)
+    (anchorAtBoundary : isStartSlotAtEpoch preset anchorBlock.slot = .ok true)
     (start : ∀ w ∈ J, e.start w = anchor) (noVotes : anchor.latestMessages.isEmpty)
     {horizon : Epoch} (chain : FinalizedPrefix e horizon) (unique : OneJustifiedPerEpoch e horizon)
-    {reference : BeaconState preset fork} {threshold drift margin : ℕ}
-    (byzantine : ByzantineStakeAtMost (fun v => balanceAt reference v.toNat)
-      (activeVoters reference) J threshold 100)
-    (drifts : ∀ w ∈ J, ∀ k (state : BeaconState preset fork),
+    {threshold margin : ℕ}
+    (byzantine : ∀ w ∈ J, ∀ k (state : BeaconState preset fork) total,
       ((e.world k).state w).Counts config state →
       (getCurrentEpoch state).toNat ≤ horizon.toNat + 1 →
-      DriftAtMost reference state drift)
+      getTotalActiveBalance state = .ok total →
+      100 * stake (fun v => balanceAt state v.toNat) {v ∈ quorumVoters state | v ∉ J} ≤
+        threshold * total.toNat)
     (unslashed : ∀ w ∈ J, ∀ k (state : BeaconState preset fork),
       ((e.world k).state w).Counts config state → ∀ v ∈ J, NotSlashed state v)
-    (enough : 3 * (threshold * stake (fun v => balanceAt reference v.toNat)
-        (activeVoters reference)) + 100 * drift <
-      200 * stake (fun v => balanceAt reference v.toNat) (activeVoters reference))
+    (positive : 0 < preset.EFFECTIVE_BALANCE_INCREMENT)
+    (enough : 3 * threshold < 200)
     (headDrifts : ∀ w ∈ J, ∀ n head headState epoch,
       ((e.world n).state w).getPulledUpHeadState config head = .ok headState →
       ((e.world n).state w).getCurrentStoreEpoch config = .ok epoch →
+      epoch ≤ horizon →
       ∀ v ∈ J, ∀ k (state : BeaconState preset fork),
         ((e.world k).state v).Counts config state →
         epoch.toNat ≤ (getCurrentEpoch state).toNat →

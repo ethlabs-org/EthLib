@@ -83,32 +83,6 @@ variable {preset : Preset} {fork : Fork} {config : Config} {checks : SignatureCh
   {anchorBlock : BeaconBlock preset fork} {assignment : Assignment preset}
   {genesisTimeMs : UInt64} {J : Set ValidatorIndex}
 
-/-- The facts on blocks that let a block of an honest store reach each honest store.
-
-They are the hypotheses of `Execution.blocks_of_synchronous`, for each pair of honest stores.
-
-No statement of this plan proves them. -/
-structure BlocksArrive
-    (e : Execution (honestForkChoice config checks sources anchorState anchorBlock assignment
-      genesisTimeMs) J) (Δ : ℕ) : Prop where
-  /-- Two honest stores hold the same block at a root that both hold. -/
-  sameBlocks : ∀ v ∈ J, ∀ u ∈ J, ∀ n k (root : Root) left right,
-    ((e.world n).state v).blocks[root]? = some left →
-    ((e.world k).state u).blocks[root]? = some right → left = right
-  /-- An honest store takes a signed block of its view that passes the checks of a new block. -/
-  accepts : ∀ u ∈ J, ∀ k signedBlock blockRoot state, .block signedBlock ∈ (e.world k).view u →
-    SszType.hashTreeRoot signedBlock.message = .ok blockRoot →
-    ((e.world k).state u).validateOnBlock config checks sources signedBlock blockRoot =
-      .ok state →
-    ∃ after, ((e.world k).state u).onBlockWithVotes config checks sources signedBlock = .ok after
-  /-- From Gloas, an up-to-date honest store has verified each payload verified a delay before. -/
-  payloads : ∀ gloas : .glamsterdam ≤ fork, ∀ v ∈ J, ∀ u ∈ J, ∀ n k parent,
-    (e.world n).time + Δ ≤ (e.world k).time →
-    UpToDate config checks sources (e.world k).time ((e.world k).view u)
-      ((e.world k).state u) →
-    ((e.world n).state v).isPayloadVerified gloas parent = true →
-    ((e.world k).state u).isPayloadVerified gloas parent = true
-
 variable {e : Execution (honestForkChoice config checks sources anchorState anchorBlock assignment
   genesisTimeMs) J}
 
@@ -132,7 +106,7 @@ A state finalizes a checkpoint of the epoch before its own at the latest.
 The store takes that checkpoint from a block of an epoch before its own. -/
 theorem Execution.finalizedCheckpoint_eq_or_add_two_le {anchor : Store preset fork}
     (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
-    (sound : CheckpointsNotAhead anchorState)
+    (sound : Invariant anchorState)
     {u : ValidatorIndex} (honest : u ∈ J) (start : e.start u = anchor) {n : ℕ} {epoch : Epoch}
     (epochOk : ((e.world n).state u).getCurrentStoreEpoch config = .ok epoch) :
     ((e.world n).state u).finalizedCheckpoint = anchor.finalizedCheckpoint ∨
@@ -150,7 +124,7 @@ A finalized checkpoint after that of the anchor is two epochs old, and its block
 So the finalized checkpoint of the store is that of the anchor. -/
 theorem Execution.finalizedCheckpoint_eq_of_checked {anchor : Store preset fork}
     (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
-    (sound : CheckpointsNotAhead anchorState)
+    (sound : Invariant anchorState)
     {u : ValidatorIndex} (honest : u ∈ J) (start : e.start u = anchor) {n : ℕ}
     {fcr : FastConfirmationStore} {head root : Root}
     (checked : ((e.world n).state u).Checked config fcr head
@@ -172,9 +146,10 @@ Otherwise its finalized checkpoint is of a later epoch, and so is its justified 
 
 The proof uses the finalized chain to place the finalized checkpoint of the receiver. -/
 theorem Execution.finalized_epoch_le_justified_epoch {Δ : ℕ} (sync : e.Synchronous Δ)
-    (arrive : BlocksArrive e Δ) {anchor : Store preset fork}
+    (preGloas : fork < .glamsterdam)
+    (oneBlock : OneBlockPerRoot e) (admitted : BlocksAdmitted e 0 Δ) {anchor : Store preset fork}
     (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
-    (sound : CheckpointsNotAhead anchorState)
+    (sound : Invariant anchorState)
     (start : ∀ w ∈ J, e.start w = anchor) {horizon : Epoch} (chain : FinalizedPrefix e horizon)
     {u w : ValidatorIndex} (first : u ∈ J) (receiver : w ∈ J) {n k : ℕ} {epoch : Epoch}
     (epochOk : ((e.world n).state u).getCurrentStoreEpoch config = .ok epoch)
@@ -197,9 +172,10 @@ The finalized block is on the chain of that justified block, by the finalized ch
 
 The head of a store is above its justified block. -/
 theorem Execution.safeAt_finalized {Δ : ℕ} (sync : e.Synchronous Δ)
-    (arrive : BlocksArrive e Δ) {anchor : Store preset fork}
+    (preGloas : fork < .glamsterdam)
+    (oneBlock : OneBlockPerRoot e) (admitted : BlocksAdmitted e 0 Δ) {anchor : Store preset fork}
     (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
-    (sound : CheckpointsNotAhead anchorState)
+    (sound : Invariant anchorState)
     (start : ∀ w ∈ J, e.start w = anchor) {horizon : Epoch} (chain : FinalizedPrefix e horizon)
     {u : ValidatorIndex} (caller : u ∈ J) {n : ℕ} {epoch : Epoch}
     (epochOk : ((e.world n).state u).getCurrentStoreEpoch config = .ok epoch) {limit : ℕ}
@@ -227,9 +203,10 @@ In a later epoch the receiver takes the unrealized justification of the block as
 
 Otherwise its finalized checkpoint is of a later epoch than the checkpoint. -/
 theorem Execution.unrealized_epoch_le_justified_epoch {Δ : ℕ} (sync : e.Synchronous Δ)
-    (arrive : BlocksArrive e Δ) {anchor : Store preset fork}
+    (preGloas : fork < .glamsterdam)
+    (oneBlock : OneBlockPerRoot e) (admitted : BlocksAdmitted e 0 Δ) {anchor : Store preset fork}
     (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
-    (sound : CheckpointsNotAhead anchorState)
+    (sound : Invariant anchorState)
     (start : ∀ w ∈ J, e.start w = anchor) {horizon : Epoch} (chain : FinalizedPrefix e horizon)
     {u w : ValidatorIndex} (first : u ∈ J) (receiver : w ∈ J) {n k : ℕ} {epoch later : Epoch}
     (epochOk : ((e.world n).state u).getCurrentStoreEpoch config = .ok epoch)
@@ -272,9 +249,10 @@ The statement does not take that fact. -/
 theorem Execution.safeAt_observed {Δ : ℕ} (sync : e.Synchronous Δ)
     (slots : 0 < config.SLOT_DURATION_MS) (votes : Votes e.startTime e)
     (fits : DelayFits fork config genesisTimeMs Δ) (prompt : Prompt e)
-    (arrive : BlocksArrive e Δ) {anchor : Store preset fork}
+    (preGloas : fork < .glamsterdam)
+    (oneBlock : OneBlockPerRoot e) (admitted : BlocksAdmitted e 0 Δ) {anchor : Store preset fork}
     (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
-    (sound : CheckpointsNotAhead anchorState)
+    (sound : Invariant anchorState)
     (start : ∀ w ∈ J, e.start w = anchor) {horizon : Epoch} (chain : FinalizedPrefix e horizon)
     (unique : OneJustifiedPerEpoch e horizon)
     (voted : JustifiedByHonestVote e anchor.justifiedCheckpoint.epoch horizon)

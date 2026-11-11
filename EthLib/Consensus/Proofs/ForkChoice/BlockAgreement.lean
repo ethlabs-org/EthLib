@@ -20,7 +20,7 @@ So two honest stores with the same start hold the same state at a root that both
 
 That needs the two stores to hold the same block wherever both hold one.
 
-Two blocks with one root would break it, and no statement here excludes such a pair.
+`OneBlockPerRoot` excludes conflicting held blocks at one root, without assuming hash injectivity.
 
 Under synchrony, a block of an honest store reaches the view of each honest validator.
 
@@ -34,7 +34,7 @@ The finalized checkpoint of the receiver must sit on that chain.
 
 From Gloas the receiver must have verified each payload that the first store has verified.
 
-The receiver must also take a signed block of its view that passes the checks of a new block.
+The receiver must admit a delayed block held by an honest source when its block validation passes.
 
 That last hypothesis covers the steps of the handler after the checks, and the votes of the block.
 
@@ -111,6 +111,37 @@ variable {config : Config} {checks : SignatureChecks} {sources : BlockSources pr
   {e : Execution (honestForkChoice config checks sources anchorState anchorBlock assignment
     genesisTimeMs) J}
 
+/-- Honest stores agree on blocks at shared roots.
+
+This is a collision-exclusion hypothesis on held blocks, not hash injectivity. -/
+def OneBlockPerRoot
+    (e : Execution (honestForkChoice config checks sources anchorState anchorBlock assignment
+      genesisTimeMs) J) : Prop :=
+  ∀ v ∈ J, ∀ u ∈ J, ∀ n k (root : Root) left right,
+    ((e.world n).state v).blocks[root]? = some left →
+    ((e.world k).state u).blocks[root]? = some right → left = right
+
+/-- A delayed block of an honest view passes the remaining handler checks when block validation passes.
+
+Partial synchrony supplies view membership, not successful `onBlockWithVotes`.
+
+The latter can fail on a carried vote even when the block transition succeeds.
+
+This hypothesis isolates that admission gap at the receiver and at the delivery deadline. -/
+def BlocksAdmitted
+    (e : Execution (honestForkChoice config checks sources anchorState anchorBlock assignment
+      genesisTimeMs) J) (GST Δ : ℕ) : Prop :=
+  ∀ v ∈ J, ∀ u ∈ J, ∀ n k signedBlock blockRoot state,
+    .block signedBlock ∈ (e.world n).view v →
+    ((e.world n).state v).blocks[blockRoot]? = some signedBlock.message →
+    max (e.world n).time GST + Δ ≤ (e.world k).time →
+    UpToDate config checks sources (e.world k).time ((e.world k).view u)
+      ((e.world k).state u) →
+    SszType.hashTreeRoot signedBlock.message = .ok blockRoot →
+    ((e.world k).state u).validateOnBlock config checks sources signedBlock blockRoot =
+      .ok state →
+    ∃ after, ((e.world k).state u).onBlockWithVotes config checks sources signedBlock = .ok after
+
 /-- Under synchrony, an up-to-date honest store holds a block that an honest store held before.
 
 The first store holds the block at an event, and the receiver is up to date one delay later.
@@ -128,21 +159,16 @@ In the first store, the chain of the block holds the finalized checkpoint of the
 The receiver then holds the block.
 
 It also finds each checkpoint block of the chain that the first store finds. -/
-theorem Execution.blocks_of_synchronous {Δ : ℕ} (sync : e.Synchronous Δ)
+theorem Execution.blocks_of_partiallySynchronous {GST Δ : ℕ}
+    (sync : e.PartiallySynchronous GST Δ)
+    (oneBlock : OneBlockPerRoot e) (admitted : BlocksAdmitted e GST Δ)
     {anchor : Store preset fork}
     (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
     (start : ∀ u ∈ J, e.start u = anchor) {v u : ValidatorIndex} (honest : v ∈ J)
-    (receiver : u ∈ J) {n k : ℕ} (late : (e.world n).time + Δ ≤ (e.world k).time)
+    (receiver : u ∈ J) {n k : ℕ}
+    (late : max (e.world n).time GST + Δ ≤ (e.world k).time)
     (upToDate : UpToDate config checks sources (e.world k).time ((e.world k).view u)
       ((e.world k).state u))
-    (sameBlocks : ∀ (root : Root) left right, ((e.world n).state v).blocks[root]? = some left →
-      ((e.world k).state u).blocks[root]? = some right → left = right)
-    (accepts : ∀ signedBlock blockRoot state, .block signedBlock ∈ (e.world k).view u →
-      SszType.hashTreeRoot signedBlock.message = .ok blockRoot →
-      ((e.world k).state u).validateOnBlock config checks sources signedBlock blockRoot =
-        .ok state →
-      ∃ after, ((e.world k).state u).onBlockWithVotes config checks sources signedBlock =
-        .ok after)
     (payloads : ∀ gloas : .glamsterdam ≤ fork, ∀ parent,
       ((e.world n).state v).isPayloadVerified gloas parent = true →
       ((e.world k).state u).isPayloadVerified gloas parent = true)
