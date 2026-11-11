@@ -2,6 +2,7 @@ module
 
 public import EthLib.Consensus.Proofs.DirectSafety.ChurnBounds
 public import EthLib.Consensus.Proofs.Transition.Requests
+public import Mathlib.Algebra.BigOperators.Fin
 
 -- Reuse the operation-level activity and effective-balance preservation proofs.
 import all EthLib.Consensus.Proofs.Transition.ActiveKept
@@ -136,6 +137,72 @@ theorem departureCharges_run_indices {x y : ForkedBeaconState preset}
     have single := (Run.nil.snoc step).departure_charge_ne_of_assigned
       one.index v found assigned two (by simpa [Run.departureCharges] using twoMember)
     exact Ne.symm single
+
+/-- Calls carry the charged registry index, or no index for partial withdrawals. -/
+structure IndexedDepartureCall where
+  index : Option Nat
+  call : DepartureQueueCall
+
+/-- Index uniqueness turns matching tagged calls into an injection of charges into calls. -/
+theorem departureCharges_inject {charges : List DepartureCharge}
+    {calls : List IndexedDepartureCall} (unique : (charges.map (·.index)).Nodup)
+    (matched : ∀ charge ∈ charges, ∃ called ∈ calls,
+      called.index = some charge.index ∧ called.call.epoch.toNat = charge.epoch ∧
+      called.call.amount.toNat = charge.amount) :
+    ∃ injection : Fin charges.length → Fin calls.length,
+      Function.Injective injection ∧
+      ∀ i, (calls[injection i]).index = some charges[i].index ∧
+        (calls[injection i]).call.epoch.toNat = charges[i].epoch ∧
+        (calls[injection i]).call.amount.toNat = charges[i].amount := by
+  classical
+  have position (i : Fin charges.length) : ∃ j : Fin calls.length,
+      calls[j].index = some charges[i].index ∧
+      calls[j].call.epoch.toNat = charges[i].epoch ∧
+      calls[j].call.amount.toNat = charges[i].amount := by
+    obtain ⟨called, member, index, epoch, amount⟩ := matched charges[i] (List.getElem_mem _)
+    obtain ⟨j, inside, atIndex⟩ := List.getElem_of_mem member
+    refine ⟨⟨j, inside⟩, ?_⟩
+    change calls[j].index = _ ∧ calls[j].call.epoch.toNat = _ ∧ calls[j].call.amount.toNat = _
+    rw [atIndex]
+    exact ⟨index, epoch, amount⟩
+  choose injection paired using position
+  refine ⟨injection, ?_, paired⟩
+  intro i j same
+  have indices : charges[i].index = charges[j].index :=
+    Option.some.inj ((paired i).1.symm.trans (same ▸ (paired j).1))
+  apply Fin.ext
+  exact unique.eq_of_getElem_eq (by simp) (by simp)
+    (by simpa using indices)
+
+/-- An injection preserving amounts and completion epochs bounds every filtered charge sum. -/
+theorem departureCharges_le_calls {charges : List DepartureCharge}
+    {calls : List IndexedDepartureCall} (unique : (charges.map (·.index)).Nodup)
+    (matched : ∀ charge ∈ charges, ∃ called ∈ calls,
+      called.index = some charge.index ∧ called.call.epoch.toNat = charge.epoch ∧
+      called.call.amount.toNat = charge.amount) (high : Nat) :
+    ((charges.filter fun c => c.epoch ≤ high).map (·.amount)).sum ≤
+      ((calls.filter fun c => c.call.epoch.toNat ≤ high).map fun c => c.call.amount.toNat).sum := by
+  classical
+  obtain ⟨injection, injective, paired⟩ := departureCharges_inject unique matched
+  have bound := Finset.sum_le_sum_of_injOn
+    (f := fun i : Fin charges.length => if charges[i].epoch ≤ high then charges[i].amount else 0)
+    (g := fun j : Fin calls.length =>
+      if calls[j].call.epoch.toNat ≤ high then calls[j].call.amount.toNat else 0)
+    (s := Finset.univ) (t := Finset.univ) injection
+    (fun _ _ _ _ same => injective same) (by simp)
+    (fun i _ => by rw [(paired i).2.1, (paired i).2.2])
+    (fun _ _ _ => Nat.zero_le _)
+  have sums {α : Type} (xs : List α) (epoch amount : α → Nat) :
+      (∑ i : Fin xs.length, if epoch xs[i] ≤ high then amount xs[i] else 0) =
+        ((xs.filter fun x => epoch x ≤ high).map amount).sum := by
+    rw [← List.sum_ofFn]
+    change (List.ofFn (fun i : Fin xs.length =>
+      if epoch xs[i.val] ≤ high then amount xs[i.val] else 0)).sum = _
+    rw [List.ofFn_getElem_eq_map xs (fun x => if epoch x ≤ high then amount x else 0)]
+    simpa using List.sum_map_ite (fun x => epoch x ≤ high) amount (fun _ => 0) xs
+  rw [sums charges (·.epoch) (·.amount),
+    sums calls (fun c => c.call.epoch.toNat) (fun c => c.call.amount.toNat)] at bound
+  exact bound
 
 /-- An exit scheduling operation supplies a call with exactly its input and output queues. -/
 theorem exitQueueCall_of_computed {fork : Fork} {s t : BeaconState preset fork}
@@ -329,6 +396,35 @@ theorem queueConsolidation_charge {fork : Fork} {s t : BeaconState preset fork}
   have nextSame := Except.ok.inj (read.symm.trans after)
   subst later
   exact ⟨rfl, call, amount, epoch.symm, earliest, available, placed, left, rate⟩
+
+/-- A consolidation call covers its source's assigned exit using the input balance. -/
+theorem queueConsolidation_indexedTrace {fork : Fork} {s t : BeaconState preset fork}
+    (electra : .pectra ≤ fork) {sourceIndex targetIndex : ValidatorIndex} {source : Validator}
+    (sourceFound : getValidator s sourceIndex = .ok source)
+    (ok : queueConsolidation config s electra sourceIndex source targetIndex = .ok t) :
+    ∃ called : IndexedDepartureCall,
+      DepartureQueueTrace (s.earliestConsolidationEpoch electra)
+        (s.consolidationBalanceToConsume electra) [called.call]
+        (t.earliestConsolidationEpoch electra) (t.consolidationBalanceToConsume electra) ∧
+      getConsolidationChurnLimit config s = .ok called.call.rate ∧
+      ∀ other old next, getValidator s other = .ok old → getValidator t other = .ok next →
+        old.exitEpoch = FAR_FUTURE_EPOCH → next.exitEpoch ≠ FAR_FUTURE_EPOCH →
+        called.index = some other.toNat ∧ called.call.epoch = next.exitEpoch ∧
+          called.call.amount = old.effectiveBalance := by
+  obtain ⟨call, amount, earliest, available, placed, left, rate, later, read, epoch⟩ :=
+    queueConsolidation_call electra ok
+  refine ⟨⟨some sourceIndex.toNat, call⟩, ?_, rate, ?_⟩
+  · change DepartureQueueTrace _ _ [call] _ _
+    rw [← earliest, ← available, ← placed, ← left]
+    exact .cons call (.nil _ _)
+  · intro other old next before after unset assigned
+    have sameIndex :=
+      (queueConsolidation_charge electra sourceFound ok before after unset assigned).1
+    subst other
+    have oldSame := Except.ok.inj (sourceFound.symm.trans before)
+    have nextSame := Except.ok.inj (read.symm.trans after)
+    subst old next
+    exact ⟨rfl, epoch.symm, amount⟩
 
 /-- The two departure queues, excluding pending transfers and withdrawals. -/
 def departureQueues {fork : Fork} (electra : .pectra ≤ fork)
@@ -896,6 +992,41 @@ theorem initiateExit_trace {fork : Fork} {s t : BeaconState preset fork}
     · intro c member
       obtain rfl := List.mem_singleton.mp member
       exact exitChurnLimit_le_cap early rate
+
+/-- An exit trace tags its call and covers every newly assigned validator exit. -/
+theorem initiateExit_indexedTrace {fork : Fork} {s t : BeaconState preset fork}
+    (electra : .pectra ≤ fork) (early : fork < .glamsterdam) {index : ValidatorIndex}
+    (ok : initiateValidatorExit config s index = .ok t) :
+    ∃ calls : List IndexedDepartureCall,
+      DepartureQueueTrace (s.earliestExitEpoch electra) (s.exitBalanceToConsume electra)
+        (calls.map (·.call)) (t.earliestExitEpoch electra) (t.exitBalanceToConsume electra) ∧
+      (∀ called ∈ calls,
+        called.call.rate.toNat ≤ config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat) ∧
+      ∀ other old next, getValidator s other = .ok old → getValidator t other = .ok next →
+        old.exitEpoch = FAR_FUTURE_EPOCH → next.exitEpoch ≠ FAR_FUTURE_EPOCH →
+        ∃ called ∈ calls, called.index = some other.toNat ∧
+          called.call.epoch = next.exitEpoch ∧ called.call.amount = old.effectiveBalance := by
+  obtain same | ⟨v, call, found, _, amount, earliest, available, placed, left, rate,
+    later, read, epoch⟩ := initiateExit_call electra ok
+  · subst t
+    refine ⟨[], .nil _ _, by simp, ?_⟩
+    intro other old next before after unset assigned
+    have equal := Except.ok.inj (before.symm.trans after)
+    exact False.elim (assigned (equal ▸ unset))
+  · refine ⟨[⟨some index.toNat, call⟩], ?_, ?_, ?_⟩
+    · change DepartureQueueTrace _ _ [call] _ _
+      rw [← earliest, ← available, ← placed, ← left]
+      exact .cons call (.nil _ _)
+    · intro called member
+      obtain rfl := List.mem_singleton.mp member
+      exact exitChurnLimit_le_cap early rate
+    · intro other old next before after unset assigned
+      have sameIndex := (initiateExit_charge electra ok before after unset assigned).1
+      subst other
+      have oldSame := Except.ok.inj (found.symm.trans before)
+      have nextSame := Except.ok.inj (read.symm.trans after)
+      subst old next
+      exact ⟨_, List.mem_singleton_self _, rfl, epoch.symm, amount⟩
 
 /-- Slashing rewards and penalties leave the initial exit call's queue output unchanged. -/
 theorem slashing_exitTrace {fork : Fork} {s t : BeaconState preset fork}
