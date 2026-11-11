@@ -451,6 +451,52 @@ theorem boundaryStake_eq_cohort (y : ForkedBeaconState preset)
   rw [weights, List.sum_eq_foldl, List.foldl_map]
   rfl
 
+private theorem sum_zipIdx_lookup (vs : List Validator) (f : Validator → Nat → Nat) :
+    (vs.zipIdx.map fun (v, i) => f v i).sum =
+      ∑ i ∈ Finset.range vs.length, (vs[i]?.map (fun v => f v i)).getD 0 := by
+  let weight := fun i => (vs[i]?.map (fun v => f v i)).getD 0
+  have same : vs.zipIdx.map (fun (v, i) => f v i) =
+      (vs.zipIdx.map Prod.snd).map weight := by
+    rw [List.map_map]
+    apply List.map_congr_left
+    rintro ⟨v, i⟩ member
+    have found := List.mem_zipIdx_iff_getElem?.mp member
+    simp [weight, found]
+  rw [same, List.zipIdx_map_snd]
+  rw [Finset.sum_eq_multiset_sum, Finset.range_val, ← Multiset.coe_range,
+    Multiset.map_coe, Multiset.sum_coe, List.range_eq_range']
+
+private def cohortAt (x : ForkedBeaconState preset) (epoch i : Nat) : Nat :=
+  (x.state.validators.data[i]?.map fun v =>
+    if v.activationEpoch.toNat < epoch && v.exitEpoch.toNat == epoch then
+      v.effectiveBalance.toNat else 0).getD 0
+
+private theorem inheritedCohort_eq_sum (x : ForkedBeaconState preset) (epoch : Nat) :
+    inheritedCohort x epoch = ∑ i ∈ Finset.range x.state.validators.data.size,
+      cohortAt x epoch i := by
+  let selected := fun v : Validator =>
+    v.activationEpoch.toNat < epoch && v.exitEpoch.toNat == epoch
+  have filtered (vs : List Validator) :
+      ((vs.filter selected).map (·.effectiveBalance.toNat)).sum =
+        (vs.map fun v => if selected v then v.effectiveBalance.toNat else 0).sum := by
+    induction vs with
+    | nil => simp
+    | cons v rest ih => cases h : selected v <;> simp [h, ih]
+  have indexed := sum_zipIdx_lookup x.state.validators.data.toList
+    (fun v _ => if selected v then v.effectiveBalance.toNat else 0)
+  have forget : (x.state.validators.data.toList.zipIdx.map fun (v, _) =>
+      if selected v then v.effectiveBalance.toNat else 0) =
+      x.state.validators.data.toList.map
+        (fun v => if selected v then v.effectiveBalance.toNat else 0) := by
+    exact (List.map_map (f := Prod.fst)
+      (g := fun v => if selected v then v.effectiveBalance.toNat else 0)).symm.trans
+        (congrArg (List.map _) (List.zipIdx_map_fst 0 _))
+  rw [forget] at indexed
+  unfold inheritedCohort
+  rw [← List.foldl_map (f := fun v : Validator => v.effectiveBalance.toNat)
+    (g := fun n v => n + v), ← List.sum_eq_foldl, filtered]
+  simpa [cohortAt, selected] using indexed
+
 private theorem sum_charge_lookup_le (charges : List DepartureCharge) (indices : Finset Nat)
     (epoch : Nat) :
     (∑ i ∈ indices, match charges.find? (fun c => c.index == i) with
@@ -520,7 +566,82 @@ theorem boundary_stake_le_charges {g x y : ForkedBeaconState preset}
     boundaryStake y ≤ inheritedCohort x (getCurrentEpoch y.state).toNat +
       ((tail.departureCharges.filter fun c => c.epoch == (getCurrentEpoch y.state).toNat).map
         (·.amount)).sum + cohortGrowth tail := by
-  sorry
+  classical
+  let epoch := (getCurrentEpoch y.state).toNat
+  let charges := tail.departureCharges
+  let growth := fun i => (y.state.validators.data[i]?.map fun v =>
+    if v.activationEpoch.toNat < epoch && v.exitEpoch.toNat == epoch then
+      v.effectiveBalance.toNat - (match charges.find? (fun c => c.index == i) with
+        | some c => c.amount
+        | none => effectiveAt x i)
+    else 0).getD 0
+  have growthSum : cohortGrowth tail = ∑ i ∈ Finset.range y.state.validators.data.size,
+      growth i := by
+    unfold cohortGrowth
+    simpa [growth, epoch, charges] using sum_zipIdx_lookup y.state.validators.data.toList
+      (fun v i => if v.activationEpoch.toNat < epoch && v.exitEpoch.toNat == epoch then
+        v.effectiveBalance.toNat - (match charges.find? (fun c => c.index == i) with
+          | some c => c.amount
+          | none => effectiveAt x i) else 0)
+  have inheritedSum : (∑ i ∈ Finset.range y.state.validators.data.size, cohortAt x epoch i) =
+      inheritedCohort x epoch := by
+    rw [inheritedCohort_eq_sum]
+    symm
+    apply Finset.sum_subset (Finset.range_mono tail.registryLifecycle.size_le)
+    intro i _ outside
+    have beyond : x.state.validators.data.size ≤ i := by simpa using outside
+    simp [cohortAt, Array.getElem?_eq_none beyond]
+  have pointwise (i : Nat) (inside : i ∈ Finset.range y.state.validators.data.size) :
+      cohortAt y epoch i ≤ cohortAt x epoch i +
+        (match charges.find? (fun c => c.index == i) with
+          | some c => if c.epoch = epoch then c.amount else 0
+          | none => 0) + growth i := by
+    have inside : i < y.state.validators.data.size := Finset.mem_range.mp inside
+    let v := y.state.validators.data[i]
+    have found : y.state.validators.data[i]? = some v := by simp [v, inside]
+    by_cases selected : v.activationEpoch.toNat < epoch ∧ v.exitEpoch.toNat = epoch
+    · have assigned : v.exitEpoch ≠ FAR_FUTURE_EPOCH := by
+        have equal : v.exitEpoch = getCurrentEpoch y.state := UInt64.toNat_inj.mp selected.2
+        rw [equal]
+        exact getCurrentEpoch_ne_farFuture parameters.slots y.state
+      have baseline := tail.departure_baseline i v found assigned
+      cases lookup : charges.find? (fun c => c.index == i) with
+      | some charge =>
+        change match charges.find? (fun c => c.index == i) with
+          | some c => c.index = i ∧ c.epoch = v.exitEpoch.toNat
+          | none => _ at baseline
+        rw [lookup] at baseline
+        have epochSame : charge.epoch = epoch := baseline.2.trans selected.2
+        simp only [cohortAt, found, Option.map_some, Option.getD_some, growth,
+          selected.1, selected.2, decide_true, beq_self_eq_true, Bool.true_and,
+          ↓reduceIte, lookup, epochSame]
+        omega
+      | none =>
+        change match charges.find? (fun c => c.index == i) with
+          | some c => _
+          | none => ∃ old, x.state.validators.data[i]? = some old ∧
+              old.exitEpoch = v.exitEpoch at baseline
+        rw [lookup] at baseline
+        obtain ⟨old, oldFound, oldExit⟩ := baseline
+        have oldAssigned : old.exitEpoch ≠ FAR_FUTURE_EPOCH := oldExit ▸ assigned
+        have activated := shared.exitsActivated genesis i old oldFound oldAssigned
+        obtain ⟨last, lastFound, kept⟩ := tail.registryLifecycle.validators i old oldFound
+        have same : last = v := Option.some.inj (lastFound.symm.trans found)
+        have activation : v.activationEpoch = old.activationEpoch :=
+          same ▸ kept.activationEpoch activated
+        have oldSelected : old.activationEpoch.toNat < epoch := by
+          rw [← activation]; exact selected.1
+        simp only [cohortAt, found, oldFound, Option.map_some, Option.getD_some, growth,
+          selected.1, selected.2, oldSelected, oldExit, decide_true, beq_self_eq_true,
+          Bool.true_and, ↓reduceIte, lookup, effectiveAt, Nat.add_zero]
+        omega
+    · simp [cohortAt, found, selected]
+  have bound := Finset.sum_le_sum pointwise
+  rw [Finset.sum_add_distrib, Finset.sum_add_distrib, inheritedSum, ← growthSum] at bound
+  have charged := sum_charge_lookup_le charges (Finset.range y.state.validators.data.size) epoch
+  rw [boundaryStake_eq_cohort y early ((shared.append tail).unique (genesis_unique genesis)),
+    inheritedCohort_eq_sum]
+  exact bound.trans (Nat.add_le_add_right (Nat.add_le_add_left charged _) _)
 
 theorem leaving_before_electra {g x y : ForkedBeaconState preset}
     (shared : Run config checks g x) (tail : Run config checks x y)
