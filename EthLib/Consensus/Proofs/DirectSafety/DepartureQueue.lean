@@ -154,6 +154,51 @@ theorem initiateExit_call {fork : Fork} {s t : BeaconState preset fork}
     exact .inr ⟨v, call, found, far, amount, earliest, available,
       placed.trans queuedEpoch.symm, left, rate, _, read, placed.symm⟩
 
+/-- Initiating an exit leaves every other registry entry unchanged. -/
+theorem initiateExit_other {fork : Fork} {s t : BeaconState preset fork}
+    (electra : .pectra ≤ fork) {index other : ValidatorIndex}
+    (ok : initiateValidatorExit config s index = .ok t) (different : other ≠ index) :
+    getValidator t other = getValidator s other := by
+  obtain ⟨v, _, unchanged | ⟨_, queued, epoch, _, scheduled, _, set⟩⟩ :=
+    initiateValidatorExit_ok ok
+  · rw [unchanged.2]
+  · have called : computeExitEpochAndUpdateChurn config s electra v.effectiveBalance =
+        .ok (queued, epoch) := by simpa only [exitQueue, electra, ↓reduceDIte] using scheduled
+    rw [getValidator_setValidator_of_ne set different]
+    exact getValidator_of_validators_eq (computeExitEpochAndUpdateChurn_earliest called).2.1 _
+
+/-- A newly assigned exit identifies the unique registry entry charged by its call. -/
+theorem initiateExit_charge {fork : Fork} {s t : BeaconState preset fork}
+    (electra : .pectra ≤ fork) {index other : ValidatorIndex} {old next : Validator}
+    (ok : initiateValidatorExit config s index = .ok t)
+    (before : getValidator s other = .ok old) (after : getValidator t other = .ok next)
+    (unset : old.exitEpoch = FAR_FUTURE_EPOCH) (assigned : next.exitEpoch ≠ FAR_FUTURE_EPOCH) :
+    other = index ∧ ∃ call : DepartureQueueCall,
+      call.amount = old.effectiveBalance ∧ call.epoch = next.exitEpoch ∧
+      call.earliest = s.earliestExitEpoch electra ∧
+      call.available = s.exitBalanceToConsume electra ∧
+      call.epoch = t.earliestExitEpoch electra ∧
+      call.left = t.exitBalanceToConsume electra ∧
+      exitChurnLimit config s = .ok call.rate := by
+  have differentStates : t ≠ s := by
+    intro same
+    subst t
+    have equal := Except.ok.inj (before.symm.trans after)
+    exact assigned (equal ▸ unset)
+  have sameIndex : other = index := by
+    by_contra different
+    have unchanged := initiateExit_other electra ok different
+    have equal := Except.ok.inj (before.symm.trans (unchanged ▸ after))
+    exact assigned (equal ▸ unset)
+  subst other
+  obtain same | ⟨v, call, found, _, amount, earliest, available, placed, left, rate,
+    later, read, epoch⟩ := initiateExit_call electra ok
+  · exact False.elim (differentStates same)
+  · have oldSame := Except.ok.inj (found.symm.trans before)
+    have nextSame := Except.ok.inj (read.symm.trans after)
+    subst v later
+    exact ⟨rfl, call, amount, epoch.symm, earliest, available, placed, left, rate⟩
+
 /-- Partial withdrawals may spend exit capacity while leaving every validator unchanged. -/
 theorem partialWithdrawal_call {fork : Fork} {s t : BeaconState preset fork}
     (electra : .pectra ≤ fork) {index : ValidatorIndex} {v : Validator} {amount owed : Gwei}
@@ -200,6 +245,49 @@ theorem queueConsolidation_call {fork : Fork} {s t : BeaconState preset fork}
   obtain ⟨inside, rfl⟩ := setValidator_ok set
   exact ⟨call, amount, earliest, available, placed.trans queuedEpoch.symm, left,
     rate, _, read, placed.symm⟩
+
+/-- Consolidation scheduling leaves registry entries other than its source unchanged. -/
+theorem queueConsolidation_other {fork : Fork} {s t : BeaconState preset fork}
+    (electra : .pectra ≤ fork) {sourceIndex targetIndex other : ValidatorIndex}
+    {source : Validator}
+    (ok : queueConsolidation config s electra sourceIndex source targetIndex = .ok t)
+    (different : other ≠ sourceIndex) : getValidator t other = getValidator s other := by
+  simp only [queueConsolidation, bind_ok_iff, liftAccessor_ok, pure, Except.pure,
+    Except.ok.injEq] at ok
+  obtain ⟨⟨queued, epoch⟩, called, withdrawable, _, changed, set, pending, _, rfl⟩ := ok
+  change getValidator changed other = getValidator s other
+  rw [getValidator_setValidator_of_ne set different]
+  exact getValidator_of_validators_eq
+    (computeConsolidationEpochAndUpdateChurn_earliest called).2.1 _
+
+/-- A consolidation charge comes from its unique source and uses that source's old balance. -/
+theorem queueConsolidation_charge {fork : Fork} {s t : BeaconState preset fork}
+    (electra : .pectra ≤ fork) {sourceIndex targetIndex other : ValidatorIndex}
+    {source old next : Validator}
+    (sourceFound : getValidator s sourceIndex = .ok source)
+    (ok : queueConsolidation config s electra sourceIndex source targetIndex = .ok t)
+    (before : getValidator s other = .ok old) (after : getValidator t other = .ok next)
+    (unset : old.exitEpoch = FAR_FUTURE_EPOCH) (assigned : next.exitEpoch ≠ FAR_FUTURE_EPOCH) :
+    other = sourceIndex ∧ ∃ call : DepartureQueueCall,
+      call.amount = old.effectiveBalance ∧ call.epoch = next.exitEpoch ∧
+      call.earliest = s.earliestConsolidationEpoch electra ∧
+      call.available = s.consolidationBalanceToConsume electra ∧
+      call.epoch = t.earliestConsolidationEpoch electra ∧
+      call.left = t.consolidationBalanceToConsume electra ∧
+      getConsolidationChurnLimit config s = .ok call.rate := by
+  have sameIndex : other = sourceIndex := by
+    by_contra different
+    have unchanged := queueConsolidation_other electra ok different
+    have equal := Except.ok.inj (before.symm.trans (unchanged ▸ after))
+    exact assigned (equal ▸ unset)
+  subst other
+  have sourceSame := Except.ok.inj (sourceFound.symm.trans before)
+  subst source
+  obtain ⟨call, amount, earliest, available, placed, left, rate, later, read, epoch⟩ :=
+    queueConsolidation_call electra ok
+  have nextSame := Except.ok.inj (read.symm.trans after)
+  subst later
+  exact ⟨rfl, call, amount, epoch.symm, earliest, available, placed, left, rate⟩
 
 /-- The two departure queues, excluding pending transfers and withdrawals. -/
 def departureQueues {fork : Fork} (electra : .pectra ≤ fork)
@@ -334,6 +422,108 @@ theorem withdrawalRequest_cases {fork : Fork} {s t : BeaconState preset fork}
     | (cases ok)
     | exact .inr (.inl ⟨_, liftAccessor_ok.mp ok⟩)
     | exact .inr (.inr ⟨_, _, _, ok⟩)
+
+/-- Starting an exit produces either no call or one call linked to the resulting queue. -/
+theorem initiateExit_trace {fork : Fork} {s t : BeaconState preset fork}
+    (electra : .pectra ≤ fork) (early : fork < .glamsterdam) {index : ValidatorIndex}
+    (ok : initiateValidatorExit config s index = .ok t) :
+    ∃ calls, DepartureQueueTrace (s.earliestExitEpoch electra) (s.exitBalanceToConsume electra)
+      calls (t.earliestExitEpoch electra) (t.exitBalanceToConsume electra) ∧
+      ∀ call ∈ calls, call.rate.toNat ≤ config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat := by
+  obtain same | ⟨v, call, _, _, _, earliest, available, placed, left, rate, _⟩ :=
+    initiateExit_call electra ok
+  · subst t
+    exact ⟨[], .nil _ _, by simp⟩
+  · refine ⟨[call], ?_, ?_⟩
+    · rw [← earliest, ← available, ← placed, ← left]
+      exact .cons call (.nil _ _)
+    · intro c member
+      obtain rfl := List.mem_singleton.mp member
+      exact exitChurnLimit_le_cap early rate
+
+/-- Consecutive queue traces compose without adding capacity at their shared state. -/
+theorem DepartureQueueTrace.append {a b c : Epoch} {x y z : Gwei}
+    {first second : List DepartureQueueCall}
+    (one : DepartureQueueTrace a x first b y) (two : DepartureQueueTrace b y second c z) :
+    DepartureQueueTrace a x (first ++ second) c z := by
+  induction one with
+  | nil => exact two
+  | cons call tail ih => exact .cons call (ih two)
+
+/-- The Electra registry pass supplies a concrete exit-call trace with bounded rates. -/
+theorem registryEntries_exitTrace {fork : Fork} (electra : .pectra ≤ fork)
+    (early : fork < .glamsterdam) {activation : Epoch} {s t : BeaconState preset fork}
+    {indices : List Nat}
+    (ok : indices.foldlM (updateRegistryEntryElectra config activation) s = .ok t) :
+    ∃ calls, DepartureQueueTrace (s.earliestExitEpoch electra) (s.exitBalanceToConsume electra)
+      calls (t.earliestExitEpoch electra) (t.exitBalanceToConsume electra) ∧
+      ∀ call ∈ calls, call.rate.toNat ≤ config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat := by
+  induction indices generalizing s with
+  | nil => cases ok; exact ⟨[], .nil _ _, by simp⟩
+  | cons index rest ih =>
+    obtain ⟨middle, stepped, remaining⟩ := bind_ok_iff.mp ok
+    obtain ⟨later, tail, laterRates⟩ := ih remaining
+    rcases registryEntry_departureQueues electra stepped with kept | ⟨i, exited⟩
+    · have epoch := congrArg Prod.fst kept
+      have left := congrArg (fun q => q.2.1) kept
+      change middle.earliestExitEpoch electra = s.earliestExitEpoch electra at epoch
+      change middle.exitBalanceToConsume electra = s.exitBalanceToConsume electra at left
+      rw [epoch, left] at tail
+      exact ⟨later, tail, laterRates⟩
+    · obtain ⟨here, head, hereRates⟩ := initiateExit_trace electra early exited
+      refine ⟨here ++ later, head.append tail, ?_⟩
+      intro call member
+      rcases List.mem_append.mp member with member | member
+      · exact hereRates call member
+      · exact laterRates call member
+
+/-- Both full and partial withdrawal requests give linked, rate-bounded exit calls. -/
+theorem withdrawalRequest_exitTrace {fork : Fork} {s t : BeaconState preset fork}
+    (electra : .pectra ≤ fork) (early : fork < .glamsterdam) {request : WithdrawalRequest}
+    (ok : processWithdrawalRequest config s electra request = .ok t) :
+    ∃ calls, DepartureQueueTrace (s.earliestExitEpoch electra) (s.exitBalanceToConsume electra)
+      calls (t.earliestExitEpoch electra) (t.exitBalanceToConsume electra) ∧
+      ∀ call ∈ calls, call.rate.toNat ≤ config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat := by
+  rcases withdrawalRequest_cases ok with same | ⟨index, exited⟩ | ⟨index, v, owed, withdrawn⟩
+  · subst t; exact ⟨[], .nil _ _, by simp⟩
+  · exact initiateExit_trace electra early exited
+  · obtain ⟨_, same | ⟨call, earliest, available, placed, left, rate⟩⟩ :=
+      partialWithdrawal_call electra withdrawn
+    · subst t; exact ⟨[], .nil _ _, by simp⟩
+    · refine ⟨[call], ?_, ?_⟩
+      · rw [← earliest, ← available, ← placed, ← left]
+        exact .cons call (.nil _ _)
+      · intro c member
+        obtain rfl := List.mem_singleton.mp member
+        exact exitChurnLimit_le_cap early rate
+
+/-- The validator-count churn is bounded by the registry size, not just active entries. -/
+theorem validatorChurnLimit_le_cohortCap {fork : Fork} (s : BeaconState preset fork)
+    (bound : Nat) (bounded : s.validators.data.size ≤ bound) :
+    (getValidatorChurnLimit config s).toNat ≤ cohortCap config bound := by
+  have active : (getActiveValidatorIndices s (getCurrentEpoch s)).length ≤
+      s.validators.data.size := by
+    exact (List.length_filterMap_le _ _).trans (by simp)
+  have converted : (getActiveValidatorIndices s (getCurrentEpoch s)).length.toUInt64.toNat ≤
+      bound := (Nat.mod_le _ _).trans (active.trans bounded)
+  simp only [getValidatorChurnLimit, Uint64.toNat_max, UInt64.toNat_div, cohortCap]
+  exact max_le_max_left _ (Nat.div_le_div_right converted)
+
+/-- A finite pre-Electra exit is assigned only while its count cohort has room. -/
+theorem exitQueue_count_room {fork : Fork} {s queued : BeaconState preset fork}
+    (early : fork < .pectra) {amount : Gwei} {epoch : Epoch}
+    (ok : exitQueue config s amount = .ok (queued, epoch))
+    (finite : epoch ≠ FAR_FUTURE_EPOCH) (bound : Nat)
+    (bounded : s.validators.data.size ≤ bound) :
+    queued = s ∧
+      (s.validators.data.toList.filter (·.exitEpoch == epoch)).length <
+        max 1 (cohortCap config bound) := by
+  have notElectra : ¬ .pectra ≤ fork := Nat.not_le_of_lt early
+  simp only [exitQueue, notElectra, ↓reduceDIte, bind_ok_iff, pure, Except.pure,
+    Except.ok.injEq, Prod.mk.injEq] at ok
+  obtain ⟨placed, scheduled, rfl, rfl⟩ := ok
+  exact ⟨rfl, (exitQueueEpoch_churn scheduled finite).trans_le
+    (max_le_max_left _ (validatorChurnLimit_le_cohortCap s bound bounded))⟩
 
 /-- A successful voluntary exit reaches the exit scheduler with the original state. -/
 theorem voluntaryExit_initiates {fork : Fork} {s t : BeaconState preset fork}
