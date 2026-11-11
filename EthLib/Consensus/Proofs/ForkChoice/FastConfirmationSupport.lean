@@ -1109,6 +1109,34 @@ theorem Execution.blocks_of_endpoint_checkpoint {Δ : ℕ} (sync : e.Synchronous
     (by simpa using late) upToDate finalizedKnown
     (fun gloas => False.elim (Nat.not_le_of_lt preGloas gloas)) headKnown headCheckpoint).1
 
+omit [DecidablePred (· ∈ J)] in
+/-- Coverage by an earlier finalized checkpoint gives coverage by endpoint justification. -/
+theorem Execution.justified_covers_of_finalized_covers {anchor : Store preset fork}
+    (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (sound : Invariant anchorState) (start : ∀ u ∈ J, e.start u = anchor)
+    (preGloas : fork < .glamsterdam)
+    {horizon : Epoch} (chain : FinalizedPrefix e horizon)
+    {w : ValidatorIndex} (receiver : w ∈ J) {arrival endpoint : ℕ}
+    (later : arrival ≤ endpoint)
+    (inHorizon : ((e.world endpoint).state w).justifiedCheckpoint.epoch ≤ horizon)
+    {root : Root} {block : BeaconBlock preset fork}
+    (known : ((e.world endpoint).state w).blocks[root]? = some block)
+    (covered : ((e.world endpoint).state w).isAncestor
+      ⟨((e.world arrival).state w).finalizedCheckpoint.root, .pending⟩
+      ⟨root, .pending⟩ = .ok true) :
+    ((e.world endpoint).state w).isAncestor
+      ⟨((e.world endpoint).state w).justifiedCheckpoint.root, .pending⟩
+      ⟨root, .pending⟩ = .ok true := by
+  have reached := e.reachable
+    (fun u hu => (start u hu).symm ▸ Store.Reachable.anchor anchored) endpoint w receiver
+  have le := UInt64.le_trans (e.epochsLe_of_le w later).2
+    (reached.finalized_le_justified sound)
+  have checkpoint := chain w receiver w receiver arrival endpoint
+    ((e.world endpoint).state w).justifiedCheckpoint (Or.inl rfl) le inHorizon
+  obtain ⟨_, finalized, _, held, _, descends⟩ :=
+    Store.isAncestor_of_getCheckpointBlock preGloas checkpoint
+  exact Store.isAncestor_trans_of_lt preGloas held known descends covered
+
 /-- A complete duty epoch gives honest support unless justification already covers the root.
 
 The tally state may be old; no comparison with the caller's balances is used.
