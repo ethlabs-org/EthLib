@@ -6,6 +6,8 @@ public import EthLib.Consensus.Proofs.ForkChoice.BlockAgreement
 public import EthLib.Consensus.Proofs.ForkChoice.HonestCheckpoints
 public import EthLib.Consensus.Proofs.ForkChoice.VoteOrigins
 public import EthLib.Consensus.Proofs.Transition.RunKept
+import EthLib.Consensus.Proofs.ForkChoice.HonestVotes
+import EthLib.Consensus.Proofs.HonestAggregation
 
 /-!
 # Statements: the honest support of a confirmed block reaches each honest store
@@ -363,6 +365,82 @@ structure WeightBounds
 
 variable {e : Execution (honestForkChoice config checks sources anchorState anchorBlock assignment
   genesisTimeMs) J} [DecidablePred (· ∈ J)]
+
+/-- A past slot's attestation deadline plus delay precedes the current clock. -/
+theorem DelayFits.deadline_add_le {Δ time : ℕ} {slot current : Slot} {clock : UInt64}
+    (fits : DelayFits fork config genesisTimeMs Δ)
+    (deadline : IsAttestationDeadline fork config genesisTimeMs slot time)
+    (currentOk : computeSlotAtTimeMs config genesisTimeMs clock = .ok current)
+    (past : slot < current) : time + Δ ≤ clock.toNat := by
+  obtain ⟨start, due, startOk, dueOk, atTime⟩ := deadline
+  unfold computeSlotAtTimeMs at currentOk
+  simp only [bind_ok_iff] at currentOk
+  obtain ⟨elapsed, elapsedOk, divided⟩ := currentOk
+  obtain ⟨_, elapsedValue⟩ := subChecked_ok_iff.mp elapsedOk
+  obtain ⟨_, currentValue⟩ := divChecked_ok_iff.mp divided
+  have pastNat := UInt64.lt_iff_toNat_lt.mp past
+  have nextBound : slot.toNat + 1 < 2 ^ 64 := lt_of_le_of_lt
+    (by omega : slot.toNat + 1 ≤ current.toNat) current.toNat_lt
+  let next := UInt64.ofNat (slot.toNat + 1)
+  have nextValue : next.toNat = slot.toNat + 1 := UInt64.toNat_ofNat_of_lt nextBound
+  have nextOk : addChecked slot 1 = .ok next :=
+    addChecked_ok_iff.mpr ⟨by simpa using nextBound, by simpa using nextValue⟩
+  have productLe : next.toNat * config.SLOT_DURATION_MS.toNat ≤ elapsed.toNat := by
+    calc
+      _ ≤ current.toNat * config.SLOT_DURATION_MS.toNat :=
+        Nat.mul_le_mul_right _ (by omega)
+      _ ≤ elapsed.toNat := by rw [currentValue]; exact Nat.div_mul_le_self _ _
+  have offsetBound : next.toNat * config.SLOT_DURATION_MS.toNat < 2 ^ 64 :=
+    lt_of_le_of_lt productLe elapsed.toNat_lt
+  let offset := UInt64.ofNat (next.toNat * config.SLOT_DURATION_MS.toNat)
+  have offsetValue : offset.toNat = next.toNat * config.SLOT_DURATION_MS.toNat :=
+    UInt64.toNat_ofNat_of_lt offsetBound
+  have offsetOk : mulChecked next config.SLOT_DURATION_MS = .ok offset :=
+    mulChecked_ok_iff.mpr ⟨offsetBound, offsetValue⟩
+  have followingLe : genesisTimeMs.toNat + offset.toNat ≤ clock.toNat := by omega
+  have followingBound : genesisTimeMs.toNat + offset.toNat < 2 ^ 64 :=
+    lt_of_le_of_lt followingLe clock.toNat_lt
+  let following := UInt64.ofNat (genesisTimeMs.toNat + offset.toNat)
+  have followingValue : following.toNat = genesisTimeMs.toNat + offset.toNat :=
+    UInt64.toNat_ofNat_of_lt followingBound
+  have followingOk : computeTimeAtSlotMs config genesisTimeMs next = .ok following := by
+    simp only [computeTimeAtSlotMs, offsetOk, bind, Except.bind]
+    exact addChecked_ok_iff.mpr ⟨followingBound, followingValue⟩
+  have before := fits.2 slot next start due following nextOk startOk dueOk followingOk
+  omega
+
+omit [DecidablePred (· ∈ J)] in
+/-- An honest supporter held the voted head when it could sign the recorded vote.
+
+The caller computes ancestry in its own store; this does not yet transport that ancestry. -/
+theorem Execution.past_head_of_honest_supporter
+    {anchor : Store preset fork}
+    (anchorStore : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (anchored : ∀ w ∈ J, e.start w = anchor)
+    {u v : ValidatorIndex} (caller : u ∈ J) (honest : v ∈ J) {n : ℕ}
+    {state : BeaconState preset fork} {root : Root}
+    (supporter : v ∈ ((e.world n).state u).supportersOf state ⟨root, .pending⟩) :
+    ∃ attestation : Attestation preset fork, ∃ m < n, ∃ head block supported,
+      ((e.world n).state u).latestMessages[v]? =
+        some (LatestMessage.ofAttestation attestation) ∧
+      MaySign config checks sources anchorState anchorBlock assignment genesisTimeMs v
+        (e.world m).time ((e.world m).view v) ((e.world m).state v) attestation.data ∧
+      ((e.world m).state v).getHead config = .ok head ∧
+      ((e.world m).state v).blocks[head.root]? = some block ∧
+      attestation.data.beaconBlockRoot = head.root ∧
+      ((e.world n).state u).getSupportedNode (LatestMessage.ofAttestation attestation) =
+        .ok supported ∧
+      ((e.world n).state u).isAncestor supported ⟨root, .pending⟩ = .ok true := by
+  obtain ⟨message, supported, latest, -, supportedOk, descends⟩ :=
+    ((e.world n).state u).exists_of_voteCountsFor
+      (Store.voteCountsFor_of_mem_supportersOf supporter)
+  obtain ⟨attestation, m, earlier, rfl, maySign⟩ :=
+    e.exists_maySign_of_latestMessages anchorStore anchored caller honest latest
+  have ⟨_, _, _, _, _, honestData, _⟩ := maySign
+  obtain ⟨head, block, headState, advanced, headOk, known, _, _, made⟩ := honestData
+  have dataRoot := (getAttestationData_eq_ok_iff.mp made).2.2.2.1
+  exact ⟨attestation, m, earlier, head, block, supported, latest, maySign, headOk,
+    known, dataRoot, supportedOk, descends⟩
 
 /-- An honest recorded supporter already held the supported block before the delivery deadline.
 
