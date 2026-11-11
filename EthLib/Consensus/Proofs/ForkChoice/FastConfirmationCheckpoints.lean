@@ -4,6 +4,7 @@ public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmationConfirmedRoot
 public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmationSupport
 public import EthLib.Consensus.Proofs.ForkChoice.HonestCheckpoints
 public import EthLib.Consensus.Proofs.ForkChoice.HonestVotes
+import EthLib.Consensus.Proofs.HonestAggregation
 
 /-!
 # Statements: a block that the rule confirms stays in the filtered tree of each honest store
@@ -893,6 +894,173 @@ theorem Execution.target_eq_or_unseen_signer_of_pins
       counted (checkpointEpoch.trans targetEpoch.symm))
   · exact .inr ⟨v, member, (members v member).1, unseen, signed⟩
 
+/-- A duty in an epoch or later cannot precede that epoch's start time. -/
+theorem epoch_start_le_attestation_deadline
+    {epoch : Epoch} {first slot : Slot} {begin : UInt64} {time : ℕ}
+    (firstOk : computeStartSlotAtEpoch preset epoch = .ok first)
+    (beginOk : computeTimeAtSlotMs config genesisTimeMs first = .ok begin)
+    (later : epoch ≤ computeEpochAtSlot preset slot)
+    (deadline : IsAttestationDeadline fork config genesisTimeMs slot time) :
+    begin.toNat ≤ time := by
+  have firstNat := (computeStartSlotAtEpoch_ok_iff.mp firstOk).2
+  have epochLe := UInt64.le_iff_toNat_le.mp later
+  simp only [computeEpochAtSlot, UInt64.toNat_div] at epochLe
+  have firstLe : first ≤ slot := UInt64.le_iff_toNat_le.mpr (by
+    rw [firstNat]
+    exact (Nat.mul_le_mul_right preset.SLOTS_PER_EPOCH.toNat epochLe).trans
+      (Nat.div_mul_le_self _ _))
+  obtain ⟨start, due, startOk, _, timeEq⟩ := deadline
+  obtain ⟨begin', beginOk', _, beginLe⟩ := exists_timeAtSlotMs_of_le firstLe startOk
+  have same := Except.ok.inj (beginOk.symm.trans beginOk')
+  subst begin'
+  have := UInt64.le_iff_toNat_le.mp beginLe
+  omega
+
+omit [DecidablePred (· ∈ J)] in
+/-- An honest vote for an epoch or later has a duty no earlier than that epoch's start. -/
+theorem Execution.exists_maySign_after_epoch_start_of_signsTargetBefore
+    {v : ValidatorIndex} (honest : v ∈ J) {target : Checkpoint} {slot first : Slot}
+    {epoch : Epoch} {begin : UInt64}
+    (signed : SignsTargetBefore e v target slot)
+    (firstOk : computeStartSlotAtEpoch preset epoch = .ok first)
+    (beginOk : computeTimeAtSlotMs config genesisTimeMs first = .ok begin)
+    (later : epoch ≤ target.epoch) :
+    ∃ k data,
+      MaySign config checks sources anchorState anchorBlock assignment genesisTimeMs v
+        (e.world k).time ((e.world k).view v) ((e.world k).state v) data ∧
+      data.target = target ∧ data.slot < slot ∧ begin.toNat ≤ (e.world k).time := by
+  obtain ⟨k, data, duty, targetOk, before⟩ :=
+    e.exists_maySign_of_signsTargetBefore honest signed
+  have dutyCopy := duty
+  obtain ⟨_, _, deadline, _, _, made, _⟩ := dutyCopy
+  obtain ⟨_, _, _, _, _, _, _, _, dataOk⟩ := made
+  have epochOk := target_epoch_eq_of_getAttestationData dataOk
+  refine ⟨k, data, duty, targetOk, before, ?_⟩
+  apply epoch_start_le_attestation_deadline firstOk beginOk _ deadline
+  rwa [← epochOk, targetOk]
+
+/-- A duty before a representable slot has its deadline strictly before that slot starts. -/
+theorem DelayFits.deadline_lt_later_slot {Δ : ℕ}
+    (fits : DelayFits fork config genesisTimeMs Δ)
+    {slot last : Slot} {endTime : UInt64} {time : ℕ}
+    (before : slot < last)
+    (endOk : computeTimeAtSlotMs config genesisTimeMs last = .ok endTime)
+    (deadline : IsAttestationDeadline fork config genesisTimeMs slot time) :
+    time + Δ < endTime.toNat := by
+  have slotLt := UInt64.lt_iff_toNat_lt.mp before
+  have lastBound := last.toNat_lt
+  have nextBound : slot.toNat + (1 : UInt64).toNat < 2 ^ 64 := by simp; omega
+  have nextOk := addChecked_of_lt nextBound
+  have nextNat := (addChecked_ok_iff.mp nextOk).2
+  have nextLe : slot + 1 ≤ last := UInt64.le_iff_toNat_le.mpr (by
+    simp only [UInt64.toNat_one] at nextNat; omega)
+  obtain ⟨start, startOk, _, _⟩ := exists_timeAtSlotMs_of_le (UInt64.le_of_lt before) endOk
+  obtain ⟨following, followingOk, _, followingLe⟩ := exists_timeAtSlotMs_of_le nextLe endOk
+  exact (fits.before_boundary nextOk startOk followingOk deadline).trans_le
+    (UInt64.le_iff_toNat_le.mp followingLe)
+
+omit [DecidablePred (· ∈ J)] in
+/-- Prefix safety covers a later-epoch target's honest duty after an epoch-start call. -/
+theorem Execution.exists_supporting_head_of_signsTargetBefore_epoch_start
+    {Δ : ℕ} (fits : DelayFits fork config genesisTimeMs Δ)
+    {v : ValidatorIndex} (honest : v ∈ J) {target : Checkpoint} {slot first : Slot}
+    {epoch : Epoch} {begin endTime : UInt64} {time : ℕ} {root : Root}
+    (signed : SignsTargetBefore e v target slot)
+    (firstOk : computeStartSlotAtEpoch preset epoch = .ok first)
+    (beginOk : computeTimeAtSlotMs config genesisTimeMs first = .ok begin)
+    (endOk : computeTimeAtSlotMs config genesisTimeMs slot = .ok endTime)
+    (endLe : endTime.toNat ≤ time) (later : epoch ≤ target.epoch)
+    (safe : ∀ earlier, begin.toNat ≤ earlier → earlier < time → SafeAt e earlier root) :
+    ∃ k data head,
+      MaySign config checks sources anchorState anchorBlock assignment genesisTimeMs v
+        (e.world k).time ((e.world k).view v) ((e.world k).state v) data ∧
+      data.target = target ∧ begin.toNat ≤ (e.world k).time ∧ (e.world k).time < time ∧
+      ((e.world k).state v).getHead config = .ok head ∧
+      ((e.world k).state v).isAncestor head ⟨root, .pending⟩ = .ok true := by
+  obtain ⟨k, data, duty, targetOk, before, afterBegin⟩ :=
+    e.exists_maySign_after_epoch_start_of_signsTargetBefore honest signed firstOk beginOk later
+  have dutyCopy := duty
+  obtain ⟨_, _, deadline, _⟩ := dutyCopy
+  have bound := fits.deadline_lt_later_slot before endOk deadline
+  have beforeTime : (e.world k).time < time := by omega
+  obtain ⟨head, headOk, supports⟩ :=
+    e.head_supports_of_maySign honest duty afterBegin beforeTime safe
+  exact ⟨k, data, head, duty, targetOk, afterBegin, beforeTime, headOk, supports⟩
+
+/-- A defined current slot has a representable start no later than the clock. -/
+theorem exists_slot_start_of_current_slot {clock : UInt64} {slot : Slot}
+    (current : computeSlotAtTimeMs config genesisTimeMs clock = .ok slot) :
+    ∃ begin, computeTimeAtSlotMs config genesisTimeMs slot = .ok begin ∧ begin ≤ clock := by
+  unfold computeSlotAtTimeMs at current
+  simp only [bind_ok_iff] at current
+  obtain ⟨elapsed, elapsedOk, slotOk⟩ := current
+  have elapsedNat := (subChecked_ok_iff.mp elapsedOk).2
+  have slotNat := (divChecked_ok_iff.mp slotOk).2
+  have offsetLe : slot.toNat * config.SLOT_DURATION_MS.toNat ≤ elapsed.toNat := by
+    rw [slotNat]
+    exact Nat.div_mul_le_self _ _
+  have offsetBound : slot.toNat * config.SLOT_DURATION_MS.toNat < 2 ^ 64 :=
+    offsetLe.trans_lt elapsed.toNat_lt
+  have offsetOk := mulChecked_of_lt offsetBound
+  have offsetNat := (mulChecked_ok_iff.mp offsetOk).2
+  have genesisLe := (subChecked_ok_iff.mp elapsedOk).1
+  have bound : genesisTimeMs.toNat + (slot * config.SLOT_DURATION_MS).toNat < 2 ^ 64 := by
+    have := clock.toNat_lt
+    omega
+  have beginOk := addChecked_of_lt bound
+  have beginNat := (addChecked_ok_iff.mp beginOk).2
+  refine ⟨genesisTimeMs + slot * config.SLOT_DURATION_MS, ?_,
+    UInt64.le_iff_toNat_le.mpr (by omega)⟩
+  simp only [computeTimeAtSlotMs, offsetOk, bind, Except.bind, beginOk]
+
+omit [DecidablePred (· ∈ J)] in
+/-- An honest justified target has a supporting head after an epoch-start call. -/
+theorem Execution.exists_supporting_head_of_justified_epoch_start
+    {Δ : ℕ} (fits : DelayFits fork config genesisTimeMs Δ)
+    {anchorEpoch horizon : Epoch} (voted : JustifiedByHonestVote e anchorEpoch horizon)
+    {anchor : Store preset fork} (anchored : ∀ w ∈ J, e.start w = anchor)
+    {w : ValidatorIndex} (receiver : w ∈ J) {n : ℕ} {checkpoint : Checkpoint} {slot first : Slot}
+    {epoch : Epoch} {begin : UInt64} {root : Root}
+    (justified : ((e.world n).state w).Justified checkpoint)
+    (slotOk : ((e.world n).state w).getCurrentSlot config = .ok slot)
+    (current : UpToDate config checks sources (e.world n).time ((e.world n).view w)
+      ((e.world n).state w))
+    (afterAnchor : anchorEpoch < checkpoint.epoch) (bounded : checkpoint.epoch ≤ horizon)
+    (firstOk : computeStartSlotAtEpoch preset epoch = .ok first)
+    (beginOk : computeTimeAtSlotMs config genesisTimeMs first = .ok begin)
+    (later : epoch ≤ checkpoint.epoch)
+    (safe : ∀ earlier, begin.toNat ≤ earlier → earlier < (e.world n).time →
+      SafeAt e earlier root) :
+    ∃ v ∈ J, ∃ k data head,
+      MaySign config checks sources anchorState anchorBlock assignment genesisTimeMs v
+        (e.world k).time ((e.world k).view v) ((e.world k).state v) data ∧
+      data.target = checkpoint ∧ begin.toNat ≤ (e.world k).time ∧
+      (e.world k).time < (e.world n).time ∧
+      ((e.world k).state v).getHead config = .ok head ∧
+      ((e.world k).state v).isAncestor head ⟨root, .pending⟩ = .ok true := by
+  obtain ⟨v, honest, signed⟩ := voted w receiver n checkpoint slot justified slotOk
+    afterAnchor bounded
+  obtain ⟨k, data, duty, _, _⟩ := e.exists_maySign_of_signsTargetBefore honest signed
+  obtain ⟨_, _, _, genesis, _⟩ := duty
+  have senderGenesis := (e.clock_bounds v k).1
+  have receiverGenesis := (e.clock_bounds w n).1
+  rw [anchored v honest] at senderGenesis
+  rw [anchored w receiver] at receiverGenesis
+  have common : ((e.world n).state w).genesisTimeMs = genesisTimeMs :=
+    receiverGenesis.trans (senderGenesis.symm.trans genesis)
+  have slotOk' := mapError_ok_iff.mp slotOk
+  change computeSlotAtTimeMs config ((e.world n).state w).genesisTimeMs
+    ((e.world n).state w).timeMs = .ok slot at slotOk'
+  rw [common] at slotOk'
+  obtain ⟨endTime, endOk, endLe⟩ := exists_slot_start_of_current_slot slotOk'
+  have endLe' : endTime.toNat ≤ (e.world n).time := by
+    rw [← current.1]
+    exact UInt64.le_iff_toNat_le.mp endLe
+  obtain ⟨k, data, head, rest⟩ :=
+    e.exists_supporting_head_of_signsTargetBefore_epoch_start fits honest signed
+      firstOk beginOk endOk endLe' later safe
+  exact ⟨v, honest, k, data, head, rest⟩
+
 /-- A slot-start call's messages arrive strictly before the following slot starts. -/
 theorem DelayFits.call_before_next_slot {Δ : ℕ}
     (fits : DelayFits fork config genesisTimeMs Δ)
@@ -914,7 +1082,9 @@ The block is on the chain of the head of the caller.
 
 The head of the slot before, as the rule tracks it, was a head of the store of the caller.
 
-Honest validators hold the count of the rule for the target of the head, with the margin.
+Away from the start of an epoch, honest validators hold the count of the rule for the target.
+
+They hold it with the margin.
 
 Each has voted for that target or has still to vote in the epoch.
 
@@ -992,7 +1162,8 @@ theorem Execution.coveredOrViableAt_of_checked {Δ : ℕ} (sync : e.Synchronous 
         ((e.world k).state u).getCurrentSlot config = .ok previousSlot ∧
         ((e.world n).state u).getCurrentSlot config = .ok currentSlot ∧
         addChecked previousSlot 1 = .ok currentSlot)
-    (targetVotes : HonestTargetVotes e margin u n head.root)
+    (targetVotes : ∀ slot, ((e.world n).state u).getCurrentSlot config = .ok slot →
+      isStartSlotAtEpoch preset slot = .ok false → HonestTargetVotes e margin u n head.root)
     (lineage : ∀ epoch, ((e.world n).state u).getCurrentStoreEpoch config = .ok epoch →
       ((e.world n).state u).getBlockEpoch start = .ok epoch →
       TargetChecked e margin anchor.finalizedCheckpoint.root u n epoch start)
