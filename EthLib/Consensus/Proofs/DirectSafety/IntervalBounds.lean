@@ -4895,6 +4895,38 @@ private theorem intervalGain_deposit_sites {x y : ForkedBeaconState preset}
   · obtain ⟨_, first, last, ordered, matched, _⟩ := provenance e member
     exact Or.inr ⟨first.trans last, ordered, later, matched⟩
 
+private theorem intervalGain_events_bounded {g x y : ForkedBeaconState preset}
+    (shared : Run config checks g x) (tail : Run config checks x y)
+    (genesis : Genesis (config := config) (checks := checks) g)
+    (early : y.fork < .glamsterdam) (high : Nat)
+    (endEpoch : (getCurrentEpoch y.state).toNat ≤ high + 1)
+    (events : List (BalanceEvent preset)) (replayed : tail.balanceEvents high = .ok events) :
+    EventsBounded events := by
+  have invariant {z : ForkedBeaconState preset} (run : Run config checks g z) :
+      Invariant z.state := by
+    induction run with
+    | nil =>
+      obtain ⟨_, _, _, ok⟩ := genesis
+      exact (initializeBeaconStateFromEth1_invariant ok).2
+    | snoc pre step ih =>
+      cases step with
+      | slot ok => exact (advanceSlotAcross_invariant ih ok).1
+      | block engine signed due ok =>
+        exact (frame_processBlock (applySignedBlock_ok ok).2.1).invariant ih
+  induction tail generalizing events with
+  | nil => cases replayed; simp [EventsBounded]
+  | @snoc middle last pre step ih =>
+    have selected := (coverage_step_epoch step).trans endEpoch
+    simp only [Run.balanceEvents, bind_ok_iff] at replayed
+    obtain ⟨prior, priorOk, rest⟩ := replayed
+    simp only [selected, ↓reduceIte, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at rest
+    obtain ⟨added, addedOk, rfl⟩ := rest
+    have previous := ih (Nat.lt_of_le_of_lt step.chainStep.fork_le early) selected prior priorOk
+    obtain ⟨actual, actualOk, bound⟩ := stepBalanceEvents_bounded step
+      (invariant (shared.append pre)).balancesMatch early
+    cases Except.ok.inj (actualOk.symm.trans addedOk)
+    exact eventsBounded_append previous bound
+
 private theorem intervalGain_crossing_of_interfaces {g x y : ForkedBeaconState preset}
     (shared : Run config checks g x) (tail : Run config checks x y)
     (genesis : Genesis (config := config) (checks := checks) g)
@@ -4902,7 +4934,6 @@ private theorem intervalGain_crossing_of_interfaces {g x y : ForkedBeaconState p
     (high : Nat) (endEpoch : (getCurrentEpoch y.state).toNat ≤ high + 1)
     (events : List (BalanceEvent preset)) (replayed : tail.balanceEvents high = .ok events)
     (crossing : config.ELECTRA_FORK_EPOCH.toNat ≤ high + 1)
-    (bounded : ∀ e ∈ events, e.credits ≤ e.creditLimit)
     (provenance : ∀ e ∈ events,
       RegistryLifecycle x.state e.before.state ∧
       RegistryLifecycle e.before.state e.after.state ∧
@@ -4916,7 +4947,8 @@ private theorem intervalGain_crossing_of_interfaces {g x y : ForkedBeaconState p
     referenceGain x y ≤ activationWindow (config := config) x high + initialExcess x +
       (events.map (residualCredit (config := config) x high)).sum := by
   apply intervalGain_crossing_endpoint shared tail genesis parameters early high endEpoch
-    events replayed crossing bounded
+    events replayed crossing (fun e member =>
+      (intervalGain_events_bounded shared tail genesis early high endEpoch events replayed e member).1)
   exact (intervalGain_deposit_filter_sum y parameters events
     (intervalGain_deposit_sites events provenance epochs)).trans
       (funding_deposit_capacity shared tail genesis parameters early high endEpoch events replayed)
