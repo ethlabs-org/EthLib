@@ -2,6 +2,7 @@ module
 
 public import EthLib.Consensus.Proofs.ForkChoice.Reachable
 import EthLib.Consensus.Proofs.Containers.Block
+public import EthLib.Consensus.Proofs.Transition.RunKept
 
 /-!
 # Proofs: each block state of a store comes from the state of its parent
@@ -338,5 +339,204 @@ theorem Store.Reachable.preBlock_history_known
   unfold getBlockRootAtSlot
   rw [processBlock_slot processed, (processBlock_blockRoots_latestBlockHeader processed).1]
   exact read
+
+/-- A successful slot run has a state at every slot from its input up to its endpoint. -/
+theorem lookaheadState_of_processSlots {state advanced : BeaconState preset fork}
+    {checks : SignatureChecks} {slot query : Slot}
+    (computed : processSlots config checks state slot = .ok advanced)
+    (low : state.slot ≤ query) (high : query < slot) :
+    ∃ checkpointState, lookaheadState config checks state query = .ok checkpointState ∧
+      checkpointState.slot = query ∧ RunKept checkpointState advanced := by
+  by_cases same : state.slot = query
+  · refine ⟨state, ?_, same, runKept_processSlots computed⟩
+    simp [lookaheadState, same, pure, Except.pure]
+  · have lt : state.slot < query := UInt64.lt_of_le_of_ne low same
+    obtain ⟨middle, before, afterOk⟩ := processSlots_split computed lt high
+    exact ⟨middle, by simp [lookaheadState, lt, before, Except.mapError],
+      (processSlots_slot before).2, runKept_processSlots afterOk⟩
+
+/-- Fixed-check transition witnesses reconstruct a checkpoint state for a history read. -/
+theorem Store.Reachable.blockState_history_run
+    (reachable : Store.Reachable config anchorState anchorBlock store)
+    {checks : SignatureChecks} {engine : ExecutionEngine preset fork}
+    (transitions : ∀ (root : Root) (block : BeaconBlock preset fork)
+      (state : BeaconState preset fork), store.blocks[root]? = some block →
+      store.blockStates[root]? = some state → block ≠ anchorBlock →
+      ∃ parent signed, signed.message = block ∧
+        store.blockStates[block.parentRoot]? = some parent ∧
+        stateTransition config checks engine parent signed true = .ok state)
+    (nonzero : ∀ (root : Root) (block : BeaconBlock preset fork), store.blocks[root]? = some block →
+      block.stateRoot ≠ Vector.replicate 32 0)
+    {root readRoot : Root} {state : BeaconState preset fork} {query : Slot}
+    (stored : store.blockStates[root]? = some state)
+    (read : getBlockRootAtSlot state query = .ok readRoot)
+    (later : anchorState.slot ≤ query) :
+    ∃ ancestor ancestorState checkpointState,
+      store.blocks[readRoot]? = some ancestor ∧
+      store.blockStates[readRoot]? = some ancestorState ∧
+      lookaheadState config checks ancestorState query = .ok checkpointState ∧
+      checkpointState.slot = query ∧ RunKept checkpointState state := by
+  obtain ⟨block, found⟩ := reachable.known_of_blockState stored
+  by_cases same : block = anchorBlock
+  · obtain ⟨post, postOk, anchored, -⟩ := reachable.blockStatesFromParents found
+    rw [stored, Option.some.injEq] at postOk
+    subst post
+    rw [anchored same] at read
+    have before := (getBlockRootAtSlot_ok_iff.mp read).1
+    have le := UInt64.le_iff_toNat_le.mp later
+    omega
+  · obtain ⟨parent, signed, message, parentFound, transitioned⟩ :=
+      transitions root block state found stored same
+    obtain ⟨advanced, slotsOk, advancedSlot, -, blockOk, -⟩ := stateTransition_ok transitioned
+    have advancedRead : getBlockRootAtSlot advanced query = .ok readRoot := by
+      unfold getBlockRootAtSlot at read ⊢
+      rwa [processBlock_slot blockOk, (processBlock_blockRoots_latestBlockHeader blockOk).1]
+        at read
+    by_cases old : query < parent.slot
+    · have run := slotsOk
+      simp only [processSlots, bind_ok_iff, ensure_ok_iff] at run
+      obtain ⟨_, -, advancedOk⟩ := run
+      obtain ⟨ancestor, ancestorState, checkpointState, known, held, made, atSlot, kept⟩ :=
+        reachable.blockState_history_run transitions nonzero parentFound
+          (getBlockRootAtSlot_of_advanceSlots advancedOk advancedRead old) later
+      exact ⟨ancestor, ancestorState, checkpointState, known, held, made, atSlot,
+        kept.trans (runKept_stateTransition transitioned)⟩
+    · obtain ⟨parentBlock, parentKnown⟩ := reachable.known_of_blockState parentFound
+      have cached := getBlockRootAtSlot_processSlots_header
+        (reachable.blockState_root parentKnown parentFound) (nonzero _ _ parentKnown)
+        slotsOk advancedRead (UInt64.not_lt.mp old)
+      have parentHash := processBlock_parentRoot blockOk
+      rw [message] at parentHash
+      have eq := Except.ok.inj (cached.symm.trans parentHash)
+      have high : query < signed.message.slot := by
+        rw [← advancedSlot]
+        exact UInt64.lt_iff_toNat_lt.mpr (getBlockRootAtSlot_ok_iff.mp advancedRead).1
+      obtain ⟨checkpointState, made, atSlot, kept⟩ :=
+        lookaheadState_of_processSlots slotsOk (UInt64.not_lt.mp old) high
+      exact ⟨parentBlock, parent, checkpointState, eq ▸ parentKnown, eq ▸ parentFound,
+        made, atSlot, kept.trans (runKept_processBlock blockOk)⟩
+termination_by state.slot.toNat
+decreasing_by
+  have bounds := stateTransition_slot transitioned
+  rw [bounds.2]
+  exact UInt64.lt_iff_toNat_lt.mp bounds.1
+
+/-- A held child's pre-block history reconstructs a checkpoint state with the same checks. -/
+theorem Store.Reachable.preBlock_history_run
+    (reachable : Store.Reachable config anchorState anchorBlock store)
+    {checks : SignatureChecks} {engine : ExecutionEngine preset fork}
+    (transitions : ∀ (root : Root) (block : BeaconBlock preset fork)
+      (state : BeaconState preset fork), store.blocks[root]? = some block →
+      store.blockStates[root]? = some state → block ≠ anchorBlock →
+      ∃ parent signed, signed.message = block ∧
+        store.blockStates[block.parentRoot]? = some parent ∧
+        stateTransition config checks engine parent signed true = .ok state)
+    (nonzero : ∀ (root : Root) (block : BeaconBlock preset fork), store.blocks[root]? = some block →
+      block.stateRoot ≠ Vector.replicate 32 0)
+    {parent advanced state : BeaconState preset fork} {block : BeaconBlock preset fork}
+    {query : Slot} {readRoot : Root}
+    (parentFound : store.blockStates[block.parentRoot]? = some parent)
+    (slotsOk : processSlots config checks parent block.slot = .ok advanced)
+    (blockOk : processBlock config checks engine advanced block = .ok state)
+    (read : getBlockRootAtSlot advanced query = .ok readRoot)
+    (later : anchorState.slot ≤ query) :
+    ∃ ancestor ancestorState checkpointState,
+      store.blocks[readRoot]? = some ancestor ∧
+      store.blockStates[readRoot]? = some ancestorState ∧
+      lookaheadState config checks ancestorState query = .ok checkpointState ∧
+      checkpointState.slot = query ∧ RunKept checkpointState advanced := by
+  by_cases old : query < parent.slot
+  · have run := slotsOk
+    simp only [processSlots, bind_ok_iff, ensure_ok_iff] at run
+    obtain ⟨_, -, advancedOk⟩ := run
+    obtain ⟨ancestor, ancestorState, checkpointState, known, held, made, atSlot, kept⟩ :=
+      reachable.blockState_history_run transitions nonzero parentFound
+        (getBlockRootAtSlot_of_advanceSlots advancedOk read old) later
+    exact ⟨ancestor, ancestorState, checkpointState, known, held, made, atSlot,
+      kept.trans (runKept_processSlots slotsOk)⟩
+  · obtain ⟨parentBlock, parentKnown⟩ := reachable.known_of_blockState parentFound
+    have cached := getBlockRootAtSlot_processSlots_header
+      (reachable.blockState_root parentKnown parentFound) (nonzero _ _ parentKnown)
+      slotsOk read (UInt64.not_lt.mp old)
+    have eq := Except.ok.inj (cached.symm.trans (processBlock_parentRoot blockOk))
+    have high : query < block.slot := by
+      rw [← (processSlots_slot slotsOk).2]
+      exact UInt64.lt_iff_toNat_lt.mpr (getBlockRootAtSlot_ok_iff.mp read).1
+    obtain ⟨checkpointState, made, atSlot, kept⟩ :=
+      lookaheadState_of_processSlots slotsOk (UInt64.not_lt.mp old) high
+    exact ⟨parentBlock, parent, checkpointState, eq ▸ parentKnown, eq ▸ parentFound,
+      made, atSlot, kept⟩
+
+/-- A block state at or after the anchor has a block no later than that state. -/
+theorem Store.Reachable.blockState_slot_le
+    (reachable : Store.Reachable config anchorState anchorBlock store)
+    (anchorSlot : anchorBlock.slot ≤ anchorState.slot)
+    {root : Root} {block : BeaconBlock preset fork} {state : BeaconState preset fork}
+    (found : store.blocks[root]? = some block) (stored : store.blockStates[root]? = some state) :
+    block.slot ≤ state.slot := by
+  by_cases same : block = anchorBlock
+  · obtain ⟨post, postOk, anchored, -⟩ := reachable.blockStatesFromParents found
+    rw [stored, Option.some.injEq] at postOk
+    subst post
+    rw [anchored same, same]
+    exact anchorSlot
+  · rw [(reachable.blockState_header found stored same).1]
+    exact UInt64.le_refl _
+
+/-- A history read after an aligned anchor agrees with the store's ancestor walk. -/
+theorem Store.Reachable.blockState_history_ancestor
+    (reachable : Store.Reachable config anchorState anchorBlock store)
+    (anchorSlot : anchorBlock.slot ≤ anchorState.slot)
+    (nonzero : ∀ (root : Root) (block : BeaconBlock preset fork), store.blocks[root]? = some block →
+      block.stateRoot ≠ Vector.replicate 32 0)
+    {root readRoot : Root} {state : BeaconState preset fork} {query : Slot}
+    (stored : store.blockStates[root]? = some state)
+    (read : getBlockRootAtSlot state query = .ok readRoot)
+    (later : anchorState.slot ≤ query) (status : PayloadStatus) :
+    (·.root) <$> store.getAncestor ⟨root, status⟩ query = .ok readRoot := by
+  obtain ⟨block, found⟩ := reachable.known_of_blockState stored
+  obtain ⟨post, postOk, anchored, produced⟩ := reachable.blockStatesFromParents found
+  rw [stored, Option.some.injEq] at postOk
+  subst post
+  by_cases same : block = anchorBlock
+  · rw [anchored same] at read
+    have before := (getBlockRootAtSlot_ok_iff.mp read).1
+    have le := UInt64.le_iff_toNat_le.mp later
+    omega
+  · obtain ⟨parent, checks, engine, signed, message, parentFound, transitioned⟩ := produced same
+    obtain ⟨advanced, slotsOk, advancedSlot, -, blockOk, -⟩ := stateTransition_ok transitioned
+    have atSlot := (reachable.blockState_header found stored same).1
+    have advancedRead : getBlockRootAtSlot advanced query = .ok readRoot := by
+      unfold getBlockRootAtSlot at read ⊢
+      rwa [processBlock_slot blockOk, (processBlock_blockRoots_latestBlockHeader blockOk).1]
+        at read
+    obtain ⟨parentBlock, parentKnown⟩ := reachable.known_of_blockState parentFound
+    have parentLe := reachable.blockState_slot_le anchorSlot parentKnown parentFound
+    have parentLt : parent.slot < block.slot := by
+      simpa only [message] using (stateTransition_slot transitioned).1
+    have above : ¬ block.slot ≤ query := by
+      have before := (getBlockRootAtSlot_ok_iff.mp read).1
+      rw [atSlot] at before
+      exact UInt64.not_le.mpr (UInt64.lt_iff_toNat_lt.mpr before)
+    rw [Store.getAncestor_step found above parentKnown (UInt64.lt_of_le_of_lt parentLe parentLt)]
+    by_cases old : query < parent.slot
+    · have run := slotsOk
+      simp only [processSlots, bind_ok_iff, ensure_ok_iff] at run
+      obtain ⟨_, -, advancedOk⟩ := run
+      exact reachable.blockState_history_ancestor anchorSlot nonzero parentFound
+        (getBlockRootAtSlot_of_advanceSlots advancedOk advancedRead old) later _
+    · have cached := getBlockRootAtSlot_processSlots_header
+        (reachable.blockState_root parentKnown parentFound) (nonzero _ _ parentKnown)
+        slotsOk advancedRead (UInt64.not_lt.mp old)
+      have parentHash := processBlock_parentRoot blockOk
+      rw [message] at parentHash
+      have eq := Except.ok.inj (cached.symm.trans parentHash)
+      rw [Store.getAncestor_of_le parentKnown (UInt64.le_trans parentLe (UInt64.not_lt.mp old))]
+      simp only [Functor.map, Except.map, eq]
+termination_by state.slot.toNat
+decreasing_by
+  have bounds := stateTransition_slot transitioned
+  rw [bounds.2]
+  exact UInt64.lt_iff_toNat_lt.mp bounds.1
 
 end EthLib.Consensus
