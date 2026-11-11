@@ -335,6 +335,10 @@ It uses the agreement of the committees of the state of a block with those of th
 
 The RANDAO ring must retain the seed through the epoch after the target.
 
+Epochs have a positive length, and block-root history covers two epochs.
+
+This keeps the target root from being overwritten before its participation is counted.
+
 Each held block has a nonzero state root, so slot processing fills its header only once.
 
 A zero state root is an explicit exceptional case for the caller, not excluded by hash injectivity.
@@ -349,6 +353,8 @@ There `one_third_honest_intersects_two_thirds` and `two_quorums_intersect_honest
 theorem Execution.exists_signsTarget_of_justified {anchor : Store preset fork}
     (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
     (sound : Invariant anchorState)
+    (slotsPositive : 0 < preset.SLOTS_PER_EPOCH.toNat)
+    (window : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
     (ring : preset.MIN_SEED_LOOKAHEAD.toNat + 2 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
     (preGloas : fork < .glamsterdam)
     {w : ValidatorIndex} (honest : w ∈ J) (start : e.start w = anchor) {k : ℕ}
@@ -434,6 +440,8 @@ No comparison with a reference state's balances is needed. -/
 theorem Execution.justifiedByHonestVote [DecidablePred (· ∈ J)] {anchor : Store preset fork}
     (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
     (sound : Invariant anchorState)
+    (slotsPositive : 0 < preset.SLOTS_PER_EPOCH.toNat)
+    (window : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
     (ring : preset.MIN_SEED_LOOKAHEAD.toNat + 2 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
     (preGloas : fork < .glamsterdam)
     (nonzero : ∀ w ∈ J, ∀ k (root : Root) (block : BeaconBlock preset fork),
@@ -459,7 +467,8 @@ theorem Execution.justifiedByHonestVote [DecidablePred (· ∈ J)] {anchor : Sto
   intro w honest k checkpoint slot justified slotOk after inHorizon
   have afterNat := UInt64.lt_iff_toNat_lt.mp after
   have inside := UInt64.le_iff_toNat_le.mp inHorizon
-  refine e.exists_signsTarget_of_justified anchored sound ring preGloas honest (start w honest)
+  refine e.exists_signsTarget_of_justified anchored sound slotsPositive window ring preGloas
+    honest (start w honest)
     (nonzero w honest k) justified slotOk
     after (fun state counts lower upper =>
       large w honest k state counts (by omega) (by omega))
@@ -486,6 +495,8 @@ That number is the margin, and it covers two epochs of drift at most. -/
 theorem Execution.honestThirdPins {anchor : Store preset fork}
     (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
     (sound : Invariant anchorState)
+    (slotsPositive : 0 < preset.SLOTS_PER_EPOCH.toNat)
+    (window : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
     (ring : preset.MIN_SEED_LOOKAHEAD.toNat + 2 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
     (preGloas : fork < .glamsterdam)
     (nonzero : ∀ w ∈ J, ∀ k (root : Root) (block : BeaconBlock preset fork),
@@ -515,7 +526,8 @@ theorem Execution.honestThirdPins {anchor : Store preset fork}
   subst same
   have afterNat := UInt64.lt_iff_toNat_lt.mp after
   have inside := UInt64.le_iff_toNat_le.mp inHorizon
-  obtain ⟨v, member, signs⟩ := e.exists_signsTarget_of_justified anchored sound ring preGloas honest
+  obtain ⟨v, member, signs⟩ := e.exists_signsTarget_of_justified anchored sound slotsPositive window
+    ring preGloas honest
     (start w honest) (nonzero w honest k) justified slotOk after
       (fun state counts lower upper => large w honest k state counts (by omega) (by omega))
       (· ∈ voters)
