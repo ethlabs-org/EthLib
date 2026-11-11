@@ -2,6 +2,7 @@ module
 
 public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmationSets
 public import EthLib.Consensus.Proofs.ForkChoice.HonestDuties
+public import EthLib.Consensus.Proofs.Transition.FfgJustification
 public import EthLib.Consensus.Proofs.Transition.Invariants
 
 /-!
@@ -186,6 +187,192 @@ theorem DriftAtMost.lt_two_mul_total {reference state : BeaconState preset fork}
       2 * total.toNat := by
   have moved := bound p total clean totalOk
   omega
+
+/-- A passing justification test includes a voter of a set whose complement is too small.
+
+The vote retains both its source and target through `LinkVote`.
+
+The active stake bound excludes a test that passes only because of the minimum balance. -/
+theorem exists_linkVote_of_justificationTest {state : BeaconState preset fork}
+    {attested : Set (ValidatorIndex × AttestationData)} {current : Bool}
+    {attesting : List ValidatorIndex} {total balance threshold weight : Gwei}
+    (totalOk : getTotalActiveBalance state = .ok total)
+    (balanceOk : getTotalBalance state attesting = .ok balance)
+    (thresholdOk : mulChecked total 2 = .ok threshold)
+    (weightOk : mulChecked balance 3 = .ok weight) (passed : threshold ≤ weight)
+    (large : 3 * preset.EFFECTIVE_BALANCE_INCREMENT.toNat <
+      2 * stake (fun v => balanceAt state v.toNat) (activeVoters state))
+    (counted : ∀ v ∈ attesting, v ∈ quorumVoters state ∧
+      ∃ data, (v, data) ∈ attested ∧ LinkVote state current v.toNat (v, data))
+    (p : ValidatorIndex → Prop) [DecidablePred p]
+    (few : 3 * stake (fun v => balanceAt state v.toNat)
+      {v ∈ quorumVoters state | ¬p v} < 2 * total.toNat) :
+    ∃ v data, p v ∧ (v, data) ∈ attested ∧ LinkVote state current v.toNat (v, data) := by
+  classical
+  by_contra missing
+  have subset : attesting.toFinset ⊆ {v ∈ quorumVoters state | ¬p v} := by
+    intro v member
+    obtain ⟨quorum, data, signed, link⟩ := counted v (List.mem_toFinset.mp member)
+    exact Finset.mem_filter.mpr ⟨quorum, fun good => missing ⟨v, data, good, signed, link⟩⟩
+  have bounded := stake_mono (w := fun v => balanceAt state v.toNat) subset
+  have tested := (justificationTest_iff_stake (getTotalActiveBalance_ok totalOk)
+    balanceOk thresholdOk weightOk large).mp passed
+  obtain ⟨-, -, totalEq⟩ := getTotalBalance_ok_iff_stake.mp (getTotalActiveBalance_ok totalOk)
+  have floor : preset.EFFECTIVE_BALANCE_INCREMENT.toNat ≤
+      stake (fun v => balanceAt state v.toNat) (activeVoters state) := by omega
+  change total.toNat = max _ (stake (fun v => balanceAt state v.toNat) (activeVoters state))
+    at totalEq
+  rw [Nat.max_eq_right floor] at totalEq
+  change 2 * stake (fun v => balanceAt state v.toNat) (activeVoters state) ≤ _ at tested
+  omega
+
+/-- An active, unslashed validator of either recent epoch belongs to the counting quorum. -/
+theorem mem_quorumVoters_of_active {state : BeaconState preset fork} {current : Bool}
+    {v : ValidatorIndex} {validator : Validator}
+    (active : v ∈ getActiveValidatorIndices state
+      (if current then getCurrentEpoch state else getPreviousEpoch state))
+    (found : getValidator state v = .ok validator) (clean : validator.slashed = false) :
+    v ∈ quorumVoters state := by
+  have read : state.validators.data[v.toNat]? = some validator := by
+    unfold getValidator at found
+    split at found
+    · cases found
+      assumption
+    · cases found
+  apply Finset.mem_filter.mpr
+  constructor
+  · apply List.mem_toFinset.mpr
+    cases current
+    · exact List.mem_append_right _ active
+    · exact List.mem_append_left _ active
+  · simp [read, clean]
+
+/-- A counted target flag supplies a quorum member and its vote, including the source. -/
+theorem TargetFlagsVoted.quorum_attester {state : BeaconState preset fork}
+    {attested : Set (ValidatorIndex × AttestationData)} (altair : .altair ≤ fork)
+    (holds : TargetFlagsVoted attested state)
+    (late : ¬getCurrentEpoch state ≤ GENESIS_EPOCH + 1) (current : Bool)
+    {indices : List ValidatorIndex}
+    (counted : getUnslashedParticipatingIndices state altair TIMELY_TARGET_FLAG_INDEX
+      (if current then getCurrentEpoch state else getPreviousEpoch state) = .ok indices)
+    {v : ValidatorIndex} (member : v ∈ indices) :
+    v ∈ quorumVoters state ∧
+      ∃ data, (v, data) ∈ attested ∧ LinkVote state current v.toNat (v, data) := by
+  obtain ⟨active, ⟨validator, found, clean⟩, -⟩ :=
+    mem_getUnslashedParticipatingIndices counted v member
+  refine ⟨mem_quorumVoters_of_active active found clean, ?_⟩
+  obtain ⟨-, ⟨index, data⟩, link, signed⟩ := holds.attester altair late current counted member
+  have same : index = v := UInt64.toNat_inj.mp link.1
+  subst index
+  exact ⟨data, signed, link⟩
+
+/-- A counted pending attestation supplies a quorum member and its source and target vote. -/
+theorem PendingVoted.quorum_attester {state : BeaconState preset fork}
+    {attested : Set (ValidatorIndex × AttestationData)} (before : fork < .altair)
+    (holds : PendingVoted attested state) (early : JustifiedEarly state) (current : Bool)
+    {attestations : Array (PendingAttestation preset)}
+    (matching : getMatchingTargetAttestations state before
+      (if current then getCurrentEpoch state else getPreviousEpoch state) = .ok attestations)
+    {indices : List ValidatorIndex}
+    (counted : getUnslashedAttestingIndices state attestations = .ok indices)
+    {v : ValidatorIndex} (member : v ∈ indices) :
+    v ∈ quorumVoters state ∧
+      ∃ data, (v, data) ∈ attested ∧ LinkVote state current v.toNat (v, data) := by
+  obtain ⟨active, data, link, signed⟩ := holds.attester before early current matching counted member
+  simp only [getUnslashedAttestingIndices, bind_ok_iff] at counted
+  obtain ⟨signers, -, filtered⟩ := counted
+  have passes := passes_of_mem_filterM_ok filtered member
+  simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at passes
+  obtain ⟨validator, found, clean⟩ := passes
+  exact ⟨mem_quorumVoters_of_active active found (by simpa using clean), data, signed, link⟩
+
+/-- A changed justified checkpoint has a counted vote from a set with a small complement.
+
+The source is retained as the checkpoint used by the successful justification test. -/
+theorem exists_linkVote_of_weighJustification {state after : BeaconState preset fork}
+    {attested : Set (ValidatorIndex × AttestationData)}
+    {previous current : List ValidatorIndex} {total previousBalance currentBalance : Gwei}
+    (totalOk : getTotalActiveBalance state = .ok total)
+    (previousOk : getTotalBalance state previous = .ok previousBalance)
+    (currentOk : getTotalBalance state current = .ok currentBalance)
+    (counted : ∀ (recent : Bool), ∀ v ∈ (if recent then current else previous),
+      v ∈ quorumVoters state ∧
+        ∃ data, (v, data) ∈ attested ∧ LinkVote state recent v.toNat (v, data))
+    (large : 3 * preset.EFFECTIVE_BALANCE_INCREMENT.toNat <
+      2 * stake (fun v => balanceAt state v.toNat) (activeVoters state))
+    (p : ValidatorIndex → Prop) [DecidablePred p]
+    (few : 3 * stake (fun v => balanceAt state v.toNat)
+      {v ∈ quorumVoters state | ¬p v} < 2 * total.toNat)
+    (computed : weighJustificationAndFinalization state total previousBalance currentBalance =
+      .ok after) :
+    after.currentJustifiedCheckpoint = state.currentJustifiedCheckpoint ∨
+      ∃ recent v data, p v ∧ (v, data) ∈ attested ∧
+        LinkVote state recent v.toNat (v, data) ∧
+          data.target = after.currentJustifiedCheckpoint := by
+  rcases weighJustificationAndFinalization_currentJustified computed with
+    ⟨same, -⟩ | ⟨recent, threshold, weight, thresholdOk, weightOk, passed, epoch, rootOk⟩
+  · exact .inl same
+  have balanceOk : getTotalBalance state (if recent then current else previous) =
+      .ok (if recent then currentBalance else previousBalance) := by
+    cases recent <;> assumption
+  obtain ⟨v, data, good, signed, link⟩ := exists_linkVote_of_justificationTest totalOk
+    balanceOk thresholdOk weightOk passed large (counted recent) p few
+  refine .inr ⟨recent, v, data, good, signed, link, ?_⟩
+  have targetEpoch := link.2.1.trans epoch.symm
+  have targetRoot := link.2.2.2
+  rw [targetEpoch, rootOk, Except.ok.injEq] at targetRoot
+  cases h : data.target
+  cases h' : after.currentJustifiedCheckpoint
+  simp_all
+
+/-- A justification step either keeps its checkpoint or supplies a vote for its new link. -/
+theorem exists_linkVote_of_processJustification {state after : BeaconState preset fork}
+    {attested : Set (ValidatorIndex × AttestationData)}
+    (flags : TargetFlagsVoted attested state) (pending : PendingVoted attested state)
+    (large : 3 * preset.EFFECTIVE_BALANCE_INCREMENT.toNat <
+      2 * stake (fun v => balanceAt state v.toNat) (activeVoters state))
+    (p : ValidatorIndex → Prop) [DecidablePred p]
+    (few : ∀ total, getTotalActiveBalance state = .ok total →
+      3 * stake (fun v => balanceAt state v.toNat)
+        {v ∈ quorumVoters state | ¬p v} < 2 * total.toNat)
+    (computed : processJustificationAndFinalization state = .ok after) :
+    after.currentJustifiedCheckpoint = state.currentJustifiedCheckpoint ∨
+      ∃ recent v data, p v ∧ (v, data) ∈ attested ∧
+        LinkVote state recent v.toNat (v, data) ∧
+          data.target = after.currentJustifiedCheckpoint := by
+  unfold processJustificationAndFinalization at computed
+  split at computed
+  · rename_i altair
+    unfold processJustificationAndFinalizationAltair at computed
+    split at computed
+    · simp only [pure, Except.pure, Except.ok.injEq] at computed
+      exact .inl (computed ▸ rfl)
+    rename_i late
+    simp only [bind_ok_iff, liftAccessor_ok] at computed
+    obtain ⟨previous, previousOk, current, currentOk, total, totalOk,
+      previousBalance, previousBalanceOk, currentBalance, currentBalanceOk, weighed⟩ := computed
+    apply exists_linkVote_of_weighJustification totalOk previousBalanceOk currentBalanceOk
+      (fun recent v member => ?_) large p (few total totalOk) weighed
+    cases recent
+    · exact flags.quorum_attester altair late false previousOk member
+    · exact flags.quorum_attester altair late true currentOk member
+  · rename_i notAltair
+    split at computed
+    · simp only [pure, Except.pure, Except.ok.injEq] at computed
+      exact .inl (computed ▸ rfl)
+    rename_i late
+    simp only [bind_ok_iff, liftAccessor_ok, getAttestingBalance] at computed
+    obtain ⟨previous, previousOk, current, currentOk, total, totalOk,
+      previousBalance, ⟨previousIndices, previousIndicesOk, previousBalanceOk⟩,
+      currentBalance, ⟨currentIndices, currentIndicesOk, currentBalanceOk⟩, weighed⟩ := computed
+    apply exists_linkVote_of_weighJustification totalOk previousBalanceOk currentBalanceOk
+      (fun recent v member => ?_) large p (few total totalOk) weighed
+    have early : JustifiedEarly state := fun h => absurd h late
+    cases recent
+    · exact pending.quorum_attester (Nat.lt_of_not_le notAltair) early false
+        previousOk previousIndicesOk member
+    · exact pending.quorum_attester (Nat.lt_of_not_le notAltair) early true
+        currentOk currentIndicesOk member
 
 namespace Models.Network
 
