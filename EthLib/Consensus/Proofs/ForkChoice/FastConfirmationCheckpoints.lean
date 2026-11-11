@@ -108,6 +108,456 @@ def Checked (store : Store preset fork) (config : Config) (fcr : FastConfirmatio
         (isStartSlotAtEpoch preset slot = .ok false →
           store.willNoConflictingCheckpointBeJustified config head = .ok true))))
 
+/-- Reading a later root of a walk cannot decrease the block epoch. -/
+private theorem walk_epoch_le {head start root : Root} {roots : List Root}
+    {startEpoch rootEpoch : Epoch}
+    (walked : store.getAncestorRoots head start = .ok roots) (member : root ∈ roots)
+    (startOk : store.getBlockEpoch start = .ok startEpoch)
+    (rootOk : store.getBlockEpoch root = .ok rootEpoch) : startEpoch ≤ rootEpoch := by
+  obtain ⟨b, t, bOk, tOk, lt⟩ := slot_lt_of_mem_getAncestorRoots walked (by simp) member
+  simp [getBlockEpoch, bOk, tOk, bind, Except.bind, pure, Except.pure] at startOk rootOk
+  subst startEpoch
+  subst rootEpoch
+  exact UInt64.le_iff_toNat_le.mpr (by
+    simp only [computeEpochAtSlot, UInt64.toNat_div]
+    exact Nat.div_le_div_right (Nat.le_of_lt (UInt64.lt_iff_toNat_lt.mp lt)))
+
+/-- A loop over an increasing walk records a target check whenever it crosses the start epoch. -/
+private theorem target_checked_loop {head start init out : Root} {roots : List Root}
+    {body : Root → Root → Except ForkChoiceError (ForInStep Root)}
+    (walked : store.getAncestorRoots head start = .ok roots)
+    (initial : ∀ se ie, store.getBlockEpoch start = .ok se →
+      store.getBlockEpoch init = .ok ie → se ≤ ie ∧
+        (se ≠ ie → store.willCurrentTargetBeJustified config head = .ok true))
+    (step : ∀ x s r, body x s = .ok r →
+      r = .done s ∨ r = .yield x ∧
+        ∃ se, store.getBlockEpoch s = .ok se ∧
+          ∀ xe, store.getBlockEpoch x = .ok xe →
+            (se < xe → store.willCurrentTargetBeJustified config head = .ok true))
+    (looped : forIn roots init body = .ok out) :
+    ∀ se oe, store.getBlockEpoch start = .ok se → store.getBlockEpoch out = .ok oe →
+      se ≤ oe ∧ (se ≠ oe → store.willCurrentTargetBeJustified config head = .ok true) := by
+  apply forIn_ok_invariant (fun _ s => ∀ se ie, store.getBlockEpoch start = .ok se →
+    store.getBlockEpoch s = .ok ie → se ≤ ie ∧
+      (se ≠ ie → store.willCurrentTargetBeJustified config head = .ok true))
+    _ initial ?_ ?_ (fun _ h => h) looped
+  · intro read x rest s s' split holds stepped
+    rcases step x s _ stepped with stopped | ⟨went, ie, oldOk, crossed⟩
+    · cases stopped
+    obtain rfl := ForInStep.yield.inj went
+    intro se xe startOk xOk
+    have le := walk_epoch_le walked (split ▸ (by simp)) startOk xOk
+    refine ⟨le, ?_⟩
+    intro different
+    -- A successful step reads the old state epoch before it can yield.
+    by_cases checked : store.willCurrentTargetBeJustified config head = .ok true
+    · exact checked
+    have old := holds se ie startOk oldOk
+    have same : se = ie := by
+      by_contra different
+      exact checked (old.2 different)
+    subst ie
+    exact crossed xe xOk (UInt64.lt_iff_toNat_lt.mpr (by
+      have := UInt64.le_iff_toNat_le.mp le
+      have := mt UInt64.toNat_inj.mp different
+      omega))
+  · intro read x rest s s' split holds stepped
+    rcases step x s _ stepped with stopped | ⟨went, crossed⟩
+    · exact ForInStep.done.inj stopped ▸ holds
+    · cases went
+
+/-- The descendant search checks the same start that its caller selected. -/
+theorem findLatestConfirmedDescendant_checked {fcr : FastConfirmationStore}
+    {head start root : Root} (_lower : store.ParentsBelow)
+    (recent : ∀ epoch startEpoch, store.getCurrentStoreEpoch config = .ok epoch →
+      store.getBlockEpoch start = .ok startEpoch → epoch.toNat ≤ startEpoch.toNat + 1)
+    (found : store.findLatestConfirmedDescendant config fcr head start = .ok root) :
+    root = start ∨ store.Checked config fcr head start root := by
+  unfold findLatestConfirmedDescendant at found
+  rw [bind_ok_iff] at found
+  obtain ⟨epoch, epochOk, found⟩ := found
+  rw [bind_ok_iff] at found
+  obtain ⟨slot, slotOk, found⟩ := found
+  rw [bind_ok_iff] at found
+  obtain ⟨atStart, atStartOk, found⟩ := found
+  extract_lets arith recentCheck source tally confirmedRoot finish current previous at found
+  have notStart (h : isStartSlotAtEpoch preset slot = .ok false) : atStart = false :=
+    Except.ok.inj (atStartOk.symm.trans h)
+  have recentNat {e : Epoch} {gap : UInt64}
+      (checked : recentCheck e gap = .ok true) : epoch.toNat ≤ e.toNat + gap.toNat := by
+    simp only [recentCheck, arith, bind_ok_iff] at checked
+    obtain ⟨sum, sumOk, checked⟩ := checked
+    have sumValue := (Uint64.addChecked_ok_iff.mp (mapError_ok_iff.mp sumOk)).2
+    have le : epoch ≤ sum := by simpa [pure, Except.pure] using checked.symm
+    have := UInt64.le_iff_toNat_le.mp le
+    omega
+  let previousChecks (mid : Root) : Prop :=
+    ∃ se, store.getBlockEpoch start = .ok se ∧
+      (mid = start ∨ ∃ me source, store.getBlockEpoch mid = .ok me ∧
+        se.toNat + 1 = epoch.toNat ∧ me ≠ epoch ∧
+        store.getVotingSource config fcr.previousSlotHead = .ok source ∧
+        epoch.toNat ≤ source.epoch.toNat + 2 ∧
+        store.isAncestor ⟨fcr.previousSlotHead, .pending⟩ ⟨mid, .pending⟩ = .ok true ∧
+        (isStartSlotAtEpoch preset slot = .ok false →
+          store.willNoConflictingCheckpointBeJustified config head = .ok true ∧
+          ∃ tip justification, (tip = head ∨ tip = fcr.previousSlotHead) ∧
+            store.unrealizedJustification tip = .ok justification ∧
+            epoch.toNat ≤ justification.epoch.toNat + 1))
+  -- The gates of the first walk supply checks shared by every root that it accepts.
+  have reach : ∃ previousEpochOk se, store.getBlockEpoch start = .ok se ∧
+      (previousEpochOk = true →
+        se.toNat + 1 = epoch.toNat ∧
+        ∃ votingSource, store.getVotingSource config fcr.previousSlotHead = .ok votingSource ∧
+          epoch.toNat ≤ votingSource.epoch.toNat + 2 ∧
+          (isStartSlotAtEpoch preset slot = .ok false →
+            store.willNoConflictingCheckpointBeJustified config head = .ok true ∧
+            ∃ tip justification, (tip = head ∨ tip = fcr.previousSlotHead) ∧
+              store.unrealizedJustification tip = .ok justification ∧
+              epoch.toNat ≤ justification.epoch.toNat + 1)) ∧
+      previous previousEpochOk = .ok root := by
+    clear_value previous
+    simp only [bind_ok_iff] at found
+    obtain ⟨se, seOk, sum, sumOk, found⟩ := found
+    have sumValue := (Uint64.addChecked_ok_iff.mp (mapError_ok_iff.mp sumOk)).2
+    split at found
+    · exact ⟨false, se, seOk, by simp, found⟩
+    · rename_i same
+      have seValue : se.toNat + 1 = epoch.toNat := by
+        have equal : sum = epoch := by simpa using same
+        subst sum
+        simpa using sumValue.symm
+      simp only [bind_ok_iff] at found
+      obtain ⟨votingSource, votingOk, sourceRecent, sourceRecentOk, found⟩ := found
+      split at found
+      · exact ⟨false, se, seOk, by simp, found⟩
+      · rename_i sourcePass
+        have sourceBound : epoch.toNat ≤ votingSource.epoch.toNat + 2 :=
+          recentNat (by have pass : sourceRecent = true := by simpa using sourcePass
+                        exact pass ▸ sourceRecentOk)
+        split at found
+        · rename_i firstSlot
+          refine ⟨true, se, seOk, fun _ => ⟨seValue, votingSource, votingOk, sourceBound, ?_⟩,
+            found⟩
+          intro h
+          have := notStart h
+          simp_all
+        · simp only [bind_ok_iff] at found
+          obtain ⟨noConflict, noConflictOk, found⟩ := found
+          split at found
+          · exact ⟨false, se, seOk, by simp, found⟩
+          · rename_i noConflictPass
+            have noConflictOk : store.willNoConflictingCheckpointBeJustified config head =
+                .ok true := by
+              have pass : noConflict = true := by simpa using noConflictPass
+              exact pass ▸ noConflictOk
+            simp only [bind_ok_iff] at found
+            obtain ⟨justification, justificationOk, justificationRecent, justificationRecentOk,
+              found⟩ := found
+            split at found
+            · rename_i justificationPass
+              refine ⟨true, se, seOk, fun _ => ⟨seValue, votingSource, votingOk, sourceBound,
+                fun _ => ⟨noConflictOk, fcr.previousSlotHead, justification, Or.inr rfl,
+                  justificationOk, ?_⟩⟩, found⟩
+              exact recentNat (justificationPass ▸ justificationRecentOk)
+            · simp only [bind_ok_iff] at found
+              obtain ⟨headJustification, headJustificationOk, headRecent, headRecentOk, found⟩ :=
+                found
+              refine ⟨headRecent, se, seOk, fun passed => ⟨seValue, votingSource, votingOk,
+                sourceBound, fun _ => ⟨noConflictOk, head, headJustification, Or.inl rfl,
+                  headJustificationOk, ?_⟩⟩, found⟩
+              exact recentNat (passed ▸ headRecentOk)
+  clear found
+  obtain ⟨previousEpochOk, se, seOk, previousOk, found⟩ := reach
+  -- Each accepted root adds its own epoch and ancestry checks to those shared checks.
+  have first : ∃ mid, previousChecks mid ∧ current () mid = .ok root := by
+    simp only [previous] at found
+    split at found
+    · rename_i passed
+      obtain ⟨seValue, votingSource, votingOk, sourceBound, boundary⟩ := previousOk passed
+      rw [bind_ok_iff] at found
+      obtain ⟨walk, walked, found⟩ := found
+      rw [bind_ok_iff] at found
+      obtain ⟨mid, looped, found⟩ := found
+      refine ⟨mid, ⟨se, seOk, ?_⟩, found⟩
+      have accepted := forIn_ok_last_kept (kept := fun x => ∃ me,
+          store.getBlockEpoch x = .ok me ∧ me ≠ epoch ∧
+          store.isAncestor ⟨fcr.previousSlotHead, .pending⟩ ⟨x, .pending⟩ = .ok true) (by
+        intro x s r stepped
+        rw [bind_ok_iff] at stepped
+        obtain ⟨me, meOk, stepped⟩ := stepped
+        split at stepped
+        · exact Or.inl (by simpa [pure, Except.pure] using stepped.symm)
+        · rename_i different
+          rw [bind_ok_iff] at stepped
+          obtain ⟨onChain, onChainOk, stepped⟩ := stepped
+          split at stepped
+          · exact Or.inl (by simpa [pure, Except.pure] using stepped.symm)
+          · rename_i onChainPass
+            simp only [bind_ok_iff] at stepped
+            obtain ⟨_, -, _, -, confirmed, confirmedOk, stepped⟩ := stepped
+            split at stepped
+            · exact Or.inl (by simpa [pure, Except.pure] using stepped.symm)
+            · exact Or.inr ⟨by simpa [pure, Except.pure] using stepped.symm,
+                me, meOk, different, by simp_all⟩) looped
+      rcases accepted with same | ⟨before, after, split, all⟩
+      · exact Or.inl same
+      · obtain ⟨me, meOk, different, ancestry⟩ := all mid (by simp)
+        exact Or.inr ⟨me, votingSource, meOk, seValue, different, votingOk, sourceBound,
+          ancestry, boundary⟩
+    · exact ⟨start, ⟨se, seOk, Or.inl rfl⟩, found⟩
+  clear found
+  obtain ⟨mid, firstChecks, found⟩ := first
+  have firstResult : mid = start ∨ store.Checked config fcr head start mid := by
+    obtain ⟨se, seOk, same | ⟨me, source, meOk, seValue, different, sourceOk,
+      sourceBound, ancestry, boundary⟩⟩ := firstChecks
+    · exact Or.inl same
+    · exact Or.inr ⟨epoch, slot, me, se, epochOk, slotOk, meOk, seOk,
+        recent epoch se epochOk seOk, Or.inl ⟨seValue, different,
+          ⟨source, sourceOk, sourceBound, ancestry⟩, boundary⟩⟩
+  simp -zeta only [current] at found
+  extract_lets tentative currentBody at found
+  have reach : ∃ currentEpochOk,
+      (currentEpochOk = true → isStartSlotAtEpoch preset slot = .ok false →
+        ∃ justification, store.unrealizedJustification head = .ok justification ∧
+          epoch.toNat ≤ justification.epoch.toNat + 1) ∧
+      currentBody currentEpochOk = .ok root := by
+    clear_value currentBody
+    split at found
+    · rename_i firstSlot
+      refine ⟨true, fun _ h => ?_, found⟩
+      have := notStart h
+      simp_all
+    · simp only [bind_ok_iff] at found
+      obtain ⟨justification, justificationOk, verdict, verdictOk, found⟩ := found
+      exact ⟨verdict, fun h _ => ⟨justification, justificationOk,
+        recentNat (h ▸ verdictOk)⟩, found⟩
+  clear found
+  obtain ⟨currentEpochOk, currentChecks, found⟩ := reach
+  simp -zeta only [currentBody] at found
+  split at found
+  · rename_i passed
+    rw [bind_ok_iff] at found
+    obtain ⟨walk, walked, found⟩ := found
+    rw [bind_ok_iff] at found
+    obtain ⟨last, looped, found⟩ := found
+    extract_lets tentativeRoot accepted acceptBody at found
+    change store.getBlockEpoch last >>= _ = .ok root at found
+    rw [bind_ok_iff] at found
+    obtain ⟨lastEpoch, lastEpochOk, found⟩ := found
+    -- Rejection restores the first walk's result, not the tentative result of the second walk.
+    have acceptedResult : root = mid ∨ root = last ∧
+        (lastEpoch ≠ epoch →
+          (∃ source, store.getVotingSource config last = .ok source ∧
+            epoch.toNat ≤ source.epoch.toNat + 2) ∧
+          (isStartSlotAtEpoch preset slot = .ok false →
+            store.willNoConflictingCheckpointBeJustified config head = .ok true)) := by
+      have finishResult {accept : Bool} (ended : acceptBody accept = .ok root) :
+          (accept = true ∧ root = last) ∨ (accept = false ∧ root = mid) := by
+        simp only [acceptBody, finish] at ended
+        split at ended
+        · exact Or.inl ⟨by assumption, by simpa [pure, Except.pure, tentativeRoot, accepted]
+            using ended.symm⟩
+        · rename_i notAccepted
+          have rejected : accept = false := Bool.eq_false_iff.mpr notAccepted
+          exact Or.inr ⟨rejected, by simpa [pure, Except.pure] using ended.symm⟩
+      split at found
+      · rename_i isCurrent
+        simp only [pure, Except.pure, bind, Except.bind] at found
+        rcases finishResult (accept := true) found with ⟨_, same⟩ | ⟨bad, _⟩
+        · exact Or.inr ⟨same, fun h => False.elim (h isCurrent)⟩
+        · cases bad
+      · rw [bind_ok_iff] at found
+        obtain ⟨votingSource, votingOk, found⟩ := found
+        rw [bind_ok_iff] at found
+        obtain ⟨sourceRecent, sourceRecentOk, found⟩ := found
+        split at found
+        · simp only [pure, Except.pure, bind, Except.bind] at found
+          rcases finishResult (accept := false) found with ⟨bad, _⟩ | ⟨_, same⟩
+          · cases bad
+          · exact Or.inl same
+        · rename_i recentPass
+          have pass : sourceRecent = true := by simpa using recentPass
+          have bound := recentNat (pass ▸ sourceRecentOk)
+          split at found
+          · rename_i firstSlot
+            simp only [pure, Except.pure, bind, Except.bind] at found
+            rcases finishResult (accept := true) found with ⟨_, same⟩ | ⟨bad, _⟩
+            · refine Or.inr ⟨same, fun _ => ⟨⟨votingSource, votingOk, bound⟩, ?_⟩⟩
+              intro h
+              have := notStart h
+              simp_all
+            · cases bad
+          · rw [bind_ok_iff] at found
+            obtain ⟨accept, acceptOk, found⟩ := found
+            rcases finishResult found with ⟨rfl, same⟩ | ⟨_, same⟩
+            · exact Or.inr ⟨same, fun _ => ⟨⟨votingSource, votingOk, bound⟩,
+                fun _ => acceptOk⟩⟩
+            · exact Or.inl same
+    rcases acceptedResult with rfl | ⟨rfl, acceptedChecks⟩
+    · exact firstResult
+    · have target := target_checked_loop (config := config) walked (by
+        intro me ie meOk ieOk
+        have same : me = ie := Except.ok.inj (meOk.symm.trans ieOk)
+        subst ie
+        exact ⟨UInt64.le_refl _, by simp⟩) (by
+        intro x s r stepped
+        simp only [bind_ok_iff] at stepped
+        obtain ⟨xe, xeOk, se, oldOk, stepped⟩ := stepped
+        split at stepped
+        · rename_i crosses
+          rw [bind_ok_iff] at stepped
+          obtain ⟨check, checkOk, stepped⟩ := stepped
+          split at stepped
+          · exact Or.inl (by simpa [pure, Except.pure] using stepped.symm)
+          · rename_i checkPass
+            simp only [bind_ok_iff] at stepped
+            obtain ⟨_, -, _, -, _, -, stepped⟩ := stepped
+            split at stepped
+            · exact Or.inl (by simpa [pure, Except.pure] using stepped.symm)
+            · refine Or.inr ⟨by simpa [pure, Except.pure] using stepped.symm, se, oldOk, ?_⟩
+              intro _ _ _
+              simp_all
+        · rename_i noCross
+          simp only [bind_ok_iff] at stepped
+          obtain ⟨_, -, _, -, _, -, stepped⟩ := stepped
+          split at stepped
+          · exact Or.inl (by simpa [pure, Except.pure] using stepped.symm)
+          · refine Or.inr ⟨by simpa [pure, Except.pure] using stepped.symm, se, oldOk, ?_⟩
+            intro other otherOk lt
+            obtain rfl : xe = other := Except.ok.inj (xeOk.symm.trans otherOk)
+            exact absurd lt noCross) looped
+      obtain ⟨se, seOk, firstCases⟩ := firstChecks
+      have startToMid : ∃ me, store.getBlockEpoch mid = .ok me := by
+        rcases firstCases with rfl | ⟨me, source, meOk, rest⟩
+        · exact ⟨se, seOk⟩
+        · exact ⟨me, meOk⟩
+      obtain ⟨me, meOk⟩ := startToMid
+      have lastTarget := target me lastEpoch meOk lastEpochOk
+      refine Or.inr ⟨epoch, slot, lastEpoch, se, epochOk, slotOk, lastEpochOk, seOk,
+        recent epoch se epochOk seOk, Or.inr ⟨currentChecks passed, ?_, acceptedChecks⟩⟩
+      intro lastCurrent startDifferent
+      have midDifferent : me ≠ lastEpoch := by
+        intro same
+        subst me
+        rcases firstCases with same | ⟨_, _, midOk, seValue, midNotCurrent, _⟩
+        · subst mid
+          have := Except.ok.inj (seOk.symm.trans meOk)
+          exact startDifferent (this.trans lastCurrent)
+        · have := Except.ok.inj (midOk.symm.trans meOk)
+          exact midNotCurrent (this.trans lastCurrent)
+      exact lastTarget.2 midDifferent
+  · have same : root = mid := by simpa [finish, pure, Except.pure] using found.symm
+    exact same ▸ firstResult
+
+/-- The selected start carries both its reset checks and its descendant search. -/
+theorem getLatestConfirmed_checked_start {fcr : FastConfirmationStore} {head root : Root}
+    (lower : store.ParentsBelow)
+    (latest : store.getLatestConfirmed config fcr head = .ok root) :
+    ∃ slot start, store.getCurrentSlot config = .ok slot ∧
+      (start = fcr.confirmedRoot ∧
+          store.isAncestor ⟨head, .pending⟩ ⟨fcr.confirmedRoot, .pending⟩ = .ok true ∧
+          (isStartSlotAtEpoch preset slot = .ok true →
+            store.isConfirmedChainSafe config fcr head fcr.confirmedRoot = .ok true) ∨
+        start = store.finalizedCheckpoint.root ∨
+        start = fcr.currentEpochObservedJustifiedCheckpoint.root ∧
+          isStartSlotAtEpoch preset slot = .ok true ∧
+          (∃ observedBlock epoch,
+            store.block fcr.currentEpochObservedJustifiedCheckpoint.root = .ok observedBlock ∧
+            store.getCurrentStoreEpoch config = .ok epoch ∧
+            Uint64.addChecked (computeEpochAtSlot preset observedBlock.slot) 1 = .ok epoch) ∧
+          store.unrealizedJustification head = .ok fcr.currentEpochObservedJustifiedCheckpoint) ∧
+      (root = start ∨ store.Checked config fcr head start root ∧
+        store.findLatestConfirmedDescendant config fcr head start = .ok root) := by
+  unfold getLatestConfirmed at latest
+  rw [bind_ok_iff] at latest
+  obtain ⟨currentEpoch, epochFound, latest⟩ := latest
+  rw [bind_ok_iff] at latest
+  obtain ⟨slot, slotFound, latest⟩ := latest
+  refine ⟨slot, ?_⟩
+  extract_lets arith confirmedRoot observed finish observedRoot afterReset finalizedRoot
+    resetBody at latest
+  let kept : Prop := store.isAncestor ⟨head, .pending⟩ ⟨fcr.confirmedRoot, .pending⟩ = .ok true ∧
+    (isStartSlotAtEpoch preset slot = .ok true →
+      store.isConfirmedChainSafe config fcr head fcr.confirmedRoot = .ok true)
+  -- Keep the reset decision paired with the continuation that consumes it.
+  have reset : ∃ reset, (reset = false → kept) ∧ resetBody reset = .ok root := by
+    clear_value resetBody
+    rw [bind_ok_iff] at latest
+    obtain ⟨_, -, latest⟩ := latest
+    rw [bind_ok_iff] at latest
+    obtain ⟨_, -, latest⟩ := latest
+    split at latest
+    · exact ⟨true, by simp, latest⟩
+    · rw [bind_ok_iff] at latest
+      obtain ⟨onChain, ancestry, latest⟩ := latest
+      split at latest
+      · exact ⟨true, by simp, latest⟩
+      · rename_i isOnChain
+        obtain rfl : onChain = true := by simpa using isOnChain
+        rw [bind_ok_iff] at latest
+        obtain ⟨atStart, startChecked, latest⟩ := latest
+        split at latest
+        · rw [bind_ok_iff] at latest
+          obtain ⟨safe, chainChecked, latest⟩ := latest
+          refine ⟨!safe, fun notReset => ⟨ancestry, fun _ => ?_⟩, latest⟩
+          obtain rfl : safe = true := by simpa using notReset
+          exact chainChecked
+        · rename_i notStart
+          refine ⟨false, fun _ => ⟨ancestry, fun isStart => ?_⟩, latest⟩
+          exact absurd (Except.ok.inj (startChecked.symm.trans isStart)) notStart
+  clear latest
+  obtain ⟨reset, keeps, latest⟩ := reset
+  have base : ∃ base, (base = fcr.confirmedRoot ∧ kept ∨
+      base = store.finalizedCheckpoint.root) ∧ afterReset () base = .ok root := by
+    cases reset
+    · exact ⟨fcr.confirmedRoot, Or.inl ⟨rfl, keeps rfl⟩, latest⟩
+    · exact ⟨store.finalizedCheckpoint.root, Or.inr rfl, latest⟩
+  clear latest keeps
+  obtain ⟨base, baseCase, latest⟩ := base
+  -- The observed checkpoint can replace this base only after all replacement checks pass.
+  have start : ∃ start, (start = fcr.confirmedRoot ∧ kept ∨
+      start = store.finalizedCheckpoint.root ∨
+      start = fcr.currentEpochObservedJustifiedCheckpoint.root ∧
+        isStartSlotAtEpoch preset slot = .ok true ∧
+        (∃ observedBlock epoch,
+          store.block fcr.currentEpochObservedJustifiedCheckpoint.root = .ok observedBlock ∧
+          store.getCurrentStoreEpoch config = .ok epoch ∧
+          Uint64.addChecked (computeEpochAtSlot preset observedBlock.slot) 1 = .ok epoch) ∧
+        store.unrealizedJustification head =
+          .ok fcr.currentEpochObservedJustifiedCheckpoint) ∧ finish () start = .ok root := by
+    clear_value finish
+    simp only [afterReset, bind_ok_iff] at latest
+    obtain ⟨atStart, startChecked, observedBlock, observedFound, observedEpoch, epochAdded,
+      justified, justification, _, -, latest⟩ := latest
+    split at latest
+    · rename_i replaced
+      refine ⟨observedRoot, Or.inr (Or.inr ⟨rfl, ?_, ?_, ?_⟩), latest⟩
+      · exact replaced.1 ▸ startChecked
+      · refine ⟨observedBlock, currentEpoch, observedFound, epochFound, ?_⟩
+        exact replaced.2.1 ▸ mapError_ok_iff.mp epochAdded
+      · exact justification.trans (congrArg Except.ok replaced.2.2.1.symm)
+    · exact ⟨base, baseCase.imp id Or.inl, latest⟩
+  clear latest
+  obtain ⟨start, startCase, latest⟩ := start
+  refine ⟨start, slotFound, startCase, ?_⟩
+  simp only [finish, bind_ok_iff] at latest
+  obtain ⟨startEpoch, startOk, sum, sumOk, latest⟩ := latest
+  split at latest
+  · rename_i recentStart
+    have recent : ∀ epoch se, store.getCurrentStoreEpoch config = .ok epoch →
+        store.getBlockEpoch start = .ok se → epoch.toNat ≤ se.toNat + 1 := by
+      intro epoch se epochOk seOk
+      obtain rfl : currentEpoch = epoch := Except.ok.inj (epochFound.symm.trans epochOk)
+      obtain rfl : startEpoch = se := Except.ok.inj (startOk.symm.trans seOk)
+      have value := (Uint64.addChecked_ok_iff.mp (mapError_ok_iff.mp sumOk)).2
+      have le := UInt64.le_iff_toNat_le.mp recentStart
+      simp only [UInt64.toNat_one] at value
+      omega
+    rcases findLatestConfirmedDescendant_checked lower recent latest with same | checked
+    · exact Or.inl same
+    · exact Or.inr ⟨checked, latest⟩
+  · exact Or.inl (Except.ok.inj latest).symm
+
 /-- Step 6, the checks: the latest confirmed block is a start, or has passed the checks.
 
 The start is the block stored before, the finalized block or the observed justified block.
@@ -127,7 +577,12 @@ theorem getLatestConfirmed_checked {fcr : FastConfirmationStore} {head root : Ro
     ∃ start, (start = fcr.confirmedRoot ∨ start = store.finalizedCheckpoint.root ∨
         start = fcr.currentEpochObservedJustifiedCheckpoint.root) ∧
       (root = start ∨ store.Checked config fcr head start root) := by
-  sorry
+  obtain ⟨slot, start, _, startCase, result⟩ := getLatestConfirmed_checked_start lower latest
+  refine ⟨start, ?_, result.imp id And.left⟩
+  rcases startCase with ⟨same, _⟩ | same | ⟨same, _⟩
+  · exact Or.inl same
+  · exact Or.inr (Or.inl same)
+  · exact Or.inr (Or.inr same)
 
 end Store
 
