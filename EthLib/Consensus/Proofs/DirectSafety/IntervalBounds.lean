@@ -23,6 +23,78 @@ noncomputable section
 
 variable {preset : Preset} {config : Config} {checks : SignatureChecks}
 
+private theorem funding_assemble {g x y : ForkedBeaconState preset}
+    (shared : Run config checks g x) (tail : Run config checks x y)
+    (genesis : Genesis (config := config) (checks := checks) g)
+    (parameters : Parameters preset) (electra : .pectra ≤ x.fork)
+    (early : y.fork < .glamsterdam)
+    (delay : 2 ≤ config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat)
+    (high : Nat) (endEpoch : (getCurrentEpoch y.state).toNat ≤ high + 1)
+    (events : List (BalanceEvent preset)) (replayed : tail.balanceEvents high = .ok events)
+    (blockBound : ∀ {fork : Fork} {s t : BeaconState preset fork},
+      .pectra ≤ fork → ∀ early : fork < .glamsterdam,
+      BalancesMatch s → ∀ (engine : ExecutionEngine preset fork) (block : BeaconBlock preset fork),
+      processBlock config checks engine s block = .ok t →
+      ∀ events : List (BalanceEvent preset),
+      blockBalanceReplay (config := config) (checks := checks) early engine s block =
+        .ok (t, events) →
+      fundedStake ⟨fork, t⟩ + funding_carry ⟨fork, t⟩ ≤
+        fundedStake ⟨fork, s⟩ + funding_carry ⟨fork, s⟩ + (events.map fundingCredit).sum)
+    (slotBound : ∀ {a b : ForkedBeaconState preset},
+      .pectra ≤ a.fork → b.fork < .glamsterdam →
+      2 ≤ config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat →
+      BalancesMatch a.state → ExitsOrdered a.state → ActivationExitOrder a.state →
+      PendingConsolidationInvariant config a.state →
+      ∀ (ok : advanceSlotAcross config checks a = .ok b) (events : List (BalanceEvent preset)),
+      (Step.slot ok).balanceEvents = .ok events →
+      fundedStake b + funding_carry b ≤ fundedStake a + funding_carry a +
+        ((getCurrentEpoch b.state).toNat - (getCurrentEpoch a.state).toNat) *
+          config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat + (events.map fundingCredit).sum) :
+    Quorum.weight (effectiveWeight y.state) (activeKeys y.state) ≤
+      activeStakeWindow (config := config) x high events := by
+  have invariant {z : ForkedBeaconState preset} (run : Run config checks g z) :
+      Invariant z.state := by
+    induction run with
+    | nil =>
+      obtain ⟨_, _, _, ok⟩ := genesis
+      exact (initializeBeaconStateFromEth1_invariant ok).2
+    | snoc pre step ih =>
+      cases step with
+      | slot ok => exact (advanceSlotAcross_invariant ih ok).1
+      | block engine signed due ok =>
+        exact (frame_processBlock (applySignedBlock_ok ok).2.1).invariant ih
+  apply funding_window_of_steps tail electra early delay
+    ((shared.append tail).unique (genesis_unique genesis)) high endEpoch events replayed
+  intro a b pre step before added addedOk
+  have reachable := shared.append pre
+  have holds := invariant reachable
+  have forkOrder : x.fork ≤ a.fork := by
+    have monotone {u v : ForkedBeaconState preset} (run : Run config checks u v) :
+        u.fork ≤ v.fork := by
+      induction run with
+      | nil => exact Nat.le_refl _
+      | snoc run next ih => exact Nat.le_trans ih next.chainStep.fork_le
+    exact monotone pre
+  have startElectra : .pectra ≤ a.fork := Nat.le_trans electra forkOrder
+  cases step with
+  | slot ok =>
+    exact slotBound startElectra before delay holds.balancesMatch holds.exitsOrdered
+      (reachable.activationExitOrder genesis)
+      (fun witness => reachable.pendingConsolidation_invariant genesis parameters
+        (Nat.lt_of_le_of_lt (Step.slot ok).chainStep.fork_le before) witness (by omega))
+      ok added addedOk
+  | block engine signed due ok =>
+    have processed := (applySignedBlock_ok ok).2.1
+    obtain ⟨blockEvents, blockReplay⟩ :=
+      blockBalanceReplay_result _ _ before engine signed.message processed
+    simp only [Step.balanceEvents, before, ↓reduceDIte, blockReplay,
+      bind, Except.bind, pure, Except.pure, Except.ok.injEq] at addedOk
+    subst added
+    have bound := blockBound startElectra before holds.balancesMatch engine signed.message
+      processed blockEvents blockReplay
+    have slot := (frame_processBlock processed).slot
+    simpa only [getCurrentEpoch, slot, Nat.sub_self, Nat.zero_mul, Nat.add_zero] using bound
+
 /-- The post-Electra funding envelope bounds active stake without a registry-wide effective cap.
 
 The bound retains withdrawn-source credits rather than assuming pending-source chronology. -/
