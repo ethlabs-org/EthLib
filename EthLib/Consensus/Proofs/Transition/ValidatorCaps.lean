@@ -7,6 +7,7 @@ public import EthLib.Consensus.Proofs.Transition.RegistryLifecycle
 # Validator effective-balance caps
 
 The cap predicate is the inequality used by `WithinBudget.capped`.
+
 Genesis supplies it without a fixed global budget.
 -/
 
@@ -908,9 +909,12 @@ private theorem CapStep.upgrade {s : ForkedBeaconState preset}
   · obtain ⟨_, upgraded, rfl⟩ := ok
     exact CapStep.carry (upgradeToAltair_spec upgraded).1
       activation compounding (by change Fork.phase0 ≤ .altair; decide)
-  · subst ok; exact CapStep.carry rfl activation compounding (by change Fork.altair ≤ .bellatrix; decide)
-  · subst ok; exact CapStep.carry rfl activation compounding (by change Fork.bellatrix ≤ .shapella; decide)
-  · subst ok; exact CapStep.carry rfl activation compounding (by change Fork.shapella ≤ .dencun; decide)
+  · subst ok
+    exact CapStep.carry rfl activation compounding (by change Fork.altair ≤ .bellatrix; decide)
+  · subst ok
+    exact CapStep.carry rfl activation compounding (by change Fork.bellatrix ≤ .shapella; decide)
+  · subst ok
+    exact CapStep.carry rfl activation compounding (by change Fork.shapella ≤ .dencun; decide)
   · obtain ⟨_, upgraded, rfl⟩ := ok
     simp only [upgradeToElectra, bind_ok_iff] at upgraded
     obtain ⟨_, _, _, _, _, _, _, _, middle, queued, compounded⟩ := upgraded
