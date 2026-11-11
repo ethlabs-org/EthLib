@@ -808,6 +808,74 @@ private theorem new_recent_key_activation {x y : ForkedBeaconState preset}
     UInt64.le_iff_toNat_le, UInt64.lt_iff_toNat_lt] at active now prev
   rcases active with h | h <;> omega
 
+private theorem effectiveWeight_of_member {fork : Fork} {state : BeaconState preset fork}
+    (unique : uniqueKeys state) {v : Validator} (member : v ∈ state.validators.data.toList) :
+    effectiveWeight state v.pubkey = v.effectiveBalance.toNat := by
+  have lookup (vs : List Validator) (distinct : (vs.map (·.pubkey)).Nodup)
+      (v : Validator) (member : v ∈ vs) :
+      vs.find? (fun w => w.pubkey == v.pubkey) = some v := by
+    induction vs with
+    | nil => simp at member
+    | cons w ws ih =>
+      simp only [List.map_cons, List.nodup_cons] at distinct
+      rcases List.mem_cons.mp member with rfl | member
+      · simp
+      · have different : w.pubkey ≠ v.pubkey := by
+          intro same
+          exact distinct.1 (List.mem_map.mpr ⟨v, member, same.symm⟩)
+        simp [different, ih distinct.2 member]
+  simp [effectiveWeight, lookup _ unique v member]
+
+private theorem carry_key_same_epoch {g x y : ForkedBeaconState preset}
+    (shared : Run config checks g x) (tail : Run config checks x y)
+    (genesis : Genesis (config := config) (checks := checks) g)
+    (parameters : Parameters preset) (early : y.fork < .pectra)
+    {key : Cryptography.Bls.BLSPubkey}
+    (member : key ∈ (recentKeys y.state ∩ recentKeys x.state) \ activeKeys x.state) :
+    getCurrentEpoch y.state = getCurrentEpoch x.state := by
+  have xEarly := Nat.lt_of_le_of_lt (fork_le_of_chainSteps tail.chainSteps) early
+  obtain ⟨both, absent⟩ := Finset.mem_sdiff.mp member
+  obtain ⟨i, old, found, keyEq, activation, exit⟩ :=
+    (mem_boundary_iff x.state (Nat.lt_trans xEarly (by decide))
+      (shared.unique (genesis_unique genesis)) key).mp
+      (Finset.mem_sdiff.mpr ⟨(Finset.mem_inter.mp both).2, absent⟩)
+  obtain ⟨v, current, kept⟩ := tail.registryLifecycle.validators i old found
+  have assigned : old.exitEpoch ≠ FAR_FUTURE_EPOCH := by
+    intro h
+    exact getCurrentEpoch_ne_farFuture parameters.slots x.state
+      ((UInt64.toNat_inj.mp exit).symm.trans h)
+  have exitSame := kept.exitEpoch assigned
+  obtain ⟨w, wFound, wKey⟩ := tail.key_preserved i old found
+  have equal : w = v := Option.some.inj (wFound.symm.trans current)
+  have vKey : v.pubkey = key := equal ▸ wKey.trans keyEq
+  have active : isActiveValidator v (getCurrentEpoch y.state) = true ∨
+      isActiveValidator v (getPreviousEpoch y.state) = true := by
+    have recent := (Finset.mem_inter.mp both).1
+    have unique := (shared.append tail).unique (genesis_unique genesis)
+    have identify {j : Nat} {z : Validator} (zFound : y.state.validators.data[j]? = some z)
+        (zKey : z.pubkey = key) : z = v := by
+      obtain ⟨hi, rfl⟩ := Array.getElem?_eq_some_iff.mp current
+      obtain ⟨hj, rfl⟩ := Array.getElem?_eq_some_iff.mp zFound
+      have eq : j = i := unique.eq_of_getElem_eq
+        (by simpa [registryKeys] using hj) (by simpa [registryKeys] using hi)
+        (by simpa [registryKeys] using zKey.trans vKey.symm)
+      subst j
+      rfl
+    rcases Finset.mem_union.mp recent with h | h
+    · obtain ⟨j, z, zFound, zKey, h⟩ :=
+        (mem_keysAt_epoch (Nat.lt_trans early (by decide)) _ key).mp h
+      exact Or.inl (identify zFound zKey ▸ h)
+    · obtain ⟨j, z, zFound, zKey, h⟩ :=
+        (mem_keysAt_epoch (Nat.lt_trans early (by decide)) _ key).mp h
+      exact Or.inr (identify zFound zKey ▸ h)
+  have epochs := UInt64.le_iff_toNat_le.mp (currentEpoch_le_of_chainSteps tail.chainSteps)
+  have py := getPreviousEpoch_toNat y.state
+  have exitNat := congrArg UInt64.toNat exitSame
+  apply UInt64.toNat_inj.mp
+  simp only [isActiveValidator, Bool.and_eq_true, decide_eq_true_eq,
+    UInt64.le_iff_toNat_le, UInt64.lt_iff_toNat_lt] at active
+  rcases active with h | h <;> omega
+
 private theorem leaving_key_exit {x y : ForkedBeaconState preset}
     (tail : Run config checks x y) (early : y.fork < .pectra)
     {key : Cryptography.Bls.BLSPubkey} (member : key ∈ activeKeys x.state \ activeKeys y.state) :
@@ -1036,6 +1104,50 @@ theorem new_recent_before_electra {g x y : ForkedBeaconState preset}
     _ = (recentKeys y.state \ recentKeys x.state).card *
         preset.MAX_EFFECTIVE_BALANCE.toNat := by simp
     _ ≤ _ := Nat.mul_le_mul_right _ (cards.trans count)
+
+/-- Separate new activation cohorts from reference previous-only stake without a positive cap. -/
+theorem joining_before_electra_split {g x y : ForkedBeaconState preset}
+    (shared : Run config checks g x) (tail : Run config checks x y)
+    (genesis : Genesis (config := config) (checks := checks) g)
+    (parameters : Parameters preset) (caps : CapOrder preset) (early : y.fork < .pectra) :
+    Quorum.weight (effectiveWeight y.state) (recentKeys y.state \ recentKeys x.state) ≤
+      ((getCurrentEpoch y.state).toNat - (getCurrentEpoch x.state).toNat) *
+        cohortCap config y.state.validators.data.size * preset.MAX_EFFECTIVE_BALANCE.toNat ∧
+    Quorum.weight (effectiveWeight y.state)
+      ((recentKeys y.state ∩ recentKeys x.state) \ activeKeys x.state) ≤ boundaryStake x := by
+  classical
+  refine ⟨new_recent_before_electra shared tail genesis parameters caps early, ?_⟩
+  have uniqueX := shared.unique (genesis_unique genesis)
+  have uniqueY := (shared.append tail).unique (genesis_unique genesis)
+  have xEarly := Nat.lt_of_le_of_lt (fork_le_of_chainSteps tail.chainSteps) early
+  have pointwise (key : Cryptography.Bls.BLSPubkey)
+      (member : key ∈ (recentKeys y.state ∩ recentKeys x.state) \ activeKeys x.state) :
+      effectiveWeight y.state key ≤ effectiveWeight x.state key := by
+    have same := carry_key_same_epoch shared tail genesis parameters early member
+    obtain ⟨both, absent⟩ := Finset.mem_sdiff.mp member
+    obtain ⟨i, old, found, keyEq, _⟩ :=
+      (mem_boundary_iff x.state (Nat.lt_trans xEarly (by decide)) uniqueX key).mp
+        (Finset.mem_sdiff.mpr ⟨(Finset.mem_inter.mp both).2, absent⟩)
+    obtain ⟨v, current, vKey⟩ := tail.key_preserved i old found
+    have bound := tail.effectiveAt_le_of_same_epoch early same i
+      (Array.getElem?_eq_some_iff.mp found).1
+    have oldWeight := effectiveWeight_of_member uniqueX
+      (by simpa using Array.mem_of_getElem? found)
+    have newWeight := effectiveWeight_of_member uniqueY
+      (by simpa using Array.mem_of_getElem? current)
+    rw [keyEq] at oldWeight
+    rw [vKey, keyEq] at newWeight
+    rw [oldWeight, newWeight]
+    simpa [effectiveAt, found, current] using bound
+  unfold boundaryStake Quorum.weight
+  exact (Finset.sum_le_sum pointwise).trans
+    (Finset.sum_le_sum_of_subset_of_nonneg
+      (by
+        intro key member
+        exact Finset.mem_sdiff.mpr
+          ⟨(Finset.mem_inter.mp (Finset.mem_sdiff.mp member).1).2,
+            (Finset.mem_sdiff.mp member).2⟩)
+      (by intros; exact Nat.zero_le _))
 
 /-- Queueing deposits keeps the queue fields and the effective balances of activated validators. -/
 private structure ElectraQueuesKept (a b : BeaconState preset .pectra) : Prop where
