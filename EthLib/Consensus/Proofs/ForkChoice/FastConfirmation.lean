@@ -11,7 +11,7 @@ public import EthLib.Consensus.Proofs.ForkChoice.Store
 
 An empty range of slots weighs nothing, and so does a sum over no items.
 
-A sum is the sum of its weights, so at most the sum of bounds on them.
+A sum is the sum of its weights.
 
 A range of slots that ends later has every member of the committees of a shorter one.
 
@@ -82,28 +82,6 @@ theorem toNat_eq_of_sumGwei {α : Type} {items : List α}
     subst summed
     rw [Nat.toUInt64_eq, UInt64.toNat_ofNat', Nat.mod_eq_of_lt (by omega)]
     omega
-
-/-- A sum that the store computes is at most the sum of bounds on its weights. -/
-theorem toNat_le_of_sumGwei {α : Type} {items : List α}
-    {weight : α → Except ForkChoiceError Gwei} {bound : α → Nat} {total : Gwei}
-    (summed : sumGwei items weight = .ok total)
-    (each : ∀ item ∈ items, ∀ value, weight item = .ok value → value.toNat ≤ bound item) :
-    total.toNat ≤ (items.map bound).sum := by
-  let value : α → Nat := fun item => match weight item with
-    | .ok computed => computed.toNat
-    | .error _ => 0
-  rw [toNat_eq_of_sumGwei (value := value) summed fun item _ computed computedOk => by
-    simp only [value, computedOk]]
-  clear summed
-  induction items with
-  | nil => simp
-  | cons first rest ih =>
-    simp only [List.map_cons, List.sum_cons]
-    refine Nat.add_le_add ?_ (ih fun item member => each item (List.mem_cons_of_mem _ member))
-    · cases computed : weight first with
-      | error _ => simp only [value, computed, Nat.zero_le]
-      | ok computed' =>
-        simpa only [value, computed] using each first List.mem_cons_self computed' computed
 
 /-- The validator at an index is the one that the registry holds there. -/
 theorem validatorAt_ok_iff {state : BeaconState preset fork} {index : ValidatorIndex}

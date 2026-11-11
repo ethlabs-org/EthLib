@@ -107,6 +107,24 @@ theorem honest_ratio_of_new_votes [DecidableEq ν] {H K N H' : Finset ν} {a c :
     _ ≤ c * (stake w H' * stake w K) := Nat.mul_le_mul_left c counted
     _ = c * stake w H' * stake w K := by ring
 
+/-- The Byzantine supporters and the equivocators weigh at most the Byzantine validators of `W`.
+
+The supporters `S` and the equivocators `I` are disjoint parts of `W`.
+
+No equivocator is honest. -/
+theorem byzantine_support_add_le {W S I : Finset ν} (supportIn : S ⊆ W) (equivocatorsIn : I ⊆ W)
+    (apart : Disjoint S I) (dishonest : ∀ v ∈ I, v ∉ J) :
+    stake w {v ∈ S | v ∉ J} + stake w I ≤ stake w {v ∈ W | v ∉ J} := by
+  classical
+  have disjoint : Disjoint ({v ∈ S | v ∉ J} : Finset ν) I :=
+    Finset.disjoint_of_subset_left (Finset.filter_subset _ _) apart
+  unfold stake
+  rw [← Finset.sum_union disjoint]
+  refine stake_mono (Finset.union_subset ?_ ?_)
+  · exact Finset.filter_subset_filter _ supportIn
+  · intro v member
+    exact Finset.mem_filter.mpr ⟨equivocatorsIn member, dishonest v member⟩
+
 /-- Lemma 4: the observed support of a block bounds its honest ratio from below.
 
 The supporters `S` and the equivocators `I` are disjoint parts of `W`.
@@ -134,15 +152,8 @@ theorem honest_ratio_of_support {W S I : Finset ν} {Φ num den : ℕ}
   have splitS : stake w {v ∈ S | v ∈ J} + stake w {v ∈ S | v ∉ J} = stake w S :=
     Finset.sum_filter_add_sum_filter_not S (· ∈ J) w
   -- The Byzantine supporters and the equivocators are disjoint Byzantine validators.
-  have byzantine : stake w {v ∈ S | v ∉ J} + stake w I ≤ A := by
-    have disjoint : Disjoint ({v ∈ S | v ∉ J} : Finset ν) I :=
-      Finset.disjoint_of_subset_left (Finset.filter_subset _ _) apart
-    unfold stake
-    rw [← Finset.sum_union disjoint]
-    refine stake_mono (Finset.union_subset ?_ ?_)
-    · exact Finset.filter_subset_filter _ supportIn
-    · intro v member
-      exact Finset.mem_filter.mpr ⟨equivocatorsIn member, dishonest v member⟩
+  have byzantine : stake w {v ∈ S | v ∉ J} + stake w I ≤ A :=
+    byzantine_support_add_le supportIn equivocatorsIn apart dishonest
   -- The supporters and the equivocators fit in the committees.
   have fits : X ≤ stake w W := by
     unfold X stake

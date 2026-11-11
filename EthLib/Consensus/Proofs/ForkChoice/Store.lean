@@ -16,6 +16,8 @@ A node at or below the slot is its own ancestor, so every known node descends fr
 
 A node that descends from a known node sits at the slot of that node or later.
 
+The ancestor of a block at the slot of an earlier parent is the node that the block builds on.
+
 The walk to a lower slot can stop at a higher slot on the way, and go on from there.
 
 From Gloas the walk gives each parent an empty or full status.
@@ -139,6 +141,23 @@ theorem getAncestor_step {node : ForkChoiceNode} {slot : Slot}
       rw [parentFound, Option.some.injEq] at same
       subst same
       simp [parentLower]
+
+/-- The ancestor of a block at the slot of its parent is the node that the block builds on.
+
+That node is the parent with the payload status that the block gives it.
+
+The walk may start from any node of the block.
+
+The store must hold the parent, at an earlier slot than the block. -/
+theorem getAncestor_parent_of_slot_lt {node : ForkChoiceNode}
+    {block parent : BeaconBlock preset fork}
+    (found : store.blocks[node.root]? = some block)
+    (parentFound : store.blocks[block.parentRoot]? = some parent)
+    (lower : parent.slot < block.slot) :
+    store.getAncestor node parent.slot =
+      .ok ⟨block.parentRoot, parentPayloadStatus block parent⟩ := by
+  rw [getAncestor_step found (UInt64.not_le.mpr lower) parentFound lower]
+  exact getAncestor_of_le parentFound (UInt64.le_refl _)
 
 /-- The root that the walk reaches does not depend on the payload status of the start.
 
