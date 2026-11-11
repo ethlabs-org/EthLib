@@ -4,6 +4,7 @@ public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmationSets
 public import EthLib.Consensus.Proofs.ForkChoice.HonestDuties
 public import EthLib.Consensus.Proofs.Transition.FfgJustification
 public import EthLib.Consensus.Proofs.Transition.Invariants
+public import EthLib.Consensus.Proofs.Transition.RunKept
 
 /-!
 # Statements: what the fast confirmation rule asks of the checkpoints of honest stores
@@ -373,6 +374,20 @@ theorem exists_linkVote_of_processJustification {state after : BeaconState prese
         previousOk previousIndicesOk member
     · exact pending.quorum_attester (Nat.lt_of_not_le notAltair) early true
         currentOk currentIndicesOk member
+
+/-- A run from a target epoch through the next epoch keeps that target's committees. -/
+theorem RunKept.committeesKept_through_next_epoch {state after : BeaconState preset fork}
+    (run : RunKept state after)
+    (ring : preset.MIN_SEED_LOOKAHEAD.toNat + 2 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
+    {epoch : Epoch} (starts : getCurrentEpoch state = epoch)
+    (ends : (getCurrentEpoch after).toNat ≤ epoch.toNat + 1) :
+    CommitteesKept epoch state after := by
+  apply run.committeesKept
+  · rw [starts]
+    omega
+  · rw [← starts]
+    exact getCurrentEpoch_le_activityFixedEpoch state
+  · omega
 
 namespace Models.Network
 
