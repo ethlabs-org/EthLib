@@ -204,6 +204,62 @@ theorem departureCharges_le_calls {charges : List DepartureCharge}
     sums calls (fun c => c.call.epoch.toNat) (fun c => c.call.amount.toNat)] at bound
   exact bound
 
+/-- Tagged calls cover all newly assigned exits of existing registry entries. -/
+def DepartureCoverage {f h : Fork} (s : BeaconState preset f) (t : BeaconState preset h)
+    (calls : List IndexedDepartureCall) : Prop :=
+  ∀ i old next, s.validators.data[i]? = some old → t.validators.data[i]? = some next →
+    old.exitEpoch = FAR_FUTURE_EPOCH → next.exitEpoch ≠ FAR_FUTURE_EPOCH →
+    ∃ called ∈ calls, called.index = some i ∧ called.call.epoch = next.exitEpoch ∧
+      called.call.amount = old.effectiveBalance
+
+/-- Coverage composes while assigned epochs and pre-scheduling effective balances persist. -/
+theorem DepartureCoverage.append {f h k : Fork} {s : BeaconState preset f}
+    {t : BeaconState preset h} {u : BeaconState preset k} {first second : List IndexedDepartureCall}
+    (one : DepartureCoverage s t first) (two : DepartureCoverage t u second)
+    (lifeOne : RegistryLifecycle s t) (lifeTwo : RegistryLifecycle t u)
+    (balances : ∀ (i : Nat) (old next : Validator), s.validators.data[i]? = some old →
+      t.validators.data[i]? = some next → next.effectiveBalance = old.effectiveBalance) :
+    DepartureCoverage s u (first ++ second) := by
+  intro i old last before after unset assigned
+  obtain ⟨middle, middleFound, _⟩ := lifeOne.validators i old before
+  by_cases pending : middle.exitEpoch = FAR_FUTURE_EPOCH
+  · obtain ⟨called, member, index, epoch, amount⟩ :=
+      two i middle last middleFound after pending assigned
+    exact ⟨called, List.mem_append_right _ member, index, epoch,
+      amount.trans (balances i old middle before middleFound)⟩
+  · obtain ⟨called, member, index, epoch, amount⟩ :=
+      one i old middle before middleFound unset pending
+    obtain ⟨later, laterFound, kept⟩ := lifeTwo.validators i middle middleFound
+    have same := Option.some.inj (laterFound.symm.trans after)
+    subst later
+    exact ⟨called, List.mem_append_left _ member, index,
+      epoch.trans (kept.exitEpoch pending).symm, amount⟩
+
+/-- Registry coverage supplies the matching premise for every charge of a concrete step. -/
+theorem DepartureCoverage.step_charges {x y : ForkedBeaconState preset}
+    (step : Step config checks x y) {calls : List IndexedDepartureCall}
+    (covered : DepartureCoverage x.state y.state calls) :
+    ∀ charge ∈ step.departureCharges, ∃ called ∈ calls,
+      called.index = some charge.index ∧ called.call.epoch.toNat = charge.epoch ∧
+        called.call.amount.toNat = charge.amount := by
+  intro charge member
+  obtain ⟨⟨old, i⟩, before, produced⟩ := List.mem_filterMap.mp member
+  have found : x.state.validators.data[i]? = some old := by
+    simpa only [List.mem_zipIdx_iff_getElem?, Array.getElem?_toList] using before
+  dsimp only at produced
+  split at produced
+  · cases produced
+  · rename_i next after
+    split at produced
+    · rename_i assigned
+      have conditions : old.exitEpoch = FAR_FUTURE_EPOCH ∧
+          next.exitEpoch ≠ FAR_FUTURE_EPOCH := by simpa using assigned
+      cases Option.some.inj produced
+      obtain ⟨called, member, index, epoch, amount⟩ :=
+        covered i old next found after conditions.1 conditions.2
+      exact ⟨called, member, index, congrArg UInt64.toNat epoch, congrArg UInt64.toNat amount⟩
+    · cases produced
+
 /-- An exit scheduling operation supplies a call with exactly its input and output queues. -/
 theorem exitQueueCall_of_computed {fork : Fork} {s t : BeaconState preset fork}
     (electra : .pectra ≤ fork) {amount : Gwei} {epoch : Epoch}
@@ -1028,6 +1084,28 @@ theorem initiateExit_indexedTrace {fork : Fork} {s t : BeaconState preset fork}
       subst old next
       exact ⟨_, List.mem_singleton_self _, rfl, epoch.symm, amount⟩
 
+/-- A partial withdrawal's capacity call has no departure index. -/
+theorem partialWithdrawal_indexedTrace {fork : Fork} {s t : BeaconState preset fork}
+    (electra : .pectra ≤ fork) (early : fork < .glamsterdam)
+    {index : ValidatorIndex} {v : Validator} {amount owed : Gwei}
+    (ok : requestPartialWithdrawal config s electra index v amount owed = .ok t) :
+    t.validators = s.validators ∧ ∃ calls : List IndexedDepartureCall,
+      DepartureQueueTrace (s.earliestExitEpoch electra) (s.exitBalanceToConsume electra)
+        (calls.map (·.call)) (t.earliestExitEpoch electra) (t.exitBalanceToConsume electra) ∧
+      ∀ called ∈ calls, called.index = none ∧
+        called.call.rate.toNat ≤ config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat := by
+  obtain ⟨registry, same | ⟨call, earliest, available, placed, left, rate⟩⟩ :=
+    partialWithdrawal_call electra ok
+  · subst t
+    exact ⟨rfl, [], .nil _ _, by simp⟩
+  · refine ⟨registry, [⟨none, call⟩], ?_, ?_⟩
+    · change DepartureQueueTrace _ _ [call] _ _
+      rw [← earliest, ← available, ← placed, ← left]
+      exact .cons call (.nil _ _)
+    · intro called member
+      obtain rfl := List.mem_singleton.mp member
+      exact ⟨rfl, exitChurnLimit_le_cap early rate⟩
+
 /-- Slashing rewards and penalties leave the initial exit call's queue output unchanged. -/
 theorem slashing_exitTrace {fork : Fork} {s t : BeaconState preset fork}
     (electra : .pectra ≤ fork) (early : fork < .glamsterdam)
@@ -1268,6 +1346,34 @@ theorem upgrades_departureQueues {s t : ForkedBeaconState preset}
       obtain ⟨_, _, rfl⟩ := nextOk
       exact False.elim (Nat.lt_irrefl _ nextEarly)
   | case2 s notDue => cases ok; rfl
+
+/-- Withdrawal requests cover full departures while retaining unmatched partial calls. -/
+theorem withdrawalRequest_indexedTrace {fork : Fork} {s t : BeaconState preset fork}
+    (electra : .pectra ≤ fork) (early : fork < .glamsterdam) {request : WithdrawalRequest}
+    (ok : processWithdrawalRequest config s electra request = .ok t) :
+    ∃ calls : List IndexedDepartureCall,
+      DepartureQueueTrace (s.earliestExitEpoch electra) (s.exitBalanceToConsume electra)
+        (calls.map (·.call)) (t.earliestExitEpoch electra) (t.exitBalanceToConsume electra) ∧
+      (∀ called ∈ calls,
+        called.call.rate.toNat ≤ config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat) ∧
+      ∀ other old next, getValidator s other = .ok old → getValidator t other = .ok next →
+        old.exitEpoch = FAR_FUTURE_EPOCH → next.exitEpoch ≠ FAR_FUTURE_EPOCH →
+        ∃ called ∈ calls, called.index = some other.toNat ∧
+          called.call.epoch = next.exitEpoch ∧ called.call.amount = old.effectiveBalance := by
+  rcases withdrawalRequest_cases ok with same | ⟨index, exited⟩ | ⟨index, v, owed, withdrawn⟩
+  · subst t
+    refine ⟨[], .nil _ _, by simp, ?_⟩
+    intro other old next before after unset assigned
+    have equal := Except.ok.inj (before.symm.trans after)
+    exact False.elim (assigned (equal ▸ unset))
+  · exact initiateExit_indexedTrace electra early exited
+  · obtain ⟨registry, calls, trace, rates⟩ :=
+      partialWithdrawal_indexedTrace electra early withdrawn
+    refine ⟨calls, trace, fun called member => (rates called member).2, ?_⟩
+    intro other old next before after unset assigned
+    have unchanged := getValidator_of_validators_eq registry other
+    have equal := Except.ok.inj (before.symm.trans (unchanged ▸ after))
+    exact False.elim (assigned (equal ▸ unset))
 
 /-- Both full and partial withdrawal requests give linked, rate-bounded exit calls. -/
 theorem withdrawalRequest_exitTrace {fork : Fork} {s t : BeaconState preset fork}
