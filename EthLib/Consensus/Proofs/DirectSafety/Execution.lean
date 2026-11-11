@@ -56,7 +56,15 @@ theorem _root_.EthLib.Consensus.Run.checkpointPath_restrict {g a : ForkedBeaconS
     (run : Run config checks g a) (early late : Epoch) (ordered : early ≤ late) :
     run.checkpointPath early = (run.checkpointPath late).filter
       (fun h => h.slot.toNat ≤ early.toNat * preset.SLOTS_PER_EPOCH.toNat) := by
-  sorry
+  unfold Run.checkpointPath
+  rw [List.filter_filter]
+  congr 1
+  funext h
+  have bound := Nat.mul_le_mul_right preset.SLOTS_PER_EPOCH.toNat
+    (UInt64.le_iff_toNat_le.mp ordered)
+  apply Bool.eq_iff_iff.mpr
+  simp only [Bool.and_eq_true, decide_eq_true_eq]
+  exact ⟨fun small => ⟨small, Nat.le_trans small bound⟩, And.left⟩
 
 /-- Compare both histories at the earlier checkpoint boundary, including skipped slots. -/
 def Conflict {g a b : ForkedBeaconState preset} (left : Run config checks g a)
