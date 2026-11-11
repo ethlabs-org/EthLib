@@ -311,6 +311,56 @@ private theorem departureQueues_decrease {fork : Fork} {s t : BeaconState preset
   obtain ⟨_, rfl⟩ := setBalance_ok set
   rfl
 
+private theorem allDeltas_departureQueues {fork : Fork} {s t : BeaconState preset fork}
+    (electra : .pectra ≤ fork) {deltas : Array Gwei × Array Gwei}
+    (ok : applyAllDeltas s deltas = .ok t) :
+    departureQueues electra t = departureQueues electra s := by
+  refine foldlM_ok_invariant (fun t => departureQueues electra t = departureQueues electra s)
+    ?_ rfl ok
+  intro a index b kept stepped
+  simp only [applyDeltas, liftAccessor_ok, bind_ok_iff] at stepped
+  obtain ⟨_, _, raised, increase, decrease⟩ := stepped
+  exact (departureQueues_decrease electra decrease).trans
+    ((departureQueues_increase electra increase).trans kept)
+
+/-- Epoch rewards and penalties preserve departure capacity and queue epochs. -/
+theorem rewards_departureQueues {fork : Fork} {s t : BeaconState preset fork}
+    (electra : .pectra ≤ fork)
+    (ok : processRewardsAndPenalties config s = .ok t) :
+    departureQueues electra t = departureQueues electra s := by
+  have altair : .altair ≤ fork := Nat.le_trans (by decide) electra
+  unfold processRewardsAndPenalties at ok
+  split at ok
+  · cases ok; rfl
+  simp only [bind_ok_iff] at ok
+  obtain ⟨_, _, _, _, folded⟩ := ok
+  refine foldlM_ok_invariant (fun t => departureQueues electra t = departureQueues electra s)
+    ?_ rfl folded
+  intro a deltas b kept stepped
+  exact (allDeltas_departureQueues electra stepped).trans kept
+
+/-- Epoch slashing penalties debit balances without spending departure capacity. -/
+theorem slashingPenalties_departureQueues {fork : Fork} {s t : BeaconState preset fork}
+    (electra : .pectra ≤ fork) (ok : processSlashings s = .ok t) :
+    departureQueues electra t = departureQueues electra s := by
+  simp only [processSlashings, electra, ↓reduceIte, bind_ok_iff] at ok
+  obtain ⟨_, _, _, _, _, _, _, _, folded⟩ := ok
+  refine foldlM_ok_invariant (fun t => departureQueues electra t = departureQueues electra s)
+    ?_ rfl folded
+  intro a index b kept stepped
+  unfold applySlashingPenaltyElectra at stepped
+  simp only [bind_ok_iff] at stepped
+  obtain ⟨_, _, stepped⟩ := stepped
+  split at stepped
+  · simp only [bind_ok_iff] at stepped
+    obtain ⟨_, _, stepped⟩ := stepped
+    split at stepped
+    · simp only [bind_ok_iff] at stepped
+      obtain ⟨_, _, _, _, decreased⟩ := stepped
+      exact (departureQueues_decrease electra (liftAccessor_ok.mp decreased)).trans kept
+    · cases stepped; exact kept
+  · cases stepped; exact kept
+
 private theorem addValidator_departureQueues {fork : Fork} {s t : BeaconState preset fork}
     (electra : .pectra ≤ fork) {key : Cryptography.Bls.BLSPubkey}
     {credentials : Bytes32} {amount : Gwei}
@@ -625,6 +675,37 @@ theorem processPendingConsolidations_departureQueues {fork : Fork}
   obtain ⟨epoch, _, ⟨passed, read⟩, processed, rfl⟩ := ok
   exact passPendingConsolidations_departureQueues electra processed
 
+/-- The epoch's pending-balance stage preserves both departure queues. -/
+theorem pendingBalances_departureQueues {fork : Fork} {s t : BeaconState preset fork}
+    (electra : .pectra ≤ fork)
+    (ok : processPendingBalances config checks s = .ok t) :
+    departureQueues electra t = departureQueues electra s := by
+  simp only [processPendingBalances, electra, ↓reduceDIte, bind_ok_iff] at ok
+  obtain ⟨middle, deposited, consolidated⟩ := ok
+  exact (processPendingConsolidations_departureQueues electra consolidated).trans
+    (pendingDeposits_departureQueues electra deposited)
+
+private theorem justification_departureQueues {fork : Fork} {s t : BeaconState preset fork}
+    (electra : .pectra ≤ fork)
+    (ok : processJustificationAndFinalization s = .ok t) :
+    departureQueues electra t = departureQueues electra s := by
+  obtain rfl | ⟨_, _, _, weighed⟩ := processJustificationAndFinalization_ok ok
+  · rfl
+  · obtain ⟨_, _, _, rest⟩ := weighJustificationAndFinalization_checkpoints weighed
+    rw [← rest]
+    rfl
+
+private theorem inactivity_departureQueues {fork : Fork} {s t : BeaconState preset fork}
+    (electra : .pectra ≤ fork) {altair : .altair ≤ fork}
+    (ok : processInactivityUpdates config s altair = .ok t) :
+    departureQueues electra t = departureQueues electra s := by
+  unfold processInactivityUpdates at ok
+  split at ok
+  · cases ok; rfl
+  · simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at ok
+    obtain ⟨_, _, _, _, rfl⟩ := ok
+    rfl
+
 /-- A registry update either preserves both queues or executes an ejection's exit call. -/
 theorem registryEntry_departureQueues {fork : Fork} {s t : BeaconState preset fork}
     (electra : .pectra ≤ fork) {activation : Epoch} {index : Nat}
@@ -727,6 +808,73 @@ theorem registryEntries_exitTrace {fork : Fork} (electra : .pectra ≤ fork)
       rcases List.mem_append.mp member with member | member
       · exact hereRates call member
       · exact laterRates call member
+
+/-- An Electra epoch spends departure capacity only in the registry's exit calls. -/
+theorem epoch_exitTrace {fork : Fork} {s t : BeaconState preset fork}
+    (electra : .pectra ≤ fork) (early : fork < .glamsterdam)
+    (ok : processEpoch config checks s = .ok t) :
+    ∃ calls, DepartureQueueTrace (s.earliestExitEpoch electra) (s.exitBalanceToConsume electra)
+      calls (t.earliestExitEpoch electra) (t.exitBalanceToConsume electra) ∧
+      ∀ call ∈ calls, call.rate.toNat ≤ config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat := by
+  have altair : .altair ≤ fork := Nat.le_trans (by decide) electra
+  have capella : .shapella ≤ fork := Nat.le_trans (by decide) electra
+  have notGloas : ¬ .glamsterdam ≤ fork := Nat.not_le_of_lt early
+  have before : fork < .hegota := Nat.lt_trans early (by decide)
+  simp only [processEpoch, altair, ↓reduceDIte, processEpochAltair, before, notGloas,
+    capella, bind_ok_iff, pure, Except.pure, Except.ok.injEq, exists_eq_left'] at ok
+  obtain ⟨justified, justifiedOk, scored, scoredOk, rewarded, rewardedOk, registered,
+    registeredOk, slashed, slashedOk, reset, resetOk, pending, pendingOk,
+    balanced, balancedOk, cleared, clearedOk, mixed, mixedOk, rooted, rootedOk,
+    synced, syncedOk, looked⟩ := ok
+  have head : departureQueues electra rewarded = departureQueues electra s :=
+    (rewards_departureQueues electra rewardedOk).trans
+      ((inactivity_departureQueues electra scoredOk).trans
+        (justification_departureQueues electra justifiedOk))
+  have resetFrame : departureQueues electra reset = departureQueues electra slashed := by
+    unfold processEth1DataReset at resetOk
+    simp only [bind, Except.bind, pure, Except.pure] at resetOk
+    repeat' (split at resetOk <;> try cases resetOk)
+    all_goals rfl
+  have rootedFrame : departureQueues electra rooted = departureQueues electra mixed := by
+    unfold processHistoricalSummariesUpdate at rootedOk
+    simp only [bind, Except.bind, pure, Except.pure] at rootedOk
+    repeat' (split at rootedOk <;> try cases rootedOk)
+    all_goals rfl
+  have syncedFrame : departureQueues electra synced = departureQueues electra rooted := by
+    unfold processSyncCommitteeUpdates at syncedOk
+    simp only [bind, Except.bind, pure, Except.pure] at syncedOk
+    repeat' (split at syncedOk <;> try cases syncedOk)
+    all_goals rfl
+  have lookedFrame : departureQueues electra t = departureQueues electra synced := by
+    obtain ⟨_, looked, rfl⟩ := looked
+    split at looked
+    · simp only [liftAccessor_ok, processProposerLookahead, bind_ok_iff,
+        pure, Except.pure, Except.ok.injEq] at looked
+      obtain ⟨_, _, _, _, rfl⟩ := looked
+      rfl
+    · cases looked; rfl
+  have tail : departureQueues electra t = departureQueues electra registered := by
+    rw [lookedFrame, syncedFrame, rootedFrame]
+    obtain ⟨_, _, _, _, rfl⟩ := processSlashingsReset_eq clearedOk
+    obtain ⟨_, _, _, _, _, _, rfl⟩ := processRandaoMixesReset_eq mixedOk
+    change departureQueues electra balanced = departureQueues electra registered
+    rw [effectiveBalances_departureQueues electra balancedOk,
+      pendingBalances_departureQueues electra pendingOk, resetFrame,
+      slashingPenalties_departureQueues electra slashedOk]
+  simp only [processRegistryUpdates, electra, ↓reduceIte, bind_ok_iff] at registeredOk
+  obtain ⟨_, _, entries⟩ := registeredOk
+  obtain ⟨calls, trace, rates⟩ := registryEntries_exitTrace electra early entries
+  have firstEpoch := congrArg Prod.fst head
+  have firstBalance := congrArg (fun q => q.2.1) head
+  have lastEpoch := congrArg Prod.fst tail
+  have lastBalance := congrArg (fun q => q.2.1) tail
+  change rewarded.earliestExitEpoch electra = s.earliestExitEpoch electra at firstEpoch
+  change rewarded.exitBalanceToConsume electra = s.exitBalanceToConsume electra at firstBalance
+  change t.earliestExitEpoch electra = registered.earliestExitEpoch electra at lastEpoch
+  change t.exitBalanceToConsume electra = registered.exitBalanceToConsume electra at lastBalance
+  rw [firstEpoch, firstBalance] at trace
+  rw [lastEpoch, lastBalance]
+  exact ⟨calls, trace, rates⟩
 
 /-- Both full and partial withdrawal requests give linked, rate-bounded exit calls. -/
 theorem withdrawalRequest_exitTrace {fork : Fork} {s t : BeaconState preset fork}
