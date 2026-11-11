@@ -2375,6 +2375,40 @@ They need a buffer of roots of three epochs, which both presets have.
 The weights of a checkpoint then hold the effective balances of each state before a slot that ends its epoch or the next one, on a run between genesis and the last state, when that state records the root of the checkpoint for that epoch.
 That genesis state exists only before Altair, so a chain whose genesis is later is out of scope.
 
+
+`Dynamic.lean` gives each supermajority link its own weighing: the total set, the voters, the stakes and a floor, as the beacon chain weighs.
+Its `Dynamic.accountable_safety` measures the slashable stake in a reference weighing.
+It loses twice a bound on the drift from that reference, over the weighings between the two finalized epochs.
+With one static weighing it gives `accountable_safety`.
+`exists_branches_not_slashable` (`BranchDrift.lean`) shows that the drift bound cannot come from each branch alone.
+Two branches finalize conflicting checkpoints of one epoch with no slashable validator, while every two weighings of one branch have drift zero.
+
+`FfgRefinement` (`Transition/FfgRefinement.lean`) lists, as structure fields, the facts that two histories of the beacon chain must provide for the dynamic model.
+`FfgRefinement.accountable_safety` proves that these fields give slashable stake, or hash evidence.
+`FfgRefinement.accountable_safety_preElectra` (`Transition/FfgPreElectra.lean`) measures the bound in a state that both histories share, before Electra.
+It proves the bounds on the stake that leaves and joins from the churn limits, and on gains from the cap.
+The loss of effective balance, which the inactivity leak drives, and the placement of each weighing call are hypotheses.
+`historyRefinement` (`Transition/FfgHistories.lean`) builds the refinement of two histories from one genesis state, from the provenance proofs.
+`accountable_safety_histories` states accountable safety for them: slashable signed attestation data, or a hash with zero output on the histories.
+Its fields are all proved, at every fork, from genesis; checkpoints conflict as epoch-boundary pairs, as in Gasper §4.
+`store_accountable_safety` (`Transition/FfgStore.lean`) applies it to the justified and finalized checkpoints of a fork-choice store that starts at genesis.
+The store's failed descent check gives their conflict as epoch-boundary pairs, or hash evidence: a zero root, two block headers with one root, or a block whose root is zero.
+`store_accountable_safety_preElectra` (`Transition/FfgStorePreElectra.lean`) instantiates the drift bound before Electra, measured at genesis.
+With `J` the justified epoch it is `2 (J+1) K MAX + 2 L + 3 deficit(genesis) + 3 (J+2) K MAX + 3 INC`, where the churn windows and the cap are proved.
+Two terms stay named hypotheses: `K` bounds the churn cap over the reached states, and `L` the effective balance that genesis validators lose, which `lostStake_le_fallen` bounds by each validator's debits along a run.
+`runRefinement` (`Transition/FfgRuns.lean`) takes the calls on prefixes of two runs from genesis instead, so each call is placed on one of the runs.
+`accountable_safety_runs_preElectra` measures the drift at a state `X` that both runs pass through, at a slot before the first slot of the finalized epoch.
+With `E` the epoch of `X` and `n = J + 1 - E`, the bound is `2 n K MAX + 2 L + 3 deficit(X) + 3 (n+1) K MAX + 3 INC`, so it depends on the epochs after `X`, not on `J`.
+`accountable_safety_runs_preElectra_registry` proves `K = max 1 (churnCapWithin X n)` from the registry growth after `X`; `L`, a bound on `lostStake X y` over the states `y` that `X` reaches up to epoch `J + 1`, stays a named hypothesis.
+`store_accountable_safety_runs_preElectra` (`Transition/FfgStoreRuns.lean`) gives the same bound for the checkpoints of a fork-choice store that starts at genesis, before Electra.
+It takes the two runs from the store's states, and holds for every split of them at a shared state `X` before the first slot of the finalized epoch; `CommonState.atStart` gives the split at genesis.
+Its alternatives are the hash evidence of `store_accountable_safety`, on the two runs.
+Its lost-stake term is proved too: `CommonState.lostStake_le_budgets` bounds it by `lossBudget`, the slack at `X`, the step budgets of each tail (`StepBudget`, flow by flow) and the rounding, so only the per-flow budgets remain as named amounts.
+From Electra, `Run.drift_le_electra` (`Transition/FfgElectra.lean`) bounds the drift along one run from a reachable state `x` to a state before Gloas.
+It uses the exit and consolidation churn with step budgets (`Run.leavingStake_le_budgets`), `lossBudget`, the deposit churn (`Run.depositsCharged_le`), and the joining split (`Run.joiningStakePrev_le`).
+Three sums stay named: the gains after deposits of the validators active at `x`, the growth of joiners already in the registry, and the effective balance of the joiners the run adds; the churn caps are hypotheses.
+It is not yet composed into the two-run or store theorems.
+
 ### Engine API
 
 The Engine API is the interface through which the consensus layer drives the execution layer.
