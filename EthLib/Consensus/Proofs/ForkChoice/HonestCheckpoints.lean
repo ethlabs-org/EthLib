@@ -791,6 +791,82 @@ theorem RunKept.attestingIndices_eq_through_next_epoch {state after : BeaconStat
   rw [← starts]
   simp only [active, checked, seed]
 
+/-- Caching a slot preserves the complete link for either recent epoch.
+
+This is equality of successful reads and failures, including epochs with one slot. -/
+theorem LinkVote.processSlot_iff {state cached : BeaconState preset fork}
+    (positive : 0 < preset.SLOTS_PER_EPOCH.toNat)
+    (window : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
+    (computed : processSlot state = .ok cached)
+    (recent : Bool) (position : Nat) (vote : ValidatorIndex × AttestationData) :
+    LinkVote cached recent position vote ↔ LinkVote state recent position vote := by
+  have frame := frame_processSlot computed
+  have current : getCurrentEpoch cached = getCurrentEpoch state := by
+    simp only [getCurrentEpoch, frame.slot]
+  have previous : getPreviousEpoch cached = getPreviousEpoch state := by
+    unfold getPreviousEpoch
+    rw [current]
+  unfold LinkVote
+  rw [current, previous, frame.currentJustified, frame.previousJustified]
+  have roots (epoch : vote.2.target.epoch =
+      (if recent then getCurrentEpoch state else getPreviousEpoch state)) :
+      getBlockRoot cached vote.2.target.epoch = getBlockRoot state vote.2.target.epoch := by
+    apply getBlockRoot_processSlot computed
+    apply slot_lt_epoch_add_historical positive window
+    cases recent
+    · exact .inr epoch
+    · exact .inl epoch
+  constructor <;> rintro ⟨index, epoch, source, target⟩
+  · exact ⟨index, epoch, source, (roots epoch) ▸ target⟩
+  · exact ⟨index, epoch, source, (roots epoch).symm ▸ target⟩
+
+/-- Caching preserves the balances and voter sets used by the justification count. -/
+theorem processSlot_countingBalances {state cached : BeaconState preset fork}
+    (computed : processSlot state = .ok cached) :
+    getCurrentEpoch cached = getCurrentEpoch state ∧
+    getPreviousEpoch cached = getPreviousEpoch state ∧
+    getTotalActiveBalance cached = getTotalActiveBalance state ∧
+    (∀ indices, getTotalBalance cached indices = getTotalBalance state indices) ∧
+    activeVoters cached = activeVoters state ∧ quorumVoters cached = quorumVoters state ∧
+    (∀ index, balanceAt cached index = balanceAt state index) := by
+  obtain ⟨_, _, _, _, rfl⟩ := processSlot_ok computed
+  exact ⟨rfl, rfl, rfl, fun _ => rfl, rfl, rfl, fun _ => rfl⟩
+
+/-- Caching preserves the participating indices, including errors. -/
+theorem processSlot_participatingIndices {state cached : BeaconState preset fork}
+    (computed : processSlot state = .ok cached) (altair : .altair ≤ fork)
+    (flag : UInt64) (epoch : Epoch) :
+    getUnslashedParticipatingIndices cached altair flag epoch =
+      getUnslashedParticipatingIndices state altair flag epoch := by
+  obtain ⟨_, _, _, _, rfl⟩ := processSlot_ok computed
+  rfl
+
+/-- Caching preserves the pending target attestations for either recent epoch. -/
+theorem processSlot_matchingTargetAttestations {state cached : BeaconState preset fork}
+    (positive : 0 < preset.SLOTS_PER_EPOCH.toNat)
+    (window : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
+    (computed : processSlot state = .ok cached) (before : fork < .altair)
+    {epoch : Epoch} (recent : epoch = getCurrentEpoch state ∨ epoch = getPreviousEpoch state) :
+    getMatchingTargetAttestations cached before epoch =
+      getMatchingTargetAttestations state before epoch := by
+  have roots := getBlockRoot_processSlot computed
+    (slot_lt_epoch_add_historical positive window recent)
+  have source : getMatchingSourceAttestations cached before epoch =
+      getMatchingSourceAttestations state before epoch := by
+    obtain ⟨_, _, _, _, rfl⟩ := processSlot_ok computed
+    rfl
+  unfold getMatchingTargetAttestations
+  rw [source, roots]
+
+/-- Caching preserves the unslashed indices of any array of pending attestations. -/
+theorem processSlot_unslashedAttestingIndices {state cached : BeaconState preset fork}
+    (computed : processSlot state = .ok cached)
+    (attestations : Array (PendingAttestation preset)) :
+    getUnslashedAttestingIndices cached attestations =
+      getUnslashedAttestingIndices state attestations := by
+  obtain ⟨_, _, _, _, rfl⟩ := processSlot_ok computed
+  rfl
+
 namespace Models.Network
 
 variable {config : Config} {checks : SignatureChecks} {sources : BlockSources preset fork}
