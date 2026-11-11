@@ -1194,6 +1194,47 @@ theorem Execution.finalized_known_of_prefix {anchor : Store preset fork}
   exact ⟨block, held⟩
 
 omit [DecidablePred (· ∈ J)] in
+/-- Every realized finalized boundary stays at or above an epoch-aligned anchor. -/
+theorem Execution.anchorSlot_le_finalized_boundary {anchor : Store preset fork}
+    (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (anchorSlot : anchorBlock.slot = anchorState.slot)
+    (anchorBoundary : isStartSlotAtEpoch preset anchorBlock.slot = .ok true)
+    {w : ValidatorIndex} (start : e.start w = anchor) {k : ℕ} {boundary : Slot}
+    (boundaryOk : computeStartSlotAtEpoch preset
+      ((e.world k).state w).finalizedCheckpoint.epoch = .ok boundary) :
+    anchorBlock.slot ≤ boundary := by
+  obtain ⟨_, _, _, _, _, finalized, _, _⟩ := getForkchoiceStore_anchor anchored
+  have epochs := (e.epochsLe_of_le w (Nat.zero_le k)).2
+  simp only [Execution.world_zero, World.initial, start, finalized] at epochs
+  have rounded : anchorState.slot / preset.SLOTS_PER_EPOCH * preset.SLOTS_PER_EPOCH =
+      anchorState.slot := by
+    unfold isStartSlotAtEpoch computeSlotsSinceEpochStart at anchorBoundary
+    rw [anchorSlot, computeStartSlotAtEpoch_computeEpochAtSlot] at anchorBoundary
+    simp only [Except.mapError, bind, Except.bind, pure, Except.pure,
+      Except.ok.injEq, decide_eq_true_eq] at anchorBoundary
+    have h := (computeStartSlotAtEpoch_ok_iff.mp
+      (computeStartSlotAtEpoch_computeEpochAtSlot (preset := preset) anchorState.slot)).2
+    have le : (anchorState.slot / preset.SLOTS_PER_EPOCH *
+        preset.SLOTS_PER_EPOCH).toNat ≤ anchorState.slot.toNat := by
+      rw [h, computeEpochAtSlot, UInt64.toNat_div]
+      exact Nat.div_mul_le_self _ _
+    have zero := congrArg UInt64.toNat anchorBoundary
+    simp only [UInt64.toNat_sub, UInt64.toNat_zero] at zero
+    have upper := anchorState.slot.toNat_lt
+    have lower := (anchorState.slot / preset.SLOTS_PER_EPOCH *
+      preset.SLOTS_PER_EPOCH).toNat_lt
+    apply UInt64.toNat_inj.mp
+    omega
+  have mono := Nat.mul_le_mul_right preset.SLOTS_PER_EPOCH.toNat
+    (UInt64.le_iff_toNat_le.mp epochs)
+  have anchorValue := (computeStartSlotAtEpoch_ok_iff.mp
+    (computeStartSlotAtEpoch_computeEpochAtSlot (preset := preset) anchorState.slot)).2
+  rw [rounded] at anchorValue
+  rw [anchorSlot, UInt64.le_iff_toNat_le,
+    (computeStartSlotAtEpoch_ok_iff.mp boundaryOk).2, anchorValue]
+  exact mono
+
+omit [DecidablePred (· ∈ J)] in
 /-- Coverage by an earlier finalized checkpoint gives coverage by endpoint justification. -/
 theorem Execution.justified_covers_of_finalized_covers {anchor : Store preset fork}
     (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
@@ -1220,6 +1261,60 @@ theorem Execution.justified_covers_of_finalized_covers {anchor : Store preset fo
   obtain ⟨_, finalized, _, held, _, descends⟩ :=
     Store.isAncestor_of_getCheckpointBlock preGloas checkpoint
   exact Store.isAncestor_trans_of_lt preGloas held known descends covered
+
+omit [DecidablePred (· ∈ J)] in
+/-- Endpoint finality compatibility admits a delayed head or covers its root by justification. -/
+theorem Execution.blocks_or_justified_covers {Δ : ℕ} (sync : e.Synchronous Δ)
+    (preGloas : fork < .glamsterdam)
+    (oneBlock : OneBlockPerRoot e) (admitted : BlocksAdmitted e 0 Δ)
+    {anchor : Store preset fork}
+    (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (sound : Invariant anchorState) (start : ∀ u ∈ J, e.start u = anchor)
+    (slots : 0 < config.SLOT_DURATION_MS) (anchorSlot : anchorBlock.slot = anchorState.slot)
+    (anchorBoundary : isStartSlotAtEpoch preset anchorBlock.slot = .ok true)
+    {horizon : Epoch} (chain : FinalizedPrefix e horizon)
+    {v w : ValidatorIndex} (honest : v ∈ J) (receiver : w ∈ J)
+    {n arrival endpoint : ℕ} (later : arrival ≤ endpoint)
+    (late : (e.world n).time + Δ ≤ (e.world arrival).time)
+    (upToDate : UpToDate config checks sources (e.world arrival).time
+      ((e.world arrival).view w) ((e.world arrival).state w))
+    {arrivalEpoch endpointEpoch : Epoch}
+    (arrivalOk : ((e.world arrival).state w).getCurrentStoreEpoch config = .ok arrivalEpoch)
+    (endpointOk : ((e.world endpoint).state w).getCurrentStoreEpoch config = .ok endpointEpoch)
+    (arrivalHorizon : arrivalEpoch ≤ horizon) (endpointHorizon : endpointEpoch ≤ horizon)
+    {head : ForkChoiceNode} {root : Root} {headBlock rootBlock : BeaconBlock preset fork}
+    (headKnown : ((e.world n).state v).blocks[head.root]? = some headBlock)
+    (sourceKnown : ((e.world n).state v).blocks[root]? = some rootBlock)
+    (known : ((e.world endpoint).state w).blocks[root]? = some rootBlock)
+    (supports : ((e.world n).state v).isAncestor head ⟨root, .pending⟩ = .ok true)
+    (compatible : (∃ boundary,
+      computeStartSlotAtEpoch preset ((e.world arrival).state w).finalizedCheckpoint.epoch =
+        .ok boundary ∧ boundary ≤ rootBlock.slot ∧
+      ((e.world endpoint).state w).getCheckpointBlock root
+        ((e.world arrival).state w).finalizedCheckpoint.epoch =
+          .ok ((e.world arrival).state w).finalizedCheckpoint.root) ∨
+      ((e.world endpoint).state w).isAncestor
+        ⟨((e.world arrival).state w).finalizedCheckpoint.root, .pending⟩
+        ⟨root, .pending⟩ = .ok true) :
+    ((e.world arrival).state w).blocks[head.root]? = some headBlock ∨
+      ((e.world endpoint).state w).isAncestor
+        ⟨((e.world endpoint).state w).justifiedCheckpoint.root, .pending⟩
+        ⟨root, .pending⟩ = .ok true := by
+  rcases compatible with ⟨boundary, boundaryOk, belowRoot, checkpoint⟩ | covered
+  · left
+    exact e.blocks_of_endpoint_checkpoint sync preGloas oneBlock admitted anchored start
+      honest receiver late upToDate
+      (e.finalized_known_of_prefix anchored sound start slots anchorSlot preGloas chain
+        receiver arrivalOk arrivalHorizon) headKnown sourceKnown supports boundaryOk
+      (e.anchorSlot_le_finalized_boundary anchored anchorSlot anchorBoundary
+        (start w receiver) boundaryOk) belowRoot checkpoint
+  · right
+    have forward := e.forwardReachable
+      (fun u hu => (start u hu) ▸ Store.ForwardReachable.anchor anchored) endpoint w receiver
+    have justifiedLe := (forward.justified_epoch_le_current sound slots
+      (UInt64.le_of_eq anchorSlot) endpointOk).1
+    exact e.justified_covers_of_finalized_covers anchored sound start preGloas chain receiver
+      later (UInt64.le_trans justifiedLe endpointHorizon) known covered
 
 /-- A complete duty epoch gives honest support unless justification already covers the root.
 
