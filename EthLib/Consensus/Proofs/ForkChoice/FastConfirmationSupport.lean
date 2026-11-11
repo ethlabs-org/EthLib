@@ -7,6 +7,7 @@ public import EthLib.Consensus.Proofs.ForkChoice.HonestCheckpoints
 public import EthLib.Consensus.Proofs.ForkChoice.VoteOrigins
 public import EthLib.Consensus.Proofs.ForkChoice.JustifiedOrigins
 public import EthLib.Consensus.Proofs.Transition.RunKept
+import EthLib.Consensus.Proofs.HonestAggregation
 
 /-!
 # Statements: the honest support of a confirmed block reaches each honest store
@@ -207,6 +208,25 @@ theorem getAncestor_of_same_blocks {receiver : Store preset fork}
         rw [parentFound, Option.some.injEq] at eq
         subst p
         simp [notLower, throw, throwThe, MonadExceptOf.throw] at walk
+
+/-- Ancestor tests agree across reachable stores holding the tip and ancestor above the anchor. -/
+theorem isAncestor_of_same_blocks {receiver : Store preset fork}
+    {anchorState : BeaconState preset fork} {anchorBlock : BeaconBlock preset fork}
+    (reachable : Reachable config anchorState anchorBlock receiver)
+    (before : fork < .glamsterdam)
+    (same : ∀ (r : Root) b c, store.blocks[r]? = some b →
+      receiver.blocks[r]? = some c → b = c)
+    {node ancestor : ForkChoiceNode} {block : BeaconBlock preset fork}
+    (sourceKnown : store.blocks[ancestor.root]? = some block)
+    (targetKnown : receiver.blocks[ancestor.root]? = some block)
+    (aboveAnchor : anchorBlock.slot ≤ block.slot)
+    (known : ∃ tip, receiver.blocks[node.root]? = some tip)
+    (descends : store.isAncestor node ancestor = .ok true) :
+    receiver.isAncestor node ancestor = .ok true := by
+  have walk := getAncestor_of_isAncestor_of_lt before sourceKnown descends
+  have transferred := getAncestor_of_same_blocks reachable same aboveAnchor known walk
+  simp [isAncestor, block_ok_iff.mpr targetKnown,
+    transferred, bind, Except.bind, pure, Except.pure]
 
 /-- Checkpoint reads agree across reachable stores holding the tip above the anchor boundary. -/
 theorem getCheckpointBlock_of_same_blocks {receiver : Store preset fork}
@@ -1017,6 +1037,82 @@ theorem VoteAt.head_supports_of_safe {anchor : Store preset fork}
   refine ⟨head, block, headOk, held, same, past, ?_⟩
   exact safe deadline afterFirst before v honest n head vote.atTime
     (vote.atTime.symm ▸ vote.upToDate) headOk
+
+omit [DecidablePred (· ∈ J)] in
+/-- A signed honest vote in the safe interval supports the root wherever its tip is held. -/
+theorem Execution.isAncestor_of_maySign_of_safe {anchor : Store preset fork}
+    (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (start : ∀ u ∈ J, e.start u = anchor) (oneBlock : OneBlockPerRoot e)
+    (preGloas : fork < .glamsterdam)
+    {v w : ValidatorIndex} (honest : v ∈ J) (receiver : w ∈ J) {n k : ℕ}
+    {data : AttestationData}
+    (signed : MaySign config checks sources anchorState anchorBlock assignment genesisTimeMs v
+      (e.world n).time ((e.world n).view v) ((e.world n).state v) data)
+    {first time : ℕ} {root : Root} (afterFirst : first ≤ (e.world n).time)
+    (before : (e.world n).time < time)
+    (safe : ∀ earlier, first ≤ earlier → earlier < time → SafeAt e earlier root)
+    {rootBlock tip : BeaconBlock preset fork}
+    (known : ((e.world k).state w).blocks[root]? = some rootBlock)
+    (aboveAnchor : anchorBlock.slot ≤ rootBlock.slot)
+    (tipKnown : ((e.world k).state w).blocks[data.beaconBlockRoot]? = some tip) :
+    ((e.world k).state w).isAncestor ⟨data.beaconBlockRoot, .pending⟩
+      ⟨root, .pending⟩ = .ok true := by
+  obtain ⟨committee, _, _, _, upToDate, honestData, _⟩ := signed
+  obtain ⟨head, block, headState, state, headOk, _, _, _, made⟩ := honestData
+  obtain ⟨_, _, _, dataRoot, _, _⟩ := getAttestationData_eq_ok_iff.mp made
+  have supported := safe _ afterFirst before v honest n head rfl upToDate headOk
+  have sourceKnown : ∃ b, ((e.world n).state v).blocks[root]? = some b := by
+    unfold Store.isAncestor at supported
+    simp only [bind_ok_iff] at supported
+    obtain ⟨b, found, _⟩ := supported
+    exact ⟨b, Store.block_ok_iff.mp found⟩
+  obtain ⟨sourceBlock, sourceKnown⟩ := sourceKnown
+  have eq := oneBlock v honest w receiver n k root sourceBlock rootBlock sourceKnown known
+  subst sourceBlock
+  have reached := e.reachable
+    (fun u hu => (start u hu) ▸ Store.Reachable.anchor anchored) k w receiver
+  have transferred := Store.isAncestor_of_same_blocks reached preGloas
+    (oneBlock v honest w receiver n k) sourceKnown known aboveAnchor
+    ⟨tip, dataRoot ▸ tipKnown⟩ supported
+  have pending := Store.getHead_pending preGloas headOk
+  have headEq : head = ⟨data.beaconBlockRoot, .pending⟩ := by
+    cases head
+    simp_all
+  exact headEq ▸ transferred
+
+omit [DecidablePred (· ∈ J)] in
+/-- A latest honest vote signed in the safe interval contributes its endpoint tally balance. -/
+theorem Execution.mem_supportersOf_of_signed_in_range {anchor : Store preset fork}
+    (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (start : ∀ u ∈ J, e.start u = anchor) (oneBlock : OneBlockPerRoot e)
+    (preGloas : fork < .glamsterdam)
+    {v w : ValidatorIndex} (honest : v ∈ J) (receiver : w ∈ J) {n k : ℕ}
+    {attestation : Attestation preset fork}
+    (signed : MaySign config checks sources anchorState anchorBlock assignment genesisTimeMs v
+      (e.world n).time ((e.world n).view v) ((e.world n).state v) attestation.data)
+    (latest : ((e.world k).state w).latestMessages[v]? =
+      some (LatestMessage.ofAttestation attestation))
+    (counted : v ∉ ((e.world k).state w).equivocatingIndices)
+    {first time : ℕ} {root : Root} (afterFirst : first ≤ (e.world n).time)
+    (before : (e.world n).time < time)
+    (safe : ∀ earlier, first ≤ earlier → earlier < time → SafeAt e earlier root)
+    {rootBlock tip : BeaconBlock preset fork}
+    (known : ((e.world k).state w).blocks[root]? = some rootBlock)
+    (aboveAnchor : anchorBlock.slot ≤ rootBlock.slot)
+    (tipKnown : ((e.world k).state w).blocks[attestation.data.beaconBlockRoot]? = some tip)
+    {state : BeaconState preset fork}
+    (active : v ∈ ((unslashedActiveBalances state).map (·.1)).toFinset) :
+    v ∈ ((e.world k).state w).supportersOf state ⟨root, .pending⟩ := by
+  have descends := e.isAncestor_of_maySign_of_safe anchored start oneBlock preGloas
+    honest receiver signed afterFirst before safe known aboveAnchor tipKnown
+  have check : ((e.world k).state w).voteCountsFor ⟨root, .pending⟩ v = true := by
+    apply Store.voteCountsFor_of_check _ latest (by simpa using counted)
+    simpa only [Store.getSupportedNode_of_lt preGloas, bind, Except.bind,
+      LatestMessage.ofAttestation] using descends
+  simp only [List.mem_toFinset, List.mem_map] at active
+  obtain ⟨entry, member, eq⟩ := active
+  simp only [Store.supportersOf, List.mem_toFinset, List.mem_map, List.mem_filter]
+  exact ⟨entry, ⟨member, eq ▸ check⟩, eq⟩
 
 omit [DecidablePred (· ∈ J)] in
 /-- Honest stores with the same blocks compute the same cached target state under fixed checks. -/
