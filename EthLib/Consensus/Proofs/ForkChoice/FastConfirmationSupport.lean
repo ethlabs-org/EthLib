@@ -8,7 +8,6 @@ public import EthLib.Consensus.Proofs.ForkChoice.VoteOrigins
 public import EthLib.Consensus.Proofs.ForkChoice.JustifiedOrigins
 public import EthLib.Consensus.Proofs.ForkChoice.HonestVotes
 public import EthLib.Consensus.Proofs.Transition.RunKept
-import EthLib.Consensus.Proofs.ForkChoice.HonestVotes
 import EthLib.Consensus.Proofs.HonestAggregation
 import EthLib.Consensus.Proofs.ForkChoice.BlockStates
 
@@ -1773,7 +1772,7 @@ Finality either permits head admission before the next boundary or already cover
 
 This is the late support step of arXiv 2405.00549v4, Lemma 2.
 
-The statement is under review; head admission must be derived, not assumed as vote delivery. -/
+Head admission follows from endpoint finality compatibility before the next slot boundary. -/
 theorem Execution.mem_supportersOf_of_duty_epoch {Δ : ℕ} (sync : e.Synchronous Δ)
     (slots : 0 < config.SLOT_DURATION_MS) (positive : 0 < preset.SLOTS_PER_EPOCH.toNat)
     (window : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
@@ -1839,7 +1838,133 @@ theorem Execution.mem_supportersOf_of_duty_epoch {Δ : ℕ} (sync : e.Synchronou
       ((e.world k).state w).isAncestor
         ⟨((e.world k).state w).justifiedCheckpoint.root, .pending⟩
         ⟨root, .pending⟩ = .ok true := by
-  sorry
+  have _ := positive
+  have _ := window
+  have _ := ring
+  have _ := large
+  have _ := few
+  have _ := stateOk
+  have _ := within
+  have forward := fun u hu j => e.forwardReachable
+    (fun u hu => (start u hu) ▸ Store.ForwardReachable.anchor anchored) j u hu
+  have rootAbove := (forward w receiver k).reachable.anchorSlot_le_block
+    known
+  obtain ⟨slot, committee, beginLe, slotLt, assigned⟩ := duty
+  obtain ⟨followingSlot, slotTime, followingTime, deadline, n, attestation, indexed,
+      nextSlotOk, slotTimeOk, followingTimeOk, deadlineOk, firstLe, beforeBoundary,
+      boundaryLe, vote⟩ := e.exists_voteAt_of_duty_interval votes fits beginTimeOk endTimeOk
+    started fresh complete honest beginLe slotLt assigned
+  obtain ⟨due, dueOk⟩ := fits.1
+  have dueLt := fits.due_lt_slot nextSlotOk slotTimeOk followingTimeOk dueOk
+  obtain ⟨dataSlot, dataEpoch, head, headBlock, headOk, headKnown, dataRoot, notFuture⟩ :=
+    vote.data_head anchored (UInt64.le_of_eq anchorSlot) start honest deadlineOk dueOk dueLt
+  have supports := safe deadline firstLe (by omega) v honest n head vote.atTime
+    (vote.atTime.symm ▸ vote.upToDate) headOk
+  have sourceKnown : ((e.world n).state v).blocks[root]? = some rootBlock := by
+    have test := supports
+    unfold Store.isAncestor at test
+    simp only [bind_ok_iff] at test
+    obtain ⟨block, held, _⟩ := test
+    have held := Store.block_ok_iff.mp held
+    have eq := oneBlock v honest w receiver n k root block rootBlock held known
+    exact eq ▸ held
+  have genesis : ∀ j, ((e.world j).state w).genesisTimeMs = genesisTimeMs := by
+    intro j
+    have left := (e.clock_bounds v n).1
+    have right := (e.clock_bounds w j).1
+    rw [start v honest] at left
+    rw [start w receiver] at right
+    exact right.trans (left.symm.trans vote.genesis)
+  have epochExists : ∀ j, ∃ current,
+      ((e.world j).state w).getCurrentStoreEpoch config = .ok current := by
+    intro j
+    obtain ⟨current, currentOk, _, _⟩ :=
+      (forward w receiver j).slots_le_current slots (UInt64.le_of_eq anchorSlot)
+    exact ⟨computeEpochAtSlot preset current, by
+      simp [Store.getCurrentStoreEpoch, currentOk, bind, Except.bind, pure, Except.pure]⟩
+  obtain ⟨endpointEpoch, endpointOk⟩ := epochExists k
+  have endpointHorizon := inHorizon w receiver k endpointEpoch (by omega) endpointOk
+  obtain ⟨⟨pre, preTime, preLate, preCurrent⟩, ⟨boundary, boundaryTime, boundaryCurrent⟩⟩ :=
+    e.exists_duty_boundaries fits prompt receiver nextSlotOk slotTimeOk followingTimeOk
+      deadlineOk (started.trans firstLe)
+  have preLe : pre ≤ k := by
+    by_contra h
+    have bad := e.monotone_time (Nat.le_of_lt (Nat.lt_of_not_ge h))
+    dsimp at bad
+    omega
+  obtain ⟨preEpoch, preEpochOk⟩ := epochExists pre
+  have preHorizon := inHorizon w receiver pre preEpoch (by omega) preEpochOk
+  rcases e.blocks_or_justified_covers sync preGloas oneBlock admitted anchored sound start
+      slots anchorSlot anchorBoundary chain honest receiver preLe
+      (by simpa [vote.atTime] using preLate) preCurrent preEpochOk endpointOk preHorizon
+      endpointHorizon headKnown sourceKnown known supports
+      (rootFinal pre preLe (by omega) preCurrent) with admittedHead | covered
+  swap
+  · exact Or.inr covered
+  have arrivalExists : ∃ arrival, pre ≤ arrival ∧ arrival ≤ k ∧
+      (e.world arrival).time = followingTime.toNat ∧
+      UpToDate config checks sources (e.world arrival).time ((e.world arrival).view w)
+        ((e.world arrival).state w) := by
+    by_cases same : followingTime.toNat = time
+    · exact ⟨k, preLe, le_refl _, by omega, upToDate⟩
+    · have boundaryBefore : boundary ≤ k := by
+        by_contra h
+        have bad := e.monotone_time (Nat.le_of_lt (Nat.lt_of_not_ge h))
+        dsimp at bad
+        omega
+      have preBefore : pre ≤ boundary := by
+        by_contra h
+        have bad := e.monotone_time (Nat.le_of_lt (Nat.lt_of_not_ge h))
+        dsimp at bad
+        omega
+      exact ⟨boundary, preBefore, boundaryBefore, boundaryTime, boundaryCurrent⟩
+  obtain ⟨arrival, preArrival, arrivalLe, arrivalTime, arrivalCurrent⟩ := arrivalExists
+  have currentOk : ((e.world arrival).state w).getCurrentSlot config = .ok followingSlot := by
+    unfold Store.getCurrentSlot
+    rw [genesis arrival]
+    have clock : ((e.world arrival).state w).timeMs = followingTime :=
+      UInt64.toNat_inj.mp (arrivalCurrent.1.trans arrivalTime)
+    rw [clock]
+    exact mapError_ok_iff.mpr (computeSlotAtTimeMs_computeTimeAtSlotMs slots followingTimeOk)
+  have votedKnown : ((e.world arrival).state w).blocks[attestation.data.beaconBlockRoot]? =
+      some headBlock := dataRoot ▸ e.blocks_of_le preArrival admittedHead
+  have targetRead := vote.data_target anchored anchorSlot anchorBoundary start honest
+    (nonzero v honest n (by rw [vote.atTime]; omega)) deadlineOk dueOk dueLt
+  obtain ⟨targetBoundary, targetBlock, targetBoundaryOk, targetKnown, targetLe, _⟩ :=
+    Store.isAncestor_of_getCheckpointBlock preGloas targetRead
+  have targetAbove := (forward v honest n).reachable.anchorSlot_le_block
+    targetKnown
+  have receiverRead := Store.getCheckpointBlock_of_same_blocks
+    (forward w receiver arrival).reachable (oneBlock v honest w receiver n arrival)
+    targetBoundaryOk (UInt64.le_trans targetAbove targetLe) ⟨headBlock, votedKnown⟩ targetRead
+  have anchorEmpty : anchor.equivocatingIndices = [] := by
+    unfold getForkchoiceStore at anchored
+    simp only [bind_ok_iff] at anchored
+    obtain ⟨_, _, anchored⟩ := anchored
+    split at anchored
+    · simp [throw, throwThe, MonadExceptOf.throw, bind, Except.bind] at anchored
+    · simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at anchored
+      obtain ⟨_, _, _, _, rfl⟩ := anchored
+      rfl
+  have counted := fun j => e.not_mem_equivocatingIndices slots
+    (fun u hu => (start u hu) ▸ anchorEmpty)
+    receiver honest j
+  obtain ⟨latest, latestOk, rank⟩ := vote.recorded_at_next_slot sync preGloas anchored start
+    oneBlock honest receiver dataSlot dataEpoch nextSlotOk currentOk (by omega) arrivalCurrent
+    (counted arrival) arrivalLe votedKnown notFuture receiverRead
+  have dutyEpoch : computeEpochAtSlot preset slot = epoch := by
+    have b := (computeStartSlotAtEpoch_ok_iff.mp beginOk).2
+    have nx := (addChecked_ok_iff.mp nextOk).2
+    have lo := UInt64.le_iff_toNat_le.mp beginLe
+    have hi := UInt64.lt_iff_toNat_lt.mp slotLt
+    apply UInt64.toNat_inj.mp
+    simp only [computeEpochAtSlot, UInt64.toNat_div]
+    exact Nat.div_eq_of_lt_le (by omega) (by rw [Nat.add_mul, Nat.one_mul]; omega)
+  left
+  exact e.mem_supportersOf_of_latest_rank anchored start oneBlock preGloas honest receiver
+    latestOk (counted k) upToDate dueOk dueLt beginOk beginTimeOk fresh
+    (by simpa [dataEpoch, dutyEpoch] using rank)
+    (fun earlier hfirst htime => safe earlier hfirst (by omega)) known rootAbove active
 
 end Models.Network
 
