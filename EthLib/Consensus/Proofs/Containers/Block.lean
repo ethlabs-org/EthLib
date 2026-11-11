@@ -198,25 +198,35 @@ instance : LawfulSszType (BeaconBlock preset fork) :=
 instance : LawfulSszType (SignedBeaconBlock preset fork) :=
   .container ⟨rfl, by simp, by decide⟩ (fun _ => rfl) (fun _ => rfl)
 
+omit [NeZero preset.BYTES_PER_LOGS_BLOOM.toNat] [NeZero preset.SYNC_COMMITTEE_SIZE.toNat]
+  [NeZero preset.MAX_COMMITTEES_PER_SLOT.toNat] [NeZero preset.PTC_SIZE.toNat]
+  [NeZero preset.INCLUSION_LIST_COMMITTEE_SIZE.toNat] in
 /-- A block has the root of its header, whose last field is the root of the body of the block. -/
 theorem BeaconBlock.hashTreeRoot_header {block : BeaconBlock preset fork} {bodyRoot : Root}
     (rooted : SszType.hashTreeRoot block.body = .ok bodyRoot) :
     SszType.hashTreeRoot (BeaconBlockHeader.mk block.slot block.proposerIndex block.parentRoot
       block.stateRoot bodyRoot) = SszType.hashTreeRoot block := by
-  rw [SszType.hashTreeRoot_ok_iff] at rooted
-  rw [SszType.hashTreeRoot_eq, SszType.hashTreeRoot_eq]
-  simp only [SszType.desc, SszType.toValue]
-  -- The body is the fifth field, which its root replaces in the header.
-  have summary := hashTreeRoot_summary
-    (names := ["slot", "proposer_index", "parent_root", "state_root", "body"]) (position := 4)
-    (fields := SszFields.descs (Slot × ValidatorIndex × Root × Root × BeaconBlockBody preset fork))
-    (values :=
-      SszFields.toValues (block.slot, block.proposerIndex, block.parentRoot, block.stateRoot,
-        block.body))
-    rfl rfl rfl rooted
-  rw [← summary, hashTreeRoot_container_names
+  have raw : SszType.root block.body = .ok bodyRoot.toArray := by
+    unfold SszType.hashTreeRoot at rooted
+    cases h : SszType.root block.body with
+    | error err => simp [h, bind, Except.bind] at rooted
+    | ok bytes =>
+      simp only [h, bind, Except.bind] at rooted
+      exact congrArg Except.ok (toChunk_ok_iff.mp rooted)
+  have chunk : SszType.root bodyRoot = .ok bodyRoot.toArray := by
+    rw [LawfulSszType.root_eq]
+    exact hashTreeRoot_chunk (by simp [bytesPerChunk])
+  change ((SszFields.roots
+      (block.slot, block.proposerIndex, block.parentRoot, block.stateRoot, bodyRoot) >>=
+    summaryRoot (.container
+      ["slot", "proposer_index", "parent_root", "state_root", "body_root"])) >>= toChunk) =
+    ((SszFields.roots
+      (block.slot, block.proposerIndex, block.parentRoot, block.stateRoot, block.body) >>=
+    summaryRoot (.container
+      ["slot", "proposer_index", "parent_root", "state_root", "body"])) >>= toChunk)
+  simp only [SszFields.roots, raw, chunk, bind, Except.bind, pure, Except.pure]
+  simp only [summaryRoot, hashTreeRoot_container_names
     ["slot", "proposer_index", "parent_root", "state_root", "body_root"]
     ["slot", "proposer_index", "parent_root", "state_root", "body"]]
-  rfl
 
 end EthLib.Consensus

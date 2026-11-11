@@ -1,6 +1,7 @@
 module
 
 public import EthLib.Consensus.Proofs.ForkChoice.Reachable
+import EthLib.Consensus.Proofs.Containers.Block
 
 /-!
 # Proofs: each block state of a store comes from the state of its parent
@@ -181,5 +182,160 @@ theorem Store.Reachable.blockStatesFromParents
     rw [blocks] at found
     rw [states]
     exact ih found
+
+/-- The root of the anchor state is the state root declared by its block. -/
+theorem Store.Reachable.anchorState_root
+    (reachable : Store.Reachable config anchorState anchorBlock store) :
+    SszType.hashTreeRoot anchorState = .ok anchorBlock.stateRoot := by
+  induction reachable with
+  | anchor made =>
+    unfold getForkchoiceStore at made
+    cases hashed : SszType.hashTreeRoot anchorState with
+    | error err => simp [hashed, bind, Except.bind, Except.mapError] at made
+    | ok root =>
+      simp only [hashed, bind, Except.bind, Except.mapError] at made
+      split at made
+      · simp [throw, throwThe, MonadExceptOf.throw] at made
+      · rename_i same
+        simp only [not_not.mp same]
+  | _ => assumption
+
+/-- A non-anchor block state has the block's slot and its header with an empty state root. -/
+theorem Store.Reachable.blockState_header
+    (reachable : Store.Reachable config anchorState anchorBlock store)
+    {root : Root} {block : BeaconBlock preset fork} {state : BeaconState preset fork}
+    (found : store.blocks[root]? = some block) (stored : store.blockStates[root]? = some state)
+    (other : block ≠ anchorBlock) :
+    state.slot = block.slot ∧ SszType.hashTreeRoot state = .ok block.stateRoot ∧
+      ∃ bodyRoot, SszType.hashTreeRoot block.body = .ok bodyRoot ∧
+        state.latestBlockHeader =
+          { slot := block.slot, proposerIndex := block.proposerIndex,
+            parentRoot := block.parentRoot, stateRoot := Vector.replicate 32 0, bodyRoot } := by
+  obtain ⟨post, postOk, -, produced⟩ := reachable.blockStatesFromParents found
+  rw [stored, Option.some.injEq] at postOk
+  subst post
+  obtain ⟨parent, checks, engine, signed, message, -, transitioned⟩ := produced other
+  obtain ⟨advanced, -, -, -, processed, rooted⟩ := stateTransition_ok transitioned
+  refine ⟨by simpa [message] using (stateTransition_slot transitioned).2, ?_, ?_⟩
+  · simpa [message] using rooted rfl
+  · simpa [message] using (processBlock_blockRoots_latestBlockHeader processed).2
+
+/-- Advancing a non-anchor block state reconstructs the block root from its header.
+
+The block's state root must be nonzero so that later empty slots do not replace it. -/
+theorem Store.Reachable.blockState_processSlots_header
+    (reachable : Store.Reachable config anchorState anchorBlock store)
+    {root : Root} {block : BeaconBlock preset fork} {state advanced : BeaconState preset fork}
+    {checks : SignatureChecks} {slot : Slot}
+    (found : store.blocks[root]? = some block) (stored : store.blockStates[root]? = some state)
+    (other : block ≠ anchorBlock) (nonzero : block.stateRoot ≠ Vector.replicate 32 0)
+    (computed : processSlots config checks state slot = .ok advanced) :
+    SszType.hashTreeRoot advanced.latestBlockHeader = .ok root := by
+  obtain ⟨-, hashed, bodyRoot, bodyHashed, header⟩ :=
+    reachable.blockState_header found stored other
+  have filled := processSlots_latestBlockHeader_of_zero
+    (by rw [header]) hashed nonzero computed
+  rw [filled, header]
+  exact (BeaconBlock.hashTreeRoot_header bodyHashed).trans (reachable.root found)
+
+/-- A history read written after a non-anchor block names that block until the next block. -/
+theorem Store.Reachable.blockState_processSlots_root
+    (reachable : Store.Reachable config anchorState anchorBlock store)
+    {root readRoot : Root} {block : BeaconBlock preset fork}
+    {state advanced : BeaconState preset fork} {checks : SignatureChecks} {slot query : Slot}
+    (found : store.blocks[root]? = some block) (stored : store.blockStates[root]? = some state)
+    (other : block ≠ anchorBlock) (nonzero : block.stateRoot ≠ Vector.replicate 32 0)
+    (computed : processSlots config checks state slot = .ok advanced)
+    (read : getBlockRootAtSlot advanced query = .ok readRoot) (later : block.slot ≤ query) :
+    readRoot = root := by
+  obtain ⟨atSlot, hashed, bodyRoot, bodyHashed, header⟩ :=
+    reachable.blockState_header found stored other
+  simp only [processSlots, bind_ok_iff, ensure_ok_iff] at computed
+  obtain ⟨_, -, advancedOk⟩ := computed
+  have readHash := getBlockRootAtSlot_advanceSlots_of_zero
+    (by rw [header]) hashed nonzero advancedOk read (atSlot ▸ later)
+  rw [header] at readHash
+  have blockHash := (BeaconBlock.hashTreeRoot_header bodyHashed).trans (reachable.root found)
+  exact Except.ok.inj (readHash.symm.trans blockHash)
+
+/-- Every held block state hashes to the state root of its block, including the anchor. -/
+theorem Store.Reachable.blockState_root
+    (reachable : Store.Reachable config anchorState anchorBlock store)
+    {root : Root} {block : BeaconBlock preset fork} {state : BeaconState preset fork}
+    (found : store.blocks[root]? = some block) (stored : store.blockStates[root]? = some state) :
+    SszType.hashTreeRoot state = .ok block.stateRoot := by
+  by_cases same : block = anchorBlock
+  · obtain ⟨post, postOk, anchored, -⟩ := reachable.blockStatesFromParents found
+    rw [stored, Option.some.injEq] at postOk
+    subst post
+    rw [anchored same, same]
+    exact reachable.anchorState_root
+  · exact (reachable.blockState_header found stored same).2.1
+
+/-- A history read later than the anchor state names a held block.
+
+The proof follows earlier block states until it reaches the slot run that wrote the root.
+For that run, the next block validates the cached header as its held parent. -/
+theorem Store.Reachable.blockState_history_known
+    (reachable : Store.Reachable config anchorState anchorBlock store)
+    (nonzero : ∀ (root : Root) (block : BeaconBlock preset fork), store.blocks[root]? = some block →
+      block.stateRoot ≠ Vector.replicate 32 0)
+    {root readRoot : Root} {state : BeaconState preset fork} {query : Slot}
+    (stored : store.blockStates[root]? = some state)
+    (read : getBlockRootAtSlot state query = .ok readRoot)
+    (later : anchorState.slot ≤ query) :
+    ∃ block, store.blocks[readRoot]? = some block := by
+  obtain ⟨block, found⟩ := reachable.known_of_blockState stored
+  obtain ⟨post, postOk, anchored, produced⟩ := reachable.blockStatesFromParents found
+  rw [stored, Option.some.injEq] at postOk
+  subst post
+  by_cases same : block = anchorBlock
+  · rw [anchored same] at read
+    have before := (getBlockRootAtSlot_ok_iff.mp read).1
+    have le := UInt64.le_iff_toNat_le.mp later
+    omega
+  · obtain ⟨parent, checks, engine, signed, message, parentFound, transitioned⟩ := produced same
+    obtain ⟨advanced, slotsOk, advancedSlot, -, blockOk, -⟩ := stateTransition_ok transitioned
+    have advancedRead : getBlockRootAtSlot advanced query = .ok readRoot := by
+      unfold getBlockRootAtSlot at read ⊢
+      rwa [(processBlock_slot blockOk), (processBlock_blockRoots_latestBlockHeader blockOk).1]
+        at read
+    by_cases old : query < parent.slot
+    · have run := slotsOk
+      simp only [processSlots, bind_ok_iff, ensure_ok_iff] at run
+      obtain ⟨_, -, advancedOk⟩ := run
+      exact reachable.blockState_history_known nonzero parentFound
+        (getBlockRootAtSlot_of_advanceSlots advancedOk advancedRead old) later
+    · obtain ⟨parentBlock, parentKnown⟩ := reachable.known_of_blockState parentFound
+      have cached := getBlockRootAtSlot_processSlots_header
+        (reachable.blockState_root parentKnown parentFound) (nonzero _ _ parentKnown)
+        slotsOk advancedRead (UInt64.not_lt.mp old)
+      have parentHash := processBlock_parentRoot blockOk
+      rw [message] at parentHash
+      have eq := Except.ok.inj (cached.symm.trans parentHash)
+      exact ⟨parentBlock, eq ▸ parentKnown⟩
+termination_by state.slot.toNat
+decreasing_by
+  have bounds := stateTransition_slot transitioned
+  rw [bounds.2]
+  exact UInt64.lt_iff_toNat_lt.mp bounds.1
+
+/-- A held child's pre-block history also names held blocks after the anchor state slot. -/
+theorem Store.Reachable.preBlock_history_known
+    (reachable : Store.Reachable config anchorState anchorBlock store)
+    (nonzero : ∀ (root : Root) (block : BeaconBlock preset fork), store.blocks[root]? = some block →
+      block.stateRoot ≠ Vector.replicate 32 0)
+    {root readRoot : Root} {state advanced : BeaconState preset fork} {query : Slot}
+    {checks : SignatureChecks} {engine : ExecutionEngine preset fork}
+    {block : BeaconBlock preset fork}
+    (stored : store.blockStates[root]? = some state)
+    (processed : processBlock config checks engine advanced block = .ok state)
+    (read : getBlockRootAtSlot advanced query = .ok readRoot)
+    (later : anchorState.slot ≤ query) :
+    ∃ ancestor, store.blocks[readRoot]? = some ancestor := by
+  apply reachable.blockState_history_known nonzero stored _ later
+  unfold getBlockRootAtSlot
+  rw [processBlock_slot processed, (processBlock_blockRoots_latestBlockHeader processed).1]
+  exact read
 
 end EthLib.Consensus
