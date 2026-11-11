@@ -1274,6 +1274,32 @@ theorem isAncestor_getHead_of_majority_withBoost {nodes : List ForkChoiceNode}
   subst headPending
   exact same ▸ computed
 
+/-- A viable node remains on the head chain when missing honest weight fits the majority margin.
+
+Balances are read only in this store's justified state, even if that state is old.
+
+The missing weight includes honest validators whose old votes do not support the node.
+
+This is the endpoint-weighted majority step of the fast-confirmation argument,
+arXiv 2405.00549v4, Lemma 2. -/
+theorem isAncestor_getHead_of_missing_weight {nodes : List ForkChoiceNode}
+    {node head : ForkChoiceNode} {score : Gwei} {J : Set ℕ} [DecidablePred (· ∈ J)]
+    {num den missing : ℕ} (lower : store.ParentsBelow)
+    (before : fork < .glamsterdam)
+    (justifiedState : store.checkpointState store.justifiedCheckpoint = .ok state)
+    (tree : store.getFilteredNodeTree config = .ok nodes) (viable : node ∈ nodes)
+    (votes : store.getAttestationScore node state = .ok score)
+    (byzantine : Models.ByzantineStakeAtMost (balanceAt state) (voters state) J num den)
+    (support : Models.stake (balanceAt state) {v ∈ voters state | v ∈ J} ≤
+      score.toNat + missing)
+    (half : 2 * num ≤ den)
+    (margin : den * (2 * missing + store.boostScore config) <
+      (den - 2 * num) * Models.stake (balanceAt state) (voters state))
+    (found : store.getHead config = .ok head) :
+    store.isAncestor head node = .ok true := by
+  exact isAncestor_getHead_of_majority_withBoost lower before justifiedState tree viable votes
+    (byzantine.majority_of_missing_weight support half margin) found
+
 /-- Without a boosted block, the score of the boost is 0. -/
 theorem boostScore_of_zero (noBoost : store.proposerBoostRoot = Vector.replicate 32 0) :
     store.boostScore config = 0 := by

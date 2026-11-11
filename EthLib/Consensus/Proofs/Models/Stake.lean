@@ -1,6 +1,7 @@
 module
 
 public import Mathlib.Algebra.Order.BigOperators.Group.Finset
+public import Mathlib.Tactic.Linarith
 
 /-!
 # Stake
@@ -206,6 +207,23 @@ theorem honest (bound : ByzantineStakeAtMost w V J num den) :
     rw [← split, Nat.mul_add]
   rw [Nat.sub_mul]
   omega
+
+/-- Honest support gives a strict majority despite a bounded missing weight and a boost.
+
+All weights use the same state; missing voters may have left its recent committees.
+
+The missing weight counts twice because it can support the competing branch. -/
+theorem majority_of_missing_weight (bound : ByzantineStakeAtMost w V J num den)
+    {score missing boost : ℕ}
+    (support : stake w {v ∈ V | v ∈ J} ≤ score + missing)
+    (half : 2 * num ≤ den)
+    (margin : den * (2 * missing + boost) < (den - 2 * num) * stake w V) :
+    stake w V + boost < 2 * score := by
+  have honest := bound.honest
+  have positive := bound.1
+  have split : den - 2 * num + 2 * num = den := Nat.sub_add_cancel half
+  have split' : den - num + num = den := Nat.sub_add_cancel (by omega)
+  nlinarith
 
 /-- The bound holds for every fraction when every validator of `V` is honest. -/
 theorem of_subset (num : ℕ) (positive : 0 < den) (all : ↑V ⊆ J) :
