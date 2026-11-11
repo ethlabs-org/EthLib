@@ -197,6 +197,106 @@ theorem finalized_of_checkpointFromRunsOn {anchorState : BeaconState preset fork
     · exact absurd (by rw [atGenesis]) notGenesis
     · exact ⟨s, run, byCall⟩
 
+/-- A non-anchor justified checkpoint of a store has provenance from a history to its anchor.
+
+The history may cross forks, so the anchor need not be a genesis state. -/
+theorem justified_of_checkpointFromRunsOn_reachable {g : ForkedBeaconState preset}
+    {anchorState : BeaconState preset fork} {anchor c : Checkpoint}
+    (history : Run config checks g ⟨fork, anchorState⟩)
+    (notAnchor : c ≠ anchor)
+    (origin : Store.CheckpointFromRuns config checks anchorState anchor
+      (·.currentJustifiedCheckpoint) c) :
+    ∃ (s : BeaconState preset fork) (run : Run config checks g ⟨fork, s⟩),
+      JustifiedOrStartOn run c ∨ JustifiedByCallOn run c := by
+  rcases origin with same | ⟨s, ⟨tail⟩, rfl⟩ | ⟨s, t, ⟨tail⟩, weighedOk, rfl⟩
+  · exact (notAnchor same).elim
+  · exact ⟨s, history.append tail, .inl (history.append tail).checkpointsOn.2.2⟩
+  · rcases (history.append tail).processJustificationAndFinalization_currentOn weighedOk with
+      same | ⟨voters, call⟩
+    · exact ⟨s, history.append tail, .inl same⟩
+    · exact ⟨s, history.append tail, .inr ⟨fork, s, s, t, voters, call⟩⟩
+
+/-- A non-anchor finalized checkpoint of a store is finalized on a history from genesis.
+
+The history to the anchor may cross forks. -/
+theorem finalized_of_checkpointFromRunsOn_reachable {g : ForkedBeaconState preset}
+    {anchorState : BeaconState preset fork} {anchor c : Checkpoint}
+    (genesis : Genesis config checks g)
+    (history : Run config checks g ⟨fork, anchorState⟩)
+    (wide4 : 4 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
+    (notAnchor : c ≠ anchor) (notGenesis : c.epoch ≠ GENESIS_EPOCH)
+    (origin : Store.CheckpointFromRuns config checks anchorState anchor
+      (·.finalizedCheckpoint) c) :
+    ∃ (s : BeaconState preset fork) (run : Run config checks g ⟨fork, s⟩),
+      KFinalizedByCallOn run c := by
+  have ofState : ∀ (s : BeaconState preset fork) (run : Run config checks g ⟨fork, s⟩),
+      c = s.finalizedCheckpoint → KFinalizedByCallOn run c := by
+    intro s run same
+    rcases run.finalized_ruleOn wide4 genesis with atGenesis | byOn
+    · exact absurd (by rw [same, atGenesis]) notGenesis
+    · exact same ▸ byOn.callOn
+  rcases origin with same | ⟨s, ⟨tail⟩, same⟩ | ⟨s, t, ⟨tail⟩, weighedOk, same⟩
+  · exact (notAnchor same).elim
+  · exact ⟨s, history.append tail, ofState s (history.append tail) same⟩
+  · subst same
+    dsimp only at ofState notGenesis ⊢
+    rcases (history.append tail).processJustificationAndFinalization_finalized_ruleOn
+      wide4 genesis weighedOk with kept | atGenesis | byCall
+    · exact ⟨s, history.append tail, ofState s (history.append tail) kept⟩
+    · exact absurd (by rw [atGenesis]) notGenesis
+    · exact ⟨s, history.append tail, byCall⟩
+
+open scoped Classical in
+/-- Store checkpoints beyond a reachable anchor belong to the refinement of two genesis runs.
+
+The common history to the anchor may cross forks.
+
+The anchor checkpoint is supplied by the store initialization, not justified by it. -/
+theorem Store.ReachableWith.checkpoints_mem_runRefinement {g : ForkedBeaconState preset}
+    {anchorState : BeaconState preset fork} {anchorBlock : BeaconBlock preset fork}
+    {store : Store preset fork}
+    (reachable : Store.ReachableWith config checks anchorState anchorBlock store)
+    (genesis : Genesis config checks g)
+    (history : Run config checks g ⟨fork, anchorState⟩)
+    (wide4 : 4 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
+    (lookahead : preset.MIN_SEED_LOOKAHEAD.toNat + 2 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
+    (early : fork < .glamsterdam)
+    (notDue : ∀ state : BeaconState preset fork, upgradeDue config ⟨fork, state⟩ = false)
+    (afterAnchor : (getCurrentEpoch anchorState).toNat < store.finalizedCheckpoint.epoch.toNat)
+    (hle : store.finalizedCheckpoint.epoch.toNat ≤ store.justifiedCheckpoint.epoch.toNat) :
+    ∃ (sJ sF : BeaconState preset fork)
+      (runA : Run config checks g ⟨fork, sJ⟩) (runB : Run config checks g ⟨fork, sF⟩),
+      store.justifiedCheckpoint ∈ (runRefinement runA runB genesis wide4 lookahead
+        (runs_within early early)).justified ∧
+      store.finalizedCheckpoint ∈ (runRefinement runA runB genesis wide4 lookahead
+        (runs_within early early)).finalized := by
+  obtain ⟨anchorRoot, _, _, justifiedOrigin, finalizedOrigin, _, _⟩ :=
+    reachable.checkpointsFromRuns notDue
+  have notGenesis : store.finalizedCheckpoint.epoch ≠ GENESIS_EPOCH := by
+    intro same
+    simp only [same, GENESIS_EPOCH, UInt64.toNat_zero] at afterAnchor
+    omega
+  have fNotAnchor : store.finalizedCheckpoint ≠ ⟨getCurrentEpoch anchorState, anchorRoot⟩ := by
+    intro same
+    rw [same] at afterAnchor
+    exact Nat.lt_irrefl _ afterAnchor
+  have jNotAnchor : store.justifiedCheckpoint ≠ ⟨getCurrentEpoch anchorState, anchorRoot⟩ := by
+    intro same
+    rw [same] at hle
+    exact (Nat.not_le_of_lt afterAnchor) hle
+  obtain ⟨sJ, runA, justified⟩ :=
+    justified_of_checkpointFromRunsOn_reachable history jNotAnchor justifiedOrigin
+  obtain ⟨sF, runB, finalized⟩ := finalized_of_checkpointFromRunsOn_reachable genesis history
+    wide4 fNotAnchor notGenesis finalizedOrigin
+  refine ⟨sJ, sF, runA, runB, ?_, .inr (.inr finalized)⟩
+  rcases justified with (h | h | h | byOn) | ⟨fork', state, cached, weighed, voters, call⟩
+  · exact .inl h
+  · exact .inr (.inl h)
+  · exact .inr (.inr (.inl h))
+  · obtain ⟨fork', state, cached, weighed, voters, call⟩ := byOn.callRecordOn
+    exact .inr (.inr (.inr ⟨fork', state, cached, weighed, voters, .inl call⟩))
+  · exact .inr (.inr (.inr ⟨fork', state, cached, weighed, voters, .inl call⟩))
+
 variable [NeZero preset.BYTES_PER_LOGS_BLOOM.toNat] [NeZero preset.SYNC_COMMITTEE_SIZE.toNat]
   [NeZero preset.MAX_COMMITTEES_PER_SLOT.toNat] [NeZero preset.PTC_SIZE.toNat]
   [NeZero preset.INCLUSION_LIST_COMMITTEE_SIZE.toNat]

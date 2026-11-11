@@ -2407,7 +2407,16 @@ Its lost-stake term is proved too: `CommonState.lostStake_le_budgets` bounds it 
 From Electra, `Run.drift_le_electra` (`Transition/FfgElectra.lean`) bounds the drift along one run from a reachable state `x` to a state before Gloas.
 It uses the exit and consolidation churn with step budgets (`Run.leavingStake_le_budgets`), `lossBudget`, the deposit churn (`Run.depositsCharged_le`), and the joining split (`Run.joiningStakePrev_le`).
 Three sums stay named: the gains after deposits of the validators active at `x`, the growth of joiners already in the registry, and the effective balance of the joiners the run adds; the churn caps are hypotheses.
-It is not yet composed into the two-run or store theorems.
+`accountable_safety_runs_electra` composes this bound with the two-run refinement when the shared state is from Electra and both ends are before Gloas.
+For each relevant tail state, its accounting hypothesis supplies a run, churn caps, and chosen per-validator budgets that cover the run's debits and whose `electraDriftBudget` is at most `D`.
+It concludes that the reference stake is at most three times the slashable stake plus `2 D`, or the runs contain hash evidence.
+It does not require every possible budget to satisfy that bound: `StepBudget` alone permits conservative overestimates and does not establish debit coverage.
+The lifecycle proofs discharge activation preservation in both the Electra drift and cross-Electra leaving bounds.
+
+`Store.ReachableWith.checkpoints_mem_runRefinement` (`Transition/FfgStoreRuns.lean`) gives provenance for store checkpoints after a reachable anchor, with a genesis history that may cross forks.
+The finalized epoch must be later than the anchor epoch, and no upgrade may be due in the store's single fork.
+Initialization supplies the anchor checkpoint; it does not establish that checkpoint's justification or finalization.
+The Electra store safety theorem and the drift composition for a reference state before Electra remain to be proved.
 
 ### Engine API
 

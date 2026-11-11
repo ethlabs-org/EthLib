@@ -596,8 +596,6 @@ Take caps on the churns of every state of the run.
 
 The upgrade starts both churns full, so they also cap the churn left at the upgrade.
 
-A validator active in the first state must keep its activation epoch, as the lifecycle gives.
-
 The last epoch must be at least the first and below the far future epoch.
 
 Each state of the run must be ready for a ledger. -/
@@ -609,12 +607,7 @@ theorem Run.leavingStake_le_acrossElectra (caps : EffectiveBalanceCaps preset)
     (ready : ∀ forked ∈ run.states, LedgerReady forked)
     (churns : ∀ forked ∈ run.states, ChurnsBounded config capExit capConsolidation largest forked)
     (epochs : getCurrentEpoch start.state ≤ getCurrentEpoch after.state)
-    (finite : getCurrentEpoch after.state < FAR_FUTURE_EPOCH)
-    (activations : ∀ (position : Nat) (validator later : Validator),
-      start.state.validators.data[position]? = some validator →
-        after.state.validators.data[position]? = some later →
-        isActiveValidator validator (getCurrentEpoch start.state) = true →
-          later.activationEpoch = validator.activationEpoch) :
+    (finite : getCurrentEpoch after.state < FAR_FUTURE_EPOCH) :
     ∃ (pre : BeaconState preset .dencun) (post : BeaconState preset .pectra)
       (budgets : Nat → List (BalanceFlow → Nat)),
       Reaches config checks start ⟨.dencun, pre⟩ ∧
@@ -635,6 +628,10 @@ theorem Run.leavingStake_le_acrossElectra (caps : EffectiveBalanceCaps preset)
             ((effectiveAt start.state position - actualBalanceAt start.state position) +
               (BalanceFlow.all.map fun flow => ((budgets position).map (· flow)).sum).sum +
               (preset.EFFECTIVE_BALANCE_INCREMENT.toNat - 1)) := by
+  have activations := fun position validator later found laterFound active =>
+    (show Reaches config checks start after from ⟨run⟩).activationEpoch_eq_of_active
+      (ready after (Run.end_mem_states run)).small
+      (position := position) (validator := validator) (later := later) found laterFound active
   obtain ⟨before, next, head, step, tail, beforeEarly, nextLate, rfl⟩ :=
     Run.splitAtElectra early run late
   obtain ⟨pre, post, rfl, rfl, upgraded⟩ := step.toElectra beforeEarly nextLate
@@ -883,12 +880,7 @@ theorem Run.leavingStake_le_acrossElectra_closed (caps : EffectiveBalanceCaps pr
     (ready : ∀ forked ∈ run.states, LedgerReady forked)
     (churns : ∀ forked ∈ run.states, ChurnsBounded config capExit capConsolidation largest forked)
     (epochs : getCurrentEpoch start.state ≤ getCurrentEpoch after.state)
-    (finite : getCurrentEpoch after.state < FAR_FUTURE_EPOCH)
-    (activations : ∀ (position : Nat) (validator later : Validator),
-      start.state.validators.data[position]? = some validator →
-        after.state.validators.data[position]? = some later →
-        isActiveValidator validator (getCurrentEpoch start.state) = true →
-          later.activationEpoch = validator.activationEpoch) :
+    (finite : getCurrentEpoch after.state < FAR_FUTURE_EPOCH) :
     ∃ (pre : BeaconState preset .dencun) (post : BeaconState preset .pectra)
       (budgets : Nat → List (BalanceFlow → Nat)),
       Reaches config checks start ⟨.dencun, pre⟩ ∧
@@ -916,7 +908,7 @@ theorem Run.leavingStake_le_acrossElectra_closed (caps : EffectiveBalanceCaps pr
               (preset.EFFECTIVE_BALANCE_INCREMENT.toNat - 1)) := by
   obtain ⟨pre, post, budgets, chain, step, tailChain, upgraded, epochSame, budgetsOk, bound⟩ :=
     Run.leavingStake_le_acrossElectra caps increment early late reachable run ready churns epochs
-      finite activations
+      finite
   refine ⟨pre, post, budgets, chain, step, tailChain, upgraded, epochSame, budgetsOk, ?_⟩
   obtain ⟨tail⟩ := tailChain
   -- The epoch of the upgrade is at most the last one, so it is below the far future epoch.

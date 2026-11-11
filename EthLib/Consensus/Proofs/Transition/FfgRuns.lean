@@ -519,4 +519,87 @@ theorem accountable_safety_runs_preElectra_registry {g a b : ForkedBeaconState p
   refine (Reaches.churnCap_le (by omega) chain).trans (max_le_max_left 1 ?_)
   exact churnCapWithin_mono config X.common (by omega)
 
+open scoped Classical in
+/-- Accountable safety from drift bounds on the tails after a shared state.
+
+The bound concerns only calls between the finalized and justified epochs.
+
+The tails may cross forks; the reference state need not be genesis.
+
+Accounting bounds on runs supply `bounded`, without assuming a bound on abstract records. -/
+theorem accountable_safety_runs_of_drift {g a b : ForkedBeaconState preset}
+    (X : CommonState config checks g a b) (genesis : Genesis config checks g)
+    (wide4 : 4 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
+    (lookahead : preset.MIN_SEED_LOOKAHEAD.toNat + 2 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
+    (earlyA : a.fork < .glamsterdam) (earlyB : b.fork < .glamsterdam) {f j : Checkpoint}
+    (hf : f ∈ (runRefinement X.leftRun X.rightRun genesis wide4 lookahead
+      (runs_within earlyA earlyB)).finalized)
+    (hj : j ∈ (runRefinement X.leftRun X.rightRun genesis wide4 lookahead
+      (runs_within earlyA earlyB)).justified)
+    (hle : f.epoch.toNat ≤ j.epoch.toNat)
+    (conflicting : Conflicting
+      (EpochBlock.ofCheckpoint (links := runLinks config checks (g := g) (a := a) (b := b))
+        (slotsPerEpoch := preset.SLOTS_PER_EPOCH.toNat) f)
+      (EpochBlock.ofCheckpoint j))
+    (before : X.common.state.slot.toNat < f.epoch.toNat * preset.SLOTS_PER_EPOCH.toNat)
+    {D : Nat}
+    (bounded : ∀ y, (y ∈ X.leftTail.states ∨ y ∈ X.rightTail.states) →
+      (getCurrentEpoch y.state).toNat ≤ j.epoch.toNat + 1 →
+      ∀ (voters : Finset ValidatorIndex),
+      (∀ i ∈ voters, activeAt y.state (getPreviousEpoch y.state) i.toNat = true ∨
+        activeAt y.state (getCurrentEpoch y.state) i.toNat = true) →
+      Weighing.drift (Weighing.ofState X.common.state
+        (getActiveValidatorIndices X.common.state (getCurrentEpoch X.common.state)).toFinset)
+        (Weighing.ofState y.state voters) ≤ D) :
+    let ω₀ := Weighing.ofState X.common.state
+      (getActiveValidatorIndices X.common.state (getCurrentEpoch X.common.state)).toFinset
+    let R := runRefinement X.leftRun X.rightRun genesis wide4 lookahead
+      (runs_within earlyA earlyB)
+    stake ω₀.stake ω₀.active ≤
+        3 * stake ω₀.stake {i ∈ ω₀.active | ∃ data1 data2, (i, data1) ∈ R.signed ∧
+          (i, data2) ∈ R.signed ∧ isSlashableAttestationData data1 data2 = true} + 2 * D ∨
+      runEvidence config checks (g := g) (a := a) (b := b) := by
+  intro ω₀ R
+  refine R.accountable_safety_justified hf hj hle conflicting ω₀ ?_
+  rintro r ⟨fork, state, cached, weighed, voters, c, on, rfl⟩ hlo hhi
+  dsimp only at hlo hhi
+  obtain ⟨x, hx, call, mem⟩ := on.cases
+  obtain ⟨stateRoots, blockRoots, header, availability, rfl⟩ := call.reads.eq
+  have within : state.RegistryWithinLimit := by
+    apply runs_within earlyA earlyB fork state
+    rcases hx with rfl | rfl
+    · exact .inl call.toAfter
+    · exact .inr call.toAfter
+  have stateEpoch : c.epoch.toNat ≤ (getCurrentEpoch state).toNat ∧
+      (getCurrentEpoch state).toNat ≤ c.epoch.toNat + 1 := by
+    rcases call.recent with h | h
+    · change c.epoch = getPreviousEpoch state at h
+      have := getPreviousEpoch_toNat state
+      rw [h]
+      omega
+    · change c.epoch = getCurrentEpoch state at h
+      rw [h]
+      omega
+  have later : X.common.state.slot.toNat < state.slot.toNat := by
+    have slotEpoch := epoch_mul_le_slot state
+    have : f.epoch.toNat * preset.SLOTS_PER_EPOCH.toNat ≤
+        (getCurrentEpoch state).toNat * preset.SLOTS_PER_EPOCH.toNat :=
+      Nat.mul_le_mul_right _ (by omega)
+    omega
+  obtain ⟨onTail, -⟩ := X.reaches_of_slot_lt (state := ⟨fork, state⟩) mem later
+  have activeVoters : ∀ i ∈ voters, i ∈ getActiveValidatorIndices state c.epoch := by
+    by_cases altair : .altair ≤ fork
+    · have active := TargetVoters.active altair call.counted
+      exact active
+    · intro i member
+      obtain ⟨_, _, active, _⟩ := call.pending_voters_signed_of_genesis lookahead genesis
+        (Nat.lt_of_not_le altair) i member
+      exact active
+  apply bounded ⟨fork, state⟩ onTail (by dsimp only; omega) voters.toFinset
+  intro i member
+  have active := (mem_active_iff within).mp (activeVoters i (List.mem_toFinset.mp member))
+  rcases call.recent with h | h
+  · exact .inl (h ▸ active)
+  · exact .inr (h ▸ active)
+
 end EthLib.Consensus

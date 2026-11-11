@@ -240,7 +240,7 @@ A validator active in the first state must keep its activation epoch, as the lif
 The last epoch must be at least the first and below the far future epoch.
 
 Each state of the run must be ready for a ledger. -/
-theorem Run.leavingStake_le_budgets (caps : EffectiveBalanceCaps preset)
+theorem Run.leavingStake_le_of_fallen_budgets (caps : EffectiveBalanceCaps preset)
     (increment : 0 < preset.EFFECTIVE_BALANCE_INCREMENT.toNat)
     {capExit capConsolidation largest : Nat} {start after : ForkedBeaconState preset}
     (electra : .pectra ≤ start.fork) (reachable : Reachable config checks start)
@@ -253,9 +253,10 @@ theorem Run.leavingStake_le_budgets (caps : EffectiveBalanceCaps preset)
       start.state.validators.data[position]? = some validator →
         after.state.validators.data[position]? = some later →
         isActiveValidator validator (getCurrentEpoch start.state) = true →
-          later.activationEpoch = validator.activationEpoch) :
-    ∃ budgets : Nat → List (BalanceFlow → Nat),
-      (∀ position, run.Budgets position (budgets position)) ∧
+          later.activationEpoch = validator.activationEpoch)
+    (budgets : Nat → List (BalanceFlow → Nat))
+    (covered : ∀ i, run.fallen i ≤
+      (BalanceFlow.all.map fun flow => ((budgets i).map (· flow)).sum).sum) :
       leavingStake start.state after.state ≤
         (((List.range start.state.validators.data.size).filter fun position =>
             (start.state.validators.data[position]?).any fun validator =>
@@ -271,9 +272,6 @@ theorem Run.leavingStake_le_budgets (caps : EffectiveBalanceCaps preset)
   have small : ∀ forked ∈ run.states, forked.state.validators.data.size < 2 ^ 64 :=
     fun forked member => (ready forked member).small
   have afterSmall := small after (Run.end_mem_states run)
-  have chosen := fun position => run.fallen_le_stepBudgets position ready
-  refine ⟨fun position => (chosen position).choose,
-    fun position => (chosen position).choose_spec.1, ?_⟩
   set upTo := (getCurrentEpoch after.state).toNat
   set exits := exitsBetween start.state after.state 0 upTo
   set leaves : Nat → Prop := fun position =>
@@ -350,7 +348,7 @@ theorem Run.leavingStake_le_budgets (caps : EffectiveBalanceCaps preset)
       ∑ position ∈ leavingExits start.state after.state,
         ((effectiveAt start.state position - actualBalanceAt start.state position) +
           (BalanceFlow.all.map fun flow =>
-            (((chosen position).choose).map (· flow)).sum).sum +
+            ((budgets position).map (· flow)).sum).sum +
           (preset.EFFECTIVE_BALANCE_INCREMENT.toNat - 1)) := by
     refine Finset.sum_le_sum fun position member => ?_
     obtain ⟨inExits, active, _⟩ := Finset.mem_filter.mp member
@@ -358,7 +356,7 @@ theorem Run.leavingStake_le_budgets (caps : EffectiveBalanceCaps preset)
     obtain ⟨validator, later, found, found', far, set⟩ := startsExit_eq_true starts
     have loss := Run.charged_loss_le caps increment electra reachable active run small validator
       later found far found' set
-    have budget := (chosen position).choose_spec.2
+    have budget := covered position
     omega
   have queued := sum_map_filter_range start.state.validators.data.size
     (fun position => (start.state.validators.data[position]?).any fun validator =>
@@ -377,8 +375,40 @@ theorem Run.leavingStake_le_budgets (caps : EffectiveBalanceCaps preset)
           decide (validator.exitEpoch ≤ getCurrentEpoch after.state)) = true))
     (s₂ := leavingExits start.state after.state) (f := effectiveAt start.state))
   have subset := Finset.sum_le_sum_of_subset (f := effectiveAt start.state) split
-  dsimp only
   rw [leaving, queued]
   omega
+
+/-- The leaving-stake bound has budgets supplied by the step ledgers. -/
+theorem Run.leavingStake_le_budgets (caps : EffectiveBalanceCaps preset)
+    (increment : 0 < preset.EFFECTIVE_BALANCE_INCREMENT.toNat)
+    {capExit capConsolidation largest : Nat} {start after : ForkedBeaconState preset}
+    (electra : .pectra ≤ start.fork) (reachable : Reachable config checks start)
+    (run : Run config checks start after) (ready : ∀ forked ∈ run.states, LedgerReady forked)
+    (churns : ∀ forked ∈ run.states, ChurnsBounded config capExit capConsolidation largest forked)
+    (lefts : LeftBounded capExit capConsolidation start)
+    (epochs : getCurrentEpoch start.state ≤ getCurrentEpoch after.state)
+    (finite : getCurrentEpoch after.state < FAR_FUTURE_EPOCH)
+    (activations : ∀ (position : Nat) (validator later : Validator),
+      start.state.validators.data[position]? = some validator →
+        after.state.validators.data[position]? = some later →
+        isActiveValidator validator (getCurrentEpoch start.state) = true →
+          later.activationEpoch = validator.activationEpoch) :
+    ∃ budgets : Nat → List (BalanceFlow → Nat),
+      (∀ position, run.Budgets position (budgets position)) ∧
+      leavingStake start.state after.state ≤
+        (((List.range start.state.validators.data.size).filter fun position =>
+            (start.state.validators.data[position]?).any fun validator =>
+              isActiveValidator validator (getCurrentEpoch start.state) &&
+                decide (validator.exitEpoch ≤ getCurrentEpoch after.state)).map
+            (effectiveAt start.state)).sum +
+          ((getCurrentEpoch after.state).toNat + 1 - firstExitEpoch preset start.state) *
+            (capExit + capConsolidation) +
+          ∑ position ∈ leavingExits start.state after.state,
+            ((effectiveAt start.state position - actualBalanceAt start.state position) +
+              (BalanceFlow.all.map fun flow => ((budgets position).map (· flow)).sum).sum +
+              (preset.EFFECTIVE_BALANCE_INCREMENT.toNat - 1)) := by
+  choose budgets valid covered using fun i => run.fallen_le_stepBudgets i ready
+  exact ⟨budgets, valid, run.leavingStake_le_of_fallen_budgets caps increment electra reachable
+    ready churns lefts epochs finite activations budgets covered⟩
 
 end EthLib.Consensus

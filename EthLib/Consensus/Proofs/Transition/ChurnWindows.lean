@@ -389,6 +389,25 @@ theorem activationEpoch_after_of_active {state : BeaconState preset fork}
       rw [this] at wasNotActive
       cases wasNotActive
 
+/-- A validator active at the start keeps its activation epoch along a chain. -/
+theorem Reaches.activationEpoch_eq_of_active {x s : ForkedBeaconState preset}
+    (chain : Reaches config checks x s) (small : s.state.validators.data.size < 2 ^ 64)
+    {position : Nat} {validator later : Validator}
+    (found : x.state.validators.data[position]? = some validator)
+    (laterFound : s.state.validators.data[position]? = some later)
+    (active : isActiveValidator validator (getCurrentEpoch x.state) = true) :
+    later.activationEpoch = validator.activationEpoch := by
+  obtain ⟨kept, keptFound, lifecycle⟩ := chain.registryLifecycle.validators small position
+    validator found
+  rw [laterFound] at keptFound
+  cases keptFound
+  apply lifecycle.activationEpoch
+  rw [isActiveValidator_iff] at active
+  intro far
+  rw [far, toNat_farFutureEpoch] at active
+  have := UInt64.toNat_lt validator.exitEpoch
+  omega
+
 /-- At most `n * cap` validators join the active set over `n` epochs, before Electra. -/
 theorem joiningCount_le {state : BeaconState preset fork} {after : BeaconState preset fork'}
     (lifecycle : RegistryLifecycle state after) (small : after.validators.data.size < 2 ^ 64)
