@@ -3,6 +3,7 @@ module
 public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmationConfirmedRoot
 public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmationSupport
 public import EthLib.Consensus.Proofs.ForkChoice.HonestCheckpoints
+public import EthLib.Consensus.Proofs.ForkChoice.HonestVotes
 
 /-!
 # Statements: a block that the rule confirms stays in the filtered tree of each honest store
@@ -812,6 +813,99 @@ theorem Execution.honestTargetVotes_of_byzantineStakeAtMost {anchor : Store pres
     HonestTargetVotes e margin u n head := by
   sorry
 
+omit [DecidablePred (· ∈ J)] in
+/-- A signed target before a slot has an earlier honest duty with the same target. -/
+theorem Execution.exists_maySign_of_signsTargetBefore
+    {v : ValidatorIndex} (honest : v ∈ J) {target : Checkpoint} {slot : Slot}
+    (signed : SignsTargetBefore e v target slot) :
+    ∃ k data,
+      MaySign config checks sources anchorState anchorBlock assignment genesisTimeMs v
+        (e.world k).time ((e.world k).view v) ((e.world k).state v) data ∧
+      data.target = target ∧ data.slot < slot := by
+  obtain ⟨n, message, sent, data, member, targetOk, before⟩ := signed
+  obtain ⟨k, _, duty⟩ := e.exists_maySign_of_signed sent member honest
+  exact ⟨k, data, duty, targetOk, before⟩
+
+omit [DecidablePred (· ∈ J)] in
+/-- Prefix safety applies at the original signing event of an honest target vote. -/
+theorem Execution.head_supports_of_maySign
+    {v : ValidatorIndex} (honest : v ∈ J) {k : ℕ} {data : AttestationData}
+    (duty : MaySign config checks sources anchorState anchorBlock assignment genesisTimeMs v
+      (e.world k).time ((e.world k).view v) ((e.world k).state v) data)
+    {first time : ℕ} {root : Root}
+    (afterFirst : first ≤ (e.world k).time) (before : (e.world k).time < time)
+    (safe : ∀ earlier, first ≤ earlier → earlier < time → SafeAt e earlier root) :
+    ∃ head, ((e.world k).state v).getHead config = .ok head ∧
+      ((e.world k).state v).isAncestor head ⟨root, .pending⟩ = .ok true := by
+  obtain ⟨_, _, _, _, current, made, _⟩ := duty
+  obtain ⟨head, _, _, _, headOk, _⟩ := made
+  exact ⟨head, headOk, safe _ afterFirst before v honest k head rfl current headOk⟩
+
+omit [DecidablePred (· ∈ J)] in
+/-- An honest validator signs at most one target in each epoch. -/
+theorem Execution.target_eq_of_signsTarget
+    (slots : 0 < config.SLOT_DURATION_MS) {v : ValidatorIndex} (honest : v ∈ J)
+    {first second : Checkpoint} (one : SignsTarget e v first) (two : SignsTarget e v second)
+    (epoch : first.epoch = second.epoch) : first = second := by
+  obtain ⟨n, m, sent, data, signed, target⟩ := one
+  obtain ⟨k, other, otherSent, otherData, otherSigned, otherTarget⟩ := two
+  have nonslashable := e.isSlashableAttestationData_of_signed slots
+    (e.monotone_sent (Nat.le_max_left n k) sent)
+    (e.monotone_sent (Nat.le_max_right n k) otherSent) signed otherSigned honest
+  have sameEpoch : data.target.epoch = otherData.target.epoch := by
+    rw [target, otherTarget, epoch]
+  have same : data = otherData := by
+    by_contra different
+    simp [isSlashableAttestationData, different, sameEpoch] at nonslashable
+  exact target.symm.trans ((congrArg AttestationData.target same).trans otherTarget)
+
+omit [DecidablePred (· ∈ J)] in
+/-- A pinned checkpoint is the counted target, or one of its signers is still uncounted.
+
+The second case needs the prefix-safety argument at that signer's duty. -/
+theorem Execution.target_eq_or_unseen_signer_of_pins
+    (slots : 0 < config.SLOT_DURATION_MS) {anchorEpoch horizon : Epoch} {margin : ℕ}
+    (pins : HonestThirdPins e anchorEpoch horizon margin)
+    {u : ValidatorIndex} (caller : u ∈ J) {n : ℕ} {head : Root}
+    {state : BeaconState preset fork} {total : Gwei} {epoch : Epoch}
+    {target checkpoint : Checkpoint} {voters : Finset ValidatorIndex}
+    {participants : Std.TreeSet ValidatorIndex}
+    (stateOk : ((e.world n).state u).getPulledUpHeadState config head = .ok state)
+    (totalOk : getTotalActiveBalance state = .ok total)
+    (epochOk : ((e.world n).state u).getCurrentStoreEpoch config = .ok epoch)
+    (bounded : epoch ≤ horizon) (afterAnchor : anchorEpoch < epoch)
+    (targetEpoch : target.epoch = epoch)
+    (members : ∀ v ∈ voters, v ∈ J ∧ v ∈ activeVoters state ∧
+      (SignsTarget e v target ∨ v ∉ participants))
+    (large : total.toNat + margin < 3 * stake (fun v => balanceAt state v.toNat) voters)
+    {w : ValidatorIndex} (receiver : w ∈ J) {k : ℕ} {slot : Slot}
+    (justified : ((e.world k).state w).Justified checkpoint)
+    (slotOk : ((e.world k).state w).getCurrentSlot config = .ok slot)
+    (checkpointEpoch : checkpoint.epoch = epoch) :
+    checkpoint = target ∨
+      ∃ v ∈ voters, v ∈ J ∧ v ∉ participants ∧ SignsTargetBefore e v checkpoint slot := by
+  obtain ⟨v, member, signed⟩ := pins u caller n head state total epoch voters
+    stateOk totalOk epochOk bounded (fun v hv => (members v hv).1)
+    (fun v hv => (members v hv).2.1) large w receiver k checkpoint slot
+    justified slotOk checkpointEpoch afterAnchor
+  rcases (members v member).2.2 with counted | unseen
+  · exact .inl (e.target_eq_of_signsTarget slots (members v member).1 signed.signsTarget
+      counted (checkpointEpoch.trans targetEpoch.symm))
+  · exact .inr ⟨v, member, (members v member).1, unseen, signed⟩
+
+/-- A slot-start call's messages arrive strictly before the following slot starts. -/
+theorem DelayFits.call_before_next_slot {Δ : ℕ}
+    (fits : DelayFits fork config genesisTimeMs Δ)
+    {slot next : Slot} {begin following : UInt64} {callTime endpoint : ℕ}
+    (nextOk : addChecked slot 1 = .ok next)
+    (beginOk : computeTimeAtSlotMs config genesisTimeMs slot = .ok begin)
+    (followingOk : computeTimeAtSlotMs config genesisTimeMs next = .ok following)
+    (atSlot : callTime = begin.toNat)
+    (later : following.toNat ≤ endpoint) : callTime + Δ < endpoint := by
+  obtain ⟨due, dueOk⟩ := fits.1
+  have bound := fits.2 slot next begin due following nextOk beginOk dueOk followingOk
+  omega
+
 /-- Step 6, the result: a block that passed the checks is not filtered out at a later time.
 
 The caller is an honest validator whose store is up to date, and its rule passed the checks.
@@ -853,6 +947,8 @@ It is `Execution.StrictSelectorAdvanceAt.actualCall_selectedStrictEdgeFilterSupp
 [vfc]: https://github.com/fradamt/verified-fast-confirmation -/
 theorem Execution.coveredOrViableAt_of_checked {Δ : ℕ} (sync : e.Synchronous Δ)
     (slots : 0 < config.SLOT_DURATION_MS)
+    (positive : 0 < preset.SLOTS_PER_EPOCH.toNat)
+    (window : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
     (preGloas : fork < .glamsterdam)
     (admitted : BlocksAdmitted e 0 Δ)
     (oneBlock : OneBlockPerRoot e)
