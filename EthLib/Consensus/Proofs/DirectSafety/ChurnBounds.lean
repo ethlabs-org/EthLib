@@ -309,6 +309,28 @@ theorem _root_.EthLib.Consensus.Run.departure_origin
           exact Or.inr ⟨charge, List.mem_append_left _ member, index, by simpa [exit] using epoch⟩
     · exact False.elim (assigned (step.new_validator_exit_unassigned i v (by omega) found))
 
+/-- The baseline lookup either selects this exit's charge or falls back to an inherited exit. -/
+theorem _root_.EthLib.Consensus.Run.departure_baseline
+    {x y : ForkedBeaconState preset} (tail : Run config checks x y)
+    (i : Nat) (v : Validator) (found : y.state.validators.data[i]? = some v)
+    (assigned : v.exitEpoch ≠ FAR_FUTURE_EPOCH) :
+    match tail.departureCharges.find? (fun c => c.index == i) with
+    | some charge => charge.index = i ∧ charge.epoch = v.exitEpoch.toNat
+    | none => ∃ old, x.state.validators.data[i]? = some old ∧ old.exitEpoch = v.exitEpoch := by
+  cases selected : tail.departureCharges.find? (fun c => c.index == i) with
+  | some charge =>
+    have index : charge.index = i := by simpa using List.find?_some selected
+    obtain ⟨w, present, _, epoch⟩ :=
+      tail.departure_charge_exit charge (List.mem_of_find?_eq_some selected)
+    rw [index] at present
+    have same : w = v := Option.some.inj (present.symm.trans found)
+    exact ⟨index, by simpa [same] using epoch.symm⟩
+  | none =>
+    rcases tail.departure_origin i v found assigned with inherited | charged
+    · exact inherited
+    · obtain ⟨charge, member, index, _⟩ := charged
+      exact False.elim ((List.find?_eq_none.mp selected charge member) (by simp [index]))
+
 /-- Reference weights of the one inherited cohort, including the initial boundary. -/
 def inheritedCohort (x : ForkedBeaconState preset) (epoch : Nat) : Nat :=
   (x.state.validators.data.toList.filter fun v =>
@@ -428,6 +450,54 @@ theorem boundaryStake_eq_cohort (y : ForkedBeaconState preset)
   change (cohort.map fun v => effectiveWeight y.state v.pubkey).sum = _
   rw [weights, List.sum_eq_foldl, List.foldl_map]
   rfl
+
+private theorem sum_charge_lookup_le (charges : List DepartureCharge) (indices : Finset Nat)
+    (epoch : Nat) :
+    (∑ i ∈ indices, match charges.find? (fun c => c.index == i) with
+      | some c => if c.epoch = epoch then c.amount else 0
+      | none => 0) ≤ ((charges.filter fun c => c.epoch == epoch).map (·.amount)).sum := by
+  induction charges with
+  | nil => simp
+  | cons charge rest ih =>
+    have pointwise (i : Nat) :
+        (match (charge :: rest).find? (fun c => c.index == i) with
+        | some c => if c.epoch = epoch then c.amount else 0
+        | none => 0) ≤
+        (if i = charge.index then if charge.epoch = epoch then charge.amount else 0 else 0) +
+        (match rest.find? (fun c => c.index == i) with
+        | some c => if c.epoch = epoch then c.amount else 0
+        | none => 0) := by
+      by_cases same : charge.index = i
+      · subst i
+        simp only [List.find?_cons, beq_self_eq_true, ↓reduceIte]
+        omega
+      · simp [same, Ne.symm same]
+    have bound := Finset.sum_le_sum (fun i (_ : i ∈ indices) => pointwise i)
+    rw [Finset.sum_add_distrib] at bound
+    have single : (∑ i ∈ indices,
+        if i = charge.index then if charge.epoch = epoch then charge.amount else 0 else 0) ≤
+        (if charge.epoch = epoch then charge.amount else 0) := by
+      by_cases present : charge.index ∈ indices
+      · rw [Finset.sum_eq_single charge.index
+          (fun i _ different => by simp [different]) (by simp [present])]
+        simp
+      · have zero : (∑ i ∈ indices,
+            if i = charge.index then
+              if charge.epoch = epoch then charge.amount else 0 else 0) = 0 :=
+          Finset.sum_eq_zero fun i member => by
+            have different : i ≠ charge.index := fun same => present (same ▸ member)
+            simp [different]
+        rw [zero]
+        exact Nat.zero_le _
+    have tail := ih
+    by_cases same : charge.epoch = epoch
+    · simp only [List.filter_cons, beq_iff_eq, same, ↓reduceIte,
+        List.map_cons, List.sum_cons]
+      simp only [same, ↓reduceIte] at single bound
+      omega
+    · simp only [List.filter_cons, beq_iff_eq, same, ↓reduceIte]
+      simp only [same, ↓reduceIte] at single bound
+      omega
 
 /-- Positive effective-weight growth since reference or scheduling, for this boundary only. -/
 def cohortGrowth {x y : ForkedBeaconState preset} (tail : Run config checks x y) : Nat :=
