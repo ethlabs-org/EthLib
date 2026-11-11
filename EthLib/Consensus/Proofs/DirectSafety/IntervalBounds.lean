@@ -2536,6 +2536,59 @@ private theorem funding_active_le (x : ForkedBeaconState preset)
   · intro _ _ _
     exact Nat.zero_le _
 
+private theorem funding_lifecycle_support {v w : Validator} {before after : Epoch}
+    (life : ValidatorLifecycle v w) (epochs : before.toNat ≤ after.toNat)
+    (active : isActiveValidator w after = true ∨ after < w.activationEpoch) :
+    isActiveValidator v before = true ∨ before < v.activationEpoch := by
+  have farValue : (UInt64.ofNat (2 ^ 64 - 1)).toNat = 18446744073709551615 := rfl
+  by_cases future : before < v.activationEpoch
+  · exact Or.inr future
+  have activation : v.activationEpoch ≠ FAR_FUTURE_EPOCH := by
+    intro far
+    have maxEpoch : after.toNat ≤ FAR_FUTURE_EPOCH.toNat := by
+      have := after.toNat_lt
+      simp only [FAR_FUTURE_EPOCH, UInt64.reduceToNat]
+      omega
+    have old : before = FAR_FUTURE_EPOCH := by
+      apply UInt64.toNat_inj.mp
+      have bound := before.toNat_lt
+      rw [UInt64.lt_iff_toNat_lt, far] at future
+      simp only [FAR_FUTURE_EPOCH, UInt64.reduceToNat] at *
+      omega
+    have later : after = FAR_FUTURE_EPOCH := by
+      apply UInt64.toNat_inj.mp
+      rw [old] at epochs
+      omega
+    rcases active with active | active
+    · have bound := w.exitEpoch.toNat_lt
+      simp only [isActiveValidator, Bool.and_eq_true, decide_eq_true_eq,
+        UInt64.lt_iff_toNat_lt, later, FAR_FUTURE_EPOCH, UInt64.reduceToNat] at active
+      omega
+    · have bound := w.activationEpoch.toNat_lt
+      rw [UInt64.lt_iff_toNat_lt, later] at active
+      simp only [FAR_FUTURE_EPOCH, UInt64.reduceToNat] at active
+      omega
+  have sameActivation := life.activationEpoch activation
+  have oldActivation : v.activationEpoch ≤ before := UInt64.not_lt.mp future
+  rcases active with active | futureAfter
+  · have bounds : w.activationEpoch ≤ after ∧ after < w.exitEpoch := by
+      simpa only [isActiveValidator, Bool.and_eq_true, decide_eq_true_eq] using active
+    have exits := bounds.2
+    have exit : before < v.exitEpoch := by
+      by_cases assigned : v.exitEpoch = FAR_FUTURE_EPOCH
+      · have beyond := UInt64.lt_iff_toNat_lt.mp exits
+        have bound := w.exitEpoch.toNat_lt
+        rw [UInt64.lt_iff_toNat_lt, assigned]
+        simp only [FAR_FUTURE_EPOCH, UInt64.reduceToNat]
+        omega
+      · rw [life.exitEpoch assigned] at exits
+        exact UInt64.lt_iff_toNat_lt.mpr (lt_of_le_of_lt epochs
+          (UInt64.lt_iff_toNat_lt.mp exits))
+    exact Or.inl (by simp [isActiveValidator, oldActivation, exit])
+  · rw [sameActivation, UInt64.lt_iff_toNat_lt] at futureAfter
+    have old := UInt64.le_iff_toNat_le.mp oldActivation
+    omega
+
 private theorem funding_source_inactive (v : Validator) (current next : Epoch)
     (nextEq : next.toNat = current.toNat + 1)
     (delay : 2 ≤ config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat)
@@ -2587,6 +2640,129 @@ private theorem funding_potential_mono {fork : Fork} (s : BeaconState preset for
       cases future : decide (getCurrentEpoch s < v.activationEpoch) <;>
       cases queued : one.any (fun c => c.sourceIndex.toNat == i) <;>
       simp_all
+
+private theorem funding_potential_change {fork : Fork} {s t : BeaconState preset fork}
+    (queue beforeQueue : List PendingConsolidation) (credits : Nat → Nat)
+    (size : t.validators.data.size = s.validators.data.size)
+    (life : RegistryLifecycle s t)
+    (epochs : (getCurrentEpoch s).toNat ≤ (getCurrentEpoch t).toNat)
+    (pending : ∀ i, queue.any (fun c => c.sourceIndex.toNat == i) = true →
+      beforeQueue.any (fun c => c.sourceIndex.toNat == i) = true ∨
+        ∃ v, s.validators.data[i]? = some v ∧
+          (isActiveValidator v (getCurrentEpoch s) = true ∨ getCurrentEpoch s < v.activationEpoch))
+    (funding : ∀ i, max (effectiveAt ⟨fork, t⟩ i) (actualBalanceAt ⟨fork, t⟩ i) ≤
+      max (effectiveAt ⟨fork, s⟩ i) (actualBalanceAt ⟨fork, s⟩ i) + credits i) :
+    funding_potential t queue ≤ funding_potential s beforeQueue +
+      ∑ i ∈ Finset.range s.validators.data.size, credits i := by
+  unfold funding_potential
+  rw [size, ← Finset.sum_add_distrib]
+  apply Finset.sum_le_sum
+  intro i member
+  have inside := Finset.mem_range.mp member
+  have found : s.validators.data[i]? = some s.validators.data[i] := by simp [inside]
+  obtain ⟨w, read, lifecycle⟩ := life.validators i _ found
+  simp only [found, read, Option.map_some, Option.getD_some]
+  by_cases chosen : (isActiveValidator w (getCurrentEpoch t) ||
+      decide (getCurrentEpoch t < w.activationEpoch) ||
+      queue.any (fun c => c.sourceIndex.toNat == i)) = true
+  · have prior : (isActiveValidator s.validators.data[i] (getCurrentEpoch s) ||
+        decide (getCurrentEpoch s < s.validators.data[i].activationEpoch) ||
+        beforeQueue.any (fun c => c.sourceIndex.toNat == i)) = true := by
+      simp only [Bool.or_eq_true, decide_eq_true_eq] at chosen ⊢
+      rcases chosen with recent | queued
+      · exact Or.inl (funding_lifecycle_support lifecycle epochs recent)
+      · rcases pending i queued with queued | ⟨v, same, recent⟩
+        · exact Or.inr queued
+        · have equal := Option.some.inj (found.symm.trans same)
+          exact Or.inl (equal ▸ recent)
+    simpa only [chosen, prior, ↓reduceIte] using funding i
+  · split <;> simp_all
+
+private theorem funding_balance_change {fork : Fork} {s t : BeaconState preset fork}
+    (queue : List PendingConsolidation) (registry : t.validators = s.validators)
+    (slot : t.slot = s.slot) :
+    funding_potential t queue ≤ funding_potential s queue +
+      ∑ i ∈ Finset.range s.validators.data.size,
+        (actualBalanceAt ⟨fork, t⟩ i - actualBalanceAt ⟨fork, s⟩ i) := by
+  have epoch : getCurrentEpoch t = getCurrentEpoch s := by simp [getCurrentEpoch, slot]
+  apply funding_potential_change queue queue _ (congrArg (·.data.size) registry)
+    (.of_data (congrArg (·.data) registry)) (by rw [epoch]) (fun _ h => Or.inl h)
+  intro i
+  have effective : effectiveAt ⟨fork, t⟩ i = effectiveAt ⟨fork, s⟩ i := by
+    simp [effectiveAt, registry]
+  rw [effective]
+  omega
+
+private theorem funding_append {fork : Fork} {s t : BeaconState preset fork}
+    (queue : List PendingConsolidation) (v : Validator) (amount : Gwei)
+    (registry : t.validators.data = s.validators.data.push v)
+    (balances : t.balances.data = s.balances.data.push amount)
+    (matched : BalancesMatch s) (slot : t.slot = s.slot) :
+    funding_potential t queue ≤ funding_potential s queue +
+      max v.effectiveBalance.toNat amount.toNat := by
+  change s.balances.data.size = s.validators.data.size at matched
+  have epoch : getCurrentEpoch t = getCurrentEpoch s := by simp [getCurrentEpoch, slot]
+  unfold funding_potential
+  rw [registry, Array.size_push, Finset.sum_range_succ]
+  have old : (∑ i ∈ Finset.range s.validators.data.size,
+      ((s.validators.data.push v)[i]?.map fun w =>
+        if isActiveValidator w (getCurrentEpoch t) ||
+            decide (getCurrentEpoch t < w.activationEpoch) ||
+            queue.any (fun c => c.sourceIndex.toNat == i) then
+          max (effectiveAt ⟨fork, t⟩ i) (actualBalanceAt ⟨fork, t⟩ i)
+        else 0).getD 0) =
+      ∑ i ∈ Finset.range s.validators.data.size,
+        (s.validators.data[i]?.map fun w =>
+          if isActiveValidator w (getCurrentEpoch s) ||
+              decide (getCurrentEpoch s < w.activationEpoch) ||
+              queue.any (fun c => c.sourceIndex.toNat == i) then
+            max (effectiveAt ⟨fork, s⟩ i) (actualBalanceAt ⟨fork, s⟩ i)
+          else 0).getD 0 := by
+    apply Finset.sum_congr rfl
+    intro i member
+    have inside := Finset.mem_range.mp member
+    have balanceInside : i < s.balances.data.size := by simpa [matched] using inside
+    simp only [effectiveAt, actualBalanceAt, registry, balances,
+      Array.getElem?_push_lt inside, Array.getElem?_push_lt balanceInside,
+      getElem?_pos s.validators.data i inside, getElem?_pos s.balances.data i balanceInside,
+      epoch]
+  rw [old]
+  apply Nat.add_le_add_left
+  have lastBalance : (s.balances.data.push amount)[s.validators.data.size]? = some amount := by
+    rw [← matched, Array.getElem?_push_size]
+  simp only [effectiveAt, actualBalanceAt, registry, balances, lastBalance,
+    Array.getElem?_push_size, Option.map_some, Option.getD_some]
+  split <;> omega
+
+private theorem funding_registration {fork : Fork} {s t : BeaconState preset fork}
+    (queue : List PendingConsolidation) {key : Cryptography.Bls.BLSPubkey}
+    {credentials : Bytes32} {amount : Gwei}
+    (matched : BalancesMatch s)
+    (ok : addValidatorToRegistry s key credentials amount = .ok t) :
+    funding_potential t queue ≤ funding_potential s queue + amount.toNat := by
+  obtain ⟨registry, balances⟩ := addValidatorToRegistry_push ok matched
+  have rounded : amount % preset.EFFECTIVE_BALANCE_INCREMENT ≤ amount := by
+    rw [UInt64.le_iff_toNat_le, UInt64.toNat_mod]
+    exact Nat.mod_le _ _
+  have lowered := UInt64.le_iff_toNat_le.mp (UInt64.sub_le rounded)
+  have cap : (getValidatorFromDeposit preset fork key credentials amount).effectiveBalance.toNat ≤
+      amount.toNat := by
+    simp only [getValidatorFromDeposit, Uint64.toNat_min]
+    exact (Nat.min_le_left _ _).trans lowered
+  simpa only [Nat.max_eq_right cap] using
+    funding_append queue _ amount registry balances matched (frame_addValidatorToRegistry ok).slot
+
+private theorem funding_effective_updates {fork : Fork} {s t : BeaconState preset fork}
+    (queue : List PendingConsolidation) (ok : processEffectiveBalanceUpdates s = .ok t) :
+    funding_potential t queue ≤ funding_potential s queue := by
+  have slot := (frame_processEffectiveBalanceUpdates ok).slot
+  have epoch : getCurrentEpoch t = getCurrentEpoch s := by simp [getCurrentEpoch, slot]
+  have bound := funding_potential_change queue queue (fun _ => 0)
+    (sameSizes_processEffectiveBalanceUpdates ok).1
+    (registryLifecycle_processEffectiveBalanceUpdates ok)
+    (by rw [epoch]) (fun _ h => Or.inl h)
+    (fun i => by simpa using processEffectiveBalanceUpdates_funding ok i)
+  simpa using bound
 
 private theorem funding_potential_transfer {fork : Fork} {s t : BeaconState preset fork}
     (c : PendingConsolidation) (rest : List PendingConsolidation) (v : Validator) (moved : Nat)
