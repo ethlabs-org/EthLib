@@ -359,7 +359,13 @@ They generalize Assumption 2 of the paper to balances that change between states
 
 They are assumptions of the theorem, not the paper's Assumption 2 itself.
 
-The weight and late fields apply only to a call that stores a block of a confirmed walk.
+Every field applies only to a call that stores a block of a confirmed walk.
+
+Such a call has the evidence that `Store.onFastConfirmation_checked` gives for a walk.
+
+Some calls store the anchor, the finalized block, the observed block or a carried block.
+
+Those calls need none of the fields.
 
 Each call weighs with the state of its observed justified checkpoint, the source of balances.
 
@@ -367,7 +373,7 @@ While no complete epoch lies between the call and a time, `WeightBounds` bounds 
 
 That shift compares the balances of the source with those of each receiver.
 
-The measured tally of each one-confirmed block exceeds the threshold of the rule by the shift.
+The measured tally of each block of the walk exceeds the threshold of the rule by the shift.
 
 In the pulled-up state of the head of a call, take the committees of the epoch so far.
 
@@ -377,15 +383,17 @@ The honest validators of the slots still to come hold the share that the rule co
 
 They hold a third of the margin on top of it.
 
-No honest validator is a known equivocator of the store of a call.
+No field says that honest validators are not known equivocators.
+
+`Execution.not_mem_equivocatingIndices` derives that, from the anchor store with no equivocator.
 
 Once a complete epoch lies between the call and a time, a receiver has `LateMargin`.
 
 That holds only where its justified block does not already cover the stored block.
 
-That second field is its own assumption on the duties of an epoch.
+That last field is its own assumption on the duties of an epoch.
 
-It does not follow from the first.
+It does not follow from the weight bound.
 
 The fields name stores of the execution alone, so an execution can hold them. -/
 structure RuleBounds
@@ -407,67 +415,88 @@ structure RuleBounds
     last ≤ limit →
     ¬CompleteEpochWithin preset config genesisTimeMs (e.world n).time last →
     WeightBounds e balanceSource (e.world n).time last shift
-  /-- The measured tally exceeds the rule's conservative threshold by the weight shift.
+  /-- The measured tally of each block of the walk exceeds the threshold by the weight shift.
 
   This is an observable margin, not an assumption about the unknown honest supporters. -/
-  slack : ∀ i n fcr after balanceSource head root block parent firstSlot lastSlot beforeBlock
-    slot participants maximum score support discount adversary,
+  slack : ∀ i n fcr after head start balanceSource chain later,
     CallAt e u events first i n fcr after →
+    ((e.world n).state u).getHead config = .ok head →
+    ((e.world n).state u).Checked config after head.root start after.confirmedRoot →
     ((e.world n).state u).checkpointState after.currentEpochObservedJustifiedCheckpoint =
       .ok balanceSource →
-    ((e.world n).state u).getHead config = .ok head →
-    ((e.world n).state u).getCurrentSlot config = .ok slot →
-    ((e.world n).state u).block root = .ok block →
-    ((e.world n).state u).block block.parentRoot = .ok parent →
-    addChecked parent.slot 1 = .ok firstSlot → subChecked slot 1 = .ok lastSlot →
-    subChecked block.slot 1 = .ok beforeBlock →
-    ((e.world n).state u).getCommitteesBetweenSlots head.root firstSlot beforeBlock =
-      .ok participants →
-    ((e.world n).state u).computeCommitteeWeightBetweenSlots head.root balanceSource firstSlot
-      lastSlot = .ok maximum → computeProposerScore config balanceSource = .ok score →
-    ((e.world n).state u).isOneConfirmed config head.root balanceSource
-      (((e.world n).state u).tallyVotes balanceSource) root = .ok true →
-    ((e.world n).state u).scoreFromTally (((e.world n).state u).tallyVotes balanceSource)
-      ⟨root, .pending⟩ = .ok support →
-    ((e.world n).state u).computeEmptySlotSupportDiscount config head.root balanceSource root =
-      .ok discount →
-    ((e.world n).state u).getAdversarialWeight config head.root balanceSource root =
-      .ok adversary →
-    maximum.toNat + score.toNat + 2 * adversary.toNat + shift <
-      discount.toNat + 2 * support.toNat
+    ((e.world n).state u).getAncestorRoots head.root start =
+      .ok (chain ++ after.confirmedRoot :: later) →
+    (∀ member ∈ chain ++ [after.confirmedRoot], ((e.world n).state u).isOneConfirmed config
+      head.root balanceSource (((e.world n).state u).tallyVotes balanceSource) member =
+        .ok true) →
+    ∀ member ∈ chain ++ [after.confirmedRoot], ∀ block parent firstSlot lastSlot beforeBlock
+      slot participants maximum score support discount adversary,
+      ((e.world n).state u).getCurrentSlot config = .ok slot →
+      ((e.world n).state u).block member = .ok block →
+      ((e.world n).state u).block block.parentRoot = .ok parent →
+      addChecked parent.slot 1 = .ok firstSlot → subChecked slot 1 = .ok lastSlot →
+      subChecked block.slot 1 = .ok beforeBlock →
+      ((e.world n).state u).getCommitteesBetweenSlots head.root firstSlot beforeBlock =
+        .ok participants →
+      ((e.world n).state u).computeCommitteeWeightBetweenSlots head.root balanceSource
+        firstSlot lastSlot = .ok maximum →
+      computeProposerScore config balanceSource = .ok score →
+      ((e.world n).state u).scoreFromTally (((e.world n).state u).tallyVotes balanceSource)
+        ⟨member, .pending⟩ = .ok support →
+      ((e.world n).state u).computeEmptySlotSupportDiscount config head.root balanceSource
+        member = .ok discount →
+      ((e.world n).state u).getAdversarialWeight config head.root balanceSource member =
+        .ok adversary →
+      maximum.toNat + score.toNat + 2 * adversary.toNat + shift <
+        discount.toNat + 2 * support.toNat
   /-- The Byzantine validators hold at most β of the committees of the epoch so far. -/
-  byzantine : ∀ i n fcr after head state slot epochStart lastSlot participants,
+  byzantine : ∀ i n fcr after head start balanceSource chain later,
     CallAt e u events first i n fcr after →
     ((e.world n).state u).getHead config = .ok head →
-    ((e.world n).state u).getPulledUpHeadState config head.root = .ok state →
-    ((e.world n).state u).getCurrentSlot config = .ok slot →
-    computeStartSlotAtEpoch preset (computeEpochAtSlot preset slot) = .ok epochStart →
-    subChecked slot 1 = .ok lastSlot →
-    ((e.world n).state u).getCommitteesBetweenSlots head.root epochStart lastSlot =
-      .ok participants →
-    ByzantineStakeAtMost (fun v => balanceAt state v.toNat)
-      (Store.activeMembers state participants) J
-      config.CONFIRMATION_BYZANTINE_THRESHOLD.toNat 100
+    ((e.world n).state u).Checked config after head.root start after.confirmedRoot →
+    ((e.world n).state u).checkpointState after.currentEpochObservedJustifiedCheckpoint =
+      .ok balanceSource →
+    ((e.world n).state u).getAncestorRoots head.root start =
+      .ok (chain ++ after.confirmedRoot :: later) →
+    (∀ member ∈ chain ++ [after.confirmedRoot], ((e.world n).state u).isOneConfirmed config
+      head.root balanceSource (((e.world n).state u).tallyVotes balanceSource) member =
+        .ok true) →
+    ∀ state slot epochStart lastSlot participants,
+      ((e.world n).state u).getPulledUpHeadState config head.root = .ok state →
+      ((e.world n).state u).getCurrentSlot config = .ok slot →
+      computeStartSlotAtEpoch preset (computeEpochAtSlot preset slot) = .ok epochStart →
+      subChecked slot 1 = .ok lastSlot →
+      ((e.world n).state u).getCommitteesBetweenSlots head.root epochStart lastSlot =
+        .ok participants →
+      ByzantineStakeAtMost (fun v => balanceAt state v.toNat)
+        (Store.activeMembers state participants) J
+        config.CONFIRMATION_BYZANTINE_THRESHOLD.toNat 100
   /-- The honest validators of the slots still to come hold their share, with the margin. -/
-  remaining : ∀ i n fcr after head state slot epochStart lastSlot participants total soFar,
+  remaining : ∀ i n fcr after head start balanceSource chain later,
     CallAt e u events first i n fcr after →
     ((e.world n).state u).getHead config = .ok head →
-    ((e.world n).state u).getPulledUpHeadState config head.root = .ok state →
-    ((e.world n).state u).getCurrentSlot config = .ok slot →
-    computeStartSlotAtEpoch preset (computeEpochAtSlot preset slot) = .ok epochStart →
-    subChecked slot 1 = .ok lastSlot →
-    ((e.world n).state u).getCommitteesBetweenSlots head.root epochStart lastSlot =
-      .ok participants →
-    getTotalActiveBalance state = .ok total →
-    ((e.world n).state u).computeCommitteeWeightBetweenSlots head.root state epochStart
-      lastSlot = .ok soFar →
-    3 * ((total.toNat - soFar.toNat) / 100 *
-        (100 - config.CONFIRMATION_BYZANTINE_THRESHOLD.toNat)) + margin ≤
-      3 * stake (fun v => balanceAt state v.toNat)
-        {v ∈ ((unslashedActiveBalances state).map (·.1)).toFinset | v ∉ participants ∧ v ∈ J}
-  /-- No honest validator is a known equivocator of the store of a call. -/
-  dishonest : ∀ i n fcr after, CallAt e u events first i n fcr after →
-    ∀ v ∈ ((e.world n).state u).equivocatingIndices, v ∉ J
+    ((e.world n).state u).Checked config after head.root start after.confirmedRoot →
+    ((e.world n).state u).checkpointState after.currentEpochObservedJustifiedCheckpoint =
+      .ok balanceSource →
+    ((e.world n).state u).getAncestorRoots head.root start =
+      .ok (chain ++ after.confirmedRoot :: later) →
+    (∀ member ∈ chain ++ [after.confirmedRoot], ((e.world n).state u).isOneConfirmed config
+      head.root balanceSource (((e.world n).state u).tallyVotes balanceSource) member =
+        .ok true) →
+    ∀ state slot epochStart lastSlot participants total soFar,
+      ((e.world n).state u).getPulledUpHeadState config head.root = .ok state →
+      ((e.world n).state u).getCurrentSlot config = .ok slot →
+      computeStartSlotAtEpoch preset (computeEpochAtSlot preset slot) = .ok epochStart →
+      subChecked slot 1 = .ok lastSlot →
+      ((e.world n).state u).getCommitteesBetweenSlots head.root epochStart lastSlot =
+        .ok participants →
+      getTotalActiveBalance state = .ok total →
+      ((e.world n).state u).computeCommitteeWeightBetweenSlots head.root state epochStart
+        lastSlot = .ok soFar →
+      3 * ((total.toNat - soFar.toNat) / 100 *
+          (100 - config.CONFIRMATION_BYZANTINE_THRESHOLD.toNat)) + margin ≤
+        3 * stake (fun v => balanceAt state v.toNat)
+          {v ∈ ((unslashedActiveBalances state).map (·.1)).toFinset | v ∉ participants ∧ v ∈ J}
   /-- After a complete epoch, a receiver that does not cover the walked block has the majority. -/
   late : ∀ i n fcr after head start balanceSource chain later,
     CallAt e u events first i n fcr after →
