@@ -288,6 +288,17 @@ theorem DepartureCoverage.of_data {f h : Fork} {s : BeaconState preset f}
   cases Option.some.inj after
   rfl
 
+/-- Appending validators preserves the exit epochs of all existing entries. -/
+theorem DepartureCoverage.of_append {f h : Fork} {s : BeaconState preset f}
+    {t : BeaconState preset h} {added : Array Validator}
+    (same : t.validators.data = s.validators.data ++ added) : DepartureCoverage s t [] := by
+  apply DepartureCoverage.of_exit_epochs
+  intro i old next before after
+  have inside := (Array.getElem?_eq_some_iff.mp before).1
+  rw [same, Array.getElem?_append_left inside, before] at after
+  cases Option.some.inj after
+  rfl
+
 /-- Replacing one validator without changing its exit epoch creates no departure. -/
 theorem DepartureCoverage.setValidatorAt {f : Fork} {s t : BeaconState preset f}
     {position : Nat} {old next : Validator}
@@ -389,6 +400,31 @@ theorem DepartureCoverage.step_charges {x y : ForkedBeaconState preset}
         covered i old next found after conditions.1 conditions.2
       exact ⟨called, member, index, congrArg UInt64.toNat epoch, congrArg UInt64.toNat amount⟩
     · cases produced
+
+/-- Concrete coverage and a linked queue trace bound the charges of one step. -/
+theorem DepartureCoverage.step_window {x y : ForkedBeaconState preset}
+    (step : Step config checks x y) {calls : List IndexedDepartureCall}
+    (covered : DepartureCoverage x.state y.state calls)
+    {first last : Epoch} {available left : Gwei}
+    (trace : DepartureQueueTrace first available (calls.map (·.call)) last left)
+    (high cap : Nat) (rates : ∀ called ∈ calls, called.call.rate.toNat ≤ cap) :
+    ((step.departureCharges.filter fun charge => charge.epoch ≤ high).map (·.amount)).sum ≤
+      departureQueuePotential high cap first available := by
+  have charges := departureCharges_le_calls (departureCharges_step_indices step)
+    (covered.step_charges step) high
+  have budget := trace.window_le high cap (by
+    intro call member
+    obtain ⟨called, present, rfl⟩ := List.mem_map.mp member
+    exact rates called present)
+  have same :
+      (((calls.map (·.call)).filter fun call => call.epoch.toNat ≤ high).map
+        fun call => call.amount.toNat) =
+      ((calls.filter fun called => called.call.epoch.toNat ≤ high).map
+        fun called => called.call.amount.toNat) := by
+    rw [List.filter_map, List.map_map]
+    rfl
+  rw [same] at budget
+  omega
 
 /-- An exit scheduling operation supplies a call with exactly its input and output queues. -/
 theorem exitQueueCall_of_computed {fork : Fork} {s t : BeaconState preset fork}
@@ -723,6 +759,30 @@ theorem deposit_departureQueues {fork : Fork} {s t : BeaconState preset fork}
   obtain ⟨_, _, _, _, credited⟩ := processDeposit_ok ok
   exact (applyDeposit_departureQueues electra credited :)
 
+/-- Deposits append validators or change balances, without assigning existing validators exits. -/
+theorem deposit_coverage {fork : Fork} {s t : BeaconState preset fork}
+    (electra : .pectra ≤ fork) {before : fork < .hegota} {deposit : Deposit}
+    (ok : processDeposit config checks before s deposit = .ok t) : DepartureCoverage s t [] := by
+  obtain ⟨_, _, _, _, credited⟩ := processDeposit_ok ok
+  have applyCoverage {a b : BeaconState preset fork} {key credentials amount signature}
+      (applied : applyDeposit config checks a key credentials amount signature = .ok b) :
+      DepartureCoverage a b [] := by
+    simp only [applyDeposit, electra, ↓reduceDIte] at applied
+    unfold applyDepositElectra at applied
+    split at applied
+    · simp only [bind_ok_iff] at applied
+      obtain ⟨_, _, applied⟩ := applied
+      split at applied
+      · simp only [bind_ok_iff, liftAccessor_ok] at applied
+        obtain ⟨added, admitted, queued⟩ := applied
+        obtain ⟨_, rfl⟩ := addPendingDeposit_eq queued
+        apply DepartureCoverage.of_append
+        simpa only [Array.push_eq_append] using addValidatorToRegistry_validators_eq_push admitted
+      · cases applied; exact DepartureCoverage.of_data rfl
+    · obtain ⟨_, rfl⟩ := addPendingDeposit_eq (liftAccessor_ok.mp applied)
+      exact DepartureCoverage.of_data rfl
+  exact (applyCoverage credited :)
+
 /-- Execution deposit requests append pending deposits without changing departure capacity. -/
 theorem depositRequest_departureQueues {fork : Fork} {s t : BeaconState preset fork}
     (electra : .pectra ≤ fork) {request : DepositRequest}
@@ -778,6 +838,16 @@ theorem credentials_departureQueues {fork : Fork} {s t : BeaconState preset fork
   obtain ⟨_, _, _, _, _, set⟩ := processBlsToExecutionChange_ok ok
   obtain ⟨_, rfl⟩ := setValidator_ok set
   rfl
+
+/-- A withdrawal-credential change assigns no exit epoch. -/
+theorem credentials_coverage {fork : Fork} {s t : BeaconState preset fork}
+    {signed : SignedBLSToExecutionChange}
+    (ok : processBlsToExecutionChange config checks s signed = .ok t) :
+    DepartureCoverage s t [] := by
+  obtain ⟨_, found, _, _, _, set⟩ := processBlsToExecutionChange_ok ok
+  rw [getValidator_eq_getValidatorAt] at found
+  rw [setValidator_eq_setValidatorAt] at set
+  exact DepartureCoverage.setValidatorAt found set rfl
 
 private theorem pendingDeposit_departureQueues {fork : Fork} {s t : BeaconState preset fork}
     (electra : .pectra ≤ fork) {deposit : PendingDeposit}
