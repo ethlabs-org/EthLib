@@ -1,7 +1,6 @@
 module
 
-public import EthLib.Consensus.Proofs.DirectSafety.Accounting
-public import EthLib.Consensus.Proofs.DirectSafety.Conflict
+public import EthLib.Consensus.Proofs.DirectSafety.IntervalBounds
 
 /-!
 # Direct accountable safety: proposed public statements
@@ -31,21 +30,22 @@ noncomputable def slashableKeys {g a b : ForkedBeaconState preset}
 theorem accountable_safety {g x a b : ForkedBeaconState preset}
     (shared : Run config checks g x) (left : Run config checks x a) (right : Run config checks x b)
     (parameters : Parameters preset) (genesis : Genesis (config := config) (checks := checks) g)
+    (caps : CapOrder preset) (aligned : AlignedCaps preset)
     (earlyA : a.fork < .glamsterdam) (earlyB : b.fork < .glamsterdam)
     (enoughA : EnoughStake (shared.append left)) (enoughB : EnoughStake (shared.append right))
     (conflict : Conflict (shared.append left) (shared.append right)
       a.state.finalizedCheckpoint b.state.finalizedCheckpoint)
-    (budget : Nat)
-    (boundA : AccountingBound (shared.append left) x
-      (min a.state.finalizedCheckpoint.epoch.toNat b.state.finalizedCheckpoint.epoch.toNat)
-      (max a.state.finalizedCheckpoint.epoch.toNat b.state.finalizedCheckpoint.epoch.toNat) budget)
-    (boundB : AccountingBound (shared.append right) x
-      (min a.state.finalizedCheckpoint.epoch.toNat b.state.finalizedCheckpoint.epoch.toNat)
-      (max a.state.finalizedCheckpoint.epoch.toNat b.state.finalizedCheckpoint.epoch.toNat)
-      budget) :
-    Quorum.weight (effectiveWeight x.state) (activeKeys x.state) ≤
+    (starts : x.state.slot.toNat ≤
+      min a.state.finalizedCheckpoint.epoch.toNat b.state.finalizedCheckpoint.epoch.toNat *
+        preset.SLOTS_PER_EPOCH.toNat) :
+    let high := max a.state.finalizedCheckpoint.epoch.toNat b.state.finalizedCheckpoint.epoch.toNat
+    (∃ eventsA eventsB, left.balanceEvents high = .ok eventsA ∧
+      right.balanceEvents high = .ok eventsB ∧
+      Quorum.weight (effectiveWeight x.state) (activeKeys x.state) ≤
       3 * Quorum.weight (effectiveWeight x.state)
-        (slashableKeys (shared.append left) (shared.append right) x) + 2 * budget ∨
+        (slashableKeys (shared.append left) (shared.append right) x) +
+        2 * max (derivedDrift (config := config) x a high eventsA)
+          (derivedDrift (config := config) x b high eventsB)) ∨
       HashEvidence ((shared.append left).hashObjects ++ (shared.append right).hashObjects) := by
   sorry
 
@@ -53,20 +53,22 @@ theorem accountable_safety {g x a b : ForkedBeaconState preset}
 theorem accountable_safety_justified {g x a b : ForkedBeaconState preset}
     (shared : Run config checks g x) (left : Run config checks x a) (right : Run config checks x b)
     (parameters : Parameters preset) (genesis : Genesis (config := config) (checks := checks) g)
+    (caps : CapOrder preset) (aligned : AlignedCaps preset)
     (earlyA : a.fork < .glamsterdam) (earlyB : b.fork < .glamsterdam)
     (enoughA : EnoughStake (shared.append left)) (enoughB : EnoughStake (shared.append right))
     (j : Checkpoint)
     (field : j = b.state.previousJustifiedCheckpoint ∨ j = b.state.currentJustifiedCheckpoint)
     (ordered : a.state.finalizedCheckpoint.epoch ≤ j.epoch)
     (conflict : Conflict (shared.append left) (shared.append right) a.state.finalizedCheckpoint j)
-    (budget : Nat)
-    (boundA : AccountingBound (shared.append left) x a.state.finalizedCheckpoint.epoch.toNat
-      j.epoch.toNat budget)
-    (boundB : AccountingBound (shared.append right) x a.state.finalizedCheckpoint.epoch.toNat
-      j.epoch.toNat budget) :
-    Quorum.weight (effectiveWeight x.state) (activeKeys x.state) ≤
+    (starts : x.state.slot.toNat ≤
+      a.state.finalizedCheckpoint.epoch.toNat * preset.SLOTS_PER_EPOCH.toNat) :
+    (∃ eventsA eventsB, left.balanceEvents j.epoch.toNat = .ok eventsA ∧
+      right.balanceEvents j.epoch.toNat = .ok eventsB ∧
+      Quorum.weight (effectiveWeight x.state) (activeKeys x.state) ≤
       3 * Quorum.weight (effectiveWeight x.state)
-        (slashableKeys (shared.append left) (shared.append right) x) + 2 * budget ∨
+        (slashableKeys (shared.append left) (shared.append right) x) +
+        2 * max (derivedDrift (config := config) x a j.epoch.toNat eventsA)
+          (derivedDrift (config := config) x b j.epoch.toNat eventsB)) ∨
       HashEvidence ((shared.append left).hashObjects ++ (shared.append right).hashObjects) := by
   sorry
 

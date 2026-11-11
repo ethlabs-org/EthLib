@@ -44,6 +44,12 @@ noncomputable def EitherCall.voters {g a b : ForkedBeaconState preset}
   | .inl c => c.voters
   | .inr c => c.voters
 
+def EitherCall.state {g a b : ForkedBeaconState preset} {left : Run config checks g a}
+    {right : Run config checks g b} (call : EitherCall left right) : ForkedBeaconState preset :=
+  match call with
+  | .inl c => ⟨c.before.fork, c.cached⟩
+  | .inr c => ⟨c.before.fork, c.cached⟩
+
 theorem call_epochs {g a : ForkedBeaconState preset} (run : Run config checks g a)
     (parameters : Parameters preset) (genesis : Genesis (config := config) (checks := checks) g)
     (call : QuorumCall run) : call.source.epoch < call.target.epoch := by

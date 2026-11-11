@@ -19,36 +19,47 @@ variable {α : Type*} [DecidableEq α]
 
 def weight (w : α → Nat) (s : Finset α) : Nat := ∑ i ∈ s, w i
 
-/-- The allowance for transporting a quorum to a reference set and its weights. -/
-def change (reference active voters : Finset α) (old current : α → Nat) : Nat :=
-  2 * (weight old (reference \ active) + ∑ i ∈ reference ∩ active, (old i - current i)) +
-    3 * (weight current (voters \ reference) +
-      ∑ i ∈ reference ∩ voters, (current i - old i))
+/-- Outside its own support, a stake measure is zero. -/
+def supported (s : Finset α) (w : α → Nat) (key : α) : Nat :=
+  if key ∈ s then w key else 0
+
+/-- Two measures use their own weights for totals, minimum for overlap, maximum for union. -/
+theorem heterogeneous_intersection (s₁ s₂ q₁ q₂ : Finset α) (w₁ w₂ : α → Nat)
+    (inside₁ : q₁ ⊆ s₁) (inside₂ : q₂ ⊆ s₂)
+    (t₁ t₂ : Nat) (quorum₁ : 2 * t₁ ≤ 3 * weight w₁ q₁)
+    (quorum₂ : 2 * t₂ ≤ 3 * weight w₂ q₂) :
+    2 * (t₁ + t₂) ≤
+      3 * weight (fun k => min (w₁ k) (w₂ k)) (q₁ ∩ q₂) +
+      3 * weight (fun k => max (supported s₁ w₁ k) (supported s₂ w₂ k)) (s₁ ∪ s₂) := by
+  sorry
+
+/-- The active-set form applies when each quorum is contained in its own active set. -/
+theorem active_intersection (s₁ s₂ q₁ q₂ : Finset α) (w₁ w₂ : α → Nat)
+    (inside₁ : q₁ ⊆ s₁) (inside₂ : q₂ ⊆ s₂)
+    (quorum₁ : 2 * weight w₁ s₁ ≤ 3 * weight w₁ q₁)
+    (quorum₂ : 2 * weight w₂ s₂ ≤ 3 * weight w₂ q₂) :
+    2 * (weight w₁ s₁ + weight w₂ s₂) ≤
+      3 * weight (fun k => min (w₁ k) (w₂ k)) (q₁ ∩ q₂) +
+      3 * weight (fun k => max (supported s₁ w₁ k) (supported s₂ w₂ k)) (s₁ ∪ s₂) := by
+  sorry
+
+/-- Convert the drift-free bound, not the individual quorums, to a reference measure. -/
+theorem core_at_reference (reference s₁ s₂ bad : Finset α) (old w₁ w₂ : α → Nat)
+    (t₁ t₂ loss₁ loss₂ gain₁ gain₂ : Nat)
+    (badInside : bad ⊆ s₁ ∩ s₂)
+    (core : 2 * (t₁ + t₂) ≤
+      3 * weight (fun k => min (w₁ k) (w₂ k)) bad +
+      3 * weight (fun k => max (supported s₁ w₁ k) (supported s₂ w₂ k)) (s₁ ∪ s₂))
+    (lossOne : weight old reference ≤ t₁ + loss₁)
+    (lossTwo : weight old reference ≤ t₂ + loss₂)
+    (gainOne : (∑ k ∈ s₁, (w₁ k - supported reference old k)) ≤ gain₁)
+    (gainTwo : (∑ k ∈ s₂, (w₂ k - supported reference old k)) ≤ gain₂) :
+    weight old reference ≤ 3 * weight old (reference ∩ bad) +
+      2 * (loss₁ + loss₂) + 3 * (gain₁ + gain₂) := by
+  sorry
 
 theorem weight_union_inter (w : α → Nat) (s t : Finset α) :
     weight w s + weight w t = weight w (s ∪ t) + weight w (s ∩ t) := by
-  sorry
-
-theorem transfer (reference active voters : Finset α) (old current : α → Nat)
-    (quorum : 2 * weight current active ≤ 3 * weight current voters) :
-    2 * weight old reference ≤ 3 * weight old (reference ∩ voters) +
-      change reference active voters old current := by
-  sorry
-
-theorem intersection (reference left right : Finset α) (w : α → Nat) (dLeft dRight : Nat)
-    (one : 2 * weight w reference ≤ 3 * weight w (reference ∩ left) + dLeft)
-    (two : 2 * weight w reference ≤ 3 * weight w (reference ∩ right) + dRight) :
-    weight w reference ≤ 3 * weight w (reference ∩ left ∩ right) + dLeft + dRight := by
-  sorry
-
-theorem change_le (reference active voters : Finset α) (old current : α → Nat)
-    (leaving lost entering gained : Nat)
-    (leave : weight old (reference \ active) ≤ leaving)
-    (loss : (∑ i ∈ reference ∩ active, (old i - current i)) ≤ lost)
-    (enter : weight current (voters \ reference) ≤ entering)
-    (gain : (∑ i ∈ reference ∩ voters, (current i - old i)) ≤ gained) :
-    change reference active voters old current ≤ 2 * (leaving + lost) +
-      3 * (entering + gained) := by
   sorry
 
 end EthLib.Base.Quorum
