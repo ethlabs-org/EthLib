@@ -1964,13 +1964,547 @@ theorem lossCorrection_eq_zero (x : ForkedBeaconState preset)
       have balance := funded i hi v found slashed
       simp [slashed, Nat.sub_eq_zero_of_le balance, noDebits i hi]
 
+private theorem registry_fold_bound {fork : Fork} {α : Type}
+    {action : BeaconState preset fork → α → Except TransitionError (BeaconState preset fork)}
+    (bound : ∀ s a t, action s a = .ok t →
+      t.validators.data.size ≤ s.validators.data.size + 1)
+    {items : List α} {s t : BeaconState preset fork}
+    (ok : items.foldlM action s = .ok t) :
+    t.validators.data.size ≤ s.validators.data.size + items.length := by
+  induction items generalizing s with
+  | nil => cases ok; simp
+  | cons a rest ih =>
+    simp only [List.foldlM_cons, bind_ok_iff] at ok
+    obtain ⟨middle, first, last⟩ := ok
+    have one := bound s a middle first
+    have remaining := ih last
+    simp only [List.length_cons]
+    omega
+
+private theorem registry_pending_bound {fork : Fork} {s t : BeaconState preset fork}
+    {electra : .pectra ≤ fork}
+    (ok : processPendingDeposits config checks s electra = .ok t) :
+    t.validators.data.size ≤ s.validators.data.size +
+      preset.MAX_PENDING_DEPOSITS_PER_EPOCH.toNat := by
+  -- Applied deposits form a sublist of the bounded prefix read by this pass.
+  obtain ⟨read, rest, applied, postponed, next, pending, carried,
+    _, _, cap, subset, _, _, folded, rfl⟩ := processPendingDeposits_applied ok
+  have growth := registry_fold_bound
+    (fun _ _ _ h => (applyPendingDeposit_validators_size_le_and_mem h).1) folded
+  have count := subset.length_le
+  dsimp only
+  omega
+
+private theorem registry_deposit_bound {fork : Fork} {s t : BeaconState preset fork}
+    {before : fork < .hegota} {deposit : Deposit}
+    (ok : processDeposit config checks before s deposit = .ok t) :
+    t.validators.data.size ≤ s.validators.data.size + 1 := by
+  obtain ⟨_, _, next, _, applied⟩ := processDeposit_ok ok
+  unfold applyDeposit at applied
+  split at applied
+  · unfold applyDepositElectra at applied
+    split at applied
+    · simp only [bind_ok_iff] at applied
+      obtain ⟨_, _, applied⟩ := applied
+      split at applied
+      · simp only [bind_ok_iff, liftAccessor_ok] at applied
+        obtain ⟨_, added, pushed⟩ := applied
+        obtain ⟨_, rfl⟩ := addPendingDeposit_eq pushed
+        rw [addValidatorToRegistry_validators_eq_push added]
+        simp
+      · cases applied; exact Nat.le_succ _
+    · obtain ⟨_, rfl⟩ := addPendingDeposit_eq (liftAccessor_ok.mp applied)
+      exact Nat.le_succ _
+  · exact (applyPendingDeposit_validators_size_le_and_mem applied).1
+
+private theorem registry_fold_size {fork : Fork} {α : Type}
+    {action : BeaconState preset fork → α → Except TransitionError (BeaconState preset fork)}
+    (keeps : ∀ s a t, action s a = .ok t → t.validators.data.size = s.validators.data.size)
+    {items : List α} {s t : BeaconState preset fork}
+    (ok : items.foldlM action s = .ok t) : t.validators.data.size = s.validators.data.size :=
+  foldlM_ok_invariant (fun t => t.validators.data.size = s.validators.data.size)
+    (fun _ _ _ prior ok => (keeps _ _ _ ok).trans prior) rfl ok
+
+private theorem registry_operations_bound {fork : Fork} {s t : BeaconState preset fork}
+    {body : BeaconBlockBody preset fork} {parentSlot : Slot} (early : fork < .glamsterdam)
+    (ok : processOperations config checks s body parentSlot = .ok t) :
+    t.validators.data.size ≤ s.validators.data.size + preset.MAX_DEPOSITS.toNat := by
+  have notGloas : ¬ Fork.glamsterdam ≤ fork := fun h => Nat.not_le.mpr early h
+  simp only [processOperations, notGloas, ↓reduceDIte,
+    bind_ok_iff, ensure_ok_iff, ← Array.foldlM_toList] at ok
+  obtain ⟨_, _, _, _, a, proposers, b, attesters, c, attestations, d, deposits,
+    e, exits, f, changes, requests⟩ := ok
+  have sa := registry_fold_size (fun _ _ _ h => (sameSizes_processProposerSlashing h).1) proposers
+  have sb := registry_fold_size (fun _ _ _ h => (sameSizes_processAttesterSlashing h).1) attesters
+  have sc := registry_fold_size (fun _ _ _ h => (sameSizes_processAttestation h).1) attestations
+  have sd := registry_fold_bound (fun _ _ _ h => registry_deposit_bound h) deposits
+  have se := registry_fold_size (fun _ _ _ h => (sameSizes_processVoluntaryExit h).1) exits
+  have sf : f.validators.data.size = e.validators.data.size := by
+    unfold processBlsToExecutionChanges at changes
+    split at changes
+    · rw [← Array.foldlM_toList] at changes
+      exact registry_fold_size (fun _ _ _ h => (sameSizes_processBlsToExecutionChange h).1) changes
+    · cases changes; rfl
+  have st : t.validators.data.size = f.validators.data.size := by
+    split at requests
+    · exact (sameSizes_processExecutionRequests requests).1
+    · cases requests; rfl
+  have cap := (body.deposits (Nat.lt_trans early (by decide))).bound early
+  simp only [Array.length_toList] at sd
+  omega
+
+private theorem registry_execution_size {fork : Fork} {s t : BeaconState preset fork}
+    {body : BeaconBlockBody preset fork} {engine : ExecutionEngine preset fork}
+    {bellatrix : .bellatrix ≤ fork} (early : fork < .glamsterdam)
+    (ok : processBlockExecution config checks engine s body bellatrix = .ok t) :
+    t.validators.data.size = s.validators.data.size := by
+  have notGloas : ¬ Fork.glamsterdam ≤ fork := fun h => Nat.not_le.mpr early h
+  unfold processBlockExecution at ok
+  simp only [notGloas, ↓reduceDIte] at ok
+  split at ok
+  · simp only [bind_ok_iff] at ok
+    obtain ⟨withdrawn, wit, payload⟩ := ok
+    obtain ⟨_, _, _, rfl⟩ := processExecutionPayload_ok payload
+    exact (sameSizes_processWithdrawals wit).1
+  · split at ok
+    · obtain ⟨_, _, _, rfl⟩ := processExecutionPayload_ok ok
+      rfl
+    · cases ok; rfl
+
+private theorem registry_block_bound {fork : Fork} {s t : BeaconState preset fork}
+    {block : BeaconBlock preset fork} {engine : ExecutionEngine preset fork}
+    (early : fork < .glamsterdam)
+    (ok : processBlock config checks engine s block = .ok t) :
+    t.validators.data.size ≤ s.validators.data.size + preset.MAX_DEPOSITS.toNat := by
+  have notGloas : ¬ Fork.glamsterdam ≤ fork := fun h => Nat.not_le.mpr early h
+  unfold processBlock at ok
+  split at ok
+  · simp only [processBlockAltair, notGloas, ↓reduceDIte, pure_bind,
+      bind_ok_iff] at ok
+    obtain ⟨a, header, b, execution, c, randao, d, eth1, e, operations, sync⟩ := ok
+    have ha := (sameSizes_processBlockHeader header).1
+    have hb : b.validators.data.size = a.validators.data.size := by
+      split at execution
+      · exact registry_execution_size early execution
+      · cases execution; rfl
+    have hc := (sameSizes_processRandao randao).1
+    have hd : d.validators.data.size = c.validators.data.size := by
+      split at eth1
+      · exact (sameSizes_processEth1Data eth1).1
+      · cases eth1; rfl
+    have he := registry_operations_bound early operations
+    have ht : t.validators.data.size = e.validators.data.size := by
+      unfold processSyncAggregate at sync
+      simp only [bind_ok_iff] at sync
+      obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, folded⟩ := sync
+      rw [← Array.foldlM_toList] at folded
+      apply registry_fold_size (fun _ _ _ h => ?_) folded
+      unfold applySyncReward at h
+      split at h
+      · simp only [bind_ok_iff, liftAccessor_ok] at h
+        obtain ⟨_, raised, _, _, paid⟩ := h
+        exact (sameSizes_increaseBalance paid).1.trans (sameSizes_increaseBalance raised).1
+      · exact (sameSizes_decreaseBalance (liftAccessor_ok.mp h)).1
+    omega
+  · simp only [bind_ok_iff] at ok
+    obtain ⟨a, header, b, randao, c, eth1, operations⟩ := ok
+    have ha := (sameSizes_processBlockHeader header).1
+    have hb := (sameSizes_processRandao randao).1
+    have hc := (sameSizes_processEth1Data eth1).1
+    have ht := registry_operations_bound early operations
+    omega
+
+private theorem registry_history_size {fork : Fork} {s t : BeaconState preset fork}
+    (ok : processHistoricalRootsUpdate s = .ok t) :
+    t.validators.data.size = s.validators.data.size := by
+  unfold processHistoricalRootsUpdate at ok
+  split at ok
+  · cases ok
+  simp only [bind_ok_iff, liftAccessor_ok] at ok
+  obtain ⟨_, _, ok⟩ := ok
+  split at ok
+  · simp only [bind_ok_iff, liftSsz_ok, pure, Except.pure, Except.ok.injEq] at ok
+    obtain ⟨_, _, _, _, rfl⟩ := ok
+    rfl
+  · cases ok; rfl
+
+private theorem registry_summary_size {fork : Fork} {s t : BeaconState preset fork}
+    {capella : .shapella ≤ fork}
+    (ok : processHistoricalSummariesUpdate s capella = .ok t) :
+    t.validators.data.size = s.validators.data.size := by
+  unfold processHistoricalSummariesUpdate at ok
+  simp only [bind, Except.bind, pure, Except.pure] at ok
+  repeat' (split at ok <;> try cases ok)
+  all_goals rfl
+
+private theorem registry_reset_size {fork : Fork} {s t : BeaconState preset fork}
+    {before : fork < .hegota} (ok : processEth1DataReset before s = .ok t) :
+    t.validators.data.size = s.validators.data.size := by
+  simp only [processEth1DataReset, bind_ok_iff, liftAccessor_ok] at ok
+  obtain ⟨_, _, ok⟩ := ok
+  split at ok <;> cases ok <;> rfl
+
+private theorem registry_epoch_tail_size {fork : Fork} {altair : .altair ≤ fork}
+    {rooted synced looked after : BeaconState preset fork}
+    (sync : processSyncCommitteeUpdates (processParticipationFlagUpdates rooted altair) altair =
+      .ok synced)
+    (look : (if fulu : .fusaka ≤ fork then liftAccessor (processProposerLookahead synced fulu)
+      else pure synced) = .ok looked)
+    (window : (if gloas : .glamsterdam ≤ fork then liftAccessor (processPtcWindow looked gloas)
+      else pure looked) = .ok after) :
+    after.validators.data.size = rooted.validators.data.size := by
+  have hs : synced.validators.data.size = rooted.validators.data.size := by
+    unfold processSyncCommitteeUpdates at sync
+    simp only [bind, Except.bind, pure, Except.pure] at sync
+    repeat' (split at sync <;> try cases sync)
+    all_goals rfl
+  have hl : looked.validators.data.size = synced.validators.data.size := by
+    split at look
+    · simp only [processProposerLookahead, liftAccessor_ok, bind_ok_iff, pure, Except.pure,
+        Except.ok.injEq] at look
+      obtain ⟨_, _, _, _, rfl⟩ := look
+      rfl
+    · cases look; rfl
+  have hw : after.validators.data.size = looked.validators.data.size := by
+    split at window
+    · simp only [processPtcWindow, liftAccessor_ok, bind_ok_iff, pure, Except.pure,
+        Except.ok.injEq] at window
+      obtain ⟨_, _, _, _, rfl⟩ := window
+      rfl
+    · cases window; rfl
+  exact hw.trans (hl.trans hs)
+
+private theorem registry_epoch_bound {fork : Fork} {s t : BeaconState preset fork}
+    (early : fork < .glamsterdam) (ok : processEpoch config checks s = .ok t) :
+    t.validators.data.size ≤ s.validators.data.size +
+      preset.MAX_PENDING_DEPOSITS_PER_EPOCH.toNat := by
+  have notGloas : ¬ Fork.glamsterdam ≤ fork := fun h => Nat.not_le.mpr early h
+  unfold processEpoch at ok
+  split at ok
+  · simp only [processEpochAltair, notGloas, ↓reduceDIte, pure_bind, bind_ok_iff] at ok
+    obtain ⟨a, justified, b, scored, c, rewarded, d, registered, e, slashed, f, reset,
+      g, pending, h, balanced, i, cleared, j, mixed, rest⟩ := ok
+    have ha := (sameSizes_processJustificationAndFinalization justified).1
+    have hb : b.validators.data.size = a.validators.data.size := by
+      unfold processInactivityUpdates at scored
+      split at scored
+      · cases scored; rfl
+      · simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at scored
+        obtain ⟨_, _, _, _, rfl⟩ := scored
+        rfl
+    have hc := (processRewardsAndPenalties_sameSizes rewarded).1
+    have hd := (sameSizes_processRegistryUpdates registered).1
+    have he := (sameSizes_processSlashings slashed).1
+    have hf : f.validators.data.size = e.validators.data.size := by
+      split at reset
+      · exact registry_reset_size reset
+      · cases reset; rfl
+    -- Only the pending-deposit pass can append validators during an epoch transition.
+    have hg : g.validators.data.size ≤ f.validators.data.size +
+        preset.MAX_PENDING_DEPOSITS_PER_EPOCH.toNat := by
+      unfold processPendingBalances at pending
+      split at pending
+      · simp only [bind_ok_iff] at pending
+        obtain ⟨deposited, dep, con⟩ := pending
+        rw [(processPendingConsolidations_kept con).1]
+        exact registry_pending_bound dep
+      · cases pending; omega
+    have hh := (sameSizes_processEffectiveBalanceUpdates balanced).1
+    obtain ⟨_, _, _, _, hi⟩ := processSlashingsReset_eq cleared
+    obtain ⟨_, _, _, _, _, _, hj⟩ := processRandaoMixesReset_eq mixed
+    have ht : t.validators.data.size = j.validators.data.size := by
+      split at rest <;> simp only [bind_ok_iff] at rest <;>
+        obtain ⟨rooted, history, synced, sync, looked, look, window⟩ := rest
+      · exact (registry_epoch_tail_size sync look (by simpa only [notGloas, ↓reduceDIte]
+          using window)).trans (registry_summary_size history)
+      · exact (registry_epoch_tail_size sync look (by simpa only [notGloas, ↓reduceDIte]
+          using window)).trans (registry_history_size history)
+    rw [hj, hi] at ht
+    dsimp only at ht
+    omega
+  · simp only [bind_ok_iff] at ok
+    obtain ⟨a, justified, b, rewarded, c, registered, d, slashed, e, reset, f, balanced,
+      g, cleared, h, mixed, i, history, rotated⟩ := ok
+    have ha := (sameSizes_processJustificationAndFinalization justified).1
+    have hb := (processRewardsAndPenalties_sameSizes rewarded).1
+    have hc := (sameSizes_processRegistryUpdates registered).1
+    have hd := (sameSizes_processSlashings slashed).1
+    have he := registry_reset_size reset
+    have hf := (sameSizes_processEffectiveBalanceUpdates balanced).1
+    obtain ⟨_, _, _, _, hg⟩ := processSlashingsReset_eq cleared
+    obtain ⟨_, _, _, _, _, _, hh⟩ := processRandaoMixesReset_eq mixed
+    have hi := registry_history_size history
+    have ht : t.validators.data.size = i.validators.data.size := by
+      unfold processParticipationRecordUpdates at rotated
+      split at rotated
+      · cases rotated
+      · cases rotated; rfl
+    rw [hh, hg] at hi
+    dsimp only at hi
+    omega
+
+private theorem registry_upgrade_size {s : ForkedBeaconState preset}
+    {t : {t : ForkedBeaconState preset // s.fork < t.fork}}
+    (ok : upgradeNext config checks s = .ok t) :
+    t.val.state.validators.data.size = s.state.validators.data.size := by
+  obtain ⟨fork, state⟩ := s
+  cases fork <;>
+    simp only [upgradeNext, bind_ok_iff, pure, Except.pure, Except.ok.injEq, throw,
+      throwThe, MonadExceptOf.throw, reduceCtorEq] at ok
+  · obtain ⟨_, upgraded, rfl⟩ := ok
+    exact congrArg Array.size (upgradeToAltair_spec upgraded).1
+  · subst ok; rfl
+  · subst ok; rfl
+  · subst ok; rfl
+  · obtain ⟨_, upgraded, rfl⟩ := ok
+    exact (upgradeToElectra_spec upgraded).1
+  · obtain ⟨_, upgraded, rfl⟩ := ok
+    exact congrArg Array.size (upgradeToFulu_spec upgraded).1
+  · obtain ⟨_, upgraded, rfl⟩ := ok
+    exact congrArg Array.size (upgradeToGloas_spec upgraded).1
+  · obtain ⟨_, upgraded, rfl⟩ := ok
+    obtain ⟨_, rfl⟩ := upgradeToHeze_ok_iff.mp upgraded
+    rfl
+
+private theorem registry_upgrades_size {s t : ForkedBeaconState preset}
+    (ok : processUpgrades config checks s = .ok t) :
+    t.state.validators.data.size = s.state.validators.data.size :=
+  processUpgrades_induction
+    (property := fun t => t.state.validators.data.size = s.state.validators.data.size)
+    (fun prior ok => (registry_upgrade_size ok).trans prior) rfl ok
+
+private theorem registry_slot_bound {s t : ForkedBeaconState preset}
+    (early : t.fork < .glamsterdam)
+    (ok : advanceSlotAcross config checks s = .ok t) :
+    t.state.slot.toNat = s.state.slot.toNat + 1 ∧
+      t.state.validators.data.size ≤ s.state.validators.data.size +
+        ((getCurrentEpoch t.state).toNat - (getCurrentEpoch s.state).toNat) *
+          preset.MAX_PENDING_DEPOSITS_PER_EPOCH.toNat := by
+  simp only [advanceSlotAcross, bind_ok_iff] at ok
+  obtain ⟨advanced, slot, upgrades⟩ := ok
+  have size := registry_upgrades_size upgrades
+  have slotEq := processUpgrades_slot upgrades
+  have forward := processUpgrades_fork_le upgrades
+  have oldEarly : s.fork < .glamsterdam := Nat.lt_of_le_of_lt forward early
+  obtain ⟨next, cached, epoched, nextOk, cachedOk, epochedOk, rfl⟩ := advanceSlot_ok slot
+  obtain ⟨_, _, _, _, cacheEq⟩ := processSlot_ok cachedOk
+  have cacheSize : cached.validators.data.size = s.state.validators.data.size := by rw [cacheEq]
+  have cacheSlot := processSlot_slot cachedOk
+  have nextSlot : t.state.slot.toNat = s.state.slot.toNat + 1 := by
+    rw [slotEq]
+    exact nextOk
+  refine ⟨nextSlot, ?_⟩
+  unfold epochIfLast at epochedOk
+  split at epochedOk
+  · rename_i boundary
+    -- Charge the pending-deposit cap only when this slot crosses an epoch boundary.
+    have epochs := nextSlot_epoch_of_boundary nextOk boundary
+    have growth := registry_epoch_bound oldEarly epochedOk
+    have diff : (getCurrentEpoch t.state).toNat - (getCurrentEpoch s.state).toNat = 1 := by
+      rw [getCurrentEpoch_toNat, getCurrentEpoch_toNat, slotEq]
+      dsimp only
+      omega
+    rw [diff, one_mul, size]
+    dsimp only
+    omega
+  · cases epochedOk
+    rw [size]
+    dsimp only
+    omega
+
+private theorem registry_operations_header {fork : Fork} {s t : BeaconState preset fork}
+    {body : BeaconBlockBody preset fork} {parentSlot : Slot} (early : fork < .glamsterdam)
+    (ok : processOperations config checks s body parentSlot = .ok t) :
+    t.latestBlockHeader = s.latestBlockHeader := by
+  have foldHeader {α : Type} {f : BeaconState preset fork → α → Except TransitionError _}
+      (keeps : ∀ s x t, f s x = .ok t → t.latestBlockHeader = s.latestBlockHeader)
+      {s t : BeaconState preset fork} {xs : List α} (h : xs.foldlM f s = .ok t) :
+      t.latestBlockHeader = s.latestBlockHeader :=
+    foldlM_ok_invariant (fun t => t.latestBlockHeader = s.latestBlockHeader)
+      (fun _ _ _ before ok => (keeps _ _ _ ok).trans before) rfl h
+  have notGloas : ¬ Fork.glamsterdam ≤ fork := fun h => Nat.not_le.mpr early h
+  simp only [processOperations, notGloas, ↓reduceDIte, bind_ok_iff, ensure_ok_iff,
+    ← Array.foldlM_toList] at ok
+  obtain ⟨_, _, _, _, _, proposers, _, attesters, _, attestations, _, deposits, exited,
+    exits, changed, changes, requests⟩ := ok
+  have changesKept : changed.latestBlockHeader = exited.latestBlockHeader := by
+    unfold processBlsToExecutionChanges at changes
+    split at changes
+    · rw [← Array.foldlM_toList] at changes
+      exact foldHeader (fun _ _ _ h =>
+        (payloadInputs_processBlsToExecutionChange h).latestBlockHeader) changes
+    · cases changes; rfl
+  have requestsKept : t.latestBlockHeader = changed.latestBlockHeader := by
+    split at requests
+    · simp only [processExecutionRequests, bind_ok_iff, ← Array.foldlM_toList] at requests
+      obtain ⟨_, dep, _, wit, con⟩ := requests
+      exact (foldHeader (fun _ _ _ h =>
+        (payloadInputs_processConsolidationRequest h).latestBlockHeader) con).trans <|
+        (foldHeader (fun _ _ _ h =>
+          (payloadInputs_processWithdrawalRequest h).latestBlockHeader) wit).trans <|
+        foldHeader (fun _ _ _ h => (payloadInputs_processDepositRequest h).latestBlockHeader) dep
+    · cases requests; rfl
+  exact requestsKept.trans <| changesKept.trans <|
+    (foldHeader (fun _ _ _ h => (payloadInputs_processVoluntaryExit h).latestBlockHeader)
+      exits).trans <|
+    (foldHeader (fun _ _ _ h => by
+      obtain ⟨_, _, _, _, applied⟩ := processDeposit_ok h
+      exact (frame_applyDeposit applied).latestBlockHeader) deposits).trans <|
+    (foldHeader (fun _ _ _ h => (payloadInputs_processAttestation h).latestBlockHeader)
+      attestations).trans <|
+    (foldHeader (fun _ _ _ h => (payloadInputs_processAttesterSlashing h).latestBlockHeader)
+      attesters).trans <|
+    foldHeader (fun _ _ _ h => (payloadInputs_processProposerSlashing h).latestBlockHeader)
+      proposers
+
+private theorem registry_execution_header {fork : Fork} {s t : BeaconState preset fork}
+    {engine : ExecutionEngine preset fork} {body : BeaconBlockBody preset fork}
+    {bellatrix : .bellatrix ≤ fork} (early : fork < .glamsterdam)
+    (ok : processBlockExecution config checks engine s body bellatrix = .ok t) :
+    t.latestBlockHeader = s.latestBlockHeader := by
+  have notGloas : ¬ Fork.glamsterdam ≤ fork := fun h => Nat.not_le.mpr early h
+  unfold processBlockExecution at ok
+  simp only [notGloas, ↓reduceDIte] at ok
+  split at ok
+  · obtain ⟨_, withdrawn, executed⟩ := bind_ok_iff.mp ok
+    obtain ⟨_, _, _, rfl⟩ := processExecutionPayload_ok executed
+    exact (payloadInputs_processWithdrawals withdrawn).latestBlockHeader
+  · split at ok
+    · obtain ⟨_, _, _, rfl⟩ := processExecutionPayload_ok ok
+      rfl
+    · cases ok; rfl
+
+private theorem registry_block_header {fork : Fork} {s t : BeaconState preset fork}
+    {engine : ExecutionEngine preset fork} {block : BeaconBlock preset fork}
+    (early : fork < .glamsterdam)
+    (ok : processBlock config checks engine s block = .ok t) :
+    t.latestBlockHeader.slot = s.slot ∧ s.latestBlockHeader.slot < s.slot := by
+  obtain ⟨headed, headerOk⟩ := processBlock_header_of_lt_gloas early ok
+  have checked := processBlockHeader_checks headerOk
+  refine ⟨?_, checked.1 ▸ checked.2.1⟩
+  suffices t.latestBlockHeader.slot = block.slot by exact this.trans checked.1
+  have notGloas : ¬ Fork.glamsterdam ≤ fork := fun h => Nat.not_le.mpr early h
+  unfold processBlock at ok
+  split at ok
+  · simp only [processBlockAltair, notGloas, ↓reduceDIte, pure_bind, bind_ok_iff] at ok
+    obtain ⟨headed, headedOk, executed, executedOk, revealed, revealedOk, voted, votedOk,
+      operated, operatedOk, synced⟩ := ok
+    have executedKept : executed.latestBlockHeader = headed.latestBlockHeader := by
+      split at executedOk
+      · exact registry_execution_header early executedOk
+      · cases executedOk; rfl
+    have votedKept : voted.latestBlockHeader = revealed.latestBlockHeader := by
+      split at votedOk
+      · exact (payloadInputs_processEth1Data votedOk).latestBlockHeader
+      · cases votedOk; rfl
+    obtain ⟨_, _, eq⟩ := processBlockHeader_eq headedOk
+    rw [(payloadInputs_processSyncAggregate synced).latestBlockHeader,
+      registry_operations_header early operatedOk, votedKept,
+      (payloadInputs_processRandao revealedOk).latestBlockHeader, executedKept, eq]
+  · simp only [bind_ok_iff] at ok
+    obtain ⟨headed, headedOk, revealed, revealedOk, voted, votedOk, operatedOk⟩ := ok
+    obtain ⟨_, _, eq⟩ := processBlockHeader_eq headedOk
+    rw [registry_operations_header early operatedOk,
+      (payloadInputs_processEth1Data votedOk).latestBlockHeader,
+      (payloadInputs_processRandao revealedOk).latestBlockHeader, eq]
+
+-- An unused block slot retains its allowance until a successful header consumes it.
+private def registry_block_allowance (s : ForkedBeaconState preset) : Nat :=
+  if s.state.latestBlockHeader.slot < s.state.slot then preset.MAX_DEPOSITS.toNat else 0
+
+private theorem registry_run_bound {x y : ForkedBeaconState preset}
+    (tail : Run config checks x y) (early : y.fork < .glamsterdam) :
+    x.state.slot.toNat ≤ y.state.slot.toNat ∧
+      y.state.validators.data.size + registry_block_allowance y ≤
+        x.state.validators.data.size +
+          (y.state.slot.toNat + 1 - x.state.slot.toNat) * preset.MAX_DEPOSITS.toNat +
+          ((getCurrentEpoch y.state).toNat - (getCurrentEpoch x.state).toNat) *
+            preset.MAX_PENDING_DEPOSITS_PER_EPOCH.toNat := by
+  induction tail with
+  | nil =>
+    constructor
+    · exact Nat.le_refl _
+    · simp only [Nat.add_sub_cancel_left, Nat.sub_self, Nat.zero_mul, Nat.add_zero, one_mul]
+      unfold registry_block_allowance
+      split <;> omega
+  | @snoc middle last pre step ih =>
+    have beforeEarly : middle.fork < .glamsterdam :=
+      Nat.lt_of_le_of_lt step.chainStep.fork_le early
+    obtain ⟨slotsBefore, bound⟩ := ih beforeEarly
+    have epochsBefore : (getCurrentEpoch x.state).toNat ≤
+        (getCurrentEpoch middle.state).toNat := by
+      rw [getCurrentEpoch_toNat, getCurrentEpoch_toNat]
+      exact Nat.div_le_div_right slotsBefore
+    cases step with
+    | slot ok =>
+      obtain ⟨slot, growth⟩ := registry_slot_bound early ok
+      have epochsAfter : (getCurrentEpoch middle.state).toNat ≤
+          (getCurrentEpoch last.state).toNat := by
+        rw [getCurrentEpoch_toNat, getCurrentEpoch_toNat]
+        exact Nat.div_le_div_right (by omega)
+      have epochAdd : (getCurrentEpoch last.state).toNat - (getCurrentEpoch x.state).toNat =
+          ((getCurrentEpoch middle.state).toNat - (getCurrentEpoch x.state).toNat) +
+          ((getCurrentEpoch last.state).toNat - (getCurrentEpoch middle.state).toNat) := by omega
+      have slotAdd : last.state.slot.toNat + 1 - x.state.slot.toNat =
+          (middle.state.slot.toNat + 1 - x.state.slot.toNat) + 1 := by omega
+      -- Advancing a slot supplies at most one fresh block allowance, even across upgrades.
+      have allowance : registry_block_allowance last ≤ preset.MAX_DEPOSITS.toNat := by
+        unfold registry_block_allowance
+        split <;> omega
+      constructor
+      · omega
+      · rw [slotAdd, epochAdd, Nat.add_mul, Nat.add_mul, one_mul]
+        omega
+    | @block fork before after engine signed due ok =>
+      have processed := (applySignedBlock_ok ok).2.1
+      have slot := (frame_processBlock processed).slot
+      have header := registry_block_header early processed
+      have growth := registry_block_bound early processed
+      -- A successful block consumes the allowance and forbids another block at this slot.
+      have used : ¬ after.latestBlockHeader.slot < after.slot := by
+        rw [header.1, slot]
+        exact UInt64.lt_irrefl _
+      have oldAllowance : registry_block_allowance ⟨fork, before⟩ =
+          preset.MAX_DEPOSITS.toNat := by simp only [registry_block_allowance, header.2, ↓reduceIte]
+      have newAllowance : registry_block_allowance ⟨fork, after⟩ = 0 := by
+        simp only [registry_block_allowance, used, ↓reduceIte]
+      have epoch : getCurrentEpoch after = getCurrentEpoch before := by
+        simp only [getCurrentEpoch, slot]
+      simp only [oldAllowance] at bound
+      simp only [newAllowance, Nat.add_zero, slot, epoch]
+      exact ⟨slotsBefore, by omega⟩
+
 /-- The registry envelope is independent of the endpoint, including a mid-epoch start. -/
 theorem registry_le_window {x y : ForkedBeaconState preset} (tail : Run config checks x y)
     (early : y.fork < .glamsterdam) (high : Nat)
     (endEpoch : (getCurrentEpoch y.state).toNat ≤ high + 1)
     (positive : 0 < preset.SLOTS_PER_EPOCH.toNat) :
     y.state.validators.data.size ≤ registryWindow x high := by
-  sorry
+  obtain ⟨slots, bound⟩ := registry_run_bound tail early
+  have epochs : (getCurrentEpoch x.state).toNat ≤ (getCurrentEpoch y.state).toNat := by
+    rw [getCurrentEpoch_toNat, getCurrentEpoch_toNat]
+    exact Nat.div_le_div_right slots
+  have epochCount : (getCurrentEpoch y.state).toNat - (getCurrentEpoch x.state).toNat ≤
+      driftHorizon x high := by unfold driftHorizon; omega
+  have lastSlot : y.state.slot.toNat < (high + 2) * preset.SLOTS_PER_EPOCH.toNat := by
+    rw [getCurrentEpoch_toNat] at endEpoch
+    apply (Nat.div_lt_iff_lt_mul positive).mp
+    omega
+  have firstSlot : (getCurrentEpoch x.state).toNat * preset.SLOTS_PER_EPOCH.toNat ≤
+      x.state.slot.toNat := by
+    rw [getCurrentEpoch_toNat]
+    exact Nat.div_mul_le_self _ _
+  -- Include the initial slot: the run can start before that slot's block has arrived.
+  have slotCount : y.state.slot.toNat + 1 - x.state.slot.toNat ≤
+      driftHorizon x high * preset.SLOTS_PER_EPOCH.toNat := by
+    unfold driftHorizon
+    rw [Nat.sub_mul]
+    omega
+  have deposits := Nat.mul_le_mul_right preset.MAX_DEPOSITS.toNat slotCount
+  have pending := Nat.mul_le_mul_right preset.MAX_PENDING_DEPOSITS_PER_EPOCH.toNat epochCount
+  unfold registryWindow
+  rw [Nat.mul_add, ← Nat.mul_assoc]
+  omega
 
 /-- Bound exits and retained-key losses, omitting keys with slashing evidence.
 
