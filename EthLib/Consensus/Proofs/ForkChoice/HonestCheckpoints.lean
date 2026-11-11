@@ -422,6 +422,53 @@ variable {config : Config} {checks : SignatureChecks} {sources : BlockSources pr
   {anchorState : BeaconState preset fork} {anchorBlock : BeaconBlock preset fork}
   {assignment : Assignment preset} {genesisTimeMs : UInt64} {J : Set ValidatorIndex}
 
+/-- Successful attestation handling supplies its checked indexed-attestation witness. -/
+theorem readsAttestation_of_onAttestation {store after : Store preset fork}
+    {attestation : Attestation preset fork} {fromBlock : Bool}
+    (handled : store.onAttestation config checks attestation fromBlock = .ok after) :
+    ∃ indexed, ReadsAttestation config checks store attestation indexed := by
+  unfold Store.onAttestation at handled
+  simp only [bind_ok_iff] at handled
+  obtain ⟨_, _, stored, storing, target, targetOk, _, _, indexed, indexedOk,
+    valid, validOk, handled⟩ := handled
+  split at handled
+  · rename_i validTrue
+    exact ⟨indexed, stored, target, storing, targetOk, mapError_ok_iff.mp indexedOk,
+      by simpa [validTrue] using mapError_ok_iff.mp validOk⟩
+  · simp [throw, throwThe, MonadExceptOf.throw, bind, Except.bind] at handled
+
+/-- Every attestation in an accepted block was read in a reachable intermediate store. -/
+theorem exists_readsAttestation_of_onBlockWithVotes {store after : Store preset fork}
+    (reachable : Store.Reachable config anchorState anchorBlock store)
+    {signed : SignedBeaconBlock preset fork}
+    (handled : store.onBlockWithVotes config checks sources signed = .ok after)
+    {attestation : Attestation preset fork}
+    (member : attestation ∈ signed.message.body.attestations.data) :
+    ∃ intermediate indexed, Store.Reachable config anchorState anchorBlock intermediate ∧
+      ReadsAttestation config checks intermediate attestation indexed := by
+  unfold Store.onBlockWithVotes at handled
+  simp only [bind_ok_iff, ← Array.foldlM_toList] at handled
+  obtain ⟨blocked, blockOk, voted, votedOk, -⟩ := handled
+  have each : ∀ (xs : List (Attestation preset fork)) (first last : Store preset fork),
+      Store.Reachable config anchorState anchorBlock first →
+      xs.foldlM (fun s a => s.onAttestation config checks a true) first = .ok last →
+      ∀ a ∈ xs, ∃ intermediate indexed,
+        Store.Reachable config anchorState anchorBlock intermediate ∧
+          ReadsAttestation config checks intermediate a indexed := by
+    intro xs
+    induction xs with
+    | nil => simp
+    | cons a rest ih =>
+      intro first last reached folded item member
+      rw [List.foldlM_cons, bind_ok_iff] at folded
+      obtain ⟨middle, firstOk, restOk⟩ := folded
+      rcases List.mem_cons.mp member with rfl | member
+      · obtain ⟨indexed, reads⟩ := readsAttestation_of_onAttestation firstOk
+        exact ⟨first, indexed, reached, reads⟩
+      · exact ih middle last (reached.attestation firstOk) restOk item member
+  exact each _ blocked voted (reachable.block blockOk) votedOk attestation
+    (Array.mem_toList_iff.mpr member)
+
 /-- The finalized checkpoint of an honest store is on the chain of each later justified one.
 
 The justified checkpoint is one of an honest store, at the epoch of the finalized one or later.
