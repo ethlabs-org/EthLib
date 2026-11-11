@@ -1192,6 +1192,94 @@ theorem Execution.exists_checkpointState_of_preBlock_target {anchor : Store pres
   rw [atSlot]
   exact computeEpochAtSlot_computeStartSlotAtEpoch (UInt64.lt_iff_toNat_lt.mpr positive) epochStart
 
+/-- A vote decoded before an accepted block occurs in a sent message with the same data.
+
+This interface is under review; its message and committee provenance proof is unfinished. -/
+theorem Execution.exists_sent_of_blockVote {anchor : Store preset fork}
+    (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (positive : 0 < preset.SLOTS_PER_EPOCH.toNat)
+    (ring : preset.MIN_SEED_LOOKAHEAD.toNat + 2 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
+    (preGloas : fork < .glamsterdam)
+    {w : ValidatorIndex} (honest : w ∈ J) (start : e.start w = anchor) {k : ℕ}
+    (nonzero : ∀ (root : Root) (block : BeaconBlock preset fork),
+      ((e.world k).state w).blocks[root]? = some block →
+      block.stateRoot ≠ Vector.replicate 32 0)
+    {root : Root} {block : BeaconBlock preset fork}
+    {parent advanced post : BeaconState preset fork}
+    (held : ((e.world k).state w).blocks[root]? = some block)
+    (other : block ≠ anchorBlock)
+    (parentFound : ((e.world k).state w).blockStates[block.parentRoot]? = some parent)
+    (slotsOk : processSlots config checks parent block.slot = .ok advanced)
+    (blockOk : processBlock config checks sources.engine advanced block = .ok post)
+    {v : ValidatorIndex} {data : AttestationData}
+    (counted : (v, data) ∈ blockVotes advanced block)
+    (later : getCurrentEpoch anchorState < data.target.epoch)
+    {slot : Slot}
+    (slotOk : ((e.world k).state w).getCurrentSlot config = .ok slot) :
+    ∃ m ∈ (e.world k).sent,
+      (v, data) ∈ statements config checks anchorState anchorBlock m ∧ data.slot < slot := by
+  sorry
+
+/-- A held state, or its fixed-check advance toward a held child, is a counting state. -/
+theorem Store.counts_of_fixedChecks {store : Store preset fork}
+    {root : Root} {base state : BeaconState preset fork}
+    (found : store.blockStates[root]? = some base)
+    (advanced : state = base ∨ ∃ (slot : Slot) (childRoot : Root)
+      (child : BeaconBlock preset fork), store.blocks[childRoot]? = some child ∧
+        child.parentRoot = root ∧ slot ≤ child.slot ∧
+        processSlots config checks base slot = .ok state) :
+    store.Counts config state := by
+  refine ⟨root, base, found, ?_⟩
+  rcases advanced with same | ⟨slot, childRoot, child, held, parent, before, processed⟩
+  · exact .inl same
+  · exact .inr ⟨checks, slot, childRoot, child, held, parent, before, processed⟩
+
+/-- A counted index for an epoch after the anchor has a sent vote for the complete link.
+
+The counting state uses the execution's checks.
+
+The recent epoch restriction excludes inherited anchor participation.
+
+It does not assert a provenance invariant for that participation.
+
+This interface is under review; its participation and message provenance proof is unfinished. -/
+theorem Execution.exists_sent_link_of_counted {anchor : Store preset fork}
+    (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (sound : Invariant anchorState)
+    (positive : 0 < preset.SLOTS_PER_EPOCH.toNat)
+    (window : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
+    (ring : preset.MIN_SEED_LOOKAHEAD.toNat + 2 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
+    (preGloas : fork < .glamsterdam)
+    {w : ValidatorIndex} (honest : w ∈ J) (start : e.start w = anchor) {k : ℕ}
+    (nonzero : ∀ (root : Root) (block : BeaconBlock preset fork),
+      ((e.world k).state w).blocks[root]? = some block →
+      block.stateRoot ≠ Vector.replicate 32 0)
+    {root : Root} {base state : BeaconState preset fork}
+    (found : ((e.world k).state w).blockStates[root]? = some base)
+    (advanced : state = base ∨ ∃ (slot : Slot) (childRoot : Root)
+      (child : BeaconBlock preset fork), ((e.world k).state w).blocks[childRoot]? = some child ∧
+        child.parentRoot = root ∧ slot ≤ child.slot ∧
+        processSlots config checks base slot = .ok state)
+    (late : ¬getCurrentEpoch state ≤ GENESIS_EPOCH + 1)
+    (recent : Bool)
+    (later : getCurrentEpoch anchorState <
+      (if recent then getCurrentEpoch state else getPreviousEpoch state))
+    {indices : List ValidatorIndex}
+    (counted : (∃ altair : .altair ≤ fork,
+      getUnslashedParticipatingIndices state altair TIMELY_TARGET_FLAG_INDEX
+        (if recent then getCurrentEpoch state else getPreviousEpoch state) = .ok indices) ∨
+      ∃ (before : fork < .altair) (attestations : Array (PendingAttestation preset)),
+        getMatchingTargetAttestations state before
+          (if recent then getCurrentEpoch state else getPreviousEpoch state) = .ok attestations ∧
+        getUnslashedAttestingIndices state attestations = .ok indices)
+    {v : ValidatorIndex} (member : v ∈ indices)
+    {slot : Slot} (slotOk : ((e.world k).state w).getCurrentSlot config = .ok slot) :
+    v ∈ quorumVoters state ∧ ∃ data,
+      LinkVote state recent v.toNat (v, data) ∧
+      ∃ m ∈ (e.world k).sent,
+        (v, data) ∈ statements config checks anchorState anchorBlock m ∧ data.slot < slot := by
+  sorry
+
 /-- The count: a set of validators signs a justified checkpoint when the others cannot.
 
 The checkpoint is one that an honest store counts as justified, after the epoch of its anchor.
