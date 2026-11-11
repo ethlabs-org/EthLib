@@ -1,6 +1,7 @@
 module
 
 public import EthLib.Consensus.Proofs.DirectSafety.Attestations
+public import EthLib.Consensus.Proofs.Transition.RegistryIdentity
 public import EthLib.Base.Proofs.Quorum
 
 /-!
@@ -39,25 +40,74 @@ def effectiveWeight {fork : Fork} (state : BeaconState preset fork) (key : BLSPu
 
 theorem genesis_unique {g : ForkedBeaconState preset}
     (genesis : Genesis (config := config) (checks := checks) g) : uniqueKeys g.state := by
-  sorry
+  obtain ⟨_, _, _, ok⟩ := genesis
+  exact RegistryIdentity.genesis ok
 
 theorem _root_.EthLib.Consensus.Run.unique {g a : ForkedBeaconState preset}
     (run : Run config checks g a)
     (initial : uniqueKeys g.state) : uniqueKeys a.state := by
-  sorry
+  induction run with
+  | nil => exact initial
+  | snoc pre step ih => exact (RegistryIdentity.chainStep step.chainStep).unique ih
 
 theorem _root_.EthLib.Consensus.Run.key_preserved {g a : ForkedBeaconState preset}
     (run : Run config checks g a)
     (i : Nat) (old : Validator) (found : g.state.validators.data[i]? = some old) :
     ∃ current, a.state.validators.data[i]? = some current ∧ current.pubkey = old.pubkey := by
-  sorry
+  have identity : RegistryIdentity g.state a.state := by
+    induction run with
+    | nil => exact .refl _
+    | snoc pre step ih => exact ih.trans (RegistryIdentity.chainStep step.chainStep)
+  obtain ⟨inside, oldEq⟩ := Array.getElem?_eq_some_iff.mp found
+  have small : i < (validatorKeys g.state).length := by simpa [validatorKeys] using inside
+  have lastSmall : i < a.state.validators.data.size := by
+    simpa [validatorKeys] using Nat.lt_of_lt_of_le small identity.kept.length_le
+  refine ⟨a.state.validators.data[i], by simp [lastSmall], ?_⟩
+  have same := identity.kept.getElem small
+  simpa [validatorKeys, oldEq] using same.symm
+
+private theorem key_preserved_from_member {g a before after : ForkedBeaconState preset}
+    {run : Run config checks g a} {step : Step config checks before after}
+    (member : run.Contains step) (i : Nat) (old : Validator)
+    (found : before.state.validators.data[i]? = some old) :
+    ∃ current, a.state.validators.data[i]? = some current ∧ current.pubkey = old.pubkey := by
+  induction member with
+  | last pre step => exact (Run.nil.snoc step).key_preserved i old found
+  | earlier member next ih =>
+    obtain ⟨middle, foundMiddle, same⟩ := ih found
+    obtain ⟨current, foundCurrent, lastSame⟩ :=
+      (Run.nil.snoc next).key_preserved i middle foundMiddle
+    exact ⟨current, foundCurrent, lastSame.trans same⟩
 
 /-- Indices are interpreted on their own run before converting to a cross-run key. -/
 theorem selected_vote_key {g a : ForkedBeaconState preset} (run : Run config checks g a)
     (initial : uniqueKeys g.state) (i : ValidatorIndex) (data : AttestationData)
     (v : Validator) (found : a.state.validators.data[i.toNat]? = some v)
     (voted : (i, data) ∈ run.votes) : run.Accepted v.pubkey data := by
-  sorry
+  -- Preservation at the same index does not require distinct keys.
+  have _initial := initial
+  obtain ⟨before, after, step, member, vote⟩ := voted
+  have atStart : ∃ old, before.state.validators.data[i.toNat]? = some old := by
+    cases step with
+    | slot ok => exact False.elim vote
+    | block engine signed due ok =>
+      rename_i fork before after
+      obtain ⟨attestation, _, _, indices, computed, inIndices⟩ := vote
+      have active := mem_getActiveValidatorIndices_of_getAttestingIndices computed inIndices
+      simp only [getActiveValidatorIndices, List.mem_filterMap, List.mem_zipIdx_iff_getElem?,
+        Prod.exists, Option.ite_none_right_eq_some, Option.some.injEq] at active
+      obtain ⟨v, position, found, _, equal⟩ := active
+      have bound : position < before.validators.data.size := by
+        simpa using (List.getElem?_eq_some_iff.mp found).1
+      -- Even a wrapped index is below the position that produced it.
+      have small : i.toNat < before.validators.data.size := by
+        subst equal
+        exact Nat.lt_of_le_of_lt (Nat.mod_le _ _) bound
+      exact ⟨before.validators.data[i.toNat], by simp [small]⟩
+  obtain ⟨old, oldFound⟩ := atStart
+  obtain ⟨current, currentFound, same⟩ := key_preserved_from_member member i.toNat old oldFound
+  have equal : current = v := Option.some.inj (currentFound.symm.trans found)
+  exact ⟨before, after, step, member, i, old, vote, oldFound, by simpa [equal] using same.symm⟩
 
 theorem keys_weight {fork : Fork} (state : BeaconState preset fork)
     (indices : List ValidatorIndex) (unique : uniqueKeys state)
@@ -65,6 +115,46 @@ theorem keys_weight {fork : Fork} (state : BeaconState preset fork)
     Quorum.weight (effectiveWeight state) (keysAt state indices) =
       ∑ i ∈ indices.toFinset,
         ((state.validators.data[i.toNat]?).map (·.effectiveBalance.toNat)).getD 0 := by
-  sorry
+  classical
+  have lookup (vs : List Validator) (distinct : (vs.map (·.pubkey)).Nodup)
+      (v : Validator) (member : v ∈ vs) :
+      vs.find? (fun w => w.pubkey == v.pubkey) = some v := by
+    induction vs with
+    | nil => simp at member
+    | cons w ws ih =>
+      simp only [List.map_cons, List.nodup_cons] at distinct
+      rcases List.mem_cons.mp member with rfl | member
+      · simp
+      · have different : w.pubkey ≠ v.pubkey := by
+          intro same
+          exact distinct.1 (List.mem_map.mpr ⟨v, member, same.symm⟩)
+        simp [different, ih distinct.2 member]
+  let key (i : ValidatorIndex) (hi : i ∈ indices.toFinset) : BLSPubkey :=
+    (state.validators.data[i.toNat]'(inside i (List.mem_toFinset.mp hi))).pubkey
+  -- Distinct registry keys make the index-to-key map a bijection on the selected set.
+  unfold Quorum.weight
+  symm
+  apply Finset.sum_bij key
+  · intro i hi
+    simp only [keysAt, List.mem_toFinset, List.mem_filterMap]
+    exact ⟨i, List.mem_toFinset.mp hi, by simp [key,
+      inside i (List.mem_toFinset.mp hi)]⟩
+  · intro i hi j hj same
+    apply UInt64.toNat_inj.mp
+    apply unique.eq_of_getElem_eq
+      (by simpa [registryKeys] using inside i (List.mem_toFinset.mp hi))
+      (by simpa [registryKeys] using inside j (List.mem_toFinset.mp hj))
+    simpa [registryKeys, key] using same
+  · intro k hk
+    simp only [keysAt, List.mem_toFinset, List.mem_filterMap] at hk
+    obtain ⟨i, hi, found⟩ := hk
+    exact ⟨i, List.mem_toFinset.mpr hi, by
+      simpa [key, Array.getElem?_eq_getElem, inside i hi] using found⟩
+  · intro i hi
+    have member : state.validators.data[i.toNat]'(inside i (List.mem_toFinset.mp hi)) ∈
+        state.validators.data.toList := by
+      simp
+    simp [effectiveWeight, key, lookup _ unique _ member,
+      inside i (List.mem_toFinset.mp hi)]
 
 end EthLib.Consensus.DirectSafety
