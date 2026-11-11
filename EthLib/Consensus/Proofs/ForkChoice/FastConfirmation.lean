@@ -1,6 +1,7 @@
 module
 
 public import EthLib.Base.Except
+public import EthLib.Base.Proofs.FilterM
 public import EthLib.Base.Proofs.MapM
 public import EthLib.Base.Proofs.Uint64
 public import EthLib.Consensus.ForkChoice.FastConfirmation
@@ -11,9 +12,13 @@ public import EthLib.Consensus.Proofs.ForkChoice.Store
 
 An empty range of slots weighs nothing, and so does a sum over no items.
 
+The adversary has no weight in an empty range.
+
 A sum is the sum of its weights.
 
 A range of slots that ends later has every member of the committees of a shorter one.
+
+A member of the committees of the slots between two slots shows that the first is earlier.
 
 A range that covers a whole epoch weighs the whole active balance.
 
@@ -236,6 +241,26 @@ theorem getCommitteesBetweenSlots_of_gt {head : Root} {startSlot endSlot : Slot}
   simp only [getCommitteesBetweenSlots, afterEndOk, Except.mapError, bind, Except.bind, zero,
     List.range_zero, List.foldlM_nil, pure, Except.pure]
 
+/-- A slot is before another when the committees of the slots between them have a member.
+
+The range starts at the slot after the first and ends at the slot before the second. -/
+theorem lt_of_mem_getCommitteesBetweenSlots {head : Root} {low high firstSlot lastSlot : Slot}
+    {participants : Std.TreeSet ValidatorIndex} {v : ValidatorIndex}
+    (firstOk : Uint64.addChecked low 1 = .ok firstSlot)
+    (lastOk : Uint64.subChecked high 1 = .ok lastSlot)
+    (participantsOk : store.getCommitteesBetweenSlots head firstSlot lastSlot = .ok participants)
+    (member : v ∈ participants) : low < high := by
+  refine UInt64.not_le.mp fun notLower => ?_
+  have empty : lastSlot < firstSlot := by
+    rw [Uint64.subChecked_ok_iff] at lastOk
+    rw [Uint64.addChecked_ok_iff] at firstOk
+    rw [UInt64.le_iff_toNat_le] at notLower
+    rw [UInt64.lt_iff_toNat_lt]
+    simp only [UInt64.toNat_one] at firstOk lastOk
+    omega
+  rw [getCommitteesBetweenSlots_of_gt empty, Except.ok.injEq] at participantsOk
+  exact absurd (participantsOk ▸ member) Std.TreeSet.not_mem_emptyc
+
 /-- The members that come with a committee weight are those of the committees of its range. -/
 theorem getCommitteesBetweenSlots_of_computeCommitteeWeightAndMembers {head : Root}
     {balanceSource : BeaconState preset fork} {startSlot endSlot : Slot} {weight : Gwei}
@@ -350,6 +375,24 @@ theorem computeAdversarialWeight_eq_spec {config : Config} {head : Root}
     split <;> rfl
   · have := getCommitteesBetweenSlots_of_computeCommitteeWeightAndMembers pair
     simp [bind, Except.bind, pure, Except.pure, getEquivocationScore, this]
+
+/-- A range of slots that starts after it ends has no adversarial weight. -/
+theorem computeAdversarialWeight_of_gt {config : Config} {head : Root}
+    {balanceSource : BeaconState preset fork} {startSlot endSlot : Slot}
+    (empty : endSlot < startSlot) :
+    store.computeAdversarialWeight config head balanceSource startSlot endSlot = .ok 0 := by
+  have noMember : (∅ : Std.TreeSet ValidatorIndex).toList = [] := rfl
+  have noShare : Uint64.mulChecked (0 / 100) config.CONFIRMATION_BYZANTINE_THRESHOLD = .ok 0 := by
+    rw [Uint64.mulChecked_ok_iff]
+    simp
+  have noScore : store.getEquivocationScoreOf balanceSource ∅ = .ok 0 := by
+    unfold getEquivocationScoreOf
+    rw [noMember]
+    simp [filterM_nil, sumGwei_nil, bind, Except.bind, pure, Except.pure]
+  rw [computeAdversarialWeight_eq_spec, computeCommitteeWeightBetweenSlots_of_gt empty]
+  simp only [getEquivocationScore, getCommitteesBetweenSlots_of_gt empty, noShare, noScore, bind,
+    Except.bind, pure, Except.pure, Except.mapError]
+  rfl
 
 /-- At each slot the tracked heads move on: the current head becomes the previous one. -/
 theorem updateFastConfirmationVariables_heads {fcr after : FastConfirmationStore} {head : Root}

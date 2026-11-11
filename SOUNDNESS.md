@@ -1830,6 +1830,40 @@ The honest support of the target of the current epoch takes the total active bal
 No theorem proves that, which rests on the shuffling of the head and its pulled-up state agreeing on the active validators of the epoch.
 Each member of the committees must also be in the source of balances, or the rule fails; no theorem bounds the epochs between that source and the range.
 
+Those theorems keep the discount for empty slots in their conclusion, as the number that the store computes.
+`Store.computeEmptySlotSupportDiscount_le` (`Consensus/Proofs/ForkChoice/FastConfirmationIndicators.lean`) bounds it by the committee weight since the parent, for a block at or before the current slot.
+`Consensus/Proofs/ForkChoice/FastConfirmationSets.lean` states which votes it counts, in any store where the rule computes it.
+`Store.parentVotersOf` is the set of the validators behind those votes, the voters for the parent.
+`Store.exists_stake_parentVotersOf_of_computeEmptySlotSupportDiscount` shows that the discount is their stake, less the store's adversarial weight of the slots between the parent and the block.
+It is zero when that weight is larger.
+By `Store.mem_parentVotersOf`, a validator is such a voter exactly when four conditions hold:
+
+- it is a member of the committees of those slots, as the rule reads them in the state of the head;
+- the source of balances holds it as active and not slashed;
+- the store does not know it to equivocate;
+- its latest message supports the pending node of the parent, or the node of the parent with the payload status that the block builds on.
+
+Before Gloas these are the same node.
+A voter votes for one of those nodes itself, while a supporter of the parent (`Store.supportersOf`) may vote for a descendant.
+When no slot lies between the parent and the block, those committees have no member (`Store.getCommitteesBetweenSlots_of_gt`).
+Then no validator is a voter and the discount is zero.
+
+`Store.le_honest_parentVotersOf_of_computeEmptySlotSupportDiscount` bounds the discount by the honest stake of the voters for the parent.
+It assumes a bound on the Byzantine validators among the active members of the committees of the slots between the parent and the block.
+They must hold at most the configured share of the stake of those members.
+The theorems on a confirmed block assume such a bound for the range of the adversarial weight, which may be another range.
+It also assumes that no known equivocator is honest.
+Each effective balance of the source must be a whole number of increments, and an increment a whole number of 100 Gwei.
+It makes no assumption on the delivery of votes.
+
+That bound does not show that the discount is safe, since it does not show that those voters do not oppose the block.
+The latest message of an honest voter in the store need not be the vote that it cast last.
+That holds even when the store receives every vote.
+From Gloas the store rejects a vote for the full node of the parent while the payload of the parent is not verified (`validatePayloadVote`).
+An older vote of that validator for the pending or the empty node of the parent can then stay as its latest message.
+The discount of a block on the empty node of the parent can count that older vote, when the validator meets the conditions above.
+The vote that the store rejected was for the full node of the parent, and that block does not descend from the full node.
+
 `Consensus/Proofs/ForkChoice/FastConfirmationConfirmedRoot.lean` states where the confirmed block of a slot comes from.
 `Store.onFastConfirmation_confirmedRoot` shows that the rule starts from the block stored before, the finalized block or the observed justified block.
 It keeps the block stored before only when that block is in the chain of the head, and at the first slot of an epoch only when `isConfirmedChainSafe` accepts it.

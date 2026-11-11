@@ -26,6 +26,10 @@ The Byzantine validators hold at most the fraction `β = num / den` of the stake
 
 That bound is Assumption 2 of the paper, taken as a hypothesis.
 
+One more bound serves the discount for empty slots of the specification.
+
+The support of a block, less an adversary that covers `β W - I`, is at most its honest support.
+
 Every bound is stated with its fractions multiplied out, in natural numbers.
 
 Views, checkpoints and Assumption 1 are left out: the statements bound stakes only.
@@ -124,6 +128,30 @@ theorem byzantine_support_add_le {W S I : Finset ν} (supportIn : S ⊆ W) (equi
   · exact Finset.filter_subset_filter _ supportIn
   · intro v member
     exact Finset.mem_filter.mpr ⟨equivocatorsIn member, dishonest v member⟩
+
+/-- The support of a block, less an adversary, is at most its honest support.
+
+The supporters `S` and the equivocators `I` are disjoint parts of `W`.
+
+No equivocator is honest.
+
+The adversary and the equivocators must cover the Byzantine share `β W`.
+
+Each set stands for its stake, and the difference is zero when the adversary is larger. -/
+theorem sub_le_honest_support {W S I : Finset ν} {adversary num den : ℕ}
+    (bound : ByzantineStakeAtMost w W J num den) (supportIn : S ⊆ W) (equivocatorsIn : I ⊆ W)
+    (apart : Disjoint S I) (dishonest : ∀ v ∈ I, v ∉ J)
+    (covered : num * stake w W ≤ den * (adversary + stake w I)) :
+    stake w S - adversary ≤ stake w {v ∈ S | v ∈ J} := by
+  obtain ⟨positiveDen, byzantineBound⟩ := bound
+  -- The support splits into honest and Byzantine validators.
+  have split : stake w {v ∈ S | v ∈ J} + stake w {v ∈ S | v ∉ J} = stake w S :=
+    Finset.sum_filter_add_sum_filter_not S (· ∈ J) w
+  have byzantine := byzantine_support_add_le (w := w) supportIn equivocatorsIn apart dishonest
+  -- The Byzantine validators of `W` weigh at most the adversary and the equivocators.
+  have room : stake w {v ∈ W | v ∉ J} ≤ adversary + stake w I :=
+    Nat.le_of_mul_le_mul_left (byzantineBound.trans covered) positiveDen
+  omega
 
 /-- Lemma 4: the observed support of a block bounds its honest ratio from below.
 
