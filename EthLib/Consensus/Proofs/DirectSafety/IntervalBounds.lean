@@ -564,7 +564,95 @@ theorem quorum_drift_from_run {g x y : ForkedBeaconState preset}
         Quorum.weight (effectiveWeight call.cached)
           (recentKeys call.cached \ activeKeys call.cached) ≤ outside ∧
         2 * loss + gain + 2 * outside ≤ derivedDrift high tail := by
-  sorry
+  classical
+  have _ := caps
+  have _ := aligned
+  have _ := withdrawalDelay
+  have member := call_after_reference shared tail parameters low starts call lower
+  obtain ⟨pre, post, split⟩ := tail.contains_split (.slot call.advanced) member
+  let before := call.before
+  have cachedSlot := (frame_processSlot call.cachedOk).slot
+  obtain ⟨_, _, _, _, validators, _⟩ := call.toEpochCall.selected_prefix
+  have epochBound : (getCurrentEpoch before.state).toNat ≤ high + 1 := by
+    have target : (getCurrentEpoch call.cached).toNat ≤ call.target.epoch.toNat + 1 := by
+      rw [call.targetEpoch]
+      cases call.current <;> simp [getPreviousEpoch_toNat]
+      omega
+    have epoch : getCurrentEpoch call.cached = getCurrentEpoch before.state := by
+      simp only [getCurrentEpoch, cachedSlot, before]
+    rw [epoch] at target
+    omega
+  have observed {z : ForkedBeaconState preset} (run : Run config checks x z)
+      (bounded : (getCurrentEpoch z.state).toNat ≤ high + 1) :
+      stateDrift x z ≤ derivedDrift high run := by
+    cases run with
+    | nil => exact Nat.le_refl _
+    | snoc pre step => simp only [derivedDrift, ite_eq_left bounded]; exact Nat.le_max_right _ _
+  have monotone {u v : ForkedBeaconState preset} (run : Run config checks x u)
+      (rest : Run config checks u v) :
+      derivedDrift high run ≤ derivedDrift high (run.append rest) := by
+    induction rest with
+    | nil => exact Nat.le_refl _
+    | snoc rest step ih =>
+      simp only [Run.append, derivedDrift]
+      split
+      · exact ih.trans (Nat.le_max_left _ _)
+      · exact ih
+  have budget : stateDrift x before ≤ derivedDrift high tail := by
+    rw [split]
+    apply (observed pre epochBound).trans
+    apply le_trans (b := derivedDrift high (pre.snoc (.slot call.advanced)))
+    · simp only [derivedDrift]
+      split
+      · exact Nat.le_max_left _ _
+      · exact Nat.le_refl _
+    · exact monotone _ post
+  have evidence (k) (h : (shared.append pre).SlashingEvidence k) :
+      (shared.append tail).SlashingEvidence k := by
+    obtain ⟨u, v, step, inside, slashed⟩ := h
+    refine ⟨u, v, step, ?_, slashed⟩
+    rcases (shared.contains_append pre step).mp inside with inside | inside
+    · exact (shared.contains_append tail step).mpr (.inl inside)
+    · apply (shared.contains_append tail step).mpr
+      right
+      rw [split]
+      exact ((pre.snoc (.slot call.advanced)).contains_append post step).mpr
+        (.inl (.earlier inside _))
+  have earlyBefore : before.fork < .glamsterdam :=
+    Nat.lt_of_le_of_lt (fork_le_of_chainSteps
+      ((Run.nil.snoc (.slot call.advanced)).append post).chainSteps) early
+  have lossBound : (∑ k ∈ (activeKeys x.state).filter
+      (fun k => ¬ (shared.append tail).SlashingEvidence k),
+      (effectiveWeight x.state k - Quorum.supported (recentKeys before.state)
+        (effectiveWeight before.state) k)) ≤ referenceLoss x before := by
+    apply Finset.sum_le_sum_of_subset_of_nonneg
+    · intro k hk
+      obtain ⟨active, absent⟩ := Finset.mem_filter.mp hk
+      refine Finset.mem_filter.mpr ⟨active, ?_⟩
+      rintro ⟨v, found, key, slashed⟩
+      exact absent (evidence k (key ▸
+        (shared.append pre).slashed_evidence genesis earlyBefore v found slashed))
+    · intros; exact Nat.zero_le _
+  refine ⟨referenceLoss x before, referenceGain x before, boundaryStake before, ?_, ?_, ?_,
+    budget⟩
+  all_goals
+    have weight : effectiveWeight call.cached = effectiveWeight before.state := by
+      funext k
+      simp only [effectiveWeight, validators, before]
+    have active : activeKeys call.cached = activeKeys before.state := by
+      simp only [activeKeys, keysAt, getActiveValidatorIndices, getCurrentEpoch,
+        validators, cachedSlot, before]
+      rfl
+    have recent : recentKeys call.cached = recentKeys before.state := by
+      simp only [recentKeys, active, keysAt, getActiveValidatorIndices, getPreviousEpoch,
+        getCurrentEpoch, validators, cachedSlot, before]
+      rfl
+  · simpa only [weight, recent] using lossBound
+  · exact (congrArg₂ (fun s w => ∑ k ∈ s,
+        (w k - Quorum.supported (activeKeys x.state) (effectiveWeight x.state) k))
+        recent weight).le
+  · exact (congrArg₂ (fun w s => Quorum.weight w s) weight
+      (congrArg₂ (· \ ·) recent active)).le
 
 end
 
