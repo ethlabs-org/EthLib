@@ -381,6 +381,54 @@ theorem mem_boundary_iff {fork : Fork} (state : BeaconState preset fork)
     rw [← equal, inactive] at active
     cases active
 
+/-- Boundary weight is the effective stake of the single cohort exiting at this epoch. -/
+theorem boundaryStake_eq_cohort (y : ForkedBeaconState preset)
+    (early : y.fork < .glamsterdam) (unique : uniqueKeys y.state) :
+    boundaryStake y = inheritedCohort y (getCurrentEpoch y.state).toNat := by
+  classical
+  let cohort := y.state.validators.data.toList.filter fun v =>
+    v.activationEpoch.toNat < (getCurrentEpoch y.state).toNat &&
+      v.exitEpoch.toNat == (getCurrentEpoch y.state).toNat
+  have selected : recentKeys y.state \ activeKeys y.state =
+      (cohort.map (·.pubkey)).toFinset := by
+    ext key
+    rw [mem_boundary_iff y.state early unique]
+    simp only [cohort, List.mem_toFinset, List.mem_map, List.mem_filter,
+      Bool.and_eq_true, decide_eq_true_eq, beq_iff_eq]
+    constructor
+    · rintro ⟨i, v, found, same, active, exited⟩
+      exact ⟨v, ⟨by simpa using Array.mem_of_getElem? found, active, exited⟩, same⟩
+    · rintro ⟨v, ⟨member, active, exited⟩, same⟩
+      obtain ⟨i, inside, found⟩ := List.getElem_of_mem member
+      exact ⟨i, v, by simp [← found], same, active, exited⟩
+  have distinct : (cohort.map (·.pubkey)).Nodup :=
+    unique.sublist ((List.filter_sublist).map _)
+  have lookup (vs : List Validator) (unique : (vs.map (·.pubkey)).Nodup)
+      (v : Validator) (member : v ∈ vs) :
+      vs.find? (fun w => w.pubkey == v.pubkey) = some v := by
+    induction vs with
+    | nil => simp at member
+    | cons w ws ih =>
+      simp only [List.map_cons, List.nodup_cons] at unique
+      rcases List.mem_cons.mp member with rfl | member
+      · simp
+      · have different : w.pubkey ≠ v.pubkey := by
+          intro same
+          exact unique.1 (List.mem_map.mpr ⟨v, member, same.symm⟩)
+        simp [different, ih unique.2 member]
+  unfold boundaryStake Quorum.weight
+  rw [selected, List.sum_toFinset _ distinct, List.map_map]
+  have weights : (cohort.map fun v => effectiveWeight y.state v.pubkey).sum =
+      (cohort.map fun v => v.effectiveBalance.toNat).sum := by
+    congr 1
+    apply List.map_congr_left
+    intro v member
+    have present := (List.mem_filter.mp member).1
+    simp [effectiveWeight, lookup _ unique v present]
+  change (cohort.map fun v => effectiveWeight y.state v.pubkey).sum = _
+  rw [weights, List.sum_eq_foldl, List.foldl_map]
+  rfl
+
 /-- Positive effective-weight growth since reference or scheduling, for this boundary only. -/
 def cohortGrowth {x y : ForkedBeaconState preset} (tail : Run config checks x y) : Nat :=
   (y.state.validators.data.toList.zipIdx.map fun (v, i) =>
