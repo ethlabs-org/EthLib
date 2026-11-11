@@ -5532,17 +5532,7 @@ private theorem intervalGain_crossing_of_interfaces {g x y : ForkedBeaconState p
     (parameters : Parameters preset) (early : y.fork < .glamsterdam)
     (high : Nat) (endEpoch : (getCurrentEpoch y.state).toNat ≤ high + 1)
     (events : List (BalanceEvent preset)) (replayed : tail.balanceEvents high = .ok events)
-    (crossing : config.ELECTRA_FORK_EPOCH.toNat ≤ high + 1)
-    (provenance : ∀ e ∈ events,
-      RegistryLifecycle x.state e.before.state ∧
-      RegistryLifecycle e.before.state e.after.state ∧
-      RegistryLifecycle e.after.state y.state ∧
-      ExitsOrdered e.before.state ∧ BalancesMatch e.after.state ∧
-      (getCurrentEpoch x.state).toNat ≤ (getCurrentEpoch e.before.state).toNat ∧
-      (getCurrentEpoch e.before.state).toNat ≤ (getCurrentEpoch y.state).toNat)
-    (epochs : ∀ e ∈ events, e.source = .deposits → .pectra ≤ e.before.fork →
-      (∀ i, actualBalanceAt e.after i ≤ actualBalanceAt e.before i) ∨
-      (getCurrentEpoch e.before.state).toNat < (getCurrentEpoch y.state).toNat) :
+    (crossing : config.ELECTRA_FORK_EPOCH.toNat ≤ high + 1) :
     referenceGain x y ≤ activationWindow (config := config) x high + initialExcess x +
       (events.map (residualCredit (config := config) x high)).sum := by
   apply intervalGain_crossing_endpoint shared tail genesis parameters early high endEpoch
@@ -5550,7 +5540,10 @@ private theorem intervalGain_crossing_of_interfaces {g x y : ForkedBeaconState p
       (intervalGain_events_bounded shared tail genesis early high endEpoch
         events replayed e member).1)
   exact (intervalGain_deposit_filter_sum y parameters events
-    (intervalGain_deposit_sites events provenance epochs)).trans
+    (intervalGain_deposit_sites events
+      (replay_event_provenance shared tail genesis parameters early high endEpoch events replayed)
+      (replay_electra_deposit_epoch shared tail genesis parameters early high endEpoch
+        events replayed))).trans
       (funding_deposit_capacity shared tail genesis parameters early high endEpoch events replayed)
 
 private theorem intervalGain_joining_split (x y : ForkedBeaconState preset)
