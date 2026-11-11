@@ -110,6 +110,34 @@ theorem computeSlotAtTimeMs_computeTimeAtSlotMs {genesisTimeMs timeMs : UInt64} 
       rw [offsetValue, Nat.mul_div_cancel _ positive]
     simp only [computeSlotAtTimeMs, elapsed, quotient, bind, Except.bind]
 
+/-- A time before the next slot maps to the slot whose start time it follows. -/
+theorem computeSlotAtTimeMs_inside {genesisTimeMs startTime timeMs due : UInt64} {slot : Slot}
+    (start : computeTimeAtSlotMs config genesisTimeMs slot = .ok startTime)
+    (time : timeMs.toNat = startTime.toNat + due.toNat)
+    (inside : due < config.SLOT_DURATION_MS) :
+    computeSlotAtTimeMs config genesisTimeMs timeMs = .ok slot := by
+  unfold computeTimeAtSlotMs at start
+  simp only [bind_ok_iff] at start
+  obtain ⟨offset, product, sum⟩ := start
+  have offsetValue := (mulChecked_ok_iff.mp product).2
+  have startValue := (addChecked_ok_iff.mp sum).2
+  have below := UInt64.lt_iff_toNat_lt.mp inside
+  have elapsed : subChecked timeMs genesisTimeMs = .ok (timeMs - genesisTimeMs) := by
+    apply subChecked_ok_iff.mpr
+    refine ⟨by omega, ?_⟩
+    rw [UInt64.toNat_sub_of_le _ _ (UInt64.le_iff_toNat_le.mpr (by omega))]
+  have value : (timeMs - genesisTimeMs).toNat =
+      slot.toNat * config.SLOT_DURATION_MS.toNat + due.toNat := by
+    rw [UInt64.toNat_sub_of_le _ _ (UInt64.le_iff_toNat_le.mpr (by omega))]
+    omega
+  have quotient : divChecked (timeMs - genesisTimeMs) config.SLOT_DURATION_MS = .ok slot := by
+    apply divChecked_ok_iff.mpr
+    refine ⟨by intro zero; simp [zero] at below, ?_⟩
+    rw [value, Nat.add_div (by omega), Nat.mul_div_cancel _ (by omega),
+      Nat.div_eq_of_lt below]
+    simp [Nat.mod_eq_of_lt below, below]
+  simp only [computeSlotAtTimeMs, elapsed, quotient, bind, Except.bind]
+
 /-- The slot at a time does not decrease as the time grows. -/
 theorem computeSlotAtTimeMs_mono {genesisTimeMs timeMs laterMs : UInt64} {slot later : Slot}
     (le : timeMs ≤ laterMs)
