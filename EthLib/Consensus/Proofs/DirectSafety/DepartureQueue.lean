@@ -1298,6 +1298,47 @@ theorem partialWithdrawal_indexedTrace {fork : Fork} {s t : BeaconState preset f
       obtain rfl := List.mem_singleton.mp member
       exact ⟨rfl, exitChurnLimit_le_cap early rate⟩
 
+/-- Slashing preserves the exit call's index, amount and assigned epoch. -/
+theorem slashing_indexedTrace {fork : Fork} {s t : BeaconState preset fork}
+    (electra : .pectra ≤ fork) (early : fork < .glamsterdam)
+    {index : ValidatorIndex} {whistleblower : Option ValidatorIndex}
+    (ok : slashValidator config s index whistleblower = .ok t) :
+    ∃ calls : List IndexedDepartureCall,
+      DepartureQueueTrace (s.earliestExitEpoch electra) (s.exitBalanceToConsume electra)
+        (calls.map (·.call)) (t.earliestExitEpoch electra) (t.exitBalanceToConsume electra) ∧
+      DepartureCoverage s t calls ∧ (∀ called ∈ calls,
+        called.call.rate.toNat ≤ config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat) := by
+  obtain ⟨exited, validator, withdrawable, marked, _, _, _, _, _, _, _, last, exitedOk,
+    found, _, markedOk, _, _, _, lowered, _, _, raised, final, done⟩ := slashValidator_ok ok
+  obtain ⟨calls, trace, rates, covered⟩ := initiateExit_indexedTrace electra early exitedOk
+  have notGloas : ¬ .glamsterdam ≤ fork := Nat.not_le_of_lt early
+  simp only [notGloas, ↓reduceDIte] at done
+  subst t
+  have registry := (increaseBalance_validators final).trans
+    ((increaseBalance_validators raised).trans (decreaseBalance_validators lowered))
+  have frame : departureQueues electra last = departureQueues electra exited := by
+    rw [departureQueues_increase electra final, departureQueues_increase electra raised,
+      departureQueues_decrease electra lowered]
+    obtain ⟨_, rfl⟩ := setValidator_ok markedOk
+    rfl
+  refine ⟨calls, ?_, DepartureCoverage.of_accessor early ?_, rates⟩
+  · have epoch := congrArg Prod.fst frame
+    have balance := congrArg (fun q => q.2.1) frame
+    change last.earliestExitEpoch electra = exited.earliestExitEpoch electra at epoch
+    change last.exitBalanceToConsume electra = exited.exitBalanceToConsume electra at balance
+    rw [epoch, balance]
+    exact trace
+  · intro other old next before after unset assigned
+    have readMarked := (getValidator_of_validators_eq registry other).symm.trans after
+    by_cases same : other = index
+    · subst other
+      have sameNext := Except.ok.inj
+        ((getValidator_setValidator_self markedOk).symm.trans readMarked)
+      subst next
+      exact covered index old validator before found unset assigned
+    · have readExited := (getValidator_setValidator_of_ne markedOk same).symm.trans readMarked
+      exact covered other old next before readExited unset assigned
+
 /-- Slashing rewards and penalties leave the initial exit call's queue output unchanged. -/
 theorem slashing_exitTrace {fork : Fork} {s t : BeaconState preset fork}
     (electra : .pectra ≤ fork) (early : fork < .glamsterdam)
@@ -1374,6 +1415,68 @@ theorem attesterSlashing_exitTrace {fork : Fork} {s t : BeaconState preset fork}
   simp only [pure, Except.pure, Except.ok.injEq] at ok
   obtain ⟨_, _, rfl⟩ := ok
   exact slashableFold_exitTrace electra early foldedOk
+
+private theorem slashableFold_indexedTrace {fork : Fork}
+    (electra : .pectra ≤ fork) (early : fork < .glamsterdam)
+    {indices : List ValidatorIndex} {s t : BeaconState preset fork} {flag nextFlag : Bool}
+    (ok : indices.foldlM (slashIfSlashable config) (s, flag) = .ok (t, nextFlag)) :
+    ∃ calls : List IndexedDepartureCall,
+      DepartureQueueTrace (s.earliestExitEpoch electra) (s.exitBalanceToConsume electra)
+        (calls.map (·.call)) (t.earliestExitEpoch electra) (t.exitBalanceToConsume electra) ∧
+      DepartureCoverage s t calls ∧ (∀ called ∈ calls,
+        called.call.rate.toNat ≤ config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat) := by
+  induction indices generalizing s flag with
+  | nil => cases ok; exact ⟨[], .nil _ _, DepartureCoverage.of_data rfl, by simp⟩
+  | cons index rest ih =>
+    obtain ⟨⟨middle, flag'⟩, stepped, remaining⟩ := bind_ok_iff.mp ok
+    obtain ⟨later, tail, laterCoverage, laterRates⟩ := ih remaining
+    have tailLifecycle : RegistryLifecycle middle t := by
+      exact foldlM_ok_invariant (fun pair => RegistryLifecycle middle pair.1)
+        (fun _ _ _ before step => before.trans (registryLifecycle_slashIfSlashable step))
+        (.refl middle) remaining
+    simp only [slashIfSlashable, bind_ok_iff] at stepped
+    obtain ⟨_, _, stepped⟩ := stepped
+    split at stepped
+    · simp only [bind_ok_iff, liftAccessor_ok, pure, Except.pure,
+        Except.ok.injEq, Prod.mk.injEq] at stepped
+      obtain ⟨_, slashed, rfl, _⟩ := stepped
+      obtain ⟨first, head, firstCoverage, firstRates⟩ := slashing_indexedTrace electra early slashed
+      refine ⟨first ++ later, ?_, ?_, ?_⟩
+      · simpa only [List.map_append] using head.append tail
+      · exact firstCoverage.append_of_effectiveKept laterCoverage
+          (registryLifecycle_slashValidator slashed) tailLifecycle (effectiveKept_slash slashed)
+      · intro called member
+        exact (List.mem_append.mp member).elim (firstRates called) (laterRates called)
+    · cases stepped; exact ⟨later, tail, laterCoverage, laterRates⟩
+
+/-- Attester slashings retain charge coverage through their slashable-validator fold. -/
+theorem attesterSlashing_indexedTrace {fork : Fork} {s t : BeaconState preset fork}
+    (electra : .pectra ≤ fork) (early : fork < .glamsterdam)
+    {slashing : AttesterSlashing preset fork}
+    (ok : processAttesterSlashing config checks s slashing = .ok t) :
+    ∃ calls : List IndexedDepartureCall,
+      DepartureQueueTrace (s.earliestExitEpoch electra) (s.exitBalanceToConsume electra)
+        (calls.map (·.call)) (t.earliestExitEpoch electra) (t.exitBalanceToConsume electra) ∧
+      DepartureCoverage s t calls ∧ (∀ called ∈ calls,
+        called.call.rate.toNat ≤ config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat) := by
+  simp only [processAttesterSlashing, bind_ok_iff, ensure_ok_iff] at ok
+  obtain ⟨_, _, _, _, _, _, _, _, _, _, ⟨folded, flag⟩, foldedOk, ok⟩ := ok
+  simp only [pure, Except.pure, Except.ok.injEq] at ok
+  obtain ⟨_, _, rfl⟩ := ok
+  exact slashableFold_indexedTrace electra early foldedOk
+
+/-- A proposer slashing retains the charged index of its exit call. -/
+theorem proposerSlashing_indexedTrace {fork : Fork} {s t : BeaconState preset fork}
+    (electra : .pectra ≤ fork) (early : fork < .glamsterdam) {slashing : ProposerSlashing}
+    (ok : processProposerSlashing config checks s slashing = .ok t) :
+    ∃ calls : List IndexedDepartureCall,
+      DepartureQueueTrace (s.earliestExitEpoch electra) (s.exitBalanceToConsume electra)
+        (calls.map (·.call)) (t.earliestExitEpoch electra) (t.exitBalanceToConsume electra) ∧
+      DepartureCoverage s t calls ∧ (∀ called ∈ calls,
+        called.call.rate.toNat ≤ config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat) := by
+  simp only [processProposerSlashing, bind_ok_iff, ensure_ok_iff, liftAccessor_ok] at ok
+  obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, slashed⟩ := ok
+  exact slashing_indexedTrace electra early slashed
 
 /-- A successful fold concatenates its operation-level exit-call traces. -/
 theorem exitTrace_fold {fork : Fork} {α : Type} (electra : .pectra ≤ fork)
