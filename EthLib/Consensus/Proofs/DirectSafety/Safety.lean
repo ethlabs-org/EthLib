@@ -3,13 +3,15 @@ module
 public import EthLib.Consensus.Proofs.DirectSafety.IntervalBounds
 
 /-!
-# Direct accountable safety: proposed public statements
+# Direct accountable safety from selected executions
 
 All checkpoints are the fields of the endpoints of actual executions.
 
 All attestation witnesses come from the supplied shared prefix or one of its two tails.
 
-All proofs are placeholders pending statement review; no security theorem is proved here yet.
+The bounds use observed effective-weight drift and retain explicit hash-evidence alternatives.
+
+Closed-form source bounds are separate obligations, not premises of these proofs.
 -/
 
 @[expose] public section
