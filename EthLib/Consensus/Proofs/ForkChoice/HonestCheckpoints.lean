@@ -124,6 +124,20 @@ def NotSlashed (state : BeaconState preset fork) (v : ValidatorIndex) : Prop :=
 def activeVoters (state : BeaconState preset fork) : Finset ValidatorIndex :=
   (getActiveValidatorIndices state (getCurrentEpoch state)).toFinset
 
+/-- No checkpoint of a state is of a later epoch than the state.
+
+The checkpoints are the finalized one and the two justified ones.
+
+The store of an anchor checks no checkpoint of the state of its anchor.
+
+A block after the anchor carries those checkpoints, and a store reads them from its state.
+
+So a statement on the justified checkpoints of a store asks this of the state of the anchor. -/
+def CheckpointsNotAhead (state : BeaconState preset fork) : Prop :=
+  state.finalizedCheckpoint.epoch ≤ getCurrentEpoch state ∧
+    state.currentJustifiedCheckpoint.epoch ≤ getCurrentEpoch state ∧
+    state.previousJustifiedCheckpoint.epoch ≤ getCurrentEpoch state
+
 /-- The balances of a state have drifted from those of a reference by at most a number of Gwei.
 
 The reference is the state where a bound on some validators is known.
@@ -298,6 +312,8 @@ The checkpoint is one that an honest store counts as justified, after the epoch 
 
 The store starts as the store of the anchor.
 
+No checkpoint of the state of the anchor is of a later epoch than that state.
+
 A state of the store counts the votes for it, in its epoch or the one after.
 
 It is the state of a block of the store, maybe at a later slot, as `Store.Counts` says.
@@ -331,6 +347,7 @@ There `one_third_honest_intersects_two_thirds` and `two_quorums_intersect_honest
 [vfc]: https://github.com/fradamt/verified-fast-confirmation -/
 theorem Execution.exists_signsTarget_of_justified {anchor : Store preset fork}
     (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (sound : CheckpointsNotAhead anchorState)
     {w : ValidatorIndex} (honest : w ∈ J) (start : e.start w = anchor) {k : ℕ}
     {checkpoint : Checkpoint} {slot : Slot}
     (justified : ((e.world k).state w).Justified checkpoint)
@@ -364,6 +381,7 @@ The margin asks that the Byzantine stake with the drift stays below two thirds.
 With a threshold of 25, the drift must be below five quarters of that active stake. -/
 theorem Execution.justifiedByHonestVote [DecidablePred (· ∈ J)] {anchor : Store preset fork}
     (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (sound : CheckpointsNotAhead anchorState)
     (start : ∀ w ∈ J, e.start w = anchor) {horizon : Epoch}
     {reference : BeaconState preset fork} {threshold drift : ℕ}
     (byzantine : ByzantineStakeAtMost (fun v => balanceAt reference v.toNat)
@@ -379,7 +397,7 @@ theorem Execution.justifiedByHonestVote [DecidablePred (· ∈ J)] {anchor : Sto
       200 * stake (fun v => balanceAt reference v.toNat) (activeVoters reference)) :
     JustifiedByHonestVote e anchor.justifiedCheckpoint.epoch horizon := by
   intro w honest k checkpoint slot justified slotOk after inHorizon
-  refine e.exists_signsTarget_of_justified anchored honest (start w honest) justified slotOk
+  refine e.exists_signsTarget_of_justified anchored sound honest (start w honest) justified slotOk
     after (· ∈ J) fun state total counts _ upper totalOk => ?_
   have bound := byzantine.2
   have inside := UInt64.le_iff_toNat_le.mp inHorizon
@@ -401,6 +419,7 @@ No honest validator is slashed in a state where an honest store can count votes.
 That number is the margin, and it covers two epochs of drift at most. -/
 theorem Execution.honestThirdPins {anchor : Store preset fork}
     (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (sound : CheckpointsNotAhead anchorState)
     (start : ∀ w ∈ J, e.start w = anchor) {drift : ℕ}
     (drifts : ∀ u ∈ J, ∀ n head reference epoch,
       ((e.world n).state u).getPulledUpHeadState config head = .ok reference →
@@ -416,7 +435,7 @@ theorem Execution.honestThirdPins {anchor : Store preset fork}
   intro u caller n head reference total epoch voters referenceOk totalOk epochOk good active third w
     honest k checkpoint slot justified slotOk same after
   subst same
-  obtain ⟨v, member, signs⟩ := e.exists_signsTarget_of_justified anchored honest
+  obtain ⟨v, member, signs⟩ := e.exists_signsTarget_of_justified anchored sound honest
     (start w honest) justified slotOk after (· ∈ voters) fun state stateTotal counts lower upper
       stateTotalOk => by
     have split := Finset.sum_filter_add_sum_filter_not (activeVoters reference) (· ∈ voters)

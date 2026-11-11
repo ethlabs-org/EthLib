@@ -210,6 +210,38 @@ def TargetIncluded
         ((e.world k).state w).unrealizedJustifications[seed]? = some justification ∧
         target.epoch.toNat ≤ justification.epoch.toNat
 
+/-- The rule of a validator has checked the target of the current epoch for a block before.
+
+The store is that of the validator at an event, and the block is one of its current epoch.
+
+At an earlier event of the same epoch, the store was up to date and its head was above the block.
+
+There the rule found that the target of the epoch will be justified.
+
+Honest validators held the count of the rule for that target, with the margin.
+
+The block is safe from that event to the later one.
+
+A call of the rule makes that check only when it enters the epoch.
+
+A later call that starts from a block of the epoch relies on the earlier check.
+
+In [verified-fast-confirmation][vfc], `AcceptedHistoricalA32CurrentLineageAt` holds this record.
+
+[vfc]: https://github.com/fradamt/verified-fast-confirmation -/
+def TargetChecked
+    (e : Execution (honestForkChoice config checks sources anchorState anchorBlock assignment
+      genesisTimeMs) J) (margin : ℕ) (u : ValidatorIndex) (n : ℕ) (root : Root) : Prop :=
+  ∃ k ≤ n, ∃ head epoch,
+    UpToDate config checks sources (e.world k).time ((e.world k).view u) ((e.world k).state u) ∧
+    ((e.world k).state u).getCurrentStoreEpoch config = .ok epoch ∧
+    ((e.world n).state u).getCurrentStoreEpoch config = .ok epoch ∧
+    ((e.world k).state u).getHead config = .ok head ∧
+    ((e.world k).state u).willCurrentTargetBeJustified config head.root = .ok true ∧
+    ((e.world k).state u).isAncestor ⟨head.root, .pending⟩ ⟨root, .pending⟩ = .ok true ∧
+    HonestTargetVotes e margin u k head.root ∧
+    ∀ time, (e.world k).time ≤ time → time ≤ (e.world n).time → SafeAt e time root
+
 variable {e : Execution (honestForkChoice config checks sources anchorState anchorBlock assignment
   genesisTimeMs) J} [DecidablePred (· ∈ J)]
 
@@ -277,6 +309,8 @@ Honest validators hold the count of the rule for the target of the head, with th
 
 Each has voted for that target or has still to vote in the epoch.
 
+A start of the current epoch is the block of the anchor, or the rule checked its target before.
+
 From the call to just before the later time, the block is safe.
 
 The start of the rule is safe from the call to the later time.
@@ -324,6 +358,9 @@ theorem Execution.coveredOrViableAt_of_checked {Δ : ℕ} (sync : e.Synchronous 
     (previousHead : ∃ k ≤ n, ∃ previous, ((e.world k).state u).getHead config = .ok previous ∧
       previous.root = fcr.previousSlotHead)
     (targetVotes : HonestTargetVotes e margin u n head.root)
+    (lineage : ∀ epoch, ((e.world n).state u).getCurrentStoreEpoch config = .ok epoch →
+      ((e.world n).state u).getBlockEpoch start = .ok epoch →
+      start = anchor.finalizedCheckpoint.root ∨ TargetChecked e margin u n start)
     {time : ℕ} (later : (e.world n).time ≤ time)
     (inHorizon : ∀ w ∈ J, ∀ k epoch, (e.world k).time ≤ time →
       ((e.world k).state w).getCurrentStoreEpoch config = .ok epoch → epoch ≤ horizon)
