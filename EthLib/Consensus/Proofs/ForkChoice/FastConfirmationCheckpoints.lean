@@ -854,10 +854,12 @@ It is `Execution.StrictSelectorAdvanceAt.actualCall_selectedStrictEdgeFilterSupp
 theorem Execution.coveredOrViableAt_of_checked {Δ : ℕ} (sync : e.Synchronous Δ)
     (slots : 0 < config.SLOT_DURATION_MS)
     (preGloas : fork < .glamsterdam)
+    (admitted : BlocksAdmitted e 0 Δ)
     (oneBlock : OneBlockPerRoot e)
     (votes : Votes e.startTime e) (fits : DelayFits fork config genesisTimeMs Δ)
     (prompt : Prompt e) (committees : CommitteesFollow e)
     {horizon anchorEpoch : Epoch} {margin : ℕ}
+    (chain : FinalizedPrefix e horizon)
     (unique : OneJustifiedPerEpoch e horizon) (pins : HonestThirdPins e anchorEpoch horizon margin)
     (voted : JustifiedByHonestVote e anchorEpoch horizon) (included : TargetIncluded e)
     {anchor : Store preset fork}
@@ -870,6 +872,10 @@ theorem Execution.coveredOrViableAt_of_checked {Δ : ℕ} (sync : e.Synchronous 
     {u : ValidatorIndex} (caller : u ∈ J) {n : ℕ}
     (upToDate : UpToDate config checks sources (e.world n).time ((e.world n).view u)
       ((e.world n).state u))
+    (atSlot : ∃ slot begin,
+      ((e.world n).state u).getCurrentSlot config = .ok slot ∧
+      computeTimeAtSlotMs config genesisTimeMs slot = .ok begin ∧
+      (e.world n).time = begin.toNat)
     {fcr : FastConfirmationStore} {head : ForkChoiceNode} {start root : Root}
     (headOk : ((e.world n).state u).getHead config = .ok head)
     (checked : ((e.world n).state u).Checked config fcr head.root start root)
