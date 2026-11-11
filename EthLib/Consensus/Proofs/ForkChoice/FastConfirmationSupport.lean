@@ -6,6 +6,7 @@ public import EthLib.Consensus.Proofs.ForkChoice.BlockAgreement
 public import EthLib.Consensus.Proofs.ForkChoice.HonestCheckpoints
 public import EthLib.Consensus.Proofs.ForkChoice.VoteOrigins
 public import EthLib.Consensus.Proofs.ForkChoice.JustifiedOrigins
+public import EthLib.Consensus.Proofs.ForkChoice.HonestVotes
 public import EthLib.Consensus.Proofs.Transition.RunKept
 import EthLib.Consensus.Proofs.HonestAggregation
 
@@ -1081,6 +1082,64 @@ theorem Execution.isAncestor_of_maySign_of_safe {anchor : Store preset fork}
   exact headEq ▸ transferred
 
 omit [DecidablePred (· ∈ J)] in
+/-- Joint vote provenance puts its signing time before the endpoint and after its target floor. -/
+theorem Execution.signing_time_in_range {anchor : Store preset fork}
+    (start : ∀ u ∈ J, e.start u = anchor)
+    {v w : ValidatorIndex} (honest : v ∈ J) (receiver : w ∈ J) {n k : ℕ}
+    (earlier : n < k) {attestation : Attestation preset fork}
+    (signed : MaySign config checks sources anchorState anchorBlock assignment genesisTimeMs v
+      (e.world n).time ((e.world n).view v) ((e.world n).state v) attestation.data)
+    (origin : ((e.world k).state w).VoteOrigin config v attestation)
+    (upToDate : UpToDate config checks sources (e.world k).time ((e.world k).view w)
+      ((e.world k).state w))
+    {due : UInt64} (dueOk : getAttestationDueMs config fork = .ok due)
+    (inSlot : due < config.SLOT_DURATION_MS)
+    {epoch : Epoch} {begin : Slot} {beginTime : UInt64} {first : ℕ}
+    (beginOk : computeStartSlotAtEpoch preset epoch = .ok begin)
+    (beginTimeOk : computeTimeAtSlotMs config genesisTimeMs begin = .ok beginTime)
+    (fresh : first ≤ beginTime.toNat) (rank : epoch ≤ attestation.data.target.epoch) :
+    first ≤ (e.world n).time ∧ (e.world n).time < (e.world k).time := by
+  obtain ⟨committee, _, deadline, genesis, current, honestData, _⟩ := signed
+  obtain ⟨startTime, due', startOk, dueOk', timeEq⟩ := deadline
+  have dueEq := Except.ok.inj (dueOk'.symm.trans dueOk)
+  subst due'
+  obtain ⟨head, block, headState, state, _, _, _, _, made⟩ := honestData
+  have epochEq := target_epoch_eq_of_getAttestationData made
+  have beginLe : begin ≤ attestation.data.slot := by
+    have floor := Nat.mul_le_mul_right preset.SLOTS_PER_EPOCH.toNat
+      (UInt64.le_iff_toNat_le.mp rank)
+    rw [epochEq, computeEpochAtSlot, UInt64.toNat_div] at floor
+    rw [UInt64.le_iff_toNat_le, (computeStartSlotAtEpoch_ok_iff.mp beginOk).2]
+    exact floor.trans (Nat.div_mul_le_self _ _)
+  obtain ⟨beginTime', beginOk', _, timeLe⟩ := exists_timeAtSlotMs_of_le beginLe startOk
+  have same := Except.ok.inj (beginOk'.symm.trans beginTimeOk)
+  subst beginTime'
+  constructor
+  · have timeLe := UInt64.le_iff_toNat_le.mp timeLe
+    omega
+  · have timeLe := e.monotone_time earlier.le
+    apply lt_of_le_of_ne timeLe
+    intro sameTime
+    have genesisEq : ((e.world k).state w).genesisTimeMs = genesisTimeMs := by
+      have left := (e.clock_bounds v n).1
+      have right := (e.clock_bounds w k).1
+      rw [start v honest] at left
+      rw [start w receiver] at right
+      exact right.trans (left.symm.trans genesis)
+    have sameClock : ((e.world k).state w).timeMs = ((e.world n).state v).timeMs :=
+      UInt64.toNat_inj.mp (upToDate.1.trans (sameTime.symm.trans current.1.symm))
+    have slotOk : ((e.world k).state w).getCurrentSlot config =
+        .ok attestation.data.slot := by
+      unfold Store.getCurrentSlot
+      rw [genesisEq, sameClock]
+      exact mapError_ok_iff.mpr (computeSlotAtTimeMs_inside startOk
+        (current.1.trans timeEq) inSlot)
+    obtain ⟨slot, slotOk', past⟩ := origin.past
+    have eq := Except.ok.inj (slotOk'.symm.trans slotOk)
+    subst slot
+    exact (UInt64.lt_irrefl _ past)
+
+omit [DecidablePred (· ∈ J)] in
 /-- A latest honest vote signed in the safe interval contributes its endpoint tally balance. -/
 theorem Execution.mem_supportersOf_of_signed_in_range {anchor : Store preset fork}
     (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
@@ -1113,6 +1172,45 @@ theorem Execution.mem_supportersOf_of_signed_in_range {anchor : Store preset for
   obtain ⟨entry, member, eq⟩ := active
   simp only [Store.supportersOf, List.mem_toFinset, List.mem_map, List.mem_filter]
   exact ⟨entry, ⟨member, eq ▸ check⟩, eq⟩
+
+omit [DecidablePred (· ∈ J)] in
+/-- A sufficiently recent latest vote supports the safe prefix, using only endpoint balances. -/
+theorem Execution.mem_supportersOf_of_latest_rank {anchor : Store preset fork}
+    (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (start : ∀ u ∈ J, e.start u = anchor) (oneBlock : OneBlockPerRoot e)
+    (preGloas : fork < .glamsterdam)
+    {v w : ValidatorIndex} (honest : v ∈ J) (receiver : w ∈ J) {k : ℕ}
+    {message : LatestMessage fork}
+    (latest : ((e.world k).state w).latestMessages[v]? = some message)
+    (counted : v ∉ ((e.world k).state w).equivocatingIndices)
+    (upToDate : UpToDate config checks sources (e.world k).time ((e.world k).view w)
+      ((e.world k).state w))
+    {due : UInt64} (dueOk : getAttestationDueMs config fork = .ok due)
+    (inSlot : due < config.SLOT_DURATION_MS)
+    {epoch : Epoch} {begin : Slot} {beginTime : UInt64} {first : ℕ}
+    (beginOk : computeStartSlotAtEpoch preset epoch = .ok begin)
+    (beginTimeOk : computeTimeAtSlotMs config genesisTimeMs begin = .ok beginTime)
+    (fresh : first ≤ beginTime.toNat) (rank : epoch ≤ message.rank)
+    {root : Root}
+    (safe : ∀ earlier, first ≤ earlier → earlier < (e.world k).time → SafeAt e earlier root)
+    {rootBlock : BeaconBlock preset fork}
+    (known : ((e.world k).state w).blocks[root]? = some rootBlock)
+    (aboveAnchor : anchorBlock.slot ≤ rootBlock.slot)
+    {state : BeaconState preset fork}
+    (active : v ∈ ((unslashedActiveBalances state).map (·.1)).toFinset) :
+    v ∈ ((e.world k).state w).supportersOf state ⟨root, .pending⟩ := by
+  obtain ⟨attestation, m, seen, rfl, signed, origin⟩ :=
+    e.exists_signed_origin_of_latestMessages anchored start receiver latest
+  obtain ⟨n, earlier, duty⟩ :=
+    e.exists_maySign_of_signed (e.view_subset_sent k w seen) signed honest
+  have epochRank : epoch ≤ attestation.data.target.epoch := by
+    have notGloas : ¬ .glamsterdam ≤ fork := Nat.not_le_of_lt preGloas
+    simpa [LatestMessage.rank, LatestMessage.ofAttestation, notGloas] using rank
+  have range := e.signing_time_in_range start honest receiver earlier duty origin upToDate
+    dueOk inSlot beginOk beginTimeOk fresh epochRank
+  obtain ⟨tip, tipKnown, _⟩ := origin.voted
+  exact e.mem_supportersOf_of_signed_in_range anchored start oneBlock preGloas honest receiver
+    duty latest counted range.1 range.2 safe known aboveAnchor tipKnown active
 
 omit [DecidablePred (· ∈ J)] in
 /-- Honest stores with the same blocks compute the same cached target state under fixed checks. -/
