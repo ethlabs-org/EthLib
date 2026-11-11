@@ -54,6 +54,7 @@ public import EthLib.Consensus.Proofs.ForkChoice.Head
 public import EthLib.Consensus.Proofs.ForkChoice.HonestCheckpoints
 public import EthLib.Consensus.Proofs.ForkChoice.HonestDuties
 public import EthLib.Consensus.Proofs.ForkChoice.HonestVotes
+public import EthLib.Consensus.Proofs.ForkChoice.JustifiedOrigins
 public import EthLib.Consensus.Proofs.ForkChoice.Network
 public import EthLib.Consensus.Proofs.ForkChoice.Optimistic
 public import EthLib.Consensus.Proofs.ForkChoice.OptimisticSync
