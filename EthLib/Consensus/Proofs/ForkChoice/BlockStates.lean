@@ -661,4 +661,149 @@ decreasing_by
   rw [bounds.2]
   exact UInt64.lt_iff_toNat_lt.mp bounds.1
 
+/-- A history root after both anchor slots names a block no later than the queried slot. -/
+theorem Store.Reachable.blockState_history_slot_le
+    (reachable : Store.Reachable config anchorState anchorBlock store)
+    (nonzero : ∀ (root : Root) (block : BeaconBlock preset fork), store.blocks[root]? = some block →
+      block.stateRoot ≠ Vector.replicate 32 0)
+    {root readRoot : Root} {state : BeaconState preset fork} {query : Slot}
+    (stored : store.blockStates[root]? = some state)
+    (read : getBlockRootAtSlot state query = .ok readRoot)
+    (stateLater : anchorState.slot ≤ query) (blockLater : anchorBlock.slot ≤ query) :
+    ∃ block, store.blocks[readRoot]? = some block ∧ block.slot ≤ query := by
+  obtain ⟨block, found⟩ := reachable.known_of_blockState stored
+  obtain ⟨post, postOk, anchored, produced⟩ := reachable.blockStatesFromParents found
+  rw [stored, Option.some.injEq] at postOk
+  subst post
+  by_cases same : block = anchorBlock
+  · rw [anchored same] at read
+    have before := (getBlockRootAtSlot_ok_iff.mp read).1
+    have le := UInt64.le_iff_toNat_le.mp stateLater
+    omega
+  · obtain ⟨parent, checks, engine, signed, message, parentFound, transitioned⟩ := produced same
+    obtain ⟨advanced, slotsOk, advancedSlot, -, blockOk, -⟩ := stateTransition_ok transitioned
+    have advancedRead : getBlockRootAtSlot advanced query = .ok readRoot := by
+      unfold getBlockRootAtSlot at read ⊢
+      rwa [processBlock_slot blockOk, (processBlock_blockRoots_latestBlockHeader blockOk).1]
+        at read
+    by_cases old : query < parent.slot
+    · have run := slotsOk
+      simp only [processSlots, bind_ok_iff, ensure_ok_iff] at run
+      obtain ⟨_, -, advancedOk⟩ := run
+      exact reachable.blockState_history_slot_le nonzero parentFound
+        (getBlockRootAtSlot_of_advanceSlots advancedOk advancedRead old) stateLater blockLater
+    · obtain ⟨parentBlock, parentKnown⟩ := reachable.known_of_blockState parentFound
+      have cached := getBlockRootAtSlot_processSlots_header
+        (reachable.blockState_root parentKnown parentFound) (nonzero _ _ parentKnown)
+        slotsOk advancedRead (UInt64.not_lt.mp old)
+      have parentHash := processBlock_parentRoot blockOk
+      rw [message] at parentHash
+      have eq := Except.ok.inj (cached.symm.trans parentHash)
+      refine ⟨parentBlock, eq ▸ parentKnown, ?_⟩
+      by_cases anchor : parentBlock = anchorBlock
+      · exact anchor ▸ blockLater
+      · rw [← (reachable.blockState_header parentKnown parentFound anchor).1]
+        exact UInt64.not_lt.mp old
+termination_by state.slot.toNat
+decreasing_by
+  have bounds := stateTransition_slot transitioned
+  rw [bounds.2]
+  exact UInt64.lt_iff_toNat_lt.mp bounds.1
+
+/-- All three state checkpoints satisfy a predicate preserved by checkpoint selection. -/
+def CheckpointsSatisfy (p : Checkpoint → Prop) (state : BeaconState preset fork) : Prop :=
+  p state.previousJustifiedCheckpoint ∧ p state.currentJustifiedCheckpoint ∧
+    p state.finalizedCheckpoint
+
+theorem CheckpointsSatisfy.of_frame {p : Checkpoint → Prop}
+    {state after : BeaconState preset fork} (holds : CheckpointsSatisfy p state)
+    (frame : Frame state after) : CheckpointsSatisfy p after := by
+  simpa only [CheckpointsSatisfy, frame.previousJustified, frame.currentJustified,
+    frame.finalized] using holds
+
+/-- Justification selects old checkpoints or a checkpoint read from the state's history. -/
+theorem CheckpointsSatisfy.processJustification {p : Checkpoint → Prop}
+    {state after : BeaconState preset fork} (holds : CheckpointsSatisfy p state)
+    (reads : ∀ checkpoint, getBlockRoot state checkpoint.epoch = .ok checkpoint.root →
+      p checkpoint)
+    (computed : processJustificationAndFinalization state = .ok after) :
+    CheckpointsSatisfy p after := by
+  rcases processJustificationAndFinalization_ok computed with rfl | ⟨_, _, _, weighed⟩
+  · exact holds
+  · obtain ⟨previous, _, final, _⟩ := weighJustificationAndFinalization_checkpoints weighed
+    refine ⟨previous ▸ holds.2.1, ?_, ?_⟩
+    · rcases weighJustificationAndFinalization_currentJustified weighed with
+        ⟨same, _⟩ | ⟨_, _, _, _, _, _, _, read⟩
+      · exact same ▸ holds.2.1
+      · exact reads _ read
+    · rcases final with same | same | same
+      · exact same ▸ holds.2.2
+      · exact same ▸ holds.1
+      · exact same ▸ holds.2.1
+
+/-- Checkpoint selection in a slot run uses only history reads at its intermediate states. -/
+theorem CheckpointsSatisfy.advanceSlots {p : Checkpoint → Prop}
+    {state after : BeaconState preset fork} {checks : SignatureChecks} {count : ℕ}
+    (holds : CheckpointsSatisfy p state)
+    (reads : ∀ i, i < count → ∀ middle cached,
+      advanceSlots config checks i state = .ok middle → processSlot middle = .ok cached →
+      ∀ checkpoint, getBlockRoot cached checkpoint.epoch = .ok checkpoint.root → p checkpoint)
+    (computed : advanceSlots config checks count state = .ok after) :
+    CheckpointsSatisfy p after := by
+  induction count generalizing state after with
+  | zero =>
+    cases Except.ok.inj computed
+    exact holds
+  | succ count ih =>
+    simp only [EthLib.Consensus.advanceSlots, bind_ok_iff] at computed
+    obtain ⟨next, step, rest⟩ := computed
+    have nextHolds : CheckpointsSatisfy p next := by
+      obtain ⟨slot, cached, epoched, _, cachedOk, epochedOk, rfl⟩ := advanceSlot_ok step
+      have cachedHolds := holds.of_frame (frame_processSlot cachedOk)
+      have epochedHolds : CheckpointsSatisfy p epoched := by
+        unfold epochIfLast at epochedOk
+        split at epochedOk
+        · obtain ⟨justified, justifiedOk, frame⟩ := processEpoch_frame epochedOk
+          exact (cachedHolds.processJustification
+            (reads 0 (Nat.zero_lt_succ _) state cached rfl cachedOk) justifiedOk).of_frame
+              frame.toFrame
+        · cases Except.ok.inj epochedOk
+          exact cachedHolds
+      exact epochedHolds
+    apply ih nextHolds (fun i hi middle cached run cachedOk => ?_) rest
+    exact reads (i + 1) (by omega) middle cached
+      (by simp only [EthLib.Consensus.advanceSlots, step, bind, Except.bind]; exact run) cachedOk
+
+/-- Block-state checkpoint provenance reduces to anchor checkpoints and slot-run history reads. -/
+theorem Store.Reachable.blockState_checkpointsSatisfy
+    (reachable : Store.Reachable config anchorState anchorBlock store)
+    {p : Checkpoint → Prop} (anchor : CheckpointsSatisfy p anchorState)
+    (reads : ∀ (root : Root) (state : BeaconState preset fork),
+      store.blockStates[root]? = some state →
+      ∀ checks count middle cached,
+        advanceSlots config checks count state = .ok middle → processSlot middle = .ok cached →
+        ∀ checkpoint, getBlockRoot cached checkpoint.epoch = .ok checkpoint.root → p checkpoint)
+    {root : Root} {state : BeaconState preset fork}
+    (stored : store.blockStates[root]? = some state) : CheckpointsSatisfy p state := by
+  obtain ⟨block, found⟩ := reachable.known_of_blockState stored
+  obtain ⟨post, postOk, anchored, produced⟩ := reachable.blockStatesFromParents found
+  rw [stored, Option.some.injEq] at postOk
+  subst post
+  by_cases same : block = anchorBlock
+  · rw [anchored same]
+    exact anchor
+  · obtain ⟨parent, checks, engine, signed, message, parentFound, transitioned⟩ := produced same
+    obtain ⟨advanced, slotsOk, _, _, blockOk, _⟩ := stateTransition_ok transitioned
+    have parentHolds := reachable.blockState_checkpointsSatisfy anchor reads parentFound
+    simp only [processSlots, bind_ok_iff, ensure_ok_iff] at slotsOk
+    obtain ⟨_, _, run⟩ := slotsOk
+    exact (parentHolds.advanceSlots (fun i _ middle cached advanced cachedOk =>
+      reads _ _ parentFound checks i middle cached advanced cachedOk) run).of_frame
+        (frame_processBlock blockOk)
+termination_by state.slot.toNat
+decreasing_by
+  have bounds := stateTransition_slot transitioned
+  rw [bounds.2]
+  exact UInt64.lt_iff_toNat_lt.mp bounds.1
+
 end EthLib.Consensus
