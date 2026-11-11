@@ -541,6 +541,48 @@ def sourceDrift (x : ForkedBeaconState preset) (high boundary : Nat)
     activationWindow (config := config) x high + initialExcess x +
     (events.map (residualCredit (config := config) x high)).sum + 2 * boundary
 
+/-- Extending a replay prefix and its boundary budget cannot shrink the source envelope. -/
+theorem sourceDrift_le_of_prefix (x : ForkedBeaconState preset) (high : Nat)
+    {before after : List (BalanceEvent preset)} (initial : before <+: after)
+    {first last : Nat} (boundary : first ≤ last) :
+    sourceDrift (config := config) x high first before ≤
+      sourceDrift (config := config) x high last after := by
+  have sums (f : BalanceEvent preset → Nat) : (before.map f).sum ≤ (after.map f).sum := by
+    obtain ⟨rest, rfl⟩ := initial
+    simp only [List.map_append, List.sum_append]
+    omega
+  have loss : lossCorrection x before ≤ lossCorrection x after := by
+    apply List.sum_le_sum
+    intro i _
+    cases found : x.state.validators.data[i.toNat]? with
+    | none => simp
+    | some v =>
+      cases slashed : v.slashed with
+      | true => simp [slashed]
+      | false =>
+        simp only [slashed, Bool.false_eq_true, ↓reduceIte]
+        have monotone := sums (referenceDebit i.toNat)
+        split <;> split <;> omega
+  have active : activeStakeWindow (config := config) x high before ≤
+      activeStakeWindow (config := config) x high after := by
+    unfold activeStakeWindow
+    split
+    · have monotone := sums fundingCredit
+      omega
+    · exact Nat.le_refl _
+  have rates : consolidationRate (preset := preset) (config := config)
+      (activeStakeWindow (config := config) x high before) ≤
+      consolidationRate (preset := preset) (config := config)
+        (activeStakeWindow (config := config) x high after) :=
+    Nat.sub_le_sub_right (max_le_max_left _
+      (Nat.div_le_div_right (max_le_max_left _ active))) _
+  have exits : exitWindow (config := config) x high before ≤
+      exitWindow (config := config) x high after := by
+    exact Nat.add_le_add_left (Nat.mul_le_mul_left _ (Nat.add_le_add_left rates _)) _
+  have credits := sums (residualCredit (config := config) x high)
+  unfold sourceDrift
+  omega
+
 /-- The source envelope is a derived upper bound, not the definition of the safety loss. -/
 theorem derivedDrift_le_sources {g x y : ForkedBeaconState preset}
     (shared : Run config checks g x) (tail : Run config checks x y)
@@ -553,7 +595,43 @@ theorem derivedDrift_le_sources {g x y : ForkedBeaconState preset}
     ∃ events, tail.balanceEvents high = .ok events ∧
       derivedDrift high tail ≤
         sourceDrift (config := config) x high (boundaryWindow high tail) events := by
-  sorry
+  obtain ⟨events, replayed, bounds⟩ :=
+    source_bounds_over_interval shared tail genesis parameters caps aligned early high
+  clear bounds
+  refine ⟨events, replayed, ?_⟩
+  have atState {y : ForkedBeaconState preset} (run : Run config checks x y)
+      (early : y.fork < .glamsterdam)
+      (within : (getCurrentEpoch y.state).toNat ≤ high + 1)
+      (events : List (BalanceEvent preset)) (replayed : run.balanceEvents high = .ok events) :
+      stateDrift x y ≤ sourceDrift (config := config) x high (boundaryStake y) events := by
+    have losses := nonaccountable_losses_over_interval shared run genesis parameters caps
+      aligned early high within events replayed
+    have gains := gains_and_activations_over_interval shared run genesis parameters caps
+      aligned withdrawalDelay early high within events replayed
+    unfold stateDrift sourceDrift
+    omega
+  induction tail generalizing events with
+  | nil => exact atState .nil early startEpoch events replayed
+  | @snoc middle last pre step ih =>
+    have beforeFork : middle.fork < .glamsterdam :=
+      Nat.lt_of_le_of_lt step.chainStep.fork_le early
+    obtain ⟨prior, priorOk, initial⟩ := pre.balanceEvents_prefix
+      (Run.nil.snoc step) high events replayed
+    have before := ih beforeFork prior priorOk
+    have budget := sourceDrift_le_of_prefix (config := config) x high initial
+      (first := boundaryWindow high pre) (last := boundaryWindow high (pre.snoc step))
+      (by simp only [boundaryWindow]; split <;> omega)
+    have past := Nat.le_trans before budget
+    simp only [derivedDrift, boundaryWindow]
+    split
+    · rename_i within
+      simp only [boundaryWindow, within, ↓reduceIte] at past
+      have current := atState (pre.snoc step) early within events replayed
+      have enlarged := sourceDrift_le_of_prefix (config := config) x high
+        (List.prefix_refl events) (Nat.le_max_right (boundaryWindow high pre) (boundaryStake last))
+      exact max_le past (current.trans enlarged)
+    · rename_i beyond
+      simpa only [boundaryWindow, beyond, ↓reduceIte] using past
 
 /-- Cache-preserving epoch calls inherit the exact budget of their selected prefix. -/
 theorem quorum_drift_from_run {g x y : ForkedBeaconState preset}
