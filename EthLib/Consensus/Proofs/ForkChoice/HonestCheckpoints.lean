@@ -526,6 +526,232 @@ theorem exists_sourceVote_of_processJustification {state after : BeaconState pre
     · exact pending.quorum_attester (Nat.lt_of_not_le notAltair) early true
         currentOk currentIndicesOk member
 
+/-- Source-link evidence carried by bit zero and the finalized checkpoint.
+
+The relation retains the evidence of the original count, including its counting state.
+
+Checkpoints at or before the anchor need no such evidence.
+
+The epoch is the current epoch between steps, and the next epoch just after a count. -/
+structure FinalizationSources (link : Checkpoint → Epoch → Prop) (anchorEpoch : Epoch)
+    (epoch : Nat) (state : BeaconState preset fork) : Prop where
+  bitZero : state.justificationBits.bits[0] = true →
+    state.previousJustifiedCheckpoint.epoch ≤ anchorEpoch ∨
+      ∃ target, target.toNat + 1 = epoch ∧ link state.previousJustifiedCheckpoint target
+  finalized : state.finalizedCheckpoint.epoch ≤ anchorEpoch ∨
+    ∃ target, state.finalizedCheckpoint.epoch < target ∧ target.toNat < epoch ∧
+      link state.finalizedCheckpoint target
+
+/-- A frame retains the source evidence without changing its epoch. -/
+theorem FinalizationSources.of_frame {link : Checkpoint → Epoch → Prop}
+    {anchorEpoch : Epoch} {epoch : Nat} {state after : BeaconState preset fork}
+    (holds : FinalizationSources link anchorEpoch epoch state) (frame : Frame state after) :
+    FinalizationSources link anchorEpoch epoch after := by
+  constructor
+  · rw [frame.justificationBits, frame.previousJustified]
+    exact holds.bitZero
+  · rw [frame.finalized]
+    exact holds.finalized
+
+/-- An anchor whose checkpoints are bounded by its epoch needs no source-link evidence. -/
+theorem FinalizationSources.anchor {link : Checkpoint → Epoch → Prop}
+    {anchorEpoch : Epoch} {epoch : Nat} {state : BeaconState preset fork}
+    (previous : state.previousJustifiedCheckpoint.epoch ≤ anchorEpoch)
+    (finalized : state.finalizedCheckpoint.epoch ≤ anchorEpoch) :
+    FinalizationSources link anchorEpoch epoch state :=
+  ⟨fun _ => .inl previous, .inl finalized⟩
+
+/-- The four finalization cases carry source evidence into the next epoch.
+
+An old bit zero reuses its original link, even when the previous-target count fails. -/
+theorem FinalizationSources.weigh {link : Checkpoint → Epoch → Prop}
+    {anchorEpoch : Epoch} {state after : BeaconState preset fork}
+    {total previousBalance currentBalance : Gwei}
+    (holds : FinalizationSources link anchorEpoch (getCurrentEpoch state).toNat state)
+    (counts : ∀ (recent : Bool) (threshold weight : Gwei),
+      mulChecked total 2 = .ok threshold →
+      mulChecked (if recent then currentBalance else previousBalance) 3 = .ok weight →
+      threshold ≤ weight →
+      anchorEpoch <
+        (if recent then state.currentJustifiedCheckpoint
+          else state.previousJustifiedCheckpoint).epoch →
+      link (if recent then state.currentJustifiedCheckpoint else state.previousJustifiedCheckpoint)
+        (if recent then getCurrentEpoch state else getPreviousEpoch state))
+    (computed : weighJustificationAndFinalization state total previousBalance currentBalance =
+      .ok after) :
+    FinalizationSources link anchorEpoch ((getCurrentEpoch state).toNat + 1) after := by
+  obtain ⟨threshold, previousWeight, currentWeight, thresholdOk, previousOk, currentOk,
+    newCurrent, newPrevious, -, finalized⟩ := weighJustificationAndFinalization_bits computed
+  obtain ⟨previous, -⟩ := weighJustificationAndFinalization_checkpoints computed
+  have previousNat := getPreviousEpoch_toNat state
+  constructor
+  · intro set
+    obtain ⟨passed, -⟩ := newCurrent set
+    rw [previous]
+    by_cases low : state.currentJustifiedCheckpoint.epoch ≤ anchorEpoch
+    · exact .inl low
+    · exact .inr ⟨getCurrentEpoch state, rfl,
+        counts true _ _ thresholdOk currentOk passed (UInt64.not_le.mp low)⟩
+  · rcases finalized with same | ⟨same, set, distance⟩ | ⟨same, set, distance⟩
+    · rw [same]
+      rcases holds.finalized with low | ⟨target, later, before, counted⟩
+      · exact .inl low
+      · exact .inr ⟨target, later, by omega, counted⟩
+    · rw [same]
+      obtain ⟨passed, -⟩ := newCurrent set
+      by_cases low : state.currentJustifiedCheckpoint.epoch ≤ anchorEpoch
+      · exact .inl low
+      refine .inr ⟨getCurrentEpoch state, ?_, by omega,
+        counts true _ _ thresholdOk currentOk passed (UInt64.not_le.mp low)⟩
+      rw [UInt64.lt_iff_toNat_lt]
+      rcases distance with one | ⟨-, two⟩ <;> omega
+    · rw [same]
+      by_cases low : state.previousJustifiedCheckpoint.epoch ≤ anchorEpoch
+      · exact .inl low
+      rcases newPrevious set with ⟨passed, -⟩ | old
+      · refine .inr ⟨getPreviousEpoch state, ?_, by omega,
+          counts false _ _ thresholdOk previousOk passed (UInt64.not_le.mp low)⟩
+        rw [UInt64.lt_iff_toNat_lt]
+        rcases distance with two | ⟨-, three⟩ <;> omega
+      · rcases holds.bitZero old with low | ⟨target, epoch, counted⟩
+        · exact .inl low
+        · refine .inr ⟨target, ?_, by omega, counted⟩
+          rw [UInt64.lt_iff_toNat_lt]
+          rcases distance with two | ⟨-, three⟩ <;> omega
+
+/-- Justification carries the source evidence, with counts needed only above the anchor. -/
+theorem FinalizationSources.process {link : Checkpoint → Epoch → Prop}
+    {anchorEpoch : Epoch} {state after : BeaconState preset fork}
+    (holds : FinalizationSources link anchorEpoch (getCurrentEpoch state).toNat state)
+    (ordered : CheckpointsOrdered state) (settled : JustifiedSettled state)
+    (counts : ∀ total previous current,
+      weighJustificationAndFinalization state total previous current = .ok after →
+      ∀ (recent : Bool) (threshold weight : Gwei),
+        mulChecked total 2 = .ok threshold →
+        mulChecked (if recent then current else previous) 3 = .ok weight →
+        threshold ≤ weight →
+        anchorEpoch <
+          (if recent then state.currentJustifiedCheckpoint
+            else state.previousJustifiedCheckpoint).epoch →
+        link (if recent then state.currentJustifiedCheckpoint
+          else state.previousJustifiedCheckpoint)
+          (if recent then getCurrentEpoch state else getPreviousEpoch state))
+    (computed : processJustificationAndFinalization state = .ok after) :
+    FinalizationSources link anchorEpoch ((getCurrentEpoch state).toNat + 1) after := by
+  have early : getCurrentEpoch state ≤ GENESIS_EPOCH + 1 → after = state →
+      FinalizationSources link anchorEpoch ((getCurrentEpoch state).toNat + 1) after := by
+    intro small same
+    subst after
+    have smallNat := UInt64.le_iff_toNat_le.mp small
+    have settledNat := UInt64.le_iff_toNat_le.mp settled
+    rw [getPreviousEpoch_toNat] at settledNat
+    have previous := UInt64.le_iff_toNat_le.mp ordered.2
+    have finalized := UInt64.le_iff_toNat_le.mp ordered.1
+    have one : (GENESIS_EPOCH + 1 : Epoch).toNat = 1 := by decide
+    rw [one] at smallNat
+    apply FinalizationSources.anchor <;> rw [UInt64.le_iff_toNat_le] <;> omega
+  have weighed : ∀ total previous current,
+      weighJustificationAndFinalization state total previous current = .ok after →
+      FinalizationSources link anchorEpoch ((getCurrentEpoch state).toNat + 1) after := by
+    intro total previous current ok
+    exact holds.weigh (counts total previous current ok) ok
+  unfold processJustificationAndFinalization at computed
+  split at computed
+  · unfold processJustificationAndFinalizationAltair at computed
+    split at computed
+    · exact early ‹_› (Except.ok.inj computed).symm
+    · simp only [bind_ok_iff, liftAccessor_ok] at computed
+      obtain ⟨_, _, _, _, total, _, previous, _, current, _, ok⟩ := computed
+      exact weighed total previous current ok
+  · split at computed
+    · exact early ‹_› (Except.ok.inj computed).symm
+    · simp only [bind_ok_iff] at computed
+      obtain ⟨_, _, _, _, total, _, previous, _, current, _, ok⟩ := computed
+      exact weighed total previous current ok
+
+/-- A slot step carries historical source links and makes new finalizing targets strictly older.
+
+Only an epoch boundary needs count evidence, in the state after slot caching. -/
+theorem FinalizationSources.advanceSlot {config : Config} {checks : SignatureChecks}
+    {link : Checkpoint → Epoch → Prop} {anchorEpoch : Epoch}
+    {state after : BeaconState preset fork}
+    (holds : FinalizationSources link anchorEpoch (getCurrentEpoch state).toNat state)
+    (counts : ∀ cached justified, processSlot state = .ok cached →
+      processJustificationAndFinalization cached = .ok justified →
+      FinalizationSources link anchorEpoch (getCurrentEpoch cached).toNat cached →
+      FinalizationSources link anchorEpoch ((getCurrentEpoch cached).toNat + 1) justified)
+    (computed : advanceSlot config checks state = .ok after) :
+    FinalizationSources link anchorEpoch (getCurrentEpoch after).toNat after := by
+  obtain ⟨next, cached, epoched, sum, cachedOk, epochedOk, afterEq⟩ := advanceSlot_ok computed
+  have frame := frame_processSlot cachedOk
+  have cachedEpoch : getCurrentEpoch cached = getCurrentEpoch state := by
+    simp only [getCurrentEpoch, frame.slot]
+  have cachedHolds :
+      FinalizationSources link anchorEpoch (getCurrentEpoch cached).toNat cached := by
+    rw [cachedEpoch]
+    exact holds.of_frame frame
+  unfold epochIfLast at epochedOk
+  split at epochedOk
+  · rename_i boundary
+    obtain ⟨justified, justifiedOk, epochFrame⟩ := processEpoch_frame epochedOk
+    have newHolds := (counts cached justified cachedOk justifiedOk cachedHolds).of_frame
+      epochFrame.toFrame
+    have epoch : (getCurrentEpoch after).toNat = (getCurrentEpoch cached).toNat + 1 := by
+      rw [cachedEpoch, getCurrentEpoch_toNat, getCurrentEpoch_toNat, afterEq]
+      exact nextSlot_epoch_of_boundary sum boundary
+    rw [epoch]
+    rw [afterEq]
+    exact ⟨newHolds.bitZero, newHolds.finalized⟩
+  · rename_i inside
+    have same : epoched = cached := (Except.ok.inj epochedOk).symm
+    have epoch : getCurrentEpoch after = getCurrentEpoch cached := by
+      apply UInt64.toNat_inj.mp
+      rw [cachedEpoch, getCurrentEpoch_toNat, getCurrentEpoch_toNat, afterEq]
+      exact nextSlot_epoch_of_inside sum inside
+    rw [epoch]
+    rw [afterEq, same]
+    exact ⟨cachedHolds.bitZero, cachedHolds.finalized⟩
+
+/-- A slot run carries source evidence from the anchor through every epoch boundary. -/
+theorem FinalizationSources.advanceSlots {config : Config} {checks : SignatureChecks}
+    {link : Checkpoint → Epoch → Prop} {anchorEpoch : Epoch}
+    {state after : BeaconState preset fork} {count : Nat}
+    (holds : FinalizationSources link anchorEpoch (getCurrentEpoch state).toNat state)
+    (counts : ∀ n, n < count → ∀ middle cached justified,
+      advanceSlots config checks n state = .ok middle → processSlot middle = .ok cached →
+      processJustificationAndFinalization cached = .ok justified →
+      FinalizationSources link anchorEpoch (getCurrentEpoch cached).toNat cached →
+      FinalizationSources link anchorEpoch ((getCurrentEpoch cached).toNat + 1) justified)
+    (computed : advanceSlots config checks count state = .ok after) :
+    FinalizationSources link anchorEpoch (getCurrentEpoch after).toNat after := by
+  induction count generalizing state with
+  | zero =>
+    have same : state = after := Except.ok.inj computed
+    exact same ▸ holds
+  | succ count ih =>
+    rw [EthLib.Consensus.advanceSlots, bind_ok_iff] at computed
+    obtain ⟨next, nextOk, rest⟩ := computed
+    apply ih (holds.advanceSlot (fun cached justified =>
+      counts 0 (by omega) state cached justified rfl) nextOk) ?_ rest
+    intro n bound middle cached justified ran cachedOk justifiedOk old
+    apply counts (n + 1) (by omega) middle cached justified ?_ cachedOk justifiedOk old
+    simp only [EthLib.Consensus.advanceSlots, nextOk, bind, Except.bind]
+    exact ran
+
+/-- A block keeps the historical source evidence and its epoch. -/
+theorem FinalizationSources.processBlock {config : Config} {checks : SignatureChecks}
+    {engine : ExecutionEngine preset fork} {link : Checkpoint → Epoch → Prop}
+    {anchorEpoch : Epoch} {state after : BeaconState preset fork}
+    {block : BeaconBlock preset fork}
+    (holds : FinalizationSources link anchorEpoch (getCurrentEpoch state).toNat state)
+    (computed : processBlock config checks engine state block = .ok after) :
+    FinalizationSources link anchorEpoch (getCurrentEpoch after).toNat after := by
+  have frame := frame_processBlock computed
+  have epoch : getCurrentEpoch after = getCurrentEpoch state := by
+    simp only [getCurrentEpoch, frame.slot]
+  rw [epoch]
+  exact holds.of_frame frame
+
 /-- A run from a target epoch through the next epoch keeps that target's committees. -/
 theorem RunKept.committeesKept_through_next_epoch {state after : BeaconState preset fork}
     (run : RunKept state after)
