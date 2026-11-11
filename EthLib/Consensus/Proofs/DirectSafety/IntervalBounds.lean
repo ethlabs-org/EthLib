@@ -280,6 +280,804 @@ def sourceTotal (events : List (BalanceEvent preset)) (source : BalanceSource)
     (amount : BalanceEvent preset → Nat) : Nat :=
   ((events.filter fun e => e.source == source).map amount).sum
 
+private def EventsBounded (events : List (BalanceEvent preset)) : Prop :=
+  ∀ event ∈ events, event.credits ≤ event.creditLimit ∧ event.debits ≤ event.debitLimit
+
+private theorem eventsBounded_append {left right : List (BalanceEvent preset)}
+    (first : EventsBounded left) (last : EventsBounded right) :
+    EventsBounded (left ++ right) := by
+  intro event member
+  rcases List.mem_append.mp member with member | member
+  · exact first event member
+  · exact last event member
+
+private theorem recordBalance_bounded {fork : Fork} (source : BalanceSource)
+    (limits : BeaconState preset fork → Except TransitionError (Nat × Nat))
+    (action : BeaconState preset fork → Except TransitionError (BeaconState preset fork))
+    (bound : ∀ s t credit debit, limits s = .ok (credit, debit) → action s = .ok t →
+      balanceCredits s t ≤ credit ∧ balanceDebits s t ≤ debit)
+    {pre post : BalanceReplay preset fork} (initial : EventsBounded pre.2)
+    (ok : recordBalance source limits action pre = .ok post) : EventsBounded post.2 := by
+  simp only [recordBalance, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at ok
+  obtain ⟨⟨credit, debit⟩, limitOk, after, actionOk, rfl⟩ := ok
+  apply eventsBounded_append initial
+  intro event member
+  simp only [List.mem_singleton] at member
+  subst event
+  exact bound pre.1 after credit debit limitOk actionOk
+
+private theorem increase_bounds {fork : Fork} {s t : BeaconState preset fork}
+    {i : ValidatorIndex} {amount : Gwei} (ok : increaseBalance s i amount = .ok t) :
+    balanceCredits s t ≤ amount.toNat ∧ balanceDebits s t ≤ 0 := by
+  obtain ⟨inside, fits, rfl⟩ := increaseBalance_eq_ok_iff.mp ok
+  have point (j : Nat) :
+      actualBalanceAt ⟨fork, s.putBalance i.toNat inside (s.balances.data[i.toNat] + amount)⟩ j =
+        actualBalanceAt ⟨fork, s⟩ j + if j = i.toNat then amount.toNat else 0 := by
+    by_cases same : j = i.toNat
+    · subst j
+      simp [actualBalanceAt, BeaconState.putBalance, inside, Uint64.toNat_add_of_lt fits]
+    · simp [actualBalanceAt, BeaconState.putBalance, same, Ne.symm same]
+  have size := (sameSizes_increaseBalance ok).2
+  simp [balanceCredits, balanceDebits, size, point, Finset.sum_ite_eq', inside]
+
+private theorem decrease_bounds {fork : Fork} {s t : BeaconState preset fork}
+    {i : ValidatorIndex} {amount : Gwei} (ok : decreaseBalance s i amount = .ok t) :
+    balanceCredits s t ≤ 0 ∧ balanceDebits s t ≤ amount.toNat := by
+  obtain ⟨inside, rfl⟩ := decreaseBalance_eq_ok_iff.mp ok
+  have point (j : Nat) :
+      actualBalanceAt ⟨fork, s.putBalance i.toNat inside
+        (Uint64.saturatingSub s.balances.data[i.toNat] amount)⟩ j =
+        actualBalanceAt ⟨fork, s⟩ j - if j = i.toNat then amount.toNat else 0 := by
+    by_cases same : j = i.toNat
+    · subst j
+      simp [actualBalanceAt, BeaconState.putBalance, inside, Uint64.toNat_saturatingSub]
+    · simp [actualBalanceAt, BeaconState.putBalance, same, Ne.symm same]
+  constructor
+  · simp [balanceCredits, point]
+  · unfold balanceDebits
+    simp only [point]
+    calc
+      _ ≤ ∑ j ∈ Finset.range s.balances.data.size,
+          if j = i.toNat then amount.toNat else 0 := by
+        apply Finset.sum_le_sum
+        intro j _
+        omega
+      _ = amount.toNat := by simp [Finset.sum_ite_eq', inside]
+
+private theorem replayDeltas_bounded {fork : Fork} (source : BalanceSource)
+    (deltas : Array Gwei × Array Gwei) {pre post : BalanceReplay preset fork}
+    (initial : EventsBounded pre.2) (ok : replayDeltas source deltas pre = .ok post) :
+    EventsBounded post.2 := by
+  apply foldlM_ok_invariant (fun pre => EventsBounded pre.2) _ initial ok
+  intro pre i post initial ok
+  simp only [bind_ok_iff] at ok
+  obtain ⟨index, _, rewarded, rewardedOk, penalizedOk⟩ := ok
+  have rewardedBound := recordBalance_bounded .rewards _ _
+    (fun s t credit debit limits action => by
+      cases limits
+      exact increase_bounds (liftAccessor_ok.mp action)) initial rewardedOk
+  exact recordBalance_bounded source _ _
+    (fun s t credit debit limits action => by
+      cases limits
+      exact decrease_bounds (liftAccessor_ok.mp action)) rewardedBound penalizedOk
+
+private theorem replayRewards_bounded {fork : Fork} {pre post : BalanceReplay preset fork}
+    (initial : EventsBounded pre.2)
+    (ok : replayRewards (config := config) pre = .ok post) : EventsBounded post.2 := by
+  simp only [replayRewards] at ok
+  split at ok
+  · cases ok
+    exact initial
+  · simp only [bind_ok_iff] at ok
+    obtain ⟨ordinary, _, inactivity, _, ok⟩ := ok
+    split at ok
+    · simp only [bind_ok_iff] at ok
+      obtain ⟨middle, folded, last⟩ := ok
+      exact replayDeltas_bounded _ _
+        (foldlM_ok_invariant (fun pre => EventsBounded pre.2)
+          (fun _ _ _ h ok => replayDeltas_bounded _ _ h ok) initial folded) last
+    · simp only [bind_ok_iff] at ok
+      obtain ⟨rewards, _, rewarded, rewardOk, middle, folded, last⟩ := ok
+      exact replayDeltas_bounded _ _
+        (foldlM_ok_invariant (fun pre => EventsBounded pre.2)
+          (fun _ _ _ h ok => replayDeltas_bounded _ _ h ok)
+          (replayDeltas_bounded _ _ initial rewardOk) folded) last
+
+private theorem replayDeltas_matches {fork : Fork} (source : BalanceSource)
+    (deltas : Array Gwei × Array Gwei) {pre post : BalanceReplay preset fork}
+    (initial : BalancesMatch pre.1) (ok : replayDeltas source deltas pre = .ok post) :
+    BalancesMatch post.1 := by
+  apply foldlM_ok_invariant (fun pre => BalancesMatch pre.1) _ initial ok
+  intro pre i post initial ok
+  simp only [recordBalance, bind_ok_iff, pure, Except.pure, Except.ok.injEq,
+    exists_eq_left', liftAccessor_ok] at ok
+  obtain ⟨index, _, rewarded, rewardedOk, after, afterOk, rfl⟩ := ok
+  obtain ⟨middle, rewardedOk, rfl⟩ := rewardedOk
+  exact balancesMatch_of_sameSizes (sameSizes_decreaseBalance afterOk)
+    (balancesMatch_of_sameSizes (sameSizes_increaseBalance rewardedOk) initial)
+
+private theorem replayRewards_matches {fork : Fork} {pre post : BalanceReplay preset fork}
+    (initial : BalancesMatch pre.1)
+    (ok : replayRewards (config := config) pre = .ok post) : BalancesMatch post.1 := by
+  simp only [replayRewards] at ok
+  split at ok
+  · cases ok
+    exact initial
+  · simp only [bind_ok_iff] at ok
+    obtain ⟨ordinary, _, inactivity, _, ok⟩ := ok
+    split at ok
+    · simp only [bind_ok_iff] at ok
+      obtain ⟨middle, folded, last⟩ := ok
+      exact replayDeltas_matches _ _
+        (foldlM_ok_invariant (fun pre => BalancesMatch pre.1)
+          (fun _ _ _ h ok => replayDeltas_matches _ _ h ok) initial folded) last
+    · simp only [bind_ok_iff] at ok
+      obtain ⟨rewards, _, rewarded, rewardOk, middle, folded, last⟩ := ok
+      exact replayDeltas_matches _ _
+        (foldlM_ok_invariant (fun pre => BalancesMatch pre.1)
+          (fun _ _ _ h ok => replayDeltas_matches _ _ h ok)
+          (replayDeltas_matches _ _ initial rewardOk) folded) last
+
+private theorem epochBalanceReplay_bounded {fork : Fork} {s : BeaconState preset fork}
+    {post : BalanceReplay preset fork} (initial : BalancesMatch s)
+    (early : fork < .glamsterdam)
+    (ok : epochBalanceReplay (config := config) (checks := checks) s = .ok post) :
+    EventsBounded post.2 := by
+  have before : fork < .hegota := Nat.lt_trans early (by decide)
+  unfold epochBalanceReplay at ok
+  obtain ⟨justified, justifiedOk, ok⟩ := bind_ok_iff.mp ok
+  simp only [carryBalance, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at justifiedOk
+  obtain ⟨justified, justifiedOk, rfl⟩ := justifiedOk
+  have matched := balancesMatch_of_sameSizes
+    (sameSizes_processJustificationAndFinalization justifiedOk) initial
+  by_cases altair : .altair ≤ fork
+  case' pos =>
+    simp only [altair, ↓reduceDIte] at ok
+    obtain ⟨inactive, inactiveOk, ok⟩ := bind_ok_iff.mp ok
+    simp only [carryBalance, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at inactiveOk
+    obtain ⟨inactive, inactiveOk, rfl⟩ := inactiveOk
+    have inactiveMatch := (frame_processInactivityUpdates inactiveOk).balancesMatch matched
+    clear matched
+    simp only [bind_ok_iff] at ok
+    obtain ⟨rewarded, rewardOk, rest⟩ := ok
+    have rewardedMatch := replayRewards_matches inactiveMatch rewardOk
+    have rewardedBound := replayRewards_bounded (by simp [EventsBounded]) rewardOk
+  case' neg =>
+    simp only [altair, ↓reduceDIte, pure, Except.pure, bind_ok_iff,
+      Except.ok.injEq, exists_eq_left'] at ok
+    obtain ⟨rewarded, rewardOk, rest⟩ := ok
+    have rewardedMatch := replayRewards_matches matched rewardOk
+    have rewardedBound := replayRewards_bounded (by simp [EventsBounded]) rewardOk
+  all_goals
+    simp only [before, ↓reduceDIte, carryBalance, bind_ok_iff, pure, Except.pure,
+      Except.ok.injEq] at rest
+    obtain ⟨registered, registeredOk, slashed, slashedOk, reset, resetOk, last⟩ := rest
+    obtain ⟨registered, registeredOk, rfl⟩ := registeredOk
+    have registeredMatch := (frame_processRegistryUpdates registeredOk).balancesMatch rewardedMatch
+    have slashedFacts : BalancesMatch slashed.1 ∧ EventsBounded slashed.2 := by
+      simp only [recordBalance, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at slashedOk
+      obtain ⟨⟨credit, debit⟩, limitOk, after, afterOk, rfl⟩ := slashedOk
+      simp only [Prod.mk.injEq] at limitOk
+      obtain ⟨limit, limitOk, rfl, rfl⟩ := limitOk
+      obtain ⟨limit', limitOk', credits, debits⟩ :=
+        delayed_slashing_bounds registered after
+          (registered.validators.bound early) afterOk
+      have same := Except.ok.inj (limitOk.symm.trans limitOk')
+      subst limit'
+      refine ⟨(frame_processSlashings afterOk).balancesMatch registeredMatch,
+        eventsBounded_append rewardedBound ?_⟩
+      intro event member
+      simp only [List.mem_singleton] at member
+      subst event
+      exact ⟨credits.le, debits⟩
+    obtain ⟨reset, resetOk, rfl⟩ := resetOk
+    have resetMatch := (frame_processEth1DataReset resetOk).balancesMatch slashedFacts.1
+    split at last
+    · rename_i electra
+      simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at last
+      obtain ⟨deposited, depositOk, consolidated, consolidationOk, rfl⟩ := last
+      have deposits := pending_deposit_bound reset deposited resetMatch electra depositOk
+      have consolidations :=
+        consolidation_transfer_bound deposited consolidated electra consolidationOk
+      apply eventsBounded_append (eventsBounded_append slashedFacts.2 ?_) ?_
+      · intro event member
+        simp only [List.mem_singleton] at member
+        subst event
+        exact ⟨deposits.2, deposits.1.le⟩
+      · intro event member
+        simp only [List.mem_singleton] at member
+        subst event
+        exact consolidations.2
+    · cases last
+      exact slashedFacts.2
+
+private theorem deposit_bounds {fork : Fork} {s t : BeaconState preset fork}
+    (matched : BalancesMatch s) (before : fork < .hegota) (deposit : Deposit)
+    (ok : processDeposit config checks before s deposit = .ok t) :
+    balanceCredits s t ≤ (if fork < .pectra then deposit.data.amount.toNat else 0) ∧
+      balanceDebits s t ≤ 0 := by
+  obtain ⟨_, _, next, _, applied⟩ := processDeposit_ok ok
+  let site := { s with eth1DepositIndex := fun _ => next }
+  have matchedSite : BalancesMatch site := matched
+  change applyDeposit config checks site _ _ _ _ = .ok t at applied
+  unfold applyDeposit at applied
+  split at applied
+  · rename_i electra
+    have notEarly : ¬ fork < .pectra := Nat.not_lt.mpr electra
+    simp only [notEarly, ↓reduceIte]
+    have added {u : BeaconState preset fork}
+        (ok : addValidatorToRegistry site deposit.data.pubkey
+          deposit.data.withdrawalCredentials 0 = .ok u) :
+        balanceCredits s u = 0 ∧ balanceDebits s u = 0 := by
+      have balances := (addValidatorToRegistry_push ok matchedSite).2
+      have point (j : Nat) : actualBalanceAt ⟨fork, u⟩ j = actualBalanceAt ⟨fork, s⟩ j := by
+        simp only [actualBalanceAt, balances, site, Array.getElem?_push]
+        split <;> simp_all
+      simp [balanceCredits, balanceDebits, point]
+    unfold applyDepositElectra at applied
+    split at applied
+    · simp only [bind_ok_iff] at applied
+      obtain ⟨valid, _, applied⟩ := applied
+      split at applied
+      · simp only [bind_ok_iff, liftAccessor_ok] at applied
+        obtain ⟨u, add, pending⟩ := applied
+        obtain ⟨_, rfl⟩ := addPendingDeposit_eq pending
+        exact ⟨(added add).1.le, (added add).2.le⟩
+      · have same : site = t := Except.ok.inj applied
+        rw [← same]
+        simp [balanceCredits, balanceDebits, actualBalanceAt, site]
+    · obtain ⟨_, rfl⟩ := addPendingDeposit_eq (liftAccessor_ok.mp applied)
+      simp [balanceCredits, balanceDebits, actualBalanceAt, site]
+  · rename_i notElectra
+    have early : fork < .pectra := Nat.lt_of_not_le notElectra
+    have bounds := deposit_credit_bound site t matchedSite _ applied
+    simpa only [early, ↓reduceIte, balanceCredits, balanceDebits, actualBalanceAt, site]
+      using And.intro bounds.2 bounds.1.le
+
+private theorem execution_bounds {fork : Fork} {s t : BeaconState preset fork}
+    (early : fork < .glamsterdam) (engine : ExecutionEngine preset fork)
+    (body : BeaconBlockBody preset fork) (bellatrix : .bellatrix ≤ fork)
+    (ok : processBlockExecution config checks engine s body bellatrix = .ok t) :
+    ∃ debit, (if capella : .shapella ≤ fork then do
+        return (0, ((← getExpectedWithdrawals s capella).withdrawals.toList.map
+          fun w => w.amount.toNat).sum)
+      else pure (0, 0)) = Except.ok (0, debit) ∧
+      balanceCredits s t ≤ 0 ∧ balanceDebits s t ≤ debit := by
+  have notGloas : ¬ .glamsterdam ≤ fork := Nat.not_le.mpr early
+  simp only [processBlockExecution, notGloas, ↓reduceDIte] at ok
+  split at ok
+  · rename_i capella
+    obtain ⟨u, withdrawals, payload⟩ := bind_ok_iff.mp ok
+    obtain ⟨_, header, _, rfl⟩ := processExecutionPayload_ok payload
+    obtain ⟨expected, expectedOk, _, applied⟩ := processWithdrawals_expected early withdrawals
+    obtain ⟨v, applied, balances, _⟩ := applyExpectedWithdrawals_balances applied
+    have bounds := withdrawal_debit_bound s v expected.withdrawals applied
+    refine ⟨(expected.withdrawals.toList.map fun w => w.amount.toNat).sum, ?_, ?_, ?_⟩
+    · simp [capella, expectedOk, bind, Except.bind, pure, Except.pure]
+    · simpa only [balanceCredits, actualBalanceAt, balances] using bounds.1.le
+    · simpa only [balanceDebits, actualBalanceAt, balances] using bounds.2
+  · rename_i notCapella
+    refine ⟨0, by simp [notCapella, pure, Except.pure], ?_⟩
+    split at ok
+    · obtain ⟨_, header, _, rfl⟩ := processExecutionPayload_ok ok
+      simp [balanceCredits, balanceDebits, actualBalanceAt]
+    · cases ok
+      simp [balanceCredits, balanceDebits]
+
+private theorem balance_triangle {fork : Fork} (s u t : BeaconState preset fork)
+    (first : s.balances.data.size = u.balances.data.size)
+    (last : t.balances.data.size = u.balances.data.size) :
+    balanceCredits s t ≤ balanceCredits s u + balanceCredits u t ∧
+      balanceDebits s t ≤ balanceDebits s u + balanceDebits u t := by
+  constructor
+  · unfold balanceCredits
+    rw [last, ← Finset.sum_add_distrib]
+    apply Finset.sum_le_sum
+    intro i _
+    omega
+  · unfold balanceDebits
+    rw [first, ← Finset.sum_add_distrib]
+    apply Finset.sum_le_sum
+    intro i _
+    omega
+
+private theorem sync_bounds {fork : Fork} {s t : BeaconState preset fork}
+    (altair : .altair ≤ fork) (aggregate : SyncAggregate preset)
+    (ok : processSyncAggregate config checks s altair aggregate = .ok t) :
+    ∃ reward proposer,
+      syncParticipantReward s = .ok reward ∧
+      liftAccessor (liftArith (do
+        Uint64.divChecked (← Uint64.mulChecked reward PROPOSER_WEIGHT)
+          (WEIGHT_DENOMINATOR - PROPOSER_WEIGHT))) = Except.ok proposer ∧
+      balanceCredits s t ≤
+        preset.SYNC_COMMITTEE_SIZE.toNat * (reward.toNat + proposer.toNat) ∧
+      balanceDebits s t ≤ preset.SYNC_COMMITTEE_SIZE.toNat * reward.toNat := by
+  simp only [processSyncAggregate, bind_ok_iff] at ok
+  obtain ⟨_, _, _, _, _, _, _, _, _, _, reward, rewardOk, proposer, proposerOk,
+    members, membersOk, folded⟩ := ok
+  refine ⟨reward, proposer, rewardOk, proposerOk, ?_⟩
+  have fold (xs : List (ValidatorIndex × Bool)) (s t : BeaconState preset fork)
+      (proposerIndex : Except AccessorError ValidatorIndex)
+      (ok : xs.foldlM (applySyncReward reward proposer proposerIndex) s = .ok t) :
+      t.balances.data.size = s.balances.data.size ∧
+      balanceCredits s t ≤ xs.length * (reward.toNat + proposer.toNat) ∧
+      balanceDebits s t ≤ xs.length * reward.toNat := by
+    induction xs generalizing s with
+    | nil => cases ok; simp [balanceCredits, balanceDebits]
+    | cons x xs ih =>
+      obtain ⟨u, one, rest⟩ := bind_ok_iff.mp ok
+      have bounds := sync_reward_bounds s u reward proposer proposerIndex x one
+      have sizes : u.balances.data.size = s.balances.data.size := by
+        unfold applySyncReward at one
+        split at one
+        · simp only [bind_ok_iff, liftAccessor_ok] at one
+          obtain ⟨v, first, _, _, last⟩ := one
+          exact (sameSizes_increaseBalance last).2.trans (sameSizes_increaseBalance first).2
+        · exact (sameSizes_decreaseBalance (liftAccessor_ok.mp one)).2
+      have tail := ih u rest
+      have triangle := balance_triangle s u t sizes.symm tail.1
+      refine ⟨tail.1.trans sizes, ?_, ?_⟩ <;>
+        simp only [List.length_cons, Nat.add_mul, Nat.one_mul] <;>
+        split_ifs at bounds <;> omega
+  have bounds := fold _ s t _ (by simpa only [← Array.foldlM_toList] using folded)
+  have length : (members.zip aggregate.syncCommitteeBits.bits.toArray).toList.length ≤
+      preset.SYNC_COMMITTEE_SIZE.toNat := by
+    simp only [Array.length_toList, Array.size_zip]
+    exact (Nat.min_le_right _ _).trans (by simp)
+  exact ⟨bounds.2.1.trans (Nat.mul_le_mul_right _ length),
+    bounds.2.2.trans (Nat.mul_le_mul_right _ length)⟩
+
+private theorem proposer_slashing_bounds {fork : Fork} {s t : BeaconState preset fork}
+    (sl : ProposerSlashing) (ok : processProposerSlashing config checks s sl = .ok t) :
+    ∃ credit debit,
+      slashingLimits [sl.signedHeader1.message.proposerIndex] s = .ok (credit, debit) ∧
+      balanceCredits s t ≤ credit ∧ balanceDebits s t ≤ debit := by
+  simp only [processProposerSlashing, bind_ok_iff, ensure_ok_iff, liftAccessor_ok] at ok
+  obtain ⟨_, _, _, _, _, _, v, found, _, _, _, _, _, _, slashed⟩ := ok
+  have bounds := initial_slashing_bounds s t _ none v found slashed
+  refine ⟨_, _, ?_, bounds.2, bounds.1⟩
+  simp [slashingLimits, found, List.mapM_cons, List.mapM_nil, liftAccessor,
+    Except.mapError, bind, Except.bind, pure, Except.pure]
+
+private theorem slash_effective {fork : Fork} {s t : BeaconState preset fork}
+    {index : ValidatorIndex} {whistleblower : Option ValidatorIndex}
+    (ok : slashValidator config s index whistleblower = .ok t) :
+    ∀ j, (getValidator t j).map Validator.effectiveBalance =
+      (getValidator s j).map Validator.effectiveBalance := by
+  have set {s t : BeaconState preset fork} {i : ValidatorIndex} {v w : Validator}
+      (read : getValidator s i = .ok v) (ok : s.setValidator i w = .ok t)
+      (same : w.effectiveBalance = v.effectiveBalance) (j : ValidatorIndex) :
+      (getValidator t j).map Validator.effectiveBalance =
+        (getValidator s j).map Validator.effectiveBalance := by
+    by_cases h : j = i
+    · subst j
+      rw [getValidator_setValidator_self ok, read]
+      exact congrArg Except.ok same
+    · rw [getValidator_setValidator_of_ne ok h]
+  have exit {s t : BeaconState preset fork}
+      (ok : initiateValidatorExit config s index = .ok t) (j : ValidatorIndex) :
+      (getValidator t j).map Validator.effectiveBalance =
+        (getValidator s j).map Validator.effectiveBalance := by
+    obtain ⟨v, read, unchanged | ⟨_, queued, epoch, withdrawal, queue, _, changed⟩⟩ :=
+      initiateValidatorExit_ok ok
+    · rw [unchanged.2]
+    · have same := (exitQueue_validators queue).1
+      rw [set (v := v) (by rw [getValidator_of_validators_eq same]; exact read) changed rfl,
+        getValidator_of_validators_eq same]
+  obtain ⟨_, _, _, marked, _, _, slashings, _, _, _, _, last, exited, found, _, changed,
+    _, _, _, lowered, _, _, raised, paid, rfl⟩ := slashValidator_ok ok
+  intro j
+  have middle := set found changed rfl
+  have endpoint : ∀ j, (getValidator last j).map Validator.effectiveBalance =
+      (getValidator s j).map Validator.effectiveBalance := by
+    intro j
+    rw [getValidator_of_validators_eq (increaseBalance_validators paid),
+      getValidator_of_validators_eq (increaseBalance_validators raised),
+      getValidator_of_validators_eq (decreaseBalance_validators lowered)]
+    change (getValidator marked j).map Validator.effectiveBalance = _
+    rw [middle j, exit exited j]
+  split <;> exact endpoint j
+
+private theorem attester_slashing_bounds {fork : Fork} {s t : BeaconState preset fork}
+    (sl : AttesterSlashing preset fork)
+    (ok : processAttesterSlashing config checks s sl = .ok t) :
+    ∃ credit debit, slashingLimits (slashingIndices sl) s = .ok (credit, debit) ∧
+      balanceCredits s t ≤ credit ∧ balanceDebits s t ≤ debit := by
+  have fold (indices : List ValidatorIndex) (s t : BeaconState preset fork) (flag last : Bool)
+      (ok : indices.foldlM (slashIfSlashable config) (s, flag) = .ok (t, last)) :
+      ∃ credit debit, slashingLimits indices s = .ok (credit, debit) ∧
+        balanceCredits s t ≤ credit ∧ balanceDebits s t ≤ debit ∧
+        t.balances.data.size = s.balances.data.size := by
+    induction indices generalizing s flag with
+    | nil =>
+      cases ok
+      exact ⟨0, 0, by simp [slashingLimits, liftAccessor, Except.mapError, pure,
+        Except.pure, bind, Except.bind], by simp [balanceCredits],
+        by simp [balanceDebits], rfl⟩
+    | cons i indices ih =>
+      obtain ⟨⟨u, flag'⟩, one, rest⟩ := bind_ok_iff.mp ok
+      simp only [slashIfSlashable, bind_ok_iff, liftAccessor_ok] at one
+      obtain ⟨v, read, one⟩ := one
+      have oneFacts :
+          balanceCredits s u ≤ v.effectiveBalance.toNat /
+            (EthLib.Consensus.parameters preset fork).WHISTLEBLOWER_REWARD_QUOTIENT.toNat ∧
+          balanceDebits s u ≤ v.effectiveBalance.toNat /
+            (EthLib.Consensus.parameters preset fork).MIN_SLASHING_PENALTY_QUOTIENT.toNat ∧
+          u.balances.data.size = s.balances.data.size ∧
+          ∀ j, (getValidator u j).map Validator.effectiveBalance =
+            (getValidator s j).map Validator.effectiveBalance := by
+        split at one
+        · simp only [bind_ok_iff, liftAccessor_ok, pure, Except.pure,
+            Except.ok.injEq, Prod.mk.injEq] at one
+          obtain ⟨u', slashed, rfl, rfl⟩ := one
+          have bounds := initial_slashing_bounds s u' i none v read slashed
+          exact ⟨bounds.2, bounds.1, (sameSizes_slashValidator slashed).2,
+            slash_effective slashed⟩
+        · cases one
+          exact ⟨by simp [balanceCredits], by simp [balanceDebits], rfl, fun _ => rfl⟩
+      obtain ⟨credit, debit, limits, credits, debits, sizes⟩ := ih u flag' rest
+      have triangle := balance_triangle s u t oneFacts.2.2.1.symm sizes
+      refine ⟨v.effectiveBalance.toNat /
+          (EthLib.Consensus.parameters preset fork).WHISTLEBLOWER_REWARD_QUOTIENT.toNat + credit,
+        v.effectiveBalance.toNat /
+          (EthLib.Consensus.parameters preset fork).MIN_SLASHING_PENALTY_QUOTIENT.toNat + debit,
+        ?_, by omega, by omega, sizes.trans oneFacts.2.2.1⟩
+      simp only [slashingLimits, bind_ok_iff, liftAccessor_ok, pure, Except.pure,
+        Except.ok.injEq] at limits ⊢
+      obtain ⟨validators, found, limits⟩ := limits
+      have original : ∃ validators', indices.mapM (getValidator s) = .ok validators' ∧
+          (validators'.map fun v => v.effectiveBalance) =
+            (validators.map fun v => v.effectiveBalance) := by
+        clear limits credits debits triangle sizes rest ih ok
+        induction indices generalizing validators with
+        | nil => cases found; exact ⟨[], rfl, rfl⟩
+        | cons j js ih =>
+          simp only [List.mapM_cons, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at found
+          obtain ⟨v', read', vs, rest, rfl⟩ := found
+          have eq := oneFacts.2.2.2 j
+          rw [read'] at eq
+          cases originalRead : getValidator s j with
+          | error e => simp [originalRead, Except.map] at eq
+          | ok w =>
+            simp only [originalRead, Except.map, Except.ok.injEq] at eq
+            obtain ⟨ws, wsOk, same⟩ := ih vs rest
+            refine ⟨w :: ws, ?_, ?_⟩
+            · simp [List.mapM_cons, originalRead, wsOk, bind, Except.bind, pure, Except.pure]
+            · simp only [List.map_cons, same, eq]
+      obtain ⟨validators', found', same⟩ := original
+      refine ⟨v :: validators', ?_, ?_⟩
+      · simp [List.mapM_cons, read, found', bind, Except.bind, pure, Except.pure]
+      · have creditsEq := congrArg (fun vs => (vs.map fun b => b.toNat /
+            (EthLib.Consensus.parameters preset fork).WHISTLEBLOWER_REWARD_QUOTIENT.toNat).sum)
+          same
+        have debitsEq := congrArg (fun vs => (vs.map fun b => b.toNat /
+            (EthLib.Consensus.parameters preset fork).MIN_SLASHING_PENALTY_QUOTIENT.toNat).sum)
+          same
+        simp only [List.map_map, Function.comp_def] at creditsEq debitsEq
+        cases limits
+        simp only [List.map_cons, List.sum_cons, creditsEq, debitsEq]
+  simp only [processAttesterSlashing, bind_ok_iff, ensure_ok_iff, pure, Except.pure,
+    Except.ok.injEq] at ok
+  obtain ⟨_, _, _, _, _, _, _, _, _, _, ⟨u, flag⟩, folded, _, _, rfl⟩ := ok
+  obtain ⟨credit, debit, limits, credits, debits, _⟩ := fold _ s u false flag folded
+  exact ⟨credit, debit, limits, credits, debits⟩
+
+set_option maxHeartbeats 800000 in
+private theorem consolidation_request_bounds {fork : Fork} {s t : BeaconState preset fork}
+    (electra : .pectra ≤ fork) (request : ConsolidationRequest)
+    (ok : processConsolidationRequest config s electra request = .ok t) :
+    balanceCredits s t ≤ 0 ∧ balanceDebits s t ≤
+      (match findValidatorByPubkey s request.sourcePubkey with
+      | none => 0
+      | some i => actualBalanceAt ⟨fork, s⟩ i.val - preset.MIN_ACTIVATION_BALANCE.toNat) := by
+  have unchanged (same : t.balances = s.balances) : balanceCredits s t ≤ 0 ∧
+      balanceDebits s t ≤ (match findValidatorByPubkey s request.sourcePubkey with
+        | none => 0
+        | some i => actualBalanceAt ⟨fork, s⟩ i.val - preset.MIN_ACTIVATION_BALANCE.toNat) := by
+    simp [balanceCredits, balanceDebits, actualBalanceAt, same]
+  have switched (i : Fin s.validators.data.size) (index : ValidatorIndex)
+      (found : findValidatorByPubkey s request.sourcePubkey = some i)
+      (indexOk : Uint64.ofNatChecked i.val = .ok index)
+      (ok : switchToCompoundingValidator s electra index = .ok t) :
+      balanceCredits s t ≤ 0 ∧ balanceDebits s t ≤
+        (match findValidatorByPubkey s request.sourcePubkey with
+        | none => 0
+        | some i => actualBalanceAt ⟨fork, s⟩ i.val - preset.MIN_ACTIVATION_BALANCE.toNat) := by
+    simp only [switchToCompoundingValidator, bind_ok_iff] at ok
+    obtain ⟨v, _, u, set, queued⟩ := ok
+    have queuedCopy := queued
+    simp only [queueExcessActiveBalance, bind_ok_iff] at queuedCopy
+    obtain ⟨balance, read, _⟩ := queuedCopy
+    have bounds := excess_queue_debit u t electra index balance read queued
+    obtain ⟨_, rfl⟩ := setValidator_ok set
+    have actual : actualBalanceAt ⟨fork, s⟩ i.val = balance.toNat := by
+      have read := getBalance_eq_ok_iff.mp read
+      simp only [BeaconState.putValidator] at read
+      rw [(Uint64.ofNatChecked_ok_iff.mp indexOk).2] at read
+      simp [actualBalanceAt, read]
+    rw [found]
+    dsimp only
+    rw [actual]
+    simpa only [balanceCredits, balanceDebits, actualBalanceAt,
+      BeaconState.putValidator] using And.intro bounds.1.le bounds.2
+  have queued (source : Validator) (sourceIndex targetIndex : ValidatorIndex)
+      (ok : queueConsolidation config s electra sourceIndex source targetIndex = .ok t) :
+      t.balances = s.balances := by
+    simp only [queueConsolidation, bind_ok_iff, liftAccessor_ok, pure, Except.pure,
+      Except.ok.injEq] at ok
+    obtain ⟨⟨u, epoch⟩, churned, _, _, v, set, _, _, rfl⟩ := ok
+    obtain ⟨_, _, balances⟩ := computeConsolidationEpochAndUpdateChurn_earliest churned
+    obtain ⟨_, rfl⟩ := setValidator_ok set
+    exact balances
+  unfold processConsolidationRequest at ok
+  split at ok
+  · split at ok
+    · rename_i position found
+      obtain ⟨index, indexOk, ok⟩ := bind_ok_iff.mp ok
+      split at ok
+      · exact switched position index found
+          (by cases h : Uint64.ofNatChecked position.val <;>
+                simp [liftAccessor, liftArith, Except.mapError, h] at indexOk ⊢; exact indexOk)
+          (liftAccessor_ok.mp ok)
+      · cases ok
+        exact unchanged rfl
+    · cases ok
+      exact unchanged rfl
+  · simp only [bind, Except.bind, pure, Except.pure] at ok
+    repeat' split at ok
+    all_goals first
+      | (cases ok; done)
+      | (cases ok; exact unchanged rfl)
+      | exact unchanged (queued _ _ _ ok)
+
+private def ReplayBounded {fork : Fork} (pre : BalanceReplay preset fork) : Prop :=
+  BalancesMatch pre.1 ∧ EventsBounded pre.2
+
+private theorem carryBalance_bounded {fork : Fork}
+    (action : BeaconState preset fork → Except TransitionError (BeaconState preset fork))
+    (preserves : ∀ s t, action s = .ok t → BalancesMatch s → BalancesMatch t)
+    {pre post : BalanceReplay preset fork} (initial : ReplayBounded pre)
+    (ok : carryBalance action pre = .ok post) : ReplayBounded post := by
+  simp only [carryBalance, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at ok
+  obtain ⟨after, afterOk, rfl⟩ := ok
+  exact ⟨preserves pre.1 after afterOk initial.1, initial.2⟩
+
+private theorem recordBalance_matched {fork : Fork} (source : BalanceSource)
+    (limits : BeaconState preset fork → Except TransitionError (Nat × Nat))
+    (action : BeaconState preset fork → Except TransitionError (BeaconState preset fork))
+    (preserves : ∀ s t, action s = .ok t → BalancesMatch s → BalancesMatch t)
+    (bound : ∀ s t credit debit, BalancesMatch s →
+      limits s = .ok (credit, debit) → action s = .ok t →
+      balanceCredits s t ≤ credit ∧ balanceDebits s t ≤ debit)
+    {pre post : BalanceReplay preset fork} (initial : ReplayBounded pre)
+    (ok : recordBalance source limits action pre = .ok post) : ReplayBounded post := by
+  simp only [recordBalance, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at ok
+  obtain ⟨⟨credit, debit⟩, limitOk, after, actionOk, rfl⟩ := ok
+  refine ⟨preserves pre.1 after actionOk initial.1, eventsBounded_append initial.2 ?_⟩
+  intro event member
+  simp only [List.mem_singleton] at member
+  subst event
+  exact bound pre.1 after credit debit initial.1 limitOk actionOk
+
+set_option maxHeartbeats 800000 in
+private theorem blockBalanceReplay_bounded {fork : Fork} {s : BeaconState preset fork}
+    (early : fork < .glamsterdam) (engine : ExecutionEngine preset fork)
+    (block : BeaconBlock preset fork) {post : BalanceReplay preset fork}
+    (matched : BalancesMatch s)
+    (ok : blockBalanceReplay (config := config) (checks := checks)
+      early engine s block = .ok post) : EventsBounded post.2 := by
+  have before : fork < .hegota := Nat.lt_trans early (by decide)
+  have record {pre post : BalanceReplay preset fork} {source : BalanceSource}
+      {limits : BeaconState preset fork → Except TransitionError (Nat × Nat)}
+      {action : BeaconState preset fork → Except TransitionError (BeaconState preset fork)}
+      (preserves : ∀ s t, action s = .ok t → BalancesMatch s → BalancesMatch t)
+      (bound : ∀ s t credit debit, BalancesMatch s →
+        limits s = .ok (credit, debit) → action s = .ok t →
+        balanceCredits s t ≤ credit ∧ balanceDebits s t ≤ debit)
+      (initial : ReplayBounded pre) (ok : recordBalance source limits action pre = .ok post) :
+      ReplayBounded post := recordBalance_matched _ _ _ preserves bound initial ok
+  have proposer {pre post : BalanceReplay preset fork} (sl : ProposerSlashing)
+      (initial : ReplayBounded pre)
+      (ok : recordBalance .slashings (slashingLimits [sl.signedHeader1.message.proposerIndex])
+        (processProposerSlashing config checks · sl) pre = .ok post) : ReplayBounded post := by
+    apply record (fun _ _ ok => (frame_processProposerSlashing ok).balancesMatch) _ initial ok
+    intro s t credit debit _ limits action
+    obtain ⟨credit', debit', limits', bounds⟩ := proposer_slashing_bounds sl action
+    cases Except.ok.inj (limits.symm.trans limits')
+    exact bounds
+  have attester {pre post : BalanceReplay preset fork} (sl : AttesterSlashing preset fork)
+      (initial : ReplayBounded pre)
+      (ok : recordBalance .slashings (slashingLimits (slashingIndices sl))
+        (processAttesterSlashing config checks · sl) pre = .ok post) : ReplayBounded post := by
+    apply record (fun _ _ ok => (frame_processAttesterSlashing ok).balancesMatch) _ initial ok
+    intro s t credit debit _ limits action
+    obtain ⟨credit', debit', limits', bounds⟩ := attester_slashing_bounds sl action
+    cases Except.ok.inj (limits.symm.trans limits')
+    exact bounds
+  have attestation {pre post : BalanceReplay preset fork} (att : Attestation preset fork)
+      (initial : ReplayBounded pre)
+      (ok : recordBalance .rewards (fun site => do
+          return (← attestationCredit site att s.latestBlockHeader.slot, 0))
+        (processAttestation config checks · s.latestBlockHeader.slot att) pre = .ok post) :
+      ReplayBounded post := by
+    apply record (fun _ _ ok => (frame_processAttestation ok).balancesMatch) _ initial ok
+    intro site t credit debit _ limits action
+    obtain ⟨credit', limits', debits, credits⟩ :=
+      attestation_proposer_bound site t att s.latestBlockHeader.slot early action
+    simp only [limits', bind, Except.bind, pure, Except.pure, Except.ok.injEq,
+      Prod.mk.injEq] at limits
+    rcases limits with ⟨rfl, rfl⟩
+    exact ⟨credits, debits.le⟩
+  have deposit {pre post : BalanceReplay preset fork} (dep : Deposit)
+      (initial : ReplayBounded pre)
+      (ok : recordBalance .deposits
+        (fun _ => pure (if fork < .pectra then dep.data.amount.toNat else 0, 0))
+        (processDeposit config checks before · dep) pre = .ok post) : ReplayBounded post := by
+    apply record (fun _ _ ok => balancesMatch_processDeposit ok) _ initial ok
+    intro site t credit debit matched limits action
+    cases limits
+    exact deposit_bounds matched before dep action
+  have excess {pre post : BalanceReplay preset fork} (electra : .pectra ≤ fork)
+      (request : ConsolidationRequest) (initial : ReplayBounded pre)
+      (ok : recordBalance .excess (fun site => pure (0,
+          match findValidatorByPubkey site request.sourcePubkey with
+          | none => 0
+          | some i => actualBalanceAt ⟨fork, site⟩ i.val - preset.MIN_ACTIVATION_BALANCE.toNat))
+        (processConsolidationRequest config · electra request) pre = .ok post) :
+      ReplayBounded post := by
+    apply record (fun _ _ ok =>
+      balancesMatch_of_sameSizes (sameSizes_processConsolidationRequest ok)) _ initial ok
+    intro site t credit debit _ limits action
+    cases limits
+    exact consolidation_request_bounds electra request action
+  unfold blockBalanceReplay at ok
+  obtain ⟨headed, headerOk, ok⟩ := bind_ok_iff.mp ok
+  have headedBound := carryBalance_bounded _
+    (fun _ _ ok => (frame_processBlockHeader ok).balancesMatch)
+    ⟨matched, by simp [EventsBounded]⟩ headerOk
+  by_cases bellatrix : .bellatrix ≤ fork
+  case' pos =>
+    simp only [bellatrix, ↓reduceDIte] at ok
+    obtain ⟨executed, executionOk, rest⟩ := bind_ok_iff.mp ok
+    have executedBound : ReplayBounded executed := by
+      apply record (fun _ _ ok => (frame_processBlockExecution ok).balancesMatch) _
+        headedBound executionOk
+      intro site t credit debit _ limits action
+      obtain ⟨debit', limits', credits, debits⟩ := execution_bounds early engine block.body
+        bellatrix action
+      cases Except.ok.inj (limits.symm.trans limits')
+      exact ⟨credits, debits⟩
+  case' neg =>
+    simp only [bellatrix, ↓reduceDIte, pure, Except.pure, bind_ok_iff,
+      Except.ok.injEq, exists_eq_left'] at ok
+    have rest := ok
+    have executedBound := headedBound
+  all_goals
+    try simp only [bind_ok_iff] at rest
+    obtain ⟨randao, randaoOk, voted, votedOk, expected, _, _, _,
+      proposed, proposedOk, attested, attestedOk, rewarded, rewardedOk, deposited, depositOk,
+      exited, exitOk, changed, changedOk, rest⟩ := rest
+    have randaoBound := carryBalance_bounded _
+      (fun _ _ ok => (frame_processRandao ok).balancesMatch) executedBound randaoOk
+    have votedBound := carryBalance_bounded _
+      (fun _ _ ok => (frame_processEth1Data ok).balancesMatch) randaoBound votedOk
+    have proposedBound := foldlM_ok_invariant ReplayBounded
+      (fun _ sl _ h ok => proposer sl h ok) votedBound proposedOk
+    have attestedBound := foldlM_ok_invariant ReplayBounded
+      (fun _ sl _ h ok => attester sl h ok) proposedBound attestedOk
+    have rewardedBound := foldlM_ok_invariant ReplayBounded
+      (fun _ att _ h ok => attestation att h ok) attestedBound rewardedOk
+    have depositedBound := foldlM_ok_invariant ReplayBounded
+      (fun _ dep _ h ok => deposit dep h ok) rewardedBound depositOk
+    have exitedBound := carryBalance_bounded _ (fun _ _ ok h =>
+      foldlM_ok_invariant BalancesMatch
+        (fun _ _ _ h ok => (frame_processVoluntaryExit ok).balancesMatch h) h
+        (by simpa only [← Array.foldlM_toList] using ok)) depositedBound exitOk
+    have changedBound := carryBalance_bounded _ (fun _ _ ok h => by
+      unfold processBlsToExecutionChanges at ok
+      split at ok
+      · exact foldlM_ok_invariant BalancesMatch
+          (fun _ _ _ h ok => (frame_processBlsToExecutionChange ok).balancesMatch h) h
+          (by simpa only [← Array.foldlM_toList] using ok)
+      · cases ok; exact h) exitedBound changedOk
+    by_cases electra : .pectra ≤ fork
+    case' pos =>
+      simp only [electra, ↓reduceDIte, bind_ok_iff] at rest
+      obtain ⟨deposits, depositRequestOk, withdrawals, withdrawalOk,
+        requested, consolidations, rest⟩ := rest
+      have requestedBound : ReplayBounded requested := by
+        have depositsBound := carryBalance_bounded _ (fun _ _ ok h =>
+          foldlM_ok_invariant BalancesMatch
+            (fun _ _ _ h ok => (frame_processDepositRequest ok).balancesMatch h) h
+            (by simpa only [← Array.foldlM_toList] using ok)) changedBound depositRequestOk
+        have withdrawalsBound := carryBalance_bounded _ (fun _ _ ok h =>
+          foldlM_ok_invariant BalancesMatch
+            (fun _ _ _ h ok => (frame_processWithdrawalRequest ok).balancesMatch h) h
+            (by simpa only [← Array.foldlM_toList] using ok)) depositsBound withdrawalOk
+        exact foldlM_ok_invariant ReplayBounded
+          (fun _ request _ h ok => excess electra request h ok) withdrawalsBound consolidations
+    case' neg =>
+      simp only [electra, ↓reduceDIte, pure, Except.pure, bind_ok_iff,
+        Except.ok.injEq, exists_eq_left'] at rest
+      have requestedBound := changedBound
+    all_goals
+      split at rest
+      · have final : ReplayBounded post := by
+          apply record (fun _ _ ok => (frame_processSyncAggregate ok).balancesMatch) _
+            requestedBound rest
+          intro site t credit debit _ limits action
+          obtain ⟨reward, proposer, rewardOk, proposerOk, bounds⟩ := sync_bounds _ _ action
+          rw [rewardOk] at limits
+          dsimp only [bind, Except.bind] at limits
+          simp only [bind, Except.bind] at proposerOk
+          rw [proposerOk] at limits
+          simp only [bind, Except.bind, pure, Except.pure,
+            Except.ok.injEq] at limits
+          cases limits
+          exact bounds
+        exact final.2
+      · cases rest
+        exact requestedBound.2
+
+private theorem upgradeBalanceReplay_bounded {s t : ForkedBeaconState preset}
+    (ok : processUpgrades config checks s = .ok t) :
+    ∃ events, upgradeBalanceReplay (config := config) (checks := checks) s = .ok events ∧
+      EventsBounded events := by
+  fun_induction processUpgrades config checks s generalizing t with
+  | case1 s due ih =>
+    obtain ⟨next, nextOk, restOk⟩ := bind_ok_iff.mp ok
+    obtain ⟨rest, replay, bounded⟩ := ih next restOk
+    rw [upgradeBalanceReplay]
+    simp only [due, ↓reduceIte, nextOk, bind, Except.bind, replay]
+    by_cases crossing : s.fork = .dencun
+    · obtain ⟨fork, state⟩ := s
+      dsimp only at crossing
+      subst fork
+      simp only [upgradeNext, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at nextOk
+      obtain ⟨after, upgraded, rfl⟩ := nextOk
+      simp only [↓reduceIte, show Fork.pectra ≤ .pectra from Nat.le_refl _, ↓reduceDIte,
+        pure, Except.pure, Except.ok.injEq, exists_eq_left']
+      intro event member
+      rcases List.mem_cons.mp member with rfl | member
+      · have bound := electra_upgrade_debit state after upgraded
+        exact ⟨bound.1.le, bound.2⟩
+      · exact bounded event member
+    · simpa only [crossing, ↓reduceIte, pure, Except.pure, Except.ok.injEq,
+        exists_eq_left'] using bounded
+  | case2 s due =>
+    refine ⟨[], ?_, by simp [EventsBounded]⟩
+    rw [upgradeBalanceReplay]
+    simp [due, pure, Except.pure]
+
+private theorem stepBalanceEvents_bounded {x y : ForkedBeaconState preset}
+    (step : Step config checks x y) (matched : BalancesMatch x.state)
+    (early : y.fork < .glamsterdam) :
+    ∃ events, step.balanceEvents = .ok events ∧ EventsBounded events := by
+  have before : x.fork < .glamsterdam := Nat.lt_of_le_of_lt step.chainStep.fork_le early
+  cases step with
+  | block engine signed due ok =>
+    obtain ⟨events, replay⟩ := blockBalanceReplay_result _ _ before engine signed.message
+      (applySignedBlock_ok ok).2.1
+    refine ⟨events, ?_, blockBalanceReplay_bounded before engine signed.message matched replay⟩
+    simp [Step.balanceEvents, before, replay, pure, Except.pure, bind, Except.bind]
+  | slot ok =>
+    obtain ⟨advanced, advanceOk, upgrades⟩ := bind_ok_iff.mp ok
+    obtain ⟨crossings, crossingOk, crossingBound⟩ := upgradeBalanceReplay_bounded upgrades
+    have advanceCopy := advanceOk
+    simp only [advanceSlot, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at advanceCopy
+    obtain ⟨next, nextOk, cached, cachedOk, epoched, epochOk, _⟩ := advanceCopy
+    have cachedMatch := (frame_processSlot cachedOk).balancesMatch matched
+    by_cases last : next % preset.SLOTS_PER_EPOCH = 0
+    · simp only [epochIfLast, last, ↓reduceIte] at epochOk
+      obtain ⟨middle, updated, events, replay, _⟩ :=
+        epochBalanceReplay_result cached epoched before epochOk
+      refine ⟨events, ?_, epochBalanceReplay_bounded cachedMatch before replay⟩
+      simp [Step.balanceEvents, cachedOk, nextOk, last, replay,
+        pure, Except.pure, bind, Except.bind]
+    · refine ⟨crossings, ?_, crossingBound⟩
+      simp [Step.balanceEvents, cachedOk, nextOk, last, advanceOk, crossingOk,
+        pure, Except.pure, bind, Except.bind]
+
 /-- Every source is bounded separately, with no freely supplied credit or debit cap. -/
 theorem source_bounds_over_interval {g x y : ForkedBeaconState preset}
     (shared : Run config checks g x) (tail : Run config checks x y)
@@ -292,7 +1090,39 @@ theorem source_bounds_over_interval {g x y : ForkedBeaconState preset}
         sourceTotal events source BalanceEvent.credits ≤ sourceTotal events source (·.creditLimit) ∧
         sourceTotal events source BalanceEvent.debits ≤
           sourceTotal events source (·.debitLimit) := by
-  sorry
+  have invariant {z : ForkedBeaconState preset} (run : Run config checks g z) :
+      Invariant z.state := by
+    induction run with
+    | nil =>
+      obtain ⟨_, _, _, ok⟩ := genesis
+      exact (initializeBeaconStateFromEth1_invariant ok).2
+    | snoc pre step ih =>
+      cases step with
+      | slot ok => exact (advanceSlotAcross_invariant ih ok).1
+      | block engine signed due ok =>
+        exact (frame_processBlock (applySignedBlock_ok ok).2.1).invariant ih
+  have replay : ∃ events, tail.balanceEvents high = .ok events ∧ EventsBounded events := by
+    induction tail with
+    | nil => exact ⟨[], rfl, by simp [EventsBounded]⟩
+    | @snoc middle last pre step ih =>
+      obtain ⟨prior, priorOk, priorBound⟩ :=
+        ih (Nat.lt_of_le_of_lt step.chainStep.fork_le early)
+      by_cases selected : (getCurrentEpoch middle.state).toNat ≤ high + 1
+      · obtain ⟨added, addedOk, addedBound⟩ := stepBalanceEvents_bounded step
+          (invariant (shared.append pre)).balancesMatch early
+        refine ⟨prior ++ added, ?_, eventsBounded_append priorBound addedBound⟩
+        simp [Run.balanceEvents, priorOk, selected, addedOk, pure, Except.pure, bind, Except.bind]
+      · refine ⟨prior, ?_, priorBound⟩
+        simp [Run.balanceEvents, priorOk, selected, pure, Except.pure, bind, Except.bind]
+  obtain ⟨events, replay, bounded⟩ := replay
+  refine ⟨events, replay, fun source => ?_⟩
+  have bound : ∀ event ∈ events.filter (fun e => e.source == source),
+      event.credits ≤ event.creditLimit ∧ event.debits ≤ event.debitLimit :=
+    fun event member => bounded event (List.mem_filter.mp member).1
+  unfold sourceTotal
+  constructor
+  · exact List.sum_le_sum (fun event member => (bound event member).1)
+  · exact List.sum_le_sum (fun event member => (bound event member).2)
 
 /-- The replay covers all positive balance changes of the selected steps, not just net issuance. -/
 theorem balance_path_covered {g x y : ForkedBeaconState preset}
