@@ -4,6 +4,7 @@ public import EthLib.Consensus.Proofs.Transition.Trace
 public import EthLib.Consensus.Proofs.Transition.RegistryLifecycle
 public import EthLib.Consensus.Proofs.Transition.ValidatorCaps
 public import EthLib.Consensus.Proofs.Transition.SyncCommitteeProvenance
+public import EthLib.Consensus.Proofs.Transition.PendingConsolidations
 public import EthLib.Consensus.Proofs.Accessors
 public import EthLib.Consensus.Proofs.Transition.EpochUpdates
 public import EthLib.Consensus.Proofs.Transition.Genesis
@@ -2059,80 +2060,6 @@ private theorem admissionFunded_consolidations {f : Fork} {s t : BeaconState pre
   simpa only [effectiveAt, actualBalanceAt, (processPendingConsolidations_kept ok).1,
     (passPendingConsolidations_kept passed).1, balances] using funded i large
 
-private theorem balanceDrift_pendingDeposits_queue {f : Fork} {s t : BeaconState preset f}
-    {electra : .pectra ≤ f}
-    (ok : processPendingDeposits config checks s electra = .ok t) :
-    t.pendingConsolidations = s.pendingConsolidations := by
-  have deposit {a b : BeaconState preset f} {d : PendingDeposit}
-      (ok : applyPendingDeposit config checks a d = .ok b) :
-      b.pendingConsolidations = a.pendingConsolidations := by
-    unfold applyPendingDeposit at ok
-    split at ok
-    · split at ok
-      · cases ok; rfl
-      simp only [bind_ok_iff] at ok
-      obtain ⟨_, _, ok⟩ := ok
-      split at ok
-      · unfold addValidatorToRegistry at ok
-        split at ok
-        · simp only [addValidatorToRegistryAltair, bind_ok_iff, liftAccessor_ok,
-            pure, Except.pure, Except.ok.injEq] at ok
-          obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, rfl⟩ := ok
-          rfl
-        · split at ok <;> cases ok
-          rfl
-      · cases ok; rfl
-    · simp only [liftAccessor_ok, bind_ok_iff] at ok
-      obtain ⟨_, _, ok⟩ := ok
-      obtain ⟨_, set⟩ := increaseBalance_ok ok
-      obtain ⟨_, rfl⟩ := setBalance_ok set
-      rfl
-  have pass {stop : PendingDeposit → Bool} {nextEpoch : Epoch} {available : Gwei} :
-      ∀ {entries : List PendingDeposit} {a : BeaconState preset f} {processed : Gwei}
-        {count : Nat} {postponed : Array PendingDeposit} {result},
-        passPendingDeposits config checks stop nextEpoch available a processed count
-          postponed entries = .ok result →
-          result.1.state.pendingConsolidations = a.pendingConsolidations := by
-    intro entries
-    induction entries with
-    | nil => intro a processed count postponed result ok; cases ok; rfl
-    | cons d rest ih =>
-      intro a processed count postponed result ok
-      unfold passPendingDeposits at ok
-      simp only [bind, Except.bind, pure, Except.pure] at ok
-      split at ok
-      · cases ok; rfl
-      split at ok
-      · cases ok
-      split at ok
-      · split at ok
-        · cases ok
-        rename_i credited
-        split at ok
-        · cases ok
-        cases ok
-        exact (ih ‹_›).trans (deposit credited)
-      split at ok
-      · split at ok
-        · cases ok
-        cases ok
-        exact ih ‹_›
-      split at ok
-      · cases ok
-      split at ok
-      · cases ok; rfl
-      split at ok
-      · cases ok
-      rename_i credited
-      split at ok
-      · cases ok
-      cases ok
-      exact (ih ‹_›).trans (deposit credited)
-  unfold processPendingDeposits at ok
-  simp only [bind, Except.bind, pure, Except.pure] at ok
-  repeat' (split at ok <;> try cases ok)
-  all_goals exact pass ‹_›
-
 private theorem admissionFunded_pending {f : Fork} {s t : BeaconState preset f}
     {n : Nat} (holds : AdmissionFunded n s) (matched : BalancesMatch s)
     (old : ∀ electra : .pectra ≤ f,
@@ -2144,177 +2071,12 @@ private theorem admissionFunded_pending {f : Fork} {s t : BeaconState preset f}
     obtain ⟨middle, deposited, consolidated⟩ := bind_ok_iff.mp ok
     apply admissionFunded_consolidations
       (admissionFunded_pendingDeposits holds matched deposited) ?_ consolidated
-    simpa only [balanceDrift_pendingDeposits_queue deposited] using old electra
+    simpa only [processPendingDeposits_pendingConsolidations deposited] using old electra
   · cases ok; exact holds
 
 private def PendingSources {f : Fork} (s : BeaconState preset f) : Prop :=
   ∀ electra : .pectra ≤ f, ∀ entry ∈ (s.pendingConsolidations electra).data.toList,
     entry.sourceIndex.toNat < s.validators.data.size
-
-private def SamePendingQueue {f : Fork} (s t : BeaconState preset f) : Prop :=
-  t.pendingConsolidations = s.pendingConsolidations
-
-private theorem SamePendingQueue.trans {f : Fork} {s t u : BeaconState preset f}
-    (one : SamePendingQueue s t) (two : SamePendingQueue t u) : SamePendingQueue s u :=
-  Eq.trans two one
-
-private theorem SamePendingQueue.fold {f : Fork} {s t : BeaconState preset f} {α ε : Type}
-    {step : BeaconState preset f → α → Except ε (BeaconState preset f)} {xs : List α}
-    (kept : ∀ a item b, step a item = .ok b → SamePendingQueue a b)
-    (ok : xs.foldlM step s = .ok t) : SamePendingQueue s t :=
-  foldlM_ok_invariant (SamePendingQueue s)
-    (fun _ _ _ prior computed => prior.trans (kept _ _ _ computed)) rfl ok
-
-private theorem SamePendingQueue.setValidatorAt {f : Fork} {s t : BeaconState preset f}
-    {i : Nat} {v : Validator} (ok : s.setValidatorAt i v = .ok t) : SamePendingQueue s t := by
-  obtain ⟨_, rfl⟩ := setValidatorAt_ok ok
-  rfl
-
-private theorem SamePendingQueue.setValidator {f : Fork} {s t : BeaconState preset f}
-    {i : ValidatorIndex} {v : Validator} (ok : s.setValidator i v = .ok t) :
-    SamePendingQueue s t :=
-  setValidatorAt (by rwa [← setValidator_eq_setValidatorAt])
-
-private theorem SamePendingQueue.increase {f : Fork} {s t : BeaconState preset f}
-    {i : ValidatorIndex} {amount : Gwei} (ok : increaseBalance s i amount = .ok t) :
-    SamePendingQueue s t := by
-  obtain ⟨_, set⟩ := increaseBalance_ok ok
-  obtain ⟨_, rfl⟩ := setBalance_ok set
-  rfl
-
-private theorem SamePendingQueue.decrease {f : Fork} {s t : BeaconState preset f}
-    {i : ValidatorIndex} {amount : Gwei} (ok : decreaseBalance s i amount = .ok t) :
-    SamePendingQueue s t := by
-  obtain ⟨_, rfl⟩ := decreaseBalance_eq_ok_iff.mp ok
-  rfl
-
-private theorem SamePendingQueue.exit {f : Fork} {s t : BeaconState preset f}
-    {i : ValidatorIndex} (ok : initiateValidatorExit config s i = .ok t) :
-    SamePendingQueue s t := by
-  obtain ⟨_, _, ⟨_, rfl⟩ | ⟨_, _, _, _, queue, _, set⟩⟩ := initiateValidatorExit_ok ok
-  · rfl
-  · obtain ⟨_, _, rfl⟩ := exitQueue_eq queue
-    have kept := setValidator set
-    exact kept
-
-private theorem SamePendingQueue.rewards {f : Fork} {s t : BeaconState preset f}
-    (ok : processRewardsAndPenalties config s = .ok t) : SamePendingQueue s t := by
-  have all {a b : BeaconState preset f} {deltas : Array Gwei × Array Gwei}
-      (ok : applyAllDeltas a deltas = .ok b) : SamePendingQueue a b := by
-    apply fold (fun _ _ _ ok => ?_) ok
-    simp only [applyDeltas, bind_ok_iff, liftAccessor_ok] at ok
-    obtain ⟨_, _, _, raised, lowered⟩ := ok
-    exact (increase raised).trans (decrease lowered)
-  unfold processRewardsAndPenalties at ok
-  split at ok
-  · cases ok; rfl
-  split at ok
-  · simp only [bind_ok_iff] at ok
-    obtain ⟨_, _, _, _, applied⟩ := ok
-    exact fold (fun _ _ _ => all) applied
-  · obtain ⟨_, _, applied⟩ := bind_ok_iff.mp ok
-    exact all applied
-
-private theorem SamePendingQueue.registry {f : Fork} {s t : BeaconState preset f}
-    (ok : processRegistryUpdates config s = .ok t) : SamePendingQueue s t := by
-  have entry {a b : BeaconState preset f} {i : Nat}
-      (ok : updateRegistryEntry config a i = .ok b) : SamePendingQueue a b := by
-    simp only [updateRegistryEntry, bind_ok_iff, liftAccessor_ok] at ok
-    obtain ⟨_, _, _, _, _, marked, ok⟩ := ok
-    split at ok
-    · simp only [bind_ok_iff, liftAccessor_ok] at ok
-      obtain ⟨_, _, exited⟩ := ok
-      exact (setValidatorAt marked).trans (exit exited)
-    · cases ok; exact setValidatorAt marked
-  have electra {a b : BeaconState preset f} {i : Nat} {epoch : Epoch}
-      (ok : updateRegistryEntryElectra config epoch a i = .ok b) : SamePendingQueue a b := by
-    simp only [updateRegistryEntryElectra, bind_ok_iff, liftAccessor_ok] at ok
-    obtain ⟨_, _, ok⟩ := ok
-    split at ok
-    · simp only [bind_ok_iff, liftAccessor_ok] at ok
-      obtain ⟨_, _, set⟩ := ok
-      exact setValidatorAt set
-    split at ok
-    · simp only [bind_ok_iff, liftAccessor_ok] at ok
-      obtain ⟨_, _, exited⟩ := ok
-      exact exit exited
-    split at ok
-    · exact setValidatorAt (liftAccessor_ok.mp ok)
-    · cases ok; rfl
-  unfold processRegistryUpdates at ok
-  split at ok
-  · simp only [bind_ok_iff, liftAccessor_ok] at ok
-    obtain ⟨_, _, ok⟩ := ok
-    exact fold (fun _ _ _ => electra) ok
-  simp only [bind_ok_iff] at ok
-  obtain ⟨_, updated, activated⟩ := ok
-  apply (fold (fun _ _ _ => entry) updated).trans
-  apply fold (fun _ _ _ ok => ?_) activated
-  simp only [activateValidator, bind_ok_iff, liftAccessor_ok] at ok
-  obtain ⟨_, _, _, _, set⟩ := ok
-  exact setValidator set
-
-private theorem SamePendingQueue.slashings {f : Fork} {s t : BeaconState preset f}
-    (ok : processSlashings s = .ok t) : SamePendingQueue s t := by
-  unfold processSlashings at ok
-  simp only [bind_ok_iff] at ok
-  obtain ⟨_, _, _, _, _, _, ok⟩ := ok
-  split at ok
-  · obtain ⟨_, _, applied⟩ := bind_ok_iff.mp ok
-    refine fold (fun _ _ _ ok => ?_) applied
-    simp only [applySlashingPenaltyElectra, bind_ok_iff, liftAccessor_ok] at ok
-    obtain ⟨_, _, ok⟩ := ok
-    split at ok
-    · obtain ⟨_, _, ok⟩ := bind_ok_iff.mp ok
-      split at ok
-      · simp only [bind_ok_iff, liftAccessor_ok] at ok
-        obtain ⟨_, _, _, _, lowered⟩ := ok
-        exact decrease lowered
-      · cases ok; rfl
-    · cases ok; rfl
-  · refine fold (fun _ _ _ ok => ?_) ok
-    simp only [applySlashingPenalty, bind_ok_iff, liftAccessor_ok] at ok
-    obtain ⟨_, _, ok⟩ := ok
-    split at ok
-    · obtain ⟨_, _, ok⟩ := bind_ok_iff.mp ok
-      split at ok
-      · simp only [bind_ok_iff, liftAccessor_ok] at ok
-        obtain ⟨_, _, _, _, _, _, lowered⟩ := ok
-        exact decrease lowered
-      · cases ok; rfl
-    · cases ok; rfl
-
-private theorem SamePendingQueue.effectiveUpdates {f : Fork} {s t : BeaconState preset f}
-    (ok : processEffectiveBalanceUpdates s = .ok t) : SamePendingQueue s t := by
-  apply fold (fun _ _ _ ok => ?_) ok
-  simp only [updateEffectiveBalance, bind_ok_iff, liftAccessor_ok] at ok
-  obtain ⟨_, _, _, _, _, _, set⟩ := ok
-  exact setValidatorAt set
-
-private theorem SamePendingQueue.inactivity {f : Fork} {s t : BeaconState preset f}
-    {altair : .altair ≤ f} (ok : processInactivityUpdates config s altair = .ok t) :
-    SamePendingQueue s t := by
-  unfold processInactivityUpdates at ok
-  split at ok
-  · cases ok; rfl
-  · simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at ok
-    obtain ⟨_, _, _, _, rfl⟩ := ok
-    rfl
-
-private theorem SamePendingQueue.justification {f : Fork} {s t : BeaconState preset f}
-    (ok : processJustificationAndFinalization s = .ok t) : SamePendingQueue s t := by
-  obtain rfl | ⟨_, _, _, weighed⟩ := processJustificationAndFinalization_ok ok
-  · rfl
-  · obtain ⟨_, _, _, rest⟩ := weighJustificationAndFinalization_checkpoints weighed
-    unfold SamePendingQueue
-    rw [← rest]
-
-private theorem SamePendingQueue.eth1Reset {f : Fork} {s t : BeaconState preset f}
-    {before : f < .hegota} (ok : processEth1DataReset before s = .ok t) :
-    SamePendingQueue s t := by
-  simp only [processEth1DataReset, bind_ok_iff, liftAccessor_ok] at ok
-  obtain ⟨_, _, ok⟩ := ok
-  split at ok <;> cases ok <;> rfl
 
 private theorem admissionFunded_epoch {f : Fork} {s t : BeaconState preset f}
     (early : f < .glamsterdam) (matched : BalancesMatch s) (sources : PendingSources s)
@@ -2358,16 +2120,16 @@ private theorem admissionFunded_epoch {f : Fork} {s t : BeaconState preset f}
         (sameSizes_processRegistryUpdates registeredOk).1,
         (processRewardsAndPenalties_sameSizes rewardedOk).1, (balanceDrift_inactivity scoredOk).1,
         (sameSizes_processJustificationAndFinalization justifiedOk).1]
-    have queue : SamePendingQueue s reset := by
-      apply (SamePendingQueue.justification justifiedOk).trans
-      apply (SamePendingQueue.inactivity scoredOk).trans
-      apply (SamePendingQueue.rewards rewardedOk).trans
-      apply (SamePendingQueue.registry registeredOk).trans
-      apply (SamePendingQueue.slashings slashedOk).trans
-      split at resetOk
-      · exact SamePendingQueue.eth1Reset resetOk
-      · cases resetOk; rfl
-    change reset.pendingConsolidations = s.pendingConsolidations at queue
+    have queue : reset.pendingConsolidations = s.pendingConsolidations := by
+      have last : reset.pendingConsolidations = slashed.pendingConsolidations := by
+        split at resetOk
+        · exact processEth1DataReset_pendingConsolidations resetOk
+        · cases resetOk; rfl
+      rw [last, processSlashings_pendingConsolidations slashedOk,
+        processRegistryUpdates_pendingConsolidations registeredOk,
+        processRewardsAndPenalties_pendingConsolidations rewardedOk,
+        processInactivityUpdates_pendingConsolidations scoredOk,
+        processJustificationAndFinalization_pendingConsolidations justifiedOk]
     have resetMatched : BalancesMatch reset := by
       rw [BalancesMatch, resetSame.1, resetSame.2]
       exact balancesMatch_of_sameSizes (sameSizes_processSlashings slashedOk)
@@ -2422,92 +2184,6 @@ private theorem admissionFunded_slot {f : Fork} {s t : BeaconState preset f}
     exact funded
   · cases advance
     exact admissionFunded_empty s
-
-private theorem PendingSources.kept {f : Fork} {s t : BeaconState preset f}
-    (holds : PendingSources s) (queue : SamePendingQueue s t)
-    (grows : s.validators.data.size ≤ t.validators.data.size) : PendingSources t := by
-  intro electra entry mem
-  change t.pendingConsolidations = s.pendingConsolidations at queue
-  rw [queue] at mem
-  exact Nat.lt_of_lt_of_le (holds electra entry mem) grows
-
-private theorem PendingSources.consolidations {f : Fork} {s t : BeaconState preset f}
-    {electra : .pectra ≤ f} (holds : PendingSources s)
-    (ok : processPendingConsolidations s electra = .ok t) : PendingSources t := by
-  obtain ⟨result, _, _, queue⟩ := processPendingConsolidations_pass ok
-  intro electra entry mem
-  rw [queue] at mem
-  rw [(processPendingConsolidations_kept ok).1]
-  exact holds electra entry (List.mem_of_mem_drop mem)
-
-private theorem PendingSources.pending {f : Fork} {s t : BeaconState preset f}
-    (holds : PendingSources s) (ok : processPendingBalances config checks s = .ok t) :
-    PendingSources t := by
-  unfold processPendingBalances at ok
-  split at ok
-  · obtain ⟨_, deposited, consolidated⟩ := bind_ok_iff.mp ok
-    exact (holds.kept (balanceDrift_pendingDeposits_queue deposited)
-      (registryLifecycle_processPendingDeposits deposited).size_le).consolidations consolidated
-  · cases ok; exact holds
-
-private theorem PendingSources.queue {f : Fork} {s t : BeaconState preset f}
-    {electra : .pectra ≤ f} {sourceIndex targetIndex : ValidatorIndex} {source : Validator}
-    (holds : PendingSources s)
-    (ok : queueConsolidation config s electra sourceIndex source targetIndex = .ok t) :
-    PendingSources t := by
-  simp only [queueConsolidation, bind_ok_iff, liftAccessor_ok, pure, Except.pure] at ok
-  obtain ⟨⟨churned, epoch⟩, churnOk, _, _, written, set, pending, appended, final⟩ := ok
-  cases final
-  have data := appendWithinLimit_data appended
-  have size := (sameSizes_setValidator set).1
-  have bound : sourceIndex.toNat < churned.validators.data.size := (setValidator_ok set).1
-  have churnQueue : churned.pendingConsolidations = s.pendingConsolidations := by
-    simp only [computeConsolidationEpochAndUpdateChurn, bind_ok_iff, pure, Except.pure,
-      Except.ok.injEq] at churnOk
-    obtain ⟨_, _, _, _, _, _, final⟩ := churnOk
-    cases final
-    rfl
-  have churnSize := (computeConsolidationEpochAndUpdateChurn_earliest churnOk).2.1
-  have kept := SamePendingQueue.setValidator set
-  change written.pendingConsolidations = churned.pendingConsolidations at kept
-  intro witness entry mem
-  change entry ∈ pending.data.toList at mem
-  rw [data, Array.toList_push, List.mem_append, List.mem_singleton] at mem
-  change entry.sourceIndex.toNat < written.validators.data.size
-  rw [size]
-  rcases mem with previous | rfl
-  · rw [kept, churnQueue] at previous
-    rw [churnSize]
-    exact holds electra entry previous
-  · exact bound
-
-private theorem SamePendingQueue.compounding {f : Fork} {s t : BeaconState preset f}
-    {electra : .pectra ≤ f} {index : ValidatorIndex}
-    (ok : switchToCompoundingValidator s electra index = .ok t) : SamePendingQueue s t := by
-  simp only [switchToCompoundingValidator, bind_ok_iff] at ok
-  obtain ⟨_, _, middle, set, queued⟩ := ok
-  apply (setValidator set).trans
-  simp only [queueExcessActiveBalance, bind_ok_iff] at queued
-  obtain ⟨_, _, queued⟩ := queued
-  split at queued
-  · simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at queued
-    obtain ⟨_, _, _, _, _, set, rfl⟩ := queued
-    obtain ⟨_, rfl⟩ := setBalance_ok set
-    rfl
-  · cases queued; rfl
-
-private theorem PendingSources.request {f : Fork} {s t : BeaconState preset f}
-    {electra : .pectra ≤ f} {request : ConsolidationRequest} (holds : PendingSources s)
-    (ok : processConsolidationRequest config s electra request = .ok t) : PendingSources t := by
-  have size := (sameSizes_processConsolidationRequest ok).1
-  unfold processConsolidationRequest at ok
-  simp only [bind, Except.bind, pure, Except.pure] at ok
-  repeat' split at ok
-  all_goals first
-    | (cases ok; done)
-    | (cases ok; exact holds)
-    | exact holds.kept (SamePendingQueue.compounding (liftAccessor_ok.mp ok)) (by omega)
-    | exact holds.queue ok
 
 private theorem balanceDrift_join_of_admission {g x y : ForkedBeaconState preset}
     (shared : Run config checks g x) (tail : Run config checks x y)
@@ -2623,7 +2299,9 @@ theorem joining_growth_from_admission {g x y : ForkedBeaconState preset}
     (i : Nat) (newKey : x.state.validators.data.size ≤ i)
     (present : i < y.state.validators.data.size) :
     effectiveAt y i ≤ pathCredits i tail.balancePath := by
-  sorry
+  have _ := present
+  exact balanceDrift_join_of_sources shared tail genesis early
+    (fun run early electra => run.pendingConsolidation_sources genesis early electra) i newKey
 
 /-- A single hysteresis update loses less than one increment beyond its actual balance gap. -/
 theorem hysteresis_loss (largest balance old next : Gwei)
