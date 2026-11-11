@@ -79,6 +79,38 @@ namespace Store
 
 variable {config : Config} {store : Store preset fork}
 
+/-- The checkpoint update records the epoch boundary tests of the same slot. -/
+private theorem updateFastConfirmationVariables_checkpoints
+    {fcr after : FastConfirmationStore} {head : Root}
+    (updated : store.updateFastConfirmationVariables config fcr head = .ok after) :
+    ∃ slot, store.getCurrentSlot config = .ok slot ∧
+      (∀ next, addChecked slot 1 = .ok next →
+        isStartSlotAtEpoch preset next = .ok true →
+        after.previousEpochGreatestUnrealizedCheckpoint = store.unrealizedJustifiedCheckpoint) ∧
+      (∀ next, addChecked slot 1 = .ok next →
+        isStartSlotAtEpoch preset next = .ok false →
+        after.previousEpochGreatestUnrealizedCheckpoint =
+          fcr.previousEpochGreatestUnrealizedCheckpoint) ∧
+      (isStartSlotAtEpoch preset slot = .ok true →
+        after.currentEpochObservedJustifiedCheckpoint =
+          after.previousEpochGreatestUnrealizedCheckpoint ∧
+        after.previousEpochObservedJustifiedCheckpoint =
+          fcr.currentEpochObservedJustifiedCheckpoint) ∧
+      (isStartSlotAtEpoch preset slot = .ok false →
+        after.currentEpochObservedJustifiedCheckpoint =
+          fcr.currentEpochObservedJustifiedCheckpoint ∧
+        after.previousEpochObservedJustifiedCheckpoint =
+          fcr.previousEpochObservedJustifiedCheckpoint) := by
+  unfold updateFastConfirmationVariables at updated
+  simp only [bind_ok_iff] at updated
+  obtain ⟨slot, slotOk, next, nextOk, nextStart, nextStartOk, updated⟩ := updated
+  have nextOk := mapError_ok_iff.mp nextOk
+  refine ⟨slot, slotOk, ?_⟩
+  split at updated <;> simp only [bind_ok_iff] at updated <;>
+    obtain ⟨atStart, atStartOk, updated⟩ := updated <;> split at updated <;>
+    simp only [pure, Except.pure, Except.ok.injEq] at updated <;> subst updated <;>
+    simp_all
+
 /-- Step 8, one call: the stored block is a start, or passed the checks along a confirmed walk.
 
 The start and its three cases are those of `onFastConfirmation_confirmedRoot`.
@@ -140,7 +172,27 @@ theorem onFastConfirmation_checked {fcr after : FastConfirmationStore}
           store.getAncestorRoots head.root start = .ok (chain ++ after.confirmedRoot :: later) ∧
           ∀ member ∈ chain ++ [after.confirmedRoot], store.isOneConfirmed config head.root
             balanceSource (store.tallyVotes balanceSource) member = .ok true) := by
-  sorry
+  unfold onFastConfirmation at confirmed
+  simp only [bind_ok_iff] at confirmed
+  obtain ⟨head, headOk, updated, updateOk, root, latest, confirmed⟩ := confirmed
+  simp only [pure, Except.pure, Except.ok.injEq] at confirmed
+  subst confirmed
+  obtain ⟨slot, start, slotOk, startCase, result⟩ :=
+    getLatestConfirmed_checked_start lower latest
+  obtain ⟨previousHead, currentHead⟩ :=
+    Prod.mk.inj (updateFastConfirmationVariables_heads updateOk)
+  obtain ⟨updateSlot, updateSlotOk, checkpoints⟩ :=
+    updateFastConfirmationVariables_checkpoints updateOk
+  have sameSlot : updateSlot = slot := Except.ok.inj (updateSlotOk.symm.trans slotOk)
+  subst updateSlot
+  rw [updateFastConfirmationVariables_confirmedRoot updateOk] at startCase
+  refine ⟨head, slot, start, headOk, slotOk, previousHead, currentHead,
+    checkpoints.1, checkpoints.2.1, checkpoints.2.2.1, checkpoints.2.2.2, startCase, ?_⟩
+  rcases result with same | ⟨checked, descendant⟩
+  · exact Or.inl same
+  · rcases findLatestConfirmedDescendant_eq_or descendant with same | walk
+    · exact Or.inl same
+    · exact Or.inr ⟨checked, walk⟩
 
 end Store
 

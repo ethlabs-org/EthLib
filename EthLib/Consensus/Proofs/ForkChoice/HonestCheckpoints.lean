@@ -84,7 +84,7 @@ There the set of validators is fixed, and the proofs count the stake of one regi
 
 namespace EthLib.Consensus
 
-open Base Uint64 Models
+open Base Uint64 Models Serialization.Ssz
 
 variable {preset : Preset} {fork : Fork}
 
@@ -378,6 +378,634 @@ theorem exists_linkVote_of_processJustification {state after : BeaconState prese
     · exact pending.quorum_attester (Nat.lt_of_not_le notAltair) early true
         currentOk currentIndicesOk member
 
+/-- A set bit zero records a source vote for the current epoch of the counting state.
+
+The previous justified checkpoint after the count is the source of that vote.
+
+Keeping this witness across the epoch boundary supplies the old-bit case of finalization. -/
+theorem exists_sourceVote_of_weighJustification_bit_zero
+    {state after : BeaconState preset fork}
+    {attested : Set (ValidatorIndex × AttestationData)}
+    {current : List ValidatorIndex} {total previousBalance currentBalance : Gwei}
+    (totalOk : getTotalActiveBalance state = .ok total)
+    (currentOk : getTotalBalance state current = .ok currentBalance)
+    (counted : ∀ v ∈ current, v ∈ quorumVoters state ∧
+      ∃ data, (v, data) ∈ attested ∧ LinkVote state true v.toNat (v, data))
+    (large : 3 * preset.EFFECTIVE_BALANCE_INCREMENT.toNat <
+      2 * stake (fun v => balanceAt state v.toNat) (activeVoters state))
+    (p : ValidatorIndex → Prop) [DecidablePred p]
+    (few : 3 * stake (fun v => balanceAt state v.toNat)
+      {v ∈ quorumVoters state | ¬p v} < 2 * total.toNat)
+    (computed : weighJustificationAndFinalization state total previousBalance currentBalance =
+      .ok after)
+    (set : after.justificationBits.bits[0] = true) :
+    ∃ v data, p v ∧ (v, data) ∈ attested ∧
+      data.source = after.previousJustifiedCheckpoint ∧
+      data.target.epoch = getCurrentEpoch state := by
+  obtain ⟨threshold, _, currentWeight, thresholdOk, _, currentWeightOk, newCurrent, _⟩ :=
+    weighJustificationAndFinalization_bits computed
+  obtain ⟨passed, -⟩ := newCurrent set
+  obtain ⟨v, data, good, signed, link⟩ := exists_linkVote_of_justificationTest totalOk
+    currentOk thresholdOk currentWeightOk passed large counted p few
+  obtain ⟨previous, -⟩ := weighJustificationAndFinalization_checkpoints computed
+  exact ⟨v, data, good, signed, link.2.2.1.trans previous.symm, link.2.1⟩
+
+/-- A changed finalized checkpoint has a source vote from a passing count or the old bit zero.
+
+The old-bit witness retains its original vote and may come from an earlier counting state.
+
+The vote set must therefore contain both the current counts and that earlier witness. -/
+theorem exists_sourceVote_of_weighJustification {state after : BeaconState preset fork}
+    {attested : Set (ValidatorIndex × AttestationData)}
+    {previous current : List ValidatorIndex} {total previousBalance currentBalance : Gwei}
+    (totalOk : getTotalActiveBalance state = .ok total)
+    (previousOk : getTotalBalance state previous = .ok previousBalance)
+    (currentOk : getTotalBalance state current = .ok currentBalance)
+    (counted : ∀ (recent : Bool), ∀ v ∈ (if recent then current else previous),
+      v ∈ quorumVoters state ∧
+        ∃ data, (v, data) ∈ attested ∧ LinkVote state recent v.toNat (v, data))
+    (large : 3 * preset.EFFECTIVE_BALANCE_INCREMENT.toNat <
+      2 * stake (fun v => balanceAt state v.toNat) (activeVoters state))
+    (p : ValidatorIndex → Prop) [DecidablePred p]
+    (few : 3 * stake (fun v => balanceAt state v.toNat)
+      {v ∈ quorumVoters state | ¬p v} < 2 * total.toNat)
+    (oldBit : state.justificationBits.bits[0] = true →
+      ∃ v data, p v ∧ (v, data) ∈ attested ∧
+        data.source = state.previousJustifiedCheckpoint ∧
+        data.target.epoch.toNat + 1 = (getCurrentEpoch state).toNat)
+    (computed : weighJustificationAndFinalization state total previousBalance currentBalance =
+      .ok after) :
+    after.finalizedCheckpoint = state.finalizedCheckpoint ∨
+      ∃ v data, p v ∧ (v, data) ∈ attested ∧
+        data.source = after.finalizedCheckpoint ∧ data.source.epoch < data.target.epoch ∧
+        data.target.epoch ≤ getCurrentEpoch state := by
+  obtain ⟨threshold, previousWeight, currentWeight, thresholdOk, previousWeightOk,
+    currentWeightOk, newCurrent, newPrevious, -, finalized⟩ :=
+    weighJustificationAndFinalization_bits computed
+  rcases finalized with same | ⟨same, set, distance⟩ | ⟨same, set, distance⟩
+  · exact .inl same
+  · obtain ⟨passed, -⟩ := newCurrent set
+    obtain ⟨v, data, good, signed, link⟩ := exists_linkVote_of_justificationTest totalOk
+      currentOk thresholdOk currentWeightOk passed large (counted true) p few
+    have target : data.target.epoch = getCurrentEpoch state := link.2.1
+    have source : data.source = state.currentJustifiedCheckpoint := link.2.2.1
+    refine .inr ⟨v, data, good, signed, source.trans same.symm, ?_, ?_⟩
+    · rw [source, target, UInt64.lt_iff_toNat_lt]
+      rcases distance with one | ⟨-, two⟩ <;> omega
+    · exact UInt64.le_of_eq target
+  · have witness : ∃ v data, p v ∧ (v, data) ∈ attested ∧
+        data.source = state.previousJustifiedCheckpoint ∧
+        data.target.epoch.toNat = (getCurrentEpoch state).toNat - 1 := by
+      rcases newPrevious set with ⟨passed, -⟩ | old
+      · obtain ⟨v, data, good, signed, link⟩ := exists_linkVote_of_justificationTest totalOk
+          previousOk thresholdOk previousWeightOk passed large (counted false) p few
+        refine ⟨v, data, good, signed, link.2.2.1, ?_⟩
+        rw [link.2.1]
+        exact getPreviousEpoch_toNat state
+      · obtain ⟨v, data, good, signed, source, target⟩ := oldBit old
+        exact ⟨v, data, good, signed, source, by omega⟩
+    obtain ⟨v, data, good, signed, source, target⟩ := witness
+    refine .inr ⟨v, data, good, signed, source.trans same.symm, ?_, ?_⟩
+    · rw [source, UInt64.lt_iff_toNat_lt]
+      rcases distance with two | ⟨-, three⟩ <;> omega
+    · rw [UInt64.le_iff_toNat_le]
+      omega
+
+/-- A finalization step retains its checkpoint or supplies a source vote from the chosen set.
+
+An inherited bit zero supplies its earlier vote rather than a fresh count in this state. -/
+theorem exists_sourceVote_of_processJustification {state after : BeaconState preset fork}
+    {attested : Set (ValidatorIndex × AttestationData)}
+    (flags : TargetFlagsVoted attested state) (pending : PendingVoted attested state)
+    (large : 3 * preset.EFFECTIVE_BALANCE_INCREMENT.toNat <
+      2 * stake (fun v => balanceAt state v.toNat) (activeVoters state))
+    (p : ValidatorIndex → Prop) [DecidablePred p]
+    (few : ∀ total, getTotalActiveBalance state = .ok total →
+      3 * stake (fun v => balanceAt state v.toNat)
+        {v ∈ quorumVoters state | ¬p v} < 2 * total.toNat)
+    (oldBit : state.justificationBits.bits[0] = true →
+      ∃ v data, p v ∧ (v, data) ∈ attested ∧
+        data.source = state.previousJustifiedCheckpoint ∧
+        data.target.epoch.toNat + 1 = (getCurrentEpoch state).toNat)
+    (computed : processJustificationAndFinalization state = .ok after) :
+    after.finalizedCheckpoint = state.finalizedCheckpoint ∨
+      ∃ v data, p v ∧ (v, data) ∈ attested ∧
+        data.source = after.finalizedCheckpoint ∧ data.source.epoch < data.target.epoch ∧
+        data.target.epoch ≤ getCurrentEpoch state := by
+  unfold processJustificationAndFinalization at computed
+  split at computed
+  · rename_i altair
+    unfold processJustificationAndFinalizationAltair at computed
+    split at computed
+    · simp only [pure, Except.pure, Except.ok.injEq] at computed
+      exact .inl (computed ▸ rfl)
+    rename_i late
+    simp only [bind_ok_iff, liftAccessor_ok] at computed
+    obtain ⟨previous, previousOk, current, currentOk, total, totalOk,
+      previousBalance, previousBalanceOk, currentBalance, currentBalanceOk, weighed⟩ := computed
+    apply exists_sourceVote_of_weighJustification totalOk previousBalanceOk currentBalanceOk
+      (fun recent v member => ?_) large p (few total totalOk) oldBit weighed
+    cases recent
+    · exact flags.quorum_attester altair late false previousOk member
+    · exact flags.quorum_attester altair late true currentOk member
+  · rename_i notAltair
+    split at computed
+    · simp only [pure, Except.pure, Except.ok.injEq] at computed
+      exact .inl (computed ▸ rfl)
+    rename_i late
+    simp only [bind_ok_iff, liftAccessor_ok, getAttestingBalance] at computed
+    obtain ⟨previous, previousOk, current, currentOk, total, totalOk,
+      previousBalance, ⟨previousIndices, previousIndicesOk, previousBalanceOk⟩,
+      currentBalance, ⟨currentIndices, currentIndicesOk, currentBalanceOk⟩, weighed⟩ := computed
+    apply exists_sourceVote_of_weighJustification totalOk previousBalanceOk currentBalanceOk
+      (fun recent v member => ?_) large p (few total totalOk) oldBit weighed
+    have early : JustifiedEarly state := fun h => absurd h late
+    cases recent
+    · exact pending.quorum_attester (Nat.lt_of_not_le notAltair) early false
+        previousOk previousIndicesOk member
+    · exact pending.quorum_attester (Nat.lt_of_not_le notAltair) early true
+        currentOk currentIndicesOk member
+
+/-- Source-link evidence carried by bit zero and the finalized checkpoint.
+
+The relation retains the evidence of the original count, including its counting state.
+
+Checkpoints at or before the anchor need no such evidence.
+
+The epoch is the current epoch between steps, and the next epoch just after a count. -/
+structure FinalizationSources (link : Checkpoint → Epoch → Prop) (anchorEpoch : Epoch)
+    (epoch : Nat) (state : BeaconState preset fork) : Prop where
+  bitZero : state.justificationBits.bits[0] = true →
+    state.previousJustifiedCheckpoint.epoch ≤ anchorEpoch ∨
+      ∃ target, target.toNat + 1 = epoch ∧ link state.previousJustifiedCheckpoint target
+  finalized : state.finalizedCheckpoint.epoch ≤ anchorEpoch ∨
+    ∃ target, state.finalizedCheckpoint.epoch < target ∧ target.toNat < epoch ∧
+      link state.finalizedCheckpoint target
+
+/-- A frame retains the source evidence without changing its epoch. -/
+theorem FinalizationSources.of_frame {link : Checkpoint → Epoch → Prop}
+    {anchorEpoch : Epoch} {epoch : Nat} {state after : BeaconState preset fork}
+    (holds : FinalizationSources link anchorEpoch epoch state) (frame : Frame state after) :
+    FinalizationSources link anchorEpoch epoch after := by
+  constructor
+  · rw [frame.justificationBits, frame.previousJustified]
+    exact holds.bitZero
+  · rw [frame.finalized]
+    exact holds.finalized
+
+/-- An anchor whose checkpoints are bounded by its epoch needs no source-link evidence. -/
+theorem FinalizationSources.anchor {link : Checkpoint → Epoch → Prop}
+    {anchorEpoch : Epoch} {epoch : Nat} {state : BeaconState preset fork}
+    (previous : state.previousJustifiedCheckpoint.epoch ≤ anchorEpoch)
+    (finalized : state.finalizedCheckpoint.epoch ≤ anchorEpoch) :
+    FinalizationSources link anchorEpoch epoch state :=
+  ⟨fun _ => .inl previous, .inl finalized⟩
+
+/-- The four finalization cases carry source evidence into the next epoch.
+
+An old bit zero reuses its original link, even when the previous-target count fails. -/
+theorem FinalizationSources.weigh {link : Checkpoint → Epoch → Prop}
+    {anchorEpoch : Epoch} {state after : BeaconState preset fork}
+    {total previousBalance currentBalance : Gwei}
+    (holds : FinalizationSources link anchorEpoch (getCurrentEpoch state).toNat state)
+    (counts : ∀ (recent : Bool) (threshold weight : Gwei),
+      mulChecked total 2 = .ok threshold →
+      mulChecked (if recent then currentBalance else previousBalance) 3 = .ok weight →
+      threshold ≤ weight →
+      anchorEpoch <
+        (if recent then state.currentJustifiedCheckpoint
+          else state.previousJustifiedCheckpoint).epoch →
+      link (if recent then state.currentJustifiedCheckpoint else state.previousJustifiedCheckpoint)
+        (if recent then getCurrentEpoch state else getPreviousEpoch state))
+    (computed : weighJustificationAndFinalization state total previousBalance currentBalance =
+      .ok after) :
+    FinalizationSources link anchorEpoch ((getCurrentEpoch state).toNat + 1) after := by
+  obtain ⟨threshold, previousWeight, currentWeight, thresholdOk, previousOk, currentOk,
+    newCurrent, newPrevious, -, finalized⟩ := weighJustificationAndFinalization_bits computed
+  obtain ⟨previous, -⟩ := weighJustificationAndFinalization_checkpoints computed
+  have previousNat := getPreviousEpoch_toNat state
+  constructor
+  · intro set
+    obtain ⟨passed, -⟩ := newCurrent set
+    rw [previous]
+    by_cases low : state.currentJustifiedCheckpoint.epoch ≤ anchorEpoch
+    · exact .inl low
+    · exact .inr ⟨getCurrentEpoch state, rfl,
+        counts true _ _ thresholdOk currentOk passed (UInt64.not_le.mp low)⟩
+  · rcases finalized with same | ⟨same, set, distance⟩ | ⟨same, set, distance⟩
+    · rw [same]
+      rcases holds.finalized with low | ⟨target, later, before, counted⟩
+      · exact .inl low
+      · exact .inr ⟨target, later, by omega, counted⟩
+    · rw [same]
+      obtain ⟨passed, -⟩ := newCurrent set
+      by_cases low : state.currentJustifiedCheckpoint.epoch ≤ anchorEpoch
+      · exact .inl low
+      refine .inr ⟨getCurrentEpoch state, ?_, by omega,
+        counts true _ _ thresholdOk currentOk passed (UInt64.not_le.mp low)⟩
+      rw [UInt64.lt_iff_toNat_lt]
+      rcases distance with one | ⟨-, two⟩ <;> omega
+    · rw [same]
+      by_cases low : state.previousJustifiedCheckpoint.epoch ≤ anchorEpoch
+      · exact .inl low
+      rcases newPrevious set with ⟨passed, -⟩ | old
+      · refine .inr ⟨getPreviousEpoch state, ?_, by omega,
+          counts false _ _ thresholdOk previousOk passed (UInt64.not_le.mp low)⟩
+        rw [UInt64.lt_iff_toNat_lt]
+        rcases distance with two | ⟨-, three⟩ <;> omega
+      · rcases holds.bitZero old with low | ⟨target, epoch, counted⟩
+        · exact .inl low
+        · refine .inr ⟨target, ?_, by omega, counted⟩
+          rw [UInt64.lt_iff_toNat_lt]
+          rcases distance with two | ⟨-, three⟩ <;> omega
+
+/-- Justification carries the source evidence, with counts needed only above the anchor. -/
+theorem FinalizationSources.process {link : Checkpoint → Epoch → Prop}
+    {anchorEpoch : Epoch} {state after : BeaconState preset fork}
+    (holds : FinalizationSources link anchorEpoch (getCurrentEpoch state).toNat state)
+    (ordered : CheckpointsOrdered state) (settled : JustifiedSettled state)
+    (counts : ∀ total previous current,
+      weighJustificationAndFinalization state total previous current = .ok after →
+      ∀ (recent : Bool) (threshold weight : Gwei),
+        mulChecked total 2 = .ok threshold →
+        mulChecked (if recent then current else previous) 3 = .ok weight →
+        threshold ≤ weight →
+        anchorEpoch <
+          (if recent then state.currentJustifiedCheckpoint
+            else state.previousJustifiedCheckpoint).epoch →
+        link (if recent then state.currentJustifiedCheckpoint
+          else state.previousJustifiedCheckpoint)
+          (if recent then getCurrentEpoch state else getPreviousEpoch state))
+    (computed : processJustificationAndFinalization state = .ok after) :
+    FinalizationSources link anchorEpoch ((getCurrentEpoch state).toNat + 1) after := by
+  have early : getCurrentEpoch state ≤ GENESIS_EPOCH + 1 → after = state →
+      FinalizationSources link anchorEpoch ((getCurrentEpoch state).toNat + 1) after := by
+    intro small same
+    subst after
+    have smallNat := UInt64.le_iff_toNat_le.mp small
+    have settledNat := UInt64.le_iff_toNat_le.mp settled
+    rw [getPreviousEpoch_toNat] at settledNat
+    have previous := UInt64.le_iff_toNat_le.mp ordered.2
+    have finalized := UInt64.le_iff_toNat_le.mp ordered.1
+    have one : (GENESIS_EPOCH + 1 : Epoch).toNat = 1 := by decide
+    rw [one] at smallNat
+    apply FinalizationSources.anchor <;> rw [UInt64.le_iff_toNat_le] <;> omega
+  have weighed : ∀ total previous current,
+      weighJustificationAndFinalization state total previous current = .ok after →
+      FinalizationSources link anchorEpoch ((getCurrentEpoch state).toNat + 1) after := by
+    intro total previous current ok
+    exact holds.weigh (counts total previous current ok) ok
+  unfold processJustificationAndFinalization at computed
+  split at computed
+  · unfold processJustificationAndFinalizationAltair at computed
+    split at computed
+    · exact early ‹_› (Except.ok.inj computed).symm
+    · simp only [bind_ok_iff, liftAccessor_ok] at computed
+      obtain ⟨_, _, _, _, total, _, previous, _, current, _, ok⟩ := computed
+      exact weighed total previous current ok
+  · split at computed
+    · exact early ‹_› (Except.ok.inj computed).symm
+    · simp only [bind_ok_iff] at computed
+      obtain ⟨_, _, _, _, total, _, previous, _, current, _, ok⟩ := computed
+      exact weighed total previous current ok
+
+/-- The source invariant uses the actual participating indices and balances of each count. -/
+theorem FinalizationSources.process_of_counts {link : Checkpoint → Epoch → Prop}
+    {anchorEpoch : Epoch} {state after : BeaconState preset fork}
+    (holds : FinalizationSources link anchorEpoch (getCurrentEpoch state).toNat state)
+    (ordered : CheckpointsOrdered state) (settled : JustifiedSettled state)
+    (counts : ¬getCurrentEpoch state ≤ GENESIS_EPOCH + 1 →
+      ∀ (recent : Bool) (indices : List ValidatorIndex) (total balance threshold weight : Gwei),
+      ((∃ altair : .altair ≤ fork,
+        getUnslashedParticipatingIndices state altair TIMELY_TARGET_FLAG_INDEX
+          (if recent then getCurrentEpoch state else getPreviousEpoch state) = .ok indices) ∨
+        ∃ (before : fork < .altair) (attestations : Array (PendingAttestation preset)),
+          getMatchingTargetAttestations state before
+            (if recent then getCurrentEpoch state else getPreviousEpoch state) =
+              .ok attestations ∧
+          getUnslashedAttestingIndices state attestations = .ok indices) →
+      getTotalActiveBalance state = .ok total → getTotalBalance state indices = .ok balance →
+      mulChecked total 2 = .ok threshold → mulChecked balance 3 = .ok weight →
+      threshold ≤ weight →
+      anchorEpoch < (if recent then state.currentJustifiedCheckpoint
+        else state.previousJustifiedCheckpoint).epoch →
+      link (if recent then state.currentJustifiedCheckpoint
+        else state.previousJustifiedCheckpoint)
+        (if recent then getCurrentEpoch state else getPreviousEpoch state))
+    (computed : processJustificationAndFinalization state = .ok after) :
+    FinalizationSources link anchorEpoch ((getCurrentEpoch state).toNat + 1) after := by
+  have early (small : getCurrentEpoch state ≤ GENESIS_EPOCH + 1) (same : after = state) :
+      FinalizationSources link anchorEpoch ((getCurrentEpoch state).toNat + 1) after := by
+    subst after
+    have smallNat := UInt64.le_iff_toNat_le.mp small
+    have settledNat := UInt64.le_iff_toNat_le.mp settled
+    have orderedNat := UInt64.le_iff_toNat_le.mp ordered.2
+    have finalizedNat := UInt64.le_iff_toNat_le.mp ordered.1
+    rw [getPreviousEpoch_toNat] at settledNat
+    have one : (GENESIS_EPOCH + 1 : Epoch).toNat = 1 := by decide
+    rw [one] at smallNat
+    apply FinalizationSources.anchor <;> rw [UInt64.le_iff_toNat_le] <;> omega
+  unfold processJustificationAndFinalization at computed
+  split at computed
+  · rename_i altair
+    unfold processJustificationAndFinalizationAltair at computed
+    split at computed
+    · exact early ‹_› (Except.ok.inj computed).symm
+    rename_i late
+    simp only [bind_ok_iff, liftAccessor_ok] at computed
+    obtain ⟨previous, previousOk, current, currentOk, total, totalOk,
+      previousBalance, previousBalanceOk, currentBalance, currentBalanceOk, weighed⟩ := computed
+    apply holds.weigh ?_ weighed
+    intro recent threshold weight thresholdOk weightOk passed above
+    cases recent
+    · exact counts late false previous total previousBalance threshold weight
+        (.inl ⟨altair, previousOk⟩) totalOk previousBalanceOk thresholdOk weightOk passed above
+    · exact counts late true current total currentBalance threshold weight
+        (.inl ⟨altair, currentOk⟩) totalOk currentBalanceOk thresholdOk weightOk passed above
+  · rename_i notAltair
+    split at computed
+    · exact early ‹_› (Except.ok.inj computed).symm
+    rename_i late
+    simp only [bind_ok_iff, liftAccessor_ok, getAttestingBalance] at computed
+    obtain ⟨previous, previousOk, current, currentOk, total, totalOk,
+      previousBalance, ⟨previousIndices, previousIndicesOk, previousBalanceOk⟩,
+      currentBalance, ⟨currentIndices, currentIndicesOk, currentBalanceOk⟩, weighed⟩ := computed
+    apply holds.weigh ?_ weighed
+    intro recent threshold weight thresholdOk weightOk passed above
+    cases recent
+    · exact counts late false previousIndices total previousBalance threshold weight
+        (.inr ⟨Nat.lt_of_not_le notAltair, previous, previousOk, previousIndicesOk⟩)
+        totalOk previousBalanceOk thresholdOk weightOk passed above
+    · exact counts late true currentIndices total currentBalance threshold weight
+        (.inr ⟨Nat.lt_of_not_le notAltair, current, currentOk, currentIndicesOk⟩)
+        totalOk currentBalanceOk thresholdOk weightOk passed above
+
+/-- A slot step carries historical source links and makes new finalizing targets strictly older.
+
+Only an epoch boundary needs count evidence, in the state after slot caching. -/
+theorem FinalizationSources.advanceSlot {config : Config} {checks : SignatureChecks}
+    {link : Checkpoint → Epoch → Prop} {anchorEpoch : Epoch}
+    {state after : BeaconState preset fork}
+    (holds : FinalizationSources link anchorEpoch (getCurrentEpoch state).toNat state)
+    (counts : ∀ cached justified, processSlot state = .ok cached →
+      processJustificationAndFinalization cached = .ok justified →
+      FinalizationSources link anchorEpoch (getCurrentEpoch cached).toNat cached →
+      FinalizationSources link anchorEpoch ((getCurrentEpoch cached).toNat + 1) justified)
+    (computed : advanceSlot config checks state = .ok after) :
+    FinalizationSources link anchorEpoch (getCurrentEpoch after).toNat after := by
+  obtain ⟨next, cached, epoched, sum, cachedOk, epochedOk, afterEq⟩ := advanceSlot_ok computed
+  have frame := frame_processSlot cachedOk
+  have cachedEpoch : getCurrentEpoch cached = getCurrentEpoch state := by
+    simp only [getCurrentEpoch, frame.slot]
+  have cachedHolds :
+      FinalizationSources link anchorEpoch (getCurrentEpoch cached).toNat cached := by
+    rw [cachedEpoch]
+    exact holds.of_frame frame
+  unfold epochIfLast at epochedOk
+  split at epochedOk
+  · rename_i boundary
+    obtain ⟨justified, justifiedOk, epochFrame⟩ := processEpoch_frame epochedOk
+    have newHolds := (counts cached justified cachedOk justifiedOk cachedHolds).of_frame
+      epochFrame.toFrame
+    have epoch : (getCurrentEpoch after).toNat = (getCurrentEpoch cached).toNat + 1 := by
+      rw [cachedEpoch, getCurrentEpoch_toNat, getCurrentEpoch_toNat, afterEq]
+      exact nextSlot_epoch_of_boundary sum boundary
+    rw [epoch]
+    rw [afterEq]
+    exact ⟨newHolds.bitZero, newHolds.finalized⟩
+  · rename_i inside
+    have same : epoched = cached := (Except.ok.inj epochedOk).symm
+    have epoch : getCurrentEpoch after = getCurrentEpoch cached := by
+      apply UInt64.toNat_inj.mp
+      rw [cachedEpoch, getCurrentEpoch_toNat, getCurrentEpoch_toNat, afterEq]
+      exact nextSlot_epoch_of_inside sum inside
+    rw [epoch]
+    rw [afterEq, same]
+    exact ⟨cachedHolds.bitZero, cachedHolds.finalized⟩
+
+/-- A slot run carries source evidence from the anchor through every epoch boundary. -/
+theorem FinalizationSources.advanceSlots {config : Config} {checks : SignatureChecks}
+    {link : Checkpoint → Epoch → Prop} {anchorEpoch : Epoch}
+    {state after : BeaconState preset fork} {count : Nat}
+    (holds : FinalizationSources link anchorEpoch (getCurrentEpoch state).toNat state)
+    (counts : ∀ n, n < count → ∀ middle cached justified,
+      advanceSlots config checks n state = .ok middle → processSlot middle = .ok cached →
+      processJustificationAndFinalization cached = .ok justified →
+      FinalizationSources link anchorEpoch (getCurrentEpoch cached).toNat cached →
+      FinalizationSources link anchorEpoch ((getCurrentEpoch cached).toNat + 1) justified)
+    (computed : advanceSlots config checks count state = .ok after) :
+    FinalizationSources link anchorEpoch (getCurrentEpoch after).toNat after := by
+  induction count generalizing state with
+  | zero =>
+    have same : state = after := Except.ok.inj computed
+    exact same ▸ holds
+  | succ count ih =>
+    rw [EthLib.Consensus.advanceSlots, bind_ok_iff] at computed
+    obtain ⟨next, nextOk, rest⟩ := computed
+    apply ih (holds.advanceSlot (fun cached justified =>
+      counts 0 (by omega) state cached justified rfl) nextOk) ?_ rest
+    intro n bound middle cached justified ran cachedOk justifiedOk old
+    apply counts (n + 1) (by omega) middle cached justified ?_ cachedOk justifiedOk old
+    simp only [EthLib.Consensus.advanceSlots, nextOk, bind, Except.bind]
+    exact ran
+
+/-- A successful slot run carries source evidence using counts at its visited states. -/
+theorem FinalizationSources.processSlots {config : Config} {checks : SignatureChecks}
+    {link : Checkpoint → Epoch → Prop} {anchorEpoch : Epoch}
+    {state after : BeaconState preset fork} {slot : Slot}
+    (holds : FinalizationSources link anchorEpoch (getCurrentEpoch state).toNat state)
+    (counts : ∀ middle cached justified,
+      (middle = state ∨ processSlots config checks state middle.slot = .ok middle) →
+      middle.slot < slot → processSlot middle = .ok cached →
+      processJustificationAndFinalization cached = .ok justified →
+      FinalizationSources link anchorEpoch (getCurrentEpoch cached).toNat cached →
+      FinalizationSources link anchorEpoch ((getCurrentEpoch cached).toNat + 1) justified)
+    (computed : processSlots config checks state slot = .ok after) :
+    FinalizationSources link anchorEpoch (getCurrentEpoch after).toNat after := by
+  simp only [EthLib.Consensus.processSlots, bind_ok_iff, ensure_ok_iff] at computed
+  obtain ⟨_, later, run⟩ := computed
+  apply holds.advanceSlots ?_ run
+  intro n bound middle cached justified ran cachedOk justifiedOk old
+  have atSlot := advanceSlots_slot n ran
+  have laterNat := UInt64.lt_iff_toNat_lt.mp later
+  have before : middle.slot < slot := by
+    rw [UInt64.lt_iff_toNat_lt]
+    omega
+  apply counts middle cached justified ?_ before cachedOk justifiedOk old
+  by_cases zero : n = 0
+  · subst n
+    exact .inl (Except.ok.inj ran).symm
+  · right
+    have afterStart : state.slot < middle.slot := by
+      rw [UInt64.lt_iff_toNat_lt]
+      omega
+    simp only [EthLib.Consensus.processSlots, bind_ok_iff, ensure_ok_iff]
+    refine ⟨(), afterStart, ?_⟩
+    have distance : middle.slot.toNat - state.slot.toNat = n := by omega
+    rw [distance]
+    exact ran
+
+/-- A block keeps the historical source evidence and its epoch. -/
+theorem FinalizationSources.processBlock {config : Config} {checks : SignatureChecks}
+    {engine : ExecutionEngine preset fork} {link : Checkpoint → Epoch → Prop}
+    {anchorEpoch : Epoch} {state after : BeaconState preset fork}
+    {block : BeaconBlock preset fork}
+    (holds : FinalizationSources link anchorEpoch (getCurrentEpoch state).toNat state)
+    (computed : processBlock config checks engine state block = .ok after) :
+    FinalizationSources link anchorEpoch (getCurrentEpoch after).toNat after := by
+  have frame := frame_processBlock computed
+  have epoch : getCurrentEpoch after = getCurrentEpoch state := by
+    simp only [getCurrentEpoch, frame.slot]
+  rw [epoch]
+  exact holds.of_frame frame
+
+/-- Held block states retain source evidence from fixed-check transitions and historical counts. -/
+theorem Store.Reachable.blockState_finalizationSources {config : Config}
+    {anchorState : BeaconState preset fork} {anchorBlock : BeaconBlock preset fork}
+    {store : Store preset fork} (reachable : Store.Reachable config anchorState anchorBlock store)
+    {checks : SignatureChecks} {engine : ExecutionEngine preset fork}
+    {link : Checkpoint → Epoch → Prop} {anchorEpoch : Epoch}
+    (anchor : FinalizationSources link anchorEpoch (getCurrentEpoch anchorState).toNat anchorState)
+    (transitions : ∀ (root : Root) (block : BeaconBlock preset fork)
+      (state : BeaconState preset fork), store.blocks[root]? = some block →
+      store.blockStates[root]? = some state → block ≠ anchorBlock →
+      ∃ parent signed, signed.message = block ∧
+        store.blockStates[block.parentRoot]? = some parent ∧
+        stateTransition config checks engine parent signed true = .ok state)
+    (counts : ∀ (root childRoot : Root) (base middle cached justified : BeaconState preset fork)
+      (child : BeaconBlock preset fork), store.blockStates[root]? = some base →
+      store.blocks[childRoot]? = some child → child.parentRoot = root →
+      (middle = base ∨ processSlots config checks base middle.slot = .ok middle) →
+      middle.slot < child.slot → processSlot middle = .ok cached →
+      processJustificationAndFinalization cached = .ok justified →
+      FinalizationSources link anchorEpoch (getCurrentEpoch cached).toNat cached →
+      FinalizationSources link anchorEpoch ((getCurrentEpoch cached).toNat + 1) justified)
+    {root : Root} {state : BeaconState preset fork}
+    (stored : store.blockStates[root]? = some state) :
+    FinalizationSources link anchorEpoch (getCurrentEpoch state).toNat state := by
+  obtain ⟨block, found⟩ := reachable.known_of_blockState stored
+  by_cases same : block = anchorBlock
+  · obtain ⟨post, postOk, anchored, -⟩ := reachable.blockStatesFromParents found
+    rw [stored, Option.some.injEq] at postOk
+    subst post
+    rw [anchored same]
+    exact anchor
+  · obtain ⟨parent, signed, message, parentFound, transitioned⟩ :=
+      transitions root block state found stored same
+    obtain ⟨advanced, slotsOk, -, -, blockOk, -⟩ := stateTransition_ok transitioned
+    have parentHolds :=
+      reachable.blockState_finalizationSources anchor transitions counts parentFound
+    apply FinalizationSources.processBlock (computed := blockOk)
+    apply parentHolds.processSlots (computed := slotsOk)
+    intro middle cached justified visited before cachedOk justifiedOk old
+    apply counts block.parentRoot root parent middle cached justified block parentFound found rfl
+      visited ?_ cachedOk justifiedOk old
+    simpa only [message] using before
+termination_by state.slot.toNat
+decreasing_by
+  have bounds := stateTransition_slot transitioned
+  rw [bounds.2]
+  exact UInt64.lt_iff_toNat_lt.mp bounds.1
+
+/-- Updating checkpoints preserves any property shared by the old and proposed final checkpoint. -/
+theorem Store.updateCheckpoints_finalized_property {store : Store preset fork}
+    {justified finalized : Checkpoint} {P : Checkpoint → Prop}
+    (old : P store.finalizedCheckpoint) (proposed : P finalized) :
+    P (store.updateCheckpoints justified finalized).finalizedCheckpoint := by
+  unfold Store.updateCheckpoints
+  split <;> dsimp only <;> split <;> assumption
+
+/-- A realized checkpoint from a pulled-up tip is counted in an earlier block epoch.
+
+The strict comparison is the guard that separates realized from unrealized finalization. -/
+theorem Store.finalized_of_computePulledUpTip {config : Config}
+    {store after : Store preset fork} {root : Root}
+    (computed : store.computePulledUpTip config root = .ok after) :
+    after.finalizedCheckpoint = store.finalizedCheckpoint ∨
+      ∃ state pulled block epoch,
+        store.blockStates[root]? = some state ∧
+        processJustificationAndFinalization state = .ok pulled ∧
+        store.blocks[root]? = some block ∧
+        store.getCurrentStoreEpoch config = .ok epoch ∧
+        computeEpochAtSlot preset block.slot < epoch ∧
+        after.finalizedCheckpoint = pulled.finalizedCheckpoint := by
+  unfold Store.computePulledUpTip at computed
+  simp only [bind_ok_iff] at computed
+  obtain ⟨state, stateOk, pulled, pulledOk, block, blockOk, epoch, epochOk, computed⟩ := computed
+  have stateFound := Store.blockState_ok_iff.mp stateOk
+  have unchanged : ∀ (s : Store preset fork) justified finalized,
+      (s.updateUnrealizedCheckpoints justified finalized).finalizedCheckpoint =
+        s.finalizedCheckpoint := by
+    intro s justified finalized
+    unfold Store.updateUnrealizedCheckpoints
+    split <;> dsimp only <;> split <;> rfl
+  have blockFound : store.blocks[root]? = some block := by
+    simpa only [Store.block, Store.updateUnrealizedCheckpoints_blocks] using
+      (Store.block_ok_iff.mp blockOk)
+  have clock : store.getCurrentStoreEpoch config = .ok epoch := by
+    simpa only [Store.getCurrentStoreEpoch, Store.getCurrentSlot,
+      Store.updateUnrealizedCheckpoints_timeMs,
+      Store.updateUnrealizedCheckpoints_genesisTimeMs] using epochOk
+  split at computed
+  · rename_i before
+    have same : after = _ := (Except.ok.inj computed).symm
+    rw [same]
+    apply Store.updateCheckpoints_finalized_property (P := fun checkpoint =>
+      checkpoint = store.finalizedCheckpoint ∨ ∃ state pulled block epoch,
+        store.blockStates[root]? = some state ∧
+        processJustificationAndFinalization state = .ok pulled ∧
+        store.blocks[root]? = some block ∧ store.getCurrentStoreEpoch config = .ok epoch ∧
+        computeEpochAtSlot preset block.slot < epoch ∧ checkpoint = pulled.finalizedCheckpoint)
+    · exact .inl (unchanged _ _ _)
+    · exact .inr ⟨state, pulled, block, epoch, stateFound, mapError_ok_iff.mp pulledOk,
+        blockFound, clock, before, rfl⟩
+  · have same : after = _ := (Except.ok.inj computed).symm
+    rw [same]
+    exact .inl (unchanged _ _ _)
+
+/-- A per-slot tick realizes a different checkpoint only at a later epoch boundary. -/
+theorem Store.finalized_of_onTickPerSlot {config : Config}
+    {store after : Store preset fork} {timeMs : UInt64}
+    (computed : store.onTickPerSlot config timeMs = .ok after) :
+    after.finalizedCheckpoint = store.finalizedCheckpoint ∨
+      ∃ previous current,
+        store.getCurrentSlot config = .ok previous ∧
+        after.getCurrentSlot config = .ok current ∧ previous < current ∧
+        computeSlotsSinceEpochStart preset current = .ok 0 ∧
+        after.finalizedCheckpoint = store.unrealizedFinalizedCheckpoint := by
+  have frame := Store.onTickPerSlot_frame computed
+  unfold Store.onTickPerSlot at computed
+  simp only [bind_ok_iff] at computed
+  obtain ⟨previous, previousOk, current, currentOk, computed⟩ := computed
+  have afterSlot : after.getCurrentSlot config = .ok current := by
+    simpa only [Store.getCurrentSlot, frame.1, frame.2.1] using currentOk
+  split at computed <;>
+    obtain ⟨offset, offsetOk, computed⟩ := computed <;>
+    split at computed
+  all_goals
+    have same : after = _ := (Except.ok.inj computed).symm
+    rw [show after.finalizedCheckpoint = _ from congrArg Store.finalizedCheckpoint same]
+  · apply Store.updateCheckpoints_finalized_property (P := fun checkpoint =>
+      checkpoint = store.finalizedCheckpoint ∨ ∃ previous current,
+        store.getCurrentSlot config = .ok previous ∧
+        after.getCurrentSlot config = .ok current ∧ previous < current ∧
+        computeSlotsSinceEpochStart preset current = .ok 0 ∧
+        checkpoint = store.unrealizedFinalizedCheckpoint)
+    · exact .inl rfl
+    · exact .inr ⟨previous, current, previousOk, afterSlot, ‹_ ∧ _›.1,
+        by simpa only [‹_ ∧ _›.2] using mapError_ok_iff.mp offsetOk, rfl⟩
+  · exact .inl rfl
+  · apply Store.updateCheckpoints_finalized_property (P := fun checkpoint =>
+      checkpoint = store.finalizedCheckpoint ∨ ∃ previous current,
+        store.getCurrentSlot config = .ok previous ∧
+        after.getCurrentSlot config = .ok current ∧ previous < current ∧
+        computeSlotsSinceEpochStart preset current = .ok 0 ∧
+        checkpoint = store.unrealizedFinalizedCheckpoint)
+    · exact .inl rfl
+    · exact .inr ⟨previous, current, previousOk, afterSlot, ‹_ ∧ _›.1,
+        by simpa only [‹_ ∧ _›.2] using mapError_ok_iff.mp offsetOk, rfl⟩
+  · exact .inl rfl
+
 /-- A run from a target epoch through the next epoch keeps that target's committees. -/
 theorem RunKept.committeesKept_through_next_epoch {state after : BeaconState preset fork}
     (run : RunKept state after)
@@ -416,6 +1044,402 @@ theorem RunKept.attestingIndices_eq_through_next_epoch {state after : BeaconStat
   unfold getAttestingIndices attesterShuffle getCommitteeCountPerSlot
   rw [← starts]
   simp only [active, checked, seed]
+
+/-- Caching a slot preserves the complete link for either recent epoch.
+
+This is equality of successful reads and failures, including epochs with one slot. -/
+theorem LinkVote.processSlot_iff {state cached : BeaconState preset fork}
+    (positive : 0 < preset.SLOTS_PER_EPOCH.toNat)
+    (window : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
+    (computed : processSlot state = .ok cached)
+    (recent : Bool) (position : Nat) (vote : ValidatorIndex × AttestationData) :
+    LinkVote cached recent position vote ↔ LinkVote state recent position vote := by
+  have frame := frame_processSlot computed
+  have current : getCurrentEpoch cached = getCurrentEpoch state := by
+    simp only [getCurrentEpoch, frame.slot]
+  have previous : getPreviousEpoch cached = getPreviousEpoch state := by
+    unfold getPreviousEpoch
+    rw [current]
+  unfold LinkVote
+  rw [current, previous, frame.currentJustified, frame.previousJustified]
+  have roots (epoch : vote.2.target.epoch =
+      (if recent then getCurrentEpoch state else getPreviousEpoch state)) :
+      getBlockRoot cached vote.2.target.epoch = getBlockRoot state vote.2.target.epoch := by
+    apply getBlockRoot_processSlot computed
+    apply slot_lt_epoch_add_historical positive window
+    cases recent
+    · exact .inr epoch
+    · exact .inl epoch
+  constructor <;> rintro ⟨index, epoch, source, target⟩
+  · exact ⟨index, epoch, source, (roots epoch) ▸ target⟩
+  · exact ⟨index, epoch, source, (roots epoch).symm ▸ target⟩
+
+/-- Caching preserves the balances and voter sets used by the justification count. -/
+theorem processSlot_countingBalances {state cached : BeaconState preset fork}
+    (computed : processSlot state = .ok cached) :
+    getCurrentEpoch cached = getCurrentEpoch state ∧
+    getPreviousEpoch cached = getPreviousEpoch state ∧
+    getTotalActiveBalance cached = getTotalActiveBalance state ∧
+    (∀ indices, getTotalBalance cached indices = getTotalBalance state indices) ∧
+    activeVoters cached = activeVoters state ∧ quorumVoters cached = quorumVoters state ∧
+    (∀ index, balanceAt cached index = balanceAt state index) := by
+  obtain ⟨_, _, _, _, rfl⟩ := processSlot_ok computed
+  exact ⟨rfl, rfl, rfl, fun _ => rfl, rfl, rfl, fun _ => rfl⟩
+
+/-- Caching preserves the participating indices, including errors. -/
+theorem processSlot_participatingIndices {state cached : BeaconState preset fork}
+    (computed : processSlot state = .ok cached) (altair : .altair ≤ fork)
+    (flag : UInt64) (epoch : Epoch) :
+    getUnslashedParticipatingIndices cached altair flag epoch =
+      getUnslashedParticipatingIndices state altair flag epoch := by
+  obtain ⟨_, _, _, _, rfl⟩ := processSlot_ok computed
+  rfl
+
+/-- Caching preserves the pending target attestations for either recent epoch. -/
+theorem processSlot_matchingTargetAttestations {state cached : BeaconState preset fork}
+    (positive : 0 < preset.SLOTS_PER_EPOCH.toNat)
+    (window : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
+    (computed : processSlot state = .ok cached) (before : fork < .altair)
+    {epoch : Epoch} (recent : epoch = getCurrentEpoch state ∨ epoch = getPreviousEpoch state) :
+    getMatchingTargetAttestations cached before epoch =
+      getMatchingTargetAttestations state before epoch := by
+  have roots := getBlockRoot_processSlot computed
+    (slot_lt_epoch_add_historical positive window recent)
+  have source : getMatchingSourceAttestations cached before epoch =
+      getMatchingSourceAttestations state before epoch := by
+    obtain ⟨_, _, _, _, rfl⟩ := processSlot_ok computed
+    rfl
+  unfold getMatchingTargetAttestations
+  rw [source, roots]
+
+/-- Caching preserves the unslashed indices of any array of pending attestations. -/
+theorem processSlot_unslashedAttestingIndices {state cached : BeaconState preset fork}
+    (computed : processSlot state = .ok cached)
+    (attestations : Array (PendingAttestation preset)) :
+    getUnslashedAttestingIndices cached attestations =
+      getUnslashedAttestingIndices state attestations := by
+  obtain ⟨_, _, _, _, rfl⟩ := processSlot_ok computed
+  rfl
+
+/-- A cached finalization step retains count evidence from the uncached visited state. -/
+theorem FinalizationSources.process_cached {link : Checkpoint → Epoch → Prop}
+    {anchorEpoch : Epoch} {state cached after : BeaconState preset fork}
+    (positive : 0 < preset.SLOTS_PER_EPOCH.toNat)
+    (window : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
+    (cachedOk : processSlot state = .ok cached)
+    (holds : FinalizationSources link anchorEpoch (getCurrentEpoch cached).toNat cached)
+    (ordered : CheckpointsOrdered cached) (settled : JustifiedSettled cached)
+    (counts : ¬getCurrentEpoch state ≤ GENESIS_EPOCH + 1 →
+      ∀ (recent : Bool) (indices : List ValidatorIndex) (total balance threshold weight : Gwei),
+      ((∃ altair : .altair ≤ fork,
+        getUnslashedParticipatingIndices state altair TIMELY_TARGET_FLAG_INDEX
+          (if recent then getCurrentEpoch state else getPreviousEpoch state) = .ok indices) ∨
+        ∃ (before : fork < .altair) (attestations : Array (PendingAttestation preset)),
+          getMatchingTargetAttestations state before
+            (if recent then getCurrentEpoch state else getPreviousEpoch state) =
+              .ok attestations ∧
+          getUnslashedAttestingIndices state attestations = .ok indices) →
+      getTotalActiveBalance state = .ok total → getTotalBalance state indices = .ok balance →
+      mulChecked total 2 = .ok threshold → mulChecked balance 3 = .ok weight →
+      threshold ≤ weight →
+      anchorEpoch < (if recent then state.currentJustifiedCheckpoint
+        else state.previousJustifiedCheckpoint).epoch →
+      link (if recent then state.currentJustifiedCheckpoint
+        else state.previousJustifiedCheckpoint)
+        (if recent then getCurrentEpoch state else getPreviousEpoch state))
+    (computed : processJustificationAndFinalization cached = .ok after) :
+    FinalizationSources link anchorEpoch ((getCurrentEpoch cached).toNat + 1) after := by
+  obtain ⟨current, previous, total, balance, -, -, -⟩ := processSlot_countingBalances cachedOk
+  have frame := frame_processSlot cachedOk
+  apply holds.process_of_counts ordered settled ?_ computed
+  intro late recent indices totalValue balanceValue threshold weight counted totalOk balanceOk
+    thresholdOk weightOk passed above
+  rw [current] at late
+  rw [total] at totalOk
+  rw [balance] at balanceOk
+  rw [frame.currentJustified, frame.previousJustified] at above ⊢
+  rw [current, previous]
+  apply counts late recent indices totalValue balanceValue threshold weight ?_
+    totalOk balanceOk thresholdOk weightOk passed above
+  rcases counted with ⟨altair, indicesOk⟩ | ⟨before, attestations, matching, indicesOk⟩
+  · left
+    refine ⟨altair, ?_⟩
+    rw [current, previous, processSlot_participatingIndices cachedOk] at indicesOk
+    exact indicesOk
+  · right
+    refine ⟨before, attestations, ?_, ?_⟩
+    · rw [current, previous] at matching
+      rw [processSlot_matchingTargetAttestations positive window cachedOk before
+        (by cases recent <;> simp)] at matching
+      exact matching
+    · rwa [processSlot_unslashedAttestingIndices cachedOk] at indicesOk
+
+/-- Pulling up a tip adds only the finalization of its successful justification computation. -/
+theorem Store.finalized_properties_of_computePulledUpTip {config : Config}
+    {store after : Store preset fork} {root : Root} (P : Checkpoint → Prop)
+    (realized : P store.finalizedCheckpoint)
+    (unrealized : P store.unrealizedFinalizedCheckpoint)
+    (counted : ∀ (state pulled : BeaconState preset fork),
+      store.blockStates[root]? = some state →
+      processJustificationAndFinalization state = .ok pulled → P pulled.finalizedCheckpoint)
+    (computed : store.computePulledUpTip config root = .ok after) :
+    P after.finalizedCheckpoint ∧ P after.unrealizedFinalizedCheckpoint := by
+  have update : ∀ (s : Store preset fork) justified finalized,
+      P s.finalizedCheckpoint → P s.unrealizedFinalizedCheckpoint → P finalized →
+      P (s.updateCheckpoints justified finalized).finalizedCheckpoint ∧
+        P (s.updateCheckpoints justified finalized).unrealizedFinalizedCheckpoint := by
+    intro s justified finalized old pending new
+    unfold Store.updateCheckpoints
+    split <;> dsimp only <;> split <;> exact ⟨by assumption, pending⟩
+  have updateUnrealized : ∀ (s : Store preset fork) justified finalized,
+      P s.finalizedCheckpoint → P s.unrealizedFinalizedCheckpoint → P finalized →
+      P (s.updateUnrealizedCheckpoints justified finalized).finalizedCheckpoint ∧
+        P (s.updateUnrealizedCheckpoints justified finalized).unrealizedFinalizedCheckpoint := by
+    intro s justified finalized old pending new
+    unfold Store.updateUnrealizedCheckpoints
+    split <;> dsimp only <;> split <;> exact ⟨old, by assumption⟩
+  unfold Store.computePulledUpTip at computed
+  simp only [bind_ok_iff] at computed
+  obtain ⟨state, found, pulled, processed, block, -, epoch, -, computed⟩ := computed
+  have new := counted state pulled (Store.blockState_ok_iff.mp found)
+    (mapError_ok_iff.mp processed)
+  have preserved := updateUnrealized
+    { store with unrealizedJustifications :=
+      store.unrealizedJustifications.insert root pulled.currentJustifiedCheckpoint }
+    pulled.currentJustifiedCheckpoint pulled.finalizedCheckpoint realized unrealized new
+  split at computed <;> simp only [pure, Except.pure, Except.ok.injEq] at computed <;>
+    subst after
+  · exact update _ _ _ preserved.1 preserved.2 new
+  · exact preserved
+
+/-- An accepted block adds only its post-state or its pulled-up finalization to the fields. -/
+theorem Store.finalized_properties_of_onBlock {config : Config} {checks : SignatureChecks}
+    {sources : BlockSources preset fork} {signed : SignedBeaconBlock preset fork}
+    {store after : Store preset fork} (P : Checkpoint → Prop)
+    (realized : P store.finalizedCheckpoint)
+    (unrealized : P store.unrealizedFinalizedCheckpoint)
+    (states : ∀ (root : Root) (state : BeaconState preset fork),
+      after.blockStates[root]? = some state → P state.finalizedCheckpoint)
+    (counts : ∀ (root : Root) (state pulled : BeaconState preset fork),
+      after.blockStates[root]? = some state →
+      processJustificationAndFinalization state = .ok pulled → P pulled.finalizedCheckpoint)
+    (added : store.onBlock config checks sources signed = .ok after) :
+    P after.finalizedCheckpoint ∧ P after.unrealizedFinalizedCheckpoint := by
+  cases root : SszType.hashTreeRoot signed.message with
+  | error err => simp [Store.onBlock, root, bind, Except.bind, Except.mapError] at added
+  | ok blockRoot =>
+    by_cases known : store.blocks.contains blockRoot
+    · rw [Store.onBlock_known root known] at added
+      cases added
+      exact ⟨realized, unrealized⟩
+    simp only [Store.onBlock, root, known, bind, Except.bind, Except.mapError, ↓reduceIte,
+      Bool.false_eq_true] at added
+    unfold Store.addBlock at added
+    simp only [bind_ok_iff] at added
+    obtain ⟨state, -, head, -, voted, vote, recorded, record, boosted, boost, added⟩ := added
+    obtain ⟨_, _, rfl⟩ := Store.recordBlockPtcVotes_onlyPtcVotes vote
+    have recordedFields : P recorded.finalizedCheckpoint ∧
+        P recorded.unrealizedFinalizedCheckpoint := by
+      unfold Store.recordBlockTimeliness at record
+      simp only [bind_ok_iff, pure, Except.pure] at record
+      obtain ⟨_, _, _, _, _, _, _, _, record⟩ := record
+      split at record
+      · simp only [bind_ok_iff, Except.ok.injEq] at record
+        obtain ⟨_, _, rfl⟩ := record
+        exact ⟨realized, unrealized⟩
+      · cases record
+        exact ⟨realized, unrealized⟩
+    have boostedFields : P boosted.finalizedCheckpoint ∧
+        P boosted.unrealizedFinalizedCheckpoint := by
+      unfold Store.updateProposerBoostRoot at boost
+      split at boost
+      rotate_left
+      · simp [throw, throwThe, MonadExceptOf.throw, bind, Except.bind] at boost
+      simp only [bind_ok_iff, pure_bind] at boost
+      obtain ⟨_, _, _, _, _, _, boost⟩ := boost
+      split at boost <;> simp only [pure, Except.pure, Except.ok.injEq] at boost <;>
+        subst boosted <;> exact recordedFields
+    have kept := (Store.computePulledUpTip_frame added).2.2.1
+    have newFound : after.blockStates[blockRoot]? = some state := by
+      rw [kept, Store.updateCheckpoints_blockStates,
+        (Store.updateProposerBoostRoot_frame boost).2.2.1,
+        (Store.recordBlockTimeliness_frame record).2.2.1]
+      simp
+    have new := states blockRoot state newFound
+    have updated :
+        P (boosted.updateCheckpoints state.currentJustifiedCheckpoint
+          state.finalizedCheckpoint).finalizedCheckpoint ∧
+        P (boosted.updateCheckpoints state.currentJustifiedCheckpoint
+          state.finalizedCheckpoint).unrealizedFinalizedCheckpoint := by
+      obtain ⟨old, pending⟩ := boostedFields
+      unfold Store.updateCheckpoints
+      split <;> dsimp only <;> split <;> exact ⟨by assumption, pending⟩
+    exact Store.finalized_properties_of_computePulledUpTip P updated.1 updated.2
+      (fun s p found processed => counts blockRoot s p (kept.symm ▸ found) processed) added
+
+/-- A tick preserves a property shared by the realized and unrealized finalized checkpoints. -/
+theorem Store.finalized_properties_of_onTickPerSlot {config : Config}
+    {store after : Store preset fork} {time : UInt64} (P : Checkpoint → Prop)
+    (realized : P store.finalizedCheckpoint)
+    (unrealized : P store.unrealizedFinalizedCheckpoint)
+    (ticked : store.onTickPerSlot config time = .ok after) :
+    P after.finalizedCheckpoint ∧ P after.unrealizedFinalizedCheckpoint := by
+  have update : ∀ (s : Store preset fork) justified finalized,
+      P s.finalizedCheckpoint → P s.unrealizedFinalizedCheckpoint → P finalized →
+      P (s.updateCheckpoints justified finalized).finalizedCheckpoint ∧
+        P (s.updateCheckpoints justified finalized).unrealizedFinalizedCheckpoint := by
+    intro s justified finalized old pending new
+    unfold Store.updateCheckpoints
+    split <;> dsimp only <;> split <;> exact ⟨by assumption, pending⟩
+  unfold Store.onTickPerSlot at ticked
+  simp only [bind_ok_iff] at ticked
+  obtain ⟨previous, -, current, -, ticked⟩ := ticked
+  split at ticked <;>
+    obtain ⟨offset, -, ticked⟩ := ticked <;>
+    split at ticked <;>
+    simp only [pure, Except.pure, Except.ok.injEq] at ticked <;> subst after
+  · exact update _ _ _ realized unrealized unrealized
+  · exact ⟨realized, unrealized⟩
+  · exact update _ _ _ realized unrealized unrealized
+  · exact ⟨realized, unrealized⟩
+
+/-- Catch-up preserves a property of both finalized checkpoint fields through every tick. -/
+theorem Store.finalized_properties_of_catchUp {config : Config}
+    {store after : Store preset fork} {slot : Slot} (P : Checkpoint → Prop)
+    (realized : P store.finalizedCheckpoint)
+    (unrealized : P store.unrealizedFinalizedCheckpoint)
+    (caught : Store.catchUp config store slot = .ok after) :
+    P after.finalizedCheckpoint ∧ P after.unrealizedFinalizedCheckpoint := by
+  induction store using Store.catchUp.induct config slot with
+  | _ store ih =>
+    rw [Store.catchUp.eq_1] at caught
+    simp only [bind_ok_iff] at caught
+    obtain ⟨current, -, caught⟩ := caught
+    split at caught
+    · simp only [bind_ok_iff] at caught
+      obtain ⟨next, -, nextTime, -, ticked, tick, caught⟩ := caught
+      split at caught
+      · obtain ⟨realized, unrealized⟩ :=
+          Store.finalized_properties_of_onTickPerSlot P realized unrealized tick
+        exact ih ticked ‹_› realized unrealized caught
+      · cases caught
+    · simp only [pure, Except.pure, Except.ok.injEq] at caught
+      subst after
+      exact ⟨realized, unrealized⟩
+
+/-- A full tick retains original checkpoint provenance, including catch-up realization. -/
+theorem Store.finalized_properties_of_onTick {config : Config}
+    {store after : Store preset fork} {time : UInt64} (P : Checkpoint → Prop)
+    (realized : P store.finalizedCheckpoint)
+    (unrealized : P store.unrealizedFinalizedCheckpoint)
+    (ticked : store.onTick config time = .ok after) :
+    P after.finalizedCheckpoint ∧ P after.unrealizedFinalizedCheckpoint := by
+  unfold Store.onTick at ticked
+  simp only [bind_ok_iff] at ticked
+  obtain ⟨slot, -, caught, catchUp, ticked⟩ := ticked
+  obtain ⟨realized, unrealized⟩ :=
+    Store.finalized_properties_of_catchUp P realized unrealized catchUp
+  exact Store.finalized_properties_of_onTickPerSlot P realized unrealized ticked
+
+/-- Every finalized field originates at the anchor, a held state, or its pulled-up count.
+
+This records original fields without recounting historical votes or asserting a timing bound. -/
+theorem Store.Reachable.finalized_origins {config : Config}
+    {anchorState : BeaconState preset fork} {anchorBlock : BeaconBlock preset fork}
+    {store : Store preset fork}
+    (reachable : Store.Reachable config anchorState anchorBlock store) :
+    ∀ checkpoint, (checkpoint = store.finalizedCheckpoint ∨
+      checkpoint = store.unrealizedFinalizedCheckpoint) →
+      (∃ root, SszType.hashTreeRoot anchorBlock = .ok root ∧
+        checkpoint = (⟨getCurrentEpoch anchorState, root⟩ : Checkpoint)) ∨
+      (∃ (root : Root) (state : BeaconState preset fork), store.blockStates[root]? = some state ∧
+        checkpoint = state.finalizedCheckpoint) ∨
+      ∃ (root : Root) (state pulled : BeaconState preset fork),
+        store.blockStates[root]? = some state ∧
+        processJustificationAndFinalization state = .ok pulled ∧
+        checkpoint = pulled.finalizedCheckpoint := by
+  let Origin := fun (s : Store preset fork) (checkpoint : Checkpoint) =>
+    (∃ root, SszType.hashTreeRoot anchorBlock = .ok root ∧
+      checkpoint = (⟨getCurrentEpoch anchorState, root⟩ : Checkpoint)) ∨
+    (∃ (root : Root) (state : BeaconState preset fork), s.blockStates[root]? = some state ∧
+      checkpoint = state.finalizedCheckpoint) ∨
+    ∃ (root : Root) (state pulled : BeaconState preset fork), s.blockStates[root]? = some state ∧
+      processJustificationAndFinalization state = .ok pulled ∧
+      checkpoint = pulled.finalizedCheckpoint
+  have mono {s t : Store preset fork}
+      (kept : ∀ (root : Root) (state : BeaconState preset fork),
+        s.blockStates[root]? = some state → t.blockStates[root]? = some state)
+      {checkpoint : Checkpoint} (origin : Origin s checkpoint) : Origin t checkpoint := by
+    rcases origin with anchor | ⟨root, state, found, same⟩ | ⟨root, state, pulled, found, run, same⟩
+    · exact .inl anchor
+    · exact .inr (.inl ⟨root, state, kept root state found, same⟩)
+    · exact .inr (.inr ⟨root, state, pulled, kept root state found, run, same⟩)
+  have both : Origin store store.finalizedCheckpoint ∧
+      Origin store store.unrealizedFinalizedCheckpoint := by
+    induction reachable with
+    | anchor made =>
+      obtain ⟨root, hashed, -, -, -, final, -, unrealized⟩ := getForkchoiceStore_anchor made
+      exact ⟨.inl ⟨root, hashed, final⟩, .inl ⟨root, hashed, unrealized⟩⟩
+    | @tick before after time reachable ticked ih =>
+      have kept := (Store.onTick_frame ticked).2.2.2
+      exact Store.finalized_properties_of_onTick (Origin after)
+        (mono (fun _ _ h => kept.symm ▸ h) ih.1)
+        (mono (fun _ _ h => kept.symm ▸ h) ih.2) ticked
+    | @block before after checks sources signed reachable added ih =>
+      have kept : ∀ (root : Root) (state : BeaconState preset fork),
+          before.blockStates[root]? = some state → after.blockStates[root]? = some state := by
+        intro root state found
+        rcases Store.onBlock_same_or_insert added with same |
+          ⟨newRoot, -, fresh, -, -, post, -, -, states⟩
+        · exact same ▸ found
+        have other : newRoot ≠ root := by
+          rintro rfl
+          rw [reachable.blockState_eq_none fresh] at found
+          cases found
+        rw [states, getElem?_insert_root]
+        simpa only [other, ↓reduceIte] using found
+      exact Store.finalized_properties_of_onBlock (Origin after)
+        (mono kept ih.1) (mono kept ih.2)
+        (fun root state found => .inr (.inl ⟨root, state, found, rfl⟩))
+        (fun root state pulled found run => .inr (.inr ⟨root, state, pulled, found, run, rfl⟩))
+        added
+    | attestation _ attested ih =>
+      unfold Store.onAttestation at attested
+      simp only [bind_ok_iff] at attested
+      obtain ⟨_, _, stored, storing, _, _, _, _, _, _, _, _, attested⟩ := attested
+      have storedOrigin : Origin stored stored.finalizedCheckpoint ∧
+          Origin stored stored.unrealizedFinalizedCheckpoint := by
+        unfold Store.storeTargetCheckpointState at storing
+        split at storing
+        · simp only [pure, Except.pure, Except.ok.injEq] at storing
+          exact storing ▸ ih
+        · simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at storing
+          obtain ⟨_, _, rfl⟩ := storing
+          exact ih
+      split at attested
+      · simp only [pure, Except.pure, Except.ok.injEq] at attested
+        subst attested
+        exact storedOrigin
+      · simp [throw, throwThe, MonadExceptOf.throw, bind, Except.bind] at attested
+    | attesterSlashing _ slashed ih =>
+      unfold Store.onAttesterSlashing at slashed
+      simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at slashed
+      obtain ⟨_, _, rfl⟩ := slashed
+      exact ih
+    | payloadAttestation _ voted ih =>
+      obtain ⟨_, _, rfl⟩ := Store.onPayloadAttestationMessage_onlyPtcVotes voted
+      exact ih
+    | envelope _ accepted ih =>
+      obtain ⟨_, _, _, _, _, record, rfl⟩ := Store.onExecutionPayloadEnvelope_ok accepted
+      obtain ⟨_, rfl⟩ := Store.recordEnvelope_frame record
+      exact ih
+    | inclusionList _ accepted ih =>
+      obtain ⟨_, _, rfl⟩ := Store.onInclusionList_ok ‹_› accepted
+      exact ih
+  intro checkpoint same
+  rcases same with rfl | rfl
+  · exact both.1
+  · exact both.2
 
 namespace Models.Network
 
@@ -817,6 +1841,158 @@ theorem Execution.exists_checkpointState_of_preBlock_target {anchor : Store pres
   unfold getCurrentEpoch
   rw [atSlot]
   exact computeEpochAtSlot_computeStartSlotAtEpoch (UInt64.lt_iff_toNat_lt.mpr positive) epochStart
+
+/-- A vote decoded before an accepted block occurs in a sent message with the same data.
+
+The target root must match the block-root history of the state that decodes the vote.
+
+The message and committee provenance proof is unfinished. -/
+theorem Execution.exists_sent_of_blockVote {anchor : Store preset fork}
+    (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (positive : 0 < preset.SLOTS_PER_EPOCH.toNat)
+    (window : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
+    (ring : preset.MIN_SEED_LOOKAHEAD.toNat + 2 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
+    (preGloas : fork < .glamsterdam)
+    {w : ValidatorIndex} (honest : w ∈ J) (start : e.start w = anchor) {k : ℕ}
+    (nonzero : ∀ (root : Root) (block : BeaconBlock preset fork),
+      ((e.world k).state w).blocks[root]? = some block →
+      block.stateRoot ≠ Vector.replicate 32 0)
+    {root : Root} {block : BeaconBlock preset fork}
+    {parent advanced post : BeaconState preset fork}
+    (held : ((e.world k).state w).blocks[root]? = some block)
+    (other : block ≠ anchorBlock)
+    (parentFound : ((e.world k).state w).blockStates[block.parentRoot]? = some parent)
+    (slotsOk : processSlots config checks parent block.slot = .ok advanced)
+    (blockOk : processBlock config checks sources.engine advanced block = .ok post)
+    {v : ValidatorIndex} {data : AttestationData}
+    (counted : (v, data) ∈ blockVotes advanced block)
+    (target : getBlockRoot advanced data.target.epoch = .ok data.target.root)
+    (later : getCurrentEpoch anchorState < data.target.epoch)
+    {slot : Slot}
+    (slotOk : ((e.world k).state w).getCurrentSlot config = .ok slot) :
+    ∃ m ∈ (e.world k).sent,
+      (v, data) ∈ statements config checks anchorState anchorBlock m ∧ data.slot < slot := by
+  sorry
+
+/-- A held state, or its fixed-check advance toward a held child, is a counting state. -/
+theorem Store.counts_of_fixedChecks {store : Store preset fork}
+    {root : Root} {base state : BeaconState preset fork}
+    (found : store.blockStates[root]? = some base)
+    (advanced : state = base ∨ ∃ (slot : Slot) (childRoot : Root)
+      (child : BeaconBlock preset fork), store.blocks[childRoot]? = some child ∧
+        child.parentRoot = root ∧ slot ≤ child.slot ∧
+        processSlots config checks base slot = .ok state) :
+    store.Counts config state := by
+  refine ⟨root, base, found, ?_⟩
+  rcases advanced with same | ⟨slot, childRoot, child, held, parent, before, processed⟩
+  · exact .inl same
+  · exact .inr ⟨checks, slot, childRoot, child, held, parent, before, processed⟩
+
+/-- A counted index for an epoch after the anchor has a sent vote for the complete link.
+
+The counting state uses the execution's checks.
+
+The recent epoch restriction excludes inherited anchor participation.
+
+It does not assert a provenance invariant for that participation.
+
+The participation and message provenance proof is unfinished. -/
+theorem Execution.exists_sent_link_of_counted {anchor : Store preset fork}
+    (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (sound : Invariant anchorState)
+    (positive : 0 < preset.SLOTS_PER_EPOCH.toNat)
+    (window : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
+    (ring : preset.MIN_SEED_LOOKAHEAD.toNat + 2 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
+    (preGloas : fork < .glamsterdam)
+    {w : ValidatorIndex} (honest : w ∈ J) (start : e.start w = anchor) {k : ℕ}
+    (nonzero : ∀ (root : Root) (block : BeaconBlock preset fork),
+      ((e.world k).state w).blocks[root]? = some block →
+      block.stateRoot ≠ Vector.replicate 32 0)
+    {root : Root} {base state : BeaconState preset fork}
+    (found : ((e.world k).state w).blockStates[root]? = some base)
+    (advanced : state = base ∨ ∃ (slot : Slot) (childRoot : Root)
+      (child : BeaconBlock preset fork), ((e.world k).state w).blocks[childRoot]? = some child ∧
+        child.parentRoot = root ∧ slot ≤ child.slot ∧
+        processSlots config checks base slot = .ok state)
+    (late : ¬getCurrentEpoch state ≤ GENESIS_EPOCH + 1)
+    (recent : Bool)
+    (later : getCurrentEpoch anchorState <
+      (if recent then getCurrentEpoch state else getPreviousEpoch state))
+    {indices : List ValidatorIndex}
+    (counted : (∃ altair : .altair ≤ fork,
+      getUnslashedParticipatingIndices state altair TIMELY_TARGET_FLAG_INDEX
+        (if recent then getCurrentEpoch state else getPreviousEpoch state) = .ok indices) ∨
+      ∃ (before : fork < .altair) (attestations : Array (PendingAttestation preset)),
+        getMatchingTargetAttestations state before
+          (if recent then getCurrentEpoch state else getPreviousEpoch state) = .ok attestations ∧
+        getUnslashedAttestingIndices state attestations = .ok indices)
+    {v : ValidatorIndex} (member : v ∈ indices)
+    {slot : Slot} (slotOk : ((e.world k).state w).getCurrentSlot config = .ok slot) :
+    v ∈ quorumVoters state ∧ ∃ data,
+      LinkVote state recent v.toNat (v, data) ∧
+      ∃ m ∈ (e.world k).sent,
+        (v, data) ∈ statements config checks anchorState anchorBlock m ∧ data.slot < slot := by
+  sorry
+
+/-- A passing count above the anchor supplies a sent source link from the chosen set. -/
+theorem Execution.exists_sent_source_of_counted {anchor : Store preset fork}
+    (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (sound : Invariant anchorState)
+    (positive : 0 < preset.SLOTS_PER_EPOCH.toNat)
+    (window : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
+    (ring : preset.MIN_SEED_LOOKAHEAD.toNat + 2 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
+    (preGloas : fork < .glamsterdam)
+    {w : ValidatorIndex} (honest : w ∈ J) (start : e.start w = anchor) {k : ℕ}
+    (nonzero : ∀ (root : Root) (block : BeaconBlock preset fork),
+      ((e.world k).state w).blocks[root]? = some block →
+      block.stateRoot ≠ Vector.replicate 32 0)
+    {root : Root} {base state : BeaconState preset fork}
+    (found : ((e.world k).state w).blockStates[root]? = some base)
+    (advanced : state = base ∨ ∃ (slot : Slot) (childRoot : Root)
+      (child : BeaconBlock preset fork), ((e.world k).state w).blocks[childRoot]? = some child ∧
+        child.parentRoot = root ∧ slot ≤ child.slot ∧
+        processSlots config checks base slot = .ok state)
+    (late : ¬getCurrentEpoch state ≤ GENESIS_EPOCH + 1) (recent : Bool)
+    (later : getCurrentEpoch anchorState <
+      (if recent then getCurrentEpoch state else getPreviousEpoch state))
+    {indices : List ValidatorIndex}
+    (counted : (∃ altair : .altair ≤ fork,
+      getUnslashedParticipatingIndices state altair TIMELY_TARGET_FLAG_INDEX
+        (if recent then getCurrentEpoch state else getPreviousEpoch state) = .ok indices) ∨
+      ∃ (before : fork < .altair) (attestations : Array (PendingAttestation preset)),
+        getMatchingTargetAttestations state before
+          (if recent then getCurrentEpoch state else getPreviousEpoch state) = .ok attestations ∧
+        getUnslashedAttestingIndices state attestations = .ok indices)
+    {slot : Slot} (slotOk : ((e.world k).state w).getCurrentSlot config = .ok slot)
+    {total balance threshold weight : Gwei}
+    (totalOk : getTotalActiveBalance state = .ok total)
+    (balanceOk : getTotalBalance state indices = .ok balance)
+    (thresholdOk : mulChecked total 2 = .ok threshold)
+    (weightOk : mulChecked balance 3 = .ok weight) (passed : threshold ≤ weight)
+    (large : 3 * preset.EFFECTIVE_BALANCE_INCREMENT.toNat <
+      2 * stake (fun v => balanceAt state v.toNat) (activeVoters state))
+    (p : ValidatorIndex → Prop) [DecidablePred p]
+    (few : 3 * stake (fun v => balanceAt state v.toNat)
+      {v ∈ quorumVoters state | ¬p v} < 2 * total.toNat) :
+    ∃ v data, p v ∧
+      data.source = (if recent then state.currentJustifiedCheckpoint
+        else state.previousJustifiedCheckpoint) ∧
+      data.target.epoch = (if recent then getCurrentEpoch state else getPreviousEpoch state) ∧
+      ∃ m ∈ (e.world k).sent,
+        (v, data) ∈ statements config checks anchorState anchorBlock m := by
+  let attested : Set (ValidatorIndex × AttestationData) :=
+    {vote | ∃ m ∈ (e.world k).sent,
+      vote ∈ statements config checks anchorState anchorBlock m}
+  have provenance : ∀ v ∈ indices, v ∈ quorumVoters state ∧
+      ∃ data, (v, data) ∈ attested ∧ LinkVote state recent v.toNat (v, data) := by
+    intro v member
+    obtain ⟨quorum, data, link, m, sent, statement, -⟩ :=
+      e.exists_sent_link_of_counted anchored sound positive window ring preGloas honest start
+        nonzero found advanced late recent later counted member slotOk
+    exact ⟨quorum, data, ⟨m, sent, statement⟩, link⟩
+  obtain ⟨v, data, good, signed, link⟩ := exists_linkVote_of_justificationTest totalOk
+    balanceOk thresholdOk weightOk passed large provenance p few
+  exact ⟨v, data, good, link.2.2.1, link.2.1, signed⟩
 
 /-- The count: a set of validators signs a justified checkpoint when the others cannot.
 

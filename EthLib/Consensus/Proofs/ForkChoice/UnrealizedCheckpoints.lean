@@ -1,6 +1,9 @@
 module
 
 public import EthLib.Consensus.Proofs.ForkChoice.Checkpoints
+import EthLib.Base.Proofs.FilterM
+import EthLib.Consensus.Proofs.Transition.Committees
+import EthLib.Consensus.Proofs.Transition.FfgStake
 
 /-!
 # Proofs: unrealized checkpoints are those of the next epoch
@@ -351,6 +354,346 @@ private theorem advanceSlots_outcome
 
 end Helpers
 
+private theorem advanceSlot_target_flags_bound {bound : Epoch}
+    (holds : ∀ (altair : .altair ≤ fork) (current : Bool) (position : Nat) flags,
+      (if current then (state.currentEpochParticipation altair).data
+        else (state.previousEpochParticipation altair).data)[position]? = some flags →
+      hasFlag flags TIMELY_TARGET_FLAG_INDEX = true →
+      (if current then getCurrentEpoch state else getPreviousEpoch state) ≤ bound)
+    (computed : advanceSlot config checks state = .ok after) :
+    ∀ (altair : .altair ≤ fork) (current : Bool) (position : Nat) flags,
+      (if current then (after.currentEpochParticipation altair).data
+        else (after.previousEpochParticipation altair).data)[position]? = some flags →
+      hasFlag flags TIMELY_TARGET_FLAG_INDEX = true →
+      (if current then getCurrentEpoch after else getPreviousEpoch after) ≤ bound := by
+  obtain ⟨next, cached, epoched, sum, cachedOk, epochedOk, rfl⟩ := advanceSlot_ok computed
+  obtain ⟨cachedPrevious, cachedCurrent⟩ := processSlot_participation cachedOk
+  have stateEpoch := getCurrentEpoch_toNat state
+  have afterEpoch := getCurrentEpoch_toNat { epoched with slot := next }
+  dsimp only at afterEpoch
+  intro altair current position flags found set
+  unfold epochIfLast at epochedOk
+  split at epochedOk
+  · rename_i boundary
+    have epochs := nextSlot_epoch_of_boundary sum boundary
+    have previousEq : getPreviousEpoch { epoched with slot := next } = getCurrentEpoch state := by
+      apply UInt64.toNat_inj.mp
+      rw [getPreviousEpoch_toNat, afterEpoch, stateEpoch, epochs]
+      rfl
+    simp only [processEpoch, altair, ↓reduceDIte] at epochedOk
+    obtain ⟨justified, rooted, justifiedOk, head, tail⟩ := processEpochAltair_split epochedOk
+    obtain ⟨-, -, -, -, -, -, -, -, -, justifiedCurrent⟩ :=
+      processJustificationAndFinalization_keeps justifiedOk
+    cases current
+    · rcases (tail.flags altair position flags).1 found with rotated | rfl
+      · rcases (head.flags altair position flags).2 rotated with old | rfl
+        · rw [justifiedCurrent, cachedCurrent] at old
+          simpa only [Bool.false_eq_true, ↓reduceIte, previousEq] using
+            holds altair true position flags old set
+        · exact absurd set (by decide)
+      · exact absurd set (by decide)
+    · rcases (tail.flags altair position flags).2 found with rotated | rfl
+      · simp only [processParticipationFlagUpdates, Array.getElem?_replicate] at rotated
+        split at rotated
+        · cases rotated
+          exact absurd set (by decide)
+        · cases rotated
+      · exact absurd set (by decide)
+  · rename_i inside
+    simp only [pure, Except.pure, Except.ok.injEq] at epochedOk
+    subst epoched
+    have currentEq : getCurrentEpoch { cached with slot := next } = getCurrentEpoch state := by
+      apply UInt64.toNat_inj.mp
+      rw [getCurrentEpoch_toNat, stateEpoch]
+      exact nextSlot_epoch_of_inside sum inside
+    have previousEq : getPreviousEpoch { cached with slot := next } = getPreviousEpoch state := by
+      unfold getPreviousEpoch
+      rw [currentEq]
+    cases current
+    · simp only [Bool.false_eq_true, ↓reduceIte] at found ⊢
+      rw [cachedPrevious] at found
+      rw [previousEq]
+      exact holds altair false position flags found set
+    · simp only [↓reduceIte] at found ⊢
+      rw [cachedCurrent] at found
+      rw [currentEq]
+      exact holds altair true position flags found set
+
+private theorem advanceSlot_pending_bound {bound : Epoch}
+    (holds : ∀ (before : fork < .altair) (current : Bool),
+      bound < (if current then getCurrentEpoch state else getPreviousEpoch state) →
+      (if current then (state.currentEpochAttestations before).data
+        else (state.previousEpochAttestations before).data) = #[])
+    (computed : advanceSlot config checks state = .ok after) :
+    ∀ (before : fork < .altair) (current : Bool),
+      bound < (if current then getCurrentEpoch after else getPreviousEpoch after) →
+      (if current then (after.currentEpochAttestations before).data
+        else (after.previousEpochAttestations before).data) = #[] := by
+  obtain ⟨next, cached, epoched, sum, cachedOk, epochedOk, rfl⟩ := advanceSlot_ok computed
+  obtain ⟨_, _, _, _, cachedEq⟩ := processSlot_ok cachedOk
+  have stateEpoch := getCurrentEpoch_toNat state
+  have afterEpoch := getCurrentEpoch_toNat { epoched with slot := next }
+  dsimp only at afterEpoch
+  intro before current late
+  unfold epochIfLast at epochedOk
+  split at epochedOk
+  · rename_i boundary
+    have epochs := nextSlot_epoch_of_boundary sum boundary
+    have previousEq : getPreviousEpoch { epoched with slot := next } = getCurrentEpoch state := by
+      apply UInt64.toNat_inj.mp
+      rw [getPreviousEpoch_toNat, afterEpoch, stateEpoch, epochs]
+      rfl
+    obtain ⟨rotated, emptied⟩ := processEpoch_pendingRotation before epochedOk
+    cases current
+    · simp only [Bool.false_eq_true, ↓reduceIte, previousEq] at late ⊢
+      simpa only [rotated, cachedEq, ↓reduceIte] using holds before true late
+    · exact emptied
+  · rename_i inside
+    simp only [pure, Except.pure, Except.ok.injEq] at epochedOk
+    subst epoched
+    have currentEq : getCurrentEpoch { cached with slot := next } = getCurrentEpoch state := by
+      apply UInt64.toNat_inj.mp
+      rw [getCurrentEpoch_toNat, stateEpoch]
+      exact nextSlot_epoch_of_inside sum inside
+    have previousEq : getPreviousEpoch { cached with slot := next } = getPreviousEpoch state := by
+      unfold getPreviousEpoch
+      rw [currentEq]
+    rw [currentEq, previousEq] at late
+    cases current <;> simpa only [cachedEq] using holds before _ late
+
+private theorem getTotalBalance_nil (s : BeaconState preset fork) :
+    getTotalBalance s [] = .ok preset.EFFECTIVE_BALANCE_INCREMENT := by
+  apply getTotalBalance_ok_iff_stake.mpr
+  simp [Models.stake]
+
+private theorem justification_epoch_bound {bound : Epoch}
+    (flags : ∀ (altair : .altair ≤ fork) (epoch : Epoch) (indices : List ValidatorIndex),
+      getUnslashedParticipatingIndices state altair TIMELY_TARGET_FLAG_INDEX epoch = .ok indices →
+      bound < epoch → indices = [])
+    (pending : ∀ (before : fork < .altair) (epoch : Epoch)
+      (attestations : Array (PendingAttestation preset)),
+      getMatchingTargetAttestations state before epoch = .ok attestations →
+      bound < epoch → attestations = #[])
+    (floor : ∀ total, getTotalActiveBalance state = .ok total →
+      3 * preset.EFFECTIVE_BALANCE_INCREMENT.toNat < 2 * total.toNat)
+    (computed : processJustificationAndFinalization state = .ok after) :
+    after.currentJustifiedCheckpoint = state.currentJustifiedCheckpoint ∨
+      after.currentJustifiedCheckpoint.epoch ≤ bound := by
+  have finish {total previous current : Gwei}
+      (totalOk : getTotalActiveBalance state = .ok total)
+      (previousEmpty : bound < getPreviousEpoch state →
+        previous = preset.EFFECTIVE_BALANCE_INCREMENT)
+      (currentEmpty : bound < getCurrentEpoch state → current = preset.EFFECTIVE_BALANCE_INCREMENT)
+      (weighed : weighJustificationAndFinalization state total previous current = .ok after) :
+      after.currentJustifiedCheckpoint = state.currentJustifiedCheckpoint ∨
+        after.currentJustifiedCheckpoint.epoch ≤ bound := by
+    rcases weighJustificationAndFinalization_currentJustified weighed with ⟨same, -⟩ |
+      ⟨recent, threshold, weight, thresholdOk, weightOk, passed, epoch, -⟩
+    · exact .inl same
+    right
+    by_contra late
+    have gt := UInt64.not_le.mp late
+    rw [epoch] at gt
+    have empty : (if recent then current else previous) = preset.EFFECTIVE_BALANCE_INCREMENT := by
+      cases recent
+      · exact previousEmpty gt
+      · exact currentEmpty gt
+    rw [empty] at weightOk
+    have a := (mulChecked_ok_iff.mp thresholdOk).2
+    have b := (mulChecked_ok_iff.mp weightOk).2
+    have c := UInt64.le_iff_toNat_le.mp passed
+    have d := floor total totalOk
+    change threshold.toNat = total.toNat * 2 at a
+    change weight.toNat = preset.EFFECTIVE_BALANCE_INCREMENT.toNat * 3 at b
+    omega
+  unfold processJustificationAndFinalization at computed
+  split at computed
+  · rename_i altair
+    unfold processJustificationAndFinalizationAltair at computed
+    split at computed
+    · cases computed
+      exact .inl rfl
+    · simp only [bind_ok_iff, liftAccessor_ok] at computed
+      obtain ⟨previous, previousOk, current, currentOk, total, totalOk,
+        previousBalance, previousBalanceOk, currentBalance, currentBalanceOk, weighed⟩ := computed
+      apply finish totalOk _ _ weighed
+      · intro late
+        rw [flags altair _ _ previousOk late, getTotalBalance_nil] at previousBalanceOk
+        exact (Except.ok.inj previousBalanceOk).symm
+      · intro late
+        rw [flags altair _ _ currentOk late, getTotalBalance_nil] at currentBalanceOk
+        exact (Except.ok.inj currentBalanceOk).symm
+  · split at computed
+    · cases computed
+      exact .inl rfl
+    · simp only [bind_ok_iff, liftAccessor_ok] at computed
+      obtain ⟨previous, previousOk, current, currentOk, total, totalOk,
+        previousBalance, previousBalanceOk, currentBalance, currentBalanceOk, weighed⟩ := computed
+      have emptyBalance :
+          getAttestingBalance state #[] = .ok preset.EFFECTIVE_BALANCE_INCREMENT := by
+        simp [getAttestingBalance, getUnslashedAttestingIndices, unslashedAmong, sortedSet,
+          filterM_nil, getTotalBalance_nil, pure, Except.pure, bind, Except.bind]
+      apply finish totalOk _ _ weighed
+      · intro late
+        rw [pending _ _ _ previousOk late, emptyBalance] at previousBalanceOk
+        exact (Except.ok.inj previousBalanceOk).symm
+      · intro late
+        rw [pending _ _ _ currentOk late, emptyBalance] at currentBalanceOk
+        exact (Except.ok.inj currentBalanceOk).symm
+
+private theorem advanceSlot_currentJustified_bound {bound : Epoch}
+    (flags : ∀ (altair : .altair ≤ fork) (current : Bool) (position : Nat) flags,
+      (if current then (state.currentEpochParticipation altair).data
+        else (state.previousEpochParticipation altair).data)[position]? = some flags →
+      hasFlag flags TIMELY_TARGET_FLAG_INDEX = true →
+      (if current then getCurrentEpoch state else getPreviousEpoch state) ≤ bound)
+    (pending : ∀ (before : fork < .altair) (current : Bool),
+      bound < (if current then getCurrentEpoch state else getPreviousEpoch state) →
+      (if current then (state.currentEpochAttestations before).data
+        else (state.previousEpochAttestations before).data) = #[])
+    (floor : ∀ total, getTotalActiveBalance state = .ok total →
+      3 * preset.EFFECTIVE_BALANCE_INCREMENT.toNat < 2 * total.toNat)
+    (computed : advanceSlot config checks state = .ok after) :
+    after.currentJustifiedCheckpoint = state.currentJustifiedCheckpoint ∨
+      after.currentJustifiedCheckpoint.epoch ≤ bound := by
+  obtain ⟨next, cached, epoched, sum, cachedOk, epochedOk, rfl⟩ := advanceSlot_ok computed
+  have frame := frame_processSlot cachedOk
+  obtain ⟨sr, br, header, availability, cachedEq⟩ := processSlot_ok cachedOk
+  have moved : Moved state cached := ⟨state.slot, sr, br, header, availability, cachedEq⟩
+  have currentEq : getCurrentEpoch cached = getCurrentEpoch state := by
+    simp only [getCurrentEpoch, frame.slot]
+  have previousEq : getPreviousEpoch cached = getPreviousEpoch state := previous_eq currentEq
+  unfold epochIfLast at epochedOk
+  split at epochedOk
+  · obtain ⟨justified, justifiedOk, rest⟩ := processEpoch_frame epochedOk
+    have result := justification_epoch_bound (state := cached) (bound := bound)
+      (fun altair epoch indices read late => by
+        apply List.eq_nil_iff_forall_not_mem.mpr
+        intro index member
+        obtain ⟨-, -, fs, found, set⟩ := mem_getUnslashedParticipatingIndices read index member
+        have recent : epoch = getPreviousEpoch cached ∨ epoch = getCurrentEpoch cached := by
+          unfold getUnslashedParticipatingIndices at read
+          dsimp only at read
+          split at read
+          · assumption
+          · cases read
+        rw [currentEq, previousEq] at recent
+        rw [currentEq] at found
+        simp only [cachedEq] at found
+        by_cases same : epoch = getCurrentEpoch state
+        · simp only [same, ↓reduceIte] at found
+          exact (UInt64.not_lt.mpr (flags altair true _ _ found set)) (same ▸ late)
+        · simp only [same, ↓reduceIte] at found
+          have eq := recent.resolve_right same
+          exact (UInt64.not_lt.mpr (flags altair false _ _ found set)) (eq ▸ late))
+      (fun before epoch attestations read late => by
+        unfold getMatchingTargetAttestations getMatchingSourceAttestations at read
+        simp only [bind_ok_iff, ensure_ok_iff, pure, Except.pure, Except.ok.injEq] at read
+        obtain ⟨_, ⟨_, recent, rfl⟩, read⟩ := read
+        have empty : (if epoch = getCurrentEpoch cached then
+            (cached.currentEpochAttestations before).data
+            else (cached.previousEpochAttestations before).data) = #[] := by
+          rw [currentEq, previousEq] at recent
+          rw [currentEq]
+          by_cases same : epoch = getCurrentEpoch state
+          · simpa only [same, ↓reduceIte, cachedEq] using pending before true (same ▸ late)
+          · simpa only [same, Bool.false_eq_true, ↓reduceIte, cachedEq] using
+              pending before false ((recent.resolve_right same) ▸ late)
+        simpa only [empty, Array.isEmpty_empty, ↓reduceIte, Except.ok.injEq] using read.symm)
+      (fun total read => floor total (by rwa [totalActive_eq moved currentEq] at read))
+      justifiedOk
+    change epoched.currentJustifiedCheckpoint = state.currentJustifiedCheckpoint ∨ _
+    rw [rest.currentJustified, ← frame.currentJustified]
+    exact result
+  · simp only [pure, Except.pure, Except.ok.injEq] at epochedOk
+    subst epoched
+    exact .inl frame.currentJustified
+
+private theorem advanceSlots_currentJustified_bound {bound : Epoch} {count : Nat}
+    (flags : ∀ (altair : .altair ≤ fork) (current : Bool) (position : Nat) flags,
+      (if current then (state.currentEpochParticipation altair).data
+        else (state.previousEpochParticipation altair).data)[position]? = some flags →
+      hasFlag flags TIMELY_TARGET_FLAG_INDEX = true →
+      (if current then getCurrentEpoch state else getPreviousEpoch state) ≤ bound)
+    (pending : ∀ (before : fork < .altair) (current : Bool),
+      bound < (if current then getCurrentEpoch state else getPreviousEpoch state) →
+      (if current then (state.currentEpochAttestations before).data
+        else (state.previousEpochAttestations before).data) = #[])
+    (floor : ∀ count middle total, advanceSlots config checks count state = .ok middle →
+      middle.slot ≤ after.slot → getTotalActiveBalance middle = .ok total →
+      3 * preset.EFFECTIVE_BALANCE_INCREMENT.toNat < 2 * total.toNat)
+    (computed : advanceSlots config checks count state = .ok after) :
+    after.currentJustifiedCheckpoint = state.currentJustifiedCheckpoint ∨
+      after.currentJustifiedCheckpoint.epoch ≤ bound := by
+  induction count generalizing state with
+  | zero =>
+    simp only [advanceSlots, pure, Except.pure, Except.ok.injEq] at computed
+    subst after
+    exact .inl rfl
+  | succ count ih =>
+    simp only [advanceSlots, bind_ok_iff] at computed
+    obtain ⟨middle, stepped, rest⟩ := computed
+    have lo : state.slot ≤ after.slot := by
+      have a := advanceSlot_slot stepped
+      have b := advanceSlots_slot count rest
+      apply UInt64.le_iff_toNat_le.mpr
+      omega
+    have first := advanceSlot_currentJustified_bound flags pending
+      (fun total totalOk => floor 0 state total rfl lo totalOk) stepped
+    have last := ih (advanceSlot_target_flags_bound flags stepped)
+      (advanceSlot_pending_bound pending stepped)
+      (fun count next total run le totalOk => floor (count + 1) next total
+        (by simpa only [advanceSlots, stepped, bind, Except.bind] using run) le totalOk) rest
+    rcases last with same | bounded
+    · rw [same]
+      exact first
+    · exact .inr bounded
+
+/-- Empty slots within one epoch keep the current justified checkpoint. -/
+theorem advanceSlots_currentJustified_same_epoch {count : Nat}
+    (advanced : advanceSlots config checks count state = .ok after)
+    (epoch : getCurrentEpoch after = getCurrentEpoch state) :
+    after.currentJustifiedCheckpoint = state.currentJustifiedCheckpoint := by
+  induction count generalizing state with
+  | zero =>
+    simp only [advanceSlots, pure, Except.pure, Except.ok.injEq] at advanced
+    subst after
+    rfl
+  | succ count ih =>
+    simp only [advanceSlots, bind_ok_iff] at advanced
+    obtain ⟨middle, stepped, rest⟩ := advanced
+    have stepSlot := advanceSlot_slot stepped
+    have restSlot := advanceSlots_slot count rest
+    have middleEpoch : getCurrentEpoch middle = getCurrentEpoch state := by
+      apply UInt64.toNat_inj.mp
+      have lo := Nat.div_le_div_right (c := preset.SLOTS_PER_EPOCH.toNat)
+        (show state.slot.toNat ≤ middle.slot.toNat by omega)
+      have hi := Nat.div_le_div_right (c := preset.SLOTS_PER_EPOCH.toNat)
+        (show middle.slot.toNat ≤ after.slot.toNat by omega)
+      have same := congrArg UInt64.toNat epoch
+      simp only [getCurrentEpoch_toNat] at same ⊢
+      omega
+    rw [ih rest (epoch.trans middleEpoch.symm)]
+    obtain ⟨nextSlot, cached, epoched, sum, cachedOk, epochedOk, rfl⟩ := advanceSlot_ok stepped
+    have inside : ¬ nextSlot % preset.SLOTS_PER_EPOCH = 0 := by
+      intro boundary
+      have crossed := nextSlot_epoch_of_boundary sum boundary
+      have same := congrArg UInt64.toNat middleEpoch
+      simp only [getCurrentEpoch_toNat] at same
+      omega
+    simp only [epochIfLast, inside, ↓reduceIte, pure, Except.pure, Except.ok.injEq] at epochedOk
+    subst epoched
+    exact (frame_processSlot cachedOk).currentJustified
+
+/-- Processing slots within one epoch keeps the current justified checkpoint. -/
+theorem processSlots_currentJustified_same_epoch {slot : Slot}
+    (advanced : processSlots config checks state slot = .ok after)
+    (epoch : getCurrentEpoch after = getCurrentEpoch state) :
+    after.currentJustifiedCheckpoint = state.currentJustifiedCheckpoint := by
+  simp only [processSlots, bind_ok_iff, ensure_ok_iff] at advanced
+  obtain ⟨_, -, run⟩ := advanced
+  exact advanceSlots_currentJustified_same_epoch run epoch
+
 /-- Advance a state to the first slot of the next epoch, with no block on the way.
 
 Its justified and finalized checkpoints are then those of the state after justification.
@@ -391,6 +734,101 @@ theorem processSlots_checkpoints_eq_of_justification
     ⟨state.slot, state.stateRoots, state.blockRoots, state.latestBlockHeader,
       state.executionPayloadAvailability, rfl⟩
     (fun _ _ _ => rfl) (Nat.le_refl _) (by omega) advanced
+
+/-- Any slot of the next epoch reads the justification computed before the empty slots. -/
+theorem processSlots_currentJustified_next_epoch {slot : Slot}
+    (positive : 0 < preset.SLOTS_PER_EPOCH)
+    (window : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
+    (pulled : processJustificationAndFinalization state = .ok tip)
+    (advanced : processSlots config checks state slot = .ok after)
+    (epoch : (getCurrentEpoch after).toNat = (getCurrentEpoch state).toNat + 1) :
+    after.currentJustifiedCheckpoint = tip.currentJustifiedCheckpoint := by
+  have afterSlot := (processSlots_slot advanced).2
+  let boundary := after.slot / preset.SLOTS_PER_EPOCH * preset.SLOTS_PER_EPOCH
+  have boundaryOk : computeStartSlotAtEpoch preset (getCurrentEpoch state + 1) = .ok boundary := by
+    have bounded := (getCurrentEpoch after).toNat_lt
+    have same : getCurrentEpoch state + 1 = getCurrentEpoch after := by
+      apply UInt64.toNat_inj.mp
+      rw [UInt64.toNat_add, UInt64.toNat_one, ← epoch, Nat.mod_eq_of_lt bounded]
+    rw [same]
+    exact computeStartSlotAtEpoch_computeEpochAtSlot after.slot
+  have value : boundary.toNat =
+      ((getCurrentEpoch state).toNat + 1) * preset.SLOTS_PER_EPOCH.toNat := by
+    have h := (computeStartSlotAtEpoch_ok_iff.mp
+      (computeStartSlotAtEpoch_computeEpochAtSlot (preset := preset) after.slot)).2
+    change boundary.toNat = (getCurrentEpoch after).toNat * preset.SLOTS_PER_EPOCH.toNat at h
+    rwa [epoch] at h
+  have lo : state.slot < boundary := by
+    have pos := UInt64.lt_iff_toNat_lt.mp positive
+    have bound := Nat.lt_div_mul_add (a := state.slot.toNat) pos
+    apply UInt64.lt_iff_toNat_lt.mpr
+    rw [value, getCurrentEpoch_toNat, Nat.add_mul, Nat.one_mul]
+    omega
+  have hi : boundary ≤ slot := by
+    rw [← afterSlot, UInt64.le_iff_toNat_le, value, ← epoch, getCurrentEpoch_toNat]
+    exact Nat.div_mul_le_self _ _
+  by_cases same : boundary = slot
+  · exact (processSlots_checkpoints_eq_of_justification window pulled
+      (same ▸ boundaryOk) advanced).1
+  · obtain ⟨middle, before, rest⟩ := processSlots_split advanced lo
+      (UInt64.lt_of_le_of_ne hi same)
+    have middleEpoch : getCurrentEpoch middle = getCurrentEpoch after := by
+      rw [getCurrentEpoch, (processSlots_slot before).2]
+      have h := computeEpochAtSlot_computeStartSlotAtEpoch positive boundaryOk
+      rw [h]
+      apply UInt64.toNat_inj.mp
+      rw [UInt64.toNat_add, UInt64.toNat_one, ← epoch,
+        Nat.mod_eq_of_lt (getCurrentEpoch after).toNat_lt]
+    exact (processSlots_currentJustified_same_epoch rest middleEpoch.symm).trans
+      (processSlots_checkpoints_eq_of_justification window pulled boundaryOk before).1
+
+/-- Empty slots select the original justification, its next-epoch pull-up, or an older source.
+
+The balance floor applies at every intermediate state, not only at the start.
+
+The stale case retains the original checkpoint as an alternative. -/
+theorem processSlots_source_selector {slot : Slot}
+    (positive : 0 < preset.SLOTS_PER_EPOCH)
+    (window : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
+    (pulled : processJustificationAndFinalization state = .ok tip)
+    (advanced : processSlots config checks state slot = .ok after)
+    (floor : ∀ count middle total, advanceSlots config checks count state = .ok middle →
+      middle.slot ≤ slot → getTotalActiveBalance middle = .ok total →
+      3 * preset.EFFECTIVE_BALANCE_INCREMENT.toNat < 2 * total.toNat) :
+    (getCurrentEpoch after = getCurrentEpoch state ∧
+      after.currentJustifiedCheckpoint = state.currentJustifiedCheckpoint) ∨
+    ((getCurrentEpoch after).toNat = (getCurrentEpoch state).toNat + 1 ∧
+      after.currentJustifiedCheckpoint = tip.currentJustifiedCheckpoint) ∨
+    ((getCurrentEpoch state).toNat + 1 < (getCurrentEpoch after).toNat ∧
+      (after.currentJustifiedCheckpoint = state.currentJustifiedCheckpoint ∨
+        after.currentJustifiedCheckpoint.epoch ≤ getCurrentEpoch state)) := by
+  by_cases same : getCurrentEpoch after = getCurrentEpoch state
+  · exact .inl ⟨same, processSlots_currentJustified_same_epoch advanced same⟩
+  by_cases next : (getCurrentEpoch after).toNat = (getCurrentEpoch state).toNat + 1
+  · exact .inr (.inl ⟨next,
+      processSlots_currentJustified_next_epoch positive window pulled advanced next⟩)
+  have slotEq := (processSlots_slot advanced).2
+  have run := advanced
+  simp only [processSlots, bind_ok_iff, ensure_ok_iff] at run
+  obtain ⟨_, lo, run⟩ := run
+  have bound := advanceSlots_currentJustified_bound (bound := getCurrentEpoch state)
+    (fun _ current _ _ _ _ => by
+      cases current
+      · exact getPreviousEpoch_le state
+      · exact UInt64.le_refl _)
+    (fun _ current late => by
+      cases current
+      · exact False.elim ((UInt64.not_lt.mpr (getPreviousEpoch_le state)) late)
+      · exact False.elim ((UInt64.not_lt.mpr (UInt64.le_refl _)) late))
+    (fun count middle total run le read => floor count middle total run (slotEq ▸ le) read) run
+  refine .inr (.inr ⟨?_, bound⟩)
+  have monotone := Nat.div_le_div_right (c := preset.SLOTS_PER_EPOCH.toNat)
+    (Nat.le_of_lt (UInt64.lt_iff_toNat_lt.mp lo))
+  have ne : (getCurrentEpoch after).toNat ≠ (getCurrentEpoch state).toNat :=
+    fun eq => same (UInt64.toNat_inj.mp eq)
+  rw [← slotEq] at monotone
+  simp only [getCurrentEpoch_toNat] at ne next ⊢
+  omega
 
 /-- The pulled-up tip of a block records the justified checkpoint of the next epoch.
 
