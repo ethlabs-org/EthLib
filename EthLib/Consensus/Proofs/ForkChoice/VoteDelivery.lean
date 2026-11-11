@@ -80,7 +80,29 @@ theorem validateOnAttestation_of_facts {attestation : Attestation preset fork}
       attestation.data.target.epoch = .ok attestation.data.target.root)
     (past : attestation.data.slot < current) :
     store.validateOnAttestation config attestation false = .ok () := by
-  sorry
+  -- The later current slot leaves room for the checked addition of one slot.
+  have slotBound : attestation.data.slot.toNat + 1 < 2 ^ 64 := by
+    have := current.toNat_lt
+    have := UInt64.lt_iff_toNat_lt.mp past
+    omega
+  have dueOk := addChecked_of_lt (a := attestation.data.slot) (b := 1)
+    (by simpa using slotBound)
+  have dueBound : ¬ current < attestation.data.slot + 1 := by
+    rw [UInt64.lt_iff_toNat_lt, toNat_add_of_lt (by simpa using slotBound)]
+    have := UInt64.lt_iff_toNat_lt.mp past
+    simp only [UInt64.toNat_one]
+    omega
+  have recentOk : store.validateTargetEpochAgainstCurrentTime config attestation = .ok () := by
+    simp [validateTargetEpochAgainstCurrentTime, getCurrentStoreEpoch, currentOk, recent,
+      bind, Except.bind, pure, Except.pure]
+  have targetOk := block_ok_iff.mpr targetKnown
+  have votedOk := block_ok_iff.mpr votedKnown
+  have notEarlier := UInt64.not_lt.mpr notFuture
+  unfold validateOnAttestation
+  by_cases gloas : .glamsterdam ≤ fork <;>
+    simp [gloas, recentOk, targetOk, votedOk, notEarlier, payload,
+      ← epoch, checkpoint, dueOk, currentOk, dueBound, bind, Except.bind, pure, Except.pure,
+      Except.mapError, discard, Functor.mapConst, Except.map]
 
 /-- The store takes an attestation that passes its checks and that it reads with valid signers.
 
@@ -99,7 +121,8 @@ theorem onAttestation_of_reads {checks : SignatureChecks} {attestation : Attesta
     (signed : isValidIndexedAttestation config checks targetState indexed = .ok true) :
     store.onAttestation config checks attestation isFromBlock =
       .ok (withTarget.updateLatestMessages indexed.attestingIndices.data.toList attestation) := by
-  sorry
+  simp [onAttestation, valid, stored, found, committees, indexedOk, signed,
+    bind, Except.bind, Except.mapError, pure, Except.pure]
 
 end Store
 
@@ -126,7 +149,26 @@ theorem UpToDate.recorded {time : ℕ} {view : Set (Message preset fork)}
     (voter : v ∈ indexed.attestingIndices.data.toList) (counted : v ∉ store.equivocatingIndices) :
     ∃ m, store.latestMessages[v]? = some m ∧
       (LatestMessage.ofAttestation attestation).rank ≤ m.rank := by
-  sorry
+  -- Processing an accepted message of the view leaves an up-to-date store unchanged.
+  have fixed : after = store := upToDate.2 after (.attestation seen accepted)
+  obtain ⟨withTarget, targetState, stored, found, indexedOk, signed⟩ := reads
+  -- The handler uses the same target state and indexed attestation as the given reads.
+  have result : after =
+      withTarget.updateLatestMessages indexed.attestingIndices.data.toList attestation := by
+    unfold Store.onAttestation at accepted
+    cases valid : store.validateOnAttestation config attestation false with
+    | error err => simp [valid, bind, Except.bind] at accepted
+    | ok value =>
+      cases value
+      simp only [valid, stored, found, indexedOk, signed, bind, Except.bind, Except.mapError,
+        ↓reduceIte] at accepted
+      cases committees : checkAttestationCommittees targetState attestation <;>
+        simp_all [pure, Except.pure]
+  have counted' : v ∉ withTarget.equivocatingIndices := by
+    simpa [← fixed, result, Store.updateLatestMessages] using counted
+  have voted := Store.foldl_recordVote indexed.attestingIndices.data.toList
+    withTarget.latestMessages voter counted' (message := LatestMessage.ofAttestation attestation)
+  simpa [← fixed, result, Store.updateLatestMessages] using voted
 
 /-- An honest vote of a duty is for the head of its voter, in the slot of the duty.
 
