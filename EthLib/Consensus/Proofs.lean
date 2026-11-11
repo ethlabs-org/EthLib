@@ -5,6 +5,10 @@ public import EthLib.Consensus.Proofs.Accessors.Draw
 public import EthLib.Consensus.Proofs.BuilderApi
 public import EthLib.Consensus.Proofs.Builders
 public import EthLib.Consensus.Proofs.Churn
+public import EthLib.Consensus.Proofs.DirectSafety.Terminal
+public import EthLib.Consensus.Proofs.DirectSafety.TerminalFields
+public import EthLib.Consensus.Proofs.DirectSafety.TerminalQuorums
+public import EthLib.Consensus.Proofs.DirectSafety.TerminalSafety
 public import EthLib.Consensus.Proofs.Mutators
 public import EthLib.Consensus.Proofs.Participation
 public import EthLib.Consensus.Proofs.PayloadTimeliness
