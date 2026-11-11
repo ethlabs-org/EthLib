@@ -3670,6 +3670,232 @@ private theorem intervalGain_selected_deposit (y : ForkedBeaconState preset)
         ite_self] at nonzero
       exact nonzero rfl
 
+private theorem intervalGain_event_credit (y : ForkedBeaconState preset)
+    (e : BalanceEvent preset) (bounded : e.credits ≤ e.creditLimit) :
+    (∑ i ∈ intervalGain_indices y, (actualBalanceAt e.after i - actualBalanceAt e.before i)) ≤
+      e.creditLimit := by
+  apply le_trans (b := e.credits) _ bounded
+  unfold BalanceEvent.credits
+  apply Finset.sum_le_sum_of_ne_zero
+  intro i _ nonzero
+  apply Finset.mem_range.mpr
+  by_contra outside
+  have absent : e.after.state.balances.data[i]? = none :=
+    Array.getElem?_eq_none_iff.mpr (by omega)
+  simp [actualBalanceAt, absent] at nonzero
+
+private theorem intervalGain_residual_other (x : ForkedBeaconState preset) (high : Nat)
+    (e : BalanceEvent preset) (other : e.source ≠ .deposits) :
+    residualCredit (config := config) x high e = e.creditLimit := by
+  cases source : e.source <;> simp_all [residualCredit]
+
+private theorem intervalGain_residual_deposit (x : ForkedBeaconState preset) (high : Nat)
+    (e : BalanceEvent preset) (deposit : e.source = .deposits) :
+    residualCredit (config := config) x high e =
+      if .pectra ≤ e.before.fork then 0 else
+        if high + 1 < config.ELECTRA_FORK_EPOCH.toNat then
+          ((getActiveValidatorIndices x.state (getCurrentEpoch x.state)).map fun i =>
+            actualBalanceAt e.after i.toNat - actualBalanceAt e.before i.toNat).sum
+        else e.creditLimit := by
+  simp only [residualCredit, deposit]
+
+private theorem intervalGain_crossing_credit (x y : ForkedBeaconState preset) (high : Nat)
+    (e : BalanceEvent preset) (crossing : e.source = .crossing)
+    (bounded : e.credits ≤ e.creditLimit) :
+    (∑ i ∈ intervalGain_indices y, (actualBalanceAt e.after i - actualBalanceAt e.before i)) ≤
+      residualCredit (config := config) x high e := by
+  rw [intervalGain_residual_other x high e (by simp [crossing])]
+  exact intervalGain_event_credit y e bounded
+
+private theorem intervalGain_preupgrade_credit (x y : ForkedBeaconState preset) (high : Nat)
+    (e : BalanceEvent preset) (deposit : e.source = .deposits)
+    (before : e.before.fork < .pectra)
+    (crossing : config.ELECTRA_FORK_EPOCH.toNat ≤ high + 1)
+    (bounded : e.credits ≤ e.creditLimit) :
+    (∑ i ∈ intervalGain_indices y, (actualBalanceAt e.after i - actualBalanceAt e.before i)) ≤
+      residualCredit (config := config) x high e := by
+  rw [intervalGain_residual_deposit x high e deposit]
+  have notElectra : ¬ Fork.pectra ≤ e.before.fork := Nat.not_le.mpr before
+  have notBefore : ¬ high + 1 < config.ELECTRA_FORK_EPOCH.toNat := by omega
+  simp only [notElectra, notBefore, ↓reduceIte]
+  exact intervalGain_event_credit y e bounded
+
+private theorem intervalGain_crossing_sources (x y : ForkedBeaconState preset) (high : Nat)
+    (events : List (BalanceEvent preset))
+    (crossing : config.ELECTRA_FORK_EPOCH.toNat ≤ high + 1)
+    (bounded : ∀ e ∈ events, e.credits ≤ e.creditLimit)
+    (depositBudget : Nat)
+    (deposits : (events.map fun e =>
+      if e.source = .deposits ∧ .pectra ≤ e.before.fork then
+        ∑ i ∈ intervalGain_indices y, (actualBalanceAt e.after i - actualBalanceAt e.before i)
+      else 0).sum ≤ depositBudget) :
+    (events.map fun e => ∑ i ∈ intervalGain_indices y,
+      (actualBalanceAt e.after i - actualBalanceAt e.before i)).sum ≤
+      depositBudget + (events.map (residualCredit (config := config) x high)).sum := by
+  have pointwise : ∀ e ∈ events,
+      (∑ i ∈ intervalGain_indices y,
+        (actualBalanceAt e.after i - actualBalanceAt e.before i)) ≤
+      (if e.source = .deposits ∧ .pectra ≤ e.before.fork then
+        ∑ i ∈ intervalGain_indices y, (actualBalanceAt e.after i - actualBalanceAt e.before i)
+      else 0) + residualCredit (config := config) x high e := by
+    intro e member
+    by_cases deposit : e.source = .deposits
+    · by_cases electra : .pectra ≤ e.before.fork
+      · simp only [deposit, electra, and_self, ↓reduceIte]
+        omega
+      · simp only [deposit, electra, and_false, ↓reduceIte, Nat.zero_add]
+        exact intervalGain_preupgrade_credit x y high e deposit (Nat.lt_of_not_le electra) crossing
+          (bounded e member)
+    · simp only [deposit, false_and, ↓reduceIte, Nat.zero_add]
+      rw [intervalGain_residual_other x high e deposit]
+      exact intervalGain_event_credit y e (bounded e member)
+  have sum := List.sum_le_sum pointwise
+  rw [List.sum_map_add] at sum
+  omega
+
+private theorem intervalGain_crossing_endpoint {g x y : ForkedBeaconState preset}
+    (shared : Run config checks g x) (tail : Run config checks x y)
+    (genesis : Genesis (config := config) (checks := checks) g)
+    (parameters : Parameters preset) (early : y.fork < .glamsterdam)
+    (high : Nat) (endEpoch : (getCurrentEpoch y.state).toNat ≤ high + 1)
+    (events : List (BalanceEvent preset)) (replayed : tail.balanceEvents high = .ok events)
+    (crossing : config.ELECTRA_FORK_EPOCH.toNat ≤ high + 1)
+    (bounded : ∀ e ∈ events, e.credits ≤ e.creditLimit)
+    (deposits : (events.map fun e =>
+      if e.source = .deposits ∧ .pectra ≤ e.before.fork then
+        ∑ i ∈ intervalGain_indices y, (actualBalanceAt e.after i - actualBalanceAt e.before i)
+      else 0).sum ≤ depositWindow (config := config) x high) :
+    referenceGain x y ≤ activationWindow (config := config) x high + initialExcess x +
+      (events.map (residualCredit (config := config) x high)).sum := by
+  have gain := intervalGain_replay_bound shared tail genesis parameters early high endEpoch
+    events replayed
+  have sources := intervalGain_crossing_sources x y high events crossing bounded
+    (depositWindow (config := config) x high) deposits
+  unfold activationWindow
+  omega
+
+private theorem intervalGain_deposit_epoch {a b y : ForkedBeaconState preset}
+    (suffix : Run config checks b y)
+    (advanced : (getCurrentEpoch a.state).toNat < (getCurrentEpoch b.state).toNat) :
+    (getCurrentEpoch a.state).toNat < (getCurrentEpoch y.state).toNat := by
+  have monotone : (getCurrentEpoch b.state).toNat ≤ (getCurrentEpoch y.state).toNat := by
+    induction suffix with
+    | nil => exact Nat.le_refl _
+    | snoc pre step ih => exact ih.trans (coverage_step_epoch step)
+  exact advanced.trans_le monotone
+
+private theorem intervalGain_deposit_filter_sum (y : ForkedBeaconState preset)
+    (parameters : Parameters preset) (events : List (BalanceEvent preset))
+    (sites : ∀ e ∈ events, e.source = .deposits → .pectra ≤ e.before.fork →
+      (∀ i, actualBalanceAt e.after i ≤ actualBalanceAt e.before i) ∨
+      (RegistryLifecycle e.before.state y.state ∧ ExitsOrdered e.before.state ∧
+        (getCurrentEpoch e.before.state).toNat < (getCurrentEpoch y.state).toNat ∧
+        BalancesMatch e.after.state)) :
+    (events.map fun e => if e.source = .deposits ∧ .pectra ≤ e.before.fork then
+      ∑ i ∈ intervalGain_indices y, (actualBalanceAt e.after i - actualBalanceAt e.before i)
+      else 0).sum ≤
+    (events.map fun e => if e.source = .deposits ∧ .pectra ≤ e.before.fork then
+      ∑ i ∈ Finset.range e.after.state.validators.data.size,
+        if (e.before.state.validators.data[i]?.map (fun v =>
+          decide (v.withdrawableEpoch.toNat ≤ (getCurrentEpoch e.before.state).toNat))).getD
+          false then 0 else actualBalanceAt e.after i - actualBalanceAt e.before i
+      else 0).sum := by
+  apply List.sum_le_sum
+  intro e member
+  split
+  · rename_i selected
+    rcases sites e member selected.1 selected.2 with zero | ⟨kept, ordered, later, matched⟩
+    · simp only [Nat.sub_eq_zero_of_le (zero _), Finset.sum_const_zero, Nat.zero_le]
+    · exact intervalGain_selected_deposit y parameters e kept ordered later matched
+  · exact Nat.le_refl _
+
+private theorem intervalGain_deposit_sites {x y : ForkedBeaconState preset}
+    (events : List (BalanceEvent preset))
+    (provenance : ∀ e ∈ events,
+      RegistryLifecycle x.state e.before.state ∧
+      RegistryLifecycle e.before.state e.after.state ∧
+      RegistryLifecycle e.after.state y.state ∧
+      ExitsOrdered e.before.state ∧ BalancesMatch e.after.state ∧
+      (getCurrentEpoch x.state).toNat ≤ (getCurrentEpoch e.before.state).toNat ∧
+      (getCurrentEpoch e.before.state).toNat ≤ (getCurrentEpoch y.state).toNat)
+    (epochs : ∀ e ∈ events, e.source = .deposits → .pectra ≤ e.before.fork →
+      (∀ i, actualBalanceAt e.after i ≤ actualBalanceAt e.before i) ∨
+      (getCurrentEpoch e.before.state).toNat < (getCurrentEpoch y.state).toNat) :
+    ∀ e ∈ events, e.source = .deposits → .pectra ≤ e.before.fork →
+      (∀ i, actualBalanceAt e.after i ≤ actualBalanceAt e.before i) ∨
+      (RegistryLifecycle e.before.state y.state ∧ ExitsOrdered e.before.state ∧
+        (getCurrentEpoch e.before.state).toNat < (getCurrentEpoch y.state).toNat ∧
+        BalancesMatch e.after.state) := by
+  intro e member deposit electra
+  rcases epochs e member deposit electra with zero | later
+  · exact Or.inl zero
+  · obtain ⟨_, first, last, ordered, matched, _⟩ := provenance e member
+    exact Or.inr ⟨first.trans last, ordered, later, matched⟩
+
+private theorem intervalGain_crossing_of_interfaces {g x y : ForkedBeaconState preset}
+    (shared : Run config checks g x) (tail : Run config checks x y)
+    (genesis : Genesis (config := config) (checks := checks) g)
+    (parameters : Parameters preset) (early : y.fork < .glamsterdam)
+    (high : Nat) (endEpoch : (getCurrentEpoch y.state).toNat ≤ high + 1)
+    (events : List (BalanceEvent preset)) (replayed : tail.balanceEvents high = .ok events)
+    (crossing : config.ELECTRA_FORK_EPOCH.toNat ≤ high + 1)
+    (bounded : ∀ e ∈ events, e.credits ≤ e.creditLimit)
+    (provenance : ∀ e ∈ events,
+      RegistryLifecycle x.state e.before.state ∧
+      RegistryLifecycle e.before.state e.after.state ∧
+      RegistryLifecycle e.after.state y.state ∧
+      ExitsOrdered e.before.state ∧ BalancesMatch e.after.state ∧
+      (getCurrentEpoch x.state).toNat ≤ (getCurrentEpoch e.before.state).toNat ∧
+      (getCurrentEpoch e.before.state).toNat ≤ (getCurrentEpoch y.state).toNat)
+    (epochs : ∀ e ∈ events, e.source = .deposits → .pectra ≤ e.before.fork →
+      (∀ i, actualBalanceAt e.after i ≤ actualBalanceAt e.before i) ∨
+      (getCurrentEpoch e.before.state).toNat < (getCurrentEpoch y.state).toNat)
+    (capacity : (events.map fun e => if e.source = .deposits ∧ .pectra ≤ e.before.fork then
+      ∑ i ∈ Finset.range e.after.state.validators.data.size,
+        if (e.before.state.validators.data[i]?.map (fun v =>
+          decide (v.withdrawableEpoch.toNat ≤ (getCurrentEpoch e.before.state).toNat))).getD
+          false then 0 else actualBalanceAt e.after i - actualBalanceAt e.before i
+      else 0).sum ≤ depositWindow (config := config) x high) :
+    referenceGain x y ≤ activationWindow (config := config) x high + initialExcess x +
+      (events.map (residualCredit (config := config) x high)).sum := by
+  apply intervalGain_crossing_endpoint shared tail genesis parameters early high endEpoch
+    events replayed crossing bounded
+  exact (intervalGain_deposit_filter_sum y parameters events
+    (intervalGain_deposit_sites events provenance epochs)).trans capacity
+
+private theorem intervalGain_joining_split (x y : ForkedBeaconState preset)
+    (newBound carryBound : Nat)
+    (newKeys : Quorum.weight (effectiveWeight y.state)
+      (recentKeys y.state \ recentKeys x.state) ≤ newBound)
+    (oldKeys : Quorum.weight (effectiveWeight y.state)
+      ((recentKeys y.state ∩ recentKeys x.state) \ activeKeys x.state) ≤ carryBound) :
+    Quorum.weight (effectiveWeight y.state) (recentKeys y.state \ activeKeys x.state) ≤
+      newBound + carryBound := by
+  have active : activeKeys x.state ⊆ recentKeys x.state := by
+    intro k member
+    exact Finset.mem_union_left _ member
+  have partition : recentKeys y.state \ activeKeys x.state =
+      (recentKeys y.state \ recentKeys x.state) ∪
+        ((recentKeys y.state ∩ recentKeys x.state) \ activeKeys x.state) := by
+    ext k
+    simp only [Finset.mem_sdiff, Finset.mem_union, Finset.mem_inter]
+    constructor
+    · rintro ⟨recent, inactive⟩
+      by_cases old : k ∈ recentKeys x.state
+      · exact Or.inr ⟨⟨recent, old⟩, inactive⟩
+      · exact Or.inl ⟨recent, old⟩
+    · rintro (⟨recent, fresh⟩ | ⟨⟨recent, _⟩, inactive⟩)
+      · exact ⟨recent, fun h => fresh (active h)⟩
+      · exact ⟨recent, inactive⟩
+  have disjoint : Disjoint (recentKeys y.state \ recentKeys x.state)
+      ((recentKeys y.state ∩ recentKeys x.state) \ activeKeys x.state) := by
+    apply Finset.disjoint_left.mpr
+    intro k first last
+    exact (Finset.mem_sdiff.mp first).2 (Finset.mem_inter.mp (Finset.mem_sdiff.mp last).1).2
+  unfold Quorum.weight at *
+  rw [partition, Finset.sum_union disjoint]
+  exact Nat.add_le_add newKeys oldKeys
+
 /-- Funding churn bounds Electra deposits that can contribute to recent voting stake.
 
 Withdrawn-key exceptions do not reactivate an exited validator and contribute no such stake. -/
