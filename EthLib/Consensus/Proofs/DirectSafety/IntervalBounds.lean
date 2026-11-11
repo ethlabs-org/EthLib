@@ -7181,7 +7181,21 @@ theorem gains_and_activations_over_interval {g x y : ForkedBeaconState preset}
     referenceGain x y ≤
       activationWindow (config := config) x high + initialExcess x +
         (events.map (residualCredit (config := config) x high)).sum := by
-  sorry
+  by_cases crossing : config.ELECTRA_FORK_EPOCH.toNat ≤ high + 1
+  · exact intervalGain_crossing_of_interfaces shared tail genesis parameters early high endEpoch
+      events replayed crossing
+  · have before : y.fork < .pectra := by
+      apply Nat.lt_of_not_le
+      intro electra
+      have scheduled := intervalGain_reachable_epoch (shared.append tail) genesis electra
+      omega
+    apply intervalGain_pre_electra_of_split tail parameters
+      (shared.unique (genesis_unique genesis)) before high endEpoch events
+      (joining_before_electra_split shared tail genesis parameters caps before)
+    apply intervalGain_active_residual shared tail genesis early high endEpoch events replayed
+    intro e member _
+    exact Nat.lt_of_le_of_lt
+      (replay_event_fork_le shared tail genesis early high endEpoch events replayed e member) before
 
 /-- A conservative source envelope, separate from the exact observed-state drift.
 
