@@ -1,6 +1,7 @@
 module
 
 public import EthLib.Consensus.Proofs.DirectSafety.Core
+public import EthLib.Consensus.Proofs.Transition.TargetUpgrades
 
 /-!
 # Drift computed from the concrete transitions
@@ -84,6 +85,42 @@ theorem call_after_reference {g x a : ForkedBeaconState preset}
     (starts : x.state.slot.toNat ≤ low * preset.SLOTS_PER_EPOCH.toNat)
     (call : QuorumCall (shared.append tail)) (later : low ≤ call.target.epoch.toNat) :
     tail.Contains (.slot call.advanced) := by
-  sorry
+  rcases (shared.contains_append tail (.slot call.advanced)).mp call.member with member | member
+  · exfalso
+    -- A call in the shared prefix finishes strictly before the reference slot bound permits.
+    have forward {u v : ForkedBeaconState preset} (run : Run config checks u v) :
+        u.state.slot.toNat ≤ v.state.slot.toNat := by
+      induction run with
+      | nil => exact Nat.le_refl _
+      | snoc pre step ih =>
+        cases step with
+        | slot ok =>
+          obtain ⟨advanced, advancedOk, upgraded⟩ := bind_ok_iff.mp ok
+          have next := advanceSlot_slot advancedOk
+          have kept := processUpgrades_slot upgraded
+          simp only [kept] at *
+          omega
+        | block engine signed due ok =>
+          have kept := (frame_processBlock (applySignedBlock_ok ok).2.1).slot
+          simp only [kept] at *
+          exact ih
+    obtain ⟨pre, post, _⟩ := shared.contains_split (.slot call.advanced) member
+    have afterEnd := forward post
+    obtain ⟨advanced, advancedOk, upgraded⟩ := bind_ok_iff.mp call.advanced
+    have next := advanceSlot_slot advancedOk
+    have kept := processUpgrades_slot upgraded
+    have cachedSlot := (frame_processSlot call.cachedOk).slot
+    have targetBound : call.target.epoch.toNat ≤
+        call.before.state.slot.toNat / preset.SLOTS_PER_EPOCH.toNat := by
+      rw [call.targetEpoch]
+      cases call.current <;>
+        simp [getPreviousEpoch_toNat, getCurrentEpoch_toNat, cachedSlot]
+    have positive : 0 < preset.SLOTS_PER_EPOCH.toNat := by
+      have := parameters.slots
+      omega
+    have lowerSlot := (Nat.le_div_iff_mul_le positive).mp (later.trans targetBound)
+    rw [← kept] at next
+    omega
+  · exact member
 
 end EthLib.Consensus.DirectSafety
