@@ -414,6 +414,89 @@ private theorem addValidator_departureQueues {fork : Fork} {s t : BeaconState pr
   obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, rfl⟩ := ok
   rfl
 
+private theorem applyDeposit_departureQueues {fork : Fork} {s t : BeaconState preset fork}
+    (electra : .pectra ≤ fork) {key : Cryptography.Bls.BLSPubkey}
+    {credentials : Bytes32} {amount : Gwei} {signature : Cryptography.Bls.BLSSignature}
+    (ok : applyDeposit config checks s key credentials amount signature = .ok t) :
+    departureQueues electra t = departureQueues electra s := by
+  simp only [applyDeposit, electra, ↓reduceDIte] at ok
+  unfold applyDepositElectra at ok
+  split at ok
+  · simp only [bind_ok_iff] at ok
+    obtain ⟨_, _, ok⟩ := ok
+    split at ok
+    · simp only [bind_ok_iff, liftAccessor_ok] at ok
+      obtain ⟨middle, added, queued⟩ := ok
+      obtain ⟨_, rfl⟩ := addPendingDeposit_eq queued
+      exact (addValidator_departureQueues electra added :)
+    · cases ok; rfl
+  · obtain ⟨_, rfl⟩ := addPendingDeposit_eq (liftAccessor_ok.mp ok)
+    rfl
+
+/-- Block deposits preserve departure capacity even when they append a validator. -/
+theorem deposit_departureQueues {fork : Fork} {s t : BeaconState preset fork}
+    (electra : .pectra ≤ fork) {before : fork < .hegota} {deposit : Deposit}
+    (ok : processDeposit config checks before s deposit = .ok t) :
+    departureQueues electra t = departureQueues electra s := by
+  obtain ⟨_, _, _, _, credited⟩ := processDeposit_ok ok
+  exact (applyDeposit_departureQueues electra credited :)
+
+/-- Execution deposit requests append pending deposits without changing departure capacity. -/
+theorem depositRequest_departureQueues {fork : Fork} {s t : BeaconState preset fork}
+    (electra : .pectra ≤ fork) {request : DepositRequest}
+    (ok : processDepositRequest s electra request = .ok t) :
+    departureQueues electra t = departureQueues electra s := by
+  obtain ⟨_, rfl⟩ := addPendingDeposit_eq (liftAccessor_ok.mp ok)
+  unfold recordDepositRequestsStart
+  split <;> (try split) <;> rfl
+
+/-- Attestation processing preserves departure queues before Gloas. -/
+theorem attestation_departureQueues {fork : Fork} {s t : BeaconState preset fork}
+    (electra : .pectra ≤ fork) (early : fork < .glamsterdam)
+    {parentSlot : Slot} {attestation : Attestation preset fork}
+    (ok : processAttestation config checks s parentSlot attestation = .ok t) :
+    departureQueues electra t = departureQueues electra s := by
+  have altair : .altair ≤ fork := Nat.le_trans (by decide) electra
+  have notGloas : ¬ .glamsterdam ≤ fork := Nat.not_le_of_lt early
+  simp only [processAttestation, altair, ↓reduceDIte] at ok
+  unfold processAttestationAltair at ok
+  simp only [bind_ok_iff, liftAccessor_ok, notGloas, ↓reduceDIte,
+    pure, Except.pure, Except.ok.injEq] at ok
+  obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _,
+    _, _, _, raised, rfl⟩ := ok
+  rw [departureQueues_increase electra raised]
+  unfold setEpochParticipation
+  split <;> rfl
+
+/-- A sync aggregate changes balances without consuming departure churn. -/
+theorem sync_departureQueues {fork : Fork} {s t : BeaconState preset fork}
+    (electra : .pectra ≤ fork) {altair : .altair ≤ fork} {aggregate : SyncAggregate preset}
+    (ok : processSyncAggregate config checks s altair aggregate = .ok t) :
+    departureQueues electra t = departureQueues electra s := by
+  unfold processSyncAggregate at ok
+  simp only [bind_ok_iff] at ok
+  obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, folded⟩ := ok
+  rw [← Array.foldlM_toList] at folded
+  refine foldlM_ok_invariant (fun t => departureQueues electra t = departureQueues electra s)
+    ?_ rfl folded
+  intro a reward b kept stepped
+  unfold applySyncReward at stepped
+  split at stepped
+  · simp only [bind_ok_iff, liftAccessor_ok] at stepped
+    obtain ⟨_, raised, _, _, paid⟩ := stepped
+    exact (departureQueues_increase electra paid).trans
+      ((departureQueues_increase electra raised).trans kept)
+  · exact (departureQueues_decrease electra (liftAccessor_ok.mp stepped)).trans kept
+
+/-- Changing withdrawal credentials leaves both departure queues unchanged. -/
+theorem credentials_departureQueues {fork : Fork} {s t : BeaconState preset fork}
+    (electra : .pectra ≤ fork) {signed : SignedBLSToExecutionChange}
+    (ok : processBlsToExecutionChange config checks s signed = .ok t) :
+    departureQueues electra t = departureQueues electra s := by
+  obtain ⟨_, _, _, _, _, set⟩ := processBlsToExecutionChange_ok ok
+  obtain ⟨_, rfl⟩ := setValidator_ok set
+  rfl
+
 private theorem pendingDeposit_departureQueues {fork : Fork} {s t : BeaconState preset fork}
     (electra : .pectra ≤ fork) {deposit : PendingDeposit}
     (ok : applyPendingDeposit config checks s deposit = .ok t) :
@@ -1123,6 +1206,162 @@ theorem consolidationRequest_cases {fork : Fork} {s t : BeaconState preset fork}
     | exact .inl (switchToCompounding_departureQueues electra (liftAccessor_ok.mp ok))
     | exact .inr ⟨_, _, _, getValidator_eq_ok_iff.mpr
         (getElem?_toNat_of_ofNatChecked (by assumption)), ok⟩
+
+/-- Consolidation requests never spend the separate exit queue. -/
+theorem consolidationRequest_exitFrame {fork : Fork} {s t : BeaconState preset fork}
+    (electra : .pectra ≤ fork) {request : ConsolidationRequest}
+    (ok : processConsolidationRequest config s electra request = .ok t) :
+    t.earliestExitEpoch electra = s.earliestExitEpoch electra ∧
+      t.exitBalanceToConsume electra = s.exitBalanceToConsume electra := by
+  rcases consolidationRequest_cases electra ok with frame | ⟨i, v, j, _, called⟩
+  · exact ⟨congrArg Prod.fst frame, congrArg (fun q => q.2.1) frame⟩
+  · simp only [queueConsolidation, bind_ok_iff, liftAccessor_ok, pure, Except.pure,
+      Except.ok.injEq] at called
+    obtain ⟨⟨queued, epoch⟩, scheduled, _, _, changed, set, _, _, rfl⟩ := called
+    obtain ⟨_, rfl⟩ := setValidator_ok set
+    simp only [computeConsolidationEpochAndUpdateChurn, bind_ok_iff,
+      pure, Except.pure, Except.ok.injEq, Prod.mk.injEq] at scheduled
+    obtain ⟨_, _, _, _, ⟨_, _⟩, _, rfl, _⟩ := scheduled
+    exact ⟨rfl, rfl⟩
+
+private theorem exitTrace_of_frame {fork : Fork} {s t : BeaconState preset fork}
+    (electra : .pectra ≤ fork)
+    (frame : t.earliestExitEpoch electra = s.earliestExitEpoch electra ∧
+      t.exitBalanceToConsume electra = s.exitBalanceToConsume electra) :
+    ∃ calls, DepartureQueueTrace (s.earliestExitEpoch electra) (s.exitBalanceToConsume electra)
+      calls (t.earliestExitEpoch electra) (t.exitBalanceToConsume electra) ∧
+      ∀ call ∈ calls, call.rate.toNat ≤ config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat := by
+  rw [frame.1, frame.2]
+  exact ⟨[], .nil _ _, by simp⟩
+
+/-- Execution requests spend exit capacity only in their withdrawal requests. -/
+theorem executionRequests_exitTrace {fork : Fork} {s t : BeaconState preset fork}
+    (electra : .pectra ≤ fork) (early : fork < .glamsterdam) {body : BeaconBlockBody preset fork}
+    (ok : processExecutionRequests config s body ⟨electra, early⟩ = .ok t) :
+    ∃ calls, DepartureQueueTrace (s.earliestExitEpoch electra) (s.exitBalanceToConsume electra)
+      calls (t.earliestExitEpoch electra) (t.exitBalanceToConsume electra) ∧
+      ∀ call ∈ calls, call.rate.toNat ≤ config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat := by
+  simp only [processExecutionRequests, bind_ok_iff] at ok
+  obtain ⟨deposited, deposits, withdrawn, withdrawals, consolidations⟩ := ok
+  rw [← Array.foldlM_toList] at deposits withdrawals consolidations
+  have initial : departureQueues electra deposited = departureQueues electra s :=
+    foldlM_ok_invariant (fun t => departureQueues electra t = departureQueues electra s)
+      (fun _ _ _ kept ok => (depositRequest_departureQueues electra ok).trans kept) rfl deposits
+  have final : t.earliestExitEpoch electra = withdrawn.earliestExitEpoch electra ∧
+      t.exitBalanceToConsume electra = withdrawn.exitBalanceToConsume electra :=
+    foldlM_ok_invariant (fun t =>
+      t.earliestExitEpoch electra = withdrawn.earliestExitEpoch electra ∧
+      t.exitBalanceToConsume electra = withdrawn.exitBalanceToConsume electra)
+      (fun _ _ _ kept ok =>
+        let one := consolidationRequest_exitFrame electra ok
+        ⟨one.1.trans kept.1, one.2.trans kept.2⟩) ⟨rfl, rfl⟩ consolidations
+  obtain ⟨calls, trace, rates⟩ := exitTrace_fold electra
+    (fun _ _ _ ok => withdrawalRequest_exitTrace electra early ok) withdrawals
+  have initialEpoch := congrArg Prod.fst initial
+  have initialBalance := congrArg (fun q => q.2.1) initial
+  change deposited.earliestExitEpoch electra = s.earliestExitEpoch electra at initialEpoch
+  change deposited.exitBalanceToConsume electra = s.exitBalanceToConsume electra at initialBalance
+  rw [initialEpoch, initialBalance] at trace
+  rw [final.1, final.2]
+  exact ⟨calls, trace, rates⟩
+
+/-- The operations in an Electra block supply a linked exit-call trace. -/
+theorem operations_exitTrace {fork : Fork} {s t : BeaconState preset fork}
+    (electra : .pectra ≤ fork) (early : fork < .glamsterdam)
+    {body : BeaconBlockBody preset fork} {parentSlot : Slot}
+    (ok : processOperations config checks s body parentSlot = .ok t) :
+    ∃ calls, DepartureQueueTrace (s.earliestExitEpoch electra) (s.exitBalanceToConsume electra)
+      calls (t.earliestExitEpoch electra) (t.exitBalanceToConsume electra) ∧
+      ∀ call ∈ calls, call.rate.toNat ≤ config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat := by
+  have notGloas : ¬ .glamsterdam ≤ fork := Nat.not_le_of_lt early
+  simp only [processOperations, notGloas, electra, ↓reduceDIte, bind_ok_iff] at ok
+  obtain ⟨_, _, _, _, proposed, proposerOk, attested, attesterOk, voted, votesOk,
+    deposited, depositsOk, exited, exitsOk, changed, changesOk, requestsOk⟩ := ok
+  rw [← Array.foldlM_toList] at proposerOk attesterOk votesOk depositsOk exitsOk
+  obtain ⟨one, oneTrace, oneRates⟩ := exitTrace_fold electra
+    (fun _ _ _ ok => proposerSlashing_exitTrace electra early ok) proposerOk
+  obtain ⟨two, twoTrace, twoRates⟩ := exitTrace_fold electra
+    (fun _ _ _ ok => attesterSlashing_exitTrace electra early ok) attesterOk
+  have votesFrame : departureQueues electra voted = departureQueues electra attested :=
+    foldlM_ok_invariant (fun t => departureQueues electra t = departureQueues electra attested)
+      (fun _ _ _ kept ok => (attestation_departureQueues electra early ok).trans kept) rfl votesOk
+  have depositsFrame : departureQueues electra deposited = departureQueues electra voted :=
+    foldlM_ok_invariant (fun t => departureQueues electra t = departureQueues electra voted)
+      (fun _ _ _ kept ok => (deposit_departureQueues electra ok).trans kept) rfl depositsOk
+  obtain ⟨three, threeTrace, threeRates⟩ := exitTrace_fold electra
+    (fun _ _ _ ok => initiateExit_trace electra early (voluntaryExit_initiates ok)) exitsOk
+  have changesFrame : departureQueues electra changed = departureQueues electra exited := by
+    have capella : .shapella ≤ fork := Nat.le_trans (by decide) electra
+    simp only [processBlsToExecutionChanges, capella, ↓reduceDIte] at changesOk
+    rw [← Array.foldlM_toList] at changesOk
+    exact foldlM_ok_invariant (fun t => departureQueues electra t = departureQueues electra exited)
+      (fun _ _ _ kept ok => (credentials_departureQueues electra ok).trans kept) rfl changesOk
+  obtain ⟨four, fourTrace, fourRates⟩ := executionRequests_exitTrace electra early requestsOk
+  have middleEpoch := congrArg Prod.fst (depositsFrame.trans votesFrame)
+  have middleBalance := congrArg (fun q => q.2.1) (depositsFrame.trans votesFrame)
+  have lastEpoch := congrArg Prod.fst changesFrame
+  have lastBalance := congrArg (fun q => q.2.1) changesFrame
+  change deposited.earliestExitEpoch electra = attested.earliestExitEpoch electra at middleEpoch
+  change deposited.exitBalanceToConsume electra = attested.exitBalanceToConsume electra at middleBalance
+  change changed.earliestExitEpoch electra = exited.earliestExitEpoch electra at lastEpoch
+  change changed.exitBalanceToConsume electra = exited.exitBalanceToConsume electra at lastBalance
+  rw [middleEpoch, middleBalance] at threeTrace
+  rw [lastEpoch, lastBalance] at fourTrace
+  refine ⟨one ++ two ++ three ++ four, ((oneTrace.append twoTrace).append threeTrace).append
+    fourTrace, ?_⟩
+  intro call member
+  simp only [List.mem_append] at member
+  rcases member with ((member | member) | member) | member
+  · exact oneRates call member
+  · exact twoRates call member
+  · exact threeRates call member
+  · exact fourRates call member
+
+/-- A successful Electra block links all exit calls across its non-scheduling operations. -/
+theorem block_exitTrace {fork : Fork} {s t : BeaconState preset fork}
+    (electra : .pectra ≤ fork) (early : fork < .glamsterdam)
+    {engine : ExecutionEngine preset fork} {block : BeaconBlock preset fork}
+    (ok : processBlock config checks engine s block = .ok t) :
+    ∃ calls, DepartureQueueTrace (s.earliestExitEpoch electra) (s.exitBalanceToConsume electra)
+      calls (t.earliestExitEpoch electra) (t.exitBalanceToConsume electra) ∧
+      ∀ call ∈ calls, call.rate.toNat ≤ config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat := by
+  have altair : .altair ≤ fork := Nat.le_trans (by decide) electra
+  have bellatrix : .bellatrix ≤ fork := Nat.le_trans (by decide) electra
+  have capella : .shapella ≤ fork := Nat.le_trans (by decide) electra
+  have before : fork < .hegota := Nat.lt_trans early (by decide)
+  have notGloas : ¬ .glamsterdam ≤ fork := Nat.not_le_of_lt early
+  simp only [processBlock, processBlockAltair, altair, bellatrix, before, notGloas,
+    ↓reduceDIte, pure_bind, bind_ok_iff] at ok
+  obtain ⟨headed, headedOk, executed, executedOk, revealed, revealedOk, voted, votedOk,
+    operated, operatedOk, synced⟩ := ok
+  have executionFrame : departureQueues electra executed = departureQueues electra headed := by
+    simp only [processBlockExecution, notGloas, capella, ↓reduceDIte, bind_ok_iff] at executedOk
+    obtain ⟨withdrawn, paid, payload⟩ := executedOk
+    obtain ⟨_, _, _, rfl⟩ := processExecutionPayload_ok payload
+    exact (withdrawals_departureQueues electra early paid :)
+  have head : departureQueues electra voted = departureQueues electra s := by
+    have voteFrame := (processEth1Data_eq votedOk).2.2
+    have voteSame : departureQueues electra voted = departureQueues electra revealed := by
+      rw [← voteFrame]; rfl
+    rw [voteSame]
+    obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, rfl⟩ := processRandao_eq revealedOk
+    change departureQueues electra executed = departureQueues electra s
+    rw [executionFrame]
+    obtain ⟨_, _, rfl⟩ := processBlockHeader_eq headedOk
+    rfl
+  have tail := sync_departureQueues electra synced
+  obtain ⟨calls, trace, rates⟩ := operations_exitTrace electra early operatedOk
+  have firstEpoch := congrArg Prod.fst head
+  have firstBalance := congrArg (fun q => q.2.1) head
+  have lastEpoch := congrArg Prod.fst tail
+  have lastBalance := congrArg (fun q => q.2.1) tail
+  change voted.earliestExitEpoch electra = s.earliestExitEpoch electra at firstEpoch
+  change voted.exitBalanceToConsume electra = s.exitBalanceToConsume electra at firstBalance
+  change t.earliestExitEpoch electra = operated.earliestExitEpoch electra at lastEpoch
+  change t.exitBalanceToConsume electra = operated.exitBalanceToConsume electra at lastBalance
+  rw [firstEpoch, firstBalance] at trace
+  rw [lastEpoch, lastBalance]
+  exact ⟨calls, trace, rates⟩
 
 set_option maxHeartbeats 800000 in
 /-- A request classified as not calling churn preserves both departure queues. -/
