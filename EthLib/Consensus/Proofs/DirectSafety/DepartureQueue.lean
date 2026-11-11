@@ -96,6 +96,47 @@ theorem DepartureQueueTrace.window_le {earliest epoch : Epoch} {available left :
 
 variable {preset : Preset} {config : Config} {checks : SignatureChecks}
 
+/-- A transition charges each registry index at most once. -/
+theorem departureCharges_step_indices {x y : ForkedBeaconState preset}
+    (step : Step config checks x y) : (step.departureCharges.map (·.index)).Nodup := by
+  rw [List.Nodup, List.pairwise_map]
+  unfold Step.departureCharges
+  apply List.Pairwise.filterMap
+    (R := fun a b : Validator × Nat => a.2 ≠ b.2)
+  · intro a b different c one d two
+    dsimp only at one two
+    split at one
+    · cases one
+    · split at one
+      · cases Option.some.inj one
+        split at two
+        · cases two
+        · split at two
+          · cases Option.some.inj two
+            exact different
+          · cases two
+      · cases one
+  · have unique : (x.state.validators.data.toList.zipIdx.map Prod.snd).Nodup := by
+      rw [List.zipIdx_map_snd]
+      exact List.nodup_range' _
+    exact List.pairwise_map.mp unique
+
+/-- Once assigned, an exit cannot generate a second charge later in the run. -/
+theorem departureCharges_run_indices {x y : ForkedBeaconState preset}
+    (tail : Run config checks x y) : (tail.departureCharges.map (·.index)).Nodup := by
+  induction tail with
+  | nil => simp [Run.departureCharges]
+  | snoc pre step ih =>
+    rw [Run.departureCharges, List.map_append, List.nodup_append]
+    refine ⟨ih, departureCharges_step_indices step, ?_⟩
+    intro i earlier j latest
+    obtain ⟨one, oneMember, rfl⟩ := List.mem_map.mp earlier
+    obtain ⟨two, twoMember, rfl⟩ := List.mem_map.mp latest
+    obtain ⟨v, found, assigned, _⟩ := pre.departure_charge_exit one oneMember
+    have single := (Run.nil.snoc step).departure_charge_ne_of_assigned
+      one.index v found assigned two (by simpa [Run.departureCharges] using twoMember)
+    exact Ne.symm single
+
 /-- An exit scheduling operation supplies a call with exactly its input and output queues. -/
 theorem exitQueueCall_of_computed {fork : Fork} {s t : BeaconState preset fork}
     (electra : .pectra ≤ fork) {amount : Gwei} {epoch : Epoch}
@@ -773,6 +814,23 @@ theorem initiateExit_trace {fork : Fork} {s t : BeaconState preset fork}
       obtain rfl := List.mem_singleton.mp member
       exact exitChurnLimit_le_cap early rate
 
+/-- Slashing rewards and penalties leave the initial exit call's queue output unchanged. -/
+theorem slashing_exitTrace {fork : Fork} {s t : BeaconState preset fork}
+    (electra : .pectra ≤ fork) (early : fork < .glamsterdam)
+    {index : ValidatorIndex} {whistleblower : Option ValidatorIndex}
+    (ok : slashValidator config s index whistleblower = .ok t) :
+    ∃ calls, DepartureQueueTrace (s.earliestExitEpoch electra) (s.exitBalanceToConsume electra)
+      calls (t.earliestExitEpoch electra) (t.exitBalanceToConsume electra) ∧
+      ∀ call ∈ calls, call.rate.toNat ≤ config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat := by
+  obtain ⟨exited, called, frame⟩ := slashValidator_departureQueues electra early ok
+  obtain ⟨calls, trace, rates⟩ := initiateExit_trace electra early called
+  have epoch := congrArg Prod.fst frame
+  have balance := congrArg (fun q => q.2.1) frame
+  change t.earliestExitEpoch electra = exited.earliestExitEpoch electra at epoch
+  change t.exitBalanceToConsume electra = exited.exitBalanceToConsume electra at balance
+  rw [epoch, balance]
+  exact ⟨calls, trace, rates⟩
+
 /-- Consecutive queue traces compose without adding capacity at their shared state. -/
 theorem DepartureQueueTrace.append {a b c : Epoch} {x y z : Gwei}
     {first second : List DepartureQueueCall}
@@ -781,6 +839,81 @@ theorem DepartureQueueTrace.append {a b c : Epoch} {x y z : Gwei}
   induction one with
   | nil => exact two
   | cons call tail ih => exact .cons call (ih two)
+
+/-- A proposer slashing supplies the exit trace of its slashed proposer. -/
+theorem proposerSlashing_exitTrace {fork : Fork} {s t : BeaconState preset fork}
+    (electra : .pectra ≤ fork) (early : fork < .glamsterdam) {slashing : ProposerSlashing}
+    (ok : processProposerSlashing config checks s slashing = .ok t) :
+    ∃ calls, DepartureQueueTrace (s.earliestExitEpoch electra) (s.exitBalanceToConsume electra)
+      calls (t.earliestExitEpoch electra) (t.exitBalanceToConsume electra) ∧
+      ∀ call ∈ calls, call.rate.toNat ≤ config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat := by
+  simp only [processProposerSlashing, bind_ok_iff, ensure_ok_iff, liftAccessor_ok] at ok
+  obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, slashed⟩ := ok
+  exact slashing_exitTrace electra early slashed
+
+private theorem slashableFold_exitTrace {fork : Fork}
+    (electra : .pectra ≤ fork) (early : fork < .glamsterdam)
+    {indices : List ValidatorIndex} {s t : BeaconState preset fork} {flag nextFlag : Bool}
+    (ok : indices.foldlM (slashIfSlashable config) (s, flag) = .ok (t, nextFlag)) :
+    ∃ calls, DepartureQueueTrace (s.earliestExitEpoch electra) (s.exitBalanceToConsume electra)
+      calls (t.earliestExitEpoch electra) (t.exitBalanceToConsume electra) ∧
+      ∀ call ∈ calls, call.rate.toNat ≤ config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat := by
+  induction indices generalizing s flag with
+  | nil => cases ok; exact ⟨[], .nil _ _, by simp⟩
+  | cons index rest ih =>
+    obtain ⟨⟨middle, flag'⟩, stepped, remaining⟩ := bind_ok_iff.mp ok
+    obtain ⟨later, tail, laterRates⟩ := ih remaining
+    simp only [slashIfSlashable, bind_ok_iff] at stepped
+    obtain ⟨_, _, stepped⟩ := stepped
+    split at stepped
+    · simp only [bind_ok_iff, liftAccessor_ok, pure, Except.pure,
+        Except.ok.injEq, Prod.mk.injEq] at stepped
+      obtain ⟨_, slashed, rfl, _⟩ := stepped
+      obtain ⟨first, head, firstRates⟩ := slashing_exitTrace electra early slashed
+      refine ⟨first ++ later, head.append tail, ?_⟩
+      intro call member
+      rcases List.mem_append.mp member with member | member
+      · exact firstRates call member
+      · exact laterRates call member
+    · cases stepped; exact ⟨later, tail, laterRates⟩
+
+/-- An attester slashing concatenates calls only for validators it actually slashes. -/
+theorem attesterSlashing_exitTrace {fork : Fork} {s t : BeaconState preset fork}
+    (electra : .pectra ≤ fork) (early : fork < .glamsterdam)
+    {slashing : AttesterSlashing preset fork}
+    (ok : processAttesterSlashing config checks s slashing = .ok t) :
+    ∃ calls, DepartureQueueTrace (s.earliestExitEpoch electra) (s.exitBalanceToConsume electra)
+      calls (t.earliestExitEpoch electra) (t.exitBalanceToConsume electra) ∧
+      ∀ call ∈ calls, call.rate.toNat ≤ config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat := by
+  simp only [processAttesterSlashing, bind_ok_iff, ensure_ok_iff] at ok
+  obtain ⟨_, _, _, _, _, _, _, _, _, _, ⟨folded, flag⟩, foldedOk, ok⟩ := ok
+  simp only [pure, Except.pure, Except.ok.injEq] at ok
+  obtain ⟨_, _, rfl⟩ := ok
+  exact slashableFold_exitTrace electra early foldedOk
+
+/-- A successful fold concatenates its operation-level exit-call traces. -/
+theorem exitTrace_fold {fork : Fork} {α : Type} (electra : .pectra ≤ fork)
+    {operation : BeaconState preset fork → α → Except TransitionError (BeaconState preset fork)}
+    (stepTrace : ∀ s item t, operation s item = .ok t →
+      ∃ calls, DepartureQueueTrace (s.earliestExitEpoch electra) (s.exitBalanceToConsume electra)
+        calls (t.earliestExitEpoch electra) (t.exitBalanceToConsume electra) ∧
+        ∀ call ∈ calls, call.rate.toNat ≤ config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat)
+    {items : List α} {s t : BeaconState preset fork}
+    (ok : items.foldlM operation s = .ok t) :
+    ∃ calls, DepartureQueueTrace (s.earliestExitEpoch electra) (s.exitBalanceToConsume electra)
+      calls (t.earliestExitEpoch electra) (t.exitBalanceToConsume electra) ∧
+      ∀ call ∈ calls, call.rate.toNat ≤ config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat := by
+  induction items generalizing s with
+  | nil => cases ok; exact ⟨[], .nil _ _, by simp⟩
+  | cons item rest ih =>
+    obtain ⟨middle, stepped, remaining⟩ := bind_ok_iff.mp ok
+    obtain ⟨first, one, firstRates⟩ := stepTrace s item middle stepped
+    obtain ⟨later, two, laterRates⟩ := ih remaining
+    refine ⟨first ++ later, one.append two, ?_⟩
+    intro call member
+    rcases List.mem_append.mp member with member | member
+    · exact firstRates call member
+    · exact laterRates call member
 
 /-- The Electra registry pass supplies a concrete exit-call trace with bounded rates. -/
 theorem registryEntries_exitTrace {fork : Fork} (electra : .pectra ≤ fork)
