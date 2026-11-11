@@ -297,13 +297,6 @@ theorem balance_path_covered {g x y : ForkedBeaconState preset}
       (events.map (·.debitLimit)).sum := by
   sorry
 
-def initialSlack (x : ForkedBeaconState preset) : Nat :=
-  ((getActiveValidatorIndices x.state (getCurrentEpoch x.state)).map fun i =>
-    match x.state.validators.data[i.toNat]? with
-    | none => 0
-    | some v => if v.slashed then 0 else
-        effectiveAt x i.toNat - actualBalanceAt x i.toNat).sum
-
 def initialExcess (x : ForkedBeaconState preset) : Nat :=
   ((getActiveValidatorIndices x.state (getCurrentEpoch x.state)).map fun i =>
     actualBalanceAt x i.toNat - effectiveAt x i.toNat).sum
@@ -316,22 +309,25 @@ def activationCarry (x : ForkedBeaconState preset) : Nat :=
         getCurrentEpoch x.state < v.activationEpoch then max (effectiveAt x i) (actualBalanceAt x i)
     else 0).sum
 
-def scheduledExitCarry (x : ForkedBeaconState preset) : Nat :=
+def scheduledExitCarry (x : ForkedBeaconState preset) (high : Nat) : Nat :=
   (x.state.validators.data.toList.filter fun v =>
-    isActiveValidator v (getCurrentEpoch x.state) && v.exitEpoch != FAR_FUTURE_EPOCH).foldl
+    isActiveValidator v (getCurrentEpoch x.state) && v.exitEpoch != FAR_FUTURE_EPOCH &&
+      v.exitEpoch.toNat ≤ high + 1).foldl
       (fun total v => total + v.effectiveBalance.toNat) 0
 
-def queueCarry (x : ForkedBeaconState preset) : Nat :=
+def queueCarry (x : ForkedBeaconState preset) (high : Nat) : Nat :=
   if electra : .pectra ≤ x.fork then
-    (x.state.exitBalanceToConsume electra).toNat +
-      (x.state.consolidationBalanceToConsume electra).toNat
+    (if (x.state.earliestExitEpoch electra).toNat ≤ high + 1 then
+      (x.state.exitBalanceToConsume electra).toNat else 0) +
+    (if (x.state.earliestConsolidationEpoch electra).toNat ≤ high + 1 then
+      (x.state.consolidationBalanceToConsume electra).toNat else 0)
   else 0
 
-/-- A configuration-derived upper rate for consolidation churn, using the endpoint registry size. -/
-def consolidationRate (size : Nat) : Nat :=
+/-- Pre-Gloas consolidation churn is the whole balance churn less the activation/exit cap. -/
+def consolidationRate (stake : Nat) : Nat :=
   max config.MIN_PER_EPOCH_CHURN_LIMIT_ELECTRA.toNat
-    (max preset.EFFECTIVE_BALANCE_INCREMENT.toNat
-      (size * preset.MAX_EFFECTIVE_BALANCE_ELECTRA.toNat) / config.CHURN_LIMIT_QUOTIENT.toNat)
+    (max preset.EFFECTIVE_BALANCE_INCREMENT.toNat stake / config.CHURN_LIMIT_QUOTIENT.toNat) -
+      config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat
 
 /-- Includes both epoch tests that can justify a target at high. -/
 def driftHorizon (x : ForkedBeaconState preset) (high : Nat) : Nat :=
@@ -343,18 +339,78 @@ def registryWindow (x : ForkedBeaconState preset) (high : Nat) : Nat :=
     (preset.SLOTS_PER_EPOCH.toNat * preset.MAX_DEPOSITS.toNat +
       preset.MAX_PENDING_DEPOSITS_PER_EPOCH.toNat)
 
-def exitWindow (x : ForkedBeaconState preset) (high : Nat) : Nat :=
-  scheduledExitCarry x + queueCarry x +
-    driftHorizon x high *
-      ((if x.fork < .pectra then max 1 (cohortCap config (registryWindow x high)) *
-        preset.MAX_EFFECTIVE_BALANCE.toNat else 0) +
-        config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat +
-        consolidationRate (preset := preset) (config := config) (registryWindow x high))
-
 /-- Electra deposit churn includes active top-ups, but not credits to already withdrawn keys. -/
 def depositWindow (x : ForkedBeaconState preset) (high : Nat) : Nat :=
   (if electra : .pectra ≤ x.fork then (x.state.depositBalanceToConsume electra).toNat else 0) +
     driftHorizon x high * config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat
+
+/-- Funding that can still support active stake, including queued consolidation sources.
+
+The maximum retains effective stake above actual balance without counting all registry entries. -/
+def fundedStake (x : ForkedBeaconState preset) : Nat :=
+  (x.state.validators.data.toList.zipIdx.map fun (v, i) =>
+    let pending := if electra : .pectra ≤ x.fork then
+      (x.state.pendingConsolidations electra).data.any (fun c => c.sourceIndex.toNat == i)
+      else false
+    if isActiveValidator v (getCurrentEpoch x.state) ||
+        getCurrentEpoch x.state < v.activationEpoch || pending then
+      max (effectiveAt x i) (actualBalanceAt x i)
+    else 0).sum
+
+/-- Retain withdrawn-source credits until queue chronology excludes them on reachable runs.
+
+Those exception credits do not consume deposit churn and must remain explicit. -/
+def withdrawnConsolidationCredit (event : BalanceEvent preset) : Nat :=
+  if electra : .pectra ≤ event.before.fork then
+    (event.before.state.validators.data.toList.zipIdx.map fun (v, i) =>
+      if v.withdrawableEpoch.toNat ≤ (getCurrentEpoch event.before.state).toNat &&
+          (event.before.state.pendingConsolidations electra).data.any
+            (fun c => c.sourceIndex.toNat == i) then
+        actualBalanceAt event.after i - actualBalanceAt event.before i
+      else 0).sum
+  else 0
+
+/-- Consolidations move existing funding; deposits have churn and a withdrawn-source exception. -/
+def fundingCredit (event : BalanceEvent preset) : Nat :=
+  match event.source with
+  | .consolidations => 0
+  | .deposits => withdrawnConsolidationCredit event
+  | _ => event.creditLimit
+
+/-- Electra active stake is funded initially, by deposit churn, or by non-transfer credits.
+
+Before Electra this retains the registry envelope until a count-churn funding proof is supplied. -/
+def activeStakeWindow (x : ForkedBeaconState preset) (high : Nat)
+    (events : List (BalanceEvent preset)) : Nat :=
+  if .pectra ≤ x.fork ∧ 2 ≤ config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat then
+    fundedStake x + depositWindow (config := config) x high + (events.map fundingCredit).sum
+  else registryWindow x high * preset.MAX_EFFECTIVE_BALANCE_ELECTRA.toNat
+
+/-- The post-Electra funding envelope bounds active stake without a registry-wide effective cap.
+
+The bound retains withdrawn-source credits rather than assuming pending-source chronology. -/
+theorem active_stake_le_window {g x y : ForkedBeaconState preset}
+    (shared : Run config checks g x) (tail : Run config checks x y)
+    (genesis : Genesis (config := config) (checks := checks) g)
+    (parameters : Parameters preset) (caps : CapOrder preset)
+    (aligned : MaxEffectiveBalancesAligned preset)
+    (electra : .pectra ≤ x.fork) (early : y.fork < .glamsterdam)
+    (withdrawalDelay : 2 ≤ config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat)
+    (high : Nat) (endEpoch : (getCurrentEpoch y.state).toNat ≤ high + 1)
+    (events : List (BalanceEvent preset)) (replayed : tail.balanceEvents high = .ok events) :
+    Quorum.weight (effectiveWeight y.state) (activeKeys y.state) ≤
+      activeStakeWindow (config := config) x high events := by
+  sorry
+
+def exitWindow (x : ForkedBeaconState preset) (high : Nat)
+    (events : List (BalanceEvent preset)) : Nat :=
+  scheduledExitCarry x high + queueCarry x high +
+    driftHorizon x high *
+      ((if x.fork < .pectra then max 1 (cohortCap config (registryWindow x high)) *
+        preset.MAX_EFFECTIVE_BALANCE.toNat else 0) +
+        config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat +
+        consolidationRate (preset := preset) (config := config)
+          (activeStakeWindow (config := config) x high events))
 
 /-- Before Electra activations spend count churn; afterwards funding spends deposit churn.
 
@@ -363,24 +419,6 @@ def activationWindow (x : ForkedBeaconState preset) (high : Nat) : Nat :=
   activationCarry x + depositWindow (config := config) x high +
     (if x.fork < .pectra then driftHorizon x high * cohortCap config (registryWindow x high) *
       preset.MAX_EFFECTIVE_BALANCE.toNat else 0)
-
-/-- Only reference validators still active at the debit site contribute withdrawal drift.
-
-Full withdrawals follow exit and are charged by exitWindow, not a second time as balance losses. -/
-def activeWithdrawalDebit (x : ForkedBeaconState preset) (event : BalanceEvent preset) : Nat :=
-  ((getActiveValidatorIndices x.state (getCurrentEpoch x.state)).map fun i =>
-    match event.before.state.validators.data[i.toNat]? with
-    | none => 0
-    | some v => if isActiveValidator v (getCurrentEpoch event.before.state) then
-        actualBalanceAt event.before i.toNat - actualBalanceAt event.after i.toNat
-      else 0).sum
-
-/-- Slashing losses belong to accountable stake; only non-slashing losses enter this budget. -/
-def residualDebit (x : ForkedBeaconState preset) (event : BalanceEvent preset) : Nat :=
-  match event.source with
-  | .slashings => 0
-  | .withdrawals => activeWithdrawalDebit x event
-  | _ => event.debitLimit
 
 /-- Electra deposits use depositWindow; pre-Electra active top-ups remain here.
 
@@ -395,10 +433,48 @@ def residualCredit (x : ForkedBeaconState preset) (high : Nat)
       else event.creditLimit
   | _ => event.creditLimit
 
+/-- Per-reference-key non-slashing debits count while the key remains in the recent support. -/
+def referenceDebit (i : Nat) (event : BalanceEvent preset) : Nat :=
+  if event.source == .slashings then 0 else
+    match event.before.state.validators.data[i]? with
+    | none => 0
+    | some v => if isActiveValidator v (getCurrentEpoch event.before.state) ||
+        isActiveValidator v (getPreviousEpoch event.before.state) then
+        actualBalanceAt event.before i - actualBalanceAt event.after i
+      else 0
+
+/-- Rounding is charged only to a key with initial slack or an actual non-slashing debit.
+
+An aligned effective balance cannot fall below its starting value without such a deficit. -/
 def lossCorrection (x : ForkedBeaconState preset) (events : List (BalanceEvent preset)) : Nat :=
-  initialSlack x + (events.map (residualDebit x)).sum +
-    (getActiveValidatorIndices x.state (getCurrentEpoch x.state)).length *
-      (preset.EFFECTIVE_BALANCE_INCREMENT.toNat - 1)
+  ((getActiveValidatorIndices x.state (getCurrentEpoch x.state)).map fun i =>
+    match x.state.validators.data[i.toNat]? with
+    | none => 0
+    | some v => if v.slashed then 0 else
+      let deficit := effectiveAt x i.toNat - actualBalanceAt x i.toNat +
+        (events.map (referenceDebit i.toNat)).sum
+      if deficit = 0 then 0 else deficit + preset.EFFECTIVE_BALANCE_INCREMENT.toNat - 1).sum
+
+/-- No rounding allowance is needed when each unslashed reference key has no deficit. -/
+theorem lossCorrection_eq_zero (x : ForkedBeaconState preset)
+    (events : List (BalanceEvent preset))
+    (funded : ∀ i ∈ getActiveValidatorIndices x.state (getCurrentEpoch x.state),
+      ∀ v, x.state.validators.data[i.toNat]? = some v → v.slashed = false →
+        effectiveAt x i.toNat ≤ actualBalanceAt x i.toNat)
+    (noDebits : ∀ i ∈ getActiveValidatorIndices x.state (getCurrentEpoch x.state),
+      (events.map (referenceDebit i.toNat)).sum = 0) : lossCorrection x events = 0 := by
+  unfold lossCorrection
+  apply List.sum_eq_zero
+  intro value member
+  obtain ⟨i, hi, rfl⟩ := List.mem_map.mp member
+  cases found : x.state.validators.data[i.toNat]? with
+  | none => simp
+  | some v =>
+    cases slashed : v.slashed with
+    | true => simp [slashed]
+    | false =>
+      have balance := funded i hi v found slashed
+      simp [slashed, Nat.sub_eq_zero_of_le balance, noDebits i hi]
 
 /-- The registry envelope is independent of the endpoint, including a mid-epoch start. -/
 theorem registry_le_window {x y : ForkedBeaconState preset} (tail : Run config checks x y)
@@ -408,9 +484,11 @@ theorem registry_le_window {x y : ForkedBeaconState preset} (tail : Run config c
     y.state.validators.data.size ≤ registryWindow x high := by
   sorry
 
-/-- Count exits and retained-key losses together, omitting keys with slashing evidence.
+/-- Bound exits and retained-key losses, omitting keys with slashing evidence.
 
-The same reference validator cannot both leave and remain, so loss corrections are charged once. -/
+The source envelope can charge a pre-exit deficit as well as the later departure.
+
+The exact referenceLoss does not double-count that key. -/
 theorem nonaccountable_losses_over_interval {g x y : ForkedBeaconState preset}
     (shared : Run config checks g x) (tail : Run config checks x y)
     (genesis : Genesis (config := config) (checks := checks) g)
@@ -420,7 +498,7 @@ theorem nonaccountable_losses_over_interval {g x y : ForkedBeaconState preset}
     (endEpoch : (getCurrentEpoch y.state).toNat ≤ high + 1)
     (events : List (BalanceEvent preset)) (replayed : tail.balanceEvents high = .ok events) :
     referenceLoss x y ≤
-      exitWindow (config := config) x high + lossCorrection x events := by
+      exitWindow (config := config) x high events + lossCorrection x events := by
   sorry
 
 /-- Funding churn bounds Electra deposits that can contribute to recent voting stake.
@@ -447,7 +525,7 @@ The boundary term is supplied by boundaryWindow, not by the cumulative exit enve
 Queue, registry and rounding bounds still need tighter transition proofs. -/
 def sourceDrift (x : ForkedBeaconState preset) (high boundary : Nat)
     (events : List (BalanceEvent preset)) : Nat :=
-  2 * (exitWindow (config := config) x high + lossCorrection x events) +
+  2 * (exitWindow (config := config) x high events + lossCorrection x events) +
     activationWindow (config := config) x high + initialExcess x +
     (events.map (residualCredit (config := config) x high)).sum + 2 * boundary
 
