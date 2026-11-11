@@ -2095,11 +2095,63 @@ private theorem newUnassigned_processBlock {block : BeaconBlock preset fork}
     exact same.trans headSize
   exact before ▸ newUnassigned_processOperations operations
 
-/-- A validator admitted within one step still has no assigned exit at its endpoint. -/
-theorem Step.new_validator_exit_unassigned {x y : ForkedBeaconState preset}
+/-- Pending balance processing retains unassigned activation and exit epochs. -/
+theorem processPendingBalances_epochs_unassigned {n : Nat}
+    (ok : processPendingBalances config checks state = .ok after)
+    (pending : ∀ i v, n ≤ i → state.validators.data[i]? = some v →
+      v.activationEpoch = FAR_FUTURE_EPOCH ∧ v.exitEpoch = FAR_FUTURE_EPOCH) :
+    ∀ i v, n ≤ i → after.validators.data[i]? = some v →
+      v.activationEpoch = FAR_FUTURE_EPOCH ∧ v.exitEpoch = FAR_FUTURE_EPOCH :=
+  UnassignedKept.processPendingBalances ok n pending
+
+/-- A withdrawal request retains unassigned activation and exit epochs. -/
+theorem processWithdrawalRequest_epochs_unassigned {n : Nat} {electra : .pectra ≤ fork}
+    {request : WithdrawalRequest}
+    (ok : processWithdrawalRequest config state electra request = .ok after)
+    (pending : ∀ i v, n ≤ i → state.validators.data[i]? = some v →
+      v.activationEpoch = FAR_FUTURE_EPOCH ∧ v.exitEpoch = FAR_FUTURE_EPOCH) :
+    ∀ i v, n ≤ i → after.validators.data[i]? = some v →
+      v.activationEpoch = FAR_FUTURE_EPOCH ∧ v.exitEpoch = FAR_FUTURE_EPOCH :=
+  UnassignedKept.processWithdrawalRequest ok n pending
+
+/-- A consolidation request retains unassigned activation and exit epochs. -/
+theorem processConsolidationRequest_epochs_unassigned {n : Nat} {electra : .pectra ≤ fork}
+    {request : ConsolidationRequest}
+    (ok : processConsolidationRequest config state electra request = .ok after)
+    (pending : ∀ i v, n ≤ i → state.validators.data[i]? = some v →
+      v.activationEpoch = FAR_FUTURE_EPOCH ∧ v.exitEpoch = FAR_FUTURE_EPOCH) :
+    ∀ i v, n ≤ i → after.validators.data[i]? = some v →
+      v.activationEpoch = FAR_FUTURE_EPOCH ∧ v.exitEpoch = FAR_FUTURE_EPOCH :=
+  UnassignedKept.processConsolidationRequest ok n pending
+
+/-- An epoch leaves newly admitted validators with both epochs unassigned. -/
+theorem processEpoch_new_validator_epochs_unassigned
+    (ok : processEpoch config checks state = .ok after) :
+    ∀ i v, state.validators.data.size ≤ i → after.validators.data[i]? = some v →
+      v.activationEpoch = FAR_FUTURE_EPOCH ∧ v.exitEpoch = FAR_FUTURE_EPOCH :=
+  newUnassigned_processEpoch ok
+
+/-- A slot leaves newly admitted validators with both epochs unassigned. -/
+theorem advanceSlot_new_validator_epochs_unassigned
+    (ok : advanceSlot config checks state = .ok after) :
+    ∀ i v, state.validators.data.size ≤ i → after.validators.data[i]? = some v →
+      v.activationEpoch = FAR_FUTURE_EPOCH ∧ v.exitEpoch = FAR_FUTURE_EPOCH :=
+  newUnassigned_advanceSlot ok
+
+/-- Block operations leave newly admitted validators with both epochs unassigned. -/
+theorem processOperations_new_validator_epochs_unassigned {body : BeaconBlockBody preset fork}
+    {parentSlot : Slot}
+    (ok : processOperations config checks state body parentSlot = .ok after) :
+    ∀ i v, state.validators.data.size ≤ i → after.validators.data[i]? = some v →
+      v.activationEpoch = FAR_FUTURE_EPOCH ∧ v.exitEpoch = FAR_FUTURE_EPOCH :=
+  newUnassigned_processOperations ok
+
+/-- A validator admitted within one step still has both epochs unassigned at its endpoint. -/
+theorem Step.new_validator_epochs_unassigned {x y : ForkedBeaconState preset}
     (step : Step config checks x y) (i : Nat) (v : Validator)
     (newIndex : x.state.validators.data.size ≤ i)
-    (found : y.state.validators.data[i]? = some v) : v.exitEpoch = FAR_FUTURE_EPOCH := by
+    (found : y.state.validators.data[i]? = some v) :
+    v.activationEpoch = FAR_FUTURE_EPOCH ∧ v.exitEpoch = FAR_FUTURE_EPOCH := by
   have pending : UnassignedFrom x.state.validators.data.size y.state := by
     cases step with
     | slot ok =>
@@ -2111,6 +2163,13 @@ theorem Step.new_validator_exit_unassigned {x y : ForkedBeaconState preset}
       exact tail _ (newUnassigned_advanceSlot slotOk)
     | block engine signed due ok =>
       exact newUnassigned_processBlock (applySignedBlock_ok ok).2.1
-  exact (pending i v newIndex found).2
+  exact pending i v newIndex found
+
+/-- A validator admitted within one step still has no assigned exit at its endpoint. -/
+theorem Step.new_validator_exit_unassigned {x y : ForkedBeaconState preset}
+    (step : Step config checks x y) (i : Nat) (v : Validator)
+    (newIndex : x.state.validators.data.size ≤ i)
+    (found : y.state.validators.data[i]? = some v) : v.exitEpoch = FAR_FUTURE_EPOCH :=
+  (step.new_validator_epochs_unassigned i v newIndex found).2
 
 end EthLib.Consensus
