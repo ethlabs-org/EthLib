@@ -375,7 +375,9 @@ That shift compares the balances of the source with those of each receiver.
 
 The measured tally of each block of the walk exceeds the threshold of the rule by the shift.
 
-In the pulled-up state of the head of a call, take the committees of the epoch so far.
+Away from the start of an epoch, take the committees of the epoch so far.
+
+They are read in the pulled-up state of the head of the call.
 
 The Byzantine validators hold at most β of their stake.
 
@@ -464,6 +466,7 @@ structure RuleBounds
     ∀ state slot epochStart lastSlot participants,
       ((e.world n).state u).getPulledUpHeadState config head.root = .ok state →
       ((e.world n).state u).getCurrentSlot config = .ok slot →
+      isStartSlotAtEpoch preset slot = .ok false →
       computeStartSlotAtEpoch preset (computeEpochAtSlot preset slot) = .ok epochStart →
       subChecked slot 1 = .ok lastSlot →
       ((e.world n).state u).getCommitteesBetweenSlots head.root epochStart lastSlot =
@@ -486,6 +489,7 @@ structure RuleBounds
     ∀ state slot epochStart lastSlot participants total soFar,
       ((e.world n).state u).getPulledUpHeadState config head.root = .ok state →
       ((e.world n).state u).getCurrentSlot config = .ok slot →
+      isStartSlotAtEpoch preset slot = .ok false →
       computeStartSlotAtEpoch preset (computeEpochAtSlot preset slot) = .ok epochStart →
       subChecked slot 1 = .ok lastSlot →
       ((e.world n).state u).getCommitteesBetweenSlots head.root epochStart lastSlot =
@@ -876,7 +880,8 @@ theorem Execution.safeAt_of_walk {Δ : ℕ} (sync : e.Synchronous Δ)
         previous.root = fcr.previousSlotHead ∧
         ((e.world k).state u).getCurrentSlot config = .ok previousSlot ∧
         addChecked previousSlot 1 = .ok slot)
-    (targetVotes : HonestTargetVotes e margin u n head.root)
+    (targetVotes : ∀ slot, ((e.world n).state u).getCurrentSlot config = .ok slot →
+      isStartSlotAtEpoch preset slot = .ok false → HonestTargetVotes e margin u n head.root)
     (lineage : ∀ epoch, ((e.world n).state u).getCurrentStoreEpoch config = .ok epoch →
       ((e.world n).state u).getBlockEpoch start = .ok epoch →
       TargetChecked e margin anchor.finalizedCheckpoint.root u n epoch start)

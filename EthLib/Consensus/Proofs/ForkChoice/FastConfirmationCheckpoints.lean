@@ -914,7 +914,9 @@ The block is on the chain of the head of the caller.
 
 The head of the slot before, as the rule tracks it, was a head of the store of the caller.
 
-Honest validators hold the count of the rule for the target of the head, with the margin.
+Away from the start of an epoch, honest validators hold the count of the rule for the target.
+
+They hold it with the margin.
 
 Each has voted for that target or has still to vote in the epoch.
 
@@ -992,7 +994,8 @@ theorem Execution.coveredOrViableAt_of_checked {Δ : ℕ} (sync : e.Synchronous 
         ((e.world k).state u).getCurrentSlot config = .ok previousSlot ∧
         ((e.world n).state u).getCurrentSlot config = .ok currentSlot ∧
         addChecked previousSlot 1 = .ok currentSlot)
-    (targetVotes : HonestTargetVotes e margin u n head.root)
+    (targetVotes : ∀ slot, ((e.world n).state u).getCurrentSlot config = .ok slot →
+      isStartSlotAtEpoch preset slot = .ok false → HonestTargetVotes e margin u n head.root)
     (lineage : ∀ epoch, ((e.world n).state u).getCurrentStoreEpoch config = .ok epoch →
       ((e.world n).state u).getBlockEpoch start = .ok epoch →
       TargetChecked e margin anchor.finalizedCheckpoint.root u n epoch start)
