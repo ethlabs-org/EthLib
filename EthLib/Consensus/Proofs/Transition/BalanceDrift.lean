@@ -2,6 +2,7 @@ module
 
 public import EthLib.Consensus.Proofs.Transition.Trace
 public import EthLib.Consensus.Proofs.Transition.RegistryLifecycle
+public import EthLib.Consensus.Proofs.Transition.ValidatorCaps
 public import EthLib.Consensus.Proofs.Accessors
 public import EthLib.Consensus.Proofs.Transition.EpochUpdates
 public import EthLib.Consensus.Proofs.Transition.Genesis
@@ -1071,6 +1072,307 @@ private theorem balanceDrift_gain {x y : ForkedBeaconState preset}
       rw [credits]
       omega
 
+private theorem balanceDrift_reference_update {f : Fork} {s t : BeaconState preset f}
+    (ok : processEffectiveBalanceUpdates s = .ok t) (i : Nat) (reference : Gwei)
+    (aligned : reference.toNat % preset.EFFECTIVE_BALANCE_INCREMENT.toNat = 0)
+    (funded : reference.toNat ≤ actualBalanceAt ⟨f, s⟩ i)
+    (previous : reference.toNat ≤ effectiveAt ⟨f, s⟩ i)
+    (cap : ∀ v, t.validators.data[i]? = some v →
+      reference ≤ withdrawalMaxEffectiveBalance preset f v) :
+    reference.toNat ≤ effectiveAt ⟨f, t⟩ i := by
+  have one {a b : BeaconState preset f} {j : Nat}
+      (step : updateEffectiveBalance a j = .ok b) :
+      b.balances = a.balances ∧
+      (∀ v, b.validators.data[i]? = some v →
+        reference ≤ withdrawalMaxEffectiveBalance preset f v) →
+      (∀ v, a.validators.data[i]? = some v →
+        reference ≤ withdrawalMaxEffectiveBalance preset f v) ∧
+      (reference.toNat ≤ actualBalanceAt ⟨f, a⟩ i →
+        reference.toNat ≤ effectiveAt ⟨f, a⟩ i →
+        reference.toNat ≤ effectiveAt ⟨f, b⟩ i) := by
+    simp only [updateEffectiveBalance, bind_ok_iff, liftAccessor_ok] at step
+    obtain ⟨v, found, balance, read, next, changed, set⟩ := step
+    obtain ⟨inside, rfl⟩ := setValidatorAt_ok set
+    intro premise
+    have located := getValidatorAt_eq_ok_iff.mp found
+    by_cases eq : i = j
+    · subst i
+      have nextRead :
+          (a.putValidator j inside { v with effectiveBalance := next }).validators.data[j]? =
+          some { v with effectiveBalance := next } := by
+        simp [BeaconState.putValidator, Serialization.Ssz.RootedForkList.data_set]
+      have capped := premise.2 _ nextRead
+      change reference ≤ withdrawalMaxEffectiveBalance preset f v at capped
+      constructor
+      · intro w wRead
+        rw [located, Option.some.injEq] at wRead
+        subst w
+        exact capped
+      · intro funded previous
+        simp only [actualBalanceAt, getBalanceAt_eq_ok_iff.mp read, effectiveAt, located,
+          Option.map_some, Option.getD_some] at funded previous
+        simp only [effectiveAt, nextRead, Option.map_some, Option.getD_some]
+        rcases updatedEffectiveBalance_cases changed with rfl | rfl
+        · exact previous
+        · have rounded : balance % preset.EFFECTIVE_BALANCE_INCREMENT ≤ balance :=
+            UInt64.le_iff_toNat_le.mpr (by rw [UInt64.toNat_mod]; exact Nat.mod_le _ _)
+          have quotient := Nat.div_le_div_right funded
+            (c := preset.EFFECTIVE_BALANCE_INCREMENT.toNat)
+          have product := Nat.mul_le_mul_left preset.EFFECTIVE_BALANCE_INCREMENT.toNat quotient
+          have refDivision := Nat.mod_add_div reference.toNat
+            preset.EFFECTIVE_BALANCE_INCREMENT.toNat
+          have balDivision := Nat.mod_add_div balance.toNat preset.EFFECTIVE_BALANCE_INCREMENT.toNat
+          rw [aligned] at refDivision
+          rw [Base.Uint64.toNat_min, UInt64.toNat_sub_of_le _ _ rounded, UInt64.toNat_mod]
+          have capped := UInt64.le_iff_toNat_le.mp capped
+          omega
+    · have same :
+          (a.putValidator j inside { v with effectiveBalance := next }).validators.data[i]? =
+          a.validators.data[i]? := by
+        simp [BeaconState.putValidator, Serialization.Ssz.RootedForkList.data_set, Ne.symm eq]
+      constructor
+      · simpa only [same] using premise.2
+      · intro _ previous
+        simpa only [effectiveAt, same] using previous
+  have fold : ∀ (xs : List Nat) {a b : BeaconState preset f},
+      xs.foldlM updateEffectiveBalance a = .ok b →
+      (∀ v, b.validators.data[i]? = some v →
+        reference ≤ withdrawalMaxEffectiveBalance preset f v) →
+      (∀ v, a.validators.data[i]? = some v →
+        reference ≤ withdrawalMaxEffectiveBalance preset f v) ∧
+      (reference.toNat ≤ actualBalanceAt ⟨f, a⟩ i →
+        reference.toNat ≤ effectiveAt ⟨f, a⟩ i →
+        reference.toNat ≤ effectiveAt ⟨f, b⟩ i) := by
+    intro xs
+    induction xs with
+    | nil => intro a b ok cap; cases ok; exact ⟨cap, fun _ previous => previous⟩
+    | cons j xs ih =>
+      intro a b ok cap
+      obtain ⟨middle, updated, rest⟩ := bind_ok_iff.mp ok
+      have tail := ih rest cap
+      have balances : middle.balances = a.balances := by
+        simp only [updateEffectiveBalance, bind_ok_iff, liftAccessor_ok] at updated
+        obtain ⟨_, _, _, _, _, _, set⟩ := updated
+        obtain ⟨_, rfl⟩ := setValidatorAt_ok set
+        rfl
+      have head := one updated ⟨balances, tail.1⟩
+      exact ⟨head.1, fun funded previous => tail.2
+        (by simpa only [actualBalanceAt, balances] using funded) (head.2 funded previous)⟩
+  exact (fold _ ok cap).2 funded previous
+
+private theorem balanceDrift_reference_epoch {f : Fork} {s t : BeaconState preset f}
+    (ok : processEpoch config checks s = .ok t) (early : f < .glamsterdam)
+    (i : Nat) (v : Validator) (found : s.validators.data[i]? = some v) (reference : Gwei)
+    (aligned : reference.toNat % preset.EFFECTIVE_BALANCE_INCREMENT.toNat = 0)
+    (funded : reference.toNat ≤ actualBalanceAt ⟨f, t⟩ i)
+    (previous : reference.toNat ≤ effectiveAt ⟨f, s⟩ i)
+    (cap : reference ≤ withdrawalMaxEffectiveBalance preset f v) :
+    reference.toNat ≤ effectiveAt ⟨f, t⟩ i := by
+  obtain ⟨before, after, kept, updated, validators, balances⟩ := balanceDrift_epoch early ok
+  obtain ⟨w, located, monotone⟩ := processEpoch_validatorCap_mono early ok i v found
+  have capAfter : ∀ z, after.validators.data[i]? = some z →
+      reference ≤ withdrawalMaxEffectiveBalance preset f z := by
+    intro z read
+    rw [validators] at located
+    rw [located, Option.some.injEq] at read
+    subst z
+    exact UInt64.le_trans cap monotone
+  have prior : reference.toNat ≤ effectiveAt ⟨f, before⟩ i := by
+    rw [kept i (Array.getElem?_eq_some_iff.mp found).1]
+    exact previous
+  have bound := balanceDrift_reference_update updated i reference aligned
+    (by simpa only [actualBalanceAt, balances] using funded) prior capAfter
+  simpa only [effectiveAt, validators] using bound
+
+private theorem balanceDrift_reference_slot {f : Fork} {s t : BeaconState preset f}
+    (ok : advanceSlot config checks s = .ok t) (early : f < .glamsterdam)
+    (i : Nat) (v : Validator) (found : s.validators.data[i]? = some v) (reference : Gwei)
+    (aligned : reference.toNat % preset.EFFECTIVE_BALANCE_INCREMENT.toNat = 0)
+    (funded : reference.toNat ≤ actualBalanceAt ⟨f, t⟩ i)
+    (previous : reference.toNat ≤ effectiveAt ⟨f, s⟩ i)
+    (cap : reference ≤ withdrawalMaxEffectiveBalance preset f v) :
+    reference.toNat ≤ effectiveAt ⟨f, t⟩ i := by
+  simp only [advanceSlot, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at ok
+  obtain ⟨next, _, cached, cache, advanced, advance, rfl⟩ := ok
+  obtain ⟨_, _, _, _, rfl⟩ := processSlot_ok cache
+  unfold epochIfLast at advance
+  split at advance
+  · exact balanceDrift_reference_epoch advance early i v found reference aligned funded previous cap
+  · cases advance
+    exact previous
+
+private theorem balanceDrift_preActivation_excludes {f : Fork} {s : BeaconState preset f}
+    (early : f < .glamsterdam) (i : Nat) (v : Validator)
+    (found : s.validators.data[i]? = some v)
+    (activated : v.activationEpoch ≠ FAR_FUTURE_EPOCH) :
+    ∀ index ∈ preActivationIndices s, index.toNat ≠ i := by
+  intro index member
+  simp only [preActivationIndices, List.mem_map, List.mem_mergeSort, List.mem_filter] at member
+  obtain ⟨⟨w, j⟩, ⟨located, waiting⟩, rfl⟩ := member
+  have read : s.validators.data[j]? = some w := by
+    simpa using List.mem_zipIdx_iff_getElem?.mp located
+  have inside := (Array.getElem?_eq_some_iff.mp read).1
+  have small : j < 2 ^ 64 := Nat.lt_of_lt_of_le inside
+    ((s.validators.bound early).trans (Nat.le_of_lt preset.VALIDATOR_REGISTRY_LIMIT.toNat_lt))
+  have converted : j.toUInt64.toNat = j := by
+    rw [Nat.toUInt64_eq, UInt64.toNat_ofNat_of_lt' small]
+  rw [converted]
+  intro eq
+  subst j
+  rw [found, Option.some.injEq] at read
+  subst w
+  exact activated (by simpa using waiting)
+
+private theorem balanceDrift_upgrade_active {s : ForkedBeaconState preset}
+    {t : {t : ForkedBeaconState preset // s.fork < t.fork}}
+    (ok : upgradeNext config checks s = .ok t) (early : t.val.fork < .glamsterdam)
+    (i : Nat) (v : Validator) (found : s.state.validators.data[i]? = some v)
+    (activated : v.activationEpoch ≠ FAR_FUTURE_EPOCH) :
+    effectiveAt t.val i = effectiveAt s i := by
+  have reset {f : Fork} {a b : BeaconState preset f} {electra : .pectra ≤ f}
+      {index : ValidatorIndex} (different : index.toNat ≠ i)
+      (ok : queuePreActivation a electra index = .ok b) :
+      effectiveAt ⟨f, b⟩ i = effectiveAt ⟨f, a⟩ i := by
+    simp only [queuePreActivation, bind_ok_iff, liftAccessor_ok, pure, Except.pure,
+      Except.ok.injEq] at ok
+    obtain ⟨_, _, _, _, _, _, _, balance, _, validator, rfl⟩ := ok
+    obtain ⟨_, rfl⟩ := setBalance_ok balance
+    obtain ⟨inside, rfl⟩ := setValidator_ok validator
+    simp [effectiveAt, BeaconState.putValidator, BeaconState.putBalance,
+      Serialization.Ssz.RootedForkList.data_set, different]
+  obtain ⟨fork, state⟩ := s
+  cases fork <;>
+    simp only [upgradeNext, bind_ok_iff, pure, Except.pure, Except.ok.injEq, throw,
+      throwThe, MonadExceptOf.throw, reduceCtorEq] at ok
+  · obtain ⟨_, upgraded, rfl⟩ := ok
+    simp only [effectiveAt, (upgradeToAltair_spec upgraded).1]
+  · subst ok; rfl
+  · subst ok; rfl
+  · subst ok; rfl
+  · obtain ⟨_, upgraded, rfl⟩ := ok
+    simp only [upgradeToElectra, bind_ok_iff] at upgraded
+    obtain ⟨_, _, _, _, _, _, _, _, middle, queued, compounded⟩ := upgraded
+    have pass : ∀ (xs : List ValidatorIndex) {a b : BeaconState preset .pectra},
+        (∀ j ∈ xs, j.toNat ≠ i) →
+        xs.foldlM (fun s j => queuePreActivation s (by decide) j) a = .ok b →
+        effectiveAt ⟨.pectra, b⟩ i = effectiveAt ⟨.pectra, a⟩ i := by
+      intro xs
+      induction xs with
+      | nil => intro a b _ ok; cases ok; rfl
+      | cons j xs ih =>
+        intro a b different ok
+        obtain ⟨middle, first, rest⟩ := bind_ok_iff.mp ok
+        exact (ih (fun k member => different k (List.mem_cons_of_mem j member)) rest).trans
+          (reset (different j List.mem_cons_self) first)
+    have excluded := balanceDrift_preActivation_excludes
+      (s := state) (by decide) i v found activated
+    have one := pass _ (by exact excluded) queued
+    have second := foldlM_ok_invariant
+        (fun t => effectiveAt ⟨.pectra, t⟩ i = effectiveAt ⟨.dencun, state⟩ i)
+        (fun a index b previous ok => ?_) one compounded
+    · exact second
+    · unfold queueCompoundingExcess at ok
+      split at ok
+      · split at ok
+        · have step := liftAccessor_ok.mp ok
+          simp only [queueExcessActiveBalance, bind_ok_iff] at step
+          obtain ⟨_, _, step⟩ := step
+          split at step
+          · simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at step
+            obtain ⟨_, _, _, _, _, set, rfl⟩ := step
+            obtain ⟨_, rfl⟩ := setBalance_ok set
+            exact previous
+          · cases step; exact previous
+        · cases ok; exact previous
+      · cases ok; exact previous
+  · obtain ⟨_, upgraded, rfl⟩ := ok
+    simp only [effectiveAt, (upgradeToFulu_spec upgraded).1]
+  · obtain ⟨_, _, rfl⟩ := ok
+    exact False.elim (Nat.lt_irrefl _ early)
+  · obtain ⟨_, _, rfl⟩ := ok
+    exact False.elim ((by decide : ¬Fork.hegota < Fork.glamsterdam) early)
+
+private theorem balanceDrift_upgrades_active {s t : ForkedBeaconState preset}
+    (ok : processUpgrades config checks s = .ok t) (early : t.fork < .glamsterdam)
+    (i : Nat) (v : Validator) (found : s.state.validators.data[i]? = some v)
+    (activated : v.activationEpoch ≠ FAR_FUTURE_EPOCH) :
+    effectiveAt t i = effectiveAt s i := by
+  fun_induction processUpgrades config checks s generalizing t v with
+  | case1 s due ih =>
+    obtain ⟨next, nextOk, rest⟩ := bind_ok_iff.mp ok
+    obtain ⟨w, located, lifecycle⟩ := (registryLifecycle_upgradeNext nextOk).validators i v found
+    exact (ih next rest early w located (by rwa [lifecycle.activationEpoch activated])).trans
+      (balanceDrift_upgrade_active nextOk
+        (Nat.lt_of_le_of_lt (processUpgrades_fork_le rest) early) i v found activated)
+  | case2 s notDue => cases ok; rfl
+
+private theorem balanceDrift_debits_append (i : Nat) (a b : List (ForkedBeaconState preset))
+    (x : ForkedBeaconState preset) :
+    pathDebits i (a ++ x :: b) = pathDebits i (a ++ [x]) + pathDebits i (x :: b) := by
+  induction a with
+  | nil => simp [pathDebits]
+  | cons first rest ih =>
+    cases rest with
+    | nil => simp [pathDebits]
+    | cons second rest => simpa [pathDebits, Nat.add_assoc] using ih
+
+private theorem balanceDrift_reference_run {x y : ForkedBeaconState preset}
+    (tail : Run config checks x y) (caps : CapOrder preset) (early : y.fork < .glamsterdam)
+    (i : Nat) (v : Validator) (found : x.state.validators.data[i]? = some v)
+    (activated : v.activationEpoch ≠ FAR_FUTURE_EPOCH) (reference : Gwei)
+    (aligned : reference.toNat % preset.EFFECTIVE_BALANCE_INCREMENT.toNat = 0)
+    (funded : reference.toNat + pathDebits i tail.balancePath ≤ actualBalanceAt x i)
+    (previous : reference.toNat ≤ effectiveAt x i)
+    (cap : reference ≤ withdrawalMaxEffectiveBalance preset x.fork v) :
+    reference.toNat ≤ effectiveAt y i ∧
+      actualBalanceAt x i ≤ actualBalanceAt y i + pathDebits i tail.balancePath := by
+  induction tail with
+  | nil => exact ⟨previous, by simp [Run.balancePath, pathDebits]⟩
+  | @snoc middle last pre step ih =>
+    have middleEarly := Nat.lt_of_le_of_lt step.chainStep.fork_le early
+    obtain ⟨w, located, lifecycle⟩ := pre.registryLifecycle.validators i v found
+    have assigned : w.activationEpoch ≠ FAR_FUTURE_EPOCH := by
+      rwa [lifecycle.activationEpoch activated]
+    obtain ⟨z, locatedZ, capMono⟩ := pre.validatorCap_mono caps.activation caps.compounding
+      middleEarly i v found
+    have eq : z = w := by rw [located, Option.some.injEq] at locatedZ; exact locatedZ.symm
+    subst z
+    have capMiddle := UInt64.le_trans cap capMono
+    obtain ⟨initial, path⟩ := balanceDrift_path_last pre
+    cases step with
+    | @block fork before after engine signed due ok =>
+      have debits : pathDebits i (pre.snoc (.block engine signed due ok)).balancePath =
+          pathDebits i pre.balancePath +
+            (actualBalanceAt ⟨fork, before⟩ i - actualBalanceAt ⟨fork, after⟩ i) := by
+        simp only [Run.balancePath, Step.balancePath, path, List.append_assoc]
+        simp only [List.cons_append, List.nil_append]
+        rw [balanceDrift_debits_append]
+        simp [pathDebits]
+      rw [debits] at funded ⊢
+      have prior := ih middleEarly (by omega)
+      have kept := effectiveKept_block early (applySignedBlock_ok ok).2.1 i
+        (Array.getElem?_eq_some_iff.mp located).1
+      exact ⟨by rw [kept]; exact prior.1, by omega⟩
+    | slot ok =>
+      obtain ⟨next, advanced, upgraded⟩ := bind_ok_iff.mp ok
+      have debits : pathDebits i (pre.snoc (.slot ok)).balancePath =
+          pathDebits i pre.balancePath +
+            ((actualBalanceAt middle i - actualBalanceAt ⟨middle.fork, next⟩ i) +
+              (actualBalanceAt ⟨middle.fork, next⟩ i - actualBalanceAt last i)) := by
+        simp only [Run.balancePath, Step.balancePath, advanced, Except.toOption,
+          path, List.append_assoc]
+        simp only [List.cons_append, List.nil_append]
+        rw [balanceDrift_debits_append]
+        simp [pathDebits]
+      rw [debits] at funded ⊢
+      have prior := ih middleEarly (by omega)
+      have updated := balanceDrift_reference_slot advanced middleEarly i w located reference
+        aligned (by omega) prior.1 capMiddle
+      obtain ⟨a, read, life⟩ := (registryLifecycle_advanceSlot advanced).validators i w located
+      have kept := balanceDrift_upgrades_active upgraded early i a read
+        (by rwa [life.activationEpoch assigned])
+      exact ⟨by rwa [kept], by omega⟩
+
 theorem effective_loss_from_balance {g x y : ForkedBeaconState preset}
     (shared : Run config checks g x) (tail : Run config checks x y)
     (genesis : Genesis (config := config) (checks := checks) g) (caps : CapOrder preset)
@@ -1080,7 +1382,37 @@ theorem effective_loss_from_balance {g x y : ForkedBeaconState preset}
     effectiveAt x i - effectiveAt y i ≤
       (effectiveAt x i - actualBalanceAt x i) + pathDebits i tail.balancePath +
         (preset.EFFECTIVE_BALANCE_INCREMENT.toNat - 1) := by
-  sorry
+  let amount := min (effectiveAt x i) (actualBalanceAt x i) - pathDebits i tail.balancePath
+  let rounded := amount - amount % preset.EFFECTIVE_BALANCE_INCREMENT.toNat
+  have effective : effectiveAt x i = v.effectiveBalance.toNat := by simp [effectiveAt, found]
+  have amount_le : amount ≤ v.effectiveBalance.toNat := by dsimp [amount]; omega
+  have rounded_le : rounded ≤ amount := Nat.sub_le _ _
+  have small : rounded < 2 ^ 64 := lt_of_le_of_lt (rounded_le.trans amount_le)
+    v.effectiveBalance.toNat_lt
+  let reference : Gwei := rounded.toUInt64
+  have value : reference.toNat = rounded := by
+    dsimp [reference]; rw [Nat.toUInt64_eq, UInt64.toNat_ofNat_of_lt' small]
+  by_cases affordable : pathDebits i tail.balancePath ≤ actualBalanceAt x i
+  · have capped := shared.effectiveBalance_capped genesis caps.activation caps.compounding
+      (Nat.lt_of_le_of_lt (fork_le_of_chainSteps tail.chainSteps) early) v
+      (Array.mem_of_getElem? found)
+    have bound := balanceDrift_reference_run tail caps early i v found activated reference
+      (by rw [value]; dsimp [rounded]
+          have division := Nat.mod_add_div amount preset.EFFECTIVE_BALANCE_INCREMENT.toNat
+          have eq : amount - amount % preset.EFFECTIVE_BALANCE_INCREMENT.toNat =
+              preset.EFFECTIVE_BALANCE_INCREMENT.toNat *
+                (amount / preset.EFFECTIVE_BALANCE_INCREMENT.toNat) := by omega
+          rw [eq, Nat.mul_mod_right])
+      (by rw [value]; dsimp [rounded, amount]; omega)
+      (by rw [value]; omega)
+      (UInt64.le_iff_toNat_le.mpr (by
+        have cap := UInt64.le_iff_toNat_le.mp capped
+        rw [value]; omega))
+    have remainder := Nat.mod_lt amount increment
+    rw [value] at bound
+    dsimp [rounded, amount] at *
+    omega
+  · omega
 
 theorem effective_gain_from_balance {x y : ForkedBeaconState preset}
     (tail : Run config checks x y) (early : y.fork < .glamsterdam)
