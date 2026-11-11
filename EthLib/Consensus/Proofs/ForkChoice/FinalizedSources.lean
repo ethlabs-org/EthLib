@@ -65,6 +65,41 @@ theorem Execution.exists_signsSource_of_finalized {anchor : Store preset fork}
       (v, data) ∈ statements config checks anchorState anchorBlock m ∧
       data.source = ((e.world k).state w).finalizedCheckpoint ∧
       data.source.epoch < data.target.epoch ∧ data.target.epoch < epoch := by
-  sorry
+  obtain ⟨anchorRoot, _, _, _, anchorJustified, anchorFinalized, _, _⟩ :=
+    getForkchoiceStore_anchor anchored
+  have above : getCurrentEpoch anchorState <
+      ((e.world k).state w).finalizedCheckpoint.epoch := by
+    simpa only [anchorJustified] using after
+  have slotRead := epochOk
+  unfold Store.getCurrentStoreEpoch at slotRead
+  simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at slotRead
+  obtain ⟨slot, slotOk, _⟩ := slotRead
+  rcases e.exists_origin_of_finalized anchored honest start slotsPositive epochOk with
+    same | ⟨root, state, stored, same, bound⟩ |
+      ⟨root, state, pulled, stored, processed, same, bound⟩
+  · rw [same, anchorFinalized] at above
+    exact (UInt64.lt_irrefl _ above).elim
+  · have sources := e.blockState_sent_sources anchored sound slotsPositive window ring preGloas
+      honest start nonzero slotOk p large few stored bound
+    rcases sources.finalized with old | ⟨target, increasing, earlier, v, data,
+      good, source, targetEq, m, sent, statement⟩
+    · rw [same] at above
+      exact (UInt64.not_lt.mpr old above).elim
+    · refine ⟨v, good, k, m, sent, data, statement, source.trans same.symm, ?_, ?_⟩
+      · simpa only [source, targetEq] using increasing
+      · rw [targetEq, UInt64.lt_iff_toNat_lt]
+        have := UInt64.le_iff_toNat_le.mp bound
+        omega
+  · have sources := e.pulledState_sent_sources anchored sound slotsPositive window ring preGloas
+      honest start nonzero slotOk p large few stored (UInt64.le_of_lt bound) processed
+    rcases sources.finalized with old | ⟨target, increasing, earlier, v, data,
+      good, source, targetEq, m, sent, statement⟩
+    · rw [same] at above
+      exact (UInt64.not_lt.mpr old above).elim
+    · refine ⟨v, good, k, m, sent, data, statement, source.trans same.symm, ?_, ?_⟩
+      · simpa only [source, targetEq] using increasing
+      · rw [targetEq, UInt64.lt_iff_toNat_lt]
+        have := UInt64.lt_iff_toNat_lt.mp bound
+        omega
 
 end EthLib.Consensus.Models.Network
