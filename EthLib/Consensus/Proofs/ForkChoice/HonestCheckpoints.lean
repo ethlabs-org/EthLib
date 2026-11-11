@@ -1121,6 +1121,59 @@ theorem processSlot_unslashedAttestingIndices {state cached : BeaconState preset
   obtain ⟨_, _, _, _, rfl⟩ := processSlot_ok computed
   rfl
 
+/-- A cached finalization step retains count evidence from the uncached visited state. -/
+theorem FinalizationSources.process_cached {link : Checkpoint → Epoch → Prop}
+    {anchorEpoch : Epoch} {state cached after : BeaconState preset fork}
+    (positive : 0 < preset.SLOTS_PER_EPOCH.toNat)
+    (window : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
+    (cachedOk : processSlot state = .ok cached)
+    (holds : FinalizationSources link anchorEpoch (getCurrentEpoch cached).toNat cached)
+    (ordered : CheckpointsOrdered cached) (settled : JustifiedSettled cached)
+    (counts : ¬getCurrentEpoch state ≤ GENESIS_EPOCH + 1 →
+      ∀ (recent : Bool) (indices : List ValidatorIndex) (total balance threshold weight : Gwei),
+      ((∃ altair : .altair ≤ fork,
+        getUnslashedParticipatingIndices state altair TIMELY_TARGET_FLAG_INDEX
+          (if recent then getCurrentEpoch state else getPreviousEpoch state) = .ok indices) ∨
+        ∃ (before : fork < .altair) (attestations : Array (PendingAttestation preset)),
+          getMatchingTargetAttestations state before
+            (if recent then getCurrentEpoch state else getPreviousEpoch state) =
+              .ok attestations ∧
+          getUnslashedAttestingIndices state attestations = .ok indices) →
+      getTotalActiveBalance state = .ok total → getTotalBalance state indices = .ok balance →
+      mulChecked total 2 = .ok threshold → mulChecked balance 3 = .ok weight →
+      threshold ≤ weight →
+      anchorEpoch < (if recent then state.currentJustifiedCheckpoint
+        else state.previousJustifiedCheckpoint).epoch →
+      link (if recent then state.currentJustifiedCheckpoint
+        else state.previousJustifiedCheckpoint)
+        (if recent then getCurrentEpoch state else getPreviousEpoch state))
+    (computed : processJustificationAndFinalization cached = .ok after) :
+    FinalizationSources link anchorEpoch ((getCurrentEpoch cached).toNat + 1) after := by
+  obtain ⟨current, previous, total, balance, -, -, -⟩ := processSlot_countingBalances cachedOk
+  have frame := frame_processSlot cachedOk
+  apply holds.process_of_counts ordered settled ?_ computed
+  intro late recent indices totalValue balanceValue threshold weight counted totalOk balanceOk
+    thresholdOk weightOk passed above
+  rw [current] at late
+  rw [total] at totalOk
+  rw [balance] at balanceOk
+  rw [frame.currentJustified, frame.previousJustified] at above ⊢
+  rw [current, previous]
+  apply counts late recent indices totalValue balanceValue threshold weight ?_
+    totalOk balanceOk thresholdOk weightOk passed above
+  rcases counted with ⟨altair, indicesOk⟩ | ⟨before, attestations, matching, indicesOk⟩
+  · left
+    refine ⟨altair, ?_⟩
+    rw [current, previous, processSlot_participatingIndices cachedOk] at indicesOk
+    exact indicesOk
+  · right
+    refine ⟨before, attestations, ?_, ?_⟩
+    · rw [current, previous] at matching
+      rw [processSlot_matchingTargetAttestations positive window cachedOk before
+        (by cases recent <;> simp)] at matching
+      exact matching
+    · rwa [processSlot_unslashedAttestingIndices cachedOk] at indicesOk
+
 namespace Models.Network
 
 variable {config : Config} {checks : SignatureChecks} {sources : BlockSources preset fork}
