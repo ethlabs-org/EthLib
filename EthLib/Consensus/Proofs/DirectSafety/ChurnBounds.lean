@@ -281,6 +281,34 @@ theorem _root_.EthLib.Consensus.Run.departure_charge_ne_of_assigned
           exact assigned ((kept.exitEpoch assigned).symm.trans (same ▸ pending.1))
         · cases added
 
+/-- Every assigned exit was inherited or charged, including validators admitted during the run. -/
+theorem _root_.EthLib.Consensus.Run.departure_origin
+    {x y : ForkedBeaconState preset} (tail : Run config checks x y)
+    (i : Nat) (v : Validator) (found : y.state.validators.data[i]? = some v)
+    (assigned : v.exitEpoch ≠ FAR_FUTURE_EPOCH) :
+    (∃ old, x.state.validators.data[i]? = some old ∧ old.exitEpoch = v.exitEpoch) ∨
+      ∃ charge ∈ tail.departureCharges, charge.index = i ∧ charge.epoch = v.exitEpoch.toNat := by
+  induction tail generalizing v with
+  | nil => exact Or.inl ⟨v, found, rfl⟩
+  | @snoc middle last pre step ih =>
+    by_cases inside : i < middle.state.validators.data.size
+    · let old := middle.state.validators.data[i]
+      have oldFound : middle.state.validators.data[i]? = some old := by simp [old, inside]
+      by_cases pending : old.exitEpoch = FAR_FUTURE_EPOCH
+      · obtain ⟨charge, member, index, epoch⟩ :=
+          (Run.nil.snoc step).departure_charge_of_assigned i old v oldFound found pending assigned
+        exact Or.inr ⟨charge, List.mem_append_right _ member, index, epoch⟩
+      · obtain ⟨w, present, kept⟩ :=
+          (RegistryLifecycle.chainStep step.chainStep).validators i old oldFound
+        have same : w = v := Option.some.inj (present.symm.trans found)
+        have exit : v.exitEpoch = old.exitEpoch := same ▸ kept.exitEpoch pending
+        rcases ih old oldFound pending with inherited | charged
+        · obtain ⟨initial, initialFound, epoch⟩ := inherited
+          exact Or.inl ⟨initial, initialFound, epoch.trans exit.symm⟩
+        · obtain ⟨charge, member, index, epoch⟩ := charged
+          exact Or.inr ⟨charge, List.mem_append_left _ member, index, by simpa [exit] using epoch⟩
+    · exact False.elim (assigned (step.new_validator_exit_unassigned i v (by omega) found))
+
 /-- Reference weights of the one inherited cohort, including the initial boundary. -/
 def inheritedCohort (x : ForkedBeaconState preset) (epoch : Nat) : Nat :=
   (x.state.validators.data.toList.filter fun v =>
@@ -297,6 +325,61 @@ theorem previous_only_iff_exit {fork : Fork} (state : BeaconState preset fork) (
     decide_eq_true_eq, decide_eq_false_iff_not, UInt64.le_iff_toNat_le,
     UInt64.lt_iff_toNat_lt, getPreviousEpoch_toNat]
   omega
+
+/-- Distinct registry keys identify the boundary support with this epoch's exiting cohort. -/
+theorem mem_boundary_iff {fork : Fork} (state : BeaconState preset fork)
+    (early : fork < .glamsterdam) (unique : uniqueKeys state)
+    (key : Cryptography.Bls.BLSPubkey) :
+    key ∈ recentKeys state \ activeKeys state ↔
+      ∃ (i : Nat) (v : Validator), state.validators.data[i]? = some v ∧ v.pubkey = key ∧
+        v.activationEpoch.toNat < (getCurrentEpoch state).toNat ∧
+        v.exitEpoch.toNat = (getCurrentEpoch state).toNat := by
+  classical
+  have within : state.RegistryWithinLimit := state.validators.bound early
+  have member (epoch : Epoch) :
+      key ∈ keysAt state (getActiveValidatorIndices state epoch) ↔
+        ∃ (i : Nat) (v : Validator), state.validators.data[i]? = some v ∧ v.pubkey = key ∧
+          isActiveValidator v epoch = true := by
+    simp only [keysAt, List.mem_toFinset, List.mem_filterMap]
+    constructor
+    · rintro ⟨index, active, read⟩
+      obtain ⟨v, found, active⟩ := (mem_getActiveValidatorIndices within).mp active
+      exact ⟨index.toNat, v, found, by simpa [found] using read, active⟩
+    · rintro ⟨i, v, found, same, active⟩
+      have inside := (Array.getElem?_eq_some_iff.mp found).1
+      have numeric := toNat_toUInt64_of_lt within inside
+      refine ⟨i.toUInt64, (mem_getActiveValidatorIndices within).mpr
+        ⟨v, by simpa [numeric] using found, active⟩, ?_⟩
+      simp [numeric, found, same]
+  have sameValidator {i j : Nat} {v w : Validator}
+      (one : state.validators.data[i]? = some v)
+      (two : state.validators.data[j]? = some w)
+      (keys : v.pubkey = w.pubkey) : v = w := by
+    obtain ⟨hi, rfl⟩ := Array.getElem?_eq_some_iff.mp one
+    obtain ⟨hj, rfl⟩ := Array.getElem?_eq_some_iff.mp two
+    have same : i = j := unique.eq_of_getElem_eq
+      (by simpa [registryKeys] using hi) (by simpa [registryKeys] using hj)
+      (by simpa [registryKeys] using keys)
+    subst j
+    rfl
+  simp only [Finset.mem_sdiff, recentKeys, Finset.mem_union, activeKeys]
+  constructor
+  · rintro ⟨current | previous, absent⟩
+    · exact False.elim (absent current)
+    · obtain ⟨i, v, found, same, active⟩ := (member _).mp previous
+      have inactive : isActiveValidator v (getCurrentEpoch state) = false := by
+        cases h : isActiveValidator v (getCurrentEpoch state) with
+        | false => rfl
+        | true => exact False.elim (absent ((member _).mpr ⟨i, v, found, same, h⟩))
+      exact ⟨i, v, found, same, (previous_only_iff_exit state v).mp ⟨active, inactive⟩⟩
+  · rintro ⟨i, v, found, same, cohort⟩
+    obtain ⟨previous, inactive⟩ := (previous_only_iff_exit state v).mpr cohort
+    refine ⟨Or.inr ((member _).mpr ⟨i, v, found, same, previous⟩), ?_⟩
+    intro active
+    obtain ⟨j, w, other, keySame, active⟩ := (member _).mp active
+    have equal := sameValidator found other (same.trans keySame.symm)
+    rw [← equal, inactive] at active
+    cases active
 
 /-- Positive effective-weight growth since reference or scheduling, for this boundary only. -/
 def cohortGrowth {x y : ForkedBeaconState preset} (tail : Run config checks x y) : Nat :=
