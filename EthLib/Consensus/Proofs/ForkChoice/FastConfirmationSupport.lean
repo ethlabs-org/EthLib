@@ -248,6 +248,85 @@ theorem getCheckpointBlock_of_isAncestor {node : ForkChoiceNode} {root checkpoin
   rw [← rootWalk, through]
   exact read
 
+/-- Before Gloas, a walk starting at a pending node returns a pending node. -/
+theorem getAncestor_pending_of_lt {node ancestor : ForkChoiceNode} {slot : Slot}
+    (before : fork < .glamsterdam) (pending : node.payloadStatus = .pending)
+    (walk : store.getAncestor node slot = .ok ancestor) :
+    ancestor.payloadStatus = .pending := by
+  induction node using getAncestor.induct (store := store) (slot := slot) with
+  | case1 node found =>
+    rw [getAncestor] at walk
+    split at walk <;> simp_all [throw, throwThe, MonadExceptOf.throw]
+  | case2 node block found le =>
+    rw [getAncestor_of_le found le] at walk
+    cases walk
+    exact pending
+  | case3 node block found above parentFound =>
+    rw [getAncestor] at walk
+    split at walk
+    · simp_all
+    · rename_i b eq
+      rw [found, Option.some.injEq] at eq
+      subst b
+      simp only [above, ↓reduceIte] at walk
+      split at walk <;> simp_all [throw, throwThe, MonadExceptOf.throw]
+  | case4 node block found above parent parentFound lower ih =>
+    rw [getAncestor_step found above parentFound lower] at walk
+    exact ih (parentPayloadStatus_of_lt before) walk
+  | case5 node block found above parent parentFound notLower =>
+    rw [getAncestor] at walk
+    split at walk
+    · simp_all
+    · rename_i b eq
+      rw [found, Option.some.injEq] at eq
+      subst b
+      simp only [above, ↓reduceIte] at walk
+      split at walk
+      · simp_all
+      · rename_i p eq
+        rw [parentFound, Option.some.injEq] at eq
+        subst p
+        simp [notLower, throw, throwThe, MonadExceptOf.throw] at walk
+
+/-- A successful checkpoint read names a held ancestor, at or before its epoch boundary. -/
+theorem isAncestor_of_getCheckpointBlock {root checkpoint : Root} {epoch : Epoch}
+    (before : fork < .glamsterdam)
+    (read : store.getCheckpointBlock root epoch = .ok checkpoint) :
+    ∃ boundary block, computeStartSlotAtEpoch preset epoch = .ok boundary ∧
+      store.blocks[checkpoint]? = some block ∧ block.slot ≤ boundary ∧
+      store.isAncestor ⟨root, .pending⟩ ⟨checkpoint, .pending⟩ = .ok true := by
+  unfold getCheckpointBlock at read
+  simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at read
+  obtain ⟨boundary, boundaryOk, ancestor, walk, rootEq⟩ := read
+  obtain ⟨block, held, le⟩ := getAncestor_le walk
+  have pending := getAncestor_pending_of_lt before rfl walk
+  have same : ancestor = ⟨checkpoint, .pending⟩ := by
+    cases ancestor
+    simp_all
+  subst ancestor
+  have through := getAncestor_trans le walk
+  have atBlock := getAncestor_of_le (node := ⟨checkpoint, .pending⟩) held (UInt64.le_refl _)
+  have walk' := through.trans atBlock
+  refine ⟨boundary, block, mapError_ok_iff.mp boundaryOk, held, le, ?_⟩
+  simp [isAncestor, block_ok_iff.mpr held, walk', bind, Except.bind, pure, Except.pure]
+
+/-- A computable target state can be cached, or the store can read its existing entry. -/
+theorem exists_storeTargetCheckpointState {checks : SignatureChecks} {target : Checkpoint}
+    {state : BeaconState preset fork}
+    (computed : store.computeCheckpointState config checks target = .ok state) :
+    ∃ withTarget targetState,
+      store.storeTargetCheckpointState config checks target = .ok withTarget ∧
+      withTarget.checkpointState target = .ok targetState := by
+  by_cases cached : store.checkpointStates.contains target
+  · have member := Std.TreeMap.contains_iff_mem.mp cached
+    have present := Std.TreeMap.mem_iff_isSome_getElem?.mp member
+    obtain ⟨targetState, found⟩ := Option.isSome_iff_exists.mp present
+    refine ⟨store, targetState, ?_, checkpointState_ok_iff.mpr found⟩
+    simp [storeTargetCheckpointState, cached, pure, Except.pure]
+  · refine ⟨{ store with checkpointStates := store.checkpointStates.insert target state },
+      state, ?_, checkpointState_ok_iff.mpr (by simp)⟩
+    simp [storeTargetCheckpointState, cached, computed, bind, Except.bind, pure, Except.pure]
+
 end Store
 
 namespace Models.Network
@@ -1339,6 +1418,42 @@ theorem Execution.targetStates_eq_of_oneBlock {anchor : Store preset fork}
   subst rightBase
   subst rightSlot
   exact Except.ok.inj (leftRun.symm.trans rightRun)
+
+omit [DecidablePred (· ∈ J)] in
+/-- A duty attestation is accepted once its target block is held and its time checks pass. -/
+theorem VoteAt.accepted_of_target_known {anchor : Store preset fork}
+    (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (start : ∀ u ∈ J, e.start u = anchor) (oneBlock : OneBlockPerRoot e)
+    {v w : ValidatorIndex} (honest : v ∈ J) (receiver : w ∈ J)
+    {slot : Slot} {committeeIndex : CommitteeIndex} {deadline n k : ℕ}
+    {attestation : Attestation preset fork} {indexed : IndexedAttestation preset fork}
+    (vote : VoteAt e v slot committeeIndex deadline n attestation indexed)
+    {targetBlock : BeaconBlock preset fork}
+    (known : ((e.world k).state w).blocks[attestation.data.target.root]? = some targetBlock)
+    (valid : ((e.world k).state w).validateOnAttestation config attestation false = .ok ()) :
+    (∃ after, ((e.world k).state w).onAttestation config checks attestation false = .ok after) ∧
+      ReadsAttestation config checks ((e.world k).state w) attestation indexed := by
+  obtain ⟨sourceStore, sourceState, sourceStored, sourceRead, indexedOk, signed⟩ := vote.reads
+  obtain ⟨base, boundary, baseFound, boundaryOk, ran⟩ :=
+    e.targetState_fixedChecks anchored (start v honest) sourceStored sourceRead
+  have reached := e.reachable
+    (fun u hu => (start u hu).symm ▸ Store.Reachable.anchor anchored) k w receiver
+  obtain ⟨receiverBase, receiverBaseFound, _, _⟩ := reached.blockStatesFromParents known
+  have baseEq := e.blockStates_eq anchored honest receiver (start v honest) (start w receiver)
+    (oneBlock v honest w receiver n k) baseFound receiverBaseFound
+  subst receiverBase
+  have computed : ((e.world k).state w).computeCheckpointState config checks
+      attestation.data.target = .ok sourceState := by
+    simpa [Store.computeCheckpointState, Store.blockState_ok_iff.mpr receiverBaseFound,
+      boundaryOk, lookaheadState, bind, Except.bind, Except.mapError] using ran
+  obtain ⟨withTarget, targetState, stored, read⟩ :=
+    Store.exists_storeTargetCheckpointState computed
+  have stateEq := e.targetStates_eq_of_oneBlock anchored start oneBlock honest receiver
+    sourceStored sourceRead stored read
+  subst targetState
+  have committees := vote.committees sourceStore sourceState sourceStored sourceRead
+  exact ⟨⟨_, Store.onAttestation_of_reads valid stored read committees indexedOk signed⟩,
+    ⟨withTarget, sourceState, stored, read, indexedOk, signed⟩⟩
 
 omit [DecidablePred (· ∈ J)] in
 /-- An endpoint checkpoint read admits a supporting head at an earlier delivery event.
