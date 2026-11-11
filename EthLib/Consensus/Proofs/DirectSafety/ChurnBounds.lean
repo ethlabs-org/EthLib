@@ -425,6 +425,173 @@ theorem joining_before_electra {g x y : ForkedBeaconState preset}
           preset.MAX_EFFECTIVE_BALANCE.toNat := by
   sorry
 
+/-- Queueing deposits keeps the queue fields and the effective balances of activated validators. -/
+private structure ElectraQueuesKept (a b : BeaconState preset .pectra) : Prop where
+  slot : b.slot = a.slot
+  exitEpoch : b.earliestExitEpoch = a.earliestExitEpoch
+  exitCapacity : b.exitBalanceToConsume = a.exitBalanceToConsume
+  consolidationCapacity : b.consolidationBalanceToConsume = a.consolidationBalanceToConsume
+  size : b.validators.data.size = a.validators.data.size
+  validators : ∀ (i : Nat) (v : Validator), a.validators.data[i]? = some v →
+    ∃ w : Validator, b.validators.data[i]? = some w ∧
+      w.activationEpoch = v.activationEpoch ∧ w.exitEpoch = v.exitEpoch ∧
+      (v.activationEpoch ≠ FAR_FUTURE_EPOCH → w.effectiveBalance = v.effectiveBalance)
+
+private theorem ElectraQueuesKept.refl (a : BeaconState preset .pectra) :
+    ElectraQueuesKept a a :=
+  ⟨rfl, rfl, rfl, rfl, rfl, fun _ v found => ⟨v, found, rfl, rfl, fun _ => rfl⟩⟩
+
+private theorem ElectraQueuesKept.trans {a b c : BeaconState preset .pectra}
+    (ab : ElectraQueuesKept a b) (bc : ElectraQueuesKept b c) : ElectraQueuesKept a c := by
+  refine ⟨bc.slot.trans ab.slot, bc.exitEpoch.trans ab.exitEpoch,
+    bc.exitCapacity.trans ab.exitCapacity,
+    bc.consolidationCapacity.trans ab.consolidationCapacity, bc.size.trans ab.size, ?_⟩
+  intro i v found
+  obtain ⟨w, hw, ha, he, hb⟩ := ab.validators i v found
+  obtain ⟨z, hz, hza, hze, hzb⟩ := bc.validators i w hw
+  exact ⟨z, hz, hza.trans ha, hze.trans he,
+    fun assigned => (hzb (ha ▸ assigned)).trans (hb assigned)⟩
+
+private theorem queues_preActivation {a b : BeaconState preset .pectra}
+    {index : ValidatorIndex}
+    (pending : ∀ v, a.validators.data[index.toNat]? = some v →
+      v.activationEpoch = FAR_FUTURE_EPOCH)
+    (ok : queuePreActivation a (by decide) index = .ok b) : ElectraQueuesKept a b := by
+  simp only [queuePreActivation, bind_ok_iff, liftAccessor_ok, pure, Except.pure,
+    Except.ok.injEq] at ok
+  obtain ⟨v, found, _, _, _, _, _, balance, _, validator, rfl⟩ := ok
+  obtain ⟨_, rfl⟩ := setBalance_ok balance
+  obtain ⟨inside, rfl⟩ := setValidator_ok validator
+  have read : a.validators.data[index.toNat]? = some v := by
+    unfold getValidator at found
+    split at found <;> simp_all
+  refine ⟨rfl, rfl, rfl, rfl, by simp [BeaconState.putValidator, BeaconState.putBalance], ?_⟩
+  intro i old oldFound
+  simp only [BeaconState.putValidator, BeaconState.putBalance,
+    Serialization.Ssz.RootedForkList.data_set,
+    Array.getElem?_set]
+  split
+  · rename_i equal
+    subst i
+    have same := Option.some.inj (oldFound.symm.trans read)
+    subst old
+    exact ⟨{ v with effectiveBalance := 0, activationEligibilityEpoch := FAR_FUTURE_EPOCH },
+      rfl, rfl, rfl, fun assigned => False.elim (assigned (pending v read))⟩
+  · exact ⟨old, oldFound, rfl, rfl, fun _ => rfl⟩
+
+private theorem queues_compounding {a b : BeaconState preset .pectra} {index : Nat}
+    (ok : queueCompoundingExcess a (by decide) index = .ok b) : ElectraQueuesKept a b := by
+  unfold queueCompoundingExcess at ok
+  split at ok
+  · split at ok
+    · have queued := liftAccessor_ok.mp ok
+      simp only [queueExcessActiveBalance, bind_ok_iff] at queued
+      obtain ⟨_, _, queued⟩ := queued
+      split at queued
+      · simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at queued
+        obtain ⟨_, _, _, _, _, set, rfl⟩ := queued
+        obtain ⟨_, rfl⟩ := setBalance_ok set
+        exact ⟨rfl, rfl, rfl, rfl, rfl,
+          fun _ v found => ⟨v, found, rfl, rfl, fun _ => rfl⟩⟩
+      · cases queued
+        exact .refl _
+    · cases ok
+      exact .refl _
+  · cases ok
+    exact .refl _
+
+private theorem queues_preActivation_fold (a b : BeaconState preset .pectra)
+    (ok : (preActivationIndices a).foldlM
+      (fun s i => queuePreActivation s (by decide) i) a = .ok b) :
+    ElectraQueuesKept a b := by
+  have pending : ∀ index ∈ preActivationIndices a, ∃ v,
+      a.validators.data[index.toNat]? = some v ∧ v.activationEpoch = FAR_FUTURE_EPOCH := by
+    -- Sorting changes the order, but every selected position still has an unset activation.
+    intro index member
+    obtain ⟨⟨v, i⟩, sorted, rfl⟩ := List.mem_map.mp member
+    rw [List.mem_mergeSort] at sorted
+    obtain ⟨member, waiting⟩ := List.mem_filter.mp sorted
+    have found : a.validators.data[i]? = some v := by
+      simpa using List.mem_zipIdx_iff_getElem?.mp member
+    have small := toNat_toUInt64_of_lt (state := a) (a.validators.bound (by decide))
+      (Array.getElem?_eq_some_iff.mp found).1
+    exact ⟨v, by simpa [small] using found, by simpa using waiting⟩
+  generalize hs : preActivationIndices a = xs at ok
+  rw [hs] at pending
+  have run : ∀ (xs : List ValidatorIndex) (s t : BeaconState preset .pectra),
+      (∀ index ∈ xs, ∃ v, a.validators.data[index.toNat]? = some v ∧
+        v.activationEpoch = FAR_FUTURE_EPOCH) → ElectraQueuesKept a s →
+      xs.foldlM (fun s i => queuePreActivation s (by decide) i) s = .ok t →
+      ElectraQueuesKept a t := by
+    intro xs
+    induction xs with
+    | nil => intro s t _ kept ok; cases ok; exact kept
+    | cons i rest ih =>
+      intro s t pending kept ok
+      obtain ⟨m, step, tail⟩ := bind_ok_iff.mp ok
+      have queued := queues_preActivation (a := s) (b := m) (index := i) (by
+        intro v found
+        obtain ⟨old, oldFound, waiting⟩ := pending i (by simp)
+        obtain ⟨w, hw, ha, _, _⟩ := kept.validators i.toNat old oldFound
+        have same := Option.some.inj (found.symm.trans hw)
+        exact same ▸ ha.trans waiting) step
+      exact ih m t (fun i hi => pending i (List.mem_cons_of_mem _ hi))
+        (kept.trans queued) tail
+  exact run xs a b pending (.refl a) ok
+
+private theorem ElectraQueuesKept.active {a b : BeaconState preset .pectra}
+    (kept : ElectraQueuesKept a b) (bound : Epoch) : ActiveKept bound a b := by
+  intro epoch _ i
+  cases found : a.validators.data[i]? with
+  | none =>
+    have outside := Array.getElem?_eq_none_iff.mp found
+    simp [isActiveAt, found, Array.getElem?_eq_none (kept.size ▸ outside)]
+  | some v =>
+    obtain ⟨w, hw, ha, he, _⟩ := kept.validators i v found
+    simp [isActiveAt, found, hw, isActiveValidator, ha, he]
+
+private theorem ElectraQueuesKept.total {a b : BeaconState preset .pectra}
+    (kept : ElectraQueuesKept a b) : getTotalActiveBalance b = getTotalActiveBalance a := by
+  have epoch : getCurrentEpoch b = getCurrentEpoch a := by
+    simp only [getCurrentEpoch, kept.slot]
+  have active := kept.active (getCurrentEpoch a)
+  have checked := active.getActiveValidatorIndicesChecked_eq (UInt64.le_refl _)
+  have sum : sumMarked b.validators.data
+      (markIndices b.validators.data.size (getActiveValidatorIndices a (getCurrentEpoch a))) =
+      sumMarked a.validators.data
+      (markIndices a.validators.data.size (getActiveValidatorIndices a (getCurrentEpoch a))) := by
+    rw [sumMarked_eq_sum, sumMarked_eq_sum, kept.size]
+    congr 1
+    apply List.map_congr_left
+    intro i member
+    by_cases marked : (markIndices a.validators.data.size
+        (getActiveValidatorIndices a (getCurrentEpoch a)))[i]?.getD false = true
+    · have inside := List.mem_range.mp member
+      rw [getElem?_markIndices, ite_eq_left inside, Option.getD_some,
+        List.any_eq_true] at marked
+      obtain ⟨index, listed, equal⟩ := marked
+      have isActive := (mem_getActiveValidatorIndices (state := a)
+        (a.validators.bound (by decide))).mp listed
+      rw [beq_iff_eq.mp equal] at isActive
+      obtain ⟨v, found, act⟩ := isActive
+      obtain ⟨w, hw, _, _, hb⟩ := kept.validators i v found
+      -- An active validator cannot have the largest epoch as its activation epoch.
+      have assigned : v.activationEpoch ≠ FAR_FUTURE_EPOCH := by
+        intro equal
+        simp only [isActiveValidator, Bool.and_eq_true, decide_eq_true_eq,
+          UInt64.le_iff_toNat_le, UInt64.lt_iff_toNat_lt] at act
+        have := v.exitEpoch.toNat_lt
+        simp [equal, FAR_FUTURE_EPOCH] at act
+        omega
+      simp [found, hw, hb assigned]
+    · simp [marked]
+  unfold getTotalActiveBalance
+  rw [epoch, checked, getActiveValidatorIndicesChecked_of_within (state := a)
+    (a.validators.bound (by decide))]
+  simp only [bind, Except.bind]
+  rw [kept.size] at sum
+  simp only [getTotalBalance, kept.size, sum]
+
 /-- A reachable Electra upgrade starts the exit queue after all previously scheduled exits. -/
 theorem electra_crossing_queues {pre : BeaconState preset .dencun}
     {post : BeaconState preset .pectra} (ok : upgradeToElectra config pre = .ok post) :
@@ -435,7 +602,68 @@ theorem electra_crossing_queues {pre : BeaconState preset .dencun}
     exitChurnLimit config post = .ok (post.exitBalanceToConsume (by decide)) ∧
     getConsolidationChurnLimit config post =
       .ok (post.consolidationBalanceToConsume (by decide)) := by
-  sorry
+  simp only [upgradeToElectra, bind_ok_iff] at ok
+  obtain ⟨activation, activationOk, earliest, earliestOk, exitRate, exitOk,
+    consolidationRate, consolidationOk, middle, queued, compounded⟩ := ok
+  -- Both folds preserve the initialized queues and the active balance used to fill them.
+  have first := queues_preActivation_fold _ _ queued
+  have kept := foldlM_ok_invariant (ElectraQueuesKept _)
+    (fun _ _ _ before step => before.trans (queues_compounding step)) first compounded
+  refine ⟨by simpa only [getCurrentEpoch, carryFields] using
+      congrArg (computeEpochAtSlot preset) kept.slot,
+    ?_, ?_, ?_⟩
+  · intro i v found assigned
+    rw [kept.exitEpoch]
+    have latest : ∀ (vs : List Validator) (start : UInt64),
+        start ≤ vs.foldl (fun latest validator =>
+          if validator.exitEpoch = FAR_FUTURE_EPOCH then latest
+          else max latest validator.exitEpoch) start ∧
+        ∀ w ∈ vs, w.exitEpoch ≠ FAR_FUTURE_EPOCH →
+          w.exitEpoch ≤ vs.foldl (fun latest validator =>
+            if validator.exitEpoch = FAR_FUTURE_EPOCH then latest
+            else max latest validator.exitEpoch) start := by
+      intro vs
+      induction vs with
+      | nil => intro start; exact ⟨UInt64.le_refl _, by simp⟩
+      | cons w rest ih =>
+        intro start
+        obtain ⟨monotone, members⟩ := ih
+          (if w.exitEpoch = FAR_FUTURE_EPOCH then start else max start w.exitEpoch)
+        have startLe : start ≤
+            (if w.exitEpoch = FAR_FUTURE_EPOCH then start else max start w.exitEpoch) := by
+          split
+          · exact UInt64.le_refl _
+          · rw [UInt64.le_iff_toNat_le, Uint64.toNat_max]
+            exact Nat.le_max_left _ _
+        refine ⟨UInt64.le_trans startLe monotone, ?_⟩
+        intro u member set
+        rcases List.mem_cons.mp member with rfl | member
+        · apply UInt64.le_trans _ monotone
+          rw [ite_eq_right set, UInt64.le_iff_toNat_le, Uint64.toNat_max]
+          exact Nat.le_max_right _ _
+        · exact members u member set
+    have bound := (latest pre.validators.data.toList activation).2 v
+      (by simpa using Array.mem_of_getElem? found) assigned
+    have addition := Uint64.addChecked_ok_iff.mp
+      (mapError_ok_iff.mp (liftAccessor_ok.mp earliestOk))
+    rw [← Array.foldl_toList] at addition
+    change v.exitEpoch < earliest
+    rw [UInt64.lt_iff_toNat_lt]
+    have := UInt64.le_iff_toNat_le.mp bound
+    simp only [UInt64.reduceToNat] at addition
+    exact Nat.lt_of_le_of_lt this (by rw [addition.2]; exact Nat.lt_succ_self _)
+  · have same := kept.total
+    rw [kept.exitCapacity]
+    change getActivationExitChurnLimit config post = .ok exitRate
+    unfold getActivationExitChurnLimit getBalanceChurnLimit
+    rw [same]
+    exact liftAccessor_ok.mp exitOk
+  · have same := kept.total
+    rw [kept.consolidationCapacity]
+    change getConsolidationChurnLimit config post = .ok consolidationRate
+    unfold getConsolidationChurnLimit getActivationExitChurnLimit getBalanceChurnLimit
+    rw [same]
+    exact liftAccessor_ok.mp consolidationOk
 
 /-- The entire crossing step includes its preceding epoch and any simultaneous upgrades. -/
 theorem split_electra_crossing {x y : ForkedBeaconState preset} (tail : Run config checks x y)
