@@ -3,6 +3,7 @@ module
 public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmationSets
 public import EthLib.Consensus.Proofs.ForkChoice.VoteDelivery
 public import EthLib.Consensus.Proofs.ForkChoice.BlockAgreement
+public import EthLib.Consensus.Proofs.ForkChoice.HonestCheckpoints
 public import EthLib.Consensus.Proofs.ForkChoice.VoteOrigins
 public import EthLib.Consensus.Proofs.Transition.RunKept
 
@@ -156,19 +157,29 @@ def DelayFits (config : Config) (genesisTimeMs : UInt64) (Δ : ℕ) : Prop :=
     computeTimeAtSlotMs config genesisTimeMs slot = .ok start →
     getAttestationDueMs config fork = .ok due →
     computeTimeAtSlotMs config genesisTimeMs next = .ok following →
-    start.toNat + due.toNat + Δ ≤ following.toNat
+    start.toNat + due.toNat + Δ < following.toNat
 
-/-- Each honest validator brings its store up to date at the start of each slot.
+/-- Each honest validator processes messages before and at each slot boundary.
 
 The slots are those that start at the start of the execution or later.
 
-So an honest store takes each vote while the checks of the handler still accept it. -/
+Pre-boundary processing admits delivered blocks before the next tick can change finality.
+
+Boundary processing admits votes after their slot has ended.
+
+This is a processing hypothesis, not a consequence of receipt in a network view.
+
+It makes explicit the processing needed in addition to the network bound of
+arXiv 2405.00549v4, Section 2. -/
 def Prompt
     (e : Execution (honestForkChoice config checks sources anchorState anchorBlock assignment
       genesisTimeMs) J) : Prop :=
   ∀ w ∈ J, ∀ slot start, computeTimeAtSlotMs config genesisTimeMs slot = .ok start →
-    e.startTime ≤ start.toNat → ∃ k, (e.world k).time = start.toNat ∧
-      UpToDate config checks sources (e.world k).time ((e.world k).view w) ((e.world k).state w)
+    e.startTime ≤ start.toNat →
+    (∃ k, (e.world k).time = start.toNat ∧
+      UpToDate config checks sources (e.world k).time ((e.world k).view w) ((e.world k).state w)) ∧
+    (e.startTime < start.toNat → ∃ k, (e.world k).time + 1 = start.toNat ∧
+      UpToDate config checks sources (e.world k).time ((e.world k).view w) ((e.world k).state w))
 
 /-- The committees that an honest store reads for a range of slots are those of the assignment.
 
@@ -305,6 +316,18 @@ structure WeightBounds
     ((e.world k).state w).checkpointState ((e.world k).state w).justifiedCheckpoint = .ok state →
     (getCurrentEpoch state).toNat ≤ (getCurrentEpoch balanceSource).toNat + 2 ∧
       (getCurrentEpoch balanceSource).toNat ≤ (getCurrentEpoch state).toNat + 2
+  /-- Counterfactual reads under the call's balances must succeed before margins can be compared. -/
+  reads : ∀ w ∈ J, ∀ k head state current firstSlot lastSlot maximum,
+    first ≤ (e.world k).time → (e.world k).time ≤ last →
+    ((e.world k).state w).getHead config = .ok head →
+    ((e.world k).state w).getCurrentSlot config = .ok current → lastSlot < current →
+    ((e.world k).state w).checkpointState ((e.world k).state w).justifiedCheckpoint = .ok state →
+    ((e.world k).state w).computeCommitteeWeightBetweenSlots head.root state firstSlot lastSlot =
+      .ok maximum →
+    ∃ sourceMaximum sourceScore,
+      ((e.world k).state w).computeCommitteeWeightBetweenSlots head.root balanceSource
+        firstSlot lastSlot = .ok sourceMaximum ∧
+      computeProposerScore config balanceSource = .ok sourceScore
   /-- The exact adverse shift of each honest support margin, including the proposer boost. -/
   margin : ∀ w ∈ J, ∀ k head state score sourceScore firstSlot lastSlot maximum sourceMaximum,
     first ≤ (e.world k).time → (e.world k).time ≤ last →
@@ -354,6 +377,7 @@ The recorded vote is from a past slot, so its attestation deadline plus delay is
 
 Receiver admission and finalized-chain compatibility are separate obligations. -/
 theorem Execution.past_block_of_honest_supporter {Δ : ℕ}
+    (slots : 0 < config.SLOT_DURATION_MS)
     (fits : DelayFits fork config genesisTimeMs Δ) (oneBlock : OneBlockPerRoot e)
     {anchor : Store preset fork}
     (anchorStore : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
@@ -436,6 +460,13 @@ theorem Execution.honest_support_of_safe {Δ : ℕ} (sync : e.Synchronous Δ)
       discount.toNat + 2 * support.toNat)
     {time : ℕ} (later : (e.world n).time ≤ time)
     (weights : WeightBounds e balanceSource (e.world n).time time shift)
+    (compatible : ∀ w ∈ J, ∀ k, (e.world n).time ≤ (e.world k).time →
+      (e.world k).time ≤ time →
+      UpToDate config checks sources (e.world k).time ((e.world k).view w)
+        ((e.world k).state w) →
+      ((e.world n).state u).getCheckpointBlock root
+        ((e.world k).state w).finalizedCheckpoint.epoch =
+          .ok ((e.world k).state w).finalizedCheckpoint.root)
     (safe : ∀ earlier, (e.world n).time ≤ earlier → earlier < time → SafeAt e earlier root)
     {w : ValidatorIndex} (receiver : w ∈ J) {k : ℕ} (atTime : (e.world k).time = time)
     (receiverUpToDate : UpToDate config checks sources (e.world k).time ((e.world k).view w)
@@ -520,12 +551,79 @@ theorem Execution.safeAt_of_support {Δ : ℕ} (sync : e.Synchronous Δ)
     (base : maximumSupport.toNat + proposerScore.toNat + 2 * adversary.toNat + shift <
       discount.toNat + 2 * support.toNat)
     {limit : ℕ} (weights : WeightBounds e balanceSource (e.world n).time limit shift)
+    (compatible : ∀ w ∈ J, ∀ k, (e.world n).time ≤ (e.world k).time →
+      (e.world k).time ≤ limit →
+      UpToDate config checks sources (e.world k).time ((e.world k).view w)
+        ((e.world k).state w) →
+      ((e.world n).state u).getCheckpointBlock root
+        ((e.world k).state w).finalizedCheckpoint.epoch =
+          .ok ((e.world k).state w).finalizedCheckpoint.root)
     (parentSafe : ∀ time, (e.world n).time ≤ time → time ≤ limit →
       SafeAt e time block.parentRoot)
     (viable : ∀ time, (e.world n).time ≤ time → time ≤ limit →
       (∀ earlier, (e.world n).time ≤ earlier → earlier < time → SafeAt e earlier root) →
       CoveredOrViableAt e time root) :
     ∀ time, (e.world n).time ≤ time → time ≤ limit → SafeAt e time root := by
+  sorry
+
+/-- A complete later duty epoch makes each assigned honest tally voter support the safe prefix.
+
+The tally state may be old; no comparison with the caller's balances is used.
+
+The head block is admitted before the next boundary, and its vote is recorded at that boundary.
+
+This is the late support step of arXiv 2405.00549v4, Lemma 2.
+
+The statement is under review; head admission must be derived, not assumed as vote delivery. -/
+theorem Execution.mem_supportersOf_of_duty_epoch {Δ : ℕ} (sync : e.Synchronous Δ)
+    (slots : 0 < config.SLOT_DURATION_MS) (positive : 0 < preset.SLOTS_PER_EPOCH.toNat)
+    (window : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
+    (ring : preset.MIN_SEED_LOOKAHEAD.toNat + 2 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
+    (preGloas : fork < .glamsterdam)
+    (oneBlock : OneBlockPerRoot e) (admitted : BlocksAdmitted e 0 Δ)
+    (votes : Votes e.startTime e) (fits : DelayFits fork config genesisTimeMs Δ)
+    (prompt : Prompt e) {anchor : Store preset fork}
+    (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (sound : Invariant anchorState) (anchorSlot : anchorBlock.slot = anchorState.slot)
+    (anchorBoundary : isStartSlotAtEpoch preset anchorBlock.slot = .ok true)
+    (start : ∀ w ∈ J, e.start w = anchor) (noVotes : anchor.latestMessages.isEmpty)
+    {first time : ℕ} (started : e.startTime ≤ first)
+    {horizon : Epoch} (chain : FinalizedPrefix e horizon)
+    (inHorizon : ∀ w ∈ J, ∀ k epoch, (e.world k).time ≤ time →
+      ((e.world k).state w).getCurrentStoreEpoch config = .ok epoch → epoch ≤ horizon)
+    (nonzero : ∀ w ∈ J, ∀ k, (e.world k).time ≤ time →
+      ∀ (r : Root) (b : BeaconBlock preset fork),
+        ((e.world k).state w).blocks[r]? = some b → b.stateRoot ≠ Vector.replicate 32 0)
+    (large : ∀ w ∈ J, ∀ k (state : BeaconState preset fork),
+      (e.world k).time ≤ time → ((e.world k).state w).Counts config state →
+      getCurrentEpoch state ≤ horizon →
+      3 * preset.EFFECTIVE_BALANCE_INCREMENT.toNat <
+        2 * stake (fun v => balanceAt state v.toNat) (activeVoters state))
+    (few : ∀ w ∈ J, ∀ k (state : BeaconState preset fork) total,
+      (e.world k).time ≤ time → ((e.world k).state w).Counts config state →
+      getCurrentEpoch state ≤ horizon → getTotalActiveBalance state = .ok total →
+      3 * stake (fun v => balanceAt state v.toNat) {v ∈ quorumVoters state | v ∉ J} <
+        2 * total.toNat)
+    {epoch : Epoch} {begin next : Slot} {beginTime endTime : UInt64}
+    (beginOk : computeStartSlotAtEpoch preset epoch = .ok begin)
+    (nextOk : addChecked begin preset.SLOTS_PER_EPOCH = .ok next)
+    (beginTimeOk : computeTimeAtSlotMs config genesisTimeMs begin = .ok beginTime)
+    (endTimeOk : computeTimeAtSlotMs config genesisTimeMs next = .ok endTime)
+    (fresh : first ≤ beginTime.toNat) (complete : endTime.toNat ≤ time)
+    {root : Root} (safe : ∀ earlier, first ≤ earlier → earlier < time → SafeAt e earlier root)
+    {w : ValidatorIndex} (receiver : w ∈ J) {k : ℕ} (atTime : (e.world k).time = time)
+    (upToDate : UpToDate config checks sources (e.world k).time ((e.world k).view w)
+      ((e.world k).state w))
+    (known : ∃ block, ((e.world k).state w).blocks[root]? = some block)
+    {state : BeaconState preset fork}
+    (stateOk : ((e.world k).state w).checkpointState ((e.world k).state w).justifiedCheckpoint =
+      .ok state)
+    (within : state.RegistryWithinLimit)
+    {v : ValidatorIndex} (honest : v ∈ J)
+    (active : v ∈ ((unslashedActiveBalances state).map (·.1)).toFinset)
+    (duty : ∃ slot committeeIndex, begin ≤ slot ∧ slot < next ∧
+      assignment.committee v slot = some committeeIndex) :
+    v ∈ ((e.world k).state w).supportersOf state ⟨root, .pending⟩ := by
   sorry
 
 end Models.Network
