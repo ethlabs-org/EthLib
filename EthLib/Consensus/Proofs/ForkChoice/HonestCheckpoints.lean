@@ -329,7 +329,13 @@ The store has read each vote of each of its blocks.
 
 It uses the agreement of the committees of the state of a block with those of the target state.
 
-That agreement is a part of issue 1458.
+The RANDAO ring must retain the seed through the epoch after the target.
+
+Each held block has a nonzero state root, so slot processing fills its header only once.
+
+A zero state root is an explicit exceptional case for the caller, not excluded by hash injectivity.
+
+Inherited anchor participation targets only epochs at or below the anchor, which are excluded.
 
 In [verified-fast-confirmation][vfc], `IncludedSupermajorityLink` holds the signers of a count.
 
@@ -339,7 +345,12 @@ There `one_third_honest_intersects_two_thirds` and `two_quorums_intersect_honest
 theorem Execution.exists_signsTarget_of_justified {anchor : Store preset fork}
     (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
     (sound : Invariant anchorState)
+    (ring : preset.MIN_SEED_LOOKAHEAD.toNat + 2 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
+    (preGloas : fork < .glamsterdam)
     {w : ValidatorIndex} (honest : w ∈ J) (start : e.start w = anchor) {k : ℕ}
+    (nonzero : ∀ (root : Root) (block : BeaconBlock preset fork),
+      ((e.world k).state w).blocks[root]? = some block →
+      block.stateRoot ≠ Vector.replicate 32 0)
     {checkpoint : Checkpoint} {slot : Slot}
     (justified : ((e.world k).state w).Justified checkpoint)
     (slotOk : ((e.world k).state w).getCurrentSlot config = .ok slot)
@@ -369,6 +380,11 @@ No comparison with a reference state's balances is needed. -/
 theorem Execution.justifiedByHonestVote [DecidablePred (· ∈ J)] {anchor : Store preset fork}
     (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
     (sound : Invariant anchorState)
+    (ring : preset.MIN_SEED_LOOKAHEAD.toNat + 2 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
+    (preGloas : fork < .glamsterdam)
+    (nonzero : ∀ w ∈ J, ∀ k (root : Root) (block : BeaconBlock preset fork),
+      ((e.world k).state w).blocks[root]? = some block →
+      block.stateRoot ≠ Vector.replicate 32 0)
     (start : ∀ w ∈ J, e.start w = anchor) {horizon : Epoch}
     {threshold : ℕ}
     (byzantine : ∀ w ∈ J, ∀ k (state : BeaconState preset fork) total,
@@ -381,7 +397,8 @@ theorem Execution.justifiedByHonestVote [DecidablePred (· ∈ J)] {anchor : Sto
     (enough : 3 * threshold < 200) :
     JustifiedByHonestVote e anchor.justifiedCheckpoint.epoch horizon := by
   intro w honest k checkpoint slot justified slotOk after inHorizon
-  refine e.exists_signsTarget_of_justified anchored sound honest (start w honest) justified slotOk
+  refine e.exists_signsTarget_of_justified anchored sound ring preGloas honest (start w honest)
+    (nonzero w honest k) justified slotOk
     after (· ∈ J) fun state total counts _ upper totalOk => ?_
   have inside := UInt64.le_iff_toNat_le.mp inHorizon
   have bound := byzantine w honest k state total counts (by omega) totalOk
@@ -406,6 +423,11 @@ That number is the margin, and it covers two epochs of drift at most. -/
 theorem Execution.honestThirdPins {anchor : Store preset fork}
     (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
     (sound : Invariant anchorState)
+    (ring : preset.MIN_SEED_LOOKAHEAD.toNat + 2 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
+    (preGloas : fork < .glamsterdam)
+    (nonzero : ∀ w ∈ J, ∀ k (root : Root) (block : BeaconBlock preset fork),
+      ((e.world k).state w).blocks[root]? = some block →
+      block.stateRoot ≠ Vector.replicate 32 0)
     (start : ∀ w ∈ J, e.start w = anchor) {horizon : Epoch} {drift : ℕ}
     (drifts : ∀ u ∈ J, ∀ n head reference epoch,
       ((e.world n).state u).getPulledUpHeadState config head = .ok reference →
@@ -422,9 +444,9 @@ theorem Execution.honestThirdPins {anchor : Store preset fork}
   intro u caller n head reference total epoch voters referenceOk totalOk epochOk inHorizon good active third w
     honest k checkpoint slot justified slotOk same after
   subst same
-  obtain ⟨v, member, signs⟩ := e.exists_signsTarget_of_justified anchored sound honest
-    (start w honest) justified slotOk after (· ∈ voters) fun state stateTotal counts lower upper
-      stateTotalOk => by
+  obtain ⟨v, member, signs⟩ := e.exists_signsTarget_of_justified anchored sound ring preGloas honest
+    (start w honest) (nonzero w honest k) justified slotOk after (· ∈ voters)
+      fun state stateTotal counts lower upper stateTotalOk => by
     have split := Finset.sum_filter_add_sum_filter_not (activeVoters reference) (· ∈ voters)
       fun v => balanceAt reference v.toNat
     have same : ({v ∈ activeVoters reference | v ∈ voters} : Finset ValidatorIndex) = voters :=
