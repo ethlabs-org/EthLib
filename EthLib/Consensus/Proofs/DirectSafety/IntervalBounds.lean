@@ -3896,6 +3896,57 @@ private theorem intervalGain_joining_split (x y : ForkedBeaconState preset)
   rw [partition, Finset.sum_union disjoint]
   exact Nat.add_le_add newKeys oldKeys
 
+private theorem intervalGain_reference_partition (x y : ForkedBeaconState preset) :
+    referenceGain x y = gaining x y +
+      Quorum.weight (effectiveWeight y.state) (recentKeys y.state \ activeKeys x.state) := by
+  have partition : recentKeys y.state =
+      (recentKeys y.state ∩ activeKeys x.state) ∪
+        (recentKeys y.state \ activeKeys x.state) := by
+    ext k
+    simp only [Finset.mem_union, Finset.mem_inter, Finset.mem_sdiff]
+    tauto
+  have disjoint : Disjoint (recentKeys y.state ∩ activeKeys x.state)
+      (recentKeys y.state \ activeKeys x.state) := by
+    apply Finset.disjoint_left.mpr
+    intro k first last
+    exact (Finset.mem_sdiff.mp last).2 (Finset.mem_inter.mp first).2
+  unfold referenceGain
+  conv_lhs => rw [partition, Finset.sum_union disjoint]
+  congr 1
+  · unfold gaining
+    rw [Finset.inter_comm]
+    apply Finset.sum_congr rfl
+    intro k member
+    simp [Quorum.supported, (Finset.mem_inter.mp member).1]
+  · unfold Quorum.weight
+    apply Finset.sum_congr rfl
+    intro k member
+    simp [Quorum.supported, (Finset.mem_sdiff.mp member).2]
+
+private theorem intervalGain_pre_electra_of_split (x y : ForkedBeaconState preset)
+    (high : Nat) (events : List (BalanceEvent preset))
+    (splitBound :
+      Quorum.weight (effectiveWeight y.state) (recentKeys y.state \ recentKeys x.state) ≤
+        ((getCurrentEpoch y.state).toNat - (getCurrentEpoch x.state).toNat) *
+          cohortCap config y.state.validators.data.size * preset.MAX_EFFECTIVE_BALANCE.toNat ∧
+      Quorum.weight (effectiveWeight y.state)
+        ((recentKeys y.state ∩ recentKeys x.state) \ activeKeys x.state) ≤ boundaryStake x)
+    (gainBound : gaining x y ≤ initialExcess x +
+      (events.map (residualCredit (config := config) x high)).sum)
+    (carryBound : boundaryStake x ≤ activationCarry x)
+    (countBound : ((getCurrentEpoch y.state).toNat - (getCurrentEpoch x.state).toNat) *
+      cohortCap config y.state.validators.data.size * preset.MAX_EFFECTIVE_BALANCE.toNat ≤
+      driftHorizon x high * cohortCap config (registryWindow x high) *
+        preset.MAX_EFFECTIVE_BALANCE.toNat)
+    (early : x.fork < .pectra) :
+    referenceGain x y ≤ activationWindow (config := config) x high + initialExcess x +
+      (events.map (residualCredit (config := config) x high)).sum := by
+  have joined := intervalGain_joining_split x y _ _ splitBound.1 splitBound.2
+  rw [intervalGain_reference_partition]
+  unfold activationWindow
+  rw [if_pos early]
+  omega
+
 /-- Funding churn bounds Electra deposits that can contribute to recent voting stake.
 
 Withdrawn-key exceptions do not reactivate an exited validator and contribute no such stake. -/
