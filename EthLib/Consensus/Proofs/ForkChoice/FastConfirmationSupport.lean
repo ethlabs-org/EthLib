@@ -480,6 +480,19 @@ theorem Execution.honest_support_of_safe {Δ : ℕ} (sync : e.Synchronous Δ)
     {w : ValidatorIndex} (receiver : w ∈ J) {k : ℕ} (atTime : (e.world k).time = time)
     (receiverUpToDate : UpToDate config checks sources (e.world k).time ((e.world k).view w)
       ((e.world k).state w))
+    (known : ((e.world k).state w).blocks[root]? = some block)
+    (rootFinal : ∀ k' ≤ k,
+      UpToDate config checks sources (e.world k').time ((e.world k').view w)
+        ((e.world k').state w) →
+      (∃ boundary,
+        computeStartSlotAtEpoch preset ((e.world k').state w).finalizedCheckpoint.epoch =
+          .ok boundary ∧ boundary ≤ block.slot ∧
+        ((e.world k).state w).getCheckpointBlock root
+          ((e.world k').state w).finalizedCheckpoint.epoch =
+            .ok ((e.world k').state w).finalizedCheckpoint.root) ∨
+      ((e.world k).state w).isAncestor
+        ⟨((e.world k').state w).finalizedCheckpoint.root, .pending⟩
+        ⟨root, .pending⟩ = .ok true)
     {receiverHead : ForkChoiceNode} {state : BeaconState preset fork}
     {current last : Slot} {maximum score : Gwei}
     {receiverParticipants : Std.TreeSet ValidatorIndex}
@@ -498,7 +511,10 @@ theorem Execution.honest_support_of_safe {Δ : ℕ} (sync : e.Synchronous Δ)
           {v ∈ ((e.world k).state w).parentVotersOf state receiverParticipants block
             parentBlock | v ∈ J} +
         2 * stake (fun v => balanceAt state v.toNat)
-          {v ∈ ((e.world k).state w).supportersOf state ⟨root, .pending⟩ | v ∈ J} := by
+          {v ∈ ((e.world k).state w).supportersOf state ⟨root, .pending⟩ | v ∈ J} ∨
+      ((e.world k).state w).isAncestor
+        ⟨((e.world k).state w).justifiedCheckpoint.root, .pending⟩
+        ⟨root, .pending⟩ = .ok true := by
   sorry
 
 /-- Step 5, the induction: a block that holds the bound of step 4 is safe up to a last time.
@@ -753,11 +769,11 @@ theorem Execution.checkpointStates_eq_of_oneBlock {anchor : Store preset fork}
   subst rightSlot
   exact Except.ok.inj (leftRun.symm.trans rightRun)
 
-/-- A complete later duty epoch makes each assigned honest tally voter support the safe prefix.
+/-- A complete duty epoch gives honest support unless justification already covers the root.
 
 The tally state may be old; no comparison with the caller's balances is used.
 
-The head block is admitted before the next boundary, and its vote is recorded at that boundary.
+Finality either permits head admission before the next boundary or already covers the root.
 
 This is the late support step of arXiv 2405.00549v4, Lemma 2.
 
@@ -801,7 +817,20 @@ theorem Execution.mem_supportersOf_of_duty_epoch {Δ : ℕ} (sync : e.Synchronou
     {w : ValidatorIndex} (receiver : w ∈ J) {k : ℕ} (atTime : (e.world k).time = time)
     (upToDate : UpToDate config checks sources (e.world k).time ((e.world k).view w)
       ((e.world k).state w))
-    (known : ∃ block, ((e.world k).state w).blocks[root]? = some block)
+    {rootBlock : BeaconBlock preset fork}
+    (known : ((e.world k).state w).blocks[root]? = some rootBlock)
+    (rootFinal : ∀ k' ≤ k, first ≤ (e.world k').time →
+      UpToDate config checks sources (e.world k').time ((e.world k').view w)
+        ((e.world k').state w) →
+      (∃ boundary,
+        computeStartSlotAtEpoch preset ((e.world k').state w).finalizedCheckpoint.epoch =
+          .ok boundary ∧ boundary ≤ rootBlock.slot ∧
+        ((e.world k).state w).getCheckpointBlock root
+          ((e.world k').state w).finalizedCheckpoint.epoch =
+            .ok ((e.world k').state w).finalizedCheckpoint.root) ∨
+      ((e.world k).state w).isAncestor
+        ⟨((e.world k').state w).finalizedCheckpoint.root, .pending⟩
+        ⟨root, .pending⟩ = .ok true)
     {state : BeaconState preset fork}
     (stateOk : ((e.world k).state w).checkpointState ((e.world k).state w).justifiedCheckpoint =
       .ok state)
@@ -810,7 +839,10 @@ theorem Execution.mem_supportersOf_of_duty_epoch {Δ : ℕ} (sync : e.Synchronou
     (active : v ∈ ((unslashedActiveBalances state).map (·.1)).toFinset)
     (duty : ∃ slot committeeIndex, begin ≤ slot ∧ slot < next ∧
       assignment.committee v slot = some committeeIndex) :
-    v ∈ ((e.world k).state w).supportersOf state ⟨root, .pending⟩ := by
+    v ∈ ((e.world k).state w).supportersOf state ⟨root, .pending⟩ ∨
+      ((e.world k).state w).isAncestor
+        ⟨((e.world k).state w).justifiedCheckpoint.root, .pending⟩
+        ⟨root, .pending⟩ = .ok true := by
   sorry
 
 end Models.Network
