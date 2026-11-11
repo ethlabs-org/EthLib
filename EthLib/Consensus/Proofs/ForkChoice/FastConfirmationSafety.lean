@@ -121,11 +121,11 @@ private theorem updateFastConfirmationVariables_checkpoints
 
 /-- Step 8, one call: the stored block is a start, or passed the checks along a confirmed walk.
 
-The start and its three cases are those of `onFastConfirmation_confirmedRoot`.
+The start is the one that the rule selects, as `getLatestConfirmed_checked_start` gives it.
 
 A later block has passed the checks of step 6 from that start.
 
-It is a root of the walk from the start to the head.
+It is a root of the walk from the start to the head, so it is not the start.
 
 That block and each root before it in the walk are one-confirmed.
 
@@ -133,7 +133,7 @@ Each known block must sit at a later slot than its known parent.
 
 The checks read the head of the slot before in the store after the call.
 
-The proof joins `getLatestConfirmed_checked` and `findLatestConfirmedDescendant_eq_or`.
+The proof joins `getLatestConfirmed_checked_start` and `findLatestConfirmedDescendant_eq_or`.
 
 Both read the same start of the same call. -/
 theorem onFastConfirmation_checked {fcr after : FastConfirmationStore}
@@ -159,20 +159,53 @@ theorem onFastConfirmation_checked {fcr after : FastConfirmationStore}
         after.currentEpochObservedJustifiedCheckpoint = fcr.currentEpochObservedJustifiedCheckpoint ∧
         after.previousEpochObservedJustifiedCheckpoint =
           fcr.previousEpochObservedJustifiedCheckpoint) ∧
-      (start = fcr.confirmedRoot ∧
-          store.isAncestor ⟨head.root, .pending⟩ ⟨fcr.confirmedRoot, .pending⟩ = .ok true ∧
-          (isStartSlotAtEpoch preset slot = .ok true →
-            store.isConfirmedChainSafe config after head.root fcr.confirmedRoot = .ok true) ∨
-        start = store.finalizedCheckpoint.root ∨
-        start = after.currentEpochObservedJustifiedCheckpoint.root ∧
-          isStartSlotAtEpoch preset slot = .ok true ∧
-          (∃ observedBlock epoch,
-            store.block after.currentEpochObservedJustifiedCheckpoint.root = .ok observedBlock ∧
-            store.getCurrentStoreEpoch config = .ok epoch ∧
-            Uint64.addChecked (computeEpochAtSlot preset observedBlock.slot) 1 = .ok epoch) ∧
-          store.unrealizedJustification head.root =
-            .ok after.currentEpochObservedJustifiedCheckpoint) ∧
+      (∃ base,
+        (base = fcr.confirmedRoot ∧
+            ((∃ epoch blockEpoch, store.getCurrentStoreEpoch config = .ok epoch ∧
+                store.getBlockEpoch fcr.confirmedRoot = .ok blockEpoch ∧
+                epoch.toNat ≤ blockEpoch.toNat + 1) ∧
+              store.isAncestor ⟨head.root, .pending⟩ ⟨fcr.confirmedRoot, .pending⟩ =
+                .ok true ∧
+              (isStartSlotAtEpoch preset slot = .ok true →
+                store.isConfirmedChainSafe config after head.root
+                  fcr.confirmedRoot = .ok true)) ∨
+          base = store.finalizedCheckpoint.root ∧
+            ¬((∃ epoch blockEpoch, store.getCurrentStoreEpoch config = .ok epoch ∧
+                 store.getBlockEpoch fcr.confirmedRoot = .ok blockEpoch ∧
+                 epoch.toNat ≤ blockEpoch.toNat + 1) ∧
+               store.isAncestor ⟨head.root, .pending⟩ ⟨fcr.confirmedRoot, .pending⟩ =
+                 .ok true ∧
+               (isStartSlotAtEpoch preset slot = .ok true →
+                 store.isConfirmedChainSafe config after head.root
+                   fcr.confirmedRoot = .ok true))) ∧
+        (start = base ∧
+            ¬(isStartSlotAtEpoch preset slot = .ok true ∧
+               (∃ observedBlock epoch,
+                 store.block after.currentEpochObservedJustifiedCheckpoint.root =
+                   .ok observedBlock ∧
+                 store.getCurrentStoreEpoch config = .ok epoch ∧
+                 Uint64.addChecked (computeEpochAtSlot preset observedBlock.slot) 1 = .ok epoch) ∧
+               store.unrealizedJustification head.root =
+                 .ok after.currentEpochObservedJustifiedCheckpoint ∧
+               ∃ baseBlock observedBlock, store.block base = .ok baseBlock ∧
+                 store.block after.currentEpochObservedJustifiedCheckpoint.root =
+                   .ok observedBlock ∧
+                 baseBlock.slot < observedBlock.slot) ∨
+          start = after.currentEpochObservedJustifiedCheckpoint.root ∧
+            (isStartSlotAtEpoch preset slot = .ok true ∧
+              (∃ observedBlock epoch,
+                store.block after.currentEpochObservedJustifiedCheckpoint.root =
+                  .ok observedBlock ∧
+                store.getCurrentStoreEpoch config = .ok epoch ∧
+                Uint64.addChecked (computeEpochAtSlot preset observedBlock.slot) 1 = .ok epoch) ∧
+              store.unrealizedJustification head.root =
+                .ok after.currentEpochObservedJustifiedCheckpoint ∧
+              ∃ baseBlock observedBlock, store.block base = .ok baseBlock ∧
+                store.block after.currentEpochObservedJustifiedCheckpoint.root =
+                  .ok observedBlock ∧
+                baseBlock.slot < observedBlock.slot))) ∧
       (after.confirmedRoot = start ∨
+        after.confirmedRoot ≠ start ∧
         store.Checked config after head.root start after.confirmedRoot ∧
         ∃ balanceSource chain later,
           store.checkpointState after.currentEpochObservedJustifiedCheckpoint =
@@ -200,7 +233,15 @@ theorem onFastConfirmation_checked {fcr after : FastConfirmationStore}
   · exact Or.inl same
   · rcases findLatestConfirmedDescendant_eq_or descendant with same | walk
     · exact Or.inl same
-    · exact Or.inr ⟨checked, walk⟩
+    · -- The walk returns roots strictly above its start, so the result is not the start.
+      obtain ⟨balanceSource, chain, later, sourceOk, walked, confirmedAll⟩ := walk
+      refine Or.inr ⟨fun same => ?_, checked, balanceSource, chain, later, sourceOk, walked,
+        confirmedAll⟩
+      obtain ⟨b, t, bOk, tOk, lt⟩ := slot_lt_of_mem_getAncestorRoots walked (by simp)
+        (List.mem_append_right _ (List.mem_cons_self ..))
+      rw [← same] at tOk
+      obtain rfl : b = t := Except.ok.inj (bOk.symm.trans tOk)
+      exact UInt64.lt_irrefl _ lt
 
 variable (lower : store.ParentsBelow) in
 /-- Before Gloas, each node of a filtered tree has a viable leaf of the tree below it.
@@ -359,13 +400,13 @@ They generalize Assumption 2 of the paper to balances that change between states
 
 They are assumptions of the theorem, not the paper's Assumption 2 itself.
 
-Every field applies only to a call that stores a block of a confirmed walk.
+The bounds apply only to a call that stores a new block of its own confirmed walk.
 
-Such a call has the evidence that `Store.onFastConfirmation_checked` gives for a walk.
+The walk starts from the start that the rule selects.
 
-Some calls store the anchor, the finalized block, the observed block or a carried block.
+`Store.onFastConfirmation_checked` gives that start.
 
-Those calls need none of the fields.
+A call that returns its start unchanged needs none of the bounds.
 
 Each call weighs with the state of its observed justified checkpoint, the source of balances.
 
@@ -402,27 +443,77 @@ structure RuleBounds
     (e : Execution (honestForkChoice config checks sources anchorState anchorBlock assignment
       genesisTimeMs) J) [DecidablePred (· ∈ J)] (u : ValidatorIndex) (events : List ℕ)
     (first : FastConfirmationStore) (margin shift limit : ℕ) : Prop where
-  /-- Before a complete epoch, the honest stores weigh near the source of a walked call. -/
-  weights : ∀ i n fcr after head start balanceSource chain later last,
-    CallAt e u events first i n fcr after →
-    ((e.world n).state u).getHead config = .ok head →
-    ((e.world n).state u).Checked config after head.root start after.confirmedRoot →
-    ((e.world n).state u).checkpointState after.currentEpochObservedJustifiedCheckpoint =
-      .ok balanceSource →
-    ((e.world n).state u).getAncestorRoots head.root start =
-      .ok (chain ++ after.confirmedRoot :: later) →
-    (∀ member ∈ chain ++ [after.confirmedRoot], ((e.world n).state u).isOneConfirmed config
-      head.root balanceSource (((e.world n).state u).tallyVotes balanceSource) member =
-        .ok true) →
-    last ≤ limit →
-    ¬CompleteEpochWithin preset config genesisTimeMs (e.world n).time last →
-    WeightBounds e balanceSource (e.world n).time last shift
-  /-- The measured tally of each block of the walk exceeds the threshold by the weight shift.
+  /-- At a call that stores a block of its own walk, five bounds hold, in this order.
 
-  This is an observable margin, not an assumption about the unknown honest supporters. -/
-  slack : ∀ i n fcr after head start balanceSource chain later,
+  The start is the one that the rule selects, as `Store.onFastConfirmation_checked` gives it.
+
+  The stored block is not that start, so the call confirmed a new block.
+
+  First, before a complete epoch, the honest stores weigh near the source of balances.
+
+  Second, the tally of each block of the walk exceeds the threshold by the weight shift.
+
+  That is an observable margin, not an assumption about the unknown honest supporters.
+
+  Third, away from an epoch start, the Byzantine validators hold at most β of its committees.
+
+  Those are the committees of the epoch so far.
+
+  Fourth, away from an epoch start, the honest validators of the slots to come hold their share.
+
+  They hold it with the margin.
+
+  Fifth, after a complete epoch, a receiver that does not cover the block has the majority. -/
+  walked : ∀ i n fcr after head slot start balanceSource chain later,
     CallAt e u events first i n fcr after →
     ((e.world n).state u).getHead config = .ok head →
+    ((e.world n).state u).getCurrentSlot config = .ok slot →
+    (∃ base,
+      (base = fcr.confirmedRoot ∧
+          ((∃ epoch blockEpoch, ((e.world n).state u).getCurrentStoreEpoch config = .ok epoch ∧
+              ((e.world n).state u).getBlockEpoch fcr.confirmedRoot = .ok blockEpoch ∧
+              epoch.toNat ≤ blockEpoch.toNat + 1) ∧
+            ((e.world n).state u).isAncestor ⟨head.root, .pending⟩ ⟨fcr.confirmedRoot, .pending⟩ =
+              .ok true ∧
+            (isStartSlotAtEpoch preset slot = .ok true →
+              ((e.world n).state u).isConfirmedChainSafe config after head.root
+                fcr.confirmedRoot = .ok true)) ∨
+        base = ((e.world n).state u).finalizedCheckpoint.root ∧
+          ¬((∃ epoch blockEpoch, ((e.world n).state u).getCurrentStoreEpoch config = .ok epoch ∧
+               ((e.world n).state u).getBlockEpoch fcr.confirmedRoot = .ok blockEpoch ∧
+               epoch.toNat ≤ blockEpoch.toNat + 1) ∧
+             ((e.world n).state u).isAncestor ⟨head.root, .pending⟩ ⟨fcr.confirmedRoot, .pending⟩ =
+               .ok true ∧
+             (isStartSlotAtEpoch preset slot = .ok true →
+               ((e.world n).state u).isConfirmedChainSafe config after head.root
+                 fcr.confirmedRoot = .ok true))) ∧
+      (start = base ∧
+          ¬(isStartSlotAtEpoch preset slot = .ok true ∧
+             (∃ observedBlock epoch,
+               ((e.world n).state u).block after.currentEpochObservedJustifiedCheckpoint.root =
+                 .ok observedBlock ∧
+               ((e.world n).state u).getCurrentStoreEpoch config = .ok epoch ∧
+               Uint64.addChecked (computeEpochAtSlot preset observedBlock.slot) 1 = .ok epoch) ∧
+             ((e.world n).state u).unrealizedJustification head.root =
+               .ok after.currentEpochObservedJustifiedCheckpoint ∧
+             ∃ baseBlock observedBlock, ((e.world n).state u).block base = .ok baseBlock ∧
+               ((e.world n).state u).block after.currentEpochObservedJustifiedCheckpoint.root =
+                 .ok observedBlock ∧
+               baseBlock.slot < observedBlock.slot) ∨
+        start = after.currentEpochObservedJustifiedCheckpoint.root ∧
+          (isStartSlotAtEpoch preset slot = .ok true ∧
+            (∃ observedBlock epoch,
+              ((e.world n).state u).block after.currentEpochObservedJustifiedCheckpoint.root =
+                .ok observedBlock ∧
+              ((e.world n).state u).getCurrentStoreEpoch config = .ok epoch ∧
+              Uint64.addChecked (computeEpochAtSlot preset observedBlock.slot) 1 = .ok epoch) ∧
+            ((e.world n).state u).unrealizedJustification head.root =
+              .ok after.currentEpochObservedJustifiedCheckpoint ∧
+            ∃ baseBlock observedBlock, ((e.world n).state u).block base = .ok baseBlock ∧
+              ((e.world n).state u).block after.currentEpochObservedJustifiedCheckpoint.root =
+                .ok observedBlock ∧
+              baseBlock.slot < observedBlock.slot))) →
+    after.confirmedRoot ≠ start →
     ((e.world n).state u).Checked config after head.root start after.confirmedRoot →
     ((e.world n).state u).checkpointState after.currentEpochObservedJustifiedCheckpoint =
       .ok balanceSource →
@@ -431,9 +522,11 @@ structure RuleBounds
     (∀ member ∈ chain ++ [after.confirmedRoot], ((e.world n).state u).isOneConfirmed config
       head.root balanceSource (((e.world n).state u).tallyVotes balanceSource) member =
         .ok true) →
-    ∀ member ∈ chain ++ [after.confirmedRoot], ∀ block parent firstSlot lastSlot beforeBlock
-      slot participants maximum score support discount adversary,
-      ((e.world n).state u).getCurrentSlot config = .ok slot →
+    (∀ last, last ≤ limit →
+      ¬CompleteEpochWithin preset config genesisTimeMs (e.world n).time last →
+      WeightBounds e balanceSource (e.world n).time last shift) ∧
+    (∀ member ∈ chain ++ [after.confirmedRoot], ∀ block parent firstSlot lastSlot beforeBlock
+      participants maximum score support discount adversary,
       ((e.world n).state u).block member = .ok block →
       ((e.world n).state u).block block.parentRoot = .ok parent →
       addChecked parent.slot 1 = .ok firstSlot → subChecked slot 1 = .ok lastSlot →
@@ -450,46 +543,20 @@ structure RuleBounds
       ((e.world n).state u).getAdversarialWeight config head.root balanceSource member =
         .ok adversary →
       maximum.toNat + score.toNat + 2 * adversary.toNat + shift <
-        discount.toNat + 2 * support.toNat
-  /-- The Byzantine validators hold at most β of the committees of the epoch so far. -/
-  byzantine : ∀ i n fcr after head start balanceSource chain later,
-    CallAt e u events first i n fcr after →
-    ((e.world n).state u).getHead config = .ok head →
-    ((e.world n).state u).Checked config after head.root start after.confirmedRoot →
-    ((e.world n).state u).checkpointState after.currentEpochObservedJustifiedCheckpoint =
-      .ok balanceSource →
-    ((e.world n).state u).getAncestorRoots head.root start =
-      .ok (chain ++ after.confirmedRoot :: later) →
-    (∀ member ∈ chain ++ [after.confirmedRoot], ((e.world n).state u).isOneConfirmed config
-      head.root balanceSource (((e.world n).state u).tallyVotes balanceSource) member =
-        .ok true) →
-    ∀ state slot epochStart lastSlot participants,
-      ((e.world n).state u).getPulledUpHeadState config head.root = .ok state →
-      ((e.world n).state u).getCurrentSlot config = .ok slot →
+        discount.toNat + 2 * support.toNat) ∧
+    (∀ state epochStart lastSlot participants,
       isStartSlotAtEpoch preset slot = .ok false →
+      ((e.world n).state u).getPulledUpHeadState config head.root = .ok state →
       computeStartSlotAtEpoch preset (computeEpochAtSlot preset slot) = .ok epochStart →
       subChecked slot 1 = .ok lastSlot →
       ((e.world n).state u).getCommitteesBetweenSlots head.root epochStart lastSlot =
         .ok participants →
       ByzantineStakeAtMost (fun v => balanceAt state v.toNat)
         (Store.activeMembers state participants) J
-        config.CONFIRMATION_BYZANTINE_THRESHOLD.toNat 100
-  /-- The honest validators of the slots still to come hold their share, with the margin. -/
-  remaining : ∀ i n fcr after head start balanceSource chain later,
-    CallAt e u events first i n fcr after →
-    ((e.world n).state u).getHead config = .ok head →
-    ((e.world n).state u).Checked config after head.root start after.confirmedRoot →
-    ((e.world n).state u).checkpointState after.currentEpochObservedJustifiedCheckpoint =
-      .ok balanceSource →
-    ((e.world n).state u).getAncestorRoots head.root start =
-      .ok (chain ++ after.confirmedRoot :: later) →
-    (∀ member ∈ chain ++ [after.confirmedRoot], ((e.world n).state u).isOneConfirmed config
-      head.root balanceSource (((e.world n).state u).tallyVotes balanceSource) member =
-        .ok true) →
-    ∀ state slot epochStart lastSlot participants total soFar,
-      ((e.world n).state u).getPulledUpHeadState config head.root = .ok state →
-      ((e.world n).state u).getCurrentSlot config = .ok slot →
+        config.CONFIRMATION_BYZANTINE_THRESHOLD.toNat 100) ∧
+    (∀ state epochStart lastSlot participants total soFar,
       isStartSlotAtEpoch preset slot = .ok false →
+      ((e.world n).state u).getPulledUpHeadState config head.root = .ok state →
       computeStartSlotAtEpoch preset (computeEpochAtSlot preset slot) = .ok epochStart →
       subChecked slot 1 = .ok lastSlot →
       ((e.world n).state u).getCommitteesBetweenSlots head.root epochStart lastSlot =
@@ -500,20 +567,8 @@ structure RuleBounds
       3 * ((total.toNat - soFar.toNat) / 100 *
           (100 - config.CONFIRMATION_BYZANTINE_THRESHOLD.toNat)) + margin ≤
         3 * stake (fun v => balanceAt state v.toNat)
-          {v ∈ ((unslashedActiveBalances state).map (·.1)).toFinset | v ∉ participants ∧ v ∈ J}
-  /-- After a complete epoch, a receiver that does not cover the walked block has the majority. -/
-  late : ∀ i n fcr after head start balanceSource chain later,
-    CallAt e u events first i n fcr after →
-    ((e.world n).state u).getHead config = .ok head →
-    ((e.world n).state u).Checked config after head.root start after.confirmedRoot →
-    ((e.world n).state u).checkpointState after.currentEpochObservedJustifiedCheckpoint =
-      .ok balanceSource →
-    ((e.world n).state u).getAncestorRoots head.root start =
-      .ok (chain ++ after.confirmedRoot :: later) →
-    (∀ member ∈ chain ++ [after.confirmedRoot], ((e.world n).state u).isOneConfirmed config
-      head.root balanceSource (((e.world n).state u).tallyVotes balanceSource) member =
-        .ok true) →
-    ∀ w ∈ J, ∀ k (state : BeaconState preset fork),
+          {v ∈ ((unslashedActiveBalances state).map (·.1)).toFinset | v ∉ participants ∧ v ∈ J}) ∧
+    (∀ w ∈ J, ∀ k (state : BeaconState preset fork),
       CompleteEpochWithin preset config genesisTimeMs (e.world n).time (e.world k).time →
       (e.world k).time ≤ limit →
       UpToDate config checks sources (e.world k).time ((e.world k).view w)
@@ -524,7 +579,7 @@ structure RuleBounds
         ⟨((e.world k).state w).justifiedCheckpoint.root, .pending⟩
         ⟨after.confirmedRoot, .pending⟩ ≠ .ok true →
       LateMargin config genesisTimeMs assignment J (e.world n).time (e.world k).time state
-        (((e.world k).state w).boostScore config)
+        (((e.world k).state w).boostScore config))
 
 variable {e : Execution (honestForkChoice config checks sources anchorState anchorBlock assignment
   genesisTimeMs) J}
@@ -1042,7 +1097,11 @@ The call before recorded it one slot before, and the first call reads the block 
 
 A walk gives a block safe from the call, by `Execution.safeAt_of_walk`.
 
-Its inputs come from the induction hypothesis and from `RuleBounds`.
+Its inputs come from the induction hypothesis and from the one field of `RuleBounds`.
+
+That field reads the walk with its selected start from `Store.onFastConfirmation_checked`.
+
+A call that returns its start unchanged reads no bound.
 
 `Execution.honestTargetVotes_of_byzantineStakeAtMost` gives the honest target votes.
 
