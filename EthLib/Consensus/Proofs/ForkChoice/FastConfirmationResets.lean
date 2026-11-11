@@ -126,6 +126,9 @@ theorem Execution.finalizedCheckpoint_eq_of_checked {anchor : Store preset fork}
     (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
     (sound : Invariant anchorState)
     {u : ValidatorIndex} (honest : u ∈ J) (start : e.start u = anchor) {n : ℕ}
+    (nonzero : ∀ (root : Root) (block : BeaconBlock preset fork),
+      ((e.world n).state u).blocks[root]? = some block →
+      block.stateRoot ≠ Vector.replicate 32 0)
     {fcr : FastConfirmationStore} {head root : Root}
     (checked : ((e.world n).state u).Checked config fcr head
       ((e.world n).state u).finalizedCheckpoint.root root) :
