@@ -1097,7 +1097,8 @@ private theorem balanceDrift_reference_update {f : Fork} {s t : BeaconState pres
     have located := getValidatorAt_eq_ok_iff.mp found
     by_cases eq : i = j
     · subst i
-      have nextRead : (a.putValidator j inside { v with effectiveBalance := next }).validators.data[j]? =
+      have nextRead :
+          (a.putValidator j inside { v with effectiveBalance := next }).validators.data[j]? =
           some { v with effectiveBalance := next } := by
         simp [BeaconState.putValidator, Serialization.Ssz.RootedForkList.data_set]
       have capped := premise.2 _ nextRead
@@ -1115,15 +1116,18 @@ private theorem balanceDrift_reference_update {f : Fork} {s t : BeaconState pres
         · exact previous
         · have rounded : balance % preset.EFFECTIVE_BALANCE_INCREMENT ≤ balance :=
             UInt64.le_iff_toNat_le.mpr (by rw [UInt64.toNat_mod]; exact Nat.mod_le _ _)
-          have quotient := Nat.div_le_div_right funded (c := preset.EFFECTIVE_BALANCE_INCREMENT.toNat)
+          have quotient := Nat.div_le_div_right funded
+            (c := preset.EFFECTIVE_BALANCE_INCREMENT.toNat)
           have product := Nat.mul_le_mul_left preset.EFFECTIVE_BALANCE_INCREMENT.toNat quotient
-          have refDivision := Nat.mod_add_div reference.toNat preset.EFFECTIVE_BALANCE_INCREMENT.toNat
+          have refDivision := Nat.mod_add_div reference.toNat
+            preset.EFFECTIVE_BALANCE_INCREMENT.toNat
           have balDivision := Nat.mod_add_div balance.toNat preset.EFFECTIVE_BALANCE_INCREMENT.toNat
           rw [aligned] at refDivision
           rw [Base.Uint64.toNat_min, UInt64.toNat_sub_of_le _ _ rounded, UInt64.toNat_mod]
           have capped := UInt64.le_iff_toNat_le.mp capped
           omega
-    · have same : (a.putValidator j inside { v with effectiveBalance := next }).validators.data[i]? =
+    · have same :
+          (a.putValidator j inside { v with effectiveBalance := next }).validators.data[i]? =
           a.validators.data[i]? := by
         simp [BeaconState.putValidator, Serialization.Ssz.RootedForkList.data_set, Ne.symm eq]
       constructor
