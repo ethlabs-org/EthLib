@@ -893,7 +893,8 @@ theorem Store.Reachable.blockState_finalizationSources {config : Config}
   · obtain ⟨parent, signed, message, parentFound, transitioned⟩ :=
       transitions root block state found stored same
     obtain ⟨advanced, slotsOk, -, -, blockOk, -⟩ := stateTransition_ok transitioned
-    have parentHolds := reachable.blockState_finalizationSources anchor transitions counts parentFound
+    have parentHolds :=
+      reachable.blockState_finalizationSources anchor transitions counts parentFound
     apply FinalizationSources.processBlock (computed := blockOk)
     apply parentHolds.processSlots (computed := slotsOk)
     intro middle cached justified visited before cachedOk justifiedOk old
