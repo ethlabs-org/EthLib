@@ -1,5 +1,6 @@
 module
 
+public import EthLib.Consensus.ForkChoice.FastConfirmation
 public import EthLib.Consensus.Proofs.ForkChoice.HonestDuties
 public import EthLib.Consensus.Proofs.ForkChoice.VoteRecords
 
@@ -181,6 +182,7 @@ The data has the slot of the duty and a target in the epoch of that slot.
 It votes for the head block of the store of the voter, which is not after the slot. -/
 theorem VoteAt.data_head {anchor : Store preset fork}
     (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (anchorSlot : anchorBlock.slot ≤ anchorState.slot)
     (start : ∀ u ∈ J, e.start u = anchor) {v : ValidatorIndex} (honest : v ∈ J) {slot : Slot}
     {committeeIndex : CommitteeIndex} {time n : ℕ} {attestation : Attestation preset fork}
     {indexed : IndexedAttestation preset fork}
@@ -198,9 +200,13 @@ theorem VoteAt.data_head {anchor : Store preset fork}
 
 The state of the head block names the same block at the start of the epoch as the store does.
 
-The hypotheses are those of `VoteAt.data_head`. -/
+The anchor state and block share an epoch-boundary slot.
+
+This aligns the first checkpoint in state history with the root held by the store. -/
 theorem VoteAt.data_target {anchor : Store preset fork}
     (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (anchorSlot : anchorBlock.slot = anchorState.slot)
+    (anchorAtBoundary : isStartSlotAtEpoch preset anchorBlock.slot = .ok true)
     (start : ∀ u ∈ J, e.start u = anchor) {v : ValidatorIndex} (honest : v ∈ J) {slot : Slot}
     {committeeIndex : CommitteeIndex} {time n : ℕ} {attestation : Attestation preset fork}
     {indexed : IndexedAttestation preset fork}
@@ -251,7 +257,10 @@ theorem VoteAt.recorded {Δ : ℕ} (sync : e.Synchronous Δ) {v u : ValidatorInd
     (counted : v ∉ ((e.world k).state u).equivocatingIndices) :
     ∃ m, ((e.world k).state u).latestMessages[v]? = some m ∧
       (LatestMessage.ofAttestation attestation).rank ≤ m.rank := by
-  sorry
+  have seen := e.mem_view_of_send sync vote.sends honest receiver
+    (by simpa [vote.atTime] using late)
+  -- Acceptance is explicit: synchrony supplies the message, not successful validation.
+  exact upToDate.recorded seen accepted reads (by simp [vote.alone]) counted
 
 /-- A store that has recorded an honest vote holds a vote of that validator at each later event.
 
