@@ -153,4 +153,9 @@ theorem filterM_exists_ok {test : α → Except ε Bool} {list : List α}
   obtain ⟨out, computed⟩ := filterAuxM_exists_ok tested []
   exact ⟨out.reverse, by simp only [List.filterM, computed]; rfl⟩
 
+/-- A filter over no element keeps none. -/
+theorem filterM_nil {test : α → Except ε Bool} : List.filterM test [] = .ok [] := by
+  simp only [List.filterM, List.filterAuxM]
+  rfl
+
 end EthLib.Base
