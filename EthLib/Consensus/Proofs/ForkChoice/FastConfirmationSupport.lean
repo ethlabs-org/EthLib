@@ -114,6 +114,137 @@ theorem lt_honest_parentVotersOf_add_two_mul_supportersOf_of_isOneConfirmed
     firstOk beforeOk parentParticipantsOk discountOk aligned increment dishonest parentByzantine
   omega
 
+/-- Before Gloas, an ancestor test is the exact walk to the ancestor's slot. -/
+theorem getAncestor_of_isAncestor_of_lt {node ancestor : ForkChoiceNode}
+    {block : BeaconBlock preset fork} (before : fork < .glamsterdam)
+    (known : store.blocks[ancestor.root]? = some block)
+    (descends : store.isAncestor node ancestor = .ok true) :
+    store.getAncestor node block.slot = .ok ancestor := by
+  have notGloas : ¬ .glamsterdam ≤ fork := Nat.not_le_of_lt before
+  simp only [isAncestor, block_ok_iff.mpr known, notGloas, ↓reduceIte,
+    bind, Except.bind] at descends
+  cases walk : store.getAncestor node block.slot with
+  | error error => simp [walk] at descends
+  | ok found =>
+    simp only [walk, pure, Except.pure, Except.ok.injEq, beq_iff_eq] at descends
+    exact congrArg Except.ok descends
+
+/-- Before Gloas, descent composes through a known intermediate block. -/
+theorem isAncestor_trans_of_lt {node middle ancestor : ForkChoiceNode}
+    {middleBlock ancestorBlock : BeaconBlock preset fork}
+    (before : fork < .glamsterdam)
+    (middleKnown : store.blocks[middle.root]? = some middleBlock)
+    (ancestorKnown : store.blocks[ancestor.root]? = some ancestorBlock)
+    (upper : store.isAncestor node middle = .ok true)
+    (lower : store.isAncestor middle ancestor = .ok true) :
+    store.isAncestor node ancestor = .ok true := by
+  have upperWalk := getAncestor_of_isAncestor_of_lt before middleKnown upper
+  have lowerWalk := getAncestor_of_isAncestor_of_lt before ancestorKnown lower
+  obtain ⟨block, found, le⟩ := slot_le_of_isAncestor ancestorKnown lower
+  rw [middleKnown, Option.some.injEq] at found
+  subst block
+  have walk := (getAncestor_trans le upperWalk).trans lowerWalk
+  simp [isAncestor, block_ok_iff.mpr ancestorKnown, walk,
+    bind, Except.bind, pure, Except.pure]
+
+/-- A reachable receiver holding the tip agrees on its ancestor walk above the anchor slot. -/
+theorem getAncestor_of_same_blocks {receiver : Store preset fork}
+    {anchorState : BeaconState preset fork} {anchorBlock : BeaconBlock preset fork}
+    (reachable : Reachable config anchorState anchorBlock receiver)
+    (same : ∀ (r : Root) b c, store.blocks[r]? = some b →
+      receiver.blocks[r]? = some c → b = c)
+    {node ancestor : ForkChoiceNode} {slot : Slot}
+    (aboveAnchor : anchorBlock.slot ≤ slot)
+    (known : ∃ block, receiver.blocks[node.root]? = some block)
+    (walk : store.getAncestor node slot = .ok ancestor) :
+    receiver.getAncestor node slot = .ok ancestor := by
+  induction node using getAncestor.induct (store := store) (slot := slot) with
+  | case1 node found =>
+    rw [getAncestor] at walk
+    split at walk <;> simp_all [throw, throwThe, MonadExceptOf.throw]
+  | case2 node block found le =>
+    obtain ⟨other, held⟩ := known
+    have eq := same _ _ _ found held
+    subst other
+    rw [getAncestor_of_le found le] at walk
+    exact (getAncestor_of_le held le).trans walk
+  | case3 node block found above parentFound =>
+    rw [getAncestor] at walk
+    split at walk
+    · simp_all
+    · rename_i b eq
+      rw [found, Option.some.injEq] at eq
+      subst b
+      simp only [above, ↓reduceIte] at walk
+      split at walk <;> simp_all [throw, throwThe, MonadExceptOf.throw]
+  | case4 node block found above parent parentFound lower ih =>
+    obtain ⟨other, held⟩ := known
+    have eq := same _ _ _ found held
+    subst other
+    have notAnchor : block ≠ anchorBlock := by
+      intro eq
+      exact above (eq ▸ aboveAnchor)
+    obtain ⟨state, _, _, provenance⟩ := reachable.blockStatesFromParents held
+    obtain ⟨parentState, _, _, _, _, parentStateFound, _⟩ := provenance notAnchor
+    obtain ⟨receiverParent, receiverParentFound⟩ := reachable.known_of_blockState parentStateFound
+    have eq := same _ _ _ parentFound receiverParentFound
+    subst receiverParent
+    rw [getAncestor_step found above parentFound lower] at walk
+    rw [getAncestor_step held above receiverParentFound lower]
+    exact ih ⟨parent, receiverParentFound⟩ walk
+  | case5 node block found above parent parentFound notLower =>
+    rw [getAncestor] at walk
+    split at walk
+    · simp_all
+    · rename_i b eq
+      rw [found, Option.some.injEq] at eq
+      subst b
+      simp only [above, ↓reduceIte] at walk
+      split at walk
+      · simp_all
+      · rename_i p eq
+        rw [parentFound, Option.some.injEq] at eq
+        subst p
+        simp [notLower, throw, throwThe, MonadExceptOf.throw] at walk
+
+/-- Checkpoint reads agree across reachable stores holding the tip above the anchor boundary. -/
+theorem getCheckpointBlock_of_same_blocks {receiver : Store preset fork}
+    {anchorState : BeaconState preset fork} {anchorBlock : BeaconBlock preset fork}
+    (reachable : Reachable config anchorState anchorBlock receiver)
+    (same : ∀ (r : Root) b c, store.blocks[r]? = some b →
+      receiver.blocks[r]? = some c → b = c)
+    {root checkpoint : Root} {epoch : Epoch} {boundary : Slot}
+    (boundaryOk : computeStartSlotAtEpoch preset epoch = .ok boundary)
+    (aboveAnchor : anchorBlock.slot ≤ boundary)
+    (known : ∃ block, receiver.blocks[root]? = some block)
+    (read : store.getCheckpointBlock root epoch = .ok checkpoint) :
+    receiver.getCheckpointBlock root epoch = .ok checkpoint := by
+  simp only [getCheckpointBlock, boundaryOk, Except.mapError, bind, Except.bind] at read ⊢
+  cases walk : store.getAncestor ⟨root, .pending⟩ boundary with
+  | error error => simp [walk] at read
+  | ok ancestor =>
+    rw [getAncestor_of_same_blocks reachable same aboveAnchor known walk]
+    simpa [walk] using read
+
+/-- Descent through a block carries its checkpoint read to the descendant at an earlier boundary. -/
+theorem getCheckpointBlock_of_isAncestor {node : ForkChoiceNode} {root checkpoint : Root}
+    {block : BeaconBlock preset fork} {epoch : Epoch} {boundary : Slot}
+    (before : fork < .glamsterdam)
+    (known : store.blocks[root]? = some block)
+    (descends : store.isAncestor node ⟨root, .pending⟩ = .ok true)
+    (boundaryOk : computeStartSlotAtEpoch preset epoch = .ok boundary)
+    (earlier : boundary ≤ block.slot)
+    (read : store.getCheckpointBlock root epoch = .ok checkpoint) :
+    store.getCheckpointBlock node.root epoch = .ok checkpoint := by
+  have walk := getAncestor_of_isAncestor_of_lt before known descends
+  have through := getAncestor_trans earlier walk
+  have rootWalk := getAncestor_root (store := store) node .pending boundary
+  simp only [getCheckpointBlock, boundaryOk, Except.mapError, bind, Except.bind] at read ⊢
+  change ((fun x => x.root) <$> store.getAncestor ⟨node.root, .pending⟩ boundary) =
+    .ok checkpoint
+  rw [← rootWalk, through]
+  exact read
+
 end Store
 
 namespace Models.Network
