@@ -236,6 +236,11 @@ structure VoteAt {J : Set ValidatorIndex}
   honestData : HonestVoteData config checks ((e.world n).state v) slot committeeIndex
     attestation.data
   reads : ReadsAttestation config checks ((e.world n).state v) attestation indexed
+  committees : ∀ withTarget targetState,
+    ((e.world n).state v).storeTargetCheckpointState config checks attestation.data.target =
+      .ok withTarget →
+    withTarget.checkpointState attestation.data.target = .ok targetState →
+    checkAttestationCommittees targetState attestation = .ok ()
   alone : indexed.attestingIndices.data.toList = [v]
 
 /-- The duty to vote, on an execution with honest validators `J`, from a time `stable` on.
@@ -555,6 +560,52 @@ theorem exists_votes_execution {anchorState : BeaconState preset fork}
         indexed.attestingIndices.data.toList = [v] :=
     readsAttestation_firstSeat (config := config) (store := ticked) (attestation := attestation)
       before stored committeeOk rfl rfl first rfl
+  have committees : ∀ withTarget targetState,
+      ticked.storeTargetCheckpointState config .acceptAll attestation.data.target = .ok withTarget →
+      withTarget.checkpointState attestation.data.target = .ok targetState →
+      checkAttestationCommittees targetState attestation = .ok () := by
+    intro withTarget targetState targetOk stateOk
+    have contains : ticked.checkpointStates.contains attestation.data.target := by
+      rw [Std.TreeMap.contains_eq_isSome_getElem?, show
+        ticked.checkpointStates[attestation.data.target]? = some anchorState from stored]
+      rfl
+    simp only [Store.storeTargetCheckpointState, contains, ↓reduceIte, pure,
+      Except.pure, Except.ok.injEq] at targetOk
+    subst withTarget
+    have lookup : ticked.checkpointState attestation.data.target = .ok anchorState := by
+      simp [Store.checkpointState, show
+        ticked.checkpointStates[attestation.data.target]? = some anchorState from stored,
+        pure, Except.pure]
+    rw [lookup, Except.ok.injEq] at stateOk
+    subst targetState
+    have countOk : ∃ count, getCommitteeCountPerSlotChecked anchorState
+        (getCurrentEpoch anchorState) = .ok count ∧ 0 < count := by
+      have read := committeeOk
+      simp only [getBeaconCommittee, bind_ok_iff] at read
+      obtain ⟨⟨active, shuffled⟩, shuffleOk, -⟩ := read
+      simp only [attesterShuffle, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at shuffleOk
+      obtain ⟨seed, seedOk, indices, indicesOk, count, countOk, rest⟩ := shuffleOk
+      have epoch : computeEpochAtSlot preset 0 = getCurrentEpoch anchorState := by
+        rw [getCurrentEpoch, stateZero]
+      rw [epoch] at indicesOk
+      simp only [List.size_toArray] at countOk
+      refine ⟨committeeCountOf preset count, ?_, ?_⟩
+      · simp only [getCommitteeCountPerSlotChecked, indicesOk, bind, Except.bind,
+          countOk, pure, Except.pure]
+      · unfold committeeCountOf
+        apply UInt64.lt_of_lt_of_le (show (0 : UInt64) < 1 by decide)
+        simp only [UInt64.max_def]
+        split
+        · assumption
+        · exact UInt64.le_refl _
+    obtain ⟨count, countOk, positiveCount⟩ := countOk
+    unfold checkAttestationCommittees
+    dsimp only
+    have notElectra : ¬ .pectra ≤ fork := Nat.not_le_of_lt before
+    rw [dite_eq_right notElectra]
+    simp [attestation, data,
+      countOk, positiveCount, committeeOk, liftAccessor, bind, Except.bind, ensure,
+      Except.mapError]
   have statementData : ∀ x ∈ statements config .acceptAll anchorState anchorBlock
       (.attestation attestation), x.2 = data := by
     intro x mem
@@ -628,7 +679,7 @@ theorem exists_votes_execution {anchorState : BeaconState preset fork}
     rw [dued, Except.ok.injEq] at dued'
     subst started' dued'
     rw [← atTime]
-    refine ⟨2, attestation, indexed, rfl, by rw [worldTwo], ?_, ?_, ?_, ?_, single⟩
+    refine ⟨2, attestation, indexed, rfl, by rw [worldTwo], ?_, ?_, ?_, ?_, ?_, single⟩
     · rw [worldTwo]
       dsimp only
       rw [Function.update_self]
@@ -638,6 +689,8 @@ theorem exists_votes_execution {anchorState : BeaconState preset fork}
       simpa using honestData
     · rw [worldTwo]
       simpa using reads
+    · rw [worldTwo]
+      simpa using committees
   · rw [later]
     show T ≤ deadline + T
     omega
