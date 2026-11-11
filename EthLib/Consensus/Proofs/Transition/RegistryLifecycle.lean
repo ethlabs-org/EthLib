@@ -1387,4 +1387,730 @@ theorem Run.registryLifecycle {first last : ForkedBeaconState preset}
   | nil => exact .refl _
   | snoc pre step ih => exact ih.trans (RegistryLifecycle.chainStep step.chainStep)
 
+/-! ## Admissions within one step -/
+
+-- Keeping both epochs unassigned lets activity checks rule out a later exit request.
+private def Unassigned (v : Validator) : Prop :=
+  v.activationEpoch = FAR_FUTURE_EPOCH ∧ v.exitEpoch = FAR_FUTURE_EPOCH
+
+private def UnassignedFrom (n : Nat) {fork : Fork} (s : BeaconState preset fork) : Prop :=
+  ∀ i v, n ≤ i → s.validators.data[i]? = some v → Unassigned v
+
+private theorem unassignedFrom_size (s : BeaconState preset fork) :
+    UnassignedFrom s.validators.data.size s := by
+  intro i v large found
+  have := (Array.getElem?_eq_some_iff.mp found).1
+  omega
+
+private def UnassignedKept {f g : Fork} (s : BeaconState preset f)
+    (t : BeaconState preset g) : Prop :=
+  ∀ n, UnassignedFrom n s → UnassignedFrom n t
+
+namespace UnassignedKept
+
+private theorem refl (s : BeaconState preset fork) : UnassignedKept s s := fun _ => id
+
+private theorem trans {f g h : Fork} {s : BeaconState preset f} {t : BeaconState preset g}
+    {u : BeaconState preset h} (one : UnassignedKept s t) (two : UnassignedKept t u) :
+    UnassignedKept s u := fun n => two n ∘ one n
+
+private theorem of_data {g : Fork} {t : BeaconState preset g}
+    (same : t.validators.data = state.validators.data := by rfl) : UnassignedKept state t := by
+  intro n h i v hi found
+  exact h i v hi (same ▸ found)
+
+private theorem foldlM {α ε : Type} {step : BeaconState preset fork → α → Except ε _}
+    (keeps : ∀ s a t, step s a = .ok t → UnassignedKept s t) {xs : List α}
+    (ok : xs.foldlM step state = .ok after) : UnassignedKept state after :=
+  foldlM_ok_invariant (UnassignedKept state)
+    (fun _ _ _ h ok => h.trans (keeps _ _ _ ok)) (refl state) ok
+
+private theorem setValidatorAt {i : Nat} {old v : Validator}
+    (found : getValidatorAt state i = .ok old)
+    (set : state.setValidatorAt i v = .ok after)
+    (keeps : Unassigned old → Unassigned v) : UnassignedKept state after := by
+  obtain ⟨inside, rfl⟩ := setValidatorAt_ok set
+  have oldEq : state.validators.data[i] = old := by simpa [getValidatorAt, inside] using found
+  intro n h j w large read
+  simp only [BeaconState.putValidator, RootedForkList.data_set, Array.getElem?_set] at read
+  split at read
+  · rename_i same
+    subst j
+    cases read
+    apply keeps (h i old large ?_)
+    simp [Array.getElem?_eq_getElem inside, oldEq]
+  · exact h j w large read
+
+private theorem setValidator {i : ValidatorIndex} {old v : Validator}
+    (found : getValidator state i = .ok old)
+    (set : state.setValidator i v = .ok after)
+    (keeps : Unassigned old → Unassigned v) : UnassignedKept state after :=
+  setValidatorAt (by rwa [← getValidator_eq_getValidatorAt])
+    (by rwa [← setValidator_eq_setValidatorAt]) keeps
+
+private theorem append {v : Validator}
+    (added : after.validators.data = state.validators.data.push v)
+    (pending : Unassigned v) : UnassignedKept state after := by
+  intro n h i w large found
+  rw [added, Array.getElem?_push] at found
+  split at found
+  · cases found; exact pending
+  · exact h i w large found
+
+private theorem increaseBalance {i : ValidatorIndex} {amount : Gwei}
+    (ok : Consensus.increaseBalance state i amount = .ok after) : UnassignedKept state after :=
+  of_data (congrArg (·.data) (increaseBalance_validators ok))
+
+private theorem decreaseBalance {i : ValidatorIndex} {amount : Gwei}
+    (ok : Consensus.decreaseBalance state i amount = .ok after) : UnassignedKept state after :=
+  of_data (congrArg (·.data) (decreaseBalance_validators ok))
+
+private theorem applyPendingDeposit {deposit : PendingDeposit}
+    (ok : Consensus.applyPendingDeposit config checks state deposit = .ok after) :
+    UnassignedKept state after := by
+  unfold Consensus.applyPendingDeposit at ok
+  split at ok
+  · split at ok
+    · cases ok; exact refl _
+    simp only [bind_ok_iff] at ok
+    obtain ⟨_, _, ok⟩ := ok
+    split at ok
+    · exact append (addValidatorToRegistry_validators_eq_push ok) ⟨rfl, rfl⟩
+    · cases ok; exact refl _
+  · simp only [liftAccessor_ok, bind_ok_iff] at ok
+    obtain ⟨_, _, ok⟩ := ok
+    exact increaseBalance ok
+
+private theorem applyDeposit {pubkey : BLSPubkey} {credentials : Bytes32} {amount : Gwei}
+    {signature : BLSSignature}
+    (ok : Consensus.applyDeposit config checks state pubkey credentials amount signature =
+      .ok after) : UnassignedKept state after := by
+  unfold Consensus.applyDeposit at ok
+  split at ok
+  · unfold applyDepositElectra at ok
+    split at ok
+    · simp only [bind_ok_iff] at ok
+      obtain ⟨_, _, ok⟩ := ok
+      split at ok
+      · simp only [bind_ok_iff, liftAccessor_ok] at ok
+        obtain ⟨middle, added, queued⟩ := ok
+        obtain ⟨_, rfl⟩ := addPendingDeposit_eq queued
+        exact (append (addValidatorToRegistry_validators_eq_push added) ⟨rfl, rfl⟩).trans
+          (of_data (state := middle))
+      · cases ok; exact refl _
+    · obtain ⟨_, rfl⟩ := addPendingDeposit_eq (liftAccessor_ok.mp ok)
+      exact of_data
+  · exact applyPendingDeposit ok
+
+private theorem processDeposit {before : fork < .hegota} {deposit : Deposit}
+    (ok : Consensus.processDeposit config checks before state deposit = .ok after) :
+    UnassignedKept state after := by
+  obtain ⟨_, _, next, _, credited⟩ := processDeposit_ok ok
+  exact (of_data (state := state)
+    (t := { state with eth1DepositIndex := fun _ => next })).trans (applyDeposit credited)
+
+private theorem inactive {v : Validator} (pending : Unassigned v) (e : Epoch) :
+    isActiveValidator v e = false := by
+  simp only [isActiveValidator, pending.1, pending.2, Bool.and_eq_false_iff,
+    decide_eq_false_iff_not]
+  by_cases h : FAR_FUTURE_EPOCH ≤ e
+  · exact Or.inr (UInt64.not_lt.mpr h)
+  · exact Or.inl h
+
+private theorem initiateValidatorExit {i : ValidatorIndex} {v : Validator}
+    (found : getValidator state i = .ok v) (notPending : ¬Unassigned v)
+    (ok : Consensus.initiateValidatorExit config state i = .ok after) :
+    UnassignedKept state after := by
+  obtain ⟨old, read, unchanged | ⟨_, queued, _, _, queue, _, set⟩⟩ :=
+    initiateValidatorExit_ok ok
+  · rw [unchanged.2]; exact refl _
+  · have equal := Except.ok.inj (read.symm.trans found)
+    have same := (exitQueue_validators queue).1
+    exact (of_data (congrArg (·.data) same)).trans <|
+      setValidator ((getValidator_of_validators_eq same i).trans read) set
+        (fun h => False.elim (notPending (equal ▸ h)))
+
+private theorem processVoluntaryExit {signed : SignedVoluntaryExit}
+    (ok : Consensus.processVoluntaryExit config checks state signed = .ok after) :
+    UnassignedKept state after := by
+  unfold Consensus.processVoluntaryExit at ok
+  simp only [bind_ok_iff, ensure_ok_iff, liftAccessor_ok, liftSsz_ok] at ok
+  obtain ⟨v, found, _, active, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, exited⟩ := ok
+  exact initiateValidatorExit found (fun h => by rw [inactive h] at active; cases active) exited
+
+private theorem processBlsToExecutionChange {signed : SignedBLSToExecutionChange}
+    (ok : Consensus.processBlsToExecutionChange config checks state signed = .ok after) :
+    UnassignedKept state after := by
+  obtain ⟨_, found, _, _, _, set⟩ := processBlsToExecutionChange_ok ok
+  apply setValidator found set
+  rintro ⟨activation, exit⟩
+  exact ⟨activation, exit⟩
+
+private theorem processEffectiveBalanceUpdates
+    (ok : Consensus.processEffectiveBalanceUpdates state = .ok after) :
+    UnassignedKept state after := by
+  apply foldlM (fun _ _ _ ok => ?_) ok
+  simp only [updateEffectiveBalance, bind_ok_iff, liftAccessor_ok] at ok
+  obtain ⟨_, found, _, _, _, _, set⟩ := ok
+  apply setValidatorAt found set
+  intro h
+  exact h
+
+private theorem queueExcessActiveBalance {electra : .pectra ≤ fork} {index : ValidatorIndex}
+    (ok : Consensus.queueExcessActiveBalance state electra index = .ok after) :
+    UnassignedKept state after := by
+  simp only [Consensus.queueExcessActiveBalance, bind_ok_iff] at ok
+  obtain ⟨_, _, ok⟩ := ok
+  split at ok
+  · simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at ok
+    obtain ⟨_, _, _, _, _, set, rfl⟩ := ok
+    obtain ⟨_, rfl⟩ := setBalance_ok set
+    exact of_data
+  · cases ok; exact refl _
+
+private theorem switchToCompoundingValidator {electra : .pectra ≤ fork} {index : ValidatorIndex}
+    (ok : Consensus.switchToCompoundingValidator state electra index = .ok after) :
+    UnassignedKept state after := by
+  simp only [Consensus.switchToCompoundingValidator, bind_ok_iff] at ok
+  obtain ⟨_, found, _, set, queued⟩ := ok
+  refine (setValidator found set (fun h => h)).trans (queueExcessActiveBalance queued)
+
+private theorem requestPartialWithdrawal {electra : .pectra ≤ fork}
+    {index : ValidatorIndex} {validator : Validator} {amount owed : Gwei}
+    (ok : Consensus.requestPartialWithdrawal config state electra index validator amount owed =
+      .ok after) : UnassignedKept state after := by
+  simp only [Consensus.requestPartialWithdrawal, bind_ok_iff, liftAccessor_ok, pure,
+    Except.pure] at ok
+  obtain ⟨_, _, _, _, ok⟩ := ok
+  split at ok
+  · simp only [bind_ok_iff, liftAccessor_ok, Except.ok.injEq] at ok
+    obtain ⟨⟨_, _⟩, churned, _, _, _, _, rfl⟩ := ok
+    have same := (computeExitEpochAndUpdateChurn_earliest churned).2.1
+    exact (of_data (by rw [same])).trans of_data
+  · cases ok; exact refl _
+
+private theorem cannotRequest {v : Validator} (pending : Unassigned v) :
+    canRequest config state v = .ok false := by
+  simp [canRequest, inactive pending, pure, Except.pure]
+
+private theorem processWithdrawalRequest {electra : .pectra ≤ fork} {request : WithdrawalRequest}
+    (ok : Consensus.processWithdrawalRequest config state electra request = .ok after) :
+    UnassignedKept state after := by
+  unfold Consensus.processWithdrawalRequest at ok
+  simp only [bind, Except.bind, pure, Except.pure] at ok
+  repeat' split at ok
+  all_goals first
+    | (cases ok; done)
+    | (cases ok; exact refl _)
+    | exact requestPartialWithdrawal ok
+    | (apply initiateValidatorExit (config := config)
+         (by rw [getValidator, getElem?_toNat_of_ofNatChecked (by assumption)])
+         ?_ (liftAccessor_ok.mp ok)
+       intro pending
+       have rejected := cannotRequest (config := config) (state := state) pending
+       simp_all)
+
+private theorem queueConsolidation {electra : .pectra ≤ fork}
+    {sourceIndex targetIndex : ValidatorIndex} {source : Validator}
+    (found : state.validators.data[sourceIndex.toNat]? = some source)
+    (notPending : ¬Unassigned source)
+    (ok : Consensus.queueConsolidation config state electra sourceIndex source targetIndex =
+      .ok after) : UnassignedKept state after := by
+  simp only [Consensus.queueConsolidation, bind_ok_iff, liftAccessor_ok, liftArith,
+    mapError_ok_iff, pure, Except.pure] at ok
+  obtain ⟨⟨churned, _⟩, churn, _, _, _, set, _, _, ok⟩ := ok
+  simp only [Except.ok.injEq] at ok
+  subst ok
+  have same := (computeConsolidationEpochAndUpdateChurn_earliest churn).2.1
+  have read : getValidator churned sourceIndex = .ok source := by
+    rw [getValidator, same, found]
+  exact (of_data (by rw [same])).trans <|
+    (setValidator read set (fun h => False.elim (notPending h))).trans of_data
+
+private theorem processConsolidationRequest {electra : .pectra ≤ fork}
+    {request : ConsolidationRequest}
+    (ok : Consensus.processConsolidationRequest config state electra request = .ok after) :
+    UnassignedKept state after := by
+  unfold Consensus.processConsolidationRequest at ok
+  simp only [bind, Except.bind, pure, Except.pure] at ok
+  repeat' split at ok
+  all_goals first
+    | (cases ok; done)
+    | (cases ok; exact refl _)
+    | exact switchToCompoundingValidator (liftAccessor_ok.mp ok)
+    | (apply queueConsolidation (getElem?_toNat_of_ofNatChecked (by assumption)) ?_ ok
+       intro pending
+       have no := inactive pending (getCurrentEpoch state)
+       simp_all)
+
+private theorem processDepositRequest {electra : .pectra ≤ fork} {request : DepositRequest}
+    (ok : Consensus.processDepositRequest state electra request = .ok after) :
+    UnassignedKept state after :=
+  of_data (congrArg (·.data) (processDepositRequest_ok ok).2.1)
+
+private theorem processExecutionRequests {body : BeaconBlockBody preset fork}
+    {electra : .pectra ≤ fork ∧ fork < .glamsterdam}
+    (ok : Consensus.processExecutionRequests config state body electra = .ok after) :
+    UnassignedKept state after := by
+  simp only [Consensus.processExecutionRequests, bind_ok_iff, ← Array.foldlM_toList] at ok
+  obtain ⟨_, deposits, _, withdrawals, consolidations⟩ := ok
+  exact (foldlM (fun _ _ _ ok => processDepositRequest ok) deposits).trans <|
+    (foldlM (fun _ _ _ ok => processWithdrawalRequest ok) withdrawals).trans
+      (foldlM (fun _ _ _ ok => processConsolidationRequest ok) consolidations)
+
+private theorem passPendingDeposits {stop : PendingDeposit → Bool} {nextEpoch : Epoch}
+    {available : Gwei} :
+    ∀ {deposits : List PendingDeposit} {state : BeaconState preset fork} {processed : Gwei}
+      {count : Nat} {postponed : Array PendingDeposit} {pass},
+      Consensus.passPendingDeposits config checks stop nextEpoch available state processed count
+        postponed deposits = .ok pass → UnassignedKept state pass.1.state
+  | [], _, _, _, _, _, ok => by cases ok; exact refl _
+  | deposit :: rest, state, processed, count, postponed, pass, ok => by
+    unfold Consensus.passPendingDeposits at ok
+    simp only [bind, Except.bind, pure, Except.pure] at ok
+    split at ok
+    · cases ok; exact refl _
+    split at ok
+    · cases ok
+    split at ok
+    · split at ok
+      · cases ok
+      rename_i credited
+      split at ok
+      · cases ok
+      cases ok
+      exact (applyPendingDeposit credited).trans (passPendingDeposits (deposits := rest) ‹_›)
+    split at ok
+    · split at ok
+      · cases ok
+      cases ok
+      exact passPendingDeposits (deposits := rest) ‹_›
+    split at ok
+    · cases ok
+    split at ok
+    · cases ok; exact refl _
+    split at ok
+    · cases ok
+    rename_i credited
+    split at ok
+    · cases ok
+    cases ok
+    exact (applyPendingDeposit credited).trans (passPendingDeposits (deposits := rest) ‹_›)
+
+private theorem processPendingBalances
+    (ok : Consensus.processPendingBalances config checks state = .ok after) :
+    UnassignedKept state after := by
+  unfold Consensus.processPendingBalances at ok
+  split at ok
+  · simp only [bind_ok_iff] at ok
+    obtain ⟨middle, deposited, consolidated⟩ := ok
+    have deposits : UnassignedKept state middle := by
+      unfold processPendingDeposits at deposited
+      simp only [bind, Except.bind, pure, Except.pure] at deposited
+      repeat' (split at deposited <;> try cases deposited)
+      all_goals exact (passPendingDeposits ‹_›).trans of_data
+    exact deposits.trans
+      (of_data (by rw [(processPendingConsolidations_kept consolidated).1]))
+  · cases ok; exact refl _
+
+private theorem queuePreActivation {electra : .pectra ≤ fork} {index : ValidatorIndex}
+    (ok : Consensus.queuePreActivation state electra index = .ok after) :
+    UnassignedKept state after := by
+  simp only [Consensus.queuePreActivation, bind_ok_iff, liftAccessor_ok, pure, Except.pure,
+    Except.ok.injEq] at ok
+  obtain ⟨v, found, _, _, _, _, _, set₁, _, set₂, rfl⟩ := ok
+  obtain ⟨_, rfl⟩ := setBalance_ok set₁
+  exact (of_data (state := state)).trans <|
+    (setValidator (old := v) (by exact found) set₂ (fun h => h)).trans of_data
+
+private theorem upgradeNext {pre : ForkedBeaconState preset}
+    {post : {post : ForkedBeaconState preset // pre.fork < post.fork}}
+    (ok : Consensus.upgradeNext config checks pre = .ok post) :
+    UnassignedKept pre.state post.val.state := by
+  obtain ⟨fork, state⟩ := pre
+  cases fork <;>
+    simp only [Consensus.upgradeNext, bind_ok_iff, pure, Except.pure, Except.ok.injEq, throw,
+      throwThe, MonadExceptOf.throw, reduceCtorEq] at ok
+  · obtain ⟨_, upgraded, rfl⟩ := ok
+    exact of_data (upgradeToAltair_spec upgraded).1
+  · subst ok; exact of_data
+  · subst ok; exact of_data
+  · subst ok; exact of_data
+  · obtain ⟨_, upgraded, rfl⟩ := ok
+    simp only [upgradeToElectra, bind_ok_iff] at upgraded
+    obtain ⟨_, _, _, _, _, _, _, _, _, queued, compounded⟩ := upgraded
+    have tail := foldlM (fun _ _ _ ok => by
+      unfold queueCompoundingExcess at ok
+      split at ok
+      · split at ok
+        · exact queueExcessActiveBalance (liftAccessor_ok.mp ok)
+        · cases ok; exact refl _
+      · cases ok; exact refl _) compounded
+    have head := foldlM (fun _ _ _ ok => queuePreActivation ok) queued
+    exact (of_data (state := state)).trans (head.trans tail)
+  · obtain ⟨_, upgraded, rfl⟩ := ok
+    exact of_data (upgradeToFulu_spec upgraded).1
+  · obtain ⟨_, upgraded, rfl⟩ := ok
+    exact of_data (upgradeToGloas_spec upgraded).1
+  · obtain ⟨_, upgraded, rfl⟩ := ok
+    obtain ⟨_, rfl⟩ := upgradeToHeze_ok_iff.mp upgraded
+    exact of_data (upgradeHezeFields_lists _).1
+
+private theorem historicalRoots
+    (ok : processHistoricalRootsUpdate state = .ok after) : UnassignedKept state after := by
+  unfold processHistoricalRootsUpdate at ok
+  split at ok
+  · cases ok
+  simp only [bind_ok_iff, liftAccessor_ok] at ok
+  obtain ⟨_, _, ok⟩ := ok
+  split at ok
+  · simp only [bind_ok_iff, liftSsz_ok, pure, Except.pure, Except.ok.injEq] at ok
+    obtain ⟨_, _, _, _, rfl⟩ := ok
+    exact of_data
+  · cases ok; exact refl _
+
+private theorem historicalSummaries {capella : .shapella ≤ fork}
+    (ok : processHistoricalSummariesUpdate state capella = .ok after) :
+    UnassignedKept state after := by
+  unfold processHistoricalSummariesUpdate at ok
+  simp only [bind, Except.bind, pure, Except.pure] at ok
+  repeat' (split at ok <;> try cases ok)
+  all_goals exact of_data
+
+private theorem epochTail {altair : .altair ≤ fork} {rooted synced looked : BeaconState preset fork}
+    (syncedOk : processSyncCommitteeUpdates (processParticipationFlagUpdates rooted altair)
+      altair = .ok synced)
+    (lookedOk : (if fulu : .fusaka ≤ fork then liftAccessor (processProposerLookahead synced fulu)
+      else pure synced) = .ok looked)
+    (windowed : (if gloas : .glamsterdam ≤ fork then liftAccessor (processPtcWindow looked gloas)
+      else pure looked) = .ok after) : UnassignedKept rooted after := by
+  have first : UnassignedKept rooted synced := by
+    unfold processSyncCommitteeUpdates at syncedOk
+    simp only [bind, Except.bind, pure, Except.pure] at syncedOk
+    repeat' (split at syncedOk <;> try cases syncedOk)
+    all_goals exact of_data
+  have second : UnassignedKept synced looked := by
+    split at lookedOk
+    · simp only [processProposerLookahead, liftAccessor_ok, bind_ok_iff, pure, Except.pure,
+        Except.ok.injEq] at lookedOk
+      obtain ⟨_, _, _, _, rfl⟩ := lookedOk
+      exact of_data
+    · cases lookedOk; exact refl _
+  have third : UnassignedKept looked after := by
+    split at windowed
+    · simp only [processPtcWindow, liftAccessor_ok, bind_ok_iff, pure, Except.pure,
+        Except.ok.injEq] at windowed
+      obtain ⟨_, _, _, _, rfl⟩ := windowed
+      exact of_data
+    · cases windowed; exact refl _
+  exact first.trans (second.trans third)
+
+end UnassignedKept
+
+-- Before the admission phase, no operation changes the length of the validator registry.
+private def RegistrySize {f g : Fork} (s : BeaconState preset f) (t : BeaconState preset g) :
+    Prop := t.validators.data.size = s.validators.data.size
+
+namespace RegistrySize
+
+private theorem refl (s : BeaconState preset fork) : RegistrySize s s := rfl
+
+private theorem trans {f g h : Fork} {s : BeaconState preset f} {t : BeaconState preset g}
+    {u : BeaconState preset h} (one : RegistrySize s t) (two : RegistrySize t u) :
+    RegistrySize s u := Eq.trans two one
+
+private theorem of_data {g : Fork} {t : BeaconState preset g}
+    (same : t.validators.data = state.validators.data := by rfl) : RegistrySize state t :=
+  congrArg Array.size same
+
+private theorem foldlM {α ε : Type} {step : BeaconState preset fork → α → Except ε _}
+    (keeps : ∀ s a t, step s a = .ok t → RegistrySize s t) {xs : List α}
+    (ok : xs.foldlM step state = .ok after) : RegistrySize state after :=
+  foldlM_ok_invariant (RegistrySize state)
+    (fun _ _ _ h ok => h.trans (keeps _ _ _ ok)) (refl state) ok
+
+private theorem inactivity {altair : .altair ≤ fork}
+    (ok : processInactivityUpdates config state altair = .ok after) :
+    RegistrySize state after := by
+  unfold processInactivityUpdates at ok
+  split at ok
+  · cases ok; rfl
+  · simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at ok
+    obtain ⟨_, _, _, _, rfl⟩ := ok
+    rfl
+
+private theorem eth1Reset {before : fork < .hegota}
+    (ok : processEth1DataReset before state = .ok after) : RegistrySize state after := by
+  simp only [processEth1DataReset, bind_ok_iff, liftAccessor_ok] at ok
+  obtain ⟨_, _, ok⟩ := ok
+  split at ok <;> cases ok <;> rfl
+
+private theorem executionPayload {body : BeaconBlockBody preset fork}
+    {bellatrix : .bellatrix ≤ fork ∧ fork < .glamsterdam}
+    (ok : processExecutionPayload config engine state body bellatrix = .ok after) :
+    RegistrySize state after := by
+  obtain ⟨_, _, _, rfl⟩ := processExecutionPayload_ok ok
+  rfl
+
+private theorem executionPayloadBid {gloas : .glamsterdam ≤ fork}
+    {signed : SignedExecutionPayloadBid preset fork}
+    (ok : processExecutionPayloadBid config checks state gloas signed = .ok after) :
+    RegistrySize state after := by
+  obtain ⟨_, recorded, recordedOk, rfl⟩ := processExecutionPayloadBid_ok ok
+  by_cases paid : 0 < signed.message.value
+  · obtain ⟨_, _, _, _, rfl⟩ := recordBidPayment_of_pos paid recordedOk
+    rfl
+  · simp only [recordBidPayment, paid, ↓reduceIte, pure, Except.pure, Except.ok.injEq] at recordedOk
+    subst recordedOk
+    rfl
+
+private theorem blockExecution {body : BeaconBlockBody preset fork} {bellatrix : .bellatrix ≤ fork}
+    (ok : processBlockExecution config checks engine state body bellatrix = .ok after) :
+    RegistrySize state after := by
+  unfold processBlockExecution at ok
+  split at ok
+  · simp only [bind_ok_iff] at ok
+    obtain ⟨_, withdrawn, bid⟩ := ok
+    exact trans (sameSizes_processWithdrawals withdrawn).1 (executionPayloadBid bid)
+  split at ok
+  · simp only [bind_ok_iff] at ok
+    obtain ⟨_, withdrawn, paid⟩ := ok
+    exact trans (sameSizes_processWithdrawals withdrawn).1 (executionPayload paid)
+  · dsimp only at ok
+    split at ok
+    · exact executionPayload ok
+    · cases ok; rfl
+
+private theorem builderDeposit {gloas : .glamsterdam ≤ fork} {request : BuilderDepositRequest}
+    (ok : processBuilderDepositRequest config checks state gloas request = .ok after) :
+    RegistrySize state after := by
+  unfold processBuilderDepositRequest addBuilderToRegistry at ok
+  simp only [bind, Except.bind, pure, Except.pure] at ok
+  repeat' split at ok
+  all_goals first | (cases ok; done) | (cases ok; rfl)
+
+private theorem builderExit {gloas : .glamsterdam ≤ fork} {request : BuilderExitRequest}
+    (ok : processBuilderExitRequest config state gloas request = .ok after) :
+    RegistrySize state after := by
+  rcases processBuilderExitRequest_cases ok with rfl | ⟨_, _, _, _, _, exited⟩
+  · rfl
+  · simp only [initiateBuilderExit, bind_ok_iff] at exited
+    obtain ⟨_, _, _, _, set⟩ := exited
+    obtain ⟨_, rfl⟩ := setBuilder_ok set
+    rfl
+
+private theorem parentPayload {gloas : .glamsterdam ≤ fork} {body : BeaconBlockBody preset fork}
+    (ok : processParentExecutionPayload config checks state gloas body = .ok after) :
+    RegistrySize state after := by
+  rcases processParentExecutionPayload_ok ok with ⟨_, _, rfl⟩ |
+    ⟨_, settled, _, _, _, _, _, _, settledOk, depositsOk, withdrawalsOk, consolidationsOk,
+      buildersOk, exitsOk, _, rfl⟩
+  · rfl
+  · have first : RegistrySize state settled := by rw [settleParentPayment_eq settledOk]; rfl
+    exact first.trans <|
+      (foldlM (fun _ _ _ ok => of_data (congrArg (·.data) (processDepositRequest_ok ok).2.1))
+        depositsOk).trans <|
+      (foldlM (fun _ _ _ ok => (sameSizes_processWithdrawalRequest ok).1) withdrawalsOk).trans <|
+      (foldlM (fun _ _ _ ok => (sameSizes_processConsolidationRequest ok).1)
+        consolidationsOk).trans <|
+      (foldlM (fun _ _ _ ok => builderDeposit ok) buildersOk).trans <|
+      (foldlM (fun _ _ _ ok => builderExit ok) exitsOk).trans (of_data rfl)
+
+end RegistrySize
+
+private theorem newUnassigned_processEpochAltair {altair : .altair ≤ fork}
+    (ok : processEpochAltair config checks state altair = .ok after) :
+    UnassignedFrom state.validators.data.size after := by
+  unfold processEpochAltair at ok
+  simp only [bind_ok_iff] at ok
+  obtain ⟨justified, justifiedOk, scored, scoredOk, rewarded, rewardedOk, registered,
+    registeredOk, slashed, slashedOk, reset, resetOk, pending, pendingOk, paid, paidOk, balanced,
+    balancedOk, cleared, clearedOk, mixed, mixedOk, ok⟩ := ok
+  have resetSize : RegistrySize slashed reset := by
+    split at resetOk
+    · exact RegistrySize.eth1Reset resetOk
+    · cases resetOk; rfl
+  have before : RegistrySize state reset :=
+    RegistrySize.trans (sameSizes_processJustificationAndFinalization justifiedOk).1 <|
+    (RegistrySize.inactivity scoredOk).trans <|
+    RegistrySize.trans (processRewardsAndPenalties_sameSizes rewardedOk).1 <|
+    RegistrySize.trans (sameSizes_processRegistryUpdates registeredOk).1 <|
+    RegistrySize.trans (sameSizes_processSlashings slashedOk).1 resetSize
+  -- All assignments precede pending deposits, so this suffix is empty at admission's start.
+  have atReset : UnassignedFrom state.validators.data.size reset := by
+    rw [← before]
+    exact unassignedFrom_size reset
+  have paidKept : UnassignedKept pending paid := by
+    split at paidOk
+    · simp only [processBuilderPendingPayments, liftAccessor_ok, bind_ok_iff, pure, Except.pure,
+        Except.ok.injEq] at paidOk
+      obtain ⟨_, _, rfl⟩ := paidOk
+      exact UnassignedKept.of_data
+    · cases paidOk; exact UnassignedKept.refl _
+  have clearKept : UnassignedKept balanced cleared := by
+    obtain ⟨_, _, _, _, rfl⟩ := processSlashingsReset_eq clearedOk
+    exact UnassignedKept.of_data
+  have mixKept : UnassignedKept cleared mixed := by
+    obtain ⟨_, _, _, _, _, _, rfl⟩ := processRandaoMixesReset_eq mixedOk
+    exact UnassignedKept.of_data
+  have atMixed := ((UnassignedKept.processPendingBalances pendingOk).trans <|
+    paidKept.trans <| (UnassignedKept.processEffectiveBalanceUpdates balancedOk).trans <|
+    clearKept.trans mixKept) _ atReset
+  split at ok <;> simp only [bind_ok_iff] at ok <;>
+    obtain ⟨rooted, rootOk, synced, syncOk, looked, lookOk, windowOk⟩ := ok
+  · exact ((UnassignedKept.historicalSummaries rootOk).trans
+      (UnassignedKept.epochTail syncOk lookOk windowOk)) _ atMixed
+  · exact ((UnassignedKept.historicalRoots rootOk).trans
+      (UnassignedKept.epochTail syncOk lookOk windowOk)) _ atMixed
+
+private theorem newUnassigned_processEpoch
+    (ok : processEpoch config checks state = .ok after) :
+    UnassignedFrom state.validators.data.size after := by
+  unfold processEpoch at ok
+  split at ok
+  · exact newUnassigned_processEpochAltair ok
+  simp only [bind_ok_iff] at ok
+  obtain ⟨_, justified, _, rewarded, _, registered, _, slashed, _, reset, balanced,
+    balancedOk, cleared, clearOk, mixed, mixOk, rooted, rootOk, rotated⟩ := ok
+  have first : RegistrySize state balanced :=
+    RegistrySize.trans (sameSizes_processJustificationAndFinalization justified).1 <|
+    RegistrySize.trans (processRewardsAndPenalties_sameSizes rewarded).1 <|
+    RegistrySize.trans (sameSizes_processRegistryUpdates registered).1 <|
+    RegistrySize.trans (sameSizes_processSlashings slashed).1 <|
+    (RegistrySize.eth1Reset reset).trans (sameSizes_processEffectiveBalanceUpdates balancedOk).1
+  have clearKept : UnassignedKept balanced cleared := by
+    obtain ⟨_, _, _, _, rfl⟩ := processSlashingsReset_eq clearOk
+    exact UnassignedKept.of_data
+  have mixKept : UnassignedKept cleared mixed := by
+    obtain ⟨_, _, _, _, _, _, rfl⟩ := processRandaoMixesReset_eq mixOk
+    exact UnassignedKept.of_data
+  have last : UnassignedKept rooted after := by
+    unfold processParticipationRecordUpdates at rotated
+    split at rotated
+    · cases rotated
+    · cases rotated; exact UnassignedKept.of_data
+  apply (clearKept.trans (mixKept.trans ((UnassignedKept.historicalRoots rootOk).trans last))) _
+  rw [← first]
+  exact unassignedFrom_size balanced
+
+private theorem newUnassigned_advanceSlot
+    (ok : advanceSlot config checks state = .ok after) :
+    UnassignedFrom state.validators.data.size after := by
+  obtain ⟨next, cached, epoched, _, cachedOk, epochedOk, rfl⟩ := advanceSlot_ok ok
+  obtain ⟨_, _, _, _, cachedEq⟩ := processSlot_ok cachedOk
+  have first : cached.validators.data = state.validators.data := by rw [cachedEq]
+  have second : UnassignedFrom cached.validators.data.size epoched := by
+    unfold epochIfLast at epochedOk
+    split at epochedOk
+    · exact newUnassigned_processEpoch epochedOk
+    · cases epochedOk; exact unassignedFrom_size _
+  exact (UnassignedKept.of_data (state := epoched)) _ (first ▸ second)
+
+private theorem newUnassigned_processOperations {body : BeaconBlockBody preset fork}
+    {parentSlot : Slot} (ok : processOperations config checks state body parentSlot = .ok after) :
+    UnassignedFrom state.validators.data.size after := by
+  unfold processOperations at ok
+  split at ok
+  -- Gloas block requests enqueue deposits; they do not admit validators in this step.
+  · have sizes := (sameSizes_processOperationsGloas ok).1
+    rw [← sizes]
+    exact unassignedFrom_size after
+  simp only [bind_ok_iff, ensure_ok_iff, ← Array.foldlM_toList] at ok
+  obtain ⟨_, _, _, _, _, proposers, _, attesters, attested, attestations, _, deposited,
+    exited, exits, changed, changes, requests⟩ := ok
+  have before : RegistrySize state attested :=
+    (RegistrySize.foldlM (fun _ _ _ ok => (sameSizes_processProposerSlashing ok).1)
+      proposers).trans <|
+    (RegistrySize.foldlM (fun _ _ _ ok => (sameSizes_processAttesterSlashing ok).1)
+      attesters).trans <|
+    RegistrySize.foldlM (fun _ _ _ ok => (sameSizes_processAttestation ok).1) attestations
+  have changesKept : UnassignedKept exited changed := by
+    unfold processBlsToExecutionChanges at changes
+    split at changes
+    · rw [← Array.foldlM_toList] at changes
+      exact UnassignedKept.foldlM
+        (fun _ _ _ ok => UnassignedKept.processBlsToExecutionChange ok) changes
+    · cases changes; exact UnassignedKept.refl _
+  have requestsKept : UnassignedKept changed after := by
+    split at requests
+    · exact UnassignedKept.processExecutionRequests requests
+    · cases requests; exact UnassignedKept.refl _
+  apply ((UnassignedKept.foldlM (fun _ _ _ ok => UnassignedKept.processDeposit ok)
+    deposited).trans <|
+    (UnassignedKept.foldlM (fun _ _ _ ok => UnassignedKept.processVoluntaryExit ok) exits).trans <|
+    changesKept.trans requestsKept) _
+  rw [← before]
+  exact unassignedFrom_size attested
+
+private theorem newUnassigned_processBlock {block : BeaconBlock preset fork}
+    (ok : processBlock config checks engine state block = .ok after) :
+    UnassignedFrom state.validators.data.size after := by
+  unfold processBlock at ok
+  split at ok
+  · unfold processBlockAltair at ok
+    simp only [bind_ok_iff] at ok
+    obtain ⟨paid, paidOk, headed, headOk, executed, executionOk, revealed, randaoOk, voted,
+      voteOk, operated, operationsOk, syncOk⟩ := ok
+    have paidSize : RegistrySize state paid := by
+      split at paidOk
+      · exact RegistrySize.parentPayload paidOk
+      · cases paidOk; rfl
+    have executionSize : RegistrySize headed executed := by
+      split at executionOk
+      · exact RegistrySize.blockExecution executionOk
+      · cases executionOk; rfl
+    have randaoSize : RegistrySize executed revealed := by
+      obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, rfl⟩ := processRandao_eq randaoOk
+      rfl
+    have voteSize : RegistrySize revealed voted := by
+      split at voteOk
+      · obtain ⟨_, _, rest⟩ := processEth1Data_eq voteOk
+        rw [← rest]; rfl
+      · cases voteOk; rfl
+    have before := paidSize.trans <|
+      RegistrySize.trans (sameSizes_processBlockHeader headOk).1 <|
+      executionSize.trans (randaoSize.trans voteSize)
+    have pending := newUnassigned_processOperations operationsOk
+    -- Sync rewards change balances, not validators.
+    unfold processSyncAggregate at syncOk
+    simp only [bind_ok_iff] at syncOk
+    obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, folded⟩ := syncOk
+    rw [← Array.foldlM_toList] at folded
+    have kept : UnassignedKept operated after := UnassignedKept.foldlM (fun _ _ _ ok => by
+      unfold applySyncReward at ok
+      split at ok
+      · simp only [bind_ok_iff, liftAccessor_ok] at ok
+        obtain ⟨_, raised, _, _, paid⟩ := ok
+        exact (UnassignedKept.increaseBalance raised).trans (UnassignedKept.increaseBalance paid)
+      · exact UnassignedKept.decreaseBalance (liftAccessor_ok.mp ok)) folded
+    exact kept _ (before ▸ pending)
+  simp only [bind_ok_iff] at ok
+  obtain ⟨_, header, _, randao, voted, eth1, operations⟩ := ok
+  have headSize := (sameSizes_processBlockHeader header).1
+  obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, randaoEq⟩ := processRandao_eq randao
+  obtain ⟨_, _, eth1Eq⟩ := processEth1Data_eq eth1
+  have before : voted.validators.data.size = state.validators.data.size := by
+    have same := congrArg (fun s => s.validators.data.size) eth1Eq
+    rw [randaoEq] at same
+    exact same.trans headSize
+  exact before ▸ newUnassigned_processOperations operations
+
+/-- A validator admitted within one step still has no assigned exit at its endpoint. -/
+theorem Step.new_validator_exit_unassigned {x y : ForkedBeaconState preset}
+    (step : Step config checks x y) (i : Nat) (v : Validator)
+    (newIndex : x.state.validators.data.size ≤ i)
+    (found : y.state.validators.data[i]? = some v) : v.exitEpoch = FAR_FUTURE_EPOCH := by
+  have pending : UnassignedFrom x.state.validators.data.size y.state := by
+    cases step with
+    | slot ok =>
+      obtain ⟨advanced, slotOk, upgrades⟩ := bind_ok_iff.mp ok
+      have tail := processUpgrades_induction
+        (property := fun post => UnassignedKept advanced post.state)
+        (fun before ok => before.trans (UnassignedKept.upgradeNext ok))
+        (UnassignedKept.refl advanced) upgrades
+      exact tail _ (newUnassigned_advanceSlot slotOk)
+    | block engine signed due ok =>
+      exact newUnassigned_processBlock (applySignedBlock_ok ok).2.1
+  exact (pending i v newIndex found).2
+
 end EthLib.Consensus
