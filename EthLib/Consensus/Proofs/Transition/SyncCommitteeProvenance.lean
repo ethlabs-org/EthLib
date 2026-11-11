@@ -1088,6 +1088,21 @@ theorem upgradeNext {pre : ForkedBeaconState preset}
 
 end SyncCommitteeKeys
 
+/-- Block operations retain the current sync committee, including when they admit validators. -/
+theorem processOperations_currentSyncCommittee {body : BeaconBlockBody preset fork}
+    {parentSlot : Slot} (altair : .altair ≤ fork)
+    (ok : processOperations config checks state body parentSlot = .ok after) :
+    after.currentSyncCommittee altair = state.currentSyncCommittee altair :=
+  congrFun (SameSyncCommittees.processOperations ok).1 altair
+
+/-- Block execution retains the current sync committee. -/
+theorem processBlockExecution_currentSyncCommittee {body : BeaconBlockBody preset fork}
+    {engine : ExecutionEngine preset fork} {bellatrix : .bellatrix ≤ fork}
+    (altair : .altair ≤ fork)
+    (ok : processBlockExecution config checks engine state body bellatrix = .ok after) :
+    after.currentSyncCommittee altair = state.currentSyncCommittee altair :=
+  congrFun (SameSyncCommittees.processBlockExecution ok).1 altair
+
 /-- Every current and next sync committee key in a run from genesis belongs to its registry. -/
 theorem Run.syncCommittee_keys {g x : ForkedBeaconState preset} (run : Run config checks g x)
     (genesis : Genesis (config := config) (checks := checks) g) (altair : .altair ≤ x.fork) :
