@@ -1,6 +1,6 @@
 module
 
-public import EthLib.Consensus.Proofs.DirectSafety.IntervalBounds
+public import EthLib.Consensus.Proofs.DirectSafety.Drift
 
 /-!
 # Direct accountable safety from selected executions
@@ -28,30 +28,19 @@ noncomputable def accountableKeys {g a b : ForkedBeaconState preset}
   classical
   exact (activeKeys reference.state).filter (Accountable left right)
 
-/-- Retain the two witness costs instead of replacing both by the larger branch budget. -/
-theorem accountable_safety_at_calls {g x a b : ForkedBeaconState preset}
+private theorem accountable_pair_bound {g x a b : ForkedBeaconState preset}
     (shared : Run config checks g x) (left : Run config checks x a) (right : Run config checks x b)
     (parameters : Parameters preset) (genesis : Genesis (config := config) (checks := checks) g)
     (earlyA : a.fork < .glamsterdam) (earlyB : b.fork < .glamsterdam)
     (enoughA : EnoughStake (shared.append left)) (enoughB : EnoughStake (shared.append right))
-    (j : Checkpoint)
-    (field : j = b.state.previousJustifiedCheckpoint ∨ j = b.state.currentJustifiedCheckpoint ∨
-      j = b.state.finalizedCheckpoint)
-    (ordered : a.state.finalizedCheckpoint.epoch ≤ j.epoch)
-    (conflict : Conflict (shared.append left) (shared.append right) a.state.finalizedCheckpoint j) :
-    (∃ one two : EitherCall (shared.append left) (shared.append right),
-      a.state.finalizedCheckpoint.epoch.toNat ≤ one.targetEpoch ∧ one.targetEpoch ≤ j.epoch.toNat ∧
-      a.state.finalizedCheckpoint.epoch.toNat ≤ two.targetEpoch ∧ two.targetEpoch ≤ j.epoch.toNat ∧
+    (one two : EitherCall (shared.append left) (shared.append right))
+    (overlap : ∀ key ∈ one.voters ∩ two.voters,
+      Slashable (shared.append left) (shared.append right) key) :
       Quorum.weight (effectiveWeight x.state) (activeKeys x.state) ≤
         3 * Quorum.weight (effectiveWeight x.state)
           (accountableKeys (shared.append left) (shared.append right) x) +
-        stateDrift x one.state + stateDrift x two.state) ∨
-      HashEvidence ((shared.append left).hashObjects ++ (shared.append right).hashObjects) := by
-  classical
-  -- Transfer both quorum denominators together, rather than bounding the union stake alone.
-  rcases conflicting_fields_quorums (shared.append left) (shared.append right)
-    parameters genesis earlyA earlyB j field ordered conflict with witnesses | hashes
-  · obtain ⟨one, two, lowerOne, upperOne, lowerTwo, upperTwo, overlap⟩ := witnesses
+        stateDrift x one.state + stateDrift x two.state := by
+    classical
     let bad := (activeKeys x.state).filter (Accountable (shared.append left) (shared.append right))
     have facts (call : EitherCall (shared.append left) (shared.append right)) :
         call.voters ⊆ recentKeys call.state.state ∧
@@ -128,11 +117,36 @@ theorem accountable_safety_at_calls {g x a b : ForkedBeaconState preset}
       Finset.subset_union_right (outsideLoss one lossOne) (outsideLoss two lossTwo)
       (Nat.le_refl _) (Nat.le_refl _) (Nat.le_refl _) (Nat.le_refl _)
     rw [same] at bound
-    refine .inl ⟨one, two, lowerOne, upperOne, lowerTwo, upperTwo, ?_⟩
     change _ ≤ 3 * Quorum.weight (effectiveWeight x.state) bad +
       stateDrift x one.state + stateDrift x two.state
     dsimp only [stateDrift]
     omega
+
+/-- Retain the two witness costs instead of replacing both by the larger branch budget. -/
+theorem accountable_safety_at_calls {g x a b : ForkedBeaconState preset}
+    (shared : Run config checks g x) (left : Run config checks x a) (right : Run config checks x b)
+    (parameters : Parameters preset) (genesis : Genesis (config := config) (checks := checks) g)
+    (earlyA : a.fork < .glamsterdam) (earlyB : b.fork < .glamsterdam)
+    (enoughA : EnoughStake (shared.append left)) (enoughB : EnoughStake (shared.append right))
+    (j : Checkpoint)
+    (field : j = b.state.previousJustifiedCheckpoint ∨ j = b.state.currentJustifiedCheckpoint ∨
+      j = b.state.finalizedCheckpoint)
+    (ordered : a.state.finalizedCheckpoint.epoch ≤ j.epoch)
+    (conflict : Conflict (shared.append left) (shared.append right) a.state.finalizedCheckpoint j) :
+    (∃ one two : EitherCall (shared.append left) (shared.append right),
+      a.state.finalizedCheckpoint.epoch.toNat ≤ one.targetEpoch ∧ one.targetEpoch ≤ j.epoch.toNat ∧
+      a.state.finalizedCheckpoint.epoch.toNat ≤ two.targetEpoch ∧ two.targetEpoch ≤ j.epoch.toNat ∧
+      Quorum.weight (effectiveWeight x.state) (activeKeys x.state) ≤
+        3 * Quorum.weight (effectiveWeight x.state)
+          (accountableKeys (shared.append left) (shared.append right) x) +
+        stateDrift x one.state + stateDrift x two.state) ∨
+      HashEvidence ((shared.append left).hashObjects ++ (shared.append right).hashObjects) := by
+  rcases conflicting_fields_quorums (shared.append left) (shared.append right)
+    parameters genesis earlyA earlyB j field ordered conflict with witnesses | hashes
+  · obtain ⟨one, two, lowerOne, upperOne, lowerTwo, upperTwo, overlap⟩ := witnesses
+    exact .inl ⟨one, two, lowerOne, upperOne, lowerTwo, upperTwo,
+      accountable_pair_bound shared left right parameters genesis earlyA earlyB
+        enoughA enoughB one two overlap⟩
   · exact .inr hashes
 
 private theorem selected_call_drift_le {g x y : ForkedBeaconState preset}
@@ -194,8 +208,6 @@ private theorem selected_call_drift_le {g x y : ForkedBeaconState preset}
 theorem accountable_safety {g x a b : ForkedBeaconState preset}
     (shared : Run config checks g x) (left : Run config checks x a) (right : Run config checks x b)
     (parameters : Parameters preset) (genesis : Genesis (config := config) (checks := checks) g)
-    (caps : CapOrder preset) (aligned : MaxEffectiveBalancesAligned preset)
-    (withdrawalDelay : 0 < config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat)
     (earlyA : a.fork < .glamsterdam) (earlyB : b.fork < .glamsterdam)
     (enoughA : EnoughStake (shared.append left)) (enoughB : EnoughStake (shared.append right))
     (ordered : a.state.finalizedCheckpoint.epoch ≤ b.state.finalizedCheckpoint.epoch)
@@ -211,9 +223,6 @@ theorem accountable_safety {g x a b : ForkedBeaconState preset}
         2 * max (derivedDrift high left) (derivedDrift high right)) ∨
       HashEvidence ((shared.append left).hashObjects ++ (shared.append right).hashObjects) := by
   dsimp only
-  have _ := caps
-  have _ := aligned
-  have _ := withdrawalDelay
   rcases accountable_safety_at_calls shared left right parameters genesis earlyA earlyB
     enoughA enoughB b.state.finalizedCheckpoint (.inr (.inr rfl)) ordered conflict with
     witnesses | hashes
@@ -241,8 +250,6 @@ theorem accountable_safety {g x a b : ForkedBeaconState preset}
 theorem accountable_safety_justified {g x a b : ForkedBeaconState preset}
     (shared : Run config checks g x) (left : Run config checks x a) (right : Run config checks x b)
     (parameters : Parameters preset) (genesis : Genesis (config := config) (checks := checks) g)
-    (caps : CapOrder preset) (aligned : MaxEffectiveBalancesAligned preset)
-    (withdrawalDelay : 0 < config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat)
     (earlyA : a.fork < .glamsterdam) (earlyB : b.fork < .glamsterdam)
     (enoughA : EnoughStake (shared.append left)) (enoughB : EnoughStake (shared.append right))
     (j : Checkpoint)
@@ -256,9 +263,6 @@ theorem accountable_safety_justified {g x a b : ForkedBeaconState preset}
         (accountableKeys (shared.append left) (shared.append right) x) +
         2 * max (derivedDrift j.epoch.toNat left) (derivedDrift j.epoch.toNat right)) ∨
       HashEvidence ((shared.append left).hashObjects ++ (shared.append right).hashObjects) := by
-  have _ := caps
-  have _ := aligned
-  have _ := withdrawalDelay
   rcases accountable_safety_at_calls shared left right parameters genesis earlyA earlyB
     enoughA enoughB j (field.imp_right Or.inl) ordered conflict with witnesses | hashes
   · obtain ⟨one, two, lowerOne, upperOne, lowerTwo, upperTwo, bound⟩ := witnesses
@@ -276,6 +280,70 @@ theorem accountable_safety_justified {g x a b : ForkedBeaconState preset}
     have second := budget two lowerTwo upperTwo
     exact .inl (by omega)
   · exact .inr hashes
+
+/-- Equal-epoch justified fields either agree or expose accountable stake or hash evidence. -/
+theorem accountable_justified_unique {g x a b : ForkedBeaconState preset}
+    (shared : Run config checks g x) (left : Run config checks x a)
+    (right : Run config checks x b) (parameters : Parameters preset)
+    (genesis : Genesis (config := config) (checks := checks) g)
+    (earlyA : a.fork < .glamsterdam) (earlyB : b.fork < .glamsterdam)
+    (enoughA : EnoughStake (shared.append left))
+    (enoughB : EnoughStake (shared.append right)) (j k : Checkpoint)
+    (fieldA : j = a.state.previousJustifiedCheckpoint ∨ j = a.state.currentJustifiedCheckpoint)
+    (fieldB : k = b.state.previousJustifiedCheckpoint ∨ k = b.state.currentJustifiedCheckpoint)
+    (epoch : j.epoch = k.epoch)
+    (starts : x.state.slot.toNat ≤ j.epoch.toNat * preset.SLOTS_PER_EPOCH.toNat) :
+    j = k ∨
+      Quorum.weight (effectiveWeight x.state) (activeKeys x.state) ≤
+        3 * Quorum.weight (effectiveWeight x.state)
+          (accountableKeys (shared.append left) (shared.append right) x) +
+        2 * max (derivedDrift j.epoch.toNat left) (derivedDrift j.epoch.toNat right) ∨
+      HashEvidence ((shared.append left).hashObjects ++ (shared.append right).hashObjects) := by
+  classical
+  by_cases same : j = k
+  · exact .inl same
+  -- A quorum call cannot target genesis, because its current epoch is at least two.
+  have positive {z : ForkedBeaconState preset} {run : Run config checks g z}
+      (c : Checkpoint) (history : JustificationHistory run c) : 0 < c.epoch.toNat := by
+    let call := history.calls.getLast history.nonempty
+    have target := history.finish call (List.getLast?_eq_some_getLast history.nonempty)
+    have later := UInt64.lt_iff_toNat_lt.mp call.later
+    have one : (GENESIS_EPOCH + 1 : Epoch).toNat = 1 := by decide
+    rw [one] at later
+    rw [← target, call.targetEpoch]
+    cases call.current <;> simp only [Bool.false_eq_true, ↓reduceIte,
+      getPreviousEpoch_toNat] <;> omega
+  rcases justified_fields (shared.append left) parameters genesis j fieldA with initialA | ha
+  · rcases justified_fields (shared.append right) parameters genesis k fieldB with initialB | hb
+    · exact .inl (initialA.trans initialB.symm)
+    · obtain ⟨hb⟩ := hb
+      have pos := positive k hb
+      have zero : j.epoch.toNat = 0 := by rw [initialA]; rfl
+      rw [epoch] at zero
+      omega
+  · obtain ⟨ha⟩ := ha
+    rcases justified_fields (shared.append right) parameters genesis k fieldB with initialB | hb
+    · have pos := positive j ha
+      have zero : k.epoch.toNat = 0 := by rw [initialB]; rfl
+      rw [← epoch] at zero
+      omega
+    · obtain ⟨hb⟩ := hb
+      let one := ha.calls.getLast ha.nonempty
+      let two := hb.calls.getLast hb.nonempty
+      have targetA := ha.finish one (List.getLast?_eq_some_getLast ha.nonempty)
+      have targetB := hb.finish two (List.getLast?_eq_some_getLast hb.nonempty)
+      have overlap := same_epoch_histories (shared.append left) (shared.append right)
+        parameters genesis earlyA earlyB one two
+        (by rw [targetA, targetB]; exact epoch)
+        (by rw [targetA, targetB]; exact same)
+      have bound := accountable_pair_bound shared left right parameters genesis earlyA earlyB
+        enoughA enoughB (.inl one) (.inr two) overlap
+      have first := selected_call_drift_le shared left parameters j.epoch.toNat j.epoch.toNat
+        starts one (by rw [targetA]) (by rw [targetA])
+      have second := selected_call_drift_le shared right parameters j.epoch.toNat j.epoch.toNat
+        starts two (by rw [targetB, epoch]) (by rw [targetB, epoch])
+      simp only [EitherCall.state] at bound
+      exact .inr (.inl (by omega))
 
 /-- The signer interpretation is conditional, with no probability or sampling theorem. -/
 theorem accepted_evidence_is_signed {g a b : ForkedBeaconState preset}
