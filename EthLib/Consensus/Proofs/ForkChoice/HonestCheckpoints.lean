@@ -1,5 +1,6 @@
 module
 
+public import EthLib.Consensus.Proofs.ForkChoice.BlockAgreement
 public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmationSets
 public import EthLib.Consensus.Proofs.ForkChoice.HonestDuties
 public import EthLib.Consensus.Proofs.Transition.FfgJustification
@@ -498,6 +499,28 @@ def HonestThirdPins
 
 variable {e : Execution (honestForkChoice config checks sources anchorState anchorBlock assignment
   genesisTimeMs) J}
+
+/-- Each non-anchor block in an honest store has a transition with the execution's checks. -/
+theorem Execution.exists_transition_of_nonanchor_block {anchor : Store preset fork}
+    (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    {w : ValidatorIndex} (honest : w ∈ J) (start : e.start w = anchor) {k : ℕ}
+    {root : Root} {block : BeaconBlock preset fork} {state : BeaconState preset fork}
+    (found : ((e.world k).state w).blocks[root]? = some block)
+    (stored : ((e.world k).state w).blockStates[root]? = some state)
+    (other : block ≠ anchorBlock) :
+    ∃ parent signed, signed.message = block ∧
+      ((e.world k).state w).blockStates[block.parentRoot]? = some parent ∧
+      stateTransition config checks sources.engine parent signed true = .ok state := by
+  rcases e.exists_signed_of_blocks honest found with old |
+    ⟨signed, parent, post, -, message, -, parentFound, transitioned, postFound⟩
+  · obtain ⟨anchorRoot, -, blocks, -⟩ := getForkchoiceStore_maps anchored
+    rw [start, blocks, getElem?_insert_root] at old
+    split at old
+    · exact (other (Option.some.inj old.1).symm).elim
+    · simp at old
+  · rw [stored, Option.some.injEq] at postFound
+    subst post
+    exact ⟨parent, signed, message, parentFound, transitioned⟩
 
 /-- The count: a set of validators signs a justified checkpoint when the others cannot.
 
