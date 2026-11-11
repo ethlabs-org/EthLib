@@ -1003,6 +1003,52 @@ private theorem balanceDrift_upgrades_upper {s t : ForkedBeaconState preset}
       (Nat.lt_of_le_of_lt (processUpgrades_fork_le rest) early) i)
   | case2 s notDue => cases ok; exact Nat.le_refl _
 
+/-- Within one epoch before Electra, an existing index cannot gain effective balance. -/
+theorem Run.effectiveAt_le_of_same_epoch {x y : ForkedBeaconState preset}
+    (tail : Run config checks x y) (early : y.fork < .pectra)
+    (same : getCurrentEpoch y.state = getCurrentEpoch x.state)
+    (i : Nat) (present : i < x.state.validators.data.size) :
+    effectiveAt y i ≤ effectiveAt x i := by
+  induction tail with
+  | nil => exact Nat.le_refl _
+  | @snoc middle last pre step ih =>
+    have middleEarly := Nat.lt_of_le_of_lt step.chainStep.fork_le early
+    have midEpoch : getCurrentEpoch middle.state = getCurrentEpoch x.state :=
+      UInt64.le_antisymm (same ▸ step.chainStep.currentEpoch_le)
+        (currentEpoch_le_of_chainSteps pre.chainSteps)
+    have prior := ih middleEarly midEpoch
+    have inside := Nat.lt_of_lt_of_le present pre.registryLifecycle.size_le
+    have early' : last.fork < .glamsterdam := Nat.lt_trans early (by decide)
+    cases step with
+    | block engine signed due ok =>
+      rw [effectiveKept_block early' (applySignedBlock_ok ok).2.1 i inside]
+      exact prior
+    | slot ok =>
+      obtain ⟨next, advanced, upgraded⟩ := bind_ok_iff.mp ok
+      have upper := balanceDrift_upgrades_upper upgraded early' i
+      have epoch : getCurrentEpoch next = getCurrentEpoch middle.state := by
+        have slot : last.state.slot = next.slot := processUpgrades_induction
+          (property := fun t => t.state.slot = next.slot)
+          (fun prior ok => (upgradeFrame_upgradeNext ok).slot.trans prior) rfl upgraded
+        have eq : getCurrentEpoch last.state = getCurrentEpoch next := by
+          simp only [getCurrentEpoch, slot]
+        exact eq.symm.trans (same.trans midEpoch.symm)
+      obtain ⟨slot, cached, epoched, sum, cachedOk, epochOk, rfl⟩ := advanceSlot_ok advanced
+      have notLast : slot % preset.SLOTS_PER_EPOCH ≠ 0 := by
+        intro lastSlot
+        have rem : slot.toNat % preset.SLOTS_PER_EPOCH.toNat = 0 := by
+          simpa only [UInt64.toNat_mod, UInt64.toNat_zero] using congrArg UInt64.toNat lastSlot
+        have eq := congrArg UInt64.toNat epoch
+        simp only [getCurrentEpoch_toNat] at eq
+        have divide := Nat.mod_add_div slot.toNat preset.SLOTS_PER_EPOCH.toNat
+        have before := Nat.mod_add_div middle.state.slot.toNat preset.SLOTS_PER_EPOCH.toNat
+        rw [eq] at divide
+        omega
+      simp only [epochIfLast, ite_eq_right notLast, pure, Except.pure, Except.ok.injEq] at epochOk
+      subst epoched
+      obtain ⟨_, _, _, _, rfl⟩ := processSlot_ok cachedOk
+      exact upper.trans prior
+
 private theorem balanceDrift_credits_append (i : Nat) (a b : List (ForkedBeaconState preset))
     (x : ForkedBeaconState preset) :
     pathCredits i (a ++ x :: b) = pathCredits i (a ++ [x]) + pathCredits i (x :: b) := by
