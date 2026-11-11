@@ -355,6 +355,7 @@ It is `Execution.StrictSelectorAdvanceAt.actualCall_selectedStrictEdgeFilterSupp
 [vfc]: https://github.com/fradamt/verified-fast-confirmation -/
 theorem Execution.coveredOrViableAt_of_checked {Δ : ℕ} (sync : e.Synchronous Δ)
     (slots : 0 < config.SLOT_DURATION_MS)
+    (oneBlock : OneBlockPerRoot e)
     (votes : Votes e.startTime e) (fits : DelayFits fork config genesisTimeMs Δ)
     (prompt : Prompt e) (committees : CommitteesFollow e)
     {horizon anchorEpoch : Epoch} {margin : ℕ}
@@ -362,6 +363,8 @@ theorem Execution.coveredOrViableAt_of_checked {Δ : ℕ} (sync : e.Synchronous 
     (voted : JustifiedByHonestVote e anchorEpoch horizon) (included : TargetIncluded e)
     {anchor : Store preset fork}
     (anchorStore : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (sound : Invariant anchorState)
+    (anchorSlot : anchorBlock.slot = anchorState.slot)
     (anchored : ∀ w ∈ J, e.start w = anchor)
     (anchorOk : anchor.justifiedCheckpoint.epoch = anchorEpoch)
     (anchorAtBoundary : isStartSlotAtEpoch preset anchorBlock.slot = .ok true)
@@ -373,6 +376,12 @@ theorem Execution.coveredOrViableAt_of_checked {Δ : ℕ} (sync : e.Synchronous 
     (checked : ((e.world n).state u).Checked config fcr head.root start root)
     (onChain : ((e.world n).state u).isAncestor ⟨head.root, .pending⟩ ⟨root, .pending⟩ =
       .ok true)
+    (atStart : ∀ slot rootEpoch epoch,
+      ((e.world n).state u).getCurrentSlot config = .ok slot →
+      isStartSlotAtEpoch preset slot = .ok true →
+      ((e.world n).state u).getCurrentStoreEpoch config = .ok epoch →
+      ((e.world n).state u).getBlockEpoch root = .ok rootEpoch →
+      rootEpoch = epoch → root = ((e.world n).state u).finalizedCheckpoint.root)
     (previousHead : fcr.previousSlotHead = anchor.finalizedCheckpoint.root ∨
       ∃ k < n, ∃ previous previousSlot currentSlot,
         UpToDate config checks sources (e.world k).time ((e.world k).view u)
@@ -396,6 +405,9 @@ theorem Execution.coveredOrViableAt_of_checked {Δ : ℕ} (sync : e.Synchronous 
           .ok fcr.currentEpochObservedJustifiedCheckpoint ∧
           start = fcr.currentEpochObservedJustifiedCheckpoint.root))
     {time : ℕ} (later : (e.world n).time ≤ time)
+    (nonzero : ∀ w ∈ J, ∀ k, (e.world k).time ≤ time →
+      ∀ (r : Root) (b : BeaconBlock preset fork),
+        ((e.world k).state w).blocks[r]? = some b → b.stateRoot ≠ Vector.replicate 32 0)
     (inHorizon : ∀ w ∈ J, ∀ k epoch, (e.world k).time ≤ time →
       ((e.world k).state w).getCurrentStoreEpoch config = .ok epoch → epoch ≤ horizon)
     (startSafe : ∀ earlier, (e.world n).time ≤ earlier → earlier ≤ time → SafeAt e earlier start)
