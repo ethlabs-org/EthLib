@@ -313,6 +313,10 @@ In each such state, take the validators outside the set whose votes can count.
 
 They hold less than two thirds of the active balance.
 
+The active stake exceeds one and a half balance increments in each counting state.
+
+This excludes a passing justification test caused by the minimum balance of an empty vote set.
+
 Then a validator of the set signs a vote with the checkpoint as its target.
 
 The vote is of a slot before the current slot of the store.
@@ -355,6 +359,12 @@ theorem Execution.exists_signsTarget_of_justified {anchor : Store preset fork}
     (justified : ((e.world k).state w).Justified checkpoint)
     (slotOk : ((e.world k).state w).getCurrentSlot config = .ok slot)
     (after : anchor.justifiedCheckpoint.epoch < checkpoint.epoch)
+    (large : ∀ state : BeaconState preset fork,
+      ((e.world k).state w).Counts config state →
+      checkpoint.epoch.toNat ≤ (getCurrentEpoch state).toNat →
+      (getCurrentEpoch state).toNat ≤ checkpoint.epoch.toNat + 1 →
+      3 * preset.EFFECTIVE_BALANCE_INCREMENT.toNat <
+        2 * stake (fun v => balanceAt state v.toNat) (activeVoters state))
     (p : ValidatorIndex → Prop) [DecidablePred p]
     (few : ∀ (state : BeaconState preset fork) (total : Gwei),
       ((e.world k).state w).Counts config state →
@@ -386,6 +396,12 @@ theorem Execution.justifiedByHonestVote [DecidablePred (· ∈ J)] {anchor : Sto
       ((e.world k).state w).blocks[root]? = some block →
       block.stateRoot ≠ Vector.replicate 32 0)
     (start : ∀ w ∈ J, e.start w = anchor) {horizon : Epoch}
+    (large : ∀ w ∈ J, ∀ k (state : BeaconState preset fork),
+      ((e.world k).state w).Counts config state →
+      anchor.justifiedCheckpoint.epoch.toNat < (getCurrentEpoch state).toNat →
+      (getCurrentEpoch state).toNat ≤ horizon.toNat + 1 →
+      3 * preset.EFFECTIVE_BALANCE_INCREMENT.toNat <
+        2 * stake (fun v => balanceAt state v.toNat) (activeVoters state))
     {threshold : ℕ}
     (byzantine : ∀ w ∈ J, ∀ k (state : BeaconState preset fork) total,
       ((e.world k).state w).Counts config state →
@@ -397,10 +413,13 @@ theorem Execution.justifiedByHonestVote [DecidablePred (· ∈ J)] {anchor : Sto
     (enough : 3 * threshold < 200) :
     JustifiedByHonestVote e anchor.justifiedCheckpoint.epoch horizon := by
   intro w honest k checkpoint slot justified slotOk after inHorizon
+  have afterNat := UInt64.lt_iff_toNat_lt.mp after
+  have inside := UInt64.le_iff_toNat_le.mp inHorizon
   refine e.exists_signsTarget_of_justified anchored sound ring preGloas honest (start w honest)
     (nonzero w honest k) justified slotOk
-    after (· ∈ J) fun state total counts _ upper totalOk => ?_
-  have inside := UInt64.le_iff_toNat_le.mp inHorizon
+    after (fun state counts lower upper =>
+      large w honest k state counts (by omega) (by omega))
+    (· ∈ J) fun state total counts _ upper totalOk => ?_
   have bound := byzantine w honest k state total counts (by omega) totalOk
   have lower := UInt64.le_iff_toNat_le.mp (le_getTotalBalance (getTotalActiveBalance_ok totalOk))
   have pos := UInt64.lt_iff_toNat_lt.mp positive
@@ -429,6 +448,12 @@ theorem Execution.honestThirdPins {anchor : Store preset fork}
       ((e.world k).state w).blocks[root]? = some block →
       block.stateRoot ≠ Vector.replicate 32 0)
     (start : ∀ w ∈ J, e.start w = anchor) {horizon : Epoch} {drift : ℕ}
+    (large : ∀ w ∈ J, ∀ k (state : BeaconState preset fork),
+      ((e.world k).state w).Counts config state →
+      anchor.justifiedCheckpoint.epoch.toNat < (getCurrentEpoch state).toNat →
+      (getCurrentEpoch state).toNat ≤ horizon.toNat + 1 →
+      3 * preset.EFFECTIVE_BALANCE_INCREMENT.toNat <
+        2 * stake (fun v => balanceAt state v.toNat) (activeVoters state))
     (drifts : ∀ u ∈ J, ∀ n head reference epoch,
       ((e.world n).state u).getPulledUpHeadState config head = .ok reference →
       ((e.world n).state u).getCurrentStoreEpoch config = .ok epoch →
@@ -444,8 +469,12 @@ theorem Execution.honestThirdPins {anchor : Store preset fork}
   intro u caller n head reference total epoch voters referenceOk totalOk epochOk inHorizon good active third w
     honest k checkpoint slot justified slotOk same after
   subst same
+  have afterNat := UInt64.lt_iff_toNat_lt.mp after
+  have inside := UInt64.le_iff_toNat_le.mp inHorizon
   obtain ⟨v, member, signs⟩ := e.exists_signsTarget_of_justified anchored sound ring preGloas honest
-    (start w honest) (nonzero w honest k) justified slotOk after (· ∈ voters)
+    (start w honest) (nonzero w honest k) justified slotOk after
+      (fun state counts lower upper => large w honest k state counts (by omega) (by omega))
+      (· ∈ voters)
       fun state stateTotal counts lower upper stateTotalOk => by
     have split := Finset.sum_filter_add_sum_filter_not (activeVoters reference) (· ∈ voters)
       fun v => balanceAt reference v.toNat
