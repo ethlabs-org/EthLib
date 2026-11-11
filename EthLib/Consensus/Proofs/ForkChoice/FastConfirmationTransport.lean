@@ -73,7 +73,11 @@ variable [DecidablePred (· ∈ J)]
 
 /-- Step 5, the initial transport: the bound of step 4 holds in each honest store at a later time.
 
-The hypotheses are those of `Execution.honest_support_of_safe`, with a historical anchor.
+The hypotheses are those of `Execution.honest_support_of_safe`, with the premises below added.
+
+The call is at the start of its slot.
+
+So every honest vote of an earlier slot of the current epoch falls in the window below.
 
 The block is on the chain of the head of the caller.
 
@@ -113,6 +117,8 @@ theorem Execution.honest_support_of_historical_anchor {Δ : ℕ} (sync : e.Synch
     {parentParticipants : Std.TreeSet ValidatorIndex} {proposerScore maximumSupport : Gwei}
     (callerHead : ∃ node, ((e.world n).state u).getHead config = .ok node ∧ node.root = head)
     (slotOk : ((e.world n).state u).getCurrentSlot config = .ok slot)
+    {begin : UInt64} (beginOk : computeTimeAtSlotMs config genesisTimeMs slot = .ok begin)
+    (atSlot : (e.world n).time = begin.toNat)
     (blockOk : ((e.world n).state u).block root = .ok block)
     (parentOk : ((e.world n).state u).block block.parentRoot = .ok parentBlock)
     (boostOk : computeProposerScore config balanceSource = .ok proposerScore)

@@ -7,9 +7,17 @@ public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmationTransport
 
 This file states step 8 of the plan for the safety of the fast confirmation rule.
 
-The rule is that of [arXiv 2405.00549v4][fcr], and the result is its Theorem 1.
+The rule is that of [arXiv 2405.00549v4][fcr].
 
-Some proofs are placeholders, and each statement is proposed for review.
+The result is the safety part of its Theorem 1, for the specification as EthLib states it.
+
+It is a conditional result.
+
+It rests on placeholders in this file and in the files it imports.
+
+It also rests on the generalized assumptions of `RuleBounds`, which are not the paper's own.
+
+It does not state the monotonicity part of Theorem 1.
 
 An honest validator calls the rule at the start of each slot of a run of slots.
 
@@ -21,11 +29,11 @@ The first statement reads the checks of step 6 and the walk of the rule off one 
 
 The walk statement keeps a confirmed block safe, by an induction on the time.
 
-Before the end of the first complete epoch after the call, it uses the transport of step 5.
+Before a complete epoch lies between the call and a time, it uses the transport of step 5.
 
 That transport compares the balances of the caller with those of each receiver.
 
-From the end of that epoch on, it uses the honest duties of a complete epoch instead.
+After one does, it uses the honest duties of a complete epoch instead.
 
 Those are weighed in the justified state of each receiver, with no comparison of balances.
 
@@ -47,11 +55,13 @@ The block stored before holds them by the induction.
 
 Step 7 gives them for the finalized block and for the observed justified block.
 
-The theorem takes Assumption 2 of the paper at each call, as `RuleBounds` holds it.
+The theorem takes the bounds of `RuleBounds` at each call that confirms by a walk.
+
+They generalize Assumption 2 of the paper to balances that change; they are not that assumption.
 
 It takes the facts of Casper FFG as hypotheses, with a horizon.
 
-It derives the honest vote of a justified checkpoint and the honest third from Assumption 2.
+It derives the honest vote of a justified checkpoint and the honest third from Byzantine bounds.
 
 The theorem does not cover a confirmed block that the rule restores after a restart.
 
@@ -300,7 +310,17 @@ Twice the missing stake, plus the boost, fits in the margin that β leaves.
 
 `ByzantineStakeAtMost.majority_of_missing_weight` turns this into a majority of the head.
 
-It does not follow from `WeightBounds`, which compares the balances of two states. -/
+It does not follow from `WeightBounds`, which compares the balances of two states.
+
+Take an assignment that gives each active validator a duty in each epoch, as with a static set.
+
+Then each honest validator of the tally has a duty in the epoch, and the missing stake is zero.
+
+The condition is then the Byzantine bound on the tally and `100 * boost < (100 - 2β) * W`.
+
+Here `W` is the stake of the tally.
+
+That case shows the condition can hold; it does not make the condition the paper's. -/
 def LateMargin (config : Config) (genesisTimeMs : UInt64) (assignment : Assignment preset)
     (J : Set ValidatorIndex) [DecidablePred (· ∈ J)] (first time : ℕ)
     (state : BeaconState preset fork) (boost : ℕ) : Prop :=
@@ -333,7 +353,13 @@ def CallAt
       (fun fcr store => store.onFastConfirmation config fcr) first = .ok fcr ∧
     ((e.world n).state u).onFastConfirmation config fcr = .ok after
 
-/-- Assumption 2 of the paper at the calls of the rule that one validator makes.
+/-- Implementation-level safety assumptions at the calls of the rule that one validator makes.
+
+They generalize Assumption 2 of the paper to balances that change between states.
+
+They are assumptions of the theorem, not the paper's Assumption 2 itself.
+
+The weight and late fields apply only to a call that stores a block of a confirmed walk.
 
 Each call weighs with the state of its observed justified checkpoint, the source of balances.
 
@@ -353,21 +379,32 @@ They hold a third of the margin on top of it.
 
 No honest validator is a known equivocator of the store of a call.
 
-Once a complete epoch lies between the call and a time, each receiver has `LateMargin`.
+Once a complete epoch lies between the call and a time, a receiver has `LateMargin`.
 
-That second field is a separate assumption on the duties of an epoch, not a consequence of the
-first.
+That holds only where its justified block does not already cover the stored block.
+
+That second field is its own assumption on the duties of an epoch.
+
+It does not follow from the first.
 
 The fields name stores of the execution alone, so an execution can hold them. -/
 structure RuleBounds
     (e : Execution (honestForkChoice config checks sources anchorState anchorBlock assignment
       genesisTimeMs) J) [DecidablePred (· ∈ J)] (u : ValidatorIndex) (events : List ℕ)
     (first : FastConfirmationStore) (margin shift limit : ℕ) : Prop where
-  /-- Before a complete epoch, the honest stores weigh near the source of balances. -/
-  weights : ∀ i n fcr after balanceSource last,
+  /-- Before a complete epoch, the honest stores weigh near the source of a walked call. -/
+  weights : ∀ i n fcr after head start balanceSource chain later last,
     CallAt e u events first i n fcr after →
+    ((e.world n).state u).getHead config = .ok head →
+    ((e.world n).state u).Checked config after head.root start after.confirmedRoot →
     ((e.world n).state u).checkpointState after.currentEpochObservedJustifiedCheckpoint =
-      .ok balanceSource → last ≤ limit →
+      .ok balanceSource →
+    ((e.world n).state u).getAncestorRoots head.root start =
+      .ok (chain ++ after.confirmedRoot :: later) →
+    (∀ member ∈ chain ++ [after.confirmedRoot], ((e.world n).state u).isOneConfirmed config
+      head.root balanceSource (((e.world n).state u).tallyVotes balanceSource) member =
+        .ok true) →
+    last ≤ limit →
     ¬CompleteEpochWithin preset config genesisTimeMs (e.world n).time last →
     WeightBounds e balanceSource (e.world n).time last shift
   /-- The measured tally exceeds the rule's conservative threshold by the weight shift.
@@ -431,8 +468,18 @@ structure RuleBounds
   /-- No honest validator is a known equivocator of the store of a call. -/
   dishonest : ∀ i n fcr after, CallAt e u events first i n fcr after →
     ∀ v ∈ ((e.world n).state u).equivocatingIndices, v ∉ J
-  /-- After a complete epoch, each receiver has the late majority. -/
-  late : ∀ i n fcr after, CallAt e u events first i n fcr after →
+  /-- After a complete epoch, a receiver that does not cover the walked block has the majority. -/
+  late : ∀ i n fcr after head start balanceSource chain later,
+    CallAt e u events first i n fcr after →
+    ((e.world n).state u).getHead config = .ok head →
+    ((e.world n).state u).Checked config after head.root start after.confirmedRoot →
+    ((e.world n).state u).checkpointState after.currentEpochObservedJustifiedCheckpoint =
+      .ok balanceSource →
+    ((e.world n).state u).getAncestorRoots head.root start =
+      .ok (chain ++ after.confirmedRoot :: later) →
+    (∀ member ∈ chain ++ [after.confirmedRoot], ((e.world n).state u).isOneConfirmed config
+      head.root balanceSource (((e.world n).state u).tallyVotes balanceSource) member =
+        .ok true) →
     ∀ w ∈ J, ∀ k (state : BeaconState preset fork),
       CompleteEpochWithin preset config genesisTimeMs (e.world n).time (e.world k).time →
       (e.world k).time ≤ limit →
@@ -440,6 +487,9 @@ structure RuleBounds
         ((e.world k).state w) →
       ((e.world k).state w).checkpointState ((e.world k).state w).justifiedCheckpoint =
         .ok state →
+      ((e.world k).state w).isAncestor
+        ⟨((e.world k).state w).justifiedCheckpoint.root, .pending⟩
+        ⟨after.confirmedRoot, .pending⟩ ≠ .ok true →
       LateMargin config genesisTimeMs assignment J (e.world n).time (e.world k).time state
         (((e.world k).state w).boostScore config)
 
@@ -539,8 +589,9 @@ A viable leaf below the block agrees with it, so no block of its chain lies betw
 
 So the block is after that later boundary, and its checkpoint block is the justified block.
 
-A block below the boundary of a later finality is not in the filtered tree, unless it is the
-justified block, which the second case covers. -/
+So a block below the boundary of a later finality is not in the filtered tree.
+
+The one exception is the justified block itself, and there the justified block covers it. -/
 theorem Execution.rootFinal_or_justified_covers {anchor : Store preset fork}
     (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
     (sound : Invariant anchorState) (start : ∀ w ∈ J, e.start w = anchor)
@@ -717,7 +768,9 @@ The facts that step 6 reads off earlier calls are given as in `coveredOrViableAt
 
 While no complete epoch lies between the call and a time, `WeightBounds` bounds the shift.
 
-Once one does, each receiver has the late majority of `LateMargin`.
+Once one does, a receiver whose justified block does not cover the block has `LateMargin`.
+
+A receiver whose justified block covers the block needs no majority.
 
 No honest store holds a block at the parent root of the anchor block, up to the last time.
 
@@ -733,11 +786,13 @@ At each time, step 6 gives the block in the filtered tree, or below the justifie
 
 The finalized-chain premise of each receiver follows by `Execution.rootFinal_or_justified_covers`.
 
-Before the end of the first complete epoch, `Execution.honest_support_of_historical_anchor` and
-`HeadFollowsSupport` keep the block on the chain of the head.
+Before a complete epoch lies in the range, the initial phase keeps the block on the head chain.
 
-After it, `Execution.mem_supportersOf_of_duty_epoch` and
-`Store.isAncestor_getHead_of_missing_weight` do.
+It uses `Execution.honest_support_of_historical_anchor` and `HeadFollowsSupport`.
+
+After one does, the late phase keeps it there.
+
+It uses `Execution.mem_supportersOf_of_duty_epoch` and `Store.isAncestor_getHead_of_missing_weight`.
 
 A theorem of [verified-fast-confirmation][vfc] gives the same result.
 
@@ -847,6 +902,8 @@ theorem Execution.safeAt_of_walk {Δ : ℕ} (sync : e.Synchronous Δ)
         ((e.world k).state w) →
       ((e.world k).state w).checkpointState ((e.world k).state w).justifiedCheckpoint =
         .ok state →
+      ((e.world k).state w).isAncestor
+        ⟨((e.world k).state w).justifiedCheckpoint.root, .pending⟩ ⟨root, .pending⟩ ≠ .ok true →
       LateMargin config genesisTimeMs assignment J (e.world n).time (e.world k).time state
         (((e.world k).state w).boostScore config))
     (anchorParent : ∀ w ∈ J, ∀ k, (e.world k).time ≤ limit →
@@ -879,13 +936,15 @@ That anchor is on its chain, of the current epoch or the one before.
 
 It is safe from the start of the current epoch to the last time.
 
-A block of the current epoch extends an origin whose target the rule checked, as in
-`TargetChecked`.
+A block of the current epoch extends an origin whose target the rule checked.
+
+That is the record of `TargetChecked`.
 
 The origin is safe from that check to the last time, not only to the call.
 
-In [verified-fast-confirmation][vfc] the first and third facts are
-`ConfirmedSafeFromFollowingSlot` and `AcceptedHistoricalA32CurrentLineageAt`.
+The first fact is `ConfirmedSafeFromFollowingSlot` in [verified-fast-confirmation][vfc].
+
+The third is `AcceptedHistoricalA32CurrentLineageAt` there.
 
 [vfc]: https://github.com/fradamt/verified-fast-confirmation -/
 def CallInvariant
@@ -933,13 +992,15 @@ Its safety from this call on and its historical anchor come from the call before
 
 At the start of an epoch, the start itself is the historical anchor.
 
-A finalized start with a confirmed walk is the block of the anchor, by
-`Execution.finalizedCheckpoint_eq_of_checked`.
+A finalized start with a confirmed walk is the block of the anchor.
+
+`Execution.finalizedCheckpoint_eq_of_checked` gives that.
 
 A finalized start without a walk is safe one delay after the call, by `Execution.safeAt_finalized`.
 
-It is the block of the anchor or is two epochs old, by
-`Execution.finalizedCheckpoint_eq_or_blockEpoch_add_two_le`, so it needs no historical anchor.
+It is the block of the anchor or is two epochs old, so it needs no historical anchor.
+
+`Execution.finalizedCheckpoint_eq_or_blockEpoch_add_two_le` gives that.
 
 An observed start is safe from the call, by `Execution.safeAt_observed`.
 
@@ -947,14 +1008,17 @@ The call before recorded it one slot before, and the first call reads the block 
 
 A walk gives a block safe from the call, by `Execution.safeAt_of_walk`.
 
-Its inputs come from the induction hypothesis, from `RuleBounds` and from
-`Execution.honestTargetVotes_of_byzantineStakeAtMost`, `Execution.honestThirdPins` and
-`Execution.justifiedByHonestVote`.
+Its inputs come from the induction hypothesis and from `RuleBounds`.
+
+`Execution.honestTargetVotes_of_byzantineStakeAtMost` gives the honest target votes.
+
+`Execution.honestThirdPins` and `Execution.justifiedByHonestVote` give the FFG inputs.
 
 A walked block of the current epoch from a start of the epoch before has its own target check.
 
-In [verified-fast-confirmation][vfc] this is the successor case of
-`confirmed_safety_and_lineage_of_acceptedActualFCRFold`.
+This is the successor case of a theorem of [verified-fast-confirmation][vfc].
+
+It is `confirmed_safety_and_lineage_of_acceptedActualFCRFold`.
 
 [vfc]: https://github.com/fradamt/verified-fast-confirmation -/
 theorem Execution.callInvariant_step {Δ : ℕ} (sync : e.Synchronous Δ)
@@ -1026,7 +1090,11 @@ theorem Execution.callInvariant_step {Δ : ℕ} (sync : e.Synchronous Δ)
     CallInvariant e margin limit anchor.finalizedCheckpoint.root u n after.confirmedRoot := by
   sorry
 
-/-- Theorem 1: the block that the rule stores is safe from the start of the next slot.
+/-- Theorem 1, safety: the block that the rule stores is safe from the start of the next slot.
+
+This is a conditional result, under the hypotheses below and the placeholders it depends on.
+
+It does not state the monotonicity part of the paper's Theorem 1.
 
 An honest validator calls the rule at the events of a list, with its store up to date.
 
@@ -1070,7 +1138,9 @@ This excludes stores that hold that root; it is not an assumption on hashes.
 
 With it, the parents of the blocks of each honest store are at lower slots.
 
-Assumption 2 holds at each call, with that margin and a weight shift, as `RuleBounds` says.
+The implementation-level bounds of `RuleBounds` hold, with that margin and a weight shift.
+
+They generalize Assumption 2 of the paper and apply only to calls that confirm by a walk.
 
 Each honest store up to the last time is in an epoch at most the horizon.
 
