@@ -575,6 +575,184 @@ theorem Execution.safeAt_of_support {Δ : ℕ} (sync : e.Synchronous Δ)
     ∀ time, (e.world n).time ≤ time → time ≤ limit → SafeAt e time root := by
   sorry
 
+/-- A fitting delay leaves time to process a duty vote before the next slot boundary. -/
+theorem DelayFits.before_boundary {Δ : ℕ}
+    (fits : DelayFits fork config genesisTimeMs Δ)
+    {slot next : Slot} {start following : UInt64} {time : ℕ}
+    (nextOk : addChecked slot 1 = .ok next)
+    (startOk : computeTimeAtSlotMs config genesisTimeMs slot = .ok start)
+    (followingOk : computeTimeAtSlotMs config genesisTimeMs next = .ok following)
+    (deadline : IsAttestationDeadline fork config genesisTimeMs slot time) :
+    time + Δ < following.toNat := by
+  obtain ⟨start', due, startOk', dueOk, timeEq⟩ := deadline
+  rw [startOk, Except.ok.injEq] at startOk'
+  subst start'
+  rw [timeEq]
+  exact fits.2 slot next start due following nextOk startOk dueOk followingOk
+
+/-- A slot no later than a representable boundary has a representable start time. -/
+theorem exists_timeAtSlotMs_of_le {slot last : Slot} {lastTime : UInt64}
+    (le : slot ≤ last)
+    (lastOk : computeTimeAtSlotMs config genesisTimeMs last = .ok lastTime) :
+    ∃ start, computeTimeAtSlotMs config genesisTimeMs slot = .ok start ∧
+      start.toNat = genesisTimeMs.toNat + slot.toNat * config.SLOT_DURATION_MS.toNat ∧
+      start ≤ lastTime := by
+  unfold computeTimeAtSlotMs at lastOk ⊢
+  simp only [bind_ok_iff] at lastOk
+  obtain ⟨offset, multiplied, added⟩ := lastOk
+  obtain ⟨bound, offsetEq⟩ := mulChecked_ok_iff.mp multiplied
+  obtain ⟨timeBound, timeEq⟩ := addChecked_ok_iff.mp added
+  have productLe := Nat.mul_le_mul_right config.SLOT_DURATION_MS.toNat
+    (UInt64.le_iff_toNat_le.mp le)
+  have productBound : slot.toNat * config.SLOT_DURATION_MS.toNat < 2 ^ 64 := by omega
+  have productEq := mulChecked_of_lt productBound
+  have productNat := (mulChecked_ok_iff.mp productEq).2
+  have sumBound : genesisTimeMs.toNat +
+      (slot * config.SLOT_DURATION_MS).toNat < 2 ^ 64 := by omega
+  have sumEq := addChecked_of_lt sumBound
+  have sumNat := (addChecked_ok_iff.mp sumEq).2
+  refine ⟨genesisTimeMs + slot * config.SLOT_DURATION_MS,
+    ?_, by omega, UInt64.le_iff_toNat_le.mpr (by omega)⟩
+  simp only [productEq, bind, Except.bind, sumEq]
+
+/-- A fitting delay places the attestation deadline inside each representable slot. -/
+theorem DelayFits.due_lt_slot {Δ : ℕ}
+    (fits : DelayFits fork config genesisTimeMs Δ)
+    {slot next : Slot} {start following due : UInt64}
+    (nextOk : addChecked slot 1 = .ok next)
+    (startOk : computeTimeAtSlotMs config genesisTimeMs slot = .ok start)
+    (followingOk : computeTimeAtSlotMs config genesisTimeMs next = .ok following)
+    (dueOk : getAttestationDueMs config fork = .ok due) :
+    due < config.SLOT_DURATION_MS := by
+  have before := fits.2 slot next start due following nextOk startOk dueOk followingOk
+  obtain ⟨start', startOk', startNat, _⟩ := exists_timeAtSlotMs_of_le
+    (UInt64.le_refl slot) startOk
+  obtain ⟨following', followingOk', followingNat, _⟩ := exists_timeAtSlotMs_of_le
+    (UInt64.le_refl next) followingOk
+  rw [startOk, Except.ok.injEq] at startOk'
+  rw [followingOk, Except.ok.injEq] at followingOk'
+  subst start'
+  subst following'
+  have nextNat := (addChecked_ok_iff.mp nextOk).2
+  simp only [UInt64.toNat_one] at nextNat
+  rw [nextNat, Nat.add_mul, Nat.one_mul] at followingNat
+  exact UInt64.lt_iff_toNat_lt.mpr (by omega)
+
+omit [DecidablePred (· ∈ J)] in
+/-- Prompt processing supplies both delivery events for a duty whose deadline has started. -/
+theorem Execution.exists_duty_boundaries {Δ : ℕ}
+    (fits : DelayFits fork config genesisTimeMs Δ) (prompt : Prompt e)
+    {w : ValidatorIndex} (receiver : w ∈ J)
+    {slot next : Slot} {start following : UInt64} {time : ℕ}
+    (nextOk : addChecked slot 1 = .ok next)
+    (startOk : computeTimeAtSlotMs config genesisTimeMs slot = .ok start)
+    (followingOk : computeTimeAtSlotMs config genesisTimeMs next = .ok following)
+    (deadline : IsAttestationDeadline fork config genesisTimeMs slot time)
+    (started : e.startTime ≤ time) :
+    (∃ k, (e.world k).time + 1 = following.toNat ∧
+      time + Δ ≤ (e.world k).time ∧
+      UpToDate config checks sources (e.world k).time ((e.world k).view w)
+        ((e.world k).state w)) ∧
+    (∃ k, (e.world k).time = following.toNat ∧
+      UpToDate config checks sources (e.world k).time ((e.world k).view w)
+        ((e.world k).state w)) := by
+  have before := fits.before_boundary nextOk startOk followingOk deadline
+  have startedBefore : e.startTime < following.toNat := by omega
+  obtain ⟨boundary, preboundary⟩ := prompt w receiver next following followingOk startedBefore.le
+  obtain ⟨k, atTime, current⟩ := preboundary startedBefore
+  exact ⟨⟨k, atTime, by omega, current⟩, boundary⟩
+
+omit [DecidablePred (· ∈ J)] in
+/-- A duty inside a complete slot interval has a vote before the endpoint's delivery cutoff. -/
+theorem Execution.exists_voteAt_of_duty_interval {Δ : ℕ}
+    (votes : Votes e.startTime e) (fits : DelayFits fork config genesisTimeMs Δ)
+    {begin last slot : Slot} {beginTime endTime : UInt64} {first time : ℕ}
+    (beginOk : computeTimeAtSlotMs config genesisTimeMs begin = .ok beginTime)
+    (endOk : computeTimeAtSlotMs config genesisTimeMs last = .ok endTime)
+    (started : e.startTime ≤ first) (fresh : first ≤ beginTime.toNat)
+    (complete : endTime.toNat ≤ time)
+    {v : ValidatorIndex} (honest : v ∈ J) {committeeIndex : CommitteeIndex}
+    (afterBegin : begin ≤ slot) (beforeEnd : slot < last)
+    (duty : assignment.committee v slot = some committeeIndex) :
+    ∃ next start following deadline n attestation indexed,
+      addChecked slot 1 = .ok next ∧
+      computeTimeAtSlotMs config genesisTimeMs slot = .ok start ∧
+      computeTimeAtSlotMs config genesisTimeMs next = .ok following ∧
+      IsAttestationDeadline fork config genesisTimeMs slot deadline ∧
+      first ≤ deadline ∧ deadline + Δ < following.toNat ∧ following.toNat ≤ time ∧
+      VoteAt e v slot committeeIndex deadline n attestation indexed := by
+  have slotLt := UInt64.lt_iff_toNat_lt.mp beforeEnd
+  have lastBound := last.toNat_lt
+  have nextBound : slot.toNat + (1 : UInt64).toNat < 2 ^ 64 := by simp; omega
+  have nextOk := addChecked_of_lt nextBound
+  have nextNat := (addChecked_ok_iff.mp nextOk).2
+  have nextLe : slot + 1 ≤ last := UInt64.le_iff_toNat_le.mpr (by
+    simp only [UInt64.toNat_one] at nextNat; omega)
+  obtain ⟨startTime, startOk, startNat, _⟩ :=
+    exists_timeAtSlotMs_of_le (UInt64.le_of_lt beforeEnd) endOk
+  obtain ⟨following, followingOk, _, followingLe⟩ :=
+    exists_timeAtSlotMs_of_le nextLe endOk
+  obtain ⟨beginTime', beginOk', _, beginLe⟩ := exists_timeAtSlotMs_of_le afterBegin startOk
+  rw [beginOk, Except.ok.injEq] at beginOk'
+  subst beginTime'
+  obtain ⟨due, dueOk⟩ := fits.1
+  have deadline : IsAttestationDeadline fork config genesisTimeMs slot
+      (startTime.toNat + due.toNat) := ⟨startTime, due, startOk, dueOk, rfl⟩
+  have beginLe := UInt64.le_iff_toNat_le.mp beginLe
+  have followingLe := UInt64.le_iff_toNat_le.mp followingLe
+  have firstLe : first ≤ startTime.toNat + due.toNat := by omega
+  obtain ⟨n, attestation, indexed, vote⟩ := votes v honest slot committeeIndex _ duty deadline
+    (started.trans firstLe) (started.trans firstLe)
+  exact ⟨slot + 1, startTime, following, _, n, attestation, indexed,
+    nextOk, startOk, followingOk, deadline, firstLe,
+    fits.before_boundary nextOk startOk followingOk deadline, by omega, vote⟩
+
+omit [DecidablePred (· ∈ J)] in
+/-- Prefix safety applies to the head actually used by a late duty vote. -/
+theorem VoteAt.head_supports_of_safe {anchor : Store preset fork}
+    (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (anchorSlot : anchorBlock.slot ≤ anchorState.slot)
+    (start : ∀ u ∈ J, e.start u = anchor)
+    {v : ValidatorIndex} (honest : v ∈ J) {slot : Slot}
+    {committeeIndex : CommitteeIndex} {deadline n : ℕ}
+    {attestation : Attestation preset fork} {indexed : IndexedAttestation preset fork}
+    (vote : VoteAt e v slot committeeIndex deadline n attestation indexed)
+    (due : IsAttestationDeadline fork config genesisTimeMs slot deadline)
+    {dueMs : UInt64} (dueOk : getAttestationDueMs config fork = .ok dueMs)
+    (inSlot : dueMs < config.SLOT_DURATION_MS)
+    {first time : ℕ} {root : Root} (afterFirst : first ≤ deadline) (before : deadline < time)
+    (safe : ∀ earlier, first ≤ earlier → earlier < time → SafeAt e earlier root) :
+    ∃ head block, ((e.world n).state v).getHead config = .ok head ∧
+      ((e.world n).state v).blocks[head.root]? = some block ∧
+      attestation.data.beaconBlockRoot = head.root ∧ block.slot ≤ slot ∧
+      ((e.world n).state v).isAncestor head ⟨root, .pending⟩ = .ok true := by
+  obtain ⟨_, _, head, block, headOk, held, same, past⟩ :=
+    vote.data_head anchored anchorSlot start honest due dueOk inSlot
+  refine ⟨head, block, headOk, held, same, past, ?_⟩
+  exact safe deadline afterFirst before v honest n head vote.atTime
+    (vote.atTime.symm ▸ vote.upToDate) headOk
+
+omit [DecidablePred (· ∈ J)] in
+/-- Honest stores with the same blocks compute the same cached target state under fixed checks. -/
+theorem Execution.checkpointStates_eq_of_oneBlock {anchor : Store preset fork}
+    (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (start : ∀ u ∈ J, e.start u = anchor) (oneBlock : OneBlockPerRoot e)
+    {u w : ValidatorIndex} (first : u ∈ J) (second : w ∈ J) {n k : ℕ}
+    {checkpoint : Checkpoint} {left right : BeaconState preset fork}
+    (leftFound : ((e.world n).state u).checkpointStates[checkpoint]? = some left)
+    (rightFound : ((e.world k).state w).checkpointStates[checkpoint]? = some right) :
+    left = right := by
+  obtain ⟨leftBase, leftSlot, leftBaseFound, leftSlotOk, leftRun⟩ :=
+    e.checkpointStates_fixedChecks anchored (start u first) leftFound
+  obtain ⟨rightBase, rightSlot, rightBaseFound, rightSlotOk, rightRun⟩ :=
+    e.checkpointStates_fixedChecks anchored (start w second) rightFound
+  have baseEq := e.blockStates_eq anchored first second (start u first) (start w second)
+    (oneBlock u first w second n k) leftBaseFound rightBaseFound
+  have slotEq := Except.ok.inj (leftSlotOk.symm.trans rightSlotOk)
+  subst rightBase
+  subst rightSlot
+  exact Except.ok.inj (leftRun.symm.trans rightRun)
+
 /-- A complete later duty epoch makes each assigned honest tally voter support the safe prefix.
 
 The tally state may be old; no comparison with the caller's balances is used.
