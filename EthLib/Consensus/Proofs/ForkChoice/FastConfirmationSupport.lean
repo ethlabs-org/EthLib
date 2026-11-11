@@ -1321,6 +1321,46 @@ theorem VoteAt.accepted_of_target_known {anchor : Store preset fork}
     ⟨withTarget, sourceState, stored, read, indexedOk, signed⟩⟩
 
 omit [DecidablePred (· ∈ J)] in
+/-- A delivered duty is recorded at its next slot boundary and retained at later events. -/
+theorem VoteAt.recorded_at_next_slot {Δ : ℕ} (sync : e.Synchronous Δ)
+    (preGloas : fork < .glamsterdam) {anchor : Store preset fork}
+    (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (start : ∀ u ∈ J, e.start u = anchor) (oneBlock : OneBlockPerRoot e)
+    {v w : ValidatorIndex} (honest : v ∈ J) (receiver : w ∈ J)
+    {slot next : Slot} {committeeIndex : CommitteeIndex} {deadline n arrival endpoint : ℕ}
+    {attestation : Attestation preset fork} {indexed : IndexedAttestation preset fork}
+    (vote : VoteAt e v slot committeeIndex deadline n attestation indexed)
+    (dataSlot : attestation.data.slot = slot)
+    (epoch : attestation.data.target.epoch = computeEpochAtSlot preset slot)
+    (nextOk : addChecked slot 1 = .ok next)
+    (currentOk : ((e.world arrival).state w).getCurrentSlot config = .ok next)
+    (late : deadline + Δ ≤ (e.world arrival).time)
+    (upToDate : UpToDate config checks sources (e.world arrival).time
+      ((e.world arrival).view w) ((e.world arrival).state w))
+    (counted : v ∉ ((e.world arrival).state w).equivocatingIndices)
+    (later : arrival ≤ endpoint)
+    {voted : BeaconBlock preset fork}
+    (votedKnown : ((e.world arrival).state w).blocks[attestation.data.beaconBlockRoot]? =
+      some voted)
+    (notFuture : voted.slot ≤ slot)
+    (checkpoint : ((e.world arrival).state w).getCheckpointBlock attestation.data.beaconBlockRoot
+      attestation.data.target.epoch = .ok attestation.data.target.root) :
+    ∃ message, ((e.world endpoint).state w).latestMessages[v]? = some message ∧
+      attestation.data.target.epoch ≤ message.rank := by
+  obtain ⟨_, target, _, targetKnown, _, _⟩ :=
+    Store.isAncestor_of_getCheckpointBlock preGloas checkpoint
+  have valid := validate_duty_at_next_slot preGloas (dataSlot ▸ nextOk) currentOk
+    (epoch.trans (congrArg (computeEpochAtSlot preset) dataSlot).symm)
+    targetKnown votedKnown (dataSlot ▸ notFuture) checkpoint
+  obtain ⟨⟨after, accepted⟩, reads⟩ := vote.accepted_of_target_known anchored start oneBlock
+    honest receiver targetKnown valid
+  obtain ⟨message, latest, rank⟩ := vote.recorded_of_le sync honest receiver late upToDate
+    accepted reads counted later
+  refine ⟨message, latest, ?_⟩
+  have notGloas : ¬ .glamsterdam ≤ fork := Nat.not_le_of_lt preGloas
+  simpa [LatestMessage.rank, LatestMessage.ofAttestation, notGloas] using rank
+
+omit [DecidablePred (· ∈ J)] in
 /-- An endpoint checkpoint read admits a supporting head at an earlier delivery event.
 
 The boundary is no later than the supported block, so the descendant shares its checkpoint.
