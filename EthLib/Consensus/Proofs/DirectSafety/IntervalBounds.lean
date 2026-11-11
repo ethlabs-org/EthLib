@@ -4338,6 +4338,111 @@ theorem replay_event_provenance {g x y : ForkedBeaconState preset}
       exact ⟨pre.registryLifecycle.trans first, during, final, ordered, matched,
         (runEpoch pre).trans lo, hi⟩
 
+private theorem intervalLoss_zero_credit (e : BalanceEvent preset)
+    (bound : e.credits ≤ e.creditLimit) (zero : e.creditLimit = 0) :
+    ∀ i, actualBalanceAt e.after i ≤ actualBalanceAt e.before i := by
+  intro i
+  have point : actualBalanceAt e.after i - actualBalanceAt e.before i ≤ e.credits := by
+    by_cases within : i < e.after.state.balances.data.size
+    · exact Finset.single_le_sum (f := fun j =>
+        actualBalanceAt e.after j - actualBalanceAt e.before j)
+        (fun _ _ => Nat.zero_le _) (Finset.mem_range.mpr within)
+    · simp [actualBalanceAt, Array.getElem?_eq_none (Nat.le_of_not_lt within)]
+  omega
+
+private theorem intervalLoss_upgrade_sources {s : ForkedBeaconState preset}
+    {events : List (BalanceEvent preset)}
+    (ok : upgradeBalanceReplay (config := config) (checks := checks) s = .ok events) :
+    ∀ e ∈ events, e.source = .crossing := by
+  fun_induction upgradeBalanceReplay (config := config) (checks := checks) s
+      generalizing events with
+  | case1 s due ih =>
+    obtain ⟨next, _, rest⟩ := bind_ok_iff.mp ok
+    obtain ⟨prior, priorOk, last⟩ := bind_ok_iff.mp rest
+    have sources := ih next priorOk
+    repeat' split at last
+    all_goals cases last; simpa using sources
+  | case2 => cases ok; simp
+
+private theorem intervalLoss_step_deposit_epoch {x y : ForkedBeaconState preset}
+    (step : Step config checks x y) (early : y.fork < .glamsterdam)
+    (holds : Invariant x.state) {events : List (BalanceEvent preset)}
+    (replayed : step.balanceEvents = .ok events)
+    (e : BalanceEvent preset) (member : e ∈ events) (deposit : e.source = .deposits)
+    (electra : .pectra ≤ e.before.fork) :
+    (∀ i, actualBalanceAt e.after i ≤ actualBalanceAt e.before i) ∨
+      (getCurrentEpoch e.before.state).toNat < (getCurrentEpoch y.state).toNat := by
+  have before : x.fork < .glamsterdam := Nat.lt_of_le_of_lt step.chainStep.fork_le early
+  cases step with
+  | block engine signed due ok =>
+    obtain ⟨recorded, replay⟩ := blockBalanceReplay_result _ _ before engine signed.message
+      (applySignedBlock_ok ok).2.1
+    simp only [Step.balanceEvents, before, ↓reduceDIte, replay, bind, Except.bind,
+      pure, Except.pure, Except.ok.injEq] at replayed
+    subst events
+    exact Or.inl (intervalLoss_zero_credit e
+      (blockBalanceReplay_bounded before engine signed.message holds.balancesMatch replay e member).1
+      (funding_block_events before engine signed.message replay e member deposit electra))
+  | slot ok =>
+    obtain ⟨advanced, advanceOk, upgrades⟩ := bind_ok_iff.mp ok
+    obtain ⟨crossings, crossingOk, _⟩ := intervalLoss_sites_upgrades upgrades
+    have sources := intervalLoss_upgrade_sources crossingOk
+    have advanceCopy := advanceOk
+    simp only [advanceSlot, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at advanceCopy
+    obtain ⟨next, nextOk, cached, cachedOk, epoched, epochOk, afterEq⟩ := advanceCopy
+    by_cases boundary : next % preset.SLOTS_PER_EPOCH = 0
+    · simp only [epochIfLast, boundary, ↓reduceIte] at epochOk
+      obtain ⟨middle, updated, recorded, recordOk, _⟩ :=
+        epochBalanceReplay_result cached epoched before epochOk
+      have eventEq := Except.ok.inj (replayed.symm.trans
+        (Step.balanceEvents_epoch_slot ok cachedOk nextOk boundary recordOk advanceOk crossingOk))
+      rw [eventEq] at member
+      rcases List.mem_append.mp member with member | member
+      · have sites := intervalLoss_sites_epoch recordOk
+        have epochEq := (sites.2 e member).1.epoch
+        have sum := (Uint64.addChecked_ok_iff.mp (mapError_ok_iff.mp
+          (liftAccessor_ok.mp nextOk))).2
+        have epochs := nextSlot_epoch_of_boundary sum boundary
+        have cachedSlot := (frame_processSlot cachedOk).slot
+        apply Or.inr
+        rw [← epochEq, getCurrentEpoch_toNat, cachedSlot,
+          getCurrentEpoch_toNat, processUpgrades_slot upgrades, ← afterEq]
+        dsimp only
+        omega
+      · have := sources e member
+        simp_all
+    · have eventEq : events = crossings := by
+        simpa [Step.balanceEvents, cachedOk, nextOk, boundary, advanceOk, crossingOk,
+          pure, Except.pure, bind, Except.bind] using replayed.symm
+      have := sources e (eventEq ▸ member)
+      simp_all
+
+theorem replay_electra_deposit_epoch {g x y : ForkedBeaconState preset}
+    (shared : Run config checks g x) (tail : Run config checks x y)
+    (genesis : Genesis (config := config) (checks := checks) g)
+    (parameters : Parameters preset) (early : y.fork < .glamsterdam) (high : Nat)
+    (endEpoch : (getCurrentEpoch y.state).toNat ≤ high + 1)
+    (events : List (BalanceEvent preset)) (replayed : tail.balanceEvents high = .ok events)
+    (event : BalanceEvent preset) (member : event ∈ events)
+    (deposit : event.source = .deposits) (electra : .pectra ≤ event.before.fork) :
+    (∀ i, actualBalanceAt event.after i ≤ actualBalanceAt event.before i) ∨
+      (getCurrentEpoch event.before.state).toNat < (getCurrentEpoch y.state).toNat := by
+  induction tail generalizing events with
+  | nil => cases replayed; simp at member
+  | @snoc middle last pre step ih =>
+    have selected := (coverage_step_epoch step).trans endEpoch
+    simp only [Run.balanceEvents, bind_ok_iff] at replayed
+    obtain ⟨prior, priorOk, rest⟩ := replayed
+    simp only [selected, ↓reduceIte, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at rest
+    obtain ⟨added, addedOk, rfl⟩ := rest
+    rcases List.mem_append.mp member with old | added
+    · rcases ih (Nat.lt_of_le_of_lt step.chainStep.fork_le early) selected prior priorOk old with
+        zero | strict
+      · exact Or.inl zero
+      · exact Or.inr (strict.trans_le (coverage_step_epoch step))
+    · exact intervalLoss_step_deposit_epoch step early
+        (intervalLoss_run_invariant (shared.append pre) genesis) addedOk event added deposit electra
+
 private theorem intervalLoss_reference_split (x y : ForkedBeaconState preset) :
     referenceLoss x y =
       (∑ k ∈ ((activeKeys x.state).filter fun k =>
