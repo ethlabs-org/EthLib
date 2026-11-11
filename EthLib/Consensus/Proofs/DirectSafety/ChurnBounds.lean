@@ -1,6 +1,7 @@
 module
 
 public import EthLib.Consensus.Proofs.Transition.BalanceDrift
+public import EthLib.Consensus.Proofs.Transition.RegistryLifecycle
 public import EthLib.Consensus.Proofs.DirectSafety.Drift
 public import EthLib.Consensus.Proofs.Churn
 
@@ -192,6 +193,94 @@ def _root_.EthLib.Consensus.Run.departureCharges {x : ForkedBeaconState preset} 
   | _, .nil => []
   | _, .snoc pre step => pre.departureCharges ++ step.departureCharges
 
+/-- An existing validator whose exit becomes assigned has a charge at that exit epoch. -/
+theorem _root_.EthLib.Consensus.Run.departure_charge_of_assigned
+    {x y : ForkedBeaconState preset} (tail : Run config checks x y)
+    (i : Nat) (old current : Validator)
+    (before : x.state.validators.data[i]? = some old)
+    (after : y.state.validators.data[i]? = some current)
+    (unset : old.exitEpoch = FAR_FUTURE_EPOCH)
+    (assigned : current.exitEpoch ≠ FAR_FUTURE_EPOCH) :
+    ∃ charge ∈ tail.departureCharges,
+      charge.index = i ∧ charge.epoch = current.exitEpoch.toNat := by
+  induction tail generalizing current with
+  | nil =>
+    have same : old = current := Option.some.inj (before.symm.trans after)
+    exact False.elim (assigned (same ▸ unset))
+  | snoc pre step ih =>
+    obtain ⟨middle, found, _⟩ := pre.registryLifecycle.validators i old before
+    by_cases pending : middle.exitEpoch = FAR_FUTURE_EPOCH
+    · refine ⟨⟨i, current.exitEpoch.toNat, middle.effectiveBalance.toNat⟩,
+        List.mem_append_right _ ?_, rfl, rfl⟩
+      apply List.mem_filterMap.mpr
+      refine ⟨(middle, i), ?_, ?_⟩
+      · simpa only [List.mem_zipIdx_iff_getElem?, Array.getElem?_toList] using found
+      · simp [after, pending, assigned]
+    · obtain ⟨charge, member, index, epoch⟩ := ih middle found pending
+      obtain ⟨last, lastFound, kept⟩ :=
+        (RegistryLifecycle.chainStep step.chainStep).validators i middle found
+      have same : last = current := Option.some.inj (lastFound.symm.trans after)
+      refine ⟨charge, List.mem_append_left _ member, index, ?_⟩
+      rw [epoch, ← kept.exitEpoch pending, same]
+
+/-- Every recorded charge names an exit that remains assigned at the interval endpoint. -/
+theorem _root_.EthLib.Consensus.Run.departure_charge_exit
+    {x y : ForkedBeaconState preset} (tail : Run config checks x y)
+    (charge : DepartureCharge) (member : charge ∈ tail.departureCharges) :
+    ∃ v, y.state.validators.data[charge.index]? = some v ∧
+      v.exitEpoch ≠ FAR_FUTURE_EPOCH ∧ v.exitEpoch.toNat = charge.epoch := by
+  induction tail with
+  | nil => simp [Run.departureCharges] at member
+  | snoc pre step ih =>
+    rcases List.mem_append.mp member with earlier | latest
+    · obtain ⟨v, found, assigned, epoch⟩ := ih earlier
+      obtain ⟨w, foundLater, kept⟩ :=
+        (RegistryLifecycle.chainStep step.chainStep).validators charge.index v found
+      exact ⟨w, foundLater, by simpa [kept.exitEpoch assigned] using assigned,
+        by simpa [kept.exitEpoch assigned] using epoch⟩
+    · obtain ⟨⟨old, i⟩, _, added⟩ := List.mem_filterMap.mp latest
+      dsimp only at added
+      split at added
+      · cases added
+      · rename_i v found
+        split at added
+        · rename_i assigned
+          cases Option.some.inj added
+          simp only [Bool.and_eq_true, beq_iff_eq, bne_iff_ne] at assigned
+          exact ⟨v, found, assigned.2, rfl⟩
+        · cases added
+
+/-- An exit already assigned at the reference state is never charged again. -/
+theorem _root_.EthLib.Consensus.Run.departure_charge_ne_of_assigned
+    {x y : ForkedBeaconState preset} (tail : Run config checks x y)
+    (i : Nat) (v : Validator) (found : x.state.validators.data[i]? = some v)
+    (assigned : v.exitEpoch ≠ FAR_FUTURE_EPOCH)
+    (charge : DepartureCharge) (member : charge ∈ tail.departureCharges) :
+    charge.index ≠ i := by
+  induction tail with
+  | nil => simp [Run.departureCharges] at member
+  | snoc pre step ih =>
+    rcases List.mem_append.mp member with earlier | latest
+    · exact ih earlier
+    · obtain ⟨w, foundLater, kept⟩ := pre.registryLifecycle.validators i v found
+      obtain ⟨⟨old, index⟩, present, added⟩ := List.mem_filterMap.mp latest
+      dsimp only at added
+      split at added
+      · cases added
+      · split at added
+        · rename_i pending
+          cases Option.some.inj added
+          intro equal
+          change index = i at equal
+          subst index
+          have oldFound : _ = some old :=
+            (List.mem_zipIdx_iff_getElem?.mp present)
+          rw [Array.getElem?_toList] at oldFound
+          have same : old = w := Option.some.inj (oldFound.symm.trans foundLater)
+          simp only [Bool.and_eq_true, beq_iff_eq, bne_iff_ne] at pending
+          exact assigned ((kept.exitEpoch assigned).symm.trans (same ▸ pending.1))
+        · cases added
+
 /-- Reference weights of the one inherited cohort, including the initial boundary. -/
 def inheritedCohort (x : ForkedBeaconState preset) (epoch : Nat) : Nat :=
   (x.state.validators.data.toList.filter fun v =>
@@ -271,7 +360,14 @@ theorem split_electra_crossing {x y : ForkedBeaconState preset} (tail : Run conf
     ∃ u v, ∃ head : Run config checks x u, ∃ step : Step config checks u v,
       ∃ rest : Run config checks v y,
         u.fork < .pectra ∧ .pectra ≤ v.fork ∧ (head.snoc step).append rest = tail := by
-  sorry
+  induction tail with
+  | nil => exact False.elim (Nat.not_lt_of_ge late early)
+  | @snoc middle last pre step ih =>
+    by_cases crossed : .pectra ≤ middle.fork
+    · obtain ⟨u, v, head, crossing, rest, before, after, same⟩ := ih crossed
+      exact ⟨u, v, head, crossing, rest.snoc step, before, after,
+        congrArg (fun run => run.snoc step) same⟩
+    · exact ⟨middle, last, pre, step, .nil, Nat.lt_of_not_ge crossed, late, rfl⟩
 
 /-- A queue charge can spend earlier epochs; an arbitrary window needs its carry-in. -/
 theorem exit_queue_charge {fork : Fork} (s t : BeaconState preset fork)
