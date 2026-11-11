@@ -1290,6 +1290,57 @@ theorem Execution.checkpointStates_eq_of_oneBlock {anchor : Store preset fork}
   exact Except.ok.inj (leftRun.symm.trans rightRun)
 
 omit [DecidablePred (· ∈ J)] in
+/-- A target state read after caching has the same fixed-check origin as an already cached state. -/
+theorem Execution.targetState_fixedChecks {anchor : Store preset fork}
+    (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    {w : ValidatorIndex} (start : e.start w = anchor) {k : ℕ}
+    {target : Checkpoint} {withTarget : Store preset fork} {state : BeaconState preset fork}
+    (stored : ((e.world k).state w).storeTargetCheckpointState config checks target =
+      .ok withTarget)
+    (read : withTarget.checkpointState target = .ok state) :
+    ∃ base slot, ((e.world k).state w).blockStates[target.root]? = some base ∧
+      computeStartSlotAtEpoch preset target.epoch = .ok slot ∧
+      lookaheadState config checks base slot = .ok state := by
+  unfold Store.storeTargetCheckpointState at stored
+  split at stored
+  · simp only [pure, Except.pure, Except.ok.injEq] at stored
+    subst withTarget
+    exact e.checkpointStates_fixedChecks anchored start (Store.checkpointState_ok_iff.mp read)
+  · simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at stored
+    obtain ⟨computed, computedOk, rfl⟩ := stored
+    have eq : computed = state := by
+      have found := Store.checkpointState_ok_iff.mp read
+      simpa using found
+    subst computed
+    exact checkpointState_run_of_compute computedOk
+
+omit [DecidablePred (· ∈ J)] in
+/-- Target-state agreement also holds when either honest store has just computed its cache entry. -/
+theorem Execution.targetStates_eq_of_oneBlock {anchor : Store preset fork}
+    (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (start : ∀ u ∈ J, e.start u = anchor) (oneBlock : OneBlockPerRoot e)
+    {u w : ValidatorIndex} (first : u ∈ J) (second : w ∈ J) {n k : ℕ}
+    {target : Checkpoint} {leftStore rightStore : Store preset fork}
+    {left right : BeaconState preset fork}
+    (leftStored : ((e.world n).state u).storeTargetCheckpointState config checks target =
+      .ok leftStore)
+    (leftRead : leftStore.checkpointState target = .ok left)
+    (rightStored : ((e.world k).state w).storeTargetCheckpointState config checks target =
+      .ok rightStore)
+    (rightRead : rightStore.checkpointState target = .ok right) :
+    left = right := by
+  obtain ⟨leftBase, leftSlot, leftFound, leftSlotOk, leftRun⟩ :=
+    e.targetState_fixedChecks anchored (start u first) leftStored leftRead
+  obtain ⟨rightBase, rightSlot, rightFound, rightSlotOk, rightRun⟩ :=
+    e.targetState_fixedChecks anchored (start w second) rightStored rightRead
+  have baseEq := e.blockStates_eq anchored first second (start u first) (start w second)
+    (oneBlock u first w second n k) leftFound rightFound
+  have slotEq := Except.ok.inj (leftSlotOk.symm.trans rightSlotOk)
+  subst rightBase
+  subst rightSlot
+  exact Except.ok.inj (leftRun.symm.trans rightRun)
+
+omit [DecidablePred (· ∈ J)] in
 /-- An endpoint checkpoint read admits a supporting head at an earlier delivery event.
 
 The boundary is no later than the supported block, so the descendant shares its checkpoint.
