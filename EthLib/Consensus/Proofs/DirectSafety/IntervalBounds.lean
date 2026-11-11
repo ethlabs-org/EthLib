@@ -262,7 +262,19 @@ theorem _root_.EthLib.Consensus.Run.balanceEvents_prefix {x m y : ForkedBeaconSt
     (events : List (BalanceEvent preset))
     (ok : (pre.append tail).balanceEvents high = .ok events) :
     ∃ before, pre.balanceEvents high = .ok before ∧ before <+: events := by
-  sorry
+  induction tail generalizing events with
+  | nil => exact ⟨events, ok, List.prefix_refl _⟩
+  | snoc tail step ih =>
+    simp only [Run.append, Run.balanceEvents, bind_ok_iff] at ok
+    obtain ⟨prior, priorOk, remaining⟩ := ok
+    obtain ⟨before, beforeOk, initial⟩ := ih prior priorOk
+    refine ⟨before, beforeOk, ?_⟩
+    split at remaining
+    · simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at remaining
+      obtain ⟨added, _, rfl⟩ := remaining
+      exact initial.trans (List.prefix_append _ _)
+    · cases remaining
+      exact initial
 
 def sourceTotal (events : List (BalanceEvent preset)) (source : BalanceSource)
     (amount : BalanceEvent preset → Nat) : Nat :=

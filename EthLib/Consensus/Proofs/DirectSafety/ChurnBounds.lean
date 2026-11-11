@@ -198,6 +198,17 @@ def inheritedCohort (x : ForkedBeaconState preset) (epoch : Nat) : Nat :=
     v.activationEpoch.toNat < epoch && v.exitEpoch.toNat == epoch).foldl
       (fun n v => n + v.effectiveBalance.toNat) 0
 
+/-- Previous-only voting support consists exactly of the cohort exiting at the current epoch. -/
+theorem previous_only_iff_exit {fork : Fork} (state : BeaconState preset fork) (v : Validator) :
+    (isActiveValidator v (getPreviousEpoch state) = true ∧
+      isActiveValidator v (getCurrentEpoch state) = false) ↔
+    v.activationEpoch.toNat < (getCurrentEpoch state).toNat ∧
+      v.exitEpoch.toNat = (getCurrentEpoch state).toNat := by
+  simp only [isActiveValidator, Bool.and_eq_true, Bool.and_eq_false_iff,
+    decide_eq_true_eq, decide_eq_false_iff_not, UInt64.le_iff_toNat_le,
+    UInt64.lt_iff_toNat_lt, getPreviousEpoch_toNat]
+  omega
+
 /-- Positive effective-weight growth since reference or scheduling, for this boundary only. -/
 def cohortGrowth {x y : ForkedBeaconState preset} (tail : Run config checks x y) : Nat :=
   (y.state.validators.data.toList.zipIdx.map fun (v, i) =>
