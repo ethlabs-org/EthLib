@@ -34,6 +34,44 @@ open Base Uint64 Serialization.Ssz Cryptography.Bls
 variable {preset : Preset} {fork : Base.Fork} {config : Config} {checks : SignatureChecks}
   {state after : BeaconState preset fork}
 
+/-- A successful slot run splits at any number of its steps. -/
+theorem advanceSlots_split {first rest : Nat}
+    (computed : advanceSlots config checks (first + rest) state = .ok after) :
+    ∃ middle, advanceSlots config checks first state = .ok middle ∧
+      advanceSlots config checks rest middle = .ok after := by
+  induction first generalizing state with
+  | zero => exact ⟨state, rfl, by simpa only [Nat.zero_add] using computed⟩
+  | succ first ih =>
+    rw [Nat.succ_add] at computed
+    simp only [advanceSlots, bind_ok_iff] at computed
+    obtain ⟨next, stepped, tail⟩ := computed
+    obtain ⟨middle, before, afterOk⟩ := ih tail
+    exact ⟨middle, by simp only [advanceSlots, stepped, bind, Except.bind]; exact before, afterOk⟩
+
+/-- A successful slot run visits every intermediate slot. -/
+theorem processSlots_split {slot middleSlot : Slot}
+    (computed : processSlots config checks state slot = .ok after)
+    (low : state.slot < middleSlot) (high : middleSlot < slot) :
+    ∃ middle, processSlots config checks state middleSlot = .ok middle ∧
+      processSlots config checks middle slot = .ok after := by
+  have lo := UInt64.lt_iff_toNat_lt.mp low
+  have hi := UInt64.lt_iff_toNat_lt.mp high
+  simp only [processSlots, bind_ok_iff, ensure_ok_iff] at computed
+  obtain ⟨_, -, run⟩ := computed
+  have sum : slot.toNat - state.slot.toNat =
+      (middleSlot.toNat - state.slot.toNat) + (slot.toNat - middleSlot.toNat) := by omega
+  rw [sum] at run
+  obtain ⟨middle, before, afterOk⟩ := advanceSlots_split run
+  have middleAt : middle.slot = middleSlot := by
+    apply UInt64.toNat_inj.mp
+    have := advanceSlots_slot _ before
+    omega
+  refine ⟨middle, ?_, ?_⟩
+  · simp only [processSlots, bind_ok_iff, ensure_ok_iff]
+    exact ⟨(), low, before⟩
+  · simp only [processSlots, bind_ok_iff, ensure_ok_iff, middleAt]
+    exact ⟨(), high, afterOk⟩
+
 /-- A slot keeps a header whose state root is already nonzero. -/
 theorem processSlot_latestBlockHeader_of_nonzero
     (nonzero : state.latestBlockHeader.stateRoot ≠ Vector.replicate 32 0)
