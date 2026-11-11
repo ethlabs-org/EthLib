@@ -3469,6 +3469,542 @@ theorem nonaccountable_losses_over_interval {g x y : ForkedBeaconState preset}
       exitWindow (config := config) x high events + lossCorrection x events := by
   sorry
 
+private theorem intervalGain_existing_funding {x y : ForkedBeaconState preset}
+    (tail : Run config checks x y) (early : y.fork < .glamsterdam)
+    (i : Nat) (present : i < x.state.validators.data.size) :
+    effectiveAt y i ≤ max (effectiveAt x i) (actualBalanceAt x i) +
+      pathCredits i tail.balancePath := by
+  -- Effective stake above actual balance is retained until a later update lowers it.
+  have gain := effective_gain_from_balance tail early i present
+  omega
+
+private theorem intervalGain_no_reentry {x y : ForkedBeaconState preset}
+    (kept : RegistryLifecycle x.state y.state) (i : Nat) (v w : Validator)
+    (before : x.state.validators.data[i]? = some v)
+    (after : y.state.validators.data[i]? = some w)
+    (assigned : v.exitEpoch ≠ FAR_FUTURE_EPOCH)
+    (exited : v.exitEpoch.toNat ≤ (getPreviousEpoch y.state).toNat) :
+    isActiveValidator w (getCurrentEpoch y.state) = false ∧
+      isActiveValidator w (getPreviousEpoch y.state) = false := by
+  obtain ⟨last, found, lifecycle⟩ := kept.validators i v before
+  have same : last = w := Option.some.inj (found.symm.trans after)
+  have exit := same ▸ lifecycle.exitEpoch assigned
+  have previous : (getPreviousEpoch y.state).toNat ≤ (getCurrentEpoch y.state).toNat := by
+    rw [getPreviousEpoch_toNat]
+    omega
+  have currentExit : ¬ getCurrentEpoch y.state < w.exitEpoch := by
+    rw [exit, UInt64.lt_iff_toNat_lt]
+    omega
+  have previousExit : ¬ getPreviousEpoch y.state < w.exitEpoch := by
+    rw [exit, UInt64.lt_iff_toNat_lt]
+    omega
+  simp [isActiveValidator, currentExit, previousExit]
+
+private theorem intervalGain_carry_cases {x y : ForkedBeaconState preset}
+    (tail : Run config checks x y) (parameters : Parameters preset)
+    (i : Nat) (v w : Validator)
+    (before : x.state.validators.data[i]? = some v)
+    (after : y.state.validators.data[i]? = some w)
+    (inactive : isActiveValidator v (getCurrentEpoch x.state) = false)
+    (recent : isActiveValidator w (getCurrentEpoch y.state) = true ∨
+      isActiveValidator w (getPreviousEpoch y.state) = true) :
+    isActiveValidator v (getPreviousEpoch x.state) = true ∨
+      getCurrentEpoch x.state < v.activationEpoch := by
+  have epochs : (getCurrentEpoch x.state).toNat ≤ (getCurrentEpoch y.state).toNat := by
+    clear after recent
+    induction tail with
+    | nil => exact Nat.le_refl _
+    | snoc pre step ih => exact ih.trans (coverage_step_epoch step)
+  obtain ⟨last, found, lifecycle⟩ := tail.registryLifecycle.validators i v before
+  have same : last = w := Option.some.inj (found.symm.trans after)
+  subst last
+  by_cases future : getCurrentEpoch x.state < v.activationEpoch
+  · exact Or.inr future
+  left
+  have bounded : (getCurrentEpoch x.state).toNat < FAR_FUTURE_EPOCH.toNat := by
+    have ne := getCurrentEpoch_ne_farFuture parameters.slots x.state
+    have bound := (getCurrentEpoch x.state).toNat_lt_size
+    have far : FAR_FUTURE_EPOCH.toNat = 2 ^ 64 - 1 := rfl
+    have different : (getCurrentEpoch x.state).toNat ≠ FAR_FUTURE_EPOCH.toNat := by
+      exact fun h => ne (UInt64.toNat_inj.mp h)
+    simp only [UInt64.size] at bound
+    omega
+  have assigned : v.activationEpoch ≠ FAR_FUTURE_EPOCH := by
+    rw [UInt64.lt_iff_toNat_lt] at future
+    intro eq
+    rw [eq] at future
+    omega
+  have activation := lifecycle.activationEpoch assigned
+  have exitAssigned : v.exitEpoch ≠ FAR_FUTURE_EPOCH := by
+    simp only [isActiveValidator, Bool.and_eq_false_iff, decide_eq_false_iff_not,
+      UInt64.le_iff_toNat_le, UInt64.lt_iff_toNat_lt] at inactive
+    rw [UInt64.lt_iff_toNat_lt] at future
+    intro eq
+    rw [eq] at inactive
+    omega
+  have exit := lifecycle.exitEpoch exitAssigned
+  simp only [isActiveValidator, Bool.and_eq_true, decide_eq_true_eq,
+    UInt64.le_iff_toNat_le, UInt64.lt_iff_toNat_lt, getPreviousEpoch_toNat,
+    activation, exit] at recent ⊢
+  simp only [isActiveValidator, Bool.and_eq_false_iff, decide_eq_false_iff_not,
+    UInt64.le_iff_toNat_le, UInt64.lt_iff_toNat_lt] at inactive
+  rw [UInt64.lt_iff_toNat_lt] at future
+  omega
+
+private theorem intervalGain_electra_deposit {fork : Fork}
+    {s t : BeaconState preset fork} {electra : .pectra ≤ fork}
+    {key : Cryptography.Bls.BLSPubkey} {credentials : Bytes32}
+    {amount : Gwei} {signature : Cryptography.Bls.BLSSignature}
+    (matched : BalancesMatch s)
+    (ok : applyDepositElectra config checks s electra key credentials amount signature = .ok t)
+    (i : Nat) : actualBalanceAt ⟨fork, t⟩ i = actualBalanceAt ⟨fork, s⟩ i := by
+  unfold applyDepositElectra at ok
+  split at ok
+  · simp only [bind_ok_iff] at ok
+    obtain ⟨valid, checked, rest⟩ := ok
+    split at rest
+    · simp only [bind_ok_iff, liftAccessor_ok] at rest
+      obtain ⟨added, admission, queued⟩ := rest
+      obtain ⟨_, rfl⟩ := addPendingDeposit_eq queued
+      -- Electra registers a new key with zero balance and queues its deposit separately.
+      have balances := (addValidatorToRegistry_push admission matched).2
+      simp only [actualBalanceAt, balances]
+      by_cases atEnd : i = s.balances.data.size
+      · subst i
+        simp
+      · simp [Array.getElem?_push, atEnd]
+    · cases rest
+      rfl
+  · obtain ⟨_, rfl⟩ := addPendingDeposit_eq (liftAccessor_ok.mp ok)
+    rfl
+
+private theorem intervalGain_withdrawn_excluded {x y : ForkedBeaconState preset}
+    (kept : RegistryLifecycle x.state y.state) (parameters : Parameters preset)
+    (ordered : ExitsOrdered x.state) (i : Nat) (v w : Validator)
+    (before : x.state.validators.data[i]? = some v)
+    (after : y.state.validators.data[i]? = some w)
+    (withdrawn : v.withdrawableEpoch.toNat ≤ (getCurrentEpoch x.state).toNat)
+    (later : (getCurrentEpoch x.state).toNat < (getCurrentEpoch y.state).toNat) :
+    isActiveValidator w (getCurrentEpoch y.state) = false ∧
+      isActiveValidator w (getPreviousEpoch y.state) = false := by
+  have exit := UInt64.le_iff_toNat_le.mp (ordered v (Array.mem_of_getElem? before))
+  have assigned : v.exitEpoch ≠ FAR_FUTURE_EPOCH := by
+    have ne := getCurrentEpoch_ne_farFuture parameters.slots x.state
+    have bound := (getCurrentEpoch x.state).toNat_lt_size
+    have far : FAR_FUTURE_EPOCH.toNat = 2 ^ 64 - 1 := rfl
+    have different : (getCurrentEpoch x.state).toNat ≠ FAR_FUTURE_EPOCH.toNat := by
+      exact fun h => ne (UInt64.toNat_inj.mp h)
+    simp only [UInt64.size] at bound
+    intro eq
+    rw [eq] at exit
+    omega
+  apply intervalGain_no_reentry kept i v w before after assigned
+  rw [getPreviousEpoch_toNat]
+  omega
+
+private theorem intervalGain_recent_not_withdrawn {x y : ForkedBeaconState preset}
+    (kept : RegistryLifecycle x.state y.state) (parameters : Parameters preset)
+    (ordered : ExitsOrdered x.state) (i : Nat) (v w : Validator)
+    (before : x.state.validators.data[i]? = some v)
+    (after : y.state.validators.data[i]? = some w)
+    (later : (getCurrentEpoch x.state).toNat < (getCurrentEpoch y.state).toNat)
+    (recent : isActiveValidator w (getCurrentEpoch y.state) = true ∨
+      isActiveValidator w (getPreviousEpoch y.state) = true) :
+    (getCurrentEpoch x.state).toNat < v.withdrawableEpoch.toNat := by
+  by_contra withdrawn
+  have excluded := intervalGain_withdrawn_excluded kept parameters ordered i v w before after
+    (by omega) later
+  rcases recent with current | previous
+  · simp [excluded.1] at current
+  · simp [excluded.2] at previous
+
+private theorem intervalGain_index_bound {g x y : ForkedBeaconState preset}
+    (shared : Run config checks g x) (tail : Run config checks x y)
+    (genesis : Genesis (config := config) (checks := checks) g)
+    (parameters : Parameters preset) (early : y.fork < .glamsterdam)
+    (i : Nat) (w : Validator) (after : y.state.validators.data[i]? = some w)
+    (recent : isActiveValidator w (getCurrentEpoch y.state) = true ∨
+      isActiveValidator w (getPreviousEpoch y.state) = true) :
+    effectiveAt y i -
+        (if (x.state.validators.data[i]?.map fun v =>
+          isActiveValidator v (getCurrentEpoch x.state)).getD false then effectiveAt x i else 0) ≤
+      (match x.state.validators.data[i]? with
+      | none => 0
+      | some v => if isActiveValidator v (getCurrentEpoch x.state) then
+          actualBalanceAt x i - effectiveAt x i
+        else if isActiveValidator v (getPreviousEpoch x.state) ||
+            getCurrentEpoch x.state < v.activationEpoch then
+          max (effectiveAt x i) (actualBalanceAt x i)
+        else 0) + pathCredits i tail.balancePath := by
+  -- Admissions spend later credits; existing inactive keys retain their initial funding.
+  cases before : x.state.validators.data[i]? with
+  | none =>
+    have absent : x.state.validators.data.size ≤ i := by
+      simpa using (Array.getElem?_eq_none_iff.mp before)
+    have present := (Array.getElem?_eq_some_iff.mp after).1
+    have bound := joining_growth_from_admission shared tail genesis early i absent present
+    simpa only [Option.map_none, Option.getD_none, Bool.false_eq_true, ↓reduceIte,
+      Nat.sub_zero, Nat.zero_add] using bound
+  | some v =>
+    have present := (Array.getElem?_eq_some_iff.mp before).1
+    cases active : isActiveValidator v (getCurrentEpoch x.state) with
+    | true =>
+      simpa only [Option.map_some, Option.getD_some, active, ↓reduceIte]
+        using effective_gain_from_balance tail early i present
+    | false =>
+      have carried := intervalGain_carry_cases tail parameters i v w before after active recent
+      have selected : (isActiveValidator v (getPreviousEpoch x.state) ||
+          getCurrentEpoch x.state < v.activationEpoch) = true := by
+        simpa only [Bool.or_eq_true, decide_eq_true_eq] using carried
+      simpa only [Option.map_some, Option.getD_some, active, Bool.false_eq_true,
+        ↓reduceIte, Nat.sub_zero, selected]
+        using intervalGain_existing_funding tail early i present
+
+private theorem intervalGain_weight_at {fork : Fork} (s : BeaconState preset fork)
+    (unique : uniqueKeys s) (i : Nat) (v : Validator)
+    (found : s.validators.data[i]? = some v) :
+    effectiveWeight s v.pubkey = effectiveAt ⟨fork, s⟩ i := by
+  have lookup (vs : List Validator) (distinct : (vs.map (·.pubkey)).Nodup)
+      (v : Validator) (member : v ∈ vs) :
+      vs.find? (fun w => w.pubkey == v.pubkey) = some v := by
+    induction vs with
+    | nil => simp at member
+    | cons w ws ih =>
+      simp only [List.map_cons, List.nodup_cons] at distinct
+      rcases List.mem_cons.mp member with rfl | member
+      · simp
+      · have different : w.pubkey ≠ v.pubkey := by
+          intro same
+          exact distinct.1 (List.mem_map.mpr ⟨v, member, same.symm⟩)
+        simp [different, ih distinct.2 member]
+  have member : v ∈ s.validators.data.toList := by
+    simpa using Array.mem_of_getElem? found
+  simp [effectiveWeight, effectiveAt, found, lookup _ unique v member]
+
+private theorem intervalGain_active_key {fork : Fork} (s : BeaconState preset fork)
+    (parameters : Parameters preset) (within : s.RegistryWithinLimit) (unique : uniqueKeys s)
+    (i : Nat) (v : Validator) (found : s.validators.data[i]? = some v) :
+    v.pubkey ∈ activeKeys s ↔ isActiveValidator v (getCurrentEpoch s) = true := by
+  have inside := (Array.getElem?_eq_some_iff.mp found).1
+  have small : i < 2 ^ 64 := by
+    exact (Nat.lt_of_lt_of_le inside within).trans parameters.registry
+  have numeric : i.toUInt64.toNat = i := by
+    rw [Nat.toUInt64_eq, UInt64.toNat_ofNat_of_lt' small]
+  constructor
+  · intro member
+    simp only [activeKeys, keysAt, List.mem_toFinset, List.mem_filterMap] at member
+    obtain ⟨j, active, key⟩ := member
+    obtain ⟨w, read, active⟩ := (mem_getActiveValidatorIndices within).mp active
+    have sameKey : w.pubkey = v.pubkey := by simpa [read] using key
+    obtain ⟨hi, vi⟩ := Array.getElem?_eq_some_iff.mp found
+    obtain ⟨hj, wj⟩ := Array.getElem?_eq_some_iff.mp read
+    have same : j.toNat = i := unique.eq_of_getElem_eq
+      (by simpa [registryKeys] using hj) (by simpa [registryKeys] using hi)
+      (by simpa [registryKeys, vi, wj] using sameKey)
+    have equal : w = v := Option.some.inj ((same ▸ read).symm.trans found)
+    simpa [equal] using active
+  · intro active
+    simp only [activeKeys, keysAt, List.mem_toFinset, List.mem_filterMap]
+    refine ⟨i.toUInt64, (mem_getActiveValidatorIndices within).mpr
+      ⟨v, by simpa [numeric] using found, active⟩, ?_⟩
+    simp [numeric, found]
+
+private theorem intervalGain_reference_at {g x y : ForkedBeaconState preset}
+    (shared : Run config checks g x) (tail : Run config checks x y)
+    (genesis : Genesis (config := config) (checks := checks) g)
+    (parameters : Parameters preset) (early : y.fork < .glamsterdam)
+    (i : Nat) (w : Validator) (after : y.state.validators.data[i]? = some w) :
+    Quorum.supported (activeKeys x.state) (effectiveWeight x.state) w.pubkey =
+      (if (x.state.validators.data[i]?.map fun v =>
+        isActiveValidator v (getCurrentEpoch x.state)).getD false then effectiveAt x i else 0) := by
+  have uniqueX := shared.unique (genesis_unique genesis)
+  have uniqueY := (shared.append tail).unique (genesis_unique genesis)
+  have earlyX := Nat.lt_of_le_of_lt (fork_le_of_chainSteps tail.chainSteps) early
+  have within := x.state.validators.bound earlyX
+  have sameIndex {j : Nat} {v : Validator} (before : x.state.validators.data[j]? = some v)
+      (key : v.pubkey = w.pubkey) : j = i := by
+    obtain ⟨last, found, preserved⟩ := tail.key_preserved j v before
+    obtain ⟨hj, lastEq⟩ := Array.getElem?_eq_some_iff.mp found
+    obtain ⟨hi, wEq⟩ := Array.getElem?_eq_some_iff.mp after
+    exact uniqueY.eq_of_getElem_eq
+      (by simpa [registryKeys] using hj) (by simpa [registryKeys] using hi)
+      (by simpa [registryKeys, lastEq, wEq] using preserved.trans key)
+  cases before : x.state.validators.data[i]? with
+  | none =>
+    have absent : w.pubkey ∉ activeKeys x.state := by
+      intro member
+      simp only [activeKeys, keysAt, List.mem_toFinset, List.mem_filterMap] at member
+      obtain ⟨j, active, key⟩ := member
+      obtain ⟨v, found, _⟩ := (mem_getActiveValidatorIndices within).mp active
+      have same := sameIndex found (by simpa [found] using key)
+      rw [same, before] at found
+      cases found
+    simp [Quorum.supported, absent]
+  | some v =>
+    obtain ⟨last, found, preserved⟩ := tail.key_preserved i v before
+    have same : last = w := Option.some.inj (found.symm.trans after)
+    have key : w.pubkey = v.pubkey := same ▸ preserved
+    rw [key]
+    simp only [Quorum.supported, intervalGain_active_key x.state parameters within uniqueX
+      i v before, intervalGain_weight_at x.state uniqueX i v before,
+      Option.map_some, Option.getD_some]
+
+private theorem intervalGain_recent_key {fork : Fork} (s : BeaconState preset fork)
+    (parameters : Parameters preset) (within : s.RegistryWithinLimit)
+    (key : Cryptography.Bls.BLSPubkey) :
+    key ∈ recentKeys s ↔ ∃ (i : Nat) (v : Validator),
+      s.validators.data[i]? = some v ∧ v.pubkey = key ∧
+      (isActiveValidator v (getCurrentEpoch s) = true ∨
+        isActiveValidator v (getPreviousEpoch s) = true) := by
+  have member (epoch : Epoch) : key ∈ keysAt s (getActiveValidatorIndices s epoch) ↔
+      ∃ (i : Nat) (v : Validator), s.validators.data[i]? = some v ∧ v.pubkey = key ∧
+        isActiveValidator v epoch = true := by
+    constructor
+    · intro selected
+      simp only [keysAt, List.mem_toFinset, List.mem_filterMap] at selected
+      obtain ⟨i, active, keyEq⟩ := selected
+      obtain ⟨v, found, active⟩ := (mem_getActiveValidatorIndices within).mp active
+      exact ⟨i.toNat, v, found, by simpa [found] using keyEq, active⟩
+    · rintro ⟨i, v, found, keyEq, active⟩
+      have inside := (Array.getElem?_eq_some_iff.mp found).1
+      have small := (Nat.lt_of_lt_of_le inside within).trans parameters.registry
+      have numeric : i.toUInt64.toNat = i := by
+        rw [Nat.toUInt64_eq, UInt64.toNat_ofNat_of_lt' small]
+      simp only [keysAt, List.mem_toFinset, List.mem_filterMap]
+      refine ⟨i.toUInt64, (mem_getActiveValidatorIndices within).mpr
+        ⟨v, by simpa [numeric] using found, active⟩, ?_⟩
+      simp [numeric, found, keyEq]
+  simp only [recentKeys, Finset.mem_union, activeKeys, member]
+  constructor
+  · rintro (⟨i, v, found, keyEq, active⟩ | ⟨i, v, found, keyEq, active⟩)
+    · exact ⟨i, v, found, keyEq, Or.inl active⟩
+    · exact ⟨i, v, found, keyEq, Or.inr active⟩
+  · rintro ⟨i, v, found, keyEq, active | active⟩
+    · exact Or.inl ⟨i, v, found, keyEq, active⟩
+    · exact Or.inr ⟨i, v, found, keyEq, active⟩
+
+private def intervalGain_indices (y : ForkedBeaconState preset) : Finset Nat :=
+  (Finset.range y.state.validators.data.size).filter fun i =>
+    ∃ w, y.state.validators.data[i]? = some w ∧
+      (isActiveValidator w (getCurrentEpoch y.state) = true ∨
+        isActiveValidator w (getPreviousEpoch y.state) = true)
+
+private theorem intervalGain_reference_sum {g x y : ForkedBeaconState preset}
+    (shared : Run config checks g x) (tail : Run config checks x y)
+    (genesis : Genesis (config := config) (checks := checks) g)
+    (parameters : Parameters preset) (early : y.fork < .glamsterdam) :
+    referenceGain x y = ∑ i ∈ intervalGain_indices y,
+      (effectiveAt y i -
+        (if (x.state.validators.data[i]?.map fun v =>
+          isActiveValidator v (getCurrentEpoch x.state)).getD false then
+            effectiveAt x i else 0)) := by
+  have unique := (shared.append tail).unique (genesis_unique genesis)
+  have inside (i) (h : i ∈ intervalGain_indices y) : i < y.state.validators.data.size :=
+    Finset.mem_range.mp (Finset.mem_filter.mp h).1
+  let key (i : Nat) (h : i ∈ intervalGain_indices y) :=
+    (y.state.validators.data[i]'(inside i h)).pubkey
+  unfold referenceGain
+  symm
+  -- Unique keys and preserved registry positions identify the reference subtraction.
+  apply Finset.sum_bij key
+  · intro i hi
+    obtain ⟨w, found, recent⟩ := (Finset.mem_filter.mp hi).2
+    apply (intervalGain_recent_key y.state parameters (y.state.validators.bound early) _).mpr
+    refine ⟨i, w, found, ?_, recent⟩
+    simp only [key, (Array.getElem?_eq_some_iff.mp found).2]
+  · intro i hi j hj equal
+    exact unique.eq_of_getElem_eq
+      (by simpa [registryKeys] using inside i hi)
+      (by simpa [registryKeys] using inside j hj)
+      (by simpa [registryKeys, key] using equal)
+  · intro k hk
+    obtain ⟨i, w, found, same, recent⟩ :=
+      (intervalGain_recent_key y.state parameters (y.state.validators.bound early) k).mp hk
+    have hi : i ∈ intervalGain_indices y := Finset.mem_filter.mpr
+      ⟨Finset.mem_range.mpr (Array.getElem?_eq_some_iff.mp found).1, w, found, recent⟩
+    refine ⟨i, hi, ?_⟩
+    simpa only [key, (Array.getElem?_eq_some_iff.mp found).2] using same
+  · intro i hi
+    obtain ⟨w, found, _⟩ := (Finset.mem_filter.mp hi).2
+    have keyEq : key i hi = w.pubkey := by
+      simp only [key, (Array.getElem?_eq_some_iff.mp found).2]
+    rw [keyEq, intervalGain_weight_at y.state unique i w found,
+      intervalGain_reference_at shared tail genesis parameters early i w found]
+
+private def intervalGain_initial (x : ForkedBeaconState preset) (i : Nat) : Nat :=
+  match x.state.validators.data[i]? with
+  | none => 0
+  | some v => if isActiveValidator v (getCurrentEpoch x.state) then
+      actualBalanceAt x i - effectiveAt x i
+    else if isActiveValidator v (getPreviousEpoch x.state) ||
+        getCurrentEpoch x.state < v.activationEpoch then
+      max (effectiveAt x i) (actualBalanceAt x i)
+    else 0
+
+private theorem intervalGain_path_bound {g x y : ForkedBeaconState preset}
+    (shared : Run config checks g x) (tail : Run config checks x y)
+    (genesis : Genesis (config := config) (checks := checks) g)
+    (parameters : Parameters preset) (early : y.fork < .glamsterdam) :
+    referenceGain x y ≤ (∑ i ∈ intervalGain_indices y, intervalGain_initial x i) +
+      ∑ i ∈ intervalGain_indices y, pathCredits i tail.balancePath := by
+  rw [intervalGain_reference_sum shared tail genesis parameters early, ← Finset.sum_add_distrib]
+  apply Finset.sum_le_sum
+  intro i member
+  obtain ⟨w, found, recent⟩ := (Finset.mem_filter.mp member).2
+  exact intervalGain_index_bound shared tail genesis parameters early i w found recent
+
+private theorem intervalGain_zip_sum (vs : List Validator) (f : Validator → Nat → Nat) :
+    (vs.zipIdx.map fun (v, i) => f v i).sum =
+      ∑ i ∈ Finset.range vs.length, (vs[i]?.map (fun v => f v i)).getD 0 := by
+  let weight := fun i => (vs[i]?.map (fun v => f v i)).getD 0
+  have same : vs.zipIdx.map (fun (v, i) => f v i) =
+      (vs.zipIdx.map Prod.snd).map weight := by
+    rw [List.map_map]
+    apply List.map_congr_left
+    rintro ⟨v, i⟩ member
+    have found := List.mem_zipIdx_iff_getElem?.mp member
+    simp [weight, found]
+  rw [same, List.zipIdx_map_snd]
+  rw [Finset.sum_eq_multiset_sum, Finset.range_val, ← Multiset.coe_range,
+    Multiset.map_coe, Multiset.sum_coe, List.range_eq_range']
+
+private theorem intervalGain_excess_sum (x : ForkedBeaconState preset)
+    (parameters : Parameters preset) (early : x.fork < .glamsterdam) :
+    initialExcess x = ∑ i ∈ Finset.range x.state.validators.data.size,
+      (x.state.validators.data[i]?.map fun v =>
+        if isActiveValidator v (getCurrentEpoch x.state) then
+          actualBalanceAt x i - effectiveAt x i else 0).getD 0 := by
+  have filterSum {α : Type} (xs : List α) (f : α → Option Nat) :
+      (xs.filterMap f).sum = (xs.map fun a => (f a).getD 0).sum := by
+    induction xs with
+    | nil => rfl
+    | cons a xs ih => cases h : f a <;> simp [h, ih]
+  unfold initialExcess getActiveValidatorIndices
+  rw [List.map_filterMap, filterSum]
+  have zipped := intervalGain_zip_sum x.state.validators.data.toList
+    (fun v i => if isActiveValidator v (getCurrentEpoch x.state) then
+      actualBalanceAt x i - effectiveAt x i else 0)
+  simp only [Array.length_toList, Array.getElem?_toList] at zipped
+  rw [← zipped]
+  apply congrArg List.sum
+  apply List.map_congr_left
+  rintro ⟨v, i⟩ member
+  have found := List.mem_zipIdx_iff_getElem?.mp member
+  have inside := (List.getElem?_eq_some_iff.mp found).1
+  have small : i < 2 ^ 64 :=
+    (Nat.lt_of_lt_of_le (by simpa using inside) (x.state.validators.bound early)).trans
+      parameters.registry
+  have numeric : i.toUInt64.toNat = i := by
+    rw [Nat.toUInt64_eq, UInt64.toNat_ofNat_of_lt' small]
+  dsimp only [Function.comp_def]
+  split <;> simp_all
+  all_goals simp only [Nat.mod_eq_of_lt small]
+
+private theorem intervalGain_initial_sum (x : ForkedBeaconState preset)
+    (parameters : Parameters preset) (early : x.fork < .glamsterdam) :
+    (∑ i ∈ Finset.range x.state.validators.data.size, intervalGain_initial x i) =
+      activationCarry x + initialExcess x := by
+  rw [intervalGain_excess_sum x parameters early]
+  unfold activationCarry
+  rw [intervalGain_zip_sum x.state.validators.data.toList
+    (fun v i => if isActiveValidator v (getCurrentEpoch x.state) then 0
+      else if isActiveValidator v (getPreviousEpoch x.state) ||
+          getCurrentEpoch x.state < v.activationEpoch then
+        max (effectiveAt x i) (actualBalanceAt x i) else 0)]
+  simp only [Array.length_toList, Array.getElem?_toList]
+  rw [← Finset.sum_add_distrib]
+  apply Finset.sum_congr rfl
+  intro i _
+  cases found : x.state.validators.data[i]? with
+  | none => simp [intervalGain_initial, found]
+  | some v =>
+    cases active : isActiveValidator v (getCurrentEpoch x.state) <;>
+      simp [intervalGain_initial, found, active]
+
+private theorem intervalGain_initial_subset (x y : ForkedBeaconState preset)
+    (parameters : Parameters preset) (early : x.fork < .glamsterdam) :
+    (∑ i ∈ intervalGain_indices y, intervalGain_initial x i) ≤
+      activationCarry x + initialExcess x := by
+  rw [← intervalGain_initial_sum x parameters early]
+  apply Finset.sum_le_sum_of_ne_zero
+  intro i _ nonzero
+  apply Finset.mem_range.mpr
+  by_contra outside
+  have absent : x.state.validators.data[i]? = none := Array.getElem?_eq_none_iff.mpr (by omega)
+  simp [intervalGain_initial, absent] at nonzero
+
+private theorem intervalGain_replay_bound {g x y : ForkedBeaconState preset}
+    (shared : Run config checks g x) (tail : Run config checks x y)
+    (genesis : Genesis (config := config) (checks := checks) g)
+    (parameters : Parameters preset) (early : y.fork < .glamsterdam)
+    (high : Nat) (endEpoch : (getCurrentEpoch y.state).toNat ≤ high + 1)
+    (events : List (BalanceEvent preset)) (replayed : tail.balanceEvents high = .ok events) :
+    referenceGain x y ≤ activationCarry x + initialExcess x +
+      (events.map fun e => ∑ i ∈ intervalGain_indices y,
+        (actualBalanceAt e.after i - actualBalanceAt e.before i)).sum := by
+  have gain := intervalGain_path_bound shared tail genesis parameters early
+  have initial := intervalGain_initial_subset x y parameters
+    (Nat.lt_of_le_of_lt (fork_le_of_chainSteps tail.chainSteps) early)
+  -- Keep the endpoint support restriction when replacing path credits by replay credits.
+  have covered : (∑ i ∈ intervalGain_indices y, pathCredits i tail.balancePath) ≤
+      ∑ i ∈ intervalGain_indices y,
+        (events.map fun e => actualBalanceAt e.after i - actualBalanceAt e.before i).sum := by
+    apply Finset.sum_le_sum
+    intro i _
+    exact coverage_run tail early high endEpoch replayed false i
+  have exchange : (∑ i ∈ intervalGain_indices y,
+      (events.map fun e => actualBalanceAt e.after i - actualBalanceAt e.before i).sum) =
+      (events.map fun e => ∑ i ∈ intervalGain_indices y,
+        (actualBalanceAt e.after i - actualBalanceAt e.before i)).sum := by
+    clear replayed covered
+    induction events with
+    | nil => simp
+    | cons e rest ih => simp only [List.map_cons, List.sum_cons, Finset.sum_add_distrib, ih]
+  rw [exchange] at covered
+  omega
+
+private theorem intervalGain_selected_deposit (y : ForkedBeaconState preset)
+    (parameters : Parameters preset) (e : BalanceEvent preset)
+    (kept : RegistryLifecycle e.before.state y.state)
+    (ordered : ExitsOrdered e.before.state)
+    (later : (getCurrentEpoch e.before.state).toNat < (getCurrentEpoch y.state).toNat)
+    (matched : BalancesMatch e.after.state) :
+    (∑ i ∈ intervalGain_indices y, (actualBalanceAt e.after i - actualBalanceAt e.before i)) ≤
+      ∑ i ∈ Finset.range e.after.state.validators.data.size,
+        if (e.before.state.validators.data[i]?.map (fun v =>
+            decide (v.withdrawableEpoch.toNat ≤ (getCurrentEpoch e.before.state).toNat))).getD
+            false then 0 else actualBalanceAt e.after i - actualBalanceAt e.before i := by
+  have selected (i) (member : i ∈ intervalGain_indices y) :
+      (e.before.state.validators.data[i]?.map (fun v =>
+        decide (v.withdrawableEpoch.toNat ≤ (getCurrentEpoch e.before.state).toNat))).getD
+          false = false := by
+    cases found : e.before.state.validators.data[i]? with
+    | none => rfl
+    | some v =>
+      obtain ⟨w, after, recent⟩ := (Finset.mem_filter.mp member).2
+      have notWithdrawn := intervalGain_recent_not_withdrawn kept parameters ordered i v w
+        found after later recent
+      simp only [Option.map_some, Option.getD_some, decide_eq_false_iff_not]
+      omega
+  calc
+    _ = ∑ i ∈ intervalGain_indices y,
+        if (e.before.state.validators.data[i]?.map (fun v =>
+            decide (v.withdrawableEpoch.toNat ≤ (getCurrentEpoch e.before.state).toNat))).getD
+            false then 0 else actualBalanceAt e.after i - actualBalanceAt e.before i := by
+      apply Finset.sum_congr rfl
+      intro i member
+      simp only [selected i member, Bool.false_eq_true, ↓reduceIte]
+    _ ≤ _ := by
+      apply Finset.sum_le_sum_of_ne_zero
+      intro i _ nonzero
+      apply Finset.mem_range.mpr
+      by_contra outside
+      have absent : e.after.state.balances.data[i]? = none :=
+        Array.getElem?_eq_none_iff.mpr (by dsimp [BalancesMatch] at matched; omega)
+      simp only [actualBalanceAt, absent, Option.map_none, Option.getD_none, Nat.zero_sub,
+        ite_self] at nonzero
+      exact nonzero rfl
+
 /-- Funding churn bounds Electra deposits that can contribute to recent voting stake.
 
 Withdrawn-key exceptions do not reactivate an exited validator and contribute no such stake. -/
