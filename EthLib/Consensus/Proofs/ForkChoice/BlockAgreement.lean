@@ -183,4 +183,34 @@ theorem Execution.blocks_of_partiallySynchronous {GST Δ : ℕ}
         ((e.world k).state u).getCheckpointBlock root epoch = .ok checkpointRoot := by
   sorry
 
+/-- Admission at an earlier event gives knownness at every later event.
+
+Finalized-chain compatibility is checked at admission, not at the later observation.
+
+The caller can choose a pre-boundary admission event supplied by prompt processing.
+
+This is the persistence step of the delivery argument in arXiv 2405.00549v4, Section 2. -/
+theorem Execution.blocks_after_partiallySynchronous {GST Δ : ℕ}
+    (sync : e.PartiallySynchronous GST Δ)
+    (oneBlock : OneBlockPerRoot e) (admitted : BlocksAdmitted e GST Δ)
+    {anchor : Store preset fork}
+    (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (start : ∀ u ∈ J, e.start u = anchor) {v u : ValidatorIndex} (honest : v ∈ J)
+    (receiver : u ∈ J) {n arrival k : ℕ}
+    (late : max (e.world n).time GST + Δ ≤ (e.world arrival).time)
+    (upToDate : UpToDate config checks sources (e.world arrival).time
+      ((e.world arrival).view u) ((e.world arrival).state u))
+    (payloads : ∀ gloas : .glamsterdam ≤ fork, ∀ parent,
+      ((e.world n).state v).isPayloadVerified gloas parent = true →
+      ((e.world arrival).state u).isPayloadVerified gloas parent = true)
+    {root : Root} {block : BeaconBlock preset fork}
+    (found : ((e.world n).state v).blocks[root]? = some block)
+    (final : ((e.world n).state v).getCheckpointBlock root
+      ((e.world arrival).state u).finalizedCheckpoint.epoch =
+        .ok ((e.world arrival).state u).finalizedCheckpoint.root)
+    (later : arrival ≤ k) : ((e.world k).state u).blocks[root]? = some block := by
+  have held := (e.blocks_of_partiallySynchronous sync oneBlock admitted anchored start
+    honest receiver late upToDate payloads found final).1
+  exact e.blocks_of_le later held
+
 end EthLib.Consensus.Models.Network

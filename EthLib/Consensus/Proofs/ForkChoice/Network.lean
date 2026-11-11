@@ -116,6 +116,48 @@ def forkChoice {ν κ : Type*} (config : Config) (checks : SignatureChecks)
 variable {config : Config} {anchorState : BeaconState preset fork}
   {anchorBlock : BeaconBlock preset fork}
 
+/-- Each network handler preserves the blocks that the store already holds. -/
+theorem Handles.blocks_of_found {checks : SignatureChecks} {sources : BlockSources preset fork}
+    {time : ℕ} {view : Set (Message preset fork)} {store after : Store preset fork}
+    (handles : Handles config checks sources time view store after)
+    {root : Root} {block : BeaconBlock preset fork}
+    (found : store.blocks[root]? = some block) : after.blocks[root]? = some block := by
+  cases handles with
+  | tick _ _ ticked => simpa only [(Store.onTick_frame ticked).2.2.1] using found
+  | block _ added =>
+    -- Carried attestations and slashings preserve the block inserted by the block handler.
+    exact Store.onBlockWithVotes_preserves
+      (fun known step => Store.onBlock_blocks_of_found step known)
+      (fun _ known step => by simpa only [(Store.onAttestation_frame step).2.1] using known)
+      (fun _ known step => by simpa only [(Store.onAttesterSlashing_frame step).2.1] using known)
+      found added
+  | attestation _ attested =>
+    simpa only [(Store.onAttestation_frame attested).2.1] using found
+  | attesterSlashing _ slashed =>
+    simpa only [(Store.onAttesterSlashing_frame slashed).2.1] using found
+  | payloadAttestation _ voted =>
+    simpa only [(Store.onPayloadAttestationMessage_onlyPtcVotes voted).frame.2.1] using found
+  | envelope _ accepted =>
+    simpa only [(Store.onExecutionPayloadEnvelope_frame accepted).2.1] using found
+  | inclusionList _ accepted =>
+    simpa only [(Store.onInclusionList_frame accepted).2.1] using found
+
+/-- Once an honest store admits a block, later finality cannot remove it. -/
+theorem Execution.blocks_of_le {ν κ : Type*} [DecidableEq ν] {checks : SignatureChecks}
+    {sources : BlockSources preset fork} {signed : Message preset fork → Set (ν × κ)}
+    {sends : ν → ℕ → Set (Message preset fork) → Store preset fork → Message preset fork → Prop}
+    {J : Set ν} (e : Execution (forkChoice config checks sources signed sends) J)
+    {u : ν} {n k : ℕ} (later : n ≤ k) {root : Root} {block : BeaconBlock preset fork}
+    (found : ((e.world n).state u).blocks[root]? = some block) :
+    ((e.world k).state u).blocks[root]? = some block := by
+  induction k, later using Nat.le_induction with
+  | base => exact found
+  | succ k _ ih =>
+    -- A world step either leaves this store unchanged or runs one of its handlers.
+    rcases e.state_succ k u with same | ⟨_, moved⟩
+    · exact same ▸ ih
+    · exact moved.blocks_of_found ih
+
 /-- A move of the store leads from a reachable store to a reachable store. -/
 theorem Handles.reachable {checks : SignatureChecks} {sources : BlockSources preset fork}
     {time : ℕ} {view : Set (Message preset fork)} {store after : Store preset fork}
