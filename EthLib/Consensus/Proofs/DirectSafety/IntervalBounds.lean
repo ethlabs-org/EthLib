@@ -5606,6 +5606,149 @@ private theorem intervalGain_reference_partition (x y : ForkedBeaconState preset
     intro k member
     simp [Quorum.supported, (Finset.mem_sdiff.mp member).2]
 
+private theorem intervalGain_active_sum (x : ForkedBeaconState preset)
+    (unique : uniqueKeys x.state) (early : x.fork < .glamsterdam)
+    (f : Cryptography.Bls.BLSPubkey → Nat) :
+    (∑ k ∈ activeKeys x.state, f k) =
+      ((getActiveValidatorIndices x.state (getCurrentEpoch x.state)).map fun i =>
+        (x.state.validators.data[i.toNat]?.map fun v => f v.pubkey).getD 0).sum := by
+  let indices := getActiveValidatorIndices x.state (getCurrentEpoch x.state)
+  have within := x.state.validators.bound early
+  have inside (i) (hi : i ∈ indices) : i.toNat < x.state.validators.data.size := by
+    obtain ⟨v, found, _⟩ := (mem_getActiveValidatorIndices within).mp hi
+    exact (Array.getElem?_eq_some_iff.mp found).1
+  have nodup : indices.Nodup := by
+    simpa [indices, List.Nodup] using
+      (getActiveValidatorIndices_sorted within (getCurrentEpoch x.state)).imp UInt64.ne_of_lt
+  rw [← List.sum_toFinset _ nodup]
+  let key (i : ValidatorIndex) (hi : i ∈ indices.toFinset) :=
+    (x.state.validators.data[i.toNat]'(inside i (List.mem_toFinset.mp hi))).pubkey
+  symm
+  apply Finset.sum_bij key
+  · intro i hi
+    simp only [activeKeys, keysAt, List.mem_toFinset, List.mem_filterMap]
+    exact ⟨i, List.mem_toFinset.mp hi, by simp [key, inside i (List.mem_toFinset.mp hi)]⟩
+  · intro i hi j hj same
+    apply UInt64.toNat_inj.mp
+    apply unique.eq_of_getElem_eq
+      (by simpa [registryKeys] using inside i (List.mem_toFinset.mp hi))
+      (by simpa [registryKeys] using inside j (List.mem_toFinset.mp hj))
+    simpa [registryKeys, key] using same
+  · intro k hk
+    simp only [activeKeys, keysAt, List.mem_toFinset, List.mem_filterMap] at hk
+    obtain ⟨i, hi, found⟩ := hk
+    exact ⟨i, List.mem_toFinset.mpr hi, by
+      simpa [key, Array.getElem?_eq_getElem, inside i hi] using found⟩
+  · intro i hi
+    simp [key, inside i (List.mem_toFinset.mp hi)]
+
+private theorem intervalGain_active_path {g x y : ForkedBeaconState preset}
+    (shared : Run config checks g x) (tail : Run config checks x y)
+    (genesis : Genesis (config := config) (checks := checks) g)
+    (early : y.fork < .glamsterdam) :
+    gaining x y ≤ initialExcess x +
+      ((getActiveValidatorIndices x.state (getCurrentEpoch x.state)).map fun i =>
+        pathCredits i.toNat tail.balancePath).sum := by
+  have uniqueX := shared.unique (genesis_unique genesis)
+  have uniqueY := (shared.append tail).unique (genesis_unique genesis)
+  have earlyX := Nat.lt_of_le_of_lt (fork_le_of_chainSteps tail.chainSteps) early
+  have allKeys : gaining x y ≤ ∑ k ∈ activeKeys x.state,
+      (effectiveWeight y.state k - effectiveWeight x.state k) := by
+    apply Finset.sum_le_sum_of_subset
+    exact Finset.inter_subset_left
+  apply allKeys.trans
+  rw [intervalGain_active_sum x uniqueX earlyX]
+  unfold initialExcess
+  rw [← List.sum_map_add]
+  apply List.sum_le_sum
+  intro i member
+  obtain ⟨v, before, _⟩ :=
+    (mem_getActiveValidatorIndices (x.state.validators.bound earlyX)).mp member
+  obtain ⟨w, after, key⟩ := tail.key_preserved i.toNat v before
+  have first := intervalGain_weight_at x.state uniqueX i.toNat v before
+  have last := intervalGain_weight_at y.state uniqueY i.toNat w after
+  have gain := intervalGain_existing_funding tail early i.toNat
+    (Array.getElem?_eq_some_iff.mp before).1
+  simp only [before, Option.map_some, Option.getD_some]
+  rw [first, ← key, last]
+  have etaX : (⟨x.fork, x.state⟩ : ForkedBeaconState preset) = x := by cases x; rfl
+  have etaY : (⟨y.fork, y.state⟩ : ForkedBeaconState preset) = y := by cases y; rfl
+  rw [etaX, etaY]
+  omega
+
+private theorem intervalGain_active_replay {g x y : ForkedBeaconState preset}
+    (shared : Run config checks g x) (tail : Run config checks x y)
+    (genesis : Genesis (config := config) (checks := checks) g)
+    (early : y.fork < .glamsterdam) (high : Nat)
+    (endEpoch : (getCurrentEpoch y.state).toNat ≤ high + 1)
+    (events : List (BalanceEvent preset)) (replayed : tail.balanceEvents high = .ok events) :
+    gaining x y ≤ initialExcess x +
+      (events.map fun e =>
+        ((getActiveValidatorIndices x.state (getCurrentEpoch x.state)).map fun i =>
+          actualBalanceAt e.after i.toNat - actualBalanceAt e.before i.toNat).sum).sum := by
+  have gain := intervalGain_active_path shared tail genesis early
+  have credits := List.sum_le_sum (l := getActiveValidatorIndices x.state (getCurrentEpoch x.state))
+    (fun i _ => coverage_run tail early high endEpoch replayed false i.toNat)
+  have exchange {α β : Type} (xs : List α) (ys : List β) (f : α → β → Nat) :
+      (xs.map fun a => (ys.map (f a)).sum).sum =
+        (ys.map fun b => (xs.map fun a => f a b).sum).sum := by
+    induction xs with
+    | nil => simp
+    | cons a rest ih => simp only [List.map_cons, List.sum_cons, ih, List.sum_map_add]
+  simp only [coveragePath, coverageDelta, Bool.false_eq_true, ↓reduceIte] at credits
+  rw [exchange] at credits
+  omega
+
+private theorem intervalGain_active_event (x : ForkedBeaconState preset)
+    (early : x.fork < .glamsterdam) (e : BalanceEvent preset)
+    (bounded : e.credits ≤ e.creditLimit) :
+    ((getActiveValidatorIndices x.state (getCurrentEpoch x.state)).map fun i =>
+      actualBalanceAt e.after i.toNat - actualBalanceAt e.before i.toNat).sum ≤ e.creditLimit := by
+  let indices := getActiveValidatorIndices x.state (getCurrentEpoch x.state)
+  have nodup : indices.Nodup := by
+    simpa [indices, List.Nodup] using
+      (getActiveValidatorIndices_sorted (x.state.validators.bound early)
+        (getCurrentEpoch x.state)).imp UInt64.ne_of_lt
+  rw [← List.sum_toFinset _ nodup]
+  have injective : Function.Injective UInt64.toNat := fun _ _ h => UInt64.toNat_inj.mp h
+  rw [← Finset.sum_image (f := fun i => actualBalanceAt e.after i - actualBalanceAt e.before i)
+    (g := UInt64.toNat) (fun _ _ _ _ h => injective h)]
+  apply le_trans (b := e.credits) _ bounded
+  unfold BalanceEvent.credits
+  apply Finset.sum_le_sum_of_ne_zero
+  intro i _ nonzero
+  apply Finset.mem_range.mpr
+  by_contra outside
+  have absent : e.after.state.balances.data[i]? = none :=
+    Array.getElem?_eq_none_iff.mpr (by omega)
+  simp [actualBalanceAt, absent] at nonzero
+
+private theorem intervalGain_active_residual {g x y : ForkedBeaconState preset}
+    (shared : Run config checks g x) (tail : Run config checks x y)
+    (genesis : Genesis (config := config) (checks := checks) g)
+    (early : y.fork < .glamsterdam) (high : Nat)
+    (endEpoch : (getCurrentEpoch y.state).toNat ≤ high + 1)
+    (events : List (BalanceEvent preset)) (replayed : tail.balanceEvents high = .ok events)
+    (before : ∀ e ∈ events, e.source = .deposits → e.before.fork < .pectra) :
+    gaining x y ≤ initialExcess x +
+      (events.map (residualCredit (config := config) x high)).sum := by
+  apply (intervalGain_active_replay shared tail genesis early high endEpoch events replayed).trans
+  apply Nat.add_le_add_left
+  apply List.sum_le_sum
+  intro e member
+  have credit := intervalGain_active_event x
+    (Nat.lt_of_le_of_lt (fork_le_of_chainSteps tail.chainSteps) early) e
+    (intervalGain_events_bounded shared tail genesis early high endEpoch events replayed e member).1
+  by_cases deposit : e.source = .deposits
+  · rw [intervalGain_residual_deposit x high e deposit]
+    have notElectra : ¬ Fork.pectra ≤ e.before.fork := Nat.not_le.mpr (before e member deposit)
+    rw [ite_eq_right notElectra]
+    split
+    · exact Nat.le_refl _
+    · exact credit
+  · rw [intervalGain_residual_other x high e deposit]
+    exact credit
+
 private theorem intervalGain_boundary_carry (x : ForkedBeaconState preset)
     (early : x.fork < .glamsterdam) (unique : uniqueKeys x.state) :
     boundaryStake x ≤ activationCarry x := by
