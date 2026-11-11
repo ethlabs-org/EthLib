@@ -1746,6 +1746,25 @@ theorem voluntaryExit_initiates {fork : Fork} {s t : BeaconState preset fork}
   obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, exited⟩ := ok
   exact exited
 
+/-- Voluntary exits retain concrete charge coverage across their entire operation fold. -/
+theorem voluntaryExits_indexedTrace {fork : Fork} {s t : BeaconState preset fork}
+    (electra : .pectra ≤ fork) (early : fork < .glamsterdam)
+    {exits : List SignedVoluntaryExit}
+    (ok : exits.foldlM (processVoluntaryExit config checks) s = .ok t) :
+    ∃ calls : List IndexedDepartureCall,
+      DepartureQueueTrace (s.earliestExitEpoch electra) (s.exitBalanceToConsume electra)
+        (calls.map (·.call)) (t.earliestExitEpoch electra) (t.exitBalanceToConsume electra) ∧
+      DepartureCoverage s t calls ∧ (∀ called ∈ calls,
+        called.call.rate.toNat ≤ config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat) := by
+  apply DepartureCoverage.foldlM electra _ ?_
+    (fun _ _ _ ok => registryLifecycle_processVoluntaryExit ok) ?_ ok
+  · intro a signed b stepped
+    obtain ⟨calls, trace, rates, covered⟩ :=
+      initiateExit_indexedTrace electra early (voluntaryExit_initiates stepped)
+    exact ⟨calls, trace, DepartureCoverage.of_accessor early covered, rates⟩
+  · intro a signed b stepped
+    exact effectiveKept_voluntaryExit stepped
+
 /-- Successful consolidation requests record the input to their balance-queue call.
 
 Credential switches and ignored requests do not call that queue. -/
@@ -2004,6 +2023,35 @@ theorem run_exitTrace {x y : ForkedBeaconState preset}
     · exact firstRates call member
     · exact laterRates call member
 
+private theorem queueExcess_registry {fork : Fork} {s t : BeaconState preset fork}
+    (electra : .pectra ≤ fork) {index : ValidatorIndex}
+    (ok : queueExcessActiveBalance s electra index = .ok t) : t.validators = s.validators := by
+  simp only [queueExcessActiveBalance, bind_ok_iff] at ok
+  obtain ⟨_, _, ok⟩ := ok
+  split at ok
+  · simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at ok
+    obtain ⟨_, _, _, _, _, set, rfl⟩ := ok
+    obtain ⟨_, rfl⟩ := setBalance_ok set
+    rfl
+  · cases ok; rfl
+
+private theorem switchToCompounding_coverage {fork : Fork} {s t : BeaconState preset fork}
+    (electra : .pectra ≤ fork) {index : ValidatorIndex}
+    (ok : switchToCompoundingValidator s electra index = .ok t) :
+    DepartureCoverage s t [] := by
+  simp only [switchToCompoundingValidator, bind_ok_iff] at ok
+  obtain ⟨validator, found, changed, set, queued⟩ := ok
+  have setAt := set
+  rw [setValidator_eq_setValidatorAt] at setAt
+  have covered := DepartureCoverage.setValidatorAt
+    (by rwa [← getValidator_eq_getValidatorAt] : getValidatorAt s index.toNat = .ok validator)
+    setAt rfl
+  apply covered.suffix (RegistryLifecycle.setValidator found set ⟨fun _ => rfl, fun _ => rfl⟩)
+  intro i old next before after
+  rw [queueExcess_registry electra queued] at after
+  cases Option.some.inj (before.symm.trans after)
+  rfl
+
 set_option maxHeartbeats 800000 in
 /-- A request classified as not calling churn preserves both departure queues. -/
 theorem consolidationRequest_notCalled {fork : Fork} {s t : BeaconState preset fork}
@@ -2019,6 +2067,23 @@ theorem consolidationRequest_notCalled {fork : Fork} {s t : BeaconState preset f
     | (cases ok; rfl)
     | (cases ok)
     | exact switchToCompounding_departureQueues electra (liftAccessor_ok.mp ok)
+    | (simp_all only [↓reduceIte, Bool.false_eq_true]; cases classified)
+
+set_option maxHeartbeats 800000 in
+/-- A consolidation request without a churn call assigns no exit epoch. -/
+theorem consolidationRequest_notCalled_coverage {fork : Fork} {s t : BeaconState preset fork}
+    (electra : .pectra ≤ fork) {request : ConsolidationRequest}
+    (ok : processConsolidationRequest config s electra request = .ok t)
+    (classified : consolidationRequestCalls config s electra request = .ok false) :
+    DepartureCoverage s t [] := by
+  unfold processConsolidationRequest at ok
+  unfold consolidationRequestCalls at classified
+  simp only [bind, Except.bind, pure, Except.pure] at ok classified
+  repeat' split at ok
+  all_goals first
+    | (cases ok; exact DepartureCoverage.of_data rfl)
+    | (cases ok)
+    | exact switchToCompounding_coverage electra (liftAccessor_ok.mp ok)
     | (simp_all only [↓reduceIte, Bool.false_eq_true]; cases classified)
 
 /-- A request classified as calling churn schedules its actual registry source. -/
@@ -2134,6 +2199,75 @@ theorem consolidationRequestsSites_trace {fork : Fork} (electra : .pectra ≤ fo
       rcases List.mem_cons.mp member with rfl | member
       · exact rates ⟨fork, s⟩ (by simp) electra c.rate rate
       · exact tailRates c member
+
+/-- Replayed consolidation calls cover their charges with rates checked at actual sites. -/
+theorem consolidationRequestsSites_indexedTrace {fork : Fork} (electra : .pectra ≤ fork)
+    (early : fork < .glamsterdam) {s t : BeaconState preset fork}
+    {sites : List (ForkedBeaconState preset)} {requests : List ConsolidationRequest}
+    (ok : consolidationRequestsSites config electra s requests = .ok (t, sites)) (cap : Nat)
+    (rates : ∀ site ∈ sites, ∀ (_h : .pectra ≤ site.fork) (rate : Gwei),
+      getConsolidationChurnLimit config site.state = .ok rate → rate.toNat ≤ cap) :
+    ∃ calls : List IndexedDepartureCall,
+      DepartureQueueTrace (s.earliestConsolidationEpoch electra)
+        (s.consolidationBalanceToConsume electra) (calls.map (·.call))
+        (t.earliestConsolidationEpoch electra) (t.consolidationBalanceToConsume electra) ∧
+      DepartureCoverage s t calls ∧ (∀ called ∈ calls, called.call.rate.toNat ≤ cap) := by
+  induction requests generalizing s sites with
+  | nil => cases ok; exact ⟨[], .nil _ _, DepartureCoverage.of_data rfl, by simp⟩
+  | cons request rest ih =>
+    simp only [consolidationRequestsSites, bind_ok_iff, pure, Except.pure,
+      Except.ok.injEq, Prod.mk.injEq] at ok
+    obtain ⟨here, recorded, middle, stepped, ⟨last, later⟩, replayed, rfl, rfl⟩ := ok
+    obtain ⟨tailCalls, tail, tailCoverage, tailRates⟩ := ih replayed
+      (fun site mem h rate computed => rates site (List.mem_append_right _ mem) h rate computed)
+    have tailLifecycle : RegistryLifecycle middle last := by
+      have result : rest.foldlM (processConsolidationRequest config · electra ·) middle =
+          .ok last := by
+        clear tail tailCoverage tailRates rates recorded stepped ih
+        induction rest generalizing middle later last with
+        | nil => cases replayed; rfl
+        | cons request rest inner =>
+          simp only [consolidationRequestsSites, bind_ok_iff, pure, Except.pure,
+            Except.ok.injEq, Prod.mk.injEq] at replayed
+          obtain ⟨_, _, next, step, ⟨_, _⟩, recur, rfl, rfl⟩ := replayed
+          simp only [List.foldlM_cons, step, bind, Except.bind, inner _ _ _ recur]
+      exact RegistryLifecycle.foldlM
+        (fun _ _ _ ok => registryLifecycle_processConsolidationRequest ok) result
+    simp only [consolidationRequestSites, bind_ok_iff, pure, Except.pure,
+      Except.ok.injEq] at recorded
+    obtain ⟨called, classified, rfl⟩ := recorded
+    cases called with
+    | false =>
+      have frame := consolidationRequest_notCalled electra stepped classified
+      have epoch := congrArg (fun q => q.2.2.1) frame
+      have balance := congrArg (fun q => q.2.2.2) frame
+      change middle.earliestConsolidationEpoch electra = s.earliestConsolidationEpoch electra
+        at epoch
+      change middle.consolidationBalanceToConsume electra =
+        s.consolidationBalanceToConsume electra at balance
+      rw [epoch, balance] at tail
+      refine ⟨tailCalls, tail, ?_, tailRates⟩
+      exact DepartureCoverage.append_of_effectiveKept
+        (consolidationRequest_notCalled_coverage electra stepped classified) tailCoverage
+          (registryLifecycle_processConsolidationRequest stepped) tailLifecycle
+          (effectiveKept_consolidationRequest stepped)
+    | true =>
+      obtain ⟨sourceIndex, source, targetIndex, found, scheduled⟩ :=
+        consolidationRequest_called electra stepped classified
+      obtain ⟨call, head, rate, covered⟩ := queueConsolidation_indexedTrace electra found scheduled
+      have coverage : DepartureCoverage s middle [call] :=
+        DepartureCoverage.of_accessor early (by
+          intro other old next before after unset assigned
+          exact ⟨call, List.mem_singleton_self _,
+            covered other old next before after unset assigned⟩)
+      refine ⟨call :: tailCalls, head.append tail, ?_, ?_⟩
+      · exact coverage.append_of_effectiveKept tailCoverage
+          (registryLifecycle_processConsolidationRequest stepped) tailLifecycle
+          (effectiveKept_consolidationRequest stepped)
+      · intro called member
+        rcases List.mem_cons.mp member with rfl | member
+        · exact rates ⟨fork, s⟩ (by simp) electra called.call.rate rate
+        · exact tailRates called member
 
 /-- The block prefix reaches execution requests before any consolidation queue call. -/
 def blockConsolidationSites {fork : Fork} (config : Config) (checks : SignatureChecks)
