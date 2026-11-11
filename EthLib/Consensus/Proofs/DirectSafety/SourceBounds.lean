@@ -1,6 +1,7 @@
 module
 
 public import EthLib.Consensus.Proofs.DirectSafety.ChurnBounds
+public import EthLib.Consensus.Proofs.Transition.EpochUpdates
 
 /-!
 # Bounds for the sources of balance drift
@@ -93,15 +94,33 @@ theorem initial_slashing_bounds {fork : Fork} (s t : BeaconState preset fork)
       (EthLib.Consensus.parameters preset fork).WHISTLEBLOWER_REWARD_QUOTIENT.toNat := by
   sorry
 
-/-- The delayed penalty is capped by the effective balance, including the Electra rounding. -/
+/-- Sum only due penalties, with the fork's actual rounding and adjusted slashing balance. -/
+def delayedSlashingLimit {fork : Fork} (s : BeaconState preset fork) :
+    Except TransitionError Nat := do
+  let total ← liftAccessor (getTotalActiveBalance s)
+  let slashed ← slashingsSum s
+  let adjusted := min (slashed.toNat *
+    (EthLib.Consensus.parameters preset fork).PROPORTIONAL_SLASHING_MULTIPLIER.toNat) total.toNat
+  let increment := preset.EFFECTIVE_BALANCE_INCREMENT.toNat
+  return (s.validators.data.toList.map fun v =>
+    if SlashingPenaltyDue preset (getCurrentEpoch s) v then
+      if .pectra ≤ fork then
+        adjusted / (total.toNat / increment) * (v.effectiveBalance.toNat / increment)
+      else v.effectiveBalance.toNat / increment * adjusted / total.toNat * increment
+    else 0).sum
+
+/-- No penalty is charged merely because a validator has effective stake. -/
 theorem delayed_slashing_bounds {fork : Fork} (s t : BeaconState preset fork)
-    (increment : 0 < preset.EFFECTIVE_BALANCE_INCREMENT.toNat)
-    (aligned : ∀ (v : Validator), v ∈ s.validators.data.toList →
-      v.effectiveBalance.toNat % preset.EFFECTIVE_BALANCE_INCREMENT.toNat = 0)
+    (within : s.RegistryWithinLimit)
     (ok : processSlashings s = .ok t) :
-    balanceCredits s t = 0 ∧
-    balanceDebits s t ≤
-      (s.validators.data.toList.map fun v => v.effectiveBalance.toNat).sum := by
+    ∃ limit, delayedSlashingLimit s = .ok limit ∧
+      balanceCredits s t = 0 ∧ balanceDebits s t ≤ limit := by
+  sorry
+
+theorem delayed_slashing_limit_zero {fork : Fork} (s : BeaconState preset fork)
+    (noneDue : ∀ v ∈ s.validators.data.toList,
+      ¬ SlashingPenaltyDue preset (getCurrentEpoch s) v)
+    (limit : Nat) (computed : delayedSlashingLimit s = .ok limit) : limit = 0 := by
   sorry
 
 theorem sync_reward_bounds {fork : Fork} (s t : BeaconState preset fork)
@@ -182,7 +201,10 @@ theorem excess_queue_debit {fork : Fork} (s t : BeaconState preset fork)
 /-- The crossing queues balance instead of losing it; the debit is counted before later credits. -/
 theorem electra_upgrade_debit (s : BeaconState preset .dencun) (t : BeaconState preset .pectra)
     (ok : upgradeToElectra config s = .ok t) :
-    totalBalance t ≤ totalBalance s ∧ totalBalance s ≤ totalBalance t +
+    (∑ i ∈ Finset.range t.balances.data.size,
+      (balanceAt ⟨.pectra, t⟩ i - balanceAt ⟨.dencun, s⟩ i)) = 0 ∧
+    (∑ i ∈ Finset.range s.balances.data.size,
+      (balanceAt ⟨.dencun, s⟩ i - balanceAt ⟨.pectra, t⟩ i)) ≤
       ((t.pendingDeposits (by decide)).data.toList.map fun d => d.amount.toNat).sum := by
   sorry
 

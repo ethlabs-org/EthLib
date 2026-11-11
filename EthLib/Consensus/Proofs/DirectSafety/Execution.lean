@@ -1,6 +1,6 @@
 module
 
-public import EthLib.Consensus.Transition.ForkBoundary
+public import EthLib.Consensus.Proofs.Transition.Trace
 public import EthLib.Consensus.Transition.Genesis
 public import Mathlib.Data.Finset.Basic
 
@@ -22,39 +22,6 @@ open Base Serialization.Ssz.SszType
 
 variable {preset : Preset} {config : Config} {checks : SignatureChecks}
 
-inductive Step (config : Config) (checks : SignatureChecks) :
-    ForkedBeaconState preset → ForkedBeaconState preset → Type where
-  | slot {before after} (ok : advanceSlotAcross config checks before = .ok after) :
-      Step config checks before after
-  | block {fork : Fork} {before after : BeaconState preset fork}
-      (engine : ExecutionEngine preset fork) (signed : SignedBeaconBlock preset fork)
-      (due : upgradeDue config ⟨fork, before⟩ = false)
-      (ok : applySignedBlock config checks engine before signed true = .ok after) :
-      Step config checks ⟨fork, before⟩ ⟨fork, after⟩
-
-inductive Run (config : Config) (checks : SignatureChecks) (first : ForkedBeaconState preset) :
-    ForkedBeaconState preset → Type where
-  | nil : Run config checks first first
-  | snoc {middle last} (pre : Run config checks first middle)
-      (step : Step config checks middle last) : Run config checks first last
-
-def Run.append {first middle last : ForkedBeaconState preset}
-    (pre : Run config checks first middle) (tail : Run config checks middle last) :
-    Run config checks first last :=
-  match tail with
-  | .nil => pre
-  | .snoc tail step => .snoc (pre.append tail) step
-
-/-- Membership keeps the actual transition input, not only its endpoint states. -/
-inductive Run.Contains {first : ForkedBeaconState preset} :
-    {last before after : ForkedBeaconState preset} → Run config checks first last →
-      Step config checks before after → Prop where
-  | last {middle after} (pre : Run config checks first middle)
-      (step : Step config checks middle after) : Contains (.snoc pre step) step
-  | earlier {middle last before after} {pre : Run config checks first middle}
-      {step : Step config checks before after} (member : Contains pre step)
-      (next : Step config checks middle last) : Contains (.snoc pre next) step
-
 def Genesis (g : ForkedBeaconState preset) : Prop :=
   ∃ hash time deposits,
     initializeBeaconStateFromEth1 config checks hash time deposits = .ok g.state ∧
@@ -72,20 +39,20 @@ def blockHeader {fork : Fork} (block : BeaconBlock preset fork) : Option BeaconB
   let bodyRoot ← (hashTreeRoot block.body).toOption
   pure ⟨block.slot, block.proposerIndex, block.parentRoot, block.stateRoot, bodyRoot⟩
 
-def Step.headers {before after : ForkedBeaconState preset}
+def _root_.EthLib.Consensus.Step.headers {before after : ForkedBeaconState preset}
     (step : Step config checks before after) : List BeaconBlockHeader :=
   match step with
   | .slot _ => []
   | .block _ signed _ _ => (blockHeader signed.message).toList
 
-def Run.headers {first last : ForkedBeaconState preset}
+def _root_.EthLib.Consensus.Run.headers {first last : ForkedBeaconState preset}
     (run : Run config checks first last) : List BeaconBlockHeader :=
   match run with
   | .nil => []
   | .snoc pre step => pre.headers ++ step.headers
 
 /-- Actual block headers up to a checkpoint boundary, without identifying equal hashes. -/
-def Run.checkpointPath {first last : ForkedBeaconState preset}
+def _root_.EthLib.Consensus.Run.checkpointPath {first last : ForkedBeaconState preset}
     (run : Run config checks first last) (checkpoint : Checkpoint) : List BeaconBlockHeader :=
   run.headers.filter fun h => h.slot.toNat ≤ checkpoint.epoch.toNat * preset.SLOTS_PER_EPOCH.toNat
 
@@ -93,18 +60,5 @@ def Conflict {g a b : ForkedBeaconState preset} (left : Run config checks g a)
     (right : Run config checks g b) (f j : Checkpoint) : Prop :=
   ¬ (left.checkpointPath f).IsPrefix (right.checkpointPath j) ∧
     ¬ (right.checkpointPath j).IsPrefix (left.checkpointPath f)
-
-theorem Run.contains_append {g x y u v : ForkedBeaconState preset}
-    (pre : Run config checks g x) (tail : Run config checks x y)
-    (step : Step config checks u v) :
-    (pre.append tail).Contains step ↔ pre.Contains step ∨ tail.Contains step := by
-  sorry
-
-theorem Run.stateTransition {fork : Fork} {first : ForkedBeaconState preset}
-    {last : BeaconState preset fork} (engine : ExecutionEngine preset fork)
-    (signed : SignedBeaconBlock preset fork)
-    (ok : stateTransitionAcross config checks engine first signed true = .ok last) :
-    Nonempty (Run config checks first ⟨fork, last⟩) := by
-  sorry
 
 end EthLib.Consensus.DirectSafety

@@ -160,15 +160,6 @@ theorem finalization_rule_quorums {g a : ForkedBeaconState preset} (run : Run co
           Nonempty (JustificationHistory run middle)) := by
   sorry
 
-/-- The shared prefix supplies inherited fields; they are not attributed to either tail. -/
-theorem inherited_fields {g x : ForkedBeaconState preset} (shared : Run config checks g x)
-    (parameters : Parameters preset) (genesis : Genesis (config := config) (checks := checks) g) :
-    (∀ c, c = x.state.previousJustifiedCheckpoint ∨ c = x.state.currentJustifiedCheckpoint →
-      c = ⟨GENESIS_EPOCH, Vector.replicate 32 0⟩ ∨ Nonempty (JustificationHistory shared c)) ∧
-    (x.state.finalizedCheckpoint = ⟨GENESIS_EPOCH, Vector.replicate 32 0⟩ ∨
-      ∃ call : EpochCall shared, FinalizationRule call x.state.finalizedCheckpoint) := by
-  sorry
-
 /-- Finalization retains a justification history even after both justified fields move on. -/
 theorem finalized_history {g a : ForkedBeaconState preset} (run : Run config checks g a)
     (parameters : Parameters preset) (genesis : Genesis (config := config) (checks := checks) g) :

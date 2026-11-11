@@ -30,7 +30,7 @@ noncomputable def slashableKeys {g a b : ForkedBeaconState preset}
 theorem accountable_safety {g x a b : ForkedBeaconState preset}
     (shared : Run config checks g x) (left : Run config checks x a) (right : Run config checks x b)
     (parameters : Parameters preset) (genesis : Genesis (config := config) (checks := checks) g)
-    (caps : CapOrder preset) (aligned : AlignedCaps preset)
+    (caps : CapOrder preset) (aligned : MaxEffectiveBalancesAligned preset)
     (earlyA : a.fork < .glamsterdam) (earlyB : b.fork < .glamsterdam)
     (enoughA : EnoughStake (shared.append left)) (enoughB : EnoughStake (shared.append right))
     (conflict : Conflict (shared.append left) (shared.append right)
@@ -53,7 +53,7 @@ theorem accountable_safety {g x a b : ForkedBeaconState preset}
 theorem accountable_safety_justified {g x a b : ForkedBeaconState preset}
     (shared : Run config checks g x) (left : Run config checks x a) (right : Run config checks x b)
     (parameters : Parameters preset) (genesis : Genesis (config := config) (checks := checks) g)
-    (caps : CapOrder preset) (aligned : AlignedCaps preset)
+    (caps : CapOrder preset) (aligned : MaxEffectiveBalancesAligned preset)
     (earlyA : a.fork < .glamsterdam) (earlyB : b.fork < .glamsterdam)
     (enoughA : EnoughStake (shared.append left)) (enoughB : EnoughStake (shared.append right))
     (j : Checkpoint)

@@ -59,19 +59,19 @@ structure Receipt {fork : Fork} (engine : ExecutionEngine preset fork)
   found : site.validators.data[index.toNat]? = some validator
   keyEq : validator.pubkey = key
 
-def Step.Accepted {before after : ForkedBeaconState preset}
+def _root_.EthLib.Consensus.Step.Accepted {before after : ForkedBeaconState preset}
     (step : Step config checks before after) (key : BLSPubkey) (data : AttestationData) : Prop :=
   match step with
   | .slot _ => False
   | .block engine signed _ _ => Nonempty
       (Receipt (config := config) (checks := checks) engine before.state signed.message key data)
 
-def Run.Accepted {first last : ForkedBeaconState preset}
+def _root_.EthLib.Consensus.Run.Accepted {first last : ForkedBeaconState preset}
     (run : Run config checks first last) (key : BLSPubkey) (data : AttestationData) : Prop :=
   ∃ before after, ∃ step : Step config checks before after,
     run.Contains step ∧ step.Accepted key data
 
-theorem Run.accepted_append {g x y : ForkedBeaconState preset}
+theorem _root_.EthLib.Consensus.Run.accepted_append {g x y : ForkedBeaconState preset}
     (pre : Run config checks g x) (tail : Run config checks x y)
     (key : BLSPubkey) (data : AttestationData) :
     (pre.append tail).Accepted key data ↔ pre.Accepted key data ∨ tail.Accepted key data := by

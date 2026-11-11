@@ -33,16 +33,6 @@ theorem heterogeneous_intersection (s₁ s₂ q₁ q₂ : Finset α) (w₁ w₂ 
       3 * weight (fun k => max (supported s₁ w₁ k) (supported s₂ w₂ k)) (s₁ ∪ s₂) := by
   sorry
 
-/-- The active-set form applies when each quorum is contained in its own active set. -/
-theorem active_intersection (s₁ s₂ q₁ q₂ : Finset α) (w₁ w₂ : α → Nat)
-    (inside₁ : q₁ ⊆ s₁) (inside₂ : q₂ ⊆ s₂)
-    (quorum₁ : 2 * weight w₁ s₁ ≤ 3 * weight w₁ q₁)
-    (quorum₂ : 2 * weight w₂ s₂ ≤ 3 * weight w₂ q₂) :
-    2 * (weight w₁ s₁ + weight w₂ s₂) ≤
-      3 * weight (fun k => min (w₁ k) (w₂ k)) (q₁ ∩ q₂) +
-      3 * weight (fun k => max (supported s₁ w₁ k) (supported s₂ w₂ k)) (s₁ ∪ s₂) := by
-  sorry
-
 /-- Convert the drift-free bound, not the individual quorums, to a reference measure. -/
 theorem core_at_reference (reference s₁ s₂ bad : Finset α) (old w₁ w₂ : α → Nat)
     (t₁ t₂ loss₁ loss₂ gain₁ gain₂ : Nat)

@@ -112,7 +112,7 @@ def epochBalanceReplay {fork : Fork} (s : BeaconState preset fork) :
   let pre ← replayRewards (config := config) pre
   let pre ← carryBalance (processRegistryUpdates config) pre
   let pre ← recordBalance .slashings
-    (fun s => pure (0, (s.validators.data.toList.map fun v => v.effectiveBalance.toNat).sum))
+    (fun s => return (0, ← delayedSlashingLimit s))
     processSlashings pre
   let pre ← if before : fork < .hegota then
       carryBalance (processEth1DataReset before) pre else pure pre
@@ -195,7 +195,11 @@ def upgradeBalanceReplay (s : ForkedBeaconState preset) :
     let next ← upgradeNext config checks s
     let rest ← upgradeBalanceReplay next.val
     if s.fork = .dencun then
-      return ⟨.crossing, s, next.val, 0, totalBalance s.state⟩ :: rest
+      if electra : .pectra ≤ next.val.fork then
+        let queued := ((next.val.state.pendingDeposits electra).data.toList.map
+          fun d => d.amount.toNat).sum
+        return ⟨.crossing, s, next.val, 0, queued⟩ :: rest
+      else return rest
     else return rest
   else return []
 termination_by Fork.hegota.ctorIdx + 1 - s.fork.ctorIdx
@@ -204,7 +208,8 @@ decreasing_by
   have last : next.val.fork.ctorIdx ≤ Fork.hegota.ctorIdx := by cases next.val.fork <;> decide
   omega
 
-def Step.balanceEvents {x y : ForkedBeaconState preset} (step : Step config checks x y) :
+def _root_.EthLib.Consensus.Step.balanceEvents {x y : ForkedBeaconState preset}
+    (step : Step config checks x y) :
     Except TransitionError (List (BalanceEvent preset)) :=
   match step with
   | .block engine signed _ _ => do
@@ -223,7 +228,7 @@ def Step.balanceEvents {x y : ForkedBeaconState preset} (step : Step config chec
       (← upgradeBalanceReplay (config := config) (checks := checks) ⟨x.fork, advanced⟩)
 
 /-- Start at this run's first state and include tests with target epoch at most `high`. -/
-def Run.balanceEvents {x : ForkedBeaconState preset} (high : Nat) :
+def _root_.EthLib.Consensus.Run.balanceEvents {x : ForkedBeaconState preset} (high : Nat) :
     {y : ForkedBeaconState preset} → Run config checks x y →
       Except TransitionError (List (BalanceEvent preset))
   | _, .nil => pure []
@@ -242,7 +247,7 @@ theorem source_bounds_over_interval {g x y : ForkedBeaconState preset}
     (shared : Run config checks g x) (tail : Run config checks x y)
     (genesis : Genesis (config := config) (checks := checks) g)
     (parameters : Parameters preset) (caps : CapOrder preset)
-    (alignedCaps : AlignedCaps preset)
+    (alignedCaps : MaxEffectiveBalancesAligned preset)
     (early : y.fork < .glamsterdam) (high : Nat) :
     ∃ events, tail.balanceEvents high = .ok events ∧
       ∀ source : BalanceSource,
@@ -255,7 +260,8 @@ theorem source_bounds_over_interval {g x y : ForkedBeaconState preset}
 theorem balance_path_covered {g x y : ForkedBeaconState preset}
     (shared : Run config checks g x) (tail : Run config checks x y)
     (genesis : Genesis (config := config) (checks := checks) g)
-    (parameters : Parameters preset) (caps : CapOrder preset) (aligned : AlignedCaps preset)
+    (parameters : Parameters preset) (caps : CapOrder preset)
+    (aligned : MaxEffectiveBalancesAligned preset)
     (early : y.fork < .glamsterdam) (high : Nat)
     (endEpoch : (getCurrentEpoch y.state).toNat ≤ high + 1)
     (events : List (BalanceEvent preset)) (replayed : tail.balanceEvents high = .ok events) :
@@ -310,7 +316,8 @@ def lossCorrection (x : ForkedBeaconState preset) (events : List (BalanceEvent p
 theorem exits_over_interval {g x y : ForkedBeaconState preset}
     (shared : Run config checks g x) (tail : Run config checks x y)
     (genesis : Genesis (config := config) (checks := checks) g)
-    (parameters : Parameters preset) (caps : CapOrder preset) (aligned : AlignedCaps preset)
+    (parameters : Parameters preset) (caps : CapOrder preset)
+    (aligned : MaxEffectiveBalancesAligned preset)
     (early : y.fork < .glamsterdam) (high : Nat)
     (endEpoch : (getCurrentEpoch y.state).toNat ≤ high + 1)
     (events : List (BalanceEvent preset)) (replayed : tail.balanceEvents high = .ok events) :
@@ -321,7 +328,8 @@ theorem exits_over_interval {g x y : ForkedBeaconState preset}
 theorem activations_and_joining_growth_over_interval {g x y : ForkedBeaconState preset}
     (shared : Run config checks g x) (tail : Run config checks x y)
     (genesis : Genesis (config := config) (checks := checks) g)
-    (parameters : Parameters preset) (caps : CapOrder preset) (aligned : AlignedCaps preset)
+    (parameters : Parameters preset) (caps : CapOrder preset)
+    (aligned : MaxEffectiveBalancesAligned preset)
     (early : y.fork < .glamsterdam) (high : Nat)
     (endEpoch : (getCurrentEpoch y.state).toNat ≤ high + 1)
     (events : List (BalanceEvent preset)) (replayed : tail.balanceEvents high = .ok events) :
@@ -332,7 +340,8 @@ theorem activations_and_joining_growth_over_interval {g x y : ForkedBeaconState 
 theorem gains_over_interval {g x y : ForkedBeaconState preset}
     (shared : Run config checks g x) (tail : Run config checks x y)
     (genesis : Genesis (config := config) (checks := checks) g)
-    (parameters : Parameters preset) (caps : CapOrder preset) (aligned : AlignedCaps preset)
+    (parameters : Parameters preset) (caps : CapOrder preset)
+    (aligned : MaxEffectiveBalancesAligned preset)
     (early : y.fork < .glamsterdam) (high : Nat)
     (endEpoch : (getCurrentEpoch y.state).toNat ≤ high + 1)
     (events : List (BalanceEvent preset)) (replayed : tail.balanceEvents high = .ok events) :
@@ -342,7 +351,8 @@ theorem gains_over_interval {g x y : ForkedBeaconState preset}
 theorem losses_and_hysteresis_over_interval {g x y : ForkedBeaconState preset}
     (shared : Run config checks g x) (tail : Run config checks x y)
     (genesis : Genesis (config := config) (checks := checks) g)
-    (parameters : Parameters preset) (caps : CapOrder preset) (aligned : AlignedCaps preset)
+    (parameters : Parameters preset) (caps : CapOrder preset)
+    (aligned : MaxEffectiveBalancesAligned preset)
     (early : y.fork < .glamsterdam) (high : Nat)
     (endEpoch : (getCurrentEpoch y.state).toNat ≤ high + 1)
     (events : List (BalanceEvent preset)) (replayed : tail.balanceEvents high = .ok events) :
@@ -358,7 +368,8 @@ def derivedDrift (x y : ForkedBeaconState preset) (high : Nat)
 theorem quorum_drift_from_sources {g x y : ForkedBeaconState preset}
     (shared : Run config checks g x) (tail : Run config checks x y)
     (genesis : Genesis (config := config) (checks := checks) g)
-    (parameters : Parameters preset) (caps : CapOrder preset) (aligned : AlignedCaps preset)
+    (parameters : Parameters preset) (caps : CapOrder preset)
+    (aligned : MaxEffectiveBalancesAligned preset)
     (early : y.fork < .glamsterdam) (low high : Nat)
     (starts : x.state.slot.toNat ≤ low * preset.SLOTS_PER_EPOCH.toNat)
     (call : QuorumCall (shared.append tail))

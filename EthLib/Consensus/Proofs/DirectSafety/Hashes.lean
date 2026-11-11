@@ -35,7 +35,7 @@ def HashObject.messages (object : HashObject preset) : List Bytes :=
   | .state s => ((valueTree (SszType.desc (BeaconState preset s.fork))
       (SszType.toValue s.state)).toOption.map (fun tree => tree.messages)).getD []
 
-def Step.hashObjects {before after : ForkedBeaconState preset}
+def _root_.EthLib.Consensus.Step.hashObjects {before after : ForkedBeaconState preset}
     (step : Step config checks before after) : List (HashObject preset) :=
   [.state before, .state after, .header before.state.latestBlockHeader,
     .header after.state.latestBlockHeader] ++
@@ -45,7 +45,7 @@ def Step.hashObjects {before after : ForkedBeaconState preset}
     | some cached => [.state ⟨before.fork, cached⟩, .header cached.latestBlockHeader]
   | .block _ signed _ _ => ((blockHeader signed.message).toList.map HashObject.header))
 
-def Run.hashObjects {first last : ForkedBeaconState preset}
+def _root_.EthLib.Consensus.Run.hashObjects {first last : ForkedBeaconState preset}
     (run : Run config checks first last) : List (HashObject preset) :=
   match run with
   | .nil => [.state first, .header first.state.latestBlockHeader]

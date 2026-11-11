@@ -1,6 +1,7 @@
 module
 
 public import EthLib.Consensus.Proofs.DirectSafety.Drift
+public import EthLib.Consensus.Proofs.Accessors
 
 /-!
 # Effective-balance changes from the actual balance path
@@ -27,7 +28,8 @@ def effectiveAt (s : ForkedBeaconState preset) (i : Nat) : Nat :=
   ((s.state.validators.data[i]?).map (·.effectiveBalance.toNat)).getD 0
 
 /-- Include the state before fork upgrades, where the effective balance was last updated. -/
-def Step.balancePath {x y : ForkedBeaconState preset} (step : Step config checks x y) :
+def _root_.EthLib.Consensus.Step.balancePath {x y : ForkedBeaconState preset}
+    (step : Step config checks x y) :
     List (ForkedBeaconState preset) :=
   match step with
   | .block _ _ _ _ => [x, y]
@@ -35,7 +37,7 @@ def Step.balancePath {x y : ForkedBeaconState preset} (step : Step config checks
     | none => [x, y]
     | some s => [x, ⟨x.fork, s⟩, y]
 
-def Run.balancePath {x : ForkedBeaconState preset} :
+def _root_.EthLib.Consensus.Run.balancePath {x : ForkedBeaconState preset} :
     {y : ForkedBeaconState preset} → Run config checks x y → List (ForkedBeaconState preset)
   | _, .nil => [x]
   | _, .snoc pre step => pre.balancePath ++ step.balancePath
@@ -52,15 +54,10 @@ structure CapOrder (preset : Preset) : Prop where
   activation : preset.MAX_EFFECTIVE_BALANCE ≤ preset.MIN_ACTIVATION_BALANCE
   compounding : preset.MIN_ACTIVATION_BALANCE ≤ preset.MAX_EFFECTIVE_BALANCE_ELECTRA
 
-structure AlignedCaps (preset : Preset) : Prop where
-  ordinary : preset.MAX_EFFECTIVE_BALANCE.toNat % preset.EFFECTIVE_BALANCE_INCREMENT.toNat = 0
-  activation : preset.MIN_ACTIVATION_BALANCE.toNat % preset.EFFECTIVE_BALANCE_INCREMENT.toNat = 0
-  compounding :
-    preset.MAX_EFFECTIVE_BALANCE_ELECTRA.toNat % preset.EFFECTIVE_BALANCE_INCREMENT.toNat = 0
-
 theorem reachable_effective_alignment {g x : ForkedBeaconState preset}
     (run : Run config checks g x) (genesis : Genesis (config := config) (checks := checks) g)
-    (aligned : AlignedCaps preset) (increment : 0 < preset.EFFECTIVE_BALANCE_INCREMENT.toNat)
+    (aligned : MaxEffectiveBalancesAligned preset)
+    (increment : 0 < preset.EFFECTIVE_BALANCE_INCREMENT.toNat)
     (early : x.fork < .glamsterdam) (v : Validator) (found : v ∈ x.state.validators.data.toList) :
     v.effectiveBalance.toNat % preset.EFFECTIVE_BALANCE_INCREMENT.toNat = 0 := by
   sorry
