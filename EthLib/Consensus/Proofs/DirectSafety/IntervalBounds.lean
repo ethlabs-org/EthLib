@@ -2693,6 +2693,65 @@ private theorem funding_balance_change {fork : Fork} {s t : BeaconState preset f
   rw [effective]
   omega
 
+private theorem funding_append {fork : Fork} {s t : BeaconState preset fork}
+    (queue : List PendingConsolidation) (v : Validator) (amount : Gwei)
+    (registry : t.validators.data = s.validators.data.push v)
+    (balances : t.balances.data = s.balances.data.push amount)
+    (matched : BalancesMatch s) (slot : t.slot = s.slot) :
+    funding_potential t queue ≤ funding_potential s queue +
+      max v.effectiveBalance.toNat amount.toNat := by
+  change s.balances.data.size = s.validators.data.size at matched
+  have epoch : getCurrentEpoch t = getCurrentEpoch s := by simp [getCurrentEpoch, slot]
+  unfold funding_potential
+  rw [registry, Array.size_push, Finset.sum_range_succ]
+  have old : (∑ i ∈ Finset.range s.validators.data.size,
+      ((s.validators.data.push v)[i]?.map fun w =>
+        if isActiveValidator w (getCurrentEpoch t) ||
+            decide (getCurrentEpoch t < w.activationEpoch) ||
+            queue.any (fun c => c.sourceIndex.toNat == i) then
+          max (effectiveAt ⟨fork, t⟩ i) (actualBalanceAt ⟨fork, t⟩ i)
+        else 0).getD 0) =
+      ∑ i ∈ Finset.range s.validators.data.size,
+        (s.validators.data[i]?.map fun w =>
+          if isActiveValidator w (getCurrentEpoch s) ||
+              decide (getCurrentEpoch s < w.activationEpoch) ||
+              queue.any (fun c => c.sourceIndex.toNat == i) then
+            max (effectiveAt ⟨fork, s⟩ i) (actualBalanceAt ⟨fork, s⟩ i)
+          else 0).getD 0 := by
+    apply Finset.sum_congr rfl
+    intro i member
+    have inside := Finset.mem_range.mp member
+    have balanceInside : i < s.balances.data.size := by simpa [matched] using inside
+    simp only [effectiveAt, actualBalanceAt, registry, balances,
+      Array.getElem?_push_lt inside, Array.getElem?_push_lt balanceInside,
+      getElem?_pos s.validators.data i inside, getElem?_pos s.balances.data i balanceInside,
+      epoch]
+  rw [old]
+  apply Nat.add_le_add_left
+  have lastBalance : (s.balances.data.push amount)[s.validators.data.size]? = some amount := by
+    rw [← matched, Array.getElem?_push_size]
+  simp only [effectiveAt, actualBalanceAt, registry, balances, lastBalance,
+    Array.getElem?_push_size, Option.map_some, Option.getD_some]
+  split <;> omega
+
+private theorem funding_registration {fork : Fork} {s t : BeaconState preset fork}
+    (queue : List PendingConsolidation) {key : Cryptography.Bls.BLSPubkey}
+    {credentials : Bytes32} {amount : Gwei}
+    (matched : BalancesMatch s)
+    (ok : addValidatorToRegistry s key credentials amount = .ok t) :
+    funding_potential t queue ≤ funding_potential s queue + amount.toNat := by
+  obtain ⟨registry, balances⟩ := addValidatorToRegistry_push ok matched
+  have rounded : amount % preset.EFFECTIVE_BALANCE_INCREMENT ≤ amount := by
+    rw [UInt64.le_iff_toNat_le, UInt64.toNat_mod]
+    exact Nat.mod_le _ _
+  have lowered := UInt64.le_iff_toNat_le.mp (UInt64.sub_le rounded)
+  have cap : (getValidatorFromDeposit preset fork key credentials amount).effectiveBalance.toNat ≤
+      amount.toNat := by
+    simp only [getValidatorFromDeposit, Uint64.toNat_min]
+    exact (Nat.min_le_left _ _).trans lowered
+  simpa only [Nat.max_eq_right cap] using
+    funding_append queue _ amount registry balances matched (frame_addValidatorToRegistry ok).slot
+
 private theorem funding_effective_updates {fork : Fork} {s t : BeaconState preset fork}
     (queue : List PendingConsolidation) (ok : processEffectiveBalanceUpdates s = .ok t) :
     funding_potential t queue ≤ funding_potential s queue := by
