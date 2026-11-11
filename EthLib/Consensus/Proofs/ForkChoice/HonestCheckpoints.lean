@@ -401,6 +401,8 @@ The target epoch bound permits same-slot admission without an early-signer stake
 theorem Execution.exists_signsSource_of_finalized {anchor : Store preset fork}
     (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
     (sound : Invariant anchorState)
+    (slotsPositive : 0 < preset.SLOTS_PER_EPOCH.toNat)
+    (window : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
     (ring : preset.MIN_SEED_LOOKAHEAD.toNat + 2 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
     (preGloas : fork < .glamsterdam)
     {w : ValidatorIndex} (honest : w ∈ J) (start : e.start w = anchor) {k : ℕ}
