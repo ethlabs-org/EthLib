@@ -419,9 +419,7 @@ theorem nonaccountable_losses_over_interval {g x y : ForkedBeaconState preset}
     (early : y.fork < .glamsterdam) (high : Nat)
     (endEpoch : (getCurrentEpoch y.state).toNat ≤ high + 1)
     (events : List (BalanceEvent preset)) (replayed : tail.balanceEvents high = .ok events) :
-    (∑ k ∈ (activeKeys x.state).filter (fun k => ¬ (shared.append tail).SlashingEvidence k),
-      (effectiveWeight x.state k - Quorum.supported (activeKeys y.state)
-        (effectiveWeight y.state) k)) ≤
+    referenceLoss x y ≤
       exitWindow (config := config) x high + lossCorrection x events := by
   sorry
 
@@ -437,22 +435,38 @@ theorem gains_and_activations_over_interval {g x y : ForkedBeaconState preset}
     (early : y.fork < .glamsterdam) (high : Nat)
     (endEpoch : (getCurrentEpoch y.state).toNat ≤ high + 1)
     (events : List (BalanceEvent preset)) (replayed : tail.balanceEvents high = .ok events) :
-    (∑ k ∈ recentKeys y.state, (effectiveWeight y.state k -
-      Quorum.supported (activeKeys x.state ∩ activeKeys y.state) (effectiveWeight x.state) k)) ≤
-      activationWindow (config := config) x high + exitWindow (config := config) x high +
-        initialExcess x +
+    referenceGain x y ≤
+      activationWindow (config := config) x high + initialExcess x +
         (events.map (residualCredit (config := config) x high)).sum := by
   sorry
 
-/-- Churn windows depend only on the reference state and horizon; residual sources use the trace. -/
-def derivedDrift (x : ForkedBeaconState preset) (high : Nat)
+/-- A conservative source envelope, separate from the exact observed-state drift.
+
+The boundary term is supplied by boundaryWindow, not by the cumulative exit envelope.
+
+Queue, registry and rounding bounds still need tighter transition proofs. -/
+def sourceDrift (x : ForkedBeaconState preset) (high boundary : Nat)
     (events : List (BalanceEvent preset)) : Nat :=
   2 * (exitWindow (config := config) x high + lossCorrection x events) +
-    3 * (activationWindow (config := config) x high + exitWindow (config := config) x high +
-      initialExcess x +
-      (events.map (residualCredit (config := config) x high)).sum)
+    activationWindow (config := config) x high + initialExcess x +
+    (events.map (residualCredit (config := config) x high)).sum + 2 * boundary
 
-theorem quorum_drift_from_sources {g x y : ForkedBeaconState preset}
+/-- The source envelope is a derived upper bound, not the definition of the safety loss. -/
+theorem derivedDrift_le_sources {g x y : ForkedBeaconState preset}
+    (shared : Run config checks g x) (tail : Run config checks x y)
+    (genesis : Genesis (config := config) (checks := checks) g)
+    (parameters : Parameters preset) (caps : CapOrder preset)
+    (aligned : MaxEffectiveBalancesAligned preset)
+    (withdrawalDelay : 0 < config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat)
+    (early : y.fork < .glamsterdam) (high : Nat)
+    (startEpoch : (getCurrentEpoch x.state).toNat ≤ high + 1) :
+    ∃ events, tail.balanceEvents high = .ok events ∧
+      derivedDrift high tail ≤
+        sourceDrift (config := config) x high (boundaryWindow high tail) events := by
+  sorry
+
+/-- Cache-preserving epoch calls inherit the exact budget of their selected prefix. -/
+theorem quorum_drift_from_run {g x y : ForkedBeaconState preset}
     (shared : Run config checks g x) (tail : Run config checks x y)
     (genesis : Genesis (config := config) (checks := checks) g)
     (parameters : Parameters preset) (caps : CapOrder preset)
@@ -462,15 +476,16 @@ theorem quorum_drift_from_sources {g x y : ForkedBeaconState preset}
     (starts : x.state.slot.toNat ≤ low * preset.SLOTS_PER_EPOCH.toNat)
     (call : QuorumCall (shared.append tail))
     (lower : low ≤ call.target.epoch.toNat) (upper : call.target.epoch.toNat ≤ high) :
-    ∃ events, tail.balanceEvents high = .ok events ∧
-      ∃ loss gain,
+    ∃ loss gain outside,
         (∑ k ∈ (activeKeys x.state).filter (fun k => ¬ (shared.append tail).SlashingEvidence k),
-          (effectiveWeight x.state k - Quorum.supported (activeKeys call.cached)
+          (effectiveWeight x.state k - Quorum.supported (recentKeys call.cached)
             (effectiveWeight call.cached) k)) ≤ loss ∧
         (∑ k ∈ recentKeys call.cached, (effectiveWeight call.cached k -
-          Quorum.supported (activeKeys x.state ∩ activeKeys call.cached)
+          Quorum.supported (activeKeys x.state)
             (effectiveWeight x.state) k)) ≤ gain ∧
-        2 * loss + 3 * gain ≤ derivedDrift (config := config) x high events := by
+        Quorum.weight (effectiveWeight call.cached)
+          (recentKeys call.cached \ activeKeys call.cached) ≤ outside ∧
+        2 * loss + gain + 2 * outside ≤ derivedDrift high tail := by
   sorry
 
 end

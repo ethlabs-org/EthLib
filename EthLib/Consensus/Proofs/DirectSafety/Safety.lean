@@ -26,6 +26,27 @@ noncomputable def accountableKeys {g a b : ForkedBeaconState preset}
   classical
   exact (activeKeys reference.state).filter (Accountable left right)
 
+/-- Retain the two witness costs instead of replacing both by the larger branch budget. -/
+theorem accountable_safety_at_calls {g x a b : ForkedBeaconState preset}
+    (shared : Run config checks g x) (left : Run config checks x a) (right : Run config checks x b)
+    (parameters : Parameters preset) (genesis : Genesis (config := config) (checks := checks) g)
+    (earlyA : a.fork < .glamsterdam) (earlyB : b.fork < .glamsterdam)
+    (enoughA : EnoughStake (shared.append left)) (enoughB : EnoughStake (shared.append right))
+    (j : Checkpoint)
+    (field : j = b.state.previousJustifiedCheckpoint ∨ j = b.state.currentJustifiedCheckpoint ∨
+      j = b.state.finalizedCheckpoint)
+    (ordered : a.state.finalizedCheckpoint.epoch ≤ j.epoch)
+    (conflict : Conflict (shared.append left) (shared.append right) a.state.finalizedCheckpoint j) :
+    (∃ one two : EitherCall (shared.append left) (shared.append right),
+      a.state.finalizedCheckpoint.epoch.toNat ≤ one.targetEpoch ∧ one.targetEpoch ≤ j.epoch.toNat ∧
+      a.state.finalizedCheckpoint.epoch.toNat ≤ two.targetEpoch ∧ two.targetEpoch ≤ j.epoch.toNat ∧
+      Quorum.weight (effectiveWeight x.state) (activeKeys x.state) ≤
+        3 * Quorum.weight (effectiveWeight x.state)
+          (accountableKeys (shared.append left) (shared.append right) x) +
+        stateDrift x one.state + stateDrift x two.state) ∨
+      HashEvidence ((shared.append left).hashObjects ++ (shared.append right).hashObjects) := by
+  sorry
+
 /-- Order the finalized fields by epoch, with weights measured at their shared state. -/
 theorem accountable_safety {g x a b : ForkedBeaconState preset}
     (shared : Run config checks g x) (left : Run config checks x a) (right : Run config checks x b)
@@ -41,13 +62,10 @@ theorem accountable_safety {g x a b : ForkedBeaconState preset}
       min a.state.finalizedCheckpoint.epoch.toNat b.state.finalizedCheckpoint.epoch.toNat *
         preset.SLOTS_PER_EPOCH.toNat) :
     let high := max a.state.finalizedCheckpoint.epoch.toNat b.state.finalizedCheckpoint.epoch.toNat
-    (∃ eventsA eventsB, left.balanceEvents high = .ok eventsA ∧
-      right.balanceEvents high = .ok eventsB ∧
-      Quorum.weight (effectiveWeight x.state) (activeKeys x.state) ≤
+    (Quorum.weight (effectiveWeight x.state) (activeKeys x.state) ≤
       3 * Quorum.weight (effectiveWeight x.state)
         (accountableKeys (shared.append left) (shared.append right) x) +
-        2 * max (derivedDrift (config := config) x high eventsA)
-          (derivedDrift (config := config) x high eventsB)) ∨
+        2 * max (derivedDrift high left) (derivedDrift high right)) ∨
       HashEvidence ((shared.append left).hashObjects ++ (shared.append right).hashObjects) := by
   sorry
 
@@ -65,13 +83,10 @@ theorem accountable_safety_justified {g x a b : ForkedBeaconState preset}
     (conflict : Conflict (shared.append left) (shared.append right) a.state.finalizedCheckpoint j)
     (starts : x.state.slot.toNat ≤
       a.state.finalizedCheckpoint.epoch.toNat * preset.SLOTS_PER_EPOCH.toNat) :
-    (∃ eventsA eventsB, left.balanceEvents j.epoch.toNat = .ok eventsA ∧
-      right.balanceEvents j.epoch.toNat = .ok eventsB ∧
-      Quorum.weight (effectiveWeight x.state) (activeKeys x.state) ≤
+    (Quorum.weight (effectiveWeight x.state) (activeKeys x.state) ≤
       3 * Quorum.weight (effectiveWeight x.state)
         (accountableKeys (shared.append left) (shared.append right) x) +
-        2 * max (derivedDrift (config := config) x j.epoch.toNat eventsA)
-          (derivedDrift (config := config) x j.epoch.toNat eventsB)) ∨
+        2 * max (derivedDrift j.epoch.toNat left) (derivedDrift j.epoch.toNat right)) ∨
       HashEvidence ((shared.append left).hashObjects ++ (shared.append right).hashObjects) := by
   sorry
 
