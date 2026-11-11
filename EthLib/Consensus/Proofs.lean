@@ -159,6 +159,7 @@ public import EthLib.Consensus.Proofs.Transition.PaymentReleaseInvariants
 public import EthLib.Consensus.Proofs.Transition.PaymentReleaseRun
 public import EthLib.Consensus.Proofs.Transition.PaymentReleaseWithdrawals
 public import EthLib.Consensus.Proofs.Transition.PendingConsolidations
+public import EthLib.Consensus.Proofs.Transition.ActivationExitOrder
 public import EthLib.Consensus.Proofs.Transition.RegistryLifecycle
 public import EthLib.Consensus.Proofs.Transition.Requests
 public import EthLib.Consensus.Proofs.Transition.RewardDeltas
