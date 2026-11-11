@@ -6,6 +6,7 @@ public import EthLib.Consensus.Proofs.Transition.RewardDeltas
 public import EthLib.Consensus.Proofs.Transition.DepositCarry
 public import EthLib.Consensus.Proofs.Transition.SlashedPersistence
 public import EthLib.Consensus.Proofs.Transition.PendingConsolidations
+public import EthLib.Consensus.Proofs.Transition.ActivationExitOrder
 
 /-!
 # Source bounds over a selected execution interval
@@ -3440,6 +3441,31 @@ private theorem funding_pending_funded {fork : Fork} {s t : BeaconState preset f
   rw [← queue, funding_potential_eq t electra] at bound
   exact bound
 
+private theorem funding_pending_balances {fork : Fork} {s t : BeaconState preset fork}
+    (electra : .pectra ≤ fork) (early : fork < .glamsterdam)
+    (delay : 2 ≤ config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat)
+    (matched : BalancesMatch s) (ordered : ExitsOrdered s)
+    (activation : ActivationExitOrder s)
+    (pending : PendingConsolidationInvariant config s)
+    (ok : processPendingBalances config checks s = .ok t) :
+    ∃ deposited, processPendingDeposits config checks s electra = .ok deposited ∧
+      processPendingConsolidations deposited electra = .ok t ∧
+      fundedStake ⟨fork, t⟩ + (t.depositBalanceToConsume electra).toNat ≤
+        fundedStake ⟨fork, s⟩ + (s.depositBalanceToConsume electra).toNat +
+          config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat +
+          withdrawnConsolidationCredit ⟨.deposits, ⟨fork, s⟩, ⟨fork, deposited⟩, 0, 0⟩ := by
+  simp only [processPendingBalances, electra, ↓reduceDIte, bind_ok_iff] at ok
+  obtain ⟨deposited, depositedOk, consolidatedOk⟩ := ok
+  have deposit := funding_pending_funded electra early
+    (fun _ _ _ holds credited => ActivationExitOrder.applyPendingDeposit holds credited)
+    matched ordered activation depositedOk
+  have consolidate := funding_consolidations_invariant electra delay
+    (pending.pendingDeposits depositedOk) consolidatedOk
+  have carry := depositCarry_processPendingConsolidations consolidatedOk
+  refine ⟨deposited, depositedOk, consolidatedOk, ?_⟩
+  rw [carry]
+  omega
+
 private theorem funding_pass_selected {fork : Fork} {stop : PendingDeposit → Bool}
     {nextEpoch : Epoch} {available : Gwei} (indices : Finset Nat) :
     ∀ {deposits : List PendingDeposit} {s : BeaconState preset fork} {processed : Gwei}
@@ -4048,6 +4074,74 @@ private theorem funding_run_capacity {x y : ForkedBeaconState preset}
         ((getCurrentEpoch last.state).toNat - (getCurrentEpoch middle.state).toNat) := by omega
     rw [count, Nat.add_mul, List.map_append, List.sum_append]
     omega
+
+private theorem funding_run_funded {x y : ForkedBeaconState preset}
+    (tail : Run config checks x y) (early : y.fork < .glamsterdam)
+    (high : Nat) (endEpoch : (getCurrentEpoch y.state).toNat ≤ high + 1)
+    (events : List (BalanceEvent preset)) (replayed : tail.balanceEvents high = .ok events)
+    (stepBound : ∀ {a b : ForkedBeaconState preset} (pre : Run config checks x a)
+      (step : Step config checks a b), b.fork < .glamsterdam →
+      ∀ added, step.balanceEvents = .ok added →
+      fundedStake b + funding_carry b ≤ fundedStake a + funding_carry a +
+        ((getCurrentEpoch b.state).toNat - (getCurrentEpoch a.state).toNat) *
+          config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat +
+        (added.map fundingCredit).sum) :
+    fundedStake y + funding_carry y ≤ fundedStake x + funding_carry x +
+      ((getCurrentEpoch y.state).toNat - (getCurrentEpoch x.state).toNat) *
+        config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat +
+      (events.map fundingCredit).sum := by
+  induction tail generalizing events with
+  | nil => cases replayed; simp
+  | @snoc middle last pre step ih =>
+    have beforeEarly : middle.fork < .glamsterdam :=
+      Nat.lt_of_le_of_lt step.chainStep.fork_le early
+    have beforeEpoch := coverage_step_epoch step
+    have within := beforeEpoch.trans endEpoch
+    simp only [Run.balanceEvents, bind_ok_iff] at replayed
+    obtain ⟨prior, priorOk, rest⟩ := replayed
+    simp only [within, ↓reduceIte, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at rest
+    obtain ⟨added, addedOk, rfl⟩ := rest
+    have previous := ih beforeEarly within prior priorOk
+    have latest := stepBound pre step early added addedOk
+    have start : (getCurrentEpoch x.state).toNat ≤
+        (getCurrentEpoch middle.state).toNat := by
+      have monotone {a b : ForkedBeaconState preset} (run : Run config checks a b) :
+          (getCurrentEpoch a.state).toNat ≤ (getCurrentEpoch b.state).toNat := by
+        induction run with
+        | nil => exact Nat.le_refl _
+        | snoc run next induction => exact induction.trans (coverage_step_epoch next)
+      exact monotone pre
+    have count : (getCurrentEpoch last.state).toNat - (getCurrentEpoch x.state).toNat =
+        ((getCurrentEpoch middle.state).toNat - (getCurrentEpoch x.state).toNat) +
+        ((getCurrentEpoch last.state).toNat - (getCurrentEpoch middle.state).toNat) := by omega
+    rw [count, Nat.add_mul, List.map_append, List.sum_append]
+    omega
+
+private theorem funding_window_of_steps {x y : ForkedBeaconState preset}
+    (tail : Run config checks x y) (electra : .pectra ≤ x.fork)
+    (early : y.fork < .glamsterdam)
+    (delay : 2 ≤ config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat)
+    (unique : uniqueKeys y.state)
+    (high : Nat) (endEpoch : (getCurrentEpoch y.state).toNat ≤ high + 1)
+    (events : List (BalanceEvent preset)) (replayed : tail.balanceEvents high = .ok events)
+    (stepBound : ∀ {a b : ForkedBeaconState preset} (pre : Run config checks x a)
+      (step : Step config checks a b), b.fork < .glamsterdam →
+      ∀ added, step.balanceEvents = .ok added →
+      fundedStake b + funding_carry b ≤ fundedStake a + funding_carry a +
+        ((getCurrentEpoch b.state).toNat - (getCurrentEpoch a.state).toNat) *
+          config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat +
+        (added.map fundingCredit).sum) :
+    Quorum.weight (effectiveWeight y.state) (activeKeys y.state) ≤
+      activeStakeWindow (config := config) x high events := by
+  have bound := funding_run_funded tail early high endEpoch events replayed stepBound
+  have active := funding_active_le y early unique
+  have count : (getCurrentEpoch y.state).toNat - (getCurrentEpoch x.state).toNat ≤
+      driftHorizon x high := by unfold driftHorizon; omega
+  have larger := Nat.mul_le_mul_right
+    config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat count
+  simp only [activeStakeWindow, electra, delay, and_self, ↓reduceIte,
+    depositWindow, funding_carry] at *
+  omega
 
 /-- Deposit credits outside the withdrawn-key bypass spend the interval's actual capacity. -/
 theorem funding_deposit_capacity {g x y : ForkedBeaconState preset}
