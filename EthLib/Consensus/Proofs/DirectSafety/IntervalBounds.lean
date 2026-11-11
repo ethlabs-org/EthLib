@@ -6015,6 +6015,67 @@ private theorem intervalGain_active_residual {g x y : ForkedBeaconState preset}
   · rw [intervalGain_residual_other x high e deposit]
     exact credit
 
+private theorem intervalGain_upgrade_epoch {s t : ForkedBeaconState preset}
+    (ok : processUpgrades config checks s = .ok t)
+    (initial : .pectra ≤ s.fork → config.ELECTRA_FORK_EPOCH.toNat ≤
+      (getCurrentEpoch s.state).toNat) :
+    .pectra ≤ t.fork → config.ELECTRA_FORK_EPOCH.toNat ≤
+      (getCurrentEpoch t.state).toNat := by
+  fun_induction processUpgrades config checks s generalizing t with
+  | case1 s due ih =>
+    obtain ⟨next, nextOk, rest⟩ := bind_ok_iff.mp ok
+    apply ih next rest
+    intro electra
+    have slot := (upgradeFrame_upgradeNext nextOk).slot
+    have epoch : getCurrentEpoch next.val.state = getCurrentEpoch s.state := by
+      simp only [getCurrentEpoch, slot]
+    rw [epoch]
+    by_cases old : .pectra ≤ s.fork
+    · exact initial old
+    · obtain ⟨fork, state⟩ := s
+      cases fork <;> simp only [ForkedBeaconState.fork] at old
+      all_goals try (exact False.elim (old (by decide)))
+      all_goals simp only [upgradeNext, bind_ok_iff, pure, Except.pure, Except.ok.injEq,
+        throw] at nextOk
+      all_goals try contradiction
+      all_goals try (obtain ⟨_, _, rfl⟩ := nextOk)
+      all_goals try (exact False.elim (of_decide_eq_false rfl electra))
+      simp only [upgradeDue, Config.nextFork, Option.any_some, Bool.and_eq_true,
+        beq_iff_eq] at due
+      have scheduled : getCurrentEpoch state = config.ELECTRA_FORK_EPOCH := by
+        exact due.2
+      rw [scheduled]
+  | case2 s notDue => cases ok; exact initial
+
+private theorem intervalGain_reachable_epoch {g y : ForkedBeaconState preset}
+    (run : Run config checks g y) (genesis : Genesis (config := config) (checks := checks) g) :
+    .pectra ≤ y.fork → config.ELECTRA_FORK_EPOCH.toNat ≤
+      (getCurrentEpoch y.state).toNat := by
+  induction run with
+  | nil =>
+    intro electra
+    obtain ⟨hash, time, deposits, ok⟩ := genesis
+    have altair : Fork.altair ≤ g.fork := Nat.le_trans (by decide) electra
+    simp [initializeBeaconStateFromEth1, altair, throw] at ok
+  | @snoc middle last pre step ih =>
+    cases step with
+    | slot ok =>
+      obtain ⟨advanced, advanceOk, upgrades⟩ := bind_ok_iff.mp ok
+      apply intervalGain_upgrade_epoch upgrades
+      intro electra
+      have previous := ih electra
+      have moved := advanceSlot_slot advanceOk
+      have epochs : (getCurrentEpoch middle.state).toNat ≤
+          (getCurrentEpoch advanced).toNat := by
+        simp only [getCurrentEpoch_toNat]
+        exact Nat.div_le_div_right (by omega)
+      exact previous.trans epochs
+    | block engine signed due ok =>
+      intro electra
+      have previous := ih electra
+      have slot := (frame_processBlock (applySignedBlock_ok ok).2.1).slot
+      simpa only [getCurrentEpoch, slot] using previous
+
 private theorem intervalGain_boundary_carry (x : ForkedBeaconState preset)
     (early : x.fork < .glamsterdam) (unique : uniqueKeys x.state) :
     boundaryStake x ≤ activationCarry x := by
