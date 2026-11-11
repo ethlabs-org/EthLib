@@ -4381,7 +4381,8 @@ private theorem intervalLoss_step_deposit_epoch {x y : ForkedBeaconState preset}
       pure, Except.pure, Except.ok.injEq] at replayed
     subst events
     exact Or.inl (intervalLoss_zero_credit e
-      (blockBalanceReplay_bounded before engine signed.message holds.balancesMatch replay e member).1
+      (blockBalanceReplay_bounded before engine signed.message
+        holds.balancesMatch replay e member).1
       (funding_block_events before engine signed.message replay e member deposit electra))
   | slot ok =>
     obtain ⟨advanced, advanceOk, upgrades⟩ := bind_ok_iff.mp ok
@@ -4443,6 +4444,320 @@ theorem replay_electra_deposit_epoch {g x y : ForkedBeaconState preset}
     · exact intervalLoss_step_deposit_epoch step early
         (intervalLoss_run_invariant (shared.append pre) genesis) addedOk event added deposit electra
 
+private theorem intervalLoss_charge_site {x y : ForkedBeaconState preset}
+    (tail : Run config checks x y) (charge : DepartureCharge)
+    (member : charge ∈ tail.departureCharges) :
+    ∃ a b, ∃ pre : Run config checks x a, ∃ step : Step config checks a b,
+      ∃ post : Run config checks b y, (pre.snoc step).append post = tail ∧
+        ∃ v w, a.state.validators.data[charge.index]? = some v ∧
+          b.state.validators.data[charge.index]? = some w ∧
+          v.exitEpoch = FAR_FUTURE_EPOCH ∧ w.exitEpoch ≠ FAR_FUTURE_EPOCH ∧
+          charge.amount = v.effectiveBalance.toNat ∧ charge.epoch = w.exitEpoch.toNat := by
+  induction tail with
+  | nil => simp [Run.departureCharges] at member
+  | @snoc a b pre step ih =>
+    rcases List.mem_append.mp member with old | added
+    · obtain ⟨first, last, initial, call, remaining, equal, witness⟩ := ih old
+      refine ⟨first, last, initial, call, remaining.snoc step, ?_, witness⟩
+      simp only [Run.append, equal]
+    · obtain ⟨⟨v, i⟩, found, charged⟩ := List.mem_filterMap.mp added
+      have found : a.state.validators.data[i]? = some v := by
+        simpa only [List.mem_zipIdx_iff_getElem?, Array.getElem?_toList] using found
+      dsimp only at charged
+      split at charged
+      · cases charged
+      · rename_i w located
+        split at charged
+        · rename_i assigned
+          cases Option.some.inj charged
+          simp only [Bool.and_eq_true, beq_iff_eq, bne_iff_ne] at assigned
+          exact ⟨a, b, pre, step, .nil, rfl, v, w, found, located,
+            assigned.1, assigned.2, rfl, rfl⟩
+        · cases charged
+
+private theorem intervalLoss_keys_sum {fork : Fork} (s : BeaconState preset fork)
+    (indices : List ValidatorIndex) (unique : uniqueKeys s) (distinct : indices.Nodup)
+    (inside : ∀ i ∈ indices, i.toNat < s.validators.data.size)
+    (weight : Cryptography.Bls.BLSPubkey → Nat) :
+    (∑ k ∈ keysAt s indices, weight k) =
+      (indices.map fun i => ((s.validators.data[i.toNat]?).map
+        (fun v => weight v.pubkey)).getD 0).sum := by
+  let key (i : ValidatorIndex) (hi : i ∈ indices.toFinset) :=
+    (s.validators.data[i.toNat]'(inside i (List.mem_toFinset.mp hi))).pubkey
+  rw [← List.sum_toFinset _ distinct]
+  symm
+  apply Finset.sum_bij key
+  · intro i hi
+    simp only [keysAt, List.mem_toFinset, List.mem_filterMap]
+    exact ⟨i, List.mem_toFinset.mp hi, by simp [key, inside i (List.mem_toFinset.mp hi)]⟩
+  · intro i hi j hj same
+    apply UInt64.toNat_inj.mp
+    apply unique.eq_of_getElem_eq
+      (by simpa [registryKeys] using inside i (List.mem_toFinset.mp hi))
+      (by simpa [registryKeys] using inside j (List.mem_toFinset.mp hj))
+    simpa [registryKeys, key] using same
+  · intro k hk
+    simp only [keysAt, List.mem_toFinset, List.mem_filterMap] at hk
+    obtain ⟨i, hi, found⟩ := hk
+    exact ⟨i, List.mem_toFinset.mpr hi, by
+      simpa [key, Array.getElem?_eq_getElem, inside i hi] using found⟩
+  · intro i hi
+    simp [key, inside i (List.mem_toFinset.mp hi)]
+
+private theorem intervalLoss_reference_indices {g x y : ForkedBeaconState preset}
+    (shared : Run config checks g x)
+    (genesis : Genesis (config := config) (checks := checks) g)
+    (early : x.fork < .glamsterdam) :
+    referenceLoss x y =
+      ((getActiveValidatorIndices x.state (getCurrentEpoch x.state)).map fun i =>
+        match x.state.validators.data[i.toNat]? with
+        | none => 0
+        | some v => if ∃ w ∈ y.state.validators.data.toList,
+            w.pubkey = v.pubkey ∧ w.slashed = true then 0 else
+          effectiveWeight x.state v.pubkey -
+            Quorum.supported (recentKeys y.state) (effectiveWeight y.state) v.pubkey).sum := by
+  have within := x.state.validators.bound early
+  have distinct : (getActiveValidatorIndices x.state (getCurrentEpoch x.state)).Nodup := by
+    simpa [List.Nodup] using (getActiveValidatorIndices_sorted within _).imp UInt64.ne_of_lt
+  unfold referenceLoss
+  rw [Finset.sum_filter]
+  simp only [ite_not]
+  rw [activeKeys, intervalLoss_keys_sum x.state _ (shared.unique (genesis_unique genesis))
+    distinct (fun i member => by
+      obtain ⟨v, found, _⟩ := (mem_getActiveValidatorIndices within).mp member
+      exact (Array.getElem?_eq_some_iff.mp found).1)]
+  congr 1
+  apply List.map_congr_left
+  intro i member
+  cases x.state.validators.data[i.toNat]? <;> rfl
+
+private theorem intervalLoss_weight_at {fork : Fork} (s : BeaconState preset fork)
+    (unique : uniqueKeys s) (i : Nat) (v : Validator)
+    (found : s.validators.data[i]? = some v) :
+    effectiveWeight s v.pubkey = effectiveAt ⟨fork, s⟩ i := by
+  have lookup (vs : List Validator) (distinct : (vs.map (·.pubkey)).Nodup)
+      (v : Validator) (member : v ∈ vs) :
+      vs.find? (fun w => w.pubkey == v.pubkey) = some v := by
+    induction vs with
+    | nil => simp at member
+    | cons w ws ih =>
+      simp only [List.map_cons, List.nodup_cons] at distinct
+      rcases List.mem_cons.mp member with rfl | member
+      · simp
+      · have different : w.pubkey ≠ v.pubkey := by
+          intro same
+          exact distinct.1 (List.mem_map.mpr ⟨v, member, same.symm⟩)
+        simp [different, ih distinct.2 member]
+  have member : v ∈ s.validators.data.toList := by
+    simpa using Array.mem_of_getElem? found
+  simp [effectiveWeight, effectiveAt, found, lookup _ unique v member]
+
+private theorem intervalLoss_recent_supported (y : ForkedBeaconState preset)
+    (early : y.fork < .glamsterdam) (unique : uniqueKeys y.state)
+    (i : ValidatorIndex) (w : Validator) (found : y.state.validators.data[i.toNat]? = some w)
+    (recent : isActiveValidator w (getCurrentEpoch y.state) = true ∨
+      isActiveValidator w (getPreviousEpoch y.state) = true) :
+    Quorum.supported (recentKeys y.state) (effectiveWeight y.state) w.pubkey =
+      effectiveAt y i.toNat := by
+  have selected (epoch : Epoch) (active : isActiveValidator w epoch = true) :
+      w.pubkey ∈ keysAt y.state (getActiveValidatorIndices y.state epoch) := by
+    simp only [keysAt, List.mem_toFinset, List.mem_filterMap]
+    refine ⟨i, (mem_getActiveValidatorIndices (y.state.validators.bound early)).mpr
+      ⟨w, found, active⟩, ?_⟩
+    simp [found]
+  have member : w.pubkey ∈ recentKeys y.state := by
+    rcases recent with current | previous
+    · exact Finset.mem_union_left _ (selected _ current)
+    · exact Finset.mem_union_right _ (selected _ previous)
+  rw [Quorum.supported, if_pos member]
+  exact intervalLoss_weight_at y.state unique i.toNat w found
+
+private theorem intervalLoss_sum_bound {g x y : ForkedBeaconState preset}
+    (shared : Run config checks g x)
+    (genesis : Genesis (config := config) (checks := checks) g)
+    (early : x.fork < .glamsterdam) (events : List (BalanceEvent preset))
+    (departure : ValidatorIndex → Nat)
+    (pointwise : ∀ i ∈ getActiveValidatorIndices x.state (getCurrentEpoch x.state),
+      ∀ v, x.state.validators.data[i.toNat]? = some v →
+      (¬ ∃ w ∈ y.state.validators.data.toList, w.pubkey = v.pubkey ∧ w.slashed = true) →
+      v.slashed = false ∧
+      effectiveWeight x.state v.pubkey -
+          Quorum.supported (recentKeys y.state) (effectiveWeight y.state) v.pubkey ≤
+        departure i +
+          (let deficit := effectiveAt x i.toNat - actualBalanceAt x i.toNat +
+            (events.map (referenceDebit i.toNat)).sum
+           if deficit = 0 then 0 else deficit + preset.EFFECTIVE_BALANCE_INCREMENT.toNat - 1)) :
+    referenceLoss x y ≤
+      ((getActiveValidatorIndices x.state (getCurrentEpoch x.state)).map departure).sum +
+        lossCorrection x events := by
+  rw [intervalLoss_reference_indices shared genesis early]
+  unfold lossCorrection
+  rw [← List.sum_map_add]
+  apply List.sum_le_sum
+  intro i member
+  obtain ⟨v, found, _⟩ := (mem_getActiveValidatorIndices (x.state.validators.bound early)).mp member
+  simp only [found, Option.map_some, Option.getD_some]
+  split
+  · exact Nat.zero_le _
+  · rename_i unslashed
+    obtain ⟨flag, bound⟩ := pointwise i member v found unslashed
+    simpa only [flag, Bool.false_eq_true, ↓reduceIte] using bound
+
+private theorem intervalLoss_charge_sum (charges : List DepartureCharge) (indices : Finset Nat)
+    (high : Nat) :
+    (∑ i ∈ indices, match charges.find? (fun c => c.index == i) with
+      | some c => if c.epoch ≤ high + 1 then c.amount else 0
+      | none => 0) ≤ ((charges.filter fun c => c.epoch ≤ high + 1).map (·.amount)).sum := by
+  induction charges with
+  | nil => simp
+  | cons charge rest ih =>
+    have pointwise (i : Nat) :
+        (match (charge :: rest).find? (fun c => c.index == i) with
+        | some c => if c.epoch ≤ high + 1 then c.amount else 0
+        | none => 0) ≤
+        (if i = charge.index then if charge.epoch ≤ high + 1 then charge.amount else 0 else 0) +
+        (match rest.find? (fun c => c.index == i) with
+        | some c => if c.epoch ≤ high + 1 then c.amount else 0
+        | none => 0) := by
+      by_cases same : charge.index = i
+      · subst i
+        simp only [List.find?_cons, beq_self_eq_true, ↓reduceIte]
+        omega
+      · simp [same, Ne.symm same]
+    have bound := Finset.sum_le_sum (fun i (_ : i ∈ indices) => pointwise i)
+    rw [Finset.sum_add_distrib] at bound
+    have single : (∑ i ∈ indices,
+        if i = charge.index then if charge.epoch ≤ high + 1 then charge.amount else 0 else 0) ≤
+        (if charge.epoch ≤ high + 1 then charge.amount else 0) := by
+      by_cases present : charge.index ∈ indices
+      · rw [Finset.sum_eq_single charge.index
+          (fun i _ different => by simp [different]) (by simp [present])]
+        simp
+      · have zero : (∑ i ∈ indices,
+            if i = charge.index then
+              if charge.epoch ≤ high + 1 then charge.amount else 0 else 0) = 0 :=
+          Finset.sum_eq_zero fun i member => by
+            have different : i ≠ charge.index := fun same => present (same ▸ member)
+            simp [different]
+        rw [zero]
+        exact Nat.zero_le _
+    by_cases same : charge.epoch ≤ high + 1
+    · simp only [List.filter_cons, decide_eq_true_eq, same, ↓reduceIte,
+        List.map_cons, List.sum_cons]
+      simp only [same, ↓reduceIte] at single bound
+      omega
+    · simp only [List.filter_cons, decide_eq_true_eq, same, ↓reduceIte]
+      simp only [same, ↓reduceIte] at single bound
+      omega
+
+private theorem intervalLoss_charge_active_sum (x : ForkedBeaconState preset)
+    (early : x.fork < .glamsterdam) (charges : List DepartureCharge) (high : Nat) :
+    ((getActiveValidatorIndices x.state (getCurrentEpoch x.state)).map fun i =>
+      match charges.find? (fun c => c.index == i.toNat) with
+      | some c => if c.epoch ≤ high + 1 then c.amount else 0
+      | none => 0).sum ≤
+        ((charges.filter fun c => c.epoch ≤ high + 1).map (·.amount)).sum := by
+  have distinct : (getActiveValidatorIndices x.state (getCurrentEpoch x.state)).Nodup := by
+    simpa [List.Nodup] using
+      (getActiveValidatorIndices_sorted (x.state.validators.bound early) _).imp UInt64.ne_of_lt
+  have injective : Function.Injective UInt64.toNat := fun _ _ h => UInt64.toNat_inj.mp h
+  have natDistinct := distinct.map injective
+  have bound := intervalLoss_charge_sum charges
+    ((getActiveValidatorIndices x.state (getCurrentEpoch x.state)).map UInt64.toNat).toFinset high
+  rw [List.sum_toFinset _ natDistinct, List.map_map] at bound
+  exact bound
+
+private theorem intervalLoss_scheduled_sum (x : ForkedBeaconState preset)
+    (parameters : Parameters preset) (early : x.fork < .glamsterdam) (high : Nat) :
+    ((getActiveValidatorIndices x.state (getCurrentEpoch x.state)).map fun i =>
+      (x.state.validators.data[i.toNat]?.map fun v =>
+        if v.exitEpoch != FAR_FUTURE_EPOCH && v.exitEpoch.toNat ≤ high + 1 then
+          v.effectiveBalance.toNat else 0).getD 0).sum = scheduledExitCarry x high := by
+  let selected (v : Validator) : Bool :=
+    v.exitEpoch != FAR_FUTURE_EPOCH && v.exitEpoch.toNat ≤ high + 1
+  let weight (v : Validator) := if selected v then v.effectiveBalance.toNat else 0
+  have filtered {α β : Type} (items : List α) (f : α → Option β) (g : β → Nat) :
+      ((items.filterMap f).map g).sum =
+        (items.map fun a => ((f a).map g).getD 0).sum := by
+    induction items with
+    | nil => rfl
+    | cons a rest ih => cases h : f a <;> simp [h, ih]
+  unfold getActiveValidatorIndices
+  rw [filtered]
+  have same : (x.state.validators.data.toList.zipIdx.map fun p =>
+      ((if isActiveValidator p.1 (getCurrentEpoch x.state) then some p.2.toUInt64 else none).map
+        fun i => (x.state.validators.data[i.toNat]?.map weight).getD 0).getD 0) =
+      x.state.validators.data.toList.map fun v =>
+        if isActiveValidator v (getCurrentEpoch x.state) then weight v else 0 := by
+    conv_rhs => rw [← List.zipIdx_map_fst 0 x.state.validators.data.toList, List.map_map]
+    apply List.map_congr_left
+    rintro ⟨v, i⟩ member
+    have found := List.mem_zipIdx_iff_getElem?.mp member
+    have inside := (List.getElem?_eq_some_iff.mp found).1
+    have bounded : i < 2 ^ 64 :=
+      (lt_of_lt_of_le inside (x.state.validators.bound early)).trans parameters.registry
+    have found' : x.state.validators.data[i]? = some v := by simpa using found
+    cases active : isActiveValidator v (getCurrentEpoch x.state) <;>
+      simp [active, Nat.toUInt64_eq, UInt64.toNat_ofNat_of_lt' bounded, found']
+  change (x.state.validators.data.toList.zipIdx.map _).sum = _
+  rw [same]
+  have sumFiltered (vs : List Validator) :
+      (vs.map fun v => if isActiveValidator v (getCurrentEpoch x.state) then weight v else 0).sum =
+        ((vs.filter fun v => isActiveValidator v (getCurrentEpoch x.state) && selected v).map
+          (·.effectiveBalance.toNat)).sum := by
+    induction vs with
+    | nil => rfl
+    | cons v rest ih =>
+      cases active : isActiveValidator v (getCurrentEpoch x.state) <;>
+        cases chosen : selected v <;> simp [active, chosen, weight, ih]
+  rw [sumFiltered]
+  unfold scheduledExitCarry
+  simp only [selected, Bool.and_assoc]
+  rw [List.sum_eq_foldl, List.foldl_map]
+
+private theorem intervalLoss_sum_departures {g x y : ForkedBeaconState preset}
+    (shared : Run config checks g x) (tail : Run config checks x y)
+    (genesis : Genesis (config := config) (checks := checks) g)
+    (parameters : Parameters preset) (early : x.fork < .glamsterdam)
+    (high : Nat) (events : List (BalanceEvent preset))
+    (pointwise : ∀ i ∈ getActiveValidatorIndices x.state (getCurrentEpoch x.state),
+      ∀ v, x.state.validators.data[i.toNat]? = some v →
+      (¬ ∃ w ∈ y.state.validators.data.toList, w.pubkey = v.pubkey ∧ w.slashed = true) →
+      v.slashed = false ∧
+      effectiveWeight x.state v.pubkey -
+          Quorum.supported (recentKeys y.state) (effectiveWeight y.state) v.pubkey ≤
+        (if v.exitEpoch != FAR_FUTURE_EPOCH && v.exitEpoch.toNat ≤ high + 1 then
+          v.effectiveBalance.toNat else 0) +
+        (match tail.departureCharges.find? (fun c => c.index == i.toNat) with
+        | some c => if c.epoch ≤ high + 1 then c.amount else 0
+        | none => 0) +
+        (let deficit := effectiveAt x i.toNat - actualBalanceAt x i.toNat +
+          (events.map (referenceDebit i.toNat)).sum
+         if deficit = 0 then 0 else deficit + preset.EFFECTIVE_BALANCE_INCREMENT.toNat - 1)) :
+    referenceLoss x y ≤ scheduledExitCarry x high +
+      ((tail.departureCharges.filter fun c => c.epoch ≤ high + 1).map (·.amount)).sum +
+      lossCorrection x events := by
+  let inherited (i : ValidatorIndex) :=
+    (x.state.validators.data[i.toNat]?.map fun v =>
+      if v.exitEpoch != FAR_FUTURE_EPOCH && v.exitEpoch.toNat ≤ high + 1 then
+        v.effectiveBalance.toNat else 0).getD 0
+  let charged (i : ValidatorIndex) :=
+    match tail.departureCharges.find? (fun c => c.index == i.toNat) with
+    | some c => if c.epoch ≤ high + 1 then c.amount else 0
+    | none => 0
+  have bounded := intervalLoss_sum_bound shared genesis early events
+    (fun i => inherited i + charged i) (fun i member v found unslashed => by
+      simpa [inherited, found, charged] using pointwise i member v found unslashed)
+  rw [List.sum_map_add] at bounded
+  have initial := intervalLoss_scheduled_sum x parameters early high
+  have added := intervalLoss_charge_active_sum x early tail.departureCharges high
+  change _ = scheduledExitCarry x high at initial
+  change ((getActiveValidatorIndices x.state (getCurrentEpoch x.state)).map charged).sum ≤ _
+    at added
+  change ((getActiveValidatorIndices x.state (getCurrentEpoch x.state)).map inherited).sum = _
+    at initial
+  omega
+
 private theorem intervalLoss_reference_split (x y : ForkedBeaconState preset) :
     referenceLoss x y =
       (∑ k ∈ ((activeKeys x.state).filter fun k =>
@@ -4502,6 +4817,81 @@ private theorem intervalLoss_recent_between {f h j : Fork}
     rw [activation]
     rw [exit, finalActivation, activation] at recent
     rcases recent with current | previous <;> omega
+
+private theorem intervalLoss_recent_unassigned {f h : Fork}
+    (s : BeaconState preset f) (t : BeaconState preset h) (v w : Validator)
+    (life : ValidatorLifecycle v w)
+    (epochs : (getCurrentEpoch s).toNat ≤ (getCurrentEpoch t).toNat)
+    (active : isActiveValidator v (getCurrentEpoch s) = true)
+    (unset : w.exitEpoch = FAR_FUTURE_EPOCH) :
+    isActiveValidator w (getCurrentEpoch t) = true ∨
+      isActiveValidator w (getPreviousEpoch t) = true := by
+  have far : FAR_FUTURE_EPOCH.toNat = 2 ^ 64 - 1 := by decide
+  have bound := v.exitEpoch.toNat_lt
+  have epochBound := (getCurrentEpoch t).toNat_lt
+  have activated : v.activationEpoch ≠ FAR_FUTURE_EPOCH := by
+    simp only [isActiveValidator, Bool.and_eq_true, decide_eq_true_eq,
+      UInt64.le_iff_toNat_le, UInt64.lt_iff_toNat_lt] at active
+    intro equal
+    rw [equal, far] at active
+    omega
+  have activation := life.activationEpoch activated
+  simp only [isActiveValidator, Bool.and_eq_true, decide_eq_true_eq,
+    UInt64.le_iff_toNat_le, UInt64.lt_iff_toNat_lt, getPreviousEpoch_toNat] at active ⊢
+  rw [activation, unset, far]
+  omega
+
+private theorem intervalLoss_exit_of_not_recent {f h : Fork}
+    (s : BeaconState preset f) (t : BeaconState preset h) (v w : Validator)
+    (life : ValidatorLifecycle v w)
+    (epochs : (getCurrentEpoch s).toNat ≤ (getCurrentEpoch t).toNat)
+    (active : isActiveValidator v (getCurrentEpoch s) = true)
+    (notRecent : ¬ (isActiveValidator w (getCurrentEpoch t) = true ∨
+      isActiveValidator w (getPreviousEpoch t) = true)) :
+    w.exitEpoch ≠ FAR_FUTURE_EPOCH ∧ w.exitEpoch.toNat ≤ (getCurrentEpoch t).toNat := by
+  have assigned : w.exitEpoch ≠ FAR_FUTURE_EPOCH := fun unset =>
+    notRecent (intervalLoss_recent_unassigned s t v w life epochs active unset)
+  refine ⟨assigned, ?_⟩
+  have activated : v.activationEpoch ≠ FAR_FUTURE_EPOCH := by
+    have bound := v.exitEpoch.toNat_lt
+    have far : FAR_FUTURE_EPOCH.toNat = 2 ^ 64 - 1 := by decide
+    simp only [isActiveValidator, Bool.and_eq_true, decide_eq_true_eq,
+      UInt64.le_iff_toNat_le, UInt64.lt_iff_toNat_lt] at active
+    intro unset
+    rw [unset, far] at active
+    omega
+  have activation := life.activationEpoch activated
+  have notActive : ¬ isActiveValidator w (getCurrentEpoch t) = true :=
+    fun h => notRecent (Or.inl h)
+  simp only [isActiveValidator, Bool.and_eq_true, decide_eq_true_eq,
+    UInt64.le_iff_toNat_le, UInt64.lt_iff_toNat_lt] at active notActive
+  rw [activation] at notActive
+  omega
+
+private theorem intervalLoss_supported_events {g x y : ForkedBeaconState preset}
+    (shared : Run config checks g x) (tail : Run config checks x y)
+    (genesis : Genesis (config := config) (checks := checks) g)
+    (parameters : Parameters preset) (early : y.fork < .glamsterdam) (high : Nat)
+    (endEpoch : (getCurrentEpoch y.state).toNat ≤ high + 1)
+    (events : List (BalanceEvent preset)) (replayed : tail.balanceEvents high = .ok events)
+    (i : Nat) (v z : Validator) (found : x.state.validators.data[i]? = some v)
+    (located : y.state.validators.data[i]? = some z)
+    (active : isActiveValidator v (getCurrentEpoch x.state) = true)
+    (recent : isActiveValidator z (getCurrentEpoch y.state) = true ∨
+      isActiveValidator z (getPreviousEpoch y.state) = true) :
+    ∀ event ∈ events, ∃ w, event.before.state.validators.data[i]? = some w ∧
+      (isActiveValidator w (getCurrentEpoch event.before.state) = true ∨
+        isActiveValidator w (getPreviousEpoch event.before.state) = true) := by
+  intro event member
+  obtain ⟨first, during, last, _, _, lo, hi⟩ :=
+    replay_event_provenance shared tail genesis parameters early high endEpoch
+      events replayed event member
+  obtain ⟨w, middle, firstLife⟩ := first.validators i v found
+  obtain ⟨final, finalFound, lastLife⟩ := (during.trans last).validators i w middle
+  have same := Option.some.inj (finalFound.symm.trans located)
+  subst final
+  exact ⟨w, middle, intervalLoss_recent_between x.state event.before.state y.state
+    v w z firstLife lastLife lo hi active recent⟩
 
 private theorem intervalLoss_filtered_coverage {x y : ForkedBeaconState preset}
     (tail : Run config checks x y) (early : y.fork < .glamsterdam) (high : Nat)
@@ -4670,6 +5060,206 @@ private theorem intervalLoss_effective_loss {g x y : ForkedBeaconState preset}
   · simpa [effectiveAt, found] using first
   · simpa [effectiveAt, located] using last
   · omega
+
+private theorem intervalLoss_effective_loss_prefix {g x a y : ForkedBeaconState preset}
+    (shared : Run config checks g x) (pre : Run config checks x a)
+    (post : Run config checks a y)
+    (genesis : Genesis (config := config) (checks := checks) g)
+    (caps : CapOrder preset) (aligned : MaxEffectiveBalancesAligned preset)
+    (increment : 0 < preset.EFFECTIVE_BALANCE_INCREMENT.toNat)
+    (early : y.fork < .glamsterdam) (high : Nat)
+    (i : Nat) (v : Validator) (found : x.state.validators.data[i]? = some v)
+    (activated : v.activationEpoch ≠ FAR_FUTURE_EPOCH)
+    (events : List (BalanceEvent preset))
+    (replayed : (pre.append post).balanceEvents high = .ok events)
+    (covered : ∀ prior, pre.balanceEvents high = .ok prior →
+      pathDebits i pre.balancePath ≤ (prior.map (referenceDebit i)).sum) :
+    let deficit := effectiveAt x i - actualBalanceAt x i + (events.map (referenceDebit i)).sum
+    effectiveAt x i - effectiveAt a i ≤
+      if deficit = 0 then 0 else deficit + preset.EFFECTIVE_BALANCE_INCREMENT.toNat - 1 := by
+  obtain ⟨prior, priorOk, initialEvents⟩ := pre.balanceEvents_prefix post high events replayed
+  have bounded := intervalLoss_effective_loss shared pre genesis caps aligned increment
+    (Nat.lt_of_le_of_lt (fork_le_of_chainSteps post.chainSteps) early)
+    i v found activated prior (covered prior priorOk)
+  obtain ⟨rest, rfl⟩ := initialEvents
+  simp only [List.map_append, List.sum_append]
+  dsimp only at bounded
+  split <;> split at bounded <;> omega
+
+private theorem intervalLoss_retained {g x y : ForkedBeaconState preset}
+    (shared : Run config checks g x) (tail : Run config checks x y)
+    (genesis : Genesis (config := config) (checks := checks) g)
+    (parameters : Parameters preset) (caps : CapOrder preset)
+    (aligned : MaxEffectiveBalancesAligned preset) (early : y.fork < .glamsterdam)
+    (high : Nat) (endEpoch : (getCurrentEpoch y.state).toNat ≤ high + 1)
+    (events : List (BalanceEvent preset)) (replayed : tail.balanceEvents high = .ok events)
+    (i : ValidatorIndex) (v w : Validator)
+    (found : x.state.validators.data[i.toNat]? = some v)
+    (located : y.state.validators.data[i.toNat]? = some w)
+    (active : isActiveValidator v (getCurrentEpoch x.state) = true)
+    (recent : isActiveValidator w (getCurrentEpoch y.state) = true ∨
+      isActiveValidator w (getPreviousEpoch y.state) = true)
+    (slashings : ∀ event ∈ events, event.source = .slashings →
+      actualBalanceAt event.before i.toNat ≤ actualBalanceAt event.after i.toNat) :
+    let deficit := effectiveAt x i.toNat - actualBalanceAt x i.toNat +
+      (events.map (referenceDebit i.toNat)).sum
+    effectiveWeight x.state v.pubkey -
+        Quorum.supported (recentKeys y.state) (effectiveWeight y.state) v.pubkey ≤
+      if deficit = 0 then 0 else deficit + preset.EFFECTIVE_BALANCE_INCREMENT.toNat - 1 := by
+  have supported := intervalLoss_supported_events shared tail genesis parameters early high
+    endEpoch events replayed i.toNat v w found located active recent
+  have covered := intervalLoss_filtered_coverage tail early high endEpoch events replayed
+    i.toNat supported slashings
+  have activated : v.activationEpoch ≠ FAR_FUTURE_EPOCH := by
+    have bound := v.exitEpoch.toNat_lt
+    have far : FAR_FUTURE_EPOCH.toNat = 2 ^ 64 - 1 := by decide
+    simp only [isActiveValidator, Bool.and_eq_true, decide_eq_true_eq,
+      UInt64.le_iff_toNat_le, UInt64.lt_iff_toNat_lt] at active
+    intro unset
+    rw [unset, far] at active
+    omega
+  obtain ⟨last, lastFound, key⟩ := tail.key_preserved i.toNat v found
+  have same := Option.some.inj (lastFound.symm.trans located)
+  subst last
+  have unique := genesis_unique genesis
+  rw [intervalLoss_weight_at x.state (shared.unique unique) i.toNat v found,
+    ← key, intervalLoss_recent_supported y early ((shared.append tail).unique unique)
+      i w located recent]
+  exact intervalLoss_effective_loss shared tail genesis caps aligned parameters.increment
+    early i.toNat v found activated events covered
+
+private theorem intervalLoss_departing {g x y : ForkedBeaconState preset}
+    (shared : Run config checks g x) (tail : Run config checks x y)
+    (genesis : Genesis (config := config) (checks := checks) g)
+    (parameters : Parameters preset) (caps : CapOrder preset)
+    (aligned : MaxEffectiveBalancesAligned preset) (early : y.fork < .glamsterdam)
+    (high : Nat) (endEpoch : (getCurrentEpoch y.state).toNat ≤ high + 1)
+    (events : List (BalanceEvent preset)) (replayed : tail.balanceEvents high = .ok events)
+    (i : ValidatorIndex) (v : Validator) (found : x.state.validators.data[i.toNat]? = some v)
+    (active : isActiveValidator v (getCurrentEpoch x.state) = true)
+    (charge : DepartureCharge) (member : charge ∈ tail.departureCharges)
+    (index : charge.index = i.toNat)
+    (slashings : ∀ a, ∀ pre : Run config checks x a, ∀ post : Run config checks a y,
+      pre.append post = tail → ∀ prior, pre.balanceEvents high = .ok prior →
+      ∀ event ∈ prior, event.source = .slashings →
+        actualBalanceAt event.before i.toNat ≤ actualBalanceAt event.after i.toNat) :
+    let deficit := effectiveAt x i.toNat - actualBalanceAt x i.toNat +
+      (events.map (referenceDebit i.toNat)).sum
+    effectiveWeight x.state v.pubkey ≤ charge.amount +
+      (if deficit = 0 then 0 else deficit + preset.EFFECTIVE_BALANCE_INCREMENT.toNat - 1) := by
+  obtain ⟨a, b, pre, step, post, equal, first, last, before, after, unset,
+    assigned, amount, epoch⟩ := intervalLoss_charge_site tail charge member
+  rw [index] at before after
+  have decomposed : pre.append ((Run.nil.snoc step).append post) = tail := by
+    have assoc : pre.append ((Run.nil.snoc step).append post) =
+        (pre.snoc step).append post := by
+      clear tail early endEpoch replayed member slashings equal
+      induction post with
+      | nil => rfl
+      | snoc post next ih => exact congrArg (fun r => r.snoc next) ih
+    exact assoc.trans equal
+  let rest := (Run.nil.snoc step).append post
+  have earlyA := Nat.lt_of_le_of_lt (fork_le_of_chainSteps rest.chainSteps) early
+  have epochs (p q : ForkedBeaconState preset) (run : Run config checks p q) :
+      (getCurrentEpoch p.state).toNat ≤ (getCurrentEpoch q.state).toNat := by
+    induction run with
+    | nil => exact le_rfl
+    | snoc pre step ih => exact ih.trans (coverage_step_epoch step)
+  have lastEpoch := (epochs a y rest).trans endEpoch
+  obtain ⟨w, located, life⟩ := pre.registryLifecycle.validators i.toNat v found
+  have same := Option.some.inj (located.symm.trans before)
+  subst w
+  have recent := intervalLoss_recent_unassigned x.state a.state v first life
+    (epochs x a pre) active unset
+  have activated : v.activationEpoch ≠ FAR_FUTURE_EPOCH := by
+    have bound := v.exitEpoch.toNat_lt
+    have far : FAR_FUTURE_EPOCH.toNat = 2 ^ 64 - 1 := by decide
+    simp only [isActiveValidator, Bool.and_eq_true, decide_eq_true_eq,
+      UInt64.le_iff_toNat_le, UInt64.lt_iff_toNat_lt] at active
+    intro unset
+    rw [unset, far] at active
+    omega
+  have bound := intervalLoss_effective_loss_prefix shared pre rest genesis caps aligned
+    parameters.increment early high i.toNat v found activated events
+    (decomposed ▸ replayed) (fun prior priorOk =>
+      intervalLoss_filtered_coverage pre earlyA high lastEpoch prior priorOk i.toNat
+        (intervalLoss_supported_events shared pre genesis parameters earlyA high lastEpoch
+          prior priorOk i.toNat v first found before active recent)
+        (slashings a pre rest decomposed prior priorOk))
+  rw [intervalLoss_weight_at x.state (shared.unique (genesis_unique genesis)) i.toNat v found]
+  have baseline : effectiveAt a i.toNat = charge.amount := by
+    simp [effectiveAt, before, amount]
+  rw [baseline] at bound
+  change effectiveAt x i.toNat ≤ _
+  dsimp only at bound ⊢
+  omega
+
+private theorem intervalLoss_pointwise {g x y : ForkedBeaconState preset}
+    (shared : Run config checks g x) (tail : Run config checks x y)
+    (genesis : Genesis (config := config) (checks := checks) g)
+    (parameters : Parameters preset) (caps : CapOrder preset)
+    (aligned : MaxEffectiveBalancesAligned preset) (early : y.fork < .glamsterdam)
+    (high : Nat) (endEpoch : (getCurrentEpoch y.state).toNat ≤ high + 1)
+    (events : List (BalanceEvent preset)) (replayed : tail.balanceEvents high = .ok events)
+    (i : ValidatorIndex) (v : Validator) (found : x.state.validators.data[i.toNat]? = some v)
+    (active : isActiveValidator v (getCurrentEpoch x.state) = true)
+    (slashings : ∀ a, ∀ pre : Run config checks x a, ∀ post : Run config checks a y,
+      pre.append post = tail → ∀ prior, pre.balanceEvents high = .ok prior →
+      ∀ event ∈ prior, event.source = .slashings →
+        actualBalanceAt event.before i.toNat ≤ actualBalanceAt event.after i.toNat) :
+    let deficit := effectiveAt x i.toNat - actualBalanceAt x i.toNat +
+      (events.map (referenceDebit i.toNat)).sum
+    effectiveWeight x.state v.pubkey -
+        Quorum.supported (recentKeys y.state) (effectiveWeight y.state) v.pubkey ≤
+      (if v.exitEpoch != FAR_FUTURE_EPOCH && v.exitEpoch.toNat ≤ high + 1 then
+        v.effectiveBalance.toNat else 0) +
+      (match tail.departureCharges.find? (fun c => c.index == i.toNat) with
+      | some c => if c.epoch ≤ high + 1 then c.amount else 0
+      | none => 0) +
+      (if deficit = 0 then 0 else deficit + preset.EFFECTIVE_BALANCE_INCREMENT.toNat - 1) := by
+  obtain ⟨w, located, life⟩ := tail.registryLifecycle.validators i.toNat v found
+  by_cases recent : isActiveValidator w (getCurrentEpoch y.state) = true ∨
+      isActiveValidator w (getPreviousEpoch y.state) = true
+  · have bound := intervalLoss_retained shared tail genesis parameters caps aligned early high
+      endEpoch events replayed i v w found located active recent
+      (slashings y tail .nil rfl events replayed)
+    dsimp only at bound ⊢
+    omega
+  · have epochs : (getCurrentEpoch x.state).toNat ≤ (getCurrentEpoch y.state).toNat := by
+      clear early endEpoch replayed slashings located recent
+      induction tail with
+      | nil => exact le_rfl
+      | snoc pre step ih => exact ih.trans (coverage_step_epoch step)
+    obtain ⟨assigned, exited⟩ :=
+      intervalLoss_exit_of_not_recent x.state y.state v w life epochs active recent
+    have baseline := tail.departure_baseline i.toNat w located assigned
+    cases chosen : tail.departureCharges.find? (fun c => c.index == i.toNat) with
+    | some charge =>
+      rw [chosen] at baseline
+      obtain ⟨index, epoch⟩ := baseline
+      have bound := intervalLoss_departing shared tail genesis parameters caps aligned early high
+        endEpoch events replayed i v found active charge (List.mem_of_find?_eq_some chosen)
+        index slashings
+      have within : charge.epoch ≤ high + 1 := by omega
+      simp only [within, ↓reduceIte]
+      dsimp only at bound ⊢
+      omega
+    | none =>
+      rw [chosen] at baseline
+      obtain ⟨old, before, exit⟩ := baseline
+      have same := Option.some.inj (before.symm.trans found)
+      subst old
+      have initialAssigned : v.exitEpoch ≠ FAR_FUTURE_EPOCH := by simpa [exit] using assigned
+      have within : v.exitEpoch.toNat ≤ high + 1 := by rw [exit]; omega
+      have selected : (v.exitEpoch != FAR_FUTURE_EPOCH && v.exitEpoch.toNat ≤ high + 1) = true :=
+        by simp [initialAssigned, within]
+      simp only [selected, ↓reduceIte]
+      have weight := intervalLoss_weight_at x.state (shared.unique (genesis_unique genesis))
+        i.toNat v found
+      have value : effectiveWeight x.state v.pubkey = v.effectiveBalance.toNat := by
+        simpa [effectiveAt, found] using weight
+      rw [value]
+      omega
 
 private theorem intervalLoss_consolidation_rate {fork : Fork}
     {s : BeaconState preset fork} (early : fork < .glamsterdam)
