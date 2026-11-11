@@ -192,6 +192,67 @@ theorem onFastConfirmation_checked {fcr after : FastConfirmationStore}
     · exact Or.inl same
     · exact Or.inr ⟨checked, walk⟩
 
+variable (lower : store.ParentsBelow) in
+/-- Before Gloas, each node of a filtered tree has a viable leaf of the tree below it.
+
+The leaf passes `isViableLeaf`, so its chain holds the finalized block of the store. -/
+theorem exists_viableLeaf_of_mem_filterNodeTree (before : fork < .glamsterdam) :
+    ∀ {node : ForkChoiceNode} {nodes : List ForkChoiceNode},
+      store.filterNodeTree config node = .ok nodes →
+      ∀ n ∈ nodes, ∃ leaf ∈ nodes, store.isViableLeaf config leaf = .ok true ∧
+        (blockTree lower).Ancestor (some n.root) (some leaf.root) := by
+  intro node
+  induction hrank : store.nodeRank node using Nat.strong_induction_on generalizing node with
+  | _ rank ih =>
+  intro nodes walk n mem
+  rw [filterNodeTree, bind_ok_iff] at walk
+  obtain ⟨children, childrenOk, walk⟩ := walk
+  by_cases empty : children.isEmpty
+  · simp only [empty, ↓reduceIte, bind_ok_iff] at walk
+    obtain ⟨isViable, viable, walk⟩ := walk
+    simp only [pure, Except.pure, Except.ok.injEq] at walk
+    subst walk
+    cases isViable
+    · cases mem
+    · rw [List.mem_singleton.mp mem]
+      exact ⟨node, List.mem_singleton_self _, viable, .refl _⟩
+  simp only [empty, Bool.false_eq_true, ↓reduceIte, bind_ok_iff] at walk
+  obtain ⟨viable, viableOk, walk⟩ := walk
+  simp only [pure, Except.pure, Except.ok.injEq] at walk
+  subst walk
+  have nonempty : viable ≠ [] := fun nil => by simp [nil] at mem
+  have nodesEq : (if viable.isEmpty then [] else viable ++ [node]) = viable ++ [node] := by
+    simp [List.isEmpty_iff, nonempty]
+  rw [nodesEq] at mem ⊢
+  -- Each node below a child of the start is a viable node of the start.
+  have below : ∀ x ∈ viable, ∃ child ∈ children, ∃ nodesBelow,
+      store.nodeRank child < store.nodeRank node ∧
+      store.filterNodeTree config child = .ok nodesBelow ∧ x ∈ nodesBelow ∧
+      ∀ y ∈ nodesBelow, y ∈ viable := by
+    intro x hx
+    obtain ⟨child, childMem, nodesBelow, belowOk, xMem⟩ := (mem_of_flatMapM_ok viableOk x).mp hx
+    split at belowOk
+    · rename_i lowerRank
+      refine ⟨child, childMem, nodesBelow, lowerRank, belowOk, xMem, fun y hy => ?_⟩
+      exact (mem_of_flatMapM_ok viableOk y).mpr ⟨child, childMem, nodesBelow, by
+        simp [lowerRank, belowOk], hy⟩
+    · simp [throw, throwThe, MonadExceptOf.throw] at belowOk
+  rcases List.mem_append.mp mem with mem | same
+  · obtain ⟨child, -, nodesBelow, lowerRank, belowOk, nMem, lift⟩ := below n mem
+    obtain ⟨leaf, leafIn, viable', above⟩ := ih _ (hrank ▸ lowerRank) rfl belowOk n nMem
+    exact ⟨leaf, List.mem_append_left _ (lift leaf leafIn), viable', above⟩
+  · -- The start has a viable child, and a viable leaf lies below that child.
+    rw [List.mem_singleton.mp same]
+    obtain ⟨x, hx⟩ := List.exists_mem_of_ne_nil _ nonempty
+    obtain ⟨child, childMem, nodesBelow, lowerRank, belowOk, xMem, lift⟩ := below x hx
+    have childIn := filterNodeTree_self belowOk (List.ne_nil_of_mem xMem)
+    obtain ⟨leaf, leafIn, viable', above⟩ :=
+      ih _ (hrank ▸ lowerRank) rfl belowOk child childIn
+    obtain ⟨-, block, found, parentRoot⟩ := (mem_getNodeChildren before childrenOk).mp childMem
+    have isChild : (blockTree lower).IsChild (some child.root) (some node.root) :=
+      blockTree_isChild_iff.mpr ⟨block, found, parentRoot⟩
+    exact ⟨leaf, List.mem_append_left _ (lift leaf leafIn), viable', isChild.ancestor.trans above⟩
+
 end Store
 
 namespace Models.Network
@@ -200,38 +261,46 @@ variable {config : Config} {checks : SignatureChecks} {sources : BlockSources pr
   {anchorState : BeaconState preset fork} {anchorBlock : BeaconBlock preset fork}
   {assignment : Assignment preset} {genesisTimeMs : UInt64} {J : Set ValidatorIndex}
 
-/-- The end of the first complete epoch whose start is not before a slot.
+/-- A complete epoch lies in a range of times, and each of its reads succeeds.
 
-A slot at the start of an epoch begins that epoch, so that epoch is the first complete one.
+It starts at the first time or later, and it ends at the last time or before.
 
-Otherwise the first complete epoch is the next one.
+Its end is the start of the epoch after it, so every duty of the epoch has its slot by then.
 
-The end is the start time of the epoch after it. -/
-def FirstCompleteEpochEnd (preset : Preset) (config : Config) (genesisTimeMs : UInt64)
-    (slot : Slot) (endTime : UInt64) : Prop :=
-  ∃ first next last : UInt64,
-    (isStartSlotAtEpoch preset slot = .ok true → first = computeEpochAtSlot preset slot) ∧
-    (isStartSlotAtEpoch preset slot = .ok false →
-      addChecked (computeEpochAtSlot preset slot) 1 = .ok first) ∧
-    addChecked first 1 = .ok next ∧ computeStartSlotAtEpoch preset next = .ok last ∧
-    computeTimeAtSlotMs config genesisTimeMs last = .ok endTime
+Near the end of `UInt64` time, such an epoch may not exist.
+
+Then the whole range belongs to the initial phase. -/
+def CompleteEpochWithin (preset : Preset) (config : Config) (genesisTimeMs : UInt64)
+    (first last : ℕ) : Prop :=
+  ∃ (epoch : Epoch) (begin next : Slot) (beginTime endTime : UInt64),
+    computeStartSlotAtEpoch preset epoch = .ok begin ∧
+    addChecked begin preset.SLOTS_PER_EPOCH = .ok next ∧
+    computeTimeAtSlotMs config genesisTimeMs begin = .ok beginTime ∧
+    computeTimeAtSlotMs config genesisTimeMs next = .ok endTime ∧
+    first ≤ beginTime.toNat ∧ endTime.toNat ≤ last
 
 open Classical in
 /-- The late majority of a receiver: a complete epoch of honest duties outweighs what is missing.
 
-The epoch starts at a first time or later, and ends at a given time or before.
+This is a generalized missing-duty assumption, not Assumption 2 of the paper as stated there.
 
-The weights are those of the justified state of the receiver, which may be old.
+The paper fixes the validator set; here the receiver weighs with its own justified state.
+
+That state may be old, so honest validators of its tally may have no duty in a recent epoch.
+
+The epoch starts at a first time or later, and ends at a given time or before.
 
 The tally is the set of validators that are active and not slashed in that state.
 
-The Byzantine validators hold at most β of the tally, Assumption 2 of the paper.
+The Byzantine validators hold at most β of the whole tally.
 
 The missing stake is that of honest validators of the tally without a duty in the epoch.
 
 Twice the missing stake, plus the boost, fits in the margin that β leaves.
 
-`ByzantineStakeAtMost.majority_of_missing_weight` turns this into a majority of the head. -/
+`ByzantineStakeAtMost.majority_of_missing_weight` turns this into a majority of the head.
+
+It does not follow from `WeightBounds`, which compares the balances of two states. -/
 def LateMargin (config : Config) (genesisTimeMs : UInt64) (assignment : Assignment preset)
     (J : Set ValidatorIndex) [DecidablePred (· ∈ J)] (first time : ℕ)
     (state : BeaconState preset fork) (boost : ℕ) : Prop :=
@@ -268,7 +337,7 @@ def CallAt
 
 Each call weighs with the state of its observed justified checkpoint, the source of balances.
 
-Up to the end of the first complete epoch after the call, `WeightBounds` bounds the shift.
+While no complete epoch lies between the call and a time, `WeightBounds` bounds the shift.
 
 That shift compares the balances of the source with those of each receiver.
 
@@ -284,21 +353,23 @@ They hold a third of the margin on top of it.
 
 No honest validator is a known equivocator of the store of a call.
 
-After the first complete epoch, each receiver has the majority of `LateMargin`.
+Once a complete epoch lies between the call and a time, each receiver has `LateMargin`.
+
+That second field is a separate assumption on the duties of an epoch, not a consequence of the
+first.
 
 The fields name stores of the execution alone, so an execution can hold them. -/
 structure RuleBounds
     (e : Execution (honestForkChoice config checks sources anchorState anchorBlock assignment
       genesisTimeMs) J) [DecidablePred (· ∈ J)] (u : ValidatorIndex) (events : List ℕ)
     (first : FastConfirmationStore) (margin shift limit : ℕ) : Prop where
-  /-- Up to the first complete epoch, the honest stores weigh near the source of balances. -/
-  weights : ∀ i n fcr after balanceSource slot settled,
+  /-- Before a complete epoch, the honest stores weigh near the source of balances. -/
+  weights : ∀ i n fcr after balanceSource last,
     CallAt e u events first i n fcr after →
     ((e.world n).state u).checkpointState after.currentEpochObservedJustifiedCheckpoint =
       .ok balanceSource →
-    ((e.world n).state u).getCurrentSlot config = .ok slot →
-    FirstCompleteEpochEnd preset config genesisTimeMs slot settled →
-    WeightBounds e balanceSource (e.world n).time (settled.toNat - 1) shift
+    ¬CompleteEpochWithin preset config genesisTimeMs (e.world n).time last →
+    WeightBounds e balanceSource (e.world n).time last shift
   /-- The measured tally exceeds the rule's conservative threshold by the weight shift.
 
   This is an observable margin, not an assumption about the unknown honest supporters. -/
@@ -360,12 +431,11 @@ structure RuleBounds
   /-- No honest validator is a known equivocator of the store of a call. -/
   dishonest : ∀ i n fcr after, CallAt e u events first i n fcr after →
     ∀ v ∈ ((e.world n).state u).equivocatingIndices, v ∉ J
-  /-- From the end of the first complete epoch, each receiver has the late majority. -/
-  late : ∀ i n fcr after slot settled, CallAt e u events first i n fcr after →
-    ((e.world n).state u).getCurrentSlot config = .ok slot →
-    FirstCompleteEpochEnd preset config genesisTimeMs slot settled →
+  /-- After a complete epoch, each receiver has the late majority. -/
+  late : ∀ i n fcr after, CallAt e u events first i n fcr after →
     ∀ w ∈ J, ∀ k (state : BeaconState preset fork),
-      settled.toNat ≤ (e.world k).time → (e.world k).time ≤ limit →
+      CompleteEpochWithin preset config genesisTimeMs (e.world n).time (e.world k).time →
+      (e.world k).time ≤ limit →
       UpToDate config checks sources (e.world k).time ((e.world k).view w)
         ((e.world k).state w) →
       ((e.world k).state w).checkpointState ((e.world k).state w).justifiedCheckpoint =
@@ -403,24 +473,6 @@ theorem Execution.getBlockEpoch_of_le {u : ValidatorIndex} {n k : ℕ} (later : 
   obtain ⟨block, found, rest⟩ := read
   rw [Store.block_ok_iff.mpr (e.blocks_of_le later (Store.block_ok_iff.mp found))]
   exact rest
-
-/-- A weight bound up to a last time also holds up to any earlier last time. -/
-theorem WeightBounds.mono [DecidablePred (· ∈ J)] {balanceSource : BeaconState preset fork}
-    {first last last' shift : ℕ}
-    (bounds : WeightBounds e balanceSource first last shift) (earlier : last' ≤ last) :
-    WeightBounds e balanceSource first last' shift where
-  reads w honest k head state current firstSlot lastSlot maximum afterFirst beforeLast :=
-    bounds.reads w honest k head state current firstSlot lastSlot maximum afterFirst
-      (beforeLast.trans earlier)
-  margin w honest k head state score sourceScore firstSlot lastSlot maximum sourceMaximum
-      afterFirst beforeLast :=
-    bounds.margin w honest k head state score sourceScore firstSlot lastSlot maximum
-      sourceMaximum afterFirst (beforeLast.trans earlier)
-  sourceByzantine := bounds.sourceByzantine
-  byzantine w honest k head state firstSlot lastSlot participants afterFirst beforeLast :=
-    bounds.byzantine w honest k head state firstSlot lastSlot participants afterFirst
-      (beforeLast.trans earlier)
-  dishonest := bounds.dishonest
 
 /-- At the start of an epoch, no block of that epoch has the margin of a confirmed block.
 
@@ -461,6 +513,190 @@ theorem Execution.rootEpoch_ne_of_slack_at_epoch_start {anchor : Store preset fo
     rootEpoch ≠ epoch := by
   sorry
 
+/-- The finalized-chain premise of a receiver, from the coverage of a block.
+
+At an event `k`, the receiver holds the block in its filtered tree or below its justified block.
+
+In the second case the head of the receiver descends from the block anyway.
+
+In the first case, take the finalized checkpoint of the receiver at any event `k'` up to `k`.
+
+Its boundary is at or before the block, and it is the checkpoint block of the block there.
+
+This is the premise `rootFinal` of the transport and of the late duty.
+
+The finalized chain places the finalized checkpoints at `k'` and at `k` below the justified block.
+
+Then two cases follow.
+
+The boundary at `k'` is at or before the justified block: the block descends from that block.
+
+The boundary is after the justified block: the finalized block is the justified block itself.
+
+The finalized checkpoint at `k` then has the same block and a boundary still later.
+
+A viable leaf below the block agrees with it, so no block of its chain lies between them.
+
+So the block is after that later boundary, and its checkpoint block is the justified block.
+
+A block below the boundary of a later finality is not in the filtered tree, unless it is the
+justified block, which the second case covers. -/
+theorem Execution.rootFinal_or_justified_covers {anchor : Store preset fork}
+    (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (sound : Invariant anchorState) (start : ∀ w ∈ J, e.start w = anchor)
+    (slots : 0 < config.SLOT_DURATION_MS) (anchorSlot : anchorBlock.slot = anchorState.slot)
+    (preGloas : fork < .glamsterdam)
+    {horizon : Epoch} (chain : FinalizedPrefix e horizon)
+    {w : ValidatorIndex} (receiver : w ∈ J) {k : ℕ} {epoch : Epoch}
+    (epochOk : ((e.world k).state w).getCurrentStoreEpoch config = .ok epoch)
+    (inHorizon : epoch ≤ horizon)
+    (lower : ((e.world k).state w).ParentsBelow)
+    {root : Root} {rootBlock : BeaconBlock preset fork}
+    (known : ((e.world k).state w).blocks[root]? = some rootBlock)
+    {nodes : List ForkChoiceNode}
+    (treeOk : ((e.world k).state w).getFilteredNodeTree config = .ok nodes)
+    (covered : ((e.world k).state w).isAncestor
+        ⟨((e.world k).state w).justifiedCheckpoint.root, .pending⟩ ⟨root, .pending⟩ = .ok true ∨
+      (⟨root, .pending⟩ : ForkChoiceNode) ∈ nodes) :
+    ((e.world k).state w).isAncestor
+        ⟨((e.world k).state w).justifiedCheckpoint.root, .pending⟩ ⟨root, .pending⟩ = .ok true ∨
+      ∀ k' ≤ k, ∃ boundary,
+        computeStartSlotAtEpoch preset ((e.world k').state w).finalizedCheckpoint.epoch =
+          .ok boundary ∧ boundary ≤ rootBlock.slot ∧
+        ((e.world k).state w).getCheckpointBlock root
+          ((e.world k').state w).finalizedCheckpoint.epoch =
+            .ok ((e.world k').state w).finalizedCheckpoint.root := by
+  rcases covered with covers | inTree
+  · exact .inl covers
+  have later : ¬ .glamsterdam ≤ fork := Nat.not_le_of_lt preGloas
+  have reached := e.reachable
+    (fun u hu => (start u hu).symm ▸ Store.Reachable.anchor anchored) k w receiver
+  have forward := e.forwardReachable
+    (fun u hu => (start u hu) ▸ Store.ForwardReachable.anchor anchored) k w receiver
+  -- Split a checkpoint read into its boundary and its walk.
+  have split {r c : Root} {ep : Epoch}
+      (read : ((e.world k).state w).getCheckpointBlock r ep = .ok c) :
+      ∃ boundary anc, computeStartSlotAtEpoch preset ep = .ok boundary ∧
+        ((e.world k).state w).getAncestor ⟨r, .pending⟩ boundary = .ok anc ∧ anc.root = c := by
+    unfold Store.getCheckpointBlock at read
+    simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at read
+    obtain ⟨boundary, boundaryOk, anc, walk, eq⟩ := read
+    exact ⟨boundary, anc, mapError_ok_iff.mp boundaryOk, walk, eq⟩
+  -- A walk from a held block to the slot of a held block that it descends from.
+  have walkTo {tip node : Root} {tipBlock nodeBlock : BeaconBlock preset fork}
+      (tipFound : ((e.world k).state w).blocks[tip]? = some tipBlock)
+      (nodeFound : ((e.world k).state w).blocks[node]? = some nodeBlock)
+      (above : (Store.blockTree lower).Ancestor (some node) (some tip)) :
+      ((e.world k).state w).getAncestor ⟨tip, .pending⟩ nodeBlock.slot = .ok ⟨node, .pending⟩ := by
+    obtain ⟨anc, walk⟩ := Store.getAncestor_ok_of_orphans_le lower (slot := nodeBlock.slot)
+      (node := ⟨tip, .pending⟩)
+      (fun r b found orphan => reached.orphans_le (UInt64.le_of_eq anchorSlot) found orphan
+        nodeFound) tipFound
+    have ancRoot := Store.getAncestor_root_eq (lower := lower) (node := ⟨node, .pending⟩)
+      nodeFound walk above
+    have ancPending := Store.getAncestor_pending_of_lt preGloas rfl walk
+    obtain ⟨r, s⟩ := anc
+    simp only at ancRoot ancPending
+    subst ancRoot ancPending
+    exact walk
+  -- The justified block is held, and the block descends from it.
+  set justified := ((e.world k).state w).justifiedCheckpoint
+  have treeWalk : ((e.world k).state w).filterNodeTree config ⟨justified.root, .pending⟩ =
+      .ok nodes := treeOk
+  obtain ⟨justifiedIn, -, -⟩ := Store.filterNodeTree_mem treeWalk _ inTree
+  obtain ⟨-, ⟨justifiedBlock, justifiedFound⟩, -⟩ :=
+    Store.filterNodeTree_mem treeWalk _ justifiedIn
+  have below := (Store.filterNodeTree_ancestor (lower := lower) preGloas treeWalk _ inTree).1
+  by_cases same : root = justified.root
+  · left
+    subst same
+    exact Store.isAncestor_self (node := ⟨justified.root, .pending⟩) known
+  right
+  have rootWalk := walkTo known justifiedFound below
+  have descends : ((e.world k).state w).isAncestor ⟨root, .pending⟩
+      ⟨justified.root, .pending⟩ = .ok true := by
+    simp [Store.isAncestor, Store.block_ok_iff.mpr justifiedFound, rootWalk, later, bind,
+      Except.bind, pure, Except.pure]
+  obtain ⟨rootBlock', rootFound', justifiedLe⟩ :=
+    Store.slot_le_of_isAncestor justifiedFound descends
+  rw [known, Option.some.injEq] at rootFound'
+  subst rootBlock'
+  -- Every justified checkpoint of the receiver is within the horizon.
+  have justifiedHorizon : justified.epoch ≤ horizon :=
+    UInt64.le_trans (forward.justified_epoch_le_current sound slots (UInt64.le_of_eq anchorSlot)
+      epochOk).1 inHorizon
+  have endpointLe := reached.finalized_le_justified sound
+  intro k' earlier
+  have finalLe := (e.epochsLe_of_le w earlier).2
+  -- The finalized chain places both finalized checkpoints below the justified block.
+  have read := chain w receiver w receiver k' k justified (Or.inl rfl)
+    (UInt64.le_trans finalLe endpointLe) justifiedHorizon
+  obtain ⟨boundary, anc, boundaryOk, walk, ancRoot⟩ := split read
+  refine ⟨boundary, boundaryOk, ?_⟩
+  by_cases early : boundary ≤ justifiedBlock.slot
+  · exact ⟨UInt64.le_trans early justifiedLe,
+      Store.getCheckpointBlock_of_isAncestor preGloas justifiedFound descends boundaryOk early read⟩
+  -- The boundary is after the justified block, so the finalized block is the justified block.
+  have late : justifiedBlock.slot ≤ boundary := UInt64.le_of_lt (UInt64.not_le.mp early)
+  rw [Store.getAncestor_of_le justifiedFound late, Except.ok.injEq] at walk
+  subst walk
+  have finalRoot : ((e.world k').state w).finalizedCheckpoint.root = justified.root := ancRoot.symm
+  have readNow := chain w receiver w receiver k k justified (Or.inl rfl) endpointLe
+    justifiedHorizon
+  obtain ⟨boundaryNow, ancNow, boundaryNowOk, walkNow, ancNowRoot⟩ := split readNow
+  have boundaryLe : boundary ≤ boundaryNow := by
+    have h1 := computeStartSlotAtEpoch_ok_iff.mp boundaryOk
+    have h2 := computeStartSlotAtEpoch_ok_iff.mp boundaryNowOk
+    have h3 := UInt64.le_iff_toNat_le.mp finalLe
+    apply UInt64.le_iff_toNat_le.mpr
+    rw [h1.2, h2.2]
+    exact Nat.mul_le_mul_right _ h3
+  have lateNow : justifiedBlock.slot ≤ boundaryNow := UInt64.le_trans late boundaryLe
+  rw [Store.getAncestor_of_le justifiedFound lateNow, Except.ok.injEq] at walkNow
+  subst walkNow
+  -- The current finality is not at genesis, since its boundary is after a held block.
+  have notGenesis : ((e.world k).state w).finalizedCheckpoint.epoch ≠ GENESIS_EPOCH := by
+    intro genesis
+    have h := (computeStartSlotAtEpoch_ok_iff.mp boundaryNowOk).2
+    rw [genesis] at h
+    have zero : boundaryNow.toNat = 0 := by simpa [GENESIS_EPOCH] using h
+    have := UInt64.lt_iff_toNat_lt.mp (UInt64.not_le.mp early)
+    have := UInt64.le_iff_toNat_le.mp boundaryLe
+    omega
+  -- A viable leaf below the block reads the justified block at the current boundary.
+  obtain ⟨leaf, leafIn, viable, leafAbove⟩ :=
+    Store.exists_viableLeaf_of_mem_filterNodeTree lower preGloas treeWalk _ inTree
+  obtain ⟨-, ⟨leafBlock, leafFound⟩, -⟩ := Store.filterNodeTree_mem treeWalk _ leafIn
+  have leafRead := (Store.isViableLeaf_finalized viable).resolve_left notGenesis
+  obtain ⟨boundaryLeaf, ancLeaf, boundaryLeafOk, leafWalk, ancLeafRoot⟩ := split leafRead
+  rw [boundaryNowOk, Except.ok.injEq] at boundaryLeafOk
+  subst boundaryLeafOk
+  have ancLeafPending := Store.getAncestor_pending_of_lt preGloas rfl leafWalk
+  have ancLeafEq : ancLeaf = ⟨justified.root, .pending⟩ := by
+    obtain ⟨r, s⟩ := ancLeaf
+    have nowRoot : ((e.world k).state w).finalizedCheckpoint.root = justified.root :=
+      ancNowRoot.symm
+    simp only at ancLeafRoot ancLeafPending
+    rw [ancLeafPending, ancLeafRoot, nowRoot]
+  rw [ancLeafEq] at leafWalk
+  have leafToRoot := walkTo leafFound known leafAbove
+  -- The block is after the current boundary, or it would be the justified block.
+  have rootLate : boundaryNow < rootBlock.slot := by
+    by_contra notLate
+    have le := UInt64.not_lt.mp notLate
+    have through := Store.getAncestor_trans le leafWalk
+    rw [leafToRoot, Store.getAncestor_of_le justifiedFound justifiedLe, Except.ok.injEq] at through
+    exact same (congrArg ForkChoiceNode.root through)
+  refine ⟨UInt64.le_trans boundaryLe (UInt64.le_of_lt rootLate), ?_⟩
+  -- Both walks from the leaf reach the justified block at the earlier boundary.
+  have viaRoot := Store.getAncestor_trans
+    (UInt64.le_trans boundaryLe (UInt64.le_of_lt rootLate)) leafToRoot
+  have viaJustified := Store.getAncestor_trans boundaryLe leafWalk
+  rw [Store.getAncestor_of_le justifiedFound late] at viaJustified
+  rw [viaJustified] at viaRoot
+  simp [Store.getCheckpointBlock, boundaryOk, ← viaRoot, finalRoot, Except.mapError, bind,
+    Except.bind, pure, Except.pure]
+
 variable [DecidablePred (· ∈ J)]
 
 /-- Step 8, the walk: a block that the rule confirms after a safe start is safe up to a last time.
@@ -479,15 +715,19 @@ A historical anchor below the start is safe from the start of the current epoch 
 
 The facts that step 6 reads off earlier calls are given as in `coveredOrViableAt_of_checked`.
 
-Up to the end of the first complete epoch, `WeightBounds` bounds the shift of the margins.
+While no complete epoch lies between the call and a time, `WeightBounds` bounds the shift.
 
-From then on, each receiver has the late majority of `LateMargin`.
+Once one does, each receiver has the late majority of `LateMargin`.
+
+No honest store holds a block at the parent root of the anchor block.
+
+So each honest store has its parents below its blocks, which the filtered tree and the head need.
 
 The proof is a strong induction on the time, and at each time an induction along the walk.
 
 At each time, step 6 gives the block in the filtered tree, or below the justified block.
 
-The finalized-chain premise of each receiver follows from that fact and the finalized chain.
+The finalized-chain premise of each receiver follows by `Execution.rootFinal_or_justified_covers`.
 
 Before the end of the first complete epoch, `Execution.honest_support_of_historical_anchor` and
 `HeadFollowsSupport` keep the block on the chain of the head.
@@ -573,9 +813,9 @@ theorem Execution.safeAt_of_walk {Δ : ℕ} (sync : e.Synchronous Δ)
       SafeAt e earlier historical)
     {limit : ℕ}
     (startSafe : ∀ time, (e.world n).time ≤ time → time ≤ limit → SafeAt e time start)
-    {shift : ℕ} {settled : UInt64}
-    (settledOk : FirstCompleteEpochEnd preset config genesisTimeMs slot settled)
-    (weights : WeightBounds e balanceSource (e.world n).time (settled.toNat - 1) shift)
+    {shift : ℕ}
+    (weights : ∀ last, ¬CompleteEpochWithin preset config genesisTimeMs (e.world n).time last →
+      WeightBounds e balanceSource (e.world n).time last shift)
     (slack : ∀ member ∈ chain ++ [root], ∀ block parent firstSlot lastSlot beforeBlock
       participants maximum score support discount adversary,
       ((e.world n).state u).block member = .ok block →
@@ -596,13 +836,16 @@ theorem Execution.safeAt_of_walk {Δ : ℕ} (sync : e.Synchronous Δ)
       maximum.toNat + score.toNat + 2 * adversary.toNat + shift <
         discount.toNat + 2 * support.toNat)
     (late : ∀ w ∈ J, ∀ k (state : BeaconState preset fork),
-      settled.toNat ≤ (e.world k).time → (e.world k).time ≤ limit →
+      CompleteEpochWithin preset config genesisTimeMs (e.world n).time (e.world k).time →
+      (e.world k).time ≤ limit →
       UpToDate config checks sources (e.world k).time ((e.world k).view w)
         ((e.world k).state w) →
       ((e.world k).state w).checkpointState ((e.world k).state w).justifiedCheckpoint =
         .ok state →
       LateMargin config genesisTimeMs assignment J (e.world n).time (e.world k).time state
         (((e.world k).state w).boostScore config))
+    (anchorParent : ∀ w ∈ J, ∀ k, (e.world k).time ≤ limit →
+      ((e.world k).state w).blocks[anchorBlock.parentRoot]? = none)
     (nonzero : ∀ w ∈ J, ∀ k, (e.world k).time ≤ limit →
       ∀ (r : Root) (b : BeaconBlock preset fork),
         ((e.world k).state w).blocks[r]? = some b → b.stateRoot ≠ Vector.replicate 32 0)
@@ -768,6 +1011,8 @@ theorem Execution.callInvariant_step {Δ : ℕ} (sync : e.Synchronous Δ)
     (bounds : RuleBounds e u events (getFastConfirmationStore anchor) margin shift limit)
     (inHorizon : ∀ w ∈ J, ∀ k epoch, (e.world k).time ≤ limit →
       ((e.world k).state w).getCurrentStoreEpoch config = .ok epoch → epoch ≤ horizon)
+    (anchorParent : ∀ w ∈ J, ∀ k, (e.world k).time ≤ limit →
+      ((e.world k).state w).blocks[anchorBlock.parentRoot]? = none)
     {i n : ℕ} {fcr after : FastConfirmationStore}
     (calls : CallAt e u events (getFastConfirmationStore anchor) i n fcr after)
     (earlier : ∀ i' < i, ∀ n' fcr' after',
@@ -814,9 +1059,15 @@ The margin covers the drift of such a state from the pulled-up state of a head, 
 
 Each block that an honest store holds has a nonzero state root.
 
+No honest store holds a block at the parent root of the anchor block, up to the last time.
+
+So the parents of the blocks of each honest store are at lower slots.
+
 Assumption 2 holds at each call, with that margin and a weight shift, as `RuleBounds` says.
 
 Each honest store up to the last time is in an epoch at most the horizon.
+
+The start of the next slot is at most the last time.
 
 Then the block that the last call stores is safe from the start of the next slot.
 
@@ -890,12 +1141,17 @@ theorem Execution.safeAt_confirmedRoot {Δ : ℕ} (sync : e.Synchronous Δ)
     (bounds : RuleBounds e u events (getFastConfirmationStore anchor) margin shift limit)
     (inHorizon : ∀ w ∈ J, ∀ k epoch, (e.world k).time ≤ limit →
       ((e.world k).state w).getCurrentStoreEpoch config = .ok epoch → epoch ≤ horizon)
+    (anchorParent : ∀ w ∈ J, ∀ k, (e.world k).time ≤ limit →
+      ((e.world k).state w).blocks[anchorBlock.parentRoot]? = none)
     {n : ℕ} {slot next : Slot} {following : UInt64}
     (lastCall : events.getLast? = some n)
     (slotOk : ((e.world n).state u).getCurrentSlot config = .ok slot)
     (nextOk : addChecked slot 1 = .ok next)
-    (followingOk : computeTimeAtSlotMs config genesisTimeMs next = .ok following) :
+    (followingOk : computeTimeAtSlotMs config genesisTimeMs next = .ok following)
+    (nonempty : following.toNat ≤ limit) :
     ∀ time, following.toNat ≤ time → time ≤ limit → SafeAt e time last.confirmedRoot := by
+  -- The promised interval is not empty, so the theorem says something about the run.
+  have _ := nonempty
   -- Every call of the run keeps the invariant, by strong induction on its index.
   have invariant : ∀ i n fcr after,
       CallAt e u events (getFastConfirmationStore anchor) i n fcr after →
@@ -907,7 +1163,7 @@ theorem Execution.safeAt_confirmedRoot {Δ : ℕ} (sync : e.Synchronous Δ)
       exact e.callInvariant_step sync half slots long window ring votes fits prompt committees
         follows preGloas oneBlock admitted included anchored sound anchorSlot anchorAtBoundary
         start noVotes maxAligned increment chain unique byzantine unslashed positive enough
-        large nonzero headDrifts caller upToDate lower atSlots bounds inHorizon calls
+        large nonzero headDrifts caller upToDate lower atSlots bounds inHorizon anchorParent calls
         fun i' lt n' fcr' after' calls' => ih i' lt n' fcr' after' calls'
   -- The last call of the run stores the block that the run returns.
   obtain ⟨prior, rfl⟩ := List.getLast?_eq_some_iff.mp lastCall
