@@ -2,6 +2,7 @@ module
 
 public import EthLib.Consensus.Proofs.ForkChoice.BlockAgreement
 public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmationCheckpoints
+public import EthLib.Consensus.Proofs.ForkChoice.FinalizedSources
 
 /-!
 # Statements: the blocks that the fast confirmation rule falls back to are safe

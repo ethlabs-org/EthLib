@@ -47,6 +47,8 @@ public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmationSafety
 public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmationSets
 public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmationSupport
 public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmationSupporters
+public import EthLib.Consensus.Proofs.ForkChoice.FinalizedOrigins
+public import EthLib.Consensus.Proofs.ForkChoice.FinalizedSources
 public import EthLib.Consensus.Proofs.ForkChoice.ForwardClock
 public import EthLib.Consensus.Proofs.ForkChoice.Ghost
 public import EthLib.Consensus.Proofs.ForkChoice.Handlers
