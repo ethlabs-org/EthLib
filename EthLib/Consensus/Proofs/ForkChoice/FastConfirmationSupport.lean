@@ -8,6 +8,7 @@ public import EthLib.Consensus.Proofs.ForkChoice.VoteOrigins
 public import EthLib.Consensus.Proofs.Transition.RunKept
 import EthLib.Consensus.Proofs.ForkChoice.HonestVotes
 import EthLib.Consensus.Proofs.HonestAggregation
+import EthLib.Consensus.Proofs.ForkChoice.BlockStates
 
 /-!
 # Statements: the honest support of a confirmed block reaches each honest store
@@ -366,6 +367,275 @@ structure WeightBounds
 variable {e : Execution (honestForkChoice config checks sources anchorState anchorBlock assignment
   genesisTimeMs) J} [DecidablePred (· ∈ J)]
 
+/-- No held block precedes the anchor, even when the anchor state has a different slot. -/
+theorem _root_.EthLib.Consensus.Store.Reachable.anchorSlot_le_block
+    {store : Store preset fork}
+    (reachable : Store.Reachable config anchorState anchorBlock store)
+    {root : Root} {block : BeaconBlock preset fork}
+    (known : store.blocks[root]? = some block) : anchorBlock.slot ≤ block.slot := by
+  induction reachable generalizing root block with
+  | anchor made =>
+    obtain ⟨r, _, blocks, _⟩ := getForkchoiceStore_maps made
+    rw [blocks, getElem?_insert_root] at known
+    split at known
+    · cases known; exact UInt64.le_refl _
+    · simp at known
+  | tick _ step ih => exact ih ((Store.onTick_frame step).2.2.1 ▸ known)
+  | attestation _ step ih => exact ih ((Store.onAttestation_frame step).2.1 ▸ known)
+  | attesterSlashing _ step ih => exact ih ((Store.onAttesterSlashing_frame step).2.1 ▸ known)
+  | payloadAttestation _ step ih =>
+    exact ih ((Store.onPayloadAttestationMessage_onlyPtcVotes step).frame.2.1 ▸ known)
+  | envelope _ step ih => exact ih ((Store.onExecutionPayloadEnvelope_frame step).2.1 ▸ known)
+  | inclusionList _ step ih => exact ih ((Store.onInclusionList_frame step).2.1 ▸ known)
+  | @block before after checks sources signed reached step ih =>
+    rcases Store.onBlock_same_or_insert step with same | ⟨r, hashed, fresh, blocks, _⟩
+    · exact ih (same ▸ known)
+    rw [blocks, getElem?_insert_root] at known
+    split at known
+    · cases known
+      -- Admission walks to a held finalized block below the new block.
+      obtain ⟨_, ⟨slot, slotOk, later⟩, checkpoint⟩ := Store.onBlock_checks hashed
+        (by simp [Std.TreeMap.contains_eq_isSome_getElem?, fresh]) step
+      unfold Store.getCheckpointBlock at checkpoint
+      simp only [bind_ok_iff, mapError_ok_iff] at checkpoint
+      obtain ⟨s, sOk, ancestor, walk, _⟩ := checkpoint
+      rw [slotOk] at sOk
+      cases sOk
+      obtain ⟨b, found, lower⟩ := Store.getAncestor_le walk
+      exact UInt64.le_trans (ih found) (UInt64.le_trans lower (UInt64.le_of_lt later))
+    · exact ih known
+
+/-- A successful ancestor walk reads blocks held by any reachable store with its first block. -/
+theorem _root_.EthLib.Consensus.Store.Reachable.known_of_ancestor_walk
+    {store receiver : Store preset fork}
+    (reachable : Store.Reachable config anchorState anchorBlock store)
+    (received : Store.Reachable config anchorState anchorBlock receiver)
+    (same : ∀ (r : Root) b c, store.blocks[r]? = some b →
+      receiver.blocks[r]? = some c → b = c)
+    {node ancestor : ForkChoiceNode} {slot : Slot}
+    (known : ∃ b, receiver.blocks[node.root]? = some b)
+    (walk : store.getAncestor node slot = .ok ancestor) :
+    ∃ b, receiver.blocks[ancestor.root]? = some b := by
+  induction node using Store.getAncestor.induct (store := store) (slot := slot) with
+  | case1 node found =>
+    rw [Store.getAncestor] at walk
+    split at walk <;> simp_all [throw, throwThe, MonadExceptOf.throw]
+  | case2 node block found le =>
+    rw [Store.getAncestor_of_le found le] at walk
+    cases walk
+    exact known
+  | case3 node block found above parentFound =>
+    rw [Store.getAncestor] at walk
+    split at walk
+    · simp_all
+    · rename_i b eq
+      rw [found, Option.some.injEq] at eq
+      subst eq
+      simp only [above, ↓reduceIte] at walk
+      split at walk <;> simp_all [throw, throwThe, MonadExceptOf.throw]
+  | case4 node block found above parent parentFound lower ih =>
+    obtain ⟨other, held⟩ := known
+    have eq := same _ _ _ found held
+    subst other
+    -- A successful step cannot leave the anchor for a strictly lower held parent.
+    have notAnchor : block ≠ anchorBlock := by
+      intro eq
+      have bound := reachable.anchorSlot_le_block parentFound
+      rw [eq] at lower
+      exact (UInt64.not_lt.mpr bound) lower
+    obtain ⟨_, _, _, produced⟩ := received.blockStatesFromParents held
+    obtain ⟨pre, _, _, _, _, preFound, _⟩ := produced notAnchor
+    have parentKnown := received.known_of_blockState preFound
+    rw [Store.getAncestor_step found above parentFound lower] at walk
+    exact ih parentKnown walk
+  | case5 node block found above parent parentFound notLower =>
+    rw [Store.getAncestor] at walk
+    split at walk
+    · simp_all
+    · rename_i b eq
+      rw [found, Option.some.injEq] at eq
+      subst eq
+      simp only [above, ↓reduceIte] at walk
+      split at walk
+      · simp_all
+      · rename_i p eq
+        rw [parentFound, Option.some.injEq] at eq
+        subst eq
+        simp [notLower, throw, throwThe, MonadExceptOf.throw] at walk
+
+omit [DecidablePred (· ∈ J)] in
+/-- A recorded honest vote retains both its accepted slot and its signing provenance. -/
+theorem Execution.exists_signed_origin_of_latestMessages
+    {anchor : Store preset fork}
+    (anchorStore : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (anchored : ∀ w ∈ J, e.start w = anchor)
+    {u : ValidatorIndex} (caller : u ∈ J) {n : ℕ}
+    {v : ValidatorIndex} {message : LatestMessage fork}
+    (latest : ((e.world n).state u).latestMessages[v]? = some message) :
+    ∃ attestation : Attestation preset fork,
+      message = LatestMessage.ofAttestation attestation ∧
+      ((e.world n).state u).VoteOrigin config v attestation ∧
+      ∃ m ∈ (e.world n).view u,
+        (v, attestation.data) ∈ statements config checks anchorState anchorBlock m := by
+  let Origin := fun (view : Set (Message preset fork)) (store : Store preset fork) =>
+    ∀ v message, store.latestMessages[v]? = some message →
+      ∃ a : Attestation preset fork, message = LatestMessage.ofAttestation a ∧
+        store.VoteOrigin config v a ∧
+        ∃ m ∈ view, (v, a.data) ∈ statements config checks anchorState anchorBlock m
+  have transfer {s t : Store preset fork} {view nextView : Set (Message preset fork)}
+      (old : Origin view s) (incl : view ⊆ nextView)
+      (messages : t.latestMessages = s.latestMessages)
+      (blocks : ∀ {r : Root} {b : BeaconBlock preset fork},
+        s.blocks[r]? = some b → t.blocks[r]? = some b)
+      (states : ∀ {c : Checkpoint} {b : BeaconState preset fork},
+        s.checkpointStates[c]? = some b → t.checkpointStates[c]? = some b)
+      (clock : ∀ {slot}, s.getCurrentSlot config = .ok slot →
+        ∃ next, t.getCurrentSlot config = .ok next ∧ slot ≤ next) : Origin nextView t := by
+    intro v message found
+    obtain ⟨a, eq, origin, m, seen, signed⟩ := old v message (messages ▸ found)
+    exact ⟨a, eq, origin.mono blocks states clock, m, incl seen, signed⟩
+  have attestationStep {s t : Store preset fork} {view : Set (Message preset fork)}
+      {a : Attestation preset fork} {fromBlock : Bool}
+      (reached : Store.Reachable config anchorState anchorBlock s) (old : Origin view s)
+      (carried : ∃ m ∈ view, attestationStatements (config := config) (checks := checks)
+        anchorState anchorBlock a ⊆ statements config checks anchorState anchorBlock m)
+      (step : s.onAttestation config checks a fromBlock = .ok t) : Origin view t := by
+    intro v message found
+    rcases Store.onAttestation_latestMessages_cases step found with previous | ⟨rfl, origin⟩
+    · obtain ⟨a, eq, origin, rest⟩ := old v message previous
+      refine ⟨a, eq, origin.mono (fun h => (Store.onAttestation_frame step).2.1 ▸ h)
+        (Store.onAttestation_checkpointStates_of_found step) (fun h =>
+          ⟨_, h ▸ (Store.onAttestation_sameClock step).getCurrentSlot, UInt64.le_refl _⟩), rest⟩
+    · obtain ⟨m, seen, carries⟩ := carried
+      refine ⟨a, rfl, origin, m, seen, carries ?_⟩
+      -- Recover the exact accepted data, not just its lossy latest-message projection.
+      have handled := step
+      unfold Store.onAttestation at handled
+      simp only [bind_ok_iff] at handled
+      obtain ⟨_, _, stored, storing, target, targetOk, _, _, indexed, indexedOk,
+        valid, validOk, handled⟩ := handled
+      split at handled
+      · rename_i validTrue
+        have indexedOk := mapError_ok_iff.mp indexedOk
+        have dataSame : indexed.data = a.data := by
+          obtain ⟨indices, indicesOk, _⟩ := getAttestingIndices_of_getIndexedAttestation indexedOk
+          obtain ⟨indexed', made, _, dataSame, _⟩ :=
+            getIndexedAttestation_of_getAttestingIndices indicesOk
+          exact Except.ok.inj (indexedOk.symm.trans made) ▸ dataSame
+        obtain ⟨target', indexed', targetFound, _, indexedOk', voter⟩ := origin.committees
+        have targetEq : target = target' := by
+          have targetHeld : t.checkpointStates[a.data.target]? = some target := by
+            have eq : stored.updateLatestMessages indexed.attestingIndices.data.toList a = t :=
+              Except.ok.inj handled
+            rw [← eq]
+            exact Store.checkpointState_ok_iff.mp targetOk
+          exact Option.some.inj (targetHeld.symm.trans targetFound)
+        have indexedEq : indexed = indexed' := by
+          rw [targetEq] at indexedOk
+          exact Except.ok.inj (indexedOk.symm.trans indexedOk')
+        refine ⟨s, indexed, reached, ⟨stored, target, storing, targetOk, indexedOk,
+          by simpa [validTrue] using mapError_ok_iff.mp validOk⟩, ?_⟩
+        exact ⟨by simpa [indexedEq] using voter, dataSame.symm⟩
+      · simp [throw, throwThe, MonadExceptOf.throw, bind, Except.bind] at handled
+  have invariant : ∀ i, Origin ((e.world i).view u) ((e.world i).state u) := by
+    intro i
+    induction i with
+    | zero =>
+      intro v message found
+      change (e.start u).latestMessages[v]? = some message at found
+      obtain ⟨_, _, empty, _⟩ := getForkchoiceStore_fields anchorStore
+      rw [anchored u caller, empty] at found
+      simp at found
+    | succ i ih =>
+      have extend {s} (old : Origin ((e.world i).view u) s) :
+          Origin ((e.world (i + 1)).view u) s :=
+        transfer old (e.monotone_view u (Nat.le_succ i)) rfl (fun h => h) (fun h => h)
+          (fun h => ⟨_, h, UInt64.le_refl _⟩)
+      rcases e.state_succ i u with same | ⟨_, moved⟩
+      · exact same ▸ extend ih
+      apply extend
+      have forward := e.forwardReachable
+        (fun w hw => (anchored w hw) ▸ Store.ForwardReachable.anchor anchorStore) i u caller
+      cases moved with
+      | tick later bounded step =>
+        exact transfer ih (fun _ h => h) (Store.onTick_checkpointStates_latestMessages step).2
+          (fun h => (Store.onTick_frame step).2.2.1 ▸ h)
+          (fun h => (Store.onTick_checkpointStates_latestMessages step).1 ▸ h)
+          (Store.exists_getCurrentSlot_onTick_ge (UInt64.le_iff_toNat_le.mpr
+            (by
+              change _ ≤ (UInt64.ofNat (e.world i).time).toNat
+              have eq : (UInt64.ofNat (e.world i).time).toNat = (e.world i).time :=
+                UInt64.toNat_ofNat_of_lt bounded
+              rw [eq]
+              exact later)) step)
+      | attestation seen step =>
+        exact attestationStep forward.reachable ih ⟨_, seen, fun _ h => h⟩ step
+      | attesterSlashing _ step =>
+        exact transfer ih (fun _ h => h)
+          (Store.onAttesterSlashing_checkpointStates_latestMessages step).2
+          (fun h => (Store.onAttesterSlashing_frame step).2.1 ▸ h)
+          (fun h => (Store.onAttesterSlashing_checkpointStates_latestMessages step).1 ▸ h)
+          (fun h => ⟨_, h ▸ (Store.onAttesterSlashing_sameClock step).getCurrentSlot,
+            UInt64.le_refl _⟩)
+      | block seen step =>
+        rename_i signed
+        unfold Store.onBlockWithVotes at step
+        simp only [bind_ok_iff, ← Array.foldlM_toList] at step
+        obtain ⟨blocked, blockOk, voted, votedOk, slashedOk⟩ := step
+        let P := fun s => Store.Reachable config anchorState anchorBlock s ∧
+          Origin ((e.world i).view u) s
+        have blockedP : P blocked := ⟨forward.reachable.block blockOk,
+          transfer ih (fun _ h => h) (Store.onBlock_checkpointStates_latestMessages blockOk).2
+            (Store.onBlock_blocks_of_found blockOk)
+            (fun h => (Store.onBlock_checkpointStates_latestMessages blockOk).1 ▸ h)
+            (fun h => ⟨_, h ▸ (Store.onBlock_sameClock blockOk).getCurrentSlot,
+              UInt64.le_refl _⟩)⟩
+        have foldStep : ∀ {α : Type} (xs : List α) (f : Store preset fork → α →
+            Except ForkChoiceError (Store preset fork)),
+            (∀ a ∈ xs, ∀ s t, P s → f s a = .ok t → P t) →
+            ∀ s t, P s → xs.foldlM f s = .ok t → P t := by
+          intro α xs f
+          induction xs with
+          | nil =>
+            intro _ s t holds step
+            simp only [List.foldlM_nil, pure, Except.pure, Except.ok.injEq] at step
+            exact step ▸ holds
+          | cons a rest ih =>
+            intro keeps s t holds step
+            rw [List.foldlM_cons, bind_ok_iff] at step
+            obtain ⟨mid, first, restOk⟩ := step
+            exact ih (fun a mem => keeps a (List.mem_cons_of_mem _ mem)) mid t
+              (keeps a List.mem_cons_self s mid holds first) restOk
+        have votedP : P voted := foldStep _ _ (fun a mem s t holds step =>
+          ⟨holds.1.attestation step, attestationStep holds.1 holds.2
+            ⟨.block signed, seen, fun x hx => Or.inl ⟨a, by simpa using mem, hx⟩⟩ step⟩)
+          blocked voted blockedP votedOk
+        exact (foldlM_ok_invariant P (fun s _ t holds step =>
+          ⟨holds.1.attesterSlashing step,
+            transfer holds.2 (fun _ h => h)
+              (Store.onAttesterSlashing_checkpointStates_latestMessages step).2
+              (fun h => (Store.onAttesterSlashing_frame step).2.1 ▸ h)
+              (fun h => (Store.onAttesterSlashing_checkpointStates_latestMessages step).1 ▸ h)
+              (fun h => ⟨_, h ▸ (Store.onAttesterSlashing_sameClock step).getCurrentSlot,
+                UInt64.le_refl _⟩)⟩) votedP slashedOk).2
+      | payloadAttestation _ step =>
+        obtain ⟨_, _, same⟩ := Store.onPayloadAttestationMessage_onlyPtcVotes step
+        rw [same]
+        exact transfer ih (fun _ h => h) rfl (fun h => h) (fun h => h)
+          (fun h => ⟨_, h, UInt64.le_refl _⟩)
+      | envelope _ step =>
+        obtain ⟨_, _, _, _, _, record, same⟩ := Store.onExecutionPayloadEnvelope_ok step
+        rw [same]
+        obtain ⟨_, rfl⟩ := Store.recordEnvelope_frame record
+        exact transfer ih (fun _ h => h) rfl (fun h => h) (fun h => h)
+          (fun h => ⟨_, h, UInt64.le_refl _⟩)
+      | inclusionList _ step =>
+        obtain ⟨_, _, same⟩ := Store.onInclusionList_ok ‹_› step
+        rw [same]
+        exact transfer ih (fun _ h => h) rfl (fun h => h) (fun h => h)
+          (fun h => ⟨_, h, UInt64.le_refl _⟩)
+  exact invariant n v message latest
+
 /-- A past slot's attestation deadline plus delay precedes the current clock. -/
 theorem DelayFits.deadline_add_le {Δ time : ℕ} {slot current : Slot} {clock : UInt64}
     (fits : DelayFits fork config genesisTimeMs Δ)
@@ -379,6 +649,7 @@ theorem DelayFits.deadline_add_le {Δ time : ℕ} {slot current : Slot} {clock :
   obtain ⟨_, elapsedValue⟩ := subChecked_ok_iff.mp elapsedOk
   obtain ⟨_, currentValue⟩ := divChecked_ok_iff.mp divided
   have pastNat := UInt64.lt_iff_toNat_lt.mp past
+  -- The current clock bounds both checked operations at the next slot boundary.
   have nextBound : slot.toNat + 1 < 2 ^ 64 := lt_of_le_of_lt
     (by omega : slot.toNat + 1 ≤ current.toNat) current.toNat_lt
   let next := UInt64.ofNat (slot.toNat + 1)
@@ -442,6 +713,7 @@ theorem Execution.past_head_of_honest_supporter
   exact ⟨attestation, m, earlier, head, block, supported, latest, maySign, headOk,
     known, dataRoot, supportedOk, descends⟩
 
+set_option linter.unusedSectionVars false in
 /-- An honest recorded supporter already held the supported block before the delivery deadline.
 
 The witness comes from the signer's past head, not safety at the receiving endpoint.
@@ -463,7 +735,46 @@ theorem Execution.past_block_of_honest_supporter {Δ : ℕ}
     ∃ m < n, ∃ block : BeaconBlock preset fork,
       ((e.world m).state v).blocks[root]? = some block ∧
       (e.world m).time + Δ ≤ (e.world n).time := by
-  sorry
+  have _ := slots
+  have _ := within
+  -- Use one attestation witness for both the accepted slot and the signed data.
+  obtain ⟨message, supported, latest, -, supportedOk, descends⟩ :=
+    ((e.world n).state u).exists_of_voteCountsFor
+      (Store.voteCountsFor_of_mem_supportersOf supporter)
+  obtain ⟨a, rfl, origin, msg, seen, signed⟩ :=
+    e.exists_signed_origin_of_latestMessages anchorStore anchored caller latest
+  obtain ⟨m, earlier, maySign⟩ :=
+    e.exists_maySign_of_signed (e.view_subset_sent n u seen) signed honest
+  obtain ⟨_, _, deadline, genesis, _, honestData, _⟩ := maySign
+  obtain ⟨head, block, _, _, _, held, _, _, made⟩ := honestData
+  have dataRoot := (getAttestationData_eq_ok_iff.mp made).2.2.2.1
+  have supportedRoot := Store.getSupportedNode_root supportedOk
+  have reached (w : ValidatorIndex) (hw : w ∈ J) (i : ℕ) :=
+    e.reachable (fun w hw => (anchored w hw) ▸ Store.Reachable.anchor anchorStore) i w hw
+  have genesisEq : ((e.world n).state u).genesisTimeMs = genesisTimeMs := by
+    rw [(e.clock_bounds u n).1, anchored u caller, ← anchored v honest,
+      ← (e.clock_bounds v m).1, genesis]
+  obtain ⟨current, currentOk, past⟩ := origin.past
+  have currentTime : computeSlotAtTimeMs config genesisTimeMs
+      ((e.world n).state u).timeMs = .ok current := by
+    have computed := mapError_ok_iff.mp currentOk
+    change computeSlotAtTimeMs config ((e.world n).state u).genesisTimeMs
+      ((e.world n).state u).timeMs = .ok current at computed
+    simpa only [genesisEq] using computed
+  have late := fits.deadline_add_le deadline currentTime past
+  rw [upToDate.1] at late
+  have known : ∃ b, ((e.world m).state v).blocks[supported.root]? = some b := by
+    rw [supportedRoot]
+    exact ⟨block, by simpa only [LatestMessage.ofAttestation, dataRoot] using held⟩
+  unfold Store.isAncestor at descends
+  simp only [bind_ok_iff] at descends
+  obtain ⟨target, _, ancestor, walk, same⟩ := descends
+  have sameRoot : ancestor.root = root := by
+    by_cases gloas : .glamsterdam ≤ fork <;>
+      simp_all [pure, Except.pure]
+  obtain ⟨b, held⟩ := (reached u caller n).known_of_ancestor_walk (reached v honest m)
+    (oneBlock u caller v honest n m) known walk
+  exact ⟨m, earlier, b, sameRoot ▸ held, late⟩
 
 /-- Step 5, the transport: the bound of step 4 holds in each honest store at a later time.
 
