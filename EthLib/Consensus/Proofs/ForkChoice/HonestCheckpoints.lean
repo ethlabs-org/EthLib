@@ -1194,7 +1194,9 @@ theorem Execution.exists_checkpointState_of_preBlock_target {anchor : Store pres
 
 /-- A vote decoded before an accepted block occurs in a sent message with the same data.
 
-This interface is under review; its message and committee provenance proof is unfinished. -/
+The target root must match the block-root history of the state that decodes the vote.
+
+The message and committee provenance proof is unfinished. -/
 theorem Execution.exists_sent_of_blockVote {anchor : Store preset fork}
     (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
     (positive : 0 < preset.SLOTS_PER_EPOCH.toNat)
@@ -1213,6 +1215,7 @@ theorem Execution.exists_sent_of_blockVote {anchor : Store preset fork}
     (blockOk : processBlock config checks sources.engine advanced block = .ok post)
     {v : ValidatorIndex} {data : AttestationData}
     (counted : (v, data) ∈ blockVotes advanced block)
+    (target : getBlockRoot advanced data.target.epoch = .ok data.target.root)
     (later : getCurrentEpoch anchorState < data.target.epoch)
     {slot : Slot}
     (slotOk : ((e.world k).state w).getCurrentSlot config = .ok slot) :
@@ -1242,7 +1245,7 @@ The recent epoch restriction excludes inherited anchor participation.
 
 It does not assert a provenance invariant for that participation.
 
-This interface is under review; its participation and message provenance proof is unfinished. -/
+The participation and message provenance proof is unfinished. -/
 theorem Execution.exists_sent_link_of_counted {anchor : Store preset fork}
     (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
     (sound : Invariant anchorState)
