@@ -10,6 +10,8 @@ What a successful filter over a list in `Except` returns: only elements of the l
 
 It keeps each element of the list that passes the test, and only those, in their order.
 
+Over no element it keeps none.
+
 Lean core states no lemma about such a filter, so this module reads its definition.
 -/
 
@@ -152,5 +154,10 @@ theorem filterM_exists_ok {test : α → Except ε Bool} {list : List α}
     ∃ out, list.filterM test = .ok out := by
   obtain ⟨out, computed⟩ := filterAuxM_exists_ok tested []
   exact ⟨out.reverse, by simp only [List.filterM, computed]; rfl⟩
+
+/-- A filter over no element keeps none. -/
+theorem filterM_nil {test : α → Except ε Bool} : List.filterM test [] = .ok [] := by
+  simp only [List.filterM, List.filterAuxM]
+  rfl
 
 end EthLib.Base
