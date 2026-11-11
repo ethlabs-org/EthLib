@@ -864,7 +864,7 @@ theorem Store.Reachable.blockState_finalizationSources {config : Config}
     {anchorState : BeaconState preset fork} {anchorBlock : BeaconBlock preset fork}
     {store : Store preset fork} (reachable : Store.Reachable config anchorState anchorBlock store)
     {checks : SignatureChecks} {engine : ExecutionEngine preset fork}
-    {link : Checkpoint → Epoch → Prop} {anchorEpoch : Epoch}
+    {link : Checkpoint → Epoch → Prop} {anchorEpoch limit : Epoch}
     (anchor : FinalizationSources link anchorEpoch (getCurrentEpoch anchorState).toNat anchorState)
     (transitions : ∀ (root : Root) (block : BeaconBlock preset fork)
       (state : BeaconState preset fork), store.blocks[root]? = some block →
@@ -876,12 +876,14 @@ theorem Store.Reachable.blockState_finalizationSources {config : Config}
       (child : BeaconBlock preset fork), store.blockStates[root]? = some base →
       store.blocks[childRoot]? = some child → child.parentRoot = root →
       (middle = base ∨ processSlots config checks base middle.slot = .ok middle) →
-      middle.slot < child.slot → processSlot middle = .ok cached →
+      middle.slot < child.slot → getCurrentEpoch middle ≤ limit →
+      processSlot middle = .ok cached →
       processJustificationAndFinalization cached = .ok justified →
       FinalizationSources link anchorEpoch (getCurrentEpoch cached).toNat cached →
       FinalizationSources link anchorEpoch ((getCurrentEpoch cached).toNat + 1) justified)
     {root : Root} {state : BeaconState preset fork}
-    (stored : store.blockStates[root]? = some state) :
+    (stored : store.blockStates[root]? = some state)
+    (bounded : getCurrentEpoch state ≤ limit) :
     FinalizationSources link anchorEpoch (getCurrentEpoch state).toNat state := by
   obtain ⟨block, found⟩ := reachable.known_of_blockState stored
   by_cases same : block = anchorBlock
@@ -893,14 +895,26 @@ theorem Store.Reachable.blockState_finalizationSources {config : Config}
   · obtain ⟨parent, signed, message, parentFound, transitioned⟩ :=
       transitions root block state found stored same
     obtain ⟨advanced, slotsOk, -, -, blockOk, -⟩ := stateTransition_ok transitioned
+    have monotone {left right : BeaconState preset fork} (le : left.slot ≤ right.slot) :
+        getCurrentEpoch left ≤ getCurrentEpoch right := by
+      rw [UInt64.le_iff_toNat_le, getCurrentEpoch_toNat, getCurrentEpoch_toNat]
+      exact Nat.div_le_div_right (UInt64.le_iff_toNat_le.mp le)
+    have parentBound : getCurrentEpoch parent ≤ limit := by
+      apply UInt64.le_trans (monotone ?_) bounded
+      obtain ⟨before, sameSlot⟩ := stateTransition_slot transitioned
+      rw [sameSlot]
+      exact UInt64.le_of_lt before
     have parentHolds :=
-      reachable.blockState_finalizationSources anchor transitions counts parentFound
+      reachable.blockState_finalizationSources anchor transitions counts parentFound parentBound
     apply FinalizationSources.processBlock (computed := blockOk)
     apply parentHolds.processSlots (computed := slotsOk)
     intro middle cached justified visited before cachedOk justifiedOk old
     apply counts block.parentRoot root parent middle cached justified block parentFound found rfl
-      visited ?_ cachedOk justifiedOk old
-    simpa only [message] using before
+      visited ?_ ?_ cachedOk justifiedOk old
+    · simpa only [message] using before
+    · apply UInt64.le_trans (monotone ?_) bounded
+      rw [(stateTransition_slot transitioned).2]
+      exact UInt64.le_of_lt before
 termination_by state.slot.toNat
 decreasing_by
   have bounds := stateTransition_slot transitioned
@@ -1993,6 +2007,150 @@ theorem Execution.exists_sent_source_of_counted {anchor : Store preset fork}
   obtain ⟨v, data, good, signed, link⟩ := exists_linkVote_of_justificationTest totalOk
     balanceOk thresholdOk weightOk passed large provenance p few
   exact ⟨v, data, good, link.2.2.1, link.2.1, signed⟩
+
+/-- Historical block-state finalization retains a sent source link from the chosen set. -/
+theorem Execution.blockState_sent_sources {anchor : Store preset fork}
+    (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (sound : Invariant anchorState)
+    (positive : 0 < preset.SLOTS_PER_EPOCH.toNat)
+    (window : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
+    (ring : preset.MIN_SEED_LOOKAHEAD.toNat + 2 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
+    (preGloas : fork < .glamsterdam)
+    {w : ValidatorIndex} (honest : w ∈ J) (start : e.start w = anchor) {k : ℕ}
+    (nonzero : ∀ (root : Root) (block : BeaconBlock preset fork),
+      ((e.world k).state w).blocks[root]? = some block →
+      block.stateRoot ≠ Vector.replicate 32 0)
+    {epoch : Epoch} {slot : Slot}
+    (slotOk : ((e.world k).state w).getCurrentSlot config = .ok slot)
+    (p : ValidatorIndex → Prop) [DecidablePred p]
+    (large : ∀ state : BeaconState preset fork,
+      ((e.world k).state w).Counts config state → getCurrentEpoch state ≤ epoch →
+      3 * preset.EFFECTIVE_BALANCE_INCREMENT.toNat <
+        2 * stake (fun v => balanceAt state v.toNat) (activeVoters state))
+    (few : ∀ (state : BeaconState preset fork) (total : Gwei),
+      ((e.world k).state w).Counts config state → getCurrentEpoch state ≤ epoch →
+      getTotalActiveBalance state = .ok total →
+      3 * stake (fun v => balanceAt state v.toNat) {v ∈ quorumVoters state | ¬p v} <
+        2 * total.toNat)
+    {root : Root} {state : BeaconState preset fork}
+    (stored : ((e.world k).state w).blockStates[root]? = some state)
+    (bounded : getCurrentEpoch state ≤ epoch) :
+    FinalizationSources (fun source target => ∃ v data, p v ∧ data.source = source ∧
+      data.target.epoch = target ∧ ∃ m ∈ (e.world k).sent,
+        (v, data) ∈ statements config checks anchorState anchorBlock m)
+      (getCurrentEpoch anchorState) (getCurrentEpoch state).toNat state := by
+  have reachable : ∀ n, Store.Reachable config anchorState anchorBlock ((e.world n).state w) := by
+    intro n
+    induction n with
+    | zero =>
+      change Store.Reachable config anchorState anchorBlock (e.start w)
+      rw [start]
+      exact .anchor anchored
+    | succ n ih =>
+      rcases e.state_succ n w with same | ⟨_, moved⟩
+      · exact same ▸ ih
+      · exact moved.reachable ih
+  apply (reachable k).blockState_finalizationSources (checks := checks)
+    (engine := sources.engine) (limit := epoch) ?_ ?_ ?_ stored bounded
+  · apply FinalizationSources.anchor
+    · exact UInt64.le_trans sound.ordered.2
+        (UInt64.le_trans sound.settled (getPreviousEpoch_le anchorState))
+    · exact UInt64.le_trans sound.ordered.1 (UInt64.le_trans sound.ordered.2
+        (UInt64.le_trans sound.settled (getPreviousEpoch_le anchorState)))
+  · intro root block state held found other
+    exact e.exists_transition_of_nonanchor_block anchored honest start held found other
+  · intro root childRoot base middle cached justified child found held parent visited before bound
+      cachedOk justifiedOk old
+    have baseSound := ((reachable k).ordered sound).2 found
+    have middleSound : Invariant middle := by
+      rcases visited with same | processed
+      · exact same ▸ baseSound
+      · exact (processSlots_invariant baseSound processed).1
+    have cachedSound := (frame_processSlot cachedOk).invariant middleSound
+    apply old.process_cached positive window cachedOk cachedSound.ordered cachedSound.settled
+      ?_ justifiedOk
+    intro late recent indices total balance threshold weight counted totalOk balanceOk thresholdOk
+      weightOk passed above
+    have advanced : middle = base ∨ ∃ (slot : Slot) (childRoot : Root)
+        (child : BeaconBlock preset fork), ((e.world k).state w).blocks[childRoot]? = some child ∧
+        child.parentRoot = root ∧ slot ≤ child.slot ∧
+        processSlots config checks base slot = .ok middle := by
+      rcases visited with same | processed
+      · exact .inl same
+      · exact .inr ⟨middle.slot, childRoot, child, held, parent, UInt64.le_of_lt before,
+          processed⟩
+    have counts := Store.counts_of_fixedChecks found advanced
+    have later : getCurrentEpoch anchorState <
+        (if recent then getCurrentEpoch middle else getPreviousEpoch middle) := by
+      cases recent
+      · exact UInt64.lt_of_lt_of_le above
+          (UInt64.le_trans middleSound.ordered.2 middleSound.settled)
+      · exact UInt64.lt_of_lt_of_le above
+          (UInt64.le_trans middleSound.settled (getPreviousEpoch_le middle))
+    exact e.exists_sent_source_of_counted anchored sound positive window ring preGloas honest start
+      nonzero found advanced late recent later counted slotOk totalOk balanceOk thresholdOk weightOk
+      passed (large middle counts bound) p (few middle total counts bound totalOk)
+
+/-- Pulling up a held state retains historical sources and adds its current passing counts. -/
+theorem Execution.pulledState_sent_sources {anchor : Store preset fork}
+    (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (sound : Invariant anchorState)
+    (positive : 0 < preset.SLOTS_PER_EPOCH.toNat)
+    (window : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
+    (ring : preset.MIN_SEED_LOOKAHEAD.toNat + 2 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
+    (preGloas : fork < .glamsterdam)
+    {w : ValidatorIndex} (honest : w ∈ J) (start : e.start w = anchor) {k : ℕ}
+    (nonzero : ∀ (root : Root) (block : BeaconBlock preset fork),
+      ((e.world k).state w).blocks[root]? = some block →
+      block.stateRoot ≠ Vector.replicate 32 0)
+    {epoch : Epoch} {slot : Slot}
+    (slotOk : ((e.world k).state w).getCurrentSlot config = .ok slot)
+    (p : ValidatorIndex → Prop) [DecidablePred p]
+    (large : ∀ state : BeaconState preset fork,
+      ((e.world k).state w).Counts config state → getCurrentEpoch state ≤ epoch →
+      3 * preset.EFFECTIVE_BALANCE_INCREMENT.toNat <
+        2 * stake (fun v => balanceAt state v.toNat) (activeVoters state))
+    (few : ∀ (state : BeaconState preset fork) (total : Gwei),
+      ((e.world k).state w).Counts config state → getCurrentEpoch state ≤ epoch →
+      getTotalActiveBalance state = .ok total →
+      3 * stake (fun v => balanceAt state v.toNat) {v ∈ quorumVoters state | ¬p v} <
+        2 * total.toNat)
+    {root : Root} {state pulled : BeaconState preset fork}
+    (stored : ((e.world k).state w).blockStates[root]? = some state)
+    (bounded : getCurrentEpoch state ≤ epoch)
+    (computed : processJustificationAndFinalization state = .ok pulled) :
+    FinalizationSources (fun source target => ∃ v data, p v ∧ data.source = source ∧
+      data.target.epoch = target ∧ ∃ m ∈ (e.world k).sent,
+        (v, data) ∈ statements config checks anchorState anchorBlock m)
+      (getCurrentEpoch anchorState) ((getCurrentEpoch state).toNat + 1) pulled := by
+  have old := e.blockState_sent_sources anchored sound positive window ring preGloas honest start
+    nonzero slotOk p large few stored bounded
+  have reachable : ∀ n, Store.Reachable config anchorState anchorBlock ((e.world n).state w) := by
+    intro n
+    induction n with
+    | zero =>
+      change Store.Reachable config anchorState anchorBlock (e.start w)
+      rw [start]
+      exact .anchor anchored
+    | succ n ih =>
+      rcases e.state_succ n w with same | ⟨_, moved⟩
+      · exact same ▸ ih
+      · exact moved.reachable ih
+  have stateSound := ((reachable k).ordered sound).2 stored
+  apply old.process_of_counts stateSound.ordered stateSound.settled ?_ computed
+  intro late recent indices total balance threshold weight counted totalOk balanceOk thresholdOk
+    weightOk passed above
+  have counts := Store.counts_of_fixedChecks (config := config) (checks := checks) stored (.inl rfl)
+  have later : getCurrentEpoch anchorState <
+      (if recent then getCurrentEpoch state else getPreviousEpoch state) := by
+    cases recent
+    · exact UInt64.lt_of_lt_of_le above
+        (UInt64.le_trans stateSound.ordered.2 stateSound.settled)
+    · exact UInt64.lt_of_lt_of_le above
+        (UInt64.le_trans stateSound.settled (getPreviousEpoch_le state))
+  exact e.exists_sent_source_of_counted anchored sound positive window ring preGloas honest start
+    nonzero stored (.inl rfl) late recent later counted slotOk totalOk balanceOk thresholdOk
+    weightOk passed (large state counts bounded) p (few state total counts bounded totalOk)
 
 /-- The count: a set of validators signs a justified checkpoint when the others cannot.
 
