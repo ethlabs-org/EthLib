@@ -1770,6 +1770,581 @@ theorem source_bounds_over_interval {g x y : ForkedBeaconState preset}
   · exact List.sum_le_sum (fun event member => (bound event member).1)
   · exact List.sum_le_sum (fun event member => (bound event member).2)
 
+private def coverageDelta (debit : Bool) (x y : ForkedBeaconState preset) (i : Nat) : Nat :=
+  if debit then actualBalanceAt x i - actualBalanceAt y i
+  else actualBalanceAt y i - actualBalanceAt x i
+
+private def Coverage (x y : ForkedBeaconState preset)
+    (events : List (BalanceEvent preset)) : Prop :=
+  ∀ debit i, coverageDelta debit x y i ≤
+    (events.map fun e => coverageDelta debit e.before e.after i).sum
+
+private theorem coverage_refl (x : ForkedBeaconState preset) : Coverage x x [] := by
+  intro debit i
+  cases debit <;> simp [coverageDelta]
+
+private theorem coverage_event (event : BalanceEvent preset) :
+    Coverage event.before event.after [event] := by
+  intro debit i
+  simp
+
+private theorem coverage_trans {x y z : ForkedBeaconState preset}
+    {left right : List (BalanceEvent preset)} (first : Coverage x y left)
+    (last : Coverage y z right) : Coverage x z (left ++ right) := by
+  intro debit i
+  have a := first debit i
+  have b := last debit i
+  simp only [List.map_append, List.sum_append]
+  cases debit <;> simp only [coverageDelta, Bool.false_eq_true, ↓reduceIte] at * <;> omega
+
+private theorem coverage_same {fork : Fork} {s t : BeaconState preset fork}
+    (same : t.balances = s.balances) : Coverage ⟨fork, s⟩ ⟨fork, t⟩ [] := by
+  intro debit i
+  cases debit <;> simp [coverageDelta, actualBalanceAt, same]
+
+private abbrev ReplayCoverage {fork : Fork} (start : BeaconState preset fork)
+    (pre : BalanceReplay preset fork) : Prop := Coverage ⟨fork, start⟩ ⟨fork, pre.1⟩ pre.2
+
+private theorem coverage_record {fork : Fork} {start : BeaconState preset fork}
+    {source : BalanceSource}
+    {limits : BeaconState preset fork → Except TransitionError (Nat × Nat)}
+    {action : BeaconState preset fork → Except TransitionError (BeaconState preset fork)}
+    {pre post : BalanceReplay preset fork} (initial : ReplayCoverage start pre)
+    (ok : recordBalance source limits action pre = .ok post) : ReplayCoverage start post := by
+  simp only [recordBalance, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at ok
+  obtain ⟨⟨credit, debit⟩, _, after, _, rfl⟩ := ok
+  exact coverage_trans initial (by intro debit i; simp)
+
+private theorem coverage_carry {fork : Fork} {start : BeaconState preset fork}
+    {action : BeaconState preset fork → Except TransitionError (BeaconState preset fork)}
+    (keeps : ∀ s t, action s = .ok t → t.balances = s.balances)
+    {pre post : BalanceReplay preset fork} (initial : ReplayCoverage start pre)
+    (ok : carryBalance action pre = .ok post) : ReplayCoverage start post := by
+  simp only [carryBalance, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at ok
+  obtain ⟨after, actionOk, rfl⟩ := ok
+  simpa only [List.append_nil] using coverage_trans initial (coverage_same (keeps _ _ actionOk))
+
+private theorem coverage_deltas {fork : Fork} {start : BeaconState preset fork}
+    (source : BalanceSource) (deltas : Array Gwei × Array Gwei)
+    {pre post : BalanceReplay preset fork} (initial : ReplayCoverage start pre)
+    (ok : replayDeltas source deltas pre = .ok post) : ReplayCoverage start post := by
+  apply foldlM_ok_invariant (ReplayCoverage start) _ initial ok
+  intro pre i post initial ok
+  simp only [bind_ok_iff] at ok
+  obtain ⟨_, _, rewarded, rewardOk, penaltyOk⟩ := ok
+  exact coverage_record (coverage_record initial rewardOk) penaltyOk
+
+private theorem coverage_rewards {fork : Fork} {start : BeaconState preset fork}
+    {pre post : BalanceReplay preset fork} (initial : ReplayCoverage start pre)
+    (ok : replayRewards (config := config) pre = .ok post) : ReplayCoverage start post := by
+  unfold replayRewards at ok
+  split at ok
+  · cases ok; exact initial
+  · simp only [bind_ok_iff] at ok
+    obtain ⟨ordinary, _, inactivity, _, ok⟩ := ok
+    split at ok
+    · obtain ⟨middle, folded, last⟩ := bind_ok_iff.mp ok
+      exact coverage_deltas _ _ (foldlM_ok_invariant (ReplayCoverage start)
+        (fun _ _ _ h ok => coverage_deltas _ _ h ok) initial folded) last
+    · simp only [bind_ok_iff] at ok
+      obtain ⟨rewards, _, rewarded, rewardOk, middle, folded, last⟩ := ok
+      exact coverage_deltas _ _ (foldlM_ok_invariant (ReplayCoverage start)
+        (fun _ _ _ h ok => coverage_deltas _ _ h ok)
+        (coverage_deltas _ _ initial rewardOk) folded) last
+
+private theorem coverage_setAt {fork : Fork} {s t : BeaconState preset fork}
+    {i : Nat} {v : Validator} (ok : s.setValidatorAt i v = .ok t) :
+    t.balances = s.balances := by
+  unfold BeaconState.setValidatorAt at ok
+  split at ok
+  · cases ok; rfl
+  · simp only [bind_ok_iff] at ok
+    obtain ⟨_, _, impossible⟩ := ok
+    cases impossible
+
+private theorem coverage_exit {fork : Fork} {s t : BeaconState preset fork}
+    {i : ValidatorIndex} (ok : initiateValidatorExit config s i = .ok t) :
+    t.balances = s.balances := by
+  obtain ⟨_, _, ⟨_, rfl⟩ | ⟨_, queued, _, _, queue, _, set⟩⟩ := initiateValidatorExit_ok ok
+  · rfl
+  · obtain ⟨_, rfl⟩ := setValidator_ok set
+    exact (exitQueue_validators queue).2
+
+private theorem coverage_fold_keeps {fork : Fork} {α ε : Type}
+    {action : BeaconState preset fork → α → Except ε (BeaconState preset fork)}
+    (keeps : ∀ s a t, action s a = .ok t → t.balances = s.balances)
+    {s t : BeaconState preset fork} {xs : List α} (ok : xs.foldlM action s = .ok t) :
+    t.balances = s.balances :=
+  foldlM_ok_invariant (fun t => t.balances = s.balances)
+    (fun a b c previous step => (keeps a b c step).trans previous) rfl ok
+
+private theorem coverage_registry {fork : Fork} {s t : BeaconState preset fork}
+    (ok : processRegistryUpdates config s = .ok t) : t.balances = s.balances := by
+  have electra (epoch : Epoch) (s t : BeaconState preset fork) (i : Nat)
+      (ok : updateRegistryEntryElectra config epoch s i = .ok t) :
+      t.balances = s.balances := by
+    simp only [updateRegistryEntryElectra, bind_ok_iff] at ok
+    obtain ⟨_, _, ok⟩ := ok
+    split at ok
+    · obtain ⟨_, _, set⟩ := bind_ok_iff.mp ok
+      exact coverage_setAt (liftAccessor_ok.mp set)
+    · split at ok
+      · obtain ⟨_, _, exited⟩ := bind_ok_iff.mp ok
+        exact coverage_exit (liftAccessor_ok.mp exited)
+      · split at ok
+        · exact coverage_setAt (liftAccessor_ok.mp ok)
+        · cases ok; rfl
+  have ordinary (s t : BeaconState preset fork) (i : Nat)
+      (ok : updateRegistryEntry config s i = .ok t) : t.balances = s.balances := by
+    simp only [updateRegistryEntry, bind_ok_iff] at ok
+    obtain ⟨_, _, _, _, u, set, rest⟩ := ok
+    have same := coverage_setAt (liftAccessor_ok.mp set)
+    split at rest
+    · obtain ⟨_, _, exited⟩ := bind_ok_iff.mp rest
+      exact (coverage_exit (liftAccessor_ok.mp exited)).trans same
+    · cases rest; exact same
+  have activate (s t : BeaconState preset fork) (i : ValidatorIndex)
+      (ok : activateValidator s i = .ok t) : t.balances = s.balances := by
+    simp only [activateValidator, bind_ok_iff, liftAccessor_ok] at ok
+    obtain ⟨_, _, _, _, set⟩ := ok
+    obtain ⟨_, rfl⟩ := setValidator_ok set
+    rfl
+  unfold processRegistryUpdates at ok
+  split at ok
+  · obtain ⟨epoch, _, folded⟩ := bind_ok_iff.mp ok
+    exact coverage_fold_keeps (fun s i t => electra epoch s t i) folded
+  · obtain ⟨u, first, last⟩ := bind_ok_iff.mp ok
+    exact (coverage_fold_keeps (fun s i t => activate s t i) last).trans
+      (coverage_fold_keeps (fun s i t => ordinary s t i) first)
+
+private theorem coverage_justification {fork : Fork} {s t : BeaconState preset fork}
+    (ok : processJustificationAndFinalization s = .ok t) : t.balances = s.balances := by
+  obtain same | ⟨_, _, _, weighed⟩ := processJustificationAndFinalization_ok ok
+  · exact congrArg BeaconState.balances same
+  · obtain ⟨_, _, _, rest⟩ := weighJustificationAndFinalization_checkpoints weighed
+    rw [← rest]
+
+private theorem coverage_inactivity {fork : Fork} {s t : BeaconState preset fork}
+    {altair : .altair ≤ fork} (ok : processInactivityUpdates config s altair = .ok t) :
+    t.balances = s.balances := by
+  unfold processInactivityUpdates at ok
+  split at ok
+  · cases ok; rfl
+  · simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at ok
+    obtain ⟨_, _, _, _, rfl⟩ := ok
+    rfl
+
+set_option maxHeartbeats 800000 in
+private theorem coverage_epoch {fork : Fork} {s : BeaconState preset fork}
+    {post : BalanceReplay preset fork}
+    (early : fork < .glamsterdam)
+    (ok : epochBalanceReplay (config := config) (checks := checks) s = .ok post) :
+    ReplayCoverage s post := by
+  have before : fork < .hegota := Nat.lt_trans early (by decide)
+  unfold epochBalanceReplay at ok
+  obtain ⟨justified, justifiedOk, ok⟩ := bind_ok_iff.mp ok
+  have justifiedCover := coverage_carry (fun _ _ => coverage_justification)
+    (coverage_refl ⟨fork, s⟩) justifiedOk
+  by_cases altair : .altair ≤ fork
+  case' pos =>
+    simp only [altair, ↓reduceDIte] at ok
+    obtain ⟨inactive, inactiveOk, ok⟩ := bind_ok_iff.mp ok
+    have inactiveCover := coverage_carry (fun _ _ => coverage_inactivity) justifiedCover inactiveOk
+    obtain ⟨rewarded, rewardOk, rest⟩ := bind_ok_iff.mp ok
+    have rewardedCover := coverage_rewards inactiveCover rewardOk
+  case' neg =>
+    simp only [altair, ↓reduceDIte, pure, Except.pure, bind_ok_iff,
+      Except.ok.injEq, exists_eq_left'] at ok
+    obtain ⟨rewarded, rewardOk, rest⟩ := ok
+    have rewardedCover := coverage_rewards justifiedCover rewardOk
+  all_goals
+    simp only [before, ↓reduceDIte, bind_ok_iff] at rest
+    obtain ⟨registered, registeredOk, slashed, slashedOk, reset, resetOk, last⟩ := rest
+    have registeredCover := coverage_carry (fun _ _ => coverage_registry) rewardedCover registeredOk
+    have slashedCover := coverage_record registeredCover slashedOk
+    have resetCover := coverage_carry (fun a b action => by
+      simp only [processEth1DataReset, bind_ok_iff] at action
+      obtain ⟨_, _, action⟩ := action
+      split at action <;> cases action <;> rfl) slashedCover resetOk
+    split at last
+    · rename_i electra
+      simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at last
+      obtain ⟨deposited, _, consolidated, _, rfl⟩ := last
+      have depositedCover := coverage_trans resetCover (coverage_event
+        ⟨.deposits, ⟨fork, reset.1⟩, ⟨fork, deposited⟩,
+          consumedDeposits reset.1 deposited electra, 0⟩)
+      exact coverage_trans depositedCover (coverage_event
+        ⟨.consolidations, ⟨fork, deposited⟩, ⟨fork, consolidated⟩,
+          consumedConsolidations deposited consolidated electra,
+          consumedConsolidations deposited consolidated electra⟩)
+    · cases last; exact resetCover
+
+private theorem coverage_voluntary {fork : Fork} {s t : BeaconState preset fork}
+    {signed : SignedVoluntaryExit} (ok : processVoluntaryExit config checks s signed = .ok t) :
+    t.balances = s.balances := by
+  simp only [processVoluntaryExit, bind_ok_iff] at ok
+  obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, exited⟩ := ok
+  exact coverage_exit (liftAccessor_ok.mp exited)
+
+private theorem coverage_bls {fork : Fork} {s t : BeaconState preset fork}
+    {signed : SignedBLSToExecutionChange}
+    (ok : processBlsToExecutionChange config checks s signed = .ok t) :
+    t.balances = s.balances := by
+  simp only [processBlsToExecutionChange, bind_ok_iff] at ok
+  obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, set⟩ := ok
+  obtain ⟨_, rfl⟩ := setValidator_ok (liftAccessor_ok.mp set)
+  rfl
+
+private theorem coverage_withdrawal_request {fork : Fork} {s t : BeaconState preset fork}
+    {electra : .pectra ≤ fork} {request : WithdrawalRequest}
+    (ok : processWithdrawalRequest config s electra request = .ok t) :
+    t.balances = s.balances := by
+  have partialRequest (s t : BeaconState preset fork) (index : ValidatorIndex) (v : Validator)
+      (amount owed : Gwei)
+      (ok : requestPartialWithdrawal config s electra index v amount owed = .ok t) :
+      t.balances = s.balances := by
+    simp only [requestPartialWithdrawal, bind_ok_iff] at ok
+    obtain ⟨_, _, _, _, ok⟩ := ok
+    split at ok
+    · simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at ok
+      obtain ⟨⟨u, epoch⟩, churned, _, _, _, _, rfl⟩ := ok
+      exact (computeExitEpochAndUpdateChurn_earliest (liftAccessor_ok.mp churned)).2.2
+    · cases ok; rfl
+  simp only [processWithdrawalRequest] at ok
+  repeat' first
+    | (exact partialRequest _ _ _ _ _ _ ok)
+    | (exact coverage_exit (liftAccessor_ok.mp ok))
+    | (cases ok; rfl)
+    | (split at ok)
+    | (rcases bind_ok_iff.mp ok with ⟨_, _, ok⟩)
+
+set_option maxHeartbeats 800000 in
+private theorem coverage_block {fork : Fork} {s : BeaconState preset fork}
+    (early : fork < .glamsterdam) (engine : ExecutionEngine preset fork)
+    (block : BeaconBlock preset fork) {post : BalanceReplay preset fork}
+    (ok : blockBalanceReplay (config := config) (checks := checks)
+      early engine s block = .ok post) : ReplayCoverage s post := by
+  unfold blockBalanceReplay at ok
+  obtain ⟨headed, headerOk, ok⟩ := bind_ok_iff.mp ok
+  have headedCover := coverage_carry (fun a b action => by
+    obtain ⟨_, _, rfl⟩ := processBlockHeader_eq action
+    rfl) (coverage_refl ⟨fork, s⟩) headerOk
+  by_cases bellatrix : .bellatrix ≤ fork
+  case' pos =>
+    simp only [bellatrix, ↓reduceDIte] at ok
+    obtain ⟨executed, executionOk, rest⟩ := bind_ok_iff.mp ok
+    have executedCover := coverage_record headedCover executionOk
+  case' neg =>
+    simp only [bellatrix, ↓reduceDIte, pure, Except.pure, bind_ok_iff,
+      Except.ok.injEq, exists_eq_left'] at ok
+    have rest := ok
+    have executedCover := headedCover
+  all_goals
+    try simp only [bind_ok_iff] at rest
+    obtain ⟨randao, randaoOk, voted, votedOk, expected, _, _, _,
+      proposed, proposedOk, attested, attestedOk, rewarded, rewardedOk, deposited, depositOk,
+      exited, exitOk, changed, changedOk, rest⟩ := rest
+    have randaoCover := coverage_carry (fun a b action => by
+      simp only [processRandao, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at action
+      obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, rfl⟩ := action
+      rfl) executedCover randaoOk
+    have votedCover := coverage_carry (fun a b action => by
+      simp only [processEth1Data] at action
+      split at action
+      · obtain ⟨_, _, action⟩ := bind_ok_iff.mp action
+        split at action <;> cases action <;> rfl
+      · cases action) randaoCover votedOk
+    have proposedCover := foldlM_ok_invariant (ReplayCoverage s)
+      (fun _ _ _ h ok => coverage_record h ok) votedCover proposedOk
+    have attestedCover := foldlM_ok_invariant (ReplayCoverage s)
+      (fun _ _ _ h ok => coverage_record h ok) proposedCover attestedOk
+    have rewardedCover := foldlM_ok_invariant (ReplayCoverage s)
+      (fun _ _ _ h ok => coverage_record h ok) attestedCover rewardedOk
+    have depositedCover := foldlM_ok_invariant (ReplayCoverage s)
+      (fun _ _ _ h ok => coverage_record h ok) rewardedCover depositOk
+    have exitedCover := coverage_carry (fun _ _ ok =>
+      coverage_fold_keeps (fun _ _ _ => coverage_voluntary)
+        (by simpa only [← Array.foldlM_toList] using ok)) depositedCover exitOk
+    have changedCover := coverage_carry (fun _ _ ok => by
+      unfold processBlsToExecutionChanges at ok
+      split at ok
+      · exact coverage_fold_keeps (fun _ _ _ => coverage_bls)
+          (by simpa only [← Array.foldlM_toList] using ok)
+      · cases ok; rfl) exitedCover changedOk
+    by_cases electra : .pectra ≤ fork
+    case' pos =>
+      simp only [electra, ↓reduceDIte, bind_ok_iff] at rest
+      obtain ⟨deposits, depositRequestOk, withdrawals, withdrawalOk,
+        requested, consolidations, rest⟩ := rest
+      have depositsCover := coverage_carry (fun _ _ ok =>
+        coverage_fold_keeps (action := fun a req => processDepositRequest a electra req)
+          (fun a req b action => by
+          simp only [processDepositRequest, liftAccessor_ok, addPendingDeposit,
+            bind_ok_iff, pure, Except.pure, Except.ok.injEq] at action
+          obtain ⟨_, _, rfl⟩ := action
+          simp only [recordDepositRequestsStart]
+          split <;> first | rfl | (split <;> rfl))
+          (by simpa only [← Array.foldlM_toList] using ok)) changedCover depositRequestOk
+      have withdrawalsCover := coverage_carry (fun _ _ ok =>
+        coverage_fold_keeps (fun _ _ _ => coverage_withdrawal_request)
+          (by simpa only [← Array.foldlM_toList] using ok)) depositsCover withdrawalOk
+      have requestedCover := foldlM_ok_invariant (ReplayCoverage s)
+        (fun _ _ _ h ok => coverage_record h ok) withdrawalsCover consolidations
+    case' neg =>
+      simp only [electra, ↓reduceDIte, pure, Except.pure, bind_ok_iff,
+        Except.ok.injEq, exists_eq_left'] at rest
+      have requestedCover := changedCover
+    all_goals
+      split at rest
+      · exact coverage_record requestedCover rest
+      · cases rest; exact requestedCover
+
+private theorem coverage_upgrade_kept {s : ForkedBeaconState preset}
+    {next : {t : ForkedBeaconState preset // s.fork < t.fork}}
+    (ok : upgradeNext config checks s = .ok next) (early : next.val.fork < .glamsterdam)
+    (notElectra : s.fork ≠ .dencun) : Coverage s next.val [] := by
+  have same (s t : ForkedBeaconState preset) (h : t.state.balances.data = s.state.balances.data) :
+      Coverage s t [] := by
+    intro debit i
+    cases debit <;> simp [coverageDelta, actualBalanceAt, h]
+  obtain ⟨fork, state⟩ := s
+  cases fork <;>
+    simp only [upgradeNext, bind_ok_iff, pure, Except.pure, Except.ok.injEq, throw,
+      throwThe, MonadExceptOf.throw, reduceCtorEq] at ok
+  · obtain ⟨_, upgraded, rfl⟩ := ok
+    exact same _ _ (upgradeToAltair_spec upgraded).2.1
+  · subst ok; exact same _ _ rfl
+  · subst ok; exact same _ _ rfl
+  · subst ok; exact same _ _ rfl
+  · exact False.elim (notElectra rfl)
+  · obtain ⟨_, upgraded, rfl⟩ := ok
+    exact same _ _ (upgradeToFulu_spec upgraded).2.1
+  · obtain ⟨_, _, rfl⟩ := ok
+    exact False.elim (Nat.lt_irrefl _ early)
+  · obtain ⟨_, _, rfl⟩ := ok
+    exact False.elim ((by decide : ¬Fork.hegota < Fork.glamsterdam) early)
+
+private theorem coverage_upgrades {s t : ForkedBeaconState preset}
+    (ok : processUpgrades config checks s = .ok t) (early : t.fork < .glamsterdam)
+    {events : List (BalanceEvent preset)}
+    (replayed : upgradeBalanceReplay (config := config) (checks := checks) s = .ok events) :
+    Coverage s t events := by
+  fun_induction processUpgrades config checks s generalizing t events with
+  | case1 s due ih =>
+    obtain ⟨next, nextOk, rest⟩ := bind_ok_iff.mp ok
+    rw [upgradeBalanceReplay] at replayed
+    simp only [due, ↓reduceIte, nextOk] at replayed
+    dsimp only [bind, Except.bind] at replayed
+    change (do
+      let tail ← upgradeBalanceReplay (config := config) (checks := checks) next.val
+      if s.fork = Fork.dencun then
+        if electra : Fork.pectra ≤ next.val.fork then
+          pure ((⟨.crossing, s, next.val, 0,
+            ((next.val.state.pendingDeposits electra).data.toList.map
+              fun (d : PendingDeposit) => d.amount.toNat).sum⟩ : BalanceEvent preset) :: tail)
+        else pure tail
+      else pure tail) = .ok events at replayed
+    simp only [bind_ok_iff] at replayed
+    obtain ⟨tail, tailOk, last⟩ := replayed
+    have covered := ih next rest early tailOk
+    by_cases crossing : s.fork = .dencun
+    · obtain ⟨fork, state⟩ := s
+      dsimp only at crossing
+      subst fork
+      simp only [upgradeNext, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at nextOk
+      obtain ⟨after, upgraded, rfl⟩ := nextOk
+      simp only [↓reduceIte, show Fork.pectra ≤ .pectra from Nat.le_refl _, ↓reduceDIte,
+        pure, Except.pure, Except.ok.injEq] at last
+      subst events
+      exact coverage_trans (coverage_event
+        ⟨.crossing, ⟨.dencun, state⟩, ⟨.pectra, after⟩, 0,
+          ((after.pendingDeposits (by decide)).data.toList.map
+            fun d => d.amount.toNat).sum⟩) covered
+    · simp only [crossing, ↓reduceIte, pure, Except.pure, Except.ok.injEq] at last
+      subst events
+      simpa only [List.nil_append] using coverage_trans
+        (coverage_upgrade_kept nextOk
+          (Nat.lt_of_le_of_lt (processUpgrades_fork_le rest) early) crossing) covered
+  | case2 s due =>
+    cases ok
+    rw [upgradeBalanceReplay] at replayed
+    simp [due, pure, Except.pure] at replayed
+    subst events
+    exact coverage_refl _
+
+private def coveragePath (debit : Bool) (i : Nat) (path : List (ForkedBeaconState preset)) : Nat :=
+  if debit then pathDebits i path else pathCredits i path
+
+private theorem coverage_step {x y : ForkedBeaconState preset} (step : Step config checks x y)
+    (early : y.fork < .glamsterdam) {events : List (BalanceEvent preset)}
+    (replayed : step.balanceEvents = .ok events) :
+    ∀ debit i, coveragePath debit i step.balancePath ≤
+      (events.map fun e => coverageDelta debit e.before e.after i).sum := by
+  have before : x.fork < .glamsterdam := Nat.lt_of_le_of_lt step.chainStep.fork_le early
+  cases step with
+  | block engine signed due ok =>
+    obtain ⟨recorded, replay⟩ := blockBalanceReplay_result _ _ before engine signed.message
+      (applySignedBlock_ok ok).2.1
+    have cover := coverage_block before engine signed.message replay
+    simp only [Step.balanceEvents, before, ↓reduceDIte, replay, bind, Except.bind,
+      pure, Except.pure, Except.ok.injEq] at replayed
+    subst events
+    intro debit i
+    simpa [coveragePath, coverageDelta, Step.balancePath, pathCredits, pathDebits]
+      using cover debit i
+  | slot ok =>
+    obtain ⟨advanced, advanceOk, upgrades⟩ := bind_ok_iff.mp ok
+    have advanceCopy := advanceOk
+    simp only [advanceSlot, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at advanceCopy
+    obtain ⟨next, nextOk, cached, cachedOk, epoched, epochOk, afterEq⟩ := advanceCopy
+    obtain ⟨_, _, _, _, cachedEq⟩ := processSlot_ok cachedOk
+    have cachedCover : Coverage x ⟨x.fork, cached⟩ [] :=
+      coverage_same (by rw [cachedEq])
+    obtain ⟨crossings, crossingOk, _⟩ := upgradeBalanceReplay_bounded upgrades
+    have crossingCover := coverage_upgrades upgrades early crossingOk
+    have finish (epochEvents : List (BalanceEvent preset))
+        (eventEq : events = epochEvents ++ crossings)
+        (epochCover : Coverage x ⟨x.fork, advanced⟩ epochEvents) :
+        ∀ debit i, coveragePath debit i (Step.slot ok).balancePath ≤
+          (events.map fun e => coverageDelta debit e.before e.after i).sum := by
+      intro debit i
+      have first := epochCover debit i
+      have second := crossingCover debit i
+      rw [eventEq, List.map_append, List.sum_append]
+      cases debit <;>
+        simpa [coveragePath, Step.balancePath, advanceOk, Except.toOption,
+          pathCredits, pathDebits, coverageDelta] using Nat.add_le_add first second
+    by_cases last : next % preset.SLOTS_PER_EPOCH = 0
+    · simp only [epochIfLast, last, ↓reduceIte] at epochOk
+      obtain ⟨middle, updated, recorded, recordOk, _, _, balances⟩ :=
+        epochBalanceReplay_result cached epoched before epochOk
+      have total := coverage_trans cachedCover (coverage_epoch before recordOk)
+      have final : Coverage ⟨x.fork, middle⟩ ⟨x.fork, advanced⟩ [] :=
+        coverage_same (by rw [← afterEq]; exact balances.symm)
+      have eventEq := Except.ok.inj (replayed.symm.trans
+        (Step.balanceEvents_epoch_slot ok cachedOk nextOk last recordOk advanceOk crossingOk))
+      apply finish recorded eventEq
+      simpa only [List.nil_append, List.append_nil] using coverage_trans total final
+    · simp only [epochIfLast, last, ↓reduceIte, pure, Except.pure, Except.ok.injEq] at epochOk
+      have eventEq : events = [] ++ crossings := by
+        simpa [Step.balanceEvents, cachedOk, nextOk, last, advanceOk, crossingOk,
+          pure, Except.pure, bind, Except.bind] using replayed.symm
+      apply finish [] eventEq
+      apply coverage_same
+      rw [← afterEq, ← epochOk, cachedEq]
+
+private theorem coverage_path_append (debit : Bool) (i : Nat)
+    (a b : List (ForkedBeaconState preset)) (x : ForkedBeaconState preset) :
+    coveragePath debit i (a ++ x :: b) =
+      coveragePath debit i (a ++ [x]) + coveragePath debit i (x :: b) := by
+  cases debit <;> simp only [coveragePath, ↓reduceIte]
+  all_goals
+    induction a with
+    | nil => simp [pathCredits, pathDebits]
+    | cons first rest ih =>
+      cases rest with
+      | nil => simp [pathCredits, pathDebits]
+      | cons second rest => simpa [pathCredits, pathDebits, Nat.add_assoc] using ih
+
+private theorem coverage_path_last {x y : ForkedBeaconState preset}
+    (run : Run config checks x y) : ∃ pre, run.balancePath = pre ++ [y] := by
+  cases run with
+  | nil => exact ⟨[], rfl⟩
+  | @snoc middle last pre step =>
+    cases step with
+    | @block fork before after engine signed due ok =>
+      exact ⟨pre.balancePath ++ [⟨fork, before⟩], by
+        simp [Run.balancePath, Step.balancePath, List.append_assoc]⟩
+    | slot ok =>
+      obtain ⟨advanced, advanceOk, _⟩ := bind_ok_iff.mp ok
+      exact ⟨pre.balancePath ++ [middle, ⟨middle.fork, advanced⟩], by
+        simp [Run.balancePath, Step.balancePath, advanceOk, Except.toOption, List.append_assoc]⟩
+
+private theorem coverage_step_epoch {x y : ForkedBeaconState preset}
+    (step : Step config checks x y) :
+    (getCurrentEpoch x.state).toNat ≤ (getCurrentEpoch y.state).toNat := by
+  have slots : x.state.slot.toNat ≤ y.state.slot.toNat := by
+    cases step with
+    | slot ok =>
+      obtain ⟨advanced, advanceOk, upgradeOk⟩ := bind_ok_iff.mp ok
+      rw [processUpgrades_slot upgradeOk]
+      obtain ⟨_, _, _, next, _, _, rfl⟩ := advanceSlot_ok advanceOk
+      dsimp only
+      omega
+    | block engine signed due ok =>
+      rw [(frame_processBlock (applySignedBlock_ok ok).2.1).slot]
+  rw [getCurrentEpoch_toNat, getCurrentEpoch_toNat]
+  exact Nat.div_le_div_right slots
+
+private theorem coverage_run {x y : ForkedBeaconState preset} (run : Run config checks x y)
+    (early : y.fork < .glamsterdam) (high : Nat)
+    (endEpoch : (getCurrentEpoch y.state).toNat ≤ high + 1)
+    {events : List (BalanceEvent preset)} (replayed : run.balanceEvents high = .ok events) :
+    ∀ debit i, coveragePath debit i run.balancePath ≤
+      (events.map fun e => coverageDelta debit e.before e.after i).sum := by
+  induction run generalizing events with
+  | nil =>
+    cases replayed
+    intro debit i
+    cases debit <;> simp [coveragePath, Run.balancePath, pathCredits, pathDebits]
+  | @snoc middle last pre step ih =>
+    have selected := (coverage_step_epoch step).trans endEpoch
+    simp only [Run.balanceEvents, bind_ok_iff] at replayed
+    obtain ⟨prior, priorOk, rest⟩ := replayed
+    simp only [selected, ↓reduceIte, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at rest
+    obtain ⟨added, addedOk, rfl⟩ := rest
+    have priorCover := ih (Nat.lt_of_le_of_lt step.chainStep.fork_le early) selected priorOk
+    have addedCover := coverage_step step early addedOk
+    obtain ⟨initialPath, prefixEq⟩ := coverage_path_last pre
+    have stepStarts : ∃ rest, step.balancePath = middle :: rest := by
+      cases step with
+      | block => exact ⟨_, rfl⟩
+      | slot ok =>
+        obtain ⟨advanced, advanceOk, _⟩ := bind_ok_iff.mp ok
+        exact ⟨[⟨middle.fork, advanced⟩, last], by
+          simp [Step.balancePath, advanceOk, Except.toOption]⟩
+    obtain ⟨suffix, suffixEq⟩ := stepStarts
+    intro debit i
+    have splitPath : coveragePath debit i (pre.snoc step).balancePath =
+        coveragePath debit i pre.balancePath + coveragePath debit i step.balancePath := by
+      rw [Run.balancePath, suffixEq, coverage_path_append]
+      congr 1
+      rw [prefixEq]
+      rw [List.append_assoc]
+      change coveragePath debit i (initialPath ++ middle :: [middle]) = _
+      rw [coverage_path_append]
+      cases debit <;> simp [coveragePath, pathCredits, pathDebits]
+    rw [splitPath, List.map_append, List.sum_append]
+    exact Nat.add_le_add (priorCover debit i) (addedCover debit i)
+
+private theorem coverage_event_sum (event : BalanceEvent preset) (n : Nat) (debit : Bool) :
+    (∑ i ∈ Finset.range n, coverageDelta debit event.before event.after i) ≤
+      if debit then event.debits else event.credits := by
+  have bound (a b : ForkedBeaconState preset) :
+      (∑ i ∈ Finset.range n, (actualBalanceAt a i - actualBalanceAt b i)) ≤
+        ∑ i ∈ Finset.range a.state.balances.data.size,
+          (actualBalanceAt a i - actualBalanceAt b i) := by
+    by_cases small : n ≤ a.state.balances.data.size
+    · exact Finset.sum_le_sum_of_subset_of_nonneg (Finset.range_mono small) (by intros; omega)
+    · have le : a.state.balances.data.size ≤ n := by omega
+      apply le_of_eq
+      symm
+      apply Finset.sum_subset (Finset.range_mono le)
+      intro i _ outside
+      have ge : a.state.balances.data.size ≤ i := by simpa using outside
+      simp [actualBalanceAt, Array.getElem?_eq_none (by omega)]
+  cases debit <;> exact bound _ _
+
+private theorem coverage_sum_events (events : List (BalanceEvent preset)) (n : Nat) (debit : Bool) :
+    (∑ i ∈ Finset.range n,
+      (events.map fun e => coverageDelta debit e.before e.after i).sum) ≤
+      (events.map fun e => if debit then e.debits else e.credits).sum := by
+  induction events with
+  | nil => simp
+  | cons event rest ih =>
+    simp only [List.map_cons, List.sum_cons, Finset.sum_add_distrib]
+    exact Nat.add_le_add (coverage_event_sum event n debit) ih
+
 /-- The replay covers all positive balance changes of the selected steps, not just net issuance. -/
 theorem balance_path_covered {g x y : ForkedBeaconState preset}
     (shared : Run config checks g x) (tail : Run config checks x y)
@@ -1783,7 +2358,43 @@ theorem balance_path_covered {g x y : ForkedBeaconState preset}
       (events.map (·.creditLimit)).sum ∧
     (∑ i ∈ Finset.range y.state.validators.data.size, pathDebits i tail.balancePath) ≤
       (events.map (·.debitLimit)).sum := by
-  sorry
+  have invariant {z : ForkedBeaconState preset} (run : Run config checks g z) :
+      Invariant z.state := by
+    induction run with
+    | nil =>
+      obtain ⟨_, _, _, ok⟩ := genesis
+      exact (initializeBeaconStateFromEth1_invariant ok).2
+    | snoc pre step ih =>
+      cases step with
+      | slot ok => exact (advanceSlotAcross_invariant ih ok).1
+      | block engine signed due ok =>
+        exact (frame_processBlock (applySignedBlock_ok ok).2.1).invariant ih
+  have bounded : EventsBounded events := by
+    induction tail generalizing events with
+    | nil => cases replayed; simp [EventsBounded]
+    | @snoc middle last pre step ih =>
+      have selected := (coverage_step_epoch step).trans endEpoch
+      simp only [Run.balanceEvents, bind_ok_iff] at replayed
+      obtain ⟨prior, priorOk, rest⟩ := replayed
+      simp only [selected, ↓reduceIte, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at rest
+      obtain ⟨added, addedOk, rfl⟩ := rest
+      have previous := ih (Nat.lt_of_le_of_lt step.chainStep.fork_le early) selected prior priorOk
+      obtain ⟨actual, actualOk, bound⟩ := stepBalanceEvents_bounded step
+        (invariant (shared.append pre)).balancesMatch early
+      cases Except.ok.inj (actualOk.symm.trans addedOk)
+      exact eventsBounded_append previous bound
+  have result (debit : Bool) :
+      (∑ i ∈ Finset.range y.state.validators.data.size, coveragePath debit i tail.balancePath) ≤
+        (events.map fun e => if debit then e.debitLimit else e.creditLimit).sum := by
+    apply (Finset.sum_le_sum fun i _ =>
+      coverage_run tail early high endEpoch replayed debit i).trans
+    apply (coverage_sum_events events _ debit).trans
+    apply List.sum_le_sum
+    intro event member
+    cases debit
+    · exact (bounded event member).1
+    · exact (bounded event member).2
+  exact ⟨result false, result true⟩
 
 def initialExcess (x : ForkedBeaconState preset) : Nat :=
   ((getActiveValidatorIndices x.state (getCurrentEpoch x.state)).map fun i =>
