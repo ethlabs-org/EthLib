@@ -865,12 +865,30 @@ def _root_.EthLib.Consensus.Step.balanceEvents {x y : ForkedBeaconState preset}
   | .slot _ => do
     let cached ← processSlot x.state
     let next ← liftAccessor (liftArith (Uint64.addChecked x.state.slot 1))
-    let events ← if next % preset.SLOTS_PER_EPOCH = 0 then
-        return (← epochBalanceReplay (config := config) (checks := checks) cached).2
+    let events ← if next % preset.SLOTS_PER_EPOCH = 0 then do
+        pure (← epochBalanceReplay (config := config) (checks := checks) cached).2
       else pure []
     let advanced ← advanceSlot config checks x.state
     return events ++
       (← upgradeBalanceReplay (config := config) (checks := checks) ⟨x.fork, advanced⟩)
+
+/-- An epoch-boundary slot records its epoch passes and the subsequent fork-upgrade passes. -/
+theorem _root_.EthLib.Consensus.Step.balanceEvents_epoch_slot
+    {x y : ForkedBeaconState preset} (ok : advanceSlotAcross config checks x = .ok y)
+    {cached middle advanced : BeaconState preset x.fork} {next : Slot}
+    {events crossings : List (BalanceEvent preset)}
+    (cachedOk : processSlot x.state = .ok cached)
+    (nextOk : liftAccessor (liftArith (Uint64.addChecked x.state.slot 1)) =
+      (Except.ok next : Except TransitionError Slot))
+    (last : next % preset.SLOTS_PER_EPOCH = 0)
+    (replayed : epochBalanceReplay (config := config) (checks := checks) cached =
+      .ok (middle, events))
+    (advancedOk : advanceSlot config checks x.state = .ok advanced)
+    (crossed : upgradeBalanceReplay (config := config) (checks := checks)
+      ⟨x.fork, advanced⟩ = .ok crossings) :
+    (Step.slot ok).balanceEvents = .ok (events ++ crossings) := by
+  simp [Step.balanceEvents, cachedOk, nextOk, last, replayed, advancedOk, crossed,
+    pure, Except.pure, bind, Except.bind]
 
 /-- Start at this run's first state and include tests with target epoch at most `high`. -/
 def _root_.EthLib.Consensus.Run.balanceEvents {x : ForkedBeaconState preset} (high : Nat) :
@@ -1698,8 +1716,9 @@ private theorem stepBalanceEvents_bounded {x y : ForkedBeaconState preset}
     · simp only [epochIfLast, last, ↓reduceIte] at epochOk
       obtain ⟨middle, updated, events, replay, _⟩ :=
         epochBalanceReplay_result cached epoched before epochOk
-      refine ⟨events, ?_, epochBalanceReplay_bounded cachedMatch before replay⟩
-      simp [Step.balanceEvents, cachedOk, nextOk, last, replay,
+      refine ⟨events ++ crossings, ?_,
+        eventsBounded_append (epochBalanceReplay_bounded cachedMatch before replay) crossingBound⟩
+      simp [Step.balanceEvents, cachedOk, nextOk, last, replay, advanceOk, crossingOk,
         pure, Except.pure, bind, Except.bind]
     · refine ⟨crossings, ?_, crossingBound⟩
       simp [Step.balanceEvents, cachedOk, nextOk, last, advanceOk, crossingOk,
