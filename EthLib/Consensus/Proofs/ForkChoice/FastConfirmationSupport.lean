@@ -311,11 +311,6 @@ structure WeightBounds
     (e : Execution (honestForkChoice config checks sources anchorState anchorBlock assignment
       genesisTimeMs) J) [DecidablePred (· ∈ J)] (balanceSource : BeaconState preset fork)
     (first last shift : ℕ) : Prop where
-  /-- The balance states read in this short-horizon result are at most two epochs apart. -/
-  nearby : ∀ w ∈ J, ∀ k state, first ≤ (e.world k).time → (e.world k).time ≤ last →
-    ((e.world k).state w).checkpointState ((e.world k).state w).justifiedCheckpoint = .ok state →
-    (getCurrentEpoch state).toNat ≤ (getCurrentEpoch balanceSource).toNat + 2 ∧
-      (getCurrentEpoch balanceSource).toNat ≤ (getCurrentEpoch state).toNat + 2
   /-- Counterfactual reads under the call's balances must succeed before margins can be compared. -/
   reads : ∀ w ∈ J, ∀ k head state current firstSlot lastSlot maximum,
     first ≤ (e.world k).time → (e.world k).time ≤ last →
@@ -420,12 +415,17 @@ The counting step `honest_ratio_of_new_votes` takes the place of its fixed commi
 
 [vfc]: https://github.com/fradamt/verified-fast-confirmation -/
 theorem Execution.honest_support_of_safe {Δ : ℕ} (sync : e.Synchronous Δ)
+    (slots : 0 < config.SLOT_DURATION_MS) (positive : 0 < preset.SLOTS_PER_EPOCH.toNat)
+    (window : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
+    (ring : preset.MIN_SEED_LOOKAHEAD.toNat + 2 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
     (preGloas : fork < .glamsterdam) (admitted : BlocksAdmitted e 0 Δ)
     (oneBlock : OneBlockPerRoot e)
     (half : 2 * config.CONFIRMATION_BYZANTINE_THRESHOLD.toNat ≤ 100)
     (votes : Votes e.startTime e) (fits : DelayFits fork config genesisTimeMs Δ)
     (prompt : Prompt e) (committees : CommitteesFollow e) {anchor : Store preset fork}
     (anchorStore : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (sound : Invariant anchorState) (anchorSlot : anchorBlock.slot = anchorState.slot)
+    (anchorBoundary : isStartSlotAtEpoch preset anchorBlock.slot = .ok true)
     (anchored : ∀ w ∈ J, e.start w = anchor) (noVotes : anchor.latestMessages.isEmpty)
     {u : ValidatorIndex} (caller : u ∈ J) {n : ℕ}
     (upToDate : UpToDate config checks sources (e.world n).time ((e.world n).view u)
@@ -460,13 +460,22 @@ theorem Execution.honest_support_of_safe {Δ : ℕ} (sync : e.Synchronous Δ)
       discount.toNat + 2 * support.toNat)
     {time : ℕ} (later : (e.world n).time ≤ time)
     (weights : WeightBounds e balanceSource (e.world n).time time shift)
-    (compatible : ∀ w ∈ J, ∀ k, (e.world n).time ≤ (e.world k).time →
-      (e.world k).time ≤ time →
-      UpToDate config checks sources (e.world k).time ((e.world k).view w)
-        ((e.world k).state w) →
-      ((e.world n).state u).getCheckpointBlock root
-        ((e.world k).state w).finalizedCheckpoint.epoch =
-          .ok ((e.world k).state w).finalizedCheckpoint.root)
+    {horizon : Epoch} (chain : FinalizedPrefix e horizon)
+    (inHorizon : ∀ w ∈ J, ∀ k epoch, (e.world k).time ≤ time →
+      ((e.world k).state w).getCurrentStoreEpoch config = .ok epoch → epoch ≤ horizon)
+    (nonzero : ∀ w ∈ J, ∀ k, (e.world k).time ≤ time →
+      ∀ (r : Root) (b : BeaconBlock preset fork),
+        ((e.world k).state w).blocks[r]? = some b → b.stateRoot ≠ Vector.replicate 32 0)
+    (large : ∀ w ∈ J, ∀ k (state : BeaconState preset fork),
+      (e.world k).time ≤ time → ((e.world k).state w).Counts config state →
+      getCurrentEpoch state ≤ horizon →
+      3 * preset.EFFECTIVE_BALANCE_INCREMENT.toNat <
+        2 * stake (fun v => balanceAt state v.toNat) (activeVoters state))
+    (few : ∀ w ∈ J, ∀ k (state : BeaconState preset fork) total,
+      (e.world k).time ≤ time → ((e.world k).state w).Counts config state →
+      getCurrentEpoch state ≤ horizon → getTotalActiveBalance state = .ok total →
+      3 * stake (fun v => balanceAt state v.toNat) {v ∈ quorumVoters state | v ∉ J} <
+        2 * total.toNat)
     (safe : ∀ earlier, (e.world n).time ≤ earlier → earlier < time → SafeAt e earlier root)
     {w : ValidatorIndex} (receiver : w ∈ J) {k : ℕ} (atTime : (e.world k).time = time)
     (receiverUpToDate : UpToDate config checks sources (e.world k).time ((e.world k).view w)

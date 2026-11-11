@@ -157,6 +157,9 @@ theorem Execution.finalized_epoch_le_justified_epoch {Δ : ℕ} (sync : e.Synchr
     {u w : ValidatorIndex} (first : u ∈ J) (receiver : w ∈ J) {n k : ℕ} {epoch : Epoch}
     (epochOk : ((e.world n).state u).getCurrentStoreEpoch config = .ok epoch)
     (inHorizon : epoch ≤ horizon) (late : (e.world n).time + Δ ≤ (e.world k).time)
+    (nonzero : ∀ v ∈ J, ∀ k', (e.world k').time ≤ (e.world k).time →
+      ∀ (r : Root) (b : BeaconBlock preset fork),
+        ((e.world k').state v).blocks[r]? = some b → b.stateRoot ≠ Vector.replicate 32 0)
     (upToDate : UpToDate config checks sources (e.world k).time ((e.world k).view w)
       ((e.world k).state w)) :
     ((e.world n).state u).finalizedCheckpoint.epoch ≤
@@ -182,6 +185,9 @@ theorem Execution.safeAt_finalized {Δ : ℕ} (sync : e.Synchronous Δ)
     (start : ∀ w ∈ J, e.start w = anchor) {horizon : Epoch} (chain : FinalizedPrefix e horizon)
     {u : ValidatorIndex} (caller : u ∈ J) {n : ℕ} {epoch : Epoch}
     (epochOk : ((e.world n).state u).getCurrentStoreEpoch config = .ok epoch) {limit : ℕ}
+    (nonzero : ∀ v ∈ J, ∀ k, (e.world k).time ≤ limit →
+      ∀ (r : Root) (b : BeaconBlock preset fork),
+        ((e.world k).state v).blocks[r]? = some b → b.stateRoot ≠ Vector.replicate 32 0)
     (inHorizon : ∀ w ∈ J, ∀ k current, (e.world k).time ≤ limit →
       ((e.world k).state w).getCurrentStoreEpoch config = .ok current → current ≤ horizon) :
     ∀ time, (e.world n).time + Δ ≤ time → time ≤ limit →
@@ -214,6 +220,9 @@ theorem Execution.unrealized_epoch_le_justified_epoch {Δ : ℕ} (sync : e.Synch
     {u w : ValidatorIndex} (first : u ∈ J) (receiver : w ∈ J) {n k : ℕ} {epoch later : Epoch}
     (epochOk : ((e.world n).state u).getCurrentStoreEpoch config = .ok epoch)
     (inHorizon : epoch ≤ horizon) (late : (e.world n).time + Δ ≤ (e.world k).time)
+    (nonzero : ∀ v ∈ J, ∀ k', (e.world k').time ≤ (e.world k).time →
+      ∀ (r : Root) (b : BeaconBlock preset fork),
+        ((e.world k').state v).blocks[r]? = some b → b.stateRoot ≠ Vector.replicate 32 0)
     (upToDate : UpToDate config checks sources (e.world k).time ((e.world k).view w)
       ((e.world k).state w))
     (laterOk : ((e.world k).state w).getCurrentStoreEpoch config = .ok later)
@@ -274,6 +283,9 @@ theorem Execution.safeAt_observed {Δ : ℕ} (sync : e.Synchronous Δ)
       ((e.world m).state u).unrealizedJustifiedCheckpoint.root = .ok observedBlock)
     (blockEpoch : addChecked (computeEpochAtSlot preset observedBlock.slot) 1 = .ok epoch)
     {limit : ℕ}
+    (nonzero : ∀ v ∈ J, ∀ k, (e.world k).time ≤ limit →
+      ∀ (r : Root) (b : BeaconBlock preset fork),
+        ((e.world k).state v).blocks[r]? = some b → b.stateRoot ≠ Vector.replicate 32 0)
     (inHorizon : ∀ w ∈ J, ∀ k current, (e.world k).time ≤ limit →
       ((e.world k).state w).getCurrentStoreEpoch config = .ok current → current ≤ horizon) :
     ∀ time, (e.world n).time ≤ time → time ≤ limit →
