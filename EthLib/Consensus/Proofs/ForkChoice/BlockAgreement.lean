@@ -1,0 +1,160 @@
+module
+
+public import EthLib.Consensus.Proofs.ForkChoice.HonestDuties
+public import EthLib.Consensus.Proofs.ForkChoice.Reachable
+
+/-!
+# Statements: honest stores agree on the blocks of an honest chain
+
+This file states part of step 3 of the plan for the safety of the fast confirmation rule.
+
+The rule is that of [arXiv 2405.00549v4][fcr].
+
+The proofs are placeholders, and each statement may still change.
+
+A block of an honest store is a block of its start, or came in a signed block of its view.
+
+Its state is then the state transition of that signed block, from the state of its parent.
+
+So two honest stores with the same start hold the same state at a root that both hold.
+
+That needs the two stores to hold the same block wherever both hold one.
+
+Two blocks with one root would break it, and no statement here excludes such a pair.
+
+Under synchrony, a block of an honest store reaches the view of each honest validator.
+
+It is there one delay later.
+
+An up-to-date honest store then holds it, when its checks of a new block pass.
+
+The parent comes first, so the statement asks for the chain of the block down to the start.
+
+The finalized checkpoint of the receiver must sit on that chain.
+
+From Gloas the receiver must have verified each payload that the first store has verified.
+
+The receiver must also take a signed block of its view that passes the checks of a new block.
+
+That last hypothesis covers the steps of the handler after the checks, and the votes of the block.
+
+In the model here a vote that the store rejects makes the store reject its block.
+
+The agreement follows two lemmas of [verified-fast-confirmation][vfc].
+
+They are `WellFormedExecution.blocks_agree` and `WalkCoveredBy.receiver_walk`.
+
+There a root names one block by construction, and a rejected event leaves the store as it is.
+
+[fcr]: https://arxiv.org/abs/2405.00549v4
+[vfc]: https://github.com/fradamt/verified-fast-confirmation
+-/
+
+@[expose] public section
+
+namespace EthLib.Consensus.Models.Network
+
+open Base Serialization.Ssz
+
+variable {preset : Preset} {fork : Fork}
+
+section ForkChoice
+
+variable {ν κ : Type*} [DecidableEq ν] {config : Config} {checks : SignatureChecks}
+  {sources : BlockSources preset fork} {signed : Message preset fork → Set (ν × κ)}
+  {sends : ν → ℕ → Set (Message preset fork) → Store preset fork → Message preset fork → Prop}
+  {J : Set ν}
+
+/-- A block of an honest store is a block of its start, or came in a signed block of its view.
+
+In the second case the store holds the state of the parent of the block.
+
+The state of the block is the state transition of the signed block from that state. -/
+theorem Execution.exists_signed_of_blocks
+    (e : Execution (forkChoice config checks sources signed sends) J) {u : ν} (honest : u ∈ J)
+    {n : ℕ} {root : Root} {block : BeaconBlock preset fork}
+    (found : ((e.world n).state u).blocks[root]? = some block) :
+    ((e.start u).blocks[root]? = some block ∧
+        ((e.world n).state u).blockStates[root]? = (e.start u).blockStates[root]?) ∨
+      ∃ signedBlock : SignedBeaconBlock preset fork, ∃ pre state,
+        .block signedBlock ∈ (e.world n).view u ∧ signedBlock.message = block ∧
+        SszType.hashTreeRoot signedBlock.message = .ok root ∧
+        ((e.world n).state u).blockStates[block.parentRoot]? = some pre ∧
+        stateTransition config checks sources.engine pre signedBlock true = .ok state ∧
+        ((e.world n).state u).blockStates[root]? = some state := by
+  sorry
+
+/-- Two honest stores with one start hold the same state at a root that both hold.
+
+The two stores must hold the same block wherever both hold one.
+
+Both validators start from a store built from an anchor. -/
+theorem Execution.blockStates_eq (e : Execution (forkChoice config checks sources signed sends) J)
+    {anchorState : BeaconState preset fork} {anchorBlock : BeaconBlock preset fork}
+    {anchor : Store preset fork}
+    (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    {u w : ν} (first : u ∈ J) (second : w ∈ J) (startFirst : e.start u = anchor)
+    (startSecond : e.start w = anchor) {n k : ℕ}
+    (sameBlocks : ∀ (root : Root) left right, ((e.world n).state u).blocks[root]? = some left →
+      ((e.world k).state w).blocks[root]? = some right → left = right)
+    {root : Root} {left right : BeaconState preset fork}
+    (leftFound : ((e.world n).state u).blockStates[root]? = some left)
+    (rightFound : ((e.world k).state w).blockStates[root]? = some right) :
+    left = right := by
+  sorry
+
+end ForkChoice
+
+variable {config : Config} {checks : SignatureChecks} {sources : BlockSources preset fork}
+  {anchorState : BeaconState preset fork} {anchorBlock : BeaconBlock preset fork}
+  {assignment : Assignment preset} {genesisTimeMs : UInt64} {J : Set ValidatorIndex}
+  {e : Execution (honestForkChoice config checks sources anchorState anchorBlock assignment
+    genesisTimeMs) J}
+
+/-- Under synchrony, an up-to-date honest store holds a block that an honest store held before.
+
+The first store holds the block at an event, and the receiver is up to date one delay later.
+
+Both validators start from a store built from the anchor.
+
+The two stores hold the same block wherever both hold one.
+
+The receiver takes each signed block of its view that passes its checks of a new block.
+
+From Gloas the receiver has verified each payload that the first store has verified.
+
+In the first store, the chain of the block holds the finalized checkpoint of the receiver.
+
+The receiver then holds the block.
+
+It also finds each checkpoint block of the chain that the first store finds. -/
+theorem Execution.blocks_of_synchronous {Δ : ℕ} (sync : e.Synchronous Δ)
+    {anchor : Store preset fork}
+    (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (start : ∀ u ∈ J, e.start u = anchor) {v u : ValidatorIndex} (honest : v ∈ J)
+    (receiver : u ∈ J) {n k : ℕ} (late : (e.world n).time + Δ ≤ (e.world k).time)
+    (upToDate : UpToDate config checks sources (e.world k).time ((e.world k).view u)
+      ((e.world k).state u))
+    (sameBlocks : ∀ (root : Root) left right, ((e.world n).state v).blocks[root]? = some left →
+      ((e.world k).state u).blocks[root]? = some right → left = right)
+    (accepts : ∀ signedBlock blockRoot state, .block signedBlock ∈ (e.world k).view u →
+      SszType.hashTreeRoot signedBlock.message = .ok blockRoot →
+      ((e.world k).state u).validateOnBlock config checks sources signedBlock blockRoot =
+        .ok state →
+      ∃ after, ((e.world k).state u).onBlockWithVotes config checks sources signedBlock =
+        .ok after)
+    (payloads : ∀ gloas : .glamsterdam ≤ fork, ∀ parent,
+      ((e.world n).state v).isPayloadVerified gloas parent = true →
+      ((e.world k).state u).isPayloadVerified gloas parent = true)
+    {root : Root} {block : BeaconBlock preset fork}
+    (found : ((e.world n).state v).blocks[root]? = some block)
+    (final : ((e.world n).state v).getCheckpointBlock root
+      ((e.world k).state u).finalizedCheckpoint.epoch =
+        .ok ((e.world k).state u).finalizedCheckpoint.root) :
+    ((e.world k).state u).blocks[root]? = some block ∧
+      ∀ epoch checkpointRoot,
+        ((e.world n).state v).getCheckpointBlock root epoch = .ok checkpointRoot →
+        ((e.world k).state u).getCheckpointBlock root epoch = .ok checkpointRoot := by
+  sorry
+
+end EthLib.Consensus.Models.Network
