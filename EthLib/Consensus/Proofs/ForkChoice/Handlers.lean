@@ -909,6 +909,44 @@ theorem validateOnBlock_merge {checks : SignatureChecks} {sources : BlockSources
   obtain ⟨_, _, _, _, _, checked, _⟩ := valid
   exact checked
 
+/-- Block validation transfers when the receiver has the same parent state and passes local checks.
+
+Data availability, the state transition and the merge check use the shared sources. -/
+theorem validateOnBlock_of_parent_state {checks : SignatureChecks}
+    {sources : BlockSources preset fork} {receiver : Store preset fork}
+    {signed : SignedBeaconBlock preset fork} {root : Root}
+    {state pre : BeaconState preset fork}
+    (valid : store.validateOnBlock config checks sources signed root = .ok state)
+    (parent : store.blockStates[signed.message.parentRoot]? = some pre)
+    (otherParent : receiver.blockStates[signed.message.parentRoot]? = some pre)
+    (payload : receiver.validateParentPayload signed.message = .ok ())
+    {current finalizedSlot : Slot}
+    (clock : receiver.getCurrentSlot config = .ok current)
+    (notFuture : signed.message.slot ≤ current)
+    (start : computeStartSlotAtEpoch preset receiver.finalizedCheckpoint.epoch = .ok finalizedSlot)
+    (above : finalizedSlot < signed.message.slot)
+    (ancestor : receiver.getCheckpointBlock signed.message.parentRoot
+      receiver.finalizedCheckpoint.epoch = .ok receiver.finalizedCheckpoint.root) :
+    receiver.validateOnBlock config checks sources signed root = .ok state := by
+  obtain ⟨p, pFound, _, available, transition⟩ := validateOnBlock_ok valid
+  have same : p = pre := Option.some.inj (pFound.symm.trans parent)
+  subst p
+  have merge := fun (bellatrix : fork = .bellatrix)
+      (range : .bellatrix ≤ fork ∧ fork < .glamsterdam)
+      (h : isMergeTransitionBlock pre signed.message.body range = true) =>
+    validateOnBlock_merge bellatrix range parent h valid
+  unfold validateOnBlock
+  simp only [blockState, otherParent, pure, Except.pure, bind, Except.bind, payload, clock,
+    UInt64.not_lt.mpr notFuture, ↓reduceIte, start, Except.mapError,
+    UInt64.not_le.mpr above, ancestor, ne_eq, not_true_eq_false, available, transition]
+  split
+  · rename_i bellatrix
+    split
+    · rename_i h
+      rw [merge bellatrix _ h]
+    · rfl
+  · rfl
+
 /-- A new block enters the store with the state after it, and no epoch falls.
 
 That state is the one the state transition computes from the state after the parent. -/
@@ -1608,6 +1646,117 @@ theorem isValidDependentRoot_ok_iff {root : Root} {dependentSlot : Slot} {possib
     · rename_i isHead
       cases possible <;> simp [pure, Except.pure, isHead, List.any_eq_true,
         Std.TreeMap.mem_toList_iff_getElem?_eq_some]
+
+/-- Ticking the store keeps its verified payloads. -/
+theorem onTick_payloads {timeMs : UInt64} {after : Store preset fork}
+    (ok : store.onTick config timeMs = .ok after) : after.payloads = store.payloads := by
+  have one {s t : Store preset fork} {time : UInt64}
+      (ok : s.onTickPerSlot config time = .ok t) : t.payloads = s.payloads := by
+    unfold onTickPerSlot at ok
+    simp only [bind_ok_iff] at ok
+    obtain ⟨_, _, _, _, ok⟩ := ok
+    split at ok <;> obtain ⟨_, _, ok⟩ := ok <;> split at ok <;>
+      simp only [pure, Except.pure, Except.ok.injEq] at ok <;> subst t
+    all_goals simp only [updateCheckpoints]; repeat' first | rfl | split
+  have loop {s t : Store preset fork} {slot : Slot}
+      (ok : catchUp config s slot = .ok t) : t.payloads = s.payloads := by
+    induction s using catchUp.induct config slot with
+    | _ s ih =>
+      rw [catchUp.eq_1] at ok
+      simp only [bind_ok_iff] at ok
+      obtain ⟨_, _, ok⟩ := ok
+      split at ok
+      · simp only [bind_ok_iff] at ok
+        obtain ⟨_, _, _, _, t, tick, ok⟩ := ok
+        split at ok
+        · exact (ih t ‹_› ok).trans (one tick)
+        · cases ok
+      · simpa [pure, Except.pure] using congrArg Store.payloads (Except.ok.inj ok).symm
+  unfold onTick at ok
+  simp only [bind_ok_iff] at ok
+  obtain ⟨_, _, _, caught, tick⟩ := ok
+  exact (one tick).trans (loop caught)
+
+/-- An attestation keeps the verified payloads. -/
+theorem onAttestation_payloads {checks : SignatureChecks} {after : Store preset fork}
+    {a : Attestation preset fork} {fromBlock : Bool}
+    (ok : store.onAttestation config checks a fromBlock = .ok after) :
+    after.payloads = store.payloads := by
+  have target {s t : Store preset fork} {cp : Checkpoint}
+      (ok : s.storeTargetCheckpointState config checks cp = .ok t) : t.payloads = s.payloads := by
+    unfold storeTargetCheckpointState at ok
+    split at ok
+    · cases ok; rfl
+    · simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at ok
+      obtain ⟨_, _, rfl⟩ := ok
+      rfl
+  unfold onAttestation at ok
+  simp only [bind_ok_iff] at ok
+  obtain ⟨_, _, s, stored, _, _, _, _, _, _, _, _, ok⟩ := ok
+  split at ok
+  · simp only [pure, Except.pure, Except.ok.injEq] at ok
+    subst after
+    simpa [updateLatestMessages] using target stored
+  · cases ok
+
+/-- An attester slashing keeps the verified payloads. -/
+theorem onAttesterSlashing_payloads {checks : SignatureChecks} {after : Store preset fork}
+    {a : AttesterSlashing preset fork}
+    (ok : store.onAttesterSlashing config checks a = .ok after) :
+    after.payloads = store.payloads := by
+  unfold onAttesterSlashing at ok
+  simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at ok
+  obtain ⟨_, _, rfl⟩ := ok
+  rfl
+
+/-- A block keeps the verified payloads of the store. -/
+theorem onBlock_payloads {checks : SignatureChecks} {sources : BlockSources preset fork}
+    {after : Store preset fork} {sb : SignedBeaconBlock preset fork}
+    (ok : store.onBlock config checks sources sb = .ok after) :
+    after.payloads = store.payloads := by
+  have cp (s : Store preset fork) (j f : Checkpoint) :
+      (s.updateCheckpoints j f).payloads = s.payloads := by
+    unfold updateCheckpoints
+    split <;> dsimp only <;> split <;> rfl
+  have ucp (s : Store preset fork) (j f : Checkpoint) :
+      (s.updateUnrealizedCheckpoints j f).payloads = s.payloads := by
+    unfold updateUnrealizedCheckpoints
+    split <;> dsimp only <;> split <;> rfl
+  have tip {s t : Store preset fork} {r : Root}
+      (ok : s.computePulledUpTip config r = .ok t) : t.payloads = s.payloads := by
+    unfold computePulledUpTip at ok
+    simp only [bind_ok_iff] at ok
+    obtain ⟨_, _, _, _, _, _, _, _, ok⟩ := ok
+    split at ok <;> simp only [pure, Except.pure, Except.ok.injEq] at ok <;> subst t
+    · rw [cp, ucp]
+    · rw [ucp]
+  unfold onBlock at ok
+  simp only [bind_ok_iff] at ok
+  obtain ⟨r, _, ok⟩ := ok
+  split at ok
+  · cases ok; rfl
+  · unfold addBlock at ok
+    simp only [bind_ok_iff] at ok
+    obtain ⟨state, _, head, _, voted, vote, timed, time, boosted, boost, ok⟩ := ok
+    obtain ⟨_, _, voteEq⟩ := recordBlockPtcVotes_onlyPtcVotes vote
+    have timeEq : timed.payloads = voted.payloads := by
+      unfold recordBlockTimeliness at time
+      simp only [bind_ok_iff, pure, Except.pure] at time
+      obtain ⟨_, _, _, _, _, _, _, _, time⟩ := time
+      split at time
+      · simp only [bind_ok_iff, Except.ok.injEq] at time
+        obtain ⟨_, _, rfl⟩ := time
+        rfl
+      · cases time; rfl
+    have boostEq : boosted.payloads = timed.payloads := by
+      unfold updateProposerBoostRoot at boost
+      split at boost
+      rotate_left
+      · simp [throw, throwThe, MonadExceptOf.throw, bind, Except.bind] at boost
+      simp only [bind_ok_iff, pure_bind] at boost
+      obtain ⟨_, _, _, _, _, _, boost⟩ := boost
+      split at boost <;> cases boost <;> rfl
+    rw [tip ok, cp, boostEq, timeEq, voteEq]
 
 end Store
 

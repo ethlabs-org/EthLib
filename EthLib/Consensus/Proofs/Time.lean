@@ -467,4 +467,21 @@ theorem nextSlot_epoch_of_inside {slot next : Slot} (sum : next.toNat = slot.toN
   rw [sum]
   exact Nat.succ_div_of_not_dvd notDvd
 
+/-- A defined slot stays defined at a later time, and does not decrease. -/
+theorem exists_computeSlotAtTimeMs_of_le {config : Config} {g t later : UInt64} {slot : Slot}
+    (le : t ≤ later) (ok : computeSlotAtTimeMs config g t = .ok slot) :
+    ∃ next, computeSlotAtTimeMs config g later = .ok next ∧ slot ≤ next := by
+  have original := ok
+  unfold computeSlotAtTimeMs at ok
+  simp only [bind_ok_iff, Uint64.subChecked_ok_iff, Uint64.divChecked_ok_iff] at ok
+  obtain ⟨elapsed, ⟨before, _⟩, nonzero, _⟩ := ok
+  have before' : g ≤ later := UInt64.le_trans (UInt64.le_iff_toNat_le.mpr before) le
+  refine ⟨(later - g) / config.SLOT_DURATION_MS, ?_, ?_⟩
+  · simp [computeSlotAtTimeMs, Uint64.subChecked, before', Uint64.divChecked, nonzero,
+      bind, Except.bind]
+  · apply computeSlotAtTimeMs_mono le
+    · exact original
+    · simp [computeSlotAtTimeMs, Uint64.subChecked, before', Uint64.divChecked, nonzero,
+        bind, Except.bind]
+
 end EthLib.Consensus

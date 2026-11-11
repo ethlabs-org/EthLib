@@ -2,6 +2,7 @@ module
 
 public import EthLib.Consensus.Proofs.ForkChoice.HonestDuties
 public import EthLib.Consensus.Proofs.ForkChoice.Reachable
+import EthLib.Consensus.Proofs.ForkChoice.BlockStates
 
 /-!
 # Statements: honest stores agree on the blocks of an honest chain
@@ -363,9 +364,9 @@ From Gloas the receiver has verified each payload that the first store has verif
 
 In the first store, the chain of the block holds the finalized checkpoint of the receiver.
 
-The receiver then holds the block.
+The receiver must already hold its finalized root, and then holds the block.
 
-It also finds each checkpoint block of the chain that the first store finds. -/
+It also finds each checkpoint block at or above its finalized epoch that the first store finds. -/
 theorem Execution.blocks_of_partiallySynchronous {GST Δ : ℕ}
     (sync : e.PartiallySynchronous GST Δ)
     (oneBlock : OneBlockPerRoot e) (admitted : BlocksAdmitted e GST Δ)
@@ -376,6 +377,9 @@ theorem Execution.blocks_of_partiallySynchronous {GST Δ : ℕ}
     (late : max (e.world n).time GST + Δ ≤ (e.world k).time)
     (upToDate : UpToDate config checks sources (e.world k).time ((e.world k).view u)
       ((e.world k).state u))
+    (finalizedKnown : ∃ finalizedBlock,
+      ((e.world k).state u).blocks[((e.world k).state u).finalizedCheckpoint.root]? =
+        some finalizedBlock)
     (payloads : ∀ gloas : .glamsterdam ≤ fork, ∀ parent,
       ((e.world n).state v).isPayloadVerified gloas parent = true →
       ((e.world k).state u).isPayloadVerified gloas parent = true)
@@ -386,9 +390,137 @@ theorem Execution.blocks_of_partiallySynchronous {GST Δ : ℕ}
         .ok ((e.world k).state u).finalizedCheckpoint.root) :
     ((e.world k).state u).blocks[root]? = some block ∧
       ∀ epoch checkpointRoot,
+        ((e.world k).state u).finalizedCheckpoint.epoch ≤ epoch →
         ((e.world n).state v).getCheckpointBlock root epoch = .ok checkpointRoot →
         ((e.world k).state u).getCheckpointBlock root epoch = .ok checkpointRoot := by
-  sorry
+  have reached (w : ValidatorIndex) (h : w ∈ J) (i : ℕ) :=
+    e.reachable (fun w hw => (start w hw).symm ▸ Store.Reachable.anchor anchored) i w h
+  have ordered : n ≤ k := by
+    by_contra! before
+    have time := e.monotone_time (Nat.le_of_lt before)
+    change (e.world k).time ≤ (e.world n).time at time
+    have positive := sync.1
+    omega
+  have verified {i j : ℕ} (le : i ≤ j) (gloas : .glamsterdam ≤ fork) (r : Root)
+      (held : ((e.world i).state v).isPayloadVerified gloas r = true) :
+      ((e.world j).state v).isPayloadVerified gloas r = true := by
+    induction j, le using Nat.le_induction with
+    | base => exact held
+    | succ j _ ih =>
+      rcases e.state_succ j v with same | ⟨_, moved⟩
+      · exact same ▸ ih
+      · exact moved.isPayloadVerified gloas ih
+  unfold Store.getCheckpointBlock at final
+  simp only [bind_ok_iff, mapError_ok_iff, pure, Except.pure, Except.ok.injEq] at final
+  obtain ⟨finalSlot, finalStart, ancestor, walk, ancestorRoot⟩ := final
+  have base : ∃ b, ((e.world k).state u).blocks[ancestor.root]? = some b := by
+    rw [ancestorRoot]
+    exact finalizedKnown
+  have admission (r : Root) (b p : BeaconBlock preset fork)
+      (bf : ((e.world n).state v).blocks[r]? = some b)
+      (pf : ((e.world n).state v).blocks[b.parentRoot]? = some p)
+      (above : finalSlot < b.slot) (_lower : p.slot < b.slot)
+      (pk : ((e.world k).state u).blocks[b.parentRoot]? = some p)
+      (parentWalk : ((e.world k).state u).getAncestor
+        ⟨b.parentRoot, Store.parentPayloadStatus b p⟩ finalSlot = .ok ancestor) :
+      ((e.world k).state u).blocks[r]? = some b := by
+    rcases e.exists_validated_of_blocks bf with old | ⟨i, before, sb, post, mem, msg, hash, valid⟩
+    · have initial : ((e.world 0).state u).blocks[r]? = some b := by
+        change (e.start u).blocks[r]? = some b
+        rw [start u receiver, ← start v honest]
+        exact old
+      exact e.blocks_of_le (Nat.zero_le k) initial
+    have memN := e.monotone_view v (Nat.le_of_lt before) mem
+    have memK := sync.2.2 n k ordered v honest u receiver (.block sb) memN late
+    obtain ⟨pre, preFound, payload, _, _⟩ := Store.validateOnBlock_ok valid
+    obtain ⟨other, otherFound, _⟩ := (reached u receiver k).blockStatesFromParents pk
+    have states : pre = other := e.blockStates_eq anchored honest receiver
+      (start v honest) (start u receiver) (oneBlock v honest u receiver i k)
+      preFound (msg ▸ otherFound)
+    have otherPre : ((e.world k).state u).blockStates[sb.message.parentRoot]? = some pre := by
+      rw [states, msg]
+      exact otherFound
+    have parentCheck : ((e.world k).state u).validateParentPayload sb.message = .ok () := by
+      by_cases gloas : .glamsterdam ≤ fork
+      · obtain ⟨ip, ipFound, needs⟩ := (Store.validateParentPayload_ok_iff gloas).mp payload
+        have ipSame : ip = p := oneBlock v honest v honest i n _ ip p ipFound (msg ▸ pf)
+        subst ip
+        apply (Store.validateParentPayload_ok_iff gloas).mpr
+        refine ⟨p, msg ▸ pk, ?_⟩
+        intro full
+        exact payloads gloas _ (verified (Nat.le_of_lt before) gloas _ (needs full))
+      · exact Store.validateParentPayload_of_lt (Nat.lt_of_not_le gloas)
+    -- The receiver's up-to-date clock dominates both the initial clock and the sender's clock.
+    have ci := e.clock_bounds v i
+    have ck := e.clock_bounds u k
+    rw [start v honest] at ci
+    rw [start u receiver] at ck
+    have time := e.monotone_time (Nat.le_of_lt before)
+    change (e.world i).time ≤ (e.world n).time at time
+    have tick := upToDate.1
+    have initialLe := UInt64.le_iff_toNat_le.mp ck.2.1
+    have clockLe : ((e.world i).state v).timeMs ≤ ((e.world k).state u).timeMs :=
+      UInt64.le_iff_toNat_le.mpr (by omega)
+    obtain ⟨current, currentOk, notFuture⟩ := (Store.validateOnBlock_checks valid).1
+    have atTime := mapError_ok_iff.mp currentOk
+    rw [ci.1] at atTime
+    obtain ⟨next, nextOk, increasing⟩ := exists_computeSlotAtTimeMs_of_le clockLe atTime
+    have nextSlot : ((e.world k).state u).getCurrentSlot config = .ok next := by
+      unfold Store.getCurrentSlot
+      rw [ck.1, nextOk]
+      rfl
+    have parentCheckpoint : ((e.world k).state u).getCheckpointBlock sb.message.parentRoot
+        ((e.world k).state u).finalizedCheckpoint.epoch =
+          .ok ((e.world k).state u).finalizedCheckpoint.root := by
+      have rootWalk := Store.getAncestor_root (store := (e.world k).state u)
+        ⟨b.parentRoot, Store.parentPayloadStatus b p⟩ .pending finalSlot
+      rw [parentWalk] at rootWalk
+      unfold Store.getCheckpointBlock
+      rw [msg, finalStart]
+      simpa [bind, Except.bind, pure, Except.pure, Except.mapError, Functor.map, Except.map,
+        ancestorRoot] using rootWalk.symm
+    have validated := Store.validateOnBlock_of_parent_state valid preFound otherPre parentCheck
+      nextSlot (UInt64.le_trans notFuture increasing) finalStart (msg ▸ above) parentCheckpoint
+    obtain ⟨after, added⟩ := admitted v honest u receiver n k sb r post memN
+      (msg ▸ bf) late upToDate hash validated
+    have fixed := upToDate.2 after (.block memK added)
+    -- The first handler inserts the root, and its carried votes preserve it.
+    have inserted : after.blocks[r]? = some sb.message := by
+      unfold Store.onBlockWithVotes at added
+      simp only [bind_ok_iff, ← Array.foldlM_toList] at added
+      obtain ⟨blocked, blockedOk, voted, attested, slashed⟩ := added
+      have bKnown : blocked.blocks[r]? = some sb.message := by
+        by_cases known : ((e.world k).state u).blocks.contains r
+        · have same := Store.onBlock_known (config := config) (checks := checks)
+            (sources := sources) hash known
+          rw [same] at blockedOk
+          cases blockedOk
+          obtain ⟨existing, existingFound⟩ := Option.isSome_iff_exists.mp
+            (by rwa [Std.TreeMap.contains_eq_isSome_getElem?] at known)
+          have eq := oneBlock v honest u receiver n k r b existing bf existingFound
+          simpa [msg, eq] using existingFound
+        · exact (Store.onBlock_new hash known blockedOk).2.1
+      have votes := foldlM_ok_invariant (fun s => s.blocks[r]? = some sb.message)
+        (fun _ _ _ h ok => (Store.onAttestation_frame ok).2.1 ▸ h) bKnown attested
+      exact foldlM_ok_invariant (fun s => s.blocks[r]? = some sb.message)
+        (fun _ _ _ h ok => (Store.onAttesterSlashing_frame ok).2.1 ▸ h) votes slashed
+    simpa [fixed, msg] using inserted
+  obtain ⟨⟨b, bf, bk⟩, agree⟩ := Store.getAncestor_of_admission
+    (oneBlock v honest u receiver n k) base admission walk
+  have eq := Option.some.inj (found.symm.trans bf)
+  subst b
+  refine ⟨bk, ?_⟩
+  intro epoch checkpointRoot higher success
+  unfold Store.getCheckpointBlock at success ⊢
+  simp only [bind_ok_iff, mapError_ok_iff, pure, Except.pure, Except.ok.injEq] at success ⊢
+  obtain ⟨target, targetOk, node, nodeOk, rootOk⟩ := success
+  have slotLe : finalSlot ≤ target := by
+    have f := (Uint64.mulChecked_ok_iff.mp finalStart).2
+    have t := (Uint64.mulChecked_ok_iff.mp targetOk).2
+    apply UInt64.le_iff_toNat_le.mpr
+    rw [f, t]
+    exact Nat.mul_le_mul_right _ (UInt64.le_iff_toNat_le.mp higher)
+  exact ⟨target, targetOk, node, (agree target slotLe).trans nodeOk, rootOk⟩
 
 /-- Admission at an earlier event gives knownness at every later event.
 
@@ -407,6 +539,9 @@ theorem Execution.blocks_after_partiallySynchronous {GST Δ : ℕ}
     (late : max (e.world n).time GST + Δ ≤ (e.world arrival).time)
     (upToDate : UpToDate config checks sources (e.world arrival).time
       ((e.world arrival).view u) ((e.world arrival).state u))
+    (finalizedKnown : ∃ finalizedBlock,
+      ((e.world arrival).state u).blocks[((e.world arrival).state u).finalizedCheckpoint.root]? =
+        some finalizedBlock)
     (payloads : ∀ gloas : .glamsterdam ≤ fork, ∀ parent,
       ((e.world n).state v).isPayloadVerified gloas parent = true →
       ((e.world arrival).state u).isPayloadVerified gloas parent = true)
@@ -417,7 +552,7 @@ theorem Execution.blocks_after_partiallySynchronous {GST Δ : ℕ}
         .ok ((e.world arrival).state u).finalizedCheckpoint.root)
     (later : arrival ≤ k) : ((e.world k).state u).blocks[root]? = some block := by
   have held := (e.blocks_of_partiallySynchronous sync oneBlock admitted anchored start
-    honest receiver late upToDate payloads found final).1
+    honest receiver late upToDate finalizedKnown payloads found final).1
   exact e.blocks_of_le later held
 
 end EthLib.Consensus.Models.Network
