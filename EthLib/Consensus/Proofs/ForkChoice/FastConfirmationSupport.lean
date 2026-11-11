@@ -1191,6 +1191,65 @@ theorem Execution.safeAt_of_support {Δ : ℕ} (sync : e.Synchronous Δ)
     ∀ time, (e.world n).time ≤ time → time ≤ limit → SafeAt e time root := by
   sorry
 
+/-- A duty target remains recent at the next slot, including an epoch boundary. -/
+theorem epoch_recent_at_next_slot {slot next : Slot}
+    (nextOk : addChecked slot 1 = .ok next) :
+    computeEpochAtSlot preset slot = computeEpochAtSlot preset next ∨
+      computeEpochAtSlot preset slot = saturatingSub (computeEpochAtSlot preset next) 1 := by
+  have nextNat := (addChecked_ok_iff.mp nextOk).2
+  simp only [UInt64.toNat_one] at nextNat
+  have quotient : (slot.toNat + 1) / preset.SLOTS_PER_EPOCH.toNat =
+      slot.toNat / preset.SLOTS_PER_EPOCH.toNat +
+        if preset.SLOTS_PER_EPOCH.toNat ∣ slot.toNat + 1 then 1 else 0 := Nat.succ_div
+  by_cases same : computeEpochAtSlot preset slot = computeEpochAtSlot preset next
+  · exact Or.inl same
+  · right
+    have different : slot.toNat / preset.SLOTS_PER_EPOCH.toNat ≠
+        next.toNat / preset.SLOTS_PER_EPOCH.toNat := by
+      intro eq
+      exact same (UInt64.toNat_inj.mp (by simpa [computeEpochAtSlot] using eq))
+    have step : next.toNat / preset.SLOTS_PER_EPOCH.toNat =
+        slot.toNat / preset.SLOTS_PER_EPOCH.toNat + 1 := by
+      rw [nextNat]
+      rw [nextNat] at different
+      split at quotient <;> omega
+    apply UInt64.toNat_inj.mp
+    simp only [computeEpochAtSlot, saturatingSub]
+    by_cases h : (1 : UInt64) < next / preset.SLOTS_PER_EPOCH
+    · simp only [h, ite_true]
+      rw [UInt64.toNat_sub_of_le _ _ (UInt64.le_of_lt h)]
+      simp only [UInt64.toNat_div, UInt64.toNat_one]
+      rw [step]
+      exact (Nat.add_sub_cancel _ _).symm
+    · simp only [h, ite_false, UInt64.toNat_zero, UInt64.toNat_div]
+      have : (next / preset.SLOTS_PER_EPOCH).toNat ≤ 1 := by
+        simpa only [UInt64.lt_iff_toNat_lt, UInt64.toNat_one, not_lt] using h
+      simp only [UInt64.toNat_div] at this
+      rw [step] at this
+      exact Nat.eq_zero_of_le_zero (Nat.le_of_add_le_add_right this)
+
+/-- A pre-Gloas duty vote passes validation at the next slot once its chain is held. -/
+theorem validate_duty_at_next_slot {store : Store preset fork}
+    {attestation : Attestation preset fork} {next : Slot}
+    (preGloas : fork < .glamsterdam)
+    (nextOk : addChecked attestation.data.slot 1 = .ok next)
+    (currentOk : store.getCurrentSlot config = .ok next)
+    (epoch : attestation.data.target.epoch = computeEpochAtSlot preset attestation.data.slot)
+    {target voted : BeaconBlock preset fork}
+    (targetKnown : store.blocks[attestation.data.target.root]? = some target)
+    (votedKnown : store.blocks[attestation.data.beaconBlockRoot]? = some voted)
+    (notFuture : voted.slot ≤ attestation.data.slot)
+    (checkpoint : store.getCheckpointBlock attestation.data.beaconBlockRoot
+      attestation.data.target.epoch = .ok attestation.data.target.root) :
+    store.validateOnAttestation config attestation false = .ok () := by
+  have nextNat := (addChecked_ok_iff.mp nextOk).2
+  have past : attestation.data.slot < next := UInt64.lt_iff_toNat_lt.mpr (by
+    simp only [UInt64.toNat_one] at nextNat
+    omega)
+  exact Store.validateOnAttestation_of_facts currentOk
+    (epoch ▸ epoch_recent_at_next_slot nextOk) epoch targetKnown votedKnown notFuture
+    (fun gloas => False.elim (Nat.not_le_of_lt preGloas gloas)) checkpoint past
+
 /-- A fitting delay leaves time to process a duty vote before the next slot boundary. -/
 theorem DelayFits.before_boundary {Δ : ℕ}
     (fits : DelayFits fork config genesisTimeMs Δ)
