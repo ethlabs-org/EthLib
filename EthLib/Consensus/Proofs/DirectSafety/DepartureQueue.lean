@@ -128,6 +128,223 @@ theorem consolidationQueueCall_of_computed {fork : Fork} {s t : BeaconState pres
   exact ⟨⟨_, _, first, rate, amount, placed, left, queued⟩,
     rfl, rfl, rfl, rfl, rfl, rateOk⟩
 
+/-- An initiated exit spends its old effective balance and retains the assigned queue epoch. -/
+theorem initiateExit_call {fork : Fork} {s t : BeaconState preset fork}
+    (electra : .pectra ≤ fork) {index : ValidatorIndex}
+    (ok : initiateValidatorExit config s index = .ok t) :
+    t = s ∨ ∃ (v : Validator) (call : DepartureQueueCall),
+      getValidator s index = .ok v ∧ v.exitEpoch = FAR_FUTURE_EPOCH ∧
+      call.amount = v.effectiveBalance ∧
+      call.earliest = s.earliestExitEpoch electra ∧
+      call.available = s.exitBalanceToConsume electra ∧
+      call.epoch = t.earliestExitEpoch electra ∧
+      call.left = t.exitBalanceToConsume electra ∧
+      exitChurnLimit config s = .ok call.rate ∧
+      ∃ next, getValidator t index = .ok next ∧ next.exitEpoch = call.epoch := by
+  obtain ⟨v, found, unchanged | ⟨far, queued, epoch, withdrawable, scheduled, _, set⟩⟩ :=
+    initiateValidatorExit_ok ok
+  · exact .inl unchanged.2
+  · have called : computeExitEpochAndUpdateChurn config s electra v.effectiveBalance =
+        .ok (queued, epoch) := by simpa only [exitQueue, electra, ↓reduceDIte] using scheduled
+    obtain ⟨call, earliest, available, amount, placed, left, rate⟩ :=
+      exitQueueCall_of_computed electra called
+    have queuedEpoch := (computeExitEpochAndUpdateChurn_earliest called).1
+    have read := getValidator_setValidator_self set
+    obtain ⟨inside, rfl⟩ := setValidator_ok set
+    exact .inr ⟨v, call, found, far, amount, earliest, available,
+      placed.trans queuedEpoch.symm, left, rate, _, read, placed.symm⟩
+
+/-- Partial withdrawals may spend exit capacity while leaving every validator unchanged. -/
+theorem partialWithdrawal_call {fork : Fork} {s t : BeaconState preset fork}
+    (electra : .pectra ≤ fork) {index : ValidatorIndex} {v : Validator} {amount owed : Gwei}
+    (ok : requestPartialWithdrawal config s electra index v amount owed = .ok t) :
+    t.validators = s.validators ∧
+      (t = s ∨ ∃ call : DepartureQueueCall,
+        call.earliest = s.earliestExitEpoch electra ∧
+        call.available = s.exitBalanceToConsume electra ∧
+        call.epoch = t.earliestExitEpoch electra ∧
+        call.left = t.exitBalanceToConsume electra ∧
+        exitChurnLimit config s = .ok call.rate) := by
+  simp only [requestPartialWithdrawal, bind_ok_iff, liftAccessor_ok] at ok
+  obtain ⟨balance, _, kept, _, ok⟩ := ok
+  split at ok
+  · simp only [bind_ok_iff, liftAccessor_ok, pure, Except.pure, Except.ok.injEq] at ok
+    obtain ⟨⟨queued, epoch⟩, called, _, _, _, _, rfl⟩ := ok
+    obtain ⟨call, earliest, available, _, placed, left, rate⟩ :=
+      exitQueueCall_of_computed electra called
+    obtain ⟨queuedEpoch, registry, _⟩ := computeExitEpochAndUpdateChurn_earliest called
+    exact ⟨registry, .inr ⟨call, earliest, available, placed.trans queuedEpoch.symm,
+      left, rate⟩⟩
+  · cases ok
+    exact ⟨rfl, .inl rfl⟩
+
+/-- Scheduling a consolidation spends the source balance before changing its exit epoch. -/
+theorem queueConsolidation_call {fork : Fork} {s t : BeaconState preset fork}
+    (electra : .pectra ≤ fork) {sourceIndex targetIndex : ValidatorIndex} {source : Validator}
+    (ok : queueConsolidation config s electra sourceIndex source targetIndex = .ok t) :
+    ∃ call : DepartureQueueCall,
+      call.amount = source.effectiveBalance ∧
+      call.earliest = s.earliestConsolidationEpoch electra ∧
+      call.available = s.consolidationBalanceToConsume electra ∧
+      call.epoch = t.earliestConsolidationEpoch electra ∧
+      call.left = t.consolidationBalanceToConsume electra ∧
+      getConsolidationChurnLimit config s = .ok call.rate ∧
+      ∃ next, getValidator t sourceIndex = .ok next ∧ next.exitEpoch = call.epoch := by
+  simp only [queueConsolidation, bind_ok_iff, liftAccessor_ok, pure, Except.pure,
+    Except.ok.injEq] at ok
+  obtain ⟨⟨queued, epoch⟩, called, withdrawable, _, changed, set, pending, _, rfl⟩ := ok
+  obtain ⟨call, earliest, available, amount, placed, left, rate⟩ :=
+    consolidationQueueCall_of_computed electra called
+  have queuedEpoch := (computeConsolidationEpochAndUpdateChurn_earliest called).1
+  have read := getValidator_setValidator_self set
+  obtain ⟨inside, rfl⟩ := setValidator_ok set
+  exact ⟨call, amount, earliest, available, placed.trans queuedEpoch.symm, left,
+    rate, _, read, placed.symm⟩
+
+/-- The two departure queues, excluding pending transfers and withdrawals. -/
+def departureQueues {fork : Fork} (electra : .pectra ≤ fork)
+    (s : BeaconState preset fork) : Epoch × Gwei × Epoch × Gwei :=
+  (s.earliestExitEpoch electra, s.exitBalanceToConsume electra,
+    s.earliestConsolidationEpoch electra, s.consolidationBalanceToConsume electra)
+
+private theorem departureQueues_increase {fork : Fork} {s t : BeaconState preset fork}
+    (electra : .pectra ≤ fork) {index : ValidatorIndex} {amount : Gwei}
+    (ok : increaseBalance s index amount = .ok t) :
+    departureQueues electra t = departureQueues electra s := by
+  obtain ⟨_, set⟩ := increaseBalance_ok ok
+  obtain ⟨_, rfl⟩ := setBalance_ok set
+  rfl
+
+private theorem departureQueues_decrease {fork : Fork} {s t : BeaconState preset fork}
+    (electra : .pectra ≤ fork) {index : ValidatorIndex} {amount : Gwei}
+    (ok : decreaseBalance s index amount = .ok t) :
+    departureQueues electra t = departureQueues electra s := by
+  obtain ⟨_, set⟩ := decreaseBalance_ok ok
+  obtain ⟨_, rfl⟩ := setBalance_ok set
+  rfl
+
+/-- A slashing changes the departure queues only in its initial exit scheduling call. -/
+theorem slashValidator_departureQueues {fork : Fork} {s t : BeaconState preset fork}
+    (electra : .pectra ≤ fork) (early : fork < .glamsterdam)
+    {index : ValidatorIndex} {whistleblower : Option ValidatorIndex}
+    (ok : slashValidator config s index whistleblower = .ok t) :
+    ∃ exited, initiateValidatorExit config s index = .ok exited ∧
+      departureQueues electra t = departureQueues electra exited := by
+  obtain ⟨exited, _, _, _, _, _, _, _, _, _, _, _, exitedOk, _, _, markedOk, _, _, _,
+    lowered, _, _, raised, final, done⟩ := slashValidator_ok ok
+  have notGloas : ¬ .glamsterdam ≤ fork := Nat.not_le_of_lt early
+  simp only [notGloas, ↓reduceDIte] at done
+  subst done
+  refine ⟨exited, exitedOk, ?_⟩
+  rw [departureQueues_increase electra final, departureQueues_increase electra raised,
+    departureQueues_decrease electra lowered]
+  obtain ⟨_, rfl⟩ := setValidator_ok markedOk
+  rfl
+
+private theorem passPendingConsolidations_departureQueues {fork : Fork}
+    (electra : .pectra ≤ fork) {epoch : Epoch} :
+    ∀ {items : List PendingConsolidation} {s : BeaconState preset fork} {result},
+      passPendingConsolidations epoch s items = .ok result →
+      departureQueues electra result.1 = departureQueues electra s
+  | [], _, _, ok => by cases ok; rfl
+  | item :: rest, s, result, ok => by
+    unfold passPendingConsolidations at ok
+    simp only [bind, Except.bind, pure, Except.pure] at ok
+    split at ok
+    · cases ok
+    split at ok
+    · split at ok
+      · cases ok
+      rename_i recur
+      cases ok
+      exact (passPendingConsolidations_departureQueues electra recur :)
+    split at ok
+    · cases ok; rfl
+    split at ok
+    · cases ok
+    split at ok
+    · cases ok
+    rename_i lowered loweredOk
+    split at ok
+    · cases ok
+    rename_i raised raisedOk
+    split at ok
+    · cases ok
+    rename_i recur
+    cases ok
+    exact (passPendingConsolidations_departureQueues electra recur).trans
+      ((departureQueues_increase electra (liftAccessor_ok.mp raisedOk)).trans
+        (departureQueues_decrease electra (liftAccessor_ok.mp loweredOk)))
+
+/-- Processing pending transfers never replenishes either departure queue. -/
+theorem processPendingConsolidations_departureQueues {fork : Fork}
+    {s t : BeaconState preset fork} (electra : .pectra ≤ fork)
+    (ok : processPendingConsolidations s electra = .ok t) :
+    departureQueues electra t = departureQueues electra s := by
+  simp only [processPendingConsolidations, bind_ok_iff, pure, Except.pure,
+    Except.ok.injEq] at ok
+  obtain ⟨epoch, _, ⟨passed, read⟩, processed, rfl⟩ := ok
+  exact passPendingConsolidations_departureQueues electra processed
+
+/-- A registry update either preserves both queues or executes an ejection's exit call. -/
+theorem registryEntry_departureQueues {fork : Fork} {s t : BeaconState preset fork}
+    (electra : .pectra ≤ fork) {activation : Epoch} {index : Nat}
+    (ok : updateRegistryEntryElectra config activation s index = .ok t) :
+    departureQueues electra t = departureQueues electra s ∨
+      ∃ validatorIndex, initiateValidatorExit config s validatorIndex = .ok t := by
+  simp only [updateRegistryEntryElectra, bind_ok_iff, liftAccessor_ok] at ok
+  obtain ⟨validator, _, ok⟩ := ok
+  split at ok
+  · simp only [bind_ok_iff, liftAccessor_ok] at ok
+    obtain ⟨epoch, _, set⟩ := ok
+    obtain ⟨_, rfl⟩ := setValidatorAt_ok set
+    exact .inl rfl
+  · split at ok
+    · simp only [bind_ok_iff, liftAccessor_ok] at ok
+      obtain ⟨validatorIndex, _, exited⟩ := ok
+      exact .inr ⟨validatorIndex, exited⟩
+    · split at ok
+      · obtain ⟨_, rfl⟩ := setValidatorAt_ok (liftAccessor_ok.mp ok)
+        exact .inl rfl
+      · cases ok
+        exact .inl rfl
+
+/-- Before Gloas every successful exit rate is bounded by the configured shared cap. -/
+theorem exitChurnLimit_le_cap {fork : Fork} {s : BeaconState preset fork} {rate : Gwei}
+    (early : fork < .glamsterdam) (ok : exitChurnLimit config s = .ok rate) :
+    rate.toNat ≤ config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat := by
+  have notGloas : ¬ .glamsterdam ≤ fork := Nat.not_le_of_lt early
+  simp only [exitChurnLimit, notGloas, ↓reduceIte, getActivationExitChurnLimit,
+    bind_ok_iff, pure, Except.pure, Except.ok.injEq] at ok
+  obtain ⟨whole, _, rfl⟩ := ok
+  exact UInt64.le_iff_toNat_le.mp Std.min_le_left
+
+/-- Withdrawal requests either do nothing, initiate an exit, or spend partial-withdrawal churn. -/
+theorem withdrawalRequest_cases {fork : Fork} {s t : BeaconState preset fork}
+    {electra : .pectra ≤ fork} {request : WithdrawalRequest}
+    (ok : processWithdrawalRequest config s electra request = .ok t) :
+    t = s ∨ (∃ index, initiateValidatorExit config s index = .ok t) ∨
+      ∃ index v owed,
+        requestPartialWithdrawal config s electra index v request.amount owed = .ok t := by
+  unfold processWithdrawalRequest at ok
+  simp only [bind, Except.bind, pure, Except.pure] at ok
+  repeat' split at ok
+  all_goals first
+    | (cases ok; exact .inl rfl)
+    | (cases ok)
+    | exact .inr (.inl ⟨_, liftAccessor_ok.mp ok⟩)
+    | exact .inr (.inr ⟨_, _, _, ok⟩)
+
+/-- A successful voluntary exit reaches the exit scheduler with the original state. -/
+theorem voluntaryExit_initiates {fork : Fork} {s t : BeaconState preset fork}
+    {signed : SignedVoluntaryExit}
+    (ok : processVoluntaryExit config checks s signed = .ok t) :
+    initiateValidatorExit config s signed.message.validatorIndex = .ok t := by
+  unfold processVoluntaryExit at ok
+  simp only [bind_ok_iff, ensure_ok_iff, liftAccessor_ok, liftSsz_ok] at ok
+  obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, exited⟩ := ok
+  exact exited
+
 /-- Successful consolidation requests record the input to their balance-queue call.
 
 Credential switches and ignored requests do not call that queue. -/
