@@ -1,6 +1,7 @@
 module
 
 public import EthLib.Consensus.Proofs.DirectSafety.Fields
+public import EthLib.Consensus.Proofs.Transition.Block
 
 /-!
 # Conflicting concrete checkpoint fields expose slashable quorum pairs
@@ -53,18 +54,6 @@ def EitherCall.state {g a b : ForkedBeaconState preset} {left : Run config check
 theorem call_epochs {g a : ForkedBeaconState preset} (run : Run config checks g a)
     (parameters : Parameters preset) (genesis : Genesis (config := config) (checks := checks) g)
     (call : QuorumCall run) : call.source.epoch < call.target.epoch := by
-  sorry
-
-/-- Equal target epochs with different targets give the first slashing condition. -/
-theorem double_vote_data (d₁ d₂ : AttestationData)
-    (sameEpoch : d₁.target.epoch = d₂.target.epoch) (different : d₁.target ≠ d₂.target) :
-    isSlashableAttestationData d₁ d₂ = true := by
-  sorry
-
-theorem surround_vote_data (d₁ d₂ : AttestationData)
-    (source : d₁.source.epoch < d₂.source.epoch)
-    (target : d₂.target.epoch < d₁.target.epoch) :
-    isSlashableAttestationData d₁ d₂ = true := by
   sorry
 
 /-- Distinct targets at the same epoch give double votes in the common voters. -/

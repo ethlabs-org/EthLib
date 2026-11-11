@@ -52,8 +52,8 @@ def _root_.EthLib.Consensus.Run.hashObjects {first last : ForkedBeaconState pres
   | .snoc pre step => pre.hashObjects ++ step.hashObjects
 
 def HashEvidence (objects : List (HashObject preset)) : Prop :=
-  (∃ x y, findMessageCollision (objects.flatMap HashObject.messages)
-    (objects.flatMap HashObject.messages) = some (x, y) ∧ MessageCollision x y) ∨
+  (∃ x ∈ objects.flatMap HashObject.messages, ∃ y ∈ objects.flatMap HashObject.messages,
+    MessageCollision x y) ∨
   ∃ object ∈ objects, object.root = some (Vector.replicate 32 0)
 
 theorem header_binding (objects : List (HashObject preset)) (a b : BeaconBlockHeader)
@@ -78,7 +78,7 @@ theorem checkpoint_binding {g a b : ForkedBeaconState preset}
     (epoch : Epoch) (root : Root)
     (one : getBlockRoot a.state epoch = .ok root)
     (two : getBlockRoot b.state epoch = .ok root) :
-    left.checkpointPath ⟨epoch, root⟩ = right.checkpointPath ⟨epoch, root⟩ ∨
+    left.checkpointPath epoch = right.checkpointPath epoch ∨
       HashEvidence (left.hashObjects ++ right.hashObjects) := by
   sorry
 

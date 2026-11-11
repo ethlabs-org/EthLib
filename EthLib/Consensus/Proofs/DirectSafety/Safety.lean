@@ -26,13 +26,14 @@ noncomputable def slashableKeys {g a b : ForkedBeaconState preset}
   classical
   exact (activeKeys reference.state).filter (Slashable left right)
 
-/-- Two finalized endpoint fields, with weights measured at their shared state. -/
+/-- Order the finalized fields by epoch, with weights measured at their shared state. -/
 theorem accountable_safety {g x a b : ForkedBeaconState preset}
     (shared : Run config checks g x) (left : Run config checks x a) (right : Run config checks x b)
     (parameters : Parameters preset) (genesis : Genesis (config := config) (checks := checks) g)
     (caps : CapOrder preset) (aligned : MaxEffectiveBalancesAligned preset)
     (earlyA : a.fork < .glamsterdam) (earlyB : b.fork < .glamsterdam)
     (enoughA : EnoughStake (shared.append left)) (enoughB : EnoughStake (shared.append right))
+    (ordered : a.state.finalizedCheckpoint.epoch ≤ b.state.finalizedCheckpoint.epoch)
     (conflict : Conflict (shared.append left) (shared.append right)
       a.state.finalizedCheckpoint b.state.finalizedCheckpoint)
     (starts : x.state.slot.toNat ≤

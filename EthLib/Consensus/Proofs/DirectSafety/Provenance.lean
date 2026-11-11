@@ -18,34 +18,9 @@ open Base Cryptography.Bls
 
 variable {preset : Preset} {config : Config} {checks : SignatureChecks}
 
-def PendingBacked {g a : ForkedBeaconState preset} (run : Run config checks g a)
-    {fork : Fork} (state : BeaconState preset fork) : Prop :=
-  ∀ (early : fork < .altair) (current : Bool),
-    ∀ pending ∈ (if current then state.currentEpochAttestations early
-      else state.previousEpochAttestations early).data,
-      pending.data.target.epoch =
-        (if current then getCurrentEpoch state else getPreviousEpoch state) ∧
-      pending.data.source = (if current then state.currentJustifiedCheckpoint
-        else state.previousJustifiedCheckpoint) ∧
-      ∀ indices, getPendingAttestingIndices state pending = .ok indices →
-        ∀ key ∈ keysAt state indices, run.Accepted key pending.data
-
-def FlagsBacked {g a : ForkedBeaconState preset} (run : Run config checks g a)
-    {fork : Fork} (state : BeaconState preset fork) : Prop :=
-  ∀ (altair : .altair ≤ fork) (current : Bool) (i : Nat) (flags : ParticipationFlags),
-    (if current then state.currentEpochParticipation altair
-      else state.previousEpochParticipation altair).data[i]? = some flags →
-    hasFlag flags TIMELY_TARGET_FLAG_INDEX = true →
-    ∀ validator, state.validators.data[i]? = some validator →
-      ∃ data, run.Accepted validator.pubkey data ∧
-        data.source = (if current then state.currentJustifiedCheckpoint
-          else state.previousJustifiedCheckpoint) ∧
-        data.target.epoch = (if current then getCurrentEpoch state else getPreviousEpoch state) ∧
-        getBlockRoot state data.target.epoch = .ok data.target.root
-
 def ParticipationBacked {g a : ForkedBeaconState preset} (run : Run config checks g a)
     {fork : Fork} (state : BeaconState preset fork) : Prop :=
-  PendingBacked run state ∧ FlagsBacked run state
+  PendingVoted run.votes state ∧ TargetFlagsVoted run.votes state
 
 theorem genesis_participation {g : ForkedBeaconState preset}
     (genesis : Genesis (config := config) (checks := checks) g) :

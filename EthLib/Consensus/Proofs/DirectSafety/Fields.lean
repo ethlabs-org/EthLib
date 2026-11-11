@@ -2,6 +2,7 @@ module
 
 public import EthLib.Consensus.Proofs.DirectSafety.Provenance
 public import EthLib.Consensus.Proofs.DirectSafety.Hashes
+public import EthLib.Consensus.Proofs.Transition.Invariants
 
 /-!
 # Concrete justification calls and checkpoint fields
@@ -40,6 +41,16 @@ structure EpochCall {g a : ForkedBeaconState preset} (run : Run config checks g 
   cachedOk : processSlot before.state = .ok cached
   weighedOk : processJustificationAndFinalization cached = .ok weighed
   later : GENESIS_EPOCH + 1 < getCurrentEpoch cached
+
+/-- The occurrence identifies a real prefix; caching changes neither stake nor its registry. -/
+theorem EpochCall.selected_prefix {g a : ForkedBeaconState preset}
+    {run : Run config checks g a} (call : EpochCall run) :
+    ∃ (pre : Run config checks g call.before) (post : Run config checks call.after a),
+      run = (pre.snoc (.slot call.advanced)).append post ∧
+      Frame call.before.state call.cached ∧
+      call.cached.validators = call.before.state.validators ∧
+      call.cached.balances = call.before.state.balances := by
+  sorry
 
 /-- An actual successful justification test inside an epoch call. -/
 structure QuorumCall {g a : ForkedBeaconState preset} (run : Run config checks g a)
@@ -172,7 +183,7 @@ theorem call_target_binding {g a b : ForkedBeaconState preset}
     (left : Run config checks g a) (right : Run config checks g b)
     (parameters : Parameters preset) (genesis : Genesis (config := config) (checks := checks) g)
     (one : QuorumCall left) (two : QuorumCall right) (same : one.target = two.target) :
-    left.checkpointPath one.target = right.checkpointPath two.target ∨
+    left.checkpointPath one.target.epoch = right.checkpointPath two.target.epoch ∨
       HashEvidence (left.hashObjects ++ right.hashObjects) := by
   sorry
 

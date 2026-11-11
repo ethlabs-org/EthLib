@@ -53,12 +53,19 @@ def _root_.EthLib.Consensus.Run.headers {first last : ForkedBeaconState preset}
 
 /-- Actual block headers up to a checkpoint boundary, without identifying equal hashes. -/
 def _root_.EthLib.Consensus.Run.checkpointPath {first last : ForkedBeaconState preset}
-    (run : Run config checks first last) (checkpoint : Checkpoint) : List BeaconBlockHeader :=
-  run.headers.filter fun h => h.slot.toNat ≤ checkpoint.epoch.toNat * preset.SLOTS_PER_EPOCH.toNat
+    (run : Run config checks first last) (epoch : Epoch) : List BeaconBlockHeader :=
+  run.headers.filter fun h => h.slot.toNat ≤ epoch.toNat * preset.SLOTS_PER_EPOCH.toNat
 
+/-- Binding at a later boundary also binds the same selected histories at an earlier boundary. -/
+theorem _root_.EthLib.Consensus.Run.checkpointPath_restrict {g a : ForkedBeaconState preset}
+    (run : Run config checks g a) (early late : Epoch) (ordered : early ≤ late) :
+    run.checkpointPath early = (run.checkpointPath late).filter
+      (fun h => h.slot.toNat ≤ early.toNat * preset.SLOTS_PER_EPOCH.toNat) := by
+  sorry
+
+/-- Compare both histories at the earlier checkpoint boundary, including skipped slots. -/
 def Conflict {g a b : ForkedBeaconState preset} (left : Run config checks g a)
     (right : Run config checks g b) (f j : Checkpoint) : Prop :=
-  ¬ (left.checkpointPath f).IsPrefix (right.checkpointPath j) ∧
-    ¬ (right.checkpointPath j).IsPrefix (left.checkpointPath f)
+  left.checkpointPath (min f.epoch j.epoch) ≠ right.checkpointPath (min f.epoch j.epoch)
 
 end EthLib.Consensus.DirectSafety

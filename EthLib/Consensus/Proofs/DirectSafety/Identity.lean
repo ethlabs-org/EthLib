@@ -52,12 +52,11 @@ theorem _root_.EthLib.Consensus.Run.key_preserved {g a : ForkedBeaconState prese
     ∃ current, a.state.validators.data[i]? = some current ∧ current.pubkey = old.pubkey := by
   sorry
 
-theorem receipt_key_preserved {fork : Fork} {state : BeaconState preset fork}
-    {engine : ExecutionEngine preset fork} {block : BeaconBlock preset fork}
-    {key : BLSPubkey} {data : AttestationData}
-    (receipt : Receipt (config := config) (checks := checks) engine state block key data) :
-    ∃ validator, state.validators.data[receipt.index.toNat]? = some validator ∧
-      validator.pubkey = key := by
+/-- Indices are interpreted on their own run before converting to a cross-run key. -/
+theorem selected_vote_key {g a : ForkedBeaconState preset} (run : Run config checks g a)
+    (initial : uniqueKeys g.state) (i : ValidatorIndex) (data : AttestationData)
+    (v : Validator) (found : a.state.validators.data[i.toNat]? = some v)
+    (voted : (i, data) ∈ run.votes) : run.Accepted v.pubkey data := by
   sorry
 
 theorem keys_weight {fork : Fork} (state : BeaconState preset fork)
