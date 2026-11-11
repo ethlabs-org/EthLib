@@ -355,6 +355,7 @@ It is `Execution.StrictSelectorAdvanceAt.actualCall_selectedStrictEdgeFilterSupp
 [vfc]: https://github.com/fradamt/verified-fast-confirmation -/
 theorem Execution.coveredOrViableAt_of_checked {Δ : ℕ} (sync : e.Synchronous Δ)
     (slots : 0 < config.SLOT_DURATION_MS)
+    (preGloas : fork < .glamsterdam)
     (oneBlock : OneBlockPerRoot e)
     (votes : Votes e.startTime e) (fits : DelayFits fork config genesisTimeMs Δ)
     (prompt : Prompt e) (committees : CommitteesFollow e)
