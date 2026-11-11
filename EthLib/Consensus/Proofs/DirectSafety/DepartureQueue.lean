@@ -1848,6 +1848,25 @@ theorem epoch_exitTrace {fork : Fork} {s t : BeaconState preset fork}
   obtain ⟨tagged, taggedMember, rfl⟩ := List.mem_map.mp member
   exact rates tagged taggedMember
 
+/-- Slot caching and increment preserve epoch charge coverage and its pre-update amounts. -/
+theorem slot_indexedTrace {fork : Fork} {s t : BeaconState preset fork}
+    (electra : .pectra ≤ fork) (early : fork < .glamsterdam)
+    (ok : advanceSlot config checks s = .ok t) :
+    ∃ calls : List IndexedDepartureCall,
+      DepartureQueueTrace (s.earliestExitEpoch electra) (s.exitBalanceToConsume electra)
+        (calls.map (·.call)) (t.earliestExitEpoch electra) (t.exitBalanceToConsume electra) ∧
+      DepartureCoverage s t calls ∧ (∀ called ∈ calls,
+        called.call.rate.toNat ≤ config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat) := by
+  simp only [advanceSlot, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at ok
+  obtain ⟨_, _, cached, cache, advanced, advance, rfl⟩ := ok
+  obtain ⟨_, _, _, _, rfl⟩ := processSlot_ok cache
+  unfold epochIfLast at advance
+  split at advance
+  · obtain ⟨calls, trace, covered, rates⟩ := epoch_indexedTrace electra early advance
+    exact ⟨calls, trace, covered, rates⟩
+  · cases advance
+    exact ⟨[], .nil _ _, .of_data rfl, by simp⟩
+
 /-- Advancing a slot preserves the linked epoch exit calls through caching and slot increment. -/
 theorem slot_exitTrace {fork : Fork} {s t : BeaconState preset fork}
     (electra : .pectra ≤ fork) (early : fork < .glamsterdam)
@@ -2520,6 +2539,51 @@ theorem consolidationRequestsSites_indexedTrace {fork : Fork} (electra : .pectra
         rcases List.mem_cons.mp member with rfl | member
         · exact rates ⟨fork, s⟩ (by simp) electra called.call.rate rate
         · exact tailRates called member
+
+/-- Execution-request charges match either withdrawal calls or replayed consolidation calls. -/
+theorem executionRequests_coverage {fork : Fork} (electra : .pectra ≤ fork)
+    (early : fork < .glamsterdam) {s deposited withdrawn t : BeaconState preset fork}
+    {deposits : List DepositRequest} {withdrawals : List WithdrawalRequest}
+    {consolidations : List ConsolidationRequest} {sites : List (ForkedBeaconState preset)}
+    (depositedOk : deposits.foldlM (processDepositRequest · electra ·) s = .ok deposited)
+    (withdrawnOk : withdrawals.foldlM (processWithdrawalRequest config · electra ·)
+      deposited = .ok withdrawn)
+    (consolidatedOk : consolidations.foldlM (processConsolidationRequest config · electra ·)
+      withdrawn = .ok t)
+    (replayed : consolidationRequestsSites config electra withdrawn consolidations =
+      .ok (t, sites)) (cap : Nat)
+    (rates : ∀ site ∈ sites, ∀ (_h : .pectra ≤ site.fork) (rate : Gwei),
+      getConsolidationChurnLimit config site.state = .ok rate → rate.toNat ≤ cap) :
+    ∃ exits consolidations : List IndexedDepartureCall,
+      DepartureCoverage s t (exits ++ consolidations) ∧
+      DepartureQueueTrace (deposited.earliestExitEpoch electra)
+        (deposited.exitBalanceToConsume electra) (exits.map (·.call))
+        (withdrawn.earliestExitEpoch electra) (withdrawn.exitBalanceToConsume electra) ∧
+      DepartureQueueTrace (withdrawn.earliestConsolidationEpoch electra)
+        (withdrawn.consolidationBalanceToConsume electra) (consolidations.map (·.call))
+        (t.earliestConsolidationEpoch electra) (t.consolidationBalanceToConsume electra) ∧
+      (∀ called ∈ exits,
+        called.call.rate.toNat ≤ config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat) ∧
+      (∀ called ∈ consolidations, called.call.rate.toNat ≤ cap) := by
+  have depositsData : deposited.validators = s.validators :=
+    foldlM_ok_invariant (fun t => t.validators = s.validators)
+      (fun _ _ _ kept ok => (processDepositRequest_ok ok).2.1.trans kept) rfl depositedOk
+  obtain ⟨exitCalls, exitTrace, exitCoverage, exitRates⟩ :=
+    withdrawalRequests_indexedTrace electra early withdrawnOk
+  obtain ⟨consolidationCalls, consolidationTrace, consolidationCoverage, consolidationRates⟩ :=
+    consolidationRequestsSites_indexedTrace electra early replayed cap rates
+  have coverage := exitCoverage.append_of_effectiveKept consolidationCoverage
+    (RegistryLifecycle.foldlM
+      (fun _ _ _ ok => registryLifecycle_processWithdrawalRequest ok) withdrawnOk)
+    (RegistryLifecycle.foldlM
+      (fun _ _ _ ok => registryLifecycle_processConsolidationRequest ok) consolidatedOk)
+    (effectiveKept_fold (fun _ _ _ ok => effectiveKept_withdrawalRequest ok)
+      (fun _ _ _ ok => (registryLifecycle_processWithdrawalRequest ok).size_le) withdrawnOk)
+  refine ⟨exitCalls, consolidationCalls, ?_, exitTrace, consolidationTrace,
+    exitRates, consolidationRates⟩
+  intro i old next before after
+  apply coverage i old next _ after
+  simpa only [depositsData] using before
 
 /-- The block prefix reaches execution requests before any consolidation queue call. -/
 def blockConsolidationSites {fork : Fork} (config : Config) (checks : SignatureChecks)
