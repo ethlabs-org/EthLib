@@ -1,6 +1,7 @@
 module
 
 public import EthLib.Consensus.Proofs.ForkChoice.BlockAgreement
+public import EthLib.Consensus.Proofs.ForkChoice.BlockStates
 public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmationSets
 public import EthLib.Consensus.Proofs.ForkChoice.HonestDuties
 public import EthLib.Consensus.Proofs.Transition.FfgJustification
@@ -390,6 +391,31 @@ theorem RunKept.committeesKept_through_next_epoch {state after : BeaconState pre
     exact getCurrentEpoch_le_activityFixedEpoch state
   · omega
 
+/-- A run through the next epoch keeps the indices decoded from a target-epoch attestation. -/
+theorem RunKept.attestingIndices_eq_through_next_epoch {state after : BeaconState preset fork}
+    (run : RunKept state after)
+    (ring : preset.MIN_SEED_LOOKAHEAD.toNat + 2 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
+    {attestation : Attestation preset fork}
+    (starts : getCurrentEpoch state = computeEpochAtSlot preset attestation.data.slot)
+    (ends : (getCurrentEpoch after).toNat ≤ (getCurrentEpoch state).toNat + 1) :
+    getAttestingIndices after attestation = getAttestingIndices state attestation := by
+  have fixed := getCurrentEpoch_le_activityFixedEpoch state
+  have active := run.active.getActiveValidatorIndices_eq fixed
+  have checked := run.active.getActiveValidatorIndicesChecked_eq fixed
+  have seed : getSeed after (getCurrentEpoch state) DOMAIN_BEACON_ATTESTER =
+      getSeed state (getCurrentEpoch state) DOMAIN_BEACON_ATTESTER := by
+    refine getSeed_eq_of_mix _ fun shifted reads =>
+      run.mixes shifted fun written low high same => ?_
+    have lowNat := UInt64.le_iff_toNat_le.mp low
+    have highNat := UInt64.le_iff_toNat_le.mp high
+    have sameNat := congrArg UInt64.toNat same
+    rw [UInt64.toNat_mod, UInt64.toNat_mod] at sameNat
+    exact Nat.mod_ne_of_sub_lt (low := written.toNat) (high := shifted.toNat)
+      (length := preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat) (by omega) (by omega) sameNat.symm
+  unfold getAttestingIndices attesterShuffle getCommitteeCountPerSlot
+  rw [← starts]
+  simp only [active, checked, seed]
+
 namespace Models.Network
 
 variable {config : Config} {checks : SignatureChecks} {sources : BlockSources preset fork}
@@ -521,6 +547,54 @@ theorem Execution.exists_transition_of_nonanchor_block {anchor : Store preset fo
   · rw [stored, Option.some.injEq] at postFound
     subst post
     exact ⟨parent, signed, message, parentFound, transitioned⟩
+
+/-- A pre-block target root reconstructs a checkpoint state with the same target committees.
+
+Every historical transition uses the execution's checks, including empty-slot processing. -/
+theorem Execution.exists_checkpointState_of_preBlock_target {anchor : Store preset fork}
+    (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    {w : ValidatorIndex} (honest : w ∈ J) (start : e.start w = anchor) {k : ℕ}
+    (positive : 0 < preset.SLOTS_PER_EPOCH.toNat)
+    (ring : preset.MIN_SEED_LOOKAHEAD.toNat + 2 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
+    (nonzero : ∀ (root : Root) (block : BeaconBlock preset fork),
+      ((e.world k).state w).blocks[root]? = some block →
+      block.stateRoot ≠ Vector.replicate 32 0)
+    {parent advanced state : BeaconState preset fork} {block : BeaconBlock preset fork}
+    {epoch : Epoch} {query : Slot} {root : Root}
+    (parentFound : ((e.world k).state w).blockStates[block.parentRoot]? = some parent)
+    (slotsOk : processSlots config checks parent block.slot = .ok advanced)
+    (blockOk : processBlock config checks sources.engine advanced block = .ok state)
+    (epochStart : computeStartSlotAtEpoch preset epoch = .ok query)
+    (read : getBlockRootAtSlot advanced query = .ok root)
+    (later : anchorState.slot ≤ query)
+    (recent : (getCurrentEpoch advanced).toNat ≤ epoch.toNat + 1) :
+    ∃ ancestor ancestorState checkpointState,
+      ((e.world k).state w).blocks[root]? = some ancestor ∧
+      ((e.world k).state w).blockStates[root]? = some ancestorState ∧
+      lookaheadState config checks ancestorState query = .ok checkpointState ∧
+      checkpointState.slot = query ∧ RunKept checkpointState advanced ∧
+      CommitteesKept epoch checkpointState advanced := by
+  have reachable : ∀ n, Store.Reachable config anchorState anchorBlock ((e.world n).state w) := by
+    intro n
+    induction n with
+    | zero =>
+      change Store.Reachable config anchorState anchorBlock (e.start w)
+      rw [start]
+      exact .anchor anchored
+    | succ n ih =>
+      rcases e.state_succ n w with same | ⟨_, moved⟩
+      · exact same ▸ ih
+      · exact moved.reachable ih
+  obtain ⟨ancestor, ancestorState, checkpointState, held, stored, made, atSlot, run⟩ :=
+    (reachable k).preBlock_history_run
+      (fun _ _ _ found stored other =>
+        e.exists_transition_of_nonanchor_block anchored honest start found stored other)
+      nonzero parentFound slotsOk blockOk read later
+  refine ⟨ancestor, ancestorState, checkpointState, held, stored, made, atSlot, run,
+    run.committeesKept_through_next_epoch ring ?_ recent⟩
+  unfold getCurrentEpoch
+  rw [atSlot]
+  exact computeEpochAtSlot_computeStartSlotAtEpoch (UInt64.lt_iff_toNat_lt.mpr positive) epochStart
 
 /-- The count: a set of validators signs a justified checkpoint when the others cannot.
 
