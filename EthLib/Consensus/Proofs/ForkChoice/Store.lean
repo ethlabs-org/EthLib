@@ -296,6 +296,76 @@ theorem getAncestor_of_blocks {after : Store preset fork} {node ancestor : ForkC
         subst same
         simp [notLower, throw, throwThe, MonadExceptOf.throw] at walk
 
+/-- Admission above a held ancestor reproduces the successful walk and every higher walk.
+
+Only the parent steps of the successful walk need to have decreasing slots. -/
+theorem getAncestor_of_admission {receiver : Store preset fork}
+    {node ancestor : ForkChoiceNode} {slot : Slot}
+    (same : ∀ (r : Root) b c, store.blocks[r]? = some b → receiver.blocks[r]? = some c → b = c)
+    (base : ∃ b, receiver.blocks[ancestor.root]? = some b)
+    (admission : ∀ (r : Root) (b p : BeaconBlock preset fork),
+      store.blocks[r]? = some b → store.blocks[b.parentRoot]? = some p →
+      slot < b.slot → p.slot < b.slot → receiver.blocks[b.parentRoot]? = some p →
+      receiver.getAncestor ⟨b.parentRoot, parentPayloadStatus b p⟩ slot = .ok ancestor →
+      receiver.blocks[r]? = some b)
+    (walk : store.getAncestor node slot = .ok ancestor) :
+    (∃ b, store.blocks[node.root]? = some b ∧ receiver.blocks[node.root]? = some b) ∧
+      ∀ target, slot ≤ target →
+        receiver.getAncestor node target = store.getAncestor node target := by
+  induction node using getAncestor.induct (store := store) (slot := slot) with
+  | case1 node found =>
+    rw [getAncestor] at walk
+    split at walk <;> simp_all [throw, throwThe, MonadExceptOf.throw]
+  | case2 node block found le =>
+    rw [getAncestor_of_le found le] at walk
+    cases walk
+    obtain ⟨other, known⟩ := base
+    have eq := same _ block other found known
+    subst other
+    refine ⟨⟨block, found, known⟩, ?_⟩
+    intro target higher
+    rw [getAncestor_of_le found (UInt64.le_trans le higher),
+      getAncestor_of_le known (UInt64.le_trans le higher)]
+  | case3 node block found above parentFound =>
+    rw [getAncestor] at walk
+    split at walk
+    · simp_all
+    · rename_i b eq
+      rw [found, Option.some.injEq] at eq
+      subst eq
+      simp only [above, ↓reduceIte] at walk
+      split at walk <;> simp_all [throw, throwThe, MonadExceptOf.throw]
+  | case4 node block found above parent parentFound lower ih =>
+    rw [getAncestor_step found above parentFound lower] at walk
+    obtain ⟨⟨p, pf, pk⟩, agree⟩ := ih walk
+    have eq := Option.some.inj (parentFound.symm.trans pf)
+    subst p
+    have parentWalk : receiver.getAncestor
+        ⟨block.parentRoot, parentPayloadStatus block parent⟩ slot = .ok ancestor := by
+      rw [agree slot (UInt64.le_refl _), walk]
+    have known := admission node.root block parent found parentFound
+      (UInt64.not_le.mp above) lower pk parentWalk
+    refine ⟨⟨block, found, known⟩, ?_⟩
+    intro target higher
+    by_cases le : block.slot ≤ target
+    · rw [getAncestor_of_le found le, getAncestor_of_le known le]
+    · rw [getAncestor_step found le parentFound lower,
+        getAncestor_step known le pk lower, agree target higher]
+  | case5 node block found above parent parentFound notLower =>
+    rw [getAncestor] at walk
+    split at walk
+    · simp_all
+    · rename_i b eq
+      rw [found, Option.some.injEq] at eq
+      subst eq
+      simp only [above, ↓reduceIte] at walk
+      split at walk
+      · simp_all
+      · rename_i p eq
+        rw [parentFound, Option.some.injEq] at eq
+        subst eq
+        simp [notLower, throw, throwThe, MonadExceptOf.throw] at walk
+
 /-- A checkpoint block stays the same in a store that keeps every block of this one. -/
 theorem getCheckpointBlock_of_blocks {after : Store preset fork} {root checkpoint : Root}
     {epoch : Epoch}

@@ -184,6 +184,162 @@ theorem Execution.reachable {ν κ : Type*} [DecidableEq ν] {checks : Signature
     ∀ v ∈ J, Store.Reachable config anchorState anchorBlock ((e.world n).state v) :=
   e.state_induction start (fun _ _ _ _ _ _ reachable moved => moved.reachable reachable) n
 
+/-- A handler keeps genesis time and bounds its clock between the old clock and network time. -/
+theorem Handles.clock_bounds {checks : SignatureChecks} {sources : BlockSources preset fork}
+    {time : ℕ} {view : Set (Message preset fork)} {s t : Store preset fork}
+    (h : Handles config checks sources time view s t) :
+    t.genesisTimeMs = s.genesisTimeMs ∧ s.timeMs ≤ t.timeMs ∧
+      t.timeMs.toNat ≤ max s.timeMs.toNat time := by
+  have same (h : Store.SameClock s t) :
+      t.genesisTimeMs = s.genesisTimeMs ∧ s.timeMs ≤ t.timeMs ∧
+        t.timeMs.toNat ≤ max s.timeMs.toNat time := by
+    rw [h.1, h.2]
+    exact ⟨rfl, UInt64.le_refl _, Nat.le_max_left _ _⟩
+  cases h with
+  | tick le fits tick =>
+    have g : t.genesisTimeMs = s.genesisTimeMs := by
+      unfold Store.onTick at tick
+      simp only [bind_ok_iff] at tick
+      obtain ⟨_, _, _, catchup, perSlot⟩ := tick
+      exact (Store.onTickPerSlot_frame perSlot).2.1.trans (Store.catchUp_frame catchup).1
+    have tm : t.timeMs.toNat = time := by
+      rw [(Store.onTick_frame tick).1]
+      exact UInt64.toNat_ofNat_of_lt' fits
+    exact ⟨g, UInt64.le_iff_toNat_le.mpr (tm ▸ le), by rw [tm]; omega⟩
+  | block _ h => exact same (Store.onBlockWithVotes_sameClock h)
+  | attestation _ h => exact same (Store.onAttestation_sameClock h)
+  | attesterSlashing _ h => exact same (Store.onAttesterSlashing_sameClock h)
+  | payloadAttestation _ h => exact same (Store.onPayloadAttestationMessage_sameClock h)
+  | envelope _ h => exact same (Store.onExecutionPayloadEnvelope_sameClock h)
+  | inclusionList _ h => exact same (Store.onInclusionList_sameClock h)
+
+/-- Store clocks stay between the initial clock and the maximum of it and network time. -/
+theorem Execution.clock_bounds {ν κ : Type*} [DecidableEq ν] {checks : SignatureChecks}
+    {sources : BlockSources preset fork} {signed : Message preset fork → Set (ν × κ)}
+    {sends : ν → ℕ → Set (Message preset fork) → Store preset fork → Message preset fork → Prop}
+    {J : Set ν} (e : Execution (forkChoice config checks sources signed sends) J)
+    (v : ν) (i : ℕ) :
+    ((e.world i).state v).genesisTimeMs = (e.start v).genesisTimeMs ∧
+      (e.start v).timeMs ≤ ((e.world i).state v).timeMs ∧
+      ((e.world i).state v).timeMs.toNat ≤ max (e.start v).timeMs.toNat (e.world i).time := by
+  induction i with
+  | zero => exact ⟨rfl, UInt64.le_refl _, Nat.le_max_left _ _⟩
+  | succ i ih =>
+    have time := e.monotone_time (Nat.le_succ i)
+    change (e.world i).time ≤ (e.world (i+1)).time at time
+    rcases e.state_succ i v with eq | ⟨_, move⟩
+    · rw [eq]
+      exact ⟨ih.1, ih.2.1, by omega⟩
+    · have h := move.clock_bounds
+      exact ⟨h.1.trans ih.1, UInt64.le_trans ih.2.1 h.2.1, by omega⟩
+
+/-- Every network handler keeps each payload that the store has verified. -/
+theorem Handles.isPayloadVerified {checks : SignatureChecks} {sources : BlockSources preset fork}
+    {time : ℕ} {view : Set (Message preset fork)} {store after : Store preset fork}
+    (h : Handles config checks sources time view store after)
+    (gloas : .glamsterdam ≤ fork) {r : Root}
+    (known : store.isPayloadVerified gloas r = true) :
+    after.isPayloadVerified gloas r = true := by
+  have maps {s t : Store preset fork} (eq : t.payloads = s.payloads)
+      (known : s.isPayloadVerified gloas r = true) : t.isPayloadVerified gloas r = true := by
+    simpa only [Store.isPayloadVerified, eq] using known
+  cases h with
+  | tick _ _ ok => exact maps (Store.onTick_payloads ok) known
+  | block _ ok =>
+    exact Store.onBlockWithVotes_preserves (fun h ok => maps (Store.onBlock_payloads ok) h)
+      (fun _ h ok => maps (Store.onAttestation_payloads ok) h)
+      (fun _ h ok => maps (Store.onAttesterSlashing_payloads ok) h) known ok
+  | attestation _ ok => exact maps (Store.onAttestation_payloads ok) known
+  | attesterSlashing _ ok => exact maps (Store.onAttesterSlashing_payloads ok) known
+  | payloadAttestation _ ok =>
+    obtain ⟨_, _, rfl⟩ := Store.onPayloadAttestationMessage_onlyPtcVotes ok
+    exact known
+  | envelope _ ok =>
+    obtain ⟨_, _, _, _, recorded, rec, rfl⟩ := Store.onExecutionPayloadEnvelope_ok ok
+    have eq : recorded.payloads = store.payloads := by
+      unfold Store.recordEnvelope at rec
+      split at rec
+      · unfold Store.recordPayloadInclusionListSatisfaction at rec
+        simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at rec
+        obtain ⟨_, _, _, _, _, _, rfl⟩ := rec
+        rfl
+      · cases rec; rfl
+    change (store.payloads gloas).contains r = true at known
+    simp [Store.isPayloadVerified, eq, Std.TreeMap.contains_insert, known]
+  | inclusionList _ ok =>
+    unfold Store.onInclusionList at ok
+    simp only [bind_ok_iff] at ok
+    obtain ⟨_, _, ok⟩ := ok
+    cases ok
+    exact known
+
+/-- A newly held block passed validation at an earlier event of the execution. -/
+theorem Execution.exists_validated_of_blocks {ν κ : Type*} [DecidableEq ν]
+    {checks : SignatureChecks} {sources : BlockSources preset fork}
+    {signed : Message preset fork → Set (ν × κ)}
+    {sends : ν → ℕ → Set (Message preset fork) → Store preset fork → Message preset fork → Prop}
+    {J : Set ν} (e : Execution (forkChoice config checks sources signed sends) J)
+    {v : ν} {n : ℕ} {r : Root} {b : BeaconBlock preset fork}
+    (found : ((e.world n).state v).blocks[r]? = some b) :
+    (e.start v).blocks[r]? = some b ∨
+      ∃ i, i < n ∧ ∃ sb post,
+        .block sb ∈ (e.world i).view v ∧ sb.message = b ∧
+        SszType.hashTreeRoot sb.message = .ok r ∧
+        ((e.world i).state v).validateOnBlock config checks sources sb r = .ok post := by
+  induction n with
+  | zero => exact .inl found
+  | succ n ih =>
+    by_cases held : ((e.world n).state v).blocks[r]? = some b
+    · rcases ih held with old | ⟨i, lt, rest⟩
+      · exact .inl old
+      · exact .inr ⟨i, Nat.lt_trans lt (Nat.lt_succ_self n), rest⟩
+    have frames {s t : Store preset fork} (h : t.blocks = s.blocks)
+        (old : s = (e.world n).state v) (new : t = (e.world (n+1)).state v) : False := by
+      subst s
+      subst t
+      exact held (h ▸ found)
+    rcases e.state_succ n v with same | ⟨_, moved⟩
+    · exact False.elim (held (same ▸ found))
+    cases moved with
+    | tick _ _ h => exact False.elim (frames (Store.onTick_frame h).2.2.1 rfl rfl)
+    | attestation _ h => exact False.elim (frames (Store.onAttestation_frame h).2.1 rfl rfl)
+    | attesterSlashing _ h =>
+      exact False.elim (frames (Store.onAttesterSlashing_frame h).2.1 rfl rfl)
+    | payloadAttestation _ h =>
+      exact False.elim (frames (Store.onPayloadAttestationMessage_onlyPtcVotes h).frame.2.1 rfl rfl)
+    | envelope _ h =>
+      exact False.elim (frames (Store.onExecutionPayloadEnvelope_frame h).2.1 rfl rfl)
+    | inclusionList _ h =>
+      exact False.elim (frames (Store.onInclusionList_frame h).2.1 rfl rfl)
+    | @block sb mem added =>
+      -- Carried votes preserve the map produced by the first block handler.
+      unfold Store.onBlockWithVotes at added
+      simp only [bind_ok_iff, ← Array.foldlM_toList] at added
+      obtain ⟨blocked, blockOk, voted, attested, slashed⟩ := added
+      have av := foldlM_ok_invariant (fun s => s.blocks = blocked.blocks)
+        (fun _ _ _ eq step => (Store.onAttestation_frame step).2.1.trans eq) rfl attested
+      have sv := foldlM_ok_invariant (fun s => s.blocks = blocked.blocks)
+        (fun _ _ _ eq step => (Store.onAttesterSlashing_frame step).2.1.trans eq) av slashed
+      have bf : blocked.blocks[r]? = some b := sv ▸ found
+      rcases Store.onBlock_same_or_insert blockOk with same | ⟨q, hash, fresh, maps, rest⟩
+      · exact False.elim (held (same ▸ bf))
+      rw [maps, getElem?_insert_root] at bf
+      by_cases eq : q = r
+      · subst q
+        simp only [↓reduceIte, Option.some.injEq] at bf
+        right
+        refine ⟨n, Nat.lt_succ_self n, sb, ?_⟩
+        unfold Store.onBlock at blockOk
+        simp only [hash, Except.mapError, bind, Except.bind,
+          Std.TreeMap.contains_eq_isSome_getElem?, fresh, Option.isSome_none,
+          Bool.false_eq_true, ↓reduceIte] at blockOk
+        unfold Store.addBlock at blockOk
+        simp only [bind_ok_iff] at blockOk
+        obtain ⟨post, valid, _⟩ := blockOk
+        exact ⟨post, mem, bf, hash, valid⟩
+      · simp only [eq, ↓reduceIte] at bf
+        exact False.elim (held bf)
+
 /-- A move of an honest validator keeps its store reachable with a forward clock. -/
 theorem Handles.forwardReachable {checks : SignatureChecks} {sources : BlockSources preset fork}
     {time : ℕ} {view : Set (Message preset fork)} {store after : Store preset fork}
