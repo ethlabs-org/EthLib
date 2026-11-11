@@ -95,7 +95,14 @@ theorem delayed_slashing_limit_zero {fork : Fork} (s : BeaconState preset fork)
     (noneDue : ∀ v ∈ s.validators.data.toList,
       ¬ SlashingPenaltyDue preset (getCurrentEpoch s) v)
     (limit : Nat) (computed : delayedSlashingLimit s = .ok limit) : limit = 0 := by
-  sorry
+  unfold delayedSlashingLimit at computed
+  simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at computed
+  obtain ⟨total, _, slashed, _, computed⟩ := computed
+  rw [← computed]
+  apply List.sum_eq_zero
+  intro n hn
+  obtain ⟨v, hv, rfl⟩ := List.mem_map.mp hn
+  simp [noneDue v hv]
 
 theorem sync_reward_bounds {fork : Fork} (s t : BeaconState preset fork)
     (reward proposerReward : Gwei) (proposer : Except AccessorError ValidatorIndex)
