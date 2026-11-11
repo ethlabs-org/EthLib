@@ -748,6 +748,8 @@ A finalized checkpoint after that of the anchor is two epochs old, and its block
 
 So the finalized checkpoint of the store is that of the anchor. -/
 theorem Execution.finalizedCheckpoint_eq_of_checked {anchor : Store preset fork}
+    (positive : 0 < preset.SLOTS_PER_EPOCH.toNat)
+    (window : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
     (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
     (sound : Invariant anchorState)
     {u : ValidatorIndex} (honest : u ∈ J) (start : e.start u = anchor) {n : ℕ}
@@ -774,6 +776,8 @@ Otherwise its finalized checkpoint is of a later epoch, and so is its justified 
 
 The proof uses the finalized chain to place the finalized checkpoint of the receiver. -/
 theorem Execution.finalized_epoch_le_justified_epoch {Δ : ℕ} (sync : e.Synchronous Δ)
+    (positive : 0 < preset.SLOTS_PER_EPOCH.toNat)
+    (window : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
     (preGloas : fork < .glamsterdam)
     (oneBlock : OneBlockPerRoot e) (admitted : BlocksAdmitted e 0 Δ) {anchor : Store preset fork}
     (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
@@ -803,6 +807,8 @@ The finalized block is on the chain of that justified block, by the finalized ch
 
 The head of a store is above its justified block. -/
 theorem Execution.safeAt_finalized {Δ : ℕ} (sync : e.Synchronous Δ)
+    (positive : 0 < preset.SLOTS_PER_EPOCH.toNat)
+    (window : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
     (preGloas : fork < .glamsterdam)
     (oneBlock : OneBlockPerRoot e) (admitted : BlocksAdmitted e 0 Δ) {anchor : Store preset fork}
     (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
@@ -837,6 +843,8 @@ In a later epoch the receiver takes the unrealized justification of the block as
 
 Otherwise its finalized checkpoint is of a later epoch than the checkpoint. -/
 theorem Execution.unrealized_epoch_le_justified_epoch {Δ : ℕ} (sync : e.Synchronous Δ)
+    (positive : 0 < preset.SLOTS_PER_EPOCH.toNat)
+    (window : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
     (preGloas : fork < .glamsterdam)
     (oneBlock : OneBlockPerRoot e) (admitted : BlocksAdmitted e 0 Δ) {anchor : Store preset fork}
     (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
@@ -884,6 +892,8 @@ The rule also asks that the checkpoint is the unrealized justification of its he
 
 The statement does not take that fact. -/
 theorem Execution.safeAt_observed {Δ : ℕ} (sync : e.Synchronous Δ)
+    (positive : 0 < preset.SLOTS_PER_EPOCH.toNat)
+    (window : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
     (slots : 0 < config.SLOT_DURATION_MS) (votes : Votes e.startTime e)
     (fits : DelayFits fork config genesisTimeMs Δ) (prompt : Prompt e)
     (preGloas : fork < .glamsterdam)
