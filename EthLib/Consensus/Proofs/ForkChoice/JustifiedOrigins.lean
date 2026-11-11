@@ -322,4 +322,34 @@ theorem Store.ForwardReachable.justified_epoch_le_current {config : Config}
         (stateBound root state held)
   exact ⟨each _ (.inl rfl), each _ (.inr rfl)⟩
 
+namespace Models.Network
+
+/-- An endpoint justification reads each earlier finalized checkpoint on its chain. -/
+theorem Execution.getCheckpointBlock_justified_of_finalized_before
+    {config : Config} {checks : SignatureChecks} {sources : BlockSources preset fork}
+    {anchorState : BeaconState preset fork} {anchorBlock : BeaconBlock preset fork}
+    {assignment : Assignment preset} {genesisTimeMs : UInt64} {J : Set ValidatorIndex}
+    {e : Execution (honestForkChoice config checks sources anchorState anchorBlock assignment
+      genesisTimeMs) J} {anchor : Store preset fork}
+    (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (sound : Invariant anchorState) (slots : 0 < config.SLOT_DURATION_MS)
+    (anchorSlot : anchorBlock.slot ≤ anchorState.slot)
+    (start : ∀ u ∈ J, e.start u = anchor) {horizon : Epoch}
+    (chain : FinalizedPrefix e horizon) {w : ValidatorIndex} (honest : w ∈ J)
+    {i k : ℕ} (earlier : i ≤ k) {epoch : Epoch}
+    (epochOk : ((e.world k).state w).getCurrentStoreEpoch config = .ok epoch)
+    (inHorizon : epoch ≤ horizon) :
+    ((e.world k).state w).getCheckpointBlock ((e.world k).state w).justifiedCheckpoint.root
+      ((e.world i).state w).finalizedCheckpoint.epoch =
+        .ok ((e.world i).state w).finalizedCheckpoint.root := by
+  have forward := e.forwardReachable
+    (fun u hu => (start u hu).symm ▸ Store.ForwardReachable.anchor anchored) k w honest
+  have upper := (forward.justified_epoch_le_current sound slots anchorSlot epochOk).1
+  have lower := (e.epochsLe_of_le w earlier).2
+  exact chain w honest w honest i k _ (.inl rfl)
+    (UInt64.le_trans lower (forward.reachable.finalized_le_justified sound))
+    (UInt64.le_trans upper inHorizon)
+
+end Models.Network
+
 end EthLib.Consensus
