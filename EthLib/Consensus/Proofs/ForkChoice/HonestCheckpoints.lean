@@ -378,6 +378,154 @@ theorem exists_linkVote_of_processJustification {state after : BeaconState prese
     · exact pending.quorum_attester (Nat.lt_of_not_le notAltair) early true
         currentOk currentIndicesOk member
 
+/-- A set bit zero records a source vote for the current epoch of the counting state.
+
+The previous justified checkpoint after the count is the source of that vote.
+
+Keeping this witness across the epoch boundary supplies the old-bit case of finalization. -/
+theorem exists_sourceVote_of_weighJustification_bit_zero
+    {state after : BeaconState preset fork}
+    {attested : Set (ValidatorIndex × AttestationData)}
+    {current : List ValidatorIndex} {total previousBalance currentBalance : Gwei}
+    (totalOk : getTotalActiveBalance state = .ok total)
+    (currentOk : getTotalBalance state current = .ok currentBalance)
+    (counted : ∀ v ∈ current, v ∈ quorumVoters state ∧
+      ∃ data, (v, data) ∈ attested ∧ LinkVote state true v.toNat (v, data))
+    (large : 3 * preset.EFFECTIVE_BALANCE_INCREMENT.toNat <
+      2 * stake (fun v => balanceAt state v.toNat) (activeVoters state))
+    (p : ValidatorIndex → Prop) [DecidablePred p]
+    (few : 3 * stake (fun v => balanceAt state v.toNat)
+      {v ∈ quorumVoters state | ¬p v} < 2 * total.toNat)
+    (computed : weighJustificationAndFinalization state total previousBalance currentBalance =
+      .ok after)
+    (set : after.justificationBits.bits[0] = true) :
+    ∃ v data, p v ∧ (v, data) ∈ attested ∧
+      data.source = after.previousJustifiedCheckpoint ∧
+      data.target.epoch = getCurrentEpoch state := by
+  obtain ⟨threshold, _, currentWeight, thresholdOk, _, currentWeightOk, newCurrent, _⟩ :=
+    weighJustificationAndFinalization_bits computed
+  obtain ⟨passed, -⟩ := newCurrent set
+  obtain ⟨v, data, good, signed, link⟩ := exists_linkVote_of_justificationTest totalOk
+    currentOk thresholdOk currentWeightOk passed large counted p few
+  obtain ⟨previous, -⟩ := weighJustificationAndFinalization_checkpoints computed
+  exact ⟨v, data, good, signed, link.2.2.1.trans previous.symm, link.2.1⟩
+
+/-- A changed finalized checkpoint has a source vote from a passing count or the old bit zero.
+
+The old-bit witness retains its original vote and may come from an earlier counting state.
+
+The vote set must therefore contain both the current counts and that earlier witness. -/
+theorem exists_sourceVote_of_weighJustification {state after : BeaconState preset fork}
+    {attested : Set (ValidatorIndex × AttestationData)}
+    {previous current : List ValidatorIndex} {total previousBalance currentBalance : Gwei}
+    (totalOk : getTotalActiveBalance state = .ok total)
+    (previousOk : getTotalBalance state previous = .ok previousBalance)
+    (currentOk : getTotalBalance state current = .ok currentBalance)
+    (counted : ∀ (recent : Bool), ∀ v ∈ (if recent then current else previous),
+      v ∈ quorumVoters state ∧
+        ∃ data, (v, data) ∈ attested ∧ LinkVote state recent v.toNat (v, data))
+    (large : 3 * preset.EFFECTIVE_BALANCE_INCREMENT.toNat <
+      2 * stake (fun v => balanceAt state v.toNat) (activeVoters state))
+    (p : ValidatorIndex → Prop) [DecidablePred p]
+    (few : 3 * stake (fun v => balanceAt state v.toNat)
+      {v ∈ quorumVoters state | ¬p v} < 2 * total.toNat)
+    (oldBit : state.justificationBits.bits[0] = true →
+      ∃ v data, p v ∧ (v, data) ∈ attested ∧
+        data.source = state.previousJustifiedCheckpoint ∧
+        data.target.epoch.toNat + 1 = (getCurrentEpoch state).toNat)
+    (computed : weighJustificationAndFinalization state total previousBalance currentBalance =
+      .ok after) :
+    after.finalizedCheckpoint = state.finalizedCheckpoint ∨
+      ∃ v data, p v ∧ (v, data) ∈ attested ∧
+        data.source = after.finalizedCheckpoint ∧ data.source.epoch < data.target.epoch ∧
+        data.target.epoch ≤ getCurrentEpoch state := by
+  obtain ⟨threshold, previousWeight, currentWeight, thresholdOk, previousWeightOk,
+    currentWeightOk, newCurrent, newPrevious, -, finalized⟩ :=
+    weighJustificationAndFinalization_bits computed
+  rcases finalized with same | ⟨same, set, distance⟩ | ⟨same, set, distance⟩
+  · exact .inl same
+  · obtain ⟨passed, -⟩ := newCurrent set
+    obtain ⟨v, data, good, signed, link⟩ := exists_linkVote_of_justificationTest totalOk
+      currentOk thresholdOk currentWeightOk passed large (counted true) p few
+    have target : data.target.epoch = getCurrentEpoch state := link.2.1
+    have source : data.source = state.currentJustifiedCheckpoint := link.2.2.1
+    refine .inr ⟨v, data, good, signed, source.trans same.symm, ?_, ?_⟩
+    · rw [source, target, UInt64.lt_iff_toNat_lt]
+      rcases distance with one | ⟨-, two⟩ <;> omega
+    · exact UInt64.le_of_eq target
+  · have witness : ∃ v data, p v ∧ (v, data) ∈ attested ∧
+        data.source = state.previousJustifiedCheckpoint ∧
+        data.target.epoch.toNat = (getCurrentEpoch state).toNat - 1 := by
+      rcases newPrevious set with ⟨passed, -⟩ | old
+      · obtain ⟨v, data, good, signed, link⟩ := exists_linkVote_of_justificationTest totalOk
+          previousOk thresholdOk previousWeightOk passed large (counted false) p few
+        refine ⟨v, data, good, signed, link.2.2.1, ?_⟩
+        rw [link.2.1]
+        exact getPreviousEpoch_toNat state
+      · obtain ⟨v, data, good, signed, source, target⟩ := oldBit old
+        exact ⟨v, data, good, signed, source, by omega⟩
+    obtain ⟨v, data, good, signed, source, target⟩ := witness
+    refine .inr ⟨v, data, good, signed, source.trans same.symm, ?_, ?_⟩
+    · rw [source, UInt64.lt_iff_toNat_lt]
+      rcases distance with two | ⟨-, three⟩ <;> omega
+    · rw [UInt64.le_iff_toNat_le]
+      omega
+
+/-- A finalization step retains its checkpoint or supplies a source vote from the chosen set.
+
+An inherited bit zero supplies its earlier vote rather than a fresh count in this state. -/
+theorem exists_sourceVote_of_processJustification {state after : BeaconState preset fork}
+    {attested : Set (ValidatorIndex × AttestationData)}
+    (flags : TargetFlagsVoted attested state) (pending : PendingVoted attested state)
+    (large : 3 * preset.EFFECTIVE_BALANCE_INCREMENT.toNat <
+      2 * stake (fun v => balanceAt state v.toNat) (activeVoters state))
+    (p : ValidatorIndex → Prop) [DecidablePred p]
+    (few : ∀ total, getTotalActiveBalance state = .ok total →
+      3 * stake (fun v => balanceAt state v.toNat)
+        {v ∈ quorumVoters state | ¬p v} < 2 * total.toNat)
+    (oldBit : state.justificationBits.bits[0] = true →
+      ∃ v data, p v ∧ (v, data) ∈ attested ∧
+        data.source = state.previousJustifiedCheckpoint ∧
+        data.target.epoch.toNat + 1 = (getCurrentEpoch state).toNat)
+    (computed : processJustificationAndFinalization state = .ok after) :
+    after.finalizedCheckpoint = state.finalizedCheckpoint ∨
+      ∃ v data, p v ∧ (v, data) ∈ attested ∧
+        data.source = after.finalizedCheckpoint ∧ data.source.epoch < data.target.epoch ∧
+        data.target.epoch ≤ getCurrentEpoch state := by
+  unfold processJustificationAndFinalization at computed
+  split at computed
+  · rename_i altair
+    unfold processJustificationAndFinalizationAltair at computed
+    split at computed
+    · simp only [pure, Except.pure, Except.ok.injEq] at computed
+      exact .inl (computed ▸ rfl)
+    rename_i late
+    simp only [bind_ok_iff, liftAccessor_ok] at computed
+    obtain ⟨previous, previousOk, current, currentOk, total, totalOk,
+      previousBalance, previousBalanceOk, currentBalance, currentBalanceOk, weighed⟩ := computed
+    apply exists_sourceVote_of_weighJustification totalOk previousBalanceOk currentBalanceOk
+      (fun recent v member => ?_) large p (few total totalOk) oldBit weighed
+    cases recent
+    · exact flags.quorum_attester altair late false previousOk member
+    · exact flags.quorum_attester altair late true currentOk member
+  · rename_i notAltair
+    split at computed
+    · simp only [pure, Except.pure, Except.ok.injEq] at computed
+      exact .inl (computed ▸ rfl)
+    rename_i late
+    simp only [bind_ok_iff, liftAccessor_ok, getAttestingBalance] at computed
+    obtain ⟨previous, previousOk, current, currentOk, total, totalOk,
+      previousBalance, ⟨previousIndices, previousIndicesOk, previousBalanceOk⟩,
+      currentBalance, ⟨currentIndices, currentIndicesOk, currentBalanceOk⟩, weighed⟩ := computed
+    apply exists_sourceVote_of_weighJustification totalOk previousBalanceOk currentBalanceOk
+      (fun recent v member => ?_) large p (few total totalOk) oldBit weighed
+    have early : JustifiedEarly state := fun h => absurd h late
+    cases recent
+    · exact pending.quorum_attester (Nat.lt_of_not_le notAltair) early false
+        previousOk previousIndicesOk member
+    · exact pending.quorum_attester (Nat.lt_of_not_le notAltair) early true
+        currentOk currentIndicesOk member
+
 /-- A run from a target epoch through the next epoch keeps that target's committees. -/
 theorem RunKept.committeesKept_through_next_epoch {state after : BeaconState preset fork}
     (run : RunKept state after)
