@@ -364,6 +364,124 @@ private theorem passPendingConsolidations_departureQueues {fork : Fork}
       ((departureQueues_increase electra (liftAccessor_ok.mp raisedOk)).trans
         (departureQueues_decrease electra (liftAccessor_ok.mp loweredOk)))
 
+private theorem queueExcess_departureQueues {fork : Fork} {s t : BeaconState preset fork}
+    (electra : .pectra ≤ fork) {index : ValidatorIndex}
+    (ok : queueExcessActiveBalance s electra index = .ok t) :
+    departureQueues electra t = departureQueues electra s := by
+  simp only [queueExcessActiveBalance, bind_ok_iff] at ok
+  obtain ⟨_, _, ok⟩ := ok
+  split at ok
+  · simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at ok
+    obtain ⟨_, _, _, _, _, set, rfl⟩ := ok
+    obtain ⟨_, rfl⟩ := setBalance_ok set
+    rfl
+  · cases ok; rfl
+
+/-- Switching credentials cannot reset departure capacity. -/
+theorem switchToCompounding_departureQueues {fork : Fork} {s t : BeaconState preset fork}
+    (electra : .pectra ≤ fork) {index : ValidatorIndex}
+    (ok : switchToCompoundingValidator s electra index = .ok t) :
+    departureQueues electra t = departureQueues electra s := by
+  simp only [switchToCompoundingValidator, bind_ok_iff] at ok
+  obtain ⟨_, _, _, set, queued⟩ := ok
+  rw [queueExcess_departureQueues electra queued]
+  obtain ⟨_, rfl⟩ := setValidator_ok set
+  rfl
+
+/-- Effective-balance changes happen after scheduling and leave its queue fields unchanged. -/
+theorem effectiveBalances_departureQueues {fork : Fork} {s t : BeaconState preset fork}
+    (electra : .pectra ≤ fork) (ok : processEffectiveBalanceUpdates s = .ok t) :
+    departureQueues electra t = departureQueues electra s := by
+  refine foldlM_ok_invariant (fun t => departureQueues electra t = departureQueues electra s)
+    ?_ rfl ok
+  intro before index after kept updated
+  simp only [updateEffectiveBalance, bind_ok_iff, liftAccessor_ok] at updated
+  obtain ⟨_, _, _, _, _, _, set⟩ := updated
+  obtain ⟨_, rfl⟩ := setValidatorAt_ok set
+  exact kept
+
+private theorem preActivation_departureQueues {fork : Fork} {s t : BeaconState preset fork}
+    (electra : .pectra ≤ fork) {index : ValidatorIndex}
+    (ok : queuePreActivation s electra index = .ok t) :
+    departureQueues electra t = departureQueues electra s := by
+  simp only [queuePreActivation, bind_ok_iff, liftAccessor_ok, pure, Except.pure,
+    Except.ok.injEq] at ok
+  obtain ⟨_, _, _, _, _, _, _, setBalance, _, setValidator, rfl⟩ := ok
+  obtain ⟨_, rfl⟩ := setValidator_ok setValidator
+  obtain ⟨_, rfl⟩ := setBalance_ok setBalance
+  rfl
+
+private theorem compoundingExcess_departureQueues {fork : Fork} {s t : BeaconState preset fork}
+    (electra : .pectra ≤ fork) {index : Nat}
+    (ok : queueCompoundingExcess s electra index = .ok t) :
+    departureQueues electra t = departureQueues electra s := by
+  unfold queueCompoundingExcess at ok
+  split at ok
+  · split at ok
+    · exact queueExcess_departureQueues electra (liftAccessor_ok.mp ok)
+    · cases ok; rfl
+  · cases ok; rfl
+
+/-- Electra initializes its queues once; subsequent upgrade folds preserve all four fields. -/
+theorem electra_departure_initialization {s : BeaconState preset .dencun}
+    {t : BeaconState preset .pectra} (ok : upgradeToElectra config s = .ok t) :
+    ∃ first exitEpoch exitRate consolidationRate,
+      computeActivationExitEpoch preset (getCurrentEpoch s) = .ok first ∧
+      Uint64.addChecked (s.validators.data.foldl (init := first) fun latest validator =>
+        if validator.exitEpoch = FAR_FUTURE_EPOCH then latest else max latest validator.exitEpoch)
+        1 = .ok exitEpoch ∧
+      departureQueues (by decide) t = (exitEpoch, exitRate, first, consolidationRate) := by
+  simp only [upgradeToElectra, bind_ok_iff, liftAccessor_ok, liftArith, mapError_ok_iff] at ok
+  obtain ⟨first, firstOk, exitEpoch, exitOk, exitRate, _, consolidationRate, _, middle,
+    queued, compounded⟩ := ok
+  have one := foldlM_ok_invariant
+    (fun u => departureQueues (by decide) u = (exitEpoch, exitRate, first, consolidationRate))
+    (fun a i b kept step => (preActivation_departureQueues (by decide) step).trans kept)
+    rfl queued
+  have two := foldlM_ok_invariant
+    (fun u => departureQueues (by decide) u = (exitEpoch, exitRate, first, consolidationRate))
+    (fun a i b kept step => (compoundingExcess_departureQueues (by decide) step).trans kept)
+    one compounded
+  exact ⟨first, exitEpoch, exitRate, consolidationRate, firstOk, exitOk, two⟩
+
+/-- Both initialized departure queues open strictly after the crossing epoch. -/
+theorem electra_departure_epochs {s : BeaconState preset .dencun}
+    {t : BeaconState preset .pectra} (ok : upgradeToElectra config s = .ok t) :
+    (getCurrentEpoch s).toNat < (t.earliestExitEpoch (by decide)).toNat ∧
+    (getCurrentEpoch s).toNat < (t.earliestConsolidationEpoch (by decide)).toNat := by
+  obtain ⟨first, exitEpoch, exitRate, consolidationRate, firstOk, exitOk, queues⟩ :=
+    electra_departure_initialization ok
+  have firstEq := (computeActivationExitEpoch_ok_iff.mp firstOk).2
+  have latest : ∀ (vs : List Validator) (start : Epoch),
+      start.toNat ≤ (vs.foldl (fun latest validator =>
+        if validator.exitEpoch = FAR_FUTURE_EPOCH then latest else max latest validator.exitEpoch)
+        start).toNat := by
+    intro vs
+    induction vs with
+    | nil => intro start; exact Nat.le_refl _
+    | cons v rest ih =>
+      intro start
+      have restLe := ih (if v.exitEpoch = FAR_FUTURE_EPOCH then start
+        else max start v.exitEpoch)
+      simp only [List.foldl_cons]
+      apply Nat.le_trans _ restLe
+      split
+      · exact Nat.le_refl _
+      · rw [Uint64.toNat_max]; exact Nat.le_max_left _ _
+  have bound := latest s.validators.data.toList first
+  rw [Array.foldl_toList] at bound
+  have exitEq := (Uint64.addChecked_ok_iff.mp exitOk).2
+  have exitField := congrArg Prod.fst queues
+  have consolidationField := congrArg (fun q => q.2.2.1) queues
+  change t.earliestExitEpoch (by decide) = exitEpoch at exitField
+  change t.earliestConsolidationEpoch (by decide) = first at consolidationField
+  rw [exitField, consolidationField]
+  simp only [UInt64.reduceToNat] at exitEq
+  have firstBefore : (getCurrentEpoch s).toNat < first.toNat := by omega
+  refine ⟨firstBefore.trans_le ?_, firstBefore⟩
+  rw [exitEq]
+  exact bound.trans (Nat.le_add_right _ _)
+
 /-- Processing pending transfers never replenishes either departure queue. -/
 theorem processPendingConsolidations_departureQueues {fork : Fork}
     {s t : BeaconState preset fork} (electra : .pectra ≤ fork)
@@ -574,6 +692,59 @@ def consolidationRequestSites {fork : Fork} (config : Config)
     Except TransitionError (List (ForkedBeaconState preset)) := do
   return if ← consolidationRequestCalls config state electra request then [⟨fork, state⟩] else []
 
+/-- A request either preserves the scheduling queues or schedules its actual source. -/
+theorem consolidationRequest_cases {fork : Fork} {s t : BeaconState preset fork}
+    (electra : .pectra ≤ fork) {request : ConsolidationRequest}
+    (ok : processConsolidationRequest config s electra request = .ok t) :
+    departureQueues electra t = departureQueues electra s ∨
+      ∃ sourceIndex source targetIndex,
+        getValidator s sourceIndex = .ok source ∧
+        queueConsolidation config s electra sourceIndex source targetIndex = .ok t := by
+  unfold processConsolidationRequest at ok
+  simp only [bind, Except.bind, pure, Except.pure] at ok
+  repeat' split at ok
+  all_goals first
+    | (cases ok; exact .inl rfl)
+    | (cases ok)
+    | exact .inl (switchToCompounding_departureQueues electra (liftAccessor_ok.mp ok))
+    | exact .inr ⟨_, _, _, getValidator_eq_ok_iff.mpr
+        (getElem?_toNat_of_ofNatChecked (by assumption)), ok⟩
+
+set_option maxHeartbeats 800000 in
+/-- A request classified as not calling churn preserves both departure queues. -/
+theorem consolidationRequest_notCalled {fork : Fork} {s t : BeaconState preset fork}
+    (electra : .pectra ≤ fork) {request : ConsolidationRequest}
+    (ok : processConsolidationRequest config s electra request = .ok t)
+    (classified : consolidationRequestCalls config s electra request = .ok false) :
+    departureQueues electra t = departureQueues electra s := by
+  unfold processConsolidationRequest at ok
+  unfold consolidationRequestCalls at classified
+  simp only [bind, Except.bind, pure, Except.pure] at ok classified
+  repeat' split at ok
+  all_goals first
+    | (cases ok; rfl)
+    | (cases ok)
+    | exact switchToCompounding_departureQueues electra (liftAccessor_ok.mp ok)
+    | (simp_all only [↓reduceIte, Bool.false_eq_true]; cases classified)
+
+/-- A request classified as calling churn schedules its actual registry source. -/
+theorem consolidationRequest_called {fork : Fork} {s t : BeaconState preset fork}
+    (electra : .pectra ≤ fork) {request : ConsolidationRequest}
+    (ok : processConsolidationRequest config s electra request = .ok t)
+    (classified : consolidationRequestCalls config s electra request = .ok true) :
+    ∃ sourceIndex source targetIndex,
+      getValidator s sourceIndex = .ok source ∧
+      queueConsolidation config s electra sourceIndex source targetIndex = .ok t := by
+  unfold processConsolidationRequest at ok
+  unfold consolidationRequestCalls at classified
+  simp only [bind, Except.bind, pure, Except.pure] at ok classified
+  repeat' split at ok
+  all_goals first
+    | (solve | cases ok)
+    | exact ⟨_, _, _, getValidator_eq_ok_iff.mpr
+        (getElem?_toNat_of_ofNatChecked (by assumption)), ok⟩
+    | (simp_all only [↓reduceIte, Bool.false_eq_true]; cases classified)
+
 /-- A successful request always has a successful classification of its churn call. -/
 private theorem consolidationRequestCalls_result {fork : Fork} {s t : BeaconState preset fork}
     {electra : .pectra ≤ fork} {request : ConsolidationRequest}
@@ -619,6 +790,56 @@ private theorem consolidationRequestsSites_result {fork : Fork}
     refine ⟨(if called then [⟨fork, s⟩] else []) ++ sites, ?_⟩
     simp only [consolidationRequestsSites, consolidationRequestSites, classified, stepped,
       replayed, bind, Except.bind, pure, Except.pure]
+
+/-- Replayed consolidation requests produce linked calls bounded only at recorded sites. -/
+theorem consolidationRequestsSites_trace {fork : Fork} (electra : .pectra ≤ fork)
+    {s t : BeaconState preset fork} {sites : List (ForkedBeaconState preset)}
+    {requests : List ConsolidationRequest}
+    (ok : consolidationRequestsSites config electra s requests = .ok (t, sites))
+    (cap : Nat)
+    (rates : ∀ site ∈ sites, ∀ (_h : .pectra ≤ site.fork) (rate : Gwei),
+      getConsolidationChurnLimit config site.state = .ok rate → rate.toNat ≤ cap) :
+    ∃ calls, DepartureQueueTrace (s.earliestConsolidationEpoch electra)
+      (s.consolidationBalanceToConsume electra) calls (t.earliestConsolidationEpoch electra)
+      (t.consolidationBalanceToConsume electra) ∧ ∀ call ∈ calls, call.rate.toNat ≤ cap := by
+  induction requests generalizing s sites with
+  | nil => cases ok; exact ⟨[], .nil _ _, by simp⟩
+  | cons request rest ih =>
+    simp only [consolidationRequestsSites, bind_ok_iff, pure, Except.pure,
+      Except.ok.injEq, Prod.mk.injEq] at ok
+    obtain ⟨here, recorded, middle, stepped, ⟨last, later⟩, replayed, rfl, rfl⟩ := ok
+    obtain ⟨tailCalls, tail, tailRates⟩ := ih replayed
+      (fun site mem h rate computed => rates site (List.mem_append_right _ mem) h rate computed)
+    simp only [consolidationRequestSites, bind_ok_iff, pure, Except.pure,
+      Except.ok.injEq] at recorded
+    obtain ⟨called, classified, rfl⟩ := recorded
+    cases called with
+    | false =>
+      have kept := consolidationRequest_notCalled electra stepped classified
+      have epoch := congrArg (fun q => q.2.2.1) kept
+      have left := congrArg (fun q => q.2.2.2) kept
+      change middle.earliestConsolidationEpoch electra = s.earliestConsolidationEpoch electra
+        at epoch
+      change middle.consolidationBalanceToConsume electra =
+        s.consolidationBalanceToConsume electra at left
+      rw [epoch, left] at tail
+      exact ⟨tailCalls, tail, tailRates⟩
+    | true =>
+      obtain ⟨sourceIndex, source, targetIndex, _, scheduled⟩ :=
+        consolidationRequest_called electra stepped classified
+      obtain ⟨call, _, earliest, available, placed, left, rate, _⟩ :=
+        queueConsolidation_call electra scheduled
+      have head : DepartureQueueTrace (s.earliestConsolidationEpoch electra)
+          (s.consolidationBalanceToConsume electra) [call]
+          (middle.earliestConsolidationEpoch electra)
+          (middle.consolidationBalanceToConsume electra) := by
+        rw [← earliest, ← available, ← placed, ← left]
+        exact .cons call (.nil _ _)
+      refine ⟨call :: tailCalls, head.append tail, ?_⟩
+      intro c member
+      rcases List.mem_cons.mp member with rfl | member
+      · exact rates ⟨fork, s⟩ (by simp) electra c.rate rate
+      · exact tailRates c member
 
 /-- The block prefix reaches execution requests before any consolidation queue call. -/
 def blockConsolidationSites {fork : Fork} (config : Config) (checks : SignatureChecks)
