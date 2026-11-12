@@ -3179,6 +3179,8 @@ theorem Execution.safeAt_of_walk {Δ : ℕ} (sync : e.Synchronous Δ)
   have coverage := e.coveredOrViableAt_of_checked sync slots positive window
     (by omega) preGloas (admitted.of_le boundedNow) (oneBlock.of_le boundedNow)
     (votes.of_le boundedNow) fits (prompt.of_le boundedNow) (committees.of_le boundedNow)
+    { reads := fun w hw k bounded => follows.reads w hw k (bounded.trans boundedNow)
+      follows := fun w hw k bounded => follows.follows w hw k (bounded.trans boundedNow) }
     (‹FinalizedPrefix e horizon limit›.of_le boundedNow) (unique.of_le boundedNow)
     (pins.of_le boundedNow) (voted.of_le boundedNow) (included.of_le boundedNow) anchorStore
     sound anchorSlot anchored anchorOk anchorBoundary caller upToDate

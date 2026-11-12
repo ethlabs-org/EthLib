@@ -1692,7 +1692,11 @@ Each justified checkpoint after the anchor, up to the horizon, has an honest vot
 
 Slots last a positive time, so an honest validator signs one target in an epoch.
 
-The RANDAO buffer is longer than the lower seed lookahead plus one, as `CommitteesFollow` asks.
+The RANDAO buffer is longer than the lower seed lookahead plus two.
+
+This retains the target epoch's committee seed in a head of the following epoch.
+
+Each up-to-date honest head has the past committee reads that `HeadFollowsSupport` supplies.
 
 A target with an honest quorum is included within an epoch, Assumption 3.
 
@@ -1711,12 +1715,13 @@ theorem Execution.coveredOrViableAt_of_checked {Δ : ℕ} (sync : e.Synchronous 
     (slots : 0 < config.SLOT_DURATION_MS)
     (positive : 0 < preset.SLOTS_PER_EPOCH.toNat)
     (window : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
-    (retained : preset.MIN_SEED_LOOKAHEAD.toNat + 1 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
+    (retained : preset.MIN_SEED_LOOKAHEAD.toNat + 2 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
     (preGloas : fork < .glamsterdam)
     {time : ℕ} (admitted : BlocksAdmitted e 0 Δ time)
     (oneBlock : OneBlockPerRoot e time)
     (votes : Votes e.startTime time e) (fits : DelayFits fork config genesisTimeMs Δ)
     (prompt : Prompt e time) (committees : CommitteesFollow e time)
+    (follows : HeadFollowsSupport e time)
     {horizon anchorEpoch : Epoch} {margin : ℕ}
     (chain : FinalizedPrefix e horizon time)
     (unique : OneJustifiedPerEpoch e horizon time)
