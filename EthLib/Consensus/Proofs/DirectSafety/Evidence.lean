@@ -191,7 +191,7 @@ private theorem slashedKeptLaws :
     EpochFrameLaws (preset := preset) (fork := fork) fun s t => SlashedKept s t where
   refl := refl
   trans := trans
-  setValidatorAt := fun found set _ _ key flag _ _ => setValidatorAt found key flag set
+  setValidatorAt := fun set found key _ _ flag _ _ => setValidatorAt found key flag set
   registryUpdates := processRegistryUpdates
   increaseBalance := increaseBalance
   decreaseBalance := decreaseBalance

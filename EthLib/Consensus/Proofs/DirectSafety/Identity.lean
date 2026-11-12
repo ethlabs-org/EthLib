@@ -2,6 +2,7 @@ module
 
 public import EthLib.Consensus.Proofs.DirectSafety.Attestations
 public import EthLib.Consensus.Proofs.Transition.RegistryIdentity
+public import EthLib.Consensus.Proofs.Transition.ValidatorKeys
 public import EthLib.Consensus.Proofs.Transition.FfgStake
 
 /-!
@@ -38,24 +39,25 @@ def effectiveWeight {fork : Fork} (state : BeaconState preset fork) (key : BLSPu
 theorem genesis_unique {g : ForkedBeaconState preset}
     (genesis : Genesis (config := config) (checks := checks) g) : PubkeysDistinct g.state := by
   obtain ⟨_, _, _, ok⟩ := genesis
-  exact RegistryIdentity.genesis ok
+  exact (validatorKeys_prefix_and_distinct_of_genesis_chainSteps ok
+    (last := g) .refl).2
 
 theorem _root_.EthLib.Consensus.Run.unique {g a : ForkedBeaconState preset}
     (run : Run config checks g a)
     (initial : PubkeysDistinct g.state) : PubkeysDistinct a.state :=
-  (registryIdentity_of_chainSteps run.chainSteps).unique initial
+  (validatorKeys_prefix_and_distinct_of_chainSteps run.chainSteps).2 initial
 
 theorem _root_.EthLib.Consensus.Run.key_preserved {g a : ForkedBeaconState preset}
     (run : Run config checks g a)
     (i : Nat) (old : Validator) (found : g.state.validators.data[i]? = some old) :
     ∃ current, a.state.validators.data[i]? = some current ∧ current.pubkey = old.pubkey := by
-  have identity := registryIdentity_of_chainSteps run.chainSteps
+  have identity := (validatorKeys_prefix_and_distinct_of_chainSteps run.chainSteps).1
   obtain ⟨inside, oldEq⟩ := Array.getElem?_eq_some_iff.mp found
   have small : i < (validatorKeys g.state).length := by simpa [validatorKeys] using inside
   have lastSmall : i < a.state.validators.data.size := by
-    simpa [validatorKeys] using Nat.lt_of_lt_of_le small identity.kept.length_le
+    simpa [validatorKeys] using Nat.lt_of_lt_of_le small identity.length_le
   refine ⟨a.state.validators.data[i], by simp [lastSmall], ?_⟩
-  have same := identity.kept.getElem small
+  have same := identity.getElem small
   simpa [validatorKeys, oldEq] using same.symm
 
 private theorem key_preserved_from_member {g a before after : ForkedBeaconState preset}

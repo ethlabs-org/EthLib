@@ -75,6 +75,12 @@ The current fork version becomes the previous one, and the new one is that of th
 
 It never shrinks the registry.
 
+The public keys of the validators before it are a prefix of the public keys after it.
+
+When no two validators share a key before it, none share a key after it.
+
+A slashed flag that is set stays set.
+
 When each validator has one balance before it, each has one after it.
 
 When each validator may withdraw no earlier than it exits before it, the same holds after it.
