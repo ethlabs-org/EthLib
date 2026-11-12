@@ -2188,7 +2188,8 @@ theorem operations_exitTrace {fork : Fork} {s t : BeaconState preset fork}
   have lastEpoch := congrArg Prod.fst changesFrame
   have lastBalance := congrArg (fun q => q.2.1) changesFrame
   change deposited.earliestExitEpoch electra = attested.earliestExitEpoch electra at middleEpoch
-  change deposited.exitBalanceToConsume electra = attested.exitBalanceToConsume electra at middleBalance
+  change deposited.exitBalanceToConsume electra = attested.exitBalanceToConsume electra
+    at middleBalance
   change changed.earliestExitEpoch electra = exited.earliestExitEpoch electra at lastEpoch
   change changed.exitBalanceToConsume electra = exited.exitBalanceToConsume electra at lastBalance
   rw [middleEpoch, middleBalance] at threeTrace
@@ -2267,7 +2268,8 @@ theorem step_exitTrace {x y : ForkedBeaconState preset}
     have epoch := congrArg Prod.fst frame
     have balance := congrArg (fun q => q.2.1) frame
     change y.state.earliestExitEpoch targetElectra = advanced.earliestExitEpoch electra at epoch
-    change y.state.exitBalanceToConsume targetElectra = advanced.exitBalanceToConsume electra at balance
+    change y.state.exitBalanceToConsume targetElectra = advanced.exitBalanceToConsume electra
+      at balance
     rw [epoch, balance]
     exact ⟨calls, trace, rates⟩
   | block engine signed due ok =>
@@ -2805,6 +2807,385 @@ theorem blockConsolidationSites_result {fork : Fork}
       votedAttOk, depositedOk, exitedOk, changedOk, requestedOk, withdrawnOk,
       replayed, pure, Except.pure, bind, Except.bind]
   · exact ⟨[], by simp only [blockConsolidationSites, electra, ↓reduceDIte]; rfl⟩
+
+private theorem withdrawals_registry {fork : Fork} {s t : BeaconState preset fork}
+    (electra : .pectra ≤ fork) (early : fork < .glamsterdam)
+    {capella : .shapella ≤ fork} {payload : Until .glamsterdam fork (ExecutionPayload preset fork)}
+    (ok : processWithdrawals s capella payload = .ok t) : t.validators = s.validators := by
+  have notGloas : ¬ .glamsterdam ≤ fork := Nat.not_le_of_lt early
+  simp only [processWithdrawals, notGloas, ↓reduceDIte, bind_ok_iff, ensure_ok_iff,
+    liftAccessor_ok] at ok
+  obtain ⟨expected, _, _, _, applied⟩ := ok
+  simp only [applyExpectedWithdrawals, notGloas, electra, ↓reduceDIte, bind_ok_iff,
+    pure, Except.pure, Except.ok.injEq, exists_eq_left'] at applied
+  obtain ⟨withdrawn, paid, indexed, moved, swept⟩ := applied
+  have paidData : withdrawn.validators = s.validators := by
+    unfold applyWithdrawals at paid
+    rw [← Array.foldlM_toList] at paid
+    refine foldlM_ok_invariant (fun t => t.validators = s.validators) ?_ rfl paid
+    intro a withdrawal b kept stepped
+    simp only [applyWithdrawal, notGloas, false_and, ↓reduceDIte] at stepped
+    exact (decreaseBalance_validators stepped).trans kept
+  have movedData : indexed.validators = withdrawn.validators := by
+    unfold updateNextWithdrawalIndex at moved
+    split at moved
+    · simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at moved
+      obtain ⟨_, _, rfl⟩ := moved
+      rfl
+    · cases moved; rfl
+  have sweptData : t.validators = indexed.validators := by
+    simp only [updateNextWithdrawalValidatorIndex, bind_ok_iff] at swept
+    obtain ⟨_, _, swept⟩ := swept
+    split at swept
+    · cases swept
+    · cases swept; rfl
+  exact sweptData.trans (movedData.trans paidData)
+
+private theorem sync_registry {fork : Fork} {s t : BeaconState preset fork}
+    {altair : .altair ≤ fork} {aggregate : SyncAggregate preset}
+    (ok : processSyncAggregate config checks s altair aggregate = .ok t) :
+    t.validators = s.validators := by
+  unfold processSyncAggregate at ok
+  simp only [bind_ok_iff] at ok
+  obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, folded⟩ := ok
+  rw [← Array.foldlM_toList] at folded
+  refine foldlM_ok_invariant (fun t => t.validators = s.validators) ?_ rfl folded
+  intro a reward b kept stepped
+  unfold applySyncReward at stepped
+  split at stepped
+  · simp only [bind_ok_iff, liftAccessor_ok] at stepped
+    obtain ⟨_, raised, _, _, paid⟩ := stepped
+    exact (increaseBalance_validators paid).trans ((increaseBalance_validators raised).trans kept)
+  · exact (decreaseBalance_validators (liftAccessor_ok.mp stepped)).trans kept
+
+private theorem exitUpdate_consolidationFrame {fork : Fork} {s t : BeaconState preset fork}
+    (electra : .pectra ≤ fork) {amount : Gwei} {epoch : Epoch}
+    (ok : computeExitEpochAndUpdateChurn config s electra amount = .ok (t, epoch)) :
+    (departureQueues electra t).2.2 = (departureQueues electra s).2.2 := by
+  simp only [computeExitEpochAndUpdateChurn, bind_ok_iff, pure, Except.pure,
+    Except.ok.injEq, Prod.mk.injEq] at ok
+  obtain ⟨_, _, _, _, ⟨_, _⟩, _, rfl, _⟩ := ok
+  rfl
+
+private theorem initiateExit_consolidationFrame {fork : Fork} {s t : BeaconState preset fork}
+    (electra : .pectra ≤ fork) {index : ValidatorIndex}
+    (ok : initiateValidatorExit config s index = .ok t) :
+    (departureQueues electra t).2.2 = (departureQueues electra s).2.2 := by
+  obtain ⟨v, _, unchanged | ⟨_, queued, epoch, _, scheduled, _, set⟩⟩ :=
+    initiateValidatorExit_ok ok
+  · rw [unchanged.2]
+  · have called : computeExitEpochAndUpdateChurn config s electra v.effectiveBalance =
+        .ok (queued, epoch) := by simpa only [exitQueue, electra, ↓reduceDIte] using scheduled
+    obtain ⟨_, rfl⟩ := setValidator_ok set
+    change (departureQueues electra queued).2.2 = (departureQueues electra s).2.2
+    exact exitUpdate_consolidationFrame electra called
+
+private theorem slashing_consolidationFrame {fork : Fork} {s t : BeaconState preset fork}
+    (electra : .pectra ≤ fork) (early : fork < .glamsterdam)
+    {index : ValidatorIndex} {whistleblower : Option ValidatorIndex}
+    (ok : slashValidator config s index whistleblower = .ok t) :
+    (departureQueues electra t).2.2 = (departureQueues electra s).2.2 := by
+  obtain ⟨exited, initiated, frame⟩ := slashValidator_departureQueues electra early ok
+  exact (congrArg (fun q => q.2.2) frame).trans
+    (initiateExit_consolidationFrame electra initiated)
+
+private theorem proposerSlashing_consolidationFrame {fork : Fork}
+    {s t : BeaconState preset fork} (electra : .pectra ≤ fork) (early : fork < .glamsterdam)
+    {slashing : ProposerSlashing}
+    (ok : processProposerSlashing config checks s slashing = .ok t) :
+    (departureQueues electra t).2.2 = (departureQueues electra s).2.2 := by
+  simp only [processProposerSlashing, bind_ok_iff, ensure_ok_iff, liftAccessor_ok] at ok
+  obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, slashed⟩ := ok
+  exact slashing_consolidationFrame electra early slashed
+
+private theorem attesterSlashing_consolidationFrame {fork : Fork}
+    {s t : BeaconState preset fork} (electra : .pectra ≤ fork) (early : fork < .glamsterdam)
+    {slashing : AttesterSlashing preset fork}
+    (ok : processAttesterSlashing config checks s slashing = .ok t) :
+    (departureQueues electra t).2.2 = (departureQueues electra s).2.2 := by
+  simp only [processAttesterSlashing, bind_ok_iff, ensure_ok_iff] at ok
+  obtain ⟨_, _, _, _, _, _, _, _, _, _, ⟨folded, flag⟩, foldedOk, ok⟩ := ok
+  simp only [pure, Except.pure, Except.ok.injEq] at ok
+  obtain ⟨_, _, rfl⟩ := ok
+  refine foldlM_ok_invariant
+    (fun pair => (departureQueues electra pair.1).2.2 = (departureQueues electra s).2.2)
+    ?_ rfl foldedOk
+  intro ⟨a, firstFlag⟩ index ⟨b, lastFlag⟩ kept stepped
+  simp only [slashIfSlashable, bind_ok_iff] at stepped
+  obtain ⟨_, _, stepped⟩ := stepped
+  split at stepped
+  · simp only [bind_ok_iff, liftAccessor_ok, pure, Except.pure,
+      Except.ok.injEq, Prod.mk.injEq] at stepped
+    obtain ⟨_, slashed, rfl, _⟩ := stepped
+    exact (slashing_consolidationFrame electra early slashed).trans kept
+  · cases stepped; exact kept
+
+private theorem withdrawalRequest_consolidationFrame {fork : Fork}
+    {s t : BeaconState preset fork} (electra : .pectra ≤ fork) {request : WithdrawalRequest}
+    (ok : processWithdrawalRequest config s electra request = .ok t) :
+    (departureQueues electra t).2.2 = (departureQueues electra s).2.2 := by
+  rcases withdrawalRequest_cases ok with rfl | ⟨index, initiated⟩ | ⟨index, v, owed, paid⟩
+  · rfl
+  · exact initiateExit_consolidationFrame electra initiated
+  · simp only [requestPartialWithdrawal, bind_ok_iff, liftAccessor_ok] at paid
+    obtain ⟨_, _, _, _, paid⟩ := paid
+    split at paid
+    · simp only [bind_ok_iff, liftAccessor_ok, pure, Except.pure, Except.ok.injEq] at paid
+      obtain ⟨⟨queued, epoch⟩, called, _, _, _, _, rfl⟩ := paid
+      change (departureQueues electra queued).2.2 = (departureQueues electra s).2.2
+      exact exitUpdate_consolidationFrame electra called
+    · cases paid; rfl
+
+private theorem epoch_consolidationFrame {fork : Fork} {s t : BeaconState preset fork}
+    (electra : .pectra ≤ fork) (early : fork < .glamsterdam)
+    (ok : processEpoch config checks s = .ok t) :
+    (departureQueues electra t).2.2 = (departureQueues electra s).2.2 := by
+  have altair : .altair ≤ fork := Nat.le_trans (by decide) electra
+  have capella : .shapella ≤ fork := Nat.le_trans (by decide) electra
+  have notGloas : ¬ .glamsterdam ≤ fork := Nat.not_le_of_lt early
+  have before : fork < .hegota := Nat.lt_trans early (by decide)
+  simp only [processEpoch, altair, ↓reduceDIte, processEpochAltair, before, notGloas,
+    capella, bind_ok_iff, pure, Except.pure, Except.ok.injEq, exists_eq_left'] at ok
+  obtain ⟨justified, justifiedOk, scored, scoredOk, rewarded, rewardedOk, registered,
+    registeredOk, slashed, slashedOk, reset, resetOk, pending, pendingOk,
+    balanced, balancedOk, cleared, clearedOk, mixed, mixedOk, rooted, rootedOk,
+    synced, syncedOk, looked⟩ := ok
+  have head : departureQueues electra rewarded = departureQueues electra s :=
+    (rewards_departureQueues electra rewardedOk).trans
+      ((inactivity_departureQueues electra scoredOk).trans
+        (justification_departureQueues electra justifiedOk))
+  have registry : (departureQueues electra registered).2.2 =
+      (departureQueues electra rewarded).2.2 := by
+    simp only [processRegistryUpdates, electra, ↓reduceIte, bind_ok_iff] at registeredOk
+    obtain ⟨_, _, entries⟩ := registeredOk
+    refine foldlM_ok_invariant
+      (fun t => (departureQueues electra t).2.2 = (departureQueues electra rewarded).2.2)
+      ?_ rfl entries
+    intro a index b kept stepped
+    rcases registryEntry_departureQueues electra stepped with frame | ⟨_, initiated⟩
+    · exact (congrArg (fun q => q.2.2) frame).trans kept
+    · exact (initiateExit_consolidationFrame electra initiated).trans kept
+  have resetFrame : departureQueues electra reset = departureQueues electra slashed := by
+    unfold processEth1DataReset at resetOk
+    simp only [bind, Except.bind, pure, Except.pure] at resetOk
+    repeat' (split at resetOk <;> try cases resetOk)
+    all_goals rfl
+  have rootedFrame : departureQueues electra rooted = departureQueues electra mixed := by
+    unfold processHistoricalSummariesUpdate at rootedOk
+    simp only [bind, Except.bind, pure, Except.pure] at rootedOk
+    repeat' (split at rootedOk <;> try cases rootedOk)
+    all_goals rfl
+  have syncedFrame : departureQueues electra synced = departureQueues electra rooted := by
+    unfold processSyncCommitteeUpdates at syncedOk
+    simp only [bind, Except.bind, pure, Except.pure] at syncedOk
+    repeat' (split at syncedOk <;> try cases syncedOk)
+    all_goals rfl
+  have lookedFrame : departureQueues electra t = departureQueues electra synced := by
+    obtain ⟨_, looked, rfl⟩ := looked
+    split at looked
+    · simp only [liftAccessor_ok, processProposerLookahead, bind_ok_iff,
+        pure, Except.pure, Except.ok.injEq] at looked
+      obtain ⟨_, _, _, _, rfl⟩ := looked
+      rfl
+    · cases looked; rfl
+  have tail : departureQueues electra t = departureQueues electra registered := by
+    rw [lookedFrame, syncedFrame, rootedFrame]
+    obtain ⟨_, _, _, _, rfl⟩ := processSlashingsReset_eq clearedOk
+    obtain ⟨_, _, _, _, _, _, rfl⟩ := processRandaoMixesReset_eq mixedOk
+    change departureQueues electra balanced = departureQueues electra registered
+    rw [effectiveBalances_departureQueues electra balancedOk,
+      pendingBalances_departureQueues electra pendingOk, resetFrame,
+      slashingPenalties_departureQueues electra slashedOk]
+  exact (congrArg (fun q => q.2.2) tail).trans
+    (registry.trans (congrArg (fun q => q.2.2) head))
+
+/-- Both block queues cover departures at the consolidation sites of the concrete replay. -/
+theorem block_indexedTrace {fork : Fork} (electra : .pectra ≤ fork)
+    (early : fork < .glamsterdam) {engine : ExecutionEngine preset fork}
+    {s t : BeaconState preset fork} {block : BeaconBlock preset fork}
+    {sites : List (ForkedBeaconState preset)}
+    (ok : processBlock config checks engine s block = .ok t)
+    (recorded : blockConsolidationSites config checks engine s block = .ok sites)
+    (cap : Nat)
+    (rates : ∀ site ∈ sites, ∀ (_h : .pectra ≤ site.fork) (rate : Gwei),
+      getConsolidationChurnLimit config site.state = .ok rate → rate.toNat ≤ cap) :
+    ∃ exits consolidations : List IndexedDepartureCall,
+      DepartureCoverage s t (exits ++ consolidations) ∧
+      DepartureQueueTrace (s.earliestExitEpoch electra) (s.exitBalanceToConsume electra)
+        (exits.map (·.call)) (t.earliestExitEpoch electra) (t.exitBalanceToConsume electra) ∧
+      DepartureQueueTrace (s.earliestConsolidationEpoch electra)
+        (s.consolidationBalanceToConsume electra) (consolidations.map (·.call))
+        (t.earliestConsolidationEpoch electra) (t.consolidationBalanceToConsume electra) ∧
+      (∀ called ∈ exits,
+        called.call.rate.toNat ≤ config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat) ∧
+      (∀ called ∈ consolidations, called.call.rate.toNat ≤ cap) := by
+  have altair : .altair ≤ fork := Nat.le_trans (by decide) electra
+  have bellatrix : .bellatrix ≤ fork := Nat.le_trans (by decide) electra
+  have capella : .shapella ≤ fork := Nat.le_trans (by decide) electra
+  have before : fork < .hegota := Nat.lt_trans early (by decide)
+  have notGloas : ¬ .glamsterdam ≤ fork := Nat.not_le_of_lt early
+  simp only [processBlock, processBlockAltair, altair, bellatrix, before, notGloas,
+    ↓reduceDIte, pure_bind, bind_ok_iff] at ok
+  obtain ⟨headed, headedOk, executed, executedOk, revealed, revealedOk, voted, votedOk,
+    operated, operatedOk, syncedOk⟩ := ok
+  simp only [processOperations, notGloas, electra, ↓reduceDIte,
+    bind_ok_iff, ensure_ok_iff] at operatedOk
+  obtain ⟨expected, expectedOk, _, count, proposed, proposedOk, attested, attestedOk,
+    votedAtt, votedAttOk, deposited, depositedOk, exited, exitedOk, changed, changedOk,
+    requestsOk⟩ := operatedOk
+  have requestsLife := registryLifecycle_processExecutionRequests requestsOk
+  simp only [processExecutionRequests, bind_ok_iff] at requestsOk
+  obtain ⟨requested, requestedOk, withdrawn, withdrawnOk, consolidatedOk⟩ := requestsOk
+  obtain ⟨actualSites, replayed⟩ := consolidationRequestsSites_result
+    (by simpa only [← Array.foldlM_toList] using consolidatedOk)
+  have ensured : ensure ((block.body.deposits before).data.size = expected)
+      (TransitionError.wrongDepositCount (block.body.deposits before).data.size expected) =
+        .ok () := ensure_ok_iff.mpr count
+  -- Both traversals reach the same withdrawal output before recording consolidation sites.
+  have same : actualSites = sites := by
+    rw [blockConsolidationSites, dite_eq_left ⟨electra, early⟩] at recorded
+    simp only [headedOk, executedOk, revealedOk, votedOk, expectedOk, ensured,
+      proposedOk, attestedOk, votedAttOk, depositedOk, exitedOk, changedOk,
+      requestedOk, withdrawnOk, replayed, pure, Except.pure, bind, Except.bind,
+      Except.ok.injEq] at recorded
+    exact recorded
+  subst actualSites
+  rw [← Array.foldlM_toList] at proposedOk attestedOk votedAttOk depositedOk exitedOk
+  rw [← Array.foldlM_toList] at requestedOk withdrawnOk consolidatedOk
+  obtain ⟨first, firstCoverage, firstTrace, firstRates, firstLife, firstBalances⟩ :=
+    operationsPrefix_coverage electra early proposedOk attestedOk votedAttOk depositedOk
+      exitedOk changedOk
+  obtain ⟨exits, consolidations, covered, exitTrace, consolidationTrace,
+    exitRates, consolidationRates⟩ :=
+    executionRequests_coverage electra early requestedOk withdrawnOk consolidatedOk
+      replayed cap rates
+  have requestedFrame : departureQueues electra requested = departureQueues electra changed :=
+    foldlM_ok_invariant (fun t => departureQueues electra t = departureQueues electra changed)
+      (fun _ _ _ kept ok => (depositRequest_departureQueues electra ok).trans kept)
+      rfl requestedOk
+  have withdrawnFrame : (departureQueues electra withdrawn).2.2 =
+      (departureQueues electra requested).2.2 :=
+    foldlM_ok_invariant
+      (fun t => (departureQueues electra t).2.2 = (departureQueues electra requested).2.2)
+      (fun _ _ _ kept ok => (withdrawalRequest_consolidationFrame electra ok).trans kept)
+      rfl withdrawnOk
+  have operatedFrame : operated.earliestExitEpoch electra = withdrawn.earliestExitEpoch electra ∧
+      operated.exitBalanceToConsume electra = withdrawn.exitBalanceToConsume electra :=
+    foldlM_ok_invariant (fun t =>
+      t.earliestExitEpoch electra = withdrawn.earliestExitEpoch electra ∧
+      t.exitBalanceToConsume electra = withdrawn.exitBalanceToConsume electra)
+      (fun _ _ _ kept ok =>
+        let frame := consolidationRequest_exitFrame electra ok
+        ⟨frame.1.trans kept.1, frame.2.trans kept.2⟩) ⟨rfl, rfl⟩ consolidatedOk
+  have prefixFrame : (departureQueues electra changed).2.2 =
+      (departureQueues electra voted).2.2 := by
+    have one := foldlM_ok_invariant
+      (fun t => (departureQueues electra t).2.2 = (departureQueues electra voted).2.2)
+      (fun _ _ _ kept ok =>
+        (proposerSlashing_consolidationFrame electra early ok).trans kept) rfl proposedOk
+    have two := foldlM_ok_invariant
+      (fun t => (departureQueues electra t).2.2 = (departureQueues electra voted).2.2)
+      (fun _ _ _ kept ok =>
+        (attesterSlashing_consolidationFrame electra early ok).trans kept) one attestedOk
+    have three := foldlM_ok_invariant
+      (fun t => (departureQueues electra t).2.2 = (departureQueues electra voted).2.2)
+      (fun _ _ _ kept ok =>
+        (congrArg (fun q => q.2.2) (attestation_departureQueues electra early ok)).trans kept)
+      two votedAttOk
+    have four := foldlM_ok_invariant
+      (fun t => (departureQueues electra t).2.2 = (departureQueues electra voted).2.2)
+      (fun _ _ _ kept ok =>
+        (congrArg (fun q => q.2.2) (deposit_departureQueues electra ok)).trans kept)
+      three depositedOk
+    have five := foldlM_ok_invariant
+      (fun t => (departureQueues electra t).2.2 = (departureQueues electra voted).2.2)
+      (fun _ _ _ kept ok =>
+        (initiateExit_consolidationFrame electra (voluntaryExit_initiates ok)).trans kept)
+      four exitedOk
+    simp only [processBlsToExecutionChanges, capella, ↓reduceDIte,
+      ← Array.foldlM_toList] at changedOk
+    exact foldlM_ok_invariant
+      (fun t => (departureQueues electra t).2.2 = (departureQueues electra voted).2.2)
+      (fun _ _ _ kept ok =>
+        (congrArg (fun q => q.2.2) (credentials_departureQueues electra ok)).trans kept)
+      five changedOk
+  have headFrame : departureQueues electra voted = departureQueues electra s := by
+    have voteFrame := congrArg (departureQueues electra) (processEth1Data_eq votedOk).2.2
+    change departureQueues electra voted = departureQueues electra revealed at voteFrame
+    rw [voteFrame]
+    obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, rfl⟩ := processRandao_eq revealedOk
+    simp only [processBlockExecution, notGloas, capella, ↓reduceDIte,
+      bind_ok_iff] at executedOk
+    obtain ⟨middle, withdrawn, payload⟩ := executedOk
+    obtain ⟨_, _, _, rfl⟩ := processExecutionPayload_ok payload
+    change departureQueues electra middle = departureQueues electra s
+    rw [withdrawals_departureQueues electra early withdrawn]
+    obtain ⟨_, _, rfl⟩ := processBlockHeader_eq headedOk
+    rfl
+  have tailFrame := sync_departureQueues electra syncedOk
+  have operatedCoverage : DepartureCoverage voted operated
+      ((first ++ exits) ++ consolidations) := by
+    simpa only [List.append_assoc] using
+      firstCoverage.append_of_effectiveKept covered firstLife requestsLife firstBalances
+  have headData : voted.validators = s.validators := by
+    have voteData : voted.validators = revealed.validators := by
+      have eq := congrArg (·.validators) (processEth1Data_eq votedOk).2.2
+      exact eq
+    rw [voteData]
+    obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, rfl⟩ := processRandao_eq revealedOk
+    simp only [processBlockExecution, notGloas, capella, ↓reduceDIte,
+      bind_ok_iff] at executedOk
+    obtain ⟨middle, withdrawn, payload⟩ := executedOk
+    obtain ⟨_, _, _, rfl⟩ := processExecutionPayload_ok payload
+    change middle.validators = s.validators
+    rw [withdrawals_registry electra early withdrawn]
+    obtain ⟨_, _, rfl⟩ := processBlockHeader_eq headedOk
+    rfl
+  have tailData := sync_registry syncedOk
+  refine ⟨first ++ exits, consolidations, ?_, ?_, ?_, ?_, consolidationRates⟩
+  · intro i old next a b
+    apply operatedCoverage i old next
+    · simpa only [headData] using a
+    · simpa only [tailData] using b
+  · have requestedEpoch := congrArg Prod.fst requestedFrame
+    have requestedBalance := congrArg (fun q => q.2.1) requestedFrame
+    change requested.earliestExitEpoch electra = changed.earliestExitEpoch electra
+      at requestedEpoch
+    change requested.exitBalanceToConsume electra = changed.exitBalanceToConsume electra
+      at requestedBalance
+    rw [requestedEpoch, requestedBalance] at exitTrace
+    have linked := firstTrace.append exitTrace
+    have firstEpoch := congrArg Prod.fst headFrame
+    have firstBalance := congrArg (fun q => q.2.1) headFrame
+    have lastEpoch := congrArg Prod.fst tailFrame
+    have lastBalance := congrArg (fun q => q.2.1) tailFrame
+    change voted.earliestExitEpoch electra = s.earliestExitEpoch electra at firstEpoch
+    change voted.exitBalanceToConsume electra = s.exitBalanceToConsume electra at firstBalance
+    change t.earliestExitEpoch electra = operated.earliestExitEpoch electra at lastEpoch
+    change t.exitBalanceToConsume electra = operated.exitBalanceToConsume electra at lastBalance
+    rw [firstEpoch, firstBalance] at linked
+    rw [List.map_append, lastEpoch, lastBalance, operatedFrame.1, operatedFrame.2]
+    exact linked
+  · have initial := withdrawnFrame.trans
+      ((congrArg (fun q => q.2.2) requestedFrame).trans
+        (prefixFrame.trans (congrArg (fun q => q.2.2) headFrame)))
+    have firstEpoch := congrArg Prod.fst initial
+    have firstBalance := congrArg Prod.snd initial
+    have lastEpoch := congrArg (fun q => q.2.2.1) tailFrame
+    have lastBalance := congrArg (fun q => q.2.2.2) tailFrame
+    change withdrawn.earliestConsolidationEpoch electra = s.earliestConsolidationEpoch electra
+      at firstEpoch
+    change withdrawn.consolidationBalanceToConsume electra = s.consolidationBalanceToConsume electra
+      at firstBalance
+    change t.earliestConsolidationEpoch electra = operated.earliestConsolidationEpoch electra
+      at lastEpoch
+    change t.consolidationBalanceToConsume electra = operated.consolidationBalanceToConsume electra
+      at lastBalance
+    rw [firstEpoch, firstBalance] at consolidationTrace
+    rw [lastEpoch, lastBalance]
+    exact consolidationTrace
+  · intro called member
+    exact (List.mem_append.mp member).elim (firstRates called) (exitRates called)
 
 def _root_.EthLib.Consensus.Step.consolidationSites {x y : ForkedBeaconState preset}
     (step : Step config checks x y) : List (ForkedBeaconState preset) :=
