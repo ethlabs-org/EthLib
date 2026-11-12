@@ -1617,6 +1617,107 @@ private theorem callInvariant_boundary {u : ValidatorIndex} {n : ℕ}
   · intro epoch epochOk rootOk
     exact False.elim (old ((epochSame epochOk) ▸ rootOk))
 
+omit [DecidablePred (· ∈ J)] in
+/-- A successful epoch-start test identifies the rounded boundary with the slot. -/
+private theorem call_boundary_eq {slot : Slot}
+    (atStart : isStartSlotAtEpoch preset slot = .ok true) :
+    computeStartSlotAtEpoch preset (computeEpochAtSlot preset slot) = .ok slot := by
+  have boundary := computeStartSlotAtEpoch_computeEpochAtSlot (preset := preset) slot
+  unfold isStartSlotAtEpoch computeSlotsSinceEpochStart at atStart
+  rw [boundary] at atStart
+  simp only [Except.mapError, bind, Except.bind, pure, Except.pure,
+    Except.ok.injEq, decide_eq_true_eq] at atStart
+  have h := (computeStartSlotAtEpoch_ok_iff.mp boundary).2
+  have le : (slot / preset.SLOTS_PER_EPOCH * preset.SLOTS_PER_EPOCH).toNat ≤ slot.toNat := by
+    rw [h, computeEpochAtSlot, UInt64.toNat_div]
+    exact Nat.div_mul_le_self _ _
+  have zero := congrArg UInt64.toNat atStart
+  simp only [UInt64.toNat_sub, UInt64.toNat_zero] at zero
+  have upper := slot.toNat_lt
+  have lower := (slot / preset.SLOTS_PER_EPOCH * preset.SLOTS_PER_EPOCH).toNat_lt
+  have same : slot / preset.SLOTS_PER_EPOCH * preset.SLOTS_PER_EPOCH = slot := by
+    apply UInt64.toNat_inj.mp
+    omega
+  exact boundary.trans (congrArg Except.ok same)
+
+omit [DecidablePred (· ∈ J)] in
+/-- A successful call returns a known block, including when it resets without walking. -/
+private theorem Execution.call_root_known {anchor : Store preset fork}
+    (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (sound : Invariant anchorState) (start : ∀ w ∈ J, e.start w = anchor)
+    (positive : 0 < preset.SLOTS_PER_EPOCH.toNat)
+    (window : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
+    {u : ValidatorIndex} (caller : u ∈ J) {n : ℕ}
+    (nonzero : ∀ (root : Root) (block : BeaconBlock preset fork),
+      ((e.world n).state u).blocks[root]? = some block →
+      block.stateRoot ≠ Vector.replicate 32 0)
+    (lower : ((e.world n).state u).ParentsBelow)
+    {fcr after : FastConfirmationStore}
+    (called : ((e.world n).state u).onFastConfirmation config fcr = .ok after) :
+    ∃ epoch, ((e.world n).state u).getBlockEpoch after.confirmedRoot = .ok epoch := by
+  have ofBlock {root : Root} {block : BeaconBlock preset fork}
+      (found : ((e.world n).state u).block root = .ok block) :
+      ∃ epoch, ((e.world n).state u).getBlockEpoch root = .ok epoch := by
+    exact ⟨computeEpochAtSlot preset block.slot, by
+      simp [Store.getBlockEpoch, found, bind, Except.bind, pure, Except.pure]⟩
+  obtain ⟨head, slot, root, headOk, slotOk, _, _, _, _, _, _, selected, result⟩ :=
+    Store.onFastConfirmation_checked lower called
+  rcases result with same | ⟨_, checked, _⟩
+  · rw [same]
+    obtain ⟨base, baseCase, selected⟩ := selected
+    rcases selected with ⟨rfl, _⟩ | ⟨rfl, _, ⟨block, _, found, _⟩, _⟩
+    · rcases baseCase with ⟨rfl, ⟨epoch, blockEpoch, _, known, _⟩, _⟩ | ⟨rfl, _⟩
+      · exact ⟨blockEpoch, known⟩
+      · have epochOk : ((e.world n).state u).getCurrentStoreEpoch config =
+            .ok (computeEpochAtSlot preset slot) := by
+          simp [Store.getCurrentStoreEpoch, slotOk, bind, Except.bind, pure, Except.pure]
+        rcases e.finalizedCheckpoint_eq_or_blockEpoch_add_two_le positive window anchored sound
+          caller (start u caller) nonzero epochOk with same | ⟨epoch, known, _⟩
+        · obtain ⟨anchorRoot, _, known, _, _, final, _⟩ := getForkchoiceStore_anchor anchored
+          have known : ((e.world n).state u).blocks[anchorRoot]? = some anchorBlock :=
+            e.blocks_of_le (Nat.zero_le n) (by
+              change (e.start u).blocks[anchorRoot]? = some anchorBlock
+              simpa only [start u caller] using known)
+          rw [same, final]
+          exact ofBlock (Store.block_ok_iff.mpr known)
+        · exact ⟨epoch, known⟩
+    · exact ofBlock found
+  · obtain ⟨_, _, epoch, _, _, _, known, _⟩ := checked
+    exact ⟨epoch, known⟩
+
+omit [DecidablePred (· ∈ J)] in
+/-- The epoch-start test is total, and is false exactly away from the rounded boundary. -/
+private theorem call_not_boundary {slot : Slot}
+    (notStart : ¬ isStartSlotAtEpoch preset slot = .ok true) :
+    isStartSlotAtEpoch preset slot = .ok false := by
+  simp only [isStartSlotAtEpoch, computeSlotsSinceEpochStart,
+    computeStartSlotAtEpoch_computeEpochAtSlot, Except.mapError, bind, Except.bind,
+    pure, Except.pure, Except.ok.injEq, decide_eq_true_eq] at notStart ⊢
+  simp [notStart]
+
+omit [DecidablePred (· ∈ J)] in
+/-- A slot immediately before an epoch boundary is not itself a boundary. -/
+private theorem call_previous_not_boundary {slot previous : Slot}
+    (long : 1 < preset.SLOTS_PER_EPOCH)
+    (nextOk : addChecked previous 1 = .ok slot)
+    (boundary : isStartSlotAtEpoch preset slot = .ok true) :
+    isStartSlotAtEpoch preset previous = .ok false := by
+  apply call_not_boundary
+  intro oldBoundary
+  have now := (computeStartSlotAtEpoch_ok_iff.mp (call_boundary_eq boundary)).2
+  have old := (computeStartSlotAtEpoch_ok_iff.mp (call_boundary_eq oldBoundary)).2
+  have sum := (addChecked_ok_iff.mp nextOk).2
+  have longNat := UInt64.lt_iff_toNat_lt.mp long
+  have dividesNow : preset.SLOTS_PER_EPOCH.toNat ∣ slot.toNat := by rw [now]; exact dvd_mul_left _ _
+  have dividesOld : preset.SLOTS_PER_EPOCH.toNat ∣ previous.toNat := by rw [old]; exact dvd_mul_left _ _
+  have dividesOne := Nat.dvd_sub dividesNow dividesOld
+  have diff : slot.toNat - previous.toNat = 1 := by
+    simpa using congrArg (fun x => x - previous.toNat) sum
+  rw [diff] at dividesOne
+  have := Nat.le_of_dvd (by decide : 0 < 1) dividesOne
+  norm_num at longNat
+  omega
+
 /-- Step 8, one call: the block that a call stores keeps `CallInvariant`.
 
 Each earlier call of the run keeps it, which is the induction hypothesis.
@@ -1729,6 +1830,274 @@ theorem Execution.callInvariant_step {Δ : ℕ} (sync : e.Synchronous Δ)
       CallAt e u events (getFastConfirmationStore anchor) i' n' fcr' after' →
       CallInvariant e margin limit anchor.finalizedCheckpoint.root u n' after'.confirmedRoot) :
     CallInvariant e margin limit anchor.finalizedCheckpoint.root u n after.confirmedRoot := by
+  have positiveSlots : 0 < preset.SLOTS_PER_EPOCH := UInt64.lt_trans (by decide) long
+  have positiveSlotsNat := UInt64.lt_iff_toNat_lt.mp positiveSlots
+  have member : n ∈ events := List.mem_of_getElem? calls.1
+  obtain ⟨slot, begin, slotOk, slotIndex, beginOk, atSlot⟩ := atSlots i n calls.1
+  have epochOk : ((e.world n).state u).getCurrentStoreEpoch config =
+      .ok (computeEpochAtSlot preset slot) := by
+    simp [Store.getCurrentStoreEpoch, slotOk, bind, Except.bind, pure, Except.pure]
+  have forward := fun k => e.forwardReachable
+    (fun w hw => (start w hw) ▸ Store.ForwardReachable.anchor anchored) k u caller
+  have anchorInvariant := e.callInvariant_anchor anchored start positiveSlots caller slotOk beginOk
+    (margin := margin) (limit := limit)
+  -- The finalized case is either the anchor or too old to carry historical obligations.
+  have finalInvariant : CallInvariant e margin limit anchor.finalizedCheckpoint.root u n
+      ((e.world n).state u).finalizedCheckpoint.root := by
+    by_cases same : ((e.world n).state u).finalizedCheckpoint = anchor.finalizedCheckpoint
+    · simpa only [same] using anchorInvariant
+    apply callInvariant_old_finalized fits slotOk beginOk atSlot
+      (e.safeAt_finalized sync positiveSlotsNat window preGloas oneBlock admitted anchored sound
+        start chain caller epochOk (fun w hw k _ => nonzero w hw k) inHorizon)
+    intro epoch currentOk
+    exact (e.finalizedCheckpoint_eq_or_blockEpoch_add_two_le positiveSlotsNat window anchored
+      sound caller (start u caller) (nonzero u caller n) currentOk).resolve_left same
+  -- Consecutive calls supply the old root's safety from the current slot onward.
+  have carriedSafe : ∀ time, (e.world n).time ≤ time → time ≤ limit →
+      SafeAt e time fcr.confirmedRoot := by
+    cases i with
+    | zero =>
+      have initial : fcr = getFastConfirmationStore anchor := by
+        simpa [pure, Except.pure] using calls.2.1.symm
+      subst fcr
+      exact fun time _ _ => e.safeAt_anchor anchored start time
+    | succ j =>
+      obtain ⟨m, before, previous⟩ := callAt_previous calls
+      obtain ⟨oldSlot, oldTime, oldSlotOk, oldIndex, oldTimeOk, atOldSlot⟩ :=
+        atSlots j m previous.1
+      have nextOk := (call_slots_order fits (by omega : slot.toNat = oldSlot.toNat + 1)
+        oldTimeOk beginOk atOldSlot atSlot).1
+      have inv := earlier j (Nat.lt_succ_self j) m before fcr previous
+      intro time afterCall bounded
+      exact inv.1 oldSlot slot begin oldSlotOk nextOk beginOk time (by omega) bounded
+  have carriedInvariant : CallInvariant e margin limit anchor.finalizedCheckpoint.root u n
+      fcr.confirmedRoot := by
+    cases i with
+    | zero =>
+      have initial : fcr = getFastConfirmationStore anchor := by
+        simpa [pure, Except.pure] using calls.2.1.symm
+      simpa only [initial, getFastConfirmationStore] using anchorInvariant
+    | succ j =>
+      obtain ⟨m, before, previous⟩ := callAt_previous calls
+      obtain ⟨oldSlot, oldTime, oldSlotOk, oldIndex, oldTimeOk, atOldSlot⟩ :=
+        atSlots j m previous.1
+      have sum : slot.toNat = oldSlot.toNat + 1 := by omega
+      obtain ⟨nextOk, eventLt, _⟩ := call_slots_order fits sum oldTimeOk beginOk atOldSlot atSlot
+      have inv := earlier j (Nat.lt_succ_self j) m before fcr previous
+      have known := e.call_root_known anchored sound start positiveSlotsNat window caller
+        (nonzero u caller m) (lower m (List.mem_of_getElem? previous.1)) previous.2.2
+      by_cases boundary : isStartSlotAtEpoch preset slot = .ok true
+      · have boundaryOk := call_boundary_eq boundary
+        apply callInvariant_boundary slotOk beginOk boundaryOk atSlot carriedSafe ?_ fits
+        intro rootOk
+        obtain ⟨rootEpoch, oldRootOk⟩ := known
+        have nowRootOk := e.getBlockEpoch_of_le eventLt.le oldRootOk
+        have same : rootEpoch = computeEpochAtSlot preset slot :=
+          Except.ok.inj (nowRootOk.symm.trans rootOk)
+        unfold Store.getBlockEpoch at oldRootOk
+        obtain ⟨block, found, blockEpoch⟩ := bind_ok_iff.mp oldRootOk
+        have blockEpoch : computeEpochAtSlot preset block.slot = computeEpochAtSlot preset slot :=
+          (Except.ok.inj blockEpoch).trans same
+        obtain ⟨current, currentOk, blocks, _⟩ :=
+          (forward m).slots_le_current slots (UInt64.le_of_eq anchorSlot)
+        have currentEq : current = oldSlot := Except.ok.inj (currentOk.symm.trans oldSlotOk)
+        subst current
+        have blockLe := UInt64.le_iff_toNat_le.mp
+          (blocks _ _ (Store.block_ok_iff.mp found))
+        have boundaryNat := (computeStartSlotAtEpoch_ok_iff.mp boundaryOk).2
+        have blockEpochNat := congrArg UInt64.toNat blockEpoch
+        simp only [computeEpochAtSlot, UInt64.toNat_div] at blockEpochNat boundaryNat
+        have blockLower := Nat.div_mul_le_self block.slot.toNat preset.SLOTS_PER_EPOCH.toNat
+        rw [blockEpochNat] at blockLower
+        omega
+      · apply e.callInvariant_carried_inside eventLt.le inv ?_ known carriedSafe fits
+          slotOk beginOk atSlot
+        intro epoch currentOk
+        have notMod : ¬ slot % preset.SLOTS_PER_EPOCH = 0 := by
+          intro modZero
+          apply boundary
+          have rounded : slot / preset.SLOTS_PER_EPOCH * preset.SLOTS_PER_EPOCH = slot := by
+            apply UInt64.toNat_inj.mp
+            have h := (computeStartSlotAtEpoch_ok_iff.mp
+              (computeStartSlotAtEpoch_computeEpochAtSlot (preset := preset) slot)).2
+            have modNat := congrArg UInt64.toNat modZero
+            simp only [UInt64.toNat_mod, UInt64.toNat_zero] at modNat
+            rw [h, computeEpochAtSlot, UInt64.toNat_div]
+            exact Nat.div_mul_cancel (Nat.dvd_of_mod_eq_zero modNat)
+          simp [isStartSlotAtEpoch, computeSlotsSinceEpochStart,
+            computeStartSlotAtEpoch_computeEpochAtSlot, rounded, Except.mapError,
+            bind, Except.bind, pure, Except.pure]
+        have sameEpoch : computeEpochAtSlot preset slot = computeEpochAtSlot preset oldSlot := by
+          apply UInt64.toNat_inj.mp
+          exact nextSlot_epoch_of_inside sum notMod
+        have epochSame : epoch = computeEpochAtSlot preset slot :=
+          Except.ok.inj (currentOk.symm.trans epochOk)
+        simp [Store.getCurrentStoreEpoch, oldSlotOk, epochSame, sameEpoch,
+          bind, Except.bind, pure, Except.pure]
+  have voted := e.justifiedByHonestVote anchored sound positiveSlotsNat window ring preGloas
+    nonzero start (fun w hw k state counts _ upper => large w hw k state counts upper)
+    byzantine positive enough
+  obtain ⟨head, readSlot, selectedStart, headOk, readSlotOk, previousHeadEq, currentHeadEq,
+    recordedNext, keptNext, atBoundary, insideEpoch, selection, result⟩ :=
+    Store.onFastConfirmation_checked (lower n member) calls.2.2
+  have sameSlot : readSlot = slot := Except.ok.inj (readSlotOk.symm.trans slotOk)
+  subst readSlot
+  have observedSafe (boundary : isStartSlotAtEpoch preset slot = .ok true)
+      {observedBlock : BeaconBlock preset fork}
+      (found : ((e.world n).state u).block after.currentEpochObservedJustifiedCheckpoint.root =
+        .ok observedBlock)
+      (age : addChecked (computeEpochAtSlot preset observedBlock.slot) 1 =
+        .ok (computeEpochAtSlot preset slot)) :
+      ∀ time, (e.world n).time ≤ time → time ≤ limit →
+        SafeAt e time after.currentEpochObservedJustifiedCheckpoint.root := by
+    have boundaryOk := call_boundary_eq boundary
+    have nextInside {next : Slot} (nextOk : addChecked slot 1 = .ok next) :
+        isStartSlotAtEpoch preset next = .ok false := by
+      apply call_not_boundary
+      intro nextBoundary
+      have previousFalse := call_previous_not_boundary long nextOk nextBoundary
+      rw [boundary] at previousFalse
+      cases Except.ok.inj previousFalse
+    have hasNext : ∃ next, addChecked slot 1 = .ok next := by
+      have run := calls.2.2
+      unfold Store.onFastConfirmation at run
+      simp only [bind_ok_iff] at run
+      obtain ⟨_, _, updated, updatedOk, _⟩ := run
+      unfold Store.updateFastConfirmationVariables at updatedOk
+      simp only [bind_ok_iff] at updatedOk
+      obtain ⟨s, sOk, next, nextOk, _⟩ := updatedOk
+      have same : s = slot := Except.ok.inj (sOk.symm.trans slotOk)
+      exact ⟨next, same ▸ mapError_ok_iff.mp nextOk⟩
+    obtain ⟨next, nextOk⟩ := hasNext
+    have observedEq : after.currentEpochObservedJustifiedCheckpoint =
+        fcr.previousEpochGreatestUnrealizedCheckpoint :=
+      (atBoundary boundary).1.trans (keptNext next nextOk (nextInside nextOk))
+    cases i with
+    | zero =>
+      have initial : fcr = getFastConfirmationStore anchor := by
+        simpa [pure, Except.pure] using calls.2.1.symm
+      rw [observedEq, initial]
+      exact fun time _ _ => e.safeAt_anchor anchored start time
+    | succ j =>
+      obtain ⟨m, before, previous⟩ := callAt_previous calls
+      obtain ⟨oldSlot, oldTime, oldSlotOk, oldIndex, oldTimeOk, atOldSlot⟩ :=
+        atSlots j m previous.1
+      have sum : slot.toNat = oldSlot.toNat + 1 := by omega
+      obtain ⟨nextOk', eventLt, delayed⟩ := call_slots_order fits sum oldTimeOk beginOk atOldSlot atSlot
+      obtain ⟨_, s, _, _, sOk, _, _, recorded, _⟩ :=
+        Store.onFastConfirmation_checked (lower m (List.mem_of_getElem? previous.1)) previous.2.2
+      have same : s = oldSlot := Except.ok.inj (sOk.symm.trans oldSlotOk)
+      subst s
+      have recordedEq := recorded slot nextOk' boundary
+      rw [recordedEq] at observedEq
+      have oldEpochOk : ((e.world m).state u).getCurrentStoreEpoch config =
+          .ok (computeEpochAtSlot preset oldSlot) := by
+        simp [Store.getCurrentStoreEpoch, oldSlotOk, bind, Except.bind, pure, Except.pure]
+      have epochNext : addChecked (computeEpochAtSlot preset oldSlot) 1 =
+          .ok (computeEpochAtSlot preset slot) := by
+        have boundaryNat := (computeStartSlotAtEpoch_ok_iff.mp boundaryOk).2
+        have modZero : slot % preset.SLOTS_PER_EPOCH = 0 := by
+          apply UInt64.toNat_inj.mp
+          simp only [UInt64.toNat_mod, UInt64.toNat_zero]
+          rw [boundaryNat]
+          exact Nat.mul_mod_left _ _
+        have nextEpoch := nextSlot_epoch_of_boundary sum modZero
+        apply addChecked_ok_iff.mpr
+        constructor
+        · have := (computeEpochAtSlot preset slot).toNat_lt
+          simpa only [computeEpochAtSlot, UInt64.toNat_div, UInt64.toNat_one, nextEpoch] using this
+        · simpa only [computeEpochAtSlot, UInt64.toNat_div, UInt64.toNat_one] using nextEpoch
+      rw [observedEq] at found ⊢
+      exact e.safeAt_observed sync positiveSlotsNat window slots votes fits prompt preGloas
+        oneBlock admitted anchored sound start chain unique voted caller delayed.le oldEpochOk
+        epochOk epochNext slotOk boundary beginOk atSlot found age
+        (fun w hw k _ => nonzero w hw k) inHorizon
+  have observedInvariant (boundary : isStartSlotAtEpoch preset slot = .ok true)
+      {observedBlock : BeaconBlock preset fork}
+      (found : ((e.world n).state u).block after.currentEpochObservedJustifiedCheckpoint.root =
+        .ok observedBlock)
+      (age : addChecked (computeEpochAtSlot preset observedBlock.slot) 1 =
+        .ok (computeEpochAtSlot preset slot)) :
+      CallInvariant e margin limit anchor.finalizedCheckpoint.root u n
+        after.currentEpochObservedJustifiedCheckpoint.root := by
+    apply callInvariant_boundary slotOk beginOk (call_boundary_eq boundary) atSlot
+      (observedSafe boundary found age) ?_ fits
+    intro rootEpoch
+    have same : computeEpochAtSlot preset observedBlock.slot = computeEpochAtSlot preset slot := by
+      simpa [Store.getBlockEpoch, found, bind, Except.bind, pure, Except.pure] using rootEpoch
+    have sum := (addChecked_ok_iff.mp age).2
+    rw [same] at sum
+    norm_num at sum
+  rcases result with same | ⟨strict, checked, balanceSource, walk, later, sourceOk,
+    walked, confirmedAll⟩
+  · rw [same]
+    obtain ⟨base, baseCase, selected⟩ := selection
+    rcases selected with ⟨rfl, _⟩ | ⟨rfl, boundary, ⟨block, epoch, found, currentOk, age⟩, _⟩
+    · rcases baseCase with ⟨rfl, _⟩ | ⟨rfl, _⟩
+      · exact carriedInvariant
+      · exact finalInvariant
+    · have sameEpoch : epoch = computeEpochAtSlot preset slot :=
+        Except.ok.inj (currentOk.symm.trans epochOk)
+      exact observedInvariant boundary found (sameEpoch ▸ age)
+  -- Only a strict walk from the selected start consumes the rule bounds.
+  obtain ⟨weights, slack, committeeByzantine, remaining, late⟩ := bounds.walked i n fcr after
+    head slot selectedStart balanceSource walk later calls headOk slotOk selection strict
+    checked sourceOk walked confirmedAll
+  have targetVotes : ∀ s, ((e.world n).state u).getCurrentSlot config = .ok s →
+      isStartSlotAtEpoch preset s = .ok false → HonestTargetVotes e margin u n head.root := by
+    intro s sOk inside
+    have same : s = slot := Except.ok.inj (sOk.symm.trans slotOk)
+    subst s
+    exact e.call_targetVotes anchored start sound slots committees maxAligned increment caller
+      headOk slotOk (fun state first last participants => committeeByzantine state first last
+        participants inside) (fun state first last participants total soFar =>
+        remaining state first last participants total soFar inside)
+  have startFacts : CallInvariant e margin limit anchor.finalizedCheckpoint.root u n selectedStart ∧
+      (∀ time, (e.world n).time ≤ time → time ≤ limit → SafeAt e time selectedStart) := by
+    obtain ⟨base, baseCase, selected⟩ := selection
+    rcases selected with ⟨rfl, _⟩ | ⟨rfl, boundary, ⟨block, epoch, found, currentOk, age⟩, _⟩
+    · rcases baseCase with ⟨rfl, _⟩ | ⟨rfl, _⟩
+      · exact ⟨carriedInvariant, carriedSafe⟩
+      · have same := e.finalizedCheckpoint_eq_of_checked positiveSlotsNat window anchored sound
+          caller (start u caller) (nonzero u caller n) checked
+        rw [same]
+        exact ⟨anchorInvariant, fun time _ _ => e.safeAt_anchor anchored start time⟩
+    · have sameEpoch : epoch = computeEpochAtSlot preset slot :=
+        Except.ok.inj (currentOk.symm.trans epochOk)
+      exact ⟨observedInvariant boundary found (sameEpoch ▸ age),
+        observedSafe boundary found (sameEpoch ▸ age)⟩
+  obtain ⟨checkedEpoch, checkedSlot, rootEpoch, startEpoch, checkedEpochOk, checkedSlotOk,
+    rootEpochOk, startEpochOk, recent, checkedCases⟩ := checked
+  have epochSame : checkedEpoch = computeEpochAtSlot preset slot :=
+    Except.ok.inj (checkedEpochOk.symm.trans epochOk)
+  subst checkedEpoch
+  have slotSame : checkedSlot = slot := Except.ok.inj (checkedSlotOk.symm.trans slotOk)
+  subst checkedSlot
+  obtain ⟨historical, historicalEpoch, epochStart, epochStartTime, startBelow, historicalOk,
+    historicalRecent, epochStartOk, epochStartTimeOk, historicalSafe⟩ :=
+    startFacts.1.2.1 _ _ epochOk startEpochOk recent
+  have previousHead : after.previousSlotHead = anchor.finalizedCheckpoint.root ∨
+      ∃ k < n, ∃ previous previousSlot,
+        UpToDate config checks sources (e.world k).time ((e.world k).view u) ((e.world k).state u) ∧
+        ((e.world k).state u).getHead config = .ok previous ∧
+        previous.root = after.previousSlotHead ∧
+        ((e.world k).state u).getCurrentSlot config = .ok previousSlot ∧
+        addChecked previousSlot 1 = .ok slot := by
+    rw [previousHeadEq]
+    cases i with
+    | zero =>
+      have initial : fcr = getFastConfirmationStore anchor := by
+        simpa [pure, Except.pure] using calls.2.1.symm
+      exact Or.inl (by simp [initial, getFastConfirmationStore])
+    | succ j =>
+      obtain ⟨m, before, previous⟩ := callAt_previous calls
+      have prevMem := List.mem_of_getElem? previous.1
+      obtain ⟨oldSlot, oldTime, oldSlotOk, oldIndex, oldTimeOk, atOldSlot⟩ := atSlots j m previous.1
+      obtain ⟨nextOk, eventLt, _⟩ := call_slots_order fits (by omega) oldTimeOk beginOk atOldSlot atSlot
+      obtain ⟨oldHead, _, _, oldHeadOk, _, _, oldHeadEq, _⟩ :=
+        Store.onFastConfirmation_checked (lower m prevMem) previous.2.2
+      exact Or.inr ⟨m, eventLt, oldHead, oldSlot, upToDate m prevMem, oldHeadOk,
+        oldHeadEq.symm, oldSlotOk, nextOk⟩
   sorry
 
 /-- Theorem 1, safety: the block that the rule stores is safe from the start of the next slot.
