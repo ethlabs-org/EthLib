@@ -1153,7 +1153,7 @@ private theorem walk_source_ancestor {store : Store preset fork}
       ⟨state, pulled, stored, processed, same⟩
     · exact .inl (by rw [old]; exact UInt64.le_refl _)
     · exact same ▸ (walk_pulled_checkpoint_ancestor reachable sound before positive window
-        aligned lower nonzero child stored processed).2.1
+        aligned nonzero child stored processed).2.1
   rcases read with source | unrealized
   · unfold Store.getVotingSource at source
     simp only [bind_ok_iff] at source
@@ -1169,7 +1169,7 @@ private theorem walk_source_ancestor {store : Store preset fork}
       | some state =>
         simp only [stored, pure, Except.pure, Except.ok.injEq] at source
         exact source ▸ (walk_checkpoint_ancestor reachable sound before positive window
-          aligned lower nonzero child stored).2.1
+          aligned nonzero child stored).2.1
   · unfold Store.unrealizedJustification at unrealized
     cases entry : store.unrealizedJustifications[root]? with
     | none => simp [entry] at unrealized
