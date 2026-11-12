@@ -118,4 +118,29 @@ theorem _root_.EthLib.Consensus.Store.Reachable.getShufflingDependentRoot_ne_ok_
   rw [UInt64.lt_iff_toNat_lt] at before
   omega
 
+/-- The common-state premise bounds a vote's target by the epoch of the head state.
+
+An old head cannot supply this premise for an arbitrarily recent cached vote target. -/
+theorem CommitteesFollow.targetEpoch_le_headEpoch_add_lookahead
+    (committees : CommitteesFollow e) {w : ValidatorIndex} (honest : w ∈ J)
+    {k : ℕ} {head : ForkChoiceNode} {headState : BeaconState preset fork}
+    {current : Epoch} {v : ValidatorIndex} {attestation : Attestation preset fork}
+    {targetState : BeaconState preset fork}
+    (headOk : ((e.world k).state w).getHead config = .ok head)
+    (headStateOk : ((e.world k).state w).blockState head.root = .ok headState)
+    (currentOk : ((e.world k).state w).getCurrentStoreEpoch config = .ok current)
+    (targetPast : attestation.data.target.epoch.toNat ≤ current.toNat)
+    (recent : current.toNat ≤ attestation.data.target.epoch.toNat + 1)
+    (origin : ((e.world k).state w).VoteOrigin config v attestation)
+    (targetOk : ((e.world k).state w).checkpointStates[attestation.data.target]? =
+      some targetState) :
+    attestation.data.target.epoch.toNat ≤
+      (getCurrentEpoch headState).toNat + preset.MIN_SEED_LOOKAHEAD.toNat := by
+  obtain ⟨common, headRun, _, targetBound, _⟩ :=
+    committees.common w honest k head headState current v attestation targetState
+      headOk headStateOk currentOk targetPast recent origin targetOk
+  -- A common state is no later than the head state that follows it.
+  have headLater := UInt64.le_iff_toNat_le.mp headRun.later
+  omega
+
 end EthLib.Consensus.Models.Network
