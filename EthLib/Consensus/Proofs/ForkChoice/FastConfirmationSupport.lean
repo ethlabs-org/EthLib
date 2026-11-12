@@ -392,9 +392,11 @@ def DelayFits (config : Config) (genesisTimeMs : UInt64) (Δ : ℕ) : Prop :=
     computeTimeAtSlotMs config genesisTimeMs next = .ok following →
     start.toNat + due.toNat + Δ < following.toNat
 
-/-- Each honest validator processes messages before and at each slot boundary.
+/-- Each honest validator processes messages before and at each slot boundary up to `last`.
 
-The slots are those that start at the start of the execution or later.
+The slots are those that start at the start of the execution or later, and at `last` or earlier.
+
+A theorem about times up to `last` needs no processing after it, so a finite execution can meet it.
 
 Pre-boundary processing admits delivered blocks before the next tick can change finality.
 
@@ -406,13 +408,19 @@ It makes explicit the processing needed in addition to the network bound of
 arXiv 2405.00549v4, Section 2. -/
 def Prompt
     (e : Execution (honestForkChoice config checks sources anchorState anchorBlock assignment
-      genesisTimeMs) J) : Prop :=
+      genesisTimeMs) J) (last : ℕ) : Prop :=
   ∀ w ∈ J, ∀ slot start, computeTimeAtSlotMs config genesisTimeMs slot = .ok start →
-    e.startTime ≤ start.toNat →
+    e.startTime ≤ start.toNat → start.toNat ≤ last →
     (∃ k, (e.world k).time = start.toNat ∧
       UpToDate config checks sources (e.world k).time ((e.world k).view w) ((e.world k).state w)) ∧
     (e.startTime < start.toNat → ∃ k, (e.world k).time + 1 = start.toNat ∧
       UpToDate config checks sources (e.world k).time ((e.world k).view w) ((e.world k).state w))
+
+/-- Processing up to a time gives processing up to every earlier time. -/
+theorem Prompt.of_le {last later : ℕ} (prompt : Prompt e later) (le : last ≤ later) :
+    Prompt e last :=
+  fun w honest slot start startOk started bounded =>
+    prompt w honest slot start startOk started (bounded.trans le)
 
 /-- The committees that an honest store reads for a range of slots are those of the assignment.
 
@@ -996,9 +1004,9 @@ theorem DelayFits.due_lt_slot {Δ : ℕ}
 omit [DecidablePred (· ∈ J)] in
 /-- Prompt processing supplies both delivery events for a duty whose deadline has started. -/
 theorem Execution.exists_duty_boundaries {Δ : ℕ}
-    (fits : DelayFits fork config genesisTimeMs Δ) (prompt : Prompt e)
-    {w : ValidatorIndex} (receiver : w ∈ J)
     {slot next : Slot} {start following : UInt64} {time : ℕ}
+    (fits : DelayFits fork config genesisTimeMs Δ) (prompt : Prompt e following.toNat)
+    {w : ValidatorIndex} (receiver : w ∈ J)
     (nextOk : addChecked slot 1 = .ok next)
     (startOk : computeTimeAtSlotMs config genesisTimeMs slot = .ok start)
     (followingOk : computeTimeAtSlotMs config genesisTimeMs next = .ok following)
@@ -1013,15 +1021,16 @@ theorem Execution.exists_duty_boundaries {Δ : ℕ}
         ((e.world k).state w)) := by
   have before := fits.before_boundary nextOk startOk followingOk deadline
   have startedBefore : e.startTime < following.toNat := by omega
-  obtain ⟨boundary, preboundary⟩ := prompt w receiver next following followingOk startedBefore.le
+  obtain ⟨boundary, preboundary⟩ :=
+    prompt w receiver next following followingOk startedBefore.le (Nat.le_refl _)
   obtain ⟨k, atTime, current⟩ := preboundary startedBefore
   exact ⟨⟨k, atTime, by omega, current⟩, boundary⟩
 
 omit [DecidablePred (· ∈ J)] in
 /-- A duty inside a complete slot interval has a vote before the endpoint's delivery cutoff. -/
-theorem Execution.exists_voteAt_of_duty_interval {Δ : ℕ}
-    (votes : Votes e.startTime e) (fits : DelayFits fork config genesisTimeMs Δ)
-    {begin last slot : Slot} {beginTime endTime : UInt64} {first time : ℕ}
+theorem Execution.exists_voteAt_of_duty_interval {Δ : ℕ} {first time : ℕ}
+    (votes : Votes e.startTime time e) (fits : DelayFits fork config genesisTimeMs Δ)
+    {begin last slot : Slot} {beginTime endTime : UInt64}
     (beginOk : computeTimeAtSlotMs config genesisTimeMs begin = .ok beginTime)
     (endOk : computeTimeAtSlotMs config genesisTimeMs last = .ok endTime)
     (started : e.startTime ≤ first) (fresh : first ≤ beginTime.toNat)
@@ -1058,6 +1067,7 @@ theorem Execution.exists_voteAt_of_duty_interval {Δ : ℕ}
   have firstLe : first ≤ startTime.toNat + due.toNat := by omega
   obtain ⟨n, attestation, indexed, vote⟩ := votes v honest slot committeeIndex _ duty deadline
     (started.trans firstLe) (started.trans firstLe)
+    (by have := fits.before_boundary nextOk startOk followingOk deadline; omega)
   exact ⟨slot + 1, startTime, following, _, n, attestation, indexed,
     nextOk, startOk, followingOk, deadline, firstLe,
     fits.before_boundary nextOk startOk followingOk deadline, by omega, vote⟩
@@ -1571,14 +1581,14 @@ theorem Execution.mem_supportersOf_of_duty_epoch {Δ : ℕ} (sync : e.Synchronou
     (window : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
     (ring : preset.MIN_SEED_LOOKAHEAD.toNat + 2 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
     (preGloas : fork < .glamsterdam)
-    (oneBlock : OneBlockPerRoot e) (admitted : BlocksAdmitted e 0 Δ)
-    (votes : Votes e.startTime e) (fits : DelayFits fork config genesisTimeMs Δ)
-    (prompt : Prompt e) {anchor : Store preset fork}
+    (oneBlock : OneBlockPerRoot e) (admitted : BlocksAdmitted e 0 Δ) {first time : ℕ}
+    (votes : Votes e.startTime time e) (fits : DelayFits fork config genesisTimeMs Δ)
+    (prompt : Prompt e time) {anchor : Store preset fork}
     (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
     (sound : Invariant anchorState) (anchorSlot : anchorBlock.slot = anchorState.slot)
     (anchorBoundary : isStartSlotAtEpoch preset anchorBlock.slot = .ok true)
     (start : ∀ w ∈ J, e.start w = anchor) (noVotes : anchor.latestMessages.isEmpty)
-    {first time : ℕ} (started : e.startTime ≤ first)
+    (started : e.startTime ≤ first)
     {horizon : Epoch} (chain : FinalizedPrefix e horizon)
     (inHorizon : ∀ w ∈ J, ∀ k epoch, (e.world k).time ≤ time →
       ((e.world k).state w).getCurrentStoreEpoch config = .ok epoch → epoch ≤ horizon)
@@ -1678,7 +1688,8 @@ theorem Execution.mem_supportersOf_of_duty_epoch {Δ : ℕ} (sync : e.Synchronou
   obtain ⟨endpointEpoch, endpointOk⟩ := epochExists k
   have endpointHorizon := inHorizon w receiver k endpointEpoch (by omega) endpointOk
   obtain ⟨⟨pre, preTime, preLate, preCurrent⟩, ⟨boundary, boundaryTime, boundaryCurrent⟩⟩ :=
-    e.exists_duty_boundaries fits prompt receiver nextSlotOk slotTimeOk followingTimeOk
+    e.exists_duty_boundaries fits (prompt.of_le boundaryLe) receiver nextSlotOk slotTimeOk
+      followingTimeOk
       deadlineOk (started.trans firstLe)
   have preLe : pre ≤ k := by
     by_contra h
