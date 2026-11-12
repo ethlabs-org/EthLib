@@ -912,6 +912,116 @@ theorem Execution.rootFinal_or_justified_covers {anchor : Store preset fork}
 
 variable [DecidablePred (· ∈ J)]
 
+/-- Each new member of the increasing root walk lies on the tip's ancestor chain. -/
+private theorem walk_member_ancestor {store : Store preset fork}
+    (before : fork < .glamsterdam) {tip terminal : Root} {acc roots : List Root}
+    (walked : store.getAncestorRoots tip terminal acc = .ok roots) :
+    ∀ member ∈ roots, member ∈ acc ∨
+      ∃ block, store.blocks[member]? = some block ∧
+        store.getAncestor ⟨tip, .pending⟩ block.slot = .ok ⟨member, .pending⟩ := by
+  fun_induction Store.getAncestorRoots store tip terminal acc generalizing roots with
+  | case1 => cases walked
+  | case2 tip acc block found ih =>
+    rw [bind_ok_iff] at walked
+    obtain ⟨terminalBlock, _, walked⟩ := walked
+    split at walked
+    · cases Except.ok.inj walked
+      simp
+    · dsimp only at walked
+      split at walked
+      · cases Except.ok.inj walked
+        intro member mem
+        rcases List.mem_cons.mp mem with rfl | mem
+        · exact Or.inr ⟨block, found,
+            Store.getAncestor_of_le found (UInt64.le_refl _)⟩
+        · exact Or.inl mem
+      · split at walked
+        · cases walked
+        · rename_i parent parentFound
+          split at walked
+          · rename_i lower
+            intro member mem
+            rcases ih parent parentFound lower walked member mem with old | ⟨b, held, path⟩
+            · rcases List.mem_cons.mp old with rfl | old
+              · exact Or.inr ⟨block, found,
+                  Store.getAncestor_of_le found (UInt64.le_refl _)⟩
+              · exact Or.inl old
+            · have parentWalk := Store.getAncestor_parent_of_slot_lt
+                (node := (⟨tip, .pending⟩ : ForkChoiceNode)) found parentFound lower
+              rw [Store.parentPayloadStatus_of_lt before] at parentWalk
+              have descends : store.isAncestor ⟨block.parentRoot, .pending⟩
+                  ⟨member, .pending⟩ = .ok true := by
+                simp [Store.isAncestor, Store.block_ok_iff.mpr held, path,
+                  bind, Except.bind, pure, Except.pure]
+              obtain ⟨same, sameFound, le⟩ := Store.slot_le_of_isAncestor held descends
+              have eq := Option.some.inj (parentFound.symm.trans sameFound)
+              subst same
+              exact Or.inr ⟨b, held, (Store.getAncestor_trans le parentWalk).trans path⟩
+          · cases walked
+
+/-- Induction follows parent edges while keeping the complete returned walk fixed. -/
+private theorem walk_members_induction {store : Store preset fork}
+    {tip terminal : Root} {acc roots : List Root} (P : Root → Prop)
+    (walked : store.getAncestorRoots tip terminal acc = .ok roots)
+    (base : P terminal)
+    (step : ∀ member ∈ roots, ∀ block, store.blocks[member]? = some block →
+      P block.parentRoot → P member)
+    (accStep : P tip → ∀ member ∈ acc, P member) :
+    ∀ member ∈ roots, P member := by
+  fun_induction Store.getAncestorRoots store tip terminal acc generalizing roots with
+  | case1 => cases walked
+  | case2 tip acc block found ih =>
+    rw [bind_ok_iff] at walked
+    obtain ⟨terminalBlock, _, walked⟩ := walked
+    split at walked
+    · cases Except.ok.inj walked
+      simp
+    · dsimp only at walked
+      split at walked
+      · rename_i parentEq
+        cases Except.ok.inj walked
+        have tipSafe := step tip (by simp) block found (parentEq ▸ base)
+        intro member mem
+        rcases List.mem_cons.mp mem with rfl | mem
+        · exact tipSafe
+        · exact accStep tipSafe member mem
+      · split at walked
+        · cases walked
+        · rename_i parent parentFound
+          split at walked
+          · rename_i lower
+            rcases Store.getAncestorRoots_eq_nil_or walked with empty | ⟨front, shape⟩
+            · subst roots
+              simp
+            · have tipMem : tip ∈ roots := by simp [shape]
+              apply ih parent parentFound lower walked step
+              intro parentSafe member mem
+              have tipSafe := step tip tipMem block found parentSafe
+              rcases List.mem_cons.mp mem with rfl | mem
+              · exact tipSafe
+              · exact accStep tipSafe member mem
+          · cases walked
+
+/-- The time induction supplies all earlier members before advancing along the same walk. -/
+private theorem walk_time_members_induction {store : Store preset fork}
+    {tip terminal : Root} {roots : List Root} {first limit : ℕ}
+    (P : ℕ → Root → Prop)
+    (walked : store.getAncestorRoots tip terminal = .ok roots)
+    (base : ∀ time, first ≤ time → time ≤ limit → P time terminal)
+    (step : ∀ time, first ≤ time → time ≤ limit →
+      (∀ earlier, first ≤ earlier → earlier < time → ∀ member ∈ roots, P earlier member) →
+      ∀ member ∈ roots, ∀ block, store.blocks[member]? = some block →
+        P time block.parentRoot → P time member) :
+    ∀ time, first ≤ time → time ≤ limit → ∀ member ∈ roots, P time member := by
+  intro time
+  induction time using Nat.strong_induction_on with
+  | h time ih =>
+    intro firstLe limitLe
+    apply walk_members_induction (P time) walked (base time firstLe limitLe)
+    · exact step time firstLe limitLe (fun earlier lower upper =>
+        ih earlier upper lower (Nat.le_trans (Nat.le_of_lt upper) limitLe))
+    · simp
+
 /-- The tally indices are the registry positions used by the missing-weight head theorem. -/
 private theorem walk_tally_indices {state : BeaconState preset fork}
     (within : state.RegistryWithinLimit) :
