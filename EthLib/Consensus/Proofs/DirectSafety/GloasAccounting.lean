@@ -134,6 +134,46 @@ theorem gloasParentRequestsReplay_result {fork : Fork} (gloas : .glamsterdam ≤
     apply carryBalance_result
     simpa only [← Array.foldlM_toList] using (by assumption)
 
+/-- EIP-7732: parent requests preserve balance lengths and the recorded event bounds. -/
+theorem gloas_parent_requests_bounded {fork : Fork} (gloas : .glamsterdam ≤ fork)
+    (requests : ExecutionRequests preset fork) (pre post : BalanceReplay preset fork)
+    (matched : BalancesMatch pre.1)
+    (bounded : ∀ event ∈ pre.2,
+      event.credits ≤ event.creditLimit ∧ event.debits ≤ event.debitLimit)
+    (ok : gloasParentRequestsReplay (config := config) (checks := checks)
+      gloas requests pre = .ok post) :
+    BalancesMatch post.1 ∧ ∀ event ∈ post.2,
+      event.credits ≤ event.creditLimit ∧ event.debits ≤ event.debitLimit := by
+  unfold gloasParentRequestsReplay at ok
+  simp only [bind_ok_iff] at ok
+  obtain ⟨deposited, deposits, withdrawn, withdrawals, consolidated, consolidations,
+    built, builders, exits⟩ := ok
+  have depositedBound := carryBalance_bounded _ (fun _ _ ok h =>
+    foldlM_ok_invariant BalancesMatch
+      (fun _ _ _ h ok => (frame_processDepositRequest ok).balancesMatch h) h
+      (by simpa only [← Array.foldlM_toList] using ok)) ⟨matched, bounded⟩ deposits
+  have withdrawnBound := carryBalance_bounded _ (fun _ _ ok h =>
+    foldlM_ok_invariant BalancesMatch
+      (fun _ _ _ h ok => (frame_processWithdrawalRequest ok).balancesMatch h) h
+      (by simpa only [← Array.foldlM_toList] using ok)) depositedBound withdrawals
+  -- Only consolidations append events, using the existing excess-balance debit bound.
+  have consolidatedBound : ReplayBounded consolidated := by
+    apply foldlM_ok_invariant ReplayBounded ?_ withdrawnBound consolidations
+    intro pre request post initial ok
+    apply recordBalance_matched _ _ _ (fun _ _ ok =>
+      balancesMatch_of_sameSizes (sameSizes_processConsolidationRequest ok)) ?_ initial ok
+    intro s t credit debit _ limits action
+    cases limits
+    exact consolidation_request_bounds (Nat.le_trans (by decide) gloas) request action
+  have builtBound := carryBalance_bounded _ (fun _ _ ok h =>
+    foldlM_ok_invariant BalancesMatch
+      (fun _ _ _ h ok => (frame_processBuilderDepositRequest ok).balancesMatch h) h
+      (by simpa only [← Array.foldlM_toList] using ok)) consolidatedBound builders
+  exact carryBalance_bounded _ (fun _ _ ok h =>
+    foldlM_ok_invariant BalancesMatch
+      (fun _ _ _ h ok => (frame_processBuilderExitRequest ok).balancesMatch h) h
+      (by simpa only [← Array.foldlM_toList] using ok)) builtBound exits
+
 /-- Replay the full parent's requests between payment settlement and availability marking. -/
 def gloasParentPayloadReplay {fork : Fork} (gloas : .glamsterdam ≤ fork)
     (body : BeaconBlockBody preset fork) (pre : BalanceReplay preset fork) :
