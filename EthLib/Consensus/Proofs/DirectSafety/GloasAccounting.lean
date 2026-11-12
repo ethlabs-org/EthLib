@@ -897,4 +897,56 @@ theorem epoch_replay_bounded_through_gloas {fork : Fork} (s : BeaconState preset
     subst event
     exact consolidations.2
 
+/-- Each step through Gloas records events that satisfy their per-call limits. -/
+theorem step_events_bounded_through_gloas {x y : ForkedBeaconState preset}
+    (step : Step config checks x y) (matched : BalancesMatch x.state)
+    (before : y.fork < .hegota) :
+    ∃ events, step.balanceEventsGloas = .ok events ∧
+      ∀ event ∈ events, event.credits ≤ event.creditLimit ∧ event.debits ≤ event.debitLimit := by
+  have startBefore := Nat.lt_of_le_of_lt step.chainStep.fork_le before
+  cases step with
+  | @block fork s t engine signed due ok =>
+    have bound : fork < .hegota := before
+    by_cases gloas : .glamsterdam ≤ fork
+    · obtain ⟨events, replay⟩ := gloasBlockBalanceReplay_result gloas bound engine
+        s t signed.message (applySignedBlock_ok ok).2.1
+      refine ⟨events, ?_, gloas_block_bounded gloas bound s signed.message
+        (t, events) matched replay⟩
+      simp [Step.balanceEventsGloas, gloas, bound, replay,
+        bind, Except.bind, pure, Except.pure]
+    · have early : fork < .glamsterdam := Nat.lt_of_not_le gloas
+      obtain ⟨events, replay⟩ := blockBalanceReplay_result _ _ early
+        engine signed.message (applySignedBlock_ok ok).2.1
+      refine ⟨events, ?_, blockBalanceReplay_bounded early engine signed.message matched replay⟩
+      simp [Step.balanceEventsGloas, Step.balanceEvents, gloas, early, replay,
+        bind, Except.bind, pure, Except.pure]
+  | slot ok =>
+    obtain ⟨advanced, advanceOk, upgrades⟩ := bind_ok_iff.mp ok
+    obtain ⟨crossings, crossingOk, crossingBound⟩ := upgradeBalanceReplay_bounded upgrades
+    have advanceCopy := advanceOk
+    simp only [advanceSlot, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at advanceCopy
+    obtain ⟨next, nextOk, cached, cachedOk, epoched, epochOk, _⟩ := advanceCopy
+    have cachedMatch := (frame_processSlot cachedOk).balancesMatch matched
+    by_cases last : next % preset.SLOTS_PER_EPOCH = 0
+    · simp only [epochIfLast, last, ↓reduceIte] at epochOk
+      -- An upgrade follows the epoch pass, so a Fulu-to-Gloas crossing still uses Fulu rules.
+      have recorded : ∃ middle events,
+          epochBalanceReplay (config := config) (checks := checks) cached =
+            .ok (middle, events) := by
+        by_cases gloas : .glamsterdam ≤ x.fork
+        · obtain ⟨middle, _, _, events, replay, _⟩ :=
+            epochBalanceReplay_result_gloas cached epoched gloas epochOk
+          exact ⟨middle, events, replay⟩
+        · obtain ⟨middle, _, events, replay, _⟩ :=
+            epochBalanceReplay_result cached epoched (Nat.lt_of_not_le gloas) epochOk
+          exact ⟨middle, events, replay⟩
+      obtain ⟨middle, events, replay⟩ := recorded
+      refine ⟨events ++ crossings, ?_, eventsBounded_append
+        (epoch_replay_bounded_through_gloas cached (middle, events)
+          cachedMatch startBefore replay) crossingBound⟩
+      exact Step.balanceEvents_epoch_slot ok cachedOk nextOk last replay advanceOk crossingOk
+    · refine ⟨crossings, ?_, crossingBound⟩
+      simp [Step.balanceEventsGloas, Step.balanceEvents, cachedOk, nextOk, last,
+        advanceOk, crossingOk, pure, Except.pure, bind, Except.bind]
+
 end EthLib.Consensus.DirectSafety
