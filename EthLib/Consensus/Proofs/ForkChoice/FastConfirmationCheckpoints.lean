@@ -733,6 +733,49 @@ theorem justified_or_one_third_lt_of_willNoConflictingCheckpointBeJustified {hea
     refine .inr ⟨state, total, support, stateOk, totalOk, supportOk, ?_⟩
     simpa only [three, UInt64.toNat_ofNat] using lt
 
+/-- The target score is a sum of balances over the successful latest-target tests. -/
+theorem getCurrentTargetScore_eq_sum
+    {head : Root} {state : BeaconState preset fork} {target : Checkpoint} {score : Gwei}
+    (stateOk : store.getPulledUpHeadState config head = .ok state)
+    (targetOk : store.getCurrentTarget config head = .ok target)
+    (scoreOk : store.getCurrentTargetScore config head = .ok score) :
+    ∃ counted : List ValidatorIndex,
+      (getActiveValidatorIndices state (getCurrentEpoch state)).filterM
+        (fun index => return !(← validatorAt state index).slashed) =
+          (Except.ok counted : Except ForkChoiceError (List ValidatorIndex)) ∧
+      score.toNat = (counted.map fun index =>
+        match store.latestMessages[index]? with
+        | none => 0
+        | some message =>
+          if index ∈ store.equivocatingIndices then 0
+          else if (store.getCheckpointForBlock message.root
+            (getLatestMessageEpoch preset message)).toOption = some target
+          then balanceAt state index.toNat else 0).sum := by
+  simp only [getCurrentTargetScore, targetOk, stateOk, bind_ok_iff] at scoreOk
+  obtain ⟨t, tOk, s, sOk, counted, countedOk, summed⟩ := scoreOk
+  cases Except.ok.inj tOk
+  cases Except.ok.inj sOk
+  refine ⟨counted, countedOk, toNat_eq_of_sumGwei summed ?_⟩
+  intro index member computed valueOk
+  cases latest : store.latestMessages[index]? with
+  | none =>
+    have zero : computed = 0 := by simpa [latest, pure, Except.pure] using valueOk.symm
+    simp [zero]
+  | some message =>
+    by_cases equivocating : index ∈ store.equivocatingIndices
+    · have zero : computed = 0 := by
+        simpa [latest, equivocating, pure, Except.pure] using valueOk.symm
+      simp [equivocating, zero]
+    · simp only [latest, equivocating, ite_false, bind_ok_iff] at valueOk
+      obtain ⟨checkpoint, checkpointOk, valueOk⟩ := valueOk
+      by_cases same : target = checkpoint
+      · subst checkpoint
+        simp only [ite_true] at valueOk
+        simpa [latest, equivocating, checkpointOk, Except.toOption] using
+          toNat_eq_balanceAt_of_effectiveBalance valueOk
+      · have zero : computed = 0 := by simpa [same, pure, Except.pure] using valueOk.symm
+        simp [equivocating, checkpointOk, Ne.symm same, zero, Except.toOption]
+
 /-- A successful target-support count is the discounted score plus the remaining honest share. -/
 theorem computeHonestFfgSupportForCurrentTarget_eq
     {head : Root} {state : BeaconState preset fork} {slot epochStart lastSlot : Slot}
