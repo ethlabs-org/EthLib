@@ -489,6 +489,7 @@ theorem Execution.oneBlockPerRoot_or_fault {anchor : Store preset fork}
     OneBlockPerRoot e limit ∨ e.HashFault history limit := by
   sorry
 
+omit [DecidablePred (· ∈ J)] in
 /-- Each block of an honest store has a nonzero state root, or a held state shows a hash fault.
 
 A zero state root of a held block is the root of a state among the hash inputs. -/
@@ -507,7 +508,40 @@ theorem Execution.nonzero_or_fault {anchor : Store preset fork}
       ∀ (root : Root) (block : BeaconBlock preset fork),
       ((e.world k).state w).blocks[root]? = some block →
       block.stateRoot ≠ Vector.replicate 32 0) ∨ e.HashFault history limit := by
-  sorry
+  classical
+  by_cases fault : e.HashFault history limit
+  · exact .inr fault
+  left
+  intro w honest k bounded root block found zero
+  have reached := (e.forwardReachable
+    (fun v hv => (start v hv) ▸ Store.ForwardReachable.anchor anchored) k w honest).reachable
+  obtain ⟨state, stored, initial, -⟩ := reached.blockStatesFromParents found
+  have rooted : SszType.hashTreeRoot state = .ok block.stateRoot := by
+    by_cases same : block = anchorBlock
+    · rw [initial same, same]
+      exact anchor_stateRoot anchored
+    · exact (reached.blockState_header found stored same).2.1
+  obtain ⟨run⟩ := e.exists_run_of_blockState anchored honest (start w honest)
+    (e.heldBlocks_before_nextFork anchored start anchorSlot slots epochSlots inHorizon
+      forkWindow.2 honest bounded) stored
+  have held : e.HeldState limit state := ⟨w, honest, k, root, bounded, stored⟩
+  have endpoint {first last : ForkedBeaconState preset} (path : Run config checks first last) :
+      HashObject.state last ∈ path.hashObjects := by
+    cases path with
+    | nil => simp [Run.hashObjects]
+    | snoc pre step =>
+      apply List.mem_append_right
+      unfold Step.hashObjects
+      exact List.mem_append_left _ (by simp)
+  apply fault
+  -- A zero-root fault can use the same held state and run on both sides.
+  refine ⟨state, state, run, run, .realized, .realized, held, held, Or.inr ?_⟩
+  refine ⟨.state ⟨fork, state⟩, ?_, ?_⟩
+  · simp only [List.mem_append]
+    exact Or.inl (Or.inl (Or.inl (Or.inl (Or.inl (endpoint (history.append run))))))
+  · change (SszType.hashTreeRoot state).toOption = some (Vector.replicate 32 0)
+    rw [rooted, zero]
+    rfl
 
 /-- Theorem 1, accountable safety: the stored block is safe, or two honest stores show a fault.
 
