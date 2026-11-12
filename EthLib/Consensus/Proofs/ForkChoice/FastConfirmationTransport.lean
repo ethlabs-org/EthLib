@@ -1325,6 +1325,8 @@ theorem Execution.honest_support_of_historical_anchor {Δ : ℕ} (sync : e.Synch
       anchored preGloas slots chain receiver receiverEpochOk
       (inHorizon w receiver k receiverEpoch (by omega) receiverEpochOk)
       (nonzero w receiver k (by omega)) headOk stateOk receiverWindowOk member
+  obtain ⟨receiverActive, receiverWeight, receiverActiveOk, receiverWeightOk⟩ :=
+    filteredTotal_exists receiverTotalOk receiverIndices
   have receiverUnslashed : ∀ v ∈ J, NotSlashed state v := by
     obtain ⟨held, boundary, stored, _, advanced⟩ :=
       e.checkpointStates_fixedChecks anchorStore (anchored w receiver)
