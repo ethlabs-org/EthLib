@@ -508,6 +508,14 @@ Not yet released.
   An instance of the law now receives that equality and proves nothing more about the flag.
   It derives the former hypothesis with `fun marked => flag.trans marked`.
   No C export or Python function changes.
+- The slashed persistence of the transition steps now comes from their frames.
+  In Lean, 31 theorems of `EthLib.Consensus.SlashedPersistence` are removed.
+  They are `foldlM`, `advanceSlot`, `upgradeNext`, `processUpgrades`, `increaseBalance`, `decreaseBalance`, and the 25 others that carry the name of a `process` function of the transition.
+  A caller applies `SlashedPersistence.of_frame` to the frame lemma of the step, such as `frame_processBlock`, with `.toFrame` where that lemma gives an epoch or mutator frame.
+  For an upgrade it applies `SlashedPersistence.of_upgradeFrame` to `upgradeFrame_upgradeNext`.
+  `Step.slashedPersistence` and `Run.slashedPersistence` no longer take the argument `early : y.fork < .glamsterdam`.
+  Callers drop that argument, and the conclusions are unchanged.
+  No C export or Python function changes.
 
 ## 0.3.0
 
