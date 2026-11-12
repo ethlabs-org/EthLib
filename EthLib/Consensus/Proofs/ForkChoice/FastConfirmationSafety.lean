@@ -4495,21 +4495,6 @@ theorem Execution.callInvariant_step {Δ : ℕ} (sync : e.Synchronous Δ)
     omega
   have positiveSlots : 0 < preset.SLOTS_PER_EPOCH := UInt64.lt_trans (by decide) long
   have positiveSlotsNat := UInt64.lt_iff_toNat_lt.mp positiveSlots
-  have validatedRecentObservation : ∀ (epoch rootEpoch : Epoch),
-      ((e.world n).state u).getCurrentStoreEpoch config = .ok epoch →
-      ((e.world n).state u).getBlockEpoch after.confirmedRoot = .ok rootEpoch →
-      epoch.toNat ≤ rootEpoch.toNat + 1 →
-      epoch.toNat ≤ after.currentEpochObservedJustifiedCheckpoint.epoch.toNat + 2 ∧
-        ((e.world n).state u).isAncestor ⟨after.confirmedRoot, .pending⟩
-          ⟨after.currentEpochObservedJustifiedCheckpoint.root, .pending⟩ = .ok true ∧
-        ((e.world n).state u).getCheckpointBlock after.confirmedRoot
-          after.currentEpochObservedJustifiedCheckpoint.epoch =
-          .ok after.currentEpochObservedJustifiedCheckpoint.root := by
-    intro epoch rootEpoch epochOk rootOk recent
-    exact e.observed_recent_of_stored slots fits preGloas anchored sound positiveSlotsNat window
-      anchorSlot anchorAtBoundary start caller atSlots bounds nonzero lower calls callBound
-      epochOk rootOk recent
-  clear validatedRecentObservation
   have member : n ∈ events := List.mem_of_getElem? calls.1
   obtain ⟨slot, begin, slotOk, slotIndex, beginOk, atSlot⟩ := atSlots i n calls.1
   have epochOk : ((e.world n).state u).getCurrentStoreEpoch config =
@@ -5196,23 +5181,6 @@ theorem Execution.safeAt_confirmedRoot {Δ : ℕ} (sync : e.Synchronous Δ)
   subst callSlot
   have callBound := fits.call_before_next_slot nextOk beginOk followingOk atSlot nonempty
   exact (invariant _ n fcr stored calls (by omega)).1 slot next following slotOk nextOk followingOk
-
-#print axioms reset_fields_after_anchor
-#print axioms Store.ForwardReachable.pulled_justified_epoch_le_unrealized
-#print axioms Store.observed_justified_lt_at_boundary
-#print axioms Store.onFastConfirmation_checkpoints_satisfy
-#print axioms walk_cache_origin
-#print axioms observed_unrealized_epoch_le
-#print axioms Execution.observed_unrealized_monotone
-#print axioms call_boundary_eq
-#print axioms observed_store_justified_block_bound
-#print axioms Execution.observed_fields_eq_anchor_or_lt
-#print axioms Execution.observed_checkpoint_block_bounds
-#print axioms Execution.observed_fields_age
-#print axioms Execution.observed_eq_anchor_of_epoch_le_add_one
-#print axioms Execution.observed_recent_of_finalized
-#print axioms Execution.observed_current_root_unrealized_recent
-#print axioms Execution.observed_recent_of_stored
 
 end Models.Network
 
