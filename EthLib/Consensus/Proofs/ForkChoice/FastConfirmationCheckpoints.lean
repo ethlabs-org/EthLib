@@ -834,19 +834,39 @@ Included means that the unrealized justification of that block is not before the
 
 Both stores are at events up to the last time `limit`.
 
-This is Assumption 3.2 of arXiv 2405.00549v4, Section 4.2, for a block `b` and an epoch `e`.
+This is a counted-vote adapter for Assumption 3.2 of arXiv 2405.00549v4, Section 4.2.
 
-There `b` is canonical throughout epoch `e + 1`, with `e` at least the epoch of `b`.
+No theorem here proves it equivalent to that assumption, in either direction.
 
-By the start of epoch `e + 2` each honest view then holds `b' ⪰ b` with `C(b, e)` in `AU(b')`.
+The paper takes a block `b` and an epoch `e` at least the epoch of `b`, after GST.
 
-Here the target is `C(b, e)`, read at the later store, and safety is canonicity there.
+It asks that `b` be canonical throughout epoch `e + 1`.
 
-The count of honest votes stands in for the paper's condition on the votes in each view.
+It also asks a condition on the votes in each view, for a link from a given source to `C(b, e)`.
+
+That condition discounts slashed stake, and it holds for every view of a descendant block.
+
+By the start of epoch `e + 2` each honest view then holds `b' ⪰ b`, of an epoch before `e + 2`.
+
+The assumption says that `C(b, e)` is included in `AU(b')`.
+
+Here the target plays the role of `C(b, e)`, read at the later store.
+
+Safety asks this of each time from the start of epoch `e + 1` up to that store.
+
+Every honest store that is up to date at an event of that time has its head above the block.
+
+The votes are one count, for the target only, against one pulled-up head state.
+
+Here the seed is a block above the given one, of an epoch before `target + 2`, like `b'`.
+
+The conclusion is that the unrealized justification of the seed is of the target's epoch or later.
+
+It does not say that the target itself is included.
 
 The block is any such block of the later store, not one that the counting store already held.
 
-In [verified-fast-confirmation][vfc], this is `EventualCheckpointInclusion.included`.
+The shape follows `EventualCheckpointInclusion.included` in [verified-fast-confirmation][vfc].
 
 Its conclusion there is `A32IncludedAtTip`, with the seed above the block it is applied to.
 
