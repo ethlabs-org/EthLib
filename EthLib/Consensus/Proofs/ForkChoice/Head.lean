@@ -758,6 +758,66 @@ theorem getHead_ne_pending {head : ForkChoiceNode} (gloas : .glamsterdam ≤ for
         filterNodeTree_child tree head headIn childrenOk someChild
       exact leaf child childMem childIn
 
+/-- From Gloas a full head has a verified payload. -/
+theorem isPayloadVerified_of_getHead_full {head : ForkChoiceNode}
+    (gloas : .glamsterdam ≤ fork) (found : store.getHead config = .ok head)
+    (full : head.payloadStatus = .full) : store.isPayloadVerified gloas head.root = true := by
+  -- Each full child is verified, so the walk preserves verification of full nodes.
+  have keeps {nodes : List ForkChoiceNode} {start finish : ForkChoiceNode}
+      (walk : store.getHeadFrom config store.justifiedTally nodes start = .ok finish)
+      (verified : start.payloadStatus = .full → store.isPayloadVerified gloas start.root = true) :
+      finish.payloadStatus = .full → store.isPayloadVerified gloas finish.root = true := by
+    induction start using getHeadFrom.induct store with
+    | _ start ih =>
+      rw [getHeadFrom] at walk
+      cases chosen : store.heaviestChild config store.justifiedTally nodes start with
+      | error e => simp [chosen, bind, Except.bind] at walk
+      | ok result =>
+        cases result with
+        | none =>
+          simp only [chosen, bind, Except.bind, pure, Except.pure, Except.ok.injEq] at walk
+          subst finish
+          exact verified
+        | some child =>
+          simp only [chosen, bind, Except.bind] at walk
+          split at walk
+          · apply ih child ‹_› walk
+            intro childFull
+            obtain ⟨children, _, childrenOk, weighted, choice⟩ := heaviestChild_eq chosen
+            obtain ⟨key, member, _⟩ := chooseHeaviest_some choice
+            obtain ⟨source, member, pair⟩ := mapM_ok_mem weighted _ member
+            obtain ⟨rfl, _⟩ := weighNode_ok_iff.mp pair
+            have childMem := (List.mem_filter.mp member).1
+            by_cases pending : start.payloadStatus = .pending
+            · rw [getNodeChildren_of_pending gloas pending, Except.ok.injEq] at childrenOk
+              rw [← childrenOk] at childMem
+              by_cases payload : store.isPayloadVerified gloas start.root = true
+              · simp only [ite_eq_left payload, List.mem_cons, List.not_mem_nil, or_false]
+                  at childMem
+                rcases childMem with rfl | rfl
+                · cases childFull
+                · exact payload
+              · simp only [ite_eq_right payload, List.mem_cons, List.not_mem_nil, or_false]
+                  at childMem
+                subst child
+                cases childFull
+            · have childPending := ((mem_getNodeChildren_of_gloas gloas pending childrenOk).mp
+                childMem).1
+              rw [childFull] at childPending
+              cases childPending
+          · cases walk
+  -- The walk starts pending, and the empty-tree fallback is empty rather than full.
+  unfold getHead at found
+  cases tree : store.getFilteredNodeTree config with
+  | error e => simp [tree, bind, Except.bind] at found
+  | ok nodes =>
+    simp only [tree, bind, Except.bind] at found
+    split at found
+    · simp only [pure, Except.pure, Except.ok.injEq] at found
+      subst head
+      cases full
+    · exact keeps found (by simp) full
+
 /-- From Gloas the empty and the full node of a block from the previous slot are a decision. -/
 theorem isPreviousSlotPayloadDecision_of_previous {root : Root} {status : PayloadStatus}
     {block : BeaconBlock preset fork} {next : Slot}
