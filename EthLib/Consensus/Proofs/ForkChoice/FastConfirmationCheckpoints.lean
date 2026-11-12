@@ -733,6 +733,49 @@ theorem justified_or_one_third_lt_of_willNoConflictingCheckpointBeJustified {hea
     refine .inr ⟨state, total, support, stateOk, totalOk, supportOk, ?_⟩
     simpa only [three, UInt64.toNat_ofNat] using lt
 
+/-- The target score is a sum of balances over the successful latest-target tests. -/
+theorem getCurrentTargetScore_eq_sum
+    {head : Root} {state : BeaconState preset fork} {target : Checkpoint} {score : Gwei}
+    (stateOk : store.getPulledUpHeadState config head = .ok state)
+    (targetOk : store.getCurrentTarget config head = .ok target)
+    (scoreOk : store.getCurrentTargetScore config head = .ok score) :
+    ∃ counted : List ValidatorIndex,
+      (getActiveValidatorIndices state (getCurrentEpoch state)).filterM
+        (fun index => return !(← validatorAt state index).slashed) =
+          (Except.ok counted : Except ForkChoiceError (List ValidatorIndex)) ∧
+      score.toNat = (counted.map fun index =>
+        match store.latestMessages[index]? with
+        | none => 0
+        | some message =>
+          if index ∈ store.equivocatingIndices then 0
+          else if (store.getCheckpointForBlock message.root
+            (getLatestMessageEpoch preset message)).toOption = some target
+          then balanceAt state index.toNat else 0).sum := by
+  simp only [getCurrentTargetScore, targetOk, stateOk, bind_ok_iff] at scoreOk
+  obtain ⟨t, tOk, s, sOk, counted, countedOk, summed⟩ := scoreOk
+  cases Except.ok.inj tOk
+  cases Except.ok.inj sOk
+  refine ⟨counted, countedOk, toNat_eq_of_sumGwei summed ?_⟩
+  intro index member computed valueOk
+  cases latest : store.latestMessages[index]? with
+  | none =>
+    have zero : computed = 0 := by simpa [latest, pure, Except.pure] using valueOk.symm
+    simp [zero]
+  | some message =>
+    by_cases equivocating : index ∈ store.equivocatingIndices
+    · have zero : computed = 0 := by
+        simpa [latest, equivocating, pure, Except.pure] using valueOk.symm
+      simp [equivocating, zero]
+    · simp only [latest, equivocating, ite_false, bind_ok_iff] at valueOk
+      obtain ⟨checkpoint, checkpointOk, valueOk⟩ := valueOk
+      by_cases same : target = checkpoint
+      · subst checkpoint
+        simp only [ite_true] at valueOk
+        simpa [latest, equivocating, checkpointOk, Except.toOption] using
+          toNat_eq_balanceAt_of_effectiveBalance valueOk
+      · have zero : computed = 0 := by simpa [same, pure, Except.pure] using valueOk.symm
+        simp [equivocating, checkpointOk, Ne.symm same, zero, Except.toOption]
+
 /-- A successful target-support count is the discounted score plus the remaining honest share. -/
 theorem computeHonestFfgSupportForCurrentTarget_eq
     {head : Root} {state : BeaconState preset fork} {slot epochStart lastSlot : Slot}
@@ -820,7 +863,7 @@ An honest store counts honest votes for the checkpoint of an epoch on the chain 
 
 Two thirds of the active balance of the pulled-up state of a head sign that target.
 
-Their votes are sent by the event of the counting store.
+Their votes are sent by the time of the counting store's event.
 
 The block is safe from a first time on.
 
@@ -917,6 +960,107 @@ theorem TargetIncluded.of_le {last later : ℕ} (included : TargetIncluded e lat
     included u caller n (nBound.trans le) head state total root rootEpoch target voters stateOk
       totalOk epochOk rootEpochOk rootLe blockOk signed quorum w receiver k current
       (kBound.trans le)
+
+omit [DecidablePred (· ∈ J)] in
+/-- Assignment agrees with a current-epoch prefix without an anchor-slot alignment premise. -/
+theorem CommitteesFollow.assigned_current_epoch {limit : ℕ}
+    (committees : CommitteesFollow e limit)
+    (retained : preset.MIN_SEED_LOOKAHEAD.toNat + 1 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
+    {w : ValidatorIndex} (honest : w ∈ J) {k : ℕ} (bounded : (e.world k).time ≤ limit)
+    (forward : Store.ForwardReachable config anchorState anchorBlock ((e.world k).state w))
+    {head : ForkChoiceNode} {current first last : Slot} {participants : Std.TreeSet ValidatorIndex}
+    (headOk : ((e.world k).state w).getHead config = .ok head)
+    (slotOk : ((e.world k).state w).getCurrentSlot config = .ok current)
+    (firstOk : computeStartSlotAtEpoch preset (computeEpochAtSlot preset current) = .ok first)
+    (past : last < current)
+    (found : ((e.world k).state w).getCommitteesBetweenSlots head.root first last =
+      .ok participants) :
+    ∀ v ∈ J, v ∈ participants ↔ ∃ slot committeeIndex,
+      first ≤ slot ∧ slot ≤ last ∧ assignment.committee v slot = some committeeIndex := by
+  exact committees.assigned w honest k bounded head current first last participants headOk
+    slotOk past (fun _ read => forward.retained_current_epoch retained slotOk firstOk read) found
+
+omit [DecidablePred (· ∈ J)] in
+/-- A latest vote's checkpoint target has been signed by the event that holds the vote. -/
+theorem Execution.signsTarget_of_latestMessages {anchor : Store preset fork}
+    (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (start : ∀ w ∈ J, e.start w = anchor) {u : ValidatorIndex} (caller : u ∈ J)
+    {n : ℕ} {v : ValidatorIndex} {message : LatestMessage fork}
+    (found : ((e.world n).state u).latestMessages[v]? = some message)
+    {target : Checkpoint}
+    (targetOk : ((e.world n).state u).getCheckpointForBlock message.root
+      (getLatestMessageEpoch preset message) = .ok target) :
+    SignsTarget e v target (e.world n).time := by
+  obtain ⟨attestation, m, seen, same, signed, origin⟩ :=
+    e.exists_signed_origin_of_latestMessages anchored start caller found
+  have epoch : getLatestMessageEpoch preset message = attestation.data.target.epoch := by
+    rw [same]
+    unfold getLatestMessageEpoch LatestMessage.ofAttestation
+    split
+    · exact origin.targetEpoch.symm
+    · rfl
+  have root : message.root = attestation.data.beaconBlockRoot := by rw [same]; rfl
+  rw [epoch, root] at targetOk
+  have targetEq : attestation.data.target = target := by
+    simpa [Store.getCheckpointForBlock, origin.targetRoot] using targetOk
+  exact ⟨n, le_rfl, m, e.view_subset_sent n u seen, attestation.data, signed, targetEq⟩
+
+omit [DecidablePred (· ∈ J)] in
+/-- An honest latest voter for the current epoch belongs to its past committee prefix. -/
+theorem Execution.mem_participants_of_latest_current_epoch {anchor : Store preset fork}
+    (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (start : ∀ w ∈ J, e.start w = anchor) {limit : ℕ}
+    (committees : CommitteesFollow e limit)
+    (retained : preset.MIN_SEED_LOOKAHEAD.toNat + 1 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
+    {u v : ValidatorIndex} (caller : u ∈ J) (honest : v ∈ J) {n : ℕ}
+    (bounded : (e.world n).time ≤ limit)
+    {head : ForkChoiceNode} {slot first last : Slot} {participants : Std.TreeSet ValidatorIndex}
+    (headOk : ((e.world n).state u).getHead config = .ok head)
+    (slotOk : ((e.world n).state u).getCurrentSlot config = .ok slot)
+    (firstOk : computeStartSlotAtEpoch preset (computeEpochAtSlot preset slot) = .ok first)
+    (lastOk : subChecked slot 1 = .ok last)
+    (participantsOk : ((e.world n).state u).getCommitteesBetweenSlots head.root first last =
+      .ok participants)
+    {message : LatestMessage fork}
+    (found : ((e.world n).state u).latestMessages[v]? = some message)
+    (epochOk : getLatestMessageEpoch preset message = computeEpochAtSlot preset slot) :
+    v ∈ participants := by
+  obtain ⟨attestation, m, seen, same, signed, origin⟩ :=
+    e.exists_signed_origin_of_latestMessages anchored start caller found
+  obtain ⟨k, _, index, assigned, _⟩ :=
+    e.exists_maySign_of_signed (e.view_subset_sent n u seen) signed honest
+  have epoch : computeEpochAtSlot preset attestation.data.slot =
+      computeEpochAtSlot preset slot := by
+    rw [same] at epochOk
+    unfold getLatestMessageEpoch LatestMessage.ofAttestation at epochOk
+    split at epochOk
+    · exact epochOk
+    · exact origin.targetEpoch ▸ epochOk
+  obtain ⟨current, currentOk, past⟩ := origin.past
+  have eq := Except.ok.inj (currentOk.symm.trans slotOk)
+  subst current
+  have lastEq := (subChecked_ok_iff.mp lastOk).2
+  have pastNat := UInt64.lt_iff_toNat_lt.mp past
+  have lastLt : last < slot := by
+    rw [UInt64.lt_iff_toNat_lt]
+    simp only [UInt64.toNat_one] at lastEq
+    omega
+  have high : attestation.data.slot ≤ last := by
+    rw [UInt64.le_iff_toNat_le]
+    simp only [UInt64.toNat_one] at lastEq
+    omega
+  have low : first ≤ attestation.data.slot := by
+    have firstEq := (computeStartSlotAtEpoch_ok_iff.mp firstOk).2
+    have divLe := Nat.div_mul_le_self attestation.data.slot.toNat preset.SLOTS_PER_EPOCH.toNat
+    have epochNat := congrArg UInt64.toNat epoch
+    simp only [computeEpochAtSlot, UInt64.toNat_div] at firstEq epochNat
+    rw [epochNat] at divLe
+    rw [UInt64.le_iff_toNat_le]
+    omega
+  have forward := e.forwardReachable
+    (fun w hw => (start w hw) ▸ Store.ForwardReachable.anchor anchored) n u caller
+  exact (committees.assigned_current_epoch retained caller bounded forward headOk slotOk
+    firstOk lastLt participantsOk v honest).mpr ⟨attestation.data.slot, index, low, high, assigned⟩
 
 /-- Step 6, the count: honest validators hold the count of the rule for the target, with a margin.
 

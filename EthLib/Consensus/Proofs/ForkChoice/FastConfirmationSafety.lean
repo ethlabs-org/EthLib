@@ -4620,7 +4620,7 @@ Each other hypothesis on stores, events or signed votes reads only events up to 
 
 A hypothesis that relates two events bounds both of them.
 
-A signed vote that a hypothesis counts is sent by the event of the store that counts it.
+A signed vote that a hypothesis counts is sent by the time of the counting store's event.
 
 Only synchrony speaks of the whole execution.
 
