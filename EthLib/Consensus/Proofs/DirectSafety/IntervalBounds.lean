@@ -4,6 +4,7 @@ public import EthLib.Consensus.Proofs.DirectSafety.IntervalFunding
 public import EthLib.Consensus.Proofs.DirectSafety.FundingBlock
 public import EthLib.Consensus.Proofs.DirectSafety.FundingSlot
 import all EthLib.Consensus.Proofs.DirectSafety.IntervalFunding
+import EthLib.Consensus.Proofs.DirectSafety.DepartureQueue
 
 /-!
 # Source bounds over a selected execution interval
@@ -2522,7 +2523,126 @@ theorem nonaccountable_losses_over_interval {g x y : ForkedBeaconState preset}
     (events : List (BalanceEvent preset)) (replayed : tail.balanceEvents high = .ok events) :
     referenceLoss x y ≤
       exitWindow (config := config) x high events + lossCorrection x events := by
-  sorry
+  have positive : 0 < preset.SLOTS_PER_EPOCH.toNat := by
+    have slots := parameters.slots
+    omega
+  have registry := registry_le_window tail early high endEpoch positive
+  -- Every reachable prefix uses the full interval's funding credits or registry allowance.
+  have prefixBound {a b : ForkedBeaconState preset} (pre : Run config checks x a)
+      (step : Step config checks a b) (post : Run config checks b y)
+      (same : (pre.snoc step).append post = tail) :
+      Quorum.weight (effectiveWeight a.state) (activeKeys a.state) ≤
+        activeStakeWindow (config := config) x high events := by
+    let rest := (Run.nil.snoc step).append post
+    have joined : pre.append rest = tail := by
+      have reassociated {z : ForkedBeaconState preset} (post : Run config checks b z) :
+          pre.append ((Run.nil.snoc step).append post) = (pre.snoc step).append post := by
+        induction post with
+        | nil => rfl
+        | snoc post next ih => exact congrArg (fun run => run.snoc next) ih
+      exact (reassociated post).trans same
+    have earlyA := Nat.lt_of_le_of_lt (fork_le_of_chainSteps rest.chainSteps) early
+    have epochA : (getCurrentEpoch a.state).toNat ≤ high + 1 := by
+      have ordered := currentEpoch_le_of_chainSteps rest.chainSteps
+      rw [UInt64.le_iff_toNat_le] at ordered
+      omega
+    by_cases funded : .pectra ≤ x.fork ∧
+        2 ≤ config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat
+    · obtain ⟨prior, priorOk, initial⟩ := pre.balanceEvents_prefix rest high events
+        (joined ▸ replayed)
+      have bound := active_stake_le_window shared pre genesis parameters caps aligned
+        funded.1 earlyA funded.2 high epochA prior priorOk
+      have credits : (prior.map fundingCredit).sum ≤ (events.map fundingCredit).sum := by
+        obtain ⟨remaining, rfl⟩ := initial
+        simp only [List.map_append, List.sum_append]
+        omega
+      simp only [activeStakeWindow, funded.1, funded.2, and_self, ↓reduceIte] at bound ⊢
+      omega
+    -- The fallback also covers intervals that cross Electra and small withdrawal delays.
+    · have unique := (shared.append pre).unique (genesis_unique genesis)
+      have capped := (shared.append pre).effectiveBalance_capped genesis caps.activation
+        caps.compounding earlyA
+      have inside (i : ValidatorIndex)
+          (member : i ∈ getActiveValidatorIndices a.state (getCurrentEpoch a.state)) :
+          i.toNat < a.state.validators.data.size := by
+        obtain ⟨v, found, _⟩ :=
+          (mem_getActiveValidatorIndices (a.state.validators.bound earlyA)).mp member
+        exact (Array.getElem?_eq_some_iff.mp found).1
+      have cap (v : Validator) (member : v ∈ a.state.validators.data) :
+          v.effectiveBalance.toNat ≤ preset.MAX_EFFECTIVE_BALANCE_ELECTRA.toNat := by
+        have bound := capped v member
+        have activation := UInt64.le_iff_toNat_le.mp caps.activation
+        have compounding := UInt64.le_iff_toNat_le.mp caps.compounding
+        rw [UInt64.le_iff_toNat_le] at bound
+        unfold withdrawalMaxEffectiveBalance getMaxEffectiveBalance at bound
+        split at bound
+        · split at bound <;> omega
+        · omega
+      have weight : Quorum.weight (effectiveWeight a.state) (activeKeys a.state) ≤
+          a.state.validators.data.size * preset.MAX_EFFECTIVE_BALANCE_ELECTRA.toNat := by
+        rw [activeKeys, keys_weight _ _ unique inside]
+        calc
+          _ ≤ ∑ _i ∈ Finset.range a.state.validators.data.size,
+              preset.MAX_EFFECTIVE_BALANCE_ELECTRA.toNat := by
+            apply Finset.sum_le_sum_of_injOn (fun i => i.toNat)
+            · intro i _ j _ equal
+              exact UInt64.toNat_inj.mp equal
+            · intro i member
+              obtain ⟨j, chosen, rfl⟩ := Finset.mem_image.mp member
+              exact Finset.mem_range.mpr (inside j (List.mem_toFinset.mp chosen))
+            · intro i member
+              obtain ⟨v, found, _⟩ :=
+                (mem_getActiveValidatorIndices (a.state.validators.bound earlyA)).mp
+                  (List.mem_toFinset.mp member)
+              simpa only [found, Option.map_some, Option.getD_some] using
+                cap v (Array.mem_of_getElem? found)
+            · intro _ _ _
+              exact Nat.zero_le _
+          _ = _ := by simp
+      have size := (registryGrows_of_chainSteps rest.chainSteps).trans registry
+      exact weight.trans (by
+        simpa only [activeStakeWindow, funded, ↓reduceIte] using
+          Nat.mul_le_mul_right preset.MAX_EFFECTIVE_BALANCE_ELECTRA.toNat size)
+  -- A reachable block input bounds the active weight at each internal call site.
+  have rates : ∀ site ∈ tail.consolidationSites,
+      .pectra ≤ site.fork → ∀ (rate : Gwei),
+        getConsolidationChurnLimit config site.state = .ok rate →
+          rate.toNat ≤ consolidationRate (preset := preset) (config := config)
+            (activeStakeWindow (config := config) x high events) := by
+    intro site member _ rate computed
+    obtain ⟨a, b, pre, step, post, same, fork, _, weight⟩ :=
+      consolidationSites_provenance shared tail genesis parameters caps early site member
+    have earlySite : site.fork < .glamsterdam := by
+      rw [fork]
+      exact Nat.lt_of_le_of_lt
+        (Nat.le_trans step.chainStep.fork_le (fork_le_of_chainSteps post.chainSteps)) early
+    have unique := consolidationSites_unique tail (shared.unique (genesis_unique genesis))
+      site member
+    have notGloas : ¬ .glamsterdam ≤ site.fork := Nat.not_le_of_lt earlySite
+    cases read : getTotalActiveBalance site.state with
+    | error error =>
+      simp only [getConsolidationChurnLimit, notGloas, ↓reduceIte,
+        getBalanceChurnLimit, read, bind, Except.bind] at computed
+      cases computed
+    | ok total =>
+      obtain ⟨inside, _, totalEq⟩ :=
+        getTotalBalance_ok_iff_stake.mp (getTotalActiveBalance_ok read)
+      have active := keys_weight site.state _ unique inside
+      have bounded := weight.trans (prefixBound pre step post same)
+      apply intervalLoss_consolidation_rate earlySite read computed
+      rw [totalEq]
+      apply max_le_max_left
+      simpa only [activeKeys, active, Models.stake, balanceAt] using bounded
+  -- Add scheduled exits and retained-key corrections to the queue window.
+  have charges := departure_charges_le_window shared tail genesis parameters caps early high
+    (registryWindow x high)
+    (consolidationRate (preset := preset) (config := config)
+      (activeStakeWindow (config := config) x high events)) endEpoch registry rates
+  have losses := intervalLoss_departure_bound shared tail genesis parameters caps aligned
+    early high endEpoch events replayed
+  change _ ≤ queueCarry x high + driftHorizon x high * _ at charges
+  unfold exitWindow
+  omega
 
 private theorem intervalGain_existing_funding {x y : ForkedBeaconState preset}
     (tail : Run config checks x y) (early : y.fork < .glamsterdam)
