@@ -5,6 +5,10 @@ public import EthLib.Consensus.Proofs.Accessors.Draw
 public import EthLib.Consensus.Proofs.BuilderApi
 public import EthLib.Consensus.Proofs.Builders
 public import EthLib.Consensus.Proofs.Churn
+public import EthLib.Consensus.Proofs.DirectSafety.Terminal
+public import EthLib.Consensus.Proofs.DirectSafety.TerminalFields
+public import EthLib.Consensus.Proofs.DirectSafety.TerminalQuorums
+public import EthLib.Consensus.Proofs.DirectSafety.TerminalSafety
 public import EthLib.Consensus.Proofs.Mutators
 public import EthLib.Consensus.Proofs.Participation
 public import EthLib.Consensus.Proofs.PayloadTimeliness
@@ -28,6 +32,7 @@ public import EthLib.Consensus.Proofs.DataAvailability.Blob
 public import EthLib.Consensus.Proofs.DataAvailability.Column
 public import EthLib.Consensus.Proofs.DataAvailability.Custody
 public import EthLib.Consensus.Proofs.DepositTree
+public import EthLib.Consensus.Proofs.ForkChoice.AccountableCheckpoints
 public import EthLib.Consensus.Proofs.ForkChoice.AncestorRoots
 public import EthLib.Consensus.Proofs.ForkChoice.AttestationScores
 public import EthLib.Consensus.Proofs.ForkChoice.BlockAgreement
@@ -35,6 +40,7 @@ public import EthLib.Consensus.Proofs.ForkChoice.BlockStates
 public import EthLib.Consensus.Proofs.ForkChoice.Checkpoints
 public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmation
 public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmationCheckpoints
+public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmationCommittees
 public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmationConfirmedRoot
 public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmationIndicators
 public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmationResets
@@ -42,6 +48,9 @@ public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmationSafety
 public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmationSets
 public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmationSupport
 public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmationSupporters
+public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmationTransport
+public import EthLib.Consensus.Proofs.ForkChoice.FinalizedOrigins
+public import EthLib.Consensus.Proofs.ForkChoice.FinalizedSources
 public import EthLib.Consensus.Proofs.ForkChoice.ForwardClock
 public import EthLib.Consensus.Proofs.ForkChoice.Ghost
 public import EthLib.Consensus.Proofs.ForkChoice.Handlers
@@ -49,6 +58,7 @@ public import EthLib.Consensus.Proofs.ForkChoice.Head
 public import EthLib.Consensus.Proofs.ForkChoice.HonestCheckpoints
 public import EthLib.Consensus.Proofs.ForkChoice.HonestDuties
 public import EthLib.Consensus.Proofs.ForkChoice.HonestVotes
+public import EthLib.Consensus.Proofs.ForkChoice.JustifiedOrigins
 public import EthLib.Consensus.Proofs.ForkChoice.Network
 public import EthLib.Consensus.Proofs.ForkChoice.Optimistic
 public import EthLib.Consensus.Proofs.ForkChoice.OptimisticSync

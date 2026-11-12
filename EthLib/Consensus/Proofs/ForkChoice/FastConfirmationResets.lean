@@ -2,6 +2,7 @@ module
 
 public import EthLib.Consensus.Proofs.ForkChoice.BlockAgreement
 public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmationCheckpoints
+public import EthLib.Consensus.Proofs.ForkChoice.FinalizedSources
 
 /-!
 # Statements: the blocks that the fast confirmation rule falls back to are safe
@@ -85,6 +86,87 @@ variable {preset : Preset} {fork : Fork} {config : Config} {checks : SignatureCh
 
 variable {e : Execution (honestForkChoice config checks sources anchorState anchorBlock assignment
   genesisTimeMs) J}
+
+/-- Without an anchor at or before its epoch start, no new block can be admitted. -/
+private theorem frozen_or_anchor_aligned {store anchor : Store preset fork}
+    (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (reachable : Store.Reachable config anchorState anchorBlock store) :
+    (∃ start, computeStartSlotAtEpoch preset (getCurrentEpoch anchorState) = .ok start ∧
+      anchorBlock.slot ≤ start) ∨
+    (store.blocks = anchor.blocks ∧
+      store.finalizedCheckpoint = anchor.finalizedCheckpoint ∧
+      store.unrealizedFinalizedCheckpoint = anchor.finalizedCheckpoint) := by
+  obtain ⟨anchorRoot, hashed, _, _, _, final, _, unrealized⟩ :=
+    getForkchoiceStore_anchor anchored
+  obtain ⟨r, hash, blocks, _⟩ := getForkchoiceStore_maps anchored
+  rw [hashed, Except.ok.injEq] at hash
+  subst r
+  induction reachable with
+  | anchor made =>
+    have eq := Except.ok.inj (made.symm.trans anchored)
+    subst eq
+    exact .inr ⟨rfl, rfl, unrealized.trans final.symm⟩
+  | tick _ ticked ih =>
+    rcases ih with aligned | ⟨same, f, u⟩
+    · exact .inl aligned
+    obtain ⟨f, u⟩ := Store.finalized_properties_of_onTick
+      (fun c => c = anchor.finalizedCheckpoint) f u ticked
+    exact .inr ⟨(Store.onTick_frame ticked).2.2.1.trans same, f, u⟩
+  | @block before after checks sources signed reached added ih =>
+    rcases ih with aligned | ⟨same, f, u⟩
+    · exact .inl aligned
+    rcases Store.onBlock_same_or_insert added with eq | ⟨root, rootOk, fresh, _⟩
+    · exact .inr (eq ▸ ⟨same, f, u⟩)
+    obtain ⟨_, _, checkpoint⟩ := Store.onBlock_checks rootOk
+      (by simp [Std.TreeMap.contains_eq_isSome_getElem?, fresh]) added
+    rw [f, final] at checkpoint
+    unfold Store.getCheckpointBlock at checkpoint
+    simp only [bind_ok_iff] at checkpoint
+    obtain ⟨start, startOk, node, walk, _⟩ := checkpoint
+    obtain ⟨block, known, lower⟩ := Store.getAncestor_le walk
+    rw [same, blocks, getElem?_insert_root] at known
+    split at known
+    · cases Option.some.inj known
+      exact .inl ⟨start, mapError_ok_iff.mp startOk, lower⟩
+    · simp at known
+  | attestation _ attested ih =>
+    rcases ih with aligned | ⟨same, f, u⟩
+    · exact .inl aligned
+    have maps := (Store.onAttestation_frame attested).2.1
+    unfold Store.onAttestation at attested
+    simp only [bind_ok_iff] at attested
+    obtain ⟨_, _, stored, storing, _, _, _, _, _, _, _, _, attested⟩ := attested
+    have fields : stored.finalizedCheckpoint = anchor.finalizedCheckpoint ∧
+        stored.unrealizedFinalizedCheckpoint = anchor.finalizedCheckpoint := by
+      unfold Store.storeTargetCheckpointState at storing
+      split at storing
+      · cases Except.ok.inj storing
+        exact ⟨f, u⟩
+      · simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at storing
+        obtain ⟨_, _, rfl⟩ := storing
+        exact ⟨f, u⟩
+    split at attested
+    · cases Except.ok.inj attested
+      exact .inr ⟨maps.trans same, fields⟩
+    · simp [throw, throwThe, MonadExceptOf.throw, bind, Except.bind] at attested
+  | attesterSlashing _ slashed ih =>
+    rcases ih with aligned | ⟨same, f, u⟩
+    · exact .inl aligned
+    have maps := (Store.onAttesterSlashing_frame slashed).2.1
+    unfold Store.onAttesterSlashing at slashed
+    simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at slashed
+    obtain ⟨_, _, rfl⟩ := slashed
+    exact .inr ⟨maps.trans same, f, u⟩
+  | payloadAttestation _ voted ih =>
+    obtain ⟨_, _, rfl⟩ := Store.onPayloadAttestationMessage_onlyPtcVotes voted
+    exact ih
+  | envelope _ accepted ih =>
+    obtain ⟨_, _, _, _, _, record, rfl⟩ := Store.onExecutionPayloadEnvelope_ok accepted
+    obtain ⟨_, rfl⟩ := Store.recordEnvelope_frame record
+    exact ih
+  | inclusionList _ accepted ih =>
+    obtain ⟨_, _, rfl⟩ := Store.onInclusionList_ok ‹_› accepted
+    exact ih
 
 private theorem ancestor_pending_of_walk {store : Store preset fork}
     {node : ForkChoiceNode} {root : Root} {block : BeaconBlock preset fork}
@@ -353,9 +435,11 @@ private theorem finalized_states_bound {store : Store preset fork}
 /-- Realized finality is two epochs old; unrealized finality is one, except at the anchor. -/
 private def ResetAge (anchor : Checkpoint) (store : Store preset fork) (epoch : Epoch) : Prop :=
   (store.finalizedCheckpoint = anchor ∨
-    store.finalizedCheckpoint.epoch.toNat + 2 ≤ epoch.toNat) ∧
+    (anchor.epoch < store.finalizedCheckpoint.epoch ∧
+      store.finalizedCheckpoint.epoch.toNat + 2 ≤ epoch.toNat)) ∧
   (store.unrealizedFinalizedCheckpoint = anchor ∨
-    store.unrealizedFinalizedCheckpoint.epoch.toNat + 1 ≤ epoch.toNat) ∧
+    (anchor.epoch < store.unrealizedFinalizedCheckpoint.epoch ∧
+      store.unrealizedFinalizedCheckpoint.epoch.toNat + 1 ≤ epoch.toNat)) ∧
   anchor.epoch ≤ store.finalizedCheckpoint.epoch ∧
   anchor.epoch ≤ store.unrealizedFinalizedCheckpoint.epoch
 
@@ -363,7 +447,7 @@ private theorem resetAge_mono {anchor : Checkpoint} {s : Store preset fork} {a b
     (h : ResetAge anchor s a) (le : a ≤ b) : ResetAge anchor s b := by
   have le := UInt64.le_iff_toNat_le.mp le
   rcases h with ⟨hf, hu, lowF, lowU⟩
-  exact ⟨hf.imp id (by omega), hu.imp id (by omega), lowF, lowU⟩
+  exact ⟨hf.imp id (fun h => ⟨h.1, by omega⟩), hu.imp id (fun h => ⟨h.1, by omega⟩), lowF, lowU⟩
 
 private theorem resetAge_update {anchor j f : Checkpoint} {s : Store preset fork} {epoch : Epoch}
     (h : ResetAge anchor s epoch)
@@ -380,7 +464,7 @@ private theorem resetAge_update {anchor j f : Checkpoint} {s : Store preset fork
     | exact ⟨hf, hu, lowF, lowU⟩
     | rename_i advance
       have advance := UInt64.lt_iff_toNat_lt.mp advance
-      exact ⟨.inr (by dsimp only; omega), hu,
+      exact ⟨.inr ⟨UInt64.lt_iff_toNat_lt.mpr (by dsimp only; omega), by dsimp only; omega⟩, hu,
         UInt64.le_iff_toNat_le.mpr (by dsimp only; omega), lowU⟩
 
 private theorem resetAge_update_unrealized {anchor j f : Checkpoint}
@@ -398,7 +482,8 @@ private theorem resetAge_update_unrealized {anchor j f : Checkpoint}
     | exact ⟨hf, hu, lowF, lowU⟩
     | rename_i advance
       have advance := UInt64.lt_iff_toNat_lt.mp advance
-      exact ⟨hf, .inr (by dsimp only; omega), lowF,
+      exact ⟨hf, .inr ⟨UInt64.lt_iff_toNat_lt.mpr (by dsimp only; omega),
+        by dsimp only; omega⟩, lowF,
         UInt64.le_iff_toNat_le.mpr (by dsimp only; omega)⟩
 
 private theorem resetAge_realize {anchor : Checkpoint} {s : Store preset fork} {a b : Epoch}
@@ -736,7 +821,7 @@ theorem Execution.finalizedCheckpoint_eq_or_add_two_le {anchor : Store preset fo
   rw [slotOk, Except.ok.injEq] at clock
   subst current
   cases Except.ok.inj epochOk
-  exact h.1
+  exact h.1.imp id And.right
 
 /-- Step 7, the recent start: the rule confirms a block after the finalized one of the anchor only.
 
@@ -748,6 +833,8 @@ A finalized checkpoint after that of the anchor is two epochs old, and its block
 
 So the finalized checkpoint of the store is that of the anchor. -/
 theorem Execution.finalizedCheckpoint_eq_of_checked {anchor : Store preset fork}
+    (positive : 0 < preset.SLOTS_PER_EPOCH.toNat)
+    (window : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
     (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
     (sound : Invariant anchorState)
     {u : ValidatorIndex} (honest : u ∈ J) (start : e.start u = anchor) {n : ℕ}
@@ -758,7 +845,98 @@ theorem Execution.finalizedCheckpoint_eq_of_checked {anchor : Store preset fork}
     (checked : ((e.world n).state u).Checked config fcr head
       ((e.world n).state u).finalizedCheckpoint.root root) :
     ((e.world n).state u).finalizedCheckpoint = anchor.finalizedCheckpoint := by
-  sorry
+  have _ := honest
+  obtain ⟨epoch, slot, rootEpoch, startEpoch, epochOk, slotOk, rootOk, startOk, recent,
+    rest⟩ := checked
+  have forward : Store.ForwardReachable config anchorState anchorBlock ((e.world n).state u) := by
+    clear epochOk slotOk startOk recent rootOk rest nonzero
+    induction n with
+    | zero =>
+      change Store.ForwardReachable config anchorState anchorBlock (e.start u)
+      rw [start]
+      exact .anchor anchored
+    | succ n ih =>
+      rcases e.state_succ n u with same | ⟨_, moved⟩
+      · exact same ▸ ih
+      · exact moved.forwardReachable ih
+  have reached := forward.reachable
+  obtain ⟨current, clock, age⟩ := resetAge_forward anchored sound
+    (Store.slotDuration_pos slotOk) forward
+  rw [slotOk, Except.ok.injEq] at clock
+  subst current
+  have epochEq : epoch = computeEpochAtSlot preset slot := by
+    simpa [Store.getCurrentStoreEpoch, slotOk, bind, Except.bind, pure, Except.pure] using
+      epochOk.symm
+  subst epoch
+  rcases age.1 with same | ⟨later, old⟩
+  · exact same
+  exfalso
+  obtain ⟨anchorRoot, hash, _, _, _, final, _⟩ := getForkchoiceStore_anchor anchored
+  have later' : getCurrentEpoch anchorState < ((e.world n).state u).finalizedCheckpoint.epoch := by
+    simpa only [final] using later
+  have origin := reached.finalized_origins _ (.inl rfl)
+  have child : ∃ (r : Root) (b : BeaconBlock preset fork),
+      ((e.world n).state u).blocks[r]? = some b ∧ b ≠ anchorBlock := by
+    by_contra absent
+    have allAnchor {r : Root} {s : BeaconState preset fork}
+        (held : ((e.world n).state u).blockStates[r]? = some s) : s = anchorState := by
+      obtain ⟨b, known⟩ := reached.known_of_blockState held
+      have same : b = anchorBlock := by
+        by_contra other
+        exact absent ⟨r, b, known, other⟩
+      obtain ⟨post, found, anchoredState, _⟩ := reached.blockStatesFromParents known
+      rw [held, Option.some.injEq] at found
+      subst post
+      exact anchoredState same
+    have upper : ((e.world n).state u).finalizedCheckpoint.epoch ≤ getCurrentEpoch anchorState := by
+      rcases origin with ⟨r, _, eq⟩ | ⟨r, s, held, eq⟩ | ⟨r, s, p, held, pulled, eq⟩
+      · exact eq ▸ UInt64.le_refl _
+      · rw [eq, allAnchor held]
+        exact UInt64.le_trans (Store.finalized_le_currentJustified sound.ordered)
+          (UInt64.le_trans sound.settled (getPreviousEpoch_le _))
+      · rw [allAnchor held] at pulled
+        have inv := processJustificationAndFinalization_invariant sound.ordered sound.settled pulled
+        rw [eq]
+        exact UInt64.le_trans (Store.finalized_le_currentJustified inv.1) inv.2.2.1
+    exact UInt64.not_le.mpr later' upper
+  have aligned : anchorBlock.slot ≤ anchorState.slot := by
+    rcases frozen_or_anchor_aligned anchored reached with ⟨first, firstOk, le⟩ | ⟨_, eq, _⟩
+    · have firstEq := (computeStartSlotAtEpoch_ok_iff.mp firstOk).2
+      rw [getCurrentEpoch_toNat] at firstEq
+      have lower := Nat.div_mul_le_self anchorState.slot.toNat preset.SLOTS_PER_EPOCH.toNat
+      exact UInt64.le_trans le (UInt64.le_iff_toNat_le.mpr (by omega))
+    · rw [eq] at later
+      exact (UInt64.lt_irrefl _ later).elim
+  have rootBound : ∃ first b,
+      computeStartSlotAtEpoch preset ((e.world n).state u).finalizedCheckpoint.epoch = .ok first ∧
+      ((e.world n).state u).blocks[((e.world n).state u).finalizedCheckpoint.root]? = some b ∧
+      b.slot ≤ first := by
+    rcases origin with ⟨r, _, eq⟩ | ⟨r, s, held, eq⟩ | ⟨r, s, p, held, pulled, eq⟩
+    · rw [eq] at later'
+      exact (UInt64.lt_irrefl _ later').elim
+    · have bound := (reached.blockState_checkpoint_roots sound positive window aligned
+        nonzero child held).2.2
+      rw [← eq] at bound
+      exact bound.resolve_left (UInt64.not_le.mpr later')
+    · have bound := reached.pulled_finalized_root sound positive window aligned nonzero
+        child held pulled
+      rw [← eq] at bound
+      exact bound.resolve_left (UInt64.not_le.mpr later')
+  obtain ⟨first, b, firstOk, known, lower⟩ := rootBound
+  unfold Store.getBlockEpoch at startOk
+  simp only [bind_ok_iff] at startOk
+  obtain ⟨b', found, eq⟩ := startOk
+  rw [Store.block_ok_iff.mpr known, Except.ok.injEq] at found
+  subst b'
+  cases Except.ok.inj eq
+  have bound : (computeEpochAtSlot preset b.slot).toNat ≤
+      ((e.world n).state u).finalizedCheckpoint.epoch.toNat := by
+    have le := Nat.div_le_div_right (c := preset.SLOTS_PER_EPOCH.toNat)
+      (UInt64.le_iff_toNat_le.mp lower)
+    have atStart := computeEpochAtSlot_computeStartSlotAtEpoch
+      (UInt64.lt_iff_toNat_lt.mpr positive) firstOk
+    simpa only [← atStart, computeEpochAtSlot, UInt64.toNat_div] using le
+  omega
 
 /-- A delay later, each honest store has justified the epoch that an honest store finalized.
 
@@ -774,6 +952,8 @@ Otherwise its finalized checkpoint is of a later epoch, and so is its justified 
 
 The proof uses the finalized chain to place the finalized checkpoint of the receiver. -/
 theorem Execution.finalized_epoch_le_justified_epoch {Δ : ℕ} (sync : e.Synchronous Δ)
+    (positive : 0 < preset.SLOTS_PER_EPOCH.toNat)
+    (window : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
     (preGloas : fork < .glamsterdam)
     (oneBlock : OneBlockPerRoot e) (admitted : BlocksAdmitted e 0 Δ) {anchor : Store preset fork}
     (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
@@ -791,6 +971,32 @@ theorem Execution.finalized_epoch_le_justified_epoch {Δ : ℕ} (sync : e.Synchr
       ((e.world k).state w).justifiedCheckpoint.epoch := by
   sorry
 
+/-- A finalized checkpoint is safe when every current justification covers its epoch. -/
+theorem Execution.safeAt_finalized_of_epoch_bounds
+    (preGloas : fork < .glamsterdam) {horizon : Epoch} (chain : FinalizedPrefix e horizon)
+    {u : ValidatorIndex} (caller : u ∈ J) {n time : ℕ}
+    (bounds : ∀ w ∈ J, ∀ k, (e.world k).time = time →
+      UpToDate config checks sources (e.world k).time ((e.world k).view w)
+        ((e.world k).state w) →
+      ((e.world n).state u).finalizedCheckpoint.epoch ≤
+        ((e.world k).state w).justifiedCheckpoint.epoch ∧
+      ((e.world k).state w).justifiedCheckpoint.epoch ≤ horizon) :
+    SafeAt e time ((e.world n).state u).finalizedCheckpoint.root := by
+  intro w honest k head atTime current headOk
+  obtain ⟨lower, upper⟩ := bounds w honest k atTime current
+  have read := chain u caller w honest n k _ (Or.inl rfl) lower upper
+  obtain ⟨boundary, finalized, _, finalizedKnown, _, below⟩ :=
+    Store.isAncestor_of_getCheckpointBlock preGloas read
+  have headAbove := Store.isAncestor_getHead headOk
+  have justifiedKnown : ∃ b, ((e.world k).state w).blocks[
+      ((e.world k).state w).justifiedCheckpoint.root]? = some b := by
+    unfold Store.isAncestor at headAbove
+    rw [bind_ok_iff] at headAbove
+    obtain ⟨b, found, _⟩ := headAbove
+    exact ⟨b, Store.block_ok_iff.mp found⟩
+  obtain ⟨justified, justifiedKnown⟩ := justifiedKnown
+  exact Store.isAncestor_trans_of_lt preGloas justifiedKnown finalizedKnown headAbove below
+
 /-- Step 7, the finalized block: it is safe from one delay after an honest store holds it.
 
 The store is that of an honest validator at an event.
@@ -803,6 +1009,8 @@ The finalized block is on the chain of that justified block, by the finalized ch
 
 The head of a store is above its justified block. -/
 theorem Execution.safeAt_finalized {Δ : ℕ} (sync : e.Synchronous Δ)
+    (positive : 0 < preset.SLOTS_PER_EPOCH.toNat)
+    (window : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
     (preGloas : fork < .glamsterdam)
     (oneBlock : OneBlockPerRoot e) (admitted : BlocksAdmitted e 0 Δ) {anchor : Store preset fork}
     (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
@@ -837,6 +1045,8 @@ In a later epoch the receiver takes the unrealized justification of the block as
 
 Otherwise its finalized checkpoint is of a later epoch than the checkpoint. -/
 theorem Execution.unrealized_epoch_le_justified_epoch {Δ : ℕ} (sync : e.Synchronous Δ)
+    (positive : 0 < preset.SLOTS_PER_EPOCH.toNat)
+    (window : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
     (preGloas : fork < .glamsterdam)
     (oneBlock : OneBlockPerRoot e) (admitted : BlocksAdmitted e 0 Δ) {anchor : Store preset fork}
     (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
@@ -884,6 +1094,8 @@ The rule also asks that the checkpoint is the unrealized justification of its he
 
 The statement does not take that fact. -/
 theorem Execution.safeAt_observed {Δ : ℕ} (sync : e.Synchronous Δ)
+    (positive : 0 < preset.SLOTS_PER_EPOCH.toNat)
+    (window : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
     (slots : 0 < config.SLOT_DURATION_MS) (votes : Votes e.startTime e)
     (fits : DelayFits fork config genesisTimeMs Δ) (prompt : Prompt e)
     (preGloas : fork < .glamsterdam)
@@ -916,5 +1128,129 @@ theorem Execution.safeAt_observed {Δ : ℕ} (sync : e.Synchronous Δ)
     ∀ time, (e.world n).time ≤ time → time ≤ limit →
       SafeAt e time ((e.world m).state u).unrealizedJustifiedCheckpoint.root := by
   sorry
+
+/-- Each block that an honest store holds has the block of the anchor on its chain.
+
+The call history uses this when its historical anchor is the block of the anchor. -/
+theorem Execution.isAncestor_anchor_of_known {anchor : Store preset fork}
+    (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (start : ∀ w ∈ J, e.start w = anchor)
+    {w : ValidatorIndex} (honest : w ∈ J) {k : ℕ} {root : Root} {block : BeaconBlock preset fork}
+    (known : ((e.world k).state w).blocks[root]? = some block) :
+    ((e.world k).state w).isAncestor ⟨root, .pending⟩
+      ⟨anchor.finalizedCheckpoint.root, .pending⟩ = .ok true := by
+  have reached := e.reachable
+    (fun w hw => (start w hw).symm ▸ Store.Reachable.anchor anchored) k w honest
+  obtain ⟨anchorKnown, walks⟩ := anchor_walk_of_reachable anchored reached
+  exact ancestor_pending_of_walk anchorKnown (walks ⟨root, .pending⟩ block known fun _ => rfl).2
+
+/-- The block of the finalized checkpoint is that of the anchor, or is two epochs old.
+
+A call that falls back to the finalized block and confirms nothing stores that block.
+
+The induction needs its age, and `Execution.finalizedCheckpoint_eq_of_checked` needs a check.
+
+So this is the same bound, read off the block of the checkpoint without a check. -/
+theorem Execution.finalizedCheckpoint_eq_or_blockEpoch_add_two_le {anchor : Store preset fork}
+    (positive : 0 < preset.SLOTS_PER_EPOCH.toNat)
+    (window : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
+    (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (sound : Invariant anchorState)
+    {u : ValidatorIndex} (honest : u ∈ J) (start : e.start u = anchor) {n : ℕ}
+    (nonzero : ∀ (root : Root) (block : BeaconBlock preset fork),
+      ((e.world n).state u).blocks[root]? = some block →
+      block.stateRoot ≠ Vector.replicate 32 0)
+    {epoch : Epoch} (epochOk : ((e.world n).state u).getCurrentStoreEpoch config = .ok epoch) :
+    ((e.world n).state u).finalizedCheckpoint = anchor.finalizedCheckpoint ∨
+      ∃ rootEpoch,
+        ((e.world n).state u).getBlockEpoch ((e.world n).state u).finalizedCheckpoint.root =
+          .ok rootEpoch ∧ rootEpoch.toNat + 2 ≤ epoch.toNat := by
+  have _ := honest
+  have forward : Store.ForwardReachable config anchorState anchorBlock ((e.world n).state u) := by
+    clear epochOk nonzero
+    induction n with
+    | zero =>
+      change Store.ForwardReachable config anchorState anchorBlock (e.start u)
+      rw [start]
+      exact .anchor anchored
+    | succ n ih =>
+      rcases e.state_succ n u with same | ⟨_, moved⟩
+      · exact same ▸ ih
+      · exact moved.forwardReachable ih
+  have reached := forward.reachable
+  unfold Store.getCurrentStoreEpoch at epochOk
+  rw [bind_ok_iff] at epochOk
+  obtain ⟨slot, slotOk, epochOk⟩ := epochOk
+  obtain ⟨current, clock, age⟩ := resetAge_forward anchored sound
+    (Store.slotDuration_pos slotOk) forward
+  rw [slotOk, Except.ok.injEq] at clock
+  subst current
+  cases Except.ok.inj epochOk
+  rcases age.1 with same | ⟨later, old⟩
+  · exact .inl same
+  right
+  obtain ⟨anchorRoot, hash, _, _, _, final, _⟩ := getForkchoiceStore_anchor anchored
+  have later' : getCurrentEpoch anchorState < ((e.world n).state u).finalizedCheckpoint.epoch := by
+    simpa only [final] using later
+  have origin := reached.finalized_origins _ (.inl rfl)
+  -- Some held block is not the anchor block, or every held state is the anchor state.
+  have child : ∃ (r : Root) (b : BeaconBlock preset fork),
+      ((e.world n).state u).blocks[r]? = some b ∧ b ≠ anchorBlock := by
+    by_contra absent
+    have allAnchor {r : Root} {s : BeaconState preset fork}
+        (held : ((e.world n).state u).blockStates[r]? = some s) : s = anchorState := by
+      obtain ⟨b, known⟩ := reached.known_of_blockState held
+      have same : b = anchorBlock := by
+        by_contra other
+        exact absent ⟨r, b, known, other⟩
+      obtain ⟨post, found, anchoredState, _⟩ := reached.blockStatesFromParents known
+      rw [held, Option.some.injEq] at found
+      subst post
+      exact anchoredState same
+    have upper : ((e.world n).state u).finalizedCheckpoint.epoch ≤ getCurrentEpoch anchorState := by
+      rcases origin with ⟨r, _, eq⟩ | ⟨r, s, held, eq⟩ | ⟨r, s, p, held, pulled, eq⟩
+      · exact eq ▸ UInt64.le_refl _
+      · rw [eq, allAnchor held]
+        exact UInt64.le_trans (Store.finalized_le_currentJustified sound.ordered)
+          (UInt64.le_trans sound.settled (getPreviousEpoch_le _))
+      · rw [allAnchor held] at pulled
+        have inv := processJustificationAndFinalization_invariant sound.ordered sound.settled pulled
+        rw [eq]
+        exact UInt64.le_trans (Store.finalized_le_currentJustified inv.1) inv.2.2.1
+    exact UInt64.not_le.mpr later' upper
+  have aligned : anchorBlock.slot ≤ anchorState.slot := by
+    rcases frozen_or_anchor_aligned anchored reached with ⟨first, firstOk, le⟩ | ⟨_, eq, _⟩
+    · have firstEq := (computeStartSlotAtEpoch_ok_iff.mp firstOk).2
+      rw [getCurrentEpoch_toNat] at firstEq
+      have lower := Nat.div_mul_le_self anchorState.slot.toNat preset.SLOTS_PER_EPOCH.toNat
+      exact UInt64.le_trans le (UInt64.le_iff_toNat_le.mpr (by omega))
+    · rw [eq] at later
+      exact (UInt64.lt_irrefl _ later).elim
+  -- The finalized block is at or before the start of the finalized epoch.
+  have rootBound : ∃ first b,
+      computeStartSlotAtEpoch preset ((e.world n).state u).finalizedCheckpoint.epoch = .ok first ∧
+      ((e.world n).state u).blocks[((e.world n).state u).finalizedCheckpoint.root]? = some b ∧
+      b.slot ≤ first := by
+    rcases origin with ⟨r, _, eq⟩ | ⟨r, s, held, eq⟩ | ⟨r, s, p, held, pulled, eq⟩
+    · rw [eq] at later'
+      exact (UInt64.lt_irrefl _ later').elim
+    · have bound := (reached.blockState_checkpoint_roots sound positive window aligned
+        nonzero child held).2.2
+      rw [← eq] at bound
+      exact bound.resolve_left (UInt64.not_le.mpr later')
+    · have bound := reached.pulled_finalized_root sound positive window aligned nonzero
+        child held pulled
+      rw [← eq] at bound
+      exact bound.resolve_left (UInt64.not_le.mpr later')
+  obtain ⟨first, b, firstOk, known, lower⟩ := rootBound
+  have bound : (computeEpochAtSlot preset b.slot).toNat ≤
+      ((e.world n).state u).finalizedCheckpoint.epoch.toNat := by
+    have le := Nat.div_le_div_right (c := preset.SLOTS_PER_EPOCH.toNat)
+      (UInt64.le_iff_toNat_le.mp lower)
+    have atStart := computeEpochAtSlot_computeStartSlotAtEpoch
+      (UInt64.lt_iff_toNat_lt.mpr positive) firstOk
+    simpa only [← atStart, computeEpochAtSlot, UInt64.toNat_div] using le
+  refine ⟨computeEpochAtSlot preset b.slot, ?_, by omega⟩
+  simp [Store.getBlockEpoch, Store.block_ok_iff.mpr known, bind, Except.bind, pure, Except.pure]
 
 end EthLib.Consensus.Models.Network

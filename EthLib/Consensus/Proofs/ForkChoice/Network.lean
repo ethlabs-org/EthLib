@@ -158,6 +158,34 @@ theorem Execution.blocks_of_le {ν κ : Type*} [DecidableEq ν] {checks : Signat
     · exact same ▸ ih
     · exact moved.blocks_of_found ih
 
+/-- A network handler never lowers the realized justified or finalized epoch. -/
+theorem Handles.epochsLe {checks : SignatureChecks} {sources : BlockSources preset fork}
+    {time : ℕ} {view : Set (Message preset fork)} {store after : Store preset fork}
+    (handles : Handles config checks sources time view store after) : store.EpochsLe after := by
+  cases handles with
+  | tick _ _ ticked => exact (Store.onTick_frame ticked).2.1
+  | block _ added => exact Store.onBlockWithVotes_epochsLe added
+  | attestation _ attested => exact (Store.onAttestation_frame attested).1
+  | attesterSlashing _ slashed => exact (Store.onAttesterSlashing_frame slashed).1
+  | payloadAttestation _ voted =>
+    exact (Store.onPayloadAttestationMessage_onlyPtcVotes voted).frame.1
+  | envelope _ accepted => exact (Store.onExecutionPayloadEnvelope_frame accepted).1
+  | inclusionList _ accepted => exact (Store.onInclusionList_frame accepted).1
+
+/-- Realized justified and finalized epochs never decrease along an execution. -/
+theorem Execution.epochsLe_of_le {ν κ : Type*} [DecidableEq ν] {checks : SignatureChecks}
+    {sources : BlockSources preset fork} {signed : Message preset fork → Set (ν × κ)}
+    {sends : ν → ℕ → Set (Message preset fork) → Store preset fork → Message preset fork → Prop}
+    {J : Set ν} (e : Execution (forkChoice config checks sources signed sends) J)
+    (u : ν) {n k : ℕ} (later : n ≤ k) :
+    ((e.world n).state u).EpochsLe ((e.world k).state u) := by
+  induction k, later using Nat.le_induction with
+  | base => exact Store.EpochsLe.refl _
+  | succ k _ ih =>
+    rcases e.state_succ k u with same | ⟨_, moved⟩
+    · exact same ▸ ih
+    · exact ih.trans moved.epochsLe
+
 /-- A move of the store leads from a reachable store to a reachable store. -/
 theorem Handles.reachable {checks : SignatureChecks} {sources : BlockSources preset fork}
     {time : ℕ} {view : Set (Message preset fork)} {store after : Store preset fork}
