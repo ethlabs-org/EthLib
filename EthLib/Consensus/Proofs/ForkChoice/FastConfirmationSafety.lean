@@ -4463,6 +4463,8 @@ Each checkpoint state that an honest store reads has at most `stakeCapGwei` of a
 
 That cap, two hundred million ether, keeps the sums of balances that the rule reads within 64 bits.
 
+The boost percentage is at most 100, so the boost of one slot stays within 64 bits too.
+
 The margin covers the drift of such a state from the pulled-up state of a head, over two epochs.
 
 Each block that an honest store holds has a nonzero state root.

@@ -798,7 +798,7 @@ theorem Execution.exists_getFilteredNodeTree {anchor : Store preset fork}
         rw [belowOk]
         exact ⟨_, rfl⟩
   obtain ⟨justified, justifiedOk⟩ := e.justifiedRoot_known anchored sound start anchorSlot
-    anchorAtBoundary window preGloas nonzero honest bounded
+    window preGloas nonzero honest bounded
   exact walk _ justified rfl justifiedOk
 
 /-- The unslashed active balances sum to at most the cap when the registry indices fit. -/
