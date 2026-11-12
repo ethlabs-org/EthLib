@@ -2765,6 +2765,48 @@ private theorem walk_head_of_missing_duties {store : Store preset fork}
   exact Store.isAncestor_getHead_of_missing_weight lower before stateOk tree viable scoreOk
     bound support half (by simpa only [total] using margin) headOk
 
+/-- A successful receiver clock read bounds the start time of its current slot. -/
+private theorem walk_slot_time {clock : UInt64} {slot : Slot}
+    (read : computeSlotAtTimeMs config genesisTimeMs clock = .ok slot) :
+    ∃ start, computeTimeAtSlotMs config genesisTimeMs slot = .ok start ∧ start ≤ clock := by
+  unfold computeSlotAtTimeMs at read
+  simp only [bind_ok_iff] at read
+  obtain ⟨elapsed, elapsedOk, divided⟩ := read
+  obtain ⟨_, elapsedValue⟩ := subChecked_ok_iff.mp elapsedOk
+  obtain ⟨_, slotValue⟩ := divChecked_ok_iff.mp divided
+  have productLe : slot.toNat * config.SLOT_DURATION_MS.toNat ≤ elapsed.toNat := by
+    rw [slotValue]
+    exact Nat.div_mul_le_self _ _
+  have productBound : slot.toNat * config.SLOT_DURATION_MS.toNat < 2 ^ 64 :=
+    productLe.trans_lt elapsed.toNat_lt
+  have productOk := mulChecked_of_lt productBound
+  have productValue := (mulChecked_ok_iff.mp productOk).2
+  have sumBound : genesisTimeMs.toNat + (slot * config.SLOT_DURATION_MS).toNat < 2 ^ 64 := by
+    have := clock.toNat_lt
+    omega
+  have sumOk := addChecked_of_lt sumBound
+  have sumValue := (addChecked_ok_iff.mp sumOk).2
+  refine ⟨genesisTimeMs + slot * config.SLOT_DURATION_MS, ?_, ?_⟩
+  · simp only [computeTimeAtSlotMs, productOk, sumOk, bind, Except.bind]
+  · exact UInt64.le_iff_toNat_le.mpr (by omega)
+
+/-- The initial-phase age bound holds at every successful receiver clock, between ticks too. -/
+private theorem walk_receiver_age_at_clock {slot current : Slot} {begin clock : UInt64}
+    {parentEpoch : Epoch}
+    (positive : 0 < preset.SLOTS_PER_EPOCH.toNat)
+    (beginOk : computeTimeAtSlotMs config genesisTimeMs slot = .ok begin)
+    (clockOk : computeSlotAtTimeMs config genesisTimeMs clock = .ok current)
+    (recent : (computeEpochAtSlot preset slot).toNat ≤ parentEpoch.toNat + 1)
+    (initial : ¬CompleteEpochWithin preset config genesisTimeMs begin.toNat clock.toNat) :
+    (computeEpochAtSlot preset current).toNat ≤ parentEpoch.toNat + 2 := by
+  obtain ⟨endpoint, endpointOk, below⟩ := walk_slot_time clockOk
+  apply walk_receiver_age positive beginOk endpointOk recent
+  rintro ⟨epoch, first, next, firstTime, nextTime, firstOk, nextOk, firstTimeOk, nextTimeOk,
+    fresh, complete⟩
+  apply initial
+  exact ⟨epoch, first, next, firstTime, nextTime, firstOk, nextOk, firstTimeOk, nextTimeOk,
+    fresh, complete.trans (UInt64.le_iff_toNat_le.mp below)⟩
+
 /-- Complete-epoch duties imply descent using only the receiver's justified balances. -/
 private theorem walk_late_head {Δ : ℕ} (sync : e.Synchronous Δ)
     (slots : 0 < config.SLOT_DURATION_MS) (positive : 0 < preset.SLOTS_PER_EPOCH.toNat)
