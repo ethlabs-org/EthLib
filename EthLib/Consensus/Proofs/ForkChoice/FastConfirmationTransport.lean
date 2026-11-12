@@ -220,6 +220,109 @@ private theorem maximum_exists_of_total {store : Store preset fork} {head : Root
       rw [Store.computeCommitteeWeightBetweenSlots_of_covered coverage]
       rw [totalOk]; rfl⟩
 
+/-- A nonempty caller read supplies the start arithmetic for another range with the same start. -/
+private theorem coverage_exists_of_maximum {store : Store preset fork} {head : Root}
+    {state : BeaconState preset fork} {first last otherLast afterOther : Slot} {maximum : Gwei}
+    (nonempty : first ≤ last)
+    (read : store.computeCommitteeWeightBetweenSlots head state first last = .ok maximum)
+    (afterOk : addChecked otherLast 1 = .ok afterOther) :
+    ∃ covered, isFullValidatorSetCovered preset first otherLast = .ok covered := by
+  have notEmpty : ¬last < first := UInt64.not_lt.mpr nonempty
+  simp only [Store.computeCommitteeWeightBetweenSlots, bind_ok_iff] at read
+  obtain ⟨result, read, -⟩ := read
+  simp only [Store.computeCommitteeWeightAndMembers, notEmpty, ↓reduceIte,
+    bind_ok_iff] at read
+  obtain ⟨covered, coverage, -⟩ := read
+  simp only [isFullValidatorSetCovered, bind_ok_iff, mapError_ok_iff] at coverage
+  obtain ⟨afterFirst, firstOk, lastFirst, lastFirstOk, _, _, -⟩ := coverage
+  refine ⟨decide (computeEpochAtSlot preset lastFirst < computeEpochAtSlot preset afterOther), ?_⟩
+  simp only [isFullValidatorSetCovered, firstOk, lastFirstOk, afterOk, Except.mapError,
+    bind, Except.bind, pure, Except.pure]
+
+/-- A slot step within one epoch does not change the registry. -/
+private theorem validators_advanceSlot_sameEpoch {state after : BeaconState preset fork}
+    (positive : 0 < preset.SLOTS_PER_EPOCH.toNat)
+    (run : advanceSlot config checks state = .ok after)
+    (same : getCurrentEpoch after = getCurrentEpoch state) :
+    after.validators = state.validators := by
+  obtain ⟨next, cached, epoched, nextNat, cachedOk, epochedOk, rfl⟩ := advanceSlot_ok run
+  have inside : next % preset.SLOTS_PER_EPOCH ≠ 0 := by
+    intro boundary
+    have rem : next.toNat % preset.SLOTS_PER_EPOCH.toNat = 0 := by
+      simpa only [UInt64.toNat_mod, UInt64.toNat_zero] using congrArg UInt64.toNat boundary
+    have equal : next.toNat / preset.SLOTS_PER_EPOCH.toNat =
+        state.slot.toNat / preset.SLOTS_PER_EPOCH.toNat := by
+      simpa only [getCurrentEpoch, computeEpochAtSlot, UInt64.toNat_div] using
+        congrArg UInt64.toNat same
+    have beforeRem := Nat.mod_lt state.slot.toNat positive
+    have before := Nat.mod_add_div state.slot.toNat preset.SLOTS_PER_EPOCH.toNat
+    have after := Nat.mod_add_div next.toNat preset.SLOTS_PER_EPOCH.toNat
+    rw [rem, equal] at after
+    omega
+  simp only [epochIfLast, inside, ↓reduceIte, pure, Except.pure, Except.ok.injEq] at epochedOk
+  subst epoched
+  obtain ⟨_, _, _, _, rfl⟩ := processSlot_ok cachedOk
+  rfl
+
+/-- No epoch transition occurs between equal endpoint epochs of a slot-only run. -/
+private theorem validators_advanceSlots_sameEpoch (positive : 0 < preset.SLOTS_PER_EPOCH.toNat)
+    {count : Nat} {state after : BeaconState preset fork}
+    (run : advanceSlots config checks count state = .ok after)
+    (same : getCurrentEpoch after = getCurrentEpoch state) :
+    after.validators = state.validators := by
+  induction count generalizing state with
+  | zero =>
+    simp only [advanceSlots, pure, Except.pure, Except.ok.injEq] at run
+    subst after
+    rfl
+  | succ count ih =>
+    obtain ⟨middle, first, rest⟩ := bind_ok_iff.mp run
+    have low := (runKept_advanceSlot first).later
+    have high : getCurrentEpoch middle ≤ getCurrentEpoch after := by
+      rw [UInt64.le_iff_toNat_le, getCurrentEpoch_toNat, getCurrentEpoch_toNat]
+      exact Nat.div_le_div_right (by rw [advanceSlots_slot count rest]; omega)
+    have middleEq : getCurrentEpoch middle = getCurrentEpoch state :=
+      UInt64.le_antisymm (same ▸ high) low
+    exact (ih rest (same.trans middleEq.symm)).trans
+      (validators_advanceSlot_sameEpoch positive first middleEq)
+
+/-- A same-epoch lookahead preserves both the active total read and every slashing flag. -/
+private theorem lookahead_sameEpoch_frame {state after : BeaconState preset fork} {slot : Slot}
+    (positive : 0 < preset.SLOTS_PER_EPOCH.toNat)
+    (run : lookaheadState config checks state slot = .ok after)
+    (same : getCurrentEpoch after = getCurrentEpoch state) :
+    getTotalActiveBalance after = getTotalActiveBalance state ∧
+      ∀ v, NotSlashed after v ↔ NotSlashed state v := by
+  have validators : after.validators = state.validators := by
+    unfold lookaheadState at run
+    split at run
+    · have slotsOk := mapError_ok_iff.mp run
+      simp only [processSlots, bind_ok_iff, ensure_ok_iff] at slotsOk
+      obtain ⟨_, _, advanced⟩ := slotsOk
+      exact validators_advanceSlots_sameEpoch positive advanced same
+    · cases run
+      rfl
+  constructor
+  · simp only [getTotalActiveBalance, getActiveValidatorIndicesChecked, getTotalBalance,
+      validators, same]
+  · intro v
+    simp only [NotSlashed, validators]
+
+/-- After the first two epochs, a successful justification step has checked the active total. -/
+private theorem activeTotal_of_justification {state after : BeaconState preset fork}
+    (late : ¬getCurrentEpoch state ≤ GENESIS_EPOCH + 1)
+    (run : processJustificationAndFinalization state = .ok after) :
+    ∃ total, getTotalActiveBalance state = .ok total := by
+  unfold processJustificationAndFinalization at run
+  split at run
+  · simp only [processJustificationAndFinalizationAltair, late, ↓reduceIte,
+      bind_ok_iff, liftAccessor_ok] at run
+    obtain ⟨_, _, _, _, total, totalOk, _⟩ := run
+    exact ⟨total, totalOk⟩
+  · simp only [bind_ok_iff, liftAccessor_ok] at run
+    obtain ⟨_, _, _, _, total, totalOk, _⟩ := run
+    exact ⟨total, totalOk⟩
+
 variable [DecidablePred (· ∈ J)]
 
 /-- Step 5, the initial transport: the bound of step 4 holds in each honest store at a later time.
