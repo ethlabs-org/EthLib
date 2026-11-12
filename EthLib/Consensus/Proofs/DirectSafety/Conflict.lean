@@ -1029,7 +1029,8 @@ private theorem operations_backed {fork : Fork} {state after : BeaconState prese
         (fun _ _ _ ok => SlashedKept.of_validators (by rw [(processAttestation_registry ok).1]))
         attestations).trans <|
       (SlashedKept.foldlM (fun _ _ _ ok => SlashedKept.processVoluntaryExit ok) exits).trans <|
-      (SlashedKept.foldlM (fun _ _ _ ok => SlashedKept.processBlsToExecutionChange ok) changes).trans <|
+      (SlashedKept.foldlM
+        (fun _ _ _ ok => SlashedKept.processBlsToExecutionChange ok) changes).trans <|
       SlashedKept.foldlM (fun _ _ _ ok => by
         rw [processPayloadAttestation_eq ok]; exact SlashedKept.of_validators) paid
     exact rest evidence slashedBacked
@@ -1106,11 +1107,13 @@ private theorem block_backed {fork : Fork} {state after : BeaconState preset for
         by_cases paid : 0 < (block.body.signedExecutionPayloadBid (by assumption)).message.value
         · obtain ⟨_, _, _, _, rfl⟩ := recordBidPayment_of_pos paid recordedOk
           rfl
-        · simp only [recordBidPayment, paid, ↓reduceIte, pure, Except.pure, Except.ok.injEq] at recordedOk
+        · simp only [recordBidPayment, paid, ↓reduceIte, pure, Except.pure,
+            Except.ok.injEq] at recordedOk
           subst recordedOk
           rfl
       exact ⟨(SlashedKept.processWithdrawals withdrawn).trans
-        (SlashedKept.executionPayloadBid executed), size.trans (sameSizes_processWithdrawals withdrawn).1⟩
+        (SlashedKept.executionPayloadBid executed),
+        size.trans (sameSizes_processWithdrawals withdrawn).1⟩
     split at ok
     · obtain ⟨middle, withdrawn, executed⟩ := bind_ok_iff.mp ok
       exact ⟨(SlashedKept.processWithdrawals withdrawn).trans (payload executed).1,
@@ -1194,13 +1197,15 @@ private theorem block_backed {fork : Fork} {state after : BeaconState preset for
       exact SlashedKept.of_validators
     apply SlashedKept.processSyncAggregate synced evidence
     exact operated
-      (parentFacts.2.2.trans <| (RegistryIdentity.processBlockHeader headedOk).trans <| executionFacts.2.2.trans <|
+      (parentFacts.2.2.trans <| (RegistryIdentity.processBlockHeader headedOk).trans <|
+        executionFacts.2.2.trans <|
         (RegistryIdentity.processRandao revealedOk).trans
           (RegistryIdentity.processEth1Data votedOk))
       ((sameSizes_processEth1Data votedOk).1.trans <|
         (sameSizes_processRandao revealedOk).1.trans <|
         executionFacts.2.1.trans <| (sameSizes_processBlockHeader headedOk).1.trans parentFacts.2.1)
-      (parentFacts.1.trans <| headKept.trans (executionFacts.1.trans (randaoKept.trans voteKept))) operatedOk
+      (parentFacts.1.trans <| headKept.trans
+        (executionFacts.1.trans (randaoKept.trans voteKept))) operatedOk
   · simp only [bind_ok_iff] at ok
     obtain ⟨headed, headedOk, revealed, revealedOk, voted, votedOk, operatedOk⟩ := ok
     have headKept : SlashedKept state headed := by
@@ -1418,8 +1423,8 @@ theorem surround_quorums {g a b : ForkedBeaconState preset}
   · simpa only [source₁, source₂] using source
   · simpa only [target₁, target₂] using target
 
-private theorem checkpointPath_zero {g a : ForkedBeaconState preset}
-    (run : Run config checks g a) (early : a.fork < .glamsterdam) :
+private theorem checkpointPath_zero_gloas {g a : ForkedBeaconState preset}
+    (run : Run config checks g a) (early : a.fork < .hegota) :
     run.checkpointPath 0 = [] := by
   induction run with
   | nil => rfl
@@ -1432,12 +1437,25 @@ private theorem checkpointPath_zero {g a : ForkedBeaconState preset}
     cases step with
     | slot ok => rfl
     | block engine signed due ok =>
-      obtain ⟨headed, headedOk⟩ :=
-        processBlock_header_of_lt_gloas early (applySignedBlock_ok ok).2.1
-      have positive := UInt64.lt_iff_toNat_lt.mp (processBlockHeader_checks headedOk).2.1
+      rename_i fork before after
+      have positive : 0 < signed.message.slot.toNat := by
+        have processed := (applySignedBlock_ok ok).2.1
+        by_cases gloas : Fork.glamsterdam ≤ fork
+        · obtain ⟨_, _, _, _, _, _, headerOk, _⟩ := processBlock_steps gloas processed
+          have checked := UInt64.lt_iff_toNat_lt.mp (processBlockHeader_checks headerOk).2.1
+          omega
+        · obtain ⟨_, headerOk⟩ :=
+            processBlock_header_of_lt_gloas (Nat.lt_of_not_le gloas) processed
+          have checked := UInt64.lt_iff_toNat_lt.mp (processBlockHeader_checks headerOk).2.1
+          omega
       simp only [Step.headers, blockHeader]
       cases root : (Serialization.Ssz.SszType.hashTreeRoot signed.message.body).toOption <;>
         (simp [Option.toList]; try omega)
+
+private theorem checkpointPath_zero {g a : ForkedBeaconState preset}
+    (run : Run config checks g a) (early : a.fork < .glamsterdam) :
+    run.checkpointPath 0 = [] :=
+  checkpointPath_zero_gloas run (Nat.lt_trans early (by decide))
 
 private theorem history_target_bound {g a : ForkedBeaconState preset}
     (run : Run config checks g a) (parameters : Parameters preset)
