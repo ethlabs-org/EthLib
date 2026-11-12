@@ -75,7 +75,13 @@ private theorem duty_delivery_before_receiver {Δ first time : Nat}
       UpToDate config checks sources (e.world pre).time ((e.world pre).view w)
         ((e.world pre).state w) ∧
       UpToDate config checks sources (e.world post).time ((e.world post).view w)
-        ((e.world post).state w) := by
+        ((e.world post).state w) ∧
+      ∃ next start following,
+        addChecked slot 1 = .ok next ∧
+        computeTimeAtSlotMs config genesisTimeMs slot = .ok start ∧
+        computeTimeAtSlotMs config genesisTimeMs next = .ok following ∧
+        IsAttestationDeadline fork config genesisTimeMs slot deadline ∧
+        (e.world post).time = following.toNat := by
   obtain ⟨next, start, following, deadline, n, attestation, indexed,
     nextOk, startOk, followingOk, due, afterFirst, delivered, bounded, vote⟩ :=
     e.exists_voteAt_of_duty_interval votes fits beginOk endOk started fresh complete
@@ -84,7 +90,8 @@ private theorem duty_delivery_before_receiver {Δ first time : Nat}
     e.exists_duty_boundaries fits (prompt.of_le bounded) receiver nextOk startOk followingOk
       due (started.trans afterFirst)
   exact ⟨deadline, n, attestation, indexed, pre, post, vote, afterFirst, by omega,
-    received, by omega, by omega, preReady, postReady⟩
+    received, by omega, by omega, preReady, postReady,
+    next, start, following, nextOk, startOk, followingOk, due, postTime⟩
 
 /-- Two votes that an honest validator signs for targets of one epoch are the same vote.
 
@@ -166,6 +173,297 @@ private theorem supporter_of_same_latest {anchor : Store preset fork}
   obtain ⟨entry, member, rfl⟩ := List.mem_map.mp (List.mem_toFinset.mp active)
   exact List.mem_toFinset.mpr (List.mem_map.mpr ⟨entry,
     List.mem_filter.mpr ⟨member, counts⟩, rfl⟩)
+
+/-- A latest vote from a slot at or after the call was signed in the safe interval.
+
+The upper bound is strict even when two events share one timestamp. -/
+private theorem signing_time_of_slot_floor {anchor : Store preset fork}
+    (anchored : ∀ u ∈ J, e.start u = anchor)
+    {v w : ValidatorIndex} (honest : v ∈ J) (receiver : w ∈ J) {n k : ℕ}
+    (earlier : n < k) {attestation : Attestation preset fork}
+    (signed : MaySign config checks sources anchorState anchorBlock assignment genesisTimeMs v
+      (e.world n).time ((e.world n).view v) ((e.world n).state v) attestation.data)
+    (origin : ((e.world k).state w).VoteOrigin config v attestation)
+    (upToDate : UpToDate config checks sources (e.world k).time ((e.world k).view w)
+      ((e.world k).state w))
+    {due : UInt64} (dueOk : getAttestationDueMs config fork = .ok due)
+    (inSlot : due < config.SLOT_DURATION_MS) {slot : Slot} {begin : UInt64}
+    (beginOk : computeTimeAtSlotMs config genesisTimeMs slot = .ok begin)
+    (floor : slot ≤ attestation.data.slot) :
+    begin.toNat ≤ (e.world n).time ∧ (e.world n).time < (e.world k).time := by
+  obtain ⟨_, _, deadline, genesis, current, _, _⟩ := signed
+  obtain ⟨startTime, due', startOk, dueOk', timeEq⟩ := deadline
+  have dueEq := Except.ok.inj (dueOk'.symm.trans dueOk)
+  subst due'
+  obtain ⟨sameBegin, sameOk, _, timeLe⟩ := exists_timeAtSlotMs_of_le floor startOk
+  have same := Except.ok.inj (sameOk.symm.trans beginOk)
+  subst sameBegin
+  constructor
+  · have := UInt64.le_iff_toNat_le.mp timeLe
+    omega
+  · apply lt_of_le_of_ne (e.monotone_time earlier.le)
+    intro sameTime
+    have genesisEq : ((e.world k).state w).genesisTimeMs = genesisTimeMs := by
+      have left := (e.clock_bounds v n).1
+      have right := (e.clock_bounds w k).1
+      rw [anchored v honest] at left
+      rw [anchored w receiver] at right
+      exact right.trans (left.symm.trans genesis)
+    have sameClock : ((e.world k).state w).timeMs = ((e.world n).state v).timeMs :=
+      UInt64.toNat_inj.mp (upToDate.1.trans (sameTime.symm.trans current.1.symm))
+    have slotOk : ((e.world k).state w).getCurrentSlot config =
+        .ok attestation.data.slot := by
+      unfold Store.getCurrentSlot
+      rw [genesisEq, sameClock]
+      exact mapError_ok_iff.mpr (computeSlotAtTimeMs_inside startOk
+        (current.1.trans timeEq) inSlot)
+    obtain ⟨currentSlot, currentOk, past⟩ := origin.past
+    have sameSlot := Except.ok.inj (currentOk.symm.trans slotOk)
+    subst currentSlot
+    exact UInt64.lt_irrefl _ past
+
+/-- A receiver's latest honest vote from the safe slot interval supports the root. -/
+private theorem supporter_of_latest_slot {anchor : Store preset fork}
+    (anchorStore : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (anchored : ∀ u ∈ J, e.start u = anchor) {limit : ℕ}
+    (oneBlock : OneBlockPerRoot e limit) (preGloas : fork < .glamsterdam)
+    {v w : ValidatorIndex} (honest : v ∈ J) (receiver : w ∈ J) {k : ℕ}
+    (bounded : (e.world k).time ≤ limit)
+    {attestation : Attestation preset fork}
+    (latest : ((e.world k).state w).latestMessages[v]? =
+      some (LatestMessage.ofAttestation attestation))
+    (counted : v ∉ ((e.world k).state w).equivocatingIndices)
+    (upToDate : UpToDate config checks sources (e.world k).time ((e.world k).view w)
+      ((e.world k).state w))
+    {due : UInt64} (dueOk : getAttestationDueMs config fork = .ok due)
+    (inSlot : due < config.SLOT_DURATION_MS) {slot : Slot} {begin : UInt64}
+    (beginOk : computeTimeAtSlotMs config genesisTimeMs slot = .ok begin)
+    (floor : slot ≤ attestation.data.slot) {root : Root}
+    (safe : ∀ earlier, begin.toNat ≤ earlier → earlier < (e.world k).time →
+      SafeAt e earlier root)
+    {block : BeaconBlock preset fork}
+    (known : ((e.world k).state w).blocks[root]? = some block)
+    (aboveAnchor : anchorBlock.slot ≤ block.slot)
+    {state : BeaconState preset fork}
+    (active : v ∈ ((unslashedActiveBalances state).map (·.1)).toFinset)
+    (signedOrigin : ∃ n < k,
+      MaySign config checks sources anchorState anchorBlock assignment genesisTimeMs v
+        (e.world n).time ((e.world n).view v) ((e.world n).state v) attestation.data)
+    (origin : ((e.world k).state w).VoteOrigin config v attestation) :
+    v ∈ ((e.world k).state w).supportersOf state ⟨root, .pending⟩ := by
+  obtain ⟨n, earlier, signed⟩ := signedOrigin
+  have range := signing_time_of_slot_floor anchored honest receiver earlier signed origin
+    upToDate dueOk inSlot beginOk floor
+  obtain ⟨tip, held, _⟩ := origin.voted
+  exact e.mem_supportersOf_of_signed_in_range anchorStore anchored oneBlock preGloas honest
+    receiver signed latest counted range.1 range.2
+    ((e.monotone_time earlier.le).trans bounded) bounded safe known aboveAnchor held active
+
+/-- A latest vote at or above a signed fresh vote's rank also comes from a fresh slot. -/
+private theorem latest_slot_floor_of_signed_rank
+    (slots : 0 < config.SLOT_DURATION_MS) (preGloas : fork < .glamsterdam)
+    {v : ValidatorIndex} (honest : v ∈ J) {n k : ℕ}
+    {message other : Message preset fork}
+    (sent : message ∈ (e.world n).sent) (sentOther : other ∈ (e.world k).sent)
+    {data : AttestationData} {attestation : Attestation preset fork}
+    (signed : (v, data) ∈ statements config checks anchorState anchorBlock message)
+    (signedOther : (v, attestation.data) ∈
+      statements config checks anchorState anchorBlock other)
+    {store : Store preset fork} (origin : store.VoteOrigin config v attestation)
+    (epoch : data.target.epoch = computeEpochAtSlot preset data.slot)
+    (rank : (LatestMessage.ofAttestation (fork := fork) attestation).rank ≥ data.target.epoch)
+    {slot : Slot} (floor : slot ≤ data.slot) : slot ≤ attestation.data.slot := by
+  have notGloas : ¬ .glamsterdam ≤ fork := Nat.not_le_of_lt preGloas
+  have targetLe : data.target.epoch ≤ attestation.data.target.epoch := by
+    simpa [LatestMessage.rank, LatestMessage.ofAttestation, notGloas] using rank
+  by_cases same : data.target.epoch = attestation.data.target.epoch
+  · have dataEq := e.data_eq_of_signed_of_target_epoch slots sent sentOther
+      signed signedOther honest same
+    exact dataEq ▸ floor
+  · have targetLt := UInt64.lt_of_le_of_ne targetLe same
+    have slotLe : data.slot ≤ attestation.data.slot := by
+      by_contra h
+      have reversed := Nat.div_le_div_right (c := preset.SLOTS_PER_EPOCH.toNat)
+        (UInt64.le_iff_toNat_le.mp (UInt64.le_of_lt (UInt64.not_le.mp h)))
+      rw [epoch, origin.targetEpoch] at targetLt
+      have strict := UInt64.lt_iff_toNat_lt.mp targetLt
+      simp only [computeEpochAtSlot, UInt64.toNat_div] at strict
+      omega
+    exact UInt64.le_trans floor slotLe
+
+/-- A successful clock read has a representable slot boundary no later than that clock. -/
+private theorem boundary_of_current_slot {clock : UInt64} {slot : Slot}
+    (read : computeSlotAtTimeMs config genesisTimeMs clock = .ok slot) :
+    ∃ boundary, computeTimeAtSlotMs config genesisTimeMs slot = .ok boundary ∧
+      boundary ≤ clock := by
+  unfold computeSlotAtTimeMs at read
+  obtain ⟨elapsed, elapsedOk, slotOk⟩ := bind_ok_iff.mp read
+  have genesisLe := (subChecked_ok_iff.mp elapsedOk).1
+  have elapsedEq := (subChecked_ok_iff.mp elapsedOk).2
+  have slotEq := (divChecked_ok_iff.mp slotOk).2
+  have productLe : slot.toNat * config.SLOT_DURATION_MS.toNat ≤ elapsed.toNat := by
+    rw [slotEq]
+    exact Nat.div_mul_le_self _ _
+  have clockBound := clock.toNat_lt
+  have productBound : slot.toNat * config.SLOT_DURATION_MS.toNat < 2 ^ 64 := by omega
+  have productOk := mulChecked_of_lt productBound
+  have productEq := (mulChecked_ok_iff.mp productOk).2
+  have sumBound : genesisTimeMs.toNat + (slot * config.SLOT_DURATION_MS).toNat < 2 ^ 64 := by
+    omega
+  have sumOk := addChecked_of_lt sumBound
+  have sumEq := (addChecked_ok_iff.mp sumOk).2
+  refine ⟨genesisTimeMs + slot * config.SLOT_DURATION_MS, ?_, ?_⟩
+  · simp [computeTimeAtSlotMs, productOk, sumOk, bind, Except.bind]
+  · exact UInt64.le_iff_toNat_le.mpr (by omega)
+
+/-- A completed safe duty is recorded by the endpoint, unless justification covers the root. -/
+private theorem recorded_duty_of_safe_interval {Δ first time : ℕ}
+    (sync : e.Synchronous Δ) (slots : 0 < config.SLOT_DURATION_MS)
+    (preGloas : fork < .glamsterdam) (oneBlock : OneBlockPerRoot e time)
+    (admitted : BlocksAdmitted e 0 Δ time)
+    (votes : Votes e.startTime time e) (prompt : Prompt e time)
+    (fits : DelayFits fork config genesisTimeMs Δ) {anchor : Store preset fork}
+    (anchorStore : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (sound : Invariant anchorState) (anchorSlot : anchorBlock.slot = anchorState.slot)
+    (anchorBoundary : isStartSlotAtEpoch preset anchorBlock.slot = .ok true)
+    (anchored : ∀ u ∈ J, e.start u = anchor)
+    {horizon : Epoch} (chain : FinalizedPrefix e horizon time)
+    (inHorizon : ∀ u ∈ J, ∀ j epoch, (e.world j).time ≤ time →
+      ((e.world j).state u).getCurrentStoreEpoch config = .ok epoch → epoch ≤ horizon)
+    (nonzero : ∀ u ∈ J, ∀ j, (e.world j).time ≤ time →
+      ∀ (r : Root) (b : BeaconBlock preset fork),
+        ((e.world j).state u).blocks[r]? = some b → b.stateRoot ≠ Vector.replicate 32 0)
+    {begin last slot : Slot} {beginTime endTime : UInt64}
+    (beginOk : computeTimeAtSlotMs config genesisTimeMs begin = .ok beginTime)
+    (endOk : computeTimeAtSlotMs config genesisTimeMs last = .ok endTime)
+    (started : e.startTime ≤ first) (fresh : first ≤ beginTime.toNat)
+    (complete : endTime.toNat ≤ time)
+    {root : Root} (safe : ∀ earlier, first ≤ earlier → earlier < time → SafeAt e earlier root)
+    {v w : ValidatorIndex} (honest : v ∈ J) (receiver : w ∈ J) {k : ℕ}
+    (atTime : (e.world k).time = time)
+    (upToDate : UpToDate config checks sources (e.world k).time ((e.world k).view w)
+      ((e.world k).state w))
+    (counted : ∀ j, (e.world j).time ≤ time →
+      v ∉ ((e.world j).state w).equivocatingIndices)
+    {block : BeaconBlock preset fork}
+    (known : ((e.world k).state w).blocks[root]? = some block)
+    (rootFinal : ∀ j ≤ k,
+      UpToDate config checks sources (e.world j).time ((e.world j).view w)
+        ((e.world j).state w) →
+      (∃ boundary,
+        computeStartSlotAtEpoch preset ((e.world j).state w).finalizedCheckpoint.epoch =
+          .ok boundary ∧ boundary ≤ block.slot ∧
+        ((e.world k).state w).getCheckpointBlock root
+          ((e.world j).state w).finalizedCheckpoint.epoch =
+            .ok ((e.world j).state w).finalizedCheckpoint.root) ∨
+      ((e.world k).state w).isAncestor
+        ⟨((e.world j).state w).finalizedCheckpoint.root, .pending⟩
+        ⟨root, .pending⟩ = .ok true)
+    {committeeIndex : CommitteeIndex} (low : begin ≤ slot) (high : slot < last)
+    (duty : assignment.committee v slot = some committeeIndex) :
+    (∃ deadline n attestation indexed message,
+      VoteAt e v slot committeeIndex deadline n attestation indexed ∧
+      attestation.data.slot = slot ∧
+      attestation.data.target.epoch = computeEpochAtSlot preset slot ∧
+      deadline + Δ ≤ time ∧
+      ((e.world k).state w).latestMessages[v]? = some message ∧
+      attestation.data.target.epoch ≤ message.rank) ∨
+    ((e.world k).state w).isAncestor
+      ⟨((e.world k).state w).justifiedCheckpoint.root, .pending⟩
+      ⟨root, .pending⟩ = .ok true := by
+  obtain ⟨deadline, n, attestation, indexed, pre, post, vote, firstLe, before,
+    delivered, adjacent, completePost, preReady, postReady,
+    next, start, following, nextOk, startOk, followingOk, deadlineOk, postTime⟩ :=
+    duty_delivery_before_receiver votes prompt fits beginOk endOk started fresh complete
+      honest receiver low high duty
+  obtain ⟨due, dueOk⟩ := fits.1
+  have dueLt := fits.due_lt_slot nextOk startOk followingOk dueOk
+  obtain ⟨dataSlot, dataEpoch, head, headBlock, headOk, headKnown, dataRoot, notFuture⟩ :=
+    vote.data_head anchorStore (UInt64.le_of_eq anchorSlot) anchored honest deadlineOk dueOk dueLt
+  have supports := safe deadline firstLe before v honest n head vote.atTime
+    (vote.atTime.symm ▸ vote.upToDate) headOk
+  have sourceKnown : ((e.world n).state v).blocks[root]? = some block := by
+    have test := supports
+    unfold Store.isAncestor at test
+    obtain ⟨other, read, _⟩ := bind_ok_iff.mp test
+    have held := Store.block_ok_iff.mp read
+    have same := oneBlock v honest w receiver n k (by rw [vote.atTime]; omega)
+      (by omega) root other block held known
+    exact same ▸ held
+  have forward := fun u hu j => e.forwardReachable
+    (fun u hu => (anchored u hu) ▸ Store.ForwardReachable.anchor anchorStore) j u hu
+  have epochExists : ∀ j, ∃ epoch,
+      ((e.world j).state w).getCurrentStoreEpoch config = .ok epoch := by
+    intro j
+    obtain ⟨current, currentOk, _, _⟩ :=
+      (forward w receiver j).slots_le_current slots (UInt64.le_of_eq anchorSlot)
+    exact ⟨computeEpochAtSlot preset current, by
+      simp [Store.getCurrentStoreEpoch, currentOk, bind, Except.bind, pure, Except.pure]⟩
+  have preLe : pre ≤ k := by
+    by_contra h
+    have bad := e.monotone_time (Nat.le_of_lt (Nat.lt_of_not_ge h))
+    dsimp at bad
+    omega
+  obtain ⟨preEpoch, preEpochOk⟩ := epochExists pre
+  obtain ⟨endpointEpoch, endpointOk⟩ := epochExists k
+  rcases e.blocks_or_justified_covers sync preGloas oneBlock admitted anchorStore sound anchored
+      slots anchorSlot anchorBoundary chain honest receiver preLe (by omega)
+      (by simpa [vote.atTime] using delivered) preReady preEpochOk endpointOk
+      (inHorizon w receiver pre preEpoch (by omega) preEpochOk)
+      (inHorizon w receiver k endpointEpoch (by omega) endpointOk)
+      headKnown sourceKnown known supports (rootFinal pre preLe preReady) with held | covered
+  swap
+  · exact .inr covered
+  -- At equal timestamps use the endpoint's ready store, not an event after the endpoint.
+  have arrivalExists : ∃ arrival, pre ≤ arrival ∧ arrival ≤ k ∧
+      (e.world arrival).time = following.toNat ∧
+      UpToDate config checks sources (e.world arrival).time ((e.world arrival).view w)
+        ((e.world arrival).state w) := by
+    by_cases same : following.toNat = time
+    · exact ⟨k, preLe, le_refl _, by omega, upToDate⟩
+    · have postLe : post ≤ k := by
+        by_contra h
+        have bad := e.monotone_time (Nat.le_of_lt (Nat.lt_of_not_ge h))
+        dsimp at bad
+        omega
+      have prePost : pre ≤ post := by
+        by_contra h
+        have bad := e.monotone_time (Nat.le_of_lt (Nat.lt_of_not_ge h))
+        dsimp at bad
+        omega
+      exact ⟨post, prePost, postLe, postTime, postReady⟩
+  obtain ⟨arrival, preArrival, arrivalLe, arrivalTime, arrivalReady⟩ := arrivalExists
+  have arrivalBound : (e.world arrival).time ≤ time :=
+    (e.monotone_time arrivalLe).trans_eq atTime
+  have genesis : ((e.world arrival).state w).genesisTimeMs = genesisTimeMs := by
+    have left := (e.clock_bounds v n).1
+    have right := (e.clock_bounds w arrival).1
+    rw [anchored v honest] at left
+    rw [anchored w receiver] at right
+    exact right.trans (left.symm.trans vote.genesis)
+  have currentOk : ((e.world arrival).state w).getCurrentSlot config = .ok next := by
+    unfold Store.getCurrentSlot
+    rw [genesis]
+    have clock : ((e.world arrival).state w).timeMs = following :=
+      UInt64.toNat_inj.mp (arrivalReady.1.trans arrivalTime)
+    rw [clock]
+    exact mapError_ok_iff.mpr (computeSlotAtTimeMs_computeTimeAtSlotMs slots followingOk)
+  have votedKnown : ((e.world arrival).state w).blocks[attestation.data.beaconBlockRoot]? =
+      some headBlock := dataRoot ▸ e.blocks_of_le preArrival held
+  have targetRead := vote.data_target anchorStore anchorSlot anchorBoundary anchored honest
+    (nonzero v honest n (by rw [vote.atTime]; omega)) deadlineOk dueOk dueLt
+  obtain ⟨targetBoundary, targetBlock, targetBoundaryOk, targetKnown, targetLe, _⟩ :=
+    Store.isAncestor_of_getCheckpointBlock preGloas targetRead
+  have targetAbove := (forward v honest n).reachable.anchorSlot_le_block targetKnown
+  have receiverRead := Store.getCheckpointBlock_of_same_blocks
+    (forward w receiver arrival).reachable (oneBlock v honest w receiver n arrival
+      (by rw [vote.atTime]; omega) arrivalBound)
+    targetBoundaryOk (UInt64.le_trans targetAbove targetLe) ⟨headBlock, votedKnown⟩ targetRead
+  obtain ⟨message, latest, rank⟩ := vote.recorded_at_next_slot sync preGloas anchorStore anchored
+    oneBlock honest receiver dataSlot dataEpoch nextOk currentOk (by omega) arrivalReady
+    (counted arrival arrivalBound) arrivalLe arrivalBound votedKnown notFuture receiverRead
+  exact .inl ⟨deadline, n, attestation, indexed, message, vote, dataSlot, dataEpoch,
+    by omega, latest, rank⟩
 
 private theorem mem_insert_fold {v : ValidatorIndex}
     {items : List ValidatorIndex} {initial : Std.TreeSet ValidatorIndex} :
@@ -1600,6 +1898,35 @@ theorem Execution.honest_support_of_historical_anchor {Δ : ℕ} (sync : e.Synch
       (by omega) (Store.block_ok_iff.mp blockOk) known rootAboveAnchor supporter
       (by rw [firstOk, secondOk, same])
       (fun equivocated => weights.dishonest w receiver k (by omega) v equivocated honest) active
+  have freshSlotSupport : ∀ v ∈ J, ∀ attestation : Attestation preset fork,
+      ((e.world k).state w).latestMessages[v]? =
+        some (LatestMessage.ofAttestation attestation) →
+      slot ≤ attestation.data.slot →
+      ((e.world k).state w).VoteOrigin config v attestation →
+      (∃ signedAt < k,
+        MaySign config checks sources anchorState anchorBlock assignment genesisTimeMs v
+          (e.world signedAt).time ((e.world signedAt).view v) ((e.world signedAt).state v)
+          attestation.data) →
+      v ∈ ((unslashedActiveBalances state).map (·.1)).toFinset →
+      v ∈ ((e.world k).state w).supportersOf state ⟨root, .pending⟩ := by
+    intro v honest attestation latest floor origin signed active
+    obtain ⟨due, dueOk⟩ := fits.1
+    -- The preceding caller slot is complete, so its boundary bounds the attestation offset.
+    have lastValue := subChecked_ok_iff.mp lastOk
+    have nextOk : addChecked lastSlot 1 = .ok slot := by
+      apply addChecked_ok_iff.mpr
+      constructor <;> simp only [UInt64.toNat_one] at lastValue ⊢ <;>
+        have := slot.toNat_lt <;> omega
+    have beforeSlot : lastSlot ≤ slot := UInt64.le_iff_toNat_le.mpr (by
+      simp only [UInt64.toNat_one] at lastValue; omega)
+    obtain ⟨previousTime, previousOk, _, _⟩ := exists_timeAtSlotMs_of_le beforeSlot beginOk
+    have dueLt := fits.due_lt_slot nextOk previousOk beginOk dueOk
+    exact supporter_of_latest_slot anchorStore anchored oneBlock preGloas honest receiver
+      (by omega) latest
+      (fun equivocated => weights.dishonest w receiver k (by omega) v equivocated honest)
+      receiverUpToDate dueOk dueLt beginOk floor
+      (fun earlier low high => safe earlier (by omega) (by omega)) known rootAboveAnchor active
+      signed origin
   sorry
 
 
