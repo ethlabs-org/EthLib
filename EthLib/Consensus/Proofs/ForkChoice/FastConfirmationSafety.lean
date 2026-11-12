@@ -2240,6 +2240,24 @@ private theorem walk_member_ancestor {store : Store preset fork}
               exact Or.inr ⟨b, held, (Store.getAncestor_trans le parentWalk).trans path⟩
           · cases walked
 
+omit [DecidablePred (· ∈ J)] in
+/-- Holding the stored root also holds every ancestor read along its caller-side walk. -/
+private theorem walk_known_ancestor {anchor : Store preset fork}
+    (anchorStore : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (anchored : ∀ w ∈ J, e.start w = anchor) (oneBlock : OneBlockPerRoot e)
+    {u w : ValidatorIndex} (caller : u ∈ J) (receiver : w ∈ J) {n k : ℕ}
+    {root member : Root} {block rootBlock : BeaconBlock preset fork}
+    (known : ((e.world n).state u).blocks[member]? = some block)
+    (received : ((e.world k).state w).blocks[root]? = some rootBlock)
+    (path : ((e.world n).state u).getAncestor ⟨root, .pending⟩ block.slot =
+      .ok ⟨member, .pending⟩) : ((e.world k).state w).blocks[member]? = some block := by
+  have reached := e.reachable
+    (fun v hv => (anchored v hv) ▸ Store.Reachable.anchor anchorStore)
+  obtain ⟨b, held⟩ := (reached n u caller).known_of_ancestor_walk (reached k w receiver)
+    (oneBlock u caller w receiver n k) ⟨rootBlock, received⟩ path
+  have same := oneBlock u caller w receiver n k member block b known held
+  exact same.symm ▸ held
+
 /-- Induction follows parent edges while keeping the complete returned walk fixed. -/
 private theorem walk_members_induction {store : Store preset fork}
     {tip terminal : Root} {acc roots : List Root} (P : Root → Prop)
