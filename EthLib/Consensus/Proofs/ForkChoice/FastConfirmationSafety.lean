@@ -1168,6 +1168,14 @@ Before a complete epoch lies in the range, the initial phase keeps the block on 
 
 It uses `Execution.honest_support_of_historical_anchor` and `HeadFollowsSupport`.
 
+In that phase the epoch of a receiver is at most two epochs after that of the parent of a member.
+
+The parent is of the epoch of the start or later, and the start is of the epoch before or later.
+
+`HeadFollowsSupport` asks that each counted voter of a sibling be a member of the window.
+
+`Execution.mem_activeMembers_of_sibling_vote` gives that containment.
+
 After one does, the late phase keeps it there.
 
 It uses `Execution.mem_supportersOf_of_duty_epoch` and `Store.isAncestor_getHead_of_missing_weight`.
@@ -1180,7 +1188,8 @@ It is `safeFrom_find_latest_confirmed_descendant_of_selectedCoveredMarginsAt_min
 theorem Execution.safeAt_of_walk {Δ : ℕ} (sync : e.Synchronous Δ)
     (slots : 0 < config.SLOT_DURATION_MS) (positive : 0 < preset.SLOTS_PER_EPOCH.toNat)
     (window : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
-    (ring : preset.MIN_SEED_LOOKAHEAD.toNat + 2 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
+    (lookahead : 1 ≤ preset.MIN_SEED_LOOKAHEAD.toNat ∧ 1 ≤ preset.MAX_SEED_LOOKAHEAD.toNat ∧
+      preset.MIN_SEED_LOOKAHEAD.toNat + 3 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
     (preGloas : fork < .glamsterdam) (admitted : BlocksAdmitted e 0 Δ)
     (oneBlock : OneBlockPerRoot e)
     (half : 2 * config.CONFIRMATION_BYZANTINE_THRESHOLD.toNat ≤ 100)
@@ -1408,7 +1417,8 @@ theorem Execution.callInvariant_step {Δ : ℕ} (sync : e.Synchronous Δ)
     (half : 2 * config.CONFIRMATION_BYZANTINE_THRESHOLD.toNat ≤ 100)
     (slots : 0 < config.SLOT_DURATION_MS) (long : 1 < preset.SLOTS_PER_EPOCH)
     (window : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
-    (ring : preset.MIN_SEED_LOOKAHEAD.toNat + 2 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
+    (lookahead : 1 ≤ preset.MIN_SEED_LOOKAHEAD.toNat ∧ 1 ≤ preset.MAX_SEED_LOOKAHEAD.toNat ∧
+      preset.MIN_SEED_LOOKAHEAD.toNat + 3 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
     (votes : Votes e.startTime e) (fits : DelayFits fork config genesisTimeMs Δ)
     (prompt : Prompt e) (committees : CommitteesFollow e) (follows : HeadFollowsSupport e)
     (preGloas : fork < .glamsterdam)
@@ -1489,6 +1499,10 @@ The anchor keeps the invariant of the state transition, and its block is at the 
 
 An epoch has more than one slot, and the historical buffer holds two epochs.
 
+The seed lookaheads are at least one, and the RANDAO buffer exceeds the lower one by more than 3.
+
+These preset bounds are sufficient for this proof; they are not claimed to be necessary.
+
 The network is synchronous, and the delay fits strictly in a slot.
 
 The honest validators vote as their duty asks, and are prompt.
@@ -1542,7 +1556,8 @@ theorem Execution.safeAt_confirmedRoot {Δ : ℕ} (sync : e.Synchronous Δ)
     (half : 2 * config.CONFIRMATION_BYZANTINE_THRESHOLD.toNat ≤ 100)
     (slots : 0 < config.SLOT_DURATION_MS) (long : 1 < preset.SLOTS_PER_EPOCH)
     (window : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
-    (ring : preset.MIN_SEED_LOOKAHEAD.toNat + 2 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
+    (lookahead : 1 ≤ preset.MIN_SEED_LOOKAHEAD.toNat ∧ 1 ≤ preset.MAX_SEED_LOOKAHEAD.toNat ∧
+      preset.MIN_SEED_LOOKAHEAD.toNat + 3 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
     (votes : Votes e.startTime e) (fits : DelayFits fork config genesisTimeMs Δ)
     (prompt : Prompt e) (committees : CommitteesFollow e) (follows : HeadFollowsSupport e)
     (preGloas : fork < .glamsterdam)
@@ -1620,7 +1635,7 @@ theorem Execution.safeAt_confirmedRoot {Δ : ℕ} (sync : e.Synchronous Δ)
     induction i using Nat.strong_induction_on with
     | _ i ih =>
       intro n fcr after calls
-      exact e.callInvariant_step sync half slots long window ring votes fits prompt committees
+      exact e.callInvariant_step sync half slots long window lookahead votes fits prompt committees
         follows preGloas oneBlock admitted included anchored sound anchorSlot anchorAtBoundary
         start noVotes maxAligned increment chain unique byzantine unslashed positive enough
         large nonzero headDrifts caller upToDate lower atSlots bounds inHorizon anchorParent calls
