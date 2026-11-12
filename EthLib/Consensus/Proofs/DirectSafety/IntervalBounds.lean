@@ -1511,9 +1511,9 @@ private theorem intervalLoss_keys_sum {fork : Fork} (s : BeaconState preset fork
   · intro i hi j hj same
     apply UInt64.toNat_inj.mp
     apply unique.eq_of_getElem_eq
-      (by simpa [registryKeys] using inside i (List.mem_toFinset.mp hi))
-      (by simpa [registryKeys] using inside j (List.mem_toFinset.mp hj))
-    simpa [registryKeys, key] using same
+      (by simpa [validatorKeys] using inside i (List.mem_toFinset.mp hi))
+      (by simpa [validatorKeys] using inside j (List.mem_toFinset.mp hj))
+    simpa [validatorKeys, key] using same
   · intro k hk
     simp only [keysAt, List.mem_toFinset, List.mem_filterMap] at hk
     obtain ⟨i, hi, found⟩ := hk
@@ -2874,8 +2874,8 @@ private theorem intervalGain_active_key {fork : Fork} (s : BeaconState preset fo
     obtain ⟨hi, vi⟩ := Array.getElem?_eq_some_iff.mp found
     obtain ⟨hj, wj⟩ := Array.getElem?_eq_some_iff.mp read
     have same : j.toNat = i := unique.eq_of_getElem_eq
-      (by simpa [registryKeys] using hj) (by simpa [registryKeys] using hi)
-      (by simpa [registryKeys, vi, wj] using sameKey)
+      (by simpa [validatorKeys] using hj) (by simpa [validatorKeys] using hi)
+      (by simpa [validatorKeys, vi, wj] using sameKey)
     have equal : w = v := Option.some.inj ((same ▸ read).symm.trans found)
     simpa [equal] using active
   · intro active
@@ -2902,8 +2902,8 @@ private theorem intervalGain_reference_at {g x y : ForkedBeaconState preset}
     obtain ⟨hj, lastEq⟩ := Array.getElem?_eq_some_iff.mp found
     obtain ⟨hi, wEq⟩ := Array.getElem?_eq_some_iff.mp after
     exact uniqueY.eq_of_getElem_eq
-      (by simpa [registryKeys] using hj) (by simpa [registryKeys] using hi)
-      (by simpa [registryKeys, lastEq, wEq] using preserved.trans key)
+      (by simpa [validatorKeys] using hj) (by simpa [validatorKeys] using hi)
+      (by simpa [validatorKeys, lastEq, wEq] using preserved.trans key)
   cases before : x.state.validators.data[i]? with
   | none =>
     have absent : w.pubkey ∉ activeKeys x.state := by
@@ -2989,9 +2989,9 @@ private theorem intervalGain_reference_sum {g x y : ForkedBeaconState preset}
     simp only [key, (Array.getElem?_eq_some_iff.mp found).2]
   · intro i hi j hj equal
     exact unique.eq_of_getElem_eq
-      (by simpa [registryKeys] using inside i hi)
-      (by simpa [registryKeys] using inside j hj)
-      (by simpa [registryKeys, key] using equal)
+      (by simpa [validatorKeys] using inside i hi)
+      (by simpa [validatorKeys] using inside j hj)
+      (by simpa [validatorKeys, key] using equal)
   · intro k hk
     obtain ⟨i, w, found, same, recent⟩ :=
       (intervalGain_recent_key y.state parameters (y.state.validators.bound early) k).mp hk
@@ -3479,9 +3479,9 @@ private theorem intervalGain_active_sum (x : ForkedBeaconState preset)
   · intro i hi j hj same
     apply UInt64.toNat_inj.mp
     apply unique.eq_of_getElem_eq
-      (by simpa [registryKeys] using inside i (List.mem_toFinset.mp hi))
-      (by simpa [registryKeys] using inside j (List.mem_toFinset.mp hj))
-    simpa [registryKeys, key] using same
+      (by simpa [validatorKeys] using inside i (List.mem_toFinset.mp hi))
+      (by simpa [validatorKeys] using inside j (List.mem_toFinset.mp hj))
+    simpa [validatorKeys, key] using same
   · intro k hk
     simp only [activeKeys, keysAt, List.mem_toFinset, List.mem_filterMap] at hk
     obtain ⟨i, hi, found⟩ := hk

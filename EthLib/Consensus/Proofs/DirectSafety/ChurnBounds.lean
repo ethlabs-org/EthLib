@@ -383,8 +383,8 @@ theorem mem_boundary_iff {fork : Fork} (state : BeaconState preset fork)
     obtain ⟨hi, rfl⟩ := Array.getElem?_eq_some_iff.mp one
     obtain ⟨hj, rfl⟩ := Array.getElem?_eq_some_iff.mp two
     have same : i = j := unique.eq_of_getElem_eq
-      (by simpa [registryKeys] using hi) (by simpa [registryKeys] using hj)
-      (by simpa [registryKeys] using keys)
+      (by simpa [validatorKeys] using hi) (by simpa [validatorKeys] using hj)
+      (by simpa [validatorKeys] using keys)
     subst j
     rfl
   simp only [Finset.mem_sdiff, recentKeys, Finset.mem_union, activeKeys]
@@ -857,8 +857,8 @@ private theorem carry_key_same_epoch {g x y : ForkedBeaconState preset}
       obtain ⟨hi, rfl⟩ := Array.getElem?_eq_some_iff.mp current
       obtain ⟨hj, rfl⟩ := Array.getElem?_eq_some_iff.mp zFound
       have eq : j = i := unique.eq_of_getElem_eq
-        (by simpa [registryKeys] using hj) (by simpa [registryKeys] using hi)
-        (by simpa [registryKeys] using zKey.trans vKey.symm)
+        (by simpa [validatorKeys] using hj) (by simpa [validatorKeys] using hi)
+        (by simpa [validatorKeys] using zKey.trans vKey.symm)
       subst j
       rfl
     rcases Finset.mem_union.mp recent with h | h
