@@ -139,15 +139,8 @@ private theorem terminal_current {a : ForkedBeaconState preset}
               targetRoot := root
               indices := if now then current else previous
               counted := ?_
-              total := total
-              part := if now then cb else pb
-              threshold := threshold
-              weighted := weighted
-              totalOk := totalOk
-              partOk := ?_
-              thresholdOk := thresholdOk
-              weightedOk := weightedOk
-              passes := passes }, rfl, ?_⟩
+              passes := ⟨total, if now then cb else pb, threshold, weighted,
+                totalOk, ?_, thresholdOk, weightedOk, passes⟩ }, rfl, ?_⟩
     · rw [epoch]; cases now <;> assumption
     · cases now <;> assumption
     · cases now <;> simp [TerminalQuorum.source]
@@ -209,10 +202,8 @@ private theorem terminal_new_bits {a : ForkedBeaconState preset}
               target := ⟨getCurrentEpoch a.state, root⟩
               targetEpoch := rfl, targetRoot := rootOk
               indices := current, counted := currentOk
-              total := total, part := cb, threshold := threshold, weighted := cw
-              totalOk := totalOk, partOk := cbOk
-              thresholdOk := thresholdOk, weightedOk := cwOk
-              passes := passes }, rfl, target.symm, rfl⟩
+              passes := ⟨total, cb, threshold, cw, totalOk, cbOk, thresholdOk, cwOk, passes⟩ },
+      rfl, target.symm, rfl⟩
   · intro set
     rcases one set with ⟨passes, root, rootOk⟩ | old
     · refine .inl ⟨{ after := after, projected := ok, selected := rfl, later := later
@@ -220,10 +211,8 @@ private theorem terminal_new_bits {a : ForkedBeaconState preset}
                      target := ⟨getPreviousEpoch a.state, root⟩
                      targetEpoch := rfl, targetRoot := rootOk
                      indices := previous, counted := previousOk
-                     total := total, part := pb, threshold := threshold, weighted := pw
-                     totalOk := totalOk, partOk := pbOk
-                     thresholdOk := thresholdOk, weightedOk := pwOk
-                     passes := passes }, rfl, rfl⟩
+                     passes := ⟨total, pb, threshold, pw, totalOk, pbOk, thresholdOk, pwOk,
+                       passes⟩ }, rfl, rfl⟩
     · exact .inr old
 
 private theorem terminal_source_history {g a : ForkedBeaconState preset}
