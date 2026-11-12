@@ -499,6 +499,15 @@ Not yet released.
   The exports decode each transaction at its fork first, so their answers do not change.
   In Lean, `validateTransaction_eq_ok_iff` ends with the new conjunct `tx.fork ≤ fork`, and `checkInclusion_fork_le` derives it from a passing inclusion check.
   `processTransaction_nonce_lt` no longer takes the hypothesis `tx.fork ≤ fork`.
+- The write law of `EpochFrameLaws` keeps the slashed flag exactly.
+  Its field `setValidatorAt` said only that a set flag stays set.
+  So a relation that must also see that no flag appears could not be an instance of the law.
+  In Lean, the premise of `EpochFrameLaws.setValidatorAt` changes from `old.slashed = true → validator.slashed = true` to `validator.slashed = old.slashed`.
+  A caller of the law now supplies `validator.slashed = old.slashed` in place of the one-way form.
+  For a write that keeps the flag, `rfl` proves it.
+  An instance of the law now receives that equality and proves nothing more about the flag.
+  It derives the former hypothesis with `fun marked => flag.trans marked`.
+  No C export or Python function changes.
 
 ## 0.3.0
 
