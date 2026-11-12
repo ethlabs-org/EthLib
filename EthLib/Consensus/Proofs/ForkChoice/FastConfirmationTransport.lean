@@ -2,6 +2,7 @@ module
 
 public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmationResets
 public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmationCommittees
+import EthLib.Consensus.Proofs.ForkChoice.FastConfirmationSupporters
 import EthLib.Consensus.Proofs.ForkChoice.HonestVotes
 import EthLib.Consensus.Proofs.ForkChoice.JustifiedRegistry
 import all EthLib.Consensus.Proofs.Transition.ActiveKept
@@ -2206,6 +2207,129 @@ theorem Execution.honest_support_of_historical_anchor {Δ : ℕ} (sync : e.Synch
   have receiverReachable := e.reachable
     (fun w hw => (anchored w hw) ▸ Store.Reachable.anchor anchorStore) k w receiver
   have rootAboveAnchor := receiverReachable.anchorSlot_le_block known
+  by_cases rootAnchor : root = anchor.finalizedCheckpoint.root
+  · right
+    have justifiedTest := Store.isAncestor_getHead headOk
+    unfold Store.isAncestor at justifiedTest
+    obtain ⟨justifiedBlock, justifiedOk, _⟩ := bind_ok_iff.mp justifiedTest
+    rw [rootAnchor]
+    exact e.isAncestor_anchor_of_known anchorStore anchored receiver
+      (Store.block_ok_iff.mp justifiedOk)
+  have callerReachable := e.reachable
+    (fun w hw => (anchored w hw) ▸ Store.Reachable.anchor anchorStore) n u caller
+  have callerKnown := Store.block_ok_iff.mp blockOk
+  have callerParentKnown := Store.block_ok_iff.mp parentOk
+  have blockOther : block ≠ anchorBlock := by
+    intro same
+    obtain ⟨r, hashed, _, _, _, final, _, _⟩ := getForkchoiceStore_anchor anchorStore
+    have rootHash := callerReachable.root callerKnown
+    rw [same, hashed, Except.ok.injEq] at rootHash
+    exact rootAnchor (by simpa only [final] using rootHash.symm)
+  obtain ⟨rootState, _, _, produced⟩ :=
+    callerReachable.blockStatesFromParents callerKnown
+  obtain ⟨parentState, _, _, signedBlock, messageEq, parentStateKnown, transition⟩ :=
+    produced blockOther
+  have parentLower : parentBlock.slot < block.slot := by
+    have stateLower := (stateTransition_slot transition).1
+    rw [messageEq] at stateLower
+    exact UInt64.lt_of_le_of_lt (callerReachable.blockState_slot_le
+      (UInt64.le_of_eq anchorSlot) callerParentKnown parentStateKnown) stateLower
+  have rootOnParent : ((e.world n).state u).isAncestor ⟨root, .pending⟩
+      ⟨block.parentRoot, .pending⟩ = .ok true := by
+    have walk := Store.getAncestor_parent_of_slot_lt (node := ⟨root, .pending⟩)
+      callerKnown callerParentKnown parentLower
+    have notGloas : ¬ .glamsterdam ≤ fork := Nat.not_le_of_lt preGloas
+    simp [Store.isAncestor, parentOk, walk, Store.parentPayloadStatus_of_lt preGloas,
+      notGloas, bind, Except.bind, pure, Except.pure]
+  obtain ⟨callerNode, callerHeadOk, callerRoot⟩ := callerHead
+  have pending := Store.getHead_pending preGloas callerHeadOk
+  have nodeEq : callerNode = ⟨head, .pending⟩ := by
+    cases callerNode with
+    | mk r status =>
+      change r = head at callerRoot
+      change status = .pending at pending
+      simp only [callerRoot, pending]
+  have parentOnHead := Store.isAncestor_trans_of_lt preGloas callerKnown callerParentKnown
+    (by simpa only [nodeEq] using rootOnHead) rootOnParent
+  have historicalFound : ∃ b, ((e.world n).state u).blocks[historical]? = some b := by
+    unfold Store.getBlockEpoch at historicalEpochOk
+    obtain ⟨b, found, _⟩ := bind_ok_iff.mp historicalEpochOk
+    exact ⟨b, Store.block_ok_iff.mp found⟩
+  obtain ⟨historicalBlock, historicalFound⟩ := historicalFound
+  have historicalOnHead := Store.isAncestor_trans_of_lt preGloas callerParentKnown
+    historicalFound parentOnHead below
+  obtain ⟨historicalBlock', historicalBoundary, historicalKnown, historicalBoundaryOk,
+      historicalBelow, historicalRead⟩ :=
+    checkpoint_of_recent_historical anchorStore sound anchorSlot anchorBoundary anchored
+      slots preGloas chain caller later callerEpochOk
+      (inHorizon u caller n callerEpoch later callerEpochOk) historicalEpochOk recent
+      callerHeadOk (by simpa only [nodeEq] using historicalOnHead)
+  rw [historicalFound, Option.some.injEq] at historicalKnown
+  subst historicalBlock'
+  have historicalKnown := historicalFound
+  have callerEpochEq : callerEpoch = computeEpochAtSlot preset slot := by
+    simpa [Store.getCurrentStoreEpoch, slotOk, bind, Except.bind, pure, Except.pure] using
+      callerEpochOk.symm
+  have callerFinalizedKnown := e.finalized_known_of_prefix anchorStore sound anchored slots
+    anchorSlot preGloas chain caller later callerEpochOk
+    (inHorizon u caller n callerEpoch later callerEpochOk)
+  have callerOrigins : ((e.world n).state u).VotesHaveOrigins config := by
+    intro v message latest
+    obtain ⟨attestation, _, _, same, _, origin⟩ :=
+      e.exists_signed_origin_of_latestMessages anchorStore anchored caller latest
+    exact ⟨attestation, same, origin⟩
+  have historicalEpochEq : historicalEpoch = computeEpochAtSlot preset historicalBlock.slot := by
+    simpa [Store.getBlockEpoch, Store.block_ok_iff.mpr historicalKnown, bind, Except.bind,
+      pure, Except.pure] using historicalEpochOk.symm
+  have historicalSlotLe : historicalBlock.slot ≤ parentBlock.slot := by
+    obtain ⟨b, held, lower⟩ := Store.slot_le_of_isAncestor historicalKnown below
+    rw [callerParentKnown, Option.some.injEq] at held
+    exact held ▸ lower
+  have oldSupportFloor : ∀ v ∈ oldSupporters, ∀ message,
+      ((e.world n).state u).latestMessages[v]? = some message →
+      callerEpoch.toNat ≤ message.rank.toNat + 1 := by
+    intro v member message latest
+    obtain ⟨attestation, latest', origin, lowSlot⟩ :=
+      Store.VotesHaveOrigins.exists_attestation_of_mem_supportersOf callerOrigins callerKnown
+        (Finset.mem_filter.mp member).1
+    have same := Option.some.inj (latest.symm.trans latest')
+    have lower := Nat.div_le_div_right (c := preset.SLOTS_PER_EPOCH.toNat)
+      (UInt64.le_iff_toNat_le.mp (UInt64.le_trans historicalSlotLe
+        (UInt64.le_trans (UInt64.le_of_lt parentLower) lowSlot)))
+    have notGloas : ¬ .glamsterdam ≤ fork := Nat.not_le_of_lt preGloas
+    have rankEpoch : message.rank = computeEpochAtSlot preset attestation.data.slot := by
+      simpa [same, LatestMessage.rank, LatestMessage.ofAttestation, notGloas] using
+        origin.targetEpoch
+    rw [historicalEpochEq] at recent
+    rw [rankEpoch]
+    simp only [computeEpochAtSlot, UInt64.toNat_div] at recent ⊢
+    omega
+  have oldParentFloor : ∀ v ∈ oldParents, ∀ message,
+      ((e.world n).state u).latestMessages[v]? = some message →
+      callerEpoch.toNat ≤ message.rank.toNat + 1 := by
+    intro v member message latest
+    obtain ⟨_, _, _, parentMessage, supported, parentLatest, supportedOk, which⟩ :=
+      Store.mem_parentVotersOf.mp (Finset.mem_filter.mp member).1
+    obtain ⟨attestation, same, origin⟩ := callerOrigins parentLatest
+    have sameMessage := Option.some.inj (latest.symm.trans parentLatest)
+    have supportedRoot : supported.root = block.parentRoot := by
+      rcases which with rfl | rfl <;> rfl
+    have rootEq : attestation.data.beaconBlockRoot = block.parentRoot := by
+      have eq := Store.getSupportedNode_root supportedOk
+      simpa only [same, LatestMessage.ofAttestation, supportedRoot] using eq.symm
+    obtain ⟨tip, held, lowSlot⟩ := origin.voted
+    rw [rootEq, callerParentKnown, Option.some.injEq] at held
+    subst tip
+    have lower := Nat.div_le_div_right (c := preset.SLOTS_PER_EPOCH.toNat)
+      (UInt64.le_iff_toNat_le.mp (UInt64.le_trans historicalSlotLe lowSlot))
+    have notGloas : ¬ .glamsterdam ≤ fork := Nat.not_le_of_lt preGloas
+    have rankEpoch : message.rank = computeEpochAtSlot preset attestation.data.slot := by
+      simpa [sameMessage, same, LatestMessage.rank, LatestMessage.ofAttestation, notGloas] using
+        origin.targetEpoch
+    rw [historicalEpochEq] at recent
+    rw [rankEpoch]
+    simp only [computeEpochAtSlot, UInt64.toNat_div] at recent ⊢
+    omega
   have equalRankSupport : ∀ v ∈ oldSupporters, ∀ first second,
       ((e.world n).state u).latestMessages[v]? = some first →
       ((e.world k).state w).latestMessages[v]? = some second →
@@ -2249,6 +2373,45 @@ theorem Execution.honest_support_of_historical_anchor {Δ : ℕ} (sync : e.Synch
       receiverUpToDate dueOk dueLt beginOk floor
       (fun earlier low high => safe earlier (by omega) (by omega)) known rootAboveAnchor active
       signed origin
+  have newerRankSupport : ∀ v ∈ J, ∀ first second,
+      ((e.world n).state u).latestMessages[v]? = some first →
+      ((e.world k).state w).latestMessages[v]? = some second →
+      first.rank < second.rank → callerEpoch.toNat ≤ first.rank.toNat + 1 →
+      v ∈ ((unslashedActiveBalances state).map (·.1)).toFinset →
+      v ∈ ((e.world k).state w).supportersOf state ⟨root, .pending⟩ := by
+    intro v honest first second firstOk secondOk higher floor active
+    obtain ⟨attestation, source, seen, same, signed, origin⟩ :=
+      e.exists_signed_origin_of_latestMessages anchorStore anchored receiver secondOk
+    obtain ⟨signedAt, earlier, maySign⟩ :=
+      e.exists_maySign_of_signed (e.view_subset_sent k w seen) signed honest
+    have latest : ((e.world k).state w).latestMessages[v]? =
+        some (LatestMessage.ofAttestation attestation) := by simpa only [same] using secondOk
+    by_cases fresh : slot ≤ attestation.data.slot
+    · exact freshSlotSupport v honest attestation latest fresh origin
+        ⟨signedAt, earlier, maySign⟩ active
+    have oldRank := rank_le_of_stale_slot sync preGloas oneBlock admitted votes fits
+      anchorStore anchorSlot anchorBoundary anchored honest caller maySign origin.targetEpoch
+      slotOk beginOk atSlot later (callerEpochEq ▸ epochStartOk) epochStartTimeOk
+      (UInt64.not_le.mp fresh) upToDate
+      (fun equivocated => weights.dishonest u caller n later v equivocated honest) firstOk
+      (by simpa only [callerEpochEq] using floor) historicalSafe
+      (fun j bounded => nonzero v honest j bounded) historicalKnown callerFinalizedKnown
+      historicalBoundaryOk historicalBelow historicalRead
+    have notGloas : ¬ .glamsterdam ≤ fork := Nat.not_le_of_lt preGloas
+    have targetHigher : first.rank < attestation.data.target.epoch := by
+      simpa [same, LatestMessage.rank, LatestMessage.ofAttestation, notGloas] using higher
+    exact ((UInt64.not_lt.mpr oldRank) targetHigher).elim
+  have oldSupportOfRank : ∀ v ∈ oldSupporters, ∀ first second,
+      ((e.world n).state u).latestMessages[v]? = some first →
+      ((e.world k).state w).latestMessages[v]? = some second →
+      first.rank ≤ second.rank →
+      v ∈ ((unslashedActiveBalances state).map (·.1)).toFinset →
+      v ∈ ((e.world k).state w).supportersOf state ⟨root, .pending⟩ := by
+    intro v member first second firstOk secondOk rank active
+    by_cases same : first.rank = second.rank
+    · exact equalRankSupport v member first second firstOk secondOk same active
+    · exact newerRankSupport v (Finset.mem_filter.mp member).2 first second firstOk secondOk
+        (UInt64.lt_of_le_of_ne rank same) (oldSupportFloor v member first firstOk) active
   have freshRecordedSupport : ∀ v ∈ J, ∀ dutySlot committeeIndex deadline signedAt
       (attestation : Attestation preset fork) indexed message,
       VoteAt e v dutySlot committeeIndex deadline signedAt attestation indexed →
