@@ -4,6 +4,7 @@ public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmationResets
 public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmationCommittees
 import EthLib.Consensus.Proofs.ForkChoice.HonestVotes
 import EthLib.Consensus.Proofs.ForkChoice.JustifiedRegistry
+import all EthLib.Consensus.Proofs.Transition.ActiveKept
 
 /-!
 # Statements: the honest support of a confirmed block, from a historical anchor
@@ -494,6 +495,284 @@ private theorem lookahead_sameEpoch_frame {state after : BeaconState preset fork
       validators, same]
   · intro v
     simp only [NotSlashed, validators]
+
+/-- Updating a validator preserves any unchanged projection of the registry. -/
+private theorem registryMap_setValidatorAt {α : Type} (project : Validator → α)
+    {state after : BeaconState preset fork} {position : Nat} {v old : Validator}
+    (found : getValidatorAt state position = .ok old)
+    (set : state.setValidatorAt position v = .ok after) (same : project v = project old) :
+    after.validators.data.toList.map project = state.validators.data.toList.map project := by
+  obtain ⟨inside, rfl⟩ := setValidatorAt_ok set
+  have oldEq : state.validators.data[position] = old := by
+    simpa [getValidatorAt, inside] using found
+  simp only [BeaconState.putValidator, Serialization.Ssz.RootedForkList.data_set,
+    Array.toList_set, List.map_set]
+  rw [same, ← oldEq]
+  have atValue : (state.validators.data.toList.map project)[position]'(by simpa using inside) =
+      project state.validators.data[position] := by simp
+  rw [← atValue]
+  exact List.set_getElem_self _
+
+/-- Exit scheduling does not change effective balances or slashing flags. -/
+private theorem balanceFlags_initiateValidatorExit {state after : BeaconState preset fork}
+    {index : ValidatorIndex}
+    (run : initiateValidatorExit config state index = .ok after) :
+    after.validators.data.toList.map (fun v => (v.effectiveBalance, v.slashed)) =
+      state.validators.data.toList.map (fun v => (v.effectiveBalance, v.slashed)) := by
+  obtain ⟨v, found, unchanged | ⟨_, queued, epoch, withdrawal, queue, _, set⟩⟩ :=
+    initiateValidatorExit_ok run
+  · rw [unchanged.2]
+  · have same := (exitQueue_validators queue).1
+    have kept := registryMap_setValidatorAt (fun v => (v.effectiveBalance, v.slashed))
+      (by rw [← getValidator_eq_getValidatorAt, getValidator_of_validators_eq same]; exact found)
+      (by rwa [← setValidator_eq_setValidatorAt]) (by rfl)
+    exact kept.trans (by rw [same])
+
+/-- Registry updates schedule future activity without changing balances or slashing flags. -/
+private theorem balanceFlags_processRegistryUpdates {state after : BeaconState preset fork}
+    (run : processRegistryUpdates config state = .ok after) :
+    after.validators.data.toList.map (fun v => (v.effectiveBalance, v.slashed)) =
+      state.validators.data.toList.map (fun v => (v.effectiveBalance, v.slashed)) := by
+  let R (s t : BeaconState preset fork) :=
+    t.validators.data.toList.map (fun v => (v.effectiveBalance, v.slashed)) =
+      s.validators.data.toList.map (fun v => (v.effectiveBalance, v.slashed))
+  have folded {α ε : Type} {step : BeaconState preset fork → α → Except ε _}
+      {xs : List α} {s t : BeaconState preset fork}
+      (keeps : ∀ s x t, step s x = .ok t → R s t)
+      (ok : xs.foldlM step s = .ok t) : R s t :=
+    foldlM_ok_invariant (R s) (fun _ _ _ before ok => (keeps _ _ _ ok).trans before) rfl ok
+  have update {s t : BeaconState preset fork} {i : Nat}
+      (ok : updateRegistryEntry config s i = .ok t) : R s t := by
+    simp only [updateRegistryEntry, bind_ok_iff, liftAccessor_ok] at ok
+    obtain ⟨v, found, queued, queue, marked, set, ok⟩ := ok
+    have fields : (queued.effectiveBalance, queued.slashed) = (v.effectiveBalance, v.slashed) := by
+      unfold queueForActivation at queue
+      split at queue
+      · simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at queue
+        obtain ⟨_, _, rfl⟩ := queue
+        rfl
+      · cases queue; rfl
+    have first := registryMap_setValidatorAt (fun v => (v.effectiveBalance, v.slashed))
+      found set fields
+    split at ok
+    · simp only [bind_ok_iff, liftAccessor_ok] at ok
+      obtain ⟨_, _, exited⟩ := ok
+      exact (balanceFlags_initiateValidatorExit exited).trans first
+    · cases ok; exact first
+  have activate {s t : BeaconState preset fork} {i : ValidatorIndex}
+      (ok : activateValidator s i = .ok t) : R s t := by
+    simp only [activateValidator, bind_ok_iff, liftAccessor_ok] at ok
+    obtain ⟨_, found, _, _, set⟩ := ok
+    rw [setValidator_eq_setValidatorAt] at set
+    rw [getValidator_eq_getValidatorAt] at found
+    exact registryMap_setValidatorAt (fun v => (v.effectiveBalance, v.slashed))
+      found set rfl
+  have updateElectra {s t : BeaconState preset fork} {epoch : Epoch} {i : Nat}
+      (ok : updateRegistryEntryElectra config epoch s i = .ok t) : R s t := by
+    simp only [updateRegistryEntryElectra, bind_ok_iff, liftAccessor_ok] at ok
+    obtain ⟨_, found, ok⟩ := ok
+    split at ok
+    · simp only [bind_ok_iff, liftAccessor_ok] at ok
+      obtain ⟨_, _, set⟩ := ok
+      exact registryMap_setValidatorAt _ found set rfl
+    split at ok
+    · simp only [bind_ok_iff, liftAccessor_ok] at ok
+      obtain ⟨_, _, exited⟩ := ok
+      exact balanceFlags_initiateValidatorExit exited
+    split at ok
+    · exact registryMap_setValidatorAt _ found (liftAccessor_ok.mp ok) rfl
+    · cases ok; rfl
+  unfold processRegistryUpdates at run
+  split at run
+  · simp only [bind_ok_iff, liftAccessor_ok] at run
+    obtain ⟨_, _, run⟩ := run
+    exact folded (fun _ _ _ ok => updateElectra ok) run
+  · simp only [bind_ok_iff] at run
+    obtain ⟨_, updated, activated⟩ := run
+    exact (folded (fun _ _ _ ok => activate ok) activated).trans
+      (folded (fun _ _ _ ok => update ok) updated)
+
+/-- Rewards change actual balances, not the validator records used by the active total. -/
+private theorem validators_processRewardsAndPenalties {state after : BeaconState preset fork}
+    (run : processRewardsAndPenalties config state = .ok after) :
+    after.validators = state.validators := by
+  have deltas {s t : BeaconState preset fork} {rewards penalties : Array Gwei} {index : Nat}
+      (ok : applyDeltas rewards penalties s index = .ok t) : t.validators = s.validators := by
+    simp only [applyDeltas, bind_ok_iff, liftAccessor_ok] at ok
+    obtain ⟨_, _, _, raised, lowered⟩ := ok
+    exact (decreaseBalance_validators lowered).trans (increaseBalance_validators raised)
+  have allDeltas {s t : BeaconState preset fork} {ds : Array Gwei × Array Gwei}
+      (ok : applyAllDeltas s ds = .ok t) : t.validators = s.validators :=
+    foldlM_ok_invariant (fun t => t.validators = s.validators)
+      (fun _ _ _ before ok => (deltas ok).trans before) rfl ok
+  unfold processRewardsAndPenalties at run
+  split at run
+  · cases run; rfl
+  split at run
+  · simp only [bind_ok_iff] at run
+    obtain ⟨_, _, _, _, applied⟩ := run
+    exact foldlM_ok_invariant (fun t => t.validators = state.validators)
+      (fun _ _ _ before ok => (allDeltas ok).trans before) rfl applied
+  · simp only [bind_ok_iff] at run
+    obtain ⟨_, _, applied⟩ := run
+    exact allDeltas applied
+
+/-- Inactivity scoring changes only the inactivity scores. -/
+private theorem validators_processInactivityUpdates {state after : BeaconState preset fork}
+    {altair : .altair ≤ fork}
+    (run : processInactivityUpdates config state altair = .ok after) :
+    after.validators = state.validators := by
+  unfold processInactivityUpdates at run
+  split at run
+  · cases run; rfl
+  · simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at run
+    obtain ⟨_, _, _, _, rfl⟩ := run
+    rfl
+
+/-- The epoch prefix before slashings preserves effective balances and slashing flags.
+
+Registry updates may schedule activation and exit, but neither changes these fields. -/
+private theorem balanceFlags_epochPrefix {state justified scored rewarded registered :
+    BeaconState preset fork}
+    (justifiedOk : processJustificationAndFinalization state = .ok justified)
+    (scoredOk : (if altair : .altair ≤ fork then
+      processInactivityUpdates config justified altair else pure justified) = .ok scored)
+    (rewardedOk : processRewardsAndPenalties config scored = .ok rewarded)
+    (registeredOk : processRegistryUpdates config rewarded = .ok registered) :
+    registered.validators.data.toList.map (fun v => (v.effectiveBalance, v.slashed)) =
+      state.validators.data.toList.map (fun v => (v.effectiveBalance, v.slashed)) := by
+  have scored : scored.validators = justified.validators := by
+    split at scoredOk
+    · exact validators_processInactivityUpdates scoredOk
+    · cases scoredOk; rfl
+  rw [balanceFlags_processRegistryUpdates registeredOk,
+    validators_processRewardsAndPenalties rewardedOk, scored,
+    (processJustificationAndFinalization_keeps justifiedOk).2.2.2.2.2.1]
+
+/-- The active total checked by slashings is also a checked total before the epoch prefix. -/
+private theorem activeTotal_before_epochPrefix {state justified scored rewarded registered :
+    BeaconState preset fork} {total : Gwei}
+    (within : state.RegistryWithinLimit)
+    (justifiedOk : processJustificationAndFinalization state = .ok justified)
+    (scoredOk : (if altair : .altair ≤ fork then
+      processInactivityUpdates config justified altair else pure justified) = .ok scored)
+    (rewardedOk : processRewardsAndPenalties config scored = .ok rewarded)
+    (registeredOk : processRegistryUpdates config rewarded = .ok registered)
+    (read : getTotalActiveBalance registered = .ok total) :
+    getTotalActiveBalance state = .ok total := by
+  have scoredFrame : ActiveStep justified scored := by
+    split at scoredOk
+    · exact (stepKeeps_processInactivityUpdates scoredOk).2
+    · cases scoredOk; exact ActiveStep.refl _
+  have frame : ActiveStep state registered :=
+    (stepKeeps_processJustificationAndFinalization justifiedOk).2.trans <|
+      scoredFrame.trans <| (activeStep_processRewardsAndPenalties rewardedOk).trans
+        (stepKeeps_processRegistryUpdates registeredOk).2
+  have epoch : getCurrentEpoch registered = getCurrentEpoch state := by
+    simp only [getCurrentEpoch, frame.1]
+  have fields := balanceFlags_epochPrefix justifiedOk scoredOk rewardedOk registeredOk
+  apply activeTotal_transfer within read
+  · intro i
+    rw [epoch]
+    exact (frame.2 _ (getCurrentEpoch_le_activityFixedEpoch state) i).symm
+  · intro v _
+    have atIndex := congrArg (fun xs => xs[v.toNat]?) fields
+    have weights := congrArg (fun x => (x.map (fun p => p.1.toNat)).getD 0) atIndex
+    simpa only [List.getElem?_map, Array.getElem?_toList, Option.map_map,
+      Function.comp_def, balanceAt] using weights.symm
+
+/-- Every successful epoch transition checks its incoming active total, including epoch zero.
+
+The slashings step reads the total before effective balances change. -/
+private theorem activeTotal_of_processEpoch {state after : BeaconState preset fork}
+    (within : state.RegistryWithinLimit)
+    (run : processEpoch config checks state = .ok after) :
+    ∃ total, getTotalActiveBalance state = .ok total := by
+  have slashings {s t : BeaconState preset fork}
+      (ok : processSlashings s = .ok t) : ∃ total, getTotalActiveBalance s = .ok total := by
+    unfold processSlashings at ok
+    simp only [bind_ok_iff, liftAccessor_ok] at ok
+    obtain ⟨total, read, _⟩ := ok
+    exact ⟨total, read⟩
+  unfold processEpoch at run
+  split at run
+  · unfold processEpochAltair at run
+    simp only [bind_ok_iff] at run
+    obtain ⟨justified, justifiedOk, scored, scoredOk, rewarded, rewardedOk,
+      registered, registeredOk, slashed, slashedOk, _⟩ := run
+    obtain ⟨total, read⟩ := slashings slashedOk
+    refine ⟨total, activeTotal_before_epochPrefix within justifiedOk ?_
+      rewardedOk registeredOk read⟩
+    simp only [dite_eq_left ‹.altair ≤ fork›]
+    exact scoredOk
+  · simp only [bind_ok_iff] at run
+    obtain ⟨justified, justifiedOk, rewarded, rewardedOk, registered, registeredOk,
+      slashed, slashedOk, _⟩ := run
+    obtain ⟨total, read⟩ := slashings slashedOk
+    refine ⟨total, activeTotal_before_epochPrefix within justifiedOk ?_
+      rewardedOk registeredOk read⟩
+    simp only [dite_eq_right ‹¬ .altair ≤ fork›, pure, Except.pure]
+
+/-- A slot run that leaves its starting epoch has checked the starting active total. -/
+private theorem activeTotal_of_advanceSlots_epoch_lt {state after : BeaconState preset fork}
+    {count : Nat} (preGloas : fork < .glamsterdam)
+    (positive : 0 < preset.SLOTS_PER_EPOCH.toNat)
+    (run : advanceSlots config checks count state = .ok after)
+    (later : getCurrentEpoch state < getCurrentEpoch after) :
+    ∃ total, getTotalActiveBalance state = .ok total := by
+  induction count generalizing state with
+  | zero =>
+    simp only [advanceSlots, pure, Except.pure, Except.ok.injEq] at run
+    subst after
+    exact False.elim ((UInt64.lt_irrefl _) later)
+  | succ count ih =>
+    obtain ⟨middle, first, rest⟩ := bind_ok_iff.mp run
+    by_cases same : getCurrentEpoch middle = getCurrentEpoch state
+    · obtain ⟨total, read⟩ := ih rest (by rwa [same])
+      have validators := validators_advanceSlot_sameEpoch positive first same
+      refine ⟨total, ?_⟩
+      simpa only [getTotalActiveBalance, getActiveValidatorIndicesChecked, getTotalBalance,
+        validators, same] using read
+    · obtain ⟨next, cached, epoched, nextNat, cachedOk, epochedOk, rfl⟩ := advanceSlot_ok first
+      obtain ⟨_, _, _, _, cachedEq⟩ := processSlot_ok cachedOk
+      unfold epochIfLast at epochedOk
+      split at epochedOk
+      · obtain ⟨total, read⟩ := activeTotal_of_processEpoch (cached.validators.bound preGloas)
+          epochedOk
+        refine ⟨total, ?_⟩
+        rw [cachedEq] at read
+        exact read
+      · rename_i noBoundary
+        cases epochedOk
+        have quotient : next.toNat / preset.SLOTS_PER_EPOCH.toNat =
+            state.slot.toNat / preset.SLOTS_PER_EPOCH.toNat := by
+          have rem : next.toNat % preset.SLOTS_PER_EPOCH.toNat ≠ 0 := by
+            intro eq
+            apply noBoundary
+            apply UInt64.toNat_inj.mp
+            simpa only [UInt64.toNat_mod, UInt64.toNat_zero] using eq
+          rw [nextNat] at rem ⊢
+          exact Nat.succ_div_of_mod_ne_zero rem
+        apply False.elim
+        apply same
+        apply UInt64.toNat_inj.mp
+        simpa only [getCurrentEpoch, computeEpochAtSlot, UInt64.toNat_div] using quotient
+
+/-- A lookahead into a later epoch supplies a checked total for its held starting state. -/
+private theorem activeTotal_of_lookahead_epoch_lt {state after : BeaconState preset fork}
+    {slot : Slot} (preGloas : fork < .glamsterdam)
+    (positive : 0 < preset.SLOTS_PER_EPOCH.toNat)
+    (run : lookaheadState config checks state slot = .ok after)
+    (later : getCurrentEpoch state < getCurrentEpoch after) :
+    ∃ total, getTotalActiveBalance state = .ok total := by
+  unfold lookaheadState at run
+  split at run
+  · have slotsOk := mapError_ok_iff.mp run
+    simp only [processSlots, bind_ok_iff, ensure_ok_iff] at slotsOk
+    obtain ⟨_, _, advanced⟩ := slotsOk
+    exact activeTotal_of_advanceSlots_epoch_lt preGloas positive advanced later
+  · cases run
+    exact False.elim ((UInt64.lt_irrefl _) later)
 
 /-- After the first two epochs, a successful justification step has checked the active total. -/
 private theorem activeTotal_of_justification {state after : BeaconState preset fork}
