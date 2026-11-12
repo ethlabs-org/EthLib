@@ -235,6 +235,43 @@ theorem mem_indexedStatements_of_cached_target
   subst other
   exact statement
 
+/-- Common initial stores and one possible sent block give agreement at every held root.
+
+A block from the initial store remains at its root in every honest store.
+
+Any other held block came from a message, and all such messages carry the same block.
+
+No hash inequality is needed, even if the sent block collides with an initial root.
+
+This does not prove agreement when different colliding blocks can be sent. -/
+theorem Execution.oneBlockPerRoot_of_single_sent_block {anchor : Store preset fork}
+    {block : BeaconBlock preset fork} {limit : ℕ}
+    (start : ∀ w ∈ J, e.start w = anchor)
+    (sent : ∀ n, (e.world n).time ≤ limit → ∀ signed,
+      .block signed ∈ (e.world n).sent → signed.message = block) :
+    OneBlockPerRoot e limit := by
+  intro v hv u hu n k boundedN boundedK root left right foundLeft foundRight
+  rcases e.exists_signed_of_blocks hv foundLeft with old | ⟨sb, pre, post, seen, same, _⟩
+  · -- Every honest validator starts with this entry and retains it.
+    have initial : ((e.world 0).state u).blocks[root]? = some left := by
+      change (e.start u).blocks[root]? = some left
+      rw [start u hu, ← start v hv]
+      exact old.1
+    have retained := e.blocks_of_le (Nat.zero_le k) initial
+    exact Option.some.inj (retained.symm.trans foundRight)
+  · have leftIs : left = block := same ▸ sent n boundedN sb (e.view_subset_sent n v seen)
+    rcases e.exists_signed_of_blocks hu foundRight with old | ⟨sb', pre', post', seen', same', _⟩
+    · -- An initial entry in the other store also wins over any colliding message.
+      have initial : ((e.world 0).state v).blocks[root]? = some right := by
+        change (e.start v).blocks[root]? = some right
+        rw [start v hv, ← start u hu]
+        exact old.1
+      have retained := e.blocks_of_le (Nat.zero_le n) initial
+      exact Option.some.inj (foundLeft.symm.trans retained)
+    · have rightIs : right = block :=
+        same' ▸ sent k boundedK sb' (e.view_subset_sent k u seen')
+      exact leftIs.trans rightIs.symm
+
 namespace FinitePrefix
 
 variable {ν μ σ κ : Type*} [DecidableEq ν]
