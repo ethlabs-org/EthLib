@@ -1831,7 +1831,7 @@ theorem Execution.safeAt_confirmedRoot_accountable {Δ : ℕ} (sync : e.Synchron
       ((e.world k).state w).Counts config state → ∀ v ∈ J, NotSlashed state v)
     (supply : ∀ w ∈ J, ∀ k (checkpoint : Checkpoint) (state : BeaconState preset fork),
       (e.world k).time ≤ limit → ((e.world k).state w).checkpointState checkpoint = .ok state →
-      stake (fun v => balanceAt state v.toNat) (activeVoters state) ≤ stakeCapGwei)
+      ActiveStakeAtMost stakeCapGwei state)
     (positive : 0 < preset.EFFECTIVE_BALANCE_INCREMENT)
     (enough : 3 * threshold < 200)
     (large : ∀ w ∈ J, ∀ k (state : BeaconState preset fork),
