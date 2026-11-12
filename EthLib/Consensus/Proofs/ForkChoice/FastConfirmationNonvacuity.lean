@@ -96,4 +96,26 @@ theorem Execution.false_of_genesis_anchor_checkpoint_parent
   exact e.false_of_anchor_checkpoint_parent anchored start caller unique sameEpoch
     (by simp [epochZero]) parent started anchorParent
 
+/-- A store built from an anchor cannot read a shuffling dependency before that anchor.
+
+The block handler reads this dependency even when the proposer boost is zero. -/
+theorem _root_.EthLib.Consensus.Store.Reachable.getShufflingDependentRoot_ne_ok_of_lt_anchor
+    {store : Store preset fork}
+    (reachable : Store.Reachable config anchorState anchorBlock store)
+    {epoch : Epoch} {slot : Slot}
+    (dependent : computeShufflingDependentSlot preset epoch = .ok slot)
+    (before : slot < anchorBlock.slot) (root result : Root) :
+    store.getShufflingDependentRoot root epoch ≠ .ok result := by
+  intro read
+  simp only [Store.getShufflingDependentRoot, Base.bind_ok_iff, Base.mapError_ok_iff,
+    pure, Except.pure, Except.ok.injEq] at read
+  obtain ⟨dependentSlot, slotOk, ancestor, walk, _⟩ := read
+  rw [dependent, Except.ok.injEq] at slotOk
+  subst dependentSlot
+  obtain ⟨block, known, below⟩ := Store.getAncestor_le walk
+  have above := reachable.anchorSlot_le_block known
+  rw [UInt64.le_iff_toNat_le] at above below
+  rw [UInt64.lt_iff_toNat_lt] at before
+  omega
+
 end EthLib.Consensus.Models.Network
