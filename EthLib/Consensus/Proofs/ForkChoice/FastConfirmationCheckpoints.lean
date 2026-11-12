@@ -919,6 +919,25 @@ theorem TargetIncluded.of_le {last later : ℕ} (included : TargetIncluded e lat
       (kBound.trans le)
 
 omit [DecidablePred (· ∈ J)] in
+/-- Assignment agrees with a current-epoch prefix without an anchor-slot alignment premise. -/
+theorem CommitteesFollow.assigned_current_epoch {limit : ℕ}
+    (committees : CommitteesFollow e limit)
+    (retained : preset.MIN_SEED_LOOKAHEAD.toNat + 1 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
+    {w : ValidatorIndex} (honest : w ∈ J) {k : ℕ} (bounded : (e.world k).time ≤ limit)
+    (forward : Store.ForwardReachable config anchorState anchorBlock ((e.world k).state w))
+    {head : ForkChoiceNode} {current first last : Slot} {participants : Std.TreeSet ValidatorIndex}
+    (headOk : ((e.world k).state w).getHead config = .ok head)
+    (slotOk : ((e.world k).state w).getCurrentSlot config = .ok current)
+    (firstOk : computeStartSlotAtEpoch preset (computeEpochAtSlot preset current) = .ok first)
+    (past : last < current)
+    (found : ((e.world k).state w).getCommitteesBetweenSlots head.root first last =
+      .ok participants) :
+    ∀ v ∈ J, v ∈ participants ↔ ∃ slot committeeIndex,
+      first ≤ slot ∧ slot ≤ last ∧ assignment.committee v slot = some committeeIndex := by
+  exact committees.assigned w honest k bounded head current first last participants headOk
+    slotOk past (fun _ read => forward.retained_current_epoch retained slotOk firstOk read) found
+
+omit [DecidablePred (· ∈ J)] in
 /-- A latest vote's checkpoint target has been signed by the event that holds the vote. -/
 theorem Execution.signsTarget_of_latestMessages {anchor : Store preset fork}
     (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
