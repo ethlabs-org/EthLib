@@ -1234,6 +1234,228 @@ decreasing_by
   rw [bounds.2]
   exact UInt64.lt_iff_toNat_lt.mp bounds.1
 
+/-- A finite activation in a held state already has a position at a finality boundary.
+
+The boundary is after the anchor and no later than the held state.
+Its epoch bounds the held state's finalized epoch.
+The result identifies the boundary's ancestor root without a hash injectivity assumption. -/
+theorem Store.Reachable.validatorAt_ancestor_boundary
+    {store : Store preset fork} (reachable : Store.Reachable config anchorState anchorBlock store)
+    (sound : Invariant anchorState) (anchorSlot : anchorBlock.slot = anchorState.slot)
+    (preGloas : fork < .glamsterdam)
+    {checks : SignatureChecks} {engine : ExecutionEngine preset fork}
+    (transitions : ∀ (root : Root) (block : BeaconBlock preset fork)
+      (state : BeaconState preset fork), store.blocks[root]? = some block →
+      store.blockStates[root]? = some state → block ≠ anchorBlock →
+      ∃ parent signed, signed.message = block ∧
+        store.blockStates[block.parentRoot]? = some parent ∧
+        stateTransition config checks engine parent signed true = .ok state)
+    {root : Root} {state : BeaconState preset fork} {query : Slot}
+    (stored : store.blockStates[root]? = some state)
+    (later : anchorState.slot ≤ query) (reached : query ≤ state.slot)
+    (finite : computeEpochAtSlot preset query < FAR_FUTURE_EPOCH)
+    (finalized : state.finalizedCheckpoint.epoch ≤ computeEpochAtSlot preset query)
+    (status : PayloadStatus) {position : Nat} {validator : Validator}
+    (found : state.validators.data[position]? = some validator)
+    (activated : validator.activationEpoch ≠ FAR_FUTURE_EPOCH) :
+    ∃ ancestorRoot base cut,
+      store.blockStates[ancestorRoot]? = some base ∧
+      lookaheadState config checks base query = .ok cut ∧ cut.slot = query ∧
+      (·.root) <$> store.getAncestor ⟨root, status⟩ query = .ok ancestorRoot ∧
+      ∃ previous, cut.validators.data[position]? = some previous := by
+  obtain ⟨ancestorRoot, base, cut, held, made, atSlot, walked, pending⟩ :=
+    reachable.pendingTail_of_ancestor sound anchorSlot preGloas transitions stored later reached
+      finite finalized status
+  refine ⟨ancestorRoot, base, cut, held, made, atSlot, walked, ?_⟩
+  have inside : position < cut.validators.data.size := by
+    by_contra outside
+    exact activated (pending position validator (by omega) found).2
+  exact ⟨cut.validators.data[position], Array.getElem?_eq_getElem inside⟩
+
+private theorem lookahead_registry_le_of_le
+    {base first second : BeaconState preset fork} {low high : Slot}
+    (one : lookaheadState config checks base low = .ok first)
+    (two : lookaheadState config checks base high = .ok second) (le : low ≤ high) :
+    first.validators.data.size ≤ second.validators.data.size := by
+  by_cases same : low = high
+  · rw [same, two] at one
+    cases one
+    exact Nat.le_refl _
+  have lt := UInt64.lt_of_le_of_ne le same
+  unfold lookaheadState at one two
+  split at one
+  · rename_i advanced
+    have highAfter := UInt64.lt_trans advanced lt
+    simp only [highAfter, ↓reduceIte] at two
+    have slotsOne := mapError_ok_iff.mp one
+    have slotsTwo := mapError_ok_iff.mp two
+    obtain ⟨middle, before, afterOk⟩ := processSlots_split slotsTwo advanced lt
+    rw [slotsOne, Except.ok.injEq] at before
+    subst middle
+    exact (runKept_processSlots afterOk).grows
+  · cases one
+    split at two
+    · exact (runKept_processSlots (mapError_ok_iff.mp two)).grows
+    · cases two
+      exact Nat.le_refl _
+
+/-- A successful ancestor walk reconstructs a boundary state whose registry grows into the tip. -/
+private theorem Store.Reachable.registry_at_ancestor
+    {store : Store preset fork} (reachable : Store.Reachable config anchorState anchorBlock store)
+    (anchorSlot : anchorBlock.slot = anchorState.slot)
+    {checks : SignatureChecks} {engine : ExecutionEngine preset fork}
+    (transitions : ∀ (root : Root) (block : BeaconBlock preset fork)
+      (state : BeaconState preset fork), store.blocks[root]? = some block →
+      store.blockStates[root]? = some state → block ≠ anchorBlock →
+      ∃ parent signed, signed.message = block ∧
+        store.blockStates[block.parentRoot]? = some parent ∧
+        stateTransition config checks engine parent signed true = .ok state)
+    {root : Root} {state : BeaconState preset fork} {query : Slot}
+    (stored : store.blockStates[root]? = some state)
+    (later : anchorState.slot ≤ query) (reached : query ≤ state.slot)
+    (status : PayloadStatus) :
+    ∃ ancestorRoot base cut,
+      store.blockStates[ancestorRoot]? = some base ∧
+      lookaheadState config checks base query = .ok cut ∧ cut.slot = query ∧
+      (·.root) <$> store.getAncestor ⟨root, status⟩ query = .ok ancestorRoot ∧
+      cut.validators.data.size ≤ state.validators.data.size := by
+  obtain ⟨block, found⟩ := reachable.known_of_blockState stored
+  have blockLe := reachable.blockState_slot_le (UInt64.le_of_eq anchorSlot) found stored
+  by_cases atQuery : state.slot = query
+  · refine ⟨root, state, state, stored, ?_, atQuery, ?_, Nat.le_refl _⟩
+    · simp [lookaheadState, atQuery, pure, Except.pure]
+    · rw [Store.getAncestor_of_le found (atQuery ▸ blockLe)]
+      rfl
+  have high : query < state.slot := UInt64.lt_of_le_of_ne reached (Ne.symm atQuery)
+  have notAnchor : block ≠ anchorBlock := by
+    intro same
+    obtain ⟨post, postOk, anchored, _⟩ := reachable.blockStatesFromParents found
+    rw [stored, Option.some.injEq] at postOk
+    subst post
+    rw [anchored same] at high
+    exact (UInt64.not_lt.mpr later) high
+  obtain ⟨parent, signed, message, parentFound, transitioned⟩ :=
+    transitions root block state found stored notAnchor
+  obtain ⟨advanced, slotsOk, advancedSlot, _, blockOk, _⟩ := stateTransition_ok transitioned
+  obtain ⟨parentBlock, parentKnown⟩ := reachable.known_of_blockState parentFound
+  have parentLe := reachable.blockState_slot_le (UInt64.le_of_eq anchorSlot) parentKnown parentFound
+  have stateSlot := (reachable.blockState_header found stored notAnchor).1
+  have parentLt : parentBlock.slot < block.slot := UInt64.lt_of_le_of_lt parentLe
+    (message ▸ (stateTransition_slot transitioned).1)
+  have walk := Store.getAncestor_step (node := ⟨root, status⟩) found
+    (UInt64.not_le.mpr (stateSlot ▸ high)) parentKnown parentLt
+  by_cases parentReached : query ≤ parent.slot
+  · obtain ⟨ancestorRoot, base, cut, held, made, atSlot, walked, grows⟩ :=
+      reachable.registry_at_ancestor anchorSlot transitions parentFound later parentReached
+        (parentPayloadStatus block parentBlock)
+    refine ⟨ancestorRoot, base, cut, held, made, atSlot, ?_,
+      Nat.le_trans grows (runKept_stateTransition transitioned).grows⟩
+    rw [walk]; exact walked
+  · have low := UInt64.not_le.mp parentReached
+    have upper : query < signed.message.slot := by rwa [← (stateTransition_slot transitioned).2]
+    obtain ⟨cut, before, afterOk⟩ := processSlots_split slotsOk low upper
+    refine ⟨block.parentRoot, parent, cut, parentFound, ?_, (processSlots_slot before).2, ?_,
+      Nat.le_trans (runKept_processSlots afterOk).grows (runKept_processBlock blockOk).grows⟩
+    · simp [lookaheadState, low, before, Except.mapError]
+    · rw [walk, Store.getAncestor_of_le parentKnown
+        (UInt64.le_trans parentLe (UInt64.le_of_lt low))]
+      rfl
+termination_by state.slot.toNat
+decreasing_by
+  have bounds := stateTransition_slot transitioned
+  rw [bounds.2]
+  exact UInt64.lt_iff_toNat_lt.mp bounds.1
+
+private theorem Store.Reachable.registry_at_cached_ancestor
+    {store : Store preset fork} (reachable : Store.Reachable config anchorState anchorBlock store)
+    (anchorSlot : anchorBlock.slot = anchorState.slot)
+    {checks : SignatureChecks} {engine : ExecutionEngine preset fork}
+    (transitions : ∀ (root : Root) (block : BeaconBlock preset fork)
+      (state : BeaconState preset fork), store.blocks[root]? = some block →
+      store.blockStates[root]? = some state → block ≠ anchorBlock →
+      ∃ parent signed, signed.message = block ∧
+        store.blockStates[block.parentRoot]? = some parent ∧
+        stateTransition config checks engine parent signed true = .ok state)
+    {root : Root} {state cached : BeaconState preset fork} {query target : Slot}
+    (stored : store.blockStates[root]? = some state)
+    (made : lookaheadState config checks state target = .ok cached)
+    (later : anchorState.slot ≤ query) (reached : query ≤ target)
+    (status : PayloadStatus) :
+    ∃ ancestorRoot base cut,
+      store.blockStates[ancestorRoot]? = some base ∧
+      lookaheadState config checks base query = .ok cut ∧
+      (·.root) <$> store.getAncestor ⟨root, status⟩ query = .ok ancestorRoot ∧
+      cut.validators.data.size ≤ cached.validators.data.size := by
+  by_cases before : query ≤ state.slot
+  · obtain ⟨ancestorRoot, base, cut, held, advanced, _, walked, grows⟩ :=
+      reachable.registry_at_ancestor anchorSlot transitions stored later before status
+    refine ⟨ancestorRoot, base, cut, held, advanced, walked, Nat.le_trans grows ?_⟩
+    unfold lookaheadState at made
+    split at made
+    · exact (runKept_processSlots (mapError_ok_iff.mp made)).grows
+    · cases made
+      exact Nat.le_refl _
+  · have low := UInt64.not_le.mp before
+    have high := UInt64.lt_of_lt_of_le low reached
+    have slotsOk := made
+    simp only [lookaheadState, high, ↓reduceIte] at slotsOk
+    obtain ⟨cut, advanced⟩ : ∃ cut, lookaheadState config checks state query = .ok cut := by
+      by_cases same : query = target
+      · exact ⟨cached, same ▸ made⟩
+      · obtain ⟨cut, first, _⟩ := processSlots_split (mapError_ok_iff.mp slotsOk) low
+          (UInt64.lt_of_le_of_ne reached same)
+        exact ⟨cut, by simp [lookaheadState, low, first, Except.mapError]⟩
+    obtain ⟨block, found⟩ := reachable.known_of_blockState stored
+    refine ⟨root, state, cut, stored, advanced, ?_,
+      lookahead_registry_le_of_le advanced made reached⟩
+    rw [Store.getAncestor_of_le found (UInt64.le_trans
+      (reachable.blockState_slot_le (UInt64.le_of_eq anchorSlot) found stored)
+      (UInt64.le_of_lt low))]
+    rfl
+
+private theorem Store.Reachable.validatorAt_of_common_boundary
+    {store : Store preset fork} (reachable : Store.Reachable config anchorState anchorBlock store)
+    (sound : Invariant anchorState) (anchorSlot : anchorBlock.slot = anchorState.slot)
+    (preGloas : fork < .glamsterdam)
+    {checks : SignatureChecks} {engine : ExecutionEngine preset fork}
+    (transitions : ∀ (root : Root) (block : BeaconBlock preset fork)
+      (state : BeaconState preset fork), store.blocks[root]? = some block →
+      store.blockStates[root]? = some state → block ≠ anchorBlock →
+      ∃ parent signed, signed.message = block ∧
+        store.blockStates[block.parentRoot]? = some parent ∧
+        stateTransition config checks engine parent signed true = .ok state)
+    {root targetRoot common : Root} {state base cached : BeaconState preset fork}
+    {query target : Slot}
+    (stored : store.blockStates[root]? = some state)
+    (baseStored : store.blockStates[targetRoot]? = some base)
+    (made : lookaheadState config checks base target = .ok cached)
+    (later : anchorState.slot ≤ query) (reached : query ≤ state.slot)
+    (targetLater : query ≤ target)
+    (finite : computeEpochAtSlot preset query < FAR_FUTURE_EPOCH)
+    (finalized : state.finalizedCheckpoint.epoch ≤ computeEpochAtSlot preset query)
+    (sourceWalk : (·.root) <$> store.getAncestor ⟨root, .pending⟩ query = .ok common)
+    (targetWalk : (·.root) <$> store.getAncestor ⟨targetRoot, .pending⟩ query = .ok common)
+    {position : Nat} {validator : Validator}
+    (found : state.validators.data[position]? = some validator)
+    (activated : validator.activationEpoch ≠ FAR_FUTURE_EPOCH) :
+    ∃ previous, cached.validators.data[position]? = some previous := by
+  obtain ⟨sourceRoot, sourceBase, sourceCut, held, advanced, _, walked, previous, present⟩ :=
+    reachable.validatorAt_ancestor_boundary sound anchorSlot preGloas transitions stored later
+      reached finite finalized .pending found activated
+  obtain ⟨destRoot, destBase, destCut, destHeld, destAdvanced, destWalked, grows⟩ :=
+    reachable.registry_at_cached_ancestor anchorSlot transitions baseStored made later
+      targetLater .pending
+  rw [sourceWalk, Except.ok.injEq] at walked
+  rw [targetWalk, Except.ok.injEq] at destWalked
+  subst sourceRoot
+  subst destRoot
+  rw [held, Option.some.injEq] at destHeld
+  subst destBase
+  rw [advanced, Except.ok.injEq] at destAdvanced
+  subst destCut
+  have bound := Nat.lt_of_lt_of_le (Array.getElem?_eq_some_iff.mp present).1 grows
+  exact ⟨cached.validators.data[position], Array.getElem?_eq_getElem bound⟩
+
 /-- Registry growth along imported parent transitions retains every anchor position.
 
 The store is fixed-fork, so these transitions do not include fork upgrades. -/
