@@ -918,6 +918,31 @@ theorem TargetIncluded.of_le {last later : ℕ} (included : TargetIncluded e lat
       totalOk epochOk rootEpochOk rootLe blockOk signed quorum w receiver k current
       (kBound.trans le)
 
+omit [DecidablePred (· ∈ J)] in
+/-- A latest vote's checkpoint target has been signed by the event that holds the vote. -/
+theorem Execution.signsTarget_of_latestMessages {anchor : Store preset fork}
+    (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (start : ∀ w ∈ J, e.start w = anchor) {u : ValidatorIndex} (caller : u ∈ J)
+    {n : ℕ} {v : ValidatorIndex} {message : LatestMessage fork}
+    (found : ((e.world n).state u).latestMessages[v]? = some message)
+    {target : Checkpoint}
+    (targetOk : ((e.world n).state u).getCheckpointForBlock message.root
+      (getLatestMessageEpoch preset message) = .ok target) :
+    SignsTarget e v target (e.world n).time := by
+  obtain ⟨attestation, m, seen, same, signed, origin⟩ :=
+    e.exists_signed_origin_of_latestMessages anchored start caller found
+  have epoch : getLatestMessageEpoch preset message = attestation.data.target.epoch := by
+    rw [same]
+    unfold getLatestMessageEpoch LatestMessage.ofAttestation
+    split
+    · exact origin.targetEpoch.symm
+    · rfl
+  have root : message.root = attestation.data.beaconBlockRoot := by rw [same]; rfl
+  rw [epoch, root] at targetOk
+  have targetEq : attestation.data.target = target := by
+    simpa [Store.getCheckpointForBlock, origin.targetRoot] using targetOk
+  exact ⟨n, le_rfl, m, e.view_subset_sent n u seen, attestation.data, signed, targetEq⟩
+
 /-- Step 6, the count: honest validators hold the count of the rule for the target, with a margin.
 
 The caller is an honest validator, and each honest store starts from the store of the anchor.
