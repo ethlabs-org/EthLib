@@ -4942,6 +4942,260 @@ private theorem blockConsolidationSites_prefix {fork : Fork}
         (requests.trans (withdrawals.trans kept)))))))))))⟩
   · cases ok; simp at member
 
+private theorem consolidationSite_epoch_total {x y : ForkedBeaconState preset}
+    (tail : Run config checks x y) (electra : .pectra ≤ x.fork)
+    (early : y.fork < .glamsterdam)
+    (site : ForkedBeaconState preset) (member : site ∈ tail.consolidationSites) :
+    .pectra ≤ site.fork ∧ site.fork < .glamsterdam ∧
+      getCurrentEpoch x.state ≤ getCurrentEpoch site.state ∧
+      (getCurrentEpoch site.state = getCurrentEpoch x.state →
+        getTotalActiveBalance site.state = getTotalActiveBalance x.state) := by
+  induction tail with
+  | nil => simp [Run.consolidationSites] at member
+  | @snoc middle last pre step ih =>
+    have middleEarly := Nat.lt_of_le_of_lt step.chainStep.fork_le early
+    have middleElectra := Nat.le_trans electra (fork_le_of_chainSteps pre.chainSteps)
+    rcases List.mem_append.mp member with previous | current
+    · exact ih middleEarly previous
+    · cases step with
+      | slot ok => simp [Step.consolidationSites] at current
+      | @block fork before after engine signed due applied =>
+        unfold Step.consolidationSites at current
+        cases replay : blockConsolidationSites config checks engine before signed.message with
+        | error err => simp [replay, Except.toOption] at current
+        | ok sites =>
+          simp only [replay, Except.toOption, Option.getD_some] at current
+          obtain ⟨u, rfl, kept⟩ := blockConsolidationSites_prefix replay site current
+          have epoch : getCurrentEpoch u = getCurrentEpoch before := by
+            simp only [getCurrentEpoch, kept.active.1]
+          refine ⟨middleElectra, middleEarly, ?_, ?_⟩
+          · rw [epoch]
+            exact currentEpoch_le_of_chainSteps pre.chainSteps
+          · intro same
+            have first := total_active_congr
+              (Nat.lt_of_le_of_lt (fork_le_of_chainSteps pre.chainSteps) middleEarly)
+              middleEarly
+              ((activeKept_of_chainSteps pre.chainSteps).mono
+                (getCurrentEpoch_le_activityFixedEpoch x.state))
+              (epoch.symm.trans same)
+              (run_same_epoch_effective pre electra middleEarly (epoch.symm.trans same))
+            have second := total_active_congr middleEarly middleEarly
+              (kept.active.2.mono (getCurrentEpoch_le_activityFixedEpoch before)) epoch
+              kept.effective
+            exact second.trans first
+
+private theorem DepartureQueueTrace.window_le_initialized
+    {earliest epoch : Epoch} {available left : Gwei} {calls : List DepartureQueueCall}
+    (trace : DepartureQueueTrace earliest available calls epoch left) (start high cap : Nat)
+    (later : start < earliest.toNat)
+    (rates : ∀ call ∈ calls, call.rate.toNat ≤ cap)
+    (startup : ∀ call ∈ calls, available.toNat ≤ cap ∨ earliest < call.first) :
+    ((calls.filter fun call => call.epoch.toNat ≤ high).map fun call => call.amount.toNat).sum ≤
+      (high + 1 - start) * cap := by
+  cases trace with
+  | nil => simp
+  | cons call tail =>
+    rcases startup call (by simp) with bounded | reset
+    · have budget := (DepartureQueueTrace.cons call tail).window_le high cap rates
+      have initial : departureQueuePotential high cap call.earliest call.available ≤
+          (high + 1 - start) * cap := by
+        unfold departureQueuePotential
+        split
+        · calc
+            _ ≤ cap + (high - call.earliest.toNat) * cap := Nat.add_le_add_right bounded _
+            _ = (1 + (high - call.earliest.toNat)) * cap := by rw [Nat.add_mul, Nat.one_mul]
+            _ ≤ _ := Nat.mul_le_mul_right cap (by omega)
+        · exact Nat.zero_le _
+      exact (Nat.le_add_right _ _).trans (budget.trans initial)
+    · have rest := tail.window_le high cap
+        (fun c member => rates c (List.mem_cons_of_mem _ member))
+      by_cases inside : call.epoch.toNat ≤ high
+      · obtain ⟨placed, spent, _⟩ := churnQueue_spend call.computed
+        have placed := UInt64.le_iff_toNat_le.mp placed
+        have reset' : call.earliest < max call.earliest call.first := by
+          rw [UInt64.lt_iff_toNat_lt, Uint64.toNat_max]
+          exact Nat.lt_of_lt_of_le (UInt64.lt_iff_toNat_lt.mp reset) (Nat.le_max_right _ _)
+        rw [ite_eq_left reset', Uint64.toNat_max] at spent
+        rw [Uint64.toNat_max] at placed
+        have one : call.left.toNat + call.amount.toNat ≤
+            (call.epoch.toNat + 1 - start) * cap := by
+          calc
+            _ = (call.epoch.toNat - max call.earliest.toNat call.first.toNat + 1) *
+                call.rate.toNat := by rw [spent, Nat.add_mul, Nat.one_mul]; omega
+            _ ≤ _ := Nat.mul_le_mul (by omega) (rates call (by simp))
+        have distance : (call.epoch.toNat + 1 - start) + (high - call.epoch.toNat) =
+            high + 1 - start := by omega
+        have combined := Nat.add_le_add_right one ((high - call.epoch.toNat) * cap)
+        rw [← Nat.add_mul, distance] at combined
+        simp only [departureQueuePotential, inside, ↓reduceIte] at rest
+        simp only [List.filter_cons, decide_eq_true inside, ↓reduceIte,
+          List.map_cons, List.sum_cons]
+        omega
+      · simp only [departureQueuePotential, inside, ↓reduceIte] at rest
+        simp only [List.filter_cons, decide_eq_false inside, Bool.false_eq_true, ↓reduceIte]
+        omega
+
+private structure InitializedDepartureQueues (s : ForkedBeaconState preset)
+    (electra : .pectra ≤ s.fork) : Prop where
+  exitLater : (getCurrentEpoch s.state).toNat < (s.state.earliestExitEpoch electra).toNat
+  exitCap : (s.state.exitBalanceToConsume electra).toNat ≤
+    config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat
+  consolidationFirst : computeActivationExitEpoch preset (getCurrentEpoch s.state) =
+    .ok (s.state.earliestConsolidationEpoch electra)
+  consolidationRate : getConsolidationChurnLimit config s.state =
+    .ok (s.state.consolidationBalanceToConsume electra)
+
+private theorem initialized_electra {s : BeaconState preset .dencun}
+    {t : BeaconState preset .pectra} (ok : upgradeToElectra config s = .ok t) :
+    InitializedDepartureQueues (config := config) ⟨.pectra, t⟩
+      (show Fork.pectra ≤ .pectra from Nat.le_refl _) := by
+  obtain ⟨epoch, _, exitRate, consolidationRate⟩ := electra_crossing_queues ok
+  obtain ⟨first, exitEpoch, exitCapacity, consolidationCapacity, firstOk, _, fields⟩ :=
+    electra_departure_initialization ok
+  have firstField := congrArg (fun q => q.2.2.1) fields
+  change t.earliestConsolidationEpoch (by decide) = first at firstField
+  refine ⟨?_, exitChurnLimit_le_cap (by decide) exitRate, ?_, consolidationRate⟩
+  · rw [epoch]
+    exact (electra_departure_epochs ok).1
+  · rw [epoch, firstField]
+    exact firstOk
+
+private theorem initialized_upgrades {s t : ForkedBeaconState preset}
+    (electra : .pectra ≤ s.fork) (early : t.fork < .glamsterdam)
+    (ok : processUpgrades config checks s = .ok t) (targetElectra : .pectra ≤ t.fork)
+    (initial : InitializedDepartureQueues (config := config) s electra) :
+    InitializedDepartureQueues (config := config) t targetElectra := by
+  have fields := upgrades_departureQueues electra early ok targetElectra
+  have data := upgrades_registry electra early ok
+  have epoch : getCurrentEpoch t.state = getCurrentEpoch s.state := by
+    simp only [getCurrentEpoch, processUpgrades_slot ok]
+  have sourceEarly := Nat.lt_of_le_of_lt (processUpgrades_fork_le ok) early
+  have total := total_active_congr sourceEarly early (ActiveKept.of_validators data _) epoch
+    (by intro i _; simp only [effectiveAt, data])
+  have notGloas : ¬ .glamsterdam ≤ t.fork := Nat.not_le_of_lt early
+  have sourceNotGloas : ¬ .glamsterdam ≤ s.fork := Nat.not_le_of_lt sourceEarly
+  have consolidation : getConsolidationChurnLimit config t.state =
+      getConsolidationChurnLimit config s.state := by
+    simp only [getConsolidationChurnLimit, notGloas,
+      sourceNotGloas, ↓reduceIte, getActivationExitChurnLimit,
+      getBalanceChurnLimit, total]
+  have exitEpoch := congrArg Prod.fst fields
+  have exitBalance := congrArg (fun q => q.2.1) fields
+  have consolidationEpoch := congrArg (fun q => q.2.2.1) fields
+  have consolidationBalance := congrArg (fun q => q.2.2.2) fields
+  change t.state.earliestExitEpoch targetElectra = s.state.earliestExitEpoch electra at exitEpoch
+  change t.state.exitBalanceToConsume targetElectra = s.state.exitBalanceToConsume electra
+    at exitBalance
+  change t.state.earliestConsolidationEpoch targetElectra =
+    s.state.earliestConsolidationEpoch electra at consolidationEpoch
+  change t.state.consolidationBalanceToConsume targetElectra =
+    s.state.consolidationBalanceToConsume electra at consolidationBalance
+  refine ⟨?_, ?_, ?_, ?_⟩
+  · simpa only [epoch, exitEpoch] using initial.exitLater
+  · simpa only [exitBalance] using initial.exitCap
+  · simpa only [epoch, consolidationEpoch] using initial.consolidationFirst
+  · simpa only [consolidationBalance] using consolidation.trans initial.consolidationRate
+
+private theorem crossing_upgrades_initialized {s t : ForkedBeaconState preset}
+    (before : s.fork < .pectra) (electra : .pectra ≤ t.fork)
+    (early : t.fork < .glamsterdam) (ok : processUpgrades config checks s = .ok t) :
+    InitializedDepartureQueues (config := config) t electra := by
+  fun_induction processUpgrades config checks s generalizing t with
+  | case1 s due ih =>
+    obtain ⟨next, nextOk, rest⟩ := bind_ok_iff.mp ok
+    by_cases stillBefore : next.val.fork < .pectra
+    · exact ih next stillBefore electra early rest
+    · have nextElectra := Nat.le_of_not_lt stillBefore
+      have initial : InitializedDepartureQueues (config := config) next.val nextElectra := by
+        obtain ⟨fork, state⟩ := s
+        cases fork
+        all_goals try (solve | simp (config := { decide := true }) at before)
+        all_goals
+          simp only [upgradeNext, bind_ok_iff, pure, Except.pure, Except.ok.injEq,
+            throw, throwThe, MonadExceptOf.throw, reduceCtorEq] at nextOk
+        · obtain ⟨_, _, rfl⟩ := nextOk
+          simp (config := { decide := true }) at nextElectra
+        · subst nextOk; simp (config := { decide := true }) at nextElectra
+        · subst nextOk; simp (config := { decide := true }) at nextElectra
+        · subst nextOk; simp (config := { decide := true }) at nextElectra
+        · obtain ⟨_, upgraded, rfl⟩ := nextOk
+          exact initialized_electra upgraded
+      exact initialized_upgrades nextElectra early rest electra initial
+  | case2 s notDue => cases ok; exact False.elim (Nat.not_lt_of_ge electra before)
+
+private theorem crossing_initialized {s t : ForkedBeaconState preset}
+    (step : Step config checks s t) (before : s.fork < .pectra)
+    (electra : .pectra ≤ t.fork) (early : t.fork < .glamsterdam) :
+    InitializedDepartureQueues (config := config) t electra := by
+  cases step with
+  | block engine signed due ok => exact False.elim (Nat.not_lt_of_ge electra before)
+  | slot ok =>
+    obtain ⟨advanced, _, upgraded⟩ := bind_ok_iff.mp ok
+    exact crossing_upgrades_initialized (s := ⟨s.fork, advanced⟩) before electra early upgraded
+
+private theorem initialized_charges_le_window {x y : ForkedBeaconState preset}
+    (tail : Run config checks x y) (electra : .pectra ≤ x.fork)
+    (early : y.fork < .glamsterdam) (high cap : Nat)
+    (initial : InitializedDepartureQueues (config := config) x electra)
+    (rates : ∀ site ∈ tail.consolidationSites,
+      ∀ (_h : .pectra ≤ site.fork) (rate : Gwei),
+        getConsolidationChurnLimit config site.state = .ok rate → rate.toNat ≤ cap) :
+    ((tail.departureCharges.filter fun c => c.epoch ≤ high).map (·.amount)).sum ≤
+      (high + 1 - (getCurrentEpoch x.state).toNat) *
+        (config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat + cap) := by
+  have targetElectra := Nat.le_trans electra (fork_le_of_chainSteps tail.chainSteps)
+  obtain ⟨exits, consolidations, _, matched, exitTrace, consolidationTrace,
+    exitRates, consolidationRates, sites⟩ :=
+    run_indexedTrace_sites tail electra early targetElectra cap rates
+  have charges := departureCharges_le_calls (departureCharges_run_indices tail) matched high
+  have exitBound := exitTrace.window_le_initialized (getCurrentEpoch x.state).toNat high
+    config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat initial.exitLater
+    (by
+      intro call member
+      obtain ⟨called, present, rfl⟩ := List.mem_map.mp member
+      exact exitRates called present)
+    (by intro _ _; exact Or.inl initial.exitCap)
+  have first := (computeActivationExitEpoch_ok_iff.mp initial.consolidationFirst).2
+  have consolidationLater : (getCurrentEpoch x.state).toNat <
+      (x.state.earliestConsolidationEpoch electra).toNat := by omega
+  have startup : ∀ call ∈ consolidations.map (·.call),
+      (x.state.consolidationBalanceToConsume electra).toNat ≤ cap ∨
+        x.state.earliestConsolidationEpoch electra < call.first := by
+    intro call member
+    obtain ⟨called, present, rfl⟩ := List.mem_map.mp member
+    obtain ⟨site, listed, firstOk, rateOk⟩ := sites called present
+    obtain ⟨_, siteEarly, ordered, total⟩ := consolidationSite_epoch_total tail electra early
+      site listed
+    by_cases same : getCurrentEpoch site.state = getCurrentEpoch x.state
+    · have sameTotal := total same
+      have sourceEarly := Nat.lt_of_le_of_lt (fork_le_of_chainSteps tail.chainSteps) early
+      have notGloas : ¬ .glamsterdam ≤ site.fork := Nat.not_le_of_lt siteEarly
+      have sourceNotGloas : ¬ .glamsterdam ≤ x.fork := Nat.not_le_of_lt sourceEarly
+      have sameRate : getConsolidationChurnLimit config site.state =
+          getConsolidationChurnLimit config x.state := by
+        simp only [getConsolidationChurnLimit, notGloas, sourceNotGloas, ↓reduceIte,
+          getActivationExitChurnLimit, getBalanceChurnLimit, sameTotal]
+      have equal := Except.ok.inj (rateOk.symm.trans
+        (sameRate.trans initial.consolidationRate))
+      exact Or.inl (equal ▸ consolidationRates called present)
+    · have later := (computeActivationExitEpoch_ok_iff.mp firstOk).2
+      have epochNe : (getCurrentEpoch site.state).toNat ≠ (getCurrentEpoch x.state).toNat :=
+        fun equal => same (UInt64.toNat_inj.mp equal)
+      have ordered := UInt64.le_iff_toNat_le.mp ordered
+      right
+      rw [UInt64.lt_iff_toNat_lt]
+      omega
+  have consolidationBound := consolidationTrace.window_le_initialized
+    (getCurrentEpoch x.state).toNat high cap consolidationLater
+    (by
+      intro call member
+      obtain ⟨called, present, rfl⟩ := List.mem_map.mp member
+      exact consolidationRates called present) startup
+  simp only [List.filter_map, List.map_map, Function.comp_def] at exitBound consolidationBound
+  simp only [List.filter_append, List.map_append, List.sum_append] at charges
+  rw [Nat.mul_add]
+  omega
+
 theorem consolidationSites_provenance {g x y : ForkedBeaconState preset}
     (shared : Run config checks g x) (tail : Run config checks x y)
     (genesis : Genesis (config := config) (checks := checks) g)
