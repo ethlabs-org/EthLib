@@ -56,4 +56,23 @@ theorem receiver_epoch_le_one {checks : SignatureChecks}
   current_epoch_le_one ((e.clock_bounds w k).1.trans (genesis w receiver))
     (updated.1 ▸ bounded) current
 
+/-- Target inclusion is vacuous on the witness's short horizon.
+
+Its receiver must be at least two epochs after a target, but cannot be past epoch one.
+
+This includes descendant-relative instances at later receivers.
+
+The result assumes an execution and does not construct one. -/
+theorem target_included {checks : SignatureChecks}
+    {sources : BlockSources preset .phase0} {anchorState : BeaconState preset .phase0}
+    {anchorBlock : BeaconBlock preset .phase0} {assignment : Assignment preset}
+    {genesisTimeMs : UInt64} {J : Set ValidatorIndex}
+    (e : Execution (honestForkChoice config checks sources anchorState anchorBlock assignment
+      genesisTimeMs) J)
+    (genesis : ∀ w ∈ J, (e.start w).genesisTimeMs = 0) : TargetIncluded e 4000 := by
+  intro u caller n nBound head state total target voters stateOk totalOk epochOk signed quorum
+    w receiver k current kBound later updated currentOk aged
+  have upper := receiver_epoch_le_one e genesis receiver kBound updated currentOk
+  omega
+
 end EthLib.Consensus.Models.Network.FiveValidatorWitness
