@@ -2475,6 +2475,127 @@ private theorem walk_head_of_covered {store : Store preset fork}
   obtain ⟨nodes, _, headOk⟩ := headOk
   exact Store.getHeadFrom_descends before rfl covered headOk
 
+/-- A successful head walk weighs children at each held ancestor on its path. -/
+private theorem walk_head_visits {store : Store preset fork}
+    {tally : Except ForkChoiceError VoteTally} {nodes : List ForkChoiceNode}
+    (before : fork < .glamsterdam) {target : Root} {targetBlock : BeaconBlock preset fork} :
+    ∀ {start head : ForkChoiceNode} {startBlock : BeaconBlock preset fork},
+      start.payloadStatus = .pending → store.blocks[start.root]? = some startBlock →
+      startBlock.slot ≤ targetBlock.slot →
+      store.getAncestor head targetBlock.slot = .ok ⟨target, .pending⟩ →
+      store.getHeadFrom config tally nodes start = .ok head →
+      ∃ result, store.heaviestChild config tally nodes ⟨target, .pending⟩ = .ok result := by
+  intro start
+  induction start using Store.getHeadFrom.induct store with
+  | _ start ih =>
+    intro head startBlock pending startKnown below path walk
+    by_cases same : start = (⟨target, .pending⟩ : ForkChoiceNode)
+    · rw [Store.getHeadFrom] at walk
+      cases read : store.heaviestChild config tally nodes start with
+      | error error => simp [read, bind, Except.bind] at walk
+      | ok result => exact ⟨result, same ▸ read⟩
+    rw [Store.getHeadFrom] at walk
+    cases read : store.heaviestChild config tally nodes start with
+    | error error => simp [read, bind, Except.bind] at walk
+    | ok result =>
+      cases result with
+      | none =>
+        simp only [read, bind, Except.bind, pure, Except.pure, Except.ok.injEq] at walk
+        subst head
+        rw [Store.getAncestor_of_le startKnown below] at path
+        exact False.elim (same (Except.ok.inj path))
+      | some child =>
+        simp only [read, bind, Except.bind] at walk
+        split at walk
+        · rename_i rank
+          obtain ⟨children, weighted, childrenOk, weightedOk, choice⟩ := Store.heaviestChild_eq read
+          obtain ⟨key, mem, _⟩ := chooseHeaviest_some choice
+          obtain ⟨source, member, pair⟩ := mapM_ok_mem weightedOk _ mem
+          obtain ⟨rfl, _⟩ := Store.weighNode_ok_iff.mp pair
+          obtain ⟨childPending, childBlock, childKnown, parent⟩ :=
+            (Store.mem_getNodeChildren before childrenOk).mp (List.mem_filter.mp member).1
+          dsimp only at childPending childKnown
+          have higher : startBlock.slot < childBlock.slot := by
+            simp only [Store.nodeRank, childKnown, startKnown, childPending, pending,
+              ↓reduceIte] at rank
+            have := childBlock.slot.toNat_lt
+            have := startBlock.slot.toNat_lt
+            rw [UInt64.lt_iff_toNat_lt]
+            omega
+          by_cases childBelow : childBlock.slot ≤ targetBlock.slot
+          · exact ih child rank childPending childKnown childBelow path walk
+          · have upper := Store.getAncestor_getHeadFrom before walk childPending childKnown
+            rw [Store.getAncestor_trans (UInt64.le_of_lt (UInt64.not_le.mp childBelow)) upper,
+              Store.getAncestor_of_gt before childKnown childBelow (parent ▸ startKnown) higher,
+              parent] at path
+            have startNode : (⟨start.root, .pending⟩ : ForkChoiceNode) = start := by
+              cases start
+              simp_all
+            rw [startNode, Store.getAncestor_of_le startKnown below] at path
+            exact False.elim (same (Except.ok.inj path))
+        · cases walk
+
+/-- A viable child of a visited parent has a successful justified-state score read. -/
+private theorem walk_score_read {store : Store preset fork}
+    (before : fork < .glamsterdam) {state : BeaconState preset fork}
+    {nodes : List ForkChoiceNode} {head : ForkChoiceNode} {root : Root}
+    {block parent justified : BeaconBlock preset fork}
+    (known : store.blocks[root]? = some block)
+    (parentKnown : store.blocks[block.parentRoot]? = some parent)
+    (justifiedKnown : store.blocks[store.justifiedCheckpoint.root]? = some justified)
+    (below : justified.slot ≤ parent.slot)
+    (stateOk : store.checkpointState store.justifiedCheckpoint = .ok state)
+    (tree : store.getFilteredNodeTree config = .ok nodes)
+    (viable : (⟨root, .pending⟩ : ForkChoiceNode) ∈ nodes)
+    (parentAbove : store.isAncestor head ⟨block.parentRoot, .pending⟩ = .ok true)
+    (headOk : store.getHead config = .ok head) :
+    ∃ score, store.getAttestationScore ⟨root, .pending⟩ state = .ok score := by
+  have notGloas : ¬ .glamsterdam ≤ fork := Nat.not_le_of_lt before
+  simp only [Store.getHead, notGloas, false_and, ↓reduceIte, tree, bind, Except.bind] at headOk
+  obtain ⟨result, read⟩ := walk_head_visits before rfl justifiedKnown below
+    (Store.getAncestor_of_isAncestor_of_lt before parentKnown parentAbove) headOk
+  obtain ⟨children, weighted, childrenOk, weightedOk, _⟩ := Store.heaviestChild_eq read
+  have member : (⟨root, .pending⟩ : ForkChoiceNode) ∈ children.filter (· ∈ nodes) := by
+    apply List.mem_filter.mpr
+    exact ⟨(Store.mem_getNodeChildren before childrenOk).mpr ⟨rfl, block, known, rfl⟩,
+      by simpa using viable⟩
+  obtain ⟨weighed, _, weightOk⟩ := exists_mem_of_mapM_ok weightedOk member
+  have weightOk := (Store.weighNode_ok_iff.mp weightOk).2.1
+  simp only [Store.getWeight, notGloas, ↓reduceIte, Store.justifiedTally_of_state stateOk,
+    bind, Except.bind, pure, Except.pure, Bool.false_eq_true] at weightOk
+  cases scoreOk : store.scoreFromTally (store.tallyVotes state) ⟨root, .pending⟩ with
+  | error error => simp [scoreOk] at weightOk
+  | ok score => exact ⟨score, scoreOk⟩
+
+/-- A viable node not covered by justification has its parent at or above justification. -/
+private theorem walk_justified_below_parent {store : Store preset fork}
+    (lower : store.ParentsBelow) (before : fork < .glamsterdam)
+    {nodes : List ForkChoiceNode} {root : Root} {block parent : BeaconBlock preset fork}
+    (known : store.blocks[root]? = some block)
+    (parentKnown : store.blocks[block.parentRoot]? = some parent)
+    (tree : store.getFilteredNodeTree config = .ok nodes)
+    (viable : (⟨root, .pending⟩ : ForkChoiceNode) ∈ nodes)
+    (uncovered : store.isAncestor ⟨store.justifiedCheckpoint.root, .pending⟩
+      ⟨root, .pending⟩ ≠ .ok true) :
+    ∃ justified, store.blocks[store.justifiedCheckpoint.root]? = some justified ∧
+      justified.slot ≤ parent.slot := by
+  have treeWalk : store.filterNodeTree config ⟨store.justifiedCheckpoint.root, .pending⟩ =
+      .ok nodes := tree
+  obtain ⟨justified, justifiedKnown⟩ := (Store.filterNodeTree_mem treeWalk _
+    (Store.filterNodeTree_self treeWalk (by intro empty; simp [empty] at viable))).2.1
+  refine ⟨justified, justifiedKnown, ?_⟩
+  have ancestor := (Store.filterNodeTree_ancestor (lower := lower) before treeWalk _ viable).1
+  rcases ancestor.eq_or_parent with same | above
+  · have same := Option.some.inj same
+    change store.justifiedCheckpoint.root = root at same
+    apply False.elim
+    apply uncovered
+    simpa only [same] using Store.isAncestor_self (node := ⟨root, .pending⟩) known
+  · rw [Store.blockTree_parent_of known] at above
+    have le := above.height_le
+    rw [Store.blockTree_height_of justifiedKnown, Store.blockTree_height_of parentKnown] at le
+    exact UInt64.le_iff_toNat_le.mpr (by omega)
+
 /-- Induction follows parent edges while keeping the complete returned walk fixed. -/
 private theorem walk_members_induction {store : Store preset fork}
     {tip terminal : Root} {acc roots : List Root} (P : Root → Prop)
