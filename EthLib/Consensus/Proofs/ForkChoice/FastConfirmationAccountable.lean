@@ -3,6 +3,7 @@ module
 public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmationSafety
 public import EthLib.Consensus.Proofs.ForkChoice.AccountableCheckpoints
 public import EthLib.Consensus.Proofs.DirectSafety.TerminalSafety
+import EthLib.Consensus.Proofs.ForkChoice.FastConfirmationExitReserve
 import EthLib.Consensus.Proofs.Transition.BlockRoots
 import EthLib.Consensus.Proofs.Transition.FfgSlack
 import EthLib.Consensus.Proofs.Transition.TargetSlots
@@ -280,7 +281,10 @@ theorem exitStake_le_exitReserve {g y : ForkedBeaconState preset}
     stake (fun v => balanceAt source v.toNat)
         {v ∈ activeVoters source | v ∉ activeVoters y.state} ≤
       exitReserve config source := by
-  sorry
+  have bound := ExitChurn.departing_stake_le genesis shared tail lookahead preGloas near
+  unfold ExitChurn.activeSet ExitChurn.scheduled at bound
+  unfold exitReserve activeVoters
+  exact bound
 
 variable {e : Execution (honestForkChoice config checks sources anchorState anchorBlock assignment
   genesisTimeMs) J} [DecidablePred (· ∈ J)]
