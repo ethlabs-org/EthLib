@@ -1520,6 +1520,79 @@ theorem processOperations_split {body : BeaconBlockBody preset fork} {parentSlot
   processOperations_split_of BlockFrame BlockFrame.refl BlockFrame.trans
     frame_processProposerSlashing frame_processAttesterSlashing computed
 
+/-- The state at which `processBlock` starts the operations of a block.
+
+The equations are the steps that `processBlock` runs before `processOperations`, at every fork.
+
+They are the payload of the parent from Gloas and the header.
+
+The execution part follows from Bellatrix, then the RANDAO reveal.
+
+The vote on the deposit contract comes last, before Hegota. -/
+def OperationsInput (config : Config) (checks : SignatureChecks) {fork : Fork}
+    (engine : ExecutionEngine preset fork) (before : BeaconState preset fork)
+    (block : BeaconBlock preset fork) (input : BeaconState preset fork) : Prop :=
+  ∃ parented headed executed revealed : BeaconState preset fork,
+    (if gloas : .glamsterdam ≤ fork then
+        processParentExecutionPayload config checks before gloas block.body
+      else pure before) = .ok parented ∧
+    processBlockHeader parented block = .ok headed ∧
+    (if bellatrix : .bellatrix ≤ fork then
+        processBlockExecution config checks engine headed block.body bellatrix
+      else pure headed) = .ok executed ∧
+    processRandao config checks executed block.body = .ok revealed ∧
+    (if early : fork < .hegota then processEth1Data early revealed block.body
+      else pure revealed) = .ok input
+
+/-- The steps of a block before its operations are a step.
+
+The step holds of each part of the block that runs before its operations.
+
+Those are the same parts as in `processBlock_split_of`.
+
+It must hold of each state to itself, and chain. -/
+theorem OperationsInput.step_of
+    (step : BeaconState preset fork → BeaconState preset fork → Prop)
+    (refl : ∀ state, step state state)
+    (trans : ∀ {first second third}, step first second → step second third → step first third)
+    {engine : ExecutionEngine preset fork} {state input : BeaconState preset fork}
+    {block : BeaconBlock preset fork}
+    (paid : ∀ {state after} (gloas : .glamsterdam ≤ fork),
+      processParentExecutionPayload config checks state gloas block.body = .ok after →
+        step state after)
+    (header : ∀ {state after}, processBlockHeader state block = .ok after → step state after)
+    (execution : ∀ {state after} (bellatrix : .bellatrix ≤ fork),
+      processBlockExecution config checks engine state block.body bellatrix = .ok after →
+        step state after)
+    (randao : ∀ {state after},
+      processRandao config checks state block.body = .ok after → step state after)
+    (eth1 : ∀ {state after} (before : fork < .hegota),
+      processEth1Data before state block.body = .ok after → step state after)
+    (started : OperationsInput config checks engine state block input) :
+    step state input := by
+  obtain ⟨parented, headed, executed, revealed, paidOk, headerOk, executionOk, randaoOk,
+    eth1Ok⟩ := started
+  -- From Gloas the payload of the parent runs before the header.
+  have paidStep : step state parented := by
+    split at paidOk
+    · exact paid _ paidOk
+    · cases paidOk
+      exact refl _
+  -- From Bellatrix the execution part runs between the header and the RANDAO reveal.
+  have executionStep : step headed executed := by
+    split at executionOk
+    · exact execution _ executionOk
+    · cases executionOk
+      exact refl _
+  -- Hegota drops the vote on the deposit contract.
+  have eth1Step : step revealed input := by
+    split at eth1Ok
+    · exact eth1 _ eth1Ok
+    · cases eth1Ok
+      exact refl _
+  exact trans paidStep <| trans (header headerOk) <|
+    trans executionStep <| trans (randao randaoOk) eth1Step
+
 /-- A block is a step, its operations, then a block frame.
 
 The step holds of each part of the block that runs before its operations.
