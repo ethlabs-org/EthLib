@@ -625,4 +625,73 @@ theorem attestation_proposer_bound_gloas {fork : Fork} (s t : BeaconState preset
     simpa only [balanceCredits, balanceDebits, actualBalanceAt, paidBalances, kept]
       using And.intro bounds.2 bounds.1.le
 
+/-- EIP-7732, State transition: Gloas operations preserve the recorded balance bounds. -/
+theorem gloas_operations_bounded {fork : Fork} (gloas : .glamsterdam ≤ fork)
+    (before : fork < .hegota) (body : BeaconBlockBody preset fork) (parent : Slot)
+    (pre post : BalanceReplay preset fork) (matched : BalancesMatch pre.1)
+    (bounded : ∀ event ∈ pre.2,
+      event.credits ≤ event.creditLimit ∧ event.debits ≤ event.debitLimit)
+    (ok : gloasOperationsReplay (config := config) (checks := checks)
+      gloas before body parent pre = .ok post) :
+    BalancesMatch post.1 ∧ ∀ event ∈ post.2,
+      event.credits ≤ event.creditLimit ∧ event.debits ≤ event.debitLimit := by
+  have proposer {pre post : BalanceReplay preset fork} (sl : ProposerSlashing)
+      (initial : ReplayBounded pre)
+      (ok : recordBalance .slashings (slashingLimits [sl.signedHeader1.message.proposerIndex])
+        (processProposerSlashing config checks · sl) pre = .ok post) : ReplayBounded post := by
+    apply recordBalance_matched _ _ _
+      (fun _ _ ok => (frame_processProposerSlashing ok).balancesMatch) _ initial ok
+    intro s t credit debit _ limits action
+    obtain ⟨credit', debit', limits', bounds⟩ := proposer_slashing_bounds sl action
+    cases Except.ok.inj (limits.symm.trans limits')
+    exact bounds
+  have attester {pre post : BalanceReplay preset fork} (sl : AttesterSlashing preset fork)
+      (initial : ReplayBounded pre)
+      (ok : recordBalance .slashings (slashingLimits (slashingIndices sl))
+        (processAttesterSlashing config checks · sl) pre = .ok post) : ReplayBounded post := by
+    apply recordBalance_matched _ _ _
+      (fun _ _ ok => (frame_processAttesterSlashing ok).balancesMatch) _ initial ok
+    intro s t credit debit _ limits action
+    obtain ⟨credit', debit', limits', bounds⟩ := attester_slashing_bounds sl action
+    cases Except.ok.inj (limits.symm.trans limits')
+    exact bounds
+  have attestation {pre post : BalanceReplay preset fork} (att : Attestation preset fork)
+      (initial : ReplayBounded pre)
+      (ok : recordBalance .rewards (fun site => do
+          return (← attestationCredit site att parent, 0))
+        (processAttestation config checks · parent att) pre = .ok post) : ReplayBounded post := by
+    apply recordBalance_matched _ _ _
+      (fun _ _ ok => (frame_processAttestation ok).balancesMatch) _ initial ok
+    intro site t credit debit _ limits action
+    obtain ⟨credit', limits', debits, credits⟩ :=
+      attestation_proposer_bound_gloas site t att parent gloas action
+    simp only [limits', bind, Except.bind, pure, Except.pure, Except.ok.injEq,
+      Prod.mk.injEq] at limits
+    rcases limits with ⟨rfl, rfl⟩
+    exact ⟨credits, debits.le⟩
+  simp only [gloasOperationsReplay, bind_ok_iff] at ok
+  obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _,
+    proposed, proposedOk, slashed, slashedOk, attested, attestedOk,
+    exited, exitedOk, changed, changedOk, paid⟩ := ok
+  -- Each recorded operation preserves both the state invariant and all event bounds.
+  have proposedBound := foldlM_ok_invariant ReplayBounded
+    (fun _ sl _ h ok => proposer sl h ok) ⟨matched, bounded⟩ proposedOk
+  have slashedBound := foldlM_ok_invariant ReplayBounded
+    (fun _ sl _ h ok => attester sl h ok) proposedBound slashedOk
+  have attestedBound := foldlM_ok_invariant ReplayBounded
+    (fun _ att _ h ok => attestation att h ok) slashedBound attestedOk
+  -- Carry passes leave events unchanged, so only balance/registry matching remains.
+  have exitedBound := carryBalance_bounded _ (fun _ _ ok h =>
+    foldlM_ok_invariant BalancesMatch
+      (fun _ _ _ h ok => (frame_processVoluntaryExit ok).balancesMatch h) h
+      (by simpa only [← Array.foldlM_toList] using ok)) attestedBound exitedOk
+  have changedBound := carryBalance_bounded _ (fun _ _ ok h =>
+    foldlM_ok_invariant BalancesMatch
+      (fun _ _ _ h ok => (frame_processBlsToExecutionChange ok).balancesMatch h) h
+      (by simpa only [← Array.foldlM_toList] using ok)) exitedBound changedOk
+  exact carryBalance_bounded _ (fun _ _ ok h =>
+    foldlM_ok_invariant BalancesMatch
+      (fun _ _ _ h ok => processPayloadAttestation_eq ok ▸ h) h
+      (by simpa only [← Array.foldlM_toList] using ok)) changedBound paid
+
 end EthLib.Consensus.DirectSafety
