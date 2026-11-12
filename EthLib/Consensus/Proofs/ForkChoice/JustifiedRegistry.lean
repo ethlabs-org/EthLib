@@ -97,6 +97,21 @@ private theorem PendingTail.of_validators {count : Nat} {epoch : Epoch}
   intro position validator outside found
   exact holds position validator outside (same ▸ found)
 
+/-- A block frame keeps old entries pending and appends only pending entries. -/
+private theorem PendingTail.of_blockFrame {count : Nat} {epoch : Epoch}
+    {state after : BeaconState preset fork} (holds : PendingTail count epoch state)
+    (finite : epoch < FAR_FUTURE_EPOCH) (frame : BlockFrame state after) :
+    PendingTail count epoch after := by
+  intro position validator outside found
+  cases before : state.validators.data[position]? with
+  | none =>
+    obtain ⟨eligibility, activation⟩ := frame.newPending position validator before found
+    exact ⟨eligibility ▸ finite, activation⟩
+  | some old =>
+    have pending := holds position old outside before
+    have kept := frame.activation position old validator before found
+    exact ⟨UInt64.lt_of_lt_of_le pending.1 kept.1, kept.2.trans pending.2⟩
+
 private theorem PendingTail.setValidatorAt {count position : Nat} {epoch : Epoch}
     {state after : BeaconState preset fork} {validator : Validator}
     (holds : PendingTail count epoch state)
@@ -282,449 +297,50 @@ private theorem PendingTail.addValidatorToRegistry {count : Nat} {epoch : Epoch}
     exact pendingAfter_deposit finite _ _ _
   · exact holds _ _ outside found
 
-private theorem PendingTail.increaseBalance {count : Nat} {epoch : Epoch}
-    {state after : BeaconState preset fork} {index : ValidatorIndex} {amount : Gwei}
-    (holds : PendingTail count epoch state)
-    (ok : increaseBalance state index amount = .ok after) : PendingTail count epoch after :=
-  holds.of_validators (congrArg (·.data) (increaseBalance_validators ok))
-
-private theorem PendingTail.decreaseBalance {count : Nat} {epoch : Epoch}
-    {state after : BeaconState preset fork} {index : ValidatorIndex} {amount : Gwei}
-    (holds : PendingTail count epoch state)
-    (ok : decreaseBalance state index amount = .ok after) : PendingTail count epoch after :=
-  holds.of_validators (congrArg (·.data) (decreaseBalance_validators ok))
-
-/-- Slashing changes exit fields and balances, but never activation fields. -/
-private theorem PendingTail.slashValidator {count : Nat} {epoch : Epoch}
-    {state after : BeaconState preset fork} {index : ValidatorIndex}
-    {whistleblower : Option ValidatorIndex} (holds : PendingTail count epoch state)
-    (ok : slashValidator config state index whistleblower = .ok after) :
-    PendingTail count epoch after := by
-  obtain ⟨_, _, _, marked, _, _, slashings, _, _, _, _, last, exited, found, _, set,
-    _, _, _, lowered, _, _, raised, paid, rfl⟩ := slashValidator_ok ok
-  have exitedHolds := holds.initiateValidatorExit exited
-  have markedHolds : PendingTail count epoch marked := by
-    apply exitedHolds.setValidator _ set
+/-- Ordinary epoch steps carry a pending suffix under fixed current and finalized bounds. -/
+private theorem pendingEpochFrameLaws (count : Nat) (epoch : Epoch)
+    (finite : epoch < FAR_FUTURE_EPOCH) : EpochFrameLaws
+    (fun (state after : BeaconState preset fork) => Frame state after ∧
+      (epoch ≤ getCurrentEpoch state → state.finalizedCheckpoint.epoch ≤ epoch →
+        PendingTail count epoch state → PendingTail count epoch after)) where
+  refl state := ⟨Frame.refl state, fun _ _ holds => holds⟩
+  trans one two := ⟨one.1.trans two.1, fun current finalized holds =>
+    two.2 (by simpa only [getCurrentEpoch, one.1.slot] using current)
+      (by simpa only [one.1.finalized] using finalized) (one.2 current finalized holds)⟩
+  setValidatorAt found set ordered aligned key slashed eligibility activation := by
+    refine ⟨(frame_setValidatorAt_of_whole set found key slashed ordered aligned).toFrame,
+      fun _ _ holds => holds.setValidatorAt ?_ set⟩
     intro outside
-    have pending := exitedHolds _ _ outside (getValidator_eq_ok_iff.mp found)
-    exact ⟨pending.1, pending.2⟩
-  have lastHolds := ((markedHolds.of_validators
-    (after := { marked with slashings })).decreaseBalance lowered).increaseBalance raised
-  have paidHolds := lastHolds.increaseBalance paid
-  split <;> exact paidHolds.of_validators
-
-private theorem PendingTail.applyPendingDeposit {count : Nat} {epoch : Epoch}
-    {state after : BeaconState preset fork} {deposit : PendingDeposit}
-    (holds : PendingTail count epoch state) (finite : epoch < FAR_FUTURE_EPOCH)
-    (ok : Consensus.applyPendingDeposit config checks state deposit = .ok after) :
-    PendingTail count epoch after := by
-  unfold Consensus.applyPendingDeposit at ok
-  split at ok
-  · split at ok
-    · cases ok
-      exact holds
-    simp only [bind_ok_iff] at ok
-    obtain ⟨_, _, ok⟩ := ok
-    split at ok
-    · exact holds.addValidatorToRegistry finite ok
-    · cases ok
-      exact holds
-  · simp only [liftAccessor_ok, bind_ok_iff] at ok
-    obtain ⟨_, _, ok⟩ := ok
-    exact holds.increaseBalance ok
-
-private theorem PendingTail.applyDeposit {count : Nat} {epoch : Epoch}
-    {state after : BeaconState preset fork} {pubkey : Cryptography.Bls.BLSPubkey}
-    {credentials : Bytes32} {amount : Gwei} {signature : Cryptography.Bls.BLSSignature}
-    (holds : PendingTail count epoch state) (finite : epoch < FAR_FUTURE_EPOCH)
-    (ok : Consensus.applyDeposit config checks state pubkey credentials amount signature =
-      .ok after) :
-    PendingTail count epoch after := by
-  unfold Consensus.applyDeposit at ok
-  split at ok
-  · unfold applyDepositElectra at ok
-    split at ok
-    · simp only [bind_ok_iff] at ok
-      obtain ⟨_, _, ok⟩ := ok
-      split at ok
-      · simp only [bind_ok_iff, liftAccessor_ok] at ok
-        obtain ⟨middle, added, queued⟩ := ok
-        obtain ⟨_, rfl⟩ := addPendingDeposit_eq queued
-        exact (holds.addValidatorToRegistry finite added).of_validators
-      · cases ok
-        exact holds
-    · obtain ⟨_, rfl⟩ := addPendingDeposit_eq (liftAccessor_ok.mp ok)
-      exact holds.of_validators
-  · exact holds.applyPendingDeposit finite ok
-
-private theorem PendingTail.processDeposit {count : Nat} {epoch : Epoch}
-    {state after : BeaconState preset fork} {before : fork < .hegota} {deposit : Deposit}
-    (holds : PendingTail count epoch state) (finite : epoch < FAR_FUTURE_EPOCH)
-    (ok : processDeposit config checks before state deposit = .ok after) :
-    PendingTail count epoch after := by
-  obtain ⟨_, _, next, _, applied⟩ := processDeposit_ok ok
-  exact (holds.of_validators
-    (after := { state with eth1DepositIndex := fun _ => next })).applyDeposit finite applied
-
-private theorem PendingTail.passPendingDeposits {count : Nat} {epoch : Epoch}
-    {stop : PendingDeposit → Bool} {nextEpoch : Epoch} {available : Gwei}
-    (finite : epoch < FAR_FUTURE_EPOCH) :
-    ∀ {deposits : List PendingDeposit} {state : BeaconState preset fork} {processed : Gwei}
-      {seen : Nat} {postponed : Array PendingDeposit} {pass},
-      PendingTail count epoch state →
-      Consensus.passPendingDeposits config checks stop nextEpoch available state processed seen
-        postponed deposits = .ok pass → PendingTail count epoch pass.1.state
-  | [], _, _, _, _, _, holds, ok => by cases ok; exact holds
-  | deposit :: rest, state, processed, seen, postponed, pass, holds, ok => by
-    unfold Consensus.passPendingDeposits at ok
-    simp only [bind, Except.bind, pure, Except.pure] at ok
-    split at ok
-    · cases ok; exact holds
-    split at ok
-    · cases ok
-    split at ok
-    · split at ok
-      · cases ok
-      rename_i credited
-      split at ok
-      · cases ok
-      cases ok
-      exact PendingTail.passPendingDeposits finite (deposits := rest)
-        (holds.applyPendingDeposit finite credited) ‹_›
-    split at ok
-    · split at ok
-      · cases ok
-      cases ok
-      exact PendingTail.passPendingDeposits finite (deposits := rest) holds ‹_›
-    split at ok
-    · cases ok
-    split at ok
-    · cases ok; exact holds
-    split at ok
-    · cases ok
-    rename_i credited
-    split at ok
-    · cases ok
-    cases ok
-    exact PendingTail.passPendingDeposits finite (deposits := rest)
-      (holds.applyPendingDeposit finite credited) ‹_›
-
-/-- Electra pending balances append through the same deposit constructor.
-
-The deposit's request slot does not determine when its registry position is created. -/
-private theorem PendingTail.processPendingBalances {count : Nat} {epoch : Epoch}
-    {state after : BeaconState preset fork} (holds : PendingTail count epoch state)
-    (finite : epoch < FAR_FUTURE_EPOCH)
-    (ok : Consensus.processPendingBalances config checks state = .ok after) :
-    PendingTail count epoch after := by
-  unfold Consensus.processPendingBalances at ok
-  split at ok
-  · simp only [bind_ok_iff] at ok
-    obtain ⟨middle, deposited, consolidated⟩ := ok
-    have deposits : PendingTail count epoch middle := by
-      unfold processPendingDeposits at deposited
-      simp only [bind, Except.bind, pure, Except.pure] at deposited
-      repeat' (split at deposited <;> try cases deposited)
-      all_goals exact (PendingTail.passPendingDeposits finite holds ‹_›).of_validators
-    exact deposits.of_validators
-      (congrArg (·.data) (processPendingConsolidations_kept consolidated).1)
-  · cases ok
-    exact holds
-
-/-- A fold preserves the same pending suffix when each successful step preserves it. -/
-private theorem PendingTail.foldlM {count : Nat} {epoch : Epoch} {α ε : Type}
-    {step : BeaconState preset fork → α → Except ε (BeaconState preset fork)}
-    {state after : BeaconState preset fork} {items : List α}
-    (holds : PendingTail count epoch state)
-    (keeps : ∀ s x t, PendingTail count epoch s → step s x = .ok t → PendingTail count epoch t)
-    (ok : items.foldlM step state = .ok after) : PendingTail count epoch after :=
-  foldlM_ok_invariant (PendingTail count epoch) keeps holds ok
-
-private theorem PendingTail.processDepositRequest {count : Nat} {epoch : Epoch}
-    {state after : BeaconState preset fork} {electra : .pectra ≤ fork} {request : DepositRequest}
-    (holds : PendingTail count epoch state)
-    (ok : Consensus.processDepositRequest state electra request = .ok after) :
-    PendingTail count epoch after := by
-  obtain ⟨start, recorded⟩ :=
-    recordDepositRequestsStart_eq (state := state) (index := request.index)
-  simp only [Consensus.processDepositRequest, recorded, liftAccessor_ok, addPendingDeposit,
-    bind_ok_iff, pure, Except.pure, Except.ok.injEq] at ok
-  obtain ⟨_, _, rfl⟩ := ok
-  exact holds.of_validators
-
-private theorem PendingTail.requestPartialWithdrawal {count : Nat} {epoch : Epoch}
-    {state after : BeaconState preset fork} {electra : .pectra ≤ fork}
-    {index : ValidatorIndex} {validator : Validator} {amount owed : Gwei}
-    (holds : PendingTail count epoch state)
-    (ok : Consensus.requestPartialWithdrawal config state electra index validator amount owed =
-      .ok after) : PendingTail count epoch after := by
-  simp only [Consensus.requestPartialWithdrawal, bind_ok_iff, liftAccessor_ok, pure, Except.pure]
-    at ok
-  obtain ⟨_, _, _, _, ok⟩ := ok
-  split at ok
-  · simp only [bind_ok_iff, liftAccessor_ok, Except.ok.injEq] at ok
-    obtain ⟨⟨_, _⟩, churned, _, _, _, _, rfl⟩ := ok
-    exact holds.of_validators (by rw [(computeExitEpochAndUpdateChurn_earliest churned).2.1])
-  · cases ok; exact holds
-
-private theorem PendingTail.processWithdrawalRequest {count : Nat} {epoch : Epoch}
-    {state after : BeaconState preset fork} {electra : .pectra ≤ fork} {request : WithdrawalRequest}
-    (holds : PendingTail count epoch state)
-    (ok : Consensus.processWithdrawalRequest config state electra request = .ok after) :
-    PendingTail count epoch after := by
-  unfold Consensus.processWithdrawalRequest at ok
-  simp only [bind, Except.bind, pure, Except.pure] at ok
-  repeat' split at ok
-  all_goals first
-    | (cases ok; done)
-    | (cases ok; exact holds)
-    | exact holds.initiateValidatorExit (liftAccessor_ok.mp ok)
-    | exact holds.requestPartialWithdrawal ok
-
-private theorem PendingTail.queueExcessActiveBalance {count : Nat} {epoch : Epoch}
-    {state after : BeaconState preset fork} {electra : .pectra ≤ fork} {index : ValidatorIndex}
-    (holds : PendingTail count epoch state)
-    (ok : Consensus.queueExcessActiveBalance state electra index = .ok after) :
-    PendingTail count epoch after := by
-  simp only [Consensus.queueExcessActiveBalance, bind_ok_iff] at ok
-  obtain ⟨_, _, ok⟩ := ok
-  split at ok
-  · simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at ok
-    obtain ⟨_, _, _, _, _, set, rfl⟩ := ok
-    obtain ⟨_, rfl⟩ := setBalance_ok set
-    exact holds.of_validators
-  · cases ok; exact holds
-
-private theorem PendingTail.switchToCompoundingValidator {count : Nat} {epoch : Epoch}
-    {state after : BeaconState preset fork} {electra : .pectra ≤ fork} {index : ValidatorIndex}
-    (holds : PendingTail count epoch state)
-    (ok : Consensus.switchToCompoundingValidator state electra index = .ok after) :
-    PendingTail count epoch after := by
-  simp only [Consensus.switchToCompoundingValidator, bind_ok_iff] at ok
-  obtain ⟨_, found, _, set, queued⟩ := ok
-  apply PendingTail.queueExcessActiveBalance _ queued
-  apply holds.setValidator _ set
-  intro outside
-  have pending := holds _ _ outside (getValidator_eq_ok_iff.mp found)
-  exact ⟨pending.1, pending.2⟩
-
-private theorem PendingTail.queueConsolidation {count : Nat} {epoch : Epoch}
-    {state after : BeaconState preset fork} {electra : .pectra ≤ fork}
-    {sourceIndex targetIndex : ValidatorIndex} {source : Validator}
-    (holds : PendingTail count epoch state)
-    (found : state.validators.data[sourceIndex.toNat]? = some source)
-    (ok : Consensus.queueConsolidation config state electra sourceIndex source targetIndex =
-      .ok after) : PendingTail count epoch after := by
-  simp only [Consensus.queueConsolidation, bind_ok_iff, liftAccessor_ok, liftArith,
-    mapError_ok_iff, addChecked_ok_iff, pure, Except.pure] at ok
-  obtain ⟨⟨churnedState, exitEpoch⟩, churned, withdrawal, _, _, set, _, _, ok⟩ := ok
-  simp only [Except.ok.injEq] at ok
-  subst ok
-  have validators := (computeConsolidationEpochAndUpdateChurn_earliest churned).2.1
-  apply PendingTail.of_validators (same := rfl)
-  apply (holds.of_validators (same := congrArg (·.data) validators)).setValidator _ set
-  intro outside
-  have pending := holds _ _ outside found
-  exact ⟨pending.1, pending.2⟩
-
-private theorem PendingTail.processConsolidationRequest {count : Nat} {epoch : Epoch}
-    {state after : BeaconState preset fork} {electra : .pectra ≤ fork}
-    {request : ConsolidationRequest} (holds : PendingTail count epoch state)
-    (ok : Consensus.processConsolidationRequest config state electra request = .ok after) :
-    PendingTail count epoch after := by
-  unfold Consensus.processConsolidationRequest at ok
-  simp only [bind, Except.bind, pure, Except.pure] at ok
-  repeat' split at ok
-  all_goals first
-    | (cases ok; done)
-    | (cases ok; exact holds)
-    | exact holds.switchToCompoundingValidator (liftAccessor_ok.mp ok)
-    | exact holds.queueConsolidation (getElem?_toNat_of_ofNatChecked (by assumption)) ok
-
-private theorem PendingTail.processExecutionRequests {count : Nat} {epoch : Epoch}
-    {state after : BeaconState preset fork} {body : BeaconBlockBody preset fork}
-    {electra : .pectra ≤ fork ∧ fork < .glamsterdam} (holds : PendingTail count epoch state)
-    (ok : Consensus.processExecutionRequests config state body electra = .ok after) :
-    PendingTail count epoch after := by
-  simp only [Consensus.processExecutionRequests, bind_ok_iff, ← Array.foldlM_toList] at ok
-  obtain ⟨_, deposits, _, withdrawals, consolidations⟩ := ok
-  exact ((holds.foldlM (fun _ _ _ h ok => h.processDepositRequest ok) deposits).foldlM
-    (fun _ _ _ h ok => h.processWithdrawalRequest ok) withdrawals).foldlM
-    (fun _ _ _ h ok => h.processConsolidationRequest ok) consolidations
-
-private theorem PendingTail.processEffectiveBalanceUpdates {count : Nat} {epoch : Epoch}
-    {state after : BeaconState preset fork} (holds : PendingTail count epoch state)
-    (ok : Consensus.processEffectiveBalanceUpdates state = .ok after) :
-    PendingTail count epoch after := by
-  apply holds.foldlM (fun s index t h step => ?_) ok
-  simp only [updateEffectiveBalance, bind_ok_iff, liftAccessor_ok] at step
-  obtain ⟨_, found, _, _, _, _, set⟩ := step
-  apply h.setValidatorAt _ set
-  intro outside
-  have pending := h _ _ outside (getValidatorAt_eq_ok_iff.mp found)
-  exact ⟨pending.1, pending.2⟩
-
-private theorem PendingTail.processRewardsAndPenalties {count : Nat} {epoch : Epoch}
-    {state after : BeaconState preset fork} (holds : PendingTail count epoch state)
-    (ok : Consensus.processRewardsAndPenalties config state = .ok after) :
-    PendingTail count epoch after := by
-  have deltas {s t : BeaconState preset fork} {rewards penalties : Array Gwei} {index : Nat}
-      (h : PendingTail count epoch s) (ok : applyDeltas rewards penalties s index = .ok t) :
-      PendingTail count epoch t := by
-    simp only [applyDeltas, bind_ok_iff, liftAccessor_ok] at ok
-    obtain ⟨_, _, _, raised, lowered⟩ := ok
-    exact (h.increaseBalance raised).decreaseBalance lowered
-  have allDeltas {s t : BeaconState preset fork} {ds : Array Gwei × Array Gwei}
-      (h : PendingTail count epoch s) (ok : applyAllDeltas s ds = .ok t) :
-      PendingTail count epoch t := h.foldlM (fun _ _ _ h ok => deltas h ok) ok
-  unfold Consensus.processRewardsAndPenalties at ok
-  split at ok
-  · cases ok; exact holds
-  split at ok
-  · simp only [bind_ok_iff] at ok
-    obtain ⟨_, _, _, _, applied⟩ := ok
-    exact holds.foldlM (fun _ _ _ h ok => allDeltas h ok) applied
-  · simp only [bind_ok_iff] at ok
-    obtain ⟨_, _, applied⟩ := ok
-    exact allDeltas holds applied
-
-private theorem PendingTail.applySlashingPenalty {count : Nat} {epoch : Epoch}
-    {state after : BeaconState preset fork} {total adjusted : Gwei} {index : Nat}
-    (holds : PendingTail count epoch state)
-    (ok : Consensus.applySlashingPenalty state total adjusted index = .ok after) :
-    PendingTail count epoch after := by
-  simp only [Consensus.applySlashingPenalty, bind_ok_iff, liftAccessor_ok] at ok
-  obtain ⟨_, _, ok⟩ := ok
-  split at ok
-  · simp only [bind_ok_iff] at ok
-    obtain ⟨_, _, ok⟩ := ok
-    split at ok
-    · simp only [bind_ok_iff, liftAccessor_ok] at ok
-      obtain ⟨_, _, _, _, _, _, lowered⟩ := ok
-      exact holds.decreaseBalance lowered
-    · cases ok; exact holds
-  · cases ok; exact holds
-
-private theorem PendingTail.applySlashingPenaltyElectra {count : Nat} {epoch : Epoch}
-    {state after : BeaconState preset fork} {perIncrement : Gwei} {index : Nat}
-    (holds : PendingTail count epoch state)
-    (ok : Consensus.applySlashingPenaltyElectra state perIncrement index = .ok after) :
-    PendingTail count epoch after := by
-  simp only [Consensus.applySlashingPenaltyElectra, bind_ok_iff, liftAccessor_ok] at ok
-  obtain ⟨_, _, ok⟩ := ok
-  split at ok
-  · simp only [bind_ok_iff] at ok
-    obtain ⟨_, _, ok⟩ := ok
-    split at ok
-    · simp only [bind_ok_iff, liftAccessor_ok] at ok
-      obtain ⟨_, _, _, _, lowered⟩ := ok
-      exact holds.decreaseBalance lowered
-    · cases ok; exact holds
-  · cases ok; exact holds
-
-private theorem PendingTail.processSlashings {count : Nat} {epoch : Epoch}
-    {state after : BeaconState preset fork} (holds : PendingTail count epoch state)
-    (ok : Consensus.processSlashings state = .ok after) : PendingTail count epoch after := by
-  unfold Consensus.processSlashings at ok
-  simp only [bind_ok_iff] at ok
-  obtain ⟨_, _, _, _, _, _, ok⟩ := ok
-  split at ok
-  · simp only [bind_ok_iff] at ok
-    obtain ⟨_, _, applied⟩ := ok
-    exact holds.foldlM (fun _ _ _ h ok => h.applySlashingPenaltyElectra ok) applied
-  · exact holds.foldlM (fun _ _ _ h ok => h.applySlashingPenalty ok) ok
+    have pending := holds _ _ outside (getValidatorAt_eq_ok_iff.mp found)
+    exact ⟨UInt64.lt_of_lt_of_le pending.1 eligibility, activation.trans pending.2⟩
+  registryUpdates ok := ⟨(frame_processRegistryUpdates ok).toFrame,
+    fun current finalized holds => holds.processRegistryUpdates current finalized ok⟩
+  increaseBalance ok := ⟨(frame_increaseBalance ok).toFrame,
+    fun _ _ holds => holds.of_validators (congrArg (·.data) (increaseBalance_validators ok))⟩
+  decreaseBalance ok := ⟨(frame_decreaseBalance ok).toFrame,
+    fun _ _ holds => holds.of_validators (congrArg (·.data) (decreaseBalance_validators ok))⟩
+  initiateValidatorExit ok := ⟨(frame_initiateValidatorExit ok).toFrame,
+    fun _ _ holds => holds.initiateValidatorExit ok⟩
+  addValidatorToRegistry ok fresh := ⟨(frame_addValidatorToRegistry ok fresh).toFrame,
+    fun _ _ holds => holds.addValidatorToRegistry finite ok⟩
+  eth1DataVotes _ _ := ⟨Frame.of_validators ⟨rfl, rfl⟩, fun _ _ h => h.of_validators⟩
+  inactivityScores _ _ := ⟨Frame.of_validators ⟨rfl, rfl⟩, fun _ _ h => h.of_validators⟩
+  slashings _ _ := ⟨(frame_slashings _ _).toFrame, fun _ _ h => h.of_validators⟩
+  randaoMixes _ _ := ⟨Frame.of_validators ⟨rfl, rfl⟩, fun _ _ h => h.of_validators⟩
+  historicalRoots _ _ := ⟨Frame.of_validators ⟨rfl, rfl⟩, fun _ _ h => h.of_validators⟩
+  historicalSummaries _ _ := ⟨Frame.of_validators ⟨rfl, rfl⟩, fun _ _ h => h.of_validators⟩
+  participationRecords _ := ⟨Frame.of_validators ⟨rfl, rfl⟩, fun _ _ h => h.of_validators⟩
+  pendingDeposits _ _ _ := ⟨Frame.of_validators ⟨rfl, rfl⟩, fun _ _ h => h.of_validators⟩
+  pendingConsolidations _ _ := ⟨Frame.of_validators ⟨rfl, rfl⟩, fun _ _ h => h.of_validators⟩
+  syncCommittees _ _ _ := ⟨Frame.of_validators ⟨rfl, rfl⟩, fun _ _ h => h.of_validators⟩
+  proposerLookahead _ _ := ⟨Frame.of_validators ⟨rfl, rfl⟩, fun _ _ h => h.of_validators⟩
+  ptcWindow _ _ := ⟨Frame.of_validators ⟨rfl, rfl⟩, fun _ _ h => h.of_validators⟩
 
 private theorem PendingTail.processJustificationAndFinalization {count : Nat} {epoch : Epoch}
     {state after : BeaconState preset fork} (holds : PendingTail count epoch state)
     (ok : Consensus.processJustificationAndFinalization state = .ok after) :
     PendingTail count epoch after :=
   holds.of_validators (by rw [(processJustificationAndFinalization_keeps ok).2.2.2.2.2.1])
-
-private theorem PendingTail.processInactivityUpdates {count : Nat} {epoch : Epoch}
-    {state after : BeaconState preset fork} {altair : .altair ≤ fork}
-    (holds : PendingTail count epoch state)
-    (ok : Consensus.processInactivityUpdates config state altair = .ok after) :
-    PendingTail count epoch after := by
-  unfold Consensus.processInactivityUpdates at ok
-  split at ok
-  · cases ok; exact holds
-  · simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at ok
-    obtain ⟨_, _, _, _, rfl⟩ := ok
-    exact holds.of_validators
-
-private theorem PendingTail.processEth1DataReset {count : Nat} {epoch : Epoch}
-    {state after : BeaconState preset fork} {before : fork < .hegota}
-    (holds : PendingTail count epoch state)
-    (ok : Consensus.processEth1DataReset before state = .ok after) :
-    PendingTail count epoch after := by
-  simp only [Consensus.processEth1DataReset, bind_ok_iff, liftAccessor_ok] at ok
-  obtain ⟨_, _, ok⟩ := ok
-  split at ok <;> cases ok <;> exact holds.of_validators
-
-private theorem PendingTail.processSlashingsReset {count : Nat} {epoch : Epoch}
-    {state after : BeaconState preset fork} (holds : PendingTail count epoch state)
-    (ok : Consensus.processSlashingsReset state = .ok after) : PendingTail count epoch after := by
-  obtain ⟨_, _, _, _, rfl⟩ := processSlashingsReset_eq ok
-  exact holds.of_validators
-
-private theorem PendingTail.processRandaoMixesReset {count : Nat} {epoch : Epoch}
-    {state after : BeaconState preset fork} (holds : PendingTail count epoch state)
-    (ok : Consensus.processRandaoMixesReset state = .ok after) : PendingTail count epoch after := by
-  obtain ⟨_, _, _, _, _, _, rfl⟩ := processRandaoMixesReset_eq ok
-  exact holds.of_validators
-
-private theorem PendingTail.processHistoricalRootsUpdate {count : Nat} {epoch : Epoch}
-    {state after : BeaconState preset fork} (holds : PendingTail count epoch state)
-    (ok : Consensus.processHistoricalRootsUpdate state = .ok after) :
-    PendingTail count epoch after := by
-  unfold Consensus.processHistoricalRootsUpdate at ok
-  split at ok
-  · cases ok
-  simp only [bind_ok_iff, liftAccessor_ok] at ok
-  obtain ⟨_, _, ok⟩ := ok
-  split at ok
-  · simp only [bind_ok_iff, liftSsz_ok, pure, Except.pure, Except.ok.injEq] at ok
-    obtain ⟨_, _, _, _, rfl⟩ := ok
-    exact holds.of_validators
-  · cases ok; exact holds
-
-private theorem PendingTail.processHistoricalSummariesUpdate {count : Nat} {epoch : Epoch}
-    {state after : BeaconState preset fork} {capella : .shapella ≤ fork}
-    (holds : PendingTail count epoch state)
-    (ok : Consensus.processHistoricalSummariesUpdate state capella = .ok after) :
-    PendingTail count epoch after := by
-  unfold Consensus.processHistoricalSummariesUpdate at ok
-  simp only [bind, Except.bind, pure, Except.pure] at ok
-  repeat' (split at ok <;> try cases ok)
-  all_goals exact holds.of_validators
-
-private theorem PendingTail.epochTail {count : Nat} {epoch : Epoch}
-    {after rooted synced looked : BeaconState preset fork} {altair : .altair ≤ fork}
-    (holds : PendingTail count epoch rooted)
-    (syncedOk : processSyncCommitteeUpdates (processParticipationFlagUpdates rooted altair)
-      altair = .ok synced)
-    (lookedOk : (if fulu : .fusaka ≤ fork then liftAccessor (processProposerLookahead synced fulu)
-      else pure synced) = .ok looked)
-    (windowed : (if gloas : .glamsterdam ≤ fork then liftAccessor (processPtcWindow looked gloas)
-      else pure looked) = .ok after) : PendingTail count epoch after := by
-  have syncedHolds : PendingTail count epoch synced := by
-    unfold processSyncCommitteeUpdates at syncedOk
-    simp only [bind, Except.bind, pure, Except.pure] at syncedOk
-    repeat' (split at syncedOk <;> try cases syncedOk)
-    all_goals exact holds.of_validators
-  have lookedHolds : PendingTail count epoch looked := by
-    split at lookedOk
-    · simp only [processProposerLookahead, liftAccessor_ok, bind_ok_iff, pure, Except.pure,
-        Except.ok.injEq] at lookedOk
-      obtain ⟨_, _, _, _, rfl⟩ := lookedOk
-      exact syncedHolds.of_validators
-    · cases lookedOk; exact syncedHolds
-  split at windowed
-  · simp only [processPtcWindow, liftAccessor_ok, bind_ok_iff, pure, Except.pure,
-      Except.ok.injEq] at windowed
-    obtain ⟨_, _, _, _, rfl⟩ := windowed
-    exact lookedHolds.of_validators
-  · cases windowed; exact lookedHolds
 
 /-- Finality after the epoch bounds the activation test inside the epoch.
 
@@ -735,29 +351,19 @@ private theorem PendingTail.processEpochAltair {count : Nat} {epoch : Epoch}
     (finite : epoch < FAR_FUTURE_EPOCH) (finalized : after.finalizedCheckpoint.epoch ≤ epoch)
     (ok : Consensus.processEpochAltair config checks state altair = .ok after) :
     PendingTail count epoch after := by
-  obtain ⟨justifiedState, justifiedOk, restFrame⟩ := processEpochAltair_frame ok
-  unfold Consensus.processEpochAltair at ok
-  simp only [bind_ok_iff] at ok
-  obtain ⟨_, justified, _, scored, _, rewarded, _, registered, slashedState, slashed,
-    reset, resetOk, pending, pendingOk, paid, paidOk, _, balanced, _, cleared,
-    mixed, mixedOk, ok⟩ := ok
-  have same := Except.ok.inj (justified.symm.trans justifiedOk)
+  have laws := pendingEpochFrameLaws (preset := preset) (fork := fork) count epoch finite
+  obtain ⟨pending, paid, rooted, pendingOk, paidOk, middle, tail⟩ :=
+    laws.processEpochAltair_paymentSplit ok
+  obtain ⟨justified, justifiedOk, head⟩ := laws.epochBeforePayments_split pendingOk
+  obtain ⟨justifiedState, frameJustifiedOk, restFrame⟩ := processEpochAltair_frame ok
+  have same := Except.ok.inj (frameJustifiedOk.symm.trans justifiedOk)
   subst justifiedState
-  have preFrame := (frame_processInactivityUpdates scored).trans
-    (frame_processRewardsAndPenalties rewarded)
-  have beforeHolds :=
-    ((holds.processJustificationAndFinalization justified).processInactivityUpdates
-      scored).processRewardsAndPenalties rewarded
-  have registeredHolds := beforeHolds.processRegistryUpdates
-    (by simpa only [getCurrentEpoch, preFrame.slot,
-      (activeStep_processJustificationAndFinalization justified).1] using current)
-    (by simpa only [preFrame.finalized, restFrame.finalized] using finalized) registered
-  have slashedHolds := registeredHolds.processSlashings slashed
-  have resetHolds : PendingTail count epoch reset := by
-    split at resetOk
-    · exact slashedHolds.processEth1DataReset resetOk
-    · cases resetOk; exact slashedHolds
-  have pendingHolds := resetHolds.processPendingBalances finite pendingOk
+  have low : epoch ≤ getCurrentEpoch justified := by
+    simpa only [getCurrentEpoch,
+      (activeStep_processJustificationAndFinalization justifiedOk).1] using current
+  have bound : justified.finalizedCheckpoint.epoch ≤ epoch := by
+    simpa only [restFrame.finalized] using finalized
+  have pendingHolds := head.2 low bound (holds.processJustificationAndFinalization justifiedOk)
   have paidHolds : PendingTail count epoch paid := by
     split at paidOk
     · simp only [processBuilderPendingPayments, liftAccessor_ok, bind_ok_iff, pure, Except.pure,
@@ -765,12 +371,20 @@ private theorem PendingTail.processEpochAltair {count : Nat} {epoch : Epoch}
       obtain ⟨_, _, rfl⟩ := paidOk
       exact pendingHolds.of_validators
     · cases paidOk; exact pendingHolds
-  have mixedHolds := ((paidHolds.processEffectiveBalanceUpdates balanced).processSlashingsReset
-    cleared).processRandaoMixesReset mixedOk
-  split at ok <;> simp only [bind_ok_iff] at ok <;>
-    obtain ⟨_, rooted, _, synced, _, looked, windowed⟩ := ok
-  · exact (mixedHolds.processHistoricalSummariesUpdate rooted).epochTail synced looked windowed
-  · exact (mixedHolds.processHistoricalRootsUpdate rooted).epochTail synced looked windowed
+  have paidFrame : Frame pending paid := by
+    split at paidOk
+    · exact (frame_processBuilderPendingPayments (liftAccessor_ok.mp paidOk)).toFrame
+    · cases paidOk
+      exact Frame.refl _
+  have rootedHolds := middle.2
+    (by simpa only [getCurrentEpoch, paidFrame.slot, head.1.slot] using low)
+    (by simpa only [paidFrame.finalized, head.1.finalized] using bound) paidHolds
+  exact tail.2
+    (by simpa only [processParticipationFlagUpdates, getCurrentEpoch,
+      middle.1.slot, paidFrame.slot, head.1.slot] using low)
+    (by simpa only [processParticipationFlagUpdates,
+      middle.1.finalized, paidFrame.finalized, head.1.finalized] using bound)
+    rootedHolds.of_validators
 
 private theorem PendingTail.processEpoch {count : Nat} {epoch : Epoch}
     {state after : BeaconState preset fork}
@@ -787,250 +401,33 @@ private theorem PendingTail.processEpoch {count : Nat} {epoch : Epoch}
       _, cleared, _, mixed, rooted, rootedOk, rotated⟩ := ok
     have same := Except.ok.inj (justified.symm.trans justifiedOk)
     subst justifiedState
-    have beforeHolds :=
-      (holds.processJustificationAndFinalization justified).processRewardsAndPenalties rewarded
-    have preFrame := frame_processRewardsAndPenalties rewarded
-    have registeredHolds := beforeHolds.processRegistryUpdates
-      (by simpa only [getCurrentEpoch, preFrame.slot,
+    have laws := pendingEpochFrameLaws (preset := preset) (fork := fork) count epoch finite
+    have rest := laws.trans (laws.processRewardsAndPenalties rewarded) <|
+      laws.trans (laws.processRegistryUpdates registered) <|
+      laws.trans (laws.processSlashings slashed) <|
+      laws.trans (laws.processEth1DataReset reset) <|
+      laws.trans (laws.processEffectiveBalanceUpdates balanced) <|
+      laws.trans (laws.processSlashingsReset cleared) <|
+      laws.trans (laws.processRandaoMixesReset mixed) <|
+      laws.trans (laws.processHistoricalRootsUpdate rootedOk)
+        (laws.processParticipationRecordUpdates rotated)
+    exact rest.2
+      (by simpa only [getCurrentEpoch,
         (activeStep_processJustificationAndFinalization justified).1] using current)
-      (by simpa only [preFrame.finalized, restFrame.finalized] using finalized) registered
-    have rootedHolds := (((((registeredHolds.processSlashings slashed).processEth1DataReset
-      reset).processEffectiveBalanceUpdates balanced).processSlashingsReset
-      cleared).processRandaoMixesReset mixed).processHistoricalRootsUpdate rootedOk
-    unfold processParticipationRecordUpdates at rotated
-    split at rotated
-    · cases rotated
-    · cases rotated; exact rootedHolds.of_validators
-
-private theorem PendingTail.applyWithdrawal {count : Nat} {epoch : Epoch}
-    {state after : BeaconState preset fork} {withdrawal : Withdrawal}
-    (holds : PendingTail count epoch state)
-    (ok : Consensus.applyWithdrawal state withdrawal = .ok after) :
-    PendingTail count epoch after := by
-  unfold Consensus.applyWithdrawal at ok
-  split at ok
-  · simp only [bind_ok_iff] at ok
-    obtain ⟨_, _, set⟩ := ok
-    obtain ⟨_, rfl⟩ := setBuilder_ok set
-    exact holds.of_validators
-  · exact holds.decreaseBalance ok
-
-private theorem PendingTail.applyExpectedWithdrawals {count : Nat} {epoch : Epoch}
-    {state after : BeaconState preset fork} {capella : .shapella ≤ fork}
-    {expected : ExpectedWithdrawals} (holds : PendingTail count epoch state)
-    (ok : Consensus.applyExpectedWithdrawals state capella expected = .ok after) :
-    PendingTail count epoch after := by
-  unfold Consensus.applyExpectedWithdrawals at ok
-  simp only [bind_ok_iff] at ok
-  obtain ⟨applied, appliedOk, indexed, indexedOk, finished, sweptOk, last⟩ := ok
-  have appliedHolds : PendingTail count epoch applied := by
-    unfold applyWithdrawals at appliedOk
-    rw [← Array.foldlM_toList] at appliedOk
-    exact holds.foldlM (fun _ _ _ h ok => h.applyWithdrawal ok) appliedOk
-  have indexedHolds : PendingTail count epoch indexed := by
-    unfold updateNextWithdrawalIndex at indexedOk
-    split at indexedOk
-    · simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at indexedOk
-      obtain ⟨_, _, rfl⟩ := indexedOk
-      exact appliedHolds.of_validators
-    · cases indexedOk; exact appliedHolds
-  have queued : ∀ s : BeaconState preset fork, PendingTail count epoch s →
-      PendingTail count epoch (if gloas : .glamsterdam ≤ fork then
-        updateBuilderPendingWithdrawals
-          (updatePayloadExpectedWithdrawals s gloas expected.withdrawals) gloas
-          expected.processedBuilderWithdrawalsCount else s) := by
-    intro s h
-    split <;> exact h.of_validators
-  have partials : ∀ s : BeaconState preset fork, PendingTail count epoch s →
-      PendingTail count epoch (if electra : .pectra ≤ fork then
-        updatePendingPartialWithdrawals s electra expected.processedPartialWithdrawalsCount
-      else s) := by
-    intro s h
-    split <;> exact h.of_validators
-  have swept : ∀ s : BeaconState preset fork, PendingTail count epoch s →
-      (if gloas : .glamsterdam ≤ fork then
-        updateNextWithdrawalBuilderIndex s gloas expected.processedBuildersSweepCount
-      else pure s) = .ok finished → PendingTail count epoch finished := by
-    intro s h computed
-    split at computed
-    · unfold updateNextWithdrawalBuilderIndex at computed
-      dsimp only at computed
-      split at computed
-      · cases computed; exact h.of_validators
-      · simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at computed
-        obtain ⟨_, _, rfl⟩ := computed
-        exact h.of_validators
-    · cases computed; exact h
-  have finishedHolds := swept _ (partials _ (queued _ indexedHolds)) sweptOk
-  unfold updateNextWithdrawalValidatorIndex at last
-  simp only [bind_ok_iff] at last
-  obtain ⟨_, _, last⟩ := last
-  split at last
-  · cases last
-  · cases last; exact finishedHolds.of_validators
-
-private theorem PendingTail.processWithdrawals {count : Nat} {epoch : Epoch}
-    {state after : BeaconState preset fork} {capella : .shapella ≤ fork}
-    {payload : Until .glamsterdam fork (ExecutionPayload preset fork)}
-    (holds : PendingTail count epoch state)
-    (ok : Consensus.processWithdrawals state capella payload = .ok after) :
-    PendingTail count epoch after := by
-  unfold Consensus.processWithdrawals at ok
-  split at ok
-  · split at ok
-    · simp only [bind_ok_iff, liftAccessor_ok] at ok
-      obtain ⟨_, _, applied⟩ := ok
-      exact holds.applyExpectedWithdrawals applied
-    · cases ok; exact holds
-  · simp only [bind_ok_iff, ensure_ok_iff, liftAccessor_ok] at ok
-    obtain ⟨_, _, _, _, applied⟩ := ok
-    exact holds.applyExpectedWithdrawals applied
-
-private theorem PendingTail.processBlsToExecutionChange {count : Nat} {epoch : Epoch}
-    {state after : BeaconState preset fork} {signed : SignedBLSToExecutionChange}
-    (holds : PendingTail count epoch state)
-    (ok : Consensus.processBlsToExecutionChange config checks state signed = .ok after) :
-    PendingTail count epoch after := by
-  obtain ⟨_, found, _, _, _, set⟩ := processBlsToExecutionChange_ok ok
-  apply holds.setValidator _ set
-  intro outside
-  have pending := holds _ _ outside (getValidator_eq_ok_iff.mp found)
-  exact ⟨pending.1, pending.2⟩
-
-private theorem PendingTail.processProposerSlashing {count : Nat} {epoch : Epoch}
-    {state after : BeaconState preset fork} {slashing : ProposerSlashing}
-    (holds : PendingTail count epoch state)
-    (ok : Consensus.processProposerSlashing config checks state slashing = .ok after) :
-    PendingTail count epoch after := by
-  simp only [Consensus.processProposerSlashing, bind_ok_iff, ensure_ok_iff, liftAccessor_ok] at ok
-  obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, slashed⟩ := ok
-  exact holds.slashValidator slashed
-
-private theorem PendingTail.processAttesterSlashing {count : Nat} {epoch : Epoch}
-    {state after : BeaconState preset fork} {slashing : AttesterSlashing preset fork}
-    (holds : PendingTail count epoch state)
-    (ok : Consensus.processAttesterSlashing config checks state slashing = .ok after) :
-    PendingTail count epoch after := by
-  simp only [Consensus.processAttesterSlashing, bind_ok_iff, ensure_ok_iff, pure, Except.pure,
-    Except.ok.injEq] at ok
-  obtain ⟨_, _, _, _, _, _, _, _, _, _, _, folded, _, _, rfl⟩ := ok
-  refine foldlM_ok_invariant (fun step => PendingTail count epoch step.1)
-    (fun step _ next before ok => ?_)
-    (show PendingTail count epoch (state, false).1 from holds) folded
-  obtain ⟨middle, slashedAny⟩ := step
-  simp only [slashIfSlashable, bind_ok_iff, liftAccessor_ok] at ok
-  obtain ⟨_, _, ok⟩ := ok
-  split at ok
-  · simp only [bind_ok_iff, liftAccessor_ok, pure, Except.pure, Except.ok.injEq] at ok
-    obtain ⟨_, slashed, rfl⟩ := ok
-    exact before.slashValidator slashed
-  · cases ok; exact before
-
-private theorem PendingTail.processVoluntaryExit {count : Nat} {epoch : Epoch}
-    {state after : BeaconState preset fork} {signed : SignedVoluntaryExit}
-    (holds : PendingTail count epoch state)
-    (ok : Consensus.processVoluntaryExit config checks state signed = .ok after) :
-    PendingTail count epoch after := by
-  unfold Consensus.processVoluntaryExit at ok
-  simp only [bind_ok_iff, ensure_ok_iff, liftAccessor_ok, liftSsz_ok] at ok
-  obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, exited⟩ := ok
-  exact holds.initiateValidatorExit exited
+      (by simpa only [restFrame.finalized] using finalized)
+      (holds.processJustificationAndFinalization justified)
 
 private theorem PendingTail.processOperations {count : Nat} {epoch : Epoch}
     {state after : BeaconState preset fork} {body : BeaconBlockBody preset fork} {parentSlot : Slot}
     (holds : PendingTail count epoch state) (finite : epoch < FAR_FUTURE_EPOCH)
-    (preGloas : fork < .glamsterdam)
     (ok : Consensus.processOperations config checks state body parentSlot = .ok after) :
     PendingTail count epoch after := by
-  unfold Consensus.processOperations at ok
-  split at ok
-  · exact False.elim (Nat.not_le_of_lt preGloas ‹_›)
-  simp only [bind_ok_iff, ensure_ok_iff, ← Array.foldlM_toList] at ok
-  obtain ⟨_, _, _, _, _, proposers, _, attesters, _, attestations, _, deposits, exited,
-    exits, changed, changesOk, requestsOk⟩ := ok
-  have p := holds.foldlM (fun _ _ _ h ok => h.processProposerSlashing ok) proposers
-  have a := p.foldlM (fun _ _ _ h ok => h.processAttesterSlashing ok) attesters
-  have votes := a.foldlM (fun _ _ _ h ok =>
-    h.of_validators (congrArg (·.data) (processAttestation_registry ok).1)) attestations
-  have deposited := votes.foldlM (fun _ _ _ h ok => h.processDeposit finite ok) deposits
-  have exitedHolds := deposited.foldlM (fun _ _ _ h ok => h.processVoluntaryExit ok) exits
-  have changedHolds : PendingTail count epoch changed := by
-    unfold processBlsToExecutionChanges at changesOk
-    split at changesOk
-    · rw [← Array.foldlM_toList] at changesOk
-      exact exitedHolds.foldlM (fun _ _ _ h ok => h.processBlsToExecutionChange ok) changesOk
-    · cases changesOk; exact exitedHolds
-  split at requestsOk
-  · exact changedHolds.processExecutionRequests requestsOk
-  · cases requestsOk; exact changedHolds
-
-private theorem PendingTail.processSyncAggregate {count : Nat} {epoch : Epoch}
-    {state after : BeaconState preset fork} {altair : .altair ≤ fork}
-    {aggregate : SyncAggregate preset} (holds : PendingTail count epoch state)
-    (ok : Consensus.processSyncAggregate config checks state altair aggregate = .ok after) :
-    PendingTail count epoch after := by
-  unfold Consensus.processSyncAggregate at ok
-  simp only [bind_ok_iff] at ok
-  obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, folded⟩ := ok
-  rw [← Array.foldlM_toList] at folded
-  refine holds.foldlM (fun _ _ _ h ok => ?_) folded
-  unfold applySyncReward at ok
-  split at ok
-  · simp only [bind_ok_iff, liftAccessor_ok] at ok
-    obtain ⟨_, raised, _, _, paid⟩ := ok
-    exact (h.increaseBalance raised).increaseBalance paid
-  · exact h.decreaseBalance (liftAccessor_ok.mp ok)
-
-private theorem PendingTail.processExecutionPayload {count : Nat} {epoch : Epoch}
-    {state after : BeaconState preset fork} {body : BeaconBlockBody preset fork}
-    {engine : ExecutionEngine preset fork} {bellatrix : .bellatrix ≤ fork ∧ fork < .glamsterdam}
-    (holds : PendingTail count epoch state)
-    (ok : Consensus.processExecutionPayload config engine state body bellatrix = .ok after) :
-    PendingTail count epoch after := by
-  obtain ⟨_, _, _, rfl⟩ := processExecutionPayload_ok ok
-  exact holds.of_validators
-
-private theorem PendingTail.processBlockExecution {count : Nat} {epoch : Epoch}
-    {state after : BeaconState preset fork} {body : BeaconBlockBody preset fork}
-    {engine : ExecutionEngine preset fork} {bellatrix : .bellatrix ≤ fork}
-    (holds : PendingTail count epoch state) (preGloas : fork < .glamsterdam)
-    (ok : Consensus.processBlockExecution config checks engine state body bellatrix = .ok after) :
-    PendingTail count epoch after := by
-  unfold Consensus.processBlockExecution at ok
-  split at ok
-  · exact False.elim (Nat.not_le_of_lt preGloas ‹_›)
-  split at ok
-  · simp only [bind_ok_iff] at ok
-    obtain ⟨_, withdrawn, paid⟩ := ok
-    exact (holds.processWithdrawals withdrawn).processExecutionPayload paid
-  · dsimp only at ok
-    split at ok
-    · exact holds.processExecutionPayload ok
-    · cases ok; exact holds
-
-private theorem PendingTail.processBlockHeader {count : Nat} {epoch : Epoch}
-    {state after : BeaconState preset fork} {block : BeaconBlock preset fork}
-    (holds : PendingTail count epoch state)
-    (ok : Consensus.processBlockHeader state block = .ok after) :
-    PendingTail count epoch after := by
-  obtain ⟨_, _, rfl⟩ := processBlockHeader_eq ok
-  exact holds.of_validators
-
-private theorem PendingTail.processRandao {count : Nat} {epoch : Epoch}
-    {state after : BeaconState preset fork} {body : BeaconBlockBody preset fork}
-    (holds : PendingTail count epoch state)
-    (ok : Consensus.processRandao config checks state body = .ok after) :
-    PendingTail count epoch after := by
-  obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, rfl⟩ := processRandao_eq ok
-  exact holds.of_validators
-
-private theorem PendingTail.processEth1Data {count : Nat} {epoch : Epoch}
-    {state after : BeaconState preset fork} {before : fork < .hegota}
-    {body : BeaconBlockBody preset fork} (holds : PendingTail count epoch state)
-    (ok : Consensus.processEth1Data before state body = .ok after) :
-    PendingTail count epoch after := by
-  obtain ⟨_, _, rest⟩ := processEth1Data_eq ok
-  exact holds.of_validators (congrArg (fun s => s.validators.data) rest)
+  obtain ⟨first, last, firstFrame, attestations, tail⟩ := processOperations_split ok
+  have attested := foldlM_ok_invariant (PendingTail count epoch)
+    (fun _ _ _ h step => h.of_validators
+      (congrArg (·.data) (processAttestation_registry step).1))
+    (holds.of_blockFrame finite firstFrame) attestations
+  exact attested.of_blockFrame finite tail
 
 /-- Fixed-fork block processing cannot activate a pending suffix. -/
 private theorem PendingTail.processBlock {count : Nat} {epoch : Epoch}
@@ -1039,31 +436,15 @@ private theorem PendingTail.processBlock {count : Nat} {epoch : Epoch}
     (finite : epoch < FAR_FUTURE_EPOCH) (preGloas : fork < .glamsterdam)
     (ok : Consensus.processBlock config checks engine state block = .ok after) :
     PendingTail count epoch after := by
-  unfold Consensus.processBlock at ok
-  split at ok
-  · unfold processBlockAltair at ok
-    simp only [bind_ok_iff] at ok
-    obtain ⟨paid, paidOk, headed, headedOk, executed, executedOk, revealed, revealedOk, voted,
-      votedOk, _, operatedOk, synced⟩ := ok
-    have paidHolds : PendingTail count epoch paid := by
-      split at paidOk
-      · exact False.elim (Nat.not_le_of_lt preGloas ‹_›)
-      · cases paidOk; exact holds
-    have headedHolds := paidHolds.processBlockHeader headedOk
-    have executedHolds : PendingTail count epoch executed := by
-      split at executedOk
-      · exact headedHolds.processBlockExecution preGloas executedOk
-      · cases executedOk; exact headedHolds
-    have revealedHolds := executedHolds.processRandao revealedOk
-    have votedHolds : PendingTail count epoch voted := by
-      split at votedOk
-      · exact revealedHolds.processEth1Data votedOk
-      · cases votedOk; exact revealedHolds
-    exact (votedHolds.processOperations finite preGloas operatedOk).processSyncAggregate synced
-  simp only [bind_ok_iff] at ok
-  obtain ⟨_, header, _, randao, _, eth1, operations⟩ := ok
-  exact (((holds.processBlockHeader header).processRandao randao).processEth1Data
-    eth1).processOperations finite preGloas operations
+  obtain ⟨first, last, firstStep, operations, tail⟩ := processBlock_split_of
+    (fun s t => PendingTail count epoch s → PendingTail count epoch t)
+    (fun _ h => h) (fun one two h => two (one h))
+    (fun gloas _ => False.elim (Nat.not_le_of_lt preGloas gloas))
+    (fun step h => h.of_blockFrame finite (frame_processBlockHeader step))
+    (fun _ step h => h.of_blockFrame finite (frame_processBlockExecution step))
+    (fun step h => h.of_blockFrame finite (frame_processRandao step))
+    (fun _ step h => h.of_blockFrame finite (frame_processEth1Data step)) ok
+  exact ((firstStep holds).processOperations finite operations).of_blockFrame finite tail
 
 private theorem PendingTail.advanceSlot {count : Nat} {epoch : Epoch}
     {state after : BeaconState preset fork} (holds : PendingTail count epoch state)
