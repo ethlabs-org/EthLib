@@ -331,9 +331,9 @@ def CompleteEpochWithin (preset : Preset) (config : Config) (genesisTimeMs : UIn
     first ≤ beginTime.toNat ∧ endTime.toNat ≤ last
 
 open Classical in
-/-- The late majority of a receiver: a complete epoch of honest duties outweighs what is missing.
+/-- The late majority of a receiver: its honest duties of a complete epoch outweigh the rest.
 
-This is a generalized missing-duty assumption, not Assumption 2 of the paper as stated there.
+This is a generalized late-duty assumption, not Assumption 2 of the paper as stated there.
 
 The paper fixes the validator set; here the receiver weighs with its own justified state.
 
@@ -343,23 +343,23 @@ The epoch starts at a first time or later, and ends at a given time or before.
 
 The tally is the set of validators that are active and not slashed in that state.
 
-The Byzantine validators hold at most β of the whole tally.
+The honest validators of the tally with a duty in the epoch are the counted ones.
 
-The missing stake is that of honest validators of the tally without a duty in the epoch.
+Twice their stake exceeds the stake of the whole tally plus the boost.
 
-Twice the missing stake, plus the boost, fits in the margin that β leaves.
-
-`ByzantineStakeAtMost.majority_of_missing_weight` turns this into a majority of the head.
+Every honest duty of the epoch supports the block, so the block then holds a majority.
 
 It does not follow from `WeightBounds`, which compares the balances of two states.
 
+It follows from a Byzantine bound on the tally with a margin for the missing duties.
+
+`late_majority_of_missing_duties` gives that implication.
+
 Take an assignment that gives each active validator a duty in each epoch, as with a static set.
 
-Then each honest validator of the tally has a duty in the epoch, and the missing stake is zero.
+Then the condition is `W + boost < 2 * H`, where `W` is the stake of the tally.
 
-The condition is then the Byzantine bound on the tally and `100 * boost < (100 - 2β) * W`.
-
-Here `W` is the stake of the tally.
+Here `H` is the stake of its honest validators.
 
 That case shows the condition can hold; it does not make the condition the paper's. -/
 def LateMargin (config : Config) (genesisTimeMs : UInt64) (assignment : Assignment preset)
@@ -371,16 +371,36 @@ def LateMargin (config : Config) (genesisTimeMs : UInt64) (assignment : Assignme
     computeTimeAtSlotMs config genesisTimeMs begin = .ok beginTime ∧
     computeTimeAtSlotMs config genesisTimeMs next = .ok endTime ∧
     first ≤ beginTime.toNat ∧ endTime.toNat ≤ time ∧
-    ByzantineStakeAtMost (fun v => balanceAt state v.toNat)
-      ((unslashedActiveBalances state).map (·.1)).toFinset J
-      config.CONFIRMATION_BYZANTINE_THRESHOLD.toNat 100 ∧
-    100 * (2 * stake (fun v => balanceAt state v.toNat)
+    stake (fun v => balanceAt state v.toNat)
+        ((unslashedActiveBalances state).map (·.1)).toFinset + boost <
+      2 * stake (fun v => balanceAt state v.toNat)
         {v ∈ ((unslashedActiveBalances state).map (·.1)).toFinset | v ∈ J ∧
-          ¬∃ slot committeeIndex, begin ≤ slot ∧ slot < next ∧
-            assignment.committee v slot = some committeeIndex} + boost) <
-      (100 - 2 * config.CONFIRMATION_BYZANTINE_THRESHOLD.toNat) *
-        stake (fun v => balanceAt state v.toNat)
-          ((unslashedActiveBalances state).map (·.1)).toFinset
+          ∃ slot committeeIndex, begin ≤ slot ∧ slot < next ∧
+            assignment.committee v slot = some committeeIndex}
+
+/-- A Byzantine bound with a margin for missing duties gives the late majority.
+
+The validators of a set `V` with stakes `w` are honest when in `J`, and some have a duty.
+
+The Byzantine validators hold at most `num / den` of the stake of `V`, with `2 * num ≤ den`.
+
+Twice the stake of honest validators without a duty, plus the boost, fits in the margin.
+
+Then twice the stake of honest validators with a duty exceeds the stake of `V` plus the boost. -/
+theorem late_majority_of_missing_duties {ν : Type*} {w : ν → ℕ} {V : Finset ν}
+    {J : Set ν} [DecidablePred (· ∈ J)] (duty : ν → Prop) [DecidablePred duty]
+    {num den boost : ℕ} (byzantine : ByzantineStakeAtMost w V J num den)
+    (half : 2 * num ≤ den)
+    (margin : den * (2 * stake w {v ∈ V | v ∈ J ∧ ¬duty v} + boost) <
+      (den - 2 * num) * stake w V) :
+    stake w V + boost < 2 * stake w {v ∈ V | v ∈ J ∧ duty v} := by
+  -- The honest stake splits into the stake with a duty and the stake without one.
+  have split : stake w {v ∈ V | v ∈ J ∧ duty v} + stake w {v ∈ V | v ∈ J ∧ ¬duty v} =
+      stake w {v ∈ V | v ∈ J} := by
+    have := Finset.sum_filter_add_sum_filter_not {v ∈ V | v ∈ J} duty w
+    simpa only [stake, Finset.filter_filter] using this
+  exact byzantine.majority_of_missing_weight (score := stake w {v ∈ V | v ∈ J ∧ duty v})
+    (by omega) half margin
 
 /-- The call of index `i` of a run is at the event `n`, from the store `fcr` to the store `after`.
 
@@ -2592,8 +2612,8 @@ private theorem walk_tally_stake {state : BeaconState preset fork}
   · intro a _ b _ eq
     exact UInt64.toNat_inj.mp eq
 
-/-- The late-duty inequality is the missing-weight inequality in the receiver's own state. -/
-private theorem walk_head_of_missing_duties {store : Store preset fork}
+/-- The late-duty majority in the receiver's own state puts the node on the head chain. -/
+private theorem walk_head_of_duty_majority {store : Store preset fork}
     {state : BeaconState preset fork} {config : Config} {nodes : List ForkChoiceNode}
     {node head : ForkChoiceNode} {score : Gwei} {J : Set ValidatorIndex}
     [DecidablePred (· ∈ J)] (duty : ValidatorIndex → Prop) [DecidablePred duty]
@@ -2602,50 +2622,31 @@ private theorem walk_head_of_missing_duties {store : Store preset fork}
     (stateOk : store.checkpointState store.justifiedCheckpoint = .ok state)
     (tree : store.getFilteredNodeTree config = .ok nodes) (viable : node ∈ nodes)
     (scoreOk : store.getAttestationScore node state = .ok score)
-    (byzantine : ByzantineStakeAtMost (fun v => balanceAt state v.toNat)
-      ((unslashedActiveBalances state).map (·.1)).toFinset J
-      config.CONFIRMATION_BYZANTINE_THRESHOLD.toNat 100)
     (supported : ∀ v ∈ ((unslashedActiveBalances state).map (·.1)).toFinset,
       v ∈ J → duty v → v ∈ store.supportersOf state node)
-    (half : 2 * config.CONFIRMATION_BYZANTINE_THRESHOLD.toNat ≤ 100)
-    (margin : 100 * (2 * stake (fun v => balanceAt state v.toNat)
-        {v ∈ ((unslashedActiveBalances state).map (·.1)).toFinset | v ∈ J ∧ ¬duty v} +
-        store.boostScore config) <
-      (100 - 2 * config.CONFIRMATION_BYZANTINE_THRESHOLD.toNat) *
-        stake (fun v => balanceAt state v.toNat)
-          ((unslashedActiveBalances state).map (·.1)).toFinset)
+    (majority : stake (fun v => balanceAt state v.toNat)
+        ((unslashedActiveBalances state).map (·.1)).toFinset + store.boostScore config <
+      2 * stake (fun v => balanceAt state v.toNat)
+        {v ∈ ((unslashedActiveBalances state).map (·.1)).toFinset | v ∈ J ∧ duty v})
     (headOk : store.getHead config = .ok head) :
     store.isAncestor head node = .ok true := by
   classical
-  let V := ((unslashedActiveBalances state).map (·.1)).toFinset
-  let missing := stake (fun v => balanceAt state v.toNat) {v ∈ V | v ∈ J ∧ ¬duty v}
   have total := walk_tally_stake within (fun _ => True)
   simp only [Finset.filter_true] at total
-  have honest := walk_tally_stake within (fun v => v ∈ J)
-  have dishonest := walk_tally_stake within (fun v => v ∉ J)
-  have bound : ByzantineStakeAtMost (balanceAt state) (Store.voters state)
-      {i | i.toUInt64 ∈ J} config.CONFIRMATION_BYZANTINE_THRESHOLD.toNat 100 := by
-    simpa only [ByzantineStakeAtMost, Set.mem_ofPred_eq, total, dishonest] using byzantine
-  have support : stake (balanceAt state)
-      {i ∈ Store.voters state | i ∈ ({i | i.toUInt64 ∈ J} : Set ℕ)} ≤
-      score.toNat + missing := by
-    rw [show {i ∈ Store.voters state | i ∈ ({i | i.toUInt64 ∈ J} : Set ℕ)} =
-      {i ∈ Store.voters state | i.toUInt64 ∈ J} from rfl, honest]
+  -- Every honest validator of the tally with a duty supports the node.
+  have counted : stake (fun v => balanceAt state v.toNat)
+      {v ∈ ((unslashedActiveBalances state).map (·.1)).toFinset | v ∈ J ∧ duty v} ≤
+      score.toNat := by
     rw [← Store.stake_supportersOf within scoreOk]
-    -- Every honest index either contributed a supporting duty or is counted as missing.
-    change (∑ v ∈ V.filter (· ∈ J), balanceAt state v.toNat) ≤ _
-    have split := Finset.sum_filter_add_sum_filter_not (V.filter (· ∈ J)) duty
-      (fun v => balanceAt state v.toNat)
-    rw [← split]
-    apply Nat.add_le_add
-    · apply Finset.sum_le_sum_of_subset
-      intro v member
-      obtain ⟨inside, dutied⟩ := Finset.mem_filter.mp member
-      obtain ⟨inside, honest⟩ := Finset.mem_filter.mp inside
-      exact supported v inside honest dutied
-    · exact Nat.le_of_eq (by simp [missing, stake, Finset.filter_filter])
-  exact Store.isAncestor_getHead_of_missing_weight lower before stateOk tree viable scoreOk
-    bound support half (by simpa only [total] using margin) headOk
+    apply stake_mono
+    intro v member
+    obtain ⟨inside, honest, dutied⟩ := Finset.mem_filter.mp member
+    exact supported v inside honest dutied
+  apply Store.isAncestor_getHead_of_majority_withBoost lower before stateOk tree viable scoreOk
+    ?_ headOk
+  rw [total]
+  omega
+
 
 /-- A successful receiver clock read bounds the start time of its current slot. -/
 private theorem walk_slot_time {clock : UInt64} {slot : Slot}
@@ -2737,7 +2738,6 @@ private theorem walk_late_head {Δ : ℕ} (sync : e.Synchronous Δ)
       getCurrentEpoch state ≤ horizon → getTotalActiveBalance state = .ok total →
       3 * stake (fun v => balanceAt state v.toNat) {v ∈ quorumVoters state | v ∉ J} <
         2 * total.toNat)
-    (half : 2 * config.CONFIRMATION_BYZANTINE_THRESHOLD.toNat ≤ 100)
     {root : Root} (safe : ∀ earlier, first ≤ earlier → earlier < time → SafeAt e earlier root)
     {w : ValidatorIndex} (receiver : w ∈ J) {k : ℕ} (atTime : (e.world k).time = time)
     (current : UpToDate config checks sources (e.world k).time ((e.world k).view w)
@@ -2766,15 +2766,15 @@ private theorem walk_late_head {Δ : ℕ} (sync : e.Synchronous Δ)
     ((e.world k).state w).isAncestor head ⟨root, .pending⟩ = .ok true := by
   classical
   obtain ⟨epoch, begin, next, beginTime, endTime, beginOk, nextOk, beginTimeOk, endTimeOk,
-    fresh, complete, byzantine, margin⟩ := margin
+    fresh, complete, majority⟩ := margin
   obtain ⟨justified, justifiedKnown, below⟩ :=
     walk_justified_below_parent lower before known parentKnown tree viable uncovered
   obtain ⟨score, scoreOk⟩ := walk_score_read before known parentKnown justifiedKnown below stateOk
     tree viable parentAbove headOk
   let duty := fun v => ∃ slot committeeIndex, begin ≤ slot ∧ slot < next ∧
     assignment.committee v slot = some committeeIndex
-  apply walk_head_of_missing_duties duty within lower before stateOk tree viable scoreOk byzantine
-    ?_ half margin headOk
+  apply walk_head_of_duty_majority duty within lower before stateOk tree viable scoreOk ?_
+    majority headOk
   intro v active honest dutied
   exact (e.mem_supportersOf_of_duty_epoch sync slots positive window ring before oneBlock admitted
     votes fits prompt anchorStore sound anchorSlot anchorBoundary anchored noVotes started chain
@@ -3271,7 +3271,7 @@ theorem Execution.safeAt_of_walk {Δ : ℕ} (sync : e.Synchronous Δ)
       (fun x hx j ep le => inHorizon x hx j ep (le.trans boundedNow))
       (fun x hx j le => nonzero x hx j (le.trans boundedNow))
       (fun x hx j s le => large x hx j s (le.trans boundedNow))
-      (fun x hx j s total le => few x hx j s total (le.trans boundedNow)) half
+      (fun x hx j s total le => few x hx j s total (le.trans boundedNow))
       (fun t low high => earlier t low high member mem) receiver atNow ready memberKnown
       receiverParentKnown rootFinal stateOk (BeaconState.registryWithinLimit_of_lt preGloas state)
       receiverLower tree viable parentAbove receiverHeadOk covered
