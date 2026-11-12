@@ -4417,7 +4417,6 @@ The third is `bval_endpoint_strip_window_uniform`.
 [vfc]: https://github.com/fradamt/verified-fast-confirmation -/
 theorem Execution.honest_support_of_historical_anchor {Δ : ℕ} (sync : e.Synchronous Δ)
     (slots : 0 < config.SLOT_DURATION_MS) (positive : 0 < preset.SLOTS_PER_EPOCH.toNat)
-    (window : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
     (lookahead : 1 ≤ preset.MIN_SEED_LOOKAHEAD.toNat ∧ 1 ≤ preset.MAX_SEED_LOOKAHEAD.toNat ∧
       preset.MIN_SEED_LOOKAHEAD.toNat + 3 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
     (preGloas : fork < .glamsterdam) {time : ℕ} (admitted : BlocksAdmitted e 0 Δ time)
@@ -4428,7 +4427,7 @@ theorem Execution.honest_support_of_historical_anchor {Δ : ℕ} (sync : e.Synch
     (anchorStore : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
     (sound : Invariant anchorState) (anchorSlot : anchorBlock.slot = anchorState.slot)
     (anchorBoundary : isStartSlotAtEpoch preset anchorBlock.slot = .ok true)
-    (anchored : ∀ w ∈ J, e.start w = anchor) (noVotes : anchor.latestMessages.isEmpty)
+    (anchored : ∀ w ∈ J, e.start w = anchor)
     {u : ValidatorIndex} (caller : u ∈ J) {n : ℕ}
     (upToDate : UpToDate config checks sources (e.world n).time ((e.world n).view u)
       ((e.world n).state u))
@@ -4460,8 +4459,6 @@ theorem Execution.honest_support_of_historical_anchor {Δ : ℕ} (sync : e.Synch
       root = .ok discount)
     (adversaryOk : ((e.world n).state u).getAdversarialWeight config head balanceSource root =
       .ok adversary)
-    (confirmed : ((e.world n).state u).isOneConfirmed config head balanceSource
-      (((e.world n).state u).tallyVotes balanceSource) root = .ok true)
     (base : maximumSupport.toNat + proposerScore.toNat + 2 * adversary.toNat + shift <
       discount.toNat + 2 * support.toNat)
     (later : (e.world n).time ≤ time)
@@ -4472,16 +4469,6 @@ theorem Execution.honest_support_of_historical_anchor {Δ : ℕ} (sync : e.Synch
     (nonzero : ∀ w ∈ J, ∀ k, (e.world k).time ≤ time →
       ∀ (r : Root) (b : BeaconBlock preset fork),
         ((e.world k).state w).blocks[r]? = some b → b.stateRoot ≠ Vector.replicate 32 0)
-    (large : ∀ w ∈ J, ∀ k (state : BeaconState preset fork),
-      (e.world k).time ≤ time → ((e.world k).state w).Counts config state →
-      getCurrentEpoch state ≤ horizon →
-      3 * preset.EFFECTIVE_BALANCE_INCREMENT.toNat <
-        2 * stake (fun v => balanceAt state v.toNat) (activeVoters state))
-    (few : ∀ w ∈ J, ∀ k (state : BeaconState preset fork) total,
-      (e.world k).time ≤ time → ((e.world k).state w).Counts config state →
-      getCurrentEpoch state ≤ horizon → getTotalActiveBalance state = .ok total →
-      3 * stake (fun v => balanceAt state v.toNat) {v ∈ quorumVoters state | v ∉ J} <
-        2 * total.toNat)
     (unslashed : ∀ w ∈ J, ∀ k (state : BeaconState preset fork), (e.world k).time ≤ time →
       ((e.world k).state w).Counts config state → ∀ v ∈ J, NotSlashed state v)
     (supply : ∀ w ∈ J, ∀ k (checkpoint : Checkpoint) (state : BeaconState preset fork),
