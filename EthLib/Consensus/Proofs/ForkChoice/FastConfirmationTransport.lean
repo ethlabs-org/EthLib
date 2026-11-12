@@ -664,7 +664,7 @@ private theorem recorded_duty_of_supporting_vote {Δ time : ℕ}
       v ∉ ((e.world j).state w).equivocatingIndices)
     {root : Root} {block : BeaconBlock preset fork}
     (known : ((e.world k).state w).blocks[root]? = some block)
-    {following : UInt64}
+    {following : UInt64} {covered : Prop}
     (rootFinal : ∀ j ≤ k,
       (e.world j).time < following.toNat →
       UpToDate config checks sources (e.world j).time ((e.world j).view w)
@@ -674,10 +674,7 @@ private theorem recorded_duty_of_supporting_vote {Δ time : ℕ}
           .ok boundary ∧ boundary ≤ block.slot ∧
         ((e.world k).state w).getCheckpointBlock root
           ((e.world j).state w).finalizedCheckpoint.epoch =
-            .ok ((e.world j).state w).finalizedCheckpoint.root) ∨
-      ((e.world k).state w).isAncestor
-        ⟨((e.world j).state w).finalizedCheckpoint.root, .pending⟩
-        ⟨root, .pending⟩ = .ok true)
+            .ok ((e.world j).state w).finalizedCheckpoint.root) ∨ covered)
     {slot next : Slot} {start : UInt64}
     {committeeIndex : CommitteeIndex} {deadline n : ℕ}
     {attestation : Attestation preset fork} {indexed : IndexedAttestation preset fork}
@@ -691,10 +688,7 @@ private theorem recorded_duty_of_supporting_vote {Δ time : ℕ}
       ((e.world n).state v).isAncestor head ⟨root, .pending⟩ = .ok true) :
     (∃ message,
       ((e.world k).state w).latestMessages[v]? = some message ∧
-      attestation.data.target.epoch ≤ message.rank) ∨
-    ((e.world k).state w).isAncestor
-      ⟨((e.world k).state w).justifiedCheckpoint.root, .pending⟩
-      ⟨root, .pending⟩ = .ok true := by
+      attestation.data.target.epoch ≤ message.rank) ∨ covered := by
   obtain ⟨⟨pre, preTime, delivered, preReady⟩, ⟨post, postTime, postReady⟩⟩ :=
     e.exists_duty_boundaries fits (prompt.of_le complete) receiver nextOk startOk followingOk
       deadlineOk started
@@ -727,16 +721,18 @@ private theorem recorded_duty_of_supporting_vote {Δ time : ℕ}
     dsimp at bad
     omega
   obtain ⟨preEpoch, preEpochOk⟩ := epochExists pre
-  obtain ⟨endpointEpoch, endpointOk⟩ := epochExists k
-  rcases e.blocks_or_justified_covers sync preGloas oneBlock admitted anchorStore sound anchored
-      slots anchorSlot anchorBoundary chain honest receiver preLe (by omega)
-      (by simpa [vote.atTime] using delivered) preReady preEpochOk endpointOk
-      (inHorizon w receiver pre preEpoch (by omega) preEpochOk)
-      (inHorizon w receiver k endpointEpoch (by omega) endpointOk)
-      headKnown sourceKnown known supports (rootFinal pre preLe (by omega) preReady)
-      with held | covered
+  rcases rootFinal pre preLe (by omega) preReady with
+    ⟨boundary, boundaryOk, below, checkpoint⟩ | covered
   swap
   · exact .inr covered
+  have held := e.blocks_of_endpoint_checkpoint sync preGloas oneBlock admitted anchorStore
+    anchored honest receiver (by omega) (by omega)
+    (by simpa [vote.atTime] using delivered) preReady
+    (e.finalized_known_of_prefix anchorStore sound anchored slots anchorSlot preGloas chain
+      receiver (by omega) preEpochOk (inHorizon w receiver pre preEpoch (by omega) preEpochOk))
+    headKnown sourceKnown supports boundaryOk
+    (e.anchorSlot_le_finalized_boundary anchorStore anchorSlot anchorBoundary
+      (anchored w receiver) boundaryOk) below checkpoint
   -- At equal timestamps use the endpoint's ready store, not an event after the endpoint.
   have arrivalExists : ∃ arrival, pre ≤ arrival ∧ arrival ≤ k ∧
       (e.world arrival).time = following.toNat ∧
@@ -851,9 +847,22 @@ private theorem recorded_duty_of_safe_interval {Δ first time : ℕ}
   have dueLt := fits.due_lt_slot nextOk startOk followingOk dueOk
   obtain ⟨dataSlot, dataEpoch, _⟩ :=
     vote.data_head anchorStore (UInt64.le_of_eq anchorSlot) anchored honest deadlineOk dueOk dueLt
+  have forward := e.forwardReachable
+    (fun u hu => (anchored u hu) ▸ Store.ForwardReachable.anchor anchorStore) k w receiver
+  obtain ⟨current, currentOk, _, _⟩ :=
+    forward.slots_le_current slots (UInt64.le_of_eq anchorSlot)
+  have epochOk : ((e.world k).state w).getCurrentStoreEpoch config =
+      .ok (computeEpochAtSlot preset current) := by
+    simp [Store.getCurrentStoreEpoch, currentOk, bind, Except.bind, pure, Except.pure]
+  have justifiedHorizon := UInt64.le_trans
+    (forward.justified_epoch_le_current sound slots (UInt64.le_of_eq anchorSlot) epochOk).1
+    (inHorizon w receiver k _ (by omega) epochOk)
   rcases recorded_duty_of_supporting_vote sync slots preGloas oneBlock admitted prompt fits
       anchorStore sound anchorSlot anchorBoundary anchored chain inHorizon nonzero honest receiver
-      atTime upToDate counted known (fun j le _ => rootFinal j le)
+      atTime upToDate counted known (fun j le _ ready =>
+        (rootFinal j le ready).imp_right fun covered =>
+          e.justified_covers_of_finalized_covers anchorStore sound anchored preGloas chain
+            receiver le (by omega) justifiedHorizon known covered)
       vote nextOk startOk followingOk deadlineOk
       (started.trans firstLe) (by omega)
       (fun head headOk => safe deadline firstLe before v honest n head vote.atTime
@@ -913,6 +922,7 @@ private theorem recorded_rank_of_counted_vote {Δ time : ℕ}
     {root : Root} {block : BeaconBlock preset fork}
     (sourceKnown : ((e.world n).state u).blocks[root]? = some block)
     (known : ((e.world k).state w).blocks[root]? = some block)
+    {covered : Prop}
     (rootFinal : ∀ j ≤ k, (e.world j).time < (e.world n).time →
       UpToDate config checks sources (e.world j).time ((e.world j).view w)
         ((e.world j).state w) →
@@ -921,18 +931,12 @@ private theorem recorded_rank_of_counted_vote {Δ time : ℕ}
           .ok boundary ∧ boundary ≤ block.slot ∧
         ((e.world k).state w).getCheckpointBlock root
           ((e.world j).state w).finalizedCheckpoint.epoch =
-            .ok ((e.world j).state w).finalizedCheckpoint.root) ∨
-      ((e.world k).state w).isAncestor
-        ⟨((e.world j).state w).finalizedCheckpoint.root, .pending⟩
-        ⟨root, .pending⟩ = .ok true)
+            .ok ((e.world j).state w).finalizedCheckpoint.root) ∨ covered)
     {first : LatestMessage fork}
     (firstOk : ((e.world n).state u).latestMessages[v]? = some first)
     (supports : ((e.world n).state u).voteCountsFor ⟨root, .pending⟩ v = true) :
     (∃ second, ((e.world k).state w).latestMessages[v]? = some second ∧
-      first.rank ≤ second.rank) ∨
-    ((e.world k).state w).isAncestor
-      ⟨((e.world k).state w).justifiedCheckpoint.root, .pending⟩
-      ⟨root, .pending⟩ = .ok true := by
+      first.rank ≤ second.rank) ∨ covered := by
   obtain ⟨message, supported, latest, _, supportedOk, descends⟩ :=
     Store.exists_of_voteCountsFor _ supports
   rw [firstOk, Option.some.injEq] at latest
@@ -2432,6 +2436,14 @@ theorem Execution.honest_support_of_historical_anchor {Δ : ℕ} (sync : e.Synch
   have receiverReachable := e.reachable
     (fun w hw => (anchored w hw) ▸ Store.Reachable.anchor anchorStore) k w receiver
   have rootAboveAnchor := receiverReachable.anchorSlot_le_block known
+  have receiverForward := e.forwardReachable
+    (fun w hw => (anchored w hw) ▸ Store.ForwardReachable.anchor anchorStore) k w receiver
+  have receiverJustifiedHorizon := UInt64.le_trans
+    (receiverForward.justified_epoch_le_current sound slots (UInt64.le_of_eq anchorSlot)
+      receiverEpochOk).1 (inHorizon w receiver k receiverEpoch (by omega) receiverEpochOk)
+  have rootFinalReady := fun j le ready => (rootFinal j le ready).imp_right fun covered =>
+    e.justified_covers_of_finalized_covers anchorStore sound anchored preGloas chain
+      receiver le (by omega) receiverJustifiedHorizon known covered
   by_cases rootAnchor : root = anchor.finalizedCheckpoint.root
   · right
     have justifiedTest := Store.isAncestor_getHead headOk
@@ -2651,7 +2663,7 @@ theorem Execution.honest_support_of_historical_anchor {Δ : ℕ} (sync : e.Synch
         anchorStore sound anchorSlot anchorBoundary anchored chain inHorizon nonzero caller honest
         receiver slotOk beginOk atSlot later atTime receiverUpToDate
         (fun j bounded equivocated => weights.dishonest w receiver j bounded v equivocated honest)
-        callerKnown known (fun j le _ => rootFinal j le) firstOk counts
+        callerKnown known (fun j le _ => rootFinalReady j le) firstOk counts
         with ⟨second, secondOk, rank⟩ | covered
     · exact .inl (oldSupportOfRank v member first second firstOk secondOk rank active)
     · exact .inr covered
