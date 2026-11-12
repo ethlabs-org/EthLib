@@ -1729,8 +1729,6 @@ private theorem stepBalanceEvents_bounded {x y : ForkedBeaconState preset}
 theorem source_bounds_over_interval {g x y : ForkedBeaconState preset}
     (shared : Run config checks g x) (tail : Run config checks x y)
     (genesis : Genesis (config := config) (checks := checks) g)
-    (parameters : Parameters preset) (caps : CapOrder preset)
-    (alignedCaps : MaxEffectiveBalancesAligned preset)
     (early : y.fork < .glamsterdam) (high : Nat) :
     ∃ events, tail.balanceEvents high = .ok events ∧
       ∀ source : BalanceSource,
@@ -2343,57 +2341,6 @@ private theorem coverage_sum_events (events : List (BalanceEvent preset)) (n : N
   | cons event rest ih =>
     simp only [List.map_cons, List.sum_cons, Finset.sum_add_distrib]
     exact Nat.add_le_add (coverage_event_sum event n debit) ih
-
-/-- The replay covers all positive balance changes of the selected steps, not just net issuance. -/
-theorem balance_path_covered {g x y : ForkedBeaconState preset}
-    (shared : Run config checks g x) (tail : Run config checks x y)
-    (genesis : Genesis (config := config) (checks := checks) g)
-    (parameters : Parameters preset) (caps : CapOrder preset)
-    (aligned : MaxEffectiveBalancesAligned preset)
-    (early : y.fork < .glamsterdam) (high : Nat)
-    (endEpoch : (getCurrentEpoch y.state).toNat ≤ high + 1)
-    (events : List (BalanceEvent preset)) (replayed : tail.balanceEvents high = .ok events) :
-    (∑ i ∈ Finset.range y.state.validators.data.size, pathCredits i tail.balancePath) ≤
-      (events.map (·.creditLimit)).sum ∧
-    (∑ i ∈ Finset.range y.state.validators.data.size, pathDebits i tail.balancePath) ≤
-      (events.map (·.debitLimit)).sum := by
-  have invariant {z : ForkedBeaconState preset} (run : Run config checks g z) :
-      Invariant z.state := by
-    induction run with
-    | nil =>
-      obtain ⟨_, _, _, ok⟩ := genesis
-      exact (initializeBeaconStateFromEth1_invariant ok).2
-    | snoc pre step ih =>
-      cases step with
-      | slot ok => exact (advanceSlotAcross_invariant ih ok).1
-      | block engine signed due ok =>
-        exact (frame_processBlock (applySignedBlock_ok ok).2.1).invariant ih
-  have bounded : EventsBounded events := by
-    induction tail generalizing events with
-    | nil => cases replayed; simp [EventsBounded]
-    | @snoc middle last pre step ih =>
-      have selected := (coverage_step_epoch step).trans endEpoch
-      simp only [Run.balanceEvents, bind_ok_iff] at replayed
-      obtain ⟨prior, priorOk, rest⟩ := replayed
-      simp only [selected, ↓reduceIte, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at rest
-      obtain ⟨added, addedOk, rfl⟩ := rest
-      have previous := ih (Nat.lt_of_le_of_lt step.chainStep.fork_le early) selected prior priorOk
-      obtain ⟨actual, actualOk, bound⟩ := stepBalanceEvents_bounded step
-        (invariant (shared.append pre)).balancesMatch early
-      cases Except.ok.inj (actualOk.symm.trans addedOk)
-      exact eventsBounded_append previous bound
-  have result (debit : Bool) :
-      (∑ i ∈ Finset.range y.state.validators.data.size, coveragePath debit i tail.balancePath) ≤
-        (events.map fun e => if debit then e.debitLimit else e.creditLimit).sum := by
-    apply (Finset.sum_le_sum fun i _ =>
-      coverage_run tail early high endEpoch replayed debit i).trans
-    apply (coverage_sum_events events _ debit).trans
-    apply List.sum_le_sum
-    intro event member
-    cases debit
-    · exact (bounded event member).1
-    · exact (bounded event member).2
-  exact ⟨result false, result true⟩
 
 def initialExcess (x : ForkedBeaconState preset) : Nat :=
   ((getActiveValidatorIndices x.state (getCurrentEpoch x.state)).map fun i =>
@@ -4144,7 +4091,7 @@ private theorem funding_window_of_steps {x y : ForkedBeaconState preset}
 theorem funding_deposit_capacity {g x y : ForkedBeaconState preset}
     (shared : Run config checks g x) (tail : Run config checks x y)
     (genesis : Genesis (config := config) (checks := checks) g)
-    (parameters : Parameters preset) (early : y.fork < .glamsterdam)
+    (early : y.fork < .glamsterdam)
     (high : Nat) (endEpoch : (getCurrentEpoch y.state).toNat ≤ high + 1)
     (events : List (BalanceEvent preset)) (replayed : tail.balanceEvents high = .ok events) :
     (events.map fun e =>

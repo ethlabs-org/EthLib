@@ -104,8 +104,7 @@ The bound retains withdrawn-source credits rather than assuming pending-source c
 theorem active_stake_le_window {g x y : ForkedBeaconState preset}
     (shared : Run config checks g x) (tail : Run config checks x y)
     (genesis : Genesis (config := config) (checks := checks) g)
-    (parameters : Parameters preset) (caps : CapOrder preset)
-    (aligned : MaxEffectiveBalancesAligned preset)
+    (parameters : Parameters preset)
     (electra : .pectra ≤ x.fork) (early : y.fork < .glamsterdam)
     (withdrawalDelay : 2 ≤ config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat)
     (high : Nat) (endEpoch : (getCurrentEpoch y.state).toNat ≤ high + 1)
@@ -1268,7 +1267,7 @@ private theorem intervalLoss_run_invariant {g y : ForkedBeaconState preset}
 theorem replay_event_provenance {g x y : ForkedBeaconState preset}
     (shared : Run config checks g x) (tail : Run config checks x y)
     (genesis : Genesis (config := config) (checks := checks) g)
-    (parameters : Parameters preset) (early : y.fork < .glamsterdam) (high : Nat)
+    (early : y.fork < .glamsterdam) (high : Nat)
     (endEpoch : (getCurrentEpoch y.state).toNat ≤ high + 1)
     (events : List (BalanceEvent preset)) (replayed : tail.balanceEvents high = .ok events)
     (event : BalanceEvent preset) (member : event ∈ events) :
@@ -1438,7 +1437,7 @@ private theorem intervalLoss_step_deposit_epoch {x y : ForkedBeaconState preset}
 theorem replay_electra_deposit_epoch {g x y : ForkedBeaconState preset}
     (shared : Run config checks g x) (tail : Run config checks x y)
     (genesis : Genesis (config := config) (checks := checks) g)
-    (parameters : Parameters preset) (early : y.fork < .glamsterdam) (high : Nat)
+    (early : y.fork < .glamsterdam) (high : Nat)
     (endEpoch : (getCurrentEpoch y.state).toNat ≤ high + 1)
     (events : List (BalanceEvent preset)) (replayed : tail.balanceEvents high = .ok events)
     (event : BalanceEvent preset) (member : event ∈ events)
@@ -1888,7 +1887,7 @@ private theorem intervalLoss_exit_of_not_recent {f h : Fork}
 private theorem intervalLoss_supported_events {g x y : ForkedBeaconState preset}
     (shared : Run config checks g x) (tail : Run config checks x y)
     (genesis : Genesis (config := config) (checks := checks) g)
-    (parameters : Parameters preset) (early : y.fork < .glamsterdam) (high : Nat)
+    (early : y.fork < .glamsterdam) (high : Nat)
     (endEpoch : (getCurrentEpoch y.state).toNat ≤ high + 1)
     (events : List (BalanceEvent preset)) (replayed : tail.balanceEvents high = .ok events)
     (i : Nat) (v z : Validator) (found : x.state.validators.data[i]? = some v)
@@ -1901,7 +1900,7 @@ private theorem intervalLoss_supported_events {g x y : ForkedBeaconState preset}
         isActiveValidator w (getPreviousEpoch event.before.state) = true) := by
   intro event member
   obtain ⟨first, during, last, _, _, lo, hi⟩ :=
-    replay_event_provenance shared tail genesis parameters early high endEpoch
+    replay_event_provenance shared tail genesis early high endEpoch
       events replayed event member
   obtain ⟨w, middle, firstLife⟩ := first.validators i v found
   obtain ⟨final, finalFound, lastLife⟩ := (during.trans last).validators i w middle
@@ -2076,7 +2075,7 @@ private theorem intervalLoss_SlashingSite.nondebit {a b : ForkedBeaconState pres
 private theorem intervalLoss_event_nondebit {g x y : ForkedBeaconState preset}
     (shared : Run config checks g x) (tail : Run config checks x y)
     (genesis : Genesis (config := config) (checks := checks) g)
-    (parameters : Parameters preset) (early : y.fork < .glamsterdam) (high : Nat)
+    (early : y.fork < .glamsterdam) (high : Nat)
     (endEpoch : (getCurrentEpoch y.state).toNat ≤ high + 1)
     (events : List (BalanceEvent preset)) (replayed : tail.balanceEvents high = .ok events)
     (i : ValidatorIndex) (v w : Validator)
@@ -2084,7 +2083,7 @@ private theorem intervalLoss_event_nondebit {g x y : ForkedBeaconState preset}
     (located : y.state.validators.data[i.toNat]? = some w) (unslashed : w.slashed = false)
     (event : BalanceEvent preset) (member : event ∈ events) (source : event.source = .slashings) :
     actualBalanceAt event.before i.toNat ≤ actualBalanceAt event.after i.toNat := by
-  obtain ⟨first, during, _, _⟩ := replay_event_provenance shared tail genesis parameters
+  obtain ⟨first, during, _, _⟩ := replay_event_provenance shared tail genesis
     early high endEpoch events replayed event member
   obtain ⟨before, beforeFound, _⟩ := first.validators i.toNat v found
   obtain ⟨after, afterFound, _⟩ := during.validators i.toNat before beforeFound
@@ -2189,7 +2188,7 @@ private theorem intervalLoss_retained {g x y : ForkedBeaconState preset}
     effectiveWeight x.state v.pubkey -
         Models.supported (recentKeys y.state) (effectiveWeight y.state) v.pubkey ≤
       if deficit = 0 then 0 else deficit + preset.EFFECTIVE_BALANCE_INCREMENT.toNat - 1 := by
-  have supported := intervalLoss_supported_events shared tail genesis parameters early high
+  have supported := intervalLoss_supported_events shared tail genesis early high
     endEpoch events replayed i.toNat v w found located active recent
   have covered := intervalLoss_filtered_coverage tail early high endEpoch events replayed
     i.toNat supported slashings
@@ -2266,7 +2265,7 @@ private theorem intervalLoss_departing {g x y : ForkedBeaconState preset}
     parameters.increment early high i.toNat v found activated events
     (decomposed ▸ replayed) (fun prior priorOk =>
       intervalLoss_filtered_coverage pre earlyA high lastEpoch prior priorOk i.toNat
-        (intervalLoss_supported_events shared pre genesis parameters earlyA high lastEpoch
+        (intervalLoss_supported_events shared pre genesis earlyA high lastEpoch
           prior priorOk i.toNat v first found before active recent)
         (slashings a pre rest decomposed prior priorOk))
   rw [intervalLoss_weight_at x.state (shared.unique (genesis_unique genesis)) i.toNat v found]
@@ -2397,7 +2396,7 @@ private theorem intervalLoss_departure_bound {g x y : ForkedBeaconState preset}
       have same := Option.some.inj (lastFound.symm.trans located)
       subst last
       simp [finalFlag] at slashed
-  exact intervalLoss_event_nondebit shared pre genesis parameters earlyA high epochBound
+  exact intervalLoss_event_nondebit shared pre genesis earlyA high epochBound
     prior priorOk i v middle found middleFound middleFlag event eventMember source
 
 private theorem intervalLoss_consolidation_rate {fork : Fork}
@@ -2549,7 +2548,7 @@ theorem nonaccountable_losses_over_interval {g x y : ForkedBeaconState preset}
         2 ≤ config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat
     · obtain ⟨prior, priorOk, initial⟩ := pre.balanceEvents_prefix rest high events
         (joined ▸ replayed)
-      have bound := active_stake_le_window shared pre genesis parameters caps aligned
+      have bound := active_stake_le_window shared pre genesis parameters
         funded.1 earlyA funded.2 high epochA prior priorOk
       have credits : (prior.map fundingCredit).sum ≤ (events.map fundingCredit).sum := by
         obtain ⟨remaining, rfl⟩ := initial
@@ -3390,10 +3389,10 @@ private theorem intervalGain_crossing_of_interfaces {g x y : ForkedBeaconState p
         events replayed e member).1)
   exact (intervalGain_deposit_filter_sum y parameters events
     (intervalGain_deposit_sites events
-      (replay_event_provenance shared tail genesis parameters early high endEpoch events replayed)
-      (replay_electra_deposit_epoch shared tail genesis parameters early high endEpoch
+      (replay_event_provenance shared tail genesis early high endEpoch events replayed)
+      (replay_electra_deposit_epoch shared tail genesis early high endEpoch
         events replayed))).trans
-      (funding_deposit_capacity shared tail genesis parameters early high endEpoch events replayed)
+      (funding_deposit_capacity shared tail genesis early high endEpoch events replayed)
 
 private theorem intervalGain_joining_split (x y : ForkedBeaconState preset)
     (newBound carryBound : Nat)
@@ -3736,8 +3735,6 @@ theorem gains_and_activations_over_interval {g x y : ForkedBeaconState preset}
     (shared : Run config checks g x) (tail : Run config checks x y)
     (genesis : Genesis (config := config) (checks := checks) g)
     (parameters : Parameters preset) (caps : CapOrder preset)
-    (aligned : MaxEffectiveBalancesAligned preset)
-    (withdrawalDelay : 0 < config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat)
     (early : y.fork < .glamsterdam) (high : Nat)
     (endEpoch : (getCurrentEpoch y.state).toNat ≤ high + 1)
     (events : List (BalanceEvent preset)) (replayed : tail.balanceEvents high = .ok events) :
@@ -3826,7 +3823,7 @@ theorem derivedDrift_le_sources {g x y : ForkedBeaconState preset}
       derivedDrift high tail ≤
         sourceDrift (config := config) x high (boundaryWindow high tail) events := by
   obtain ⟨events, replayed, bounds⟩ :=
-    source_bounds_over_interval shared tail genesis parameters caps aligned early high
+    source_bounds_over_interval shared tail genesis early high
   clear bounds
   refine ⟨events, replayed, ?_⟩
   have atState {y : ForkedBeaconState preset} (run : Run config checks x y)
@@ -3837,7 +3834,7 @@ theorem derivedDrift_le_sources {g x y : ForkedBeaconState preset}
     have losses := nonaccountable_losses_over_interval shared run genesis parameters caps
       aligned early high within events replayed
     have gains := gains_and_activations_over_interval shared run genesis parameters caps
-      aligned withdrawalDelay early high within events replayed
+      early high within events replayed
     unfold stateDrift sourceDrift
     omega
   induction tail generalizing events with
