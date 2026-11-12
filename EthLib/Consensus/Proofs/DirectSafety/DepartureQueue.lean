@@ -2585,6 +2585,109 @@ theorem executionRequests_coverage {fork : Fork} (electra : .pectra ≤ fork)
   apply coverage i old next _ after
   simpa only [depositsData] using before
 
+/-- The pre-Gloas operation prefix covers all exits before execution requests. -/
+theorem operationsPrefix_coverage {fork : Fork} (electra : .pectra ≤ fork)
+    (early : fork < .glamsterdam) {s proposed attested voted deposited exited changed :
+      BeaconState preset fork} {body : BeaconBlockBody preset fork} {parentSlot : Slot}
+    {before : fork < .hegota}
+    (proposedOk : body.proposerSlashings.data.toList.foldlM
+      (processProposerSlashing config checks) s = .ok proposed)
+    (attestedOk : body.attesterSlashings.data.toList.foldlM
+      (processAttesterSlashing config checks) proposed = .ok attested)
+    (votedOk : body.attestations.data.toList.foldlM
+      (processAttestation config checks · parentSlot ·) attested = .ok voted)
+    (depositedOk : (body.deposits before).data.toList.foldlM
+      (processDeposit config checks before) voted = .ok deposited)
+    (exitedOk : body.voluntaryExits.data.toList.foldlM
+      (processVoluntaryExit config checks) deposited = .ok exited)
+    (changedOk : processBlsToExecutionChanges config checks exited body = .ok changed) :
+    ∃ calls : List IndexedDepartureCall, DepartureCoverage s changed calls ∧
+      DepartureQueueTrace (s.earliestExitEpoch electra) (s.exitBalanceToConsume electra)
+        (calls.map (·.call)) (changed.earliestExitEpoch electra)
+        (changed.exitBalanceToConsume electra) ∧
+      (∀ called ∈ calls,
+        called.call.rate.toNat ≤ config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat) := by
+  obtain ⟨one, oneTrace, oneCoverage, oneRates⟩ := DepartureCoverage.foldlM electra _
+    (fun _ _ _ ok => proposerSlashing_indexedTrace electra early ok)
+    (fun _ _ _ ok => registryLifecycle_processProposerSlashing ok)
+    (fun _ _ _ ok => effectiveKept_proposerSlashing ok) proposedOk
+  obtain ⟨two, twoTrace, twoCoverage, twoRates⟩ := DepartureCoverage.foldlM electra _
+    (fun _ _ _ ok => attesterSlashing_indexedTrace electra early ok)
+    (fun _ _ _ ok => registryLifecycle_processAttesterSlashing ok)
+    (fun _ _ _ ok => effectiveKept_attesterSlashing ok) attestedOk
+  obtain ⟨three, threeTrace, threeCoverage, threeRates⟩ :=
+    voluntaryExits_indexedTrace electra early exitedOk
+  have firstLife := RegistryLifecycle.foldlM
+    (fun _ _ _ ok => registryLifecycle_processProposerSlashing ok) proposedOk
+  have secondLife := RegistryLifecycle.foldlM
+    (fun _ _ _ ok => registryLifecycle_processAttesterSlashing ok) attestedOk
+  have votesLife := RegistryLifecycle.foldlM
+    (fun _ _ _ ok => registryLifecycle_processAttestation ok) votedOk
+  have depositsLife := RegistryLifecycle.foldlM
+    (fun _ _ _ ok => registryLifecycle_processDeposit ok) depositedOk
+  have exitsLife := RegistryLifecycle.foldlM
+    (fun _ _ _ ok => registryLifecycle_processVoluntaryExit ok) exitedOk
+  have votesData : voted.validators = attested.validators :=
+    foldlM_ok_invariant (fun t => t.validators = attested.validators)
+      (fun _ _ _ kept ok => (processAttestation_registry ok).1.trans kept) rfl votedOk
+  have depositsCoverage := DepartureCoverage.empty_fold
+    (fun _ _ _ ok => deposit_coverage electra ok)
+    (fun _ _ _ ok => registryLifecycle_processDeposit ok) depositedOk
+  have both := oneCoverage.append_of_effectiveKept twoCoverage firstLife secondLife
+    (effectiveKept_fold (fun _ _ _ ok => effectiveKept_proposerSlashing ok)
+      (fun _ _ _ ok => (registryLifecycle_processProposerSlashing ok).size_le) proposedOk)
+  have middle := (both.suffix_of_empty (.of_data (congrArg (·.data) votesData))
+    (firstLife.trans secondLife) votesLife).suffix_of_empty depositsCoverage
+      ((firstLife.trans secondLife).trans votesLife) depositsLife
+  have balances := effectiveKept_trans
+    (effectiveKept_fold (fun _ _ _ ok => effectiveKept_proposerSlashing ok)
+      (fun _ _ _ ok => (registryLifecycle_processProposerSlashing ok).size_le) proposedOk)
+    (effectiveKept_trans
+      (effectiveKept_fold (fun _ _ _ ok => effectiveKept_attesterSlashing ok)
+        (fun _ _ _ ok => (registryLifecycle_processAttesterSlashing ok).size_le) attestedOk)
+      (effectiveKept_trans (effectiveKept_data (congrArg (·.data) votesData))
+        (effectiveKept_fold (fun _ _ _ ok => effectiveKept_processDeposit ok)
+          (fun _ _ _ ok => (registryLifecycle_processDeposit ok).size_le) depositedOk)
+        votesLife.size_le) secondLife.size_le) firstLife.size_le
+  have prefixCoverage := middle.append_of_effectiveKept threeCoverage
+    (((firstLife.trans secondLife).trans votesLife).trans depositsLife) exitsLife balances
+  have capella : .shapella ≤ fork := Nat.le_trans (by decide) electra
+  simp only [processBlsToExecutionChanges, capella, ↓reduceDIte,
+    ← Array.foldlM_toList] at changedOk
+  have changesLife := RegistryLifecycle.foldlM
+    (fun _ _ _ ok => registryLifecycle_processBlsToExecutionChange ok) changedOk
+  have changesCoverage := DepartureCoverage.empty_fold
+    (fun _ _ _ ok => credentials_coverage ok)
+    (fun _ _ _ ok => registryLifecycle_processBlsToExecutionChange ok) changedOk
+  have votesFrame : departureQueues electra voted = departureQueues electra attested :=
+    foldlM_ok_invariant (fun t => departureQueues electra t = departureQueues electra attested)
+      (fun _ _ _ kept ok => (attestation_departureQueues electra early ok).trans kept) rfl votedOk
+  have depositsFrame : departureQueues electra deposited = departureQueues electra voted :=
+    foldlM_ok_invariant (fun t => departureQueues electra t = departureQueues electra voted)
+      (fun _ _ _ kept ok => (deposit_departureQueues electra ok).trans kept) rfl depositedOk
+  have changesFrame : departureQueues electra changed = departureQueues electra exited :=
+    foldlM_ok_invariant (fun t => departureQueues electra t = departureQueues electra exited)
+      (fun _ _ _ kept ok => (credentials_departureQueues electra ok).trans kept) rfl changedOk
+  refine ⟨(one ++ two) ++ three, prefixCoverage.suffix_of_empty changesCoverage
+    ((((firstLife.trans secondLife).trans votesLife).trans depositsLife).trans exitsLife)
+    changesLife, ?_, ?_⟩
+  · have middleEpoch := congrArg Prod.fst (depositsFrame.trans votesFrame)
+    have middleBalance := congrArg (fun q => q.2.1) (depositsFrame.trans votesFrame)
+    have lastEpoch := congrArg Prod.fst changesFrame
+    have lastBalance := congrArg (fun q => q.2.1) changesFrame
+    change deposited.earliestExitEpoch electra = attested.earliestExitEpoch electra at middleEpoch
+    change deposited.exitBalanceToConsume electra = attested.exitBalanceToConsume electra
+      at middleBalance
+    change changed.earliestExitEpoch electra = exited.earliestExitEpoch electra at lastEpoch
+    change changed.exitBalanceToConsume electra = exited.exitBalanceToConsume electra at lastBalance
+    rw [middleEpoch, middleBalance] at threeTrace
+    rw [lastEpoch, lastBalance, List.map_append, List.map_append]
+    exact (oneTrace.append twoTrace).append threeTrace
+  intro called member
+  rcases List.mem_append.mp member with member | member
+  · exact (List.mem_append.mp member).elim (oneRates called) (twoRates called)
+  · exact threeRates called member
+
 /-- The block prefix reaches execution requests before any consolidation queue call. -/
 def blockConsolidationSites {fork : Fork} (config : Config) (checks : SignatureChecks)
     (engine : ExecutionEngine preset fork) (state : BeaconState preset fork)
