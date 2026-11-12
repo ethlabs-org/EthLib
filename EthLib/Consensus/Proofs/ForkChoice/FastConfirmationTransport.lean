@@ -55,6 +55,37 @@ variable {preset : Preset} {fork : Fork} {config : Config} {checks : SignatureCh
   {e : Execution (honestForkChoice config checks sources anchorState anchorBlock assignment
     genesisTimeMs) J}
 
+/-- A duty in a completed slot has both delivery events within the finite receiver horizon. -/
+private theorem duty_delivery_before_receiver {Δ first time : Nat}
+    (votes : Votes e.startTime time e) (prompt : Prompt e time)
+    (fits : DelayFits fork config genesisTimeMs Δ)
+    {begin last slot : Slot} {beginTime endTime : UInt64}
+    (beginOk : computeTimeAtSlotMs config genesisTimeMs begin = .ok beginTime)
+    (endOk : computeTimeAtSlotMs config genesisTimeMs last = .ok endTime)
+    (started : e.startTime ≤ first) (fresh : first ≤ beginTime.toNat)
+    (complete : endTime.toNat ≤ time)
+    {v w : ValidatorIndex} (honest : v ∈ J) (receiver : w ∈ J)
+    {committeeIndex : CommitteeIndex} (low : begin ≤ slot) (high : slot < last)
+    (duty : assignment.committee v slot = some committeeIndex) :
+    ∃ deadline n attestation indexed pre post,
+      VoteAt e v slot committeeIndex deadline n attestation indexed ∧
+      first ≤ deadline ∧ deadline < time ∧
+      deadline + Δ ≤ (e.world pre).time ∧
+      (e.world pre).time + 1 = (e.world post).time ∧ (e.world post).time ≤ time ∧
+      UpToDate config checks sources (e.world pre).time ((e.world pre).view w)
+        ((e.world pre).state w) ∧
+      UpToDate config checks sources (e.world post).time ((e.world post).view w)
+        ((e.world post).state w) := by
+  obtain ⟨next, start, following, deadline, n, attestation, indexed,
+    nextOk, startOk, followingOk, due, afterFirst, delivered, bounded, vote⟩ :=
+    e.exists_voteAt_of_duty_interval votes fits beginOk endOk started fresh complete
+      honest low high duty
+  obtain ⟨⟨pre, preTime, received, preReady⟩, ⟨post, postTime, postReady⟩⟩ :=
+    e.exists_duty_boundaries fits (prompt.of_le bounded) receiver nextOk startOk followingOk
+      due (started.trans afterFirst)
+  exact ⟨deadline, n, attestation, indexed, pre, post, vote, afterFirst, by omega,
+    received, by omega, by omega, preReady, postReady⟩
+
 /-- Two votes that an honest validator signs for targets of one epoch are the same vote.
 
 Two different votes for one target epoch are slashable, and an honest validator signs neither.
