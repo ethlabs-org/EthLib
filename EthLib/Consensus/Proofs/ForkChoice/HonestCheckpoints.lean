@@ -4214,7 +4214,44 @@ theorem Execution.exists_signsTarget_of_justified {anchor : Store preset fork}
       3 * stake (fun v => balanceAt state v.toNat) {v ∈ quorumVoters state | ¬p v} <
         2 * total.toNat) :
     ∃ v, p v ∧ SignsTargetBefore e v checkpoint slot (e.world k).time := by
-  sorry
+  have reachable : ∀ n, Store.Reachable config anchorState anchorBlock ((e.world n).state w) := by
+    intro n
+    induction n with
+    | zero =>
+      change Store.Reachable config anchorState anchorBlock (e.start w)
+      rw [start]
+      exact .anchor anchored
+    | succ n ih =>
+      rcases e.state_succ n w with same | ⟨_, moved⟩
+      · exact same ▸ ih
+      · exact moved.reachable ih
+  obtain ⟨anchorRoot, -, -, -, anchorCheckpoint, -⟩ := getForkchoiceStore_anchor anchored
+  have later : getCurrentEpoch anchorState < checkpoint.epoch := by
+    simpa only [anchorCheckpoint] using after
+  -- Track only the requested checkpoint, so stake bounds are needed only in its own window.
+  let P := fun target : Checkpoint => target = checkpoint →
+    ∃ v, p v ∧ SignsTargetBefore e v checkpoint slot (e.world k).time
+  have holds : P checkpoint := by
+    refine justified_target_property (checks := checks) (sources := sources)
+      (reachable k) sound slotsPositive window preGloas
+      (P := P) ?_ ?_ ?_ justified
+    · intro target bound same
+      subst target
+      have strict := UInt64.lt_iff_toNat_lt.mp later
+      have lower := UInt64.le_iff_toNat_le.mp bound
+      omega
+    · intro root block state held found other
+      exact e.exists_transition_of_nonanchor_block anchored honest start held found other
+    · intro root base state found advanced counts late recent indices total balance threshold weight
+        counted totalOk balanceOk thresholdOk weightOk passed target lower upper epoch rootOk same
+      subst target
+      apply signsTarget_of_count totalOk balanceOk thresholdOk weightOk passed
+        (large state counts lower upper) p (few state total counts lower upper totalOk)
+        epoch rootOk
+      intro v member
+      exact e.exists_sent_target_of_counted anchored sound slotsPositive window ring preGloas
+        honest start nonzero found advanced late recent (epoch ▸ later) counted member slotOk
+  exact holds rfl
 
 /-- Each justified checkpoint has an honest vote, from the bound in each counting state.
 
