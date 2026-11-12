@@ -921,6 +921,8 @@ The stake is read in the pulled-up state of the head.
 
 The statement reads the store of the caller alone, and takes no safety of the target.
 
+The RANDAO buffer is longer than the lower seed lookahead plus one, as `CommitteesFollow` asks.
+
 The proof follows two lemmas of [verified-fast-confirmation][vfc].
 
 The first is `noConflict_arithmeticBranch_oneThird`.
@@ -930,7 +932,8 @@ The second is `currentTarget_remaining_honest_le_future_weight`.
 [vfc]: https://github.com/fradamt/verified-fast-confirmation -/
 theorem Execution.honestTargetVotes_of_byzantineStakeAtMost {anchor : Store preset fork}
     (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
-    (start : ∀ w ∈ J, e.start w = anchor) (committees : CommitteesFollow e) {margin : ℕ}
+    (start : ∀ w ∈ J, e.start w = anchor) (committees : CommitteesFollow e)
+    (retained : preset.MIN_SEED_LOOKAHEAD.toNat + 1 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat) {margin : ℕ}
     {u : ValidatorIndex} (caller : u ∈ J) {n : ℕ}
     {head : Root} {state : BeaconState preset fork}
     {slot epochStart lastSlot : Slot} {total soFar : Gwei}
@@ -1246,6 +1249,8 @@ Each justified checkpoint after the anchor, up to the horizon, has an honest vot
 
 Slots last a positive time, so an honest validator signs one target in an epoch.
 
+The RANDAO buffer is longer than the lower seed lookahead plus one, as `CommitteesFollow` asks.
+
 A target with an honest quorum is included within an epoch, Assumption 3.
 
 Each honest store up to the later time is in an epoch at most the horizon.
@@ -1263,6 +1268,7 @@ theorem Execution.coveredOrViableAt_of_checked {Δ : ℕ} (sync : e.Synchronous 
     (slots : 0 < config.SLOT_DURATION_MS)
     (positive : 0 < preset.SLOTS_PER_EPOCH.toNat)
     (window : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
+    (retained : preset.MIN_SEED_LOOKAHEAD.toNat + 1 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
     (preGloas : fork < .glamsterdam)
     (admitted : BlocksAdmitted e 0 Δ)
     (oneBlock : OneBlockPerRoot e)
