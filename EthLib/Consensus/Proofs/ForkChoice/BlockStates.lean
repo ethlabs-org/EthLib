@@ -201,6 +201,30 @@ theorem Store.Reachable.anchorState_root
         simp only [not_not.mp same]
   | _ => assumption
 
+/-- An imported non-anchor block is later than its held parent. -/
+theorem Store.Reachable.parent_slot_lt_of_ne_anchor
+    (reachable : Store.Reachable config anchorState anchorBlock store)
+    (aligned : anchorBlock.slot ≤ anchorState.slot)
+    {root : Root} {block parent : BeaconBlock preset fork}
+    (found : store.blocks[root]? = some block) (different : block ≠ anchorBlock)
+    (parentFound : store.blocks[block.parentRoot]? = some parent) :
+    parent.slot < block.slot := by
+  obtain ⟨state, _, _, produced⟩ := reachable.blockStatesFromParents found
+  obtain ⟨pre, checks, engine, signed, same, held, transitioned⟩ := produced different
+  have earlier := (stateTransition_slot transitioned).1
+  rw [same] at earlier
+  obtain ⟨post, postOk, anchor, producedParent⟩ := reachable.blockStatesFromParents parentFound
+  rw [held, Option.some.injEq] at postOk
+  subst post
+  by_cases isAnchor : parent = anchorBlock
+  · rw [anchor isAnchor] at earlier
+    rw [isAnchor]
+    exact UInt64.lt_of_le_of_lt aligned earlier
+  · obtain ⟨_, _, _, parentSigned, parentSame, _, parentRun⟩ := producedParent isAnchor
+    have slotEq := (stateTransition_slot parentRun).2
+    rw [parentSame] at slotEq
+    rwa [slotEq] at earlier
+
 /-- A non-anchor block state has the block's slot and its header with an empty state root. -/
 theorem Store.Reachable.blockState_header
     (reachable : Store.Reachable config anchorState anchorBlock store)
