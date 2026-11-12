@@ -1080,13 +1080,10 @@ theorem _root_.EthLib.Consensus.Run.attestationChecks_of_attesterSlashing
   obtain ⟨_, processed, _⟩ := applySignedBlock_ok applied
   obtain ⟨input, _, _, _, started, proposers, slashings, -⟩ := processBlock_folds processed
   -- The slashing sits at a position of the attester slashings of the block.
-  obtain ⟨pre, post, split⟩ := List.append_of_mem included
-  rw [split, List.foldlM_append] at slashings
-  obtain ⟨checked, earlier, rest⟩ := bind_ok_iff.mp slashings
-  rw [List.foldlM_cons] at rest
-  obtain ⟨next, processedS, -⟩ := bind_ok_iff.mp rest
+  obtain ⟨pre, post, checked, next, split, earlier, processedS⟩ :=
+    foldlM_ok_of_mem included slashings
   have frame : Frame before checked :=
-    started.frame.toFrame.trans <|
+    (frame_operationsInput started).toFrame.trans <|
       (BlockFrame.foldlM (fun _ _ _ ok => frame_processProposerSlashing ok) proposers).toFrame.trans
         (BlockFrame.foldlM (fun _ _ _ ok => frame_processAttesterSlashing ok) earlier).toFrame
   obtain ⟨current, foundCurrent, currentKey⟩ :=
@@ -1096,11 +1093,7 @@ theorem _root_.EthLib.Consensus.Run.attestationChecks_of_attesterSlashing
   obtain ⟨first, second⟩ := List.mem_filter.mp (mem_sortedSet.mp named)
   have inSecond := of_decide_eq_true second
   -- Both attestations are checked at the state where the slashing runs.
-  have opened := processedS
-  unfold processAttesterSlashing at opened
-  simp only [bind_ok_iff, ensure_ok_iff] at opened
-  obtain ⟨_, conflict, one, oneOk, _, oneTrue, two, twoOk, _, twoTrue, -⟩ := opened
-  subst oneTrue twoTrue
+  obtain ⟨conflict, oneOk, twoOk⟩ := processAttesterSlashing_checks processedS
   exact ⟨⟨⟨fork, before, after, engine, signed, due, applied, member, input, started⟩, checked,
       slashing.attestation1, .slashing split proposers earlier processedS (.inl rfl),
       ⟨i, first, current, foundCurrent, currentKey⟩, oneOk⟩,
@@ -1126,21 +1119,15 @@ theorem _root_.EthLib.Consensus.Run.headerCheck_of_proposerSlashing
   obtain ⟨_, processed, _⟩ := applySignedBlock_ok applied
   obtain ⟨input, _, _, _, started, proposers, -⟩ := processBlock_folds processed
   -- The slashing sits at a position of the proposer slashings of the block.
-  obtain ⟨pre, post, split⟩ := List.append_of_mem included
-  rw [split, List.foldlM_append] at proposers
-  obtain ⟨checked, earlier, rest⟩ := bind_ok_iff.mp proposers
-  rw [List.foldlM_cons] at rest
-  obtain ⟨next, processedP, -⟩ := bind_ok_iff.mp rest
+  obtain ⟨pre, post, checked, next, split, earlier, processedP⟩ :=
+    foldlM_ok_of_mem included proposers
   have frame : Frame before checked :=
-    started.frame.toFrame.trans
+    (frame_operationsInput started).toFrame.trans
       (BlockFrame.foldlM (fun _ _ _ ok => frame_processProposerSlashing ok) earlier).toFrame
   obtain ⟨current, foundCurrent, currentKey⟩ :=
     validators_getElem?_of_validatorKeys_prefix frame.pubkeysPrefix found
-  have opened := processedP
-  unfold processProposerSlashing at opened
-  simp only [bind_ok_iff, liftAccessor_ok, ensure_ok_iff] at opened
-  obtain ⟨_, slotEq, _, indexEq, _, differ, proposer, proposerOk, _, -, one, oneOk, two, twoOk,
-    -⟩ := opened
+  obtain ⟨slotEq, indexEq, differ, proposer, proposerOk, -, oneOk, twoOk⟩ :=
+    processProposerSlashing_checks processedP
   -- The validator that the check reads is the one that the key reaches.
   have same : proposer = current := Option.some.inj
     ((getValidator_eq_ok_iff.mp proposerOk).symm.trans foundCurrent)

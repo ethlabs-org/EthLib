@@ -105,12 +105,15 @@ structure AttestationCheck {g a : ForkedBeaconState preset} (run : Run config ch
   indexed : IndexedAttestation preset fork
   site : AttestationSite config checks input signed.message.body
     before.latestBlockHeader.slot checked indexed
+  /-- Some index of the aggregate holds `key` in the registry of the checked state.
+
+  This does not say that `key` signed. -/
   signer : ∃ i ∈ indexed.attestingIndices.data.toList, ∃ v,
     checked.validators.data[i.toNat]? = some v ∧ v.pubkey = key
   valid : isValidIndexedAttestation config checks checked indexed = .ok true
 
 /-- The steps of a block before its operations are a block frame. -/
-theorem _root_.EthLib.Consensus.OperationsInput.frame {fork : Fork}
+theorem frame_operationsInput {fork : Fork}
     {engine : ExecutionEngine preset fork} {state input : BeaconState preset fork}
     {block : BeaconBlock preset fork}
     (started : OperationsInput config checks engine state block input) :
@@ -119,6 +122,20 @@ theorem _root_.EthLib.Consensus.OperationsInput.frame {fork : Fork}
     (fun _ ok => frame_processParentExecutionPayload ok) frame_processBlockHeader
     (fun _ ok => frame_processBlockExecution ok) frame_processRandao
     (fun _ ok => frame_processEth1Data ok)
+
+/-- A fold that succeeds runs its step at each member.
+
+The list splits at the member, and the step runs on the state that the earlier members leave. -/
+theorem foldlM_ok_of_mem {α β ε : Type} {g : β → α → Except ε β} {xs : List α} {x : α}
+    {start done : β} (member : x ∈ xs) (computed : xs.foldlM g start = .ok done) :
+    ∃ pre post before after, xs = pre ++ x :: post ∧ pre.foldlM g start = .ok before ∧
+      g before x = .ok after := by
+  obtain ⟨pre, post, split⟩ := List.append_of_mem member
+  rw [split, List.foldlM_append] at computed
+  obtain ⟨before, earlier, rest⟩ := bind_ok_iff.mp computed
+  rw [List.foldlM_cons] at rest
+  obtain ⟨after, step, -⟩ := bind_ok_iff.mp rest
+  exact ⟨pre, post, before, after, split, earlier, step⟩
 
 /-- The state on which `processAttestation` checks its indexed attestation, and the check.
 
@@ -131,9 +148,9 @@ private theorem processAttestation_checked {fork : Fork} {state after : BeaconSt
         .ok indexed ∧
       isValidIndexedAttestation config checks (if .altair ≤ fork then state else after)
         indexed = .ok true := by
-  unfold processAttestation at computed
   by_cases altair : Fork.altair ≤ fork
-  · simp only [altair, ↓reduceDIte] at computed
+  · unfold processAttestation at computed
+    simp only [altair, ↓reduceDIte] at computed
     unfold processAttestationAltair at computed
     simp only [bind_ok_iff, liftAccessor_ok, ensure_ok_iff] at computed
     obtain ⟨_, -, _, -, _, -, _, -, _, -, _, -, _, -, indexed, indexedOk, valid, validOk, _,
@@ -141,13 +158,8 @@ private theorem processAttestation_checked {fork : Fork} {state after : BeaconSt
     subst validTrue
     simp only [altair, ↓reduceIte]
     exact ⟨indexed, indexedOk, validOk⟩
-  · simp only [altair, ↓reduceDIte] at computed
-    simp only [bind_ok_iff, liftAccessor_ok, ensure_ok_iff] at computed
-    obtain ⟨_, -, _, -, _, -, _, -, _, -, _, -, _, -, _, -, _, -, _, -, _, -, _, -, updated, -,
-      indexed, indexedOk, valid, validOk, _, validTrue, kept⟩ := computed
-    subst validTrue
-    simp only [pure, Except.pure, Except.ok.injEq] at kept
-    subst kept
+  · obtain ⟨_, _, _, _, _, _, indexed, indexedOk, validOk⟩ :=
+      processAttestation_records (Nat.lt_of_not_le altair) computed
     simp only [altair, ↓reduceIte]
     exact ⟨indexed, indexedOk, validOk⟩
 
@@ -168,11 +180,8 @@ theorem _root_.EthLib.Consensus.Run.attestationCheck_of_accepted {g a : ForkedBe
     obtain ⟨attestation, included, dataEq, indices, indicesOk, iMem⟩ := vote
     have dataEq : data = attestation.data := dataEq
     -- The attestation sits at a position of the attestations of the block.
-    obtain ⟨pre, post, split⟩ := List.append_of_mem (Array.mem_toList_iff.mpr included)
-    rw [split, List.foldlM_append] at folded
-    obtain ⟨mid, earlier, rest⟩ := bind_ok_iff.mp folded
-    rw [List.foldlM_cons] at rest
-    obtain ⟨next, processedA, -⟩ := bind_ok_iff.mp rest
+    obtain ⟨pre, post, mid, next, split, earlier, processedA⟩ :=
+      foldlM_ok_of_mem (Array.mem_toList_iff.mpr included) folded
     have same := getAttestingIndices_attestationsStart lookahead started proposers
       slashings earlier processedA
     -- Up to the attestation, the registry and the mixes are those where the attestations start.
@@ -195,7 +204,7 @@ theorem _root_.EthLib.Consensus.Run.attestationCheck_of_accepted {g a : ForkedBe
         exact ⟨(processAttestation_registry processedA).1.trans midKept.1,
           (processAttestation_registry processedA).2.trans midKept.2, midFrame.trans nextFrame⟩
     have headFrame : BlockFrame before slashingsDone :=
-      started.frame.trans <|
+      (frame_operationsInput started).trans <|
         (BlockFrame.foldlM (fun _ _ _ ok => frame_processProposerSlashing ok) proposers).trans <|
         BlockFrame.foldlM (fun _ _ _ ok => frame_processAttesterSlashing ok) slashings
     -- The attesters at the check are those that the vote used.

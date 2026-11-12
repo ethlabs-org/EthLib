@@ -384,7 +384,9 @@ private theorem checked_of_slashingEvidence {g a : ForkedBeaconState preset}
 
 No assumption about the signature checks is made.
 
-The result is about the checks that the runs performed, not about who signed. -/
+The result is about the checks that the runs performed, not about who signed.
+
+It interprets the set `accountableKeys` of the `accountable_safety` headline. -/
 theorem verifiedConflict_of_accountable {g a b : ForkedBeaconState preset}
     (left : Run config checks g a) (right : Run config checks g b)
     (lookahead : preset.MIN_SEED_LOOKAHEAD.toNat + 2 <
