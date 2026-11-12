@@ -354,19 +354,16 @@ The voter votes for the payload only when its head has the payload, which its st
 
 The hypotheses are those of `VoteAt.data_head`. -/
 theorem VoteAt.data_payload {anchor : Store preset fork}
-    (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
-    (start : ∀ u ∈ J, e.start u = anchor) {v : ValidatorIndex} (honest : v ∈ J) {slot : Slot}
+    (_anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (_start : ∀ u ∈ J, e.start u = anchor) {v : ValidatorIndex} (_honest : v ∈ J) {slot : Slot}
     {committeeIndex : CommitteeIndex} {time n : ℕ} {attestation : Attestation preset fork}
     {indexed : IndexedAttestation preset fork}
     (vote : VoteAt e v slot committeeIndex time n attestation indexed)
-    (deadline : IsAttestationDeadline fork config genesisTimeMs slot time) {due : UInt64}
-    (dueOk : getAttestationDueMs config fork = .ok due) (inSlot : due < config.SLOT_DURATION_MS)
+    (_deadline : IsAttestationDeadline fork config genesisTimeMs slot time) {due : UInt64}
+    (_dueOk : getAttestationDueMs config fork = .ok due) (_inSlot : due < config.SLOT_DURATION_MS)
     (gloas : .glamsterdam ≤ fork) {voted : BeaconBlock preset fork}
     (known : ((e.world n).state v).blocks[attestation.data.beaconBlockRoot]? = some voted) :
     ((e.world n).state v).validatePayloadVote gloas attestation voted = .ok () := by
-  -- The generated data suffices; the anchor and deadline premises are not needed here.
-  obtain ⟨-, -, -, -, -, -⟩ :=
-    (show _ ∧ _ ∧ _ ∧ _ ∧ _ ∧ _ from ⟨anchored, start, honest, deadline, dueOk, inSlot⟩)
   obtain ⟨head, block, headState, state, headOk, held, -, -, made⟩ := vote.honestData
   obtain ⟨index, -, dataSlot, dataRoot, -, -⟩ := getAttestationData_eq_ok_iff.mp made
   have blockEq : block = voted := by
