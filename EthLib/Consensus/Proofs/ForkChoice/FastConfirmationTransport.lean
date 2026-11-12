@@ -157,6 +157,53 @@ private theorem active_of_mem_committeeWindow {store : Store preset fork}
       simp only [UInt64.toNat_one] at afterNat
       omega
 
+/-- A window with a participant has read its head state.
+An empty slot range has no participants. -/
+private theorem headState_of_mem_committeeWindow {store : Store preset fork}
+    {head : Root} {first last : Slot} {members : Std.TreeSet ValidatorIndex}
+    {v : ValidatorIndex}
+    (read : store.getCommitteesBetweenSlots head first last = .ok members)
+    (member : v ∈ members) : ∃ state, store.blockState head = .ok state := by
+  cases found : store.blockState head with
+  | ok state => exact ⟨state, rfl⟩
+  | error err =>
+    unfold Store.getCommitteesBetweenSlots at read
+    obtain ⟨afterEnd, _, read⟩ := bind_ok_iff.mp read
+    have empty := foldlM_ok_invariant
+      (fun set : Std.TreeSet ValidatorIndex => ∀ x, x ∉ set)
+      (fun set offset next before step => ?_) (by
+        intro x
+        exact Std.TreeSet.not_mem_emptyc) read
+    · exact False.elim (empty v member)
+    · simp [Store.getSlotCommittee, found, bind, Except.bind] at step
+
+/-- Every window participant can be read in the justified registry before filtering activity. -/
+private theorem validatorAt_of_mem_committeeWindow {anchor : Store preset fork}
+    (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (sound : Invariant anchorState) (anchorSlot : anchorBlock.slot = anchorState.slot)
+    (anchorBoundary : isStartSlotAtEpoch preset anchorBlock.slot = .ok true)
+    (start : ∀ w ∈ J, e.start w = anchor) (preGloas : fork < .glamsterdam)
+    (slots : 0 < config.SLOT_DURATION_MS) {horizon : Epoch} (chain : FinalizedPrefix e horizon)
+    {w : ValidatorIndex} (honest : w ∈ J) {k : Nat} {current : Epoch}
+    (currentOk : ((e.world k).state w).getCurrentStoreEpoch config = .ok current)
+    (inHorizon : current ≤ horizon)
+    (nonzero : ∀ (r : Root) (b : BeaconBlock preset fork),
+      ((e.world k).state w).blocks[r]? = some b → b.stateRoot ≠ Vector.replicate 32 0)
+    {head : ForkChoiceNode} {state : BeaconState preset fork}
+    (headOk : ((e.world k).state w).getHead config = .ok head)
+    (stateOk : ((e.world k).state w).checkpointState
+      ((e.world k).state w).justifiedCheckpoint = .ok state)
+    {first last : Slot} {members : Std.TreeSet ValidatorIndex} {v : ValidatorIndex}
+    (windowOk : ((e.world k).state w).getCommitteesBetweenSlots head.root first last = .ok members)
+    (member : v ∈ members) : ∃ validator, validatorAt state v = .ok validator := by
+  obtain ⟨headState, headStateOk⟩ := headState_of_mem_committeeWindow windowOk member
+  obtain ⟨_, _, _, active⟩ :=
+    active_of_mem_committeeWindow preGloas headStateOk windowOk member
+  obtain ⟨validator, found⟩ := e.validatorAt_justified_of_head_active anchored sound anchorSlot
+    anchorBoundary start preGloas slots chain honest currentOk inHorizon nonzero headOk
+    headStateOk stateOk active
+  exact ⟨validator, validatorAt_ok_iff.mpr found⟩
+
 /-- A successful total also bounds a subset, without requiring a bound on inactive balances. -/
 private theorem totalBalance_exists_of_subset {state : BeaconState preset fork}
     {indices all : List ValidatorIndex} {total : Gwei}
@@ -652,6 +699,13 @@ theorem Execution.honest_support_of_historical_anchor {Δ : ℕ} (sync : e.Synch
       ((e.world k).state w).isAncestor
         ⟨((e.world k).state w).justifiedCheckpoint.root, .pending⟩
         ⟨root, .pending⟩ = .ok true := by
+  have receiverIndices : ∀ v ∈ receiverWindow, ∃ validator,
+      validatorAt state v = .ok validator := by
+    intro v member
+    exact validatorAt_of_mem_committeeWindow anchorStore sound anchorSlot anchorBoundary
+      anchored preGloas slots chain receiver receiverEpochOk
+      (inHorizon w receiver k receiverEpoch (by omega) receiverEpochOk)
+      (nonzero w receiver k (by omega)) headOk stateOk receiverWindowOk member
   sorry
 
 
