@@ -1990,7 +1990,7 @@ private theorem blockVote_attestation_read {store after : Store preset fork}
       exact (Store.validateOnAttestation_ok validated).2.2.2
   · simp [throw, throwThe, MonadExceptOf.throw, bind, Except.bind] at handled
 
-private theorem blockVote_read_of_held {anchor : Store preset fork}
+theorem blockVote_read_of_held {anchor : Store preset fork}
     (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
     {w : ValidatorIndex} (start : e.start w = anchor) {k : ℕ}
     {root : Root} {block : BeaconBlock preset fork}
@@ -2319,7 +2319,7 @@ theorem Store.counts_of_fixedChecks {store : Store preset fork}
   · exact .inr ⟨checks, slot, childRoot, child, held, parent, before, processed⟩
 
 /-- Target provenance starts after the anchor; source equality needs the source epoch bound. -/
-private def CountedVote (anchorEpoch : Epoch)
+def CountedVote (anchorEpoch : Epoch)
     (votes : Set (ValidatorIndex × AttestationData)) (state : BeaconState preset fork)
     (recent : Bool) (position : Nat) : Prop :=
   anchorEpoch < (if recent then getCurrentEpoch state else getPreviousEpoch state) →
@@ -2331,7 +2331,7 @@ private def CountedVote (anchorEpoch : Epoch)
         vote.2.source = (if recent then state.currentJustifiedCheckpoint
           else state.previousJustifiedCheckpoint))
 
-private def CountedFlags (anchorEpoch : Epoch)
+def CountedFlags (anchorEpoch : Epoch)
     (votes : Set (ValidatorIndex × AttestationData)) (state : BeaconState preset fork) : Prop :=
   ∀ (altair : .altair ≤ fork) (recent : Bool) (position : Nat),
     TargetFlagAt (recentParticipation state altair recent) position →
@@ -2359,7 +2359,7 @@ private theorem countedVote_voteFrame {anchorEpoch : Epoch}
   simpa only [current, previous, frame.currentJustified, frame.previousJustified,
     getBlockRoot, getBlockRootAtSlot, frame.slot, frame.blockRoots] using holds
 
-private theorem countedFlags_voteFrame {anchorEpoch : Epoch}
+theorem countedFlags_voteFrame {anchorEpoch : Epoch}
     {votes added : Set (ValidatorIndex × AttestationData)}
     {state after : BeaconState preset fork}
     (holds : CountedFlags anchorEpoch votes state)
@@ -2480,7 +2480,7 @@ private theorem countedFlags_advanceSlot {anchorEpoch : Epoch}
         roots rootOk (.inl epoch), ?_⟩
       simpa only [↓reduceIte, cachedFrame.currentJustified] using source
 
-private theorem countedFlags_advanceSlots {anchorEpoch : Epoch}
+theorem countedFlags_advanceSlots {anchorEpoch : Epoch}
     {votes : Set (ValidatorIndex × AttestationData)}
     (positive : 0 < preset.SLOTS_PER_EPOCH.toNat)
     (window : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat) :
@@ -2496,7 +2496,7 @@ private theorem countedFlags_advanceSlots {anchorEpoch : Epoch}
     exact countedFlags_advanceSlots positive window (advanceSlot_invariant sound nextOk).1
       (countedFlags_advanceSlot positive window sound.ordered sound.settled holds nextOk) rest
 
-private theorem countedFlags_quorum {anchorEpoch : Epoch}
+theorem countedFlags_quorum {anchorEpoch : Epoch}
     {votes : Set (ValidatorIndex × AttestationData)} {state : BeaconState preset fork}
     (holds : CountedFlags anchorEpoch votes state) (altair : .altair ≤ fork)
     (late : ¬getCurrentEpoch state ≤ GENESIS_EPOCH + 1) (recent : Bool)
@@ -2531,7 +2531,7 @@ private theorem countedFlags_quorum {anchorEpoch : Epoch}
   exact ⟨mem_quorumVoters_of_active active found clean, data, voted, epoch, root, source⟩
 
 /-- Pending attestations retain their original data and bits, even before their target is read. -/
-private def CountedPending (anchorEpoch : Epoch)
+def CountedPending (anchorEpoch : Epoch)
     (origin : PendingAttestation preset → Prop) (state : BeaconState preset fork) : Prop :=
   ∀ (before : fork < .altair) (recent : Bool),
     anchorEpoch < (if recent then getCurrentEpoch state else getPreviousEpoch state) →
@@ -2731,7 +2731,7 @@ private theorem countedPending_advanceSlot {anchorEpoch : Epoch}
     refine ⟨epoch, slot, ?_, voted⟩
     simpa only [cachedFrame.currentJustified, cachedFrame.previousJustified] using source
 
-private theorem countedPending_advanceSlots {anchorEpoch : Epoch}
+theorem countedPending_advanceSlots {anchorEpoch : Epoch}
     {origin : PendingAttestation preset → Prop} :
     ∀ {count : Nat} {state after : BeaconState preset fork}, Invariant state →
       CountedPending anchorEpoch origin state →
@@ -2811,7 +2811,7 @@ decreasing_by
   rw [bounds.2]
   exact UInt64.lt_iff_toNat_lt.mp bounds.1
 
-private theorem countedPending_held {anchor : Store preset fork}
+theorem countedPending_held {anchor : Store preset fork}
     (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
     (sound : Invariant anchorState)
     {w : ValidatorIndex} (honest : w ∈ J) (start : e.start w = anchor) {k : ℕ}
@@ -2871,7 +2871,7 @@ decreasing_by
   rw [bounds.2]
   exact UInt64.lt_iff_toNat_lt.mp bounds.1
 
-private theorem countedPending_member {anchorEpoch : Epoch}
+theorem countedPending_member {anchorEpoch : Epoch}
     {origin : PendingAttestation preset → Prop} {state : BeaconState preset fork}
     (before : fork < .altair) (holds : CountedPending anchorEpoch origin state)
     (late : ¬getCurrentEpoch state ≤ GENESIS_EPOCH + 1) (recent : Bool)
@@ -4054,7 +4054,7 @@ private theorem signsTarget_of_count {state : BeaconState preset fork} {k : Nat}
     simp_all
   exact ⟨v, good, k, le_rfl, m, sent, data, statement, same, before⟩
 
-private theorem justified_target_property {store : Store preset fork}
+theorem justified_target_property {store : Store preset fork}
     (reachable : Store.Reachable config anchorState anchorBlock store)
     (sound : Invariant anchorState)
     (positive : 0 < preset.SLOTS_PER_EPOCH.toNat)
