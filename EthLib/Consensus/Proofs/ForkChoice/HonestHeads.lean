@@ -1448,6 +1448,216 @@ theorem Execution.exists_scoreFromTally {anchor : Store preset fork}
     simp only [ite_eq_right (Nat.not_le.mpr fits), pure, Except.pure]
   · simpa only [UInt64.toNat_ofNat_of_lt' fits] using totalLe
 
+private theorem p8_updates_boost (store : Store preset fork) (j f : Checkpoint) :
+    (store.updateCheckpoints j f).proposerBoostRoot = store.proposerBoostRoot ∧
+      (store.updateUnrealizedCheckpoints j f).proposerBoostRoot = store.proposerBoostRoot := by
+  constructor
+  · unfold Store.updateCheckpoints
+    split <;> dsimp only <;> split <;> rfl
+  · unfold Store.updateUnrealizedCheckpoints
+    split <;> dsimp only <;> split <;> rfl
+
+private theorem p8_tick_boost {store after : Store preset fork} {time : UInt64}
+    (ticked : store.onTick config time = .ok after) :
+    after.proposerBoostRoot = Vector.replicate 32 0 ∨
+      after.proposerBoostRoot = store.proposerBoostRoot := by
+  have step : ∀ {store after : Store preset fork} {time : UInt64},
+      store.onTickPerSlot config time = .ok after →
+      after.proposerBoostRoot = Vector.replicate 32 0 ∨
+        after.proposerBoostRoot = store.proposerBoostRoot := by
+    intro store after time ticked
+    unfold Store.onTickPerSlot at ticked
+    simp only [bind_ok_iff] at ticked
+    obtain ⟨previous, _, current, _, ticked⟩ := ticked
+    split at ticked <;>
+      · obtain ⟨_, _, ticked⟩ := ticked
+        split at ticked <;> simp only [pure, Except.pure, Except.ok.injEq] at ticked <;>
+          subst after
+        all_goals simp only [(p8_updates_boost _ _ _).1]
+        all_goals simp
+  have caught : ∀ {store after : Store preset fork} {slot : Slot},
+      Store.catchUp config store slot = .ok after →
+      after.proposerBoostRoot = Vector.replicate 32 0 ∨
+        after.proposerBoostRoot = store.proposerBoostRoot := by
+    intro store after slot run
+    induction store using Store.catchUp.induct config slot with
+    | _ store ih =>
+      rw [Store.catchUp.eq_1] at run
+      simp only [bind_ok_iff] at run
+      obtain ⟨current, _, run⟩ := run
+      split at run
+      · simp only [bind_ok_iff] at run
+        obtain ⟨next, _, nextTime, _, ticked, tick, run⟩ := run
+        split at run
+        · rcases ih ticked ‹_› run with zero | same
+          · exact .inl zero
+          · simpa only [same] using step tick
+        · cases run
+      · cases Except.ok.inj run
+        exact .inr rfl
+  unfold Store.onTick at ticked
+  simp only [bind_ok_iff] at ticked
+  obtain ⟨slot, _, middle, run, ticked⟩ := ticked
+  rcases step ticked with zero | same
+  · exact .inl zero
+  · simpa only [same] using caught run
+
+private theorem p8_attestation_boost {store after : Store preset fork}
+    {attestation : Attestation preset fork} {fromBlock : Bool}
+    (attested : store.onAttestation config checks attestation fromBlock = .ok after) :
+    after.proposerBoostRoot = store.proposerBoostRoot := by
+  unfold Store.onAttestation at attested
+  simp only [bind_ok_iff] at attested
+  obtain ⟨_, _, cached, caching, _, _, _, _, _, _, _, _, attested⟩ := attested
+  have kept : cached.proposerBoostRoot = store.proposerBoostRoot := by
+    unfold Store.storeTargetCheckpointState at caching
+    split at caching
+    · cases Except.ok.inj caching
+      rfl
+    · simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at caching
+      obtain ⟨_, _, rfl⟩ := caching
+      rfl
+  split at attested
+  · cases Except.ok.inj attested
+    exact kept
+  · cases attested
+
+private theorem p8_block_boost {store after : Store preset fork}
+    {signed : SignedBeaconBlock preset fork}
+    (added : store.onBlock config checks sources signed = .ok after) :
+    after.proposerBoostRoot = store.proposerBoostRoot ∨
+      ∃ block, after.blocks[after.proposerBoostRoot]? = some block := by
+  rcases Store.onBlock_same_or_insert added with same |
+    ⟨root, hashed, fresh, blocks, _⟩
+  · exact .inl (congrArg Store.proposerBoostRoot same)
+  have unknown : ¬ store.blocks.contains root := by
+    simp [Std.TreeMap.contains_eq_isSome_getElem?, fresh]
+  simp only [Store.onBlock, hashed, unknown, bind, Except.bind, Except.mapError,
+    ↓reduceIte, Bool.false_eq_true] at added
+  unfold Store.addBlock at added
+  simp only [bind_ok_iff] at added
+  obtain ⟨state, _, head, _, voted, vote, recorded, record, boosted, boost, added⟩ := added
+  obtain ⟨_, _, rfl⟩ := Store.recordBlockPtcVotes_onlyPtcVotes vote
+  have recordedBoost : recorded.proposerBoostRoot = store.proposerBoostRoot := by
+    unfold Store.recordBlockTimeliness at record
+    simp only [bind_ok_iff, pure, Except.pure] at record
+    obtain ⟨_, _, _, _, _, _, _, _, record⟩ := record
+    split at record
+    · simp only [bind_ok_iff, Except.ok.injEq] at record
+      obtain ⟨_, _, rfl⟩ := record
+      rfl
+    · cases record
+      rfl
+  have pulledBoost : after.proposerBoostRoot = boosted.proposerBoostRoot := by
+    unfold Store.computePulledUpTip at added
+    simp only [bind_ok_iff] at added
+    obtain ⟨_, _, pulled, _, _, _, _, _, added⟩ := added
+    split at added <;> simp only [pure, Except.pure, Except.ok.injEq] at added <;>
+      subst after
+    · rw [(p8_updates_boost _ _ _).1, (p8_updates_boost _ _ _).2,
+        (p8_updates_boost _ _ _).1]
+    · rw [(p8_updates_boost _ _ _).2, (p8_updates_boost _ _ _).1]
+  unfold Store.updateProposerBoostRoot at boost
+  split at boost
+  rotate_left
+  · simp [throw, throwThe, MonadExceptOf.throw, bind, Except.bind] at boost
+  simp only [bind_ok_iff, pure_bind] at boost
+  obtain ⟨_, _, _, _, _, _, boost⟩ := boost
+  split at boost <;> simp only [pure, Except.pure, Except.ok.injEq] at boost <;> subst boosted
+  · right
+    rw [pulledBoost, blocks, getElem?_insert_root]
+    exact ⟨signed.message, by simp⟩
+  · exact .inl (pulledBoost.trans recordedBoost)
+
+private theorem p8_boost_known {store : Store preset fork}
+    (reachable : Store.Reachable config anchorState anchorBlock store)
+    (preGloas : fork < .glamsterdam) :
+    store.proposerBoostRoot = Vector.replicate 32 0 ∨
+      ∃ block, store.blocks[store.proposerBoostRoot]? = some block := by
+  induction reachable with
+  | anchor made =>
+    unfold getForkchoiceStore at made
+    simp only [bind_ok_iff] at made
+    obtain ⟨_, _, made⟩ := made
+    split at made
+    · cases made
+    · simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at made
+      obtain ⟨_, _, _, _, rfl⟩ := made
+      exact .inl rfl
+  | tick prior ticked ih =>
+    rcases p8_tick_boost ticked with zero | same
+    · exact .inl zero
+    · simpa only [same, (Store.onTick_frame ticked).2.2.1] using ih
+  | block prior added ih =>
+    rcases p8_block_boost added with same | known
+    · rcases ih with zero | ⟨block, held⟩
+      · exact .inl (same.trans zero)
+      · exact .inr ⟨block, same ▸ Store.onBlock_blocks_of_found added held⟩
+    · exact .inr known
+  | attestation prior attested ih =>
+    simpa only [p8_attestation_boost attested, (Store.onAttestation_frame attested).2.1] using ih
+  | attesterSlashing prior slashed ih =>
+    unfold Store.onAttesterSlashing at slashed
+    simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at slashed
+    obtain ⟨_, _, rfl⟩ := slashed
+    exact ih
+  | payloadAttestation => exact False.elim (Nat.not_le_of_lt preGloas ‹.glamsterdam ≤ fork›)
+  | envelope => exact False.elim (Nat.not_le_of_lt preGloas ‹.glamsterdam ≤ fork›)
+  | inclusionList =>
+    exact False.elim (Nat.not_le_of_lt preGloas
+      (Nat.le_trans (by decide : Fork.glamsterdam ≤ Fork.hegota) ‹.hegota ≤ fork›))
+
+private theorem p8_headFrom {store : Store preset fork} {tally : Except ForkChoiceError VoteTally}
+    (preGloas : fork < .glamsterdam) (parents : store.ParentsBelow)
+    (weights : ∀ {root : Root} {block : BeaconBlock preset fork},
+      store.blocks[root]? = some block →
+      ∃ weight, store.getWeight config tally ⟨root, .pending⟩ = .ok weight)
+    (nodes : List ForkChoiceNode) (node : ForkChoiceNode) (block : BeaconBlock preset fork)
+    (pending : node.payloadStatus = .pending) (held : store.blocks[node.root]? = some block) :
+    ∃ head, store.getHeadFrom config tally nodes node = .ok head := by
+  classical
+  induction rank : store.nodeRank node using Nat.strong_induction_on generalizing node block with
+  | _ n ih =>
+    have later : ¬ .glamsterdam ≤ fork := Nat.not_le_of_lt preGloas
+    let children := (store.blocks.toList.filter fun (_, b) => b.parentRoot = node.root).map
+      fun (r, _) => (⟨r, .pending⟩ : ForkChoiceNode)
+    have childrenOk : store.getNodeChildren node = .ok children := by
+      simp [Store.getNodeChildren, later, children, pure, Except.pure]
+    obtain ⟨weighted, weightedOk⟩ := mapM_exists_ok (xs := children.filter (· ∈ nodes)) (by
+      intro child member
+      obtain ⟨childPending, childBlock, childHeld, _⟩ :=
+        (Store.mem_getNodeChildren preGloas childrenOk).mp (List.mem_filter.mp member).1
+      obtain ⟨weight, weightOk⟩ := weights childHeld
+      have same : child = ⟨child.root, .pending⟩ := by cases child; simp_all
+      rw [← same] at weightOk
+      exact ⟨(child, weight, 0), Store.weighNode_ok_iff.mpr
+        ⟨rfl, weightOk, by simp [Store.tiebreaker, later, pure, Except.pure]⟩⟩)
+    have heaviest : store.heaviestChild config tally nodes node =
+        .ok (chooseHeaviest weighted) := by
+      simp [Store.heaviestChild, childrenOk, weightedOk, bind, Except.bind, pure, Except.pure]
+    rw [Store.getHeadFrom, heaviest]
+    simp only [bind, Except.bind]
+    cases choice : chooseHeaviest weighted with
+    | none => exact ⟨node, rfl⟩
+    | some child =>
+      obtain ⟨key, member, _⟩ := chooseHeaviest_some choice
+      obtain ⟨source, sourceIn, weighed⟩ := mapM_ok_mem weightedOk _ member
+      obtain ⟨same, _, _⟩ := Store.weighNode_ok_iff.mp weighed
+      change child = source at same
+      subst source
+      obtain ⟨childPending, childBlock, childHeld, parent⟩ :=
+        (Store.mem_getNodeChildren preGloas childrenOk).mp (List.mem_filter.mp sourceIn).1
+      have lowerSlot := parents _ _ _ childHeld (parent ▸ held)
+      have lower : store.nodeRank child < store.nodeRank node := by
+        simp only [Store.nodeRank, held, childHeld, pending, childPending, ↓reduceIte]
+        have := UInt64.lt_iff_toNat_lt.mp lowerSlot
+        have := block.slot.toNat_lt
+        have := childBlock.slot.toNat_lt
+        omega
+      dsimp only
+      rw [dite_eq_left lower]
+      exact ih _ (rank ▸ lower) child childBlock childPending childHeld rfl
+
 /-- The store of an honest validator computes a head at each event up to a last time.
 
 The justified checkpoint state is cached and counts, so its active stake is at most the cap.
@@ -1464,7 +1674,7 @@ theorem Execution.exists_getHead {anchor : Store preset fork}
     (anchorAtBoundary : isStartSlotAtEpoch preset anchorBlock.slot = .ok true)
     (slots : 0 < config.SLOT_DURATION_MS) (long : 1 < preset.SLOTS_PER_EPOCH)
     (window : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
-    (preGloas : fork < .glamsterdam) (positive : 0 < preset.EFFECTIVE_BALANCE_INCREMENT)
+    (preGloas : fork < .glamsterdam)
     (boost : config.PROPOSER_SCORE_BOOST.toNat ≤ 100) {limit : ℕ} {horizon : Epoch}
     (nonzero : ∀ w ∈ J, ∀ k, (e.world k).time ≤ limit →
       ∀ (r : Root) (b : BeaconBlock preset fork),
@@ -1483,6 +1693,85 @@ theorem Execution.exists_getHead {anchor : Store preset fork}
       ActiveStakeAtMost stakeCapGwei state)
     {w : ValidatorIndex} (honest : w ∈ J) {k : ℕ} (bounded : (e.world k).time ≤ limit) :
     ∃ head, ((e.world k).state w).getHead config = .ok head := by
-  sorry
+  classical
+  let store := (e.world k).state w
+  have forward : Store.ForwardReachable config anchorState anchorBlock store :=
+    e.forwardReachable (fun v hv => (start v hv) ▸ .anchor anchored) k w honest
+  have reachable := forward.reachable
+  obtain ⟨current, currentOk, _, stateBound⟩ :=
+    forward.slots_le_current slots (UInt64.le_of_eq anchorSlot)
+  let epoch := computeEpochAtSlot preset current
+  have epochOk : store.getCurrentStoreEpoch config = .ok epoch := by
+    simp [Store.getCurrentStoreEpoch, currentOk, epoch, bind, Except.bind, pure, Except.pure]
+  obtain ⟨state, stateOk, counts⟩ := e.exists_justified_checkpointState anchored sound start
+    anchorSlot window preGloas nonzero inHorizon large honest bounded
+  change store.checkpointState store.justifiedCheckpoint = .ok state at stateOk
+  obtain ⟨base, first, baseOk, firstOk, advanced⟩ := e.checkpointStates_fixedChecks anchored
+    (start w honest) (Store.checkpointState_ok_iff.mp stateOk)
+  have stateEpoch : getCurrentEpoch state ≤ epoch := by
+    unfold lookaheadState at advanced
+    split at advanced
+    · have atSlot := (processSlots_slot (mapError_ok_iff.mp advanced)).2
+      have positiveSlots : 0 < preset.SLOTS_PER_EPOCH :=
+        UInt64.lt_trans (by decide : (0 : UInt64) < 1) long
+      have same : getCurrentEpoch state = store.justifiedCheckpoint.epoch := by
+        rw [getCurrentEpoch, atSlot]
+        exact computeEpochAtSlot_computeStartSlotAtEpoch positiveSlots firstOk
+      rw [same]
+      exact (forward.justified_epoch_le_current sound slots (UInt64.le_of_eq anchorSlot) epochOk).1
+    · cases Except.ok.inj advanced
+      exact UInt64.le_iff_toNat_le.mpr
+        (Nat.div_le_div_right (UInt64.le_iff_toNat_le.mp (stateBound _ _ baseOk)))
+  have stakeLe := supply w honest k _ state bounded stateOk
+  have enough := large w honest k state bounded counts
+    (UInt64.le_trans stateEpoch (inHorizon w honest k epoch bounded epochOk))
+  have floor : preset.EFFECTIVE_BALANCE_INCREMENT.toNat ≤ stakeCapGwei := by
+    change stake (fun v => balanceAt state v.toNat) (activeVoters state) ≤ stakeCapGwei at stakeLe
+    omega
+  obtain ⟨proposerScore, proposerOk, proposerLe⟩ :=
+    computeProposerScore_le_stakeCap stakeLe floor long boost
+  have scoreOk : store.getProposerScore config = .ok proposerScore := by
+    simp [Store.getProposerScore, stateOk, proposerOk, bind, Except.bind]
+  have tallyOk : store.justifiedTally = .ok (store.tallyVotes state) :=
+    Store.justifiedTally_of_state stateOk
+  have weights : ∀ {root : Root} {block : BeaconBlock preset fork},
+      store.blocks[root]? = some block →
+      ∃ weight, store.getWeight config store.justifiedTally ⟨root, .pending⟩ = .ok weight := by
+    intro root block held
+    obtain ⟨score, tallyScoreOk, scoreLe⟩ := e.exists_scoreFromTally anchored start anchorSlot
+      preGloas anchorParent honest bounded stakeLe held
+    change store.scoreFromTally (store.tallyVotes state) ⟨root, .pending⟩ = .ok score
+      at tallyScoreOk
+    have later : ¬ .glamsterdam ≤ fork := Nat.not_le_of_lt preGloas
+    by_cases zero : store.proposerBoostRoot = Vector.replicate 32 0
+    · rw [Store.getWeight_of_no_boost preGloas zero, tallyOk]
+      exact ⟨_, tallyScoreOk⟩
+    · obtain ⟨boostedBlock, boostedHeld⟩ := (p8_boost_known reachable preGloas).resolve_left zero
+      obtain ⟨ancestor, ancestorOk⟩ := e.exists_isAncestor_of_held anchored start anchorSlot
+        preGloas anchorParent honest bounded boostedHeld held
+      change store.isAncestor ⟨store.proposerBoostRoot, .pending⟩ ⟨root, .pending⟩ =
+        .ok ancestor at ancestorOk
+      have sumFits : score.toNat + proposerScore.toNat < 2 ^ 64 := by
+        unfold stakeCapGwei at scoreLe proposerLe
+        omega
+      unfold Store.getWeight
+      simp only [later, ↓reduceDIte, pure, Except.pure, bind, Except.bind, tallyOk, tallyScoreOk,
+        zero, ne_eq, not_false_eq_true, decide_true, Bool.not_true, Bool.false_eq_true,
+        ↓reduceIte, ancestorOk]
+      cases ancestor <;> simp only [Bool.false_eq_true, ↓reduceIte, scoreOk]
+      · exact ⟨score, by simp [addChecked, Except.mapError, score.toNat_lt]⟩
+      · exact ⟨score + proposerScore, by rw [addChecked_of_lt sumFits]; rfl⟩
+  obtain ⟨nodes, nodesOk⟩ := e.exists_getFilteredNodeTree anchored sound start anchorSlot
+    anchorAtBoundary slots long window preGloas nonzero anchorParent honest bounded
+  change store.getFilteredNodeTree config = .ok nodes at nodesOk
+  obtain ⟨justified, justifiedOk⟩ := e.justifiedRoot_known anchored sound start anchorSlot
+    window preGloas nonzero honest bounded
+  obtain ⟨head, headOk⟩ := p8_headFrom preGloas
+    (reachable.parentsBelow (UInt64.le_of_eq anchorSlot) (anchorParent w honest k bounded))
+    weights nodes ⟨store.justifiedCheckpoint.root, .pending⟩ justified rfl justifiedOk
+  refine ⟨head, ?_⟩
+  change store.getHead config = .ok head
+  have later : ¬ .glamsterdam ≤ fork := Nat.not_le_of_lt preGloas
+  simp [Store.getHead, nodesOk, later, headOk, bind, Except.bind]
 
 end EthLib.Consensus.Models.Network
