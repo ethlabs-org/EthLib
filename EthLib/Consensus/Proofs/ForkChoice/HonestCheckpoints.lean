@@ -1612,6 +1612,46 @@ def HonestThirdPins
 variable {e : Execution (honestForkChoice config checks sources anchorState anchorBlock assignment
   genesisTimeMs) J}
 
+/-- Every realized finalized boundary stays at or above an epoch-aligned anchor. -/
+theorem Execution.anchorSlot_le_finalized_boundary {anchor : Store preset fork}
+    (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (anchorSlot : anchorBlock.slot = anchorState.slot)
+    (anchorBoundary : isStartSlotAtEpoch preset anchorBlock.slot = .ok true)
+    {w : ValidatorIndex} (start : e.start w = anchor) {k : ℕ} {boundary : Slot}
+    (boundaryOk : computeStartSlotAtEpoch preset
+      ((e.world k).state w).finalizedCheckpoint.epoch = .ok boundary) :
+    anchorBlock.slot ≤ boundary := by
+  obtain ⟨_, _, _, _, _, finalized, _, _⟩ := getForkchoiceStore_anchor anchored
+  have epochs := (e.epochsLe_of_le w (Nat.zero_le k)).2
+  simp only [Execution.world_zero, World.initial, start, finalized] at epochs
+  have rounded : anchorState.slot / preset.SLOTS_PER_EPOCH * preset.SLOTS_PER_EPOCH =
+      anchorState.slot := by
+    unfold isStartSlotAtEpoch computeSlotsSinceEpochStart at anchorBoundary
+    rw [anchorSlot, computeStartSlotAtEpoch_computeEpochAtSlot] at anchorBoundary
+    simp only [Except.mapError, bind, Except.bind, pure, Except.pure,
+      Except.ok.injEq, decide_eq_true_eq] at anchorBoundary
+    have h := (computeStartSlotAtEpoch_ok_iff.mp
+      (computeStartSlotAtEpoch_computeEpochAtSlot (preset := preset) anchorState.slot)).2
+    have le : (anchorState.slot / preset.SLOTS_PER_EPOCH *
+        preset.SLOTS_PER_EPOCH).toNat ≤ anchorState.slot.toNat := by
+      rw [h, computeEpochAtSlot, UInt64.toNat_div]
+      exact Nat.div_mul_le_self _ _
+    have zero := congrArg UInt64.toNat anchorBoundary
+    simp only [UInt64.toNat_sub, UInt64.toNat_zero] at zero
+    have upper := anchorState.slot.toNat_lt
+    have lower := (anchorState.slot / preset.SLOTS_PER_EPOCH *
+      preset.SLOTS_PER_EPOCH).toNat_lt
+    apply UInt64.toNat_inj.mp
+    omega
+  have mono := Nat.mul_le_mul_right preset.SLOTS_PER_EPOCH.toNat
+    (UInt64.le_iff_toNat_le.mp epochs)
+  have anchorValue := (computeStartSlotAtEpoch_ok_iff.mp
+    (computeStartSlotAtEpoch_computeEpochAtSlot (preset := preset) anchorState.slot)).2
+  rw [rounded] at anchorValue
+  rw [anchorSlot, UInt64.le_iff_toNat_le,
+    (computeStartSlotAtEpoch_ok_iff.mp boundaryOk).2, anchorValue]
+  exact mono
+
 /-- Computing a checkpoint state retains the checks used for its empty slots. -/
 theorem checkpointState_run_of_compute {store : Store preset fork} {target : Checkpoint}
     {state : BeaconState preset fork}
