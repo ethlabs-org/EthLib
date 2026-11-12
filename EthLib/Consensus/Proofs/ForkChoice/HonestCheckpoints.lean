@@ -1954,11 +1954,289 @@ theorem Execution.exists_checkpointState_of_preBlock_target {anchor : Store pres
   rw [atSlot]
   exact computeEpochAtSlot_computeStartSlotAtEpoch (UInt64.lt_iff_toNat_lt.mpr positive) epochStart
 
+private theorem blockVote_attestation_read {store after : Store preset fork}
+    {a : Attestation preset fork} {fromBlock : Bool}
+    (reachable : Store.Reachable config anchorState anchorBlock store)
+    (handled : store.onAttestation config checks a fromBlock = .ok after) :
+    ∃ targetState indexed,
+      after.checkpointStates[a.data.target]? = some targetState ∧
+      getIndexedAttestation targetState a = .ok indexed ∧
+      (∀ v ∈ indexed.attestingIndices.data,
+        (v, a.data) ∈ attestationStatements (config := config) (checks := checks)
+          anchorState anchorBlock a) ∧
+      ∃ slot, after.getCurrentSlot config = .ok slot ∧ a.data.slot < slot := by
+  have clock := (Store.onAttestation_sameClock handled).getCurrentSlot (config := config)
+  unfold Store.onAttestation at handled
+  simp only [bind_ok_iff] at handled
+  obtain ⟨_, validated, stored, storing, targetState, targetOk, _, _, indexed, indexedOk,
+    valid, validOk, handled⟩ := handled
+  split at handled
+  · rename_i validTrue
+    simp only [pure, Except.pure, Except.ok.injEq] at handled
+    subst after
+    have read := mapError_ok_iff.mp indexedOk
+    obtain ⟨indices, indicesOk, -⟩ := getAttestingIndices_of_getIndexedAttestation read
+    obtain ⟨same, sameOk, _, data, -⟩ :=
+      getIndexedAttestation_of_getAttestingIndices indicesOk
+    rw [read, Except.ok.injEq] at sameOk
+    subst same
+    refine ⟨targetState, indexed, Store.checkpointState_ok_iff.mp targetOk, read, ?_, ?_⟩
+    · intro v member
+      exact ⟨store, indexed, reachable,
+        ⟨stored, targetState, storing, targetOk, read,
+          by simpa [validTrue] using mapError_ok_iff.mp validOk⟩,
+        member, data.symm⟩
+    · rw [clock]
+      exact (Store.validateOnAttestation_ok validated).2.2.2
+  · simp [throw, throwThe, MonadExceptOf.throw, bind, Except.bind] at handled
+
+private theorem blockVote_read_of_held {anchor : Store preset fork}
+    (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    {w : ValidatorIndex} (start : e.start w = anchor) {k : ℕ}
+    {root : Root} {block : BeaconBlock preset fork}
+    (held : ((e.world k).state w).blocks[root]? = some block)
+    (other : block ≠ anchorBlock) {a : Attestation preset fork}
+    (member : a ∈ block.body.attestations.data) :
+    ∃ targetState indexed,
+      ((e.world k).state w).checkpointStates[a.data.target]? = some targetState ∧
+      getIndexedAttestation targetState a = .ok indexed ∧
+      (∀ v ∈ indexed.attestingIndices.data,
+        ∃ m ∈ (e.world k).sent,
+          (v, a.data) ∈ statements config checks anchorState anchorBlock m) ∧
+      ∃ slot, ((e.world k).state w).getCurrentSlot config = .ok slot ∧ a.data.slot < slot := by
+  have cacheKept {store after : Store preset fork} {a : Attestation preset fork}
+      {fromBlock : Bool} {checkpoint : Checkpoint} {state : BeaconState preset fork}
+      (handled : store.onAttestation config checks a fromBlock = .ok after)
+      (found : store.checkpointStates[checkpoint]? = some state) :
+      after.checkpointStates[checkpoint]? = some state := by
+    unfold Store.onAttestation at handled
+    simp only [bind_ok_iff] at handled
+    obtain ⟨_, _, stored, storing, _, _, _, _, _, _, _, _, handled⟩ := handled
+    split at handled
+    · simp only [pure, Except.pure, Except.ok.injEq] at handled
+      subst after
+      change stored.checkpointStates[checkpoint]? = some state
+      unfold Store.storeTargetCheckpointState at storing
+      split at storing
+      · simp only [pure, Except.pure, Except.ok.injEq] at storing
+        exact storing ▸ found
+      · rename_i absent
+        simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at storing
+        obtain ⟨_, _, rfl⟩ := storing
+        rw [Std.TreeMap.getElem?_insert]
+        split
+        · rename_i same
+          exact absurd (Std.TreeMap.contains_iff_mem.mpr
+            (Std.TreeMap.mem_iff_isSome_getElem?.mpr (by
+              rw [Std.TreeMap.getElem?_congr same, found]
+              rfl))) absent
+        · exact found
+    · simp [throw, throwThe, MonadExceptOf.throw, bind, Except.bind] at handled
+  let P := fun (sent : Set (Message preset fork)) (s : Store preset fork) =>
+    ∀ (r : Root) (b : BeaconBlock preset fork), s.blocks[r]? = some b → b ≠ anchorBlock →
+      ∀ a ∈ b.body.attestations.data, ∃ targetState indexed,
+        s.checkpointStates[a.data.target]? = some targetState ∧
+        getIndexedAttestation targetState a = .ok indexed ∧
+        (∀ v ∈ indexed.attestingIndices.data,
+          ∃ m ∈ sent, (v, a.data) ∈ statements config checks anchorState anchorBlock m) ∧
+        ∃ slot, s.getCurrentSlot config = .ok slot ∧ a.data.slot < slot
+  have keep {sent sent' : Set (Message preset fork)} {s t : Store preset fork}
+      (old : P sent s) (incl : sent ⊆ sent')
+      (blocks : t.blocks = s.blocks)
+      (cached : ∀ (c : Checkpoint) (st : BeaconState preset fork),
+        s.checkpointStates[c]? = some st → t.checkpointStates[c]? = some st)
+      (clock : ∀ slot, s.getCurrentSlot config = .ok slot →
+        ∃ later, t.getCurrentSlot config = .ok later ∧ slot ≤ later) : P sent' t := by
+    intro r b found other a member
+    obtain ⟨st, indexed, found, read, signed, slot, slotOk, past⟩ :=
+      old r b (blocks ▸ found) other a member
+    obtain ⟨later, laterOk, le⟩ := clock slot slotOk
+    exact ⟨st, indexed, cached _ _ found, read,
+      fun v mem => let ⟨m, sent, vote⟩ := signed v mem; ⟨m, incl sent, vote⟩,
+      later, laterOk, UInt64.lt_of_lt_of_le past le⟩
+  have invariant : ∀ n, Store.Reachable config anchorState anchorBlock ((e.world n).state w) ∧
+      P (e.world n).sent ((e.world n).state w) := by
+    intro n
+    induction n with
+    | zero =>
+      change Store.Reachable config anchorState anchorBlock (e.start w) ∧
+        P (e.world 0).sent (e.start w)
+      rw [start]
+      refine ⟨.anchor anchored, ?_⟩
+      intro r b found other
+      obtain ⟨_, _, blocks, -⟩ := getForkchoiceStore_maps anchored
+      rw [blocks, getElem?_insert_root] at found
+      split at found
+      · exact (other (Option.some.inj found).symm).elim
+      · simp at found
+    | succ n ih =>
+      have incl := e.monotone_sent (Nat.le_succ n)
+      rcases e.state_succ n w with same | ⟨_, handles⟩
+      · rw [same]
+        exact ⟨ih.1, keep ih.2 incl rfl (fun _ _ h => h)
+          (fun slot ok => ⟨slot, ok, UInt64.le_refl _⟩)⟩
+      refine ⟨handles.reachable ih.1, ?_⟩
+      have forward := handles.clock_bounds
+      cases handles with
+      | tick _ fits handled =>
+        exact keep ih.2 incl (Store.onTick_frame handled).2.2.1
+          (fun _ _ h => (Store.onTick_checkpointStates_latestMessages handled).1 ▸ h)
+          (fun slot ok => Store.exists_getCurrentSlot_onTick_ge
+            (by rw [(Store.onTick_frame handled).1] at forward; exact forward.2.1) handled ok)
+      | attestation _ handled =>
+        exact keep ih.2 incl (Store.onAttestation_frame handled).2.1
+          (fun _ _ h => cacheKept handled h)
+          (fun slot ok => ⟨slot, (Store.onAttestation_sameClock handled).getCurrentSlot ▸ ok,
+            UInt64.le_refl _⟩)
+      | attesterSlashing _ handled =>
+        exact keep ih.2 incl (Store.onAttesterSlashing_frame handled).2.1
+          (fun _ _ h => (Store.onAttesterSlashing_checkpointStates_latestMessages handled).1 ▸ h)
+          (fun slot ok => ⟨slot, (Store.onAttesterSlashing_sameClock handled).getCurrentSlot ▸ ok,
+            UInt64.le_refl _⟩)
+      | block seen handled =>
+        rename_i signed
+        have full := handled
+        unfold Store.onBlockWithVotes at handled
+        simp only [bind_ok_iff, ← Array.foldlM_toList] at handled
+        obtain ⟨blocked, blockOk, voted, votedOk, slashedOk⟩ := handled
+        have cached : ∀ (c : Checkpoint) (st : BeaconState preset fork),
+            blocked.checkpointStates[c]? = some st →
+            ((e.world (n + 1)).state w).checkpointStates[c]? = some st := by
+          intro c st found
+          have votedFound := foldlM_ok_invariant
+            (fun s : Store preset fork => s.checkpointStates[c]? = some st)
+            (fun _ _ _ old step => cacheKept step old)
+            found votedOk
+          exact foldlM_ok_invariant
+            (fun s : Store preset fork => s.checkpointStates[c]? = some st)
+            (fun _ _ _ old step =>
+              (Store.onAttesterSlashing_checkpointStates_latestMessages step).1 ▸ old)
+            votedFound slashedOk
+        have votedBlocks := foldlM_ok_invariant
+          (fun s : Store preset fork => s.blocks = blocked.blocks)
+          (fun _ _ _ old step => (Store.onAttestation_frame step).2.1.trans old) rfl votedOk
+        have blocks := foldlM_ok_invariant
+          (fun s : Store preset fork => s.blocks = blocked.blocks)
+          (fun _ _ _ old step => (Store.onAttesterSlashing_frame step).2.1.trans old)
+          votedBlocks slashedOk
+        intro r b found other a member
+        rw [blocks] at found
+        rcases Store.onBlock_same_or_insert blockOk with same |
+          ⟨newRoot, hashed, fresh, blockMap, rest⟩
+        · have old := keep ih.2 incl (blocks.trans (congrArg Store.blocks same))
+            (fun c st h => cached c st
+              ((Store.onBlock_checkpointStates_latestMessages blockOk).1 ▸ h))
+            (fun slot ok => ⟨slot, (Store.onBlockWithVotes_sameClock full).getCurrentSlot ▸ ok,
+              UInt64.le_refl _⟩)
+          exact old r b (blocks ▸ found) other a member
+        rw [blockMap, getElem?_insert_root] at found
+        split at found
+        · cases Option.some.inj found
+          have each : ∀ (xs : List (Attestation preset fork)) first last,
+              Store.Reachable config anchorState anchorBlock first →
+              xs.foldlM (fun s a => s.onAttestation config checks a true) first = .ok last →
+              ∀ a ∈ xs, ∃ st indexed, last.checkpointStates[a.data.target]? = some st ∧
+                getIndexedAttestation st a = .ok indexed ∧
+                (∀ v ∈ indexed.attestingIndices.data,
+                  (v, a.data) ∈ attestationStatements (config := config) (checks := checks)
+                    anchorState anchorBlock a) ∧
+                ∃ slot, last.getCurrentSlot config = .ok slot ∧ a.data.slot < slot := by
+            intro xs
+            induction xs with
+            | nil => simp
+            | cons a tail ih =>
+              intro first last reached folded item mem
+              rw [List.foldlM_cons, bind_ok_iff] at folded
+              obtain ⟨mid, step, tailOk⟩ := folded
+              rcases List.mem_cons.mp mem with rfl | mem
+              · obtain ⟨st, indexed, found, read, signed, slot, slotOk, past⟩ :=
+                  blockVote_attestation_read reached step
+                refine ⟨st, indexed, ?_, read, signed, slot, ?_, past⟩
+                · exact foldlM_ok_invariant
+                    (fun s : Store preset fork => s.checkpointStates[item.data.target]? = some st)
+                    (fun _ _ _ old ok => cacheKept ok old)
+                    found tailOk
+                · exact foldlM_ok_invariant
+                    (fun s : Store preset fork => s.getCurrentSlot config = .ok slot)
+                    (fun _ _ _ old ok => (Store.onAttestation_sameClock ok).getCurrentSlot ▸ old)
+                    slotOk tailOk
+              · exact ih mid last (reached.attestation step) tailOk item mem
+          obtain ⟨st, indexed, found, read, signedRead, slot, slotOk, past⟩ :=
+            each _ blocked voted (ih.1.block blockOk) votedOk a
+              (Array.mem_toList_iff.mpr member)
+          refine ⟨st, indexed, ?_, read, ?_, slot, ?_, past⟩
+          · exact foldlM_ok_invariant
+              (fun s : Store preset fork => s.checkpointStates[a.data.target]? = some st)
+              (fun _ _ _ old step =>
+                (Store.onAttesterSlashing_checkpointStates_latestMessages step).1 ▸ old)
+              found slashedOk
+          · intro v mem
+            exact ⟨.block signed, incl (e.view_subset_sent n w seen),
+              Or.inl ⟨a, member, signedRead v mem⟩⟩
+          · exact foldlM_ok_invariant
+              (fun s : Store preset fork => s.getCurrentSlot config = .ok slot)
+              (fun _ _ _ old step =>
+                (Store.onAttesterSlashing_sameClock step).getCurrentSlot ▸ old)
+              slotOk slashedOk
+        · obtain ⟨st, indexed, found, read, signedRead, slot, slotOk, past⟩ :=
+            ih.2 r b found other a member
+          exact ⟨st, indexed, cached _ _
+              ((Store.onBlock_checkpointStates_latestMessages blockOk).1 ▸ found), read,
+            fun v mem => let ⟨m, sent, vote⟩ := signedRead v mem; ⟨m, incl sent, vote⟩,
+            slot, (Store.onBlockWithVotes_sameClock full).getCurrentSlot ▸ slotOk, past⟩
+      | payloadAttestation _ handled =>
+        obtain ⟨_, _, same⟩ := Store.onPayloadAttestationMessage_onlyPtcVotes handled
+        rw [same]
+        exact keep ih.2 incl rfl (fun _ _ h => h) (fun slot ok => ⟨slot, ok, UInt64.le_refl _⟩)
+      | envelope _ handled =>
+        obtain ⟨_, _, _, _, _, record, same⟩ := Store.onExecutionPayloadEnvelope_ok handled
+        rw [same]
+        obtain ⟨_, rfl⟩ := Store.recordEnvelope_frame record
+        exact keep ih.2 incl rfl (fun _ _ h => h) (fun slot ok => ⟨slot, ok, UInt64.le_refl _⟩)
+      | inclusionList _ handled =>
+        obtain ⟨_, _, same⟩ := Store.onInclusionList_ok ‹_› handled
+        rw [same]
+        exact keep ih.2 incl rfl (fun _ _ h => h) (fun slot ok => ⟨slot, ok, UInt64.le_refl _⟩)
+  exact (invariant k).2 root block held other a member
+
+private theorem blockVote_epoch {state post : BeaconState preset fork}
+    {block : BeaconBlock preset fork}
+    (ring : preset.MIN_SEED_LOOKAHEAD.toNat + 2 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
+    (blockOk : processBlock config checks sources.engine state block = .ok post)
+    {a : Attestation preset fork} (member : a ∈ block.body.attestations.data) :
+    a.data.target.epoch = computeEpochAtSlot preset a.data.slot ∧
+      (getCurrentEpoch state).toNat ≤ a.data.target.epoch.toNat + 1 := by
+  obtain ⟨first, last, frame, _, folded, _⟩ := processBlock_attestationSplit ring blockOk
+  obtain ⟨index, bound, found⟩ := List.getElem_of_mem (Array.mem_toList_iff.mpr member)
+  obtain ⟨mid, _, prefixOk, ok, -⟩ := (foldlM_ok_steps (fun _ _ => True) (fun _ => trivial)
+    (fun _ _ => trivial) (fun _ _ _ _ => trivial) folded).2 index bound
+  rw [found] at ok
+  have slot : mid.slot = state.slot :=
+    foldlM_ok_invariant (fun next : BeaconState preset fork => next.slot = state.slot)
+      (fun _ _ _ holds ok => (frame_processAttestation ok).slot.trans holds) frame.slot prefixOk
+  have epoch : a.data.target.epoch = computeEpochAtSlot preset a.data.slot := by
+    by_cases altair : .altair ≤ fork
+    · simp only [processAttestation, altair, ↓reduceDIte] at ok
+      unfold processAttestationAltair at ok
+      simp only [bind_ok_iff, ensure_ok_iff] at ok
+      obtain ⟨_, _, _, slotEpoch, -⟩ := ok
+      exact slotEpoch
+    · exact (processAttestation_checks (Nat.lt_of_not_le altair) ok).2.1
+  have recent := processAttestation_slotEpoch ok
+  have current : getCurrentEpoch mid = getCurrentEpoch state := by
+    simp only [getCurrentEpoch, slot]
+  have previous : getPreviousEpoch mid = getPreviousEpoch state := by
+    simp only [getPreviousEpoch, current]
+  rw [previous, current, ← epoch] at recent
+  have prev := getPreviousEpoch_toNat state
+  refine ⟨epoch, ?_⟩
+  rcases recent with same | same <;> rw [same] <;> omega
+
 /-- A vote decoded before an accepted block occurs in a sent message with the same data.
 
 The target root must match the block-root history of the state that decodes the vote.
 
-The message and committee provenance proof is unfinished. -/
+The handler's cached target state and the pre-block history reconstruct the same committees. -/
 theorem Execution.exists_sent_of_blockVote {anchor : Store preset fork}
     (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
     (positive : 0 < preset.SLOTS_PER_EPOCH.toNat)
@@ -1984,7 +2262,47 @@ theorem Execution.exists_sent_of_blockVote {anchor : Store preset fork}
     (slotOk : ((e.world k).state w).getCurrentSlot config = .ok slot) :
     ∃ m ∈ (e.world k).sent,
       (v, data) ∈ statements config checks anchorState anchorBlock m ∧ data.slot < slot := by
-  sorry
+  have _ := window
+  have _ := preGloas
+  obtain ⟨a, member, dataEq, indices, indicesOk, voter⟩ := counted
+  dsimp only at dataEq voter
+  subst data
+  obtain ⟨targetState, indexed, cached, indexedOk, sent, current, currentOk, past⟩ :=
+    blockVote_read_of_held anchored start held other member
+  rw [slotOk, Except.ok.injEq] at currentOk
+  subst current
+  obtain ⟨epoch, recent⟩ := blockVote_epoch ring blockOk member
+  obtain ⟨query, queryOk, history⟩ := getBlockRoot_ok_iff.mp target
+  have anchorBefore : anchorState.slot ≤ query := by
+    have laterNat := UInt64.lt_iff_toNat_lt.mp later
+    rw [getCurrentEpoch_toNat] at laterNat
+    have queryNat := (computeStartSlotAtEpoch_ok_iff.mp queryOk).2
+    rw [UInt64.le_iff_toNat_le, queryNat]
+    exact Nat.le_of_lt ((Nat.div_lt_iff_lt_mul positive).mp laterNat)
+  obtain ⟨ancestor, ancestorState, checkpointState, _, stored, made, atSlot, run, _⟩ :=
+    e.exists_checkpointState_of_preBlock_target anchored honest start positive ring nonzero
+      parentFound slotsOk blockOk queryOk history anchorBefore recent
+  obtain ⟨base, boundary, baseFound, boundaryOk, looked⟩ :=
+    e.checkpointStates_fixedChecks anchored start cached
+  rw [stored, Option.some.injEq] at baseFound
+  subst base
+  rw [queryOk, Except.ok.injEq] at boundaryOk
+  subst boundary
+  rw [made, Except.ok.injEq] at looked
+  subst targetState
+  have starts : getCurrentEpoch checkpointState = computeEpochAtSlot preset a.data.slot := by
+    unfold getCurrentEpoch
+    rw [atSlot, computeEpochAtSlot_computeStartSlotAtEpoch
+      (UInt64.lt_iff_toNat_lt.mpr positive) queryOk, epoch]
+  have same := run.attestingIndices_eq_through_next_epoch ring starts (by
+    rw [starts, ← epoch]
+    exact recent)
+  obtain ⟨readIndices, readOk, indexedIndices⟩ :=
+    getAttestingIndices_of_getIndexedAttestation indexedOk
+  rw [same, readOk, Except.ok.injEq] at indicesOk
+  subst readIndices
+  obtain ⟨m, sent, statement⟩ := sent v (by simpa [indexedIndices] using voter)
+  exact ⟨m, sent, statement, past⟩
 
 /-- A held state, or its fixed-check advance toward a held child, is a counting state. -/
 theorem Store.counts_of_fixedChecks {store : Store preset fork}
