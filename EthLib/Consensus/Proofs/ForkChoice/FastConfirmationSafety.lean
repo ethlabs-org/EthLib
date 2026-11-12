@@ -1061,7 +1061,7 @@ private theorem walk_finalized_read_below_source {anchor : Store preset fork}
     ((e.world n).state u).getCheckpointBlock root
       ((e.world k).state w).finalizedCheckpoint.epoch =
         .ok ((e.world k).state w).finalizedCheckpoint.root := by
-  rcases e.finalizedCheckpoint_eq_or_add_two_le anchorStore sound receiver
+  rcases e.finalizedCheckpoint_eq_or_add_two_le anchorStore sound
       (anchored w receiver) receiverEpoch with same | age
   · simpa only [same] using
       walk_anchor_read anchorStore anchored anchorSlot anchorBoundary before caller known
@@ -3181,7 +3181,7 @@ private theorem Execution.call_root_known {anchor : Store preset fork}
             .ok (computeEpochAtSlot preset slot) := by
           simp [Store.getCurrentStoreEpoch, slotOk, bind, Except.bind, pure, Except.pure]
         rcases e.finalizedCheckpoint_eq_or_blockEpoch_add_two_le positive window anchored sound
-          caller (start u caller) nonzero epochOk with same | ⟨epoch, known, _⟩
+          (start u caller) nonzero epochOk with same | ⟨epoch, known, _⟩
         · obtain ⟨anchorRoot, _, known, _, _, final, _⟩ := getForkchoiceStore_anchor anchored
           have known : ((e.world n).state u).blocks[anchorRoot]? = some anchorBlock :=
             e.blocks_of_le (Nat.zero_le n) (by
@@ -3374,7 +3374,7 @@ theorem Execution.callInvariant_step {Δ : ℕ} (sync : e.Synchronous Δ)
         start chain caller epochOk nonzero inHorizon)
     intro epoch currentOk
     exact (e.finalizedCheckpoint_eq_or_blockEpoch_add_two_le positiveSlotsNat window anchored
-      sound caller (start u caller) (nonzero u caller n callBound) currentOk).resolve_left same
+      sound (start u caller) (nonzero u caller n callBound) currentOk).resolve_left same
   -- Consecutive calls supply the old root's safety from the current slot onward.
   have carriedSafe : ∀ time, (e.world n).time ≤ time → time ≤ limit →
       SafeAt e time fcr.confirmedRoot := by

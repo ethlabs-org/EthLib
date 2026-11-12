@@ -2474,11 +2474,10 @@ The store takes that checkpoint from a block of an epoch before its own. -/
 theorem Execution.finalizedCheckpoint_eq_or_add_two_le {anchor : Store preset fork}
     (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
     (sound : Invariant anchorState)
-    {u : ValidatorIndex} (honest : u ∈ J) (start : e.start u = anchor) {n : ℕ} {epoch : Epoch}
+    {u : ValidatorIndex} (start : e.start u = anchor) {n : ℕ} {epoch : Epoch}
     (epochOk : ((e.world n).state u).getCurrentStoreEpoch config = .ok epoch) :
     ((e.world n).state u).finalizedCheckpoint = anchor.finalizedCheckpoint ∨
       ((e.world n).state u).finalizedCheckpoint.epoch.toNat + 2 ≤ epoch.toNat := by
-  have _ := honest
   have forward : Store.ForwardReachable config anchorState anchorBlock ((e.world n).state u) := by
     clear epochOk
     induction n with
@@ -2888,7 +2887,7 @@ theorem walk_finalized_read_of_recent_source {anchor : Store preset fork}
     (fun v hv => (anchored v hv) ▸ Store.ForwardReachable.anchor anchorStore) n u caller
   have anchorRead := walk_anchor_read anchorStore anchored anchorSlot anchorBoundary before
     caller known
-  rcases e.finalizedCheckpoint_eq_or_add_two_le anchorStore sound receiver
+  rcases e.finalizedCheckpoint_eq_or_add_two_le anchorStore sound
       (anchored w receiver) receiverEpoch with same | age
   · simpa only [same] using anchorRead
   have ordered : ((e.world k).state w).finalizedCheckpoint.epoch ≤ checkpoint.epoch :=

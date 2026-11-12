@@ -1750,7 +1750,7 @@ theorem Execution.finalizedCheckpoint_eq_or_blockEpoch_add_two_le {anchor : Stor
     (window : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
     (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
     (sound : Invariant anchorState)
-    {u : ValidatorIndex} (honest : u ∈ J) (start : e.start u = anchor) {n : ℕ}
+    {u : ValidatorIndex} (start : e.start u = anchor) {n : ℕ}
     (nonzero : ∀ (root : Root) (block : BeaconBlock preset fork),
       ((e.world n).state u).blocks[root]? = some block →
       block.stateRoot ≠ Vector.replicate 32 0)
@@ -1759,7 +1759,6 @@ theorem Execution.finalizedCheckpoint_eq_or_blockEpoch_add_two_le {anchor : Stor
       ∃ rootEpoch,
         ((e.world n).state u).getBlockEpoch ((e.world n).state u).finalizedCheckpoint.root =
           .ok rootEpoch ∧ rootEpoch.toNat + 2 ≤ epoch.toNat := by
-  have _ := honest
   have forward : Store.ForwardReachable config anchorState anchorBlock ((e.world n).state u) := by
     clear epochOk nonzero
     induction n with
