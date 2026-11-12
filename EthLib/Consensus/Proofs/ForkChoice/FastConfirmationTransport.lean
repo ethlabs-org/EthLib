@@ -174,6 +174,99 @@ private theorem totalBalance_exists_of_subset {state : BeaconState preset fork}
     ⟨fun v member => inside v (subset v member), small, ?_⟩⟩
   exact UInt64.toNat_ofNat_of_lt' fits
 
+/-- A checked subset total transfers across states when its indices and weights agree. -/
+private theorem totalBalance_transfer {source state : BeaconState preset fork}
+    {indices : List ValidatorIndex} {total : Gwei}
+    (read : getTotalBalance source indices = .ok total)
+    (inside : ∀ v ∈ indices, v.toNat < state.validators.data.size)
+    (weights : ∀ v ∈ indices, balanceAt state v.toNat = balanceAt source v.toNat) :
+    getTotalBalance state indices = .ok total := by
+  obtain ⟨_, bounded, value⟩ := getTotalBalance_ok_iff_stake.mp read
+  have same := stake_congr (S := indices.toFinset)
+    (fun v member => weights v (List.mem_toFinset.mp member))
+  exact getTotalBalance_ok_iff_stake.mpr ⟨inside, same ▸ bounded, same ▸ value⟩
+
+/-- Equal duty activity transfers a filtered read only after every receiver lookup succeeds. -/
+private theorem filteredTotal_transfer {source state : BeaconState preset fork}
+    {participants : Std.TreeSet ValidatorIndex} {active : List ValidatorIndex} {total : Gwei}
+    (filtered : participants.toList.filterM (fun index => do
+      return isActiveValidator (← validatorAt source index) (getCurrentEpoch source)) = .ok active)
+    (read : getTotalBalance source active = .ok total)
+    (inside : ∀ v ∈ participants, ∃ validator, validatorAt state v = .ok validator)
+    (activity : ∀ v ∈ participants,
+      isActiveAt state (getCurrentEpoch state) v.toNat =
+        isActiveAt source (getCurrentEpoch source) v.toNat)
+    (weights : ∀ v ∈ active, balanceAt state v.toNat = balanceAt source v.toNat) :
+    ∃ other, participants.toList.filterM (fun index => do
+      return isActiveValidator (← validatorAt state index) (getCurrentEpoch state)) = .ok other ∧
+      getTotalBalance state other = .ok total := by
+  obtain ⟨other, otherOk⟩ := filterM_exists_ok (test := fun index => do
+    return isActiveValidator (← validatorAt state index) (getCurrentEpoch state))
+    (list := participants.toList) (fun v member => by
+      obtain ⟨validator, found⟩ := inside v (Std.TreeSet.mem_toList.mp member)
+      exact ⟨isActiveValidator validator (getCurrentEpoch state), by simp [found]⟩)
+  have activeMem : ∀ v, v ∈ active ↔ v ∈ participants ∧
+      isActiveAt source (getCurrentEpoch source) v.toNat = true := by
+    intro v
+    constructor
+    · intro member
+      have pass := passes_of_mem_filterM_ok filtered member
+      simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at pass
+      obtain ⟨validator, found, active⟩ := pass
+      exact ⟨Std.TreeSet.mem_toList.mp (mem_of_filterM_ok filtered member),
+        isActiveAt_eq_true_iff.mpr ⟨validator, validatorAt_ok_iff.mp found, active⟩⟩
+    · rintro ⟨member, active⟩
+      obtain ⟨validator, found, active⟩ := isActiveAt_eq_true_iff.mp active
+      exact mem_filterM_ok_of_test filtered (Std.TreeSet.mem_toList.mpr member)
+        (by simp [validatorAt_ok_iff.mpr found, active])
+  have same : ∀ v, v ∈ other ↔ v ∈ active := by
+    intro v
+    rw [activeMem]
+    constructor
+    · intro member
+      have inSet := Std.TreeSet.mem_toList.mp (mem_of_filterM_ok otherOk member)
+      have pass := passes_of_mem_filterM_ok otherOk member
+      simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at pass
+      obtain ⟨validator, found, active⟩ := pass
+      exact ⟨inSet, activity v inSet ▸
+        isActiveAt_eq_true_iff.mpr ⟨validator, validatorAt_ok_iff.mp found, active⟩⟩
+    · rintro ⟨member, active⟩
+      rw [← activity v member] at active
+      obtain ⟨validator, found, active⟩ := isActiveAt_eq_true_iff.mp active
+      exact mem_filterM_ok_of_test otherOk (Std.TreeSet.mem_toList.mpr member)
+        (by simp [validatorAt_ok_iff.mpr found, active])
+  refine ⟨other, otherOk, (getTotalBalance_congr same).mpr ?_⟩
+  exact totalBalance_transfer read (fun v member => by
+    obtain ⟨validator, found⟩ := inside v ((activeMem v).mp member).1
+    exact (Array.getElem?_eq_some_iff.mp (validatorAt_ok_iff.mp found)).1) weights
+
+/-- Full-mode totals transfer when all active positions and their weights agree. -/
+private theorem activeTotal_transfer {source state : BeaconState preset fork} {total : Gwei}
+    (within : state.RegistryWithinLimit)
+    (read : getTotalActiveBalance source = .ok total)
+    (activity : ∀ position, isActiveAt state (getCurrentEpoch state) position =
+      isActiveAt source (getCurrentEpoch source) position)
+    (weights : ∀ v ∈ getActiveValidatorIndices source (getCurrentEpoch source),
+      balanceAt state v.toNat = balanceAt source v.toNat) :
+    getTotalActiveBalance state = .ok total := by
+  have checked := (bind_ok_iff.mp read).choose_spec.1
+  have same : ∀ v, v ∈ getActiveValidatorIndices state (getCurrentEpoch state) ↔
+      v ∈ getActiveValidatorIndices source (getCurrentEpoch source) := by
+    intro v
+    rw [mem_getActiveValidatorIndices within]
+    rw [← getActiveValidatorIndicesChecked_ok checked,
+      mem_iff_of_getActiveValidatorIndicesChecked_ok checked]
+    rw [← isActiveAt_eq_true_iff, ← isActiveAt_eq_true_iff, activity]
+  unfold getTotalActiveBalance
+  rw [getActiveValidatorIndicesChecked_of_within within]
+  change getTotalBalance state (getActiveValidatorIndices state (getCurrentEpoch state)) =
+    .ok total
+  apply (getTotalBalance_congr same).mpr
+  exact totalBalance_transfer (getTotalActiveBalance_ok read) (fun v member => by
+    obtain ⟨validator, found, _⟩ := (mem_getActiveValidatorIndices within).mp
+      ((same v).mpr member)
+    exact (Array.getElem?_eq_some_iff.mp found).1) weights
+
 /-- Registry containment and an active total suffice for the non-full window's balance read. -/
 private theorem filteredTotal_exists {state : BeaconState preset fork}
     {participants : Std.TreeSet ValidatorIndex} {total : Gwei}
