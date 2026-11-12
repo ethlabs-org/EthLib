@@ -18,9 +18,6 @@ open Base Uint64 Cryptography.Bls
 variable {preset : Preset} {fork : Fork} {config : Config} {checks : SignatureChecks}
   {engine : ExecutionEngine preset fork} {state after : BeaconState preset fork}
 
-def validatorKeys {fork : Fork} (s : BeaconState preset fork) : List BLSPubkey :=
-  s.validators.data.toList.map (·.pubkey)
-
 /-- Keys form an unchanged prefix, and new keys do not duplicate earlier ones. -/
 structure RegistryIdentity {fork fork' : Fork} (s : BeaconState preset fork)
     (t : BeaconState preset fork') : Prop where
