@@ -916,7 +916,7 @@ theorem frame_processRegistryUpdates
 
 They leave out justification, the builder payments and the rotation of the flags.
 
-A validator write at a plain position must relate its states when it meets the conditions of a write.
+A validator write at a plain position must relate its states when it meets these conditions.
 
 It keeps the public key of the old validator.
 
@@ -924,7 +924,9 @@ Its exit comes no later than its withdrawal, when the exits of the state are ord
 
 Its effective balance is a whole number of increments, when the preset and the state are aligned.
 
-It keeps the slashed flag exactly, never lowers activation eligibility, and keeps the activation epoch.
+It keeps the slashed flag exactly.
+
+It never lowers activation eligibility, and keeps the activation epoch.
 
 Registry activation has a separate law because it can change both activation fields.
 
