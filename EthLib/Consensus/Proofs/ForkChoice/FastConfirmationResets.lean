@@ -955,13 +955,15 @@ theorem Execution.finalized_epoch_le_justified_epoch {Δ : ℕ} (sync : e.Synchr
     (positive : 0 < preset.SLOTS_PER_EPOCH.toNat)
     (window : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
     (preGloas : fork < .glamsterdam)
-    (oneBlock : OneBlockPerRoot e) (admitted : BlocksAdmitted e 0 Δ) {anchor : Store preset fork}
+    {last : ℕ} (oneBlock : OneBlockPerRoot e last)
+    (admitted : BlocksAdmitted e 0 Δ last) {anchor : Store preset fork}
     (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
     (sound : Invariant anchorState)
-    (start : ∀ w ∈ J, e.start w = anchor) {horizon : Epoch} (chain : FinalizedPrefix e horizon)
+    (start : ∀ w ∈ J, e.start w = anchor) {horizon : Epoch} (chain : FinalizedPrefix e horizon last)
     {u w : ValidatorIndex} (first : u ∈ J) (receiver : w ∈ J) {n k : ℕ} {epoch : Epoch}
     (epochOk : ((e.world n).state u).getCurrentStoreEpoch config = .ok epoch)
     (inHorizon : epoch ≤ horizon) (late : (e.world n).time + Δ ≤ (e.world k).time)
+    (bounded : (e.world k).time ≤ last)
     (nonzero : ∀ v ∈ J, ∀ k', (e.world k').time ≤ (e.world k).time →
       ∀ (r : Root) (b : BeaconBlock preset fork),
         ((e.world k').state v).blocks[r]? = some b → b.stateRoot ≠ Vector.replicate 32 0)
@@ -973,8 +975,10 @@ theorem Execution.finalized_epoch_le_justified_epoch {Δ : ℕ} (sync : e.Synchr
 
 /-- A finalized checkpoint is safe when every current justification covers its epoch. -/
 theorem Execution.safeAt_finalized_of_epoch_bounds
-    (preGloas : fork < .glamsterdam) {horizon : Epoch} (chain : FinalizedPrefix e horizon)
-    {u : ValidatorIndex} (caller : u ∈ J) {n time : ℕ}
+    (preGloas : fork < .glamsterdam) {horizon : Epoch} {last : ℕ}
+    (chain : FinalizedPrefix e horizon last)
+    {u : ValidatorIndex} (caller : u ∈ J) {n time : ℕ} (nBound : (e.world n).time ≤ last)
+    (bounded : time ≤ last)
     (bounds : ∀ w ∈ J, ∀ k, (e.world k).time = time →
       UpToDate config checks sources (e.world k).time ((e.world k).view w)
         ((e.world k).state w) →
@@ -984,7 +988,7 @@ theorem Execution.safeAt_finalized_of_epoch_bounds
     SafeAt e time ((e.world n).state u).finalizedCheckpoint.root := by
   intro w honest k head atTime current headOk
   obtain ⟨lower, upper⟩ := bounds w honest k atTime current
-  have read := chain u caller w honest n k _ (Or.inl rfl) lower upper
+  have read := chain u caller w honest n k nBound (atTime ▸ bounded) _ (Or.inl rfl) lower upper
   obtain ⟨boundary, finalized, _, finalizedKnown, _, below⟩ :=
     Store.isAncestor_of_getCheckpointBlock preGloas read
   have headAbove := Store.isAncestor_getHead headOk
@@ -1012,12 +1016,14 @@ theorem Execution.safeAt_finalized {Δ : ℕ} (sync : e.Synchronous Δ)
     (positive : 0 < preset.SLOTS_PER_EPOCH.toNat)
     (window : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
     (preGloas : fork < .glamsterdam)
-    (oneBlock : OneBlockPerRoot e) (admitted : BlocksAdmitted e 0 Δ) {anchor : Store preset fork}
+    {limit : ℕ} (oneBlock : OneBlockPerRoot e limit)
+    (admitted : BlocksAdmitted e 0 Δ limit) {anchor : Store preset fork}
     (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
     (sound : Invariant anchorState)
-    (start : ∀ w ∈ J, e.start w = anchor) {horizon : Epoch} (chain : FinalizedPrefix e horizon)
+    (start : ∀ w ∈ J, e.start w = anchor) {horizon : Epoch}
+    (chain : FinalizedPrefix e horizon limit)
     {u : ValidatorIndex} (caller : u ∈ J) {n : ℕ} {epoch : Epoch}
-    (epochOk : ((e.world n).state u).getCurrentStoreEpoch config = .ok epoch) {limit : ℕ}
+    (epochOk : ((e.world n).state u).getCurrentStoreEpoch config = .ok epoch)
     (nonzero : ∀ v ∈ J, ∀ k, (e.world k).time ≤ limit →
       ∀ (r : Root) (b : BeaconBlock preset fork),
         ((e.world k).state v).blocks[r]? = some b → b.stateRoot ≠ Vector.replicate 32 0)
@@ -1048,13 +1054,15 @@ theorem Execution.unrealized_epoch_le_justified_epoch {Δ : ℕ} (sync : e.Synch
     (positive : 0 < preset.SLOTS_PER_EPOCH.toNat)
     (window : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
     (preGloas : fork < .glamsterdam)
-    (oneBlock : OneBlockPerRoot e) (admitted : BlocksAdmitted e 0 Δ) {anchor : Store preset fork}
+    {last : ℕ} (oneBlock : OneBlockPerRoot e last)
+    (admitted : BlocksAdmitted e 0 Δ last) {anchor : Store preset fork}
     (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
     (sound : Invariant anchorState)
-    (start : ∀ w ∈ J, e.start w = anchor) {horizon : Epoch} (chain : FinalizedPrefix e horizon)
+    (start : ∀ w ∈ J, e.start w = anchor) {horizon : Epoch} (chain : FinalizedPrefix e horizon last)
     {u w : ValidatorIndex} (first : u ∈ J) (receiver : w ∈ J) {n k : ℕ} {epoch later : Epoch}
     (epochOk : ((e.world n).state u).getCurrentStoreEpoch config = .ok epoch)
     (inHorizon : epoch ≤ horizon) (late : (e.world n).time + Δ ≤ (e.world k).time)
+    (bounded : (e.world k).time ≤ last)
     (nonzero : ∀ v ∈ J, ∀ k', (e.world k').time ≤ (e.world k).time →
       ∀ (r : Root) (b : BeaconBlock preset fork),
         ((e.world k').state v).blocks[r]? = some b → b.stateRoot ≠ Vector.replicate 32 0)
@@ -1099,12 +1107,14 @@ theorem Execution.safeAt_observed {Δ : ℕ} (sync : e.Synchronous Δ)
     (slots : 0 < config.SLOT_DURATION_MS) {limit : ℕ} (votes : Votes e.startTime limit e)
     (fits : DelayFits fork config genesisTimeMs Δ) (prompt : Prompt e limit)
     (preGloas : fork < .glamsterdam)
-    (oneBlock : OneBlockPerRoot e) (admitted : BlocksAdmitted e 0 Δ) {anchor : Store preset fork}
+    (oneBlock : OneBlockPerRoot e limit)
+    (admitted : BlocksAdmitted e 0 Δ limit) {anchor : Store preset fork}
     (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
     (sound : Invariant anchorState)
-    (start : ∀ w ∈ J, e.start w = anchor) {horizon : Epoch} (chain : FinalizedPrefix e horizon)
-    (unique : OneJustifiedPerEpoch e horizon)
-    (voted : JustifiedByHonestVote e anchor.justifiedCheckpoint.epoch horizon)
+    (start : ∀ w ∈ J, e.start w = anchor) {horizon : Epoch}
+    (chain : FinalizedPrefix e horizon limit)
+    (unique : OneJustifiedPerEpoch e horizon limit)
+    (voted : JustifiedByHonestVote e anchor.justifiedCheckpoint.epoch horizon limit)
     {u : ValidatorIndex} (caller : u ∈ J) {m n : ℕ}
     (recorded : (e.world m).time + Δ ≤ (e.world n).time)
     {previous epoch : Epoch} {slot : Slot} {begin : UInt64}
