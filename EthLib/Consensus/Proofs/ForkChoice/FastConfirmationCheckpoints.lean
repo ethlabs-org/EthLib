@@ -690,49 +690,6 @@ theorem getLatestConfirmed_checked {fcr : FastConfirmationStore} {head root : Ro
     · exact Or.inr (Or.inl rfl)
   · exact Or.inr (Or.inr rfl)
 
-/-- A successful target check supplies a two-thirds bound in its counting state. -/
-theorem two_thirds_le_of_willCurrentTargetBeJustified {head : Root}
-    (checked : store.willCurrentTargetBeJustified config head = .ok true) :
-    ∃ state total support,
-      store.getPulledUpHeadState config head = .ok state ∧
-      getTotalActiveBalance state = .ok total ∧
-      store.computeHonestFfgSupportForCurrentTarget config head = .ok support ∧
-      2 * total.toNat ≤ 3 * support.toNat := by
-  simp only [willCurrentTargetBeJustified, bind_ok_iff, mapError_ok_iff,
-    pure, Except.pure, Except.ok.injEq] at checked
-  obtain ⟨state, stateOk, total, totalOk, support, supportOk, doubled, doubledOk,
-    tripled, tripledOk, bound⟩ := checked
-  have two := (mulChecked_ok_iff.mp doubledOk).2
-  have three := (mulChecked_ok_iff.mp tripledOk).2
-  have le : doubled.toNat ≤ tripled.toNat :=
-    UInt64.le_iff_toNat_le.mp (of_decide_eq_true bound)
-  refine ⟨state, total, support, stateOk, totalOk, supportOk, ?_⟩
-  simpa only [two, three, UInt64.toNat_ofNat] using le
-
-/-- A no-conflict check either names a justified target or supplies a strict one-third bound. -/
-theorem justified_or_one_third_lt_of_willNoConflictingCheckpointBeJustified {head : Root}
-    (checked : store.willNoConflictingCheckpointBeJustified config head = .ok true) :
-    store.getCurrentTarget config head = .ok store.unrealizedJustifiedCheckpoint ∨
-      ∃ state total support,
-        store.getPulledUpHeadState config head = .ok state ∧
-        getTotalActiveBalance state = .ok total ∧
-        store.computeHonestFfgSupportForCurrentTarget config head = .ok support ∧
-        total.toNat < 3 * support.toNat := by
-  simp only [willNoConflictingCheckpointBeJustified, bind_ok_iff] at checked
-  obtain ⟨target, targetOk, checked⟩ := checked
-  split at checked
-  · rename_i same
-    exact .inl (same ▸ targetOk)
-  · simp only [bind_ok_iff, mapError_ok_iff, pure, Except.pure,
-      Except.ok.injEq] at checked
-    obtain ⟨state, stateOk, total, totalOk, support, supportOk, tripled, tripledOk,
-      bound⟩ := checked
-    have three := (mulChecked_ok_iff.mp tripledOk).2
-    have lt : total.toNat < tripled.toNat :=
-      UInt64.lt_iff_toNat_lt.mp (of_decide_eq_true bound)
-    refine .inr ⟨state, total, support, stateOk, totalOk, supportOk, ?_⟩
-    simpa only [three, UInt64.toNat_ofNat] using lt
-
 /-- The target score is a sum of balances over the successful latest-target tests. -/
 theorem getCurrentTargetScore_eq_sum
     {head : Root} {state : BeaconState preset fork} {target : Checkpoint} {score : Gwei}

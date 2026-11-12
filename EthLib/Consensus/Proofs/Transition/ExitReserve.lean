@@ -2287,8 +2287,9 @@ theorem fixed_ge {f : Fork} (s : BeaconState preset f) {E : Epoch} {n : Nat}
 
 The queried epoch is read in a later state, and is no earlier than the epoch of that state.
 
-The validator was scheduled to exit by then, or else a queue call in the epoch of the source
-charged its exit.
+The validator was scheduled to exit by then, or a queue call charged its exit.
+
+That call occurred in the source's epoch.
 
 Those calls are the ones that an invariant of the epoch counts. -/
 theorem departing_subset {Inv : BeaconState preset fork → Prop} (laws : Laws config Inv)

@@ -336,7 +336,7 @@ theorem Store.Reachable.blockState_history_known
       have cached := getBlockRootAtSlot_processSlots_header
         (reachable.blockState_root parentKnown parentFound) (nonzero _ _ parentKnown)
         slotsOk advancedRead (UInt64.not_lt.mp old)
-      have parentHash := processBlock_parentRoot blockOk
+      have parentHash := (processBlock_parentRoot blockOk).2.2
       rw [message] at parentHash
       have eq := Except.ok.inj (cached.symm.trans parentHash)
       exact ⟨parentBlock, eq ▸ parentKnown⟩
@@ -429,7 +429,7 @@ theorem Store.Reachable.blockState_history_run
       have cached := getBlockRootAtSlot_processSlots_header
         (reachable.blockState_root parentKnown parentFound) (nonzero _ _ parentKnown)
         slotsOk advancedRead (UInt64.not_lt.mp old)
-      have parentHash := processBlock_parentRoot blockOk
+      have parentHash := (processBlock_parentRoot blockOk).2.2
       rw [message] at parentHash
       have eq := Except.ok.inj (cached.symm.trans parentHash)
       have high : query < signed.message.slot := by
@@ -482,7 +482,7 @@ theorem Store.Reachable.preBlock_history_run
     have cached := getBlockRootAtSlot_processSlots_header
       (reachable.blockState_root parentKnown parentFound) (nonzero _ _ parentKnown)
       slotsOk read (UInt64.not_lt.mp old)
-    have eq := Except.ok.inj (cached.symm.trans (processBlock_parentRoot blockOk))
+    have eq := Except.ok.inj (cached.symm.trans (processBlock_parentRoot blockOk).2.2)
     have high : query < block.slot := by
       rw [← (processSlots_slot slotsOk).2]
       exact UInt64.lt_iff_toNat_lt.mpr (getBlockRootAtSlot_ok_iff.mp read).1
@@ -552,7 +552,7 @@ theorem Store.Reachable.blockState_history_ancestor
     · have cached := getBlockRootAtSlot_processSlots_header
         (reachable.blockState_root parentKnown parentFound) (nonzero _ _ parentKnown)
         slotsOk advancedRead (UInt64.not_lt.mp old)
-      have parentHash := processBlock_parentRoot blockOk
+      have parentHash := (processBlock_parentRoot blockOk).2.2
       rw [message] at parentHash
       have eq := Except.ok.inj (cached.symm.trans parentHash)
       rw [Store.getAncestor_of_le parentKnown (UInt64.le_trans parentLe (UInt64.not_lt.mp old))]
@@ -586,7 +586,7 @@ theorem Store.Reachable.anchor_processSlots_header
     obtain ⟨childAdvanced, slotsOk, -, -, blockOk, -⟩ := stateTransition_ok transitioned
     rw [parentEq] at slotsOk
     rw [processSlots_latestBlockHeader_eq reachable.anchorState_root nonzero computed slotsOk]
-    have parentHash := processBlock_parentRoot blockOk
+    have parentHash := (processBlock_parentRoot blockOk).2.2
     rw [message] at parentHash
     exact parentHash.trans (by simpa only [same] using (reachable.root parentKnown).symm)
   · exact reachable.anchor_processSlots_header nonzero parentKnown parentFound same computed
@@ -720,7 +720,7 @@ theorem Store.Reachable.blockState_history_slot_le
       have cached := getBlockRootAtSlot_processSlots_header
         (reachable.blockState_root parentKnown parentFound) (nonzero _ _ parentKnown)
         slotsOk advancedRead (UInt64.not_lt.mp old)
-      have parentHash := processBlock_parentRoot blockOk
+      have parentHash := (processBlock_parentRoot blockOk).2.2
       rw [message] at parentHash
       have eq := Except.ok.inj (cached.symm.trans parentHash)
       refine ⟨parentBlock, eq ▸ parentKnown, ?_⟩
@@ -981,5 +981,20 @@ theorem Store.Reachable.pulled_finalized_root
     · exact same ▸ roots.2.2
     · exact same ▸ roots.1
     · exact same ▸ roots.2.1
+
+/-- The state that a store keeps for a block is at the slot of the block. -/
+theorem Models.Network.blockState_slot_eq {store : Store preset fork}
+    (reachable : Store.Reachable config anchorState anchorBlock store)
+    (anchorSlot : anchorBlock.slot = anchorState.slot) {root : Root}
+    {block : BeaconBlock preset fork} {state : BeaconState preset fork}
+    (found : store.blocks[root]? = some block)
+    (stored : store.blockStates[root]? = some state) : state.slot = block.slot := by
+  by_cases same : block = anchorBlock
+  · obtain ⟨post, postOk, anchored, -⟩ := reachable.blockStatesFromParents found
+    rw [stored, Option.some.injEq] at postOk
+    subst post
+    rw [anchored same, same]
+    exact anchorSlot.symm
+  · exact (reachable.blockState_header found stored same).1
 
 end EthLib.Consensus

@@ -558,7 +558,7 @@ private theorem justifiedState_history_counts {store : Store preset fork}
       have cachedRoot := getBlockRootAtSlot_processSlots_header
         (reached.blockState_root parentKnown parentFound) (nonzero _ _ parentKnown)
         slotsOk advancedRead (UInt64.not_lt.mp old)
-      have parentHash := processBlock_parentRoot blockOk
+      have parentHash := (processBlock_parentRoot blockOk).2.2
       rw [message] at parentHash
       have eq := Except.ok.inj (cachedRoot.symm.trans parentHash)
       have high : query < signed.message.slot := by

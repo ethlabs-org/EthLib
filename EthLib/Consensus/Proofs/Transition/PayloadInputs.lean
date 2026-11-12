@@ -915,23 +915,32 @@ theorem processBlock_blockRoots_latestBlockHeader {block : BeaconBlock preset fo
     exact ⟨operations.1.trans (voting.blockRoots.trans randao.blockRoots), root, hashed,
       operations.2.trans (voting.latestBlockHeader.trans randao.latestBlockHeader)⟩
 
-/-- A successful block checks its parent against the header before its block step. -/
+/-- At every fork, a block names the latest block header before it as its parent.
+
+The block is at the slot of the state, after the slot of that header.
+
+Its parent root is the root of that header. -/
 theorem processBlock_parentRoot {block : BeaconBlock preset fork}
     (computed : processBlock config checks engine state block = .ok after) :
-    Serialization.Ssz.SszType.hashTreeRoot state.latestBlockHeader = .ok block.parentRoot := by
+    block.slot = state.slot ∧ state.latestBlockHeader.slot < block.slot ∧
+      Serialization.Ssz.SszType.hashTreeRoot state.latestBlockHeader = .ok block.parentRoot := by
   unfold processBlock at computed
   split at computed
   · unfold processBlockAltair at computed
     simp only [bind_ok_iff] at computed
     obtain ⟨paid, paidOk, headed, headerOk, _⟩ := computed
-    have kept : paid.latestBlockHeader = state.latestBlockHeader := by
+    have kept : paid.slot = state.slot ∧ paid.latestBlockHeader = state.latestBlockHeader := by
       split at paidOk
-      · exact (payloadInputs_processParentExecutionPayload paidOk).latestBlockHeader
+      · exact ⟨(payloadInputs_processParentExecutionPayload paidOk).slot,
+          (payloadInputs_processParentExecutionPayload paidOk).latestBlockHeader⟩
       · cases paidOk
-        rfl
-    simpa only [kept] using (processBlockHeader_checks headerOk).2.2.2.1
+        exact ⟨rfl, rfl⟩
+    obtain ⟨atSlot, newer, -, parent, -⟩ := processBlockHeader_checks headerOk
+    rw [kept.2] at newer parent
+    exact ⟨atSlot.trans kept.1, newer, parent⟩
   · simp only [bind_ok_iff] at computed
     obtain ⟨headed, headerOk, _⟩ := computed
-    exact (processBlockHeader_checks headerOk).2.2.2.1
+    obtain ⟨atSlot, newer, -, parent, -⟩ := processBlockHeader_checks headerOk
+    exact ⟨atSlot, newer, parent⟩
 
 end EthLib.Consensus

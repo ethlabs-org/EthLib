@@ -45,6 +45,10 @@ Not yet released.
   The keys of the record come out in byte order.
   The JSON format and the C and Python signatures are unchanged.
 
+- The theorem that a block leaves its header as the latest block header holds at every fork ([#2061](https://github.com/ethereum/EthLib/issues/2061)).
+  In Lean, `latestBlockHeader_processBlock` drops its `gloas` argument, and its conclusion is unchanged.
+  Callers remove that argument.
+
 - The cumulative churn bounds also hold for idle queues ([#1451](https://github.com/ethereum/EthLib/issues/1451)).
   In Lean, `churnQueue_foldlM_le` drops its `first` argument, and `computeExitEpochAndUpdateChurn_foldlM_le` and `computeConsolidationEpochAndUpdateChurn_foldlM_le` drop their `open_` argument.
   Callers remove that argument.
@@ -553,6 +557,12 @@ Not yet released.
   Each comes with the successful check that a block of one of the two runs executed.
   The theorem exposes executed checks, not signing acts, and it makes no assumption about the signature checks.
   A caller that needs the statement that a validator signed must prove that step from the checks.
+  No C export or Python function changes.
+- `processBlock_split_of` is removed.
+  Its reader `processBlock_split` now reads `processBlock_operationsInput` and `OperationsInput.step_of`, and `processBlock_attestationSplit` reads `processBlock_folds`.
+  In Lean, a caller that needs a step across the parts of a block before its operations takes the `OperationsInput` that `processBlock_operationsInput` gives.
+  It applies `OperationsInput.step_of` to it with the same step arguments.
+  The block then continues with `processOperations`, as before.
   No C export or Python function changes.
 
 ## 0.3.0

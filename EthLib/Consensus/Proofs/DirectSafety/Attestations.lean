@@ -158,7 +158,7 @@ theorem _root_.EthLib.Consensus.Run.attestationCheck_of_accepted {g a : ForkedBe
     obtain ⟨pre, post, mid, next, split, earlier, processedA⟩ :=
       foldlM_ok_of_mem (Array.mem_toList_iff.mpr included) folded
     have same := getAttestingIndices_attestationsStart lookahead started proposers
-      slashings earlier processedA
+      slashings folded (Array.mem_toList_iff.mpr included)
     -- Up to the attestation, the registry and the mixes are those where the attestations start.
     have midKept : mid.validators = slashingsDone.validators ∧
         mid.randaoMixes = slashingsDone.randaoMixes :=
