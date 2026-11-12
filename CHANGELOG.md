@@ -532,11 +532,8 @@ Not yet released.
   Callers drop that argument, and the conclusions are unchanged.
   No C export or Python function changes.
 - `EthLib.Consensus.DirectSafety.quorum_drift_from_run` is removed.
-  No declaration read it.
-  It took the arguments `caps`, `aligned` and `withdrawalDelay` and discarded them.
-  Its proof repeated the budgeting of the selected prefix and the handling of slashing evidence.
-  The private lemmas `selected_call_drift_le` and `accountable_pair_bound` of `DirectSafety.Safety` already do both.
-  No migration is needed, and no other statement changes.
+  It had no callers in this repository and duplicated parts of the existing accountable-safety proof.
+  Other theorem statements are unchanged.
   No C export or Python function changes.
 
 ## 0.3.0
