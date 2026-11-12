@@ -78,6 +78,16 @@ structure TheoremOnePremises (e : Execution protocol honest) : Prop where
     ((e.world k).state w).Counts config s → ∀ v ∈ honest, NotSlashed s v
   supply : ∀ w ∈ honest, ∀ k checkpoint s, (e.world k).time ≤ 4000 →
     ((e.world k).state w).checkpointState checkpoint = .ok s → ActiveStakeAtMost stakeCapGwei s
+  exits : ∀ u ∈ honest, ∀ n (c : Checkpoint) (source : BeaconState preset .phase0),
+    (e.world n).time ≤ 4000 → ((e.world n).state u).checkpointState c = .ok source →
+    ∀ w ∈ honest, ∀ k (head : Root) (hs : BeaconState preset .phase0),
+    (e.world k).time ≤ 4000 → ((e.world k).state w).blockStates[head]? = some hs →
+    ((e.world k).state w).getCheckpointBlock head c.epoch = .ok c.root →
+    ∀ epoch : Epoch, c.epoch ≤ epoch → epoch.toNat ≤ c.epoch.toNat + 2 → epoch ≤ 1 →
+    epoch.toNat ≤ (getCurrentEpoch hs).toNat + 1 →
+    stake (fun v => balanceAt source v.toNat)
+        {v ∈ activeVoters source | isActiveAt hs epoch v.toNat = false} ≤
+      exitReserve config source
   positive : 0 < preset.EFFECTIVE_BALANCE_INCREMENT
   enough : 3 * 12 < 200
   large : ∀ w ∈ honest, ∀ k (s : BeaconState preset .phase0),
@@ -148,6 +158,7 @@ theorem all_premises : TheoremOnePremises execution where
   byzantine := byzantine
   unslashed := unslashed
   supply := supply
+  exits := exits
   positive := by decide
   enough := by decide
   large := large
@@ -231,6 +242,8 @@ Some quantified obligations hold only vacuously on this short horizon:
 * The dishonest-equivocator field of `WeightBounds` is vacuous: no store has an equivocator.
 * The slot-zero vote deadline precedes the execution's start, so `Votes` does not require it.
 * `FinalizedPrefix` and `OneJustifiedPerEpoch` compare only the epoch-zero anchor checkpoint.
+* `exits` holds with zero exited stake, since no validator has an exit epoch.
+  Every registered validator is active at each epoch up to the horizon in each held head state.
 
 No later-epoch target, duty or checkpoint instance is exercised beyond these time bounds.
 

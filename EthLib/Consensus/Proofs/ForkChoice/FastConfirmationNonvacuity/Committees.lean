@@ -88,11 +88,6 @@ theorem range_members {code : Local} {root : Root} {first last : Slot}
     exact (mem_foldlM_committees_iff read).mpr (.inr ⟨_, inside, committee, ok,
       (slot_members ok v).mpr (by rw [back]; exact present)⟩)
 
-/-- Every position of the registry is a validator of 200 Gwei. -/
-theorem registered_validator {v : ValidatorIndex} (registered : v < 8) :
-    (state bodyRoot).validators.data[v.toNat]? = some (validator 200) := by
-  rcases registered_cases registered with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;> rfl
-
 /-- The anchor's churn limit is one validator, so its exit reserve is one maximum balance. -/
 theorem exit_reserve_state (root : Root) : exitReserve config (state root) = 200 := by
   change exitReserve config (state default) = 200

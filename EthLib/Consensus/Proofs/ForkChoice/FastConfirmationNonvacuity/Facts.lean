@@ -226,23 +226,56 @@ theorem large : ∀ w ∈ honest, ∀ k (s : BeaconState preset .phase0),
     rw [(stakes bodyRoot).1]
     decide
 
-/-- The three counted states have the registry of the anchor, all active in epoch zero. -/
-theorem counted_active {s : BeaconState preset .phase0}
-    (shape : s = state bodyRoot ∨ s = postState ∨ s = advanced) :
-    activeVoters s = activeVoters (state bodyRoot) := by
-  rcases shape with rfl | rfl | rfl <;> first | rfl | decide
+/-- Every position of the registry is a validator of 200 Gwei. -/
+theorem registered_validator {v : ValidatorIndex} (registered : v < 8) :
+    (state bodyRoot).validators.data[v.toNat]? = some (validator 200) := by
+  rcases registered_cases registered with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;> rfl
 
-/-- No validator leaves the active set between two counted states, so the exited stake is zero.
+/-- Every registered validator is active at each epoch that the execution can name.
 
-The exit reserve of the source bounds it, whatever its value. -/
-theorem no_exited_stake {source later : BeaconState preset .phase0}
-    (sourceShape : source = state bodyRoot ∨ source = postState ∨ source = advanced)
-    (laterShape : later = state bodyRoot ∨ later = postState ∨ later = advanced) :
+A held head block state has the registry of the anchor, and no validator has an exit epoch. -/
+theorem active_at_epoch {hs : BeaconState preset .phase0}
+    (shape : hs = state bodyRoot ∨ hs = postState) {epoch : Epoch} (early : epoch ≤ 1)
+    {v : ValidatorIndex} (registered : v < 8) : isActiveAt hs epoch v.toNat = true := by
+  have lookup : hs.validators.data[v.toNat]? = some (validator 200) := by
+    rcases shape with rfl | rfl <;> exact registered_validator registered
+  have below : epoch < FAR_FUTURE_EPOCH := UInt64.lt_of_le_of_lt early (by decide)
+  simp [isActiveAt, lookup, isActiveValidator, validator, below]
+
+/-- The stake of the source that is inactive in a head state at a queried epoch fits the reserve.
+
+No validator leaves the registry within the horizon, so that stake is zero. -/
+theorem exits : ∀ u ∈ honest, ∀ n (c : Checkpoint) (source : BeaconState preset .phase0),
+    (execution.world n).time ≤ 4000 →
+    ((execution.world n).state u).checkpointState c = .ok source →
+    ∀ w ∈ honest, ∀ k (head : Root) (hs : BeaconState preset .phase0),
+    (execution.world k).time ≤ 4000 →
+    ((execution.world k).state w).blockStates[head]? = some hs →
+    ((execution.world k).state w).getCheckpointBlock head c.epoch = .ok c.root →
+    ∀ epoch : Epoch, c.epoch ≤ epoch → epoch.toNat ≤ c.epoch.toNat + 2 → epoch ≤ 1 →
+    epoch.toNat ≤ (getCurrentEpoch hs).toNat + 1 →
     stake (fun v => balanceAt source v.toNat)
-        {v ∈ activeVoters source | v ∉ activeVoters later} ≤ exitReserve config source := by
-  have empty : {v ∈ activeVoters source | v ∉ activeVoters later} = ∅ := by
-    rw [counted_active sourceShape, counted_active laterShape]
-    exact Finset.filter_false_of_mem fun v held => not_not.mpr held
+        {v ∈ activeVoters source | isActiveAt hs epoch v.toNat = false} ≤
+      exitReserve config source := by
+  intro u _ n c source nBound sourceOk w _ k head hs kBound held _ epoch _ _ early _
+  obtain ⟨sourceCode, sourceEq⟩ := store_code nBound u
+  rw [sourceEq] at sourceOk
+  have sourceIs := local_checkpoint sourceOk
+  subst sourceIs
+  obtain ⟨headCode, headEq⟩ := store_code kBound w
+  rw [headEq] at held
+  have shape : hs = state bodyRoot ∨ hs = postState :=
+    (local_block_state held).elim (fun h => .inl h.2) (fun h => .inr h.2)
+  have empty : {v ∈ activeVoters (state bodyRoot) | isActiveAt hs epoch v.toNat = false} = ∅ := by
+    apply Finset.eq_empty_iff_forall_notMem.mpr
+    intro v member
+    obtain ⟨inside, inactive⟩ := Finset.mem_filter.mp member
+    rw [active_voters bodyRoot] at inside
+    have registered : v < 8 := by
+      simp only [Finset.mem_insert, Finset.mem_singleton] at inside
+      rcases inside with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;> decide
+    rw [active_at_epoch shape early registered] at inactive
+    exact Bool.noConfusion inactive
   rw [empty, stake_empty]
   exact Nat.zero_le _
 
