@@ -238,6 +238,40 @@ private theorem validatorAt_of_mem_committeeWindow {anchor : Store preset fork}
     headStateOk stateOk active
   exact ⟨validator, validatorAt_ok_iff.mpr found⟩
 
+/-- A successful committee window supplies every shorter window with the same first slot. -/
+private theorem committeeWindow_prefix {store : Store preset fork} {head : Root}
+    {first last shortLast : Slot} {members : Std.TreeSet ValidatorIndex}
+    (read : store.getCommitteesBetweenSlots head first last = .ok members)
+    (before : shortLast ≤ last) :
+    ∃ short, store.getCommitteesBetweenSlots head first shortLast = .ok short ∧
+      ∀ v ∈ short, v ∈ members := by
+  have original := read
+  unfold Store.getCommitteesBetweenSlots at read
+  obtain ⟨afterLast, afterOk, folded⟩ := bind_ok_iff.mp read
+  have afterNat := (addChecked_ok_iff.mp (mapError_ok_iff.mp afterOk))
+  have shorter : shortLast.toNat + (1 : UInt64).toNat < 2 ^ 64 := by
+    have le := UInt64.le_iff_toNat_le.mp before
+    omega
+  have shortOk := addChecked_of_lt shorter
+  have shortNat := (addChecked_ok_iff.mp shortOk).2
+  have counts : (shortLast + 1).toNat - first.toNat ≤ afterLast.toNat - first.toNat := by
+    have le := UInt64.le_iff_toNat_le.mp before
+    omega
+  have split : List.range (afterLast.toNat - first.toNat) =
+      List.range ((shortLast + 1).toNat - first.toNat) ++
+        (List.range (afterLast.toNat - first.toNat)).drop
+          ((shortLast + 1).toNat - first.toNat) := by
+    simpa only [List.take_range, Nat.min_eq_left counts] using
+      (List.take_append_drop ((shortLast + 1).toNat - first.toNat)
+        (List.range (afterLast.toNat - first.toNat))).symm
+  rw [split, List.foldlM_append] at folded
+  obtain ⟨short, prefixOk, _⟩ := bind_ok_iff.mp folded
+  have shortRead : store.getCommitteesBetweenSlots head first shortLast = .ok short := by
+    simpa only [Store.getCommitteesBetweenSlots, shortOk, Except.mapError,
+      bind, Except.bind] using prefixOk
+  exact ⟨short, shortRead, fun _ member =>
+    Store.mem_getCommitteesBetweenSlots_of_le shortRead original before member⟩
+
 /-- An unslashed active window member is present in the balance list used by the tally. -/
 private theorem tallyActive_of_activeMember {state : BeaconState preset fork}
     {members : Std.TreeSet ValidatorIndex} {v : ValidatorIndex}
@@ -495,6 +529,30 @@ private theorem coverage_exists_of_maximum {store : Store preset fork} {head : R
   refine ⟨decide (computeEpochAtSlot preset lastFirst < computeEpochAtSlot preset afterOther), ?_⟩
   simp only [isFullValidatorSetCovered, firstOk, lastFirstOk, afterOk, Except.mapError,
     bind, Except.bind, pure, Except.pure]
+
+/-- The receiver reads the old maximum from its own bounded balance source.
+
+The caller supplies range arithmetic, not balances or registry containment. -/
+private theorem receiver_oldMaximum {caller receiver : Store preset fork}
+    {head receiverHead : Root} {source state : BeaconState preset fork}
+    {first oldLast last : Slot} {maximum total : Gwei}
+    {window : Std.TreeSet ValidatorIndex}
+    (read : caller.computeCommitteeWeightBetweenSlots head source first oldLast = .ok maximum)
+    (windowOk : receiver.getCommitteesBetweenSlots receiverHead first last = .ok window)
+    (before : oldLast ≤ last) (totalOk : getTotalActiveBalance state = .ok total)
+    (inside : ∀ v ∈ window, ∃ validator, validatorAt state v = .ok validator) :
+    ∃ result, receiver.computeCommitteeWeightBetweenSlots receiverHead state first oldLast =
+      .ok result := by
+  by_cases empty : oldLast < first
+  · exact ⟨0, Store.computeCommitteeWeightBetweenSlots_of_gt empty⟩
+  obtain ⟨members, membersOk, subset⟩ := committeeWindow_prefix windowOk before
+  have afterRead := membersOk
+  unfold Store.getCommitteesBetweenSlots at afterRead
+  obtain ⟨afterOld, afterOk, _⟩ := bind_ok_iff.mp afterRead
+  obtain ⟨covered, coverage⟩ := coverage_exists_of_maximum (UInt64.not_lt.mp empty) read
+    (mapError_ok_iff.mp afterOk)
+  exact maximum_exists_of_total coverage membersOk totalOk
+    (fun v member => inside v (subset v member))
 
 /-- A slot step within one epoch does not change the registry. -/
 private theorem validators_advanceSlot_sameEpoch {state after : BeaconState preset fork}
@@ -1381,6 +1439,31 @@ theorem Execution.honest_support_of_historical_anchor {Δ : ℕ} (sync : e.Synch
       (nonzero w receiver k (by omega)) headOk stateOk receiverWindowOk member
   obtain ⟨receiverActive, receiverWeight, receiverActiveOk, receiverWeightOk⟩ :=
     filteredTotal_exists receiverTotalOk receiverIndices
+  have clocks := (e.clock_bounds u n).1
+  have receiverClocks := (e.clock_bounds w k).1
+  rw [anchored u caller] at clocks
+  rw [anchored w receiver] at receiverClocks
+  have currentLe : slot ≤ current := by
+    apply computeSlotAtTimeMs_mono (laterMs := ((e.world k).state w).timeMs)
+      (UInt64.le_iff_toNat_le.mpr (by
+        rw [upToDate.1, receiverUpToDate.1, atTime]
+        exact later)) (mapError_ok_iff.mp slotOk)
+    simpa only [Store.getCurrentSlot, receiverClocks.trans clocks.symm] using
+      (mapError_ok_iff.mp currentOk)
+  have oldLastLe : lastSlot ≤ last := by
+    have callerLast := (subChecked_ok_iff.mp lastOk).2
+    have receiverLast := (subChecked_ok_iff.mp receiverLastOk).2
+    have slotsLe := UInt64.le_iff_toNat_le.mp currentLe
+    exact UInt64.le_iff_toNat_le.mpr (by omega)
+  obtain ⟨receiverMaximum, receiverMaximumOk⟩ := receiver_oldMaximum maximumOk
+    receiverWindowOk oldLastLe receiverTotalOk receiverIndices
+  have oldLastPast : lastSlot < current := by
+    have lastValue := subChecked_ok_iff.mp lastOk
+    have slotsLe := UInt64.le_iff_toNat_le.mp currentLe
+    exact UInt64.lt_iff_toNat_lt.mpr (by simp only [UInt64.toNat_one] at lastValue; omega)
+  obtain ⟨sourceMaximum, sourceScore, sourceMaximumOk, sourceScoreOk⟩ :=
+    weights.reads w receiver k receiverHead state current firstSlot lastSlot receiverMaximum
+      (by omega) (by omega) headOk currentOk oldLastPast stateOk receiverMaximumOk
   have receiverUnslashed : ∀ v ∈ J, NotSlashed state v := by
     obtain ⟨held, boundary, stored, _, advanced⟩ :=
       e.checkpointStates_fixedChecks anchorStore (anchored w receiver)
