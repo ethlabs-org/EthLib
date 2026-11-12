@@ -79,6 +79,8 @@ The public keys of the validators before it are a prefix of the public keys afte
 
 When no two validators share a key before it, none share a key after it.
 
+A validator that is slashed before it is still slashed after it, at the same position.
+
 When each validator has one balance before it, each has one after it.
 
 When each validator may withdraw no earlier than it exits before it, the same holds after it.
@@ -103,6 +105,10 @@ structure UpgradeFrame (config : Config) {fork post : Fork} (pre : BeaconState p
   registryGrows : pre.validators.data.size ≤ after.validators.data.size
   pubkeysPrefix : validatorKeys pre <+: validatorKeys after
   pubkeysDistinct : PubkeysDistinct pre → PubkeysDistinct after
+  slashed : ∀ (position : Nat) (old validator : Validator),
+    pre.validators.data[position]? = some old →
+    after.validators.data[position]? = some validator →
+    old.slashed = true → validator.slashed = true
   balancesMatch : BalancesMatch pre → BalancesMatch after
   exitsOrdered : ExitsOrdered pre → ExitsOrdered after
   aligned : MaxEffectiveBalancesAligned preset → EffectiveBalancesAligned pre →
@@ -143,6 +149,7 @@ theorem UpgradeFrame.of_carried {fork post : Fork} {pre : BeaconState preset for
   registryGrows := by rw [validators]; exact Nat.le_refl _
   pubkeysPrefix := by unfold validatorKeys; rw [validators]; exact List.prefix_refl _
   pubkeysDistinct := by unfold PubkeysDistinct validatorKeys; rw [validators]; exact id
+  slashed _ _ _ old found := by rw [validators, old] at found; cases found; exact id
   balancesMatch holds := by
     unfold BalancesMatch at holds ⊢
     rw [balances, validators]
@@ -176,6 +183,12 @@ theorem UpgradeFrame.trans_blockFrame {fork post : Fork} {pre : BeaconState pres
   registryGrows := Nat.le_trans one.registryGrows two.registryGrows
   pubkeysPrefix := one.pubkeysPrefix.trans two.pubkeysPrefix
   pubkeysDistinct := two.pubkeysDistinct ∘ one.pubkeysDistinct
+  slashed position old validator before after slashed := by
+    have inside := (Array.getElem?_eq_some_iff.mp before).1
+    have mid : position < middle.validators.data.size :=
+      Nat.lt_of_lt_of_le inside one.registryGrows
+    exact two.slashed position _ validator (Array.getElem?_eq_getElem mid) after
+      (one.slashed position old _ before (Array.getElem?_eq_getElem mid) slashed)
   balancesMatch := two.balancesMatch ∘ one.balancesMatch
   exitsOrdered := two.exitsOrdered ∘ one.exitsOrdered
   aligned maxAligned := two.aligned maxAligned ∘ one.aligned maxAligned
@@ -386,7 +399,7 @@ theorem frame_queuePreActivation {fork : Fork} {state after : BeaconState preset
   have sizes := sameSizes_setBalance set₁
   obtain ⟨_, rfl⟩ := setBalance_ok set₁
   have zeroed := BlockFrame.of_validators sizes
-  have reset := frame_setValidator_of_whole (old := validator) set₂ found rfl
+  have reset := frame_setValidator_of_whole (old := validator) set₂ found rfl id
     (fun ordered => ordered validator (mem_of_getValidator found)) fun _ _ => UInt64.zero_mod
   exact (zeroed.trans reset.toBlockFrame).trans (BlockFrame.of_validators ⟨rfl, rfl⟩)
 
