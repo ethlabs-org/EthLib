@@ -1612,6 +1612,413 @@ theorem frame_processBlock {block : BeaconBlock preset fork}
   obtain ⟨_, _, first, operated, last⟩ := processBlock_split computed
   exact first.toFrame.trans <| (frame_processOperations operated).trans last.toFrame
 
+/-! ## Header preservation outside the header step -/
+
+private theorem header_processDepositRequest {electra : .pectra ≤ fork} {request : DepositRequest}
+    (computed : processDepositRequest state electra request = .ok after) :
+    after.latestBlockHeader = state.latestBlockHeader := by
+  obtain ⟨start, recorded⟩ :=
+    recordDepositRequestsStart_eq (state := state) (index := request.index)
+  simp only [processDepositRequest, recorded, liftAccessor_ok, addPendingDeposit, bind_ok_iff,
+    pure, Except.pure, Except.ok.injEq] at computed
+  obtain ⟨_, _, rfl⟩ := computed
+  rfl
+
+private theorem header_processWithdrawalRequest {electra : .pectra ≤ fork}
+    {request : WithdrawalRequest}
+    (computed : processWithdrawalRequest config state electra request = .ok after) :
+    after.latestBlockHeader = state.latestBlockHeader := by
+  have partialWithdrawal : ∀ {s t : BeaconState preset fork} {index validator amount owed},
+      requestPartialWithdrawal config s electra index validator amount owed = .ok t →
+      t.latestBlockHeader = s.latestBlockHeader := by
+    intro s t index validator amount owed ok
+    simp only [requestPartialWithdrawal, bind_ok_iff, liftAccessor_ok, pure, Except.pure] at ok
+    obtain ⟨_, _, _, _, ok⟩ := ok
+    split at ok
+    · simp only [bind_ok_iff, liftAccessor_ok, Except.ok.injEq] at ok
+      obtain ⟨⟨_, _⟩, churned, _, _, _, _, rfl⟩ := ok
+      simp only [computeExitEpochAndUpdateChurn, bind_ok_iff, pure, Except.pure,
+        Except.ok.injEq] at churned
+      obtain ⟨_, _, _, _, _, _, churned⟩ := churned
+      cases churned
+      rfl
+    · cases ok
+      rfl
+  unfold processWithdrawalRequest at computed
+  simp only [bind, Except.bind, pure, Except.pure] at computed
+  repeat' split at computed
+  all_goals first
+    | (cases computed; done)
+    | (cases computed; rfl)
+    | exact (frame_initiateValidatorExit (liftAccessor_ok.mp computed)).latestBlockHeader
+    | exact partialWithdrawal computed
+
+private theorem header_processConsolidationRequest {electra : .pectra ≤ fork}
+    {request : ConsolidationRequest}
+    (computed : processConsolidationRequest config state electra request = .ok after) :
+    after.latestBlockHeader = state.latestBlockHeader := by
+  have switch : ∀ {s t : BeaconState preset fork} {index},
+      switchToCompoundingValidator s electra index = .ok t →
+      t.latestBlockHeader = s.latestBlockHeader := by
+    intro s t index ok
+    simp only [switchToCompoundingValidator, bind_ok_iff] at ok
+    obtain ⟨_, _, _, set, queued⟩ := ok
+    obtain ⟨_, rfl⟩ := setValidator_ok set
+    simp only [queueExcessActiveBalance, bind_ok_iff] at queued
+    obtain ⟨_, _, queued⟩ := queued
+    split at queued
+    · simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at queued
+      obtain ⟨_, _, _, _, _, set, rfl⟩ := queued
+      obtain ⟨_, rfl⟩ := setBalance_ok set
+      rfl
+    · cases queued
+      rfl
+  have queue : ∀ {s t : BeaconState preset fork} {index source target},
+      queueConsolidation config s electra index source target = .ok t →
+      t.latestBlockHeader = s.latestBlockHeader := by
+    intro s t index source target ok
+    simp only [queueConsolidation, bind_ok_iff, liftAccessor_ok, liftArith, mapError_ok_iff,
+      pure, Except.pure] at ok
+    obtain ⟨⟨_, _⟩, churned, _, _, _, set, _, _, ok⟩ := ok
+    simp only [Except.ok.injEq] at ok
+    subst ok
+    obtain ⟨_, rfl⟩ := setValidator_ok set
+    simp only [computeConsolidationEpochAndUpdateChurn, bind_ok_iff, pure, Except.pure,
+      Except.ok.injEq] at churned
+    obtain ⟨_, _, _, _, _, _, churned⟩ := churned
+    cases churned
+    rfl
+  unfold processConsolidationRequest at computed
+  simp only [bind, Except.bind, pure, Except.pure] at computed
+  repeat' split at computed
+  all_goals first
+    | (cases computed; done)
+    | (cases computed; rfl)
+    | exact switch (liftAccessor_ok.mp computed)
+    | exact queue computed
+
+theorem latestBlockHeader_processOperations
+    {body : BeaconBlockBody preset fork} {parentSlot : Slot}
+    (computed : processOperations config checks state body parentSlot = .ok after) :
+    after.latestBlockHeader = state.latestBlockHeader := by
+  have fold {α ε : Type} {step : BeaconState preset fork → α → Except ε _}
+      (kept : ∀ s x t, step s x = .ok t → t.latestBlockHeader = s.latestBlockHeader)
+      {s t : BeaconState preset fork} {items : List α}
+      (ok : items.foldlM step s = .ok t) : t.latestBlockHeader = s.latestBlockHeader :=
+    foldlM_ok_invariant (fun t => t.latestBlockHeader = s.latestBlockHeader)
+      (fun _ _ _ before ok => (kept _ _ _ ok).trans before) rfl ok
+  have proposer : ∀ {s t : BeaconState preset fork} {slashing},
+      processProposerSlashing config checks s slashing = .ok t →
+      t.latestBlockHeader = s.latestBlockHeader := by
+    intro s t slashing ok
+    simp only [processProposerSlashing, bind_ok_iff, ensure_ok_iff, liftAccessor_ok] at ok
+    obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, slashed⟩ := ok
+    exact (frame_slashValidator slashed).latestBlockHeader
+  have slash : ∀ {step next : BeaconState preset fork × Bool} {index},
+      slashIfSlashable config step index = .ok next →
+      next.1.latestBlockHeader = step.1.latestBlockHeader := by
+    intro step next index ok
+    obtain ⟨s, any⟩ := step
+    simp only [slashIfSlashable, bind_ok_iff, liftAccessor_ok] at ok
+    obtain ⟨_, _, ok⟩ := ok
+    split at ok
+    · simp only [bind_ok_iff, liftAccessor_ok, pure, Except.pure, Except.ok.injEq] at ok
+      obtain ⟨_, slashed, rfl⟩ := ok
+      exact (frame_slashValidator slashed).latestBlockHeader
+    · cases ok
+      rfl
+  have attester : ∀ {s t : BeaconState preset fork} {slashing},
+      processAttesterSlashing config checks s slashing = .ok t →
+      t.latestBlockHeader = s.latestBlockHeader := by
+    intro s t slashing ok
+    simp only [processAttesterSlashing, bind_ok_iff, ensure_ok_iff, pure, Except.pure,
+      Except.ok.injEq] at ok
+    obtain ⟨_, _, _, _, _, _, _, _, _, _, _, folded, _, _, rfl⟩ := ok
+    exact foldlM_ok_invariant (fun step => step.1.latestBlockHeader = s.latestBlockHeader)
+      (fun _ _ _ before ok => (slash ok).trans before) rfl folded
+  have attestation : ∀ {s t : BeaconState preset fork} {attestation},
+      processAttestation config checks s parentSlot attestation = .ok t →
+      t.latestBlockHeader = s.latestBlockHeader := by
+    intro s t attestation ok
+    unfold processAttestation at ok
+    split at ok
+    · unfold processAttestationAltair at ok
+      simp only [bind_ok_iff, liftAccessor_ok] at ok
+      obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _,
+        _, _, raised, raisedOk, final⟩ := ok
+      have last : t.latestBlockHeader = raised.latestBlockHeader := by
+        split at final
+        · rw [recordPaymentWeight_eq final]
+        · cases final
+          rfl
+      refine last.trans ((frame_increaseBalance raisedOk).latestBlockHeader.trans ?_)
+      unfold setEpochParticipation
+      split <;> rfl
+    · simp only [bind_ok_iff, ensure_ok_iff, liftAccessor_ok, pure, Except.pure,
+        Except.ok.injEq] at ok
+      obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _,
+        _, _, _, _, _, _, _, _, recorded, _, _, _, _, _, _, rfl⟩ := ok
+      have kept := recordPendingAttestation_ok recorded
+      split at kept <;>
+      · obtain ⟨_, rest⟩ := kept
+        rw [← rest]
+  have exit : ∀ {s t : BeaconState preset fork} {signed},
+      processVoluntaryExit config checks s signed = .ok t →
+      t.latestBlockHeader = s.latestBlockHeader := by
+    intro s t signed ok
+    unfold processVoluntaryExit at ok
+    simp only [bind_ok_iff, ensure_ok_iff, liftAccessor_ok, liftSsz_ok] at ok
+    obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, exited⟩ := ok
+    exact (frame_initiateValidatorExit exited).latestBlockHeader
+  have change : ∀ {s t : BeaconState preset fork} {signed},
+      processBlsToExecutionChange config checks s signed = .ok t →
+      t.latestBlockHeader = s.latestBlockHeader := by
+    intro s t signed ok
+    obtain ⟨_, _, _, _, _, set⟩ := processBlsToExecutionChange_ok ok
+    obtain ⟨_, rfl⟩ := setValidator_ok set
+    rfl
+  unfold processOperations at computed
+  split at computed
+  · unfold processOperationsGloas at computed
+    simp only [bind_ok_iff, ← Array.foldlM_toList] at computed
+    obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, proposersOk, _, attestersOk, _,
+      attestedOk, _, exitsOk, _, changesOk, paid⟩ := computed
+    exact (fold (fun _ _ _ ok => by rw [processPayloadAttestation_eq ok]) paid).trans <|
+      (fold (fun _ _ _ ok => change ok) changesOk).trans <|
+      (fold (fun _ _ _ ok => exit ok) exitsOk).trans <|
+      (fold (fun _ _ _ ok => attestation ok) attestedOk).trans <|
+      (fold (fun _ _ _ ok => attester ok) attestersOk).trans <|
+      fold (fun _ _ _ ok => proposer ok) proposersOk
+  · simp only [bind_ok_iff, ensure_ok_iff, ← Array.foldlM_toList] at computed
+    obtain ⟨_, _, _, _, _, proposersOk, _, attestersOk, _, attestedOk, _, depositedOk, exited,
+      exitsOk, changed, changesOk, requestsOk⟩ := computed
+    have changes : changed.latestBlockHeader = exited.latestBlockHeader := by
+      unfold processBlsToExecutionChanges at changesOk
+      split at changesOk
+      · rw [← Array.foldlM_toList] at changesOk
+        exact fold (fun _ _ _ ok => change ok) changesOk
+      · cases changesOk
+        rfl
+    have requests : after.latestBlockHeader = changed.latestBlockHeader := by
+      split at requestsOk
+      · simp only [processExecutionRequests, bind_ok_iff, ← Array.foldlM_toList] at requestsOk
+        obtain ⟨_, depositsOk, _, withdrawalsOk, consolidationsOk⟩ := requestsOk
+        exact (fold (fun _ _ _ ok => header_processConsolidationRequest ok)
+          consolidationsOk).trans <|
+          (fold (fun _ _ _ ok => header_processWithdrawalRequest ok) withdrawalsOk).trans <|
+          fold (fun _ _ _ ok => header_processDepositRequest ok) depositsOk
+      · cases requestsOk
+        rfl
+    refine requests.trans <| changes.trans <|
+      (fold (fun _ _ _ ok => exit ok) exitsOk).trans <|
+      (fold (fun _ _ _ ok => ?_) depositedOk).trans <|
+      (fold (fun _ _ _ ok => attestation ok) attestedOk).trans <|
+      (fold (fun _ _ _ ok => attester ok) attestersOk).trans <|
+      fold (fun _ _ _ ok => proposer ok) proposersOk
+    obtain ⟨_, _, _, _, applied⟩ := processDeposit_ok ok
+    exact (frame_applyDeposit applied).latestBlockHeader
+
+theorem latestBlockHeader_processBlockExecution
+    {body : BeaconBlockBody preset fork} {bellatrix : .bellatrix ≤ fork}
+    (computed : processBlockExecution config checks engine state body bellatrix = .ok after) :
+    after.latestBlockHeader = state.latestBlockHeader := by
+  have expected : ∀ {s t : BeaconState preset fork} {capella expected},
+      applyExpectedWithdrawals s capella expected = .ok t →
+      t.latestBlockHeader = s.latestBlockHeader := by
+    intro s t capella expected ok
+    simp only [applyExpectedWithdrawals, bind_ok_iff] at ok
+    obtain ⟨applied, appliedOk, indexed, indexedOk, finished, sweptOk, last⟩ := ok
+    have one : applied.latestBlockHeader = s.latestBlockHeader := by
+      unfold applyWithdrawals at appliedOk
+      rw [← Array.foldlM_toList] at appliedOk
+      refine foldlM_ok_invariant (fun t => t.latestBlockHeader = s.latestBlockHeader)
+        (fun _ _ _ before ok => ?_) rfl appliedOk
+      rw [applyWithdrawal_eq ok]
+      exact before
+    have two : indexed.latestBlockHeader = applied.latestBlockHeader := by
+      unfold updateNextWithdrawalIndex at indexedOk
+      split at indexedOk
+      · obtain ⟨_, _, built⟩ := bind_ok_iff.mp indexedOk
+        cases built
+        rfl
+      · cases indexedOk
+        rfl
+    have three : ∀ kept : BeaconState preset fork,
+        (if gloas : .glamsterdam ≤ fork then
+          updateNextWithdrawalBuilderIndex kept gloas expected.processedBuildersSweepCount
+        else pure kept) = .ok finished → finished.latestBlockHeader = kept.latestBlockHeader := by
+      intro kept ok
+      split at ok
+      · unfold updateNextWithdrawalBuilderIndex at ok
+        dsimp only at ok
+        split at ok
+        · cases ok
+          rfl
+        · obtain ⟨_, _, built⟩ := bind_ok_iff.mp ok
+          cases built
+          rfl
+      · cases ok
+        rfl
+    have queued : (if electra : .pectra ≤ fork then
+        updatePendingPartialWithdrawals (if gloas : .glamsterdam ≤ fork then
+          updateBuilderPendingWithdrawals
+            (updatePayloadExpectedWithdrawals indexed gloas expected.withdrawals) gloas
+            expected.processedBuilderWithdrawalsCount
+        else indexed) electra expected.processedPartialWithdrawalsCount
+      else if gloas : .glamsterdam ≤ fork then
+          updateBuilderPendingWithdrawals
+            (updatePayloadExpectedWithdrawals indexed gloas expected.withdrawals) gloas
+            expected.processedBuilderWithdrawalsCount
+        else indexed).latestBlockHeader = indexed.latestBlockHeader := by
+      split <;> split <;> rfl
+    have four : t.latestBlockHeader = finished.latestBlockHeader := by
+      unfold updateNextWithdrawalValidatorIndex at last
+      obtain ⟨_, _, last⟩ := bind_ok_iff.mp last
+      dsimp only at last
+      split at last
+      · cases last
+      · cases last
+        rfl
+    exact four.trans ((three _ sweptOk).trans (queued.trans (two.trans one)))
+  have withdrawals : ∀ {s t : BeaconState preset fork} {capella payload},
+      processWithdrawals s capella payload = .ok t →
+      t.latestBlockHeader = s.latestBlockHeader := by
+    intro s t capella payload ok
+    unfold processWithdrawals at ok
+    split at ok
+    · split at ok
+      · obtain ⟨_, _, applied⟩ := bind_ok_iff.mp ok
+        exact expected (liftAccessor_ok.mp applied)
+      · cases ok
+        rfl
+    · simp only [bind_ok_iff, ensure_ok_iff, liftAccessor_ok] at ok
+      obtain ⟨_, _, _, _, applied⟩ := ok
+      exact expected applied
+  have payload : ∀ {s t : BeaconState preset fork} {before},
+      processExecutionPayload config engine s body before = .ok t →
+      t.latestBlockHeader = s.latestBlockHeader := by
+    intro s t before ok
+    obtain ⟨_, _, _, rfl⟩ := processExecutionPayload_ok ok
+    rfl
+  unfold processBlockExecution at computed
+  split at computed
+  · simp only [bind_ok_iff] at computed
+    obtain ⟨_, withdrawnOk, bid⟩ := computed
+    obtain ⟨_, _, recordedOk, rfl⟩ := processExecutionPayloadBid_ok bid
+    have recorded : ∀ {s t : BeaconState preset fork} {gloas signed},
+        recordBidPayment s gloas signed = .ok t → t.latestBlockHeader = s.latestBlockHeader := by
+      intro s t gloas signed ok
+      unfold recordBidPayment at ok
+      split at ok
+      · simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at ok
+        obtain ⟨_, _, _, _, rfl⟩ := ok
+        rfl
+      · cases ok
+        rfl
+    exact (recorded recordedOk).trans (withdrawals withdrawnOk)
+  split at computed
+  · simp only [bind_ok_iff] at computed
+    obtain ⟨_, withdrawnOk, paid⟩ := computed
+    exact (payload paid).trans (withdrawals withdrawnOk)
+  · dsimp only at computed
+    split at computed
+    · exact payload computed
+    · cases computed
+      rfl
+
+theorem processBlock_header_split {block : BeaconBlock preset fork}
+    (computed : processBlock config checks engine state block = .ok after) :
+    ∃ parented headed,
+      parented.latestBlockHeader = state.latestBlockHeader ∧
+      processBlockHeader parented block = .ok headed ∧
+      after.latestBlockHeader = headed.latestBlockHeader := by
+  have fold {α ε : Type} {step : BeaconState preset fork → α → Except ε _}
+      (kept : ∀ s x t, step s x = .ok t → t.latestBlockHeader = s.latestBlockHeader)
+      {s t : BeaconState preset fork} {items : List α}
+      (ok : items.foldlM step s = .ok t) : t.latestBlockHeader = s.latestBlockHeader :=
+    foldlM_ok_invariant (fun t => t.latestBlockHeader = s.latestBlockHeader)
+      (fun _ _ _ before ok => (kept _ _ _ ok).trans before) rfl ok
+  have parent : ∀ {s t : BeaconState preset fork} {gloas},
+      processParentExecutionPayload config checks s gloas block.body = .ok t →
+      t.latestBlockHeader = s.latestBlockHeader := by
+    intro s t gloas ok
+    rcases processParentExecutionPayload_ok ok with ⟨-, -, rfl⟩ |
+      ⟨-, _, _, _, _, _, _, _, settledOk, depositsOk, withdrawalsOk, consolidationsOk, buildersOk,
+        exitsOk, -, rfl⟩
+    · rfl
+    · have settle := congrArg (·.latestBlockHeader) (settleParentPayment_eq settledOk)
+      have builders := fold (fun _ _ _ ok => by
+        unfold processBuilderDepositRequest addBuilderToRegistry at ok
+        simp only [bind, Except.bind, pure, Except.pure] at ok
+        repeat' split at ok
+        all_goals first | (cases ok; done) | (cases ok; rfl)) buildersOk
+      have exits := fold (fun _ _ _ ok => by
+        rcases processBuilderExitRequest_cases ok with rfl | ⟨_, _, _, _, _, exited⟩
+        · rfl
+        · simp only [initiateBuilderExit, bind_ok_iff] at exited
+          obtain ⟨_, _, _, _, set⟩ := exited
+          obtain ⟨_, rfl⟩ := setBuilder_ok set
+          rfl) exitsOk
+      exact exits.trans <| builders.trans <|
+        (fold (fun _ _ _ ok => header_processConsolidationRequest ok) consolidationsOk).trans <|
+        (fold (fun _ _ _ ok => header_processWithdrawalRequest ok) withdrawalsOk).trans <|
+        (fold (fun _ _ _ ok => header_processDepositRequest ok) depositsOk).trans settle
+  have randao : ∀ {s t : BeaconState preset fork},
+      processRandao config checks s block.body = .ok t →
+      t.latestBlockHeader = s.latestBlockHeader := by
+    intro s t ok
+    obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, rfl⟩ := processRandao_eq ok
+    rfl
+  have eth1 : ∀ {s t : BeaconState preset fork} {before},
+      processEth1Data before s block.body = .ok t →
+      t.latestBlockHeader = s.latestBlockHeader := by
+    intro s t before ok
+    obtain ⟨_, _, rest⟩ := processEth1Data_eq ok
+    exact congrArg (·.latestBlockHeader) rest
+  have sync : ∀ {s t : BeaconState preset fork} {altair},
+      processSyncAggregate config checks s altair (block.body.syncAggregate altair) = .ok t →
+      t.latestBlockHeader = s.latestBlockHeader := by
+    intro s t altair ok
+    unfold processSyncAggregate at ok
+    simp only [bind_ok_iff] at ok
+    obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, folded⟩ := ok
+    rw [← Array.foldlM_toList] at folded
+    refine fold (fun _ _ _ ok => ?_) folded
+    unfold applySyncReward at ok
+    split at ok
+    · simp only [bind_ok_iff, liftAccessor_ok] at ok
+      obtain ⟨_, raised, _, _, paid⟩ := ok
+      exact (frame_increaseBalance paid).latestBlockHeader.trans
+        (frame_increaseBalance raised).latestBlockHeader
+    · exact (frame_decreaseBalance (liftAccessor_ok.mp ok)).latestBlockHeader
+  unfold processBlock at computed
+  split at computed
+  · simp only [processBlockAltair, bind_ok_iff] at computed
+    obtain ⟨parented, parentedOk, headed, headedOk, executed, executedOk, revealed, revealedOk,
+      voted, votedOk, _, operatedOk, synced⟩ := computed
+    have parentedHeader : parented.latestBlockHeader = state.latestBlockHeader := by
+      split at parentedOk
+      · exact parent parentedOk
+      · cases parentedOk
+        rfl
+    have executedHeader : executed.latestBlockHeader = headed.latestBlockHeader := by
+      split at executedOk
+      · exact latestBlockHeader_processBlockExecution executedOk
+      · cases executedOk
+        rfl
+    have votedHeader : voted.latestBlockHeader = revealed.latestBlockHeader := by
+      split at votedOk
+      · exact eth1 votedOk
+      · cases votedOk
+        rfl
+    exact ⟨parented, headed, parentedHeader, headedOk,
+      (sync synced).trans <| (latestBlockHeader_processOperations operatedOk).trans <|
+        votedHeader.trans <| (randao revealedOk).trans executedHeader⟩
+  · simp only [bind_ok_iff] at computed
+    obtain ⟨headed, headedOk, _, randaoOk, _, eth1Ok, operationsOk⟩ := computed
+    exact ⟨state, headed, rfl, headedOk, (latestBlockHeader_processOperations operationsOk).trans <|
+      (eth1 eth1Ok).trans (randao randaoOk)⟩
+
 /-! ## Relations through the steps of an epoch -/
 
 /-- Joining the activation queue changes neither the exit nor the withdrawable epoch. -/
