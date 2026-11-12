@@ -1,6 +1,7 @@
 module
 
 public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmationResets
+public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmationCommittees
 import EthLib.Consensus.Proofs.ForkChoice.HonestVotes
 
 /-!
@@ -73,7 +74,9 @@ variable [DecidablePred (· ∈ J)]
 
 /-- Step 5, the initial transport: the bound of step 4 holds in each honest store at a later time.
 
-The hypotheses are those of `Execution.honest_support_of_safe`, with the premises below added.
+The caller is an honest validator whose store is up to date and holds the bound of step 4.
+
+Its ranges of committees end at the slot before its own, and at the slot before the block.
 
 The call is at the start of its slot.
 
@@ -87,7 +90,19 @@ It is of the current epoch of the caller or of the epoch before.
 
 It is safe at each time from the start of the current epoch to just before the call.
 
-The receiver keeps the finalized-chain premise `rootFinal` of that transport.
+The receiver is an honest validator whose store is up to date at the later time.
+
+Its head descends from the parent of the block.
+
+Its current epoch is at most two epochs after the epoch of the parent.
+
+Its finalized checkpoints up to that time agree with the block, as `rootFinal` says.
+
+The window of the receiver is the committees of its head between the parent and its own slot.
+
+The conclusion bounds the active members of that window, as `HeadFollowsSupport` reads it.
+
+The preset bounds are sufficient for this argument; they are not claimed to be necessary.
 
 The proof follows three lemmas of [verified-fast-confirmation][vfc].
 
@@ -99,7 +114,8 @@ The third is `bval_endpoint_strip_window_uniform`.
 theorem Execution.honest_support_of_historical_anchor {Δ : ℕ} (sync : e.Synchronous Δ)
     (slots : 0 < config.SLOT_DURATION_MS) (positive : 0 < preset.SLOTS_PER_EPOCH.toNat)
     (window : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
-    (ring : preset.MIN_SEED_LOOKAHEAD.toNat + 2 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
+    (lookahead : 1 ≤ preset.MIN_SEED_LOOKAHEAD.toNat ∧ 1 ≤ preset.MAX_SEED_LOOKAHEAD.toNat ∧
+      preset.MIN_SEED_LOOKAHEAD.toNat + 3 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
     (preGloas : fork < .glamsterdam) (admitted : BlocksAdmitted e 0 Δ)
     (oneBlock : OneBlockPerRoot e)
     (half : 2 * config.CONFIRMATION_BYZANTINE_THRESHOLD.toNat ≤ 100)
@@ -190,19 +206,24 @@ theorem Execution.honest_support_of_historical_anchor {Δ : ℕ} (sync : e.Synch
         ⟨((e.world k').state w).finalizedCheckpoint.root, .pending⟩
         ⟨root, .pending⟩ = .ok true)
     {receiverHead : ForkChoiceNode} {state : BeaconState preset fork}
-    {current last : Slot} {maximum score : Gwei}
-    {receiverParticipants : Std.TreeSet ValidatorIndex}
+    {current last : Slot} {receiverEpoch : Epoch} {score : Gwei}
+    {receiverWindow receiverParticipants : Std.TreeSet ValidatorIndex}
     (headOk : ((e.world k).state w).getHead config = .ok receiverHead)
+    (receiverAbove : ((e.world k).state w).isAncestor receiverHead ⟨block.parentRoot, .pending⟩ =
+      .ok true)
     (stateOk : ((e.world k).state w).checkpointState ((e.world k).state w).justifiedCheckpoint =
       .ok state)
     (currentOk : ((e.world k).state w).getCurrentSlot config = .ok current)
+    (receiverEpochOk : ((e.world k).state w).getCurrentStoreEpoch config = .ok receiverEpoch)
+    (age : receiverEpoch.toNat ≤ (computeEpochAtSlot preset parentBlock.slot).toNat + 2)
     (receiverLastOk : subChecked current 1 = .ok last)
-    (receiverMaximumOk : ((e.world k).state w).computeCommitteeWeightBetweenSlots
-      receiverHead.root state firstSlot last = .ok maximum)
+    (receiverWindowOk : ((e.world k).state w).getCommitteesBetweenSlots receiverHead.root
+      firstSlot last = .ok receiverWindow)
     (scoreOk : computeProposerScore config state = .ok score)
     (receiverParticipantsOk : ((e.world k).state w).getCommitteesBetweenSlots receiverHead.root
       firstSlot beforeBlock = .ok receiverParticipants) :
-    maximum.toNat + score.toNat <
+    stake (fun v => balanceAt state v.toNat) (Store.activeMembers state receiverWindow) +
+        score.toNat <
       stake (fun v => balanceAt state v.toNat)
           {v ∈ ((e.world k).state w).parentVotersOf state receiverParticipants block
             parentBlock | v ∈ J} +

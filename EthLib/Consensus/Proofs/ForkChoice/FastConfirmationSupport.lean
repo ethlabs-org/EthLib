@@ -459,19 +459,27 @@ The store is up to date, and the parent of the block is on the chain of its head
 
 The block is in the filtered tree of the store.
 
-The committees are those from the slot after the parent to the slot before the current one.
+The window is the committees of the head over the slots between the parent and the current slot.
+
+The current epoch is at most two epochs after the epoch of the parent.
+
+Each validator counted for a sibling of the block, or for the block, is in the window.
+
+It is also active in the justified state of the store.
+
+That containment is a premise, not part of this assumption.
+
+`Execution.mem_activeMembers_of_sibling_vote` is to prove it.
 
 Count the honest supporters of the block twice, and add the honest voters for its parent.
 
-The sum exceeds the weight of those committees plus the boost.
+The sum exceeds the stake of the active members of the window plus the boost.
 
 The balances are those of the justified state of the store.
 
 Then the block is on the chain of the head.
 
-The tree part of Lemma 2 in issue 1458 is to give this fact.
-
-It needs a cap on the weight of a sibling.
+This is the tree part of Lemma 2 in issue 1458, with the window as the cap on a sibling.
 
 The reads field prevents a failed committee computation from making descent vacuous. -/
 structure HeadFollowsSupport
@@ -486,30 +494,35 @@ structure HeadFollowsSupport
       ((e.world k).state w).getCurrentSlot config = .ok current ∧
       computeProposerScore config state = .ok score ∧
       ((e.world k).state w).getFilteredNodeTree config = .ok nodes ∧
-      ∀ first last, last < current → ∃ participants weight,
-        ((e.world k).state w).getCommitteesBetweenSlots head.root first last = .ok participants ∧
-        ((e.world k).state w).computeCommitteeWeightBetweenSlots head.root state first last =
-          .ok weight
+      ∀ first last, last < current → ∃ participants,
+        ((e.world k).state w).getCommitteesBetweenSlots head.root first last = .ok participants
   /-- Honest support above the sibling cap makes the head follow a viable child. -/
-  follows : ∀ w ∈ J, ∀ k head state root block parentBlock current first last beforeBlock maximum score
-    nodes parentParticipants,
+  follows : ∀ w ∈ J, ∀ k head state root block parentBlock current epoch first last beforeBlock
+    window score nodes parentParticipants,
     UpToDate config checks sources (e.world k).time ((e.world k).view w) ((e.world k).state w) →
     ((e.world k).state w).getHead config = .ok head →
     ((e.world k).state w).checkpointState ((e.world k).state w).justifiedCheckpoint = .ok state →
     ((e.world k).state w).block root = .ok block →
     ((e.world k).state w).block block.parentRoot = .ok parentBlock →
     ((e.world k).state w).getCurrentSlot config = .ok current →
+    ((e.world k).state w).getCurrentStoreEpoch config = .ok epoch →
+    epoch.toNat ≤ (computeEpochAtSlot preset parentBlock.slot).toNat + 2 →
     addChecked parentBlock.slot 1 = .ok first → subChecked current 1 = .ok last →
     subChecked block.slot 1 = .ok beforeBlock →
-    ((e.world k).state w).computeCommitteeWeightBetweenSlots head.root state first last =
-      .ok maximum →
+    ((e.world k).state w).getCommitteesBetweenSlots head.root first last = .ok window →
     computeProposerScore config state = .ok score →
     ((e.world k).state w).getCommitteesBetweenSlots head.root first beforeBlock =
       .ok parentParticipants →
     ((e.world k).state w).getFilteredNodeTree config = .ok nodes →
     (⟨root, .pending⟩ : ForkChoiceNode) ∈ nodes →
     ((e.world k).state w).isAncestor head ⟨block.parentRoot, .pending⟩ = .ok true →
-    maximum.toNat + score.toNat <
+    (∀ (c : ForkChoiceNode) (childBlock : BeaconBlock preset fork) (v : ValidatorIndex),
+      ((e.world k).state w).blocks[c.root]? = some childBlock →
+      childBlock.parentRoot = block.parentRoot →
+      ((e.world k).state w).voteCountsFor c v = true →
+      v ∈ ((unslashedActiveBalances state).map (·.1)).toFinset →
+      v ∈ Store.activeMembers state window) →
+    stake (fun v => balanceAt state v.toNat) (Store.activeMembers state window) + score.toNat <
       stake (fun v => balanceAt state v.toNat)
           {v ∈ ((e.world k).state w).parentVotersOf state parentParticipants block parentBlock |
             v ∈ J} +
@@ -544,7 +557,9 @@ structure WeightBounds
     (e : Execution (honestForkChoice config checks sources anchorState anchorBlock assignment
       genesisTimeMs) J) [DecidablePred (· ∈ J)] (balanceSource : BeaconState preset fork)
     (first last shift : ℕ) : Prop where
-  /-- Counterfactual reads under the call's balances must succeed before margins can be compared. -/
+  /-- Counterfactual reads under the call's balances must succeed before margins can be compared.
+
+  The transport reads the source maximum of the window before the call through this field. -/
   reads : ∀ w ∈ J, ∀ k head state current firstSlot lastSlot maximum,
     first ≤ (e.world k).time → (e.world k).time ≤ last →
     ((e.world k).state w).getHead config = .ok head →
@@ -832,210 +847,6 @@ theorem Execution.past_block_of_honest_supporter {Δ : ℕ}
   obtain ⟨b, held⟩ := (reached u caller n).known_of_ancestor_walk (reached v honest m)
     (oneBlock u caller v honest n m) known walk
   exact ⟨m, earlier, b, sameRoot ▸ held, late⟩
-
-/-- Step 5, the transport: the bound of step 4 holds in each honest store at a later time.
-
-The caller is an honest validator whose store is up to date and holds the bound of step 4.
-
-Its ranges of committees end at the slot before its own, and at the slot before the block.
-
-From the time of the call to just before the later time, the block is safe.
-
-So each honest vote of those slots supports the block.
-
-The receiver is an honest validator whose store is up to date at the later time.
-
-Its ranges of committees end at the slot before its own, and at the slot before the block.
-
-The honest validators vote as their duty asks from the start of the execution.
-
-Each honest store starts as the same store, which holds no vote.
-
-The proof follows three lemmas of [verified-fast-confirmation][vfc].
-
-Two are `honest_supporters_sum_le_Sval_window` and `weak_base_discharged_window`.
-
-The third is `bval_endpoint_strip_window_uniform`.
-
-The counting step `honest_ratio_of_new_votes` takes the place of its fixed committees.
-
-[vfc]: https://github.com/fradamt/verified-fast-confirmation -/
-theorem Execution.honest_support_of_safe {Δ : ℕ} (sync : e.Synchronous Δ)
-    (slots : 0 < config.SLOT_DURATION_MS) (positive : 0 < preset.SLOTS_PER_EPOCH.toNat)
-    (window : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
-    (ring : preset.MIN_SEED_LOOKAHEAD.toNat + 2 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
-    (preGloas : fork < .glamsterdam) (admitted : BlocksAdmitted e 0 Δ)
-    (oneBlock : OneBlockPerRoot e)
-    (half : 2 * config.CONFIRMATION_BYZANTINE_THRESHOLD.toNat ≤ 100)
-    (votes : Votes e.startTime e) (fits : DelayFits fork config genesisTimeMs Δ)
-    (prompt : Prompt e) (committees : CommitteesFollow e) {anchor : Store preset fork}
-    (anchorStore : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
-    (sound : Invariant anchorState) (anchorSlot : anchorBlock.slot = anchorState.slot)
-    (anchorBoundary : isStartSlotAtEpoch preset anchorBlock.slot = .ok true)
-    (anchored : ∀ w ∈ J, e.start w = anchor) (noVotes : anchor.latestMessages.isEmpty)
-    {u : ValidatorIndex} (caller : u ∈ J) {n : ℕ}
-    (upToDate : UpToDate config checks sources (e.world n).time ((e.world n).view u)
-      ((e.world n).state u))
-    {head root : Root} {balanceSource : BeaconState preset fork}
-    {slot firstSlot lastSlot beforeBlock : Slot} {block parentBlock : BeaconBlock preset fork}
-    {parentParticipants : Std.TreeSet ValidatorIndex} {proposerScore maximumSupport : Gwei}
-    (callerHead : ∃ node, ((e.world n).state u).getHead config = .ok node ∧ node.root = head)
-    (slotOk : ((e.world n).state u).getCurrentSlot config = .ok slot)
-    (blockOk : ((e.world n).state u).block root = .ok block)
-    (parentOk : ((e.world n).state u).block block.parentRoot = .ok parentBlock)
-    (boostOk : computeProposerScore config balanceSource = .ok proposerScore)
-    (firstOk : addChecked parentBlock.slot 1 = .ok firstSlot)
-    (lastOk : subChecked slot 1 = .ok lastSlot)
-    (beforeOk : subChecked block.slot 1 = .ok beforeBlock)
-    (maximumOk : ((e.world n).state u).computeCommitteeWeightBetweenSlots head balanceSource
-      firstSlot lastSlot = .ok maximumSupport)
-    (parentParticipantsOk : ((e.world n).state u).getCommitteesBetweenSlots head firstSlot
-      beforeBlock = .ok parentParticipants)
-    {shift : ℕ} {support discount adversary : Gwei}
-    (within : balanceSource.RegistryWithinLimit) (aligned : EffectiveBalancesAligned balanceSource)
-    (increment : preset.EFFECTIVE_BALANCE_INCREMENT.toNat % 100 = 0)
-    (supportOk : ((e.world n).state u).scoreFromTally
-      (((e.world n).state u).tallyVotes balanceSource) ⟨root, .pending⟩ = .ok support)
-    (discountOk : ((e.world n).state u).computeEmptySlotSupportDiscount config head balanceSource
-      root = .ok discount)
-    (adversaryOk : ((e.world n).state u).getAdversarialWeight config head balanceSource root =
-      .ok adversary)
-    (confirmed : ((e.world n).state u).isOneConfirmed config head balanceSource
-      (((e.world n).state u).tallyVotes balanceSource) root = .ok true)
-    (base : maximumSupport.toNat + proposerScore.toNat + 2 * adversary.toNat + shift <
-      discount.toNat + 2 * support.toNat)
-    {time : ℕ} (later : (e.world n).time ≤ time)
-    (weights : WeightBounds e balanceSource (e.world n).time time shift)
-    {horizon : Epoch} (chain : FinalizedPrefix e horizon)
-    (inHorizon : ∀ w ∈ J, ∀ k epoch, (e.world k).time ≤ time →
-      ((e.world k).state w).getCurrentStoreEpoch config = .ok epoch → epoch ≤ horizon)
-    (nonzero : ∀ w ∈ J, ∀ k, (e.world k).time ≤ time →
-      ∀ (r : Root) (b : BeaconBlock preset fork),
-        ((e.world k).state w).blocks[r]? = some b → b.stateRoot ≠ Vector.replicate 32 0)
-    (large : ∀ w ∈ J, ∀ k (state : BeaconState preset fork),
-      (e.world k).time ≤ time → ((e.world k).state w).Counts config state →
-      getCurrentEpoch state ≤ horizon →
-      3 * preset.EFFECTIVE_BALANCE_INCREMENT.toNat <
-        2 * stake (fun v => balanceAt state v.toNat) (activeVoters state))
-    (few : ∀ w ∈ J, ∀ k (state : BeaconState preset fork) total,
-      (e.world k).time ≤ time → ((e.world k).state w).Counts config state →
-      getCurrentEpoch state ≤ horizon → getTotalActiveBalance state = .ok total →
-      3 * stake (fun v => balanceAt state v.toNat) {v ∈ quorumVoters state | v ∉ J} <
-        2 * total.toNat)
-    (safe : ∀ earlier, (e.world n).time ≤ earlier → earlier < time → SafeAt e earlier root)
-    {w : ValidatorIndex} (receiver : w ∈ J) {k : ℕ} (atTime : (e.world k).time = time)
-    (receiverUpToDate : UpToDate config checks sources (e.world k).time ((e.world k).view w)
-      ((e.world k).state w))
-    (known : ((e.world k).state w).blocks[root]? = some block)
-    (rootFinal : ∀ k' ≤ k,
-      UpToDate config checks sources (e.world k').time ((e.world k').view w)
-        ((e.world k').state w) →
-      (∃ boundary,
-        computeStartSlotAtEpoch preset ((e.world k').state w).finalizedCheckpoint.epoch =
-          .ok boundary ∧ boundary ≤ block.slot ∧
-        ((e.world k).state w).getCheckpointBlock root
-          ((e.world k').state w).finalizedCheckpoint.epoch =
-            .ok ((e.world k').state w).finalizedCheckpoint.root) ∨
-      ((e.world k).state w).isAncestor
-        ⟨((e.world k').state w).finalizedCheckpoint.root, .pending⟩
-        ⟨root, .pending⟩ = .ok true)
-    {receiverHead : ForkChoiceNode} {state : BeaconState preset fork}
-    {current last : Slot} {maximum score : Gwei}
-    {receiverParticipants : Std.TreeSet ValidatorIndex}
-    (headOk : ((e.world k).state w).getHead config = .ok receiverHead)
-    (stateOk : ((e.world k).state w).checkpointState ((e.world k).state w).justifiedCheckpoint =
-      .ok state)
-    (currentOk : ((e.world k).state w).getCurrentSlot config = .ok current)
-    (receiverLastOk : subChecked current 1 = .ok last)
-    (receiverMaximumOk : ((e.world k).state w).computeCommitteeWeightBetweenSlots
-      receiverHead.root state firstSlot last = .ok maximum)
-    (scoreOk : computeProposerScore config state = .ok score)
-    (receiverParticipantsOk : ((e.world k).state w).getCommitteesBetweenSlots receiverHead.root
-      firstSlot beforeBlock = .ok receiverParticipants) :
-    maximum.toNat + score.toNat <
-      stake (fun v => balanceAt state v.toNat)
-          {v ∈ ((e.world k).state w).parentVotersOf state receiverParticipants block
-            parentBlock | v ∈ J} +
-        2 * stake (fun v => balanceAt state v.toNat)
-          {v ∈ ((e.world k).state w).supportersOf state ⟨root, .pending⟩ | v ∈ J} ∨
-      ((e.world k).state w).isAncestor
-        ⟨((e.world k).state w).justifiedCheckpoint.root, .pending⟩
-        ⟨root, .pending⟩ = .ok true := by
-  sorry
-
-/-- Step 5, the induction: a block that holds the bound of step 4 is safe up to a last time.
-
-The caller and its bound are those of `Execution.honest_support_of_safe`.
-
-The parent of the block is safe from the time of the call to the last time.
-
-Take a time of that range such that the block is safe at each earlier time of the range.
-
-Then each honest store holds the block in its filtered tree or below its justified block.
-
-Step 6 gives that fact from the other checks of the rule.
-
-The proof is a strong induction on the time.
-
-It follows `safeFrom_of_headStep_at` of [verified-fast-confirmation][vfc].
-
-[vfc]: https://github.com/fradamt/verified-fast-confirmation -/
-theorem Execution.safeAt_of_support {Δ : ℕ} (sync : e.Synchronous Δ)
-    (preGloas : fork < .glamsterdam) (admitted : BlocksAdmitted e 0 Δ)
-    (oneBlock : OneBlockPerRoot e)
-    (half : 2 * config.CONFIRMATION_BYZANTINE_THRESHOLD.toNat ≤ 100)
-    (votes : Votes e.startTime e) (fits : DelayFits fork config genesisTimeMs Δ)
-    (prompt : Prompt e) (committees : CommitteesFollow e) (follows : HeadFollowsSupport e)
-    {anchor : Store preset fork}
-    (anchorStore : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
-    (anchored : ∀ w ∈ J, e.start w = anchor)
-    (noVotes : anchor.latestMessages.isEmpty)
-    {u : ValidatorIndex} (caller : u ∈ J) {n : ℕ}
-    (upToDate : UpToDate config checks sources (e.world n).time ((e.world n).view u)
-      ((e.world n).state u))
-    {head root : Root} {balanceSource : BeaconState preset fork}
-    {slot firstSlot lastSlot beforeBlock : Slot} {block parentBlock : BeaconBlock preset fork}
-    {parentParticipants : Std.TreeSet ValidatorIndex} {proposerScore maximumSupport : Gwei}
-    (callerHead : ∃ node, ((e.world n).state u).getHead config = .ok node ∧ node.root = head)
-    (slotOk : ((e.world n).state u).getCurrentSlot config = .ok slot)
-    (blockOk : ((e.world n).state u).block root = .ok block)
-    (parentOk : ((e.world n).state u).block block.parentRoot = .ok parentBlock)
-    (boostOk : computeProposerScore config balanceSource = .ok proposerScore)
-    (firstOk : addChecked parentBlock.slot 1 = .ok firstSlot)
-    (lastOk : subChecked slot 1 = .ok lastSlot)
-    (beforeOk : subChecked block.slot 1 = .ok beforeBlock)
-    (maximumOk : ((e.world n).state u).computeCommitteeWeightBetweenSlots head balanceSource
-      firstSlot lastSlot = .ok maximumSupport)
-    (parentParticipantsOk : ((e.world n).state u).getCommitteesBetweenSlots head firstSlot
-      beforeBlock = .ok parentParticipants)
-    {shift : ℕ} {support discount adversary : Gwei}
-    (within : balanceSource.RegistryWithinLimit) (aligned : EffectiveBalancesAligned balanceSource)
-    (increment : preset.EFFECTIVE_BALANCE_INCREMENT.toNat % 100 = 0)
-    (supportOk : ((e.world n).state u).scoreFromTally
-      (((e.world n).state u).tallyVotes balanceSource) ⟨root, .pending⟩ = .ok support)
-    (discountOk : ((e.world n).state u).computeEmptySlotSupportDiscount config head balanceSource
-      root = .ok discount)
-    (adversaryOk : ((e.world n).state u).getAdversarialWeight config head balanceSource root =
-      .ok adversary)
-    (confirmed : ((e.world n).state u).isOneConfirmed config head balanceSource
-      (((e.world n).state u).tallyVotes balanceSource) root = .ok true)
-    (base : maximumSupport.toNat + proposerScore.toNat + 2 * adversary.toNat + shift <
-      discount.toNat + 2 * support.toNat)
-    {limit : ℕ} (weights : WeightBounds e balanceSource (e.world n).time limit shift)
-    (compatible : ∀ w ∈ J, ∀ k, (e.world n).time ≤ (e.world k).time →
-      (e.world k).time ≤ limit →
-      UpToDate config checks sources (e.world k).time ((e.world k).view w)
-        ((e.world k).state w) →
-      ((e.world n).state u).getCheckpointBlock root
-        ((e.world k).state w).finalizedCheckpoint.epoch =
-          .ok ((e.world k).state w).finalizedCheckpoint.root)
-    (parentSafe : ∀ time, (e.world n).time ≤ time → time ≤ limit →
-      SafeAt e time block.parentRoot)
-    (viable : ∀ time, (e.world n).time ≤ time → time ≤ limit →
-      (∀ earlier, (e.world n).time ≤ earlier → earlier < time → SafeAt e earlier root) →
-      CoveredOrViableAt e time root) :
-    ∀ time, (e.world n).time ≤ time → time ≤ limit → SafeAt e time root := by
-  sorry
 
 /-- A duty target remains recent at the next slot, including an epoch boundary. -/
 theorem epoch_recent_at_next_slot {slot next : Slot}
