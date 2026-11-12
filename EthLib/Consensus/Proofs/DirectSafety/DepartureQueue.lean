@@ -204,6 +204,57 @@ theorem departureCharges_le_calls {charges : List DepartureCharge}
     sums calls (fun c => c.call.epoch.toNat) (fun c => c.call.amount.toNat)] at bound
   exact bound
 
+/-- A first-epoch bound discards capacity in idle epochs before the chosen window. -/
+theorem DepartureQueueTrace.window_le_from {earliest epoch : Epoch} {available left : Gwei}
+    {calls : List DepartureQueueCall}
+    (trace : DepartureQueueTrace earliest available calls epoch left) (start high cap : Nat)
+    (rates : ∀ call ∈ calls, call.rate.toNat ≤ cap)
+    (firsts : ∀ call ∈ calls, start ≤ call.first.toNat) :
+    ((calls.filter fun call => call.epoch.toNat ≤ high).map fun call => call.amount.toNat).sum ≤
+      (if earliest.toNat ≤ high then available.toNat else 0) + (high + 1 - start) * cap := by
+  cases trace with
+  | nil => simp
+  | cons call tail =>
+    have rest := tail.window_le high cap
+      (fun c member => rates c (List.mem_cons_of_mem _ member))
+    by_cases inside : call.epoch.toNat ≤ high
+    · by_cases before : start ≤ call.earliest.toNat
+      · have initialInside := call.epoch_mono.trans inside
+        have bound := (DepartureQueueTrace.cons call tail).window_le high cap rates
+        have initial : departureQueuePotential high cap call.earliest call.available ≤
+            (if call.earliest.toNat ≤ high then call.available.toNat else 0) +
+              (high + 1 - start) * cap := by
+          simp only [departureQueuePotential, initialInside, ↓reduceIte]
+          exact Nat.add_le_add_left (Nat.mul_le_mul_right cap (by omega)) _
+        exact (Nat.le_add_right _ _).trans (bound.trans initial)
+      · have first := firsts call (by simp)
+        obtain ⟨placed, spent, _⟩ := churnQueue_spend call.computed
+        have placed := UInt64.le_iff_toNat_le.mp placed
+        rw [Uint64.toNat_max] at placed
+        have reset : call.earliest < max call.earliest call.first := by
+          rw [UInt64.lt_iff_toNat_lt, Uint64.toNat_max]
+          omega
+        rw [ite_eq_left reset, Uint64.toNat_max] at spent
+        have one : call.left.toNat + call.amount.toNat ≤
+            (call.epoch.toNat + 1 - start) * cap := by
+          calc
+            call.left.toNat + call.amount.toNat =
+                (call.epoch.toNat - max call.earliest.toNat call.first.toNat + 1) *
+                  call.rate.toNat := by rw [spent, Nat.add_mul, Nat.one_mul]; omega
+            _ ≤ (call.epoch.toNat + 1 - start) * cap :=
+              Nat.mul_le_mul (by omega) (rates call (by simp))
+        have distance : (call.epoch.toNat + 1 - start) + (high - call.epoch.toNat) =
+            high + 1 - start := by omega
+        have combined := Nat.add_le_add_right one ((high - call.epoch.toNat) * cap)
+        rw [← Nat.add_mul, distance] at combined
+        simp only [departureQueuePotential, inside, ↓reduceIte] at rest
+        simp only [List.filter_cons, decide_eq_true inside, ↓reduceIte,
+          List.map_cons, List.sum_cons]
+        omega
+    · simp only [departureQueuePotential, inside, ↓reduceIte] at rest
+      simp only [List.filter_cons, decide_eq_false inside, Bool.false_eq_true, ↓reduceIte]
+      omega
+
 /-- Tagged calls cover all newly assigned exits of existing registry entries. -/
 def DepartureCoverage {f h : Fork} (s : BeaconState preset f) (t : BeaconState preset h)
     (calls : List IndexedDepartureCall) : Prop :=
