@@ -3823,7 +3823,6 @@ theorem derivedDrift_le_sources {g x y : ForkedBeaconState preset}
     (parameters : Parameters preset)
     (twoSlots : 2 ≤ preset.SLOTS_PER_EPOCH.toNat) (caps : CapOrder preset)
     (aligned : MaxEffectiveBalancesAligned preset)
-    (withdrawalDelay : 0 < config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat)
     (early : y.fork < .glamsterdam) (high : Nat)
     (startEpoch : (getCurrentEpoch x.state).toNat ≤ high + 1) :
     ∃ events, tail.balanceEvents high = .ok events ∧
