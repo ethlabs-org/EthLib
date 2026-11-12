@@ -3199,6 +3199,159 @@ def _root_.EthLib.Consensus.Run.consolidationSites {x : ForkedBeaconState preset
   | _, .nil => []
   | _, .snoc pre step => pre.consolidationSites ++ step.consolidationSites
 
+private theorem slot_consolidationFrame {fork : Fork} {s t : BeaconState preset fork}
+    (electra : .pectra ≤ fork) (early : fork < .glamsterdam)
+    (ok : advanceSlot config checks s = .ok t) :
+    (departureQueues electra t).2.2 = (departureQueues electra s).2.2 := by
+  simp only [advanceSlot, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at ok
+  obtain ⟨_, _, cached, cache, stepped, advance, rfl⟩ := ok
+  have cachedFrame : (departureQueues electra cached).2.2 =
+      (departureQueues electra s).2.2 := by
+    obtain ⟨_, _, _, _, rfl⟩ := processSlot_ok cache
+    rfl
+  change (departureQueues electra stepped).2.2 = (departureQueues electra s).2.2
+  unfold epochIfLast at advance
+  split at advance
+  · exact (epoch_consolidationFrame electra early advance).trans cachedFrame
+  · cases advance; exact cachedFrame
+
+private theorem upgrades_registry {s t : ForkedBeaconState preset}
+    (electra : .pectra ≤ s.fork) (early : t.fork < .glamsterdam)
+    (ok : processUpgrades config checks s = .ok t) :
+    t.state.validators.data = s.state.validators.data := by
+  fun_induction processUpgrades config checks s generalizing t with
+  | case1 s due ih =>
+    obtain ⟨next, nextOk, rest⟩ := bind_ok_iff.mp ok
+    have nextElectra := Nat.le_trans electra (Nat.le_of_lt next.property)
+    have nextEarly := Nat.lt_of_le_of_lt (processUpgrades_fork_le rest) early
+    rw [ih next nextElectra early rest]
+    obtain ⟨fork, state⟩ := s
+    have sourceEarly := Nat.lt_trans next.property nextEarly
+    have forkCases : fork = .pectra ∨ fork = .fusaka := by
+      change Fork.pectra ≤ fork at electra
+      change fork < Fork.glamsterdam at sourceEarly
+      cases fork <;> simp_all (config := { decide := true })
+      all_goals cases nextOk
+    rcases forkCases with rfl | rfl
+    · simp only [upgradeNext, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at nextOk
+      obtain ⟨_, upgraded, rfl⟩ := nextOk
+      exact (upgradeToFulu_spec upgraded).1
+    · simp only [upgradeNext, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at nextOk
+      obtain ⟨_, _, rfl⟩ := nextOk
+      exact False.elim (Nat.lt_irrefl _ nextEarly)
+  | case2 s notDue => cases ok; rfl
+
+/-- A post-Electra step retains both linked queues and coverage of its actual departures. -/
+theorem step_indexedTrace {x y : ForkedBeaconState preset}
+    (step : Step config checks x y) (electra : .pectra ≤ x.fork)
+    (early : y.fork < .glamsterdam) (targetElectra : .pectra ≤ y.fork) (cap : Nat)
+    (rates : ∀ site ∈ step.consolidationSites,
+      ∀ (_h : .pectra ≤ site.fork) (rate : Gwei),
+        getConsolidationChurnLimit config site.state = .ok rate → rate.toNat ≤ cap) :
+    ∃ exits consolidations : List IndexedDepartureCall,
+      DepartureCoverage x.state y.state (exits ++ consolidations) ∧
+      DepartureQueueTrace (x.state.earliestExitEpoch electra)
+        (x.state.exitBalanceToConsume electra) (exits.map (·.call))
+        (y.state.earliestExitEpoch targetElectra) (y.state.exitBalanceToConsume targetElectra) ∧
+      DepartureQueueTrace (x.state.earliestConsolidationEpoch electra)
+        (x.state.consolidationBalanceToConsume electra) (consolidations.map (·.call))
+        (y.state.earliestConsolidationEpoch targetElectra)
+        (y.state.consolidationBalanceToConsume targetElectra) ∧
+      (∀ called ∈ exits,
+        called.call.rate.toNat ≤ config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat) ∧
+      (∀ called ∈ consolidations, called.call.rate.toNat ≤ cap) := by
+  have sourceEarly := Nat.lt_of_le_of_lt step.chainStep.fork_le early
+  cases step with
+  | slot ok =>
+    obtain ⟨advanced, advancedOk, upgraded⟩ := bind_ok_iff.mp ok
+    have frame := upgrades_departureQueues (s := ⟨x.fork, advanced⟩)
+      electra early upgraded targetElectra
+    have data := upgrades_registry (s := ⟨x.fork, advanced⟩) electra early upgraded
+    obtain ⟨calls, trace, covered, exitRates⟩ := slot_indexedTrace electra sourceEarly advancedOk
+    have consolidationFrame := slot_consolidationFrame electra sourceEarly advancedOk
+    have first := congrArg Prod.fst frame
+    have left := congrArg (fun q => q.2.1) frame
+    change y.state.earliestExitEpoch targetElectra = advanced.earliestExitEpoch electra at first
+    change y.state.exitBalanceToConsume targetElectra = advanced.exitBalanceToConsume electra
+      at left
+    refine ⟨calls, [], ?_, ?_, ?_, exitRates, by simp⟩
+    · simpa only [List.append_nil] using
+        (show DepartureCoverage x.state y.state calls from fun i old next before after =>
+          covered i old next before (by simpa only [data] using after))
+    · rw [first, left]
+      exact trace
+    · have both := (congrArg (fun q => q.2.2) frame).trans consolidationFrame
+      have epoch := congrArg Prod.fst both
+      have balance := congrArg Prod.snd both
+      change y.state.earliestConsolidationEpoch targetElectra =
+        x.state.earliestConsolidationEpoch electra at epoch
+      change y.state.consolidationBalanceToConsume targetElectra =
+        x.state.consolidationBalanceToConsume electra at balance
+      rw [epoch, balance]
+      exact .nil _ _
+  | block engine signed due ok =>
+    have processed := (applySignedBlock_ok ok).2.1
+    obtain ⟨sites, recorded⟩ := blockConsolidationSites_result processed
+    apply block_indexedTrace electra early processed recorded cap
+    intro site member h rate computed
+    apply rates site ?_ h rate computed
+    simpa only [Step.consolidationSites, recorded, Except.toOption, Option.getD_some] using member
+
+/-- Run charges match tagged calls without identifying partial withdrawals with departures. -/
+theorem run_indexedTrace {x y : ForkedBeaconState preset}
+    (tail : Run config checks x y) (electra : .pectra ≤ x.fork)
+    (early : y.fork < .glamsterdam) (targetElectra : .pectra ≤ y.fork) (cap : Nat)
+    (rates : ∀ site ∈ tail.consolidationSites,
+      ∀ (_h : .pectra ≤ site.fork) (rate : Gwei),
+        getConsolidationChurnLimit config site.state = .ok rate → rate.toNat ≤ cap) :
+    ∃ exits consolidations : List IndexedDepartureCall,
+      (∀ charge ∈ tail.departureCharges, ∃ called ∈ exits ++ consolidations,
+        called.index = some charge.index ∧ called.call.epoch.toNat = charge.epoch ∧
+          called.call.amount.toNat = charge.amount) ∧
+      DepartureQueueTrace (x.state.earliestExitEpoch electra)
+        (x.state.exitBalanceToConsume electra) (exits.map (·.call))
+        (y.state.earliestExitEpoch targetElectra) (y.state.exitBalanceToConsume targetElectra) ∧
+      DepartureQueueTrace (x.state.earliestConsolidationEpoch electra)
+        (x.state.consolidationBalanceToConsume electra) (consolidations.map (·.call))
+        (y.state.earliestConsolidationEpoch targetElectra)
+        (y.state.consolidationBalanceToConsume targetElectra) ∧
+      (∀ called ∈ exits,
+        called.call.rate.toNat ≤ config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat) ∧
+      (∀ called ∈ consolidations, called.call.rate.toNat ≤ cap) := by
+  induction tail with
+  | nil => exact ⟨[], [], by simp [Run.departureCharges], .nil _ _, .nil _ _, by simp⟩
+  | snoc pre step ih =>
+    have middleElectra := Nat.le_trans electra (fork_le_of_chainSteps pre.chainSteps)
+    obtain ⟨firstExits, firstConsolidations, firstMatched, firstExitTrace,
+      firstConsolidationTrace, firstExitRates, firstConsolidationRates⟩ := ih
+        (Nat.lt_of_le_of_lt step.chainStep.fork_le early) middleElectra
+        (fun site member h rate computed =>
+          rates site (List.mem_append_left _ member) h rate computed)
+    obtain ⟨lastExits, lastConsolidations, covered, lastExitTrace,
+      lastConsolidationTrace, lastExitRates, lastConsolidationRates⟩ :=
+      step_indexedTrace step middleElectra early targetElectra cap
+        (fun site member h rate computed =>
+          rates site (List.mem_append_right _ member) h rate computed)
+    refine ⟨firstExits ++ lastExits, firstConsolidations ++ lastConsolidations,
+      ?_, ?_, ?_, ?_, ?_⟩
+    · intro charge member
+      rcases List.mem_append.mp member with earlier | latest
+      · obtain ⟨called, present, paired⟩ := firstMatched charge earlier
+        refine ⟨called, ?_, paired⟩
+        simp only [List.mem_append] at present ⊢
+        exact present.elim (fun h => .inl (.inl h)) (fun h => .inr (.inl h))
+      · obtain ⟨called, present, paired⟩ := covered.step_charges step charge latest
+        refine ⟨called, ?_, paired⟩
+        simp only [List.mem_append] at present ⊢
+        exact present.elim (fun h => .inl (.inr h)) (fun h => .inr (.inr h))
+    · simpa only [List.map_append] using firstExitTrace.append lastExitTrace
+    · simpa only [List.map_append] using firstConsolidationTrace.append lastConsolidationTrace
+    · intro called member
+      exact (List.mem_append.mp member).elim (firstExitRates called) (lastExitRates called)
+    · intro called member
+      exact (List.mem_append.mp member).elim
+        (firstConsolidationRates called) (lastConsolidationRates called)
+
 private structure SitePrefix {fork : Fork} (s t : BeaconState preset fork) : Prop where
   identity : RegistryIdentity s t
   active : ActiveStep s t
