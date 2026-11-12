@@ -1,6 +1,7 @@
 module
 
 public import EthLib.Consensus.Proofs.ForkChoice.HonestCheckpoints
+public import EthLib.Consensus.Proofs.ForkChoice.JustifiedOrigins
 
 /-!
 # Registry positions at justified checkpoints
@@ -1141,6 +1142,50 @@ theorem validatorAt_of_stateTransition_finalized_le
     exact activated (pending position validator (by omega) found).2
   exact ⟨state.validators.data[position], Array.getElem?_eq_getElem inside⟩
 
+private theorem Store.Reachable.pendingTail_anchor
+    {store : Store preset fork} (reachable : Store.Reachable config anchorState anchorBlock store)
+    (sound : Invariant anchorState) (preGloas : fork < .glamsterdam)
+    {checks : SignatureChecks} {engine : ExecutionEngine preset fork}
+    (transitions : ∀ (root : Root) (block : BeaconBlock preset fork)
+      (state : BeaconState preset fork), store.blocks[root]? = some block →
+      store.blockStates[root]? = some state → block ≠ anchorBlock →
+      ∃ parent signed, signed.message = block ∧
+        store.blockStates[block.parentRoot]? = some parent ∧
+        stateTransition config checks engine parent signed true = .ok state)
+    {root : Root} {state : BeaconState preset fork}
+    (stored : store.blockStates[root]? = some state)
+    {epoch : Epoch} (low : epoch ≤ getCurrentEpoch anchorState)
+    (finite : epoch < FAR_FUTURE_EPOCH) (finalized : state.finalizedCheckpoint.epoch ≤ epoch) :
+    PendingTail anchorState.validators.data.size epoch state := by
+  obtain ⟨block, found⟩ := reachable.known_of_blockState stored
+  by_cases same : block = anchorBlock
+  · obtain ⟨post, postOk, anchored, _⟩ := reachable.blockStatesFromParents found
+    rw [stored, Option.some.injEq] at postOk
+    subst post
+    rw [anchored same]
+    intro index value outside read
+    have inside := (Array.getElem?_eq_some_iff.mp read).1
+    omega
+  obtain ⟨parent, signed, _, parentFound, transitioned⟩ :=
+    transitions root block state found stored same
+  have parentSound := (reachable.ordered sound).2 parentFound
+  have parentFinalized := UInt64.le_trans (stateTransition_invariant parentSound transitioned).2
+    finalized
+  have pending := reachable.pendingTail_anchor sound preGloas transitions parentFound low
+    finite parentFinalized
+  have epochLe : getCurrentEpoch anchorState ≤ getCurrentEpoch parent := by
+    have bound := reachable.anchorSlot_le_blockState parentFound
+    simp only [UInt64.le_iff_toNat_le, getCurrentEpoch, computeEpochAtSlot,
+      UInt64.toNat_div] at bound ⊢
+    exact Nat.div_le_div_right bound
+  exact pending.stateTransition parentSound (UInt64.le_trans low epochLe) finite preGloas
+    finalized transitioned
+termination_by state.slot.toNat
+decreasing_by
+  have bounds := stateTransition_slot transitioned
+  rw [bounds.2]
+  exact UInt64.lt_iff_toNat_lt.mp bounds.1
+
 /-- The registry suffix at a finalized boundary stays pending along the held chain.
 
 The boundary state is reconstructed with the same checks as its descendant transitions.
@@ -1456,6 +1501,64 @@ private theorem Store.Reachable.validatorAt_of_common_boundary
   have bound := Nat.lt_of_lt_of_le (Array.getElem?_eq_some_iff.mp present).1 grows
   exact ⟨cached.validators.data[position], Array.getElem?_eq_getElem bound⟩
 
+private theorem Store.Reachable.validatorAt_of_common_boundary_total
+    {store : Store preset fork} (reachable : Store.Reachable config anchorState anchorBlock store)
+    (sound : Invariant anchorState) (anchorSlot : anchorBlock.slot = anchorState.slot)
+    (preGloas : fork < .glamsterdam)
+    {checks : SignatureChecks} {engine : ExecutionEngine preset fork}
+    (transitions : ∀ (root : Root) (block : BeaconBlock preset fork)
+      (state : BeaconState preset fork), store.blocks[root]? = some block →
+      store.blockStates[root]? = some state → block ≠ anchorBlock →
+      ∃ parent signed, signed.message = block ∧
+        store.blockStates[block.parentRoot]? = some parent ∧
+        stateTransition config checks engine parent signed true = .ok state)
+    {root targetRoot common : Root} {state base cached : BeaconState preset fork}
+    {query target : Slot}
+    (stored : store.blockStates[root]? = some state)
+    (baseStored : store.blockStates[targetRoot]? = some base)
+    (made : lookaheadState config checks base target = .ok cached)
+    (later : anchorState.slot ≤ query) (targetLater : query ≤ target)
+    (finalized : state.finalizedCheckpoint.epoch ≤ computeEpochAtSlot preset query)
+    (sourceWalk : (·.root) <$> store.getAncestor ⟨root, .pending⟩ query = .ok common)
+    (targetWalk : (·.root) <$> store.getAncestor ⟨targetRoot, .pending⟩ query = .ok common)
+    {position : Nat} {validator : Validator}
+    (found : state.validators.data[position]? = some validator)
+    (activated : validator.activationEpoch ≠ FAR_FUTURE_EPOCH) :
+    ∃ previous, cached.validators.data[position]? = some previous := by
+  by_cases high : query < state.slot
+  · have finite : computeEpochAtSlot preset query < FAR_FUTURE_EPOCH := by
+      have le : (computeEpochAtSlot preset query).toNat ≤ query.toNat := by
+        simp only [computeEpochAtSlot, UInt64.toNat_div]
+        exact Nat.div_le_self _ _
+      have upper := state.slot.toNat_lt
+      have less := UInt64.lt_iff_toNat_lt.mp high
+      change (computeEpochAtSlot preset query).toNat < 18446744073709551615
+      omega
+    exact reachable.validatorAt_of_common_boundary sound anchorSlot preGloas transitions stored
+      baseStored made later (UInt64.le_of_lt high) targetLater finite finalized sourceWalk
+      targetWalk found activated
+  · obtain ⟨block, heldBlock⟩ := reachable.known_of_blockState stored
+    rw [Store.getAncestor_of_le heldBlock (UInt64.le_trans
+      (reachable.blockState_slot_le (UInt64.le_of_eq anchorSlot) heldBlock stored)
+      (UInt64.not_lt.mp high))] at sourceWalk
+    have rootEq : root = common := Except.ok.inj sourceWalk
+    obtain ⟨destRoot, destBase, destCut, destHeld, advanced, walked, grows⟩ :=
+      reachable.registry_at_cached_ancestor anchorSlot transitions baseStored made later
+        targetLater .pending
+    rw [targetWalk, Except.ok.injEq] at walked
+    subst destRoot
+    rw [← rootEq, stored, Option.some.injEq] at destHeld
+    subst destBase
+    have growsBase : state.validators.data.size ≤ destCut.validators.data.size := by
+      unfold lookaheadState at advanced
+      split at advanced
+      · exact (runKept_processSlots (mapError_ok_iff.mp advanced)).grows
+      · cases advanced
+        exact Nat.le_refl _
+    have bound := Nat.lt_of_lt_of_le (Array.getElem?_eq_some_iff.mp found).1
+      (Nat.le_trans growsBase grows)
+    exact ⟨cached.validators.data[position], Array.getElem?_eq_getElem bound⟩
+
 /-- Registry growth along imported parent transitions retains every anchor position.
 
 The store is fixed-fork, so these transitions do not include fork upgrades. -/
@@ -1611,6 +1714,119 @@ theorem Execution.validatorAt_checkpoint_of_anchor
       exact Nat.le_refl _
   have bound := Nat.lt_of_lt_of_le inside (Nat.le_trans grows later)
   exact ⟨state.validators.data[v.toNat], Array.getElem?_eq_getElem bound⟩
+
+/-- An active head position already exists in the receiver's justified balance source.
+
+Activation requires finalized eligibility, so a position created after the finalized
+boundary cannot be active, even at a future queried epoch. -/
+theorem Execution.validatorAt_justified_of_head_active
+    {anchor : Store preset fork}
+    (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (sound : Invariant anchorState)
+    (anchorSlot : anchorBlock.slot = anchorState.slot)
+    (anchorBoundary : isStartSlotAtEpoch preset anchorBlock.slot = .ok true)
+    (start : ∀ w ∈ J, e.start w = anchor)
+    (preGloas : fork < .glamsterdam)
+    (slots : 0 < config.SLOT_DURATION_MS)
+    {horizon : Epoch} (chain : FinalizedPrefix e horizon)
+    {w : ValidatorIndex} (honest : w ∈ J) {k : ℕ}
+    {current : Epoch}
+    (currentOk : ((e.world k).state w).getCurrentStoreEpoch config = .ok current)
+    (inHorizon : current ≤ horizon)
+    (nonzero : ∀ (r : Root) (b : BeaconBlock preset fork),
+      ((e.world k).state w).blocks[r]? = some b →
+      b.stateRoot ≠ Vector.replicate 32 0)
+    {head : ForkChoiceNode} {headState state : BeaconState preset fork}
+    (headOk : ((e.world k).state w).getHead config = .ok head)
+    (headStateOk : ((e.world k).state w).blockState head.root = .ok headState)
+    (stateOk : ((e.world k).state w).checkpointState
+      ((e.world k).state w).justifiedCheckpoint = .ok state)
+    {d : Epoch} {v : ValidatorIndex}
+    (active : isActiveAt headState d v.toNat = true) :
+    ∃ validator, state.validators.data[v.toNat]? = some validator := by
+  have _ := nonzero
+  have reached := e.reachable
+    (fun u hu => (start u hu).symm ▸ Store.Reachable.anchor anchored) k w honest
+  have forward := e.forwardReachable
+    (fun u hu => (start u hu).symm ▸ Store.ForwardReachable.anchor anchored) k w honest
+  have stored := Store.blockState_ok_iff.mp headStateOk
+  have transitions := fun root block post found held other =>
+    e.exists_transition_of_nonanchor_block anchored honest (start w honest)
+      (k := k) (root := root) (block := block) (state := post) found held other
+  obtain ⟨validator, found, activated⟩ := activationEpoch_ne_farFuture_of_isActiveAt active
+  obtain ⟨base, target, baseStored, targetOk, made⟩ :=
+    e.checkpointStates_fixedChecks anchored (start w honest)
+      (Store.checkpointState_ok_iff.mp stateOk)
+  -- The fallback head is already the block used to compute the cached balance source.
+  by_cases same : head.root = ((e.world k).state w).justifiedCheckpoint.root
+  · rw [same, baseStored, Option.some.injEq] at stored
+    subst base
+    have grows : headState.validators.data.size ≤ state.validators.data.size := by
+      unfold lookaheadState at made
+      split at made
+      · exact (runKept_processSlots (mapError_ok_iff.mp made)).grows
+      · cases made
+        exact Nat.le_refl _
+    have bound := Nat.lt_of_lt_of_le (Array.getElem?_eq_some_iff.mp found).1 grows
+    exact ⟨state.validators.data[v.toNat], Array.getElem?_eq_getElem bound⟩
+  have someViable : ((e.world k).state w).getFilteredNodeTree config ≠ .ok [] := by
+    intro empty
+    have later : ¬ .glamsterdam ≤ fork := Nat.not_le_of_lt preGloas
+    simp only [Store.getHead, empty, later, false_and, ↓reduceIte, bind, Except.bind] at headOk
+    rcases Store.getHeadFrom_mem headOk with equal | mem
+    · exact same (congrArg ForkChoiceNode.root equal)
+    · exact List.not_mem_nil mem
+  have finalLe := reached.blockState_finalized_le sound stored
+  rcases Store.getHead_finalized headOk someViable with genesis | headWalk
+  · -- With genesis finality no post-anchor append can have finite activation.
+    have pending := reached.pendingTail_anchor sound preGloas transitions stored
+      (epoch := 0) UInt64.zero_le (by decide) (by simpa [genesis, GENESIS_EPOCH] using finalLe)
+    apply e.validatorAt_checkpoint_of_anchor anchored start honest stateOk
+    by_contra outside
+    exact activated (pending v.toNat validator (by omega) found).2
+  · have justifiedWalk := e.getCheckpointBlock_justified_of_finalized_before anchored sound slots
+      (UInt64.le_of_eq anchorSlot) start chain honest (Nat.le_refl k) currentOk inHorizon
+    simp only [Store.getCheckpointBlock, bind_ok_iff] at headWalk
+    obtain ⟨query, queryOk, headWalk⟩ := headWalk
+    have queryOk := mapError_ok_iff.mp queryOk
+    have lower := e.anchorSlot_le_finalized_boundary anchored anchorSlot anchorBoundary
+      (start w honest) queryOk
+    have epochBound := (forward.justified_epoch_le_current sound slots
+      (UInt64.le_of_eq anchorSlot) currentOk).1
+    have finalBound := reached.finalized_le_justified sound
+    by_cases zero : preset.SLOTS_PER_EPOCH = 0
+    ·
+      have currentZero : current = 0 := by
+        simp only [Store.getCurrentStoreEpoch, bind_ok_iff] at currentOk
+        obtain ⟨slot, _, equal⟩ := currentOk
+        simpa [computeEpochAtSlot, zero, pure, Except.pure] using equal.symm
+      have finalZero : ((e.world k).state w).finalizedCheckpoint.epoch = 0 := by
+        exact UInt64.le_zero_iff.mp (currentZero ▸ UInt64.le_trans finalBound epochBound)
+      have pending := reached.pendingTail_anchor sound preGloas transitions stored
+        (epoch := 0) UInt64.zero_le (by decide) (by simpa [finalZero] using finalLe)
+      have inside : v.toNat < anchorState.validators.data.size := by
+        by_contra outside
+        exact activated (pending v.toNat validator (by omega) found).2
+      exact e.validatorAt_checkpoint_of_anchor anchored start honest stateOk inside
+    have positive : 0 < preset.SLOTS_PER_EPOCH := UInt64.lt_of_le_of_ne
+      UInt64.zero_le (Ne.symm zero)
+    have queryEpoch := computeEpochAtSlot_computeStartSlotAtEpoch positive queryOk
+    have targetLater : query ≤ target := by
+      rw [UInt64.le_iff_toNat_le, (computeStartSlotAtEpoch_ok_iff.mp queryOk).2,
+        (computeStartSlotAtEpoch_ok_iff.mp targetOk).2]
+      exact Nat.mul_le_mul_right _ (UInt64.le_iff_toNat_le.mp finalBound)
+    have targetWalk : (·.root) <$> ((e.world k).state w).getAncestor
+        ⟨((e.world k).state w).justifiedCheckpoint.root, .pending⟩ query =
+        .ok ((e.world k).state w).finalizedCheckpoint.root := by
+      simpa [Store.getCheckpointBlock, queryOk, Except.mapError, bind, Except.bind,
+        Functor.map, Except.map, pure, Except.pure] using justifiedWalk
+    have sourceWalk : (·.root) <$> ((e.world k).state w).getAncestor
+        ⟨head.root, .pending⟩ query = .ok ((e.world k).state w).finalizedCheckpoint.root := by
+      obtain ⟨ancestor, walk, result⟩ := headWalk
+      simpa [walk, Functor.map, Except.map, pure, Except.pure] using result
+    exact reached.validatorAt_of_common_boundary_total sound anchorSlot preGloas transitions
+      stored baseStored made (anchorSlot ▸ lower) targetLater (queryEpoch ▸ finalLe)
+      sourceWalk targetWalk found activated
 
 end Models.Network
 
