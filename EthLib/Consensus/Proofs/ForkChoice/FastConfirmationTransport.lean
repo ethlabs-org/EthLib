@@ -1183,6 +1183,89 @@ private theorem epoch_le_of_partial_parent_window {parent first last current : S
   simpa only [computeEpochAtSlot, UInt64.toNat_div, boundary,
     Nat.add_div_right _ positive] using le
 
+/-- A covered range holds a whole epoch, with checked boundaries. -/
+private theorem epoch_of_covered {first last : Slot}
+    (positive : 0 < preset.SLOTS_PER_EPOCH.toNat)
+    (covered : isFullValidatorSetCovered preset first last = .ok true) :
+    ∃ epoch epochStart next epochEnd,
+      computeStartSlotAtEpoch preset epoch = .ok epochStart ∧
+      addChecked epochStart preset.SLOTS_PER_EPOCH = .ok next ∧
+      subChecked next 1 = .ok epochEnd ∧ first ≤ epochStart ∧ epochEnd ≤ last ∧
+      epochStart.toNat = epoch.toNat * preset.SLOTS_PER_EPOCH.toNat ∧
+      epochEnd.toNat + 1 = epochStart.toNat + preset.SLOTS_PER_EPOCH.toNat := by
+  simp only [isFullValidatorSetCovered, bind_ok_iff, mapError_ok_iff] at covered
+  obtain ⟨afterFirst, afterFirstOk, lastFirst, lastFirstOk, afterLast, afterLastOk, full⟩ :=
+    covered
+  have afterFirstNat := addChecked_ok_iff.mp afterFirstOk
+  have lastFirstNat := subChecked_ok_iff.mp lastFirstOk
+  have afterLastNat := addChecked_ok_iff.mp afterLastOk
+  simp only [UInt64.toNat_one] at lastFirstNat afterLastNat
+  have later : computeEpochAtSlot preset lastFirst < computeEpochAtSlot preset afterLast := by
+    simpa only [pure, Except.pure, Except.ok.injEq, decide_eq_true_eq] using full
+  have laterNat := UInt64.lt_iff_toNat_lt.mp later
+  simp only [computeEpochAtSlot, UInt64.toNat_div] at laterNat
+  generalize sizeEq : preset.SLOTS_PER_EPOCH.toNat = size at *
+  generalize epochEq : lastFirst.toNat / size = E at *
+  have below : E * size ≤ lastFirst.toNat := epochEq ▸ Nat.div_mul_le_self _ _
+  have above : lastFirst.toNat < E * size + size := by
+    have := Nat.lt_mul_div_succ lastFirst.toNat positive
+    rw [epochEq, Nat.mul_add, Nat.mul_one, Nat.mul_comm] at this
+    exact this
+  have reach : E * size + size ≤ afterLast.toNat := by
+    have := (Nat.le_div_iff_mul_le positive).mp laterNat
+    rwa [Nat.succ_mul] at this
+  have startBound : E * size < 2 ^ 64 := Nat.lt_of_le_of_lt below lastFirst.toNat_lt
+  have nextBound : E * size + size < 2 ^ 64 := Nat.lt_of_le_of_lt reach afterLast.toNat_lt
+  have epochBound : E < 2 ^ 64 := by
+    have := Nat.le_mul_of_pos_right E positive
+    omega
+  have epochNat : E.toUInt64.toNat = E := UInt64.toNat_ofNat_of_lt' epochBound
+  have startNat : (E * size).toUInt64.toNat = E * size := UInt64.toNat_ofNat_of_lt' startBound
+  have nextNat : (E * size + size).toUInt64.toNat = E * size + size :=
+    UInt64.toNat_ofNat_of_lt' nextBound
+  have endBound : E * size + size - 1 < 2 ^ 64 := by omega
+  have endNat : (E * size + size - 1).toUInt64.toNat = E * size + size - 1 :=
+    UInt64.toNat_ofNat_of_lt' endBound
+  refine ⟨E.toUInt64, (E * size).toUInt64, (E * size + size).toUInt64,
+    (E * size + size - 1).toUInt64, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩
+  · exact computeStartSlotAtEpoch_ok_iff.mpr ⟨by rw [epochNat, sizeEq]; exact startBound,
+      by rw [epochNat, startNat, sizeEq]⟩
+  · exact addChecked_ok_iff.mpr ⟨by rw [startNat, sizeEq]; exact nextBound,
+      by rw [startNat, nextNat, sizeEq]⟩
+  · exact subChecked_ok_iff.mpr ⟨by rw [nextNat, UInt64.toNat_one]; omega,
+      by rw [nextNat, endNat, UInt64.toNat_one]⟩
+  · exact UInt64.le_iff_toNat_le.mpr (by rw [startNat]; omega)
+  · exact UInt64.le_iff_toNat_le.mpr (by rw [endNat]; omega)
+  · rw [startNat, epochNat]
+  · rw [endNat, startNat]
+    omega
+
+/-- The whole epoch of a covered receiver window ends at or after the call, within the seed. -/
+private theorem epoch_bounds_of_covered {size epoch parent slot current epochStart epochEnd : Nat}
+    (positive : 0 < size) (startNat : epochStart = epoch * size)
+    (endNat : epochEnd + 1 = epochStart + size) (startLow : parent + 1 ≤ epochStart)
+    (endHigh : epochEnd + 1 ≤ current) (callerAge : slot / size ≤ parent / size + 1)
+    (receiverAge : current / size ≤ parent / size + 2) :
+    slot ≤ epochEnd ∧ epochEnd / size ≤ parent / size + 1 := by
+  have parentBelow : parent / size < epoch := by
+    apply Nat.lt_of_mul_lt_mul_right (a := size)
+    have := Nat.div_mul_le_self parent size
+    omega
+  have slotBelow : slot < size * (slot / size) + size := by
+    have := Nat.lt_mul_div_succ slot positive
+    rwa [Nat.mul_add, Nat.mul_one] at this
+  have scaled : size * (slot / size) ≤ size * epoch := Nat.mul_le_mul_left size (by omega)
+  have endValue : epochEnd / size < epoch + 1 := by
+    apply (Nat.div_lt_iff_lt_mul positive).mpr
+    rw [Nat.add_mul, Nat.one_mul]
+    omega
+  have reach : epoch + 1 ≤ current / size := by
+    apply (Nat.le_div_iff_mul_le positive).mpr
+    rw [Nat.add_mul, Nat.one_mul]
+    omega
+  rw [Nat.mul_comm] at startNat
+  constructor <;> omega
+
 /-- Recent heads above a common parent read the same committees through its next epoch. -/
 private theorem slotCommittee_eq_of_recent_parent {anchor : Store preset fork} {limit : Nat}
     (anchorStore : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
@@ -1483,6 +1566,78 @@ private theorem activeMembers_window_union {store : Store preset fork} {head : R
         ⟨slot, committee, UInt64.le_trans low firstLe, lastLe, committeeOk, inside⟩,
           validator, found, active⟩
 
+/-- A covered receiver window holds a whole epoch after the call and within the parent's seed.
+
+The source stake outside that epoch's committees fits the reserve.
+
+So the active source stake exceeds the members of a window through the epoch by at most it. -/
+private theorem full_window_epoch {store : Store preset fork} {head : Root}
+    {source : BeaconState preset fork} {parent slot lastSlot firstSlot current last : Slot}
+    {window : Std.TreeSet ValidatorIndex} {receiverEpoch : Epoch} {reserve : Nat}
+    (positive : 0 < preset.SLOTS_PER_EPOCH.toNat) (within : source.RegistryWithinLimit)
+    (firstOk : addChecked parent 1 = .ok firstSlot) (lastOk : subChecked slot 1 = .ok lastSlot)
+    (currentOk : store.getCurrentSlot config = .ok current)
+    (receiverEpochOk : store.getCurrentStoreEpoch config = .ok receiverEpoch)
+    (receiverLastOk : subChecked current 1 = .ok last)
+    (covered : isFullValidatorSetCovered preset firstSlot last = .ok true)
+    (windowOk : store.getCommitteesBetweenSlots head firstSlot last = .ok window)
+    (callerAge : (computeEpochAtSlot preset slot).toNat ≤
+      (computeEpochAtSlot preset parent).toNat + 1)
+    (age : receiverEpoch.toNat ≤ (computeEpochAtSlot preset parent).toNat + 2)
+    (exited : ∀ epoch epochStart next epochEnd epochMembers,
+      computeStartSlotAtEpoch preset epoch = .ok epochStart →
+      addChecked epochStart preset.SLOTS_PER_EPOCH = .ok next →
+      subChecked next 1 = .ok epochEnd →
+      firstSlot ≤ epochStart → epochEnd ≤ last →
+      store.getCommitteesBetweenSlots head epochStart epochEnd = .ok epochMembers →
+      stake (fun v => balanceAt source v.toNat) {v ∈ activeVoters source | v ∉ epochMembers} ≤
+        reserve) :
+    ∃ epochEnd, lastSlot ≤ epochEnd ∧ slot ≤ epochEnd ∧ epochEnd ≤ last ∧
+      (computeEpochAtSlot preset epochEnd).toNat ≤ (computeEpochAtSlot preset parent).toNat + 1 ∧
+      ∀ wide, store.getCommitteesBetweenSlots head firstSlot epochEnd = .ok wide →
+        stake (fun v => balanceAt source v.toNat) (activeVoters source) ≤
+          stake (fun v => balanceAt source v.toNat) (Store.activeMembers source wide) +
+            reserve := by
+  obtain ⟨epoch, epochStart, next, epochEnd, epochStartOk, nextOk, epochEndOk, startIn, endIn,
+    startNat, endNat⟩ := epoch_of_covered positive covered
+  have receiverEpochEq : receiverEpoch = computeEpochAtSlot preset current := by
+    simpa [Store.getCurrentStoreEpoch, currentOk, bind, Except.bind, pure, Except.pure]
+      using receiverEpochOk.symm
+  rw [receiverEpochEq] at age
+  simp only [computeEpochAtSlot, UInt64.toNat_div] at age callerAge ⊢
+  have finish := subChecked_ok_iff.mp receiverLastOk
+  have start := (addChecked_ok_iff.mp firstOk).2
+  have low := UInt64.le_iff_toNat_le.mp startIn
+  have high := UInt64.le_iff_toNat_le.mp endIn
+  have lastNat := (subChecked_ok_iff.mp lastOk).2
+  simp only [UInt64.toNat_one] at finish start lastNat
+  have bounds := epoch_bounds_of_covered positive startNat endNat (by omega) (by omega)
+    callerAge age
+  obtain ⟨epochMembers, epochMembersOk⟩ := committeeWindow_subrange windowOk startIn endIn
+  have outside := exited epoch epochStart next epochEnd epochMembers epochStartOk nextOk
+    epochEndOk startIn endIn epochMembersOk
+  refine ⟨epochEnd, UInt64.le_iff_toNat_le.mpr (by omega), UInt64.le_iff_toNat_le.mpr bounds.1,
+    endIn, bounds.2, fun wide wideOk => ?_⟩
+  have split : stake (fun v => balanceAt source v.toNat)
+        {v ∈ activeVoters source | v ∈ epochMembers} +
+      stake (fun v => balanceAt source v.toNat) {v ∈ activeVoters source | v ∉ epochMembers} =
+      stake (fun v => balanceAt source v.toNat) (activeVoters source) :=
+    Finset.sum_filter_add_sum_filter_not _ _ _
+  have inside : stake (fun v => balanceAt source v.toNat)
+      {v ∈ activeVoters source | v ∈ epochMembers} ≤
+      stake (fun v => balanceAt source v.toNat) (Store.activeMembers source wide) := by
+    apply stake_mono
+    intro v member
+    obtain ⟨active, epochMember⟩ := Finset.mem_filter.mp member
+    obtain ⟨validator, found, isActive⟩ := (mem_getActiveValidatorIndices within).mp
+      (List.mem_toFinset.mp active)
+    obtain ⟨dutySlot, committee, dutyLow, dutyHigh, committeeOk, inCommittee⟩ :=
+      (mem_committeeWindow_iff epochMembersOk).mp epochMember
+    exact Store.mem_activeMembers.mpr ⟨(mem_committeeWindow_iff wideOk).mpr
+      ⟨dutySlot, committee, UInt64.le_trans startIn dutyLow, dutyHigh, committeeOk,
+        inCommittee⟩, validator, found, isActive⟩
+  omega
+
 /-- The adversary window starts after the parent and no later than the block. -/
 private theorem adversary_window_bounds {store : Store preset fork} {head root : Root}
     {source : BeaconState preset fork} {slot first last : Slot}
@@ -1578,6 +1733,48 @@ private theorem sourceByzantine_of_partial_parent_window
     preGloas lookahead caller receiver callerBound receiverBound callerParentKnown
     receiverParentKnown firstAbove secondAbove callerEpochOk receiverEpochOk recent age
     parentLow highEpoch).symm
+
+/-- A receiver window from the parent through its next epoch is also the caller's window. -/
+private theorem callerWindow_of_recent_parent {anchor : Store preset fork} {limit : Nat}
+    (anchorStore : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (anchorSlot : anchorBlock.slot = anchorState.slot)
+    (anchored : ∀ w ∈ J, e.start w = anchor)
+    (oneBlock : OneBlockPerRoot e limit) (slots : 0 < config.SLOT_DURATION_MS)
+    (preGloas : fork < .glamsterdam)
+    (lookahead : 1 ≤ preset.MIN_SEED_LOOKAHEAD.toNat ∧ 1 ≤ preset.MAX_SEED_LOOKAHEAD.toNat ∧
+      preset.MIN_SEED_LOOKAHEAD.toNat + 3 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
+    {u w : ValidatorIndex} (caller : u ∈ J) (receiver : w ∈ J) {n k : Nat}
+    (callerBound : (e.world n).time ≤ limit) (receiverBound : (e.world k).time ≤ limit)
+    {parent : Root} {parentBlock : BeaconBlock preset fork}
+    (callerParentKnown : ((e.world n).state u).blocks[parent]? = some parentBlock)
+    (receiverParentKnown : ((e.world k).state w).blocks[parent]? = some parentBlock)
+    {firstHead secondHead : ForkChoiceNode}
+    (firstAbove : ((e.world n).state u).isAncestor firstHead ⟨parent, .pending⟩ = .ok true)
+    (secondAbove : ((e.world k).state w).isAncestor secondHead ⟨parent, .pending⟩ = .ok true)
+    {callerEpoch receiverEpoch : Epoch}
+    (callerEpochOk : ((e.world n).state u).getCurrentStoreEpoch config = .ok callerEpoch)
+    (receiverEpochOk : ((e.world k).state w).getCurrentStoreEpoch config = .ok receiverEpoch)
+    (recent : callerEpoch.toNat ≤ (computeEpochAtSlot preset parentBlock.slot).toNat + 1)
+    (age : receiverEpoch.toNat ≤ (computeEpochAtSlot preset parentBlock.slot).toNat + 2)
+    {low high : Slot} {members : Std.TreeSet ValidatorIndex}
+    (lowIn : parentBlock.slot ≤ low)
+    (highEpoch : (computeEpochAtSlot preset high).toNat ≤
+      (computeEpochAtSlot preset parentBlock.slot).toNat + 1)
+    (read : ((e.world k).state w).getCommitteesBetweenSlots secondHead.root low high =
+      .ok members) :
+    ((e.world n).state u).getCommitteesBetweenSlots firstHead.root low high = .ok members := by
+  apply committeeWindow_transfer read
+  intro dutySlot lowLe highLe
+  have dutyEpoch : (computeEpochAtSlot preset dutySlot).toNat ≤
+      (computeEpochAtSlot preset parentBlock.slot).toNat + 1 := by
+    have lower := Nat.div_le_div_right (c := preset.SLOTS_PER_EPOCH.toNat)
+      (UInt64.le_iff_toNat_le.mp highLe)
+    simp only [computeEpochAtSlot, UInt64.toNat_div] at highEpoch ⊢
+    omega
+  exact (slotCommittee_eq_of_recent_parent anchorStore anchorSlot anchored oneBlock slots
+    preGloas lookahead caller receiver callerBound receiverBound callerParentKnown
+    receiverParentKnown firstAbove secondAbove callerEpochOk receiverEpochOk recent age
+    (UInt64.le_trans lowIn lowLe) dutyEpoch).symm
 
 /-- Equal slot committees transfer a maximum read under the same balance state. -/
 private theorem maximum_of_same_slotCommittees {left right : Store preset fork}
@@ -1772,21 +1969,21 @@ Honest prefix members gain at least one.
 All weights use the caller's balance source. -/
 private theorem margin_of_fresh_duty_partition
     {share adversary equivocators countedByzantine oldByzantine adversaryMaximum : Nat}
-    {freshHonest prefixHonest freshByzantine prefixByzantine : Nat}
+    {freshHonest prefixHonest freshByzantine prefixByzantine reserve : Nat}
     {maximum laterMaximum score shift parents supporters laterParents laterSupporters : Nat}
     (half : 2 * share ≤ 100)
-    (unionBound : 100 * (oldByzantine + freshByzantine + prefixByzantine) ≤
+    (unionBound : 100 * (oldByzantine + freshByzantine + prefixByzantine) + 50 * reserve ≤
       share * (adversaryMaximum + freshHonest + prefixHonest +
         freshByzantine + prefixByzantine))
     (adversaryBound : share * adversaryMaximum ≤ 100 * (adversary + equivocators))
     (apart : equivocators + countedByzantine ≤ oldByzantine)
     (base : maximum + score + 2 * adversary + shift < parents +
       2 * supporters + 2 * countedByzantine)
-    (growth : laterMaximum ≤ maximum + freshHonest + freshByzantine)
+    (growth : laterMaximum ≤ maximum + freshHonest + freshByzantine + reserve)
     (gain : parents + 2 * supporters + 2 * freshHonest + prefixHonest ≤
       laterParents + 2 * laterSupporters) :
     laterMaximum + score + shift < laterParents + 2 * laterSupporters := by
-  have reserve : freshByzantine + prefixByzantine + 2 * countedByzantine ≤
+  have paid : freshByzantine + prefixByzantine + 2 * countedByzantine + reserve ≤
       freshHonest + prefixHonest + 2 * adversary := by
     have scaledHalf := Nat.mul_le_mul_right
       (freshHonest + prefixHonest + freshByzantine + prefixByzantine) half
@@ -1855,12 +2052,14 @@ private theorem margin_of_fresh_duty_sets {α : Type} [DecidableEq α]
     {maximum laterMaximum score shift : Nat}
     (nested : A ⊆ W) (supportersIn : S ⊆ A) (parentsIn : P ⊆ W) (apart : Disjoint S P)
     (half : 2 * share ≤ 100)
-    (byzantine : ByzantineStakeAtMost weight (A ∪ G) honest share 100)
+    {reserve : Nat}
+    (byzantine : 100 * stake weight {v ∈ A ∪ G | v ∉ honest} + 50 * reserve ≤
+      share * stake weight (A ∪ G))
     (cover : share * stake weight A ≤ 100 * (adversary + equivocation))
     (oldByzantine : equivocation + countedByzantine ≤ stake weight {v ∈ A | v ∉ honest})
     (base : maximum + score + 2 * adversary + shift <
       stake weight P + 2 * stake weight S + 2 * countedByzantine)
-    (growth : laterMaximum ≤ maximum + stake weight (G \ W)) :
+    (growth : laterMaximum ≤ maximum + stake weight (G \ W) + reserve) :
     laterMaximum + score + shift < stake weight (P \ {v ∈ G | v ∈ honest}) +
       2 * stake weight (S ∪ {v ∈ G | v ∈ honest}) := by
   let T := G \ W
@@ -1905,13 +2104,13 @@ private theorem margin_of_fresh_duty_sets {α : Type} [DecidableEq α]
     (freshByzantine := stake weight {v ∈ T | v ∉ honest})
     (prefixByzantine := stake weight {v ∈ I | v ∉ honest})
     (adversaryMaximum := stake weight A)
-  · have bound := byzantine.2
-    rw [badParts, totalParts] at bound
-    nlinarith
+  · have bound := byzantine
+    rw [badParts, totalParts, ← splitT, ← splitI] at bound
+    exact le_of_le_of_eq bound (by ring)
   · exact cover
   · exact oldByzantine
   · exact base
-  · change laterMaximum ≤ maximum + stake weight T at growth
+  · change laterMaximum ≤ maximum + stake weight T + reserve at growth
     omega
   · exact stake_gain_of_fresh_duties weight A W G S P honest nested supportersIn parentsIn apart
 
@@ -1930,13 +2129,15 @@ private theorem honest_margin_of_partial_sets {store : Store preset fork}
       (store.equivocatorsOf source participants) = equivocation)
     (supportOk : store.scoreFromTally (store.tallyVotes source) node = .ok support)
     (half : 2 * share ≤ 100)
-    (byzantine : ByzantineStakeAtMost (fun v => balanceAt source v.toNat)
-      (A ∪ G) J share 100)
+    {reserve : Nat}
+    (byzantine : 100 * stake (fun v => balanceAt source v.toNat) {v ∈ A ∪ G | v ∉ J} +
+      50 * reserve ≤ share * stake (fun v => balanceAt source v.toNat) (A ∪ G))
     (cover : share * stake (fun v => balanceAt source v.toNat) A ≤
       100 * (adversary + equivocation))
     (base : maximum + score + 2 * adversary + shift < discount + 2 * support.toNat)
     (parentDiscount : discount ≤ stake (fun v => balanceAt source v.toNat) P)
-    (growth : laterMaximum ≤ maximum + stake (fun v => balanceAt source v.toNat) (G \ W)) :
+    (growth : laterMaximum ≤ maximum + stake (fun v => balanceAt source v.toNat) (G \ W) +
+      reserve) :
     laterMaximum + score + shift <
       stake (fun v => balanceAt source v.toNat) (P \ {v ∈ G | v ∈ J}) +
       2 * stake (fun v => balanceAt source v.toNat)
@@ -1976,7 +2177,8 @@ private theorem honest_margin_of_partial_sets {store : Store preset fork}
     {v ∈ store.supportersOf source node | v ∈ J} P J
     (share := share) (adversary := adversary) (equivocation := equivocation)
     (countedByzantine := stake (fun v => balanceAt source v.toNat) badSupporters)
-    (maximum := maximum) (laterMaximum := laterMaximum) (score := score) (shift := shift) nested
+    (maximum := maximum) (laterMaximum := laterMaximum) (score := score) (shift := shift)
+    (reserve := reserve) nested
     honestSupportersIn parentsIn apart half
   have certificate := certificate byzantine cover badCover
   exact certificate checked growth
@@ -2109,6 +2311,20 @@ private theorem lt_of_transported_margin
     (windowBound : windowWeight ≤ maximum) :
     windowWeight + score < parents + 2 * support := by
   omega
+
+/-- Source weights of active validators lose nothing to the margin's activity mask. -/
+private theorem margin_of_active_sets {source : BeaconState preset fork}
+    {p q : Finset ValidatorIndex} {maximum score rest : Nat}
+    (pActive : ∀ v ∈ p, v ∈ ((unslashedActiveBalances source).map (·.1)).toFinset)
+    (qActive : ∀ v ∈ q, v ∈ ((unslashedActiveBalances source).map (·.1)).toFinset)
+    (margin : 2 * stake (fun v => if v ∈ ((unslashedActiveBalances source).map (·.1)).toFinset
+        then balanceAt source v.toNat else 0) p +
+      stake (fun v => if v ∈ ((unslashedActiveBalances source).map (·.1)).toFinset
+        then balanceAt source v.toNat else 0) q + maximum + score ≤ rest) :
+    2 * stake (fun v => balanceAt source v.toNat) p +
+      stake (fun v => balanceAt source v.toNat) q + maximum + score ≤ rest := by
+  rwa [stake_congr (fun v member => ite_eq_left (pActive v member)),
+    stake_congr (fun v member => ite_eq_left (qActive v member))] at margin
 
 /-- A complete caller window preserves its honest margin through balance and vote transport. -/
 private theorem honest_support_of_complete_window {store : Store preset fork}
@@ -3595,7 +3811,9 @@ private theorem honest_support_of_partial_window
     ((disjoint_supporters_parentVoters callerKnown callerParentKnown parentLower).mono
       (Finset.filter_subset _ _) (Finset.filter_subset _ _))
     Store.equivocatorsOf_subset_activeMembers (weights.dishonest u caller n later)
-    equivocationValue supportOk half unionBound cover base parentDiscount growth
+    equivocationValue supportOk half (laterMaximum := newSourceMaximum.toNat) (reserve := 0)
+    (by simpa only [Nat.mul_zero, Nat.add_zero] using unionBound.2) cover base parentDiscount
+    (by simpa only [Nat.add_zero] using growth)
   have sourceUnslashed : ∀ v ∈ J, NotSlashed balanceSource v := by
     obtain ⟨held, boundary, stored, _, advanced⟩ :=
       e.checkpointStates_fixedChecks anchorStore (anchored u caller)
@@ -3621,22 +3839,15 @@ private theorem honest_support_of_partial_window
     · exact tallyActive_of_activeMember (Finset.mem_filter.mp fresh).1
         (sourceUnslashed v (Finset.mem_filter.mp fresh).2)
   -- Apply the larger-window margin once, preserving its receiver activity masks.
-  have newMargin := weights.margin w receiver k receiverHead state score newSourceScore
-    firstSlot last newMaximum newSourceMaximum (atTime ▸ later) (Nat.le_of_eq atTime) headOk stateOk
-    scoreOk newSourceScoreOk newMaximumOk newSourceMaximumOk newSupporters newParents
-    supportersHonest parentsHonest
+  have newMargin := margin_of_active_sets sourceSupportersActive
+    (fun v member => parentsActive v (Finset.mem_sdiff.mp member).1)
+    (weights.margin w receiver k receiverHead state score newSourceScore
+      firstSlot last newMaximum newSourceMaximum (atTime ▸ later) (Nat.le_of_eq atTime) headOk
+      stateOk scoreOk newSourceScoreOk newMaximumOk newSourceMaximumOk newSupporters newParents
+      supportersHonest parentsHonest)
   have newScoreEq : newSourceScore = proposerScore :=
     Except.ok.inj (newSourceScoreOk.symm.trans boostOk)
   subst newSourceScore
-  dsimp only at newMargin
-  rw [stake_congr (S := newSupporters) (w := fun v =>
-      if v ∈ ((unslashedActiveBalances balanceSource).map (·.1)).toFinset
-      then balanceAt balanceSource v.toNat else 0)
-      (fun v member => ite_eq_left (sourceSupportersActive v member)),
-    stake_congr (S := newParents) (w := fun v =>
-      if v ∈ ((unslashedActiveBalances balanceSource).map (·.1)).toFinset
-      then balanceAt balanceSource v.toNat else 0)
-      (fun v member => ite_eq_left (parentsActive v (Finset.mem_sdiff.mp member).1))] at newMargin
   have honestLatest : ∃ v message, v ∈ J ∧
       ((e.world n).state u).latestMessages[v]? = some message := by
     by_cases child : oldSupporters.Nonempty
@@ -3741,6 +3952,420 @@ private theorem honest_support_of_partial_window
       2 * stake (fun v => balanceAt balanceSource v.toNat) newSupporters at sourceMargin
   exact lt_of_transported_margin sourceMargin newMargin transported windowBound
 
+/-- A receiver window with a whole epoch transports old support and promotes honest duties.
+
+The epoch starts after the parent, so its committees are those of the caller's head.
+
+The receiver weighs the total active balance of its state, and the caller's source does too.
+
+Source-active validators outside the committees of that epoch fit the exit reserve.
+
+The caller's source reserve on the range from its adversary window through the epoch pays it. -/
+private theorem honest_support_of_full_window
+    (slots : 0 < config.SLOT_DURATION_MS) (positive : 0 < preset.SLOTS_PER_EPOCH.toNat)
+    (lookahead : 1 ≤ preset.MIN_SEED_LOOKAHEAD.toNat ∧ 1 ≤ preset.MAX_SEED_LOOKAHEAD.toNat ∧
+      preset.MIN_SEED_LOOKAHEAD.toNat + 3 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
+    (preGloas : fork < .glamsterdam) {time : Nat} (oneBlock : OneBlockPerRoot e time)
+    (half : 2 * config.CONFIRMATION_BYZANTINE_THRESHOLD.toNat ≤ 100)
+    (committees : CommitteesFollow e time) {anchor : Store preset fork}
+    (anchorStore : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (anchorSlot : anchorBlock.slot = anchorState.slot) (anchored : ∀ w ∈ J, e.start w = anchor)
+    {u : ValidatorIndex} (caller : u ∈ J) {n : Nat} {head root : Root}
+    {balanceSource : BeaconState preset fork} {slot firstSlot lastSlot beforeBlock : Slot}
+    {block parentBlock : BeaconBlock preset fork}
+    {parentParticipants : Std.TreeSet ValidatorIndex} {proposerScore maximumSupport : Gwei}
+    (slotOk : ((e.world n).state u).getCurrentSlot config = .ok slot)
+    (blockOk : ((e.world n).state u).block root = .ok block)
+    (parentOk : ((e.world n).state u).block block.parentRoot = .ok parentBlock)
+    {sourceCheckpoint : Checkpoint}
+    (sourceOk : ((e.world n).state u).checkpointState sourceCheckpoint = .ok balanceSource)
+    (boostOk : computeProposerScore config balanceSource = .ok proposerScore)
+    (firstOk : addChecked parentBlock.slot 1 = .ok firstSlot)
+    (lastOk : subChecked slot 1 = .ok lastSlot)
+    (maximumOk : ((e.world n).state u).computeCommitteeWeightBetweenSlots head balanceSource
+      firstSlot lastSlot = .ok maximumSupport)
+    (parentParticipantsOk : ((e.world n).state u).getCommitteesBetweenSlots head firstSlot
+      beforeBlock = .ok parentParticipants)
+    {shift : Nat} {support discount adversary : Gwei}
+    (within : balanceSource.RegistryWithinLimit) (aligned : EffectiveBalancesAligned balanceSource)
+    (increment : preset.EFFECTIVE_BALANCE_INCREMENT.toNat % 100 = 0)
+    (supportOk : ((e.world n).state u).scoreFromTally
+      (((e.world n).state u).tallyVotes balanceSource) ⟨root, .pending⟩ = .ok support)
+    (adversaryOk : ((e.world n).state u).getAdversarialWeight config head balanceSource root =
+      .ok adversary)
+    (base : maximumSupport.toNat + proposerScore.toNat + 2 * adversary.toNat + shift <
+      discount.toNat + 2 * support.toNat)
+    (later : (e.world n).time ≤ time)
+    (weights : WeightBounds e balanceSource (e.world n).time time shift)
+    (unslashed : ∀ w ∈ J, ∀ k (state : BeaconState preset fork), (e.world k).time ≤ time →
+      ((e.world k).state w).Counts config state → ∀ v ∈ J, NotSlashed state v)
+    {callerEpoch : Epoch}
+    (callerEpochOk : ((e.world n).state u).getCurrentStoreEpoch config = .ok callerEpoch)
+    {w : ValidatorIndex} (receiver : w ∈ J) {k : Nat} (atTime : (e.world k).time = time)
+    (receiverUpToDate : UpToDate config checks sources (e.world k).time ((e.world k).view w)
+      ((e.world k).state w))
+    {receiverHead : ForkChoiceNode} {state : BeaconState preset fork}
+    {current last : Slot} {receiverEpoch : Epoch} {score : Gwei}
+    {receiverWindow receiverParticipants : Std.TreeSet ValidatorIndex}
+    (headOk : ((e.world k).state w).getHead config = .ok receiverHead)
+    (receiverAbove : ((e.world k).state w).isAncestor receiverHead ⟨block.parentRoot, .pending⟩ =
+      .ok true)
+    (stateOk : ((e.world k).state w).checkpointState ((e.world k).state w).justifiedCheckpoint =
+      .ok state)
+    (currentOk : ((e.world k).state w).getCurrentSlot config = .ok current)
+    (receiverEpochOk : ((e.world k).state w).getCurrentStoreEpoch config = .ok receiverEpoch)
+    (age : receiverEpoch.toNat ≤ (computeEpochAtSlot preset parentBlock.slot).toNat + 2)
+    (receiverLastOk : subChecked current 1 = .ok last)
+    (receiverWindowOk : ((e.world k).state w).getCommitteesBetweenSlots receiverHead.root
+      firstSlot last = .ok receiverWindow)
+    (scoreOk : computeProposerScore config state = .ok score) {receiverTotal : Gwei}
+    (receiverTotalOk : getTotalActiveBalance state = .ok receiverTotal)
+    (oldLastLe : lastSlot ≤ last)
+    (parentLower : parentBlock.slot < block.slot)
+    (callerHeadOk : ((e.world n).state u).getHead config = .ok ⟨head, .pending⟩)
+    (parentOnHead : ((e.world n).state u).isAncestor ⟨head, .pending⟩
+      ⟨block.parentRoot, .pending⟩ = .ok true)
+    (callerEpochEq : callerEpoch = computeEpochAtSlot preset slot)
+    (callerOrigins : ((e.world n).state u).VotesHaveOrigins config)
+    (callerParentAge : callerEpoch.toNat ≤ (computeEpochAtSlot preset parentBlock.slot).toNat + 1)
+    (receiverParentKnown : ((e.world k).state w).blocks[block.parentRoot]? = some parentBlock)
+    (callerBlocksLe : ∀ (root : Root) (block : BeaconBlock preset fork),
+      ((e.world n).state u).blocks[root]? = some block →
+      block.slot ≤ slot)
+    (oldSlotCommittees : ∀ dutySlot, firstSlot ≤ dutySlot → dutySlot ≤ lastSlot →
+      ((e.world n).state u).getSlotCommittee head dutySlot =
+        ((e.world k).state w).getSlotCommittee receiverHead.root dutySlot)
+    (beforeBlockLe : beforeBlock ≤ lastSlot) {callerHeadState : BeaconState preset fork}
+    (callerHeadStateOk : ((e.world n).state u).blockState head = .ok callerHeadState)
+    (callerBlockAge : callerEpoch.toNat ≤ (computeEpochAtSlot preset block.slot).toNat + 1)
+    (oldComplete : isFullValidatorSetCovered preset firstSlot lastSlot ≠ .ok true)
+    (notUncovered : isFullValidatorSetCovered preset firstSlot last ≠ .ok false)
+    (oldSupporters oldParents : Finset ValidatorIndex)
+    (supportersEq : oldSupporters = {v ∈ ((e.world n).state u).supportersOf balanceSource
+      ⟨root, .pending⟩ | v ∈ J})
+    (parentsEq : oldParents = {v ∈ ((e.world n).state u).parentVotersOf balanceSource
+      parentParticipants block parentBlock | v ∈ J})
+    (parentDiscount : discount.toNat ≤ stake (fun v => balanceAt balanceSource v.toNat) oldParents)
+    (supportersActive : ∀ (v : ValidatorIndex), v ∈ oldSupporters →
+      v ∈ ((unslashedActiveBalances balanceSource).map (·.1)).toFinset)
+    (parentsActive : ∀ (v : ValidatorIndex), v ∈ oldParents →
+      v ∈ ((unslashedActiveBalances balanceSource).map (·.1)).toFinset)
+    (positiveHonest : 0 < stake (fun v => balanceAt balanceSource v.toNat) oldParents +
+      2 * stake (fun v => balanceAt balanceSource v.toNat) oldSupporters)
+    (oldSupportTransport : ∀ (v : ValidatorIndex), v ∈ oldSupporters →
+      v ∈ ((unslashedActiveBalances state).map (·.1)).toFinset →
+      v ∈ ((e.world k).state w).supportersOf state ⟨root, .pending⟩ ∨
+      ((e.world k).state w).isAncestor
+        ⟨((e.world k).state w).justifiedCheckpoint.root, .pending⟩ ⟨root, .pending⟩ = .ok true)
+    (oldParentTransport : ∀ (v : ValidatorIndex), v ∈ oldParents →
+      v ∈ ((unslashedActiveBalances state).map (·.1)).toFinset →
+      (v ∈ ((e.world k).state w).parentVotersOf state receiverParticipants block parentBlock ∨
+        v ∈ ((e.world k).state w).supportersOf state ⟨root, .pending⟩) ∨
+      ((e.world k).state w).isAncestor
+        ⟨((e.world k).state w).justifiedCheckpoint.root, .pending⟩ ⟨root, .pending⟩ = .ok true)
+    (freshDutySupport : ∀ endTime,
+      computeTimeAtSlotMs config genesisTimeMs current = .ok endTime → endTime.toNat ≤ time →
+      ∀ v ∈ J, ∀ dutySlot committeeIndex, slot ≤ dutySlot → dutySlot < current →
+      assignment.committee v dutySlot = some committeeIndex →
+      v ∈ ((unslashedActiveBalances state).map (·.1)).toFinset →
+      v ∈ ((e.world k).state w).supportersOf state ⟨root, .pending⟩ ∨
+      ((e.world k).state w).isAncestor
+        ⟨((e.world k).state w).justifiedCheckpoint.root, .pending⟩ ⟨root, .pending⟩ = .ok true)
+    (exited : ∀ epoch epochStart next epochEnd epochMembers,
+      computeStartSlotAtEpoch preset epoch = .ok epochStart →
+      addChecked epochStart preset.SLOTS_PER_EPOCH = .ok next →
+      subChecked next 1 = .ok epochEnd →
+      firstSlot ≤ epochStart → epochEnd ≤ last →
+      ((e.world k).state w).getCommitteesBetweenSlots receiverHead.root epochStart epochEnd =
+        .ok epochMembers →
+      stake (fun v => balanceAt balanceSource v.toNat)
+          {v ∈ activeVoters balanceSource | v ∉ epochMembers} ≤
+        exitReserve config balanceSource) :
+    stake (fun v => balanceAt state v.toNat) (Store.activeMembers state receiverWindow) +
+        score.toNat <
+      stake (fun v => balanceAt state v.toNat)
+        {v ∈ ((e.world k).state w).parentVotersOf state receiverParticipants block parentBlock |
+          v ∈ J} +
+      2 * stake (fun v => balanceAt state v.toNat)
+        {v ∈ ((e.world k).state w).supportersOf state ⟨root, .pending⟩ | v ∈ J} ∨
+      ((e.world k).state w).isAncestor
+        ⟨((e.world k).state w).justifiedCheckpoint.root, .pending⟩ ⟨root, .pending⟩ = .ok true := by
+  subst oldSupporters oldParents
+  let oldSupporters := {v ∈ ((e.world n).state u).supportersOf balanceSource
+    ⟨root, .pending⟩ | v ∈ J}
+  let oldParents := {v ∈ ((e.world n).state u).parentVotersOf balanceSource
+    parentParticipants block parentBlock | v ∈ J}
+  change 0 < stake (fun v => balanceAt balanceSource v.toNat) oldParents +
+    2 * stake (fun v => balanceAt balanceSource v.toNat) oldSupporters at positiveHonest
+  have callerKnown := Store.block_ok_iff.mp blockOk
+  have callerParentKnown := Store.block_ok_iff.mp parentOk
+  have receiverForward := e.forwardReachable
+    (fun w hw => (anchored w hw) ▸ Store.ForwardReachable.anchor anchorStore) k w receiver
+  have oldNonempty := window_nonempty_of_honest_weight callerOrigins blockOk parentLower
+    firstOk slotOk lastOk beforeBlockLe parentParticipantsOk positiveHonest
+  obtain ⟨oldWindow, oldWindowOk, _⟩ := committeeWindow_prefix receiverWindowOk oldLastLe
+  have callerWindowOk := committeeWindow_transfer oldWindowOk
+    (fun dutySlot low high => (oldSlotCommittees dutySlot low high).symm)
+  have oldPartial := coverage_false_of_maximum oldNonempty maximumOk callerWindowOk oldComplete
+  have oldValue := maximum_eq_max_stake_of_partial oldNonempty oldPartial callerWindowOk maximumOk
+  obtain ⟨adversaryStart, startLow, startHigh, rangeOk⟩ :=
+    adversary_window_bounds slotOk blockOk parentOk firstOk lastOk parentLower adversaryOk
+  obtain ⟨adversaryMaximum, equivocation, adversaryMaximumOk, equivocationOk⟩ :=
+    Store.computeAdversarialWeight_eq_ok rangeOk
+  obtain ⟨adversaryMembers, adversaryMembersOk, equivocationValue⟩ :=
+    Store.exists_stake_equivocatorsOf_of_getEquivocationScore equivocationOk
+  have receiverAdversaryMembersOk := committeeWindow_transfer adversaryMembersOk
+    (fun dutySlot low high => oldSlotCommittees dutySlot (UInt64.le_trans startLow low) high)
+  have firstLeSlot : firstSlot ≤ slot := UInt64.le_trans
+    (UInt64.le_trans startLow startHigh) (callerBlocksLe _ _ callerKnown)
+  have startLeSlot : adversaryStart ≤ slot :=
+    UInt64.le_trans startHigh (callerBlocksLe _ _ callerKnown)
+  have covered : isFullValidatorSetCovered preset firstSlot last = .ok true := by
+    have afterRead := receiverWindowOk
+    unfold Store.getCommitteesBetweenSlots at afterRead
+    obtain ⟨afterLast, afterOk, _⟩ := bind_ok_iff.mp afterRead
+    obtain ⟨coverage, coverageOk⟩ := coverage_exists_of_maximum oldNonempty maximumOk
+      (mapError_ok_iff.mp afterOk)
+    cases coverage
+    · exact absurd coverageOk notUncovered
+    · exact coverageOk
+  have lastPast : last < current := UInt64.lt_iff_toNat_lt.mpr (by
+    have finish := subChecked_ok_iff.mp receiverLastOk
+    simp only [UInt64.toNat_one] at finish
+    omega)
+  -- The receiver window holds a whole epoch after the call, within the parent's seed.
+  obtain ⟨epochEnd, lastLeEnd, slotLeEnd, endIn, endEpoch, wideBound⟩ := full_window_epoch
+    positive within firstOk lastOk currentOk receiverEpochOk receiverLastOk covered
+    receiverWindowOk (callerEpochEq ▸ callerParentAge) age exited
+  have endPast : epochEnd < current := UInt64.lt_of_le_of_lt endIn lastPast
+  obtain ⟨freshMembers, freshMembersOk⟩ := committeeWindow_subrange receiverWindowOk
+    firstLeSlot endIn
+  obtain ⟨unionMembers, unionMembersOk⟩ := committeeWindow_subrange receiverWindowOk
+    startLow endIn
+  obtain ⟨wideMembers, wideMembersOk⟩ := committeeWindow_subrange receiverWindowOk
+    (UInt64.le_refl firstSlot) endIn
+  -- The caller reads the same committees through the epoch, so its source reserve applies.
+  have callerUnionOk := callerWindow_of_recent_parent anchorStore anchorSlot anchored oneBlock
+    slots preGloas lookahead caller receiver later (Nat.le_of_eq atTime) callerParentKnown
+    receiverParentKnown parentOnHead receiverAbove callerEpochOk receiverEpochOk callerParentAge
+    age (UInt64.le_trans (UInt64.le_iff_toNat_le.mpr (by
+      have start := (addChecked_ok_iff.mp firstOk).2
+      simp only [UInt64.toNat_one] at start
+      omega)) startLow) endEpoch unionMembersOk
+  have unionBound := weights.sourceReserve u caller n head adversaryStart epochEnd unionMembers
+    rfl (UInt64.le_trans startLeSlot slotLeEnd) callerUnionOk
+  -- All three sets use source activity; repeated duties contribute only once to each union.
+  let A := Store.activeMembers balanceSource adversaryMembers
+  let W := Store.activeMembers balanceSource oldWindow
+  let G := Store.activeMembers balanceSource freshMembers
+  have unionA : Store.activeMembers balanceSource unionMembers = A ∪ G :=
+    activeMembers_window_union lastOk startLeSlot lastLeEnd
+      receiverAdversaryMembersOk freshMembersOk unionMembersOk
+  have unionW : Store.activeMembers balanceSource wideMembers = W ∪ G :=
+    activeMembers_window_union lastOk firstLeSlot lastLeEnd
+      oldWindowOk freshMembersOk wideMembersOk
+  rw [unionA] at unionBound
+  have nested : A ⊆ W := by
+    intro v member
+    obtain ⟨inside, validator, found, active⟩ := Store.mem_activeMembers.mp member
+    obtain ⟨dutySlot, committee, low, high, committeeOk, inCommittee⟩ :=
+      (mem_committeeWindow_iff adversaryMembersOk).mp inside
+    exact Store.mem_activeMembers.mpr
+      ⟨(mem_committeeWindow_iff callerWindowOk).mpr
+        ⟨dutySlot, committee, UInt64.le_trans startLow low, high, committeeOk, inCommittee⟩,
+        validator, found, active⟩
+  have supportersIn : ((e.world n).state u).supportersOf balanceSource ⟨root, .pending⟩ ⊆ A := by
+    intro v member
+    apply Store.mem_activeMembers.mpr
+    refine ⟨?_, isActiveAt_eq_true_iff.mp (Store.isActiveAt_of_mem_supportersOf within member)⟩
+    exact supporters_mem_committeeWindow committees caller later callerOrigins callerHeadOk
+      callerHeadStateOk slotOk callerEpochOk blockOk callerBlockAge startHigh lastOk
+      adversaryMembersOk v member
+  have parentsIn : oldParents ⊆ W := by
+    intro v member
+    apply activeMember_of_tallyActive within (parentsActive v member)
+    obtain ⟨dutySlot, committee, low, high, committeeOk, inside⟩ :=
+      (mem_committeeWindow_iff parentParticipantsOk).mp
+        (Store.mem_parentVotersOf.mp (Finset.mem_filter.mp member).1).1
+    exact (mem_committeeWindow_iff callerWindowOk).mpr
+      ⟨dutySlot, committee, low, UInt64.le_trans high beforeBlockLe, committeeOk, inside⟩
+  have cover := Store.threshold_mul_stake_le_of_computeAdversarialWeight
+    adversaryMaximumOk equivocationOk rangeOk
+    (Store.stake_le_computeCommitteeWeightBetweenSlots adversaryMembersOk adversaryMaximumOk
+      fun v member => Store.mem_activeMembers.mp member)
+    (fun v _ => Nat.mod_eq_zero_of_dvd (dvd_balanceAt_of_aligned aligned
+      (Nat.dvd_of_mod_eq_zero increment) v.toNat))
+  have newMaximumOk : ((e.world k).state w).computeCommitteeWeightBetweenSlots
+      receiverHead.root state firstSlot last = .ok receiverTotal := by
+    rw [Store.computeCommitteeWeightBetweenSlots_of_covered covered, receiverTotalOk]
+    rfl
+  obtain ⟨newSourceMaximum, newSourceScore, newSourceMaximumOk, newSourceScoreOk⟩ :=
+    weights.reads w receiver k receiverHead state current firstSlot last receiverTotal
+      (atTime ▸ later) (Nat.le_of_eq atTime) headOk currentOk lastPast stateOk newMaximumOk
+  have sourceTotalOk : getTotalActiveBalance balanceSource = .ok newSourceMaximum := by
+    rw [Store.computeCommitteeWeightBetweenSlots_of_covered covered] at newSourceMaximumOk
+    exact mapError_ok_iff.mp newSourceMaximumOk
+  have newValue :=
+    (getTotalBalance_ok_iff_stake.mp (getTotalActiveBalance_ok sourceTotalOk)).2.2
+  have growth : newSourceMaximum.toNat ≤ maximumSupport.toNat +
+      stake (fun v => balanceAt balanceSource v.toNat) (G \ W) +
+      exitReserve config balanceSource := by
+    have bound := wideBound wideMembers wideMembersOk
+    have unionSum : stake (fun v => balanceAt balanceSource v.toNat) (W ∪ G) =
+        stake (fun v => balanceAt balanceSource v.toNat) W +
+          stake (fun v => balanceAt balanceSource v.toNat) (G \ W) := by
+      rw [← Finset.union_sdiff_self_eq_union]
+      exact Finset.sum_union Finset.disjoint_sdiff
+    rw [unionW, unionSum] at bound
+    change newSourceMaximum.toNat = max preset.EFFECTIVE_BALANCE_INCREMENT.toNat
+      (stake (fun v => balanceAt balanceSource v.toNat) (activeVoters balanceSource)) at newValue
+    change maximumSupport.toNat = max preset.EFFECTIVE_BALANCE_INCREMENT.toNat
+      (stake (fun v => balanceAt balanceSource v.toNat) W) at oldValue
+    omega
+  -- The caller's reserve pays for Byzantine growth after honest promotion is counted.
+  have sourceMargin := honest_margin_of_partial_sets within nested supportersIn parentsIn
+    ((disjoint_supporters_parentVoters callerKnown callerParentKnown parentLower).mono
+      (Finset.filter_subset _ _) (Finset.filter_subset _ _))
+    Store.equivocatorsOf_subset_activeMembers (weights.dishonest u caller n later)
+    equivocationValue supportOk half unionBound cover base parentDiscount growth
+  have sourceUnslashed : ∀ v ∈ J, NotSlashed balanceSource v := by
+    obtain ⟨held, boundary, stored, _, advanced⟩ :=
+      e.checkpointStates_fixedChecks anchorStore (anchored u caller)
+        (Store.checkpointState_ok_iff.mp sourceOk)
+    intro v honest
+    apply (notSlashed_lookahead advanced v).mpr
+    exact unslashed u caller n held later
+      (Store.counts_of_fixedChecks (checks := checks) stored (.inl rfl)) v honest
+  let newSupporters := oldSupporters ∪ {v ∈ G | v ∈ J}
+  let newParents := oldParents \ {v ∈ G | v ∈ J}
+  have supportersHonest : ∀ v ∈ newSupporters, v ∈ J := by
+    intro v member
+    rcases Finset.mem_union.mp member with old | fresh
+    · exact (Finset.mem_filter.mp old).2
+    · exact (Finset.mem_filter.mp fresh).2
+  have parentsHonest : ∀ v ∈ newParents, v ∈ J :=
+    fun _ member => (Finset.mem_filter.mp (Finset.mem_sdiff.mp member).1).2
+  have sourceSupportersActive : ∀ v ∈ newSupporters,
+      v ∈ ((unslashedActiveBalances balanceSource).map (·.1)).toFinset := by
+    intro v member
+    rcases Finset.mem_union.mp member with old | fresh
+    · exact supportersActive v old
+    · exact tallyActive_of_activeMember (Finset.mem_filter.mp fresh).1
+        (sourceUnslashed v (Finset.mem_filter.mp fresh).2)
+  -- Apply the larger-window margin once, preserving its receiver activity masks.
+  have newMargin := margin_of_active_sets sourceSupportersActive
+    (fun v member => parentsActive v (Finset.mem_sdiff.mp member).1)
+    (weights.margin w receiver k receiverHead state score newSourceScore
+      firstSlot last receiverTotal newSourceMaximum (atTime ▸ later) (Nat.le_of_eq atTime) headOk
+      stateOk scoreOk newSourceScoreOk newMaximumOk newSourceMaximumOk newSupporters newParents
+      supportersHonest parentsHonest)
+  have newScoreEq : newSourceScore = proposerScore :=
+    Except.ok.inj (newSourceScoreOk.symm.trans boostOk)
+  subst newSourceScore
+  have honestLatest : ∃ v message, v ∈ J ∧
+      ((e.world n).state u).latestMessages[v]? = some message := by
+    by_cases child : oldSupporters.Nonempty
+    · obtain ⟨v, member⟩ := child
+      obtain ⟨message, _, latest, _⟩ := Store.exists_of_voteCountsFor _
+        (Store.voteCountsFor_of_mem_supportersOf (Finset.mem_filter.mp member).1)
+      exact ⟨v, message, (Finset.mem_filter.mp member).2, latest⟩
+    · have parent : oldParents.Nonempty := by
+        by_contra absent
+        have noParents := Finset.not_nonempty_iff_eq_empty.mp absent
+        have noSupporters := Finset.not_nonempty_iff_eq_empty.mp child
+        rw [noParents, noSupporters, stake_empty, Nat.mul_zero, Nat.zero_add] at positiveHonest
+        exact Nat.not_lt_zero _ positiveHonest
+      obtain ⟨v, member⟩ := parent
+      obtain ⟨_, _, _, message, _, latest, _⟩ :=
+        Store.mem_parentVotersOf.mp (Finset.mem_filter.mp member).1
+      exact ⟨v, message, (Finset.mem_filter.mp member).2, latest⟩
+  obtain ⟨v, message, honest, latest⟩ := honestLatest
+  obtain ⟨attestation, signedMessage, seen, _, signed, _⟩ :=
+    e.exists_signed_origin_of_latestMessages anchorStore anchored caller latest
+  obtain ⟨signedAt, _, maySign⟩ :=
+    e.exists_maySign_of_signed (e.view_subset_sent n u seen) signed honest
+  obtain ⟨_, _, _, genesis, _, _, _⟩ := maySign
+  have receiverGenesis : ((e.world k).state w).genesisTimeMs = genesisTimeMs := by
+    rw [(e.clock_bounds w k).1, anchored w receiver, ← anchored v honest,
+      ← (e.clock_bounds v signedAt).1, genesis]
+  have currentRead := mapError_ok_iff.mp currentOk
+  change computeSlotAtTimeMs config ((e.world k).state w).genesisTimeMs
+    ((e.world k).state w).timeMs = .ok current at currentRead
+  rw [receiverGenesis] at currentRead
+  obtain ⟨endTime, endTimeOk, endTimeLe⟩ := boundary_of_current_slot currentRead
+  have endBound : endTime.toNat ≤ time :=
+    (UInt64.le_iff_toNat_le.mp endTimeLe).trans_eq (receiverUpToDate.1.trans atTime)
+  have parentEpochLe :
+      (computeEpochAtSlot preset parentBlock.slot).toNat ≤ callerEpoch.toNat := by
+    rw [callerEpochEq]
+    simp only [computeEpochAtSlot, UInt64.toNat_div]
+    exact Nat.div_le_div_right (UInt64.le_iff_toNat_le.mp
+      (callerBlocksLe _ _ callerParentKnown))
+  have freshAssigned := committees.assigned w receiver k (Nat.le_of_eq atTime)
+    receiverHead current slot epochEnd freshMembers headOk currentOk endPast
+    (fun headState headStateOk => by
+      obtain ⟨readSlot, readSlotOk, _, statesLe⟩ :=
+        receiverForward.slots_le_current slots (UInt64.le_of_eq anchorSlot)
+      rw [currentOk, Except.ok.injEq] at readSlotOk
+      subst readSlot
+      have stateSlotLe := statesLe _ _ (Store.blockState_ok_iff.mp headStateOk)
+      have epochLe := Nat.div_le_div_right (c := preset.SLOTS_PER_EPOCH.toNat)
+        (UInt64.le_iff_toNat_le.mp stateSlotLe)
+      have receiverEpochEq : receiverEpoch = computeEpochAtSlot preset current := by
+        simpa [Store.getCurrentStoreEpoch, currentOk, bind, Except.bind, pure, Except.pure]
+          using receiverEpochOk.symm
+      simp only [receiverEpochEq, computeEpochAtSlot, UInt64.toNat_div] at age
+      simp only [getCurrentEpoch, callerEpochEq, computeEpochAtSlot, UInt64.toNat_div]
+        at parentEpochLe ⊢
+      omega) freshMembersOk
+  by_cases covered : ((e.world k).state w).isAncestor
+      ⟨((e.world k).state w).justifiedCheckpoint.root, .pending⟩ ⟨root, .pending⟩ = .ok true
+  · exact .inr covered
+  left
+  have transported := stake_le_of_supporter_parent_transport
+    (fun v => if v ∈ ((unslashedActiveBalances state).map (·.1)).toFinset
+      then balanceAt state v.toNat else 0) (fun v => balanceAt state v.toNat)
+    newSupporters newParents
+    {v ∈ ((e.world k).state w).supportersOf state ⟨root, .pending⟩ | v ∈ J}
+    {v ∈ ((e.world k).state w).parentVotersOf state receiverParticipants block parentBlock | v ∈ J}
+    (by
+      apply Finset.disjoint_left.mpr
+      intro v supporter parent
+      have parentOld := (Finset.mem_sdiff.mp parent).1
+      rcases Finset.mem_union.mp supporter with old | fresh
+      · exact Finset.disjoint_left.mp
+          (disjoint_supporters_parentVoters callerKnown callerParentKnown parentLower)
+          (Finset.mem_filter.mp old).1 (Finset.mem_filter.mp parentOld).1
+      · exact (Finset.mem_sdiff.mp parent).2 fresh)
+    (fun v => by split <;> omega)
+    (fun v member positive => by
+      have active : v ∈ ((unslashedActiveBalances state).map (·.1)).toFinset := by
+        by_contra absent
+        simp only [ite_eq_right absent, Nat.lt_irrefl] at positive
+      refine Finset.mem_filter.mpr ⟨?_, supportersHonest v member⟩
+      rcases Finset.mem_union.mp member with old | fresh
+      · exact (oldSupportTransport v old active).resolve_right covered
+      · have freshHonest := (Finset.mem_filter.mp fresh).2
+        obtain ⟨dutySlot, committeeIndex, low, high, duty⟩ :=
+          (freshAssigned v freshHonest).mp
+            (Store.mem_activeMembers.mp (Finset.mem_filter.mp fresh).1).1
+        exact (freshDutySupport endTime endTimeOk endBound v freshHonest dutySlot committeeIndex
+          low (UInt64.lt_of_le_of_lt high endPast) duty active).resolve_right covered)
+    (fun v member positive => by
+      have active : v ∈ ((unslashedActiveBalances state).map (·.1)).toFinset := by
+        by_contra absent
+        simp only [ite_eq_right absent, Nat.lt_irrefl] at positive
+      have old := (Finset.mem_sdiff.mp member).1
+      rcases (oldParentTransport v old active).resolve_right covered with parent | child
+      · exact .inr (Finset.mem_filter.mpr ⟨parent, parentsHonest v member⟩)
+      · exact .inl (Finset.mem_filter.mpr ⟨child, parentsHonest v member⟩))
+  have windowBound := Store.stake_le_computeCommitteeWeightBetweenSlots receiverWindowOk
+    newMaximumOk (fun v member => Store.mem_activeMembers.mp member)
+  change newSourceMaximum.toNat + proposerScore.toNat + shift <
+    stake (fun v => balanceAt balanceSource v.toNat) newParents +
+      2 * stake (fun v => balanceAt balanceSource v.toNat) newSupporters at sourceMargin
+  exact lt_of_transported_margin sourceMargin newMargin transported windowBound
+
 /-- Step 5, the initial transport: the bound of step 4 holds in each honest store at a later time.
 
 The caller is an honest validator whose store is up to date and holds the bound of step 4.
@@ -3773,9 +4398,9 @@ No honest validator is slashed in a state that an honest store counts, as `unsla
 
 The tally state of the receiver is a lookahead of a held state, and need not be a counting state.
 
-The chain of the parent of the block holds the root of the source checkpoint at its epoch, as `sourceBelow` says.
+A validator active in the source may sit in no committee of a whole epoch of the receiver window.
 
-The source stake that is active in the source and inactive in the tally state fits the exit reserve, as `exited` says.
+The source stake of such validators fits the exit reserve, as `exited` says.
 
 The window of the receiver is the committees of its head between the parent and its own slot.
 
@@ -3818,8 +4443,6 @@ theorem Execution.honest_support_of_historical_anchor {Δ : ℕ} (sync : e.Synch
     (parentOk : ((e.world n).state u).block block.parentRoot = .ok parentBlock)
     {sourceCheckpoint : Checkpoint}
     (sourceOk : ((e.world n).state u).checkpointState sourceCheckpoint = .ok balanceSource)
-    (sourceBelow : ((e.world n).state u).getCheckpointBlock block.parentRoot
-      sourceCheckpoint.epoch = .ok sourceCheckpoint.root)
     (boostOk : computeProposerScore config balanceSource = .ok proposerScore)
     (firstOk : addChecked parentBlock.slot 1 = .ok firstSlot)
     (lastOk : subChecked slot 1 = .ok lastSlot)
@@ -3901,9 +4524,6 @@ theorem Execution.honest_support_of_historical_anchor {Δ : ℕ} (sync : e.Synch
       .ok true)
     (stateOk : ((e.world k).state w).checkpointState ((e.world k).state w).justifiedCheckpoint =
       .ok state)
-    (exited : stake (fun v => balanceAt balanceSource v.toNat)
-        {v ∈ activeVoters balanceSource | v ∉ activeVoters state} ≤
-      exitReserve config balanceSource)
     (currentOk : ((e.world k).state w).getCurrentSlot config = .ok current)
     (receiverEpochOk : ((e.world k).state w).getCurrentStoreEpoch config = .ok receiverEpoch)
     (age : receiverEpoch.toNat ≤ (computeEpochAtSlot preset parentBlock.slot).toNat + 2)
@@ -3912,7 +4532,17 @@ theorem Execution.honest_support_of_historical_anchor {Δ : ℕ} (sync : e.Synch
       firstSlot last = .ok receiverWindow)
     (scoreOk : computeProposerScore config state = .ok score)
     (receiverParticipantsOk : ((e.world k).state w).getCommitteesBetweenSlots receiverHead.root
-      firstSlot beforeBlock = .ok receiverParticipants) :
+      firstSlot beforeBlock = .ok receiverParticipants)
+    (exited : ∀ epoch epochStart next epochEnd epochMembers,
+      computeStartSlotAtEpoch preset epoch = .ok epochStart →
+      addChecked epochStart preset.SLOTS_PER_EPOCH = .ok next →
+      subChecked next 1 = .ok epochEnd →
+      firstSlot ≤ epochStart → epochEnd ≤ last →
+      ((e.world k).state w).getCommitteesBetweenSlots receiverHead.root epochStart epochEnd =
+        .ok epochMembers →
+      stake (fun v => balanceAt balanceSource v.toNat)
+          {v ∈ activeVoters balanceSource | v ∉ epochMembers} ≤
+        exitReserve config balanceSource) :
     stake (fun v => balanceAt state v.toNat) (Store.activeMembers state receiverWindow) +
         score.toNat <
       stake (fun v => balanceAt state v.toNat)
@@ -3923,10 +4553,6 @@ theorem Execution.honest_support_of_historical_anchor {Δ : ℕ} (sync : e.Synch
       ((e.world k).state w).isAncestor
         ⟨((e.world k).state w).justifiedCheckpoint.root, .pending⟩
         ⟨root, .pending⟩ = .ok true := by
-  -- The last case uses the exit facts.
-  -- As plain hypotheses they push this proof past the heartbeat limit, so they wait here.
-  have exitFacts := PProd.mk exited sourceBelow
-  clear exited sourceBelow
   obtain ⟨receiverTotal, receiverTotalOk⟩ := getTotalActiveBalance_exists_ok_of_activeStakeAtMost
     (state.validators.bound preGloas)
     (supply w receiver k _ state (by omega) stateOk) stakeCapGwei_lt
@@ -4469,8 +5095,21 @@ theorem Execution.honest_support_of_historical_anchor {Δ : ℕ} (sync : e.Synch
         rw [sameParentParticipants]
         exact (Store.mem_parentVotersOf.mp (Finset.mem_filter.mp member).1).1) active)
       freshDutySupport
-  obtain ⟨exited, sourceBelow⟩ := exitFacts
-  sorry
+  exact honest_support_of_full_window slots positive lookahead preGloas oneBlock half
+    committees anchorStore anchorSlot anchored caller slotOk blockOk parentOk sourceOk boostOk
+    firstOk lastOk maximumOk parentParticipantsOk within aligned increment supportOk adversaryOk
+    base later weights unslashed callerEpochOk receiver atTime receiverUpToDate headOk
+    receiverAbove stateOk currentOk receiverEpochOk age receiverLastOk receiverWindowOk scoreOk
+    receiverTotalOk oldLastLe parentLower (by simpa only [nodeEq] using callerHeadOk)
+    parentOnHead callerEpochEq callerOrigins callerParentAge receiverParentKnown callerBlocksLe
+    oldSlotCommittees beforeBlockLe (Store.blockState_ok_iff.mpr callerHeadStateKnown)
+    callerBlockAge oldComplete uncovered oldSupporters oldParents rfl rfl parentDiscount
+    supportersActive parentsActive ((Nat.zero_le _).trans_lt sourceHonestParents)
+    oldSupportTransport
+    (fun v member active => oldParentTransport v member (by
+      rw [sameParentParticipants]
+      exact (Store.mem_parentVotersOf.mp (Finset.mem_filter.mp member).1).1) active)
+    freshDutySupport exited
 
 
 end EthLib.Consensus.Models.Network
