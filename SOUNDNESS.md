@@ -2568,6 +2568,20 @@ Adding votes and allowed weights keeps slack links, justification and finalizati
 `FfgFinalityMonotonicity.lean` puts the finalized checkpoint of a chain in such larger sets, with the same validator sets and second sets.
 This does not identify validator indices or establish root ancestry across two chains.
 
+The direct theorems of `Consensus/Proofs/DirectSafety/Safety.lean` do not go through the model.
+They take two runs of the state transition from one genesis built from deposits, which share a prefix up to a state `x`.
+A run keeps the inputs of each step: the slots, and the blocks with their state roots checked (`Run`, `Consensus/Proofs/Transition/Trace.lean`).
+A key is accountable when the two runs accepted two of its votes that `isSlashableAttestationData` flags, or when a block of either run applied a slashing that names it.
+The votes are those of the attestations that the blocks applied, read by public key in the registry before each block, and the weights are effective balances.
+`accountable_safety` takes conflicting finalized checkpoints of the two last states, with `x` no later than the first slot of the earlier finalized epoch.
+Then the active stake at `x` is at most three times the accountable stake at `x`, plus twice the larger drift of the two tails.
+Otherwise the headers and states of the two runs show a collision of the node hash or a zero root (`HashEvidence`), so no theorem assumes that the hash is injective.
+The drift is the largest that a tail observes at the ends of epochs up to the later finalized epoch, not a bound in closed form.
+The theorems need one slot per epoch, a buffer of roots of four epochs, more than `MIN_SEED_LOOKAHEAD + 2` epochs of RANDAO mixes, and an active stake above one and a half increments at each end of an epoch (`EnoughStake`).
+They hold at every fork.
+`verifiedConflict_of_accountable` gives, for each accountable key, the calls of `isValidIndexedAttestation` or `checkHeaderSignature` that blocks of the runs executed on its two conflicting messages, and that accepted.
+It assumes nothing about the signature checks, so it does not say who signed.
+
 ### Engine API
 
 The Engine API is the interface through which the consensus layer drives the execution layer.
