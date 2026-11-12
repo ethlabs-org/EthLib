@@ -425,6 +425,127 @@ private theorem PendingTail.processPendingBalances {count : Nat} {epoch : Epoch}
   · cases ok
     exact holds
 
+/-- A fold preserves the same pending suffix when each successful step preserves it. -/
+private theorem PendingTail.foldlM {count : Nat} {epoch : Epoch} {α ε : Type}
+    {step : BeaconState preset fork → α → Except ε (BeaconState preset fork)}
+    {state after : BeaconState preset fork} {items : List α}
+    (holds : PendingTail count epoch state)
+    (keeps : ∀ s x t, PendingTail count epoch s → step s x = .ok t → PendingTail count epoch t)
+    (ok : items.foldlM step state = .ok after) : PendingTail count epoch after :=
+  foldlM_ok_invariant (PendingTail count epoch) keeps holds ok
+
+private theorem PendingTail.processDepositRequest {count : Nat} {epoch : Epoch}
+    {state after : BeaconState preset fork} {electra : .pectra ≤ fork} {request : DepositRequest}
+    (holds : PendingTail count epoch state)
+    (ok : Consensus.processDepositRequest state electra request = .ok after) :
+    PendingTail count epoch after := by
+  obtain ⟨start, recorded⟩ :=
+    recordDepositRequestsStart_eq (state := state) (index := request.index)
+  simp only [Consensus.processDepositRequest, recorded, liftAccessor_ok, addPendingDeposit,
+    bind_ok_iff, pure, Except.pure, Except.ok.injEq] at ok
+  obtain ⟨_, _, rfl⟩ := ok
+  exact holds.of_validators
+
+private theorem PendingTail.requestPartialWithdrawal {count : Nat} {epoch : Epoch}
+    {state after : BeaconState preset fork} {electra : .pectra ≤ fork}
+    {index : ValidatorIndex} {validator : Validator} {amount owed : Gwei}
+    (holds : PendingTail count epoch state)
+    (ok : Consensus.requestPartialWithdrawal config state electra index validator amount owed =
+      .ok after) : PendingTail count epoch after := by
+  simp only [Consensus.requestPartialWithdrawal, bind_ok_iff, liftAccessor_ok, pure, Except.pure]
+    at ok
+  obtain ⟨_, _, _, _, ok⟩ := ok
+  split at ok
+  · simp only [bind_ok_iff, liftAccessor_ok, Except.ok.injEq] at ok
+    obtain ⟨⟨_, _⟩, churned, _, _, _, _, rfl⟩ := ok
+    exact holds.of_validators (by rw [(computeExitEpochAndUpdateChurn_earliest churned).2.1])
+  · cases ok; exact holds
+
+private theorem PendingTail.processWithdrawalRequest {count : Nat} {epoch : Epoch}
+    {state after : BeaconState preset fork} {electra : .pectra ≤ fork} {request : WithdrawalRequest}
+    (holds : PendingTail count epoch state)
+    (ok : Consensus.processWithdrawalRequest config state electra request = .ok after) :
+    PendingTail count epoch after := by
+  unfold Consensus.processWithdrawalRequest at ok
+  simp only [bind, Except.bind, pure, Except.pure] at ok
+  repeat' split at ok
+  all_goals first
+    | (cases ok; done)
+    | (cases ok; exact holds)
+    | exact holds.initiateValidatorExit (liftAccessor_ok.mp ok)
+    | exact holds.requestPartialWithdrawal ok
+
+private theorem PendingTail.queueExcessActiveBalance {count : Nat} {epoch : Epoch}
+    {state after : BeaconState preset fork} {electra : .pectra ≤ fork} {index : ValidatorIndex}
+    (holds : PendingTail count epoch state)
+    (ok : Consensus.queueExcessActiveBalance state electra index = .ok after) :
+    PendingTail count epoch after := by
+  simp only [Consensus.queueExcessActiveBalance, bind_ok_iff] at ok
+  obtain ⟨_, _, ok⟩ := ok
+  split at ok
+  · simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at ok
+    obtain ⟨_, _, _, _, _, set, rfl⟩ := ok
+    obtain ⟨_, rfl⟩ := setBalance_ok set
+    exact holds.of_validators
+  · cases ok; exact holds
+
+private theorem PendingTail.switchToCompoundingValidator {count : Nat} {epoch : Epoch}
+    {state after : BeaconState preset fork} {electra : .pectra ≤ fork} {index : ValidatorIndex}
+    (holds : PendingTail count epoch state)
+    (ok : Consensus.switchToCompoundingValidator state electra index = .ok after) :
+    PendingTail count epoch after := by
+  simp only [Consensus.switchToCompoundingValidator, bind_ok_iff] at ok
+  obtain ⟨_, found, _, set, queued⟩ := ok
+  apply PendingTail.queueExcessActiveBalance _ queued
+  apply holds.setValidator _ set
+  intro outside
+  have pending := holds _ _ outside (getValidator_eq_ok_iff.mp found)
+  exact ⟨pending.1, pending.2⟩
+
+private theorem PendingTail.queueConsolidation {count : Nat} {epoch : Epoch}
+    {state after : BeaconState preset fork} {electra : .pectra ≤ fork}
+    {sourceIndex targetIndex : ValidatorIndex} {source : Validator}
+    (holds : PendingTail count epoch state)
+    (found : state.validators.data[sourceIndex.toNat]? = some source)
+    (ok : Consensus.queueConsolidation config state electra sourceIndex source targetIndex =
+      .ok after) : PendingTail count epoch after := by
+  simp only [Consensus.queueConsolidation, bind_ok_iff, liftAccessor_ok, liftArith,
+    mapError_ok_iff, addChecked_ok_iff, pure, Except.pure] at ok
+  obtain ⟨⟨churnedState, exitEpoch⟩, churned, withdrawal, _, _, set, _, _, ok⟩ := ok
+  simp only [Except.ok.injEq] at ok
+  subst ok
+  have validators := (computeConsolidationEpochAndUpdateChurn_earliest churned).2.1
+  apply PendingTail.of_validators (same := rfl)
+  apply (holds.of_validators (same := congrArg (·.data) validators)).setValidator _ set
+  intro outside
+  have pending := holds _ _ outside found
+  exact ⟨pending.1, pending.2⟩
+
+private theorem PendingTail.processConsolidationRequest {count : Nat} {epoch : Epoch}
+    {state after : BeaconState preset fork} {electra : .pectra ≤ fork}
+    {request : ConsolidationRequest} (holds : PendingTail count epoch state)
+    (ok : Consensus.processConsolidationRequest config state electra request = .ok after) :
+    PendingTail count epoch after := by
+  unfold Consensus.processConsolidationRequest at ok
+  simp only [bind, Except.bind, pure, Except.pure] at ok
+  repeat' split at ok
+  all_goals first
+    | (cases ok; done)
+    | (cases ok; exact holds)
+    | exact holds.switchToCompoundingValidator (liftAccessor_ok.mp ok)
+    | exact holds.queueConsolidation (getElem?_toNat_of_ofNatChecked (by assumption)) ok
+
+private theorem PendingTail.processExecutionRequests {count : Nat} {epoch : Epoch}
+    {state after : BeaconState preset fork} {body : BeaconBlockBody preset fork}
+    {electra : .pectra ≤ fork ∧ fork < .glamsterdam} (holds : PendingTail count epoch state)
+    (ok : Consensus.processExecutionRequests config state body electra = .ok after) :
+    PendingTail count epoch after := by
+  simp only [Consensus.processExecutionRequests, bind_ok_iff, ← Array.foldlM_toList] at ok
+  obtain ⟨_, deposits, _, withdrawals, consolidations⟩ := ok
+  exact ((holds.foldlM (fun _ _ _ h ok => h.processDepositRequest ok) deposits).foldlM
+    (fun _ _ _ h ok => h.processWithdrawalRequest ok) withdrawals).foldlM
+    (fun _ _ _ h ok => h.processConsolidationRequest ok) consolidations
+
 /-- Registry growth along imported parent transitions retains every anchor position.
 
 The store is fixed-fork, so these transitions do not include fork upgrades. -/
