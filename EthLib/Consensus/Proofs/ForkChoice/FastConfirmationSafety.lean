@@ -1707,6 +1707,88 @@ private theorem walk_checkpoint_of_descendant {store : Store preset fork}
   simpa only [Store.getCheckpointBlock, boundaryOk, Except.mapError, bind, Except.bind,
     through] using read
 
+/-- Two-epoch-old finality is below every block of the current or previous epoch. -/
+private theorem walk_finalized_boundary_below {block : BeaconBlock preset fork}
+    {epoch finalized : Epoch} {boundary : Slot}
+    (recent : epoch.toNat ≤ (computeEpochAtSlot preset block.slot).toNat + 1)
+    (age : finalized.toNat + 2 ≤ epoch.toNat)
+    (boundaryOk : computeStartSlotAtEpoch preset finalized = .ok boundary) :
+    boundary ≤ block.slot := by
+  have epochLe : finalized.toNat ≤ block.slot.toNat / preset.SLOTS_PER_EPOCH.toNat := by
+    simp only [computeEpochAtSlot, UInt64.toNat_div] at recent
+    omega
+  apply UInt64.le_iff_toNat_le.mpr
+  rw [(computeStartSlotAtEpoch_ok_iff.mp boundaryOk).2]
+  exact (Nat.mul_le_mul_right _ epochLe).trans (Nat.div_mul_le_self _ _)
+
+omit [DecidablePred (· ∈ J)] in
+/-- A recent descendant's source certifies finality for the recent block below it. -/
+private theorem walk_finalized_read_below_source {anchor : Store preset fork}
+    (anchorStore : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (anchored : ∀ w ∈ J, e.start w = anchor)
+    (sound : Invariant anchorState) (slots : 0 < config.SLOT_DURATION_MS)
+    (positive : 0 < preset.SLOTS_PER_EPOCH.toNat)
+    (window : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
+    (anchorSlot : anchorBlock.slot = anchorState.slot)
+    (anchorBoundary : isStartSlotAtEpoch preset anchorBlock.slot = .ok true)
+    (before : fork < .glamsterdam) {horizon : Epoch} (chain : FinalizedPrefix e horizon)
+    {u w : ValidatorIndex} (caller : u ∈ J) (receiver : w ∈ J) {n k : ℕ} {epoch : Epoch}
+    (callerEpoch : ((e.world n).state u).getCurrentStoreEpoch config = .ok epoch)
+    (receiverEpoch : ((e.world k).state w).getCurrentStoreEpoch config = .ok epoch)
+    (inHorizon : epoch ≤ horizon) (anchorHorizon : getCurrentEpoch anchorState ≤ horizon)
+    (lower : ((e.world n).state u).ParentsBelow)
+    (nonzero : ∀ (r : Root) (b : BeaconBlock preset fork),
+      ((e.world n).state u).blocks[r]? = some b → b.stateRoot ≠ Vector.replicate 32 0)
+    (child : ∃ (r : Root) (b : BeaconBlock preset fork),
+      ((e.world n).state u).blocks[r]? = some b ∧ b ≠ anchorBlock)
+    {root tip : Root} {block : BeaconBlock preset fork} {checkpoint : Checkpoint}
+    (known : ((e.world n).state u).blocks[root]? = some block)
+    (descends : ((e.world n).state u).isAncestor ⟨tip, .pending⟩ ⟨root, .pending⟩ = .ok true)
+    (source : ((e.world n).state u).getVotingSource config tip = .ok checkpoint ∨
+      ((e.world n).state u).unrealizedJustification tip = .ok checkpoint)
+    (recent : epoch.toNat ≤ checkpoint.epoch.toNat + 2)
+    (blockRecent : epoch.toNat ≤ (computeEpochAtSlot preset block.slot).toNat + 1) :
+    ((e.world n).state u).getCheckpointBlock root
+      ((e.world k).state w).finalizedCheckpoint.epoch =
+        .ok ((e.world k).state w).finalizedCheckpoint.root := by
+  rcases e.finalizedCheckpoint_eq_or_add_two_le anchorStore sound receiver
+      (anchored w receiver) receiverEpoch with same | age
+  · simpa only [same] using
+      walk_anchor_read anchorStore anchored anchorSlot anchorBoundary before caller known
+  obtain ⟨tipBlock, tipKnown, _⟩ := Store.slot_le_of_isAncestor known descends
+  have read := walk_finalized_read_of_recent_source anchorStore anchored sound slots positive window
+    anchorSlot anchorBoundary before chain caller receiver callerEpoch receiverEpoch inHorizon
+    anchorHorizon lower nonzero child tipKnown source recent
+  have splitRead := read
+  unfold Store.getCheckpointBlock at splitRead
+  simp only [bind_ok_iff] at splitRead
+  obtain ⟨boundary, boundaryOk, _⟩ := splitRead
+  have boundaryOk := mapError_ok_iff.mp boundaryOk
+  exact walk_checkpoint_of_descendant before known descends boundaryOk
+    (walk_finalized_boundary_below blockRecent age boundaryOk) read
+
+/-- A checked root outside the current epoch has a recent source on its chain. -/
+private theorem walk_checked_source {store : Store preset fork} {fcr : FastConfirmationStore}
+    {head start root : Root} {epoch rootEpoch : Epoch}
+    (checked : store.Checked config fcr head start root)
+    (epochOk : store.getCurrentStoreEpoch config = .ok epoch)
+    (rootEpochOk : store.getBlockEpoch root = .ok rootEpoch)
+    (older : rootEpoch ≠ epoch) :
+    ∃ tip source, store.getVotingSource config tip = .ok source ∧
+      epoch.toNat ≤ source.epoch.toNat + 2 ∧
+      (tip = root ∨ store.isAncestor ⟨tip, .pending⟩ ⟨root, .pending⟩ = .ok true) := by
+  obtain ⟨readEpoch, slot, readRootEpoch, startEpoch, readEpochOk, _, readRootEpochOk,
+    _, _, branches⟩ := checked
+  rw [epochOk, Except.ok.injEq] at readEpochOk
+  rw [rootEpochOk, Except.ok.injEq] at readRootEpochOk
+  subst readEpoch
+  subst readRootEpoch
+  rcases branches with previous | current
+  · obtain ⟨source, sourceOk, recent, descends⟩ := previous.2.2.1
+    exact ⟨fcr.previousSlotHead, source, sourceOk, recent, Or.inr descends⟩
+  · obtain ⟨source, sourceOk, recent⟩ := (current.2.2 older).1
+    exact ⟨root, source, sourceOk, recent, Or.inl rfl⟩
+
 /-- Every walked member is at least as recent as the checked start. -/
 private theorem walk_member_recent {store : Store preset fork} {fcr : FastConfirmationStore}
     {head start root member : Root} {roots : List Root} {epoch : Epoch}
