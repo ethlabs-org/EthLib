@@ -1359,6 +1359,112 @@ def CallInvariant
         HonestTargetVotes e margin u k head.root) ∧
       ∀ time, (e.world k).time ≤ time → time ≤ limit → SafeAt e time origin)
 
+/-- The call's committee bounds count honest targets without assuming honest equivocation. -/
+private theorem Execution.call_targetVotes {anchor : Store preset fork}
+    (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (start : ∀ w ∈ J, e.start w = anchor) (sound : Invariant anchorState)
+    (slots : 0 < config.SLOT_DURATION_MS) (committees : CommitteesFollow e)
+    (maxAligned : MaxEffectiveBalancesAligned preset)
+    (increment : preset.EFFECTIVE_BALANCE_INCREMENT.toNat % 100 = 0)
+    {u : ValidatorIndex} (caller : u ∈ J) {n : ℕ} {head : ForkChoiceNode} {slot : Slot}
+    (headOk : ((e.world n).state u).getHead config = .ok head)
+    (slotOk : ((e.world n).state u).getCurrentSlot config = .ok slot) {margin : ℕ}
+    (byzantine : ∀ state epochStart lastSlot participants,
+      ((e.world n).state u).getPulledUpHeadState config head.root = .ok state →
+      computeStartSlotAtEpoch preset (computeEpochAtSlot preset slot) = .ok epochStart →
+      subChecked slot 1 = .ok lastSlot →
+      ((e.world n).state u).getCommitteesBetweenSlots head.root epochStart lastSlot =
+        .ok participants →
+      ByzantineStakeAtMost (fun v => balanceAt state v.toNat)
+        (Store.activeMembers state participants) J
+        config.CONFIRMATION_BYZANTINE_THRESHOLD.toNat 100)
+    (remaining : ∀ state epochStart lastSlot participants total soFar,
+      ((e.world n).state u).getPulledUpHeadState config head.root = .ok state →
+      computeStartSlotAtEpoch preset (computeEpochAtSlot preset slot) = .ok epochStart →
+      subChecked slot 1 = .ok lastSlot →
+      ((e.world n).state u).getCommitteesBetweenSlots head.root epochStart lastSlot =
+        .ok participants →
+      getTotalActiveBalance state = .ok total →
+      ((e.world n).state u).computeCommitteeWeightBetweenSlots head.root state epochStart
+        lastSlot = .ok soFar →
+      3 * ((total.toNat - soFar.toNat) / 100 *
+          (100 - config.CONFIRMATION_BYZANTINE_THRESHOLD.toNat)) + margin ≤
+        3 * stake (fun v => balanceAt state v.toNat)
+          {v ∈ ((unslashedActiveBalances state).map (·.1)).toFinset | v ∉ participants ∧ v ∈ J}) :
+    HonestTargetVotes e margin u n head.root := by
+  have reached := e.reachable
+    (fun w hw => (start w hw).symm ▸ Store.Reachable.anchor anchored) n u caller
+  -- The anchor has no equivocators, and honest signatures never add one.
+  have empty : anchor.equivocatingIndices = [] := by
+    unfold getForkchoiceStore at anchored
+    simp only [bind_ok_iff] at anchored
+    obtain ⟨_, _, anchored⟩ := anchored
+    split at anchored
+    · simp [throw, throwThe, MonadExceptOf.throw, bind, Except.bind] at anchored
+    · simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at anchored
+      obtain ⟨_, _, _, _, rfl⟩ := anchored
+      rfl
+  have dishonest : ∀ v ∈ ((e.world n).state u).equivocatingIndices, v ∉ J := by
+    intro v member honest
+    exact e.not_mem_equivocatingIndices slots (fun w hw => (start w hw) ▸ empty)
+      caller honest n member
+  intro state support target readSlot epochStart lastSlot participants stateOk supportOk
+    targetOk readSlotOk startOk lastOk participantsOk
+  have sameSlot : readSlot = slot := Except.ok.inj (readSlotOk.symm.trans slotOk)
+  subst readSlot
+  -- A successful support read supplies the total and elapsed committee weight.
+  have reads := supportOk
+  unfold Store.computeHonestFfgSupportForCurrentTarget at reads
+  simp only [bind_ok_iff, mapError_ok_iff, slotOk, stateOk, startOk, lastOk, Except.ok.injEq,
+    exists_eq_left'] at reads
+  obtain ⟨total, totalOk, score, scoreOk, soFar, soFarOk, rest⟩ := reads
+  have counted := e.honestTargetVotes_of_byzantineStakeAtMost anchored start committees caller
+    ⟨head, headOk, rfl⟩ slotOk stateOk totalOk
+    (reached.getPulledUpHeadState_aligned sound maxAligned stateOk) increment startOk lastOk
+    soFarOk participantsOk (byzantine _ _ _ _ stateOk startOk lastOk participantsOk) dishonest
+    (remaining _ _ _ _ _ _ stateOk startOk lastOk participantsOk totalOk soFarOk)
+  exact counted state support target slot epochStart lastSlot participants stateOk supportOk
+    targetOk slotOk startOk lastOk participantsOk
+
+omit [DecidablePred (· ∈ J)] in
+/-- A noninitial call consumes exactly the output of the call before it. -/
+private theorem callAt_previous {u : ValidatorIndex} {events : List ℕ}
+    {first fcr after : FastConfirmationStore} {i n : ℕ}
+    (calls : CallAt e u events first (i + 1) n fcr after) :
+    ∃ previous before, CallAt e u events first i previous before fcr := by
+  have index : i < events.length := by
+    obtain ⟨bound, _⟩ := List.getElem?_eq_some_iff.mp calls.1
+    omega
+  have previousOk : events[i]? = some events[i] := List.getElem?_eq_getElem index
+  have ran := calls.2.1
+  rw [List.take_add_one, previousOk] at ran
+  simp only [Option.toList_some, List.map_append, List.map_cons, List.map_nil,
+    List.foldlM_append, List.foldlM_cons, List.foldlM_nil, bind_ok_iff,
+    pure, Except.pure, Except.ok.injEq, exists_eq_right] at ran
+  obtain ⟨before, ranBefore, step⟩ := ran
+  exact ⟨events[i], before, previousOk, ranBefore, step⟩
+
+omit [DecidablePred (· ∈ J)] in
+/-- Consecutive slot-start calls occur in increasing event order. -/
+private theorem call_slots_order {Δ : ℕ} (fits : DelayFits fork config genesisTimeMs Δ)
+    {m n : ℕ} {previous slot : Slot} {before begin : UInt64}
+    (successor : slot.toNat = previous.toNat + 1)
+    (beforeOk : computeTimeAtSlotMs config genesisTimeMs previous = .ok before)
+    (beginOk : computeTimeAtSlotMs config genesisTimeMs slot = .ok begin)
+    (atBefore : (e.world m).time = before.toNat)
+    (atSlot : (e.world n).time = begin.toNat) :
+    addChecked previous 1 = .ok slot ∧ m < n ∧ (e.world m).time + Δ < (e.world n).time := by
+  have nextOk : addChecked previous 1 = .ok slot := addChecked_ok_iff.mpr ⟨by
+    have := slot.toNat_lt
+    simpa only [UInt64.toNat_one, ← successor] using this, by simpa using successor⟩
+  have late := fits.call_before_next_slot nextOk beforeOk beginOk atBefore
+    (by omega : begin.toNat ≤ (e.world n).time)
+  refine ⟨nextOk, ?_, late⟩
+  by_contra notBefore
+  have backwards : (e.world n).time ≤ (e.world m).time :=
+    e.monotone_time (Nat.le_of_not_gt notBefore)
+  omega
+
 /-- Step 8, one call: the block that a call stores keeps `CallInvariant`.
 
 Each earlier call of the run keeps it, which is the induction hypothesis.
