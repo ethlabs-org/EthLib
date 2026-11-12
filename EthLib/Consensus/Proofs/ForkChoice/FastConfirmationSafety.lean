@@ -1500,6 +1500,131 @@ private theorem walk_finalized_read_of_source {horizon : Epoch}
   obtain ⟨prior, priorOk, _⟩ := splitRead
   exact walk_checkpoint_trans boundaryOk (mapError_ok_iff.mp priorOk) ordered read priorRead before
 
+omit [DecidablePred (· ∈ J)] in
+/-- Every held block reads an epoch-aligned anchor at the anchor's checkpoint boundary. -/
+private theorem walk_anchor_read {anchor : Store preset fork}
+    (anchorStore : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (anchored : ∀ w ∈ J, e.start w = anchor)
+    (anchorSlot : anchorBlock.slot = anchorState.slot)
+    (anchorBoundary : isStartSlotAtEpoch preset anchorBlock.slot = .ok true)
+    (before : fork < .glamsterdam) {u : ValidatorIndex} (honest : u ∈ J) {n : ℕ}
+    {root : Root} {block : BeaconBlock preset fork}
+    (known : ((e.world n).state u).blocks[root]? = some block) :
+    ((e.world n).state u).getCheckpointBlock root anchor.finalizedCheckpoint.epoch =
+      .ok anchor.finalizedCheckpoint.root := by
+  have reached := e.reachable
+    (fun w hw => (anchored w hw) ▸ Store.Reachable.anchor anchorStore) n u honest
+  obtain ⟨r, hashed, _, _, _, final, _, _⟩ := getForkchoiceStore_anchor anchorStore
+  obtain ⟨r', hashed', found⟩ := reached.anchor_known
+  rw [hashed, Except.ok.injEq] at hashed'
+  subst r'
+  have rounded : anchorState.slot / preset.SLOTS_PER_EPOCH * preset.SLOTS_PER_EPOCH =
+      anchorState.slot := by
+    unfold isStartSlotAtEpoch computeSlotsSinceEpochStart at anchorBoundary
+    rw [anchorSlot, computeStartSlotAtEpoch_computeEpochAtSlot] at anchorBoundary
+    simp only [Except.mapError, bind, Except.bind, pure, Except.pure,
+      Except.ok.injEq, decide_eq_true_eq] at anchorBoundary
+    have h := (computeStartSlotAtEpoch_ok_iff.mp
+      (computeStartSlotAtEpoch_computeEpochAtSlot (preset := preset) anchorState.slot)).2
+    have le : (anchorState.slot / preset.SLOTS_PER_EPOCH *
+        preset.SLOTS_PER_EPOCH).toNat ≤ anchorState.slot.toNat := by
+      rw [h, computeEpochAtSlot, UInt64.toNat_div]
+      exact Nat.div_mul_le_self _ _
+    have zero := congrArg UInt64.toNat anchorBoundary
+    simp only [UInt64.toNat_sub, UInt64.toNat_zero] at zero
+    have upper := anchorState.slot.toNat_lt
+    have lower := (anchorState.slot / preset.SLOTS_PER_EPOCH * preset.SLOTS_PER_EPOCH).toNat_lt
+    apply UInt64.toNat_inj.mp
+    omega
+  have boundaryOk : computeStartSlotAtEpoch preset anchor.finalizedCheckpoint.epoch =
+      .ok anchorBlock.slot := by
+    simpa [final, getCurrentEpoch, rounded, anchorSlot] using
+      computeStartSlotAtEpoch_computeEpochAtSlot (preset := preset) anchorState.slot
+  have descends := e.isAncestor_anchor_of_known anchorStore anchored honest known
+  rw [final] at descends
+  have path := Store.getAncestor_of_isAncestor_of_lt before found descends
+  unfold Store.getCheckpointBlock
+  rw [boundaryOk]
+  simp only [Except.mapError, bind, Except.bind, path, pure, Except.pure, final]
+
+omit [DecidablePred (· ∈ J)] in
+/-- Prefix agreement identifies a finalized checkpoint whose epoch is still the anchor's. -/
+private theorem walk_finalized_eq_anchor {anchor : Store preset fork}
+    (anchorStore : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (anchored : ∀ w ∈ J, e.start w = anchor)
+    (anchorSlot : anchorBlock.slot = anchorState.slot)
+    (anchorBoundary : isStartSlotAtEpoch preset anchorBlock.slot = .ok true)
+    (before : fork < .glamsterdam) {horizon : Epoch} (chain : FinalizedPrefix e horizon)
+    {w : ValidatorIndex} (honest : w ∈ J) {k : ℕ}
+    (upper : ((e.world k).state w).finalizedCheckpoint.epoch ≤ getCurrentEpoch anchorState)
+    (inHorizon : getCurrentEpoch anchorState ≤ horizon) :
+    ((e.world k).state w).finalizedCheckpoint = anchor.finalizedCheckpoint := by
+  obtain ⟨r, _, found, _, justified, final, _, _⟩ := getForkchoiceStore_anchor anchorStore
+  have lower := (e.epochsLe_of_le w (Nat.zero_le k)).2
+  simp only [Execution.world_zero, World.initial, anchored w honest, final] at lower
+  have epochEq := UInt64.le_antisymm upper lower
+  have justifiedAt : ((e.world 0).state w).Justified anchor.justifiedCheckpoint := by
+    change (e.start w).Justified anchor.justifiedCheckpoint
+    rw [anchored w honest]
+    exact .inl rfl
+  have read := chain w honest w honest k 0 anchor.justifiedCheckpoint justifiedAt
+    (by simpa only [justified] using upper) (by simpa only [justified] using inHorizon)
+  have known : ((e.world 0).state w).blocks[r]? = some anchorBlock := by
+    simpa only [Execution.world_zero, World.initial, anchored w honest] using found
+  have own := walk_anchor_read anchorStore anchored anchorSlot anchorBoundary before honest known
+  rw [justified, epochEq] at read
+  rw [final] at own
+  have rootEq := Except.ok.inj (own.symm.trans read)
+  rw [final]
+  cases cp : ((e.world k).state w).finalizedCheckpoint
+  simp_all
+
+omit [DecidablePred (· ∈ J)] in
+/-- At a common epoch, a source at most two epochs old covers receiver finality. -/
+private theorem walk_finalized_read_of_recent_source {anchor : Store preset fork}
+    (anchorStore : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (anchored : ∀ w ∈ J, e.start w = anchor)
+    (sound : Invariant anchorState) (slots : 0 < config.SLOT_DURATION_MS)
+    (positive : 0 < preset.SLOTS_PER_EPOCH.toNat)
+    (window : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
+    (anchorSlot : anchorBlock.slot = anchorState.slot)
+    (anchorBoundary : isStartSlotAtEpoch preset anchorBlock.slot = .ok true)
+    (before : fork < .glamsterdam) {horizon : Epoch} (chain : FinalizedPrefix e horizon)
+    {u w : ValidatorIndex} (caller : u ∈ J) (receiver : w ∈ J) {n k : ℕ} {epoch : Epoch}
+    (callerEpoch : ((e.world n).state u).getCurrentStoreEpoch config = .ok epoch)
+    (receiverEpoch : ((e.world k).state w).getCurrentStoreEpoch config = .ok epoch)
+    (inHorizon : epoch ≤ horizon) (anchorHorizon : getCurrentEpoch anchorState ≤ horizon)
+    (lower : ((e.world n).state u).ParentsBelow)
+    (nonzero : ∀ (r : Root) (b : BeaconBlock preset fork),
+      ((e.world n).state u).blocks[r]? = some b → b.stateRoot ≠ Vector.replicate 32 0)
+    (child : ∃ (r : Root) (b : BeaconBlock preset fork),
+      ((e.world n).state u).blocks[r]? = some b ∧ b ≠ anchorBlock)
+    {root : Root} {block : BeaconBlock preset fork} {checkpoint : Checkpoint}
+    (known : ((e.world n).state u).blocks[root]? = some block)
+    (source : ((e.world n).state u).getVotingSource config root = .ok checkpoint ∨
+      ((e.world n).state u).unrealizedJustification root = .ok checkpoint)
+    (recent : epoch.toNat ≤ checkpoint.epoch.toNat + 2) :
+    ((e.world n).state u).getCheckpointBlock root
+      ((e.world k).state w).finalizedCheckpoint.epoch =
+        .ok ((e.world k).state w).finalizedCheckpoint.root := by
+  have forward := e.forwardReachable
+    (fun v hv => (anchored v hv) ▸ Store.ForwardReachable.anchor anchorStore) n u caller
+  have anchorRead := walk_anchor_read anchorStore anchored anchorSlot anchorBoundary before caller known
+  rcases e.finalizedCheckpoint_eq_or_add_two_le anchorStore sound receiver
+      (anchored w receiver) receiverEpoch with same | age
+  · simpa only [same] using anchorRead
+  have ordered : ((e.world k).state w).finalizedCheckpoint.epoch ≤ checkpoint.epoch :=
+    UInt64.le_iff_toNat_le.mpr (by omega)
+  rcases walk_source_ancestor forward.reachable sound before positive window
+      (UInt64.le_of_eq anchorSlot) lower nonzero child source with old |
+      ⟨_, boundary, _, _, boundaryOk, _, read⟩
+  · have same := walk_finalized_eq_anchor anchorStore anchored anchorSlot anchorBoundary before
+      chain receiver (UInt64.le_trans ordered old) anchorHorizon
+    simpa only [same] using anchorRead
+  · exact walk_finalized_read_of_source chain before caller receiver source boundaryOk read ordered
+      (UInt64.le_trans (walk_source_epoch_le forward sound slots (UInt64.le_of_eq anchorSlot)
+        before callerEpoch source) inHorizon)
+
 /-- A two-epoch advance contains a complete epoch, with representable boundaries. -/
 private theorem walk_complete_of_epoch_gap {slot current : Slot} {begin endpoint : UInt64}
     (positive : 0 < preset.SLOTS_PER_EPOCH.toNat)
