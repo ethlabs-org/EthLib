@@ -2170,6 +2170,29 @@ private theorem walk_known_at_call {Δ : ℕ} (sync : e.Synchronous Δ)
     (e.finalized_known_of_prefix anchorStore sound anchored slots anchorSlot before chain receiver
       receiverEpoch inHorizon) finality
 
+omit [DecidablePred (· ∈ J)] in
+/-- Boundary admission persists; equal-time events use admission at that event itself. -/
+private theorem walk_known_after_call (prompt : Prompt e)
+    {slot : Slot} {begin : UInt64}
+    (beginOk : computeTimeAtSlotMs config genesisTimeMs slot = .ok begin)
+    (started : e.startTime ≤ begin.toNat) {root : Root} {block : BeaconBlock preset fork}
+    (atCall : ∀ w ∈ J, ∀ k, (e.world k).time = begin.toNat →
+      UpToDate config checks sources (e.world k).time ((e.world k).view w) ((e.world k).state w) →
+      ((e.world k).state w).blocks[root]? = some block)
+    {w : ValidatorIndex} (receiver : w ∈ J) {k : ℕ}
+    (later : begin.toNat ≤ (e.world k).time)
+    (current : UpToDate config checks sources (e.world k).time ((e.world k).view w)
+      ((e.world k).state w)) : ((e.world k).state w).blocks[root]? = some block := by
+  by_cases same : (e.world k).time = begin.toNat
+  · exact atCall w receiver k same current
+  obtain ⟨arrival, time, ready⟩ := (prompt w receiver slot begin beginOk started).1
+  have ordered : arrival ≤ k := by
+    by_contra h
+    have reverse := e.monotone_time (Nat.le_of_lt (Nat.lt_of_not_ge h))
+    dsimp at reverse
+    omega
+  exact e.blocks_of_le ordered (atCall w receiver arrival time ready)
+
 /-- Each new member of the increasing root walk lies on the tip's ancestor chain. -/
 private theorem walk_member_ancestor {store : Store preset fork}
     (before : fork < .glamsterdam) {tip terminal : Root} {acc roots : List Root}
