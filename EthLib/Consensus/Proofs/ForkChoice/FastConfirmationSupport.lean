@@ -1759,7 +1759,7 @@ theorem Execution.mem_supportersOf_of_duty_epoch {Δ : ℕ} (sync : e.Synchronou
   have votedKnown : ((e.world arrival).state w).blocks[attestation.data.beaconBlockRoot]? =
       some headBlock := dataRoot ▸ e.blocks_of_le preArrival admittedHead
   have targetRead := vote.data_target anchored anchorSlot anchorBoundary start honest
-    (nonzero v honest n (by rw [vote.atTime]; omega)) deadlineOk dueOk dueLt
+    (nonzero v honest n (by rw [vote.atTime]; omega))
   obtain ⟨targetBoundary, targetBlock, targetBoundaryOk, targetKnown, targetLe, _⟩ :=
     Store.isAncestor_of_getCheckpointBlock preGloas targetRead
   have targetAbove := (forward v honest n).reachable.anchorSlot_le_block
