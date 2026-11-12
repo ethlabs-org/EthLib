@@ -3352,6 +3352,39 @@ theorem run_indexedTrace {x y : ForkedBeaconState preset}
       exact (List.mem_append.mp member).elim
         (firstConsolidationRates called) (lastConsolidationRates called)
 
+/-- Injective charge coverage spends no more than the two queues' initial window potentials. -/
+theorem departure_charges_le_queue_potentials {x y : ForkedBeaconState preset}
+    (tail : Run config checks x y) (electra : .pectra ≤ x.fork)
+    (early : y.fork < .glamsterdam) (high cap : Nat)
+    (rates : ∀ site ∈ tail.consolidationSites,
+      ∀ (_h : .pectra ≤ site.fork) (rate : Gwei),
+        getConsolidationChurnLimit config site.state = .ok rate → rate.toNat ≤ cap) :
+    ((tail.departureCharges.filter fun c => c.epoch ≤ high).map (·.amount)).sum ≤
+      departureQueuePotential high config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat
+        (x.state.earliestExitEpoch electra) (x.state.exitBalanceToConsume electra) +
+      departureQueuePotential high cap (x.state.earliestConsolidationEpoch electra)
+        (x.state.consolidationBalanceToConsume electra) := by
+  have targetElectra := Nat.le_trans electra (fork_le_of_chainSteps tail.chainSteps)
+  obtain ⟨exits, consolidations, matched, exitTrace, consolidationTrace,
+    exitRates, consolidationRates⟩ := run_indexedTrace tail electra early targetElectra cap rates
+  have charges := departureCharges_le_calls (departureCharges_run_indices tail) matched high
+  have queueBound {calls : List IndexedDepartureCall} {first last : Epoch} {available left : Gwei}
+      (trace : DepartureQueueTrace first available (calls.map (·.call)) last left) (cap : Nat)
+      (rates : ∀ called ∈ calls, called.call.rate.toNat ≤ cap) :
+      ((calls.filter fun called => called.call.epoch.toNat ≤ high).map
+        fun called => called.call.amount.toNat).sum ≤
+          departureQueuePotential high cap first available := by
+    have budget := trace.window_le high cap (by
+      intro call member
+      obtain ⟨called, present, rfl⟩ := List.mem_map.mp member
+      exact rates called present)
+    simp only [List.filter_map, List.map_map] at budget
+    exact (Nat.le_add_right _ _).trans budget
+  have exitBound := queueBound exitTrace _ exitRates
+  have consolidationBound := queueBound consolidationTrace cap consolidationRates
+  simp only [List.filter_append, List.map_append, List.sum_append] at charges
+  exact charges.trans (Nat.add_le_add exitBound consolidationBound)
+
 private structure SitePrefix {fork : Fork} (s t : BeaconState preset fork) : Prop where
   identity : RegistryIdentity s t
   active : ActiveStep s t
