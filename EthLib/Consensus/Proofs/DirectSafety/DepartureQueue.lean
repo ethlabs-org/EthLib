@@ -4046,6 +4046,385 @@ private theorem CountCohortStep.epoch {f : Fork} {s t : BeaconState preset f}
       data (lastData clearedOk mixedOk (rotatedSame.trans (balanceDrift_historical rootedOk).1))
         (wholeSlot.trans balancedSlot.symm)
 
+private theorem CountCohortStep.withdrawals {f : Fork} {s t : BeaconState preset f}
+    (early : f < .pectra) (bound : Nat) {capella : .shapella ≤ f}
+    {payload : Until .glamsterdam f (ExecutionPayload preset f)}
+    (ok : processWithdrawals s capella payload = .ok t) : CountCohortStep config bound s t := by
+  have notGloas : ¬ .glamsterdam ≤ f := Nat.not_le_of_lt (Nat.lt_trans early (by decide))
+  have notElectra : ¬ .pectra ≤ f := Nat.not_le_of_lt early
+  have slot := (frame_processWithdrawals ok).slot
+  simp only [processWithdrawals, notGloas, ↓reduceDIte, bind_ok_iff, ensure_ok_iff,
+    liftAccessor_ok] at ok
+  obtain ⟨expected, _, _, _, applied⟩ := ok
+  simp only [applyExpectedWithdrawals, notGloas, notElectra, ↓reduceDIte, bind_ok_iff,
+    pure, Except.pure, Except.ok.injEq, exists_eq_left'] at applied
+  obtain ⟨withdrawn, paid, indexed, moved, swept⟩ := applied
+  have paidData : withdrawn.validators = s.validators := by
+    unfold applyWithdrawals at paid
+    rw [← Array.foldlM_toList] at paid
+    refine foldlM_ok_invariant (fun t => t.validators = s.validators) ?_ rfl paid
+    intro a withdrawal b kept stepped
+    simp only [applyWithdrawal, notGloas, false_and, ↓reduceDIte] at stepped
+    exact (decreaseBalance_validators stepped).trans kept
+  have movedData : indexed.validators = withdrawn.validators := by
+    unfold updateNextWithdrawalIndex at moved
+    split at moved
+    · simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at moved
+      obtain ⟨_, _, rfl⟩ := moved
+      rfl
+    · cases moved; rfl
+  have sweptData : t.validators = indexed.validators := by
+    simp only [updateNextWithdrawalValidatorIndex, bind_ok_iff] at swept
+    obtain ⟨_, _, swept⟩ := swept
+    split at swept
+    · cases swept
+    · cases swept; rfl
+  exact .data bound (congrArg (·.data) (sweptData.trans (movedData.trans paidData)))
+    (by simp only [getCurrentEpoch, slot]; exact Nat.le_refl _)
+
+private theorem CountCohortStep.block {f : Fork} {s t : BeaconState preset f}
+    (early : f < .pectra) (bound : Nat) {engine : ExecutionEngine preset f}
+    {block : BeaconBlock preset f} (ok : processBlock config checks engine s block = .ok t) :
+    CountCohortStep config bound s t := by
+  have data {a b : BeaconState preset f} (same : b.validators = a.validators)
+      (slot : b.slot = a.slot) : CountCohortStep config bound a b :=
+    .data bound (congrArg (·.data) same)
+      (by simp only [getCurrentEpoch, slot]; exact Nat.le_refl _)
+  have header {a b : BeaconState preset f} {block : BeaconBlock preset f}
+      (computed : processBlockHeader a block = .ok b) : CountCohortStep config bound a b := by
+    obtain ⟨_, _, rfl⟩ := processBlockHeader_eq computed
+    exact .data bound rfl
+  have randao {a b : BeaconState preset f} {body : BeaconBlockBody preset f}
+      (computed : processRandao config checks a body = .ok b) :
+      CountCohortStep config bound a b := by
+    obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, rfl⟩ := processRandao_eq computed
+    exact .data bound rfl
+  have vote {a b : BeaconState preset f} {body : BeaconBlockBody preset f} {before : f < .hegota}
+      (computed : processEth1Data before a body = .ok b) : CountCohortStep config bound a b := by
+    obtain ⟨_, _, rest⟩ := processEth1Data_eq computed
+    rw [← rest]
+    exact .data bound rfl
+  have execution {a b : BeaconState preset f} {body : BeaconBlockBody preset f}
+      {bellatrix : .bellatrix ≤ f}
+      (computed : processBlockExecution config checks engine a body bellatrix = .ok b) :
+      CountCohortStep config bound a b := by
+    have payload {a b : BeaconState preset f} {bellatrix : .bellatrix ≤ f ∧ f < .glamsterdam}
+        (computed : processExecutionPayload config engine a body bellatrix = .ok b) :
+        CountCohortStep config bound a b := by
+      obtain ⟨_, _, _, rfl⟩ := processExecutionPayload_ok computed
+      exact .data bound rfl
+    unfold processBlockExecution at computed
+    split at computed
+    · exact False.elim (Nat.not_le_of_lt
+        (Nat.lt_trans early (by decide : Fork.pectra < .glamsterdam)) (by assumption))
+    split at computed
+    · simp only [bind_ok_iff] at computed
+      obtain ⟨_, withdrawn, paid⟩ := computed
+      exact (CountCohortStep.withdrawals early bound withdrawn).trans (payload paid)
+    · dsimp only at computed
+      split at computed
+      · exact payload computed
+      · cases computed; exact .refl _ bound
+  unfold processBlock at ok
+  split at ok
+  · unfold processBlockAltair at ok
+    simp only [bind_ok_iff] at ok
+    obtain ⟨paid, paidOk, headed, headedOk, executed, executedOk, revealed, revealedOk, voted,
+      votedOk, operated, operatedOk, synced⟩ := ok
+    have paidSame : paid = s := by
+      split at paidOk
+      · exact False.elim (Nat.not_le_of_lt
+          (Nat.lt_trans early (by decide : Fork.pectra < .glamsterdam)) (by assumption))
+      · cases paidOk; rfl
+    subst paid
+    have executionStep : CountCohortStep config bound headed executed := by
+      split at executedOk
+      · exact execution executedOk
+      · cases executedOk; exact .refl _ bound
+    have votedStep : CountCohortStep config bound revealed voted := by
+      split at votedOk
+      · exact vote votedOk
+      · cases votedOk; exact .refl _ bound
+    exact (header headedOk).trans <| executionStep.trans <| (randao revealedOk).trans <|
+      votedStep.trans <| (CountCohortStep.operations early bound operatedOk).trans <|
+      data (sync_registry synced) (frame_processSyncAggregate synced).slot
+  · simp only [bind_ok_iff] at ok
+    obtain ⟨_, headed, _, revealed, _, voted, operated⟩ := ok
+    exact (header headed).trans <| (randao revealed).trans <| (vote voted).trans <|
+      CountCohortStep.operations early bound operated
+
+private theorem CountCohortStep.slot {f : Fork} {s t : BeaconState preset f}
+    (early : f < .pectra) (bound : Nat) (ok : advanceSlot config checks s = .ok t) :
+    CountCohortStep config bound s t := by
+  obtain ⟨next, cached, epoched, sum, cachedOk, advanced, rfl⟩ := advanceSlot_ok ok
+  have cachedSame : cached.validators = s.validators := by
+    obtain ⟨_, _, _, _, rfl⟩ := processSlot_ok cachedOk
+    rfl
+  have cachedSlot := processSlot_slot cachedOk
+  have head : CountCohortStep config bound s cached :=
+    .data bound (congrArg (·.data) cachedSame)
+      (by simp only [getCurrentEpoch, cachedSlot]; exact Nat.le_refl _)
+  have middle : CountCohortStep config bound cached epoched ∧ epoched.slot = cached.slot := by
+    unfold epochIfLast at advanced
+    split at advanced
+    · obtain ⟨justified, justifiedOk, frame⟩ := processEpoch_frame advanced
+      exact ⟨.epoch early bound advanced,
+        frame.slot.trans (activeStep_processJustificationAndFinalization justifiedOk).1⟩
+    · cases advanced; exact ⟨.refl _ bound, rfl⟩
+  apply (head.trans middle.1).trans
+  refine CountCohortStep.data bound (s := epoched) (t := { epoched with slot := next }) rfl ?_
+  rw [getCurrentEpoch_toNat, getCurrentEpoch_toNat]
+  change epoched.slot.toNat / _ ≤ next.toNat / _
+  rw [middle.2, cachedSlot, sum]
+  exact Nat.div_le_div_right (Nat.le_succ _)
+
+private theorem CountCohortStep.upgrade {s : ForkedBeaconState preset}
+    {t : {t : ForkedBeaconState preset // s.fork < t.fork}} (bound : Nat)
+    (ok : upgradeNext config checks s = .ok t) (early : t.val.fork < .pectra) :
+    CountCohortStep config bound s.state t.val.state := by
+  have epochs : (getCurrentEpoch s.state).toNat ≤ (getCurrentEpoch t.val.state).toNat := by
+    simp only [getCurrentEpoch, (upgradeFrame_upgradeNext ok).slot]
+    exact Nat.le_refl _
+  apply CountCohortStep.data bound _ epochs
+  obtain ⟨fork, state⟩ := s
+  cases fork <;>
+    simp only [upgradeNext, bind_ok_iff, pure, Except.pure, Except.ok.injEq, throw,
+      throwThe, MonadExceptOf.throw, reduceCtorEq] at ok
+  · obtain ⟨_, upgraded, rfl⟩ := ok
+    exact (upgradeToAltair_spec upgraded).1
+  · subst ok; rfl
+  · subst ok; rfl
+  · subst ok; rfl
+  · obtain ⟨_, _, rfl⟩ := ok
+    exact False.elim (Nat.lt_irrefl _ early)
+  · obtain ⟨_, _, rfl⟩ := ok
+    exact False.elim ((by decide : ¬ Fork.fusaka < Fork.pectra) early)
+  · obtain ⟨_, _, rfl⟩ := ok
+    exact False.elim ((by decide : ¬ Fork.glamsterdam < Fork.pectra) early)
+  · obtain ⟨_, _, rfl⟩ := ok
+    exact False.elim ((by decide : ¬ Fork.hegota < Fork.pectra) early)
+
+private theorem CountCohortStep.upgrades {s t : ForkedBeaconState preset} (bound : Nat)
+    (ok : processUpgrades config checks s = .ok t) (early : t.fork < .pectra) :
+    CountCohortStep config bound s.state t.state := by
+  fun_induction processUpgrades config checks s generalizing t with
+  | case1 s due ih =>
+    obtain ⟨next, nextOk, rest⟩ := bind_ok_iff.mp ok
+    exact (CountCohortStep.upgrade bound nextOk
+      (Nat.lt_of_le_of_lt (processUpgrades_fork_le rest) early)).trans (ih next rest early)
+  | case2 s notDue => cases ok; exact .refl _ bound
+
+private theorem CountCohortStep.step {s t : ForkedBeaconState preset} (bound : Nat)
+    (step : Step config checks s t) (early : t.fork < .pectra) :
+    CountCohortStep config bound s.state t.state := by
+  cases step with
+  | block engine signed due ok =>
+    exact CountCohortStep.block early bound (applySignedBlock_ok ok).2.1
+  | slot ok =>
+    obtain ⟨advanced, slotOk, upgrades⟩ := bind_ok_iff.mp ok
+    exact (CountCohortStep.slot
+      (Nat.lt_of_le_of_lt (processUpgrades_fork_le upgrades) early) bound slotOk).trans
+      (CountCohortStep.upgrades bound upgrades early)
+
+private theorem CountCohortStep.run {s t : ForkedBeaconState preset} (bound : Nat)
+    (run : Run config checks s t) (early : t.fork < .pectra) :
+    CountCohortStep config bound s.state t.state := by
+  induction run with
+  | nil => exact .refl _ bound
+  | snoc pre step ih =>
+    exact (ih (Nat.lt_of_le_of_lt step.chainStep.fork_le early)).trans
+      (CountCohortStep.step bound step early)
+
+private theorem genesis_cohorts {g : ForkedBeaconState preset}
+    (genesis : Genesis (config := config) (checks := checks) g) (bound : Nat)
+    (size : g.state.validators.data.size ≤ bound) :
+    ExitCohortsBounded (max 1 (cohortCap config bound)) g.state := by
+  obtain ⟨hash, time, deposits, ok⟩ := genesis
+  obtain ⟨before, genesisTime, root, deposited, activated, finalRoot, depositedOk, activatedOk,
+    equal⟩ := initializeBeaconStateFromEth1_ok ok
+  have first := CountCohortStep.fold (bound := bound) (config := config)
+    (fun a entry b computed => by
+      simp only [genesisDeposit, bind_ok_iff] at computed
+      obtain ⟨depositRoot, _, paid⟩ := computed
+      exact (CountCohortStep.data bound (s := a)
+        (t := { a with eth1Data := fun _ => { a.eth1Data _ with depositRoot } })).trans
+          (CountCohortStep.processDeposit (Nat.lt_trans before (by decide)) bound paid))
+    depositedOk
+  have second := CountCohortStep.fold (bound := bound) (config := config)
+    (fun a i b computed => by
+      simp only [activateAtGenesis, bind_ok_iff, liftAccessor_ok] at computed
+      obtain ⟨validator, found, balance, _, set⟩ := computed
+      apply CountCohortStep.setExitUnchanged bound found set
+      split <;> rfl) activatedOk
+  rw [equal]
+  apply (first.trans second).bounded
+  · simpa only [equal] using size
+  · intro epoch finite
+    simp [emptyGenesisState]
+
+private theorem run_cohorts {g y : ForkedBeaconState preset}
+    (run : Run config checks g y) (genesis : Genesis (config := config) (checks := checks) g)
+    (early : y.fork < .pectra) (bound : Nat) (size : y.state.validators.data.size ≤ bound) :
+    ExitCohortsBounded (max 1 (cohortCap config bound)) y.state := by
+  have kept := CountCohortStep.run bound run early
+  exact kept.bounded size (genesis_cohorts genesis bound (kept.grows.trans size))
+
+private theorem pre_electra_charge_bounds {g x y : ForkedBeaconState preset}
+    (shared : Run config checks g x) (tail : Run config checks x y)
+    (genesis : Genesis (config := config) (checks := checks) g) (caps : CapOrder preset)
+    (early : y.fork < .pectra) (charge : DepartureCharge)
+    (member : charge ∈ tail.departureCharges) :
+    (getCurrentEpoch x.state).toNat ≤ charge.epoch ∧
+      charge.amount ≤ preset.MAX_EFFECTIVE_BALANCE.toNat := by
+  induction tail with
+  | nil => simp [Run.departureCharges] at member
+  | @snoc middle last pre step ih =>
+    have middleEarly := Nat.lt_of_le_of_lt step.chainStep.fork_le early
+    rcases List.mem_append.mp member with earlier | latest
+    · exact ih middleEarly earlier
+    · obtain ⟨⟨old, i⟩, present, added⟩ := List.mem_filterMap.mp latest
+      have found : middle.state.validators.data[i]? = some old := by
+        simpa only [List.mem_zipIdx_iff_getElem?, Array.getElem?_toList] using present
+      dsimp only at added
+      split at added
+      · cases added
+      · rename_i next after
+        split at added
+        · rename_i assigned
+          cases Option.some.inj added
+          simp only [Bool.and_eq_true, beq_iff_eq, bne_iff_ne] at assigned
+          have placed := (CountCohortStep.step 0 step early).future i old next found after
+          have source := (CountCohortStep.run 0 pre middleEarly).epochs
+          have lower : (getCurrentEpoch middle.state).toNat ≤ next.exitEpoch.toNat := by
+            rcases placed with same | lower
+            · exact False.elim (assigned.2 (same.trans assigned.1))
+            · exact lower
+          have capped := (shared.append pre).effectiveBalance_capped genesis
+            caps.activation caps.compounding (Nat.lt_trans middleEarly (by decide)) old
+            (Array.mem_of_getElem? found)
+          have notElectra : ¬ .pectra ≤ middle.fork := Nat.not_le_of_lt middleEarly
+          simp only [withdrawalMaxEffectiveBalance, notElectra, ↓reduceIte] at capped
+          exact ⟨source.trans lower, UInt64.le_iff_toNat_le.mp capped⟩
+        · cases added
+
+private theorem charge_count_le_cohort {x y : ForkedBeaconState preset}
+    (tail : Run config checks x y) (epoch : Nat) :
+    tail.departureCharges.countP (fun charge => charge.epoch == epoch) ≤
+      y.state.validators.data.toList.countP (fun v => v.exitEpoch.toNat == epoch) := by
+  let selected := tail.departureCharges.filter (fun charge => charge.epoch == epoch)
+  let validators := y.state.validators.data.toList.zipIdx.filter
+    (fun entry => entry.1.exitEpoch.toNat == epoch)
+  have unique : (selected.map (·.index)).Nodup :=
+    ((List.filter_sublist).map DepartureCharge.index).nodup (departureCharges_run_indices tail)
+  have subset : selected.map (·.index) ⊆ validators.map Prod.snd := by
+    intro i member
+    obtain ⟨charge, selectedMember, rfl⟩ := List.mem_map.mp member
+    obtain ⟨chargeMember, same⟩ := List.mem_filter.mp selectedMember
+    obtain ⟨v, found, _, exit⟩ := tail.departure_charge_exit charge chargeMember
+    apply List.mem_map.mpr
+    refine ⟨(v, charge.index), List.mem_filter.mpr ⟨?_, ?_⟩, rfl⟩
+    · simpa only [List.mem_zipIdx_iff_getElem?, Array.getElem?_toList] using found
+    · simpa only [exit] using same
+  have bound := unique.length_le_of_subset subset
+  simp only [List.length_map] at bound
+  have count : validators.length =
+      y.state.validators.data.toList.countP (fun v => v.exitEpoch.toNat == epoch) := by
+    dsimp only [validators]
+    rw [← List.countP_eq_length_filter]
+    have mapped := List.countP_map (l := y.state.validators.data.toList.zipIdx)
+      (f := Prod.fst) (p := fun v => v.exitEpoch.toNat == epoch)
+    simpa only [List.zipIdx_map_fst, Function.comp_def] using mapped.symm
+  simpa only [selected, ← List.countP_eq_length_filter, count] using bound
+
+private theorem charge_window_length_le (charges : List DepartureCharge) (start high cap : Nat)
+    (firsts : ∀ charge ∈ charges, start ≤ charge.epoch)
+    (counts : ∀ epoch, charges.countP (fun charge => charge.epoch == epoch) ≤ cap) :
+    (charges.filter (fun charge => charge.epoch ≤ high)).length ≤ (high + 1 - start) * cap := by
+  have outside (n : Nat) (before : n < start) :
+      charges.countP (fun charge => charge.epoch ≤ n) = 0 := by
+    apply List.countP_eq_zero.mpr
+    intro charge member
+    have lower := firsts charge member
+    simp only [decide_eq_true_eq]
+    omega
+  rw [← List.countP_eq_length_filter]
+  induction high with
+  | zero =>
+    by_cases inside : start ≤ 0
+    · have zero : start = 0 := by omega
+      subst start
+      have same : (fun charge : DepartureCharge => decide (charge.epoch ≤ 0)) =
+          (fun charge => charge.epoch == 0) := by
+        funext charge
+        apply Bool.eq_iff_iff.mpr
+        simp
+      rw [same]
+      simpa only [Nat.reduceAdd, Nat.sub_zero, Nat.one_mul, Nat.le_zero_eq,
+        decide_eq_true_eq, beq_iff_eq] using counts 0
+    · rw [outside 0 (by omega)]
+      exact Nat.zero_le _
+  | succ high ih =>
+    by_cases inside : start ≤ high + 1
+    · have splitCount : charges.countP (fun charge => charge.epoch ≤ high + 1) =
+          charges.countP (fun charge => charge.epoch ≤ high) +
+          charges.countP (fun charge => charge.epoch == high + 1) := by
+        clear firsts counts outside ih
+        induction charges with
+        | nil => simp
+        | cons charge rest ih =>
+          simp only [List.countP_cons, ih]
+          split_ifs <;> simp_all only [decide_eq_true_eq, beq_iff_eq] <;> omega
+      rw [splitCount]
+      have distance : high + 1 + 1 - start = (high + 1 - start) + 1 := by omega
+      have latest := counts (high + 1)
+      simpa only [Nat.succ_eq_add_one, distance, Nat.add_mul, Nat.one_mul] using
+        Nat.add_le_add ih latest
+    · rw [outside (high + 1) (by omega)]
+      exact Nat.zero_le _
+
+private theorem pre_electra_charges_le_window {g x y : ForkedBeaconState preset}
+    (shared : Run config checks g x) (tail : Run config checks x y)
+    (genesis : Genesis (config := config) (checks := checks) g) (caps : CapOrder preset)
+    (early : y.fork < .pectra) (high bound : Nat)
+    (size : y.state.validators.data.size ≤ bound) :
+    ((tail.departureCharges.filter fun c => c.epoch ≤ high).map (·.amount)).sum ≤
+      (high + 1 - (getCurrentEpoch x.state).toNat) *
+        (max 1 (cohortCap config bound) * preset.MAX_EFFECTIVE_BALANCE.toNat) := by
+  have cohorts := run_cohorts (shared.append tail) genesis early bound size
+  have counts (epoch : Nat) :
+      tail.departureCharges.countP (fun charge => charge.epoch == epoch) ≤
+        max 1 (cohortCap config bound) := by
+    by_cases empty : tail.departureCharges.countP (fun charge => charge.epoch == epoch) = 0
+    · rw [empty]; exact Nat.zero_le _
+    obtain ⟨charge, member, same⟩ := List.countP_pos_iff.mp (Nat.pos_of_ne_zero empty)
+    obtain ⟨v, found, finite, exit⟩ := tail.departure_charge_exit charge member
+    have exit : v.exitEpoch.toNat = epoch := exit.trans (beq_iff_eq.mp same)
+    have predicates : (fun w : Validator => w.exitEpoch.toNat == epoch) =
+        (fun w => w.exitEpoch == v.exitEpoch) := by
+      funext w
+      apply Bool.eq_iff_iff.mpr
+      simp only [beq_iff_eq, ← exit, UInt64.toNat_inj]
+    exact (charge_count_le_cohort tail epoch).trans (by
+      rw [predicates]
+      exact cohorts v.exitEpoch finite)
+  have length := charge_window_length_le tail.departureCharges
+    (getCurrentEpoch x.state).toNat high (max 1 (cohortCap config bound))
+    (fun charge member =>
+      (pre_electra_charge_bounds shared tail genesis caps early charge member).1)
+    counts
+  have amount := List.sum_le_length_nsmul
+    ((tail.departureCharges.filter fun c => c.epoch ≤ high).map (·.amount))
+    preset.MAX_EFFECTIVE_BALANCE.toNat (by
+      intro amount member
+      obtain ⟨charge, present, equal⟩ := List.mem_map.mp member
+      rw [← equal]
+      exact (pre_electra_charge_bounds shared tail genesis caps early charge
+        (List.mem_filter.mp present).1).2)
+  simp only [List.length_map, nsmul_eq_mul, Nat.cast_id] at amount
+  apply amount.trans
+  simpa only [Nat.mul_assoc] using
+    Nat.mul_le_mul_right preset.MAX_EFFECTIVE_BALANCE.toNat length
+
 private structure SitePrefix {fork : Fork} (s t : BeaconState preset fork) : Prop where
   identity : RegistryIdentity s t
   active : ActiveStep s t
