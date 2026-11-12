@@ -74,6 +74,59 @@ theorem gloas_consolidation_rate {fork : Fork} (s : BeaconState preset fork)
   subst churn
   rfl
 
+/-- The exit envelope keeps the minimum and the Gloas exit quotient, without a cap. -/
+def exitRateBound (preset : Preset) (config : Config) (stake : Nat) : Nat :=
+  max config.MIN_PER_EPOCH_CHURN_LIMIT_ELECTRA.toNat
+    (max preset.EFFECTIVE_BALANCE_INCREMENT.toNat stake / config.CHURN_LIMIT_QUOTIENT_GLOAS.toNat)
+
+/-- The consolidation envelope uses its own quotient, without a minimum or a cap. -/
+def consolidationRateBound (preset : Preset) (config : Config) (stake : Nat) : Nat :=
+  max preset.EFFECTIVE_BALANCE_INCREMENT.toNat stake /
+    config.CONSOLIDATION_CHURN_LIMIT_QUOTIENT.toNat
+
+private theorem roundToIncrement_le (amount : Gwei) :
+    (roundToIncrement preset amount).toNat ≤ amount.toNat := by
+  have remainder : amount % preset.EFFECTIVE_BALANCE_INCREMENT ≤ amount := by
+    rw [UInt64.le_iff_toNat_le, UInt64.toNat_mod]
+    exact Nat.mod_le _ _
+  rw [roundToIncrement, UInt64.toNat_sub_of_le _ _ remainder]
+  exact Nat.sub_le _ _
+
+theorem gloas_exit_rate_le {fork : Fork} (s : BeaconState preset fork)
+    (gloas : .glamsterdam ≤ fork) (total churn : Gwei) (stake : Nat)
+    (active : getTotalActiveBalance s = .ok total)
+    (ok : exitChurnLimit config s = .ok churn)
+    (bounded : total.toNat ≤ max preset.EFFECTIVE_BALANCE_INCREMENT.toNat stake) :
+    churn.toNat ≤ exitRateBound preset config stake := by
+  rw [gloas_exit_rate s gloas active ok]
+  have rounded := roundToIncrement_le (preset := preset)
+    (max config.MIN_PER_EPOCH_CHURN_LIMIT_ELECTRA (total / config.CHURN_LIMIT_QUOTIENT_GLOAS))
+  rw [Uint64.toNat_max, UInt64.toNat_div] at rounded
+  exact rounded.trans (max_le_max_left _ (Nat.div_le_div_right bounded))
+
+theorem gloas_activation_rate_le {fork : Fork} (s : BeaconState preset fork)
+    (gloas : .glamsterdam ≤ fork) (churn : Gwei)
+    (ok : depositChurnLimit config s = .ok churn) :
+    churn.toNat ≤ config.MAX_PER_EPOCH_ACTIVATION_CHURN_LIMIT_GLOAS.toNat := by
+  have computed := ok
+  simp only [depositChurnLimit, gloas, ↓reduceIte, getActivationChurnLimit,
+    getExitChurnLimit, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at computed
+  obtain ⟨rate, ⟨total, active, _⟩, _⟩ := computed
+  rw [gloas_activation_rate s gloas active ok]
+  exact Nat.min_le_left _ _
+
+theorem gloas_consolidation_rate_le {fork : Fork} (s : BeaconState preset fork)
+    (gloas : .glamsterdam ≤ fork) (total churn : Gwei) (stake : Nat)
+    (active : getTotalActiveBalance s = .ok total)
+    (ok : getConsolidationChurnLimit config s = .ok churn)
+    (bounded : total.toNat ≤ max preset.EFFECTIVE_BALANCE_INCREMENT.toNat stake) :
+    churn.toNat ≤ consolidationRateBound preset config stake := by
+  rw [gloas_consolidation_rate s gloas active ok]
+  have rounded := roundToIncrement_le (preset := preset)
+    (total / config.CONSOLIDATION_CHURN_LIMIT_QUOTIENT)
+  rw [UInt64.toNat_div] at rounded
+  exact rounded.trans (Nat.div_le_div_right bounded)
+
 /-- A window that crosses Gloas must allow either cap, without equating configuration fields. -/
 def gloasDepositWindow (config : Config) (x : ForkedBeaconState preset) (high : Nat) : Nat :=
   (if electra : .pectra ≤ x.fork then (x.state.depositBalanceToConsume electra).toNat else 0) +
