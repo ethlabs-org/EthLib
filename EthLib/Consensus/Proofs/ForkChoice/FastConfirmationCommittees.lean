@@ -239,8 +239,8 @@ theorem Execution.mem_activeMembers_of_sibling_vote {anchor : Store preset fork}
     (start : ∀ w ∈ J, e.start w = anchor) (preGloas : fork < .glamsterdam)
     (lookahead : 1 ≤ preset.MIN_SEED_LOOKAHEAD.toNat ∧ 1 ≤ preset.MAX_SEED_LOOKAHEAD.toNat ∧
       preset.MIN_SEED_LOOKAHEAD.toNat + 3 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
-    (committees : CommitteesFollow e)
-    {w : ValidatorIndex} (receiver : w ∈ J) {k : ℕ}
+    {limit : ℕ} (committees : CommitteesFollow e limit)
+    {w : ValidatorIndex} (receiver : w ∈ J) {k : ℕ} (bounded : (e.world k).time ≤ limit)
     (upToDate : UpToDate config checks sources (e.world k).time ((e.world k).view w)
       ((e.world k).state w))
     (lower : ((e.world k).state w).ParentsBelow)
@@ -321,7 +321,7 @@ theorem Execution.mem_activeMembers_of_sibling_vote {anchor : Store preset fork}
     by_cases recent : epoch.toNat ≤ attestation.data.target.epoch.toNat + 1
     -- Both runs keep the same seed and active registry for the two recent target epochs.
     · obtain ⟨common, headRun, targetRun, final, fixed, headRing, targetRing⟩ :=
-        committees.common w receiver k head headState epoch v attestation targetState
+        committees.common w receiver k bounded head headState epoch v attestation targetState
           headOk headStateOk epochOk targetPast recent origin cached
       have headKept := headRun.committeesKept final fixed headRing
       have targetKept := targetRun.committeesKept final fixed targetRing
