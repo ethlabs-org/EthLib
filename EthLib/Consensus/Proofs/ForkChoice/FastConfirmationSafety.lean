@@ -912,6 +912,187 @@ theorem Execution.rootFinal_or_justified_covers {anchor : Store preset fork}
 
 variable [DecidablePred (· ∈ J)]
 
+/-- Every walked member is at least as recent as the checked start. -/
+private theorem walk_member_recent {store : Store preset fork} {fcr : FastConfirmationStore}
+    {head start root member : Root} {roots : List Root} {epoch : Epoch}
+    {block : BeaconBlock preset fork}
+    (checked : store.Checked config fcr head start root)
+    (walked : store.getAncestorRoots head start = .ok roots) (mem : member ∈ roots)
+    (epochOk : store.getCurrentStoreEpoch config = .ok epoch)
+    (known : store.blocks[member]? = some block) :
+    epoch.toNat ≤ (computeEpochAtSlot preset block.slot).toNat + 1 := by
+  obtain ⟨readEpoch, slot, rootEpoch, startEpoch, readEpochOk, _, _, startEpochOk, recent, _⟩ :=
+    checked
+  rw [epochOk, Except.ok.injEq] at readEpochOk
+  subst readEpoch
+  obtain ⟨same, startBlock, sameOk, startOk, below⟩ :=
+    Store.slot_lt_of_mem_getAncestorRoots walked (by simp) mem
+  rw [Store.block_ok_iff.mpr known, Except.ok.injEq] at sameOk
+  subst same
+  have startEq : startEpoch = computeEpochAtSlot preset startBlock.slot := by
+    simpa [Store.getBlockEpoch, startOk, bind, Except.bind, pure, Except.pure] using
+      startEpochOk.symm
+  have le : (computeEpochAtSlot preset startBlock.slot).toNat ≤
+      (computeEpochAtSlot preset block.slot).toNat := by
+    simp only [computeEpochAtSlot, UInt64.toNat_div]
+    exact Nat.div_le_div_right (Nat.le_of_lt (UInt64.lt_iff_toNat_lt.mp below))
+  rw [startEq] at recent
+  omega
+
+omit [DecidablePred (· ∈ J)] in
+/-- A recent recorded vote belongs to the caller-head committees of any range containing its slot.
+
+The common-state comparison applies to every recorded voter, not only honest voters. -/
+private theorem walk_vote_mem_window (committees : CommitteesFollow e)
+    {u : ValidatorIndex} (caller : u ∈ J) {n : ℕ} {head : ForkChoiceNode}
+    {headState : BeaconState preset fork} {current : Epoch}
+    {v : ValidatorIndex} {attestation : Attestation preset fork}
+    {first last : Slot} {participants : Std.TreeSet ValidatorIndex}
+    (headOk : ((e.world n).state u).getHead config = .ok head)
+    (stateOk : ((e.world n).state u).blockState head.root = .ok headState)
+    (epochOk : ((e.world n).state u).getCurrentStoreEpoch config = .ok current)
+    (past : attestation.data.target.epoch.toNat ≤ current.toNat)
+    (recent : current.toNat ≤ attestation.data.target.epoch.toNat + 1)
+    (origin : ((e.world n).state u).VoteOrigin config v attestation)
+    (windowOk : ((e.world n).state u).getCommitteesBetweenSlots head.root first last =
+      .ok participants)
+    (low : first ≤ attestation.data.slot) (high : attestation.data.slot ≤ last) :
+    v ∈ participants := by
+  obtain ⟨targetState, index, committee, targetOk, below, committeeOk, member⟩ :=
+    origin.exists_mem_committee
+  obtain ⟨common, headRun, targetRun, final, fixed, headRing, targetRing⟩ :=
+    committees.common u caller n head headState current v attestation targetState
+      headOk stateOk epochOk past recent origin targetOk
+  have headKept := headRun.committeesKept final fixed headRing
+  have targetKept := targetRun.committeesKept final fixed targetRing
+  have same := (headKept attestation.data.slot index origin.targetEpoch.symm).trans
+    (targetKept attestation.data.slot index origin.targetEpoch.symm).symm
+  have active := (headRun.active.getActiveValidatorIndices_eq fixed).trans
+    (targetRun.active.getActiveValidatorIndices_eq fixed).symm
+  have count : getCommitteeCountPerSlot headState (computeEpochAtSlot preset attestation.data.slot) =
+      getCommitteeCountPerSlot targetState (computeEpochAtSlot preset attestation.data.slot) := by
+    simp only [← origin.targetEpoch, getCommitteeCountPerSlot, active]
+  exact Store.mem_getCommitteesBetweenSlots windowOk low high stateOk
+    (count ▸ below) (same.trans committeeOk) member
+
+omit [DecidablePred (· ∈ J)] in
+/-- Every supporter of a recent block belongs to its caller-head adversary window. -/
+private theorem walk_supporters_in_window (committees : CommitteesFollow e)
+    {u : ValidatorIndex} (caller : u ∈ J) {n : ℕ} {head : ForkChoiceNode}
+    {headState source : BeaconState preset fork} {current : Epoch}
+    {root : Root} {block : BeaconBlock preset fork} {slot first last : Slot}
+    {participants : Std.TreeSet ValidatorIndex}
+    (origins : ((e.world n).state u).VotesHaveOrigins config)
+    (headOk : ((e.world n).state u).getHead config = .ok head)
+    (stateOk : ((e.world n).state u).blockState head.root = .ok headState)
+    (slotOk : ((e.world n).state u).getCurrentSlot config = .ok slot)
+    (epochOk : ((e.world n).state u).getCurrentStoreEpoch config = .ok current)
+    (known : ((e.world n).state u).blocks[root]? = some block)
+    (recent : current.toNat ≤ (computeEpochAtSlot preset block.slot).toNat + 1)
+    (firstLe : first ≤ block.slot) (lastOk : subChecked slot 1 = .ok last)
+    (windowOk : ((e.world n).state u).getCommitteesBetweenSlots head.root first last =
+      .ok participants) :
+    ∀ v ∈ ((e.world n).state u).supportersOf source ⟨root, .pending⟩, v ∈ participants := by
+  intro v supporter
+  obtain ⟨message, supported, latest, _, supportedOk, descends⟩ :=
+    ((e.world n).state u).exists_of_voteCountsFor
+      (Store.voteCountsFor_of_mem_supportersOf supporter)
+  obtain ⟨attestation, rfl, origin⟩ := origins latest
+  obtain ⟨votedBlock, votedKnown, votedLe⟩ := origin.voted
+  obtain ⟨same, sameKnown, below⟩ := Store.slot_le_of_isAncestor known descends
+  have rootEq := Store.getSupportedNode_root supportedOk
+  change supported.root = attestation.data.beaconBlockRoot at rootEq
+  rw [rootEq, votedKnown, Option.some.injEq] at sameKnown
+  subst same
+  have blockLe := UInt64.le_trans below votedLe
+  obtain ⟨readSlot, readOk, past⟩ := origin.past
+  rw [slotOk, Except.ok.injEq] at readOk
+  subst readSlot
+  have lastNat := (subChecked_ok_iff.mp lastOk).2
+  have high : attestation.data.slot ≤ last := UInt64.le_iff_toNat_le.mpr (by
+    have := UInt64.lt_iff_toNat_lt.mp past
+    simp only [UInt64.toNat_one] at lastNat
+    omega)
+  have epochEq : current = computeEpochAtSlot preset slot := by
+    simpa [Store.getCurrentStoreEpoch, slotOk, bind, Except.bind, pure, Except.pure] using
+      epochOk.symm
+  have monotone {a b : Slot} (le : a ≤ b) :
+      (computeEpochAtSlot preset a).toNat ≤ (computeEpochAtSlot preset b).toNat := by
+    simp only [computeEpochAtSlot, UInt64.toNat_div]
+    exact Nat.div_le_div_right (UInt64.le_iff_toNat_le.mp le)
+  apply walk_vote_mem_window committees caller headOk stateOk epochOk
+    (by rw [origin.targetEpoch, epochEq]; exact monotone (UInt64.le_of_lt past))
+    (by rw [origin.targetEpoch]; have := monotone blockLe; omega) origin windowOk
+    (UInt64.le_trans firstLe blockLe) high
+
+/-- A recent one-confirmed block has an honest supporter in the caller's tally. -/
+private theorem walk_exists_honest_supporter (committees : CommitteesFollow e)
+    {u : ValidatorIndex} (caller : u ∈ J) {n : ℕ} {head : ForkChoiceNode}
+    {headState source : BeaconState preset fork} {current : Epoch}
+    {root : Root} {block : BeaconBlock preset fork} {slot : Slot}
+    (origins : ((e.world n).state u).VotesHaveOrigins config)
+    (headOk : ((e.world n).state u).getHead config = .ok head)
+    (stateOk : ((e.world n).state u).blockState head.root = .ok headState)
+    (slotOk : ((e.world n).state u).getCurrentSlot config = .ok slot)
+    (epochOk : ((e.world n).state u).getCurrentStoreEpoch config = .ok current)
+    (known : ((e.world n).state u).blocks[root]? = some block)
+    (recent : current.toNat ≤ (computeEpochAtSlot preset block.slot).toNat + 1)
+    (notFuture : block.slot ≤ slot)
+    (within : source.RegistryWithinLimit) (aligned : EffectiveBalancesAligned source)
+    (increment : preset.EFFECTIVE_BALANCE_INCREMENT.toNat % 100 = 0)
+    (dishonest : ∀ v ∈ ((e.world n).state u).equivocatingIndices, v ∉ J)
+    (byzantine : ∀ first last participants,
+      ((e.world n).state u).getCommitteesBetweenSlots head.root first last = .ok participants →
+      ByzantineStakeAtMost (fun v => balanceAt source v.toNat)
+        (Store.activeMembers source participants) J
+        config.CONFIRMATION_BYZANTINE_THRESHOLD.toNat 100)
+    (confirmed : ((e.world n).state u).isOneConfirmed config head.root source
+      (((e.world n).state u).tallyVotes source) root = .ok true) :
+    ∃ v ∈ ((e.world n).state u).supportersOf source ⟨root, .pending⟩, v ∈ J := by
+  obtain ⟨support, threshold, _, thresholdOk, _⟩ :=
+    Store.isOneConfirmed_eq_ok_true_iff.mp confirmed
+  obtain ⟨readSlot, readBlock, parent, score, first, last, maximum, discount, adversary,
+    readSlotOk, readBlockOk, parentOk, scoreOk, firstOk, lastOk, maximumOk, discountOk,
+    adversaryOk⟩ := Store.computeSafetyThreshold_eq_ok thresholdOk
+  rw [slotOk, Except.ok.injEq] at readSlotOk
+  subst readSlot
+  rw [Store.block_ok_iff.mpr known, Except.ok.injEq] at readBlockOk
+  subst readBlock
+  obtain ⟨readSlot, readBlock, startSlot, readLast, readSlotOk, readBlockOk, readLastOk,
+    startOk, rangeOk⟩ := Store.getAdversarialWeight_eq_ok adversaryOk
+  rw [slotOk, Except.ok.injEq] at readSlotOk
+  subst readSlot
+  rw [Store.block_ok_iff.mpr known, Except.ok.injEq] at readBlockOk
+  subst readBlock
+  rw [lastOk, Except.ok.injEq] at readLastOk
+  subst readLast
+  obtain ⟨weight, equivocation, _, equivocationOk⟩ :=
+    Store.computeAdversarialWeight_eq_ok rangeOk
+  obtain ⟨participants, participantsOk, _⟩ :=
+    Store.exists_stake_equivocatorsOf_of_getEquivocationScore equivocationOk
+  have firstLe : startSlot ≤ block.slot := by
+    rcases startOk with rfl | boundary
+    · exact UInt64.le_refl _
+    · apply UInt64.le_iff_toNat_le.mpr
+      rw [(computeStartSlotAtEpoch_ok_iff.mp boundary).2]
+      exact Nat.div_mul_le_self _ _
+  have inside := walk_supporters_in_window committees caller origins headOk stateOk slotOk
+    epochOk known recent firstLe lastOk participantsOk (source := source)
+  have positive := Store.lt_two_mul_honest_supportersOf_of_isOneConfirmed within slotOk
+    (Store.block_ok_iff.mpr known) parentOk scoreOk firstOk lastOk maximumOk discountOk
+    adversaryOk rangeOk participantsOk confirmed inside aligned increment dishonest
+    (byzantine _ _ _ participantsOk)
+  have discountLe := UInt64.le_iff_toNat_le.mp
+    (Store.computeEmptySlotSupportDiscount_le (Store.block_ok_iff.mpr known) parentOk firstOk
+      lastOk maximumOk discountOk notFuture)
+  by_contra absent
+  have empty : {v ∈ ((e.world n).state u).supportersOf source ⟨root, .pending⟩ | v ∈ J} = ∅ := by
+    apply Finset.eq_empty_iff_forall_notMem.mpr
+    intro v member
+    exact absent ⟨v, (Finset.mem_filter.mp member).1, (Finset.mem_filter.mp member).2⟩
+  rw [empty, stake_empty] at positive
+  omega
+
 /-- Each new member of the increasing root walk lies on the tip's ancestor chain. -/
 private theorem walk_member_ancestor {store : Store preset fork}
     (before : fork < .glamsterdam) {tip terminal : Root} {acc roots : List Root}
