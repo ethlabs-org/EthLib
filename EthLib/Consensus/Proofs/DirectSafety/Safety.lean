@@ -387,14 +387,15 @@ No assumption about the signature checks is made.
 The result is about the checks that the runs performed, not about who signed. -/
 theorem verifiedConflict_of_accountable {g a b : ForkedBeaconState preset}
     (left : Run config checks g a) (right : Run config checks g b)
-    (parameters : Parameters preset) (key : BLSPubkey)
+    (lookahead : preset.MIN_SEED_LOOKAHEAD.toNat + 2 <
+      preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat) (key : BLSPubkey)
     (accountable : Accountable left right key) :
     VerifiedConflict left right key := by
   rcases accountable with ⟨d₁, d₂, first, second, conflict⟩ | evidence | evidence
   · have verified {data : AttestationData} (accepted : AcceptedEither left right key data) :
         VerifiedEither left right key data :=
-      accepted.imp (Run.attestationCheck_of_accepted parameters)
-        (Run.attestationCheck_of_accepted parameters)
+      accepted.imp (Run.attestationCheck_of_accepted lookahead)
+        (Run.attestationCheck_of_accepted lookahead)
     exact .inl ⟨d₁, d₂, verified first, verified second, conflict⟩
   · rcases checked_of_slashingEvidence evidence with ⟨one, two, conflict⟩ | ⟨c, conflict⟩
     · exact .inl ⟨_, _, .inl ⟨one, rfl⟩, .inl ⟨two, rfl⟩, conflict⟩

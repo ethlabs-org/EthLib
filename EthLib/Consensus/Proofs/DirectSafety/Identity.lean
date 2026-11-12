@@ -51,14 +51,8 @@ theorem _root_.EthLib.Consensus.Run.key_preserved {g a : ForkedBeaconState prese
     (run : Run config checks g a)
     (i : Nat) (old : Validator) (found : g.state.validators.data[i]? = some old) :
     ∃ current, a.state.validators.data[i]? = some current ∧ current.pubkey = old.pubkey := by
-  have identity := (validatorKeys_prefix_and_distinct_of_chainSteps run.chainSteps).1
-  obtain ⟨inside, oldEq⟩ := Array.getElem?_eq_some_iff.mp found
-  have small : i < (validatorKeys g.state).length := by simpa [validatorKeys] using inside
-  have lastSmall : i < a.state.validators.data.size := by
-    simpa [validatorKeys] using Nat.lt_of_lt_of_le small identity.length_le
-  refine ⟨a.state.validators.data[i], by simp [lastSmall], ?_⟩
-  have same := identity.getElem small
-  simpa [validatorKeys, oldEq] using same.symm
+  exact validators_getElem?_of_validatorKeys_prefix
+    (validatorKeys_prefix_and_distinct_of_chainSteps run.chainSteps).1 found
 
 private theorem key_preserved_from_member {g a before after : ForkedBeaconState preset}
     {run : Run config checks g a} {step : Step config checks before after}

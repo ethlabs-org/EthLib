@@ -64,6 +64,20 @@ def validatorKeys (state : BeaconState preset fork) : List BLSPubkey :=
 def PubkeysDistinct (state : BeaconState preset fork) : Prop :=
   (validatorKeys state).Nodup
 
+/-- A key at a position of a registry is at that position after, when the keys after extend them. -/
+theorem validators_getElem?_of_validatorKeys_prefix {post : Base.Fork}
+    {state : BeaconState preset fork} {after : BeaconState preset post}
+    (kept : validatorKeys state <+: validatorKeys after) {i : Nat} {old : Validator}
+    (found : state.validators.data[i]? = some old) :
+    ∃ current, after.validators.data[i]? = some current ∧ current.pubkey = old.pubkey := by
+  obtain ⟨inside, oldEq⟩ := Array.getElem?_eq_some_iff.mp found
+  have small : i < (validatorKeys state).length := by simpa [validatorKeys] using inside
+  have afterSmall : i < after.validators.data.size := by
+    simpa [validatorKeys] using Nat.lt_of_lt_of_le small kept.length_le
+  refine ⟨after.validators.data[i], by simp [afterSmall], ?_⟩
+  have same := kept.getElem small
+  simpa [validatorKeys, oldEq] using same.symm
+
 def depositRegistrationAmount (fork : Fork) (amount : Gwei) : Gwei :=
   if .pectra ≤ fork then 0 else amount
 

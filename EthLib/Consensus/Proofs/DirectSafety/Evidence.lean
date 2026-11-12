@@ -1078,7 +1078,8 @@ theorem _root_.EthLib.Consensus.Run.attestationChecks_of_attesterSlashing
       isSlashableAttestationData slashing.attestation1.data slashing.attestation2.data =
         true := by
   obtain ⟨_, processed, _⟩ := applySignedBlock_ok applied
-  obtain ⟨input, _, _, _, started, proposers, slashings, -⟩ := processBlock_folds processed
+  obtain ⟨input, _, started, operated, -⟩ := processBlock_operationsInput processed
+  obtain ⟨_, _, _, proposers, slashings, -⟩ := processOperations_folds operated
   -- The slashing sits at a position of the attester slashings of the block.
   obtain ⟨pre, post, split⟩ := List.append_of_mem included
   rw [split, List.foldlM_append] at slashings
@@ -1089,7 +1090,8 @@ theorem _root_.EthLib.Consensus.Run.attestationChecks_of_attesterSlashing
     started.frame.toFrame.trans <|
       (BlockFrame.foldlM (fun _ _ _ ok => frame_processProposerSlashing ok) proposers).toFrame.trans
         (BlockFrame.foldlM (fun _ _ _ ok => frame_processAttesterSlashing ok) earlier).toFrame
-  obtain ⟨current, foundCurrent, currentKey⟩ := frame.key_preserved found
+  obtain ⟨current, foundCurrent, currentKey⟩ :=
+    validators_getElem?_of_validatorKeys_prefix frame.pubkeysPrefix found
   -- The index is in both attestations, because the slashed indices are those in both.
   unfold slashingIndices at named
   obtain ⟨first, second⟩ := List.mem_filter.mp (mem_sortedSet.mp named)
@@ -1123,7 +1125,8 @@ theorem _root_.EthLib.Consensus.Run.headerCheck_of_proposerSlashing
       some v) :
     ∃ c : HeaderCheck run v.pubkey, c.slashing = slashing ∧ ProposerConflict slashing := by
   obtain ⟨_, processed, _⟩ := applySignedBlock_ok applied
-  obtain ⟨input, _, _, _, started, proposers, -⟩ := processBlock_folds processed
+  obtain ⟨input, _, started, operated, -⟩ := processBlock_operationsInput processed
+  obtain ⟨_, _, _, proposers, -⟩ := processOperations_folds operated
   -- The slashing sits at a position of the proposer slashings of the block.
   obtain ⟨pre, post, split⟩ := List.append_of_mem included
   rw [split, List.foldlM_append] at proposers
@@ -1133,7 +1136,8 @@ theorem _root_.EthLib.Consensus.Run.headerCheck_of_proposerSlashing
   have frame : Frame before checked :=
     started.frame.toFrame.trans
       (BlockFrame.foldlM (fun _ _ _ ok => frame_processProposerSlashing ok) earlier).toFrame
-  obtain ⟨current, foundCurrent, currentKey⟩ := frame.key_preserved found
+  obtain ⟨current, foundCurrent, currentKey⟩ :=
+    validators_getElem?_of_validatorKeys_prefix frame.pubkeysPrefix found
   have opened := processedP
   unfold processProposerSlashing at opened
   simp only [bind_ok_iff, liftAccessor_ok, ensure_ok_iff] at opened

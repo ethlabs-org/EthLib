@@ -109,19 +109,6 @@ structure AttestationCheck {g a : ForkedBeaconState preset} (run : Run config ch
     checked.validators.data[i.toNat]? = some v ∧ v.pubkey = key
   valid : isValidIndexedAttestation config checks checked indexed = .ok true
 
-/-- A key at a position of a state is at that position, with the same key, after a frame. -/
-theorem _root_.EthLib.Consensus.Frame.key_preserved {fork : Fork}
-    {state after : BeaconState preset fork} (frame : Frame state after) {i : Nat}
-    {old : Validator} (found : state.validators.data[i]? = some old) :
-    ∃ current, after.validators.data[i]? = some current ∧ current.pubkey = old.pubkey := by
-  obtain ⟨inside, oldEq⟩ := Array.getElem?_eq_some_iff.mp found
-  have small : i < (validatorKeys state).length := by simpa [validatorKeys] using inside
-  have lastSmall : i < after.validators.data.size := by
-    simpa [validatorKeys] using Nat.lt_of_lt_of_le small frame.pubkeysPrefix.length_le
-  refine ⟨after.validators.data[i], by simp [lastSmall], ?_⟩
-  have same := frame.pubkeysPrefix.getElem small
-  simpa [validatorKeys, oldEq] using same.symm
-
 /-- The steps of a block before its operations are a block frame. -/
 theorem _root_.EthLib.Consensus.OperationsInput.frame {fork : Fork}
     {engine : ExecutionEngine preset fork} {state input : BeaconState preset fork}
@@ -132,69 +119,6 @@ theorem _root_.EthLib.Consensus.OperationsInput.frame {fork : Fork}
     (fun _ ok => frame_processParentExecutionPayload ok) frame_processBlockHeader
     (fun _ ok => frame_processBlockExecution ok) frame_processRandao
     (fun _ ok => frame_processEth1Data ok)
-
-/-- The operations of a block run its three first folds from the state that it starts at. -/
-private theorem processOperations_folds {fork : Fork} {input last : BeaconState preset fork}
-    {body : BeaconBlockBody preset fork} {parentSlot : Slot}
-    (computed : processOperations config checks input body parentSlot = .ok last) :
-    ∃ proposersDone slashingsDone attested,
-      body.proposerSlashings.data.toList.foldlM (processProposerSlashing config checks) input =
-        .ok proposersDone ∧
-      body.attesterSlashings.data.toList.foldlM (processAttesterSlashing config checks)
-        proposersDone = .ok slashingsDone ∧
-      body.attestations.data.toList.foldlM (processAttestation config checks · parentSlot ·)
-        slashingsDone = .ok attested := by
-  unfold processOperations at computed
-  split at computed
-  · unfold processOperationsGloas at computed
-    simp only [bind_ok_iff, ← Array.foldlM_toList] at computed
-    obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, proposersOk, _, attestersOk, _,
-      attestedOk, -⟩ := computed
-    exact ⟨_, _, _, proposersOk, attestersOk, attestedOk⟩
-  · simp only [bind_ok_iff, ensure_ok_iff, ← Array.foldlM_toList] at computed
-    obtain ⟨_, _, _, _, _, proposersOk, _, attestersOk, _, attestedOk, -⟩ := computed
-    exact ⟨_, _, _, proposersOk, attestersOk, attestedOk⟩
-
-/-- A block that succeeds starts its operations at an operations input.
-
-It runs the proposer slashings from there, then the attester slashings, then the attestations.
-
-The attestations read the slot of the latest block header before the block. -/
-theorem processBlock_folds {fork : Fork} {engine : ExecutionEngine preset fork}
-    {state after : BeaconState preset fork} {block : BeaconBlock preset fork}
-    (computed : processBlock config checks engine state block = .ok after) :
-    ∃ input proposersDone slashingsDone attested,
-      OperationsInput config checks engine state block input ∧
-      block.body.proposerSlashings.data.toList.foldlM (processProposerSlashing config checks)
-        input = .ok proposersDone ∧
-      block.body.attesterSlashings.data.toList.foldlM (processAttesterSlashing config checks)
-        proposersDone = .ok slashingsDone ∧
-      block.body.attestations.data.toList.foldlM
-        (processAttestation config checks · state.latestBlockHeader.slot ·) slashingsDone =
-        .ok attested := by
-  unfold processBlock at computed
-  split at computed
-  · unfold processBlockAltair at computed
-    simp only [bind_ok_iff] at computed
-    obtain ⟨_, paidOk, _, headedOk, _, executedOk, _, revealedOk, _, votedOk, _, operatedOk,
-      -⟩ := computed
-    obtain ⟨_, _, _, folds⟩ := processOperations_folds operatedOk
-    exact ⟨_, _, _, _, ⟨_, _, _, _, paidOk, headedOk, executedOk, revealedOk, votedOk⟩, folds⟩
-  · rename_i altair
-    simp only [bind_ok_iff] at computed
-    obtain ⟨_, headerOk, _, randaoOk, _, eth1Ok, operationsOk⟩ := computed
-    obtain ⟨_, _, _, folds⟩ := processOperations_folds operationsOk
-    -- Before Altair neither the payload of the parent nor the execution part runs.
-    have gloas : ¬ Fork.glamsterdam ≤ fork := fun h => altair (Nat.le_trans (by decide) h)
-    have bellatrix : ¬ Fork.bellatrix ≤ fork := fun h => altair (Nat.le_trans (by decide) h)
-    have early : fork < .hegota := Nat.lt_trans (Nat.lt_of_not_le altair) (by decide)
-    refine ⟨_, _, _, _, ⟨state, _, _, _, ?_, headerOk, ?_, randaoOk, ?_⟩, folds⟩
-    · simp only [gloas, ↓reduceDIte]
-      rfl
-    · simp only [bellatrix, ↓reduceDIte]
-      rfl
-    · simp only [early, ↓reduceDIte]
-      exact eth1Ok
 
 /-- The state on which `processAttestation` checks its indexed attestation, and the check.
 
@@ -229,7 +153,9 @@ private theorem processAttestation_checked {fork : Fork} {state after : BeaconSt
 
 /-- Case 1: a vote that a block of the run accepted was checked in its attestation. -/
 theorem _root_.EthLib.Consensus.Run.attestationCheck_of_accepted {g a : ForkedBeaconState preset}
-    {run : Run config checks g a} (parameters : Parameters preset)
+    {run : Run config checks g a}
+    (lookahead : preset.MIN_SEED_LOOKAHEAD.toNat + 2 <
+      preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
     {key : BLSPubkey} {data : AttestationData} (accepted : run.Accepted key data) :
     ∃ c : AttestationCheck run key, c.indexed.data = data := by
   obtain ⟨x, y, step, member, i, v, vote, found, keyEq⟩ := accepted
@@ -237,8 +163,9 @@ theorem _root_.EthLib.Consensus.Run.attestationCheck_of_accepted {g a : ForkedBe
   | slot ok => simp [Step.votes] at vote
   | @block fork before after engine signed due applied =>
     obtain ⟨_, processed, _⟩ := applySignedBlock_ok applied
-    obtain ⟨input, proposersDone, slashingsDone, attested, started, proposers, slashings,
-      folded⟩ := processBlock_folds processed
+    obtain ⟨input, _, started, operated, -⟩ := processBlock_operationsInput processed
+    obtain ⟨proposersDone, slashingsDone, _, proposers, slashings, folded, -⟩ :=
+      processOperations_folds operated
     obtain ⟨attestation, included, dataEq, indices, indicesOk, iMem⟩ := vote
     have dataEq : data = attestation.data := dataEq
     -- The attestation sits at a position of the attestations of the block.
@@ -247,7 +174,7 @@ theorem _root_.EthLib.Consensus.Run.attestationCheck_of_accepted {g a : ForkedBe
     obtain ⟨mid, earlier, rest⟩ := bind_ok_iff.mp folded
     rw [List.foldlM_cons] at rest
     obtain ⟨next, processedA, -⟩ := bind_ok_iff.mp rest
-    have same := getAttestingIndices_attestationsStart parameters.lookahead started proposers
+    have same := getAttestingIndices_attestationsStart lookahead started proposers
       slashings earlier processedA
     -- Up to the attestation, the registry and the mixes are those where the attestations start.
     have midKept : mid.validators = slashingsDone.validators ∧
@@ -289,7 +216,8 @@ theorem _root_.EthLib.Consensus.Run.attestationCheck_of_accepted {g a : ForkedBe
       simpa using iMem
     have dataOut : indexed.data = data := by rw [← indexedEq, indexedData, dataEq]
     obtain ⟨current, foundCurrent, currentKey⟩ :=
-      (headFrame.toFrame.trans kept.2.2).key_preserved found
+      validators_getElem?_of_validatorKeys_prefix
+        (headFrame.toFrame.trans kept.2.2).pubkeysPrefix found
     refine ⟨⟨⟨fork, before, after, engine, signed, due, applied, member, input, started⟩,
       _, indexed, .attestation split proposers slashings earlier processedA indexedOk,
       ⟨i, signs, current, foundCurrent, currentKey.trans keyEq⟩, valid⟩, dataOut⟩
