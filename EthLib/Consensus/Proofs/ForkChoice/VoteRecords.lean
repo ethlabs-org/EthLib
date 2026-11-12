@@ -4,13 +4,11 @@ public import EthLib.Consensus.Proofs.ForkChoice.Checkpoints
 public import EthLib.Consensus.Proofs.ForkChoice.Network
 
 /-!
-# Statements: the latest vote of a validator never goes back
+# Proofs: the latest vote of a validator never goes back
 
-This file states step 2 of the plan for the safety of the fast confirmation rule.
+This module proves that handlers preserve latest votes and never lower their rank.
 
-The rule is that of [arXiv 2405.00549v4][fcr].
-
-The proofs are placeholders, and each statement may still change.
+The paper's latest-vote filter is in [arXiv 2405.00549v4, Section 3.1, LMD-GHOST][fcr].
 
 A store keeps one latest vote for each validator.
 
@@ -22,7 +20,7 @@ An attester slashing adds equivocators, and leaves the latest votes as they are.
 
 Along an execution of the network model, the same holds for each honest validator.
 
-The statements follow two declarations of [verified-fast-confirmation][vfc].
+For an implementation comparison, [verified-fast-confirmation][vfc] has two related declarations.
 
 They are `StoreLE` and `Execution.store_latest_message_ge_mono`.
 

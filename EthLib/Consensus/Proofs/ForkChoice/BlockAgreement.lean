@@ -5,13 +5,13 @@ public import EthLib.Consensus.Proofs.ForkChoice.Reachable
 import EthLib.Consensus.Proofs.ForkChoice.BlockStates
 
 /-!
-# Statements: honest stores agree on the blocks of an honest chain
+# Proofs: block provenance, conditional state agreement and block delivery
 
-This file states part of step 3 of the plan for the safety of the fast confirmation rule.
+This module proves block provenance and state agreement under agreement on held blocks.
 
-The rule is that of [arXiv 2405.00549v4][fcr].
+It also proves delivery to a receiver that admits the blocks.
 
-The proofs are placeholders, and each statement may still change.
+The network model follows [arXiv 2405.00549v4, Section 2][fcr].
 
 A block of an honest store is a block of its start, or came in a signed block of its view.
 
@@ -21,7 +21,7 @@ So two honest stores with the same start hold the same state at a root that both
 
 That needs the two stores to hold the same block wherever both hold one.
 
-`OneBlockPerRoot` excludes conflicting held blocks at one root, without assuming hash injectivity.
+`OneBlockPerRoot` assumes collision freedom on held blocks, not injectivity on all blocks.
 
 Under synchrony, a block of an honest store reaches the view of each honest validator.
 
@@ -41,7 +41,7 @@ That last hypothesis covers the steps of the handler after the checks, and the v
 
 In the model here a vote that the store rejects makes the store reject its block.
 
-The agreement follows two lemmas of [verified-fast-confirmation][vfc].
+For an implementation comparison, [verified-fast-confirmation][vfc] has two related lemmas.
 
 They are `WellFormedExecution.blocks_agree` and `WalkCoveredBy.receiver_walk`.
 
@@ -332,7 +332,7 @@ def OneBlockPerRoot
     ((e.world n).state v).blocks[root]? = some left →
     ((e.world k).state u).blocks[root]? = some right → left = right
 
-/-- A delayed block of an honest view passes the remaining handler checks when block validation passes.
+/-- Admission hypothesis: block validation suffices for the remaining handler checks.
 
 Partial synchrony supplies view membership, not successful `onBlockWithVotes`.
 
@@ -340,7 +340,9 @@ The latter can fail on a carried vote even when the block transition succeeds.
 
 This hypothesis isolates that admission gap at the receiver and at the delivery deadline.
 
-It speaks of receivers up to the last time `last` only; the sender's event is earlier. -/
+It speaks of receivers up to the last time `last` only.
+
+The sender's event is earlier. -/
 def BlocksAdmitted
     (e : Execution (honestForkChoice config checks sources anchorState anchorBlock assignment
       genesisTimeMs) J) (GST Δ last : ℕ) : Prop :=

@@ -9,6 +9,12 @@ Not yet released.
 
 ### Changes that break callers
 
+- In Lean, `Votes` in `EthLib.Consensus.Proofs.ForkChoice.HonestDuties` takes `last` after `stable`, before the execution ([#1458](https://github.com/ethereum/EthLib/issues/1458)).
+  It requires voting only at deadlines up to and including that time, in milliseconds.
+  `exists_votes_execution` takes `last` after the positive-delay premise and returns `Votes 0 last e` in place of `Votes 0 e`.
+  Callers must supply the endpoint and bound each voting deadline by it when using `Votes`.
+  `VoteAt` gains the field `committees`: its constructors must prove that `checkAttestationCommittees` succeeds in every target state read by the voter's store.
+  No C export or Python function changes.
 - In Lean, `toNat_le_of_sumGwei` is gone from `EthLib.Consensus.Proofs.ForkChoice.FastConfirmation` ([#1458](https://github.com/ethereum/EthLib/issues/1458)).
   `Store.getNodeSupportBetweenSlots_le`, the one theorem that read it, now follows from the new `Store.exists_stake_of_getNodeSupportBetweenSlots`.
   A caller can use `toNat_eq_of_sumGwei`, which gives the sum itself, and bound its terms.

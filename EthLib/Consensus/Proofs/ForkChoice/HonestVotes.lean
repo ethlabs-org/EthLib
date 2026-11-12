@@ -5,13 +5,15 @@ public import EthLib.Consensus.Proofs.ForkChoice.VoteOrigins
 public import EthLib.Consensus.Proofs.Models.Network.Signers
 
 /-!
-# Statements: the votes that honest stores hold for honest validators
+# Proofs: the votes that honest stores hold for honest validators
 
-This file states part of step 3 of the plan for the safety of the fast confirmation rule.
+This module proves vote provenance and the exclusion of honest validators from known equivocators.
 
-The rule is that of [arXiv 2405.00549v4][fcr].
+The signature model follows [arXiv 2405.00549v4, Section 2, Validators][fcr].
 
-The proofs are placeholders, and each statement may still change.
+The voting and slashing assumptions are in Section 3.1 of that paper.
+
+The exclusion requires empty initial lists of equivocators and a positive slot duration.
 
 Each statement of an honest validator in a sent message is a vote that its duty allowed.
 
@@ -23,7 +25,7 @@ Each latest vote of an honest store comes from a statement of a message of its v
 
 So the latest vote that an honest store holds for an honest validator is a vote of its duty.
 
-Two lemmas of [verified-fast-confirmation][vfc] state the same facts.
+For an implementation comparison, [verified-fast-confirmation][vfc] has two related lemmas.
 
 They are `Execution.honest_not_equivocating` and `Execution.latest_message_eq_honest_vote`.
 

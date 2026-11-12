@@ -8,19 +8,21 @@ import EthLib.Consensus.Proofs.ForkChoice.BlockStates
 import EthLib.Consensus.Proofs.ForkChoice.Checkpoints
 
 /-!
-# Statements: an honest vote reaches the latest votes of each honest store
+# Conditional vote delivery and the data of an honest vote
 
-This file states part of step 3 of the plan for the safety of the fast confirmation rule.
+This module proves that an up-to-date receiver records an accepted honest vote under synchrony.
 
-The rule is that of [arXiv 2405.00549v4][fcr].
+The network model follows [arXiv 2405.00549v4, Section 2, Network Model and Gossiping][fcr].
 
-The proofs are placeholders, and each statement may still change.
+Voting time and next-slot delivery are in Section 3.1 of that paper.
+
+`VoteAt.data_payload`, the claim about payload validation from Gloas, still has a `sorry` proof.
 
 A store takes an attestation from the wire when the attestation passes each check of the handler.
 
 The first statements give that passage from the facts that the checks ask for.
 
-An honest vote, cast as its duty asks, has those facts in the store of its voter.
+`VoteAt.data_head` and `VoteAt.data_target` give the head and target facts in the voter's store.
 
 Under synchrony the vote is in the view of each honest validator one delay later.
 
@@ -34,7 +36,7 @@ Whether the receiver accepts the vote is left as hypotheses on its store.
 
 It must hold the voted block with the same checkpoint block, and read the same signers.
 
-Two lemmas of [verified-fast-confirmation][vfc] state the delivery.
+For an implementation comparison, [verified-fast-confirmation][vfc] has two delivery lemmas.
 
 They are `Execution.vote_lands` and `Execution.vote_ubiquity`.
 

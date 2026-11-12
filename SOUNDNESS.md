@@ -1783,6 +1783,11 @@ The Python suite checks the periods against the three tables of the rule, except
 ### Fast confirmation rule
 
 `Consensus/ForkChoice/FastConfirmation.lean` holds the fast confirmation rule of [arXiv 2405.00549v4](https://arxiv.org/abs/2405.00549v4).
+The end-to-end safety argument is incomplete: the proof line still contains `sorry` skeletons.
+`Execution.safeAt_confirmedRoot` in `Consensus/Proofs/ForkChoice/FastConfirmationSafety.lean` composes a conditional safety argument, but its dependencies are not all proved.
+It does not establish the monotonicity part of the paper's Theorem 1.
+The paper proves next-slot safety in Appendix A.2, Theorem 2, using Lemmas 50 and 51.
+
 The rule weighs the committees of a range of slots exactly.
 Each active member of their union counts once, by its effective balance in the source of balances, and a range with a whole epoch weighs the total active balance.
 An earlier form of the rule estimated that weight as an average per slot, which is not an upper bound on a given committee.
@@ -1872,19 +1877,59 @@ That block must then be in the epoch before the current one, and its checkpoint 
 The rule stores that block, or a later root of the walk of `getAncestorRoots` from that block to the head.
 That root and each root before it in the walk then pass `isOneConfirmed`, with the votes of the state of the observed justified checkpoint.
 The rule makes two walks, and `Store.getAncestorRoots_of_append` in `Consensus/Proofs/ForkChoice/AncestorRoots.lean` shows that the second walk is the part of the first walk after the root where the first walk stopped.
-No theorem yet shows that the roots of a walk are in the chain of the head.
+Before Gloas, `walk_member_ancestor` in `Consensus/Proofs/ForkChoice/FastConfirmationSafety.lean` places each new root of a walk on the tip's ancestor chain.
 
 `foldlM_onFastConfirmation_confirmedRoot` turns those four cases into an induction along a list of stores, one fast confirmation for each.
 A property of the confirmed block holds at the end when the three starts have it and a one-confirmed walk keeps it.
 
-These theorems prove no safety: no theorem yet shows that a start is safe, or that a one-confirmed walk keeps a block in the chain of every honest head.
+These structural lemmas alone prove no safety.
 They do not record every check of the rule.
 For the start they leave out the other checks that compare the epochs and the slots of the blocks.
 For the walks they leave out the checks on the epochs of the start and of the walked blocks.
 They also leave out the check that the head of the slot before holds each block of the first walk.
 They leave out the checks that a voting source or an unrealized justification is recent.
 They also leave out `willNoConflictingCheckpointBeJustified` and `willCurrentTargetBeJustified`, which are about the justification of the target of the current epoch.
-No theorem yet relates the list of stores to the stores of an honest validator in an execution.
+
+The conditional theorem `Execution.safeAt_confirmedRoot` relates a run of the rule to an honest validator's stores in a network execution.
+Its conclusion is `SafeAt`, from the start of the next slot through `limit`.
+At an up-to-date honest event in that interval, the stored root is an ancestor of every successfully read head.
+The theorem's statement can still change.
+Its hypotheses are obligations of the caller, not facts established by declaring the theorem:
+
+| Hypotheses | Obligation |
+| --- | --- |
+| `sync`, `fits` (`DelayFits`) | The execution is synchronous, and a vote sent at its deadline arrives strictly before the next slot. |
+| `votes` (`Votes`), `prompt` (`Prompt`) | Honest validators vote as assigned through `limit` and process messages before and at the specified slot boundaries through `limit`. |
+| `committees` (`CommitteesFollow`) | The assignment agrees with the head's committees for the specified past ranges, and target/head comparisons have common-state witnesses. |
+| `follows` (`HeadFollowsSupport`) | The required head reads succeed, and sufficient honest support makes the head follow a viable child under the stated sibling cap. |
+| `preGloas` | The fork is before Gloas. |
+| `oneBlock` (`OneBlockPerRoot`) | Honest stores hold the same block at every shared root through `limit`, including across events. |
+| `admitted` (`BlocksAdmitted`) | A delayed block from an honest view passes the remaining handler checks when block validation succeeds at the receiver. |
+| `included` (`TargetIncluded`) | A safe target with an honest quorum has a descendant carrying its justification by the specified later epochs. |
+| `anchored`, `sound`, `anchorSlot`, `anchorAtBoundary`, `start`, `noVotes` | Every honest store starts from the same constructed anchor store, with no latest votes, an invariant anchor state and matching epoch-boundary slots. |
+| `_syncStart` | An anchor after epoch 0 requires execution to start no earlier than epoch `anchorEpoch + MIN_SEED_LOOKAHEAD + 1`, measured from the anchor store's genesis time. |
+| `half`, `slots`, `long`, `window` | The configured Byzantine percentage is at most 50, slot duration is positive, epochs have more than one slot, and history holds two epochs. |
+| `lookahead` | Both seed lookaheads are at least one, and `MIN_SEED_LOOKAHEAD + 3 < EPOCHS_PER_HISTORICAL_VECTOR`. |
+| `maxAligned`, `increment`, `positive` | Maximum effective balances and the minimum activation balance align with the positive effective-balance increment, which is a multiple of 100 Gwei. |
+| `chain` (`FinalizedPrefix`), `unique` (`OneJustifiedPerEpoch`) | Through `limit` and within `horizon`, finalized checkpoints prefix later justified checkpoints and justified checkpoints of one epoch agree. |
+| `byzantine`, `enough` | In the specified counting states through epoch `horizon + 1`, Byzantine current-or-previous-epoch voters satisfy the `threshold` percentage bound, with `3 * threshold < 200`. |
+| `unslashed` | No honest validator is slashed in any counting state of an honest store through `limit`. |
+| `supply` | Active effective stake at each successful honest checkpoint-state read through `limit` is at most `stakeCapGwei`, or 10^18 Gwei. |
+| `large` | Active stake in each specified counting state through epoch `horizon + 1` satisfies `3 * EFFECTIVE_BALANCE_INCREMENT < 2 * activeStake`. |
+| `nonzero`, `anchorParent` | Every block held by an honest store through `limit` has a nonzero state root, and no such store holds a block at the anchor's parent root. |
+| `headDrifts` (`DriftAtMost`) | The specified counting states satisfy the quorum-transport bound with margin `margin` relative to pulled-up head states over the stated two-epoch window. |
+| `caller`, `upToDate`, `lower`, `atSlots` | The caller is honest, calls with up-to-date stores whose parents have lower slots, and calls at the starts of consecutive slots. |
+| `ran`, `bounds` (`RuleBounds`) | The run succeeds from the anchor's confirmation store, and calls that confirm by a strict walk satisfy the drift, slack, committee, remaining-vote and late-majority bounds. |
+| `inHorizon` | Every honest store through `limit` reads an epoch at most `horizon`. |
+| `lastCall`, `slotOk`, `nextOk`, `followingOk`, `nonempty` | The last call and its next-slot time are well defined, with the next slot starting at or before `limit`. |
+
+`supply` is assumed, not proved from issuance, deposits or the state transition.
+Its cap is one billion ether and keeps the balance sums used by the argument within 64 bits.
+`OneBlockPerRoot` is also assumed: it is collision freedom on held blocks, not a theorem about the hash function.
+The proof does not use `_syncStart`; that premise deliberately restricts the executions covered by the statement.
+Except for global synchrony, the execution hypotheses are bounded by `limit`, and voting and processing duties require no action after it.
+In particular, `VoteAt.data_payload` in `Consensus/Proofs/ForkChoice/VoteDelivery.lean` still has a `sorry` proof for Gloas payload validation.
+The pre-Gloas scope of this safety statement does not complete the other skeletons in its proof line.
 
 ### Honest validator duties
 
