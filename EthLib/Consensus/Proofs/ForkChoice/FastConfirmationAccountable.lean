@@ -3,6 +3,10 @@ module
 public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmationSafety
 public import EthLib.Consensus.Proofs.ForkChoice.AccountableCheckpoints
 public import EthLib.Consensus.Proofs.DirectSafety.TerminalSafety
+import EthLib.Consensus.Proofs.Transition.BlockRoots
+import EthLib.Consensus.Proofs.Transition.FfgSlack
+import EthLib.Consensus.Proofs.Transition.TargetSlots
+import EthLib.Consensus.Proofs.Transition.TargetVotes
 
 /-!
 # Accountable fast-confirmation safety
@@ -30,7 +34,7 @@ It uses the accountable safety theorems of `DirectSafety`, which follow
 
 namespace EthLib.Consensus.Models.Network
 
-open Base Uint64 Models DirectSafety
+open Base Uint64 Models DirectSafety Serialization.Ssz
 
 variable {preset : Preset} {fork : Fork} {config : Config} {checks : SignatureChecks}
   {sources : BlockSources preset fork}
@@ -93,8 +97,289 @@ def Execution.HashFault
     HashEvidence ((history.append left).hashObjects ++ (history.append right).hashObjects ++
       va.hashObjects ++ vb.hashObjects ++ (blockHeader anchorBlock).toList.map HashObject.header)
 
+/-- A state holds the justified checkpoints of an epoch, and records its first root, at one root.
+
+This holds trivially when the state neither justifies the epoch nor can read its root. -/
+def EpochRootFixed (epoch : Epoch) (root : Root) (state : BeaconState preset fork) : Prop :=
+  (state.currentJustifiedCheckpoint.epoch = epoch → state.currentJustifiedCheckpoint.root = root) ∧
+  (state.previousJustifiedCheckpoint.epoch = epoch →
+    state.previousJustifiedCheckpoint.root = root) ∧
+  ∀ read, getBlockRoot state epoch = .ok read → read = root
+
+/-- One slot keeps the fixed root of an epoch whose first slot is at or before the slot.
+
+At the first slot of the epoch itself the slot records its header, which must have that root. -/
+theorem EpochRootFixed.of_advanceSlot
+    (window : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
+    {epoch : Epoch} {root : Root} {state after : BeaconState preset fork}
+    (holds : EpochRootFixed epoch root state)
+    (computed : advanceSlot config checks state = .ok after)
+    (first : epoch.toNat * preset.SLOTS_PER_EPOCH.toNat = state.slot.toNat →
+      SszType.hashTreeRoot after.latestBlockHeader = .ok root) :
+    EpochRootFixed epoch root after := by
+  obtain ⟨current, previous, reads⟩ := holds
+  refine ⟨?_, ?_, ?_⟩
+  · intro same
+    by_cases kept : after.currentJustifiedCheckpoint = state.currentJustifiedCheckpoint
+    · rw [kept] at same ⊢
+      exact current same
+    · obtain ⟨-, rootOk, -⟩ :=
+        advanceSlot_getBlockRoot_currentJustified_of_ne window computed kept
+      rw [same] at rootOk
+      exact reads _ rootOk
+  · rcases advanceSlot_previousJustified computed with same | ⟨same, -⟩
+    · rw [same]
+      exact previous
+    · rw [same]
+      exact current
+  · intro read rootOk
+    obtain ⟨start, startOk, atSlot⟩ := getBlockRoot_ok_iff.mp rootOk
+    rcases getBlockRootAtSlot_advanceSlot_cases computed atSlot with ⟨-, old⟩ | ⟨same, hashed⟩
+    · exact reads read (getBlockRoot_ok_iff.mpr ⟨start, startOk, old⟩)
+    · have startNat := (computeStartSlotAtEpoch_ok_iff.mp startOk).2
+      rw [first (by rw [← startNat, same])] at hashed
+      exact (Except.ok.inj hashed).symm
+
+/-- Empty slots from a slot at or after the first slot of an epoch keep its fixed root.
+
+If they start at that first slot, the header after the first of them must have that root. -/
+theorem EpochRootFixed.of_advanceSlots
+    (window : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
+    {epoch : Epoch} {root : Root} :
+    ∀ (count : ℕ) {state after : BeaconState preset fork}, EpochRootFixed epoch root state →
+      advanceSlots config checks count state = .ok after →
+      epoch.toNat * preset.SLOTS_PER_EPOCH.toNat ≤ state.slot.toNat →
+      (epoch.toNat * preset.SLOTS_PER_EPOCH.toNat = state.slot.toNat →
+        ∀ next, advanceSlot config checks state = .ok next →
+          SszType.hashTreeRoot next.latestBlockHeader = .ok root) →
+      EpochRootFixed epoch root after
+  | 0, _, _, holds, computed, _, _ => by
+    simp only [advanceSlots, pure, Except.pure, Except.ok.injEq] at computed
+    subst computed
+    exact holds
+  | count + 1, state, _, holds, computed, started, first => by
+    simp only [advanceSlots, bind_ok_iff] at computed
+    obtain ⟨next, stepped, rest⟩ := computed
+    have slot := (advanceSlot_cachedRoots stepped).choose_spec.2.2.2.2.2.2
+    apply EpochRootFixed.of_advanceSlots window count
+      (holds.of_advanceSlot window stepped fun same => first same next stepped) rest (by omega)
+    intro same
+    omega
+
+/-- Slots processed from a slot at or after the first slot of an epoch keep its fixed root. -/
+theorem EpochRootFixed.of_processSlots
+    (window : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
+    {epoch : Epoch} {root : Root} {state after : BeaconState preset fork} {slot : Slot}
+    (holds : EpochRootFixed epoch root state)
+    (computed : processSlots config checks state slot = .ok after)
+    (started : epoch.toNat * preset.SLOTS_PER_EPOCH.toNat ≤ state.slot.toNat)
+    (first : epoch.toNat * preset.SLOTS_PER_EPOCH.toNat = state.slot.toNat →
+      ∀ next, advanceSlot config checks state = .ok next →
+        SszType.hashTreeRoot next.latestBlockHeader = .ok root) :
+    EpochRootFixed epoch root after := by
+  simp only [processSlots, bind_ok_iff, ensure_ok_iff] at computed
+  obtain ⟨_, -, advanced⟩ := computed
+  exact EpochRootFixed.of_advanceSlots window _ holds advanced started first
+
+/-- A block keeps the justified checkpoints, the slot and the roots, so the fixed root too. -/
+theorem EpochRootFixed.of_processBlock {engine : ExecutionEngine preset fork}
+    {block : BeaconBlock preset fork} {epoch : Epoch} {root : Root}
+    {state after : BeaconState preset fork} (holds : EpochRootFixed epoch root state)
+    (computed : processBlock config checks engine state block = .ok after) :
+    EpochRootFixed epoch root after := by
+  have frame := frame_processBlock computed
+  have roots := processBlock_blockRoots computed
+  refine ⟨?_, ?_, ?_⟩
+  · rw [frame.currentJustified]
+    exact holds.1
+  · rw [frame.previousJustified]
+    exact holds.2.1
+  · intro read rootOk
+    apply holds.2.2 read
+    obtain ⟨start, startOk, atSlot⟩ := getBlockRoot_ok_iff.mp rootOk
+    rw [getBlockRootAtSlot_ok_iff, roots, frame.slot] at atSlot
+    exact getBlockRoot_ok_iff.mpr ⟨start, startOk, getBlockRootAtSlot_ok_iff.mpr atSlot⟩
+
+/-- A justification step on a state with a fixed root justifies the epoch only at that root. -/
+theorem EpochRootFixed.of_processJustificationAndFinalization {epoch : Epoch} {root : Root}
+    {state after : BeaconState preset fork} (holds : EpochRootFixed epoch root state)
+    (computed : processJustificationAndFinalization state = .ok after) :
+    (after.currentJustifiedCheckpoint.epoch = epoch →
+        after.currentJustifiedCheckpoint.root = root) ∧
+      (after.previousJustifiedCheckpoint.epoch = epoch →
+        after.previousJustifiedCheckpoint.root = root) := by
+  constructor
+  · intro same
+    rcases processJustificationAndFinalization_currentJustified computed with kept | ⟨-, rootOk⟩
+    · rw [kept] at same ⊢
+      exact holds.1 same
+    · rw [same] at rootOk
+      exact holds.2.2 _ rootOk
+  · rcases processJustificationAndFinalization_ok computed with rfl | ⟨_, _, _, weighed⟩
+    · exact holds.2.1
+    · rw [(weighJustificationAndFinalization_checkpoints weighed).1]
+      exact holds.1
+
+/-- A new store checks that the anchor block commits to the root of the anchor state. -/
+private theorem anchor_stateRoot {anchor : Store preset fork}
+    (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor) :
+    SszType.hashTreeRoot anchorState = .ok anchorBlock.stateRoot := by
+  unfold getForkchoiceStore at anchored
+  cases stateRoot : SszType.hashTreeRoot anchorState with
+  | error e => simp [stateRoot, bind, Except.bind, Except.mapError] at anchored
+  | ok stateRoot' =>
+    simp only [stateRoot, Except.mapError, bind, Except.bind] at anchored
+    split at anchored
+    · simp [throw, throwThe, MonadExceptOf.throw] at anchored
+    · rename_i same
+      rw [not_not] at same
+      rw [same]
+
+/-- A successful epoch-start test identifies the rounded boundary with the slot. -/
+private theorem anchor_boundary {slot : Slot}
+    (atStart : isStartSlotAtEpoch preset slot = .ok true) :
+    (computeEpochAtSlot preset slot).toNat * preset.SLOTS_PER_EPOCH.toNat = slot.toNat := by
+  have boundary := computeStartSlotAtEpoch_computeEpochAtSlot (preset := preset) slot
+  unfold isStartSlotAtEpoch computeSlotsSinceEpochStart at atStart
+  rw [boundary] at atStart
+  simp only [Except.mapError, bind, Except.bind, pure, Except.pure,
+    Except.ok.injEq, decide_eq_true_eq] at atStart
+  have h := (computeStartSlotAtEpoch_ok_iff.mp boundary).2
+  have le : (slot / preset.SLOTS_PER_EPOCH * preset.SLOTS_PER_EPOCH).toNat ≤ slot.toNat := by
+    rw [h, computeEpochAtSlot, UInt64.toNat_div]
+    exact Nat.div_mul_le_self _ _
+  have zero := congrArg UInt64.toNat atStart
+  simp only [UInt64.toNat_sub, UInt64.toNat_zero] at zero
+  have upper := slot.toNat_lt
+  have lower := (slot / preset.SLOTS_PER_EPOCH * preset.SLOTS_PER_EPOCH).toNat_lt
+  rw [← h]
+  omega
+
 variable {e : Execution (honestForkChoice config checks sources anchorState anchorBlock assignment
   genesisTimeMs) J} [DecidablePred (· ∈ J)]
+
+omit [DecidablePred (· ∈ J)] in
+/-- Each held state records the anchor root for the anchor epoch and justifies it only there.
+
+The anchor block is at the start of a later epoch than the first one.
+
+The anchor state then neither justifies its own epoch nor reads its root.
+
+The first block after the anchor checks that its parent root is the root of the header after the
+anchor slot.
+
+The store found the anchor state under that parent root, so it is the root of the anchor block.
+
+The anchor state root must be nonzero, so that the anchor slot fills the header only once. -/
+theorem Execution.epochRootFixed_of_blockState {anchor : Store preset fork}
+    (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (sound : Invariant anchorState)
+    (window : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
+    (anchorSlot : anchorBlock.slot = anchorState.slot)
+    (anchorAtBoundary : isStartSlotAtEpoch preset anchorBlock.slot = .ok true)
+    (later : 0 < (getCurrentEpoch anchorState).toNat)
+    (nonzero : anchorBlock.stateRoot ≠ Vector.replicate 32 0)
+    {anchorRoot : Root} (rooted : SszType.hashTreeRoot anchorBlock = .ok anchorRoot)
+    {w : ValidatorIndex} (honest : w ∈ J) (start : e.start w = anchor) {k : ℕ} {root : Root}
+    {state : BeaconState preset fork}
+    (stored : ((e.world k).state w).blockStates[root]? = some state) :
+    EpochRootFixed (getCurrentEpoch anchorState) anchorRoot state := by
+  have reachable : ∀ n, Store.Reachable config anchorState anchorBlock ((e.world n).state w) := by
+    intro n
+    induction n with
+    | zero =>
+      change Store.Reachable config anchorState anchorBlock (e.start w)
+      rw [start]
+      exact .anchor anchored
+    | succ n ih =>
+      rcases e.state_succ n w with same | ⟨_, moved⟩
+      · exact same ▸ ih
+      · exact moved.reachable ih
+  -- The anchor slot is the first slot of the anchor epoch.
+  have boundary : (getCurrentEpoch anchorState).toNat * preset.SLOTS_PER_EPOCH.toNat =
+      anchorState.slot.toNat := by
+    have := anchor_boundary anchorAtBoundary
+    rw [anchorSlot] at this
+    exact this
+  have base : ∀ fixed, EpochRootFixed (getCurrentEpoch anchorState) fixed anchorState := by
+    intro fixed
+    have settled := UInt64.le_iff_toNat_le.mp sound.settled
+    have ordered := UInt64.le_iff_toNat_le.mp sound.ordered.2
+    have previous := getPreviousEpoch_toNat anchorState
+    refine ⟨fun same => ?_, fun same => ?_, fun read rootOk => ?_⟩
+    · rw [same] at settled
+      omega
+    · rw [same] at ordered
+      omega
+    · have := getBlockRoot_start_lt rootOk
+      omega
+  obtain ⟨block, found⟩ := (reachable k).known_of_blockState stored
+  by_cases same : block = anchorBlock
+  · obtain ⟨post, postOk, initial, -⟩ := (reachable k).blockStatesFromParents found
+    have equal : post = state := Option.some.inj (postOk.symm.trans stored)
+    rw [← equal, initial same]
+    exact base anchorRoot
+  obtain ⟨parent, signed, message, parentFound, transitioned⟩ :=
+    e.exists_transition_of_nonanchor_block anchored honest start found stored same
+  obtain ⟨advanced, slotsOk, -, -, blockOk, -⟩ := stateTransition_ok transitioned
+  apply EpochRootFixed.of_processBlock (engine := sources.engine) (block := signed.message) ?_
+    blockOk
+  obtain ⟨parentBlock, parentKnown⟩ := (reachable k).known_of_blockState parentFound
+  by_cases first : parentBlock = anchorBlock
+  · -- The first block after the anchor fixes the root through its parent check.
+    obtain ⟨post, postOk, initial, -⟩ := (reachable k).blockStatesFromParents parentKnown
+    have equal : post = parent := Option.some.inj (postOk.symm.trans parentFound)
+    rw [initial first] at equal
+    subst parent
+    have keyed := (reachable k).root parentKnown
+    rw [first, rooted] at keyed
+    have parentRoot := processBlock_parentRoot blockOk
+    rw [message, ← Except.ok.inj keyed] at parentRoot
+    apply EpochRootFixed.of_processSlots window (base anchorRoot) slotsOk boundary.le
+    intro _ next stepped
+    have hashed := anchor_stateRoot anchored
+    -- The header after the anchor slot has a nonzero state root, and empty slots keep it.
+    have filled : next.latestBlockHeader.stateRoot ≠ Vector.replicate 32 0 := by
+      obtain ⟨cached, cachedOk, -, -, header, -, -, -⟩ := advanceSlot_cachedRoots stepped
+      rw [header]
+      by_cases zero : anchorState.latestBlockHeader.stateRoot = Vector.replicate 32 0
+      · rw [processSlot_latestBlockHeader_of_zero zero hashed cachedOk]
+        exact nonzero
+      · rw [processSlot_latestBlockHeader_of_nonzero zero cachedOk]
+        exact zero
+    have ahead := (processSlots_slot slotsOk).1
+    have run := slotsOk
+    simp only [processSlots, bind_ok_iff, ensure_ok_iff] at run
+    obtain ⟨_, -, advancedRun⟩ := run
+    obtain ⟨count, counted⟩ : ∃ count,
+        signed.message.slot.toNat - anchorState.slot.toNat = count + 1 :=
+      ⟨signed.message.slot.toNat - anchorState.slot.toNat - 1, by
+        have := UInt64.lt_iff_toNat_lt.mp ahead
+        omega⟩
+    rw [counted] at advancedRun
+    simp only [advanceSlots, bind_ok_iff] at advancedRun
+    obtain ⟨next', stepped', rest⟩ := advancedRun
+    rw [stepped, Except.ok.injEq] at stepped'
+    subst next'
+    rw [← advanceSlots_latestBlockHeader_of_nonzero filled rest]
+    exact parentRoot
+  · -- A later parent is past the anchor slot, so its slots never reach the anchor slot again.
+    have parentFixed := Execution.epochRootFixed_of_blockState anchored sound window anchorSlot
+      anchorAtBoundary later nonzero rooted honest start parentFound
+    obtain ⟨grand, grandSigned, grandMessage, grandFound, grandTransitioned⟩ :=
+      e.exists_transition_of_nonanchor_block anchored honest start parentKnown parentFound first
+    have grandLe := UInt64.le_iff_toNat_le.mp ((reachable k).anchorSlot_le_blockState grandFound)
+    have parentSlots := stateTransition_slot grandTransitioned
+    have parentLt := UInt64.lt_iff_toNat_lt.mp parentSlots.1
+    have parentEq := congrArg UInt64.toNat parentSlots.2
+    apply EpochRootFixed.of_processSlots window parentFixed slotsOk (by omega)
+    intro atStart
+    omega
+termination_by state.slot.toNat
+decreasing_by
+  have bounds := stateTransition_slot transitioned
+  rw [bounds.2]
+  exact UInt64.lt_iff_toNat_lt.mp bounds.1
 
 /-- Before the next fork, the blocks of honest stores up to a last time are before its activation.
 
