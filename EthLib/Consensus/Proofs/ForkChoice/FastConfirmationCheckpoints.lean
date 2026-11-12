@@ -2649,7 +2649,7 @@ private theorem walk_block_cache {store after : Store preset fork}
     · exact .inr fresh
 
 /-- Every pull-up cache entry comes from its own block state, except the anchor entry. -/
-private theorem walk_cache_origin {store : Store preset fork}
+theorem walk_cache_origin {store : Store preset fork}
     (reachable : Store.Reachable config anchorState anchorBlock store)
     (before : fork < .glamsterdam) {key : Root} {checkpoint : Checkpoint}
     (entry : store.unrealizedJustifications[key]? = some checkpoint) :
