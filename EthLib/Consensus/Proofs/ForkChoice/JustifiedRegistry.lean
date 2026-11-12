@@ -22,7 +22,7 @@ open Base Uint64 Models
 variable {preset : Preset} {fork : Fork} {config : Config} {checks : SignatureChecks}
   {anchorState : BeaconState preset fork} {anchorBlock : BeaconBlock preset fork}
 
-/-- Phase0 beacon-chain `is_active_validator` excludes the far-future activation sentinel.
+/-- Activity excludes the far-future activation sentinel.
 
 The strict exit bound applies even when the queried epoch is beyond the state's epoch. -/
 theorem activationEpoch_ne_farFuture_of_isActiveAt
@@ -45,7 +45,7 @@ theorem activationEpoch_ne_farFuture_of_isActiveAt
 private def PendingAfter (epoch : Epoch) (validator : Validator) : Prop :=
   epoch < validator.activationEligibilityEpoch ∧ validator.activationEpoch = FAR_FUTURE_EPOCH
 
-/-- Phase0 `is_eligible_for_activation` rejects a queue position beyond finality. -/
+/-- Activation eligibility rejects a queue position beyond finality. -/
 private theorem PendingAfter.not_eligible {epoch : Epoch} {validator : Validator}
     {state : BeaconState preset fork} (pending : PendingAfter epoch validator)
     (finalized : state.finalizedCheckpoint.epoch ≤ epoch) :
@@ -57,11 +57,12 @@ private theorem PendingAfter.not_eligible {epoch : Epoch} {validator : Validator
 
 /-- Both registry-update paths set eligibility with checked addition.
 
-Phase0 `process_registry_updates` sets eligibility to the next epoch, never a wrapped epoch. -/
+Eligibility is set to the next epoch, never a wrapped epoch. -/
 private theorem PendingAfter.queueForActivation {epoch : Epoch} {validator queued : Validator}
     {state : BeaconState preset fork} (pending : PendingAfter epoch validator)
     (current : epoch ≤ getCurrentEpoch state)
-    (ok : Consensus.queueForActivation state validator = .ok queued) : PendingAfter epoch queued := by
+    (ok : Consensus.queueForActivation state validator = .ok queued) :
+    PendingAfter epoch queued := by
   unfold Consensus.queueForActivation at ok
   split at ok
   · simp only [bind_ok_iff, liftAccessor_ok, liftArith, mapError_ok_iff,
@@ -78,7 +79,7 @@ private theorem PendingAfter.queueForActivation {epoch : Epoch} {validator queue
 
 /-- A new registry entry is pending beyond every finite boundary.
 
-Phase0 and Electra `get_validator_from_deposit` initialize both activation fields to FAR. -/
+The deposit constructor initializes both activation fields to the far-future sentinel. -/
 private theorem pendingAfter_deposit {epoch : Epoch} (finite : epoch < FAR_FUTURE_EPOCH)
     (pubkey : Cryptography.Bls.BLSPubkey) (credentials : Bytes32) (amount : Gwei) :
     PendingAfter epoch (getValidatorFromDeposit preset fork pubkey credentials amount) :=
@@ -137,7 +138,8 @@ private theorem PendingTail.initiateValidatorExit {count : Nat} {epoch : Epoch}
 private theorem PendingTail.updateRegistryEntry {count : Nat} {epoch : Epoch}
     {state after : BeaconState preset fork} {index : Nat}
     (holds : PendingTail count epoch state) (current : epoch ≤ getCurrentEpoch state)
-    (ok : Consensus.updateRegistryEntry config state index = .ok after) : PendingTail count epoch after := by
+    (ok : Consensus.updateRegistryEntry config state index = .ok after) :
+    PendingTail count epoch after := by
   simp only [Consensus.updateRegistryEntry, bind_ok_iff, liftAccessor_ok] at ok
   obtain ⟨validator, found, queued, joined, middle, set, rest⟩ := ok
   have pending : count ≤ index → PendingAfter epoch queued := fun outside =>
@@ -218,7 +220,8 @@ private theorem PendingTail.processRegistryUpdates {count : Nat} {epoch : Epoch}
     {state after : BeaconState preset fork} (holds : PendingTail count epoch state)
     (current : epoch ≤ getCurrentEpoch state)
     (finalized : state.finalizedCheckpoint.epoch ≤ epoch)
-    (ok : Consensus.processRegistryUpdates config state = .ok after) : PendingTail count epoch after := by
+    (ok : Consensus.processRegistryUpdates config state = .ok after) :
+    PendingTail count epoch after := by
   unfold Consensus.processRegistryUpdates at ok
   split at ok
   · simp only [bind_ok_iff, liftAccessor_ok] at ok
@@ -334,7 +337,8 @@ private theorem PendingTail.applyDeposit {count : Nat} {epoch : Epoch}
     {state after : BeaconState preset fork} {pubkey : Cryptography.Bls.BLSPubkey}
     {credentials : Bytes32} {amount : Gwei} {signature : Cryptography.Bls.BLSSignature}
     (holds : PendingTail count epoch state) (finite : epoch < FAR_FUTURE_EPOCH)
-    (ok : Consensus.applyDeposit config checks state pubkey credentials amount signature = .ok after) :
+    (ok : Consensus.applyDeposit config checks state pubkey credentials amount signature =
+      .ok after) :
     PendingTail count epoch after := by
   unfold Consensus.applyDeposit at ok
   split at ok
@@ -359,8 +363,8 @@ private theorem PendingTail.processDeposit {count : Nat} {epoch : Epoch}
     (ok : processDeposit config checks before state deposit = .ok after) :
     PendingTail count epoch after := by
   obtain ⟨_, _, next, _, applied⟩ := processDeposit_ok ok
-  exact (holds.of_validators (after := { state with eth1DepositIndex := fun _ => next })).applyDeposit
-    finite applied
+  exact (holds.of_validators
+    (after := { state with eth1DepositIndex := fun _ => next })).applyDeposit finite applied
 
 private theorem PendingTail.passPendingDeposits {count : Nat} {epoch : Epoch}
     {stop : PendingDeposit → Bool} {nextEpoch : Epoch} {available : Gwei}
@@ -422,7 +426,8 @@ private theorem PendingTail.processPendingBalances {count : Nat} {epoch : Epoch}
       simp only [bind, Except.bind, pure, Except.pure] at deposited
       repeat' (split at deposited <;> try cases deposited)
       all_goals exact (PendingTail.passPendingDeposits finite holds ‹_›).of_validators
-    exact deposits.of_validators (congrArg (·.data) (processPendingConsolidations_kept consolidated).1)
+    exact deposits.of_validators
+      (congrArg (·.data) (processPendingConsolidations_kept consolidated).1)
   · cases ok
     exact holds
 
@@ -740,8 +745,9 @@ private theorem PendingTail.processEpochAltair {count : Nat} {epoch : Epoch}
   subst justifiedState
   have preFrame := (frame_processInactivityUpdates scored).trans
     (frame_processRewardsAndPenalties rewarded)
-  have beforeHolds := ((holds.processJustificationAndFinalization justified).processInactivityUpdates
-    scored).processRewardsAndPenalties rewarded
+  have beforeHolds :=
+    ((holds.processJustificationAndFinalization justified).processInactivityUpdates
+      scored).processRewardsAndPenalties rewarded
   have registeredHolds := beforeHolds.processRegistryUpdates
     (by simpa only [getCurrentEpoch, preFrame.slot,
       (activeStep_processJustificationAndFinalization justified).1] using current)
@@ -770,7 +776,8 @@ private theorem PendingTail.processEpoch {count : Nat} {epoch : Epoch}
     {state after : BeaconState preset fork}
     (holds : PendingTail count epoch state) (current : epoch ≤ getCurrentEpoch state)
     (finite : epoch < FAR_FUTURE_EPOCH) (finalized : after.finalizedCheckpoint.epoch ≤ epoch)
-    (ok : Consensus.processEpoch config checks state = .ok after) : PendingTail count epoch after := by
+    (ok : Consensus.processEpoch config checks state = .ok after) :
+    PendingTail count epoch after := by
   obtain ⟨justifiedState, justifiedOk, restFrame⟩ := processEpoch_frame ok
   unfold Consensus.processEpoch at ok
   split at ok
@@ -780,8 +787,8 @@ private theorem PendingTail.processEpoch {count : Nat} {epoch : Epoch}
       _, cleared, _, mixed, rooted, rootedOk, rotated⟩ := ok
     have same := Except.ok.inj (justified.symm.trans justifiedOk)
     subst justifiedState
-    have beforeHolds := (holds.processJustificationAndFinalization justified).processRewardsAndPenalties
-      rewarded
+    have beforeHolds :=
+      (holds.processJustificationAndFinalization justified).processRewardsAndPenalties rewarded
     have preFrame := frame_processRewardsAndPenalties rewarded
     have registeredHolds := beforeHolds.processRegistryUpdates
       (by simpa only [getCurrentEpoch, preFrame.slot,
@@ -798,7 +805,8 @@ private theorem PendingTail.processEpoch {count : Nat} {epoch : Epoch}
 private theorem PendingTail.applyWithdrawal {count : Nat} {epoch : Epoch}
     {state after : BeaconState preset fork} {withdrawal : Withdrawal}
     (holds : PendingTail count epoch state)
-    (ok : Consensus.applyWithdrawal state withdrawal = .ok after) : PendingTail count epoch after := by
+    (ok : Consensus.applyWithdrawal state withdrawal = .ok after) :
+    PendingTail count epoch after := by
   unfold Consensus.applyWithdrawal at ok
   split at ok
   · simp only [bind_ok_iff] at ok
@@ -1003,7 +1011,8 @@ private theorem PendingTail.processBlockExecution {count : Nat} {epoch : Epoch}
 private theorem PendingTail.processBlockHeader {count : Nat} {epoch : Epoch}
     {state after : BeaconState preset fork} {block : BeaconBlock preset fork}
     (holds : PendingTail count epoch state)
-    (ok : Consensus.processBlockHeader state block = .ok after) : PendingTail count epoch after := by
+    (ok : Consensus.processBlockHeader state block = .ok after) :
+    PendingTail count epoch after := by
   obtain ⟨_, _, rfl⟩ := processBlockHeader_eq ok
   exact holds.of_validators
 
@@ -1018,7 +1027,8 @@ private theorem PendingTail.processRandao {count : Nat} {epoch : Epoch}
 private theorem PendingTail.processEth1Data {count : Nat} {epoch : Epoch}
     {state after : BeaconState preset fork} {before : fork < .hegota}
     {body : BeaconBlockBody preset fork} (holds : PendingTail count epoch state)
-    (ok : Consensus.processEth1Data before state body = .ok after) : PendingTail count epoch after := by
+    (ok : Consensus.processEth1Data before state body = .ok after) :
+    PendingTail count epoch after := by
   obtain ⟨_, _, rest⟩ := processEth1Data_eq ok
   exact holds.of_validators (congrArg (fun s => s.validators.data) rest)
 
@@ -1052,14 +1062,15 @@ private theorem PendingTail.processBlock {count : Nat} {epoch : Epoch}
     exact (votedHolds.processOperations finite preGloas operatedOk).processSyncAggregate synced
   simp only [bind_ok_iff] at ok
   obtain ⟨_, header, _, randao, _, eth1, operations⟩ := ok
-  exact (((holds.processBlockHeader header).processRandao randao).processEth1Data eth1).processOperations
-    finite preGloas operations
+  exact (((holds.processBlockHeader header).processRandao randao).processEth1Data
+    eth1).processOperations finite preGloas operations
 
 private theorem PendingTail.advanceSlot {count : Nat} {epoch : Epoch}
     {state after : BeaconState preset fork} (holds : PendingTail count epoch state)
     (current : epoch ≤ getCurrentEpoch state) (finite : epoch < FAR_FUTURE_EPOCH)
     (finalized : after.finalizedCheckpoint.epoch ≤ epoch)
-    (ok : Consensus.advanceSlot config checks state = .ok after) : PendingTail count epoch after := by
+    (ok : Consensus.advanceSlot config checks state = .ok after) :
+    PendingTail count epoch after := by
   obtain ⟨next, cached, epoched, _, cachedOk, epochedOk, rfl⟩ := advanceSlot_ok ok
   have cachedHolds : PendingTail count epoch cached := by
     obtain ⟨_, _, _, _, rfl⟩ := processSlot_ok cachedOk
@@ -1117,8 +1128,7 @@ private theorem PendingTail.stateTransition {count : Nat} {epoch : Epoch}
 
 /-- An activated position predates a transition whose starting epoch bounds finality.
 
-Phase0 `process_registry_updates` and Electra `process_registry_updates` cannot activate
-positions appended after this boundary while finality remains at or below it.
+Registry updates cannot activate positions appended after the boundary until finality passes it.
 
 The queried activity epoch is unrestricted; only the activation sentinel is needed. -/
 theorem validatorAt_of_stateTransition_finalized_le
@@ -1189,6 +1199,7 @@ decreasing_by
 /-- The registry suffix at a finalized boundary stays pending along the held chain.
 
 The boundary state is reconstructed with the same checks as its descendant transitions.
+
 This retains the lifecycle information that `RunKept` alone does not record. -/
 private theorem Store.Reachable.pendingTail_of_ancestor
     {store : Store preset fork} (reachable : Store.Reachable config anchorState anchorBlock store)
@@ -1260,11 +1271,13 @@ private theorem Store.Reachable.pendingTail_of_ancestor
     obtain ⟨cut, before, afterOk⟩ := processSlots_split slotsOk low upper
     have atSlot := (processSlots_slot before).2
     have cutSound := (processSlots_invariant parentSound before).1
-    have emptyTail : PendingTail cut.validators.data.size (computeEpochAtSlot preset query) cut := by
+    have emptyTail :
+        PendingTail cut.validators.data.size (computeEpochAtSlot preset query) cut := by
       intro index value outside read
       have inside := (Array.getElem?_eq_some_iff.mp read).1
       omega
-    have advancedFinalized : advanced.finalizedCheckpoint.epoch ≤ computeEpochAtSlot preset query := by
+    have advancedFinalized :
+        advanced.finalizedCheckpoint.epoch ≤ computeEpochAtSlot preset query := by
       simpa only [(frame_processBlock blockOk).finalized] using finalized
     refine ⟨block.parentRoot, parent, cut, parentFound, ?_, atSlot, ?_, ?_⟩
     · simp [lookaheadState, low, before, Except.mapError]
@@ -1282,7 +1295,9 @@ decreasing_by
 /-- A finite activation in a held state already has a position at a finality boundary.
 
 The boundary is after the anchor and no later than the held state.
+
 Its epoch bounds the held state's finalized epoch.
+
 The result identifies the boundary's ancestor root without a hash injectivity assumption. -/
 theorem Store.Reachable.validatorAt_ancestor_boundary
     {store : Store preset fork} (reachable : Store.Reachable config anchorState anchorBlock store)
@@ -1717,8 +1732,9 @@ theorem Execution.validatorAt_checkpoint_of_anchor
 
 /-- An active head position already exists in the receiver's justified balance source.
 
-Activation requires finalized eligibility, so a position created after the finalized
-boundary cannot be active, even at a future queried epoch. -/
+Activation requires finalized eligibility.
+
+A position created after the finalized boundary cannot be active, even at a future queried epoch. -/
 theorem Execution.validatorAt_justified_of_head_active
     {anchor : Store preset fork}
     (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
