@@ -203,10 +203,10 @@ private theorem voteFrame_processAttestationAltair {attestation : Attestation pr
       exact BlockFrame.of_validators ⟨rfl, rfl⟩
     · cases final
       exact BlockFrame.refl _
-  have kept := (frame_increaseBalance raisedOk).toBlockFrame.trans last
+  have kept := last.blockRoots.trans (frame_increaseBalance raisedOk).blockRoots
   generalize (attestation.data.target.epoch == getCurrentEpoch state) = same at kept
   refine ⟨frame, ?_, fun altair' current position flagged => ?_⟩
-  · rw [kept.blockRoots]
+  · rw [kept]
     unfold setEpochParticipation
     split <;> rfl
   · rcases flagsOf current position flagged with old | ⟨other, otherOk, -, -, member, link⟩

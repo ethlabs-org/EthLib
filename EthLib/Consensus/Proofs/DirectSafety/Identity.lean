@@ -21,10 +21,10 @@ open Base Cryptography.Bls
 variable {preset : Preset} {config : Config} {checks : SignatureChecks}
 
 def registryKeys {fork : Fork} (state : BeaconState preset fork) : List BLSPubkey :=
-  state.validators.data.toList.map (·.pubkey)
+  validatorKeys state
 
 def uniqueKeys {fork : Fork} (state : BeaconState preset fork) : Prop :=
-  (registryKeys state).Nodup
+  PubkeysDistinct state
 
 noncomputable def keysAt {fork : Fork} (state : BeaconState preset fork)
     (indices : List ValidatorIndex) : Finset BLSPubkey := by
@@ -45,19 +45,14 @@ theorem genesis_unique {g : ForkedBeaconState preset}
 
 theorem _root_.EthLib.Consensus.Run.unique {g a : ForkedBeaconState preset}
     (run : Run config checks g a)
-    (initial : uniqueKeys g.state) : uniqueKeys a.state := by
-  induction run with
-  | nil => exact initial
-  | snoc pre step ih => exact (RegistryIdentity.chainStep step.chainStep).unique ih
+    (initial : uniqueKeys g.state) : uniqueKeys a.state :=
+  (registryIdentity_of_chainSteps run.chainSteps).unique initial
 
 theorem _root_.EthLib.Consensus.Run.key_preserved {g a : ForkedBeaconState preset}
     (run : Run config checks g a)
     (i : Nat) (old : Validator) (found : g.state.validators.data[i]? = some old) :
     ∃ current, a.state.validators.data[i]? = some current ∧ current.pubkey = old.pubkey := by
-  have identity : RegistryIdentity g.state a.state := by
-    induction run with
-    | nil => exact .refl _
-    | snoc pre step ih => exact ih.trans (RegistryIdentity.chainStep step.chainStep)
+  have identity := registryIdentity_of_chainSteps run.chainSteps
   obtain ⟨inside, oldEq⟩ := Array.getElem?_eq_some_iff.mp found
   have small : i < (validatorKeys g.state).length := by simpa [validatorKeys] using inside
   have lastSmall : i < a.state.validators.data.size := by
@@ -142,9 +137,9 @@ theorem keys_weight {fork : Fork} (state : BeaconState preset fork)
   · intro i hi j hj same
     apply UInt64.toNat_inj.mp
     apply unique.eq_of_getElem_eq
-      (by simpa [registryKeys] using inside i (List.mem_toFinset.mp hi))
-      (by simpa [registryKeys] using inside j (List.mem_toFinset.mp hj))
-    simpa [registryKeys, key] using same
+      (by simpa [validatorKeys] using inside i (List.mem_toFinset.mp hi))
+      (by simpa [validatorKeys] using inside j (List.mem_toFinset.mp hj))
+    simpa [validatorKeys, key] using same
   · intro k hk
     simp only [keysAt, List.mem_toFinset, List.mem_filterMap] at hk
     obtain ⟨i, hi, found⟩ := hk
