@@ -1,6 +1,7 @@
 module
 
-public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmationNonvacuity.Anchor
+public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmationNonvacuity.FirstBlockRoot
+public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmationNonvacuity.Bounds
 
 /-! The fast-confirmation witness's initialization and finite-prefix helpers.
 
