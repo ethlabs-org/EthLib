@@ -10,6 +10,8 @@ public import EthLib.Consensus.Proofs.Transition.TargetUpgrades
 A slashed flag in a reachable registry must originate in a slashing operation of the run.
 
 The walk follows the state transition operation by operation; no abstract protocol is an input.
+
+The steps of an epoch use the generic traversal `EpochFrameLaws`.
 -/
 
 @[expose] public section
@@ -127,21 +129,88 @@ private theorem append {v : Validator}
   · exact backed current member slashed
   · simp [flag] at slashed
 
-private theorem applyPendingDeposit {deposit : PendingDeposit}
-    (ok : Consensus.applyPendingDeposit config checks state deposit = .ok after) :
+private theorem updateRegistryEntry {index : Nat}
+    (ok : Consensus.updateRegistryEntry config state index = .ok after) :
     SlashedKept state after := by
-  unfold Consensus.applyPendingDeposit at ok
+  simp only [Consensus.updateRegistryEntry, bind_ok_iff, liftAccessor_ok] at ok
+  obtain ⟨v, found, queued, queue, marked, set, ok⟩ := ok
+  have fields : queued.pubkey = v.pubkey ∧ queued.slashed = v.slashed := by
+    unfold queueForActivation at queue
+    split at queue
+    · simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at queue
+      obtain ⟨_, _, rfl⟩ := queue
+      exact ⟨rfl, rfl⟩
+    · cases queue; exact ⟨rfl, rfl⟩
+  have first := setValidatorAt found fields.1 fields.2 set
   split at ok
-  · split at ok
-    · cases ok; exact refl _
-    simp only [bind_ok_iff] at ok
+  · simp only [bind_ok_iff, liftAccessor_ok] at ok
+    obtain ⟨_, _, exited⟩ := ok
+    exact first.trans (initiateValidatorExit exited)
+  · cases ok; exact first
+
+private theorem activateValidator {index : ValidatorIndex}
+    (ok : Consensus.activateValidator state index = .ok after) : SlashedKept state after := by
+  simp only [Consensus.activateValidator, bind_ok_iff, liftAccessor_ok] at ok
+  obtain ⟨_, found, _, _, set⟩ := ok
+  exact setValidator found (by rfl) (by rfl) set
+
+private theorem updateRegistryEntryElectra {activationEpoch : Epoch} {index : Nat}
+    (ok : Consensus.updateRegistryEntryElectra config activationEpoch state index = .ok after) :
+    SlashedKept state after := by
+  simp only [Consensus.updateRegistryEntryElectra, bind_ok_iff, liftAccessor_ok] at ok
+  obtain ⟨_, found, ok⟩ := ok
+  split at ok
+  · simp only [bind_ok_iff, liftAccessor_ok] at ok
+    obtain ⟨_, _, set⟩ := ok
+    exact setValidatorAt found (by rfl) (by rfl) set
+  split at ok
+  · simp only [bind_ok_iff, liftAccessor_ok] at ok
+    obtain ⟨_, _, exited⟩ := ok
+    exact initiateValidatorExit exited
+  split at ok
+  · exact setValidatorAt found (by rfl) (by rfl) (liftAccessor_ok.mp ok)
+  · cases ok; exact refl _
+
+private theorem processRegistryUpdates
+    (ok : Consensus.processRegistryUpdates config state = .ok after) :
+    SlashedKept state after := by
+  unfold Consensus.processRegistryUpdates at ok
+  split at ok
+  · simp only [bind_ok_iff, liftAccessor_ok] at ok
     obtain ⟨_, _, ok⟩ := ok
-    split at ok
-    · exact append (addValidatorToRegistry_validators_eq_push ok) rfl
-    · cases ok; exact refl _
-  · simp only [liftAccessor_ok, bind_ok_iff] at ok
-    obtain ⟨_, _, ok⟩ := ok
-    exact increaseBalance ok
+    exact foldlM (fun _ _ _ ok => updateRegistryEntryElectra ok) ok
+  · simp only [bind_ok_iff] at ok
+    obtain ⟨_, updated, activated⟩ := ok
+    exact (foldlM (fun _ _ _ ok => updateRegistryEntry ok) updated).trans
+      (foldlM (fun _ _ _ ok => activateValidator ok) activated)
+
+/-- A write keeps the key and the slashed flag of its validator.
+
+Every other epoch step leaves both alone, so the generic traversal of an epoch applies. -/
+private theorem slashedKeptLaws :
+    EpochFrameLaws (preset := preset) (fork := fork) fun s t => SlashedKept s t where
+  refl := refl
+  trans := trans
+  setValidatorAt := fun found set _ _ key flag _ _ => setValidatorAt found key flag set
+  registryUpdates := processRegistryUpdates
+  increaseBalance := increaseBalance
+  decreaseBalance := decreaseBalance
+  initiateValidatorExit := initiateValidatorExit
+  addValidatorToRegistry := fun added _ =>
+    append (addValidatorToRegistry_validators_eq_push added) rfl
+  eth1DataVotes _ _ := of_validators
+  inactivityScores _ _ := of_validators
+  slashings _ _ := of_validators
+  randaoMixes _ _ := of_validators
+  historicalRoots _ _ := of_validators
+  historicalSummaries _ _ := of_validators
+  participationRecords _ := of_validators
+  pendingDeposits _ _ _ := of_validators
+  pendingConsolidations _ _ := of_validators
+  syncCommittees _ _ _ := of_validators
+  proposerLookahead _ _ := of_validators
+  ptcWindow _ _ := of_validators
+
 
 private theorem applyDeposit {pubkey : BLSPubkey} {credentials : Bytes32} {amount : Gwei}
     {signature : BLSSignature}
@@ -162,7 +231,7 @@ private theorem applyDeposit {pubkey : BLSPubkey} {credentials : Bytes32} {amoun
       · cases ok; exact refl _
     · obtain ⟨_, rfl⟩ := addPendingDeposit_eq (liftAccessor_ok.mp ok)
       exact of_validators
-  · exact applyPendingDeposit ok
+  · exact slashedKeptLaws.applyPendingDeposit ok
 
 private theorem processDeposit {before : fork < .hegota} {deposit : Deposit}
     (ok : Consensus.processDeposit config checks before state deposit = .ok after) :
@@ -448,322 +517,42 @@ private theorem processVoluntaryExit {signed : SignedVoluntaryExit}
   obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, exited⟩ := ok
   exact initiateValidatorExit exited
 
-private theorem processRewardsAndPenalties
-    (ok : Consensus.processRewardsAndPenalties config state = .ok after) :
-    SlashedKept state after := by
-  have deltas {s t : BeaconState preset fork} {rewards penalties : Array Gwei} {index : Nat}
-      (ok : applyDeltas rewards penalties s index = .ok t) : SlashedKept s t := by
-    simp only [applyDeltas, bind_ok_iff, liftAccessor_ok] at ok
-    obtain ⟨_, _, _, raised, lowered⟩ := ok
-    exact (increaseBalance raised).trans (decreaseBalance lowered)
-  have allDeltas {s t : BeaconState preset fork} {ds : Array Gwei × Array Gwei}
-      (ok : applyAllDeltas s ds = .ok t) : SlashedKept s t :=
-    foldlM (fun _ _ _ ok => deltas ok) ok
-  unfold Consensus.processRewardsAndPenalties at ok
-  split at ok
-  · cases ok; exact refl _
-  split at ok
-  · simp only [bind_ok_iff] at ok
-    obtain ⟨_, _, _, _, applied⟩ := ok
-    exact foldlM (fun _ _ _ ok => allDeltas ok) applied
-  · simp only [bind_ok_iff] at ok
-    obtain ⟨_, _, applied⟩ := ok
-    exact allDeltas applied
-
-private theorem updateRegistryEntry {index : Nat}
-    (ok : Consensus.updateRegistryEntry config state index = .ok after) :
-    SlashedKept state after := by
-  simp only [Consensus.updateRegistryEntry, bind_ok_iff, liftAccessor_ok] at ok
-  obtain ⟨v, found, queued, queue, marked, set, ok⟩ := ok
-  have fields : queued.pubkey = v.pubkey ∧ queued.slashed = v.slashed := by
-    unfold queueForActivation at queue
-    split at queue
-    · simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at queue
-      obtain ⟨_, _, rfl⟩ := queue
-      exact ⟨rfl, rfl⟩
-    · cases queue; exact ⟨rfl, rfl⟩
-  have first := setValidatorAt found fields.1 fields.2 set
-  split at ok
-  · simp only [bind_ok_iff, liftAccessor_ok] at ok
-    obtain ⟨_, _, exited⟩ := ok
-    exact first.trans (initiateValidatorExit exited)
-  · cases ok; exact first
-
-private theorem activateValidator {index : ValidatorIndex}
-    (ok : Consensus.activateValidator state index = .ok after) : SlashedKept state after := by
-  simp only [Consensus.activateValidator, bind_ok_iff, liftAccessor_ok] at ok
-  obtain ⟨_, found, _, _, set⟩ := ok
-  exact setValidator found (by rfl) (by rfl) set
-
-private theorem updateRegistryEntryElectra {activationEpoch : Epoch} {index : Nat}
-    (ok : Consensus.updateRegistryEntryElectra config activationEpoch state index = .ok after) :
-    SlashedKept state after := by
-  simp only [Consensus.updateRegistryEntryElectra, bind_ok_iff, liftAccessor_ok] at ok
-  obtain ⟨_, found, ok⟩ := ok
-  split at ok
-  · simp only [bind_ok_iff, liftAccessor_ok] at ok
-    obtain ⟨_, _, set⟩ := ok
-    exact setValidatorAt found (by rfl) (by rfl) set
-  split at ok
-  · simp only [bind_ok_iff, liftAccessor_ok] at ok
-    obtain ⟨_, _, exited⟩ := ok
-    exact initiateValidatorExit exited
-  split at ok
-  · exact setValidatorAt found (by rfl) (by rfl) (liftAccessor_ok.mp ok)
-  · cases ok; exact refl _
-
-private theorem processRegistryUpdates
-    (ok : Consensus.processRegistryUpdates config state = .ok after) :
-    SlashedKept state after := by
-  unfold Consensus.processRegistryUpdates at ok
-  split at ok
-  · simp only [bind_ok_iff, liftAccessor_ok] at ok
-    obtain ⟨_, _, ok⟩ := ok
-    exact foldlM (fun _ _ _ ok => updateRegistryEntryElectra ok) ok
-  · simp only [bind_ok_iff] at ok
-    obtain ⟨_, updated, activated⟩ := ok
-    exact (foldlM (fun _ _ _ ok => updateRegistryEntry ok) updated).trans
-      (foldlM (fun _ _ _ ok => activateValidator ok) activated)
-
-private theorem applySlashingPenalty {total adjusted : Gwei} {index : Nat}
-    (ok : Consensus.applySlashingPenalty state total adjusted index = .ok after) :
-    SlashedKept state after := by
-  simp only [Consensus.applySlashingPenalty, bind_ok_iff, liftAccessor_ok] at ok
-  obtain ⟨_, _, ok⟩ := ok
-  split at ok
-  · simp only [bind_ok_iff] at ok
-    obtain ⟨_, _, ok⟩ := ok
-    split at ok
-    · simp only [bind_ok_iff, liftAccessor_ok] at ok
-      obtain ⟨_, _, _, _, _, _, lowered⟩ := ok
-      exact decreaseBalance lowered
-    · cases ok; exact refl _
-  · cases ok; exact refl _
-
-private theorem applySlashingPenaltyElectra {perIncrement : Gwei} {index : Nat}
-    (ok : Consensus.applySlashingPenaltyElectra state perIncrement index = .ok after) :
-    SlashedKept state after := by
-  simp only [Consensus.applySlashingPenaltyElectra, bind_ok_iff, liftAccessor_ok] at ok
-  obtain ⟨_, _, ok⟩ := ok
-  split at ok
-  · simp only [bind_ok_iff] at ok
-    obtain ⟨_, _, ok⟩ := ok
-    split at ok
-    · simp only [bind_ok_iff, liftAccessor_ok] at ok
-      obtain ⟨_, _, _, _, lowered⟩ := ok
-      exact decreaseBalance lowered
-    · cases ok; exact refl _
-  · cases ok; exact refl _
-
-private theorem processSlashings (ok : Consensus.processSlashings state = .ok after) :
-    SlashedKept state after := by
-  unfold Consensus.processSlashings at ok
-  simp only [bind_ok_iff] at ok
-  obtain ⟨_, _, _, _, _, _, ok⟩ := ok
-  split at ok
-  · simp only [bind_ok_iff] at ok
-    obtain ⟨_, _, applied⟩ := ok
-    exact foldlM (fun _ _ _ ok => applySlashingPenaltyElectra ok) applied
-  · exact foldlM (fun _ _ _ ok => applySlashingPenalty ok) ok
-
-private theorem processEffectiveBalanceUpdates
-    (ok : Consensus.processEffectiveBalanceUpdates state = .ok after) :
-    SlashedKept state after := by
-  apply foldlM (fun _ _ _ ok => ?_) ok
-  simp only [updateEffectiveBalance, bind_ok_iff, liftAccessor_ok] at ok
-  obtain ⟨_, found, _, _, _, _, set⟩ := ok
-  exact setValidatorAt found (by rfl) (by rfl) set
-
-private theorem passPendingDeposits {stop : PendingDeposit → Bool} {nextEpoch : Epoch}
-    {available : Gwei} :
-    ∀ {deposits : List PendingDeposit} {state : BeaconState preset fork} {processed : Gwei}
-      {count : Nat} {postponed : Array PendingDeposit} {pass},
-      Consensus.passPendingDeposits config checks stop nextEpoch available state processed count
-        postponed deposits = .ok pass → SlashedKept state pass.1.state
-  | [], _, _, _, _, _, ok => by
-    cases ok; exact refl _
-  | deposit :: rest, state, processed, count, postponed, pass, ok => by
-    unfold Consensus.passPendingDeposits at ok
-    simp only [bind, Except.bind, pure, Except.pure] at ok
-    split at ok
-    · cases ok; exact refl _
-    split at ok
-    · cases ok
-    split at ok
-    · split at ok
-      · cases ok
-      rename_i credited
-      split at ok
-      · cases ok
-      cases ok
-      exact (applyPendingDeposit credited).trans (passPendingDeposits (deposits := rest) ‹_›)
-    split at ok
-    · split at ok
-      · cases ok
-      cases ok
-      exact passPendingDeposits (deposits := rest) ‹_›
-    split at ok
-    · cases ok
-    split at ok
-    · cases ok; exact refl _
-    split at ok
-    · cases ok
-    rename_i credited
-    split at ok
-    · cases ok
-    cases ok
-    exact (applyPendingDeposit credited).trans (passPendingDeposits (deposits := rest) ‹_›)
-
-private theorem processPendingBalances
-    (ok : Consensus.processPendingBalances config checks state = .ok after) :
-    SlashedKept state after := by
-  unfold Consensus.processPendingBalances at ok
-  split at ok
-  · simp only [bind_ok_iff] at ok
-    obtain ⟨middle, deposited, consolidated⟩ := ok
-    have deposits : SlashedKept state middle := by
-      unfold processPendingDeposits at deposited
-      simp only [bind, Except.bind, pure, Except.pure] at deposited
-      repeat' (split at deposited <;> try cases deposited)
-      all_goals exact (passPendingDeposits ‹_›).trans of_validators
-    exact deposits.trans
-      (of_validators (by rw [(processPendingConsolidations_kept consolidated).1]))
-  · cases ok; exact refl _
-
 private theorem processJustificationAndFinalization
     (ok : Consensus.processJustificationAndFinalization state = .ok after) :
     SlashedKept state after :=
   of_validators (by rw [(processJustificationAndFinalization_keeps ok).2.2.2.2.2.1])
 
-private theorem processInactivityUpdates {altair : .altair ≤ fork}
-    (ok : Consensus.processInactivityUpdates config state altair = .ok after) :
-    SlashedKept state after := by
-  unfold Consensus.processInactivityUpdates at ok
-  split at ok
-  · cases ok; exact refl _
-  · simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at ok
-    obtain ⟨_, _, _, _, rfl⟩ := ok
-    exact of_validators
-
-private theorem processEth1DataReset {before : fork < .hegota}
-    (ok : Consensus.processEth1DataReset before state = .ok after) :
-    SlashedKept state after := by
-  simp only [Consensus.processEth1DataReset, bind_ok_iff, liftAccessor_ok] at ok
-  obtain ⟨_, _, ok⟩ := ok
-  split at ok <;> cases ok <;> exact of_validators
-
-private theorem processSlashingsReset (ok : Consensus.processSlashingsReset state = .ok after) :
-    SlashedKept state after := by
-  obtain ⟨_, _, _, _, rfl⟩ := processSlashingsReset_eq ok
-  exact of_validators
-
-private theorem processRandaoMixesReset (ok : Consensus.processRandaoMixesReset state = .ok after) :
-    SlashedKept state after := by
-  obtain ⟨_, _, _, _, _, _, rfl⟩ := processRandaoMixesReset_eq ok
-  exact of_validators
-
-private theorem processHistoricalRootsUpdate
-    (ok : Consensus.processHistoricalRootsUpdate state = .ok after) :
-    SlashedKept state after := by
-  unfold Consensus.processHistoricalRootsUpdate at ok
-  split at ok
-  · cases ok
-  simp only [bind_ok_iff, liftAccessor_ok] at ok
-  obtain ⟨_, _, ok⟩ := ok
-  split at ok
-  · simp only [bind_ok_iff, liftSsz_ok, pure, Except.pure, Except.ok.injEq] at ok
-    obtain ⟨_, _, _, _, rfl⟩ := ok
-    exact of_validators
-  · cases ok; exact refl _
-
-private theorem processHistoricalSummariesUpdate {capella : .shapella ≤ fork}
-    (ok : Consensus.processHistoricalSummariesUpdate state capella = .ok after) :
-    SlashedKept state after := by
-  unfold Consensus.processHistoricalSummariesUpdate at ok
-  simp only [bind, Except.bind, pure, Except.pure] at ok
-  repeat' (split at ok <;> try cases ok)
-  all_goals exact of_validators
-
-private theorem epochTail {altair : .altair ≤ fork} {rooted synced looked : BeaconState preset fork}
-    (syncedOk : processSyncCommitteeUpdates (processParticipationFlagUpdates rooted altair)
-      altair = .ok synced)
-    (lookedOk : (if fulu : .fusaka ≤ fork then liftAccessor (processProposerLookahead synced fulu)
-      else pure synced) = .ok looked)
-    (windowed : (if gloas : .glamsterdam ≤ fork then liftAccessor (processPtcWindow looked gloas)
-      else pure looked) = .ok after) : SlashedKept rooted after := by
-  have syncedStep : SlashedKept (processParticipationFlagUpdates rooted altair) synced := by
-    unfold processSyncCommitteeUpdates at syncedOk
-    simp only [bind, Except.bind, pure, Except.pure] at syncedOk
-    repeat' (split at syncedOk <;> try cases syncedOk)
-    all_goals exact of_validators
-  have lookedStep : SlashedKept synced looked := by
-    split at lookedOk
-    · simp only [processProposerLookahead, liftAccessor_ok, bind_ok_iff, pure, Except.pure,
-        Except.ok.injEq] at lookedOk
-      obtain ⟨_, _, _, _, rfl⟩ := lookedOk
-      exact of_validators
-    · cases lookedOk; exact refl _
-  have windowedStep : SlashedKept looked after := by
-    split at windowed
-    · simp only [processPtcWindow, liftAccessor_ok, bind_ok_iff, pure, Except.pure,
-        Except.ok.injEq] at windowed
-      obtain ⟨_, _, _, _, rfl⟩ := windowed
-      exact of_validators
-    · cases windowed; exact refl _
-  exact (of_validators (state := rooted)).trans <| syncedStep.trans <|
-    lookedStep.trans windowedStep
-
-private theorem processEpochAltair {altair : .altair ≤ fork}
-    (ok : Consensus.processEpochAltair config checks state altair = .ok after) :
-    SlashedKept state after := by
-  unfold Consensus.processEpochAltair at ok
-  simp only [bind_ok_iff] at ok
-  obtain ⟨_, justified, _, scored, _, rewarded, _, registered, slashedState, slashed,
-    reset, resetOk, pending, pendingOk, paid, paidOk, _, balanced, _, cleared,
-    mixed, mixedOk, ok⟩ := ok
-  have resetStep : SlashedKept slashedState reset := by
-    split at resetOk
-    · exact processEth1DataReset resetOk
-    · cases resetOk; exact refl _
-  have paidStep : SlashedKept pending paid := by
-    split at paidOk
-    · simp only [processBuilderPendingPayments, liftAccessor_ok, bind_ok_iff, pure, Except.pure,
-        Except.ok.injEq] at paidOk
-      obtain ⟨_, _, rfl⟩ := paidOk
-      exact of_validators
-    · cases paidOk; exact refl _
-  have first : SlashedKept state mixed :=
-    (processJustificationAndFinalization justified).trans <|
-    (processInactivityUpdates scored).trans <| (processRewardsAndPenalties rewarded).trans <|
-    (processRegistryUpdates registered).trans <| (processSlashings slashed).trans <|
-    resetStep.trans <| (processPendingBalances pendingOk).trans <| paidStep.trans <|
-    (processEffectiveBalanceUpdates balanced).trans <| (processSlashingsReset cleared).trans <|
-    processRandaoMixesReset mixedOk
-  split at ok <;> simp only [bind_ok_iff] at ok <;>
-    obtain ⟨_, rooted, _, synced, _, looked, windowed⟩ := ok
-  · exact first.trans ((processHistoricalSummariesUpdate rooted).trans
-      (epochTail synced looked windowed))
-  · exact first.trans
-      ((processHistoricalRootsUpdate rooted).trans (epochTail synced looked windowed))
-
 private theorem processEpoch (ok : Consensus.processEpoch config checks state = .ok after) :
     SlashedKept state after := by
   unfold Consensus.processEpoch at ok
   split at ok
-  · exact processEpochAltair ok
+  · obtain ⟨pending, paid, rooted, pendingOk, paidOk, middle, tail⟩ :=
+      slashedKeptLaws.processEpochAltair_paymentSplit ok
+    obtain ⟨justified, justifiedOk, head⟩ := slashedKeptLaws.epochBeforePayments_split pendingOk
+    have paidStep : SlashedKept pending paid := by
+      split at paidOk
+      · simp only [processBuilderPendingPayments, liftAccessor_ok, bind_ok_iff, pure,
+          Except.pure, Except.ok.injEq] at paidOk
+        obtain ⟨_, _, rfl⟩ := paidOk
+        exact of_validators
+      · cases paidOk; exact refl _
+    exact (processJustificationAndFinalization justifiedOk).trans <| head.trans <|
+      paidStep.trans <| middle.trans <| (of_validators (state := rooted)).trans tail
   · simp only [bind_ok_iff] at ok
-    obtain ⟨_, justified, _, rewarded, _, registered, _, slashed, _, reset, _, balanced,
-      _, cleared, _, mixed, rooted, rootedOk, rotated⟩ := ok
-    have last : SlashedKept rooted after := by
-      unfold processParticipationRecordUpdates at rotated
-      split at rotated
-      · cases rotated
-      · cases rotated; exact of_validators
-    exact (processJustificationAndFinalization justified).trans <|
-      (processRewardsAndPenalties rewarded).trans <| (processRegistryUpdates registered).trans <|
-      (processSlashings slashed).trans <| (processEth1DataReset reset).trans <|
-      (processEffectiveBalanceUpdates balanced).trans <| (processSlashingsReset cleared).trans <|
-      (processRandaoMixesReset mixed).trans <| (processHistoricalRootsUpdate rootedOk).trans last
+    obtain ⟨justified, justifiedOk, rewarded, rewardedOk, registered, registeredOk, slashed,
+      slashedOk, reset, resetOk, balanced, balancedOk, cleared, clearedOk, mixed, mixedOk, rooted,
+      rootedOk, rotated⟩ := ok
+    exact (processJustificationAndFinalization justifiedOk).trans <|
+      (slashedKeptLaws.processRewardsAndPenalties rewardedOk).trans <|
+      (slashedKeptLaws.processRegistryUpdates registeredOk).trans <|
+      (slashedKeptLaws.processSlashings slashedOk).trans <|
+      (slashedKeptLaws.processEth1DataReset resetOk).trans <|
+      (slashedKeptLaws.processEffectiveBalanceUpdates balancedOk).trans <|
+      (slashedKeptLaws.processSlashingsReset clearedOk).trans <|
+      (slashedKeptLaws.processRandaoMixesReset mixedOk).trans <|
+      (slashedKeptLaws.processHistoricalRootsUpdate rootedOk).trans
+        (slashedKeptLaws.processParticipationRecordUpdates rotated)
+
 
 private theorem advanceSlot (ok : Consensus.advanceSlot config checks state = .ok after) :
     SlashedKept state after := by
