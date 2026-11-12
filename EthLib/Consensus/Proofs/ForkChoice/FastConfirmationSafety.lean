@@ -912,6 +912,88 @@ theorem Execution.rootFinal_or_justified_covers {anchor : Store preset fork}
 
 variable [DecidablePred (· ∈ J)]
 
+/-- A two-epoch advance contains a complete epoch, with representable boundaries. -/
+private theorem walk_complete_of_epoch_gap {slot current : Slot} {begin endpoint : UInt64}
+    (positive : 0 < preset.SLOTS_PER_EPOCH.toNat)
+    (beginOk : computeTimeAtSlotMs config genesisTimeMs slot = .ok begin)
+    (endpointOk : computeTimeAtSlotMs config genesisTimeMs current = .ok endpoint)
+    (gap : (computeEpochAtSlot preset slot).toNat + 2 ≤
+      (computeEpochAtSlot preset current).toNat) :
+    CompleteEpochWithin preset config genesisTimeMs begin.toNat endpoint.toNat := by
+  let E := (computeEpochAtSlot preset slot).toNat
+  let size := preset.SLOTS_PER_EPOCH.toNat
+  have endLe : (E + 2) * size ≤ current.toNat :=
+    (Nat.mul_le_mul_right size gap).trans (Nat.div_mul_le_self _ _)
+  have startLe : (E + 1) * size ≤ current.toNat := by
+    have := Nat.mul_le_mul_right size (show E + 1 ≤ E + 2 by omega)
+    omega
+  have epochBound : E + 1 < 2 ^ 64 := by
+    have := (computeEpochAtSlot preset current).toNat_lt
+    change E + 2 ≤ _ at gap
+    omega
+  have startBound : (E + 1) * size < 2 ^ 64 := startLe.trans_lt current.toNat_lt
+  have endBound : (E + 2) * size < 2 ^ 64 := endLe.trans_lt current.toNat_lt
+  let epoch : Epoch := (E + 1).toUInt64
+  let first : Slot := ((E + 1) * size).toUInt64
+  let next : Slot := ((E + 2) * size).toUInt64
+  have epochNat : epoch.toNat = E + 1 := UInt64.toNat_ofNat_of_lt' epochBound
+  have firstNat : first.toNat = (E + 1) * size := UInt64.toNat_ofNat_of_lt' startBound
+  have nextNat : next.toNat = (E + 2) * size := UInt64.toNat_ofNat_of_lt' endBound
+  have firstOk : computeStartSlotAtEpoch preset epoch = .ok first := by
+    apply computeStartSlotAtEpoch_ok_iff.mpr
+    exact ⟨by simpa [epochNat] using startBound, by simp [epochNat, firstNat, size]⟩
+  have nextOk : addChecked first preset.SLOTS_PER_EPOCH = .ok next := by
+    apply addChecked_ok_iff.mpr
+    constructor
+    · rw [firstNat]
+      simp only [Nat.add_mul, Nat.one_mul] at endBound ⊢
+      dsimp [size] at *
+      omega
+    · rw [firstNat, nextNat]
+      simp [Nat.add_mul, size]
+      omega
+  have firstLe : first ≤ current := UInt64.le_iff_toNat_le.mpr (firstNat ▸ startLe)
+  have nextLe : next ≤ current := UInt64.le_iff_toNat_le.mpr (nextNat ▸ endLe)
+  obtain ⟨firstTime, firstTimeOk, firstTimeNat, _⟩ := exists_timeAtSlotMs_of_le firstLe endpointOk
+  obtain ⟨nextTime, nextTimeOk, _, nextTimeLe⟩ := exists_timeAtSlotMs_of_le nextLe endpointOk
+  have slotLe : slot ≤ first := by
+    apply UInt64.le_iff_toNat_le.mpr
+    rw [firstNat]
+    have bound := Nat.lt_mul_div_succ slot.toNat positive
+    exact Nat.le_of_lt (by simpa [E, size, computeEpochAtSlot, Nat.mul_comm] using bound)
+  obtain ⟨sameTime, sameTimeOk, _, timeLe⟩ := exists_timeAtSlotMs_of_le slotLe firstTimeOk
+  rw [beginOk, Except.ok.injEq] at sameTimeOk
+  subst sameTime
+  exact ⟨epoch, first, next, firstTime, nextTime, firstOk, nextOk, firstTimeOk, nextTimeOk,
+    UInt64.le_iff_toNat_le.mp timeLe, UInt64.le_iff_toNat_le.mp nextTimeLe⟩
+
+/-- Before a complete epoch, a recent parent remains within the receiver's two-epoch cap. -/
+private theorem walk_receiver_age {slot current : Slot} {begin endpoint : UInt64}
+    {parentEpoch : Epoch}
+    (positive : 0 < preset.SLOTS_PER_EPOCH.toNat)
+    (beginOk : computeTimeAtSlotMs config genesisTimeMs slot = .ok begin)
+    (endpointOk : computeTimeAtSlotMs config genesisTimeMs current = .ok endpoint)
+    (recent : (computeEpochAtSlot preset slot).toNat ≤ parentEpoch.toNat + 1)
+    (initial : ¬CompleteEpochWithin preset config genesisTimeMs begin.toNat endpoint.toNat) :
+    (computeEpochAtSlot preset current).toNat ≤ parentEpoch.toNat + 2 := by
+  have gap := mt (walk_complete_of_epoch_gap positive beginOk endpointOk) initial
+  omega
+
+/-- A checkpoint read of a descendant is also a read of an ancestor above its boundary. -/
+private theorem walk_checkpoint_of_descendant {store : Store preset fork}
+    (before : fork < .glamsterdam) {tip root checkpoint : Root} {epoch : Epoch}
+    {block : BeaconBlock preset fork} {boundary : Slot}
+    (known : store.blocks[root]? = some block)
+    (descends : store.isAncestor ⟨tip, .pending⟩ ⟨root, .pending⟩ = .ok true)
+    (boundaryOk : computeStartSlotAtEpoch preset epoch = .ok boundary)
+    (below : boundary ≤ block.slot)
+    (read : store.getCheckpointBlock tip epoch = .ok checkpoint) :
+    store.getCheckpointBlock root epoch = .ok checkpoint := by
+  have path := Store.getAncestor_of_isAncestor_of_lt before known descends
+  have through := Store.getAncestor_trans below path
+  simpa only [Store.getCheckpointBlock, boundaryOk, Except.mapError, bind, Except.bind,
+    through] using read
+
 /-- Every walked member is at least as recent as the checked start. -/
 private theorem walk_member_recent {store : Store preset fork} {fcr : FastConfirmationStore}
     {head start root member : Root} {roots : List Root} {epoch : Epoch}
