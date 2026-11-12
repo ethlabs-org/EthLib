@@ -41,7 +41,8 @@ theorem Execution.anchor_currentJustified_eq_of_oneJustifiedPerEpoch
     {anchor : Store preset fork}
     (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
     (start : ∀ w ∈ J, e.start w = anchor) {u : ValidatorIndex} (caller : u ∈ J)
-    {horizon : Epoch} (unique : OneJustifiedPerEpoch e horizon)
+    {horizon : Epoch} {limit : ℕ} (unique : OneJustifiedPerEpoch e horizon limit)
+    (started : e.startTime ≤ limit)
     (sameEpoch : anchorState.currentJustifiedCheckpoint.epoch = getCurrentEpoch anchorState)
     (positive : 0 < anchorState.currentJustifiedCheckpoint.epoch)
     (within : getCurrentEpoch anchorState ≤ horizon) :
@@ -52,7 +53,7 @@ theorem Execution.anchor_currentJustified_eq_of_oneJustifiedPerEpoch
   have stateJustified : anchor.Justified anchorState.currentJustifiedCheckpoint :=
     .inr (.inr ⟨positive, .inl ⟨root, anchorState, stored, rfl⟩⟩)
   have storeJustified : anchor.Justified anchor.justifiedCheckpoint := .inl rfl
-  exact unique u caller u caller 0 0 _ _ (atStart ▸ stateJustified)
+  exact unique u caller u caller 0 0 started started _ _ (atStart ▸ stateJustified)
     (atStart ▸ storeJustified) (by simpa [justified] using sameEpoch)
     (sameEpoch ▸ within)
 
@@ -61,17 +62,17 @@ theorem Execution.false_of_anchor_checkpoint_parent
     {anchor : Store preset fork}
     (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
     (start : ∀ w ∈ J, e.start w = anchor) {u : ValidatorIndex} (caller : u ∈ J)
-    {horizon : Epoch} (unique : OneJustifiedPerEpoch e horizon)
+    {horizon : Epoch} {limit : ℕ} (unique : OneJustifiedPerEpoch e horizon limit)
     (sameEpoch : anchorState.currentJustifiedCheckpoint.epoch = getCurrentEpoch anchorState)
     (positive : 0 < anchorState.currentJustifiedCheckpoint.epoch)
     (within : getCurrentEpoch anchorState ≤ horizon)
     (parent : anchorState.currentJustifiedCheckpoint.root = anchorBlock.parentRoot)
-    {limit : ℕ} (started : e.startTime ≤ limit)
+    (started : e.startTime ≤ limit)
     (anchorParent : ∀ w ∈ J, ∀ k, (e.world k).time ≤ limit →
       ((e.world k).state w).blocks[anchorBlock.parentRoot]? = none) : False := by
   obtain ⟨root, _, held, _, justified, _⟩ := getForkchoiceStore_anchor anchored
   have same := e.anchor_currentJustified_eq_of_oneJustifiedPerEpoch anchored start caller
-    unique sameEpoch positive within
+    unique started sameEpoch positive within
   have rootEq : anchorBlock.parentRoot = root := by
     simpa [parent, justified] using congrArg Checkpoint.root same
   -- The excluded parent is the anchor itself, which the initial store holds.
@@ -89,10 +90,10 @@ theorem Execution.not_justified_of_genesis_anchor_checkpoint_parent
     {anchor : Store preset fork}
     (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
     (start : ∀ w ∈ J, e.start w = anchor) {u : ValidatorIndex} (caller : u ∈ J)
-    {horizon : Epoch} (unique : OneJustifiedPerEpoch e horizon)
+    {horizon : Epoch} {limit : ℕ} (unique : OneJustifiedPerEpoch e horizon limit)
     (sound : Invariant anchorState) (epochZero : getCurrentEpoch anchorState = 0)
     (parent : anchorState.currentJustifiedCheckpoint.root = anchorBlock.parentRoot)
-    {limit : ℕ} (started : e.startTime ≤ limit)
+    (started : e.startTime ≤ limit)
     (anchorParent : ∀ w ∈ J, ∀ k, (e.world k).time ≤ limit →
       ((e.world k).state w).blocks[anchorBlock.parentRoot]? = none) :
     ¬ anchor.Justified anchorState.currentJustifiedCheckpoint := by
@@ -105,7 +106,7 @@ theorem Execution.not_justified_of_genesis_anchor_checkpoint_parent
   obtain ⟨root, _, held, _, justified, _⟩ := getForkchoiceStore_anchor anchored
   have atStart : (e.world 0).state u = anchor := start u caller
   have storeJustified : anchor.Justified anchor.justifiedCheckpoint := .inl rfl
-  have same := unique u caller u caller 0 0
+  have same := unique u caller u caller 0 0 started started
     anchorState.currentJustifiedCheckpoint anchor.justifiedCheckpoint (atStart ▸ rawJustified)
     (atStart ▸ storeJustified)
     (by simpa [justified] using sameEpoch) (by simp [sameEpoch, epochZero])
@@ -143,10 +144,12 @@ theorem _root_.EthLib.Consensus.Store.Reachable.getShufflingDependentRoot_ne_ok_
 
 An old head cannot supply this premise for an arbitrarily recent cached vote target. -/
 theorem CommitteesFollow.targetEpoch_le_headEpoch_add_lookahead
-    (committees : CommitteesFollow e) {w : ValidatorIndex} (honest : w ∈ J)
+    {limit : ℕ} (committees : CommitteesFollow e limit)
+    {w : ValidatorIndex} (honest : w ∈ J)
     {k : ℕ} {head : ForkChoiceNode} {headState : BeaconState preset fork}
     {current : Epoch} {v : ValidatorIndex} {attestation : Attestation preset fork}
     {targetState : BeaconState preset fork}
+    (bounded : (e.world k).time ≤ limit)
     (headOk : ((e.world k).state w).getHead config = .ok head)
     (headStateOk : ((e.world k).state w).blockState head.root = .ok headState)
     (currentOk : ((e.world k).state w).getCurrentStoreEpoch config = .ok current)
@@ -158,7 +161,7 @@ theorem CommitteesFollow.targetEpoch_le_headEpoch_add_lookahead
     attestation.data.target.epoch.toNat ≤
       (getCurrentEpoch headState).toNat + preset.MIN_SEED_LOOKAHEAD.toNat := by
   obtain ⟨common, headRun, _, targetBound, _⟩ :=
-    committees.common w honest k head headState current v attestation targetState
+    committees.common w honest k bounded head headState current v attestation targetState
       headOk headStateOk currentOk targetPast recent origin targetOk
   -- A common state is no later than the head state that follows it.
   have headLater := UInt64.le_iff_toNat_le.mp headRun.later
@@ -268,6 +271,19 @@ theorem world_tail (steps : List (Event ν μ σ)) (lastTime : ℕ) (init : Worl
     rw [Nat.add_succ, worldAt, ih, events, dite_eq_right (by omega)]
     simp [World.apply]
     omega
+
+/-- Every world at or before the final prefix time belongs to that finite prefix.
+
+The tail advances time strictly, so a bounded premise needs no tail-state case. -/
+theorem index_le_length_of_time_le (steps : List (Event ν μ σ)) (lastTime : ℕ)
+    (init : World ν μ σ) (clock : (steps.foldl World.apply init).time = lastTime)
+    (n : ℕ) (bounded : (worldAt init (events steps lastTime) n).time ≤ lastTime) :
+    n ≤ steps.length := by
+  by_contra beyond
+  have index : n = steps.length + (n - steps.length) := by omega
+  rw [index, world_tail steps lastTime init clock] at bounded
+  change lastTime + (n - steps.length) ≤ lastTime at bounded
+  omega
 
 /-- Allowed events in a finite list extend to an execution by waiting after its last time. -/
 def execution (P : Protocol ν μ σ κ) (J : Set ν) (startTime : ℕ) (start : ν → σ)
@@ -383,6 +399,14 @@ def validator (weight : UInt64) : Validator :=
 
 The balances are 200, 200, 200, 100 and 200 Gwei; validator 3 is Byzantine.
 
+The fork is phase0, with a small custom preset rather than mainnet parameters.
+
+The modified minimal preset has zero shuffle rounds.
+
+The modified minimal config has zero proposer boost and a committee threshold of 34 percent.
+
+The committee certificates use kernel `decide`, which adds no compiler-trusting axiom.
+
 The body root is a parameter so these state facts do not need to evaluate a hash.
 
 These initialization facts alone do not certify an execution of Theorem 1. -/
@@ -453,6 +477,42 @@ theorem mixed_committee_byzantine_stake (root : Root) :
     ByzantineStakeAtMost (fun v => balanceAt (state root) v.toNat) {3, 4} honest 34 100 := by
   change 0 < 100 ∧ 100 * 100 ≤ 34 * 300
   decide
+
+/-- Any registered committee range pairing validator 3 with validator 4 meets the bound.
+
+Additional honest members can only increase the total stake. -/
+theorem committee_byzantine_of_paired (root : Root) (members : Finset ValidatorIndex)
+    (registered : members ⊆ {0, 1, 2, 3, 4}) (paired : 3 ∈ members → 4 ∈ members) :
+    ByzantineStakeAtMost (fun v => balanceAt (state root) v.toNat) members honest 34 100 := by
+  -- Only validator 3 can contribute Byzantine stake among these registered positions.
+  have subset : {v ∈ members | v ∉ honest} ⊆ ({3} : Finset ValidatorIndex) := by
+    intro v member
+    obtain ⟨inside, dishonest⟩ := Finset.mem_filter.mp member
+    have known := registered inside
+    simp only [Finset.mem_insert, Finset.mem_singleton] at known
+    rcases known with rfl | rfl | rfl | rfl | rfl <;> simp_all [honest]
+  refine ⟨by decide, ?_⟩
+  by_cases present : 3 ∈ members
+  · have minimum : ({3, 4} : Finset ValidatorIndex) ⊆ members := by
+      intro v member
+      simp only [Finset.mem_insert, Finset.mem_singleton] at member
+      rcases member with rfl | rfl
+      · exact present
+      · exact paired present
+    -- The pair contributes 300 Gwei, against at most 100 Gwei of Byzantine stake.
+    have lower := stake_mono (w := fun v => balanceAt (state root) v.toNat) minimum
+    have upper := stake_mono (w := fun v => balanceAt (state root) v.toNat) subset
+    change 300 ≤ stake (fun v => balanceAt (state root) v.toNat) members at lower
+    change stake (fun v : ValidatorIndex => balanceAt (state root) v.toNat) _ ≤ 100 at upper
+    omega
+  · have empty : {v ∈ members | v ∉ honest} = ∅ := by
+      apply Finset.eq_empty_iff_forall_notMem.mpr
+      intro v member
+      have same := Finset.mem_singleton.mp (subset member)
+      subst v
+      exact present (Finset.mem_filter.mp member).1
+    rw [empty, stake_empty]
+    omega
 
 /-- The last committee pairs the Byzantine validator with an honest validator of twice its stake. -/
 theorem committees (root : Root) :
