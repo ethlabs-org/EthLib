@@ -2038,6 +2038,7 @@ private theorem Execution.call_targetVotes {anchor : Store preset fork}
     (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
     (start : ∀ w ∈ J, e.start w = anchor) (sound : Invariant anchorState)
     (slots : 0 < config.SLOT_DURATION_MS) (committees : CommitteesFollow e)
+    (retained : preset.MIN_SEED_LOOKAHEAD.toNat + 1 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
     (maxAligned : MaxEffectiveBalancesAligned preset)
     (increment : preset.EFFECTIVE_BALANCE_INCREMENT.toNat % 100 = 0)
     {u : ValidatorIndex} (caller : u ∈ J) {n : ℕ} {head : ForkChoiceNode} {slot : Slot}
@@ -2092,7 +2093,8 @@ private theorem Execution.call_targetVotes {anchor : Store preset fork}
   simp only [bind_ok_iff, mapError_ok_iff, slotOk, stateOk, startOk, lastOk, Except.ok.injEq,
     exists_eq_left'] at reads
   obtain ⟨total, totalOk, score, scoreOk, soFar, soFarOk, rest⟩ := reads
-  have counted := e.honestTargetVotes_of_byzantineStakeAtMost anchored start committees caller
+  have counted := e.honestTargetVotes_of_byzantineStakeAtMost anchored start committees retained
+    caller
     ⟨head, headOk, rfl⟩ slotOk stateOk totalOk
     (reached.getPulledUpHeadState_aligned sound maxAligned stateOk) increment startOk lastOk
     soFarOk participantsOk (byzantine _ _ _ _ stateOk startOk lastOk participantsOk) dishonest
@@ -2727,7 +2729,8 @@ theorem Execution.callInvariant_step {Δ : ℕ} (sync : e.Synchronous Δ)
     intro s sOk inside
     have same : s = slot := Except.ok.inj (sOk.symm.trans slotOk)
     subst s
-    exact e.call_targetVotes anchored start sound slots committees maxAligned increment caller
+    exact e.call_targetVotes anchored start sound slots committees (by omega) maxAligned increment
+      caller
       headOk slotOk (fun state first last participants => committeeByzantine state first last
         participants inside) (fun state first last participants total soFar =>
         remaining state first last participants total soFar inside)

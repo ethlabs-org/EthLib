@@ -2,6 +2,7 @@ module
 
 public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmationSupport
 import EthLib.Consensus.Proofs.ForkChoice.BlockStates
+import EthLib.Consensus.Proofs.ForkChoice.FastConfirmationResets
 
 /-!
 # Statements: the committees of a vote for a sibling are those of the head
@@ -48,6 +49,80 @@ variable {preset : Preset} {fork : Fork} {config : Config} {checks : SignatureCh
   {e : Execution (honestForkChoice config checks sources anchorState anchorBlock assignment
     genesisTimeMs) J}
 
+/-- The ancestor walk reconstructs a boundary state without reading the history ring. -/
+private theorem checkpoint_run_of_walk {store : Store preset fork}
+    (reachable : Store.Reachable config anchorState anchorBlock store)
+    (transitions : ∀ (root : Root) (block : BeaconBlock preset fork)
+      (state : BeaconState preset fork), store.blocks[root]? = some block →
+      store.blockStates[root]? = some state → block ≠ anchorBlock →
+      ∃ parent signed, signed.message = block ∧
+        store.blockStates[block.parentRoot]? = some parent ∧
+        stateTransition config checks sources.engine parent signed true = .ok state)
+    {boundary : Slot} (anchorBelow : anchorBlock.slot ≤ boundary)
+    (stateBelow : anchorState.slot ≤ boundary)
+    {node ancestor : ForkChoiceNode} {state : BeaconState preset fork}
+    (held : store.blockStates[node.root]? = some state)
+    (walk : store.getAncestor node boundary = .ok ancestor)
+    (reached : boundary ≤ state.slot) :
+    ∃ base middle, store.blockStates[ancestor.root]? = some base ∧
+      lookaheadState config checks base boundary = .ok middle ∧
+      middle.slot = boundary ∧ RunKept middle state := by
+  obtain ⟨block, found⟩ := reachable.known_of_blockState held
+  by_cases low : block.slot ≤ boundary
+  · rw [Store.getAncestor_of_le found low] at walk
+    cases walk
+    have atBoundary : state.slot = boundary := by
+      by_cases same : block = anchorBlock
+      · obtain ⟨post, stored, initial, _⟩ := reachable.blockStatesFromParents found
+        rw [held, Option.some.injEq] at stored
+        subst post
+        exact UInt64.le_antisymm ((initial same) ▸ stateBelow) reached
+      · exact UInt64.le_antisymm ((reachable.blockState_header found held same).1 ▸ low) reached
+    refine ⟨state, state, held, ?_, atBoundary, RunKept.refl _⟩
+    simp [lookaheadState, atBoundary, pure, Except.pure]
+  · have other : block ≠ anchorBlock := fun same => low (same ▸ anchorBelow)
+    obtain ⟨parentState, signed, message, parentHeld, transition⟩ :=
+      transitions node.root block state found held other
+    obtain ⟨advanced, slots, _, _, processed, _⟩ := stateTransition_ok transition
+    have slotEq := (reachable.blockState_header found held other).1
+    -- The successful walk supplies the parent's strict slot decrease, including at the anchor.
+    rw [Store.getAncestor] at walk
+    split at walk
+    · simp_all
+    rename_i b same
+    rw [found, Option.some.injEq] at same
+    subst b
+    simp only [low, ↓reduceIte] at walk
+    split at walk
+    · simp [throw, throwThe, MonadExceptOf.throw] at walk
+    · rename_i parent parentFound
+      split at walk
+      · rename_i parentLower
+        by_cases before : boundary ≤ parentState.slot
+        · obtain ⟨base, middle, baseHeld, made, middleSlot, run⟩ :=
+            checkpoint_run_of_walk reachable transitions anchorBelow stateBelow parentHeld walk before
+          exact ⟨base, middle, baseHeld, made, middleSlot,
+            run.trans (runKept_stateTransition transition)⟩
+        · have parentLe : parent.slot ≤ boundary := by
+            by_cases same : parent = anchorBlock
+            · exact same ▸ anchorBelow
+            · rw [← (reachable.blockState_header parentFound parentHeld same).1]
+              exact UInt64.le_of_lt (UInt64.not_le.mp before)
+          rw [Store.getAncestor_of_le parentFound parentLe] at walk
+          cases walk
+          obtain ⟨middle, made, middleSlot, run⟩ := lookaheadState_of_processSlots slots
+            (UInt64.le_of_lt (UInt64.not_le.mp before))
+            (message ▸ UInt64.not_le.mp low)
+          exact ⟨parentState, middle, parentHeld, made, middleSlot,
+            run.trans (runKept_processBlock processed)⟩
+      · simp [throw, throwThe, MonadExceptOf.throw] at walk
+termination_by state.slot.toNat
+decreasing_by
+  have bounds := stateTransition_slot transition
+  rw [bounds.2]
+  exact UInt64.lt_iff_toNat_lt.mp bounds.1
+
+set_option linter.unusedVariables false in
 /-- A checkpoint on the chain of a head keeps its committees in the state of the head.
 
 The checkpoint is cached in an honest store, and the head is a block of that store.
@@ -60,7 +135,7 @@ The epoch read is at most the lookahead after the checkpoint, and its activity i
 
 The state of the head has not yet overwritten the RANDAO mix that the seed of the epoch reads.
 
-The proof reconstructs the cached state with `Store.Reachable.blockState_history_run`.
+The proof reconstructs the cached state along the ancestor walk, without a history-ring read.
 
 That run starts at the checkpoint state, so `RunKept.committeesKept` applies. -/
 theorem Execution.committeesKept_of_head_checkpoint {anchor : Store preset fork}
@@ -83,7 +158,56 @@ theorem Execution.committeesKept_of_head_checkpoint {anchor : Store preset fork}
       epoch.toNat + preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat) :
     CommitteesKept epoch targetState headState ∧
       getCommitteeCountPerSlot headState epoch = getCommitteeCountPerSlot targetState epoch := by
-  sorry
+  -- The ancestor walk needs neither a nonzero state root nor a lower bound on the epoch read.
+  clear nonzero above
+  have reachable := e.reachable
+    (fun w hw => (start w hw).symm ▸ Store.Reachable.anchor anchored) k w receiver
+  obtain ⟨base, slot, baseHeld, slotOk, made⟩ :=
+    e.checkpointStates_fixedChecks anchored (start w receiver) cached
+  have slotEq := Except.ok.inj (slotOk.symm.trans boundaryOk)
+  subst slot
+  unfold Store.getCheckpointBlock at onChain
+  simp only [boundaryOk, Except.mapError, bind, Except.bind] at onChain
+  cases walk : ((e.world k).state w).getAncestor ⟨head, .pending⟩ boundary with
+  | error err => simp [walk] at onChain
+  | ok ancestor =>
+    simp only [walk, pure, Except.pure, Except.ok.injEq] at onChain
+    obtain ⟨targetBlock, targetHeld, targetBelow⟩ := Store.getAncestor_le walk
+    -- Even a malformed anchor must lie below a successful checkpoint walk.
+    obtain ⟨anchorRoot, anchorHash, anchorHeld⟩ := reachable.anchor_known
+    obtain ⟨_, anchorHash', _, _, _, anchorFinal, _⟩ := getForkchoiceStore_anchor anchored
+    have rootEq := Except.ok.inj (anchorHash.symm.trans anchorHash')
+    have anchorKnown : ((e.world k).state w).blocks[anchor.finalizedCheckpoint.root]? =
+        some anchorBlock := by simpa [anchorFinal, ← rootEq] using anchorHeld
+    obtain ⟨targetBlock', targetHeld', anchorLe⟩ := Store.slot_le_of_isAncestor anchorKnown
+      (e.isAncestor_anchor_of_known anchored start receiver targetHeld)
+    rw [targetHeld, Option.some.injEq] at targetHeld'
+    subst targetBlock'
+    obtain ⟨base', middle, baseHeld', made', middleSlot, run⟩ := checkpoint_run_of_walk reachable
+      (fun r b s found stored other =>
+        e.exists_transition_of_nonanchor_block anchored receiver (start w receiver)
+          found stored other)
+      (UInt64.le_trans anchorLe targetBelow) afterAnchor headFound walk reached
+    rw [onChain, baseHeld, Option.some.injEq] at baseHeld'
+    subst base'
+    have middleEq := Except.ok.inj (made'.symm.trans made)
+    subst middle
+    by_cases positive : 0 < preset.SLOTS_PER_EPOCH
+    · have atEpoch : getCurrentEpoch targetState = target.epoch := by
+        simpa [getCurrentEpoch, middleSlot] using
+          computeEpochAtSlot_computeStartSlotAtEpoch positive boundaryOk
+      refine ⟨run.committeesKept (atEpoch ▸ final) fixed inRing, ?_⟩
+      unfold getCommitteeCountPerSlot
+      rw [run.active.getActiveValidatorIndices_eq fixed]
+    · have zero : preset.SLOTS_PER_EPOCH = 0 := by
+        have := UInt64.not_lt.mp positive
+        exact UInt64.le_antisymm this UInt64.zero_le
+      constructor
+      · intro duty index atEpoch
+        have epochZero : epoch = 0 := by simpa [computeEpochAtSlot, zero] using atEpoch.symm
+        exact run.committeesKept (by rw [epochZero]; exact Nat.zero_le _) fixed inRing
+          duty index atEpoch
+      · simp [getCommitteeCountPerSlot, committeeCountOf, zero]
 
 variable [DecidablePred (· ∈ J)]
 
