@@ -238,6 +238,24 @@ private theorem validatorAt_of_mem_committeeWindow {anchor : Store preset fork}
     headStateOk stateOk active
   exact ⟨validator, validatorAt_ok_iff.mpr found⟩
 
+/-- An unslashed active window member is present in the balance list used by the tally. -/
+private theorem tallyActive_of_activeMember {state : BeaconState preset fork}
+    {members : Std.TreeSet ValidatorIndex} {v : ValidatorIndex}
+    (member : v ∈ Store.activeMembers state members) (unslashed : NotSlashed state v) :
+    v ∈ ((unslashedActiveBalances state).map (·.1)).toFinset := by
+  obtain ⟨_, validator, found, active⟩ := Store.mem_activeMembers.mp member
+  have flag : validator.slashed = false := by
+    simpa only [NotSlashed, found, Option.map_some, Option.getD_some] using unslashed
+  apply List.mem_toFinset.mpr
+  apply List.mem_map.mpr
+  refine ⟨(v, validator.effectiveBalance), ?_, rfl⟩
+  unfold unslashedActiveBalances
+  apply List.mem_filterMap.mpr
+  refine ⟨(validator, v.toNat), ?_, ?_⟩
+  · apply List.mem_zipIdx_iff_getElem?.mpr
+    simpa using found
+  · simp [active, flag, UInt64.ofNat_toNat]
+
 /-- A successful total also bounds a subset, without requiring a bound on inactive balances. -/
 private theorem totalBalance_exists_of_subset {state : BeaconState preset fork}
     {indices all : List ValidatorIndex} {total : Gwei}
@@ -1371,6 +1389,10 @@ theorem Execution.honest_support_of_historical_anchor {Δ : ℕ} (sync : e.Synch
     apply (notSlashed_lookahead advanced v).mpr
     exact unslashed w receiver k held (by omega)
       (Store.counts_of_fixedChecks (checks := checks) stored (.inl rfl)) v honest
+  have receiverHonestActive : ∀ v ∈ Store.activeMembers state receiverWindow, v ∈ J →
+      v ∈ ((unslashedActiveBalances state).map (·.1)).toFinset := by
+    intro v member honest
+    exact tallyActive_of_activeMember member (receiverUnslashed v honest)
   sorry
 
 

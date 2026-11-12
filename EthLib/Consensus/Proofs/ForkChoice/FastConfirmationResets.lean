@@ -1031,7 +1031,39 @@ theorem Execution.safeAt_finalized {Δ : ℕ} (sync : e.Synchronous Δ)
       ((e.world k).state w).getCurrentStoreEpoch config = .ok current → current ≤ horizon) :
     ∀ time, (e.world n).time + Δ ≤ time → time ≤ limit →
       SafeAt e time ((e.world n).state u).finalizedCheckpoint.root := by
-  sorry
+  intro time late bounded
+  by_cases same : ((e.world n).state u).finalizedCheckpoint = anchor.finalizedCheckpoint
+  · rw [same]
+    exact e.safeAt_anchor anchored start time
+  have reached := e.reachable
+    (fun w hw => (start w hw).symm ▸ Store.Reachable.anchor anchored) n u caller
+  have aligned : anchorBlock.slot ≤ anchorState.slot := by
+    rcases frozen_or_anchor_aligned anchored reached with ⟨first, firstOk, le⟩ | ⟨_, eq, _⟩
+    · have firstEq := (computeStartSlotAtEpoch_ok_iff.mp firstOk).2
+      rw [getCurrentEpoch_toNat] at firstEq
+      have lower := Nat.div_mul_le_self anchorState.slot.toNat preset.SLOTS_PER_EPOCH.toNat
+      exact UInt64.le_trans le (UInt64.le_iff_toNat_le.mpr (by omega))
+    · exact (same eq).elim
+  have nBound : (e.world n).time ≤ limit := by omega
+  apply e.safeAt_finalized_of_epoch_bounds preGloas chain caller nBound bounded
+  intro w honest k atTime current
+  have kBound : (e.world k).time ≤ limit := by omega
+  have lower := e.finalized_epoch_le_justified_epoch sync positive window preGloas
+    oneBlock admitted anchored sound start chain caller honest epochOk
+    (inHorizon u caller n _ nBound epochOk) (by omega) kBound
+    (fun v hv k' earlier => nonzero v hv k' (earlier.trans kBound)) current
+  have forward := e.forwardReachable
+    (fun v hv => (start v hv).symm ▸ Store.ForwardReachable.anchor anchored) k w honest
+  have duration : 0 < config.SLOT_DURATION_MS := by
+    obtain ⟨slot, read, _⟩ := bind_ok_iff.mp epochOk
+    exact Store.slotDuration_pos read
+  obtain ⟨slot, slotOk, _⟩ := forward.slots_le_current duration aligned
+  have currentEpoch : ((e.world k).state w).getCurrentStoreEpoch config =
+      .ok (computeEpochAtSlot preset slot) := by
+    simp [Store.getCurrentStoreEpoch, slotOk, bind, Except.bind, pure, Except.pure]
+  exact ⟨lower, UInt64.le_trans
+    (forward.justified_epoch_le_current sound (Store.slotDuration_pos slotOk) aligned
+      currentEpoch).1 (inHorizon w honest k _ kBound currentEpoch)⟩
 
 /-- In the next epoch, each honest store has justified what an honest store saw as justified.
 
