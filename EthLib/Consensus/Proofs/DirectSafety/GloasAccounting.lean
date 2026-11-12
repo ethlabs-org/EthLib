@@ -509,4 +509,25 @@ theorem _root_.EthLib.Consensus.Run.balanceEventsGloas_result {x y : ForkedBeaco
     · exact ⟨prior ++ added, by simp [addedOk, pure, Except.pure]⟩
     · exact ⟨prior, rfl⟩
 
+/-- Builder withdrawals cannot increase the validator debit beyond the full withdrawal sum. -/
+theorem gloas_withdrawal_bounds {fork : Fork} (gloas : .glamsterdam ≤ fork)
+    (s t : BeaconState preset fork)
+    (ok : processWithdrawals s (Nat.le_trans (by decide) gloas)
+      (fun before => absurd gloas (Nat.not_le_of_lt before)) = .ok t) :
+    ∃ debit, gloasWithdrawalLimits gloas s = .ok (0, debit) ∧
+      balanceCredits s t = 0 ∧ balanceDebits s t ≤ debit := by
+  simp only [processWithdrawals, gloas, ↓reduceDIte] at ok
+  split at ok <;> rename_i full
+  · obtain ⟨expected, expectedOk, applied⟩ := bind_ok_iff.mp ok
+    obtain ⟨u, withdrawn, balances, _⟩ :=
+      applyExpectedWithdrawals_balances (liftAccessor_ok.mp applied)
+    have bounds := withdrawal_debit_bound s u expected.withdrawals withdrawn
+    refine ⟨(expected.withdrawals.toList.map fun w => w.amount.toNat).sum, ?_, ?_, ?_⟩
+    · simp [gloasWithdrawalLimits, full, expectedOk, bind, Except.bind, pure, Except.pure]
+    · simpa only [balanceCredits, actualBalanceAt, balances] using bounds.1
+    · simpa only [balanceDebits, actualBalanceAt, balances] using bounds.2
+  · cases ok
+    exact ⟨0, by simp [gloasWithdrawalLimits, full, pure, Except.pure],
+      by simp [balanceCredits], by simp [balanceDebits]⟩
+
 end EthLib.Consensus.DirectSafety
