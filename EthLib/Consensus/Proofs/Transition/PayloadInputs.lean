@@ -800,79 +800,15 @@ theorem processOperations_blockRoots_latestBlockHeader
       (fun _ => rfl) (fun one two => two.trans one)
       (fun _ _ _ ok => (payloadInputs_processAttestation ok).blockRoots) attested).1
     rw [last.blockRoots, middle, first.blockRoots]
-  refine ⟨roots, ?_⟩
-  have fold {α ε : Type} {f : BeaconState preset fork → α → Except ε _}
-      (kept : ∀ s x t, f s x = .ok t → t.latestBlockHeader = s.latestBlockHeader)
-      {xs : List α} {s t : BeaconState preset fork} (ok : xs.foldlM f s = .ok t) :
-      t.latestBlockHeader = s.latestBlockHeader :=
-    (foldlM_ok_steps
-      (fun s t : BeaconState preset fork => t.latestBlockHeader = s.latestBlockHeader)
-      (fun _ => rfl) (fun one two => two.trans one) kept ok).1
-  by_cases gloas : .glamsterdam ≤ fork
-  · exact (payloadInputs_processOperations gloas computed).latestBlockHeader
-  simp only [processOperations, gloas, ↓reduceDIte, bind_ok_iff, ensure_ok_iff,
-    ← Array.foldlM_toList] at computed
-  obtain ⟨_, _, _, _, _, proposers, _, attesters, _, attestations, _, deposits, exited,
-    exits, changed, changes, requests⟩ := computed
-  have changesKept : changed.latestBlockHeader = exited.latestBlockHeader := by
-    unfold processBlsToExecutionChanges at changes
-    split at changes
-    · rw [← Array.foldlM_toList] at changes
-      exact fold (fun _ _ _ ok => (payloadInputs_processBlsToExecutionChange ok).latestBlockHeader)
-        changes
-    · cases changes
-      rfl
-  have requestsKept : after.latestBlockHeader = changed.latestBlockHeader := by
-    split at requests
-    · simp only [processExecutionRequests, bind_ok_iff, ← Array.foldlM_toList] at requests
-      obtain ⟨_, deposited, _, withdrawn, consolidated⟩ := requests
-      exact (fold (fun _ _ _ ok =>
-        (payloadInputs_processConsolidationRequest ok).latestBlockHeader) consolidated).trans <|
-        (fold (fun _ _ _ ok =>
-          (payloadInputs_processWithdrawalRequest ok).latestBlockHeader) withdrawn).trans <|
-        fold (fun _ _ _ ok => (payloadInputs_processDepositRequest ok).latestBlockHeader) deposited
-    · cases requests
-      rfl
-  exact requestsKept.trans <| changesKept.trans <|
-    (fold (fun _ _ _ ok =>
-      (payloadInputs_processVoluntaryExit ok).latestBlockHeader) exits).trans <|
-    (fold (fun _ _ _ ok => by
-      obtain ⟨_, _, next, _, applied⟩ := processDeposit_ok ok
-      exact (frame_applyDeposit applied).latestBlockHeader) deposits).trans <|
-    (fold (fun _ _ _ ok =>
-      (payloadInputs_processAttestation ok).latestBlockHeader) attestations).trans <|
-    (fold (fun _ _ _ ok =>
-      (payloadInputs_processAttesterSlashing ok).latestBlockHeader) attesters).trans <|
-    fold (fun _ _ _ ok => (payloadInputs_processProposerSlashing ok).latestBlockHeader) proposers
+  exact ⟨roots, latestBlockHeader_processOperations computed⟩
 
 /-- The execution part of a block keeps its block-root history and latest beacon header. -/
 theorem processBlockExecution_blockRoots_latestBlockHeader {body : BeaconBlockBody preset fork}
     {bellatrix : .bellatrix ≤ fork}
     (computed : processBlockExecution config checks engine state body bellatrix = .ok after) :
     after.blockRoots = state.blockRoots ∧ after.latestBlockHeader = state.latestBlockHeader := by
-  refine ⟨(frame_processBlockExecution computed).blockRoots, ?_⟩
-  have payload {s t : BeaconState preset fork} {range : .bellatrix ≤ fork ∧ fork < .glamsterdam}
-      (ok : processExecutionPayload config engine s body range = .ok t) :
-      t.latestBlockHeader = s.latestBlockHeader := by
-    obtain ⟨_, _, _, rfl⟩ := processExecutionPayload_ok ok
-    rfl
-  unfold processBlockExecution at computed
-  split at computed
-  · simp only [bind_ok_iff] at computed
-    obtain ⟨_, withdrawn, bid⟩ := computed
-    have first := payloadInputs_processWithdrawals withdrawn
-    have last := payloadInputs_processExecutionPayloadBid bid
-    exact last.latestBlockHeader.trans first.latestBlockHeader
-  split at computed
-  · simp only [bind_ok_iff] at computed
-    obtain ⟨_, withdrawn, executed⟩ := computed
-    have first := payloadInputs_processWithdrawals withdrawn
-    exact (payload executed).trans first.latestBlockHeader
-  · dsimp only at computed
-    split at computed
-    · exact payload computed
-    · cases computed
-      rfl
+  exact ⟨(frame_processBlockExecution computed).blockRoots,
+    latestBlockHeader_processBlockExecution computed⟩
 
 /-- A block keeps history and stores its header with an empty state root, at every fork. -/
 theorem processBlock_blockRoots_latestBlockHeader {block : BeaconBlock preset fork}
@@ -886,57 +822,15 @@ theorem processBlock_blockRoots_latestBlockHeader {block : BeaconBlock preset fo
     obtain ⟨_, _, first, operated, last⟩ := processBlock_split computed
     rw [last.blockRoots, (processOperations_blockRoots_latestBlockHeader operated).1,
       first.blockRoots]
-  refine ⟨roots, ?_⟩
-  by_cases gloas : .glamsterdam ≤ fork
-  · exact latestBlockHeader_processBlock gloas computed
-  unfold processBlock at computed
-  split at computed
-  · unfold processBlockAltair at computed
-    simp only [gloas, ↓reduceDIte, pure_bind, bind_ok_iff] at computed
-    obtain ⟨headed, headerOk, executed, executedOk, revealed, revealedOk, voted,
-      votedOk, operated, operatedOk, synced⟩ := computed
-    have executedKept : executed.latestBlockHeader = headed.latestBlockHeader := by
-      split at executedOk
-      · exact (processBlockExecution_blockRoots_latestBlockHeader executedOk).2
-      · cases executedOk
-        rfl
-    have votedKept : PayloadInputs revealed voted := by
-      split at votedOk
-      · exact payloadInputs_processEth1Data votedOk
-      · cases votedOk
-        exact PayloadInputs.refl _
-    have randao := payloadInputs_processRandao revealedOk
-    have operations := processOperations_blockRoots_latestBlockHeader operatedOk
-    have sync := payloadInputs_processSyncAggregate synced
-    obtain ⟨root, hashed, rfl⟩ := processBlockHeader_eq headerOk
-    exact ⟨root, hashed, sync.latestBlockHeader.trans (operations.2.trans
-      (votedKept.latestBlockHeader.trans (randao.latestBlockHeader.trans executedKept)))⟩
-  · simp only [bind_ok_iff] at computed
-    obtain ⟨headed, headerOk, revealed, revealedOk, voted, votedOk, operated⟩ := computed
-    have randao := payloadInputs_processRandao revealedOk
-    have voting := payloadInputs_processEth1Data votedOk
-    have operations := processOperations_blockRoots_latestBlockHeader operated
-    obtain ⟨root, hashed, rfl⟩ := processBlockHeader_eq headerOk
-    exact ⟨root, hashed,
-      operations.2.trans (voting.latestBlockHeader.trans randao.latestBlockHeader)⟩
+  obtain ⟨_, _, -, headedOk, header⟩ := processBlock_header_split computed
+  obtain ⟨root, hashed, rfl⟩ := processBlockHeader_eq headedOk
+  exact ⟨roots, root, hashed, header⟩
 
 /-- A successful block checks its parent against the header before its block step. -/
 theorem processBlock_parentRoot {block : BeaconBlock preset fork}
     (computed : processBlock config checks engine state block = .ok after) :
     Serialization.Ssz.SszType.hashTreeRoot state.latestBlockHeader = .ok block.parentRoot := by
-  unfold processBlock at computed
-  split at computed
-  · unfold processBlockAltair at computed
-    simp only [bind_ok_iff] at computed
-    obtain ⟨paid, paidOk, headed, headerOk, _⟩ := computed
-    have kept : paid.latestBlockHeader = state.latestBlockHeader := by
-      split at paidOk
-      · exact (payloadInputs_processParentExecutionPayload paidOk).latestBlockHeader
-      · cases paidOk
-        rfl
-    simpa only [kept] using (processBlockHeader_checks headerOk).2.2.2.1
-  · simp only [bind_ok_iff] at computed
-    obtain ⟨headed, headerOk, _⟩ := computed
-    exact (processBlockHeader_checks headerOk).2.2.2.1
+  obtain ⟨_, _, kept, headedOk, -⟩ := processBlock_header_split computed
+  simpa only [kept] using (processBlockHeader_checks headedOk).2.2.2.1
 
 end EthLib.Consensus
