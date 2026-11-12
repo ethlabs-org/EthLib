@@ -959,6 +959,181 @@ theorem Execution.finalized_epoch_le_justified_of_carrier
   exact UInt64.le_trans (reached.blockState_finalized_le sound stored)
     (reached.finalized_le_justified sound)
 
+/-- Importing a block includes its state's justified epoch in the store's maximum. -/
+private theorem reset_state_justified_le {store : Store preset fork}
+    (reachable : Store.Reachable config anchorState anchorBlock store)
+    (sound : Invariant anchorState) {root : Root} {state : BeaconState preset fork}
+    (stored : store.blockStates[root]? = some state) :
+    state.currentJustifiedCheckpoint.epoch ≤ store.justifiedCheckpoint.epoch := by
+  have all : ∀ (r : Root) (s : BeaconState preset fork), store.blockStates[r]? = some s →
+      s.currentJustifiedCheckpoint.epoch ≤ store.justifiedCheckpoint.epoch := by
+    clear stored state root
+    induction reachable with
+    | anchor made =>
+      obtain ⟨anchorRoot, _, _, states⟩ := getForkchoiceStore_maps made
+      obtain ⟨_, _, _, _, justified, _⟩ := getForkchoiceStore_anchor made
+      intro r s found
+      rw [states, getElem?_insert_root] at found
+      split at found
+      · cases Option.some.inj found
+        rw [justified]
+        exact UInt64.le_trans sound.settled (getPreviousEpoch_le _)
+      · simp at found
+    | @block before after checks sources signed _ added ih =>
+      have forward := Store.onBlock_epochsLe added
+      unfold Store.onBlock at added
+      simp only [bind_ok_iff] at added
+      obtain ⟨_, _, added⟩ := added
+      split at added
+      · cases added
+        exact ih
+      · unfold Store.addBlock at added
+        simp only [bind_ok_iff] at added
+        obtain ⟨state, _, head, _, voted, vote, recorded, record, boosted, boost, added⟩ := added
+        obtain ⟨_, _, bs0⟩ := (Store.recordBlockPtcVotes_onlyPtcVotes vote).frame
+        obtain ⟨_, _, bs1, _⟩ := Store.recordBlockTimeliness_frame record
+        obtain ⟨_, _, bs2, _⟩ := Store.updateProposerBoostRoot_frame boost
+        obtain ⟨later, _, bs3, _⟩ := Store.computePulledUpTip_frame added
+        intro r s found
+        rw [bs3, Store.updateCheckpoints_blockStates, bs2, bs1, bs0,
+          Std.TreeMap.getElem?_insert] at found
+        split at found
+        · cases found
+          apply UInt64.le_trans (b := (boosted.updateCheckpoints
+            state.currentJustifiedCheckpoint state.finalizedCheckpoint).justifiedCheckpoint.epoch)
+            ?_ later.1
+          unfold Store.updateCheckpoints
+          split <;> dsimp only <;> split
+          all_goals first | exact UInt64.le_refl _ | exact UInt64.not_lt.mp ‹_›
+        · exact UInt64.le_trans (ih _ _ found) forward.1
+    | tick _ handled ih =>
+      obtain ⟨_, le, _, states⟩ := Store.onTick_frame handled
+      exact fun r s found => UInt64.le_trans (ih r s (states ▸ found)) le.1
+    | attestation _ handled ih =>
+      obtain ⟨le, _, states⟩ := Store.onAttestation_frame handled
+      exact fun r s found => UInt64.le_trans (ih r s (states ▸ found)) le.1
+    | attesterSlashing _ handled ih =>
+      obtain ⟨le, _, states⟩ := Store.onAttesterSlashing_frame handled
+      exact fun r s found => UInt64.le_trans (ih r s (states ▸ found)) le.1
+    | payloadAttestation _ handled ih =>
+      obtain ⟨le, _, states⟩ := (Store.onPayloadAttestationMessage_onlyPtcVotes handled).frame
+      exact fun r s found => UInt64.le_trans (ih r s (states ▸ found)) le.1
+    | envelope _ handled ih =>
+      obtain ⟨le, _, states⟩ := Store.onExecutionPayloadEnvelope_frame handled
+      exact fun r s found => UInt64.le_trans (ih r s (states ▸ found)) le.1
+    | inclusionList _ handled ih =>
+      obtain ⟨le, _, states⟩ := Store.onInclusionList_frame handled
+      exact fun r s found => UInt64.le_trans (ih r s (states ▸ found)) le.1
+  exact all root state stored
+
+/-- Finality after the anchor requires a held block other than the anchor. -/
+private theorem reset_child_of_finalized_gt {store : Store preset fork}
+    (reached : Store.Reachable config anchorState anchorBlock store)
+    (sound : Invariant anchorState)
+    (later : getCurrentEpoch anchorState < store.finalizedCheckpoint.epoch) :
+    ∃ (root : Root) (block : BeaconBlock preset fork),
+      store.blocks[root]? = some block ∧ block ≠ anchorBlock := by
+  by_contra absent
+  have allAnchor {r : Root} {s : BeaconState preset fork}
+      (held : store.blockStates[r]? = some s) : s = anchorState := by
+    obtain ⟨b, known⟩ := reached.known_of_blockState held
+    have same : b = anchorBlock := by
+      by_contra other
+      exact absent ⟨r, b, known, other⟩
+    obtain ⟨post, found, anchored, _⟩ := reached.blockStatesFromParents known
+    rw [held, Option.some.injEq] at found
+    subst post
+    exact anchored same
+  have upper : store.finalizedCheckpoint.epoch ≤ getCurrentEpoch anchorState := by
+    rcases reached.finalized_origins _ (.inl rfl) with
+      ⟨r, _, eq⟩ | ⟨r, s, held, eq⟩ | ⟨r, s, p, held, pulled, eq⟩
+    · exact eq ▸ UInt64.le_refl _
+    · rw [eq, allAnchor held]
+      exact UInt64.le_trans (Store.finalized_le_currentJustified sound.ordered)
+        (UInt64.le_trans sound.settled (getPreviousEpoch_le _))
+    · rw [allAnchor held] at pulled
+      have inv := processJustificationAndFinalization_invariant sound.ordered sound.settled pulled
+      rw [eq]
+      exact UInt64.le_trans (Store.finalized_le_currentJustified inv.1) inv.2.2.1
+  exact UInt64.not_le.mpr later upper
+
+/-- Realized finality names a held block, including the anchor case. -/
+private theorem reset_finalized_known {anchor store : Store preset fork}
+    (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (sound : Invariant anchorState) (slots : 0 < config.SLOT_DURATION_MS)
+    (positive : 0 < preset.SLOTS_PER_EPOCH.toNat)
+    (window : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
+    (aligned : anchorBlock.slot ≤ anchorState.slot)
+    (nonzero : ∀ (r : Root) (b : BeaconBlock preset fork), store.blocks[r]? = some b →
+      b.stateRoot ≠ Vector.replicate 32 0)
+    (forward : Store.ForwardReachable config anchorState anchorBlock store) :
+    ∃ block, store.blocks[store.finalizedCheckpoint.root]? = some block := by
+  obtain ⟨_, _, age⟩ := resetAge_forward anchored sound slots forward
+  obtain ⟨r, hashed, _, _, _, final, _⟩ := getForkchoiceStore_anchor anchored
+  have reached := forward.reachable
+  rcases age.1 with same | ⟨later, _⟩
+  · obtain ⟨r', hashed', found⟩ := reached.anchor_known
+    rw [hashed, Except.ok.injEq] at hashed'
+    subst r'
+    simpa only [same, final] using Exists.intro anchorBlock found
+  have later' : getCurrentEpoch anchorState < store.finalizedCheckpoint.epoch := by
+    simpa only [final] using later
+  have child := reset_child_of_finalized_gt reached sound later'
+  have roots : ∃ start block,
+      computeStartSlotAtEpoch preset store.finalizedCheckpoint.epoch = .ok start ∧
+        store.blocks[store.finalizedCheckpoint.root]? = some block ∧ block.slot ≤ start := by
+    rcases reached.finalized_origins _ (.inl rfl) with
+      ⟨r, _, eq⟩ | ⟨r, s, held, eq⟩ | ⟨r, s, p, held, pulled, eq⟩
+    · rw [eq] at later'
+      exact (UInt64.lt_irrefl _ later').elim
+    · have bound := (reached.blockState_checkpoint_roots sound positive window aligned
+        nonzero child held).2.2
+      rw [← eq] at bound
+      exact bound.resolve_left (UInt64.not_le.mpr later')
+    · have bound := reached.pulled_finalized_root sound positive window aligned nonzero
+        child held pulled
+      rw [← eq] at bound
+      exact bound.resolve_left (UInt64.not_le.mpr later')
+  obtain ⟨_, block, _, held, _⟩ := roots
+  exact ⟨block, held⟩
+
+/-- A carrier's checkpoint read composes with an earlier finalized-prefix read. -/
+private theorem reset_finalized_read {horizon : Epoch} {last : ℕ}
+    (chain : FinalizedPrefix e horizon last) (before : fork < .glamsterdam)
+    {u w : ValidatorIndex} (sender : u ∈ J) (receiver : w ∈ J) {n k : ℕ}
+    (nBound : (e.world n).time ≤ last) (kBound : (e.world k).time ≤ last)
+    {root : Root} {checkpoint : Checkpoint}
+    (justified : ((e.world n).state u).Justified checkpoint)
+    (inHorizon : checkpoint.epoch ≤ horizon)
+    (ordered : ((e.world k).state w).finalizedCheckpoint.epoch ≤ checkpoint.epoch)
+    (read : ((e.world n).state u).getCheckpointBlock root checkpoint.epoch = .ok checkpoint.root) :
+    ((e.world n).state u).getCheckpointBlock root
+      ((e.world k).state w).finalizedCheckpoint.epoch =
+        .ok ((e.world k).state w).finalizedCheckpoint.root := by
+  have priorRead := chain w receiver u sender k n kBound nBound checkpoint justified ordered
+    inHorizon
+  have splitRead := read
+  have splitPrefix := priorRead
+  unfold Store.getCheckpointBlock at splitRead splitPrefix
+  simp only [bind_ok_iff] at splitRead splitPrefix
+  obtain ⟨boundary, boundaryOk, node, walked, result⟩ := splitRead
+  obtain ⟨prior, priorOk, _⟩ := splitPrefix
+  have below : prior ≤ boundary := by
+    apply UInt64.le_iff_toNat_le.mpr
+    rw [(computeStartSlotAtEpoch_ok_iff.mp (mapError_ok_iff.mp priorOk)).2,
+      (computeStartSlotAtEpoch_ok_iff.mp (mapError_ok_iff.mp boundaryOk)).2]
+    exact Nat.mul_le_mul_right _ (UInt64.le_iff_toNat_le.mp ordered)
+  have pending := Store.getAncestor_pending_of_lt before rfl walked
+  have rootEq : node.root = checkpoint.root := Except.ok.inj result
+  have nodeEq : node = ⟨checkpoint.root, .pending⟩ := by
+    cases node
+    simp_all
+  subst node
+  have through := Store.getAncestor_trans below walked
+  unfold Store.getCheckpointBlock at priorRead ⊢
+  simp only [priorOk, bind, Except.bind, through]
+  simpa only [priorOk, bind, Except.bind] using priorRead
+
 /-- A delay later, each honest store has justified the epoch that an honest store finalized.
 
 The first store is that of an honest validator at an event, in an epoch at most the horizon.
@@ -992,7 +1167,88 @@ theorem Execution.finalized_epoch_le_justified_epoch {Δ : ℕ} (sync : e.Synchr
       ((e.world k).state w)) :
     ((e.world n).state u).finalizedCheckpoint.epoch ≤
       ((e.world k).state w).justifiedCheckpoint.epoch := by
-  sorry
+  have forward (v : ValidatorIndex) (honest : v ∈ J) (i : ℕ) := e.forwardReachable
+    (fun x hx => (start x hx).symm ▸ Store.ForwardReachable.anchor anchored) i v honest
+  have reached := (forward u first n).reachable
+  have received := (forward w receiver k).reachable
+  have anchorLe : getCurrentEpoch anchorState ≤
+      ((e.world k).state w).justifiedCheckpoint.epoch := by
+    have lower := (e.epochsLe_of_le w (Nat.zero_le k)).1
+    obtain ⟨_, _, _, _, justified, _⟩ := getForkchoiceStore_anchor anchored
+    simpa only [Execution.world_zero, World.initial, start w receiver, justified] using lower
+  by_cases old : ((e.world n).state u).finalizedCheckpoint.epoch ≤ getCurrentEpoch anchorState
+  · exact UInt64.le_trans old anchorLe
+  by_cases covered : ((e.world n).state u).finalizedCheckpoint.epoch ≤
+      ((e.world k).state w).finalizedCheckpoint.epoch
+  · exact UInt64.le_trans covered (received.finalized_le_justified sound)
+  have ordered := UInt64.le_of_lt (UInt64.not_le.mp covered)
+  have later := UInt64.not_le.mp old
+  have child := reset_child_of_finalized_gt reached sound later
+  have aligned : anchorBlock.slot ≤ anchorState.slot := by
+    rcases frozen_or_anchor_aligned anchored reached with ⟨boundary, boundaryOk, le⟩ |
+      ⟨_, same, _⟩
+    · have eq := (computeStartSlotAtEpoch_ok_iff.mp boundaryOk).2
+      rw [getCurrentEpoch_toNat] at eq
+      have bound := Nat.div_mul_le_self anchorState.slot.toNat preset.SLOTS_PER_EPOCH.toNat
+      exact UInt64.le_trans le (UInt64.le_iff_toNat_le.mpr (by omega))
+    · obtain ⟨_, _, _, _, _, final, _⟩ := getForkchoiceStore_anchor anchored
+      rw [same, final] at old
+      exact (old (UInt64.le_refl _)).elim
+  obtain ⟨current, currentOk, _⟩ := bind_ok_iff.mp epochOk
+  have slots := Store.slotDuration_pos currentOk
+  have nBound : (e.world n).time ≤ last := by omega
+  have carrier : ∀ (root : Root) (state : BeaconState preset fork),
+      ((e.world n).state u).blockStates[root]? = some state →
+      ((e.world n).state u).finalizedCheckpoint.epoch ≤ state.currentJustifiedCheckpoint.epoch →
+      ∃ block, ((e.world k).state w).blocks[root]? = some block := by
+    intro root state stored bound
+    have recent : getCurrentEpoch anchorState < state.currentJustifiedCheckpoint.epoch :=
+      UInt64.lt_of_lt_of_le later bound
+    have justified : ((e.world n).state u).Justified state.currentJustifiedCheckpoint :=
+      .inr (.inr ⟨UInt64.lt_iff_toNat_lt.mpr (by
+        have lt := UInt64.lt_iff_toNat_lt.mp recent
+        simp only [GENESIS_EPOCH, UInt64.toNat_zero]
+        omega), .inl ⟨root, state, stored, rfl⟩⟩)
+    have upper := UInt64.le_trans (reset_state_justified_le reached sound stored)
+      (forward u first n |>.justified_epoch_le_current sound slots aligned epochOk).1
+    rcases (walk_checkpoint_ancestor reached sound preGloas positive window aligned
+      (nonzero u first n (by omega)) child stored).2.1 with early |
+      ⟨_, _, block, known, _, _, read⟩
+    · exact (UInt64.not_le.mpr recent early).elim
+    have finalRead := reset_finalized_read chain preGloas first receiver nBound bounded justified
+      (UInt64.le_trans upper inHorizon) (UInt64.le_trans ordered bound) read
+    exact ⟨block, (e.blocks_of_partiallySynchronous sync oneBlock admitted anchored start first
+      receiver (by simpa using late) bounded upToDate
+      (reset_finalized_known anchored sound slots positive window aligned
+        (nonzero w receiver k le_rfl) (forward w receiver k))
+      (fun gloas => False.elim (Nat.not_le_of_lt preGloas gloas)) known finalRead).1⟩
+  rcases reached.finalized_origins _ (.inl rfl) with
+    ⟨root, _, same⟩ | ⟨root, state, stored, same⟩ | ⟨root, state, pulled, stored, run, same⟩
+  · rw [same] at later
+    exact (UInt64.lt_irrefl _ later).elim
+  · have bound : ((e.world n).state u).finalizedCheckpoint.epoch ≤
+        state.currentJustifiedCheckpoint.epoch :=
+      same ▸ Store.finalized_le_currentJustified ((reached.ordered sound).2 stored).ordered
+    obtain ⟨block, held⟩ := carrier root state stored bound
+    rw [same]
+    exact e.finalized_epoch_le_justified_of_carrier oneBlock anchored sound start first receiver
+      nBound bounded stored held
+  · have inv := (reached.ordered sound).2 stored
+    have bound : pulled.finalizedCheckpoint.epoch ≤ state.currentJustifiedCheckpoint.epoch := by
+      rcases processJustificationAndFinalization_ok run with same | ⟨_, _, _, weighed⟩
+      · rw [same]
+        exact Store.finalized_le_currentJustified inv.ordered
+      · rcases (weighJustificationAndFinalization_checkpoints weighed).2.2.1 with eq | eq | eq
+        · exact eq ▸ Store.finalized_le_currentJustified inv.ordered
+        · exact eq ▸ inv.ordered.2
+        · exact eq ▸ UInt64.le_refl _
+    obtain ⟨block, held⟩ := carrier root state stored (same ▸ bound)
+    obtain ⟨post, postOk, _, _⟩ := received.blockStatesFromParents held
+    have eq := e.blockStates_eq anchored first receiver (start u first) (start w receiver)
+      (oneBlock u first w receiver n k nBound bounded) stored postOk
+    subst post
+    rw [same]
+    exact UInt64.le_trans bound (reset_state_justified_le received sound postOk)
 
 /-- A finalized checkpoint is safe when every current justification covers its epoch. -/
 theorem Execution.safeAt_finalized_of_epoch_bounds
