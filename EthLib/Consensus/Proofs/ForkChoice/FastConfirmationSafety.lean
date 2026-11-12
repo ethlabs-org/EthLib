@@ -3450,7 +3450,10 @@ def CallInvariant
         ((e.world k).state u).getHead config = .ok head ∧
         ((e.world k).state u).willCurrentTargetBeJustified config head.root = .ok true ∧
         ((e.world k).state u).isAncestor ⟨head.root, .pending⟩ ⟨origin, .pending⟩ = .ok true ∧
-        HonestTargetVotes e margin u k head.root) ∧
+        HonestTargetVotes e margin u k head.root ∧
+        ∃ slot begin, ((e.world k).state u).getCurrentSlot config = .ok slot ∧
+          computeTimeAtSlotMs config genesisTimeMs slot = .ok begin ∧
+          (e.world k).time = begin.toNat) ∧
       ∀ time, (e.world k).time ≤ time → time ≤ limit → SafeAt e time origin)
 
 /-- The call's committee bounds count honest targets without assuming honest equivocation. -/
@@ -4405,7 +4408,8 @@ theorem Execution.callInvariant_step {Δ : ℕ} (sync : e.Synchronous Δ)
       exact ⟨n, le_rfl, after.confirmedRoot, readRootEpoch,
         Store.isAncestor_self (Store.block_ok_iff.mp rootBlockOk),
         Or.inr ⟨head, upToDate n member, epochOk, headOk, target, headAbove,
-          targetVotes slot slotOk (currentRootInside rootSame)⟩, walkSafe⟩
+          targetVotes slot slotOk (currentRootInside rootSame), slot, begin, slotOk, beginOk,
+          atSlot⟩, walkSafe⟩
 
 /-- Theorem 1, safety: the block that the rule stores is safe from the start of the next slot.
 
