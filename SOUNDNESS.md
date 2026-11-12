@@ -1931,16 +1931,17 @@ Its hypotheses are obligations of the caller, not facts established by declaring
 | `preGloas` | The fork is before Gloas. |
 | `oneBlock` (`OneBlockPerRoot`) | Honest stores hold the same block at every shared root through `limit`, including across events. |
 | `admitted` (`BlocksAdmitted`) | A delayed block from an honest view passes the remaining handler checks when block validation succeeds at the receiver. |
-| `included` (`TargetIncluded`) | A safe target with an honest quorum has a descendant carrying its justification by the specified later epochs. |
+| `included` (`TargetIncluded`) | Take a target with a counted honest quorum, and a block with that checkpoint that is safe from the start of epoch `target + 1`. From epoch `target + 2`, each honest store holds a descendant of the block, of an epoch before `target + 2`, whose unrealized justification is of the target's epoch or later. |
 | `anchored`, `sound`, `anchorSlot`, `anchorAtBoundary`, `start`, `noVotes` | Every honest store starts from the same constructed anchor store, with no latest votes, an invariant anchor state and matching epoch-boundary slots. |
 | `_syncStart` | An anchor after epoch 0 requires execution to start no earlier than epoch `anchorEpoch + MIN_SEED_LOOKAHEAD + 1`, measured from the anchor store's genesis time. |
 | `half`, `slots`, `long`, `window` | The configured Byzantine percentage is at most 50, slot duration is positive, epochs have more than one slot, and history holds two epochs. |
+| `boost` | The configured proposer boost percentage is at most 100. With the stake cap and two slots per epoch, the boost of one slot stays within 64 bits. |
 | `lookahead` | Both seed lookaheads are at least one, and `MIN_SEED_LOOKAHEAD + 3 < EPOCHS_PER_HISTORICAL_VECTOR`. |
 | `maxAligned`, `increment`, `positive` | Maximum effective balances and the minimum activation balance align with the positive effective-balance increment, which is a multiple of 100 Gwei. |
 | `chain` (`FinalizedPrefix`), `unique` (`OneJustifiedPerEpoch`) | Through `limit` and within `horizon`, finalized checkpoints prefix later justified checkpoints and justified checkpoints of one epoch agree. |
 | `byzantine`, `enough` | In the specified counting states through epoch `horizon + 1`, Byzantine current-or-previous-epoch voters satisfy the `threshold` percentage bound, with `3 * threshold < 200`. |
 | `unslashed` | No honest validator is slashed in any counting state of an honest store through `limit`. |
-| `supply` | Active effective stake at each successful honest checkpoint-state read through `limit` is at most `stakeCapGwei`, or 10^18 Gwei. |
+| `supply` | Active effective stake at each successful honest checkpoint-state read through `limit` is at most `stakeCapGwei`, or 2·10^17 Gwei. |
 | `large` | Active stake in each specified counting state through epoch `horizon + 1` satisfies `3 * EFFECTIVE_BALANCE_INCREMENT < 2 * activeStake`. |
 | `nonzero`, `anchorParent` | Every block held by an honest store through `limit` has a nonzero state root, and no such store holds a block at the anchor's parent root. |
 | `headDrifts` (`DriftAtMost`) | The specified counting states satisfy the quorum-transport bound with margin `margin` relative to pulled-up head states over the stated two-epoch window. |
@@ -1950,7 +1951,7 @@ Its hypotheses are obligations of the caller, not facts established by declaring
 | `lastCall`, `slotOk`, `nextOk`, `followingOk`, `nonempty` | The last call and its next-slot time are well defined, with the next slot starting at or before `limit`. |
 
 `supply` is assumed, not proved from issuance, deposits or the state transition.
-Its cap is one billion ether and keeps the balance sums used by the argument within 64 bits.
+Its cap is two hundred million ether and keeps the balance sums used by the argument within 64 bits.
 `OneBlockPerRoot` is also assumed: it is collision freedom on held blocks, not a theorem about the hash function.
 The proof does not use `_syncStart`; that premise deliberately restricts the executions covered by the statement.
 Except for global synchrony, the execution hypotheses are bounded by `limit`, and voting and processing duties require no action after it.

@@ -573,7 +573,7 @@ private theorem recorded_duty_of_endpoint_checkpoint {Δ time : ℕ}
   have votedKnown : ((e.world k).state w).blocks[attestation.data.beaconBlockRoot]? =
       some headBlock := dataRoot ▸ votedKnown
   have targetRead := vote.data_target anchorStore anchorSlot anchorBoundary anchored honest
-    nonzero due dueOk inSlot
+    nonzero
   obtain ⟨targetBoundary, targetBlock, targetBoundaryOk, targetKnown, targetLe, _⟩ :=
     Store.isAncestor_of_getCheckpointBlock preGloas targetRead
   have sourceReachable := e.reachable
@@ -836,7 +836,7 @@ private theorem recorded_duty_of_supporting_vote {Δ time : ℕ}
   have votedKnown : ((e.world arrival).state w).blocks[attestation.data.beaconBlockRoot]? =
       some headBlock := dataRoot ▸ e.blocks_of_le preArrival held
   have targetRead := vote.data_target anchorStore anchorSlot anchorBoundary anchored honest
-    (nonzero v honest n (by rw [vote.atTime]; omega)) deadlineOk dueOk dueLt
+    (nonzero v honest n (by rw [vote.atTime]; omega))
   obtain ⟨targetBoundary, targetBlock, targetBoundaryOk, targetKnown, targetLe, _⟩ :=
     Store.isAncestor_of_getCheckpointBlock preGloas targetRead
   have targetAbove := (forward v honest n).reachable.anchorSlot_le_block targetKnown
@@ -2050,24 +2050,6 @@ private theorem activeTotal_transfer {source state : BeaconState preset fork} {t
       ((same v).mpr member)
     exact (Array.getElem?_eq_some_iff.mp found).1) weights
 
-/-- An all-active stake bound supplies the checked total, including slashed validators. -/
-private theorem activeTotal_of_stake_bound {state : BeaconState preset fork}
-    (within : state.RegistryWithinLimit)
-    (bounded : stake (fun v => balanceAt state v.toNat) (activeVoters state) < 2 ^ 64) :
-    ∃ total, getTotalActiveBalance state = .ok total := by
-  let amount := stake (fun v => balanceAt state v.toNat) (activeVoters state)
-  have fits : max preset.EFFECTIVE_BALANCE_INCREMENT.toNat amount < 2 ^ 64 :=
-    max_lt (UInt64.toNat_lt _) bounded
-  refine ⟨(max preset.EFFECTIVE_BALANCE_INCREMENT.toNat amount).toUInt64, ?_⟩
-  unfold getTotalActiveBalance
-  rw [getActiveValidatorIndicesChecked_of_within within]
-  apply getTotalBalance_ok_iff_stake.mpr
-  refine ⟨?_, bounded, ?_⟩
-  · intro v member
-    obtain ⟨validator, found, _⟩ := (mem_getActiveValidatorIndices within).mp member
-    exact (Array.getElem?_eq_some_iff.mp found).1
-  · exact UInt64.toNat_ofNat_of_lt' fits
-
 /-- Registry containment and an active total suffice for the non-full window's balance read. -/
 private theorem filteredTotal_exists {state : BeaconState preset fork}
     {participants : Std.TreeSet ValidatorIndex} {total : Gwei}
@@ -3019,7 +3001,7 @@ theorem Execution.honest_support_of_historical_anchor {Δ : ℕ} (sync : e.Synch
       ((e.world k).state w).Counts config state → ∀ v ∈ J, NotSlashed state v)
     (supply : ∀ w ∈ J, ∀ k (checkpoint : Checkpoint) (state : BeaconState preset fork),
       (e.world k).time ≤ time → ((e.world k).state w).checkpointState checkpoint = .ok state →
-      stake (fun v => balanceAt state v.toNat) (activeVoters state) ≤ stakeCapGwei)
+      ActiveStakeAtMost stakeCapGwei state)
     (safe : ∀ earlier, (e.world n).time ≤ earlier → earlier < time → SafeAt e earlier root)
     (rootOnHead : ((e.world n).state u).isAncestor ⟨head, .pending⟩ ⟨root, .pending⟩ = .ok true)
     {historical : Root} {callerEpoch historicalEpoch : Epoch} {epochStart : Slot}
@@ -3076,9 +3058,9 @@ theorem Execution.honest_support_of_historical_anchor {Δ : ℕ} (sync : e.Synch
       ((e.world k).state w).isAncestor
         ⟨((e.world k).state w).justifiedCheckpoint.root, .pending⟩
         ⟨root, .pending⟩ = .ok true := by
-  obtain ⟨receiverTotal, receiverTotalOk⟩ := activeTotal_of_stake_bound
+  obtain ⟨receiverTotal, receiverTotalOk⟩ := getTotalActiveBalance_exists_ok_of_activeStakeAtMost
     (state.validators.bound preGloas)
-    (Nat.lt_of_le_of_lt (supply w receiver k _ state (by omega) stateOk) stakeCapGwei_lt)
+    (supply w receiver k _ state (by omega) stateOk) stakeCapGwei_lt
   have receiverIndices : ∀ v ∈ receiverWindow, ∃ validator,
       validatorAt state v = .ok validator := by
     intro v member

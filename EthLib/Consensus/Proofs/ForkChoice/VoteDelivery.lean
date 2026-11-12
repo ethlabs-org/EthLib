@@ -248,13 +248,9 @@ theorem VoteAt.data_target {anchor : Store preset fork}
     (vote : VoteAt e v slot committeeIndex time n attestation indexed)
     (nonzero : ∀ (root : Root) (block : BeaconBlock preset fork),
       ((e.world n).state v).blocks[root]? = some block →
-        block.stateRoot ≠ Vector.replicate 32 0)
-    (deadline : IsAttestationDeadline fork config genesisTimeMs slot time) {due : UInt64}
-    (dueOk : getAttestationDueMs config fork = .ok due) (inSlot : due < config.SLOT_DURATION_MS) :
+        block.stateRoot ≠ Vector.replicate 32 0) :
     ((e.world n).state v).getCheckpointBlock attestation.data.beaconBlockRoot
       attestation.data.target.epoch = .ok attestation.data.target.root := by
-  have _ := vote.data_head anchored (UInt64.le_of_eq anchorSlot) start honest
-    deadline dueOk inSlot
   have reachable := e.reachable
     (fun u hu => (start u hu) ▸ Store.Reachable.anchor anchored) n v honest
   obtain ⟨head, block, headState, state, headOk, found, stored, advanced, made⟩ := vote.honestData

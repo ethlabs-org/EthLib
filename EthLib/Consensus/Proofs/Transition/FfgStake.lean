@@ -35,6 +35,13 @@ A position outside the registry weighs nothing. -/
 def balanceAt (state : BeaconState preset fork) (index : ℕ) : ℕ :=
   (state.validators.data[index]?.map (·.effectiveBalance.toNat)).getD 0
 
+/-- The effective balances of the validators active in the current epoch sum to at most `cap`.
+
+Slashed validators count if they are still active. -/
+def ActiveStakeAtMost (cap : Nat) (state : BeaconState preset fork) : Prop :=
+  stake (fun v => balanceAt state v.toNat)
+    (getActiveValidatorIndices state (getCurrentEpoch state)).toFinset ≤ cap
+
 /-- With aligned effective balances, each stake is a multiple of each divisor of the increment. -/
 theorem dvd_balanceAt_of_aligned {state : BeaconState preset fork} {divisor : ℕ}
     (aligned : EffectiveBalancesAligned state)
@@ -106,6 +113,29 @@ theorem getTotalBalance_ok_iff_stake {state : BeaconState preset fork}
   rw [getTotalBalance_ok_iff, sumMarked_markIndices_eq_stake]
   refine and_congr_right fun _ => and_congr_right fun lt => ?_
   rw [← UInt64.toNat_inj, toNat_max, Nat.toUInt64_eq, UInt64.toNat_ofNat', Nat.mod_eq_of_lt lt]
+
+/-- A cap below `2^64` on active stake ensures that the checked total active balance succeeds.
+
+The registry must stay within its limit. -/
+theorem getTotalActiveBalance_exists_ok_of_activeStakeAtMost
+    {state : BeaconState preset fork} {cap : Nat}
+    (within : state.RegistryWithinLimit) (bounded : ActiveStakeAtMost cap state)
+    (capFits : cap < 2 ^ 64) :
+    ∃ total, getTotalActiveBalance state = .ok total := by
+  let amount := stake (fun v => balanceAt state v.toNat)
+    (getActiveValidatorIndices state (getCurrentEpoch state)).toFinset
+  have below : amount < 2 ^ 64 := Nat.lt_of_le_of_lt bounded capFits
+  have fits : max preset.EFFECTIVE_BALANCE_INCREMENT.toNat amount < 2 ^ 64 :=
+    max_lt (UInt64.toNat_lt _) below
+  refine ⟨(max preset.EFFECTIVE_BALANCE_INCREMENT.toNat amount).toUInt64, ?_⟩
+  unfold getTotalActiveBalance
+  rw [getActiveValidatorIndicesChecked_of_within within]
+  apply getTotalBalance_ok_iff_stake.mpr
+  refine ⟨?_, below, ?_⟩
+  · intro v member
+    obtain ⟨validator, found, _⟩ := (mem_getActiveValidatorIndices within).mp member
+    exact (Array.getElem?_eq_some_iff.mp found).1
+  · exact UInt64.toNat_ofNat_of_lt' fits
 
 /-- Three times a part reaches twice a total, each raised to a floor.
 
