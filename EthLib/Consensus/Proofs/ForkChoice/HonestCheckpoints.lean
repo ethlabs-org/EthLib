@@ -2318,6 +2318,565 @@ theorem Store.counts_of_fixedChecks {store : Store preset fork}
   · exact .inl same
   · exact .inr ⟨checks, slot, childRoot, child, held, parent, before, processed⟩
 
+private def CountedVote (anchorEpoch : Epoch)
+    (votes : Set (ValidatorIndex × AttestationData)) (state : BeaconState preset fork)
+    (recent : Bool) (position : Nat) : Prop :=
+  anchorEpoch < (if recent then getCurrentEpoch state else getPreviousEpoch state) →
+    ∃ vote ∈ votes, vote.1.toNat = position ∧
+      vote.2.target.epoch = (if recent then getCurrentEpoch state else getPreviousEpoch state) ∧
+      getBlockRoot state vote.2.target.epoch = .ok vote.2.target.root ∧
+      (anchorEpoch < (if recent then state.currentJustifiedCheckpoint
+        else state.previousJustifiedCheckpoint).epoch →
+        vote.2.source = (if recent then state.currentJustifiedCheckpoint
+          else state.previousJustifiedCheckpoint))
+
+private def CountedFlags (anchorEpoch : Epoch)
+    (votes : Set (ValidatorIndex × AttestationData)) (state : BeaconState preset fork) : Prop :=
+  ∀ (altair : .altair ≤ fork) (recent : Bool) (position : Nat),
+    TargetFlagAt (recentParticipation state altair recent) position →
+      CountedVote anchorEpoch votes state recent position
+
+private theorem countedVote_of_link {anchorEpoch : Epoch}
+    {votes : Set (ValidatorIndex × AttestationData)} {state : BeaconState preset fork}
+    {recent : Bool} {position : Nat} {vote : ValidatorIndex × AttestationData}
+    (member : vote ∈ votes) (link : LinkVote state recent position vote) :
+    CountedVote anchorEpoch votes state recent position := by
+  intro _
+  exact ⟨vote, member, link.1, link.2.1, link.2.2.2, fun _ => link.2.2.1⟩
+
+private theorem countedVote_mono {anchorEpoch : Epoch}
+    {votes added : Set (ValidatorIndex × AttestationData)} {state : BeaconState preset fork}
+    {recent : Bool} {position : Nat}
+    (holds : CountedVote anchorEpoch votes state recent position) (sub : votes ⊆ added) :
+    CountedVote anchorEpoch added state recent position := by
+  intro later
+  obtain ⟨vote, member, rest⟩ := holds later
+  exact ⟨vote, sub member, rest⟩
+
+private theorem countedVote_voteFrame {anchorEpoch : Epoch}
+    {votes added : Set (ValidatorIndex × AttestationData)}
+    {state after : BeaconState preset fork} {recent : Bool} {position : Nat}
+    (holds : CountedVote anchorEpoch votes state recent position)
+    (frame : VoteFrame added state after) :
+    CountedVote anchorEpoch votes after recent position := by
+  have current : getCurrentEpoch after = getCurrentEpoch state := by
+    simp only [getCurrentEpoch, frame.slot]
+  have previous : getPreviousEpoch after = getPreviousEpoch state := by
+    simp only [getPreviousEpoch, current]
+  unfold CountedVote at holds ⊢
+  simpa only [current, previous, frame.currentJustified, frame.previousJustified,
+    getBlockRoot, getBlockRootAtSlot, frame.slot, frame.blockRoots] using holds
+
+private theorem countedFlags_voteFrame {anchorEpoch : Epoch}
+    {votes added : Set (ValidatorIndex × AttestationData)}
+    {state after : BeaconState preset fork}
+    (holds : CountedFlags anchorEpoch votes state)
+    (frame : VoteFrame added state after)
+    (sent : ∀ vote ∈ added, getBlockRoot state vote.2.target.epoch = .ok vote.2.target.root →
+      anchorEpoch < vote.2.target.epoch → vote ∈ votes) :
+    CountedFlags anchorEpoch votes after := by
+  intro altair recent position flagged
+  rcases frame.flags altair recent position flagged with old | ⟨vote, member, link⟩
+  · exact countedVote_voteFrame (holds altair recent position old) frame
+  · apply countedVote_voteFrame (frame := frame)
+    intro later
+    have voted := sent vote member link.2.2.2 (link.2.1 ▸ later)
+    exact countedVote_of_link voted link later
+
+private theorem countedFlags_advanceSlot {anchorEpoch : Epoch}
+    {votes : Set (ValidatorIndex × AttestationData)}
+    {state after : BeaconState preset fork}
+    (positive : 0 < preset.SLOTS_PER_EPOCH.toNat)
+    (window : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
+    (ordered : CheckpointsOrdered state) (settled : JustifiedSettled state)
+    (holds : CountedFlags anchorEpoch votes state)
+    (computed : advanceSlot config checks state = .ok after) :
+    CountedFlags anchorEpoch votes after := by
+  have roots : ∀ {epoch : Epoch} {root : Root}, getBlockRoot state epoch = .ok root →
+      (epoch = getCurrentEpoch state ∨ epoch = getPreviousEpoch state) →
+      getBlockRoot after epoch = .ok root :=
+    fun read near =>
+      getBlockRoot_advanceSlot computed read (slot_lt_epoch_add_historical positive window near)
+  obtain ⟨next, cached, epoched, sum, cachedOk, epochedOk, rfl⟩ := advanceSlot_ok computed
+  have cachedFrame := frame_processSlot cachedOk
+  obtain ⟨cachedPrevious, cachedCurrent⟩ := processSlot_participation cachedOk
+  have stateEpoch := getCurrentEpoch_toNat state
+  have afterEpoch := getCurrentEpoch_toNat { epoched with slot := next }
+  dsimp only at afterEpoch
+  intro altair current position flagged later
+  obtain ⟨flags, found, set⟩ := flagged
+  unfold recentParticipation at found
+  dsimp only at found
+  unfold epochIfLast at epochedOk
+  split at epochedOk
+  · rename_i boundary
+    have epochs := nextSlot_epoch_of_boundary sum boundary
+    have previousEq : getPreviousEpoch { epoched with slot := next } = getCurrentEpoch state := by
+      apply UInt64.toNat_inj.mp
+      rw [getPreviousEpoch_toNat, afterEpoch, stateEpoch, epochs]
+      rfl
+    simp only [processEpoch, altair, ↓reduceDIte] at epochedOk
+    obtain ⟨justified, rooted, justifiedOk, head, tail⟩ := processEpochAltair_split epochedOk
+    obtain ⟨-, -, -, -, -, -, -, -, -, justifiedCurrent⟩ :=
+      processJustificationAndFinalization_keeps justifiedOk
+    cases current
+    · rcases (tail.flags altair position flags).1 found with rotated | rfl
+      · rcases (head.flags altair position flags).2 rotated with old | rfl
+        · rw [justifiedCurrent, cachedCurrent] at old
+          have prior : anchorEpoch < getCurrentEpoch state := by
+            simpa only [Bool.false_eq_true, ↓reduceIte, previousEq] using later
+          obtain ⟨vote, voted, index, epoch, rootOk, source⟩ :=
+            holds altair true position ⟨flags, old, set⟩ prior
+          refine ⟨vote, voted, index, epoch.trans previousEq.symm,
+            roots rootOk (.inl epoch), ?_⟩
+          intro above
+          change anchorEpoch < epoched.previousJustifiedCheckpoint.epoch at above
+          change vote.2.source = epoched.previousJustifiedCheckpoint
+          simp only [tail.previousJustified, processParticipationFlagUpdates,
+            head.previousJustified] at above ⊢
+          by_cases early : getCurrentEpoch cached ≤ GENESIS_EPOCH + 1
+          · have same := processJustificationAndFinalization_early_eq early justifiedOk
+            rw [same, cachedFrame.previousJustified] at above
+            have earlyState : getCurrentEpoch state ≤ GENESIS_EPOCH + 1 := by
+              simpa only [getCurrentEpoch, cachedFrame.slot] using early
+            have previous := getPreviousEpoch_toNat state
+            have order := ordered.2
+            unfold JustifiedSettled at settled
+            simp only [UInt64.lt_iff_toNat_lt] at above prior
+            simp only [UInt64.le_iff_toNat_le] at earlyState settled order
+            norm_num [GENESIS_EPOCH] at earlyState
+            omega
+          · have earlyHolds : JustifiedEarly cached := fun h => (early h).elim
+            rw [earlyHolds.previousJustified_of_justification justifiedOk,
+              cachedFrame.currentJustified] at above ⊢
+            exact source above
+        · exact absurd set (by decide)
+      · exact absurd set (by decide)
+    · rcases (tail.flags altair position flags).2 found with rotated | rfl
+      · simp only [processParticipationFlagUpdates, Array.getElem?_replicate] at rotated
+        split at rotated
+        · cases rotated
+          exact absurd set (by decide)
+        · cases rotated
+      · exact absurd set (by decide)
+  · rename_i inside
+    simp only [pure, Except.pure, Except.ok.injEq] at epochedOk
+    subst epochedOk
+    have currentEq : getCurrentEpoch { cached with slot := next } = getCurrentEpoch state := by
+      apply UInt64.toNat_inj.mp
+      rw [afterEpoch, stateEpoch]
+      exact nextSlot_epoch_of_inside sum inside
+    have previousEq : getPreviousEpoch { cached with slot := next } = getPreviousEpoch state := by
+      unfold getPreviousEpoch
+      rw [currentEq]
+    cases current
+    · rw [cachedPrevious] at found
+      have prior : anchorEpoch < getPreviousEpoch state := by
+        simpa only [Bool.false_eq_true, ↓reduceIte, previousEq] using later
+      obtain ⟨vote, voted, index, epoch, rootOk, source⟩ :=
+        holds altair false position ⟨flags, found, set⟩ prior
+      refine ⟨vote, voted, index, epoch.trans previousEq.symm,
+        roots rootOk (.inr epoch), ?_⟩
+      simpa only [Bool.false_eq_true, ↓reduceIte, cachedFrame.previousJustified] using source
+    · rw [cachedCurrent] at found
+      have prior : anchorEpoch < getCurrentEpoch state := by
+        simpa only [↓reduceIte, currentEq] using later
+      obtain ⟨vote, voted, index, epoch, rootOk, source⟩ :=
+        holds altair true position ⟨flags, found, set⟩ prior
+      refine ⟨vote, voted, index, epoch.trans currentEq.symm,
+        roots rootOk (.inl epoch), ?_⟩
+      simpa only [↓reduceIte, cachedFrame.currentJustified] using source
+
+private theorem countedFlags_advanceSlots {anchorEpoch : Epoch}
+    {votes : Set (ValidatorIndex × AttestationData)}
+    (positive : 0 < preset.SLOTS_PER_EPOCH.toNat)
+    (window : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat) :
+    ∀ {count : Nat} {state after : BeaconState preset fork}, Invariant state →
+      CountedFlags anchorEpoch votes state →
+      advanceSlots config checks count state = .ok after → CountedFlags anchorEpoch votes after
+  | 0, state, after, _, holds, computed => by
+    simp only [advanceSlots, pure, Except.pure, Except.ok.injEq] at computed
+    exact computed ▸ holds
+  | count + 1, state, after, sound, holds, computed => by
+    simp only [advanceSlots, bind_ok_iff] at computed
+    obtain ⟨next, nextOk, rest⟩ := computed
+    exact countedFlags_advanceSlots positive window (advanceSlot_invariant sound nextOk).1
+      (countedFlags_advanceSlot positive window sound.ordered sound.settled holds nextOk) rest
+
+private theorem countedFlags_quorum {anchorEpoch : Epoch}
+    {votes : Set (ValidatorIndex × AttestationData)} {state : BeaconState preset fork}
+    (holds : CountedFlags anchorEpoch votes state) (altair : .altair ≤ fork)
+    (late : ¬getCurrentEpoch state ≤ GENESIS_EPOCH + 1) (recent : Bool)
+    (later : anchorEpoch < (if recent then getCurrentEpoch state else getPreviousEpoch state))
+    {indices : List ValidatorIndex}
+    (counted : getUnslashedParticipatingIndices state altair TIMELY_TARGET_FLAG_INDEX
+      (if recent then getCurrentEpoch state else getPreviousEpoch state) = .ok indices)
+    {v : ValidatorIndex} (member : v ∈ indices) :
+    v ∈ quorumVoters state ∧ ∃ data, (v, data) ∈ votes ∧
+      data.target.epoch = (if recent then getCurrentEpoch state else getPreviousEpoch state) ∧
+      getBlockRoot state data.target.epoch = .ok data.target.root ∧
+      (anchorEpoch < (if recent then state.currentJustifiedCheckpoint
+        else state.previousJustifiedCheckpoint).epoch →
+        data.source = (if recent then state.currentJustifiedCheckpoint
+          else state.previousJustifiedCheckpoint)) := by
+  have distinct : getPreviousEpoch state ≠ getCurrentEpoch state := by
+    intro same
+    have := congrArg UInt64.toNat same
+    rw [getPreviousEpoch_toNat] at this
+    exact late (UInt64.le_iff_toNat_le.mpr (by simp [GENESIS_EPOCH]; omega))
+  obtain ⟨active, ⟨validator, found, clean⟩, flags, read, set⟩ :=
+    mem_getUnslashedParticipatingIndices counted v member
+  have flag : TargetFlagAt (recentParticipation state altair recent) v.toNat := by
+    refine ⟨flags, ?_, set⟩
+    cases recent
+    · simpa [recentParticipation, distinct] using read
+    · simpa [recentParticipation] using read
+  obtain ⟨⟨index, data⟩, voted, position, epoch, root, source⟩ :=
+    holds altair recent v.toNat flag later
+  have same : index = v := UInt64.toNat_inj.mp position
+  subst index
+  exact ⟨mem_quorumVoters_of_active active found clean, data, voted, epoch, root, source⟩
+
+private def CountedPending (anchorEpoch : Epoch)
+    (origin : PendingAttestation preset → Prop) (state : BeaconState preset fork) : Prop :=
+  ∀ (before : fork < .altair) (recent : Bool),
+    anchorEpoch < (if recent then getCurrentEpoch state else getPreviousEpoch state) →
+    ∀ pending ∈ recentPending state before recent,
+      pending.data.target.epoch =
+        (if recent then getCurrentEpoch state else getPreviousEpoch state) ∧
+      computeEpochAtSlot preset pending.data.slot = pending.data.target.epoch ∧
+      (anchorEpoch < (if recent then state.currentJustifiedCheckpoint
+        else state.previousJustifiedCheckpoint).epoch →
+        pending.data.source = (if recent then state.currentJustifiedCheckpoint
+          else state.previousJustifiedCheckpoint)) ∧
+      origin pending
+
+private theorem countedPending_frame {anchorEpoch : Epoch}
+    {origin : PendingAttestation preset → Prop} {state after : BeaconState preset fork}
+    (holds : CountedPending anchorEpoch origin state) (frame : PendingFrame state after) :
+    CountedPending anchorEpoch origin after := by
+  have current : getCurrentEpoch after = getCurrentEpoch state := by
+    simp only [getCurrentEpoch, frame.slot]
+  have previous : getPreviousEpoch after = getPreviousEpoch state := by
+    simp only [getPreviousEpoch, current]
+  intro before recent later pending member
+  have lists : recentPending after before recent = recentPending state before recent := by
+    cases recent <;> simp [recentPending, frame.previousPending, frame.currentPending]
+  rw [lists] at member
+  rw [current, previous] at later ⊢
+  obtain ⟨epoch, slot, source, voted⟩ := holds before recent later pending member
+  refine ⟨epoch, slot, ?_, voted⟩
+  simpa only [frame.currentJustified, frame.previousJustified] using source
+
+private theorem countedPending_attestation {anchorEpoch : Epoch}
+    {origin : PendingAttestation preset → Prop} {state after : BeaconState preset fork}
+    {parentSlot : Slot} {attestation : Attestation preset fork}
+    (before : fork < .altair) (holds : CountedPending anchorEpoch origin state)
+    (computed : processAttestation config checks state parentSlot attestation = .ok after)
+    (sent : ∀ pending : PendingAttestation preset, pending.data = attestation.data →
+      pending.aggregationBits.bits = attestation.aggregationBits.bits → origin pending) :
+    CountedPending anchorEpoch origin after := by
+  have frame := voteFrame_processAttestation computed
+  have currentEq : getCurrentEpoch after = getCurrentEpoch state := by
+    simp only [getCurrentEpoch, frame.slot]
+  have previousEq : getPreviousEpoch after = getPreviousEpoch state := by
+    simp only [getPreviousEpoch, currentEq]
+  have kept : ∀ (current : Bool),
+      anchorEpoch < (if current then getCurrentEpoch after else getPreviousEpoch after) →
+      ∀ pending ∈ recentPending state before current,
+      pending.data.target.epoch =
+          (if current then getCurrentEpoch after else getPreviousEpoch after) ∧
+        computeEpochAtSlot preset pending.data.slot = pending.data.target.epoch ∧
+        (anchorEpoch < (if current then after.currentJustifiedCheckpoint
+          else after.previousJustifiedCheckpoint).epoch →
+          pending.data.source = (if current then after.currentJustifiedCheckpoint
+            else after.previousJustifiedCheckpoint)) ∧
+        origin pending := by
+    intro current later pending member
+    rw [currentEq, previousEq] at later ⊢
+    obtain ⟨epoch, slot, source, voted⟩ := holds before current later pending member
+    refine ⟨epoch, slot, ?_, voted⟩
+    simpa only [frame.currentJustified, frame.previousJustified] using source
+  obtain ⟨recent, slotEpoch, -, -, -, ⟨committee, committeeOk, -⟩, source⟩ :=
+    processAttestation_checks before computed
+  obtain ⟨pending, bits, dataEq, -, -, recorded, -⟩ := processAttestation_records before computed
+  have lists : ∀ current, recentPending after before current =
+      if current = (attestation.data.target.epoch == getCurrentEpoch state) then
+        (recentPending state before current).push pending
+      else recentPending state before current := by
+    intro current
+    have records := recordPendingAttestation_ok recorded
+    cases current <;> split at records <;>
+      simp_all [recentPending]
+    · rw [← records.2]
+    · rw [← records.2]
+  intro before' current later other member
+  rw [lists] at member
+  split at member
+  · rename_i chosen
+    rcases Array.mem_push.mp member with old | rfl
+    · exact kept current later other old
+    rw [dataEq]
+    have epoch : attestation.data.target.epoch =
+        (if current then getCurrentEpoch after else getPreviousEpoch after) := by
+      cases current
+      · have differ : attestation.data.target.epoch ≠ getCurrentEpoch state :=
+          ne_of_beq_false chosen.symm
+        simpa [previousEq] using recent.resolve_right differ
+      · simpa [currentEq] using beq_iff_eq.mp chosen.symm
+    refine ⟨epoch, slotEpoch.symm, ?_, sent other dataEq bits⟩
+    intro _
+    rw [frame.currentJustified, frame.previousJustified, source]
+    cases current
+    · simp [ne_of_beq_false chosen.symm]
+    · simp [beq_iff_eq.mp chosen.symm]
+  · exact kept current later other member
+
+private theorem countedPending_block {anchorEpoch : Epoch}
+    {origin : PendingAttestation preset → Prop} {state after : BeaconState preset fork}
+    {block : BeaconBlock preset fork} (before : fork < .altair)
+    (holds : CountedPending anchorEpoch origin state)
+    (computed : processBlock config checks sources.engine state block = .ok after)
+    (sent : ∀ a ∈ block.body.attestations.data, ∀ pending : PendingAttestation preset,
+      pending.data = a.data → pending.aggregationBits.bits = a.aggregationBits.bits →
+      origin pending) : CountedPending anchorEpoch origin after := by
+  obtain ⟨first, last, head, attested, tail⟩ := processBlock_pendingSplit before computed
+  apply countedPending_frame (frame := tail)
+  have each : ∀ (xs : List (Attestation preset fork)) first last,
+      CountedPending anchorEpoch origin first →
+      (∀ a ∈ xs, ∀ pending : PendingAttestation preset,
+        pending.data = a.data → pending.aggregationBits.bits = a.aggregationBits.bits →
+        origin pending) →
+      xs.foldlM (processAttestation config checks · state.latestBlockHeader.slot ·) first =
+        .ok last → CountedPending anchorEpoch origin last := by
+    intro xs
+    induction xs with
+    | nil => intro first last holds _ computed; cases computed; exact holds
+    | cons a rest ih =>
+      intro first last holds all computed
+      rw [List.foldlM_cons, bind_ok_iff] at computed
+      obtain ⟨middle, step, restOk⟩ := computed
+      exact ih middle last (countedPending_attestation before holds step
+        (all a (by simp))) (fun b member => all b (by simp [member])) restOk
+  exact each _ first last (countedPending_frame holds head)
+    (fun a mem => sent a (Array.mem_toList_iff.mp mem)) attested
+
+private theorem countedPending_advanceSlot {anchorEpoch : Epoch}
+    {origin : PendingAttestation preset → Prop} {state after : BeaconState preset fork}
+    (ordered : CheckpointsOrdered state) (settled : JustifiedSettled state)
+    (holds : CountedPending anchorEpoch origin state)
+    (computed : advanceSlot config checks state = .ok after) :
+    CountedPending anchorEpoch origin after := by
+  obtain ⟨next, cached, epoched, sum, cachedOk, epochedOk, rfl⟩ := advanceSlot_ok computed
+  have cachedFrame := frame_processSlot cachedOk
+  obtain ⟨_, _, _, _, cachedEq⟩ := processSlot_ok cachedOk
+  have cachedLists : ∀ before current, recentPending cached before current =
+      recentPending state before current := by
+    intro before current
+    cases current <;> simp [recentPending, cachedEq]
+  have stateEpoch := getCurrentEpoch_toNat state
+  have afterEpoch := getCurrentEpoch_toNat { epoched with slot := next }
+  dsimp only at afterEpoch
+  intro before current later pending member
+  unfold epochIfLast at epochedOk
+  split at epochedOk
+  · rename_i boundary
+    have epochs := nextSlot_epoch_of_boundary sum boundary
+    have previousEq : getPreviousEpoch { epoched with slot := next } = getCurrentEpoch state := by
+      apply UInt64.toNat_inj.mp
+      rw [getPreviousEpoch_toNat, afterEpoch, stateEpoch, epochs]
+      rfl
+    obtain ⟨rotated, emptied⟩ := processEpoch_pendingRotation before epochedOk
+    obtain ⟨justified, justifiedOk, frame⟩ := processEpoch_frame epochedOk
+    cases current
+    · have moved : recentPending { epoched with slot := next } before false =
+          recentPending state before true := by
+        rw [← cachedLists before true]
+        simp [recentPending, rotated]
+      rw [moved] at member
+      have prior : anchorEpoch < getCurrentEpoch state := by
+        simpa only [Bool.false_eq_true, ↓reduceIte, previousEq] using later
+      obtain ⟨epoch, slot, source, voted⟩ := holds before true prior pending member
+      refine ⟨epoch.trans previousEq.symm, slot, ?_, voted⟩
+      intro above
+      change anchorEpoch < epoched.previousJustifiedCheckpoint.epoch at above
+      change pending.data.source = epoched.previousJustifiedCheckpoint
+      rw [frame.previousJustified] at above ⊢
+      by_cases early : getCurrentEpoch cached ≤ GENESIS_EPOCH + 1
+      · have same := processJustificationAndFinalization_early_eq early justifiedOk
+        rw [same, cachedFrame.previousJustified] at above
+        have earlyState : getCurrentEpoch state ≤ GENESIS_EPOCH + 1 := by
+          simpa only [getCurrentEpoch, cachedFrame.slot] using early
+        have previous := getPreviousEpoch_toNat state
+        have order := ordered.2
+        unfold JustifiedSettled at settled
+        simp only [UInt64.lt_iff_toNat_lt] at above prior
+        simp only [UInt64.le_iff_toNat_le] at earlyState settled order
+        norm_num [GENESIS_EPOCH] at earlyState
+        omega
+      · have earlyHolds : JustifiedEarly cached := fun h => (early h).elim
+        rw [earlyHolds.previousJustified_of_justification justifiedOk,
+          cachedFrame.currentJustified] at above ⊢
+        exact source above
+    · simp [recentPending, emptied] at member
+  · rename_i inside
+    simp only [pure, Except.pure, Except.ok.injEq] at epochedOk
+    subst epochedOk
+    have currentEq : getCurrentEpoch { cached with slot := next } = getCurrentEpoch state := by
+      apply UInt64.toNat_inj.mp
+      rw [afterEpoch, stateEpoch]
+      exact nextSlot_epoch_of_inside sum inside
+    have previousEq : getPreviousEpoch { cached with slot := next } = getPreviousEpoch state := by
+      unfold getPreviousEpoch
+      rw [currentEq]
+    have lists : recentPending { cached with slot := next } before current =
+        recentPending state before current := cachedLists before current
+    rw [lists] at member
+    rw [currentEq, previousEq] at later ⊢
+    obtain ⟨epoch, slot, source, voted⟩ := holds before current later pending member
+    refine ⟨epoch, slot, ?_, voted⟩
+    simpa only [cachedFrame.currentJustified, cachedFrame.previousJustified] using source
+
+private theorem countedPending_advanceSlots {anchorEpoch : Epoch}
+    {origin : PendingAttestation preset → Prop} :
+    ∀ {count : Nat} {state after : BeaconState preset fork}, Invariant state →
+      CountedPending anchorEpoch origin state →
+      advanceSlots config checks count state = .ok after →
+        CountedPending anchorEpoch origin after
+  | 0, state, after, _, holds, computed => by
+    simp only [advanceSlots, pure, Except.pure, Except.ok.injEq] at computed
+    exact computed ▸ holds
+  | count + 1, state, after, sound, holds, computed => by
+    simp only [advanceSlots, bind_ok_iff] at computed
+    obtain ⟨next, nextOk, rest⟩ := computed
+    exact countedPending_advanceSlots (advanceSlot_invariant sound nextOk).1
+      (countedPending_advanceSlot sound.ordered sound.settled holds nextOk) rest
+
+private theorem countedFlags_held {anchor : Store preset fork}
+    (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (sound : Invariant anchorState)
+    (positive : 0 < preset.SLOTS_PER_EPOCH.toNat)
+    (window : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
+    (ring : preset.MIN_SEED_LOOKAHEAD.toNat + 2 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
+    (preGloas : fork < .glamsterdam)
+    {w : ValidatorIndex} (honest : w ∈ J) (start : e.start w = anchor) {k : ℕ}
+    (nonzero : ∀ (root : Root) (block : BeaconBlock preset fork),
+      ((e.world k).state w).blocks[root]? = some block →
+      block.stateRoot ≠ Vector.replicate 32 0)
+    {slot : Slot} (slotOk : ((e.world k).state w).getCurrentSlot config = .ok slot)
+    {root : Root} {state : BeaconState preset fork}
+    (found : ((e.world k).state w).blockStates[root]? = some state) :
+    CountedFlags (getCurrentEpoch anchorState)
+      {vote | ∃ m ∈ (e.world k).sent,
+        vote ∈ statements config checks anchorState anchorBlock m ∧ vote.2.slot < slot} state := by
+  have reachable : Store.Reachable config anchorState anchorBlock ((e.world k).state w) := by
+    have all : ∀ n, Store.Reachable config anchorState anchorBlock ((e.world n).state w) := by
+      intro n
+      induction n with
+      | zero =>
+        change Store.Reachable config anchorState anchorBlock (e.start w)
+        rw [start]
+        exact .anchor anchored
+      | succ n ih =>
+        rcases e.state_succ n w with same | ⟨_, moved⟩
+        · exact same ▸ ih
+        · exact moved.reachable ih
+    exact all k
+  obtain ⟨block, held⟩ := reachable.known_of_blockState found
+  by_cases same : block = anchorBlock
+  · obtain ⟨post, postOk, atAnchor, -⟩ := reachable.blockStatesFromParents held
+    rw [found, Option.some.injEq] at postOk
+    subst post
+    rw [atAnchor same]
+    intro _ recent _ _ later
+    have bound := getPreviousEpoch_le anchorState
+    cases recent <;> simp only [Bool.false_eq_true, ↓reduceIte] at later
+    · exact (UInt64.not_lt.mpr bound later).elim
+    · exact (UInt64.lt_irrefl _ later).elim
+  · obtain ⟨parent, signed, message, parentFound, transitioned⟩ :=
+      e.exists_transition_of_nonanchor_block anchored honest start held found same
+    obtain ⟨advanced, slotsOk, -, -, blockOk, -⟩ := stateTransition_ok transitioned
+    have parentHolds := countedFlags_held anchored sound positive window ring preGloas
+      honest start nonzero slotOk parentFound
+    have parentSound := (reachable.ordered sound).2 parentFound
+    have advancedHolds : CountedFlags (getCurrentEpoch anchorState)
+        {vote | ∃ m ∈ (e.world k).sent,
+          vote ∈ statements config checks anchorState anchorBlock m ∧ vote.2.slot < slot}
+        advanced := by
+      simp only [processSlots, bind_ok_iff, ensure_ok_iff] at slotsOk
+      obtain ⟨_, _, processed⟩ := slotsOk
+      exact countedFlags_advanceSlots positive window parentSound parentHolds processed
+    apply countedFlags_voteFrame advancedHolds (voteFrame_processBlock ring blockOk)
+    intro vote counted target later
+    apply e.exists_sent_of_blockVote anchored positive window ring preGloas honest start
+      nonzero held same parentFound (message ▸ slotsOk) (message ▸ blockOk)
+      (message ▸ counted) target later slotOk
+termination_by state.slot.toNat
+decreasing_by
+  have bounds := stateTransition_slot transitioned
+  rw [bounds.2]
+  exact UInt64.lt_iff_toNat_lt.mp bounds.1
+
+private theorem countedPending_held {anchor : Store preset fork}
+    (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (sound : Invariant anchorState)
+    {w : ValidatorIndex} (honest : w ∈ J) (start : e.start w = anchor) {k : ℕ}
+    {root : Root} {state : BeaconState preset fork}
+    (found : ((e.world k).state w).blockStates[root]? = some state) :
+    CountedPending (getCurrentEpoch anchorState)
+      (fun pending => ∃ (root : Root) (block : BeaconBlock preset fork)
+        (a : Attestation preset fork),
+        ((e.world k).state w).blocks[root]? = some block ∧ block ≠ anchorBlock ∧
+        a ∈ block.body.attestations.data ∧ pending.data = a.data ∧
+        pending.aggregationBits.bits = a.aggregationBits.bits) state := by
+  have reachable : Store.Reachable config anchorState anchorBlock ((e.world k).state w) := by
+    have all : ∀ n, Store.Reachable config anchorState anchorBlock ((e.world n).state w) := by
+      intro n
+      induction n with
+      | zero =>
+        change Store.Reachable config anchorState anchorBlock (e.start w)
+        rw [start]
+        exact .anchor anchored
+      | succ n ih =>
+        rcases e.state_succ n w with same | ⟨_, moved⟩
+        · exact same ▸ ih
+        · exact moved.reachable ih
+    exact all k
+  obtain ⟨block, held⟩ := reachable.known_of_blockState found
+  by_cases same : block = anchorBlock
+  · obtain ⟨post, postOk, atAnchor, -⟩ := reachable.blockStatesFromParents held
+    rw [found, Option.some.injEq] at postOk
+    subst post
+    rw [atAnchor same]
+    intro _ recent later
+    have bound := getPreviousEpoch_le anchorState
+    cases recent <;> simp only [Bool.false_eq_true, ↓reduceIte] at later
+    · exact (UInt64.not_lt.mpr bound later).elim
+    · exact (UInt64.lt_irrefl _ later).elim
+  · obtain ⟨parent, signed, message, parentFound, transitioned⟩ :=
+      e.exists_transition_of_nonanchor_block anchored honest start held found same
+    obtain ⟨advanced, slotsOk, -, -, blockOk, -⟩ := stateTransition_ok transitioned
+    have parentHolds := countedPending_held anchored sound honest start parentFound
+    have parentSound := (reachable.ordered sound).2 parentFound
+    have advancedHolds : CountedPending (getCurrentEpoch anchorState)
+        (fun pending => ∃ (root : Root) (block : BeaconBlock preset fork)
+          (a : Attestation preset fork),
+          ((e.world k).state w).blocks[root]? = some block ∧ block ≠ anchorBlock ∧
+          a ∈ block.body.attestations.data ∧ pending.data = a.data ∧
+          pending.aggregationBits.bits = a.aggregationBits.bits) advanced := by
+      simp only [processSlots, bind_ok_iff, ensure_ok_iff] at slotsOk
+      obtain ⟨_, _, processed⟩ := slotsOk
+      exact countedPending_advanceSlots parentSound parentHolds processed
+    intro before
+    apply countedPending_block before advancedHolds blockOk ?_ before
+    intro a member pending data bits
+    exact ⟨root, block, a, held, same, message ▸ member, data, bits⟩
+termination_by state.slot.toNat
+decreasing_by
+  have bounds := stateTransition_slot transitioned
+  rw [bounds.2]
+  exact UInt64.lt_iff_toNat_lt.mp bounds.1
+
 /-- A counted index for a source after the anchor has a sent vote for the complete link.
 
 The counting state uses the execution's checks.
