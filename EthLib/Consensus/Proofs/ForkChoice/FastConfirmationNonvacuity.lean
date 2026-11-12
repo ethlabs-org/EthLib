@@ -7,6 +7,13 @@ public import EthLib.Serialization.Proofs.Ssz.Typed.Root
 import all Batteries.Data.Except
 -- A zero-round shuffle reads the body of Array.range to enumerate the registry positions.
 import all Init.Data.Array.Basic
+-- Hash certificates unfold SSZ's mutual definitions and check each SHA-256 call in the kernel.
+import all EthLib.Serialization.Ssz.Merkle.Merkleize
+import all EthLib.Serialization.Ssz.Codec.Root
+import all EthLib.Serialization.Ssz.Codec.Serialize
+import Lean
+public meta import Lean
+meta import EthLib.Serialization.Ssz.Codec.Root
 
 /-!
 # Compatibility of the fast-confirmation premises at the anchor
@@ -626,5 +633,302 @@ theorem exists_initialization :
   have sameRoot : (anchorBlock stateRoot).stateRoot = stateRoot := rfl
   simp only [sameRoot, ne_eq, not_true_eq_false, ↓reduceIte]
   exact ⟨_, rfl⟩
+
+/-! These certificates compute candidate bytes outside the kernel, then prove them inside it.
+
+The candidate computation is not trusted: each result needs a kernel-checked equality proof.
+
+Repeated SSZ subroots reuse those proofs instead of rebuilding their reduction traces. -/
+
+set_option Elab.async false
+
+open Lean Meta Sym Tactic.Cbv Cryptography.Hash in
+local cbv_simproc cbv_eval sha256Certificate (Sha256.hash _) := fun e => do
+  let_expr Sha256.hash bytes := e | return .rfl
+  let_expr ByteArray.mk data := bytes | return .rfl
+  let_expr Array.mk _ items := data | return .rfl
+  let some elems := getListLitElems items | return .rfl
+  let some values := elems.mapM (m := Option) (fun x => (Sym.getUInt8Value? x).run) |
+    return .rfl
+  let hashed := Sha256.hash ⟨values⟩
+  let array := mkApp2 (mkConst ``Array.mk [0]) (mkConst ``UInt8) (toExpr hashed.data.toList)
+  let result ← share <| mkApp (mkConst ``ByteArray.mk) array
+  let expected ← liftM <| Meta.mkEq e result
+  -- Reflexivity checks the actual SHA-256 reduction, not the candidate generator.
+  let name ← liftM <| Meta.withFreshCache do
+    let proof ← Meta.mkEqRefl result
+    withOptions (Elab.async.set · false) <| mkAuxLemma [] expected proof
+  return .step result (mkConst name)
+
+private theorem zero_step (n : Nat) (previous next : Array UInt8)
+    (ih : zeroSubtreeM (m := Id) Cryptography.Hash.Sha256.hash n = previous)
+    (hashed : Cryptography.Hash.Sha256.hash ⟨previous ++ previous⟩ = ⟨next⟩) :
+    zeroSubtreeM (m := Id) Cryptography.Hash.Sha256.hash (n + 1) = next := by
+  change (Cryptography.Hash.Sha256.hash
+    ⟨(zeroSubtreeM (m := Id) Cryptography.Hash.Sha256.hash n).run ++
+      (zeroSubtreeM (m := Id) Cryptography.Hash.Sha256.hash n).run⟩).data = next
+  rw [ih]
+  exact congrArg ByteArray.data hashed
+
+open Lean Meta Sym Tactic.Cbv Cryptography.Hash in
+local cbv_simproc cbv_eval zeroCertificate (zeroSubtreeM Sha256.hash _) := fun e => do
+  let_expr zeroSubtreeM _ _ _ count := e | return .rfl
+  let some depth := Sym.getNatValue? count | return .rfl
+  let literal (xs : Array UInt8) :=
+    mkApp2 (mkConst ``Array.mk [0]) (mkConst ``UInt8) (toExpr xs.toList)
+  let mut bytes : Array UInt8 := Array.replicate 32 0
+  let mut value := literal bytes
+  let mut proof ← liftM <| Meta.mkEqRefl value
+  -- Each level uses the previous certificate, so padding costs one hash per level.
+  for i in [:depth] do
+    let next := (Sha256.hash ⟨bytes ++ bytes⟩).data
+    let nextValue := literal next
+    let input ← liftM <| mkAppM ``HAppend.hAppend #[value, value]
+    let hash := mkApp (mkConst ``Sha256.hash) (mkApp (mkConst ``ByteArray.mk) input)
+    let expected ← liftM <| Meta.mkEq hash (mkApp (mkConst ``ByteArray.mk) nextValue)
+    let hashRefl ← liftM <| Meta.mkEqRefl (mkApp (mkConst ``ByteArray.mk) nextValue)
+    let hashName ← liftM <|
+      withOptions (Elab.async.set · false) <| mkAuxLemma [] expected hashRefl
+    let step := mkApp5 (mkConst ``zero_step) (mkNatLit i) value nextValue proof (mkConst hashName)
+    let type ← liftM <| Meta.inferType step
+    let name ← liftM <| withOptions (Elab.async.set · false) <| mkAuxLemma [] type step
+    value := nextValue
+    proof := mkConst name
+    bytes := next
+  return .step (← share value) proof
+
+private theorem depthFor_power_two (n : Nat) : depthFor (2 ^ n) = n := by
+  apply Nat.le_antisymm (depthFor_le_of_le_two_pow (Nat.le_refl _))
+  exact (Nat.pow_le_pow_iff_right (by decide : 1 < 2)).mp (le_two_pow_depthFor _)
+
+open Lean Meta Sym Tactic.Cbv in
+local cbv_simproc cbv_eval depthCertificate (depthFor _) := fun e => do
+  let_expr depthFor count := e | return .rfl
+  let some value := Sym.getNatValue? count | return .rfl
+  let exponent := value.log2
+  if value != 2 ^ exponent then return .rfl
+  let result ← share (mkNatLit exponent)
+  return .step result (mkApp (mkConst ``depthFor_power_two) result)
+
+open Lean Meta Sym Tactic.Cbv in
+private meta def literalDesc : Nat → Expr → Option Desc
+  | 0, _ => none
+  | fuel + 1, e => do
+    let args := e.getAppArgs
+    match e.getAppFn.constName! with
+    | ``Desc.bool => return .bool
+    | ``Desc.uint => return .uint (← (Sym.getNatValue? args[0]!).run)
+    | ``Desc.byteVector => return .byteVector (← (Sym.getNatValue? args[0]!).run)
+    | ``Desc.byteList => return .byteList (← (Sym.getNatValue? args[0]!).run)
+    | ``Desc.bitVector => return .bitVector (← (Sym.getNatValue? args[0]!).run)
+    | ``Desc.bitList => return .bitList (← (Sym.getNatValue? args[0]!).run)
+    | ``Desc.vector =>
+      return .vector (← literalDesc fuel args[0]!) (← (Sym.getNatValue? args[1]!).run)
+    | ``Desc.list =>
+      return .list (← literalDesc fuel args[0]!) (← (Sym.getNatValue? args[1]!).run)
+    | ``Desc.container =>
+      return .container
+        ((← (← getListLitElems args[0]!).mapM Sym.getStringValue?).toList)
+        ((← (← getListLitElems args[1]!).mapM (literalDesc fuel)).toList)
+    | _ => none
+
+open Lean Meta Sym Tactic.Cbv in
+private meta def literalValue : Nat → Expr → Option Value
+  | 0, _ => none
+  | fuel + 1, e => do
+    let a := e.appArg!
+    match e.getAppFn.constName! with
+    | ``Value.bool => return .bool (← (Sym.getBoolValue? a).run)
+    | ``Value.uint => return .uint (← (Sym.getNatValue? a).run)
+    | ``Value.bytes => do
+      let_expr Array.mk _ items := a | none
+      return .bytes (← (← getListLitElems items).mapM (fun x => (Sym.getUInt8Value? x).run))
+    | ``Value.bits => do
+      let_expr Array.mk _ items := a | none
+      return .bits (← (← getListLitElems items).mapM (fun x => (Sym.getBoolValue? x).run))
+    | ``Value.seq => return .seq ((← (← getListLitElems a).mapM (literalValue fuel)).toList)
+    | _ => none
+
+open Lean Meta Sym Tactic.Cbv Cryptography.Hash in
+local cbv_simproc cbv_eval rootCertificate (hashTreeRootAtM _ _ _ _) := fun e => do
+  let_expr hashTreeRootAtM _ _ _ budget shape input := e | return .rfl
+  let some depth := Sym.getNatValue? budget | return .rfl
+  -- The recursive evaluation handles this node itself and certifies only smaller children.
+  if depth >= (← getOptions).get `witness.rootBudget 1000 then return .rfl
+  let some desc := literalDesc 32 shape | return .rfl
+  let some data := literalValue 32 input | return .rfl
+  let output := (hashTreeRootAtM (m := Id) (Hasher.ofHash Sha256.hash) depth desc data).run
+  let .ok bytes := output | return .rfl
+  let array := mkApp2 (mkConst ``Array.mk [0]) (mkConst ``UInt8) (toExpr bytes.toList)
+  let value := mkApp3 (mkConst ``Except.ok [0, 0]) (mkConst ``Err)
+    (mkApp (mkConst ``Array [0]) (mkConst ``UInt8)) array
+  let expected ← liftM <| Meta.mkEq e value
+  -- Only an already checked equality may bypass proof construction.
+  let env ← getEnv
+  if let some (name, _) := (auxLemmasExt.getState env).lemmas.find?
+      { type := expected, isPrivate := !env.isExporting, defeq := false } then
+    return .step (← share value) (mkConst name)
+  let reduced ← liftM <| Meta.withFreshCache <|
+    withOptions (·.set `witness.rootBudget depth) <| cbvEntry e
+  let .step _ proof .. := reduced | return .rfl
+  let name ← liftM <| Meta.withFreshCache <|
+    withOptions (Elab.async.set · false) <| mkAuxLemma [] expected proof
+  return .step (← share value) (mkConst name)
+
+attribute [local cbv_eval] hashTreeRootAtM.eq_def depthFor.eq_def SszType.hashTreeRoot_eq
+  zeroSubtree_eq layoutChunksAtM.eq_def serialize.eq_def serializeSequence.eq_def
+  serializeStruct.eq_def serializeEach.eq_def serializeEachFrom.eq_def serializeFields.eq_def
+  serializeFieldsFrom.eq_def
+
+@[local cbv_eval] private theorem hasher_certificate :
+    sha256Hasher = Hasher.ofHash Cryptography.Hash.Sha256.hash := ofHash_sha256.symm
+
+/-- The root certified below for the witness's empty phase0 body. -/
+def bodyRoot : Root := ⟨#[204, 182, 36, 96, 105, 43, 224, 236, 129, 59, 86, 190,
+  151, 246, 138, 130, 207, 87, 171, 193, 2, 226, 123, 244, 158, 191, 65, 144, 255, 34, 238, 221],
+  by decide⟩
+
+set_option maxRecDepth 100000 in
+set_option maxHeartbeats 2000000 in
+set_option cbv.maxSteps 10000000 in
+/-- The displayed body root agrees with the SSZ definition, checked by the kernel. -/
+theorem body_root : SszType.hashTreeRoot body = .ok bodyRoot := by
+  let : NeZero preset.BYTES_PER_LOGS_BLOOM.toNat := ⟨by decide⟩
+  let : NeZero preset.SYNC_COMMITTEE_SIZE.toNat := ⟨by decide⟩
+  let : NeZero preset.MAX_COMMITTEES_PER_SLOT.toNat := ⟨by decide⟩
+  let : NeZero preset.PTC_SIZE.toNat := ⟨by decide⟩
+  let : NeZero preset.INCLUSION_LIST_COMMITTEE_SIZE.toNat := ⟨by decide⟩
+  rw [SszType.hashTreeRoot_eq]
+  cbv
+
+/-- The root certified below for the five-validator state with the certified body root. -/
+def stateRoot : Root := ⟨#[0, 37, 86, 15, 195, 37, 68, 199, 169, 148, 187, 41, 148, 247, 69, 176,
+  140, 110, 165, 78, 4, 31, 167, 109, 249, 126, 200, 58, 172, 5, 30, 84], by decide⟩
+
+-- These normal forms avoid carrying the state constructor through every reduction step.
+
+-- The two reflexivity proofs below check them against the existing typed SSZ definitions.
+private def stateValue (root : Root) : Value :=
+  let zero := Value.bytes (Array.replicate 32 0)
+  let checkpoint := Value.seq [.uint 0, zero]
+  let validatorValue (balance : Nat) := Value.seq
+    [.bytes (Array.replicate 48 0), zero, .uint balance, .bool false, .uint 0, .uint 0,
+      .uint 18446744073709551615, .uint 18446744073709551615]
+  .seq [.uint 0, zero, .uint 0,
+    .seq [.bytes #[0, 0, 0, 1], .bytes #[0, 0, 0, 1], .uint 0],
+    .seq [.uint 0, .uint 0, zero, zero, .bytes root.toArray],
+    .seq (List.replicate 8 zero), .seq (List.replicate 8 zero), .seq [],
+    .seq [zero, .uint 0, zero], .seq [], .uint 0,
+    .seq ([200, 200, 200, 100, 200].map validatorValue),
+    .seq ([200, 200, 200, 100, 200].map Value.uint),
+    .seq (List.replicate 8 zero), .seq (List.replicate 8 (.uint 0)), .seq [], .seq [],
+    .bits #[false, false, false, false], checkpoint, checkpoint, checkpoint]
+
+private def stateDesc : Desc :=
+  let uint := Desc.uint 8
+  let root := Desc.byteVector 32
+  let checkpoint := Desc.container ["epoch", "root"] [uint, root]
+  let eth1 := Desc.container ["deposit_root", "deposit_count", "block_hash"] [root, uint, root]
+  let pending := Desc.container ["aggregation_bits", "data", "inclusion_delay", "proposer_index"]
+    [.bitList 2048,
+      .container ["slot", "index", "beacon_block_root", "source", "target"]
+        [uint, uint, root, checkpoint, checkpoint], uint, uint]
+  .container
+    ["genesis_time", "genesis_validators_root", "slot", "fork", "latest_block_header",
+      "block_roots", "state_roots", "historical_roots", "eth1_data", "eth1_data_votes",
+      "eth1_deposit_index", "validators", "balances", "randao_mixes", "slashings",
+      "previous_epoch_attestations", "current_epoch_attestations", "justification_bits",
+      "previous_justified_checkpoint", "current_justified_checkpoint", "finalized_checkpoint"]
+    [uint, root, uint,
+      .container ["previous_version", "current_version", "epoch"]
+        [.byteVector 4, .byteVector 4, uint],
+      .container ["slot", "proposer_index", "parent_root", "state_root", "body_root"]
+        [uint, uint, root, root, root],
+      .vector root 8, .vector root 8, .list root 16777216, eth1, .list eth1 16, uint,
+      .list (.container ["pubkey", "withdrawal_credentials", "effective_balance", "slashed",
+        "activation_eligibility_epoch", "activation_epoch", "exit_epoch", "withdrawable_epoch"]
+        [.byteVector 48, root, uint, .bool, uint, uint, uint, uint]) 8,
+      .list uint 8, .vector root 8, .vector uint 8, .list pending 512, .list pending 512,
+      .bitVector 4, checkpoint, checkpoint, checkpoint]
+
+set_option maxRecDepth 10000 in
+private theorem state_value (root : Root) : SszType.toValue (state root) = stateValue root := by
+  rfl
+
+set_option maxRecDepth 10000 in
+private theorem state_desc : SszType.desc (BeaconState preset .phase0) = stateDesc := by rfl
+
+set_option maxRecDepth 100000 in
+set_option maxHeartbeats 4000000 in
+set_option cbv.maxSteps 10000000 in
+/-- The actual initial state has the displayed root, with no hash assumption. -/
+theorem state_root : SszType.hashTreeRoot (state bodyRoot) = .ok stateRoot := by
+  let : NeZero preset.BYTES_PER_LOGS_BLOOM.toNat := ⟨by decide⟩
+  let : NeZero preset.SYNC_COMMITTEE_SIZE.toNat := ⟨by decide⟩
+  let : NeZero preset.MAX_COMMITTEES_PER_SLOT.toNat := ⟨by decide⟩
+  let : NeZero preset.SLOTS_PER_HISTORICAL_ROOT.toNat := ⟨by decide⟩
+  let : NeZero preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat := ⟨by decide⟩
+  let : NeZero preset.EPOCHS_PER_SLASHINGS_VECTOR.toNat := ⟨by decide⟩
+  let : NeZero ((preset.MIN_SEED_LOOKAHEAD.toNat + 1) * preset.SLOTS_PER_EPOCH.toNat) :=
+    ⟨by decide⟩
+  let : NeZero preset.PTC_SIZE.toNat := ⟨by decide⟩
+  let : NeZero (2 * preset.SLOTS_PER_EPOCH.toNat) := ⟨by decide⟩
+  let : NeZero ((preset.MIN_SEED_LOOKAHEAD.toNat + 2) * preset.SLOTS_PER_EPOCH.toNat) :=
+    ⟨by decide⟩
+  let : NeZero preset.INCLUSION_LIST_COMMITTEE_SIZE.toNat := ⟨by decide⟩
+  rw [SszType.hashTreeRoot_eq, state_value, state_desc]
+  cbv
+
+/-- The anchor's state root is nonzero because its second byte is 37. -/
+theorem stateRoot_ne_zero : stateRoot ≠ Vector.replicate 32 0 := by decide
+
+/-- The root of the genesis block, with the certified state root. -/
+def anchorRoot : Root := ⟨#[55, 33, 215, 25, 110, 21, 184, 68, 214, 44, 44, 231, 191, 73,
+  184, 207, 124, 7, 161, 74, 206, 139, 115, 214, 204, 138, 1, 138, 62, 9, 235, 207], by decide⟩
+
+set_option maxRecDepth 100000 in
+set_option maxHeartbeats 1000000 in
+set_option cbv.maxSteps 1000000 in
+/-- Replacing the body by its certified root leaves only the header to hash. -/
+theorem anchor_root : SszType.hashTreeRoot (anchorBlock stateRoot) = .ok anchorRoot := by
+  rw [← BeaconBlock.hashTreeRoot_header (block := anchorBlock stateRoot) body_root,
+    SszType.hashTreeRoot_eq]
+  cbv
+
+/-- The anchor root differs from its zero parent root. -/
+theorem anchorRoot_ne_zero : anchorRoot ≠ Vector.replicate 32 0 := by decide
+
+/-- The initialized store, written out so later state certificates need not recompute its hashes. -/
+def anchor : Store preset .phase0 where
+  timeMs := 0
+  genesisTimeMs := 0
+  justifiedCheckpoint := ⟨0, anchorRoot⟩
+  finalizedCheckpoint := ⟨0, anchorRoot⟩
+  unrealizedJustifiedCheckpoint := ⟨0, anchorRoot⟩
+  unrealizedFinalizedCheckpoint := ⟨0, anchorRoot⟩
+  proposerBoostRoot := Vector.replicate 32 0
+  equivocatingIndices := []
+  blocks := Std.TreeMap.empty.insert anchorRoot (anchorBlock stateRoot)
+  blockStates := Std.TreeMap.empty.insert anchorRoot (state bodyRoot)
+  blockTimeliness := ∅
+  ptcTimeliness := fun _ => Std.TreeMap.empty.insert anchorRoot true
+  checkpointStates := Std.TreeMap.empty.insert ⟨0, anchorRoot⟩ (state bodyRoot)
+  latestMessages := ∅
+  unrealizedJustifications := Std.TreeMap.empty.insert anchorRoot ⟨0, anchorRoot⟩
+  payloads := fun _ => ∅
+  payloadTimelinessVote := fun _ =>
+    Std.TreeMap.empty.insert anchorRoot (Vector.replicate _ none)
+  payloadDataAvailabilityVote := fun _ =>
+    Std.TreeMap.empty.insert anchorRoot (Vector.replicate _ none)
+  inclusionLists := fun _ => .empty
+  payloadInclusionListSatisfaction := fun _ => ∅
+
+/-- Initialization accepts the actual body, state and block roots without a hash hypothesis. -/
+theorem initialized :
+    getForkchoiceStore config (state bodyRoot) (anchorBlock stateRoot) = .ok anchor := by
+  simp only [getForkchoiceStore, state_root, anchor_root, Except.mapError, bind, Except.bind]
+  have sameRoot : (anchorBlock stateRoot).stateRoot = stateRoot := rfl
+  simp only [sameRoot, ne_eq, not_true_eq_false, ↓reduceIte]
+  rfl
 
 end EthLib.Consensus.Models.Network.FiveValidatorWitness
