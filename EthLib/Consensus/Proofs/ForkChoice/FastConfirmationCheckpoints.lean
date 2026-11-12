@@ -820,7 +820,7 @@ An honest store counts honest votes for the checkpoint of an epoch on the chain 
 
 Two thirds of the active balance of the pulled-up state of a head sign that target.
 
-Their votes are sent by the event of the counting store.
+Their votes are sent by the time of the counting store's event.
 
 The block is safe from a first time on.
 
