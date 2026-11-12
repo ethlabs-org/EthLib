@@ -11,7 +11,7 @@ import all EthLib.Serialization.Ssz.Codec.Serialize
 
 @[expose] public section
 
-namespace EthLib.Consensus.Models.Network.FiveValidatorWitness
+namespace EthLib.Consensus.Models.Network.EightValidatorWitness
 
 open Base Serialization.Ssz
 open scoped NonvacuityCertificates
@@ -40,4 +40,4 @@ theorem body_root : SszType.hashTreeRoot body = .ok bodyRoot := by
   rw [SszType.hashTreeRoot_eq]
   cbv
 
-end EthLib.Consensus.Models.Network.FiveValidatorWitness
+end EthLib.Consensus.Models.Network.EightValidatorWitness

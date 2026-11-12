@@ -2,11 +2,11 @@ module
 
 public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmationNonvacuity.DutyStates
 
-/-! The witness stores keep one child and collect three votes before time 4000. -/
+/-! The witness stores keep one child and collect six votes before time 4000. -/
 
 @[expose] public section
 
-namespace EthLib.Consensus.Models.Network.FiveValidatorWitness
+namespace EthLib.Consensus.Models.Network.EightValidatorWitness
 
 open Base Serialization.Ssz
 
@@ -18,9 +18,8 @@ These are candidate states, not yet a certified network execution. -/
 def running (time : UInt64) (count : Nat) : Store preset .phase0 :=
   { admitted with
     timeMs := time
-    latestMessages := ([1, 2, 3].take count).foldl
-      (fun messages slot => recordVote [] (LatestMessage.ofAttestation (vote slot))
-        messages (voter slot)) ∅
+    latestMessages := ([2, 3, 4, 5, 6, 7].take count).foldl
+      (fun messages v => recordVote [] (LatestMessage.ofAttestation (vote v)) messages v) ∅
     proposerBoostRoot := if time < 2000 then blockRoot else Vector.replicate 32 0 }
 
 set_option maxRecDepth 10000 in
@@ -123,7 +122,7 @@ theorem running_filtered (time : UInt64) (count : Nat) {epoch : Epoch}
 
 set_option maxRecDepth 10000 in
 /-- Each received vote adds 200 Gwei of honest support for the child. -/
-theorem running_tally (time : UInt64) (count : Nat) (bound : count ≤ 3) :
+theorem running_tally (time : UInt64) (count : Nat) (bound : count ≤ 6) :
     (running time count).justifiedTally = .ok
       ⟨if count = 0 then [] else [(⟨blockRoot, .pending⟩, 200 * count)], none⟩ := by
   have target : (running time count).checkpointState
@@ -131,18 +130,19 @@ theorem running_tally (time : UInt64) (count : Nat) (bound : count ≤ 3) :
     simp [Store.checkpointState, running, admitted, ticked, anchor, pure, Except.pure]
   simp only [Store.justifiedTally, target, bind, Except.bind, pure, Except.pure]
   have balances : unslashedActiveBalances (state bodyRoot) =
-      [(0, 200), (1, 200), (2, 200), (3, 100), (4, 200)] := rfl
+      [(0, 200), (1, 200), (2, 200), (3, 200), (4, 200), (5, 200), (6, 200), (7, 200)] := rfl
   simp only [Store.tallyVotes, balances]
-  have cases : count = 0 ∨ count = 1 ∨ count = 2 ∨ count = 3 := by omega
-  rcases cases with rfl | rfl | rfl | rfl <;>
-    simp [Store.groupVotes, running, Store.getSupportedNode, recordVote, voter,
+  have cases : count = 0 ∨ count = 1 ∨ count = 2 ∨ count = 3 ∨ count = 4 ∨ count = 5 ∨
+      count = 6 := by omega
+  rcases cases with rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
+    simp [Store.groupVotes, running, Store.getSupportedNode, recordVote,
       admitted, ticked, anchor, LatestMessage.ofAttestation, vote, voteData,
       Std.TreeMap.getElem_insert, Std.TreeMap.getD_insert,
       show ¬ Fork.glamsterdam ≤ Fork.phase0 by decide, pure, Except.pure]
 
 set_option maxRecDepth 10000 in
 /-- The child has only its attestation weight because the configured proposer score is zero. -/
-theorem running_weight (time : UInt64) (count : Nat) (bound : count ≤ 3) :
+theorem running_weight (time : UInt64) (count : Nat) (bound : count ≤ 6) :
     (running time count).getWeight config (running time count).justifiedTally
       ⟨blockRoot, .pending⟩ = .ok (200 * count).toUInt64 := by
   have blockOk : (running time count).block blockRoot = .ok signedBlock.message := by
@@ -168,13 +168,13 @@ theorem running_weight (time : UInt64) (count : Nat) (bound : count ≤ 3) :
         (running time count).justifiedCheckpoint = .ok (state bodyRoot) := by
       simp [Store.checkpointState, running, admitted, ticked, anchor, pure, Except.pure]
     simp only [Store.getProposerScore, target, bind, Except.bind]
-    have total : getTotalBalance (state bodyRoot) [0, 1, 2, 3, 4] = .ok 900 := by
+    have total : getTotalBalance (state bodyRoot) [0, 1, 2, 3, 4, 5, 6, 7] = .ok 1600 := by
       rw [getTotalBalance_ok_iff]
       simp only [List.forall_mem_cons,
         sumMarked_eq_sum, getElem?_markIndices]
       decide
     have balances : unslashedActiveBalances (state bodyRoot) =
-        [(0, 200), (1, 200), (2, 200), (3, 100), (4, 200)] := rfl
+        [(0, 200), (1, 200), (2, 200), (3, 200), (4, 200), (5, 200), (6, 200), (7, 200)] := rfl
     simp only [computeProposerScore, calculateCommitteeFraction, balances, List.map_cons,
       List.map_nil, total, Except.mapError, bind, Except.bind]
     rfl
@@ -194,7 +194,7 @@ theorem running_weight (time : UInt64) (count : Nat) (bound : count ≤ 3) :
 
 set_option maxRecDepth 10000 in
 /-- LMD-GHOST selects the child even before the first attestation is received. -/
-theorem running_head (time : UInt64) (count : Nat) (bound : count ≤ 3) {epoch : Epoch}
+theorem running_head (time : UInt64) (count : Nat) (bound : count ≤ 6) {epoch : Epoch}
     (current : (running time count).getCurrentStoreEpoch config = .ok epoch)
     (early : epoch = 0 ∨ epoch = 1) :
     (running time count).getHead config = .ok ⟨blockRoot, .pending⟩ := by
@@ -225,39 +225,39 @@ theorem running_head (time : UInt64) (count : Nat) (bound : count ≤ 3) {epoch 
 
 set_option maxRecDepth 10000 in
 /-- Each vote passes the time and ancestry checks in the slot following its duty. -/
-theorem running_vote_valid (time : UInt64) (count : Nat) {slot : Slot}
-    (within : slot = 1 ∨ slot = 2 ∨ slot = 3)
-    (clock : (running time count).getCurrentSlot config = .ok (slot + 1)) :
-    (running time count).validateOnAttestation config (vote slot) false = .ok () := by
+theorem running_vote_valid (time : UInt64) (count : Nat) {v : ValidatorIndex}
+    (within : Voter v)
+    (clock : (running time count).getCurrentSlot config = .ok (v / 2 + 1)) :
+    (running time count).validateOnAttestation config (vote v) false = .ok () := by
   have anchorOk : (running time count).block anchorRoot = .ok (anchorBlock stateRoot) := by
     simp [Store.block, running_anchor, pure, Except.pure]
   have blockOk : (running time count).block blockRoot = .ok signedBlock.message := by
     simp [Store.block, running_child, pure, Except.pure]
   have recent : (running time count).validateTargetEpochAgainstCurrentTime config
-      (vote slot) = .ok () := by
+      (vote v) = .ok () := by
     simp only [Store.validateTargetEpochAgainstCurrentTime, Store.getCurrentStoreEpoch, clock,
       bind, Except.bind, pure, Except.pure]
-    rcases within with rfl | rfl | rfl <;> rfl
+    rcases within with rfl | rfl | rfl | rfl | rfl | rfl <;> rfl
   simp only [Store.validateOnAttestation, recent, bind, Except.bind,
-    show (vote slot).data.target = ⟨0, anchorRoot⟩ from rfl,
-    show (vote slot).data.beaconBlockRoot = blockRoot from rfl,
-    show (vote slot).data.slot = slot from rfl,
+    show (vote v).data.target = ⟨0, anchorRoot⟩ from rfl,
+    show (vote v).data.beaconBlockRoot = blockRoot from rfl,
+    show (vote v).data.slot = v / 2 from rfl,
     anchorOk, blockOk, running_checkpoint, clock,
     show ¬ Fork.glamsterdam ≤ Fork.phase0 by decide, ↓reduceDIte]
-  rcases within with rfl | rfl | rfl <;> rfl
+  rcases within with rfl | rfl | rfl | rfl | rfl | rfl <;> rfl
 
 set_option maxRecDepth 10000 in
 /-- The attestation handler records the vote after checking its cached target state. -/
-theorem running_vote_accepted (time : UInt64) (count : Nat) {slot : Slot}
-    (within : slot = 1 ∨ slot = 2 ∨ slot = 3)
-    (clock : (running time count).getCurrentSlot config = .ok (slot + 1)) :
-    (running time count).onAttestation config .acceptAll (vote slot) false =
-      .ok ((running time count).updateLatestMessages [voter slot] (vote slot)) := by
+theorem running_vote_accepted (time : UInt64) (count : Nat) {v : ValidatorIndex}
+    (within : Voter v)
+    (clock : (running time count).getCurrentSlot config = .ok (v / 2 + 1)) :
+    (running time count).onAttestation config .acceptAll (vote v) false =
+      .ok ((running time count).updateLatestMessages [v] (vote v)) := by
   have cached : (running time count).storeTargetCheckpointState config .acceptAll
-      (vote slot).data.target = .ok (running time count) := by
+      (vote v).data.target = .ok (running time count) := by
     simp [Store.storeTargetCheckpointState, running, admitted, ticked, anchor,
       vote, voteData, Checkpoint.compare, pure, Except.pure]
-  have target : (running time count).checkpointState (vote slot).data.target =
+  have target : (running time count).checkpointState (vote v).data.target =
       .ok (state bodyRoot) := by
     simp [Store.checkpointState, running, admitted, ticked, anchor, vote, voteData,
       pure, Except.pure]
@@ -267,14 +267,14 @@ theorem running_vote_accepted (time : UInt64) (count : Nat) {slot : Slot}
   rfl
 
 /-- The selected child supplies the honest vote data throughout the first epoch. -/
-theorem running_vote_data (time : UInt64) (count : Nat) (bound : count ≤ 3) {slot : Slot}
-    (within : slot = 1 ∨ slot = 2 ∨ slot = 3) {epoch : Epoch}
+theorem running_vote_data (time : UInt64) (count : Nat) (bound : count ≤ 6) {v : ValidatorIndex}
+    (within : Voter v) {epoch : Epoch}
     (current : (running time count).getCurrentStoreEpoch config = .ok epoch)
     (early : epoch = 0 ∨ epoch = 1) :
-    HonestVoteData config .acceptAll (running time count) slot 0 (voteData slot) := by
-  obtain ⟨currentState, advanced, data⟩ := exists_vote_state within
+    HonestVoteData config .acceptAll (running time count) (v / 2) 0 (voteData (v / 2)) := by
+  obtain ⟨currentState, advanced, data⟩ := exists_vote_state (voter_slot within)
   refine ⟨⟨blockRoot, .pending⟩, signedBlock.message, postState, currentState,
     running_head time count bound current early, running_child time count, ?_, advanced, data⟩
   simp [Store.blockState, running, admitted, pure, Except.pure]
 
-end EthLib.Consensus.Models.Network.FiveValidatorWitness
+end EthLib.Consensus.Models.Network.EightValidatorWitness

@@ -405,7 +405,7 @@ end FinitePrefix
 
 end EthLib.Consensus.Models.Network
 
-namespace EthLib.Consensus.Models.Network.FiveValidatorWitness
+namespace EthLib.Consensus.Models.Network.EightValidatorWitness
 
 open Base Models
 
@@ -422,10 +422,15 @@ def preset : Preset := { Preset.minimal with
   MAX_EFFECTIVE_BALANCE_ELECTRA := 200
   BASE_REWARD_FACTOR := 0 }
 
-/-- One-second slots and no proposer boost isolate the weight of the votes. -/
+/-- One-second slots and no proposer boost isolate the weight of the votes.
+
+The churn limit is one validator per epoch.
+
+So the exit reserve of the anchor is one maximum balance, 200 Gwei. -/
 def config : Config := { Config.minimal with
   SLOT_DURATION_MS := 1000
   EJECTION_BALANCE := 0
+  MIN_PER_EPOCH_CHURN_LIMIT := 1
   PROPOSER_SCORE_BOOST := 0
   CONFIRMATION_BYZANTINE_THRESHOLD := 34 }
 
@@ -433,42 +438,43 @@ def config : Config := { Config.minimal with
 def validator (weight : UInt64) : Validator :=
   ⟨default, default, weight, false, 0, 0, FAR_FUTURE_EPOCH, FAR_FUTURE_EPOCH⟩
 
-/-- Genesis at time zero with four honest validators and one silent Byzantine validator.
+/-- Eight validators of the maximum effective balance, two for each slot of an epoch. -/
+def registry : Array Validator :=
+  #[validator 200, validator 200, validator 200, validator 200,
+    validator 200, validator 200, validator 200, validator 200]
 
-The balances are 200, 200, 200, 100 and 200 Gwei; validator 3 is Byzantine.
+/-- Genesis at time zero with eight honest validators of 200 Gwei each.
 
 The fork is phase0, with a small custom preset rather than mainnet parameters.
 
 The modified minimal preset has zero shuffle rounds.
 
-The modified minimal config has zero proposer boost and a committee threshold of 34 percent.
+The modified minimal config has a churn limit of one and zero proposer boost.
 
-The committee certificates use kernel `decide`, which adds no compiler-trusting axiom.
+Its committee threshold is 34 percent.
 
 The body root is a parameter so these state facts do not need to evaluate a hash.
 
 These initialization facts alone do not certify an execution of Theorem 1. -/
 def state (bodyRoot : Root) : BeaconState preset .phase0 :=
   { emptyGenesisState config (by decide) 0 default 0 bodyRoot with
-    validators := .ofData #[validator 200, validator 200, validator 200,
-      validator 100, validator 200] (by decide)
-    balances := ⟨#[200, 200, 200, 100, 200], by decide⟩ }
+    validators := .ofData registry (by decide)
+    balances := ⟨#[200, 200, 200, 200, 200, 200, 200, 200], by decide⟩ }
 
-/-- Validator 3 is the only active validator outside the honest set. -/
-def honest : Set ValidatorIndex := {0, 1, 2, 4}
+/-- Every validator of the registry is honest. -/
+def honest : Set ValidatorIndex := {v | v < 8}
 
 instance instDecidableHonest : DecidablePred (· ∈ honest) := fun v =>
-  inferInstanceAs (Decidable (v ∈ ({0, 1, 2, 4} : Set ValidatorIndex)))
+  inferInstanceAs (Decidable (v < 8))
 
 /-- The initialization satisfies the state-transition invariant for every body root. -/
 theorem invariant (root : Root) : Invariant (state root) where
   balancesMatch := by rfl
   exitsOrdered := by
     intro v member
-    change v ∈ #[validator 200, validator 200, validator 200, validator 100, validator 200]
-      at member
-    simp only [List.mem_toArray, List.mem_cons, List.not_mem_nil, or_false] at member
-    rcases member with rfl | rfl | rfl | rfl | rfl <;> decide
+    change v ∈ registry at member
+    simp only [registry, List.mem_toArray, List.mem_cons, List.not_mem_nil, or_false] at member
+    rcases member with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;> decide
   ordered := by
     change (0 : UInt64) ≤ 0 ∧ (0 : UInt64) ≤ 0
     decide
@@ -479,90 +485,69 @@ theorem invariant (root : Root) : Invariant (state root) where
     decide
   aligned _ := by
     intro v member
-    change v ∈ #[validator 200, validator 200, validator 200, validator 100, validator 200]
-      at member
-    simp only [List.mem_toArray, List.mem_cons, List.not_mem_nil, or_false] at member
-    rcases member with rfl | rfl | rfl | rfl | rfl <;> decide
+    change v ∈ registry at member
+    simp only [registry, List.mem_toArray, List.mem_cons, List.not_mem_nil, or_false] at member
+    rcases member with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;> decide
 
-/-- All five positions of the registry are active. -/
-theorem active_voters (root : Root) : activeVoters (state root) = {0, 1, 2, 3, 4} := by
+/-- All eight positions of the registry are active. -/
+theorem active_voters (root : Root) :
+    activeVoters (state root) = {0, 1, 2, 3, 4, 5, 6, 7} := by
   -- Activity depends on the registry and epoch, not the header root.
   change activeVoters (state default) = _
   decide
 
-/-- The initial stake is 900 Gwei, of which 100 Gwei is Byzantine. -/
+/-- The initial stake is 1600 Gwei, none of it Byzantine. -/
 theorem stakes (root : Root) :
-    stake (fun v => balanceAt (state root) v.toNat) (activeVoters (state root)) = 900 ∧
+    stake (fun v => balanceAt (state root) v.toNat) (activeVoters (state root)) = 1600 ∧
     stake (fun v => balanceAt (state root) v.toNat)
-      {v ∈ quorumVoters (state root) | v ∉ honest} = 100 := by
+      {v ∈ quorumVoters (state root) | v ∉ honest} = 0 := by
   -- None of the counted fields reads the header root.
-  change stake (fun v => balanceAt (state default) v.toNat) (activeVoters (state default)) = 900 ∧
+  change stake (fun v => balanceAt (state default) v.toNat) (activeVoters (state default)) = 1600 ∧
     stake (fun v => balanceAt (state default) v.toNat)
-      {v ∈ quorumVoters (state default) | v ∉ honest} = 100
+      {v ∈ quorumVoters (state default) | v ∉ honest} = 0
   decide
 
 /-- The global Byzantine stake fits a 12-percent bound, strictly below one third. -/
 theorem byzantine_stake (root : Root) :
     100 * stake (fun v => balanceAt (state root) v.toNat)
-      {v ∈ quorumVoters (state root) | v ∉ honest} ≤ 12 * 900 := by
+      {v ∈ quorumVoters (state root) | v ∉ honest} ≤ 12 * 1600 := by
   rw [(stakes root).2]
   decide
 
-/-- The mixed pair meets the separate 34-percent committee bound.
+/-- Every position below eight is one of the eight registered validators. -/
+theorem registered_cases {v : ValidatorIndex} (registered : v < 8) :
+    v = 0 ∨ v = 1 ∨ v = 2 ∨ v = 3 ∨ v = 4 ∨ v = 5 ∨ v = 6 ∨ v = 7 := by
+  have nat := UInt64.lt_iff_toNat_lt.mp registered
+  simp only [← UInt64.toNat_inj]
+  change v.toNat = 0 ∨ v.toNat = 1 ∨ v.toNat = 2 ∨ v.toNat = 3 ∨ v.toNat = 4 ∨
+    v.toNat = 5 ∨ v.toNat = 6 ∨ v.toNat = 7
+  change v.toNat < 8 at nat
+  omega
 
-This is not the global Byzantine bound: 34 percent is greater than one third. -/
-theorem mixed_committee_byzantine_stake (root : Root) :
-    ByzantineStakeAtMost (fun v => balanceAt (state root) v.toNat) {3, 4} honest 34 100 := by
-  change 0 < 100 ∧ 100 * 100 ≤ 34 * 300
-  decide
-
-/-- Any registered committee range pairing validator 3 with validator 4 meets the bound.
-
-Additional honest members can only increase the total stake. -/
-theorem committee_byzantine_of_paired (root : Root) (members : Finset ValidatorIndex)
-    (registered : members ⊆ {0, 1, 2, 3, 4}) (paired : 3 ∈ members → 4 ∈ members) :
+/-- Any set of honest validators meets the 34-percent committee bound, since none is Byzantine. -/
+theorem committee_byzantine (root : Root) (members : Finset ValidatorIndex)
+    (inside : ∀ v ∈ members, v ∈ honest) :
     ByzantineStakeAtMost (fun v => balanceAt (state root) v.toNat) members honest 34 100 := by
-  -- Only validator 3 can contribute Byzantine stake among these registered positions.
-  have subset : {v ∈ members | v ∉ honest} ⊆ ({3} : Finset ValidatorIndex) := by
-    intro v member
-    obtain ⟨inside, dishonest⟩ := Finset.mem_filter.mp member
-    have known := registered inside
-    simp only [Finset.mem_insert, Finset.mem_singleton] at known
-    rcases known with rfl | rfl | rfl | rfl | rfl <;> simp_all [honest]
   refine ⟨by decide, ?_⟩
-  by_cases present : 3 ∈ members
-  · have minimum : ({3, 4} : Finset ValidatorIndex) ⊆ members := by
-      intro v member
-      simp only [Finset.mem_insert, Finset.mem_singleton] at member
-      rcases member with rfl | rfl
-      · exact present
-      · exact paired present
-    -- The pair contributes 300 Gwei, against at most 100 Gwei of Byzantine stake.
-    have lower := stake_mono (w := fun v => balanceAt (state root) v.toNat) minimum
-    have upper := stake_mono (w := fun v => balanceAt (state root) v.toNat) subset
-    change 300 ≤ stake (fun v => balanceAt (state root) v.toNat) members at lower
-    change stake (fun v : ValidatorIndex => balanceAt (state root) v.toNat) _ ≤ 100 at upper
-    omega
-  · have empty : {v ∈ members | v ∉ honest} = ∅ := by
-      apply Finset.eq_empty_iff_forall_notMem.mpr
-      intro v member
-      have same := Finset.mem_singleton.mp (subset member)
-      subst v
-      exact present (Finset.mem_filter.mp member).1
-    rw [empty, stake_empty]
-    omega
+  have empty : {v ∈ members | v ∉ honest} = ∅ := by
+    apply Finset.eq_empty_iff_forall_notMem.mpr
+    intro v member
+    obtain ⟨held, dishonest⟩ := Finset.mem_filter.mp member
+    exact dishonest (inside v held)
+  rw [empty, stake_empty]
+  omega
 
-/-- The last committee pairs the Byzantine validator with an honest validator of twice its stake. -/
+/-- Each slot of the first epoch has the committee of the two validators numbered after it. -/
 theorem committees (root : Root) :
-    getBeaconCommittee (state root) 0 0 = .ok #[0] ∧
-    getBeaconCommittee (state root) 1 0 = .ok #[1] ∧
-    getBeaconCommittee (state root) 2 0 = .ok #[2] ∧
-    getBeaconCommittee (state root) 3 0 = .ok #[3, 4] := by
+    getBeaconCommittee (state root) 0 0 = .ok #[0, 1] ∧
+    getBeaconCommittee (state root) 1 0 = .ok #[2, 3] ∧
+    getBeaconCommittee (state root) 2 0 = .ok #[4, 5] ∧
+    getBeaconCommittee (state root) 3 0 = .ok #[6, 7] := by
   -- Zero shuffle rounds leave registry order unchanged, independently of the seed.
-  change getBeaconCommittee (state default) 0 0 = .ok #[0] ∧
-    getBeaconCommittee (state default) 1 0 = .ok #[1] ∧
-    getBeaconCommittee (state default) 2 0 = .ok #[2] ∧
-    getBeaconCommittee (state default) 3 0 = .ok #[3, 4]
+  change getBeaconCommittee (state default) 0 0 = .ok #[0, 1] ∧
+    getBeaconCommittee (state default) 1 0 = .ok #[2, 3] ∧
+    getBeaconCommittee (state default) 2 0 = .ok #[4, 5] ∧
+    getBeaconCommittee (state default) 3 0 = .ok #[6, 7]
   decide +kernel
 
 /-- The preset meets the lookahead bundle and its balance alignment requirements. -/
@@ -584,7 +569,7 @@ def anchorBlock (stateRoot : Root) : BeaconBlock preset .phase0 :=
   ⟨0, 0, default, stateRoot, body⟩
 
 set_option maxRecDepth 10000 in
-/-- The five-validator state has a matching anchor and an initialized store.
+/-- The eight-validator state has a matching anchor and an initialized store.
 
 SSZ totality supplies the roots without evaluating their bytes.
 
@@ -627,4 +612,4 @@ theorem exists_initialization :
   simp only [sameRoot, ne_eq, not_true_eq_false, ↓reduceIte]
   exact ⟨_, rfl⟩
 
-end EthLib.Consensus.Models.Network.FiveValidatorWitness
+end EthLib.Consensus.Models.Network.EightValidatorWitness

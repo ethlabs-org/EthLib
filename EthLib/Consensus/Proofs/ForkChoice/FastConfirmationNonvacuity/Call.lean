@@ -6,7 +6,7 @@ public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmationNonvacuity.Walk
 
 @[expose] public section
 
-namespace EthLib.Consensus.Models.Network.FiveValidatorWitness
+namespace EthLib.Consensus.Models.Network.EightValidatorWitness
 
 open Base
 
@@ -46,30 +46,30 @@ set_option maxRecDepth 10000 in
 theorem running_latest (fcr : FastConfirmationStore)
     (root : fcr.confirmedRoot = anchorRoot)
     (source : fcr.currentEpochObservedJustifiedCheckpoint = ⟨0, anchorRoot⟩) :
-    (running 3000 2).getLatestConfirmed config fcr blockRoot = .ok blockRoot := by
-  have slot : (running 3000 2).getCurrentSlot config = .ok 3 := by
+    (running 3000 4).getLatestConfirmed config fcr blockRoot = .ok blockRoot := by
+  have slot : (running 3000 4).getCurrentSlot config = .ok 3 := by
     change (computeSlotAtTimeMs config 0 3000).mapError ForkChoiceError.arith = .ok 3
     simp [computeSlotAtTimeMs, Uint64.subChecked, Uint64.divChecked, config,
       bind, Except.bind, Except.mapError]
-  have epoch : (running 3000 2).getCurrentStoreEpoch config = .ok 0 := by
+  have epoch : (running 3000 4).getCurrentStoreEpoch config = .ok 0 := by
     rw [Store.getCurrentStoreEpoch, slot]
     rfl
-  have parent : (running 3000 2).block anchorRoot = .ok (anchorBlock stateRoot) := by
+  have parent : (running 3000 4).block anchorRoot = .ok (anchorBlock stateRoot) := by
     simp [Store.block, running_anchor, pure, Except.pure]
-  have epochParent : (running 3000 2).getBlockEpoch anchorRoot = .ok 0 := by
+  have epochParent : (running 3000 4).getBlockEpoch anchorRoot = .ok 0 := by
     rw [Store.getBlockEpoch, parent]
     rfl
-  have ancestor : (running 3000 2).isAncestor ⟨blockRoot, .pending⟩
+  have ancestor : (running 3000 4).isAncestor ⟨blockRoot, .pending⟩
       ⟨anchorRoot, .pending⟩ = .ok true := by
     have path' := Store.getAncestor_parent_of_slot_lt (node := ⟨blockRoot, .pending⟩)
-      (running_child 3000 2) (running_anchor 3000 2)
+      (running_child 3000 4) (running_anchor 3000 4)
       (show signedBlock.message.slot > 0 by decide)
-    change (running 3000 2).getAncestor ⟨blockRoot, .pending⟩ 0 =
+    change (running 3000 4).getAncestor ⟨blockRoot, .pending⟩ 0 =
       .ok ⟨anchorRoot, .pending⟩ at path'
     simp [Store.isAncestor, parent, show (anchorBlock stateRoot).slot = 0 from rfl,
       path', bind, Except.bind, pure, Except.pure,
       show ¬ Fork.glamsterdam ≤ Fork.phase0 by decide]
-  have unrealized : (running 3000 2).unrealizedJustification blockRoot =
+  have unrealized : (running 3000 4).unrealizedJustification blockRoot =
       .ok postState.currentJustifiedCheckpoint := by
     simp [Store.unrealizedJustification, running, admitted, pure, Except.pure]
   exact latest_of_reads _ fcr root source slot epoch parent epochParent ancestor unrealized
@@ -80,18 +80,18 @@ set_option maxRecDepth 10000 in
 
 This computes a store operation; it does not yet exhibit an allowed network execution. -/
 theorem running_call :
-    (running 3000 2).onFastConfirmation config (getFastConfirmationStore anchor) =
+    (running 3000 4).onFastConfirmation config (getFastConfirmationStore anchor) =
       .ok confirmed := by
-  have slot : (running 3000 2).getCurrentSlot config = .ok 3 := by
+  have slot : (running 3000 4).getCurrentSlot config = .ok 3 := by
     change (computeSlotAtTimeMs config 0 3000).mapError ForkChoiceError.arith = .ok 3
     simp [computeSlotAtTimeMs, Uint64.subChecked, Uint64.divChecked, config,
       bind, Except.bind, Except.mapError]
-  have epoch : (running 3000 2).getCurrentStoreEpoch config = .ok 0 := by
+  have epoch : (running 3000 4).getCurrentStoreEpoch config = .ok 0 := by
     rw [Store.getCurrentStoreEpoch, slot]
     rfl
-  have head := running_head 3000 2 (by decide) epoch (.inl rfl)
+  have head := running_head 3000 4 (by decide) epoch (.inl rfl)
   let updated := { getFastConfirmationStore anchor with currentSlotHead := blockRoot }
-  have update : (running 3000 2).updateFastConfirmationVariables config
+  have update : (running 3000 4).updateFastConfirmationVariables config
       (getFastConfirmationStore anchor) blockRoot = .ok updated := by
     rw [Store.updateFastConfirmationVariables, slot]
     rfl
@@ -101,8 +101,8 @@ theorem running_call :
 
 /-- The successful call changes the confirmed root, rather than returning its selected start. -/
 theorem running_call_nontrivial :
-    ∃ after, (running 3000 2).onFastConfirmation config (getFastConfirmationStore anchor) =
+    ∃ after, (running 3000 4).onFastConfirmation config (getFastConfirmationStore anchor) =
       .ok after ∧ after.confirmedRoot ≠ anchorRoot :=
   ⟨confirmed, running_call, blockRoot_ne_anchorRoot⟩
 
-end EthLib.Consensus.Models.Network.FiveValidatorWitness
+end EthLib.Consensus.Models.Network.EightValidatorWitness

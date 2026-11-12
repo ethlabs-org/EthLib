@@ -6,13 +6,15 @@ public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmationNonvacuity.Rule
 
 The theorem is the safety part of arXiv 2405.00549v4, Section 4, as stated by EthLib.
 
-The witness uses five validators, four slots per epoch, zero shuffle rounds and zero proposer boost.
+The witness uses eight validators, four slots per epoch and zero shuffle rounds.
+
+It has zero proposer boost and a churn limit of one.
 
 The proof certifies the premises and the advancing call without using the safety theorem's proof. -/
 
 @[expose] public section
 
-namespace EthLib.Consensus.Models.Network.FiveValidatorWitness.Trace
+namespace EthLib.Consensus.Models.Network.EightValidatorWitness.Trace
 open Base Base.Uint64
 
 /-- A held parent is the slot-zero anchor of the sole slot-one child. -/
@@ -30,7 +32,7 @@ theorem local_parents (code : Local) : code.store.ParentsBelow := by
 
 The delay is one millisecond, the horizon epoch is one, and the last time is 4000 milliseconds.
 
-Validator zero calls at event 52, in slot three, with zero drift margin and weight shift.
+Validator zero calls at event 112, in slot three, with zero drift margin and weight shift.
 
 The global Byzantine percentage is twelve; the separate committee percentage is thirty-four.
 
@@ -93,23 +95,23 @@ structure TheoremOnePremises (e : Execution protocol honest) : Prop where
       ((e.world k).state v).Counts config s → epoch.toNat ≤ (getCurrentEpoch s).toNat →
       (getCurrentEpoch s).toNat ≤ epoch.toNat + 1 → DriftAtMost headState s 0
   caller : (0 : ValidatorIndex) ∈ honest
-  upToDate : ∀ n ∈ ([52] : List Nat), UpToDate config .acceptAll sources (e.world n).time
+  upToDate : ∀ n ∈ ([112] : List Nat), UpToDate config .acceptAll sources (e.world n).time
     ((e.world n).view 0) ((e.world n).state 0)
-  lower : ∀ n ∈ ([52] : List Nat), ((e.world n).state 0).ParentsBelow
-  atSlots : ∀ i n, ([52] : List Nat)[i]? = some n → ∃ slot begin,
+  lower : ∀ n ∈ ([112] : List Nat), ((e.world n).state 0).ParentsBelow
+  atSlots : ∀ i n, ([112] : List Nat)[i]? = some n → ∃ slot begin,
     ((e.world n).state 0).getCurrentSlot config = .ok slot ∧
     slot.toNat = (3 : Slot).toNat + i ∧ computeTimeAtSlotMs config 0 slot = .ok begin ∧
     (e.world n).time = begin.toNat
-  ran : (([52] : List Nat).map fun n => (e.world n).state 0).foldlM
+  ran : (([112] : List Nat).map fun n => (e.world n).state 0).foldlM
     (fun fcr store => store.onFastConfirmation config fcr) (getFastConfirmationStore anchor) =
       .ok confirmed
-  bounds : RuleBounds e 0 [52] (getFastConfirmationStore anchor) 0 0 4000
+  bounds : RuleBounds e 0 [112] (getFastConfirmationStore anchor) 0 0 4000
   inHorizon : ∀ w ∈ honest, ∀ k epoch, (e.world k).time ≤ 4000 →
     ((e.world k).state w).getCurrentStoreEpoch config = .ok epoch → epoch ≤ 1
   anchorParent : ∀ w ∈ honest, ∀ k, (e.world k).time ≤ 4000 →
     ((e.world k).state w).blocks[(anchorBlock stateRoot).parentRoot]? = none
-  lastCall : ([52] : List Nat).getLast? = some 52
-  slotOk : ((e.world 52).state 0).getCurrentSlot config = .ok 3
+  lastCall : ([112] : List Nat).getLast? = some 112
+  slotOk : ((e.world 112).state 0).getCurrentSlot config = .ok 3
   nextOk : addChecked (3 : Slot) 1 = .ok 4
   followingOk : computeTimeAtSlotMs config 0 4 = .ok 4000
   nonempty : (4000 : UInt64).toNat ≤ 4000
@@ -162,7 +164,7 @@ theorem all_premises : TheoremOnePremises execution where
     simp only [List.mem_singleton] at member
     subst n
     rw [call_store]
-    exact local_parents (.running 3000 2)
+    exact local_parents (.running 3000 4)
   atSlots := by
     intro i n index
     cases i with
@@ -187,12 +189,12 @@ theorem all_premises : TheoremOnePremises execution where
   nonempty := by decide
 
 /-- The full call selects the anchor as its start and checks the distinct child's walk. -/
-theorem call_checked : ((execution.world 52).state 0).Checked config confirmed
+theorem call_checked : ((execution.world 112).state 0).Checked config confirmed
     blockRoot anchorRoot blockRoot := by
   rw [call_store]
   obtain ⟨head, slot, start, headOk, _, _, _, _, _, _, _, selected, result⟩ :=
-    Store.onFastConfirmation_checked (local_parents (.running 3000 2)) running_call
-  change (running 3000 2).getHead config = .ok head at headOk
+    Store.onFastConfirmation_checked (local_parents (.running 3000 4)) running_call
+  change (running 3000 4).getHead config = .ok head at headOk
   rw [call_head, Except.ok.injEq] at headOk
   subst head
   have startEq : start = anchorRoot := by
@@ -206,11 +208,19 @@ theorem call_checked : ((execution.world 52).state 0).Checked config confirmed
 
 /-- An allowed execution satisfies every premise and genuinely advances through the walk.
 
-The five-validator phase0 witness uses the custom preset and configuration described above.
+The eight-validator phase0 witness uses the custom preset and configuration described above.
 
-It uses acceptance-only signature checks, fixed balances totalling 900 Gwei, and one child block.
+It uses acceptance-only signature checks, fixed balances totalling 1600 Gwei, and one child block.
 
-Two honest votes supply 400 Gwei against the child's 336-Gwei confirmation threshold.
+Four honest votes supply 800 Gwei against the child's 672-Gwei confirmation threshold.
+
+Every validator is honest and holds the maximum balance of 200 Gwei, two per slot.
+
+The churn limit is one, so the exit reserve of the anchor is 200 Gwei.
+
+Every ordered range of committees then weighs at least 400 Gwei.
+
+So `100 B + 50 reserve = 10000` is at most `34 w` on each of them.
 
 Some quantified obligations hold only vacuously on this short horizon:
 
@@ -227,13 +237,13 @@ No later-epoch target, duty or checkpoint instance is exercised beyond these tim
 The witness proves satisfiability, not that these restricted circumstances represent mainnet. -/
 theorem exists_nonvacuity : ∃ e : Execution protocol honest,
     TheoremOnePremises e ∧
-    ((e.world 52).state 0).Checked config confirmed blockRoot anchorRoot blockRoot ∧
-    (e.world 52).time = 3000 ∧
-    ((e.world 52).state 0).onFastConfirmation config (getFastConfirmationStore anchor) =
+    ((e.world 112).state 0).Checked config confirmed blockRoot anchorRoot blockRoot ∧
+    (e.world 112).time = 3000 ∧
+    ((e.world 112).state 0).onFastConfirmation config (getFastConfirmationStore anchor) =
       .ok confirmed ∧
-    ((e.world 52).state 0).findLatestConfirmedDescendant config
+    ((e.world 112).state 0).findLatestConfirmedDescendant config
       (getFastConfirmationStore anchor) blockRoot anchorRoot = .ok blockRoot ∧
     confirmed.confirmedRoot ≠ anchorRoot :=
   ⟨execution, all_premises, call_checked, confirms_by_walk⟩
 
-end EthLib.Consensus.Models.Network.FiveValidatorWitness.Trace
+end EthLib.Consensus.Models.Network.EightValidatorWitness.Trace

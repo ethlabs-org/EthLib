@@ -7,11 +7,11 @@ import Mathlib.Tactic.FinCases
 
 The schedule meets the honest-duty assumptions used by arXiv 2405.00549v4, Sections 2 and 4.
 
-The slot-zero deadline precedes the execution; the three later assigned honest duties all vote. -/
+The slot-zero deadline precedes the execution; the six later assigned honest duties all vote. -/
 
 @[expose] public section
 
-namespace EthLib.Consensus.Models.Network.FiveValidatorWitness.Trace
+namespace EthLib.Consensus.Models.Network.EightValidatorWitness.Trace
 
 open Base Base.Uint64
 
@@ -41,7 +41,7 @@ theorem delay_fits : DelayFits .phase0 config 0 1 := by
 /-- A decidable certificate of clock agreement and processing completeness. -/
 def ReadySnapshot (w : Snapshot) (v : ValidatorIndex) : Prop :=
   match w.state v with
-  | .running time count => w.time = time.toNat ∧ count ≤ 3 ∧ Ready time count (w.view v)
+  | .running time count => w.time = time.toNat ∧ count ≤ 6 ∧ Ready time count (w.view v)
   | _ => False
 
 instance (w : Snapshot) (v : ValidatorIndex) : Decidable (ReadySnapshot w v) := by
@@ -61,19 +61,19 @@ theorem ready_snapshot {w : Snapshot} {v : ValidatorIndex} (ready : ReadySnapsho
     exact running_up_to_date time ready.2.1 (ready_view ready.2.2)
 
 /-- The four snapshots after all honest stores finish processing at a slot boundary. -/
-def boundaryIndex (i : Fin 4) : Nat := 10 + 21 * i.val
+def boundaryIndex (i : Fin 4) : Nat := 18 + 47 * i.val
 
 /-- The three snapshots after all honest stores finish processing before the next boundary. -/
-def beforeIndex (i : Fin 3) : Nat := 22 + 21 * i.val
+def beforeIndex (i : Fin 3) : Nat := 40 + 47 * i.val
 
 /-- Every honest validator is ready at each boundary within the horizon. -/
-theorem boundary_certificate : ∀ i : Fin 4, ∀ v : Fin 5, v.val.toUInt64 ∈ honest →
+theorem boundary_certificate : ∀ i : Fin 4, ∀ v : Fin 8, v.val.toUInt64 ∈ honest →
     (snapshot (boundaryIndex i)).time = (i.val + 1) * 1000 ∧
       ReadySnapshot (snapshot (boundaryIndex i)) v.val.toUInt64 := by
   decide +kernel
 
 /-- Every honest validator is also ready one millisecond before each later boundary. -/
-theorem before_certificate : ∀ i : Fin 3, ∀ v : Fin 5, v.val.toUInt64 ∈ honest →
+theorem before_certificate : ∀ i : Fin 3, ∀ v : Fin 8, v.val.toUInt64 ∈ honest →
     (snapshot (beforeIndex i)).time + 1 = (i.val + 2) * 1000 ∧
       ReadySnapshot (snapshot (beforeIndex i)) v.val.toUInt64 := by
   decide +kernel
@@ -87,7 +87,7 @@ theorem prompt : Prompt execution 4000 := by
   obtain ⟨v, rfl⟩ := honest_index own
   constructor
   · let i : Fin 4 := ⟨slot.toNat - 1, by omega⟩
-    have within : boundaryIndex i ≤ 73 := by dsimp [boundaryIndex, i]; omega
+    have within : boundaryIndex i ≤ 159 := by dsimp [boundaryIndex, i]; omega
     refine ⟨boundaryIndex i, ?_, ?_⟩
     · rw [world_prefix _ within]
       have atTime := (boundary_certificate i v own).1
@@ -101,7 +101,7 @@ theorem prompt : Prompt execution 4000 := by
   · intro strict
     have low : 2 ≤ slot.toNat := by change 1000 < start.toNat at strict; omega
     let i : Fin 3 := ⟨slot.toNat - 2, by omega⟩
-    have within : beforeIndex i ≤ 73 := by dsimp [beforeIndex, i]; omega
+    have within : beforeIndex i ≤ 159 := by dsimp [beforeIndex, i]; omega
     refine ⟨beforeIndex i, ?_, ?_⟩
     · rw [world_prefix _ within]
       have atTime := (before_certificate i v own).1
@@ -128,53 +128,59 @@ theorem no_complete_epoch {last : Nat} (bounded : last ≤ 4000) :
   omega
 
 /-- Each candidate vote's target state is already cached. -/
-theorem running_target_cached (time : UInt64) (count : Nat) (slot : Slot) :
-    (running time count).storeTargetCheckpointState config .acceptAll (vote slot).data.target =
+theorem running_target_cached (time : UInt64) (count : Nat) (v : ValidatorIndex) :
+    (running time count).storeTargetCheckpointState config .acceptAll (vote v).data.target =
       .ok (running time count) := by
   simp [Store.storeTargetCheckpointState, running, admitted, ticked, anchor,
     vote, voteData, Checkpoint.compare, pure, Except.pure]
 
 /-- The cached target state is the unchanged source of balances. -/
-theorem running_target_state (time : UInt64) (count : Nat) (slot : Slot) :
-    (running time count).checkpointState (vote slot).data.target = .ok (state bodyRoot) := by
+theorem running_target_state (time : UInt64) (count : Nat) (v : ValidatorIndex) :
+    (running time count).checkpointState (vote v).data.target = .ok (state bodyRoot) := by
   simp [Store.checkpointState, running, admitted, ticked, anchor, vote, voteData,
     pure, Except.pure]
 
-/-- Each nonzero assigned slot has an actual honest send with the required vote reads. -/
-theorem vote_at {slot : Slot} (within : slot = 1 ∨ slot = 2 ∨ slot = 3) :
-    VoteAt execution (voter slot) slot 0 (slot * 1000 + 333).toNat
-      (15 + 21 * (slot.toNat - 1)) (vote slot) (indexedVote slot) := by
-  let n := 15 + 21 * (slot.toNat - 1)
-  have bound : n ≤ 73 := by rcases within with rfl | rfl | rfl <;> decide
-  have storeEq : (execution.world n).state (voter slot) =
-      running (slot * 1000 + 333) (slot.toNat - 1) := by
+set_option maxRecDepth 100000 in
+/-- Each nonzero assigned voter has an actual honest send with the required vote reads.
+
+The send is event `27 + 47 (slot - 1)` for the first validator of its slot.
+
+It is two events later for the second. -/
+theorem vote_at {v : ValidatorIndex} (within : Voter v) :
+    VoteAt execution v (v / 2) 0 (v / 2 * 1000 + 333).toNat
+      (27 + 47 * (v.toNat / 2 - 1) + 2 * (v.toNat % 2)) (vote v) (indexedVote v) := by
+  let n := 27 + 47 * (v.toNat / 2 - 1) + 2 * (v.toNat % 2)
+  have bound : n ≤ 159 := by rcases within with rfl | rfl | rfl | rfl | rfl | rfl <;> decide
+  have storeEq : (execution.world n).state v =
+      running (v / 2 * 1000 + 333) (2 * (v.toNat / 2 - 1)) := by
     rw [world_prefix _ bound]
-    rcases within with rfl | rfl | rfl <;> rfl
-  have count : slot.toNat - 1 ≤ 3 := by rcases within with rfl | rfl | rfl <;> decide
-  have clock : (running (slot * 1000 + 333) (slot.toNat - 1)).getCurrentStoreEpoch config =
-      .ok 0 := by
+    rcases within with rfl | rfl | rfl | rfl | rfl | rfl <;> rfl
+  have count : 2 * (v.toNat / 2 - 1) ≤ 6 := by
+    rcases within with rfl | rfl | rfl | rfl | rfl | rfl <;> decide
+  have clock : (running (v / 2 * 1000 + 333) (2 * (v.toNat / 2 - 1))).getCurrentStoreEpoch
+      config = .ok 0 := by
     rw [Store.getCurrentStoreEpoch, running_clock]
-    rcases within with rfl | rfl | rfl <;> rfl
-  have timeEq : (execution.world n).time = (slot * 1000 + 333).toNat := by
+    rcases within with rfl | rfl | rfl | rfl | rfl | rfl <;> rfl
+  have timeEq : (execution.world n).time = (v / 2 * 1000 + 333).toNat := by
     rw [world_prefix _ bound]
-    rcases within with rfl | rfl | rfl <;> rfl
+    rcases within with rfl | rfl | rfl | rfl | rfl | rfl <;> rfl
   refine ⟨?_, timeEq, ?_, ?_, ?_, ?_, ?_, rfl⟩
-  · rcases within with rfl | rfl | rfl <;> rfl
-  · change ((execution.world n).state (voter slot)).genesisTimeMs = 0
+  · rcases within with rfl | rfl | rfl | rfl | rfl | rfl <;> rfl
+  · change ((execution.world n).state v).genesisTimeMs = 0
     rw [storeEq]
     rfl
   · rw [← timeEq, world_prefix _ bound]
     apply ready_snapshot
-    rcases within with rfl | rfl | rfl <;> decide +kernel
-  · change HonestVoteData _ _ ((execution.world n).state (voter slot)) _ _ _
+    rcases within with rfl | rfl | rfl | rfl | rfl | rfl <;> decide +kernel
+  · change HonestVoteData _ _ ((execution.world n).state v) _ _ _
     rw [storeEq]
     exact running_vote_data _ _ count within clock (.inl rfl)
-  · change ReadsAttestation _ _ ((execution.world n).state (voter slot)) _ _
+  · change ReadsAttestation _ _ ((execution.world n).state v) _ _
     rw [storeEq]
-    exact ⟨_, _, running_target_cached _ _ slot, running_target_state _ _ slot,
+    exact ⟨_, _, running_target_cached _ _ v, running_target_state _ _ v,
       vote_indexed within, vote_signature within⟩
   · intro withTarget target cached targetOk
-    change ((execution.world n).state (voter slot)).storeTargetCheckpointState _ _ _ = _ at cached
+    change ((execution.world n).state v).storeTargetCheckpointState _ _ _ = _ at cached
     rw [storeEq, running_target_cached, Except.ok.injEq] at cached
     subst withTarget
     rw [running_target_state, Except.ok.injEq] at targetOk
@@ -192,35 +198,61 @@ theorem votes : Votes execution.startTime 4000 execution := by
   simp only [assignment] at assigned
   split at assigned
   · rename_i assignedSlot
-    obtain ⟨_, rfl⟩ := assignedSlot
+    obtain ⟨registered, rfl⟩ := assignedSlot
     cases assigned
-    simp only [honest, Set.mem_insert_iff, Set.mem_singleton_iff] at own
-    rcases own with rfl | rfl | rfl | rfl
-    · change 1000 ≤ time at started
+    rcases registered_cases registered with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl
+    · -- Validator 0 has the slot-zero duty, whose deadline precedes the start.
+      change 1000 ≤ time at started
       change start.toNat = 0 at timeNat
       change time = start.toNat + 333 at timeEq
       omega
-    · have same : time = (1 * 1000 + 333 : UInt64).toNat := by
+    · -- Validator 1 has the slot-zero duty, whose deadline precedes the start.
+      change 1000 ≤ time at started
+      change start.toNat = 0 at timeNat
+      change time = start.toNat + 333 at timeEq
+      omega
+    · have same : time = (2 / 2 * 1000 + 333 : UInt64).toNat := by
         change start.toNat = 1000 at timeNat
         change time = start.toNat + 333 at timeEq
         change time = 1333
         omega
       rw [same]
-      exact ⟨_, _, _, vote_at (.inl rfl)⟩
-    · have same : time = (2 * 1000 + 333 : UInt64).toNat := by
+      exact ⟨_, _, _, vote_at (v := 2) (by simp only [Voter]; decide)⟩
+    · have same : time = (3 / 2 * 1000 + 333 : UInt64).toNat := by
+        change start.toNat = 1000 at timeNat
+        change time = start.toNat + 333 at timeEq
+        change time = 1333
+        omega
+      rw [same]
+      exact ⟨_, _, _, vote_at (v := 3) (by simp only [Voter]; decide)⟩
+    · have same : time = (4 / 2 * 1000 + 333 : UInt64).toNat := by
         change start.toNat = 2000 at timeNat
         change time = start.toNat + 333 at timeEq
         change time = 2333
         omega
       rw [same]
-      exact ⟨_, _, _, vote_at (.inr (.inl rfl))⟩
-    · have same : time = (3 * 1000 + 333 : UInt64).toNat := by
+      exact ⟨_, _, _, vote_at (v := 4) (by simp only [Voter]; decide)⟩
+    · have same : time = (5 / 2 * 1000 + 333 : UInt64).toNat := by
+        change start.toNat = 2000 at timeNat
+        change time = start.toNat + 333 at timeEq
+        change time = 2333
+        omega
+      rw [same]
+      exact ⟨_, _, _, vote_at (v := 5) (by simp only [Voter]; decide)⟩
+    · have same : time = (6 / 2 * 1000 + 333 : UInt64).toNat := by
         change start.toNat = 3000 at timeNat
         change time = start.toNat + 333 at timeEq
         change time = 3333
         omega
       rw [same]
-      exact ⟨_, _, _, vote_at (.inr (.inr rfl))⟩
+      exact ⟨_, _, _, vote_at (v := 6) (by simp only [Voter]; decide)⟩
+    · have same : time = (7 / 2 * 1000 + 333 : UInt64).toNat := by
+        change start.toNat = 3000 at timeNat
+        change time = start.toNat + 333 at timeEq
+        change time = 3333
+        omega
+      rw [same]
+      exact ⟨_, _, _, vote_at (v := 7) (by simp only [Voter]; decide)⟩
   · contradiction
 
-end EthLib.Consensus.Models.Network.FiveValidatorWitness.Trace
+end EthLib.Consensus.Models.Network.EightValidatorWitness.Trace

@@ -10,7 +10,7 @@ All required past committee reads succeed before the time-4000 limit. -/
 
 @[expose] public section
 
-namespace EthLib.Consensus.Models.Network.FiveValidatorWitness.Trace
+namespace EthLib.Consensus.Models.Network.EightValidatorWitness.Trace
 open Base Base.Uint64
 
 /-- A head is one of the two roots held by the witness stores. -/
@@ -160,4 +160,4 @@ theorem head_follows : HeadFollowsSupport execution 4000 where
     rw [eq] at headOk blockOk parentOk tree ⊢
     exact local_follows headOk blockOk parentOk tree viable
 
-end EthLib.Consensus.Models.Network.FiveValidatorWitness.Trace
+end EthLib.Consensus.Models.Network.EightValidatorWitness.Trace

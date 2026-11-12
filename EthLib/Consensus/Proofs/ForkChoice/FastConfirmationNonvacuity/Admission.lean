@@ -6,7 +6,7 @@ public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmationNonvacuity.Firs
 
 @[expose] public section
 
-namespace EthLib.Consensus.Models.Network.FiveValidatorWitness
+namespace EthLib.Consensus.Models.Network.EightValidatorWitness
 
 open Base Serialization.Ssz
 
@@ -185,4 +185,4 @@ theorem first_admitted :
   simp only [Store.onBlockWithVotes, accepted, bind, Except.bind]
   rfl
 
-end EthLib.Consensus.Models.Network.FiveValidatorWitness
+end EthLib.Consensus.Models.Network.EightValidatorWitness

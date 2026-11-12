@@ -12,7 +12,7 @@ It stays outside the proof roots until those dependencies are proved. -/
 
 public section
 
-namespace EthLib.Consensus.Models.Network.FiveValidatorWitness.Trace
+namespace EthLib.Consensus.Models.Network.EightValidatorWitness.Trace
 
 /-- The certified call's root is safe on the witness's next-slot interval. -/
 theorem safe_confirmed_root :
@@ -25,4 +25,4 @@ theorem safe_confirmed_root :
     p.nonzero p.headDrifts p.caller p.upToDate p.lower p.atSlots p.ran p.bounds p.inHorizon
     p.anchorParent p.lastCall p.slotOk p.nextOk p.followingOk p.nonempty
 
-end EthLib.Consensus.Models.Network.FiveValidatorWitness.Trace
+end EthLib.Consensus.Models.Network.EightValidatorWitness.Trace

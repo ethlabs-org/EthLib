@@ -7,13 +7,13 @@ import all EthLib.Serialization.Ssz.Merkle.Merkleize
 import all EthLib.Serialization.Ssz.Codec.Root
 import all EthLib.Serialization.Ssz.Codec.Serialize
 
-/-! Kernel certificate for the five-validator witness's concrete genesis state.
+/-! Kernel certificate for the eight-validator witness's concrete genesis state.
 
 This state root is nonzero; a confirming execution needs further certificates. -/
 
 @[expose] public section
 
-namespace EthLib.Consensus.Models.Network.FiveValidatorWitness
+namespace EthLib.Consensus.Models.Network.EightValidatorWitness
 
 open Base Serialization.Ssz
 open scoped NonvacuityCertificates
@@ -23,9 +23,9 @@ attribute [local cbv_eval] hashTreeRootAtM.eq_def depthFor.eq_def SszType.hashTr
   serializeStruct.eq_def serializeEach.eq_def serializeEachFrom.eq_def serializeFields.eq_def
   serializeFieldsFrom.eq_def
 
-/-- The root certified below for the five-validator state with the certified body root. -/
-def stateRoot : Root := ⟨#[0, 37, 86, 15, 195, 37, 68, 199, 169, 148, 187, 41, 148, 247, 69, 176,
-  140, 110, 165, 78, 4, 31, 167, 109, 249, 126, 200, 58, 172, 5, 30, 84], by decide⟩
+/-- The root certified below for the eight-validator state with the certified body root. -/
+def stateRoot : Root := ⟨#[239, 57, 151, 33, 208, 196, 22, 50, 128, 196, 39, 85, 248, 27, 78, 50,
+  180, 87, 125, 222, 76, 194, 36, 179, 98, 175, 88, 77, 116, 45, 201, 90], by decide⟩
 
 -- These normal forms avoid carrying the state constructor through every reduction step.
 
@@ -41,8 +41,8 @@ private def stateValue (root : Root) : Value :=
     .seq [.uint 0, .uint 0, zero, zero, .bytes root.toArray],
     .seq (List.replicate 8 zero), .seq (List.replicate 8 zero), .seq [],
     .seq [zero, .uint 0, zero], .seq [], .uint 0,
-    .seq ([200, 200, 200, 100, 200].map validatorValue),
-    .seq ([200, 200, 200, 100, 200].map Value.uint),
+    .seq ((List.replicate 8 200).map validatorValue),
+    .seq ((List.replicate 8 200).map Value.uint),
     .seq (List.replicate 8 zero), .seq (List.replicate 8 (.uint 0)), .seq [], .seq [],
     .bits #[false, false, false, false], checkpoint, checkpoint, checkpoint]
 
@@ -102,7 +102,7 @@ theorem state_root : SszType.hashTreeRoot (state bodyRoot) = .ok stateRoot := by
   rw [SszType.hashTreeRoot_eq, state_value, state_desc]
   cbv
 
-/-- The anchor's state root is nonzero because its second byte is 37. -/
+/-- The anchor's state root is nonzero because its first byte is 239. -/
 theorem stateRoot_ne_zero : stateRoot ≠ Vector.replicate 32 0 := by decide
 
-end EthLib.Consensus.Models.Network.FiveValidatorWitness
+end EthLib.Consensus.Models.Network.EightValidatorWitness

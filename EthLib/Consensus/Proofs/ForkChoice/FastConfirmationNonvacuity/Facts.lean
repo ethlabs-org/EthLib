@@ -14,12 +14,13 @@ All three have the same active registry, balances, and slashing flags. -/
 
 @[expose] public section
 
-namespace EthLib.Consensus.Models.Network.FiveValidatorWitness.Trace
+namespace EthLib.Consensus.Models.Network.EightValidatorWitness.Trace
 
 open Base
 
-/-- The increasing wait tail is already past the horizon after event 73. -/
-theorem bounded_index {n : Nat} (bounded : (execution.world n).time ≤ 4000) : n ≤ 73 := by
+set_option maxRecDepth 10000 in
+/-- The increasing wait tail is already past the horizon after event 159. -/
+theorem bounded_index {n : Nat} (bounded : (execution.world n).time ≤ 4000) : n ≤ 159 := by
   exact FinitePrefix.index_le_length_of_time_le events 4000
     (World.initial 1000 (fun _ => anchor)) final_clock n bounded
 
@@ -98,7 +99,7 @@ theorem anchor_parent : ∀ w ∈ honest, ∀ k, (execution.world k).time ≤ 40
     · exact False.elim (anchorRoot_ne_zero root.symm)
     · exact False.elim (blockRoot_ne_zero root.symm)
 
-/-- Every checkpoint read has 900 Gwei of active stake, below the approved supply cap. -/
+/-- Every checkpoint read has 1600 Gwei of active stake, below the approved supply cap. -/
 theorem supply : ∀ w ∈ honest, ∀ k checkpoint s, (execution.world k).time ≤ 4000 →
     ((execution.world k).state w).checkpointState checkpoint = .ok s →
       ActiveStakeAtMost stakeCapGwei s := by
@@ -179,13 +180,13 @@ theorem counted_epoch {k : Nat} {w : ValidatorIndex} {s : BeaconState preset .ph
   rcases counts bounded counted with rfl | rfl | rfl <;> rfl
 
 /-- The checked total active balance agrees with the mathematical stake sum. -/
-theorem total_balance : getTotalActiveBalance (state bodyRoot) = .ok 900 := by
-  change getTotalBalance (state bodyRoot) [0, 1, 2, 3, 4] = .ok 900
+theorem total_balance : getTotalActiveBalance (state bodyRoot) = .ok 1600 := by
+  change getTotalBalance (state bodyRoot) [0, 1, 2, 3, 4, 5, 6, 7] = .ok 1600
   rw [getTotalBalance_ok_iff]
   simp only [List.forall_mem_cons, sumMarked_eq_sum, getElem?_markIndices]
   decide
 
-/-- The Byzantine validator holds 100 of the 900 Gwei, within twelve percent. -/
+/-- No validator is Byzantine, so the Byzantine stake is within twelve percent. -/
 theorem byzantine : ∀ w ∈ honest, ∀ k (s : BeaconState preset .phase0) total,
     (execution.world k).time ≤ 4000 → ((execution.world k).state w).Counts config s →
     (getCurrentEpoch s).toNat ≤ (1 : Epoch).toNat + 1 →
@@ -224,6 +225,26 @@ theorem large : ∀ w ∈ honest, ∀ k (s : BeaconState preset .phase0),
       2 * stake (fun v => balanceAt (state bodyRoot) v.toNat) (activeVoters (state bodyRoot))
     rw [(stakes bodyRoot).1]
     decide
+
+/-- The three counted states have the registry of the anchor, all active in epoch zero. -/
+theorem counted_active {s : BeaconState preset .phase0}
+    (shape : s = state bodyRoot ∨ s = postState ∨ s = advanced) :
+    activeVoters s = activeVoters (state bodyRoot) := by
+  rcases shape with rfl | rfl | rfl <;> first | rfl | decide
+
+/-- No validator leaves the active set between two counted states, so the exited stake is zero.
+
+The exit reserve of the source bounds it, whatever its value. -/
+theorem no_exited_stake {source later : BeaconState preset .phase0}
+    (sourceShape : source = state bodyRoot ∨ source = postState ∨ source = advanced)
+    (laterShape : later = state bodyRoot ∨ later = postState ∨ later = advanced) :
+    stake (fun v => balanceAt source v.toNat)
+        {v ∈ activeVoters source | v ∉ activeVoters later} ≤ exitReserve config source := by
+  have empty : {v ∈ activeVoters source | v ∉ activeVoters later} = ∅ := by
+    rw [counted_active sourceShape, counted_active laterShape]
+    exact Finset.filter_false_of_mem fun v held => not_not.mpr held
+  rw [empty, stake_empty]
+  exact Nat.zero_le _
 
 /-- The restricted trace and the certified distinct roots give cross-store block agreement. -/
 theorem one_block : OneBlockPerRoot execution 4000 := by
@@ -358,4 +379,4 @@ theorem blocks_admitted : BlocksAdmitted execution 0 1 4000 := by
   | ticked => exact ⟨admitted, first_admitted⟩
   | running time count => exact ⟨running time count, running_block_repeat time count⟩
 
-end EthLib.Consensus.Models.Network.FiveValidatorWitness.Trace
+end EthLib.Consensus.Models.Network.EightValidatorWitness.Trace

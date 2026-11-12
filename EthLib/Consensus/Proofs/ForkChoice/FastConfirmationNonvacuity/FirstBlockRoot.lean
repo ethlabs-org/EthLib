@@ -11,7 +11,7 @@ import all EthLib.Serialization.Ssz.Codec.Serialize
 
 @[expose] public section
 
-namespace EthLib.Consensus.Models.Network.FiveValidatorWitness
+namespace EthLib.Consensus.Models.Network.EightValidatorWitness
 
 open Base Serialization.Ssz
 open scoped NonvacuityCertificates
@@ -25,8 +25,8 @@ attribute [local cbv_eval] hashTreeRootAtM.eq_def depthFor.eq_def SszType.hashTr
 def signedBlock : SignedBeaconBlock preset .phase0 := ⟨firstBlock postRoot, default⟩
 
 /-- The first block's root, certified by `first_block_root`. -/
-def blockRoot : Root := ⟨#[187, 106, 2, 157, 164, 174, 50, 94, 64, 86, 77, 165, 90, 179, 115, 121,
-  58, 239, 85, 142, 153, 254, 40, 14, 161, 247, 10, 126, 170, 172, 58, 203], by decide⟩
+def blockRoot : Root := ⟨#[152, 242, 152, 94, 224, 81, 138, 184, 18, 73, 232, 88, 134, 158, 208,
+  192, 190, 88, 30, 77, 136, 36, 204, 184, 175, 40, 244, 166, 60, 0, 112, 26], by decide⟩
 
 set_option Elab.async false in
 set_option maxRecDepth 100000 in
@@ -76,4 +76,4 @@ theorem first_transition :
     bind, Except.bind]
   rfl
 
-end EthLib.Consensus.Models.Network.FiveValidatorWitness
+end EthLib.Consensus.Models.Network.EightValidatorWitness

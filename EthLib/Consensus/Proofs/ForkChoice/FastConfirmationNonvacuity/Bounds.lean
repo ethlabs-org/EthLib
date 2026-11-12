@@ -2,11 +2,11 @@ module
 
 public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmationNonvacuity.Basic
 
-/-! Bounds on the epochs reached before the five-validator witness's last time. -/
+/-! Bounds on the epochs reached before the eight-validator witness's last time. -/
 
 @[expose] public section
 
-namespace EthLib.Consensus.Models.Network.FiveValidatorWitness
+namespace EthLib.Consensus.Models.Network.EightValidatorWitness
 
 open Base
 
@@ -75,4 +75,4 @@ theorem target_included {checks : SignatureChecks}
   have upper := receiver_epoch_le_one e genesis receiver kBound updated currentOk
   omega
 
-end EthLib.Consensus.Models.Network.FiveValidatorWitness
+end EthLib.Consensus.Models.Network.EightValidatorWitness

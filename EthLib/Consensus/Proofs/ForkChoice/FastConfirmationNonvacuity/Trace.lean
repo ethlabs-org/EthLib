@@ -10,13 +10,13 @@ Small message and store codes let the kernel check the finite network schedule w
 
 Their interpretation uses the certified handlers and the unchanged honest-validator protocol.
 
-After 73 events, all messages have been delivered and an infinite tail advances only time.
+After 159 events, all messages have been delivered and an infinite tail advances only time.
 
 The `Joint` module certifies every premise of Theorem 1 for this execution. -/
 
 @[expose] public section
 
-namespace EthLib.Consensus.Models.Network.FiveValidatorWitness.Trace
+namespace EthLib.Consensus.Models.Network.EightValidatorWitness.Trace
 
 open Base
 
@@ -29,32 +29,32 @@ inductive Local where
 
 /-- Interpret a store code using the already certified candidate stores. -/
 def Local.store : Local → Store preset .phase0
-  | .anchor => FiveValidatorWitness.anchor
-  | .ticked => FiveValidatorWitness.ticked
-  | .running time count => FiveValidatorWitness.running time count
+  | .anchor => EightValidatorWitness.anchor
+  | .ticked => EightValidatorWitness.ticked
+  | .running time count => EightValidatorWitness.running time count
 
-/-- Code zero is the child block; the other three codes are votes at those slots. -/
-def message (tag : Fin 4) : Message preset .phase0 :=
-  if tag = 0 then .block signedBlock else .attestation (vote tag.val.toUInt64)
+/-- Code zero is the child block; code `k` is the vote of validator `k + 1`. -/
+def message (tag : Fin 7) : Message preset .phase0 :=
+  if tag = 0 then .block signedBlock else .attestation (vote (tag.val.toUInt64 + 1))
 
 /-- A finite description of a world, retaining the state and view of every validator. -/
 structure Snapshot where
   time : Nat
-  sent : Finset (Fin 4)
-  view : ValidatorIndex → Finset (Fin 4)
+  sent : Finset (Fin 7)
+  view : ValidatorIndex → Finset (Fin 7)
   state : ValidatorIndex → Local
 
 /-- Interpret finite message sets as network views without assuming message injectivity. -/
 def Snapshot.world (w : Snapshot) : World ValidatorIndex (Message preset .phase0)
     (Store preset .phase0) :=
-  ⟨w.time, message '' (w.sent : Set (Fin 4)),
-    fun v => message '' (w.view v : Set (Fin 4)), fun v => (w.state v).store⟩
+  ⟨w.time, message '' (w.sent : Set (Fin 7)),
+    fun v => message '' (w.view v : Set (Fin 7)), fun v => (w.state v).store⟩
 
 /-- The trace sends single messages, broadcasts them, ticks, and handles them one node at a time. -/
 inductive Action where
   | wait (time : Nat)
-  | send (v : ValidatorIndex) (tag : Fin 4)
-  | deliver (tag : Fin 4)
+  | send (v : ValidatorIndex) (tag : Fin 7)
+  | deliver (tag : Fin 7)
   | move (v : ValidatorIndex) (s : Local)
 
 /-- Every encoded action is an event of the unchanged network model. -/
@@ -109,28 +109,34 @@ theorem fold_world (w : Snapshot) (actions : List Action) :
     simp only [List.foldl_cons, List.map_cons, ih, apply_world]
 
 /-- A decidable version of processing completeness for encoded messages. -/
-def Ready (time : UInt64) (count : Nat) (view : Finset (Fin 4)) : Prop :=
-  ∀ tag ∈ view, tag = 0 ∨ tag.val ≤ count ∨ time / 1000 ≤ tag.val.toUInt64
+def Ready (time : UInt64) (count : Nat) (view : Finset (Fin 7)) : Prop :=
+  ∀ tag ∈ view, tag = 0 ∨ tag.val ≤ count ∨ time / 1000 ≤ (tag.val.toUInt64 + 1) / 2
 
-instance (time : UInt64) (count : Nat) (view : Finset (Fin 4)) :
+instance (time : UInt64) (count : Nat) (view : Finset (Fin 7)) :
     Decidable (Ready time count view) := inferInstanceAs (Decidable (∀ tag ∈ view, _))
 
+/-- A nonzero code names one of the six voters. -/
+theorem voter_of_tag {tag : Fin 7} (nonzero : tag ≠ 0) : Voter (tag.val.toUInt64 + 1) := by
+  fin_cases tag
+  · exact absurd rfl nonzero
+  all_goals (simp only [Voter]; decide)
+
+/-- The voter of a code is one more than the code. -/
+theorem voter_toNat (tag : Fin 7) : (tag.val.toUInt64 + 1).toNat = tag.val + 1 := by
+  fin_cases tag <;> rfl
+
 /-- Encoded completeness suffices for the actual handlers. -/
-theorem ready_view {time : UInt64} {count : Nat} {view : Finset (Fin 4)}
+theorem ready_view {time : UInt64} {count : Nat} {view : Finset (Fin 7)}
     (ready : Ready time count view) :
-    ReadyView time count (message '' (view : Set (Fin 4))) := by
+    ReadyView time count (message '' (view : Set (Fin 7))) := by
   rintro _ ⟨tag, member, rfl⟩
-  rcases ready tag member with zero | old | early
+  by_cases zero : tag = 0
   · exact .inl (by simp [message, zero])
-  · by_cases zero : tag = 0
-    · exact .inl (by simp [message, zero])
-    · refine .inr ⟨tag.val.toUInt64, ?_, by simp [message, zero], .inl ?_⟩
-      · fin_cases tag <;> simp_all
-      · exact (Nat.mod_le _ _).trans old
-  · by_cases zero : tag = 0
-    · exact .inl (by simp [message, zero])
-    · refine .inr ⟨tag.val.toUInt64, ?_, by simp [message, zero], .inr early⟩
-      fin_cases tag <;> simp_all
+  · refine .inr ⟨tag.val.toUInt64 + 1, voter_of_tag zero, by simp [message, zero], ?_⟩
+    rcases ready tag member with isZero | old | early
+    · exact absurd isZero zero
+    · exact .inl (by rw [voter_toNat]; omega)
+    · exact .inr early
 
 /-- The same-slot ticks and three boundary ticks used in this schedule. -/
 def Tick (first next : UInt64) : Prop :=
@@ -153,26 +159,26 @@ theorem tick_ok {first next : UInt64} (count : Nat) (tick : Tick first next) :
   · exact running_tick_boundary count (slot := 3) (.inr (.inr rfl))
 
 /-- Local moves admitted by the handler certificates, including receipt of each used message. -/
-def PermittedMove (time : Nat) (view : Finset (Fin 4)) (before after : Local) : Prop :=
+def PermittedMove (time : Nat) (view : Finset (Fin 7)) (before after : Local) : Prop :=
   match before, after with
   | .anchor, .ticked => time = 1000
   | .ticked, .running next count => next = 1000 ∧ count = 0 ∧ 0 ∈ view
   | .running first count, .running next more =>
       (more = count ∧ time = next.toNat ∧ Tick first next) ∨
       (next = first ∧
-        ∃ tag : Fin 4, tag ≠ 0 ∧ tag ∈ view ∧ first = (tag.val.toUInt64 + 1) * 1000 ∧
-          count = tag.val - 1 ∧ more = tag.val)
+        ∃ tag : Fin 7, tag ≠ 0 ∧ tag ∈ view ∧
+          first = ((tag.val.toUInt64 + 1) / 2 + 1) * 1000 ∧ count = tag.val - 1 ∧ more = tag.val)
   | _, _ => False
 
-instance (time : Nat) (view : Finset (Fin 4)) (before after : Local) :
+instance (time : Nat) (view : Finset (Fin 7)) (before after : Local) :
     Decidable (PermittedMove time view before after) := by
   unfold PermittedMove
   split <;> infer_instance
 
 /-- A permitted encoded move is a genuine handler step, not a substitute transition rule. -/
-theorem move_handles {time : Nat} {view : Finset (Fin 4)} {before after : Local}
+theorem move_handles {time : Nat} {view : Finset (Fin 7)} {before after : Local}
     (valid : PermittedMove time view before after) :
-    Handles config .acceptAll sources time (message '' (view : Set (Fin 4)))
+    Handles config .acceptAll sources time (message '' (view : Set (Fin 7)))
       before.store after.store := by
   cases before <;> cases after <;> try exact False.elim valid
   case anchor.ticked =>
@@ -187,13 +193,12 @@ theorem move_handles {time : Nat} {view : Finset (Fin 4)} {before after : Local}
     rcases valid with ⟨rfl, rfl, tick⟩ | ⟨rfl, tag, nonzero, held, rfl, rfl, rfl⟩
     · refine .tick (UInt64.le_iff_toNat_le.mp tick.1) next.toNat_lt ?_
       simpa only [Local.store, Nat.toUInt64_eq, UInt64.ofNat_toNat] using tick_ok more tick
-    · have within : tag.val.toUInt64 = 1 ∨ tag.val.toUInt64 = 2 ∨
-          tag.val.toUInt64 = 3 := by fin_cases tag <;> simp_all
-      refine .attestation (attestation := vote tag.val.toUInt64)
+    · refine .attestation (attestation := vote (tag.val.toUInt64 + 1))
         ⟨tag, held, by simp [message, nonzero]⟩ ?_
-      have small : tag.val < 18446744073709551616 := by omega
-      simpa only [Local.store, Nat.toUInt64_eq, UInt64.toNat_ofNat',
-        Nat.mod_eq_of_lt small] using running_vote_step within
+      have step := running_vote_step (voter_of_tag nonzero)
+      rw [voter_toNat, show tag.val + 1 - 2 = tag.val - 1 by omega,
+        show tag.val + 1 - 1 = tag.val by omega] at step
+      exact step
 
 /-- Decidable sufficient conditions for an encoded event to be allowed by the protocol. -/
 def Permitted (w : Snapshot) : Action → Prop
@@ -203,8 +208,9 @@ def Permitted (w : Snapshot) : Action → Prop
   | .send v tag => tag = 0 ∨
       match w.state v with
       | .running time count =>
-          tag ≠ 0 ∧ v = voter tag.val.toUInt64 ∧ time = tag.val.toUInt64 * 1000 + 333 ∧
-          w.time = time.toNat ∧ count ≤ 3 ∧ Ready time count (w.view v)
+          tag ≠ 0 ∧ v = tag.val.toUInt64 + 1 ∧
+          time = (tag.val.toUInt64 + 1) / 2 * 1000 + 333 ∧
+          w.time = time.toNat ∧ count ≤ 6 ∧ Ready time count (w.view v)
       | _ => False
 
 instance (w : Snapshot) (a : Action) : Decidable (Permitted w a) := by
@@ -214,7 +220,7 @@ instance (w : Snapshot) (a : Action) : Decidable (Permitted w a) := by
     simp only [Permitted]
     cases w.state v <;> infer_instance
   | deliver tag => unfold Permitted; infer_instance
-  | move v s => unfold Permitted honest; infer_instance
+  | move v s => unfold Permitted; infer_instance
 
 /-- The honest-validator protocol with the fixed candidate's parameters and assignment. -/
 abbrev protocol := honestForkChoice config .acceptAll sources (state bodyRoot)
@@ -248,8 +254,7 @@ theorem permitted_allowed (w : Snapshot) (a : Action) (valid : Permitted w a) :
       | running time count =>
         simp only [localState] at valid
         obtain ⟨nonzero, rfl, rfl, clock, bound, ready⟩ := valid
-        have within : tag.val.toUInt64 = 1 ∨ tag.val.toUInt64 = 2 ∨
-            tag.val.toUInt64 = 3 := by fin_cases tag <;> simp_all
+        have within := voter_of_tag nonzero
         change (∀ x ∈ statements _ _ _ _ (message tag), _) ∧ _
         refine ⟨?_, fun _ => ?_⟩
         · intro x statement _ other
@@ -261,26 +266,32 @@ theorem permitted_allowed (w : Snapshot) (a : Action) (valid : Permitted w a) :
             ite_eq_right nonzero]
           exact running_vote_sends within bound (ready_view ready)
 
-/-- The four honest validators, in their processing order. -/
-def validators : List ValidatorIndex := [0, 1, 2, 4]
+/-- The eight honest validators, in their processing order. -/
+def validators : List ValidatorIndex := [0, 1, 2, 3, 4, 5, 6, 7]
 
 /-- Every validator processes one step at the same network time. -/
 def moveAll (s : Local) : List Action := validators.map (fun v => .move v s)
 
-/-- One duty round: vote at its deadline, then process at and just before the next boundary. -/
-def round (tag : Fin 4) : List Action :=
-  let slot := tag.val.toUInt64
-  let count := tag.val - 1
-  [.wait (slot * 1000 + 333).toNat] ++ moveAll (.running (slot * 1000 + 333) count) ++
-    [.send (voter slot) tag, .deliver tag, .wait (slot * 1000 + 999).toNat] ++
-    moveAll (.running (slot * 1000 + 999) count) ++ [.wait ((slot + 1) * 1000).toNat] ++
-    moveAll (.running ((slot + 1) * 1000) count) ++
-    moveAll (.running ((slot + 1) * 1000) tag.val)
+/-- One duty round: both validators of the slot vote at its deadline.
+
+Then every validator processes at and just before the next boundary.
+
+At the boundary it processes the two votes in turn. -/
+def round (slot : Nat) (first second : Fin 7) : List Action :=
+  let time := slot.toUInt64
+  let count := 2 * (slot - 1)
+  [.wait (time * 1000 + 333).toNat] ++ moveAll (.running (time * 1000 + 333) count) ++
+    [.send (2 * time) first, .deliver first, .send (2 * time + 1) second, .deliver second,
+      .wait (time * 1000 + 999).toNat] ++
+    moveAll (.running (time * 1000 + 999) count) ++ [.wait ((time + 1) * 1000).toNat] ++
+    moveAll (.running ((time + 1) * 1000) count) ++
+    moveAll (.running ((time + 1) * 1000) (count + 1)) ++
+    moveAll (.running ((time + 1) * 1000) (count + 2))
 
 /-- The block is broadcast first, followed by the three honest duty rounds. -/
 def actions : List Action :=
-  [.send 3 0, .deliver 0] ++ moveAll .ticked ++ moveAll (.running 1000 0) ++
-    round 1 ++ round 2 ++ round 3
+  [.send 0 0, .deliver 0] ++ moveAll .ticked ++ moveAll (.running 1000 0) ++
+    round 1 1 2 ++ round 2 3 4 ++ round 3 5 6
 
 /-- The execution starts at slot one with empty views and initialized anchor stores. -/
 def initial : Snapshot := ⟨1000, ∅, fun _ => ∅, fun _ => .anchor⟩
@@ -293,13 +304,13 @@ def events := actions.map Action.event
 
 /-- Encoding does not change the model's empty initial world. -/
 theorem initial_world :
-    initial.world = World.initial 1000 (fun _ => FiveValidatorWitness.anchor) := by
+    initial.world = World.initial 1000 (fun _ => EightValidatorWitness.anchor) := by
   simp [initial, Snapshot.world, World.initial, Local.store]
 
 /-- A prefix snapshot describes the actual world after that prefix. -/
 theorem snapshot_world (n : Nat) :
     (snapshot n).world = (events.take n).foldl World.apply
-      (World.initial 1000 (fun _ => FiveValidatorWitness.anchor)) := by
+      (World.initial 1000 (fun _ => EightValidatorWitness.anchor)) := by
   rw [← initial_world, events, ← List.map_take, ← fold_world]
   rfl
 
@@ -312,68 +323,65 @@ theorem permitted_actions :
 theorem allowed_events (n : Nat) (h : n < events.length) :
     Allowed protocol honest
       ((events.take n).foldl World.apply
-        (World.initial 1000 (fun _ => FiveValidatorWitness.anchor))) events[n] := by
+        (World.initial 1000 (fun _ => EightValidatorWitness.anchor))) events[n] := by
   rw [← snapshot_world]
   simpa only [events, List.getElem_map, Fin.getElem_fin] using
     permitted_allowed _ _ (permitted_actions ⟨n, by simpa [events] using h⟩)
 
 /-- The finite prefix ends exactly at the start of epoch one. -/
 theorem final_clock :
-    (events.foldl World.apply (World.initial 1000 (fun _ => FiveValidatorWitness.anchor))).time =
+    (events.foldl World.apply (World.initial 1000 (fun _ => EightValidatorWitness.anchor))).time =
       4000 := by
   have h := congrArg World.time (snapshot_world events.length)
-  change (snapshot 73).world.time = _ at h
-  have clock : (snapshot 73).world.time = 4000 := rfl
+  change (snapshot 159).world.time = _ at h
+  have clock : (snapshot 159).world.time = 4000 := rfl
   rw [clock] at h
   simpa only [List.take_length] using h.symm
 
 /-- An infinite allowed execution: the certified prefix followed by increasing waits. -/
 def execution : Execution protocol honest :=
-  FinitePrefix.execution protocol honest 1000 (fun _ => FiveValidatorWitness.anchor)
+  FinitePrefix.execution protocol honest 1000 (fun _ => EightValidatorWitness.anchor)
     events 4000 final_clock allowed_events
 
 /-- Bounded-time reasoning may use the finite snapshots of the execution. -/
-theorem world_prefix (n : Nat) (h : n ≤ 73) : execution.world n = (snapshot n).world := by
+theorem world_prefix (n : Nat) (h : n ≤ 159) : execution.world n = (snapshot n).world := by
   rw [Execution.world, execution, FinitePrefix.execution]
   rw [FinitePrefix.world_prefix _ _ _ n (by exact h), ← snapshot_world]
 
-/-- At the call, validator zero has processed the child and the first two votes. -/
-theorem call_store : (execution.world 52).state 0 = running 3000 2 := by
-  rw [world_prefix 52 (by decide)]
+/-- At the call, validator zero has processed the child and the four votes of slots one and two. -/
+theorem call_store : (execution.world 112).state 0 = running 3000 4 := by
+  rw [world_prefix 112 (by decide)]
   rfl
 
 /-- The unique send time of each message. -/
-def sentAt (tag : Fin 4) : Nat := if tag = 0 then 1000 else tag.val * 1000 + 333
+def sentAt (tag : Fin 7) : Nat := if tag = 0 then 1000 else (tag.val + 1) / 2 * 1000 + 333
 
 /-- No view contains a message before its send time. -/
-theorem held_after_send : ∀ n : Fin 74, ∀ v : Fin 5, ∀ tag : Fin 4,
+theorem held_after_send : ∀ n : Fin 160, ∀ v : Fin 8, ∀ tag : Fin 7,
     tag ∈ (snapshot n).view v.val.toUInt64 → sentAt tag ≤ (snapshot n).time := by
   decide +kernel
 
 /-- Delivery finishes before the network clock advances past each send time. -/
-theorem delivered_before_wait : ∀ n : Fin 74, ∀ v : Fin 5, ∀ tag : Fin 4,
+theorem delivered_before_wait : ∀ n : Fin 160, ∀ v : Fin 8, ∀ tag : Fin 7,
     sentAt tag < (snapshot n).time → tag ∈ (snapshot n).view v.val.toUInt64 := by
   decide +kernel
 
 /-- Every sent message has reached every registry validator before the infinite wait tail. -/
-theorem final_delivered : ∀ v : Fin 5,
-    (snapshot 73).sent ⊆ (snapshot 73).view v.val.toUInt64 := by
+theorem final_delivered : ∀ v : Fin 8,
+    (snapshot 159).sent ⊆ (snapshot 159).view v.val.toUInt64 := by
   decide +kernel
 
-/-- Every honest validator is one of the five positions checked by the finite certificates. -/
+/-- Every honest validator is one of the eight positions checked by the finite certificates. -/
 theorem honest_index {v : ValidatorIndex} (h : v ∈ honest) :
-    ∃ i : Fin 5, i.val.toUInt64 = v := by
-  simp only [honest, Set.mem_insert_iff, Set.mem_singleton_iff] at h
-  rcases h with rfl | rfl | rfl | rfl
-  · exact ⟨0, rfl⟩
-  · exact ⟨1, rfl⟩
-  · exact ⟨2, rfl⟩
-  · exact ⟨4, rfl⟩
+    ∃ i : Fin 8, i.val.toUInt64 = v := by
+  rcases registered_cases h with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl
+  exacts [⟨0, rfl⟩, ⟨1, rfl⟩, ⟨2, rfl⟩, ⟨3, rfl⟩, ⟨4, rfl⟩, ⟨5, rfl⟩, ⟨6, rfl⟩, ⟨7, rfl⟩]
 
+set_option maxRecDepth 10000 in
 /-- The entire infinite execution is synchronous with a positive delay of one millisecond. -/
 theorem synchronous : execution.Synchronous 1 := by
   apply FinitePrefix.synchronous_execution protocol honest 1000
-    (fun _ => FiveValidatorWitness.anchor) events 4000 final_clock allowed_events 1 (by decide)
+    (fun _ => EightValidatorWitness.anchor) events 4000 final_clock allowed_events 1 (by decide)
   · intro u honestU
     obtain ⟨u, rfl⟩ := honest_index honestU
     have last := snapshot_world events.length
@@ -388,8 +396,8 @@ theorem synchronous : execution.Synchronous 1 := by
     rw [← snapshot_world k]
     rw [← snapshot_world n, ← snapshot_world k] at elapsed
     obtain ⟨tag, held, rfl⟩ := member
-    have kBound : k < 74 := by change k ≤ 73 at bounded; omega
-    have nBound : n < 74 := by omega
+    have kBound : k < 160 := by change k ≤ 159 at bounded; omega
+    have nBound : n < 160 := by omega
     have afterSend := held_after_send ⟨n, nBound⟩ v tag held
     change sentAt tag ≤ (snapshot n).time at afterSend
     refine ⟨tag, delivered_before_wait ⟨k, kBound⟩ u tag ?_, rfl⟩
@@ -399,10 +407,10 @@ theorem synchronous : execution.Synchronous 1 := by
 
 /-- The caller has processed every message its handlers accept at the call time. -/
 theorem call_ready :
-    UpToDate config .acceptAll sources (execution.world 52).time
-      ((execution.world 52).view 0) ((execution.world 52).state 0) := by
-  rw [world_prefix 52 (by decide)]
-  exact running_up_to_date 3000 (count := 2) (by decide) (ready_view (by decide))
+    UpToDate config .acceptAll sources (execution.world 112).time
+      ((execution.world 112).view 0) ((execution.world 112).state 0) := by
+  rw [world_prefix 112 (by decide)]
+  exact running_up_to_date 3000 (count := 4) (by decide) (ready_view (by decide))
 
 /-- An allowed execution contains a full call whose walk confirms the distinct slot-one child.
 
@@ -412,15 +420,15 @@ Its custom configuration has zero proposer boost and confirmation threshold 34, 
 
 This theorem certifies the execution and its advancing call; `Joint` proves the other premises. -/
 theorem confirms_by_walk :
-    (execution.world 52).time = 3000 ∧
-    ((execution.world 52).state 0).onFastConfirmation config (getFastConfirmationStore anchor) =
+    (execution.world 112).time = 3000 ∧
+    ((execution.world 112).state 0).onFastConfirmation config (getFastConfirmationStore anchor) =
       .ok confirmed ∧
-    ((execution.world 52).state 0).findLatestConfirmedDescendant config
+    ((execution.world 112).state 0).findLatestConfirmedDescendant config
       (getFastConfirmationStore anchor) blockRoot anchorRoot = .ok blockRoot ∧
     confirmed.confirmedRoot ≠ anchorRoot := by
   refine ⟨?_, ?_, ?_, blockRoot_ne_anchorRoot⟩
-  · rw [world_prefix 52 (by decide)]; rfl
+  · rw [world_prefix 112 (by decide)]; rfl
   · rw [call_store]; exact running_call
   · rw [call_store]; exact running_walk _ rfl
 
-end EthLib.Consensus.Models.Network.FiveValidatorWitness.Trace
+end EthLib.Consensus.Models.Network.EightValidatorWitness.Trace

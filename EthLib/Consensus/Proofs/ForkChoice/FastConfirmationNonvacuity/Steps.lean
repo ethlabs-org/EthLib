@@ -6,7 +6,7 @@ public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmationNonvacuity.Stor
 
 @[expose] public section
 
-namespace EthLib.Consensus.Models.Network.FiveValidatorWitness
+namespace EthLib.Consensus.Models.Network.EightValidatorWitness
 
 open Base Serialization.Ssz
 
@@ -83,11 +83,11 @@ theorem running_tick_boundary (count : Nat) {slot : Slot}
 
 set_option maxRecDepth 10000 in
 /-- Every reachable reading of a candidate vote names only its intended signer and data. -/
-theorem running_vote_statements {slot : Slot} (within : slot = 1 ∨ slot = 2 ∨ slot = 3)
+theorem running_vote_statements {v : ValidatorIndex} (within : Voter v)
     {x : ValidatorIndex × AttestationData}
     (member : x ∈ statements config .acceptAll (state bodyRoot) (anchorBlock stateRoot)
-      (.attestation (vote slot))) : x = (voter slot, voteData slot) := by
-  have initial : anchor.checkpointStates[(vote slot).data.target]? = some (state bodyRoot) := by
+      (.attestation (vote v))) : x = (v, voteData (v / 2)) := by
+  have initial : anchor.checkpointStates[(vote v).data.target]? = some (state bodyRoot) := by
     simp [anchor, vote, voteData]
   have indexed := mem_indexedStatements_of_cached_target initialized initial
     (vote_indexed within) member
@@ -110,27 +110,30 @@ theorem running_block_repeat (time : UInt64) (count : Nat) :
 
 set_option maxRecDepth 10000 in
 /-- A recorded vote cannot replace itself at the same target epoch. -/
-theorem running_update_repeat (time : UInt64) {count : Nat} (bound : count ≤ 3)
-    {slot : Slot} (within : slot = 1 ∨ slot = 2 ∨ slot = 3) (already : slot.toNat ≤ count) :
-    (running time count).updateLatestMessages [voter slot] (vote slot) = running time count := by
-  have cases : count = 0 ∨ count = 1 ∨ count = 2 ∨ count = 3 := by omega
-  rcases within with rfl | rfl | rfl <;>
-    rcases cases with rfl | rfl | rfl | rfl <;>
-    simp_all [Store.updateLatestMessages, running, recordVote, voter, LatestMessage.ofAttestation,
-      vote, voteData, admitted, ticked, anchor, Std.TreeMap.getElem_insert]
+theorem running_update_repeat (time : UInt64) {count : Nat} (bound : count ≤ 6)
+    {v : ValidatorIndex} (within : Voter v) (already : v.toNat ≤ count + 1) :
+    (running time count).updateLatestMessages [v] (vote v) = running time count := by
+  have cases : count = 0 ∨ count = 1 ∨ count = 2 ∨ count = 3 ∨ count = 4 ∨ count = 5 ∨
+      count = 6 := by omega
+  rcases within with rfl | rfl | rfl | rfl | rfl | rfl <;>
+    rcases cases with rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
+    first
+    | (exfalso; revert already; decide)
+    | simp_all [Store.updateLatestMessages, running, recordVote, LatestMessage.ofAttestation,
+        vote, voteData, admitted, ticked, anchor, Std.TreeMap.getElem_insert]
 
 set_option maxRecDepth 10000 in
 /-- Accepting a recorded vote again changes no field of the store. -/
-theorem running_vote_repeat (time : UInt64) {count : Nat} (bound : count ≤ 3)
-    {slot : Slot} (within : slot = 1 ∨ slot = 2 ∨ slot = 3) (already : slot.toNat ≤ count)
+theorem running_vote_repeat (time : UInt64) {count : Nat} (bound : count ≤ 6)
+    {v : ValidatorIndex} (within : Voter v) (already : v.toNat ≤ count + 1)
     {after : Store preset .phase0}
-    (step : (running time count).onAttestation config .acceptAll (vote slot) false = .ok after) :
+    (step : (running time count).onAttestation config .acceptAll (vote v) false = .ok after) :
     after = running time count := by
   have cached : (running time count).storeTargetCheckpointState config .acceptAll
-      (vote slot).data.target = .ok (running time count) := by
+      (vote v).data.target = .ok (running time count) := by
     simp [Store.storeTargetCheckpointState, running, admitted, ticked, anchor,
       vote, voteData, Checkpoint.compare, pure, Except.pure]
-  have target : (running time count).checkpointState (vote slot).data.target =
+  have target : (running time count).checkpointState (vote v).data.target =
       .ok (state bodyRoot) := by
     simp [Store.checkpointState, running, admitted, ticked, anchor, vote, voteData,
       pure, Except.pure]
@@ -138,7 +141,7 @@ theorem running_vote_repeat (time : UInt64) {count : Nat} (bound : count ≤ 3)
   obtain ⟨_, _, step⟩ := step
   simp [cached, target, vote_committees within, vote_indexed within,
     vote_signature within, Except.mapError, pure, Except.pure] at step
-  change (running time count).updateLatestMessages [voter slot] (vote slot) = after at step
+  change (running time count).updateLatestMessages [v] (vote v) = after at step
   exact step.symm.trans (running_update_repeat time bound within already)
 
-end EthLib.Consensus.Models.Network.FiveValidatorWitness
+end EthLib.Consensus.Models.Network.EightValidatorWitness

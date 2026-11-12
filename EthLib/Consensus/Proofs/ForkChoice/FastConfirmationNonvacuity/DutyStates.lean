@@ -6,7 +6,7 @@ public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmationNonvacuity.Atte
 
 @[expose] public section
 
-namespace EthLib.Consensus.Models.Network.FiveValidatorWitness
+namespace EthLib.Consensus.Models.Network.EightValidatorWitness
 
 open Base Serialization.Ssz
 
@@ -81,4 +81,4 @@ theorem exists_vote_state {slot : Slot} (within : slot = 1 ∨ slot = 2 ∨ slot
       change getAttestationData (thirdState default) blockRoot 1 0 .pending = .ok (voteData 3)
       rfl
 
-end EthLib.Consensus.Models.Network.FiveValidatorWitness
+end EthLib.Consensus.Models.Network.EightValidatorWitness

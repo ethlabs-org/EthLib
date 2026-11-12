@@ -7,13 +7,13 @@ import all EthLib.Serialization.Ssz.Merkle.Merkleize
 import all EthLib.Serialization.Ssz.Codec.Root
 import all EthLib.Serialization.Ssz.Codec.Serialize
 
-/-! Kernel certificates for the five-validator witness's concrete genesis anchor.
+/-! Kernel certificates for the eight-validator witness's concrete genesis anchor.
 
 These facts establish initialization and nonzero roots, not a confirming execution. -/
 
 @[expose] public section
 
-namespace EthLib.Consensus.Models.Network.FiveValidatorWitness
+namespace EthLib.Consensus.Models.Network.EightValidatorWitness
 
 open Base Serialization.Ssz
 open scoped NonvacuityCertificates
@@ -24,8 +24,8 @@ attribute [local cbv_eval] hashTreeRootAtM.eq_def depthFor.eq_def SszType.hashTr
   serializeFieldsFrom.eq_def
 
 /-- The root of the genesis block, with the certified state root. -/
-def anchorRoot : Root := ⟨#[55, 33, 215, 25, 110, 21, 184, 68, 214, 44, 44, 231, 191, 73,
-  184, 207, 124, 7, 161, 74, 206, 139, 115, 214, 204, 138, 1, 138, 62, 9, 235, 207], by decide⟩
+def anchorRoot : Root := ⟨#[229, 236, 252, 145, 210, 50, 255, 170, 141, 68, 119, 82, 13, 41,
+  152, 16, 117, 200, 142, 232, 29, 132, 181, 73, 156, 165, 214, 81, 58, 92, 57, 168], by decide⟩
 
 set_option Elab.async false in
 set_option maxRecDepth 100000 in
@@ -73,4 +73,4 @@ theorem initialized :
   simp only [sameRoot, ne_eq, not_true_eq_false, ↓reduceIte]
   rfl
 
-end EthLib.Consensus.Models.Network.FiveValidatorWitness
+end EthLib.Consensus.Models.Network.EightValidatorWitness

@@ -7,7 +7,7 @@ import EthLib.Consensus.Proofs.ForkChoice.FastConfirmationNonvacuity.Certificate
 
 @[expose] public section
 
-namespace EthLib.Consensus.Models.Network.FiveValidatorWitness
+namespace EthLib.Consensus.Models.Network.EightValidatorWitness
 
 open Base Serialization.Ssz
 open scoped NonvacuityCertificates
@@ -77,4 +77,4 @@ theorem first_block (root : Root) :
   rw [first_randao]
   rfl
 
-end EthLib.Consensus.Models.Network.FiveValidatorWitness
+end EthLib.Consensus.Models.Network.EightValidatorWitness

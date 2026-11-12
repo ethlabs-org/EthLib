@@ -13,7 +13,7 @@ import all EthLib.Serialization.Ssz.Codec.Serialize
 
 @[expose] public section
 
-namespace EthLib.Consensus.Models.Network.FiveValidatorWitness
+namespace EthLib.Consensus.Models.Network.EightValidatorWitness
 
 open Base Serialization.Ssz
 open scoped NonvacuityCertificates
@@ -24,8 +24,8 @@ attribute [local cbv_eval] hashTreeRootAtM.eq_def depthFor.eq_def SszType.hashTr
   serializeFieldsFrom.eq_def
 
 /-- The post-state root, certified by `post_root`. -/
-def postRoot : Root := ⟨#[45, 83, 186, 136, 34, 222, 78, 249, 102, 21, 11, 157, 143, 11, 68, 204,
-  241, 162, 23, 220, 223, 203, 150, 107, 3, 70, 5, 23, 3, 92, 110, 109], by decide⟩
+def postRoot : Root := ⟨#[221, 129, 140, 208, 135, 37, 231, 9, 47, 94, 215, 197, 110, 84, 55, 14,
+  236, 136, 123, 121, 47, 80, 211, 102, 24, 163, 77, 247, 204, 253, 76, 94], by decide⟩
 
 -- A compact normal form avoids repeatedly reducing the nested state updates.
 private def postValue : Value :=
@@ -41,8 +41,8 @@ private def postValue : Value :=
     .seq (.bytes anchorRoot.toArray :: List.replicate 7 zero),
     .seq (.bytes stateRoot.toArray :: List.replicate 7 zero), .seq [],
     eth1, .seq [eth1], .uint 0,
-    .seq ([200, 200, 200, 100, 200].map validatorValue),
-    .seq ([200, 200, 200, 100, 200].map Value.uint),
+    .seq ((List.replicate 8 200).map validatorValue),
+    .seq ((List.replicate 8 200).map Value.uint),
     .seq (.bytes revealMix.toArray :: List.replicate 7 zero),
     .seq (List.replicate 8 (.uint 0)), .seq [], .seq [],
     .bits #[false, false, false, false], checkpoint, checkpoint, checkpoint]
@@ -75,4 +75,4 @@ theorem post_root : SszType.hashTreeRoot postState = .ok postRoot := by
 /-- The post-state root is nonzero, as required for a held block's state. -/
 theorem postRoot_ne_zero : postRoot ≠ Vector.replicate 32 0 := by decide
 
-end EthLib.Consensus.Models.Network.FiveValidatorWitness
+end EthLib.Consensus.Models.Network.EightValidatorWitness

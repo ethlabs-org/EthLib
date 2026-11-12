@@ -6,11 +6,11 @@ import EthLib.Consensus.Proofs.ForkChoice.FastConfirmationNonvacuity.Certificate
 import all Init.Data.Array.Basic
 import all Batteries.Data.Except
 
-/-! Advance the five-validator witness from genesis to the slot of its first block. -/
+/-! Advance the eight-validator witness from genesis to the slot of its first block. -/
 
 @[expose] public section
 
-namespace EthLib.Consensus.Models.Network.FiveValidatorWitness
+namespace EthLib.Consensus.Models.Network.EightValidatorWitness
 
 open Base Serialization.Ssz
 open scoped NonvacuityCertificates
@@ -52,4 +52,4 @@ theorem first_proposer : getBeaconProposerIndex advanced = .ok 0 := by
   change getBeaconProposerIndex { state default with slot := 1 } = .ok 0
   cbv
 
-end EthLib.Consensus.Models.Network.FiveValidatorWitness
+end EthLib.Consensus.Models.Network.EightValidatorWitness

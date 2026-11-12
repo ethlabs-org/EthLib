@@ -7,48 +7,48 @@ public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmationNonvacuity.Duti
 
 The call has zero weight shift and zero balance-drift margin.
 
-Its remaining honest duty has 200 Gwei, exceeding the 198 Gwei the rule requires.
+Its two remaining honest duties have 400 Gwei, exceeding the 264 Gwei the rule requires.
 
 The late-margin field is vacuous because no complete epoch fits between the call and the limit. -/
 
 @[expose] public section
 
-namespace EthLib.Consensus.Models.Network.FiveValidatorWitness.Trace
+namespace EthLib.Consensus.Models.Network.EightValidatorWitness.Trace
 open Base Base.Uint64
 
 /-- The confirming call reads slot three. -/
-theorem call_slot : (running 3000 2).getCurrentSlot config = .ok 3 := by
-  simp [Store.getCurrentSlot, show (running 3000 2).genesisTimeMs = 0 from rfl,
-    show (running 3000 2).timeMs = 3000 from rfl, computeSlotAtTimeMs, subChecked, divChecked,
+theorem call_slot : (running 3000 4).getCurrentSlot config = .ok 3 := by
+  simp [Store.getCurrentSlot, show (running 3000 4).genesisTimeMs = 0 from rfl,
+    show (running 3000 4).timeMs = 3000 from rfl, computeSlotAtTimeMs, subChecked, divChecked,
     show config.SLOT_DURATION_MS = 1000 from rfl, bind, Except.bind, Except.mapError]
 
 /-- The confirming call remains in epoch zero. -/
-theorem call_epoch : (running 3000 2).getCurrentStoreEpoch config = .ok 0 := by
+theorem call_epoch : (running 3000 4).getCurrentStoreEpoch config = .ok 0 := by
   rw [Store.getCurrentStoreEpoch, call_slot]
   rfl
 
 /-- The call's head is the slot-one child. -/
-theorem call_head : (running 3000 2).getHead config = .ok ⟨blockRoot, .pending⟩ :=
-  running_head 3000 2 (by decide) call_epoch (.inl rfl)
+theorem call_head : (running 3000 4).getHead config = .ok ⟨blockRoot, .pending⟩ :=
+  running_head 3000 4 (by decide) call_epoch (.inl rfl)
 
 /-- No epoch processing is needed to pull up the call's head state. -/
-theorem call_pulled : (running 3000 2).getPulledUpHeadState config blockRoot = .ok postState := by
+theorem call_pulled : (running 3000 4).getPulledUpHeadState config blockRoot = .ok postState := by
   simp only [Store.getPulledUpHeadState, call_epoch]
-  have stored : (running 3000 2).blockState blockRoot = .ok postState := by
+  have stored : (running 3000 4).blockState blockRoot = .ok postState := by
     simp [Store.blockState, running, admitted, pure, Except.pure]
   rw [stored]
   rfl
 
 /-- Validators whose duties have ended at the call. -/
 def pastMembers : Std.TreeSet ValidatorIndex :=
-  (((∅ : Std.TreeSet ValidatorIndex).insert 0).insert 1).insert 2
+  (((((((∅ : Std.TreeSet ValidatorIndex).insert 0).insert 1).insert 2).insert 3).insert 4).insert 5)
 
-/-- The epoch's first three slots assign exactly validators zero, one and two. -/
+/-- The epoch's first three slots assign exactly validators zero to five. -/
 theorem call_past_members :
-    (running 3000 2).getCommitteesBetweenSlots blockRoot 0 2 = .ok pastMembers := by
-  have zero : (running 3000 2).getSlotCommittee blockRoot 0 =
-      .ok ((∅ : Std.TreeSet ValidatorIndex).insert 0) := by
-    have stored : (running 3000 2).blockState blockRoot = .ok postState := by
+    (running 3000 4).getCommitteesBetweenSlots blockRoot 0 2 = .ok pastMembers := by
+  have zero : (running 3000 4).getSlotCommittee blockRoot 0 =
+      .ok (((∅ : Std.TreeSet ValidatorIndex).insert 0).insert 1) := by
+    have stored : (running 3000 4).blockState blockRoot = .ok postState := by
       simp [Store.blockState, running, admitted, pure, Except.pure]
     simp only [Store.getSlotCommittee, stored, bind, Except.bind,
       show getCommitteeCountPerSlot postState (computeEpochAtSlot preset 0) = 1 from rfl,
@@ -62,61 +62,62 @@ theorem call_past_members :
     show (0 : Slot) + (0 : Nat).toUInt64 = 0 from rfl,
     show (0 : Slot) + (1 : Nat).toUInt64 = 1 from rfl,
     show (0 : Slot) + (2 : Nat).toUInt64 = 2 from rfl,
-    zero, (running_committees 3000 2).1, (running_committees 3000 2).2]
+    zero, (running_committees 3000 4).1, (running_committees 3000 4).2]
   rfl
 
-/-- The three past duties account for 600 of the 900 Gwei. -/
+/-- The three past duties account for 1200 of the 1600 Gwei. -/
 theorem call_past_weight :
-    (running 3000 2).computeCommitteeWeightBetweenSlots blockRoot postState 0 2 = .ok 600 := by
-  suffices read : (running 3000 2).computeCommitteeWeightAndMembers blockRoot postState 0 2 =
-      .ok (600, some pastMembers) by
+    (running 3000 4).computeCommitteeWeightBetweenSlots blockRoot postState 0 2 = .ok 1200 := by
+  suffices read : (running 3000 4).computeCommitteeWeightAndMembers blockRoot postState 0 2 =
+      .ok (1200, some pastMembers) by
     rw [Store.computeCommitteeWeightBetweenSlots, read]
     rfl
-  have total : getTotalBalance postState [0, 1, 2] = .ok 600 := by
+  have total : getTotalBalance postState [0, 1, 2, 3, 4, 5] = .ok 1200 := by
     rw [getTotalBalance_ok_iff]
     simp only [List.forall_mem_cons, sumMarked_eq_sum, getElem?_markIndices]
     decide
-  have active : ([(0 : ValidatorIndex), 1, 2].filterM fun index => do
+  have active : ([(0 : ValidatorIndex), 1, 2, 3, 4, 5].filterM fun index => do
       pure (isActiveValidator (← validatorAt postState index) 0)) =
-      (.ok [0, 1, 2] : Except ForkChoiceError _) := by
-    have passes : ∀ index ∈ [(0 : ValidatorIndex), 1, 2],
+      (.ok [0, 1, 2, 3, 4, 5] : Except ForkChoiceError _) := by
+    have passes : ∀ index ∈ [(0 : ValidatorIndex), 1, 2, 3, 4, 5],
         (do pure (isActiveValidator (← validatorAt postState index) 0)) =
           (.ok true : Except ForkChoiceError Bool) := by
       intro index member
       simp only [List.mem_cons, List.not_mem_nil, or_false] at member
-      rcases member with rfl | rfl | rfl <;> rfl
+      rcases member with rfl | rfl | rfl | rfl | rfl | rfl <;> rfl
     obtain ⟨out, filtered⟩ := filterM_exists_ok (fun index member => ⟨true, passes index member⟩)
-    have contains : [(0 : ValidatorIndex), 1, 2] ⊆ out := fun index member =>
+    have contains : [(0 : ValidatorIndex), 1, 2, 3, 4, 5] ⊆ out := fun index member =>
       mem_filterM_ok_of_test filtered member (passes index member)
     have same := (sublist_of_filterM_ok filtered).eq_of_length_le
-      ((show [(0 : ValidatorIndex), 1, 2].Nodup by decide).length_le_of_subset contains)
+      ((show [(0 : ValidatorIndex), 1, 2, 3, 4, 5].Nodup by decide).length_le_of_subset contains)
     simpa only [same] using filtered
   simp only [Store.computeCommitteeWeightAndMembers,
     show ¬ (0 : Slot) > 2 by decide, ↓reduceIte,
     show isFullValidatorSetCovered preset 0 2 = .ok false from rfl,
     call_past_members, bind, Except.bind]
   change (do
-    let members ← ([(0 : ValidatorIndex), 1, 2].filterM fun index => do
+    let members ← ([(0 : ValidatorIndex), 1, 2, 3, 4, 5].filterM fun index => do
       pure (isActiveValidator (← validatorAt postState index) 0))
     pure (← (getTotalBalance postState members).mapError ForkChoiceError.accessor,
-      some pastMembers)) = .ok (600, some pastMembers)
+      some pastMembers)) = .ok (1200, some pastMembers)
   rw [active]
   simp only [bind, Except.bind, total, Except.mapError]
   rfl
 
-/-- Honest validator four supplies the required share of the remaining 300 Gwei. -/
+/-- Honest validators six and seven supply the required share of the remaining 400 Gwei. -/
 theorem remaining_margin :
-    3 * ((900 - 600) / 100 * (100 - config.CONFIRMATION_BYZANTINE_THRESHOLD.toNat)) ≤
+    3 * ((1600 - 1200) / 100 * (100 - config.CONFIRMATION_BYZANTINE_THRESHOLD.toNat)) ≤
       3 * stake (fun v => balanceAt postState v.toNat)
         {v ∈ ((unslashedActiveBalances postState).map (·.1)).toFinset |
           v ∉ pastMembers ∧ v ∈ honest} := by
-  change 594 ≤ 600
+  change 792 ≤ 1200
   decide
 
+set_option maxRecDepth 10000 in
 /-- The singleton call history starts at the anchor and returns the certified child. -/
 theorem only_call {i n : Nat} {fcr after : FastConfirmationStore}
-    (call : CallAt execution 0 [52] (getFastConfirmationStore anchor) i n fcr after) :
-    i = 0 ∧ n = 52 ∧ fcr = getFastConfirmationStore anchor ∧ after = confirmed := by
+    (call : CallAt execution 0 [112] (getFastConfirmationStore anchor) i n fcr after) :
+    i = 0 ∧ n = 112 ∧ fcr = getFastConfirmationStore anchor ∧ after = confirmed := by
   obtain ⟨index, prior, called⟩ := call
   cases i with
   | succ i => simp at index
@@ -129,8 +130,9 @@ theorem only_call {i n : Nat} {fcr after : FastConfirmationStore}
     rw [call_store, running_call, Except.ok.injEq] at called
     exact ⟨rfl, rfl, rfl, called.symm⟩
 
+set_option maxRecDepth 10000 in
 /-- All five rule bounds hold together at the genuinely advancing call. -/
-theorem rule_bounds : RuleBounds execution 0 [52] (getFastConfirmationStore anchor) 0 0 4000 where
+theorem rule_bounds : RuleBounds execution 0 [112] (getFastConfirmationStore anchor) 0 0 4000 where
   walked := by
     intro i n fcr after head slot start balanceSource chain later call headOk slotOk _ _ _
       sourceOk _ confirmedMembers
@@ -139,7 +141,7 @@ theorem rule_bounds : RuleBounds execution 0 [52] (getFastConfirmationStore anch
     rw [call_head, Except.ok.injEq] at headOk
     rw [call_slot, Except.ok.injEq] at slotOk
     subst head slot
-    have source := local_checkpoint (code := .running 3000 2) sourceOk
+    have source := local_checkpoint (code := .running 3000 4) sourceOk
     subst balanceSource
     rw [confirms_by_walk.1]
     refine ⟨fun last bounded _ => weights bounded, ?_, ?_, ?_, ?_⟩
@@ -159,7 +161,7 @@ theorem rule_bounds : RuleBounds execution 0 [52] (getFastConfirmationStore anch
       subst s
       change ByzantineStakeAtMost (fun v => balanceAt (state bodyRoot) v.toNat)
         (Store.activeMembers (state bodyRoot) participants) honest 34 100
-      exact range_byzantine (code := .running 3000 2) read
+      exact range_byzantine (code := .running 3000 4) read
     · intro s epochStart lastSlot participants total soFar _ pulled startOk lastOk read totalOk
         weightOk
       rw [call_pulled, Except.ok.injEq] at pulled
@@ -172,7 +174,7 @@ theorem rule_bounds : RuleBounds execution 0 [52] (getFastConfirmationStore anch
       subst epochStart lastSlot
       rw [call_past_members, Except.ok.injEq] at read
       subst participants
-      have totalRead : getTotalActiveBalance postState = .ok 900 := total_balance
+      have totalRead : getTotalActiveBalance postState = .ok 1600 := total_balance
       rw [totalRead, Except.ok.injEq] at totalOk
       rw [call_past_weight, Except.ok.injEq] at weightOk
       subst total soFar
@@ -180,4 +182,4 @@ theorem rule_bounds : RuleBounds execution 0 [52] (getFastConfirmationStore anch
     · intro w _ k s full bounded _ _ _
       exact False.elim (no_complete_epoch bounded full)
 
-end EthLib.Consensus.Models.Network.FiveValidatorWitness.Trace
+end EthLib.Consensus.Models.Network.EightValidatorWitness.Trace
