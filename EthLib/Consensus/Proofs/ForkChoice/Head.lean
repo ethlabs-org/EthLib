@@ -602,8 +602,7 @@ theorem isAncestor_getHead_of_lt_gloas (before : fork < .glamsterdam) {head : Fo
     obtain ⟨justifiedBlock, justifiedFound⟩ := filterNodeTree_known tree
     simp only [tree, bind, Except.bind, later, false_and, ↓reduceIte] at found
     have walked := getAncestor_getHeadFrom before found rfl justifiedFound
-    simp [isAncestor, block_ok_iff.mpr justifiedFound, walked, later, bind, Except.bind, pure,
-      Except.pure]
+    exact isAncestor_of_getAncestor walked
 
 /-- From Gloas, let the walk from a known node end at some node.
 

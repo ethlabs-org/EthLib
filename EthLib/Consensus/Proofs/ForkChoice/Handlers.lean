@@ -215,6 +215,28 @@ theorem SameClock.getCurrentSlot {after : Store preset fork} (same : SameClock s
   unfold Store.getCurrentSlot
   rw [same.1, same.2]
 
+@[simp] private theorem updateCheckpoints_payloads (justified finalized : Checkpoint) :
+    (store.updateCheckpoints justified finalized).payloads = store.payloads := by
+  unfold updateCheckpoints
+  split <;> dsimp only <;> split <;> rfl
+
+@[simp] private theorem updateUnrealizedCheckpoints_payloads (justified finalized : Checkpoint) :
+    (store.updateUnrealizedCheckpoints justified finalized).payloads = store.payloads := by
+  unfold updateUnrealizedCheckpoints
+  split <;> dsimp only <;> split <;> rfl
+
+private theorem computePulledUpTip_frame_payloads {root : Root} {after : Store preset fork}
+    (pulled : store.computePulledUpTip config root = .ok after) :
+    (store.EpochsLe after ∧ after.blocks = store.blocks ∧ after.blockStates = store.blockStates ∧
+      SameClock store after) ∧ after.payloads = store.payloads := by
+  unfold computePulledUpTip at pulled
+  simp only [bind_ok_iff] at pulled
+  obtain ⟨state, -, pulledState, -, block, -, epoch, -, pulled⟩ := pulled
+  split at pulled <;> simp only [pure, Except.pure, Except.ok.injEq] at pulled <;> subst pulled
+  · exact ⟨⟨(EpochsLe.of_eq (by simp) (by simp)).trans (updateCheckpoints_epochsLe _ _),
+      by simp, by simp, by simp, by simp⟩, by simp⟩
+  · exact ⟨⟨EpochsLe.of_eq (by simp) (by simp), by simp, by simp, by simp, by simp⟩, by simp⟩
+
 /-- The tip pulled up to the end of its epoch lowers neither epoch, and keeps the blocks.
 
 It also keeps the clock. -/
@@ -222,19 +244,13 @@ theorem computePulledUpTip_frame {root : Root} {after : Store preset fork}
     (pulled : store.computePulledUpTip config root = .ok after) :
     store.EpochsLe after ∧ after.blocks = store.blocks ∧ after.blockStates = store.blockStates ∧
       SameClock store after := by
-  unfold computePulledUpTip at pulled
-  simp only [bind_ok_iff] at pulled
-  obtain ⟨state, -, pulledState, -, block, -, epoch, -, pulled⟩ := pulled
-  split at pulled <;> simp only [pure, Except.pure, Except.ok.injEq] at pulled <;> subst pulled
-  · exact ⟨(EpochsLe.of_eq (by simp) (by simp)).trans (updateCheckpoints_epochsLe _ _),
-      by simp, by simp, by simp, by simp⟩
-  · exact ⟨EpochsLe.of_eq (by simp) (by simp), by simp, by simp, by simp, by simp⟩
+  exact (computePulledUpTip_frame_payloads pulled).1
 
-/-- A tick within a slot sets the clock to its time, keeps the blocks and lowers no epoch. -/
-theorem onTickPerSlot_frame {timeMs : UInt64} {after : Store preset fork}
+private theorem onTickPerSlot_frame_payloads {timeMs : UInt64} {after : Store preset fork}
     (ticked : store.onTickPerSlot config timeMs = .ok after) :
-    after.timeMs = timeMs ∧ after.genesisTimeMs = store.genesisTimeMs ∧ store.EpochsLe after ∧
-      after.blocks = store.blocks ∧ after.blockStates = store.blockStates := by
+    (after.timeMs = timeMs ∧ after.genesisTimeMs = store.genesisTimeMs ∧ store.EpochsLe after ∧
+      after.blocks = store.blocks ∧ after.blockStates = store.blockStates) ∧
+      after.payloads = store.payloads := by
   unfold onTickPerSlot at ticked
   simp only [bind_ok_iff] at ticked
   obtain ⟨previous, -, current, -, ticked⟩ := ticked
@@ -243,18 +259,24 @@ theorem onTickPerSlot_frame {timeMs : UInt64} {after : Store preset fork}
       split at ticked
       · simp only [pure, Except.pure, Except.ok.injEq] at ticked
         subst ticked
-        refine ⟨by simp, by simp, ?_, by simp, by simp⟩
+        refine ⟨⟨by simp, by simp, ?_, by simp, by simp⟩, by simp⟩
         exact (EpochsLe.of_eq (by rfl) (by rfl)).trans (updateCheckpoints_epochsLe _ _)
       · simp only [pure, Except.pure, Except.ok.injEq] at ticked
         subst ticked
-        exact ⟨rfl, rfl, EpochsLe.of_eq (by rfl) (by rfl), rfl, rfl⟩
+        exact ⟨⟨rfl, rfl, EpochsLe.of_eq (by rfl) (by rfl), rfl, rfl⟩, rfl⟩
 
+/-- A tick within a slot sets the clock to its time, keeps the blocks and lowers no epoch. -/
+theorem onTickPerSlot_frame {timeMs : UInt64} {after : Store preset fork}
+    (ticked : store.onTickPerSlot config timeMs = .ok after) :
+    after.timeMs = timeMs ∧ after.genesisTimeMs = store.genesisTimeMs ∧ store.EpochsLe after ∧
+      after.blocks = store.blocks ∧ after.blockStates = store.blockStates :=
+  (onTickPerSlot_frame_payloads ticked).1
 
-/-- The catch-up loop keeps the time of genesis and the blocks, and lowers no epoch. -/
-theorem catchUp_frame {tickSlot : Slot} {start after : Store preset fork}
+private theorem catchUp_frame_payloads {tickSlot : Slot} {start after : Store preset fork}
     (caught : catchUp config start tickSlot = .ok after) :
-    after.genesisTimeMs = start.genesisTimeMs ∧ start.EpochsLe after ∧
-      after.blocks = start.blocks ∧ after.blockStates = start.blockStates := by
+    (after.genesisTimeMs = start.genesisTimeMs ∧ start.EpochsLe after ∧
+      after.blocks = start.blocks ∧ after.blockStates = start.blockStates) ∧
+      after.payloads = start.payloads := by
   induction start using catchUp.induct config tickSlot with
   | _ start ih =>
     rw [catchUp.eq_1] at caught
@@ -264,25 +286,39 @@ theorem catchUp_frame {tickSlot : Slot} {start after : Store preset fork}
     · simp only [bind_ok_iff] at caught
       obtain ⟨next, -, nextTimeMs, -, ticked, tick, caught⟩ := caught
       split at caught
-      · obtain ⟨g, le, b, bs⟩ := ih ticked ‹_› caught
-        obtain ⟨-, g', le', b', bs'⟩ := onTickPerSlot_frame tick
-        exact ⟨g.trans g', le'.trans le, b.trans b', bs.trans bs'⟩
+      · obtain ⟨⟨g, le, b, bs⟩, p⟩ := ih ticked ‹_› caught
+        obtain ⟨⟨-, g', le', b', bs'⟩, p'⟩ := onTickPerSlot_frame_payloads tick
+        exact ⟨⟨g.trans g', le'.trans le, b.trans b', bs.trans bs'⟩, p.trans p'⟩
       · cases caught
     · simp only [pure, Except.pure, Except.ok.injEq] at caught
       subst caught
-      exact ⟨rfl, EpochsLe.refl _, rfl, rfl⟩
+      exact ⟨⟨rfl, EpochsLe.refl _, rfl, rfl⟩, rfl⟩
+
+/-- The catch-up loop keeps the time of genesis and the blocks, and lowers no epoch. -/
+theorem catchUp_frame {tickSlot : Slot} {start after : Store preset fork}
+    (caught : catchUp config start tickSlot = .ok after) :
+    after.genesisTimeMs = start.genesisTimeMs ∧ start.EpochsLe after ∧
+      after.blocks = start.blocks ∧ after.blockStates = start.blockStates :=
+  (catchUp_frame_payloads caught).1
+
+private theorem onTick_frame_payloads {timeMs : UInt64} {after : Store preset fork}
+    (ticked : store.onTick config timeMs = .ok after) :
+    (after.timeMs = timeMs ∧ store.EpochsLe after ∧
+      after.blocks = store.blocks ∧ after.blockStates = store.blockStates) ∧
+      after.payloads = store.payloads := by
+  unfold onTick at ticked
+  simp only [bind_ok_iff] at ticked
+  obtain ⟨tickSlot, -, caught, caughtUp, ticked⟩ := ticked
+  obtain ⟨⟨-, le, b, bs⟩, p⟩ := catchUp_frame_payloads caughtUp
+  obtain ⟨⟨time, -, le', b', bs'⟩, p'⟩ := onTickPerSlot_frame_payloads ticked
+  exact ⟨⟨time, le.trans le', b'.trans b, bs'.trans bs⟩, p'.trans p⟩
 
 /-- A tick sets the clock to its time, keeps the blocks and lowers no epoch. -/
 theorem onTick_frame {timeMs : UInt64} {after : Store preset fork}
     (ticked : store.onTick config timeMs = .ok after) :
     after.timeMs = timeMs ∧ store.EpochsLe after ∧
-      after.blocks = store.blocks ∧ after.blockStates = store.blockStates := by
-  unfold onTick at ticked
-  simp only [bind_ok_iff] at ticked
-  obtain ⟨tickSlot, -, caught, caughtUp, ticked⟩ := ticked
-  obtain ⟨-, le, b, bs⟩ := catchUp_frame caughtUp
-  obtain ⟨time, -, le', b', bs'⟩ := onTickPerSlot_frame ticked
-  exact ⟨time, le.trans le', b'.trans b, bs'.trans bs⟩
+      after.blocks = store.blocks ∧ after.blockStates = store.blockStates :=
+  (onTick_frame_payloads ticked).1
 
 /-- After a tick, the current slot is the slot of the time of the tick. -/
 theorem getCurrentSlot_onTick {timeMs : UInt64} {after : Store preset fork}
@@ -374,89 +410,108 @@ theorem catchUp_ne_tickNotAdvancing {tickSlot slot : Slot} (start : Store preset
                 omega
       · simp [pure, Except.pure] at stalled
 
+private theorem storeTargetCheckpointState_frame_payloads {checks : SignatureChecks}
+    {target : Checkpoint}
+    {after : Store preset fork}
+    (stored : store.storeTargetCheckpointState config checks target = .ok after) :
+    (store.EpochsLe after ∧ after.blocks = store.blocks ∧ after.blockStates = store.blockStates ∧
+      SameClock store after) ∧ after.payloads = store.payloads := by
+  unfold storeTargetCheckpointState at stored
+  split at stored
+  · simp only [pure, Except.pure, Except.ok.injEq] at stored
+    subst stored
+    exact ⟨⟨EpochsLe.refl _, rfl, rfl, .refl _⟩, rfl⟩
+  · simp only [bind_ok_iff] at stored
+    obtain ⟨_, _, stored⟩ := stored
+    simp only [pure, Except.pure, Except.ok.injEq] at stored
+    subst stored
+    exact ⟨⟨EpochsLe.of_eq (by rfl) (by rfl), rfl, rfl, ⟨rfl, rfl⟩⟩, rfl⟩
+
 /-- Storing the state of a target keeps the checkpoints, the blocks, their states and the clock. -/
 theorem storeTargetCheckpointState_frame {checks : SignatureChecks} {target : Checkpoint}
     {after : Store preset fork}
     (stored : store.storeTargetCheckpointState config checks target = .ok after) :
     store.EpochsLe after ∧ after.blocks = store.blocks ∧ after.blockStates = store.blockStates ∧
-      SameClock store after := by
-  unfold storeTargetCheckpointState at stored
-  split at stored
-  · simp only [pure, Except.pure, Except.ok.injEq] at stored
-    subst stored
-    exact ⟨EpochsLe.refl _, rfl, rfl, .refl _⟩
-  · simp only [bind_ok_iff] at stored
-    obtain ⟨_, _, stored⟩ := stored
-    simp only [pure, Except.pure, Except.ok.injEq] at stored
-    subst stored
-    exact ⟨EpochsLe.of_eq (by rfl) (by rfl), rfl, rfl, ⟨rfl, rfl⟩⟩
+      SameClock store after :=
+  (storeTargetCheckpointState_frame_payloads stored).1
+
+private theorem onAttestation_frame_payloads {checks : SignatureChecks}
+    {attestation : Attestation preset fork}
+    {isFromBlock : Bool} {after : Store preset fork}
+    (attested : store.onAttestation config checks attestation isFromBlock = .ok after) :
+    (store.EpochsLe after ∧ after.blocks = store.blocks ∧ after.blockStates = store.blockStates ∧
+      SameClock store after) ∧ after.payloads = store.payloads := by
+  unfold onAttestation at attested
+  simp only [bind_ok_iff] at attested
+  obtain ⟨_, _, stored, storing, _, _, _, _, _, _, valid, _, attested⟩ := attested
+  obtain ⟨⟨le, b, bs, clock⟩, payloads⟩ := storeTargetCheckpointState_frame_payloads storing
+  split at attested
+  · simp only [pure, Except.pure, Except.ok.injEq] at attested
+    subst attested
+    exact ⟨⟨le, b, bs, clock⟩, payloads⟩
+  · simp [throw, throwThe, MonadExceptOf.throw, bind, Except.bind] at attested
 
 /-- An attestation lowers no epoch, and keeps the blocks and their states. -/
 theorem onAttestation_frame {checks : SignatureChecks} {attestation : Attestation preset fork}
     {isFromBlock : Bool} {after : Store preset fork}
     (attested : store.onAttestation config checks attestation isFromBlock = .ok after) :
     store.EpochsLe after ∧ after.blocks = store.blocks ∧ after.blockStates = store.blockStates := by
-  unfold onAttestation at attested
-  simp only [bind_ok_iff] at attested
-  obtain ⟨_, _, stored, storing, _, _, _, _, _, _, valid, _, attested⟩ := attested
-  obtain ⟨le, b, bs, -⟩ := storeTargetCheckpointState_frame storing
-  split at attested
-  · simp only [pure, Except.pure, Except.ok.injEq] at attested
-    subst attested
-    exact ⟨le, b, bs⟩
-  · simp [throw, throwThe, MonadExceptOf.throw, bind, Except.bind] at attested
+  obtain ⟨⟨le, b, bs, -⟩, -⟩ := onAttestation_frame_payloads attested
+  exact ⟨le, b, bs⟩
+
+private theorem onAttesterSlashing_frame_payloads {checks : SignatureChecks}
+    {slashing : AttesterSlashing preset fork} {after : Store preset fork}
+    (slashed : store.onAttesterSlashing config checks slashing = .ok after) :
+    (store.EpochsLe after ∧ after.blocks = store.blocks ∧ after.blockStates = store.blockStates ∧
+      SameClock store after) ∧ after.payloads = store.payloads := by
+  unfold onAttesterSlashing at slashed
+  simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at slashed
+  obtain ⟨_, _, slashed⟩ := slashed
+  subst slashed
+  exact ⟨⟨EpochsLe.of_eq (by rfl) (by rfl), rfl, rfl, .refl _⟩, rfl⟩
 
 /-- An attester slashing lowers no epoch, and keeps the blocks and their states. -/
 theorem onAttesterSlashing_frame {checks : SignatureChecks}
     {slashing : AttesterSlashing preset fork} {after : Store preset fork}
     (slashed : store.onAttesterSlashing config checks slashing = .ok after) :
     store.EpochsLe after ∧ after.blocks = store.blocks ∧ after.blockStates = store.blockStates := by
-  unfold onAttesterSlashing at slashed
-  simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at slashed
-  obtain ⟨_, _, slashed⟩ := slashed
-  subst slashed
-  exact ⟨EpochsLe.of_eq (by rfl) (by rfl), rfl, rfl⟩
+  obtain ⟨⟨le, b, bs, -⟩, -⟩ := onAttesterSlashing_frame_payloads slashed
+  exact ⟨le, b, bs⟩
 
 /-- An attestation keeps the clock. -/
 theorem onAttestation_sameClock {checks : SignatureChecks} {attestation : Attestation preset fork}
     {isFromBlock : Bool} {after : Store preset fork}
     (attested : store.onAttestation config checks attestation isFromBlock = .ok after) :
     SameClock store after := by
-  unfold onAttestation at attested
-  simp only [bind_ok_iff] at attested
-  obtain ⟨_, _, stored, storing, _, _, _, _, _, _, valid, _, attested⟩ := attested
-  have first := (storeTargetCheckpointState_frame storing).2.2.2
-  split at attested
-  · simp only [pure, Except.pure, Except.ok.injEq] at attested
-    subst attested
-    exact first
-  · simp [throw, throwThe, MonadExceptOf.throw, bind, Except.bind] at attested
+  exact (onAttestation_frame_payloads attested).1.2.2.2
 
 /-- An attester slashing keeps the clock. -/
 theorem onAttesterSlashing_sameClock {checks : SignatureChecks}
     {slashing : AttesterSlashing preset fork} {after : Store preset fork}
     (slashed : store.onAttesterSlashing config checks slashing = .ok after) :
     SameClock store after := by
-  unfold onAttesterSlashing at slashed
-  simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at slashed
-  obtain ⟨_, _, slashed⟩ := slashed
-  subst slashed
-  exact ⟨rfl, rfl⟩
+  exact (onAttesterSlashing_frame_payloads slashed).1.2.2.2
 
-/-- Recording the timeliness of a block changes only the timeliness, and keeps the clock. -/
-theorem recordBlockTimeliness_frame {root : Root} {after : Store preset fork}
+private theorem recordBlockTimeliness_frame_payloads {root : Root} {after : Store preset fork}
     (recorded : store.recordBlockTimeliness config root = .ok after) :
-    store.EpochsLe after ∧ after.blocks = store.blocks ∧ after.blockStates = store.blockStates ∧
-      SameClock store after := by
+    (store.EpochsLe after ∧ after.blocks = store.blocks ∧ after.blockStates = store.blockStates ∧
+      SameClock store after) ∧ after.payloads = store.payloads := by
   unfold recordBlockTimeliness at recorded
   simp only [bind_ok_iff, pure, Except.pure] at recorded
   obtain ⟨_, _, _, _, _, _, _, _, recorded⟩ := recorded
   split at recorded
   · simp only [bind_ok_iff, Except.ok.injEq] at recorded
     obtain ⟨_, _, rfl⟩ := recorded
-    exact ⟨EpochsLe.of_eq (by rfl) (by rfl), rfl, rfl, ⟨rfl, rfl⟩⟩
+    exact ⟨⟨EpochsLe.of_eq (by rfl) (by rfl), rfl, rfl, ⟨rfl, rfl⟩⟩, rfl⟩
   · cases recorded
-    exact ⟨EpochsLe.of_eq (by rfl) (by rfl), rfl, rfl, ⟨rfl, rfl⟩⟩
+    exact ⟨⟨EpochsLe.of_eq (by rfl) (by rfl), rfl, rfl, ⟨rfl, rfl⟩⟩, rfl⟩
+
+/-- Recording the timeliness of a block changes only the timeliness, and keeps the clock. -/
+theorem recordBlockTimeliness_frame {root : Root} {after : Store preset fork}
+    (recorded : store.recordBlockTimeliness config root = .ok after) :
+    store.EpochsLe after ∧ after.blocks = store.blocks ∧ after.blockStates = store.blockStates ∧
+      SameClock store after :=
+  (recordBlockTimeliness_frame_payloads recorded).1
 
 /-- From Gloas a recorded block also gets whether it came before the payload committee's deadline.
 
@@ -477,11 +532,11 @@ theorem recordBlockTimeliness_ptc {root : Root} {after : Store preset fork}
   exact ⟨block, current, time, deadline, block_ok_iff.mp found, currentOk, timeOk, deadlineOk,
     by simp⟩
 
-/-- Updating the boost changes only the boosted root, and keeps the clock. -/
-theorem updateProposerBoostRoot_frame {head root : Root} {after : Store preset fork}
+private theorem updateProposerBoostRoot_frame_payloads {head root : Root}
+    {after : Store preset fork}
     (updated : store.updateProposerBoostRoot config head root = .ok after) :
-    store.EpochsLe after ∧ after.blocks = store.blocks ∧ after.blockStates = store.blockStates ∧
-      SameClock store after := by
+    (store.EpochsLe after ∧ after.blocks = store.blocks ∧ after.blockStates = store.blockStates ∧
+      SameClock store after) ∧ after.payloads = store.payloads := by
   unfold updateProposerBoostRoot at updated
   split at updated
   rotate_left
@@ -489,7 +544,14 @@ theorem updateProposerBoostRoot_frame {head root : Root} {after : Store preset f
   simp only [bind_ok_iff, pure_bind] at updated
   obtain ⟨_, _, _, _, _, _, updated⟩ := updated
   split at updated <;> simp only [pure, Except.pure, Except.ok.injEq] at updated <;>
-    subst updated <;> exact ⟨EpochsLe.of_eq (by rfl) (by rfl), rfl, rfl, ⟨rfl, rfl⟩⟩
+    subst updated <;> exact ⟨⟨EpochsLe.of_eq (by rfl) (by rfl), rfl, rfl, ⟨rfl, rfl⟩⟩, rfl⟩
+
+/-- Updating the boost changes only the boosted root, and keeps the clock. -/
+theorem updateProposerBoostRoot_frame {head root : Root} {after : Store preset fork}
+    (updated : store.updateProposerBoostRoot config head root = .ok after) :
+    store.EpochsLe after ∧ after.blocks = store.blocks ∧ after.blockStates = store.blockStates ∧
+      SameClock store after :=
+  (updateProposerBoostRoot_frame_payloads updated).1
 
 /-- The store changes at most in its two vote maps of the payload committee. -/
 def OnlyPtcVotes (before after : Store preset fork) : Prop :=
@@ -947,6 +1009,32 @@ theorem validateOnBlock_of_parent_state {checks : SignatureChecks}
     · rfl
   · rfl
 
+private theorem addBlock_ok_payloads {checks : SignatureChecks} {sources : BlockSources preset fork}
+    {signed : SignedBeaconBlock preset fork}
+    {blockRoot : Root} {after : Store preset fork}
+    (added : store.addBlock config checks sources signed blockRoot = .ok after) :
+    (store.EpochsLe after ∧ after.blocks[blockRoot]? = some signed.message ∧
+      ∃ pre state, store.blockStates[signed.message.parentRoot]? = some pre ∧
+        stateTransition config checks sources.engine pre signed true = .ok state ∧
+        after.blockStates[blockRoot]? = some state) ∧ after.payloads = store.payloads := by
+  unfold addBlock at added
+  simp only [bind_ok_iff] at added
+  obtain ⟨state, valid, head, -, voted, vote, recorded, record, boosted, boost, added⟩ := added
+  obtain ⟨le0, b0, bs0⟩ := (recordBlockPtcVotes_onlyPtcVotes vote).frame
+  obtain ⟨⟨le1, b1, bs1, -⟩, p1⟩ := recordBlockTimeliness_frame_payloads record
+  obtain ⟨⟨le2, b2, bs2, -⟩, p2⟩ := updateProposerBoostRoot_frame_payloads boost
+  obtain ⟨⟨le3, b3, bs3, -⟩, p3⟩ := computePulledUpTip_frame_payloads added
+  refine ⟨⟨((EpochsLe.of_eq rfl rfl).trans (le0.trans (le1.trans le2))).trans
+    ((updateCheckpoints_epochsLe _ _).trans le3), ?_, ?_⟩, ?_⟩
+  · rw [b3, updateCheckpoints_blocks, b2, b1, b0]
+    simp
+  · obtain ⟨pre, found, -, -, transition⟩ := validateOnBlock_ok valid
+    refine ⟨pre, state, found, transition, ?_⟩
+    rw [bs3, updateCheckpoints_blockStates, bs2, bs1, bs0]
+    simp
+  · obtain ⟨_, _, voteEq⟩ := recordBlockPtcVotes_onlyPtcVotes vote
+    rw [p3, updateCheckpoints_payloads, p2, p1, voteEq]
+
 /-- A new block enters the store with the state after it, and no epoch falls.
 
 That state is the one the state transition computes from the state after the parent. -/
@@ -957,22 +1045,8 @@ theorem addBlock_ok {checks : SignatureChecks} {sources : BlockSources preset fo
     store.EpochsLe after ∧ after.blocks[blockRoot]? = some signed.message ∧
       ∃ pre state, store.blockStates[signed.message.parentRoot]? = some pre ∧
         stateTransition config checks sources.engine pre signed true = .ok state ∧
-        after.blockStates[blockRoot]? = some state := by
-  unfold addBlock at added
-  simp only [bind_ok_iff] at added
-  obtain ⟨state, valid, head, -, voted, vote, recorded, record, boosted, boost, added⟩ := added
-  obtain ⟨le0, b0, bs0⟩ := (recordBlockPtcVotes_onlyPtcVotes vote).frame
-  obtain ⟨le1, b1, bs1, -⟩ := recordBlockTimeliness_frame record
-  obtain ⟨le2, b2, bs2, -⟩ := updateProposerBoostRoot_frame boost
-  obtain ⟨le3, b3, bs3, -⟩ := computePulledUpTip_frame added
-  refine ⟨((EpochsLe.of_eq rfl rfl).trans (le0.trans (le1.trans le2))).trans
-    ((updateCheckpoints_epochsLe _ _).trans le3), ?_, ?_⟩
-  · rw [b3, updateCheckpoints_blocks, b2, b1, b0]
-    simp
-  · obtain ⟨pre, found, -, -, transition⟩ := validateOnBlock_ok valid
-    refine ⟨pre, state, found, transition, ?_⟩
-    rw [bs3, updateCheckpoints_blockStates, bs2, bs1, bs0]
-    simp
+        after.blockStates[blockRoot]? = some state :=
+  (addBlock_ok_payloads added).1
 
 /-- A block that the store holds already leaves the store as it was. -/
 theorem onBlock_known {checks : SignatureChecks} {sources : BlockSources preset fork}
@@ -1650,113 +1724,33 @@ theorem isValidDependentRoot_ok_iff {root : Root} {dependentSlot : Slot} {possib
 /-- Ticking the store keeps its verified payloads. -/
 theorem onTick_payloads {timeMs : UInt64} {after : Store preset fork}
     (ok : store.onTick config timeMs = .ok after) : after.payloads = store.payloads := by
-  have one {s t : Store preset fork} {time : UInt64}
-      (ok : s.onTickPerSlot config time = .ok t) : t.payloads = s.payloads := by
-    unfold onTickPerSlot at ok
-    simp only [bind_ok_iff] at ok
-    obtain ⟨_, _, _, _, ok⟩ := ok
-    split at ok <;> obtain ⟨_, _, ok⟩ := ok <;> split at ok <;>
-      simp only [pure, Except.pure, Except.ok.injEq] at ok <;> subst t
-    all_goals simp only [updateCheckpoints]; repeat' first | rfl | split
-  have loop {s t : Store preset fork} {slot : Slot}
-      (ok : catchUp config s slot = .ok t) : t.payloads = s.payloads := by
-    induction s using catchUp.induct config slot with
-    | _ s ih =>
-      rw [catchUp.eq_1] at ok
-      simp only [bind_ok_iff] at ok
-      obtain ⟨_, _, ok⟩ := ok
-      split at ok
-      · simp only [bind_ok_iff] at ok
-        obtain ⟨_, _, _, _, t, tick, ok⟩ := ok
-        split at ok
-        · exact (ih t ‹_› ok).trans (one tick)
-        · cases ok
-      · simpa [pure, Except.pure] using congrArg Store.payloads (Except.ok.inj ok).symm
-  unfold onTick at ok
-  simp only [bind_ok_iff] at ok
-  obtain ⟨_, _, _, caught, tick⟩ := ok
-  exact (one tick).trans (loop caught)
+  exact (onTick_frame_payloads ok).2
 
 /-- An attestation keeps the verified payloads. -/
 theorem onAttestation_payloads {checks : SignatureChecks} {after : Store preset fork}
     {a : Attestation preset fork} {fromBlock : Bool}
     (ok : store.onAttestation config checks a fromBlock = .ok after) :
     after.payloads = store.payloads := by
-  have target {s t : Store preset fork} {cp : Checkpoint}
-      (ok : s.storeTargetCheckpointState config checks cp = .ok t) : t.payloads = s.payloads := by
-    unfold storeTargetCheckpointState at ok
-    split at ok
-    · cases ok; rfl
-    · simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at ok
-      obtain ⟨_, _, rfl⟩ := ok
-      rfl
-  unfold onAttestation at ok
-  simp only [bind_ok_iff] at ok
-  obtain ⟨_, _, s, stored, _, _, _, _, _, _, _, _, ok⟩ := ok
-  split at ok
-  · simp only [pure, Except.pure, Except.ok.injEq] at ok
-    subst after
-    simpa [updateLatestMessages] using target stored
-  · cases ok
+  exact (onAttestation_frame_payloads ok).2
 
 /-- An attester slashing keeps the verified payloads. -/
 theorem onAttesterSlashing_payloads {checks : SignatureChecks} {after : Store preset fork}
     {a : AttesterSlashing preset fork}
     (ok : store.onAttesterSlashing config checks a = .ok after) :
     after.payloads = store.payloads := by
-  unfold onAttesterSlashing at ok
-  simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at ok
-  obtain ⟨_, _, rfl⟩ := ok
-  rfl
+  exact (onAttesterSlashing_frame_payloads ok).2
 
 /-- A block keeps the verified payloads of the store. -/
 theorem onBlock_payloads {checks : SignatureChecks} {sources : BlockSources preset fork}
     {after : Store preset fork} {sb : SignedBeaconBlock preset fork}
     (ok : store.onBlock config checks sources sb = .ok after) :
     after.payloads = store.payloads := by
-  have cp (s : Store preset fork) (j f : Checkpoint) :
-      (s.updateCheckpoints j f).payloads = s.payloads := by
-    unfold updateCheckpoints
-    split <;> dsimp only <;> split <;> rfl
-  have ucp (s : Store preset fork) (j f : Checkpoint) :
-      (s.updateUnrealizedCheckpoints j f).payloads = s.payloads := by
-    unfold updateUnrealizedCheckpoints
-    split <;> dsimp only <;> split <;> rfl
-  have tip {s t : Store preset fork} {r : Root}
-      (ok : s.computePulledUpTip config r = .ok t) : t.payloads = s.payloads := by
-    unfold computePulledUpTip at ok
-    simp only [bind_ok_iff] at ok
-    obtain ⟨_, _, _, _, _, _, _, _, ok⟩ := ok
-    split at ok <;> simp only [pure, Except.pure, Except.ok.injEq] at ok <;> subst t
-    · rw [cp, ucp]
-    · rw [ucp]
   unfold onBlock at ok
   simp only [bind_ok_iff] at ok
   obtain ⟨r, _, ok⟩ := ok
   split at ok
   · cases ok; rfl
-  · unfold addBlock at ok
-    simp only [bind_ok_iff] at ok
-    obtain ⟨state, _, head, _, voted, vote, timed, time, boosted, boost, ok⟩ := ok
-    obtain ⟨_, _, voteEq⟩ := recordBlockPtcVotes_onlyPtcVotes vote
-    have timeEq : timed.payloads = voted.payloads := by
-      unfold recordBlockTimeliness at time
-      simp only [bind_ok_iff, pure, Except.pure] at time
-      obtain ⟨_, _, _, _, _, _, _, _, time⟩ := time
-      split at time
-      · simp only [bind_ok_iff, Except.ok.injEq] at time
-        obtain ⟨_, _, rfl⟩ := time
-        rfl
-      · cases time; rfl
-    have boostEq : boosted.payloads = timed.payloads := by
-      unfold updateProposerBoostRoot at boost
-      split at boost
-      rotate_left
-      · simp [throw, throwThe, MonadExceptOf.throw, bind, Except.bind] at boost
-      simp only [bind_ok_iff, pure_bind] at boost
-      obtain ⟨_, _, _, _, _, _, boost⟩ := boost
-      split at boost <;> cases boost <;> rfl
-    rw [tip ok, cp, boostEq, timeEq, voteEq]
+  · exact (addBlock_ok_payloads ok).2
 
 end Store
 

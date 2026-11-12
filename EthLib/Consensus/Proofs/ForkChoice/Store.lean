@@ -253,13 +253,15 @@ theorem getAncestor_trans {node ancestor : ForkChoiceNode} {higher lower : Slot}
         subst same
         simp [notLower, throw, throwThe, MonadExceptOf.throw] at walk
 
-/-- A walk keeps its result in a store that keeps every block of this one. -/
-theorem getAncestor_of_blocks {after : Store preset fork} {node ancestor : ForkChoiceNode}
-    {slot : Slot}
-    (blocks : ∀ {root : Root} {block : BeaconBlock preset fork},
-      store.blocks[root]? = some block → after.blocks[root]? = some block)
-    (walk : store.getAncestor node slot = .ok ancestor) :
-    after.getAncestor node slot = .ok ancestor := by
+/-- A property of the end of a successful walk propagates through its parent steps. -/
+theorem getAncestor_induction {node ancestor : ForkChoiceNode} {slot : Slot}
+    {P : ForkChoiceNode → Prop} (walk : store.getAncestor node slot = .ok ancestor)
+    (stop : P ancestor)
+    (step : ∀ (node : ForkChoiceNode) (block parent : BeaconBlock preset fork),
+      store.blocks[node.root]? = some block → store.blocks[block.parentRoot]? = some parent →
+      slot < block.slot → parent.slot < block.slot →
+      store.getAncestor ⟨block.parentRoot, parentPayloadStatus block parent⟩ slot = .ok ancestor →
+      P ⟨block.parentRoot, parentPayloadStatus block parent⟩ → P node) : P node := by
   induction node using getAncestor.induct (store := store) (slot := slot) with
   | case1 node found =>
     rw [getAncestor] at walk
@@ -267,7 +269,7 @@ theorem getAncestor_of_blocks {after : Store preset fork} {node ancestor : ForkC
   | case2 node block found le =>
     rw [getAncestor_of_le found le] at walk
     cases walk
-    exact getAncestor_of_le (blocks found) le
+    exact stop
   | case3 node block found above parentFound =>
     rw [getAncestor] at walk
     split at walk
@@ -279,8 +281,7 @@ theorem getAncestor_of_blocks {after : Store preset fork} {node ancestor : ForkC
       split at walk <;> simp_all [throw, throwThe, MonadExceptOf.throw]
   | case4 node block found above parent parentFound lower ih =>
     rw [getAncestor_step found above parentFound lower] at walk
-    rw [getAncestor_step (blocks found) above (blocks parentFound) lower]
-    exact ih walk
+    exact step node block parent found parentFound (UInt64.not_le.mp above) lower walk (ih walk)
   | case5 node block found above parent parentFound notLower =>
     rw [getAncestor] at walk
     split at walk
@@ -295,6 +296,20 @@ theorem getAncestor_of_blocks {after : Store preset fork} {node ancestor : ForkC
         rw [parentFound, Option.some.injEq] at same
         subst same
         simp [notLower, throw, throwThe, MonadExceptOf.throw] at walk
+
+/-- A walk keeps its result in a store that keeps every block of this one. -/
+theorem getAncestor_of_blocks {after : Store preset fork} {node ancestor : ForkChoiceNode}
+    {slot : Slot}
+    (blocks : ∀ {root : Root} {block : BeaconBlock preset fork},
+      store.blocks[root]? = some block → after.blocks[root]? = some block)
+    (walk : store.getAncestor node slot = .ok ancestor) :
+    after.getAncestor node slot = .ok ancestor := by
+  obtain ⟨block, found, le⟩ := getAncestor_le walk
+  apply getAncestor_induction (P := fun node => after.getAncestor node slot = .ok ancestor) walk
+  · exact getAncestor_of_le (blocks found) le
+  · intro node block parent found parentFound above lower _ ih
+    rw [getAncestor_step (blocks found) (UInt64.not_le.mpr above) (blocks parentFound) lower]
+    exact ih
 
 /-- Admission above a held ancestor reproduces the successful walk and every higher walk.
 
@@ -312,13 +327,12 @@ theorem getAncestor_of_admission {receiver : Store preset fork}
     (∃ b, store.blocks[node.root]? = some b ∧ receiver.blocks[node.root]? = some b) ∧
       ∀ target, slot ≤ target →
         receiver.getAncestor node target = store.getAncestor node target := by
-  induction node using getAncestor.induct (store := store) (slot := slot) with
-  | case1 node found =>
-    rw [getAncestor] at walk
-    split at walk <;> simp_all [throw, throwThe, MonadExceptOf.throw]
-  | case2 node block found le =>
-    rw [getAncestor_of_le found le] at walk
-    cases walk
+  obtain ⟨block, found, le⟩ := getAncestor_le walk
+  apply getAncestor_induction (P := fun node =>
+    (∃ b, store.blocks[node.root]? = some b ∧ receiver.blocks[node.root]? = some b) ∧
+      ∀ target, slot ≤ target →
+        receiver.getAncestor node target = store.getAncestor node target) walk
+  ·
     obtain ⟨other, known⟩ := base
     have eq := same _ block other found known
     subst other
@@ -326,45 +340,21 @@ theorem getAncestor_of_admission {receiver : Store preset fork}
     intro target higher
     rw [getAncestor_of_le found (UInt64.le_trans le higher),
       getAncestor_of_le known (UInt64.le_trans le higher)]
-  | case3 node block found above parentFound =>
-    rw [getAncestor] at walk
-    split at walk
-    · simp_all
-    · rename_i b eq
-      rw [found, Option.some.injEq] at eq
-      subst eq
-      simp only [above, ↓reduceIte] at walk
-      split at walk <;> simp_all [throw, throwThe, MonadExceptOf.throw]
-  | case4 node block found above parent parentFound lower ih =>
-    rw [getAncestor_step found above parentFound lower] at walk
-    obtain ⟨⟨p, pf, pk⟩, agree⟩ := ih walk
+  · intro node block parent found parentFound above lower walk ih
+    obtain ⟨⟨p, pf, pk⟩, agree⟩ := ih
     have eq := Option.some.inj (parentFound.symm.trans pf)
     subst p
     have parentWalk : receiver.getAncestor
         ⟨block.parentRoot, parentPayloadStatus block parent⟩ slot = .ok ancestor := by
       rw [agree slot (UInt64.le_refl _), walk]
     have known := admission node.root block parent found parentFound
-      (UInt64.not_le.mp above) lower pk parentWalk
+      above lower pk parentWalk
     refine ⟨⟨block, found, known⟩, ?_⟩
     intro target higher
     by_cases le : block.slot ≤ target
     · rw [getAncestor_of_le found le, getAncestor_of_le known le]
     · rw [getAncestor_step found le parentFound lower,
         getAncestor_step known le pk lower, agree target higher]
-  | case5 node block found above parent parentFound notLower =>
-    rw [getAncestor] at walk
-    split at walk
-    · simp_all
-    · rename_i b eq
-      rw [found, Option.some.injEq] at eq
-      subst eq
-      simp only [above, ↓reduceIte] at walk
-      split at walk
-      · simp_all
-      · rename_i p eq
-        rw [parentFound, Option.some.injEq] at eq
-        subst eq
-        simp [notLower, throw, throwThe, MonadExceptOf.throw] at walk
 
 /-- A checkpoint block stays the same in a store that keeps every block of this one. -/
 theorem getCheckpointBlock_of_blocks {after : Store preset fork} {root checkpoint : Root}
@@ -383,14 +373,21 @@ theorem getCheckpointBlock_of_blocks {after : Store preset fork} {root checkpoin
       rw [getAncestor_of_blocks blocks walk]
       exact found
 
+/-- A node descends from the result of its successful ancestor walk. -/
+theorem isAncestor_of_getAncestor {node ancestor : ForkChoiceNode} {slot : Slot}
+    (walk : store.getAncestor node slot = .ok ancestor) :
+    store.isAncestor node ancestor = .ok true := by
+  obtain ⟨block, found, le⟩ := getAncestor_le walk
+  have stops : store.getAncestor node block.slot = .ok ancestor := by
+    rw [getAncestor_trans le walk, getAncestor_of_le found (UInt64.le_refl _)]
+  by_cases gloas : .glamsterdam ≤ fork <;>
+    simp [isAncestor, block_ok_iff.mpr found, stops, gloas, bind, Except.bind, pure, Except.pure]
+
 /-- Every known node descends from itself. -/
 theorem isAncestor_self {node : ForkChoiceNode} {block : BeaconBlock preset fork}
     (found : store.blocks[node.root]? = some block) :
     store.isAncestor node node = .ok true := by
-  have known : store.block node.root = .ok block := block_ok_iff.mpr found
-  by_cases gloas : .glamsterdam ≤ fork <;>
-    simp [isAncestor, known, getAncestor_of_le found (UInt64.le_refl _), gloas, bind,
-      Except.bind, pure, Except.pure]
+  exact isAncestor_of_getAncestor (getAncestor_of_le found (UInt64.le_refl _))
 
 /-- A node that descends from a known node is a known block, at the slot of that node or later. -/
 theorem slot_le_of_isAncestor {node ancestor : ForkChoiceNode} {block : BeaconBlock preset fork}
