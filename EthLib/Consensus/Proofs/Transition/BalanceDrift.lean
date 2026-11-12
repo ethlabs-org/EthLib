@@ -552,7 +552,8 @@ private theorem effectiveKept_operations {f : Fork} {s t : BeaconState preset f}
             split at changesOk
             · rw [← Array.foldlM_toList] at changesOk
               exact (RegistryLifecycle.foldlM
-                (fun _ _ _ ok => registryLifecycle_processBlsToExecutionChange ok) changesOk).size_le
+                (fun _ _ _ ok => registryLifecycle_processBlsToExecutionChange ok)
+                changesOk).size_le
             · cases changesOk; exact Nat.le_refl _
           · exact (RegistryLifecycle.foldlM
               (fun _ _ _ ok => registryLifecycle_processVoluntaryExit ok) exits).size_le
