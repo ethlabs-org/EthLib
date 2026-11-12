@@ -277,6 +277,102 @@ theorem Execution.exists_getFilteredNodeTree {anchor : Store preset fork}
     ∃ nodes, ((e.world k).state w).getFilteredNodeTree config = .ok nodes := by
   sorry
 
+/-- The unslashed active balances sum to at most the cap when the registry indices fit. -/
+private theorem p7_unslashed_sum_le {state : BeaconState preset fork}
+    (within : state.RegistryWithinLimit) (stakeLe : ActiveStakeAtMost stakeCapGwei state) :
+    ((unslashedActiveBalances state).map fun entry => entry.2.toNat).sum ≤ stakeCapGwei := by
+  classical
+  let entries := unslashedActiveBalances state
+  have balance : ∀ entry ∈ entries, balanceAt state entry.1.toNat = entry.2.toNat := by
+    rintro ⟨index, gwei⟩ member
+    simp only [entries, unslashedActiveBalances, List.mem_filterMap,
+      Option.ite_none_right_eq_some, Option.some.injEq, Prod.mk.injEq, Prod.exists] at member
+    obtain ⟨validator, i, inZip, -, rfl, rfl⟩ := member
+    have found := List.mem_zipIdx_iff_getElem?.mp inZip
+    have lt : i < state.validators.data.size := by
+      simpa using (List.getElem?_eq_some_iff.mp found).1
+    rw [toNat_toUInt64_of_lt within lt]
+    simp [balanceAt, by simpa using found]
+  have distinct : (entries.map (·.1)).Nodup := by
+    have sorted := validatorPositions_sorted within
+      fun validator => isActiveValidator validator (getCurrentEpoch state) && !validator.slashed
+    have same : entries.map (·.1) = state.validators.data.toList.zipIdx.filterMap
+        fun (validator, index) =>
+          if isActiveValidator validator (getCurrentEpoch state) && !validator.slashed then
+            some index.toUInt64
+          else none := by
+      simp only [entries, unslashedActiveBalances, List.map_filterMap]
+      congr 1
+      funext entry
+      split <;> rfl
+    rw [same]
+    exact sorted.imp UInt64.ne_of_lt
+  have subset : (entries.map (·.1)).toFinset ⊆
+      (getActiveValidatorIndices state (getCurrentEpoch state)).toFinset := by
+    intro v member
+    simp only [List.mem_toFinset, List.mem_map] at member
+    obtain ⟨⟨index, gwei⟩, inside, rfl⟩ := member
+    simp only [entries, unslashedActiveBalances, List.mem_filterMap,
+      Option.ite_none_right_eq_some, Option.some.injEq, Prod.mk.injEq, Prod.exists] at inside
+    obtain ⟨validator, i, inZip, active, rfl, -⟩ := inside
+    simp only [List.mem_toFinset, getActiveValidatorIndices, List.mem_filterMap,
+      Option.ite_none_right_eq_some, Option.some.injEq, Prod.exists]
+    exact ⟨validator, i, inZip, (Bool.and_eq_true_iff.mp active).1, rfl⟩
+  have eq : stake (fun v => balanceAt state v.toNat) (entries.map (·.1)).toFinset =
+      (entries.map fun entry => entry.2.toNat).sum := by
+    rw [stake, List.sum_toFinset _ distinct, List.map_map]
+    exact congrArg List.sum (List.map_congr_left fun entry member => balance entry member)
+  exact eq ▸ (stake_mono subset).trans stakeLe
+
+/-- Successful vote checks make the fold succeed, adding at most the given balances. -/
+private theorem p7_fold_exists (store : Store preset fork) (node : ForkChoiceNode)
+    (votes : List (ValidatorIndex × Gwei))
+    (checks : ∀ entry ∈ votes, ∀ message, store.latestMessages[entry.1]? = some message →
+      ∃ result, (store.getSupportedNode message >>= (store.isAncestor · node)) = .ok result)
+    (initial : Nat) :
+    ∃ total,
+      votes.foldlM (init := initial) (fun (total : Nat) (index, balance) =>
+        match store.latestMessages[index]? with
+        | none => pure total
+        | some message => do
+          if store.equivocatingIndices.contains index then return total
+          if ← store.isAncestor (← store.getSupportedNode message) node then
+            return total + balance.toNat
+          return total) = (Except.ok total : Except ForkChoiceError Nat) ∧
+      total ≤ initial + (votes.map fun entry => entry.2.toNat).sum := by
+  induction votes generalizing initial with
+  | nil => exact ⟨initial, rfl, by simp⟩
+  | cons entry rest ih =>
+    obtain ⟨index, balance⟩ := entry
+    have tail := ih (fun entry member => checks entry (List.mem_cons_of_mem _ member))
+    rw [List.foldlM_cons]
+    cases latest : store.latestMessages[index]? with
+    | none =>
+      obtain ⟨total, fold, le⟩ := tail initial
+      exact ⟨total, by simpa only [latest, bind, Except.bind, pure, Except.pure] using fold,
+        by simp only [List.map_cons, List.sum_cons]; omega⟩
+    | some message =>
+      obtain ⟨result, resultOk⟩ := checks _ List.mem_cons_self message latest
+      cases supported : store.getSupportedNode message with
+      | error error => simp [supported, bind, Except.bind] at resultOk
+      | ok supported =>
+        simp only [supported, bind, Except.bind] at resultOk
+        by_cases equivocating : store.equivocatingIndices.contains index
+        · obtain ⟨total, fold, le⟩ := tail initial
+          exact ⟨total,
+            by simpa only [latest, equivocating, ↓reduceIte,
+              bind, Except.bind, pure, Except.pure] using fold,
+            by simp only [List.map_cons, List.sum_cons]; omega⟩
+        · cases result
+          · obtain ⟨total, fold, le⟩ := tail initial
+            exact ⟨total, by simpa only [latest, equivocating, supported, resultOk,
+              Bool.false_eq_true, ↓reduceIte, bind, Except.bind, pure, Except.pure] using fold,
+              by simp only [List.map_cons, List.sum_cons]; omega⟩
+          · obtain ⟨total, fold, le⟩ := tail (initial + balance.toNat)
+            exact ⟨total, by simpa only [latest, equivocating, supported, resultOk,
+              Bool.false_eq_true, ↓reduceIte, bind, Except.bind, pure, Except.pure] using fold,
+              by simpa [Nat.add_assoc] using le⟩
+
 /-- An honest store counts the latest votes for a held block in a state with capped stake.
 
 Before Gloas each vote supports the pending node of its block, which the store holds.
@@ -294,7 +390,31 @@ theorem Execution.exists_scoreFromTally {anchor : Store preset fork}
     (known : ((e.world k).state w).blocks[root]? = some block) :
     ∃ score, ((e.world k).state w).scoreFromTally (((e.world k).state w).tallyVotes state)
       ⟨root, .pending⟩ = .ok score ∧ score.toNat ≤ stakeCapGwei := by
-  sorry
+  have votes : ∀ entry ∈ unslashedActiveBalances state, ∀ message,
+      ((e.world k).state w).latestMessages[entry.1]? = some message →
+      ∃ result, (((e.world k).state w).getSupportedNode message >>=
+        (((e.world k).state w).isAncestor · ⟨root, .pending⟩)) = .ok result := by
+    intro entry _ message latest
+    obtain ⟨attestation, _, _, same, _, origin⟩ :=
+      e.exists_signed_origin_of_latestMessages anchored start honest latest
+    obtain ⟨votedBlock, votedKnown, _⟩ := origin.voted
+    obtain ⟨result, read⟩ := e.exists_isAncestor_of_held anchored start anchorSlot
+      preGloas anchorParent honest bounded votedKnown known
+    refine ⟨result, ?_⟩
+    simpa only [Store.getSupportedNode_of_lt preGloas, same, LatestMessage.ofAttestation,
+      bind, Except.bind] using read
+  obtain ⟨total, fold, le⟩ := p7_fold_exists ((e.world k).state w)
+    ⟨root, .pending⟩ (unslashedActiveBalances state) votes 0
+  have totalLe : total ≤ stakeCapGwei := by
+    simp only [Nat.zero_add] at le
+    exact le.trans (p7_unslashed_sum_le (state.validators.bound preGloas) stakeLe)
+  have fits := totalLe.trans_lt stakeCapGwei_lt
+  refine ⟨total.toUInt64, ?_, ?_⟩
+  · change ((e.world k).state w).getAttestationScore ⟨root, .pending⟩ state = _
+    rw [Store.getAttestationScore_eq_fold, bind_ok_iff]
+    refine ⟨total, fold, ?_⟩
+    simp only [ite_eq_right (Nat.not_le.mpr fits), pure, Except.pure]
+  · simpa only [UInt64.toNat_ofNat_of_lt' fits] using totalLe
 
 /-- The store of an honest validator computes a head at each event up to a last time.
 
