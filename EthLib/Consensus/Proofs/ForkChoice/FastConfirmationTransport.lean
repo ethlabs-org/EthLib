@@ -1315,6 +1315,9 @@ theorem Execution.honest_support_of_historical_anchor {Δ : ℕ} (sync : e.Synch
       ((e.world k).state w).isAncestor
         ⟨((e.world k).state w).justifiedCheckpoint.root, .pending⟩
         ⟨root, .pending⟩ = .ok true := by
+  obtain ⟨receiverTotal, receiverTotalOk⟩ := activeTotal_of_stake_bound
+    (state.validators.bound preGloas)
+    (Nat.lt_of_le_of_lt (supply w receiver k _ state stateOk) stakeCapGwei_lt)
   have receiverIndices : ∀ v ∈ receiverWindow, ∃ validator,
       validatorAt state v = .ok validator := by
     intro v member
