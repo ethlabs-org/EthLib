@@ -441,7 +441,7 @@ theorem boundaryStake_eq_cohort (y : ForkedBeaconState preset)
           intro same
           exact unique.1 (List.mem_map.mpr ⟨v, member, same.symm⟩)
         simp [different, ih unique.2 member]
-  unfold boundaryStake Quorum.weight
+  unfold boundaryStake Models.stake
   rw [selected, List.sum_toFinset _ distinct, List.map_map]
   have weights : (cohort.map fun v => effectiveWeight y.state v.pubkey).sum =
       (cohort.map fun v => v.effectiveBalance.toNat).sum := by
@@ -951,7 +951,7 @@ theorem leaving_before_electra {g x y : ForkedBeaconState preset}
     (List.toFinset_card_le (departing.map (·.pubkey)))
   simp only [List.length_map] at cards
   have xEarly := Nat.lt_of_le_of_lt (fork_le_of_chainSteps tail.chainSteps) early
-  unfold leaving Quorum.weight
+  unfold leaving Models.stake
   calc
     _ ≤ ∑ _key ∈ activeKeys x.state \ activeKeys y.state,
         preset.MAX_EFFECTIVE_BALANCE.toNat :=
@@ -965,7 +965,7 @@ theorem joining_before_electra {g x y : ForkedBeaconState preset}
     (shared : Run config checks g x) (tail : Run config checks x y)
     (genesis : Genesis (config := config) (checks := checks) g)
     (parameters : Parameters preset) (caps : CapOrder preset) (early : y.fork < .pectra) :
-    Quorum.weight (effectiveWeight y.state) (recentKeys y.state \ activeKeys x.state) ≤
+    Models.stake (effectiveWeight y.state) (recentKeys y.state \ activeKeys x.state) ≤
       (((getCurrentEpoch y.state).toNat - (getCurrentEpoch x.state).toNat) *
         cohortCap config y.state.validators.data.size +
         max 1 (cohortCap config y.state.validators.data.size)) *
@@ -1029,7 +1029,7 @@ theorem joining_before_electra {g x y : ForkedBeaconState preset}
   have cards := (Finset.card_le_card subset).trans
     (List.toFinset_card_le ((activated ++ carried).map (·.pubkey)))
   simp only [List.length_map, List.length_append] at cards
-  unfold Quorum.weight
+  unfold Models.stake
   calc
     _ ≤ ∑ _key ∈ recentKeys y.state \ activeKeys x.state,
         preset.MAX_EFFECTIVE_BALANCE.toNat :=
@@ -1044,7 +1044,7 @@ theorem new_recent_before_electra {g x y : ForkedBeaconState preset}
     (shared : Run config checks g x) (tail : Run config checks x y)
     (genesis : Genesis (config := config) (checks := checks) g)
     (parameters : Parameters preset) (caps : CapOrder preset) (early : y.fork < .pectra) :
-    Quorum.weight (effectiveWeight y.state) (recentKeys y.state \ recentKeys x.state) ≤
+    Models.stake (effectiveWeight y.state) (recentKeys y.state \ recentKeys x.state) ≤
       ((getCurrentEpoch y.state).toNat - (getCurrentEpoch x.state).toNat) *
         cohortCap config y.state.validators.data.size * preset.MAX_EFFECTIVE_BALANCE.toNat := by
   classical
@@ -1095,7 +1095,7 @@ theorem new_recent_before_electra {g x y : ForkedBeaconState preset}
   have cards := (Finset.card_le_card subset).trans
     (List.toFinset_card_le (activated.map (·.pubkey)))
   simp only [List.length_map] at cards
-  unfold Quorum.weight
+  unfold Models.stake
   calc
     _ ≤ ∑ _key ∈ recentKeys y.state \ recentKeys x.state,
         preset.MAX_EFFECTIVE_BALANCE.toNat :=
@@ -1110,10 +1110,10 @@ theorem joining_before_electra_split {g x y : ForkedBeaconState preset}
     (shared : Run config checks g x) (tail : Run config checks x y)
     (genesis : Genesis (config := config) (checks := checks) g)
     (parameters : Parameters preset) (caps : CapOrder preset) (early : y.fork < .pectra) :
-    Quorum.weight (effectiveWeight y.state) (recentKeys y.state \ recentKeys x.state) ≤
+    Models.stake (effectiveWeight y.state) (recentKeys y.state \ recentKeys x.state) ≤
       ((getCurrentEpoch y.state).toNat - (getCurrentEpoch x.state).toNat) *
         cohortCap config y.state.validators.data.size * preset.MAX_EFFECTIVE_BALANCE.toNat ∧
-    Quorum.weight (effectiveWeight y.state)
+    Models.stake (effectiveWeight y.state)
       ((recentKeys y.state ∩ recentKeys x.state) \ activeKeys x.state) ≤ boundaryStake x := by
   classical
   refine ⟨new_recent_before_electra shared tail genesis parameters caps early, ?_⟩
@@ -1139,7 +1139,7 @@ theorem joining_before_electra_split {g x y : ForkedBeaconState preset}
     rw [vKey, keyEq] at newWeight
     rw [oldWeight, newWeight]
     simpa [effectiveAt, found, current] using bound
-  unfold boundaryStake Quorum.weight
+  unfold boundaryStake Models.stake
   exact (Finset.sum_le_sum pointwise).trans
     (Finset.sum_le_sum_of_subset_of_nonneg
       (by

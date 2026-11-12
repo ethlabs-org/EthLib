@@ -98,7 +98,7 @@ noncomputable def QuorumCall.voters {g a : ForkedBeaconState preset}
 /-- The lower bound excludes the one-increment floor from manufacturing a quorum. -/
 def EnoughStake {g a : ForkedBeaconState preset} (run : Run config checks g a) : Prop :=
   ∀ call : EpochCall run, 3 * preset.EFFECTIVE_BALANCE_INCREMENT.toNat <
-    2 * Quorum.weight (effectiveWeight call.cached) (activeKeys call.cached)
+    2 * Models.stake (effectiveWeight call.cached) (activeKeys call.cached)
 
 structure JustificationHistory {g a : ForkedBeaconState preset} (run : Run config checks g a)
     (checkpoint : Checkpoint) where
@@ -199,8 +199,8 @@ def FinalizationRule {g a : ForkedBeaconState preset} {run : Run config checks g
 theorem quorum_count {g a : ForkedBeaconState preset} (run : Run config checks g a)
     (genesis : Genesis (config := config) (checks := checks) g)
     (enough : EnoughStake run) (call : QuorumCall run) :
-    2 * Quorum.weight (effectiveWeight call.cached) (activeKeys call.cached) ≤
-      3 * Quorum.weight (effectiveWeight call.cached) call.voters := by
+    2 * Models.stake (effectiveWeight call.cached) (activeKeys call.cached) ≤
+      3 * Models.stake (effectiveWeight call.cached) call.voters := by
   obtain ⟨pre, _, _, _, validators, _⟩ := call.toEpochCall.selected_prefix
   have unique : uniqueKeys call.cached := by
     simpa [uniqueKeys, PubkeysDistinct, validatorKeys, validators] using

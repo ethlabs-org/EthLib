@@ -53,7 +53,7 @@ private theorem funding_assemble {g x y : ForkedBeaconState preset}
       fundedStake b + funding_carry b ≤ fundedStake a + funding_carry a +
         ((getCurrentEpoch b.state).toNat - (getCurrentEpoch a.state).toNat) *
           config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat + (events.map fundingCredit).sum) :
-    Quorum.weight (effectiveWeight y.state) (activeKeys y.state) ≤
+    Models.stake (effectiveWeight y.state) (activeKeys y.state) ≤
       activeStakeWindow (config := config) x high events := by
   have invariant {z : ForkedBeaconState preset} (run : Run config checks g z) :
       Invariant z.state := by
@@ -110,7 +110,7 @@ theorem active_stake_le_window {g x y : ForkedBeaconState preset}
     (withdrawalDelay : 2 ≤ config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat)
     (high : Nat) (endEpoch : (getCurrentEpoch y.state).toNat ≤ high + 1)
     (events : List (BalanceEvent preset)) (replayed : tail.balanceEvents high = .ok events) :
-    Quorum.weight (effectiveWeight y.state) (activeKeys y.state) ≤
+    Models.stake (effectiveWeight y.state) (activeKeys y.state) ≤
       activeStakeWindow (config := config) x high events := by
   exact funding_assemble shared tail genesis parameters electra early withdrawalDelay
     high endEpoch events replayed funding_block funding_slot
@@ -1533,7 +1533,7 @@ private theorem intervalLoss_reference_indices {g x y : ForkedBeaconState preset
         | some v => if ∃ w ∈ y.state.validators.data.toList,
             w.pubkey = v.pubkey ∧ w.slashed = true then 0 else
           effectiveWeight x.state v.pubkey -
-            Quorum.supported (recentKeys y.state) (effectiveWeight y.state) v.pubkey).sum := by
+            Models.supported (recentKeys y.state) (effectiveWeight y.state) v.pubkey).sum := by
   have within := x.state.validators.bound early
   have distinct : (getActiveValidatorIndices x.state (getCurrentEpoch x.state)).Nodup := by
     simpa [List.Nodup] using (getActiveValidatorIndices_sorted within _).imp UInt64.ne_of_lt
@@ -1575,7 +1575,7 @@ private theorem intervalLoss_recent_supported (y : ForkedBeaconState preset)
     (i : ValidatorIndex) (w : Validator) (found : y.state.validators.data[i.toNat]? = some w)
     (recent : isActiveValidator w (getCurrentEpoch y.state) = true ∨
       isActiveValidator w (getPreviousEpoch y.state) = true) :
-    Quorum.supported (recentKeys y.state) (effectiveWeight y.state) w.pubkey =
+    Models.supported (recentKeys y.state) (effectiveWeight y.state) w.pubkey =
       effectiveAt y i.toNat := by
   have selected (epoch : Epoch) (active : isActiveValidator w epoch = true) :
       w.pubkey ∈ keysAt y.state (getActiveValidatorIndices y.state epoch) := by
@@ -1587,7 +1587,7 @@ private theorem intervalLoss_recent_supported (y : ForkedBeaconState preset)
     rcases recent with current | previous
     · exact Finset.mem_union_left _ (selected _ current)
     · exact Finset.mem_union_right _ (selected _ previous)
-  rw [Quorum.supported, if_pos member]
+  rw [Models.supported, if_pos member]
   exact intervalLoss_weight_at y.state unique i.toNat w found
 
 private theorem intervalLoss_sum_bound {g x y : ForkedBeaconState preset}
@@ -1600,7 +1600,7 @@ private theorem intervalLoss_sum_bound {g x y : ForkedBeaconState preset}
       (¬ ∃ w ∈ y.state.validators.data.toList, w.pubkey = v.pubkey ∧ w.slashed = true) →
       v.slashed = false ∧
       effectiveWeight x.state v.pubkey -
-          Quorum.supported (recentKeys y.state) (effectiveWeight y.state) v.pubkey ≤
+          Models.supported (recentKeys y.state) (effectiveWeight y.state) v.pubkey ≤
         departure i +
           (let deficit := effectiveAt x i.toNat - actualBalanceAt x i.toNat +
             (events.map (referenceDebit i.toNat)).sum
@@ -1743,7 +1743,7 @@ private theorem intervalLoss_sum_departures {g x y : ForkedBeaconState preset}
       (¬ ∃ w ∈ y.state.validators.data.toList, w.pubkey = v.pubkey ∧ w.slashed = true) →
       v.slashed = false ∧
       effectiveWeight x.state v.pubkey -
-          Quorum.supported (recentKeys y.state) (effectiveWeight y.state) v.pubkey ≤
+          Models.supported (recentKeys y.state) (effectiveWeight y.state) v.pubkey ≤
         (if v.exitEpoch != FAR_FUTURE_EPOCH && v.exitEpoch.toNat ≤ high + 1 then
           v.effectiveBalance.toNat else 0) +
         (match tail.departureCharges.find? (fun c => c.index == i.toNat) with
@@ -1788,7 +1788,7 @@ private theorem intervalLoss_reference_split (x y : ForkedBeaconState preset) :
   rw [← Finset.sum_add_distrib]
   apply Finset.sum_congr rfl
   intro k _
-  unfold Quorum.supported
+  unfold Models.supported
   split <;> simp_all
 
 private theorem intervalLoss_referenceDebit_of_recent (event : BalanceEvent preset)
@@ -2188,7 +2188,7 @@ private theorem intervalLoss_retained {g x y : ForkedBeaconState preset}
     let deficit := effectiveAt x i.toNat - actualBalanceAt x i.toNat +
       (events.map (referenceDebit i.toNat)).sum
     effectiveWeight x.state v.pubkey -
-        Quorum.supported (recentKeys y.state) (effectiveWeight y.state) v.pubkey ≤
+        Models.supported (recentKeys y.state) (effectiveWeight y.state) v.pubkey ≤
       if deficit = 0 then 0 else deficit + preset.EFFECTIVE_BALANCE_INCREMENT.toNat - 1 := by
   have supported := intervalLoss_supported_events shared tail genesis parameters early high
     endEpoch events replayed i.toNat v w found located active recent
@@ -2294,7 +2294,7 @@ private theorem intervalLoss_pointwise {g x y : ForkedBeaconState preset}
     let deficit := effectiveAt x i.toNat - actualBalanceAt x i.toNat +
       (events.map (referenceDebit i.toNat)).sum
     effectiveWeight x.state v.pubkey -
-        Quorum.supported (recentKeys y.state) (effectiveWeight y.state) v.pubkey ≤
+        Models.supported (recentKeys y.state) (effectiveWeight y.state) v.pubkey ≤
       (if v.exitEpoch != FAR_FUTURE_EPOCH && v.exitEpoch.toNat ≤ high + 1 then
         v.effectiveBalance.toNat else 0) +
       (match tail.departureCharges.find? (fun c => c.index == i.toNat) with
@@ -2531,7 +2531,7 @@ theorem nonaccountable_losses_over_interval {g x y : ForkedBeaconState preset}
   have prefixBound {a b : ForkedBeaconState preset} (pre : Run config checks x a)
       (step : Step config checks a b) (post : Run config checks b y)
       (same : (pre.snoc step).append post = tail) :
-      Quorum.weight (effectiveWeight a.state) (activeKeys a.state) ≤
+      Models.stake (effectiveWeight a.state) (activeKeys a.state) ≤
         activeStakeWindow (config := config) x high events := by
     let rest := (Run.nil.snoc step).append post
     have joined : pre.append rest = tail := by
@@ -2578,7 +2578,7 @@ theorem nonaccountable_losses_over_interval {g x y : ForkedBeaconState preset}
         split at bound
         · split at bound <;> omega
         · omega
-      have weight : Quorum.weight (effectiveWeight a.state) (activeKeys a.state) ≤
+      have weight : Models.stake (effectiveWeight a.state) (activeKeys a.state) ≤
           a.state.validators.data.size * preset.MAX_EFFECTIVE_BALANCE_ELECTRA.toNat := by
         rw [activeKeys, keys_weight _ _ unique inside]
         calc
@@ -2632,7 +2632,9 @@ theorem nonaccountable_losses_over_interval {g x y : ForkedBeaconState preset}
       apply intervalLoss_consolidation_rate earlySite read computed
       rw [totalEq]
       apply max_le_max_left
-      simpa only [activeKeys, active, Models.stake, balanceAt] using bounded
+      unfold activeKeys at bounded
+      rw [active] at bounded
+      simpa only [Models.stake, balanceAt] using bounded
   -- Add scheduled exits and retained-key corrections to the queue window.
   have charges := departure_charges_le_window shared tail genesis parameters caps early high
     (registryWindow x high)
@@ -2889,7 +2891,7 @@ private theorem intervalGain_reference_at {g x y : ForkedBeaconState preset}
     (genesis : Genesis (config := config) (checks := checks) g)
     (parameters : Parameters preset) (early : y.fork < .glamsterdam)
     (i : Nat) (w : Validator) (after : y.state.validators.data[i]? = some w) :
-    Quorum.supported (activeKeys x.state) (effectiveWeight x.state) w.pubkey =
+    Models.supported (activeKeys x.state) (effectiveWeight x.state) w.pubkey =
       (if (x.state.validators.data[i]?.map fun v =>
         isActiveValidator v (getCurrentEpoch x.state)).getD false then effectiveAt x i else 0) := by
   have uniqueX := shared.unique (genesis_unique genesis)
@@ -2914,13 +2916,13 @@ private theorem intervalGain_reference_at {g x y : ForkedBeaconState preset}
       have same := sameIndex found (by simpa [found] using key)
       rw [same, before] at found
       cases found
-    simp [Quorum.supported, absent]
+    simp [Models.supported, absent]
   | some v =>
     obtain ⟨last, found, preserved⟩ := tail.key_preserved i v before
     have same : last = w := Option.some.inj (found.symm.trans after)
     have key : w.pubkey = v.pubkey := same ▸ preserved
     rw [key]
-    simp only [Quorum.supported, intervalGain_active_key x.state parameters within uniqueX
+    simp only [Models.supported, intervalGain_active_key x.state parameters within uniqueX
       i v before, intervalGain_weight_at x.state uniqueX i v before,
       Option.map_some, Option.getD_some]
 
@@ -3396,11 +3398,11 @@ private theorem intervalGain_crossing_of_interfaces {g x y : ForkedBeaconState p
 
 private theorem intervalGain_joining_split (x y : ForkedBeaconState preset)
     (newBound carryBound : Nat)
-    (newKeys : Quorum.weight (effectiveWeight y.state)
+    (newKeys : Models.stake (effectiveWeight y.state)
       (recentKeys y.state \ recentKeys x.state) ≤ newBound)
-    (oldKeys : Quorum.weight (effectiveWeight y.state)
+    (oldKeys : Models.stake (effectiveWeight y.state)
       ((recentKeys y.state ∩ recentKeys x.state) \ activeKeys x.state) ≤ carryBound) :
-    Quorum.weight (effectiveWeight y.state) (recentKeys y.state \ activeKeys x.state) ≤
+    Models.stake (effectiveWeight y.state) (recentKeys y.state \ activeKeys x.state) ≤
       newBound + carryBound := by
   have active : activeKeys x.state ⊆ recentKeys x.state := by
     intro k member
@@ -3423,13 +3425,13 @@ private theorem intervalGain_joining_split (x y : ForkedBeaconState preset)
     apply Finset.disjoint_left.mpr
     intro k first last
     exact (Finset.mem_sdiff.mp first).2 (Finset.mem_inter.mp (Finset.mem_sdiff.mp last).1).2
-  unfold Quorum.weight at *
+  unfold Models.stake at *
   rw [partition, Finset.sum_union disjoint]
   exact Nat.add_le_add newKeys oldKeys
 
 private theorem intervalGain_reference_partition (x y : ForkedBeaconState preset) :
     referenceGain x y = gaining x y +
-      Quorum.weight (effectiveWeight y.state) (recentKeys y.state \ activeKeys x.state) := by
+      Models.stake (effectiveWeight y.state) (recentKeys y.state \ activeKeys x.state) := by
   have partition : recentKeys y.state =
       (recentKeys y.state ∩ activeKeys x.state) ∪
         (recentKeys y.state \ activeKeys x.state) := by
@@ -3448,11 +3450,11 @@ private theorem intervalGain_reference_partition (x y : ForkedBeaconState preset
     rw [Finset.inter_comm]
     apply Finset.sum_congr rfl
     intro k member
-    simp [Quorum.supported, (Finset.mem_inter.mp member).1]
-  · unfold Quorum.weight
+    simp [Models.supported, (Finset.mem_inter.mp member).1]
+  · unfold Models.stake
     apply Finset.sum_congr rfl
     intro k member
-    simp [Quorum.supported, (Finset.mem_sdiff.mp member).2]
+    simp [Models.supported, (Finset.mem_sdiff.mp member).2]
 
 private theorem intervalGain_active_sum (x : ForkedBeaconState preset)
     (unique : uniqueKeys x.state) (early : x.fork < .glamsterdam)
@@ -3701,10 +3703,10 @@ private theorem intervalGain_pre_electra_of_split {x y : ForkedBeaconState prese
     (endEpoch : (getCurrentEpoch y.state).toNat ≤ high + 1)
     (events : List (BalanceEvent preset))
     (splitBound :
-      Quorum.weight (effectiveWeight y.state) (recentKeys y.state \ recentKeys x.state) ≤
+      Models.stake (effectiveWeight y.state) (recentKeys y.state \ recentKeys x.state) ≤
         ((getCurrentEpoch y.state).toNat - (getCurrentEpoch x.state).toNat) *
           cohortCap config y.state.validators.data.size * preset.MAX_EFFECTIVE_BALANCE.toNat ∧
-      Quorum.weight (effectiveWeight y.state)
+      Models.stake (effectiveWeight y.state)
         ((recentKeys y.state ∩ recentKeys x.state) \ activeKeys x.state) ≤ boundaryStake x)
     (gainBound : gaining x y ≤ initialExcess x +
       (events.map (residualCredit (config := config) x high)).sum) :
@@ -3875,12 +3877,12 @@ theorem quorum_drift_from_run {g x y : ForkedBeaconState preset}
     (lower : low ≤ call.target.epoch.toNat) (upper : call.target.epoch.toNat ≤ high) :
     ∃ loss gain outside,
         (∑ k ∈ (activeKeys x.state).filter (fun k => ¬ (shared.append tail).SlashingEvidence k),
-          (effectiveWeight x.state k - Quorum.supported (recentKeys call.cached)
+          (effectiveWeight x.state k - Models.supported (recentKeys call.cached)
             (effectiveWeight call.cached) k)) ≤ loss ∧
         (∑ k ∈ recentKeys call.cached, (effectiveWeight call.cached k -
-          Quorum.supported (activeKeys x.state)
+          Models.supported (activeKeys x.state)
             (effectiveWeight x.state) k)) ≤ gain ∧
-        Quorum.weight (effectiveWeight call.cached)
+        Models.stake (effectiveWeight call.cached)
           (recentKeys call.cached \ activeKeys call.cached) ≤ outside ∧
         2 * loss + gain + 2 * outside ≤ derivedDrift high tail := by
   classical
@@ -3942,7 +3944,7 @@ theorem quorum_drift_from_run {g x y : ForkedBeaconState preset}
       ((Run.nil.snoc (.slot call.advanced)).append post).chainSteps) early
   have lossBound : (∑ k ∈ (activeKeys x.state).filter
       (fun k => ¬ (shared.append tail).SlashingEvidence k),
-      (effectiveWeight x.state k - Quorum.supported (recentKeys before.state)
+      (effectiveWeight x.state k - Models.supported (recentKeys before.state)
         (effectiveWeight before.state) k)) ≤ referenceLoss x before := by
     apply Finset.sum_le_sum_of_subset_of_nonneg
     · intro k hk
@@ -3968,9 +3970,9 @@ theorem quorum_drift_from_run {g x y : ForkedBeaconState preset}
       rfl
   · simpa only [weight, recent] using lossBound
   · exact (congrArg₂ (fun s w => ∑ k ∈ s,
-        (w k - Quorum.supported (activeKeys x.state) (effectiveWeight x.state) k))
+        (w k - Models.supported (activeKeys x.state) (effectiveWeight x.state) k))
         recent weight).le
-  · exact (congrArg₂ (fun w s => Quorum.weight w s) weight
+  · exact (congrArg₂ (fun w s => Models.stake w s) weight
       (congrArg₂ (· \ ·) recent active)).le
 
 end

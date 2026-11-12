@@ -26,9 +26,9 @@ noncomputable def recentKeys {fork : Fork} (s : BeaconState preset fork) : Finse
 noncomputable def unionStake {g a b : ForkedBeaconState preset}
     {left : Run config checks g a} {right : Run config checks g b}
     (one two : EitherCall left right) : Nat :=
-  Quorum.weight (fun k => max
-    (Quorum.supported (recentKeys one.state.state) (effectiveWeight one.state.state) k)
-    (Quorum.supported (recentKeys two.state.state) (effectiveWeight two.state.state) k))
+  Models.stake (fun k => max
+    (Models.supported (recentKeys one.state.state) (effectiveWeight one.state.state) k)
+    (Models.supported (recentKeys two.state.state) (effectiveWeight two.state.state) k))
     (recentKeys one.state.state ∪ recentKeys two.state.state)
 
 noncomputable def commonAccountable {g a b : ForkedBeaconState preset}
@@ -96,9 +96,9 @@ theorem accountable_safety_core {g a b : ForkedBeaconState preset}
       a.state.finalizedCheckpoint.epoch.toNat ≤ one.targetEpoch ∧ one.targetEpoch ≤ j.epoch.toNat ∧
       a.state.finalizedCheckpoint.epoch.toNat ≤ two.targetEpoch ∧ two.targetEpoch ≤ j.epoch.toNat ∧
       (∀ key ∈ one.voters ∩ two.voters, Accountable left right key) ∧
-      2 * (Quorum.weight (effectiveWeight one.state.state) (activeKeys one.state.state) +
-        Quorum.weight (effectiveWeight two.state.state) (activeKeys two.state.state)) ≤
-        3 * Quorum.weight (fun k => min (effectiveWeight one.state.state k)
+      2 * (Models.stake (effectiveWeight one.state.state) (activeKeys one.state.state) +
+        Models.stake (effectiveWeight two.state.state) (activeKeys two.state.state)) ≤
+        3 * Models.stake (fun k => min (effectiveWeight one.state.state k)
           (effectiveWeight two.state.state k)) (commonAccountable left right one two) +
         3 * unionStake one two) ∨ HashEvidence (left.hashObjects ++ right.hashObjects) := by
   classical
@@ -116,8 +116,8 @@ theorem accountable_safety_core {g a b : ForkedBeaconState preset}
       | inl call => exact quorum_voters_recent left parameters genesis earlyA call
       | inr call => exact quorum_voters_recent right parameters genesis earlyB call
     have counted : ∀ call : EitherCall left right,
-        2 * Quorum.weight (effectiveWeight call.state.state) (activeKeys call.state.state) ≤
-          3 * Quorum.weight (effectiveWeight call.state.state) call.voters := by
+        2 * Models.stake (effectiveWeight call.state.state) (activeKeys call.state.state) ≤
+          3 * Models.stake (effectiveWeight call.state.state) call.voters := by
       intro call
       cases call with
       | inl call => exact quorum_count left genesis enoughA call
@@ -125,7 +125,7 @@ theorem accountable_safety_core {g a b : ForkedBeaconState preset}
     refine Or.inl ⟨one, two, loOne, hiOne, loTwo, hiTwo, accountable, ?_⟩
     -- The arithmetic allows distinct supports and weights, including two calls on one run.
     rw [common]
-    exact Quorum.heterogeneous_intersection _ _ _ _ _ _ (inside one) (inside two)
+    exact Models.two_mul_stake_add_le_inter_add_union _ _ _ _ _ _ (inside one) (inside two)
       _ _ (counted one) (counted two)
   · exact Or.inr hashes
 

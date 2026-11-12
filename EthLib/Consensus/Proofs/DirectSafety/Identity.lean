@@ -2,7 +2,7 @@ module
 
 public import EthLib.Consensus.Proofs.DirectSafety.Attestations
 public import EthLib.Consensus.Proofs.Transition.RegistryIdentity
-public import EthLib.Base.Proofs.Quorum
+public import EthLib.Consensus.Proofs.Models.Stake
 
 /-!
 # Validator identities and weights
@@ -107,7 +107,7 @@ theorem selected_vote_key {g a : ForkedBeaconState preset} (run : Run config che
 theorem keys_weight {fork : Fork} (state : BeaconState preset fork)
     (indices : List ValidatorIndex) (unique : uniqueKeys state)
     (inside : ∀ i ∈ indices, i.toNat < state.validators.data.size) :
-    Quorum.weight (effectiveWeight state) (keysAt state indices) =
+    Models.stake (effectiveWeight state) (keysAt state indices) =
       ∑ i ∈ indices.toFinset,
         ((state.validators.data[i.toNat]?).map (·.effectiveBalance.toNat)).getD 0 := by
   classical
@@ -127,7 +127,7 @@ theorem keys_weight {fork : Fork} (state : BeaconState preset fork)
   let key (i : ValidatorIndex) (hi : i ∈ indices.toFinset) : BLSPubkey :=
     (state.validators.data[i.toNat]'(inside i (List.mem_toFinset.mp hi))).pubkey
   -- Distinct registry keys make the index-to-key map a bijection on the selected set.
-  unfold Quorum.weight
+  unfold Models.stake
   symm
   apply Finset.sum_bij key
   · intro i hi

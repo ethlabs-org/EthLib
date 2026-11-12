@@ -38,7 +38,7 @@ def TerminalView.enough {a : ForkedBeaconState preset} (view : TerminalView a) :
   | .realized => True
   | .pulled _ _ => GENESIS_EPOCH + 1 < getCurrentEpoch a.state →
       3 * preset.EFFECTIVE_BALANCE_INCREMENT.toNat <
-        2 * Quorum.weight (effectiveWeight a.state) (activeKeys a.state)
+        2 * Models.stake (effectiveWeight a.state) (activeKeys a.state)
 
 /-- Charge the actual terminal input, not a hypothetical future endpoint. -/
 noncomputable def terminalDrift {x a : ForkedBeaconState preset}

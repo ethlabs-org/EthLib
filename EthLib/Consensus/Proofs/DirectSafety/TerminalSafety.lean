@@ -95,8 +95,8 @@ private theorem view_facts {g a : ForkedBeaconState preset}
     (early : a.fork < .hegota) (enough : EnoughStake run)
     {view : TerminalView a} (terminal : view.enough) (call : ViewQuorum run view) :
     call.voters ⊆ recentKeys call.state.state ∧
-      2 * Quorum.weight (effectiveWeight call.state.state) (activeKeys call.state.state) ≤
-        3 * Quorum.weight (effectiveWeight call.state.state) call.voters ∧
+      2 * Models.stake (effectiveWeight call.state.state) (activeKeys call.state.state) ≤
+        3 * Models.stake (effectiveWeight call.state.state) call.voters ∧
       ∀ v ∈ call.state.state.validators.data.toList, v.slashed = true →
         run.SlashingEvidence v.pubkey := by
   cases call with
@@ -128,8 +128,8 @@ private theorem terminal_pair_bound {g x a b : ForkedBeaconState preset}
     (one : ViewQuorum (shared.append left) va) (two : ViewQuorum (shared.append right) vb)
     (overlap : ∀ key ∈ one.voters ∩ two.voters,
       Slashable (shared.append left) (shared.append right) key) :
-    Quorum.weight (effectiveWeight x.state) (activeKeys x.state) ≤
-      3 * Quorum.weight (effectiveWeight x.state)
+    Models.stake (effectiveWeight x.state) (activeKeys x.state) ≤
+      3 * Models.stake (effectiveWeight x.state)
         (accountableKeys (shared.append left) (shared.append right) x) +
       stateDrift x one.state + stateDrift x two.state := by
   classical
@@ -144,7 +144,7 @@ private theorem terminal_pair_bound {g x a b : ForkedBeaconState preset}
       (backed : ∀ v ∈ s.state.validators.data.toList, v.slashed = true →
         Accountable (shared.append left) (shared.append right) v.pubkey) :
       (∑ k ∈ activeKeys x.state \ accountable,
-        (effectiveWeight x.state k - Quorum.supported (recentKeys s.state)
+        (effectiveWeight x.state k - Models.supported (recentKeys s.state)
           (effectiveWeight s.state) k)) ≤ referenceLoss x s := by
     unfold referenceLoss
     apply Finset.sum_le_sum_of_subset_of_nonneg
@@ -165,7 +165,7 @@ private theorem terminal_pair_bound {g x a b : ForkedBeaconState preset}
       · exact h
       · exact ⟨active, .inl (overlap k (Finset.mem_inter.mpr h))⟩
     · intro h; exact ⟨h.1, .inl h⟩
-  have bound := Quorum.accountable_at_reference (activeKeys x.state)
+  have bound := Models.stake_le_accountable_add_change (activeKeys x.state)
     (activeKeys one.state.state) (activeKeys two.state.state)
     (recentKeys one.state.state) (recentKeys two.state.state) one.voters two.voters
     accountable (effectiveWeight x.state) (effectiveWeight one.state.state)
@@ -178,7 +178,7 @@ private theorem terminal_pair_bound {g x a b : ForkedBeaconState preset}
     (loss two.state (fun v h flag => .inr (.inr (slashedTwo v h flag))))
     (Nat.le_refl _) (Nat.le_refl _) (Nat.le_refl _) (Nat.le_refl _)
   rw [same] at bound
-  change _ ≤ 3 * Quorum.weight (effectiveWeight x.state) bad +
+  change _ ≤ 3 * Models.stake (effectiveWeight x.state) bad +
     stateDrift x one.state + stateDrift x two.state
   dsimp only [stateDrift]
   omega
@@ -206,8 +206,8 @@ theorem accountable_terminal_justified_unique_gloas {g x a b : ForkedBeaconState
     (fieldB : k = vb.state.previousJustifiedCheckpoint ∨ k = vb.state.currentJustifiedCheckpoint)
     (epoch : j.epoch = k.epoch)
     (starts : x.state.slot.toNat ≤ j.epoch.toNat * preset.SLOTS_PER_EPOCH.toNat) :
-    j = k ∨ Quorum.weight (effectiveWeight x.state) (activeKeys x.state) ≤
-      3 * Quorum.weight (effectiveWeight x.state)
+    j = k ∨ Models.stake (effectiveWeight x.state) (activeKeys x.state) ≤
+      3 * Models.stake (effectiveWeight x.state)
         (accountableKeys (shared.append left) (shared.append right) x) +
       2 * max (terminalDrift j.epoch.toNat left va) (terminalDrift j.epoch.toNat right vb) ∨
     HashEvidence ((shared.append left).hashObjects ++ (shared.append right).hashObjects ++
@@ -337,8 +337,8 @@ theorem accountable_terminal_finalized_prefix_gloas {g x a b : ForkedBeaconState
       va.state.finalizedCheckpoint.epoch.toNat * preset.SLOTS_PER_EPOCH.toNat) :
     (shared.append left).checkpointPath va.state.finalizedCheckpoint.epoch =
         (shared.append right).checkpointPath va.state.finalizedCheckpoint.epoch ∨
-      Quorum.weight (effectiveWeight x.state) (activeKeys x.state) ≤
-        3 * Quorum.weight (effectiveWeight x.state)
+      Models.stake (effectiveWeight x.state) (activeKeys x.state) ≤
+        3 * Models.stake (effectiveWeight x.state)
           (accountableKeys (shared.append left) (shared.append right) x) +
         2 * max (terminalDrift j.epoch.toNat left va) (terminalDrift j.epoch.toNat right vb) ∨
       HashEvidence ((shared.append left).hashObjects ++ (shared.append right).hashObjects ++
@@ -372,8 +372,8 @@ theorem accountable_terminal_finalized_prefix_gloas {g x a b : ForkedBeaconState
       (upperOne : one.target.epoch.toNat ≤ j.epoch.toNat)
       (overlap : ∀ key ∈ one.voters ∩ crossing.voters,
         Slashable (shared.append left) (shared.append right) key) :
-      Quorum.weight (effectiveWeight x.state) (activeKeys x.state) ≤
-        3 * Quorum.weight (effectiveWeight x.state)
+      Models.stake (effectiveWeight x.state) (activeKeys x.state) ≤
+        3 * Models.stake (effectiveWeight x.state)
           (accountableKeys (shared.append left) (shared.append right) x) +
         2 * max (terminalDrift j.epoch.toNat left va) (terminalDrift j.epoch.toNat right vb) := by
     have bound := terminal_pair_bound shared left right parameters genesis earlyA earlyB
@@ -386,8 +386,8 @@ theorem accountable_terminal_finalized_prefix_gloas {g x a b : ForkedBeaconState
   have pair (one : ViewQuorum (shared.append left) va)
       (epoch : one.target.epoch = crossing.target.epoch)
       (lower : f.epoch.toNat ≤ one.target.epoch.toNat) :
-      Quorum.weight (effectiveWeight x.state) (activeKeys x.state) ≤
-        3 * Quorum.weight (effectiveWeight x.state)
+      Models.stake (effectiveWeight x.state) (activeKeys x.state) ≤
+        3 * Models.stake (effectiveWeight x.state)
           (accountableKeys (shared.append left) (shared.append right) x) +
         2 * max (terminalDrift j.epoch.toNat left va) (terminalDrift j.epoch.toNat right vb) ∨
       HashEvidence ((shared.append left).hashObjects ++ (shared.append right).hashObjects ++
@@ -464,8 +464,8 @@ theorem accountable_terminal_justified_unique {g x a b : ForkedBeaconState prese
     (fieldB : k = vb.state.previousJustifiedCheckpoint ∨ k = vb.state.currentJustifiedCheckpoint)
     (epoch : j.epoch = k.epoch)
     (starts : x.state.slot.toNat ≤ j.epoch.toNat * preset.SLOTS_PER_EPOCH.toNat) :
-    j = k ∨ Quorum.weight (effectiveWeight x.state) (activeKeys x.state) ≤
-      3 * Quorum.weight (effectiveWeight x.state)
+    j = k ∨ Models.stake (effectiveWeight x.state) (activeKeys x.state) ≤
+      3 * Models.stake (effectiveWeight x.state)
         (accountableKeys (shared.append left) (shared.append right) x) +
       2 * max (terminalDrift j.epoch.toNat left va) (terminalDrift j.epoch.toNat right vb) ∨
     HashEvidence ((shared.append left).hashObjects ++ (shared.append right).hashObjects ++
@@ -487,8 +487,8 @@ theorem accountable_terminal_finalized_prefix {g x a b : ForkedBeaconState prese
       va.state.finalizedCheckpoint.epoch.toNat * preset.SLOTS_PER_EPOCH.toNat) :
     (shared.append left).checkpointPath va.state.finalizedCheckpoint.epoch =
         (shared.append right).checkpointPath va.state.finalizedCheckpoint.epoch ∨
-      Quorum.weight (effectiveWeight x.state) (activeKeys x.state) ≤
-        3 * Quorum.weight (effectiveWeight x.state)
+      Models.stake (effectiveWeight x.state) (activeKeys x.state) ≤
+        3 * Models.stake (effectiveWeight x.state)
           (accountableKeys (shared.append left) (shared.append right) x) +
         2 * max (terminalDrift j.epoch.toNat left va) (terminalDrift j.epoch.toNat right vb) ∨
       HashEvidence ((shared.append left).hashObjects ++ (shared.append right).hashObjects ++

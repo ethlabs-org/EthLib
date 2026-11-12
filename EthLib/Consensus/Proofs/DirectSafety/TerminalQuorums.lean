@@ -21,8 +21,8 @@ variable {preset : Preset} {config : Config} {checks : SignatureChecks}
 theorem terminal_quorum_count {g a : ForkedBeaconState preset}
     (run : Run config checks g a) (genesis : Genesis (config := config) (checks := checks) g)
     (view : TerminalView a) (enough : view.enough) (call : TerminalQuorum view) :
-    2 * Quorum.weight (effectiveWeight a.state) (activeKeys a.state) ≤
-      3 * Quorum.weight (effectiveWeight a.state) call.voters := by
+    2 * Models.stake (effectiveWeight a.state) (activeKeys a.state) ≤
+      3 * Models.stake (effectiveWeight a.state) call.voters := by
   have unique := run.unique (genesis_unique genesis)
   have active := getTotalActiveBalance_ok call.totalOk
   have activeWeight := keys_weight a.state _ unique

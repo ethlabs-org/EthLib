@@ -4807,8 +4807,8 @@ private theorem SitePrefix.fold {fork : Fork} {α : Type}
 private theorem SitePrefix.weight {fork : Fork} {s t : BeaconState preset fork}
     (kept : SitePrefix s t) (unique : uniqueKeys s)
     (bound : t.validators.data.size < 2 ^ 64) :
-    Quorum.weight (effectiveWeight t) (activeKeys t) =
-      Quorum.weight (effectiveWeight s) (activeKeys s) := by
+    Models.stake (effectiveWeight t) (activeKeys t) =
+      Models.stake (effectiveWeight s) (activeKeys s) := by
   classical
   have epoch : getCurrentEpoch t = getCurrentEpoch s := by
     simp only [getCurrentEpoch, kept.active.1]
@@ -5228,8 +5228,8 @@ theorem consolidationSites_provenance {g x y : ForkedBeaconState preset}
         (pre.snoc step).append post = tail ∧
         site.fork = a.fork ∧
         getCurrentEpoch site.state = getCurrentEpoch a.state ∧
-        Quorum.weight (effectiveWeight site.state) (activeKeys site.state) ≤
-          Quorum.weight (effectiveWeight a.state) (activeKeys a.state) := by
+        Models.stake (effectiveWeight site.state) (activeKeys site.state) ≤
+          Models.stake (effectiveWeight a.state) (activeKeys a.state) := by
   have _ := parameters
   have _ := caps
   induction tail with

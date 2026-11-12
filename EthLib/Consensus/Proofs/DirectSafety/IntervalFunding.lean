@@ -2506,7 +2506,7 @@ private theorem funding_sum_zipIdx (vs : List Validator) (f : Validator → Nat 
 
 private theorem funding_active_le (x : ForkedBeaconState preset)
     (early : x.fork < .glamsterdam) (unique : uniqueKeys x.state) :
-    Quorum.weight (effectiveWeight x.state) (activeKeys x.state) ≤ fundedStake x := by
+    Models.stake (effectiveWeight x.state) (activeKeys x.state) ≤ fundedStake x := by
   have within : x.state.RegistryWithinLimit := x.state.validators.bound early
   have foundActive {i : ValidatorIndex}
       (member : i ∈ getActiveValidatorIndices x.state (getCurrentEpoch x.state)) :=
@@ -4132,7 +4132,7 @@ private theorem funding_window_of_steps {x y : ForkedBeaconState preset}
         ((getCurrentEpoch b.state).toNat - (getCurrentEpoch a.state).toNat) *
           config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat +
         (added.map fundingCredit).sum) :
-    Quorum.weight (effectiveWeight y.state) (activeKeys y.state) ≤
+    Models.stake (effectiveWeight y.state) (activeKeys y.state) ≤
       activeStakeWindow (config := config) x high events := by
   have bound := funding_run_funded tail early high endEpoch events replayed stepBound
   have active := funding_active_le y early unique
