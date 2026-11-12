@@ -49,7 +49,67 @@ theorem computeProposerScore_le_stakeCap {state : BeaconState preset fork}
     (floor : preset.EFFECTIVE_BALANCE_INCREMENT.toNat ≤ stakeCapGwei)
     (long : 1 < preset.SLOTS_PER_EPOCH) (boost : config.PROPOSER_SCORE_BOOST.toNat ≤ 100) :
     ∃ score, computeProposerScore config state = .ok score ∧ score.toNat ≤ stakeCapGwei := by
-  sorry
+  classical
+  let indices := (unslashedActiveBalances state).map (·.1)
+  have members : ∀ index ∈ indices,
+      index.toNat < state.validators.data.size ∧
+        index ∈ getActiveValidatorIndices state (getCurrentEpoch state) := by
+    intro index member
+    simp only [indices, List.mem_map, unslashedActiveBalances, List.mem_filterMap,
+      Option.ite_none_right_eq_some, Option.some.injEq, Prod.mk.injEq,
+      Prod.exists] at member
+    obtain ⟨i, balance, ⟨validator, position, inZip, active, rfl, rfl⟩, rfl⟩ := member
+    have positionLt := (List.getElem?_eq_some_iff.mp
+      (List.mem_zipIdx_iff_getElem?.mp inZip)).1
+    have reduced : position.toUInt64.toNat ≤ position := by
+      simp only [Nat.toUInt64_eq, UInt64.toNat_ofNat']
+      exact Nat.mod_le _ _
+    refine ⟨by simpa using reduced.trans_lt positionLt, ?_⟩
+    simp only [getActiveValidatorIndices, List.mem_filterMap,
+      Option.ite_none_right_eq_some, Option.some.injEq, Prod.exists]
+    exact ⟨validator, position, inZip, (Bool.and_eq_true_iff.mp active).1, rfl⟩
+  have stakeBound : stake (fun v => balanceAt state v.toNat) indices.toFinset ≤
+      stakeCapGwei := by
+    apply le_trans (stake_mono (fun v member => ?_)) stakeLe
+    exact List.mem_toFinset.mpr (members v (List.mem_toFinset.mp member)).2
+  let amount := max preset.EFFECTIVE_BALANCE_INCREMENT.toNat
+    (stake (fun v => balanceAt state v.toNat) indices.toFinset)
+  have amountLe : amount ≤ stakeCapGwei := max_le floor stakeBound
+  have amountFits := amountLe.trans_lt stakeCapGwei_lt
+  have totalOk : getTotalBalance state indices = .ok amount.toUInt64 := by
+    apply getTotalBalance_ok_iff_stake.mpr
+    exact ⟨fun i member => (members i member).1,
+      stakeBound.trans_lt stakeCapGwei_lt, UInt64.toNat_ofNat_of_lt' amountFits⟩
+  have slotsLong : 2 ≤ preset.SLOTS_PER_EPOCH.toNat := by
+    have := UInt64.lt_iff_toNat_lt.mp long
+    change 1 < preset.SLOTS_PER_EPOCH.toNat at this
+    omega
+  have nonzero : preset.SLOTS_PER_EPOCH ≠ 0 := by
+    intro zero
+    simp [zero] at slotsLong
+  have quotient : amount / preset.SLOTS_PER_EPOCH.toNat ≤ stakeCapGwei / 2 :=
+    Nat.div_le_div amountLe slotsLong (by decide)
+  have productLe : amount / preset.SLOTS_PER_EPOCH.toNat *
+      config.PROPOSER_SCORE_BOOST.toNat ≤ stakeCapGwei / 2 * 100 :=
+    Nat.mul_le_mul quotient boost
+  have productFits : amount / preset.SLOTS_PER_EPOCH.toNat *
+      config.PROPOSER_SCORE_BOOST.toNat < 2 ^ 64 := by
+    exact productLe.trans_lt (by norm_num [stakeCapGwei])
+  have committeeOk : divChecked amount.toUInt64 preset.SLOTS_PER_EPOCH =
+      .ok (amount.toUInt64 / preset.SLOTS_PER_EPOCH) :=
+    divChecked_ok_iff.mpr ⟨nonzero, UInt64.toNat_div _ _⟩
+  have productOk := mulChecked_of_lt (a := amount.toUInt64 / preset.SLOTS_PER_EPOCH)
+    (b := config.PROPOSER_SCORE_BOOST) (by
+      simpa only [UInt64.toNat_div, UInt64.toNat_ofNat_of_lt' amountFits] using productFits)
+  refine ⟨((amount.toUInt64 / preset.SLOTS_PER_EPOCH) * config.PROPOSER_SCORE_BOOST) / 100,
+    ?_, ?_⟩
+  · unfold computeProposerScore calculateCommitteeFraction
+    simp only [bind_ok_iff, mapError_ok_iff, pure, Except.pure, Except.ok.injEq]
+    exact ⟨_, totalOk, _, committeeOk, _, productOk, rfl⟩
+  · rw [UInt64.toNat_div, UInt64.toNat_mul, UInt64.toNat_div,
+      UInt64.toNat_ofNat_of_lt' amountFits, Nat.mod_eq_of_lt productFits]
+    exact (Nat.div_le_div_right (Nat.mul_le_mul_left _ boost)).trans
+      (by simpa using (Nat.div_le_self amount preset.SLOTS_PER_EPOCH.toNat).trans amountLe)
 
 variable {e : Execution (honestForkChoice config checks sources anchorState anchorBlock assignment
   genesisTimeMs) J}
