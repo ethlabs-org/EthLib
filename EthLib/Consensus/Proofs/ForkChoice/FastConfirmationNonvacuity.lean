@@ -9,11 +9,11 @@ These results test the premises of the safety statement for Theorem 1 of [the pa
 
 The anchor store and the anchor state can name different justified checkpoints.
 
-`OneJustifiedPerEpoch` identifies them when their epochs agree and lie within its horizon.
+`OneJustifiedPerEpoch` identifies them when their positive epochs agree within its horizon.
 
 If that identifies the anchor root with its parent, the `anchorParent` premise fails.
 
-This excludes those anchors, not executions with an anchor at a later epoch.
+At genesis, the raw state's checkpoint need not be justified in the store.
 
 [fcr]: https://arxiv.org/html/2405.00549v4#S4
 -/
@@ -31,20 +31,21 @@ variable {preset : Preset} {fork : Fork} {config : Config} {checks : SignatureCh
   {e : Execution (honestForkChoice config checks sources anchorState anchorBlock assignment
     genesisTimeMs) J}
 
-/-- Uniqueness also compares the checkpoint inside the anchor state with the store's checkpoint. -/
+/-- Uniqueness compares a positive-epoch state checkpoint with the store's checkpoint. -/
 theorem Execution.anchor_currentJustified_eq_of_oneJustifiedPerEpoch
     {anchor : Store preset fork}
     (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
     (start : ∀ w ∈ J, e.start w = anchor) {u : ValidatorIndex} (caller : u ∈ J)
     {horizon : Epoch} (unique : OneJustifiedPerEpoch e horizon)
     (sameEpoch : anchorState.currentJustifiedCheckpoint.epoch = getCurrentEpoch anchorState)
+    (positive : 0 < anchorState.currentJustifiedCheckpoint.epoch)
     (within : getCurrentEpoch anchorState ≤ horizon) :
     anchorState.currentJustifiedCheckpoint = anchor.justifiedCheckpoint := by
   obtain ⟨root, _, _, stored, justified, _⟩ := getForkchoiceStore_anchor anchored
   have atStart : (e.world 0).state u = anchor := start u caller
   -- Both alternatives of Justified are present in the initial world.
   have stateJustified : anchor.Justified anchorState.currentJustifiedCheckpoint :=
-    .inr (.inr (.inl ⟨root, anchorState, stored, rfl⟩))
+    .inr (.inr ⟨positive, .inl ⟨root, anchorState, stored, rfl⟩⟩)
   have storeJustified : anchor.Justified anchor.justifiedCheckpoint := .inl rfl
   exact unique u caller u caller 0 0 _ _ (atStart ▸ stateJustified)
     (atStart ▸ storeJustified) (by simpa [justified] using sameEpoch)
@@ -57,6 +58,7 @@ theorem Execution.false_of_anchor_checkpoint_parent
     (start : ∀ w ∈ J, e.start w = anchor) {u : ValidatorIndex} (caller : u ∈ J)
     {horizon : Epoch} (unique : OneJustifiedPerEpoch e horizon)
     (sameEpoch : anchorState.currentJustifiedCheckpoint.epoch = getCurrentEpoch anchorState)
+    (positive : 0 < anchorState.currentJustifiedCheckpoint.epoch)
     (within : getCurrentEpoch anchorState ≤ horizon)
     (parent : anchorState.currentJustifiedCheckpoint.root = anchorBlock.parentRoot)
     {limit : ℕ} (started : e.startTime ≤ limit)
@@ -64,7 +66,7 @@ theorem Execution.false_of_anchor_checkpoint_parent
       ((e.world k).state w).blocks[anchorBlock.parentRoot]? = none) : False := by
   obtain ⟨root, _, held, _, justified, _⟩ := getForkchoiceStore_anchor anchored
   have same := e.anchor_currentJustified_eq_of_oneJustifiedPerEpoch anchored start caller
-    unique sameEpoch within
+    unique sameEpoch positive within
   have rootEq : anchorBlock.parentRoot = root := by
     simpa [parent, justified] using congrArg Checkpoint.root same
   -- The excluded parent is the anchor itself, which the initial store holds.
@@ -73,12 +75,12 @@ theorem Execution.false_of_anchor_checkpoint_parent
   rw [start u caller, rootEq, held] at missing
   contradiction
 
-/-- At epoch zero, the state invariant supplies the equal-epoch condition.
+/-- A raw genesis checkpoint naming the excluded parent is not justified in the store.
 
 This covers an anchor whose parent and state's current justified root are both zero.
 
 No assertion about the value or injectivity of a hash is needed. -/
-theorem Execution.false_of_genesis_anchor_checkpoint_parent
+theorem Execution.not_justified_of_genesis_anchor_checkpoint_parent
     {anchor : Store preset fork}
     (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
     (start : ∀ w ∈ J, e.start w = anchor) {u : ValidatorIndex} (caller : u ∈ J)
@@ -87,14 +89,28 @@ theorem Execution.false_of_genesis_anchor_checkpoint_parent
     (parent : anchorState.currentJustifiedCheckpoint.root = anchorBlock.parentRoot)
     {limit : ℕ} (started : e.startTime ≤ limit)
     (anchorParent : ∀ w ∈ J, ∀ k, (e.world k).time ≤ limit →
-      ((e.world k).state w).blocks[anchorBlock.parentRoot]? = none) : False := by
+      ((e.world k).state w).blocks[anchorBlock.parentRoot]? = none) :
+    ¬ anchor.Justified anchorState.currentJustifiedCheckpoint := by
+  intro rawJustified
   have settled := sound.settled
   have sameEpoch : anchorState.currentJustifiedCheckpoint.epoch = getCurrentEpoch anchorState := by
     apply UInt64.toNat_inj.mp
     simpa [JustifiedSettled, getPreviousEpoch, epochZero, Uint64.saturatingSub,
       UInt64.le_iff_toNat_le] using settled
-  exact e.false_of_anchor_checkpoint_parent anchored start caller unique sameEpoch
-    (by simp [epochZero]) parent started anchorParent
+  obtain ⟨root, _, held, _, justified, _⟩ := getForkchoiceStore_anchor anchored
+  have atStart : (e.world 0).state u = anchor := start u caller
+  have storeJustified : anchor.Justified anchor.justifiedCheckpoint := .inl rfl
+  have same := unique u caller u caller 0 0
+    anchorState.currentJustifiedCheckpoint anchor.justifiedCheckpoint (atStart ▸ rawJustified)
+    (atStart ▸ storeJustified)
+    (by simpa [justified] using sameEpoch) (by simp [sameEpoch, epochZero])
+  have rootEq : anchorBlock.parentRoot = root := by
+    simpa [parent, justified] using congrArg Checkpoint.root same
+  -- The excluded parent would be the anchor itself.
+  have missing := anchorParent u caller 0 started
+  change (e.start u).blocks[anchorBlock.parentRoot]? = none at missing
+  rw [start u caller, rootEq, held] at missing
+  contradiction
 
 /-- A store built from an anchor cannot read a shuffling dependency before that anchor.
 
