@@ -2097,9 +2097,10 @@ It assumes that the vectors whose length the preset sets have a positive length,
 It rests on `BeaconBlock.hashTreeRoot_header`, which shows that a block has the root of its header.
 It also rests on `latestBlockHash_processBlock`, which shows that from Gloas the latest block hash after a block is the parent hash of the latest bid.
 `latestExecutionPayloadBid_processBlock` shows that from Gloas a block leaves its own bid as the latest bid.
-`latestBlockHeader_processBlock` shows that from Gloas a block leaves its header, with a zero state root, as the latest block header.
-These rest on `PayloadInputs`, the fields that the checks of a payload and of a bid read.
+The hash and bid results rest on `PayloadInputs`, the fields that the checks of a payload and of a bid read.
 From Gloas the parent, header, RANDAO and bid steps each change one of them, and the other steps keep them all.
+`latestBlockHeader_processBlock` shows that at every fork a block leaves its header, with a zero state root, as the latest block header.
+It uses `processBlock_header_split`, which separates header processing from the steps that preserve the header.
 No theorem covers the signature, the time or the withdrawals of the envelope, or the answer of the execution layer.
 
 The Python suite builds the envelope of a fork choice case at Gloas and Heze from its block, payload and requests, and compares it with the envelope of the case.
