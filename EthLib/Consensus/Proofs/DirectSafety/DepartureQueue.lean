@@ -3646,25 +3646,47 @@ private structure CountCohortStep {f h : Fork} (config : Config) (bound : Nat)
   bounded : t.validators.data.size ≤ bound →
     ExitCohortsBounded (max 1 (cohortCap config bound)) s →
     ExitCohortsBounded (max 1 (cohortCap config bound)) t
+  epochs : (getCurrentEpoch s).toNat ≤ (getCurrentEpoch t).toNat
+  future : ∀ (i : Nat) (old next : Validator), s.validators.data[i]? = some old →
+    t.validators.data[i]? = some next → next.exitEpoch = old.exitEpoch ∨
+      (getCurrentEpoch s).toNat ≤ next.exitEpoch.toNat
 
 private theorem CountCohortStep.refl {f : Fork} (s : BeaconState preset f) (bound : Nat) :
-    CountCohortStep config bound s s := ⟨Nat.le_refl _, fun _ => id⟩
+    CountCohortStep config bound s s :=
+  ⟨Nat.le_refl _, fun _ => id, Nat.le_refl _, fun _ _ _ before after =>
+    .inl (congrArg Validator.exitEpoch (Option.some.inj (after.symm.trans before)))⟩
 
 private theorem CountCohortStep.trans {f h k : Fork} {s : BeaconState preset f}
     {t : BeaconState preset h} {u : BeaconState preset k} {bound : Nat}
     (one : CountCohortStep config bound s t) (two : CountCohortStep config bound t u) :
-    CountCohortStep config bound s u :=
-  ⟨one.grows.trans two.grows,
-    fun size capped => two.bounded size (one.bounded (two.grows.trans size) capped)⟩
+    CountCohortStep config bound s u := by
+  refine ⟨one.grows.trans two.grows,
+    fun size capped => two.bounded size (one.bounded (two.grows.trans size) capped),
+    one.epochs.trans two.epochs, ?_⟩
+  intro i old next before after
+  have inside := (Array.getElem?_eq_some_iff.mp before).1
+  have middleInside := Nat.lt_of_lt_of_le inside one.grows
+  have middleFound : t.validators.data[i]? = some t.validators.data[i] := by
+    simp [middleInside]
+  rcases two.future i _ next middleFound after with same | later
+  · rcases one.future i old _ before middleFound with earlier | later
+    · exact .inl (same.trans earlier)
+    · exact .inr (by rw [same]; exact later)
+  · exact .inr (one.epochs.trans later)
 
 private theorem CountCohortStep.data {f h : Fork} {s : BeaconState preset f}
     {t : BeaconState preset h} (bound : Nat)
-    (same : t.validators.data = s.validators.data := by rfl) :
+    (same : t.validators.data = s.validators.data := by rfl)
+    (epochs : (getCurrentEpoch s).toNat ≤ (getCurrentEpoch t).toNat := by exact Nat.le_refl _) :
     CountCohortStep config bound s t := by
   constructor
   · exact Nat.le_of_eq (congrArg Array.size same.symm)
   · intro _ capped epoch finite
     simpa only [same] using capped epoch finite
+  · exact epochs
+  · intro i old next before after
+    rw [same] at after
+    exact .inl (congrArg Validator.exitEpoch (Option.some.inj (after.symm.trans before)))
 
 private theorem CountCohortStep.fold {f : Fork} {s t : BeaconState preset f} {α ε : Type}
     {action : BeaconState preset f → α → Except ε (BeaconState preset f)} {items : List α}
@@ -3679,7 +3701,9 @@ private theorem CountCohortStep.setValidatorAt {f : Fork} {s t : BeaconState pre
       s.validators.data.size ≤ bound →
       s.validators.data.toList.countP (·.exitEpoch == w.exitEpoch) <
         max 1 (cohortCap config bound))
-    (ok : s.setValidatorAt i w = .ok t) : CountCohortStep config bound s t := by
+    (ok : s.setValidatorAt i w = .ok t)
+    (placed : w.exitEpoch = v.exitEpoch ∨ (getCurrentEpoch s).toNat ≤ w.exitEpoch.toNat) :
+    CountCohortStep config bound s t := by
   obtain ⟨inside, rfl⟩ := setValidatorAt_ok ok
   have read := getValidatorAt_eq_ok_iff.mp found
   have atIndex : s.validators.data[i] = v := by
@@ -3706,12 +3730,25 @@ private theorem CountCohortStep.setValidatorAt {f : Fork} {s t : BeaconState pre
         omega
     · simp only [beq_eq_false_iff_ne.mpr same, Bool.false_eq_true, ↓reduceIte]
       omega
+  · exact Nat.le_refl _
+  · intro j old next before after
+    simp only [BeaconState.putValidator, Serialization.Ssz.RootedForkList.data_set,
+      Array.getElem?_set] at after
+    split at after
+    · rename_i same
+      subst j
+      have oldSame := Option.some.inj (read.symm.trans before)
+      have nextSame := Option.some.inj after
+      subst old next
+      exact placed
+    · exact .inl (congrArg Validator.exitEpoch (Option.some.inj (after.symm.trans before)))
 
 private theorem CountCohortStep.setExitUnchanged {f : Fork} {s t : BeaconState preset f}
     {i : Nat} {v w : Validator} (bound : Nat) (found : getValidatorAt s i = .ok v)
     (ok : s.setValidatorAt i w = .ok t) (same : w.exitEpoch = v.exitEpoch) :
     CountCohortStep config bound s t :=
   .setValidatorAt bound found (fun _ different _ => False.elim (different same.symm)) ok
+    (.inl same)
 
 private theorem CountCohortStep.exit {f : Fork} {s t : BeaconState preset f}
     (early : f < .pectra) (bound : Nat) {index : ValidatorIndex}
@@ -3726,22 +3763,26 @@ private theorem CountCohortStep.exit {f : Fork} {s t : BeaconState preset f}
       obtain ⟨_, _, same, _⟩ := queue
       exact same.symm
     subst queued
+    rw [getValidator_eq_getValidatorAt] at found
+    rw [setValidator_eq_setValidatorAt] at set
     apply CountCohortStep.setValidatorAt bound
-      (by rwa [← getValidator_eq_getValidatorAt]) _
-      (by rwa [← setValidator_eq_setValidatorAt])
-    intro finite _ size
-    simpa only [List.countP_eq_length_filter] using
-      (exitQueue_count_room early queue finite bound size).2
+      found _ set
+    · exact .inr (by have later := exitQueue_lt queue; dsimp only; omega)
+    · intro finite _ size
+      simpa only [List.countP_eq_length_filter] using
+        (exitQueue_count_room early queue finite bound size).2
 
 private theorem CountCohortStep.increase {f : Fork} {s t : BeaconState preset f}
     (bound : Nat) {index amount : UInt64} (ok : increaseBalance s index amount = .ok t) :
     CountCohortStep config bound s t :=
   .data bound (congrArg (·.data) (increaseBalance_validators ok))
+    (by simp only [getCurrentEpoch, (frame_increaseBalance ok).slot]; exact Nat.le_refl _)
 
 private theorem CountCohortStep.decrease {f : Fork} {s t : BeaconState preset f}
     (bound : Nat) {index amount : UInt64} (ok : decreaseBalance s index amount = .ok t) :
     CountCohortStep config bound s t :=
   .data bound (congrArg (·.data) (decreaseBalance_validators ok))
+    (by simp only [getCurrentEpoch, (frame_decreaseBalance ok).slot]; exact Nat.le_refl _)
 
 private theorem CountCohortStep.slash {f : Fork} {s t : BeaconState preset f}
     (early : f < .pectra) (bound : Nat) {index : ValidatorIndex}
@@ -3771,6 +3812,13 @@ private theorem CountCohortStep.add {f : Fork} {s t : BeaconState preset f}
   · simp [data]
   · intro _ capped epoch finite
     simpa [data, getValidatorFromDeposit, Ne.symm finite] using capped epoch finite
+  · simp only [getCurrentEpoch, (frame_addValidatorToRegistry ok).slot]
+    exact Nat.le_refl _
+  · intro i old next before after
+    have inside := (Array.getElem?_eq_some_iff.mp before).1
+    have kept : t.validators.data[i]? = some old := by
+      simpa [data, Array.getElem?_push, Nat.ne_of_lt inside] using before
+    exact .inl (congrArg Validator.exitEpoch (Option.some.inj (after.symm.trans kept)))
 
 private theorem CountCohortStep.deposit {f : Fork} {s t : BeaconState preset f}
     (bound : Nat) {deposit : PendingDeposit}
@@ -3835,6 +3883,168 @@ private theorem CountCohortStep.registry {f : Fork} {s t : BeaconState preset f}
   obtain ⟨_, updated, activated⟩ := ok
   exact (CountCohortStep.fold (fun _ _ _ => CountCohortStep.registryEntry early bound)
     updated).trans (.fold (fun _ _ _ => CountCohortStep.activate bound) activated)
+
+private theorem CountCohortStep.proposerSlashing {f : Fork} {s t : BeaconState preset f}
+    (early : f < .pectra) (bound : Nat) {slashing : ProposerSlashing}
+    (ok : processProposerSlashing config checks s slashing = .ok t) :
+    CountCohortStep config bound s t := by
+  simp only [processProposerSlashing, bind_ok_iff, ensure_ok_iff, liftAccessor_ok] at ok
+  obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, slashed⟩ := ok
+  exact .slash early bound slashed
+
+private theorem CountCohortStep.attesterSlashing {f : Fork} {s t : BeaconState preset f}
+    (early : f < .pectra) (bound : Nat) {slashing : AttesterSlashing preset f}
+    (ok : processAttesterSlashing config checks s slashing = .ok t) :
+    CountCohortStep config bound s t := by
+  simp only [processAttesterSlashing, bind_ok_iff, ensure_ok_iff, pure, Except.pure,
+    Except.ok.injEq] at ok
+  obtain ⟨_, _, _, _, _, _, _, _, _, _, _, folded, _, _, rfl⟩ := ok
+  refine foldlM_ok_invariant (fun step => CountCohortStep config bound s step.1)
+    ?_ (.refl _ bound) folded
+  intro step i next previous computed
+  obtain ⟨middle, slashedAny⟩ := step
+  simp only [slashIfSlashable, bind_ok_iff, liftAccessor_ok] at computed
+  obtain ⟨_, _, computed⟩ := computed
+  split at computed
+  · simp only [bind_ok_iff, liftAccessor_ok, pure, Except.pure, Except.ok.injEq] at computed
+    obtain ⟨_, slashed, rfl⟩ := computed
+    exact previous.trans (.slash early bound slashed)
+  · cases computed; exact previous
+
+private theorem CountCohortStep.blsChange {f : Fork} {s t : BeaconState preset f}
+    (bound : Nat) {signed : SignedBLSToExecutionChange}
+    (ok : processBlsToExecutionChange config checks s signed = .ok t) :
+    CountCohortStep config bound s t := by
+  obtain ⟨_, found, _, _, _, set⟩ := processBlsToExecutionChange_ok ok
+  rw [getValidator_eq_getValidatorAt] at found
+  rw [setValidator_eq_setValidatorAt] at set
+  exact .setExitUnchanged bound found set rfl
+
+private theorem CountCohortStep.operations {f : Fork} {s t : BeaconState preset f}
+    (early : f < .pectra) (bound : Nat) {body : BeaconBlockBody preset f} {parentSlot : Slot}
+    (ok : processOperations config checks s body parentSlot = .ok t) :
+    CountCohortStep config bound s t := by
+  have notGloas : ¬ .glamsterdam ≤ f := Nat.not_le_of_lt (early.trans (by decide))
+  unfold processOperations at ok
+  simp only [notGloas, ↓reduceDIte, bind_ok_iff, ensure_ok_iff, ← Array.foldlM_toList] at ok
+  obtain ⟨_, _, _, _, _, proposers, _, attesters, _, attestations, _, deposits, exited,
+    exits, changed, changesOk, requestsOk⟩ := ok
+  have changes : CountCohortStep config bound exited changed := by
+    unfold processBlsToExecutionChanges at changesOk
+    split at changesOk
+    · rw [← Array.foldlM_toList] at changesOk
+      exact .fold (fun _ _ _ => CountCohortStep.blsChange bound) changesOk
+    · cases changesOk; exact .refl _ bound
+  have same : t = changed := by
+    split at requestsOk
+    · exact False.elim (Nat.not_le_of_lt early (by assumption))
+    · cases requestsOk; rfl
+  subst t
+  exact (CountCohortStep.fold (fun _ _ _ => CountCohortStep.proposerSlashing early bound)
+    proposers).trans <|
+    (CountCohortStep.fold (fun _ _ _ => CountCohortStep.attesterSlashing early bound)
+      attesters).trans <|
+    (CountCohortStep.fold (fun _ _ _ computed => CountCohortStep.data bound
+      (by rw [(processAttestation_registry computed).1])
+      (by simp only [getCurrentEpoch, (frame_processAttestation computed).slot]
+          exact Nat.le_refl _)) attestations).trans <|
+    (CountCohortStep.fold (fun _ _ _ => CountCohortStep.processDeposit early bound)
+      deposits).trans <|
+    (CountCohortStep.fold (fun _ _ _ computed =>
+      CountCohortStep.exit early bound (voluntaryExit_initiates computed)) exits).trans changes
+
+private theorem CountCohortStep.effective {f : Fork} {s t : BeaconState preset f}
+    (bound : Nat) (ok : processEffectiveBalanceUpdates s = .ok t) :
+    CountCohortStep config bound s t := by
+  unfold processEffectiveBalanceUpdates at ok
+  refine CountCohortStep.fold (fun _ _ _ computed => ?_) ok
+  simp only [updateEffectiveBalance, bind_ok_iff, liftAccessor_ok] at computed
+  obtain ⟨_, found, _, _, _, _, set⟩ := computed
+  exact .setExitUnchanged bound found set rfl
+
+private theorem CountCohortStep.epoch {f : Fork} {s t : BeaconState preset f}
+    (early : f < .pectra) (bound : Nat) (ok : processEpoch config checks s = .ok t) :
+    CountCohortStep config bound s t := by
+  have wholeSlot : t.slot = s.slot := by
+    obtain ⟨justified, justifiedOk, frame⟩ := processEpoch_frame ok
+    exact frame.slot.trans (activeStep_processJustificationAndFinalization justifiedOk).1
+  have data {a b : BeaconState preset f} (same : b.validators = a.validators)
+      (slot : b.slot = a.slot) : CountCohortStep config bound a b :=
+    .data bound (congrArg (·.data) same)
+      (by simp only [getCurrentEpoch, slot]; exact Nat.le_refl _)
+  have lastData {a b c d : BeaconState preset f}
+      (clear : processSlashingsReset a = .ok b) (mix : processRandaoMixesReset b = .ok c)
+      (same : d.validators = c.validators) : d.validators = a.validators := by
+    obtain ⟨_, _, _, _, rfl⟩ := processSlashingsReset_eq clear
+    obtain ⟨_, _, _, _, _, _, rfl⟩ := processRandaoMixesReset_eq mix
+    exact same
+  unfold processEpoch at ok
+  split at ok
+  · have before : f < .hegota := Nat.lt_trans early (by decide)
+    have notGloas : ¬ .glamsterdam ≤ f := Nat.not_le_of_lt (early.trans (by decide))
+    have notElectra : ¬ .pectra ≤ f := Nat.not_le_of_lt early
+    simp only [processEpochAltair, before, notGloas, processPendingBalances, notElectra,
+      ↓reduceDIte, bind_ok_iff, pure, Except.pure, Except.ok.injEq, exists_eq_left'] at ok
+    obtain ⟨justified, justifiedOk, scored, scoredOk, rewarded, rewardedOk, registered,
+      registeredOk, slashed, slashedOk, reset, resetOk, balanced, balancedOk, cleared,
+      clearedOk, mixed, mixedOk, last⟩ := ok
+    have headSlot : rewarded.slot = s.slot :=
+      (frame_processRewardsAndPenalties rewardedOk).slot.trans
+        ((frame_processInactivityUpdates scoredOk).slot.trans
+          (activeStep_processJustificationAndFinalization justifiedOk).1)
+    have registeredSlot := (frame_processRegistryUpdates registeredOk).slot.trans headSlot
+    have resetSlot : reset.slot = registered.slot :=
+      (frame_processEth1DataReset resetOk).slot.trans (frame_processSlashings slashedOk).slot
+    have balancedSlot := (frame_processEffectiveBalanceUpdates balancedOk).slot.trans
+      (resetSlot.trans registeredSlot)
+    have headData : rewarded.validators = s.validators := by
+      rw [processRewardsAndPenalties_frame rewardedOk]
+      exact (balanceDrift_inactivity scoredOk).1.trans
+        (processJustificationAndFinalization_keeps justifiedOk).2.2.2.2.2.1
+    have resetData : reset.validators = registered.validators := by
+      rw [(balanceDrift_reset resetOk).1, balanceDrift_slashings slashedOk]
+    have tailData : t.validators = balanced.validators := by
+      apply lastData clearedOk mixedOk
+      split at last <;> simp only [bind_ok_iff] at last <;>
+        obtain ⟨_, rooted, _, synced, _, looked, windowed⟩ := last
+      · exact (balanceDrift_epochEnd synced looked
+          (by simpa only [notGloas, ↓reduceDIte, pure, Except.pure] using windowed)).1.trans
+          (balanceDrift_summaries rooted).1
+      · exact (balanceDrift_epochEnd synced looked
+          (by simpa only [notGloas, ↓reduceDIte, pure, Except.pure] using windowed)).1.trans
+          (balanceDrift_historical rooted).1
+    exact (data headData headSlot).trans <|
+      (CountCohortStep.registry early bound registeredOk).trans <|
+      (data resetData resetSlot).trans <|
+      (CountCohortStep.effective bound balancedOk).trans <|
+      data tailData (wholeSlot.trans balancedSlot.symm)
+  · simp only [bind_ok_iff] at ok
+    obtain ⟨justified, justifiedOk, rewarded, rewardedOk, registered, registeredOk,
+      slashed, slashedOk, reset, resetOk, balanced, balancedOk, cleared, clearedOk,
+      mixed, mixedOk, rooted, rootedOk, rotated⟩ := ok
+    have headData : rewarded.validators = s.validators := by
+      rw [processRewardsAndPenalties_frame rewardedOk]
+      exact (processJustificationAndFinalization_keeps justifiedOk).2.2.2.2.2.1
+    have headSlot : rewarded.slot = s.slot :=
+      (frame_processRewardsAndPenalties rewardedOk).slot.trans
+        (activeStep_processJustificationAndFinalization justifiedOk).1
+    have registeredSlot := (frame_processRegistryUpdates registeredOk).slot.trans headSlot
+    have resetSlot : reset.slot = registered.slot :=
+      (frame_processEth1DataReset resetOk).slot.trans (frame_processSlashings slashedOk).slot
+    have balancedSlot := (frame_processEffectiveBalanceUpdates balancedOk).slot.trans
+      (resetSlot.trans registeredSlot)
+    have rotatedSame : t.validators = rooted.validators := by
+      unfold processParticipationRecordUpdates at rotated
+      split at rotated
+      · cases rotated
+      · cases rotated; rfl
+    exact (data headData headSlot).trans <|
+      (CountCohortStep.registry early bound registeredOk).trans <|
+      (data (by rw [(balanceDrift_reset resetOk).1, balanceDrift_slashings slashedOk])
+        resetSlot).trans <|
+      (CountCohortStep.effective bound balancedOk).trans <|
+      data (lastData clearedOk mixedOk (rotatedSame.trans (balanceDrift_historical rootedOk).1))
+        (wholeSlot.trans balancedSlot.symm)
 
 private structure SitePrefix {fork : Fork} (s t : BeaconState preset fork) : Prop where
   identity : RegistryIdentity s t
