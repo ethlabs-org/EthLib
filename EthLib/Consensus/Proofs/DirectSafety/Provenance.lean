@@ -46,7 +46,7 @@ private theorem votes_snoc {g a b : ForkedBeaconState preset} (run : Run config 
   · exact ⟨before, after, selected, .earlier member step, voted⟩
   · exact ⟨a, b, step, .last run step, voted⟩
 
-theorem genesis_participation {g : ForkedBeaconState preset}
+private theorem genesis_participation {g : ForkedBeaconState preset}
     (genesis : Genesis (config := config) (checks := checks) g) :
     ParticipationBacked (Run.nil : Run config checks g g) g.state := by
   obtain ⟨_, _, _, ok⟩ := genesis
@@ -58,7 +58,7 @@ theorem genesis_participation {g : ForkedBeaconState preset}
     exact False.elim (Nat.not_le_of_lt (initializeBeaconStateFromEth1_invariant ok).1 altair)
 
 /-- This includes epoch rotation and every due upgrade, in particular pending-to-flag conversion. -/
-theorem slot_participation {g a b : ForkedBeaconState preset} (run : Run config checks g a)
+private theorem slot_participation {g a b : ForkedBeaconState preset} (run : Run config checks g a)
     (parameters : Parameters preset) (genesis : Genesis (config := config) (checks := checks) g)
     (ok : advanceSlotAcross config checks a = .ok b) (early : b.fork < .hegota)
     (backed : ParticipationBacked run a.state) :
@@ -86,7 +86,7 @@ theorem slot_participation {g a b : ForkedBeaconState preset} (run : Run config 
     votes_snoc run (.slot ok) (.inl voted)
   exact ⟨(pending.of_processUpgrades upgraded).mono sub, flags.mono sub⟩
 
-theorem block_participation {g : ForkedBeaconState preset} {fork : Fork}
+private theorem block_participation {g : ForkedBeaconState preset} {fork : Fork}
     {a b : BeaconState preset fork} (run : Run config checks g ⟨fork, a⟩)
     (parameters : Parameters preset) (genesis : Genesis (config := config) (checks := checks) g)
     (early : fork < .hegota) (engine : ExecutionEngine preset fork)

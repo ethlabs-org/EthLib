@@ -517,8 +517,9 @@ private theorem run_bits {g a : ForkedBeaconState preset} (run : Run config chec
           exact nextSlot_epoch_of_inside sum ‹_›
 
 /-- A set bit identifies a successful test on this run, not merely an epoch number. -/
-theorem justification_bit_call {g a : ForkedBeaconState preset} (run : Run config checks g a)
-    (parameters : Parameters preset) (genesis : Genesis (config := config) (checks := checks) g)
+private theorem justification_bit_call {g a : ForkedBeaconState preset}
+    (run : Run config checks g a) (parameters : Parameters preset)
+    (genesis : Genesis (config := config) (checks := checks) g)
     (call : EpochCall run) (i : Fin 4) (set : call.weighed.justificationBits.bits[i] = true) :
     ∃ witness : QuorumCall run,
       witness.target.epoch.toNat + i.val = (getCurrentEpoch call.cached).toNat := by

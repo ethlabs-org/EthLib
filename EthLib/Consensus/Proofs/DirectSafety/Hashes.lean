@@ -70,7 +70,7 @@ def HashEvidence (objects : List (HashObject preset)) : Prop :=
     MessageCollision x y) ∨
   ∃ object ∈ objects, object.root = some (Vector.replicate 32 0)
 
-theorem header_binding (objects : List (HashObject preset)) (a b : BeaconBlockHeader)
+private theorem header_binding (objects : List (HashObject preset)) (a b : BeaconBlockHeader)
     (one : .header a ∈ objects) (two : .header b ∈ objects) (root : Root)
     (sameA : hashTreeRoot a = .ok root) (sameB : hashTreeRoot b = .ok root) :
     a = b ∨ HashEvidence objects := by
@@ -656,14 +656,14 @@ theorem checkpoint_binding {g a b : ForkedBeaconState preset}
     · exact False.elim (evidence collision)
   · exact False.elim (evidence collision)
 
-private theorem hashObjects_append_subset {g a b : ForkedBeaconState preset}
+theorem hashObjects_append_subset {g a b : ForkedBeaconState preset}
     (pre : Run config checks g a) (tail : Run config checks a b) :
     pre.hashObjects ⊆ (pre.append tail).hashObjects := by
   induction tail with
   | nil => exact fun _ h => h
   | snoc tail step ih => exact fun _ h => List.mem_append_left _ (ih h)
 
-private theorem hashEvidence_mono {one two : List (HashObject preset)}
+theorem hashEvidence_mono {one two : List (HashObject preset)}
     (subset : one ⊆ two) (evidence : HashEvidence one) : HashEvidence two := by
   rcases evidence with ⟨x, xm, y, ym, collision⟩ | ⟨object, member, zero⟩
   · left

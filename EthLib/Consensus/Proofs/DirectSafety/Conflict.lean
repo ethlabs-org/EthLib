@@ -122,7 +122,7 @@ theorem same_epoch_histories {g a b : ForkedBeaconState preset}
     exact epoch
 
 /-- The first call crossing an epoch is chosen from the actual justification history. -/
-theorem history_crossing {g a : ForkedBeaconState preset} (run : Run config checks g a)
+private theorem history_crossing {g a : ForkedBeaconState preset} (run : Run config checks g a)
     (parameters : Parameters preset) (genesis : Genesis (config := config) (checks := checks) g)
     (c : Checkpoint) (history : JustificationHistory run c) (epoch : Nat)
     (positive : 0 < epoch) (reached : epoch ≤ c.epoch.toNat) :
@@ -170,7 +170,7 @@ theorem history_crossing {g a : ForkedBeaconState preset} (run : Run config chec
     rw [history.finish call last]
     exact reached
 
-theorem surround_quorums {g a b : ForkedBeaconState preset}
+private theorem surround_quorums {g a b : ForkedBeaconState preset}
     (left : Run config checks g a) (right : Run config checks g b)
     (parameters : Parameters preset) (genesis : Genesis (config := config) (checks := checks) g)
     (earlyA : a.fork < .glamsterdam) (earlyB : b.fork < .glamsterdam)
