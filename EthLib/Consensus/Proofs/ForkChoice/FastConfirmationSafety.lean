@@ -1149,7 +1149,7 @@ private theorem walk_source_ancestor {store : Store preset fork}
     (sound : Invariant anchorState) (before : fork < .glamsterdam)
     (positive : 0 < preset.SLOTS_PER_EPOCH.toNat)
     (window : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
-    (aligned : anchorBlock.slot ≤ anchorState.slot) (lower : store.ParentsBelow)
+    (aligned : anchorBlock.slot ≤ anchorState.slot)
     (nonzero : ∀ (root : Root) (block : BeaconBlock preset fork), store.blocks[root]? = some block →
       block.stateRoot ≠ Vector.replicate 32 0)
     (child : ∃ (root : Root) (block : BeaconBlock preset fork),
@@ -1173,7 +1173,7 @@ private theorem walk_source_ancestor {store : Store preset fork}
       ⟨state, pulled, stored, processed, same⟩
     · exact .inl (by rw [old]; exact UInt64.le_refl _)
     · exact same ▸ (walk_pulled_checkpoint_ancestor reachable sound before positive window
-        aligned lower nonzero child stored processed).2.1
+        aligned nonzero child stored processed).2.1
   rcases read with source | unrealized
   · unfold Store.getVotingSource at source
     simp only [bind_ok_iff] at source
@@ -1189,7 +1189,7 @@ private theorem walk_source_ancestor {store : Store preset fork}
       | some state =>
         simp only [stored, pure, Except.pure, Except.ok.injEq] at source
         exact source ▸ (walk_checkpoint_ancestor reachable sound before positive window
-          aligned lower nonzero child stored).2.1
+          aligned nonzero child stored).2.1
   · unfold Store.unrealizedJustification at unrealized
     cases entry : store.unrealizedJustifications[root]? with
     | none => simp [entry] at unrealized
@@ -1435,7 +1435,6 @@ private theorem walk_finalized_read_of_recent_source {anchor : Store preset fork
     (callerEpoch : ((e.world n).state u).getCurrentStoreEpoch config = .ok epoch)
     (receiverEpoch : ((e.world k).state w).getCurrentStoreEpoch config = .ok epoch)
     (inHorizon : epoch ≤ horizon) (anchorHorizon : getCurrentEpoch anchorState ≤ horizon)
-    (lower : ((e.world n).state u).ParentsBelow)
     (nonzero : ∀ (r : Root) (b : BeaconBlock preset fork),
       ((e.world n).state u).blocks[r]? = some b → b.stateRoot ≠ Vector.replicate 32 0)
     (child : ∃ (r : Root) (b : BeaconBlock preset fork),
@@ -1469,7 +1468,7 @@ private theorem walk_finalized_read_of_recent_source {anchor : Store preset fork
     simp only [GENESIS_EPOCH, UInt64.toNat_zero]
     omega
   rcases walk_source_ancestor forward.reachable sound before positive window
-      (UInt64.le_of_eq anchorSlot) lower nonzero child source with early |
+      (UInt64.le_of_eq anchorSlot) nonzero child source with early |
       ⟨_, boundary, _, _, boundaryOk, _, read⟩
   · exact absurd early old
   · exact walk_finalized_read_of_source chain before caller receiver nBound kBound source boundaryOk
@@ -1590,7 +1589,6 @@ private theorem walk_finalized_read_below_source {anchor : Store preset fork}
     (callerEpoch : ((e.world n).state u).getCurrentStoreEpoch config = .ok epoch)
     (receiverEpoch : ((e.world k).state w).getCurrentStoreEpoch config = .ok epoch)
     (inHorizon : epoch ≤ horizon) (anchorHorizon : getCurrentEpoch anchorState ≤ horizon)
-    (lower : ((e.world n).state u).ParentsBelow)
     (nonzero : ∀ (r : Root) (b : BeaconBlock preset fork),
       ((e.world n).state u).blocks[r]? = some b → b.stateRoot ≠ Vector.replicate 32 0)
     (child : ∃ (r : Root) (b : BeaconBlock preset fork),
@@ -1613,7 +1611,7 @@ private theorem walk_finalized_read_below_source {anchor : Store preset fork}
   have read := walk_finalized_read_of_recent_source anchorStore anchored sound slots positive window
     anchorSlot anchorBoundary before chain caller receiver nBound kBound callerEpoch receiverEpoch
     inHorizon
-    anchorHorizon lower nonzero child tipKnown source recent
+    anchorHorizon nonzero child tipKnown source recent
   have splitRead := read
   unfold Store.getCheckpointBlock at splitRead
   simp only [bind_ok_iff] at splitRead
@@ -2004,7 +2002,6 @@ private theorem walk_known_at_call {Δ : ℕ} (sync : e.Synchronous Δ)
     (epochOk : ((e.world n).state u).getCurrentStoreEpoch config = .ok epoch)
     (slotOk : ((e.world n).state u).getCurrentSlot config = .ok slot)
     (inHorizon : epoch ≤ horizon) (anchorHorizon : getCurrentEpoch anchorState ≤ horizon)
-    (lower : ((e.world n).state u).ParentsBelow)
     (nonzero : ∀ (r : Root) (b : BeaconBlock preset fork),
       ((e.world n).state u).blocks[r]? = some b → b.stateRoot ≠ Vector.replicate 32 0)
     (child : ∃ (r : Root) (b : BeaconBlock preset fork),
@@ -2027,7 +2024,7 @@ private theorem walk_known_at_call {Δ : ℕ} (sync : e.Synchronous Δ)
   have finality := walk_finalized_read_below_source anchorStore anchored sound slots positive window
     anchorSlot anchorBoundary before chain caller receiver (same ▸ bounded) bounded epochOk
     receiverEpoch inHorizon
-    anchorHorizon lower nonzero child known above sourceRead sourceRecent recent
+    anchorHorizon nonzero child known above sourceRead sourceRecent recent
   exact walk_known_of_honest_supporter sync slots fits before oneBlock admitted anchorStore anchored
     anchorSlot anchorBoundary caller honest receiver (Nat.le_of_eq same) bounded callerCurrent
     receiverCurrent within known supporter
@@ -2805,7 +2802,6 @@ private theorem walk_admitted_root {Δ : ℕ} (sync : e.Synchronous Δ)
     (atSlot : (e.world n).time = begin.toNat) (started : e.startTime ≤ begin.toNat)
     (callBound : (e.world n).time ≤ last)
     (inHorizon : epoch ≤ horizon) (anchorHorizon : getCurrentEpoch anchorState ≤ horizon)
-    (lower : ((e.world n).state u).ParentsBelow)
     (nonzero : ∀ (r : Root) (b : BeaconBlock preset fork),
       ((e.world n).state u).blocks[r]? = some b → b.stateRoot ≠ Vector.replicate 32 0)
     (child : ∃ (r : Root) (b : BeaconBlock preset fork),
@@ -2841,7 +2837,7 @@ private theorem walk_admitted_root {Δ : ℕ} (sync : e.Synchronous Δ)
   intro x hx j same ready
   exact walk_known_at_call sync slots positive window fits before oneBlock admitted anchorStore
     anchored sound anchorSlot anchorBoundary chain caller honest hx (atSlot.trans same.symm)
-    (by omega) current ready epochOk slotOk inHorizon anchorHorizon lower nonzero child within
+    (by omega) current ready epochOk slotOk inHorizon anchorHorizon nonzero child within
     checked known
     recent headAbove forward.votesHaveOrigins supporter
 
@@ -3144,7 +3140,7 @@ theorem Execution.safeAt_of_walk {Δ : ℕ} (sync : e.Synchronous Δ)
     committees (prompt.of_le (by omega)) anchorStore anchored sound anchorSlot anchorBoundary
     (by assumption) caller upToDate
     epochOk slotOk beginOk atSlot started callBound (inHorizon u caller n epoch callBound epochOk)
-    anchorHorizon lower (nonzero u caller n callBound) ⟨root, rootBlock, rootKnown, child⟩ checked
+    anchorHorizon (nonzero u caller n callBound) ⟨root, rootBlock, rootKnown, child⟩ checked
     headOk (Store.blockState_ok_iff.mpr headStateHeld) rootKnown rootRecent
     (blocksBound root rootBlock rootKnown) headAbove
     (Store.Reachable.checkpointState_aligned sound (reached n u caller) maxAligned sourceOk)
