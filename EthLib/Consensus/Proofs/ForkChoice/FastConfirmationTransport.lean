@@ -1927,6 +1927,61 @@ theorem Execution.honest_support_of_historical_anchor {Δ : ℕ} (sync : e.Synch
       receiverUpToDate dueOk dueLt beginOk floor
       (fun earlier low high => safe earlier (by omega) (by omega)) known rootAboveAnchor active
       signed origin
+  have freshRecordedSupport : ∀ v ∈ J, ∀ dutySlot committeeIndex deadline signedAt
+      (attestation : Attestation preset fork) indexed message,
+      VoteAt e v dutySlot committeeIndex deadline signedAt attestation indexed →
+      attestation.data.slot = dutySlot →
+      attestation.data.target.epoch = computeEpochAtSlot preset dutySlot →
+      deadline + Δ ≤ time → slot ≤ dutySlot →
+      ((e.world k).state w).latestMessages[v]? = some message →
+      attestation.data.target.epoch ≤ message.rank →
+      v ∈ ((unslashedActiveBalances state).map (·.1)).toFinset →
+      v ∈ ((e.world k).state w).supportersOf state ⟨root, .pending⟩ := by
+    intro v honest dutySlot committeeIndex deadline signedAt attestation indexed message
+      vote dataSlot dataEpoch delivered floor latest rank active
+    have seen := vote.mem_view sync honest receiver (k := k) (by omega)
+    have signerReachable := e.reachable
+      (fun u hu => (anchored u hu) ▸ Store.Reachable.anchor anchorStore) signedAt v honest
+    have signedVote : (v, attestation.data) ∈
+        statements config checks anchorState anchorBlock (.attestation attestation) := by
+      obtain ⟨stored, target, storedOk, targetOk, indexedOk, valid⟩ := vote.reads
+      obtain ⟨indices, indicesOk, _⟩ := getAttestingIndices_of_getIndexedAttestation indexedOk
+      obtain ⟨other, otherOk, _, sameData, _⟩ :=
+        getIndexedAttestation_of_getAttestingIndices indicesOk
+      have same := Except.ok.inj (indexedOk.symm.trans otherOk)
+      have dataEq : indexed.data = attestation.data := same ▸ sameData
+      refine ⟨_, indexed, signerReachable, ⟨stored, target, storedOk, targetOk,
+        indexedOk, valid⟩, ?_⟩
+      simp [indexedStatements, ← dataEq, ← Array.mem_toList_iff, vote.alone]
+    obtain ⟨other, source, sourceSeen, rfl, signedOther, origin⟩ :=
+      e.exists_signed_origin_of_latestMessages anchorStore anchored receiver latest
+    have fresh := latest_slot_floor_of_signed_rank slots preGloas honest
+      (e.view_subset_sent k w seen) (e.view_subset_sent k w sourceSeen) signedVote signedOther
+      origin (by simpa [dataSlot] using dataEpoch) rank (dataSlot ▸ floor)
+    exact freshSlotSupport v honest other latest fresh origin
+      (e.exists_maySign_of_signed (e.view_subset_sent k w sourceSeen) signedOther honest) active
+  have freshDutySupport : ∀ endTime,
+      computeTimeAtSlotMs config genesisTimeMs current = .ok endTime →
+      endTime.toNat ≤ time → ∀ v ∈ J, ∀ dutySlot committeeIndex,
+      slot ≤ dutySlot → dutySlot < current →
+      assignment.committee v dutySlot = some committeeIndex →
+      v ∈ ((unslashedActiveBalances state).map (·.1)).toFinset →
+      v ∈ ((e.world k).state w).supportersOf state ⟨root, .pending⟩ ∨
+      ((e.world k).state w).isAncestor
+        ⟨((e.world k).state w).justifiedCheckpoint.root, .pending⟩
+        ⟨root, .pending⟩ = .ok true := by
+    intro endTime endOk complete v honest dutySlot committeeIndex low high duty active
+    have started : e.startTime ≤ (e.world n).time := e.monotone_time (Nat.zero_le n)
+    rcases recorded_duty_of_safe_interval sync slots preGloas oneBlock admitted votes prompt fits
+        anchorStore sound anchorSlot anchorBoundary anchored chain inHorizon nonzero
+        beginOk endOk started (by omega) complete safe honest receiver atTime receiverUpToDate
+        (fun j bounded equivocated => weights.dishonest w receiver j bounded v equivocated honest)
+        known rootFinal low high duty with recorded | covered
+    · obtain ⟨deadline, signedAt, attestation, indexed, message, vote, dataSlot, dataEpoch,
+        delivered, latest, rank⟩ := recorded
+      exact .inl (freshRecordedSupport v honest dutySlot committeeIndex deadline signedAt
+        attestation indexed message vote dataSlot dataEpoch delivered low latest rank active)
+    · exact .inr covered
   sorry
 
 
