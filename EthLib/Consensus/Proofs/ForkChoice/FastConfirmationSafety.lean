@@ -1970,6 +1970,90 @@ private theorem walk_exists_honest_supporter (committees : CommitteesFollow e)
   rw [empty, stake_empty] at positive
   omega
 
+/-- A strictly earlier block in the same epoch rules out the epoch boundary. -/
+private theorem walk_not_boundary {slot earlier : Slot}
+    (lt : earlier < slot)
+    (same : computeEpochAtSlot preset earlier = computeEpochAtSlot preset slot) :
+    isStartSlotAtEpoch preset slot = .ok false := by
+  unfold isStartSlotAtEpoch computeSlotsSinceEpochStart
+  rw [computeStartSlotAtEpoch_computeEpochAtSlot]
+  simp only [Except.mapError, bind, Except.bind, pure, Except.pure,
+    Except.ok.injEq, decide_eq_false_iff_not]
+  intro zero
+  have zeroNat := congrArg UInt64.toNat zero
+  have boundary := (computeStartSlotAtEpoch_ok_iff.mp
+    (computeStartSlotAtEpoch_computeEpochAtSlot (preset := preset) slot)).2
+  have sameNat := congrArg UInt64.toNat same
+  simp only [computeEpochAtSlot, UInt64.toNat_div] at sameNat boundary
+  have le := Nat.div_mul_le_self earlier.toNat preset.SLOTS_PER_EPOCH.toNat
+  rw [sameNat] at le
+  have upper := slot.toNat_lt
+  have lower := (slot / preset.SLOTS_PER_EPOCH * preset.SLOTS_PER_EPOCH).toNat_lt
+  have strict := UInt64.lt_iff_toNat_lt.mp lt
+  simp only [UInt64.toNat_sub, UInt64.toNat_zero] at zeroNat
+  omega
+
+/-- A recorded supporter places its supported block strictly before the store's slot. -/
+private theorem walk_supported_slot_lt {store : Store preset fork}
+    {source : BeaconState preset fork} {v : ValidatorIndex} {root : Root}
+    {block : BeaconBlock preset fork} {slot : Slot}
+    (origins : store.VotesHaveOrigins config)
+    (known : store.blocks[root]? = some block)
+    (slotOk : store.getCurrentSlot config = .ok slot)
+    (supporter : v ∈ store.supportersOf source ⟨root, .pending⟩) : block.slot < slot := by
+  obtain ⟨message, supported, latest, _, supportedOk, descends⟩ :=
+    store.exists_of_voteCountsFor (Store.voteCountsFor_of_mem_supportersOf supporter)
+  obtain ⟨attestation, rfl, origin⟩ := origins latest
+  obtain ⟨votedBlock, votedKnown, votedLe⟩ := origin.voted
+  obtain ⟨same, sameKnown, below⟩ := Store.slot_le_of_isAncestor known descends
+  have rootEq := Store.getSupportedNode_root supportedOk
+  change supported.root = attestation.data.beaconBlockRoot at rootEq
+  rw [rootEq, votedKnown, Option.some.injEq] at sameKnown
+  subst same
+  obtain ⟨readSlot, readOk, past⟩ := origin.past
+  rw [slotOk, Except.ok.injEq] at readOk
+  subst readSlot
+  exact UInt64.lt_of_le_of_lt (UInt64.le_trans below votedLe) past
+
+/-- A checked supported root has a recent source at itself or a descendant. -/
+private theorem walk_recent_source {store : Store preset fork} {fcr : FastConfirmationStore}
+    {head start root : Root} {epoch : Epoch} {slot : Slot} {block : BeaconBlock preset fork}
+    (checked : store.Checked config fcr head start root)
+    (epochOk : store.getCurrentStoreEpoch config = .ok epoch)
+    (slotOk : store.getCurrentSlot config = .ok slot)
+    (known : store.blocks[root]? = some block)
+    (past : block.slot < slot)
+    (headAbove : store.isAncestor ⟨head, .pending⟩ ⟨root, .pending⟩ = .ok true) :
+    ∃ tip checkpoint,
+      (store.getVotingSource config tip = .ok checkpoint ∨
+        store.unrealizedJustification tip = .ok checkpoint) ∧
+      epoch.toNat ≤ checkpoint.epoch.toNat + 2 ∧
+      store.isAncestor ⟨tip, .pending⟩ ⟨root, .pending⟩ = .ok true := by
+  have rootEpochOk : store.getBlockEpoch root = .ok (computeEpochAtSlot preset block.slot) := by
+    simp [Store.getBlockEpoch, Store.block_ok_iff.mpr known, bind, Except.bind, pure, Except.pure]
+  by_cases same : computeEpochAtSlot preset block.slot = epoch
+  · have current : computeEpochAtSlot preset slot = epoch := by
+      simpa [Store.getCurrentStoreEpoch, slotOk, bind, Except.bind, pure, Except.pure] using epochOk
+    have away := walk_not_boundary past (same.trans current.symm)
+    obtain ⟨readEpoch, readSlot, rootEpoch, startEpoch, readEpochOk, readSlotOk,
+      readRootEpochOk, _, _, branches⟩ := checked
+    rw [epochOk, Except.ok.injEq] at readEpochOk
+    rw [slotOk, Except.ok.injEq] at readSlotOk
+    rw [rootEpochOk, Except.ok.injEq] at readRootEpochOk
+    subst readEpoch
+    subst readSlot
+    subst rootEpoch
+    rcases branches with previous | current
+    · exact False.elim (previous.2.1 same)
+    · obtain ⟨checkpoint, read, recent⟩ := current.1 away
+      exact ⟨head, checkpoint, Or.inr read, by omega, headAbove⟩
+  · obtain ⟨tip, checkpoint, read, recent, above⟩ :=
+      walk_checked_source checked epochOk rootEpochOk same
+    refine ⟨tip, checkpoint, Or.inl read, recent, ?_⟩
+    rcases above with rfl | above
+    · exact Store.isAncestor_self known
+    · exact above
+
 /-- A past honest supporter delivers the block once the caller establishes receiver finality. -/
 private theorem walk_known_of_honest_supporter {Δ : ℕ} (sync : e.Synchronous Δ)
     (slots : 0 < config.SLOT_DURATION_MS) (fits : DelayFits fork config genesisTimeMs Δ)
