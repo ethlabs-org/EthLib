@@ -268,6 +268,26 @@ theorem getCheckpointBlock_of_isAncestor {node : ForkChoiceNode} {root checkpoin
   rw [← rootWalk, through]
   exact read
 
+/-- A descendant reads the checkpoint of an ancestor that is no earlier than the boundary. -/
+theorem getCheckpointBlock_of_isAncestor_below {node ancestor : ForkChoiceNode}
+    {checkpoint : Root} {block : BeaconBlock preset fork} {epoch : Epoch} {boundary : Slot}
+    (before : fork < .glamsterdam)
+    (known : store.blocks[ancestor.root]? = some block)
+    (descends : store.isAncestor node ancestor = .ok true)
+    (boundaryOk : computeStartSlotAtEpoch preset epoch = .ok boundary)
+    (earlier : boundary ≤ block.slot)
+    (read : store.getCheckpointBlock node.root epoch = .ok checkpoint) :
+    store.getCheckpointBlock ancestor.root epoch = .ok checkpoint := by
+  have walk := getAncestor_of_isAncestor_of_lt before known descends
+  have through := getAncestor_trans earlier walk
+  have nodeWalk := getAncestor_root (store := store) node .pending boundary
+  have ancestorWalk := getAncestor_root (store := store) ancestor .pending boundary
+  simp only [getCheckpointBlock, boundaryOk, Except.mapError, bind, Except.bind] at read ⊢
+  change ((fun x => x.root) <$> store.getAncestor ⟨ancestor.root, .pending⟩ boundary) =
+    .ok checkpoint
+  rw [← ancestorWalk, ← through, nodeWalk]
+  exact read
+
 /-- Before Gloas, a walk starting at a pending node returns a pending node. -/
 theorem getAncestor_pending_of_lt {node ancestor : ForkChoiceNode} {slot : Slot}
     (before : fork < .glamsterdam) (pending : node.payloadStatus = .pending)
