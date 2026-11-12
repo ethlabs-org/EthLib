@@ -1024,8 +1024,198 @@ def TargetChecked
         (e.world k).time = begin.toNat) ∧
     ∀ time, (e.world k).time ≤ time → time ≤ (e.world n).time → SafeAt e time origin
 
+theorem ancestor_pending_of_walk {store : Store preset fork}
+    {node : ForkChoiceNode} {root : Root} {block : BeaconBlock preset fork}
+    (known : store.blocks[root]? = some block)
+    (walk : ∃ ancestor, store.getAncestor node block.slot = .ok ancestor ∧
+      ancestor.root = root ∧ (fork < .glamsterdam → ancestor.payloadStatus = .pending)) :
+    store.isAncestor node ⟨root, .pending⟩ = .ok true := by
+  obtain ⟨ancestor, walked, rootEq, pending⟩ := walk
+  by_cases gloas : .glamsterdam ≤ fork
+  · simp [Store.isAncestor, Store.block_ok_iff.mpr known, walked, gloas, rootEq,
+      bind, Except.bind, pure, Except.pure]
+  · have status := pending (Nat.lt_of_not_le gloas)
+    have eq : ancestor = ⟨root, .pending⟩ := by cases ancestor; simp_all
+    simp [Store.isAncestor, Store.block_ok_iff.mpr known, walked, gloas, eq,
+      bind, Except.bind, pure, Except.pure]
+
+/-- Every known block has the anchor in its chain, including when the anchor slots differ. -/
+theorem anchor_walk_of_reachable {store anchor : Store preset fork}
+    (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (reachable : Store.Reachable config anchorState anchorBlock store) :
+    store.blocks[anchor.finalizedCheckpoint.root]? = some anchorBlock ∧
+      ∀ (node : ForkChoiceNode) (block : BeaconBlock preset fork),
+        store.blocks[node.root]? = some block →
+        (fork < .glamsterdam → node.payloadStatus = .pending) →
+        anchorBlock.slot ≤ block.slot ∧ ∃ ancestor,
+          store.getAncestor node anchorBlock.slot = .ok ancestor ∧
+          ancestor.root = anchor.finalizedCheckpoint.root ∧
+          (fork < .glamsterdam → ancestor.payloadStatus = .pending) := by
+  obtain ⟨anchorRoot, hashed, -, -, -, finalEq, -⟩ := getForkchoiceStore_anchor anchored
+  rw [finalEq]
+  dsimp only
+  have transfer {s t : Store preset fork}
+      (maps : ∀ {r : Root} {b : BeaconBlock preset fork},
+        s.blocks[r]? = some b → t.blocks[r]? = some b)
+      (h : s.blocks[anchorRoot]? = some anchorBlock ∧
+        ∀ (node : ForkChoiceNode) (block : BeaconBlock preset fork),
+          s.blocks[node.root]? = some block →
+          (fork < .glamsterdam → node.payloadStatus = .pending) →
+          anchorBlock.slot ≤ block.slot ∧ ∃ ancestor,
+            s.getAncestor node anchorBlock.slot = .ok ancestor ∧ ancestor.root = anchorRoot ∧
+            (fork < .glamsterdam → ancestor.payloadStatus = .pending))
+      {node : ForkChoiceNode} {block : BeaconBlock preset fork}
+      (found : s.blocks[node.root]? = some block)
+      (pending : fork < .glamsterdam → node.payloadStatus = .pending) :
+      anchorBlock.slot ≤ block.slot ∧ ∃ ancestor,
+        t.getAncestor node anchorBlock.slot = .ok ancestor ∧ ancestor.root = anchorRoot ∧
+        (fork < .glamsterdam → ancestor.payloadStatus = .pending) := by
+    obtain ⟨le, ancestor, walk, rest⟩ := h.2 node block found pending
+    exact ⟨le, ancestor, Store.getAncestor_of_blocks maps walk, rest⟩
+  induction reachable with
+  | anchor made =>
+    obtain ⟨r, hash, blocks, -⟩ := getForkchoiceStore_maps made
+    rw [hashed, Except.ok.injEq] at hash
+    subst r
+    constructor
+    · simp [blocks]
+    · intro node block found pending
+      rw [blocks, getElem?_insert_root] at found
+      split at found
+      · rename_i eq
+        simp only [Option.some.injEq] at found
+        subst block
+        exact ⟨UInt64.le_refl _, node,
+          Store.getAncestor_of_le (by simp [blocks, eq]) (UInt64.le_refl _),
+          eq.symm, pending⟩
+      · simp at found
+  | @block before after checks sources signed reached added ih =>
+    rcases Store.onBlock_same_or_insert added with same | ⟨r, hash, fresh, blocks,
+      pre, post, preFound, transition, states⟩
+    · exact same ▸ ih
+    have maps {r : Root} {b : BeaconBlock preset fork}
+        (found : before.blocks[r]? = some b) : after.blocks[r]? = some b :=
+      Store.onBlock_blocks_of_found added found
+    refine ⟨maps ih.1, ?_⟩
+    intro node block found pending
+    rw [blocks, getElem?_insert_root] at found
+    split at found
+    · rename_i eq
+      simp only [Option.some.injEq] at found
+      subst block
+      obtain ⟨parent, parentFound⟩ := reached.known_of_blockState preFound
+      have lower : parent.slot < signed.message.slot := by
+        by_cases same : parent = anchorBlock
+        -- The anchor state need not have its block's slot; the finalized walk bounds that block.
+        · obtain ⟨-, ⟨finalSlot, start, afterFinal⟩, checkpoint⟩ := Store.onBlock_checks hash
+            (by simp [Std.TreeMap.contains_eq_isSome_getElem?, fresh]) added
+          unfold Store.getCheckpointBlock at checkpoint
+          rw [bind_ok_iff] at checkpoint
+          obtain ⟨slot, slotOk, checkpoint⟩ := checkpoint
+          have slotEq := Except.ok.inj ((mapError_ok_iff.mp slotOk).symm.trans start)
+          cases slotEq
+          rw [bind_ok_iff] at checkpoint
+          obtain ⟨ancestor, walk, -⟩ := checkpoint
+          obtain ⟨b, known, le⟩ := Store.getAncestor_le walk
+          have minSlot := (ih.2 ⟨ancestor.root, .pending⟩ b known (fun _ => rfl)).1
+          rw [same]
+          exact UInt64.lt_of_le_of_lt (UInt64.le_trans minSlot le) afterFinal
+        -- Every other block has the slot of its stored state, before the child's transition.
+        · have slotEq := (reached.blockState_header parentFound preFound same).1
+          rw [← slotEq]
+          exact (stateTransition_slot transition).1
+      obtain ⟨minSlot, ancestor, walk, rootEq, status⟩ := ih.2
+        ⟨signed.message.parentRoot, Store.parentPayloadStatus signed.message parent⟩ parent
+        parentFound (fun before => Store.parentPayloadStatus_of_lt before)
+      refine ⟨UInt64.le_trans minSlot (UInt64.le_of_lt lower), ancestor, ?_, rootEq, status⟩
+      rw [Store.getAncestor_step (by simp [blocks, eq])
+        (UInt64.not_le.mpr (UInt64.lt_of_le_of_lt minSlot lower)) (maps parentFound) lower]
+      exact Store.getAncestor_of_blocks maps walk
+    · exact transfer maps ih found pending
+  | tick _ ticked ih =>
+    have blocks := (Store.onTick_frame ticked).2.2.1
+    exact ⟨blocks ▸ ih.1, fun n b f p => transfer (fun h => blocks ▸ h) ih (blocks ▸ f) p⟩
+  | attestation _ attested ih =>
+    have blocks := (Store.onAttestation_frame attested).2.1
+    exact ⟨blocks ▸ ih.1, fun n b f p => transfer (fun h => blocks ▸ h) ih (blocks ▸ f) p⟩
+  | attesterSlashing _ slashed ih =>
+    have blocks := (Store.onAttesterSlashing_frame slashed).2.1
+    exact ⟨blocks ▸ ih.1, fun n b f p => transfer (fun h => blocks ▸ h) ih (blocks ▸ f) p⟩
+  | payloadAttestation _ voted ih =>
+    have blocks := (Store.onPayloadAttestationMessage_onlyPtcVotes voted).frame.2.1
+    exact ⟨blocks ▸ ih.1, fun n b f p => transfer (fun h => blocks ▸ h) ih (blocks ▸ f) p⟩
+  | envelope _ accepted ih =>
+    have blocks := (Store.onExecutionPayloadEnvelope_frame accepted).2.1
+    exact ⟨blocks ▸ ih.1, fun n b f p => transfer (fun h => blocks ▸ h) ih (blocks ▸ f) p⟩
+  | inclusionList _ accepted ih =>
+    have blocks := (Store.onInclusionList_frame accepted).2.1
+    exact ⟨blocks ▸ ih.1, fun n b f p => transfer (fun h => blocks ▸ h) ih (blocks ▸ f) p⟩
+
 variable {e : Execution (honestForkChoice config checks sources anchorState anchorBlock assignment
   genesisTimeMs) J} [DecidablePred (· ∈ J)]
+
+omit [DecidablePred (· ∈ J)] in
+/-- Each block that an honest store holds has the block of the anchor on its chain.
+
+The call history uses this when its historical anchor is the block of the anchor. -/
+theorem Execution.isAncestor_anchor_of_known {anchor : Store preset fork}
+    (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (start : ∀ w ∈ J, e.start w = anchor)
+    {w : ValidatorIndex} (honest : w ∈ J) {k : ℕ} {root : Root} {block : BeaconBlock preset fork}
+    (known : ((e.world k).state w).blocks[root]? = some block) :
+    ((e.world k).state w).isAncestor ⟨root, .pending⟩
+      ⟨anchor.finalizedCheckpoint.root, .pending⟩ = .ok true := by
+  have reached := e.reachable
+    (fun w hw => (start w hw).symm ▸ Store.Reachable.anchor anchored) k w honest
+  obtain ⟨anchorKnown, walks⟩ := anchor_walk_of_reachable anchored reached
+  exact ancestor_pending_of_walk anchorKnown (walks ⟨root, .pending⟩ block known fun _ => rfl).2
+
+omit [DecidablePred (· ∈ J)] in
+/-- Every held block reads an epoch-aligned anchor at the anchor's checkpoint boundary. -/
+theorem walk_anchor_read {anchor : Store preset fork}
+    (anchorStore : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (anchored : ∀ w ∈ J, e.start w = anchor)
+    (anchorSlot : anchorBlock.slot = anchorState.slot)
+    (anchorBoundary : isStartSlotAtEpoch preset anchorBlock.slot = .ok true)
+    (before : fork < .glamsterdam) {u : ValidatorIndex} (honest : u ∈ J) {n : ℕ}
+    {root : Root} {block : BeaconBlock preset fork}
+    (known : ((e.world n).state u).blocks[root]? = some block) :
+    ((e.world n).state u).getCheckpointBlock root anchor.finalizedCheckpoint.epoch =
+      .ok anchor.finalizedCheckpoint.root := by
+  have reached := e.reachable
+    (fun w hw => (anchored w hw) ▸ Store.Reachable.anchor anchorStore) n u honest
+  obtain ⟨r, hashed, _, _, _, final, _, _⟩ := getForkchoiceStore_anchor anchorStore
+  obtain ⟨r', hashed', found⟩ := reached.anchor_known
+  rw [hashed, Except.ok.injEq] at hashed'
+  subst r'
+  have rounded : anchorState.slot / preset.SLOTS_PER_EPOCH * preset.SLOTS_PER_EPOCH =
+      anchorState.slot := by
+    unfold isStartSlotAtEpoch computeSlotsSinceEpochStart at anchorBoundary
+    rw [anchorSlot, computeStartSlotAtEpoch_computeEpochAtSlot] at anchorBoundary
+    simp only [Except.mapError, bind, Except.bind, pure, Except.pure,
+      Except.ok.injEq, decide_eq_true_eq] at anchorBoundary
+    have h := (computeStartSlotAtEpoch_ok_iff.mp
+      (computeStartSlotAtEpoch_computeEpochAtSlot (preset := preset) anchorState.slot)).2
+    have le : (anchorState.slot / preset.SLOTS_PER_EPOCH *
+        preset.SLOTS_PER_EPOCH).toNat ≤ anchorState.slot.toNat := by
+      rw [h, computeEpochAtSlot, UInt64.toNat_div]
+      exact Nat.div_mul_le_self _ _
+    have zero := congrArg UInt64.toNat anchorBoundary
+    simp only [UInt64.toNat_sub, UInt64.toNat_zero] at zero
+    have upper := anchorState.slot.toNat_lt
+    have lower := (anchorState.slot / preset.SLOTS_PER_EPOCH * preset.SLOTS_PER_EPOCH).toNat_lt
+    apply UInt64.toNat_inj.mp
+    omega
+  have boundaryOk : computeStartSlotAtEpoch preset anchor.finalizedCheckpoint.epoch =
+      .ok anchorBlock.slot := by
+    simpa [final, getCurrentEpoch, rounded, anchorSlot] using
+      computeStartSlotAtEpoch_computeEpochAtSlot (preset := preset) anchorState.slot
+  have descends := e.isAncestor_anchor_of_known anchorStore anchored honest known
+  rw [final] at descends
+  have path := Store.getAncestor_of_isAncestor_of_lt before found descends
+  unfold Store.getCheckpointBlock
+  rw [boundaryOk]
+  simp only [Except.mapError, bind, Except.bind, path, pure, Except.pure, final]
 
 omit [DecidablePred (· ∈ J)] in
 /-- Inclusion up to a time gives inclusion up to every earlier time. -/
