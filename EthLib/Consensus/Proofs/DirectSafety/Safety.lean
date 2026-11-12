@@ -352,7 +352,7 @@ def VerifiedEither {g a b : ForkedBeaconState preset} (left : Run config checks 
   (∃ c : AttestationCheck left key, c.indexed.data = data) ∨
     ∃ c : AttestationCheck right key, c.indexed.data = data
 
-/-- Two conflicting messages by `key`, each with a check that one of the runs executed. -/
+/-- Two conflicting messages that name `key`, each with a check that one of the runs executed. -/
 def VerifiedConflict {g a b : ForkedBeaconState preset} (left : Run config checks g a)
     (right : Run config checks g b) (key : BLSPubkey) : Prop :=
   (∃ d₁ d₂, VerifiedEither left right key d₁ ∧ VerifiedEither left right key d₂ ∧
@@ -382,7 +382,9 @@ private theorem checked_of_slashingEvidence {g a : ForkedBeaconState preset}
 
 /-- Every accountable key has two conflicting messages, each checked by one of the runs.
 
-No assumption about the signature checks is made. -/
+No assumption about the signature checks is made.
+
+The result is about the checks that the runs performed, not about who signed. -/
 theorem verifiedConflict_of_accountable {g a b : ForkedBeaconState preset}
     (left : Run config checks g a) (right : Run config checks g b)
     (parameters : Parameters preset) (key : BLSPubkey)
