@@ -1272,8 +1272,8 @@ theorem Execution.coveredOrViableAt_of_checked {Δ : ℕ} (sync : e.Synchronous 
     (preGloas : fork < .glamsterdam)
     (admitted : BlocksAdmitted e 0 Δ)
     (oneBlock : OneBlockPerRoot e)
-    (votes : Votes e.startTime e) (fits : DelayFits fork config genesisTimeMs Δ)
-    (prompt : Prompt e) (committees : CommitteesFollow e)
+    {time : ℕ} (votes : Votes e.startTime time e) (fits : DelayFits fork config genesisTimeMs Δ)
+    (prompt : Prompt e time) (committees : CommitteesFollow e)
     {horizon anchorEpoch : Epoch} {margin : ℕ}
     (chain : FinalizedPrefix e horizon)
     (unique : OneJustifiedPerEpoch e horizon) (pins : HonestThirdPins e anchorEpoch horizon margin)
@@ -1326,7 +1326,7 @@ theorem Execution.coveredOrViableAt_of_checked {Δ : ℕ} (sync : e.Synchronous 
         (((e.world n).state u).unrealizedJustification head.root =
           .ok fcr.currentEpochObservedJustifiedCheckpoint ∧
           start = fcr.currentEpochObservedJustifiedCheckpoint.root))
-    {time : ℕ} (later : (e.world n).time ≤ time)
+    (later : (e.world n).time ≤ time)
     (nonzero : ∀ w ∈ J, ∀ k, (e.world k).time ≤ time →
       ∀ (r : Root) (b : BeaconBlock preset fork),
         ((e.world k).state w).blocks[r]? = some b → b.stateRoot ≠ Vector.replicate 32 0)

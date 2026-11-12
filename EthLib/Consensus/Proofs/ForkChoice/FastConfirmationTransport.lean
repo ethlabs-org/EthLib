@@ -1177,8 +1177,8 @@ theorem Execution.honest_support_of_historical_anchor {Δ : ℕ} (sync : e.Synch
     (preGloas : fork < .glamsterdam) (admitted : BlocksAdmitted e 0 Δ)
     (oneBlock : OneBlockPerRoot e)
     (half : 2 * config.CONFIRMATION_BYZANTINE_THRESHOLD.toNat ≤ 100)
-    (votes : Votes e.startTime e) (fits : DelayFits fork config genesisTimeMs Δ)
-    (prompt : Prompt e) (committees : CommitteesFollow e) {anchor : Store preset fork}
+    {time : ℕ} (votes : Votes e.startTime time e) (fits : DelayFits fork config genesisTimeMs Δ)
+    (prompt : Prompt e time) (committees : CommitteesFollow e) {anchor : Store preset fork}
     (anchorStore : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
     (sound : Invariant anchorState) (anchorSlot : anchorBlock.slot = anchorState.slot)
     (anchorBoundary : isStartSlotAtEpoch preset anchorBlock.slot = .ok true)
@@ -1218,7 +1218,7 @@ theorem Execution.honest_support_of_historical_anchor {Δ : ℕ} (sync : e.Synch
       (((e.world n).state u).tallyVotes balanceSource) root = .ok true)
     (base : maximumSupport.toNat + proposerScore.toNat + 2 * adversary.toNat + shift <
       discount.toNat + 2 * support.toNat)
-    {time : ℕ} (later : (e.world n).time ≤ time)
+    (later : (e.world n).time ≤ time)
     (weights : WeightBounds e balanceSource (e.world n).time time shift)
     {horizon : Epoch} (chain : FinalizedPrefix e horizon)
     (inHorizon : ∀ w ∈ J, ∀ k epoch, (e.world k).time ≤ time →

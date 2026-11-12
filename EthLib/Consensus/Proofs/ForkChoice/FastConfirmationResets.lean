@@ -1096,8 +1096,8 @@ The statement does not take that fact. -/
 theorem Execution.safeAt_observed {Δ : ℕ} (sync : e.Synchronous Δ)
     (positive : 0 < preset.SLOTS_PER_EPOCH.toNat)
     (window : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
-    (slots : 0 < config.SLOT_DURATION_MS) (votes : Votes e.startTime e)
-    (fits : DelayFits fork config genesisTimeMs Δ) (prompt : Prompt e)
+    (slots : 0 < config.SLOT_DURATION_MS) {limit : ℕ} (votes : Votes e.startTime limit e)
+    (fits : DelayFits fork config genesisTimeMs Δ) (prompt : Prompt e limit)
     (preGloas : fork < .glamsterdam)
     (oneBlock : OneBlockPerRoot e) (admitted : BlocksAdmitted e 0 Δ) {anchor : Store preset fork}
     (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
@@ -1119,7 +1119,6 @@ theorem Execution.safeAt_observed {Δ : ℕ} (sync : e.Synchronous Δ)
     (found : ((e.world n).state u).block
       ((e.world m).state u).unrealizedJustifiedCheckpoint.root = .ok observedBlock)
     (blockEpoch : addChecked (computeEpochAtSlot preset observedBlock.slot) 1 = .ok epoch)
-    {limit : ℕ}
     (nonzero : ∀ v ∈ J, ∀ k, (e.world k).time ≤ limit →
       ∀ (r : Root) (b : BeaconBlock preset fork),
         ((e.world k).state v).blocks[r]? = some b → b.stateRoot ≠ Vector.replicate 32 0)
