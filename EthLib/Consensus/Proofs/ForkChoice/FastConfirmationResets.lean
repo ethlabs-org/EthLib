@@ -1560,6 +1560,18 @@ private theorem reset_adoption_forward {store : Store preset fork}
     obtain ⟨_, _, rfl⟩ := Store.onInclusionList_ok _ accepted
     exact ih
 
+/-- Each held state's pulled-up justification is no later than the store's unrealized field. -/
+theorem _root_.EthLib.Consensus.Store.ForwardReachable.pulled_justified_epoch_le_unrealized
+    {store : Store preset fork}
+    (forward : Store.ForwardReachable config anchorState anchorBlock store)
+    (positive : 0 < preset.SLOTS_PER_EPOCH.toNat) (slots : 0 < config.SLOT_DURATION_MS)
+    (sound : Invariant anchorState) {root : Root} {state pulled : BeaconState preset fork}
+    (stored : store.blockStates[root]? = some state)
+    (computed : processJustificationAndFinalization state = .ok pulled) :
+    pulled.currentJustifiedCheckpoint.epoch ≤ store.unrealizedJustifiedCheckpoint.epoch := by
+  obtain ⟨_, _, adopted⟩ := reset_adoption_forward positive slots sound forward
+  exact (adopted root state pulled stored computed).1
+
 /-- In the next epoch, each honest store has justified what an honest store saw as justified.
 
 The first store is that of an honest validator at an event, in an epoch at most the horizon.
@@ -1714,7 +1726,7 @@ theorem Execution.unrealized_epoch_le_justified_epoch {Δ : ℕ} (sync : e.Synch
       (epochEq ▸ UInt64.lt_of_le_of_lt stateEpoch next)
 
 /-- A store replaces an anchor justification only with a strictly later checkpoint. -/
-private theorem reset_fields_after_anchor {anchor store : Store preset fork}
+theorem reset_fields_after_anchor {anchor store : Store preset fork}
     (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
     (reached : Store.Reachable config anchorState anchorBlock store) :
     (store.justifiedCheckpoint = anchor.justifiedCheckpoint ∨
