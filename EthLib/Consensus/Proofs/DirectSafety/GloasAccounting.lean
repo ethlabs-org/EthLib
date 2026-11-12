@@ -694,4 +694,49 @@ theorem gloas_operations_bounded {fork : Fork} (gloas : .glamsterdam ≤ fork)
       (fun _ _ _ h ok => processPayloadAttestation_eq ok ▸ h) h
       (by simpa only [← Array.foldlM_toList] using ok)) changedBound paid
 
+/-- EIP-7732, State transition: every recorded Gloas block event satisfies its limits. -/
+theorem gloas_block_bounded {fork : Fork} (gloas : .glamsterdam ≤ fork)
+    (before : fork < .hegota) (s : BeaconState preset fork) (block : BeaconBlock preset fork)
+    (post : BalanceReplay preset fork) (matched : BalancesMatch s)
+    (ok : gloasBlockBalanceReplay (config := config) (checks := checks)
+      gloas before s block = .ok post) :
+    ∀ event ∈ post.2, event.credits ≤ event.creditLimit ∧ event.debits ≤ event.debitLimit := by
+  simp only [gloasBlockBalanceReplay, bind_ok_iff] at ok
+  obtain ⟨parent, parentOk, headed, headerOk, withdrawn, withdrawalsOk,
+    bid, bidOk, randao, randaoOk, voted, votedOk, operated, operationsOk, synced⟩ := ok
+  have parentBound := gloas_parent_payload_bounded gloas block.body (s, []) parent
+    matched (by simp) parentOk
+  have headedBound := carryBalance_bounded _
+    (fun _ _ ok => (frame_processBlockHeader ok).balancesMatch) parentBound headerOk
+  -- The full withdrawal sum also bounds validator debits when builder withdrawals are present.
+  have withdrawnBound : ReplayBounded withdrawn := by
+    apply recordBalance_matched _ _ _
+      (fun _ _ ok => (frame_processWithdrawals ok).balancesMatch) _ headedBound withdrawalsOk
+    intro site t credit debit _ limits action
+    obtain ⟨debit', limits', credits, debits⟩ := gloas_withdrawal_bounds gloas site t action
+    cases Except.ok.inj (limits.symm.trans limits')
+    exact ⟨credits.le, debits⟩
+  have bidBound := carryBalance_bounded _
+    (fun _ _ ok => (frame_processExecutionPayloadBid ok).balancesMatch) withdrawnBound bidOk
+  have randaoBound := carryBalance_bounded _
+    (fun _ _ ok => (frame_processRandao ok).balancesMatch) bidBound randaoOk
+  have votedBound := carryBalance_bounded _
+    (fun _ _ ok => (frame_processEth1Data ok).balancesMatch) randaoBound votedOk
+  -- Attestation credits use the parent slot from the original state, before the header write.
+  have operatedBound := gloas_operations_bounded gloas before block.body
+    s.latestBlockHeader.slot voted operated votedBound.1 votedBound.2 operationsOk
+  have final : ReplayBounded post := by
+    apply recordBalance_matched _ _ _
+      (fun _ _ ok => (frame_processSyncAggregate ok).balancesMatch) _ operatedBound synced
+    intro site t credit debit _ limits action
+    obtain ⟨reward, proposer, rewardOk, proposerOk, bounds⟩ := sync_bounds _ _ action
+    rw [rewardOk] at limits
+    dsimp only [bind, Except.bind] at limits
+    simp only [bind, Except.bind] at proposerOk
+    rw [proposerOk] at limits
+    simp only [pure, Except.pure, Except.ok.injEq] at limits
+    cases limits
+    exact bounds
+  exact final.2
+
 end EthLib.Consensus.DirectSafety
