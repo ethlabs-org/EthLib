@@ -159,4 +159,122 @@ theorem CommitteesFollow.targetEpoch_le_headEpoch_add_lookahead
   have headLater := UInt64.le_iff_toNat_le.mp headRun.later
   omega
 
+namespace FinitePrefix
+
+variable {ν μ σ κ : Type*} [DecidableEq ν]
+
+/-- A finite event list followed by waits that advance the clock without bound.
+
+The infinite tail supplies the unbounded time required by the network model of the paper's §2. -/
+def events (steps : List (Event ν μ σ)) (lastTime : ℕ) (n : ℕ) : Event ν μ σ :=
+  if h : n < steps.length then steps[n] else .wait (lastTime + (n - steps.length) + 1)
+
+/-- Before the tail, the world is the fold of the events that have happened. -/
+theorem world_prefix (steps : List (Event ν μ σ)) (lastTime : ℕ) (init : World ν μ σ)
+    (n : ℕ) (within : n ≤ steps.length) :
+    worldAt init (events steps lastTime) n = (steps.take n).foldl World.apply init := by
+  induction n with
+  | zero => rfl
+  | succ n ih =>
+    have inside : n < steps.length := by omega
+    -- Taking one more event appends exactly the event that the network applies.
+    rw [worldAt, ih (by omega), events, dite_eq_left inside,
+      List.take_succ_eq_append_getElem inside, List.foldl_append]
+    rfl
+
+/-- After the finite list, only the clock changes. -/
+theorem world_tail (steps : List (Event ν μ σ)) (lastTime : ℕ) (init : World ν μ σ)
+    (clock : (steps.foldl World.apply init).time = lastTime) (n : ℕ) :
+    worldAt init (events steps lastTime) (steps.length + n) =
+      { steps.foldl World.apply init with time := lastTime + n } := by
+  induction n with
+  | zero =>
+    rw [Nat.add_zero, world_prefix _ _ _ _ (Nat.le_refl _), List.take_length]
+    simp [← clock]
+  | succ n ih =>
+    -- Every tail event is a wait, so it preserves states, sent messages and views.
+    rw [Nat.add_succ, worldAt, ih, events, dite_eq_right (by omega)]
+    simp [World.apply]
+    omega
+
+/-- Allowed events in a finite list extend to an execution by waiting after its last time. -/
+def execution (P : Protocol ν μ σ κ) (J : Set ν) (startTime : ℕ) (start : ν → σ)
+    (steps : List (Event ν μ σ)) (lastTime : ℕ)
+    (clock : (steps.foldl World.apply (World.initial startTime start)).time = lastTime)
+    (valid : ∀ n (h : n < steps.length),
+      Allowed P J ((steps.take n).foldl World.apply (World.initial startTime start)) steps[n]) :
+    Execution P J where
+  startTime
+  start
+  events := events steps lastTime
+  allowed n := by
+    by_cases inside : n < steps.length
+    · rw [world_prefix _ _ _ _ (Nat.le_of_lt inside), events, dite_eq_left inside]
+      exact valid n inside
+    · have index : n = steps.length + (n - steps.length) := by omega
+      -- Waiting one more millisecond is allowed at every point in the tail.
+      rw [index, world_tail steps lastTime _ clock, events, dite_eq_right (by omega)]
+      simp [Allowed]
+
+/-- Finite timely delivery and complete final delivery suffice for infinite synchrony.
+
+The finite list delivers every sent message to every honest validator before it ends.
+
+The tail sends no new messages, so its delivery obligations are already discharged. -/
+theorem synchronous_execution (P : Protocol ν μ σ κ) (J : Set ν)
+    (startTime : ℕ) (start : ν → σ) (steps : List (Event ν μ σ)) (lastTime : ℕ)
+    (clock : (steps.foldl World.apply (World.initial startTime start)).time = lastTime)
+    (valid : ∀ n (h : n < steps.length),
+      Allowed P J ((steps.take n).foldl World.apply (World.initial startTime start)) steps[n])
+    (Δ : ℕ) (positive : 0 < Δ)
+    (delivered : ∀ u ∈ J,
+      (steps.foldl World.apply (World.initial startTime start)).sent ⊆
+        (steps.foldl World.apply (World.initial startTime start)).view u)
+    (timely : ∀ n k, n ≤ k → k ≤ steps.length → ∀ v ∈ J, ∀ u ∈ J,
+      ∀ m ∈ ((steps.take n).foldl World.apply (World.initial startTime start)).view v,
+      ((steps.take n).foldl World.apply (World.initial startTime start)).time + Δ ≤
+        ((steps.take k).foldl World.apply (World.initial startTime start)).time →
+      m ∈ ((steps.take k).foldl World.apply (World.initial startTime start)).view u) :
+    (execution P J startTime start steps lastTime clock valid).Synchronous Δ := by
+  let run := execution P J startTime start steps lastTime clock valid
+  have before (n : ℕ) (within : n ≤ steps.length) :
+      run.world n = (steps.take n).foldl World.apply (World.initial startTime start) :=
+    world_prefix _ _ _ _ within
+  have after (n : ℕ) (beyond : steps.length ≤ n) :
+      run.world n = {steps.foldl World.apply (World.initial startTime start) with
+        time := lastTime + (n - steps.length)} := by
+    have index : n = steps.length + (n - steps.length) := by omega
+    change worldAt _ _ _ = _
+    conv_lhs => rw [index]
+    exact world_tail _ _ _ clock _
+  refine ⟨positive, ?_, ?_⟩
+  · intro T
+    refine ⟨steps.length + T, ?_⟩
+    change T ≤ (run.world (steps.length + T)).time
+    rw [after _ (by omega)]
+    simp
+  · intro n k later v honest u receiver m member arrived
+    change m ∈ (run.world k).view u
+    change m ∈ (run.world n).view v at member
+    change max (run.world n).time 0 + Δ ≤ (run.world k).time at arrived
+    rw [Nat.max_zero] at arrived
+    by_cases early : k ≤ steps.length
+    · rw [before k early]
+      rw [before n (by omega)] at member
+      rw [before n (by omega), before k early] at arrived
+      exact timely n k later early v honest u receiver m member arrived
+    · rw [after k (by omega)]
+      apply delivered u receiver
+      -- Every received message was sent; the tail's views contain every such message.
+      have sent := run.view_subset_sent n v member
+      by_cases first : n ≤ steps.length
+      · have kept := run.monotone_sent first sent
+        change m ∈ (run.world steps.length).sent at kept
+        rw [before _ (Nat.le_refl _), List.take_length] at kept
+        exact kept
+      · rw [after n (by omega)] at sent
+        exact sent
+
+end FinitePrefix
+
 end EthLib.Consensus.Models.Network
