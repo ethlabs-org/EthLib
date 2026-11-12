@@ -4452,7 +4452,7 @@ This bound gives an honest signer directly, without a reference-state drift.
 
 Each checkpoint state that an honest store reads has at most `stakeCapGwei` of active stake.
 
-That cap, one billion ether, keeps the sums of balances that the rule reads within 64 bits.
+That cap, two hundred million ether, keeps the sums of balances that the rule reads within 64 bits.
 
 The margin covers the drift of such a state from the pulled-up state of a head, over two epochs.
 

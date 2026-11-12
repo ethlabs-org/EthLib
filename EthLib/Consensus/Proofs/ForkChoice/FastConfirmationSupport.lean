@@ -553,16 +553,18 @@ structure HeadFollowsSupport
           {v ∈ ((e.world k).state w).supportersOf state ⟨root, .pending⟩ | v ∈ J} →
     ((e.world k).state w).isAncestor head ⟨root, .pending⟩ = .ok true
 
-/-- One billion ether, in Gwei: a cap on the active stake of a state.
+/-- Two hundred million ether, in Gwei: a cap on the active stake of a state.
 
-The whole supply of ether is far below it.
+The active stake of the chain is far below it.
 
 Theorem 1 assumes that every checkpoint state an honest store reads stays within it.
 
 That keeps each sum of effective balances that the rule reads below 2^64.
 
+It also keeps a percentage of the stake of one slot below 2^64 before it is divided by 100.
+
 The cap is a premise about the supply of ether, not a check of the specification. -/
-def stakeCapGwei : ℕ := 10 ^ 18
+def stakeCapGwei : ℕ := 2 * 10 ^ 17
 
 /-- The cap fits in 64 bits. -/
 theorem stakeCapGwei_lt : stakeCapGwei < 2 ^ 64 := by
