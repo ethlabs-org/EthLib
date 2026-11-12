@@ -3,6 +3,7 @@ module
 public import EthLib.Consensus.Proofs.DirectSafety.IntervalFunding
 import all EthLib.Consensus.Proofs.DirectSafety.IntervalFunding
 import all EthLib.Consensus.Proofs.Transition.BalanceSources
+import all EthLib.Consensus.Proofs.Transition.EpochUpdates
 
 /-!
 # Gloas accounting rates and parent replay
@@ -738,5 +739,158 @@ theorem gloas_block_bounded {fork : Fork} (gloas : .glamsterdam ≤ fork)
     cases limits
     exact bounds
   exact final.2
+
+-- Only a due penalty converts its Nat position to a validator index.
+private theorem slashing_step_balances_unbounded {fork : Fork} {s t : BeaconState preset fork}
+    {perIncrement : Gwei} {j : Nat}
+    (ok : applySlashingPenaltyElectra s perIncrement j = .ok t) :
+    t.validators = s.validators ∧ t.slot = s.slot ∧
+      (∃ v, s.validators.data[j]? = some v ∧
+        t.balances.data[j]?.map UInt64.toNat = s.balances.data[j]?.map fun balance =>
+          balance.toNat - if SlashingPenaltyDue preset (getCurrentEpoch s) v then
+            perIncrement.toNat * (v.effectiveBalance.toNat /
+              preset.EFFECTIVE_BALANCE_INCREMENT.toNat) else 0) ∧
+      ∀ k, k ≠ j → t.balances.data[k]? = s.balances.data[k]? := by
+  by_cases small : j < 2 ^ 64
+  · exact applySlashingPenaltyElectra_balances_toNat small ok
+  have unchanged : ∃ v, getValidatorAt s j = .ok v ∧
+      ¬ SlashingPenaltyDue preset (getCurrentEpoch s) v ∧ t = s := by
+    simp only [applySlashingPenaltyElectra, bind_ok_iff, liftAccessor_ok] at ok
+    obtain ⟨v, found, ok⟩ := ok
+    refine ⟨v, found, ?_⟩
+    split at ok
+    · rename_i slashed
+      obtain ⟨due, dueOk, ok⟩ := bind_ok_iff.mp ok
+      have dueIff := slashingPenaltyDue_iff slashed dueOk
+      split at ok
+      · simp only [bind_ok_iff, liftAccessor_ok, liftArith, mapError_ok_iff] at ok
+        obtain ⟨_, _, index, converted, _⟩ := ok
+        exact False.elim (small (Uint64.ofNatChecked_ok_iff.mp converted).1)
+      · rename_i notDue
+        cases ok
+        exact ⟨fun due => notDue (dueIff.mp due), rfl⟩
+    · rename_i notSlashed
+      cases ok
+      exact ⟨fun due => notSlashed due.1, rfl⟩
+  obtain ⟨v, found, notDue, rfl⟩ := unchanged
+  refine ⟨rfl, rfl, ⟨v, getValidatorAt_eq_ok_iff.mp found, ?_⟩, fun _ _ => rfl⟩
+  simp [notDue]
+
+-- Successful due calls supply their own index bounds; the registry need not fit globally.
+private theorem delayed_slashing_bounds_gloas {fork : Fork} (s t : BeaconState preset fork)
+    (gloas : .glamsterdam ≤ fork) (ok : processSlashings s = .ok t) :
+    ∃ limit, delayedSlashingLimit s = .ok limit ∧
+      balanceCredits s t = 0 ∧ balanceDebits s t ≤ limit := by
+  have electra : .pectra ≤ fork := Nat.le_trans (by decide) gloas
+  simp only [processSlashings, electra, ↓reduceIte, bind_ok_iff, liftAccessor_ok,
+    liftArith, mapError_ok_iff] at ok
+  obtain ⟨total, totalOk, sum, sumOk, slashed, product, perIncrement,
+    ⟨increments, counted, divided⟩, applied⟩ := ok
+  let penalty (v : Validator) : Nat :=
+    if SlashingPenaltyDue preset (getCurrentEpoch s) v then
+      perIncrement.toNat * (v.effectiveBalance.toNat / preset.EFFECTIVE_BALANCE_INCREMENT.toNat)
+    else 0
+  have each := (foldlM_range_balances
+    (fun last => last.validators = s.validators ∧ last.slot = s.slot)
+    (fun j old new => ∃ v, s.validators.data[j]? = some v ∧
+      new.map UInt64.toNat = old.map fun b => b.toNat - penalty v)
+    (fun {last next j} _ ⟨sameRegistry, sameSlot⟩ step => by
+      obtain ⟨kept, slot, ⟨v, registered, entry⟩, others⟩ :=
+        slashing_step_balances_unbounded step
+      have sameEpoch : getCurrentEpoch last = getCurrentEpoch s := by
+        unfold getCurrentEpoch
+        rw [sameSlot]
+      exact ⟨⟨kept.trans sameRegistry, slot.trans sameSlot⟩,
+        ⟨v, sameRegistry ▸ registered, by simpa only [penalty, sameEpoch] using entry⟩, others⟩)
+    ⟨rfl, rfl⟩ applied).2
+  have point (i : Nat) : actualBalanceAt ⟨fork, t⟩ i = actualBalanceAt ⟨fork, s⟩ i -
+      ((s.validators.data[i]?).map penalty).getD 0 := by
+    by_cases inside : i < s.validators.data.size
+    · obtain ⟨v, found, entry⟩ := (each i).1 inside
+      unfold actualBalanceAt
+      rw [entry, found]
+      cases s.balances.data[i]? <;> simp
+    · simp [actualBalanceAt, (each i).2 (Nat.le_of_not_gt inside),
+        Array.getElem?_eq_none (Nat.le_of_not_gt inside)]
+  have sumLookup (xs : List Nat) (n : Nat) :
+      (∑ i ∈ Finset.range n, xs[i]?.getD 0) ≤ xs.sum := by
+    induction xs generalizing n with
+    | nil => simp
+    | cons x xs ih =>
+      cases n with
+      | zero => simp
+      | succ n =>
+        rw [Finset.sum_range_succ']
+        simpa [Nat.add_comm] using Nat.add_le_add_right (ih n) x
+  refine ⟨(s.validators.data.toList.map penalty).sum, ?_, ?_, ?_⟩
+  · have value : perIncrement.toNat =
+        min (sum.toNat *
+          (EthLib.Consensus.parameters preset fork).PROPORTIONAL_SLASHING_MULTIPLIER.toNat)
+          total.toNat / (total.toNat / preset.EFFECTIVE_BALANCE_INCREMENT.toNat) := by
+      rw [(Uint64.divChecked_ok_iff.mp divided).2,
+        (Uint64.divChecked_ok_iff.mp counted).2, Uint64.toNat_min,
+        (Uint64.mulChecked_ok_iff.mp product).2]
+    simp [delayedSlashingLimit, liftAccessor, totalOk, sumOk, electra, penalty, value,
+      bind, Except.bind, pure, Except.pure, Except.mapError]
+  · simp [balanceCredits, point]
+  · calc
+      balanceDebits s t ≤ ∑ i ∈ Finset.range s.balances.data.size,
+          ((s.validators.data[i]?).map penalty).getD 0 := by
+        unfold balanceDebits
+        apply Finset.sum_le_sum
+        intro i _
+        rw [point]
+        omega
+      _ ≤ _ := by
+        simpa using sumLookup (s.validators.data.toList.map penalty) s.balances.data.size
+
+/-- Epoch replay bounds hold through Gloas without a global registry-size assumption. -/
+theorem epoch_replay_bounded_through_gloas {fork : Fork} (s : BeaconState preset fork)
+    (post : BalanceReplay preset fork) (matched : BalancesMatch s) (before : fork < .hegota)
+    (ok : epochBalanceReplay (config := config) (checks := checks) s = .ok post) :
+    ∀ event ∈ post.2, event.credits ≤ event.creditLimit ∧ event.debits ≤ event.debitLimit := by
+  by_cases early : fork < .glamsterdam
+  · exact epochBalanceReplay_bounded matched early ok
+  have gloas : .glamsterdam ≤ fork := Nat.le_of_not_gt early
+  have altair : .altair ≤ fork := Nat.le_trans (by decide) gloas
+  have electra : .pectra ≤ fork := Nat.le_trans (by decide) gloas
+  simp only [epochBalanceReplay, altair, before, electra, ↓reduceDIte, bind_ok_iff,
+    pure, Except.pure, Except.ok.injEq] at ok
+  obtain ⟨justified, justifiedOk, inactive, inactiveOk, rewarded, rewardOk,
+    registered, registeredOk, slashed, slashedOk, reset, resetOk,
+    deposited, depositOk, consolidated, consolidationOk, rfl⟩ := ok
+  have justifiedBound := carryBalance_bounded _ (fun _ _ ok h =>
+    balancesMatch_of_sameSizes (sameSizes_processJustificationAndFinalization ok) h)
+    ⟨matched, by simp [EventsBounded]⟩ justifiedOk
+  have inactiveBound := carryBalance_bounded _
+    (fun _ _ ok => (frame_processInactivityUpdates ok).balancesMatch) justifiedBound inactiveOk
+  have rewardedBound : ReplayBounded rewarded :=
+    ⟨replayRewards_matches inactiveBound.1 rewardOk,
+      replayRewards_bounded inactiveBound.2 rewardOk⟩
+  have registeredBound := carryBalance_bounded _
+    (fun _ _ ok => (frame_processRegistryUpdates ok).balancesMatch) rewardedBound registeredOk
+  -- Delayed slashings use successful per-call conversions, not a bound on the whole registry.
+  have slashedBound : ReplayBounded slashed := by
+    apply recordBalance_matched _ _ _
+      (fun _ _ ok => (frame_processSlashings ok).balancesMatch) _ registeredBound slashedOk
+    intro site t credit debit _ limits action
+    obtain ⟨limit, limitOk, credits, debits⟩ := delayed_slashing_bounds_gloas site t gloas action
+    simp only [limitOk, bind, Except.bind, Except.ok.injEq] at limits
+    cases limits
+    exact ⟨credits.le, debits⟩
+  have resetBound := carryBalance_bounded _
+    (fun _ _ ok => (frame_processEth1DataReset ok).balancesMatch) slashedBound resetOk
+  have deposits := pending_deposit_bound reset.1 deposited resetBound.1 electra depositOk
+  have consolidations :=
+    consolidation_transfer_bound deposited consolidated electra consolidationOk
+  apply eventsBounded_append (eventsBounded_append resetBound.2 ?_) ?_
+  · intro event member
+    simp only [List.mem_singleton] at member
+    subst event
+    exact ⟨deposits.2, deposits.1.le⟩
+  · intro event member
+    simp only [List.mem_singleton] at member
+    subst event
+    exact consolidations.2
 
 end EthLib.Consensus.DirectSafety
