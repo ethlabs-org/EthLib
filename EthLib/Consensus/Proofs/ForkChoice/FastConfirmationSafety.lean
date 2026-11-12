@@ -4602,7 +4602,23 @@ Then the block that the last call stores is safe from the start of the next slot
 
 It stays safe to the last time.
 
-Clocks start at anchor epoch `a > 0`, so no block enters before `a + MIN_SEED_LOOKAHEAD + 1` in ℕ.
+An execution from an anchor after genesis starts at epoch `a + MIN_SEED_LOOKAHEAD + 1` or later.
+
+Here `a` is the epoch of the anchor state, and `_syncStart` reads the bound in natural numbers.
+
+The bound is the anchor store's genesis time plus the slot length times the slots before that epoch.
+
+Every honest tick is at or after the start, so a store reaches that epoch at its first tick.
+
+Before that epoch a store with only the anchor's history admits no block.
+
+Its boost update reads an ancestor below the anchor's slot, and the anchor's parent is not held.
+
+With `1 ≤ MIN_SEED_LOOKAHEAD`, this is at least two epochs after the anchor.
+
+The anchor need not be finalized, and a genesis anchor needs no such start.
+
+The proof does not use this premise: it only fixes which executions the theorem describes.
 
 The proof is a strong induction on the calls, with `Execution.callInvariant_step`.
 
@@ -4625,6 +4641,10 @@ theorem Execution.safeAt_confirmedRoot {Δ : ℕ} (sync : e.Synchronous Δ)
     (sound : Invariant anchorState) (anchorSlot : anchorBlock.slot = anchorState.slot)
     (anchorAtBoundary : isStartSlotAtEpoch preset anchorBlock.slot = .ok true)
     (start : ∀ w ∈ J, e.start w = anchor) (noVotes : anchor.latestMessages.isEmpty)
+    (_syncStart : (getCurrentEpoch anchorState).toNat = 0 ∨
+      anchor.genesisTimeMs.toNat + ((getCurrentEpoch anchorState).toNat +
+        preset.MIN_SEED_LOOKAHEAD.toNat + 1) * preset.SLOTS_PER_EPOCH.toNat *
+          config.SLOT_DURATION_MS.toNat ≤ e.startTime)
     (maxAligned : MaxEffectiveBalancesAligned preset)
     (increment : preset.EFFECTIVE_BALANCE_INCREMENT.toNat % 100 = 0)
     {horizon : Epoch} (chain : FinalizedPrefix e horizon) (unique : OneJustifiedPerEpoch e horizon)
