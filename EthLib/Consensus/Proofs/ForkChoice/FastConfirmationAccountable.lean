@@ -84,7 +84,9 @@ def Execution.AccountableFault
 
 /-- Two held states whose runs, with the anchor block, show a concrete hash fault.
 
-The hash inputs are those of the two runs, of the two views, and the header of the anchor block. -/
+The hash inputs are those of the two runs, of the two views, and the anchor block and its header.
+
+The anchor block is in no run, as the runs start at the anchor state. -/
 def Execution.HashFault
     (e : Execution (honestForkChoice config checks sources anchorState anchorBlock assignment
       genesisTimeMs) J) {g : ForkedBeaconState preset}
@@ -95,7 +97,8 @@ def Execution.HashFault
     (va : TerminalView ⟨fork, stateA⟩) (vb : TerminalView ⟨fork, stateB⟩),
     e.HeldState limit stateA ∧ e.HeldState limit stateB ∧
     HashEvidence ((history.append left).hashObjects ++ (history.append right).hashObjects ++
-      va.hashObjects ++ vb.hashObjects ++ (blockHeader anchorBlock).toList.map HashObject.header)
+      va.hashObjects ++ vb.hashObjects ++ (blockHeader anchorBlock).toList.map HashObject.header ++
+      [HashObject.block fork anchorBlock])
 
 /-- A state holds the justified checkpoints of an epoch, and records its first root, at one root.
 
@@ -454,8 +457,11 @@ theorem Execution.oneJustifiedPerEpoch_or_fault {anchor : Store preset fork}
 
 /-- Honest stores agree on the block at each shared root, or two held states show a hash fault.
 
-This needs the block hash inputs of `DirectSafety`, which are not yet in `HashObject`. -/
+It reads two equal block roots through `DirectSafety.block_binding`, before Gloas. -/
 theorem Execution.oneBlockPerRoot_or_fault {anchor : Store preset fork}
+    [NeZero preset.BYTES_PER_LOGS_BLOOM.toNat] [NeZero preset.SYNC_COMMITTEE_SIZE.toNat]
+    [NeZero preset.MAX_COMMITTEES_PER_SLOT.toNat] [NeZero preset.PTC_SIZE.toNat]
+    [NeZero preset.INCLUSION_LIST_COMMITTEE_SIZE.toNat]
     (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
     (start : ∀ w ∈ J, e.start w = anchor) (anchorSlot : anchorBlock.slot = anchorState.slot)
     (slots : 0 < config.SLOT_DURATION_MS)
@@ -509,6 +515,9 @@ Or two runs to held states show a concrete hash fault.
 
 The hypothesis `anchorParent` stays: it is a condition on checkpoint sync, not on hashes. -/
 theorem Execution.safeAt_confirmedRoot_accountable {Δ : ℕ} (sync : e.Synchronous Δ)
+    [NeZero preset.BYTES_PER_LOGS_BLOOM.toNat] [NeZero preset.SYNC_COMMITTEE_SIZE.toNat]
+    [NeZero preset.MAX_COMMITTEES_PER_SLOT.toNat] [NeZero preset.PTC_SIZE.toNat]
+    [NeZero preset.INCLUSION_LIST_COMMITTEE_SIZE.toNat]
     (half : 2 * config.CONFIRMATION_BYZANTINE_THRESHOLD.toNat ≤ 100)
     (slots : 0 < config.SLOT_DURATION_MS) (long : 1 < preset.SLOTS_PER_EPOCH)
     (window : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
