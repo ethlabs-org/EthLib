@@ -3,6 +3,7 @@ module
 public import EthLib.Consensus.Proofs.ForkChoice.BlockAgreement
 public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmationCheckpoints
 public import EthLib.Consensus.Proofs.ForkChoice.FinalizedSources
+public import EthLib.Consensus.Proofs.ForkChoice.JustifiedRegistry
 
 /-!
 # Statements: the blocks that the fast confirmation rule falls back to are safe
@@ -937,6 +938,26 @@ theorem Execution.finalizedCheckpoint_eq_of_checked {anchor : Store preset fork}
       (UInt64.lt_iff_toNat_lt.mpr positive) firstOk
     simpa only [← atStart, computeEpochAtSlot, UInt64.toNat_div] using le
   omega
+
+/-- A receiver holding a carrier includes that carrier state's finalized epoch. -/
+theorem Execution.finalized_epoch_le_justified_of_carrier
+    {last : ℕ} (oneBlock : OneBlockPerRoot e last) {anchor : Store preset fork}
+    (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (sound : Invariant anchorState) (start : ∀ w ∈ J, e.start w = anchor)
+    {u w : ValidatorIndex} (sender : u ∈ J) (receiver : w ∈ J) {n k : ℕ}
+    (nBound : (e.world n).time ≤ last) (kBound : (e.world k).time ≤ last)
+    {root : Root} {state : BeaconState preset fork} {block : BeaconBlock preset fork}
+    (origin : ((e.world n).state u).blockStates[root]? = some state)
+    (held : ((e.world k).state w).blocks[root]? = some block) :
+    state.finalizedCheckpoint.epoch ≤ ((e.world k).state w).justifiedCheckpoint.epoch := by
+  have reached := e.reachable
+    (fun v hv => (start v hv).symm ▸ Store.Reachable.anchor anchored) k w receiver
+  obtain ⟨post, stored, _, _⟩ := reached.blockStatesFromParents held
+  have same := e.blockStates_eq anchored sender receiver (start u sender) (start w receiver)
+    (oneBlock u sender w receiver n k nBound kBound) origin stored
+  subst post
+  exact UInt64.le_trans (reached.blockState_finalized_le sound stored)
+    (reached.finalized_le_justified sound)
 
 /-- A delay later, each honest store has justified the epoch that an honest store finalized.
 
