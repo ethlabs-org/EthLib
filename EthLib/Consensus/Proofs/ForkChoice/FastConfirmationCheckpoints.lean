@@ -2855,6 +2855,222 @@ theorem walk_finalized_eq_anchor {anchor : Store preset fork}
   simp_all
 
 omit [DecidablePred (· ∈ J)] in
+/-- The pulled-up state of a held head stays the same while the store stays in one epoch. -/
+private theorem coverage_pulled_state_of_same_epoch {anchor : Store preset fork}
+    (anchorStore : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (anchored : ∀ w ∈ J, e.start w = anchor)
+    {limit : ℕ} (oneBlock : OneBlockPerRoot e limit)
+    {u : ValidatorIndex} (caller : u ∈ J) {n k : ℕ} (later : n ≤ k)
+    (nBound : (e.world n).time ≤ limit) (kBound : (e.world k).time ≤ limit)
+    {head : Root} {state : BeaconState preset fork} {epoch : Epoch}
+    (epochBefore : ((e.world n).state u).getCurrentStoreEpoch config = .ok epoch)
+    (epochAfter : ((e.world k).state u).getCurrentStoreEpoch config = .ok epoch)
+    (read : ((e.world n).state u).getPulledUpHeadState config head = .ok state) :
+    ((e.world k).state u).getPulledUpHeadState config head = .ok state := by
+  have forward (i : ℕ) :
+      Store.ForwardReachable config anchorState anchorBlock ((e.world i).state u) :=
+    e.forwardReachable (fun a ha => (anchored a ha) ▸ .anchor anchorStore) i u caller
+  have parsed := read
+  simp only [Store.getPulledUpHeadState, bind_ok_iff] at parsed
+  obtain ⟨raw, rawOk, _, _, _⟩ := parsed
+  have rawHeld := Store.blockState_ok_iff.mp rawOk
+  obtain ⟨block, blockHeld⟩ := (forward n).reachable.known_of_blockState rawHeld
+  have laterBlock := e.blocks_of_le later blockHeld
+  obtain ⟨laterRaw, laterHeld, _, _⟩ :=
+    (forward k).reachable.blockStatesFromParents laterBlock
+  have same := e.blockStates_eq anchorStore caller caller (anchored u caller)
+    (anchored u caller) (oneBlock u caller u caller n k nBound kBound) rawHeld laterHeld
+  subst laterRaw
+  have rawAfter := Store.blockState_ok_iff.mpr laterHeld
+  simpa only [Store.getPulledUpHeadState, rawOk, rawAfter, epochBefore, epochAfter,
+    bind, Except.bind] using read
+
+/-- The millisecond before a slot boundary belongs to the preceding slot. -/
+private theorem coverage_slot_before_boundary {store : Store preset fork} {current boundary : Slot}
+    {begin : UInt64} (slots : 0 < config.SLOT_DURATION_MS)
+    (beginOk : computeTimeAtSlotMs config store.genesisTimeMs boundary = .ok begin)
+    (before : store.timeMs.toNat + 1 = begin.toNat)
+    (slotOk : store.getCurrentSlot config = .ok current) :
+    current.toNat + 1 = boundary.toNat := by
+  have slotRead := mapError_ok_iff.mp slotOk
+  simp only [computeSlotAtTimeMs, bind_ok_iff] at slotRead
+  obtain ⟨elapsed, elapsedOk, divided⟩ := slotRead
+  have elapsedNat := (subChecked_ok_iff.mp elapsedOk).2
+  have elapsedBound := (subChecked_ok_iff.mp elapsedOk).1
+  have currentNat := (divChecked_ok_iff.mp divided).2
+  simp only [computeTimeAtSlotMs, bind_ok_iff] at beginOk
+  obtain ⟨offset, offsetOk, summed⟩ := beginOk
+  have offsetNat := (mulChecked_ok_iff.mp offsetOk).2
+  have beginNat := (addChecked_ok_iff.mp summed).2
+  have positive : 0 < config.SLOT_DURATION_MS.toNat := UInt64.lt_iff_toNat_lt.mp slots
+  have elapsedEq : elapsed.toNat + 1 = boundary.toNat * config.SLOT_DURATION_MS.toNat := by
+    omega
+  have boundaryPos : 0 < boundary.toNat := by
+    by_contra h
+    have zero : boundary.toNat = 0 := by omega
+    simp only [zero, Nat.zero_mul] at elapsedEq
+    omega
+  have lower : (boundary.toNat - 1) * config.SLOT_DURATION_MS.toNat ≤ elapsed.toNat := by
+    rw [Nat.sub_mul, Nat.one_mul]
+    omega
+  have upper : elapsed.toNat <
+      ((boundary.toNat - 1) + 1) * config.SLOT_DURATION_MS.toNat := by
+    rw [Nat.sub_add_cancel (by omega : 1 ≤ boundary.toNat)]
+    omega
+  have quotient := Nat.div_eq_of_lt_le lower upper
+  rw [currentNat, quotient]
+  omega
+
+/-- A clock in a strictly earlier slot precedes the given slot boundary. -/
+private theorem coverage_time_lt_of_slot_lt {store : Store preset fork} {current boundary : Slot}
+    {begin : UInt64} (slots : 0 < config.SLOT_DURATION_MS)
+    (beginOk : computeTimeAtSlotMs config store.genesisTimeMs boundary = .ok begin)
+    (slotOk : store.getCurrentSlot config = .ok current) (below : current < boundary) :
+    store.timeMs < begin := by
+  have slotRead := mapError_ok_iff.mp slotOk
+  simp only [computeSlotAtTimeMs, bind_ok_iff] at slotRead
+  obtain ⟨elapsed, elapsedOk, divided⟩ := slotRead
+  have elapsedNat := (subChecked_ok_iff.mp elapsedOk).2
+  have elapsedBound := (subChecked_ok_iff.mp elapsedOk).1
+  have currentNat := (divChecked_ok_iff.mp divided).2
+  simp only [computeTimeAtSlotMs, bind_ok_iff] at beginOk
+  obtain ⟨offset, offsetOk, summed⟩ := beginOk
+  have offsetNat := (mulChecked_ok_iff.mp offsetOk).2
+  have beginNat := (addChecked_ok_iff.mp summed).2
+  have positive : 0 < config.SLOT_DURATION_MS.toNat := UInt64.lt_iff_toNat_lt.mp slots
+  have bound := UInt64.lt_iff_toNat_lt.mp below
+  rw [currentNat, Nat.div_lt_iff_lt_mul positive] at bound
+  exact UInt64.lt_iff_toNat_lt.mpr (by omega)
+
+omit [DecidablePred (· ∈ J)] in
+/-- Prompt supplies a counting event before rollover with the original state and balances. -/
+private theorem coverage_exists_same_state_before_boundary {anchor : Store preset fork}
+    (anchorStore : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (anchored : ∀ w ∈ J, e.start w = anchor)
+    (slots : 0 < config.SLOT_DURATION_MS)
+    (positive : 0 < preset.SLOTS_PER_EPOCH.toNat)
+    {limit : ℕ} (oneBlock : OneBlockPerRoot e limit) (prompt : Prompt e limit)
+    (genesis : anchor.genesisTimeMs = genesisTimeMs)
+    {u : ValidatorIndex} (caller : u ∈ J) {n : ℕ}
+    (upToDate : UpToDate config checks sources (e.world n).time ((e.world n).view u)
+      ((e.world n).state u))
+    {head : Root} {state : BeaconState preset fork} {epoch next : Epoch}
+    {boundary : Slot} {begin : UInt64}
+    (epochBefore : ((e.world n).state u).getCurrentStoreEpoch config = .ok epoch)
+    (read : ((e.world n).state u).getPulledUpHeadState config head = .ok state)
+    (nextOk : addChecked epoch 1 = .ok next)
+    (boundaryOk : computeStartSlotAtEpoch preset next = .ok boundary)
+    (beginOk : computeTimeAtSlotMs config genesisTimeMs boundary = .ok begin)
+    (bounded : begin.toNat ≤ limit) :
+    ∃ k, n ≤ k ∧ (e.world k).time + 1 = begin.toNat ∧
+      ((e.world k).state u).getCurrentStoreEpoch config = .ok epoch ∧
+      ((e.world k).state u).getPulledUpHeadState config head = .ok state := by
+  have forward (i : ℕ) :
+      Store.ForwardReachable config anchorState anchorBlock ((e.world i).state u) :=
+    e.forwardReachable (fun a ha => (anchored a ha) ▸ .anchor anchorStore) i u caller
+  have genesisAt (i : ℕ) : ((e.world i).state u).genesisTimeMs = genesisTimeMs := by
+    rw [(e.clock_bounds u i).1, anchored u caller, genesis]
+  have epochRead := epochBefore
+  simp only [Store.getCurrentStoreEpoch, bind_ok_iff, pure, Except.pure,
+    Except.ok.injEq] at epochRead
+  obtain ⟨current, currentOk, epochEq⟩ := epochRead
+  have nextNat := (addChecked_ok_iff.mp nextOk).2
+  simp only [UInt64.toNat_one] at nextNat
+  have boundaryNat := (computeStartSlotAtEpoch_ok_iff.mp boundaryOk).2
+  have currentBelow : current < boundary := UInt64.lt_iff_toNat_lt.mpr (by
+    have lower := Nat.lt_mul_div_succ current.toNat positive
+    have eq := congrArg UInt64.toNat epochEq
+    simp only [computeEpochAtSlot, UInt64.toNat_div] at eq
+    rw [eq, Nat.mul_comm] at lower
+    rw [nextNat] at boundaryNat
+    omega)
+  have before : (e.world n).time < begin.toNat := by
+    rw [← upToDate.1]
+    exact UInt64.lt_iff_toNat_lt.mp
+      (coverage_time_lt_of_slot_lt slots
+        (by rw [genesisAt]; exact beginOk) currentOk currentBelow)
+  have started : e.startTime < begin.toNat := by
+    have lower := e.monotone_time (Nat.zero_le n)
+    change e.startTime ≤ (e.world n).time at lower
+    omega
+  obtain ⟨k, atTime, ready⟩ := (prompt u caller boundary begin beginOk started.le bounded).2 started
+  by_cases later : n ≤ k
+  · have sameTime : ((e.world k).state u).timeMs.toNat + 1 = begin.toNat := by
+      rw [ready.1]
+      exact atTime
+    obtain ⟨now, nowOk, _⟩ := (forward k).blockState_slots_le_current slots
+    have slotNat := coverage_slot_before_boundary slots
+      (by rw [genesisAt]; exact beginOk) sameTime nowOk
+    have epochEq : computeEpochAtSlot preset now = epoch := by
+      apply UInt64.toNat_inj.mp
+      simp only [computeEpochAtSlot, UInt64.toNat_div]
+      apply Nat.div_eq_of_lt_le
+      · rw [nextNat, Nat.add_mul, Nat.one_mul] at boundaryNat
+        omega
+      · rw [nextNat, Nat.add_mul, Nat.one_mul] at boundaryNat
+        rw [Nat.add_mul, Nat.one_mul]
+        omega
+    have epochAfter : ((e.world k).state u).getCurrentStoreEpoch config = .ok epoch := by
+      simp [Store.getCurrentStoreEpoch, nowOk, epochEq, bind, Except.bind, pure, Except.pure]
+    refine ⟨k, later, atTime, epochAfter, ?_⟩
+    exact coverage_pulled_state_of_same_epoch anchorStore anchored oneBlock caller later
+      (by omega) (by omega) epochBefore epochAfter read
+  · have lower := e.monotone_time (Nat.le_of_not_ge later)
+    change (e.world k).time ≤ (e.world n).time at lower
+    exact ⟨n, Nat.le_refl _, by omega, epochBefore, read⟩
+
+omit [DecidablePred (· ∈ J)] in
+/-- Honest signatures by the next epoch boundary supply inclusion with the original weights. -/
+theorem Execution.seed_of_signed_by_boundary {anchor : Store preset fork}
+    (anchorStore : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (anchored : ∀ w ∈ J, e.start w = anchor)
+    (slots : 0 < config.SLOT_DURATION_MS) (positive : 0 < preset.SLOTS_PER_EPOCH.toNat)
+    {limit : ℕ} (oneBlock : OneBlockPerRoot e limit) (prompt : Prompt e limit)
+    (included : TargetIncluded e limit) (genesis : anchor.genesisTimeMs = genesisTimeMs)
+    {u : ValidatorIndex} (caller : u ∈ J) {n : ℕ}
+    (upToDate : UpToDate config checks sources (e.world n).time ((e.world n).view u)
+      ((e.world n).state u))
+    {head : Root} {state : BeaconState preset fork} {total : Gwei} {target : Checkpoint}
+    {voters : Finset ValidatorIndex}
+    (stateOk : ((e.world n).state u).getPulledUpHeadState config head = .ok state)
+    (totalOk : getTotalActiveBalance state = .ok total)
+    (epochOk : ((e.world n).state u).getCurrentStoreEpoch config = .ok target.epoch)
+    (quorum : 2 * total.toNat ≤ 3 * stake (fun v => balanceAt state v.toNat) voters)
+    {next : Epoch} {boundary : Slot} {begin : UInt64}
+    (nextOk : addChecked target.epoch 1 = .ok next)
+    (boundaryOk : computeStartSlotAtEpoch preset next = .ok boundary)
+    (beginOk : computeTimeAtSlotMs config genesisTimeMs boundary = .ok begin)
+    (bounded : begin.toNat ≤ limit)
+    (signed : ∀ v ∈ voters, v ∈ J ∧ SignsTarget e v target (begin.toNat - 1))
+    {w : ValidatorIndex} (receiver : w ∈ J) {k : ℕ} {current : Epoch}
+    (kBound : (e.world k).time ≤ limit) (afterBoundary : begin.toNat ≤ (e.world k).time)
+    (ready : UpToDate config checks sources (e.world k).time ((e.world k).view w)
+      ((e.world k).state w))
+    (currentOk : ((e.world k).state w).getCurrentStoreEpoch config = .ok current)
+    (old : target.epoch.toNat + 2 ≤ current.toNat)
+    {root : Root} {rootEpoch : Epoch}
+    (rootOk : ((e.world k).state w).getBlockEpoch root = .ok rootEpoch)
+    (rootPast : rootEpoch ≤ target.epoch)
+    (rootRead : ((e.world k).state w).getCheckpointBlock root target.epoch = .ok target.root)
+    (safe : ∀ t, begin.toNat ≤ t → t < (e.world k).time → SafeAt e t root) :
+    ∃ (seed : Root) (seedBlock : BeaconBlock preset fork) (justification : Checkpoint),
+      ((e.world k).state w).blocks[seed]? = some seedBlock ∧
+      ((e.world k).state w).isAncestor ⟨seed, .pending⟩ ⟨root, .pending⟩ = .ok true ∧
+      (computeEpochAtSlot preset seedBlock.slot).toNat < target.epoch.toNat + 2 ∧
+      ((e.world k).state w).unrealizedJustifications[seed]? = some justification ∧
+      target.epoch.toNat ≤ justification.epoch.toNat := by
+  obtain ⟨q, _, before, epochAfter, stateAfter⟩ :=
+    coverage_exists_same_state_before_boundary anchorStore anchored slots positive
+      oneBlock prompt genesis caller upToDate epochOk stateOk nextOk boundaryOk beginOk bounded
+  have atPre : (e.world q).time = begin.toNat - 1 := by omega
+  have signedAfter : ∀ v ∈ voters, v ∈ J ∧ SignsTarget e v target (e.world q).time := by
+    rw [atPre]
+    exact signed
+  exact included u caller q (by omega) head state total target voters stateAfter totalOk epochAfter
+    signedAfter quorum w receiver k current kBound (by omega) ready currentOk old root rootEpoch
+    rootOk rootPast rootRead next boundary begin nextOk boundaryOk beginOk safe
+
+omit [DecidablePred (· ∈ J)] in
 /-- At a common epoch, a source at most two epochs old covers receiver finality. -/
 theorem walk_finalized_read_of_recent_source {anchor : Store preset fork}
     (anchorStore : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
