@@ -949,4 +949,50 @@ theorem step_events_bounded_through_gloas {x y : ForkedBeaconState preset}
       simp [Step.balanceEventsGloas, Step.balanceEvents, cachedOk, nextOk, last,
         advanceOk, crossingOk, pure, Except.pure, bind, Except.bind]
 
+private theorem step_balances_match {x y : ForkedBeaconState preset}
+    (step : Step config checks x y) (matched : BalancesMatch x.state) :
+    BalancesMatch y.state := by
+  cases step with
+  | block engine signed due ok =>
+    exact (frame_processBlock (applySignedBlock_ok ok).2.1).balancesMatch matched
+  | slot ok =>
+    obtain ⟨advanced, advanceOk, upgrades⟩ := bind_ok_iff.mp ok
+    obtain ⟨next, cached, epoched, sum, cachedOk, epochOk, rfl⟩ := advanceSlot_ok advanceOk
+    have cachedMatch := (frame_processSlot cachedOk).balancesMatch matched
+    have epochedMatch : BalancesMatch epoched := by
+      unfold epochIfLast at epochOk
+      split at epochOk
+      · obtain ⟨justified, justifiedOk, frame⟩ := processEpoch_frame epochOk
+        exact frame.toFrame.balancesMatch
+          (balancesMatch_of_sameSizes
+            (sameSizes_processJustificationAndFinalization justifiedOk) cachedMatch)
+      · cases epochOk
+        exact cachedMatch
+    apply processUpgrades_induction (property := fun s => BalancesMatch s.state)
+      (fun holds ok => (upgradeFrame_upgradeNext ok).balancesMatch holds) _ upgrades
+    exact epochedMatch
+
+/-- Every selected event of a run through Gloas satisfies its per-call limits. -/
+theorem run_events_bounded_through_gloas {x y : ForkedBeaconState preset}
+    (run : Run config checks x y) (matched : BalancesMatch x.state)
+    (before : y.fork < .hegota) (high : Nat) :
+    ∃ events, run.balanceEventsGloas high = .ok events ∧
+      ∀ event ∈ events, event.credits ≤ event.creditLimit ∧ event.debits ≤ event.debitLimit := by
+  have bounded : BalancesMatch y.state ∧ ∃ events,
+      run.balanceEventsGloas high = .ok events ∧ EventsBounded events := by
+    induction run with
+    | nil => exact ⟨matched, [], rfl, by simp [EventsBounded]⟩
+    | snoc pre step ih =>
+      obtain ⟨middleMatch, prior, priorOk, priorBound⟩ :=
+        ih (Nat.lt_of_le_of_lt step.chainStep.fork_le before)
+      refine ⟨step_balances_match step middleMatch, ?_⟩
+      simp only [Run.balanceEventsGloas, priorOk, bind, Except.bind]
+      split
+      · obtain ⟨added, addedOk, addedBound⟩ :=
+          step_events_bounded_through_gloas step middleMatch before
+        exact ⟨prior ++ added, by simp [addedOk, pure, Except.pure],
+          eventsBounded_append priorBound addedBound⟩
+      · exact ⟨prior, rfl, priorBound⟩
+  exact bounded.2
+
 end EthLib.Consensus.DirectSafety
