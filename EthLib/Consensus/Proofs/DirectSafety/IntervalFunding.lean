@@ -2753,7 +2753,7 @@ private theorem funding_registration {fork : Fork} {s t : BeaconState preset for
     simp only [getValidatorFromDeposit, Uint64.toNat_min]
     exact (Nat.min_le_left _ _).trans lowered
   simpa only [Nat.max_eq_right cap] using
-    funding_append queue _ amount registry balances matched (frame_addValidatorToRegistry ok).slot
+    funding_append queue _ amount registry balances matched (addValidatorToRegistry_slot ok)
 
 private theorem funding_effective_updates {fork : Fork} {s t : BeaconState preset fork}
     (queue : List PendingConsolidation) (ok : processEffectiveBalanceUpdates s = .ok t) :

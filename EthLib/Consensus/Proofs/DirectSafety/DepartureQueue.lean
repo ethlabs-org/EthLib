@@ -3986,7 +3986,7 @@ private theorem CountCohortStep.add {f : Fork} {s t : BeaconState preset f}
   · simp [data]
   · intro _ capped epoch finite
     simpa [data, getValidatorFromDeposit, Ne.symm finite] using capped epoch finite
-  · simp only [getCurrentEpoch, (frame_addValidatorToRegistry ok).slot]
+  · simp only [getCurrentEpoch, addValidatorToRegistry_slot ok]
     exact Nat.le_refl _
   · intro i old next before after
     have inside := (Array.getElem?_eq_some_iff.mp before).1

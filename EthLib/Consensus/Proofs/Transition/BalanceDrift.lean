@@ -214,7 +214,7 @@ private theorem effectiveKept_applyDeposit {f : Fork} {s t : BeaconState preset 
         obtain ⟨middle, added, queued⟩ := ok
         obtain ⟨_, rfl⟩ := addPendingDeposit_eq queued
         exact effectiveKept_trans (effectiveKept_add added) (effectiveKept_data rfl)
-          (frame_addValidatorToRegistry added).registryGrows
+          (by rw [addValidatorToRegistry_validators_eq_push added]; simp)
       · cases ok; exact effectiveKept_refl _
     · obtain ⟨_, rfl⟩ := addPendingDeposit_eq (liftAccessor_ok.mp ok)
       exact effectiveKept_refl _
