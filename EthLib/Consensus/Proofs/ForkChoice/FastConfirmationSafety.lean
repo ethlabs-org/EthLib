@@ -2258,6 +2258,162 @@ private theorem walk_known_ancestor {anchor : Store preset fork}
   have same := oneBlock u caller w receiver n k member block b known held
   exact same.symm ▸ held
 
+/-- A nonempty walk separates its newly read roots from its supplied accumulator. -/
+private theorem walk_without_acc {store : Store preset fork} {tip terminal : Root}
+    {acc roots : List Root}
+    (walked : store.getAncestorRoots tip terminal acc = .ok roots) (nonempty : roots ≠ []) :
+    ∃ fresh, roots = fresh ++ acc ∧ store.getAncestorRoots tip terminal = .ok fresh := by
+  have replace : ∀ otherAcc, ∃ fresh, roots = fresh ++ acc ∧
+      store.getAncestorRoots tip terminal otherAcc = .ok (fresh ++ otherAcc) := by
+    intro otherAcc
+    fun_induction Store.getAncestorRoots store tip terminal acc generalizing roots otherAcc with
+    | case1 => cases walked
+    | case2 tip acc block found ih =>
+      rw [bind_ok_iff] at walked
+      obtain ⟨terminalBlock, terminalOk, walked⟩ := walked
+      split at walked
+      · exact False.elim (nonempty (Except.ok.inj walked).symm)
+      · rename_i above
+        dsimp only at walked
+        split at walked
+        · rename_i parentEq
+          refine ⟨[tip], (Except.ok.inj walked).symm, ?_⟩
+          rw [Store.getAncestorRoots, found]
+          simp [terminalOk, above, parentEq,
+            bind, Except.bind, pure, Except.pure]
+        · rename_i parentNe
+          split at walked
+          · cases walked
+          · rename_i parent parentFound
+            split at walked
+            · rename_i lower
+              obtain ⟨fresh, shape, read⟩ := ih parent parentFound lower walked nonempty
+                (tip :: otherAcc)
+              refine ⟨fresh ++ [tip], by simpa using shape, ?_⟩
+              rw [Store.getAncestorRoots, found]
+              simp only [terminalOk, above, parentNe, bind, Except.bind, ↓reduceIte]
+              rw [parentFound]
+              simpa only [lower, ↓reduceDIte, List.append_assoc, List.singleton_append] using read
+            · cases walked
+  obtain ⟨fresh, shape, read⟩ := replace []
+  exact ⟨fresh, shape, by simpa using read⟩
+
+/-- New walk entries never have slots above the tip. -/
+private theorem walk_slots_bounded {store : Store preset fork} {tip terminal : Root}
+    {acc roots : List Root} {tipBlock : BeaconBlock preset fork}
+    (known : store.blocks[tip]? = some tipBlock)
+    (walked : store.getAncestorRoots tip terminal acc = .ok roots) :
+    ∀ member ∈ roots, member ∈ acc ∨
+      ∃ block, store.blocks[member]? = some block ∧ block.slot ≤ tipBlock.slot := by
+  fun_induction Store.getAncestorRoots store tip terminal acc generalizing roots tipBlock with
+  | case1 => simp_all
+  | case2 tip acc block found ih =>
+    have eq := Option.some.inj (found.symm.trans known)
+    subst tipBlock
+    rw [bind_ok_iff] at walked
+    obtain ⟨terminalBlock, _, walked⟩ := walked
+    split at walked
+    · cases Except.ok.inj walked
+      simp
+    · dsimp only at walked
+      split at walked
+      · cases Except.ok.inj walked
+        intro member mem
+        rcases List.mem_cons.mp mem with rfl | mem
+        · exact Or.inr ⟨block, found, UInt64.le_refl _⟩
+        · exact Or.inl mem
+      · split at walked
+        · cases walked
+        · rename_i parent parentFound
+          split at walked
+          · rename_i lower
+            intro member mem
+            rcases ih parent parentFound lower parentFound walked member mem with old | fresh
+            · rcases List.mem_cons.mp old with rfl | old
+              · exact Or.inr ⟨block, found, UInt64.le_refl _⟩
+              · exact Or.inl old
+            · obtain ⟨b, held, below⟩ := fresh
+              exact Or.inr ⟨b, held, UInt64.le_trans below (UInt64.le_of_lt lower)⟩
+          · cases walked
+
+/-- Every root before the tip in a walk has a strictly smaller slot. -/
+private theorem walk_before_tip {store : Store preset fork} {tip terminal : Root}
+    {acc older : List Root} {tipBlock : BeaconBlock preset fork}
+    (known : store.blocks[tip]? = some tipBlock)
+    (walked : store.getAncestorRoots tip terminal acc = .ok (older ++ tip :: acc)) :
+    tip ∉ older := by
+  rw [Store.getAncestorRoots, known] at walked
+  simp only [bind_ok_iff] at walked
+  obtain ⟨terminalBlock, _, walked⟩ := walked
+  split at walked
+  · simp [pure, Except.pure] at walked
+  · split at walked
+    · have lengths := congrArg List.length (Except.ok.inj walked)
+      have empty : older = [] := by
+        apply List.length_eq_zero_iff.mp
+        simp only [List.length_append, List.length_cons] at lengths
+        omega
+      simp [empty]
+    · split at walked
+      · cases walked
+      · rename_i parent parentFound
+        split at walked
+        · rename_i lower
+          obtain ⟨fresh, shape, read⟩ := walk_without_acc walked (by simp)
+          have eq : older = fresh := List.append_cancel_right shape
+          subst older
+          intro member
+          obtain ⟨b, held, below⟩ :=
+            (walk_slots_bounded parentFound read tip member).resolve_left (by simp)
+          rw [known, Option.some.injEq] at held
+          subst b
+          have := UInt64.lt_iff_toNat_lt.mp lower
+          have := UInt64.le_iff_toNat_le.mp below
+          omega
+        · cases walked
+
+/-- Splitting at a returned root gives the walk ending at that root. -/
+private theorem walk_prefix {store : Store preset fork} {tip terminal root : Root}
+    {acc front back : List Root}
+    (walked : store.getAncestorRoots tip terminal acc = .ok (front ++ root :: back))
+    (outside : root ∉ acc) :
+    store.getAncestorRoots root terminal = .ok (front ++ [root]) := by
+  fun_induction Store.getAncestorRoots store tip terminal acc generalizing front back with
+  | case1 => cases walked
+  | case2 tip acc block found ih =>
+    by_cases same : root = tip
+    · subst root
+      have full : store.getAncestorRoots tip terminal acc = .ok (front ++ tip :: back) := by
+        rw [Store.getAncestorRoots, found]
+        exact walked
+      rcases Store.getAncestorRoots_eq_nil_or full with empty | ⟨older, shape⟩
+      · simp at empty
+      have read := full
+      rw [shape] at read
+      have unique := (List.append_cons_inj_of_notMem (walk_before_tip found read) outside).mp
+        shape.symm
+      obtain ⟨fresh, freshShape, freshRead⟩ := walk_without_acc read (by simp)
+      have freshEq : older ++ [tip] = fresh := by
+        exact List.append_cancel_right (bs := acc) (by simpa using freshShape)
+      simpa only [← freshEq, unique.1] using freshRead
+    · rw [bind_ok_iff] at walked
+      obtain ⟨terminalBlock, _, walked⟩ := walked
+      split at walked
+      · simp [pure, Except.pure] at walked
+      · dsimp only at walked
+        split at walked
+        · have member : root ∈ tip :: acc := by
+            rw [Except.ok.inj walked]
+            simp
+          exact False.elim ((List.mem_cons.mp member).elim same outside)
+        · split at walked
+          · cases walked
+          · rename_i parent parentFound
+            split at walked
+            · rename_i lower
+              exact ih parent parentFound lower walked (by simp [same, outside])
+            · cases walked
+
 /-- Induction follows parent edges while keeping the complete returned walk fixed. -/
 private theorem walk_members_induction {store : Store preset fork}
     {tip terminal : Root} {acc roots : List Root} (P : Root → Prop)
