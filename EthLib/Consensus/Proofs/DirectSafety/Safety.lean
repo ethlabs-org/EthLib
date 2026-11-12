@@ -346,15 +346,59 @@ theorem accountable_justified_unique {g x a b : ForkedBeaconState preset}
       simp only [EitherCall.state] at bound
       exact .inr (.inl (by omega))
 
-/-- The signer interpretation is conditional, with no probability or sampling theorem. -/
-theorem accepted_evidence_is_signed {g a b : ForkedBeaconState preset}
+/-- Data that one of the two runs checked in an aggregate that names `key`. -/
+def VerifiedEither {g a b : ForkedBeaconState preset} (left : Run config checks g a)
+    (right : Run config checks g b) (key : BLSPubkey) (data : AttestationData) : Prop :=
+  (∃ c : AttestationCheck left key, c.indexed.data = data) ∨
+    ∃ c : AttestationCheck right key, c.indexed.data = data
+
+/-- Two conflicting messages by `key`, each with a check that one of the runs executed. -/
+def VerifiedConflict {g a b : ForkedBeaconState preset} (left : Run config checks g a)
+    (right : Run config checks g b) (key : BLSPubkey) : Prop :=
+  (∃ d₁ d₂, VerifiedEither left right key d₁ ∧ VerifiedEither left right key d₂ ∧
+      isSlashableAttestationData d₁ d₂ = true) ∨
+    (∃ c : HeaderCheck left key, ProposerConflict c.slashing) ∨
+    ∃ c : HeaderCheck right key, ProposerConflict c.slashing
+
+/-- A slashing that a block of one run applied gives two checks of its own.
+
+They are two checks of attestations that conflict, or two checks of conflicting headers. -/
+private theorem checked_of_slashingEvidence {g a : ForkedBeaconState preset}
+    {run : Run config checks g a} {key : BLSPubkey} (evidence : run.SlashingEvidence key) :
+    (∃ one two : AttestationCheck run key,
+      isSlashableAttestationData one.indexed.data two.indexed.data = true) ∨
+    ∃ c : HeaderCheck run key, ProposerConflict c.slashing := by
+  obtain ⟨x, y, step, member, evidence⟩ := evidence
+  cases step with
+  | slot _ => exact evidence.elim
+  | block engine signed due applied =>
+    rcases evidence with ⟨slashing, included, v, found, rfl⟩ |
+      ⟨slashing, included, i, named, v, found, rfl⟩
+    · obtain ⟨c, same, conflict⟩ := Run.headerCheck_of_proposerSlashing member included found
+      exact .inr ⟨c, same ▸ conflict⟩
+    · obtain ⟨one, two, first, second, conflict⟩ :=
+        Run.attestationChecks_of_attesterSlashing member included named found
+      exact .inl ⟨one, two, by rw [first, second]; exact conflict⟩
+
+/-- Every accountable key has two conflicting messages, each checked by one of the runs.
+
+No assumption about the signature checks is made. -/
+theorem verifiedConflict_of_accountable {g a b : ForkedBeaconState preset}
     (left : Run config checks g a) (right : Run config checks g b)
-    (signed : BLSPubkey → AttestationData → Prop)
-    (authA : Authenticated left signed) (authB : Authenticated right signed)
-    (key : BLSPubkey) (slashable : Slashable left right key) :
-    ∃ d₁ d₂, signed key d₁ ∧ signed key d₂ ∧ isSlashableAttestationData d₁ d₂ = true := by
-  obtain ⟨d₁, d₂, first, second, conflict⟩ := slashable
-  exact ⟨d₁, d₂, first.elim (authA key d₁) (authB key d₁),
-    second.elim (authA key d₂) (authB key d₂), conflict⟩
+    (parameters : Parameters preset) (key : BLSPubkey)
+    (accountable : Accountable left right key) :
+    VerifiedConflict left right key := by
+  rcases accountable with ⟨d₁, d₂, first, second, conflict⟩ | evidence | evidence
+  · have verified {data : AttestationData} (accepted : AcceptedEither left right key data) :
+        VerifiedEither left right key data :=
+      accepted.imp (Run.attestationCheck_of_accepted parameters)
+        (Run.attestationCheck_of_accepted parameters)
+    exact .inl ⟨d₁, d₂, verified first, verified second, conflict⟩
+  · rcases checked_of_slashingEvidence evidence with ⟨one, two, conflict⟩ | ⟨c, conflict⟩
+    · exact .inl ⟨_, _, .inl ⟨one, rfl⟩, .inl ⟨two, rfl⟩, conflict⟩
+    · exact .inr (.inl ⟨c, conflict⟩)
+  · rcases checked_of_slashingEvidence evidence with ⟨one, two, conflict⟩ | ⟨c, conflict⟩
+    · exact .inl ⟨_, _, .inr ⟨one, rfl⟩, .inr ⟨two, rfl⟩, conflict⟩
+    · exact .inr (.inr ⟨c, conflict⟩)
 
 end EthLib.Consensus.DirectSafety

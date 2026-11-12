@@ -1113,7 +1113,7 @@ private theorem beforeVotes_operationsInput {engine : ExecutionEngine preset for
 
 The start is the state after the operations input and the slashings of the block.
 
-The attestation is one that the attestations before it in the block accept.
+The attestation succeeds after a list of attestations is processed from that start.
 
 There must be more than `MIN_SEED_LOOKAHEAD + 2` epochs of mixes. -/
 theorem getAttestingIndices_attestationsStart

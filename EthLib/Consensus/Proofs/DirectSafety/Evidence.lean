@@ -1,5 +1,6 @@
 module
 
+public import EthLib.Consensus.Proofs.DirectSafety.Attestations
 public import EthLib.Consensus.Proofs.DirectSafety.Fields
 public import EthLib.Consensus.Proofs.Transition.Block
 public import EthLib.Consensus.Proofs.Transition.TargetUpgrades
@@ -37,6 +38,30 @@ def _root_.EthLib.Consensus.Step.SlashingEvidence {x y : ForkedBeaconState prese
 def _root_.EthLib.Consensus.Run.SlashingEvidence {g a : ForkedBeaconState preset}
     (run : Run config checks g a) (key : BLSPubkey) : Prop :=
   ∃ x y, ∃ step : Step config checks x y, run.Contains step ∧ step.SlashingEvidence key
+
+/-- Both header checks that a block of the run executed for one of its proposer slashings. -/
+structure HeaderCheck {g a : ForkedBeaconState preset} (run : Run config checks g a)
+    (key : BLSPubkey) extends CheckSite run where
+  pre : List ProposerSlashing
+  post : List ProposerSlashing
+  slashing : ProposerSlashing
+  checked : BeaconState preset fork
+  next : BeaconState preset fork
+  split : signed.message.body.proposerSlashings.data.toList = pre ++ slashing :: post
+  earlier : pre.foldlM (processProposerSlashing config checks) input = .ok checked
+  processed : processProposerSlashing config checks checked slashing = .ok next
+  proposer : ∃ v,
+    checked.validators.data[slashing.signedHeader1.message.proposerIndex.toNat]? = some v ∧
+      v.pubkey = key
+  first : checkHeaderSignature config checks checked key slashing.signedHeader1 = .ok ()
+  second : checkHeaderSignature config checks checked key slashing.signedHeader2 = .ok ()
+
+/-- Two different headers of one proposer at one slot, as `processProposerSlashing` requires. -/
+def ProposerConflict (slashing : ProposerSlashing) : Prop :=
+  slashing.signedHeader1.message.slot = slashing.signedHeader2.message.slot ∧
+    slashing.signedHeader1.message.proposerIndex =
+      slashing.signedHeader2.message.proposerIndex ∧
+    slashing.signedHeader1.message ≠ slashing.signedHeader2.message
 
 -- The predicate follows public keys, so registry growth does not require a fixed index set.
 private def SlashedBacked (evidence : BLSPubkey → Prop) {fork : Fork}
@@ -1032,5 +1057,95 @@ theorem _root_.EthLib.Consensus.Run.slashed_evidence {g a : ForkedBeaconState pr
           exact ⟨_, _, .block engine signed due ok, .last pre _,
             Or.inr ⟨sl, member, i, inIndices, old, found, rfl⟩⟩
   exact backed v member slashed
+
+/-- Case 2: a block of the run applied an attester slashing, and checked both its attestations.
+
+Each of them names the key at an index of the slashing. -/
+theorem _root_.EthLib.Consensus.Run.attestationChecks_of_attesterSlashing
+    {g a : ForkedBeaconState preset}
+    {run : Run config checks g a} {fork : Fork} {before after : BeaconState preset fork}
+    {engine : ExecutionEngine preset fork} {signed : SignedBeaconBlock preset fork}
+    {due : upgradeDue config ⟨fork, before⟩ = false}
+    {applied : applySignedBlock config checks engine before signed true = .ok after}
+    (member : run.Contains (.block engine signed due applied))
+    {slashing : AttesterSlashing preset fork}
+    (included : slashing ∈ signed.message.body.attesterSlashings.data.toList)
+    {i : ValidatorIndex} (named : i ∈ slashingIndices slashing) {v : Validator}
+    (found : before.validators.data[i.toNat]? = some v) :
+    ∃ one two : AttestationCheck run v.pubkey,
+      one.indexed.data = slashing.attestation1.data ∧
+      two.indexed.data = slashing.attestation2.data ∧
+      isSlashableAttestationData slashing.attestation1.data slashing.attestation2.data =
+        true := by
+  obtain ⟨_, processed, _⟩ := applySignedBlock_ok applied
+  obtain ⟨input, _, _, _, started, proposers, slashings, -⟩ := processBlock_folds processed
+  -- The slashing sits at a position of the attester slashings of the block.
+  obtain ⟨pre, post, split⟩ := List.append_of_mem included
+  rw [split, List.foldlM_append] at slashings
+  obtain ⟨checked, earlier, rest⟩ := bind_ok_iff.mp slashings
+  rw [List.foldlM_cons] at rest
+  obtain ⟨next, processedS, -⟩ := bind_ok_iff.mp rest
+  have frame : Frame before checked :=
+    started.frame.toFrame.trans <|
+      (BlockFrame.foldlM (fun _ _ _ ok => frame_processProposerSlashing ok) proposers).toFrame.trans
+        (BlockFrame.foldlM (fun _ _ _ ok => frame_processAttesterSlashing ok) earlier).toFrame
+  obtain ⟨current, foundCurrent, currentKey⟩ := frame.key_preserved found
+  -- The index is in both attestations, because the slashed indices are those in both.
+  unfold slashingIndices at named
+  obtain ⟨first, second⟩ := List.mem_filter.mp (mem_sortedSet.mp named)
+  have inSecond := of_decide_eq_true second
+  -- Both attestations are checked at the state where the slashing runs.
+  have opened := processedS
+  unfold processAttesterSlashing at opened
+  simp only [bind_ok_iff, ensure_ok_iff] at opened
+  obtain ⟨_, conflict, one, oneOk, _, oneTrue, two, twoOk, _, twoTrue, -⟩ := opened
+  subst oneTrue twoTrue
+  exact ⟨⟨⟨fork, before, after, engine, signed, due, applied, member, input, started⟩, checked,
+      slashing.attestation1, .slashing split proposers earlier processedS (.inl rfl),
+      ⟨i, first, current, foundCurrent, currentKey⟩, oneOk⟩,
+    ⟨⟨fork, before, after, engine, signed, due, applied, member, input, started⟩, checked,
+      slashing.attestation2, .slashing split proposers earlier processedS (.inr rfl),
+      ⟨i, inSecond, current, foundCurrent, currentKey⟩, twoOk⟩, rfl, rfl, conflict⟩
+
+/-- Case 3: a block of the run applied a proposer slashing, and checked both its headers.
+
+Each check is for the key of the proposer, and the two headers conflict. -/
+theorem _root_.EthLib.Consensus.Run.headerCheck_of_proposerSlashing
+    {g a : ForkedBeaconState preset}
+    {run : Run config checks g a} {fork : Fork} {before after : BeaconState preset fork}
+    {engine : ExecutionEngine preset fork} {signed : SignedBeaconBlock preset fork}
+    {due : upgradeDue config ⟨fork, before⟩ = false}
+    {applied : applySignedBlock config checks engine before signed true = .ok after}
+    (member : run.Contains (.block engine signed due applied))
+    {slashing : ProposerSlashing}
+    (included : slashing ∈ signed.message.body.proposerSlashings.data.toList) {v : Validator}
+    (found : before.validators.data[slashing.signedHeader1.message.proposerIndex.toNat]? =
+      some v) :
+    ∃ c : HeaderCheck run v.pubkey, c.slashing = slashing ∧ ProposerConflict slashing := by
+  obtain ⟨_, processed, _⟩ := applySignedBlock_ok applied
+  obtain ⟨input, _, _, _, started, proposers, -⟩ := processBlock_folds processed
+  -- The slashing sits at a position of the proposer slashings of the block.
+  obtain ⟨pre, post, split⟩ := List.append_of_mem included
+  rw [split, List.foldlM_append] at proposers
+  obtain ⟨checked, earlier, rest⟩ := bind_ok_iff.mp proposers
+  rw [List.foldlM_cons] at rest
+  obtain ⟨next, processedP, -⟩ := bind_ok_iff.mp rest
+  have frame : Frame before checked :=
+    started.frame.toFrame.trans
+      (BlockFrame.foldlM (fun _ _ _ ok => frame_processProposerSlashing ok) earlier).toFrame
+  obtain ⟨current, foundCurrent, currentKey⟩ := frame.key_preserved found
+  have opened := processedP
+  unfold processProposerSlashing at opened
+  simp only [bind_ok_iff, liftAccessor_ok, ensure_ok_iff] at opened
+  obtain ⟨_, slotEq, _, indexEq, _, differ, proposer, proposerOk, _, -, one, oneOk, two, twoOk,
+    -⟩ := opened
+  -- The validator that the check reads is the one that the key reaches.
+  have same : proposer = current := Option.some.inj
+    ((getValidator_eq_ok_iff.mp proposerOk).symm.trans foundCurrent)
+  have key : proposer.pubkey = v.pubkey := same ▸ currentKey
+  rw [key] at oneOk twoOk
+  exact ⟨⟨⟨fork, before, after, engine, signed, due, applied, member, input, started⟩, pre, post,
+    slashing, checked, next, split, earlier, processedP, ⟨current, foundCurrent, currentKey⟩,
+    oneOk, twoOk⟩, rfl, slotEq, indexEq, differ⟩
 
 end EthLib.Consensus.DirectSafety
