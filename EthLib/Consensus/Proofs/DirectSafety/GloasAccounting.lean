@@ -2,6 +2,7 @@ module
 
 public import EthLib.Consensus.Proofs.DirectSafety.IntervalFunding
 import all EthLib.Consensus.Proofs.DirectSafety.IntervalFunding
+import all EthLib.Consensus.Proofs.Transition.BalanceSources
 
 /-!
 # Gloas accounting rates and parent replay
@@ -529,5 +530,33 @@ theorem gloas_withdrawal_bounds {fork : Fork} (gloas : .glamsterdam ≤ fork)
   · cases ok
     exact ⟨0, by simp [gloasWithdrawalLimits, full, pure, Except.pure],
       by simp [balanceCredits], by simp [balanceDebits]⟩
+
+/-- EIP-7732: weighing builder payments leaves the validator proposer credit unchanged. -/
+theorem attestation_proposer_bound_gloas {fork : Fork} (s t : BeaconState preset fork)
+    (att : Attestation preset fork) (parent : Slot) (gloas : .glamsterdam ≤ fork)
+    (ok : processAttestation config checks s parent att = .ok t) :
+    ∃ credit, attestationCredit s att parent = .ok credit ∧
+      balanceDebits s t = 0 ∧ balanceCredits s t ≤ credit := by
+  have altair : .altair ≤ fork := Nat.le_trans (by decide) gloas
+  simp only [processAttestation, altair, ↓reduceDIte, processAttestationAltair,
+    bind_ok_iff, liftAccessor_ok] at ok
+  obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, earned, earnedOk, _, _, _, _, _, _, total,
+    totalOk, attesters, attestersOk, pair, flagsOk, proposer, _, u, raised, final⟩ := ok
+  simp only [gloas, ↓reduceDIte] at final
+  -- The Gloas suffix updates builder payments, not validator balances.
+  have paidBalances : t.balances = u.balances := by rw [recordPaymentWeight_eq final]
+  refine ⟨(pair.2 /
+    ((WEIGHT_DENOMINATOR - PROPOSER_WEIGHT) * WEIGHT_DENOMINATOR / PROPOSER_WEIGHT)).toNat,
+    ?_, ?_⟩
+  · simp only [attestationCredit, altair, ↓reduceDIte, liftAccessor, earnedOk, totalOk,
+      attestersOk, Except.mapError, bind, Except.bind, flagsOk]
+    rfl
+  · have bounds := credits_increase raised
+    have kept : (setEpochParticipation s
+        (att.data.target.epoch == getCurrentEpoch s) pair.1).balances = s.balances := by
+      unfold setEpochParticipation
+      split <;> rfl
+    simpa only [balanceCredits, balanceDebits, actualBalanceAt, paidBalances, kept]
+      using And.intro bounds.2 bounds.1.le
 
 end EthLib.Consensus.DirectSafety
