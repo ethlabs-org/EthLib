@@ -451,23 +451,74 @@ theorem findLatestConfirmedDescendant_checked {fcr : FastConfirmationStore}
   · have same : root = mid := by simpa [finish, pure, Except.pure] using found.symm
     exact same ▸ firstResult
 
-/-- The selected start carries both its reset checks and its descendant search. -/
+/-- The selected start carries both its reset checks and its descendant search.
+
+The start is the one that the rule selects, not only one of its three candidates.
+
+The rule first keeps the block stored before, when that block passes three checks.
+
+Its epoch is the current one or the one before.
+
+It is on the chain of the head.
+
+At the start of an epoch, its chain is still safe.
+
+Otherwise the rule falls back to the finalized block.
+
+Call the block that this step gives the base.
+
+The rule then takes the observed justified block in place of the base, when four checks pass.
+
+The slot starts an epoch, and the observed block is of the epoch before.
+
+The observed checkpoint is the unrealized justification of the head.
+
+The base is at an earlier slot than the observed block.
+
+Otherwise the start is the base.
+
+These cases exclude one another, so the start is the one that the rule computes. -/
 theorem getLatestConfirmed_checked_start {fcr : FastConfirmationStore} {head root : Root}
     (lower : store.ParentsBelow)
     (latest : store.getLatestConfirmed config fcr head = .ok root) :
     ∃ slot start, store.getCurrentSlot config = .ok slot ∧
-      (start = fcr.confirmedRoot ∧
-          store.isAncestor ⟨head, .pending⟩ ⟨fcr.confirmedRoot, .pending⟩ = .ok true ∧
-          (isStartSlotAtEpoch preset slot = .ok true →
-            store.isConfirmedChainSafe config fcr head fcr.confirmedRoot = .ok true) ∨
-        start = store.finalizedCheckpoint.root ∨
-        start = fcr.currentEpochObservedJustifiedCheckpoint.root ∧
-          isStartSlotAtEpoch preset slot = .ok true ∧
-          (∃ observedBlock epoch,
-            store.block fcr.currentEpochObservedJustifiedCheckpoint.root = .ok observedBlock ∧
-            store.getCurrentStoreEpoch config = .ok epoch ∧
-            Uint64.addChecked (computeEpochAtSlot preset observedBlock.slot) 1 = .ok epoch) ∧
-          store.unrealizedJustification head = .ok fcr.currentEpochObservedJustifiedCheckpoint) ∧
+      (∃ base,
+        (base = fcr.confirmedRoot ∧
+            ((∃ epoch blockEpoch, store.getCurrentStoreEpoch config = .ok epoch ∧
+                store.getBlockEpoch fcr.confirmedRoot = .ok blockEpoch ∧
+                epoch.toNat ≤ blockEpoch.toNat + 1) ∧
+              store.isAncestor ⟨head, .pending⟩ ⟨fcr.confirmedRoot, .pending⟩ = .ok true ∧
+              (isStartSlotAtEpoch preset slot = .ok true →
+                store.isConfirmedChainSafe config fcr head fcr.confirmedRoot = .ok true)) ∨
+          base = store.finalizedCheckpoint.root ∧
+            ¬((∃ epoch blockEpoch, store.getCurrentStoreEpoch config = .ok epoch ∧
+                store.getBlockEpoch fcr.confirmedRoot = .ok blockEpoch ∧
+                epoch.toNat ≤ blockEpoch.toNat + 1) ∧
+              store.isAncestor ⟨head, .pending⟩ ⟨fcr.confirmedRoot, .pending⟩ = .ok true ∧
+              (isStartSlotAtEpoch preset slot = .ok true →
+                store.isConfirmedChainSafe config fcr head fcr.confirmedRoot = .ok true))) ∧
+        (start = base ∧
+            ¬(isStartSlotAtEpoch preset slot = .ok true ∧
+              (∃ observedBlock epoch,
+                store.block fcr.currentEpochObservedJustifiedCheckpoint.root = .ok observedBlock ∧
+                store.getCurrentStoreEpoch config = .ok epoch ∧
+                Uint64.addChecked (computeEpochAtSlot preset observedBlock.slot) 1 = .ok epoch) ∧
+              store.unrealizedJustification head =
+                .ok fcr.currentEpochObservedJustifiedCheckpoint ∧
+              ∃ baseBlock observedBlock, store.block base = .ok baseBlock ∧
+                store.block fcr.currentEpochObservedJustifiedCheckpoint.root = .ok observedBlock ∧
+                baseBlock.slot < observedBlock.slot) ∨
+          start = fcr.currentEpochObservedJustifiedCheckpoint.root ∧
+            isStartSlotAtEpoch preset slot = .ok true ∧
+            (∃ observedBlock epoch,
+              store.block fcr.currentEpochObservedJustifiedCheckpoint.root = .ok observedBlock ∧
+              store.getCurrentStoreEpoch config = .ok epoch ∧
+              Uint64.addChecked (computeEpochAtSlot preset observedBlock.slot) 1 = .ok epoch) ∧
+            store.unrealizedJustification head =
+              .ok fcr.currentEpochObservedJustifiedCheckpoint ∧
+            ∃ baseBlock observedBlock, store.block base = .ok baseBlock ∧
+              store.block fcr.currentEpochObservedJustifiedCheckpoint.root = .ok observedBlock ∧
+              baseBlock.slot < observedBlock.slot)) ∧
       (root = start ∨ store.Checked config fcr head start root ∧
         store.findLatestConfirmedDescendant config fcr head start = .ok root) := by
   unfold getLatestConfirmed at latest
@@ -478,70 +529,121 @@ theorem getLatestConfirmed_checked_start {fcr : FastConfirmationStore} {head roo
   refine ⟨slot, ?_⟩
   extract_lets arith confirmedRoot observed finish observedRoot afterReset finalizedRoot
     resetBody at latest
-  let kept : Prop := store.isAncestor ⟨head, .pending⟩ ⟨fcr.confirmedRoot, .pending⟩ = .ok true ∧
+  -- The three checks that keep the block stored before.
+  let kept : Prop :=
+    (∃ epoch blockEpoch, store.getCurrentStoreEpoch config = .ok epoch ∧
+      store.getBlockEpoch fcr.confirmedRoot = .ok blockEpoch ∧
+      epoch.toNat ≤ blockEpoch.toNat + 1) ∧
+    store.isAncestor ⟨head, .pending⟩ ⟨fcr.confirmedRoot, .pending⟩ = .ok true ∧
     (isStartSlotAtEpoch preset slot = .ok true →
       store.isConfirmedChainSafe config fcr head fcr.confirmedRoot = .ok true)
   -- Keep the reset decision paired with the continuation that consumes it.
-  have reset : ∃ reset, (reset = false → kept) ∧ resetBody reset = .ok root := by
+  have reset : ∃ reset, (reset = false → kept) ∧ (reset = true → ¬kept) ∧
+      resetBody reset = .ok root := by
     clear_value resetBody
     rw [bind_ok_iff] at latest
-    obtain ⟨_, -, latest⟩ := latest
+    obtain ⟨blockEpoch, blockEpochOk, latest⟩ := latest
     rw [bind_ok_iff] at latest
-    obtain ⟨_, -, latest⟩ := latest
+    obtain ⟨sum, sumOk, latest⟩ := latest
+    have sumValue := (Uint64.addChecked_ok_iff.mp (mapError_ok_iff.mp sumOk)).2
+    simp only [UInt64.toNat_one] at sumValue
+    -- The epoch check of `kept` is the negation of the staleness test of the rule.
+    have epochCheck : (∃ epoch be, store.getCurrentStoreEpoch config = .ok epoch ∧
+        store.getBlockEpoch fcr.confirmedRoot = .ok be ∧ epoch.toNat ≤ be.toNat + 1) ↔
+        ¬sum < currentEpoch := by
+      constructor
+      · rintro ⟨epoch, be, epochOk, beOk, le⟩ stale
+        obtain rfl : currentEpoch = epoch := Except.ok.inj (epochFound.symm.trans epochOk)
+        obtain rfl : blockEpoch = be := Except.ok.inj (blockEpochOk.symm.trans beOk)
+        have := UInt64.lt_iff_toNat_lt.mp stale
+        omega
+      · intro fresh
+        have := UInt64.not_lt.mp fresh
+        refine ⟨currentEpoch, blockEpoch, epochFound, blockEpochOk, ?_⟩
+        have := UInt64.le_iff_toNat_le.mp this
+        omega
     split at latest
-    · exact ⟨true, by simp, latest⟩
-    · rw [bind_ok_iff] at latest
+    · rename_i stale
+      exact ⟨true, by simp, fun _ held => epochCheck.mp held.1 stale, latest⟩
+    · rename_i fresh
+      rw [bind_ok_iff] at latest
       obtain ⟨onChain, ancestry, latest⟩ := latest
       split at latest
-      · exact ⟨true, by simp, latest⟩
+      · rename_i offChain
+        refine ⟨true, by simp, fun _ held => ?_, latest⟩
+        have same := Except.ok.inj (ancestry.symm.trans held.2.1)
+        simp [same] at offChain
       · rename_i isOnChain
         obtain rfl : onChain = true := by simpa using isOnChain
         rw [bind_ok_iff] at latest
         obtain ⟨atStart, startChecked, latest⟩ := latest
         split at latest
-        · rw [bind_ok_iff] at latest
+        · rename_i startTrue
+          obtain rfl : atStart = true := by simpa using startTrue
+          rw [bind_ok_iff] at latest
           obtain ⟨safe, chainChecked, latest⟩ := latest
-          refine ⟨!safe, fun notReset => ⟨ancestry, fun _ => ?_⟩, latest⟩
-          obtain rfl : safe = true := by simpa using notReset
-          exact chainChecked
+          refine ⟨!safe, fun notReset => ⟨epochCheck.mpr fresh, ancestry, fun _ => ?_⟩,
+            fun isReset held => ?_, latest⟩
+          · obtain rfl : safe = true := by simpa using notReset
+            exact chainChecked
+          · have same := Except.ok.inj (chainChecked.symm.trans (held.2.2 startChecked))
+            simp [same] at isReset
         · rename_i notStart
-          refine ⟨false, fun _ => ⟨ancestry, fun isStart => ?_⟩, latest⟩
-          exact absurd (Except.ok.inj (startChecked.symm.trans isStart)) notStart
+          refine ⟨false, fun _ => ⟨epochCheck.mpr fresh, ancestry, fun isStart => ?_⟩,
+            by simp, latest⟩
+          exact absurd (Except.ok.inj (startChecked.symm.trans isStart)) (by simpa using notStart)
   clear latest
-  obtain ⟨reset, keeps, latest⟩ := reset
+  obtain ⟨reset, keeps, drops, latest⟩ := reset
   have base : ∃ base, (base = fcr.confirmedRoot ∧ kept ∨
-      base = store.finalizedCheckpoint.root) ∧ afterReset () base = .ok root := by
+      base = store.finalizedCheckpoint.root ∧ ¬kept) ∧ afterReset () base = .ok root := by
     cases reset
     · exact ⟨fcr.confirmedRoot, Or.inl ⟨rfl, keeps rfl⟩, latest⟩
-    · exact ⟨store.finalizedCheckpoint.root, Or.inr rfl, latest⟩
-  clear latest keeps
+    · exact ⟨store.finalizedCheckpoint.root, Or.inr ⟨rfl, drops rfl⟩, latest⟩
+  clear latest keeps drops
   obtain ⟨base, baseCase, latest⟩ := base
-  -- The observed checkpoint can replace this base only after all replacement checks pass.
-  have start : ∃ start, (start = fcr.confirmedRoot ∧ kept ∨
-      start = store.finalizedCheckpoint.root ∨
-      start = fcr.currentEpochObservedJustifiedCheckpoint.root ∧
-        isStartSlotAtEpoch preset slot = .ok true ∧
-        (∃ observedBlock epoch,
-          store.block fcr.currentEpochObservedJustifiedCheckpoint.root = .ok observedBlock ∧
-          store.getCurrentStoreEpoch config = .ok epoch ∧
-          Uint64.addChecked (computeEpochAtSlot preset observedBlock.slot) 1 = .ok epoch) ∧
-        store.unrealizedJustification head =
-          .ok fcr.currentEpochObservedJustifiedCheckpoint) ∧ finish () start = .ok root := by
+  -- The observed checkpoint replaces this base exactly when all four replacement checks pass.
+  let over : Prop :=
+    isStartSlotAtEpoch preset slot = .ok true ∧
+    (∃ observedBlock epoch,
+      store.block fcr.currentEpochObservedJustifiedCheckpoint.root = .ok observedBlock ∧
+      store.getCurrentStoreEpoch config = .ok epoch ∧
+      Uint64.addChecked (computeEpochAtSlot preset observedBlock.slot) 1 = .ok epoch) ∧
+    store.unrealizedJustification head = .ok fcr.currentEpochObservedJustifiedCheckpoint ∧
+    ∃ baseBlock observedBlock, store.block base = .ok baseBlock ∧
+      store.block fcr.currentEpochObservedJustifiedCheckpoint.root = .ok observedBlock ∧
+      baseBlock.slot < observedBlock.slot
+  have start : ∃ start, (start = base ∧ ¬over ∨
+      start = fcr.currentEpochObservedJustifiedCheckpoint.root ∧ over) ∧
+      finish () start = .ok root := by
     clear_value finish
     simp only [afterReset, bind_ok_iff] at latest
     obtain ⟨atStart, startChecked, observedBlock, observedFound, observedEpoch, epochAdded,
-      justified, justification, _, -, latest⟩ := latest
+      justified, justification, baseBlock, baseFound, latest⟩ := latest
     split at latest
     · rename_i replaced
-      refine ⟨observedRoot, Or.inr (Or.inr ⟨rfl, ?_, ?_, ?_⟩), latest⟩
-      · exact replaced.1 ▸ startChecked
-      · refine ⟨observedBlock, currentEpoch, observedFound, epochFound, ?_⟩
-        exact replaced.2.1 ▸ mapError_ok_iff.mp epochAdded
-      · exact justification.trans (congrArg Except.ok replaced.2.2.1.symm)
-    · exact ⟨base, baseCase.imp id Or.inl, latest⟩
+      refine ⟨observedRoot, Or.inr ⟨rfl, replaced.1 ▸ startChecked,
+        ⟨observedBlock, currentEpoch, observedFound, epochFound,
+          replaced.2.1 ▸ mapError_ok_iff.mp epochAdded⟩,
+        justification.trans (congrArg Except.ok replaced.2.2.1.symm),
+        baseBlock, observedBlock, baseFound, observedFound, replaced.2.2.2⟩, latest⟩
+    · rename_i kept'
+      refine ⟨base, Or.inl ⟨rfl, ?_⟩, latest⟩
+      rintro ⟨isStart, ⟨ob, epoch, obFound, epochOk, added⟩, headJustified, bb, ob', bbFound,
+        ob'Found, lower'⟩
+      apply kept'
+      obtain rfl : atStart = true := Except.ok.inj (startChecked.symm.trans isStart)
+      obtain rfl : ob = observedBlock := Except.ok.inj (obFound.symm.trans observedFound)
+      obtain rfl : ob' = ob := Except.ok.inj (ob'Found.symm.trans obFound)
+      obtain rfl : bb = baseBlock := Except.ok.inj (bbFound.symm.trans baseFound)
+      obtain rfl : epoch = currentEpoch := Except.ok.inj (epochOk.symm.trans epochFound)
+      have sameEpoch : observedEpoch = epoch :=
+        Except.ok.inj ((mapError_ok_iff.mp epochAdded).symm.trans added)
+      have sameJustified : justified = fcr.currentEpochObservedJustifiedCheckpoint :=
+        Except.ok.inj (justification.symm.trans headJustified)
+      exact ⟨rfl, sameEpoch, sameJustified.symm, lower'⟩
   clear latest
   obtain ⟨start, startCase, latest⟩ := start
-  refine ⟨start, slotFound, startCase, ?_⟩
+  refine ⟨start, slotFound, ⟨base, baseCase, startCase⟩, ?_⟩
   simp only [finish, bind_ok_iff] at latest
   obtain ⟨startEpoch, startOk, sum, sumOk, latest⟩ := latest
   split at latest
@@ -579,12 +681,14 @@ theorem getLatestConfirmed_checked {fcr : FastConfirmationStore} {head root : Ro
     ∃ start, (start = fcr.confirmedRoot ∨ start = store.finalizedCheckpoint.root ∨
         start = fcr.currentEpochObservedJustifiedCheckpoint.root) ∧
       (root = start ∨ store.Checked config fcr head start root) := by
-  obtain ⟨slot, start, _, startCase, result⟩ := getLatestConfirmed_checked_start lower latest
+  obtain ⟨slot, start, _, ⟨base, baseCase, startCase⟩, result⟩ :=
+    getLatestConfirmed_checked_start lower latest
   refine ⟨start, ?_, result.imp id And.left⟩
-  rcases startCase with ⟨same, _⟩ | same | ⟨same, _⟩
-  · exact Or.inl same
-  · exact Or.inr (Or.inl same)
-  · exact Or.inr (Or.inr same)
+  rcases startCase with ⟨rfl, _⟩ | ⟨rfl, _⟩
+  · rcases baseCase with ⟨rfl, _⟩ | ⟨rfl, _⟩
+    · exact Or.inl rfl
+    · exact Or.inr (Or.inl rfl)
+  · exact Or.inr (Or.inr rfl)
 
 /-- A successful target check supplies a two-thirds bound in its counting state. -/
 theorem two_thirds_le_of_willCurrentTargetBeJustified {head : Root}
