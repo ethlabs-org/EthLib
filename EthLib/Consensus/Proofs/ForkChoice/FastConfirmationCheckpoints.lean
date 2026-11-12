@@ -4602,7 +4602,8 @@ private theorem coverage_covered_of_later_justified {anchor : Store preset fork}
     rw [target] at targetNat
     have le := Nat.mul_le_mul_right preset.SLOTS_PER_EPOCH.toNat
       (UInt64.le_iff_toNat_le.mp later)
-    exact rootBefore.trans (UInt64.le_iff_toNat_le.mpr (by omega))
+    have firstBelow : first ≤ targetSlot := UInt64.le_iff_toNat_le.mpr (by omega)
+    exact UInt64.le_trans rootBefore firstBelow
   have sourceWalk := Store.getAncestor_of_isAncestor_of_lt preGloas otherKnown supports
   have targetAncestor : ((e.world signer).state v).getAncestor
       ⟨checkpoint.root, .pending⟩ rootBlock.slot = .ok ⟨root, .pending⟩ := by
