@@ -2,7 +2,7 @@ module
 
 public import EthLib.Consensus.Proofs.DirectSafety.Attestations
 public import EthLib.Consensus.Proofs.Transition.RegistryIdentity
-public import EthLib.Consensus.Proofs.Models.Stake
+public import EthLib.Consensus.Proofs.Transition.FfgStake
 
 /-!
 # Validator identities and weights
