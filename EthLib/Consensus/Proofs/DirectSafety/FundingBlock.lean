@@ -17,7 +17,7 @@ noncomputable section
 
 variable {preset : Preset} {config : Config} {checks : SignatureChecks}
 
-private theorem funding_block_change {fork : Fork} {s t : BeaconState preset fork}
+theorem funding_block_change {fork : Fork} {s t : BeaconState preset fork}
     (electra : .pectra ≤ fork) (life : RegistryLifecycle s t)
     (size : t.validators.data.size = s.validators.data.size) (matched : BalancesMatch t)
     (slot : t.slot = s.slot) (effective : EffectiveKept s t)
@@ -48,7 +48,7 @@ private theorem funding_block_change {fork : Fork} {s t : BeaconState preset for
     omega
   · intros; exact Nat.zero_le _
 
-private theorem funding_block_kept {fork : Fork} {s t : BeaconState preset fork}
+theorem funding_block_kept {fork : Fork} {s t : BeaconState preset fork}
     (electra : .pectra ≤ fork) (life : RegistryLifecycle s t)
     (size : t.validators.data.size = s.validators.data.size) (matched : BalancesMatch t)
     (slot : t.slot = s.slot) (effective : EffectiveKept s t)
@@ -60,7 +60,7 @@ private theorem funding_block_kept {fork : Fork} {s t : BeaconState preset fork}
     queue] using pending)
 
 -- A validated request adds only an already active source to pending support.
-private theorem funding_request_support {fork : Fork} {s t : BeaconState preset fork}
+theorem funding_request_support {fork : Fork} {s t : BeaconState preset fork}
     {electra : .pectra ≤ fork} {request : ConsolidationRequest}
     (ok : processConsolidationRequest config s electra request = .ok t) :
     ∀ i, (t.pendingConsolidations electra).data.toList.any
@@ -143,10 +143,10 @@ private theorem funding_block_deposit {fork : Fork} {s t : BeaconState preset fo
   · obtain ⟨_, rfl⟩ := addPendingDeposit_eq (liftAccessor_ok.mp applied)
     exact Nat.le_refl _
 
-private def funding_block_cost (event : BalanceEvent preset) : Nat :=
+def funding_block_cost (event : BalanceEvent preset) : Nat :=
   if event.source = .deposits ∨ event.source = .consolidations then 0 else event.credits
 
-private theorem funding_block_cost_le {events : List (BalanceEvent preset)}
+theorem funding_block_cost_le {events : List (BalanceEvent preset)}
     (bounded : EventsBounded events) :
     (events.map funding_block_cost).sum ≤ (events.map fundingCredit).sum := by
   induction events with
@@ -158,7 +158,7 @@ private theorem funding_block_cost_le {events : List (BalanceEvent preset)}
     simpa only [List.map_cons, List.sum_cons] using Nat.add_le_add one
       (ih (fun x h => bounded x (by simp [h])))
 
-private theorem funding_block_same {fork : Fork} {s t : BeaconState preset fork}
+theorem funding_block_same {fork : Fork} {s t : BeaconState preset fork}
     (electra : .pectra ≤ fork) (matched : BalancesMatch t)
     (life : RegistryLifecycle s t) (size : t.validators.data.size = s.validators.data.size)
     (slot : t.slot = s.slot) (effective : EffectiveKept s t)
@@ -168,12 +168,12 @@ private theorem funding_block_same {fork : Fork} {s t : BeaconState preset fork}
     Finset.sum_const_zero, Nat.add_zero] using
     funding_block_kept electra life size matched slot effective queue
 
-private def FundingReplay {fork : Fork} (s : BeaconState preset fork)
+def FundingReplay {fork : Fork} (s : BeaconState preset fork)
     (post : BalanceReplay preset fork) : Prop :=
   BalancesMatch post.1 ∧ fundedStake ⟨fork, post.1⟩ ≤
     fundedStake ⟨fork, s⟩ + (post.2.map funding_block_cost).sum
 
-private theorem funding_block_record {fork : Fork} {s : BeaconState preset fork}
+theorem funding_block_record {fork : Fork} {s : BeaconState preset fork}
     {pre post : BalanceReplay preset fork} {source : BalanceSource}
     {limits : BeaconState preset fork → Except TransitionError (Nat × Nat)}
     {action : BeaconState preset fork → Except TransitionError (BeaconState preset fork)}
@@ -192,7 +192,7 @@ private theorem funding_block_record {fork : Fork} {s : BeaconState preset fork}
     List.sum_cons, List.sum_nil, Nat.add_zero, funding_block_cost, BalanceEvent.credits,
     Nat.add_assoc, balanceCredits] using one.trans (Nat.add_le_add_right prior _)
 
-private theorem funding_block_carry {fork : Fork} {s : BeaconState preset fork}
+theorem funding_block_carry {fork : Fork} {s : BeaconState preset fork}
     {pre post : BalanceReplay preset fork}
     {action : BeaconState preset fork → Except TransitionError (BeaconState preset fork)}
     (preserves : ∀ a b, action a = .ok b → BalancesMatch a → BalancesMatch b)

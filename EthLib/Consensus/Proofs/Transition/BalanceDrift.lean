@@ -84,7 +84,7 @@ theorem reachable_effective_alignment {g x : ForkedBeaconState preset}
   have numeric := congrArg UInt64.toNat whole
   simpa only [UInt64.toNat_mod, UInt64.reduceToNat] using numeric
 
-private def EffectiveKept {f h : Fork} (s : BeaconState preset f)
+def EffectiveKept {f h : Fork} (s : BeaconState preset f)
     (t : BeaconState preset h) : Prop :=
   ∀ i, i < s.validators.data.size → effectiveAt ⟨h, t⟩ i = effectiveAt ⟨f, s⟩ i
 

@@ -100,7 +100,7 @@ private def PendingSources {f : Fork} (s : BeaconState preset f) : Prop :=
   ∀ electra : .pectra ≤ f, ∀ entry ∈ (s.pendingConsolidations electra).data.toList,
     entry.sourceIndex.toNat < s.validators.data.size
 
-private def SamePendingQueue {f : Fork} (s t : BeaconState preset f) : Prop :=
+def SamePendingQueue {f : Fork} (s t : BeaconState preset f) : Prop :=
   t.pendingConsolidations = s.pendingConsolidations
 
 private theorem SamePendingQueue.trans {f : Fork} {s t u : BeaconState preset f}

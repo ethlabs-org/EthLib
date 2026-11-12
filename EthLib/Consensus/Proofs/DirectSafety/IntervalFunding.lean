@@ -929,7 +929,7 @@ def sourceTotal (events : List (BalanceEvent preset)) (source : BalanceSource)
     (amount : BalanceEvent preset → Nat) : Nat :=
   ((events.filter fun e => e.source == source).map amount).sum
 
-private def EventsBounded (events : List (BalanceEvent preset)) : Prop :=
+def EventsBounded (events : List (BalanceEvent preset)) : Prop :=
   ∀ event ∈ events, event.credits ≤ event.creditLimit ∧ event.debits ≤ event.debitLimit
 
 private theorem eventsBounded_append {left right : List (BalanceEvent preset)}
