@@ -2964,6 +2964,8 @@ theorem Execution.safeAt_of_walk {Δ : ℕ} (sync : e.Synchronous Δ)
     (preGloas : fork < .glamsterdam) {limit : ℕ} (admitted : BlocksAdmitted e 0 Δ limit)
     (oneBlock : OneBlockPerRoot e limit)
     (half : 2 * config.CONFIRMATION_BYZANTINE_THRESHOLD.toNat ≤ 100)
+    (boost : config.PROPOSER_SCORE_BOOST.toNat ≤ 100)
+    (long : 1 < preset.SLOTS_PER_EPOCH) (incrementPositive : 0 < preset.EFFECTIVE_BALANCE_INCREMENT)
     (votes : Votes e.startTime limit e)
     (fits : DelayFits fork config genesisTimeMs Δ)
     (prompt : Prompt e limit) (committees : CommitteesFollow e limit)
@@ -3195,6 +3197,9 @@ theorem Execution.safeAt_of_walk {Δ : ℕ} (sync : e.Synchronous Δ)
       exact previousLineage ep previous epOk boundary next startEpoch)
     afterNow (fun w hw k le => nonzero w hw k (le.trans boundedNow))
     (fun w hw k ep le => inHorizon w hw k ep (le.trans boundedNow))
+    (fun w hw k c s le => supply w hw k c s (le.trans boundedNow))
+    (fun w hw k le => anchorParent w hw k (le.trans boundedNow))
+    (fun w hw k s le => large w hw k s (le.trans boundedNow)) incrementPositive long boost
     (fun t lower upper => startSafe t lower (upper.trans boundedNow)) rootSafe
     (fun w hw k eq ready => ⟨rootBlock, known w hw k (afterNow.trans_eq eq.symm)
       (eq.trans_le boundedNow) ready⟩)
@@ -3857,6 +3862,7 @@ It is `confirmed_safety_and_lineage_of_acceptedActualFCRFold`.
 [vfc]: https://github.com/fradamt/verified-fast-confirmation -/
 theorem Execution.callInvariant_step {Δ : ℕ} (sync : e.Synchronous Δ)
     (half : 2 * config.CONFIRMATION_BYZANTINE_THRESHOLD.toNat ≤ 100)
+    (boost : config.PROPOSER_SCORE_BOOST.toNat ≤ 100)
     (slots : 0 < config.SLOT_DURATION_MS) (long : 1 < preset.SLOTS_PER_EPOCH)
     (window : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
     (lookahead : 1 ≤ preset.MIN_SEED_LOOKAHEAD.toNat ∧ 1 ≤ preset.MAX_SEED_LOOKAHEAD.toNat ∧
@@ -4311,6 +4317,7 @@ theorem Execution.callInvariant_step {Δ : ℕ} (sync : e.Synchronous Δ)
     intro time afterCall bounded
     have callBound := afterCall.trans bounded
     exact e.safeAt_of_walk sync slots positiveSlotsNat window lookahead preGloas admitted oneBlock half
+      boost long positive
       votes fits prompt committees follows chain unique pins voted included anchored sound anchorSlot
       anchorAtBoundary start rfl noVotes maxAligned increment caller (upToDate n member) (lower n member)
       slotOk beginOk atSlot headOk
@@ -4503,6 +4510,7 @@ In [verified-fast-confirmation][vfc], this is `confirmed_root_safe_from_next_slo
 [vfc]: https://github.com/fradamt/verified-fast-confirmation -/
 theorem Execution.safeAt_confirmedRoot {Δ : ℕ} (sync : e.Synchronous Δ)
     (half : 2 * config.CONFIRMATION_BYZANTINE_THRESHOLD.toNat ≤ 100)
+    (boost : config.PROPOSER_SCORE_BOOST.toNat ≤ 100)
     (slots : 0 < config.SLOT_DURATION_MS) (long : 1 < preset.SLOTS_PER_EPOCH)
     (window : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
     (lookahead : 1 ≤ preset.MIN_SEED_LOOKAHEAD.toNat ∧ 1 ≤ preset.MAX_SEED_LOOKAHEAD.toNat ∧
@@ -4593,7 +4601,8 @@ theorem Execution.safeAt_confirmedRoot {Δ : ℕ} (sync : e.Synchronous Δ)
     induction i using Nat.strong_induction_on with
     | _ i ih =>
       intro n fcr after calls callBound
-      exact e.callInvariant_step sync half slots long window lookahead votes fits prompt committees
+      exact e.callInvariant_step sync half boost slots long window lookahead votes fits prompt
+        committees
         follows preGloas oneBlock admitted included anchored sound anchorSlot anchorAtBoundary
         start noVotes maxAligned increment chain unique byzantine unslashed supply positive enough
         large nonzero headDrifts caller upToDate lower atSlots bounds inHorizon anchorParent calls

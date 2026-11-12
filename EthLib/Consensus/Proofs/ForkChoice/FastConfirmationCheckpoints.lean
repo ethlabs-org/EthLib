@@ -1781,6 +1781,18 @@ theorem Execution.coveredOrViableAt_of_checked {Δ : ℕ} (sync : e.Synchronous 
         ((e.world k).state w).blocks[r]? = some b → b.stateRoot ≠ Vector.replicate 32 0)
     (inHorizon : ∀ w ∈ J, ∀ k epoch, (e.world k).time ≤ time →
       ((e.world k).state w).getCurrentStoreEpoch config = .ok epoch → epoch ≤ horizon)
+    (supply : ∀ w ∈ J, ∀ k (checkpoint : Checkpoint) (state : BeaconState preset fork),
+      (e.world k).time ≤ time → ((e.world k).state w).checkpointState checkpoint = .ok state →
+      ActiveStakeAtMost stakeCapGwei state)
+    (anchorParent : ∀ w ∈ J, ∀ k, (e.world k).time ≤ time →
+      ((e.world k).state w).blocks[anchorBlock.parentRoot]? = none)
+    (large : ∀ w ∈ J, ∀ k (state : BeaconState preset fork),
+      (e.world k).time ≤ time → ((e.world k).state w).Counts config state →
+      getCurrentEpoch state ≤ horizon →
+      3 * preset.EFFECTIVE_BALANCE_INCREMENT.toNat <
+        2 * stake (fun v => balanceAt state v.toNat) (activeVoters state))
+    (incrementPositive : 0 < preset.EFFECTIVE_BALANCE_INCREMENT)
+    (long : 1 < preset.SLOTS_PER_EPOCH) (boost : config.PROPOSER_SCORE_BOOST.toNat ≤ 100)
     (startSafe : ∀ earlier, (e.world n).time ≤ earlier → earlier ≤ time → SafeAt e earlier start)
     (safe : ∀ earlier, (e.world n).time ≤ earlier → earlier < time → SafeAt e earlier root)
     (known : ∀ w ∈ J, ∀ k, (e.world k).time = time →

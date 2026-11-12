@@ -211,7 +211,7 @@ theorem Execution.exists_getHead {anchor : Store preset fork}
       ((e.world k).state w).getCurrentStoreEpoch config = .ok epoch → epoch ≤ horizon)
     (large : ∀ w ∈ J, ∀ k (state : BeaconState preset fork),
       (e.world k).time ≤ limit → ((e.world k).state w).Counts config state →
-      (getCurrentEpoch state).toNat ≤ horizon.toNat + 1 →
+      getCurrentEpoch state ≤ horizon →
       3 * preset.EFFECTIVE_BALANCE_INCREMENT.toNat <
         2 * stake (fun v => balanceAt state v.toNat) (activeVoters state))
     (supply : ∀ w ∈ J, ∀ k (checkpoint : Checkpoint) (state : BeaconState preset fork),

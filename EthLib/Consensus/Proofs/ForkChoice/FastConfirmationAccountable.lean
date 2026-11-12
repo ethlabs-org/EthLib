@@ -1793,6 +1793,7 @@ theorem Execution.safeAt_confirmedRoot_accountable {Δ : ℕ} (sync : e.Synchron
     [NeZero preset.MAX_COMMITTEES_PER_SLOT.toNat] [NeZero preset.PTC_SIZE.toNat]
     [NeZero preset.INCLUSION_LIST_COMMITTEE_SIZE.toNat]
     (half : 2 * config.CONFIRMATION_BYZANTINE_THRESHOLD.toNat ≤ 100)
+    (boost : config.PROPOSER_SCORE_BOOST.toNat ≤ 100)
     (slots : 0 < config.SLOT_DURATION_MS) (long : 1 < preset.SLOTS_PER_EPOCH)
     (window : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
     (lookahead : 1 ≤ preset.MIN_SEED_LOOKAHEAD.toNat ∧ 1 ≤ preset.MAX_SEED_LOOKAHEAD.toNat ∧
@@ -1898,7 +1899,7 @@ theorem Execution.safeAt_confirmedRoot_accountable {Δ : ℕ} (sync : e.Synchron
     nonzero | fault
   rotate_left
   · exact .inr (.inr fault)
-  exact .inl (e.safeAt_confirmedRoot sync half slots long window lookahead votes fits prompt
+  exact .inl (e.safeAt_confirmedRoot sync half boost slots long window lookahead votes fits prompt
     committees follows forkWindow.1 oneBlock admitted included anchored sound anchorSlot
     anchorAtBoundary start noVotes _syncStart maxAligned increment chain unique byzantine
     unslashed supply positive enough large nonzero headDrifts caller upToDate lower atSlots ran
