@@ -770,23 +770,23 @@ private structure intervalLoss_SiteStep (a b : ForkedBeaconState preset) : Prop 
   matched : BalancesMatch a.state → BalancesMatch b.state
   ordered : ExitsOrdered a.state → ExitsOrdered b.state
   fork_le : a.fork ≤ b.fork
-  slashed : b.fork < .glamsterdam → SlashedPersistence a.state b.state
+  slashed : SlashedPersistence a.state b.state
 
 private theorem intervalLoss_SiteStep.refl (a : ForkedBeaconState preset) :
-    intervalLoss_SiteStep a a := ⟨.refl _, rfl, id, id, Nat.le_refl _, fun _ => .refl _⟩
+    intervalLoss_SiteStep a a := ⟨.refl _, rfl, id, id, Nat.le_refl _, .refl _⟩
 
 private theorem intervalLoss_SiteStep.trans {a b c : ForkedBeaconState preset}
     (ab : intervalLoss_SiteStep a b) (bc : intervalLoss_SiteStep b c) :
     intervalLoss_SiteStep a c :=
   ⟨ab.lifecycle.trans bc.lifecycle, ab.epoch.trans bc.epoch,
     bc.matched ∘ ab.matched, bc.ordered ∘ ab.ordered, Nat.le_trans ab.fork_le bc.fork_le,
-    fun early => (ab.slashed (Nat.lt_of_le_of_lt bc.fork_le early)).trans (bc.slashed early)⟩
+    ab.slashed.trans bc.slashed⟩
 
 private theorem intervalLoss_SiteStep.of_frame {fork : Fork}
-    {a b : BeaconState preset fork} (life : RegistryLifecycle a b) (frame : Frame a b)
-    (slashed : fork < .glamsterdam → SlashedPersistence a b) :
+    {a b : BeaconState preset fork} (life : RegistryLifecycle a b) (frame : Frame a b) :
     intervalLoss_SiteStep ⟨fork, a⟩ ⟨fork, b⟩ := by
-  refine ⟨life, ?_, frame.balancesMatch, frame.exitsOrdered, Nat.le_refl _, slashed⟩
+  refine ⟨life, ?_, frame.balancesMatch, frame.exitsOrdered, Nat.le_refl _,
+    .of_frame frame⟩
   simp [getCurrentEpoch, frame.slot]
 
 private inductive intervalLoss_SlashingSite (config : Config) (checks : SignatureChecks) :
@@ -873,7 +873,6 @@ private theorem intervalLoss_sites_deltas {fork : Fork}
   have raised := intervalLoss_sites_record (fun s t computed => by
     have computed := liftAccessor_ok.mp computed
     apply intervalLoss_SiteStep.of_frame _ (frame_increaseBalance computed).toFrame
-      (fun early => SlashedPersistence.increaseBalance early computed)
     obtain ⟨_, set⟩ := increaseBalance_ok computed
     obtain ⟨_, rfl⟩ := setBalance_ok set
     exact .of_data rfl) prior (fun _ _ _ h => by cases h) rewardOk
@@ -881,7 +880,6 @@ private theorem intervalLoss_sites_deltas {fork : Fork}
     (fun _ _ _ h => False.elim (notSlashing h)) penaltyOk
   have computed := liftAccessor_ok.mp computed
   apply intervalLoss_SiteStep.of_frame _ (frame_decreaseBalance computed).toFrame
-    (fun early => SlashedPersistence.decreaseBalance early computed)
   obtain ⟨_, set⟩ := decreaseBalance_ok computed
   obtain ⟨_, rfl⟩ := setBalance_ok set
   exact .of_data rfl
@@ -916,7 +914,7 @@ private theorem intervalLoss_sites_justification {fork : Fork}
   · exact .refl _
   · obtain ⟨_, _, _, rest⟩ := weighJustificationAndFinalization_checkpoints weighed
     rw [← rest]
-    exact ⟨.of_data rfl, rfl, id, id, Nat.le_refl _, fun _ => .of_data rfl⟩
+    exact ⟨.of_data rfl, rfl, id, id, Nat.le_refl _, .of_data rfl⟩
 
 private theorem intervalLoss_sites_epoch {fork : Fork} {s : BeaconState preset fork}
     {post : BalanceReplay preset fork}
@@ -934,8 +932,7 @@ private theorem intervalLoss_sites_epoch {fork : Fork} {s : BeaconState preset f
     obtain ⟨scored, scoredOk, rest⟩ := bind_ok_iff.mp rest
     have scoredSites := intervalLoss_sites_carry (fun _ _ ok => .of_frame
         (registryLifecycle_processInactivityUpdates ok)
-        (frame_processInactivityUpdates ok).toFrame
-        (fun early => SlashedPersistence.processInactivityUpdates early ok)) justifiedSites scoredOk
+        (frame_processInactivityUpdates ok).toFrame) justifiedSites scoredOk
   case' neg =>
     simp only [altair, ↓reduceDIte, pure, Except.pure, bind_ok_iff,
       Except.ok.injEq, exists_eq_left'] at rest
@@ -945,20 +942,17 @@ private theorem intervalLoss_sites_epoch {fork : Fork} {s : BeaconState preset f
     obtain ⟨rewarded, rewardedOk, registered, registeredOk, slashed, slashedOk, rest⟩ := rest
     have rewardedSites := intervalLoss_sites_rewards scoredSites rewardedOk
     have registeredSites := intervalLoss_sites_carry (fun _ _ ok => .of_frame
-      (registryLifecycle_processRegistryUpdates ok) (frame_processRegistryUpdates ok).toFrame
-      (fun early => SlashedPersistence.processRegistryUpdates early ok))
+      (registryLifecycle_processRegistryUpdates ok) (frame_processRegistryUpdates ok).toFrame)
       rewardedSites registeredOk
     have slashedSites := intervalLoss_sites_record (fun _ _ ok => .of_frame
-      (registryLifecycle_processSlashings ok) (frame_processSlashings ok).toFrame
-      (fun early => SlashedPersistence.processSlashings early ok))
+      (registryLifecycle_processSlashings ok) (frame_processSlashings ok).toFrame)
       registeredSites (fun _ _ ok _ => .delayed ok) slashedOk
     by_cases before : fork < .hegota
     case' pos =>
       simp only [before, ↓reduceDIte] at rest
       obtain ⟨reset, resetOk, rest⟩ := bind_ok_iff.mp rest
       have resetSites := intervalLoss_sites_carry (fun _ _ ok => .of_frame
-          (registryLifecycle_processEth1DataReset ok) (frame_processEth1DataReset ok).toFrame
-          (fun early => SlashedPersistence.processEth1DataReset early ok))
+          (registryLifecycle_processEth1DataReset ok) (frame_processEth1DataReset ok).toFrame)
           slashedSites resetOk
     case' neg =>
       simp only [before, ↓reduceDIte, pure, Except.pure, bind_ok_iff,
@@ -971,12 +965,10 @@ private theorem intervalLoss_sites_epoch {fork : Fork} {s : BeaconState preset f
         have depositStep := intervalLoss_SiteStep.of_frame
           (registryLifecycle_processPendingDeposits depositOk)
           (frame_processPendingDeposits depositOk).toFrame
-          (fun early => SlashedPersistence.processPendingDeposits early depositOk)
         have consolidationStep := intervalLoss_SiteStep.of_frame
           (RegistryLifecycle.of_data (by
             rw [(processPendingConsolidations_kept consolidationOk).1]))
           (frame_processPendingConsolidations consolidationOk).toFrame
-          (fun early => SlashedPersistence.processPendingConsolidations early consolidationOk)
         refine ⟨(resetSites.1.trans depositStep).trans consolidationStep, ?_⟩
         intro e member
         simp only [List.mem_append, List.mem_singleton] at member
@@ -998,16 +990,14 @@ private theorem intervalLoss_sites_block {fork : Fork} {s : BeaconState preset f
   have initial : intervalLoss_ReplaySites (config := config) (checks := checks) ⟨fork, s⟩ (s, []) :=
     ⟨.refl _, by simp⟩
   have headedSites := intervalLoss_sites_carry (fun _ _ ok => .of_frame
-    (registryLifecycle_processBlockHeader ok) (frame_processBlockHeader ok).toFrame
-    (fun early => SlashedPersistence.processBlockHeader early ok))
+    (registryLifecycle_processBlockHeader ok) (frame_processBlockHeader ok).toFrame)
     initial headerOk
   by_cases bellatrix : .bellatrix ≤ fork
   case' pos =>
     simp only [bellatrix, ↓reduceDIte] at ok
     obtain ⟨executed, executionOk, rest⟩ := bind_ok_iff.mp ok
     have executedSites := intervalLoss_sites_record (fun _ _ ok => .of_frame
-      (registryLifecycle_processBlockExecution ok) (frame_processBlockExecution ok).toFrame
-      (fun early => SlashedPersistence.processBlockExecution early ok))
+      (registryLifecycle_processBlockExecution ok) (frame_processBlockExecution ok).toFrame)
       headedSites (fun _ _ _ h => by cases h) executionOk
   case' neg =>
     simp only [bellatrix, ↓reduceDIte, pure, Except.pure, bind_ok_iff,
@@ -1020,47 +1010,39 @@ private theorem intervalLoss_sites_block {fork : Fork} {s : BeaconState preset f
       proposed, proposedOk, attested, attestedOk, rewarded, rewardedOk, deposited, depositOk,
       exited, exitOk, changed, changedOk, rest⟩ := rest
     have randaoSites := intervalLoss_sites_carry (fun _ _ ok => .of_frame
-      (registryLifecycle_processRandao ok) (frame_processRandao ok).toFrame
-      (fun early => SlashedPersistence.processRandao early ok)) executedSites randaoOk
+      (registryLifecycle_processRandao ok) (frame_processRandao ok).toFrame) executedSites randaoOk
     have votedSites := intervalLoss_sites_carry (fun _ _ ok => .of_frame
-      (registryLifecycle_processEth1Data ok) (frame_processEth1Data ok).toFrame
-      (fun early => SlashedPersistence.processEth1Data early ok)) randaoSites votedOk
+      (registryLifecycle_processEth1Data ok) (frame_processEth1Data ok).toFrame) randaoSites votedOk
     have proposedSites := foldlM_ok_invariant
       (intervalLoss_ReplaySites (config := config) (checks := checks) ⟨fork, s⟩)
       (fun _ _ _ h ok => intervalLoss_sites_record (fun _ _ ok => .of_frame
-        (registryLifecycle_processProposerSlashing ok) (frame_processProposerSlashing ok).toFrame
-        (fun early => SlashedPersistence.processProposerSlashing early ok))
+        (registryLifecycle_processProposerSlashing ok) (frame_processProposerSlashing ok).toFrame)
         h (fun _ _ ok _ => .proposer ok) ok) votedSites proposedOk
     have attestedSites := foldlM_ok_invariant
       (intervalLoss_ReplaySites (config := config) (checks := checks) ⟨fork, s⟩)
       (fun _ _ _ h ok => intervalLoss_sites_record (fun _ _ ok => .of_frame
-        (registryLifecycle_processAttesterSlashing ok) (frame_processAttesterSlashing ok).toFrame
-        (fun early => SlashedPersistence.processAttesterSlashing early ok))
+        (registryLifecycle_processAttesterSlashing ok) (frame_processAttesterSlashing ok).toFrame)
         h (fun _ _ ok _ => .attester ok) ok) proposedSites attestedOk
     have rewardedSites := foldlM_ok_invariant
       (intervalLoss_ReplaySites (config := config) (checks := checks) ⟨fork, s⟩)
       (fun _ _ _ h ok => intervalLoss_sites_record (fun _ _ ok => .of_frame
-        (registryLifecycle_processAttestation ok) (frame_processAttestation ok)
-        (fun early => SlashedPersistence.processAttestation early ok))
+        (registryLifecycle_processAttestation ok) (frame_processAttestation ok))
         h (fun _ _ _ h => by cases h) ok) attestedSites rewardedOk
     have depositedSites := foldlM_ok_invariant
       (intervalLoss_ReplaySites (config := config) (checks := checks) ⟨fork, s⟩)
       (fun _ _ _ h ok => intervalLoss_sites_record (fun _ _ ok => .of_frame
-        (registryLifecycle_processDeposit ok) (frame_processDeposit ok).toFrame
-        (fun early => SlashedPersistence.processDeposit early ok))
+        (registryLifecycle_processDeposit ok) (frame_processDeposit ok).toFrame)
         h (fun _ _ _ h => by cases h) ok) rewardedSites depositOk
     have exitedSites := intervalLoss_sites_carry (fun _ _ ok =>
       intervalLoss_sites_fold _ (fun _ _ _ ok => .of_frame
-        (registryLifecycle_processVoluntaryExit ok) (frame_processVoluntaryExit ok).toFrame
-        (fun early => SlashedPersistence.processVoluntaryExit early ok))
+        (registryLifecycle_processVoluntaryExit ok) (frame_processVoluntaryExit ok).toFrame)
         _ (by simpa only [← Array.foldlM_toList] using ok)) depositedSites exitOk
     have changedSites := intervalLoss_sites_carry (fun _ _ ok => by
       unfold processBlsToExecutionChanges at ok
       split at ok
       · exact intervalLoss_sites_fold _ (fun _ _ _ ok => .of_frame
           (registryLifecycle_processBlsToExecutionChange ok)
-          (frame_processBlsToExecutionChange ok).toFrame
-          (fun early => SlashedPersistence.processBlsToExecutionChange early ok))
+          (frame_processBlsToExecutionChange ok).toFrame)
           _ (by simpa only [← Array.foldlM_toList] using ok)
       · cases ok; exact .refl _) exitedSites changedOk
     by_cases electra : .pectra ≤ fork
@@ -1070,21 +1052,18 @@ private theorem intervalLoss_sites_block {fork : Fork} {s : BeaconState preset f
         requested, consolidations, rest⟩ := rest
       have depositsSites := intervalLoss_sites_carry (fun _ _ ok =>
         intervalLoss_sites_fold _ (fun _ _ _ ok => .of_frame
-          (registryLifecycle_processDepositRequest ok) (frame_processDepositRequest ok).toFrame
-          (fun early => SlashedPersistence.processDepositRequest early ok))
+          (registryLifecycle_processDepositRequest ok) (frame_processDepositRequest ok).toFrame)
           _ (by simpa only [← Array.foldlM_toList] using ok)) changedSites depositRequestOk
       have withdrawalsSites := intervalLoss_sites_carry (fun _ _ ok =>
         intervalLoss_sites_fold _ (fun _ _ _ ok => .of_frame
           (registryLifecycle_processWithdrawalRequest ok)
-          (frame_processWithdrawalRequest ok).toFrame
-          (fun early => SlashedPersistence.processWithdrawalRequest early ok))
+          (frame_processWithdrawalRequest ok).toFrame)
           _ (by simpa only [← Array.foldlM_toList] using ok)) depositsSites withdrawalOk
       have requestedSites := foldlM_ok_invariant
         (intervalLoss_ReplaySites (config := config) (checks := checks) ⟨fork, s⟩)
         (fun _ _ _ h ok => intervalLoss_sites_record (fun _ _ ok => .of_frame
           (registryLifecycle_processConsolidationRequest ok)
-          (frame_processConsolidationRequest ok).toFrame
-          (fun early => SlashedPersistence.processConsolidationRequest early ok))
+          (frame_processConsolidationRequest ok).toFrame)
           h (fun _ _ _ h => by cases h) ok) withdrawalsSites consolidations
     case' neg =>
       simp only [electra, ↓reduceDIte, pure, Except.pure, bind_ok_iff,
@@ -1093,8 +1072,7 @@ private theorem intervalLoss_sites_block {fork : Fork} {s : BeaconState preset f
     all_goals
       split at rest
       · exact intervalLoss_sites_record (fun _ _ ok => .of_frame
-          (registryLifecycle_processSyncAggregate ok) (frame_processSyncAggregate ok).toFrame
-          (fun early => SlashedPersistence.processSyncAggregate early ok))
+          (registryLifecycle_processSyncAggregate ok) (frame_processSyncAggregate ok).toFrame)
           requestedSites (fun _ _ _ h => by cases h) rest
       · cases rest; exact requestedSites
 
@@ -1103,7 +1081,7 @@ private theorem intervalLoss_sites_upgradeNext {s : ForkedBeaconState preset}
     (ok : upgradeNext config checks s = .ok t) : intervalLoss_SiteStep s t.val := by
   have frame := upgradeFrame_upgradeNext ok
   refine ⟨registryLifecycle_upgradeNext ok, ?_, frame.balancesMatch, frame.exitsOrdered,
-    Nat.le_of_lt t.property, fun early => SlashedPersistence.upgradeNext early ok⟩
+    Nat.le_of_lt t.property, .of_upgradeFrame frame⟩
   simp [getCurrentEpoch, frame.slot]
 
 private theorem intervalLoss_sites_upgrades {s t : ForkedBeaconState preset}
@@ -1165,8 +1143,8 @@ private theorem intervalLoss_sites_between {x y : ForkedBeaconState preset}
   have afterEarly := Nat.lt_of_le_of_lt last.fork_le early
   refine ⟨first.lifecycle, middle.lifecycle, last.lifecycle, first.ordered ordered,
     middle.matched (first.matched matched), ?_, ?_,
-    Nat.lt_of_le_of_lt middle.fork_le afterEarly, middle.slashed afterEarly,
-    last.slashed early, source, Nat.le_trans middle.fork_le last.fork_le⟩
+    Nat.lt_of_le_of_lt middle.fork_le afterEarly, middle.slashed,
+    last.slashed, source, Nat.le_trans middle.fork_le last.fork_le⟩
   · rw [first.epoch]
   · rw [middle.epoch, last.epoch]
 
@@ -1199,7 +1177,7 @@ private theorem intervalLoss_step_sites {x y : ForkedBeaconState preset}
     obtain ⟨_, _, _, _, cachedEq⟩ := processSlot_ok cachedOk
     have cachedStep : intervalLoss_SiteStep x ⟨x.fork, cached⟩ := by
       rw [cachedEq]
-      exact ⟨.of_data rfl, rfl, id, id, Nat.le_refl _, fun _ => .of_data rfl⟩
+      exact ⟨.of_data rfl, rfl, id, id, Nat.le_refl _, .of_data rfl⟩
     have advanceLife := registryLifecycle_advanceSlot advanceOk
     have advanceEpoch := coverage_step_epoch (Step.slot ok)
     have advancedHolds := (advanceSlot_invariant holds advanceOk).1
@@ -1210,7 +1188,7 @@ private theorem intervalLoss_step_sites {x y : ForkedBeaconState preset}
       have afterEarly := Nat.lt_of_le_of_lt last.fork_le early
       refine ⟨advanceLife.trans first.lifecycle, middle.lifecycle, last.lifecycle,
         ?_, ?_, ?_, ?_, Nat.lt_of_le_of_lt middle.fork_le afterEarly,
-        middle.slashed afterEarly, last.slashed early, (fun h => False.elim (source h)),
+        middle.slashed, last.slashed, (fun h => False.elim (source h)),
         Nat.le_trans middle.fork_le last.fork_le⟩
       · exact first.ordered advancedHolds.exitsOrdered
       · exact middle.matched (first.matched advancedHolds.balancesMatch)
@@ -1226,7 +1204,7 @@ private theorem intervalLoss_step_sites {x y : ForkedBeaconState preset}
         (registryLifecycle_processEffectiveBalanceUpdates updatedOk).trans
           (.of_data (by rw [← afterEq]; exact congrArg (·.data) validators.symm))
       have finishSlashed : SlashedPersistence middle advanced :=
-        (SlashedPersistence.processEffectiveBalanceUpdates before updatedOk).trans
+        (SlashedPersistence.of_frame (frame_processEffectiveBalanceUpdates updatedOk).toFrame).trans
           (.of_data (by rw [← afterEq]; exact congrArg (·.data) validators.symm))
       have eventEq := Except.ok.inj (replayed.symm.trans
         (Step.balanceEvents_epoch_slot ok cachedOk nextOk lastSlot recordOk advanceOk crossingOk))
@@ -1239,8 +1217,7 @@ private theorem intervalLoss_step_sites {x y : ForkedBeaconState preset}
           (last.lifecycle.trans finishLife).trans crossingStep.lifecycle,
           initial.ordered ordered, during.matched (initial.matched matched), ?_, ?_,
           Nat.lt_of_le_of_lt (Nat.le_trans during.fork_le last.fork_le) before,
-          during.slashed (Nat.lt_of_le_of_lt last.fork_le before),
-          ((last.slashed before).trans finishSlashed).trans (crossingStep.slashed early), source,
+          during.slashed, (last.slashed.trans finishSlashed).trans crossingStep.slashed, source,
           Nat.le_trans (Nat.le_trans during.fork_le last.fork_le) crossingStep.fork_le⟩
         · rw [initial.epoch]
         · rw [← initial.epoch]; exact advanceEpoch
@@ -1324,7 +1301,7 @@ private theorem intervalLoss_event_slashed {g x y : ForkedBeaconState preset}
     rcases List.mem_append.mp member with old | added
     · obtain ⟨before, during, final, source⟩ :=
         ih (Nat.lt_of_le_of_lt step.chainStep.fork_le early) selected prior priorOk old
-      exact ⟨before, during, final.trans (step.slashedPersistence early), source⟩
+      exact ⟨before, during, final.trans step.slashedPersistence, source⟩
     · obtain ⟨_, _, _, _, _, _, _, before, during, final, source, _⟩ :=
         intervalLoss_step_sites step early (intervalLoss_run_invariant (shared.append pre) genesis)
           addedOk event added
@@ -2366,7 +2343,7 @@ private theorem intervalLoss_departure_bound {g x y : ForkedBeaconState preset}
     cases flag : v.slashed with
     | false => rfl
     | true =>
-      obtain ⟨last, lastFound, slashed⟩ := tail.slashedPersistence early i.toNat v found flag
+      obtain ⟨last, lastFound, slashed⟩ := tail.slashedPersistence i.toNat v found flag
       have same := Option.some.inj (lastFound.symm.trans located)
       subst last
       simp [finalFlag] at slashed
@@ -2392,7 +2369,7 @@ private theorem intervalLoss_departure_bound {g x y : ForkedBeaconState preset}
     | false => rfl
     | true =>
       obtain ⟨last, lastFound, slashed⟩ :=
-        post.slashedPersistence early i.toNat middle middleFound flag
+        post.slashedPersistence i.toNat middle middleFound flag
       have same := Option.some.inj (lastFound.symm.trans located)
       subst last
       simp [finalFlag] at slashed
