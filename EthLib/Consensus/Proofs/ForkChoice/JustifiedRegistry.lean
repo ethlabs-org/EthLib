@@ -64,6 +64,106 @@ decreasing_by
   rw [bounds.2]
   exact UInt64.lt_iff_toNat_lt.mp bounds.1
 
+namespace Store
+
+/-- Fork-choice `update_checkpoints` includes the supplied finalized epoch in its maximum. -/
+private theorem finalized_le_updateCheckpoints (store : Store preset fork)
+    (justified finalized : Checkpoint) :
+    finalized.epoch ≤ (store.updateCheckpoints justified finalized).finalizedCheckpoint.epoch := by
+  unfold updateCheckpoints
+  split <;> dsimp only <;> split
+  all_goals first | exact UInt64.le_refl _ | exact UInt64.not_lt.mp ‹_›
+
+/-- The realized finality of an imported state is bounded by the resulting store's finality.
+
+Fork-choice `on_block` updates realized checkpoints before pulling up the tip. -/
+private theorem addBlock_finalized_states
+    {store after : Store preset fork} {sources : BlockSources preset fork}
+    {signed : SignedBeaconBlock preset fork} {root : Root}
+    (holds : ∀ (r : Root) (s : BeaconState preset fork), store.blockStates[r]? = some s →
+      s.finalizedCheckpoint.epoch ≤ store.finalizedCheckpoint.epoch)
+    (added : store.addBlock config checks sources signed root = .ok after) :
+    ∀ (r : Root) (s : BeaconState preset fork), after.blockStates[r]? = some s →
+      s.finalizedCheckpoint.epoch ≤ after.finalizedCheckpoint.epoch := by
+  have forward := (addBlock_ok added).1.2
+  unfold addBlock at added
+  simp only [bind_ok_iff] at added
+  obtain ⟨state, -, head, -, voted, vote, recorded, record, boosted, boost, added⟩ := added
+  obtain ⟨-, -, bs0⟩ := (recordBlockPtcVotes_onlyPtcVotes vote).frame
+  obtain ⟨-, -, bs1, -⟩ := recordBlockTimeliness_frame record
+  obtain ⟨-, -, bs2, -⟩ := updateProposerBoostRoot_frame boost
+  obtain ⟨later, -, bs3, -⟩ := computePulledUpTip_frame added
+  intro r s found
+  rw [bs3, updateCheckpoints_blockStates, bs2, bs1, bs0,
+    Std.TreeMap.getElem?_insert] at found
+  split at found
+  · cases found
+    exact UInt64.le_trans (finalized_le_updateCheckpoints boosted _ _) later.2
+  · exact UInt64.le_trans (holds _ _ found) forward
+
+/-- Every held block state has finality at most the store's realized finality.
+
+At the anchor the store starts finalized at the anchor epoch.
+
+Each block import includes its post-state finality, and every handler preserves the bound. -/
+theorem Reachable.blockState_finalized_le {store : Store preset fork}
+    (reachable : Reachable config anchorState anchorBlock store)
+    (sound : Invariant anchorState)
+    {root : Root} {state : BeaconState preset fork}
+    (stored : store.blockStates[root]? = some state) :
+    state.finalizedCheckpoint.epoch ≤ store.finalizedCheckpoint.epoch := by
+  have all : ∀ (r : Root) (s : BeaconState preset fork), store.blockStates[r]? = some s →
+      s.finalizedCheckpoint.epoch ≤ store.finalizedCheckpoint.epoch := by
+    clear stored state root
+    induction reachable with
+    | anchor made =>
+      obtain ⟨anchorRoot, -, -, states⟩ := getForkchoiceStore_maps made
+      obtain ⟨checkpointRoot, _, _, _, _, finalized, _, _⟩ := getForkchoiceStore_anchor made
+      intro r s found
+      rw [states, getElem?_insert_root] at found
+      split at found
+      · simp only [Option.some.injEq] at found
+        subst s
+        rw [finalized]
+        exact UInt64.le_trans (finalized_le_currentJustified sound.ordered)
+          (UInt64.le_trans sound.settled (getPreviousEpoch_le _))
+      · simp at found
+    | @block before after checks sources signed _ added ih =>
+      unfold onBlock at added
+      simp only [bind_ok_iff] at added
+      obtain ⟨_, -, added⟩ := added
+      split at added
+      · cases added
+        exact ih
+      · exact addBlock_finalized_states ih added
+    | tick _ handled ih =>
+      obtain ⟨-, le, -, states⟩ := onTick_frame handled
+      intro r s found
+      exact UInt64.le_trans (ih r s (states ▸ found)) le.2
+    | attestation _ handled ih =>
+      obtain ⟨le, -, states⟩ := onAttestation_frame handled
+      intro r s found
+      exact UInt64.le_trans (ih r s (states ▸ found)) le.2
+    | attesterSlashing _ handled ih =>
+      obtain ⟨le, -, states⟩ := onAttesterSlashing_frame handled
+      intro r s found
+      exact UInt64.le_trans (ih r s (states ▸ found)) le.2
+    | payloadAttestation _ handled ih =>
+      obtain ⟨le, -, states⟩ := (onPayloadAttestationMessage_onlyPtcVotes handled).frame
+      intro r s found
+      exact UInt64.le_trans (ih r s (states ▸ found)) le.2
+    | envelope _ handled ih =>
+      obtain ⟨le, -, states⟩ := onExecutionPayloadEnvelope_frame handled
+      intro r s found
+      exact UInt64.le_trans (ih r s (states ▸ found)) le.2
+    | inclusionList _ handled ih =>
+      obtain ⟨le, -, states⟩ := onInclusionList_frame handled
+      intro r s found
+      exact UInt64.le_trans (ih r s (states ▸ found)) le.2
+  exact all root state stored
+
+end Store
+
 namespace Models.Network
 
 variable {sources : BlockSources preset fork} {assignment : Assignment preset}
