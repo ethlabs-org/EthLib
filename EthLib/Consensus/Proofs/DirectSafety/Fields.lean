@@ -217,14 +217,14 @@ theorem quorum_count {g a : ForkedBeaconState preset} (run : Run config checks g
     large).mp call.passes
 
 /-- Caching a slot must retain the participation evidence used by its epoch call. -/
-theorem cached_participation_gloas {g a : ForkedBeaconState preset} (run : Run config checks g a)
+theorem cached_participation {g a : ForkedBeaconState preset} (run : Run config checks g a)
     (parameters : Parameters preset) (genesis : Genesis (config := config) (checks := checks) g)
     (early : a.fork < .hegota) (call : EpochCall run) :
     ParticipationBacked run call.cached := by
   obtain ⟨pre, post, same, _⟩ := call.selected_prefix
   let tail := (Run.nil.snoc (.slot call.advanced)).append post
   have forkLe := fork_le_of_chainSteps tail.chainSteps
-  have backed := inherited_participation_gloas pre tail parameters genesis
+  have backed := inherited_participation pre tail parameters genesis
     (Nat.lt_of_le_of_lt forkLe early)
   have eqRun : pre.append tail = run :=
     (append_slot_tail pre (.slot call.advanced) post).trans same.symm
@@ -233,12 +233,12 @@ theorem cached_participation_gloas {g a : ForkedBeaconState preset} (run : Run c
     backed.2.of_processSlot (by have := parameters.slots; omega)
       (by have := parameters.roots; omega) call.cachedOk⟩
 
-theorem quorum_attestations_gloas {g a : ForkedBeaconState preset} (run : Run config checks g a)
+theorem quorum_attestations {g a : ForkedBeaconState preset} (run : Run config checks g a)
     (parameters : Parameters preset) (genesis : Genesis (config := config) (checks := checks) g)
     (early : a.fork < .hegota) (call : QuorumCall run) :
     ∀ key ∈ call.voters, ∃ data, run.Accepted key data ∧
       data.source = call.source ∧ data.target = call.target := by
-  have backed := cached_participation_gloas run parameters genesis early call.toEpochCall
+  have backed := cached_participation run parameters genesis early call.toEpochCall
   have late := UInt64.not_le.mpr call.later
   intro key member
   simp only [QuorumCall.voters, keysAt, List.mem_toFinset, List.mem_filterMap] at member
@@ -276,19 +276,6 @@ theorem quorum_attestations_gloas {g a : ForkedBeaconState preset} (run : Run co
     cases h₁ : vote.2.target
     cases h₂ : call.target
     simp_all
-
-theorem cached_participation {g a : ForkedBeaconState preset} (run : Run config checks g a)
-    (parameters : Parameters preset) (genesis : Genesis (config := config) (checks := checks) g)
-    (early : a.fork < .glamsterdam) (call : EpochCall run) :
-    ParticipationBacked run call.cached :=
-  cached_participation_gloas run parameters genesis (Nat.lt_trans early (by decide)) call
-
-theorem quorum_attestations {g a : ForkedBeaconState preset} (run : Run config checks g a)
-    (parameters : Parameters preset) (genesis : Genesis (config := config) (checks := checks) g)
-    (early : a.fork < .glamsterdam) (call : QuorumCall run) :
-    ∀ key ∈ call.voters, ∃ data, run.Accepted key data ∧
-      data.source = call.source ∧ data.target = call.target :=
-  quorum_attestations_gloas run parameters genesis (Nat.lt_trans early (by decide)) call
 
 private theorem call_balances {g a : ForkedBeaconState preset} {run : Run config checks g a}
     (call : EpochCall run) :

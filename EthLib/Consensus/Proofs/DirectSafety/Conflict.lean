@@ -1227,7 +1227,7 @@ private theorem block_backed {fork : Fork} {state after : BeaconState preset for
       (headKept.trans (randaoKept.trans voteKept)) operatedOk
 
 /-- A slashed flag in a reachable registry must originate in evidence on the selected history. -/
-theorem _root_.EthLib.Consensus.Run.slashed_evidence_gloas {g a : ForkedBeaconState preset}
+theorem _root_.EthLib.Consensus.Run.slashed_evidence {g a : ForkedBeaconState preset}
     (run : Run config checks g a) (genesis : Genesis (config := config) (checks := checks) g)
     (early : a.fork < .hegota) (v : Validator)
     (member : v ∈ a.state.validators.data.toList) (slashed : v.slashed = true) :
@@ -1257,14 +1257,6 @@ theorem _root_.EthLib.Consensus.Run.slashed_evidence_gloas {g a : ForkedBeaconSt
           exact ⟨_, _, .block engine signed due ok, .last pre _,
             Or.inr ⟨sl, member, i, inIndices, old, found, rfl⟩⟩
   exact backed v member slashed
-
-/-- The pre-Gloas interface remains available to the interval-accounting proofs. -/
-theorem _root_.EthLib.Consensus.Run.slashed_evidence {g a : ForkedBeaconState preset}
-    (run : Run config checks g a) (genesis : Genesis (config := config) (checks := checks) g)
-    (early : a.fork < .glamsterdam) (v : Validator)
-    (member : v ∈ a.state.validators.data.toList) (slashed : v.slashed = true) :
-    run.SlashingEvidence v.pubkey :=
-  run.slashed_evidence_gloas genesis (Nat.lt_trans early (by decide)) v member slashed
 
 /-- Both calls may be on the same run: the statement must not force one witness per branch. -/
 abbrev EitherCall {g a b : ForkedBeaconState preset} (left : Run config checks g a)
@@ -1345,9 +1337,9 @@ theorem same_epoch_histories {g a b : ForkedBeaconState preset}
   intro key member
   obtain ⟨inOne, inTwo⟩ := Finset.mem_inter.mp member
   obtain ⟨d₁, accepted₁, _, target₁⟩ :=
-    quorum_attestations left parameters genesis earlyA one key inOne
+    quorum_attestations left parameters genesis (Nat.lt_trans earlyA (by decide)) one key inOne
   obtain ⟨d₂, accepted₂, _, target₂⟩ :=
-    quorum_attestations right parameters genesis earlyB two key inTwo
+    quorum_attestations right parameters genesis (Nat.lt_trans earlyB (by decide)) two key inTwo
   refine ⟨d₁, d₂, Or.inl accepted₁, Or.inr accepted₂, ?_⟩
   apply isSlashableAttestationData_of_double
   · intro same
@@ -1415,15 +1407,15 @@ theorem surround_quorums {g a b : ForkedBeaconState preset}
   intro key member
   obtain ⟨inOuter, inInner⟩ := Finset.mem_inter.mp member
   obtain ⟨d₁, accepted₁, source₁, target₁⟩ :=
-    quorum_attestations left parameters genesis earlyA outer key inOuter
+    quorum_attestations left parameters genesis (Nat.lt_trans earlyA (by decide)) outer key inOuter
   obtain ⟨d₂, accepted₂, source₂, target₂⟩ :=
-    quorum_attestations right parameters genesis earlyB inner key inInner
+    quorum_attestations right parameters genesis (Nat.lt_trans earlyB (by decide)) inner key inInner
   refine ⟨d₁, d₂, Or.inl accepted₁, Or.inr accepted₂, ?_⟩
   apply isSlashableAttestationData_of_surround
   · simpa only [source₁, source₂] using source
   · simpa only [target₁, target₂] using target
 
-private theorem checkpointPath_zero_gloas {g a : ForkedBeaconState preset}
+private theorem checkpointPath_zero {g a : ForkedBeaconState preset}
     (run : Run config checks g a) (early : a.fork < .hegota) :
     run.checkpointPath 0 = [] := by
   induction run with
@@ -1451,11 +1443,6 @@ private theorem checkpointPath_zero_gloas {g a : ForkedBeaconState preset}
       simp only [Step.headers, blockHeader]
       cases root : (Serialization.Ssz.SszType.hashTreeRoot signed.message.body).toOption <;>
         (simp [Option.toList]; try omega)
-
-private theorem checkpointPath_zero {g a : ForkedBeaconState preset}
-    (run : Run config checks g a) (early : a.fork < .glamsterdam) :
-    run.checkpointPath 0 = [] :=
-  checkpointPath_zero_gloas run (Nat.lt_trans early (by decide))
 
 private theorem history_target_bound {g a : ForkedBeaconState preset}
     (run : Run config checks g a) (parameters : Parameters preset)
@@ -1514,8 +1501,8 @@ theorem conflicting_fields_quorums {g a b : ForkedBeaconState preset}
   have positive : 0 < f.epoch.toNat := by
     by_contra zero
     have epochZero : f.epoch = 0 := UInt64.toNat_inj.mp (by change f.epoch.toNat = 0; omega)
-    exact paths (by rw [epochZero, checkpointPath_zero left earlyA,
-      checkpointPath_zero right earlyB])
+    exact paths (by rw [epochZero, checkpointPath_zero left (Nat.lt_trans earlyA (by decide)),
+      checkpointPath_zero right (Nat.lt_trans earlyB (by decide))])
   have notGenesis : f ≠ ⟨GENESIS_EPOCH, Vector.replicate 32 0⟩ := by
     intro equal
     have zero : f.epoch.toNat = 0 := by rw [equal]; rfl

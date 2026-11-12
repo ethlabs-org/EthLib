@@ -3952,7 +3952,8 @@ theorem quorum_drift_from_run {g x y : ForkedBeaconState preset}
       refine Finset.mem_filter.mpr ⟨active, ?_⟩
       rintro ⟨v, found, key, slashed⟩
       exact absent (evidence k (key ▸
-        (shared.append pre).slashed_evidence genesis earlyBefore v found slashed))
+        (shared.append pre).slashed_evidence genesis (Nat.lt_trans earlyBefore (by decide)) v
+          found slashed))
     · intros; exact Nat.zero_le _
   refine ⟨referenceLoss x before, referenceGain x before, boundaryStake before, ?_, ?_, ?_,
     budget⟩

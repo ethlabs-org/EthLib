@@ -60,7 +60,8 @@ private theorem accountable_pair_bound {g x a b : ForkedBeaconState preset}
           (∑ k ∈ activeKeys x.state \ bad,
             (effectiveWeight x.state k - Models.supported (recentKeys c.cached)
               (effectiveWeight c.cached) k)) ≤ referenceLoss x ⟨c.before.fork, c.cached⟩ := by
-        refine ⟨quorum_voters_recent run parameters genesis early c,
+        refine ⟨quorum_voters_recent run parameters genesis
+          (Nat.lt_trans early (by decide)) c,
           quorum_count run genesis enough c, ?_⟩
         obtain ⟨pre, post, split, frame, validators, balances⟩ := c.toEpochCall.selected_prefix
         have earlyBefore : c.before.fork < .glamsterdam :=
@@ -72,7 +73,7 @@ private theorem accountable_pair_bound {g x a b : ForkedBeaconState preset}
           obtain ⟨active, absent⟩ := Finset.mem_sdiff.mp hk
           refine Finset.mem_filter.mpr ⟨active, ?_⟩
           rintro ⟨v, found, key, slashed⟩
-          have evidence := pre.slashed_evidence genesis earlyBefore v
+          have evidence := pre.slashed_evidence genesis (Nat.lt_trans earlyBefore (by decide)) v
             (by simpa only [validators] using found) slashed
           have all : run.SlashingEvidence v.pubkey := by
             obtain ⟨u, v, step, inside, ev⟩ := evidence

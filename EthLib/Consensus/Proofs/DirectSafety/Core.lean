@@ -19,7 +19,7 @@ variable {preset : Preset} {config : Config} {checks : SignatureChecks}
 noncomputable def recentKeys {fork : Fork} (s : BeaconState preset fork) : Finset BLSPubkey :=
   activeKeys s ∪ keysAt s (getActiveValidatorIndices s (getPreviousEpoch s))
 
-theorem quorum_voters_recent_gloas {g a : ForkedBeaconState preset} (run : Run config checks g a)
+theorem quorum_voters_recent {g a : ForkedBeaconState preset} (run : Run config checks g a)
     (parameters : Parameters preset) (genesis : Genesis (config := config) (checks := checks) g)
     (early : a.fork < .hegota) (call : QuorumCall run) :
     call.voters ⊆ recentKeys call.cached := by
@@ -36,7 +36,7 @@ theorem quorum_voters_recent_gloas {g a : ForkedBeaconState preset} (run : Run c
     · rename_i before
       simp only [bind_ok_iff] at counted
       obtain ⟨pending, matching, counted⟩ := counted
-      have backed := (cached_participation_gloas run parameters genesis early call.toEpochCall).1
+      have backed := (cached_participation run parameters genesis early call.toEpochCall).1
       -- A quorum call is after the two epochs where equal justified fields are required.
       have notEarly : JustifiedEarly call.cached := by
         intro small
@@ -55,12 +55,5 @@ theorem quorum_voters_recent_gloas {g a : ForkedBeaconState preset} (run : Run c
   cases current : call.current
   · exact Finset.mem_union_right _ (by simpa [current] using present)
   · exact Finset.mem_union_left _ (by simpa [current, activeKeys] using present)
-
-/-- The pre-Gloas interface for the recent-voter support bound. -/
-theorem quorum_voters_recent {g a : ForkedBeaconState preset} (run : Run config checks g a)
-    (parameters : Parameters preset) (genesis : Genesis (config := config) (checks := checks) g)
-    (early : a.fork < .glamsterdam) (call : QuorumCall run) :
-    call.voters ⊆ recentKeys call.cached :=
-  quorum_voters_recent_gloas run parameters genesis (Nat.lt_trans early (by decide)) call
 
 end EthLib.Consensus.DirectSafety
