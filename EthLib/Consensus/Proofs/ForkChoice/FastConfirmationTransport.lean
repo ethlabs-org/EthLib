@@ -3,6 +3,7 @@ module
 public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmationResets
 public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmationCommittees
 import EthLib.Consensus.Proofs.ForkChoice.HonestVotes
+import EthLib.Consensus.Proofs.ForkChoice.JustifiedRegistry
 
 /-!
 # Statements: the honest support of a confirmed block, from a historical anchor
