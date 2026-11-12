@@ -159,6 +159,73 @@ theorem CommitteesFollow.targetEpoch_le_headEpoch_add_lookahead
   have headLater := UInt64.le_iff_toNat_le.mp headRun.later
   omega
 
+/-- Every reachable store retains each checkpoint state cached at initialization.
+
+The handlers extend this cache without replacing an existing entry. -/
+theorem _root_.EthLib.Consensus.Store.Reachable.checkpointStates_of_anchor
+    {anchor store : Store preset fork} {checkpoint : Checkpoint}
+    {state : BeaconState preset fork}
+    (reachable : Store.Reachable config anchorState anchorBlock store)
+    (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (initial : anchor.checkpointStates[checkpoint]? = some state) :
+    store.checkpointStates[checkpoint]? = some state := by
+  induction reachable with
+  | anchor made =>
+    rw [anchored, Except.ok.injEq] at made
+    subst made
+    exact initial
+  | tick _ ticked ih =>
+    rw [(Store.onTick_checkpointStates_latestMessages ticked).1]
+    exact ih
+  | block _ added ih =>
+    rw [(Store.onBlock_checkpointStates_latestMessages added).1]
+    exact ih
+  | attestation _ attested ih =>
+    exact Store.onAttestation_checkpointStates_of_found attested ih
+  | attesterSlashing _ slashed ih =>
+    rw [(Store.onAttesterSlashing_checkpointStates_latestMessages slashed).1]
+    exact ih
+  | payloadAttestation _ voted ih =>
+    obtain ⟨_, _, rfl⟩ := Store.onPayloadAttestationMessage_onlyPtcVotes voted
+    exact ih
+  | envelope _ accepted ih =>
+    obtain ⟨_, _, _, _, _, record, rfl⟩ := Store.onExecutionPayloadEnvelope_ok accepted
+    obtain ⟨_, rfl⟩ := Store.recordEnvelope_frame record
+    exact ih
+  | inclusionList _ accepted ih =>
+    obtain ⟨_, _, rfl⟩ := Store.onInclusionList_ok ‹_› accepted
+    exact ih
+
+/-- An initially cached target fixes the signers in every reachable reading of a vote.
+
+The no-forgery condition can use this one indexed reading without assuming hash injectivity. -/
+theorem mem_indexedStatements_of_cached_target
+    {anchor : Store preset fork} {state : BeaconState preset fork}
+    {attestation : Attestation preset fork} {indexed : IndexedAttestation preset fork}
+    (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (initial : anchor.checkpointStates[attestation.data.target]? = some state)
+    (read : getIndexedAttestation state attestation = .ok indexed)
+    {x : ValidatorIndex × AttestationData}
+    (member : x ∈ attestationStatements (config := config) (checks := checks)
+      anchorState anchorBlock attestation) : x ∈ indexedStatements indexed := by
+  obtain ⟨store, other, reachable, ⟨withTarget, targetState, stored, found, indexedOk, _⟩,
+    statement⟩ := member
+  have cached := reachable.checkpointStates_of_anchor anchored initial
+  have contains : store.checkpointStates.contains attestation.data.target := by
+    rw [Std.TreeMap.contains_eq_isSome_getElem?, cached]
+    rfl
+  -- Reading an already cached target does not recompute it from another block state.
+  simp only [Store.storeTargetCheckpointState, contains, ↓reduceIte,
+    pure, Except.pure, Except.ok.injEq] at stored
+  subst withTarget
+  have found' : store.checkpointState attestation.data.target = .ok state := by
+    simp [Store.checkpointState, cached, pure, Except.pure]
+  rw [found', Except.ok.injEq] at found
+  subst targetState
+  rw [read, Except.ok.injEq] at indexedOk
+  subst other
+  exact statement
+
 namespace FinitePrefix
 
 variable {ν μ σ κ : Type*} [DecidableEq ν]
