@@ -384,13 +384,15 @@ decreasing_by
   rw [bounds.2]
   exact UInt64.lt_iff_toNat_lt.mp bounds.1
 
+omit [DecidablePred (· ∈ J)] in
 /-- Before the next fork, the blocks of honest stores up to a last time are before its activation.
 
 The epoch of each store is at most the horizon, and the next fork activates after the horizon. -/
 theorem Execution.heldBlocks_before_nextFork {anchor : Store preset fork}
     (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
     (start : ∀ w ∈ J, e.start w = anchor) (anchorSlot : anchorBlock.slot = anchorState.slot)
-    (slots : 0 < config.SLOT_DURATION_MS) {horizon : Epoch} {limit : ℕ}
+    (slots : 0 < config.SLOT_DURATION_MS) (epochSlots : 0 < preset.SLOTS_PER_EPOCH.toNat)
+    {horizon : Epoch} {limit : ℕ}
     (inHorizon : ∀ w ∈ J, ∀ k epoch, (e.world k).time ≤ limit →
       ((e.world k).state w).getCurrentStoreEpoch config = .ok epoch → epoch ≤ horizon)
     (activation : ∀ next ∈ config.nextFork fork, horizon.toNat < next.2.toNat)
@@ -399,7 +401,19 @@ theorem Execution.heldBlocks_before_nextFork {anchor : Store preset fork}
       ((e.world k).state w).blocks[root]? = some block →
       ∀ next ∈ config.nextFork fork,
         block.slot.toNat < next.2.toNat * preset.SLOTS_PER_EPOCH.toNat := by
-  sorry
+  have forward := e.forwardReachable
+    (fun v hv => (start v hv) ▸ Store.ForwardReachable.anchor anchored) k w honest
+  obtain ⟨current, currentOk, blocks, -⟩ :=
+    forward.slots_le_current slots (UInt64.le_of_eq anchorSlot)
+  have epochOk : ((e.world k).state w).getCurrentStoreEpoch config =
+      .ok (computeEpochAtSlot preset current) := by
+    simp [Store.getCurrentStoreEpoch, currentOk]
+  have epochLe := UInt64.le_iff_toNat_le.mp (inHorizon w honest k _ bounded epochOk)
+  intro root block found next member
+  have blockLe := UInt64.le_iff_toNat_le.mp (blocks root block found)
+  have epochLt := lt_of_le_of_lt epochLe (activation next member)
+  rw [computeEpochAtSlot, UInt64.toNat_div] at epochLt
+  exact lt_of_le_of_lt blockLe ((Nat.div_lt_iff_lt_mul epochSlots).mp epochLt)
 
 /-- Honest stores agree on finalized prefixes up to the horizon, or two held states show a fault.
 
@@ -464,7 +478,7 @@ theorem Execution.oneBlockPerRoot_or_fault {anchor : Store preset fork}
     [NeZero preset.INCLUSION_LIST_COMMITTEE_SIZE.toNat]
     (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
     (start : ∀ w ∈ J, e.start w = anchor) (anchorSlot : anchorBlock.slot = anchorState.slot)
-    (slots : 0 < config.SLOT_DURATION_MS)
+    (slots : 0 < config.SLOT_DURATION_MS) (epochSlots : 0 < preset.SLOTS_PER_EPOCH.toNat)
     {g : ForkedBeaconState preset} (history : Run config checks g ⟨fork, anchorState⟩)
     {horizon : Epoch}
     (forkWindow : fork < .glamsterdam ∧ ∀ next ∈ config.nextFork fork,
@@ -481,7 +495,7 @@ A zero state root of a held block is the root of a state among the hash inputs. 
 theorem Execution.nonzero_or_fault {anchor : Store preset fork}
     (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
     (start : ∀ w ∈ J, e.start w = anchor) (anchorSlot : anchorBlock.slot = anchorState.slot)
-    (slots : 0 < config.SLOT_DURATION_MS)
+    (slots : 0 < config.SLOT_DURATION_MS) (epochSlots : 0 < preset.SLOTS_PER_EPOCH.toNat)
     {g : ForkedBeaconState preset} (history : Run config checks g ⟨fork, anchorState⟩)
     {horizon : Epoch}
     (forkWindow : fork < .glamsterdam ∧ ∀ next ∈ config.nextFork fork,
@@ -614,11 +628,13 @@ theorem Execution.safeAt_confirmedRoot_accountable {Δ : ℕ} (sync : e.Synchron
   rotate_left
   · exact .inr (.inl fault)
   · exact .inr (.inr fault)
-  rcases e.oneBlockPerRoot_or_fault anchored start anchorSlot slots history forkWindow
+  rcases e.oneBlockPerRoot_or_fault anchored start anchorSlot slots
+      (by have := parameters.slots; omega) history forkWindow
       inHorizon with oneBlock | fault
   rotate_left
   · exact .inr (.inr fault)
-  rcases e.nonzero_or_fault anchored start anchorSlot slots history forkWindow inHorizon with
+  rcases e.nonzero_or_fault anchored start anchorSlot slots
+      (by have := parameters.slots; omega) history forkWindow inHorizon with
     nonzero | fault
   rotate_left
   · exact .inr (.inr fault)
