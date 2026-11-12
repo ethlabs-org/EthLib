@@ -225,6 +225,32 @@ theorem gloasParentPayloadReplay_result {fork : Fork} (gloas : .glamsterdam ≤ 
       (settled, events), carryBalance_result settledOk events,
       (requested, recorded), replayed, bits, bitsOk, rfl⟩
 
+/-- EIP-7732: parent payload processing preserves the recorded validator balance bounds. -/
+theorem gloas_parent_payload_bounded {fork : Fork} (gloas : .glamsterdam ≤ fork)
+    (body : BeaconBlockBody preset fork) (pre post : BalanceReplay preset fork)
+    (matched : BalancesMatch pre.1)
+    (bounded : ∀ event ∈ pre.2,
+      event.credits ≤ event.creditLimit ∧ event.debits ≤ event.debitLimit)
+    (ok : gloasParentPayloadReplay (config := config) (checks := checks)
+      gloas body pre = .ok post) :
+    BalancesMatch post.1 ∧ ∀ event ∈ post.2,
+      event.credits ≤ event.creditLimit ∧ event.debits ≤ event.debitLimit := by
+  unfold gloasParentPayloadReplay at ok
+  dsimp only at ok
+  split at ok
+  · simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at ok
+    obtain ⟨_, _, rfl⟩ := ok
+    exact ⟨matched, bounded⟩
+  · simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at ok
+    obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, settled, settledOk,
+      requested, requestedOk, _, _, rfl⟩ := ok
+    have settledBound := carryBalance_bounded _
+      (fun _ _ ok => (frame_settleParentPayment ok).balancesMatch)
+      ⟨matched, bounded⟩ settledOk
+    -- Availability and block-hash writes leave validator data and recorded events unchanged.
+    exact gloas_parent_requests_bounded gloas _ settled requested
+      settledBound.1 settledBound.2 requestedOk
+
 /-- EIP-7732, State transition: builder payments do not change validator balances.
 
 The effective-balance pass reads the state after builder payments settle.
