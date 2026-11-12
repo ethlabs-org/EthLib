@@ -316,6 +316,50 @@ private theorem boundary_of_current_slot {clock : UInt64} {slot : Slot}
   · simp [computeTimeAtSlotMs, productOk, sumOk, bind, Except.bind]
   · exact UInt64.le_iff_toNat_le.mpr (by omega)
 
+/-- The caller's finalized boundary is no later than a recent held historical block. -/
+private theorem finalized_boundary_le_historical {anchor : Store preset fork}
+    (anchorStore : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (sound : Invariant anchorState) (anchorSlot : anchorBlock.slot = anchorState.slot)
+    (anchored : ∀ u ∈ J, e.start u = anchor)
+    {u : ValidatorIndex} (caller : u ∈ J) {n : ℕ}
+    {epoch historicalEpoch : Epoch} {historical : Root}
+    (epochOk : ((e.world n).state u).getCurrentStoreEpoch config = .ok epoch)
+    (historicalEpochOk : ((e.world n).state u).getBlockEpoch historical = .ok historicalEpoch)
+    (recent : epoch.toNat ≤ historicalEpoch.toNat + 1) :
+    ∃ block boundary, ((e.world n).state u).blocks[historical]? = some block ∧
+      computeStartSlotAtEpoch preset ((e.world n).state u).finalizedCheckpoint.epoch =
+        .ok boundary ∧ boundary ≤ block.slot := by
+  have reachable := e.reachable
+    (fun u hu => (anchored u hu) ▸ Store.Reachable.anchor anchorStore) n u caller
+  unfold Store.getBlockEpoch at historicalEpochOk
+  obtain ⟨block, blockOk, epochEq⟩ := bind_ok_iff.mp historicalEpochOk
+  have known := Store.block_ok_iff.mp blockOk
+  have epochEq : historicalEpoch = computeEpochAtSlot preset block.slot :=
+    (Except.ok.inj epochEq).symm
+  have finalizedLe : ((e.world n).state u).finalizedCheckpoint.epoch.toNat ≤
+      historicalEpoch.toNat := by
+    rcases e.finalizedCheckpoint_eq_or_add_two_le anchorStore sound caller
+      (anchored u caller) epochOk with same | older
+    · obtain ⟨_, _, _, _, _, initial, _, _⟩ := getForkchoiceStore_anchor anchorStore
+      rw [same, initial]
+      change (computeEpochAtSlot preset anchorState.slot).toNat ≤ historicalEpoch.toNat
+      rw [← anchorSlot, epochEq]
+      simp only [computeEpochAtSlot, UInt64.toNat_div]
+      exact Nat.div_le_div_right (UInt64.le_iff_toNat_le.mp
+        (reachable.anchorSlot_le_block known))
+    · omega
+  have productLe := Nat.mul_le_mul_right preset.SLOTS_PER_EPOCH.toNat finalizedLe
+  rw [epochEq] at productLe
+  simp only [computeEpochAtSlot, UInt64.toNat_div] at productLe
+  have rounded := Nat.div_mul_le_self block.slot.toNat preset.SLOTS_PER_EPOCH.toNat
+  have bound : ((e.world n).state u).finalizedCheckpoint.epoch.toNat *
+      preset.SLOTS_PER_EPOCH.toNat < 2 ^ 64 :=
+    lt_of_le_of_lt (productLe.trans rounded) block.slot.toNat_lt
+  have made := mulChecked_of_lt bound
+  refine ⟨block, _, known, made, UInt64.le_iff_toNat_le.mpr ?_⟩
+  rw [(mulChecked_ok_iff.mp made).2]
+  exact productLe.trans rounded
+
 /-- A completed safe duty is recorded by the endpoint, unless justification covers the root. -/
 private theorem recorded_duty_of_safe_interval {Δ first time : ℕ}
     (sync : e.Synchronous Δ) (slots : 0 < config.SLOT_DURATION_MS)
