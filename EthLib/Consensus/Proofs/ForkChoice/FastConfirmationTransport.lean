@@ -70,6 +70,352 @@ theorem Execution.data_eq_of_signed_of_target_epoch (slots : 0 < config.SLOT_DUR
   by_contra different
   simp [isSlashableAttestationData, different, epoch] at nonslashable
 
+private theorem mem_insert_fold {v : ValidatorIndex}
+    {items : List ValidatorIndex} {initial : Std.TreeSet ValidatorIndex} :
+    v ∈ items.foldl (·.insert ·) initial ↔ v ∈ initial ∨ v ∈ items := by
+  induction items generalizing initial with
+  | nil => simp
+  | cons first rest ih =>
+    simp only [List.foldl_cons, ih, Std.TreeSet.mem_insert, List.mem_cons,
+      Std.LawfulEqCmp.compare_eq_iff_eq]
+    constructor
+    · rintro ((rfl | inside) | later)
+      · exact .inr (.inl rfl)
+      · exact .inl inside
+      · exact .inr (.inr later)
+    · rintro (inside | rfl | later)
+      · exact .inl (.inr inside)
+      · exact .inl (.inl rfl)
+      · exact .inr later
+
+/-- A slot committee contains only indices active in the head state's duty epoch. -/
+private theorem active_of_mem_slotCommittee {store : Store preset fork}
+    {head : Root} {slot : Slot} {members : Std.TreeSet ValidatorIndex}
+    {headState : BeaconState preset fork} {v : ValidatorIndex}
+    (preGloas : fork < .glamsterdam)
+    (stateOk : store.blockState head = .ok headState)
+    (read : store.getSlotCommittee head slot = .ok members) (member : v ∈ members) :
+    isActiveAt headState (computeEpochAtSlot preset slot) v.toNat = true := by
+  unfold Store.getSlotCommittee at read
+  rw [stateOk] at read
+  dsimp only [bind, Except.bind] at read
+  -- Every insertion is justified by the committee read at that iteration.
+  have kept := foldlM_ok_invariant
+    (fun found : Std.TreeSet ValidatorIndex => ∀ x ∈ found,
+      isActiveAt headState (computeEpochAtSlot preset slot) x.toNat = true)
+    (fun found index after before step => ?_) (by
+      intro x hx
+      exact False.elim (Std.TreeSet.not_mem_emptyc hx)) read
+  · exact kept v member
+  · change (do
+      let committee ← (getBeaconCommittee headState slot index.toUInt64).mapError
+        ForkChoiceError.accessor
+      pure (committee.foldl (·.insert ·) found)) = Except.ok after at step
+    simp only [bind_ok_iff, mapError_ok_iff, pure, Except.pure, Except.ok.injEq] at step
+    obtain ⟨committee, committeeOk, rfl⟩ := step
+    intro x inside
+    rw [← Array.foldl_toList, mem_insert_fold] at inside
+    rcases inside with old | added
+    · exact before x old
+    · exact isActiveAt_eq_true_iff.mpr
+        ((mem_getActiveValidatorIndices
+          (BeaconState.registryWithinLimit_of_lt preGloas headState)).mp
+          (mem_getActiveValidatorIndices_of_getBeaconCommittee committeeOk
+            (Array.mem_toList_iff.mp added)))
+
+/-- A window member has an active duty epoch in the state used to read the window. -/
+private theorem active_of_mem_committeeWindow {store : Store preset fork}
+    {head : Root} {first last : Slot} {members : Std.TreeSet ValidatorIndex}
+    {headState : BeaconState preset fork} {v : ValidatorIndex}
+    (preGloas : fork < .glamsterdam)
+    (stateOk : store.blockState head = .ok headState)
+    (read : store.getCommitteesBetweenSlots head first last = .ok members)
+    (member : v ∈ members) :
+    ∃ slot, first ≤ slot ∧ slot ≤ last ∧
+      isActiveAt headState (computeEpochAtSlot preset slot) v.toNat = true := by
+  simp only [Store.getCommitteesBetweenSlots, bind_ok_iff, mapError_ok_iff] at read
+  obtain ⟨afterLast, afterOk, read⟩ := read
+  have inside := (mem_foldlM_committees_iff read).mp member
+  rcases inside with empty | ⟨offset, offsetIn, committee, committeeOk, inside⟩
+  · exact False.elim (Std.TreeSet.not_mem_emptyc empty)
+  · have offsetLt := List.mem_range.mp offsetIn
+    have afterNat := (addChecked_ok_iff.mp afterOk).2
+    have lastBound := last.toNat_lt
+    have offsetBound : offset < 2 ^ 64 := by simp only [UInt64.toNat_one] at afterNat; omega
+    have offsetNat : offset.toUInt64.toNat = offset := by
+      simp [Nat.toUInt64_eq, UInt64.toNat_ofNat_of_lt' offsetBound]
+    have slotNat : (first + offset.toUInt64).toNat = first.toNat + offset := by
+      rw [UInt64.toNat_add, offsetNat, Nat.mod_eq_of_lt]
+      simp only [UInt64.toNat_one] at afterNat
+      omega
+    refine ⟨first + offset.toUInt64, ?_, ?_,
+      active_of_mem_slotCommittee preGloas stateOk committeeOk inside⟩
+    · rw [UInt64.le_iff_toNat_le, slotNat]
+      omega
+    · rw [UInt64.le_iff_toNat_le, slotNat]
+      simp only [UInt64.toNat_one] at afterNat
+      omega
+
+/-- A successful total also bounds a subset, without requiring a bound on inactive balances. -/
+private theorem totalBalance_exists_of_subset {state : BeaconState preset fork}
+    {indices all : List ValidatorIndex} {total : Gwei}
+    (read : getTotalBalance state all = .ok total)
+    (subset : ∀ v ∈ indices, v ∈ all) :
+    ∃ result, getTotalBalance state indices = .ok result := by
+  obtain ⟨inside, bounded, -⟩ := getTotalBalance_ok_iff_stake.mp read
+  have small : stake (fun v => balanceAt state v.toNat) indices.toFinset < 2 ^ 64 :=
+    lt_of_le_of_lt (stake_mono fun v member =>
+      List.mem_toFinset.mpr (subset v (List.mem_toFinset.mp member))) bounded
+  -- The floor is itself a UInt64, so taking the maximum cannot introduce overflow.
+  let value := max preset.EFFECTIVE_BALANCE_INCREMENT.toNat
+    (stake (fun v => balanceAt state v.toNat) indices.toFinset)
+  have fits : value < 2 ^ 64 := max_lt preset.EFFECTIVE_BALANCE_INCREMENT.toNat_lt small
+  refine ⟨value.toUInt64, getTotalBalance_ok_iff_stake.mpr
+    ⟨fun v member => inside v (subset v member), small, ?_⟩⟩
+  exact UInt64.toNat_ofNat_of_lt' fits
+
+/-- A checked subset total transfers across states when its indices and weights agree. -/
+private theorem totalBalance_transfer {source state : BeaconState preset fork}
+    {indices : List ValidatorIndex} {total : Gwei}
+    (read : getTotalBalance source indices = .ok total)
+    (inside : ∀ v ∈ indices, v.toNat < state.validators.data.size)
+    (weights : ∀ v ∈ indices, balanceAt state v.toNat = balanceAt source v.toNat) :
+    getTotalBalance state indices = .ok total := by
+  obtain ⟨_, bounded, value⟩ := getTotalBalance_ok_iff_stake.mp read
+  have same := stake_congr (S := indices.toFinset)
+    (fun v member => weights v (List.mem_toFinset.mp member))
+  exact getTotalBalance_ok_iff_stake.mpr ⟨inside, same ▸ bounded, same ▸ value⟩
+
+/-- Equal duty activity transfers a filtered read only after every receiver lookup succeeds. -/
+private theorem filteredTotal_transfer {source state : BeaconState preset fork}
+    {participants : Std.TreeSet ValidatorIndex} {active : List ValidatorIndex} {total : Gwei}
+    (filtered : participants.toList.filterM (fun index => do
+      return isActiveValidator (← validatorAt source index) (getCurrentEpoch source)) = .ok active)
+    (read : getTotalBalance source active = .ok total)
+    (inside : ∀ v ∈ participants, ∃ validator, validatorAt state v = .ok validator)
+    (activity : ∀ v ∈ participants,
+      isActiveAt state (getCurrentEpoch state) v.toNat =
+        isActiveAt source (getCurrentEpoch source) v.toNat)
+    (weights : ∀ v ∈ active, balanceAt state v.toNat = balanceAt source v.toNat) :
+    ∃ other, participants.toList.filterM (fun index => do
+      return isActiveValidator (← validatorAt state index) (getCurrentEpoch state)) = .ok other ∧
+      getTotalBalance state other = .ok total := by
+  obtain ⟨other, otherOk⟩ := filterM_exists_ok (test := fun index => do
+    return isActiveValidator (← validatorAt state index) (getCurrentEpoch state))
+    (list := participants.toList) (fun v member => by
+      obtain ⟨validator, found⟩ := inside v (Std.TreeSet.mem_toList.mp member)
+      exact ⟨isActiveValidator validator (getCurrentEpoch state), by simp [found]⟩)
+  have activeMem : ∀ v, v ∈ active ↔ v ∈ participants ∧
+      isActiveAt source (getCurrentEpoch source) v.toNat = true := by
+    intro v
+    constructor
+    · intro member
+      have pass := passes_of_mem_filterM_ok filtered member
+      simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at pass
+      obtain ⟨validator, found, active⟩ := pass
+      exact ⟨Std.TreeSet.mem_toList.mp (mem_of_filterM_ok filtered member),
+        isActiveAt_eq_true_iff.mpr ⟨validator, validatorAt_ok_iff.mp found, active⟩⟩
+    · rintro ⟨member, active⟩
+      obtain ⟨validator, found, active⟩ := isActiveAt_eq_true_iff.mp active
+      exact mem_filterM_ok_of_test filtered (Std.TreeSet.mem_toList.mpr member)
+        (by simp [validatorAt_ok_iff.mpr found, active])
+  have same : ∀ v, v ∈ other ↔ v ∈ active := by
+    intro v
+    rw [activeMem]
+    constructor
+    · intro member
+      have inSet := Std.TreeSet.mem_toList.mp (mem_of_filterM_ok otherOk member)
+      have pass := passes_of_mem_filterM_ok otherOk member
+      simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at pass
+      obtain ⟨validator, found, active⟩ := pass
+      exact ⟨inSet, activity v inSet ▸
+        isActiveAt_eq_true_iff.mpr ⟨validator, validatorAt_ok_iff.mp found, active⟩⟩
+    · rintro ⟨member, active⟩
+      rw [← activity v member] at active
+      obtain ⟨validator, found, active⟩ := isActiveAt_eq_true_iff.mp active
+      exact mem_filterM_ok_of_test otherOk (Std.TreeSet.mem_toList.mpr member)
+        (by simp [validatorAt_ok_iff.mpr found, active])
+  refine ⟨other, otherOk, (getTotalBalance_congr same).mpr ?_⟩
+  exact totalBalance_transfer read (fun v member => by
+    obtain ⟨validator, found⟩ := inside v ((activeMem v).mp member).1
+    exact (Array.getElem?_eq_some_iff.mp (validatorAt_ok_iff.mp found)).1) weights
+
+/-- Full-mode totals transfer when all active positions and their weights agree. -/
+private theorem activeTotal_transfer {source state : BeaconState preset fork} {total : Gwei}
+    (within : state.RegistryWithinLimit)
+    (read : getTotalActiveBalance source = .ok total)
+    (activity : ∀ position, isActiveAt state (getCurrentEpoch state) position =
+      isActiveAt source (getCurrentEpoch source) position)
+    (weights : ∀ v ∈ getActiveValidatorIndices source (getCurrentEpoch source),
+      balanceAt state v.toNat = balanceAt source v.toNat) :
+    getTotalActiveBalance state = .ok total := by
+  have checked := (bind_ok_iff.mp read).choose_spec.1
+  have same : ∀ v, v ∈ getActiveValidatorIndices state (getCurrentEpoch state) ↔
+      v ∈ getActiveValidatorIndices source (getCurrentEpoch source) := by
+    intro v
+    rw [mem_getActiveValidatorIndices within]
+    rw [← getActiveValidatorIndicesChecked_ok checked,
+      mem_iff_of_getActiveValidatorIndicesChecked_ok checked]
+    rw [← isActiveAt_eq_true_iff, ← isActiveAt_eq_true_iff, activity]
+  unfold getTotalActiveBalance
+  rw [getActiveValidatorIndicesChecked_of_within within]
+  change getTotalBalance state (getActiveValidatorIndices state (getCurrentEpoch state)) =
+    .ok total
+  apply (getTotalBalance_congr same).mpr
+  exact totalBalance_transfer (getTotalActiveBalance_ok read) (fun v member => by
+    obtain ⟨validator, found, _⟩ := (mem_getActiveValidatorIndices within).mp
+      ((same v).mpr member)
+    exact (Array.getElem?_eq_some_iff.mp found).1) weights
+
+/-- Registry containment and an active total suffice for the non-full window's balance read. -/
+private theorem filteredTotal_exists {state : BeaconState preset fork}
+    {participants : Std.TreeSet ValidatorIndex} {total : Gwei}
+    (read : getTotalActiveBalance state = .ok total)
+    (inside : ∀ v ∈ participants, ∃ validator, validatorAt state v = .ok validator) :
+    ∃ active result,
+      participants.toList.filterM (fun index => do
+        return isActiveValidator (← validatorAt state index) (getCurrentEpoch state)) =
+        .ok active ∧ getTotalBalance state active = .ok result := by
+  obtain ⟨active, filtered⟩ := filterM_exists_ok (test := fun index => do
+    return isActiveValidator (← validatorAt state index) (getCurrentEpoch state))
+    (list := participants.toList) (fun v member => by
+      obtain ⟨validator, found⟩ := inside v (Std.TreeSet.mem_toList.mp member)
+      exact ⟨isActiveValidator validator (getCurrentEpoch state), by simp [found]⟩)
+  -- The filter passes only indices in the total's active set, even if they are slashed.
+  obtain ⟨result, resultOk⟩ := totalBalance_exists_of_subset
+    (indices := active) (getTotalActiveBalance_ok read) (fun v member => by
+      have passed := passes_of_mem_filterM_ok filtered member
+      simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at passed
+      obtain ⟨validator, found, isActive⟩ := passed
+      exact mem_getActiveValidatorIndices_of_isActiveAt
+        (isActiveAt_eq_true_iff.mpr ⟨validator, validatorAt_ok_iff.mp found, isActive⟩))
+  exact ⟨active, result, filtered, resultOk⟩
+
+/-- The rule maximum succeeds once its range arithmetic, registry reads and total succeed. -/
+private theorem maximum_exists_of_total {store : Store preset fork} {head : Root}
+    {state : BeaconState preset fork} {first last : Slot}
+    {participants : Std.TreeSet ValidatorIndex} {total : Gwei} {covered : Bool}
+    (coverage : isFullValidatorSetCovered preset first last = .ok covered)
+    (windowOk : store.getCommitteesBetweenSlots head first last = .ok participants)
+    (totalOk : getTotalActiveBalance state = .ok total)
+    (inside : ∀ v ∈ participants, ∃ validator, validatorAt state v = .ok validator) :
+    ∃ maximum, store.computeCommitteeWeightBetweenSlots head state first last = .ok maximum := by
+  by_cases empty : last < first
+  · exact ⟨0, Store.computeCommitteeWeightBetweenSlots_of_gt empty⟩
+  cases covered
+  · obtain ⟨active, result, filtered, resultOk⟩ := filteredTotal_exists totalOk inside
+    simp only [bind, Except.bind, pure, Except.pure] at filtered
+    exact ⟨result, by
+      simp only [Store.computeCommitteeWeightBetweenSlots, Store.computeCommitteeWeightAndMembers,
+        empty, ↓reduceIte, coverage, bind, Except.bind, Bool.false_eq_true, windowOk,
+        filtered, resultOk, Except.mapError, pure, Except.pure]⟩
+  · exact ⟨total, by
+      rw [Store.computeCommitteeWeightBetweenSlots_of_covered coverage]
+      rw [totalOk]; rfl⟩
+
+/-- A nonempty caller read supplies the start arithmetic for another range with the same start. -/
+private theorem coverage_exists_of_maximum {store : Store preset fork} {head : Root}
+    {state : BeaconState preset fork} {first last otherLast afterOther : Slot} {maximum : Gwei}
+    (nonempty : first ≤ last)
+    (read : store.computeCommitteeWeightBetweenSlots head state first last = .ok maximum)
+    (afterOk : addChecked otherLast 1 = .ok afterOther) :
+    ∃ covered, isFullValidatorSetCovered preset first otherLast = .ok covered := by
+  have notEmpty : ¬last < first := UInt64.not_lt.mpr nonempty
+  simp only [Store.computeCommitteeWeightBetweenSlots, bind_ok_iff] at read
+  obtain ⟨result, read, -⟩ := read
+  simp only [Store.computeCommitteeWeightAndMembers, notEmpty, ↓reduceIte,
+    bind_ok_iff] at read
+  obtain ⟨covered, coverage, -⟩ := read
+  simp only [isFullValidatorSetCovered, bind_ok_iff, mapError_ok_iff] at coverage
+  obtain ⟨afterFirst, firstOk, lastFirst, lastFirstOk, _, _, -⟩ := coverage
+  refine ⟨decide (computeEpochAtSlot preset lastFirst < computeEpochAtSlot preset afterOther), ?_⟩
+  simp only [isFullValidatorSetCovered, firstOk, lastFirstOk, afterOk, Except.mapError,
+    bind, Except.bind, pure, Except.pure]
+
+/-- A slot step within one epoch does not change the registry. -/
+private theorem validators_advanceSlot_sameEpoch {state after : BeaconState preset fork}
+    (positive : 0 < preset.SLOTS_PER_EPOCH.toNat)
+    (run : advanceSlot config checks state = .ok after)
+    (same : getCurrentEpoch after = getCurrentEpoch state) :
+    after.validators = state.validators := by
+  obtain ⟨next, cached, epoched, nextNat, cachedOk, epochedOk, rfl⟩ := advanceSlot_ok run
+  have inside : next % preset.SLOTS_PER_EPOCH ≠ 0 := by
+    intro boundary
+    have rem : next.toNat % preset.SLOTS_PER_EPOCH.toNat = 0 := by
+      simpa only [UInt64.toNat_mod, UInt64.toNat_zero] using congrArg UInt64.toNat boundary
+    have equal : next.toNat / preset.SLOTS_PER_EPOCH.toNat =
+        state.slot.toNat / preset.SLOTS_PER_EPOCH.toNat := by
+      simpa only [getCurrentEpoch, computeEpochAtSlot, UInt64.toNat_div] using
+        congrArg UInt64.toNat same
+    have beforeRem := Nat.mod_lt state.slot.toNat positive
+    have before := Nat.mod_add_div state.slot.toNat preset.SLOTS_PER_EPOCH.toNat
+    have after := Nat.mod_add_div next.toNat preset.SLOTS_PER_EPOCH.toNat
+    rw [rem, equal] at after
+    omega
+  simp only [epochIfLast, inside, ↓reduceIte, pure, Except.pure, Except.ok.injEq] at epochedOk
+  subst epoched
+  obtain ⟨_, _, _, _, rfl⟩ := processSlot_ok cachedOk
+  rfl
+
+/-- No epoch transition occurs between equal endpoint epochs of a slot-only run. -/
+private theorem validators_advanceSlots_sameEpoch (positive : 0 < preset.SLOTS_PER_EPOCH.toNat)
+    {count : Nat} {state after : BeaconState preset fork}
+    (run : advanceSlots config checks count state = .ok after)
+    (same : getCurrentEpoch after = getCurrentEpoch state) :
+    after.validators = state.validators := by
+  induction count generalizing state with
+  | zero =>
+    simp only [advanceSlots, pure, Except.pure, Except.ok.injEq] at run
+    subst after
+    rfl
+  | succ count ih =>
+    obtain ⟨middle, first, rest⟩ := bind_ok_iff.mp run
+    have low := (runKept_advanceSlot first).later
+    have high : getCurrentEpoch middle ≤ getCurrentEpoch after := by
+      rw [UInt64.le_iff_toNat_le, getCurrentEpoch_toNat, getCurrentEpoch_toNat]
+      exact Nat.div_le_div_right (by rw [advanceSlots_slot count rest]; omega)
+    have middleEq : getCurrentEpoch middle = getCurrentEpoch state :=
+      UInt64.le_antisymm (same ▸ high) low
+    exact (ih rest (same.trans middleEq.symm)).trans
+      (validators_advanceSlot_sameEpoch positive first middleEq)
+
+/-- A same-epoch lookahead preserves both the active total read and every slashing flag. -/
+private theorem lookahead_sameEpoch_frame {state after : BeaconState preset fork} {slot : Slot}
+    (positive : 0 < preset.SLOTS_PER_EPOCH.toNat)
+    (run : lookaheadState config checks state slot = .ok after)
+    (same : getCurrentEpoch after = getCurrentEpoch state) :
+    getTotalActiveBalance after = getTotalActiveBalance state ∧
+      ∀ v, NotSlashed after v ↔ NotSlashed state v := by
+  have validators : after.validators = state.validators := by
+    unfold lookaheadState at run
+    split at run
+    · have slotsOk := mapError_ok_iff.mp run
+      simp only [processSlots, bind_ok_iff, ensure_ok_iff] at slotsOk
+      obtain ⟨_, _, advanced⟩ := slotsOk
+      exact validators_advanceSlots_sameEpoch positive advanced same
+    · cases run
+      rfl
+  constructor
+  · simp only [getTotalActiveBalance, getActiveValidatorIndicesChecked, getTotalBalance,
+      validators, same]
+  · intro v
+    simp only [NotSlashed, validators]
+
+/-- After the first two epochs, a successful justification step has checked the active total. -/
+private theorem activeTotal_of_justification {state after : BeaconState preset fork}
+    (late : ¬getCurrentEpoch state ≤ GENESIS_EPOCH + 1)
+    (run : processJustificationAndFinalization state = .ok after) :
+    ∃ total, getTotalActiveBalance state = .ok total := by
+  unfold processJustificationAndFinalization at run
+  split at run
+  · simp only [processJustificationAndFinalizationAltair, late, ↓reduceIte,
+      bind_ok_iff, liftAccessor_ok] at run
+    obtain ⟨_, _, _, _, total, totalOk, _⟩ := run
+    exact ⟨total, totalOk⟩
+  · simp only [bind_ok_iff, liftAccessor_ok] at run
+    obtain ⟨_, _, _, _, total, totalOk, _⟩ := run
+    exact ⟨total, totalOk⟩
+
 variable [DecidablePred (· ∈ J)]
 
 /-- Step 5, the initial transport: the bound of step 4 holds in each honest store at a later time.
@@ -79,6 +425,8 @@ The caller is an honest validator whose store is up to date and holds the bound 
 Its ranges of committees end at the slot before its own, and at the slot before the block.
 
 The call is at the start of its slot.
+
+Its source of balances is the state of a checkpoint of its store, as `sourceOk` says.
 
 So every honest vote of an earlier slot of the current epoch falls in the window below.
 
@@ -141,6 +489,8 @@ theorem Execution.honest_support_of_historical_anchor {Δ : ℕ} (sync : e.Synch
     (atSlot : (e.world n).time = begin.toNat)
     (blockOk : ((e.world n).state u).block root = .ok block)
     (parentOk : ((e.world n).state u).block block.parentRoot = .ok parentBlock)
+    {sourceCheckpoint : Checkpoint}
+    (sourceOk : ((e.world n).state u).checkpointState sourceCheckpoint = .ok balanceSource)
     (boostOk : computeProposerScore config balanceSource = .ok proposerScore)
     (firstOk : addChecked parentBlock.slot 1 = .ok firstSlot)
     (lastOk : subChecked slot 1 = .ok lastSlot)
