@@ -361,6 +361,72 @@ private theorem finalized_boundary_le_historical {anchor : Store preset fork}
   rw [(mulChecked_ok_iff.mp made).2]
   exact productLe.trans rounded
 
+/-- Finality at an earlier ready event is below a slot recent at the caller. -/
+private theorem finalized_boundary_le_slot_of_earlier {anchor : Store preset fork}
+    (anchorStore : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (sound : Invariant anchorState) (slots : 0 < config.SLOT_DURATION_MS)
+    (anchorSlot : anchorBlock.slot = anchorState.slot)
+    (anchored : ∀ u ∈ J, e.start u = anchor)
+    {u w : ValidatorIndex} (caller : u ∈ J) (receiver : w ∈ J) {n j : ℕ}
+    (upToDate : UpToDate config checks sources (e.world n).time ((e.world n).view u)
+      ((e.world n).state u))
+    (ready : UpToDate config checks sources (e.world j).time ((e.world j).view w)
+      ((e.world j).state w))
+    (earlier : (e.world j).time ≤ (e.world n).time)
+    {slot recent : Slot} {epoch : Epoch}
+    (slotOk : ((e.world n).state u).getCurrentSlot config = .ok slot)
+    (epochOk : ((e.world n).state u).getCurrentStoreEpoch config = .ok epoch)
+    (age : epoch.toNat ≤ (computeEpochAtSlot preset recent).toNat + 1)
+    (above : anchorBlock.slot ≤ recent) :
+    ∃ boundary,
+      computeStartSlotAtEpoch preset ((e.world j).state w).finalizedCheckpoint.epoch =
+        .ok boundary ∧ boundary ≤ recent := by
+  have forward := e.forwardReachable
+    (fun u hu => (anchored u hu) ▸ Store.ForwardReachable.anchor anchorStore) j w receiver
+  obtain ⟨current, currentOk, _, _⟩ :=
+    forward.slots_le_current slots (UInt64.le_of_eq anchorSlot)
+  have firstClock := (e.clock_bounds u n).1
+  have secondClock := (e.clock_bounds w j).1
+  rw [anchored u caller] at firstClock
+  rw [anchored w receiver] at secondClock
+  have currentLe : current ≤ slot := by
+    apply computeSlotAtTimeMs_mono (laterMs := ((e.world n).state u).timeMs)
+      (UInt64.le_iff_toNat_le.mpr (by rw [ready.1, upToDate.1]; exact earlier))
+      (mapError_ok_iff.mp currentOk)
+    simpa only [Store.getCurrentSlot, firstClock.trans secondClock.symm] using
+      (mapError_ok_iff.mp slotOk)
+  have epochEq : epoch = computeEpochAtSlot preset slot := by
+    simpa [Store.getCurrentStoreEpoch, slotOk, bind, Except.bind, pure, Except.pure] using
+      epochOk.symm
+  have currentEpochOk : ((e.world j).state w).getCurrentStoreEpoch config =
+      .ok (computeEpochAtSlot preset current) := by
+    simp [Store.getCurrentStoreEpoch, currentOk, bind, Except.bind, pure, Except.pure]
+  have currentEpochLe : (computeEpochAtSlot preset current).toNat ≤ epoch.toNat := by
+    rw [epochEq]
+    simp only [computeEpochAtSlot, UInt64.toNat_div]
+    exact Nat.div_le_div_right (UInt64.le_iff_toNat_le.mp currentLe)
+  have finalizedLe : ((e.world j).state w).finalizedCheckpoint.epoch.toNat ≤
+      (computeEpochAtSlot preset recent).toNat := by
+    rcases e.finalizedCheckpoint_eq_or_add_two_le anchorStore sound receiver
+      (anchored w receiver) currentEpochOk with same | older
+    · obtain ⟨_, _, _, _, _, initial, _, _⟩ := getForkchoiceStore_anchor anchorStore
+      rw [same, initial]
+      change (computeEpochAtSlot preset anchorState.slot).toNat ≤ _
+      rw [← anchorSlot]
+      simp only [computeEpochAtSlot, UInt64.toNat_div]
+      exact Nat.div_le_div_right (UInt64.le_iff_toNat_le.mp above)
+    · omega
+  have productLe := Nat.mul_le_mul_right preset.SLOTS_PER_EPOCH.toNat finalizedLe
+  simp only [computeEpochAtSlot, UInt64.toNat_div] at productLe
+  have rounded := Nat.div_mul_le_self recent.toNat preset.SLOTS_PER_EPOCH.toNat
+  have bound : ((e.world j).state w).finalizedCheckpoint.epoch.toNat *
+      preset.SLOTS_PER_EPOCH.toNat < 2 ^ 64 :=
+    lt_of_le_of_lt (productLe.trans rounded) recent.toNat_lt
+  have made := mulChecked_of_lt bound
+  refine ⟨_, made, UInt64.le_iff_toNat_le.mpr ?_⟩
+  rw [(mulChecked_ok_iff.mp made).2]
+  exact productLe.trans rounded
+
 /-- A recent historical block on the caller's head agrees with caller finality. -/
 private theorem checkpoint_of_recent_historical {anchor : Store preset fork}
     (anchorStore : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
@@ -1035,6 +1101,233 @@ private theorem mem_insert_fold {v : ValidatorIndex}
       · exact .inl (.inl rfl)
       · exact .inr later
 
+/-- The state at a held ancestor starts a committee-preserving run to each held descendant. -/
+private theorem runKept_of_ancestor_walk {store : Store preset fork}
+    (reachable : Store.Reachable config anchorState anchorBlock store)
+    (anchorSlot : anchorBlock.slot ≤ anchorState.slot)
+    {ancestor : Root} {baseBlock : BeaconBlock preset fork}
+    {base state : BeaconState preset fork} {node : ForkChoiceNode}
+    (baseKnown : store.blocks[ancestor]? = some baseBlock)
+    (baseHeld : store.blockStates[ancestor]? = some base)
+    (held : store.blockStates[node.root]? = some state)
+    (walk : store.getAncestor node baseBlock.slot = .ok ⟨ancestor, .pending⟩) :
+    RunKept base state := by
+  obtain ⟨block, known⟩ := reachable.known_of_blockState held
+  by_cases low : block.slot ≤ baseBlock.slot
+  · rw [Store.getAncestor_of_le known low, Except.ok.injEq] at walk
+    subst node
+    rw [baseHeld, Option.some.injEq] at held
+    subst state
+    exact RunKept.refl _
+  have other : block ≠ anchorBlock := by
+    intro same
+    exact low (same ▸ reachable.anchorSlot_le_block baseKnown)
+  obtain ⟨post, postHeld, _, produced⟩ := reachable.blockStatesFromParents known
+  rw [held, Option.some.injEq] at postHeld
+  subst post
+  obtain ⟨parent, checks, engine, signed, message, parentHeld, transition⟩ := produced other
+  obtain ⟨parentBlock, parentKnown⟩ := reachable.known_of_blockState parentHeld
+  have lower : parentBlock.slot < block.slot := by
+    have bounds := (stateTransition_slot transition).1
+    rw [message] at bounds
+    exact UInt64.lt_of_le_of_lt (reachable.blockState_slot_le anchorSlot parentKnown parentHeld)
+      bounds
+  rw [Store.getAncestor_step known low parentKnown lower] at walk
+  exact (runKept_of_ancestor_walk reachable anchorSlot baseKnown baseHeld parentHeld walk).trans
+    (runKept_stateTransition transition)
+termination_by state.slot.toNat
+decreasing_by
+  have bounds := stateTransition_slot transition
+  rw [bounds.2]
+  exact UInt64.lt_iff_toNat_lt.mp bounds.1
+
+/-- Two head states with the same active indices and committees read the same slot members. -/
+private theorem slotCommittee_eq_of_kept {left right : Store preset fork}
+    {first second : Root} {source state : BeaconState preset fork} {slot : Slot}
+    (sourceOk : left.blockState first = .ok source)
+    (stateOk : right.blockState second = .ok state)
+    (active : getActiveValidatorIndices source (computeEpochAtSlot preset slot) =
+      getActiveValidatorIndices state (computeEpochAtSlot preset slot))
+    (kept : ∀ index, getBeaconCommittee source slot index = getBeaconCommittee state slot index) :
+    left.getSlotCommittee first slot = right.getSlotCommittee second slot := by
+  have count : getCommitteeCountPerSlot source (computeEpochAtSlot preset slot) =
+      getCommitteeCountPerSlot state (computeEpochAtSlot preset slot) := by
+    simp only [getCommitteeCountPerSlot, active]
+  simp only [Store.getSlotCommittee, sourceOk, stateOk, bind, Except.bind, count, kept]
+
+/-- Recent heads above a common parent read the same committees through the caller epoch. -/
+private theorem slotCommittee_eq_of_recent_parent {anchor : Store preset fork} {limit : Nat}
+    (anchorStore : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (anchorSlot : anchorBlock.slot = anchorState.slot)
+    (anchored : ∀ w ∈ J, e.start w = anchor)
+    (oneBlock : OneBlockPerRoot e limit) (slots : 0 < config.SLOT_DURATION_MS)
+    (preGloas : fork < .glamsterdam)
+    (lookahead : 1 ≤ preset.MIN_SEED_LOOKAHEAD.toNat ∧ 1 ≤ preset.MAX_SEED_LOOKAHEAD.toNat ∧
+      preset.MIN_SEED_LOOKAHEAD.toNat + 3 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
+    {u w : ValidatorIndex} (caller : u ∈ J) (receiver : w ∈ J) {n k : Nat}
+    (callerBound : (e.world n).time ≤ limit) (receiverBound : (e.world k).time ≤ limit)
+    {parent : Root} {parentBlock : BeaconBlock preset fork}
+    (callerParentKnown : ((e.world n).state u).blocks[parent]? = some parentBlock)
+    (receiverParentKnown : ((e.world k).state w).blocks[parent]? = some parentBlock)
+    {firstHead secondHead : ForkChoiceNode}
+    (firstAbove : ((e.world n).state u).isAncestor firstHead ⟨parent, .pending⟩ = .ok true)
+    (secondAbove : ((e.world k).state w).isAncestor secondHead ⟨parent, .pending⟩ = .ok true)
+    {callerEpoch receiverEpoch : Epoch}
+    (callerEpochOk : ((e.world n).state u).getCurrentStoreEpoch config = .ok callerEpoch)
+    (receiverEpochOk : ((e.world k).state w).getCurrentStoreEpoch config = .ok receiverEpoch)
+    (recent : callerEpoch.toNat ≤ (computeEpochAtSlot preset parentBlock.slot).toNat + 1)
+    (age : receiverEpoch.toNat ≤ (computeEpochAtSlot preset parentBlock.slot).toNat + 2)
+    {dutySlot : Slot} (low : parentBlock.slot ≤ dutySlot)
+    (high : (computeEpochAtSlot preset dutySlot).toNat ≤ callerEpoch.toNat) :
+    ((e.world n).state u).getSlotCommittee firstHead.root dutySlot =
+      ((e.world k).state w).getSlotCommittee secondHead.root dutySlot := by
+  have callerForward := e.forwardReachable
+    (fun w hw => (anchored w hw) ▸ Store.ForwardReachable.anchor anchorStore) n u caller
+  have receiverForward := e.forwardReachable
+    (fun w hw => (anchored w hw) ▸ Store.ForwardReachable.anchor anchorStore) k w receiver
+  have callerReachable := callerForward.reachable
+  have receiverReachable := receiverForward.reachable
+  obtain ⟨parentState, parentStateKnown, initial, _⟩ :=
+    callerReachable.blockStatesFromParents callerParentKnown
+  have parentStateSlot : parentState.slot = parentBlock.slot := by
+    by_cases atAnchor : parentBlock = anchorBlock
+    · rw [initial atAnchor, atAnchor, anchorSlot]
+    · exact (callerReachable.blockState_header callerParentKnown parentStateKnown atAnchor).1
+  obtain ⟨firstBlock, firstKnown, _⟩ := Store.slot_le_of_isAncestor callerParentKnown firstAbove
+  obtain ⟨firstState, firstStateKnown, _⟩ := callerReachable.blockStatesFromParents firstKnown
+  obtain ⟨secondBlock, secondKnown, _⟩ :=
+    Store.slot_le_of_isAncestor receiverParentKnown secondAbove
+  obtain ⟨secondState, secondStateKnown, _⟩ := receiverReachable.blockStatesFromParents secondKnown
+  obtain ⟨receiverParentState, receiverParentStateKnown, _⟩ :=
+    receiverReachable.blockStatesFromParents receiverParentKnown
+  have sameParentState := e.blockStates_eq anchorStore caller receiver
+    (anchored u caller) (anchored w receiver)
+    (oneBlock u caller w receiver n k callerBound receiverBound)
+    parentStateKnown receiverParentStateKnown
+  subst receiverParentState
+  have firstRun := runKept_of_ancestor_walk callerReachable (UInt64.le_of_eq anchorSlot)
+    callerParentKnown parentStateKnown firstStateKnown
+    (Store.getAncestor_of_isAncestor_of_lt preGloas callerParentKnown firstAbove)
+  have secondRun := runKept_of_ancestor_walk receiverReachable (UInt64.le_of_eq anchorSlot)
+    receiverParentKnown receiverParentStateKnown secondStateKnown
+    (Store.getAncestor_of_isAncestor_of_lt preGloas receiverParentKnown secondAbove)
+  have headEpochLe {v : ValidatorIndex} {i : Nat} {epoch : Epoch}
+      {r : Root} {state : BeaconState preset fork}
+      (forward : Store.ForwardReachable config anchorState anchorBlock ((e.world i).state v))
+      (epochOk : ((e.world i).state v).getCurrentStoreEpoch config = .ok epoch)
+      (held : ((e.world i).state v).blockStates[r]? = some state) :
+      (getCurrentEpoch state).toNat ≤ epoch.toNat := by
+    obtain ⟨current, currentOk, _, statesLe⟩ :=
+      forward.slots_le_current slots (UInt64.le_of_eq anchorSlot)
+    have epochEq : epoch = computeEpochAtSlot preset current := by
+      simpa [Store.getCurrentStoreEpoch, currentOk, bind, Except.bind, pure, Except.pure] using
+        epochOk.symm
+    rw [epochEq]
+    simp only [getCurrentEpoch, computeEpochAtSlot, UInt64.toNat_div]
+    exact Nat.div_le_div_right (UInt64.le_iff_toNat_le.mp (statesLe _ _ held))
+  have firstEpochLe := headEpochLe callerForward callerEpochOk firstStateKnown
+  have secondEpochLe := headEpochLe receiverForward receiverEpochOk secondStateKnown
+  have epochLow : (computeEpochAtSlot preset parentBlock.slot).toNat ≤
+      (computeEpochAtSlot preset dutySlot).toNat := by
+    simp only [computeEpochAtSlot, UInt64.toNat_div]
+    exact Nat.div_le_div_right (UInt64.le_iff_toNat_le.mp low)
+  have parentEpochEq : getCurrentEpoch parentState =
+      computeEpochAtSlot preset parentBlock.slot := by
+    simp only [getCurrentEpoch, parentStateSlot]
+  have final : (computeEpochAtSlot preset dutySlot).toNat ≤
+      (getCurrentEpoch parentState).toNat + preset.MIN_SEED_LOOKAHEAD.toNat := by
+    rw [parentEpochEq]
+    omega
+  have fixed : computeEpochAtSlot preset dutySlot ≤ activityFixedEpoch parentState := by
+    rw [UInt64.le_iff_toNat_le, activityFixedEpoch_toNat, parentEpochEq]
+    have := (computeEpochAtSlot preset dutySlot).toNat_lt
+    omega
+  have firstKept := firstRun.committeesKept final fixed (by omega)
+  have secondKept := secondRun.committeesKept final fixed (by omega)
+  exact slotCommittee_eq_of_kept (Store.blockState_ok_iff.mpr firstStateKnown)
+    (Store.blockState_ok_iff.mpr secondStateKnown)
+    ((firstRun.active.getActiveValidatorIndices_eq fixed).trans
+      (secondRun.active.getActiveValidatorIndices_eq fixed).symm)
+    (fun index => (firstKept dutySlot index rfl).trans (secondKept dutySlot index rfl).symm)
+
+/-- Equality of slot committees transfers every successful read of a finite window. -/
+private theorem committeeWindow_transfer {left right : Store preset fork}
+    {first second : Root} {low high : Slot} {members : Std.TreeSet ValidatorIndex}
+    (read : left.getCommitteesBetweenSlots first low high = .ok members)
+    (same : ∀ slot, low ≤ slot → slot ≤ high →
+      left.getSlotCommittee first slot = right.getSlotCommittee second slot) :
+    right.getCommitteesBetweenSlots second low high = .ok members := by
+  unfold Store.getCommitteesBetweenSlots at read ⊢
+  obtain ⟨afterHigh, afterOk, folded⟩ := bind_ok_iff.mp read
+  rw [afterOk]
+  dsimp only [bind, Except.bind]
+  have afterNat := (addChecked_ok_iff.mp (mapError_ok_iff.mp afterOk)).2
+  have steps : ∀ offset ∈ List.range (afterHigh.toNat - low.toNat),
+      left.getSlotCommittee first (low + offset.toUInt64) =
+        right.getSlotCommittee second (low + offset.toUInt64) := by
+    intro offset member
+    have bound := List.mem_range.mp member
+    have offsetLt : offset < 2 ^ 64 := by
+      have := afterHigh.toNat_lt
+      omega
+    have offsetNat : offset.toUInt64.toNat = offset := by
+      simp only [Nat.toUInt64_eq, UInt64.toNat_ofNat_of_lt' offsetLt]
+    have slotNat : (low + offset.toUInt64).toNat = low.toNat + offset := by
+      rw [UInt64.toNat_add, offsetNat, Nat.mod_eq_of_lt]
+      have := afterHigh.toNat_lt
+      omega
+    apply same <;> rw [UInt64.le_iff_toNat_le, slotNat]
+    · omega
+    · simp only [UInt64.toNat_one] at afterNat
+      omega
+  have transfer : ∀ (indices : List Nat) (initial result : Std.TreeSet ValidatorIndex),
+      (∀ offset ∈ indices, left.getSlotCommittee first (low + offset.toUInt64) =
+        right.getSlotCommittee second (low + offset.toUInt64)) →
+      indices.foldlM (fun (participants : Std.TreeSet ValidatorIndex) offset => do
+        let committee : Std.TreeSet ValidatorIndex ←
+          left.getSlotCommittee first (low + offset.toUInt64)
+        Except.ok (committee.foldl Std.TreeSet.insert participants)) initial =
+          Except.ok (ε := ForkChoiceError) result →
+      indices.foldlM (fun (participants : Std.TreeSet ValidatorIndex) offset => do
+        let committee : Std.TreeSet ValidatorIndex ←
+          right.getSlotCommittee second (low + offset.toUInt64)
+        Except.ok (committee.foldl Std.TreeSet.insert participants)) initial =
+          Except.ok (ε := ForkChoiceError) result := by
+    intro indices
+    induction indices with
+    | nil => intro initial result agrees folded; exact folded
+    | cons offset rest ih =>
+      intro initial result agrees folded
+      simp only [List.foldlM_cons, bind_ok_iff] at folded ⊢
+      obtain ⟨next, nextOk, restOk⟩ := folded
+      refine ⟨next, ?_, ih next result (fun i member => agrees i (by simp [member])) restOk⟩
+      simpa only [← agrees offset (by simp)] using nextOk
+  exact transfer _ _ _ steps folded
+
+/-- Equal slot committees transfer a maximum read under the same balance state. -/
+private theorem maximum_of_same_slotCommittees {left right : Store preset fork}
+    {first second : Root} {source : BeaconState preset fork} {low high : Slot} {maximum : Gwei}
+    (read : left.computeCommitteeWeightBetweenSlots first source low high = .ok maximum)
+    (same : ∀ slot, low ≤ slot → slot ≤ high →
+      left.getSlotCommittee first slot = right.getSlotCommittee second slot) :
+    right.computeCommitteeWeightBetweenSlots second source low high = .ok maximum := by
+  by_cases empty : high < low
+  · rw [Store.computeCommitteeWeightBetweenSlots_of_gt empty] at read ⊢
+    exact read
+  simp only [Store.computeCommitteeWeightBetweenSlots, bind_ok_iff, pure, Except.pure,
+    Except.ok.injEq] at read ⊢
+  obtain ⟨⟨total, members⟩, read, rfl⟩ := read
+  refine ⟨(total, members), ?_, rfl⟩
+  simp only [Store.computeCommitteeWeightAndMembers, empty, ↓reduceIte, bind_ok_iff] at read ⊢
+  obtain ⟨covered, coveredOk, read⟩ := read
+  refine ⟨covered, coveredOk, ?_⟩
+  cases covered
+  · simp only [Bool.false_eq_true, ↓reduceIte, bind_ok_iff] at read ⊢
+    obtain ⟨participants, windowRead, rest⟩ := read
+    refine ⟨participants, ?_, rest⟩
+    exact committeeWindow_transfer windowRead same
+  · exact read
+
 /-- A slot committee contains only indices active in the head state's duty epoch. -/
 private theorem active_of_mem_slotCommittee {store : Store preset fork}
     {head : Root} {slot : Slot} {members : Std.TreeSet ValidatorIndex}
@@ -1203,6 +1496,21 @@ private theorem tallyActive_of_activeMember {state : BeaconState preset fork}
   · apply List.mem_zipIdx_iff_getElem?.mpr
     simpa using found
   · simp [active, flag, UInt64.ofNat_toNat]
+
+/-- A tally-active participant passes the activity filter of its committee window. -/
+private theorem activeMember_of_tallyActive {state : BeaconState preset fork}
+    (within : state.RegistryWithinLimit) {members : Std.TreeSet ValidatorIndex}
+    {v : ValidatorIndex}
+    (active : v ∈ ((unslashedActiveBalances state).map (·.1)).toFinset)
+    (member : v ∈ members) : v ∈ Store.activeMembers state members := by
+  simp only [List.mem_toFinset, List.mem_map, unslashedActiveBalances, List.mem_filterMap,
+    Option.ite_none_right_eq_some, Option.some.injEq, Prod.mk.injEq, Prod.exists] at active
+  obtain ⟨index, balance, ⟨validator, i, inZip, flags, rfl, rfl⟩, rfl⟩ := active
+  have found := List.mem_zipIdx_iff_getElem?.mp inZip
+  have lt : i < state.validators.data.size := by
+    simpa using (List.getElem?_eq_some_iff.mp found).1
+  refine Store.mem_activeMembers.mpr ⟨member, validator, ?_, (Bool.and_eq_true_iff.mp flags).1⟩
+  simpa only [toNat_toUInt64_of_lt within lt, Array.getElem?_toList] using found
 
 /-- A successful total also bounds a subset, without requiring a bound on inactive balances. -/
 private theorem totalBalance_exists_of_subset {state : BeaconState preset fork}
@@ -2522,6 +2830,85 @@ theorem Execution.honest_support_of_historical_anchor {Δ : ℕ} (sync : e.Synch
     obtain ⟨b, held, lower⟩ := Store.slot_le_of_isAncestor historicalKnown below
     rw [callerParentKnown, Option.some.injEq] at held
     exact held ▸ lower
+  have callerParentAge : callerEpoch.toNat ≤
+      (computeEpochAtSlot preset parentBlock.slot).toNat + 1 := by
+    have lower := Nat.div_le_div_right (c := preset.SLOTS_PER_EPOCH.toNat)
+      (UInt64.le_iff_toNat_le.mp historicalSlotLe)
+    rw [historicalEpochEq] at recent
+    simp only [computeEpochAtSlot, UInt64.toNat_div] at recent ⊢
+    omega
+  have receiverParentKnown : ((e.world k).state w).blocks[block.parentRoot]? =
+      some parentBlock := by
+    have test := receiverAbove
+    unfold Store.isAncestor at test
+    obtain ⟨other, read, _⟩ := bind_ok_iff.mp test
+    have held := Store.block_ok_iff.mp read
+    have same := oneBlock u caller w receiver n k later (by omega)
+      block.parentRoot parentBlock other callerParentKnown held
+    exact same ▸ held
+  have callerForward := e.forwardReachable
+    (fun w hw => (anchored w hw) ▸ Store.ForwardReachable.anchor anchorStore) n u caller
+  obtain ⟨callerCurrent, callerCurrentOk, callerBlocksLe, _⟩ :=
+    callerForward.slots_le_current slots (UInt64.le_of_eq anchorSlot)
+  rw [slotOk, Except.ok.injEq] at callerCurrentOk
+  subst callerCurrent
+  have oldSlotCommittees : ∀ dutySlot, firstSlot ≤ dutySlot → dutySlot ≤ lastSlot →
+      ((e.world n).state u).getSlotCommittee head dutySlot =
+        ((e.world k).state w).getSlotCommittee receiverHead.root dutySlot := by
+    intro dutySlot low high
+    have parentLow : parentBlock.slot ≤ dutySlot := by
+      have start := (addChecked_ok_iff.mp firstOk).2
+      have lower := UInt64.le_iff_toNat_le.mp low
+      exact UInt64.le_iff_toNat_le.mpr (by omega)
+    have callerHigh : dutySlot ≤ slot := by
+      have finish := (subChecked_ok_iff.mp lastOk).2
+      have upper := UInt64.le_iff_toNat_le.mp high
+      exact UInt64.le_iff_toNat_le.mpr (by omega)
+    have epochHigh : (computeEpochAtSlot preset dutySlot).toNat ≤ callerEpoch.toNat := by
+      rw [callerEpochEq]
+      simp only [computeEpochAtSlot, UInt64.toNat_div]
+      exact Nat.div_le_div_right (UInt64.le_iff_toNat_le.mp callerHigh)
+    exact slotCommittee_eq_of_recent_parent anchorStore anchorSlot anchored oneBlock slots
+      preGloas lookahead caller receiver later (by omega) callerParentKnown receiverParentKnown
+      parentOnHead receiverAbove callerEpochOk receiverEpochOk callerParentAge age
+      parentLow epochHigh
+  have sourceMaximumRead := maximum_of_same_slotCommittees maximumOk oldSlotCommittees
+  have sourceMaximumEq := Except.ok.inj (sourceMaximumOk.symm.trans sourceMaximumRead)
+  rw [sourceMaximumEq] at transferred
+  have beforeBlockLe : beforeBlock ≤ lastSlot := by
+    have rootLe := UInt64.le_iff_toNat_le.mp (callerBlocksLe _ _ callerKnown)
+    have beforeNat := (subChecked_ok_iff.mp beforeOk).2
+    have lastNat := (subChecked_ok_iff.mp lastOk).2
+    exact UInt64.le_iff_toNat_le.mpr (by omega)
+  have parentWindows := committeeWindow_transfer parentParticipantsOk
+    (fun dutySlot low high => oldSlotCommittees dutySlot low (UInt64.le_trans high beforeBlockLe))
+  have sameParentParticipants := Except.ok.inj (receiverParticipantsOk.symm.trans parentWindows)
+  have parentFinalReady : ∀ j ≤ k, (e.world j).time < (e.world n).time →
+      UpToDate config checks sources (e.world j).time ((e.world j).view w)
+        ((e.world j).state w) →
+      (∃ boundary,
+        computeStartSlotAtEpoch preset ((e.world j).state w).finalizedCheckpoint.epoch =
+          .ok boundary ∧ boundary ≤ parentBlock.slot ∧
+        ((e.world k).state w).getCheckpointBlock block.parentRoot
+          ((e.world j).state w).finalizedCheckpoint.epoch =
+            .ok ((e.world j).state w).finalizedCheckpoint.root) ∨
+      ((e.world k).state w).isAncestor
+        ⟨((e.world k).state w).justifiedCheckpoint.root, .pending⟩
+        ⟨root, .pending⟩ = .ok true := by
+    intro j le before ready
+    obtain ⟨boundary, boundaryOk, lower⟩ := finalized_boundary_le_slot_of_earlier anchorStore
+      sound slots anchorSlot anchored caller receiver upToDate ready before.le slotOk callerEpochOk
+      callerParentAge (callerReachable.anchorSlot_le_block callerParentKnown)
+    rcases rootFinalReady j le ready with ⟨other, otherOk, _, checkpoint⟩ | covered
+    · have same := Except.ok.inj (otherOk.symm.trans boundaryOk)
+      subst other
+      refine .inl ⟨boundary, boundaryOk, lower, ?_⟩
+      have walk := Store.getAncestor_of_gt (node := ⟨root, .pending⟩) preGloas known
+        (UInt64.not_le.mpr (UInt64.lt_of_le_of_lt lower parentLower))
+        receiverParentKnown parentLower
+      simpa only [Store.getCheckpointBlock, boundaryOk, Except.mapError, bind, Except.bind,
+        walk] using checkpoint
+    · exact .inr covered
   have oldSupportFloor : ∀ v ∈ oldSupporters, ∀ message,
       ((e.world n).state u).latestMessages[v]? = some message →
       callerEpoch.toNat ≤ message.rank.toNat + 1 := by
@@ -2666,6 +3053,49 @@ theorem Execution.honest_support_of_historical_anchor {Δ : ℕ} (sync : e.Synch
         callerKnown known (fun j le _ => rootFinalReady j le) firstOk counts
         with ⟨second, secondOk, rank⟩ | covered
     · exact .inl (oldSupportOfRank v member first second firstOk secondOk rank active)
+    · exact .inr covered
+  have oldParentTransport : ∀ v ∈ oldParents, v ∈ receiverParticipants →
+      v ∈ ((unslashedActiveBalances state).map (·.1)).toFinset →
+      (v ∈ ((e.world k).state w).parentVotersOf state receiverParticipants block parentBlock ∨
+        v ∈ ((e.world k).state w).supportersOf state ⟨root, .pending⟩) ∨
+      ((e.world k).state w).isAncestor
+        ⟨((e.world k).state w).justifiedCheckpoint.root, .pending⟩
+        ⟨root, .pending⟩ = .ok true := by
+    intro v member participant active
+    have honest := (Finset.mem_filter.mp member).2
+    obtain ⟨_, _, notKnown, first, supported, firstOk, supportedOk, which⟩ :=
+      Store.mem_parentVotersOf.mp (Finset.mem_filter.mp member).1
+    have supportedEq : supported = ⟨block.parentRoot, .pending⟩ := by
+      rcases which with rfl | rfl
+      · rfl
+      · rw [Store.parentPayloadStatus_of_lt preGloas]
+    have counts : ((e.world n).state u).voteCountsFor ⟨block.parentRoot, .pending⟩ v = true := by
+      apply Store.voteCountsFor_of_check _ firstOk (by simpa using notKnown)
+      simpa only [supportedOk, supportedEq, bind, Except.bind] using
+        (Store.isAncestor_self (node := ⟨block.parentRoot, .pending⟩) callerParentKnown)
+    rcases recorded_rank_of_counted_vote sync slots preGloas oneBlock admitted votes prompt fits
+        anchorStore sound anchorSlot anchorBoundary anchored chain inHorizon nonzero caller honest
+        receiver slotOk beginOk atSlot later atTime receiverUpToDate
+        (fun j bounded equivocated => weights.dishonest w receiver j bounded v equivocated honest)
+        callerParentKnown receiverParentKnown parentFinalReady firstOk counts
+        with ⟨second, secondOk, rank⟩ | covered
+    · left
+      by_cases equal : first.rank = second.rank
+      · left
+        have same := latest_eq_of_rank_eq slots preGloas anchorStore anchored caller receiver
+          honest firstOk secondOk equal
+        obtain ⟨_, validator, found, isActive⟩ := Store.mem_activeMembers.mp
+          (activeMember_of_tallyActive (state.validators.bound preGloas) active participant)
+        have flag : validator.slashed = false := by
+          simpa only [NotSlashed, found, Option.map_some, Option.getD_some] using
+            receiverUnslashed v honest
+        refine Store.mem_parentVotersOf.mpr ⟨participant, ⟨validator, found, flag, isActive⟩,
+          (fun equivocated => weights.dishonest w receiver k (by omega) v equivocated honest),
+          second, ⟨block.parentRoot, .pending⟩, secondOk, ?_, .inl rfl⟩
+        simpa only [Store.getSupportedNode_of_lt preGloas, supportedEq, same] using supportedOk
+      · right
+        exact newerRankSupport v honest first second firstOk secondOk
+          (UInt64.lt_of_le_of_ne rank equal) (oldParentFloor v member first firstOk) active
     · exact .inr covered
   have freshRecordedSupport : ∀ v ∈ J, ∀ dutySlot committeeIndex deadline signedAt
       (attestation : Attestation preset fork) indexed message,
