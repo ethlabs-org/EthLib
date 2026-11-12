@@ -3773,6 +3773,10 @@ No honest validator is slashed in a state that an honest store counts, as `unsla
 
 The tally state of the receiver is a lookahead of a held state, and need not be a counting state.
 
+The chain of the parent of the block holds the root of the source checkpoint at its epoch, as `sourceBelow` says.
+
+The source stake that is active in the source and inactive in the tally state fits the exit reserve, as `exited` says.
+
 The window of the receiver is the committees of its head between the parent and its own slot.
 
 The conclusion bounds the active members of that window, as `HeadFollowsSupport` reads it.
@@ -3814,6 +3818,8 @@ theorem Execution.honest_support_of_historical_anchor {Δ : ℕ} (sync : e.Synch
     (parentOk : ((e.world n).state u).block block.parentRoot = .ok parentBlock)
     {sourceCheckpoint : Checkpoint}
     (sourceOk : ((e.world n).state u).checkpointState sourceCheckpoint = .ok balanceSource)
+    (sourceBelow : ((e.world n).state u).getCheckpointBlock block.parentRoot
+      sourceCheckpoint.epoch = .ok sourceCheckpoint.root)
     (boostOk : computeProposerScore config balanceSource = .ok proposerScore)
     (firstOk : addChecked parentBlock.slot 1 = .ok firstSlot)
     (lastOk : subChecked slot 1 = .ok lastSlot)
@@ -3895,6 +3901,9 @@ theorem Execution.honest_support_of_historical_anchor {Δ : ℕ} (sync : e.Synch
       .ok true)
     (stateOk : ((e.world k).state w).checkpointState ((e.world k).state w).justifiedCheckpoint =
       .ok state)
+    (exited : stake (fun v => balanceAt balanceSource v.toNat)
+        {v ∈ activeVoters balanceSource | v ∉ activeVoters state} ≤
+      exitReserve config balanceSource)
     (currentOk : ((e.world k).state w).getCurrentSlot config = .ok current)
     (receiverEpochOk : ((e.world k).state w).getCurrentStoreEpoch config = .ok receiverEpoch)
     (age : receiverEpoch.toNat ≤ (computeEpochAtSlot preset parentBlock.slot).toNat + 2)
@@ -3914,6 +3923,10 @@ theorem Execution.honest_support_of_historical_anchor {Δ : ℕ} (sync : e.Synch
       ((e.world k).state w).isAncestor
         ⟨((e.world k).state w).justifiedCheckpoint.root, .pending⟩
         ⟨root, .pending⟩ = .ok true := by
+  -- The last case uses the exit facts.
+  -- As plain hypotheses they push this proof past the heartbeat limit, so they wait here.
+  have exitFacts := PProd.mk exited sourceBelow
+  clear exited sourceBelow
   obtain ⟨receiverTotal, receiverTotalOk⟩ := getTotalActiveBalance_exists_ok_of_activeStakeAtMost
     (state.validators.bound preGloas)
     (supply w receiver k _ state (by omega) stateOk) stakeCapGwei_lt
@@ -4456,6 +4469,7 @@ theorem Execution.honest_support_of_historical_anchor {Δ : ℕ} (sync : e.Synch
         rw [sameParentParticipants]
         exact (Store.mem_parentVotersOf.mp (Finset.mem_filter.mp member).1).1) active)
       freshDutySupport
+  obtain ⟨exited, sourceBelow⟩ := exitFacts
   sorry
 
 

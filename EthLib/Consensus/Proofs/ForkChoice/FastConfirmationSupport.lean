@@ -661,6 +661,8 @@ structure WeightBounds
         sourceScore.toNat + shift
   /-- The call's balance source satisfies the bound on every committee range it reads.
 
+  The range starts at or before its last slot; a range that starts after it has no members.
+
   The bound keeps half the exit reserve of the source free, in percent of the range.
 
   That reserve pays for the stake that leaves the active set before a receiver weighs.
@@ -673,7 +675,7 @@ structure WeightBounds
 
   A rule that subtracted the reserve in its safety threshold would make this bound fixed. -/
   sourceReserve : ∀ w ∈ J, ∀ k head firstSlot lastSlot participants,
-    (e.world k).time = first →
+    (e.world k).time = first → firstSlot ≤ lastSlot →
     ((e.world k).state w).getCommitteesBetweenSlots head firstSlot lastSlot = .ok participants →
     100 * stake (fun v => balanceAt balanceSource v.toNat)
         {v ∈ Store.activeMembers balanceSource participants | v ∉ J} +
@@ -696,7 +698,9 @@ structure WeightBounds
 variable {e : Execution (honestForkChoice config checks sources anchorState anchorBlock assignment
   genesisTimeMs) J} [DecidablePred (· ∈ J)]
 
-/-- The reserved bound gives the plain bound of Assumption 2 on each range the caller reads. -/
+/-- The reserved bound gives the plain bound of Assumption 2 on each range the caller reads.
+
+A range that starts after it ends has no members, so the bound holds for it without the reserve. -/
 theorem WeightBounds.sourceByzantine {balanceSource : BeaconState preset fork}
     {first last shift : ℕ} (weights : WeightBounds e balanceSource first last shift) :
     ∀ w ∈ J, ∀ k head firstSlot lastSlot participants,
@@ -707,8 +711,14 @@ theorem WeightBounds.sourceByzantine {balanceSource : BeaconState preset fork}
         (Store.activeMembers balanceSource participants) J
         config.CONFIRMATION_BYZANTINE_THRESHOLD.toNat 100 := by
   intro w honest k head firstSlot lastSlot participants time read
-  have reserved := weights.sourceReserve w honest k head firstSlot lastSlot participants time read
-  exact ⟨by decide, by omega⟩
+  by_cases ordered : firstSlot ≤ lastSlot
+  · have reserved := weights.sourceReserve w honest k head firstSlot lastSlot participants time
+      ordered read
+    exact ⟨by decide, by omega⟩
+  · rw [Store.getCommitteesBetweenSlots_of_gt (UInt64.not_le.mp ordered), Except.ok.injEq] at read
+    subst read
+    refine ByzantineStakeAtMost.of_subset _ (by decide) fun v member => ?_
+    exact absurd (Store.mem_activeMembers.mp member).1 Std.TreeSet.not_mem_emptyc
 
 /-- No held block precedes the anchor, even when the anchor state has a different slot. -/
 theorem _root_.EthLib.Consensus.Store.Reachable.anchorSlot_le_block
