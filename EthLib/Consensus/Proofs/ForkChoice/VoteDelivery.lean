@@ -352,15 +352,11 @@ theorem VoteAt.data_target {anchor : Store preset fork}
 
 The voter votes for the payload only when its head has the payload, which its store has verified.
 
-The hypotheses are those of `VoteAt.data_head`. -/
-theorem VoteAt.data_payload {anchor : Store preset fork}
-    (_anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
-    (_start : ∀ u ∈ J, e.start u = anchor) {v : ValidatorIndex} (_honest : v ∈ J) {slot : Slot}
+The vote satisfies `VoteAt`, the fork is at least Gloas, and its voter holds the voted block. -/
+theorem VoteAt.data_payload {v : ValidatorIndex} {slot : Slot}
     {committeeIndex : CommitteeIndex} {time n : ℕ} {attestation : Attestation preset fork}
     {indexed : IndexedAttestation preset fork}
     (vote : VoteAt e v slot committeeIndex time n attestation indexed)
-    (_deadline : IsAttestationDeadline fork config genesisTimeMs slot time) {due : UInt64}
-    (_dueOk : getAttestationDueMs config fork = .ok due) (_inSlot : due < config.SLOT_DURATION_MS)
     (gloas : .glamsterdam ≤ fork) {voted : BeaconBlock preset fork}
     (known : ((e.world n).state v).blocks[attestation.data.beaconBlockRoot]? = some voted) :
     ((e.world n).state v).validatePayloadVote gloas attestation voted = .ok () := by
