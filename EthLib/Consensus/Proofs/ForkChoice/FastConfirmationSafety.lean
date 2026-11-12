@@ -2965,7 +2965,7 @@ theorem Execution.safeAt_of_walk {Δ : ℕ} (sync : e.Synchronous Δ)
     (oneBlock : OneBlockPerRoot e limit)
     (half : 2 * config.CONFIRMATION_BYZANTINE_THRESHOLD.toNat ≤ 100)
     (boost : config.PROPOSER_SCORE_BOOST.toNat ≤ 100)
-    (long : 1 < preset.SLOTS_PER_EPOCH) (incrementPositive : 0 < preset.EFFECTIVE_BALANCE_INCREMENT)
+    (long : 1 < preset.SLOTS_PER_EPOCH)
     (votes : Votes e.startTime limit e)
     (fits : DelayFits fork config genesisTimeMs Δ)
     (prompt : Prompt e limit) (committees : CommitteesFollow e limit)
@@ -3199,7 +3199,7 @@ theorem Execution.safeAt_of_walk {Δ : ℕ} (sync : e.Synchronous Δ)
     (fun w hw k ep le => inHorizon w hw k ep (le.trans boundedNow))
     (fun w hw k c s le => supply w hw k c s (le.trans boundedNow))
     (fun w hw k le => anchorParent w hw k (le.trans boundedNow))
-    (fun w hw k s le => large w hw k s (le.trans boundedNow)) incrementPositive long boost
+    (fun w hw k s le => large w hw k s (le.trans boundedNow)) long boost
     (fun t lower upper => startSafe t lower (upper.trans boundedNow)) rootSafe
     (fun w hw k eq ready => ⟨rootBlock, known w hw k (afterNow.trans_eq eq.symm)
       (eq.trans_le boundedNow) ready⟩)
@@ -4317,7 +4317,7 @@ theorem Execution.callInvariant_step {Δ : ℕ} (sync : e.Synchronous Δ)
     intro time afterCall bounded
     have callBound := afterCall.trans bounded
     exact e.safeAt_of_walk sync slots positiveSlotsNat window lookahead preGloas admitted oneBlock half
-      boost long positive
+      boost long
       votes fits prompt committees follows chain unique pins voted included anchored sound anchorSlot
       anchorAtBoundary start rfl noVotes maxAligned increment caller (upToDate n member) (lower n member)
       slotOk beginOk atSlot headOk

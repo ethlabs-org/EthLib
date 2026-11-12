@@ -1791,7 +1791,6 @@ theorem Execution.coveredOrViableAt_of_checked {Δ : ℕ} (sync : e.Synchronous 
       getCurrentEpoch state ≤ horizon →
       3 * preset.EFFECTIVE_BALANCE_INCREMENT.toNat <
         2 * stake (fun v => balanceAt state v.toNat) (activeVoters state))
-    (incrementPositive : 0 < preset.EFFECTIVE_BALANCE_INCREMENT)
     (long : 1 < preset.SLOTS_PER_EPOCH) (boost : config.PROPOSER_SCORE_BOOST.toNat ≤ 100)
     (startSafe : ∀ earlier, (e.world n).time ≤ earlier → earlier ≤ time → SafeAt e earlier start)
     (safe : ∀ earlier, (e.world n).time ≤ earlier → earlier < time → SafeAt e earlier root)
