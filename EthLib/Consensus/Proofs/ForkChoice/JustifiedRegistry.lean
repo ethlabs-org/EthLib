@@ -1728,8 +1728,8 @@ theorem Execution.validatorAt_justified_of_head_active
     (start : ∀ w ∈ J, e.start w = anchor)
     (preGloas : fork < .glamsterdam)
     (slots : 0 < config.SLOT_DURATION_MS)
-    {horizon : Epoch} (chain : FinalizedPrefix e horizon)
-    {w : ValidatorIndex} (honest : w ∈ J) {k : ℕ}
+    {horizon : Epoch} {last : ℕ} (chain : FinalizedPrefix e horizon last)
+    {w : ValidatorIndex} (honest : w ∈ J) {k : ℕ} (bounded : (e.world k).time ≤ last)
     {current : Epoch}
     (currentOk : ((e.world k).state w).getCurrentStoreEpoch config = .ok current)
     (inHorizon : current ≤ horizon)
@@ -1785,7 +1785,7 @@ theorem Execution.validatorAt_justified_of_head_active
     by_contra outside
     exact activated (pending v.toNat validator (by omega) found).2
   · have justifiedWalk := e.getCheckpointBlock_justified_of_finalized_before anchored sound slots
-      (UInt64.le_of_eq anchorSlot) start chain honest (Nat.le_refl k) currentOk inHorizon
+      (UInt64.le_of_eq anchorSlot) start chain honest (Nat.le_refl k) bounded currentOk inHorizon
     simp only [Store.getCheckpointBlock, bind_ok_iff] at headWalk
     obtain ⟨query, queryOk, headWalk⟩ := headWalk
     have queryOk := mapError_ok_iff.mp queryOk

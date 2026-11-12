@@ -215,8 +215,10 @@ private theorem validatorAt_of_mem_committeeWindow {anchor : Store preset fork}
     (sound : Invariant anchorState) (anchorSlot : anchorBlock.slot = anchorState.slot)
     (anchorBoundary : isStartSlotAtEpoch preset anchorBlock.slot = .ok true)
     (start : ∀ w ∈ J, e.start w = anchor) (preGloas : fork < .glamsterdam)
-    (slots : 0 < config.SLOT_DURATION_MS) {horizon : Epoch} (chain : FinalizedPrefix e horizon)
-    {w : ValidatorIndex} (honest : w ∈ J) {k : Nat} {current : Epoch}
+    (slots : 0 < config.SLOT_DURATION_MS) {horizon : Epoch} {last : ℕ}
+    (chain : FinalizedPrefix e horizon last)
+    {w : ValidatorIndex} (honest : w ∈ J) {k : Nat} (bounded : (e.world k).time ≤ last)
+    {current : Epoch}
     (currentOk : ((e.world k).state w).getCurrentStoreEpoch config = .ok current)
     (inHorizon : current ≤ horizon)
     (nonzero : ∀ (r : Root) (b : BeaconBlock preset fork),
@@ -232,7 +234,7 @@ private theorem validatorAt_of_mem_committeeWindow {anchor : Store preset fork}
   obtain ⟨_, _, _, active⟩ :=
     active_of_mem_committeeWindow preGloas headStateOk windowOk member
   obtain ⟨validator, found⟩ := e.validatorAt_justified_of_head_active anchored sound anchorSlot
-    anchorBoundary start preGloas slots chain honest currentOk inHorizon nonzero headOk
+    anchorBoundary start preGloas slots chain honest bounded currentOk inHorizon nonzero headOk
     headStateOk stateOk active
   exact ⟨validator, validatorAt_ok_iff.mpr found⟩
 
@@ -1157,8 +1159,10 @@ private theorem activeTotal_of_justification {state after : BeaconState preset f
 /-- The cached anchor checkpoint remains exactly the anchor state, not an arbitrary lookahead. -/
 private theorem anchor_checkpointState {anchor : Store preset fork}
     (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
-    (start : ∀ w ∈ J, e.start w = anchor) (oneBlock : OneBlockPerRoot e)
-    {w : ValidatorIndex} (honest : w ∈ J) {k : Nat} {state : BeaconState preset fork}
+    (start : ∀ w ∈ J, e.start w = anchor) {last : ℕ}
+    (oneBlock : OneBlockPerRoot e last)
+    {w : ValidatorIndex} (honest : w ∈ J) {k : Nat} (bounded : (e.world k).time ≤ last)
+    {state : BeaconState preset fork}
     (read : ((e.world k).state w).checkpointState anchor.justifiedCheckpoint = .ok state) :
     state = anchorState := by
   obtain ⟨root, rootOk, cached⟩ := getForkchoiceStore_checkpointStates anchored
@@ -1168,7 +1172,8 @@ private theorem anchor_checkpointState {anchor : Store preset fork}
   have initial : ((e.world 0).state w).checkpointStates[anchor.justifiedCheckpoint]? =
       some anchorState := by
     simp [Execution.world_zero, World.initial, start w honest, justified, cached]
-  exact e.checkpointStates_eq_of_oneBlock anchored start oneBlock honest honest
+  exact e.checkpointStates_eq_of_oneBlock anchored start oneBlock honest honest bounded
+    ((e.monotone_time (Nat.zero_le k)).trans bounded)
     (Store.checkpointState_ok_iff.mp read) initial
 
 variable [DecidablePred (· ∈ J)]
@@ -1223,11 +1228,11 @@ theorem Execution.honest_support_of_historical_anchor {Δ : ℕ} (sync : e.Synch
     (window : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
     (lookahead : 1 ≤ preset.MIN_SEED_LOOKAHEAD.toNat ∧ 1 ≤ preset.MAX_SEED_LOOKAHEAD.toNat ∧
       preset.MIN_SEED_LOOKAHEAD.toNat + 3 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
-    (preGloas : fork < .glamsterdam) (admitted : BlocksAdmitted e 0 Δ)
-    (oneBlock : OneBlockPerRoot e)
+    (preGloas : fork < .glamsterdam) {time : ℕ} (admitted : BlocksAdmitted e 0 Δ time)
+    (oneBlock : OneBlockPerRoot e time)
     (half : 2 * config.CONFIRMATION_BYZANTINE_THRESHOLD.toNat ≤ 100)
-    {time : ℕ} (votes : Votes e.startTime time e) (fits : DelayFits fork config genesisTimeMs Δ)
-    (prompt : Prompt e time) (committees : CommitteesFollow e) {anchor : Store preset fork}
+    (votes : Votes e.startTime time e) (fits : DelayFits fork config genesisTimeMs Δ)
+    (prompt : Prompt e time) (committees : CommitteesFollow e time) {anchor : Store preset fork}
     (anchorStore : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
     (sound : Invariant anchorState) (anchorSlot : anchorBlock.slot = anchorState.slot)
     (anchorBoundary : isStartSlotAtEpoch preset anchorBlock.slot = .ok true)
@@ -1269,7 +1274,7 @@ theorem Execution.honest_support_of_historical_anchor {Δ : ℕ} (sync : e.Synch
       discount.toNat + 2 * support.toNat)
     (later : (e.world n).time ≤ time)
     (weights : WeightBounds e balanceSource (e.world n).time time shift)
-    {horizon : Epoch} (chain : FinalizedPrefix e horizon)
+    {horizon : Epoch} (chain : FinalizedPrefix e horizon time)
     (inHorizon : ∀ w ∈ J, ∀ k epoch, (e.world k).time ≤ time →
       ((e.world k).state w).getCurrentStoreEpoch config = .ok epoch → epoch ≤ horizon)
     (nonzero : ∀ w ∈ J, ∀ k, (e.world k).time ≤ time →
@@ -1285,10 +1290,10 @@ theorem Execution.honest_support_of_historical_anchor {Δ : ℕ} (sync : e.Synch
       getCurrentEpoch state ≤ horizon → getTotalActiveBalance state = .ok total →
       3 * stake (fun v => balanceAt state v.toNat) {v ∈ quorumVoters state | v ∉ J} <
         2 * total.toNat)
-    (unslashed : ∀ w ∈ J, ∀ k (state : BeaconState preset fork),
+    (unslashed : ∀ w ∈ J, ∀ k (state : BeaconState preset fork), (e.world k).time ≤ time →
       ((e.world k).state w).Counts config state → ∀ v ∈ J, NotSlashed state v)
     (supply : ∀ w ∈ J, ∀ k (checkpoint : Checkpoint) (state : BeaconState preset fork),
-      ((e.world k).state w).checkpointState checkpoint = .ok state →
+      (e.world k).time ≤ time → ((e.world k).state w).checkpointState checkpoint = .ok state →
       stake (fun v => balanceAt state v.toNat) (activeVoters state) ≤ stakeCapGwei)
     (safe : ∀ earlier, (e.world n).time ≤ earlier → earlier < time → SafeAt e earlier root)
     (rootOnHead : ((e.world n).state u).isAncestor ⟨head, .pending⟩ ⟨root, .pending⟩ = .ok true)
@@ -1348,12 +1353,12 @@ theorem Execution.honest_support_of_historical_anchor {Δ : ℕ} (sync : e.Synch
         ⟨root, .pending⟩ = .ok true := by
   obtain ⟨receiverTotal, receiverTotalOk⟩ := activeTotal_of_stake_bound
     (state.validators.bound preGloas)
-    (Nat.lt_of_le_of_lt (supply w receiver k _ state stateOk) stakeCapGwei_lt)
+    (Nat.lt_of_le_of_lt (supply w receiver k _ state (by omega) stateOk) stakeCapGwei_lt)
   have receiverIndices : ∀ v ∈ receiverWindow, ∃ validator,
       validatorAt state v = .ok validator := by
     intro v member
     exact validatorAt_of_mem_committeeWindow anchorStore sound anchorSlot anchorBoundary
-      anchored preGloas slots chain receiver receiverEpochOk
+      anchored preGloas slots chain receiver (by omega) receiverEpochOk
       (inHorizon w receiver k receiverEpoch (by omega) receiverEpochOk)
       (nonzero w receiver k (by omega)) headOk stateOk receiverWindowOk member
   obtain ⟨receiverActive, receiverWeight, receiverActiveOk, receiverWeightOk⟩ :=
@@ -1364,7 +1369,7 @@ theorem Execution.honest_support_of_historical_anchor {Δ : ℕ} (sync : e.Synch
         (Store.checkpointState_ok_iff.mp stateOk)
     intro v honest
     apply (notSlashed_lookahead advanced v).mpr
-    exact unslashed w receiver k held
+    exact unslashed w receiver k held (by omega)
       (Store.counts_of_fixedChecks (checks := checks) stored (.inl rfl)) v honest
   sorry
 
