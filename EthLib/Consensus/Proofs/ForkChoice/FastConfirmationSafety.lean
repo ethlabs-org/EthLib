@@ -912,6 +912,215 @@ theorem Execution.rootFinal_or_justified_covers {anchor : Store preset fork}
 
 variable [DecidablePred (· ∈ J)]
 
+/-- Clock updates do not change the per-block pull-up cache. -/
+private theorem walk_tick_cache {store after : Store preset fork} {time : UInt64}
+    (ticked : store.onTick config time = .ok after) :
+    after.unrealizedJustifications = store.unrealizedJustifications := by
+  have step : ∀ {store after : Store preset fork} {time : UInt64},
+      store.onTickPerSlot config time = .ok after →
+      after.unrealizedJustifications = store.unrealizedJustifications := by
+    intro store after time ticked
+    unfold Store.onTickPerSlot at ticked
+    simp only [bind_ok_iff] at ticked
+    obtain ⟨previous, _, current, _, ticked⟩ := ticked
+    split at ticked <;>
+      · obtain ⟨_, _, ticked⟩ := ticked
+        split at ticked <;> simp only [pure, Except.pure, Except.ok.injEq] at ticked <;>
+          subst after <;> try rfl
+        all_goals unfold Store.updateCheckpoints
+        all_goals
+          split <;> dsimp only <;> split <;> rfl
+  have catchup : ∀ {start after : Store preset fork} {slot : Slot},
+      Store.catchUp config start slot = .ok after →
+      after.unrealizedJustifications = start.unrealizedJustifications := by
+    intro start after slot caught
+    induction start using Store.catchUp.induct config slot with
+    | _ start ih =>
+      rw [Store.catchUp.eq_1] at caught
+      simp only [bind_ok_iff] at caught
+      obtain ⟨current, _, caught⟩ := caught
+      split at caught
+      · simp only [bind_ok_iff] at caught
+        obtain ⟨next, _, nextTime, _, ticked, tick, caught⟩ := caught
+        split at caught
+        · exact (ih ticked ‹_› caught).trans (step tick)
+        · cases caught
+      · cases Except.ok.inj caught
+        rfl
+  unfold Store.onTick at ticked
+  simp only [bind_ok_iff] at ticked
+  obtain ⟨slot, _, caught, caughtOk, ticked⟩ := ticked
+  exact (step ticked).trans (catchup caughtOk)
+
+/-- Attestation processing changes votes and target states, not the pull-up cache. -/
+private theorem walk_attestation_cache {store after : Store preset fork}
+    {checks : SignatureChecks} {attestation : Attestation preset fork} {fromBlock : Bool}
+    (attested : store.onAttestation config checks attestation fromBlock = .ok after) :
+    after.unrealizedJustifications = store.unrealizedJustifications := by
+  unfold Store.onAttestation at attested
+  simp only [bind_ok_iff] at attested
+  obtain ⟨_, _, cached, caching, _, _, _, _, _, _, _, _, attested⟩ := attested
+  have kept : cached.unrealizedJustifications = store.unrealizedJustifications := by
+    unfold Store.storeTargetCheckpointState at caching
+    split at caching
+    · cases Except.ok.inj caching
+      rfl
+    · simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at caching
+      obtain ⟨_, _, rfl⟩ := caching
+      rfl
+  split at attested
+  · cases Except.ok.inj attested
+    exact kept
+  · cases attested
+
+/-- A pull-up cache entry is either retained or is the result counted at its own key. -/
+private theorem walk_pulled_cache {store after : Store preset fork} {root key : Root}
+    {checkpoint : Checkpoint}
+    (computed : store.computePulledUpTip config root = .ok after)
+    (entry : after.unrealizedJustifications[key]? = some checkpoint) :
+    store.unrealizedJustifications[key]? = some checkpoint ∨
+      ∃ state pulled, after.blockStates[key]? = some state ∧
+        processJustificationAndFinalization state = .ok pulled ∧
+        pulled.currentJustifiedCheckpoint = checkpoint := by
+  have states := (Store.computePulledUpTip_frame computed).2.2.1
+  unfold Store.computePulledUpTip at computed
+  simp only [bind_ok_iff] at computed
+  obtain ⟨state, found, pulled, processed, block, _, epoch, _, computed⟩ := computed
+  have update : ∀ (s : Store preset fork) j f,
+      (s.updateCheckpoints j f).unrealizedJustifications = s.unrealizedJustifications := by
+    intro s j f
+    unfold Store.updateCheckpoints
+    split <;> dsimp only <;> split <;> rfl
+  have pending : ∀ (s : Store preset fork) j f,
+      (s.updateUnrealizedCheckpoints j f).unrealizedJustifications = s.unrealizedJustifications := by
+    intro s j f
+    unfold Store.updateUnrealizedCheckpoints
+    split <;> dsimp only <;> split <;> rfl
+  have cache : after.unrealizedJustifications =
+      store.unrealizedJustifications.insert root pulled.currentJustifiedCheckpoint := by
+    split at computed <;> simp only [pure, Except.pure, Except.ok.injEq] at computed <;>
+      subst after
+    all_goals simp only [update, pending]
+  rw [cache, getElem?_insert_root] at entry
+  by_cases same : root = key
+  · simp only [same, ↓reduceIte, Option.some.injEq] at entry
+    exact .inr ⟨state, pulled, states.symm ▸ same ▸ Store.blockState_ok_iff.mp found,
+      mapError_ok_iff.mp processed, entry⟩
+  · exact .inl (by simpa [same] using entry)
+
+/-- Block import retains old cache entries or computes the entry at its new block. -/
+private theorem walk_block_cache {store after : Store preset fork}
+    {checks : SignatureChecks} {sources : BlockSources preset fork}
+    {signed : SignedBeaconBlock preset fork} {key : Root} {checkpoint : Checkpoint}
+    (added : store.onBlock config checks sources signed = .ok after)
+    (entry : after.unrealizedJustifications[key]? = some checkpoint) :
+    store.unrealizedJustifications[key]? = some checkpoint ∨
+      ∃ state pulled, after.blockStates[key]? = some state ∧
+        processJustificationAndFinalization state = .ok pulled ∧
+        pulled.currentJustifiedCheckpoint = checkpoint := by
+  cases root : Serialization.Ssz.SszType.hashTreeRoot signed.message with
+  | error err => simp [Store.onBlock, root, bind, Except.bind, Except.mapError] at added
+  | ok blockRoot =>
+    by_cases known : store.blocks.contains blockRoot
+    · rw [Store.onBlock_known root known] at added
+      cases added
+      exact .inl entry
+    simp only [Store.onBlock, root, known, bind, Except.bind, Except.mapError, ↓reduceIte,
+      Bool.false_eq_true] at added
+    unfold Store.addBlock at added
+    simp only [bind_ok_iff] at added
+    obtain ⟨state, _, head, _, voted, vote, recorded, record, boosted, boost, added⟩ := added
+    obtain ⟨_, _, rfl⟩ := Store.recordBlockPtcVotes_onlyPtcVotes vote
+    have recordedCache : recorded.unrealizedJustifications = store.unrealizedJustifications := by
+      unfold Store.recordBlockTimeliness at record
+      simp only [bind_ok_iff, pure, Except.pure] at record
+      obtain ⟨_, _, _, _, _, _, _, _, record⟩ := record
+      split at record
+      · simp only [bind_ok_iff, Except.ok.injEq] at record
+        obtain ⟨_, _, rfl⟩ := record
+        rfl
+      · cases record
+        rfl
+    have boostedCache : boosted.unrealizedJustifications = store.unrealizedJustifications := by
+      unfold Store.updateProposerBoostRoot at boost
+      split at boost
+      rotate_left
+      · simp [throw, throwThe, MonadExceptOf.throw, bind, Except.bind] at boost
+      simp only [bind_ok_iff, pure_bind] at boost
+      obtain ⟨_, _, _, _, _, _, boost⟩ := boost
+      split at boost <;> simp only [pure, Except.pure, Except.ok.injEq] at boost <;>
+        subst boosted <;> exact recordedCache
+    rcases walk_pulled_cache added entry with old | fresh
+    · left
+      have kept : (boosted.updateCheckpoints state.currentJustifiedCheckpoint
+          state.finalizedCheckpoint).unrealizedJustifications = boosted.unrealizedJustifications := by
+        unfold Store.updateCheckpoints
+        split <;> dsimp only <;> split <;> rfl
+      rwa [kept, boostedCache] at old
+    · exact .inr fresh
+
+/-- Every pull-up cache entry comes from its own block state, except the anchor entry. -/
+private theorem walk_cache_origin {store : Store preset fork}
+    (reachable : Store.Reachable config anchorState anchorBlock store)
+    (before : fork < .glamsterdam) {key : Root} {checkpoint : Checkpoint}
+    (entry : store.unrealizedJustifications[key]? = some checkpoint) :
+    checkpoint.epoch = getCurrentEpoch anchorState ∨
+      ∃ state pulled, store.blockStates[key]? = some state ∧
+        processJustificationAndFinalization state = .ok pulled ∧
+        pulled.currentJustifiedCheckpoint = checkpoint := by
+  induction reachable with
+  | anchor made =>
+    unfold getForkchoiceStore at made
+    simp only [bind_ok_iff] at made
+    obtain ⟨stateRoot, _, made⟩ := made
+    split at made
+    · cases made
+    · simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at made
+      obtain ⟨root, _, time, _, rfl⟩ := made
+      rw [getElem?_insert_root] at entry
+      split at entry
+      · cases Option.some.inj entry
+        exact .inl rfl
+      · simp at entry
+  | tick prior ticked ih =>
+    rw [walk_tick_cache ticked] at entry
+    rcases ih entry with old | ⟨state, pulled, held, processed, same⟩
+    · exact .inl old
+    · exact .inr ⟨state, pulled, (Store.onTick_frame ticked).2.2.2.symm ▸ held,
+        processed, same⟩
+  | @block prior after checks sources signed reachable added ih =>
+    rcases walk_block_cache added entry with old | fresh
+    · rcases ih old with old | ⟨state, pulled, held, processed, same⟩
+      · exact .inl old
+      · right
+        refine ⟨state, pulled, ?_, processed, same⟩
+        rcases Store.onBlock_same_or_insert added with eq |
+          ⟨newRoot, _, fresh, _, _, _, _, _, states⟩
+        · exact eq ▸ held
+        have other : newRoot ≠ key := by
+          rintro rfl
+          rw [reachable.blockState_eq_none fresh] at held
+          cases held
+        rw [states, getElem?_insert_root]
+        simpa only [other, ↓reduceIte] using held
+    · exact .inr fresh
+  | attestation prior attested ih =>
+    rw [walk_attestation_cache attested] at entry
+    rcases ih entry with old | ⟨state, pulled, held, processed, same⟩
+    · exact .inl old
+    · exact .inr ⟨state, pulled, (Store.onAttestation_frame attested).2.2.symm ▸ held,
+        processed, same⟩
+  | attesterSlashing prior slashed ih =>
+    unfold Store.onAttesterSlashing at slashed
+    simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at slashed
+    obtain ⟨_, _, rfl⟩ := slashed
+    exact ih entry
+  | payloadAttestation => exact False.elim (Nat.not_le_of_lt before ‹.glamsterdam ≤ fork›)
+  | envelope => exact False.elim (Nat.not_le_of_lt before ‹.glamsterdam ≤ fork›)
+  | inclusionList =>
+    exact False.elim (Nat.not_le_of_lt before
+      (Nat.le_trans (by decide : Fork.glamsterdam ≤ Fork.hegota) ‹.hegota ≤ fork›))
+
 /-- Checkpoint provenance can depend on the block whose state holds the checkpoint. -/
 private theorem walk_indexed_checkpoints {store : Store preset fork}
     (reachable : Store.Reachable config anchorState anchorBlock store)
