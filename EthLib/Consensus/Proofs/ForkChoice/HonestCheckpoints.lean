@@ -2000,16 +2000,77 @@ theorem Store.counts_of_fixedChecks {store : Store preset fork}
   · exact .inl same
   · exact .inr ⟨checks, slot, childRoot, child, held, parent, before, processed⟩
 
-/-- A counted index for an epoch after the anchor has a sent vote for the complete link.
+/-- A counted index for a source after the anchor has a sent vote for the complete link.
 
 The counting state uses the execution's checks.
+
+The justified checkpoint that the state holds for the epoch of the count is after the anchor.
+
+A first-epoch anchor may hold two justified checkpoints of its epoch, with different roots.
+
+Then at the third epoch the previous-epoch flags may come from votes with either as source.
+
+Both have the anchor's epoch, so this bound excludes that case.
+
+It also excludes inherited anchor participation.
+
+It does not assert a provenance invariant for that participation.
+
+The participation and message provenance proof is unfinished. -/
+theorem Execution.exists_sent_link_of_counted {anchor : Store preset fork}
+    (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (sound : Invariant anchorState)
+    (positive : 0 < preset.SLOTS_PER_EPOCH.toNat)
+    (window : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
+    (ring : preset.MIN_SEED_LOOKAHEAD.toNat + 2 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
+    (preGloas : fork < .glamsterdam)
+    {w : ValidatorIndex} (honest : w ∈ J) (start : e.start w = anchor) {k : ℕ}
+    (nonzero : ∀ (root : Root) (block : BeaconBlock preset fork),
+      ((e.world k).state w).blocks[root]? = some block →
+      block.stateRoot ≠ Vector.replicate 32 0)
+    {root : Root} {base state : BeaconState preset fork}
+    (found : ((e.world k).state w).blockStates[root]? = some base)
+    (advanced : state = base ∨ ∃ (slot : Slot) (childRoot : Root)
+      (child : BeaconBlock preset fork), ((e.world k).state w).blocks[childRoot]? = some child ∧
+        child.parentRoot = root ∧ slot ≤ child.slot ∧
+        processSlots config checks base slot = .ok state)
+    (late : ¬getCurrentEpoch state ≤ GENESIS_EPOCH + 1)
+    (recent : Bool)
+    (above : getCurrentEpoch anchorState < (if recent then state.currentJustifiedCheckpoint
+      else state.previousJustifiedCheckpoint).epoch)
+    {indices : List ValidatorIndex}
+    (counted : (∃ altair : .altair ≤ fork,
+      getUnslashedParticipatingIndices state altair TIMELY_TARGET_FLAG_INDEX
+        (if recent then getCurrentEpoch state else getPreviousEpoch state) = .ok indices) ∨
+      ∃ (before : fork < .altair) (attestations : Array (PendingAttestation preset)),
+        getMatchingTargetAttestations state before
+          (if recent then getCurrentEpoch state else getPreviousEpoch state) = .ok attestations ∧
+        getUnslashedAttestingIndices state attestations = .ok indices)
+    {v : ValidatorIndex} (member : v ∈ indices)
+    {slot : Slot} (slotOk : ((e.world k).state w).getCurrentSlot config = .ok slot) :
+    v ∈ quorumVoters state ∧ ∃ data,
+      LinkVote state recent v.toNat (v, data) ∧
+      ∃ m ∈ (e.world k).sent,
+        (v, data) ∈ statements config checks anchorState anchorBlock m ∧ data.slot < slot := by
+  sorry
+/-- A counted index for an epoch after the anchor has a sent vote for the counted target.
+
+The counting state uses the execution's checks.
+
+The vote has the target epoch of the count, and the target root that the state records for it.
+
+Its source is not fixed: at the third epoch, an anchor of the first epoch may leave two sources.
+
+There the previous-epoch flags come from votes with the current justified checkpoint as source.
+
+Votes included in the third epoch for the previous target carry the previous one instead.
 
 The recent epoch restriction excludes inherited anchor participation.
 
 It does not assert a provenance invariant for that participation.
 
 The participation and message provenance proof is unfinished. -/
-theorem Execution.exists_sent_link_of_counted {anchor : Store preset fork}
+theorem Execution.exists_sent_target_of_counted {anchor : Store preset fork}
     (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
     (sound : Invariant anchorState)
     (positive : 0 < preset.SLOTS_PER_EPOCH.toNat)
@@ -2041,7 +2102,8 @@ theorem Execution.exists_sent_link_of_counted {anchor : Store preset fork}
     {v : ValidatorIndex} (member : v ∈ indices)
     {slot : Slot} (slotOk : ((e.world k).state w).getCurrentSlot config = .ok slot) :
     v ∈ quorumVoters state ∧ ∃ data,
-      LinkVote state recent v.toNat (v, data) ∧
+      data.target.epoch = (if recent then getCurrentEpoch state else getPreviousEpoch state) ∧
+      getBlockRoot state data.target.epoch = .ok data.target.root ∧
       ∃ m ∈ (e.world k).sent,
         (v, data) ∈ statements config checks anchorState anchorBlock m ∧ data.slot < slot := by
   sorry
@@ -2065,8 +2127,8 @@ theorem Execution.exists_sent_source_of_counted {anchor : Store preset fork}
         child.parentRoot = root ∧ slot ≤ child.slot ∧
         processSlots config checks base slot = .ok state)
     (late : ¬getCurrentEpoch state ≤ GENESIS_EPOCH + 1) (recent : Bool)
-    (later : getCurrentEpoch anchorState <
-      (if recent then getCurrentEpoch state else getPreviousEpoch state))
+    (above : getCurrentEpoch anchorState < (if recent then state.currentJustifiedCheckpoint
+      else state.previousJustifiedCheckpoint).epoch)
     {indices : List ValidatorIndex}
     (counted : (∃ altair : .altair ≤ fork,
       getUnslashedParticipatingIndices state altair TIMELY_TARGET_FLAG_INDEX
@@ -2100,7 +2162,7 @@ theorem Execution.exists_sent_source_of_counted {anchor : Store preset fork}
     intro v member
     obtain ⟨quorum, data, link, m, sent, statement, -⟩ :=
       e.exists_sent_link_of_counted anchored sound positive window ring preGloas honest start
-        nonzero found advanced late recent later counted member slotOk
+        nonzero found advanced late recent above counted member slotOk
     exact ⟨quorum, data, ⟨m, sent, statement⟩, link⟩
   obtain ⟨v, data, good, signed, link⟩ := exists_linkVote_of_justificationTest totalOk
     balanceOk thresholdOk weightOk passed large provenance p few
@@ -2178,15 +2240,8 @@ theorem Execution.blockState_sent_sources {anchor : Store preset fork}
       · exact .inr ⟨middle.slot, childRoot, child, held, parent, UInt64.le_of_lt before,
           processed⟩
     have counts := Store.counts_of_fixedChecks found advanced
-    have later : getCurrentEpoch anchorState <
-        (if recent then getCurrentEpoch middle else getPreviousEpoch middle) := by
-      cases recent
-      · exact UInt64.lt_of_lt_of_le above
-          (UInt64.le_trans middleSound.ordered.2 middleSound.settled)
-      · exact UInt64.lt_of_lt_of_le above
-          (UInt64.le_trans middleSound.settled (getPreviousEpoch_le middle))
     exact e.exists_sent_source_of_counted anchored sound positive window ring preGloas honest start
-      nonzero found advanced late recent later counted slotOk totalOk balanceOk thresholdOk weightOk
+      nonzero found advanced late recent above counted slotOk totalOk balanceOk thresholdOk weightOk
       passed (large middle counts bound) p (few middle total counts bound totalOk)
 
 /-- Pulling up a held state retains historical sources and adds its current passing counts. -/
@@ -2239,15 +2294,8 @@ theorem Execution.pulledState_sent_sources {anchor : Store preset fork}
   intro late recent indices total balance threshold weight counted totalOk balanceOk thresholdOk
     weightOk passed above
   have counts := Store.counts_of_fixedChecks (config := config) (checks := checks) stored (.inl rfl)
-  have later : getCurrentEpoch anchorState <
-      (if recent then getCurrentEpoch state else getPreviousEpoch state) := by
-    cases recent
-    · exact UInt64.lt_of_lt_of_le above
-        (UInt64.le_trans stateSound.ordered.2 stateSound.settled)
-    · exact UInt64.lt_of_lt_of_le above
-        (UInt64.le_trans stateSound.settled (getPreviousEpoch_le state))
   exact e.exists_sent_source_of_counted anchored sound positive window ring preGloas honest start
-    nonzero stored (.inl rfl) late recent later counted slotOk totalOk balanceOk thresholdOk
+    nonzero stored (.inl rfl) late recent above counted slotOk totalOk balanceOk thresholdOk
     weightOk passed (large state counts bounded) p (few state total counts bounded totalOk)
 
 /-- The count: a set of validators signs a justified checkpoint when the others cannot.
