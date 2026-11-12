@@ -1931,7 +1931,7 @@ Its hypotheses are obligations of the caller, not facts established by declaring
 | `preGloas` | The fork is before Gloas. |
 | `oneBlock` (`OneBlockPerRoot`) | Honest stores hold the same block at every shared root through `limit`, including across events. |
 | `admitted` (`BlocksAdmitted`) | A delayed block from an honest view passes the remaining handler checks when block validation succeeds at the receiver. |
-| `included` (`TargetIncluded`) | A safe target with an honest quorum has a descendant carrying its justification by the specified later epochs. |
+| `included` (`TargetIncluded`) | Take a target with a counted honest quorum, and a block with that checkpoint that is safe from the start of epoch `target + 1`. From epoch `target + 2`, each honest store holds a descendant of the block, of an epoch before `target + 2`, whose unrealized justification is of the target's epoch or later. |
 | `anchored`, `sound`, `anchorSlot`, `anchorAtBoundary`, `start`, `noVotes` | Every honest store starts from the same constructed anchor store, with no latest votes, an invariant anchor state and matching epoch-boundary slots. |
 | `_syncStart` | An anchor after epoch 0 requires execution to start no earlier than epoch `anchorEpoch + MIN_SEED_LOOKAHEAD + 1`, measured from the anchor store's genesis time. |
 | `half`, `slots`, `long`, `window` | The configured Byzantine percentage is at most 50, slot duration is positive, epochs have more than one slot, and history holds two epochs. |
