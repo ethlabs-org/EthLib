@@ -3237,7 +3237,10 @@ theorem Execution.safeAt_of_walk {Δ : ℕ} (sync : e.Synchronous Δ)
       3 * stake (fun v => balanceAt state v.toNat) {v ∈ quorumVoters state | v ∉ J} <
         2 * total.toNat)
     (unslashed : ∀ w ∈ J, ∀ k (state : BeaconState preset fork),
-      ((e.world k).state w).Counts config state → ∀ v ∈ J, NotSlashed state v) :
+      ((e.world k).state w).Counts config state → ∀ v ∈ J, NotSlashed state v)
+    (supply : ∀ w ∈ J, ∀ k (checkpoint : Checkpoint) (state : BeaconState preset fork),
+      ((e.world k).state w).checkpointState checkpoint = .ok state →
+      stake (fun v => balanceAt state v.toNat) (activeVoters state) ≤ stakeCapGwei) :
     ∀ time, (e.world n).time ≤ time → time ≤ limit → SafeAt e time root := by
   classical
   intro time afterCall bounded
@@ -3514,7 +3517,7 @@ theorem Execution.safeAt_of_walk {Δ : ℕ} (sync : e.Synchronous Δ)
     (fun x hx j le => nonzero x hx j (le.trans boundedNow))
     (fun x hx j s le => large x hx j s (le.trans boundedNow))
     (fun x hx j s total le => few x hx j s total (le.trans boundedNow)) unslashed
-    (fun t lo hi => earlier t lo hi member mem) memberOnHead parentHistorical epochOk
+    supply (fun t lo hi => earlier t lo hi member mem) memberOnHead parentHistorical epochOk
     historicalEpochOk recent epochStartOk epochStartTimeOk historicalSafe receiver atNow ready
     memberKnown (fun j le _ => Or.inl (rootFinal j le)) receiverHeadOk parentAbove stateOk currentOk
     receiverEpochOk age receiverLastOk receiverWindowOk scoreOk receiverParticipantsOk
@@ -4013,6 +4016,9 @@ theorem Execution.callInvariant_step {Δ : ℕ} (sync : e.Synchronous Δ)
         threshold * total.toNat)
     (unslashed : ∀ w ∈ J, ∀ k (state : BeaconState preset fork),
       ((e.world k).state w).Counts config state → ∀ v ∈ J, NotSlashed state v)
+    (supply : ∀ w ∈ J, ∀ k (checkpoint : Checkpoint) (state : BeaconState preset fork),
+      ((e.world k).state w).checkpointState checkpoint = .ok state →
+      stake (fun v => balanceAt state v.toNat) (activeVoters state) ≤ stakeCapGwei)
     (positive : 0 < preset.EFFECTIVE_BALANCE_INCREMENT)
     (enough : 3 * threshold < 200)
     (large : ∀ w ∈ J, ∀ k (state : BeaconState preset fork),
@@ -4437,7 +4443,8 @@ theorem Execution.callInvariant_step {Δ : ℕ} (sync : e.Synchronous Δ)
       epochStartTimeOk (fun earlier lower beforeCall => historicalSafe earlier lower (Nat.le_trans (Nat.le_of_lt beforeCall) callBound))
       startFacts.2 weights slack late anchorParent (fun w hw k _ => nonzero w hw k) inHorizon
       (fun w hw k state _ counts epochLe => large w hw k state counts
-        (by have := UInt64.le_iff_toNat_le.mp epochLe; omega)) few unslashed time afterCall bounded
+        (by have := UInt64.le_iff_toNat_le.mp epochLe; omega)) few unslashed supply
+        time afterCall bounded
   have rootMem : after.confirmedRoot ∈ walk ++ after.confirmedRoot :: later := by simp
   obtain ⟨rootBlock, startBlock, rootBlockOk, startBlockOk, rootLater⟩ :=
     Store.slot_lt_of_mem_getAncestorRoots walked (by simp) rootMem
@@ -4558,6 +4565,10 @@ Each counting state bounds Byzantine current-or-previous-epoch voters against it
 
 This bound gives an honest signer directly, without a reference-state drift.
 
+Each checkpoint state that an honest store reads has at most `stakeCapGwei` of active stake.
+
+That cap, one billion ether, keeps the sums of balances that the rule reads within 64 bits.
+
 The margin covers the drift of such a state from the pulled-up state of a head, over two epochs.
 
 Each block that an honest store holds has a nonzero state root.
@@ -4613,6 +4624,9 @@ theorem Execution.safeAt_confirmedRoot {Δ : ℕ} (sync : e.Synchronous Δ)
         threshold * total.toNat)
     (unslashed : ∀ w ∈ J, ∀ k (state : BeaconState preset fork),
       ((e.world k).state w).Counts config state → ∀ v ∈ J, NotSlashed state v)
+    (supply : ∀ w ∈ J, ∀ k (checkpoint : Checkpoint) (state : BeaconState preset fork),
+      ((e.world k).state w).checkpointState checkpoint = .ok state →
+      stake (fun v => balanceAt state v.toNat) (activeVoters state) ≤ stakeCapGwei)
     (positive : 0 < preset.EFFECTIVE_BALANCE_INCREMENT)
     (enough : 3 * threshold < 200)
     (large : ∀ w ∈ J, ∀ k (state : BeaconState preset fork),
@@ -4670,7 +4684,7 @@ theorem Execution.safeAt_confirmedRoot {Δ : ℕ} (sync : e.Synchronous Δ)
       intro n fcr after calls
       exact e.callInvariant_step sync half slots long window lookahead votes fits prompt committees
         follows preGloas oneBlock admitted included anchored sound anchorSlot anchorAtBoundary
-        start noVotes maxAligned increment chain unique byzantine unslashed positive enough
+        start noVotes maxAligned increment chain unique byzantine unslashed supply positive enough
         large nonzero headDrifts caller upToDate lower atSlots bounds inHorizon anchorParent calls
         fun i' lt n' fcr' after' calls' => ih i' lt n' fcr' after' calls'
   -- The last call of the run stores the block that the run returns.
