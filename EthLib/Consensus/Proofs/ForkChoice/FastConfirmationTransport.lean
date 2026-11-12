@@ -1328,6 +1328,308 @@ private theorem maximum_of_same_slotCommittees {left right : Store preset fork}
     exact committeeWindow_transfer windowRead same
   · exact read
 
+/-- A recent counted supporter belongs to every head-committee window containing its vote. -/
+private theorem supporters_mem_committeeWindow {limit : Nat}
+    (committees : CommitteesFollow e limit)
+    {u : ValidatorIndex} (caller : u ∈ J) {n : Nat} (bounded : (e.world n).time ≤ limit)
+    {head : ForkChoiceNode} {headState source : BeaconState preset fork}
+    {current : Epoch} {root : Root} {block : BeaconBlock preset fork}
+    {slot first last : Slot} {participants : Std.TreeSet ValidatorIndex}
+    (origins : ((e.world n).state u).VotesHaveOrigins config)
+    (headOk : ((e.world n).state u).getHead config = .ok head)
+    (stateOk : ((e.world n).state u).blockState head.root = .ok headState)
+    (slotOk : ((e.world n).state u).getCurrentSlot config = .ok slot)
+    (epochOk : ((e.world n).state u).getCurrentStoreEpoch config = .ok current)
+    (blockOk : ((e.world n).state u).block root = .ok block)
+    (recent : current.toNat ≤ (computeEpochAtSlot preset block.slot).toNat + 1)
+    (firstLe : first ≤ block.slot) (lastOk : subChecked slot 1 = .ok last)
+    (windowOk : ((e.world n).state u).getCommitteesBetweenSlots head.root first last =
+      .ok participants) :
+    ∀ v ∈ ((e.world n).state u).supportersOf source ⟨root, .pending⟩,
+      v ∈ participants := by
+  intro v supporter
+  obtain ⟨attestation, _, origin, blockLe, high⟩ :=
+    origins.slot_mem_range_of_mem_supportersOf blockOk (UInt64.le_refl _) slotOk lastOk supporter
+  have epochEq : current = computeEpochAtSlot preset slot := by
+    simpa [Store.getCurrentStoreEpoch, slotOk, bind, Except.bind, pure, Except.pure] using
+      epochOk.symm
+  have monotone {a b : Slot} (le : a ≤ b) :
+      (computeEpochAtSlot preset a).toNat ≤ (computeEpochAtSlot preset b).toNat := by
+    simp only [computeEpochAtSlot, UInt64.toNat_div]
+    exact Nat.div_le_div_right (UInt64.le_iff_toNat_le.mp le)
+  obtain ⟨readSlot, readOk, past⟩ := origin.past
+  rw [slotOk, Except.ok.injEq] at readOk
+  subst readSlot
+  have targetPast : attestation.data.target.epoch.toNat ≤ current.toNat := by
+    rw [origin.targetEpoch, epochEq]
+    exact monotone (UInt64.le_of_lt past)
+  have targetRecent : current.toNat ≤ attestation.data.target.epoch.toNat + 1 := by
+    rw [origin.targetEpoch]
+    exact recent.trans (Nat.add_le_add_right (monotone blockLe) 1)
+  obtain ⟨targetState, index, committee, targetOk, below, committeeOk, member⟩ :=
+    origin.exists_mem_committee
+  obtain ⟨common, headRun, targetRun, final, fixed, headRing, targetRing⟩ :=
+    committees.common u caller n bounded head headState current v attestation targetState
+      headOk stateOk epochOk targetPast targetRecent origin targetOk
+  have headKept := headRun.committeesKept final fixed headRing
+  have targetKept := targetRun.committeesKept final fixed targetRing
+  have same := (headKept attestation.data.slot index origin.targetEpoch.symm).trans
+    (targetKept attestation.data.slot index origin.targetEpoch.symm).symm
+  have active := (headRun.active.getActiveValidatorIndices_eq fixed).trans
+    (targetRun.active.getActiveValidatorIndices_eq fixed).symm
+  have count :
+      getCommitteeCountPerSlot headState (computeEpochAtSlot preset attestation.data.slot) =
+      getCommitteeCountPerSlot targetState (computeEpochAtSlot preset attestation.data.slot) := by
+    simp only [← origin.targetEpoch, getCommitteeCountPerSlot, active]
+  exact Store.mem_getCommitteesBetweenSlots windowOk (UInt64.le_trans firstLe blockLe) high
+    stateOk (count ▸ below) (same.trans committeeOk) member
+
+/-- Removing Byzantine counted votes preserves the raw confirmation margin, including its shift. -/
+private theorem honest_margin_of_raw_bound {store : Store preset fork}
+    [DecidablePred (· ∈ J)] {head root : Root} {source : BeaconState preset fork}
+    {first last : Slot} {participants : Std.TreeSet ValidatorIndex}
+    {maximum score support discount adversary : Gwei} {shift : Nat}
+    (within : source.RegistryWithinLimit)
+    (supportOk : store.scoreFromTally (store.tallyVotes source) ⟨root, .pending⟩ = .ok support)
+    (rangeOk : store.computeAdversarialWeight config head source first last = .ok adversary)
+    (participantsOk : store.getCommitteesBetweenSlots head first last = .ok participants)
+    (supportersIn : ∀ v ∈ store.supportersOf source ⟨root, .pending⟩, v ∈ participants)
+    (aligned : EffectiveBalancesAligned source)
+    (increment : preset.EFFECTIVE_BALANCE_INCREMENT.toNat % 100 = 0)
+    (dishonest : ∀ v ∈ store.equivocatingIndices, v ∉ J)
+    (byzantine : ByzantineStakeAtMost (fun v => balanceAt source v.toNat)
+      (Store.activeMembers source participants) J
+      config.CONFIRMATION_BYZANTINE_THRESHOLD.toNat 100)
+    (base : maximum.toNat + score.toNat + 2 * adversary.toNat + shift <
+      discount.toNat + 2 * support.toNat) :
+    maximum.toNat + score.toNat + shift < discount.toNat +
+      2 * stake (fun v => balanceAt source v.toNat)
+        {v ∈ store.supportersOf source ⟨root, .pending⟩ | v ∈ J} := by
+  obtain ⟨weight, equivocation, weightOk, equivocationOk⟩ :=
+    Store.computeAdversarialWeight_eq_ok rangeOk
+  obtain ⟨found, foundOk, equivocators⟩ :=
+    Store.exists_stake_equivocatorsOf_of_getEquivocationScore equivocationOk
+  rw [participantsOk, Except.ok.injEq] at foundOk
+  subst found
+  have cover := Store.threshold_mul_stake_le_of_computeAdversarialWeight weightOk equivocationOk
+    rangeOk (Store.stake_le_computeCommitteeWeightBetweenSlots participantsOk weightOk
+      fun v member => Store.mem_activeMembers.mp member)
+    (fun v _ => Nat.mod_eq_zero_of_dvd (dvd_balanceAt_of_aligned aligned
+      (Nat.dvd_of_mod_eq_zero increment) v.toNat))
+  rw [← equivocators] at cover
+  have clean := Models.ForkChoice.sub_le_honest_support byzantine
+    (fun v member => Finset.mem_filter.mpr ⟨List.mem_toFinset.mpr
+      (Std.TreeSet.mem_toList.mpr (supportersIn v member)),
+        Store.isActiveAt_of_mem_supportersOf within member⟩)
+    Store.equivocatorsOf_subset_activeMembers Store.disjoint_supportersOf_equivocatorsOf
+    (fun v member => dishonest v (Finset.mem_filter.mp member).2) cover
+  rw [Store.stake_supportersOf within supportOk] at clean
+  omega
+
+/-- The raw check of a recent block gives an honest margin at the caller, with its shift. -/
+private theorem honest_margin_of_recent_check {limit : Nat}
+    [DecidablePred (· ∈ J)] (committees : CommitteesFollow e limit)
+    {u : ValidatorIndex} (caller : u ∈ J) {n : Nat} (bounded : (e.world n).time ≤ limit)
+    {head : ForkChoiceNode} {headState source : BeaconState preset fork}
+    {current : Epoch} {root : Root} {block : BeaconBlock preset fork}
+    {slot last : Slot} {maximum score support discount adversary : Gwei}
+    {shift parentStake : Nat}
+    (origins : ((e.world n).state u).VotesHaveOrigins config)
+    (headOk : ((e.world n).state u).getHead config = .ok head)
+    (stateOk : ((e.world n).state u).blockState head.root = .ok headState)
+    (slotOk : ((e.world n).state u).getCurrentSlot config = .ok slot)
+    (epochOk : ((e.world n).state u).getCurrentStoreEpoch config = .ok current)
+    (blockOk : ((e.world n).state u).block root = .ok block)
+    (recent : current.toNat ≤ (computeEpochAtSlot preset block.slot).toNat + 1)
+    (lastOk : subChecked slot 1 = .ok last)
+    (within : source.RegistryWithinLimit)
+    (supportOk : ((e.world n).state u).scoreFromTally
+      (((e.world n).state u).tallyVotes source) ⟨root, .pending⟩ = .ok support)
+    (adversaryOk : ((e.world n).state u).getAdversarialWeight config head.root source root =
+      .ok adversary)
+    (aligned : EffectiveBalancesAligned source)
+    (increment : preset.EFFECTIVE_BALANCE_INCREMENT.toNat % 100 = 0)
+    (dishonest : ∀ v ∈ ((e.world n).state u).equivocatingIndices, v ∉ J)
+    (byzantine : ∀ first last participants,
+      ((e.world n).state u).getCommitteesBetweenSlots head.root first last = .ok participants →
+      ByzantineStakeAtMost (fun v => balanceAt source v.toNat)
+        (Store.activeMembers source participants) J
+        config.CONFIRMATION_BYZANTINE_THRESHOLD.toNat 100)
+    (base : maximum.toNat + score.toNat + 2 * adversary.toNat + shift <
+      discount.toNat + 2 * support.toNat)
+    (parentBound : discount.toNat ≤ parentStake) :
+    maximum.toNat + score.toNat + shift < parentStake +
+      2 * stake (fun v => balanceAt source v.toNat)
+        {v ∈ ((e.world n).state u).supportersOf source ⟨root, .pending⟩ | v ∈ J} := by
+  obtain ⟨readSlot, readBlock, start, readLast, readSlotOk, readBlockOk, readLastOk,
+    startOk, rangeOk⟩ := Store.getAdversarialWeight_eq_ok adversaryOk
+  rw [slotOk, Except.ok.injEq] at readSlotOk
+  subst readSlot
+  rw [blockOk, Except.ok.injEq] at readBlockOk
+  subst readBlock
+  rw [lastOk, Except.ok.injEq] at readLastOk
+  subst readLast
+  obtain ⟨weight, equivocation, _, equivocationOk⟩ := Store.computeAdversarialWeight_eq_ok rangeOk
+  obtain ⟨participants, participantsOk, _⟩ :=
+    Store.exists_stake_equivocatorsOf_of_getEquivocationScore equivocationOk
+  have startLe : start ≤ block.slot := by
+    rcases startOk with rfl | boundary
+    · exact UInt64.le_refl _
+    · apply UInt64.le_iff_toNat_le.mpr
+      rw [(computeStartSlotAtEpoch_ok_iff.mp boundary).2]
+      exact Nat.div_mul_le_self _ _
+  have inside := supporters_mem_committeeWindow committees caller bounded origins headOk stateOk
+    slotOk epochOk blockOk recent startLe lastOk participantsOk (source := source)
+  exact (honest_margin_of_raw_bound within supportOk rangeOk participantsOk inside aligned
+    increment dishonest (byzantine _ _ _ participantsOk) base).trans_le
+    (Nat.add_le_add_right parentBound _)
+
+/-- Disjoint child supporters and parent voters can move to child support without losing weight. -/
+private theorem stake_le_of_supporter_parent_transport {α : Type} [DecidableEq α]
+    (weight targetWeight : α → Nat) (supporters parents targetSupporters targetParents : Finset α)
+    (apart : Disjoint supporters parents)
+    (weights : ∀ v, weight v ≤ targetWeight v)
+    (support : ∀ v ∈ supporters, 0 < weight v → v ∈ targetSupporters)
+    (parent : ∀ v ∈ parents, 0 < weight v → v ∈ targetSupporters ∨ v ∈ targetParents) :
+    2 * stake weight supporters + stake weight parents ≤
+      2 * stake targetWeight targetSupporters + stake targetWeight targetParents := by
+  let all := supporters ∪ parents ∪ targetSupporters ∪ targetParents
+  have indicator (members : Finset α) (value : α → Nat) (inside : members ⊆ all) :
+      (∑ v ∈ all, if v ∈ members then value v else 0) = stake value members := by
+    rw [← Finset.sum_filter]
+    have filtered : all.filter (fun v => v ∈ members) = members := by
+      ext v
+      simp only [Finset.mem_filter]
+      exact ⟨fun h => h.2, fun h => ⟨inside h, h⟩⟩
+    rw [filtered]
+    rfl
+  have pointwise := Finset.sum_le_sum (s := all)
+    (f := fun v => 2 * (if v ∈ supporters then weight v else 0) +
+      (if v ∈ parents then weight v else 0))
+    (g := fun v => 2 * (if v ∈ targetSupporters then targetWeight v else 0) +
+      (if v ∈ targetParents then targetWeight v else 0)) (fun v _ => by
+      have disjoint : v ∈ supporters → v ∈ parents → False :=
+        fun hs hp => Finset.disjoint_left.mp apart hs hp
+      have bounded := weights v
+      by_cases zero : weight v = 0
+      · simp only [zero, ite_self, Nat.mul_zero, Nat.zero_add]
+        exact Nat.zero_le _
+      have positive : 0 < weight v := Nat.pos_of_ne_zero zero
+      by_cases hs : v ∈ supporters
+      · have child := support v hs positive
+        simp only [ite_eq_left hs, ite_eq_right (disjoint hs), ite_eq_left child]
+        omega
+      by_cases hp : v ∈ parents
+      · rcases parent v hp positive with child | stays
+        · simp only [ite_eq_right hs, ite_eq_left hp, ite_eq_left child]
+          omega
+        · simp only [ite_eq_right hs, ite_eq_left hp, ite_eq_left stays]
+          omega
+      · simp only [ite_eq_right hs, ite_eq_right hp, Nat.mul_zero, Nat.zero_add]
+        exact Nat.zero_le _)
+  simpa only [Finset.sum_add_distrib, ← Finset.mul_sum,
+    indicator supporters weight (by intro v h; simp [all, h]),
+    indicator parents weight (by intro v h; simp [all, h]),
+    indicator targetSupporters targetWeight (by intro v h; simp [all, h]),
+    indicator targetParents targetWeight (by intro v h; simp [all, h])] using pointwise
+
+/-- A counted child supporter cannot have its latest vote at the strictly earlier parent. -/
+private theorem disjoint_supporters_parentVoters {store : Store preset fork}
+    {source : BeaconState preset fork} {root : Root} {block parentBlock : BeaconBlock preset fork}
+    {participants : Std.TreeSet ValidatorIndex}
+    (known : store.blocks[root]? = some block)
+    (parentKnown : store.blocks[block.parentRoot]? = some parentBlock)
+    (earlier : parentBlock.slot < block.slot) :
+    Disjoint (store.supportersOf source ⟨root, .pending⟩)
+      (store.parentVotersOf source participants block parentBlock) := by
+  apply Finset.disjoint_left.mpr
+  intro v supporter parent
+  obtain ⟨message, supported, latest, _, supportedOk, descends⟩ :=
+    Store.exists_of_voteCountsFor _ (Store.voteCountsFor_of_mem_supportersOf supporter)
+  obtain ⟨_, _, _, other, otherSupported, otherLatest, otherOk, which⟩ :=
+    Store.mem_parentVotersOf.mp parent
+  rw [latest, Option.some.injEq] at otherLatest
+  subst other
+  rw [supportedOk, Except.ok.injEq] at otherOk
+  subst otherSupported
+  have rootEq : supported.root = block.parentRoot := by
+    rcases which with rfl | rfl <;> rfl
+  obtain ⟨found, foundOk, le⟩ := Store.slot_le_of_isAncestor known descends
+  rw [rootEq, parentKnown, Option.some.injEq] at foundOk
+  subst found
+  exact (UInt64.not_le.mpr earlier) le
+
+/-- A complete caller window preserves its honest margin through balance and vote transport. -/
+private theorem honest_support_of_complete_window {store : Store preset fork}
+    [DecidablePred (· ∈ J)] {source state : BeaconState preset fork}
+    {root : Root} {block parentBlock : BeaconBlock preset fork}
+    {participants window : Std.TreeSet ValidatorIndex} {supporters parents : Finset ValidatorIndex}
+    {sourceMaximum sourceScore maximum score : Gwei} {shift : Nat} {head : Root}
+    {first last : Slot}
+    (apart : Disjoint supporters parents)
+    (supporterHonest : ∀ v ∈ supporters, v ∈ J)
+    (parentHonest : ∀ v ∈ parents, v ∈ J)
+    (sourceMargin : sourceMaximum.toNat + sourceScore.toNat + shift <
+      stake (fun v => balanceAt source v.toNat) parents +
+        2 * stake (fun v => balanceAt source v.toNat) supporters)
+    (margin : 2 * stake (fun v => balanceAt source v.toNat) supporters +
+        stake (fun v => balanceAt source v.toNat) parents + maximum.toNat + score.toNat ≤
+      2 * stake (fun v => if v ∈ ((unslashedActiveBalances state).map (·.1)).toFinset
+        then balanceAt state v.toNat else 0) supporters +
+      stake (fun v => if v ∈ ((unslashedActiveBalances state).map (·.1)).toFinset
+        then balanceAt state v.toNat else 0) parents +
+      sourceMaximum.toNat + sourceScore.toNat + shift)
+    (within : state.RegistryWithinLimit)
+    (complete : isFullValidatorSetCovered preset first last = .ok true)
+    (maximumOk : store.computeCommitteeWeightBetweenSlots head state first last = .ok maximum)
+    (support : ∀ v ∈ supporters,
+      v ∈ ((unslashedActiveBalances state).map (·.1)).toFinset →
+      v ∈ store.supportersOf state ⟨root, .pending⟩ ∨
+      store.isAncestor ⟨store.justifiedCheckpoint.root, .pending⟩ ⟨root, .pending⟩ = .ok true)
+    (parent : ∀ v ∈ parents,
+      v ∈ ((unslashedActiveBalances state).map (·.1)).toFinset →
+      (v ∈ store.parentVotersOf state participants block parentBlock ∨
+        v ∈ store.supportersOf state ⟨root, .pending⟩) ∨
+      store.isAncestor ⟨store.justifiedCheckpoint.root, .pending⟩ ⟨root, .pending⟩ = .ok true) :
+    stake (fun v => balanceAt state v.toNat) (Store.activeMembers state window) + score.toNat <
+      stake (fun v => balanceAt state v.toNat)
+        {v ∈ store.parentVotersOf state participants block parentBlock | v ∈ J} +
+      2 * stake (fun v => balanceAt state v.toNat)
+        {v ∈ store.supportersOf state ⟨root, .pending⟩ | v ∈ J} ∨
+      store.isAncestor ⟨store.justifiedCheckpoint.root, .pending⟩ ⟨root, .pending⟩ = .ok true := by
+  by_cases covered : store.isAncestor ⟨store.justifiedCheckpoint.root, .pending⟩
+      ⟨root, .pending⟩ = .ok true
+  · exact .inr covered
+  left
+  have windowBound := (stake_mono (w := fun v => balanceAt state v.toNat)
+    (show Store.activeMembers state window ⊆
+      (getActiveValidatorIndices state (getCurrentEpoch state)).toFinset from by
+        intro v member
+        exact List.mem_toFinset.mpr ((mem_getActiveValidatorIndices within).mpr
+          (Store.mem_activeMembers.mp member).2))).trans
+      (Store.stake_le_computeCommitteeWeightBetweenSlots_of_covered complete maximumOk)
+  have transported := stake_le_of_supporter_parent_transport
+    (fun v => if v ∈ ((unslashedActiveBalances state).map (·.1)).toFinset
+      then balanceAt state v.toNat else 0) (fun v => balanceAt state v.toNat)
+    supporters parents
+    {v ∈ store.supportersOf state ⟨root, .pending⟩ | v ∈ J}
+    {v ∈ store.parentVotersOf state participants block parentBlock | v ∈ J}
+    apart (fun v => by split <;> omega)
+    (fun v member positive => by
+      have active : v ∈ ((unslashedActiveBalances state).map (·.1)).toFinset := by
+        by_contra absent
+        simp only [ite_eq_right absent, Nat.lt_irrefl] at positive
+      exact Finset.mem_filter.mpr
+        ⟨(support v member active).resolve_right covered, supporterHonest v member⟩)
+    (fun v member positive => by
+      have active : v ∈ ((unslashedActiveBalances state).map (·.1)).toFinset := by
+        by_contra absent
+        simp only [ite_eq_right absent, Nat.lt_irrefl] at positive
+      rcases (parent v member active).resolve_right covered with stays | promotes
+      · exact .inr (Finset.mem_filter.mpr ⟨stays, parentHonest v member⟩)
+      · exact .inl (Finset.mem_filter.mpr ⟨promotes, parentHonest v member⟩))
+  omega
+
 /-- A slot committee contains only indices active in the head state's duty epoch. -/
 private theorem active_of_mem_slotCommittee {store : Store preset fork}
     {head : Root} {slot : Slot} {members : Std.TreeSet ValidatorIndex}
@@ -3140,6 +3442,37 @@ theorem Execution.honest_support_of_historical_anchor {Δ : ℕ} (sync : e.Synch
       exact .inl (freshRecordedSupport v honest dutySlot committeeIndex deadline signedAt
         attestation indexed message vote dataSlot dataEpoch delivered low latest rank active)
     · exact .inr covered
+  obtain ⟨callerHeadBlock, callerHeadKnown, _⟩ :=
+    Store.slot_le_of_isAncestor callerParentKnown parentOnHead
+  obtain ⟨callerHeadState, callerHeadStateKnown, _⟩ :=
+    callerReachable.blockStatesFromParents callerHeadKnown
+  have callerBlockAge : callerEpoch.toNat ≤
+      (computeEpochAtSlot preset block.slot).toNat + 1 := by
+    have lower := Nat.div_le_div_right (c := preset.SLOTS_PER_EPOCH.toNat)
+      (UInt64.le_iff_toNat_le.mp (UInt64.le_of_lt parentLower))
+    simp only [computeEpochAtSlot, UInt64.toNat_div] at callerParentAge ⊢
+    omega
+  have sourceHonestParents := honest_margin_of_recent_check committees caller later callerOrigins
+    callerHeadOk
+    (show ((e.world n).state u).blockState callerNode.root = .ok callerHeadState by
+      simpa only [nodeEq] using Store.blockState_ok_iff.mpr callerHeadStateKnown)
+    slotOk callerEpochOk blockOk callerBlockAge lastOk within supportOk
+    (show ((e.world n).state u).getAdversarialWeight config callerNode.root balanceSource root =
+      .ok adversary by simpa only [nodeEq] using adversaryOk)
+    aligned increment (weights.dishonest u caller n later)
+    (fun first last participants read => weights.sourceByzantine u caller n callerNode.root
+      first last participants rfl read) base parentDiscount
+  by_cases oldComplete : isFullValidatorSetCovered preset firstSlot lastSlot = .ok true
+  · exact honest_support_of_complete_window
+      ((disjoint_supporters_parentVoters callerKnown callerParentKnown parentLower).mono
+        (Finset.filter_subset _ _) (Finset.filter_subset _ _))
+      (fun _ member => (Finset.mem_filter.mp member).2)
+      (fun _ member => (Finset.mem_filter.mp member).2)
+      sourceHonestParents transferred (state.validators.bound preGloas) oldComplete
+      receiverMaximumOk oldSupportTransport
+      (fun v member active => oldParentTransport v member (by
+        rw [sameParentParticipants]
+        exact (Store.mem_parentVotersOf.mp (Finset.mem_filter.mp member).1).1) active)
   sorry
 
 
