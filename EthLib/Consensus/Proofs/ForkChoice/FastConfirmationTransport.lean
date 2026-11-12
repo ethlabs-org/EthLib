@@ -98,6 +98,10 @@ Its current epoch is at most two epochs after the epoch of the parent.
 
 Its finalized checkpoints up to that time agree with the block, as `rootFinal` says.
 
+No honest validator is slashed in a state that an honest store counts, as `unslashed` says.
+
+The tally state of the receiver is a lookahead of a held state, and need not be a counting state.
+
 The window of the receiver is the committees of its head between the parent and its own slot.
 
 The conclusion bounds the active members of that window, as `HeadFollowsSupport` reads it.
@@ -176,6 +180,8 @@ theorem Execution.honest_support_of_historical_anchor {Δ : ℕ} (sync : e.Synch
       getCurrentEpoch state ≤ horizon → getTotalActiveBalance state = .ok total →
       3 * stake (fun v => balanceAt state v.toNat) {v ∈ quorumVoters state | v ∉ J} <
         2 * total.toNat)
+    (unslashed : ∀ w ∈ J, ∀ k (state : BeaconState preset fork),
+      ((e.world k).state w).Counts config state → ∀ v ∈ J, NotSlashed state v)
     (safe : ∀ earlier, (e.world n).time ≤ earlier → earlier < time → SafeAt e earlier root)
     (rootOnHead : ((e.world n).state u).isAncestor ⟨head, .pending⟩ ⟨root, .pending⟩ = .ok true)
     {historical : Root} {callerEpoch historicalEpoch : Epoch} {epochStart : Slot}

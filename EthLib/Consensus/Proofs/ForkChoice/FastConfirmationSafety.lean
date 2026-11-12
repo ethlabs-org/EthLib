@@ -1841,6 +1841,8 @@ The parent is of the epoch of the start or later, and the start is of the epoch 
 
 `Execution.mem_activeMembers_of_sibling_vote` gives that containment.
 
+The transport also needs `unslashed`, so that an honest member of the window can support the block.
+
 After one does, the late phase keeps it there.
 
 It uses `Execution.mem_supportersOf_of_duty_epoch` and `Store.isAncestor_getHead_of_missing_weight`.
@@ -1975,7 +1977,9 @@ theorem Execution.safeAt_of_walk {Δ : ℕ} (sync : e.Synchronous Δ)
       (e.world k).time ≤ limit → ((e.world k).state w).Counts config state →
       getCurrentEpoch state ≤ horizon → getTotalActiveBalance state = .ok total →
       3 * stake (fun v => balanceAt state v.toNat) {v ∈ quorumVoters state | v ∉ J} <
-        2 * total.toNat) :
+        2 * total.toNat)
+    (unslashed : ∀ w ∈ J, ∀ k (state : BeaconState preset fork),
+      ((e.world k).state w).Counts config state → ∀ v ∈ J, NotSlashed state v) :
     ∀ time, (e.world n).time ≤ time → time ≤ limit → SafeAt e time root := by
   sorry
 
@@ -2891,7 +2895,7 @@ theorem Execution.callInvariant_step {Δ : ℕ} (sync : e.Synchronous Δ)
       epochStartTimeOk (fun earlier lower beforeCall => historicalSafe earlier lower (Nat.le_trans (Nat.le_of_lt beforeCall) callBound))
       startFacts.2 weights slack late anchorParent (fun w hw k _ => nonzero w hw k) inHorizon
       (fun w hw k state _ counts epochLe => large w hw k state counts
-        (by have := UInt64.le_iff_toNat_le.mp epochLe; omega)) few time afterCall bounded
+        (by have := UInt64.le_iff_toNat_le.mp epochLe; omega)) few unslashed time afterCall bounded
   have rootMem : after.confirmedRoot ∈ walk ++ after.confirmedRoot :: later := by simp
   obtain ⟨rootBlock, startBlock, rootBlockOk, startBlockOk, rootLater⟩ :=
     Store.slot_lt_of_mem_getAncestorRoots walked (by simp) rootMem
