@@ -70,6 +70,92 @@ theorem Execution.data_eq_of_signed_of_target_epoch (slots : 0 < config.SLOT_DUR
   by_contra different
   simp [isSlashableAttestationData, different, epoch] at nonslashable
 
+private theorem mem_insert_fold {v : ValidatorIndex}
+    {items : List ValidatorIndex} {initial : Std.TreeSet ValidatorIndex} :
+    v ∈ items.foldl (·.insert ·) initial ↔ v ∈ initial ∨ v ∈ items := by
+  induction items generalizing initial with
+  | nil => simp
+  | cons first rest ih =>
+    simp only [List.foldl_cons, ih, Std.TreeSet.mem_insert, List.mem_cons,
+      Std.LawfulEqCmp.compare_eq_iff_eq]
+    constructor
+    · rintro ((rfl | inside) | later)
+      · exact .inr (.inl rfl)
+      · exact .inl inside
+      · exact .inr (.inr later)
+    · rintro (inside | rfl | later)
+      · exact .inl (.inr inside)
+      · exact .inl (.inl rfl)
+      · exact .inr later
+
+/-- A slot committee contains only indices active in the head state's duty epoch. -/
+private theorem active_of_mem_slotCommittee {store : Store preset fork}
+    {head : Root} {slot : Slot} {members : Std.TreeSet ValidatorIndex}
+    {headState : BeaconState preset fork} {v : ValidatorIndex}
+    (preGloas : fork < .glamsterdam)
+    (stateOk : store.blockState head = .ok headState)
+    (read : store.getSlotCommittee head slot = .ok members) (member : v ∈ members) :
+    isActiveAt headState (computeEpochAtSlot preset slot) v.toNat = true := by
+  unfold Store.getSlotCommittee at read
+  rw [stateOk] at read
+  dsimp only [bind, Except.bind] at read
+  -- Every insertion is justified by the committee read at that iteration.
+  have kept := foldlM_ok_invariant
+    (fun found : Std.TreeSet ValidatorIndex => ∀ x ∈ found,
+      isActiveAt headState (computeEpochAtSlot preset slot) x.toNat = true)
+    (fun found index after before step => ?_) (by
+      intro x hx
+      exact False.elim (Std.TreeSet.not_mem_emptyc hx)) read
+  · exact kept v member
+  · change (do
+      let committee ← (getBeaconCommittee headState slot index.toUInt64).mapError
+        ForkChoiceError.accessor
+      pure (committee.foldl (·.insert ·) found)) = Except.ok after at step
+    simp only [bind_ok_iff, mapError_ok_iff, pure, Except.pure, Except.ok.injEq] at step
+    obtain ⟨committee, committeeOk, rfl⟩ := step
+    intro x inside
+    rw [← Array.foldl_toList, mem_insert_fold] at inside
+    rcases inside with old | added
+    · exact before x old
+    · exact isActiveAt_eq_true_iff.mpr
+        ((mem_getActiveValidatorIndices
+          (BeaconState.registryWithinLimit_of_lt preGloas headState)).mp
+          (mem_getActiveValidatorIndices_of_getBeaconCommittee committeeOk
+            (Array.mem_toList_iff.mp added)))
+
+/-- A window member has an active duty epoch in the state used to read the window. -/
+private theorem active_of_mem_committeeWindow {store : Store preset fork}
+    {head : Root} {first last : Slot} {members : Std.TreeSet ValidatorIndex}
+    {headState : BeaconState preset fork} {v : ValidatorIndex}
+    (preGloas : fork < .glamsterdam)
+    (stateOk : store.blockState head = .ok headState)
+    (read : store.getCommitteesBetweenSlots head first last = .ok members)
+    (member : v ∈ members) :
+    ∃ slot, first ≤ slot ∧ slot ≤ last ∧
+      isActiveAt headState (computeEpochAtSlot preset slot) v.toNat = true := by
+  simp only [Store.getCommitteesBetweenSlots, bind_ok_iff, mapError_ok_iff] at read
+  obtain ⟨afterLast, afterOk, read⟩ := read
+  have inside := (mem_foldlM_committees_iff read).mp member
+  rcases inside with empty | ⟨offset, offsetIn, committee, committeeOk, inside⟩
+  · exact False.elim (Std.TreeSet.not_mem_emptyc empty)
+  · have offsetLt := List.mem_range.mp offsetIn
+    have afterNat := (addChecked_ok_iff.mp afterOk).2
+    have lastBound := last.toNat_lt
+    have offsetBound : offset < 2 ^ 64 := by simp only [UInt64.toNat_one] at afterNat; omega
+    have offsetNat : offset.toUInt64.toNat = offset := by
+      simp [Nat.toUInt64_eq, UInt64.toNat_ofNat_of_lt' offsetBound]
+    have slotNat : (first + offset.toUInt64).toNat = first.toNat + offset := by
+      rw [UInt64.toNat_add, offsetNat, Nat.mod_eq_of_lt]
+      simp only [UInt64.toNat_one] at afterNat
+      omega
+    refine ⟨first + offset.toUInt64, ?_, ?_,
+      active_of_mem_slotCommittee preGloas stateOk committeeOk inside⟩
+    · rw [UInt64.le_iff_toNat_le, slotNat]
+      omega
+    · rw [UInt64.le_iff_toNat_le, slotNat]
+      simp only [UInt64.toNat_one] at afterNat
+      omega
+
 variable [DecidablePred (· ∈ J)]
 
 /-- Step 5, the initial transport: the bound of step 4 holds in each honest store at a later time.
