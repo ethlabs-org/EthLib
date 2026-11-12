@@ -1669,6 +1669,93 @@ theorem DelayFits.call_before_next_slot {Δ : ℕ}
   have bound := fits.2 slot next begin due following nextOk beginOk dueOk followingOk
   omega
 
+/-- Both source selectors name a checkpoint covered by finalized-prefix agreement. -/
+theorem walk_source_justified {store : Store preset fork} {root : Root}
+    {checkpoint : Checkpoint}
+    (read : store.getVotingSource config root = .ok checkpoint ∨
+      store.unrealizedJustification root = .ok checkpoint)
+    (later : GENESIS_EPOCH < checkpoint.epoch) : store.Justified checkpoint := by
+  have cache : store.unrealizedJustifications[root]? = some checkpoint →
+      store.Justified checkpoint :=
+    fun entry => .inr (.inr ⟨later, .inr ⟨root, entry⟩⟩)
+  rcases read with source | unrealized
+  · unfold Store.getVotingSource at source
+    simp only [bind_ok_iff] at source
+    obtain ⟨block, _, epoch, _, source⟩ := source
+    split at source
+    · cases entry : store.unrealizedJustifications[root]? with
+      | none => simp [entry] at source
+      | some value =>
+        simp only [entry, pure, Except.pure, Except.ok.injEq] at source
+        exact cache (source ▸ entry)
+    · cases stored : store.blockStates[root]? with
+      | none => simp [stored] at source
+      | some state =>
+        simp only [stored, pure, Except.pure, Except.ok.injEq] at source
+        exact .inr (.inr ⟨later, .inl ⟨root, state, stored, source.symm⟩⟩)
+  · unfold Store.unrealizedJustification at unrealized
+    cases entry : store.unrealizedJustifications[root]? with
+    | none => simp [entry] at unrealized
+    | some value =>
+      simp only [entry, pure, Except.pure, Except.ok.injEq] at unrealized
+      exact cache (unrealized ▸ entry)
+
+/-- A checkpoint read composes with an earlier checkpoint read even across empty slots. -/
+theorem walk_checkpoint_trans {store : Store preset fork}
+    {root middle checkpoint : Root} {epoch earlier : Epoch}
+    {boundary prior : Slot}
+    (boundaryOk : computeStartSlotAtEpoch preset epoch = .ok boundary)
+    (priorOk : computeStartSlotAtEpoch preset earlier = .ok prior)
+    (ordered : earlier ≤ epoch)
+    (read : store.getCheckpointBlock root epoch = .ok middle)
+    (priorRead : store.getCheckpointBlock middle earlier = .ok checkpoint)
+    (before : fork < .glamsterdam) :
+    store.getCheckpointBlock root earlier = .ok checkpoint := by
+  have below : prior ≤ boundary := by
+    apply UInt64.le_iff_toNat_le.mpr
+    rw [(computeStartSlotAtEpoch_ok_iff.mp priorOk).2,
+      (computeStartSlotAtEpoch_ok_iff.mp boundaryOk).2]
+    exact Nat.mul_le_mul_right _ (UInt64.le_iff_toNat_le.mp ordered)
+  unfold Store.getCheckpointBlock at read priorRead ⊢
+  simp only [boundaryOk, priorOk, Except.mapError, bind, Except.bind] at read priorRead ⊢
+  cases walked : store.getAncestor ⟨root, .pending⟩ boundary with
+  | error err => simp [walked] at read
+  | ok node =>
+    have pending := Store.getAncestor_pending_of_lt before rfl walked
+    simp only [walked, pure, Except.pure, Except.ok.injEq] at read
+    have nodeEq : node = ⟨middle, .pending⟩ := by
+      cases node
+      simp_all
+    subst node
+    have through := Store.getAncestor_trans below walked
+    rw [through]
+    exact priorRead
+
+omit [DecidablePred (· ∈ J)] in
+/-- An exact source boundary read carries finalized-prefix agreement back to its block. -/
+theorem walk_finalized_read_of_source {horizon : Epoch} {last : ℕ}
+    (chain : FinalizedPrefix e horizon last) (before : fork < .glamsterdam)
+    {u w : ValidatorIndex} (caller : u ∈ J) (receiver : w ∈ J) {n k : ℕ}
+    (nBound : (e.world n).time ≤ last) (kBound : (e.world k).time ≤ last)
+    {root : Root} {checkpoint : Checkpoint} {boundary : Slot}
+    (source : ((e.world n).state u).getVotingSource config root = .ok checkpoint ∨
+      ((e.world n).state u).unrealizedJustification root = .ok checkpoint)
+    (boundaryOk : computeStartSlotAtEpoch preset checkpoint.epoch = .ok boundary)
+    (read : ((e.world n).state u).getCheckpointBlock root checkpoint.epoch = .ok checkpoint.root)
+    (ordered : ((e.world k).state w).finalizedCheckpoint.epoch ≤ checkpoint.epoch)
+    (inHorizon : checkpoint.epoch ≤ horizon) (later : GENESIS_EPOCH < checkpoint.epoch) :
+    ((e.world n).state u).getCheckpointBlock root
+      ((e.world k).state w).finalizedCheckpoint.epoch =
+        .ok ((e.world k).state w).finalizedCheckpoint.root := by
+  have priorRead := chain w receiver u caller k n kBound nBound checkpoint
+    (walk_source_justified source later)
+    ordered inHorizon
+  have splitRead := priorRead
+  unfold Store.getCheckpointBlock at splitRead
+  simp only [bind_ok_iff] at splitRead
+  obtain ⟨prior, priorOk, _⟩ := splitRead
+  exact walk_checkpoint_trans boundaryOk (mapError_ok_iff.mp priorOk) ordered read priorRead before
+
 /-- Step 6, the result: a block that passed the checks is not filtered out at a later time.
 
 The caller is an honest validator whose store is up to date, and its rule passed the checks.
