@@ -1840,6 +1840,10 @@ theorem Execution.callInvariant_step {Δ : ℕ} (sync : e.Synchronous Δ)
       CallAt e u events (getFastConfirmationStore anchor) i' n' fcr' after' →
       CallInvariant e margin limit anchor.finalizedCheckpoint.root u n' after'.confirmedRoot) :
     CallInvariant e margin limit anchor.finalizedCheckpoint.root u n after.confirmedRoot := by
+  -- The preset bundle implies the ring bound that the H and N wrappers read.
+  have ring :
+      preset.MIN_SEED_LOOKAHEAD.toNat + 2 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat := by
+    omega
   have positiveSlots : 0 < preset.SLOTS_PER_EPOCH := UInt64.lt_trans (by decide) long
   have positiveSlotsNat := UInt64.lt_iff_toNat_lt.mp positiveSlots
   have member : n ∈ events := List.mem_of_getElem? calls.1
@@ -2209,7 +2213,7 @@ theorem Execution.callInvariant_step {Δ : ℕ} (sync : e.Synchronous Δ)
       SafeAt e time after.confirmedRoot := by
     intro time afterCall bounded
     have callBound := afterCall.trans bounded
-    exact e.safeAt_of_walk sync slots positiveSlotsNat window ring preGloas admitted oneBlock half
+    exact e.safeAt_of_walk sync slots positiveSlotsNat window lookahead preGloas admitted oneBlock half
       votes fits prompt committees follows chain unique pins voted included anchored sound anchorSlot
       anchorAtBoundary start rfl noVotes maxAligned increment caller (upToDate n member) (lower n member)
       slotOk beginOk atSlot headOk
