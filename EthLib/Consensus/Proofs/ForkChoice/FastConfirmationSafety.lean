@@ -649,7 +649,81 @@ theorem Execution.rootEpoch_ne_of_slack_at_epoch_start {anchor : Store preset fo
     (slack : maximum.toNat + score.toNat + 2 * adversary.toNat + shift <
       discount.toNat + 2 * support.toNat) :
     rootEpoch ≠ epoch := by
-  sorry
+  intro sameEpoch
+  have forward := e.forwardReachable
+    (fun w hw => (start w hw) ▸ Store.ForwardReachable.anchor anchored) n u caller
+  -- A successful clock read rules out a zero slot duration.
+  have positive : 0 < config.SLOT_DURATION_MS := by
+    have clock := mapError_ok_iff.mp slotOk
+    unfold computeSlotAtTimeMs at clock
+    obtain ⟨elapsed, -, divided⟩ := bind_ok_iff.mp clock
+    have nonzero := (divChecked_ok_iff.mp divided).1
+    exact UInt64.lt_iff_toNat_lt.mpr (by
+      have := UInt64.toNat_inj.not.mpr nonzero
+      simp only [UInt64.toNat_zero] at this ⊢
+      omega)
+  obtain ⟨current, currentOk, blocks, -⟩ :=
+    forward.slots_le_current positive (UInt64.le_of_eq anchorSlot)
+  rw [slotOk, Except.ok.injEq] at currentOk
+  subst current
+  have known := Store.block_ok_iff.mp blockOk
+  have notFuture := blocks root block known
+  have currentEpoch : computeEpochAtSlot preset slot = epoch := by
+    simpa only [Store.getCurrentStoreEpoch, slotOk, bind, Except.bind, pure, Except.pure,
+      Except.ok.injEq] using epochOk
+  have blockEpoch : computeEpochAtSlot preset block.slot = epoch := by
+    simpa only [Store.getBlockEpoch, blockOk, bind, Except.bind, pure, Except.pure,
+      Except.ok.injEq, sameEpoch] using rootEpochOk
+  -- The boundary slot is its epoch rounded down, so a block of that epoch is not earlier.
+  have rounded : slot / preset.SLOTS_PER_EPOCH * preset.SLOTS_PER_EPOCH = slot := by
+    unfold isStartSlotAtEpoch computeSlotsSinceEpochStart at isStart
+    rw [computeStartSlotAtEpoch_computeEpochAtSlot] at isStart
+    simp only [Except.mapError, bind, Except.bind, pure, Except.pure,
+      Except.ok.injEq, decide_eq_true_eq] at isStart
+    have zero := congrArg UInt64.toNat isStart
+    simp only [UInt64.toNat_sub, UInt64.toNat_zero] at zero
+    have upper := slot.toNat_lt
+    have lower := (slot / preset.SLOTS_PER_EPOCH * preset.SLOTS_PER_EPOCH).toNat_lt
+    apply UInt64.toNat_inj.mp
+    omega
+  have boundary := (computeStartSlotAtEpoch_ok_iff.mp
+    (computeStartSlotAtEpoch_computeEpochAtSlot (preset := preset) slot)).2
+  rw [rounded] at boundary
+  have epochEqual := congrArg UInt64.toNat (blockEpoch.trans currentEpoch.symm)
+  simp only [computeEpochAtSlot, UInt64.toNat_div] at epochEqual
+  have blockLower : slot.toNat ≤ block.slot.toNat := by
+    rw [boundary, computeEpochAtSlot, UInt64.toNat_div, ← epochEqual]
+    exact Nat.div_mul_le_self _ _
+  -- Phase 0 fork-choice `validate_on_attestation` delays votes until their slot is past.
+  have noVote (index : ValidatorIndex) :
+      ((e.world n).state u).voteCountsFor ⟨root, .pending⟩ index = false := by
+    apply Bool.eq_false_iff.mpr
+    intro counts
+    obtain ⟨message, supported, latest, -, supportedOk, descends⟩ :=
+      Store.exists_of_voteCountsFor _ counts
+    rw [Store.getSupportedNode_of_lt preGloas, Except.ok.injEq] at supportedOk
+    subst supported
+    obtain ⟨attestation, rfl, origin⟩ := forward.votesHaveOrigins latest
+    obtain ⟨voted, votedKnown, votedLe⟩ := origin.voted
+    obtain ⟨past, pastOk, pastLt⟩ := origin.past
+    rw [slotOk, Except.ok.injEq] at pastOk
+    subst past
+    obtain ⟨nodeBlock, nodeKnown, ancestorLe⟩ := Store.slot_le_of_isAncestor known descends
+    change ((e.world n).state u).blocks[attestation.data.beaconBlockRoot]? =
+      some nodeBlock at nodeKnown
+    rw [votedKnown, Option.some.injEq] at nodeKnown
+    subst nodeBlock
+    have := UInt64.le_iff_toNat_le.mp ancestorLe
+    have := UInt64.le_iff_toNat_le.mp votedLe
+    have := UInt64.lt_iff_toNat_lt.mp pastLt
+    omega
+  have zero := Store.getAttestationScore_toNat_eq_sum _ supportOk
+  simp only [noVote, Bool.false_eq_true, ↓reduceIte, List.map_const', List.sum_replicate_nat,
+    Nat.mul_zero] at zero
+  have bounded := Store.computeEmptySlotSupportDiscount_le blockOk parentOk firstOk lastOk
+    maximumOk discountOk notFuture
+  have := UInt64.le_iff_toNat_le.mp bounded
+  omega
 
 /-- The finalized-chain premise of a receiver, from the coverage of a block.
 
