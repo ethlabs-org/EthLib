@@ -1584,7 +1584,7 @@ An honest validator signs a vote with the checkpoint as its target.
 
 The vote is of a slot before the current slot of the store.
 
-The store is at an event up to the last time `last`, and the vote is sent by that event. -/
+The store is at an event up to the last time `last`, and the vote is sent by its time. -/
 def JustifiedByHonestVote
     (e : Execution (honestForkChoice config checks sources anchorState anchorBlock assignment
       genesisTimeMs) J) (anchorEpoch horizon : Epoch) (last : ℕ) : Prop :=
@@ -1618,7 +1618,7 @@ No voter has to sign a target here: the definition only counts stake.
 
 Both stores are at events up to the last time `last`.
 
-The vote is sent by the event of the store with the justified checkpoint. -/
+The vote is sent by the time of the store with the justified checkpoint. -/
 def HonestThirdPins
     (e : Execution (honestForkChoice config checks sources anchorState anchorBlock assignment
       genesisTimeMs) J) (anchorEpoch horizon : Epoch) (margin last : ℕ) : Prop :=
@@ -1655,7 +1655,7 @@ theorem OneJustifiedPerEpoch.of_le {horizon : Epoch} {last later : ℕ}
 
 /-- Honest votes for justified checkpoints up to a time are honest votes up to every earlier time.
 
-The vote is sent by the event of the store, so its bound does not depend on the time. -/
+The vote is sent by the time of the store, so its bound does not depend on the last time. -/
 theorem JustifiedByHonestVote.of_le {anchorEpoch horizon : Epoch} {last later : ℕ}
     (voted : JustifiedByHonestVote e anchorEpoch horizon later) (le : last ≤ later) :
     JustifiedByHonestVote e anchorEpoch horizon last :=
@@ -2284,7 +2284,7 @@ Each counted vote is in a block of the chain of that state.
 
 The store has read each vote of each of its blocks.
 
-A block reaches the store in a sent message, so its votes are sent by the event of the store.
+A block reaches the store in a sent message, so its votes are sent by the time of the store.
 
 It uses the agreement of the committees of the state of a block with those of the target state.
 
