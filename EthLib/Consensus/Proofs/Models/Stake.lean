@@ -189,40 +189,6 @@ private theorem sum_supported [DecidableEq ν] (S U : Finset ν) (w : ν → ℕ
   · intro v _ hv
     simp [supported, hv]
 
-/-- Quorums with different weights share their minimum weight, up to their maximum total.
-
-`DirectSafety.accountable_safety_core` uses this bound before transferring to reference weights. -/
-theorem two_mul_stake_add_le_inter_add_union [DecidableEq ν]
-    (S T A B : Finset ν) (w₁ w₂ : ν → ℕ)
-    (hA : A ⊆ S) (hB : B ⊆ T) (a b : ℕ)
-    (quorum₁ : 2 * a ≤ 3 * stake w₁ A) (quorum₂ : 2 * b ≤ 3 * stake w₂ B) :
-    2 * (a + b) ≤ 3 * stake (fun v => min (w₁ v) (w₂ v)) (A ∩ B) +
-      3 * stake (fun v => max (supported S w₁ v) (supported T w₂ v)) (S ∪ T) := by
-  -- The union/intersection identity is applied to the two supported voter weights.
-  have pointwise : ∀ v, supported A w₁ v + supported B w₂ v ≤
-      supported (A ∩ B) (fun v => min (w₁ v) (w₂ v)) v +
-        max (supported S w₁ v) (supported T w₂ v) := by
-    intro v
-    by_cases ha : v ∈ A <;> by_cases hb : v ∈ B
-    · simp only [supported, ha, hb, hA ha, hB hb, Finset.mem_inter,
-        and_self, ↓reduceIte]
-      omega
-    · have le : w₁ v ≤ max (supported S w₁ v) (supported T w₂ v) := by
-        simp [supported, hA ha]
-      simpa [supported, ha, hb] using le
-    · have le : w₂ v ≤ max (supported S w₁ v) (supported T w₂ v) := by
-        simp [supported, hB hb]
-      simpa [supported, ha, hb] using le
-    · simp [supported, ha, hb]
-  have total := Finset.sum_le_sum (s := S ∪ T) (fun v _ => pointwise v)
-  simp only [Finset.sum_add_distrib] at total
-  rw [sum_supported A _ w₁ (hA.trans Finset.subset_union_left),
-    sum_supported B _ w₂ (hB.trans Finset.subset_union_right),
-    sum_supported (A ∩ B) _ _
-      (Finset.inter_subset_left.trans (hA.trans Finset.subset_union_left))] at total
-  change stake w₁ A + stake w₂ B ≤ _ + stake _ (S ∪ T) at total
-  omega
-
 /-- Transfer two quorums together, excluding accountable validators from the weight loss.
 
 Gains cost once, losses twice, and support outside each active denominator costs twice.

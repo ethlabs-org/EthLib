@@ -202,8 +202,8 @@ theorem quorum_count {g a : ForkedBeaconState preset} (run : Run config checks g
     2 * Models.stake (effectiveWeight call.cached) (activeKeys call.cached) ≤
       3 * Models.stake (effectiveWeight call.cached) call.voters := by
   obtain ⟨pre, _, _, _, validators, _⟩ := call.toEpochCall.selected_prefix
-  have unique : uniqueKeys call.cached := by
-    simpa [uniqueKeys, PubkeysDistinct, validatorKeys, validators] using
+  have unique : PubkeysDistinct call.cached := by
+    simpa [PubkeysDistinct, validatorKeys, validators] using
       pre.unique (genesis_unique genesis)
   have active := getTotalActiveBalance_ok call.totalOk
   have activeWeight := keys_weight call.cached _ unique
