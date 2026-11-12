@@ -1271,6 +1271,54 @@ private theorem walk_pulled_checkpoint_ancestor {store : Store preset fork}
       Functor.map, Except.map, pure, Except.pure] using path
   exact .inr (Store.isAncestor_of_getCheckpointBlock before checkpointRead).choose_spec.choose_spec.2.2.2
 
+/-- Both voting-source selectors return an anchor-era checkpoint or an ancestor. -/
+private theorem walk_source_ancestor {store : Store preset fork}
+    (reachable : Store.Reachable config anchorState anchorBlock store)
+    (sound : Invariant anchorState) (before : fork < .glamsterdam)
+    (positive : 0 < preset.SLOTS_PER_EPOCH.toNat)
+    (window : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
+    (aligned : anchorBlock.slot ≤ anchorState.slot) (lower : store.ParentsBelow)
+    (nonzero : ∀ (root : Root) (block : BeaconBlock preset fork), store.blocks[root]? = some block →
+      block.stateRoot ≠ Vector.replicate 32 0)
+    (child : ∃ (root : Root) (block : BeaconBlock preset fork),
+      store.blocks[root]? = some block ∧ block ≠ anchorBlock)
+    {root : Root} {checkpoint : Checkpoint}
+    (read : store.getVotingSource config root = .ok checkpoint ∨
+      store.unrealizedJustification root = .ok checkpoint) :
+    checkpoint.epoch ≤ getCurrentEpoch anchorState ∨
+      store.isAncestor ⟨root, .pending⟩ ⟨checkpoint.root, .pending⟩ = .ok true := by
+  have cache : store.unrealizedJustifications[root]? = some checkpoint →
+      checkpoint.epoch ≤ getCurrentEpoch anchorState ∨
+        store.isAncestor ⟨root, .pending⟩ ⟨checkpoint.root, .pending⟩ = .ok true := by
+    intro entry
+    rcases walk_cache_origin reachable before entry with old |
+      ⟨state, pulled, stored, processed, same⟩
+    · exact .inl (by rw [old]; exact UInt64.le_refl _)
+    · exact same ▸ (walk_pulled_checkpoint_ancestor reachable sound before positive window
+        aligned lower nonzero child stored processed).2.1
+  rcases read with source | unrealized
+  · unfold Store.getVotingSource at source
+    simp only [bind_ok_iff] at source
+    obtain ⟨block, _, epoch, _, source⟩ := source
+    split at source
+    · cases entry : store.unrealizedJustifications[root]? with
+      | none => simp [entry] at source
+      | some value =>
+        simp only [entry, pure, Except.pure, Except.ok.injEq] at source
+        exact cache (source ▸ entry)
+    · cases stored : store.blockStates[root]? with
+      | none => simp [stored] at source
+      | some state =>
+        simp only [stored, pure, Except.pure, Except.ok.injEq] at source
+        exact source ▸ (walk_checkpoint_ancestor reachable sound before positive window
+          aligned lower nonzero child stored).2.1
+  · unfold Store.unrealizedJustification at unrealized
+    cases entry : store.unrealizedJustifications[root]? with
+    | none => simp [entry] at unrealized
+    | some value =>
+      simp only [entry, pure, Except.pure, Except.ok.injEq] at unrealized
+      exact cache (unrealized ▸ entry)
+
 /-- A two-epoch advance contains a complete epoch, with representable boundaries. -/
 private theorem walk_complete_of_epoch_gap {slot current : Slot} {begin endpoint : UInt64}
     (positive : 0 < preset.SLOTS_PER_EPOCH.toNat)
