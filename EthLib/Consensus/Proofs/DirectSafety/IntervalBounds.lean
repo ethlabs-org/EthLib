@@ -2484,7 +2484,8 @@ private theorem intervalLoss_consolidation_charge {fork : Fork} {s t : BeaconSta
 private theorem intervalLoss_preElectra_departures {g x y : ForkedBeaconState preset}
     (shared : Run config checks g x) (tail : Run config checks x y)
     (genesis : Genesis (config := config) (checks := checks) g)
-    (parameters : Parameters preset) (caps : CapOrder preset)
+    (parameters : Parameters preset)
+    (twoSlots : 2 ≤ preset.SLOTS_PER_EPOCH.toNat) (caps : CapOrder preset)
     (early : y.fork < .pectra) (high : Nat)
     (endEpoch : (getCurrentEpoch y.state).toNat ≤ high + 1)
     (events : List (BalanceEvent preset)) :
@@ -2498,7 +2499,7 @@ private theorem intervalLoss_preElectra_departures {g x y : ForkedBeaconState pr
     max_le_max_left _ (Nat.div_le_div_right registry)
   have horizon : (getCurrentEpoch y.state).toNat - (getCurrentEpoch x.state).toNat ≤
       driftHorizon x high := by unfold driftHorizon; omega
-  have departures := leaving_before_electra shared tail genesis parameters caps early
+  have departures := leaving_before_electra shared tail genesis twoSlots caps early
   have bounded := Nat.mul_le_mul_right preset.MAX_EFFECTIVE_BALANCE.toNat
     (Nat.mul_le_mul horizon (max_le_max_left 1 count))
   have total := departures.trans bounded
@@ -2676,7 +2677,7 @@ private theorem intervalGain_no_reentry {x y : ForkedBeaconState preset}
   simp [isActiveValidator, currentExit, previousExit]
 
 private theorem intervalGain_carry_cases {x y : ForkedBeaconState preset}
-    (tail : Run config checks x y) (parameters : Parameters preset)
+    (tail : Run config checks x y) (twoSlots : 2 ≤ preset.SLOTS_PER_EPOCH.toNat)
     (i : Nat) (v w : Validator)
     (before : x.state.validators.data[i]? = some v)
     (after : y.state.validators.data[i]? = some w)
@@ -2697,7 +2698,7 @@ private theorem intervalGain_carry_cases {x y : ForkedBeaconState preset}
   · exact Or.inr future
   left
   have bounded : (getCurrentEpoch x.state).toNat < FAR_FUTURE_EPOCH.toNat := by
-    have ne := getCurrentEpoch_ne_farFuture parameters.slots x.state
+    have ne := getCurrentEpoch_ne_farFuture twoSlots x.state
     have bound := (getCurrentEpoch x.state).toNat_lt_size
     have far : FAR_FUTURE_EPOCH.toNat = 2 ^ 64 - 1 := rfl
     have different : (getCurrentEpoch x.state).toNat ≠ FAR_FUTURE_EPOCH.toNat := by
@@ -2754,7 +2755,7 @@ private theorem intervalGain_electra_deposit {fork : Fork}
     rfl
 
 private theorem intervalGain_withdrawn_excluded {x y : ForkedBeaconState preset}
-    (kept : RegistryLifecycle x.state y.state) (parameters : Parameters preset)
+    (kept : RegistryLifecycle x.state y.state) (twoSlots : 2 ≤ preset.SLOTS_PER_EPOCH.toNat)
     (ordered : ExitsOrdered x.state) (i : Nat) (v w : Validator)
     (before : x.state.validators.data[i]? = some v)
     (after : y.state.validators.data[i]? = some w)
@@ -2764,7 +2765,7 @@ private theorem intervalGain_withdrawn_excluded {x y : ForkedBeaconState preset}
       isActiveValidator w (getPreviousEpoch y.state) = false := by
   have exit := UInt64.le_iff_toNat_le.mp (ordered v (Array.mem_of_getElem? before))
   have assigned : v.exitEpoch ≠ FAR_FUTURE_EPOCH := by
-    have ne := getCurrentEpoch_ne_farFuture parameters.slots x.state
+    have ne := getCurrentEpoch_ne_farFuture twoSlots x.state
     have bound := (getCurrentEpoch x.state).toNat_lt_size
     have far : FAR_FUTURE_EPOCH.toNat = 2 ^ 64 - 1 := rfl
     have different : (getCurrentEpoch x.state).toNat ≠ FAR_FUTURE_EPOCH.toNat := by
@@ -2778,7 +2779,7 @@ private theorem intervalGain_withdrawn_excluded {x y : ForkedBeaconState preset}
   omega
 
 private theorem intervalGain_recent_not_withdrawn {x y : ForkedBeaconState preset}
-    (kept : RegistryLifecycle x.state y.state) (parameters : Parameters preset)
+    (kept : RegistryLifecycle x.state y.state) (twoSlots : 2 ≤ preset.SLOTS_PER_EPOCH.toNat)
     (ordered : ExitsOrdered x.state) (i : Nat) (v w : Validator)
     (before : x.state.validators.data[i]? = some v)
     (after : y.state.validators.data[i]? = some w)
@@ -2787,7 +2788,7 @@ private theorem intervalGain_recent_not_withdrawn {x y : ForkedBeaconState prese
       isActiveValidator w (getPreviousEpoch y.state) = true) :
     (getCurrentEpoch x.state).toNat < v.withdrawableEpoch.toNat := by
   by_contra withdrawn
-  have excluded := intervalGain_withdrawn_excluded kept parameters ordered i v w before after
+  have excluded := intervalGain_withdrawn_excluded kept twoSlots ordered i v w before after
     (by omega) later
   rcases recent with current | previous
   · simp [excluded.1] at current
@@ -2796,7 +2797,7 @@ private theorem intervalGain_recent_not_withdrawn {x y : ForkedBeaconState prese
 private theorem intervalGain_index_bound {g x y : ForkedBeaconState preset}
     (shared : Run config checks g x) (tail : Run config checks x y)
     (genesis : Genesis (config := config) (checks := checks) g)
-    (parameters : Parameters preset) (early : y.fork < .glamsterdam)
+    (twoSlots : 2 ≤ preset.SLOTS_PER_EPOCH.toNat) (early : y.fork < .glamsterdam)
     (i : Nat) (w : Validator) (after : y.state.validators.data[i]? = some w)
     (recent : isActiveValidator w (getCurrentEpoch y.state) = true ∨
       isActiveValidator w (getPreviousEpoch y.state) = true) :
@@ -2827,7 +2828,7 @@ private theorem intervalGain_index_bound {g x y : ForkedBeaconState preset}
       simpa only [Option.map_some, Option.getD_some, active, ↓reduceIte]
         using effective_gain_from_balance tail early i present
     | false =>
-      have carried := intervalGain_carry_cases tail parameters i v w before after active recent
+      have carried := intervalGain_carry_cases tail twoSlots i v w before after active recent
       have selected : (isActiveValidator v (getPreviousEpoch x.state) ||
           getCurrentEpoch x.state < v.activationEpoch) = true := by
         simpa only [Bool.or_eq_true, decide_eq_true_eq] using carried
@@ -3019,14 +3020,15 @@ private def intervalGain_initial (x : ForkedBeaconState preset) (i : Nat) : Nat 
 private theorem intervalGain_path_bound {g x y : ForkedBeaconState preset}
     (shared : Run config checks g x) (tail : Run config checks x y)
     (genesis : Genesis (config := config) (checks := checks) g)
-    (parameters : Parameters preset) (early : y.fork < .glamsterdam) :
+    (parameters : Parameters preset)
+    (twoSlots : 2 ≤ preset.SLOTS_PER_EPOCH.toNat) (early : y.fork < .glamsterdam) :
     referenceGain x y ≤ (∑ i ∈ intervalGain_indices y, intervalGain_initial x i) +
       ∑ i ∈ intervalGain_indices y, pathCredits i tail.balancePath := by
   rw [intervalGain_reference_sum shared tail genesis parameters early, ← Finset.sum_add_distrib]
   apply Finset.sum_le_sum
   intro i member
   obtain ⟨w, found, recent⟩ := (Finset.mem_filter.mp member).2
-  exact intervalGain_index_bound shared tail genesis parameters early i w found recent
+  exact intervalGain_index_bound shared tail genesis twoSlots early i w found recent
 
 private theorem intervalGain_zip_sum (vs : List Validator) (f : Validator → Nat → Nat) :
     (vs.zipIdx.map fun (v, i) => f v i).sum =
@@ -3111,13 +3113,14 @@ private theorem intervalGain_initial_subset (x y : ForkedBeaconState preset)
 private theorem intervalGain_replay_bound {g x y : ForkedBeaconState preset}
     (shared : Run config checks g x) (tail : Run config checks x y)
     (genesis : Genesis (config := config) (checks := checks) g)
-    (parameters : Parameters preset) (early : y.fork < .glamsterdam)
+    (parameters : Parameters preset)
+    (twoSlots : 2 ≤ preset.SLOTS_PER_EPOCH.toNat) (early : y.fork < .glamsterdam)
     (high : Nat) (endEpoch : (getCurrentEpoch y.state).toNat ≤ high + 1)
     (events : List (BalanceEvent preset)) (replayed : tail.balanceEvents high = .ok events) :
     referenceGain x y ≤ activationCarry x + initialExcess x +
       (events.map fun e => ∑ i ∈ intervalGain_indices y,
         (actualBalanceAt e.after i - actualBalanceAt e.before i)).sum := by
-  have gain := intervalGain_path_bound shared tail genesis parameters early
+  have gain := intervalGain_path_bound shared tail genesis parameters twoSlots early
   have initial := intervalGain_initial_subset x y parameters
     (Nat.lt_of_le_of_lt (fork_le_of_chainSteps tail.chainSteps) early)
   -- Keep the endpoint support restriction when replacing path credits by replay credits.
@@ -3139,7 +3142,7 @@ private theorem intervalGain_replay_bound {g x y : ForkedBeaconState preset}
   omega
 
 private theorem intervalGain_selected_deposit (y : ForkedBeaconState preset)
-    (parameters : Parameters preset) (e : BalanceEvent preset)
+    (twoSlots : 2 ≤ preset.SLOTS_PER_EPOCH.toNat) (e : BalanceEvent preset)
     (kept : RegistryLifecycle e.before.state y.state)
     (ordered : ExitsOrdered e.before.state)
     (later : (getCurrentEpoch e.before.state).toNat < (getCurrentEpoch y.state).toNat)
@@ -3157,7 +3160,7 @@ private theorem intervalGain_selected_deposit (y : ForkedBeaconState preset)
     | none => rfl
     | some v =>
       obtain ⟨w, after, recent⟩ := (Finset.mem_filter.mp member).2
-      have notWithdrawn := intervalGain_recent_not_withdrawn kept parameters ordered i v w
+      have notWithdrawn := intervalGain_recent_not_withdrawn kept twoSlots ordered i v w
         found after later recent
       simp only [Option.map_some, Option.getD_some, decide_eq_false_iff_not]
       omega
@@ -3266,7 +3269,8 @@ private theorem intervalGain_crossing_sources (x y : ForkedBeaconState preset) (
 private theorem intervalGain_crossing_endpoint {g x y : ForkedBeaconState preset}
     (shared : Run config checks g x) (tail : Run config checks x y)
     (genesis : Genesis (config := config) (checks := checks) g)
-    (parameters : Parameters preset) (early : y.fork < .glamsterdam)
+    (parameters : Parameters preset)
+    (twoSlots : 2 ≤ preset.SLOTS_PER_EPOCH.toNat) (early : y.fork < .glamsterdam)
     (high : Nat) (endEpoch : (getCurrentEpoch y.state).toNat ≤ high + 1)
     (events : List (BalanceEvent preset)) (replayed : tail.balanceEvents high = .ok events)
     (crossing : config.ELECTRA_FORK_EPOCH.toNat ≤ high + 1)
@@ -3277,7 +3281,7 @@ private theorem intervalGain_crossing_endpoint {g x y : ForkedBeaconState preset
       else 0).sum ≤ depositWindow (config := config) x high) :
     referenceGain x y ≤ activationWindow (config := config) x high + initialExcess x +
       (events.map (residualCredit (config := config) x high)).sum := by
-  have gain := intervalGain_replay_bound shared tail genesis parameters early high endEpoch
+  have gain := intervalGain_replay_bound shared tail genesis parameters twoSlots early high endEpoch
     events replayed
   have sources := intervalGain_crossing_sources x y high events crossing bounded
     (depositWindow (config := config) x high) deposits
@@ -3295,7 +3299,7 @@ private theorem intervalGain_deposit_epoch {a b y : ForkedBeaconState preset}
   exact advanced.trans_le monotone
 
 private theorem intervalGain_deposit_filter_sum (y : ForkedBeaconState preset)
-    (parameters : Parameters preset) (events : List (BalanceEvent preset))
+    (twoSlots : 2 ≤ preset.SLOTS_PER_EPOCH.toNat) (events : List (BalanceEvent preset))
     (sites : ∀ e ∈ events, e.source = .deposits → .pectra ≤ e.before.fork →
       (∀ i, actualBalanceAt e.after i ≤ actualBalanceAt e.before i) ∨
       (RegistryLifecycle e.before.state y.state ∧ ExitsOrdered e.before.state ∧
@@ -3316,7 +3320,7 @@ private theorem intervalGain_deposit_filter_sum (y : ForkedBeaconState preset)
   · rename_i selected
     rcases sites e member selected.1 selected.2 with zero | ⟨kept, ordered, later, matched⟩
     · simp only [Nat.sub_eq_zero_of_le (zero _), Finset.sum_const_zero, Nat.zero_le]
-    · exact intervalGain_selected_deposit y parameters e kept ordered later matched
+    · exact intervalGain_selected_deposit y twoSlots e kept ordered later matched
   · exact Nat.le_refl _
 
 private theorem intervalGain_deposit_sites {x y : ForkedBeaconState preset}
@@ -3377,17 +3381,18 @@ private theorem intervalGain_events_bounded {g x y : ForkedBeaconState preset}
 private theorem intervalGain_crossing_of_interfaces {g x y : ForkedBeaconState preset}
     (shared : Run config checks g x) (tail : Run config checks x y)
     (genesis : Genesis (config := config) (checks := checks) g)
-    (parameters : Parameters preset) (early : y.fork < .glamsterdam)
+    (parameters : Parameters preset)
+    (twoSlots : 2 ≤ preset.SLOTS_PER_EPOCH.toNat) (early : y.fork < .glamsterdam)
     (high : Nat) (endEpoch : (getCurrentEpoch y.state).toNat ≤ high + 1)
     (events : List (BalanceEvent preset)) (replayed : tail.balanceEvents high = .ok events)
     (crossing : config.ELECTRA_FORK_EPOCH.toNat ≤ high + 1) :
     referenceGain x y ≤ activationWindow (config := config) x high + initialExcess x +
       (events.map (residualCredit (config := config) x high)).sum := by
-  apply intervalGain_crossing_endpoint shared tail genesis parameters early high endEpoch
+  apply intervalGain_crossing_endpoint shared tail genesis parameters twoSlots early high endEpoch
     events replayed crossing (fun e member =>
       (intervalGain_events_bounded shared tail genesis early high endEpoch
         events replayed e member).1)
-  exact (intervalGain_deposit_filter_sum y parameters events
+  exact (intervalGain_deposit_filter_sum y twoSlots events
     (intervalGain_deposit_sites events
       (replay_event_provenance shared tail genesis early high endEpoch events replayed)
       (replay_electra_deposit_epoch shared tail genesis early high endEpoch
@@ -3734,7 +3739,8 @@ Withdrawn-key exceptions do not reactivate an exited validator and contribute no
 theorem gains_and_activations_over_interval {g x y : ForkedBeaconState preset}
     (shared : Run config checks g x) (tail : Run config checks x y)
     (genesis : Genesis (config := config) (checks := checks) g)
-    (parameters : Parameters preset) (caps : CapOrder preset)
+    (parameters : Parameters preset)
+    (twoSlots : 2 ≤ preset.SLOTS_PER_EPOCH.toNat) (caps : CapOrder preset)
     (early : y.fork < .glamsterdam) (high : Nat)
     (endEpoch : (getCurrentEpoch y.state).toNat ≤ high + 1)
     (events : List (BalanceEvent preset)) (replayed : tail.balanceEvents high = .ok events) :
@@ -3742,8 +3748,8 @@ theorem gains_and_activations_over_interval {g x y : ForkedBeaconState preset}
       activationWindow (config := config) x high + initialExcess x +
         (events.map (residualCredit (config := config) x high)).sum := by
   by_cases crossing : config.ELECTRA_FORK_EPOCH.toNat ≤ high + 1
-  · exact intervalGain_crossing_of_interfaces shared tail genesis parameters early high endEpoch
-      events replayed crossing
+  · exact intervalGain_crossing_of_interfaces shared tail genesis parameters twoSlots early high
+      endEpoch events replayed crossing
   · have before : y.fork < .pectra := by
       apply Nat.lt_of_not_le
       intro electra
@@ -3751,7 +3757,7 @@ theorem gains_and_activations_over_interval {g x y : ForkedBeaconState preset}
       omega
     apply intervalGain_pre_electra_of_split tail parameters
       (shared.unique (genesis_unique genesis)) before high endEpoch events
-      (joining_before_electra_split shared tail genesis parameters caps before)
+      (joining_before_electra_split shared tail genesis twoSlots caps before)
     apply intervalGain_active_residual shared tail genesis early high endEpoch events replayed
     intro e member _
     exact Nat.lt_of_le_of_lt
@@ -3814,7 +3820,8 @@ theorem sourceDrift_le_of_prefix (x : ForkedBeaconState preset) (high : Nat)
 theorem derivedDrift_le_sources {g x y : ForkedBeaconState preset}
     (shared : Run config checks g x) (tail : Run config checks x y)
     (genesis : Genesis (config := config) (checks := checks) g)
-    (parameters : Parameters preset) (caps : CapOrder preset)
+    (parameters : Parameters preset)
+    (twoSlots : 2 ≤ preset.SLOTS_PER_EPOCH.toNat) (caps : CapOrder preset)
     (aligned : MaxEffectiveBalancesAligned preset)
     (withdrawalDelay : 0 < config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat)
     (early : y.fork < .glamsterdam) (high : Nat)
@@ -3833,7 +3840,7 @@ theorem derivedDrift_le_sources {g x y : ForkedBeaconState preset}
       stateDrift x y ≤ sourceDrift (config := config) x high (boundaryStake y) events := by
     have losses := nonaccountable_losses_over_interval shared run genesis parameters caps
       aligned early high within events replayed
-    have gains := gains_and_activations_over_interval shared run genesis parameters caps
+    have gains := gains_and_activations_over_interval shared run genesis parameters twoSlots caps
       early high within events replayed
     unfold stateDrift sourceDrift
     omega
