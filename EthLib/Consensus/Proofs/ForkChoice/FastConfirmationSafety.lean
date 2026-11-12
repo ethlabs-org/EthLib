@@ -3892,6 +3892,14 @@ The implementation-level bounds of `RuleBounds` hold, with that margin and a wei
 
 They generalize Assumption 2 of the paper and apply only to calls that confirm by a walk.
 
+Their source bound reserves the stake that can leave the active set, read from the source.
+
+So the adversary bound depends on the state.
+
+A rule that subtracted that reserve in its safety threshold would make it fixed.
+
+That change to the rule may be proposed later.
+
 Each honest store up to the last time is in an epoch at most the horizon.
 
 The start of the next slot is at most the last time, so every call is before it.
