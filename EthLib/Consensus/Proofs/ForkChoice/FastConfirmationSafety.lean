@@ -3285,6 +3285,49 @@ private theorem call_previous_not_boundary {slot previous : Slot}
   norm_num at longNat
   omega
 
+/-- A call that stores a recent block weighs with a recent observed checkpoint on its chain.
+
+The stored block is of the current epoch or the one before.
+
+Then the observed checkpoint is at most two epochs old, and it is the checkpoint of the stored
+block at its epoch.
+
+A restart stores the observed root itself, whose epoch is the one before.
+
+A carried block keeps its place only when the epoch-start check finds the observed checkpoint on
+its chain.
+
+A block confirmed in the epoch before passed the current-epoch test of the head's justification.
+
+The unrealized justification of a store never falls, so the later snapshot is recent. -/
+theorem Execution.observed_recent_of_stored {Δ : ℕ}
+    (slots : 0 < config.SLOT_DURATION_MS) (fits : DelayFits fork config genesisTimeMs Δ)
+    (preGloas : fork < .glamsterdam)
+    {anchor : Store preset fork}
+    (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (anchorSlot : anchorBlock.slot = anchorState.slot)
+    (start : ∀ w ∈ J, e.start w = anchor)
+    {u : ValidatorIndex} (caller : u ∈ J) {events : List ℕ} {firstSlot : Slot}
+    (atSlots : ∀ i n, events[i]? = some n → ∃ slot begin,
+      ((e.world n).state u).getCurrentSlot config = .ok slot ∧
+      slot.toNat = firstSlot.toNat + i ∧
+      computeTimeAtSlotMs config genesisTimeMs slot = .ok begin ∧
+      (e.world n).time = begin.toNat)
+    {margin shift limit : ℕ}
+    (bounds : RuleBounds e u events (getFastConfirmationStore anchor) margin shift limit)
+    {i n : ℕ} {fcr after : FastConfirmationStore}
+    (calls : CallAt e u events (getFastConfirmationStore anchor) i n fcr after)
+    (callBound : (e.world n).time ≤ limit)
+    {epoch rootEpoch : Epoch}
+    (epochOk : ((e.world n).state u).getCurrentStoreEpoch config = .ok epoch)
+    (rootOk : ((e.world n).state u).getBlockEpoch after.confirmedRoot = .ok rootEpoch)
+    (recent : epoch.toNat ≤ rootEpoch.toNat + 1) :
+    epoch.toNat ≤ after.currentEpochObservedJustifiedCheckpoint.epoch.toNat + 2 ∧
+      ((e.world n).state u).getCheckpointBlock after.confirmedRoot
+          after.currentEpochObservedJustifiedCheckpoint.epoch =
+        .ok after.currentEpochObservedJustifiedCheckpoint.root := by
+  sorry
+
 /-- Step 8, one call: the block that a call stores keeps `CallInvariant`.
 
 Each earlier call of the run keeps it, which is the induction hypothesis.

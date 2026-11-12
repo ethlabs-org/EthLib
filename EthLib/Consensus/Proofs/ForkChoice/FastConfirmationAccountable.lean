@@ -258,6 +258,30 @@ private theorem anchor_boundary {slot : Slot}
   rw [← h]
   omega
 
+/-- The stake that leaves the active set within two epochs of a reachable state fits its reserve.
+
+The state is reached from genesis, and a later state is reached from it within two epochs.
+
+Each validator active in the first state and not in the later one exits in between.
+
+Its exit was scheduled before the first state, or charged during the epoch of the first state.
+
+The first kind is the scheduled term of `exitReserve`; the queues bound the second kind.
+
+The seed lookahead puts the earliest exit of a new charge two epochs after its epoch. -/
+theorem exitStake_le_exitReserve {g y : ForkedBeaconState preset}
+    {source : BeaconState preset fork}
+    (genesis : Genesis (config := config) (checks := checks) g)
+    (shared : Run config checks g ⟨fork, source⟩)
+    (tail : Run config checks ⟨fork, source⟩ y)
+    (lookahead : 1 ≤ preset.MAX_SEED_LOOKAHEAD.toNat)
+    (preGloas : y.fork < .glamsterdam)
+    (near : (getCurrentEpoch y.state).toNat ≤ (getCurrentEpoch source).toNat + 2) :
+    stake (fun v => balanceAt source v.toNat)
+        {v ∈ activeVoters source | v ∉ activeVoters y.state} ≤
+      exitReserve config source := by
+  sorry
+
 variable {e : Execution (honestForkChoice config checks sources anchorState anchorBlock assignment
   genesisTimeMs) J} [DecidablePred (· ∈ J)]
 

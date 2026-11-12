@@ -571,6 +571,33 @@ theorem stakeCapGwei_lt : stakeCapGwei < 2 ^ 64 := by
   unfold stakeCapGwei
   norm_num
 
+/-- The stake that can leave the active set of a source of balances within two epochs.
+
+The first term is the stake already scheduled to exit by two epochs after the source's epoch.
+
+The second is what exits charged during the source's epoch can still add by then.
+
+Those charges read the source's effective balances, so the churn of the source bounds them.
+
+From Electra the exit and consolidation queues each add their churn and their churn left over.
+
+Each also adds one maximum effective balance, for an exit that carries churn from earlier epochs.
+
+Before Electra the exit queue counts validators, so it adds a churn of maximum balances.
+
+A churn read that fails adds nothing, since a charge that reads it then fails too. -/
+def exitReserve (config : Config) (source : BeaconState preset fork) : ℕ :=
+  stake (fun v => balanceAt source v.toNat)
+      {v ∈ activeVoters source | (source.validators.data[v.toNat]?).any fun validator =>
+        validator.exitEpoch.toNat ≤ (getCurrentEpoch source).toNat + 2} +
+    if electra : .pectra ≤ fork then
+      ((exitChurnLimit config source).toOption.getD 0).toNat +
+        (source.exitBalanceToConsume electra).toNat +
+        ((getConsolidationChurnLimit config source).toOption.getD 0).toNat +
+        (source.consolidationBalanceToConsume electra).toNat +
+        2 * preset.MAX_EFFECTIVE_BALANCE_ELECTRA.toNat
+    else max 1 (getValidatorChurnLimit config source).toNat * preset.MAX_EFFECTIVE_BALANCE.toNat
+
 /-- The stores of the honest validators weigh a block as the caller of the rule does.
 
 The caller weighs with the state of its observed justified checkpoint, the source of balances.
@@ -632,13 +659,26 @@ structure WeightBounds
     2 * stake sourceWeight p + stake sourceWeight q + maximum.toNat + score.toNat ≤
       2 * stake receiverWeight p + stake receiverWeight q + sourceMaximum.toNat +
         sourceScore.toNat + shift
-  /-- The call's balance source also satisfies the bound on every committee range it reads. -/
-  sourceByzantine : ∀ w ∈ J, ∀ k head firstSlot lastSlot participants,
+  /-- The call's balance source satisfies the bound on every committee range it reads.
+
+  The bound keeps half the exit reserve of the source free, in percent of the range.
+
+  That reserve pays for the stake that leaves the active set before a receiver weighs.
+
+  The reserve is read from the source alone, so the bound is exact for each call.
+
+  As an illustration only, take a typical mainnet epoch with a reserve of about 5.5k ETH.
+
+  One slot then holds about 1.06M ETH, so a threshold of 25% acts like about 24.7%. -/
+  sourceReserve : ∀ w ∈ J, ∀ k head firstSlot lastSlot participants,
     (e.world k).time = first →
     ((e.world k).state w).getCommitteesBetweenSlots head firstSlot lastSlot = .ok participants →
-    ByzantineStakeAtMost (fun v => balanceAt balanceSource v.toNat)
-      (Store.activeMembers balanceSource participants) J
-      config.CONFIRMATION_BYZANTINE_THRESHOLD.toNat 100
+    100 * stake (fun v => balanceAt balanceSource v.toNat)
+        {v ∈ Store.activeMembers balanceSource participants | v ∉ J} +
+      50 * exitReserve config balanceSource ≤
+      config.CONFIRMATION_BYZANTINE_THRESHOLD.toNat *
+        stake (fun v => balanceAt balanceSource v.toNat)
+          (Store.activeMembers balanceSource participants)
   /-- The Byzantine validators hold at most β of the stake of each range of committees. -/
   byzantine : ∀ w ∈ J, ∀ k head state firstSlot lastSlot participants,
     first ≤ (e.world k).time → (e.world k).time ≤ last →
@@ -653,6 +693,20 @@ structure WeightBounds
 
 variable {e : Execution (honestForkChoice config checks sources anchorState anchorBlock assignment
   genesisTimeMs) J} [DecidablePred (· ∈ J)]
+
+/-- The reserved bound gives the plain bound of Assumption 2 on each range the caller reads. -/
+theorem WeightBounds.sourceByzantine {balanceSource : BeaconState preset fork}
+    {first last shift : ℕ} (weights : WeightBounds e balanceSource first last shift) :
+    ∀ w ∈ J, ∀ k head firstSlot lastSlot participants,
+      (e.world k).time = first →
+      ((e.world k).state w).getCommitteesBetweenSlots head firstSlot lastSlot =
+        .ok participants →
+      ByzantineStakeAtMost (fun v => balanceAt balanceSource v.toNat)
+        (Store.activeMembers balanceSource participants) J
+        config.CONFIRMATION_BYZANTINE_THRESHOLD.toNat 100 := by
+  intro w honest k head firstSlot lastSlot participants time read
+  have reserved := weights.sourceReserve w honest k head firstSlot lastSlot participants time read
+  exact ⟨by decide, by omega⟩
 
 /-- No held block precedes the anchor, even when the anchor state has a different slot. -/
 theorem _root_.EthLib.Consensus.Store.Reachable.anchorSlot_le_block
