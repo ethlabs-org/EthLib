@@ -165,6 +165,33 @@ theorem Execution.exists_justified_checkpointState {anchor : Store preset fork}
       ((e.world k).state w).Counts config state := by
   sorry
 
+private theorem p2_exists_getAncestor {store : Store preset fork}
+    (reachable : Store.Reachable config anchorState anchorBlock store)
+    (aligned : anchorBlock.slot ≤ anchorState.slot)
+    (unknown : store.blocks[anchorBlock.parentRoot]? = none)
+    (preGloas : fork < .glamsterdam) {root : Root} {block : BeaconBlock preset fork}
+    (known : store.blocks[root]? = some block) {slot : Slot}
+    (above : anchorBlock.slot ≤ slot) :
+    ∃ ancestor, store.getAncestor ⟨root, .pending⟩ slot = .ok ancestor := by
+  by_cases below : block.slot ≤ slot
+  · exact ⟨_, Store.getAncestor_of_le known below⟩
+  · have different : block ≠ anchorBlock := by
+      rintro rfl
+      exact below above
+    obtain ⟨_, _, _, produced⟩ := reachable.blockStatesFromParents known
+    obtain ⟨_, _, _, _, _, parentState, _⟩ := produced different
+    obtain ⟨parent, parentKnown⟩ := reachable.known_of_blockState parentState
+    have lower := reachable.parentsBelow aligned unknown root block parent known parentKnown
+    -- Strictly descending slots make this recursive walk finite.
+    obtain ⟨ancestor, walked⟩ := p2_exists_getAncestor reachable aligned unknown preGloas
+      parentKnown above
+    refine ⟨ancestor, ?_⟩
+    rw [Store.getAncestor_step known below parentKnown lower,
+      Store.parentPayloadStatus_of_lt preGloas]
+    exact walked
+termination_by block.slot.toNat
+decreasing_by exact UInt64.lt_iff_toNat_lt.mp lower
+
 /-- An honest store reads whether one held block descends from another.
 
 The walk goes down the parents of the first block while they are above the second one's slot.
@@ -182,7 +209,25 @@ theorem Execution.exists_isAncestor_of_held {anchor : Store preset fork}
     (ancestorKnown : ((e.world k).state w).blocks[ancestor]? = some ancestorBlock) :
     ∃ result, ((e.world k).state w).isAncestor ⟨root, .pending⟩ ⟨ancestor, .pending⟩ =
       .ok result := by
-  sorry
+  have reachable := e.reachable
+    (fun v member => (start v member).symm ▸ Store.Reachable.anchor anchored) k w honest
+  have aligned : anchorBlock.slot ≤ anchorState.slot := anchorSlot ▸ UInt64.le_refl _
+  -- A non-anchor block follows a transition from a state at or after the anchor.
+  have above : anchorBlock.slot ≤ ancestorBlock.slot := by
+    by_cases same : ancestorBlock = anchorBlock
+    · exact same ▸ UInt64.le_refl _
+    · obtain ⟨_, _, _, produced⟩ := reachable.blockStatesFromParents ancestorKnown
+      obtain ⟨_, _, _, signed, message, parentState, transitioned⟩ := produced same
+      have afterAnchor := reachable.anchorSlot_le_blockState parentState
+      have later := (stateTransition_slot transitioned).1
+      rw [message] at later
+      exact UInt64.le_trans aligned (UInt64.le_trans afterAnchor (UInt64.le_of_lt later))
+  obtain ⟨found, walked⟩ := p2_exists_getAncestor reachable aligned
+    (anchorParent w honest k bounded) preGloas known above
+  have before : ¬ .glamsterdam ≤ fork := Nat.not_le_of_lt preGloas
+  refine ⟨found == ⟨ancestor, .pending⟩, ?_⟩
+  simp [Store.isAncestor, Store.block_ok_iff.mpr ancestorKnown, walked,
+    before, bind, Except.bind, pure, Except.pure]
 
 /-- An honest store reads the checkpoint block of a held block at an epoch after the anchor's slot.
 
