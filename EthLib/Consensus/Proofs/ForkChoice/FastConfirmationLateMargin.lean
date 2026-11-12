@@ -61,7 +61,7 @@ theorem lateMargin_boost_bound {total boost slots percent beta : ℕ}
   have remaining : 50 ≤ 100 - 2 * beta := by omega
   nlinarith
 
-/-- Complete honest duty coverage makes the existing late margin follow from the tally bound.
+/-- Complete honest duty coverage makes the late margin follow from the tally bound.
 
 Coverage is the part of the paper's static setting needed here; Byzantine duties may change.
 The bound on the boost uses the formula of `calculateCommitteeFraction`, including rounding.
@@ -93,7 +93,7 @@ theorem lateMargin_of_static_honest_duties
   obtain ⟨epoch, begin, next, beginTime, endTime, beginOk, nextOk, beginTimeOk,
     endTimeOk, firstLe, endLe⟩ := complete
   refine ⟨epoch, begin, next, beginTime, endTime, beginOk, nextOk, beginTimeOk,
-    endTimeOk, firstLe, endLe, byzantine, ?_⟩
+    endTimeOk, firstLe, endLe, ?_⟩
   -- Every member of the missing set contradicts the supplied epoch coverage.
   have empty : {v ∈ ((unslashedActiveBalances state).map (·.1)).toFinset | v ∈ J ∧
       ¬∃ slot committeeIndex, begin ≤ slot ∧ slot < next ∧
@@ -101,6 +101,8 @@ theorem lateMargin_of_static_honest_duties
     apply Finset.filter_eq_empty_iff.mpr
     intro v member missing
     exact missing.2 (coverage epoch begin next beginOk nextOk v member missing.1)
+  -- With no missing duty, the boost alone must fit the margin that the Byzantine bound leaves.
+  apply late_majority_of_missing_duties _ byzantine (by omega)
   simpa only [empty, stake, Finset.sum_empty, Nat.mul_zero, Nat.zero_add] using
     lateMargin_boost_bound positive long smallBoost threshold boostBound
 
