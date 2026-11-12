@@ -92,12 +92,23 @@ variable {preset : Preset} {fork : Fork}
 
 It is the justified checkpoint of the store, realized or not, or that of a block of the store.
 
-A block has the justified checkpoint of its state and its unrealized justification. -/
+A block has the justified checkpoint of its state and its unrealized justification.
+
+A checkpoint that a block gives counts only after the genesis epoch.
+
+At the genesis epoch a state names no justified block: the genesis state has a zero root there.
+
+Justification and finalization change nothing in the first two epochs.
+
+So a state reaches a genesis-epoch checkpoint only from the genesis state, never from votes.
+
+The store's own checkpoints still count at every epoch: at genesis they name the anchor. -/
 def Store.Justified (store : Store preset fork) (checkpoint : Checkpoint) : Prop :=
   checkpoint = store.justifiedCheckpoint ∨ checkpoint = store.unrealizedJustifiedCheckpoint ∨
-    (∃ (root : Root) (state : BeaconState preset fork), store.blockStates[root]? = some state ∧
-      checkpoint = state.currentJustifiedCheckpoint) ∨
-    ∃ root : Root, store.unrealizedJustifications[root]? = some checkpoint
+    GENESIS_EPOCH < checkpoint.epoch ∧
+      ((∃ (root : Root) (state : BeaconState preset fork), store.blockStates[root]? = some state ∧
+        checkpoint = state.currentJustifiedCheckpoint) ∨
+      ∃ root : Root, store.unrealizedJustifications[root]? = some checkpoint)
 
 /-- A state where a store can count votes: the state of one of its blocks, maybe at a later slot.
 

@@ -1367,9 +1367,10 @@ private theorem walk_source_ancestor {store : Store preset fork}
 private theorem walk_source_justified {store : Store preset fork} {root : Root}
     {checkpoint : Checkpoint}
     (read : store.getVotingSource config root = .ok checkpoint ∨
-      store.unrealizedJustification root = .ok checkpoint) : store.Justified checkpoint := by
+      store.unrealizedJustification root = .ok checkpoint)
+    (later : GENESIS_EPOCH < checkpoint.epoch) : store.Justified checkpoint := by
   have cache : store.unrealizedJustifications[root]? = some checkpoint → store.Justified checkpoint :=
-    fun entry => .inr (.inr (.inr ⟨root, entry⟩))
+    fun entry => .inr (.inr ⟨later, .inr ⟨root, entry⟩⟩)
   rcases read with source | unrealized
   · unfold Store.getVotingSource at source
     simp only [bind_ok_iff] at source
@@ -1384,7 +1385,7 @@ private theorem walk_source_justified {store : Store preset fork} {root : Root}
       | none => simp [stored] at source
       | some state =>
         simp only [stored, pure, Except.pure, Except.ok.injEq] at source
-        exact .inr (.inr (.inl ⟨root, state, stored, source.symm⟩))
+        exact .inr (.inr ⟨later, .inl ⟨root, state, stored, source.symm⟩⟩)
   · unfold Store.unrealizedJustification at unrealized
     cases entry : store.unrealizedJustifications[root]? with
     | none => simp [entry] at unrealized
@@ -1488,11 +1489,11 @@ private theorem walk_finalized_read_of_source {horizon : Epoch}
     (boundaryOk : computeStartSlotAtEpoch preset checkpoint.epoch = .ok boundary)
     (read : ((e.world n).state u).getCheckpointBlock root checkpoint.epoch = .ok checkpoint.root)
     (ordered : ((e.world k).state w).finalizedCheckpoint.epoch ≤ checkpoint.epoch)
-    (inHorizon : checkpoint.epoch ≤ horizon) :
+    (inHorizon : checkpoint.epoch ≤ horizon) (later : GENESIS_EPOCH < checkpoint.epoch) :
     ((e.world n).state u).getCheckpointBlock root
       ((e.world k).state w).finalizedCheckpoint.epoch =
         .ok ((e.world k).state w).finalizedCheckpoint.root := by
-  have priorRead := chain w receiver u caller k n checkpoint (walk_source_justified source)
+  have priorRead := chain w receiver u caller k n checkpoint (walk_source_justified source later)
     ordered inHorizon
   have splitRead := priorRead
   unfold Store.getCheckpointBlock at splitRead
@@ -1615,15 +1616,25 @@ private theorem walk_finalized_read_of_recent_source {anchor : Store preset fork
   · simpa only [same] using anchorRead
   have ordered : ((e.world k).state w).finalizedCheckpoint.epoch ≤ checkpoint.epoch :=
     UInt64.le_iff_toNat_le.mpr (by omega)
-  rcases walk_source_ancestor forward.reachable sound before positive window
-      (UInt64.le_of_eq anchorSlot) lower nonzero child source with old |
-      ⟨_, boundary, _, _, boundaryOk, _, read⟩
+  -- A source no later than the anchor's epoch leaves the receiver at the anchor's finality.
+  by_cases old : checkpoint.epoch ≤ getCurrentEpoch anchorState
   · have same := walk_finalized_eq_anchor anchorStore anchored anchorSlot anchorBoundary before
       chain receiver (UInt64.le_trans ordered old) anchorHorizon
     simpa only [same] using anchorRead
+  -- A later source is after the genesis epoch, so the receiver counts it as justified.
+  have later : GENESIS_EPOCH < checkpoint.epoch := by
+    have notLe : ¬ checkpoint.epoch.toNat ≤ (getCurrentEpoch anchorState).toNat :=
+      fun le => old (UInt64.le_iff_toNat_le.mpr le)
+    apply UInt64.lt_iff_toNat_lt.mpr
+    simp only [GENESIS_EPOCH, UInt64.toNat_zero]
+    omega
+  rcases walk_source_ancestor forward.reachable sound before positive window
+      (UInt64.le_of_eq anchorSlot) lower nonzero child source with early |
+      ⟨_, boundary, _, _, boundaryOk, _, read⟩
+  · exact absurd early old
   · exact walk_finalized_read_of_source chain before caller receiver source boundaryOk read ordered
       (UInt64.le_trans (walk_source_epoch_le forward sound slots (UInt64.le_of_eq anchorSlot)
-        before callerEpoch source) inHorizon)
+        before callerEpoch source) inHorizon) later
 
 /-- A two-epoch advance contains a complete epoch, with representable boundaries. -/
 private theorem walk_complete_of_epoch_gap {slot current : Slot} {begin endpoint : UInt64}
@@ -4590,6 +4601,26 @@ The start of the next slot is at most the last time.
 Then the block that the last call stores is safe from the start of the next slot.
 
 It stays safe to the last time.
+
+With an anchor at a later epoch, the first epochs have no new block for the theorem to cover.
+
+Read the epochs here as natural numbers.
+
+Take an anchor at an epoch `a` above 0, at the start slot of `a`.
+
+An honest store starts with the anchor block and no block before it.
+
+While its current epoch is at most `a + MIN_SEED_LOOKAHEAD`, it adds no new block.
+
+The boost update of `onBlock` reads the ancestor of a block at a slot before the anchor's slot.
+
+That walk reaches the parent of the anchor, which no honest store holds by `anchorParent`.
+
+So the read fails, and with it the handler.
+
+So the honest stores hold new blocks only from epoch `a + MIN_SEED_LOOKAHEAD + 1` on.
+
+An anchor at epoch 0 has no such gap, because that read stops at slot 0.
 
 The proof is a strong induction on the calls, with `Execution.callInvariant_step`.
 
