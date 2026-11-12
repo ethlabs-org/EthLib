@@ -97,6 +97,8 @@ structure UpgradeFrame (config : Config) {fork post : Fork} (pre : BeaconState p
   previousVersion : after.forkVersions.previousVersion = pre.forkVersions.currentVersion
   currentVersion : after.forkVersions.currentVersion = config.forkVersion post
   registryGrows : pre.validators.data.size ≤ after.validators.data.size
+  pubkeysPrefix : validatorKeys pre <+: validatorKeys after
+  pubkeysDistinct : PubkeysDistinct pre → PubkeysDistinct after
   balancesMatch : BalancesMatch pre → BalancesMatch after
   exitsOrdered : ExitsOrdered pre → ExitsOrdered after
   aligned : MaxEffectiveBalancesAligned preset → EffectiveBalancesAligned pre →
@@ -135,6 +137,8 @@ theorem UpgradeFrame.of_carried {fork post : Fork} {pre : BeaconState preset for
   previousVersion := previousVersion
   currentVersion := currentVersion
   registryGrows := by rw [validators]; exact Nat.le_refl _
+  pubkeysPrefix := by unfold validatorKeys; rw [validators]; exact List.prefix_refl _
+  pubkeysDistinct := by unfold PubkeysDistinct validatorKeys; rw [validators]; exact id
   balancesMatch holds := by
     unfold BalancesMatch at holds ⊢
     rw [balances, validators]
@@ -166,6 +170,8 @@ theorem UpgradeFrame.trans_blockFrame {fork post : Fork} {pre : BeaconState pres
   previousVersion := by rw [two.forkVersions]; exact one.previousVersion
   currentVersion := by rw [two.forkVersions]; exact one.currentVersion
   registryGrows := Nat.le_trans one.registryGrows two.registryGrows
+  pubkeysPrefix := one.pubkeysPrefix.trans two.pubkeysPrefix
+  pubkeysDistinct := two.pubkeysDistinct ∘ one.pubkeysDistinct
   balancesMatch := two.balancesMatch ∘ one.balancesMatch
   exitsOrdered := two.exitsOrdered ∘ one.exitsOrdered
   aligned maxAligned := two.aligned maxAligned ∘ one.aligned maxAligned
@@ -376,7 +382,7 @@ theorem frame_queuePreActivation {fork : Fork} {state after : BeaconState preset
   have sizes := sameSizes_setBalance set₁
   obtain ⟨_, rfl⟩ := setBalance_ok set₁
   have zeroed := BlockFrame.of_validators sizes
-  have reset := frame_setValidator_of_whole set₂
+  have reset := frame_setValidator_of_whole (old := validator) set₂ found rfl
     (fun ordered => ordered validator (mem_of_getValidator found)) fun _ _ => UInt64.zero_mod
   exact (zeroed.trans reset.toBlockFrame).trans (BlockFrame.of_validators ⟨rfl, rfl⟩)
 

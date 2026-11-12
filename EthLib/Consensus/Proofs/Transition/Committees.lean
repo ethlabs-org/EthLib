@@ -746,7 +746,16 @@ theorem activeStep_addValidatorToRegistry {pubkey : Cryptography.Bls.BLSPubkey}
     (computed : addValidatorToRegistry state pubkey withdrawalCredentials amount = .ok after) :
     ActiveStep state after := by
   have pushed := addValidatorToRegistry_validators_eq_push computed
-  refine ⟨(frame_addValidatorToRegistry computed).slot, fun epoch _ position => ?_⟩
+  have slot : after.slot = state.slot := by
+    unfold addValidatorToRegistry at computed
+    split at computed
+    · simp only [addValidatorToRegistryAltair, liftAccessor_ok, bind_ok_iff, pure, Except.pure,
+        Except.ok.injEq] at computed
+      obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, rfl⟩ := computed
+      rfl
+    · split at computed <;> cases computed
+      rfl
+  refine ⟨slot, fun epoch _ position => ?_⟩
   unfold isActiveAt
   rw [pushed, Array.getElem?_push]
   split

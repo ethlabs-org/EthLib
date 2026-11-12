@@ -9,6 +9,17 @@ Not yet released.
 
 ### Changes that break callers
 
+- Along a chain from genesis, the public keys of the validators stay a prefix and stay distinct ([#1421](https://github.com/ethereum/EthLib/issues/1421)).
+  No C export or Python function changes.
+  In Lean, `Frame` and `UpgradeFrame` gain the fields `pubkeysPrefix` and `pubkeysDistinct`, which bring back the key-keeping fact that [#1908](https://github.com/ethereum/EthLib/issues/1908) removed.
+  `validatorKeys` and `PubkeysDistinct` name the keys and their distinctness.
+  `validatorKeys_prefix_and_distinct_of_genesis_chainSteps` states the result.
+  `frame_addValidatorToRegistry` takes a proof that the key is not in the registry, and `EpochFrameLaws.addValidatorToRegistry` takes it too.
+  `frame_setValidatorAt_of_whole`, `frame_setValidator_of_whole`, `EpochFrameLaws.setValidator` and the `setValidatorAt` field of `EpochFrameLaws` take the old validator and a proof that it is read.
+  They also take a proof that the new validator keeps the key of the old one.
+  `frame_setValidator`, `EpochFrameLaws.setValidator_of_sameBalance` and `EpochFrameLaws.setValidatorAt_of_sameBalance` take the proof of the key.
+  `applyPendingDeposit_cases` decomposes a pending deposit.
+
 - In Lean, the gossip message ID has its length in its type.
   `Gossip.messageId` returns `Vector UInt8 20` in place of a `ByteArray`.
   A caller that needs a `ByteArray` takes `Base.packBytes (messageId fork topic data)`.
