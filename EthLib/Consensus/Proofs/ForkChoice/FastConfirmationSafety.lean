@@ -4602,25 +4602,7 @@ Then the block that the last call stores is safe from the start of the next slot
 
 It stays safe to the last time.
 
-With an anchor at a later epoch, the first epochs have no new block for the theorem to cover.
-
-Read the epochs here as natural numbers.
-
-Take an anchor at an epoch `a` above 0, at the start slot of `a`.
-
-An honest store starts with the anchor block and no block before it.
-
-While its current epoch is at most `a + MIN_SEED_LOOKAHEAD`, it adds no new block.
-
-The boost update of `onBlock` reads the ancestor of a block at a slot before the anchor's slot.
-
-That walk reaches the parent of the anchor, which no honest store holds by `anchorParent`.
-
-So the read fails, and with it the handler.
-
-So the honest stores hold new blocks only from epoch `a + MIN_SEED_LOOKAHEAD + 1` on.
-
-An anchor at epoch 0 has no such gap, because that read stops at slot 0.
+Clocks start at anchor epoch `a > 0`, so no block enters before `a + MIN_SEED_LOOKAHEAD + 1` in ℕ.
 
 The proof is a strong induction on the calls, with `Execution.callInvariant_step`.
 
