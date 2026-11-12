@@ -1,0 +1,247 @@
+module
+
+public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmationNonvacuity.Facts
+public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmationNonvacuity.Shuffling
+
+/-! Committee agreement and unchanged weight margins for the short execution.
+
+Every successful range pairs the Byzantine validator with an honest validator of twice its stake.
+
+This supplies the committee bound of arXiv 2405.00549v4, Assumption 2, at all queried slots. -/
+
+@[expose] public section
+
+namespace EthLib.Consensus.Models.Network.FiveValidatorWitness.Trace
+open Base Base.Uint64
+
+/-- A successful slot read returns exactly the seats of the fixed zero-round assignment. -/
+theorem slot_members {code : Local} {root : Root} {slot : Slot}
+    {members : Std.TreeSet ValidatorIndex}
+    (read : code.store.getSlotCommittee root slot = .ok members) :
+    ∀ v, v ∈ members ↔ v ∈ seats slot := by
+  simp only [Store.getSlotCommittee, bind_ok_iff] at read
+  obtain ⟨s, stateOk, read⟩ := read
+  have registry : s.validators = (state bodyRoot).validators := by
+    rcases local_block_state (Store.blockState_ok_iff.mp stateOk) with ⟨_, rfl⟩ | ⟨_, rfl⟩ <;> rfl
+  have count : getCommitteeCountPerSlot s (computeEpochAtSlot preset slot) = 1 := by
+    unfold getCommitteeCountPerSlot getActiveValidatorIndices
+    rw [registry]
+    exact slot_committee_count bodyRoot slot
+  rw [count] at read
+  simp only [show List.range (1 : UInt64).toNat = [0] from rfl,
+    List.foldlM_cons, List.foldlM_nil, bind_pure] at read
+  change (do
+    let committee ← (getBeaconCommittee s slot 0).mapError ForkChoiceError.accessor
+    pure (committee.foldl (fun (set : Std.TreeSet ValidatorIndex) v => set.insert v) ∅)) =
+      .ok members at read
+  simp only [bind_ok_iff, mapError_ok_iff, pure, Except.pure, Except.ok.injEq] at read
+  obtain ⟨committee, committeeOk, rfl⟩ := read
+  rw [committee_at_slot registry committeeOk]
+  intro v
+  unfold seats
+  split <;> (first | simp | split <;> (first | simp | split <;> simp))
+  all_goals simp [eq_comm, or_comm]
+
+/-- Unions of slot committees retain the Byzantine validator's honest partner. -/
+theorem range_paired {code : Local} {root : Root} {first last : Slot}
+    {members : Std.TreeSet ValidatorIndex}
+    (read : code.store.getCommitteesBetweenSlots root first last = .ok members) :
+    (3 : ValidatorIndex) ∈ members → (4 : ValidatorIndex) ∈ members := by
+  simp only [Store.getCommitteesBetweenSlots, bind_ok_iff] at read
+  obtain ⟨afterLast, _, read⟩ := read
+  intro member
+  rcases (mem_foldlM_committees_iff read).mp member with empty | ⟨i, inside, committee, ok, present⟩
+  · exact False.elim (Std.TreeSet.not_mem_emptyc empty)
+  · exact (mem_foldlM_committees_iff read).mpr (.inr ⟨i, inside, committee, ok,
+      (slot_members ok 4).mpr (seats_paired _ ((slot_members ok 3).mp present))⟩)
+
+/-- The 34-percent bound holds for every successful range, including future ranges. -/
+theorem range_byzantine {code : Local} {root : Root} {first last : Slot}
+    {members : Std.TreeSet ValidatorIndex}
+    (read : code.store.getCommitteesBetweenSlots root first last = .ok members) :
+    ByzantineStakeAtMost (fun v => balanceAt (state bodyRoot) v.toNat)
+      (Store.activeMembers (state bodyRoot) members) honest 34 100 := by
+  apply committee_byzantine_of_paired
+  · intro v inside
+    obtain ⟨_, validator, held, active⟩ := Store.mem_activeMembers.mp inside
+    rw [← active_voters bodyRoot]
+    apply List.mem_toFinset.mpr
+    exact (mem_getActiveValidatorIndices
+      (BeaconState.registryWithinLimit_of_lt (by decide) (state bodyRoot))).mpr
+        ⟨validator, held, active⟩
+  · intro inside
+    have member := range_paired read (Store.mem_activeMembers.mp inside).1
+    exact Store.mem_activeMembers.mpr ⟨member, validator 200, rfl, rfl⟩
+
+/-- The configured proposer boost contributes no stake. -/
+theorem proposer_score : computeProposerScore config (state bodyRoot) = .ok 0 := by
+  have total : getTotalBalance (state bodyRoot) [0, 1, 2, 3, 4] = .ok 900 := total_balance
+  have balances : unslashedActiveBalances (state bodyRoot) =
+      [(0, 200), (1, 200), (2, 200), (3, 100), (4, 200)] := rfl
+  simp only [computeProposerScore, calculateCommitteeFraction, balances, List.map_cons,
+    List.map_nil, total, Except.mapError, bind, Except.bind]
+  rfl
+
+/-- Every receiver uses the same balances, so the adverse weight shift is zero. -/
+theorem weights {last : Nat} (bounded : last ≤ 4000) :
+    WeightBounds execution (state bodyRoot) 3000 last 0 where
+  reads := by
+    intro w _ k head s current firstSlot lastSlot maximum _ byLimit _ _ _ checkpoint read
+    obtain ⟨code, eq⟩ := store_code (byLimit.trans bounded) w
+    rw [eq] at checkpoint
+    rw [local_checkpoint checkpoint] at read
+    exact ⟨maximum, 0, read, proposer_score⟩
+  margin := by
+    intro w _ k head s score sourceScore firstSlot lastSlot maximum sourceMaximum _ byLimit
+      _ checkpoint receiverScore originalScore receiver original p q _ _
+    obtain ⟨code, eq⟩ := store_code (byLimit.trans bounded) w
+    rw [eq] at checkpoint
+    rw [local_checkpoint checkpoint] at receiverScore receiver ⊢
+    rw [receiverScore, Except.ok.injEq] at originalScore
+    rw [receiver, Except.ok.injEq] at original
+    subst sourceScore sourceMaximum
+    exact Nat.le_refl _
+  sourceByzantine := by
+    intro w _ k head firstSlot lastSlot members time read
+    obtain ⟨code, eq⟩ := store_code (n := k) (by omega) w
+    rw [eq] at read
+    exact range_byzantine read
+  byzantine := by
+    intro w _ k head s firstSlot lastSlot members _ byLimit checkpoint read
+    obtain ⟨code, eq⟩ := store_code (byLimit.trans bounded) w
+    rw [eq] at checkpoint read
+    rw [local_checkpoint checkpoint]
+    exact range_byzantine read
+  dishonest := by
+    intro w _ k byLimit v inside
+    obtain ⟨code, eq⟩ := store_code (byLimit.trans bounded) w
+    rw [eq] at inside
+    cases code <;> change v ∈ ([] : List ValidatorIndex) at inside <;> contradiction
+
+/-- A range member has a duty in an included slot, and every such duty is a member. -/
+theorem range_members {code : Local} {root : Root} {first last : Slot}
+    {members : Std.TreeSet ValidatorIndex}
+    (read : code.store.getCommitteesBetweenSlots root first last = .ok members)
+    (v : ValidatorIndex) :
+    v ∈ members ↔ ∃ slot, first ≤ slot ∧ slot ≤ last ∧ v ∈ seats slot := by
+  simp only [Store.getCommitteesBetweenSlots, bind_ok_iff, mapError_ok_iff] at read
+  obtain ⟨afterLast, afterOk, read⟩ := read
+  have afterNat := (addChecked_ok_iff.mp afterOk).2
+  simp only [UInt64.toNat_one] at afterNat
+  constructor
+  · intro member
+    rcases (mem_foldlM_committees_iff read).mp member with empty |
+      ⟨i, inside, committee, ok, present⟩
+    · exact False.elim (Std.TreeSet.not_mem_emptyc empty)
+    · have offset := List.mem_range.mp inside
+      have bound := afterLast.toNat_lt
+      have iBound : i < 2 ^ 64 := by omega
+      have iNat : i.toUInt64.toNat = i := by
+        simp [Nat.toUInt64_eq, UInt64.toNat_ofNat_of_lt' iBound]
+      have slotNat : (first + i.toUInt64).toNat = first.toNat + i := by
+        rw [UInt64.toNat_add, iNat, Nat.mod_eq_of_lt (by omega)]
+      refine ⟨first + i.toUInt64, ?_, ?_, (slot_members ok v).mp present⟩
+      · rw [UInt64.le_iff_toNat_le, slotNat]; omega
+      · rw [UInt64.le_iff_toNat_le, slotNat]; omega
+  · rintro ⟨slot, low, high, present⟩
+    have lowNat := UInt64.le_iff_toNat_le.mp low
+    have highNat := UInt64.le_iff_toNat_le.mp high
+    have inside : slot.toNat - first.toNat ∈ List.range (afterLast.toNat - first.toNat) :=
+      List.mem_range.mpr (by omega)
+    have back : first + (slot.toNat - first.toNat).toUInt64 = slot := by
+      rw [← UInt64.toNat_sub_of_le _ _ low, Nat.toUInt64_eq,
+        UInt64.ofNat_toNat, UInt64.add_comm, UInt64.sub_add_cancel]
+    obtain ⟨committee, ok⟩ := foldlM_forall_of_ok
+      (fun _ _ _ step => (bind_ok_iff.mp step).imp fun _ read => read.1) _ _ _ read _ inside
+    exact (mem_foldlM_committees_iff read).mpr (.inr ⟨_, inside, committee, ok,
+      (slot_members ok v).mpr (by rw [back]; exact present)⟩)
+
+/-- Store clocks reach at most the first boundary of epoch one before the limit. -/
+theorem current_slot_le_four {n : Nat} {v : ValidatorIndex} {slot : Slot}
+    (bounded : (execution.world n).time ≤ 4000)
+    (clock : ((execution.world n).state v).getCurrentSlot config = .ok slot) : slot ≤ 4 := by
+  have bounds := execution.clock_bounds v n
+  have genesis : ((execution.world n).state v).genesisTimeMs = 0 := bounds.1
+  have upper : ((execution.world n).state v).timeMs.toNat ≤ (execution.world n).time := by
+    simpa only [show (execution.start v).timeMs.toNat = 0 from rfl, Nat.zero_max] using bounds.2.2
+  unfold Store.getCurrentSlot at clock
+  rw [genesis, mapError_ok_iff] at clock
+  exact computeSlotAtTimeMs_mono (show ((execution.world n).state v).timeMs ≤ 4000 from
+    UInt64.le_iff_toNat_le.mpr (upper.trans bounded)) clock
+    (show computeSlotAtTimeMs config 0 4000 = .ok 4 from rfl)
+
+/-- The finite assignment covers exactly the first epoch's committee seats. -/
+theorem seats_assignment {slot : Slot} (past : slot < 4) (v : ValidatorIndex) :
+    v ∈ seats slot ↔ ∃ index, assignment.committee v slot = some index := by
+  have slots : slot = 0 ∨ slot = 1 ∨ slot = 2 ∨ slot = 3 := by
+    have nat := UInt64.lt_iff_toNat_lt.mp past
+    simp only [← UInt64.toNat_inj]
+    change slot.toNat = 0 ∨ slot.toNat = 1 ∨ slot.toNat = 2 ∨ slot.toNat = 3
+    change slot.toNat < 4 at nat
+    omega
+  by_cases registered : v < 5
+  · have indices : v = 0 ∨ v = 1 ∨ v = 2 ∨ v = 3 ∨ v = 4 := by
+      have nat := UInt64.lt_iff_toNat_lt.mp registered
+      simp only [← UInt64.toNat_inj]
+      change v.toNat = 0 ∨ v.toNat = 1 ∨ v.toNat = 2 ∨ v.toNat = 3 ∨ v.toNat = 4
+      change v.toNat < 5 at nat
+      omega
+    rcases indices with rfl | rfl | rfl | rfl | rfl <;>
+      rcases slots with rfl | rfl | rfl | rfl <;>
+      simp [seats, assignment] <;> decide +kernel
+  · have distinct : v ≠ 0 ∧ v ≠ 1 ∧ v ≠ 2 ∧ v ≠ 3 ∧ v ≠ 4 := by
+      have nat : ¬v.toNat < 5 := registered
+      simp only [ne_eq, ← UInt64.toNat_inj]
+      change v.toNat ≠ 0 ∧ v.toNat ≠ 1 ∧ v.toNat ≠ 2 ∧ v.toNat ≠ 3 ∧ v.toNat ≠ 4
+      omega
+    rcases slots with rfl | rfl | rfl | rfl <;> simp [seats, assignment, registered, distinct]
+
+/-- Every past range read by an honest store agrees with the execution's duty assignment. -/
+theorem committees_assigned : ∀ w ∈ honest, ∀ k, (execution.world k).time ≤ 4000 →
+    ∀ head current first last members,
+      ((execution.world k).state w).getHead config = .ok head →
+      ((execution.world k).state w).getCurrentSlot config = .ok current → last < current →
+      ((execution.world k).state w).getCommitteesBetweenSlots head.root first last = .ok members →
+      ∀ v ∈ honest, v ∈ members ↔ ∃ slot index,
+        first ≤ slot ∧ slot ≤ last ∧ assignment.committee v slot = some index := by
+  intro w _ k bounded head current first last members _ clock past read v _
+  have below := current_slot_le_four bounded clock
+  obtain ⟨code, eq⟩ := store_code bounded w
+  rw [eq] at read
+  rw [range_members read]
+  constructor
+  · rintro ⟨slot, low, high, member⟩
+    obtain ⟨index, assigned⟩ := (seats_assignment
+      (UInt64.lt_of_le_of_lt high (UInt64.lt_of_lt_of_le past below)) v).mp member
+    exact ⟨slot, index, low, high, assigned⟩
+  · rintro ⟨slot, index, low, high, assigned⟩
+    exact ⟨slot, low, high, (seats_assignment
+      (UInt64.lt_of_le_of_lt high (UInt64.lt_of_lt_of_le past below)) v).mpr ⟨index, assigned⟩⟩
+
+/-- The initial state is a common retained source for the head and every cached target. -/
+theorem committees_follow : CommitteesFollow execution 4000 where
+  assigned := by
+    intro w own k bounded head current first last members headOk clock past _ read
+    exact committees_assigned w own k bounded head current first last members headOk clock past read
+  common := by
+    intro w _ k bounded head headState current v attestation targetState _ headOk _ _ _ _ cached
+    obtain ⟨code, eq⟩ := store_code bounded w
+    rw [eq] at headOk cached
+    have target : attestation.data.target = ⟨0, anchorRoot⟩ ∧ targetState = state bodyRoot := by
+      cases code <;>
+        simp only [Local.store, running, admitted, ticked, anchor, Std.TreeMap.getElem?_insert]
+          at cached <;>
+        split at cached <;> simp_all [Checkpoint.compare, Ordering.then_eq_eq,
+          Std.LawfulEqCmp.compare_eq_iff_eq]
+    rw [target.2]
+    refine ⟨state bodyRoot, ?_, RunKept.refl _, ?_, ?_, ?_, ?_⟩
+    · rcases local_block_state (Store.blockState_ok_iff.mp headOk) with ⟨_, rfl⟩ | ⟨_, rfl⟩
+      · exact RunKept.refl _
+      · exact runKept_stateTransition first_transition
+    · rw [target.1]; decide
+    · rw [target.1]; decide
+    · rcases local_block_state (Store.blockState_ok_iff.mp headOk) with ⟨_, rfl⟩ | ⟨_, rfl⟩ <;>
+        rw [target.1] <;> decide
+    · rw [target.1]; decide
+
+end EthLib.Consensus.Models.Network.FiveValidatorWitness.Trace

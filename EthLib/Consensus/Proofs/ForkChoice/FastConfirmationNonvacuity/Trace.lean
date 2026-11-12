@@ -12,7 +12,7 @@ Their interpretation uses the certified handlers and the unchanged honest-valida
 
 After 73 events, all messages have been delivered and an infinite tail advances only time.
 
-This execution does not yet have certificates of every premise of Theorem 1. -/
+The `Joint` module certifies every premise of Theorem 1 for this execution. -/
 
 @[expose] public section
 
@@ -410,7 +410,7 @@ The phase0 candidate uses a custom minimal preset with zero shuffle rounds and f
 
 Its custom configuration has zero proposer boost and confirmation threshold 34, not mainnet values.
 
-This does not yet prove the other premises of Theorem 1. -/
+This theorem certifies the execution and its advancing call; `Joint` proves the other premises. -/
 theorem confirms_by_walk :
     (execution.world 52).time = 3000 ∧
     ((execution.world 52).state 0).onFastConfirmation config (getFastConfirmationStore anchor) =

@@ -1,8 +1,9 @@
 module
 
-public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmationNonvacuity.Trace
-public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmationNonvacuity.Bounds
+public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmationNonvacuity.Joint
 
-/-! An allowed synchronous execution containing a nontrivial fast-confirmation walk.
+/-! Nonvacuity of the premises of fast-confirmation Theorem 1.
 
-The execution does not yet have certificates of every premise of Theorem 1. -/
+An allowed synchronous execution satisfies every premise and confirms a distinct child by the walk.
+
+The final witness theorem documents which later-epoch obligations hold only vacuously. -/
