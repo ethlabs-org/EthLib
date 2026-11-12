@@ -5234,4 +5234,113 @@ theorem consolidationSites_provenance {g x y : ForkedBeaconState preset}
           · simp only [getCurrentEpoch, kept.active.1]
           · exact Nat.lt_of_le_of_lt (u.validators.bound early) (UInt64.toNat_lt _)
 
+/-- Departure charges fit the legacy cohort window and the two balance-queue windows. -/
+theorem departure_charges_le_window {g x y : ForkedBeaconState preset}
+    (shared : Run config checks g x) (tail : Run config checks x y)
+    (genesis : Genesis (config := config) (checks := checks) g)
+    (parameters : Parameters preset) (caps : CapOrder preset)
+    (early : y.fork < .glamsterdam) (high registryBound consolidationCap : Nat)
+    (endEpoch : (getCurrentEpoch y.state).toNat ≤ high + 1)
+    (registryBounded : y.state.validators.data.size ≤ registryBound)
+    (rates : ∀ site ∈ tail.consolidationSites,
+      .pectra ≤ site.fork → ∀ (rate : Gwei),
+        getConsolidationChurnLimit config site.state = .ok rate →
+          rate.toNat ≤ consolidationCap) :
+    ((tail.departureCharges.filter fun c => c.epoch ≤ high + 1).map (·.amount)).sum ≤
+      (if electra : .pectra ≤ x.fork then
+        (if (x.state.earliestExitEpoch electra).toNat ≤ high + 1 then
+          (x.state.exitBalanceToConsume electra).toNat else 0) +
+        (if (x.state.earliestConsolidationEpoch electra).toNat ≤ high + 1 then
+          (x.state.consolidationBalanceToConsume electra).toNat else 0)
+       else 0) +
+      (high + 2 - (getCurrentEpoch x.state).toNat) *
+        ((if x.fork < .pectra then max 1 (cohortCap config registryBound) *
+          preset.MAX_EFFECTIVE_BALANCE.toNat else 0) +
+         config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat + consolidationCap) := by
+  by_cases electra : .pectra ≤ x.fork
+  · have bound := departure_charges_le_window_electra tail electra early high
+      consolidationCap rates
+    have notBefore : ¬ x.fork < .pectra := Nat.not_lt_of_ge electra
+    simpa only [electra, ↓reduceDIte, notBefore, ↓reduceIte, Nat.zero_add,
+      Nat.add_assoc] using bound
+  · have before : x.fork < .pectra := Nat.lt_of_not_ge electra
+    simp only [electra, ↓reduceDIte, before, ↓reduceIte, Nat.zero_add]
+    by_cases targetBefore : y.fork < .pectra
+    · have bound := pre_electra_charges_le_window shared tail genesis caps targetBefore
+        (high + 1) registryBound registryBounded
+      apply bound.trans
+      apply Nat.mul_le_mul_left
+      omega
+    · obtain ⟨u, v, pre, crossing, post, uBefore, vElectra, same⟩ :=
+        split_electra_crossing tail before (Nat.le_of_not_lt targetBefore)
+      subst tail
+      have vEarly := Nat.lt_of_le_of_lt (fork_le_of_chainSteps post.chainSteps) early
+      have legacy := crossing_charges_le_window shared pre crossing genesis caps uBefore
+        vEarly (high + 1) registryBound
+        ((registryGrows_of_chainSteps post.chainSteps).trans registryBounded)
+      have balance := initialized_charges_le_window post vElectra early (high + 1)
+        consolidationCap (crossing_initialized crossing uBefore vElectra vEarly)
+        (by
+          intro site member h rate computed
+          apply rates site _ h rate computed
+          have appended : ∀ {a b c : ForkedBeaconState preset}
+              (one : Run config checks a b) (two : Run config checks b c),
+              (one.append two).consolidationSites =
+                one.consolidationSites ++ two.consolidationSites := by
+            intro a b c one two
+            induction two with
+            | nil => simp [Run.append, Run.consolidationSites]
+            | snoc two step ih =>
+              simp only [Run.append, Run.consolidationSites, ih, List.append_assoc]
+          rw [appended]
+          exact List.mem_append_right _ member)
+      -- Convert the endpoint epoch bound to a slot horizon, then carry it back along the run.
+      have positive : 0 < preset.SLOTS_PER_EPOCH.toNat := by
+        have slots := parameters.slots
+        omega
+      have slotMono : ∀ {a b : ForkedBeaconState preset} (run : Run config checks a b),
+          a.state.slot.toNat ≤ b.state.slot.toNat := by
+        intro a b run
+        induction run with
+        | nil => exact Nat.le_refl _
+        | @snoc middle last head step ih =>
+          apply ih.trans
+          cases step with
+          | slot ok =>
+            obtain ⟨advanced, slotOk, upgraded⟩ := bind_ok_iff.mp ok
+            rw [processUpgrades_slot upgraded, advanceSlot_slot slotOk]
+            exact Nat.le_succ _
+          | block engine signed due ok =>
+            rw [(frame_processBlock (applySignedBlock_ok ok).2.1).slot]
+      have horizon : y.state.slot.toNat <
+          (high + 2) * preset.SLOTS_PER_EPOCH.toNat := by
+        apply (Nat.div_lt_iff_lt_mul positive).mp
+        simpa only [getCurrentEpoch_toNat] using Nat.lt_succ_of_le endEpoch
+      have startWindow : (getCurrentEpoch x.state).toNat < high + 2 := by
+        rw [getCurrentEpoch_toNat]
+        exact (Nat.div_lt_iff_lt_mul positive).mpr
+          ((slotMono ((pre.snoc crossing).append post)).trans_lt horizon)
+      have ordered := UInt64.le_iff_toNat_le.mp
+        (currentEpoch_le_of_chainSteps (pre.snoc crossing).chainSteps)
+      have length : high + 2 = (getCurrentEpoch x.state).toNat +
+          (high + 2 - (getCurrentEpoch x.state).toNat) := by omega
+      have suffix : high + 2 - (getCurrentEpoch v.state).toNat ≤
+          high + 2 - (getCurrentEpoch x.state).toNat := by
+        conv_lhs => rw [length]
+        omega
+      have balance := balance.trans (Nat.mul_le_mul_right
+        (config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat + consolidationCap) suffix)
+      have charges : ∀ {a b c : ForkedBeaconState preset}
+          (one : Run config checks a b) (two : Run config checks b c),
+          (one.append two).departureCharges = one.departureCharges ++ two.departureCharges := by
+        intro a b c one two
+        induction two with
+        | nil => simp [Run.append, Run.departureCharges]
+        | snoc two step ih =>
+          simp only [Run.append, Run.departureCharges, ih, List.append_assoc]
+      rw [charges, List.filter_append, List.map_append, List.sum_append]
+      simp only [Nat.add_assoc, Nat.reduceAdd] at legacy balance
+      rw [Nat.add_assoc, Nat.mul_add]
+      exact Nat.add_le_add legacy balance
+
 end EthLib.Consensus.DirectSafety
