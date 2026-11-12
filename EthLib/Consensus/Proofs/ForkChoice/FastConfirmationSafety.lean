@@ -4113,7 +4113,7 @@ theorem Execution.callInvariant_step {Δ : ℕ} (sync : e.Synchronous Δ)
           simpa only [computeEpochAtSlot, UInt64.toNat_div, UInt64.toNat_one, nextEpoch] using this
         · simpa only [computeEpochAtSlot, UInt64.toNat_div, UInt64.toNat_one] using nextEpoch
       rw [observedEq] at found ⊢
-      exact e.safeAt_observed sync positiveSlotsNat window slots votes fits prompt preGloas
+      exact e.safeAt_observed sync positiveSlotsNat window slots fits preGloas
         oneBlock admitted anchored sound start chain unique voted caller delayed.le oldEpochOk
         epochOk epochNext slotOk boundary beginOk atSlot found age nonzero inHorizon
   have observedInvariant (boundary : isStartSlotAtEpoch preset slot = .ok true)
