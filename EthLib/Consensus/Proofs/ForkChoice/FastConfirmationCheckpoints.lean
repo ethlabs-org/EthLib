@@ -776,6 +776,42 @@ theorem getCurrentTargetScore_eq_sum
       · have zero : computed = 0 := by simpa [same, pure, Except.pure] using valueOk.symm
         simp [equivocating, checkpointOk, Ne.symm same, zero, Except.toOption]
 
+/-- A successful total-balance read makes the target score a finite stake, without duplicates. -/
+theorem getCurrentTargetScore_eq_stake
+    {head : Root} {state : BeaconState preset fork} {target : Checkpoint} {score total : Gwei}
+    (stateOk : store.getPulledUpHeadState config head = .ok state)
+    (targetOk : store.getCurrentTarget config head = .ok target)
+    (totalOk : getTotalActiveBalance state = .ok total)
+    (scoreOk : store.getCurrentTargetScore config head = .ok score) :
+    ∃ counted : List ValidatorIndex,
+      (getActiveValidatorIndices state (getCurrentEpoch state)).filterM
+        (fun index => return !(← validatorAt state index).slashed) =
+          (Except.ok counted : Except ForkChoiceError (List ValidatorIndex)) ∧
+      counted.Nodup ∧
+      score.toNat = stake (fun v => balanceAt state v.toNat)
+        (counted.toFinset.filter fun index => (match store.latestMessages[index]? with
+          | none => false
+          | some message => decide (index ∉ store.equivocatingIndices ∧
+            (store.getCheckpointForBlock message.root
+              (getLatestMessageEpoch preset message)).toOption = some target)) = true) := by
+  obtain ⟨counted, countedOk, summed⟩ := getCurrentTargetScore_eq_sum stateOk targetOk scoreOk
+  simp only [getTotalActiveBalance, bind_ok_iff] at totalOk
+  obtain ⟨active, activeOk, _⟩ := totalOk
+  have distinct : (getActiveValidatorIndices state (getCurrentEpoch state)).Nodup := by
+    have sorted := sorted_of_getActiveValidatorIndicesChecked_ok activeOk
+    rw [getActiveValidatorIndicesChecked_ok activeOk] at sorted
+    exact sorted.imp UInt64.ne_of_lt
+  have keptDistinct := (sublist_of_filterM_ok countedOk).nodup distinct
+  refine ⟨counted, countedOk, keptDistinct, ?_⟩
+  rw [stake, Finset.sum_filter, List.sum_toFinset _ keptDistinct, summed]
+  congr 1
+  apply List.map_congr_left
+  intro index _
+  cases store.latestMessages[index]? with
+  | none => simp
+  | some message =>
+    by_cases equiv : index ∈ store.equivocatingIndices <;> simp [equiv]
+
 /-- A successful target-support count is the discounted score plus the remaining honest share. -/
 theorem computeHonestFfgSupportForCurrentTarget_eq
     {head : Root} {state : BeaconState preset fork} {slot epochStart lastSlot : Slot}
