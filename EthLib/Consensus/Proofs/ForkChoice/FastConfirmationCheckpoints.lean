@@ -629,6 +629,46 @@ theorem justified_or_one_third_lt_of_willNoConflictingCheckpointBeJustified {hea
     refine .inr ⟨state, total, support, stateOk, totalOk, supportOk, ?_⟩
     simpa only [three, UInt64.toNat_ofNat] using lt
 
+/-- A successful target-support count is the discounted score plus the remaining honest share. -/
+theorem computeHonestFfgSupportForCurrentTarget_eq
+    {head : Root} {state : BeaconState preset fork} {slot epochStart lastSlot : Slot}
+    {total soFar support : Gwei}
+    (stateOk : store.getPulledUpHeadState config head = .ok state)
+    (slotOk : store.getCurrentSlot config = .ok slot)
+    (totalOk : getTotalActiveBalance state = .ok total)
+    (startOk : computeStartSlotAtEpoch preset (computeEpochAtSlot preset slot) = .ok epochStart)
+    (lastOk : subChecked slot 1 = .ok lastSlot)
+    (soFarOk : store.computeCommitteeWeightBetweenSlots head state epochStart lastSlot = .ok soFar)
+    (supportOk : store.computeHonestFfgSupportForCurrentTarget config head = .ok support) :
+    ∃ score adversary,
+      store.getCurrentTargetScore config head = .ok score ∧
+      store.computeAdversarialWeight config head state epochStart lastSlot = .ok adversary ∧
+      support.toNat = score.toNat - adversary.toNat +
+        (total.toNat - soFar.toNat) / 100 *
+          (100 - config.CONFIRMATION_BYZANTINE_THRESHOLD.toNat) := by
+  simp only [computeHonestFfgSupportForCurrentTarget, slotOk, stateOk,
+    mapError_ok_iff, bind_ok_iff] at supportOk
+  obtain ⟨s, sOk, st, stOk, t, tOk, score, scoreOk, first, firstOk, last, lastOk',
+    weight, weightOk, remaining, remainingOk, share, shareOk, future, futureOk,
+    adversary, adversaryOk, sumOk⟩ := supportOk
+  cases Except.ok.inj sOk
+  cases Except.ok.inj stOk
+  rw [totalOk, Except.ok.injEq] at tOk
+  subst t
+  rw [startOk, Except.ok.injEq] at firstOk
+  subst first
+  rw [lastOk, Except.ok.injEq] at lastOk'
+  subst last
+  rw [soFarOk, Except.ok.injEq] at weightOk
+  subst weight
+  have remainingNat := (subChecked_ok_iff.mp remainingOk).2
+  have shareNat := (subChecked_ok_iff.mp shareOk).2
+  have futureNat := (mulChecked_ok_iff.mp futureOk).2
+  have sumNat := (addChecked_ok_iff.mp sumOk).2
+  refine ⟨score, adversary, scoreOk, adversaryOk, ?_⟩
+  simpa only [toNat_saturatingSub, futureNat, UInt64.toNat_div, remainingNat, shareNat,
+    UInt64.toNat_ofNat] using sumNat
+
 end Store
 
 namespace Models.Network
