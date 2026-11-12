@@ -283,11 +283,13 @@ structure VoteAt {J : Set ValidatorIndex}
     checkAttestationCommittees targetState attestation = .ok ()
   alone : indexed.attestingIndices.data.toList = [v]
 
-/-- The duty to vote, on an execution with honest validators `J`, from a time `stable` on.
+/-- The duty to vote, on an execution with honest validators `J`, from `stable` up to `last`.
 
 Take an honest validator, a slot of its assignment, and the attestation deadline of that slot.
 
-When the execution starts by then, and `stable` is past, the validator votes, as its duty asks.
+When the execution starts by then, `stable` is past and `last` is not, the validator votes.
+
+A theorem about times up to `last` needs no duty after it, so a finite execution can meet it.
 
 Before `stable`, honest stores may disagree with the assignment on the committees.
 
@@ -298,13 +300,21 @@ The time is in milliseconds, like the deadlines.
 The paper shares committees after its stabilization time, in §2, which comes after GST.
 
 Each theorem relates that time to GST itself. -/
-def Votes {J : Set ValidatorIndex} (stable : ℕ)
+def Votes {J : Set ValidatorIndex} (stable last : ℕ)
     (e : Execution (honestForkChoice config checks sources anchorState anchorBlock assignment
       genesisTimeMs) J) : Prop :=
   ∀ v ∈ J, ∀ slot committeeIndex time, assignment.committee v slot = some committeeIndex →
     IsAttestationDeadline fork config genesisTimeMs slot time → e.startTime ≤ time →
-    stable ≤ time →
+    stable ≤ time → time ≤ last →
     ∃ n attestation indexed, VoteAt e v slot committeeIndex time n attestation indexed
+
+/-- The duty up to a time gives the duty up to every earlier time. -/
+theorem Votes.of_le {J : Set ValidatorIndex}
+    {e : Execution (honestForkChoice config checks sources anchorState anchorBlock assignment
+      genesisTimeMs) J} {stable last later : ℕ} (votes : Votes stable later e)
+    (le : last ≤ later) : Votes stable last e :=
+  fun v honest slot committeeIndex time assigned deadline started stableLe bounded =>
+    votes v honest slot committeeIndex time assigned deadline started stableLe (bounded.trans le)
 
 /-- Under synchrony with delay `Δ`, a vote of a duty reaches every honest validator `Δ` later. -/
 theorem VoteAt.mem_view {J : Set ValidatorIndex}
@@ -522,12 +532,13 @@ theorem exists_votes_execution {anchorState : BeaconState preset fork}
     (first : committee[0]? = some v) (small : committee.size ≤ maxAttesters preset fork)
     (slots : 0 < config.SLOT_DURATION_MS) {due : UInt64}
     (dueOk : getAttestationDueMs config fork = .ok due) (inSlot : due < config.SLOT_DURATION_MS)
-    (fits : store.genesisTimeMs.toNat + due.toNat < 2 ^ 64) {Δ : ℕ} (positive : 0 < Δ) :
+    (fits : store.genesisTimeMs.toNat + due.toNat < 2 ^ 64) {Δ : ℕ} (positive : 0 < Δ)
+    (last : ℕ) :
     ∃ e : Execution (honestForkChoice config .acceptAll sources anchorState anchorBlock
         (Assignment.single v 0 0) store.genesisTimeMs) {v},
       e.startTime = store.timeMs.toNat ∧ e.start = (fun _ => store) ∧
       (∃ attestation, e.events 2 = .send v (.attestation attestation)) ∧
-      Votes 0 e ∧ e.Synchronous Δ ∧
+      Votes 0 last e ∧ e.Synchronous Δ ∧
       ∀ n, Store.Reachable config anchorState anchorBlock ((e.world n).state v) := by
   obtain ⟨anchorRoot, blockRooted, checkpoints⟩ := getForkchoiceStore_checkpointStates anchored
   have stored : store.checkpointStates[(⟨getCurrentEpoch anchorState, anchorRoot⟩ : Checkpoint)]? =
@@ -706,7 +717,7 @@ theorem exists_votes_execution {anchorState : BeaconState preset fork}
   refine ⟨e, rfl, rfl, ⟨attestation, rfl⟩, ?_, ⟨positive, fun T => ⟨T + 3, ?_⟩, ?_⟩,
     fun n => e.reachable (fun u _ => .anchor anchored) n v rfl⟩
   · -- The only duty is in slot zero, at the deadline, and the vote of the third event does it.
-    intro u honest slot committeeIndex time assigned atDeadline _ _
+    intro u honest slot committeeIndex time assigned atDeadline _ _ _
     rw [Set.mem_singleton_iff] at honest
     subst honest
     obtain ⟨rfl, rfl⟩ : slot = 0 ∧ committeeIndex = 0 := by

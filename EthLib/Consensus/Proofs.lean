@@ -40,6 +40,7 @@ public import EthLib.Consensus.Proofs.ForkChoice.BlockStates
 public import EthLib.Consensus.Proofs.ForkChoice.Checkpoints
 public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmation
 public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmationCheckpoints
+public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmationCommittees
 public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmationConfirmedRoot
 public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmationIndicators
 public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmationResets
@@ -47,6 +48,7 @@ public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmationSafety
 public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmationSets
 public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmationSupport
 public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmationSupporters
+public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmationTransport
 public import EthLib.Consensus.Proofs.ForkChoice.FinalizedOrigins
 public import EthLib.Consensus.Proofs.ForkChoice.FinalizedSources
 public import EthLib.Consensus.Proofs.ForkChoice.ForwardClock
@@ -57,6 +59,7 @@ public import EthLib.Consensus.Proofs.ForkChoice.HonestCheckpoints
 public import EthLib.Consensus.Proofs.ForkChoice.HonestDuties
 public import EthLib.Consensus.Proofs.ForkChoice.HonestVotes
 public import EthLib.Consensus.Proofs.ForkChoice.JustifiedOrigins
+public import EthLib.Consensus.Proofs.ForkChoice.JustifiedRegistry
 public import EthLib.Consensus.Proofs.ForkChoice.Network
 public import EthLib.Consensus.Proofs.ForkChoice.Optimistic
 public import EthLib.Consensus.Proofs.ForkChoice.OptimisticSync

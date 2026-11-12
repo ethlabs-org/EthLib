@@ -4,6 +4,7 @@ public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmationConfirmedRoot
 public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmationSupport
 public import EthLib.Consensus.Proofs.ForkChoice.HonestCheckpoints
 public import EthLib.Consensus.Proofs.ForkChoice.HonestVotes
+import EthLib.Consensus.Proofs.HonestAggregation
 
 /-!
 # Statements: a block that the rule confirms stays in the filtered tree of each honest store
@@ -450,23 +451,74 @@ theorem findLatestConfirmedDescendant_checked {fcr : FastConfirmationStore}
   · have same : root = mid := by simpa [finish, pure, Except.pure] using found.symm
     exact same ▸ firstResult
 
-/-- The selected start carries both its reset checks and its descendant search. -/
+/-- The selected start carries both its reset checks and its descendant search.
+
+The start is the one that the rule selects, not only one of its three candidates.
+
+The rule first keeps the block stored before, when that block passes three checks.
+
+Its epoch is the current one or the one before.
+
+It is on the chain of the head.
+
+At the start of an epoch, its chain is still safe.
+
+Otherwise the rule falls back to the finalized block.
+
+Call the block that this step gives the base.
+
+The rule then takes the observed justified block in place of the base, when four checks pass.
+
+The slot starts an epoch, and the observed block is of the epoch before.
+
+The observed checkpoint is the unrealized justification of the head.
+
+The base is at an earlier slot than the observed block.
+
+Otherwise the start is the base.
+
+These cases exclude one another, so the start is the one that the rule computes. -/
 theorem getLatestConfirmed_checked_start {fcr : FastConfirmationStore} {head root : Root}
     (lower : store.ParentsBelow)
     (latest : store.getLatestConfirmed config fcr head = .ok root) :
     ∃ slot start, store.getCurrentSlot config = .ok slot ∧
-      (start = fcr.confirmedRoot ∧
-          store.isAncestor ⟨head, .pending⟩ ⟨fcr.confirmedRoot, .pending⟩ = .ok true ∧
-          (isStartSlotAtEpoch preset slot = .ok true →
-            store.isConfirmedChainSafe config fcr head fcr.confirmedRoot = .ok true) ∨
-        start = store.finalizedCheckpoint.root ∨
-        start = fcr.currentEpochObservedJustifiedCheckpoint.root ∧
-          isStartSlotAtEpoch preset slot = .ok true ∧
-          (∃ observedBlock epoch,
-            store.block fcr.currentEpochObservedJustifiedCheckpoint.root = .ok observedBlock ∧
-            store.getCurrentStoreEpoch config = .ok epoch ∧
-            Uint64.addChecked (computeEpochAtSlot preset observedBlock.slot) 1 = .ok epoch) ∧
-          store.unrealizedJustification head = .ok fcr.currentEpochObservedJustifiedCheckpoint) ∧
+      (∃ base,
+        (base = fcr.confirmedRoot ∧
+            ((∃ epoch blockEpoch, store.getCurrentStoreEpoch config = .ok epoch ∧
+                store.getBlockEpoch fcr.confirmedRoot = .ok blockEpoch ∧
+                epoch.toNat ≤ blockEpoch.toNat + 1) ∧
+              store.isAncestor ⟨head, .pending⟩ ⟨fcr.confirmedRoot, .pending⟩ = .ok true ∧
+              (isStartSlotAtEpoch preset slot = .ok true →
+                store.isConfirmedChainSafe config fcr head fcr.confirmedRoot = .ok true)) ∨
+          base = store.finalizedCheckpoint.root ∧
+            ¬((∃ epoch blockEpoch, store.getCurrentStoreEpoch config = .ok epoch ∧
+                store.getBlockEpoch fcr.confirmedRoot = .ok blockEpoch ∧
+                epoch.toNat ≤ blockEpoch.toNat + 1) ∧
+              store.isAncestor ⟨head, .pending⟩ ⟨fcr.confirmedRoot, .pending⟩ = .ok true ∧
+              (isStartSlotAtEpoch preset slot = .ok true →
+                store.isConfirmedChainSafe config fcr head fcr.confirmedRoot = .ok true))) ∧
+        (start = base ∧
+            ¬(isStartSlotAtEpoch preset slot = .ok true ∧
+              (∃ observedBlock epoch,
+                store.block fcr.currentEpochObservedJustifiedCheckpoint.root = .ok observedBlock ∧
+                store.getCurrentStoreEpoch config = .ok epoch ∧
+                Uint64.addChecked (computeEpochAtSlot preset observedBlock.slot) 1 = .ok epoch) ∧
+              store.unrealizedJustification head =
+                .ok fcr.currentEpochObservedJustifiedCheckpoint ∧
+              ∃ baseBlock observedBlock, store.block base = .ok baseBlock ∧
+                store.block fcr.currentEpochObservedJustifiedCheckpoint.root = .ok observedBlock ∧
+                baseBlock.slot < observedBlock.slot) ∨
+          start = fcr.currentEpochObservedJustifiedCheckpoint.root ∧
+            isStartSlotAtEpoch preset slot = .ok true ∧
+            (∃ observedBlock epoch,
+              store.block fcr.currentEpochObservedJustifiedCheckpoint.root = .ok observedBlock ∧
+              store.getCurrentStoreEpoch config = .ok epoch ∧
+              Uint64.addChecked (computeEpochAtSlot preset observedBlock.slot) 1 = .ok epoch) ∧
+            store.unrealizedJustification head =
+              .ok fcr.currentEpochObservedJustifiedCheckpoint ∧
+            ∃ baseBlock observedBlock, store.block base = .ok baseBlock ∧
+              store.block fcr.currentEpochObservedJustifiedCheckpoint.root = .ok observedBlock ∧
+              baseBlock.slot < observedBlock.slot)) ∧
       (root = start ∨ store.Checked config fcr head start root ∧
         store.findLatestConfirmedDescendant config fcr head start = .ok root) := by
   unfold getLatestConfirmed at latest
@@ -477,70 +529,121 @@ theorem getLatestConfirmed_checked_start {fcr : FastConfirmationStore} {head roo
   refine ⟨slot, ?_⟩
   extract_lets arith confirmedRoot observed finish observedRoot afterReset finalizedRoot
     resetBody at latest
-  let kept : Prop := store.isAncestor ⟨head, .pending⟩ ⟨fcr.confirmedRoot, .pending⟩ = .ok true ∧
+  -- The three checks that keep the block stored before.
+  let kept : Prop :=
+    (∃ epoch blockEpoch, store.getCurrentStoreEpoch config = .ok epoch ∧
+      store.getBlockEpoch fcr.confirmedRoot = .ok blockEpoch ∧
+      epoch.toNat ≤ blockEpoch.toNat + 1) ∧
+    store.isAncestor ⟨head, .pending⟩ ⟨fcr.confirmedRoot, .pending⟩ = .ok true ∧
     (isStartSlotAtEpoch preset slot = .ok true →
       store.isConfirmedChainSafe config fcr head fcr.confirmedRoot = .ok true)
   -- Keep the reset decision paired with the continuation that consumes it.
-  have reset : ∃ reset, (reset = false → kept) ∧ resetBody reset = .ok root := by
+  have reset : ∃ reset, (reset = false → kept) ∧ (reset = true → ¬kept) ∧
+      resetBody reset = .ok root := by
     clear_value resetBody
     rw [bind_ok_iff] at latest
-    obtain ⟨_, -, latest⟩ := latest
+    obtain ⟨blockEpoch, blockEpochOk, latest⟩ := latest
     rw [bind_ok_iff] at latest
-    obtain ⟨_, -, latest⟩ := latest
+    obtain ⟨sum, sumOk, latest⟩ := latest
+    have sumValue := (Uint64.addChecked_ok_iff.mp (mapError_ok_iff.mp sumOk)).2
+    simp only [UInt64.toNat_one] at sumValue
+    -- The epoch check of `kept` is the negation of the staleness test of the rule.
+    have epochCheck : (∃ epoch be, store.getCurrentStoreEpoch config = .ok epoch ∧
+        store.getBlockEpoch fcr.confirmedRoot = .ok be ∧ epoch.toNat ≤ be.toNat + 1) ↔
+        ¬sum < currentEpoch := by
+      constructor
+      · rintro ⟨epoch, be, epochOk, beOk, le⟩ stale
+        obtain rfl : currentEpoch = epoch := Except.ok.inj (epochFound.symm.trans epochOk)
+        obtain rfl : blockEpoch = be := Except.ok.inj (blockEpochOk.symm.trans beOk)
+        have := UInt64.lt_iff_toNat_lt.mp stale
+        omega
+      · intro fresh
+        have := UInt64.not_lt.mp fresh
+        refine ⟨currentEpoch, blockEpoch, epochFound, blockEpochOk, ?_⟩
+        have := UInt64.le_iff_toNat_le.mp this
+        omega
     split at latest
-    · exact ⟨true, by simp, latest⟩
-    · rw [bind_ok_iff] at latest
+    · rename_i stale
+      exact ⟨true, by simp, fun _ held => epochCheck.mp held.1 stale, latest⟩
+    · rename_i fresh
+      rw [bind_ok_iff] at latest
       obtain ⟨onChain, ancestry, latest⟩ := latest
       split at latest
-      · exact ⟨true, by simp, latest⟩
+      · rename_i offChain
+        refine ⟨true, by simp, fun _ held => ?_, latest⟩
+        have same := Except.ok.inj (ancestry.symm.trans held.2.1)
+        simp [same] at offChain
       · rename_i isOnChain
         obtain rfl : onChain = true := by simpa using isOnChain
         rw [bind_ok_iff] at latest
         obtain ⟨atStart, startChecked, latest⟩ := latest
         split at latest
-        · rw [bind_ok_iff] at latest
+        · rename_i startTrue
+          obtain rfl : atStart = true := by simpa using startTrue
+          rw [bind_ok_iff] at latest
           obtain ⟨safe, chainChecked, latest⟩ := latest
-          refine ⟨!safe, fun notReset => ⟨ancestry, fun _ => ?_⟩, latest⟩
-          obtain rfl : safe = true := by simpa using notReset
-          exact chainChecked
+          refine ⟨!safe, fun notReset => ⟨epochCheck.mpr fresh, ancestry, fun _ => ?_⟩,
+            fun isReset held => ?_, latest⟩
+          · obtain rfl : safe = true := by simpa using notReset
+            exact chainChecked
+          · have same := Except.ok.inj (chainChecked.symm.trans (held.2.2 startChecked))
+            simp [same] at isReset
         · rename_i notStart
-          refine ⟨false, fun _ => ⟨ancestry, fun isStart => ?_⟩, latest⟩
-          exact absurd (Except.ok.inj (startChecked.symm.trans isStart)) notStart
+          refine ⟨false, fun _ => ⟨epochCheck.mpr fresh, ancestry, fun isStart => ?_⟩,
+            by simp, latest⟩
+          exact absurd (Except.ok.inj (startChecked.symm.trans isStart)) (by simpa using notStart)
   clear latest
-  obtain ⟨reset, keeps, latest⟩ := reset
+  obtain ⟨reset, keeps, drops, latest⟩ := reset
   have base : ∃ base, (base = fcr.confirmedRoot ∧ kept ∨
-      base = store.finalizedCheckpoint.root) ∧ afterReset () base = .ok root := by
+      base = store.finalizedCheckpoint.root ∧ ¬kept) ∧ afterReset () base = .ok root := by
     cases reset
     · exact ⟨fcr.confirmedRoot, Or.inl ⟨rfl, keeps rfl⟩, latest⟩
-    · exact ⟨store.finalizedCheckpoint.root, Or.inr rfl, latest⟩
-  clear latest keeps
+    · exact ⟨store.finalizedCheckpoint.root, Or.inr ⟨rfl, drops rfl⟩, latest⟩
+  clear latest keeps drops
   obtain ⟨base, baseCase, latest⟩ := base
-  -- The observed checkpoint can replace this base only after all replacement checks pass.
-  have start : ∃ start, (start = fcr.confirmedRoot ∧ kept ∨
-      start = store.finalizedCheckpoint.root ∨
-      start = fcr.currentEpochObservedJustifiedCheckpoint.root ∧
-        isStartSlotAtEpoch preset slot = .ok true ∧
-        (∃ observedBlock epoch,
-          store.block fcr.currentEpochObservedJustifiedCheckpoint.root = .ok observedBlock ∧
-          store.getCurrentStoreEpoch config = .ok epoch ∧
-          Uint64.addChecked (computeEpochAtSlot preset observedBlock.slot) 1 = .ok epoch) ∧
-        store.unrealizedJustification head =
-          .ok fcr.currentEpochObservedJustifiedCheckpoint) ∧ finish () start = .ok root := by
+  -- The observed checkpoint replaces this base exactly when all four replacement checks pass.
+  let over : Prop :=
+    isStartSlotAtEpoch preset slot = .ok true ∧
+    (∃ observedBlock epoch,
+      store.block fcr.currentEpochObservedJustifiedCheckpoint.root = .ok observedBlock ∧
+      store.getCurrentStoreEpoch config = .ok epoch ∧
+      Uint64.addChecked (computeEpochAtSlot preset observedBlock.slot) 1 = .ok epoch) ∧
+    store.unrealizedJustification head = .ok fcr.currentEpochObservedJustifiedCheckpoint ∧
+    ∃ baseBlock observedBlock, store.block base = .ok baseBlock ∧
+      store.block fcr.currentEpochObservedJustifiedCheckpoint.root = .ok observedBlock ∧
+      baseBlock.slot < observedBlock.slot
+  have start : ∃ start, (start = base ∧ ¬over ∨
+      start = fcr.currentEpochObservedJustifiedCheckpoint.root ∧ over) ∧
+      finish () start = .ok root := by
     clear_value finish
     simp only [afterReset, bind_ok_iff] at latest
     obtain ⟨atStart, startChecked, observedBlock, observedFound, observedEpoch, epochAdded,
-      justified, justification, _, -, latest⟩ := latest
+      justified, justification, baseBlock, baseFound, latest⟩ := latest
     split at latest
     · rename_i replaced
-      refine ⟨observedRoot, Or.inr (Or.inr ⟨rfl, ?_, ?_, ?_⟩), latest⟩
-      · exact replaced.1 ▸ startChecked
-      · refine ⟨observedBlock, currentEpoch, observedFound, epochFound, ?_⟩
-        exact replaced.2.1 ▸ mapError_ok_iff.mp epochAdded
-      · exact justification.trans (congrArg Except.ok replaced.2.2.1.symm)
-    · exact ⟨base, baseCase.imp id Or.inl, latest⟩
+      refine ⟨observedRoot, Or.inr ⟨rfl, replaced.1 ▸ startChecked,
+        ⟨observedBlock, currentEpoch, observedFound, epochFound,
+          replaced.2.1 ▸ mapError_ok_iff.mp epochAdded⟩,
+        justification.trans (congrArg Except.ok replaced.2.2.1.symm),
+        baseBlock, observedBlock, baseFound, observedFound, replaced.2.2.2⟩, latest⟩
+    · rename_i kept'
+      refine ⟨base, Or.inl ⟨rfl, ?_⟩, latest⟩
+      rintro ⟨isStart, ⟨ob, epoch, obFound, epochOk, added⟩, headJustified, bb, ob', bbFound,
+        ob'Found, lower'⟩
+      apply kept'
+      obtain rfl : atStart = true := Except.ok.inj (startChecked.symm.trans isStart)
+      obtain rfl : ob = observedBlock := Except.ok.inj (obFound.symm.trans observedFound)
+      obtain rfl : ob' = ob := Except.ok.inj (ob'Found.symm.trans obFound)
+      obtain rfl : bb = baseBlock := Except.ok.inj (bbFound.symm.trans baseFound)
+      obtain rfl : epoch = currentEpoch := Except.ok.inj (epochOk.symm.trans epochFound)
+      have sameEpoch : observedEpoch = epoch :=
+        Except.ok.inj ((mapError_ok_iff.mp epochAdded).symm.trans added)
+      have sameJustified : justified = fcr.currentEpochObservedJustifiedCheckpoint :=
+        Except.ok.inj (justification.symm.trans headJustified)
+      exact ⟨rfl, sameEpoch, sameJustified.symm, lower'⟩
   clear latest
   obtain ⟨start, startCase, latest⟩ := start
-  refine ⟨start, slotFound, startCase, ?_⟩
+  refine ⟨start, slotFound, ⟨base, baseCase, startCase⟩, ?_⟩
   simp only [finish, bind_ok_iff] at latest
   obtain ⟨startEpoch, startOk, sum, sumOk, latest⟩ := latest
   split at latest
@@ -578,12 +681,14 @@ theorem getLatestConfirmed_checked {fcr : FastConfirmationStore} {head root : Ro
     ∃ start, (start = fcr.confirmedRoot ∨ start = store.finalizedCheckpoint.root ∨
         start = fcr.currentEpochObservedJustifiedCheckpoint.root) ∧
       (root = start ∨ store.Checked config fcr head start root) := by
-  obtain ⟨slot, start, _, startCase, result⟩ := getLatestConfirmed_checked_start lower latest
+  obtain ⟨slot, start, _, ⟨base, baseCase, startCase⟩, result⟩ :=
+    getLatestConfirmed_checked_start lower latest
   refine ⟨start, ?_, result.imp id And.left⟩
-  rcases startCase with ⟨same, _⟩ | same | ⟨same, _⟩
-  · exact Or.inl same
-  · exact Or.inr (Or.inl same)
-  · exact Or.inr (Or.inr same)
+  rcases startCase with ⟨rfl, _⟩ | ⟨rfl, _⟩
+  · rcases baseCase with ⟨rfl, _⟩ | ⟨rfl, _⟩
+    · exact Or.inl rfl
+    · exact Or.inr (Or.inl rfl)
+  · exact Or.inr (Or.inr rfl)
 
 /-- A successful target check supplies a two-thirds bound in its counting state. -/
 theorem two_thirds_le_of_willCurrentTargetBeJustified {head : Root}
@@ -628,6 +733,46 @@ theorem justified_or_one_third_lt_of_willNoConflictingCheckpointBeJustified {hea
     refine .inr ⟨state, total, support, stateOk, totalOk, supportOk, ?_⟩
     simpa only [three, UInt64.toNat_ofNat] using lt
 
+/-- A successful target-support count is the discounted score plus the remaining honest share. -/
+theorem computeHonestFfgSupportForCurrentTarget_eq
+    {head : Root} {state : BeaconState preset fork} {slot epochStart lastSlot : Slot}
+    {total soFar support : Gwei}
+    (stateOk : store.getPulledUpHeadState config head = .ok state)
+    (slotOk : store.getCurrentSlot config = .ok slot)
+    (totalOk : getTotalActiveBalance state = .ok total)
+    (startOk : computeStartSlotAtEpoch preset (computeEpochAtSlot preset slot) = .ok epochStart)
+    (lastOk : subChecked slot 1 = .ok lastSlot)
+    (soFarOk : store.computeCommitteeWeightBetweenSlots head state epochStart lastSlot = .ok soFar)
+    (supportOk : store.computeHonestFfgSupportForCurrentTarget config head = .ok support) :
+    ∃ score adversary,
+      store.getCurrentTargetScore config head = .ok score ∧
+      store.computeAdversarialWeight config head state epochStart lastSlot = .ok adversary ∧
+      support.toNat = score.toNat - adversary.toNat +
+        (total.toNat - soFar.toNat) / 100 *
+          (100 - config.CONFIRMATION_BYZANTINE_THRESHOLD.toNat) := by
+  simp only [computeHonestFfgSupportForCurrentTarget, slotOk, stateOk,
+    mapError_ok_iff, bind_ok_iff] at supportOk
+  obtain ⟨s, sOk, st, stOk, t, tOk, score, scoreOk, first, firstOk, last, lastOk',
+    weight, weightOk, remaining, remainingOk, share, shareOk, future, futureOk,
+    adversary, adversaryOk, sumOk⟩ := supportOk
+  cases Except.ok.inj sOk
+  cases Except.ok.inj stOk
+  rw [totalOk, Except.ok.injEq] at tOk
+  subst t
+  rw [startOk, Except.ok.injEq] at firstOk
+  subst first
+  rw [lastOk, Except.ok.injEq] at lastOk'
+  subst last
+  rw [soFarOk, Except.ok.injEq] at weightOk
+  subst weight
+  have remainingNat := (subChecked_ok_iff.mp remainingOk).2
+  have shareNat := (subChecked_ok_iff.mp shareOk).2
+  have futureNat := (mulChecked_ok_iff.mp futureOk).2
+  have sumNat := (addChecked_ok_iff.mp sumOk).2
+  refine ⟨score, adversary, scoreOk, adversaryOk, ?_⟩
+  simpa only [toNat_saturatingSub, futureNat, UInt64.toNat_div, remainingNat, shareNat,
+    UInt64.toNat_ofNat] using sumNat
+
 end Store
 
 namespace Models.Network
@@ -666,7 +811,7 @@ def HonestTargetVotes
     ((e.world n).state u).getCommitteesBetweenSlots head epochStart lastSlot = .ok participants →
     ∃ voters : Finset ValidatorIndex,
       (∀ v ∈ voters, v ∈ J ∧ v ∈ activeVoters state ∧
-        (SignsTarget e v target ∨ v ∉ participants)) ∧
+        (SignsTarget e v target (e.world n).time ∨ v ∉ participants)) ∧
       3 * support.toNat + margin ≤ 3 * stake (fun v => balanceAt state v.toNat) voters
 
 /-- Assumption 3 of the paper: a target with an honest quorum is included within an epoch.
@@ -674,6 +819,8 @@ def HonestTargetVotes
 An honest store counts honest votes for the checkpoint of an epoch on the chain of a block.
 
 Two thirds of the active balance of the pulled-up state of a head sign that target.
+
+Their votes are sent by the event of the counting store.
 
 The block is safe from a first time on.
 
@@ -685,6 +832,8 @@ It holds a block above the given one, of an epoch before that, with the target i
 
 Included means that the unrealized justification of that block is not before the target.
 
+Both stores are at events up to the last time `limit`.
+
 In [verified-fast-confirmation][vfc], this is `EventualCheckpointInclusion.included`.
 
 Its conclusion there is `A32IncludedAtTip`.
@@ -692,17 +841,18 @@ Its conclusion there is `A32IncludedAtTip`.
 [vfc]: https://github.com/fradamt/verified-fast-confirmation -/
 def TargetIncluded
     (e : Execution (honestForkChoice config checks sources anchorState anchorBlock assignment
-      genesisTimeMs) J) : Prop :=
-  ∀ u ∈ J, ∀ n head state total root rootEpoch target, ∀ voters : Finset ValidatorIndex,
+      genesisTimeMs) J) (limit : ℕ) : Prop :=
+  ∀ u ∈ J, ∀ n, (e.world n).time ≤ limit →
+    ∀ head state total root rootEpoch target, ∀ voters : Finset ValidatorIndex,
     ((e.world n).state u).getPulledUpHeadState config head = .ok state →
     getTotalActiveBalance state = .ok total →
     ((e.world n).state u).getCurrentStoreEpoch config = .ok target.epoch →
     ((e.world n).state u).getBlockEpoch root = .ok rootEpoch →
     rootEpoch ≤ target.epoch →
     ((e.world n).state u).getCheckpointBlock root target.epoch = .ok target.root →
-    (∀ v ∈ voters, v ∈ J ∧ SignsTarget e v target) →
+    (∀ v ∈ voters, v ∈ J ∧ SignsTarget e v target (e.world n).time) →
     2 * total.toNat ≤ 3 * stake (fun v => balanceAt state v.toNat) voters →
-    ∀ w ∈ J, ∀ k current, (e.world n).time ≤ (e.world k).time →
+    ∀ w ∈ J, ∀ k current, (e.world k).time ≤ limit → (e.world n).time ≤ (e.world k).time →
       (∀ time, (e.world n).time ≤ time → time < (e.world k).time → SafeAt e time root) →
       UpToDate config checks sources (e.world k).time ((e.world k).view w)
         ((e.world k).state w) →
@@ -758,6 +908,16 @@ def TargetChecked
 variable {e : Execution (honestForkChoice config checks sources anchorState anchorBlock assignment
   genesisTimeMs) J} [DecidablePred (· ∈ J)]
 
+omit [DecidablePred (· ∈ J)] in
+/-- Inclusion up to a time gives inclusion up to every earlier time. -/
+theorem TargetIncluded.of_le {last later : ℕ} (included : TargetIncluded e later)
+    (le : last ≤ later) : TargetIncluded e last :=
+  fun u caller n nBound head state total root rootEpoch target voters stateOk totalOk epochOk
+    rootEpochOk rootLe blockOk signed quorum w receiver k current kBound =>
+    included u caller n (nBound.trans le) head state total root rootEpoch target voters stateOk
+      totalOk epochOk rootEpochOk rootLe blockOk signed quorum w receiver k current
+      (kBound.trans le)
+
 /-- Step 6, the count: honest validators hold the count of the rule for the target, with a margin.
 
 The caller is an honest validator, and each honest store starts from the store of the anchor.
@@ -776,6 +936,8 @@ The stake is read in the pulled-up state of the head.
 
 The statement reads the store of the caller alone, and takes no safety of the target.
 
+The RANDAO buffer is longer than the lower seed lookahead plus one, as `CommitteesFollow` asks.
+
 The proof follows two lemmas of [verified-fast-confirmation][vfc].
 
 The first is `noConflict_arithmeticBranch_oneThird`.
@@ -785,8 +947,9 @@ The second is `currentTarget_remaining_honest_le_future_weight`.
 [vfc]: https://github.com/fradamt/verified-fast-confirmation -/
 theorem Execution.honestTargetVotes_of_byzantineStakeAtMost {anchor : Store preset fork}
     (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
-    (start : ∀ w ∈ J, e.start w = anchor) (committees : CommitteesFollow e) {margin : ℕ}
-    {u : ValidatorIndex} (caller : u ∈ J) {n : ℕ}
+    (start : ∀ w ∈ J, e.start w = anchor) {limit : ℕ} (committees : CommitteesFollow e limit)
+    (retained : preset.MIN_SEED_LOOKAHEAD.toNat + 1 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat) {margin : ℕ}
+    {u : ValidatorIndex} (caller : u ∈ J) {n : ℕ} (bounded : (e.world n).time ≤ limit)
     {head : Root} {state : BeaconState preset fork}
     {slot epochStart lastSlot : Slot} {total soFar : Gwei}
     {participants : Std.TreeSet ValidatorIndex}
@@ -816,13 +979,13 @@ theorem Execution.honestTargetVotes_of_byzantineStakeAtMost {anchor : Store pres
 omit [DecidablePred (· ∈ J)] in
 /-- A signed target before a slot has an earlier honest duty with the same target. -/
 theorem Execution.exists_maySign_of_signsTargetBefore
-    {v : ValidatorIndex} (honest : v ∈ J) {target : Checkpoint} {slot : Slot}
-    (signed : SignsTargetBefore e v target slot) :
+    {v : ValidatorIndex} (honest : v ∈ J) {target : Checkpoint} {slot : Slot} {last : ℕ}
+    (signed : SignsTargetBefore e v target slot last) :
     ∃ k data,
       MaySign config checks sources anchorState anchorBlock assignment genesisTimeMs v
         (e.world k).time ((e.world k).view v) ((e.world k).state v) data ∧
       data.target = target ∧ data.slot < slot := by
-  obtain ⟨n, message, sent, data, member, targetOk, before⟩ := signed
+  obtain ⟨n, _, message, sent, data, member, targetOk, before⟩ := signed
   obtain ⟨k, _, duty⟩ := e.exists_maySign_of_signed sent member honest
   exact ⟨k, data, duty, targetOk, before⟩
 
@@ -845,10 +1008,11 @@ omit [DecidablePred (· ∈ J)] in
 /-- An honest validator signs at most one target in each epoch. -/
 theorem Execution.target_eq_of_signsTarget
     (slots : 0 < config.SLOT_DURATION_MS) {v : ValidatorIndex} (honest : v ∈ J)
-    {first second : Checkpoint} (one : SignsTarget e v first) (two : SignsTarget e v second)
+    {first second : Checkpoint} {last last' : ℕ} (one : SignsTarget e v first last)
+    (two : SignsTarget e v second last')
     (epoch : first.epoch = second.epoch) : first = second := by
-  obtain ⟨n, m, sent, data, signed, target⟩ := one
-  obtain ⟨k, other, otherSent, otherData, otherSigned, otherTarget⟩ := two
+  obtain ⟨n, _, m, sent, data, signed, target⟩ := one
+  obtain ⟨k, _, other, otherSent, otherData, otherSigned, otherTarget⟩ := two
   have nonslashable := e.isSlashableAttestationData_of_signed slots
     (e.monotone_sent (Nat.le_max_left n k) sent)
     (e.monotone_sent (Nat.le_max_right n k) otherSent) signed otherSigned honest
@@ -865,8 +1029,9 @@ omit [DecidablePred (· ∈ J)] in
 The second case needs the prefix-safety argument at that signer's duty. -/
 theorem Execution.target_eq_or_unseen_signer_of_pins
     (slots : 0 < config.SLOT_DURATION_MS) {anchorEpoch horizon : Epoch} {margin : ℕ}
-    (pins : HonestThirdPins e anchorEpoch horizon margin)
-    {u : ValidatorIndex} (caller : u ∈ J) {n : ℕ} {head : Root}
+    {last : ℕ} (pins : HonestThirdPins e anchorEpoch horizon margin last)
+    {u : ValidatorIndex} (caller : u ∈ J) {n : ℕ} (nBound : (e.world n).time ≤ last)
+    {head : Root}
     {state : BeaconState preset fork} {total : Gwei} {epoch : Epoch}
     {target checkpoint : Checkpoint} {voters : Finset ValidatorIndex}
     {participants : Std.TreeSet ValidatorIndex}
@@ -876,22 +1041,193 @@ theorem Execution.target_eq_or_unseen_signer_of_pins
     (bounded : epoch ≤ horizon) (afterAnchor : anchorEpoch < epoch)
     (targetEpoch : target.epoch = epoch)
     (members : ∀ v ∈ voters, v ∈ J ∧ v ∈ activeVoters state ∧
-      (SignsTarget e v target ∨ v ∉ participants))
+      (SignsTarget e v target (e.world n).time ∨ v ∉ participants))
     (large : total.toNat + margin < 3 * stake (fun v => balanceAt state v.toNat) voters)
-    {w : ValidatorIndex} (receiver : w ∈ J) {k : ℕ} {slot : Slot}
+    {w : ValidatorIndex} (receiver : w ∈ J) {k : ℕ} (kBound : (e.world k).time ≤ last)
+    {slot : Slot}
     (justified : ((e.world k).state w).Justified checkpoint)
     (slotOk : ((e.world k).state w).getCurrentSlot config = .ok slot)
     (checkpointEpoch : checkpoint.epoch = epoch) :
     checkpoint = target ∨
-      ∃ v ∈ voters, v ∈ J ∧ v ∉ participants ∧ SignsTargetBefore e v checkpoint slot := by
-  obtain ⟨v, member, signed⟩ := pins u caller n head state total epoch voters
+      ∃ v ∈ voters, v ∈ J ∧ v ∉ participants ∧
+        SignsTargetBefore e v checkpoint slot (e.world k).time := by
+  obtain ⟨v, member, signed⟩ := pins u caller n nBound head state total epoch voters
     stateOk totalOk epochOk bounded (fun v hv => (members v hv).1)
-    (fun v hv => (members v hv).2.1) large w receiver k checkpoint slot
+    (fun v hv => (members v hv).2.1) large w receiver k kBound checkpoint slot
     justified slotOk checkpointEpoch afterAnchor
   rcases (members v member).2.2 with counted | unseen
   · exact .inl (e.target_eq_of_signsTarget slots (members v member).1 signed.signsTarget
       counted (checkpointEpoch.trans targetEpoch.symm))
   · exact .inr ⟨v, member, (members v member).1, unseen, signed⟩
+
+/-- A duty in an epoch or later cannot precede that epoch's start time. -/
+theorem epoch_start_le_attestation_deadline
+    {epoch : Epoch} {first slot : Slot} {begin : UInt64} {time : ℕ}
+    (firstOk : computeStartSlotAtEpoch preset epoch = .ok first)
+    (beginOk : computeTimeAtSlotMs config genesisTimeMs first = .ok begin)
+    (later : epoch ≤ computeEpochAtSlot preset slot)
+    (deadline : IsAttestationDeadline fork config genesisTimeMs slot time) :
+    begin.toNat ≤ time := by
+  have firstNat := (computeStartSlotAtEpoch_ok_iff.mp firstOk).2
+  have epochLe := UInt64.le_iff_toNat_le.mp later
+  simp only [computeEpochAtSlot, UInt64.toNat_div] at epochLe
+  have firstLe : first ≤ slot := UInt64.le_iff_toNat_le.mpr (by
+    rw [firstNat]
+    exact (Nat.mul_le_mul_right preset.SLOTS_PER_EPOCH.toNat epochLe).trans
+      (Nat.div_mul_le_self _ _))
+  obtain ⟨start, due, startOk, _, timeEq⟩ := deadline
+  obtain ⟨begin', beginOk', _, beginLe⟩ := exists_timeAtSlotMs_of_le firstLe startOk
+  have same := Except.ok.inj (beginOk.symm.trans beginOk')
+  subst begin'
+  have := UInt64.le_iff_toNat_le.mp beginLe
+  omega
+
+omit [DecidablePred (· ∈ J)] in
+/-- An honest vote for an epoch or later has a duty no earlier than that epoch's start. -/
+theorem Execution.exists_maySign_after_epoch_start_of_signsTargetBefore
+    {v : ValidatorIndex} (honest : v ∈ J) {target : Checkpoint} {slot first : Slot}
+    {epoch : Epoch} {begin : UInt64}
+    {last : ℕ} (signed : SignsTargetBefore e v target slot last)
+    (firstOk : computeStartSlotAtEpoch preset epoch = .ok first)
+    (beginOk : computeTimeAtSlotMs config genesisTimeMs first = .ok begin)
+    (later : epoch ≤ target.epoch) :
+    ∃ k data,
+      MaySign config checks sources anchorState anchorBlock assignment genesisTimeMs v
+        (e.world k).time ((e.world k).view v) ((e.world k).state v) data ∧
+      data.target = target ∧ data.slot < slot ∧ begin.toNat ≤ (e.world k).time := by
+  obtain ⟨k, data, duty, targetOk, before⟩ :=
+    e.exists_maySign_of_signsTargetBefore honest signed
+  have dutyCopy := duty
+  obtain ⟨_, _, deadline, _, _, made, _⟩ := dutyCopy
+  obtain ⟨_, _, _, _, _, _, _, _, dataOk⟩ := made
+  have epochOk := target_epoch_eq_of_getAttestationData dataOk
+  refine ⟨k, data, duty, targetOk, before, ?_⟩
+  apply epoch_start_le_attestation_deadline firstOk beginOk _ deadline
+  rwa [← epochOk, targetOk]
+
+/-- A duty before a representable slot has its deadline strictly before that slot starts. -/
+theorem DelayFits.deadline_lt_later_slot {Δ : ℕ}
+    (fits : DelayFits fork config genesisTimeMs Δ)
+    {slot last : Slot} {endTime : UInt64} {time : ℕ}
+    (before : slot < last)
+    (endOk : computeTimeAtSlotMs config genesisTimeMs last = .ok endTime)
+    (deadline : IsAttestationDeadline fork config genesisTimeMs slot time) :
+    time + Δ < endTime.toNat := by
+  have slotLt := UInt64.lt_iff_toNat_lt.mp before
+  have lastBound := last.toNat_lt
+  have nextBound : slot.toNat + (1 : UInt64).toNat < 2 ^ 64 := by simp; omega
+  have nextOk := addChecked_of_lt nextBound
+  have nextNat := (addChecked_ok_iff.mp nextOk).2
+  have nextLe : slot + 1 ≤ last := UInt64.le_iff_toNat_le.mpr (by
+    simp only [UInt64.toNat_one] at nextNat; omega)
+  obtain ⟨start, startOk, _, _⟩ := exists_timeAtSlotMs_of_le (UInt64.le_of_lt before) endOk
+  obtain ⟨following, followingOk, _, followingLe⟩ := exists_timeAtSlotMs_of_le nextLe endOk
+  exact (fits.before_boundary nextOk startOk followingOk deadline).trans_le
+    (UInt64.le_iff_toNat_le.mp followingLe)
+
+omit [DecidablePred (· ∈ J)] in
+/-- Prefix safety covers a later-epoch target's honest duty after an epoch-start call. -/
+theorem Execution.exists_supporting_head_of_signsTargetBefore_epoch_start
+    {Δ : ℕ} (fits : DelayFits fork config genesisTimeMs Δ)
+    {v : ValidatorIndex} (honest : v ∈ J) {target : Checkpoint} {slot first : Slot}
+    {epoch : Epoch} {begin endTime : UInt64} {time : ℕ} {root : Root}
+    {last : ℕ} (signed : SignsTargetBefore e v target slot last)
+    (firstOk : computeStartSlotAtEpoch preset epoch = .ok first)
+    (beginOk : computeTimeAtSlotMs config genesisTimeMs first = .ok begin)
+    (endOk : computeTimeAtSlotMs config genesisTimeMs slot = .ok endTime)
+    (endLe : endTime.toNat ≤ time) (later : epoch ≤ target.epoch)
+    (safe : ∀ earlier, begin.toNat ≤ earlier → earlier < time → SafeAt e earlier root) :
+    ∃ k data head,
+      MaySign config checks sources anchorState anchorBlock assignment genesisTimeMs v
+        (e.world k).time ((e.world k).view v) ((e.world k).state v) data ∧
+      data.target = target ∧ begin.toNat ≤ (e.world k).time ∧ (e.world k).time < time ∧
+      ((e.world k).state v).getHead config = .ok head ∧
+      ((e.world k).state v).isAncestor head ⟨root, .pending⟩ = .ok true := by
+  obtain ⟨k, data, duty, targetOk, before, afterBegin⟩ :=
+    e.exists_maySign_after_epoch_start_of_signsTargetBefore honest signed firstOk beginOk later
+  have dutyCopy := duty
+  obtain ⟨_, _, deadline, _⟩ := dutyCopy
+  have bound := fits.deadline_lt_later_slot before endOk deadline
+  have beforeTime : (e.world k).time < time := by omega
+  obtain ⟨head, headOk, supports⟩ :=
+    e.head_supports_of_maySign honest duty afterBegin beforeTime safe
+  exact ⟨k, data, head, duty, targetOk, afterBegin, beforeTime, headOk, supports⟩
+
+/-- A defined current slot has a representable start no later than the clock. -/
+theorem exists_slot_start_of_current_slot {clock : UInt64} {slot : Slot}
+    (current : computeSlotAtTimeMs config genesisTimeMs clock = .ok slot) :
+    ∃ begin, computeTimeAtSlotMs config genesisTimeMs slot = .ok begin ∧ begin ≤ clock := by
+  unfold computeSlotAtTimeMs at current
+  simp only [bind_ok_iff] at current
+  obtain ⟨elapsed, elapsedOk, slotOk⟩ := current
+  have elapsedNat := (subChecked_ok_iff.mp elapsedOk).2
+  have slotNat := (divChecked_ok_iff.mp slotOk).2
+  have offsetLe : slot.toNat * config.SLOT_DURATION_MS.toNat ≤ elapsed.toNat := by
+    rw [slotNat]
+    exact Nat.div_mul_le_self _ _
+  have offsetBound : slot.toNat * config.SLOT_DURATION_MS.toNat < 2 ^ 64 :=
+    offsetLe.trans_lt elapsed.toNat_lt
+  have offsetOk := mulChecked_of_lt offsetBound
+  have offsetNat := (mulChecked_ok_iff.mp offsetOk).2
+  have genesisLe := (subChecked_ok_iff.mp elapsedOk).1
+  have bound : genesisTimeMs.toNat + (slot * config.SLOT_DURATION_MS).toNat < 2 ^ 64 := by
+    have := clock.toNat_lt
+    omega
+  have beginOk := addChecked_of_lt bound
+  have beginNat := (addChecked_ok_iff.mp beginOk).2
+  refine ⟨genesisTimeMs + slot * config.SLOT_DURATION_MS, ?_,
+    UInt64.le_iff_toNat_le.mpr (by omega)⟩
+  simp only [computeTimeAtSlotMs, offsetOk, bind, Except.bind, beginOk]
+
+omit [DecidablePred (· ∈ J)] in
+/-- An honest justified target has a supporting head after an epoch-start call. -/
+theorem Execution.exists_supporting_head_of_justified_epoch_start
+    {Δ : ℕ} (fits : DelayFits fork config genesisTimeMs Δ)
+    {anchorEpoch horizon : Epoch} {last : ℕ}
+    (voted : JustifiedByHonestVote e anchorEpoch horizon last)
+    {anchor : Store preset fork} (anchored : ∀ w ∈ J, e.start w = anchor)
+    {w : ValidatorIndex} (receiver : w ∈ J) {n : ℕ} (nBound : (e.world n).time ≤ last)
+    {checkpoint : Checkpoint} {slot first : Slot}
+    {epoch : Epoch} {begin : UInt64} {root : Root}
+    (justified : ((e.world n).state w).Justified checkpoint)
+    (slotOk : ((e.world n).state w).getCurrentSlot config = .ok slot)
+    (current : UpToDate config checks sources (e.world n).time ((e.world n).view w)
+      ((e.world n).state w))
+    (afterAnchor : anchorEpoch < checkpoint.epoch) (bounded : checkpoint.epoch ≤ horizon)
+    (firstOk : computeStartSlotAtEpoch preset epoch = .ok first)
+    (beginOk : computeTimeAtSlotMs config genesisTimeMs first = .ok begin)
+    (later : epoch ≤ checkpoint.epoch)
+    (safe : ∀ earlier, begin.toNat ≤ earlier → earlier < (e.world n).time →
+      SafeAt e earlier root) :
+    ∃ v ∈ J, ∃ k data head,
+      MaySign config checks sources anchorState anchorBlock assignment genesisTimeMs v
+        (e.world k).time ((e.world k).view v) ((e.world k).state v) data ∧
+      data.target = checkpoint ∧ begin.toNat ≤ (e.world k).time ∧
+      (e.world k).time < (e.world n).time ∧
+      ((e.world k).state v).getHead config = .ok head ∧
+      ((e.world k).state v).isAncestor head ⟨root, .pending⟩ = .ok true := by
+  obtain ⟨v, honest, signed⟩ := voted w receiver n nBound checkpoint slot justified slotOk
+    afterAnchor bounded
+  obtain ⟨k, data, duty, _, _⟩ := e.exists_maySign_of_signsTargetBefore honest signed
+  obtain ⟨_, _, _, genesis, _⟩ := duty
+  have senderGenesis := (e.clock_bounds v k).1
+  have receiverGenesis := (e.clock_bounds w n).1
+  rw [anchored v honest] at senderGenesis
+  rw [anchored w receiver] at receiverGenesis
+  have common : ((e.world n).state w).genesisTimeMs = genesisTimeMs :=
+    receiverGenesis.trans (senderGenesis.symm.trans genesis)
+  have slotOk' := mapError_ok_iff.mp slotOk
+  change computeSlotAtTimeMs config ((e.world n).state w).genesisTimeMs
+    ((e.world n).state w).timeMs = .ok slot at slotOk'
+  rw [common] at slotOk'
+  obtain ⟨endTime, endOk, endLe⟩ := exists_slot_start_of_current_slot slotOk'
+  have endLe' : endTime.toNat ≤ (e.world n).time := by
+    rw [← current.1]
+    exact UInt64.le_iff_toNat_le.mp endLe
+  obtain ⟨k, data, head, rest⟩ :=
+    e.exists_supporting_head_of_signsTargetBefore_epoch_start fits honest signed
+      firstOk beginOk endOk endLe' later safe
+  exact ⟨v, honest, k, data, head, rest⟩
 
 /-- A slot-start call's messages arrive strictly before the following slot starts. -/
 theorem DelayFits.call_before_next_slot {Δ : ℕ}
@@ -914,7 +1250,9 @@ The block is on the chain of the head of the caller.
 
 The head of the slot before, as the rule tracks it, was a head of the store of the caller.
 
-Honest validators hold the count of the rule for the target of the head, with the margin.
+Away from the start of an epoch, honest validators hold the count of the rule for the target.
+
+They hold it with the margin.
 
 Each has voted for that target or has still to vote in the epoch.
 
@@ -931,6 +1269,8 @@ An honest third, with the margin, signs each justified checkpoint of its epoch.
 Each justified checkpoint after the anchor, up to the horizon, has an honest vote.
 
 Slots last a positive time, so an honest validator signs one target in an epoch.
+
+The RANDAO buffer is longer than the lower seed lookahead plus one, as `CommitteesFollow` asks.
 
 A target with an honest quorum is included within an epoch, Assumption 3.
 
@@ -949,15 +1289,17 @@ theorem Execution.coveredOrViableAt_of_checked {Δ : ℕ} (sync : e.Synchronous 
     (slots : 0 < config.SLOT_DURATION_MS)
     (positive : 0 < preset.SLOTS_PER_EPOCH.toNat)
     (window : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
+    (retained : preset.MIN_SEED_LOOKAHEAD.toNat + 1 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
     (preGloas : fork < .glamsterdam)
-    (admitted : BlocksAdmitted e 0 Δ)
-    (oneBlock : OneBlockPerRoot e)
-    (votes : Votes e.startTime e) (fits : DelayFits fork config genesisTimeMs Δ)
-    (prompt : Prompt e) (committees : CommitteesFollow e)
+    {time : ℕ} (admitted : BlocksAdmitted e 0 Δ time)
+    (oneBlock : OneBlockPerRoot e time)
+    (votes : Votes e.startTime time e) (fits : DelayFits fork config genesisTimeMs Δ)
+    (prompt : Prompt e time) (committees : CommitteesFollow e time)
     {horizon anchorEpoch : Epoch} {margin : ℕ}
-    (chain : FinalizedPrefix e horizon)
-    (unique : OneJustifiedPerEpoch e horizon) (pins : HonestThirdPins e anchorEpoch horizon margin)
-    (voted : JustifiedByHonestVote e anchorEpoch horizon) (included : TargetIncluded e)
+    (chain : FinalizedPrefix e horizon time)
+    (unique : OneJustifiedPerEpoch e horizon time)
+    (pins : HonestThirdPins e anchorEpoch horizon margin time)
+    (voted : JustifiedByHonestVote e anchorEpoch horizon time) (included : TargetIncluded e time)
     {anchor : Store preset fork}
     (anchorStore : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
     (sound : Invariant anchorState)
@@ -992,7 +1334,8 @@ theorem Execution.coveredOrViableAt_of_checked {Δ : ℕ} (sync : e.Synchronous 
         ((e.world k).state u).getCurrentSlot config = .ok previousSlot ∧
         ((e.world n).state u).getCurrentSlot config = .ok currentSlot ∧
         addChecked previousSlot 1 = .ok currentSlot)
-    (targetVotes : HonestTargetVotes e margin u n head.root)
+    (targetVotes : ∀ slot, ((e.world n).state u).getCurrentSlot config = .ok slot →
+      isStartSlotAtEpoch preset slot = .ok false → HonestTargetVotes e margin u n head.root)
     (lineage : ∀ epoch, ((e.world n).state u).getCurrentStoreEpoch config = .ok epoch →
       ((e.world n).state u).getBlockEpoch start = .ok epoch →
       TargetChecked e margin anchor.finalizedCheckpoint.root u n epoch start)
@@ -1005,7 +1348,7 @@ theorem Execution.coveredOrViableAt_of_checked {Δ : ℕ} (sync : e.Synchronous 
         (((e.world n).state u).unrealizedJustification head.root =
           .ok fcr.currentEpochObservedJustifiedCheckpoint ∧
           start = fcr.currentEpochObservedJustifiedCheckpoint.root))
-    {time : ℕ} (later : (e.world n).time ≤ time)
+    (later : (e.world n).time ≤ time)
     (nonzero : ∀ w ∈ J, ∀ k, (e.world k).time ≤ time →
       ∀ (r : Root) (b : BeaconBlock preset fork),
         ((e.world k).state w).blocks[r]? = some b → b.stateRoot ≠ Vector.replicate 32 0)
