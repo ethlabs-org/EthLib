@@ -2054,6 +2054,27 @@ private theorem walk_recent_source {store : Store preset fork} {fcr : FastConfir
     · exact Store.isAncestor_self known
     · exact above
 
+omit [DecidablePred (· ∈ J)] in
+/-- Up-to-date honest stores at the same time read the same epoch. -/
+private theorem walk_same_time_epoch {anchor : Store preset fork}
+    (anchored : ∀ w ∈ J, e.start w = anchor)
+    {u w : ValidatorIndex} (caller : u ∈ J) (receiver : w ∈ J) {n k : ℕ}
+    (callerCurrent : UpToDate config checks sources (e.world n).time ((e.world n).view u)
+      ((e.world n).state u))
+    (receiverCurrent : UpToDate config checks sources (e.world k).time ((e.world k).view w)
+      ((e.world k).state w))
+    (same : (e.world n).time = (e.world k).time) {epoch : Epoch}
+    (epochOk : ((e.world n).state u).getCurrentStoreEpoch config = .ok epoch) :
+    ((e.world k).state w).getCurrentStoreEpoch config = .ok epoch := by
+  have clock : ((e.world k).state w).timeMs = ((e.world n).state u).timeMs :=
+    UInt64.toNat_inj.mp (receiverCurrent.1.trans (same.symm.trans callerCurrent.1.symm))
+  have left := (e.clock_bounds u n).1
+  have right := (e.clock_bounds w k).1
+  rw [anchored u caller] at left
+  rw [anchored w receiver] at right
+  simpa only [Store.getCurrentStoreEpoch, Store.getCurrentSlot, clock,
+    right.trans left.symm] using epochOk
+
 /-- A past honest supporter delivers the block once the caller establishes receiver finality. -/
 private theorem walk_known_of_honest_supporter {Δ : ℕ} (sync : e.Synchronous Δ)
     (slots : 0 < config.SLOT_DURATION_MS) (fits : DelayFits fork config genesisTimeMs Δ)
@@ -2096,6 +2117,58 @@ private theorem walk_known_of_honest_supporter {Δ : ℕ} (sync : e.Synchronous 
   exact (e.blocks_of_partiallySynchronous sync oneBlock admitted anchorStore anchored honest
     receiver (by simpa using delivered.trans later) receiverCurrent finalizedKnown
     (fun gloas => False.elim (Nat.not_le_of_lt preGloas gloas)) pastKnown pastCheckpoint).1
+
+omit [DecidablePred (· ∈ J)] in
+/-- A checked root with an honest supporter is held by every up-to-date receiver then. -/
+private theorem walk_known_at_call {Δ : ℕ} (sync : e.Synchronous Δ)
+    (slots : 0 < config.SLOT_DURATION_MS) (positive : 0 < preset.SLOTS_PER_EPOCH.toNat)
+    (window : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
+    (fits : DelayFits fork config genesisTimeMs Δ) (before : fork < .glamsterdam)
+    (oneBlock : OneBlockPerRoot e) (admitted : BlocksAdmitted e 0 Δ)
+    {anchor : Store preset fork}
+    (anchorStore : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (anchored : ∀ w ∈ J, e.start w = anchor) (sound : Invariant anchorState)
+    (anchorSlot : anchorBlock.slot = anchorState.slot)
+    (anchorBoundary : isStartSlotAtEpoch preset anchorBlock.slot = .ok true)
+    {horizon : Epoch} (chain : FinalizedPrefix e horizon)
+    {u v w : ValidatorIndex} (caller : u ∈ J) (honest : v ∈ J) (receiver : w ∈ J)
+    {n k : ℕ} (same : (e.world n).time = (e.world k).time)
+    (callerCurrent : UpToDate config checks sources (e.world n).time ((e.world n).view u)
+      ((e.world n).state u))
+    (receiverCurrent : UpToDate config checks sources (e.world k).time ((e.world k).view w)
+      ((e.world k).state w))
+    {epoch : Epoch} {slot : Slot}
+    (epochOk : ((e.world n).state u).getCurrentStoreEpoch config = .ok epoch)
+    (slotOk : ((e.world n).state u).getCurrentSlot config = .ok slot)
+    (inHorizon : epoch ≤ horizon) (anchorHorizon : getCurrentEpoch anchorState ≤ horizon)
+    (lower : ((e.world n).state u).ParentsBelow)
+    (nonzero : ∀ (r : Root) (b : BeaconBlock preset fork),
+      ((e.world n).state u).blocks[r]? = some b → b.stateRoot ≠ Vector.replicate 32 0)
+    (child : ∃ (r : Root) (b : BeaconBlock preset fork),
+      ((e.world n).state u).blocks[r]? = some b ∧ b ≠ anchorBlock)
+    {source : BeaconState preset fork} (within : source.RegistryWithinLimit)
+    {fcr : FastConfirmationStore} {head start root : Root} {block : BeaconBlock preset fork}
+    (checked : ((e.world n).state u).Checked config fcr head start root)
+    (known : ((e.world n).state u).blocks[root]? = some block)
+    (recent : epoch.toNat ≤ (computeEpochAtSlot preset block.slot).toNat + 1)
+    (headAbove : ((e.world n).state u).isAncestor ⟨head, .pending⟩ ⟨root, .pending⟩ = .ok true)
+    (origins : ((e.world n).state u).VotesHaveOrigins config)
+    (supporter : v ∈ ((e.world n).state u).supportersOf source ⟨root, .pending⟩) :
+    ((e.world k).state w).blocks[root]? = some block := by
+  classical
+  have receiverEpoch := walk_same_time_epoch anchored caller receiver callerCurrent receiverCurrent
+    same epochOk
+  have past := walk_supported_slot_lt origins known slotOk supporter
+  obtain ⟨tip, checkpoint, sourceRead, sourceRecent, above⟩ :=
+    walk_recent_source checked epochOk slotOk known past headAbove
+  have finality := walk_finalized_read_below_source anchorStore anchored sound slots positive window
+    anchorSlot anchorBoundary before chain caller receiver epochOk receiverEpoch inHorizon
+    anchorHorizon lower nonzero child known above sourceRead sourceRecent recent
+  exact walk_known_of_honest_supporter sync slots fits before oneBlock admitted anchorStore anchored
+    anchorSlot anchorBoundary caller honest receiver (Nat.le_of_eq same) callerCurrent
+    receiverCurrent within known supporter
+    (e.finalized_known_of_prefix anchorStore sound anchored slots anchorSlot before chain receiver
+      receiverEpoch inHorizon) finality
 
 /-- Each new member of the increasing root walk lies on the tip's ancestor chain. -/
 private theorem walk_member_ancestor {store : Store preset fork}
