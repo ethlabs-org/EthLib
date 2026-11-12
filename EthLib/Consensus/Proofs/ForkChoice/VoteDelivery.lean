@@ -364,7 +364,32 @@ theorem VoteAt.data_payload {anchor : Store preset fork}
     (gloas : .glamsterdam ≤ fork) {voted : BeaconBlock preset fork}
     (known : ((e.world n).state v).blocks[attestation.data.beaconBlockRoot]? = some voted) :
     ((e.world n).state v).validatePayloadVote gloas attestation voted = .ok () := by
-  sorry
+  -- The generated data suffices; the anchor and deadline premises are not needed here.
+  obtain ⟨-, -, -, -, -, -⟩ :=
+    (show _ ∧ _ ∧ _ ∧ _ ∧ _ ∧ _ from ⟨anchored, start, honest, deadline, dueOk, inSlot⟩)
+  obtain ⟨head, block, headState, state, headOk, held, -, -, made⟩ := vote.honestData
+  obtain ⟨index, -, dataSlot, dataRoot, -, -⟩ := getAttestationData_eq_ok_iff.mp made
+  have blockEq : block = voted := by
+    rw [dataRoot, held] at known
+    exact Option.some.inj known
+  subst block
+  apply Store.validatePayloadVote_ok_iff.mpr
+  -- Payload validity uses the data's state slot, without identifying it with the duty slot.
+  rw [dataSlot, dataRoot]
+  by_cases same : voted.slot = state.slot
+  · have zero : attestation.data.index = 0 := by
+      simpa [attestationDataIndex, gloas, same] using index.symm
+    simp [zero]
+  · rw [attestationDataIndex_of_glamsterdam_of_ne gloas same] at index
+    cases status : head.payloadStatus with
+    | pending => simp [status] at index
+    | empty =>
+      have zero : attestation.data.index = 0 := by simpa [status] using index.symm
+      simp [zero]
+    | full =>
+      have one : attestation.data.index = 1 := by simpa [status] using index.symm
+      have verified := Store.isPayloadVerified_of_getHead_full gloas headOk status
+      simp [one, same, verified]
 
 /-- Under synchrony, an honest store that accepts an honest vote holds a vote of that validator.
 
