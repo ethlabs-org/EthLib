@@ -1093,6 +1093,49 @@ private theorem walk_exists_honest_supporter (committees : CommitteesFollow e)
   rw [empty, stake_empty] at positive
   omega
 
+/-- A past honest supporter delivers the block once the caller establishes receiver finality. -/
+private theorem walk_known_of_honest_supporter {Δ : ℕ} (sync : e.Synchronous Δ)
+    (slots : 0 < config.SLOT_DURATION_MS) (fits : DelayFits fork config genesisTimeMs Δ)
+    (preGloas : fork < .glamsterdam) (oneBlock : OneBlockPerRoot e)
+    (admitted : BlocksAdmitted e 0 Δ) {anchor : Store preset fork}
+    (anchorStore : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (anchored : ∀ w ∈ J, e.start w = anchor)
+    (anchorSlot : anchorBlock.slot = anchorState.slot)
+    (anchorBoundary : isStartSlotAtEpoch preset anchorBlock.slot = .ok true)
+    {u v w : ValidatorIndex} (caller : u ∈ J) (honest : v ∈ J) (receiver : w ∈ J)
+    {n k : ℕ} (later : (e.world n).time ≤ (e.world k).time)
+    (callerCurrent : UpToDate config checks sources (e.world n).time ((e.world n).view u)
+      ((e.world n).state u))
+    (receiverCurrent : UpToDate config checks sources (e.world k).time ((e.world k).view w)
+      ((e.world k).state w))
+    {source : BeaconState preset fork} (within : source.RegistryWithinLimit)
+    {root : Root} {block : BeaconBlock preset fork}
+    (known : ((e.world n).state u).blocks[root]? = some block)
+    (supporter : v ∈ ((e.world n).state u).supportersOf source ⟨root, .pending⟩)
+    (finalizedKnown : ∃ b, ((e.world k).state w).blocks[
+      ((e.world k).state w).finalizedCheckpoint.root]? = some b)
+    (checkpoint : ((e.world n).state u).getCheckpointBlock root
+      ((e.world k).state w).finalizedCheckpoint.epoch =
+        .ok ((e.world k).state w).finalizedCheckpoint.root) :
+    ((e.world k).state w).blocks[root]? = some block := by
+  obtain ⟨m, _, pastBlock, pastKnown, delivered⟩ := e.past_block_of_honest_supporter
+    slots fits oneBlock anchorStore anchored caller honest callerCurrent within supporter
+  have same := oneBlock v honest u caller m n root pastBlock block pastKnown known
+  subst pastBlock
+  have reached := e.reachable
+    (fun x hx => (anchored x hx) ▸ Store.Reachable.anchor anchorStore) m v honest
+  have checkpointCopy := checkpoint
+  unfold Store.getCheckpointBlock at checkpointCopy
+  simp only [bind_ok_iff, mapError_ok_iff] at checkpointCopy
+  obtain ⟨boundary, boundaryOk, _⟩ := checkpointCopy
+  have above := e.anchorSlot_le_finalized_boundary anchorStore anchorSlot anchorBoundary
+    (anchored w receiver) boundaryOk
+  have pastCheckpoint := Store.getCheckpointBlock_of_same_blocks reached
+    (oneBlock u caller v honest n m) boundaryOk above ⟨block, pastKnown⟩ checkpoint
+  exact (e.blocks_of_partiallySynchronous sync oneBlock admitted anchorStore anchored honest
+    receiver (by simpa using delivered.trans later) receiverCurrent finalizedKnown
+    (fun gloas => False.elim (Nat.not_le_of_lt preGloas gloas)) pastKnown pastCheckpoint).1
+
 /-- Each new member of the increasing root walk lies on the tip's ancestor chain. -/
 private theorem walk_member_ancestor {store : Store preset fork}
     (before : fork < .glamsterdam) {tip terminal : Root} {acc roots : List Root}
