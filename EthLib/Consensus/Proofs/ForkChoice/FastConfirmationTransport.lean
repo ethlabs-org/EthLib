@@ -426,6 +426,8 @@ Its ranges of committees end at the slot before its own, and at the slot before 
 
 The call is at the start of its slot.
 
+Its source of balances is the state of a checkpoint of its store, as `sourceOk` says.
+
 So every honest vote of an earlier slot of the current epoch falls in the window below.
 
 The block is on the chain of the head of the caller.
@@ -487,6 +489,8 @@ theorem Execution.honest_support_of_historical_anchor {Δ : ℕ} (sync : e.Synch
     (atSlot : (e.world n).time = begin.toNat)
     (blockOk : ((e.world n).state u).block root = .ok block)
     (parentOk : ((e.world n).state u).block block.parentRoot = .ok parentBlock)
+    {sourceCheckpoint : Checkpoint}
+    (sourceOk : ((e.world n).state u).checkpointState sourceCheckpoint = .ok balanceSource)
     (boostOk : computeProposerScore config balanceSource = .ok proposerScore)
     (firstOk : addChecked parentBlock.slot 1 = .ok firstSlot)
     (lastOk : subChecked slot 1 = .ok lastSlot)
