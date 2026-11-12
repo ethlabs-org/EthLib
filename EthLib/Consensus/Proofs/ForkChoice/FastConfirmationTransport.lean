@@ -339,7 +339,7 @@ private theorem finalized_boundary_le_historical {anchor : Store preset fork}
     (Except.ok.inj epochEq).symm
   have finalizedLe : ((e.world n).state u).finalizedCheckpoint.epoch.toNat ≤
       historicalEpoch.toNat := by
-    rcases e.finalizedCheckpoint_eq_or_add_two_le anchorStore sound caller
+    rcases e.finalizedCheckpoint_eq_or_add_two_le anchorStore sound
       (anchored u caller) epochOk with same | older
     · obtain ⟨_, _, _, _, _, initial, _, _⟩ := getForkchoiceStore_anchor anchorStore
       rw [same, initial]
@@ -407,7 +407,7 @@ private theorem finalized_boundary_le_slot_of_earlier {anchor : Store preset for
     exact Nat.div_le_div_right (UInt64.le_iff_toNat_le.mp currentLe)
   have finalizedLe : ((e.world j).state w).finalizedCheckpoint.epoch.toNat ≤
       (computeEpochAtSlot preset recent).toNat := by
-    rcases e.finalizedCheckpoint_eq_or_add_two_le anchorStore sound receiver
+    rcases e.finalizedCheckpoint_eq_or_add_two_le anchorStore sound
       (anchored w receiver) currentEpochOk with same | older
     · obtain ⟨_, _, _, _, _, initial, _, _⟩ := getForkchoiceStore_anchor anchorStore
       rw [same, initial]
