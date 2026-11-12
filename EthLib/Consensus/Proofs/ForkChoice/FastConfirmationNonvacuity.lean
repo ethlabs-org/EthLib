@@ -1,6 +1,11 @@
 module
 
 public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmationSafety
+public import EthLib.Consensus.Transition.Genesis
+-- The committee certificates reduce the derived equality decision procedure for Except.
+import all Batteries.Data.Except
+-- A zero-round shuffle reads the body of Array.range to enumerate the registry positions.
+import all Init.Data.Array.Basic
 
 /-!
 # Compatibility of the fast-confirmation premises at the anchor
@@ -345,3 +350,130 @@ theorem synchronous_execution (P : Protocol ν μ σ κ) (J : Set ν)
 end FinitePrefix
 
 end EthLib.Consensus.Models.Network
+
+namespace EthLib.Consensus.Models.Network.FiveValidatorWitness
+
+open Base Models
+
+/-- A four-slot preset with small state vectors and whole balance increments. -/
+def preset : Preset := { Preset.minimal with
+  SHUFFLE_ROUND_COUNT := 0
+  SLOTS_PER_EPOCH := 4
+  SLOTS_PER_HISTORICAL_ROOT := 8
+  EPOCHS_PER_HISTORICAL_VECTOR := 8
+  EPOCHS_PER_SLASHINGS_VECTOR := 8
+  VALIDATOR_REGISTRY_LIMIT := 8
+  EFFECTIVE_BALANCE_INCREMENT := 100
+  MAX_EFFECTIVE_BALANCE := 200
+  MAX_EFFECTIVE_BALANCE_ELECTRA := 200
+  BASE_REWARD_FACTOR := 0 }
+
+/-- One-second slots and no proposer boost isolate the weight of the votes. -/
+def config : Config := { Config.minimal with
+  SLOT_DURATION_MS := 1000
+  EJECTION_BALANCE := 0
+  PROPOSER_SCORE_BOOST := 0
+  CONFIRMATION_BYZANTINE_THRESHOLD := 34 }
+
+/-- An active, unslashed validator with no scheduled exit. -/
+def validator (weight : UInt64) : Validator :=
+  ⟨default, default, weight, false, 0, 0, FAR_FUTURE_EPOCH, FAR_FUTURE_EPOCH⟩
+
+/-- Genesis at time zero with four honest validators and one silent Byzantine validator.
+
+The balances are 200, 200, 200, 100 and 200 Gwei; validator 3 is Byzantine.
+
+The body root is a parameter so these state facts do not need to evaluate a hash.
+
+These initialization facts alone do not certify an execution of Theorem 1. -/
+def state (bodyRoot : Root) : BeaconState preset .phase0 :=
+  { emptyGenesisState config (by decide) 0 default 0 bodyRoot with
+    validators := .ofData #[validator 200, validator 200, validator 200,
+      validator 100, validator 200] (by decide)
+    balances := ⟨#[200, 200, 200, 100, 200], by decide⟩ }
+
+/-- Validator 3 is the only active validator outside the honest set. -/
+def honest : Set ValidatorIndex := {0, 1, 2, 4}
+
+instance instDecidableHonest : DecidablePred (· ∈ honest) := fun v =>
+  inferInstanceAs (Decidable (v ∈ ({0, 1, 2, 4} : Set ValidatorIndex)))
+
+/-- The initialization satisfies the state-transition invariant for every body root. -/
+theorem invariant (root : Root) : Invariant (state root) where
+  balancesMatch := by rfl
+  exitsOrdered := by
+    intro v member
+    change v ∈ #[validator 200, validator 200, validator 200, validator 100, validator 200]
+      at member
+    simp only [List.mem_toArray, List.mem_cons, List.not_mem_nil, or_false] at member
+    rcases member with rfl | rfl | rfl | rfl | rfl <;> decide
+  ordered := by
+    change (0 : UInt64) ≤ 0 ∧ (0 : UInt64) ≤ 0
+    decide
+  settled := by
+    -- The header root has no effect on the epoch of a state.
+    change JustifiedSettled (state default)
+    unfold JustifiedSettled
+    decide
+  aligned _ := by
+    intro v member
+    change v ∈ #[validator 200, validator 200, validator 200, validator 100, validator 200]
+      at member
+    simp only [List.mem_toArray, List.mem_cons, List.not_mem_nil, or_false] at member
+    rcases member with rfl | rfl | rfl | rfl | rfl <;> decide
+
+/-- All five positions of the registry are active. -/
+theorem active_voters (root : Root) : activeVoters (state root) = {0, 1, 2, 3, 4} := by
+  -- Activity depends on the registry and epoch, not the header root.
+  change activeVoters (state default) = _
+  decide
+
+/-- The initial stake is 900 Gwei, of which 100 Gwei is Byzantine. -/
+theorem stakes (root : Root) :
+    stake (fun v => balanceAt (state root) v.toNat) (activeVoters (state root)) = 900 ∧
+    stake (fun v => balanceAt (state root) v.toNat)
+      {v ∈ quorumVoters (state root) | v ∉ honest} = 100 := by
+  -- None of the counted fields reads the header root.
+  change stake (fun v => balanceAt (state default) v.toNat) (activeVoters (state default)) = 900 ∧
+    stake (fun v => balanceAt (state default) v.toNat)
+      {v ∈ quorumVoters (state default) | v ∉ honest} = 100
+  decide
+
+/-- The global Byzantine stake fits a 12-percent bound, strictly below one third. -/
+theorem byzantine_stake (root : Root) :
+    100 * stake (fun v => balanceAt (state root) v.toNat)
+      {v ∈ quorumVoters (state root) | v ∉ honest} ≤ 12 * 900 := by
+  rw [(stakes root).2]
+  decide
+
+/-- The mixed pair meets the separate 34-percent committee bound.
+
+This is not the global Byzantine bound: 34 percent is greater than one third. -/
+theorem mixed_committee_byzantine_stake (root : Root) :
+    ByzantineStakeAtMost (fun v => balanceAt (state root) v.toNat) {3, 4} honest 34 100 := by
+  change 0 < 100 ∧ 100 * 100 ≤ 34 * 300
+  decide
+
+/-- The last committee pairs the Byzantine validator with an honest validator of twice its stake. -/
+theorem committees (root : Root) :
+    getBeaconCommittee (state root) 0 0 = .ok #[0] ∧
+    getBeaconCommittee (state root) 1 0 = .ok #[1] ∧
+    getBeaconCommittee (state root) 2 0 = .ok #[2] ∧
+    getBeaconCommittee (state root) 3 0 = .ok #[3, 4] := by
+  -- Zero shuffle rounds leave registry order unchanged, independently of the seed.
+  change getBeaconCommittee (state default) 0 0 = .ok #[0] ∧
+    getBeaconCommittee (state default) 1 0 = .ok #[1] ∧
+    getBeaconCommittee (state default) 2 0 = .ok #[2] ∧
+    getBeaconCommittee (state default) 3 0 = .ok #[3, 4]
+  decide +kernel
+
+/-- The preset meets the lookahead bundle and its balance alignment requirements. -/
+theorem parameters :
+    MaxEffectiveBalancesAligned preset ∧
+    1 ≤ preset.MIN_SEED_LOOKAHEAD.toNat ∧ 1 ≤ preset.MAX_SEED_LOOKAHEAD.toNat ∧
+    preset.MIN_SEED_LOOKAHEAD.toNat + 3 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat ∧
+    3 * 12 < 100 := by
+  unfold MaxEffectiveBalancesAligned
+  decide
+
+end EthLib.Consensus.Models.Network.FiveValidatorWitness
