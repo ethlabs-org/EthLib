@@ -1946,6 +1946,55 @@ theorem walk_finalized_read_of_source {horizon : Epoch} {last : ℕ}
   obtain ⟨prior, priorOk, _⟩ := splitRead
   exact walk_checkpoint_trans boundaryOk (mapError_ok_iff.mp priorOk) ordered read priorRead before
 
+/-- Coverage of a held root also covers each of its held ancestors. -/
+theorem walk_covered_ancestor {store : Store preset fork}
+    (reached : Store.Reachable config anchorState anchorBlock store)
+    (anchorSlot : anchorBlock.slot = anchorState.slot)
+    (lower : store.ParentsBelow) (before : fork < .glamsterdam)
+    {root member : Root} {block : BeaconBlock preset fork} {nodes : List ForkChoiceNode}
+    (known : store.blocks[member]? = some block)
+    (descends : store.isAncestor ⟨root, .pending⟩ ⟨member, .pending⟩ = .ok true)
+    (tree : store.getFilteredNodeTree config = .ok nodes)
+    (covered : store.isAncestor ⟨store.justifiedCheckpoint.root, .pending⟩
+        ⟨root, .pending⟩ = .ok true ∨ (⟨root, .pending⟩ : ForkChoiceNode) ∈ nodes) :
+    store.isAncestor ⟨store.justifiedCheckpoint.root, .pending⟩
+      ⟨member, .pending⟩ = .ok true ∨ (⟨member, .pending⟩ : ForkChoiceNode) ∈ nodes := by
+  obtain ⟨rootBlock, rootKnown, _⟩ := Store.slot_le_of_isAncestor known descends
+  rcases covered with covered | viable
+  · exact Or.inl (Store.isAncestor_trans_of_lt before rootKnown known covered descends)
+  have treeWalk : store.filterNodeTree config ⟨store.justifiedCheckpoint.root, .pending⟩ =
+      .ok nodes := tree
+  have ancestors := Store.filterNodeTree_ancestor (lower := lower) before treeWalk _ viable
+  have memberAbove := (Store.isAncestor_iff (lower := lower) before known rfl descends).mp rfl
+  rcases memberAbove.total ancestors.1 with above | below
+  · left
+    obtain ⟨_, justifiedKnown⟩ := (Store.filterNodeTree_mem treeWalk _
+      (Store.filterNodeTree_self treeWalk (by intro empty; simp [empty] at viable))).2.1
+    obtain ⟨ancestor, walk⟩ := Store.getAncestor_ok_of_orphans_le lower
+      (node := ⟨store.justifiedCheckpoint.root, .pending⟩) (slot := block.slot)
+      (fun r b held orphan => reached.orphans_le (UInt64.le_of_eq anchorSlot) held orphan known)
+      justifiedKnown
+    have rootEq := Store.getAncestor_root_eq (lower := lower)
+      (node := ⟨member, .pending⟩) known walk above
+    have pending := Store.getAncestor_pending_of_lt before rfl walk
+    have ancestorEq : ancestor = (⟨member, .pending⟩ : ForkChoiceNode) := by
+      cases ancestor
+      simp_all
+    rw [ancestorEq] at walk
+    simp [Store.isAncestor, Store.block_ok_iff.mpr known, walk, bind, Except.bind,
+      pure, Except.pure]
+  · right
+    obtain ⟨node, mem, rootEq⟩ := ancestors.2 (some member) below memberAbove
+    have pending : node.payloadStatus = .pending := by
+      rcases (Store.filterNodeTree_parent before rfl treeWalk node mem).2 with rfl | ⟨h, _⟩
+      · rfl
+      · exact h
+    have eq : node = (⟨member, .pending⟩ : ForkChoiceNode) := by
+      have rootEq := Option.some.inj rootEq
+      cases node
+      simp_all
+    exact eq ▸ mem
+
 /-- Step 6, the result: a block that passed the checks is not filtered out at a later time.
 
 The caller is an honest validator whose store is up to date, and its rule passed the checks.
