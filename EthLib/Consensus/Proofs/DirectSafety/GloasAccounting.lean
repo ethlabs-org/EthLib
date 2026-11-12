@@ -3,7 +3,6 @@ module
 public import EthLib.Consensus.Proofs.DirectSafety.IntervalFunding
 import all EthLib.Consensus.Proofs.DirectSafety.IntervalFunding
 import all EthLib.Consensus.Proofs.Transition.BalanceSources
-import all EthLib.Consensus.Proofs.Transition.EpochUpdates
 
 /-!
 # Gloas accounting rates and parent replay
@@ -761,7 +760,12 @@ private theorem slashing_step_balances_unbounded {fork : Fork} {s t : BeaconStat
     split at ok
     · rename_i slashed
       obtain ⟨due, dueOk, ok⟩ := bind_ok_iff.mp ok
-      have dueIff := slashingPenaltyDue_iff slashed dueOk
+      have dueIff : SlashingPenaltyDue preset (getCurrentEpoch s) v ↔
+          due = v.withdrawableEpoch := by
+        rw [liftAccessor_ok, liftArith, mapError_ok_iff] at dueOk
+        have sum := Except.ok.inj
+          ((Uint64.addChecked_of_lt (Uint64.addChecked_ok_iff.mp dueOk).1).symm.trans dueOk)
+        simp [SlashingPenaltyDue, slashed, sum]
       split at ok
       · simp only [bind_ok_iff, liftAccessor_ok, liftArith, mapError_ok_iff] at ok
         obtain ⟨_, _, index, converted, _⟩ := ok
