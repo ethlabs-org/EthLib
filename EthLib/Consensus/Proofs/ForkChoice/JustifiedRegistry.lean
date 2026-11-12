@@ -40,6 +40,391 @@ theorem activationEpoch_ne_farFuture_of_isActiveAt
   rw [far, sentinel] at low
   omega
 
+/-- A validator whose eligibility lies beyond a finalized boundary has not activated. -/
+private def PendingAfter (epoch : Epoch) (validator : Validator) : Prop :=
+  epoch < validator.activationEligibilityEpoch ∧ validator.activationEpoch = FAR_FUTURE_EPOCH
+
+/-- Phase0 `is_eligible_for_activation` rejects a queue position beyond finality. -/
+private theorem PendingAfter.not_eligible {epoch : Epoch} {validator : Validator}
+    {state : BeaconState preset fork} (pending : PendingAfter epoch validator)
+    (finalized : state.finalizedCheckpoint.epoch ≤ epoch) :
+    isEligibleForActivation state validator = false := by
+  have apart : ¬validator.activationEligibilityEpoch ≤ state.finalizedCheckpoint.epoch := by
+    intro le
+    exact UInt64.not_lt.mpr (UInt64.le_trans le finalized) pending.1
+  simp [isEligibleForActivation, apart]
+
+/-- Both registry-update paths set eligibility with checked addition.
+
+Phase0 `process_registry_updates` sets eligibility to the next epoch, never a wrapped epoch. -/
+private theorem PendingAfter.queueForActivation {epoch : Epoch} {validator queued : Validator}
+    {state : BeaconState preset fork} (pending : PendingAfter epoch validator)
+    (current : epoch ≤ getCurrentEpoch state)
+    (ok : Consensus.queueForActivation state validator = .ok queued) : PendingAfter epoch queued := by
+  unfold Consensus.queueForActivation at ok
+  split at ok
+  · simp only [bind_ok_iff, liftAccessor_ok, liftArith, mapError_ok_iff,
+      addChecked_ok_iff, pure, Except.pure, Except.ok.injEq] at ok
+    obtain ⟨next, ⟨_, sum⟩, rfl⟩ := ok
+    refine ⟨?_, pending.2⟩
+    rw [UInt64.lt_iff_toNat_lt]
+    have low := UInt64.le_iff_toNat_le.mp current
+    simp only [UInt64.toNat_one] at sum
+    dsimp only
+    omega
+  · cases ok
+    exact pending
+
+/-- A new registry entry is pending beyond every finite boundary.
+
+Phase0 and Electra `get_validator_from_deposit` initialize both activation fields to FAR. -/
+private theorem pendingAfter_deposit {epoch : Epoch} (finite : epoch < FAR_FUTURE_EPOCH)
+    (pubkey : Cryptography.Bls.BLSPubkey) (credentials : Bytes32) (amount : Gwei) :
+    PendingAfter epoch (getValidatorFromDeposit preset fork pubkey credentials amount) :=
+  ⟨finite, rfl⟩
+
+/-- The suffix appended after a boundary has no eligible or activated entries. -/
+private def PendingTail (count : Nat) (epoch : Epoch) (state : BeaconState preset fork) : Prop :=
+  ∀ position validator, count ≤ position → state.validators.data[position]? = some validator →
+    PendingAfter epoch validator
+
+private theorem PendingTail.of_validators {count : Nat} {epoch : Epoch}
+    {state after : BeaconState preset fork} (holds : PendingTail count epoch state)
+    (same : after.validators.data = state.validators.data := by rfl) :
+    PendingTail count epoch after := by
+  intro position validator outside found
+  exact holds position validator outside (same ▸ found)
+
+private theorem PendingTail.setValidatorAt {count position : Nat} {epoch : Epoch}
+    {state after : BeaconState preset fork} {validator : Validator}
+    (holds : PendingTail count epoch state)
+    (pending : count ≤ position → PendingAfter epoch validator)
+    (set : state.setValidatorAt position validator = .ok after) :
+    PendingTail count epoch after := by
+  obtain ⟨inside, rfl⟩ := setValidatorAt_ok set
+  intro index value outside found
+  simp only [BeaconState.putValidator, Serialization.Ssz.RootedForkList.data_set,
+    Array.getElem?_set] at found
+  split at found
+  · cases found
+    exact pending (by omega)
+  · exact holds _ _ outside found
+
+private theorem PendingTail.setValidator {count : Nat} {index : ValidatorIndex} {epoch : Epoch}
+    {state after : BeaconState preset fork} {validator : Validator}
+    (holds : PendingTail count epoch state)
+    (pending : count ≤ index.toNat → PendingAfter epoch validator)
+    (set : state.setValidator index validator = .ok after) :
+    PendingTail count epoch after :=
+  holds.setValidatorAt pending (by rwa [← setValidator_eq_setValidatorAt])
+
+private theorem PendingTail.initiateValidatorExit {count : Nat} {epoch : Epoch}
+    {state after : BeaconState preset fork} {index : ValidatorIndex}
+    (holds : PendingTail count epoch state)
+    (ok : initiateValidatorExit config state index = .ok after) :
+    PendingTail count epoch after := by
+  obtain ⟨validator, found, unchanged | ⟨_, queued, _, _, queue, _, set⟩⟩ :=
+    initiateValidatorExit_ok ok
+  · rw [unchanged.2]
+    exact holds
+  · have same := (exitQueue_validators queue).1
+    apply (holds.of_validators (congrArg (·.data) same)).setValidator _ set
+    intro outside
+    exact holds _ validator outside (getValidatorAt_eq_ok_iff.mp
+      (by rwa [← getValidator_eq_getValidatorAt]))
+
+private theorem PendingTail.updateRegistryEntry {count : Nat} {epoch : Epoch}
+    {state after : BeaconState preset fork} {index : Nat}
+    (holds : PendingTail count epoch state) (current : epoch ≤ getCurrentEpoch state)
+    (ok : Consensus.updateRegistryEntry config state index = .ok after) : PendingTail count epoch after := by
+  simp only [Consensus.updateRegistryEntry, bind_ok_iff, liftAccessor_ok] at ok
+  obtain ⟨validator, found, queued, joined, middle, set, rest⟩ := ok
+  have pending : count ≤ index → PendingAfter epoch queued := fun outside =>
+    (holds _ _ outside (getValidatorAt_eq_ok_iff.mp found)).queueForActivation current joined
+  have middleHolds := holds.setValidatorAt pending set
+  split at rest
+  · simp only [bind_ok_iff, liftAccessor_ok] at rest
+    obtain ⟨_, _, exited⟩ := rest
+    exact middleHolds.initiateValidatorExit exited
+  · cases rest
+    exact middleHolds
+
+private theorem PendingTail.updateRegistryEntryElectra {count : Nat} {epoch activation : Epoch}
+    {state after : BeaconState preset fork} {index : Nat}
+    (holds : PendingTail count epoch state) (current : epoch ≤ getCurrentEpoch state)
+    (finalized : state.finalizedCheckpoint.epoch ≤ epoch)
+    (ok : Consensus.updateRegistryEntryElectra config activation state index = .ok after) :
+    PendingTail count epoch after := by
+  simp only [Consensus.updateRegistryEntryElectra, bind_ok_iff, liftAccessor_ok] at ok
+  obtain ⟨validator, found, ok⟩ := ok
+  have pending := fun outside => holds _ _ outside (getValidatorAt_eq_ok_iff.mp found)
+  split at ok
+  · simp only [bind_ok_iff, liftAccessor_ok, liftArith, mapError_ok_iff,
+      addChecked_ok_iff] at ok
+    obtain ⟨next, ⟨_, sum⟩, set⟩ := ok
+    apply holds.setValidatorAt _ set
+    intro outside
+    refine ⟨?_, (pending outside).2⟩
+    have low := UInt64.le_iff_toNat_le.mp current
+    rw [UInt64.lt_iff_toNat_lt]
+    simp only [UInt64.toNat_one] at sum
+    dsimp only
+    omega
+  split at ok
+  · simp only [bind_ok_iff, liftAccessor_ok] at ok
+    obtain ⟨_, _, exited⟩ := ok
+    exact holds.initiateValidatorExit exited
+  split at ok
+  · rename_i eligible
+    apply holds.setValidatorAt _ (liftAccessor_ok.mp ok)
+    intro outside
+    have no := (pending outside).not_eligible finalized
+    rw [no] at eligible
+    contradiction
+  · cases ok
+    exact holds
+
+/-- A pre-Electra activation queue cannot select a pending suffix beyond finality. -/
+private theorem PendingTail.not_mem_activationQueue {count : Nat} {epoch : Epoch}
+    {state : BeaconState preset fork} (holds : PendingTail count epoch state)
+    (within : state.RegistryWithinLimit) (finalized : state.finalizedCheckpoint.epoch ≤ epoch)
+    {index : ValidatorIndex} (outside : count ≤ index.toNat) :
+    index ∉ activationQueue state := by
+  intro member
+  simp only [activationQueue, List.mem_map] at member
+  obtain ⟨⟨eligibility, found⟩, sorted, rfl⟩ := member
+  have inEligible := (List.mergeSort_perm _ _).mem_iff.mp sorted
+  simp only [List.mem_filterMap, Option.ite_none_right_eq_some, Option.some.injEq,
+    List.mem_zipIdx_iff_getElem?, Prod.exists, Prod.mk.injEq] at inEligible
+  obtain ⟨validator, i, atI, eligible, -, rfl⟩ := inEligible
+  have inside : i < state.validators.data.size := by
+    simpa using (List.getElem?_eq_some_iff.mp atI).1
+  rw [toNat_toUInt64_of_lt within inside] at outside
+  have pending := holds i validator outside (by simpa using atI)
+  rw [pending.not_eligible finalized] at eligible
+  contradiction
+
+private theorem PendingTail.activateValidator {count : Nat} {epoch : Epoch}
+    {state after : BeaconState preset fork} {index : ValidatorIndex}
+    (holds : PendingTail count epoch state) (inside : index.toNat < count)
+    (ok : Consensus.activateValidator state index = .ok after) : PendingTail count epoch after := by
+  simp only [Consensus.activateValidator, bind_ok_iff, liftAccessor_ok] at ok
+  obtain ⟨_, _, _, _, set⟩ := ok
+  exact holds.setValidator (by omega) set
+
+/-- Registry updates preserve the pending suffix while finality has not passed its boundary. -/
+private theorem PendingTail.processRegistryUpdates {count : Nat} {epoch : Epoch}
+    {state after : BeaconState preset fork} (holds : PendingTail count epoch state)
+    (current : epoch ≤ getCurrentEpoch state)
+    (finalized : state.finalizedCheckpoint.epoch ≤ epoch)
+    (ok : Consensus.processRegistryUpdates config state = .ok after) : PendingTail count epoch after := by
+  unfold Consensus.processRegistryUpdates at ok
+  split at ok
+  · simp only [bind_ok_iff, liftAccessor_ok] at ok
+    obtain ⟨activation, _, folded⟩ := ok
+    exact (foldlM_ok_invariant
+      (fun s => PendingTail count epoch s ∧ s.slot = state.slot ∧
+        s.finalizedCheckpoint = state.finalizedCheckpoint)
+      (fun s index t ih step => by
+        have frame := frame_updateRegistryEntryElectra step
+        refine ⟨ih.1.updateRegistryEntryElectra ?_ ?_ step,
+          frame.slot.trans ih.2.1, frame.finalized.trans ih.2.2⟩
+        · simpa only [getCurrentEpoch, ih.2.1] using current
+        · simpa only [ih.2.2] using finalized)
+      ⟨holds, rfl, rfl⟩ folded).1
+  · rename_i before
+    simp only [bind_ok_iff] at ok
+    obtain ⟨updated, first, last⟩ := ok
+    have updatedHolds := (foldlM_ok_invariant
+      (fun s => PendingTail count epoch s ∧ s.slot = state.slot ∧
+        s.finalizedCheckpoint = state.finalizedCheckpoint)
+      (fun s index t ih step => by
+        have frame := frame_updateRegistryEntry step
+        refine ⟨ih.1.updateRegistryEntry ?_ step,
+          frame.slot.trans ih.2.1, frame.finalized.trans ih.2.2⟩
+        simpa only [getCurrentEpoch, ih.2.1] using current)
+      ⟨holds, rfl, rfl⟩ first)
+    have allInside : ∀ index ∈ activationQueue updated, index.toNat < count := by
+      intro index member
+      by_contra outside
+      exact updatedHolds.1.not_mem_activationQueue
+        (updated.validators.bound (Nat.lt_trans (Nat.lt_of_not_ge before) (by decide)))
+        (by simpa only [updatedHolds.2.2] using finalized) (by omega) member
+    have fold : ∀ (indices : List ValidatorIndex) (s t : BeaconState preset fork),
+        (∀ index ∈ indices, index.toNat < count) → PendingTail count epoch s →
+        indices.foldlM Consensus.activateValidator s = .ok t → PendingTail count epoch t := by
+      intro indices
+      induction indices with
+      | nil => intro s t _ holds ok; cases ok; exact holds
+      | cons index rest ih =>
+        intro s t inside holds ok
+        rw [List.foldlM_cons, bind_ok_iff] at ok
+        obtain ⟨middle, step, remaining⟩ := ok
+        exact ih middle t (fun index mem => inside index (List.mem_cons_of_mem _ mem))
+          (holds.activateValidator (inside index List.mem_cons_self) step) remaining
+    exact fold _ _ _ (fun index member => allInside index (List.mem_of_mem_take member))
+      updatedHolds.1 last
+
+private theorem PendingTail.addValidatorToRegistry {count : Nat} {epoch : Epoch}
+    {state after : BeaconState preset fork} {pubkey : Cryptography.Bls.BLSPubkey}
+    {credentials : Bytes32} {amount : Gwei}
+    (holds : PendingTail count epoch state) (finite : epoch < FAR_FUTURE_EPOCH)
+    (ok : addValidatorToRegistry state pubkey credentials amount = .ok after) :
+    PendingTail count epoch after := by
+  intro position validator outside found
+  rw [addValidatorToRegistry_validators_eq_push ok, Array.getElem?_push] at found
+  split at found
+  · cases found
+    exact pendingAfter_deposit finite _ _ _
+  · exact holds _ _ outside found
+
+private theorem PendingTail.increaseBalance {count : Nat} {epoch : Epoch}
+    {state after : BeaconState preset fork} {index : ValidatorIndex} {amount : Gwei}
+    (holds : PendingTail count epoch state)
+    (ok : increaseBalance state index amount = .ok after) : PendingTail count epoch after :=
+  holds.of_validators (congrArg (·.data) (increaseBalance_validators ok))
+
+private theorem PendingTail.decreaseBalance {count : Nat} {epoch : Epoch}
+    {state after : BeaconState preset fork} {index : ValidatorIndex} {amount : Gwei}
+    (holds : PendingTail count epoch state)
+    (ok : decreaseBalance state index amount = .ok after) : PendingTail count epoch after :=
+  holds.of_validators (congrArg (·.data) (decreaseBalance_validators ok))
+
+/-- Slashing changes exit fields and balances, but never activation fields. -/
+private theorem PendingTail.slashValidator {count : Nat} {epoch : Epoch}
+    {state after : BeaconState preset fork} {index : ValidatorIndex}
+    {whistleblower : Option ValidatorIndex} (holds : PendingTail count epoch state)
+    (ok : slashValidator config state index whistleblower = .ok after) :
+    PendingTail count epoch after := by
+  obtain ⟨_, _, _, marked, _, _, slashings, _, _, _, _, last, exited, found, _, set,
+    _, _, _, lowered, _, _, raised, paid, rfl⟩ := slashValidator_ok ok
+  have exitedHolds := holds.initiateValidatorExit exited
+  have markedHolds : PendingTail count epoch marked := by
+    apply exitedHolds.setValidator _ set
+    intro outside
+    have pending := exitedHolds _ _ outside (getValidator_eq_ok_iff.mp found)
+    exact ⟨pending.1, pending.2⟩
+  have lastHolds := ((markedHolds.of_validators
+    (after := { marked with slashings })).decreaseBalance lowered).increaseBalance raised
+  have paidHolds := lastHolds.increaseBalance paid
+  split <;> exact paidHolds.of_validators
+
+private theorem PendingTail.applyPendingDeposit {count : Nat} {epoch : Epoch}
+    {state after : BeaconState preset fork} {deposit : PendingDeposit}
+    (holds : PendingTail count epoch state) (finite : epoch < FAR_FUTURE_EPOCH)
+    (ok : Consensus.applyPendingDeposit config checks state deposit = .ok after) :
+    PendingTail count epoch after := by
+  unfold Consensus.applyPendingDeposit at ok
+  split at ok
+  · split at ok
+    · cases ok
+      exact holds
+    simp only [bind_ok_iff] at ok
+    obtain ⟨_, _, ok⟩ := ok
+    split at ok
+    · exact holds.addValidatorToRegistry finite ok
+    · cases ok
+      exact holds
+  · simp only [liftAccessor_ok, bind_ok_iff] at ok
+    obtain ⟨_, _, ok⟩ := ok
+    exact holds.increaseBalance ok
+
+private theorem PendingTail.applyDeposit {count : Nat} {epoch : Epoch}
+    {state after : BeaconState preset fork} {pubkey : Cryptography.Bls.BLSPubkey}
+    {credentials : Bytes32} {amount : Gwei} {signature : Cryptography.Bls.BLSSignature}
+    (holds : PendingTail count epoch state) (finite : epoch < FAR_FUTURE_EPOCH)
+    (ok : Consensus.applyDeposit config checks state pubkey credentials amount signature = .ok after) :
+    PendingTail count epoch after := by
+  unfold Consensus.applyDeposit at ok
+  split at ok
+  · unfold applyDepositElectra at ok
+    split at ok
+    · simp only [bind_ok_iff] at ok
+      obtain ⟨_, _, ok⟩ := ok
+      split at ok
+      · simp only [bind_ok_iff, liftAccessor_ok] at ok
+        obtain ⟨middle, added, queued⟩ := ok
+        obtain ⟨_, rfl⟩ := addPendingDeposit_eq queued
+        exact (holds.addValidatorToRegistry finite added).of_validators
+      · cases ok
+        exact holds
+    · obtain ⟨_, rfl⟩ := addPendingDeposit_eq (liftAccessor_ok.mp ok)
+      exact holds.of_validators
+  · exact holds.applyPendingDeposit finite ok
+
+private theorem PendingTail.processDeposit {count : Nat} {epoch : Epoch}
+    {state after : BeaconState preset fork} {before : fork < .hegota} {deposit : Deposit}
+    (holds : PendingTail count epoch state) (finite : epoch < FAR_FUTURE_EPOCH)
+    (ok : processDeposit config checks before state deposit = .ok after) :
+    PendingTail count epoch after := by
+  obtain ⟨_, _, next, _, applied⟩ := processDeposit_ok ok
+  exact (holds.of_validators (after := { state with eth1DepositIndex := fun _ => next })).applyDeposit
+    finite applied
+
+private theorem PendingTail.passPendingDeposits {count : Nat} {epoch : Epoch}
+    {stop : PendingDeposit → Bool} {nextEpoch : Epoch} {available : Gwei}
+    (finite : epoch < FAR_FUTURE_EPOCH) :
+    ∀ {deposits : List PendingDeposit} {state : BeaconState preset fork} {processed : Gwei}
+      {seen : Nat} {postponed : Array PendingDeposit} {pass},
+      PendingTail count epoch state →
+      Consensus.passPendingDeposits config checks stop nextEpoch available state processed seen
+        postponed deposits = .ok pass → PendingTail count epoch pass.1.state
+  | [], _, _, _, _, _, holds, ok => by cases ok; exact holds
+  | deposit :: rest, state, processed, seen, postponed, pass, holds, ok => by
+    unfold Consensus.passPendingDeposits at ok
+    simp only [bind, Except.bind, pure, Except.pure] at ok
+    split at ok
+    · cases ok; exact holds
+    split at ok
+    · cases ok
+    split at ok
+    · split at ok
+      · cases ok
+      rename_i credited
+      split at ok
+      · cases ok
+      cases ok
+      exact PendingTail.passPendingDeposits finite (deposits := rest)
+        (holds.applyPendingDeposit finite credited) ‹_›
+    split at ok
+    · split at ok
+      · cases ok
+      cases ok
+      exact PendingTail.passPendingDeposits finite (deposits := rest) holds ‹_›
+    split at ok
+    · cases ok
+    split at ok
+    · cases ok; exact holds
+    split at ok
+    · cases ok
+    rename_i credited
+    split at ok
+    · cases ok
+    cases ok
+    exact PendingTail.passPendingDeposits finite (deposits := rest)
+      (holds.applyPendingDeposit finite credited) ‹_›
+
+/-- Electra pending balances append through the same deposit constructor.
+
+The deposit's request slot does not determine when its registry position is created. -/
+private theorem PendingTail.processPendingBalances {count : Nat} {epoch : Epoch}
+    {state after : BeaconState preset fork} (holds : PendingTail count epoch state)
+    (finite : epoch < FAR_FUTURE_EPOCH)
+    (ok : Consensus.processPendingBalances config checks state = .ok after) :
+    PendingTail count epoch after := by
+  unfold Consensus.processPendingBalances at ok
+  split at ok
+  · simp only [bind_ok_iff] at ok
+    obtain ⟨middle, deposited, consolidated⟩ := ok
+    have deposits : PendingTail count epoch middle := by
+      unfold processPendingDeposits at deposited
+      simp only [bind, Except.bind, pure, Except.pure] at deposited
+      repeat' (split at deposited <;> try cases deposited)
+      all_goals exact (PendingTail.passPendingDeposits finite holds ‹_›).of_validators
+    exact deposits.of_validators (congrArg (·.data) (processPendingConsolidations_kept consolidated).1)
+  · cases ok
+    exact holds
+
 /-- Registry growth along imported parent transitions retains every anchor position.
 
 The store is fixed-fork, so these transitions do not include fork upgrades. -/
