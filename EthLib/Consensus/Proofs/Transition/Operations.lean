@@ -56,9 +56,11 @@ def pendingAmount (deposits : List PendingDeposit) : Nat :=
 def BalancesMatch (state : BeaconState preset fork) : Prop :=
   state.balances.data.size = state.validators.data.size
 
+/-- The public keys of the validators, in the order of the registry. -/
 def validatorKeys (state : BeaconState preset fork) : List BLSPubkey :=
   state.validators.data.toList.map (·.pubkey)
 
+/-- No two validators of the registry have the same public key. -/
 def PubkeysDistinct (state : BeaconState preset fork) : Prop :=
   (validatorKeys state).Nodup
 
@@ -683,6 +685,22 @@ theorem addValidatorToRegistry_validators_eq_push {pubkey : BLSPubkey}
       rfl
     · cases computed
 
+/-- Adding a validator keeps the slot. -/
+theorem addValidatorToRegistry_slot {pubkey : BLSPubkey}
+    {withdrawalCredentials : Bytes32} {amount : Gwei}
+    (computed : addValidatorToRegistry state pubkey withdrawalCredentials amount = .ok after) :
+    after.slot = state.slot := by
+  unfold addValidatorToRegistry at computed
+  split at computed
+  · simp only [addValidatorToRegistryAltair, liftAccessor_ok, bind_ok_iff, pure, Except.pure,
+      Except.ok.injEq] at computed
+    obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, rfl⟩ := computed
+    rfl
+  split at computed
+  · cases computed
+    rfl
+  · cases computed
+
 /-- A new validator joins a registry of fewer than `2^64` validators.
 
 So its position fits a validator index. -/
@@ -699,53 +717,6 @@ theorem addValidatorToRegistry_size_lt {pubkey : BLSPubkey}
     · rename_i fits
       exact Nat.lt_trans fits.1 preset.VALIDATOR_REGISTRY_LIMIT.toNat_lt
     · cases computed
-
-theorem addValidatorToRegistry_slot {pubkey : BLSPubkey}
-    {withdrawalCredentials : Bytes32} {amount : Gwei}
-    (computed : addValidatorToRegistry state pubkey withdrawalCredentials amount = .ok after) :
-    after.slot = state.slot := by
-  unfold addValidatorToRegistry at computed
-  split at computed
-  · simp only [addValidatorToRegistryAltair, liftAccessor_ok, bind_ok_iff, pure, Except.pure,
-      Except.ok.injEq] at computed
-    obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, rfl⟩ := computed
-    rfl
-  · split at computed <;> cases computed
-    rfl
-
-theorem applyPendingDeposit_cases {deposit : PendingDeposit}
-    (computed : applyPendingDeposit config checks state deposit = .ok after) :
-    after = state ∨
-    (∃ index : Nat,
-      state.validators.data.findIdx? (·.pubkey == deposit.pubkey) = some index ∧
-      increaseBalance state index.toUInt64 deposit.amount = .ok after) ∨
-    (deposit.pubkey ∉ validatorKeys state ∧
-      state.validators.data.size < 2 ^ 64 ∧
-      addValidatorToRegistry state deposit.pubkey deposit.withdrawalCredentials deposit.amount =
-        .ok after) := by
-  unfold applyPendingDeposit at computed
-  split at computed
-  · rename_i absent
-    split at computed
-    · cases computed
-      exact .inl rfl
-    simp only [bind_ok_iff] at computed
-    obtain ⟨_, _, computed⟩ := computed
-    split at computed
-    · refine .inr (.inr ⟨?_, addValidatorToRegistry_size_lt computed, computed⟩)
-      simp only [Array.findIdx?_eq_none_iff, beq_eq_false_iff_ne] at absent
-      simpa [validatorKeys, List.mem_map] using absent
-    · cases computed
-      exact .inl rfl
-  · rename_i position found
-    simp only [liftAccessor_ok, bind_ok_iff, liftArith, mapError_ok_iff] at computed
-    obtain ⟨index, converted, computed⟩ := computed
-    have small := (ofNatChecked_ok_iff.mp converted).1
-    have equal : index = position.toUInt64 := by
-      rw [ofNatChecked_of_lt small] at converted
-      exact Except.ok.inj converted.symm
-    subst index
-    exact .inr (.inl ⟨position, found, computed⟩)
 
 /-- A new validator joins the end of the registry, and its balance joins the end of the balances.
 
@@ -861,13 +832,24 @@ theorem applyPendingDeposit_kept {deposit : PendingDeposit}
     (computed : applyPendingDeposit config checks state deposit = .ok after) :
     (BalancesMatch state → BalancesMatch after) ∧
       after.eth1DepositIndex = state.eth1DepositIndex ∧ after.eth1Data = state.eth1Data := by
-  rcases applyPendingDeposit_cases computed with rfl | ⟨_, _, raised⟩ | ⟨_, _, added⟩
-  · exact ⟨id, rfl, rfl⟩
-  · refine ⟨balancesMatch_of_sameSizes (sameSizes_increaseBalance raised), ?_⟩
-    obtain ⟨_, set⟩ := increaseBalance_ok raised
+  unfold applyPendingDeposit at computed
+  split at computed
+  · split at computed
+    · cases computed
+      exact ⟨id, rfl, rfl⟩
+    simp only [bind, Except.bind] at computed
+    split at computed
+    · cases computed
+    split at computed
+    · exact ⟨balancesMatch_addValidatorToRegistry computed, addValidatorToRegistry_eth1 computed⟩
+    · cases computed
+      exact ⟨id, rfl, rfl⟩
+  · simp only [liftAccessor_ok, bind_ok_iff] at computed
+    obtain ⟨_, _, computed⟩ := computed
+    refine ⟨balancesMatch_of_sameSizes (sameSizes_increaseBalance computed), ?_⟩
+    obtain ⟨_, set⟩ := increaseBalance_ok computed
     obtain ⟨_, rfl⟩ := setBalance_ok set
     exact ⟨rfl, rfl⟩
-  · exact ⟨balancesMatch_addValidatorToRegistry added, addValidatorToRegistry_eth1 added⟩
 
 /-- A new validator is the only change to the registry.
 
@@ -1029,12 +1011,46 @@ theorem applyPendingDeposit_new_valid {deposit : PendingDeposit}
   simp only [applyPendingDeposit, new, notBls, ↓reduceIte, bind, Except.bind, valid] at computed
   exact addValidatorToRegistry_push computed holds
 
+/-- A pending deposit changes nothing, raises a balance, or adds a fresh key.
+
+The first case covers a deposit to a new key with an invalid signature.
+
+From Heze it also covers a new key with BLS withdrawal credentials.
+
+The second case is a deposit to a known key.
+
+The third case adds a validator at the end of the registry, and no other validator has its key. -/
+theorem applyPendingDeposit_cases {deposit : PendingDeposit}
+    (computed : applyPendingDeposit config checks state deposit = .ok after) :
+    after = state ∨
+    (∃ index : ValidatorIndex, increaseBalance state index deposit.amount = .ok after) ∨
+    (deposit.pubkey ∉ validatorKeys state ∧
+      addValidatorToRegistry state deposit.pubkey deposit.withdrawalCredentials deposit.amount =
+        .ok after) := by
+  unfold applyPendingDeposit at computed
+  split at computed
+  · rename_i absent
+    split at computed
+    · cases computed
+      exact .inl rfl
+    simp only [bind_ok_iff] at computed
+    obtain ⟨_, _, computed⟩ := computed
+    split at computed
+    · refine .inr (.inr ⟨?_, computed⟩)
+      simp only [Array.findIdx?_eq_none_iff, beq_eq_false_iff_ne] at absent
+      simpa [validatorKeys, List.mem_map] using absent
+    · cases computed
+      exact .inl rfl
+  · simp only [liftAccessor_ok, bind_ok_iff, liftArith, mapError_ok_iff] at computed
+    obtain ⟨index, _, computed⟩ := computed
+    exact .inr (.inl ⟨index, computed⟩)
+
 /-- A deposit adds at most one entry to the registry, and keeps each validator there. -/
 theorem applyPendingDeposit_validators_size_le_and_mem {deposit : PendingDeposit}
     (computed : applyPendingDeposit config checks state deposit = .ok after) :
     after.validators.data.size ≤ state.validators.data.size + 1 ∧
       ∀ validator ∈ state.validators.data, validator ∈ after.validators.data := by
-  rcases applyPendingDeposit_cases computed with rfl | ⟨_, _, raised⟩ | ⟨_, _, added⟩
+  rcases applyPendingDeposit_cases computed with rfl | ⟨_, raised⟩ | ⟨_, added⟩
   · exact ⟨Nat.le_succ _, fun _ member => member⟩
   · rw [increaseBalance_validators raised]
     exact ⟨Nat.le_succ _, fun _ member => member⟩
@@ -1182,7 +1198,7 @@ theorem applyDeposit_cases {pubkey : BLSPubkey} {withdrawalCredentials : Bytes32
       exact .inl rfl
   · rename_i before
     simp only [depositRegistrationAmount, before, ↓reduceIte]
-    rcases applyPendingDeposit_cases computed with rfl | ⟨_, _, raised⟩ | ⟨fresh, _, added⟩
+    rcases applyPendingDeposit_cases computed with rfl | ⟨_, raised⟩ | ⟨fresh, added⟩
     · exact .inl rfl
     · exact .inl (congrArg (·.data) (increaseBalance_validators raised))
     · exact .inr ⟨fresh, addValidatorToRegistry_validators_eq_push added,

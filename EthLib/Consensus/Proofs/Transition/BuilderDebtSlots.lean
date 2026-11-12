@@ -106,7 +106,7 @@ private theorem builderEpochFrameLaws : EpochFrameLaws (@BuilderFrame preset for
     where
   refl := BuilderFrame.refl
   trans := BuilderFrame.trans
-  setValidatorAt := fun _ set _ _ _ _ _ _ => builderFrame_setValidatorAt set
+  setValidatorAt := fun set _ _ _ _ _ _ _ => builderFrame_setValidatorAt set
   registryUpdates := by
     intro config state after computed
     have entry : ∀ (s : BeaconState preset fork) i t, updateRegistryEntry config s i = .ok t →

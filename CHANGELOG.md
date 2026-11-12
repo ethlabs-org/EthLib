@@ -9,6 +9,21 @@ Not yet released.
 
 ### Changes that break callers
 
+- Along a chain from genesis, the public keys of the validators stay a prefix and stay distinct ([#1421](https://github.com/ethereum/EthLib/issues/1421)).
+  No C export or Python function changes.
+  In Lean, `Frame` and `UpgradeFrame` gain the fields `pubkeysPrefix` and `pubkeysDistinct`.
+  They bring back the key-keeping fact that [#1950](https://github.com/ethereum/EthLib/pull/1950) removed for [#1908](https://github.com/ethereum/EthLib/issues/1908), where it was named `KeysKept`.
+  `validatorKeys` lists the keys of the registry and `PubkeysDistinct` says that they have no repeat.
+  `validatorKeys_prefix_and_distinct_of_chainSteps` states, for a run of steps, that the keys of its first state are a prefix of the keys of its last state.
+  It also states that distinct keys stay distinct.
+  `validatorKeys_prefix_and_distinct_of_genesis_chainSteps` states both along a chain from genesis.
+  `frame_addValidatorToRegistry` takes a proof that the key is not in the registry, and `EpochFrameLaws.addValidatorToRegistry` takes it too.
+  `frame_setValidatorAt_of_whole`, `frame_setValidator_of_whole`, `EpochFrameLaws.setValidator` and the `setValidatorAt` field of `EpochFrameLaws` take the old validator and a proof that the state holds it at that position.
+  They also take a proof that the new validator keeps the key of the old one.
+  `frame_setValidator`, `EpochFrameLaws.setValidator_of_sameBalance` and `EpochFrameLaws.setValidatorAt_of_sameBalance` take the proof of the key.
+  `applyPendingDeposit_cases` decomposes a pending deposit.
+  `addValidatorToRegistry_slot` states that adding a validator keeps the slot.
+
 - In Lean, the gossip message ID has its length in its type.
   `Gossip.messageId` returns `Vector UInt8 20` in place of a `ByteArray`.
   A caller that needs a `ByteArray` takes `Base.packBytes (messageId fork topic data)`.
@@ -517,11 +532,8 @@ Not yet released.
   Callers drop that argument, and the conclusions are unchanged.
   No C export or Python function changes.
 - `EthLib.Consensus.DirectSafety.quorum_drift_from_run` is removed.
-  No declaration read it.
-  It took the arguments `caps`, `aligned` and `withdrawalDelay` and discarded them.
-  Its proof repeated the budgeting of the selected prefix and the handling of slashing evidence.
-  The private lemmas `selected_call_drift_le` and `accountable_pair_bound` of `DirectSafety.Safety` already do both.
-  No migration is needed, and no other statement changes.
+  It had no callers in this repository and duplicated parts of the existing accountable-safety proof.
+  Other theorem statements are unchanged.
   No C export or Python function changes.
 
 ## 0.3.0

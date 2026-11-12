@@ -103,12 +103,6 @@ theorem slashValidator {index : ValidatorIndex} {whistleblower : Option Validato
     RegistryIdentity state after :=
   (frame_slashValidator ok).toFrame.registryIdentity
 
-theorem genesis {hash : Hash32} {time : UInt64} {deposits : Array Deposit}
-    (ok : initializeBeaconStateFromEth1 config checks hash time deposits = .ok after) :
-    (validatorKeys after).Nodup := by
-  obtain ⟨_, _, _, _, _, frame, rfl⟩ := initializeBeaconStateFromEth1_frame ok
-  exact frame.pubkeysDistinct (by simp [PubkeysDistinct, validatorKeys, emptyGenesisState])
-
 theorem processParentExecutionPayload {gloas : .glamsterdam ≤ fork}
     {body : BeaconBlockBody preset fork}
     (ok : Consensus.processParentExecutionPayload config checks state gloas body = .ok after) :
@@ -207,22 +201,6 @@ theorem processHistoricalSummariesUpdate {capella : .shapella ≤ fork}
     RegistryIdentity state after :=
   (frame_processHistoricalSummariesUpdate ok).toFrame.registryIdentity
 
-theorem processEpoch (ok : Consensus.processEpoch config checks state = .ok after) :
-    RegistryIdentity state after := by
-  obtain ⟨_, justified, frame⟩ := processEpoch_frame ok
-  exact (processJustificationAndFinalization justified).trans frame.toFrame.registryIdentity
-
-theorem advanceSlot (ok : Consensus.advanceSlot config checks state = .ok after) :
-    RegistryIdentity state after := by
-  obtain ⟨next, cached, epoched, _, cachedOk, epochedOk, rfl⟩ := advanceSlot_ok ok
-  have first := (frame_processSlot cachedOk).registryIdentity
-  have second : RegistryIdentity cached epoched := by
-    unfold epochIfLast at epochedOk
-    split at epochedOk
-    · exact processEpoch epochedOk
-    · cases epochedOk; exact refl _
-  exact (first.trans second).trans of_validators
-
 theorem queuePreActivation {electra : .pectra ≤ fork} {index : ValidatorIndex}
     (ok : Consensus.queuePreActivation state electra index = .ok after) :
     RegistryIdentity state after :=
@@ -233,32 +211,6 @@ theorem queueCompoundingExcess {electra : .pectra ≤ fork} {index : Nat}
     RegistryIdentity state after :=
   (frame_queueCompoundingExcess ok).toFrame.registryIdentity
 
-theorem upgradeNext {pre : ForkedBeaconState preset}
-    {post : {post : ForkedBeaconState preset // pre.fork < post.fork}}
-    (ok : Consensus.upgradeNext config checks pre = .ok post) :
-    RegistryIdentity pre.state post.val.state :=
-  (upgradeFrame_upgradeNext ok).registryIdentity
-
-theorem chainStep {first last : ForkedBeaconState preset}
-    (step : ChainStep config checks first last) :
-    RegistryIdentity first.state last.state := by
-  cases step with
-  | slot ok =>
-    obtain ⟨advanced, slotOk, upgrades⟩ := bind_ok_iff.mp ok
-    have rest := processUpgrades_induction
-      (property := fun post => RegistryIdentity advanced post.state)
-      (fun before ok => before.trans (upgradeNext ok)) (refl advanced) upgrades
-    exact (advanceSlot slotOk).trans rest
-  | block engine signed validate ok =>
-    exact processBlock (applySignedBlock_ok ok).2.1
-
 end RegistryIdentity
-
-theorem registryIdentity_of_chainSteps {first last : ForkedBeaconState preset}
-    (steps : Relation.ReflTransGen (ChainStep config checks) first last) :
-    RegistryIdentity first.state last.state := by
-  induction steps with
-  | refl => exact .refl _
-  | tail steps step ih => exact ih.trans (RegistryIdentity.chainStep step)
 
 end EthLib.Consensus

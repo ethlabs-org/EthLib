@@ -75,7 +75,13 @@ It also keeps the genesis time, the fork versions and the genesis validators roo
 
 The registry never shrinks.
 
-When they hold before it, it also keeps one balance for each validator.
+The public keys of the validators before it are a prefix of the public keys after it.
+
+When no two validators share a key before it, none share a key after it.
+
+A slashed flag that is set stays set.
+
+When each validator has one balance before it, each has one after it.
 
 It then also keeps each exit no later than its withdrawal.
 
@@ -317,9 +323,13 @@ theorem BlockFrame.foldlM {α ε : Type} {step : BeaconState preset fork → α 
 
 /-- An epoch frame after which each byte of flags is the byte at its position before, or zero.
 
-The mutators of a balance, of the exit queue and of a validator form one.
+So it is also a block frame.
 
-So do the steps that add a validator to the registry.
+The mutators of a balance and of the exit queue form one.
+
+So does a write to a validator that keeps its public key and does not clear its slashed flag.
+
+So do the steps that add a validator to the registry with a key that no validator has.
 
 So does each step of an epoch after justification, other than the rotation of the flags. -/
 structure MutatorFrame (state after : BeaconState preset fork) : Prop extends EpochFrame state after
@@ -378,7 +388,11 @@ theorem ExitsOrdered.putValidator {index : Nat} {validator : Validator}
 
 /-- Replacing a validator at a plain position forms a mutator frame.
 
-The new one must exit no later than it withdraws.
+The new one must keep the public key of the old one.
+
+It must not clear a slashed flag.
+
+It must exit no later than it withdraws.
 
 Let the largest values of the preset and the effective balances before be aligned.
 
@@ -396,6 +410,7 @@ theorem frame_setValidatorAt_of_whole {position : Nat} {validator old : Validato
   have sizes := sameSizes_putValidator state inside validator
   have oldEq : state.validators.data[position] = old := by
     simpa [getValidatorAt, inside] using found
+  -- The write changes the key at the position to the key it had.
   have keys : validatorKeys (state.putValidator position inside validator) =
       validatorKeys state := by
     simp only [validatorKeys, BeaconState.putValidator, RootedForkList.data_set,
@@ -462,6 +477,10 @@ theorem blockFrame_setValidatorAt_of_whole {position : Nat} {validator old : Val
 
 /-- Replacing a validator forms a mutator frame, if the new one exits no later than it withdraws.
 
+The new one must keep the public key of the old one.
+
+It must not clear a slashed flag.
+
 Let the largest values of the preset and the effective balances before be aligned.
 
 Then the new one must have an aligned effective balance. -/
@@ -479,7 +498,11 @@ theorem frame_setValidator_of_whole {index : ValidatorIndex} {validator old : Va
 
 /-- Replacing a validator by one with the same effective balance forms a mutator frame.
 
-The new one must exit no later than it withdraws. -/
+The new one must keep the public key of the old one.
+
+It must not clear a slashed flag.
+
+It must exit no later than it withdraws. -/
 theorem frame_setValidator {index : ValidatorIndex} {validator old : Validator}
     (set : state.setValidator index validator = .ok after)
     (found : getValidator state index = .ok old)
@@ -750,7 +773,13 @@ private theorem getValidatorFromDeposit_aligned (maxAligned : MaxEffectiveBalanc
       preset.EFFECTIVE_BALANCE_INCREMENT = 0 := by
   exact min_sub_mod_mod_self _ (withdrawalMaxEffectiveBalance_aligned maxAligned _)
 
-/-- A new validator exits and withdraws at the far future epoch. -/
+/-- A new validator exits and withdraws at the far future epoch.
+
+The key must be one that no validator has.
+
+It goes at the end of the registry, so the keys before stay a prefix.
+
+Distinct keys stay distinct. -/
 theorem frame_addValidatorToRegistry {pubkey : BLSPubkey}
     {withdrawalCredentials : Bytes32} {amount : Gwei}
     (computed : addValidatorToRegistry state pubkey withdrawalCredentials amount = .ok after)
@@ -887,28 +916,32 @@ theorem frame_processRegistryUpdates
 
 They leave out justification, the builder payments and the rotation of the flags.
 
-A validator write checks the old entry and keeps its key and its slashed flag.
+A validator write at a plain position must relate its states when it meets these conditions.
 
-It never lowers activation eligibility, and keeps the activation epoch.
+It keeps the public key of the old validator.
 
 Its exit comes no later than its withdrawal, when the exits of the state are ordered.
 
 Its effective balance is a whole number of increments, when the preset and the state are aligned.
 
+It keeps the slashed flag exactly.
+
+It never lowers activation eligibility, and keeps the activation epoch.
+
 Registry activation has a separate law because it can change both activation fields.
 
-The other laws cover balance changes, exits, fresh validators and record updates. -/
+The other laws cover balance changes, exits, new validators with a fresh key and record updates. -/
 structure EpochFrameLaws (R : BeaconState preset fork → BeaconState preset fork → Prop) : Prop where
   refl : ∀ state, R state state
   trans : ∀ {first second third}, R first second → R second third → R first third
   setValidatorAt : ∀ {state after : BeaconState preset fork} {position : Nat}
-    {old validator : Validator},
-    getValidatorAt state position = .ok old →
+    {validator old : Validator},
     state.setValidatorAt position validator = .ok after →
+    getValidatorAt state position = .ok old →
+    validator.pubkey = old.pubkey →
     (ExitsOrdered state → validator.exitEpoch ≤ validator.withdrawableEpoch) →
     (MaxEffectiveBalancesAligned preset → EffectiveBalancesAligned state →
       validator.effectiveBalance % preset.EFFECTIVE_BALANCE_INCREMENT = 0) →
-    validator.pubkey = old.pubkey →
     validator.slashed = old.slashed →
     old.activationEligibilityEpoch ≤ validator.activationEligibilityEpoch →
     validator.activationEpoch = old.activationEpoch → R state after
@@ -945,7 +978,7 @@ structure EpochFrameLaws (R : BeaconState preset fork → BeaconState preset for
 theorem mutatorEpochFrameLaws : EpochFrameLaws (@MutatorFrame preset fork) where
   refl := MutatorFrame.refl
   trans := MutatorFrame.trans
-  setValidatorAt := fun found set le whole key flag _ _ =>
+  setValidatorAt := fun set found key le whole flag _ _ =>
     frame_setValidatorAt_of_whole set found key (fun marked => flag.trans marked) le whole
   registryUpdates := frame_processRegistryUpdates
   increaseBalance := frame_increaseBalance
@@ -979,10 +1012,72 @@ theorem foldlM {α ε : Type} {step : BeaconState preset fork → α → Except 
   foldlM_ok_invariant (R state) (fun _ _ _ before ok => laws.trans before (frame _ _ _ ok))
     (laws.refl state) computed
 
+/-- A validator write follows the relation when it meets the conditions of a write.
+
+It keeps the public key of the old validator.
+
+Its exit comes no later than its withdrawal, when the exits of the state are ordered.
+
+Its effective balance is a whole number of increments, when the preset and the state are aligned.
+
+It keeps the slashed flag, never lowers activation eligibility, and keeps the activation epoch. -/
+theorem setValidator {index : ValidatorIndex} {validator old : Validator}
+    (set : state.setValidator index validator = .ok after)
+    (found : getValidator state index = .ok old)
+    (key : validator.pubkey = old.pubkey)
+    (le : ExitsOrdered state → validator.exitEpoch ≤ validator.withdrawableEpoch)
+    (whole : MaxEffectiveBalancesAligned preset → EffectiveBalancesAligned state →
+      validator.effectiveBalance % preset.EFFECTIVE_BALANCE_INCREMENT = 0)
+    (flag : validator.slashed = old.slashed)
+    (eligibility : old.activationEligibilityEpoch ≤ validator.activationEligibilityEpoch)
+    (activation : validator.activationEpoch = old.activationEpoch) : R state after :=
+  laws.setValidatorAt (by rwa [← setValidator_eq_setValidatorAt])
+    (by rwa [← getValidator_eq_getValidatorAt]) key le whole flag eligibility activation
+
+/-- A validator write that keeps the effective balance follows the relation.
+
+It must also keep the public key.
+
+It must exit no later than it withdraws, when the exits of the state are ordered.
+
+It must also meet the slashed flag and activation conditions of the law. -/
+theorem setValidator_of_sameBalance {index : ValidatorIndex} {validator old : Validator}
+    (set : state.setValidator index validator = .ok after)
+    (found : getValidator state index = .ok old)
+    (key : validator.pubkey = old.pubkey)
+    (le : ExitsOrdered state → validator.exitEpoch ≤ validator.withdrawableEpoch)
+    (flag : validator.slashed = old.slashed)
+    (eligibility : old.activationEligibilityEpoch ≤ validator.activationEligibilityEpoch)
+    (activation : validator.activationEpoch = old.activationEpoch)
+    (balance : validator.effectiveBalance = old.effectiveBalance := by rfl) : R state after :=
+  laws.setValidator set found key le (fun _ holds => by
+    rw [balance]
+    exact holds old (mem_of_getValidator found)) flag eligibility activation
+
+/-- A validator write at a plain position follows the relation when it keeps the balance.
+
+It must keep the public key of the old validator.
+
+Its exit must come no later than its withdrawal, when the exits of the state are ordered.
+
+It must also meet the slashed flag and activation conditions of the law. -/
+theorem setValidatorAt_of_sameBalance {position : Nat} {validator old : Validator}
+    (set : state.setValidatorAt position validator = .ok after)
+    (found : getValidatorAt state position = .ok old)
+    (key : validator.pubkey = old.pubkey)
+    (le : ExitsOrdered state → validator.exitEpoch ≤ validator.withdrawableEpoch)
+    (flag : validator.slashed = old.slashed)
+    (eligibility : old.activationEligibilityEpoch ≤ validator.activationEligibilityEpoch)
+    (activation : validator.activationEpoch = old.activationEpoch)
+    (balance : validator.effectiveBalance = old.effectiveBalance := by rfl) : R state after :=
+  laws.setValidatorAt set found key le (fun _ holds => by
+    rw [balance]
+    exact holds old (mem_of_getValidatorAt found)) flag eligibility activation
+
 theorem applyPendingDeposit {deposit : PendingDeposit}
     (computed : Consensus.applyPendingDeposit config checks state deposit = .ok after) :
     R state after := by
-  rcases applyPendingDeposit_cases computed with rfl | ⟨_, _, raised⟩ | ⟨fresh, _, added⟩
+  rcases applyPendingDeposit_cases computed with rfl | ⟨_, raised⟩ | ⟨fresh, added⟩
   · exact laws.refl _
   · exact laws.increaseBalance raised
   · exact laws.addValidatorToRegistry added fresh
@@ -2245,9 +2340,9 @@ theorem updateEffectiveBalance {index : Nat}
     (computed : Consensus.updateEffectiveBalance state index = .ok after) : R state after := by
   simp only [Consensus.updateEffectiveBalance, bind_ok_iff, liftAccessor_ok] at computed
   obtain ⟨validator, found, _, _, _, updated, set⟩ := computed
-  refine laws.setValidatorAt found set
+  refine laws.setValidatorAt set found rfl
     (fun ordered => ordered validator (mem_of_getValidatorAt found))
-    (fun maxAligned holds => ?_) rfl rfl (UInt64.le_refl _) rfl
+    (fun maxAligned holds => ?_) rfl (UInt64.le_refl _) rfl
   exact updatedEffectiveBalance_aligned (withdrawalMaxEffectiveBalance_aligned maxAligned validator)
     (holds validator (mem_of_getValidatorAt found)) updated
 

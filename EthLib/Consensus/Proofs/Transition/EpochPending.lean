@@ -151,10 +151,11 @@ theorem depositTargetStatus_applyPendingDeposit {deposit : PendingDeposit}
     (computed : applyPendingDeposit config checks state deposit = .ok after) :
     depositTargetStatus after = depositTargetStatus state := by
   funext nextEpoch pubkey
-  rcases applyPendingDeposit_cases computed with rfl | ⟨_, _, raised⟩ | ⟨_, small, added⟩
+  rcases applyPendingDeposit_cases computed with rfl | ⟨_, raised⟩ | ⟨_, added⟩
   · rfl
   · simp only [depositTargetStatus, increaseBalance_validators raised]
   · have pushed := addValidatorToRegistry_validators_eq_push added
+    have small := addValidatorToRegistry_size_lt added
     -- The new validator has no exit before the far future, and no epoch passes the far future.
     have far : ¬FAR_FUTURE_EPOCH < nextEpoch := by
       rw [UInt64.lt_iff_toNat_lt]
