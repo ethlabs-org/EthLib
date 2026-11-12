@@ -1587,7 +1587,7 @@ private theorem intervalLoss_recent_supported (y : ForkedBeaconState preset)
     rcases recent with current | previous
     · exact Finset.mem_union_left _ (selected _ current)
     · exact Finset.mem_union_right _ (selected _ previous)
-  rw [Models.supported, if_pos member]
+  rw [Models.supported, ite_eq_left member]
   exact intervalLoss_weight_at y.state unique i.toNat w found
 
 private theorem intervalLoss_sum_bound {g x y : ForkedBeaconState preset}
@@ -1614,7 +1614,7 @@ private theorem intervalLoss_sum_bound {g x y : ForkedBeaconState preset}
   apply List.sum_le_sum
   intro i member
   obtain ⟨v, found, _⟩ := (mem_getActiveValidatorIndices (x.state.validators.bound early)).mp member
-  simp only [found, Option.map_some, Option.getD_some]
+  simp only [found]
   split
   · exact Nat.zero_le _
   · rename_i unslashed
@@ -3617,7 +3617,7 @@ private theorem intervalGain_upgrade_epoch {s t : ForkedBeaconState preset}
     by_cases old : .pectra ≤ s.fork
     · exact initial old
     · obtain ⟨fork, state⟩ := s
-      cases fork <;> simp only [ForkedBeaconState.fork] at old
+      cases fork <;> simp only at old
       all_goals try (exact False.elim (old (by decide)))
       all_goals simp only [upgradeNext, bind_ok_iff, pure, Except.pure, Except.ok.injEq,
         throw] at nextOk

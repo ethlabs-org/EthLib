@@ -1123,7 +1123,7 @@ private theorem epochBalanceReplay_bounded {fork : Fork} {s : BeaconState preset
     have resetMatch := (frame_processEth1DataReset resetOk).balancesMatch slashedFacts.1
     split at last
     · rename_i electra
-      simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at last
+      simp only [bind_ok_iff, Except.ok.injEq] at last
       obtain ⟨deposited, depositOk, consolidated, consolidationOk, rfl⟩ := last
       have deposits := pending_deposit_bound reset deposited resetMatch electra depositOk
       have consolidations :=
@@ -1660,8 +1660,7 @@ private theorem blockBalanceReplay_bounded {fork : Fork} {s : BeaconState preset
           dsimp only [bind, Except.bind] at limits
           simp only [bind, Except.bind] at proposerOk
           rw [proposerOk] at limits
-          simp only [bind, Except.bind, pure, Except.pure,
-            Except.ok.injEq] at limits
+          simp only [pure, Except.pure, Except.ok.injEq] at limits
           cases limits
           exact bounds
         exact final.2
@@ -2550,13 +2549,13 @@ private theorem funding_lifecycle_support {v w : Validator} {before after : Epoc
     intro far
     have maxEpoch : after.toNat ≤ FAR_FUTURE_EPOCH.toNat := by
       have := after.toNat_lt
-      simp only [FAR_FUTURE_EPOCH, UInt64.reduceToNat]
+      simp only [FAR_FUTURE_EPOCH]
       omega
     have old : before = FAR_FUTURE_EPOCH := by
       apply UInt64.toNat_inj.mp
       have bound := before.toNat_lt
       rw [UInt64.lt_iff_toNat_lt, far] at future
-      simp only [FAR_FUTURE_EPOCH, UInt64.reduceToNat] at *
+      simp only [FAR_FUTURE_EPOCH] at *
       omega
     have later : after = FAR_FUTURE_EPOCH := by
       apply UInt64.toNat_inj.mp
@@ -2565,11 +2564,11 @@ private theorem funding_lifecycle_support {v w : Validator} {before after : Epoc
     rcases active with active | active
     · have bound := w.exitEpoch.toNat_lt
       simp only [isActiveValidator, Bool.and_eq_true, decide_eq_true_eq,
-        UInt64.lt_iff_toNat_lt, later, FAR_FUTURE_EPOCH, UInt64.reduceToNat] at active
+        UInt64.lt_iff_toNat_lt, later, FAR_FUTURE_EPOCH] at active
       omega
     · have bound := w.activationEpoch.toNat_lt
       rw [UInt64.lt_iff_toNat_lt, later] at active
-      simp only [FAR_FUTURE_EPOCH, UInt64.reduceToNat] at active
+      simp only [FAR_FUTURE_EPOCH] at active
       omega
   have sameActivation := life.activationEpoch activation
   have oldActivation : v.activationEpoch ≤ before := UInt64.not_lt.mp future
@@ -2582,7 +2581,7 @@ private theorem funding_lifecycle_support {v w : Validator} {before after : Epoc
       · have beyond := UInt64.lt_iff_toNat_lt.mp exits
         have bound := w.exitEpoch.toNat_lt
         rw [UInt64.lt_iff_toNat_lt, assigned]
-        simp only [FAR_FUTURE_EPOCH, UInt64.reduceToNat]
+        simp only [FAR_FUTURE_EPOCH]
         omega
       · rw [life.exitEpoch assigned] at exits
         exact UInt64.lt_iff_toNat_lt.mpr (lt_of_le_of_lt epochs
@@ -2633,7 +2632,7 @@ private theorem funding_potential_mono {fork : Fork} (s : BeaconState preset for
   cases found : s.validators.data[i]? with
   | none => simp
   | some v =>
-    simp only [found, Option.map_some, Option.getD_some]
+    simp only [Option.map_some, Option.getD_some]
     have pending : one.any (fun c => c.sourceIndex.toNat == i) = true →
         two.any (fun c => c.sourceIndex.toNat == i) = true := by
       intro present
@@ -2840,7 +2839,8 @@ private theorem funding_transfer_balances {fork : Fork} {s lowered t : BeaconSta
     obtain ⟨high, highFound, highEq⟩ := balance_increaseBalance credit lowFound
     simp only [actualBalanceAt, found, highFound, Option.map_some, Option.getD_some]
     by_cases hs : source.toNat = i <;> by_cases ht : target.toNat = i <;>
-      simp_all <;> omega
+      simp_all
+    omega
   | none =>
     have size := (sameSizes_increaseBalance credit).2.trans (sameSizes_decreaseBalance debit).2
     have outside := Array.getElem?_eq_none_iff.mp found
@@ -2875,14 +2875,14 @@ private theorem funding_pass_consolidations {fork : Fork} {next : Epoch}
       have ih := funding_pass_consolidations delay passed nextEq distinct'.2
         (fun d member => sources d (List.mem_cons_of_mem c member))
       exact ih.trans (funding_potential_mono s (fun d member => List.mem_cons_of_mem c member))
-    · simp only [slashed, ↓reduceIte] at ok
+    · simp only [slashed] at ok
       by_cases waits : next < v.withdrawableEpoch
-      · simp only [waits, ↓reduceIte, pure, Except.pure, Except.ok.injEq] at ok
+      · simp only [waits, ↓reduceIte, pure, Except.pure] at ok
         cases ok
         exact Nat.le_refl _
-      · simp only [waits, ↓reduceIte, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at ok
+      · simp only [waits, ↓reduceIte, pure, Except.pure] at ok
         obtain ⟨balance, balanceOk, ok⟩ := bind_ok_iff.mp ok
-        simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at ok
+        simp only [bind_ok_iff, Except.ok.injEq] at ok
         obtain ⟨lowered, loweredOk, raised, raisedOk, result', passed, rfl⟩ := ok
         have debit := liftAccessor_ok.mp loweredOk
         have credit := liftAccessor_ok.mp raisedOk
@@ -2927,9 +2927,10 @@ private theorem funding_consolidations {fork : Fork} {s t : BeaconState preset f
       ((s.pendingConsolidations electra).data.size - result.2) =
       (s.pendingConsolidations electra).data.toList.drop result.2 :=
     List.take_of_length_le (by simp)
-  convert bound using 1 <;>
-    simp only [funding_potential, Array.toList_extract, List.extract_eq_take_drop,
-      takeEq, effectiveAt, actualBalanceAt, getCurrentEpoch] <;> congr 3
+  convert bound using 1
+  simp only [funding_potential, Array.toList_extract, takeEq, effectiveAt, actualBalanceAt,
+    getCurrentEpoch]
+  congr 3
 
 private theorem funding_consolidations_invariant {fork : Fork} {s t : BeaconState preset fork}
     (electra : .pectra ≤ fork)
@@ -3065,9 +3066,9 @@ private theorem funding_supported_balance_change {fork : Fork} {s t : BeaconStat
   have effective : effectiveAt ⟨fork, t⟩ i = effectiveAt ⟨fork, s⟩ i := by
     simp [effectiveAt, registry]
   cases found : s.validators.data[i]? with
-  | none => simp [found]
+  | none => simp
   | some v =>
-    simp only [found, Option.map_some, Option.getD_some, epoch, effective]
+    simp only [Option.map_some, Option.getD_some, epoch, effective]
     split <;> omega
 
 private theorem funding_withdrawn_support (v : Validator) (epoch : Epoch)
@@ -3094,9 +3095,9 @@ private theorem funding_balance_selection {fork : Fork} {s t : BeaconState prese
   apply Finset.sum_le_sum
   intro i _
   cases found : s.validators.data[i]? with
-  | none => simp [found]
+  | none => simp
   | some v =>
-    simp only [found, Option.map_some, Option.getD_some]
+    simp only [Option.map_some, Option.getD_some]
     by_cases withdrawn : v.withdrawableEpoch ≤ getCurrentEpoch s
     · have member := Array.mem_of_getElem? found
       have activated := UInt64.le_trans (activation v member)
@@ -3173,9 +3174,9 @@ private theorem funding_withdrawn_change {fork : Fork} {s t : BeaconState preset
   apply Finset.sum_le_sum
   intro i _
   cases read : s.validators.data[i]? with
-  | none => simp [read]
+  | none => simp
   | some v =>
-    simp only [read, Option.map_some, Option.getD_some]
+    simp only [Option.map_some, Option.getD_some]
     by_cases withdrawn : v.withdrawableEpoch ≤ getCurrentEpoch s
     · simp [withdrawn]
     · have unchanged := funding_withdrawn_deposit status ok i (by
@@ -3210,13 +3211,13 @@ private theorem funding_withdrawn_selected {fork : Fork} {s t : BeaconState pres
       by_cases inside : i ∈ indices
       · simp only [inside, ↓reduceIte]
         cases read : s.validators.data[i]? with
-        | none => simp [read]
-        | some v => simp only [read, Option.map_some, Option.getD_some]; split <;> omega
+        | none => simp
+        | some v => simp only [Option.map_some, Option.getD_some]; split <;> omega
       simp only [inside, ↓reduceIte]
       cases read : s.validators.data[i]? with
-      | none => simp [read]
+      | none => simp
       | some v =>
-        simp only [read, Option.map_some, Option.getD_some]
+        simp only [Option.map_some, Option.getD_some]
         split
         · rename_i supported
           have notWithdrawn := selected i inside supported.2 v read
@@ -3434,8 +3435,8 @@ private theorem funding_pending_funded {fork : Fork} {s t : BeaconState preset f
     apply Finset.sum_congr rfl
     intro i _
     cases read : s.validators.data[i]? with
-    | none => simp [read]
-    | some v => simp [read, Bool.and_eq_true]
+    | none => simp
+    | some v => simp [Bool.and_eq_true]
   rw [credit, funding_potential_eq s electra] at bound
   have queue := processPendingDeposits_pendingConsolidations ok
   rw [← queue, funding_potential_eq t electra] at bound
