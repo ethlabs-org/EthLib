@@ -103,6 +103,28 @@ theorem Execution.data_eq_of_signed_of_target_epoch (slots : 0 < config.SLOT_DUR
   by_contra different
   simp [isSlashableAttestationData, different, epoch] at nonslashable
 
+/-- Equal-rank honest latest votes agree before Gloas, even across different stores. -/
+private theorem latest_eq_of_rank_eq (slots : 0 < config.SLOT_DURATION_MS)
+    (preGloas : fork < .glamsterdam) {anchor : Store preset fork}
+    (anchorStore : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (anchored : ∀ w ∈ J, e.start w = anchor)
+    {u w v : ValidatorIndex} (caller : u ∈ J) (receiver : w ∈ J) (honest : v ∈ J)
+    {n k : ℕ} {first second : LatestMessage fork}
+    (firstOk : ((e.world n).state u).latestMessages[v]? = some first)
+    (secondOk : ((e.world k).state w).latestMessages[v]? = some second)
+    (rank : first.rank = second.rank) : first = second := by
+  obtain ⟨a, firstMessage, seenFirst, rfl, signedFirst, _⟩ :=
+    e.exists_signed_origin_of_latestMessages anchorStore anchored caller firstOk
+  obtain ⟨b, secondMessage, seenSecond, rfl, signedSecond, _⟩ :=
+    e.exists_signed_origin_of_latestMessages anchorStore anchored receiver secondOk
+  have notGloas : ¬ .glamsterdam ≤ fork := Nat.not_le_of_lt preGloas
+  have epoch : a.data.target.epoch = b.data.target.epoch := by
+    simpa [LatestMessage.rank, LatestMessage.ofAttestation, notGloas] using rank
+  have same := e.data_eq_of_signed_of_target_epoch slots
+    (e.view_subset_sent n u seenFirst) (e.view_subset_sent k w seenSecond)
+    signedFirst signedSecond honest epoch
+  simp only [LatestMessage.ofAttestation, same]
+
 private theorem mem_insert_fold {v : ValidatorIndex}
     {items : List ValidatorIndex} {initial : Std.TreeSet ValidatorIndex} :
     v ∈ items.foldl (·.insert ·) initial ↔ v ∈ initial ∨ v ∈ items := by
@@ -1464,6 +1486,49 @@ theorem Execution.honest_support_of_historical_anchor {Δ : ℕ} (sync : e.Synch
   obtain ⟨sourceMaximum, sourceScore, sourceMaximumOk, sourceScoreOk⟩ :=
     weights.reads w receiver k receiverHead state current firstSlot lastSlot receiverMaximum
       (by omega) (by omega) headOk currentOk oldLastPast stateOk receiverMaximumOk
+  have sourceScoreEq : sourceScore = proposerScore :=
+    Except.ok.inj (sourceScoreOk.symm.trans boostOk)
+  subst sourceScore
+  let oldSupporters := {v ∈ ((e.world n).state u).supportersOf balanceSource
+    ⟨root, .pending⟩ | v ∈ J}
+  let oldParents := {v ∈ ((e.world n).state u).parentVotersOf balanceSource
+    parentParticipants block parentBlock | v ∈ J}
+  have parentDiscount : discount.toNat ≤
+      stake (fun v => balanceAt balanceSource v.toNat) oldParents :=
+    Store.le_honest_parentVotersOf_of_computeEmptySlotSupportDiscount blockOk parentOk
+      firstOk beforeOk parentParticipantsOk discountOk aligned increment
+      (weights.dishonest u caller n later)
+      (weights.sourceByzantine u caller n head firstSlot beforeBlock parentParticipants
+        rfl parentParticipantsOk)
+  have transferred := weights.margin w receiver k receiverHead state score proposerScore
+    firstSlot lastSlot receiverMaximum sourceMaximum (by omega) (by omega) headOk stateOk
+    scoreOk boostOk receiverMaximumOk sourceMaximumOk oldSupporters oldParents
+    (fun _ member => (Finset.mem_filter.mp member).2)
+    (fun _ member => (Finset.mem_filter.mp member).2)
+  have supportersActive : ∀ v ∈ oldSupporters,
+      v ∈ ((unslashedActiveBalances balanceSource).map (·.1)).toFinset := by
+    intro v member
+    have supports := (Finset.mem_filter.mp member).1
+    simp only [Store.supportersOf, List.mem_toFinset, List.mem_map, List.mem_filter] at supports
+    obtain ⟨entry, ⟨present, _⟩, rfl⟩ := supports
+    exact List.mem_toFinset.mpr (List.mem_map.mpr ⟨entry, present, rfl⟩)
+  have parentsActive : ∀ v ∈ oldParents,
+      v ∈ ((unslashedActiveBalances balanceSource).map (·.1)).toFinset := by
+    intro v member
+    have parent := (Finset.mem_filter.mp member).1
+    obtain ⟨_, ⟨validator, found, flag, _⟩, _⟩ := Store.mem_parentVotersOf.mp parent
+    apply tallyActive_of_activeMember (Finset.mem_filter.mp parent).1
+    simp only [NotSlashed, found, Option.map_some, Option.getD_some, flag]
+  have supportersWeight := stake_congr (w := fun v =>
+    if v ∈ ((unslashedActiveBalances balanceSource).map (·.1)).toFinset
+    then balanceAt balanceSource v.toNat else 0)
+    (fun v member => ite_eq_left (supportersActive v member))
+  have parentsWeight := stake_congr (w := fun v =>
+    if v ∈ ((unslashedActiveBalances balanceSource).map (·.1)).toFinset
+    then balanceAt balanceSource v.toNat else 0)
+    (fun v member => ite_eq_left (parentsActive v member))
+  dsimp only at transferred
+  rw [supportersWeight, parentsWeight] at transferred
   have receiverUnslashed : ∀ v ∈ J, NotSlashed state v := by
     obtain ⟨held, boundary, stored, _, advanced⟩ :=
       e.checkpointStates_fixedChecks anchorStore (anchored w receiver)
