@@ -4034,8 +4034,8 @@ private theorem funding_run_capacity {x y : ForkedBeaconState preset}
     (tail : Run config checks x y) (early : y.fork < .glamsterdam)
     (high : Nat) (endEpoch : (getCurrentEpoch y.state).toNat ≤ high + 1)
     (events : List (BalanceEvent preset)) (replayed : tail.balanceEvents high = .ok events)
-    (stepBound : ∀ {a b : ForkedBeaconState preset} (pre : Run config checks x a)
-      (step : Step config checks a b), b.fork < .glamsterdam →
+    (stepBound : ∀ {a b : ForkedBeaconState preset}, Run config checks x a →
+      ∀ (step : Step config checks a b), b.fork < .glamsterdam →
       ∀ added, step.balanceEvents = .ok added →
       funding_carry b + (added.map funding_deposit_credit).sum ≤
         funding_carry a + ((getCurrentEpoch b.state).toNat -
@@ -4076,8 +4076,8 @@ private theorem funding_run_funded {x y : ForkedBeaconState preset}
     (tail : Run config checks x y) (early : y.fork < .glamsterdam)
     (high : Nat) (endEpoch : (getCurrentEpoch y.state).toNat ≤ high + 1)
     (events : List (BalanceEvent preset)) (replayed : tail.balanceEvents high = .ok events)
-    (stepBound : ∀ {a b : ForkedBeaconState preset} (pre : Run config checks x a)
-      (step : Step config checks a b), b.fork < .glamsterdam →
+    (stepBound : ∀ {a b : ForkedBeaconState preset}, Run config checks x a →
+      ∀ (step : Step config checks a b), b.fork < .glamsterdam →
       ∀ added, step.balanceEvents = .ok added →
       fundedStake b + funding_carry b ≤ fundedStake a + funding_carry a +
         ((getCurrentEpoch b.state).toNat - (getCurrentEpoch a.state).toNat) *
@@ -4121,8 +4121,8 @@ private theorem funding_window_of_steps {x y : ForkedBeaconState preset}
     (unique : uniqueKeys y.state)
     (high : Nat) (endEpoch : (getCurrentEpoch y.state).toNat ≤ high + 1)
     (events : List (BalanceEvent preset)) (replayed : tail.balanceEvents high = .ok events)
-    (stepBound : ∀ {a b : ForkedBeaconState preset} (pre : Run config checks x a)
-      (step : Step config checks a b), b.fork < .glamsterdam →
+    (stepBound : ∀ {a b : ForkedBeaconState preset}, Run config checks x a →
+      ∀ (step : Step config checks a b), b.fork < .glamsterdam →
       ∀ added, step.balanceEvents = .ok added →
       fundedStake b + funding_carry b ≤ fundedStake a + funding_carry a +
         ((getCurrentEpoch b.state).toNat - (getCurrentEpoch a.state).toNat) *
