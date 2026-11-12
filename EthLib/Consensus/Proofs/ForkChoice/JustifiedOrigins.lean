@@ -335,8 +335,8 @@ theorem Execution.getCheckpointBlock_justified_of_finalized_before
     (sound : Invariant anchorState) (slots : 0 < config.SLOT_DURATION_MS)
     (anchorSlot : anchorBlock.slot ≤ anchorState.slot)
     (start : ∀ u ∈ J, e.start u = anchor) {horizon : Epoch}
-    (chain : FinalizedPrefix e horizon) {w : ValidatorIndex} (honest : w ∈ J)
-    {i k : ℕ} (earlier : i ≤ k) {epoch : Epoch}
+    {last : ℕ} (chain : FinalizedPrefix e horizon last) {w : ValidatorIndex} (honest : w ∈ J)
+    {i k : ℕ} (earlier : i ≤ k) (bounded : (e.world k).time ≤ last) {epoch : Epoch}
     (epochOk : ((e.world k).state w).getCurrentStoreEpoch config = .ok epoch)
     (inHorizon : epoch ≤ horizon) :
     ((e.world k).state w).getCheckpointBlock ((e.world k).state w).justifiedCheckpoint.root
@@ -346,7 +346,7 @@ theorem Execution.getCheckpointBlock_justified_of_finalized_before
     (fun u hu => (start u hu).symm ▸ Store.ForwardReachable.anchor anchored) k w honest
   have upper := (forward.justified_epoch_le_current sound slots anchorSlot epochOk).1
   have lower := (e.epochsLe_of_le w earlier).2
-  exact chain w honest w honest i k _ (.inl rfl)
+  exact chain w honest w honest i k ((e.monotone_time earlier).trans bounded) bounded _ (.inl rfl)
     (UInt64.le_trans lower (forward.reachable.finalized_le_justified sound))
     (UInt64.le_trans upper inHorizon)
 
