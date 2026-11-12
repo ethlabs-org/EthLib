@@ -2639,6 +2639,42 @@ private theorem walk_members_induction {store : Store preset fork}
               · exact accStep tipSafe member mem
           · cases walked
 
+/-- Each parent in the confirmed walk still extends its terminal block.
+
+The terminal itself is not a member, since every member has a strictly later slot. -/
+private theorem walk_parent_below {store : Store preset fork}
+    (before : fork < .glamsterdam) (lower : store.ParentsBelow)
+    {tip terminal : Root} {roots : List Root} {terminalBlock : BeaconBlock preset fork}
+    (terminalKnown : store.blocks[terminal]? = some terminalBlock)
+    (walked : store.getAncestorRoots tip terminal = .ok roots) :
+    ∀ member ∈ roots, ∀ block, store.blocks[member]? = some block →
+      store.isAncestor ⟨block.parentRoot, .pending⟩ ⟨terminal, .pending⟩ = .ok true := by
+  have terminalOutside : terminal ∉ roots := by
+    intro mem
+    obtain ⟨b, t, bOk, tOk, lt⟩ :=
+      Store.slot_lt_of_mem_getAncestorRoots walked (by simp) mem
+    have bEq := Except.ok.inj ((Store.block_ok_iff.mpr terminalKnown).symm.trans bOk)
+    have tEq := Except.ok.inj ((Store.block_ok_iff.mpr terminalKnown).symm.trans tOk)
+    subst b
+    subst t
+    exact UInt64.lt_irrefl _ lt
+  have all := walk_members_induction (fun r =>
+      store.isAncestor ⟨r, .pending⟩ ⟨terminal, .pending⟩ = .ok true ∧
+      ∀ block, store.blocks[r]? = some block → r ∈ roots →
+        store.isAncestor ⟨block.parentRoot, .pending⟩ ⟨terminal, .pending⟩ = .ok true)
+    walked ⟨Store.isAncestor_self terminalKnown, by
+      intro block known mem
+      exact False.elim (terminalOutside mem)⟩ (fun r mem block known parent => by
+      obtain ⟨parentBlock, parentKnown, _⟩ :=
+        Store.slot_le_of_isAncestor terminalKnown parent.1
+      refine ⟨Store.isAncestor_of_parent before known parentKnown
+        (lower r block parentBlock known parentKnown) parent.1, ?_⟩
+      intro same sameKnown _
+      cases Option.some.inj (known.symm.trans sameKnown)
+      exact parent.1) (by simp)
+  intro member mem block known
+  exact (all member mem).2 block known mem
+
 /-- The time induction supplies all earlier members before advancing along the same walk. -/
 private theorem walk_time_members_induction {store : Store preset fork}
     {tip terminal : Root} {roots : List Root} {first limit : ℕ}
@@ -2881,6 +2917,60 @@ private theorem walk_late_head {Δ : ℕ} (sync : e.Synchronous Δ)
     inHorizon nonzero large few beginOk nextOk beginTimeOk endTimeOk fresh complete safe receiver
     atTime current known (fun j le _ _ => Or.inl (rootFinal j le)) stateOk within honest active
     dutied).resolve_right uncovered
+
+/-- The receiver's committee window bounds all siblings in the initial phase.
+
+The cap counts members, so every counted sibling vote must enter that same window. -/
+private theorem walk_initial_head {anchor : Store preset fork}
+    (anchorStore : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (sound : Invariant anchorState) (anchorSlot : anchorBlock.slot = anchorState.slot)
+    (anchorBoundary : isStartSlotAtEpoch preset anchorBlock.slot = .ok true)
+    (anchored : ∀ w ∈ J, e.start w = anchor) (before : fork < .glamsterdam)
+    (lookahead : 1 ≤ preset.MIN_SEED_LOOKAHEAD.toNat ∧ 1 ≤ preset.MAX_SEED_LOOKAHEAD.toNat ∧
+      preset.MIN_SEED_LOOKAHEAD.toNat + 3 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
+    (committees : CommitteesFollow e) (follows : HeadFollowsSupport e)
+    {w : ValidatorIndex} (receiver : w ∈ J) {k : ℕ}
+    (current : UpToDate config checks sources (e.world k).time ((e.world k).view w)
+      ((e.world k).state w))
+    (lower : ((e.world k).state w).ParentsBelow)
+    (nonzero : ∀ (r : Root) (b : BeaconBlock preset fork),
+      ((e.world k).state w).blocks[r]? = some b → b.stateRoot ≠ Vector.replicate 32 0)
+    {head : ForkChoiceNode} {state : BeaconState preset fork} {root : Root}
+    {block parent : BeaconBlock preset fork} {slot first last beforeBlock : Slot}
+    {epoch : Epoch} {window participants : Std.TreeSet ValidatorIndex}
+    {score : Gwei} {nodes : List ForkChoiceNode}
+    (headOk : ((e.world k).state w).getHead config = .ok head)
+    (stateOk : ((e.world k).state w).checkpointState ((e.world k).state w).justifiedCheckpoint =
+      .ok state)
+    (blockOk : ((e.world k).state w).block root = .ok block)
+    (parentOk : ((e.world k).state w).block block.parentRoot = .ok parent)
+    (slotOk : ((e.world k).state w).getCurrentSlot config = .ok slot)
+    (epochOk : ((e.world k).state w).getCurrentStoreEpoch config = .ok epoch)
+    (age : epoch.toNat ≤ (computeEpochAtSlot preset parent.slot).toNat + 2)
+    (firstOk : addChecked parent.slot 1 = .ok first)
+    (lastOk : subChecked slot 1 = .ok last)
+    (beforeOk : subChecked block.slot 1 = .ok beforeBlock)
+    (windowOk : ((e.world k).state w).getCommitteesBetweenSlots head.root first last = .ok window)
+    (scoreOk : computeProposerScore config state = .ok score)
+    (participantsOk : ((e.world k).state w).getCommitteesBetweenSlots head.root first beforeBlock =
+      .ok participants)
+    (tree : ((e.world k).state w).getFilteredNodeTree config = .ok nodes)
+    (viable : (⟨root, .pending⟩ : ForkChoiceNode) ∈ nodes)
+    (parentAbove : ((e.world k).state w).isAncestor head ⟨block.parentRoot, .pending⟩ = .ok true)
+    (margin : stake (fun v => balanceAt state v.toNat) (Store.activeMembers state window) +
+        score.toNat <
+      stake (fun v => balanceAt state v.toNat)
+          {v ∈ ((e.world k).state w).parentVotersOf state participants block parent | v ∈ J} +
+        2 * stake (fun v => balanceAt state v.toNat)
+          {v ∈ ((e.world k).state w).supportersOf state ⟨root, .pending⟩ | v ∈ J}) :
+    ((e.world k).state w).isAncestor head ⟨root, .pending⟩ = .ok true := by
+  apply follows.follows w receiver k head state root block parent slot epoch first last beforeBlock
+    window score nodes participants current headOk stateOk blockOk parentOk slotOk epochOk age
+    firstOk lastOk beforeOk windowOk scoreOk participantsOk tree viable parentAbove ?_ margin
+  intro child childBlock voter held parentEq counted active
+  exact e.mem_activeMembers_of_sibling_vote anchorStore sound anchorSlot anchorBoundary anchored
+    before lookahead committees receiver current lower nonzero headOk stateOk blockOk parentOk
+    slotOk epochOk age firstOk lastOk windowOk parentAbove held parentEq counted active
 
 /-- Step 8, the walk: a block that the rule confirms after a safe start is safe up to a last time.
 
