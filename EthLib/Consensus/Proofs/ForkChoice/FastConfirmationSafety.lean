@@ -934,64 +934,6 @@ theorem Execution.rootFinal_or_justified_covers {anchor : Store preset fork}
 
 variable [DecidablePred (· ∈ J)]
 
-omit [DecidablePred (· ∈ J)] in
-/-- At a common epoch, a source at most two epochs old covers receiver finality. -/
-private theorem walk_finalized_read_of_recent_source {anchor : Store preset fork}
-    (anchorStore : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
-    (anchored : ∀ w ∈ J, e.start w = anchor)
-    (sound : Invariant anchorState) (slots : 0 < config.SLOT_DURATION_MS)
-    (positive : 0 < preset.SLOTS_PER_EPOCH.toNat)
-    (window : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
-    (anchorSlot : anchorBlock.slot = anchorState.slot)
-    (anchorBoundary : isStartSlotAtEpoch preset anchorBlock.slot = .ok true)
-    (before : fork < .glamsterdam) {horizon : Epoch} {last : ℕ}
-    (chain : FinalizedPrefix e horizon last)
-    {u w : ValidatorIndex} (caller : u ∈ J) (receiver : w ∈ J) {n k : ℕ}
-    (nBound : (e.world n).time ≤ last) (kBound : (e.world k).time ≤ last) {epoch : Epoch}
-    (callerEpoch : ((e.world n).state u).getCurrentStoreEpoch config = .ok epoch)
-    (receiverEpoch : ((e.world k).state w).getCurrentStoreEpoch config = .ok epoch)
-    (inHorizon : epoch ≤ horizon) (anchorHorizon : getCurrentEpoch anchorState ≤ horizon)
-    (nonzero : ∀ (r : Root) (b : BeaconBlock preset fork),
-      ((e.world n).state u).blocks[r]? = some b → b.stateRoot ≠ Vector.replicate 32 0)
-    (child : ∃ (r : Root) (b : BeaconBlock preset fork),
-      ((e.world n).state u).blocks[r]? = some b ∧ b ≠ anchorBlock)
-    {root : Root} {block : BeaconBlock preset fork} {checkpoint : Checkpoint}
-    (known : ((e.world n).state u).blocks[root]? = some block)
-    (source : ((e.world n).state u).getVotingSource config root = .ok checkpoint ∨
-      ((e.world n).state u).unrealizedJustification root = .ok checkpoint)
-    (recent : epoch.toNat ≤ checkpoint.epoch.toNat + 2) :
-    ((e.world n).state u).getCheckpointBlock root
-      ((e.world k).state w).finalizedCheckpoint.epoch =
-        .ok ((e.world k).state w).finalizedCheckpoint.root := by
-  have forward := e.forwardReachable
-    (fun v hv => (anchored v hv) ▸ Store.ForwardReachable.anchor anchorStore) n u caller
-  have anchorRead := walk_anchor_read anchorStore anchored anchorSlot anchorBoundary before caller known
-  rcases e.finalizedCheckpoint_eq_or_add_two_le anchorStore sound receiver
-      (anchored w receiver) receiverEpoch with same | age
-  · simpa only [same] using anchorRead
-  have ordered : ((e.world k).state w).finalizedCheckpoint.epoch ≤ checkpoint.epoch :=
-    UInt64.le_iff_toNat_le.mpr (by omega)
-  -- A source no later than the anchor's epoch leaves the receiver at the anchor's finality.
-  by_cases old : checkpoint.epoch ≤ getCurrentEpoch anchorState
-  · have same := walk_finalized_eq_anchor anchorStore anchored anchorSlot anchorBoundary before
-      chain receiver kBound (UInt64.le_trans ordered old) anchorHorizon
-    simpa only [same] using anchorRead
-  -- A later source is after the genesis epoch, so the receiver counts it as justified.
-  have later : GENESIS_EPOCH < checkpoint.epoch := by
-    have notLe : ¬ checkpoint.epoch.toNat ≤ (getCurrentEpoch anchorState).toNat :=
-      fun le => old (UInt64.le_iff_toNat_le.mpr le)
-    apply UInt64.lt_iff_toNat_lt.mpr
-    simp only [GENESIS_EPOCH, UInt64.toNat_zero]
-    omega
-  rcases walk_source_ancestor forward.reachable sound before positive window
-      (UInt64.le_of_eq anchorSlot) nonzero child source with early |
-      ⟨_, boundary, _, _, boundaryOk, _, read⟩
-  · exact absurd early old
-  · exact walk_finalized_read_of_source chain before caller receiver nBound kBound source boundaryOk
-      read ordered
-      (UInt64.le_trans (walk_source_epoch_le forward sound slots (UInt64.le_of_eq anchorSlot)
-        before callerEpoch source) inHorizon) later
-
 /-- A two-epoch advance contains a complete epoch, with representable boundaries. -/
 private theorem walk_complete_of_epoch_gap {slot current : Slot} {begin endpoint : UInt64}
     (positive : 0 < preset.SLOTS_PER_EPOCH.toNat)
