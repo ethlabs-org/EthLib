@@ -887,7 +887,7 @@ theorem frame_processRegistryUpdates
 
 They leave out justification, the builder payments and the rotation of the flags.
 
-A validator write checks the old entry and keeps its key and any slashed flag.
+A validator write checks the old entry and keeps its key and its slashed flag.
 
 It never lowers activation eligibility, and keeps the activation epoch.
 
@@ -909,7 +909,7 @@ structure EpochFrameLaws (R : BeaconState preset fork → BeaconState preset for
     (MaxEffectiveBalancesAligned preset → EffectiveBalancesAligned state →
       validator.effectiveBalance % preset.EFFECTIVE_BALANCE_INCREMENT = 0) →
     validator.pubkey = old.pubkey →
-    (old.slashed = true → validator.slashed = true) →
+    validator.slashed = old.slashed →
     old.activationEligibilityEpoch ≤ validator.activationEligibilityEpoch →
     validator.activationEpoch = old.activationEpoch → R state after
   registryUpdates : ∀ {config state after},
@@ -945,8 +945,8 @@ structure EpochFrameLaws (R : BeaconState preset fork → BeaconState preset for
 theorem mutatorEpochFrameLaws : EpochFrameLaws (@MutatorFrame preset fork) where
   refl := MutatorFrame.refl
   trans := MutatorFrame.trans
-  setValidatorAt := fun found set le whole key slashed _ _ =>
-    frame_setValidatorAt_of_whole set found key slashed le whole
+  setValidatorAt := fun found set le whole key flag _ _ =>
+    frame_setValidatorAt_of_whole set found key (fun marked => flag.trans marked) le whole
   registryUpdates := frame_processRegistryUpdates
   increaseBalance := frame_increaseBalance
   decreaseBalance := frame_decreaseBalance
@@ -2174,7 +2174,7 @@ theorem updateEffectiveBalance {index : Nat}
   obtain ⟨validator, found, _, _, _, updated, set⟩ := computed
   refine laws.setValidatorAt found set
     (fun ordered => ordered validator (mem_of_getValidatorAt found))
-    (fun maxAligned holds => ?_) rfl id (UInt64.le_refl _) rfl
+    (fun maxAligned holds => ?_) rfl rfl (UInt64.le_refl _) rfl
   exact updatedEffectiveBalance_aligned (withdrawalMaxEffectiveBalance_aligned maxAligned validator)
     (holds validator (mem_of_getValidatorAt found)) updated
 
