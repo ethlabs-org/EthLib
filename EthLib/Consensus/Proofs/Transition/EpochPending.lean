@@ -151,45 +151,33 @@ theorem depositTargetStatus_applyPendingDeposit {deposit : PendingDeposit}
     (computed : applyPendingDeposit config checks state deposit = .ok after) :
     depositTargetStatus after = depositTargetStatus state := by
   funext nextEpoch pubkey
-  unfold applyPendingDeposit at computed
-  split at computed
-  · split at computed
-    · cases computed
-      rfl
-    simp only [bind_ok_iff] at computed
-    obtain ⟨_, _, computed⟩ := computed
-    split at computed
-    · have pushed := addValidatorToRegistry_validators_eq_push computed
-      -- The new validator has no exit before the far future, and no epoch passes the far future.
-      have far : ¬FAR_FUTURE_EPOCH < nextEpoch := by
-        rw [UInt64.lt_iff_toNat_lt]
-        have := nextEpoch.toNat_lt
-        have : FAR_FUTURE_EPOCH.toNat = 2 ^ 64 - 1 := rfl
-        omega
-      have small := addValidatorToRegistry_size_lt computed
-      simp only [depositTargetStatus, pushed, Array.findIdx?_push]
-      cases found : state.validators.data.findIdx? (·.pubkey == pubkey) with
-      | some position =>
-        -- The validator found before keeps its position, below the new one.
-        obtain ⟨below, _⟩ := Array.findIdx?_eq_some_iff_getElem.mp found
-        simp only [Option.some_or, bind, Except.bind]
-        cases converted : liftArith (ofNatChecked position) with
-        | error _ => rfl
-        | ok index =>
-          simp only [getElem?_toNat_eq_of_ofNatChecked (mapError_ok_iff.mp converted),
-            Array.getElem?_push_lt below, Array.getElem?_eq_getElem below]
-      | none =>
-        simp only [Option.none_or]
-        by_cases key : deposit.pubkey = pubkey
-        · simp [getValidatorFromDeposit, key, far, ofNatChecked_of_lt small, liftArith,
-            Except.mapError, bind, Except.bind, pure, Except.pure, Nat.mod_eq_of_lt small]
-        · simp [getValidatorFromDeposit, key]
-    · simp only [pure, Except.pure, Except.ok.injEq] at computed
-      subst computed
-      rfl
-  · simp only [liftAccessor_ok, bind_ok_iff] at computed
-    obtain ⟨_, _, computed⟩ := computed
-    simp only [depositTargetStatus, increaseBalance_validators computed]
+  rcases applyPendingDeposit_cases computed with rfl | ⟨_, _, raised⟩ | ⟨_, small, added⟩
+  · rfl
+  · simp only [depositTargetStatus, increaseBalance_validators raised]
+  · have pushed := addValidatorToRegistry_validators_eq_push added
+    -- The new validator has no exit before the far future, and no epoch passes the far future.
+    have far : ¬FAR_FUTURE_EPOCH < nextEpoch := by
+      rw [UInt64.lt_iff_toNat_lt]
+      have := nextEpoch.toNat_lt
+      have : FAR_FUTURE_EPOCH.toNat = 2 ^ 64 - 1 := rfl
+      omega
+    simp only [depositTargetStatus, pushed, Array.findIdx?_push]
+    cases found : state.validators.data.findIdx? (·.pubkey == pubkey) with
+    | some position =>
+      -- The validator found before keeps its position, below the new one.
+      obtain ⟨below, _⟩ := Array.findIdx?_eq_some_iff_getElem.mp found
+      simp only [Option.some_or, bind, Except.bind]
+      cases converted : liftArith (ofNatChecked position) with
+      | error _ => rfl
+      | ok index =>
+        simp only [getElem?_toNat_eq_of_ofNatChecked (mapError_ok_iff.mp converted),
+          Array.getElem?_push_lt below, Array.getElem?_eq_getElem below]
+    | none =>
+      simp only [Option.none_or]
+      by_cases key : deposit.pubkey = pubkey
+      · simp [getValidatorFromDeposit, key, far, ofNatChecked_of_lt small, liftArith,
+          Except.mapError, bind, Except.bind, pure, Except.pure, Nat.mod_eq_of_lt small]
+      · simp [getValidatorFromDeposit, key]
 
 /-- The status of a deposit target never fails on an index.
 
