@@ -989,6 +989,8 @@ For any other origin, an earlier up-to-date call checked a head above that origi
 
 There the rule found that the target of the epoch will be justified.
 
+That call was at the start of its slot, and the record keeps that time.
+
 Honest validators held the count of the rule for that target, with the margin.
 
 The origin is safe from that event to the later one.
@@ -1016,7 +1018,10 @@ def TargetChecked
       ((e.world k).state u).getHead config = .ok head ∧
       ((e.world k).state u).willCurrentTargetBeJustified config head.root = .ok true ∧
       ((e.world k).state u).isAncestor ⟨head.root, .pending⟩ ⟨origin, .pending⟩ = .ok true ∧
-      HonestTargetVotes e margin u k head.root) ∧
+      HonestTargetVotes e margin u k head.root ∧
+      ∃ slot begin, ((e.world k).state u).getCurrentSlot config = .ok slot ∧
+        computeTimeAtSlotMs config genesisTimeMs slot = .ok begin ∧
+        (e.world k).time = begin.toNat) ∧
     ∀ time, (e.world k).time ≤ time → time ≤ (e.world n).time → SafeAt e time origin
 
 variable {e : Execution (honestForkChoice config checks sources anchorState anchorBlock assignment
