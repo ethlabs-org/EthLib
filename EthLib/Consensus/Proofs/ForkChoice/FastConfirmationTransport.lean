@@ -1256,6 +1256,9 @@ theorem Execution.honest_support_of_historical_anchor {Δ : ℕ} (sync : e.Synch
         2 * total.toNat)
     (unslashed : ∀ w ∈ J, ∀ k (state : BeaconState preset fork),
       ((e.world k).state w).Counts config state → ∀ v ∈ J, NotSlashed state v)
+    (supply : ∀ w ∈ J, ∀ k (checkpoint : Checkpoint) (state : BeaconState preset fork),
+      ((e.world k).state w).checkpointState checkpoint = .ok state →
+      stake (fun v => balanceAt state v.toNat) (activeVoters state) ≤ stakeCapGwei)
     (safe : ∀ earlier, (e.world n).time ≤ earlier → earlier < time → SafeAt e earlier root)
     (rootOnHead : ((e.world n).state u).isAncestor ⟨head, .pending⟩ ⟨root, .pending⟩ = .ok true)
     {historical : Root} {callerEpoch historicalEpoch : Epoch} {epochStart : Slot}
