@@ -156,6 +156,70 @@ private theorem active_of_mem_committeeWindow {store : Store preset fork}
       simp only [UInt64.toNat_one] at afterNat
       omega
 
+/-- A successful total also bounds a subset, without requiring a bound on inactive balances. -/
+private theorem totalBalance_exists_of_subset {state : BeaconState preset fork}
+    {indices all : List ValidatorIndex} {total : Gwei}
+    (read : getTotalBalance state all = .ok total)
+    (subset : ∀ v ∈ indices, v ∈ all) :
+    ∃ result, getTotalBalance state indices = .ok result := by
+  obtain ⟨inside, bounded, -⟩ := getTotalBalance_ok_iff_stake.mp read
+  have small : stake (fun v => balanceAt state v.toNat) indices.toFinset < 2 ^ 64 :=
+    lt_of_le_of_lt (stake_mono fun v member =>
+      List.mem_toFinset.mpr (subset v (List.mem_toFinset.mp member))) bounded
+  -- The floor is itself a UInt64, so taking the maximum cannot introduce overflow.
+  let value := max preset.EFFECTIVE_BALANCE_INCREMENT.toNat
+    (stake (fun v => balanceAt state v.toNat) indices.toFinset)
+  have fits : value < 2 ^ 64 := max_lt preset.EFFECTIVE_BALANCE_INCREMENT.toNat_lt small
+  refine ⟨value.toUInt64, getTotalBalance_ok_iff_stake.mpr
+    ⟨fun v member => inside v (subset v member), small, ?_⟩⟩
+  exact UInt64.toNat_ofNat_of_lt' fits
+
+/-- Registry containment and an active total suffice for the non-full window's balance read. -/
+private theorem filteredTotal_exists {state : BeaconState preset fork}
+    {participants : Std.TreeSet ValidatorIndex} {total : Gwei}
+    (read : getTotalActiveBalance state = .ok total)
+    (inside : ∀ v ∈ participants, ∃ validator, validatorAt state v = .ok validator) :
+    ∃ active result,
+      participants.toList.filterM (fun index => do
+        return isActiveValidator (← validatorAt state index) (getCurrentEpoch state)) =
+        .ok active ∧ getTotalBalance state active = .ok result := by
+  obtain ⟨active, filtered⟩ := filterM_exists_ok (test := fun index => do
+    return isActiveValidator (← validatorAt state index) (getCurrentEpoch state))
+    (list := participants.toList) (fun v member => by
+      obtain ⟨validator, found⟩ := inside v (Std.TreeSet.mem_toList.mp member)
+      exact ⟨isActiveValidator validator (getCurrentEpoch state), by simp [found]⟩)
+  -- The filter passes only indices in the total's active set, even if they are slashed.
+  obtain ⟨result, resultOk⟩ := totalBalance_exists_of_subset
+    (indices := active) (getTotalActiveBalance_ok read) (fun v member => by
+      have passed := passes_of_mem_filterM_ok filtered member
+      simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at passed
+      obtain ⟨validator, found, isActive⟩ := passed
+      exact mem_getActiveValidatorIndices_of_isActiveAt
+        (isActiveAt_eq_true_iff.mpr ⟨validator, validatorAt_ok_iff.mp found, isActive⟩))
+  exact ⟨active, result, filtered, resultOk⟩
+
+/-- The rule maximum succeeds once its range arithmetic, registry reads and total succeed. -/
+private theorem maximum_exists_of_total {store : Store preset fork} {head : Root}
+    {state : BeaconState preset fork} {first last : Slot}
+    {participants : Std.TreeSet ValidatorIndex} {total : Gwei} {covered : Bool}
+    (coverage : isFullValidatorSetCovered preset first last = .ok covered)
+    (windowOk : store.getCommitteesBetweenSlots head first last = .ok participants)
+    (totalOk : getTotalActiveBalance state = .ok total)
+    (inside : ∀ v ∈ participants, ∃ validator, validatorAt state v = .ok validator) :
+    ∃ maximum, store.computeCommitteeWeightBetweenSlots head state first last = .ok maximum := by
+  by_cases empty : last < first
+  · exact ⟨0, Store.computeCommitteeWeightBetweenSlots_of_gt empty⟩
+  cases covered
+  · obtain ⟨active, result, filtered, resultOk⟩ := filteredTotal_exists totalOk inside
+    simp only [bind, Except.bind, pure, Except.pure] at filtered
+    exact ⟨result, by
+      simp only [Store.computeCommitteeWeightBetweenSlots, Store.computeCommitteeWeightAndMembers,
+        empty, ↓reduceIte, coverage, bind, Except.bind, Bool.false_eq_true, windowOk,
+        filtered, resultOk, Except.mapError, pure, Except.pure]⟩
+  · exact ⟨total, by
+      rw [Store.computeCommitteeWeightBetweenSlots_of_covered coverage]
+      rw [totalOk]; rfl⟩
+
 variable [DecidablePred (· ∈ J)]
 
 /-- Step 5, the initial transport: the bound of step 4 holds in each honest store at a later time.
