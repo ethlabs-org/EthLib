@@ -5196,6 +5196,27 @@ private theorem initialized_charges_le_window {x y : ForkedBeaconState preset}
   rw [Nat.mul_add]
   omega
 
+/-- Consolidation call sites retain distinct validator keys from the run's initial state. -/
+theorem consolidationSites_unique {x y : ForkedBeaconState preset}
+    (tail : Run config checks x y) (initial : uniqueKeys x.state)
+    (site : ForkedBeaconState preset) (member : site ∈ tail.consolidationSites) :
+    uniqueKeys site.state := by
+  induction tail with
+  | nil => simp [Run.consolidationSites] at member
+  | @snoc middle last pre step ih =>
+    rcases List.mem_append.mp member with previous | current
+    · exact ih previous
+    · cases step with
+      | slot ok => simp [Step.consolidationSites] at current
+      | @block fork before after engine signed due applied =>
+        unfold Step.consolidationSites at current
+        cases replay : blockConsolidationSites config checks engine before signed.message with
+        | error err => simp [replay, Except.toOption] at current
+        | ok sites =>
+          simp only [replay, Except.toOption, Option.getD_some] at current
+          obtain ⟨u, rfl, kept⟩ := blockConsolidationSites_prefix replay site current
+          exact kept.identity.unique (pre.unique initial)
+
 theorem consolidationSites_provenance {g x y : ForkedBeaconState preset}
     (shared : Run config checks g x) (tail : Run config checks x y)
     (genesis : Genesis (config := config) (checks := checks) g)
