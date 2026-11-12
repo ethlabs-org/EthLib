@@ -227,7 +227,6 @@ private theorem funding_execution_effective {fork : Fork} {s t : BeaconState pre
     · exact effectiveKept_data (congrArg (·.data) (payload ok))
     · cases ok; exact effectiveKept_refl _
 
-set_option maxHeartbeats 1600000 in
 private theorem funding_block_replay {fork : Fork} {s : BeaconState preset fork}
     (electra : .pectra ≤ fork) (early : fork < .glamsterdam)
     (matched : BalancesMatch s) (engine : ExecutionEngine preset fork)

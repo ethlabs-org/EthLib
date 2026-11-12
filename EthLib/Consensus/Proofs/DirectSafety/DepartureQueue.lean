@@ -2473,7 +2473,6 @@ private theorem switchToCompounding_coverage {fork : Fork} {s t : BeaconState pr
   cases Option.some.inj (before.symm.trans after)
   rfl
 
-set_option maxHeartbeats 800000 in
 /-- A request classified as not calling churn preserves both departure queues. -/
 theorem consolidationRequest_notCalled {fork : Fork} {s t : BeaconState preset fork}
     (electra : .pectra ≤ fork) {request : ConsolidationRequest}
@@ -2490,7 +2489,6 @@ theorem consolidationRequest_notCalled {fork : Fork} {s t : BeaconState preset f
     | exact switchToCompounding_departureQueues electra (liftAccessor_ok.mp ok)
     | (simp_all only [↓reduceIte, Bool.false_eq_true]; cases classified)
 
-set_option maxHeartbeats 800000 in
 /-- A consolidation request without a churn call assigns no exit epoch. -/
 theorem consolidationRequest_notCalled_coverage {fork : Fork} {s t : BeaconState preset fork}
     (electra : .pectra ≤ fork) {request : ConsolidationRequest}
@@ -4863,7 +4861,8 @@ private theorem consolidationRequestsSites_prefix {fork : Fork}
     rcases List.mem_append.mp member with first | tail
     · exact ⟨s, consolidationRequestSites_input recorded site first, .refl s⟩
     · obtain ⟨u, same, kept⟩ := ih replayed tail
-      exact ⟨u, same, (SitePrefix.mk (RegistryIdentity.processConsolidationRequest stepped)
+      exact ⟨u, same, (SitePrefix.mk
+        (frame_processConsolidationRequest stepped).toFrame.registryIdentity
         (stepKeeps_processConsolidationRequest stepped).2
         (effectiveKept_consolidationRequest stepped)).trans kept⟩
 
@@ -4883,12 +4882,12 @@ private theorem blockConsolidationSites_prefix {fork : Fork}
       votedAtt, votedAttOk, deposited, depositedOk, exited, exitedOk, changed, changedOk,
       requested, requestedOk, withdrawn, withdrawnOk, ⟨last, recorded⟩, replayed, rfl⟩ := ok
     have head : SitePrefix s headed := by
-      refine ⟨RegistryIdentity.processBlockHeader headedOk,
+      refine ⟨(frame_processBlockHeader headedOk).toFrame.registryIdentity,
         (stepKeeps_processBlockHeader headedOk).2, ?_⟩
       obtain ⟨_, _, rfl⟩ := processBlockHeader_eq headedOk
       exact effectiveKept_refl _
     have execution : SitePrefix headed executed := by
-      refine ⟨RegistryIdentity.processBlockExecution executedOk,
+      refine ⟨(frame_processBlockExecution executedOk).toFrame.registryIdentity,
         (stepKeeps_processBlockExecution executedOk).2, ?_⟩
       have notGloas : ¬ .glamsterdam ≤ fork := Nat.not_le_of_lt electra.2
       have capella : .shapella ≤ fork := Nat.le_trans (by decide) electra.1
@@ -4898,43 +4897,44 @@ private theorem blockConsolidationSites_prefix {fork : Fork}
       obtain ⟨_, _, _, rfl⟩ := processExecutionPayload_ok payload
       simpa only [EffectiveKept, effectiveAt] using effectiveKept_withdrawals withdrawn
     have randao : SitePrefix executed revealed := by
-      refine ⟨RegistryIdentity.processRandao revealedOk,
+      refine ⟨(frame_processRandao revealedOk).toFrame.registryIdentity,
         (stepKeeps_processRandao revealedOk).2, ?_⟩
       obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, rfl⟩ := processRandao_eq revealedOk
       exact effectiveKept_refl _
     have vote : SitePrefix revealed voted := by
-      refine ⟨RegistryIdentity.processEth1Data votedOk,
+      refine ⟨(frame_processEth1Data votedOk).toFrame.registryIdentity,
         (stepKeeps_processEth1Data votedOk).2, ?_⟩
       obtain ⟨_, _, rest⟩ := processEth1Data_eq votedOk
       exact effectiveKept_data (congrArg (·.validators.data) rest)
     have proposers : SitePrefix voted proposed := SitePrefix.fold
-      (fun _ _ _ h => ⟨RegistryIdentity.processProposerSlashing h,
+      (fun _ _ _ h => ⟨(frame_processProposerSlashing h).toFrame.registryIdentity,
         (stepKeeps_processProposerSlashing h).2, effectiveKept_proposerSlashing h⟩) proposedOk
     have attesters : SitePrefix proposed attested := SitePrefix.fold
-      (fun _ _ _ h => ⟨RegistryIdentity.processAttesterSlashing h,
+      (fun _ _ _ h => ⟨(frame_processAttesterSlashing h).toFrame.registryIdentity,
         (stepKeeps_processAttesterSlashing h).2, effectiveKept_attesterSlashing h⟩) attestedOk
     have attestations : SitePrefix attested votedAtt := SitePrefix.fold
-      (fun _ _ _ h => ⟨RegistryIdentity.processAttestation h,
+      (fun _ _ _ h => ⟨(frame_processAttestation h).registryIdentity,
         (stepKeeps_processAttestation h).2,
         effectiveKept_data (by rw [(processAttestation_registry h).1])⟩) votedAttOk
     have deposits : SitePrefix votedAtt deposited := SitePrefix.fold
-      (fun _ _ _ h => ⟨RegistryIdentity.processDeposit h,
+      (fun _ _ _ h => ⟨(frame_processDeposit h).toFrame.registryIdentity,
         (stepKeeps_processDeposit h).2, effectiveKept_processDeposit h⟩) depositedOk
     have exits : SitePrefix deposited exited := SitePrefix.fold
-      (fun _ _ _ h => ⟨RegistryIdentity.processVoluntaryExit h,
+      (fun _ _ _ h => ⟨(frame_processVoluntaryExit h).toFrame.registryIdentity,
         (stepKeeps_processVoluntaryExit h).2, effectiveKept_voluntaryExit h⟩) exitedOk
     have changes : SitePrefix exited changed := by
       unfold processBlsToExecutionChanges at changedOk
       split at changedOk
       · rw [← Array.foldlM_toList] at changedOk
-        exact SitePrefix.fold (fun _ _ _ h => ⟨RegistryIdentity.processBlsToExecutionChange h,
+        exact SitePrefix.fold (fun _ _ _ h =>
+          ⟨(frame_processBlsToExecutionChange h).toFrame.registryIdentity,
           (stepKeeps_processBlsToExecutionChange h).2, effectiveKept_blsChange h⟩) changedOk
       · cases changedOk; exact .refl _
     have requests : SitePrefix changed requested := SitePrefix.fold
-      (fun _ _ _ h => ⟨RegistryIdentity.processDepositRequest h,
+      (fun _ _ _ h => ⟨(frame_processDepositRequest h).toFrame.registryIdentity,
         (stepKeeps_processDepositRequest h).2, effectiveKept_depositRequest h⟩) requestedOk
     have withdrawals : SitePrefix requested withdrawn := SitePrefix.fold
-      (fun _ _ _ h => ⟨RegistryIdentity.processWithdrawalRequest h,
+      (fun _ _ _ h => ⟨(frame_processWithdrawalRequest h).toFrame.registryIdentity,
         (stepKeeps_processWithdrawalRequest h).2, effectiveKept_withdrawalRequest h⟩) withdrawnOk
     obtain ⟨u, same, kept⟩ := consolidationRequestsSites_prefix replayed site member
     exact ⟨u, same, head.trans (execution.trans (randao.trans (vote.trans (proposers.trans

@@ -118,7 +118,7 @@ theorem churnQueue_new_cohort_le
   have remainder := churnQueue_same_epoch_spend rest left finalLeft completed
   rcases boundary with same | small
   · have reset : earliest < max earliest first := by rw [← same]; exact newer
-    rw [if_pos reset, same, Nat.sub_self, Nat.zero_mul, Nat.add_zero] at spent
+    rw [ite_eq_left reset, same, Nat.sub_self, Nat.zero_mul, Nat.add_zero] at spent
     omega
   · omega
 
