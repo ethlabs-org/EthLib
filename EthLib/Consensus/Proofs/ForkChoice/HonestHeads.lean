@@ -439,6 +439,206 @@ theorem Execution.exists_getCheckpointBlock_of_held {anchor : Store preset fork}
     simp [Store.getCheckpointBlock, firstOk, walked, Except.mapError,
       bind, Except.bind, pure, Except.pure]⟩
 
+private theorem p6_update_cache (store : Store preset fork) (j f : Checkpoint) :
+    (store.updateCheckpoints j f).unrealizedJustifications = store.unrealizedJustifications ∧
+      (store.updateUnrealizedCheckpoints j f).unrealizedJustifications =
+        store.unrealizedJustifications := by
+  constructor
+  · unfold Store.updateCheckpoints
+    split <;> dsimp only <;> split <;> rfl
+  · unfold Store.updateUnrealizedCheckpoints
+    split <;> dsimp only <;> split <;> rfl
+
+private theorem p6_tick_cache {store after : Store preset fork} {time : UInt64}
+    (ticked : store.onTick config time = .ok after) :
+    after.unrealizedJustifications = store.unrealizedJustifications := by
+  have step : ∀ {store after : Store preset fork} {time : UInt64},
+      store.onTickPerSlot config time = .ok after →
+      after.unrealizedJustifications = store.unrealizedJustifications := by
+    intro store after time ticked
+    unfold Store.onTickPerSlot at ticked
+    simp only [bind_ok_iff] at ticked
+    obtain ⟨previous, _, current, _, ticked⟩ := ticked
+    split at ticked <;>
+      · obtain ⟨_, _, ticked⟩ := ticked
+        split at ticked <;> simp only [pure, Except.pure, Except.ok.injEq] at ticked <;>
+          subst after <;> try rfl
+        exact (p6_update_cache _ _ _).1
+  have catchup : ∀ {start after : Store preset fork} {slot : Slot},
+      Store.catchUp config start slot = .ok after →
+      after.unrealizedJustifications = start.unrealizedJustifications := by
+    intro start after slot caught
+    induction start using Store.catchUp.induct config slot with
+    | _ start ih =>
+      rw [Store.catchUp.eq_1] at caught
+      simp only [bind_ok_iff] at caught
+      obtain ⟨current, _, caught⟩ := caught
+      split at caught
+      · simp only [bind_ok_iff] at caught
+        obtain ⟨next, _, nextTime, _, ticked, tick, caught⟩ := caught
+        split at caught
+        · exact (ih ticked ‹_› caught).trans (step tick)
+        · cases caught
+      · cases Except.ok.inj caught
+        rfl
+  unfold Store.onTick at ticked
+  simp only [bind_ok_iff] at ticked
+  obtain ⟨slot, _, caught, caughtOk, ticked⟩ := ticked
+  exact (step ticked).trans (catchup caughtOk)
+
+private theorem p6_attestation_cache {store after : Store preset fork}
+    {attestation : Attestation preset fork} {fromBlock : Bool}
+    (attested : store.onAttestation config checks attestation fromBlock = .ok after) :
+    after.unrealizedJustifications = store.unrealizedJustifications := by
+  unfold Store.onAttestation at attested
+  simp only [bind_ok_iff] at attested
+  obtain ⟨_, _, cached, caching, _, _, _, _, _, _, _, _, attested⟩ := attested
+  have kept : cached.unrealizedJustifications = store.unrealizedJustifications := by
+    unfold Store.storeTargetCheckpointState at caching
+    split at caching
+    · cases Except.ok.inj caching
+      rfl
+    · simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at caching
+      obtain ⟨_, _, rfl⟩ := caching
+      rfl
+  split at attested
+  · cases Except.ok.inj attested
+    exact kept
+  · cases attested
+
+private theorem p6_pulled_cache {store after : Store preset fork} {root : Root}
+    (computed : store.computePulledUpTip config root = .ok after) :
+    ∃ state pulled, store.blockStates[root]? = some state ∧
+      processJustificationAndFinalization state = .ok pulled ∧
+      after.unrealizedJustifications =
+        store.unrealizedJustifications.insert root pulled.currentJustifiedCheckpoint := by
+  unfold Store.computePulledUpTip at computed
+  simp only [bind_ok_iff] at computed
+  obtain ⟨state, found, pulled, processed, block, _, epoch, _, computed⟩ := computed
+  refine ⟨state, pulled, Store.blockState_ok_iff.mp found, mapError_ok_iff.mp processed, ?_⟩
+  split at computed <;> simp only [pure, Except.pure, Except.ok.injEq] at computed <;>
+    subst after
+  · rw [(p6_update_cache _ _ _).1, (p6_update_cache _ _ _).2]
+  · exact (p6_update_cache _ _ _).2
+
+private theorem p6_block_cache {store after : Store preset fork}
+    {signed : SignedBeaconBlock preset fork}
+    (added : store.onBlock config checks sources signed = .ok after) :
+    after = store ∨ ∃ root state pulled,
+      store.blocks[root]? = none ∧
+      after.blocks = store.blocks.insert root signed.message ∧
+      after.blockStates[root]? = some state ∧ state.slot = signed.message.slot ∧
+      processJustificationAndFinalization state = .ok pulled ∧
+      after.unrealizedJustifications =
+        store.unrealizedJustifications.insert root pulled.currentJustifiedCheckpoint := by
+  rcases Store.onBlock_same_or_insert added with same |
+    ⟨root, hashed, fresh, blocks, pre, post, _, transitioned, states⟩
+  · exact .inl same
+  right
+  have unknown : ¬ store.blocks.contains root := by
+    simp [Std.TreeMap.contains_eq_isSome_getElem?, fresh]
+  simp only [Store.onBlock, hashed, unknown, bind, Except.bind, Except.mapError,
+    ↓reduceIte, Bool.false_eq_true] at added
+  unfold Store.addBlock at added
+  simp only [bind_ok_iff] at added
+  obtain ⟨state, _, head, _, voted, vote, recorded, record, boosted, boost, added⟩ := added
+  obtain ⟨_, _, rfl⟩ := Store.recordBlockPtcVotes_onlyPtcVotes vote
+  have recordedCache : recorded.unrealizedJustifications = store.unrealizedJustifications := by
+    unfold Store.recordBlockTimeliness at record
+    simp only [bind_ok_iff, pure, Except.pure] at record
+    obtain ⟨_, _, _, _, _, _, _, _, record⟩ := record
+    split at record
+    · simp only [bind_ok_iff, Except.ok.injEq] at record
+      obtain ⟨_, _, rfl⟩ := record
+      rfl
+    · cases record
+      rfl
+  have boostedCache : boosted.unrealizedJustifications = store.unrealizedJustifications := by
+    unfold Store.updateProposerBoostRoot at boost
+    split at boost
+    rotate_left
+    · simp [throw, throwThe, MonadExceptOf.throw, bind, Except.bind] at boost
+    simp only [bind_ok_iff, pure_bind] at boost
+    obtain ⟨_, _, _, _, _, _, boost⟩ := boost
+    split at boost <;> simp only [pure, Except.pure, Except.ok.injEq] at boost <;>
+      subst boosted <;> exact recordedCache
+  obtain ⟨cached, pulled, held, run, cache⟩ := p6_pulled_cache added
+  have heldAfter : after.blockStates[root]? = some cached := by
+    rwa [(Store.computePulledUpTip_frame added).2.2.1]
+  have postHeld : after.blockStates[root]? = some post := by
+    rw [states, getElem?_insert_root]
+    simp
+  have same : cached = post := Option.some.inj (heldAfter.symm.trans postHeld)
+  refine ⟨root, cached, pulled, fresh, blocks, heldAfter, ?_, run, ?_⟩
+  · rw [same]
+    exact (stateTransition_slot transitioned).2
+  · rw [(p6_update_cache _ _ _).1, boostedCache] at cache
+    exact cache
+
+private theorem p6_cache_of_held {store : Store preset fork}
+    (reachable : Store.Reachable config anchorState anchorBlock store)
+    (sound : Invariant anchorState) (anchorSlot : anchorBlock.slot = anchorState.slot)
+    (preGloas : fork < .glamsterdam) :
+    ∀ {root : Root} {block : BeaconBlock preset fork}, store.blocks[root]? = some block →
+      ∃ checkpoint, store.unrealizedJustifications[root]? = some checkpoint ∧
+        checkpoint.epoch ≤ computeEpochAtSlot preset block.slot := by
+  induction reachable with
+  | anchor made =>
+    unfold getForkchoiceStore at made
+    simp only [bind_ok_iff] at made
+    obtain ⟨stateRoot, _, made⟩ := made
+    split at made
+    · cases made
+    · simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at made
+      obtain ⟨root, _, time, _, rfl⟩ := made
+      intro key block found
+      rw [getElem?_insert_root] at found
+      split at found
+      · cases Option.some.inj found
+        refine ⟨⟨getCurrentEpoch anchorState, root⟩, ?_, ?_⟩
+        · rw [getElem?_insert_root]
+          simp [‹root = key›]
+        · rw [anchorSlot]
+          exact UInt64.le_refl _
+      · simp at found
+  | tick prior ticked ih =>
+    intro root block held
+    rw [(Store.onTick_frame ticked).2.2.1] at held
+    rw [p6_tick_cache ticked]
+    exact ih held
+  | @block before after c s signed prior added ih =>
+    rcases p6_block_cache added with rfl |
+      ⟨root, state, pulled, fresh, blocks, held, atSlot, run, cache⟩
+    · exact ih
+    intro key block found
+    rw [blocks, getElem?_insert_root] at found
+    rw [cache, getElem?_insert_root]
+    by_cases same : root = key
+    · simp only [same, ↓reduceIte, Option.some.injEq] at found
+      subst block
+      refine ⟨pulled.currentJustifiedCheckpoint, by simp [same], ?_⟩
+      have inv := ((prior.block added).ordered sound).2 held
+      have bound :=
+        (processJustificationAndFinalization_invariant inv.ordered inv.settled run).2.2.1
+      simpa only [getCurrentEpoch, atSlot] using bound
+    · simp only [same, ↓reduceIte] at found ⊢
+      exact ih found
+  | attestation prior attested ih =>
+    intro root block held
+    rw [(Store.onAttestation_frame attested).2.1] at held
+    rw [p6_attestation_cache attested]
+    exact ih held
+  | attesterSlashing prior slashed ih =>
+    unfold Store.onAttesterSlashing at slashed
+    simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at slashed
+    obtain ⟨_, _, rfl⟩ := slashed
+    exact ih
+  | payloadAttestation => exact False.elim (Nat.not_le_of_lt preGloas ‹.glamsterdam ≤ fork›)
+  | envelope => exact False.elim (Nat.not_le_of_lt preGloas ‹.glamsterdam ≤ fork›)
+  | inclusionList =>
+    exact False.elim (Nat.not_le_of_lt preGloas
+      (Nat.le_trans (by decide : Fork.glamsterdam ≤ Fork.hegota) ‹.hegota ≤ fork›))
+
 /-- An honest store reads its filtered block tree, up to a last time.
 
 Each leaf has a voting source, from the state or the unrealized justification of its block.
@@ -461,7 +661,145 @@ theorem Execution.exists_getFilteredNodeTree {anchor : Store preset fork}
       ((e.world k).state w).blocks[anchorBlock.parentRoot]? = none)
     {w : ValidatorIndex} (honest : w ∈ J) {k : ℕ} (bounded : (e.world k).time ≤ limit) :
     ∃ nodes, ((e.world k).state w).getFilteredNodeTree config = .ok nodes := by
-  sorry
+  classical
+  let store := (e.world k).state w
+  have forward : Store.ForwardReachable config anchorState anchorBlock store :=
+    e.forwardReachable (fun v hv => (start v hv) ▸ .anchor anchored) k w honest
+  have reachable := forward.reachable
+  obtain ⟨current, currentOk, blockBound, stateBound⟩ :=
+    forward.slots_le_current slots (UInt64.le_of_eq anchorSlot)
+  let epoch := computeEpochAtSlot preset current
+  have epochOk : store.getCurrentStoreEpoch config = .ok epoch := by
+    simp [Store.getCurrentStoreEpoch, currentOk, epoch, bind, Except.bind, pure, Except.pure]
+  have source : ∀ {root : Root} {block : BeaconBlock preset fork},
+      store.blocks[root]? = some block →
+      ∃ checkpoint, store.getVotingSource config root = .ok checkpoint ∧
+        checkpoint.epoch ≤ epoch := by
+    intro root block held
+    have blockEpoch : computeEpochAtSlot preset block.slot ≤ epoch := by
+      exact UInt64.le_iff_toNat_le.mpr
+        (Nat.div_le_div_right (UInt64.le_iff_toNat_le.mp (blockBound root block held)))
+    obtain ⟨state, stateOk, _, _⟩ := reachable.blockStatesFromParents held
+    by_cases earlier : computeEpochAtSlot preset block.slot < epoch
+    · obtain ⟨checkpoint, cached, bound⟩ :=
+        p6_cache_of_held reachable sound anchorSlot preGloas held
+      refine ⟨checkpoint, ?_, UInt64.le_trans bound blockEpoch⟩
+      simp [Store.getVotingSource, Store.block, held, epochOk, earlier, cached,
+        bind, Except.bind, pure, Except.pure]
+    · refine ⟨state.currentJustifiedCheckpoint, ?_, ?_⟩
+      · simp [Store.getVotingSource, Store.block, held, epochOk, earlier, stateOk,
+          bind, Except.bind, pure, Except.pure]
+      · exact UInt64.le_trans
+          (UInt64.le_trans ((reachable.ordered sound).2 stateOk).settled (getPreviousEpoch_le _))
+          (UInt64.le_iff_toNat_le.mpr
+            (Nat.div_le_div_right (UInt64.le_iff_toNat_le.mp (stateBound root state stateOk))))
+  have finalizedLe : store.finalizedCheckpoint.epoch ≤ epoch :=
+    UInt64.le_trans (reachable.ordered sound).1.1
+      (forward.justified_epoch_le_current sound slots (UInt64.le_of_eq anchorSlot) epochOk).1
+  have fits : store.finalizedCheckpoint.epoch.toNat * preset.SLOTS_PER_EPOCH.toNat <
+      2 ^ 64 := by
+    have le := Nat.mul_le_mul_right preset.SLOTS_PER_EPOCH.toNat
+      (UInt64.le_iff_toNat_le.mp finalizedLe)
+    exact Nat.lt_of_le_of_lt (le.trans (Nat.div_mul_le_self _ _)) current.toNat_lt
+  let boundary := store.finalizedCheckpoint.epoch * preset.SLOTS_PER_EPOCH
+  have boundaryOk : computeStartSlotAtEpoch preset store.finalizedCheckpoint.epoch =
+      .ok boundary := by
+    exact computeStartSlotAtEpoch_ok_iff.mpr ⟨fits,
+      by simp only [boundary, UInt64.toNat_mul, Nat.mod_eq_of_lt fits]⟩
+  have above : anchorBlock.slot ≤ boundary :=
+    e.anchorSlot_le_finalized_boundary anchored anchorSlot anchorAtBoundary
+      (start w honest) boundaryOk
+  have viable : ∀ {root : Root} {block : BeaconBlock preset fork},
+      store.blocks[root]? = some block → ∃ result,
+        store.isViableLeaf config ⟨root, .pending⟩ = .ok result := by
+    intro root block held
+    obtain ⟨checkpoint, sourceOk, sourceLe⟩ := source held
+    obtain ⟨finalizedRoot, finalizedOk⟩ := e.exists_getCheckpointBlock_of_held anchored start
+      anchorSlot preGloas anchorParent honest bounded held boundaryOk above
+    change store.getCheckpointBlock root store.finalizedCheckpoint.epoch = .ok finalizedRoot
+      at finalizedOk
+    have nextFits : checkpoint.epoch.toNat + 2 < 2 ^ 64 := by
+      have sourceNat := UInt64.le_iff_toNat_le.mp sourceLe
+      have longNat : 2 ≤ preset.SLOTS_PER_EPOCH.toNat := by
+        have := UInt64.lt_iff_toNat_lt.mp long
+        change 1 < preset.SLOTS_PER_EPOCH.toNat at this
+        omega
+      have half := Nat.div_le_div_left (a := current.toNat) longNat (by decide)
+      have currentFits := current.toNat_lt
+      change checkpoint.epoch.toNat ≤ current.toNat / preset.SLOTS_PER_EPOCH.toNat at sourceNat
+      omega
+    have nextOk := addChecked_of_lt (a := checkpoint.epoch) (b := 2) nextFits
+    unfold Store.isViableLeaf
+    rw [epochOk, sourceOk]
+    simp only [bind, Except.bind]
+    split
+    · simp only [pure, Except.pure, finalizedOk]
+      exact ⟨_, rfl⟩
+    · simp only [nextOk, Except.mapError, pure, Except.pure, finalizedOk]
+      exact ⟨_, rfl⟩
+  have parents := reachable.parentsBelow (UInt64.le_of_eq anchorSlot)
+    (anchorParent w honest k bounded)
+  have walk : ∀ (node : ForkChoiceNode) (block : BeaconBlock preset fork),
+      node.payloadStatus = .pending → store.blocks[node.root]? = some block →
+      ∃ nodes, store.filterNodeTree config node = .ok nodes := by
+    intro node
+    induction rank : store.nodeRank node using Nat.strong_induction_on generalizing node with
+    | _ n ih =>
+      intro block pending held
+      have later : ¬ .glamsterdam ≤ fork := Nat.not_le_of_lt preGloas
+      let children := (store.blocks.toList.filter fun (_, b) => b.parentRoot = node.root).map
+        fun (r, _) => (⟨r, .pending⟩ : ForkChoiceNode)
+      have childrenOk : store.getNodeChildren node = .ok children := by
+        simp [Store.getNodeChildren, later, children, pure, Except.pure]
+      rw [Store.filterNodeTree, childrenOk]
+      simp only [bind, Except.bind]
+      split
+      · obtain ⟨result, resultOk⟩ := viable held
+        have same : node = ⟨node.root, .pending⟩ := by cases node; simp_all
+        rw [← same] at resultOk
+        simp only [resultOk, pure, Except.pure]
+        exact ⟨_, rfl⟩
+      · have each : ∀ child ∈ children, ∃ below,
+            (if store.nodeRank child < store.nodeRank node then
+              store.filterNodeTree config child else
+              throw (.parentSlotNotLower child.root)) = .ok below := by
+          intro child member
+          obtain ⟨childPending, childBlock, childHeld, parent⟩ :=
+            (Store.mem_getNodeChildren preGloas childrenOk).mp member
+          have lowerSlot := parents _ _ _ childHeld (parent ▸ held)
+          have lower : store.nodeRank child < store.nodeRank node := by
+            simp only [Store.nodeRank, held, childHeld, pending, childPending, ↓reduceIte]
+            have := UInt64.lt_iff_toNat_lt.mp lowerSlot
+            have := block.slot.toNat_lt
+            have := childBlock.slot.toNat_lt
+            omega
+          obtain ⟨below, belowOk⟩ := ih _ (rank ▸ lower) child rfl childBlock childPending childHeld
+          exact ⟨below, by simp [lower, belowOk]⟩
+        have flat : ∀ xs : List ForkChoiceNode,
+            (∀ child ∈ xs, ∃ below,
+              (if store.nodeRank child < store.nodeRank node then
+                store.filterNodeTree config child else
+                throw (.parentSlotNotLower child.root)) = .ok below) →
+            ∃ below, xs.flatMapM (fun child =>
+              if store.nodeRank child < store.nodeRank node then
+                store.filterNodeTree config child else
+                throw (.parentSlotNotLower child.root)) = .ok below := by
+          intro xs all
+          induction xs with
+          | nil => exact ⟨[], rfl⟩
+          | cons x xs ih =>
+            obtain ⟨first, firstOk⟩ := all x (by simp)
+            obtain ⟨rest, restOk⟩ := ih (fun x hx => all x (by simp [hx]))
+            exact ⟨first ++ rest, by
+              rw [List.flatMapM_cons, firstOk]
+              simp [restOk, bind, Except.bind, pure, Except.pure]⟩
+        obtain ⟨below, belowOk⟩ := flat children each
+        simp only [dite_eq_ite]
+        rw [belowOk]
+        exact ⟨_, rfl⟩
+  obtain ⟨justified, justifiedOk⟩ := e.justifiedRoot_known anchored sound start anchorSlot
+    window preGloas nonzero honest bounded
+  exact walk _ justified rfl justifiedOk
 
 /-- The unslashed active balances sum to at most the cap when the registry indices fit. -/
 private theorem p7_unslashed_sum_le {state : BeaconState preset fork}
