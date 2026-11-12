@@ -499,6 +499,30 @@ Not yet released.
   The exports decode each transaction at its fork first, so their answers do not change.
   In Lean, `validateTransaction_eq_ok_iff` ends with the new conjunct `tx.fork ≤ fork`, and `checkInclusion_fork_le` derives it from a passing inclusion check.
   `processTransaction_nonce_lt` no longer takes the hypothesis `tx.fork ≤ fork`.
+- The write law of `EpochFrameLaws` keeps the slashed flag exactly.
+  Its field `setValidatorAt` said only that a set flag stays set.
+  So a relation that must also see that no flag appears could not be an instance of the law.
+  In Lean, the premise of `EpochFrameLaws.setValidatorAt` changes from `old.slashed = true → validator.slashed = true` to `validator.slashed = old.slashed`.
+  A caller of the law now supplies `validator.slashed = old.slashed` in place of the one-way form.
+  For a write that keeps the flag, `rfl` proves it.
+  An instance of the law now receives that equality and proves nothing more about the flag.
+  It derives the former hypothesis with `fun marked => flag.trans marked`.
+  No C export or Python function changes.
+- The slashed persistence of the transition steps now comes from their frames.
+  In Lean, 31 theorems of `EthLib.Consensus.SlashedPersistence` are removed.
+  They are `foldlM`, `advanceSlot`, `upgradeNext`, `processUpgrades`, `increaseBalance`, `decreaseBalance`, and the 25 others that carry the name of a `process` function of the transition.
+  A caller applies `SlashedPersistence.of_frame` to the frame lemma of the step, such as `frame_processBlock`, with `.toFrame` where that lemma gives an epoch or mutator frame.
+  For an upgrade it applies `SlashedPersistence.of_upgradeFrame` to `upgradeFrame_upgradeNext`.
+  `Step.slashedPersistence` and `Run.slashedPersistence` no longer take the argument `early : y.fork < .glamsterdam`.
+  Callers drop that argument, and the conclusions are unchanged.
+  No C export or Python function changes.
+- `EthLib.Consensus.DirectSafety.quorum_drift_from_run` is removed.
+  No declaration read it.
+  It took the arguments `caps`, `aligned` and `withdrawalDelay` and discarded them.
+  Its proof repeated the budgeting of the selected prefix and the handling of slashing evidence.
+  The private lemmas `selected_call_drift_le` and `accountable_pair_bound` of `DirectSafety.Safety` already do both.
+  No migration is needed, and no other statement changes.
+  No C export or Python function changes.
 
 ## 0.3.0
 
