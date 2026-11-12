@@ -462,6 +462,23 @@ private theorem activeTotal_of_justification {state after : BeaconState preset f
     obtain ⟨_, _, _, _, total, totalOk, _⟩ := run
     exact ⟨total, totalOk⟩
 
+/-- The cached anchor checkpoint remains exactly the anchor state, not an arbitrary lookahead. -/
+private theorem anchor_checkpointState {anchor : Store preset fork}
+    (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (start : ∀ w ∈ J, e.start w = anchor) (oneBlock : OneBlockPerRoot e)
+    {w : ValidatorIndex} (honest : w ∈ J) {k : Nat} {state : BeaconState preset fork}
+    (read : ((e.world k).state w).checkpointState anchor.justifiedCheckpoint = .ok state) :
+    state = anchorState := by
+  obtain ⟨root, rootOk, cached⟩ := getForkchoiceStore_checkpointStates anchored
+  obtain ⟨other, otherOk, _, _, justified, _, _, _⟩ := getForkchoiceStore_anchor anchored
+  have roots : other = root := Except.ok.inj (otherOk.symm.trans rootOk)
+  subst other
+  have initial : ((e.world 0).state w).checkpointStates[anchor.justifiedCheckpoint]? =
+      some anchorState := by
+    simp [Execution.world_zero, World.initial, start w honest, justified, cached]
+  exact e.checkpointStates_eq_of_oneBlock anchored start oneBlock honest honest
+    (Store.checkpointState_ok_iff.mp read) initial
+
 variable [DecidablePred (· ∈ J)]
 
 /-- Step 5, the initial transport: the bound of step 4 holds in each honest store at a later time.
