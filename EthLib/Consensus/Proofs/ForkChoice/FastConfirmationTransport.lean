@@ -125,6 +125,48 @@ private theorem latest_eq_of_rank_eq (slots : 0 < config.SLOT_DURATION_MS)
     signedFirst signedSecond honest epoch
   simp only [LatestMessage.ofAttestation, same]
 
+/-- An unchanged honest message keeps supporting its root in a receiver that counts its weight.
+
+Block agreement transfers the ancestor walk; no equality of balance states is needed. -/
+private theorem supporter_of_same_latest {anchor : Store preset fork}
+    (anchorStore : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (anchored : ∀ w ∈ J, e.start w = anchor) {limit : ℕ}
+    (oneBlock : OneBlockPerRoot e limit) (preGloas : fork < .glamsterdam)
+    {u w v : ValidatorIndex} (caller : u ∈ J) (receiver : w ∈ J)
+    {n k : ℕ} (callerBound : (e.world n).time ≤ limit)
+    (receiverBound : (e.world k).time ≤ limit)
+    {source state : BeaconState preset fork} {root : Root} {block : BeaconBlock preset fork}
+    (sourceKnown : ((e.world n).state u).blocks[root]? = some block)
+    (known : ((e.world k).state w).blocks[root]? = some block)
+    (aboveAnchor : anchorBlock.slot ≤ block.slot)
+    (supporter : v ∈ ((e.world n).state u).supportersOf source ⟨root, .pending⟩)
+    (sameLatest : ((e.world k).state w).latestMessages[v]? =
+      ((e.world n).state u).latestMessages[v]?)
+    (counted : v ∉ ((e.world k).state w).equivocatingIndices)
+    (active : v ∈ ((unslashedActiveBalances state).map (·.1)).toFinset) :
+    v ∈ ((e.world k).state w).supportersOf state ⟨root, .pending⟩ := by
+  obtain ⟨message, supported, latest, _, supportedOk, descends⟩ :=
+    Store.exists_of_voteCountsFor _ (Store.voteCountsFor_of_mem_supportersOf supporter)
+  have receiverLatest := sameLatest.trans latest
+  obtain ⟨attestation, _, _, same, _, origin⟩ :=
+    e.exists_signed_origin_of_latestMessages anchorStore anchored receiver receiverLatest
+  obtain ⟨tip, tipKnown, _⟩ := origin.voted
+  have rootEq := Store.getSupportedNode_root supportedOk
+  rw [same] at rootEq
+  have reachable := e.reachable
+    (fun w hw => (anchored w hw) ▸ Store.Reachable.anchor anchorStore) k w receiver
+  have transferred := Store.isAncestor_of_same_blocks reachable preGloas
+    (oneBlock u caller w receiver n k callerBound receiverBound) sourceKnown known aboveAnchor
+    ⟨tip, by simpa only [rootEq, LatestMessage.ofAttestation] using tipKnown⟩ descends
+  have counts : ((e.world k).state w).voteCountsFor ⟨root, .pending⟩ v = true := by
+    apply Store.voteCountsFor_of_check _ receiverLatest (by simpa using counted)
+    have supportedReceiver : ((e.world k).state w).getSupportedNode message = .ok supported := by
+      simpa only [Store.getSupportedNode_of_lt preGloas] using supportedOk
+    simpa only [supportedReceiver, bind, Except.bind] using transferred
+  obtain ⟨entry, member, rfl⟩ := List.mem_map.mp (List.mem_toFinset.mp active)
+  exact List.mem_toFinset.mpr (List.mem_map.mpr ⟨entry,
+    List.mem_filter.mpr ⟨member, counts⟩, rfl⟩)
+
 private theorem mem_insert_fold {v : ValidatorIndex}
     {items : List ValidatorIndex} {initial : Std.TreeSet ValidatorIndex} :
     v ∈ items.foldl (·.insert ·) initial ↔ v ∈ initial ∨ v ∈ items := by
@@ -1541,6 +1583,23 @@ theorem Execution.honest_support_of_historical_anchor {Δ : ℕ} (sync : e.Synch
       v ∈ ((unslashedActiveBalances state).map (·.1)).toFinset := by
     intro v member honest
     exact tallyActive_of_activeMember member (receiverUnslashed v honest)
+  have receiverReachable := e.reachable
+    (fun w hw => (anchored w hw) ▸ Store.Reachable.anchor anchorStore) k w receiver
+  have rootAboveAnchor := receiverReachable.anchorSlot_le_block known
+  have equalRankSupport : ∀ v ∈ oldSupporters, ∀ first second,
+      ((e.world n).state u).latestMessages[v]? = some first →
+      ((e.world k).state w).latestMessages[v]? = some second →
+      first.rank = second.rank →
+      v ∈ ((unslashedActiveBalances state).map (·.1)).toFinset →
+      v ∈ ((e.world k).state w).supportersOf state ⟨root, .pending⟩ := by
+    intro v member first second firstOk secondOk rank active
+    obtain ⟨supporter, honest⟩ := Finset.mem_filter.mp member
+    have same := latest_eq_of_rank_eq slots preGloas anchorStore anchored caller receiver honest
+      firstOk secondOk rank
+    exact supporter_of_same_latest anchorStore anchored oneBlock preGloas caller receiver later
+      (by omega) (Store.block_ok_iff.mp blockOk) known rootAboveAnchor supporter
+      (by rw [firstOk, secondOk, same])
+      (fun equivocated => weights.dishonest w receiver k (by omega) v equivocated honest) active
   sorry
 
 
