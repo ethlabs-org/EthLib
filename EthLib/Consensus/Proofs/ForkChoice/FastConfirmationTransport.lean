@@ -3773,9 +3773,9 @@ No honest validator is slashed in a state that an honest store counts, as `unsla
 
 The tally state of the receiver is a lookahead of a held state, and need not be a counting state.
 
-The chain of the parent of the block holds the root of the source checkpoint at its epoch, as `sourceBelow` says.
+The chain of the parent of the block holds the source checkpoint block, as `sourceBelow` says.
 
-The source stake that is active in the source and inactive in the tally state fits the exit reserve, as `exited` says.
+The source stake that is inactive in the tally state fits the exit reserve, as `exited` says.
 
 The window of the receiver is the committees of its head between the parent and its own slot.
 
@@ -3924,6 +3924,7 @@ theorem Execution.honest_support_of_historical_anchor {Δ : ℕ} (sync : e.Synch
         ⟨((e.world k).state w).justifiedCheckpoint.root, .pending⟩
         ⟨root, .pending⟩ = .ok true := by
   -- The last case uses the exit facts.
+  --
   -- As plain hypotheses they push this proof past the heartbeat limit, so they wait here.
   have exitFacts := PProd.mk exited sourceBelow
   clear exited sourceBelow
