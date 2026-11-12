@@ -2,9 +2,12 @@ module
 
 public import EthLib.Consensus.Proofs.Accessors
 public import EthLib.Consensus.Proofs.Accessors.Draw
+public import EthLib.Consensus.Proofs.Accessors.DrawProbability
+public import EthLib.Consensus.Proofs.Accessors.DrawRandomOracle
 public import EthLib.Consensus.Proofs.BuilderApi
 public import EthLib.Consensus.Proofs.Builders
 public import EthLib.Consensus.Proofs.Churn
+public import EthLib.Consensus.Proofs.ChurnReservations
 public import EthLib.Consensus.Proofs.DirectSafety.DepartureQueue
 public import EthLib.Consensus.Proofs.DirectSafety.FundingBlock
 public import EthLib.Consensus.Proofs.DirectSafety.FundingEpoch
@@ -96,6 +99,7 @@ public import EthLib.Consensus.Proofs.LightClient.Sync
 public import EthLib.Consensus.Proofs.LightClient.Unforgeable
 public import EthLib.Consensus.Proofs.LightClient.Upgrade
 public import EthLib.Consensus.Proofs.Models.Ffg.AccountableSafety
+public import EthLib.Consensus.Proofs.Models.Ffg.Monotonicity
 public import EthLib.Consensus.Proofs.Models.Ffg.PlausibleLiveness
 public import EthLib.Consensus.Proofs.Models.ForkChoice.HonestSupport
 public import EthLib.Consensus.Proofs.Models.ForkChoice.LmdGhost
@@ -138,6 +142,7 @@ public import EthLib.Consensus.Proofs.Transition.EpochUpdates
 public import EthLib.Consensus.Proofs.Transition.Execution
 public import EthLib.Consensus.Proofs.Transition.FfgFinality
 public import EthLib.Consensus.Proofs.Transition.FfgFinalityChain
+public import EthLib.Consensus.Proofs.Transition.FfgFinalityMonotonicity
 public import EthLib.Consensus.Proofs.Transition.FfgJustification
 public import EthLib.Consensus.Proofs.Transition.FfgRoots
 public import EthLib.Consensus.Proofs.Transition.FfgSlack
@@ -149,6 +154,7 @@ public import EthLib.Consensus.Proofs.Transition.ForkBoundary
 public import EthLib.Consensus.Proofs.Transition.Genesis
 public import EthLib.Consensus.Proofs.Transition.InactivityLeak
 public import EthLib.Consensus.Proofs.Transition.InactivityLeakBound
+public import EthLib.Consensus.Proofs.Transition.InactivityLeakEpoch
 public import EthLib.Consensus.Proofs.Transition.InactivityLeakStake
 public import EthLib.Consensus.Proofs.Transition.Invariants
 public import EthLib.Consensus.Proofs.Transition.MixesKept
@@ -178,10 +184,13 @@ public import EthLib.Consensus.Proofs.Transition.TargetSlots
 public import EthLib.Consensus.Proofs.Transition.TargetUpgrades
 public import EthLib.Consensus.Proofs.Transition.TargetVotes
 public import EthLib.Consensus.Proofs.Transition.Totality.Bound
+public import EthLib.Consensus.Proofs.Transition.Totality.BuilderPayments
+public import EthLib.Consensus.Proofs.Transition.Totality.Consolidations
 public import EthLib.Consensus.Proofs.Transition.Totality.EffectiveBalances
 public import EthLib.Consensus.Proofs.Transition.Totality.Genesis
 public import EthLib.Consensus.Proofs.Transition.Totality.Inactivity
 public import EthLib.Consensus.Proofs.Transition.Totality.Justification
+public import EthLib.Consensus.Proofs.Transition.Totality.Registry
 public import EthLib.Consensus.Proofs.Transition.Totality.Rewards
 public import EthLib.Consensus.Proofs.Transition.Totality.RewardsBeforeAltair
 public import EthLib.Consensus.Proofs.Transition.Totality.Slashings
