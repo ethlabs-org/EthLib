@@ -48,6 +48,7 @@ public import EthLib.Consensus.Proofs.ForkChoice.BlockAgreement
 public import EthLib.Consensus.Proofs.ForkChoice.BlockStates
 public import EthLib.Consensus.Proofs.ForkChoice.Checkpoints
 public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmation
+public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmationAccountable
 public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmationCheckpoints
 public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmationCommittees
 public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmationConfirmedRoot
