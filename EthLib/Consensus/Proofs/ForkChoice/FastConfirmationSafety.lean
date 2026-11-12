@@ -1028,6 +1028,40 @@ private theorem walk_checkpoint_ancestor {store : Store preset fork}
     exact .inr (Store.isAncestor_of_parent before found parentFound
       (lower root block parentBlock found parentFound) descends)
 
+/-- Pull-up justification preserves the stored block's checkpoint ancestry. -/
+private theorem walk_pulled_checkpoint_ancestor {store : Store preset fork}
+    (reachable : Store.Reachable config anchorState anchorBlock store)
+    (sound : Invariant anchorState) (before : fork < .glamsterdam)
+    (positive : 0 < preset.SLOTS_PER_EPOCH.toNat)
+    (window : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
+    (aligned : anchorBlock.slot ≤ anchorState.slot) (lower : store.ParentsBelow)
+    (nonzero : ∀ (root : Root) (block : BeaconBlock preset fork), store.blocks[root]? = some block →
+      block.stateRoot ≠ Vector.replicate 32 0)
+    (child : ∃ (root : Root) (block : BeaconBlock preset fork),
+      store.blocks[root]? = some block ∧ block ≠ anchorBlock)
+    {root : Root} {state pulled : BeaconState preset fork}
+    (stored : store.blockStates[root]? = some state)
+    (computed : processJustificationAndFinalization state = .ok pulled) :
+    CheckpointsSatisfy (fun checkpoint => checkpoint.epoch ≤ getCurrentEpoch anchorState ∨
+      store.isAncestor ⟨root, .pending⟩ ⟨checkpoint.root, .pending⟩ = .ok true) pulled := by
+  apply (walk_checkpoint_ancestor reachable sound before positive window aligned lower nonzero
+    child stored).processJustification ?_ computed
+  intro checkpoint recent read
+  by_cases old : checkpoint.epoch ≤ getCurrentEpoch anchorState
+  · exact .inl old
+  obtain ⟨start, startOk, read⟩ := getBlockRoot_ok_iff.mp read
+  have later : anchorState.slot ≤ start := by
+    have epochLt := UInt64.lt_iff_toNat_lt.mp (UInt64.not_le.mp old)
+    rw [getCurrentEpoch_toNat] at epochLt
+    have next := (Nat.div_lt_iff_lt_mul positive).mp epochLt
+    have eq := (Base.Uint64.mulChecked_ok_iff.mp startOk).2
+    exact UInt64.le_iff_toNat_le.mpr (by omega)
+  have path := reachable.blockState_history_ancestor aligned nonzero stored read later .pending
+  have checkpointRead : store.getCheckpointBlock root checkpoint.epoch = .ok checkpoint.root := by
+    simpa [Store.getCheckpointBlock, startOk, Except.mapError, bind, Except.bind,
+      Functor.map, Except.map, pure, Except.pure] using path
+  exact .inr (Store.isAncestor_of_getCheckpointBlock before checkpointRead).choose_spec.choose_spec.2.2.2
+
 /-- A two-epoch advance contains a complete epoch, with representable boundaries. -/
 private theorem walk_complete_of_epoch_gap {slot current : Slot} {begin endpoint : UInt64}
     (positive : 0 < preset.SLOTS_PER_EPOCH.toNat)
