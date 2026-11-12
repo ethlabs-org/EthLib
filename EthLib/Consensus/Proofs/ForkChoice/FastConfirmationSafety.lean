@@ -1465,6 +1465,158 @@ private theorem call_slots_order {Δ : ℕ} (fits : DelayFits fork config genesi
     e.monotone_time (Nat.le_of_not_gt notBefore)
   omega
 
+omit [DecidablePred (· ∈ J)] in
+/-- A representable slot start supplies the start time of its epoch. -/
+private theorem call_epoch_start {slot : Slot} {begin : UInt64}
+    (positive : 0 < preset.SLOTS_PER_EPOCH)
+    (beginOk : computeTimeAtSlotMs config genesisTimeMs slot = .ok begin) :
+    ∃ epochStart epochStartTime,
+      computeStartSlotAtEpoch preset (computeEpochAtSlot preset slot) = .ok epochStart ∧
+      computeTimeAtSlotMs config genesisTimeMs epochStart = .ok epochStartTime := by
+  have boundary := computeStartSlotAtEpoch_computeEpochAtSlot (preset := preset) slot
+  have le := (computeStartSlotAtEpoch_le_lt positive boundary).1
+  obtain ⟨time, timeOk, _⟩ := exists_timeAtSlotMs_of_le
+    (UInt64.le_iff_toNat_le.mpr le) beginOk
+  exact ⟨_, time, boundary, timeOk⟩
+
+omit [DecidablePred (· ∈ J)] in
+/-- The anchor root satisfies all three call-history clauses. -/
+private theorem Execution.callInvariant_anchor {anchor : Store preset fork}
+    (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (start : ∀ w ∈ J, e.start w = anchor)
+    (positive : 0 < preset.SLOTS_PER_EPOCH) {u : ValidatorIndex} (caller : u ∈ J)
+    {n : ℕ} {slot : Slot} {begin : UInt64}
+    (slotOk : ((e.world n).state u).getCurrentSlot config = .ok slot)
+    (beginOk : computeTimeAtSlotMs config genesisTimeMs slot = .ok begin)
+    {margin limit : ℕ} :
+    CallInvariant e margin limit anchor.finalizedCheckpoint.root u n
+      anchor.finalizedCheckpoint.root := by
+  have safe := e.safeAt_anchor anchored start
+  have self {epoch : Epoch}
+      (rootOk : ((e.world n).state u).getBlockEpoch anchor.finalizedCheckpoint.root = .ok epoch) :
+      ((e.world n).state u).isAncestor ⟨anchor.finalizedCheckpoint.root, .pending⟩
+        ⟨anchor.finalizedCheckpoint.root, .pending⟩ = .ok true := by
+    unfold Store.getBlockEpoch at rootOk
+    obtain ⟨block, found, _⟩ := bind_ok_iff.mp rootOk
+    exact e.isAncestor_anchor_of_known anchored start caller (Store.block_ok_iff.mp found)
+  refine ⟨fun _ _ _ _ _ _ time _ _ => safe time, ?_, ?_⟩
+  · intro epoch rootEpoch epochOk rootOk recent
+    have epochEq : epoch = computeEpochAtSlot preset slot := by
+      simpa [Store.getCurrentStoreEpoch, slotOk, bind, Except.bind, pure, Except.pure]
+        using epochOk.symm
+    obtain ⟨epochStart, time, boundary, timeOk⟩ := call_epoch_start positive beginOk
+    refine ⟨anchor.finalizedCheckpoint.root, rootEpoch, epochStart, time,
+      self rootOk, rootOk, recent, ?_, timeOk, fun t _ _ => safe t⟩
+    simpa only [epochEq] using boundary
+  · intro epoch _ rootOk
+    exact ⟨n, le_rfl, anchor.finalizedCheckpoint.root, rootOk, self rootOk,
+      Or.inl rfl, fun t _ _ => safe t⟩
+
+omit [DecidablePred (· ∈ J)] in
+/-- A reset to a nonanchor finalized block has no recent-history obligations. -/
+private theorem callInvariant_old_finalized {u : ValidatorIndex} {n : ℕ}
+    {anchorRoot root : Root} {margin limit Δ : ℕ} {slot : Slot} {begin : UInt64}
+    (fits : DelayFits fork config genesisTimeMs Δ)
+    (slotOk : ((e.world n).state u).getCurrentSlot config = .ok slot)
+    (beginOk : computeTimeAtSlotMs config genesisTimeMs slot = .ok begin)
+    (atSlot : (e.world n).time = begin.toNat)
+    (safe : ∀ time, (e.world n).time + Δ ≤ time → time ≤ limit → SafeAt e time root)
+    (old : ∀ epoch, ((e.world n).state u).getCurrentStoreEpoch config = .ok epoch →
+      ∃ rootEpoch, ((e.world n).state u).getBlockEpoch root = .ok rootEpoch ∧
+        rootEpoch.toNat + 2 ≤ epoch.toNat) :
+    CallInvariant e margin limit anchorRoot u n root := by
+  refine ⟨?_, ?_, ?_⟩
+  · intro readSlot next following readSlotOk nextOk followingOk time afterNext bounded
+    have same : readSlot = slot := Except.ok.inj (readSlotOk.symm.trans slotOk)
+    subst readSlot
+    exact safe time (Nat.le_of_lt
+      (fits.call_before_next_slot nextOk beginOk followingOk atSlot afterNext)) bounded
+  · intro epoch rootEpoch epochOk rootOk recent
+    obtain ⟨other, otherOk, age⟩ := old epoch epochOk
+    have same : other = rootEpoch := Except.ok.inj (otherOk.symm.trans rootOk)
+    subst other
+    omega
+  · intro epoch epochOk rootOk
+    obtain ⟨other, otherOk, age⟩ := old epoch epochOk
+    have same : other = epoch := Except.ok.inj (otherOk.symm.trans rootOk)
+    subst other
+    omega
+
+omit [DecidablePred (· ∈ J)] in
+/-- Within one epoch, a carried root keeps its historical anchor and target origin. -/
+private theorem Execution.callInvariant_carried_inside
+    {u : ValidatorIndex} {m n : ℕ} {root anchorRoot : Root} {margin limit : ℕ}
+    (later : m ≤ n) (previous : CallInvariant e margin limit anchorRoot u m root)
+    (sameEpoch : ∀ epoch, ((e.world n).state u).getCurrentStoreEpoch config = .ok epoch →
+      ((e.world m).state u).getCurrentStoreEpoch config = .ok epoch)
+    (knownBefore : ∃ epoch, ((e.world m).state u).getBlockEpoch root = .ok epoch)
+    (safe : ∀ time, (e.world n).time ≤ time → time ≤ limit → SafeAt e time root)
+    {Δ : ℕ} (fits : DelayFits fork config genesisTimeMs Δ)
+    {slot : Slot} {begin : UInt64}
+    (slotOk : ((e.world n).state u).getCurrentSlot config = .ok slot)
+    (beginOk : computeTimeAtSlotMs config genesisTimeMs slot = .ok begin)
+    (atSlot : (e.world n).time = begin.toNat) :
+    CallInvariant e margin limit anchorRoot u n root := by
+  have readBefore {epoch : Epoch}
+      (read : ((e.world n).state u).getBlockEpoch root = .ok epoch) :
+      ((e.world m).state u).getBlockEpoch root = .ok epoch := by
+    obtain ⟨old, oldOk⟩ := knownBefore
+    have same : old = epoch := Except.ok.inj ((e.getBlockEpoch_of_le later oldOk).symm.trans read)
+    exact same ▸ oldOk
+  refine ⟨?_, ?_, ?_⟩
+  · intro readSlot next following readSlotOk nextOk followingOk time afterNext bounded
+    have same : readSlot = slot := Except.ok.inj (readSlotOk.symm.trans slotOk)
+    subst readSlot
+    have late := fits.call_before_next_slot nextOk beginOk followingOk atSlot afterNext
+    exact safe time (by omega) bounded
+  · intro epoch rootEpoch epochOk rootOk recent
+    obtain ⟨historical, historicalEpoch, epochStart, time, below, historicalOk,
+      age, boundary, timeOk, historicalSafe⟩ :=
+      previous.2.1 epoch rootEpoch (sameEpoch epoch epochOk) (readBefore rootOk) recent
+    exact ⟨historical, historicalEpoch, epochStart, time,
+      e.isAncestor_of_le later below, e.getBlockEpoch_of_le later historicalOk,
+      age, boundary, timeOk, historicalSafe⟩
+  · intro epoch epochOk rootOk
+    obtain ⟨k, before, origin, originOk, below, checked, originSafe⟩ :=
+      previous.2.2 epoch (sameEpoch epoch epochOk) (readBefore rootOk)
+    exact ⟨k, before.trans later, origin, e.getBlockEpoch_of_le later originOk,
+      e.isAncestor_of_le later below, checked, originSafe⟩
+
+omit [DecidablePred (· ∈ J)] in
+/-- At an epoch boundary an older safe root is its own historical anchor. -/
+private theorem callInvariant_boundary {u : ValidatorIndex} {n : ℕ}
+    {root anchorRoot : Root} {margin limit : ℕ} {slot : Slot} {begin : UInt64}
+    (slotOk : ((e.world n).state u).getCurrentSlot config = .ok slot)
+    (beginOk : computeTimeAtSlotMs config genesisTimeMs slot = .ok begin)
+    (boundary : computeStartSlotAtEpoch preset (computeEpochAtSlot preset slot) = .ok slot)
+    (atSlot : (e.world n).time = begin.toNat)
+    (safe : ∀ time, (e.world n).time ≤ time → time ≤ limit → SafeAt e time root)
+    (old : ((e.world n).state u).getBlockEpoch root ≠ .ok (computeEpochAtSlot preset slot))
+    {Δ : ℕ} (fits : DelayFits fork config genesisTimeMs Δ) :
+    CallInvariant e margin limit anchorRoot u n root := by
+  have epochSame {epoch : Epoch}
+      (epochOk : ((e.world n).state u).getCurrentStoreEpoch config = .ok epoch) :
+      epoch = computeEpochAtSlot preset slot := by
+    simpa [Store.getCurrentStoreEpoch, slotOk, bind, Except.bind, pure, Except.pure]
+      using epochOk.symm
+  refine ⟨?_, ?_, ?_⟩
+  · intro readSlot next following readSlotOk nextOk followingOk time afterNext bounded
+    have same : readSlot = slot := Except.ok.inj (readSlotOk.symm.trans slotOk)
+    subst readSlot
+    have late := fits.call_before_next_slot nextOk beginOk followingOk atSlot afterNext
+    exact safe time (by omega) bounded
+  · intro epoch rootEpoch epochOk rootOk recent
+    have known := rootOk
+    unfold Store.getBlockEpoch at known
+    obtain ⟨block, found, _⟩ := bind_ok_iff.mp known
+    refine ⟨root, rootEpoch, slot, begin,
+      Store.isAncestor_self (Store.block_ok_iff.mp found), rootOk, recent,
+      (epochSame epochOk) ▸ boundary, beginOk, ?_⟩
+    intro time afterBegin bounded
+    exact safe time (atSlot ▸ afterBegin) bounded
+  · intro epoch epochOk rootOk
+    exact False.elim (old ((epochSame epochOk) ▸ rootOk))
+
 /-- Step 8, one call: the block that a call stores keeps `CallInvariant`.
 
 Each earlier call of the run keeps it, which is the induction hypothesis.
