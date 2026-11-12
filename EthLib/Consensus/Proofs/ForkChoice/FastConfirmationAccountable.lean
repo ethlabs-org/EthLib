@@ -469,6 +469,7 @@ theorem Execution.oneJustifiedPerEpoch_or_fault {anchor : Store preset fork}
       e.HashFault history limit := by
   sorry
 
+omit [DecidablePred (· ∈ J)] in
 /-- Honest stores agree on the block at each shared root, or two held states show a hash fault.
 
 It reads two equal block roots through `DirectSafety.block_binding`, before Gloas. -/
@@ -487,7 +488,65 @@ theorem Execution.oneBlockPerRoot_or_fault {anchor : Store preset fork}
     (inHorizon : ∀ w ∈ J, ∀ k epoch, (e.world k).time ≤ limit →
       ((e.world k).state w).getCurrentStoreEpoch config = .ok epoch → epoch ≤ horizon) :
     OneBlockPerRoot e limit ∨ e.HashFault history limit := by
-  sorry
+  classical
+  -- Select the actual block input, except for the anchor, which is supplied separately.
+  have select {w : ValidatorIndex} (honest : w ∈ J) {k : ℕ}
+      (bounded : (e.world k).time ≤ limit) {root : Root} {block : BeaconBlock preset fork}
+      (found : ((e.world k).state w).blocks[root]? = some block) :
+      ∃ (state : BeaconState preset fork)
+        (run : Run config checks ⟨fork, anchorState⟩ ⟨fork, state⟩),
+        ((e.world k).state w).blockStates[root]? = some state ∧
+        HashObject.block fork block ∈
+          (history.append run).hashObjects ++ [HashObject.block fork anchorBlock] := by
+    have reached := e.reachable
+      (fun v hv => (start v hv) ▸ Store.Reachable.anchor anchored) k w honest
+    obtain ⟨state, stored, initial, -⟩ := reached.blockStatesFromParents found
+    by_cases same : block = anchorBlock
+    · have equal := initial same
+      subst state
+      exact ⟨anchorState, .nil, stored, List.mem_append_right _ (by simp [same])⟩
+    · obtain ⟨parent, signed, message, parentFound, transitioned⟩ :=
+        e.exists_transition_of_nonanchor_block anchored honest (start w honest) found stored same
+      have before := e.heldBlocks_before_nextFork anchored start anchorSlot slots epochSlots
+        inHorizon forkWindow.2 honest bounded
+      obtain ⟨pre⟩ := e.exists_run_of_blockState anchored honest (start w honest) before parentFound
+      have across : stateTransitionAcross config checks sources.engine ⟨fork, parent⟩ signed true =
+          .ok state := by
+        rw [stateTransitionAcross_of_before (by simpa only [message] using before root block found)]
+        exact transitioned
+      obtain ⟨advanced, slotRun, due, applied, -, -, -⟩ :=
+        Run.stateTransition sources.engine signed across
+      refine ⟨state, pre.append (slotRun.snoc (.block sources.engine signed due applied)),
+        stored, List.mem_append_left _ ?_⟩
+      apply List.mem_append_right
+      unfold Step.hashObjects
+      simp [message]
+  by_cases fault : e.HashFault history limit
+  · exact .inr fault
+  left
+  intro v honestV u honestU n k boundedN boundedK root a b foundA foundB
+  obtain ⟨stateA, left, storedA, memberA⟩ := select honestV boundedN foundA
+  obtain ⟨stateB, right, storedB, memberB⟩ := select honestU boundedK foundB
+  have reachedA := e.reachable
+    (fun w hw => (start w hw) ▸ Store.Reachable.anchor anchored) n v honestV
+  have reachedB := e.reachable
+    (fun w hw => (start w hw) ▸ Store.Reachable.anchor anchored) k u honestU
+  let objects := (history.append left).hashObjects ++ (history.append right).hashObjects ++
+    (TerminalView.realized (a := ⟨fork, stateA⟩)).hashObjects ++
+    (TerminalView.realized (a := ⟨fork, stateB⟩)).hashObjects ++
+    (blockHeader anchorBlock).toList.map HashObject.header ++ [HashObject.block fork anchorBlock]
+  have one : HashObject.block fork a ∈ objects := by
+    simp only [objects, List.mem_append, List.mem_singleton] at memberA ⊢
+    tauto
+  have two : HashObject.block fork b ∈ objects := by
+    simp only [objects, List.mem_append, List.mem_singleton] at memberB ⊢
+    tauto
+  rcases DirectSafety.block_binding forkWindow.1 objects a b one two root
+      (reachedA.root foundA) (reachedB.root foundB) with same | evidence
+  · exact same
+  · exact (fault ⟨stateA, stateB, left, right, .realized, .realized,
+      ⟨v, honestV, n, root, boundedN, storedA⟩,
+      ⟨u, honestU, k, root, boundedK, storedB⟩, evidence⟩).elim
 
 omit [DecidablePred (· ∈ J)] in
 /-- Each block of an honest store has a nonzero state root, or a held state shows a hash fault.
