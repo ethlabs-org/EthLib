@@ -452,6 +452,13 @@ private theorem enough_slot {state after : BeaconState preset fork}
     rw [active_weight_eq_stake early cachedUnique, balances.2.2.2.2.1]
     simpa only [balances.2.2.2.2.2.2] using large
 
+private theorem headers_append {g a b : ForkedBeaconState preset}
+    (pre : Run config checks g a) (tail : Run config checks a b) :
+    (pre.append tail).headers = pre.headers ++ tail.headers := by
+  induction tail with
+  | nil => simp [Run.append, Run.headers]
+  | snoc tail step ih => simp only [Run.append, Run.headers, ih, List.append_assoc]
+
 private theorem run_enough_of_advanceSlots (count : ℕ)
     {state after : BeaconState preset fork}
     (early : fork < .glamsterdam) (unique : uniqueKeys state)
@@ -462,11 +469,12 @@ private theorem run_enough_of_advanceSlots (count : ℕ)
       advanceSlots config checks i state = .ok current →
       3 * preset.EFFECTIVE_BALANCE_INCREMENT.toNat <
         2 * stake (fun v => balanceAt current v.toNat) (activeVoters current)) :
-    ∃ run : Run config checks ⟨fork, state⟩ ⟨fork, after⟩, EnoughStake run := by
+    ∃ run : Run config checks ⟨fork, state⟩ ⟨fork, after⟩,
+      EnoughStake run ∧ run.headers = [] := by
   induction count generalizing state with
   | zero =>
     cases advanced
-    refine ⟨.nil, ?_⟩
+    refine ⟨.nil, ?_, rfl⟩
     rintro ⟨_, _, _, member, _⟩
     cases member
   | succ count ih =>
@@ -478,11 +486,12 @@ private theorem run_enough_of_advanceSlots (count : ℕ)
         have := before nextFork scheduled
         omega), stepped]
       rfl
-    obtain ⟨tail, enough⟩ := ih ((Run.nil.snoc (.slot across)).unique unique) rest
+    obtain ⟨tail, enough, empty⟩ := ih ((Run.nil.snoc (.slot across)).unique unique) rest
       (fun i current small run => large (i + 1) current (by omega)
         (by simp only [advanceSlots, stepped, bind, Except.bind]; exact run))
-    exact ⟨(Run.nil.snoc (.slot across)).append tail,
-      enough_append (enough_slot early unique across (large 0 state (by omega) rfl)) enough⟩
+    refine ⟨(Run.nil.snoc (.slot across)).append tail,
+      enough_append (enough_slot early unique across (large 0 state (by omega) rfl)) enough, ?_⟩
+    simp [headers_append, Run.headers, Step.headers, empty]
 
 private theorem counts_epoch_le_current {store : Store preset fork}
     (forward : Store.ForwardReachable config anchorState anchorBlock store)
@@ -506,6 +515,7 @@ omit [DecidablePred (· ∈ J)] in
 private theorem run_enough_of_blockState {anchor : Store preset fork}
     (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
     (unique : uniqueKeys anchorState) (early : fork < .glamsterdam)
+    (anchorSlot : anchorBlock.slot = anchorState.slot)
     {w : ValidatorIndex} (honest : w ∈ J) (start : e.start w = anchor) {k : ℕ}
     (before : ∀ (root : Root) (block : BeaconBlock preset fork),
       ((e.world k).state w).blocks[root]? = some block →
@@ -516,7 +526,12 @@ private theorem run_enough_of_blockState {anchor : Store preset fork}
         2 * stake (fun v => balanceAt state v.toNat) (activeVoters state))
     {root : Root} {state : BeaconState preset fork}
     (stored : ((e.world k).state w).blockStates[root]? = some state) :
-    ∃ run : Run config checks ⟨fork, anchorState⟩ ⟨fork, state⟩, EnoughStake run := by
+    ∃ run : Run config checks ⟨fork, anchorState⟩ ⟨fork, state⟩, EnoughStake run ∧
+      ∀ epoch boundary, computeStartSlotAtEpoch preset epoch = .ok boundary →
+        anchorBlock.slot ≤ boundary →
+        ((e.world k).state w).getCheckpointBlock root epoch =
+          ((run.checkpointPath epoch).getLast?.map SszType.hashTreeRoot |>.getD
+            (SszType.hashTreeRoot anchorBlock)).mapError ForkChoiceError.ssz := by
   have reachable : ∀ n, Store.Reachable config anchorState anchorBlock ((e.world n).state w) := by
     intro n
     induction n with
@@ -533,13 +548,19 @@ private theorem run_enough_of_blockState {anchor : Store preset fork}
   · obtain ⟨post, postOk, initial, -⟩ := (reachable k).blockStatesFromParents found
     have equal : post = state := Option.some.inj (postOk.symm.trans stored)
     rw [← equal, initial same]
-    refine ⟨.nil, ?_⟩
-    rintro ⟨_, _, _, member, _⟩
-    cases member
+    refine ⟨.nil, ?_, ?_⟩
+    · rintro ⟨_, _, _, member, _⟩
+      cases member
+    · intro epoch boundary boundaryOk above
+      have hashed := same ▸ (reachable k).root found
+      simp [Run.checkpointPath, Run.headers, Store.getCheckpointBlock, boundaryOk,
+        Store.getAncestor_of_le (node := ⟨root, .pending⟩) found (same ▸ above),
+        hashed, Except.mapError, bind, Except.bind, pure, Except.pure]
   · obtain ⟨parent, signed, message, parentFound, transitioned⟩ :=
       e.exists_transition_of_nonanchor_block anchored honest start found stored same
-    obtain ⟨pre, preEnough⟩ :=
-      run_enough_of_blockState anchored unique early honest start before large parentFound
+    obtain ⟨pre, preEnough, preReads⟩ :=
+      run_enough_of_blockState anchored unique early anchorSlot honest start before large
+        parentFound
     have across : stateTransitionAcross config checks sources.engine ⟨fork, parent⟩ signed true =
         .ok state := by
       rw [stateTransitionAcross_of_before (by simpa only [message] using before root block found)]
@@ -559,7 +580,7 @@ private theorem run_enough_of_blockState {anchor : Store preset fork}
     have slotRuns := slotsOk
     simp only [processSlots, bind_ok_iff, ensure_ok_iff] at slotRuns
     obtain ⟨_, _, advancedSlots⟩ := slotRuns
-    obtain ⟨tail, tailEnough⟩ := run_enough_of_advanceSlots _ early (pre.unique unique)
+    obtain ⟨tail, tailEnough, tailEmpty⟩ := run_enough_of_advanceSlots _ early (pre.unique unique)
       advancedSlots (by simpa only [lastSlot, message] using before root block found) (by
         intro i current small reached
         apply large current
@@ -579,15 +600,48 @@ private theorem run_enough_of_blockState {anchor : Store preset fork}
             have count : current.slot.toNat - parent.slot.toNat = i := by omega
             rw [count]
             exact reached)
-    refine ⟨pre.append (tail.snoc (.block sources.engine signed due applied)), ?_⟩
-    apply enough_append preEnough
-    intro call
-    rcases call with ⟨before, after, advanced, member, boundary, cached, weighed,
-      cachedOk, weighedOk, later⟩
-    cases member with
-    | earlier member =>
-      exact tailEnough ⟨before, after, advanced, member, boundary, cached, weighed,
+    refine ⟨pre.append (tail.snoc (.block sources.engine signed due applied)), ?_, ?_⟩
+    · apply enough_append preEnough
+      intro call
+      rcases call with ⟨before, after, advanced, member, boundary, cached, weighed,
         cachedOk, weighedOk, later⟩
+      cases member with
+      | earlier member =>
+        exact tailEnough ⟨before, after, advanced, member, boundary, cached, weighed,
+          cachedOk, weighedOk, later⟩
+    · intro epoch boundary boundaryOk above
+      obtain ⟨_, _, bodyRoot, bodyOk, _⟩ := (reachable k).blockState_header found stored same
+      let header : BeaconBlockHeader :=
+        ⟨block.slot, block.proposerIndex, block.parentRoot, block.stateRoot, bodyRoot⟩
+      have selected : blockHeader signed.message = some header := by
+        simp [blockHeader, message, bodyOk, Except.toOption, header]
+      have hashed : SszType.hashTreeRoot header = .ok root :=
+        (BeaconBlock.hashTreeRoot_header bodyOk).trans ((reachable k).root found)
+      have bound := (computeStartSlotAtEpoch_ok_iff.mp boundaryOk).2
+      by_cases below : block.slot ≤ boundary
+      · have keep : header.slot.toNat ≤ epoch.toNat * preset.SLOTS_PER_EPOCH.toNat := by
+          change block.slot.toNat ≤ _
+          rw [← bound]
+          exact UInt64.le_iff_toNat_le.mp below
+        simp [Run.checkpointPath, headers_append, Run.headers, Step.headers, tailEmpty,
+          selected, keep, Store.getCheckpointBlock, boundaryOk,
+          Store.getAncestor_of_le (node := ⟨root, .pending⟩) found below,
+          hashed, Except.mapError, bind, Except.bind, pure, Except.pure]
+      · have skip : ¬header.slot.toNat ≤ epoch.toNat * preset.SLOTS_PER_EPOCH.toNat := by
+          change ¬block.slot.toNat ≤ _
+          rw [← bound, ← UInt64.le_iff_toNat_le]
+          exact below
+        obtain ⟨parentBlock, parentKnown⟩ := (reachable k).known_of_blockState parentFound
+        have parentLe := (reachable k).blockState_slot_le (UInt64.le_of_eq anchorSlot)
+          parentKnown parentFound
+        have parentLt : parent.slot < block.slot := by
+          simpa only [message] using (stateTransition_slot transitioned).1
+        have step := Store.getAncestor_of_gt (node := ⟨root, .pending⟩) early found below
+          parentKnown (UInt64.lt_of_le_of_lt parentLe parentLt)
+        simpa [Run.checkpointPath, headers_append, Run.headers, Step.headers, tailEmpty,
+          selected, skip, Store.getCheckpointBlock, boundaryOk, step, Except.mapError,
+          bind, Except.bind, pure, Except.pure]
+          using preReads epoch boundary boundaryOk above
 termination_by state.slot.toNat
 decreasing_by
   have bounds := stateTransition_slot transitioned
@@ -615,7 +669,12 @@ private theorem held_run_enough {anchor : Store preset fork}
     {root : Root} {state : BeaconState preset fork}
     (stored : ((e.world k).state w).blockStates[root]? = some state) :
     ∃ run : Run config checks ⟨fork, anchorState⟩ ⟨fork, state⟩,
-      EnoughStake (history.append run) ∧ ∀ view : TerminalView ⟨fork, state⟩, view.enough := by
+      EnoughStake (history.append run) ∧ (∀ view : TerminalView ⟨fork, state⟩, view.enough) ∧
+      ∀ epoch boundary, computeStartSlotAtEpoch preset epoch = .ok boundary →
+        anchorBlock.slot ≤ boundary →
+        ((e.world k).state w).getCheckpointBlock root epoch =
+          ((run.checkpointPath epoch).getLast?.map SszType.hashTreeRoot |>.getD
+            (SszType.hashTreeRoot anchorBlock)).mapError ForkChoiceError.ssz := by
   have forward := e.forwardReachable (anchorState := anchorState) (anchorBlock := anchorBlock)
     (fun v member => by rw [start v member]; exact .anchor anchored) k w honest
   have countLarge (state : BeaconState preset fork)
@@ -626,8 +685,8 @@ private theorem held_run_enough {anchor : Store preset fork}
     have high := UInt64.le_iff_toNat_le.mp (inHorizon w honest k epoch bounded epochOk)
     have low := UInt64.le_iff_toNat_le.mp bound
     exact large w honest k state bounded counts (by omega)
-  obtain ⟨run, enough⟩ := run_enough_of_blockState anchored
-    (history.unique (genesis_unique genesis)) forkWindow.1 honest (start w honest)
+  obtain ⟨run, enough, reads⟩ := run_enough_of_blockState anchored
+    (history.unique (genesis_unique genesis)) forkWindow.1 anchorSlot honest (start w honest)
     (by
       obtain ⟨current, currentOk, blocks, -⟩ := forward.slots_le_current slots
         (by rw [anchorSlot]; exact UInt64.le_refl _)
@@ -644,7 +703,7 @@ private theorem held_run_enough {anchor : Store preset fork}
       have currentLt : current.toNat < next.2.toNat * preset.SLOTS_PER_EPOCH.toNat :=
         (Nat.div_lt_iff_lt_mul (by omega)).mp (by omega)
       omega) countLarge stored
-  refine ⟨run, enough_append historyEnough enough, ?_⟩
+  refine ⟨run, enough_append historyEnough enough, ?_, reads⟩
   intro view
   cases view with
   | realized => trivial
@@ -888,36 +947,6 @@ private theorem justified_origin {store : Store preset fork}
     · exact .inl anchor
     · exact .inr ⟨root, state, .pulled pulled processed, held, same⟩
 
-/-- Honest stores agree on finalized prefixes up to the horizon, or two held states show a fault.
-
-The history to the anchor has enough stake for the count of each epoch, as `EnoughStake` asks.
-
-After the anchor, the bound `large` on counting states gives the same for the runs of the stores.
-
-A finalized checkpoint of a store that is the anchor's own is on every chain of the stores. -/
-theorem Execution.finalizedPrefix_or_fault {anchor : Store preset fork}
-    (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
-    (sound : Invariant anchorState) (start : ∀ w ∈ J, e.start w = anchor)
-    (anchorSlot : anchorBlock.slot = anchorState.slot)
-    (anchorAtBoundary : isStartSlotAtEpoch preset anchorBlock.slot = .ok true)
-    (slots : 0 < config.SLOT_DURATION_MS) (parameters : DirectSafety.Parameters preset)
-    {g : ForkedBeaconState preset} (genesis : Genesis (config := config) (checks := checks) g)
-    (history : Run config checks g ⟨fork, anchorState⟩) {horizon : Epoch}
-    (forkWindow : fork < .glamsterdam ∧ ∀ next ∈ config.nextFork fork,
-      horizon.toNat < next.2.toNat)
-    {limit : ℕ}
-    (inHorizon : ∀ w ∈ J, ∀ k epoch, (e.world k).time ≤ limit →
-      ((e.world k).state w).getCurrentStoreEpoch config = .ok epoch → epoch ≤ horizon)
-    (historyEnough : EnoughStake history)
-    (large : ∀ w ∈ J, ∀ k (state : BeaconState preset fork),
-      (e.world k).time ≤ limit → ((e.world k).state w).Counts config state →
-      (getCurrentEpoch state).toNat ≤ horizon.toNat + 1 →
-      3 * preset.EFFECTIVE_BALANCE_INCREMENT.toNat <
-        2 * stake (fun v => balanceAt state v.toNat) (activeVoters state)) :
-    FinalizedPrefix e horizon limit ∨ e.AccountableFault history horizon limit ∨
-      e.HashFault history limit := by
-  sorry
-
 private theorem hash_evidence_mono {one two : List (HashObject preset)}
     (subset : ∀ object ∈ one, object ∈ two) (evidence : HashEvidence one) :
     HashEvidence two := by
@@ -944,41 +973,28 @@ private theorem nil_append_run {g a : ForkedBeaconState preset}
   | nil => rfl
   | snoc pre step ih => exact congrArg (fun run => run.snoc step) ih
 
-private theorem justified_zero {store : Store preset fork}
+private theorem checkpoint_fields {store : Store preset fork}
     (reachable : Store.Reachable config anchorState anchorBlock store) {anchorRoot : Root}
     (rooted : SszType.hashTreeRoot anchorBlock = .ok anchorRoot)
-    {checkpoint : Checkpoint} (justified : store.Justified checkpoint)
-    (zero : checkpoint.epoch = 0) :
-    checkpoint = ⟨getCurrentEpoch anchorState, anchorRoot⟩ := by
+    (p : Checkpoint → Prop) (initial : p ⟨getCurrentEpoch anchorState, anchorRoot⟩)
+    (newer : ∀ old next, p old → old.epoch < next.epoch → p next) :
+    (p store.justifiedCheckpoint ∧ p store.unrealizedJustifiedCheckpoint) ∧
+      p store.finalizedCheckpoint ∧ p store.unrealizedFinalizedCheckpoint := by
   let P := fun (s : Store preset fork) =>
-    (s.justifiedCheckpoint.epoch = 0 →
-      s.justifiedCheckpoint = (⟨getCurrentEpoch anchorState, anchorRoot⟩ : Checkpoint)) ∧
-    (s.unrealizedJustifiedCheckpoint.epoch = 0 →
-      s.unrealizedJustifiedCheckpoint = (⟨getCurrentEpoch anchorState, anchorRoot⟩ : Checkpoint))
+    (p s.justifiedCheckpoint ∧ p s.unrealizedJustifiedCheckpoint) ∧
+      p s.finalizedCheckpoint ∧ p s.unrealizedFinalizedCheckpoint
   have update (s : Store preset fork) j f (old : P s) : P (s.updateCheckpoints j f) := by
     unfold Store.updateCheckpoints
-    split
-    · rename_i later
-      have nonzero : j.epoch ≠ 0 := by
-        intro eq
-        rw [eq] at later
-        exact UInt64.not_lt_zero later
-      dsimp only
-      split <;> exact ⟨fun eq => (nonzero eq).elim, old.2⟩
-    · dsimp only
-      split <;> exact old
+    split <;> dsimp only <;> split
+    all_goals refine ⟨⟨?_, old.1.2⟩, ?_, old.2.2⟩
+    all_goals first | exact old.1.1 | exact old.2.1 |
+      exact newer _ _ old.1.1 ‹_› | exact newer _ _ old.2.1 ‹_›
   have pending (s : Store preset fork) j f (old : P s) : P (s.updateUnrealizedCheckpoints j f) := by
     unfold Store.updateUnrealizedCheckpoints
-    split
-    · rename_i later
-      have nonzero : j.epoch ≠ 0 := by
-        intro eq
-        rw [eq] at later
-        exact UInt64.not_lt_zero later
-      dsimp only
-      split <;> exact ⟨old.1, fun eq => (nonzero eq).elim⟩
-    · dsimp only
-      split <;> exact old
+    split <;> dsimp only <;> split
+    all_goals refine ⟨⟨old.1.1, ?_⟩, old.2.1, ?_⟩
+    all_goals first | exact old.1.2 | exact old.2.2 |
+      exact newer _ _ old.1.2 ‹_› | exact newer _ _ old.2.2 ‹_›
   have pull {s t : Store preset fork} {root : Root} (old : P s)
       (computed : s.computePulledUpTip config root = .ok t) : P t := by
     unfold Store.computePulledUpTip at computed
@@ -1002,13 +1018,13 @@ private theorem justified_zero {store : Store preset fork}
         split at computed <;> cases Except.ok.inj computed
         all_goals first | exact update _ _ _ old | exact old
   have invariant : P store := by
-    clear justified
     induction reachable with
     | anchor made =>
-      obtain ⟨root, rootOk, _, _, real, _, unrealized, _⟩ := getForkchoiceStore_anchor made
+      obtain ⟨root, rootOk, _, _, real, final, unrealized, pending⟩ :=
+        getForkchoiceStore_anchor made
       rw [rooted, Except.ok.injEq] at rootOk
       subst root
-      exact ⟨fun _ => real, fun _ => unrealized⟩
+      exact ⟨⟨real ▸ initial, unrealized ▸ initial⟩, final ▸ initial, pending ▸ initial⟩
     | tick before computed ih =>
       have catchup : ∀ {s t : Store preset fork} {slot : Slot}, P s →
           Store.catchUp config s slot = .ok t → P t := by
@@ -1094,6 +1110,18 @@ private theorem justified_zero {store : Store preset fork}
     | inclusionList before accepted ih =>
       obtain ⟨_, _, rfl⟩ := Store.onInclusionList_ok ‹_› accepted
       exact ih
+  exact invariant
+
+private theorem justified_zero {store : Store preset fork}
+    (reachable : Store.Reachable config anchorState anchorBlock store) {anchorRoot : Root}
+    (rooted : SszType.hashTreeRoot anchorBlock = .ok anchorRoot)
+    {checkpoint : Checkpoint} (justified : store.Justified checkpoint)
+    (zero : checkpoint.epoch = 0) :
+    checkpoint = ⟨getCurrentEpoch anchorState, anchorRoot⟩ := by
+  have invariant := (checkpoint_fields reachable rooted
+    (fun checkpoint => checkpoint.epoch = 0 →
+      checkpoint = ⟨getCurrentEpoch anchorState, anchorRoot⟩) (fun _ => rfl)
+    (fun _ _ _ later eq => (UInt64.not_lt_zero (eq ▸ later)).elim)).1
   rcases justified with rfl | rfl | ⟨positive, _⟩
   · exact invariant.1 zero
   · exact invariant.2 zero
@@ -1188,9 +1216,9 @@ theorem Execution.oneJustifiedPerEpoch_or_fault {anchor : Store preset fork}
       subst rootB
       exact (anchorCase honestU storedA va fieldA
         (sameEpoch.trans (congrArg Checkpoint.epoch anchorB)) zero).trans anchorB.symm
-    · obtain ⟨left, enoughA, terminalA⟩ := held_run_enough anchored start anchorSlot slots
+    · obtain ⟨left, enoughA, terminalA, _⟩ := held_run_enough anchored start anchorSlot slots
         parameters genesis history forkWindow inHorizon historyEnough large honestU boundedN storedA
-      obtain ⟨right, enoughB, terminalB⟩ := held_run_enough anchored start anchorSlot slots
+      obtain ⟨right, enoughB, terminalB, _⟩ := held_run_enough anchored start anchorSlot slots
         parameters genesis history forkWindow inHorizon historyEnough large honestW boundedK storedB
       have heldA : e.HeldState limit stateA := ⟨u, honestU, n, rootA, boundedN, storedA⟩
       have heldB : e.HeldState limit stateB := ⟨w, honestW, k, rootB, boundedK, storedB⟩
@@ -1356,6 +1384,390 @@ theorem Execution.nonzero_or_fault {anchor : Store preset fork}
   · change (SszType.hashTreeRoot state).toOption = some (Vector.replicate 32 0)
     rw [rooted, zero]
     rfl
+
+private theorem state_checkpoint_read {store : Store preset fork}
+    (reachable : Store.Reachable config anchorState anchorBlock store)
+    (sound : Invariant anchorState) (early : fork < .glamsterdam)
+    (positive : 0 < preset.SLOTS_PER_EPOCH.toNat)
+    (window : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
+    (aligned : anchorBlock.slot ≤ anchorState.slot)
+    (nonzero : ∀ (root : Root) (block : BeaconBlock preset fork), store.blocks[root]? = some block →
+      block.stateRoot ≠ Vector.replicate 32 0)
+    {root : Root} {state : BeaconState preset fork}
+    (stored : store.blockStates[root]? = some state) :
+    CheckpointsSatisfy (fun checkpoint => checkpoint.epoch ≤ getCurrentEpoch anchorState ∨
+      ∃ boundary block, store.blocks[root]? = some block ∧
+        computeStartSlotAtEpoch preset checkpoint.epoch = .ok boundary ∧ boundary ≤ block.slot ∧
+        store.getCheckpointBlock root checkpoint.epoch = .ok checkpoint.root) state := by
+  obtain ⟨block, found⟩ := reachable.known_of_blockState stored
+  obtain ⟨post, postOk, initial, produced⟩ := reachable.blockStatesFromParents found
+  rw [stored, Option.some.injEq] at postOk
+  subst post
+  by_cases same : block = anchorBlock
+  · rw [initial same]
+    have bound := UInt64.le_trans sound.settled (getPreviousEpoch_le anchorState)
+    exact ⟨.inl (UInt64.le_trans sound.ordered.2 bound), .inl bound,
+      .inl (UInt64.le_trans sound.ordered.1 (UInt64.le_trans sound.ordered.2 bound))⟩
+  · obtain ⟨parent, checks, engine, signed, message, parentFound, transitioned⟩ := produced same
+    obtain ⟨advanced, slotsOk, _, _, blockOk, _⟩ := stateTransition_ok transitioned
+    have prior := state_checkpoint_read reachable sound early positive window aligned
+      nonzero parentFound
+    obtain ⟨parentBlock, parentKnown⟩ := reachable.known_of_blockState parentFound
+    have parentLe := reachable.blockState_slot_le aligned parentKnown parentFound
+    have parentLt : parent.slot < block.slot := by
+      simpa only [message] using (stateTransition_slot transitioned).1
+    have parentBlockLt := UInt64.lt_of_le_of_lt parentLe parentLt
+    have inherit (checkpoint : Checkpoint)
+        (holds : checkpoint.epoch ≤ getCurrentEpoch anchorState ∨
+          ∃ boundary b, store.blocks[block.parentRoot]? = some b ∧
+            computeStartSlotAtEpoch preset checkpoint.epoch = .ok boundary ∧ boundary ≤ b.slot ∧
+            store.getCheckpointBlock block.parentRoot checkpoint.epoch = .ok checkpoint.root) :
+        checkpoint.epoch ≤ getCurrentEpoch anchorState ∨
+          ∃ boundary b, store.blocks[root]? = some b ∧
+            computeStartSlotAtEpoch preset checkpoint.epoch = .ok boundary ∧ boundary ≤ b.slot ∧
+            store.getCheckpointBlock root checkpoint.epoch = .ok checkpoint.root := by
+      rcases holds with old | ⟨boundary, b, known, boundaryOk, below, read⟩
+      · exact .inl old
+      have eq := Option.some.inj (known.symm.trans parentKnown)
+      subst b
+      have step := Store.getAncestor_of_gt (node := ⟨root, .pending⟩) early found
+        (UInt64.not_le.mpr (UInt64.lt_of_le_of_lt below parentBlockLt)) parentKnown parentBlockLt
+      refine .inr ⟨boundary, block, found, boundaryOk,
+        UInt64.le_trans below (UInt64.le_of_lt parentBlockLt), ?_⟩
+      simpa [Store.getCheckpointBlock, boundaryOk, Except.mapError, bind, Except.bind, step]
+        using read
+    have lifted : CheckpointsSatisfy (fun checkpoint =>
+        checkpoint.epoch ≤ getCurrentEpoch anchorState ∨
+          ∃ boundary b, store.blocks[root]? = some b ∧
+            computeStartSlotAtEpoch preset checkpoint.epoch = .ok boundary ∧ boundary ≤ b.slot ∧
+            store.getCheckpointBlock root checkpoint.epoch = .ok checkpoint.root) parent :=
+      ⟨inherit _ prior.1, inherit _ prior.2.1, inherit _ prior.2.2⟩
+    simp only [processSlots, bind_ok_iff, ensure_ok_iff] at slotsOk
+    obtain ⟨_, _, run⟩ := slotsOk
+    apply (CheckpointsSatisfy.advanceSlots (state := parent) lifted ?_ run).of_frame
+      (frame_processBlock blockOk)
+    intro i bounded middle cached advanced cachedOk checkpoint recent read
+    by_cases old : checkpoint.epoch ≤ getCurrentEpoch anchorState
+    · exact .inl old
+    have recent' : checkpoint.epoch = getPreviousEpoch middle ∨
+        checkpoint.epoch = getCurrentEpoch middle := by
+      simpa only [getPreviousEpoch, getCurrentEpoch, processSlot_slot cachedOk] using recent
+    rw [getBlockRoot_processSlot_of_recent_epoch positive window cachedOk recent'] at read
+    obtain ⟨boundary, boundaryOk, read⟩ := getBlockRoot_ok_iff.mp read
+    have later : anchorState.slot ≤ boundary := by
+      have epochLt := UInt64.lt_iff_toNat_lt.mp (UInt64.not_le.mp old)
+      rw [getCurrentEpoch_toNat] at epochLt
+      have next := (Nat.div_lt_iff_lt_mul positive).mp epochLt
+      have eq := (Base.Uint64.mulChecked_ok_iff.mp boundaryOk).2
+      exact UInt64.le_iff_toNat_le.mpr (by omega)
+    have path : (·.root) <$> store.getAncestor ⟨block.parentRoot, .pending⟩ boundary =
+        .ok checkpoint.root := by
+      cases i with
+      | zero =>
+        cases Except.ok.inj advanced
+        exact reachable.blockState_history_ancestor aligned nonzero parentFound read later .pending
+      | succ i =>
+        have atSlot := advanceSlots_slot (i + 1) advanced
+        have greater : parent.slot < middle.slot := UInt64.lt_iff_toNat_lt.mpr (by omega)
+        have computed : processSlots config checks parent middle.slot = .ok middle := by
+          simp only [processSlots, bind_ok_iff, ensure_ok_iff]
+          refine ⟨(), greater, ?_⟩
+          have countEq : middle.slot.toNat - parent.slot.toNat = i + 1 := by omega
+          simpa only [countEq] using advanced
+        obtain ⟨readBlock, known, _⟩ := reachable.processSlots_history_slot_le nonzero
+          ⟨root, block, found, same⟩ parentFound computed read later (UInt64.le_trans aligned later)
+        have ahead : lookaheadState config checks parent middle.slot = .ok middle := by
+          simp [lookaheadState, greater, computed, Except.mapError]
+        exact reachable.lookahead_history_ancestor aligned nonzero parentFound known ahead read
+          later .pending
+    have checkpointRead : store.getCheckpointBlock block.parentRoot checkpoint.epoch =
+        .ok checkpoint.root := by
+      simpa [Store.getCheckpointBlock, boundaryOk, Except.mapError, bind, Except.bind,
+        Functor.map, Except.map, pure, Except.pure] using path
+    have middleLt : middle.slot < block.slot := by
+      have atSlot := advanceSlots_slot i advanced
+      rw [message] at bounded
+      have low := UInt64.lt_iff_toNat_lt.mp parentLt
+      exact UInt64.lt_iff_toNat_lt.mpr (by omega)
+    have boundaryLt : boundary < block.slot := UInt64.lt_trans
+      (UInt64.lt_iff_toNat_lt.mpr (getBlockRootAtSlot_ok_iff.mp read).1) middleLt
+    have step := Store.getAncestor_of_gt (node := ⟨root, .pending⟩) early found
+      (UInt64.not_le.mpr boundaryLt) parentKnown parentBlockLt
+    refine .inr ⟨boundary, block, found, boundaryOk, UInt64.le_of_lt boundaryLt, ?_⟩
+    simpa [Store.getCheckpointBlock, boundaryOk, Except.mapError, bind, Except.bind, step]
+      using checkpointRead
+termination_by state.slot.toNat
+decreasing_by
+  have bounds := stateTransition_slot transitioned
+  rw [bounds.2]
+  exact UInt64.lt_iff_toNat_lt.mp bounds.1
+
+private theorem view_checkpoint_read {store : Store preset fork}
+    (reachable : Store.Reachable config anchorState anchorBlock store)
+    (sound : Invariant anchorState) (early : fork < .glamsterdam)
+    (positive : 0 < preset.SLOTS_PER_EPOCH.toNat)
+    (window : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
+    (aligned : anchorBlock.slot ≤ anchorState.slot)
+    (nonzero : ∀ (root : Root) (block : BeaconBlock preset fork), store.blocks[root]? = some block →
+      block.stateRoot ≠ Vector.replicate 32 0)
+    {root : Root} {state : BeaconState preset fork}
+    (stored : store.blockStates[root]? = some state) (view : TerminalView ⟨fork, state⟩) :
+    CheckpointsSatisfy (fun checkpoint => checkpoint.epoch ≤ getCurrentEpoch anchorState ∨
+      ∃ boundary block, store.blocks[root]? = some block ∧
+        computeStartSlotAtEpoch preset checkpoint.epoch = .ok boundary ∧ boundary ≤ block.slot ∧
+        store.getCheckpointBlock root checkpoint.epoch = .ok checkpoint.root) view.state := by
+  have holds := state_checkpoint_read reachable sound early positive window aligned nonzero stored
+  cases view with
+  | realized => exact holds
+  | pulled after computed =>
+    apply holds.processJustification ?_ computed
+    intro checkpoint _ read
+    by_cases old : checkpoint.epoch ≤ getCurrentEpoch anchorState
+    · exact .inl old
+    obtain ⟨boundary, boundaryOk, read⟩ := getBlockRoot_ok_iff.mp read
+    have later : anchorState.slot ≤ boundary := by
+      have epochLt := UInt64.lt_iff_toNat_lt.mp (UInt64.not_le.mp old)
+      rw [getCurrentEpoch_toNat] at epochLt
+      have next := (Nat.div_lt_iff_lt_mul positive).mp epochLt
+      have eq := (Base.Uint64.mulChecked_ok_iff.mp boundaryOk).2
+      exact UInt64.le_iff_toNat_le.mpr (by omega)
+    have path := reachable.blockState_history_ancestor aligned nonzero stored read later .pending
+    obtain ⟨block, found⟩ := reachable.known_of_blockState stored
+    have notAnchor : block ≠ anchorBlock := by
+      intro same
+      obtain ⟨post, postOk, initial, _⟩ := reachable.blockStatesFromParents found
+      rw [stored, Option.some.injEq] at postOk
+      subst post
+      rw [initial same] at read
+      have lt := (getBlockRootAtSlot_ok_iff.mp read).1
+      have le := UInt64.le_iff_toNat_le.mp later
+      omega
+    have below : boundary ≤ block.slot := by
+      rw [← (reachable.blockState_header found stored notAnchor).1]
+      exact UInt64.le_iff_toNat_le.mpr (Nat.le_of_lt (getBlockRootAtSlot_ok_iff.mp read).1)
+    refine .inr ⟨boundary, block, found, boundaryOk, below, ?_⟩
+    simpa [Store.getCheckpointBlock, boundaryOk, Except.mapError, bind, Except.bind,
+      Functor.map, Except.map, pure, Except.pure] using path
+
+omit [DecidablePred (· ∈ J)] in
+private theorem anchor_checkpoint_read {anchor : Store preset fork}
+    (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (start : ∀ w ∈ J, e.start w = anchor)
+    (anchorSlot : anchorBlock.slot = anchorState.slot)
+    (anchorBoundary : isStartSlotAtEpoch preset anchorBlock.slot = .ok true)
+    (early : fork < .glamsterdam) {w : ValidatorIndex} (honest : w ∈ J) {k : ℕ}
+    {root : Root} {block : BeaconBlock preset fork}
+    (known : ((e.world k).state w).blocks[root]? = some block) :
+    ((e.world k).state w).getCheckpointBlock root anchor.finalizedCheckpoint.epoch =
+      .ok anchor.finalizedCheckpoint.root := by
+  have reached := e.reachable
+    (fun v member => (start v member) ▸ Store.Reachable.anchor anchored) k w honest
+  obtain ⟨anchorRoot, rooted, _, _, _, final, _, _⟩ := getForkchoiceStore_anchor anchored
+  obtain ⟨other, hashed, found⟩ := reached.anchor_known
+  rw [rooted, Except.ok.injEq] at hashed
+  subst other
+  have boundaryOk : computeStartSlotAtEpoch preset anchor.finalizedCheckpoint.epoch =
+      .ok anchorBlock.slot := by
+    have aligned : (getCurrentEpoch anchorState).toNat * preset.SLOTS_PER_EPOCH.toNat =
+        anchorBlock.slot.toNat := by
+      rw [getCurrentEpoch, ← anchorSlot]
+      exact anchor_boundary anchorBoundary
+    apply computeStartSlotAtEpoch_ok_iff.mpr
+    rw [final]
+    constructor
+    · rw [aligned]
+      exact anchorBlock.slot.toNat_lt
+    · exact aligned.symm
+  have descends := e.isAncestor_anchor_of_known anchored start honest known
+  rw [final] at descends
+  have path := Store.getAncestor_of_isAncestor_of_lt early found descends
+  unfold Store.getCheckpointBlock
+  rw [boundaryOk]
+  simp only [Except.mapError, bind, Except.bind,
+    path, pure, Except.pure, final]
+
+private theorem checkpoint_read_down {store : Store preset fork}
+    (early : fork < .glamsterdam) {root middle checkpoint : Root} {epoch prior : Epoch}
+    {boundary earlier : Slot}
+    (boundaryOk : computeStartSlotAtEpoch preset epoch = .ok boundary)
+    (earlierOk : computeStartSlotAtEpoch preset prior = .ok earlier)
+    (ordered : prior ≤ epoch)
+    (read : store.getCheckpointBlock root epoch = .ok middle)
+    (lower : store.getCheckpointBlock root prior = .ok checkpoint) :
+    store.getCheckpointBlock middle prior = .ok checkpoint := by
+  have below : earlier ≤ boundary := by
+    apply UInt64.le_iff_toNat_le.mpr
+    rw [(computeStartSlotAtEpoch_ok_iff.mp earlierOk).2,
+      (computeStartSlotAtEpoch_ok_iff.mp boundaryOk).2]
+    exact Nat.mul_le_mul_right _ (UInt64.le_iff_toNat_le.mp ordered)
+  unfold Store.getCheckpointBlock at read lower ⊢
+  simp only [boundaryOk, earlierOk, Except.mapError, bind, Except.bind] at read lower ⊢
+  cases walked : store.getAncestor ⟨root, .pending⟩ boundary with
+  | error err => simp [walked] at read
+  | ok node =>
+    have pending := Store.getAncestor_pending_of_lt early rfl walked
+    simp only [walked, pure, Except.pure, Except.ok.injEq] at read
+    have nodeEq : node = ⟨middle, .pending⟩ := by
+      cases node
+      simp_all
+    subst node
+    rwa [Store.getAncestor_trans below walked] at lower
+
+omit [DecidablePred (· ∈ J)] in
+/-- Honest stores agree on finalized prefixes up to the horizon, or two held states show a fault.
+
+The history to the anchor has enough stake for the count of each epoch, as `EnoughStake` asks.
+
+After the anchor, the bound `large` on counting states gives the same for the runs of the stores.
+
+A finalized checkpoint of a store that is the anchor's own is on every chain of the stores. -/
+theorem Execution.finalizedPrefix_or_fault {anchor : Store preset fork}
+    (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (sound : Invariant anchorState) (start : ∀ w ∈ J, e.start w = anchor)
+    (anchorSlot : anchorBlock.slot = anchorState.slot)
+    (anchorAtBoundary : isStartSlotAtEpoch preset anchorBlock.slot = .ok true)
+    (slots : 0 < config.SLOT_DURATION_MS) (parameters : DirectSafety.Parameters preset)
+    {g : ForkedBeaconState preset} (genesis : Genesis (config := config) (checks := checks) g)
+    (history : Run config checks g ⟨fork, anchorState⟩) {horizon : Epoch}
+    (forkWindow : fork < .glamsterdam ∧ ∀ next ∈ config.nextFork fork,
+      horizon.toNat < next.2.toNat)
+    {limit : ℕ}
+    (inHorizon : ∀ w ∈ J, ∀ k epoch, (e.world k).time ≤ limit →
+      ((e.world k).state w).getCurrentStoreEpoch config = .ok epoch → epoch ≤ horizon)
+    (historyEnough : EnoughStake history)
+    (large : ∀ w ∈ J, ∀ k (state : BeaconState preset fork),
+      (e.world k).time ≤ limit → ((e.world k).state w).Counts config state →
+      (getCurrentEpoch state).toNat ≤ horizon.toNat + 1 →
+      3 * preset.EFFECTIVE_BALANCE_INCREMENT.toNat <
+        2 * stake (fun v => balanceAt state v.toNat) (activeVoters state)) :
+    FinalizedPrefix e horizon limit ∨ e.AccountableFault history horizon limit ∨
+      e.HashFault history limit := by
+  classical
+  by_cases fault : e.AccountableFault history horizon limit ∨ e.HashFault history limit
+  · exact .inr fault
+  have positive : 0 < preset.SLOTS_PER_EPOCH.toNat := by have := parameters.slots; omega
+  have window : 2 * preset.SLOTS_PER_EPOCH.toNat ≤
+      preset.SLOTS_PER_HISTORICAL_ROOT.toNat := by have := parameters.roots; omega
+  obtain nonzero | hashes := e.nonzero_or_fault anchored start anchorSlot slots positive
+    history forkWindow inHorizon
+  · obtain unique | faults := e.oneJustifiedPerEpoch_or_fault anchored sound start anchorSlot
+      anchorAtBoundary slots parameters genesis history forkWindow inHorizon historyEnough large
+    · left
+      intro u honestU w honestW n k boundedN boundedK checkpoint justified ordered high
+      have reach := e.reachable (anchorState := anchorState) (anchorBlock := anchorBlock)
+        (fun v member => by rw [start v member]; exact .anchor anchored)
+      obtain ⟨anchorRoot, rooted, anchorKnown, _, anchorJust, anchorFinal, _, _⟩ :=
+        getForkchoiceStore_anchor anchored
+      have finalCases := (checkpoint_fields (reach n u honestU) rooted
+        (fun c => c = (⟨getCurrentEpoch anchorState, anchorRoot⟩ : Checkpoint) ∨
+          getCurrentEpoch anchorState < c.epoch) (.inl rfl) (by
+            intro old next prior later
+            right
+            rcases prior with rfl | prior
+            · exact later
+            · exact UInt64.lt_trans prior later)).2.1
+      have anchorLe : getCurrentEpoch anchorState ≤
+          ((e.world n).state u).finalizedCheckpoint.epoch := by
+        rcases finalCases with same | later
+        · rw [same]
+          exact UInt64.le_refl _
+        · exact UInt64.le_of_lt later
+      by_cases old : checkpoint.epoch ≤ getCurrentEpoch anchorState
+      · have sameEpoch : checkpoint.epoch = getCurrentEpoch anchorState :=
+          UInt64.le_antisymm old (UInt64.le_trans anchorLe ordered)
+        have initial : ((e.world 0).state w).Justified anchor.justifiedCheckpoint := by
+          change (e.start w).Justified anchor.justifiedCheckpoint
+          rw [start w honestW]
+          exact .inl rfl
+        have same := unique w honestW w honestW k 0 boundedK
+          ((e.monotone_time (Nat.zero_le k)).trans boundedK)
+          checkpoint anchor.justifiedCheckpoint justified initial
+          (by simpa only [anchorJust] using sameEpoch) high
+        have finalSame : ((e.world n).state u).finalizedCheckpoint =
+            anchor.finalizedCheckpoint := by
+          rcases finalCases with same | later
+          · exact same.trans anchorFinal.symm
+          · exact ((UInt64.not_le.mpr later) (UInt64.le_trans ordered old)).elim
+        rw [finalSame, same, anchorJust]
+        have known := (reach k w honestW).anchor_known
+        obtain ⟨root, rootOk, found⟩ := known
+        rw [rooted, Except.ok.injEq] at rootOk
+        subst root
+        exact anchor_checkpoint_read anchored start anchorSlot anchorAtBoundary forkWindow.1
+          honestW found
+      · have laterJ := UInt64.not_le.mp old
+        obtain ⟨rootB, stateB, vb, storedB, fieldB⟩ :
+            ∃ (root : Root) (state : BeaconState preset fork) (view : TerminalView ⟨fork, state⟩),
+              ((e.world k).state w).blockStates[root]? = some state ∧
+                checkpoint = view.state.currentJustifiedCheckpoint := by
+          rcases justified_origin (reach k w honestW) forkWindow.1 justified with
+              ⟨root, _, same⟩ | terminal
+          · exact (UInt64.ne_of_lt laterJ (congrArg Checkpoint.epoch same).symm).elim
+          · exact terminal
+        have checkpointOrigin := fieldB ▸ (view_checkpoint_read (reach k w honestW) sound
+          forkWindow.1 positive window (UInt64.le_of_eq anchorSlot)
+          (nonzero w honestW k boundedK) storedB vb).2.1
+        rcases checkpointOrigin with earlier | ⟨boundaryB, blockB, knownB, boundaryOkB, _, readB⟩
+        · exact (old earlier).elim
+        obtain ⟨_, checkpointBlock, _, checkpointKnown, _, _⟩ :=
+          Store.isAncestor_of_getCheckpointBlock forkWindow.1 readB
+        rcases finalCases with finalSame | laterF
+        · rw [finalSame, ← anchorFinal]
+          exact anchor_checkpoint_read anchored start anchorSlot anchorAtBoundary forkWindow.1
+            honestW checkpointKnown
+        · obtain ⟨rootA, stateA, va, storedA, fieldA⟩ :
+              ∃ (root : Root) (state : BeaconState preset fork) (view : TerminalView ⟨fork, state⟩),
+                ((e.world n).state u).blockStates[root]? = some state ∧
+                  ((e.world n).state u).finalizedCheckpoint = view.state.finalizedCheckpoint := by
+            rcases (reach n u honestU).finalized_origins _ (.inl rfl) with
+                ⟨root, _, same⟩ | ⟨root, state, held, field⟩ |
+                ⟨root, state, pulled, held, computed, field⟩
+            · exact (UInt64.ne_of_lt laterF (congrArg Checkpoint.epoch same).symm).elim
+            · exact ⟨root, state, .realized, held, field⟩
+            · exact ⟨root, state, .pulled pulled computed, held, field⟩
+          have finalOrigin := fieldA ▸ (view_checkpoint_read (reach n u honestU) sound
+            forkWindow.1 positive window (UInt64.le_of_eq anchorSlot)
+            (nonzero u honestU n boundedN) storedA va).2.2
+          rcases finalOrigin with earlier | ⟨boundaryA, blockA, knownA, boundaryOkA, _, readA⟩
+          · exact ((UInt64.not_le.mpr laterF) earlier).elim
+          obtain ⟨left, enoughA, terminalA, readsA⟩ := held_run_enough anchored start anchorSlot
+            slots parameters genesis history forkWindow inHorizon historyEnough large
+            honestU boundedN storedA
+          obtain ⟨right, enoughB, terminalB, readsB⟩ := held_run_enough anchored start anchorSlot
+            slots parameters genesis history forkWindow inHorizon historyEnough large
+            honestW boundedK storedB
+          have above := e.anchorSlot_le_finalized_boundary anchored anchorSlot anchorAtBoundary
+            (start u honestU) boundaryOkA
+          have starts : anchorState.slot.toNat ≤
+              va.state.finalizedCheckpoint.epoch.toNat * preset.SLOTS_PER_EPOCH.toNat := by
+            rw [← fieldA, ← (computeStartSlotAtEpoch_ok_iff.mp boundaryOkA).2, ← anchorSlot]
+            exact UInt64.le_iff_toNat_le.mp above
+          rcases accountable_terminal_finalized_prefix history left right va vb parameters genesis
+              forkWindow.1 forkWindow.1 enoughA enoughB (terminalA va) (terminalB vb)
+              checkpoint (.inr fieldB) (fieldA ▸ ordered) starts with paths | accountable | hashes
+          · rw [← fieldA] at paths
+            have tails : left.checkpointPath ((e.world n).state u).finalizedCheckpoint.epoch =
+                right.checkpointPath ((e.world n).state u).finalizedCheckpoint.epoch := by
+              simp only [Run.checkpointPath, headers_append, List.filter_append] at paths
+              exact List.append_cancel_left paths
+            have sameRead := (readsB _ _ boundaryOkA above).trans
+              ((congrArg (fun path : List BeaconBlockHeader =>
+                (path.getLast?.map SszType.hashTreeRoot |>.getD
+                  (SszType.hashTreeRoot anchorBlock)).mapError ForkChoiceError.ssz)
+                tails.symm).trans ((readsA _ _ boundaryOkA above).symm.trans readA))
+            exact checkpoint_read_down forkWindow.1 boundaryOkB boundaryOkA ordered readB sameRead
+          · exact (fault (.inl ⟨stateA, stateB, left, right, va, vb, checkpoint,
+              ⟨u, honestU, n, rootA, boundedN, storedA⟩,
+              ⟨w, honestW, k, rootB, boundedK, storedB⟩,
+              .inr (.inr (.inr fieldB)), high, .inl accountable⟩)).elim
+          · apply (fault (.inr ?_)).elim
+            refine ⟨stateA, stateB, left, right, va, vb,
+              ⟨u, honestU, n, rootA, boundedN, storedA⟩,
+              ⟨w, honestW, k, rootB, boundedK, storedB⟩, ?_⟩
+            exact hash_evidence_mono (fun _ member =>
+              List.mem_append_left _ (List.mem_append_left _ member)) hashes
+    · exact (fault faults).elim
+  · exact (fault (.inr hashes)).elim
 
 /-- Theorem 1, accountable safety: the stored block is safe, or two honest stores show a fault.
 
