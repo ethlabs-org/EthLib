@@ -42,18 +42,18 @@ private theorem view_epochs {g a : ForkedBeaconState preset}
 private theorem view_attestations {g a : ForkedBeaconState preset}
     (run : Run config checks g a) (parameters : Parameters preset)
     (genesis : Genesis (config := config) (checks := checks) g)
-    (early : a.fork < .glamsterdam) {view : TerminalView a}
+    (early : a.fork < .hegota) {view : TerminalView a}
     (call : ViewQuorum run view) :
     ∀ key ∈ call.voters, ∃ data, run.Accepted key data ∧
       data.source = call.source ∧ data.target = call.target := by
   cases call with
-  | inl c => exact quorum_attestations run parameters genesis early c
-  | inr c => exact terminal_quorum_attestations run parameters genesis early view c
+  | inl c => exact quorum_attestations_gloas run parameters genesis early c
+  | inr c => exact terminal_quorum_attestations_gloas run parameters genesis early view c
 
 private theorem view_same_epoch {g a b : ForkedBeaconState preset}
     (left : Run config checks g a) (right : Run config checks g b)
     (parameters : Parameters preset) (genesis : Genesis (config := config) (checks := checks) g)
-    (earlyA : a.fork < .glamsterdam) (earlyB : b.fork < .glamsterdam)
+    (earlyA : a.fork < .hegota) (earlyB : b.fork < .hegota)
     {va : TerminalView a} {vb : TerminalView b}
     (one : ViewQuorum left va) (two : ViewQuorum right vb)
     (epoch : one.target.epoch = two.target.epoch) (different : one.target ≠ two.target) :
@@ -92,7 +92,7 @@ private theorem view_drift {g x a : ForkedBeaconState preset}
 private theorem view_facts {g a : ForkedBeaconState preset}
     (run : Run config checks g a) (parameters : Parameters preset)
     (genesis : Genesis (config := config) (checks := checks) g)
-    (early : a.fork < .glamsterdam) (enough : EnoughStake run)
+    (early : a.fork < .hegota) (enough : EnoughStake run)
     {view : TerminalView a} (terminal : view.enough) (call : ViewQuorum run view) :
     call.voters ⊆ recentKeys call.state.state ∧
       2 * Quorum.weight (effectiveWeight call.state.state) (activeKeys call.state.state) ≤
@@ -101,17 +101,17 @@ private theorem view_facts {g a : ForkedBeaconState preset}
         run.SlashingEvidence v.pubkey := by
   cases call with
   | inr c =>
-    exact ⟨terminal_quorum_recent run parameters genesis early view c,
-      terminal_quorum_count run genesis view terminal c, run.slashed_evidence genesis early⟩
+    exact ⟨terminal_quorum_recent_gloas run parameters genesis early view c,
+      terminal_quorum_count run genesis view terminal c, run.slashed_evidence_gloas genesis early⟩
   | inl c =>
-    refine ⟨quorum_voters_recent run parameters genesis early c,
+    refine ⟨quorum_voters_recent_gloas run parameters genesis early c,
       quorum_count run genesis enough c, ?_⟩
     obtain ⟨pre, post, split, _, validators, _⟩ := c.toEpochCall.selected_prefix
-    have earlyBefore : c.before.fork < .glamsterdam :=
+    have earlyBefore : c.before.fork < .hegota :=
       Nat.lt_of_le_of_lt (fork_le_of_chainSteps
         ((Run.nil.snoc (.slot c.advanced)).append post).chainSteps) early
     intro v found slashed
-    have evidence := pre.slashed_evidence genesis earlyBefore v
+    have evidence := pre.slashed_evidence_gloas genesis earlyBefore v
       (by simpa only [ViewQuorum.state, validators] using found) slashed
     obtain ⟨u, v, step, inside, ev⟩ := evidence
     refine ⟨u, v, step, ?_, ev⟩
@@ -122,7 +122,7 @@ private theorem view_facts {g a : ForkedBeaconState preset}
 private theorem terminal_pair_bound {g x a b : ForkedBeaconState preset}
     (shared : Run config checks g x) (left : Run config checks x a) (right : Run config checks x b)
     (parameters : Parameters preset) (genesis : Genesis (config := config) (checks := checks) g)
-    (earlyA : a.fork < .glamsterdam) (earlyB : b.fork < .glamsterdam)
+    (earlyA : a.fork < .hegota) (earlyB : b.fork < .hegota)
     (enoughA : EnoughStake (shared.append left)) (enoughB : EnoughStake (shared.append right))
     {va : TerminalView a} {vb : TerminalView b} (terminalA : va.enough) (terminalB : vb.enough)
     (one : ViewQuorum (shared.append left) va) (two : ViewQuorum (shared.append right) vb)
@@ -195,11 +195,11 @@ private theorem view_history_positive {g a : ForkedBeaconState preset}
   omega
 
 /-- Equal-epoch fields include either endpoint fields or one terminal projection per branch. -/
-theorem accountable_terminal_justified_unique {g x a b : ForkedBeaconState preset}
+theorem accountable_terminal_justified_unique_gloas {g x a b : ForkedBeaconState preset}
     (shared : Run config checks g x) (left : Run config checks x a)
     (right : Run config checks x b) (va : TerminalView a) (vb : TerminalView b)
     (parameters : Parameters preset) (genesis : Genesis (config := config) (checks := checks) g)
-    (earlyA : a.fork < .glamsterdam) (earlyB : b.fork < .glamsterdam)
+    (earlyA : a.fork < .hegota) (earlyB : b.fork < .hegota)
     (enoughA : EnoughStake (shared.append left)) (enoughB : EnoughStake (shared.append right))
     (terminalA : va.enough) (terminalB : vb.enough) (j k : Checkpoint)
     (fieldA : j = va.state.previousJustifiedCheckpoint ∨ j = va.state.currentJustifiedCheckpoint)
@@ -324,11 +324,11 @@ private theorem view_history_bound {g a : ForkedBeaconState preset}
 /-- A finalized terminal field fixes the earlier path of a later justified terminal field.
 
 The alternatives retain observed drift and concrete hash evidence, not hash injectivity. -/
-theorem accountable_terminal_finalized_prefix {g x a b : ForkedBeaconState preset}
+theorem accountable_terminal_finalized_prefix_gloas {g x a b : ForkedBeaconState preset}
     (shared : Run config checks g x) (left : Run config checks x a)
     (right : Run config checks x b) (va : TerminalView a) (vb : TerminalView b)
     (parameters : Parameters preset) (genesis : Genesis (config := config) (checks := checks) g)
-    (earlyA : a.fork < .glamsterdam) (earlyB : b.fork < .glamsterdam)
+    (earlyA : a.fork < .hegota) (earlyB : b.fork < .hegota)
     (enoughA : EnoughStake (shared.append left)) (enoughB : EnoughStake (shared.append right))
     (terminalA : va.enough) (terminalB : vb.enough) (j : Checkpoint)
     (field : j = vb.state.previousJustifiedCheckpoint ∨ j = vb.state.currentJustifiedCheckpoint)
@@ -351,7 +351,8 @@ theorem accountable_terminal_finalized_prefix {g x a b : ForkedBeaconState prese
   have positive : 0 < f.epoch.toNat := by
     by_contra zero
     have epochZero : f.epoch = 0 := UInt64.toNat_inj.mp (by change f.epoch.toNat = 0; omega)
-    exact paths (by rw [epochZero, checkpointPath_zero _ earlyA, checkpointPath_zero _ earlyB])
+    exact paths (by rw [epochZero, checkpointPath_zero_gloas _ earlyA,
+      checkpointPath_zero_gloas _ earlyB])
   have notGenesis : f ≠ ⟨GENESIS_EPOCH, Vector.replicate 32 0⟩ := by
     intro equal
     have zero : f.epoch.toNat = 0 := by rw [equal]; rfl
@@ -450,5 +451,50 @@ theorem accountable_terminal_finalized_prefix {g x a b : ForkedBeaconState prese
   have target := midHistory.finish incoming (List.getLast?_eq_some_getLast midHistory.nonempty)
   exact .inr (pair incoming (UInt64.toNat_inj.mp (by rw [target]; dsimp [f] at *; omega))
     (by rw [target]; dsimp [f] at *; omega))
+
+-- The original entry points keep their pre-Gloas contracts.
+theorem accountable_terminal_justified_unique {g x a b : ForkedBeaconState preset}
+    (shared : Run config checks g x) (left : Run config checks x a)
+    (right : Run config checks x b) (va : TerminalView a) (vb : TerminalView b)
+    (parameters : Parameters preset) (genesis : Genesis (config := config) (checks := checks) g)
+    (earlyA : a.fork < .glamsterdam) (earlyB : b.fork < .glamsterdam)
+    (enoughA : EnoughStake (shared.append left)) (enoughB : EnoughStake (shared.append right))
+    (terminalA : va.enough) (terminalB : vb.enough) (j k : Checkpoint)
+    (fieldA : j = va.state.previousJustifiedCheckpoint ∨ j = va.state.currentJustifiedCheckpoint)
+    (fieldB : k = vb.state.previousJustifiedCheckpoint ∨ k = vb.state.currentJustifiedCheckpoint)
+    (epoch : j.epoch = k.epoch)
+    (starts : x.state.slot.toNat ≤ j.epoch.toNat * preset.SLOTS_PER_EPOCH.toNat) :
+    j = k ∨ Quorum.weight (effectiveWeight x.state) (activeKeys x.state) ≤
+      3 * Quorum.weight (effectiveWeight x.state)
+        (accountableKeys (shared.append left) (shared.append right) x) +
+      2 * max (terminalDrift j.epoch.toNat left va) (terminalDrift j.epoch.toNat right vb) ∨
+    HashEvidence ((shared.append left).hashObjects ++ (shared.append right).hashObjects ++
+      va.hashObjects ++ vb.hashObjects) :=
+  accountable_terminal_justified_unique_gloas shared left right va vb parameters genesis
+    (Nat.lt_trans earlyA (by decide)) (Nat.lt_trans earlyB (by decide))
+    enoughA enoughB terminalA terminalB j k fieldA fieldB epoch starts
+
+theorem accountable_terminal_finalized_prefix {g x a b : ForkedBeaconState preset}
+    (shared : Run config checks g x) (left : Run config checks x a)
+    (right : Run config checks x b) (va : TerminalView a) (vb : TerminalView b)
+    (parameters : Parameters preset) (genesis : Genesis (config := config) (checks := checks) g)
+    (earlyA : a.fork < .glamsterdam) (earlyB : b.fork < .glamsterdam)
+    (enoughA : EnoughStake (shared.append left)) (enoughB : EnoughStake (shared.append right))
+    (terminalA : va.enough) (terminalB : vb.enough) (j : Checkpoint)
+    (field : j = vb.state.previousJustifiedCheckpoint ∨ j = vb.state.currentJustifiedCheckpoint)
+    (ordered : va.state.finalizedCheckpoint.epoch ≤ j.epoch)
+    (starts : x.state.slot.toNat ≤
+      va.state.finalizedCheckpoint.epoch.toNat * preset.SLOTS_PER_EPOCH.toNat) :
+    (shared.append left).checkpointPath va.state.finalizedCheckpoint.epoch =
+        (shared.append right).checkpointPath va.state.finalizedCheckpoint.epoch ∨
+      Quorum.weight (effectiveWeight x.state) (activeKeys x.state) ≤
+        3 * Quorum.weight (effectiveWeight x.state)
+          (accountableKeys (shared.append left) (shared.append right) x) +
+        2 * max (terminalDrift j.epoch.toNat left va) (terminalDrift j.epoch.toNat right vb) ∨
+      HashEvidence ((shared.append left).hashObjects ++ (shared.append right).hashObjects ++
+        va.hashObjects ++ vb.hashObjects) :=
+  accountable_terminal_finalized_prefix_gloas shared left right va vb parameters genesis
+    (Nat.lt_trans earlyA (by decide)) (Nat.lt_trans earlyB (by decide))
+    enoughA enoughB terminalA terminalB j field ordered starts
 
 end EthLib.Consensus.DirectSafety

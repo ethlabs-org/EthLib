@@ -8,19 +8,19 @@ import EthLib.Consensus.Proofs.ForkChoice.BlockStates
 import EthLib.Consensus.Proofs.ForkChoice.Checkpoints
 
 /-!
-# Statements: an honest vote reaches the latest votes of each honest store
+# Conditional vote delivery and the data of an honest vote
 
-This file states part of step 3 of the plan for the safety of the fast confirmation rule.
+This module proves that an up-to-date receiver records an accepted honest vote under synchrony.
 
-The rule is that of [arXiv 2405.00549v4][fcr].
+The network model follows [arXiv 2405.00549v4, Section 2, Network Model and Gossiping][fcr].
 
-The proofs are placeholders, and each statement may still change.
+Voting time and next-slot delivery are in Section 3.1 of that paper.
 
 A store takes an attestation from the wire when the attestation passes each check of the handler.
 
 The first statements give that passage from the facts that the checks ask for.
 
-An honest vote, cast as its duty asks, has those facts in the store of its voter.
+`VoteAt.data_head` and `VoteAt.data_target` give the head and target facts in the voter's store.
 
 Under synchrony the vote is in the view of each honest validator one delay later.
 
@@ -34,7 +34,7 @@ Whether the receiver accepts the vote is left as hypotheses on its store.
 
 It must hold the voted block with the same checkpoint block, and read the same signers.
 
-Two lemmas of [verified-fast-confirmation][vfc] state the delivery.
+For an implementation comparison, [verified-fast-confirmation][vfc] has two delivery lemmas.
 
 They are `Execution.vote_lands` and `Execution.vote_ubiquity`.
 
@@ -352,19 +352,37 @@ theorem VoteAt.data_target {anchor : Store preset fork}
 
 The voter votes for the payload only when its head has the payload, which its store has verified.
 
-The hypotheses are those of `VoteAt.data_head`. -/
-theorem VoteAt.data_payload {anchor : Store preset fork}
-    (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
-    (start : ∀ u ∈ J, e.start u = anchor) {v : ValidatorIndex} (honest : v ∈ J) {slot : Slot}
+The vote satisfies `VoteAt`, the fork is at least Gloas, and its voter holds the voted block. -/
+theorem VoteAt.data_payload {v : ValidatorIndex} {slot : Slot}
     {committeeIndex : CommitteeIndex} {time n : ℕ} {attestation : Attestation preset fork}
     {indexed : IndexedAttestation preset fork}
     (vote : VoteAt e v slot committeeIndex time n attestation indexed)
-    (deadline : IsAttestationDeadline fork config genesisTimeMs slot time) {due : UInt64}
-    (dueOk : getAttestationDueMs config fork = .ok due) (inSlot : due < config.SLOT_DURATION_MS)
     (gloas : .glamsterdam ≤ fork) {voted : BeaconBlock preset fork}
     (known : ((e.world n).state v).blocks[attestation.data.beaconBlockRoot]? = some voted) :
     ((e.world n).state v).validatePayloadVote gloas attestation voted = .ok () := by
-  sorry
+  obtain ⟨head, block, headState, state, headOk, held, -, -, made⟩ := vote.honestData
+  obtain ⟨index, -, dataSlot, dataRoot, -, -⟩ := getAttestationData_eq_ok_iff.mp made
+  have blockEq : block = voted := by
+    rw [dataRoot, held] at known
+    exact Option.some.inj known
+  subst block
+  apply Store.validatePayloadVote_ok_iff.mpr
+  -- Payload validity uses the data's state slot, without identifying it with the duty slot.
+  rw [dataSlot, dataRoot]
+  by_cases same : voted.slot = state.slot
+  · have zero : attestation.data.index = 0 := by
+      simpa [attestationDataIndex, gloas, same] using index.symm
+    simp [zero]
+  · rw [attestationDataIndex_of_glamsterdam_of_ne gloas same] at index
+    cases status : head.payloadStatus with
+    | pending => simp [status] at index
+    | empty =>
+      have zero : attestation.data.index = 0 := by simpa [status] using index.symm
+      simp [zero]
+    | full =>
+      have one : attestation.data.index = 1 := by simpa [status] using index.symm
+      have verified := Store.isPayloadVerified_of_getHead_full gloas headOk status
+      simp [one, same, verified]
 
 /-- Under synchrony, an honest store that accepts an honest vote holds a vote of that validator.
 

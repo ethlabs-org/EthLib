@@ -198,6 +198,68 @@ instance : LawfulSszType (BeaconBlock preset fork) :=
 instance : LawfulSszType (SignedBeaconBlock preset fork) :=
   .container ⟨rfl, by simp, by decide⟩ (fun _ => rfl) (fun _ => rfl)
 
+-- Declared capacities suffice only when no nested count is unbounded.
+private def boundedCounts : Desc → Prop
+  | .byteList limit | .bitList limit => limit < 2 ^ 256
+  | .vector element _ => boundedCounts element
+  | .list element limit => limit < 2 ^ 256 ∧ boundedCounts element
+  | .progressiveList _ _ | .progressiveBitList _ => False
+  | .container _ fields | .progressiveContainer _ _ fields |
+      .compatibleUnion _ fields => ∀ field ∈ fields, boundedCounts field
+  | _ => True
+
+private theorem commitmentSized_of_boundedCounts {shape : Desc} {value : Value}
+    (fits : Fits shape value) (bounded : boundedCounts shape) :
+    CommitmentSized shape value := by
+  -- Admissibility bounds each actual count, and induction handles the nested counts.
+  induction fits <;> simp only [boundedCounts] at bounded
+  case bool => exact .bool _
+  case uint => exact .uint _ _
+  case byteVector => exact .byteVector _ _
+  case bitVector => exact .bitVector _ _
+  case byteList within => exact .byteList (Nat.lt_of_le_of_lt within bounded)
+  case bitList within => exact .bitList (Nat.lt_of_le_of_lt within bounded)
+  case vector ih => exact .vector (fun value member => ih value member bounded)
+  case list within _ ih =>
+    exact .list (Nat.lt_of_le_of_lt within bounded.1)
+      (fun value member => ih value member bounded.2)
+  case container ih | progressiveContainer ih =>
+    constructor
+    intro pair member
+    exact ih pair member (bounded pair.1 (List.of_mem_zip member).1)
+  case compatibleUnion named _ ih =>
+    exact .compatibleUnion named (ih (bounded _ (lookupOption_mem _ _ _ _ named)))
+
+/-- Before Gloas, every nested variable count in a block fits its 256-bit mixing word. -/
+theorem BeaconBlock.commitmentSized (block : BeaconBlock preset fork)
+    (before : fork < .glamsterdam) :
+    CommitmentSized (SszType.desc (BeaconBlock preset fork)) (SszType.toValue block) := by
+  apply commitmentSized_of_boundedCounts (LawfulSszType.fits block)
+  have scalar (n : UInt64) : n.toNat < 2 ^ 256 :=
+    Nat.lt_trans n.toNat_lt (by decide)
+  -- Electra's attester limit is a product of two 64-bit preset entries.
+  have attesters : maxAttesters preset fork < 2 ^ 256 := by
+    unfold maxAttesters
+    split
+    · exact Nat.lt_of_lt_of_le
+        (Nat.mul_lt_mul_of_lt_of_le preset.MAX_VALIDATORS_PER_COMMITTEE.toNat_lt
+          (Nat.le_of_lt preset.MAX_COMMITTEES_PER_SLOT.toNat_lt) (by decide)) (by decide)
+    · exact scalar _
+  have gloas : ¬ Fork.glamsterdam ≤ fork := not_switch_of_lt before
+  have heze : fork < .hegota := Nat.lt_of_lt_of_le before (by decide)
+  have body : boundedCounts (SszType.desc (BeaconBlockBody preset fork)) := by
+    -- Expose the nested fork-switched containers before checking their capacities.
+    dsimp +instances [SszType.desc, BeaconBlockBody.instSszType, SszType.forkContainer,
+      SszType.container, SszType.progressiveContainer, SszFields.descs,
+      instSszTypeIndexedAttestation, Attestation.instSszType, ExecutionPayload.instSszType,
+      ExecutionRequests.instSszType]
+    by_cases altair : Fork.altair ≤ fork <;> by_cases bellatrix : Fork.bellatrix ≤ fork <;>
+      by_cases capella : Fork.shapella ≤ fork <;> by_cases deneb : Fork.dencun ≤ fork <;>
+      by_cases electra : Fork.pectra ≤ fork <;>
+      simp +instances [gloas, before, heze, altair, bellatrix, capella, deneb, electra,
+        Desc.uint64, Desc.uint256, boundedCounts, attesters, scalar]
+  simpa [SszType.desc, SszFields.descs, Desc.uint64, boundedCounts] using body
+
 omit [NeZero preset.BYTES_PER_LOGS_BLOOM.toNat] [NeZero preset.SYNC_COMMITTEE_SIZE.toNat]
   [NeZero preset.MAX_COMMITTEES_PER_SLOT.toNat] [NeZero preset.PTC_SIZE.toNat]
   [NeZero preset.INCLUSION_LIST_COMMITTEE_SIZE.toNat] in
