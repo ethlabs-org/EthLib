@@ -10,8 +10,6 @@ public import Mathlib.Data.Finset.Basic
 Blocks are the actual inputs of successful transitions, with result validation enabled.
 
 No relation over all reachable paths stands in for the selected execution.
-
-This fork-only statement draft deliberately leaves the proofs for review.
 -/
 
 @[expose] public section

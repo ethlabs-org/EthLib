@@ -41,20 +41,6 @@ def Run.Accepted {first last : ForkedBeaconState preset}
   ∃ before after, ∃ step : Step config checks before after,
     run.Contains step ∧ step.Accepted key data
 
-theorem Run.accepted_append {g x y : ForkedBeaconState preset}
-    (pre : Run config checks g x) (tail : Run config checks x y)
-    (key : BLSPubkey) (data : AttestationData) :
-    (pre.append tail).Accepted key data ↔ pre.Accepted key data ∨ tail.Accepted key data := by
-  constructor
-  · rintro ⟨before, after, step, member, accepted⟩
-    rcases (pre.contains_append tail step).mp member with member | member
-    · exact .inl ⟨before, after, step, member, accepted⟩
-    · exact .inr ⟨before, after, step, member, accepted⟩
-  · rintro (⟨before, after, step, member, accepted⟩ |
-      ⟨before, after, step, member, accepted⟩)
-    · exact ⟨before, after, step, (pre.contains_append tail step).mpr (.inl member), accepted⟩
-    · exact ⟨before, after, step, (pre.contains_append tail step).mpr (.inr member), accepted⟩
-
 namespace DirectSafety
 
 /-- The signature interpretation is a separate assumption about accepted block votes. -/

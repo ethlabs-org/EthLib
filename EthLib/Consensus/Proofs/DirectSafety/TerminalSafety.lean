@@ -47,8 +47,8 @@ private theorem view_attestations {g a : ForkedBeaconState preset}
     ∀ key ∈ call.voters, ∃ data, run.Accepted key data ∧
       data.source = call.source ∧ data.target = call.target := by
   cases call with
-  | inl c => exact quorum_attestations_gloas run parameters genesis early c
-  | inr c => exact terminal_quorum_attestations_gloas run parameters genesis early view c
+  | inl c => exact quorum_attestations run parameters genesis early c
+  | inr c => exact terminal_quorum_attestations run parameters genesis early view c
 
 private theorem view_same_epoch {g a b : ForkedBeaconState preset}
     (left : Run config checks g a) (right : Run config checks g b)
@@ -101,17 +101,17 @@ private theorem view_facts {g a : ForkedBeaconState preset}
         run.SlashingEvidence v.pubkey := by
   cases call with
   | inr c =>
-    exact ⟨terminal_quorum_recent_gloas run parameters genesis early view c,
-      terminal_quorum_count run genesis view terminal c, run.slashed_evidence_gloas genesis early⟩
+    exact ⟨terminal_quorum_recent run parameters genesis early view c,
+      terminal_quorum_count run genesis view terminal c, run.slashed_evidence genesis early⟩
   | inl c =>
-    refine ⟨quorum_voters_recent_gloas run parameters genesis early c,
+    refine ⟨quorum_voters_recent run parameters genesis early c,
       quorum_count run genesis enough c, ?_⟩
     obtain ⟨pre, post, split, _, validators, _⟩ := c.toEpochCall.selected_prefix
     have earlyBefore : c.before.fork < .hegota :=
       Nat.lt_of_le_of_lt (fork_le_of_chainSteps
         ((Run.nil.snoc (.slot c.advanced)).append post).chainSteps) early
     intro v found slashed
-    have evidence := pre.slashed_evidence_gloas genesis earlyBefore v
+    have evidence := pre.slashed_evidence genesis earlyBefore v
       (by simpa only [ViewQuorum.state, validators] using found) slashed
     obtain ⟨u, v, step, inside, ev⟩ := evidence
     refine ⟨u, v, step, ?_, ev⟩
@@ -351,8 +351,8 @@ theorem accountable_terminal_finalized_prefix_gloas {g x a b : ForkedBeaconState
   have positive : 0 < f.epoch.toNat := by
     by_contra zero
     have epochZero : f.epoch = 0 := UInt64.toNat_inj.mp (by change f.epoch.toNat = 0; omega)
-    exact paths (by rw [epochZero, checkpointPath_zero_gloas _ earlyA,
-      checkpointPath_zero_gloas _ earlyB])
+    exact paths (by rw [epochZero, checkpointPath_zero _ earlyA,
+      checkpointPath_zero _ earlyB])
   have notGenesis : f ≠ ⟨GENESIS_EPOCH, Vector.replicate 32 0⟩ := by
     intro equal
     have zero : f.epoch.toNat = 0 := by rw [equal]; rfl

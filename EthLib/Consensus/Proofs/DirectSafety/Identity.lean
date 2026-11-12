@@ -2,7 +2,7 @@ module
 
 public import EthLib.Consensus.Proofs.DirectSafety.Attestations
 public import EthLib.Consensus.Proofs.Transition.RegistryIdentity
-public import EthLib.Consensus.Proofs.Models.Stake
+public import EthLib.Consensus.Proofs.Transition.FfgStake
 
 /-!
 # Validator identities and weights
@@ -20,9 +20,6 @@ open Base Cryptography.Bls
 
 variable {preset : Preset} {config : Config} {checks : SignatureChecks}
 
-def registryKeys {fork : Fork} (state : BeaconState preset fork) : List BLSPubkey :=
-  validatorKeys state
-
 def uniqueKeys {fork : Fork} (state : BeaconState preset fork) : Prop :=
   PubkeysDistinct state
 
@@ -39,13 +36,13 @@ def effectiveWeight {fork : Fork} (state : BeaconState preset fork) (key : BLSPu
     (·.effectiveBalance.toNat)).getD 0
 
 theorem genesis_unique {g : ForkedBeaconState preset}
-    (genesis : Genesis (config := config) (checks := checks) g) : uniqueKeys g.state := by
+    (genesis : Genesis (config := config) (checks := checks) g) : PubkeysDistinct g.state := by
   obtain ⟨_, _, _, ok⟩ := genesis
   exact RegistryIdentity.genesis ok
 
 theorem _root_.EthLib.Consensus.Run.unique {g a : ForkedBeaconState preset}
     (run : Run config checks g a)
-    (initial : uniqueKeys g.state) : uniqueKeys a.state :=
+    (initial : PubkeysDistinct g.state) : PubkeysDistinct a.state :=
   (registryIdentity_of_chainSteps run.chainSteps).unique initial
 
 theorem _root_.EthLib.Consensus.Run.key_preserved {g a : ForkedBeaconState preset}
@@ -76,7 +73,7 @@ private theorem key_preserved_from_member {g a before after : ForkedBeaconState 
 
 /-- Indices are interpreted on their own run before converting to a cross-run key. -/
 theorem selected_vote_key {g a : ForkedBeaconState preset} (run : Run config checks g a)
-    (initial : uniqueKeys g.state) (i : ValidatorIndex) (data : AttestationData)
+    (initial : PubkeysDistinct g.state) (i : ValidatorIndex) (data : AttestationData)
     (v : Validator) (found : a.state.validators.data[i.toNat]? = some v)
     (voted : (i, data) ∈ run.votes) : run.Accepted v.pubkey data := by
   -- Preservation at the same index does not require distinct keys.
@@ -105,7 +102,7 @@ theorem selected_vote_key {g a : ForkedBeaconState preset} (run : Run config che
   exact ⟨before, after, step, member, i, old, vote, oldFound, by simpa [equal] using same.symm⟩
 
 theorem keys_weight {fork : Fork} (state : BeaconState preset fork)
-    (indices : List ValidatorIndex) (unique : uniqueKeys state)
+    (indices : List ValidatorIndex) (unique : PubkeysDistinct state)
     (inside : ∀ i ∈ indices, i.toNat < state.validators.data.size) :
     Models.stake (effectiveWeight state) (keysAt state indices) =
       ∑ i ∈ indices.toFinset,
