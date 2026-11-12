@@ -2,6 +2,7 @@ module
 
 public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmationSafety
 public import EthLib.Consensus.Transition.Genesis
+public import EthLib.Serialization.Proofs.Ssz.Typed.Root
 -- The committee certificates reduce the derived equality decision procedure for Except.
 import all Batteries.Data.Except
 -- A zero-round shuffle reads the body of Array.range to enumerate the registry positions.
@@ -535,5 +536,58 @@ theorem parameters :
     3 * 12 < 100 := by
   unfold MaxEffectiveBalancesAligned
   decide
+
+open Serialization.Ssz
+
+/-- An empty phase0 body supplies the header of the initial state. -/
+def body : BeaconBlockBody preset .phase0 := emptyBody (by decide)
+
+/-- The genesis block stores the root of the initial state. -/
+def anchorBlock (stateRoot : Root) : BeaconBlock preset .phase0 :=
+  ⟨0, 0, default, stateRoot, body⟩
+
+set_option maxRecDepth 10000 in
+/-- The five-validator state has a matching anchor and an initialized store.
+
+SSZ totality supplies the roots without evaluating their bytes.
+
+This proves neither that these roots are nonzero nor that different blocks have different roots. -/
+theorem exists_initialization :
+    ∃ (bodyRoot stateRoot anchorRoot : Root) (anchor : Store preset .phase0),
+      SszType.hashTreeRoot body = .ok bodyRoot ∧
+      SszType.hashTreeRoot (state bodyRoot) = .ok stateRoot ∧
+      SszType.hashTreeRoot (anchorBlock stateRoot) = .ok anchorRoot ∧
+      getForkchoiceStore config (state bodyRoot) (anchorBlock stateRoot) = .ok anchor := by
+  -- The lawful state and block instances require positive lengths for their fixed vectors.
+  let : NeZero preset.BYTES_PER_LOGS_BLOOM.toNat := ⟨by decide⟩
+  let : NeZero preset.SYNC_COMMITTEE_SIZE.toNat := ⟨by decide⟩
+  let : NeZero preset.MAX_COMMITTEES_PER_SLOT.toNat := ⟨by decide⟩
+  let : NeZero preset.SLOTS_PER_HISTORICAL_ROOT.toNat := ⟨by decide⟩
+  let : NeZero preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat := ⟨by decide⟩
+  let : NeZero preset.EPOCHS_PER_SLASHINGS_VECTOR.toNat := ⟨by decide⟩
+  let : NeZero ((preset.MIN_SEED_LOOKAHEAD.toNat + 1) * preset.SLOTS_PER_EPOCH.toNat) :=
+    ⟨by decide⟩
+  let : NeZero preset.PTC_SIZE.toNat := ⟨by decide⟩
+  let : NeZero (2 * preset.SLOTS_PER_EPOCH.toNat) := ⟨by decide⟩
+  let : NeZero ((preset.MIN_SEED_LOOKAHEAD.toNat + 2) * preset.SLOTS_PER_EPOCH.toNat) :=
+    ⟨by decide⟩
+  let : NeZero preset.INCLUSION_LIST_COMMITTEE_SIZE.toNat := ⟨by decide⟩
+  obtain ⟨bodyRoot, bodyHashed⟩ := SszType.hashTreeRoot_total body
+  obtain ⟨stateRoot, stateHashed⟩ := SszType.hashTreeRoot_total (state bodyRoot)
+  obtain ⟨anchorRoot, anchorHashed⟩ := SszType.hashTreeRoot_total (anchorBlock stateRoot)
+  refine ⟨bodyRoot, stateRoot, anchorRoot, ?_⟩
+  suffices existsStore : ∃ anchor,
+      getForkchoiceStore config (state bodyRoot) (anchorBlock stateRoot) = .ok anchor by
+    obtain ⟨anchor, anchored⟩ := existsStore
+    exact ⟨anchor, bodyHashed, stateHashed, anchorHashed, anchored⟩
+  -- Initialization checks equality with the state root that totality supplied.
+  have clock : computeTimeAtSlotMs config
+      (secondsToMilliseconds (state bodyRoot).genesisTime) (state bodyRoot).slot = .ok 0 := by
+    rfl
+  simp only [getForkchoiceStore, stateHashed, anchorHashed, clock, Except.mapError,
+    bind, Except.bind]
+  have sameRoot : (anchorBlock stateRoot).stateRoot = stateRoot := rfl
+  simp only [sameRoot, ne_eq, not_true_eq_false, ↓reduceIte]
+  exact ⟨_, rfl⟩
 
 end EthLib.Consensus.Models.Network.FiveValidatorWitness
