@@ -2473,7 +2473,6 @@ private theorem switchToCompounding_coverage {fork : Fork} {s t : BeaconState pr
   cases Option.some.inj (before.symm.trans after)
   rfl
 
-set_option maxHeartbeats 800000 in
 /-- A request classified as not calling churn preserves both departure queues. -/
 theorem consolidationRequest_notCalled {fork : Fork} {s t : BeaconState preset fork}
     (electra : .pectra ≤ fork) {request : ConsolidationRequest}
@@ -2490,7 +2489,6 @@ theorem consolidationRequest_notCalled {fork : Fork} {s t : BeaconState preset f
     | exact switchToCompounding_departureQueues electra (liftAccessor_ok.mp ok)
     | (simp_all only [↓reduceIte, Bool.false_eq_true]; cases classified)
 
-set_option maxHeartbeats 800000 in
 /-- A consolidation request without a churn call assigns no exit epoch. -/
 theorem consolidationRequest_notCalled_coverage {fork : Fork} {s t : BeaconState preset fork}
     (electra : .pectra ≤ fork) {request : ConsolidationRequest}

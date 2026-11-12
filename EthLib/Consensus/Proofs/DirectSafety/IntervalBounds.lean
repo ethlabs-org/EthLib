@@ -988,7 +988,6 @@ private theorem intervalLoss_sites_epoch {fork : Fork} {s : BeaconState preset f
         · exact ⟨resetSites.1.trans depositStep, consolidationStep, .refl _, fun h => by cases h⟩
       · cases rest; exact resetSites
 
-set_option maxHeartbeats 800000 in
 private theorem intervalLoss_sites_block {fork : Fork} {s : BeaconState preset fork}
     (early : fork < .glamsterdam) (engine : ExecutionEngine preset fork)
     (block : BeaconBlock preset fork) {post : BalanceReplay preset fork}

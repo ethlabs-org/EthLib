@@ -1411,7 +1411,6 @@ private theorem attester_slashing_bounds {fork : Fork} {s t : BeaconState preset
   obtain ⟨credit, debit, limits, credits, debits, _⟩ := fold _ s u false flag folded
   exact ⟨credit, debit, limits, credits, debits⟩
 
-set_option maxHeartbeats 800000 in
 private theorem consolidation_request_bounds {fork : Fork} {s t : BeaconState preset fork}
     (electra : .pectra ≤ fork) (request : ConsolidationRequest)
     (ok : processConsolidationRequest config s electra request = .ok t) :
@@ -1508,7 +1507,6 @@ private theorem recordBalance_matched {fork : Fork} (source : BalanceSource)
   subst event
   exact bound pre.1 after credit debit initial.1 limitOk actionOk
 
-set_option maxHeartbeats 800000 in
 private theorem blockBalanceReplay_bounded {fork : Fork} {s : BeaconState preset fork}
     (early : fork < .glamsterdam) (engine : ExecutionEngine preset fork)
     (block : BeaconBlock preset fork) {post : BalanceReplay preset fork}
@@ -1937,7 +1935,6 @@ private theorem coverage_inactivity {fork : Fork} {s t : BeaconState preset fork
     obtain ⟨_, _, _, _, rfl⟩ := ok
     rfl
 
-set_option maxHeartbeats 800000 in
 private theorem coverage_epoch {fork : Fork} {s : BeaconState preset fork}
     {post : BalanceReplay preset fork}
     (early : fork < .glamsterdam)
@@ -1947,7 +1944,7 @@ private theorem coverage_epoch {fork : Fork} {s : BeaconState preset fork}
   unfold epochBalanceReplay at ok
   obtain ⟨justified, justifiedOk, ok⟩ := bind_ok_iff.mp ok
   have justifiedCover := coverage_carry (fun _ _ => coverage_justification)
-    (coverage_refl ⟨fork, s⟩) justifiedOk
+    (coverage_refl ⟨fork, s⟩ : ReplayCoverage s (s, [])) justifiedOk
   by_cases altair : .altair ≤ fork
   case' pos =>
     simp only [altair, ↓reduceDIte] at ok
@@ -2021,7 +2018,6 @@ private theorem coverage_withdrawal_request {fork : Fork} {s t : BeaconState pre
     | (split at ok)
     | (rcases bind_ok_iff.mp ok with ⟨_, _, ok⟩)
 
-set_option maxHeartbeats 800000 in
 private theorem coverage_block {fork : Fork} {s : BeaconState preset fork}
     (early : fork < .glamsterdam) (engine : ExecutionEngine preset fork)
     (block : BeaconBlock preset fork) {post : BalanceReplay preset fork}
@@ -2031,7 +2027,7 @@ private theorem coverage_block {fork : Fork} {s : BeaconState preset fork}
   obtain ⟨headed, headerOk, ok⟩ := bind_ok_iff.mp ok
   have headedCover := coverage_carry (fun a b action => by
     obtain ⟨_, _, rfl⟩ := processBlockHeader_eq action
-    rfl) (coverage_refl ⟨fork, s⟩) headerOk
+    rfl) (coverage_refl ⟨fork, s⟩ : ReplayCoverage s (s, [])) headerOk
   by_cases bellatrix : .bellatrix ≤ fork
   case' pos =>
     simp only [bellatrix, ↓reduceDIte] at ok
@@ -3646,7 +3642,6 @@ private theorem funding_record_events {fork : Fork} {source : BalanceSource}
   · obtain rfl := List.mem_singleton.mp new
     exact zero credit debit limitOk sourceEq electra
 
-set_option maxHeartbeats 800000 in
 private theorem funding_block_events {fork : Fork} {s : BeaconState preset fork}
     (early : fork < .glamsterdam) (engine : ExecutionEngine preset fork)
     (block : BeaconBlock preset fork) {post : BalanceReplay preset fork}
