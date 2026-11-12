@@ -10,8 +10,6 @@ public import Mathlib.Data.Finset.Basic
 Blocks are the actual inputs of successful transitions, with result validation enabled.
 
 No relation over all reachable paths stands in for the selected execution.
-
-This fork-only statement draft deliberately leaves the proofs for review.
 -/
 
 @[expose] public section
@@ -23,7 +21,7 @@ open Base Serialization.Ssz.SszType
 variable {preset : Preset} {config : Config} {checks : SignatureChecks}
 
 structure Parameters (preset : Preset) : Prop where
-  slots : 2 ≤ preset.SLOTS_PER_EPOCH.toNat
+  slots : 1 ≤ preset.SLOTS_PER_EPOCH.toNat
   roots : 4 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat
   lookahead : preset.MIN_SEED_LOOKAHEAD.toNat + 2 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat
   increment : 0 < preset.EFFECTIVE_BALANCE_INCREMENT.toNat

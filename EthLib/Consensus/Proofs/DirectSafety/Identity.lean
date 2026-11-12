@@ -2,7 +2,8 @@ module
 
 public import EthLib.Consensus.Proofs.DirectSafety.Attestations
 public import EthLib.Consensus.Proofs.Transition.RegistryIdentity
-public import EthLib.Base.Proofs.Quorum
+public import EthLib.Consensus.Proofs.Transition.ValidatorKeys
+public import EthLib.Consensus.Proofs.Transition.FfgStake
 
 /-!
 # Validator identities and weights
@@ -20,11 +21,8 @@ open Base Cryptography.Bls
 
 variable {preset : Preset} {config : Config} {checks : SignatureChecks}
 
-def registryKeys {fork : Fork} (state : BeaconState preset fork) : List BLSPubkey :=
-  state.validators.data.toList.map (·.pubkey)
-
 def uniqueKeys {fork : Fork} (state : BeaconState preset fork) : Prop :=
-  (registryKeys state).Nodup
+  PubkeysDistinct state
 
 noncomputable def keysAt {fork : Fork} (state : BeaconState preset fork)
     (indices : List ValidatorIndex) : Finset BLSPubkey := by
@@ -39,32 +37,22 @@ def effectiveWeight {fork : Fork} (state : BeaconState preset fork) (key : BLSPu
     (·.effectiveBalance.toNat)).getD 0
 
 theorem genesis_unique {g : ForkedBeaconState preset}
-    (genesis : Genesis (config := config) (checks := checks) g) : uniqueKeys g.state := by
+    (genesis : Genesis (config := config) (checks := checks) g) : PubkeysDistinct g.state := by
   obtain ⟨_, _, _, ok⟩ := genesis
-  exact RegistryIdentity.genesis ok
+  exact (validatorKeys_prefix_and_distinct_of_genesis_chainSteps ok
+    (last := g) .refl).2
 
 theorem _root_.EthLib.Consensus.Run.unique {g a : ForkedBeaconState preset}
     (run : Run config checks g a)
-    (initial : uniqueKeys g.state) : uniqueKeys a.state := by
-  induction run with
-  | nil => exact initial
-  | snoc pre step ih => exact (RegistryIdentity.chainStep step.chainStep).unique ih
+    (initial : PubkeysDistinct g.state) : PubkeysDistinct a.state :=
+  (validatorKeys_prefix_and_distinct_of_chainSteps run.chainSteps).2 initial
 
 theorem _root_.EthLib.Consensus.Run.key_preserved {g a : ForkedBeaconState preset}
     (run : Run config checks g a)
     (i : Nat) (old : Validator) (found : g.state.validators.data[i]? = some old) :
     ∃ current, a.state.validators.data[i]? = some current ∧ current.pubkey = old.pubkey := by
-  have identity : RegistryIdentity g.state a.state := by
-    induction run with
-    | nil => exact .refl _
-    | snoc pre step ih => exact ih.trans (RegistryIdentity.chainStep step.chainStep)
-  obtain ⟨inside, oldEq⟩ := Array.getElem?_eq_some_iff.mp found
-  have small : i < (validatorKeys g.state).length := by simpa [validatorKeys] using inside
-  have lastSmall : i < a.state.validators.data.size := by
-    simpa [validatorKeys] using Nat.lt_of_lt_of_le small identity.kept.length_le
-  refine ⟨a.state.validators.data[i], by simp [lastSmall], ?_⟩
-  have same := identity.kept.getElem small
-  simpa [validatorKeys, oldEq] using same.symm
+  exact validators_getElem?_of_validatorKeys_prefix
+    (validatorKeys_prefix_and_distinct_of_chainSteps run.chainSteps).1 found
 
 private theorem key_preserved_from_member {g a before after : ForkedBeaconState preset}
     {run : Run config checks g a} {step : Step config checks before after}
@@ -81,7 +69,7 @@ private theorem key_preserved_from_member {g a before after : ForkedBeaconState 
 
 /-- Indices are interpreted on their own run before converting to a cross-run key. -/
 theorem selected_vote_key {g a : ForkedBeaconState preset} (run : Run config checks g a)
-    (initial : uniqueKeys g.state) (i : ValidatorIndex) (data : AttestationData)
+    (initial : PubkeysDistinct g.state) (i : ValidatorIndex) (data : AttestationData)
     (v : Validator) (found : a.state.validators.data[i.toNat]? = some v)
     (voted : (i, data) ∈ run.votes) : run.Accepted v.pubkey data := by
   -- Preservation at the same index does not require distinct keys.
@@ -110,9 +98,9 @@ theorem selected_vote_key {g a : ForkedBeaconState preset} (run : Run config che
   exact ⟨before, after, step, member, i, old, vote, oldFound, by simpa [equal] using same.symm⟩
 
 theorem keys_weight {fork : Fork} (state : BeaconState preset fork)
-    (indices : List ValidatorIndex) (unique : uniqueKeys state)
+    (indices : List ValidatorIndex) (unique : PubkeysDistinct state)
     (inside : ∀ i ∈ indices, i.toNat < state.validators.data.size) :
-    Quorum.weight (effectiveWeight state) (keysAt state indices) =
+    Models.stake (effectiveWeight state) (keysAt state indices) =
       ∑ i ∈ indices.toFinset,
         ((state.validators.data[i.toNat]?).map (·.effectiveBalance.toNat)).getD 0 := by
   classical
@@ -132,7 +120,7 @@ theorem keys_weight {fork : Fork} (state : BeaconState preset fork)
   let key (i : ValidatorIndex) (hi : i ∈ indices.toFinset) : BLSPubkey :=
     (state.validators.data[i.toNat]'(inside i (List.mem_toFinset.mp hi))).pubkey
   -- Distinct registry keys make the index-to-key map a bijection on the selected set.
-  unfold Quorum.weight
+  unfold Models.stake
   symm
   apply Finset.sum_bij key
   · intro i hi
@@ -142,9 +130,9 @@ theorem keys_weight {fork : Fork} (state : BeaconState preset fork)
   · intro i hi j hj same
     apply UInt64.toNat_inj.mp
     apply unique.eq_of_getElem_eq
-      (by simpa [registryKeys] using inside i (List.mem_toFinset.mp hi))
-      (by simpa [registryKeys] using inside j (List.mem_toFinset.mp hj))
-    simpa [registryKeys, key] using same
+      (by simpa [validatorKeys] using inside i (List.mem_toFinset.mp hi))
+      (by simpa [validatorKeys] using inside j (List.mem_toFinset.mp hj))
+    simpa [validatorKeys, key] using same
   · intro k hk
     simp only [keysAt, List.mem_toFinset, List.mem_filterMap] at hk
     obtain ⟨i, hi, found⟩ := hk

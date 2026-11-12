@@ -14,7 +14,7 @@ An empty range of slots weighs nothing, and so does a sum over no items.
 
 The adversary has no weight in an empty range.
 
-A sum is the sum of its weights.
+A sum is the sum of its weights, so at most the sum of bounds on them.
 
 A range of slots that ends later has every member of the committees of a shorter one.
 
@@ -87,6 +87,28 @@ theorem toNat_eq_of_sumGwei {α : Type} {items : List α}
     subst summed
     rw [Nat.toUInt64_eq, UInt64.toNat_ofNat', Nat.mod_eq_of_lt (by omega)]
     omega
+
+/-- A sum that the store computes is at most the sum of bounds on its weights. -/
+theorem toNat_le_of_sumGwei {α : Type} {items : List α}
+    {weight : α → Except ForkChoiceError Gwei} {bound : α → Nat} {total : Gwei}
+    (summed : sumGwei items weight = .ok total)
+    (each : ∀ item ∈ items, ∀ value, weight item = .ok value → value.toNat ≤ bound item) :
+    total.toNat ≤ (items.map bound).sum := by
+  let value : α → Nat := fun item => match weight item with
+    | .ok computed => computed.toNat
+    | .error _ => 0
+  rw [toNat_eq_of_sumGwei (value := value) summed fun item _ computed computedOk => by
+    simp only [value, computedOk]]
+  clear summed
+  induction items with
+  | nil => simp
+  | cons first rest ih =>
+    simp only [List.map_cons, List.sum_cons]
+    refine Nat.add_le_add ?_ (ih fun item member => each item (List.mem_cons_of_mem _ member))
+    · cases computed : weight first with
+      | error _ => simp only [value, computed, Nat.zero_le]
+      | ok computed' =>
+        simpa only [value, computed] using each first List.mem_cons_self computed' computed
 
 /-- The validator at an index is the one that the registry holds there. -/
 theorem validatorAt_ok_iff {state : BeaconState preset fork} {index : ValidatorIndex}
@@ -243,7 +265,9 @@ theorem getCommitteesBetweenSlots_of_gt {head : Root} {startSlot endSlot : Slot}
 
 /-- A slot is before another when the committees of the slots between them have a member.
 
-The range starts at the slot after the first and ends at the slot before the second. -/
+The range starts at the slot after the first and ends at the slot before the second.
+
+This is the empty-slot range of arXiv 2405.00549v4, Definition 5. -/
 theorem lt_of_mem_getCommitteesBetweenSlots {head : Root} {low high firstSlot lastSlot : Slot}
     {participants : Std.TreeSet ValidatorIndex} {v : ValidatorIndex}
     (firstOk : Uint64.addChecked low 1 = .ok firstSlot)
@@ -376,7 +400,9 @@ theorem computeAdversarialWeight_eq_spec {config : Config} {head : Root}
   · have := getCommitteesBetweenSlots_of_computeCommitteeWeightAndMembers pair
     simp [bind, Except.bind, pure, Except.pure, getEquivocationScore, this]
 
-/-- A range of slots that starts after it ends has no adversarial weight. -/
+/-- A range of slots that starts after it ends has no adversarial weight.
+
+This serves the case of arXiv 2405.00549v4, Definition 5, with no empty slot. -/
 theorem computeAdversarialWeight_of_gt {config : Config} {head : Root}
     {balanceSource : BeaconState preset fork} {startSlot endSlot : Slot}
     (empty : endSlot < startSlot) :
@@ -388,7 +414,14 @@ theorem computeAdversarialWeight_of_gt {config : Config} {head : Root}
   have noScore : store.getEquivocationScoreOf balanceSource ∅ = .ok 0 := by
     unfold getEquivocationScoreOf
     rw [noMember]
-    simp [filterM_nil, sumGwei_nil, bind, Except.bind, pure, Except.pure]
+    obtain ⟨out, filtered⟩ := filterM_exists_ok
+      (test := fun v : ValidatorIndex => do
+        return isActiveValidator (← validatorAt balanceSource v) (getCurrentEpoch balanceSource))
+      (list := []) (by simp)
+    have emptyOut := List.eq_nil_of_sublist_nil (sublist_of_filterM_ok filtered)
+    simp only [List.filter_nil]
+    rw [filtered, emptyOut]
+    simp only [bind, Except.bind, sumGwei_nil]
   rw [computeAdversarialWeight_eq_spec, computeCommitteeWeightBetweenSlots_of_gt empty]
   simp only [getEquivocationScore, getCommitteesBetweenSlots_of_gt empty, noShare, noScore, bind,
     Except.bind, pure, Except.pure, Except.mapError]

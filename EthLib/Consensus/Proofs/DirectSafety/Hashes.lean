@@ -70,7 +70,7 @@ def HashEvidence (objects : List (HashObject preset)) : Prop :=
     MessageCollision x y) ∨
   ∃ object ∈ objects, object.root = some (Vector.replicate 32 0)
 
-theorem header_binding (objects : List (HashObject preset)) (a b : BeaconBlockHeader)
+private theorem header_binding (objects : List (HashObject preset)) (a b : BeaconBlockHeader)
     (one : .header a ∈ objects) (two : .header b ∈ objects) (root : Root)
     (sameA : hashTreeRoot a = .ok root) (sameB : hashTreeRoot b = .ok root) :
     a = b ∨ HashEvidence objects := by
@@ -125,111 +125,13 @@ private theorem header_deposit {fork : Fork} {before after : BeaconState preset 
   obtain ⟨_, _, _, _, applied⟩ := processDeposit_ok ok
   exact (frame_applyDeposit applied).latestBlockHeader
 
-private theorem header_operations {fork : Fork} {before after : BeaconState preset fork}
-    {body : BeaconBlockBody preset fork} {parentSlot : Slot}
-    (ok : processOperations config checks before body parentSlot = .ok after) :
-    after.latestBlockHeader = before.latestBlockHeader := by
-  have foldHeader {α : Type} {f : BeaconState preset fork → α → Except TransitionError _}
-      (keeps : ∀ s x t, f s x = .ok t → t.latestBlockHeader = s.latestBlockHeader)
-      {s t : BeaconState preset fork} {xs : List α} (h : xs.foldlM f s = .ok t) :
-      t.latestBlockHeader = s.latestBlockHeader :=
-    foldlM_ok_invariant (fun t => t.latestBlockHeader = s.latestBlockHeader)
-      (fun _ _ _ before ok => (keeps _ _ _ ok).trans before) rfl h
-  by_cases gloas : .glamsterdam ≤ fork
-  · exact (payloadInputs_processOperations gloas ok).latestBlockHeader
-  · simp only [processOperations, gloas, ↓reduceDIte, bind_ok_iff, ensure_ok_iff,
-      ← Array.foldlM_toList] at ok
-    obtain ⟨_, _, _, _, _, proposers, _, attesters, _, attestations, _, deposits, exited,
-      exits, changed, changes, requests⟩ := ok
-    have changesKept : changed.latestBlockHeader = exited.latestBlockHeader := by
-      unfold processBlsToExecutionChanges at changes
-      split at changes
-      · rw [← Array.foldlM_toList] at changes
-        exact foldHeader (fun _ _ _ h =>
-          (payloadInputs_processBlsToExecutionChange h).latestBlockHeader) changes
-      · cases changes
-        rfl
-    have requestsKept : after.latestBlockHeader = changed.latestBlockHeader := by
-      split at requests
-      · simp only [processExecutionRequests, bind_ok_iff, ← Array.foldlM_toList] at requests
-        obtain ⟨_, dep, _, wit, con⟩ := requests
-        exact (foldHeader (fun _ _ _ h =>
-          (payloadInputs_processConsolidationRequest h).latestBlockHeader) con).trans <|
-          (foldHeader (fun _ _ _ h =>
-            (payloadInputs_processWithdrawalRequest h).latestBlockHeader) wit).trans <|
-          foldHeader (fun _ _ _ h => (payloadInputs_processDepositRequest h).latestBlockHeader) dep
-      · cases requests
-        rfl
-    exact requestsKept.trans <| changesKept.trans <|
-      (foldHeader (fun _ _ _ h => (payloadInputs_processVoluntaryExit h).latestBlockHeader)
-        exits).trans <|
-      (foldHeader (fun _ _ _ h => header_deposit h) deposits).trans <|
-      (foldHeader (fun _ _ _ h => (payloadInputs_processAttestation h).latestBlockHeader)
-        attestations).trans <|
-      (foldHeader (fun _ _ _ h => (payloadInputs_processAttesterSlashing h).latestBlockHeader)
-        attesters).trans <|
-      foldHeader (fun _ _ _ h => (payloadInputs_processProposerSlashing h).latestBlockHeader)
-        proposers
-
-private theorem header_execution {fork : Fork} {before after : BeaconState preset fork}
-    {engine : ExecutionEngine preset fork} {body : BeaconBlockBody preset fork}
-    {bellatrix : .bellatrix ≤ fork}
-    (ok : processBlockExecution config checks engine before body bellatrix = .ok after) :
-    after.latestBlockHeader = before.latestBlockHeader := by
-  have payload {before after : BeaconState preset fork}
-      {during : .bellatrix ≤ fork ∧ fork < .glamsterdam}
-      (ok : processExecutionPayload config engine before body during = .ok after) :
-      after.latestBlockHeader = before.latestBlockHeader := by
-    obtain ⟨_, _, _, rfl⟩ := processExecutionPayload_ok ok
-    rfl
-  unfold processBlockExecution at ok
-  split at ok
-  · obtain ⟨_, withdrawn, bid⟩ := bind_ok_iff.mp ok
-    exact (payloadInputs_processExecutionPayloadBid bid).latestBlockHeader.trans
-      (payloadInputs_processWithdrawals withdrawn).latestBlockHeader
-  · split at ok
-    · obtain ⟨_, withdrawn, executed⟩ := bind_ok_iff.mp ok
-      exact (payload executed).trans (payloadInputs_processWithdrawals withdrawn).latestBlockHeader
-    · dsimp only at ok
-      split at ok
-      · exact payload ok
-      · cases ok
-        rfl
-
 private theorem block_header {fork : Fork} {before after : BeaconState preset fork}
     {engine : ExecutionEngine preset fork} {block : BeaconBlock preset fork}
     (ok : processBlock config checks engine before block = .ok after) :
     ∃ root, hashTreeRoot block.body = .ok root ∧
       after.latestBlockHeader = ⟨block.slot, block.proposerIndex, block.parentRoot,
         Vector.replicate 32 0, root⟩ := by
-  by_cases gloas : .glamsterdam ≤ fork
-  · exact latestBlockHeader_processBlock gloas ok
-  · unfold processBlock at ok
-    split at ok
-    · simp only [processBlockAltair, gloas, ↓reduceDIte, pure_bind, bind_ok_iff] at ok
-      obtain ⟨headed, headedOk, executed, executedOk, revealed, revealedOk, voted, votedOk,
-        operated, operatedOk, synced⟩ := ok
-      have executedKept : executed.latestBlockHeader = headed.latestBlockHeader := by
-        split at executedOk
-        · exact header_execution executedOk
-        · cases executedOk
-          rfl
-      have votedKept : voted.latestBlockHeader = revealed.latestBlockHeader := by
-        split at votedOk
-        · exact (payloadInputs_processEth1Data votedOk).latestBlockHeader
-        · cases votedOk
-          rfl
-      obtain ⟨root, hashed, eq⟩ := processBlockHeader_eq headedOk
-      refine ⟨root, hashed, ?_⟩
-      rw [(payloadInputs_processSyncAggregate synced).latestBlockHeader,
-        header_operations operatedOk, votedKept,
-        (payloadInputs_processRandao revealedOk).latestBlockHeader, executedKept, eq]
-    · simp only [bind_ok_iff] at ok
-      obtain ⟨headed, headedOk, revealed, revealedOk, voted, votedOk, operatedOk⟩ := ok
-      obtain ⟨root, hashed, eq⟩ := processBlockHeader_eq headedOk
-      refine ⟨root, hashed, ?_⟩
-      rw [header_operations operatedOk, (payloadInputs_processEth1Data votedOk).latestBlockHeader,
-        (payloadInputs_processRandao revealedOk).latestBlockHeader, eq]
+  exact latestBlockHeader_processBlock ok
 
 private theorem genesis_header {g : ForkedBeaconState preset}
     (genesis : Genesis (config := config) (checks := checks) g) :
@@ -754,14 +656,14 @@ theorem checkpoint_binding {g a b : ForkedBeaconState preset}
     · exact False.elim (evidence collision)
   · exact False.elim (evidence collision)
 
-private theorem hashObjects_append_subset {g a b : ForkedBeaconState preset}
+theorem hashObjects_append_subset {g a b : ForkedBeaconState preset}
     (pre : Run config checks g a) (tail : Run config checks a b) :
     pre.hashObjects ⊆ (pre.append tail).hashObjects := by
   induction tail with
   | nil => exact fun _ h => h
   | snoc tail step ih => exact fun _ h => List.mem_append_left _ (ih h)
 
-private theorem hashEvidence_mono {one two : List (HashObject preset)}
+theorem hashEvidence_mono {one two : List (HashObject preset)}
     (subset : one ⊆ two) (evidence : HashEvidence one) : HashEvidence two := by
   rcases evidence with ⟨x, xm, y, ym, collision⟩ | ⟨object, member, zero⟩
   · left

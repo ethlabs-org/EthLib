@@ -84,7 +84,7 @@ theorem reachable_effective_alignment {g x : ForkedBeaconState preset}
   have numeric := congrArg UInt64.toNat whole
   simpa only [UInt64.toNat_mod, UInt64.reduceToNat] using numeric
 
-private def EffectiveKept {f h : Fork} (s : BeaconState preset f)
+def EffectiveKept {f h : Fork} (s : BeaconState preset f)
     (t : BeaconState preset h) : Prop :=
   ∀ i, i < s.validators.data.size → effectiveAt ⟨h, t⟩ i = effectiveAt ⟨f, s⟩ i
 
@@ -214,7 +214,7 @@ private theorem effectiveKept_applyDeposit {f : Fork} {s t : BeaconState preset 
         obtain ⟨middle, added, queued⟩ := ok
         obtain ⟨_, rfl⟩ := addPendingDeposit_eq queued
         exact effectiveKept_trans (effectiveKept_add added) (effectiveKept_data rfl)
-          (frame_addValidatorToRegistry added).registryGrows
+          (by rw [addValidatorToRegistry_validators_eq_push added]; simp)
       · cases ok; exact effectiveKept_refl _
     · obtain ⟨_, rfl⟩ := addPendingDeposit_eq (liftAccessor_ok.mp ok)
       exact effectiveKept_refl _
@@ -552,7 +552,8 @@ private theorem effectiveKept_operations {f : Fork} {s t : BeaconState preset f}
             split at changesOk
             · rw [← Array.foldlM_toList] at changesOk
               exact (RegistryLifecycle.foldlM
-                (fun _ _ _ ok => registryLifecycle_processBlsToExecutionChange ok) changesOk).size_le
+                (fun _ _ _ ok => registryLifecycle_processBlsToExecutionChange ok)
+                changesOk).size_le
             · cases changesOk; exact Nat.le_refl _
           · exact (RegistryLifecycle.foldlM
               (fun _ _ _ ok => registryLifecycle_processVoluntaryExit ok) exits).size_le
@@ -1964,7 +1965,7 @@ private theorem admissionFunded_block {f : Fork} {s t : BeaconState preset f}
       · cases executedOk; exact .refl _
     have executionKeys : RegistryIdentity headed executed := by
       split at executedOk
-      · exact RegistryIdentity.processBlockExecution executedOk
+      · exact (frame_processBlockExecution executedOk).toFrame.registryIdentity
       · cases executedOk; exact .refl _
     have executionCommittee : executed.currentSyncCommittee altair =
         headed.currentSyncCommittee altair := by
@@ -1977,7 +1978,7 @@ private theorem admissionFunded_block {f : Fork} {s t : BeaconState preset f}
       · cases votedOk; exact .refl _
     have votedKeys : RegistryIdentity revealed voted := by
       split at votedOk
-      · exact RegistryIdentity.processEth1Data votedOk
+      · exact (frame_processEth1Data votedOk).toFrame.registryIdentity
       · cases votedOk; exact .refl _
     have votedCommittee : voted.currentSyncCommittee = revealed.currentSyncCommittee := by
       split at votedOk
@@ -1992,9 +1993,9 @@ private theorem admissionFunded_block {f : Fork} {s t : BeaconState preset f}
     intro key member index indexed
     apply balanceDrift_indexOfPubkey_lt ?_ indexed
     apply balanceDrift_old_key
-      ((RegistryIdentity.processBlockHeader headedOk).trans (executionKeys.trans
-        ((RegistryIdentity.processRandao revealedOk).trans (votedKeys.trans
-          (RegistryIdentity.processOperations operatedOk)))))
+      ((frame_processBlockHeader headedOk).toFrame.registryIdentity.trans (executionKeys.trans
+        ((frame_processRandao revealedOk).toFrame.registryIdentity.trans (votedKeys.trans
+          (frame_processOperations operatedOk).registryIdentity))))
     apply keys altair key
     have same : operated.currentSyncCommittee altair = s.currentSyncCommittee altair := by
       rw [processOperations_currentSyncCommittee altair operatedOk, votedCommittee,

@@ -115,7 +115,9 @@ theorem honest_ratio_of_new_votes [DecidableEq ν] {H K N H' : Finset ν} {a c :
 
 The supporters `S` and the equivocators `I` are disjoint parts of `W`.
 
-No equivocator is honest. -/
+No equivocator is honest.
+
+This is the disjoint accounting used in arXiv 2405.00549v4, Appendix A.1, Lemma 4. -/
 theorem byzantine_support_add_le {W S I : Finset ν} (supportIn : S ⊆ W) (equivocatorsIn : I ⊆ W)
     (apart : Disjoint S I) (dishonest : ∀ v ∈ I, v ∉ J) :
     stake w {v ∈ S | v ∉ J} + stake w I ≤ stake w {v ∈ W | v ∉ J} := by
@@ -137,7 +139,9 @@ No equivocator is honest.
 
 The adversary and the equivocators must cover the Byzantine share `β W`.
 
-Each set stands for its stake, and the difference is zero when the adversary is larger. -/
+Each set stands for its stake, and the difference is zero when the adversary is larger.
+
+This is the honest lower bound of arXiv 2405.00549v4, Definition 5, under Assumption 2. -/
 theorem sub_le_honest_support {W S I : Finset ν} {adversary num den : ℕ}
     (bound : ByzantineStakeAtMost w W J num den) (supportIn : S ⊆ W) (equivocatorsIn : I ⊆ W)
     (apart : Disjoint S I) (dishonest : ∀ v ∈ I, v ∉ J)

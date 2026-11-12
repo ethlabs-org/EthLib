@@ -22,7 +22,7 @@ open Base Cryptography.Bls
 variable {preset : Preset} {config : Config} {checks : SignatureChecks}
 
 noncomputable def leaving (x y : ForkedBeaconState preset) : Nat :=
-  Quorum.weight (effectiveWeight x.state) (activeKeys x.state \ activeKeys y.state)
+  Models.stake (effectiveWeight x.state) (activeKeys x.state \ activeKeys y.state)
 
 noncomputable def losing (x y : ForkedBeaconState preset) : Nat :=
   ∑ k ∈ activeKeys x.state ∩ activeKeys y.state,
@@ -38,18 +38,18 @@ noncomputable def referenceLoss (x y : ForkedBeaconState preset) : Nat := by
   let unslashed := (activeKeys x.state).filter fun k =>
     ¬ ∃ v ∈ y.state.validators.data.toList, v.pubkey = k ∧ v.slashed = true
   exact ∑ k ∈ unslashed,
-    (effectiveWeight x.state k - Quorum.supported (recentKeys y.state)
+    (effectiveWeight x.state k - Models.supported (recentKeys y.state)
       (effectiveWeight y.state) k)
 
 /-- Exact gains on the voting support, without charging reference stake that just exited. -/
 noncomputable def referenceGain (x y : ForkedBeaconState preset) : Nat :=
   ∑ k ∈ recentKeys y.state,
-    (effectiveWeight y.state k - Quorum.supported (activeKeys x.state)
+    (effectiveWeight y.state k - Models.supported (activeKeys x.state)
       (effectiveWeight x.state) k)
 
 /-- Previous-epoch stake outside the current quorum denominator, at one boundary only. -/
 noncomputable def boundaryStake (y : ForkedBeaconState preset) : Nat :=
-  Quorum.weight (effectiveWeight y.state) (recentKeys y.state \ activeKeys y.state)
+  Models.stake (effectiveWeight y.state) (recentKeys y.state \ activeKeys y.state)
 
 /-- The combined transfer assigns coefficients two, one and two to loss, gain and boundary stake.
 

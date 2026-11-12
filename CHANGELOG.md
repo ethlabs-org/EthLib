@@ -15,10 +15,30 @@ Not yet released.
   Callers must supply the endpoint and bound each voting deadline by it when using `Votes`.
   `VoteAt` gains the field `committees`: its constructors must prove that `checkAttestationCommittees` succeeds in every target state read by the voter's store.
   No C export or Python function changes.
-- In Lean, `toNat_le_of_sumGwei` is gone from `EthLib.Consensus.Proofs.ForkChoice.FastConfirmation` ([#1458](https://github.com/ethereum/EthLib/issues/1458)).
-  `Store.getNodeSupportBetweenSlots_le`, the one theorem that read it, now follows from the new `Store.exists_stake_of_getNodeSupportBetweenSlots`.
-  A caller can use `toNat_eq_of_sumGwei`, which gives the sum itself, and bound its terms.
+
+- Along a chain from genesis, the public keys of the validators stay a prefix and stay distinct ([#1421](https://github.com/ethereum/EthLib/issues/1421)).
   No C export or Python function changes.
+  In Lean, `Frame` and `UpgradeFrame` gain the fields `pubkeysPrefix` and `pubkeysDistinct`.
+  They bring back the key-keeping fact that [#1950](https://github.com/ethereum/EthLib/pull/1950) removed for [#1908](https://github.com/ethereum/EthLib/issues/1908), where it was named `KeysKept`.
+  `validatorKeys` lists the keys of the registry and `PubkeysDistinct` says that they have no repeat.
+  `validatorKeys_prefix_and_distinct_of_chainSteps` states, for a run of steps, that the keys of its first state are a prefix of the keys of its last state.
+  It also states that distinct keys stay distinct.
+  `validatorKeys_prefix_and_distinct_of_genesis_chainSteps` states both along a chain from genesis.
+  `frame_addValidatorToRegistry` takes a proof that the key is not in the registry, and `EpochFrameLaws.addValidatorToRegistry` takes it too.
+  `frame_setValidatorAt_of_whole`, `frame_setValidator_of_whole`, `EpochFrameLaws.setValidator` and the `setValidatorAt` field of `EpochFrameLaws` take the old validator and a proof that the state holds it at that position.
+  They also take a proof that the new validator keeps the key of the old one.
+  `frame_setValidator`, `EpochFrameLaws.setValidator_of_sameBalance` and `EpochFrameLaws.setValidatorAt_of_sameBalance` take the proof of the key.
+  `applyPendingDeposit_cases` decomposes a pending deposit.
+  `addValidatorToRegistry_slot` states that adding a validator keeps the slot.
+
+- In Lean, the gossip message ID has its length in its type.
+  `Gossip.messageId` returns `Vector UInt8 20` in place of a `ByteArray`.
+  A caller that needs a `ByteArray` takes `Base.packBytes (messageId fork topic data)`.
+  `messageId_size` is removed, since the type states the length.
+  `messageId_of_ok` and `messageId_of_error` state the ID as `(Sha256.hash32 input).take 20`.
+  The new `packBytes_messageId_of_ok` and `packBytes_messageId_of_error` state their former equations, through `Base.packBytes`.
+  The C export `eth_gossip_message_id` and the Python `gossip.message_id` are unchanged.
+
 - Slashing-protection imports use EIP-3076's minimal strategy ([#1963](https://github.com/ethereum/EthLib/issues/1963)).
   Import compacts both the held record and the file: each key keeps its greatest block slot and its greatest source and target epochs, taken independently, without signing roots.
   So a repeat of any message held before the import is refused, and so is a block at or before the slot limit, or a vote with a source before the source limit or a target at or before the target limit.
@@ -501,6 +521,39 @@ Not yet released.
   The exports decode each transaction at its fork first, so their answers do not change.
   In Lean, `validateTransaction_eq_ok_iff` ends with the new conjunct `tx.fork ≤ fork`, and `checkInclusion_fork_le` derives it from a passing inclusion check.
   `processTransaction_nonce_lt` no longer takes the hypothesis `tx.fork ≤ fork`.
+- The write law of `EpochFrameLaws` keeps the slashed flag exactly.
+  Its field `setValidatorAt` said only that a set flag stays set.
+  So a relation that must also see that no flag appears could not be an instance of the law.
+  In Lean, the premise of `EpochFrameLaws.setValidatorAt` changes from `old.slashed = true → validator.slashed = true` to `validator.slashed = old.slashed`.
+  A caller of the law now supplies `validator.slashed = old.slashed` in place of the one-way form.
+  For a write that keeps the flag, `rfl` proves it.
+  An instance of the law now receives that equality and proves nothing more about the flag.
+  It derives the former hypothesis with `fun marked => flag.trans marked`.
+  No C export or Python function changes.
+- The slashed persistence of the transition steps now comes from their frames.
+  In Lean, 31 theorems of `EthLib.Consensus.SlashedPersistence` are removed.
+  They are `foldlM`, `advanceSlot`, `upgradeNext`, `processUpgrades`, `increaseBalance`, `decreaseBalance`, and the 25 others that carry the name of a `process` function of the transition.
+  A caller applies `SlashedPersistence.of_frame` to the frame lemma of the step, such as `frame_processBlock`, with `.toFrame` where that lemma gives an epoch or mutator frame.
+  For an upgrade it applies `SlashedPersistence.of_upgradeFrame` to `upgradeFrame_upgradeNext`.
+  `Step.slashedPersistence` and `Run.slashedPersistence` no longer take the argument `early : y.fork < .glamsterdam`.
+  Callers drop that argument, and the conclusions are unchanged.
+  No C export or Python function changes.
+- `EthLib.Consensus.DirectSafety.quorum_drift_from_run` is removed.
+  It had no callers in this repository and duplicated parts of the existing accountable-safety proof.
+  Other theorem statements are unchanged.
+  No C export or Python function changes.
+- `EthLib.Consensus.DirectSafety.Authenticated` and `EthLib.Consensus.DirectSafety.accepted_evidence_is_signed` are removed.
+  `accepted_evidence_is_signed` took a predicate `signed`, a proof for each run that every vote it accepted satisfies `signed`, and `Slashable left right key`.
+  It concluded that two conflicting data satisfy `signed`.
+  It has no direct replacement.
+  `EthLib.Consensus.DirectSafety.verifiedConflict_of_accountable` gives the executed checks instead.
+  It takes `Accountable left right key`, which `Or.inl` makes from `Slashable left right key`.
+  It also takes the premise `MIN_SEED_LOOKAHEAD + 2 < EPOCHS_PER_HISTORICAL_VECTOR`.
+  For each accountable key, it gives two conflicting attestations or two conflicting proposer headers.
+  Each comes with the successful check that a block of one of the two runs executed.
+  The theorem exposes executed checks, not signing acts, and it makes no assumption about the signature checks.
+  A caller that needs the statement that a validator signed must prove that step from the checks.
+  No C export or Python function changes.
 
 ## 0.3.0
 

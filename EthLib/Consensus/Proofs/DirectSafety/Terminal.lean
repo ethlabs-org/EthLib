@@ -38,7 +38,7 @@ def TerminalView.enough {a : ForkedBeaconState preset} (view : TerminalView a) :
   | .realized => True
   | .pulled _ _ => GENESIS_EPOCH + 1 < getCurrentEpoch a.state →
       3 * preset.EFFECTIVE_BALANCE_INCREMENT.toNat <
-        2 * Quorum.weight (effectiveWeight a.state) (activeKeys a.state)
+        2 * Models.stake (effectiveWeight a.state) (activeKeys a.state)
 
 /-- Charge the actual terminal input, not a hypothetical future endpoint. -/
 noncomputable def terminalDrift {x a : ForkedBeaconState preset}
@@ -69,15 +69,7 @@ structure TerminalQuorum {a : ForkedBeaconState preset} (view : TerminalView a) 
   targetRoot : getBlockRoot a.state target.epoch = .ok target.root
   indices : List ValidatorIndex
   counted : targetIndices a.state target.epoch = .ok indices
-  total : Gwei
-  part : Gwei
-  threshold : Gwei
-  weighted : Gwei
-  totalOk : getTotalActiveBalance a.state = .ok total
-  partOk : getTotalBalance a.state indices = .ok part
-  thresholdOk : Uint64.mulChecked total 2 = .ok threshold
-  weightedOk : Uint64.mulChecked part 3 = .ok weighted
-  passes : threshold ≤ weighted
+  passes : JustificationPasses a.state indices
 
 def TerminalQuorum.source {a : ForkedBeaconState preset} {view : TerminalView a}
     (call : TerminalQuorum view) : Checkpoint :=

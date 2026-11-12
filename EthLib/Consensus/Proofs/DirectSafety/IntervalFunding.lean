@@ -929,7 +929,7 @@ def sourceTotal (events : List (BalanceEvent preset)) (source : BalanceSource)
     (amount : BalanceEvent preset → Nat) : Nat :=
   ((events.filter fun e => e.source == source).map amount).sum
 
-private def EventsBounded (events : List (BalanceEvent preset)) : Prop :=
+def EventsBounded (events : List (BalanceEvent preset)) : Prop :=
   ∀ event ∈ events, event.credits ≤ event.creditLimit ∧ event.debits ≤ event.debitLimit
 
 private theorem eventsBounded_append {left right : List (BalanceEvent preset)}
@@ -1123,7 +1123,7 @@ private theorem epochBalanceReplay_bounded {fork : Fork} {s : BeaconState preset
     have resetMatch := (frame_processEth1DataReset resetOk).balancesMatch slashedFacts.1
     split at last
     · rename_i electra
-      simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at last
+      simp only [bind_ok_iff, Except.ok.injEq] at last
       obtain ⟨deposited, depositOk, consolidated, consolidationOk, rfl⟩ := last
       have deposits := pending_deposit_bound reset deposited resetMatch electra depositOk
       have consolidations :=
@@ -1411,7 +1411,6 @@ private theorem attester_slashing_bounds {fork : Fork} {s t : BeaconState preset
   obtain ⟨credit, debit, limits, credits, debits, _⟩ := fold _ s u false flag folded
   exact ⟨credit, debit, limits, credits, debits⟩
 
-set_option maxHeartbeats 800000 in
 private theorem consolidation_request_bounds {fork : Fork} {s t : BeaconState preset fork}
     (electra : .pectra ≤ fork) (request : ConsolidationRequest)
     (ok : processConsolidationRequest config s electra request = .ok t) :
@@ -1508,7 +1507,6 @@ private theorem recordBalance_matched {fork : Fork} (source : BalanceSource)
   subst event
   exact bound pre.1 after credit debit initial.1 limitOk actionOk
 
-set_option maxHeartbeats 800000 in
 private theorem blockBalanceReplay_bounded {fork : Fork} {s : BeaconState preset fork}
     (early : fork < .glamsterdam) (engine : ExecutionEngine preset fork)
     (block : BeaconBlock preset fork) {post : BalanceReplay preset fork}
@@ -1660,8 +1658,7 @@ private theorem blockBalanceReplay_bounded {fork : Fork} {s : BeaconState preset
           dsimp only [bind, Except.bind] at limits
           simp only [bind, Except.bind] at proposerOk
           rw [proposerOk] at limits
-          simp only [bind, Except.bind, pure, Except.pure,
-            Except.ok.injEq] at limits
+          simp only [pure, Except.pure, Except.ok.injEq] at limits
           cases limits
           exact bounds
         exact final.2
@@ -1732,8 +1729,6 @@ private theorem stepBalanceEvents_bounded {x y : ForkedBeaconState preset}
 theorem source_bounds_over_interval {g x y : ForkedBeaconState preset}
     (shared : Run config checks g x) (tail : Run config checks x y)
     (genesis : Genesis (config := config) (checks := checks) g)
-    (parameters : Parameters preset) (caps : CapOrder preset)
-    (alignedCaps : MaxEffectiveBalancesAligned preset)
     (early : y.fork < .glamsterdam) (high : Nat) :
     ∃ events, tail.balanceEvents high = .ok events ∧
       ∀ source : BalanceSource,
@@ -1938,7 +1933,6 @@ private theorem coverage_inactivity {fork : Fork} {s t : BeaconState preset fork
     obtain ⟨_, _, _, _, rfl⟩ := ok
     rfl
 
-set_option maxHeartbeats 800000 in
 private theorem coverage_epoch {fork : Fork} {s : BeaconState preset fork}
     {post : BalanceReplay preset fork}
     (early : fork < .glamsterdam)
@@ -1948,7 +1942,7 @@ private theorem coverage_epoch {fork : Fork} {s : BeaconState preset fork}
   unfold epochBalanceReplay at ok
   obtain ⟨justified, justifiedOk, ok⟩ := bind_ok_iff.mp ok
   have justifiedCover := coverage_carry (fun _ _ => coverage_justification)
-    (coverage_refl ⟨fork, s⟩) justifiedOk
+    (coverage_refl ⟨fork, s⟩ : ReplayCoverage s (s, [])) justifiedOk
   by_cases altair : .altair ≤ fork
   case' pos =>
     simp only [altair, ↓reduceDIte] at ok
@@ -2022,7 +2016,6 @@ private theorem coverage_withdrawal_request {fork : Fork} {s t : BeaconState pre
     | (split at ok)
     | (rcases bind_ok_iff.mp ok with ⟨_, _, ok⟩)
 
-set_option maxHeartbeats 800000 in
 private theorem coverage_block {fork : Fork} {s : BeaconState preset fork}
     (early : fork < .glamsterdam) (engine : ExecutionEngine preset fork)
     (block : BeaconBlock preset fork) {post : BalanceReplay preset fork}
@@ -2032,7 +2025,7 @@ private theorem coverage_block {fork : Fork} {s : BeaconState preset fork}
   obtain ⟨headed, headerOk, ok⟩ := bind_ok_iff.mp ok
   have headedCover := coverage_carry (fun a b action => by
     obtain ⟨_, _, rfl⟩ := processBlockHeader_eq action
-    rfl) (coverage_refl ⟨fork, s⟩) headerOk
+    rfl) (coverage_refl ⟨fork, s⟩ : ReplayCoverage s (s, [])) headerOk
   by_cases bellatrix : .bellatrix ≤ fork
   case' pos =>
     simp only [bellatrix, ↓reduceDIte] at ok
@@ -2349,57 +2342,6 @@ private theorem coverage_sum_events (events : List (BalanceEvent preset)) (n : N
     simp only [List.map_cons, List.sum_cons, Finset.sum_add_distrib]
     exact Nat.add_le_add (coverage_event_sum event n debit) ih
 
-/-- The replay covers all positive balance changes of the selected steps, not just net issuance. -/
-theorem balance_path_covered {g x y : ForkedBeaconState preset}
-    (shared : Run config checks g x) (tail : Run config checks x y)
-    (genesis : Genesis (config := config) (checks := checks) g)
-    (parameters : Parameters preset) (caps : CapOrder preset)
-    (aligned : MaxEffectiveBalancesAligned preset)
-    (early : y.fork < .glamsterdam) (high : Nat)
-    (endEpoch : (getCurrentEpoch y.state).toNat ≤ high + 1)
-    (events : List (BalanceEvent preset)) (replayed : tail.balanceEvents high = .ok events) :
-    (∑ i ∈ Finset.range y.state.validators.data.size, pathCredits i tail.balancePath) ≤
-      (events.map (·.creditLimit)).sum ∧
-    (∑ i ∈ Finset.range y.state.validators.data.size, pathDebits i tail.balancePath) ≤
-      (events.map (·.debitLimit)).sum := by
-  have invariant {z : ForkedBeaconState preset} (run : Run config checks g z) :
-      Invariant z.state := by
-    induction run with
-    | nil =>
-      obtain ⟨_, _, _, ok⟩ := genesis
-      exact (initializeBeaconStateFromEth1_invariant ok).2
-    | snoc pre step ih =>
-      cases step with
-      | slot ok => exact (advanceSlotAcross_invariant ih ok).1
-      | block engine signed due ok =>
-        exact (frame_processBlock (applySignedBlock_ok ok).2.1).invariant ih
-  have bounded : EventsBounded events := by
-    induction tail generalizing events with
-    | nil => cases replayed; simp [EventsBounded]
-    | @snoc middle last pre step ih =>
-      have selected := (coverage_step_epoch step).trans endEpoch
-      simp only [Run.balanceEvents, bind_ok_iff] at replayed
-      obtain ⟨prior, priorOk, rest⟩ := replayed
-      simp only [selected, ↓reduceIte, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at rest
-      obtain ⟨added, addedOk, rfl⟩ := rest
-      have previous := ih (Nat.lt_of_le_of_lt step.chainStep.fork_le early) selected prior priorOk
-      obtain ⟨actual, actualOk, bound⟩ := stepBalanceEvents_bounded step
-        (invariant (shared.append pre)).balancesMatch early
-      cases Except.ok.inj (actualOk.symm.trans addedOk)
-      exact eventsBounded_append previous bound
-  have result (debit : Bool) :
-      (∑ i ∈ Finset.range y.state.validators.data.size, coveragePath debit i tail.balancePath) ≤
-        (events.map fun e => if debit then e.debitLimit else e.creditLimit).sum := by
-    apply (Finset.sum_le_sum fun i _ =>
-      coverage_run tail early high endEpoch replayed debit i).trans
-    apply (coverage_sum_events events _ debit).trans
-    apply List.sum_le_sum
-    intro event member
-    cases debit
-    · exact (bounded event member).1
-    · exact (bounded event member).2
-  exact ⟨result false, result true⟩
-
 def initialExcess (x : ForkedBeaconState preset) : Nat :=
   ((getActiveValidatorIndices x.state (getCurrentEpoch x.state)).map fun i =>
     actualBalanceAt x i.toNat - effectiveAt x i.toNat).sum
@@ -2506,7 +2448,7 @@ private theorem funding_sum_zipIdx (vs : List Validator) (f : Validator → Nat 
 
 private theorem funding_active_le (x : ForkedBeaconState preset)
     (early : x.fork < .glamsterdam) (unique : uniqueKeys x.state) :
-    Quorum.weight (effectiveWeight x.state) (activeKeys x.state) ≤ fundedStake x := by
+    Models.stake (effectiveWeight x.state) (activeKeys x.state) ≤ fundedStake x := by
   have within : x.state.RegistryWithinLimit := x.state.validators.bound early
   have foundActive {i : ValidatorIndex}
       (member : i ∈ getActiveValidatorIndices x.state (getCurrentEpoch x.state)) :=
@@ -2550,13 +2492,13 @@ private theorem funding_lifecycle_support {v w : Validator} {before after : Epoc
     intro far
     have maxEpoch : after.toNat ≤ FAR_FUTURE_EPOCH.toNat := by
       have := after.toNat_lt
-      simp only [FAR_FUTURE_EPOCH, UInt64.reduceToNat]
+      simp only [FAR_FUTURE_EPOCH]
       omega
     have old : before = FAR_FUTURE_EPOCH := by
       apply UInt64.toNat_inj.mp
       have bound := before.toNat_lt
       rw [UInt64.lt_iff_toNat_lt, far] at future
-      simp only [FAR_FUTURE_EPOCH, UInt64.reduceToNat] at *
+      simp only [FAR_FUTURE_EPOCH] at *
       omega
     have later : after = FAR_FUTURE_EPOCH := by
       apply UInt64.toNat_inj.mp
@@ -2565,11 +2507,11 @@ private theorem funding_lifecycle_support {v w : Validator} {before after : Epoc
     rcases active with active | active
     · have bound := w.exitEpoch.toNat_lt
       simp only [isActiveValidator, Bool.and_eq_true, decide_eq_true_eq,
-        UInt64.lt_iff_toNat_lt, later, FAR_FUTURE_EPOCH, UInt64.reduceToNat] at active
+        UInt64.lt_iff_toNat_lt, later, FAR_FUTURE_EPOCH] at active
       omega
     · have bound := w.activationEpoch.toNat_lt
       rw [UInt64.lt_iff_toNat_lt, later] at active
-      simp only [FAR_FUTURE_EPOCH, UInt64.reduceToNat] at active
+      simp only [FAR_FUTURE_EPOCH] at active
       omega
   have sameActivation := life.activationEpoch activation
   have oldActivation : v.activationEpoch ≤ before := UInt64.not_lt.mp future
@@ -2582,7 +2524,7 @@ private theorem funding_lifecycle_support {v w : Validator} {before after : Epoc
       · have beyond := UInt64.lt_iff_toNat_lt.mp exits
         have bound := w.exitEpoch.toNat_lt
         rw [UInt64.lt_iff_toNat_lt, assigned]
-        simp only [FAR_FUTURE_EPOCH, UInt64.reduceToNat]
+        simp only [FAR_FUTURE_EPOCH]
         omega
       · rw [life.exitEpoch assigned] at exits
         exact UInt64.lt_iff_toNat_lt.mpr (lt_of_le_of_lt epochs
@@ -2633,7 +2575,7 @@ private theorem funding_potential_mono {fork : Fork} (s : BeaconState preset for
   cases found : s.validators.data[i]? with
   | none => simp
   | some v =>
-    simp only [found, Option.map_some, Option.getD_some]
+    simp only [Option.map_some, Option.getD_some]
     have pending : one.any (fun c => c.sourceIndex.toNat == i) = true →
         two.any (fun c => c.sourceIndex.toNat == i) = true := by
       intro present
@@ -2753,7 +2695,7 @@ private theorem funding_registration {fork : Fork} {s t : BeaconState preset for
     simp only [getValidatorFromDeposit, Uint64.toNat_min]
     exact (Nat.min_le_left _ _).trans lowered
   simpa only [Nat.max_eq_right cap] using
-    funding_append queue _ amount registry balances matched (frame_addValidatorToRegistry ok).slot
+    funding_append queue _ amount registry balances matched (addValidatorToRegistry_slot ok)
 
 private theorem funding_effective_updates {fork : Fork} {s t : BeaconState preset fork}
     (queue : List PendingConsolidation) (ok : processEffectiveBalanceUpdates s = .ok t) :
@@ -2840,7 +2782,8 @@ private theorem funding_transfer_balances {fork : Fork} {s lowered t : BeaconSta
     obtain ⟨high, highFound, highEq⟩ := balance_increaseBalance credit lowFound
     simp only [actualBalanceAt, found, highFound, Option.map_some, Option.getD_some]
     by_cases hs : source.toNat = i <;> by_cases ht : target.toNat = i <;>
-      simp_all <;> omega
+      simp_all
+    omega
   | none =>
     have size := (sameSizes_increaseBalance credit).2.trans (sameSizes_decreaseBalance debit).2
     have outside := Array.getElem?_eq_none_iff.mp found
@@ -2875,14 +2818,14 @@ private theorem funding_pass_consolidations {fork : Fork} {next : Epoch}
       have ih := funding_pass_consolidations delay passed nextEq distinct'.2
         (fun d member => sources d (List.mem_cons_of_mem c member))
       exact ih.trans (funding_potential_mono s (fun d member => List.mem_cons_of_mem c member))
-    · simp only [slashed, ↓reduceIte] at ok
+    · simp only [slashed] at ok
       by_cases waits : next < v.withdrawableEpoch
-      · simp only [waits, ↓reduceIte, pure, Except.pure, Except.ok.injEq] at ok
+      · simp only [waits, ↓reduceIte, pure, Except.pure] at ok
         cases ok
         exact Nat.le_refl _
-      · simp only [waits, ↓reduceIte, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at ok
+      · simp only [waits, ↓reduceIte, pure, Except.pure] at ok
         obtain ⟨balance, balanceOk, ok⟩ := bind_ok_iff.mp ok
-        simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at ok
+        simp only [bind_ok_iff, Except.ok.injEq] at ok
         obtain ⟨lowered, loweredOk, raised, raisedOk, result', passed, rfl⟩ := ok
         have debit := liftAccessor_ok.mp loweredOk
         have credit := liftAccessor_ok.mp raisedOk
@@ -2927,9 +2870,10 @@ private theorem funding_consolidations {fork : Fork} {s t : BeaconState preset f
       ((s.pendingConsolidations electra).data.size - result.2) =
       (s.pendingConsolidations electra).data.toList.drop result.2 :=
     List.take_of_length_le (by simp)
-  convert bound using 1 <;>
-    simp only [funding_potential, Array.toList_extract, List.extract_eq_take_drop,
-      takeEq, effectiveAt, actualBalanceAt, getCurrentEpoch] <;> congr 3
+  convert bound using 1
+  simp only [funding_potential, Array.toList_extract, takeEq, effectiveAt, actualBalanceAt,
+    getCurrentEpoch]
+  congr 3
 
 private theorem funding_consolidations_invariant {fork : Fork} {s t : BeaconState preset fork}
     (electra : .pectra ≤ fork)
@@ -3065,9 +3009,9 @@ private theorem funding_supported_balance_change {fork : Fork} {s t : BeaconStat
   have effective : effectiveAt ⟨fork, t⟩ i = effectiveAt ⟨fork, s⟩ i := by
     simp [effectiveAt, registry]
   cases found : s.validators.data[i]? with
-  | none => simp [found]
+  | none => simp
   | some v =>
-    simp only [found, Option.map_some, Option.getD_some, epoch, effective]
+    simp only [Option.map_some, Option.getD_some, epoch, effective]
     split <;> omega
 
 private theorem funding_withdrawn_support (v : Validator) (epoch : Epoch)
@@ -3094,9 +3038,9 @@ private theorem funding_balance_selection {fork : Fork} {s t : BeaconState prese
   apply Finset.sum_le_sum
   intro i _
   cases found : s.validators.data[i]? with
-  | none => simp [found]
+  | none => simp
   | some v =>
-    simp only [found, Option.map_some, Option.getD_some]
+    simp only [Option.map_some, Option.getD_some]
     by_cases withdrawn : v.withdrawableEpoch ≤ getCurrentEpoch s
     · have member := Array.mem_of_getElem? found
       have activated := UInt64.le_trans (activation v member)
@@ -3173,9 +3117,9 @@ private theorem funding_withdrawn_change {fork : Fork} {s t : BeaconState preset
   apply Finset.sum_le_sum
   intro i _
   cases read : s.validators.data[i]? with
-  | none => simp [read]
+  | none => simp
   | some v =>
-    simp only [read, Option.map_some, Option.getD_some]
+    simp only [Option.map_some, Option.getD_some]
     by_cases withdrawn : v.withdrawableEpoch ≤ getCurrentEpoch s
     · simp [withdrawn]
     · have unchanged := funding_withdrawn_deposit status ok i (by
@@ -3210,13 +3154,13 @@ private theorem funding_withdrawn_selected {fork : Fork} {s t : BeaconState pres
       by_cases inside : i ∈ indices
       · simp only [inside, ↓reduceIte]
         cases read : s.validators.data[i]? with
-        | none => simp [read]
-        | some v => simp only [read, Option.map_some, Option.getD_some]; split <;> omega
+        | none => simp
+        | some v => simp only [Option.map_some, Option.getD_some]; split <;> omega
       simp only [inside, ↓reduceIte]
       cases read : s.validators.data[i]? with
-      | none => simp [read]
+      | none => simp
       | some v =>
-        simp only [read, Option.map_some, Option.getD_some]
+        simp only [Option.map_some, Option.getD_some]
         split
         · rename_i supported
           have notWithdrawn := selected i inside supported.2 v read
@@ -3434,8 +3378,8 @@ private theorem funding_pending_funded {fork : Fork} {s t : BeaconState preset f
     apply Finset.sum_congr rfl
     intro i _
     cases read : s.validators.data[i]? with
-    | none => simp [read]
-    | some v => simp [read, Bool.and_eq_true]
+    | none => simp
+    | some v => simp [Bool.and_eq_true]
   rw [credit, funding_potential_eq s electra] at bound
   have queue := processPendingDeposits_pendingConsolidations ok
   rw [← queue, funding_potential_eq t electra] at bound
@@ -3645,7 +3589,6 @@ private theorem funding_record_events {fork : Fork} {source : BalanceSource}
   · obtain rfl := List.mem_singleton.mp new
     exact zero credit debit limitOk sourceEq electra
 
-set_option maxHeartbeats 800000 in
 private theorem funding_block_events {fork : Fork} {s : BeaconState preset fork}
     (early : fork < .glamsterdam) (engine : ExecutionEngine preset fork)
     (block : BeaconBlock preset fork) {post : BalanceReplay preset fork}
@@ -4038,8 +3981,8 @@ private theorem funding_run_capacity {x y : ForkedBeaconState preset}
     (tail : Run config checks x y) (early : y.fork < .glamsterdam)
     (high : Nat) (endEpoch : (getCurrentEpoch y.state).toNat ≤ high + 1)
     (events : List (BalanceEvent preset)) (replayed : tail.balanceEvents high = .ok events)
-    (stepBound : ∀ {a b : ForkedBeaconState preset} (pre : Run config checks x a)
-      (step : Step config checks a b), b.fork < .glamsterdam →
+    (stepBound : ∀ {a b : ForkedBeaconState preset}, Run config checks x a →
+      ∀ (step : Step config checks a b), b.fork < .glamsterdam →
       ∀ added, step.balanceEvents = .ok added →
       funding_carry b + (added.map funding_deposit_credit).sum ≤
         funding_carry a + ((getCurrentEpoch b.state).toNat -
@@ -4080,8 +4023,8 @@ private theorem funding_run_funded {x y : ForkedBeaconState preset}
     (tail : Run config checks x y) (early : y.fork < .glamsterdam)
     (high : Nat) (endEpoch : (getCurrentEpoch y.state).toNat ≤ high + 1)
     (events : List (BalanceEvent preset)) (replayed : tail.balanceEvents high = .ok events)
-    (stepBound : ∀ {a b : ForkedBeaconState preset} (pre : Run config checks x a)
-      (step : Step config checks a b), b.fork < .glamsterdam →
+    (stepBound : ∀ {a b : ForkedBeaconState preset}, Run config checks x a →
+      ∀ (step : Step config checks a b), b.fork < .glamsterdam →
       ∀ added, step.balanceEvents = .ok added →
       fundedStake b + funding_carry b ≤ fundedStake a + funding_carry a +
         ((getCurrentEpoch b.state).toNat - (getCurrentEpoch a.state).toNat) *
@@ -4125,14 +4068,14 @@ private theorem funding_window_of_steps {x y : ForkedBeaconState preset}
     (unique : uniqueKeys y.state)
     (high : Nat) (endEpoch : (getCurrentEpoch y.state).toNat ≤ high + 1)
     (events : List (BalanceEvent preset)) (replayed : tail.balanceEvents high = .ok events)
-    (stepBound : ∀ {a b : ForkedBeaconState preset} (pre : Run config checks x a)
-      (step : Step config checks a b), b.fork < .glamsterdam →
+    (stepBound : ∀ {a b : ForkedBeaconState preset}, Run config checks x a →
+      ∀ (step : Step config checks a b), b.fork < .glamsterdam →
       ∀ added, step.balanceEvents = .ok added →
       fundedStake b + funding_carry b ≤ fundedStake a + funding_carry a +
         ((getCurrentEpoch b.state).toNat - (getCurrentEpoch a.state).toNat) *
           config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat +
         (added.map fundingCredit).sum) :
-    Quorum.weight (effectiveWeight y.state) (activeKeys y.state) ≤
+    Models.stake (effectiveWeight y.state) (activeKeys y.state) ≤
       activeStakeWindow (config := config) x high events := by
   have bound := funding_run_funded tail early high endEpoch events replayed stepBound
   have active := funding_active_le y early unique
@@ -4148,7 +4091,7 @@ private theorem funding_window_of_steps {x y : ForkedBeaconState preset}
 theorem funding_deposit_capacity {g x y : ForkedBeaconState preset}
     (shared : Run config checks g x) (tail : Run config checks x y)
     (genesis : Genesis (config := config) (checks := checks) g)
-    (parameters : Parameters preset) (early : y.fork < .glamsterdam)
+    (early : y.fork < .glamsterdam)
     (high : Nat) (endEpoch : (getCurrentEpoch y.state).toNat ≤ high + 1)
     (events : List (BalanceEvent preset)) (replayed : tail.balanceEvents high = .ok events) :
     (events.map fun e =>

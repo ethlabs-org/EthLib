@@ -660,12 +660,26 @@ The Python tests check seven test cases of the NIST CAVP file `gcmtestvectors.zi
 
 ### X25519 and ChaCha20-Poly1305
 
-X25519 has no theorem: only the Python tests check it.
+The X25519 proofs cover the clamp of RFC 7748 §5 and the decoding of a coordinate (`Proofs/X25519.lean`).
+`decodeScalar_eq` proves that the clamp sets bit 254, clears bits 0 to 2 and bit 255, and keeps bits 3 to 253 of the key.
+`decodeScalar_mod_eight`, `le_decodeScalar` and `decodeScalar_lt` follow: a clamped scalar is a multiple of eight, at least `2 ^ 254` and below `2 ^ 255`.
+`val_decodeUCoordinate` proves that decoding clears bit 255 and reduces modulo the field prime, so a noncanonical coordinate is accepted.
+`decodeUCoordinate_encodeUCoordinate` proves that decoding the bytes of a reduced coordinate returns it.
+`ladder_mod_two_pow` proves that the bits of the scalar above bit 254 do not change the ladder.
+So no run of the ladder can observe the cleared bit 255; only the clamp theorems record it.
+`swap_ladder_decodeScalar` proves that a clamped scalar leaves no swap pending at the end of the ladder.
+No theorem relates the ladder to the curve, so it is not proved to compute a scalar multiple.
+
 The ChaCha20-Poly1305 proofs cover output length, counter exhaustion, rejection of a wrong tag and the round trip (`Proofs/ChaCha20Poly1305.lean`).
 `crypt_crypt` proves that the cipher, run twice under one key, counter and nonce, gives back its input.
 `decrypt_encrypt` proves that decryption of an honest ciphertext and tag returns the plaintext.
 `tag_eq_of_decrypt_eq_ok` proves that no other tag passes for that ciphertext.
 These are statements about the definitions alone, not about their security.
+The clamp of the Poly1305 key has its own theorem.
+`testBit_clampR` gives every bit of `r` without the mask, by its place in the little-endian 32-bit words of `r`: the top four bits of bytes 3, 7, 11 and 15 and the bottom two bits of bytes 4, 8 and 12 are clear, and every other bit of the low 16 bytes of the key is kept.
+So a clamp with another mask would fail it.
+`clampR_lt` bounds `r` by `2 ^ 124`.
+`poly1305Accumulator_lt` proves that the accumulator stays below the prime `2 ^ 130 - 5`, whatever `r` and the message, since each step reduces modulo the prime.
 No theorem relates ChaCha20-Poly1305 to an independent model of RFC 8439.
 The Python tests compare the bindings with the RFC 7748 and RFC 8439 vectors.
 The million-iteration X25519 vector requires `ETHLIB_SLOW_VECTORS=1`.
@@ -680,7 +694,12 @@ A caller that edits the state can therefore complete with a remote whose signatu
 `Produced.complete_isOk` says that completion of such a state after message 3 succeeds.
 These are acceptance theorems, not a proof of protocol security, confidentiality or constant-time execution.
 They relate the identity to the transport keys only through the shared handshake state.
-No theorem says that the chaining key mixed a Diffie-Hellman output with the remote static key, and none covers the handshake hash.
+The transcript of Noise §5.2 has its own theorems (`Networking/Proofs/Noise.lean`).
+`chainingKey_foldl_mixHash` and `cipher_foldl_mixHash` prove that a run of transcript mixes leaves the chaining key and the cipher unchanged.
+`eq_or_collision_of_hash_mixHash_eq` proves that two mixes that end at one handshake hash started at one handshake hash and mixed the same bytes, or else names the two different SHA-256 inputs that hash alike.
+No theorem assumes or bounds the collision resistance of SHA-256, and none binds the whole transcript of a handshake.
+`unframe_frame` proves that reading back a written frame of the noise-libp2p "Wire Format" returns its message.
+No theorem says that the chaining key mixed a Diffie-Hellman output with the remote static key.
 Only the libp2p read verifies an identity, and completion checks that the stored remote has the remote static key of the handshake.
 The raw transport split of an XX state checks neither.
 The Python tests compare the raw XX handshake with a published test vector.
@@ -693,13 +712,25 @@ They must discard handshake state after an error.
 ### Engine API authentication
 
 `Jwt.check_build_of_size` (`Engine/Proofs/Jwt.lean`) proves that a token built with a 32-byte secret passes with that secret at clocks within 60 seconds of its issued-at time.
+`Jwt.within_eq_true_iff_of_nonneg` and `Jwt.within_eq_true_iff_of_neg` give the clock comparison of the issued-at time in full, one for each sign of the exponent of the date.
+For a negative exponent the statement scales the bounds instead of dividing the date, so it is the exact comparison.
+They prove correct the two shortcuts that avoid expanding a huge exponent, where a test can run the shortcut but cannot compute the value it replaces.
 The builder validates the JSON it generates, and `Jwt.build_eq_ok` proves that this validation never fails.
 `Jwt.authenticate_eq_error_of_tag_ne` proves that a token whose tag differs from the HS256 tag of its parts is refused before any JSON is read.
 `Jwt.compact_signature_of_check` proves that an accepted token is the compact form of its parts with their HS256 tag under the secret.
 So the clock check accepts no other tag part for those parts.
 Keeping a party without the secret away from the reader also assumes HMAC unforgeability, and a captured token can be replayed within its 60 seconds.
 `Jwt.check_eq_false_of_algorithm_ne` proves rejection when the decoded algorithm differs from HS256.
-The total JSON reader has no separate theorem of agreement with RFC 8259.
+The Unicode escape of [RFC 8259 §7](https://www.rfc-editor.org/rfc/rfc8259#section-7) has its own theorems (`Engine/Proofs/Jwt/Json.lean`).
+`Jwt.Json.hex4_cons_eq_some_iff` proves that four hex digits, in either letter case, name the number they write in base 16.
+`Jwt.Json.hex4_eq_none_of_length_lt` proves that fewer than four characters are no escape.
+`hexValue?_hexDigitChar` and `hexValue?_toUpper_hexDigitChar` prove that those hex digits are read in lowercase and in uppercase.
+`Jwt.Json.unicodeEscape_eq_none_of_hex4` proves that an escape without four hex digits is refused.
+`Jwt.Json.unicodeEscape_eq_of_not_surrogate` proves that a value outside the surrogate range is returned as the code point it names.
+`Jwt.Json.unicodeEscape_eq_of_pair` proves that a high surrogate followed by an escaped low surrogate is returned as the code point of the pair.
+`Jwt.Json.unicodeEscape_eq_none_of_surrogate` proves that every other surrogate is refused: the grammar admits a lone surrogate ([§8.2](https://www.rfc-editor.org/rfc/rfc8259#section-8.2)), but this reader refuses one.
+`Jwt.Json.string_eq_none_of_control` proves that a character below `0x20` is refused when it comes next in a string unescaped.
+The total JSON reader has no theorem of full agreement with RFC 8259.
 These theorems do not establish HMAC unforgeability or constant-time execution.
 
 ### ERC-2335 keystores
@@ -729,6 +760,13 @@ The Python tests (`bindings/python/tests/precompile/test_ripemd160.py`) check th
 
 ### KZG
 
+No text is agreed yet as the normative KZG specification.
+The specifications in consensus-specs point to this repository through a redirect that names no commit.
+The Final EIPs pin an older consensus-specs text.
+The [KZG README](EthLib/Cryptography/Kzg/README.md#the-normative-text) gives the three readings, and no one has settled on one.
+The theorems below are about the definitions of EthLib.
+Which source text EthLib's definitions match depends on the reading.
+
 The KZG and PeerDAS proofs use `Bls.pairingLaws`, which proves the pairing law of the check.
 Their theorems take no pairing-law hypothesis.
 
@@ -757,6 +795,9 @@ They take two hypotheses on the setup.
 `TrustedSetup.WellFormed.valid` and `TrustedSetup.WellFormed.torsion` derive both from a well-formed setup.
 `computeCellsAndKzgProofs_blob_spec_ofHex` and `recoverCellsAndKzgProofs_spec_ofHex` state the two theorems for the embedded setup, with neither hypothesis.
 Of the setup, they assume only that it decodes.
+
+`uncompress_KZG_SETUP_G2_MONOMIAL_1` (`Execution/Proofs/Evm/Precompiles/PointEvaluation.lean`) states that the point evaluation precompile uses `G2` point 1 of the embedded setup as `[tau]_2`.
+It also assumes only that the setup decodes.
 
 For a well-formed setup, `blobToKzgCommitment_represents` (`Proofs/Kzg/Commitment.lean`) proves that a blob's commitment holds its polynomial at the secret.
 On a well-formed setup (assumption D3), `blobToKzgCommitment_binding` in the same file proves that two blobs whose decoded values differ share a commitment only when the secret is a root of `p - p'`.
@@ -1809,11 +1850,6 @@ No theorem yet derives the sequences themselves, such as the condition that the 
 ### Fast confirmation rule
 
 `Consensus/ForkChoice/FastConfirmation.lean` holds the fast confirmation rule of [arXiv 2405.00549v4](https://arxiv.org/abs/2405.00549v4).
-The end-to-end safety argument is incomplete: the proof line still contains `sorry` skeletons.
-`Execution.safeAt_confirmedRoot` in `Consensus/Proofs/ForkChoice/FastConfirmationSafety.lean` composes a conditional safety argument, but its dependencies are not all proved.
-It does not establish the monotonicity part of the paper's Theorem 1.
-The paper proves next-slot safety in Appendix A.2, Theorem 2, using Lemmas 50 and 51.
-
 The rule weighs the committees of a range of slots exactly.
 Each active member of their union counts once, by its effective balance in the source of balances, and a range with a whole epoch weighs the total active balance.
 An earlier form of the rule estimated that weight as an average per slot, which is not an upper bound on a given committee.
@@ -1861,39 +1897,14 @@ The honest support of the target of the current epoch takes the total active bal
 No theorem proves that, which rests on the shuffling of the head and its pulled-up state agreeing on the active validators of the epoch.
 Each member of the committees must also be in the source of balances, or the rule fails; no theorem bounds the epochs between that source and the range.
 
-Those theorems keep the discount for empty slots in their conclusion, as the number that the store computes.
-`Store.computeEmptySlotSupportDiscount_le` (`Consensus/Proofs/ForkChoice/FastConfirmationIndicators.lean`) bounds it by the committee weight since the parent, for a block at or before the current slot.
-`Consensus/Proofs/ForkChoice/FastConfirmationSets.lean` states which votes it counts, in any store where the rule computes it.
-`Store.parentVotersOf` is the set of the validators behind those votes, the voters for the parent.
-`Store.exists_stake_parentVotersOf_of_computeEmptySlotSupportDiscount` shows that the discount is their stake, less the store's adversarial weight of the slots between the parent and the block.
-It is zero when that weight is larger.
-By `Store.mem_parentVotersOf`, a validator is such a voter exactly when four conditions hold:
-
-- it is a member of the committees of those slots, as the rule reads them in the state of the head;
-- the source of balances holds it as active and not slashed;
-- the store does not know it to equivocate;
-- its latest message supports the pending node of the parent, or the node of the parent with the payload status that the block builds on.
-
-Before Gloas these are the same node.
-A voter votes for one of those nodes itself, while a supporter of the parent (`Store.supportersOf`) may vote for a descendant.
-When no slot lies between the parent and the block, those committees have no member (`Store.getCommitteesBetweenSlots_of_gt`).
-Then no validator is a voter and the discount is zero.
-
-`Store.le_honest_parentVotersOf_of_computeEmptySlotSupportDiscount` bounds the discount by the honest stake of the voters for the parent.
-It assumes a bound on the Byzantine validators among the active members of the committees of the slots between the parent and the block.
-They must hold at most the configured share of the stake of those members.
-The theorems on a confirmed block assume such a bound for the range of the adversarial weight, which may be another range.
-It also assumes that no known equivocator is honest.
-Each effective balance of the source must be a whole number of increments, and an increment a whole number of 100 Gwei.
-It makes no assumption on the delivery of votes.
-
-That bound does not show that the discount is safe, since it does not show that those voters do not oppose the block.
-The latest message of an honest voter in the store need not be the vote that it cast last.
-That holds even when the store receives every vote.
-From Gloas the store rejects a vote for the full node of the parent while the payload of the parent is not verified (`validatePayloadVote`).
-An older vote of that validator for the pending or the empty node of the parent can then stay as its latest message.
-The discount of a block on the empty node of the parent can count that older vote, when the validator meets the conditions above.
-The vote that the store rejected was for the full node of the parent, and that block does not descend from the full node.
+`Store.parentVotersOf` in `Consensus/Proofs/ForkChoice/FastConfirmationSets.lean` names the committee members whose recorded votes the discount for empty slots counts.
+They are active and not slashed in the source of balances, are not known equivocators, and vote for the pending parent node or the parent payload node that the child builds on.
+`exists_stake_parentVotersOf_of_computeEmptySlotSupportDiscount` shows that the discount is their stake less the adversarial weight of the empty slots, with subtraction truncated at zero.
+If the parent sits at an earlier slot than the child, both counted nodes are ancestors of the pending child node, including from Gloas.
+The ancestry needs only the two block reads and that local slot order, not `Reachable` or `ParentsBelow`.
+`le_honest_parentVotersOf_of_computeEmptySlotSupportDiscount` shows that the discount takes off at most the honest stake of these voters.
+It assumes Assumption 2 on the active members of the empty-slot committees, no honest known equivocator, aligned effective balances, and an increment divisible by 100 Gwei.
+These are store-local facts: no theorem here shows that a recorded honest vote is its voter's latest actual vote, or that it remains the recorded vote at a later store.
 
 `Consensus/Proofs/ForkChoice/FastConfirmationConfirmedRoot.lean` states where the confirmed block of a slot comes from.
 `Store.onFastConfirmation_confirmedRoot` shows that the rule starts from the block stored before, the finalized block or the observed justified block.
@@ -1903,59 +1914,19 @@ That block must then be in the epoch before the current one, and its checkpoint 
 The rule stores that block, or a later root of the walk of `getAncestorRoots` from that block to the head.
 That root and each root before it in the walk then pass `isOneConfirmed`, with the votes of the state of the observed justified checkpoint.
 The rule makes two walks, and `Store.getAncestorRoots_of_append` in `Consensus/Proofs/ForkChoice/AncestorRoots.lean` shows that the second walk is the part of the first walk after the root where the first walk stopped.
-Before Gloas, `walk_member_ancestor` in `Consensus/Proofs/ForkChoice/FastConfirmationSafety.lean` places each new root of a walk on the tip's ancestor chain.
+No theorem yet shows that the roots of a walk are in the chain of the head.
 
 `foldlM_onFastConfirmation_confirmedRoot` turns those four cases into an induction along a list of stores, one fast confirmation for each.
 A property of the confirmed block holds at the end when the three starts have it and a one-confirmed walk keeps it.
 
-These structural lemmas alone prove no safety.
+These theorems prove no safety: no theorem yet shows that a start is safe, or that a one-confirmed walk keeps a block in the chain of every honest head.
 They do not record every check of the rule.
 For the start they leave out the other checks that compare the epochs and the slots of the blocks.
 For the walks they leave out the checks on the epochs of the start and of the walked blocks.
 They also leave out the check that the head of the slot before holds each block of the first walk.
 They leave out the checks that a voting source or an unrealized justification is recent.
 They also leave out `willNoConflictingCheckpointBeJustified` and `willCurrentTargetBeJustified`, which are about the justification of the target of the current epoch.
-
-The conditional theorem `Execution.safeAt_confirmedRoot` relates a run of the rule to an honest validator's stores in a network execution.
-Its conclusion is `SafeAt`, from the start of the next slot through `limit`.
-At an up-to-date honest event in that interval, the stored root is an ancestor of every successfully read head.
-The theorem's statement can still change.
-Its hypotheses are obligations of the caller, not facts established by declaring the theorem:
-
-| Hypotheses | Obligation |
-| --- | --- |
-| `sync`, `fits` (`DelayFits`) | The execution is synchronous, and a vote sent at its deadline arrives strictly before the next slot. |
-| `votes` (`Votes`), `prompt` (`Prompt`) | Honest validators vote as assigned through `limit` and process messages before and at the specified slot boundaries through `limit`. |
-| `committees` (`CommitteesFollow`) | The assignment agrees with the head's committees for the specified past ranges, and target/head comparisons have common-state witnesses. |
-| `follows` (`HeadFollowsSupport`) | The required head reads succeed, and sufficient honest support makes the head follow a viable child under the stated sibling cap. |
-| `preGloas` | The fork is before Gloas. |
-| `oneBlock` (`OneBlockPerRoot`) | Honest stores hold the same block at every shared root through `limit`, including across events. |
-| `admitted` (`BlocksAdmitted`) | A delayed block from an honest view passes the remaining handler checks when block validation succeeds at the receiver. |
-| `included` (`TargetIncluded`) | Take a target with a counted honest quorum, and a block with that checkpoint that is safe from the start of epoch `target + 1`. From epoch `target + 2`, each honest store holds a descendant of the block, of an epoch before `target + 2`, whose unrealized justification is of the target's epoch or later. |
-| `anchored`, `sound`, `anchorSlot`, `anchorAtBoundary`, `start`, `noVotes` | Every honest store starts from the same constructed anchor store, with no latest votes, an invariant anchor state and matching epoch-boundary slots. |
-| `_syncStart` | An anchor after epoch 0 requires execution to start no earlier than epoch `anchorEpoch + MIN_SEED_LOOKAHEAD + 1`, measured from the anchor store's genesis time. |
-| `half`, `slots`, `long`, `window` | The configured Byzantine percentage is at most 50, slot duration is positive, epochs have more than one slot, and history holds two epochs. |
-| `boost` | The configured proposer boost percentage is at most 100. With the stake cap and two slots per epoch, the boost of one slot stays within 64 bits. |
-| `lookahead` | Both seed lookaheads are at least one, and `MIN_SEED_LOOKAHEAD + 3 < EPOCHS_PER_HISTORICAL_VECTOR`. |
-| `maxAligned`, `increment`, `positive` | Maximum effective balances and the minimum activation balance align with the positive effective-balance increment, which is a multiple of 100 Gwei. |
-| `chain` (`FinalizedPrefix`), `unique` (`OneJustifiedPerEpoch`) | Through `limit` and within `horizon`, finalized checkpoints prefix later justified checkpoints and justified checkpoints of one epoch agree. |
-| `byzantine`, `enough` | In the specified counting states through epoch `horizon + 1`, Byzantine current-or-previous-epoch voters satisfy the `threshold` percentage bound, with `3 * threshold < 200`. |
-| `unslashed` | No honest validator is slashed in any counting state of an honest store through `limit`. |
-| `supply` | Active effective stake at each successful honest checkpoint-state read through `limit` is at most `stakeCapGwei`, or 2·10^17 Gwei. |
-| `large` | Active stake in each specified counting state through epoch `horizon + 1` satisfies `3 * EFFECTIVE_BALANCE_INCREMENT < 2 * activeStake`. |
-| `nonzero`, `anchorParent` | Every block held by an honest store through `limit` has a nonzero state root, and no such store holds a block at the anchor's parent root. |
-| `headDrifts` (`DriftAtMost`) | The specified counting states satisfy the quorum-transport bound with margin `margin` relative to pulled-up head states over the stated two-epoch window. |
-| `caller`, `upToDate`, `lower`, `atSlots` | The caller is honest, calls with up-to-date stores whose parents have lower slots, and calls at the starts of consecutive slots. |
-| `ran`, `bounds` (`RuleBounds`) | The run succeeds from the anchor's confirmation store, and calls that confirm by a strict walk satisfy the drift, slack, committee, remaining-vote and late-majority bounds. |
-| `inHorizon` | Every honest store through `limit` reads an epoch at most `horizon`. |
-| `lastCall`, `slotOk`, `nextOk`, `followingOk`, `nonempty` | The last call and its next-slot time are well defined, with the next slot starting at or before `limit`. |
-
-`supply` is assumed, not proved from issuance, deposits or the state transition.
-Its cap is two hundred million ether and keeps the balance sums used by the argument within 64 bits.
-`OneBlockPerRoot` is also assumed: it is collision freedom on held blocks, not a theorem about the hash function.
-The proof does not use `_syncStart`; that premise deliberately restricts the executions covered by the statement.
-Except for global synchrony, the execution hypotheses are bounded by `limit`, and voting and processing duties require no action after it.
-The pre-Gloas scope of this safety statement does not complete the other skeletons in its proof line.
+No theorem yet relates the list of stores to the stores of an honest validator in an execution.
 
 ### Balance-weighted draws
 
@@ -2176,9 +2147,10 @@ It assumes that the vectors whose length the preset sets have a positive length,
 It rests on `BeaconBlock.hashTreeRoot_header`, which shows that a block has the root of its header.
 It also rests on `latestBlockHash_processBlock`, which shows that from Gloas the latest block hash after a block is the parent hash of the latest bid.
 `latestExecutionPayloadBid_processBlock` shows that from Gloas a block leaves its own bid as the latest bid.
-`latestBlockHeader_processBlock` shows that from Gloas a block leaves its header, with a zero state root, as the latest block header.
-These rest on `PayloadInputs`, the fields that the checks of a payload and of a bid read.
+The hash and bid results rest on `PayloadInputs`, the fields that the checks of a payload and of a bid read.
 From Gloas the parent, header, RANDAO and bid steps each change one of them, and the other steps keep them all.
+`latestBlockHeader_processBlock` shows that at every fork a block leaves its header, with a zero state root, as the latest block header.
+It uses `processBlock_header_split`, which separates header processing from the steps that preserve the header.
 No theorem covers the signature, the time or the withdrawals of the envelope, or the answer of the execution layer.
 
 The Python suite builds the envelope of a fork choice case at Gloas and Heze from its block, payload and requests, and compares it with the envelope of the case.
@@ -3015,6 +2987,47 @@ The package requires Mathlib, at `v4.35.0`, commit `56a0058`.
 The package requires VCVio, at `bbf05ee`.
 Only the proofs import them.
 The Lean toolchain is `leanprover/lean4:v4.35.0`.
+<!-- end generated -->
+
+VCVio defines the oracle computations and probabilities in which the security games are stated.
+The proofs below import it, directly or through another file.
+A directory is listed when at least one file under it imports VCVio, or when the file of the same name beside it does, such as `Wots.lean` beside `Wots/`.
+So a listed directory can hold files that do not import VCVio.
+The files named `Proofs.lean` are roots that gather the proofs of a domain, so they are not listed.
+
+<!-- generated: vcvio-users -->
+- `EthLib/Consensus/Proofs/Accessors/`
+- `EthLib/Consensus/Proofs/DataAvailability/`
+- `EthLib/Consensus/Proofs/Gossip/`
+- `EthLib/Consensus/Proofs/LightClient/`
+- `EthLib/Consensus/Proofs/PqKeys/`
+- `EthLib/Cryptography/Proofs/Aes/`
+- `EthLib/Cryptography/Proofs/BadOnBudget.lean`
+- `EthLib/Cryptography/Proofs/BadOnGrowth.lean`
+- `EthLib/Cryptography/Proofs/Bls/`
+- `EthLib/Cryptography/Proofs/DerivationTable.lean`
+- `EthLib/Cryptography/Proofs/EvalDistEq.lean`
+- `EthLib/Cryptography/Proofs/ExceptTAnswers.lean`
+- `EthLib/Cryptography/Proofs/HashSig/`
+- `EthLib/Cryptography/Proofs/IndependentAnswers.lean`
+- `EthLib/Cryptography/Proofs/IndependentOutside.lean`
+- `EthLib/Cryptography/Proofs/Kzg/`
+- `EthLib/Cryptography/Proofs/LazyPermutation.lean`
+- `EthLib/Cryptography/Proofs/LogKeys.lean`
+- `EthLib/Cryptography/Proofs/LoggedUntilBad.lean`
+- `EthLib/Cryptography/Proofs/Merkle/`
+- `EthLib/Cryptography/Proofs/ProgrammedPermutation.lean`
+- `EthLib/Cryptography/Proofs/QueryAvoidance.lean`
+- `EthLib/Cryptography/Proofs/Secp256k1/`
+- `EthLib/Cryptography/Proofs/Sphincs/`
+- `EthLib/Cryptography/Proofs/TaggedLazyPermutation.lean`
+- `EthLib/Cryptography/Proofs/Vrf/`
+- `EthLib/Cryptography/Proofs/Wots/`
+- `EthLib/Cryptography/Proofs/Xmss/`
+- `EthLib/Execution/Proofs/Trie/`
+- `EthLib/Serialization/Proofs/Ssz/`
+
+No specification file imports it.
 <!-- end generated -->
 
 ### D3. The KZG trusted setup

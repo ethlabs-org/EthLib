@@ -769,24 +769,21 @@ theorem latestBlockHash_processBlock (gloas : .glamsterdam ≤ fork)
   rw [hash, kept, latestExecutionPayloadBid_processExecutionPayloadBid bid, parentHash]
   exact congrFun (payloadInputs_processExecutionPayloadBid bid).latestBlockHash gloas
 
-/-- From Gloas, a block leaves its header as the latest block header.
+/-- At every fork, a block leaves its header as the latest block header.
 
 The header holds the slot, the proposer and the parent root of the block, and the root of its body.
 
 Its state root is zero. -/
-theorem latestBlockHeader_processBlock (gloas : .glamsterdam ≤ fork)
+theorem latestBlockHeader_processBlock
     {block : BeaconBlock preset fork}
     (computed : processBlock config checks engine state block = .ok after) :
     ∃ bodyRoot, Serialization.Ssz.SszType.hashTreeRoot block.body = .ok bodyRoot ∧
       after.latestBlockHeader =
         { slot := block.slot, proposerIndex := block.proposerIndex,
           parentRoot := block.parentRoot, stateRoot := Vector.replicate 32 0, bodyRoot } := by
-  obtain ⟨_, _, _, _, _, _, headedOk, withdrawnOk, bid, -, header, -, -⟩ :=
-    processBlock_steps gloas computed
+  obtain ⟨_, _, -, headedOk, header⟩ := processBlock_header_split computed
   obtain ⟨bodyRoot, rooted, rfl⟩ := processBlockHeader_eq headedOk
-  refine ⟨bodyRoot, rooted, ?_⟩
-  exact header.trans ((payloadInputs_processExecutionPayloadBid bid).latestBlockHeader.trans
-    (payloadInputs_processWithdrawals withdrawnOk).latestBlockHeader)
+  exact ⟨bodyRoot, rooted, header⟩
 
 /-- Operations keep the block-root history and latest header at every fork. -/
 theorem processOperations_blockRoots_latestBlockHeader

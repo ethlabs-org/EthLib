@@ -68,7 +68,9 @@ open Base Uint64 Models Models.ForkChoice
 
 variable {preset : Preset} {fork : Fork}
 
-/-- The effective balance that the store reads for a validator is its weight as a stake. -/
+/-- The effective balance that the store reads for a validator is its weight as a stake.
+
+This is the effective-balance assignment of arXiv 2405.00549v4, Section 2.1. -/
 theorem toNat_eq_balanceAt_of_effectiveBalance {state : BeaconState preset fork}
     {index : ValidatorIndex} {value : Gwei}
     (valueOk : (do return (← validatorAt state index).effectiveBalance :
@@ -77,11 +79,6 @@ theorem toNat_eq_balanceAt_of_effectiveBalance {state : BeaconState preset fork}
   simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at valueOk
   obtain ⟨validator, found, rfl⟩ := valueOk
   simp [balanceAt, validatorAt_ok_iff.mp found]
-
-/-- The list of a set of validators holds each of them once. -/
-theorem participants_toList_nodup (participants : Std.TreeSet ValidatorIndex) :
-    participants.toList.Nodup :=
-  Std.TreeSet.distinct_toList.imp Std.ReflCmp.ne_of_cmp_ne_eq
 
 namespace Store
 
@@ -481,7 +478,9 @@ The store does not know a voter to equivocate.
 
 The latest message of a voter supports one of the nodes, not a descendant of one.
 
-A validator weighs its effective balance in the source of balances. -/
+A validator weighs its effective balance in the source of balances.
+
+With the nodes of the parent, this is the observed weight of arXiv 2405.00549v4, Definition 5. -/
 theorem exists_stake_of_getNodeSupportBetweenSlots {head : Root}
     {balanceSource : BeaconState preset fork} {nodes : List ForkChoiceNode}
     {startSlot endSlot : Slot} {support : Gwei}
@@ -518,7 +517,8 @@ theorem exists_stake_of_getNodeSupportBetweenSlots {head : Root}
       refine mem_filterM_ok_of_test countedOk (Std.TreeSet.mem_toList.mpr inside) ?_
       simp [validatorAt, found, unslashed, isActive, bind, Except.bind, pure, Except.pure]
   have distinct : counted.Nodup :=
-    (sublist_of_filterM_ok countedOk).nodup (participants_toList_nodup participants)
+    (sublist_of_filterM_ok countedOk).nodup
+      (Std.TreeSet.distinct_toList.imp Std.ReflCmp.ne_of_cmp_ne_eq)
   -- The vote of a validator counts when it is no known equivocator and supports one of the nodes.
   refine ⟨participants, counted.toFinset.filter fun v => v ∉ store.equivocatingIndices ∧
     ∃ message supported, store.latestMessages[v]? = some message ∧
@@ -587,7 +587,11 @@ Before Gloas it holds the pending node only.
 
 The discount is then the votes for those nodes, less the adversarial weight.
 
-Both are over the slots from the one after the parent to the one before the block. -/
+It is zero when the adversary is larger.
+
+Both are over the slots from the one after the parent to the one before the block.
+
+This is the store's form of the discount of arXiv 2405.00549v4, Definition 5. -/
 theorem computeEmptySlotSupportDiscount_steps {head root : Root}
     {balanceSource : BeaconState preset fork} {firstSlot : Slot}
     {block parentBlock : BeaconBlock preset fork} {discount : Gwei}
@@ -717,7 +721,9 @@ Each effective balance in the set must be a whole number of 100 Gwei.
 
 The store rounds the weight down to 100 Gwei for its adversary.
 
-The rounded weight then still covers the stake of the set. -/
+The rounded weight then still covers the stake of the set.
+
+This supplies the Byzantine share in arXiv 2405.00549v4, Assumption 2 and Definition 5. -/
 theorem threshold_mul_stake_le_of_computeAdversarialWeight {W : Finset ValidatorIndex}
     {head : Root} {balanceSource : BeaconState preset fork} {startSlot endSlot : Slot}
     {weight equivocation adversary : Gwei}

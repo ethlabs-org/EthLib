@@ -106,11 +106,56 @@ private theorem builderEpochFrameLaws : EpochFrameLaws (@BuilderFrame preset for
     where
   refl := BuilderFrame.refl
   trans := BuilderFrame.trans
-  setValidatorAt := fun set _ _ => builderFrame_setValidatorAt set
+  setValidatorAt := fun set _ _ _ _ _ _ _ => builderFrame_setValidatorAt set
+  registryUpdates := by
+    intro config state after computed
+    have entry : ∀ (s : BeaconState preset fork) i t, updateRegistryEntry config s i = .ok t →
+        BuilderFrame s t := by
+      intro s i t ok
+      simp only [updateRegistryEntry, bind_ok_iff, liftAccessor_ok] at ok
+      obtain ⟨_, _, _, _, _, set, ok⟩ := ok
+      split at ok
+      · simp only [bind_ok_iff, liftAccessor_ok] at ok
+        obtain ⟨_, _, exited⟩ := ok
+        exact (builderFrame_setValidatorAt set).trans (builderFrame_initiateValidatorExit exited)
+      · cases ok
+        exact builderFrame_setValidatorAt set
+    have activate : ∀ (s : BeaconState preset fork) i t,
+        activateValidator s i = .ok t → BuilderFrame s t := by
+      intro s i t ok
+      simp only [activateValidator, bind_ok_iff, liftAccessor_ok] at ok
+      obtain ⟨_, _, _, _, set⟩ := ok
+      exact builderFrame_setValidator set
+    have electraEntry : ∀ epoch (s : BeaconState preset fork) i t,
+        updateRegistryEntryElectra config epoch s i = .ok t →
+        BuilderFrame s t := by
+      intro epoch s i t ok
+      simp only [updateRegistryEntryElectra, bind_ok_iff, liftAccessor_ok] at ok
+      obtain ⟨_, _, ok⟩ := ok
+      split at ok
+      · simp only [bind_ok_iff, liftAccessor_ok] at ok
+        obtain ⟨_, _, set⟩ := ok
+        exact builderFrame_setValidatorAt set
+      split at ok
+      · simp only [bind_ok_iff, liftAccessor_ok] at ok
+        obtain ⟨_, _, exited⟩ := ok
+        exact builderFrame_initiateValidatorExit exited
+      split at ok
+      · exact builderFrame_setValidatorAt (liftAccessor_ok.mp ok)
+      · cases ok
+        exact BuilderFrame.refl _
+    unfold processRegistryUpdates at computed
+    split at computed
+    · simp only [bind_ok_iff, liftAccessor_ok] at computed
+      obtain ⟨_, _, computed⟩ := computed
+      exact BuilderFrame.foldlM (electraEntry _) computed
+    simp only [bind_ok_iff] at computed
+    obtain ⟨_, updated, activated⟩ := computed
+    exact (BuilderFrame.foldlM entry updated).trans (BuilderFrame.foldlM activate activated)
   increaseBalance := builderFrame_increaseBalance
   decreaseBalance := builderFrame_decreaseBalance
   initiateValidatorExit := builderFrame_initiateValidatorExit
-  addValidatorToRegistry := builderFrame_addValidatorToRegistry
+  addValidatorToRegistry := fun computed _ => builderFrame_addValidatorToRegistry computed
   eth1DataVotes _ _ := ⟨rfl, rfl, rfl, rfl, rfl, rfl⟩
   inactivityScores _ _ := ⟨rfl, rfl, rfl, rfl, rfl, rfl⟩
   slashings _ _ := ⟨rfl, rfl, rfl, rfl, rfl, rfl⟩
