@@ -1252,53 +1252,6 @@ private theorem walk_source_epoch_le {store : Store preset fork}
       exact cache (unrealized ▸ entry)
 
 omit [DecidablePred (· ∈ J)] in
-/-- Every held block reads an epoch-aligned anchor at the anchor's checkpoint boundary. -/
-private theorem walk_anchor_read {anchor : Store preset fork}
-    (anchorStore : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
-    (anchored : ∀ w ∈ J, e.start w = anchor)
-    (anchorSlot : anchorBlock.slot = anchorState.slot)
-    (anchorBoundary : isStartSlotAtEpoch preset anchorBlock.slot = .ok true)
-    (before : fork < .glamsterdam) {u : ValidatorIndex} (honest : u ∈ J) {n : ℕ}
-    {root : Root} {block : BeaconBlock preset fork}
-    (known : ((e.world n).state u).blocks[root]? = some block) :
-    ((e.world n).state u).getCheckpointBlock root anchor.finalizedCheckpoint.epoch =
-      .ok anchor.finalizedCheckpoint.root := by
-  have reached := e.reachable
-    (fun w hw => (anchored w hw) ▸ Store.Reachable.anchor anchorStore) n u honest
-  obtain ⟨r, hashed, _, _, _, final, _, _⟩ := getForkchoiceStore_anchor anchorStore
-  obtain ⟨r', hashed', found⟩ := reached.anchor_known
-  rw [hashed, Except.ok.injEq] at hashed'
-  subst r'
-  have rounded : anchorState.slot / preset.SLOTS_PER_EPOCH * preset.SLOTS_PER_EPOCH =
-      anchorState.slot := by
-    unfold isStartSlotAtEpoch computeSlotsSinceEpochStart at anchorBoundary
-    rw [anchorSlot, computeStartSlotAtEpoch_computeEpochAtSlot] at anchorBoundary
-    simp only [Except.mapError, bind, Except.bind, pure, Except.pure,
-      Except.ok.injEq, decide_eq_true_eq] at anchorBoundary
-    have h := (computeStartSlotAtEpoch_ok_iff.mp
-      (computeStartSlotAtEpoch_computeEpochAtSlot (preset := preset) anchorState.slot)).2
-    have le : (anchorState.slot / preset.SLOTS_PER_EPOCH *
-        preset.SLOTS_PER_EPOCH).toNat ≤ anchorState.slot.toNat := by
-      rw [h, computeEpochAtSlot, UInt64.toNat_div]
-      exact Nat.div_mul_le_self _ _
-    have zero := congrArg UInt64.toNat anchorBoundary
-    simp only [UInt64.toNat_sub, UInt64.toNat_zero] at zero
-    have upper := anchorState.slot.toNat_lt
-    have lower := (anchorState.slot / preset.SLOTS_PER_EPOCH * preset.SLOTS_PER_EPOCH).toNat_lt
-    apply UInt64.toNat_inj.mp
-    omega
-  have boundaryOk : computeStartSlotAtEpoch preset anchor.finalizedCheckpoint.epoch =
-      .ok anchorBlock.slot := by
-    simpa [final, getCurrentEpoch, rounded, anchorSlot] using
-      computeStartSlotAtEpoch_computeEpochAtSlot (preset := preset) anchorState.slot
-  have descends := e.isAncestor_anchor_of_known anchorStore anchored honest known
-  rw [final] at descends
-  have path := Store.getAncestor_of_isAncestor_of_lt before found descends
-  unfold Store.getCheckpointBlock
-  rw [boundaryOk]
-  simp only [Except.mapError, bind, Except.bind, path, pure, Except.pure, final]
-
-omit [DecidablePred (· ∈ J)] in
 /-- Prefix agreement identifies a finalized checkpoint whose epoch is still the anchor's. -/
 private theorem walk_finalized_eq_anchor {anchor : Store preset fork}
     (anchorStore : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
