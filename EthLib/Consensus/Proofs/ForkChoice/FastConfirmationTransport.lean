@@ -360,6 +360,94 @@ private theorem finalized_boundary_le_historical {anchor : Store preset fork}
   rw [(mulChecked_ok_iff.mp made).2]
   exact productLe.trans rounded
 
+/-- A recent historical block on the caller's head agrees with caller finality. -/
+private theorem checkpoint_of_recent_historical {anchor : Store preset fork}
+    (anchorStore : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (sound : Invariant anchorState) (anchorSlot : anchorBlock.slot = anchorState.slot)
+    (anchorBoundary : isStartSlotAtEpoch preset anchorBlock.slot = .ok true)
+    (anchored : ∀ u ∈ J, e.start u = anchor)
+    (slots : 0 < config.SLOT_DURATION_MS) (preGloas : fork < .glamsterdam)
+    {horizon : Epoch} {time : ℕ} (chain : FinalizedPrefix e horizon time)
+    {u : ValidatorIndex} (caller : u ∈ J) {n : ℕ}
+    (bounded : (e.world n).time ≤ time)
+    {epoch historicalEpoch : Epoch} {historical : Root} {head : ForkChoiceNode}
+    (epochOk : ((e.world n).state u).getCurrentStoreEpoch config = .ok epoch)
+    (inHorizon : epoch ≤ horizon)
+    (historicalEpochOk : ((e.world n).state u).getBlockEpoch historical = .ok historicalEpoch)
+    (recent : epoch.toNat ≤ historicalEpoch.toNat + 1)
+    (headOk : ((e.world n).state u).getHead config = .ok head)
+    (descends : ((e.world n).state u).isAncestor head ⟨historical, .pending⟩ = .ok true) :
+    ∃ block boundary, ((e.world n).state u).blocks[historical]? = some block ∧
+      computeStartSlotAtEpoch preset ((e.world n).state u).finalizedCheckpoint.epoch =
+        .ok boundary ∧ boundary ≤ block.slot ∧
+      ((e.world n).state u).getCheckpointBlock historical
+        ((e.world n).state u).finalizedCheckpoint.epoch =
+          .ok ((e.world n).state u).finalizedCheckpoint.root := by
+  obtain ⟨block, boundary, known, boundaryOk, below⟩ := finalized_boundary_le_historical
+    anchorStore sound anchorSlot anchored caller epochOk historicalEpochOk recent
+  have forward := e.forwardReachable
+    (fun u hu => (anchored u hu) ▸ Store.ForwardReachable.anchor anchorStore) n u caller
+  have justifiedHorizon := UInt64.le_trans
+    (forward.justified_epoch_le_current sound slots (UInt64.le_of_eq anchorSlot) epochOk).1
+    inHorizon
+  have justifiedRead := chain u caller u caller n n bounded bounded
+    ((e.world n).state u).justifiedCheckpoint (Or.inl rfl)
+    (forward.reachable.finalized_le_justified sound) justifiedHorizon
+  refine ⟨block, boundary, known, boundaryOk, below, ?_⟩
+  by_cases genesis : ((e.world n).state u).finalizedCheckpoint.epoch = GENESIS_EPOCH
+  · have above := e.anchorSlot_le_finalized_boundary anchorStore anchorSlot anchorBoundary
+      (anchored u caller) boundaryOk
+    have zeroBoundary : boundary = 0 := by
+      apply UInt64.toNat_inj.mp
+      simpa [genesis, GENESIS_EPOCH] using
+        (computeStartSlotAtEpoch_ok_iff.mp boundaryOk).2
+    have zeroAnchor : anchorBlock.slot = 0 :=
+      UInt64.le_zero_iff.mp (zeroBoundary ▸ above)
+    obtain ⟨r, hashed, anchorKnown, _, justified, final, _, _⟩ :=
+      getForkchoiceStore_anchor anchorStore
+    have initialKnown : ((e.world 0).state u).blocks[r]? = some anchorBlock := by
+      simpa only [Execution.world_zero, World.initial, anchored u caller] using anchorKnown
+    have rootRead := chain u caller u caller n 0 bounded
+      ((e.monotone_time (Nat.zero_le n)).trans bounded)
+      anchor.justifiedCheckpoint
+      (by change (e.start u).Justified anchor.justifiedCheckpoint
+          rw [anchored u caller]
+          exact .inl rfl)
+      (by rw [genesis]; exact UInt64.zero_le)
+      (by simp [justified, getCurrentEpoch, computeEpochAtSlot, ← anchorSlot, zeroAnchor])
+    have initialWalk := Store.getAncestor_of_le (node := ⟨r, .pending⟩) initialKnown
+      (show anchorBlock.slot ≤ boundary by rw [zeroAnchor, zeroBoundary]; exact UInt64.le_refl _)
+    have initialRead : ((e.world 0).state u).getCheckpointBlock r
+        ((e.world n).state u).finalizedCheckpoint.epoch = .ok r := by
+      simp [Store.getCheckpointBlock, boundaryOk, initialWalk, Except.mapError,
+        bind, Except.bind, pure, Except.pure]
+    rw [justified] at rootRead
+    have finalRoot : ((e.world n).state u).finalizedCheckpoint.root = r :=
+      (Except.ok.inj (rootRead.symm.trans initialRead))
+    have historicalAbove := e.isAncestor_anchor_of_known anchorStore anchored caller known
+    obtain ⟨r', hashed', held⟩ := forward.reachable.anchor_known
+    rw [hashed, Except.ok.injEq] at hashed'
+    subst r'
+    rw [final] at historicalAbove
+    have walk := Store.getAncestor_of_isAncestor_of_lt preGloas held historicalAbove
+    simp [Store.getCheckpointBlock, boundaryOk, zeroBoundary, ← zeroAnchor, walk,
+      Except.mapError, bind, Except.bind, pure, Except.pure, finalRoot]
+  have headRead : ((e.world n).state u).getCheckpointBlock head.root
+      ((e.world n).state u).finalizedCheckpoint.epoch =
+        .ok ((e.world n).state u).finalizedCheckpoint.root := by
+    rcases Store.getHead_viable headOk with viable | ⟨_, fallback⟩
+    · exact (Store.isViableLeaf_finalized viable).resolve_left genesis
+    · simpa only [fallback] using justifiedRead
+  have walk := Store.getAncestor_of_isAncestor_of_lt preGloas known descends
+  have through := Store.getAncestor_trans below walk
+  have rootWalk := Store.getAncestor_root (store := (e.world n).state u) head .pending boundary
+  simp only [Store.getCheckpointBlock, boundaryOk, Except.mapError, bind, Except.bind,
+    pure, Except.pure] at headRead ⊢
+  change (·.root) <$> ((e.world n).state u).getAncestor ⟨head.root, .pending⟩ boundary =
+    .ok ((e.world n).state u).finalizedCheckpoint.root at headRead
+  rw [← rootWalk, through] at headRead
+  exact headRead
+
 /-- A completed safe duty is recorded by the endpoint, unless justification covers the root. -/
 private theorem recorded_duty_of_safe_interval {Δ first time : ℕ}
     (sync : e.Synchronous Δ) (slots : 0 < config.SLOT_DURATION_MS)
