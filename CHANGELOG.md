@@ -516,6 +516,13 @@ Not yet released.
   `Step.slashedPersistence` and `Run.slashedPersistence` no longer take the argument `early : y.fork < .glamsterdam`.
   Callers drop that argument, and the conclusions are unchanged.
   No C export or Python function changes.
+- `EthLib.Consensus.DirectSafety.quorum_drift_from_run` is removed.
+  No declaration read it.
+  It took the arguments `caps`, `aligned` and `withdrawalDelay` and discarded them.
+  Its proof repeated the budgeting of the selected prefix and the handling of slashing evidence.
+  The private lemmas `selected_call_drift_le` and `accountable_pair_bound` of `DirectSafety.Safety` already do both.
+  No migration is needed, and no other statement changes.
+  No C export or Python function changes.
 
 ## 0.3.0
 
