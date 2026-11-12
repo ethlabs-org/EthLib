@@ -2606,7 +2606,10 @@ theorem operationsPrefix_coverage {fork : Fork} (electra : .pectra ≤ fork)
         (calls.map (·.call)) (changed.earliestExitEpoch electra)
         (changed.exitBalanceToConsume electra) ∧
       (∀ called ∈ calls,
-        called.call.rate.toNat ≤ config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat) := by
+        called.call.rate.toNat ≤ config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat) ∧
+      RegistryLifecycle s changed ∧
+      (∀ i, i < s.validators.data.size →
+        effectiveAt ⟨fork, changed⟩ i = effectiveAt ⟨fork, s⟩ i) := by
   obtain ⟨one, oneTrace, oneCoverage, oneRates⟩ := DepartureCoverage.foldlM electra _
     (fun _ _ _ ok => proposerSlashing_indexedTrace electra early ok)
     (fun _ _ _ ok => registryLifecycle_processProposerSlashing ok)
@@ -2670,7 +2673,7 @@ theorem operationsPrefix_coverage {fork : Fork} (electra : .pectra ≤ fork)
       (fun _ _ _ kept ok => (credentials_departureQueues electra ok).trans kept) rfl changedOk
   refine ⟨(one ++ two) ++ three, prefixCoverage.suffix_of_empty changesCoverage
     ((((firstLife.trans secondLife).trans votesLife).trans depositsLife).trans exitsLife)
-    changesLife, ?_, ?_⟩
+    changesLife, ?_, ?_, ?_, ?_⟩
   · have middleEpoch := congrArg Prod.fst (depositsFrame.trans votesFrame)
     have middleBalance := congrArg (fun q => q.2.1) (depositsFrame.trans votesFrame)
     have lastEpoch := congrArg Prod.fst changesFrame
@@ -2683,10 +2686,57 @@ theorem operationsPrefix_coverage {fork : Fork} (electra : .pectra ≤ fork)
     rw [middleEpoch, middleBalance] at threeTrace
     rw [lastEpoch, lastBalance, List.map_append, List.map_append]
     exact (oneTrace.append twoTrace).append threeTrace
-  intro called member
-  rcases List.mem_append.mp member with member | member
-  · exact (List.mem_append.mp member).elim (oneRates called) (twoRates called)
-  · exact threeRates called member
+  · intro called member
+    rcases List.mem_append.mp member with member | member
+    · exact (List.mem_append.mp member).elim (oneRates called) (twoRates called)
+    · exact threeRates called member
+  · exact ((((firstLife.trans secondLife).trans votesLife).trans depositsLife).trans
+      exitsLife).trans changesLife
+  · exact effectiveKept_trans balances
+      (effectiveKept_trans
+        (effectiveKept_fold (fun _ _ _ ok => effectiveKept_voluntaryExit ok)
+          (fun _ _ _ ok => (registryLifecycle_processVoluntaryExit ok).size_le) exitedOk)
+        (effectiveKept_fold (fun _ _ _ ok => effectiveKept_blsChange ok)
+          (fun _ _ _ ok => (registryLifecycle_processBlsToExecutionChange ok).size_le) changedOk)
+        exitsLife.size_le)
+      (((firstLife.trans secondLife).trans votesLife).trans depositsLife).size_le
+
+/-- Successful Electra operations cover charges by exit and concrete consolidation calls. -/
+theorem operations_coverage {fork : Fork} (electra : .pectra ≤ fork)
+    (early : fork < .glamsterdam) {s t : BeaconState preset fork}
+    {body : BeaconBlockBody preset fork} {parentSlot : Slot}
+    (ok : processOperations config checks s body parentSlot = .ok t) :
+    ∃ sites : List (ForkedBeaconState preset), ∀ cap : Nat,
+      (∀ site ∈ sites, ∀ (_h : .pectra ≤ site.fork) (rate : Gwei),
+        getConsolidationChurnLimit config site.state = .ok rate → rate.toNat ≤ cap) →
+      ∃ exits consolidations : List IndexedDepartureCall,
+        DepartureCoverage s t (exits ++ consolidations) ∧
+        (∀ called ∈ exits,
+          called.call.rate.toNat ≤ config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat) ∧
+        (∀ called ∈ consolidations, called.call.rate.toNat ≤ cap) := by
+  have notGloas : ¬ .glamsterdam ≤ fork := Nat.not_le_of_lt early
+  simp only [processOperations, notGloas, electra, ↓reduceDIte, bind_ok_iff] at ok
+  obtain ⟨_, _, _, _, proposed, proposedOk, attested, attestedOk, voted, votedOk,
+    deposited, depositedOk, exited, exitedOk, changed, changedOk, requestsOk⟩ := ok
+  rw [← Array.foldlM_toList] at proposedOk attestedOk votedOk depositedOk exitedOk
+  obtain ⟨first, firstCoverage, _, firstRates, firstLife, firstBalances⟩ :=
+    operationsPrefix_coverage electra early proposedOk attestedOk votedOk depositedOk
+      exitedOk changedOk
+  have requestsLife := registryLifecycle_processExecutionRequests requestsOk
+  simp only [processExecutionRequests, bind_ok_iff] at requestsOk
+  obtain ⟨requested, requestedOk, withdrawn, withdrawnOk, consolidatedOk⟩ := requestsOk
+  rw [← Array.foldlM_toList] at requestedOk withdrawnOk consolidatedOk
+  obtain ⟨sites, replayed⟩ := consolidationRequestsSites_result consolidatedOk
+  refine ⟨sites, ?_⟩
+  intro cap rates
+  obtain ⟨exits, consolidations, covered, _, _, exitRates, consolidationRates⟩ :=
+    executionRequests_coverage electra early requestedOk withdrawnOk consolidatedOk
+      replayed cap rates
+  refine ⟨first ++ exits, consolidations, ?_, ?_, consolidationRates⟩
+  · simpa only [List.append_assoc] using
+      firstCoverage.append_of_effectiveKept covered firstLife requestsLife firstBalances
+  · intro called member
+    exact (List.mem_append.mp member).elim (firstRates called) (exitRates called)
 
 /-- The block prefix reaches execution requests before any consolidation queue call. -/
 def blockConsolidationSites {fork : Fork} (config : Config) (checks : SignatureChecks)
