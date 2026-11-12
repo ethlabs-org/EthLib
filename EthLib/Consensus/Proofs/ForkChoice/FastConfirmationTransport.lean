@@ -1155,7 +1155,35 @@ private theorem slotCommittee_eq_of_kept {left right : Store preset fork}
     simp only [getCommitteeCountPerSlot, active]
   simp only [Store.getSlotCommittee, sourceOk, stateOk, bind, Except.bind, count, kept]
 
-/-- Recent heads above a common parent read the same committees through the caller epoch. -/
+/-- A partial window after a parent ends no later than the epoch after that parent. -/
+private theorem epoch_le_of_partial_parent_window {parent first last current : Slot}
+    (positive : 0 < preset.SLOTS_PER_EPOCH.toNat)
+    (firstOk : addChecked parent 1 = .ok first)
+    (lastOk : subChecked current 1 = .ok last)
+    (uncovered : isFullValidatorSetCovered preset first last = .ok false) :
+    (computeEpochAtSlot preset current).toNat ≤
+      (computeEpochAtSlot preset parent).toNat + 1 := by
+  simp only [isFullValidatorSetCovered, bind_ok_iff, mapError_ok_iff] at uncovered
+  obtain ⟨afterFirst, afterFirstOk, lastFirst, lastFirstOk, afterLast, afterLastOk, notFull⟩ :=
+    uncovered
+  have firstNat := (addChecked_ok_iff.mp firstOk).2
+  have afterFirstNat := (addChecked_ok_iff.mp afterFirstOk).2
+  have lastFirstNat := (subChecked_ok_iff.mp lastFirstOk).2
+  have lastNat := subChecked_ok_iff.mp lastOk
+  have afterLastNat := (addChecked_ok_iff.mp afterLastOk).2
+  simp only [UInt64.toNat_one] at lastNat afterLastNat
+  have endpoint : afterLast = current := UInt64.toNat_inj.mp (by omega)
+  have boundary : lastFirst.toNat = parent.toNat + preset.SLOTS_PER_EPOCH.toNat := by
+    simp only [UInt64.toNat_one] at firstNat lastFirstNat
+    omega
+  have notLater : ¬computeEpochAtSlot preset lastFirst < computeEpochAtSlot preset afterLast := by
+    simpa only [pure, Except.pure, Except.ok.injEq, decide_eq_false_iff_not] using notFull
+  rw [endpoint] at notLater
+  have le := UInt64.le_iff_toNat_le.mp (UInt64.not_lt.mp notLater)
+  simpa only [computeEpochAtSlot, UInt64.toNat_div, boundary,
+    Nat.add_div_right _ positive] using le
+
+/-- Recent heads above a common parent read the same committees through its next epoch. -/
 private theorem slotCommittee_eq_of_recent_parent {anchor : Store preset fork} {limit : Nat}
     (anchorStore : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
     (anchorSlot : anchorBlock.slot = anchorState.slot)
@@ -1178,7 +1206,8 @@ private theorem slotCommittee_eq_of_recent_parent {anchor : Store preset fork} {
     (recent : callerEpoch.toNat ≤ (computeEpochAtSlot preset parentBlock.slot).toNat + 1)
     (age : receiverEpoch.toNat ≤ (computeEpochAtSlot preset parentBlock.slot).toNat + 2)
     {dutySlot : Slot} (low : parentBlock.slot ≤ dutySlot)
-    (high : (computeEpochAtSlot preset dutySlot).toNat ≤ callerEpoch.toNat) :
+    (high : (computeEpochAtSlot preset dutySlot).toNat ≤
+      (computeEpochAtSlot preset parentBlock.slot).toNat + 1) :
     ((e.world n).state u).getSlotCommittee firstHead.root dutySlot =
       ((e.world k).state w).getSlotCommittee secondHead.root dutySlot := by
   have callerForward := e.forwardReachable
@@ -1303,6 +1332,67 @@ private theorem committeeWindow_transfer {left right : Store preset fork}
       refine ⟨next, ?_, ih next result (fun i member => agrees i (by simp [member])) restOk⟩
       simpa only [← agrees offset (by simp)] using nextOk
   exact transfer _ _ _ steps folded
+
+/-- Partial receiver windows transfer their readable subranges to the caller's Byzantine bound. -/
+private theorem sourceByzantine_of_partial_parent_window
+    [DecidablePred (· ∈ J)] {anchor : Store preset fork} {limit : Nat}
+    (anchorStore : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (anchorSlot : anchorBlock.slot = anchorState.slot)
+    (anchored : ∀ w ∈ J, e.start w = anchor)
+    (oneBlock : OneBlockPerRoot e limit) (slots : 0 < config.SLOT_DURATION_MS)
+    (positive : 0 < preset.SLOTS_PER_EPOCH.toNat) (preGloas : fork < .glamsterdam)
+    (lookahead : 1 ≤ preset.MIN_SEED_LOOKAHEAD.toNat ∧ 1 ≤ preset.MAX_SEED_LOOKAHEAD.toNat ∧
+      preset.MIN_SEED_LOOKAHEAD.toNat + 3 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
+    {u w : ValidatorIndex} (caller : u ∈ J) (receiver : w ∈ J) {n k : Nat}
+    (callerBound : (e.world n).time ≤ limit) (receiverBound : (e.world k).time ≤ limit)
+    {parent : Root} {parentBlock : BeaconBlock preset fork}
+    (callerParentKnown : ((e.world n).state u).blocks[parent]? = some parentBlock)
+    (receiverParentKnown : ((e.world k).state w).blocks[parent]? = some parentBlock)
+    {firstHead secondHead : ForkChoiceNode}
+    (firstAbove : ((e.world n).state u).isAncestor firstHead ⟨parent, .pending⟩ = .ok true)
+    (secondAbove : ((e.world k).state w).isAncestor secondHead ⟨parent, .pending⟩ = .ok true)
+    {callerEpoch receiverEpoch : Epoch}
+    (callerEpochOk : ((e.world n).state u).getCurrentStoreEpoch config = .ok callerEpoch)
+    (receiverEpochOk : ((e.world k).state w).getCurrentStoreEpoch config = .ok receiverEpoch)
+    (recent : callerEpoch.toNat ≤ (computeEpochAtSlot preset parentBlock.slot).toNat + 1)
+    (age : receiverEpoch.toNat ≤ (computeEpochAtSlot preset parentBlock.slot).toNat + 2)
+    {source : BeaconState preset fork}
+    (sourceBound : ∀ low high members,
+      ((e.world n).state u).getCommitteesBetweenSlots firstHead.root low high = .ok members →
+      ByzantineStakeAtMost (fun v => balanceAt source v.toNat)
+        (Store.activeMembers source members) J
+        config.CONFIRMATION_BYZANTINE_THRESHOLD.toNat 100)
+    {first last current low high : Slot} {members : Std.TreeSet ValidatorIndex}
+    (firstOk : addChecked parentBlock.slot 1 = .ok first)
+    (lastOk : subChecked current 1 = .ok last)
+    (uncovered : isFullValidatorSetCovered preset first last = .ok false)
+    (lowIn : first ≤ low) (highIn : high ≤ last)
+    (read : ((e.world k).state w).getCommitteesBetweenSlots secondHead.root low high =
+      .ok members) :
+    ByzantineStakeAtMost (fun v => balanceAt source v.toNat)
+      (Store.activeMembers source members) J
+      config.CONFIRMATION_BYZANTINE_THRESHOLD.toNat 100 := by
+  have epochBound := epoch_le_of_partial_parent_window positive firstOk lastOk uncovered
+  apply sourceBound low high members
+  apply committeeWindow_transfer read
+  intro dutySlot lowLe highLe
+  have parentLow : parentBlock.slot ≤ dutySlot := by
+    have start := (addChecked_ok_iff.mp firstOk).2
+    have lower := UInt64.le_iff_toNat_le.mp (UInt64.le_trans lowIn lowLe)
+    exact UInt64.le_iff_toNat_le.mpr (by omega)
+  have currentHigh : dutySlot ≤ current := by
+    have finish := (subChecked_ok_iff.mp lastOk).2
+    have upper := UInt64.le_iff_toNat_le.mp (UInt64.le_trans highLe highIn)
+    exact UInt64.le_iff_toNat_le.mpr (by omega)
+  have highEpoch : (computeEpochAtSlot preset dutySlot).toNat ≤
+      (computeEpochAtSlot preset parentBlock.slot).toNat + 1 := by
+    apply Nat.le_trans _ epochBound
+    simp only [computeEpochAtSlot, UInt64.toNat_div]
+    exact Nat.div_le_div_right (UInt64.le_iff_toNat_le.mp currentHigh)
+  exact (slotCommittee_eq_of_recent_parent anchorStore anchorSlot anchored oneBlock slots
+    preGloas lookahead caller receiver callerBound receiverBound callerParentKnown
+    receiverParentKnown firstAbove secondAbove callerEpochOk receiverEpochOk recent age
+    parentLow highEpoch).symm
 
 /-- Equal slot committees transfer a maximum read under the same balance state. -/
 private theorem maximum_of_same_slotCommittees {left right : Store preset fork}
@@ -1483,6 +1573,41 @@ private theorem honest_margin_of_recent_check {limit : Nat}
   exact (honest_margin_of_raw_bound within supportOk rangeOk participantsOk inside aligned
     increment dishonest (byzantine _ _ _ participantsOk) base).trans_le
     (Nat.add_le_add_right parentBound _)
+
+/-- The caller reserve pays for new Byzantine duties after honest gains are counted.
+
+Fresh members lie outside the old support window.
+
+Prefix members lie in that window but outside its adversary window.
+
+Honest fresh members gain two units of support weight.
+
+Honest prefix members gain at least one.
+
+All weights use the caller's balance source. -/
+private theorem margin_of_fresh_duty_partition
+    {share adversary equivocators countedByzantine oldByzantine adversaryMaximum : Nat}
+    {freshHonest prefixHonest freshByzantine prefixByzantine : Nat}
+    {maximum laterMaximum score shift parents supporters laterParents laterSupporters : Nat}
+    (half : 2 * share ≤ 100)
+    (unionBound : 100 * (oldByzantine + freshByzantine + prefixByzantine) ≤
+      share * (adversaryMaximum + freshHonest + prefixHonest +
+        freshByzantine + prefixByzantine))
+    (adversaryBound : share * adversaryMaximum ≤ 100 * (adversary + equivocators))
+    (apart : equivocators + countedByzantine ≤ oldByzantine)
+    (base : maximum + score + 2 * adversary + shift < parents +
+      2 * supporters + 2 * countedByzantine)
+    (growth : laterMaximum ≤ maximum + freshHonest + freshByzantine)
+    (gain : parents + 2 * supporters + 2 * freshHonest + prefixHonest ≤
+      laterParents + 2 * laterSupporters) :
+    laterMaximum + score + shift < laterParents + 2 * laterSupporters := by
+  have reserve : freshByzantine + prefixByzantine + 2 * countedByzantine ≤
+      freshHonest + prefixHonest + 2 * adversary := by
+    have scaledHalf := Nat.mul_le_mul_right
+      (freshHonest + prefixHonest + freshByzantine + prefixByzantine) half
+    have scaledApart := Nat.mul_le_mul_left 100 apart
+    nlinarith
+  omega
 
 /-- Disjoint child supporters and parent voters can move to child support without losing weight. -/
 private theorem stake_le_of_supporter_parent_transport {α : Type} [DecidableEq α]
@@ -3173,7 +3298,7 @@ theorem Execution.honest_support_of_historical_anchor {Δ : ℕ} (sync : e.Synch
     exact slotCommittee_eq_of_recent_parent anchorStore anchorSlot anchored oneBlock slots
       preGloas lookahead caller receiver later (by omega) callerParentKnown receiverParentKnown
       parentOnHead receiverAbove callerEpochOk receiverEpochOk callerParentAge age
-      parentLow epochHigh
+      parentLow (epochHigh.trans callerParentAge)
   have sourceMaximumRead := maximum_of_same_slotCommittees maximumOk oldSlotCommittees
   have sourceMaximumEq := Except.ok.inj (sourceMaximumOk.symm.trans sourceMaximumRead)
   rw [sourceMaximumEq] at transferred
