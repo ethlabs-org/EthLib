@@ -2283,30 +2283,37 @@ theorem fixed_ge {f : Fork} (s : BeaconState preset f) {E : Epoch} {n : Nat}
   rw [UInt64.le_iff_toNat_le, activityFixedEpoch_toNat]
   exact Nat.le_min.mpr ⟨by omega, by omega⟩
 
-/-- A validator that leaves the active set within two epochs was scheduled to exit by then.
+/-- A validator active in the source and not in a queried epoch by two epochs later departs.
 
-Or else a queue call in the epoch of the source charged its exit.
+The queried epoch is read in a later state, and is no earlier than the epoch of that state.
+
+The validator was scheduled to exit by then, or else a queue call in the epoch of the source
+charged its exit.
 
 Those calls are the ones that an invariant of the epoch counts. -/
 theorem departing_subset {Inv : BeaconState preset fork → Prop} (laws : Laws config Inv)
     {y : ForkedBeaconState preset} {source : BeaconState preset fork}
     (tail : Run config checks ⟨fork, source⟩ y) (holds : Inv source)
     (lookahead : 1 ≤ preset.MAX_SEED_LOOKAHEAD.toNat) (preGloas : y.fork < .glamsterdam)
-    (near : (getCurrentEpoch y.state).toNat ≤ (getCurrentEpoch source).toNat + 2)
+    {Ep : Epoch} (later : getCurrentEpoch y.state ≤ Ep)
+    (near : Ep.toNat ≤ (getCurrentEpoch source).toNat + 2)
     (bounded : horizon source < 2 ^ 64 - 1) :
     ∃ r a : BeaconState preset fork, Inv r ∧ ExitsSame r a ∧
-      {v ∈ activeSet source | v ∉ activeSet y.state} ⊆ scheduled source ∪ departed source a := by
+      {v ∈ activeSet source | isActiveAt y.state Ep v.toNat = false} ⊆
+        scheduled source ∪ departed source a := by
   have early : fork < .glamsterdam :=
     Nat.lt_of_le_of_lt (fork_le_of_chainSteps tail.chainSteps) preGloas
-  have later : (getCurrentEpoch source).toNat ≤ (getCurrentEpoch y.state).toNat :=
+  have forward : (getCurrentEpoch source).toNat ≤ (getCurrentEpoch y.state).toNat :=
     UInt64.le_iff_toNat_le.mp (currentEpoch_le_of_chainSteps tail.chainSteps)
+  have laterNat : (getCurrentEpoch y.state).toNat ≤ Ep.toNat := UInt64.le_iff_toNat_le.mp later
   have farNat : FAR_FUTURE_EPOCH.toNat = 2 ^ 64 - 1 := rfl
   unfold horizon at bounded
-  -- A source validator with an exit already set leaves only if that exit is by the horizon.
-  have scheduledCase : ∀ v ∈ activeSet source, v ∉ activeSet y.state →
-      ∀ a, source.validators.data[v.toNat]? = some a → a.exitEpoch ≠ FAR_FUTURE_EPOCH →
-        v ∈ scheduled source := by
-    intro v active absent a found assigned
+  -- A source validator inactive at the queried epoch later has an exit by that epoch.
+  have exitBy : ∀ v ∈ activeSet source, isActiveAt y.state Ep v.toNat = false →
+      ∀ a, source.validators.data[v.toNat]? = some a →
+        ∃ b, y.state.validators.data[v.toNat]? = some b ∧ b.exitEpoch.toNat ≤ Ep.toNat ∧
+          (a.exitEpoch ≠ FAR_FUTURE_EPOCH → b.exitEpoch = a.exitEpoch) := by
+    intro v active absent a found
     obtain ⟨b, hb, life⟩ := tail.registryLifecycle.validators v.toNat a found
     obtain ⟨a', ha', act⟩ := isActiveAt_eq_true_iff.mp ((mem_activeSet early).mp active)
     rw [found] at ha'
@@ -2318,20 +2325,25 @@ theorem departing_subset {Inv : BeaconState preset fork → Prop} (laws : Laws c
       have := a.exitEpoch.toNat_lt
       rw [far] at act
       omega
-    have exitEq := life.exitEpoch assigned
     have actEq := life.activationEpoch activation
-    have inactive : isActiveValidator b (getCurrentEpoch y.state) = false := by
-      by_contra h
-      apply absent
-      exact (mem_activeSet preGloas).mpr (isActiveAt_eq_true_iff.mpr ⟨b, hb, by simpa using h⟩)
+    have inactive : isActiveValidator b Ep = false := by
+      simpa only [isActiveAt, hb, Option.map_some, Option.getD_some] using absent
     simp only [isActiveValidator, Bool.and_eq_false_iff, decide_eq_false_iff_not,
-      UInt64.le_iff_toNat_le, UInt64.lt_iff_toNat_lt, exitEq, actEq] at inactive
+      UInt64.le_iff_toNat_le, UInt64.lt_iff_toNat_lt, actEq] at inactive
+    exact ⟨b, hb, by omega, life.exitEpoch⟩
+  -- A source validator with an exit already set leaves only if that exit is by the horizon.
+  have scheduledCase : ∀ v ∈ activeSet source, isActiveAt y.state Ep v.toNat = false →
+      ∀ a, source.validators.data[v.toNat]? = some a → a.exitEpoch ≠ FAR_FUTURE_EPOCH →
+        v ∈ scheduled source := by
+    intro v active absent a found assigned
+    obtain ⟨b, _, within, exitEq⟩ := exitBy v active absent a found
+    rw [exitEq assigned] at within
     unfold scheduled
     rw [Finset.mem_filter]
     refine ⟨active, ?_⟩
     simp only [found, Option.any_some, decide_eq_true_eq]
     omega
-  by_cases stays : (getCurrentEpoch y.state).toNat ≤ (getCurrentEpoch source).toNat + 1
+  by_cases stays : Ep.toNat ≤ (getCurrentEpoch source).toNat + 1
   · refine ⟨source, source, holds, ExitsSame.refl _, ?_⟩
     intro v member
     rw [Finset.mem_filter] at member
@@ -2339,20 +2351,36 @@ theorem departing_subset {Inv : BeaconState preset fork → Prop} (laws : Laws c
     obtain ⟨a, found, act⟩ := isActiveAt_eq_true_iff.mp ((mem_activeSet early).mp active)
     by_cases assigned : a.exitEpoch = FAR_FUTURE_EPOCH
     · exfalso
-      apply absent
-      have kept := activeKept_of_chainSteps tail.chainSteps (getCurrentEpoch y.state)
+      have kept := activeKept_of_chainSteps tail.chainSteps Ep
         (fixed_ge source (n := 1) (by omega) lookahead (by omega)) v.toNat
-      apply (mem_activeSet preGloas).mpr
-      rw [kept, isActiveAt_eq_true_iff]
-      refine ⟨a, found, ?_⟩
-      simp only [isActiveValidator, Bool.and_eq_true, decide_eq_true_eq, UInt64.le_iff_toNat_le,
-        UInt64.lt_iff_toNat_lt, assigned] at act ⊢
+      rw [kept] at absent
+      simp only [isActiveAt, found, Option.map_some, Option.getD_some, isActiveValidator,
+        Bool.and_eq_false_iff, Bool.and_eq_true, decide_eq_false_iff_not, decide_eq_true_eq,
+        UInt64.le_iff_toNat_le, UInt64.lt_iff_toNat_lt, assigned] at absent act
       omega
     · exact Finset.mem_union_left _ (scheduledCase v active absent a found assigned)
-  have leaves : getCurrentEpoch y.state ≠ getCurrentEpoch source := by
-    intro same
-    rw [same] at stays
+  by_cases same : getCurrentEpoch y.state = getCurrentEpoch source
+  · -- The run stays in the epoch of the source, so the invariant holds at its end.
+    obtain ⟨t, rfl, invT⟩ := run_within laws early tail ⟨source, rfl, holds⟩ same
+    refine ⟨t, t, invT, ExitsSame.refl _, ?_⟩
+    intro v member
+    rw [Finset.mem_filter] at member
+    obtain ⟨active, absent⟩ := member
+    obtain ⟨a0, found, _⟩ := isActiveAt_eq_true_iff.mp ((mem_activeSet early).mp active)
+    by_cases assigned : a0.exitEpoch = FAR_FUTURE_EPOCH
+    swap
+    · exact Finset.mem_union_left _ (scheduledCase v active absent a0 found assigned)
+    apply Finset.mem_union_right
+    obtain ⟨b, hb, within, _⟩ := exitBy v active absent a0 found
+    unfold departed departs
+    rw [Finset.mem_filter]
+    refine ⟨active, ?_⟩
+    change t.validators.data[v.toNat]? = some b at hb
+    simp only [found, hb, Option.any_some, Bool.and_eq_true, beq_iff_eq, decide_eq_true_eq,
+      assigned, true_and]
+    unfold horizon
     omega
+  have leaves : getCurrentEpoch y.state ≠ getCurrentEpoch source := same
   obtain ⟨u, z, pre, step, rest, uEpoch, zEpoch⟩ := run_split tail leaves
   obtain ⟨s', rfl, invS⟩ := run_within laws early pre ⟨source, rfl, holds⟩ uEpoch
   change getCurrentEpoch s' = getCurrentEpoch source at uEpoch
@@ -2381,15 +2409,13 @@ theorem departing_subset {Inv : BeaconState preset fork → Prop} (laws : Laws c
     simp only [isActiveValidator, Bool.and_eq_true, decide_eq_true_eq, UInt64.le_iff_toNat_le,
       UInt64.lt_iff_toNat_lt, assigned] at act ⊢
     omega
-  -- Not active two epochs after the source, at the end of the run.
-  have atLast : isActiveAt a (getCurrentEpoch y.state) v.toNat = false := by
-    have one := activeAZ (getCurrentEpoch y.state)
-      (fixed_ge a (n := 1) (by omega) lookahead (by omega)) v.toNat
-    have two := activeKept_of_chainSteps rest.chainSteps (getCurrentEpoch y.state)
+  -- Not active at the queried epoch, which the end of the run reads.
+  have atLast : isActiveAt a Ep v.toNat = false := by
+    have one := activeAZ Ep (fixed_ge a (n := 1) (by omega) lookahead (by omega)) v.toNat
+    have two := activeKept_of_chainSteps rest.chainSteps Ep
       (fixedZ ▸ fixed_ge a (n := 1) (by omega) lookahead (by omega)) v.toNat
     rw [← one, ← two]
-    by_contra h
-    exact absent ((mem_activeSet preGloas).mpr (by simpa using h))
+    exact absent
   obtain ⟨w, hw, actW⟩ := isActiveAt_eq_true_iff.mp atNext
   simp only [isActiveAt, hw, Option.map_some, Option.getD_some] at atLast
   simp only [isActiveValidator, Bool.and_eq_true, Bool.and_eq_false_iff, decide_eq_true_eq,
@@ -2402,19 +2428,24 @@ theorem departing_subset {Inv : BeaconState preset fork → Prop} (laws : Laws c
   unfold horizon
   omega
 
-/-- The stake that leaves the active set within two epochs of a reachable state.
+/-- The stake that leaves the active set by a queried epoch within two epochs of a reachable state.
 
-It is at most the stake already scheduled to exit by then.
+A later state reads the activity of the queried epoch, which is no earlier than its own epoch.
 
-The churn of the epoch of the state adds what its charges can still move. -/
-theorem departing_stake_le {g y : ForkedBeaconState preset} {source : BeaconState preset fork}
+The stake is at most the stake already scheduled to exit by then.
+
+The churn of the epoch of the first state adds what its charges can still move. -/
+theorem departing_stake_le_epoch {g y : ForkedBeaconState preset}
+    {source : BeaconState preset fork}
     (genesis : Genesis (config := config) (checks := checks) g)
     (shared : Run config checks g ⟨fork, source⟩)
     (tail : Run config checks ⟨fork, source⟩ y)
     (lookahead : 1 ≤ preset.MAX_SEED_LOOKAHEAD.toNat)
     (preGloas : y.fork < .glamsterdam)
-    (near : (getCurrentEpoch y.state).toNat ≤ (getCurrentEpoch source).toNat + 2) :
-    stake (fun v => balanceAt source v.toNat) {v ∈ activeSet source | v ∉ activeSet y.state} ≤
+    {Ep : Epoch} (later : getCurrentEpoch y.state ≤ Ep)
+    (near : Ep.toNat ≤ (getCurrentEpoch source).toNat + 2) :
+    stake (fun v => balanceAt source v.toNat)
+        {v ∈ activeSet source | isActiveAt y.state Ep v.toNat = false} ≤
       stake (fun v => balanceAt source v.toNat) (scheduled source) +
         if electra : .pectra ≤ fork then
           ((exitChurnLimit config source).toOption.getD 0).toNat +
@@ -2428,7 +2459,8 @@ theorem departing_stake_le {g y : ForkedBeaconState preset} {source : BeaconStat
     Nat.lt_of_le_of_lt (fork_le_of_chainSteps tail.chainSteps) preGloas
   by_cases bounded : horizon source < 2 ^ 64 - 1
   swap
-  · have sub : {v ∈ activeSet source | v ∉ activeSet y.state} ⊆ scheduled source := by
+  · have sub : {v ∈ activeSet source | isActiveAt y.state Ep v.toNat = false} ⊆
+        scheduled source := by
       intro v member
       rw [Finset.mem_filter] at member
       unfold scheduled
@@ -2443,7 +2475,7 @@ theorem departing_stake_le {g y : ForkedBeaconState preset} {source : BeaconStat
   by_cases electra : .pectra ≤ fork
   · simp only [electra, ↓reduceDIte]
     obtain ⟨r, a, invR, exitsR, sub⟩ := departing_subset (lawsE lookahead electra source) tail
-      (InvE.start electra bounded) lookahead preGloas near bounded
+      (InvE.start electra bounded) lookahead preGloas later near bounded
     have same := departed_of_exitsOnly exitsR.1 invR.size
     have bound := invR.departed_le
     unfold exitRateOf consolidationRateOf at bound
@@ -2454,7 +2486,7 @@ theorem departing_stake_le {g y : ForkedBeaconState preset} {source : BeaconStat
   · simp only [electra, ↓reduceDIte]
     have before : fork < .pectra := Nat.lt_of_not_le electra
     obtain ⟨r, a, invR, exitsR, sub⟩ := departing_subset (lawsP lookahead before source bounded)
-      tail (InvP.start source) lookahead preGloas near bounded
+      tail (InvP.start source) lookahead preGloas later near bounded
     have same := departed_of_exitsOnly exitsR.1 invR.size
     have count := invR.departed_card bounded
     have capped : CappedPre source := run_capped genesis shared before
@@ -2478,5 +2510,35 @@ theorem departing_stake_le {g y : ForkedBeaconState preset} {source : BeaconStat
       (stake_union_le _ _)
     rw [same] at union
     omega
+
+/-- The stake that leaves the active set within two epochs of a reachable state.
+
+It is at most the stake already scheduled to exit by then.
+
+The churn of the epoch of the state adds what its charges can still move. -/
+theorem departing_stake_le {g y : ForkedBeaconState preset} {source : BeaconState preset fork}
+    (genesis : Genesis (config := config) (checks := checks) g)
+    (shared : Run config checks g ⟨fork, source⟩)
+    (tail : Run config checks ⟨fork, source⟩ y)
+    (lookahead : 1 ≤ preset.MAX_SEED_LOOKAHEAD.toNat)
+    (preGloas : y.fork < .glamsterdam)
+    (near : (getCurrentEpoch y.state).toNat ≤ (getCurrentEpoch source).toNat + 2) :
+    stake (fun v => balanceAt source v.toNat) {v ∈ activeSet source | v ∉ activeSet y.state} ≤
+      stake (fun v => balanceAt source v.toNat) (scheduled source) +
+        if electra : .pectra ≤ fork then
+          ((exitChurnLimit config source).toOption.getD 0).toNat +
+            (source.exitBalanceToConsume electra).toNat +
+            ((getConsolidationChurnLimit config source).toOption.getD 0).toNat +
+            (source.consolidationBalanceToConsume electra).toNat +
+            2 * preset.MAX_EFFECTIVE_BALANCE_ELECTRA.toNat
+        else max 1 (getValidatorChurnLimit config source).toNat *
+          preset.MAX_EFFECTIVE_BALANCE.toNat := by
+  have same : {v ∈ activeSet source | v ∉ activeSet y.state} =
+      {v ∈ activeSet source | isActiveAt y.state (getCurrentEpoch y.state) v.toNat = false} :=
+    Finset.filter_congr fun v _ => by
+      rw [mem_activeSet preGloas, Bool.not_eq_true]
+  rw [same]
+  exact departing_stake_le_epoch genesis shared tail lookahead preGloas
+    (UInt64.le_iff_toNat_le.mpr (Nat.le_refl _)) near
 
 end EthLib.Consensus.ExitChurn
