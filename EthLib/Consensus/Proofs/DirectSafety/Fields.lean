@@ -1009,6 +1009,9 @@ private theorem call_target_window {g a : ForkedBeaconState preset}
       call.before.state.slot.toNat < call.target.epoch.toNat * preset.SLOTS_PER_EPOCH.toNat +
         preset.SLOTS_PER_HISTORICAL_ROOT.toNat := by
   have frame := frame_processSlot call.cachedOk
+  -- The successful root read puts the target's first slot strictly before the cached slot.
+  have started := getBlockRoot_start_lt call.targetRoot
+  rw [frame.slot] at started
   have current : (getCurrentEpoch call.cached).toNat =
       call.before.state.slot.toNat / preset.SLOTS_PER_EPOCH.toNat := by
     simp [getCurrentEpoch_toNat, frame.slot]
@@ -1016,24 +1019,13 @@ private theorem call_target_window {g a : ForkedBeaconState preset}
   have positive : 0 < preset.SLOTS_PER_EPOCH.toNat := by have := parameters.slots; omega
   have division := Nat.mod_add_div call.before.state.slot.toNat preset.SLOTS_PER_EPOCH.toNat
   have remainder := Nat.mod_lt call.before.state.slot.toNat positive
-  have boundary := call.boundary
-  have remainderNext := Nat.add_mod call.before.state.slot.toNat 1 preset.SLOTS_PER_EPOCH.toNat
-  -- At an epoch boundary, the cached slot is strictly after the epoch's first slot.
-  have last : call.before.state.slot.toNat % preset.SLOTS_PER_EPOCH.toNat + 1 =
-      preset.SLOTS_PER_EPOCH.toNat := by
-    have slots := parameters.slots
-    rw [boundary, Nat.mod_eq_of_lt (by omega : 1 < preset.SLOTS_PER_EPOCH.toNat)] at remainderNext
-    have div := Nat.dvd_of_mod_eq_zero remainderNext.symm
-    have small : call.before.state.slot.toNat % preset.SLOTS_PER_EPOCH.toNat + 1 ≤
-        preset.SLOTS_PER_EPOCH.toNat := by omega
-    exact Nat.le_antisymm small (Nat.le_of_dvd (by omega) div)
   have date := congrArg UInt64.toNat call.targetEpoch
   have roots := parameters.roots
-  have slots := parameters.slots
+  refine ⟨started, ?_⟩
   split at date
   · rw [current] at date
     rw [← date, Nat.mul_comm preset.SLOTS_PER_EPOCH.toNat] at division
-    constructor <;> omega
+    omega
   · rw [prev, current] at date
     have late := UInt64.lt_iff_toNat_lt.mp call.later
     simp only [GENESIS_EPOCH, UInt64.reduceAdd, UInt64.reduceToNat, current] at late
@@ -1042,7 +1034,7 @@ private theorem call_target_window {g a : ForkedBeaconState preset}
         call.target.epoch.toNat + 1 := by omega
     rw [pred, Nat.mul_add, Nat.mul_comm preset.SLOTS_PER_EPOCH.toNat] at division
     simp only [Nat.mul_one] at division
-    constructor <;> omega
+    omega
 
 /-- Calls retain their target's path even when the endpoint's root ring has overwritten it. -/
 theorem call_target_binding {g a b : ForkedBeaconState preset}
