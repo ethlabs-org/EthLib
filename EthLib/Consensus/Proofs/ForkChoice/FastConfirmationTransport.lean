@@ -774,6 +774,322 @@ private theorem activeTotal_of_lookahead_epoch_lt {state after : BeaconState pre
   · cases run
     exact False.elim ((UInt64.lt_irrefl _) later)
 
+/-- Slot processing preserves the slashing flag at every index, including absent indices. -/
+private def SlashFlagsKept (state after : BeaconState preset fork) : Prop :=
+  ∀ i : Nat, (after.validators.data[i]?.map (·.slashed)).getD false =
+    (state.validators.data[i]?.map (·.slashed)).getD false
+
+private theorem slashFlags_of_validators {state after : BeaconState preset fork}
+    (same : after.validators.data = state.validators.data := by rfl) :
+    SlashFlagsKept state after := by intro i; simp only [same]
+
+private theorem slashFlags_of_map {state after : BeaconState preset fork}
+    (same : after.validators.data.toList.map (·.slashed) =
+      state.validators.data.toList.map (·.slashed)) : SlashFlagsKept state after := by
+  intro i
+  have atIndex := congrArg (fun xs => (xs[i]?).getD false) same
+  simpa only [List.getElem?_map, Array.getElem?_toList] using atIndex
+
+private theorem SlashFlagsKept.trans {first second third : BeaconState preset fork}
+    (one : SlashFlagsKept first second) (two : SlashFlagsKept second third) :
+    SlashFlagsKept first third := fun i => (two i).trans (one i)
+
+private theorem slashFlags_fold {α ε : Type} {step : BeaconState preset fork → α → Except ε _}
+    {xs : List α} {state after : BeaconState preset fork}
+    (keeps : ∀ s x t, step s x = .ok t → SlashFlagsKept s t)
+    (ok : xs.foldlM step state = .ok after) : SlashFlagsKept state after :=
+  foldlM_ok_invariant (SlashFlagsKept state)
+    (fun _ _ _ before ok => before.trans (keeps _ _ _ ok)) (fun _ => rfl) ok
+
+/-- Slashings collect balance penalties without changing any validator record. -/
+private theorem validators_processSlashings {state after : BeaconState preset fork}
+    (run : processSlashings state = .ok after) : after.validators = state.validators := by
+  have penalty {s t : BeaconState preset fork} {total adjusted : Gwei} {i : Nat}
+      (ok : applySlashingPenalty s total adjusted i = .ok t) : t.validators = s.validators := by
+    simp only [applySlashingPenalty, bind_ok_iff, liftAccessor_ok] at ok
+    obtain ⟨_, _, ok⟩ := ok
+    split at ok
+    · simp only [bind_ok_iff] at ok
+      obtain ⟨_, _, ok⟩ := ok
+      split at ok
+      · simp only [bind_ok_iff, liftAccessor_ok] at ok
+        obtain ⟨_, _, _, _, _, _, lowered⟩ := ok
+        exact decreaseBalance_validators lowered
+      · cases ok; rfl
+    · cases ok; rfl
+  have penaltyElectra {s t : BeaconState preset fork} {perIncrement : Gwei} {i : Nat}
+      (ok : applySlashingPenaltyElectra s perIncrement i = .ok t) :
+      t.validators = s.validators := by
+    simp only [applySlashingPenaltyElectra, bind_ok_iff, liftAccessor_ok] at ok
+    obtain ⟨_, _, ok⟩ := ok
+    split at ok
+    · simp only [bind_ok_iff] at ok
+      obtain ⟨_, _, ok⟩ := ok
+      split at ok
+      · simp only [bind_ok_iff, liftAccessor_ok] at ok
+        obtain ⟨_, _, _, _, lowered⟩ := ok
+        exact decreaseBalance_validators lowered
+      · cases ok; rfl
+    · cases ok; rfl
+  unfold processSlashings at run
+  simp only [bind_ok_iff] at run
+  obtain ⟨_, _, _, _, _, _, run⟩ := run
+  split at run
+  · simp only [bind_ok_iff] at run
+    obtain ⟨_, _, applied⟩ := run
+    exact foldlM_ok_invariant (fun s => s.validators = state.validators)
+      (fun _ _ _ before ok => (penaltyElectra ok).trans before) rfl applied
+  · exact foldlM_ok_invariant (fun s => s.validators = state.validators)
+      (fun _ _ _ before ok => (penalty ok).trans before) rfl run
+
+/-- A newly deposited validator is unslashed, so absence and insertion have the same flag. -/
+private theorem slashFlags_addValidator {state after : BeaconState preset fork}
+    {pubkey : Cryptography.Bls.BLSPubkey} {credentials : Bytes32} {amount : Gwei}
+    (run : addValidatorToRegistry state pubkey credentials amount = .ok after) :
+    SlashFlagsKept state after := by
+  have added := addValidatorToRegistry_validators_eq_push run
+  intro i
+  rw [added]
+  by_cases before : i < state.validators.data.size
+  · simp [Array.getElem?_push, before, Nat.ne_of_lt before]
+  · by_cases atEnd : i = state.validators.data.size
+    · subst i
+      simp [getValidatorFromDeposit]
+    · simp [Array.getElem?_push, before, atEnd]
+
+/-- Pending deposits either credit a balance or append an unslashed validator. -/
+private theorem slashFlags_applyPendingDeposit {state after : BeaconState preset fork}
+    {deposit : PendingDeposit}
+    (run : applyPendingDeposit config checks state deposit = .ok after) :
+    SlashFlagsKept state after := by
+  unfold applyPendingDeposit at run
+  split at run
+  · split at run
+    · cases run; exact slashFlags_of_validators
+    simp only [bind_ok_iff] at run
+    obtain ⟨_, _, run⟩ := run
+    split at run
+    · exact slashFlags_addValidator run
+    · cases run; exact slashFlags_of_validators
+  · simp only [liftAccessor_ok, bind_ok_iff] at run
+    obtain ⟨_, _, run⟩ := run
+    exact slashFlags_of_validators (congrArg (·.data) (increaseBalance_validators run))
+
+/-- Passing pending deposits preserves the default-false flag even when the registry grows. -/
+private theorem slashFlags_passPendingDeposits {stop : PendingDeposit → Bool}
+    {nextEpoch : Epoch} {available : Gwei} :
+    ∀ {deposits : List PendingDeposit} {state : BeaconState preset fork} {processed : Gwei}
+      {count : Nat} {postponed : Array PendingDeposit} {pass},
+      passPendingDeposits config checks stop nextEpoch available state processed count
+        postponed deposits = .ok pass → SlashFlagsKept state pass.1.state
+  | [], _, _, _, _, _, ok => by
+    cases ok; exact slashFlags_of_validators
+  | deposit :: rest, state, processed, count, postponed, pass, ok => by
+    unfold passPendingDeposits at ok
+    simp only [bind, Except.bind, pure, Except.pure] at ok
+    split at ok
+    · cases ok; exact slashFlags_of_validators
+    split at ok
+    · cases ok
+    split at ok
+    · split at ok
+      · cases ok
+      rename_i credited
+      split at ok
+      · cases ok
+      cases ok
+      exact (slashFlags_applyPendingDeposit credited).trans
+        (slashFlags_passPendingDeposits (deposits := rest) ‹_›)
+    split at ok
+    · split at ok
+      · cases ok
+      cases ok
+      exact slashFlags_passPendingDeposits (deposits := rest) ‹_›
+    split at ok
+    · cases ok
+    split at ok
+    · cases ok; exact slashFlags_of_validators
+    split at ok
+    · cases ok
+    rename_i credited
+    split at ok
+    · cases ok
+    cases ok
+    exact (slashFlags_applyPendingDeposit credited).trans
+      (slashFlags_passPendingDeposits (deposits := rest) ‹_›)
+
+private theorem slashFlags_processPendingBalances {state after : BeaconState preset fork}
+    (run : processPendingBalances config checks state = .ok after) :
+    SlashFlagsKept state after := by
+  unfold processPendingBalances at run
+  split at run
+  · simp only [bind_ok_iff] at run
+    obtain ⟨middle, deposited, consolidated⟩ := run
+    have deposits : SlashFlagsKept state middle := by
+      unfold processPendingDeposits at deposited
+      simp only [bind, Except.bind, pure, Except.pure] at deposited
+      repeat' (split at deposited <;> try cases deposited)
+      all_goals exact (slashFlags_passPendingDeposits ‹_›).trans slashFlags_of_validators
+    exact deposits.trans
+      (slashFlags_of_validators (by rw [(processPendingConsolidations_kept consolidated).1]))
+  · cases run; exact slashFlags_of_validators
+
+private theorem slashFlags_processEffectiveBalanceUpdates {state after : BeaconState preset fork}
+    (run : processEffectiveBalanceUpdates state = .ok after) : SlashFlagsKept state after := by
+  apply slashFlags_fold (fun _ _ _ ok => ?_) run
+  simp only [updateEffectiveBalance, bind_ok_iff, liftAccessor_ok] at ok
+  obtain ⟨_, found, _, _, _, _, set⟩ := ok
+  exact slashFlags_of_map (registryMap_setValidatorAt (·.slashed) found set rfl)
+
+private theorem slashFlags_epochTail {rooted synced looked after : BeaconState preset fork}
+    {altair : .altair ≤ fork}
+    (syncedOk : processSyncCommitteeUpdates (processParticipationFlagUpdates rooted altair)
+      altair = .ok synced)
+    (lookedOk : (if fulu : .fusaka ≤ fork then liftAccessor (processProposerLookahead synced fulu)
+      else pure synced) = .ok looked)
+    (windowed : (if gloas : .glamsterdam ≤ fork then liftAccessor (processPtcWindow looked gloas)
+      else pure looked) = .ok after) : SlashFlagsKept rooted after := by
+  have syncedStep : SlashFlagsKept rooted synced := by
+    unfold processSyncCommitteeUpdates at syncedOk
+    simp only [bind, Except.bind, pure, Except.pure] at syncedOk
+    repeat' (split at syncedOk <;> try cases syncedOk)
+    all_goals exact slashFlags_of_validators
+  have lookedStep : SlashFlagsKept synced looked := by
+    split at lookedOk
+    · simp only [processProposerLookahead, liftAccessor_ok, bind_ok_iff, pure, Except.pure,
+        Except.ok.injEq] at lookedOk
+      obtain ⟨_, _, _, _, rfl⟩ := lookedOk
+      exact slashFlags_of_validators
+    · cases lookedOk; exact slashFlags_of_validators
+  have windowedStep : SlashFlagsKept looked after := by
+    split at windowed
+    · simp only [processPtcWindow, liftAccessor_ok, bind_ok_iff, pure, Except.pure,
+        Except.ok.injEq] at windowed
+      obtain ⟨_, _, _, _, rfl⟩ := windowed
+      exact slashFlags_of_validators
+    · cases windowed; exact slashFlags_of_validators
+  exact syncedStep.trans (lookedStep.trans windowedStep)
+
+/-- Epoch processing cannot slash a validator, and newly appended validators are unslashed. -/
+private theorem slashFlags_processEpoch {state after : BeaconState preset fork}
+    (run : processEpoch config checks state = .ok after) : SlashFlagsKept state after := by
+  have initial {s j c r t : BeaconState preset fork}
+      (justified : processJustificationAndFinalization s = .ok j)
+      (scored : (if altair : .altair ≤ fork then processInactivityUpdates config j altair
+        else pure j) = .ok c)
+      (rewarded : processRewardsAndPenalties config c = .ok r)
+      (registered : processRegistryUpdates config r = .ok t) : SlashFlagsKept s t := by
+    apply slashFlags_of_map
+    have fields := congrArg (List.map Prod.snd)
+      (balanceFlags_epochPrefix justified scored rewarded registered)
+    simpa only [List.map_map, Function.comp_def] using fields
+  have reset {s t : BeaconState preset fork} {before : fork < .hegota}
+      (ok : processEth1DataReset before s = .ok t) : SlashFlagsKept s t := by
+    simp only [processEth1DataReset, bind_ok_iff, liftAccessor_ok] at ok
+    obtain ⟨_, _, ok⟩ := ok
+    split at ok <;> cases ok <;> exact slashFlags_of_validators
+  have clear {s t : BeaconState preset fork}
+      (ok : processSlashingsReset s = .ok t) : SlashFlagsKept s t := by
+    obtain ⟨_, _, _, _, rfl⟩ := processSlashingsReset_eq ok
+    exact slashFlags_of_validators
+  have mix {s t : BeaconState preset fork}
+      (ok : processRandaoMixesReset s = .ok t) : SlashFlagsKept s t := by
+    obtain ⟨_, _, _, _, _, _, rfl⟩ := processRandaoMixesReset_eq ok
+    exact slashFlags_of_validators
+  have roots {s t : BeaconState preset fork}
+      (ok : processHistoricalRootsUpdate s = .ok t) : SlashFlagsKept s t := by
+    unfold processHistoricalRootsUpdate at ok
+    split at ok
+    · cases ok
+    simp only [bind_ok_iff, liftAccessor_ok] at ok
+    obtain ⟨_, _, ok⟩ := ok
+    split at ok
+    · simp only [bind_ok_iff, liftSsz_ok, pure, Except.pure, Except.ok.injEq] at ok
+      obtain ⟨_, _, _, _, rfl⟩ := ok
+      exact slashFlags_of_validators
+    · cases ok; exact slashFlags_of_validators
+  unfold processEpoch at run
+  split at run
+  · unfold processEpochAltair at run
+    simp only [bind_ok_iff] at run
+    obtain ⟨_, justified, _, scored, _, rewarded, _, registered, slashedState, slashed,
+      resetState, resetOk, pending, pendingOk, paid, paidOk, _, balanced, _, cleared,
+      mixed, mixedOk, run⟩ := run
+    have resetStep : SlashFlagsKept slashedState resetState := by
+      split at resetOk
+      · exact reset resetOk
+      · cases resetOk; exact slashFlags_of_validators
+    have paidStep : SlashFlagsKept pending paid := by
+      split at paidOk
+      · simp only [processBuilderPendingPayments, liftAccessor_ok, bind_ok_iff,
+          pure, Except.pure, Except.ok.injEq] at paidOk
+        obtain ⟨_, _, rfl⟩ := paidOk
+        exact slashFlags_of_validators
+      · cases paidOk; exact slashFlags_of_validators
+    have first : SlashFlagsKept state mixed :=
+      (initial justified (by simpa only [dite_eq_left ‹.altair ≤ fork›] using scored)
+        rewarded registered).trans <|
+      (slashFlags_of_validators (congrArg (·.data) (validators_processSlashings slashed))).trans <|
+      resetStep.trans <| (slashFlags_processPendingBalances pendingOk).trans <| paidStep.trans <|
+      (slashFlags_processEffectiveBalanceUpdates balanced).trans <| (clear cleared).trans <|
+      mix mixedOk
+    split at run <;> simp only [bind_ok_iff] at run <;>
+      obtain ⟨rootedState, rooted, _, synced, _, looked, windowed⟩ := run
+    · have rootedStep : SlashFlagsKept mixed rootedState := by
+        unfold processHistoricalSummariesUpdate at rooted
+        simp only [bind, Except.bind, pure, Except.pure] at rooted
+        repeat' (split at rooted <;> try cases rooted)
+        all_goals exact slashFlags_of_validators
+      exact first.trans (rootedStep.trans (slashFlags_epochTail synced looked windowed))
+    · exact first.trans ((roots rooted).trans (slashFlags_epochTail synced looked windowed))
+  · simp only [bind_ok_iff] at run
+    obtain ⟨_, justified, _, rewarded, _, registered, _, slashed, _, resetOk, _, balanced,
+      _, cleared, _, mixed, rooted, rootedOk, rotated⟩ := run
+    have last : SlashFlagsKept rooted after := by
+      unfold processParticipationRecordUpdates at rotated
+      split at rotated
+      · cases rotated
+      · cases rotated; exact slashFlags_of_validators
+    exact (initial justified (by simp only [dite_eq_right ‹¬ .altair ≤ fork›]; rfl)
+      rewarded registered).trans <|
+      (slashFlags_of_validators (congrArg (·.data) (validators_processSlashings slashed))).trans <|
+      (reset resetOk).trans <| (slashFlags_processEffectiveBalanceUpdates balanced).trans <|
+      (clear cleared).trans <| (mix mixed).trans <| (roots rootedOk).trans last
+
+/-- Slot-only lookahead preserves unslashedness at every index, across any number of epochs. -/
+private theorem notSlashed_lookahead {state after : BeaconState preset fork} {slot : Slot}
+    (run : lookaheadState config checks state slot = .ok after) :
+    ∀ v, NotSlashed after v ↔ NotSlashed state v := by
+  have step {s t : BeaconState preset fork}
+      (ok : advanceSlot config checks s = .ok t) : SlashFlagsKept s t := by
+    obtain ⟨_, cached, epoched, _, cachedOk, epochedOk, rfl⟩ := advanceSlot_ok ok
+    obtain ⟨_, _, _, _, cachedEq⟩ := processSlot_ok cachedOk
+    have first : SlashFlagsKept s cached := slashFlags_of_validators (by rw [cachedEq])
+    have middle : SlashFlagsKept cached epoched := by
+      unfold epochIfLast at epochedOk
+      split at epochedOk
+      · exact slashFlags_processEpoch epochedOk
+      · cases epochedOk; exact slashFlags_of_validators
+    exact (first.trans middle).trans slashFlags_of_validators
+  have steps {count : Nat} {s t : BeaconState preset fork}
+      (ok : advanceSlots config checks count s = .ok t) : SlashFlagsKept s t := by
+    induction count generalizing s with
+    | zero => cases ok; exact slashFlags_of_validators
+    | succ count ih =>
+      obtain ⟨_, first, rest⟩ := bind_ok_iff.mp ok
+      exact (step first).trans (ih rest)
+  have flags : SlashFlagsKept state after := by
+    unfold lookaheadState at run
+    split at run
+    · have slotsOk := mapError_ok_iff.mp run
+      simp only [processSlots, bind_ok_iff, ensure_ok_iff] at slotsOk
+      obtain ⟨_, _, advanced⟩ := slotsOk
+      exact steps advanced
+    · cases run; exact slashFlags_of_validators
+  intro v
+  unfold NotSlashed
+  rw [flags v.toNat]
+
 /-- After the first two epochs, a successful justification step has checked the active total. -/
 private theorem activeTotal_of_justification {state after : BeaconState preset fork}
     (late : ¬getCurrentEpoch state ≤ GENESIS_EPOCH + 1)
@@ -985,6 +1301,14 @@ theorem Execution.honest_support_of_historical_anchor {Δ : ℕ} (sync : e.Synch
       anchored preGloas slots chain receiver receiverEpochOk
       (inHorizon w receiver k receiverEpoch (by omega) receiverEpochOk)
       (nonzero w receiver k (by omega)) headOk stateOk receiverWindowOk member
+  have receiverUnslashed : ∀ v ∈ J, NotSlashed state v := by
+    obtain ⟨held, boundary, stored, _, advanced⟩ :=
+      e.checkpointStates_fixedChecks anchorStore (anchored w receiver)
+        (Store.checkpointState_ok_iff.mp stateOk)
+    intro v honest
+    apply (notSlashed_lookahead advanced v).mpr
+    exact unslashed w receiver k held
+      (Store.counts_of_fixedChecks (checks := checks) stored (.inl rfl)) v honest
   sorry
 
 
