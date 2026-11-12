@@ -117,4 +117,29 @@ theorem processPendingConsolidations_balance_le_of_slashable {electra : .pectra 
   simp only [isSlashableValidator, Bool.and_eq_true, decide_eq_true_eq] at slashable
   exact processPendingConsolidations_balance_le computed read current slashable.2
 
+/-- A consolidation cannot debit recent voting stake when withdrawal follows exit by two epochs.
+
+This includes previous-epoch voters outside the current active denominator. -/
+theorem processPendingConsolidations_balance_le_of_recent {electra : .pectra ≤ fork}
+    (computed : processPendingConsolidations state electra = .ok after) {index : ValidatorIndex}
+    {validator : Validator} {balance : Gwei} (read : getValidator state index = .ok validator)
+    (current : getBalance state index = .ok balance)
+    (recent : isActiveValidator validator (getCurrentEpoch state) = true ∨
+      isActiveValidator validator (getPreviousEpoch state) = true)
+    (delay : validator.exitEpoch.toNat + 2 ≤ validator.withdrawableEpoch.toNat) :
+    ∃ later, getBalance after index = .ok later ∧ balance ≤ later := by
+  apply processPendingConsolidations_balance_le computed read current
+  rw [UInt64.lt_iff_toNat_lt]
+  have next : (getCurrentEpoch state + 1).toNat ≤ (getCurrentEpoch state).toNat + 1 := by
+    rw [UInt64.toNat_add]
+    exact Nat.mod_le _ _
+  rcases recent with active | previous
+  · simp only [isActiveValidator, Bool.and_eq_true, decide_eq_true_eq] at active
+    have exit := UInt64.lt_iff_toNat_lt.mp active.2
+    omega
+  · simp only [isActiveValidator, Bool.and_eq_true, decide_eq_true_eq] at previous
+    have exit := UInt64.lt_iff_toNat_lt.mp previous.2
+    rw [getPreviousEpoch_toNat] at exit
+    omega
+
 end EthLib.Consensus

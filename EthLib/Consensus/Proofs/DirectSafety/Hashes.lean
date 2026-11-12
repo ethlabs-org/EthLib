@@ -2,6 +2,7 @@ module
 
 public import EthLib.Consensus.Proofs.DirectSafety.Execution
 public import EthLib.Serialization.Proofs.Ssz.Typed.Root
+import EthLib.Consensus.Proofs.Containers.Block
 import EthLib.Consensus.Proofs.Containers.Misc
 import EthLib.Consensus.Proofs.Transition.BlockRoots
 import EthLib.Consensus.Proofs.Transition.TargetUpgrades
@@ -10,7 +11,7 @@ import EthLib.Consensus.Proofs.Transition.PayloadInputs
 /-!
 # Hash evidence restricted to the supplied executions
 
-Collision evidence uses only the selected block headers, not full beacon-state commitments.
+Collision evidence uses the selected block headers and full blocks, not beacon-state commitments.
 
 States are included only for the zero-root alternative.
 
@@ -30,17 +31,22 @@ variable {preset : Preset} {config : Config} {checks : SignatureChecks}
 inductive HashObject (preset : Preset) where
   | header (value : BeaconBlockHeader)
   | state (value : ForkedBeaconState preset)
+  | block (fork : Fork) (value : BeaconBlock preset fork)
 
 def HashObject.root (object : HashObject preset) : Option Root :=
   match object with
   | .header h => (hashTreeRoot h).toOption
   | .state s => (hashTreeRoot s.state).toOption
+  | .block _ b => (hashTreeRoot b).toOption
 
 def HashObject.messages (object : HashObject preset) : List Bytes :=
   match object with
   | .header h => ((valueTree (SszType.desc BeaconBlockHeader) (SszType.toValue h)).toOption.map
       (fun tree => tree.messages)).getD []
   | .state _ => []
+  | .block fork b =>
+    ((valueTree (SszType.desc (BeaconBlock preset fork)) (SszType.toValue b)).toOption.map
+      (fun tree => tree.messages)).getD []
 
 def _root_.EthLib.Consensus.Step.hashObjects {before after : ForkedBeaconState preset}
     (step : Step config checks before after) : List (HashObject preset) :=
@@ -50,7 +56,8 @@ def _root_.EthLib.Consensus.Step.hashObjects {before after : ForkedBeaconState p
   | .slot _ => match (processSlot before.state).toOption with
     | none => []
     | some cached => [.state ⟨before.fork, cached⟩, .header cached.latestBlockHeader]
-  | .block _ signed _ _ => ((blockHeader signed.message).toList.map HashObject.header))
+  | .block _ signed _ _ => (blockHeader signed.message).toList.map HashObject.header ++
+      [.block _ signed.message])
 
 def _root_.EthLib.Consensus.Run.hashObjects {first last : ForkedBeaconState preset}
     (run : Run config checks first last) : List (HashObject preset) :=
@@ -81,6 +88,33 @@ theorem header_binding (objects : List (HashObject preset)) (a b : BeaconBlockHe
     left
     refine ⟨x, List.mem_flatMap.mpr ⟨.header a, one, ?_⟩,
       y, List.mem_flatMap.mpr ⟨.header b, two, ?_⟩, collided⟩
+    · simpa [HashObject.messages, leftOk, Except.toOption] using leftMem
+    · simpa [HashObject.messages, rightOk, Except.toOption] using rightMem
+
+/-- Before Gloas, equal roots of same-fork blocks give equality or evidence in their messages.
+
+At Gloas the `ForkList` bound does not imply `proposerSlashings.data.size < 2^256`.
+
+The same count restriction is needed for every nested progressive list. -/
+theorem block_binding {fork : Fork}
+    [NeZero preset.BYTES_PER_LOGS_BLOOM.toNat] [NeZero preset.SYNC_COMMITTEE_SIZE.toNat]
+    [NeZero preset.MAX_COMMITTEES_PER_SLOT.toNat] [NeZero preset.PTC_SIZE.toNat]
+    [NeZero preset.INCLUSION_LIST_COMMITTEE_SIZE.toNat]
+    (early : fork < .glamsterdam)
+    (objects : List (HashObject preset)) (a b : BeaconBlock preset fork)
+    (one : .block fork a ∈ objects)
+    (two : .block fork b ∈ objects) (root : Root)
+    (sameA : hashTreeRoot a = .ok root) (sameB : hashTreeRoot b = .ok root) :
+    a = b ∨ HashEvidence objects := by
+  rcases SszType.hashTreeRoot_binding (a.commitmentSized early) (b.commitmentSized early)
+      sameA sameB with same | collision
+  · exact .inl same
+  · obtain ⟨leftTree, rightTree, leftOk, rightOk, x, y, _, leftMem, rightMem, collided⟩ :=
+      collision
+    right
+    left
+    refine ⟨x, List.mem_flatMap.mpr ⟨.block fork a, one, ?_⟩,
+      y, List.mem_flatMap.mpr ⟨.block fork b, two, ?_⟩, collided⟩
     · simpa [HashObject.messages, leftOk, Except.toOption] using leftMem
     · simpa [HashObject.messages, rightOk, Except.toOption] using rightMem
 

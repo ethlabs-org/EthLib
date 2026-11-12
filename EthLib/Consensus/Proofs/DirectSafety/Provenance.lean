@@ -58,9 +58,9 @@ theorem genesis_participation {g : ForkedBeaconState preset}
     exact False.elim (Nat.not_le_of_lt (initializeBeaconStateFromEth1_invariant ok).1 altair)
 
 /-- This includes epoch rotation and every due upgrade, in particular pending-to-flag conversion. -/
-theorem slot_participation {g a b : ForkedBeaconState preset} (run : Run config checks g a)
+theorem slot_participation_gloas {g a b : ForkedBeaconState preset} (run : Run config checks g a)
     (parameters : Parameters preset) (genesis : Genesis (config := config) (checks := checks) g)
-    (ok : advanceSlotAcross config checks a = .ok b) (early : b.fork < .glamsterdam)
+    (ok : advanceSlotAcross config checks a = .ok b) (early : b.fork < .hegota)
     (backed : ParticipationBacked run a.state) :
     ParticipationBacked (run.snoc (.slot ok)) b.state := by
   have _early := early
@@ -86,10 +86,10 @@ theorem slot_participation {g a b : ForkedBeaconState preset} (run : Run config 
     votes_snoc run (.slot ok) (.inl voted)
   exact ⟨(pending.of_processUpgrades upgraded).mono sub, flags.mono sub⟩
 
-theorem block_participation {g : ForkedBeaconState preset} {fork : Fork}
+theorem block_participation_gloas {g : ForkedBeaconState preset} {fork : Fork}
     {a b : BeaconState preset fork} (run : Run config checks g ⟨fork, a⟩)
     (parameters : Parameters preset) (genesis : Genesis (config := config) (checks := checks) g)
-    (early : fork < .glamsterdam) (engine : ExecutionEngine preset fork)
+    (early : fork < .hegota) (engine : ExecutionEngine preset fork)
     (signed : SignedBeaconBlock preset fork) (due : upgradeDue config ⟨fork, a⟩ = false)
     (ok : applySignedBlock config checks engine a signed true = .ok b)
     (backed : ParticipationBacked run a) :
@@ -106,28 +106,59 @@ theorem block_participation {g : ForkedBeaconState preset} {fork : Fork}
   exact ⟨pending.mono (votes_snoc run (.block engine signed due ok)),
     flags.mono (votes_snoc run (.block engine signed due ok))⟩
 
-theorem run_participation {g a : ForkedBeaconState preset} (run : Run config checks g a)
+theorem run_participation_gloas {g a : ForkedBeaconState preset} (run : Run config checks g a)
     (parameters : Parameters preset) (genesis : Genesis (config := config) (checks := checks) g)
-    (early : a.fork < .glamsterdam) : ParticipationBacked run a.state := by
+    (early : a.fork < .hegota) : ParticipationBacked run a.state := by
   induction run with
   | nil => exact genesis_participation genesis
   | snoc pre step ih =>
     have backed := ih (Nat.lt_of_le_of_lt step.chainStep.fork_le early)
     cases step with
-    | slot ok => exact slot_participation pre parameters genesis ok early backed
+    | slot ok => exact slot_participation_gloas pre parameters genesis ok early backed
     | block engine signed due ok =>
-      exact block_participation pre parameters genesis early engine signed due ok backed
+      exact block_participation_gloas pre parameters genesis early engine signed due ok backed
 
 /-- Inherited participation belongs to the shared prefix, not to an arbitrary reachable run. -/
-theorem inherited_participation {g x a : ForkedBeaconState preset}
+theorem inherited_participation_gloas {g x a : ForkedBeaconState preset}
     (shared : Run config checks g x) (tail : Run config checks x a)
     (parameters : Parameters preset) (genesis : Genesis (config := config) (checks := checks) g)
-    (early : x.fork < .glamsterdam) :
+    (early : x.fork < .hegota) :
     ParticipationBacked (shared.append tail) x.state := by
-  have backed := run_participation shared parameters genesis early
+  have backed := run_participation_gloas shared parameters genesis early
   have sub : shared.votes ⊆ (shared.append tail).votes := by
     rintro vote ⟨before, after, step, member, voted⟩
     exact ⟨before, after, step, (shared.contains_append tail step).mpr (.inl member), voted⟩
   exact ⟨backed.1.mono sub, backed.2.mono sub⟩
+
+-- Keep the pre-Gloas interfaces available to clients of the interval proofs.
+theorem slot_participation {g a b : ForkedBeaconState preset} (run : Run config checks g a)
+    (parameters : Parameters preset) (genesis : Genesis (config := config) (checks := checks) g)
+    (ok : advanceSlotAcross config checks a = .ok b) (early : b.fork < .glamsterdam)
+    (backed : ParticipationBacked run a.state) :
+    ParticipationBacked (run.snoc (.slot ok)) b.state :=
+  slot_participation_gloas run parameters genesis ok (Nat.lt_trans early (by decide)) backed
+
+theorem block_participation {g : ForkedBeaconState preset} {fork : Fork}
+    {a b : BeaconState preset fork} (run : Run config checks g ⟨fork, a⟩)
+    (parameters : Parameters preset) (genesis : Genesis (config := config) (checks := checks) g)
+    (early : fork < .glamsterdam) (engine : ExecutionEngine preset fork)
+    (signed : SignedBeaconBlock preset fork) (due : upgradeDue config ⟨fork, a⟩ = false)
+    (ok : applySignedBlock config checks engine a signed true = .ok b)
+    (backed : ParticipationBacked run a) :
+    ParticipationBacked (run.snoc (.block engine signed due ok)) b :=
+  block_participation_gloas run parameters genesis (Nat.lt_trans early (by decide))
+    engine signed due ok backed
+
+theorem run_participation {g a : ForkedBeaconState preset} (run : Run config checks g a)
+    (parameters : Parameters preset) (genesis : Genesis (config := config) (checks := checks) g)
+    (early : a.fork < .glamsterdam) : ParticipationBacked run a.state :=
+  run_participation_gloas run parameters genesis (Nat.lt_trans early (by decide))
+
+theorem inherited_participation {g x a : ForkedBeaconState preset}
+    (shared : Run config checks g x) (tail : Run config checks x a)
+    (parameters : Parameters preset) (genesis : Genesis (config := config) (checks := checks) g)
+    (early : x.fork < .glamsterdam) :
+    ParticipationBacked (shared.append tail) x.state :=
+  inherited_participation_gloas shared tail parameters genesis (Nat.lt_trans early (by decide))
 
 end EthLib.Consensus.DirectSafety

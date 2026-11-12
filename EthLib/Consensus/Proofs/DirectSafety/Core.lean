@@ -37,9 +37,9 @@ noncomputable def commonAccountable {g a b : ForkedBeaconState preset}
   classical
   exact (one.voters ∩ two.voters).filter (Accountable left right)
 
-theorem quorum_voters_recent {g a : ForkedBeaconState preset} (run : Run config checks g a)
+theorem quorum_voters_recent_gloas {g a : ForkedBeaconState preset} (run : Run config checks g a)
     (parameters : Parameters preset) (genesis : Genesis (config := config) (checks := checks) g)
-    (early : a.fork < .glamsterdam) (call : QuorumCall run) :
+    (early : a.fork < .hegota) (call : QuorumCall run) :
     call.voters ⊆ recentKeys call.cached := by
   classical
   -- Both participation flags and pending votes select validators active at the target epoch.
@@ -54,7 +54,7 @@ theorem quorum_voters_recent {g a : ForkedBeaconState preset} (run : Run config 
     · rename_i before
       simp only [bind_ok_iff] at counted
       obtain ⟨pending, matching, counted⟩ := counted
-      have backed := (cached_participation run parameters genesis early call.toEpochCall).1
+      have backed := (cached_participation_gloas run parameters genesis early call.toEpochCall).1
       -- A quorum call is after the two epochs where equal justified fields are required.
       have notEarly : JustifiedEarly call.cached := by
         intro small
@@ -73,6 +73,13 @@ theorem quorum_voters_recent {g a : ForkedBeaconState preset} (run : Run config 
   cases current : call.current
   · exact Finset.mem_union_right _ (by simpa [current] using present)
   · exact Finset.mem_union_left _ (by simpa [current, activeKeys] using present)
+
+/-- The pre-Gloas interface for the recent-voter support bound. -/
+theorem quorum_voters_recent {g a : ForkedBeaconState preset} (run : Run config checks g a)
+    (parameters : Parameters preset) (genesis : Genesis (config := config) (checks := checks) g)
+    (early : a.fork < .glamsterdam) (call : QuorumCall run) :
+    call.voters ⊆ recentKeys call.cached :=
+  quorum_voters_recent_gloas run parameters genesis (Nat.lt_trans early (by decide)) call
 
 /-- There is no bound on changes of membership or balances in this statement. -/
 theorem accountable_safety_core {g a b : ForkedBeaconState preset}

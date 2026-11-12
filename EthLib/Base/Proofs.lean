@@ -17,6 +17,7 @@ public import EthLib.Base.Proofs.LittleEndian
 public import EthLib.Base.Proofs.List
 public import EthLib.Base.Proofs.MapM
 public import EthLib.Base.Proofs.Nat
+public import EthLib.Base.Proofs.Quorum
 public import EthLib.Base.Proofs.U256
 public import EthLib.Base.Proofs.Uint64
 

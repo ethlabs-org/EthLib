@@ -36,13 +36,13 @@ theorem terminal_quorum_count {g a : ForkedBeaconState preset}
   exact (justificationTest_iff_stake active call.partOk call.thresholdOk call.weightedOk
     large).mp call.passes
 
-theorem terminal_quorum_attestations {g a : ForkedBeaconState preset}
+theorem terminal_quorum_attestations_gloas {g a : ForkedBeaconState preset}
     (run : Run config checks g a) (parameters : Parameters preset)
     (genesis : Genesis (config := config) (checks := checks) g)
-    (early : a.fork < .glamsterdam) (view : TerminalView a) (call : TerminalQuorum view) :
+    (early : a.fork < .hegota) (view : TerminalView a) (call : TerminalQuorum view) :
     ∀ key ∈ call.voters, ∃ data, run.Accepted key data ∧
       data.source = call.source ∧ data.target = call.target := by
-  have backed := run_participation run parameters genesis early
+  have backed := run_participation_gloas run parameters genesis early
   have late := UInt64.not_le.mpr call.later
   intro key member
   simp only [TerminalQuorum.voters, keysAt, List.mem_toFinset, List.mem_filterMap] at member
@@ -76,10 +76,10 @@ theorem terminal_quorum_attestations {g a : ForkedBeaconState preset}
     cases h₂ : call.target
     simp_all
 
-theorem terminal_quorum_recent {g a : ForkedBeaconState preset}
+theorem terminal_quorum_recent_gloas {g a : ForkedBeaconState preset}
     (run : Run config checks g a) (parameters : Parameters preset)
     (genesis : Genesis (config := config) (checks := checks) g)
-    (early : a.fork < .glamsterdam) (view : TerminalView a) (call : TerminalQuorum view) :
+    (early : a.fork < .hegota) (view : TerminalView a) (call : TerminalQuorum view) :
     call.voters ⊆ recentKeys a.state := by
   classical
   have active : ∀ i ∈ call.indices, i ∈ getActiveValidatorIndices a.state
@@ -93,7 +93,7 @@ theorem terminal_quorum_recent {g a : ForkedBeaconState preset}
     · rename_i before
       simp only [bind_ok_iff] at counted
       obtain ⟨pending, matching, counted⟩ := counted
-      have backed := (run_participation run parameters genesis early).1
+      have backed := (run_participation_gloas run parameters genesis early).1
       have notEarly : JustifiedEarly a.state := by
         intro small
         have smallNat := UInt64.le_iff_toNat_le.mp small
@@ -111,6 +111,22 @@ theorem terminal_quorum_recent {g a : ForkedBeaconState preset}
   cases current : call.current
   · exact Finset.mem_union_right _ (by simpa [current] using present)
   · exact Finset.mem_union_left _ (by simpa [current, activeKeys] using present)
+
+theorem terminal_quorum_attestations {g a : ForkedBeaconState preset}
+    (run : Run config checks g a) (parameters : Parameters preset)
+    (genesis : Genesis (config := config) (checks := checks) g)
+    (early : a.fork < .glamsterdam) (view : TerminalView a) (call : TerminalQuorum view) :
+    ∀ key ∈ call.voters, ∃ data, run.Accepted key data ∧
+      data.source = call.source ∧ data.target = call.target :=
+  terminal_quorum_attestations_gloas run parameters genesis
+    (Nat.lt_trans early (by decide)) view call
+
+theorem terminal_quorum_recent {g a : ForkedBeaconState preset}
+    (run : Run config checks g a) (parameters : Parameters preset)
+    (genesis : Genesis (config := config) (checks := checks) g)
+    (early : a.fork < .glamsterdam) (view : TerminalView a) (call : TerminalQuorum view) :
+    call.voters ⊆ recentKeys a.state :=
+  terminal_quorum_recent_gloas run parameters genesis (Nat.lt_trans early (by decide)) view call
 
 theorem terminal_quorum_epochs {g a : ForkedBeaconState preset}
     (run : Run config checks g a) (parameters : Parameters preset)

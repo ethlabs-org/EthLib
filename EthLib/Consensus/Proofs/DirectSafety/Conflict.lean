@@ -294,6 +294,55 @@ private theorem processConsolidationRequest {electra : .pectra ≤ fork}
     | exact switchToCompoundingValidator (liftAccessor_ok.mp ok)
     | exact queueConsolidation (getElem?_toNat_of_ofNatChecked (by assumption)) ok
 
+-- EIP-8282, Consensus Layer Processing: builder requests touch a separate registry.
+private theorem builderDeposit {gloas : .glamsterdam ≤ fork} {request : BuilderDepositRequest}
+    (ok : processBuilderDepositRequest config checks state gloas request = .ok after) :
+    SlashedKept state after := by
+  unfold processBuilderDepositRequest addBuilderToRegistry at ok
+  simp only [bind, Except.bind, pure, Except.pure] at ok
+  repeat' split at ok
+  all_goals first | (cases ok; done) | (cases ok; exact of_validators)
+
+private theorem builderExit {gloas : .glamsterdam ≤ fork} {request : BuilderExitRequest}
+    (ok : processBuilderExitRequest config state gloas request = .ok after) :
+    SlashedKept state after := by
+  rcases processBuilderExitRequest_cases ok with rfl | ⟨_, _, _, _, _, exited⟩
+  · exact refl _
+  · simp only [initiateBuilderExit, bind_ok_iff] at exited
+    obtain ⟨_, _, _, _, set⟩ := exited
+    obtain ⟨_, rfl⟩ := setBuilder_ok set
+    exact of_validators
+
+-- EIP-7732, Beacon chain changes: requests move to the parent payload's processing.
+private theorem parentPayload {gloas : .glamsterdam ≤ fork} {body : BeaconBlockBody preset fork}
+    (ok : processParentExecutionPayload config checks state gloas body = .ok after) :
+    SlashedKept state after := by
+  rcases processParentExecutionPayload_ok ok with ⟨_, _, rfl⟩ |
+    ⟨_, settled, _, _, _, _, _, _, settledOk, depositsOk, withdrawalsOk, consolidationsOk,
+      buildersOk, exitsOk, _, rfl⟩
+  · exact refl _
+  · have first : SlashedKept state settled := by
+      rw [settleParentPayment_eq settledOk]
+      exact of_validators
+    exact first.trans <|
+      (foldlM (fun _ _ _ ok => processDepositRequest ok) depositsOk).trans <|
+      (foldlM (fun _ _ _ ok => processWithdrawalRequest ok) withdrawalsOk).trans <|
+      (foldlM (fun _ _ _ ok => processConsolidationRequest ok) consolidationsOk).trans <|
+      (foldlM (fun _ _ _ ok => builderDeposit ok) buildersOk).trans <|
+      (foldlM (fun _ _ _ ok => builderExit ok) exitsOk).trans of_validators
+
+private theorem executionPayloadBid {gloas : .glamsterdam ≤ fork}
+    {signed : SignedExecutionPayloadBid preset fork}
+    (ok : processExecutionPayloadBid config checks state gloas signed = .ok after) :
+    SlashedKept state after := by
+  obtain ⟨_, recorded, recordedOk, rfl⟩ := processExecutionPayloadBid_ok ok
+  by_cases paid : 0 < signed.message.value
+  · obtain ⟨_, _, _, _, rfl⟩ := recordBidPayment_of_pos paid recordedOk
+    exact of_validators
+  · simp only [recordBidPayment, paid, ↓reduceIte, pure, Except.pure, Except.ok.injEq] at recordedOk
+    subst recordedOk
+    exact of_validators
+
 private theorem processExecutionRequests {body : BeaconBlockBody preset fork}
     {electra : .pectra ≤ fork ∧ fork < .glamsterdam}
     (ok : Consensus.processExecutionRequests config state body electra = .ok after) :
@@ -938,7 +987,7 @@ private theorem fold_slashings_backed {fork : Fork} {α : Type}
     exact same ▸ selected item (by simp) i member original originalAt
 
 private theorem operations_backed {fork : Fork} {state after : BeaconState preset fork}
-    {body : BeaconBlockBody preset fork} {parentSlot : Slot} (early : fork < .glamsterdam)
+    {body : BeaconBlockBody preset fork} {parentSlot : Slot}
     (ok : processOperations config checks state body parentSlot = .ok after)
     (evidence : BLSPubkey → Prop) (backed : SlashedBacked evidence state)
     (proposers : ∀ sl ∈ body.proposerSlashings.data.toList, ∀ old,
@@ -947,8 +996,45 @@ private theorem operations_backed {fork : Fork} {state after : BeaconState prese
     (attesters : ∀ sl ∈ body.attesterSlashings.data.toList, ∀ i ∈ slashingIndices sl, ∀ old,
       state.validators.data[i.toNat]? = some old → evidence old.pubkey) :
     SlashedBacked evidence after := by
-  have notGloas : ¬ .glamsterdam ≤ fork := Nat.not_le_of_lt early
-  simp only [processOperations, notGloas, ↓reduceDIte, bind_ok_iff, ensure_ok_iff,
+  unfold processOperations at ok
+  split at ok
+  · unfold processOperationsGloas at ok
+    simp only [bind_ok_iff, ← Array.foldlM_toList] at ok
+    obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, proposed, proposersOk,
+      slashed, attestersOk, attested, attestations, exited, exits, changed, changes, paid⟩ := ok
+    have proposedBacked : SlashedBacked evidence proposed := by
+      refine fold_slashings_backed (fun sl => [sl.signedHeader1.message.proposerIndex])
+        (fun _ _ _ ok => RegistryIdentity.processProposerSlashing ok)
+        (fun _ _ _ ok => sameSizes_processProposerSlashing ok) ?_ _ (.refl state) rfl
+        evidence backed ?_ proposersOk
+      · intro s sl t ok evidence backed selected
+        exact proposerSlashing_backed ok evidence backed (selected _ (by simp))
+      · intro sl member i inIndices
+        simp only [List.mem_singleton] at inIndices
+        subst i
+        exact proposers sl member
+    have proposedIdentity := RegistryIdentity.foldlM
+      (fun _ _ _ ok => RegistryIdentity.processProposerSlashing ok) proposersOk
+    have proposedSize : SameSizes state proposed :=
+      (foldlM_ok_steps SameSizes SameSizes.refl SameSizes.trans
+        (fun _ _ _ ok => sameSizes_processProposerSlashing ok) proposersOk).1
+    have slashedBacked := fold_slashings_backed slashingIndices
+      (fun _ _ _ ok => RegistryIdentity.processAttesterSlashing ok)
+      (fun _ _ _ ok => sameSizes_processAttesterSlashing ok)
+      (fun _ _ _ ok => attesterSlashing_backed ok) _ proposedIdentity proposedSize.1
+      evidence proposedBacked attesters attestersOk
+    -- Payload attestations change payment weights, not validator slashing flags.
+    have rest : SlashedKept slashed after :=
+      (SlashedKept.foldlM
+        (fun _ _ _ ok => SlashedKept.of_validators (by rw [(processAttestation_registry ok).1]))
+        attestations).trans <|
+      (SlashedKept.foldlM (fun _ _ _ ok => SlashedKept.processVoluntaryExit ok) exits).trans <|
+      (SlashedKept.foldlM
+        (fun _ _ _ ok => SlashedKept.processBlsToExecutionChange ok) changes).trans <|
+      SlashedKept.foldlM (fun _ _ _ ok => by
+        rw [processPayloadAttestation_eq ok]; exact SlashedKept.of_validators) paid
+    exact rest evidence slashedBacked
+  simp only [bind_ok_iff, ensure_ok_iff,
     ← Array.foldlM_toList] at ok
   obtain ⟨_, _, _, _, proposed, proposersOk, slashed, attestersOk, attested, attestations,
     deposited, deposits, exited, exits, changed, changesOk, requestsOk⟩ := ok
@@ -994,7 +1080,7 @@ private theorem operations_backed {fork : Fork} {state after : BeaconState prese
 
 private theorem block_backed {fork : Fork} {state after : BeaconState preset fork}
     {engine : ExecutionEngine preset fork} {block : BeaconBlock preset fork}
-    (early : fork < .glamsterdam)
+    (early : fork < .hegota)
     (ok : processBlock config checks engine state block = .ok after)
     (evidence : BLSPubkey → Prop) (backed : SlashedBacked evidence state)
     (proposers : ∀ sl ∈ block.body.proposerSlashings.data.toList, ∀ old,
@@ -1013,13 +1099,27 @@ private theorem block_backed {fork : Fork} {state after : BeaconState preset for
   have execution {s t : BeaconState preset fork} {bellatrix : .bellatrix ≤ fork}
       (ok : processBlockExecution config checks engine s block.body bellatrix = .ok t) :
       SlashedKept s t ∧ t.validators.data.size = s.validators.data.size := by
-    have notGloas : ¬ .glamsterdam ≤ fork := Nat.not_le_of_lt early
-    simp only [processBlockExecution, notGloas, ↓reduceDIte] at ok
+    unfold processBlockExecution at ok
+    split at ok
+    · obtain ⟨middle, withdrawn, executed⟩ := bind_ok_iff.mp ok
+      have size : t.validators.data.size = middle.validators.data.size := by
+        obtain ⟨_, recorded, recordedOk, rfl⟩ := processExecutionPayloadBid_ok executed
+        by_cases paid : 0 < (block.body.signedExecutionPayloadBid (by assumption)).message.value
+        · obtain ⟨_, _, _, _, rfl⟩ := recordBidPayment_of_pos paid recordedOk
+          rfl
+        · simp only [recordBidPayment, paid, ↓reduceIte, pure, Except.pure,
+            Except.ok.injEq] at recordedOk
+          subst recordedOk
+          rfl
+      exact ⟨(SlashedKept.processWithdrawals withdrawn).trans
+        (SlashedKept.executionPayloadBid executed),
+        size.trans (sameSizes_processWithdrawals withdrawn).1⟩
     split at ok
     · obtain ⟨middle, withdrawn, executed⟩ := bind_ok_iff.mp ok
       exact ⟨(SlashedKept.processWithdrawals withdrawn).trans (payload executed).1,
         (congrArg Array.size (payload executed).2).trans (sameSizes_processWithdrawals withdrawn).1⟩
-    · split at ok
+    · dsimp only at ok
+      split at ok
       · exact ⟨(payload ok).1, congrArg Array.size (payload ok).2⟩
       · cases ok; exact ⟨.refl _, rfl⟩
   have operated {s t : BeaconState preset fork} {parentSlot : Slot}
@@ -1028,7 +1128,7 @@ private theorem block_backed {fork : Fork} {state after : BeaconState preset for
       (kept : SlashedKept state s)
       (ok : processOperations config checks s block.body parentSlot = .ok t) :
       SlashedBacked evidence t := by
-    apply operations_backed early ok evidence (kept evidence backed)
+    apply operations_backed ok evidence (kept evidence backed)
     · intro sl member old found
       obtain ⟨original, originalAt, same⟩ := key_of_same_size identity size found
       exact same ▸ proposers sl member original originalAt
@@ -1037,13 +1137,48 @@ private theorem block_backed {fork : Fork} {state after : BeaconState preset for
       exact same ▸ attesters sl member i inIndices original originalAt
   unfold processBlock at ok
   split at ok
-  · have notGloas : ¬ .glamsterdam ≤ fork := Nat.not_le_of_lt early
-    have beforeHeze : fork < .hegota := Nat.lt_trans early (by decide)
-    simp only [processBlockAltair, notGloas, beforeHeze, ↓reduceDIte, pure_bind,
+  · simp only [processBlockAltair, early, ↓reduceDIte,
       bind_ok_iff] at ok
-    obtain ⟨headed, headedOk, executed, executedOk, revealed, revealedOk, voted,
+    obtain ⟨parent, parentOk, headed, headedOk, executed, executedOk, revealed, revealedOk, voted,
       votedOk, operatedState, operatedOk, synced⟩ := ok
-    have headKept : SlashedKept state headed := by
+    have parentFacts : SlashedKept state parent ∧
+        parent.validators.data.size = state.validators.data.size ∧
+        RegistryIdentity state parent := by
+      split at parentOk
+      · refine ⟨SlashedKept.parentPayload parentOk, ?_,
+          RegistryIdentity.processParentExecutionPayload parentOk⟩
+        rcases processParentExecutionPayload_ok parentOk with ⟨_, _, rfl⟩ |
+          ⟨_, settled, _, _, _, _, _, _, settledOk, depositsOk, withdrawalsOk,
+            consolidationsOk, buildersOk, exitsOk, _, rfl⟩
+        · rfl
+        · have foldSize {α : Type} {step : BeaconState preset fork → α → Except TransitionError _}
+              (keeps : ∀ s x t, step s x = .ok t → t.validators.data.size = s.validators.data.size)
+              {xs : List α} {s t : BeaconState preset fork} (ok : xs.foldlM step s = .ok t) :
+              t.validators.data.size = s.validators.data.size :=
+            foldlM_ok_invariant (fun t => t.validators.data.size = s.validators.data.size)
+              (fun _ _ _ before computed => (keeps _ _ _ computed).trans before) rfl ok
+          have depositSize := foldSize (fun _ _ _ ok =>
+            congrArg (fun vs => vs.data.size) (processDepositRequest_ok ok).2.1) depositsOk
+          have withdrawalSize := foldSize (fun _ _ _ ok =>
+            (sameSizes_processWithdrawalRequest ok).1) withdrawalsOk
+          have consolidationSize := foldSize (fun _ _ _ ok =>
+            (sameSizes_processConsolidationRequest ok).1) consolidationsOk
+          have builderSize := foldSize (fun _ _ _ ok => by
+            unfold processBuilderDepositRequest addBuilderToRegistry at ok
+            simp only [bind, Except.bind, pure, Except.pure] at ok
+            repeat' split at ok
+            all_goals first | (cases ok; done) | (cases ok; rfl)) buildersOk
+          have exitSize := foldSize (fun _ _ _ ok => by
+            rcases processBuilderExitRequest_cases ok with rfl | ⟨_, _, _, _, _, exited⟩
+            · rfl
+            · simp only [initiateBuilderExit, bind_ok_iff] at exited
+              obtain ⟨_, _, _, _, set⟩ := exited
+              obtain ⟨_, rfl⟩ := setBuilder_ok set
+              rfl) exitsOk
+          exact exitSize.trans <| builderSize.trans <| consolidationSize.trans <|
+            withdrawalSize.trans <| depositSize.trans (by rw [settleParentPayment_eq settledOk])
+      · cases parentOk; exact ⟨.refl _, rfl, .refl _⟩
+    have headKept : SlashedKept parent headed := by
       obtain ⟨_, _, rfl⟩ := processBlockHeader_eq headedOk
       exact SlashedKept.of_validators
     have executionFacts : SlashedKept headed executed ∧
@@ -1062,13 +1197,15 @@ private theorem block_backed {fork : Fork} {state after : BeaconState preset for
       exact SlashedKept.of_validators
     apply SlashedKept.processSyncAggregate synced evidence
     exact operated
-      ((RegistryIdentity.processBlockHeader headedOk).trans <| executionFacts.2.2.trans <|
+      (parentFacts.2.2.trans <| (RegistryIdentity.processBlockHeader headedOk).trans <|
+        executionFacts.2.2.trans <|
         (RegistryIdentity.processRandao revealedOk).trans
           (RegistryIdentity.processEth1Data votedOk))
       ((sameSizes_processEth1Data votedOk).1.trans <|
         (sameSizes_processRandao revealedOk).1.trans <|
-        executionFacts.2.1.trans (sameSizes_processBlockHeader headedOk).1)
-      (headKept.trans (executionFacts.1.trans (randaoKept.trans voteKept))) operatedOk
+        executionFacts.2.1.trans <| (sameSizes_processBlockHeader headedOk).1.trans parentFacts.2.1)
+      (parentFacts.1.trans <| headKept.trans
+        (executionFacts.1.trans (randaoKept.trans voteKept))) operatedOk
   · simp only [bind_ok_iff] at ok
     obtain ⟨headed, headedOk, revealed, revealedOk, voted, votedOk, operatedOk⟩ := ok
     have headKept : SlashedKept state headed := by
@@ -1090,9 +1227,9 @@ private theorem block_backed {fork : Fork} {state after : BeaconState preset for
       (headKept.trans (randaoKept.trans voteKept)) operatedOk
 
 /-- A slashed flag in a reachable registry must originate in evidence on the selected history. -/
-theorem _root_.EthLib.Consensus.Run.slashed_evidence {g a : ForkedBeaconState preset}
+theorem _root_.EthLib.Consensus.Run.slashed_evidence_gloas {g a : ForkedBeaconState preset}
     (run : Run config checks g a) (genesis : Genesis (config := config) (checks := checks) g)
-    (early : a.fork < .glamsterdam) (v : Validator)
+    (early : a.fork < .hegota) (v : Validator)
     (member : v ∈ a.state.validators.data.toList) (slashed : v.slashed = true) :
     run.SlashingEvidence v.pubkey := by
   have backed : SlashedBacked run.SlashingEvidence a.state := by
@@ -1120,6 +1257,14 @@ theorem _root_.EthLib.Consensus.Run.slashed_evidence {g a : ForkedBeaconState pr
           exact ⟨_, _, .block engine signed due ok, .last pre _,
             Or.inr ⟨sl, member, i, inIndices, old, found, rfl⟩⟩
   exact backed v member slashed
+
+/-- The pre-Gloas interface remains available to the interval-accounting proofs. -/
+theorem _root_.EthLib.Consensus.Run.slashed_evidence {g a : ForkedBeaconState preset}
+    (run : Run config checks g a) (genesis : Genesis (config := config) (checks := checks) g)
+    (early : a.fork < .glamsterdam) (v : Validator)
+    (member : v ∈ a.state.validators.data.toList) (slashed : v.slashed = true) :
+    run.SlashingEvidence v.pubkey :=
+  run.slashed_evidence_gloas genesis (Nat.lt_trans early (by decide)) v member slashed
 
 /-- Both calls may be on the same run: the statement must not force one witness per branch. -/
 abbrev EitherCall {g a b : ForkedBeaconState preset} (left : Run config checks g a)
@@ -1278,8 +1423,8 @@ theorem surround_quorums {g a b : ForkedBeaconState preset}
   · simpa only [source₁, source₂] using source
   · simpa only [target₁, target₂] using target
 
-private theorem checkpointPath_zero {g a : ForkedBeaconState preset}
-    (run : Run config checks g a) (early : a.fork < .glamsterdam) :
+private theorem checkpointPath_zero_gloas {g a : ForkedBeaconState preset}
+    (run : Run config checks g a) (early : a.fork < .hegota) :
     run.checkpointPath 0 = [] := by
   induction run with
   | nil => rfl
@@ -1292,12 +1437,25 @@ private theorem checkpointPath_zero {g a : ForkedBeaconState preset}
     cases step with
     | slot ok => rfl
     | block engine signed due ok =>
-      obtain ⟨headed, headedOk⟩ :=
-        processBlock_header_of_lt_gloas early (applySignedBlock_ok ok).2.1
-      have positive := UInt64.lt_iff_toNat_lt.mp (processBlockHeader_checks headedOk).2.1
+      rename_i fork before after
+      have positive : 0 < signed.message.slot.toNat := by
+        have processed := (applySignedBlock_ok ok).2.1
+        by_cases gloas : Fork.glamsterdam ≤ fork
+        · obtain ⟨_, _, _, _, _, _, headerOk, _⟩ := processBlock_steps gloas processed
+          have checked := UInt64.lt_iff_toNat_lt.mp (processBlockHeader_checks headerOk).2.1
+          omega
+        · obtain ⟨_, headerOk⟩ :=
+            processBlock_header_of_lt_gloas (Nat.lt_of_not_le gloas) processed
+          have checked := UInt64.lt_iff_toNat_lt.mp (processBlockHeader_checks headerOk).2.1
+          omega
       simp only [Step.headers, blockHeader]
       cases root : (Serialization.Ssz.SszType.hashTreeRoot signed.message.body).toOption <;>
         (simp [Option.toList]; try omega)
+
+private theorem checkpointPath_zero {g a : ForkedBeaconState preset}
+    (run : Run config checks g a) (early : a.fork < .glamsterdam) :
+    run.checkpointPath 0 = [] :=
+  checkpointPath_zero_gloas run (Nat.lt_trans early (by decide))
 
 private theorem history_target_bound {g a : ForkedBeaconState preset}
     (run : Run config checks g a) (parameters : Parameters preset)
