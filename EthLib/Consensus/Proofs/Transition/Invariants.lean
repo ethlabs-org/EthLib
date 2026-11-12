@@ -240,13 +240,45 @@ Each step of a block other than an attestation forms such a frame, deposits incl
 structure BlockFrame (state after : BeaconState preset fork) : Prop extends Frame state after where
   blockRoots : after.blockRoots = state.blockRoots
   flags : FlagsKeptOrZero state after
+  activation : ∀ (position : Nat) (old validator : Validator),
+    state.validators.data[position]? = some old →
+    after.validators.data[position]? = some validator →
+    old.activationEligibilityEpoch ≤ validator.activationEligibilityEpoch ∧
+      validator.activationEpoch = old.activationEpoch
+  newPending : ∀ (position : Nat) (validator : Validator),
+    state.validators.data[position]? = none →
+    after.validators.data[position]? = some validator →
+    validator.activationEligibilityEpoch = FAR_FUTURE_EPOCH ∧
+      validator.activationEpoch = FAR_FUTURE_EPOCH
 
 theorem BlockFrame.refl (state : BeaconState preset fork) : BlockFrame state state :=
-  ⟨Frame.refl state, rfl, FlagsKeptOrZero.refl state⟩
+  ⟨Frame.refl state, rfl, FlagsKeptOrZero.refl state,
+    fun _ _ _ before after => by cases before.symm.trans after; exact ⟨UInt64.le_refl _, rfl⟩,
+    fun _ _ before after => by rw [before] at after; cases after⟩
 
 theorem BlockFrame.trans {first second third : BeaconState preset fork}
-    (one : BlockFrame first second) (two : BlockFrame second third) : BlockFrame first third :=
-  ⟨one.toFrame.trans two.toFrame, two.blockRoots.trans one.blockRoots, one.flags.trans two.flags⟩
+    (one : BlockFrame first second) (two : BlockFrame second third) : BlockFrame first third := by
+  refine ⟨one.toFrame.trans two.toFrame, two.blockRoots.trans one.blockRoots,
+    one.flags.trans two.flags, ?_, ?_⟩
+  · intro position old validator before after
+    have inside := (Array.getElem?_eq_some_iff.mp before).1
+    have mid : position < second.validators.data.size := Nat.lt_of_lt_of_le inside one.registryGrows
+    have firstStep := one.activation position old _ before (Array.getElem?_eq_getElem mid)
+    have secondStep := two.activation position _ validator (Array.getElem?_eq_getElem mid) after
+    exact ⟨UInt64.le_trans firstStep.1 secondStep.1, secondStep.2.trans firstStep.2⟩
+  · intro position validator before after
+    cases middle : second.validators.data[position]? with
+    | none => exact two.newPending position validator middle after
+    | some entry =>
+      have firstStep := one.newPending position entry before middle
+      have secondStep := two.activation position entry validator middle after
+      refine ⟨?_, secondStep.2.trans firstStep.2⟩
+      rw [firstStep.1] at secondStep
+      apply UInt64.le_antisymm _ secondStep.1
+      apply UInt64.le_iff_toNat_le.mpr
+      have bound := validator.activationEligibilityEpoch.toNat_lt
+      change validator.activationEligibilityEpoch.toNat ≤ 2 ^ 64 - 1
+      omega
 
 /-- A step that keeps the registry, the number of balances and the fields of a block frame. -/
 theorem BlockFrame.of_validators (sizes : SameSizes state after)
@@ -269,7 +301,12 @@ theorem BlockFrame.of_validators (sizes : SameSizes state after)
     BlockFrame state after :=
   ⟨Frame.of_validators sizes validators slot finalized previousJustified currentJustified
     justificationBits genesisTime forkVersions genesisValidatorsRoot, blockRoots,
-    FlagsKeptOrZero.of_eq previousEpochParticipation currentEpochParticipation⟩
+    FlagsKeptOrZero.of_eq previousEpochParticipation currentEpochParticipation,
+    fun _ _ _ before found => by
+      rw [validators, before] at found
+      cases found
+      exact ⟨UInt64.le_refl _, rfl⟩,
+    fun _ _ before found => by rw [validators, before] at found; cases found⟩
 
 /-- A fold whose every step is a block frame is a block frame. -/
 theorem BlockFrame.foldlM {α ε : Type} {step : BeaconState preset fork → α → Except ε _}
@@ -279,8 +316,6 @@ theorem BlockFrame.foldlM {α ε : Type} {step : BeaconState preset fork → α 
     (BlockFrame.refl state) computed
 
 /-- An epoch frame after which each byte of flags is the byte at its position before, or zero.
-
-So it is also a block frame.
 
 The mutators of a balance, of the exit queue and of a validator form one.
 
@@ -299,8 +334,18 @@ theorem MutatorFrame.trans {first second third : BeaconState preset fork}
     MutatorFrame first third :=
   ⟨one.toEpochFrame.trans two.toEpochFrame, one.flags.trans two.flags⟩
 
-theorem MutatorFrame.toBlockFrame (frame : MutatorFrame state after) : BlockFrame state after :=
-  ⟨frame.toFrame, frame.blockRoots, frame.flags⟩
+theorem MutatorFrame.toBlockFrame (frame : MutatorFrame state after)
+    (activation : ∀ (position : Nat) (old validator : Validator),
+      state.validators.data[position]? = some old →
+      after.validators.data[position]? = some validator →
+      old.activationEligibilityEpoch ≤ validator.activationEligibilityEpoch ∧
+        validator.activationEpoch = old.activationEpoch)
+    (newPending : ∀ (position : Nat) (validator : Validator),
+      state.validators.data[position]? = none →
+      after.validators.data[position]? = some validator →
+      validator.activationEligibilityEpoch = FAR_FUTURE_EPOCH ∧
+        validator.activationEpoch = FAR_FUTURE_EPOCH) : BlockFrame state after :=
+  ⟨frame.toFrame, frame.blockRoots, frame.flags, activation, newPending⟩
 
 /-- A fold whose every step is a mutator frame is a mutator frame. -/
 theorem MutatorFrame.foldlM {α ε : Type} {step : BeaconState preset fork → α → Except ε _}
@@ -378,6 +423,42 @@ theorem frame_setValidatorAt_of_whole {position : Nat} {validator old : Validato
     exact slashed (same ▸ marked)
   · cases before.symm.trans after
     exact marked
+
+theorem blockFrame_setValidatorAt_of_whole {position : Nat} {validator old : Validator}
+    (set : state.setValidatorAt position validator = .ok after)
+    (found : getValidatorAt state position = .ok old)
+    (key : validator.pubkey = old.pubkey)
+    (slashed : old.slashed = true → validator.slashed = true)
+    (le : ExitsOrdered state → validator.exitEpoch ≤ validator.withdrawableEpoch)
+    (whole : MaxEffectiveBalancesAligned preset → EffectiveBalancesAligned state →
+      validator.effectiveBalance % preset.EFFECTIVE_BALANCE_INCREMENT = 0)
+    (eligibility : old.activationEligibilityEpoch ≤ validator.activationEligibilityEpoch)
+    (activation : validator.activationEpoch = old.activationEpoch) : BlockFrame state after := by
+  have frame := frame_setValidatorAt_of_whole set found key slashed le whole
+  obtain ⟨inside, rfl⟩ := setValidatorAt_ok set
+  have oldEq : state.validators.data[position] = old := by
+    simpa [getValidatorAt, inside] using found
+  refine frame.toBlockFrame ?_ ?_
+  · intro i previous next before after
+    simp only [BeaconState.putValidator, RootedForkList.data_set, Array.getElem?_set] at after
+    split at after
+    · rename_i equal
+      subst i
+      have same : previous = old := (Option.some.inj
+        (before.symm.trans (Array.getElem?_eq_getElem inside))).trans oldEq
+      cases after
+      exact same ▸ ⟨eligibility, activation⟩
+    · cases before.symm.trans after
+      exact ⟨UInt64.le_refl _, rfl⟩
+  · intro i next before after
+    simp only [BeaconState.putValidator, RootedForkList.data_set, Array.getElem?_set] at after
+    split at after
+    · rename_i equal
+      subst i
+      rw [Array.getElem?_eq_getElem inside] at before
+      cases before
+    · rw [before] at after
+      cases after
 
 /-- Replacing a validator forms a mutator frame, if the new one exits no later than it withdraws.
 
@@ -489,6 +570,71 @@ theorem frame_slashValidator {slashedIndex : ValidatorIndex}
   · assumption
   · exact UInt64.le_refl _
 
+theorem blockFrame_initiateValidatorExit {index : ValidatorIndex}
+    (computed : initiateValidatorExit config state index = .ok after) : BlockFrame state after := by
+  obtain ⟨validator, found, ⟨_, rfl⟩ |
+      ⟨_, queued, exitEpoch, withdrawableEpoch, queue, summed, set⟩⟩ :=
+    initiateValidatorExit_ok computed
+  · exact BlockFrame.refl _
+  · have same := (exitQueue_validators queue).1
+    have queuedFrame : BlockFrame state queued := by
+      refine (frame_exitQueue queue).toBlockFrame ?_ ?_
+      · intro position old next before after
+        rw [same, before] at after
+        cases after
+        exact ⟨UInt64.le_refl _, rfl⟩
+      · intro position next before after
+        rw [same, before] at after
+        cases after
+    rw [setValidator_eq_setValidatorAt] at set
+    refine queuedFrame.trans (blockFrame_setValidatorAt_of_whole (old := validator) set
+      (by simpa only [getValidator_eq_getValidatorAt, getValidatorAt, same] using found)
+      rfl id (fun _ => ?_) (fun _ holds => holds validator (by
+        rw [same]; exact mem_of_getValidator found)) (UInt64.le_refl _) rfl)
+    have sum := (addChecked_ok_iff.mp summed).2
+    apply UInt64.le_iff_toNat_le.mpr
+    change exitEpoch.toNat ≤ withdrawableEpoch.toNat
+    omega
+
+theorem blockFrame_slashValidator {slashedIndex : ValidatorIndex}
+    {whistleblowerIndex : Option ValidatorIndex}
+    (computed : slashValidator config state slashedIndex whistleblowerIndex = .ok after) :
+    BlockFrame state after := by
+  obtain ⟨_, validator, _, _, _, _, _, _, _, _, _, last, exitedOk, found, -, markedOk, -, -, -,
+    loweredOk, -, -, raisedOk, lastOk, done⟩ := slashValidator_ok computed
+  -- Balance changes and cancellation of builder payments do not change the registry.
+  have unchanged : ∀ {s t : BeaconState preset fork}, MutatorFrame s t →
+      t.validators = s.validators → BlockFrame s t := by
+    intro s t frame same
+    refine frame.toBlockFrame ?_ ?_
+    · intro position old next before after
+      rw [same, before] at after
+      cases after
+      exact ⟨UInt64.le_refl _, rfl⟩
+    · intro position next before after
+      rw [same, before] at after
+      cases after
+  have lastValidators : after.validators = last.validators := by
+    subst done
+    split <;> rfl
+  rw [setValidator_eq_setValidatorAt] at markedOk
+  refine (blockFrame_initiateValidatorExit exitedOk).trans <|
+    (blockFrame_setValidatorAt_of_whole (old := validator) markedOk
+      (by simpa only [getValidator_eq_getValidatorAt] using found) rfl (fun _ => rfl)
+      (fun ordered => ?_) (fun _ holds => holds validator (mem_of_getValidator found))
+      (UInt64.le_refl _) rfl).trans <|
+    (unchanged (frame_slashings _ _) rfl).trans <|
+    (unchanged (frame_decreaseBalance loweredOk) (decreaseBalance_validators loweredOk)).trans <|
+    (unchanged (frame_increaseBalance raisedOk) (increaseBalance_validators raisedOk)).trans <|
+    (unchanged (frame_increaseBalance lastOk) (increaseBalance_validators lastOk)).trans <|
+    unchanged (frame_slashValidatorLast
+      (last := last) (after := after) (index := slashedIndex) (by subst done; rfl)) lastValidators
+  refine UInt64.le_trans (ordered validator (mem_of_getValidator found)) ?_
+  rw [UInt64.max_def]
+  split
+  · assumption
+  · exact UInt64.le_refl _
+
 /-! ## The steps of a block -/
 
 theorem frame_processBlockHeader {block : BeaconBlock preset fork}
@@ -512,7 +658,7 @@ theorem frame_processProposerSlashing {slashing : ProposerSlashing}
     BlockFrame state after := by
   simp only [processProposerSlashing, bind_ok_iff, ensure_ok_iff, liftAccessor_ok] at computed
   obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, slashed⟩ := computed
-  exact (frame_slashValidator slashed).toBlockFrame
+  exact blockFrame_slashValidator slashed
 
 theorem frame_slashIfSlashable {step next : BeaconState preset fork × Bool}
     {index : ValidatorIndex} (computed : slashIfSlashable config step index = .ok next) :
@@ -523,7 +669,7 @@ theorem frame_slashIfSlashable {step next : BeaconState preset fork × Bool}
   split at computed
   · simp only [bind_ok_iff, liftAccessor_ok, pure, Except.pure, Except.ok.injEq] at computed
     obtain ⟨_, slashed, rfl⟩ := computed
-    exact (frame_slashValidator slashed).toBlockFrame
+    exact blockFrame_slashValidator slashed
   · simp only [pure, Except.pure, Except.ok.injEq] at computed
     exact computed ▸ BlockFrame.refl _
 
@@ -751,7 +897,7 @@ Its effective balance is a whole number of increments, when the preset and the s
 
 Registry activation has a separate law because it can change both activation fields.
 
-The other laws cover balance changes, exits, fresh validators and the record updates of the steps. -/
+The other laws cover balance changes, exits, fresh validators and record updates. -/
 structure EpochFrameLaws (R : BeaconState preset fork → BeaconState preset fork → Prop) : Prop where
   refl : ∀ state, R state state
   trans : ∀ {first second third}, R first second → R second third → R first third
@@ -882,13 +1028,41 @@ theorem frame_applyDeposit {pubkey : BLSPubkey} {withdrawalCredentials : Bytes32
   · exact frame_applyDepositElectra computed
   · exact frame_applyPendingDeposit computed
 
+theorem blockFrame_applyDeposit {pubkey : BLSPubkey} {withdrawalCredentials : Bytes32}
+    {amount : Gwei} {signature : BLSSignature}
+    (computed : applyDeposit config checks state pubkey withdrawalCredentials amount signature =
+      .ok after) : BlockFrame state after := by
+  rcases applyDeposit_cases computed with same | ⟨_, pushed, _⟩
+  · refine (frame_applyDeposit computed).toBlockFrame ?_ ?_
+    · intro position old validator before found
+      rw [same, before] at found
+      cases found
+      exact ⟨UInt64.le_refl _, rfl⟩
+    · intro position validator before found
+      rw [same, before] at found
+      cases found
+  · refine (frame_applyDeposit computed).toBlockFrame ?_ ?_
+    · intro position old validator before found
+      have inside := (Array.getElem?_eq_some_iff.mp before).1
+      rw [pushed, Array.getElem?_push_lt inside] at found
+      rw [Array.getElem?_eq_getElem inside] at before
+      cases before.symm.trans found
+      exact ⟨UInt64.le_refl _, rfl⟩
+    · intro position validator before found
+      rw [pushed, Array.getElem?_push] at found
+      split at found
+      · cases found
+        exact ⟨rfl, rfl⟩
+      · rw [before] at found
+        cases found
+
 theorem frame_processDeposit {before : fork < .hegota} {deposit : Deposit}
     (computed : processDeposit config checks before state deposit = .ok after) :
     BlockFrame state after := by
   obtain ⟨_, _, next, _, applied⟩ := processDeposit_ok computed
   exact (BlockFrame.of_validators (state := state)
     (after := { state with eth1DepositIndex := fun _ => next })
-    ⟨rfl, rfl⟩).trans (frame_applyDeposit applied).toBlockFrame
+    ⟨rfl, rfl⟩).trans (blockFrame_applyDeposit applied)
 
 theorem frame_processVoluntaryExit {signed : SignedVoluntaryExit}
     (computed : processVoluntaryExit config checks state signed = .ok after) :
@@ -896,7 +1070,7 @@ theorem frame_processVoluntaryExit {signed : SignedVoluntaryExit}
   unfold processVoluntaryExit at computed
   simp only [bind_ok_iff, ensure_ok_iff, liftAccessor_ok, liftSsz_ok] at computed
   obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, exited⟩ := computed
-  exact (frame_initiateValidatorExit exited).toBlockFrame
+  exact blockFrame_initiateValidatorExit exited
 
 /-! ## Requests of the execution layer -/
 
@@ -956,7 +1130,7 @@ theorem frame_processWithdrawalRequest {electra : .pectra ≤ fork} {request : W
   all_goals first
     | (cases computed; done)
     | (cases computed; exact BlockFrame.refl _)
-    | exact (frame_initiateValidatorExit (liftAccessor_ok.mp computed)).toBlockFrame
+    | exact blockFrame_initiateValidatorExit (liftAccessor_ok.mp computed)
     | exact frame_requestPartialWithdrawal computed
 
 theorem frame_queueExcessActiveBalance {electra : .pectra ≤ fork} {index : ValidatorIndex}
@@ -979,8 +1153,11 @@ theorem frame_switchToCompoundingValidator {electra : .pectra ≤ fork} {index :
     BlockFrame state after := by
   simp only [switchToCompoundingValidator, bind_ok_iff] at computed
   obtain ⟨validator, found, _, set, queued⟩ := computed
-  exact (frame_setValidator set found rfl id fun ordered =>
-    ordered validator (mem_of_getValidator found)).toBlockFrame.trans
+  rw [setValidator_eq_setValidatorAt] at set
+  exact (blockFrame_setValidatorAt_of_whole (old := validator) set
+    (by simpa only [getValidator_eq_getValidatorAt] using found) rfl id
+    (fun ordered => ordered validator (mem_of_getValidator found))
+    (fun _ holds => holds validator (mem_of_getValidator found)) (UInt64.le_refl _) rfl).trans
     (frame_queueExcessActiveBalance queued)
 
 /-- The source of a consolidation exits, and may withdraw a checked delay later.
@@ -1003,12 +1180,13 @@ theorem frame_queueConsolidation {electra : .pectra ≤ fork} {sourceIndex : Val
     UInt64.le_iff_toNat_le.mpr (by simp only at sum ⊢; omega)
   have validators : churnedState.validators = state.validators :=
     (computeConsolidationEpochAndUpdateChurn_earliest churned).2.1
+  rw [setValidator_eq_setValidatorAt] at set
   refine (frame_computeConsolidationEpochAndUpdateChurn churned).trans <|
-    (frame_setValidator_of_whole (old := state.validators.data[sourceIndex.toNat]) set
-      (by simp [getValidator, validators, inside]) rfl id
-      (fun _ => le) fun _ holds => holds state.validators.data[sourceIndex.toNat] (by
-        rw [validators]; exact Array.getElem_mem inside)
-      ).toBlockFrame.trans (BlockFrame.of_validators ⟨rfl, rfl⟩)
+    (blockFrame_setValidatorAt_of_whole (old := state.validators.data[sourceIndex.toNat]) set
+      (by simp [getValidatorAt, validators, inside]) rfl id
+      (fun _ => le) (fun _ holds => holds state.validators.data[sourceIndex.toNat] (by
+        rw [validators]; exact Array.getElem_mem inside)) (UInt64.le_refl _) rfl).trans
+      (BlockFrame.of_validators ⟨rfl, rfl⟩)
 
 theorem frame_processConsolidationRequest {electra : .pectra ≤ fork}
     {request : ConsolidationRequest}
@@ -1043,7 +1221,15 @@ theorem frame_applyWithdrawal {withdrawal : Withdrawal}
     obtain ⟨_, _, set⟩ := computed
     obtain ⟨_, rfl⟩ := setBuilder_ok set
     exact BlockFrame.of_validators ⟨rfl, rfl⟩
-  · exact (frame_decreaseBalance computed).toBlockFrame
+  · have same := decreaseBalance_validators computed
+    refine (frame_decreaseBalance computed).toBlockFrame ?_ ?_
+    · intro position old validator before found
+      rw [same, before] at found
+      cases found
+      exact ⟨UInt64.le_refl _, rfl⟩
+    · intro position validator before found
+      rw [same, before] at found
+      cases found
 
 theorem frame_updateNextWithdrawalIndex {withdrawals : Array Withdrawal}
     (computed : updateNextWithdrawalIndex state withdrawals = .ok after) :
@@ -1136,8 +1322,11 @@ theorem frame_processBlsToExecutionChange {signed : SignedBLSToExecutionChange}
     (computed : processBlsToExecutionChange config checks state signed = .ok after) :
     BlockFrame state after := by
   obtain ⟨validator, found, _, _, _, set⟩ := processBlsToExecutionChange_ok computed
-  exact (frame_setValidator set found rfl id fun ordered =>
-    ordered validator (mem_of_getValidator found)).toBlockFrame
+  rw [setValidator_eq_setValidatorAt] at set
+  exact blockFrame_setValidatorAt_of_whole (old := validator) set
+    (by simpa only [getValidator_eq_getValidatorAt] using found) rfl id
+    (fun ordered => ordered validator (mem_of_getValidator found))
+    (fun _ holds => holds validator (mem_of_getValidator found)) (UInt64.le_refl _) rfl
 
 /-! ## The parent payload and the execution part of a block -/
 
@@ -1235,8 +1424,24 @@ theorem frame_applySyncReward {reward proposerReward : Gwei}
   split at computed
   · simp only [bind_ok_iff, liftAccessor_ok] at computed
     obtain ⟨_, raised, _, _, paid⟩ := computed
-    exact ((frame_increaseBalance raised).trans (frame_increaseBalance paid)).toBlockFrame
-  · exact (frame_decreaseBalance (liftAccessor_ok.mp computed)).toBlockFrame
+    have same := (increaseBalance_validators paid).trans (increaseBalance_validators raised)
+    refine ((frame_increaseBalance raised).trans (frame_increaseBalance paid)).toBlockFrame ?_ ?_
+    · intro position old validator before found
+      rw [same, before] at found
+      cases found
+      exact ⟨UInt64.le_refl _, rfl⟩
+    · intro position validator before found
+      rw [same, before] at found
+      cases found
+  · have same := decreaseBalance_validators (liftAccessor_ok.mp computed)
+    refine (frame_decreaseBalance (liftAccessor_ok.mp computed)).toBlockFrame ?_ ?_
+    · intro position old validator before found
+      rw [same, before] at found
+      cases found
+      exact ⟨UInt64.le_refl _, rfl⟩
+    · intro position validator before found
+      rw [same, before] at found
+      cases found
 
 theorem frame_processSyncAggregate {altair : .altair ≤ fork} {aggregate : SyncAggregate preset}
     (computed : processSyncAggregate config checks state altair aggregate = .ok after) :

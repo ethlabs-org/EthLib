@@ -392,10 +392,17 @@ theorem frame_queuePreActivation {fork : Fork} {state after : BeaconState preset
   have sizes := sameSizes_setBalance set₁
   obtain ⟨_, rfl⟩ := setBalance_ok set₁
   have zeroed := BlockFrame.of_validators sizes
-  have reset := frame_setValidator_of_whole set₂
-    found rfl id
-    (fun ordered => ordered validator (mem_of_getValidator found)) fun _ _ => UInt64.zero_mod
-  exact (zeroed.trans reset.toBlockFrame).trans (BlockFrame.of_validators ⟨rfl, rfl⟩)
+  rw [setValidator_eq_setValidatorAt] at set₂
+  have reset := blockFrame_setValidatorAt_of_whole (old := validator) set₂
+    (by rw [← getValidator_eq_getValidatorAt]; exact found) rfl id
+    (fun ordered => ordered validator (mem_of_getValidator found))
+    (fun _ _ => UInt64.zero_mod) (show validator.activationEligibilityEpoch ≤
+      FAR_FUTURE_EPOCH from by
+        apply UInt64.le_iff_toNat_le.mpr
+        have bound := validator.activationEligibilityEpoch.toNat_lt
+        change validator.activationEligibilityEpoch.toNat ≤ 2 ^ 64 - 1
+        omega) rfl
+  exact (zeroed.trans reset).trans (BlockFrame.of_validators ⟨rfl, rfl⟩)
 
 /-- Queueing the excess balance of a validator with compounding credentials keeps the frame.
 
