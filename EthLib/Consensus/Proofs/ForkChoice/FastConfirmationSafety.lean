@@ -2765,6 +2765,81 @@ private theorem walk_head_of_missing_duties {store : Store preset fork}
   exact Store.isAncestor_getHead_of_missing_weight lower before stateOk tree viable scoreOk
     bound support half (by simpa only [total] using margin) headOk
 
+/-- Complete-epoch duties imply descent using only the receiver's justified balances. -/
+private theorem walk_late_head {Δ : ℕ} (sync : e.Synchronous Δ)
+    (slots : 0 < config.SLOT_DURATION_MS) (positive : 0 < preset.SLOTS_PER_EPOCH.toNat)
+    (window : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
+    (ring : preset.MIN_SEED_LOOKAHEAD.toNat + 2 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
+    (before : fork < .glamsterdam) (oneBlock : OneBlockPerRoot e)
+    (admitted : BlocksAdmitted e 0 Δ) (votes : Votes e.startTime e)
+    (fits : DelayFits fork config genesisTimeMs Δ) (prompt : Prompt e)
+    {anchor : Store preset fork}
+    (anchorStore : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (sound : Invariant anchorState) (anchorSlot : anchorBlock.slot = anchorState.slot)
+    (anchorBoundary : isStartSlotAtEpoch preset anchorBlock.slot = .ok true)
+    (anchored : ∀ w ∈ J, e.start w = anchor) (noVotes : anchor.latestMessages.isEmpty)
+    {first time : ℕ} (started : e.startTime ≤ first)
+    {horizon : Epoch} (chain : FinalizedPrefix e horizon)
+    (inHorizon : ∀ w ∈ J, ∀ k epoch, (e.world k).time ≤ time →
+      ((e.world k).state w).getCurrentStoreEpoch config = .ok epoch → epoch ≤ horizon)
+    (nonzero : ∀ w ∈ J, ∀ k, (e.world k).time ≤ time →
+      ∀ (r : Root) (b : BeaconBlock preset fork),
+        ((e.world k).state w).blocks[r]? = some b → b.stateRoot ≠ Vector.replicate 32 0)
+    (large : ∀ w ∈ J, ∀ k (state : BeaconState preset fork),
+      (e.world k).time ≤ time → ((e.world k).state w).Counts config state →
+      getCurrentEpoch state ≤ horizon →
+      3 * preset.EFFECTIVE_BALANCE_INCREMENT.toNat <
+        2 * stake (fun v => balanceAt state v.toNat) (activeVoters state))
+    (few : ∀ w ∈ J, ∀ k (state : BeaconState preset fork) total,
+      (e.world k).time ≤ time → ((e.world k).state w).Counts config state →
+      getCurrentEpoch state ≤ horizon → getTotalActiveBalance state = .ok total →
+      3 * stake (fun v => balanceAt state v.toNat) {v ∈ quorumVoters state | v ∉ J} <
+        2 * total.toNat)
+    (half : 2 * config.CONFIRMATION_BYZANTINE_THRESHOLD.toNat ≤ 100)
+    {root : Root} (safe : ∀ earlier, first ≤ earlier → earlier < time → SafeAt e earlier root)
+    {w : ValidatorIndex} (receiver : w ∈ J) {k : ℕ} (atTime : (e.world k).time = time)
+    (current : UpToDate config checks sources (e.world k).time ((e.world k).view w)
+      ((e.world k).state w))
+    {block parent : BeaconBlock preset fork}
+    (known : ((e.world k).state w).blocks[root]? = some block)
+    (parentKnown : ((e.world k).state w).blocks[block.parentRoot]? = some parent)
+    (rootFinal : ∀ k' ≤ k, ∃ boundary,
+      computeStartSlotAtEpoch preset ((e.world k').state w).finalizedCheckpoint.epoch =
+        .ok boundary ∧ boundary ≤ block.slot ∧
+      ((e.world k).state w).getCheckpointBlock root
+        ((e.world k').state w).finalizedCheckpoint.epoch =
+          .ok ((e.world k').state w).finalizedCheckpoint.root)
+    {state : BeaconState preset fork} {nodes : List ForkChoiceNode} {head : ForkChoiceNode}
+    (stateOk : ((e.world k).state w).checkpointState ((e.world k).state w).justifiedCheckpoint =
+      .ok state)
+    (within : state.RegistryWithinLimit) (lower : ((e.world k).state w).ParentsBelow)
+    (tree : ((e.world k).state w).getFilteredNodeTree config = .ok nodes)
+    (viable : (⟨root, .pending⟩ : ForkChoiceNode) ∈ nodes)
+    (parentAbove : ((e.world k).state w).isAncestor head ⟨block.parentRoot, .pending⟩ = .ok true)
+    (headOk : ((e.world k).state w).getHead config = .ok head)
+    (uncovered : ((e.world k).state w).isAncestor
+      ⟨((e.world k).state w).justifiedCheckpoint.root, .pending⟩ ⟨root, .pending⟩ ≠ .ok true)
+    (margin : LateMargin config genesisTimeMs assignment J first time state
+      (((e.world k).state w).boostScore config)) :
+    ((e.world k).state w).isAncestor head ⟨root, .pending⟩ = .ok true := by
+  classical
+  obtain ⟨epoch, begin, next, beginTime, endTime, beginOk, nextOk, beginTimeOk, endTimeOk,
+    fresh, complete, byzantine, margin⟩ := margin
+  obtain ⟨justified, justifiedKnown, below⟩ :=
+    walk_justified_below_parent lower before known parentKnown tree viable uncovered
+  obtain ⟨score, scoreOk⟩ := walk_score_read before known parentKnown justifiedKnown below stateOk
+    tree viable parentAbove headOk
+  let duty := fun v => ∃ slot committeeIndex, begin ≤ slot ∧ slot < next ∧
+    assignment.committee v slot = some committeeIndex
+  apply walk_head_of_missing_duties duty within lower before stateOk tree viable scoreOk byzantine
+    ?_ half margin headOk
+  intro v active honest dutied
+  exact (e.mem_supportersOf_of_duty_epoch sync slots positive window ring before oneBlock admitted
+    votes fits prompt anchorStore sound anchorSlot anchorBoundary anchored noVotes started chain
+    inHorizon nonzero large few beginOk nextOk beginTimeOk endTimeOk fresh complete safe receiver
+    atTime current known (fun j le _ _ => Or.inl (rootFinal j le)) stateOk within honest active
+    dutied).resolve_right uncovered
+
 /-- Step 8, the walk: a block that the rule confirms after a safe start is safe up to a last time.
 
 The caller is an honest validator whose store is up to date at the start of a slot.
