@@ -55,50 +55,63 @@ def EitherCall.state {g a b : ForkedBeaconState preset} {left : Run config check
   | .inl c => ⟨c.before.fork, c.cached⟩
   | .inr c => ⟨c.before.fork, c.cached⟩
 
+/-- Each reachable state keeps the invariants and the early and separated justified checkpoints. -/
+theorem run_justified_separated {g a : ForkedBeaconState preset} (run : Run config checks g a)
+    (genesis : Genesis (config := config) (checks := checks) g) :
+    Invariant a.state ∧ JustifiedEarly a.state ∧ JustifiedSeparated a.state := by
+  induction run with
+  | nil =>
+    obtain ⟨hash, time, deposits, ok⟩ := genesis
+    refine ⟨(initializeBeaconStateFromEth1_invariant ok).2,
+      JustifiedEarly.of_initializeBeaconStateFromEth1 ok, ?_⟩
+    obtain ⟨_, _, _, _, _, frame, equal⟩ := initializeBeaconStateFromEth1_frame ok
+    rw [equal]
+    intro later
+    have slot := frame.slot
+    simp only [getCurrentEpoch, slot, emptyGenesisState] at later
+    simp [GENESIS_SLOT, GENESIS_EPOCH, computeEpochAtSlot, UInt64.lt_iff_toNat_lt] at later
+  | snoc pre step ih =>
+    rcases ih with ⟨holds, early, separated⟩
+    cases step with
+    | slot ok =>
+      obtain ⟨advanced, advancedOk, upgraded⟩ := bind_ok_iff.mp ok
+      exact ⟨(advanceSlotAcross_invariant holds ok).1,
+        (early.of_advanceSlot advancedOk).of_processUpgrades upgraded,
+        (separated.of_advanceSlot early holds.settled advancedOk).of_processUpgrades upgraded⟩
+    | block engine signed due ok =>
+      obtain ⟨_, blockOk, _⟩ := applySignedBlock_ok ok
+      have frame := frame_processBlock blockOk
+      exact ⟨frame.invariant holds, early.of_frame frame, separated.of_frame frame⟩
+
+/-- The justified checkpoint that a link names as its source is older than its target. -/
+theorem link_source_lt {fork : Fork} {state : BeaconState preset fork}
+    (settled : JustifiedSettled state) (separated : JustifiedSeparated state)
+    (later : GENESIS_EPOCH + 1 < getCurrentEpoch state) (current : Bool) (target : Checkpoint)
+    (targetEpoch : target.epoch =
+      if current then getCurrentEpoch state else getPreviousEpoch state) :
+    (if current then state.currentJustifiedCheckpoint
+      else state.previousJustifiedCheckpoint).epoch < target.epoch := by
+  have previous := separated later
+  rw [targetEpoch]
+  cases current
+  · exact previous
+  · have settledNat := UInt64.le_iff_toNat_le.mp settled
+    have laterNat := UInt64.lt_iff_toNat_lt.mp later
+    apply UInt64.lt_iff_toNat_lt.mpr
+    simp only [getPreviousEpoch_toNat] at settledNat
+    have one : (GENESIS_EPOCH + 1 : Epoch).toNat = 1 := by decide
+    rw [one] at laterNat
+    simp only [↓reduceIte]
+    omega
+
 theorem call_epochs {g a : ForkedBeaconState preset} (run : Run config checks g a)
     (parameters : Parameters preset) (genesis : Genesis (config := config) (checks := checks) g)
     (call : QuorumCall run) : call.source.epoch < call.target.epoch := by
   have _ := parameters
-  have invariants {a : ForkedBeaconState preset} (pre : Run config checks g a) :
-      Invariant a.state ∧ JustifiedEarly a.state ∧ JustifiedSeparated a.state := by
-    induction pre with
-    | nil =>
-      obtain ⟨hash, time, deposits, ok⟩ := genesis
-      refine ⟨(initializeBeaconStateFromEth1_invariant ok).2,
-        JustifiedEarly.of_initializeBeaconStateFromEth1 ok, ?_⟩
-      obtain ⟨_, _, _, _, _, frame, equal⟩ := initializeBeaconStateFromEth1_frame ok
-      rw [equal]
-      intro later
-      have slot := frame.slot
-      simp only [getCurrentEpoch, slot, emptyGenesisState] at later
-      simp [GENESIS_SLOT, GENESIS_EPOCH, computeEpochAtSlot, UInt64.lt_iff_toNat_lt] at later
-    | snoc pre step ih =>
-      rcases ih with ⟨holds, early, separated⟩
-      cases step with
-      | slot ok =>
-        obtain ⟨advanced, advancedOk, upgraded⟩ := bind_ok_iff.mp ok
-        exact ⟨(advanceSlotAcross_invariant holds ok).1,
-          (early.of_advanceSlot advancedOk).of_processUpgrades upgraded,
-          (separated.of_advanceSlot early holds.settled advancedOk).of_processUpgrades upgraded⟩
-      | block engine signed due ok =>
-        obtain ⟨_, blockOk, _⟩ := applySignedBlock_ok ok
-        have frame := frame_processBlock blockOk
-        exact ⟨frame.invariant holds, early.of_frame frame, separated.of_frame frame⟩
   obtain ⟨pre, _, _, frame, _⟩ := call.toEpochCall.selected_prefix
-  obtain ⟨holds, _, separated⟩ := invariants pre
-  have settled := (frame.invariant holds).settled
-  have previous := (separated.of_frame frame) call.later
-  rw [QuorumCall.source, call.targetEpoch]
-  cases call.current
-  · exact previous
-  · have settledNat := UInt64.le_iff_toNat_le.mp settled
-    have later := UInt64.lt_iff_toNat_lt.mp call.later
-    apply UInt64.lt_iff_toNat_lt.mpr
-    simp only [getPreviousEpoch_toNat] at settledNat
-    have one : (GENESIS_EPOCH + 1 : Epoch).toNat = 1 := by decide
-    rw [one] at later
-    simp only [↓reduceIte]
-    omega
+  obtain ⟨holds, _, separated⟩ := run_justified_separated pre genesis
+  exact link_source_lt (frame.invariant holds).settled (separated.of_frame frame) call.later
+    call.current call.target call.targetEpoch
 
 /-- Distinct targets at the same epoch give double votes in the common voters. -/
 theorem same_epoch_histories {g a b : ForkedBeaconState preset}

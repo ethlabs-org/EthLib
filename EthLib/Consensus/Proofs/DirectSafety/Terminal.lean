@@ -69,15 +69,7 @@ structure TerminalQuorum {a : ForkedBeaconState preset} (view : TerminalView a) 
   targetRoot : getBlockRoot a.state target.epoch = .ok target.root
   indices : List ValidatorIndex
   counted : targetIndices a.state target.epoch = .ok indices
-  total : Gwei
-  part : Gwei
-  threshold : Gwei
-  weighted : Gwei
-  totalOk : getTotalActiveBalance a.state = .ok total
-  partOk : getTotalBalance a.state indices = .ok part
-  thresholdOk : Uint64.mulChecked total 2 = .ok threshold
-  weightedOk : Uint64.mulChecked part 3 = .ok weighted
-  passes : threshold ≤ weighted
+  passes : JustificationPasses a.state indices
 
 def TerminalQuorum.source {a : ForkedBeaconState preset} {view : TerminalView a}
     (call : TerminalQuorum view) : Checkpoint :=
