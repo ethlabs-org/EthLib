@@ -103,36 +103,11 @@ theorem slashValidator {index : ValidatorIndex} {whistleblower : Option Validato
     RegistryIdentity state after :=
   (frame_slashValidator ok).toFrame.registryIdentity
 
-theorem processDeposit {before : fork < .hegota} {deposit : Deposit}
-    (ok : Consensus.processDeposit config checks before state deposit = .ok after) :
-    RegistryIdentity state after :=
-  (frame_processDeposit ok).toFrame.registryIdentity
-
 theorem genesis {hash : Hash32} {time : UInt64} {deposits : Array Deposit}
     (ok : initializeBeaconStateFromEth1 config checks hash time deposits = .ok after) :
     (validatorKeys after).Nodup := by
   obtain ⟨_, _, _, _, _, frame, rfl⟩ := initializeBeaconStateFromEth1_frame ok
   exact frame.pubkeysDistinct (by simp [PubkeysDistinct, validatorKeys, emptyGenesisState])
-
-theorem processDepositRequest {electra : .pectra ≤ fork} {request : DepositRequest}
-    (ok : Consensus.processDepositRequest state electra request = .ok after) :
-    RegistryIdentity state after :=
-  (frame_processDepositRequest ok).toFrame.registryIdentity
-
-theorem processWithdrawalRequest {electra : .pectra ≤ fork} {request : WithdrawalRequest}
-    (ok : Consensus.processWithdrawalRequest config state electra request = .ok after) :
-    RegistryIdentity state after :=
-  (frame_processWithdrawalRequest ok).toFrame.registryIdentity
-
-theorem processConsolidationRequest {electra : .pectra ≤ fork} {request : ConsolidationRequest}
-    (ok : Consensus.processConsolidationRequest config state electra request = .ok after) :
-    RegistryIdentity state after :=
-  (frame_processConsolidationRequest ok).toFrame.registryIdentity
-
-theorem processBlsToExecutionChange {signed : SignedBLSToExecutionChange}
-    (ok : Consensus.processBlsToExecutionChange config checks state signed = .ok after) :
-    RegistryIdentity state after :=
-  (frame_processBlsToExecutionChange ok).toFrame.registryIdentity
 
 theorem processParentExecutionPayload {gloas : .glamsterdam ≤ fork}
     {body : BeaconBlockBody preset fork}
@@ -169,21 +144,6 @@ theorem processAttesterSlashing {slashing : AttesterSlashing preset fork}
     (ok : Consensus.processAttesterSlashing config checks state slashing = .ok after) :
     RegistryIdentity state after :=
   (frame_processAttesterSlashing ok).toFrame.registryIdentity
-
-theorem processAttestation {attestation : Attestation preset fork} {parentSlot : Slot}
-    (ok : Consensus.processAttestation config checks state parentSlot attestation = .ok after) :
-    RegistryIdentity state after :=
-  (frame_processAttestation ok).registryIdentity
-
-theorem processVoluntaryExit {signed : SignedVoluntaryExit}
-    (ok : Consensus.processVoluntaryExit config checks state signed = .ok after) :
-    RegistryIdentity state after :=
-  (frame_processVoluntaryExit ok).toFrame.registryIdentity
-
-theorem processOperations {body : BeaconBlockBody preset fork} {parentSlot : Slot}
-    (ok : Consensus.processOperations config checks state body parentSlot = .ok after) :
-    RegistryIdentity state after :=
-  (frame_processOperations ok).registryIdentity
 
 theorem processBlock {block : BeaconBlock preset fork}
     (ok : Consensus.processBlock config checks engine state block = .ok after) :

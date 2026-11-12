@@ -1965,7 +1965,7 @@ private theorem admissionFunded_block {f : Fork} {s t : BeaconState preset f}
       · cases executedOk; exact .refl _
     have executionKeys : RegistryIdentity headed executed := by
       split at executedOk
-      · exact RegistryIdentity.processBlockExecution executedOk
+      · exact (frame_processBlockExecution executedOk).toFrame.registryIdentity
       · cases executedOk; exact .refl _
     have executionCommittee : executed.currentSyncCommittee altair =
         headed.currentSyncCommittee altair := by
@@ -1978,7 +1978,7 @@ private theorem admissionFunded_block {f : Fork} {s t : BeaconState preset f}
       · cases votedOk; exact .refl _
     have votedKeys : RegistryIdentity revealed voted := by
       split at votedOk
-      · exact RegistryIdentity.processEth1Data votedOk
+      · exact (frame_processEth1Data votedOk).toFrame.registryIdentity
       · cases votedOk; exact .refl _
     have votedCommittee : voted.currentSyncCommittee = revealed.currentSyncCommittee := by
       split at votedOk
@@ -1993,9 +1993,9 @@ private theorem admissionFunded_block {f : Fork} {s t : BeaconState preset f}
     intro key member index indexed
     apply balanceDrift_indexOfPubkey_lt ?_ indexed
     apply balanceDrift_old_key
-      ((RegistryIdentity.processBlockHeader headedOk).trans (executionKeys.trans
-        ((RegistryIdentity.processRandao revealedOk).trans (votedKeys.trans
-          (RegistryIdentity.processOperations operatedOk)))))
+      ((frame_processBlockHeader headedOk).toFrame.registryIdentity.trans (executionKeys.trans
+        ((frame_processRandao revealedOk).toFrame.registryIdentity.trans (votedKeys.trans
+          (frame_processOperations operatedOk).registryIdentity))))
     apply keys altair key
     have same : operated.currentSyncCommittee altair = s.currentSyncCommittee altair := by
       rw [processOperations_currentSyncCommittee altair operatedOk, votedCommittee,
