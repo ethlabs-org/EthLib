@@ -184,7 +184,14 @@ theorem Execution.exists_getCheckpointBlock_of_held {anchor : Store preset fork}
     {epoch : Epoch} {first : Slot} (firstOk : computeStartSlotAtEpoch preset epoch = .ok first)
     (above : anchorBlock.slot ≤ first) :
     ∃ checkpointRoot, ((e.world k).state w).getCheckpointBlock root epoch = .ok checkpointRoot := by
-  sorry
+  have reachable := e.reachable
+    (fun v member => (start v member).symm ▸ Store.Reachable.anchor anchored) k w honest
+  have aligned : anchorBlock.slot ≤ anchorState.slot := anchorSlot ▸ UInt64.le_refl _
+  obtain ⟨ancestor, walked⟩ := p2_exists_getAncestor reachable aligned
+    (anchorParent w honest k bounded) preGloas known above
+  exact ⟨ancestor.root, by
+    simp [Store.getCheckpointBlock, firstOk, walked, Except.mapError,
+      bind, Except.bind, pure, Except.pure]⟩
 
 /-- An honest store reads its filtered block tree, up to a last time.
 
