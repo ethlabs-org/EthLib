@@ -912,6 +912,112 @@ theorem Execution.rootFinal_or_justified_covers {anchor : Store preset fork}
 
 variable [DecidablePred (· ∈ J)]
 
+/-- The tally indices are the registry positions used by the missing-weight head theorem. -/
+private theorem walk_tally_indices {state : BeaconState preset fork}
+    (within : state.RegistryWithinLimit) :
+    ((unslashedActiveBalances state).map (·.1)).toFinset.image UInt64.toNat =
+      Store.voters state := by
+  ext i
+  simp only [Finset.mem_image, List.mem_toFinset, List.mem_map,
+    unslashedActiveBalances, List.mem_filterMap, Option.ite_none_right_eq_some,
+    Option.some.injEq, Prod.mk.injEq, Prod.exists, Store.voters, Finset.mem_filter,
+    Finset.mem_range]
+  constructor
+  · rintro ⟨v, ⟨index, balance, ⟨validator, j, inZip, active, rfl, rfl⟩, rfl⟩, rfl⟩
+    have found := List.mem_zipIdx_iff_getElem?.mp inZip
+    have lt : j < state.validators.data.size := by
+      simpa using (List.getElem?_eq_some_iff.mp found).1
+    rw [toNat_toUInt64_of_lt within lt]
+    exact ⟨lt, by simpa [Store.counts, ← Array.getElem?_toList, found] using active⟩
+  · rintro ⟨lt, active⟩
+    cases found : state.validators.data[i]? with
+    | none => simp [Store.counts, found] at active
+    | some validator =>
+      refine ⟨i.toUInt64, ⟨i.toUInt64, validator.effectiveBalance, ?_, rfl⟩,
+        toNat_toUInt64_of_lt within lt⟩
+      refine ⟨validator, i, ?_, ?_, rfl, rfl⟩
+      · exact List.mem_zipIdx_iff_getElem?.mpr (by simpa using found)
+      · simpa [Store.counts, found] using active
+
+/-- Reindexing the tally preserves every selected stake, including honest and missing duties. -/
+private theorem walk_tally_stake {state : BeaconState preset fork}
+    (within : state.RegistryWithinLimit) (P : ValidatorIndex → Prop) [DecidablePred P] :
+    stake (balanceAt state) {i ∈ Store.voters state | P i.toUInt64} =
+      stake (fun v => balanceAt state v.toNat)
+        {v ∈ ((unslashedActiveBalances state).map (·.1)).toFinset | P v} := by
+  rw [← walk_tally_indices within]
+  have selected :
+      {i ∈ ((unslashedActiveBalances state).map (·.1)).toFinset.image UInt64.toNat |
+        P i.toUInt64} =
+      ({v ∈ ((unslashedActiveBalances state).map (·.1)).toFinset | P v}).image
+        UInt64.toNat := by
+    ext i
+    simp only [Finset.mem_filter, Finset.mem_image]
+    constructor
+    · rintro ⟨⟨v, member, rfl⟩, passes⟩
+      exact ⟨v, ⟨member, by simpa using passes⟩, rfl⟩
+    · rintro ⟨v, ⟨member, passes⟩, rfl⟩
+      exact ⟨⟨v, member, rfl⟩, by simpa using passes⟩
+  rw [selected, stake, Finset.sum_image]
+  · rfl
+  · intro a _ b _ eq
+    exact UInt64.toNat_inj.mp eq
+
+/-- The late-duty inequality is the missing-weight inequality in the receiver's own state. -/
+private theorem walk_head_of_missing_duties {store : Store preset fork}
+    {state : BeaconState preset fork} {config : Config} {nodes : List ForkChoiceNode}
+    {node head : ForkChoiceNode} {score : Gwei} {J : Set ValidatorIndex}
+    [DecidablePred (· ∈ J)] (duty : ValidatorIndex → Prop) [DecidablePred duty]
+    (within : state.RegistryWithinLimit) (lower : store.ParentsBelow)
+    (before : fork < .glamsterdam)
+    (stateOk : store.checkpointState store.justifiedCheckpoint = .ok state)
+    (tree : store.getFilteredNodeTree config = .ok nodes) (viable : node ∈ nodes)
+    (scoreOk : store.getAttestationScore node state = .ok score)
+    (byzantine : ByzantineStakeAtMost (fun v => balanceAt state v.toNat)
+      ((unslashedActiveBalances state).map (·.1)).toFinset J
+      config.CONFIRMATION_BYZANTINE_THRESHOLD.toNat 100)
+    (supported : ∀ v ∈ ((unslashedActiveBalances state).map (·.1)).toFinset,
+      v ∈ J → duty v → v ∈ store.supportersOf state node)
+    (half : 2 * config.CONFIRMATION_BYZANTINE_THRESHOLD.toNat ≤ 100)
+    (margin : 100 * (2 * stake (fun v => balanceAt state v.toNat)
+        {v ∈ ((unslashedActiveBalances state).map (·.1)).toFinset | v ∈ J ∧ ¬duty v} +
+        store.boostScore config) <
+      (100 - 2 * config.CONFIRMATION_BYZANTINE_THRESHOLD.toNat) *
+        stake (fun v => balanceAt state v.toNat)
+          ((unslashedActiveBalances state).map (·.1)).toFinset)
+    (headOk : store.getHead config = .ok head) :
+    store.isAncestor head node = .ok true := by
+  classical
+  let V := ((unslashedActiveBalances state).map (·.1)).toFinset
+  let missing := stake (fun v => balanceAt state v.toNat) {v ∈ V | v ∈ J ∧ ¬duty v}
+  have total := walk_tally_stake within (fun _ => True)
+  simp only [Finset.filter_true] at total
+  have honest := walk_tally_stake within (fun v => v ∈ J)
+  have dishonest := walk_tally_stake within (fun v => v ∉ J)
+  have bound : ByzantineStakeAtMost (balanceAt state) (Store.voters state)
+      {i | i.toUInt64 ∈ J} config.CONFIRMATION_BYZANTINE_THRESHOLD.toNat 100 := by
+    simpa only [ByzantineStakeAtMost, Set.mem_ofPred_eq, total, dishonest] using byzantine
+  have support : stake (balanceAt state)
+      {i ∈ Store.voters state | i ∈ ({i | i.toUInt64 ∈ J} : Set ℕ)} ≤
+      score.toNat + missing := by
+    rw [show {i ∈ Store.voters state | i ∈ ({i | i.toUInt64 ∈ J} : Set ℕ)} =
+      {i ∈ Store.voters state | i.toUInt64 ∈ J} from rfl, honest]
+    rw [← Store.stake_supportersOf within scoreOk]
+    -- Every honest index either contributed a supporting duty or is counted as missing.
+    change (∑ v ∈ V.filter (· ∈ J), balanceAt state v.toNat) ≤ _
+    have split := Finset.sum_filter_add_sum_filter_not (V.filter (· ∈ J)) duty
+      (fun v => balanceAt state v.toNat)
+    rw [← split]
+    apply Nat.add_le_add
+    · apply Finset.sum_le_sum_of_subset
+      intro v member
+      obtain ⟨inside, dutied⟩ := Finset.mem_filter.mp member
+      obtain ⟨inside, honest⟩ := Finset.mem_filter.mp inside
+      exact supported v inside honest dutied
+    · exact Nat.le_of_eq (by simp [missing, stake, Finset.filter_filter])
+  exact Store.isAncestor_getHead_of_missing_weight lower before stateOk tree viable scoreOk
+    bound support half (by simpa only [total] using margin) headOk
+
 /-- Step 8, the walk: a block that the rule confirms after a safe start is safe up to a last time.
 
 The caller is an honest validator whose store is up to date at the start of a slot.
