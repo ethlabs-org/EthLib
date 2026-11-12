@@ -426,10 +426,17 @@ The assignment link remains separate: a free assignment is not determined by a t
 structure CommitteesFollow
     (e : Execution (honestForkChoice config checks sources anchorState anchorBlock assignment
       genesisTimeMs) J) : Prop where
-  /-- Honest duties use the actual head's committees for the past slots read by the rule. -/
+  /-- Honest duties use the actual head's committees for the past slots read by the rule.
+
+  The head state still holds the RANDAO mix that the seed of the first epoch of the range reads.
+
+  This is the retention bound of `RunKept.committeesKept`; agreement beyond it is not derived. -/
   assigned : ∀ w ∈ J, ∀ k head current first last participants,
     ((e.world k).state w).getHead config = .ok head →
     ((e.world k).state w).getCurrentSlot config = .ok current → last < current →
+    (∀ headState, ((e.world k).state w).blockState head.root = .ok headState →
+      (getCurrentEpoch headState).toNat + preset.MIN_SEED_LOOKAHEAD.toNat + 1 <
+        (computeEpochAtSlot preset first).toNat + preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat) →
     ((e.world k).state w).getCommitteesBetweenSlots head.root first last = .ok participants →
     ∀ v ∈ J, v ∈ participants ↔
       ∃ slot committeeIndex, first ≤ slot ∧ slot ≤ last ∧
