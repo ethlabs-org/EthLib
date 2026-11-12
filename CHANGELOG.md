@@ -535,14 +535,17 @@ Not yet released.
   It had no callers in this repository and duplicated parts of the existing accountable-safety proof.
   Other theorem statements are unchanged.
   No C export or Python function changes.
-- `EthLib.Consensus.DirectSafety.Authenticated` and `accepted_evidence_is_signed` are removed.
-  `accepted_evidence_is_signed` took a predicate `signed` and a proof that each accepted vote of both runs satisfies it.
-  `verifiedConflict_of_accountable` replaces it and takes no such premise.
+- `EthLib.Consensus.DirectSafety.Authenticated` and `EthLib.Consensus.DirectSafety.accepted_evidence_is_signed` are removed.
+  `accepted_evidence_is_signed` took a predicate `signed`, a proof for each run that every vote it accepted satisfies `signed`, and `Slashable left right key`.
+  It concluded that two conflicting data satisfy `signed`.
+  It has no direct replacement.
+  `EthLib.Consensus.DirectSafety.verifiedConflict_of_accountable` gives the executed checks instead.
+  It takes `Accountable left right key`, which `Or.inl` makes from `Slashable left right key`.
+  It also takes the premise `MIN_SEED_LOOKAHEAD + 2 < EPOCHS_PER_HISTORICAL_VECTOR`.
   For each accountable key, it gives two conflicting attestations or two conflicting proposer headers.
   Each comes with the successful check that a block of one of the two runs executed.
   The theorem exposes executed checks, not signing acts, and it makes no assumption about the signature checks.
   A caller that needs the statement that a validator signed must prove that step from the checks.
-  `verifiedConflict_of_accountable` is not a drop-in replacement for `accepted_evidence_is_signed` with a signing interpretation.
   No C export or Python function changes.
 
 ## 0.3.0

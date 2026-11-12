@@ -1598,7 +1598,6 @@ theorem processOperations_folds {body : BeaconBlockBody preset fork} {parentSlot
     (BlockFrame.foldlM (fun _ _ _ ok => frame_processVoluntaryExit ok) exitsOk).trans <|
     changes.trans requests
 
-
 /-- The operations of a block are a step, its attestations in order, then a block frame.
 
 The step holds of the two kinds of slashings, which run before the attestations.
@@ -1706,6 +1705,16 @@ theorem OperationsInput.step_of
   exact trans paidStep <| trans (header headerOk) <|
     trans executionStep <| trans (randao randaoOk) eth1Step
 
+/-- The steps of a block before its operations are a block frame. -/
+theorem frame_operationsInput {engine : ExecutionEngine preset fork}
+    {state input : BeaconState preset fork} {block : BeaconBlock preset fork}
+    (started : OperationsInput config checks engine state block input) :
+    BlockFrame state input :=
+  started.step_of BlockFrame BlockFrame.refl BlockFrame.trans
+    (fun _ ok => frame_processParentExecutionPayload ok) frame_processBlockHeader
+    (fun _ ok => frame_processBlockExecution ok) frame_processRandao
+    (fun _ ok => frame_processEth1Data ok)
+
 /-- A block runs the steps of its operations input, then its operations, then a block frame.
 
 The operations read the parent slot from the latest block header before the block. -/
@@ -1807,11 +1816,9 @@ theorem processBlock_split {block : BeaconBlock preset fork}
     (computed : processBlock config checks engine state block = .ok after) :
     ∃ first last, BlockFrame state first ∧
       processOperations config checks first block.body state.latestBlockHeader.slot = .ok last ∧
-      BlockFrame last after :=
-  processBlock_split_of BlockFrame BlockFrame.refl BlockFrame.trans
-    (fun _ ok => frame_processParentExecutionPayload ok) frame_processBlockHeader
-    (fun _ ok => frame_processBlockExecution ok) frame_processRandao
-    (fun _ ok => frame_processEth1Data ok) computed
+      BlockFrame last after := by
+  obtain ⟨input, last, started, operated, tail⟩ := processBlock_operationsInput computed
+  exact ⟨input, last, frame_operationsInput started, operated, tail⟩
 
 /-- The operations of a block form a frame. -/
 theorem frame_processOperations {body : BeaconBlockBody preset fork} {parentSlot : Slot}

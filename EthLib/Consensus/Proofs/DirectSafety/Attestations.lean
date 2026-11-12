@@ -112,31 +112,6 @@ structure AttestationCheck {g a : ForkedBeaconState preset} (run : Run config ch
     checked.validators.data[i.toNat]? = some v ∧ v.pubkey = key
   valid : isValidIndexedAttestation config checks checked indexed = .ok true
 
-/-- The steps of a block before its operations are a block frame. -/
-theorem frame_operationsInput {fork : Fork}
-    {engine : ExecutionEngine preset fork} {state input : BeaconState preset fork}
-    {block : BeaconBlock preset fork}
-    (started : OperationsInput config checks engine state block input) :
-    BlockFrame state input :=
-  started.step_of BlockFrame BlockFrame.refl BlockFrame.trans
-    (fun _ ok => frame_processParentExecutionPayload ok) frame_processBlockHeader
-    (fun _ ok => frame_processBlockExecution ok) frame_processRandao
-    (fun _ ok => frame_processEth1Data ok)
-
-/-- A fold that succeeds runs its step at each member.
-
-The list splits at the member, and the step runs on the state that the earlier members leave. -/
-theorem foldlM_ok_of_mem {α β ε : Type} {g : β → α → Except ε β} {xs : List α} {x : α}
-    {start done : β} (member : x ∈ xs) (computed : xs.foldlM g start = .ok done) :
-    ∃ pre post before after, xs = pre ++ x :: post ∧ pre.foldlM g start = .ok before ∧
-      g before x = .ok after := by
-  obtain ⟨pre, post, split⟩ := List.append_of_mem member
-  rw [split, List.foldlM_append] at computed
-  obtain ⟨before, earlier, rest⟩ := bind_ok_iff.mp computed
-  rw [List.foldlM_cons] at rest
-  obtain ⟨after, step, -⟩ := bind_ok_iff.mp rest
-  exact ⟨pre, post, before, after, split, earlier, step⟩
-
 /-- The state on which `processAttestation` checks its indexed attestation, and the check.
 
 Before Altair it is the state that the attestation returns, and from Altair its input. -/
