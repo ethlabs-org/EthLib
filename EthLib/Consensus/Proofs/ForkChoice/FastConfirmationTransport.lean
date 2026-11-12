@@ -313,6 +313,52 @@ private theorem maximum_exists_of_total {store : Store preset fork} {head : Root
       rw [Store.computeCommitteeWeightBetweenSlots_of_covered coverage]
       rw [totalOk]; rfl⟩
 
+/-- A rule maximum transfers on the same window under equal activity and active weights.
+
+The receiver must hold even the participants that its activity filter rejects. -/
+private theorem maximum_transfer {caller receiver : Store preset fork} {head otherHead : Root}
+    {source state : BeaconState preset fork} {first last : Slot} {maximum : Gwei}
+    (within : state.RegistryWithinLimit)
+    (read : caller.computeCommitteeWeightBetweenSlots head source first last = .ok maximum)
+    (windows : ∀ participants, caller.getCommitteesBetweenSlots head first last = .ok participants →
+      receiver.getCommitteesBetweenSlots otherHead first last = .ok participants)
+    (inside : ∀ participants, caller.getCommitteesBetweenSlots head first last = .ok participants →
+      ∀ v ∈ participants, ∃ validator, validatorAt state v = .ok validator)
+    (activity : ∀ position, isActiveAt state (getCurrentEpoch state) position =
+      isActiveAt source (getCurrentEpoch source) position)
+    (weights : ∀ v ∈ getActiveValidatorIndices source (getCurrentEpoch source),
+      balanceAt state v.toNat = balanceAt source v.toNat) :
+    receiver.computeCommitteeWeightBetweenSlots otherHead state first last = .ok maximum := by
+  by_cases empty : last < first
+  · rw [Store.computeCommitteeWeightBetweenSlots_of_gt empty] at read ⊢
+    exact read
+  simp only [Store.computeCommitteeWeightBetweenSlots, bind_ok_iff, pure, Except.pure,
+    Except.ok.injEq] at read
+  obtain ⟨⟨_, members⟩, read, rfl⟩ := read
+  simp only [Store.computeCommitteeWeightAndMembers, empty, ↓reduceIte, bind_ok_iff] at read
+  obtain ⟨covered, coverage, read⟩ := read
+  cases covered
+  · simp only [Bool.false_eq_true, ↓reduceIte, bind_ok_iff, mapError_ok_iff,
+      pure, Except.pure, Except.ok.injEq, Prod.mk.injEq] at read
+    obtain ⟨participants, windowOk, active, filtered, total, totalOk, rfl, _⟩ := read
+    obtain ⟨other, otherOk, transferred⟩ := filteredTotal_transfer filtered totalOk
+      (inside participants windowOk) (fun v _ => activity v.toNat) (fun v member => by
+        have pass := passes_of_mem_filterM_ok filtered member
+        simp only [bind_ok_iff, Except.ok.injEq] at pass
+        obtain ⟨validator, found, active⟩ := pass
+        exact weights v (mem_getActiveValidatorIndices_of_isActiveAt
+          (isActiveAt_eq_true_iff.mpr ⟨validator, validatorAt_ok_iff.mp found, active⟩)))
+    simp only [bind, Except.bind, pure, Except.pure] at otherOk
+    simp only [Store.computeCommitteeWeightBetweenSlots, Store.computeCommitteeWeightAndMembers,
+      empty, ↓reduceIte, coverage, bind, Except.bind, Bool.false_eq_true,
+      windows participants windowOk, otherOk, transferred, Except.mapError, pure, Except.pure]
+  · simp only [↓reduceIte, bind_ok_iff, mapError_ok_iff, pure, Except.pure,
+      Except.ok.injEq, Prod.mk.injEq] at read
+    obtain ⟨total, totalOk, rfl, _⟩ := read
+    rw [Store.computeCommitteeWeightBetweenSlots_of_covered coverage]
+    rw [activeTotal_transfer within totalOk activity weights]
+    rfl
+
 /-- A nonempty caller read supplies the start arithmetic for another range with the same start. -/
 private theorem coverage_exists_of_maximum {store : Store preset fork} {head : Root}
     {state : BeaconState preset fork} {first last otherLast afterOther : Slot} {maximum : Gwei}
