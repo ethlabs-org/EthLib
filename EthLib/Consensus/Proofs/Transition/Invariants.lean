@@ -1738,6 +1738,31 @@ theorem processBlock_operationsInput {block : BeaconBlock preset fork}
     · simp only [early, ↓reduceDIte]
       exact eth1Ok
 
+/-- A block runs the steps of its operations input, then three folds, then a block frame.
+
+The folds are the proposer slashings, the attester slashings and the attestations.
+
+They run from the input in that order.
+
+The attestations read the slot of the latest block header before the block. -/
+theorem processBlock_folds {block : BeaconBlock preset fork}
+    (computed : processBlock config checks engine state block = .ok after) :
+    ∃ input proposersDone slashingsDone attested,
+      OperationsInput config checks engine state block input ∧
+      block.body.proposerSlashings.data.toList.foldlM (processProposerSlashing config checks)
+        input = .ok proposersDone ∧
+      block.body.attesterSlashings.data.toList.foldlM (processAttesterSlashing config checks)
+        proposersDone = .ok slashingsDone ∧
+      block.body.attestations.data.toList.foldlM
+        (processAttestation config checks · state.latestBlockHeader.slot ·) slashingsDone =
+        .ok attested ∧
+      BlockFrame attested after := by
+  obtain ⟨input, last, started, operated, tail⟩ := processBlock_operationsInput computed
+  obtain ⟨proposersDone, slashingsDone, attested, proposersOk, slashingsOk, attestedOk, rest⟩ :=
+    processOperations_folds operated
+  exact ⟨input, proposersDone, slashingsDone, attested, started, proposersOk, slashingsOk,
+    attestedOk, rest.trans tail⟩
+
 /-- A block is a step, its operations, then a block frame.
 
 The step holds of each part of the block that runs before its operations.

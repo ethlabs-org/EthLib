@@ -163,9 +163,8 @@ theorem _root_.EthLib.Consensus.Run.attestationCheck_of_accepted {g a : ForkedBe
   | slot ok => simp [Step.votes] at vote
   | @block fork before after engine signed due applied =>
     obtain ⟨_, processed, _⟩ := applySignedBlock_ok applied
-    obtain ⟨input, _, started, operated, -⟩ := processBlock_operationsInput processed
-    obtain ⟨proposersDone, slashingsDone, _, proposers, slashings, folded, -⟩ :=
-      processOperations_folds operated
+    obtain ⟨input, proposersDone, slashingsDone, _, started, proposers, slashings, folded, -⟩ :=
+      processBlock_folds processed
     obtain ⟨attestation, included, dataEq, indices, indicesOk, iMem⟩ := vote
     have dataEq : data = attestation.data := dataEq
     -- The attestation sits at a position of the attestations of the block.

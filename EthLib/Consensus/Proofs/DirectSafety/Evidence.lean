@@ -1078,8 +1078,7 @@ theorem _root_.EthLib.Consensus.Run.attestationChecks_of_attesterSlashing
       isSlashableAttestationData slashing.attestation1.data slashing.attestation2.data =
         true := by
   obtain ⟨_, processed, _⟩ := applySignedBlock_ok applied
-  obtain ⟨input, _, started, operated, -⟩ := processBlock_operationsInput processed
-  obtain ⟨_, _, _, proposers, slashings, -⟩ := processOperations_folds operated
+  obtain ⟨input, _, _, _, started, proposers, slashings, -⟩ := processBlock_folds processed
   -- The slashing sits at a position of the attester slashings of the block.
   obtain ⟨pre, post, split⟩ := List.append_of_mem included
   rw [split, List.foldlM_append] at slashings
@@ -1125,8 +1124,7 @@ theorem _root_.EthLib.Consensus.Run.headerCheck_of_proposerSlashing
       some v) :
     ∃ c : HeaderCheck run v.pubkey, c.slashing = slashing ∧ ProposerConflict slashing := by
   obtain ⟨_, processed, _⟩ := applySignedBlock_ok applied
-  obtain ⟨input, _, started, operated, -⟩ := processBlock_operationsInput processed
-  obtain ⟨_, _, _, proposers, -⟩ := processOperations_folds operated
+  obtain ⟨input, _, _, _, started, proposers, -⟩ := processBlock_folds processed
   -- The slashing sits at a position of the proposer slashings of the block.
   obtain ⟨pre, post, split⟩ := List.append_of_mem included
   rw [split, List.foldlM_append] at proposers
