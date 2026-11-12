@@ -1935,6 +1935,7 @@ Its hypotheses are obligations of the caller, not facts established by declaring
 | `anchored`, `sound`, `anchorSlot`, `anchorAtBoundary`, `start`, `noVotes` | Every honest store starts from the same constructed anchor store, with no latest votes, an invariant anchor state and matching epoch-boundary slots. |
 | `_syncStart` | An anchor after epoch 0 requires execution to start no earlier than epoch `anchorEpoch + MIN_SEED_LOOKAHEAD + 1`, measured from the anchor store's genesis time. |
 | `half`, `slots`, `long`, `window` | The configured Byzantine percentage is at most 50, slot duration is positive, epochs have more than one slot, and history holds two epochs. |
+| `boost` | The configured proposer boost percentage is at most 100. With the stake cap and two slots per epoch, the boost of one slot stays within 64 bits. |
 | `lookahead` | Both seed lookaheads are at least one, and `MIN_SEED_LOOKAHEAD + 3 < EPOCHS_PER_HISTORICAL_VECTOR`. |
 | `maxAligned`, `increment`, `positive` | Maximum effective balances and the minimum activation balance align with the positive effective-balance increment, which is a multiple of 100 Gwei. |
 | `chain` (`FinalizedPrefix`), `unique` (`OneJustifiedPerEpoch`) | Through `limit` and within `horizon`, finalized checkpoints prefix later justified checkpoints and justified checkpoints of one epoch agree. |
