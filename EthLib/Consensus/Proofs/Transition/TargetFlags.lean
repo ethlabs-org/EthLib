@@ -315,4 +315,113 @@ theorem processAttestationAltair_targetFlag {attestation : Attestation preset fo
       here, ?_, root⟩
     simpa [here] using source
 
+/-! ## Flags kept forward -/
+
+/-- Adding a flag keeps each flag that was set. -/
+theorem hasFlag_addFlag_of_hasFlag {flags : ParticipationFlags} {flagIndex : UInt64}
+    (added : UInt64) (set : hasFlag flags flagIndex = true) :
+    hasFlag (addFlag flags added) flagIndex = true := by
+  simp only [hasFlag, addFlag, beq_iff_eq] at set ⊢
+  have bits := congrArg UInt8.toBitVec set
+  apply UInt8.toBitVec_inj.mp
+  simp only [UInt8.toBitVec_and, UInt8.toBitVec_or] at bits ⊢
+  ext k
+  have bit := congrArg (·[k]) bits
+  simp only [BitVec.getElem_and, BitVec.getElem_or] at bit ⊢
+  cases a : flags.toBitVec[k] <;> cases b : (flagBit added).toBitVec[k] <;>
+    cases c : (flagBit flagIndex).toBitVec[k] <;> simp_all
+
+/-- One flag of one attester keeps the target flag. -/
+private theorem addFlagReward_keeps {total : Gwei} {earned : List UInt64}
+    {index : ValidatorIndex} {flags flags' : ParticipationFlags} {numerator numerator' : Gwei}
+    {flag : Fin PARTICIPATION_FLAG_WEIGHTS.length}
+    (computed :
+      addFlagReward state total earned index (flags, numerator) flag = .ok (flags', numerator'))
+    (set : hasFlag flags TIMELY_TARGET_FLAG_INDEX = true) :
+    hasFlag flags' TIMELY_TARGET_FLAG_INDEX = true := by
+  unfold addFlagReward at computed
+  dsimp only at computed
+  split at computed
+  · simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq, Prod.mk.injEq] at computed
+    obtain ⟨_, _, _, _, _, _, rfl, _⟩ := computed
+    exact hasFlag_addFlag_of_hasFlag _ set
+  · simp only [pure, Except.pure, Except.ok.injEq, Prod.mk.injEq] at computed
+    obtain ⟨rfl, _⟩ := computed
+    exact set
+
+/-- One attester keeps the size of the list of flags and each target flag. -/
+private theorem addAttesterFlags_keeps {total : Gwei} {earned : List UInt64}
+    {index : ValidatorIndex} {participation updated : EpochParticipation preset fork}
+    {numerator numerator' : Gwei}
+    (computed :
+      addAttesterFlags state total earned (participation, numerator) index =
+        .ok (updated, numerator')) :
+    updated.data.size = participation.data.size ∧
+      ∀ position, TargetFlagAt participation position → TargetFlagAt updated position := by
+  unfold addAttesterFlags at computed
+  dsimp only at computed
+  split at computed
+  · rename_i inside
+    simp only [bind_ok_iff] at computed
+    obtain ⟨⟨flags, _⟩, fold, final⟩ := computed
+    simp only [pure, Except.pure, Except.ok.injEq, Prod.mk.injEq] at final
+    obtain ⟨rfl, _⟩ := final
+    have byte : hasFlag participation.data[index.toNat] TIMELY_TARGET_FLAG_INDEX = true →
+        hasFlag flags TIMELY_TARGET_FLAG_INDEX = true := fun set =>
+      foldlM_ok_invariant (fun step => hasFlag step.1 TIMELY_TARGET_FLAG_INDEX = true)
+        (fun ⟨_, _⟩ _ ⟨_, _⟩ holds step => addFlagReward_keeps step holds) set fold
+    refine ⟨by simp, fun position ⟨value, found, set⟩ => ?_⟩
+    by_cases same : index.toNat = position
+    · subst same
+      rw [Array.getElem?_eq_getElem inside, Option.some.injEq] at found
+      subst found
+      exact ⟨flags, by simp, byte set⟩
+    · exact ⟨value, by rw [Array.getElem?_set]; simp [same, found], set⟩
+  · cases computed
+
+/-- From Altair, setting the flags of attesters keeps each target flag. -/
+theorem foldlM_addAttesterFlags_keeps {total : Gwei} {earned : List UInt64}
+    {attesters : List ValidatorIndex} {participation updated : EpochParticipation preset fork}
+    {numerator numerator' : Gwei}
+    (computed : attesters.foldlM (addAttesterFlags state total earned) (participation, numerator) =
+      .ok (updated, numerator')) :
+    ∀ position, TargetFlagAt participation position → TargetFlagAt updated position := fun
+    position flagged =>
+  foldlM_ok_invariant
+    (fun (carried : EpochParticipation preset fork × Gwei) => TargetFlagAt carried.1 position)
+    (fun ⟨_, _⟩ _ ⟨_, _⟩ holds ok => (addAttesterFlags_keeps ok).2 position holds) flagged
+    computed
+
+/-- From Altair, an attestation keeps each target flag of both epochs. -/
+theorem processAttestationAltair_keepsTargetFlag {attestation : Attestation preset fork}
+    {altair : .altair ≤ fork} {parentSlot : Slot}
+    (computed :
+      processAttestationAltair config checks state attestation altair parentSlot = .ok after)
+    (current : Bool) (position : Nat)
+    (flagged : TargetFlagAt (recentParticipation state altair current) position) :
+    TargetFlagAt (recentParticipation after altair current) position := by
+  unfold processAttestationAltair at computed
+  simp only [bind_ok_iff, liftAccessor_ok] at computed
+  obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, ⟨updated, _⟩,
+    fold, _, _, raised, raisedOk, final⟩ := computed
+  have kept :
+      recentParticipation after altair current = recentParticipation raised altair current := by
+    split at final
+    · rw [recordPaymentWeight_eq final]
+      rfl
+    · cases final
+      rfl
+  obtain ⟨_, set⟩ := increaseBalance_ok raisedOk
+  obtain ⟨_, rfl⟩ := setBalance_ok set
+  simp only [BeaconState.putBalance, recentParticipation] at kept
+  unfold recentParticipation at flagged ⊢
+  rw [kept]
+  generalize (attestation.data.target.epoch == getCurrentEpoch state) = same at fold ⊢
+  have moved := foldlM_addAttesterFlags_keeps fold position
+  cases same <;> cases current
+  · simpa [setEpochParticipation] using moved (by simpa using flagged)
+  · simpa [setEpochParticipation] using flagged
+  · simpa [setEpochParticipation] using flagged
+  · simpa [setEpochParticipation] using moved (by simpa using flagged)
+
 end EthLib.Consensus

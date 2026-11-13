@@ -341,4 +341,55 @@ theorem voteFrame_processBlock
     · exact cast
     · exact empty.elim
 
+/-! ## Target flags kept forward -/
+
+/-- From Altair, a step that keeps or zeroes bytes keeps each target flag of the registry before. -/
+theorem FlagsKeptOrZero.keepsTargetFlag (kept : FlagsKeptOrZero state after)
+    (altair : .altair ≤ fork) (current : Bool) {position : Nat}
+    (inside : position < state.validators.data.size)
+    (flagged : TargetFlagAt (recentParticipation state altair current) position) :
+    TargetFlagAt (recentParticipation after altair current) position := by
+  obtain ⟨previous, now⟩ := kept.2 altair position inside
+  obtain ⟨flags, found, set⟩ := flagged
+  refine ⟨flags, ?_, set⟩
+  cases current
+  · simpa only [recentParticipation, Bool.false_eq_true, ↓reduceIte, previous] using found
+  · simpa only [recentParticipation, ↓reduceIte, now] using found
+
+/-- From Altair, an attestation keeps each target flag of both epochs. -/
+theorem processAttestation_keepsTargetFlag {attestation : Attestation preset fork}
+    {parentSlot : Slot}
+    (computed : processAttestation config checks state parentSlot attestation = .ok after)
+    (altair : .altair ≤ fork) (current : Bool) {position : Nat}
+    (flagged : TargetFlagAt (recentParticipation state altair current) position) :
+    TargetFlagAt (recentParticipation after altair current) position := by
+  unfold processAttestation at computed
+  split at computed
+  · exact processAttestationAltair_keepsTargetFlag computed current position flagged
+  · rename_i before
+    exact absurd altair before
+
+/-- From Altair, a block keeps each target flag at a position of the registry before it.
+
+Its attestations only add flags, and its other steps keep each byte of the registry. -/
+theorem processBlock_keepsTargetFlag {block : BeaconBlock preset fork}
+    (computed : processBlock config checks engine state block = .ok after)
+    (altair : .altair ≤ fork) (current : Bool) {position : Nat}
+    (inside : position < state.validators.data.size)
+    (flagged : TargetFlagAt (recentParticipation state altair current) position) :
+    TargetFlagAt (recentParticipation after altair current) position := by
+  obtain ⟨_, _, slashingsDone, attested, started, proposersOk, slashingsOk, attestedOk, tail⟩ :=
+    processBlock_folds computed
+  have head : BlockFrame state slashingsDone := (frame_operationsInput started).trans <|
+    (BlockFrame.foldlM (fun _ _ _ ok => frame_processProposerSlashing ok) proposersOk).trans
+      (BlockFrame.foldlM (fun _ _ _ ok => frame_processAttesterSlashing ok) slashingsOk)
+  have middle := foldlM_ok_invariant
+    (fun s => TargetFlagAt (recentParticipation s altair current) position)
+    (fun _ _ _ holds ok => processAttestation_keepsTargetFlag ok altair current holds)
+    (head.flags.keepsTargetFlag altair current inside flagged) attestedOk
+  have grown : slashingsDone.validators.data.size ≤ attested.validators.data.size :=
+    (Frame.foldlM (fun _ _ _ ok => frame_processAttestation ok) attestedOk).registryGrows
+  exact tail.flags.keepsTargetFlag altair current
+    (Nat.lt_of_lt_of_le (Nat.lt_of_lt_of_le inside head.registryGrows) grown) middle
+
 end EthLib.Consensus

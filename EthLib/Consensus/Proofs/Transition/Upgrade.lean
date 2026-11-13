@@ -61,7 +61,7 @@ theorem TargetFlagAt.of_flagsKeptOrZero {fork : Fork} {state after : BeaconState
     (flagged : TargetFlagAt (recentParticipation after altair current) position) :
     TargetFlagAt (recentParticipation state altair current) position := by
   obtain ⟨flags, found, set⟩ := flagged
-  have kept := kept altair position flags
+  have kept := kept.1 altair position flags
   cases current
   · rcases kept.1 found with old | rfl
     · exact ⟨flags, old, set⟩

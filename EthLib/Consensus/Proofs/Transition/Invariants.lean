@@ -213,30 +213,50 @@ theorem EpochFrame.of_validators (sizes : SameSizes state after)
 
 /-- From Altair, each byte of flags after a step is the byte at its position before, or zero.
 
-This holds for the flags of the previous epoch and for those of the current epoch. -/
+This holds for the flags of the previous epoch and for those of the current epoch.
+
+Each position of the registry before the step also keeps its byte of flags exactly.
+
+A position past the registry may lose its byte: a new validator writes a zero byte there. -/
 def FlagsKeptOrZero (state after : BeaconState preset fork) : Prop :=
-  ∀ (altair : .altair ≤ fork) (position : Nat) (flags : ParticipationFlags),
+  (∀ (altair : .altair ≤ fork) (position : Nat) (flags : ParticipationFlags),
     ((after.previousEpochParticipation altair).data[position]? = some flags →
       (state.previousEpochParticipation altair).data[position]? = some flags ∨ flags = 0) ∧
     ((after.currentEpochParticipation altair).data[position]? = some flags →
-      (state.currentEpochParticipation altair).data[position]? = some flags ∨ flags = 0)
+      (state.currentEpochParticipation altair).data[position]? = some flags ∨ flags = 0)) ∧
+  ∀ (altair : .altair ≤ fork) (position : Nat), position < state.validators.data.size →
+    (after.previousEpochParticipation altair).data[position]? =
+        (state.previousEpochParticipation altair).data[position]? ∧
+      (after.currentEpochParticipation altair).data[position]? =
+        (state.currentEpochParticipation altair).data[position]?
 
 theorem FlagsKeptOrZero.refl (state : BeaconState preset fork) : FlagsKeptOrZero state state :=
-  fun _ _ _ => ⟨.inl, .inl⟩
+  ⟨fun _ _ _ => ⟨.inl, .inl⟩, fun _ _ _ => ⟨rfl, rfl⟩⟩
 
+/-- Two steps chain when the registry does not shrink between them. -/
 theorem FlagsKeptOrZero.trans {first second third : BeaconState preset fork}
-    (one : FlagsKeptOrZero first second) (two : FlagsKeptOrZero second third) :
-    FlagsKeptOrZero first third := fun altair position flags =>
-  ⟨fun found => ((two altair position flags).1 found).elim (one altair position flags).1 .inr,
-    fun found => ((two altair position flags).2 found).elim (one altair position flags).2 .inr⟩
+    (one : FlagsKeptOrZero first second) (two : FlagsKeptOrZero second third)
+    (grows : first.validators.data.size ≤ second.validators.data.size) :
+    FlagsKeptOrZero first third :=
+  ⟨fun altair position flags =>
+    ⟨fun found => ((two.1 altair position flags).1 found).elim (one.1 altair position flags).1 .inr,
+      fun found =>
+        ((two.1 altair position flags).2 found).elim (one.1 altair position flags).2 .inr⟩,
+    fun altair position inside =>
+      ⟨(two.2 altair position (Nat.lt_of_lt_of_le inside grows)).1.trans
+          (one.2 altair position inside).1,
+        (two.2 altair position (Nat.lt_of_lt_of_le inside grows)).2.trans
+          (one.2 altair position inside).2⟩⟩
 
 /-- Two states with the same lists of flags keep each byte of flags. -/
 theorem FlagsKeptOrZero.of_eq
     (previous : after.previousEpochParticipation = state.previousEpochParticipation)
     (current : after.currentEpochParticipation = state.currentEpochParticipation) :
-    FlagsKeptOrZero state after := fun _ _ _ => by
-  rw [previous, current]
-  exact ⟨.inl, .inl⟩
+    FlagsKeptOrZero state after :=
+  ⟨fun _ _ _ => by
+    rw [previous, current]
+    exact ⟨.inl, .inl⟩,
+    fun _ _ _ => by rw [previous, current]; exact ⟨rfl, rfl⟩⟩
 
 /-- A frame that also keeps the buffer of block roots.
 
@@ -265,7 +285,7 @@ theorem BlockFrame.refl (state : BeaconState preset fork) : BlockFrame state sta
 theorem BlockFrame.trans {first second third : BeaconState preset fork}
     (one : BlockFrame first second) (two : BlockFrame second third) : BlockFrame first third := by
   refine ⟨one.toFrame.trans two.toFrame, two.blockRoots.trans one.blockRoots,
-    one.flags.trans two.flags, ?_, ?_⟩
+    one.flags.trans two.flags one.registryGrows, ?_, ?_⟩
   · intro position old validator before after
     have inside := (Array.getElem?_eq_some_iff.mp before).1
     have mid : position < second.validators.data.size := Nat.lt_of_lt_of_le inside one.registryGrows
@@ -342,7 +362,7 @@ theorem MutatorFrame.refl (state : BeaconState preset fork) : MutatorFrame state
 theorem MutatorFrame.trans {first second third : BeaconState preset fork}
     (one : MutatorFrame first second) (two : MutatorFrame second third) :
     MutatorFrame first third :=
-  ⟨one.toEpochFrame.trans two.toEpochFrame, one.flags.trans two.flags⟩
+  ⟨one.toEpochFrame.trans two.toEpochFrame, one.flags.trans two.flags one.registryGrows⟩
 
 theorem MutatorFrame.toBlockFrame (frame : MutatorFrame state after)
     (activation : ∀ (position : Nat) (old validator : Validator),
@@ -826,11 +846,13 @@ theorem frame_addValidatorToRegistry {pubkey : BLSPubkey}
   split at computed
   · simp only [addValidatorToRegistryAltair, liftAccessor_ok, bind_ok_iff, pure, Except.pure,
       Except.ok.injEq] at computed
-    obtain ⟨_, _, _, _, _, _, previous, previousOk, current, currentOk, _, _, rfl⟩ := computed
+    obtain ⟨index, indexOk, _, _, _, _, previous, previousOk, current, currentOk, _, _, rfl⟩ :=
+      computed
     -- The new validator gets a zero byte of flags, and each other byte stays.
     refine ⟨⟨⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, grows, kept, distinct, slashed,
       balances, exits, aligned⟩,
-      rfl, rfl, rfl, rfl⟩, fun _ position flags => ⟨fun found => ?_, fun found => ?_⟩⟩
+      rfl, rfl, rfl, rfl⟩, fun _ position flags => ⟨fun found => ?_, fun found => ?_⟩,
+      fun _ position inside => ?_⟩
     · rw [setOrAppendList_getElem? previousOk] at found
       split at found
       · exact .inr (Option.some.inj found).symm
@@ -839,6 +861,11 @@ theorem frame_addValidatorToRegistry {pubkey : BLSPubkey}
       split at found
       · exact .inr (Option.some.inj found).symm
       · exact .inl found
+    -- The new validator takes the position just past the registry, so no earlier byte moves.
+    · have atEnd := (getIndexForNewValidator_ok_iff.mp indexOk).2
+      have other : position ≠ index.toNat := by omega
+      exact ⟨by simp [setOrAppendList_getElem? previousOk, other],
+        by simp [setOrAppendList_getElem? currentOk, other]⟩
   split at computed
   · cases computed
     exact ⟨⟨⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, grows, kept, distinct, slashed,

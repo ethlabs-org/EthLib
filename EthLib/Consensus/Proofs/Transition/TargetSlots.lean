@@ -331,8 +331,8 @@ theorem TargetFlagsVoted.of_advanceSlot {votes : Set (ValidatorIndex × Attestat
       processJustificationAndFinalization_keeps justifiedOk
     have previousJustified := (cachedEarly'.previousJustified_of_justification justifiedOk)
     cases current
-    · rcases (tail.flags altair position flags).1 found with rotated | rfl
-      · rcases (head.flags altair position flags).2 rotated with old | rfl
+    · rcases (tail.flags.1 altair position flags).1 found with rotated | rfl
+      · rcases (head.flags.1 altair position flags).2 rotated with old | rfl
         · rw [justifiedCurrent, cachedCurrent] at old
           obtain ⟨vote, voted, index, epoch, source, rootOk⟩ :=
             holds altair true position ⟨flags, old, set⟩
@@ -343,7 +343,7 @@ theorem TargetFlagsVoted.of_advanceSlot {votes : Set (ValidatorIndex × Attestat
                 (head.previousJustified.symm.trans tail.previousJustified.symm)
         · exact absurd set (by decide)
       · exact absurd set (by decide)
-    · rcases (tail.flags altair position flags).2 found with rotated | rfl
+    · rcases (tail.flags.1 altair position flags).2 found with rotated | rfl
       · simp only [processParticipationFlagUpdates, Array.getElem?_replicate] at rotated
         split at rotated
         · cases rotated
@@ -473,5 +473,69 @@ theorem JustifiedSeparated.of_stateTransition {engine : ExecutionEngine preset f
   obtain ⟨_, -, slotsOk⟩ := slotsOk
   exact (JustifiedSeparated.of_advanceSlots holds early separated slotsOk).of_frame
     (frame_processBlock blockOk)
+
+/-! ## Target flags kept forward -/
+
+/-- From Altair, one slot keeps each target flag at a position of the registry before it.
+
+Inside an epoch each list keeps its flags.
+
+At the end of an epoch the flags of the current epoch become those of the previous one. -/
+theorem advanceSlot_keepsTargetFlag (computed : advanceSlot config checks state = .ok after)
+    (altair : .altair ≤ fork) {position : Nat} (inside : position < state.validators.data.size)
+    (current : Bool) (flagged : TargetFlagAt (recentParticipation state altair current) position) :
+    (getCurrentEpoch after = getCurrentEpoch state →
+        TargetFlagAt (recentParticipation after altair current) position) ∧
+      (getCurrentEpoch after ≠ getCurrentEpoch state → current = true →
+        TargetFlagAt (recentParticipation after altair false) position) := by
+  obtain ⟨next, cached, epoched, sum, cachedOk, epochedOk, rfl⟩ := advanceSlot_ok computed
+  obtain ⟨cachedPrevious, cachedCurrent⟩ := processSlot_participation cachedOk
+  obtain ⟨_, _, _, _, cachedEq⟩ := processSlot_ok cachedOk
+  have cachedInside : position < cached.validators.data.size := by
+    rw [cachedEq]
+    exact inside
+  have cachedFlag : TargetFlagAt (recentParticipation cached altair current) position := by
+    cases current <;> simpa only [recentParticipation, cachedPrevious, cachedCurrent] using flagged
+  have stateEpoch := getCurrentEpoch_toNat state
+  have afterEpoch := getCurrentEpoch_toNat { epoched with slot := next }
+  dsimp only at afterEpoch
+  unfold epochIfLast at epochedOk
+  split at epochedOk
+  · rename_i boundary
+    have epochs := nextSlot_epoch_of_boundary sum boundary
+    simp only [processEpoch, altair, ↓reduceDIte] at epochedOk
+    obtain ⟨justified, rooted, justifiedOk, head, tail⟩ := processEpochAltair_split epochedOk
+    obtain ⟨-, -, -, -, -, validatorsEq, -, -, -, currentEq⟩ :=
+      processJustificationAndFinalization_keeps justifiedOk
+    have moved : getCurrentEpoch { epoched with slot := next } ≠ getCurrentEpoch state := by
+      intro same
+      have values := congrArg UInt64.toNat same
+      rw [afterEpoch, stateEpoch, epochs] at values
+      exact Nat.succ_ne_self _ values
+    refine ⟨fun same => absurd same moved, fun _ isCurrent => ?_⟩
+    subst isCurrent
+    have justifiedFlag : TargetFlagAt (recentParticipation justified altair true) position := by
+      simpa only [recentParticipation, ↓reduceIte, currentEq] using cachedFlag
+    have justifiedInside : position < justified.validators.data.size := by
+      rw [validatorsEq]
+      exact cachedInside
+    have rootedFlag := head.flags.keepsTargetFlag altair true justifiedInside justifiedFlag
+    have rotated : TargetFlagAt
+        (recentParticipation (processParticipationFlagUpdates rooted altair) altair false)
+        position :=
+      rootedFlag
+    have rotatedInside :
+        position < (processParticipationFlagUpdates rooted altair).validators.data.size :=
+      Nat.lt_of_lt_of_le justifiedInside head.registryGrows
+    simpa only [recentParticipation] using
+      tail.flags.keepsTargetFlag altair false rotatedInside rotated
+  · rename_i inEpoch
+    simp only [pure, Except.pure, Except.ok.injEq] at epochedOk
+    subst epochedOk
+    refine ⟨fun _ => by simpa only [recentParticipation] using cachedFlag,
+      fun differ _ => absurd ?_ differ⟩
+    apply UInt64.toNat_inj.mp
+    rw [afterEpoch, stateEpoch]
+    exact nextSlot_epoch_of_inside sum inEpoch
 
 end EthLib.Consensus
