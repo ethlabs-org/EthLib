@@ -1,5 +1,6 @@
 module
 
+public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmationLateCurrent
 public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmationTransport
 
 /-!
@@ -3187,7 +3188,7 @@ theorem Execution.safeAt_of_walk {Δ : ℕ} (sync : e.Synchronous Δ)
     (by simp)
   intro now afterNow boundedNow earlier member mem block held parentSafe
   have rootSafe := fun t lower upper => earlier t lower upper root (by simp)
-  have coverage := e.coveredOrViableAt_of_checked sync slots positive incrementPositive window
+  have currentLate := e.coveredOrViableAt_late_current sync slots positive incrementPositive window
     (by omega) preGloas (admitted.of_le boundedNow) (oneBlock.of_le boundedNow)
     (votes.of_le boundedNow) fits (prompt.of_le boundedNow) (committees.of_le boundedNow)
     { reads := fun w hw k bounded => follows.reads w hw k (bounded.trans boundedNow)
@@ -3222,6 +3223,41 @@ theorem Execution.safeAt_of_walk {Δ : ℕ} (sync : e.Synchronous Δ)
       (fun v hv => (anchored v hv) ▸ Store.ForwardReachable.anchor anchorStore) k w hw) sound
       positive slots anchorSlot preGloas lower read)
     genesisAll
+  have coverage := e.coveredOrViableAt_of_checked sync slots positive incrementPositive window
+    (by omega) preGloas (admitted.of_le boundedNow) (oneBlock.of_le boundedNow)
+    (votes.of_le boundedNow) fits (prompt.of_le boundedNow) (committees.of_le boundedNow)
+    { reads := fun w hw k bounded => follows.reads w hw k (bounded.trans boundedNow)
+      follows := fun w hw k bounded => follows.follows w hw k (bounded.trans boundedNow) }
+    (‹FinalizedPrefix e horizon limit›.of_le boundedNow) (unique.of_le boundedNow)
+    (pins.of_le boundedNow) (voted.of_le boundedNow) (included.of_le boundedNow) anchorStore
+    sound anchorSlot anchored anchorOk anchorBoundary caller upToDate
+    ⟨slot, begin, slotOk, beginOk, atSlot⟩ headOk checked headAbove atStart
+    (previousHead.imp_right (by
+      rintro ⟨k, before, previous, previousSlot, ready, read, eq, oldSlot, next⟩
+      exact ⟨k, before, previous, previousSlot, slot, ready, read, eq, oldSlot, slotOk, next⟩))
+    targetVotes lineage (by
+      intro ep previous s epOk sOk boundary next startEpoch
+      have eq := Except.ok.inj (sOk.symm.trans slotOk)
+      subst s
+      exact previousLineage ep previous epOk boundary next startEpoch)
+    afterNow (fun w hw k le => nonzero w hw k (le.trans boundedNow))
+    (fun w hw k ep le => inHorizon w hw k ep (le.trans boundedNow))
+    (fun w hw k c s le => supply w hw k c s (le.trans boundedNow))
+    (fun u hu n head pulled anc target nle pulledOk targetOk ancOk w hw k root rootState state
+        kle => quorumDrifts u hu n head pulled anc target (nle.trans boundedNow) pulledOk targetOk
+          ancOk w hw k root rootState state (kle.trans boundedNow))
+    (fun w hw k le => anchorParent w hw k (le.trans boundedNow))
+    (fun w hw k s le => large w hw k s (le.trans boundedNow)) long boost
+    (fun t lower upper => startSafe t lower (upper.trans boundedNow)) rootSafe
+    (fun w hw k eq ready => ⟨rootBlock, known w hw k (afterNow.trans_eq eq.symm)
+      (eq.trans_le boundedNow) ready⟩)
+    (fun r mem => realized r (List.mem_append_right _ mem))
+    (fun _ _ epOk known => walk_member_recent checked walked rootMem epOk known)
+    (realizedHead root (by simp))
+    (fun w hw k _ _ _ lower read => walk_source_le_justified (e.forwardReachable
+      (fun v hv => (anchored v hv) ▸ Store.ForwardReachable.anchor anchorStore) k w hw) sound
+      positive slots anchorSlot preGloas lower read)
+    genesisAll currentLate
   intro w receiver k receiverHead atNow ready receiverHeadOk
   have receiverBound : (e.world k).time ≤ limit := atNow ▸ boundedNow
   have receiverLower := (reached k w receiver).parentsBelow (UInt64.le_of_eq anchorSlot)

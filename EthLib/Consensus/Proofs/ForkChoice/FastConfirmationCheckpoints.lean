@@ -14,7 +14,7 @@ This file states step 6 of the plan for the safety of the fast confirmation rule
 
 The rule is that of [arXiv 2405.00549v4][fcr].
 
-The proofs are placeholders, and each statement may still change.
+The late case of a block of the call's own epoch is proved in `FastConfirmationLateCurrent`.
 
 The fork choice of a store filters out a block when no leaf above it has a recent voting source.
 
@@ -4253,6 +4253,10 @@ Then each honest store at the later time holds the block in its filtered tree.
 
 Otherwise its justified block is above the block.
 
+For a block of the call's own epoch and a store two epochs later, that is `currentLate`.
+
+`Execution.coveredOrViableAt_late_current` proves it from the same hypotheses.
+
 The proof follows a theorem of [verified-fast-confirmation][vfc] and the lemmas under it.
 
 It is `Execution.StrictSelectorAdvanceAt.actualCall_selectedStrictEdgeFilterSupplyAt`.
@@ -4382,7 +4386,23 @@ theorem Execution.coveredOrViableAt_of_checked {Δ : ℕ} (sync : e.Synchronous 
       getCurrentEpoch anchorState ≤ ((e.world k).state w).justifiedCheckpoint.epoch →
       ((e.world k).state w).getVotingSource config tip = .ok source →
       source.epoch ≤ ((e.world k).state w).justifiedCheckpoint.epoch)
-    (genesis : ∀ w ∈ J, ∀ i, ((e.world i).state w).genesisTimeMs = genesisTimeMs) :
+    (genesis : ∀ w ∈ J, ∀ i, ((e.world i).state w).genesisTimeMs = genesisTimeMs)
+    (currentLate : ∀ w ∈ J, ∀ k nodes (rootBlock : BeaconBlock preset fork) (slot current : Slot),
+      (e.world k).time = time →
+      UpToDate config checks sources (e.world k).time ((e.world k).view w)
+        ((e.world k).state w) →
+      ((e.world k).state w).getFilteredNodeTree config = .ok nodes →
+      ((e.world n).state u).blocks[root]? = some rootBlock →
+      ((e.world n).state u).getCurrentSlot config = .ok slot →
+      computeEpochAtSlot preset rootBlock.slot = computeEpochAtSlot preset slot →
+      ((e.world k).state w).getCurrentSlot config = .ok current →
+      (computeEpochAtSlot preset rootBlock.slot).toNat + 1 <
+        (computeEpochAtSlot preset current).toNat →
+      ((e.world k).state w).isAncestor ⟨root, .pending⟩
+        ⟨((e.world k).state w).justifiedCheckpoint.root, .pending⟩ = .ok true →
+      ((e.world k).state w).isAncestor
+          ⟨((e.world k).state w).justifiedCheckpoint.root, .pending⟩ ⟨root, .pending⟩ = .ok true ∨
+        (⟨root, .pending⟩ : ForkChoiceNode) ∈ nodes) :
     CoveredOrViableAt e time root := by
   intro w receiver k nodes atTime ready tree
   obtain ⟨block, held⟩ := known w receiver k atTime ready
@@ -4471,8 +4491,21 @@ theorem Execution.coveredOrViableAt_of_checked {Δ : ℕ} (sync : e.Synchronous 
     by_cases previous : computeEpochAtSlot preset callerBlock.slot <
         computeEpochAtSlot preset callSlot
     swap
-    -- A root of the call's own epoch needs the honest quorum of its target.
-    · sorry
+    -- A root of the call's own epoch is the late case of `currentLate`.
+    · obtain ⟨readSlot, readSlotOk, blocksBelow, _⟩ :=
+        (forward n u caller).slots_le_current slots (UInt64.le_of_eq anchorSlot)
+      have slotEq := Except.ok.inj (readSlotOk.symm.trans callSlotOk)
+      subst readSlot
+      have below := Nat.div_le_div_right (c := preset.SLOTS_PER_EPOCH.toNat)
+        (UInt64.le_iff_toNat_le.mp (blocksBelow root callerBlock callerKnown))
+      have notBefore := UInt64.le_iff_toNat_le.mp (UInt64.not_lt.mp previous)
+      have sameEpoch : computeEpochAtSlot preset callerBlock.slot =
+          computeEpochAtSlot preset callSlot := by
+        apply UInt64.toNat_inj.mp
+        simp only [computeEpochAtSlot, UInt64.toNat_div] at below notBefore ⊢
+        omega
+      exact currentLate w receiver k nodes callerBlock callSlot current atTime ready tree
+        callerKnown callSlotOk sameEpoch currentOk lateEpoch descends
     -- A root of the epoch before the call: the head realized its epoch.
     have previousNat := UInt64.lt_iff_toNat_lt.mp previous
     obtain ⟨headState, headStored, headAbove, headRealized⟩ :=
