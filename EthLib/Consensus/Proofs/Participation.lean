@@ -26,6 +26,10 @@ A vote for an earlier block matches when its index is the availability bit of th
 A head flag from Gloas needs a matching payload vote.
 
 From Altair, a base reward is the base reward per increment, once for each whole increment.
+
+The base reward per increment and the base reward are formulas of the total active balance.
+
+Before Altair, the base reward is a fixed factor of the effective balance over the square root.
 -/
 
 @[expose] public section
@@ -178,5 +182,61 @@ theorem getBaseReward_eq_mul_of_altair {state : BeaconState preset fork}
     cases found
     exact read
   · cases found
+
+/-- The base reward per increment is a fixed factor of the increment over a square root.
+
+The root is the integer square root of the total active balance. -/
+theorem getBaseRewardPerIncrement_toNat {total perIncrement : Gwei}
+    (computed : getBaseRewardPerIncrement preset total = .ok perIncrement) :
+    perIncrement.toNat = preset.EFFECTIVE_BALANCE_INCREMENT.toNat *
+      preset.BASE_REWARD_FACTOR.toNat / (integerSquareroot (UInt64.ofNat total.toNat)).toNat := by
+  simp only [getBaseRewardPerIncrement, liftArith, mapError_ok_iff, bind_ok_iff] at computed
+  obtain ⟨scaled, scaledOk, rootOk⟩ := computed
+  rw [mulChecked_ok_iff] at scaledOk
+  rw [divChecked_ok_iff] at rootOk
+  rw [rootOk.2, scaledOk.2, UInt64.ofNat_toNat]
+
+/-- A successful base reward is a formula of the effective balance of the validator and the total.
+
+From Altair it is the base reward per increment, once for each whole increment.
+
+Before Altair it is the effective balance times a factor, over the square root of the total.
+
+The result is then shared among the parts of an epoch reward. -/
+theorem getBaseReward_toNat {state : BeaconState preset fork} {total base : Gwei}
+    {index : ValidatorIndex} (computed : getBaseReward state total index = .ok base) :
+    base.toNat =
+      if .altair ≤ fork then
+        ((state.validators.data[index.toNat]?).map (·.effectiveBalance.toNat)).getD 0 /
+          preset.EFFECTIVE_BALANCE_INCREMENT.toNat *
+          (preset.EFFECTIVE_BALANCE_INCREMENT.toNat * preset.BASE_REWARD_FACTOR.toNat /
+            (integerSquareroot (UInt64.ofNat total.toNat)).toNat)
+      else
+        ((state.validators.data[index.toNat]?).map (·.effectiveBalance.toNat)).getD 0 *
+          preset.BASE_REWARD_FACTOR.toNat / (integerSquareroot (UInt64.ofNat total.toNat)).toNat /
+          BASE_REWARDS_PER_EPOCH.toNat := by
+  by_cases altair : .altair ≤ fork
+  · simp only [altair, ↓reduceIte]
+    have whole := computed
+    simp only [getBaseReward, altair, ↓reduceIte, bind_ok_iff] at computed
+    obtain ⟨-, -, perIncrement, per, -⟩ := computed
+    obtain ⟨validator, found, value⟩ := getBaseReward_eq_mul_of_altair altair per whole
+    rw [value, getBaseRewardPerIncrement_toNat per, found]
+    simp
+  · simp only [altair, ↓reduceIte]
+    simp only [getBaseReward, altair, ↓reduceIte, bind_ok_iff, liftArith, mapError_ok_iff,
+      pure, Except.pure, Except.ok.injEq] at computed
+    obtain ⟨validator, found, scaled, ⟨product, productOk, scaledOk⟩, rfl⟩ := computed
+    rw [mulChecked_ok_iff] at productOk
+    rw [divChecked_ok_iff] at scaledOk
+    have read : state.validators.data[index.toNat]? = some validator := by
+      unfold getValidator at found
+      split at found
+      · rename_i read
+        cases found
+        exact read
+      · cases found
+    rw [UInt64.toNat_div, scaledOk.2, productOk.2, read, UInt64.ofNat_toNat]
+    simp
 
 end EthLib.Consensus
