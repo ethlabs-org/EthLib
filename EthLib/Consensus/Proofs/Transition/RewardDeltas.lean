@@ -1534,6 +1534,8 @@ It also earns the proposer shares of the attestations whose earliest inclusion i
 
 Over the registry, these shares add up to at most a share of the base rewards of the previous epoch.
 
+Each share goes to a proposer that a pending attestation of the previous epoch names.
+
 It loses at most three base rewards, and in a leak four more and its inactivity penalty.
 
 The pending attestations that match the source of the previous epoch must have slots in it.
@@ -1566,6 +1568,8 @@ theorem processRewardsAndPenalties_balance_le_of_lt_altair {config : Config}
       ∑ i ∈ Finset.range state.validators.data.size, share i ≤
         ∑ i ∈ (Finset.range state.validators.data.size).filter recent,
           base i / preset.PROPOSER_REWARD_QUOTIENT.toNat ∧
+      (∀ j, 0 < share j → ∃ a ∈ (state.previousEpochAttestations before).data.toList,
+        a.proposerIndex.toNat = j) ∧
       ∀ j < state.validators.data.size,
         ((after.balances.data[j]?).map (·.toNat)).getD 0 ≤
             ((state.balances.data[j]?).map (·.toNat)).getD 0 +
@@ -1576,8 +1580,8 @@ theorem processRewardsAndPenalties_balance_le_of_lt_altair {config : Config}
   by_cases genesis : getCurrentEpoch state = GENESIS_EPOCH
   · rw [processRewardsAndPenalties_genesis config genesis] at computed
     cases computed
-    exact ⟨fun _ => 0, by simp, fun j _ => ⟨Nat.le_add_right _ _ |>.trans (Nat.le_add_right _ _),
-      Nat.le_add_right _ _⟩⟩
+    exact ⟨fun _ => 0, by simp, fun _ positive => absurd positive (Nat.lt_irrefl 0),
+      fun j _ => ⟨Nat.le_add_right _ _ |>.trans (Nat.le_add_right _ _), Nat.le_add_right _ _⟩⟩
   obtain ⟨rewards, penalties, deltasOk, balanceFacts⟩ :=
     processRewardsAndPenalties_balances_of_lt_altair before genesis computed
   obtain ⟨⟨sourceRewards, sourcePenalties⟩, ⟨targetRewards, targetPenalties⟩,
@@ -1612,7 +1616,7 @@ theorem processRewardsAndPenalties_balance_le_of_lt_altair {config : Config}
   let share (j : Nat) := (shares.map fun share =>
     if share.2.1.proposerIndex.toNat = j then
       share.2.2.toNat / preset.PROPOSER_REWARD_QUOTIENT.toNat else 0).sum
-  refine ⟨share, ?_, fun j inside => ?_⟩
+  refine ⟨share, ?_, fun j positive => ?_, fun j inside => ?_⟩
   · -- Each share goes to one proposer, and comes from a signer active in the previous epoch.
     refine (sum_range_ite_le (key := fun share => share.2.1.proposerIndex.toNat)
       (value := fun share => share.2.2.toNat / preset.PROPOSER_REWARD_QUOTIENT.toNat) _
@@ -1638,6 +1642,41 @@ theorem processRewardsAndPenalties_balance_le_of_lt_altair {config : Config}
       (mem_getActiveValidatorIndices within).mp (attestersActive _ signer)
     exact Finset.mem_filter.mpr ⟨Finset.mem_range.mpr (Array.getElem?_eq_some_iff.mp found).1,
       isActiveAt_eq_true_iff.mpr ⟨validator, found, isActive⟩⟩
+  · -- A share goes to the proposer of the earliest inclusion of a signer of the source.
+    obtain ⟨value, inValues, nonzero⟩ :=
+      List.exists_mem_ne_zero_of_sum_ne_zero (Nat.pos_iff_ne_zero.mp positive)
+    obtain ⟨entry, inShares, rfl⟩ := List.mem_map.mp inValues
+    have proposed : entry.2.1.proposerIndex.toNat = j := by
+      by_contra other
+      simp [other] at nonzero
+    have found := (facts entry inShares).1
+    rw [Array.getD_eq_getD_getElem?] at found
+    have earliest : (earliestInclusions state.validators.data.size
+        (attestations.zip signers.toArray))[entry.1.toNat]? = some (some entry.2.1) := by
+      cases read : (earliestInclusions state.validators.data.size
+          (attestations.zip signers.toArray))[entry.1.toNat]? with
+      | none =>
+        rw [read] at found
+        cases found
+      | some kept =>
+        rw [read] at found
+        simp only [Option.getD_some] at found
+        rw [found]
+    obtain ⟨signed, pair⟩ := earliestInclusions_size_and_mem.2 _ _ earliest
+    rw [Array.toList_zip] at pair
+    -- After the first epoch, the source attestations of the previous epoch are its list.
+    have differ : getPreviousEpoch state ≠ getCurrentEpoch state := by
+      intro same
+      have numbers := congrArg UInt64.toNat same
+      rw [getPreviousEpoch_toNat] at numbers
+      exact genesis (UInt64.toNat_inj.mp (by
+        show (getCurrentEpoch state).toNat = (0 : UInt64).toNat
+        rw [UInt64.toNat_zero]
+        omega))
+    simp only [getMatchingSourceAttestations, bind_ok_iff, ensure_ok_iff, pure, Except.pure,
+      Except.ok.injEq, differ, ↓reduceIte] at attestationsOk
+    obtain ⟨_, _, rfl⟩ := attestationsOk
+    exact ⟨entry.2.1, (List.of_mem_zip pair).1, proposed⟩
   -- The balance of the validator moves once, by its reward and its penalty.
   obtain ⟨rewardSum, penaltySum⟩ := sums j inside
   dsimp only at rewardSum penaltySum
