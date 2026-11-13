@@ -2632,7 +2632,7 @@ private theorem walk_block_cache {store after : Store preset fork}
     · exact .inr fresh
 
 /-- Every pull-up cache entry comes from its own block state, except the anchor entry. -/
-private theorem walk_cache_origin_state {store : Store preset fork}
+theorem walk_cache_origin_state {store : Store preset fork}
     (reachable : Store.Reachable config anchorState anchorBlock store)
     (before : fork < .glamsterdam) {key : Root} {checkpoint : Checkpoint}
     (entry : store.unrealizedJustifications[key]? = some checkpoint) :
@@ -3779,7 +3779,7 @@ theorem coverage_delay_before_later_slot {Δ : ℕ}
   omega
 
 /-- A viable leaf above a block of the justified subtree keeps the block in the filtered tree. -/
-private theorem coverage_mem_of_viable_leaf {store : Store preset fork}
+theorem coverage_mem_of_viable_leaf {store : Store preset fork}
     (lower : store.ParentsBelow) (before : fork < .glamsterdam)
     {start root leaf : Root} {nodes : List ForkChoiceNode} {rootBlock : BeaconBlock preset fork}
     (rootKnown : store.blocks[root]? = some rootBlock)
@@ -3803,7 +3803,7 @@ omit [DecidablePred (· ∈ J)] in
 When it is below the root, the root comes after the boundary of the justification's epoch.
 
 So for a root of an earlier epoch than the call, such a justification is above it. -/
-private theorem coverage_current_justified {anchor : Store preset fork}
+theorem coverage_current_justified {anchor : Store preset fork}
     (anchorStore : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
     (anchorSlot : anchorBlock.slot = anchorState.slot)
     (anchored : ∀ w ∈ J, e.start w = anchor)
@@ -4139,7 +4139,7 @@ theorem Execution.justified_comparable_of_checked {anchor : Store preset fork}
 
 omit [DecidablePred (· ∈ J)] in
 /-- A count with the quorum reserve added to the margin is a count with the margin alone. -/
-private theorem coverage_targetVotes_of_reserve {anchor : Store preset fork}
+theorem coverage_targetVotes_of_reserve {anchor : Store preset fork}
     (anchorStore : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
     (anchored : ∀ w ∈ J, e.start w = anchor) (preGloas : fork < .glamsterdam)
     {u : ValidatorIndex} (caller : u ∈ J) {n margin : ℕ} {head : Root}

@@ -3212,7 +3212,8 @@ theorem Execution.safeAt_of_walk {Δ : ℕ} (sync : e.Synchronous Δ)
         kle => quorumDrifts u hu n head pulled anc target (nle.trans boundedNow) pulledOk targetOk
           ancOk w hw k root rootState state (kle.trans boundedNow))
     (fun w hw k le => anchorParent w hw k (le.trans boundedNow))
-    (fun w hw k s le => large w hw k s (le.trans boundedNow)) long boost
+    (fun w hw k s le => large w hw k s (le.trans boundedNow))
+    (fun w hw k s le => unslashed w hw k s (le.trans boundedNow)) long boost
     (fun t lower upper => startSafe t lower (upper.trans boundedNow)) rootSafe
     (fun w hw k eq ready => ⟨rootBlock, known w hw k (afterNow.trans_eq eq.symm)
       (eq.trans_le boundedNow) ready⟩)

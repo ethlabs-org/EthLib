@@ -233,7 +233,7 @@ private theorem coverage_slot_at_start_of_genesis_offset {genesis actual : UInt6
   exact divChecked_ok_iff.mpr ⟨by intro zero; simp [zero] at slots, quotient.symm⟩
 
 /-- The state path along an actual ancestor walk consists of kept transitions. -/
-private theorem coverage_runKept_of_ancestor {store : Store preset fork}
+theorem coverage_runKept_of_ancestor {store : Store preset fork}
     (reachable : Store.Reachable config anchorState anchorBlock store)
     {checks : SignatureChecks} {engine : ExecutionEngine preset fork}
     (transitions : ∀ (root : Root) (block : BeaconBlock preset fork)
@@ -281,7 +281,7 @@ decreasing_by
 
 omit [DecidablePred (· ∈ J)] in
 /-- Descendants of a common epoch origin agree on that epoch's active validators. -/
-private theorem coverage_activity_eq_of_common_ancestor {anchor : Store preset fork}
+theorem coverage_activity_eq_of_common_ancestor {anchor : Store preset fork}
     (anchorStore : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
     (anchored : ∀ w ∈ J, e.start w = anchor)
     (anchorSlot : anchorBlock.slot = anchorState.slot)
@@ -493,7 +493,7 @@ private theorem coverage_exists_rollover_reads {anchor : Store preset fork}
     ranges⟩
 
 /-- A successful pulled-up state read has the store's current epoch. -/
-private theorem coverage_pulled_epoch_of_current_epoch {store : Store preset fork}
+theorem coverage_pulled_epoch_of_current_epoch {store : Store preset fork}
     (forward : Store.ForwardReachable config anchorState anchorBlock store)
     (positive : 0 < preset.SLOTS_PER_EPOCH.toNat)
     {head : Root} {state : BeaconState preset fork} {epoch : Epoch}
