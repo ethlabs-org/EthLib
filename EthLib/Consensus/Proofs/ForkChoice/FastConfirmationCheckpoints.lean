@@ -3358,7 +3358,7 @@ private theorem coverage_covered_of_later_justified {anchor : Store preset fork}
     bind, Except.bind, pure, Except.pure]
 
 /-- Two pending ancestors of one head are comparable before Gloas. -/
-private theorem coverage_ancestors_comparable {store : Store preset fork}
+theorem coverage_ancestors_comparable {store : Store preset fork}
     (before : fork < .glamsterdam) {head : ForkChoiceNode} {a b : Root}
     {aBlock bBlock : BeaconBlock preset fork}
     (aKnown : store.blocks[a]? = some aBlock) (bKnown : store.blocks[b]? = some bBlock)
@@ -3435,7 +3435,7 @@ theorem Execution.unseen_signer_time
 
 omit [DecidablePred (· ∈ J)] in
 /-- The count of the rule for a head names its target, its committees and the honest voters. -/
-private theorem coverage_quorum_of_count {u : ValidatorIndex} {n margin : ℕ}
+theorem coverage_quorum_of_count {u : ValidatorIndex} {n margin : ℕ}
     {head : Root} (count : HonestTargetVotes e margin u n head)
     {state : BeaconState preset fork} {support : Gwei}
     (stateOk : ((e.world n).state u).getPulledUpHeadState config head = .ok state)

@@ -3222,7 +3222,9 @@ theorem Execution.safeAt_of_walk {Δ : ℕ} (sync : e.Synchronous Δ)
     (fun w hw k _ _ _ lower read => walk_source_le_justified (e.forwardReachable
       (fun v hv => (anchored v hv) ▸ Store.ForwardReachable.anchor anchorStore) k w hw) sound
       positive slots anchorSlot preGloas lower read)
-    genesisAll
+    genesisAll (fun rb sb rk sk => by
+      rw [Option.some.inj (rk.symm.trans rootKnown), Option.some.inj (sk.symm.trans startKnown)]
+      exact rootLater)
   have coverage := e.coveredOrViableAt_of_checked sync slots positive incrementPositive window
     (by omega) preGloas (admitted.of_le boundedNow) (oneBlock.of_le boundedNow)
     (votes.of_le boundedNow) fits (prompt.of_le boundedNow) (committees.of_le boundedNow)
