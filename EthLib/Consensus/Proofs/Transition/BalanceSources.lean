@@ -1150,6 +1150,417 @@ private def seatsOf {fork : Fork} (s : BeaconState preset fork) (altair : .altai
   ((s.currentSyncCommittee altair).value.pubkeys.toList.filter fun key =>
     (s.validators.data[v.toNat]?).any (·.pubkey == key)).length
 
+/-! ### Validators later in an epoch -/
+
+section Lives
+
+variable {fork : Fork} {s u t : BeaconState preset fork}
+
+/-- One validator later inside an epoch keeps its slashed flag and its activation epoch.
+
+It keeps its exit epoch once set, and its withdrawable epoch while unslashed with its exit set. -/
+private structure Later (old w : Validator) : Prop where
+  slashed : old.slashed = true → w.slashed = true
+  activation : w.activationEpoch = old.activationEpoch
+  exit : old.exitEpoch ≠ FAR_FUTURE_EPOCH → w.exitEpoch = old.exitEpoch
+  withdrawable : w.slashed = false → old.exitEpoch ≠ FAR_FUTURE_EPOCH →
+    w.withdrawableEpoch = old.withdrawableEpoch
+
+/-- Every validator is later than itself. -/
+private theorem Later.refl (v : Validator) : Later v v := ⟨id, rfl, fun _ => rfl, fun _ _ => rfl⟩
+
+/-- Two later steps make one. -/
+private theorem Later.trans {a b c : Validator} (one : Later a b) (two : Later b c) :
+    Later a c where
+  slashed h := two.slashed (one.slashed h)
+  activation := two.activation.trans one.activation
+  exit h := (two.exit (by rw [one.exit h]; exact h)).trans (one.exit h)
+  withdrawable h far := by
+    have mid : b.slashed = false := by
+      cases hb : b.slashed
+      · rfl
+      · rw [two.slashed hb] at h; cases h
+    have farB : b.exitEpoch ≠ FAR_FUTURE_EPOCH := by rw [one.exit far]; exact far
+    rw [two.withdrawable h farB, one.withdrawable mid far]
+
+/-- A later registry inside an epoch keeps each old validator later.
+
+Its new validators are not activated. -/
+private structure Lives (s t : BeaconState preset fork) : Prop where
+  size_le : s.validators.data.size ≤ t.validators.data.size
+  validators : ∀ (index : ℕ) old, s.validators.data[index]? = some old →
+    ∃ w, t.validators.data[index]? = some w ∧ Later old w
+  fresh : ∀ (index : ℕ) w, s.validators.data[index]? = none →
+    t.validators.data[index]? = some w → w.activationEpoch = FAR_FUTURE_EPOCH
+
+/-- Every state lives on in itself. -/
+private theorem Lives.refl (s : BeaconState preset fork) : Lives s s :=
+  ⟨Nat.le_refl _, fun _ old found => ⟨old, found, .refl old⟩,
+    fun _ _ none found => by rw [none] at found; cases found⟩
+
+/-- Two later registries make one. -/
+private theorem Lives.trans (one : Lives s u) (two : Lives u t) : Lives s t where
+  size_le := Nat.le_trans one.size_le two.size_le
+  validators index old found := by
+    obtain ⟨middle, middleFound, first⟩ := one.validators index old found
+    obtain ⟨later, laterFound, second⟩ := two.validators index middle middleFound
+    exact ⟨later, laterFound, first.trans second⟩
+  fresh index w none found := by
+    cases middle : u.validators.data[index]? with
+    | none => exact two.fresh index w middle found
+    | some m =>
+      obtain ⟨later, laterFound, step⟩ := two.validators index m middle
+      rw [found] at laterFound
+      cases laterFound
+      rw [step.activation]
+      exact one.fresh index m none middle
+
+/-- A state with the same validators lives on. -/
+private theorem Lives.of_data (same : t.validators.data = s.validators.data) : Lives s t :=
+  ⟨Nat.le_of_eq (by rw [same]), fun _ old found => ⟨old, by rw [same]; exact found, .refl old⟩,
+    fun _ _ none found => by rw [same, none] at found; cases found⟩
+
+/-- A fold whose every step lives on does too. -/
+private theorem Lives.foldlM {α ε : Type} {step : BeaconState preset fork → α → Except ε _}
+    (each : ∀ a x b, step a x = .ok b → Lives a b) {items : List α}
+    (computed : items.foldlM step s = .ok t) : Lives s t :=
+  foldlM_ok_invariant (Lives s) (fun _ _ _ before ok => before.trans (each _ _ _ ok))
+    (Lives.refl s) computed
+
+/-- Replacing a validator by one later than it. -/
+private theorem Lives.putValidator {index : Nat} {validator : Validator}
+    (inside : index < s.validators.data.size)
+    (step : Later s.validators.data[index] validator) :
+    Lives s (s.putValidator index inside validator) where
+  size_le := by simp [BeaconState.putValidator]
+  validators other old found := by
+    simp only [BeaconState.putValidator, Serialization.Ssz.RootedForkList.data_set,
+      Array.getElem?_set]
+    split
+    · rename_i same
+      subst same
+      have equal : s.validators.data[index] = old := by
+        rw [Array.getElem?_eq_getElem inside] at found
+        exact Option.some.inj found
+      exact ⟨validator, by simp, equal ▸ step⟩
+    · exact ⟨old, found, .refl _⟩
+  fresh other w none found := by
+    simp only [BeaconState.putValidator, Serialization.Ssz.RootedForkList.data_set,
+      Array.getElem?_set] at found
+    split at found
+    · rename_i same
+      subst same
+      rw [Array.getElem?_eq_getElem inside] at none
+      cases none
+    · rw [none] at found
+      cases found
+
+/-- Replacing a validator, read by its index, by one later than it. -/
+private theorem Lives.setValidator {index : ValidatorIndex} {old validator : Validator}
+    (found : getValidator s index = .ok old) (set : s.setValidator index validator = .ok t)
+    (step : Later old validator) : Lives s t := by
+  obtain ⟨inside, rfl⟩ := setValidator_ok set
+  refine Lives.putValidator inside ?_
+  have read : s.validators.data[index.toNat]? = some old := getValidator_eq_ok_iff.mp found
+  rw [Array.getElem?_eq_getElem inside] at read
+  exact Option.some.inj read ▸ step
+
+/-- Appending a validator that is not activated. -/
+private theorem Lives.append {validator : Validator}
+    (added : t.validators.data = s.validators.data.push validator)
+    (pending : validator.activationEpoch = FAR_FUTURE_EPOCH) : Lives s t where
+  size_le := by simp [added]
+  validators index old found := by
+    have inside := (Array.getElem?_eq_some_iff.mp found).1
+    refine ⟨old, ?_, .refl _⟩
+    simpa [added, Array.getElem?_push, Nat.ne_of_lt inside] using found
+  fresh index w none found := by
+    rw [added, Array.getElem?_push] at found
+    split at found
+    · cases found
+      exact pending
+    · rw [none] at found
+      cases found
+
+private theorem lives_increaseBalance {index : ValidatorIndex} {delta : Gwei}
+    (computed : increaseBalance s index delta = .ok t) : Lives s t :=
+  Lives.of_data (by rw [increaseBalance_validators computed])
+
+private theorem lives_decreaseBalance {index : ValidatorIndex} {delta : Gwei}
+    (computed : decreaseBalance s index delta = .ok t) : Lives s t :=
+  Lives.of_data (by rw [decreaseBalance_validators computed])
+
+private theorem lives_initiateValidatorExit {index : ValidatorIndex}
+    (computed : initiateValidatorExit config s index = .ok t) : Lives s t := by
+  obtain ⟨validator, found, ⟨_, rfl⟩ | ⟨far, queued, _, _, queue, _, set⟩⟩ :=
+    initiateValidatorExit_ok computed
+  · exact Lives.refl _
+  · have same := (exitQueue_validators queue).1
+    exact (Lives.of_data (by rw [same])).trans <|
+      Lives.setValidator ((getValidator_of_validators_eq same index).trans found) set
+        ⟨id, rfl, fun set => absurd far set, fun _ set => absurd far set⟩
+
+private theorem lives_slashValidator {slashedIndex : ValidatorIndex}
+    {whistleblowerIndex : Option ValidatorIndex}
+    (computed : slashValidator config s slashedIndex whistleblowerIndex = .ok t) : Lives s t := by
+  simp only [slashValidator, bind_ok_iff, liftArith, mapError_ok_iff] at computed
+  obtain ⟨exited, exitedOk, validator, found, delay, _, marked, markedOk, _, _, _, _, _, _,
+    lowered, loweredOk,
+    proposer, _, _, _, raised, raisedOk, last, lastOk, done⟩ := computed
+  exact (lives_initiateValidatorExit exitedOk).trans <|
+    ((Lives.setValidator found markedOk
+      ⟨fun _ => rfl, rfl, fun _ => rfl, fun h _ => by simp at h⟩).trans
+        (by exact Lives.of_data rfl)).trans <|
+    (lives_decreaseBalance loweredOk).trans <|
+    (lives_increaseBalance raisedOk).trans <|
+    (lives_increaseBalance lastOk).trans (Lives.of_data (by rw [(slashValidator_last done).1]))
+
+private theorem lives_processProposerSlashing {slashing : ProposerSlashing}
+    (computed : processProposerSlashing config checks s slashing = .ok t) : Lives s t := by
+  simp only [processProposerSlashing, bind_ok_iff, ensure_ok_iff, liftAccessor_ok] at computed
+  obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, slashed⟩ := computed
+  exact lives_slashValidator slashed
+
+private theorem lives_slashIfSlashable {step next : BeaconState preset fork × Bool}
+    {index : ValidatorIndex} (computed : slashIfSlashable config step index = .ok next) :
+    Lives step.1 next.1 := by
+  obtain ⟨state, slashedAny⟩ := step
+  simp only [slashIfSlashable, bind_ok_iff, liftAccessor_ok] at computed
+  obtain ⟨_, _, computed⟩ := computed
+  split at computed
+  · simp only [bind_ok_iff, liftAccessor_ok, pure, Except.pure, Except.ok.injEq] at computed
+    obtain ⟨_, slashed, rfl⟩ := computed
+    exact lives_slashValidator slashed
+  · simp only [pure, Except.pure, Except.ok.injEq] at computed
+    exact computed ▸ Lives.refl _
+
+private theorem lives_processAttesterSlashing {slashing : AttesterSlashing preset fork}
+    (computed : processAttesterSlashing config checks s slashing = .ok t) : Lives s t := by
+  simp only [processAttesterSlashing, bind_ok_iff, ensure_ok_iff, pure, Except.pure,
+    Except.ok.injEq] at computed
+  obtain ⟨_, _, _, _, _, _, _, _, _, _, _, folded, _, _, rfl⟩ := computed
+  exact foldlM_ok_invariant (fun step => Lives s step.1)
+    (fun _ _ _ before ok => before.trans (lives_slashIfSlashable ok))
+    (show Lives s (s, false).1 from Lives.refl s) folded
+
+private theorem lives_addValidatorToRegistry {pubkey : Cryptography.Bls.BLSPubkey}
+    {withdrawalCredentials : Bytes32} {amount : Gwei}
+    (computed : addValidatorToRegistry s pubkey withdrawalCredentials amount = .ok t) :
+    Lives s t := by
+  obtain ⟨validator, found, pending, -, -⟩ := addValidatorToRegistry_admission computed
+  have added := addValidatorToRegistry_validators_eq_push computed
+  refine Lives.append added ?_
+  rw [added, Array.getElem?_push_size] at found
+  cases found
+  exact pending
+
+private theorem lives_applyPendingDeposit {deposit : PendingDeposit}
+    (computed : applyPendingDeposit config checks s deposit = .ok t) : Lives s t := by
+  unfold applyPendingDeposit at computed
+  split at computed
+  · split at computed
+    · cases computed
+      exact Lives.refl _
+    simp only [bind_ok_iff] at computed
+    obtain ⟨_, _, computed⟩ := computed
+    split at computed
+    · exact lives_addValidatorToRegistry computed
+    · simp only [pure, Except.pure, Except.ok.injEq] at computed
+      exact computed ▸ Lives.refl _
+  · simp only [liftAccessor_ok, bind_ok_iff] at computed
+    obtain ⟨_, _, computed⟩ := computed
+    exact lives_increaseBalance computed
+
+private theorem lives_processDeposit {before : fork < .hegota} {deposit : Deposit}
+    (computed : processDeposit config checks before s deposit = .ok t) : Lives s t := by
+  obtain ⟨_, _, next, _, applied⟩ := processDeposit_ok computed
+  refine (Lives.of_data (s := s) (t := { s with eth1DepositIndex := fun _ => next }) rfl).trans ?_
+  unfold applyDeposit at applied
+  split at applied
+  · unfold applyDepositElectra at applied
+    split at applied
+    · simp only [bind_ok_iff] at applied
+      obtain ⟨_, _, applied⟩ := applied
+      split at applied
+      · simp only [bind_ok_iff, liftAccessor_ok] at applied
+        obtain ⟨_, added, pushed⟩ := applied
+        obtain ⟨_, rfl⟩ := addPendingDeposit_eq pushed
+        exact (lives_addValidatorToRegistry added).trans (Lives.of_data rfl)
+      · cases applied
+        exact Lives.refl _
+    · obtain ⟨_, rfl⟩ := addPendingDeposit_eq (liftAccessor_ok.mp applied)
+      exact Lives.of_data rfl
+  · exact lives_applyPendingDeposit applied
+
+private theorem lives_processVoluntaryExit {signed : SignedVoluntaryExit}
+    (computed : processVoluntaryExit config checks s signed = .ok t) : Lives s t := by
+  unfold processVoluntaryExit at computed
+  simp only [bind_ok_iff, ensure_ok_iff, liftAccessor_ok, liftSsz_ok] at computed
+  obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, exited⟩ := computed
+  exact lives_initiateValidatorExit exited
+
+private theorem lives_processBlsToExecutionChanges {body : BeaconBlockBody preset fork}
+    (computed : processBlsToExecutionChanges config checks s body = .ok t) : Lives s t := by
+  unfold processBlsToExecutionChanges at computed
+  split at computed
+  · rw [← Array.foldlM_toList] at computed
+    refine Lives.foldlM (fun _ _ _ ok => ?_) computed
+    obtain ⟨validator, found, _, _, _, set⟩ := processBlsToExecutionChange_ok ok
+    exact Lives.setValidator found set ⟨id, rfl, fun _ => rfl, fun _ _ => rfl⟩
+  · cases computed; exact Lives.refl _
+
+private theorem lives_processDepositRequest {electra : .pectra ≤ fork} {request : DepositRequest}
+    (computed : processDepositRequest s electra request = .ok t) : Lives s t := by
+  obtain ⟨start, recorded⟩ := recordDepositRequestsStart_eq (state := s) (index := request.index)
+  simp only [processDepositRequest, recorded, liftAccessor_ok, addPendingDeposit, bind_ok_iff,
+    pure, Except.pure, Except.ok.injEq] at computed
+  obtain ⟨_, _, rfl⟩ := computed
+  exact Lives.of_data rfl
+
+private theorem lives_computeExitEpochAndUpdateChurn {electra : .pectra ≤ fork}
+    {exitBalance : Gwei} {epoch : Epoch}
+    (computed : computeExitEpochAndUpdateChurn config s electra exitBalance = .ok (t, epoch)) :
+    Lives s t := by
+  simp only [computeExitEpochAndUpdateChurn, bind_ok_iff, pure, Except.pure,
+    Except.ok.injEq] at computed
+  obtain ⟨_, _, _, _, _, _, computed⟩ := computed
+  cases computed
+  exact Lives.of_data rfl
+
+private theorem lives_requestPartialWithdrawal {electra : .pectra ≤ fork}
+    {index : ValidatorIndex} {validator : Validator} {amount owed : Gwei}
+    (computed : requestPartialWithdrawal config s electra index validator amount owed = .ok t) :
+    Lives s t := by
+  simp only [requestPartialWithdrawal, bind_ok_iff, liftAccessor_ok, pure, Except.pure] at computed
+  obtain ⟨_, _, _, _, computed⟩ := computed
+  split at computed
+  · simp only [bind_ok_iff, liftAccessor_ok, Except.ok.injEq] at computed
+    obtain ⟨⟨_, _⟩, churned, _, _, _, _, rfl⟩ := computed
+    exact (lives_computeExitEpochAndUpdateChurn churned).trans (Lives.of_data rfl)
+  · cases computed
+    exact Lives.refl _
+
+private theorem lives_processWithdrawalRequest {electra : .pectra ≤ fork}
+    {request : WithdrawalRequest}
+    (computed : processWithdrawalRequest config s electra request = .ok t) : Lives s t := by
+  unfold processWithdrawalRequest at computed
+  simp only [bind, Except.bind, pure, Except.pure] at computed
+  repeat' split at computed
+  all_goals first
+    | (cases computed; done)
+    | (cases computed; exact Lives.refl _)
+    | exact lives_initiateValidatorExit (liftAccessor_ok.mp computed)
+    | exact lives_requestPartialWithdrawal computed
+
+private theorem lives_queueExcessActiveBalance {electra : .pectra ≤ fork} {index : ValidatorIndex}
+    (computed : queueExcessActiveBalance s electra index = .ok t) : Lives s t := by
+  simp only [queueExcessActiveBalance, bind_ok_iff] at computed
+  obtain ⟨_, _, computed⟩ := computed
+  split at computed
+  · simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at computed
+    obtain ⟨_, _, _, _, _, set, rfl⟩ := computed
+    obtain ⟨_, rfl⟩ := setBalance_ok set
+    exact Lives.of_data rfl
+  · cases computed
+    exact Lives.refl _
+
+private theorem lives_switchToCompoundingValidator {electra : .pectra ≤ fork}
+    {index : ValidatorIndex}
+    (computed : switchToCompoundingValidator s electra index = .ok t) : Lives s t := by
+  simp only [switchToCompoundingValidator, bind_ok_iff] at computed
+  obtain ⟨validator, found, _, set, queued⟩ := computed
+  exact (Lives.setValidator found set ⟨id, rfl, fun _ => rfl, fun _ _ => rfl⟩).trans
+    (lives_queueExcessActiveBalance queued)
+
+private theorem lives_queueConsolidation {electra : .pectra ≤ fork} {sourceIndex : ValidatorIndex}
+    {source : Validator} {targetIndex : ValidatorIndex}
+    (found : s.validators.data[sourceIndex.toNat]? = some source)
+    (far : source.exitEpoch = FAR_FUTURE_EPOCH)
+    (computed : queueConsolidation config s electra sourceIndex source targetIndex = .ok t) :
+    Lives s t := by
+  simp only [queueConsolidation, bind_ok_iff, liftAccessor_ok, liftArith, mapError_ok_iff,
+    pure, Except.pure] at computed
+  obtain ⟨⟨churnedState, exitEpoch⟩, churned, withdrawable, _, _, set, _, _, computed⟩ :=
+    computed
+  simp only [Except.ok.injEq] at computed
+  subst computed
+  have same : churnedState.validators.data = s.validators.data := by
+    simp only [computeConsolidationEpochAndUpdateChurn, bind_ok_iff, pure, Except.pure,
+      Except.ok.injEq] at churned
+    obtain ⟨_, _, _, _, _, _, churned⟩ := churned
+    cases churned
+    rfl
+  exact (Lives.of_data same).trans <|
+    (Lives.setValidator (old := source) (by simp [getValidator, same, found]) set
+      ⟨id, rfl, fun set => absurd far set, fun _ set => absurd far set⟩).trans (Lives.of_data rfl)
+
+private theorem lives_processConsolidationRequest {electra : .pectra ≤ fork}
+    {request : ConsolidationRequest}
+    (computed : processConsolidationRequest config s electra request = .ok t) : Lives s t := by
+  unfold processConsolidationRequest at computed
+  simp only [bind, Except.bind, pure, Except.pure] at computed
+  repeat' split at computed
+  all_goals first
+    | (cases computed; done)
+    | (cases computed; exact Lives.refl _)
+    | exact lives_switchToCompoundingValidator (liftAccessor_ok.mp computed)
+    | exact lives_queueConsolidation (getElem?_toNat_of_ofNatChecked (by assumption))
+        (by clear computed; simp_all) computed
+
+private theorem lives_processExecutionRequests {body : BeaconBlockBody preset fork}
+    {electra : .pectra ≤ fork ∧ fork < .glamsterdam}
+    (computed : processExecutionRequests config s body electra = .ok t) : Lives s t := by
+  simp only [processExecutionRequests, bind_ok_iff, ← Array.foldlM_toList] at computed
+  obtain ⟨_, depositsOk, _, withdrawalsOk, consolidationsOk⟩ := computed
+  exact (Lives.foldlM (fun _ _ _ ok => lives_processDepositRequest ok) depositsOk).trans <|
+    (Lives.foldlM (fun _ _ _ ok => lives_processWithdrawalRequest ok) withdrawalsOk).trans <|
+    Lives.foldlM (fun _ _ _ ok => lives_processConsolidationRequest ok) consolidationsOk
+
+/-- A validator that a slashing could still slash at an epoch, or whose exit is unset. -/
+private def Eligible (E : Epoch) (w : Validator) : Prop :=
+  w.slashed = false ∧ w.activationEpoch ≤ E ∧ E < FAR_FUTURE_EPOCH ∧
+    (w.exitEpoch = FAR_FUTURE_EPOCH ∨ E < w.withdrawableEpoch)
+
+/-- A slashable validator is eligible. -/
+private theorem eligible_of_slashable {E : Epoch} {w : Validator}
+    (slashable : isSlashableValidator w E = true) : Eligible E w := by
+  simp only [isSlashableValidator, Bool.and_eq_true, Bool.not_eq_true', decide_eq_true_eq]
+    at slashable
+  obtain ⟨⟨unslashed, active⟩, before⟩ := slashable
+  refine ⟨unslashed, active, ?_, Or.inr before⟩
+  have bound := w.withdrawableEpoch.toNat_lt
+  have far : FAR_FUTURE_EPOCH.toNat = 2 ^ 64 - 1 := rfl
+  rw [UInt64.lt_iff_toNat_lt] at before ⊢
+  omega
+
+/-- An eligible validator of a later registry was eligible before. -/
+private theorem Lives.back (lives : Lives s t) {E : Epoch} {i : ℕ} {w : Validator}
+    (found : t.validators.data[i]? = some w) (eligible : Eligible E w) :
+    ∃ old, s.validators.data[i]? = some old ∧ Eligible E old := by
+  obtain ⟨unslashed, active, below, window⟩ := eligible
+  cases read : s.validators.data[i]? with
+  | none =>
+    have pending := lives.fresh i w read found
+    rw [pending] at active
+    exact absurd (UInt64.lt_of_le_of_lt active below) (UInt64.lt_irrefl _)
+  | some old =>
+    obtain ⟨later, laterFound, step⟩ := lives.validators i old read
+    rw [found] at laterFound
+    cases laterFound
+    refine ⟨old, rfl, ?_, step.activation ▸ active, below, ?_⟩
+    · cases flag : old.slashed
+      · rfl
+      · rw [step.slashed flag] at unslashed; cases unslashed
+    · by_cases far : old.exitEpoch = FAR_FUTURE_EPOCH
+      · exact Or.inl far
+      · right
+        rcases window with exitFar | early
+        · exact absurd ((step.exit far).symm.trans exitFar) far
+        · rw [← step.withdrawable unslashed far]
+          exact early
+
+end Lives
+
 /-! ### The steps of a block, one by one -/
 
 section Steps
@@ -1299,6 +1710,28 @@ private theorem ledger_processBlockExecution {engine : ExecutionEngine preset fo
       exact Ledger.of_eq rfl rfl
     · cases computed
       exact Ledger.refl s
+
+/-- Before Gloas, the execution part of a block keeps the registry. -/
+private theorem validators_processBlockExecution {engine : ExecutionEngine preset fork}
+    {body : BeaconBlockBody preset fork} {bellatrix : .bellatrix ≤ fork}
+    (early : fork < .glamsterdam)
+    (computed : processBlockExecution config checks engine s body bellatrix = .ok t) :
+    t.validators = s.validators := by
+  unfold processBlockExecution at computed
+  have notGloas : ¬ .glamsterdam ≤ fork := Nat.not_le_of_lt early
+  simp only [notGloas, ↓reduceDIte] at computed
+  split at computed
+  · simp only [bind_ok_iff] at computed
+    obtain ⟨middle, withdrawnOk, paidOk⟩ := computed
+    obtain ⟨-, header, -, rfl⟩ := processExecutionPayload_ok paidOk
+    obtain ⟨expected, -, -, appliedOk⟩ := processWithdrawals_expected early withdrawnOk
+    have same := applyExpectedWithdrawals_validators appliedOk
+    exact same
+  · split at computed
+    · obtain ⟨-, header, -, rfl⟩ := processExecutionPayload_ok computed
+      rfl
+    · cases computed
+      rfl
 
 /-- A balance increase adds its amount at its own index and keeps every other balance. -/
 private theorem actualBalanceAt_increaseBalance {u w : BeaconState preset fork}
@@ -1541,13 +1974,15 @@ private theorem ledger_processProposerSlashing {slashing : ProposerSlashing}
         (fun v => if v = proposer then validator.effectiveBalance.toNat /
           (parameters preset fork).WHISTLEBLOWER_REWARD_QUOTIENT.toNat else 0)
         (fun v => if v = slashed then validator.effectiveBalance.toNat /
-          (parameters preset fork).MIN_SLASHING_PENALTY_QUOTIENT.toNat else 0) := by
+          (parameters preset fork).MIN_SLASHING_PENALTY_QUOTIENT.toNat else 0) ∧
+      Eligible (getCurrentEpoch s) validator := by
   simp only [processProposerSlashing, bind_ok_iff, ensure_ok_iff, liftAccessor_ok] at computed
   obtain ⟨_, _, _, _, _, _, validator, found, _, slashable, _, _, _, _, slashed⟩ := computed
   have read := getValidator_eq_ok_iff.mp found
   obtain ⟨proposer, proposerRead, ledger⟩ := ledger_slashValidator early (StepKeeps.refl s)
     (PayloadInputs.refl s) (effectiveKept_refl s) read slashed
-  refine ⟨proposer, _, validator, proposerRead, read, ?_, ?_, ledger⟩
+  refine ⟨proposer, _, validator, proposerRead, read, ?_, ?_, ledger,
+    eligible_of_slashable slashable⟩
   · simp only [isSlashableValidator, Bool.and_eq_true, Bool.not_eq_true'] at slashable
     exact slashable.1.1
   · have flag := (slashValidator_slashedFlag slashed).1
@@ -1574,6 +2009,8 @@ private theorem ledger_foldSlashIfSlashable {r : BeaconState preset fork}
         (∀ v ∈ slashed, ∃ validator later, u.validators.data[v.toNat]? = some validator ∧
           validator.slashed = false ∧ w.validators.data[v.toNat]? = some later ∧
           later.slashed = true) ∧
+        (∀ v ∈ slashed, ∃ validator, u.validators.data[v.toNat]? = some validator ∧
+          Eligible (getCurrentEpoch r) validator) ∧
         Ledger u w ∅ ∅ 0
           (fun v => if v = chosen then ∑ x ∈ slashed, effectiveAt ⟨fork, r⟩ x.toNat /
             (parameters preset fork).WHISTLEBLOWER_REWARD_QUOTIENT.toNat else 0)
@@ -1582,6 +2019,7 @@ private theorem ledger_foldSlashIfSlashable {r : BeaconState preset fork}
   | [], u, w, flag, flag', _, _, _, _, ok => by
     cases ok
     refine ⟨∅, fun empty => absurd empty Finset.not_nonempty_empty,
+      fun v member => absurd member (Finset.notMem_empty v),
       fun v member => absurd member (Finset.notMem_empty v), ?_⟩
     exact (Ledger.refl u).mono ∅ (subset_refl _) (fun _ => Nat.zero_le _)
       (fun _ => Nat.zero_le _)
@@ -1598,7 +2036,7 @@ private theorem ledger_foldSlashIfSlashable {r : BeaconState preset fork}
       obtain ⟨proposer, proposerRead, one⟩ :=
         ledger_slashValidator early keeps inputs effective read slashed
       rw [choice proposer proposerRead] at one proposerRead
-      obtain ⟨set, _, marks, two⟩ := ledger_foldSlashIfSlashable early chosen choice rest
+      obtain ⟨set, _, marks, eligibles, two⟩ := ledger_foldSlashIfSlashable early chosen choice rest
         (keeps.trans (stepKeeps_slashValidator slashed))
         (inputs.trans (payloadInputs_slashValidator slashed))
         (effectiveKept_trans effective (effectiveKept_slash slashed) keeps.1)
@@ -1617,7 +2055,7 @@ private theorem ledger_foldSlashIfSlashable {r : BeaconState preset fork}
           validator.effectiveBalance.toNat := by
         rw [← effective index.toNat (size ▸ (Array.getElem?_eq_some_iff.mp read).1)]
         simp [effectiveAt, read]
-      refine ⟨insert index set, fun _ => proposerRead, ?_, ?_⟩
+      refine ⟨insert index set, fun _ => proposerRead, ?_, ?_, ?_⟩
       · intro v member
         rcases Finset.mem_insert.mp member with rfl | inside
         · have persist := (foldlM_slashIfSlashable rest tail).2.1 v flagNext.1
@@ -1635,6 +2073,15 @@ private theorem ledger_foldSlashIfSlashable {r : BeaconState preset fork}
           | some original =>
             simp [slashedFlag, getValidator, old, entryRead, Except.map, entrySlashed] at before
             exact ⟨original, later, rfl, before, laterRead, laterSlashed⟩
+      · intro v member
+        rcases Finset.mem_insert.mp member with rfl | inside
+        · refine ⟨validator, read, ?_⟩
+          have epoch : getCurrentEpoch u = getCurrentEpoch r := by
+            simp only [getCurrentEpoch, keeps.2.1]
+          rw [← epoch]
+          exact eligible_of_slashable slashable
+        · obtain ⟨entry, entryRead, entryEligible⟩ := eligibles v inside
+          exact (lives_slashValidator slashed).back entryRead entryEligible
       · have both := one.trans two
         rw [add_zero] at both
         refine both.mono ∅ (subset_refl _) (fun v => ?_) (fun v => ?_)
@@ -1659,6 +2106,8 @@ private theorem ledger_processAttesterSlashing {slashing : AttesterSlashing pres
       (∀ v ∈ slashed, ∃ validator later, s.validators.data[v.toNat]? = some validator ∧
         validator.slashed = false ∧ t.validators.data[v.toNat]? = some later ∧
         later.slashed = true) ∧
+      (∀ v ∈ slashed, ∃ validator, s.validators.data[v.toNat]? = some validator ∧
+        Eligible (getCurrentEpoch s) validator) ∧
       Ledger s t ∅ ∅ 0
         (fun v => if v = proposer then ∑ x ∈ slashed, effectiveAt ⟨fork, s⟩ x.toNat /
           (parameters preset fork).WHISTLEBLOWER_REWARD_QUOTIENT.toNat else 0)
@@ -1672,9 +2121,10 @@ private theorem ledger_processAttesterSlashing {slashing : AttesterSlashing pres
     cases read : getBeaconProposerIndex s with
     | ok p => exact ⟨p, fun q found => (Except.ok.inj found).symm⟩
     | error _ => exact ⟨0, fun q found => by cases found⟩
-  obtain ⟨slashed, nonempty, marks, ledger⟩ := ledger_foldSlashIfSlashable early chosen choice _
-    (StepKeeps.refl s) (PayloadInputs.refl s) (effectiveKept_refl s) rfl folded
-  exact ⟨chosen, slashed, nonempty, marks, ledger⟩
+  obtain ⟨slashed, nonempty, marks, eligibles, ledger⟩ :=
+    ledger_foldSlashIfSlashable early chosen choice _
+      (StepKeeps.refl s) (PayloadInputs.refl s) (effectiveKept_refl s) rfl folded
+  exact ⟨chosen, slashed, nonempty, marks, eligibles, ledger⟩
 
 /-- A step that keeps every validator, lowers no balance and raises each by at most its credit. -/
 private theorem Ledger.of_rise {other : ValidatorIndex → ℕ}
@@ -3227,13 +3677,15 @@ private structure Kept (s t : BeaconState preset fork) : Prop where
   inputs : PayloadInputs s t
   keeps : StepKeeps s t
   effective : EffectiveKept s t
+  lives : Lives s t
 
 private theorem Kept.refl (s : BeaconState preset fork) : Kept s s :=
-  ⟨Frame.refl s, PayloadInputs.refl s, StepKeeps.refl s, effectiveKept_refl s⟩
+  ⟨Frame.refl s, PayloadInputs.refl s, StepKeeps.refl s, effectiveKept_refl s, Lives.refl s⟩
 
 private theorem Kept.trans (one : Kept s u) (two : Kept u t) : Kept s t :=
   ⟨one.frame.trans two.frame, one.inputs.trans two.inputs, one.keeps.trans two.keeps,
-    effectiveKept_trans one.effective two.effective one.keeps.1⟩
+    effectiveKept_trans one.effective two.effective one.keeps.1,
+    one.lives.trans two.lives⟩
 
 /-- A step that keeps the slot, activity up to the fixed epoch and effective balances. -/
 private structure Steady (s t : BeaconState preset fork) : Prop where
@@ -3703,19 +4155,21 @@ private theorem Kept.foldlM {α ε : Type} {step : BeaconState preset fork → �
 private theorem kept_processProposerSlashing {slashing : ProposerSlashing}
     (computed : processProposerSlashing config checks s slashing = .ok t) : Kept s t :=
   ⟨(frame_processProposerSlashing computed).toFrame, payloadInputs_processProposerSlashing computed,
-    stepKeeps_processProposerSlashing computed, effectiveKept_proposerSlashing computed⟩
+    stepKeeps_processProposerSlashing computed, effectiveKept_proposerSlashing computed,
+    lives_processProposerSlashing computed⟩
 
 private theorem kept_processAttesterSlashing {slashing : AttesterSlashing preset fork}
     (computed : processAttesterSlashing config checks s slashing = .ok t) : Kept s t :=
   ⟨(frame_processAttesterSlashing computed).toFrame,
     payloadInputs_processAttesterSlashing computed, stepKeeps_processAttesterSlashing computed,
-    effectiveKept_attesterSlashing computed⟩
+    effectiveKept_attesterSlashing computed, lives_processAttesterSlashing computed⟩
 
 private theorem kept_processAttestation {attestation : Attestation preset fork} {parent : Slot}
     (computed : processAttestation config checks s parent attestation = .ok t) : Kept s t :=
   ⟨frame_processAttestation computed, payloadInputs_processAttestation computed,
     stepKeeps_processAttestation computed,
-    effectiveKept_data (by rw [(processAttestation_registry computed).1])⟩
+    effectiveKept_data (by rw [(processAttestation_registry computed).1]),
+    Lives.of_data (by rw [(processAttestation_registry computed).1])⟩
 
 /-- A new validator keeps the inputs of a payload. -/
 private theorem payloadInputs_addValidatorToRegistry' {pubkey : Cryptography.Bls.BLSPubkey}
@@ -3762,12 +4216,14 @@ private theorem payloadInputs_processDeposit' {before : fork < .hegota} {deposit
 private theorem kept_processDeposit {before : fork < .hegota} {deposit : Deposit}
     (computed : processDeposit config checks before s deposit = .ok t) : Kept s t :=
   ⟨(frame_processDeposit computed).toFrame, payloadInputs_processDeposit' computed,
-    stepKeeps_processDeposit computed, effectiveKept_processDeposit computed⟩
+    stepKeeps_processDeposit computed, effectiveKept_processDeposit computed,
+    lives_processDeposit computed⟩
 
 private theorem kept_processVoluntaryExit {signed : SignedVoluntaryExit}
     (computed : processVoluntaryExit config checks s signed = .ok t) : Kept s t :=
   ⟨(frame_processVoluntaryExit computed).toFrame, payloadInputs_processVoluntaryExit computed,
-    stepKeeps_processVoluntaryExit computed, effectiveKept_voluntaryExit computed⟩
+    stepKeeps_processVoluntaryExit computed, effectiveKept_voluntaryExit computed,
+    lives_processVoluntaryExit computed⟩
 
 private theorem kept_processBlsToExecutionChanges {body : BeaconBlockBody preset fork}
     (computed : processBlsToExecutionChanges config checks s body = .ok t) : Kept s t := by
@@ -3776,7 +4232,9 @@ private theorem kept_processBlsToExecutionChanges {body : BeaconBlockBody preset
   · rw [← Array.foldlM_toList] at computed
     exact Kept.foldlM (fun _ _ _ ok => ⟨(frame_processBlsToExecutionChange ok).toFrame,
       payloadInputs_processBlsToExecutionChange ok, stepKeeps_processBlsToExecutionChange ok,
-      effectiveKept_blsChange ok⟩) computed
+      effectiveKept_blsChange ok,
+      (by obtain ⟨validator, found, _, _, _, set⟩ := processBlsToExecutionChange_ok ok
+          exact Lives.setValidator found set ⟨id, rfl, fun _ => rfl, fun _ _ => rfl⟩)⟩) computed
   · cases computed; exact Kept.refl _
 
 private theorem kept_processExecutionRequests {body : BeaconBlockBody preset fork}
@@ -3792,7 +4250,8 @@ private theorem kept_processExecutionRequests {body : BeaconBlockBody preset for
       PayloadInputs.foldlM (fun _ _ _ ok => payloadInputs_processConsolidationRequest ok)
         consolidations
   exact ⟨(frame_processExecutionRequests computed).toFrame, inputs,
-    stepKeeps_processExecutionRequests computed, effectiveKept_requests computed⟩
+    stepKeeps_processExecutionRequests computed, effectiveKept_requests computed,
+    lives_processExecutionRequests computed⟩
 
 end KeptSteps
 
@@ -3835,6 +4294,8 @@ private structure Credited {fork : Fork} (o t : BeaconState preset fork)
   electra : .pectra ≤ fork → deposited = ∅
   deposits : ∀ before : fork < .hegota,
     (o.eth1DepositIndex before).toNat + deposited.card ≤ (t.eth1DepositIndex before).toNat
+  eligible : ∀ v ∈ slashed, ∃ old, o.validators.data[v.toNat]? = some old ∧
+    Eligible (getCurrentEpoch o) old
 
 section Credited
 
@@ -3857,6 +4318,7 @@ private theorem Credited.of_ledger (ledger : Ledger o t ∅ ∅ 0 0 0) (kept : K
   phase0 _ := rfl
   electra _ := rfl
   deposits before := by simp [index before]
+  eligible v member := absurd member (Finset.notMem_empty v)
 
 /-- An effective balance at a later kept state is the one before, for an existing validator. -/
 private theorem effectiveAt_of_kept (kept : Kept u t) {v : ValidatorIndex} {validator : Validator}
@@ -3891,7 +4353,7 @@ private theorem Credited.trans {proposer proposer' : ValidatorIndex} {credit cre
     Finset.sum_congr rfl fun x member => by rw [kept x member]
   have proposerSame : getBeaconProposerIndex u = getBeaconProposerIndex o := one.kept.proposer
   refine ⟨by simpa using one.ledger.trans two.ledger, one.kept.trans two.kept,
-    one.grow.trans two.grow one.kept.frame.registryGrows, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩
+    one.grow.trans two.grow one.kept.frame.registryGrows, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩
   · intro positive
     split
     · rename_i later
@@ -3993,6 +4455,14 @@ private theorem Credited.trans {proposer proposer' : ValidatorIndex} {credit cre
     have second := two.deposits before
     have := Finset.card_union_le deposited deposited'
     omega
+  · intro v member
+    rcases Finset.mem_union.mp member with first | second
+    · exact one.eligible v first
+    · obtain ⟨w, found, eligible⟩ := two.eligible v second
+      have epoch : getCurrentEpoch u = getCurrentEpoch o := by
+        simp only [getCurrentEpoch, one.kept.inputs.slot]
+      rw [epoch] at eligible
+      exact one.kept.lives.back found eligible
 
 /-- A fold of steps that each credit like operations, and convert nothing, does so too. -/
 private theorem Credited.foldlM {α ε : Type} {step : BeaconState preset fork → α → Except ε _}
@@ -4025,14 +4495,14 @@ private theorem credited_processProposerSlashing {slashing : ProposerSlashing}
     (computed : processProposerSlashing config checks s slashing = .ok t) :
     ∃ p c sl d o sh, Credited s t p c sl d ∅ o sh := by
   obtain ⟨proposer, slashed, validator, read, found, unslashed, ⟨later, laterFound, marked⟩,
-    ledger⟩ := ledger_processProposerSlashing early computed
+    ledger, eligible⟩ := ledger_processProposerSlashing early computed
   have kept := kept_processProposerSlashing computed
   have grow := (grow_processProposerSlashing computed).below
   have effective : effectiveAt ⟨fork, t⟩ slashed.toNat = validator.effectiveBalance.toNat :=
     (effectiveAt_of_kept kept found).trans (effectiveAt_eq_of_found found)
   refine ⟨proposer, 0, {slashed}, ∅, _, _, ledger, kept, grow, fun _ => read,
     fun v _ => ?_, fun v => ?_, fun v member => ?_, fun altair base count _ _ support => ?_,
-    fun _ => rfl, fun _ => rfl, fun before => ?_⟩
+    fun _ => rfl, fun _ => rfl, fun before => ?_, fun v member => ?_⟩
   · simp only [Finset.sum_singleton, effective, zero_add]; exact le_rfl
   · by_cases same : v = slashed
     · subst same; simp [effective]
@@ -4042,12 +4512,15 @@ private theorem credited_processProposerSlashing {slashing : ProposerSlashing}
       later, laterFound, marked⟩
   · simpa using flagPotential_mono_below grow altair base count support
   · simp [index_processProposerSlashing computed before]
+  · rw [Finset.mem_singleton.mp member]
+    exact ⟨validator, found, eligible⟩
 
 private theorem credited_processAttesterSlashing {slashing : AttesterSlashing preset fork}
     (early : fork < .glamsterdam)
     (computed : processAttesterSlashing config checks s slashing = .ok t) :
     ∃ p c sl d o sh, Credited s t p c sl d ∅ o sh := by
-  obtain ⟨proposer, slashed, read, newly, ledger⟩ := ledger_processAttesterSlashing early computed
+  obtain ⟨proposer, slashed, read, newly, eligibles, ledger⟩ :=
+    ledger_processAttesterSlashing early computed
   have kept := kept_processAttesterSlashing computed
   have grow := (grow_processAttesterSlashing computed).below
   have effective : ∀ v ∈ slashed, effectiveAt ⟨fork, t⟩ v.toNat = effectiveAt ⟨fork, s⟩ v.toNat :=
@@ -4056,7 +4529,8 @@ private theorem credited_processAttesterSlashing {slashing : AttesterSlashing pr
       exact effectiveAt_of_kept kept found
   refine ⟨proposer, 0, slashed, ∅, _, _, ledger, kept, grow,
     fun hyp => read (by simpa using hyp), fun v _ => ?_, fun v => ?_, fun v member => ?_,
-    fun altair base count _ _ support => ?_, fun _ => rfl, fun _ => rfl, fun before => ?_⟩
+    fun altair base count _ _ support => ?_, fun _ => rfl, fun _ => rfl, fun before => ?_,
+    eligibles⟩
   · have same : ∑ x ∈ slashed, effectiveAt ⟨fork, s⟩ x.toNat /
         (parameters preset fork).WHISTLEBLOWER_REWARD_QUOTIENT.toNat =
         ∑ x ∈ slashed, effectiveAt ⟨fork, t⟩ x.toNat /
@@ -4082,7 +4556,8 @@ private theorem credited_processAttestation {attestation : Attestation preset fo
   refine ⟨proposer, credit, ∅, ∅, _, _, ledger, kept, grow,
     fun hyp => read (by simpa using hyp), fun v _ => by simp, fun v => by simp,
     fun v member => absurd member (Finset.notMem_empty v), fun altair base count big reads _ => ?_,
-    fun before => ?_, fun _ => rfl, fun before => ?_⟩
+    fun before => ?_, fun _ => rfl, fun before => ?_,
+    fun v member => absurd member (Finset.notMem_empty v)⟩
   · exact attestationCredit_potential altair early computed credited base big reads
   · have notAltair : ¬ .altair ≤ fork := Nat.not_le_of_lt before
     simp [attestationCredit, notAltair, pure, Except.pure] at credited
@@ -4103,7 +4578,8 @@ private theorem credited_processDeposit {before : fork < .hegota} {deposit : Dep
       simpa using flagPotential_mono_below grow altair base count support,
     fun _ => rfl, fun electra => by
       have notBefore : ¬ fork < .pectra := Nat.not_lt_of_le electra
-      simp [notBefore], fun before' => ?_⟩
+      simp [notBefore], fun before' => ?_,
+    fun v member => absurd member (Finset.notMem_empty v)⟩
   · by_cases credited : v = recipient ∧ fork < .pectra
     · simp [credited.1, credited.2] at absent
     · simp [credited]
@@ -4136,7 +4612,8 @@ private theorem credited_processExecutionRequests {body : BeaconBlockBody preset
     fun altair base count _ _ support => by
       simpa using flagPotential_mono_below grow altair base count support,
     fun _ => rfl, fun _ => rfl,
-    fun before => by simp [index_processExecutionRequests computed before]⟩, count⟩
+    fun before => by simp [index_processExecutionRequests computed before],
+    fun v member => absurd member (Finset.notMem_empty v)⟩, count⟩
 
 /-- Before Gloas, the operations of a block credit like operations.
 
@@ -4321,7 +4798,8 @@ private theorem kept_processSyncAggregate {altair : .altair ≤ fork}
     {aggregate : SyncAggregate preset}
     (computed : processSyncAggregate config checks s altair aggregate = .ok t) : Kept s t :=
   ⟨(frame_processSyncAggregate computed).toFrame, payloadInputs_processSyncAggregate computed,
-    stepKeeps_processSyncAggregate computed, effectiveKept_sync computed⟩
+    stepKeeps_processSyncAggregate computed, effectiveKept_sync computed,
+    Lives.of_data (by rw [(processSyncAggregate_kept computed).1])⟩
 
 /-- The proposer of a slot reads the seed of its epoch, the slot, the lookahead and the registry. -/
 private theorem getBeaconProposerIndex_congr_seed {s w : BeaconState preset fork}
@@ -4458,7 +4936,10 @@ private theorem block_balances {engine : ExecutionEngine preset fork}
         (t.eth1DepositIndex before).toNat ∧ deposited.card ≤ preset.MAX_DEPOSITS.toNat) ∧
       (fork < .altair →
         preset.MIN_SEED_LOOKAHEAD.toNat + 2 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat →
-        0 < credit + share ∨ slashed.Nonempty → proposer = block.proposerIndex) := by
+        0 < credit + share ∨ slashed.Nonempty → proposer = block.proposerIndex) ∧
+      Lives s t ∧
+      (∀ v ∈ slashed, ∃ old, s.validators.data[v.toNat]? = some old ∧
+        Eligible (getCurrentEpoch s) old) := by
   -- The steps before the operations move no balance except the withdrawals, and keep the reads.
   have before {o : BeaconState preset fork}
       (steps : ∃ paid : Finset ValidatorIndex, Ledger s o paid ∅ 0 0 0 ∧
@@ -4524,6 +5005,23 @@ private theorem block_balances {engine : ExecutionEngine preset fork}
         voted.eth1DepositIndex before = s.eth1DepositIndex before := fun before => by
       rw [votedIndex before, index_processRandao revealedOk before, executedIndex before,
         index_processBlockHeader headedOk before]
+    have votedValidators : voted.validators.data = s.validators.data := by
+      have h1 : headed.validators = s.validators := by
+        obtain ⟨_, _, rfl⟩ := processBlockHeader_eq headedOk
+        rfl
+      have h2 : executed.validators = headed.validators := by
+        split at executedOk
+        · exact validators_processBlockExecution early executedOk
+        · cases executedOk; rfl
+      have h3 : revealed.validators = executed.validators := by
+        obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, rfl⟩ := processRandao_eq revealedOk
+        rfl
+      have h4 : voted.validators.data = revealed.validators.data := by
+        split at votedOk
+        · obtain ⟨_, _, rest⟩ := processEth1Data_eq votedOk
+          rw [← rest]
+        · cases votedOk; rfl
+      rw [h4, h3, h2, h1]
     -- The operations and the sync aggregate.
     obtain ⟨proposer, credit, slashed, deposited, conv, other, slash, ops, convCount⟩ :=
       credited_processOperations early (frameVoted.balancesMatch matched) operatedOk
@@ -4548,7 +5046,7 @@ private theorem block_balances {engine : ExecutionEngine preset fork}
       0 + other + fun v => if v = proposer' then share else 0, 0 + slash + 0,
       if 0 < share then proposer' else proposer, credit, share,
       (toVoted.trans ops.ledger).trans syncLedger, by simpa using paidCount,
-      by simpa [altair] using convCount, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩
+      by simpa [altair] using convCount, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩
     · intro v absent
       have first := ops.credited v absent
       have sumSame : ∑ x ∈ slashed, effectiveAt ⟨fork, operated⟩ x.toNat /
@@ -4616,6 +5114,14 @@ private theorem block_balances {engine : ExecutionEngine preset fork}
       omega
     · intro earlier
       exact absurd altair (Nat.not_le_of_lt earlier)
+    · exact (Lives.of_data votedValidators).trans (ops.kept.lives.trans syncKept.lives)
+    · intro v member
+      obtain ⟨old, found, eligible⟩ := ops.eligible v member
+      have epoch : getCurrentEpoch voted = getCurrentEpoch s := by
+        simp only [getCurrentEpoch, frameVoted.slot]
+      rw [epoch] at eligible
+      rw [votedValidators] at found
+      exact ⟨old, found, eligible⟩
   · rename_i altair
     have notAltair : fork < .altair := Nat.lt_of_not_le altair
     simp only [bind_ok_iff] at computed
@@ -4630,12 +5136,23 @@ private theorem block_balances {engine : ExecutionEngine preset fork}
         voted.eth1DepositIndex before = s.eth1DepositIndex before := fun before => by
       rw [index_processEth1Data votedOk, index_processRandao revealedOk before,
         index_processBlockHeader headedOk before]
+    have votedValidators : voted.validators.data = s.validators.data := by
+      have h1 : headed.validators = s.validators := by
+        obtain ⟨_, _, rfl⟩ := processBlockHeader_eq headedOk
+        rfl
+      have h3 : revealed.validators = headed.validators := by
+        obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, rfl⟩ := processRandao_eq revealedOk
+        rfl
+      have h4 : voted.validators.data = revealed.validators.data := by
+        obtain ⟨_, _, rest⟩ := processEth1Data_eq votedOk
+        rw [← rest]
+      rw [h4, h3, h1]
     obtain ⟨proposer, credit, slashed, deposited, conv, other, slash, ops, convCount⟩ :=
       credited_processOperations early (frameVoted.balancesMatch matched) operatedOk
     have zero := ops.phase0 notAltair
     refine ⟨∅, conv, slashed, deposited, 0, other, slash, proposer, credit, 0,
       toVoted.zero_left ops.ledger, by simp, convCount, ?_, ops.penalized, ?_, ?_, ?_, ?_,
-      ops.electra, ?_, ?_⟩
+      ops.electra, ?_, ?_, ?_, ?_⟩
     · intro v absent
       simpa using ops.credited v absent
     · intro v member
@@ -4668,6 +5185,14 @@ private theorem block_balances {engine : ExecutionEngine preset fork}
       have read := ops.read (by simpa using positive)
       rw [proposer_of_prefix notAltair apart headedOk revealedOk votedOk] at read
       exact (Except.ok.inj read).symm
+    · exact (Lives.of_data votedValidators).trans ops.kept.lives
+    · intro v member
+      obtain ⟨old, found, eligible⟩ := ops.eligible v member
+      have epoch : getCurrentEpoch voted = getCurrentEpoch s := by
+        simp only [getCurrentEpoch, frameVoted.slot]
+      rw [epoch] at eligible
+      rw [votedValidators] at found
+      exact ⟨old, found, eligible⟩
 
 
 end Block
@@ -4993,6 +5518,9 @@ private structure Tally (a s : BeaconState preset fork) (n : ℕ)
     (a.eth1DepositIndex before).toNat + dep.card ≤ (s.eth1DepositIndex before).toNat
   electra : .pectra ≤ fork → dep = ∅
   reward : 0 < n → .altair ≤ fork → ∃ r, syncParticipantReward a = .ok r
+  lives : Lives a s
+  eligible : ∀ v ∈ sl, ∃ old, a.validators.data[v.toNat]? = some old ∧
+    Eligible (getCurrentEpoch a) old
 
 /-- Before any block, the tally is empty. -/
 private theorem Tally.start (a : BeaconState preset fork) (matched : BalancesMatch a) :
@@ -5019,6 +5547,8 @@ private theorem Tally.start (a : BeaconState preset fork) (matched : BalancesMat
   depIndex _ := by simp
   electra _ := rfl
   reward h := absurd h (Nat.lt_irrefl 0)
+  lives := Lives.refl a
+  eligible v member := absurd member (Finset.notMem_empty v)
 
 /-- A slot step inside the epoch keeps the tally. -/
 private theorem Tally.slot {a s cached : BeaconState preset fork} {next : Slot} {n : ℕ}
@@ -5031,7 +5561,8 @@ private theorem Tally.slot {a s cached : BeaconState preset fork} {next : Slot} 
   obtain ⟨_, _, _, _, rfl⟩ := processSlot_ok computed
   exact { tally with
     within := { tally.within with epoch := epoch.trans tally.within.epoch
-                                  active := tally.within.active } }
+                                  active := tally.within.active }
+    lives := tally.lives.trans (Lives.of_data rfl) }
 
 /-- A block before Gloas extends the tally by one block. -/
 private theorem Tally.block {a s t : BeaconState preset fork} {engine : ExecutionEngine preset fork}
@@ -5047,7 +5578,7 @@ private theorem Tally.block {a s t : BeaconState preset fork} {engine : Executio
         ∀ v ∈ props', v ∉ props → v = block.proposerIndex) := by
   obtain ⟨paid, cv, slashed, deposited, sync, other, slash, proposer, credit, share, ledger,
     paidCard, convCard, credited, penalized, newly, rewards, phase0, potential, electra,
-    deposits, header⟩ := block_balances early tally.matched computed
+    deposits, header, livesB, eligibleB⟩ := block_balances early tally.matched computed
   have frame := frame_processBlock computed
   have steady : Steady s t := ⟨stepKeeps_processBlock computed, effectiveKept_block early computed⟩
   have within := tally.within.steady steady
@@ -5132,7 +5663,9 @@ private theorem Tally.block {a s t : BeaconState preset fork} {engine : Executio
       depCard := ?_
       depIndex := ?_
       electra := ?_
-      reward := ?_ }, ?_⟩
+      reward := ?_
+      lives := tally.lives.trans livesB
+      eligible := ?_ }, ?_⟩
   · have one := Finset.card_union_le deb (paid ∪ cv)
     have two := Finset.card_union_le paid cv
     have three := tally.debCard
@@ -5293,6 +5826,12 @@ private theorem Tally.block {a s t : BeaconState preset fork} {engine : Executio
   · intro _ altair
     obtain ⟨reward, ok, _⟩ := rewardSame altair
     exact ⟨reward, ok⟩
+  · intro v member
+    rcases Finset.mem_union.mp member with old | fresh
+    · exact tally.eligible v old
+    · obtain ⟨w, found, eligible⟩ := eligibleB v fresh
+      rw [tally.within.epoch] at eligible
+      exact tally.lives.back found eligible
   · intro pre apart v member notOld
     split at member
     · rename_i positive
@@ -5378,7 +5917,8 @@ Read at its last state:
   Together they are at most the sum of the proposer credit and some whistleblower rewards.
   These are the whistleblower rewards of the validators slashed at the last state.
   The proposer credit counts the proposer share apart from the participant sync rewards.
-  The bound also holds with only the validators slashed along the run.
+  The bound also holds with only the validators slashed within the run.
+  Each of those was slashable at the first state, which needs the exits to be ordered there.
   Before Altair, blocks pay no proposer rewards, so only those whistleblower rewards remain.
 - The credited set splits into the credited proposers and the recipients of deposits.
   Before Altair, each credited proposer is the proposer of a block of the run.
@@ -5387,7 +5927,7 @@ Read at its last state:
 - Effective balances stay. -/
 theorem branchCorrections {x y : ForkedBeaconState preset} (tail : Run config checks x y)
     (early : y.fork < .glamsterdam) (same : getCurrentEpoch y.state = getCurrentEpoch x.state)
-    (matched : BalancesMatch x.state) :
+    (matched : BalancesMatch x.state) (exits : ExitsOrdered x.state) :
     let state := y.state
     let inc := preset.EFFECTIVE_BALANCE_INCREMENT.toNat
     let slots := preset.SLOTS_PER_EPOCH.toNat
@@ -5444,19 +5984,20 @@ theorem branchCorrections {x y : ForkedBeaconState preset} (tail : Run config ch
       ∑ v ∈ creditedKeys, pc v ≤ proposerCredit + whistleblowerP ∧
       (∃ slashedNow : Finset ValidatorIndex,
         (∀ v ∈ slashedNow, (∀ validator, x.state.validators.data[v.toNat]? = some validator →
-            validator.slashed = false) ∧ slashed v.toNat = true) ∧
+            validator.slashed = false) ∧ slashed v.toNat = true ∧
+          ∃ validator, x.state.validators.data[v.toNat]? = some validator ∧
+            validator.activationEpoch ≤ getCurrentEpoch x.state ∧
+            getCurrentEpoch x.state < validator.withdrawableEpoch) ∧
         ∑ v ∈ creditedKeys, pc v ≤ (∑ i ∈ positions with recent i, base i) + syncProposer +
-          (∑ v ∈ slashedNow, effective v.toNat) / p.WHISTLEBLOWER_REWARD_QUOTIENT.toNat) ∧
+          (∑ v ∈ slashedNow, effective v.toNat) / p.WHISTLEBLOWER_REWARD_QUOTIENT.toNat ∧
+        (y.fork < .altair → ∑ v ∈ creditedKeys, pc v ≤
+          (∑ v ∈ slashedNow, effective v.toNat) / p.WHISTLEBLOWER_REWARD_QUOTIENT.toNat)) ∧
       (∀ v validator later, x.state.validators.data[v.toNat]? = some validator →
         y.state.validators.data[v.toNat]? = some later →
         withdrawalMaxEffectiveBalance preset y.fork later ≠
           withdrawalMaxEffectiveBalance preset x.fork validator →
         actualBalanceAt y v.toNat ≤ preset.MIN_ACTIVATION_BALANCE.toNat +
           blocks * sync v.toNat + pc v + deposit v) ∧
-      (y.fork < .altair → ∃ slashedNow : Finset ValidatorIndex,
-        (∀ v ∈ slashedNow, slashed v.toNat = true) ∧
-        ∑ v ∈ creditedKeys, pc v ≤
-          (∑ v ∈ slashedNow, effective v.toNat) / p.WHISTLEBLOWER_REWARD_QUOTIENT.toNat) ∧
       (∃ proposerKeys depositKeys : Finset ValidatorIndex,
         creditedKeys = proposerKeys ∪ depositKeys ∧
         proposerKeys.card ≤ (if proposerCredit = 0 ∧ seatReward = 0 ∧
@@ -5683,7 +6224,7 @@ theorem branchCorrections {x y : ForkedBeaconState preset} (tail : Run config ch
   have creditedCard : (props ∪ dep).card ≤ creditedP :=
     Nat.le_trans (Finset.card_union_le _ _) (Nat.add_le_add propsCard depCard)
   refine ⟨deb, props ∪ dep, pc, deposit, tally.debCard, creditedCard, ?_, ?_, ?_, ?_, ?_, ?_, ?_,
-    ?_, ⟨props, dep, rfl, propsCard, depCard, tally.pcZero, tally.depositZero, owned⟩, ?_, rfl,
+    ⟨props, dep, rfl, propsCard, depCard, tally.pcZero, tally.depositZero, owned⟩, ?_, rfl,
     tally.within.effective⟩
   · intro v notIn
     have := tally.down v notIn
@@ -5700,7 +6241,19 @@ theorem branchCorrections {x y : ForkedBeaconState preset} (tail : Run config ch
     exact tally.depositZero v (by rw [tally.electra pectra]; exact Finset.notMem_empty v)
   · calc _ ≤ _ := budget
       _ ≤ _ := Nat.add_le_add_left (Nat.div_le_div_right slashedSub) _
-  · exact ⟨sl, fun v member => ⟨(tally.newly v member).1, (tally.newly v member).2⟩, budget⟩
+  · refine ⟨sl, fun v member => ⟨(tally.newly v member).1, (tally.newly v member).2, ?_⟩, budget,
+      fun pre => ?_⟩
+    · obtain ⟨old, found, -, active, below, window⟩ := tally.eligible v member
+      refine ⟨old, found, active, ?_⟩
+      rcases window with far | before
+      · have ordered := exits old (Array.mem_of_getElem? found)
+        rw [far] at ordered
+        exact UInt64.lt_of_lt_of_le below ordered
+      · exact before
+    · have ph := tally.phase0 pre
+      rw [pcSum]
+      have := tally.budget
+      omega
   · intro v validator later found foundB differ
     have member : v ∈ conv := by
       by_contra notConv
@@ -5712,12 +6265,6 @@ theorem branchCorrections {x y : ForkedBeaconState preset} (tail : Run config ch
     have := tally.converted v member
     rw [syncEq v] at this
     exact this
-  · intro pre
-    have ph := tally.phase0 pre
-    refine ⟨sl, fun v member => (tally.newly v member).2, ?_⟩
-    rw [pcSum]
-    have := tally.budget
-    omega
   · intro v validator notIn found
     obtain ⟨later, foundB, same⟩ := tally.kept v validator (fun h => notIn (tally.convSub h)) found
     exact ⟨later, foundB,
