@@ -3162,6 +3162,26 @@ theorem Execution.safeAt_of_walk {Δ : ℕ} (sync : e.Synchronous Δ)
     exact False.elim (e.rootEpoch_ne_of_slack_at_epoch_start anchorStore anchored anchorSlot
       preGloas caller slotOk boundary epOk reOk blockOk parentOk firstOk lastOk maximumOk supportOk
       discountOk strict same)
+  -- An honest supporter's signed vote identifies the model's genesis time with the stores' clock.
+  have genesisAll : ∀ w ∈ J, ∀ i, ((e.world i).state w).genesisTimeMs = genesisTimeMs := by
+    obtain ⟨v, supporter, honest⟩ := walk_exists_honest_supporter committees caller callBound
+      (forward n u caller).votesHaveOrigins headOk (Store.blockState_ok_iff.mpr headStateHeld)
+      slotOk epochOk rootKnown rootRecent (blocksBound root rootBlock rootKnown)
+      (BeaconState.registryWithinLimit_of_lt preGloas balanceSource)
+      (Store.Reachable.checkpointState_aligned sound (reached n u caller) maxAligned sourceOk)
+      increment (callWeights.dishonest u caller n le_rfl)
+      (fun first last participants read => callWeights.sourceByzantine u caller n head.root
+        first last participants rfl read) (allConfirmed root (by simp))
+    obtain ⟨message, supported, latest, _, _, _⟩ :=
+      ((e.world n).state u).exists_of_voteCountsFor
+        (Store.voteCountsFor_of_mem_supportersOf supporter)
+    obtain ⟨a, msg, seen, rfl, signed, _⟩ :=
+      e.exists_signed_origin_of_latestMessages anchorStore anchored caller latest
+    obtain ⟨j, _, maySign⟩ := e.exists_maySign_of_signed (e.view_subset_sent n u seen) signed honest
+    obtain ⟨_, _, _, genesis, _⟩ := maySign
+    intro w hw i
+    rw [(e.clock_bounds w i).1, anchored w hw, ← anchored v honest,
+      ← (e.clock_bounds v j).1, genesis]
   -- Keep the checked root fixed while advancing through only its confirmed prefix.
   apply walk_time_members_induction (SafeAt e) prefixWalk startSafe ?_ time afterCall bounded root
     (by simp)
@@ -3201,6 +3221,7 @@ theorem Execution.safeAt_of_walk {Δ : ℕ} (sync : e.Synchronous Δ)
     (fun w hw k _ _ _ lower read => walk_source_le_justified (e.forwardReachable
       (fun v hv => (anchored v hv) ▸ Store.ForwardReachable.anchor anchorStore) k w hw) sound
       positive slots anchorSlot preGloas lower read)
+    genesisAll
   intro w receiver k receiverHead atNow ready receiverHeadOk
   have receiverBound : (e.world k).time ≤ limit := atNow ▸ boundedNow
   have receiverLower := (reached k w receiver).parentsBelow (UInt64.le_of_eq anchorSlot)
@@ -3329,28 +3350,9 @@ theorem Execution.safeAt_of_walk {Δ : ℕ} (sync : e.Synchronous Δ)
     rw [seEq, epochValue] at recentStart
     simp only [computeEpochAtSlot, UInt64.toNat_div] at *
     omega
-  -- An honest signed vote identifies the model's genesis time with the common store clock.
   have receiverClock : computeSlotAtTimeMs config genesisTimeMs ((e.world k).state w).timeMs =
       .ok current := by
-    obtain ⟨v, supporter, honest⟩ := walk_exists_honest_supporter committees caller callBound
-      (forward n u caller).votesHaveOrigins headOk (Store.blockState_ok_iff.mpr headStateHeld)
-      slotOk epochOk rootKnown rootRecent (blocksBound root rootBlock rootKnown)
-      (BeaconState.registryWithinLimit_of_lt preGloas balanceSource)
-      (Store.Reachable.checkpointState_aligned sound (reached n u caller) maxAligned sourceOk)
-      increment (callWeights.dishonest u caller n le_rfl)
-      (fun first last participants read => callWeights.sourceByzantine u caller n head.root
-        first last participants rfl read) (allConfirmed root (by simp))
-    obtain ⟨message, supported, latest, _, _, _⟩ :=
-      ((e.world n).state u).exists_of_voteCountsFor
-        (Store.voteCountsFor_of_mem_supportersOf supporter)
-    obtain ⟨a, msg, seen, rfl, signed, _⟩ :=
-      e.exists_signed_origin_of_latestMessages anchorStore anchored caller latest
-    obtain ⟨j, _, maySign⟩ := e.exists_maySign_of_signed (e.view_subset_sent n u seen) signed honest
-    obtain ⟨_, _, _, genesis, _⟩ := maySign
-    have receiverGenesis : ((e.world k).state w).genesisTimeMs = genesisTimeMs := by
-      rw [(e.clock_bounds w k).1, anchored w receiver, ← anchored v honest,
-        ← (e.clock_bounds v j).1, genesis]
-    simpa only [Store.getCurrentSlot, receiverGenesis] using (mapError_ok_iff.mp currentOk)
+    simpa only [Store.getCurrentSlot, genesisAll w receiver k] using (mapError_ok_iff.mp currentOk)
   have age := walk_receiver_age_at_clock positive beginOk receiverClock recentParent
     (by simpa only [← atSlot, ready.1, atNow] using complete)
   have historicalKnown : ∃ b, ((e.world n).state u).blocks[historical]? = some b := by
