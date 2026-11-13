@@ -2972,6 +2972,7 @@ theorem Execution.safeAt_of_walk {Δ : ℕ} (sync : e.Synchronous Δ)
     {historical : Root} {epoch historicalEpoch : Epoch} {epochStart : Slot}
     {epochStartTime : UInt64}
     (epochOk : ((e.world n).state u).getCurrentStoreEpoch config = .ok epoch)
+    (callEpochs : GENESIS_EPOCH + 1 < epoch ∧ getCurrentEpoch anchorState < epoch)
     (startBelow : ((e.world n).state u).isAncestor ⟨start, .pending⟩ ⟨historical, .pending⟩ =
       .ok true)
     (historicalEpochOk : ((e.world n).state u).getBlockEpoch historical = .ok historicalEpoch)
@@ -3196,7 +3197,9 @@ theorem Execution.safeAt_of_walk {Δ : ℕ} (sync : e.Synchronous Δ)
     (‹FinalizedPrefix e horizon limit›.of_le boundedNow) (unique.of_le boundedNow)
     (pins.of_le boundedNow) (voted.of_le boundedNow) (included.of_le boundedNow) anchorStore
     sound anchorSlot anchored anchorOk anchorBoundary caller upToDate
-    ⟨slot, begin, slotOk, beginOk, atSlot⟩ headOk checked headAbove atStart
+    ⟨slot, begin, slotOk, beginOk, atSlot⟩
+    (fun ep epOk => Except.ok.inj (epochOk.symm.trans epOk) ▸ callEpochs) headOk checked
+    headAbove atStart
     (previousHead.imp_right (by
       rintro ⟨k, before, previous, previousSlot, ready, read, eq, oldSlot, next⟩
       exact ⟨k, before, previous, previousSlot, slot, ready, read, eq, oldSlot, slotOk, next⟩))
@@ -4817,6 +4820,8 @@ theorem Execution.callInvariant_step {Δ : ℕ} (sync : e.Synchronous Δ)
         (getCurrentEpoch state).toNat ≤ epoch.toNat + 1 →
         DriftAtMost headState state margin)
     {u : ValidatorIndex} (caller : u ∈ J) {events : List ℕ} {firstSlot : Slot}
+    (confirmationEpoch : 2 ≤ computeEpochAtSlot preset firstSlot)
+    (anchorEpochBefore : getCurrentEpoch anchorState < computeEpochAtSlot preset firstSlot)
     (upToDate : ∀ n ∈ events, UpToDate config checks sources (e.world n).time
       ((e.world n).view u) ((e.world n).state u))
     (lower : ∀ n ∈ events, ((e.world n).state u).ParentsBelow)
@@ -4850,6 +4855,19 @@ theorem Execution.callInvariant_step {Δ : ℕ} (sync : e.Synchronous Δ)
   have epochOk : ((e.world n).state u).getCurrentStoreEpoch config =
       .ok (computeEpochAtSlot preset slot) := by
     simp [Store.getCurrentStoreEpoch, slotOk, bind, Except.bind, pure, Except.pure]
+  -- Each call is at or after the first slot, so in epoch 2 or later and after the anchor's.
+  have callEpochs : GENESIS_EPOCH + 1 < computeEpochAtSlot preset slot ∧
+      getCurrentEpoch anchorState < computeEpochAtSlot preset slot := by
+    have mono : (computeEpochAtSlot preset firstSlot).toNat ≤
+        (computeEpochAtSlot preset slot).toNat := by
+      simp only [computeEpochAtSlot, UInt64.toNat_div]
+      exact Nat.div_le_div_right (by omega)
+    have two := UInt64.le_iff_toNat_le.mp confirmationEpoch
+    have before := UInt64.lt_iff_toNat_lt.mp anchorEpochBefore
+    refine ⟨UInt64.lt_iff_toNat_lt.mpr ?_, UInt64.lt_iff_toNat_lt.mpr (by omega)⟩
+    simp only [GENESIS_EPOCH, UInt64.toNat_add, UInt64.toNat_zero, UInt64.toNat_one] at two ⊢
+    simp only [UInt64.toNat_ofNat] at two
+    omega
   have forward := fun k => e.forwardReachable
     (fun w hw => (start w hw) ▸ Store.ForwardReachable.anchor anchored) k u caller
   have anchorInvariant := e.callInvariant_anchor anchored start positiveSlots caller slotOk beginOk
@@ -5281,7 +5299,7 @@ theorem Execution.callInvariant_step {Δ : ℕ} (sync : e.Synchronous Δ)
       slotOk beginOk atSlot headOk
       ⟨_, slot, rootEpoch, startEpoch, epochOk, slotOk, rootEpochOk, startEpochOk, recent, checkedCases⟩
       sourceOk walked confirmedAll previousHead targetVotes (boundedLineage callBound)
-      (previousLineage callBound) epochOk startBelow historicalOk historicalRecent epochStartOk
+      (previousLineage callBound) epochOk callEpochs startBelow historicalOk historicalRecent epochStartOk
       epochStartTimeOk (fun earlier lower beforeCall => historicalSafe earlier lower (Nat.le_trans (Nat.le_of_lt beforeCall) callBound))
       startFacts.2 weights slack late anchorParent nonzero inHorizon
       (fun w hw k state bounded counts epochLe => large w hw k state bounded counts
@@ -5482,6 +5500,15 @@ The anchor need not be finalized, and a genesis anchor needs no such start.
 
 The proof does not use this premise: it only fixes which executions the theorem describes.
 
+The first call is in epoch 2 or later, by `confirmationEpoch`, and after the epoch of the anchor
+state, by `anchorEpochBefore`.
+
+Justification skips the first two epochs, so votes for a target of epoch 1 count only in epoch 2.
+
+A call in the anchor's epoch can confirm a block above the anchor without a counted quorum.
+
+A rule that does not confirm in those epochs would discharge both premises.
+
 The proof is a strong induction on the calls, with `Execution.callInvariant_step`.
 
 In [verified-fast-confirmation][vfc], this is `confirmed_root_safe_from_next_slot`.
@@ -5576,6 +5603,8 @@ theorem Execution.safeAt_confirmedRoot
         (getCurrentEpoch state).toNat ≤ epoch.toNat + 1 →
         DriftAtMost headState state margin)
     {u : ValidatorIndex} (caller : u ∈ J) {events : List ℕ} {firstSlot : Slot}
+    (confirmationEpoch : 2 ≤ computeEpochAtSlot preset firstSlot)
+    (anchorEpochBefore : getCurrentEpoch anchorState < computeEpochAtSlot preset firstSlot)
     (upToDate : ∀ n ∈ events, UpToDate config .bls sources (e.world n).time
       ((e.world n).view u) ((e.world n).state u))
     (lower : ∀ n ∈ events, ((e.world n).state u).ParentsBelow)
@@ -5616,7 +5645,8 @@ theorem Execution.safeAt_confirmedRoot
         start noVotes maxAligned increment chain unique byzantine unslashed supply exits
         quorumDrifts positive
         enough
-        large nonzero headDrifts caller upToDate lower atSlots bounds inHorizon anchorParent calls
+        large nonzero headDrifts caller confirmationEpoch anchorEpochBefore upToDate lower atSlots
+        bounds inHorizon anchorParent calls
         callBound fun i' lt n' fcr' after' calls' => ih i' lt n' fcr' after' calls'
   -- The last call of the run stores the block that the run returns.
   obtain ⟨prior, rfl⟩ := List.getLast?_eq_some_iff.mp lastCall

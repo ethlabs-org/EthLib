@@ -3514,6 +3514,8 @@ The honest stores check signatures with BLS.
 
 A change to the rule that rejects an advance failing either guard would discharge them.
 
+As there, the first call is in epoch 2 or later and after the epoch of the anchor state.
+
 `Execution.quorumDriftsHead_of_oneBlock` bounds the drift of the honest quorum of each call.
 
 It needs the bands of hysteresis, the withdrawal delay and the Electra caps of the parameters. -/
@@ -3585,6 +3587,8 @@ theorem Execution.safeAt_confirmedRoot_accountable
     (electraFloor : preset.MAX_EFFECTIVE_BALANCE = preset.MIN_ACTIVATION_BALANCE)
     (electraCap : preset.MIN_ACTIVATION_BALANCE ≤ preset.MAX_EFFECTIVE_BALANCE_ELECTRA)
     {u : ValidatorIndex} (caller : u ∈ J) {events : List ℕ} {firstSlot : Slot}
+    (confirmationEpoch : 2 ≤ computeEpochAtSlot preset firstSlot)
+    (anchorEpochBefore : getCurrentEpoch anchorState < computeEpochAtSlot preset firstSlot)
     (upToDate : ∀ n ∈ events, UpToDate config .bls sources (e.world n).time
       ((e.world n).view u) ((e.world n).state u))
     (lower : ∀ n ∈ events, ((e.world n).state u).ParentsBelow)
@@ -3642,7 +3646,8 @@ theorem Execution.safeAt_confirmedRoot_accountable
       historyEnough inHorizon large anchorParent oneBlock lookahead.2.1 long)
     (e.quorumDriftsHead_of_oneBlock anchored start anchorSlot slots parameters genesis history
       forkWindow inHorizon oneBlock lookahead.2.1 bands withdrawDelay electraFloor electraCap)
-    positive enough large nonzero headDrifts caller upToDate lower atSlots ran
+    positive enough large nonzero headDrifts caller confirmationEpoch anchorEpochBefore upToDate
+    lower atSlots ran
     bounds inHorizon anchorParent lastCall slotOk nextOk followingOk nonempty)
 
 end EthLib.Consensus.Models.Network

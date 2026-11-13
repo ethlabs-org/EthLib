@@ -647,6 +647,8 @@ theorem Execution.coveredOrViableAt_late_current {Δ : ℕ} (sync : e.Synchronou
       ((e.world n).state u).getCurrentSlot config = .ok slot ∧
       computeTimeAtSlotMs config genesisTimeMs slot = .ok begin ∧
       (e.world n).time = begin.toNat)
+    (callEpochs : ∀ epoch, ((e.world n).state u).getCurrentStoreEpoch config = .ok epoch →
+      GENESIS_EPOCH + 1 < epoch ∧ getCurrentEpoch anchorState < epoch)
     {fcr : FastConfirmationStore} {head : ForkChoiceNode} {start root : Root}
     (headOk : ((e.world n).state u).getHead config = .ok head)
     (checked : ((e.world n).state u).Checked config fcr head.root start root)
@@ -865,8 +867,20 @@ theorem Execution.coveredOrViableAt_late_current {Δ : ℕ} (sync : e.Synchronou
   obtain ⟨q, qLe, origin, _, originEpoch, rootAboveOrigin, arm, originSafe⟩ := record
   rcases arm with anchorOrigin | ⟨headQ, readyQ, epochQ, headQOk, checkQ, originBelowHeadQ,
     countQ, slotQ, beginQ, slotQOk, beginQOk, atQ⟩
-  -- An origin at the anchor carries no target check: held for fradamt's decision.
-  · sorry
+  -- An origin at the anchor would put the call in the anchor's epoch.
+  · obtain ⟨anchorKey, anchorHash, anchorKnown⟩ :=
+      (e.reachable (fun v hv => (anchored v hv) ▸ Store.Reachable.anchor anchorStore) n u
+        caller).anchor_known
+    obtain ⟨anchorRoot, rootHash, _, _, _, anchorFinal, _⟩ := getForkchoiceStore_anchor anchorStore
+    have sameKey := Except.ok.inj (anchorHash.symm.trans rootHash)
+    subst sameKey
+    subst anchorOrigin
+    simp only [anchorFinal] at originEpoch
+    simp only [Store.getBlockEpoch, Store.block_ok_iff.mpr anchorKnown, bind, Except.bind, pure,
+      Except.pure, Except.ok.injEq] at originEpoch
+    have after := (callEpochs _ epochOk).2
+    rw [← originEpoch, anchorSlot] at after
+    exact absurd after (UInt64.lt_irrefl _)
   obtain ⟨stateQ, ancQ, totalQ, target, slotQ', firstQ, lastQ, participantsQ, voters, stateQOk,
     totalQOk, targetQOk, ancQStored, slotQOk', targetEpochQ, firstQOk, lastQOk, participantsQOk,
     targetReadQ, members, quorum⟩ :=
@@ -945,13 +959,9 @@ theorem Execution.coveredOrViableAt_late_current {Δ : ℕ} (sync : e.Synchronou
       w receiver k (computeEpochAtSlot preset current) atTime.le (by rw [atTime]; exact later)
       ready receiverEpochOk (by rw [targetEpoch]; omega) root target.epoch rootEpochReceiver
       (UInt64.le_refl _) rootRead (fun t low high => safe t low (by rw [← atTime]; exact high))
-  -- The call is in epoch 2 or later: fradamt's approved `confirmationEpoch`, held until the
-  -- anchor-epoch decision so that the public premises change once.
-  have targetLate : GENESIS_EPOCH + 1 < target.epoch := by
-    sorry
-  -- The call is after the anchor's epoch: open with fradamt; only phase0 pending votes use it.
-  have anchorBefore : getCurrentEpoch anchorState < target.epoch := by
-    sorry
+  have targetLate : GENESIS_EPOCH + 1 < target.epoch := targetEpoch ▸ (callEpochs _ epochOk).1
+  have anchorBefore : getCurrentEpoch anchorState < target.epoch :=
+    targetEpoch ▸ (callEpochs _ epochOk).2
   have forward := e.forwardReachable
     (fun v hv => (anchored v hv) ▸ Store.ForwardReachable.anchor anchorStore)
   have reached := (forward k w receiver).reachable
