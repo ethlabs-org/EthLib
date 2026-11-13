@@ -882,19 +882,32 @@ private def forkEpochs (config : Config) (x : ForkedBeaconState preset) (high : 
       (config.ELECTRA_FORK_EPOCH.toNat - (getCurrentEpoch x.state).toNat)
   else 0
 
-/-- The guard of a branch from `x` through `high + 1`, with every observable read at `x`. -/
+/-- The guard of a branch from `x` through `high + 1`, with every observable read at `x`.
+
+It also requires a state before Electra to be in an epoch before the Electra fork epoch.
+
+A state before Electra whose epoch has reached the Electra fork epoch never upgrades.
+
+The upgrade fires only at the boundary of that epoch, and the formula does not charge such a run. -/
 private noncomputable def aprioriGuardAt (config : Config) (x : ForkedBeaconState preset)
     (high : Nat) : Prop :=
+  (x.fork < .pectra → (getCurrentEpoch x.state).toNat < config.ELECTRA_FORK_EPOCH.toNat) ∧
   aprioriGuard preset config (refStake x) (slashedActiveStake x) (slashedPenalisedStake x)
     (refCount x) (startScore config x) (startSlack x) (fundingCarry x) (preActiveStake x)
     (scheduledCount x) (scheduledDepartures x (driftHorizon x high))
     (duePartials x (driftHorizon x high)) (slashableInactiveStake x) (fundedStake x)
     (driftHorizon x high) (forkEpochs config x high)
 
-/-- The drift `f` of a branch from `x` through `high + 1`, with every observable read at `x`. -/
+/-- The drift `f` of a branch from `x` through `high + 1`, with every observable read at `x`.
+
+A state before Electra whose epoch has reached the Electra fork epoch fails the guard.
+
+Its drift is the unslashed stake `W - Z`, as for any other failed guard. -/
 private noncomputable def aprioriDriftAt (config : Config) (x : ForkedBeaconState preset)
     (high : Nat) : Nat :=
-  aprioriDrift preset config (refStake x) (slashedActiveStake x) (slashedPenalisedStake x)
+  if x.fork < .pectra ∧ config.ELECTRA_FORK_EPOCH.toNat ≤ (getCurrentEpoch x.state).toNat then
+    refStake x - slashedActiveStake x
+  else aprioriDrift preset config (refStake x) (slashedActiveStake x) (slashedPenalisedStake x)
     (refCount x) (highKeys x) (startScore config x) (startSlack x) (initialExcess x)
     (fundingCarry x) (preActiveStake x) (scheduledCount x)
     (scheduledDepartures x (driftHorizon x high)) (duePartials x (driftHorizon x high))
