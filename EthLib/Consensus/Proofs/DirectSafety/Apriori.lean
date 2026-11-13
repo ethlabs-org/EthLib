@@ -3,6 +3,7 @@ module
 public import EthLib.Consensus.Participation
 public import EthLib.Consensus.Proofs.DirectSafety.BalanceSources
 public import EthLib.Consensus.Proofs.DirectSafety.IntervalFunding
+import EthLib.Consensus.Proofs.DirectSafety.DepartureQueue
 public import Mathlib.Data.Nat.Sqrt
 public import Mathlib.Order.Monotone.Defs
 import EthLib.Base.Proofs.MapM
@@ -850,18 +851,6 @@ private def dueCredits (x : ForkedBeaconState preset) (horizon : Nat) : Nat :=
       | none => 0).sum
   else 0
 
-/-- `eX`: the earliest exit epoch less the current epoch, or zero before Electra. -/
-private def exitQueueEnd (x : ForkedBeaconState preset) : Nat :=
-  if electra : .pectra ≤ x.fork then
-    (x.state.earliestExitEpoch electra).toNat - (getCurrentEpoch x.state).toNat
-  else 0
-
-/-- `eC`: the earliest consolidation epoch less the current epoch, or zero before Electra. -/
-private def consolidationQueueEnd (x : ForkedBeaconState preset) : Nat :=
-  if electra : .pectra ≤ x.fork then
-    (x.state.earliestConsolidationEpoch electra).toNat - (getCurrentEpoch x.state).toNat
-  else 0
-
 /-- `Bd`: the largest effective balance that exits in two adjacent epochs of the window. -/
 private def boundaryLoad (x : ForkedBeaconState preset) (horizon : Nat) : Nat :=
   ((List.range (horizon + 1)).map fun t =>
@@ -902,7 +891,10 @@ private noncomputable def aprioriDriftAt (config : Config) (x : ForkedBeaconStat
     (refCount x) (highKeys x) (startScore config x) (startSlack x) (initialExcess x)
     (fundingCarry x) (preActiveStake x) (scheduledCount x)
     (scheduledDepartures x (driftHorizon x high)) (duePartials x (driftHorizon x high))
-    (dueCredits x (driftHorizon x high)) (exitQueueEnd x) (consolidationQueueEnd x)
+    (dueCredits x (driftHorizon x high))
+    -- `eX` and `eC`: the start of each queue less the current epoch, zero before Electra.
+    (exitQueueStart x - (getCurrentEpoch x.state).toNat)
+    (consolidationQueueStart x - (getCurrentEpoch x.state).toNat)
     (queueCarry x high) (boundaryLoad x (driftHorizon x high)) (slashableInactiveStake x)
     (fundedStake x) (driftHorizon x high) (forkEpochs config x high)
 
