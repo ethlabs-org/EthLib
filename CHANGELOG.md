@@ -102,6 +102,17 @@ Not yet released.
   A proof that unfolds `HashEvidence` to take it apart first rewrites with `hashEvidence_iff`, or applies `hashEvidence_iff.mp`.
   A proof that builds the evidence as an `Or` of the old form applies `hashEvidence_iff.mpr`.
 
+- In Lean, `DirectSafety.slashingLimits` counts only the indices that are slashable at the operation.
+  It still reads every index with `getValidator`, so its errors are unchanged.
+  It then keeps the validators for which `isSlashableValidator` holds at the current epoch, the test of `slashIfSlashable`.
+  An attester slashing pays nothing for an index that is already slashed, so its limits no longer count one.
+  So every value derived from it can only decrease.
+  These are the `creditLimit` and `debitLimit` of the `.slashings` events, and through `fundingCredit (.slashings)` the values `activeStakeWindow`, `consolidationRate` and the right side of `departure_charges_le_funded_window`.
+  `residualCredit` and `sourceDrift` read the same limits, so they can only decrease too.
+  A call on one proposer that is not slashable now gives zero limits.
+  The replay of a successful proposer slashing is unchanged, since `processProposerSlashing` requires the proposer to be slashable.
+  Every theorem statement is unchanged.
+
 - `verify_kzg_proof` checks its inputs in the order of EIP-4844: the commitment, `z`, `y`, then the proof.
   When more than one input is invalid, the first in that order gives the error.
   Before, it checked the proof second, so an input with an invalid `z` and an invalid proof raised the error of the proof.

@@ -145,13 +145,19 @@ It runs the stages before the payments, in the order of the epoch schedule. -/
   EpochTrace.run (epochReplayAction (config := config) (checks := checks))
     EpochStage.prefixStages (s, [])
 
+/-- The whistleblower and penalty limits of a slashing of some indices, read at its input state.
+
+Every index must name a validator.
+
+Only the validators slashable at the current epoch count, since a slashing skips the others. -/
 def slashingLimits {fork : Fork} (indices : List ValidatorIndex) (s : BeaconState preset fork) :
     Except TransitionError (Nat × Nat) := do
   let validators ← liftAccessor (indices.mapM (getValidator s))
+  let slashable := validators.filter fun v => isSlashableValidator v (getCurrentEpoch s)
   let p := EthLib.Consensus.parameters preset fork
-  return ((validators.map fun v => v.effectiveBalance.toNat /
+  return ((slashable.map fun v => v.effectiveBalance.toNat /
       p.WHISTLEBLOWER_REWARD_QUOTIENT.toNat).sum,
-    (validators.map fun v => v.effectiveBalance.toNat / p.MIN_SLASHING_PENALTY_QUOTIENT.toNat).sum)
+    (slashable.map fun v => v.effectiveBalance.toNat / p.MIN_SLASHING_PENALTY_QUOTIENT.toNat).sum)
 
 /-- Pre-Gloas block replay, with limits read at the actual site of each operation. -/
 def blockBalanceReplay {fork : Fork} (early : fork < .glamsterdam)
@@ -1192,37 +1198,73 @@ private theorem proposer_slashing_bounds {fork : Fork} {s t : BeaconState preset
       slashingLimits [sl.signedHeader1.message.proposerIndex] s = .ok (credit, debit) ∧
       balanceCredits s t ≤ credit ∧ balanceDebits s t ≤ debit := by
   simp only [processProposerSlashing, bind_ok_iff, ensure_ok_iff, liftAccessor_ok] at ok
-  obtain ⟨_, _, _, _, _, _, v, found, _, _, _, _, _, _, slashed⟩ := ok
+  obtain ⟨_, _, _, _, _, _, v, found, _, slashable, _, _, _, _, slashed⟩ := ok
   have bounds := initial_slashing_bounds s t _ none v found slashed
   refine ⟨_, _, ?_, bounds.2, bounds.1⟩
-  simp [slashingLimits, found, List.mapM_cons, List.mapM_nil, liftAccessor,
+  simp [slashingLimits, found, slashable, List.mapM_cons, List.mapM_nil, liftAccessor,
     Except.mapError, bind, Except.bind, pure, Except.pure]
 
-private theorem slash_effective {fork : Fork} {s t : BeaconState preset fork}
-    {index : ValidatorIndex} {whistleblower : Option ValidatorIndex}
-    (ok : slashValidator config s index whistleblower = .ok t) :
-    ∀ j, (getValidator t j).map Validator.effectiveBalance =
-      (getValidator s j).map Validator.effectiveBalance := by
-  intro j
-  have size := (sameSizes_slashValidator ok).1
-  unfold getValidator
-  by_cases inside : j.toNat < s.validators.data.size
-  · have inside' : j.toNat < t.validators.data.size := size ▸ inside
-    have kept := effectiveKept_slash ok j.toNat inside
-    simp only [effectiveAt, Array.getElem?_eq_getElem inside, Array.getElem?_eq_getElem inside',
-      Option.map_some, Option.getD_some] at kept
-    simp only [Array.getElem?_eq_getElem inside, Array.getElem?_eq_getElem inside', Except.map,
-      UInt64.toNat_inj.mp kept]
-  · have outside : ¬j.toNat < t.validators.data.size := size ▸ inside
-    simp only [Array.getElem?_eq_none (Nat.le_of_not_gt inside),
-      Array.getElem?_eq_none (Nat.le_of_not_gt outside), Except.map]
+/-- Slashing a validator keeps the record of every other validator. -/
+private theorem getValidator_slashValidator_of_ne {fork : Fork} {s t : BeaconState preset fork}
+    {index other : ValidatorIndex} {whistleblower : Option ValidatorIndex}
+    (ok : slashValidator config s index whistleblower = .ok t) (distinct : other ≠ index) :
+    getValidator t other = getValidator s other := by
+  obtain ⟨exited, _, _, marked, _, _, _, _, _, _, _, last, exitedOk, -, -, markedOk, -, -, -,
+    lowered, -, -, raised, final, done⟩ := slashValidator_ok ok
+  -- The balance steps and the last step keep the registry in which the validator is marked.
+  have same : t.validators = marked.validators := by
+    rw [(slashValidator_last (last := last) (after := t) (index := index) (by subst done; rfl)).1,
+      increaseBalance_validators final, increaseBalance_validators raised,
+      decreaseBalance_validators lowered]
+  rw [getValidator_of_validators_eq same, getValidator_setValidator_of_ne markedOk distinct]
+  obtain ⟨_, _, ⟨_, rfl⟩ | ⟨_, _, _, _, queue, _, set⟩⟩ := initiateValidatorExit_ok exitedOk
+  · rfl
+  · rw [getValidator_setValidator_of_ne set distinct,
+      getValidator_of_validators_eq (exitQueue_validators queue).1]
+
+/-- The limits of a slashing read only the records of its indices and the current epoch. -/
+private theorem slashingLimits_congr {fork : Fork} {s t : BeaconState preset fork}
+    {indices : List ValidatorIndex} (same : ∀ j ∈ indices, getValidator t j = getValidator s j)
+    (epoch : getCurrentEpoch t = getCurrentEpoch s) :
+    slashingLimits indices t = slashingLimits indices s := by
+  have mapped : indices.mapM (getValidator t) = indices.mapM (getValidator s) := by
+    induction indices with
+    | nil => rfl
+    | cons j js ih =>
+      simp only [List.mapM_cons, same j List.mem_cons_self,
+        ih fun k member => same k (List.mem_cons_of_mem j member)]
+  simp only [slashingLimits, mapped, epoch]
+
+/-- The limits of a slashing add the limits of its first index, if it is slashable. -/
+private theorem slashingLimits_cons {fork : Fork} {s : BeaconState preset fork}
+    {index : ValidatorIndex} {indices : List ValidatorIndex} {v : Validator}
+    (read : getValidator s index = .ok v) {credit debit : Nat}
+    (rest : slashingLimits indices s = .ok (credit, debit)) :
+    slashingLimits (index :: indices) s = .ok
+      ((if isSlashableValidator v (getCurrentEpoch s) then v.effectiveBalance.toNat /
+          (EthLib.Consensus.parameters preset fork).WHISTLEBLOWER_REWARD_QUOTIENT.toNat
+        else 0) + credit,
+      (if isSlashableValidator v (getCurrentEpoch s) then v.effectiveBalance.toNat /
+          (EthLib.Consensus.parameters preset fork).MIN_SLASHING_PENALTY_QUOTIENT.toNat
+        else 0) + debit) := by
+  simp only [slashingLimits, bind_ok_iff, liftAccessor_ok, pure, Except.pure,
+    Except.ok.injEq] at rest ⊢
+  obtain ⟨validators, found, rest⟩ := rest
+  refine ⟨v :: validators, by simp [List.mapM_cons, read, found, bind, Except.bind, pure,
+    Except.pure], ?_⟩
+  simp only [Prod.mk.injEq] at rest
+  obtain ⟨rfl, rfl⟩ := rest
+  by_cases slashable : isSlashableValidator v (getCurrentEpoch s) = true <;>
+    simp [slashable]
 
 private theorem attester_slashing_bounds {fork : Fork} {s t : BeaconState preset fork}
     (sl : AttesterSlashing preset fork)
     (ok : processAttesterSlashing config checks s sl = .ok t) :
     ∃ credit debit, slashingLimits (slashingIndices sl) s = .ok (credit, debit) ∧
       balanceCredits s t ≤ credit ∧ balanceDebits s t ≤ debit := by
-  have fold (indices : List ValidatorIndex) (s t : BeaconState preset fork) (flag last : Bool)
+  -- The indices are distinct, so each step reads its own record as it was at the input.
+  have fold (indices : List ValidatorIndex) (distinct : indices.Nodup)
+      (s t : BeaconState preset fork) (flag last : Bool)
       (ok : indices.foldlM (slashIfSlashable config) (s, flag) = .ok (t, last)) :
       ∃ credit debit, slashingLimits indices s = .ok (credit, debit) ∧
         balanceCredits s t ≤ credit ∧ balanceDebits s t ≤ debit ∧
@@ -1234,72 +1276,49 @@ private theorem attester_slashing_bounds {fork : Fork} {s t : BeaconState preset
         Except.pure, bind, Except.bind], by simp [balanceCredits],
         by simp [balanceDebits], rfl⟩
     | cons i indices ih =>
+      obtain ⟨absent, distinct⟩ := List.nodup_cons.mp distinct
       obtain ⟨⟨u, flag'⟩, one, rest⟩ := bind_ok_iff.mp ok
       simp only [slashIfSlashable, bind_ok_iff, liftAccessor_ok] at one
       obtain ⟨v, read, one⟩ := one
+      -- One step pays at most the limits of its index, and keeps the other records.
       have oneFacts :
-          balanceCredits s u ≤ v.effectiveBalance.toNat /
-            (EthLib.Consensus.parameters preset fork).WHISTLEBLOWER_REWARD_QUOTIENT.toNat ∧
-          balanceDebits s u ≤ v.effectiveBalance.toNat /
-            (EthLib.Consensus.parameters preset fork).MIN_SLASHING_PENALTY_QUOTIENT.toNat ∧
+          balanceCredits s u ≤ (if isSlashableValidator v (getCurrentEpoch s) then
+            v.effectiveBalance.toNat /
+              (EthLib.Consensus.parameters preset fork).WHISTLEBLOWER_REWARD_QUOTIENT.toNat
+            else 0) ∧
+          balanceDebits s u ≤ (if isSlashableValidator v (getCurrentEpoch s) then
+            v.effectiveBalance.toNat /
+              (EthLib.Consensus.parameters preset fork).MIN_SLASHING_PENALTY_QUOTIENT.toNat
+            else 0) ∧
           u.balances.data.size = s.balances.data.size ∧
-          ∀ j, (getValidator u j).map Validator.effectiveBalance =
-            (getValidator s j).map Validator.effectiveBalance := by
+          (∀ j ∈ indices, getValidator u j = getValidator s j) ∧
+          getCurrentEpoch u = getCurrentEpoch s := by
         split at one
-        · simp only [bind_ok_iff, liftAccessor_ok, pure, Except.pure,
+        · rename_i slashable
+          simp only [bind_ok_iff, liftAccessor_ok, pure, Except.pure,
             Except.ok.injEq, Prod.mk.injEq] at one
           obtain ⟨u', slashed, rfl, rfl⟩ := one
           have bounds := initial_slashing_bounds s u' i none v read slashed
-          exact ⟨bounds.2, bounds.1, (sameSizes_slashValidator slashed).2,
-            slash_effective slashed⟩
+          simp only [slashable, ↓reduceIte]
+          refine ⟨bounds.2, bounds.1, (sameSizes_slashValidator slashed).2,
+            fun j member => getValidator_slashValidator_of_ne slashed
+              fun same => absent (same ▸ member), ?_⟩
+          unfold getCurrentEpoch
+          rw [(frame_slashValidator slashed).slot]
         · cases one
-          exact ⟨by simp [balanceCredits], by simp [balanceDebits], rfl, fun _ => rfl⟩
-      obtain ⟨credit, debit, limits, credits, debits, sizes⟩ := ih u flag' rest
+          exact ⟨by simp [balanceCredits], by simp [balanceDebits], rfl, fun _ _ => rfl, rfl⟩
+      obtain ⟨credits₁, debits₁, sizes₁, same, epoch⟩ := oneFacts
+      obtain ⟨credit, debit, limits, credits, debits, sizes⟩ := ih distinct u flag' rest
+      rw [slashingLimits_congr same epoch] at limits
       have triangle :=
-        And.intro (credits_triangle s u t sizes) (debits_triangle s u t oneFacts.2.2.1.symm)
-      refine ⟨v.effectiveBalance.toNat /
-          (EthLib.Consensus.parameters preset fork).WHISTLEBLOWER_REWARD_QUOTIENT.toNat + credit,
-        v.effectiveBalance.toNat /
-          (EthLib.Consensus.parameters preset fork).MIN_SLASHING_PENALTY_QUOTIENT.toNat + debit,
-        ?_, by omega, by omega, sizes.trans oneFacts.2.2.1⟩
-      simp only [slashingLimits, bind_ok_iff, liftAccessor_ok, pure, Except.pure,
-        Except.ok.injEq] at limits ⊢
-      obtain ⟨validators, found, limits⟩ := limits
-      have original : ∃ validators', indices.mapM (getValidator s) = .ok validators' ∧
-          (validators'.map fun v => v.effectiveBalance) =
-            (validators.map fun v => v.effectiveBalance) := by
-        clear limits credits debits triangle sizes rest ih ok
-        induction indices generalizing validators with
-        | nil => cases found; exact ⟨[], rfl, rfl⟩
-        | cons j js ih =>
-          simp only [List.mapM_cons, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at found
-          obtain ⟨v', read', vs, rest, rfl⟩ := found
-          have eq := oneFacts.2.2.2 j
-          rw [read'] at eq
-          cases originalRead : getValidator s j with
-          | error e => simp [originalRead, Except.map] at eq
-          | ok w =>
-            simp only [originalRead, Except.map, Except.ok.injEq] at eq
-            obtain ⟨ws, wsOk, same⟩ := ih vs rest
-            refine ⟨w :: ws, ?_, ?_⟩
-            · simp [List.mapM_cons, originalRead, wsOk, bind, Except.bind, pure, Except.pure]
-            · simp only [List.map_cons, same, eq]
-      obtain ⟨validators', found', same⟩ := original
-      refine ⟨v :: validators', ?_, ?_⟩
-      · simp [List.mapM_cons, read, found', bind, Except.bind, pure, Except.pure]
-      · have creditsEq := congrArg (fun vs => (vs.map fun b => b.toNat /
-            (EthLib.Consensus.parameters preset fork).WHISTLEBLOWER_REWARD_QUOTIENT.toNat).sum)
-          same
-        have debitsEq := congrArg (fun vs => (vs.map fun b => b.toNat /
-            (EthLib.Consensus.parameters preset fork).MIN_SLASHING_PENALTY_QUOTIENT.toNat).sum)
-          same
-        simp only [List.map_map, Function.comp_def] at creditsEq debitsEq
-        cases limits
-        simp only [List.map_cons, List.sum_cons, creditsEq, debitsEq]
+        And.intro (credits_triangle s u t sizes) (debits_triangle s u t sizes₁.symm)
+      exact ⟨_, _, slashingLimits_cons read limits, by omega, by omega, sizes.trans sizes₁⟩
   simp only [processAttesterSlashing, bind_ok_iff, ensure_ok_iff, pure, Except.pure,
     Except.ok.injEq] at ok
   obtain ⟨_, _, _, _, _, _, _, _, _, _, ⟨u, flag⟩, folded, _, _, rfl⟩ := ok
-  obtain ⟨credit, debit, limits, credits, debits, _⟩ := fold _ s u false flag folded
+  have distinct : (slashingIndices sl).Nodup :=
+    (sortedSet_sorted _).imp fun less => UInt64.ne_of_lt less
+  obtain ⟨credit, debit, limits, credits, debits, _⟩ := fold _ distinct s u false flag folded
   exact ⟨credit, debit, limits, credits, debits⟩
 
 private theorem consolidation_request_bounds {fork : Fork} {s t : BeaconState preset fork}
