@@ -3183,6 +3183,91 @@ theorem run_exitTrace {x y : ForkedBeaconState preset}
         rw [prefixAt (consumed + k) (by omega), queue, List.getElem?_drop]
         simp
 
+/-- A sum over the entries of a list that pass a test is the same sum over the positions. -/
+private theorem sum_filter_map_eq_sum_range {α : Type} (p : α → Bool) (f : α → ℕ) :
+    ∀ l : List α, ((l.filter p).map f).sum =
+      ∑ j ∈ Finset.range l.length, ((l[j]?.filter p).map f).getD 0
+  | [] => by simp
+  | a :: l => by
+    rw [List.length_cons, Finset.sum_range_succ']
+    simp only [List.getElem?_cons_succ, List.getElem?_cons_zero,
+      ← sum_filter_map_eq_sum_range p f l]
+    cases passes : p a
+    · simp [passes, Option.filter_some]
+    · simp [passes, Option.filter_some]
+      omega
+
+/-- A run whose blocks all lie in an epoch pays a validator only from the queue at its start.
+
+The blocks of the run start no earlier than the epoch, and the run ends no later than it.
+
+The run pays the validator at most the amounts of the validator's entries in the starting queue.
+
+Only the entries that are withdrawable by the epoch count.
+
+An entry that a block appends becomes withdrawable after the epoch of that block.
+
+So no block of the run pays an entry that the run appended. -/
+theorem queuePaid_le_ancestorPartials {x y : ForkedBeaconState preset}
+    (tail : Run config checks x y) (electra : .pectra ≤ x.fork)
+    (early : y.fork < .glamsterdam) (targetElectra : .pectra ≤ y.fork) {epoch : Epoch}
+    (blocks : ∀ {f : Fork} {before after : BeaconState preset f}
+      {engine : ExecutionEngine preset f} {signed : SignedBeaconBlock preset f}
+      {due : upgradeDue config ⟨f, before⟩ = false}
+      {applied : applySignedBlock config checks engine before signed true = .ok after},
+      tail.Contains (.block engine signed due applied) → epoch ≤ getCurrentEpoch before)
+    (ended : getCurrentEpoch y.state ≤ epoch) (v : ValidatorIndex) :
+    tail.queuePaid v ≤
+      (((x.state.pendingPartialWithdrawals electra).data.toList.filter fun w =>
+        w.validatorIndex.toNat = v.toNat ∧ w.withdrawableEpoch ≤ epoch).map
+          (·.amount.toNat)).sum := by
+  obtain ⟨_, -, -, appended, consumed, paid, -, -, charged, -, entries, sums⟩ :=
+    run_exitTrace tail electra early targetElectra
+  generalize queueDef : (x.state.pendingPartialWithdrawals electra).data.toList = queue at *
+  -- What an entry of the starting queue can pay the validator by the epoch.
+  let due (j : ℕ) := ((queue[j]?.filter fun w =>
+    w.validatorIndex.toNat = v.toNat ∧ w.withdrawableEpoch ≤ epoch).map (·.amount.toNat)).getD 0
+  -- No position pays more than the due amount of the entry of the starting queue at it.
+  have bound : ∀ j ∈ Finset.range consumed,
+      (if (queue ++ appended.map (·.1))[j]?.map (·.validatorIndex) = some v then paid j else 0) ≤
+        if j < queue.length then due j else 0 := by
+    intro j member
+    obtain ⟨w, found, cap, paidDue⟩ := entries j (Finset.mem_range.mp member)
+    by_cases positive : 0 < paid j
+    swap
+    · have zero : paid j = 0 := by omega
+      simp [zero]
+    have withdrawable := UInt64.le_trans (paidDue positive) ended
+    by_cases old : j < queue.length
+    · have read : queue[j]? = some w := by rwa [List.getElem?_append_left old] at found
+      simp only [found, read, Option.map_some, Option.some.injEq, old, ↓reduceIte, due,
+        Option.filter_some]
+      by_cases named : w.validatorIndex = v
+      · simp [named, withdrawable, cap]
+      · simp [named]
+    · -- An appended entry becomes withdrawable after the epoch of its block, which is the epoch.
+      exfalso
+      rw [List.getElem?_append_right (by omega), List.getElem?_map] at found
+      obtain ⟨a, appendedAt, rfl⟩ := Option.map_eq_some_iff.mp found
+      obtain ⟨-, ⟨_, _, _, _, _, _, _, contained, blockEpoch⟩, call, -, -, delay, starts⟩ :=
+        charged a (List.mem_of_getElem? appendedAt)
+      have late := UInt64.le_iff_toNat_le.mp (blockEpoch ▸ blocks contained)
+      have placed := UInt64.le_iff_toNat_le.mp (churnQueue_spend call.computed).1
+      rw [Base.Uint64.toNat_max] at placed
+      have paidBy := UInt64.le_iff_toNat_le.mp withdrawable
+      omega
+  rw [sums v, Finset.sum_filter, sum_filter_map_eq_sum_range]
+  calc _ ≤ ∑ j ∈ Finset.range consumed, if j < queue.length then due j else 0 :=
+        Finset.sum_le_sum bound
+    _ ≤ ∑ j ∈ Finset.range (queue.length + consumed), if j < queue.length then due j else 0 :=
+        Finset.sum_le_sum_of_subset fun j member =>
+          Finset.mem_range.mpr (by have := Finset.mem_range.mp member; omega)
+    _ = ∑ j ∈ Finset.range queue.length, due j := by
+        rw [Finset.sum_range_add]
+        simp only [↓reduceIte, Finset.sum_const_zero, Nat.add_zero,
+          show ∀ k, ¬ queue.length + k < queue.length from fun _ => by omega]
+        exact Finset.sum_congr rfl fun j member => by simp [Finset.mem_range.mp member]
+
 private theorem queueExcess_registry {fork : Fork} {s t : BeaconState preset fork}
     (electra : .pectra ≤ fork) {index : ValidatorIndex}
     (ok : queueExcessActiveBalance s electra index = .ok t) : t.validators = s.validators := by
