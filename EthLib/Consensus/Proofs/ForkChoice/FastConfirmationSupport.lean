@@ -709,7 +709,12 @@ def quorumReserve (config : Config) (state ancestor : BeaconState preset fork) :
      else 3 * (base i * max num den / den) + base i) + slots * sync i
   let penalty (i : ℕ) :=
     (if .altair ≤ fork then base i else 3 * base i) + inactivity i + slots * sync i
-  let proposerCredit := ∑ i ∈ positions with recent i, base i
+  -- The proposer share of the sync rewards of a full epoch, paid per seat as in the sync step.
+  let syncProposer := if .altair ≤ fork then
+      slots * preset.SYNC_COMMITTEE_SIZE.toNat *
+        (seatReward * PROPOSER_WEIGHT.toNat / (WEIGHT_DENOMINATOR.toNat - PROPOSER_WEIGHT.toNat))
+    else 0
+  let proposerCredit := (∑ i ∈ positions with recent i, base i) + syncProposer
   let whistleblower := (∑ i ∈ positions with (validator i).any (fun v =>
       v.activationEpoch ≤ epoch && epoch < v.withdrawableEpoch), effective i) /
     p.WHISTLEBLOWER_REWARD_QUOTIENT.toNat
@@ -718,7 +723,7 @@ def quorumReserve (config : Config) (state ancestor : BeaconState preset fork) :
   let due := if electra : .pectra ≤ fork then
       (state.pendingConsolidations electra).data.toList.filter fun c =>
         ((validator c.sourceIndex.toNat).map fun v =>
-          decide (v.withdrawableEpoch ≤ epoch + 1)).getD false
+          v.slashed || decide (v.withdrawableEpoch ≤ epoch + 1)).getD false
     else []
   let dueStake := (due.map fun c => effective c.sourceIndex.toNat).sum
   let proposers := if .altair ≤ fork then slots else 2 * slots
