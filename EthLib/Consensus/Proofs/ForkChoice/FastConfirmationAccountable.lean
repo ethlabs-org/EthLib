@@ -3033,8 +3033,22 @@ Or validators with enough stake signed slashable votes, up to the drift of effec
 
 Or two runs to held states show a concrete hash fault.
 
-The hypothesis `anchorParent` stays: it is a condition on checkpoint sync, not on hashes. -/
-theorem Execution.safeAt_confirmedRoot_accountable {Δ : ℕ} (sync : e.Synchronous Δ)
+The hypothesis `anchorParent` stays: it is a condition on checkpoint sync, not on hashes.
+
+The honest stores check signatures with BLS.
+
+`RuleBounds` guards each advance by realized recency and by a head that realized earlier epochs.
+
+A change to the rule that rejects an advance failing either guard would discharge them.
+
+The hypothesis `quorumDrifts` is temporary, an intermediate assembly step.
+
+It bounds the drift of the honest quorum of each call by the quorum reserve of its pulled-up state.
+
+The accountable producer of that bound, from runs, replaces it when it lands. -/
+theorem Execution.safeAt_confirmedRoot_accountable
+    {e : Execution (honestForkChoice config .bls sources anchorState anchorBlock assignment
+      genesisTimeMs) J} {Δ : ℕ} (sync : e.Synchronous Δ)
     [NeZero preset.BYTES_PER_LOGS_BLOOM.toNat] [NeZero preset.SYNC_COMMITTEE_SIZE.toNat]
     [NeZero preset.MAX_COMMITTEES_PER_SLOT.toNat] [NeZero preset.PTC_SIZE.toNat]
     [NeZero preset.INCLUSION_LIST_COMMITTEE_SIZE.toNat]
@@ -3064,8 +3078,8 @@ theorem Execution.safeAt_confirmedRoot_accountable {Δ : ℕ} (sync : e.Synchron
     (forkWindow : fork < .glamsterdam ∧ ∀ next ∈ config.nextFork fork,
       horizon.toNat < next.2.toNat)
     (parameters : DirectSafety.Parameters preset)
-    {g : ForkedBeaconState preset} (genesis : Genesis (config := config) (checks := checks) g)
-    (history : Run config checks g ⟨fork, anchorState⟩)
+    {g : ForkedBeaconState preset} (genesis : Genesis (config := config) (checks := .bls) g)
+    (history : Run config .bls g ⟨fork, anchorState⟩)
     (historyEnough : EnoughStake history)
     {threshold margin : ℕ}
     (byzantine : ∀ w ∈ J, ∀ k (state : BeaconState preset fork) total,
@@ -3095,8 +3109,26 @@ theorem Execution.safeAt_confirmedRoot_accountable {Δ : ℕ} (sync : e.Synchron
         epoch.toNat ≤ (getCurrentEpoch state).toNat →
         (getCurrentEpoch state).toNat ≤ epoch.toNat + 1 →
         DriftAtMost headState state margin)
+    (quorumDrifts : ∀ u ∈ J, ∀ n (head : Root) (pulled anc : BeaconState preset fork)
+        (target : Checkpoint),
+      (e.world n).time ≤ limit →
+      ((e.world n).state u).getPulledUpHeadState config head = .ok pulled →
+      ((e.world n).state u).getCurrentTarget config head = .ok target →
+      ((e.world n).state u).blockStates[target.root]? = some anc →
+      ∀ w ∈ J, ∀ k (root : Root) (rootState state : BeaconState preset fork),
+      (e.world k).time ≤ limit → ((e.world k).state w).blockStates[root]? = some rootState →
+      ((e.world k).state w).getCheckpointBlock root target.epoch = .ok target.root →
+      (state = rootState ∨ ∃ slot, processSlots config .bls rootState slot = .ok state) →
+      target.epoch ≤ getCurrentEpoch state →
+      (getCurrentEpoch state).toNat ≤ target.epoch.toNat + 1 → getCurrentEpoch state ≤ horizon →
+      ∀ (voters : Finset ValidatorIndex) (total pulledTotal : Gwei),
+      (∀ v ∈ voters, v ∈ activeVoters pulled ∧ NotSlashed state v) →
+      getTotalActiveBalance state = .ok total → getTotalActiveBalance pulled = .ok pulledTotal →
+      2 * total.toNat + 3 * stake (fun v => balanceAt pulled v.toNat) voters ≤
+        2 * pulledTotal.toNat + 3 * stake (fun v => balanceAt state v.toNat) voters +
+          quorumReserve config pulled anc)
     {u : ValidatorIndex} (caller : u ∈ J) {events : List ℕ} {firstSlot : Slot}
-    (upToDate : ∀ n ∈ events, UpToDate config checks sources (e.world n).time
+    (upToDate : ∀ n ∈ events, UpToDate config .bls sources (e.world n).time
       ((e.world n).view u) ((e.world n).state u))
     (lower : ∀ n ∈ events, ((e.world n).state u).ParentsBelow)
     (atSlots : ∀ i n, events[i]? = some n → ∃ slot begin,
@@ -3151,7 +3183,7 @@ theorem Execution.safeAt_confirmedRoot_accountable {Δ : ℕ} (sync : e.Synchron
     unslashed supply
     (e.exitsHead_of_oneBlock anchored start anchorSlot slots parameters genesis history forkWindow
       historyEnough inHorizon large anchorParent oneBlock lookahead.2.1 long)
-    positive enough large nonzero headDrifts caller upToDate lower atSlots ran
+    quorumDrifts positive enough large nonzero headDrifts caller upToDate lower atSlots ran
     bounds inHorizon anchorParent lastCall slotOk nextOk followingOk nonempty)
 
 end EthLib.Consensus.Models.Network

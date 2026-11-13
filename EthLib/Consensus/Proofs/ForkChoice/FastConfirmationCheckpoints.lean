@@ -956,7 +956,9 @@ There the rule found that the target of the epoch will be justified.
 
 That call was at the start of its slot, and the record keeps that time.
 
-Honest validators held the count of the rule for that target, with the margin.
+Honest validators held the count of the rule for that target.
+
+They held it with the margin plus the quorum reserve of the pulled-up state and the target state.
 
 The origin is safe from that event to the later one.
 
@@ -983,7 +985,11 @@ def TargetChecked
       ((e.world k).state u).getHead config = .ok head ∧
       ((e.world k).state u).willCurrentTargetBeJustified config head.root = .ok true ∧
       ((e.world k).state u).isAncestor ⟨head.root, .pending⟩ ⟨origin, .pending⟩ = .ok true ∧
-      HonestTargetVotes e margin u k head.root ∧
+      (∀ state target anc,
+        ((e.world k).state u).getPulledUpHeadState config head.root = .ok state →
+        ((e.world k).state u).getCurrentTarget config head.root = .ok target →
+        ((e.world k).state u).blockStates[target.root]? = some anc →
+        HonestTargetVotes e (margin + quorumReserve config state anc) u k head.root) ∧
       ∃ slot begin, ((e.world k).state u).getCurrentSlot config = .ok slot ∧
         computeTimeAtSlotMs config genesisTimeMs slot = .ok begin ∧
         (e.world k).time = begin.toNat) ∧
@@ -3404,15 +3410,13 @@ private theorem coverage_unseen_signer_time
     omega
 
 omit [DecidablePred (· ∈ J)] in
-/-- A numeric FFG check supplies the strict honest stake bound used by checkpoint pins. -/
-private theorem coverage_quorum_of_numeric_check {u : ValidatorIndex} {n margin : ℕ}
+/-- The count of the rule for a head names its target, its committees and the honest voters. -/
+private theorem coverage_quorum_of_count {u : ValidatorIndex} {n margin : ℕ}
     {head : Root} (count : HonestTargetVotes e margin u n head)
-    {state : BeaconState preset fork} {total support : Gwei}
+    {state : BeaconState preset fork} {support : Gwei}
     (stateOk : ((e.world n).state u).getPulledUpHeadState config head = .ok state)
-    (totalOk : getTotalActiveBalance state = .ok total)
     (supportOk : ((e.world n).state u).computeHonestFfgSupportForCurrentTarget config head =
-      .ok support)
-    (enough : total.toNat < 3 * support.toNat) :
+      .ok support) :
     ∃ target slot first last participants, ∃ voters : Finset ValidatorIndex,
       ((e.world n).state u).getCurrentTarget config head = .ok target ∧
       ((e.world n).state u).getCurrentSlot config = .ok slot ∧
@@ -3423,12 +3427,12 @@ private theorem coverage_quorum_of_numeric_check {u : ValidatorIndex} {n margin 
       ((e.world n).state u).getCheckpointBlock head target.epoch = .ok target.root ∧
       (∀ v ∈ voters, v ∈ J ∧ v ∈ activeVoters state ∧
         (SignsTarget e v target (e.world n).time ∨ v ∉ participants)) ∧
-      total.toNat + margin < 3 * stake (fun v => balanceAt state v.toNat) voters := by
+      3 * support.toNat + margin ≤ 3 * stake (fun v => balanceAt state v.toNat) voters := by
   have supportRead := supportOk
   simp only [Store.computeHonestFfgSupportForCurrentTarget, bind_ok_iff, mapError_ok_iff]
     at supportRead
-  obtain ⟨slot, slotOk, readState, stateRead, _, _, score, scoreOk, first, firstOk, last,
-    lastOk, weight, weightOk, _⟩ := supportRead
+  obtain ⟨slot, slotOk, readState, stateRead, total, totalOk, score, scoreOk, first, firstOk,
+    last, lastOk, weight, weightOk, _⟩ := supportRead
   have stateEq := Except.ok.inj (stateRead.symm.trans stateOk)
   subst readState
   have targetScore := scoreOk
@@ -3587,8 +3591,10 @@ private theorem coverage_comparable_of_numeric_check {anchor : Store preset fork
       ((e.world k).state w).isAncestor ⟨root, .pending⟩ ⟨checkpoint.root, .pending⟩ =
         .ok true := by
   obtain ⟨target, current, first, last, participants, voters, targetOk, currentOk, targetEpochOk,
-    firstOk, lastOk, participantsOk, targetRead, members, large⟩ :=
-    coverage_quorum_of_numeric_check count stateOk totalOk supportOk enough
+    firstOk, lastOk, participantsOk, targetRead, members, counted⟩ :=
+    coverage_quorum_of_count count stateOk supportOk
+  have large : total.toNat + margin < 3 * stake (fun v => balanceAt state v.toNat) voters := by
+    omega
   have currentEq := Except.ok.inj (currentOk.symm.trans slotOk)
   subst current
   have targetEpoch := Except.ok.inj (targetEpochOk.symm.trans epochOk)
@@ -3938,6 +3944,80 @@ theorem Execution.justified_comparable_of_checked {anchor : Store preset fork}
       · exact numeric s total support hs ht hv enough
   · exact .inr (Store.isAncestor_trans_of_lt preGloas rsk jk startBelow belowJ)
 
+omit [DecidablePred (· ∈ J)] in
+/-- A count with the quorum reserve added to the margin is a count with the margin alone. -/
+private theorem coverage_targetVotes_of_reserve {anchor : Store preset fork}
+    (anchorStore : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (anchored : ∀ w ∈ J, e.start w = anchor) (preGloas : fork < .glamsterdam)
+    {u : ValidatorIndex} (caller : u ∈ J) {n margin : ℕ} {head : Root}
+    (reserve : ∀ state target anc,
+      ((e.world n).state u).getPulledUpHeadState config head = .ok state →
+      ((e.world n).state u).getCurrentTarget config head = .ok target →
+      ((e.world n).state u).blockStates[target.root]? = some anc →
+      HonestTargetVotes e (margin + quorumReserve config state anc) u n head) :
+    HonestTargetVotes e margin u n head := by
+  intro state support target slot epochStart lastSlot participants stateOk supportOk targetOk
+    slotOk startOk lastOk participantsOk
+  have reachable := e.reachable
+    (fun a ha => (anchored a ha) ▸ Store.Reachable.anchor anchorStore) n u caller
+  obtain ⟨epoch, checkpoint, _, read, rfl⟩ := Store.getCurrentTarget_eq_ok_iff.mp targetOk
+  obtain ⟨_, block, _, held, _, _⟩ := Store.isAncestor_of_getCheckpointBlock preGloas read
+  obtain ⟨anc, stored, _⟩ := reachable.blockStatesFromParents held
+  obtain ⟨voters, members, bound⟩ := reserve state ⟨epoch, checkpoint⟩ anc stateOk targetOk
+    stored state support ⟨epoch, checkpoint⟩ slot epochStart lastSlot participants stateOk
+    supportOk targetOk slotOk startOk lastOk participantsOk
+  exact ⟨voters, members, by omega⟩
+
+omit [DecidablePred (· ∈ J)] in
+/-- A later store reads a checkpoint of a head at each block above a block of that epoch.
+
+The block is on the chain of the head and in the epoch of the checkpoint.
+
+Another honest store holds a block above it, at a time up to the last one.
+
+That store reads the same checkpoint root at that block for that epoch. -/
+private theorem coverage_target_read {anchor : Store preset fork}
+    (anchorStore : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (anchored : ∀ w ∈ J, e.start w = anchor) (preGloas : fork < .glamsterdam)
+    {limit : ℕ} (oneBlock : OneBlockPerRoot e limit)
+    {u w : ValidatorIndex} (caller : u ∈ J) (receiver : w ∈ J) {n k : ℕ}
+    (nBound : (e.world n).time ≤ limit) (kBound : (e.world k).time ≤ limit)
+    {head : Root} {target : Checkpoint}
+    (headRead : ((e.world n).state u).getCheckpointBlock head target.epoch = .ok target.root)
+    {root : Root} {rootBlock : BeaconBlock preset fork}
+    (rootHeld : ((e.world n).state u).blocks[root]? = some rootBlock)
+    (onChain : ((e.world n).state u).isAncestor ⟨head, .pending⟩ ⟨root, .pending⟩ = .ok true)
+    (rootEpoch : computeEpochAtSlot preset rootBlock.slot = target.epoch)
+    {x : Root}
+    (above : ((e.world k).state w).isAncestor ⟨x, .pending⟩ ⟨root, .pending⟩ = .ok true) :
+    ((e.world k).state w).getCheckpointBlock x target.epoch = .ok target.root := by
+  have reachable (v : ValidatorIndex) (honest : v ∈ J) (i : ℕ) :=
+    e.reachable (fun a ha => (anchored a ha) ▸ Store.Reachable.anchor anchorStore) i v honest
+  obtain ⟨boundary, checkpointBlock, boundaryOk, checkpointHeld, checkpointLe, _⟩ :=
+    Store.isAncestor_of_getCheckpointBlock preGloas headRead
+  have early : boundary ≤ rootBlock.slot := by
+    have boundaryNat := (computeStartSlotAtEpoch_ok_iff.mp boundaryOk).2
+    rw [UInt64.le_iff_toNat_le, boundaryNat, ← rootEpoch]
+    simp only [computeEpochAtSlot, UInt64.toNat_div]
+    exact Nat.div_mul_le_self _ _
+  have rootRead := Store.getCheckpointBlock_of_isAncestor_below (node := ⟨head, .pending⟩)
+    (ancestor := ⟨root, .pending⟩) preGloas rootHeld onChain boundaryOk early headRead
+  obtain ⟨receiverRoot, receiverRootHeld⟩ : ∃ b, ((e.world k).state w).blocks[root]? = some b := by
+    have read := above
+    unfold Store.isAncestor at read
+    obtain ⟨b, found, _⟩ := bind_ok_iff.mp read
+    exact ⟨b, Store.block_ok_iff.mp found⟩
+  have same := oneBlock u caller w receiver n k nBound kBound root rootBlock receiverRoot
+    rootHeld receiverRootHeld
+  subst same
+  have aboveAnchor : anchorBlock.slot ≤ boundary :=
+    UInt64.le_trans ((reachable u caller n).anchorSlot_le_block checkpointHeld) checkpointLe
+  have receiverRead := Store.getCheckpointBlock_of_same_blocks (reachable w receiver k)
+    (oneBlock u caller w receiver n k nBound kBound) boundaryOk aboveAnchor
+    ⟨rootBlock, receiverRootHeld⟩ rootRead
+  exact Store.getCheckpointBlock_of_isAncestor (node := ⟨x, .pending⟩) preGloas receiverRootHeld
+    above boundaryOk early receiverRead
+
 /-- Step 6, the result: a block that passed the checks is not filtered out at a later time.
 
 The caller is an honest validator whose store is up to date, and its rule passed the checks.
@@ -4037,7 +4117,11 @@ theorem Execution.coveredOrViableAt_of_checked {Δ : ℕ} (sync : e.Synchronous 
         ((e.world n).state u).getCurrentSlot config = .ok currentSlot ∧
         addChecked previousSlot 1 = .ok currentSlot)
     (targetVotes : ∀ slot, ((e.world n).state u).getCurrentSlot config = .ok slot →
-      isStartSlotAtEpoch preset slot = .ok false → HonestTargetVotes e margin u n head.root)
+      isStartSlotAtEpoch preset slot = .ok false → ∀ state target anc,
+      ((e.world n).state u).getPulledUpHeadState config head.root = .ok state →
+      ((e.world n).state u).getCurrentTarget config head.root = .ok target →
+      ((e.world n).state u).blockStates[target.root]? = some anc →
+      HonestTargetVotes e (margin + quorumReserve config state anc) u n head.root)
     (lineage : ∀ epoch, ((e.world n).state u).getCurrentStoreEpoch config = .ok epoch →
       ((e.world n).state u).getBlockEpoch start = .ok epoch →
       TargetChecked e margin anchor.finalizedCheckpoint.root u n epoch start)
@@ -4059,6 +4143,24 @@ theorem Execution.coveredOrViableAt_of_checked {Δ : ℕ} (sync : e.Synchronous 
     (supply : ∀ w ∈ J, ∀ k (checkpoint : Checkpoint) (state : BeaconState preset fork),
       (e.world k).time ≤ time → ((e.world k).state w).checkpointState checkpoint = .ok state →
       ActiveStakeAtMost stakeCapGwei state)
+    (quorumDrifts : ∀ u ∈ J, ∀ n (head : Root) (pulled anc : BeaconState preset fork)
+        (target : Checkpoint),
+      (e.world n).time ≤ time →
+      ((e.world n).state u).getPulledUpHeadState config head = .ok pulled →
+      ((e.world n).state u).getCurrentTarget config head = .ok target →
+      ((e.world n).state u).blockStates[target.root]? = some anc →
+      ∀ w ∈ J, ∀ k (root : Root) (rootState state : BeaconState preset fork),
+      (e.world k).time ≤ time → ((e.world k).state w).blockStates[root]? = some rootState →
+      ((e.world k).state w).getCheckpointBlock root target.epoch = .ok target.root →
+      (state = rootState ∨ ∃ slot, processSlots config checks rootState slot = .ok state) →
+      target.epoch ≤ getCurrentEpoch state →
+      (getCurrentEpoch state).toNat ≤ target.epoch.toNat + 1 → getCurrentEpoch state ≤ horizon →
+      ∀ (voters : Finset ValidatorIndex) (total pulledTotal : Gwei),
+      (∀ v ∈ voters, v ∈ activeVoters pulled ∧ NotSlashed state v) →
+      getTotalActiveBalance state = .ok total → getTotalActiveBalance pulled = .ok pulledTotal →
+      2 * total.toNat + 3 * stake (fun v => balanceAt pulled v.toNat) voters ≤
+        2 * pulledTotal.toNat + 3 * stake (fun v => balanceAt state v.toNat) voters +
+          quorumReserve config pulled anc)
     (anchorParent : ∀ w ∈ J, ∀ k, (e.world k).time ≤ time →
       ((e.world k).state w).blocks[anchorBlock.parentRoot]? = none)
     (large : ∀ w ∈ J, ∀ k (state : BeaconState preset fork),
@@ -4083,7 +4185,10 @@ theorem Execution.coveredOrViableAt_of_checked {Δ : ℕ} (sync : e.Synchronous 
   rcases e.justified_comparable_of_checked anchorStore sound anchorSlot anchored preGloas
       positive window incrementPositive slots fits oneBlock unique pins voted committees
       (by omega) anchorOk nonzero inHorizon caller receiver later atTime upToDate ready
-      headOk receiverHeadOk checked onChain atSlot targetVotes startSafe safe held with
+      headOk receiverHeadOk checked onChain atSlot
+      (fun slot slotOk inside => coverage_targetVotes_of_reserve anchorStore anchored preGloas
+        caller (targetVotes slot slotOk inside))
+      startSafe safe held with
       covered | descends
   · exact .inl covered
   have forward := e.forwardReachable

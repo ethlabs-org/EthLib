@@ -28,7 +28,15 @@ theorem local_parents (code : Local) : code.store.ParentsBelow := by
     · decide
     · exact False.elim (blockRoot_ne_anchorRoot bad.symm)
 
-/-- Every premise of `Execution.safeAt_confirmedRoot`, specialized to the witness parameters.
+/-- The premises that the acceptance-only fixture execution satisfies, with its parameters.
+
+They are the premises of an earlier statement of `Execution.safeAt_confirmedRoot`.
+
+That theorem now takes BLS executions, the quorum-drift bound and the count with the reserve.
+
+This fixture checks no signature, so it does not instantiate that theorem.
+
+Nonvacuity of Theorem 1 itself remains an open delivery gate.
 
 The delay is one millisecond, the horizon epoch is one, and the last time is 4000 milliseconds.
 
@@ -36,8 +44,8 @@ Validator zero calls at event 112, in slot three, with zero drift margin and wei
 
 The global Byzantine percentage is twelve; the separate committee percentage is thirty-four.
 
-Keeping the fields in statement order makes the correspondence with the theorem explicit. -/
-structure TheoremOnePremises (e : Execution protocol honest) : Prop where
+The fields follow the order of that earlier statement. -/
+structure AcceptAllFixturePremises (e : Execution protocol honest) : Prop where
   sync : e.Synchronous 1
   half : 2 * config.CONFIRMATION_BYZANTINE_THRESHOLD.toNat ≤ 100
   boost : config.PROPOSER_SCORE_BOOST.toNat ≤ 100
@@ -127,7 +135,7 @@ structure TheoremOnePremises (e : Execution protocol honest) : Prop where
   nonempty : (4000 : UInt64).toNat ≤ 4000
 
 /-- The same allowed execution satisfies every specialized premise simultaneously. -/
-theorem all_premises : TheoremOnePremises execution where
+theorem acceptAll_fixture_premises : AcceptAllFixturePremises execution where
   sync := synchronous
   half := by decide
   boost := by decide
@@ -217,7 +225,7 @@ theorem call_checked : ((execution.world 112).state 0).Checked config confirmed
   · exact False.elim (blockRoot_ne_anchorRoot same)
   · exact checked
 
-/-- An allowed execution satisfies every premise and genuinely advances through the walk.
+/-- The acceptance-only fixture satisfies its premises and genuinely advances through the walk.
 
 The eight-validator phase0 witness uses the custom preset and configuration described above.
 
@@ -247,9 +255,11 @@ Some quantified obligations hold only vacuously on this short horizon:
 
 No later-epoch target, duty or checkpoint instance is exercised beyond these time bounds.
 
-The witness proves satisfiability, not that these restricted circumstances represent mainnet. -/
-theorem exists_nonvacuity : ∃ e : Execution protocol honest,
-    TheoremOnePremises e ∧
+The fixture proves satisfiability of these premises, not that they represent mainnet.
+
+It does not instantiate the BLS statement of Theorem 1. -/
+theorem exists_acceptAll_fixture : ∃ e : Execution protocol honest,
+    AcceptAllFixturePremises e ∧
     ((e.world 112).state 0).Checked config confirmed blockRoot anchorRoot blockRoot ∧
     (e.world 112).time = 3000 ∧
     ((e.world 112).state 0).onFastConfirmation config (getFastConfirmationStore anchor) =
@@ -257,6 +267,6 @@ theorem exists_nonvacuity : ∃ e : Execution protocol honest,
     ((e.world 112).state 0).findLatestConfirmedDescendant config
       (getFastConfirmationStore anchor) blockRoot anchorRoot = .ok blockRoot ∧
     confirmed.confirmedRoot ≠ anchorRoot :=
-  ⟨execution, all_premises, call_checked, confirms_by_walk⟩
+  ⟨execution, acceptAll_fixture_premises, call_checked, confirms_by_walk⟩
 
 end EthLib.Consensus.Models.Network.EightValidatorWitness.Trace

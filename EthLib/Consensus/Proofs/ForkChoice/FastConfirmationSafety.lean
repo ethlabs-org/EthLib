@@ -596,7 +596,85 @@ structure RuleBounds
       head.root balanceSource (((e.world n).state u).tallyVotes balanceSource) member =
         .ok true) →
     ((e.world n).state u).RealizedRecent (chain ++ [after.confirmedRoot])
-  /-- At a call that stores a block of its own walk, five bounds hold, in this order.
+  /-- Each accepted block of an earlier epoch is below the head, whose state realized its epoch.
+
+  The blocks are those of the accepted advanced prefix, not the selected start.
+
+  The epoch of such a block is before the current epoch of the call.
+
+  The stored state of the head has justified that epoch or a later one.
+
+  This is the stored block state of the head, not a pulled-up or advanced state.
+
+  It holds at every call that advances, also when the selected start is an observed root.
+
+  That observed start is excluded, like any selected start; the blocks accepted above it count. -/
+  realizedHead : ∀ i n fcr after head slot start balanceSource chain later,
+    CallAt e u events first i n fcr after →
+    ((e.world n).state u).getHead config = .ok head →
+    ((e.world n).state u).getCurrentSlot config = .ok slot →
+    (∃ base,
+      (base = fcr.confirmedRoot ∧
+          ((∃ epoch blockEpoch, ((e.world n).state u).getCurrentStoreEpoch config = .ok epoch ∧
+              ((e.world n).state u).getBlockEpoch fcr.confirmedRoot = .ok blockEpoch ∧
+              epoch.toNat ≤ blockEpoch.toNat + 1) ∧
+            ((e.world n).state u).isAncestor ⟨head.root, .pending⟩ ⟨fcr.confirmedRoot, .pending⟩ =
+              .ok true ∧
+            (isStartSlotAtEpoch preset slot = .ok true →
+              ((e.world n).state u).isConfirmedChainSafe config after head.root
+                fcr.confirmedRoot = .ok true)) ∨
+        base = ((e.world n).state u).finalizedCheckpoint.root ∧
+          ¬((∃ epoch blockEpoch, ((e.world n).state u).getCurrentStoreEpoch config = .ok epoch ∧
+               ((e.world n).state u).getBlockEpoch fcr.confirmedRoot = .ok blockEpoch ∧
+               epoch.toNat ≤ blockEpoch.toNat + 1) ∧
+             ((e.world n).state u).isAncestor ⟨head.root, .pending⟩ ⟨fcr.confirmedRoot, .pending⟩ =
+               .ok true ∧
+             (isStartSlotAtEpoch preset slot = .ok true →
+               ((e.world n).state u).isConfirmedChainSafe config after head.root
+                 fcr.confirmedRoot = .ok true))) ∧
+      (start = base ∧
+          ¬(isStartSlotAtEpoch preset slot = .ok true ∧
+             (∃ observedBlock epoch,
+               ((e.world n).state u).block after.currentEpochObservedJustifiedCheckpoint.root =
+                 .ok observedBlock ∧
+               ((e.world n).state u).getCurrentStoreEpoch config = .ok epoch ∧
+               Uint64.addChecked (computeEpochAtSlot preset observedBlock.slot) 1 = .ok epoch) ∧
+             ((e.world n).state u).unrealizedJustification head.root =
+               .ok after.currentEpochObservedJustifiedCheckpoint ∧
+             ∃ baseBlock observedBlock, ((e.world n).state u).block base = .ok baseBlock ∧
+               ((e.world n).state u).block after.currentEpochObservedJustifiedCheckpoint.root =
+                 .ok observedBlock ∧
+               baseBlock.slot < observedBlock.slot) ∨
+        start = after.currentEpochObservedJustifiedCheckpoint.root ∧
+          (isStartSlotAtEpoch preset slot = .ok true ∧
+            (∃ observedBlock epoch,
+              ((e.world n).state u).block after.currentEpochObservedJustifiedCheckpoint.root =
+                .ok observedBlock ∧
+              ((e.world n).state u).getCurrentStoreEpoch config = .ok epoch ∧
+              Uint64.addChecked (computeEpochAtSlot preset observedBlock.slot) 1 = .ok epoch) ∧
+            ((e.world n).state u).unrealizedJustification head.root =
+              .ok after.currentEpochObservedJustifiedCheckpoint ∧
+            ∃ baseBlock observedBlock, ((e.world n).state u).block base = .ok baseBlock ∧
+              ((e.world n).state u).block after.currentEpochObservedJustifiedCheckpoint.root =
+                .ok observedBlock ∧
+              baseBlock.slot < observedBlock.slot))) →
+    after.confirmedRoot ≠ start →
+    ((e.world n).state u).Checked config after head.root start after.confirmedRoot →
+    ((e.world n).state u).checkpointState after.currentEpochObservedJustifiedCheckpoint =
+      .ok balanceSource →
+    ((e.world n).state u).getAncestorRoots head.root start =
+      .ok (chain ++ after.confirmedRoot :: later) →
+    (∀ member ∈ chain ++ [after.confirmedRoot], ((e.world n).state u).isOneConfirmed config
+      head.root balanceSource (((e.world n).state u).tallyVotes balanceSource) member =
+        .ok true) →
+    ∀ member ∈ chain ++ [after.confirmedRoot], ∀ epoch block,
+      ((e.world n).state u).getCurrentStoreEpoch config = .ok epoch →
+      ((e.world n).state u).blocks[member]? = some block →
+      computeEpochAtSlot preset block.slot < epoch →
+      ∃ headState, ((e.world n).state u).blockStates[head.root]? = some headState ∧
+        ((e.world n).state u).isAncestor head ⟨member, .pending⟩ = .ok true ∧
+        computeEpochAtSlot preset block.slot ≤ headState.currentJustifiedCheckpoint.epoch
+  /-- At a call that stores a block of its own walk, four bounds hold, in this order.
 
   The start is the one that the rule selects, as `Store.onFastConfirmation_checked` gives it.
 
@@ -608,15 +686,17 @@ structure RuleBounds
 
   That is an observable margin, not an assumption about the unknown honest supporters.
 
-  Third, away from an epoch start, the Byzantine validators hold at most β of its committees.
+  Third, away from an epoch start, honest validators hold the count of the rule for the target.
 
-  Those are the committees of the epoch so far.
+  They hold it with the margin plus the quorum reserve of the pulled-up state of the head.
 
-  Fourth, away from an epoch start, the honest validators of the slots to come hold their share.
+  The reserve reads the state of the target block only for its pending partial withdrawals.
 
-  They hold it with the margin.
+  `Execution.honestTargetVotes_of_byzantineStakeAtMost` derives such a count from two bounds.
 
-  Fifth, after a complete epoch, a receiver that does not cover the block has the majority. -/
+  They bound the Byzantine share of the committees so far and the honest share of the slots to come.
+
+  Fourth, after a complete epoch, a receiver that does not cover the block has the majority. -/
   walked : ∀ i n fcr after head slot start balanceSource chain later,
     CallAt e u events first i n fcr after →
     ((e.world n).state u).getHead config = .ok head →
@@ -697,30 +777,11 @@ structure RuleBounds
         .ok adversary →
       maximum.toNat + score.toNat + 2 * adversary.toNat + shift <
         discount.toNat + 2 * support.toNat) ∧
-    (∀ state epochStart lastSlot participants,
-      isStartSlotAtEpoch preset slot = .ok false →
+    (∀ state target anc, isStartSlotAtEpoch preset slot = .ok false →
       ((e.world n).state u).getPulledUpHeadState config head.root = .ok state →
-      computeStartSlotAtEpoch preset (computeEpochAtSlot preset slot) = .ok epochStart →
-      subChecked slot 1 = .ok lastSlot →
-      ((e.world n).state u).getCommitteesBetweenSlots head.root epochStart lastSlot =
-        .ok participants →
-      ByzantineStakeAtMost (fun v => balanceAt state v.toNat)
-        (Store.activeMembers state participants) J
-        config.CONFIRMATION_BYZANTINE_THRESHOLD.toNat 100) ∧
-    (∀ state epochStart lastSlot participants total soFar,
-      isStartSlotAtEpoch preset slot = .ok false →
-      ((e.world n).state u).getPulledUpHeadState config head.root = .ok state →
-      computeStartSlotAtEpoch preset (computeEpochAtSlot preset slot) = .ok epochStart →
-      subChecked slot 1 = .ok lastSlot →
-      ((e.world n).state u).getCommitteesBetweenSlots head.root epochStart lastSlot =
-        .ok participants →
-      getTotalActiveBalance state = .ok total →
-      ((e.world n).state u).computeCommitteeWeightBetweenSlots head.root state epochStart
-        lastSlot = .ok soFar →
-      3 * ((total.toNat - soFar.toNat) / 100 *
-          (100 - config.CONFIRMATION_BYZANTINE_THRESHOLD.toNat)) + margin ≤
-        3 * stake (fun v => balanceAt state v.toNat)
-          {v ∈ ((unslashedActiveBalances state).map (·.1)).toFinset | v ∉ participants ∧ v ∈ J}) ∧
+      ((e.world n).state u).getCurrentTarget config head.root = .ok target →
+      ((e.world n).state u).blockStates[target.root]? = some anc →
+      HonestTargetVotes e (margin + quorumReserve config state anc) u n head.root) ∧
     (∀ w ∈ J, ∀ k (state : BeaconState preset fork),
       CompleteEpochWithin preset config genesisTimeMs (e.world n).time (e.world k).time →
       (e.world k).time ≤ limit →
@@ -2851,7 +2912,11 @@ theorem Execution.safeAt_of_walk {Δ : ℕ} (sync : e.Synchronous Δ)
         ((e.world k).state u).getCurrentSlot config = .ok previousSlot ∧
         addChecked previousSlot 1 = .ok slot)
     (targetVotes : ∀ slot, ((e.world n).state u).getCurrentSlot config = .ok slot →
-      isStartSlotAtEpoch preset slot = .ok false → HonestTargetVotes e margin u n head.root)
+      isStartSlotAtEpoch preset slot = .ok false → ∀ state target anc,
+      ((e.world n).state u).getPulledUpHeadState config head.root = .ok state →
+      ((e.world n).state u).getCurrentTarget config head.root = .ok target →
+      ((e.world n).state u).blockStates[target.root]? = some anc →
+      HonestTargetVotes e (margin + quorumReserve config state anc) u n head.root)
     (lineage : ∀ epoch, ((e.world n).state u).getCurrentStoreEpoch config = .ok epoch →
       ((e.world n).state u).getBlockEpoch start = .ok epoch →
       TargetChecked e margin anchor.finalizedCheckpoint.root u n epoch start)
@@ -2941,6 +3006,24 @@ theorem Execution.safeAt_of_walk {Δ : ℕ} (sync : e.Synchronous Δ)
       stake (fun v => balanceAt source v.toNat)
           {v ∈ activeVoters source | isActiveAt hs epoch v.toNat = false} ≤
         exitReserve config source)
+    (quorumDrifts : ∀ u ∈ J, ∀ n (head : Root) (pulled anc : BeaconState preset fork)
+        (target : Checkpoint),
+      (e.world n).time ≤ limit →
+      ((e.world n).state u).getPulledUpHeadState config head = .ok pulled →
+      ((e.world n).state u).getCurrentTarget config head = .ok target →
+      ((e.world n).state u).blockStates[target.root]? = some anc →
+      ∀ w ∈ J, ∀ k (root : Root) (rootState state : BeaconState preset fork),
+      (e.world k).time ≤ limit → ((e.world k).state w).blockStates[root]? = some rootState →
+      ((e.world k).state w).getCheckpointBlock root target.epoch = .ok target.root →
+      (state = rootState ∨ ∃ slot, processSlots config checks rootState slot = .ok state) →
+      target.epoch ≤ getCurrentEpoch state →
+      (getCurrentEpoch state).toNat ≤ target.epoch.toNat + 1 → getCurrentEpoch state ≤ horizon →
+      ∀ (voters : Finset ValidatorIndex) (total pulledTotal : Gwei),
+      (∀ v ∈ voters, v ∈ activeVoters pulled ∧ NotSlashed state v) →
+      getTotalActiveBalance state = .ok total → getTotalActiveBalance pulled = .ok pulledTotal →
+      2 * total.toNat + 3 * stake (fun v => balanceAt pulled v.toNat) voters ≤
+        2 * pulledTotal.toNat + 3 * stake (fun v => balanceAt state v.toNat) voters +
+          quorumReserve config pulled anc)
     (observedAge : epoch.toNat ≤ fcr.currentEpochObservedJustifiedCheckpoint.epoch.toNat + 2)
     (observedRead : ((e.world n).state u).getCheckpointBlock root
       fcr.currentEpochObservedJustifiedCheckpoint.epoch =
@@ -3057,6 +3140,9 @@ theorem Execution.safeAt_of_walk {Δ : ℕ} (sync : e.Synchronous Δ)
     afterNow (fun w hw k le => nonzero w hw k (le.trans boundedNow))
     (fun w hw k ep le => inHorizon w hw k ep (le.trans boundedNow))
     (fun w hw k c s le => supply w hw k c s (le.trans boundedNow))
+    (fun u hu n head pulled anc target nle pulledOk targetOk ancOk w hw k root rootState state
+        kle => quorumDrifts u hu n head pulled anc target (nle.trans boundedNow) pulledOk targetOk
+          ancOk w hw k root rootState state (kle.trans boundedNow))
     (fun w hw k le => anchorParent w hw k (le.trans boundedNow))
     (fun w hw k s le => large w hw k s (le.trans boundedNow)) long boost
     (fun t lower upper => startSafe t lower (upper.trans boundedNow)) rootSafe
@@ -3411,81 +3497,15 @@ def CallInvariant
         ((e.world k).state u).getHead config = .ok head ∧
         ((e.world k).state u).willCurrentTargetBeJustified config head.root = .ok true ∧
         ((e.world k).state u).isAncestor ⟨head.root, .pending⟩ ⟨origin, .pending⟩ = .ok true ∧
-        HonestTargetVotes e margin u k head.root ∧
+        (∀ state target anc,
+          ((e.world k).state u).getPulledUpHeadState config head.root = .ok state →
+          ((e.world k).state u).getCurrentTarget config head.root = .ok target →
+          ((e.world k).state u).blockStates[target.root]? = some anc →
+          HonestTargetVotes e (margin + quorumReserve config state anc) u k head.root) ∧
         ∃ slot begin, ((e.world k).state u).getCurrentSlot config = .ok slot ∧
           computeTimeAtSlotMs config genesisTimeMs slot = .ok begin ∧
           (e.world k).time = begin.toNat) ∧
       ∀ time, (e.world k).time ≤ time → time ≤ limit → SafeAt e time origin)
-
-/-- The call's committee bounds count honest targets without assuming honest equivocation. -/
-private theorem Execution.call_targetVotes {anchor : Store preset fork}
-    (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
-    (start : ∀ w ∈ J, e.start w = anchor) (sound : Invariant anchorState)
-    (slots : 0 < config.SLOT_DURATION_MS) {limit : ℕ} (committees : CommitteesFollow e limit)
-    (retained : preset.MIN_SEED_LOOKAHEAD.toNat + 1 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
-    (maxAligned : MaxEffectiveBalancesAligned preset)
-    (increment : preset.EFFECTIVE_BALANCE_INCREMENT.toNat % 100 = 0)
-    {u : ValidatorIndex} (caller : u ∈ J) {n : ℕ} (bounded : (e.world n).time ≤ limit)
-    {head : ForkChoiceNode} {slot : Slot}
-    (headOk : ((e.world n).state u).getHead config = .ok head)
-    (slotOk : ((e.world n).state u).getCurrentSlot config = .ok slot) {margin : ℕ}
-    (byzantine : ∀ state epochStart lastSlot participants,
-      ((e.world n).state u).getPulledUpHeadState config head.root = .ok state →
-      computeStartSlotAtEpoch preset (computeEpochAtSlot preset slot) = .ok epochStart →
-      subChecked slot 1 = .ok lastSlot →
-      ((e.world n).state u).getCommitteesBetweenSlots head.root epochStart lastSlot =
-        .ok participants →
-      ByzantineStakeAtMost (fun v => balanceAt state v.toNat)
-        (Store.activeMembers state participants) J
-        config.CONFIRMATION_BYZANTINE_THRESHOLD.toNat 100)
-    (remaining : ∀ state epochStart lastSlot participants total soFar,
-      ((e.world n).state u).getPulledUpHeadState config head.root = .ok state →
-      computeStartSlotAtEpoch preset (computeEpochAtSlot preset slot) = .ok epochStart →
-      subChecked slot 1 = .ok lastSlot →
-      ((e.world n).state u).getCommitteesBetweenSlots head.root epochStart lastSlot =
-        .ok participants →
-      getTotalActiveBalance state = .ok total →
-      ((e.world n).state u).computeCommitteeWeightBetweenSlots head.root state epochStart
-        lastSlot = .ok soFar →
-      3 * ((total.toNat - soFar.toNat) / 100 *
-          (100 - config.CONFIRMATION_BYZANTINE_THRESHOLD.toNat)) + margin ≤
-        3 * stake (fun v => balanceAt state v.toNat)
-          {v ∈ ((unslashedActiveBalances state).map (·.1)).toFinset | v ∉ participants ∧ v ∈ J}) :
-    HonestTargetVotes e margin u n head.root := by
-  have reached := e.reachable
-    (fun w hw => (start w hw).symm ▸ Store.Reachable.anchor anchored) n u caller
-  -- The anchor has no equivocators, and honest signatures never add one.
-  have empty : anchor.equivocatingIndices = [] := by
-    unfold getForkchoiceStore at anchored
-    simp only [bind_ok_iff] at anchored
-    obtain ⟨_, _, anchored⟩ := anchored
-    split at anchored
-    · simp [throw, throwThe, MonadExceptOf.throw, bind, Except.bind] at anchored
-    · simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at anchored
-      obtain ⟨_, _, _, _, rfl⟩ := anchored
-      rfl
-  have dishonest : ∀ v ∈ ((e.world n).state u).equivocatingIndices, v ∉ J := by
-    intro v member honest
-    exact e.not_mem_equivocatingIndices slots (fun w hw => (start w hw) ▸ empty)
-      caller honest n member
-  intro state support target readSlot epochStart lastSlot participants stateOk supportOk
-    targetOk readSlotOk startOk lastOk participantsOk
-  have sameSlot : readSlot = slot := Except.ok.inj (readSlotOk.symm.trans slotOk)
-  subst readSlot
-  -- A successful support read supplies the total and elapsed committee weight.
-  have reads := supportOk
-  unfold Store.computeHonestFfgSupportForCurrentTarget at reads
-  simp only [bind_ok_iff, mapError_ok_iff, slotOk, stateOk, startOk, lastOk, Except.ok.injEq,
-    exists_eq_left'] at reads
-  obtain ⟨total, totalOk, score, scoreOk, soFar, soFarOk, rest⟩ := reads
-  have counted := e.honestTargetVotes_of_byzantineStakeAtMost anchored start committees retained
-    caller bounded
-    ⟨head, headOk, rfl⟩ slotOk stateOk totalOk
-    (reached.getPulledUpHeadState_aligned sound maxAligned stateOk) increment startOk lastOk
-    soFarOk participantsOk (byzantine _ _ _ _ stateOk startOk lastOk participantsOk) dishonest
-    (remaining _ _ _ _ _ _ stateOk startOk lastOk participantsOk totalOk soFarOk)
-  exact counted state support target slot epochStart lastSlot participants stateOk supportOk
-    targetOk slotOk startOk lastOk participantsOk
 
 omit [DecidablePred (· ∈ J)] in
 /-- A noninitial call consumes exactly the output of the call before it. -/
@@ -4665,6 +4685,24 @@ theorem Execution.callInvariant_step {Δ : ℕ} (sync : e.Synchronous Δ)
       stake (fun v => balanceAt source v.toNat)
           {v ∈ activeVoters source | isActiveAt hs epoch v.toNat = false} ≤
         exitReserve config source)
+    (quorumDrifts : ∀ u ∈ J, ∀ n (head : Root) (pulled anc : BeaconState preset fork)
+        (target : Checkpoint),
+      (e.world n).time ≤ limit →
+      ((e.world n).state u).getPulledUpHeadState config head = .ok pulled →
+      ((e.world n).state u).getCurrentTarget config head = .ok target →
+      ((e.world n).state u).blockStates[target.root]? = some anc →
+      ∀ w ∈ J, ∀ k (root : Root) (rootState state : BeaconState preset fork),
+      (e.world k).time ≤ limit → ((e.world k).state w).blockStates[root]? = some rootState →
+      ((e.world k).state w).getCheckpointBlock root target.epoch = .ok target.root →
+      (state = rootState ∨ ∃ slot, processSlots config checks rootState slot = .ok state) →
+      target.epoch ≤ getCurrentEpoch state →
+      (getCurrentEpoch state).toNat ≤ target.epoch.toNat + 1 → getCurrentEpoch state ≤ horizon →
+      ∀ (voters : Finset ValidatorIndex) (total pulledTotal : Gwei),
+      (∀ v ∈ voters, v ∈ activeVoters pulled ∧ NotSlashed state v) →
+      getTotalActiveBalance state = .ok total → getTotalActiveBalance pulled = .ok pulledTotal →
+      2 * total.toNat + 3 * stake (fun v => balanceAt pulled v.toNat) voters ≤
+        2 * pulledTotal.toNat + 3 * stake (fun v => balanceAt state v.toNat) voters +
+          quorumReserve config pulled anc)
     (positive : 0 < preset.EFFECTIVE_BALANCE_INCREMENT)
     (enough : 3 * threshold < 200)
     (large : ∀ w ∈ J, ∀ k (state : BeaconState preset fork),
@@ -4923,21 +4961,21 @@ theorem Execution.callInvariant_step {Δ : ℕ} (sync : e.Synchronous Δ)
         Except.ok.inj (currentOk.symm.trans epochOk)
       exact observedInvariant boundary found (sameEpoch ▸ age)
   -- Only a strict walk from the selected start consumes the rule bounds.
-  obtain ⟨weights, slack, committeeByzantine, remaining, late⟩ := bounds.walked i n fcr after
+  obtain ⟨weights, slack, reserve, late⟩ := bounds.walked i n fcr after
     head slot selectedStart balanceSource walk later calls headOk slotOk selection strict
     checked sourceOk walked confirmedAll
   have realized := bounds.realized i n fcr after head slot selectedStart balanceSource walk
     later calls headOk slotOk selection strict checked sourceOk walked confirmedAll
   have targetVotes : ∀ s, ((e.world n).state u).getCurrentSlot config = .ok s →
-      isStartSlotAtEpoch preset s = .ok false → HonestTargetVotes e margin u n head.root := by
+      isStartSlotAtEpoch preset s = .ok false → ∀ state target anc,
+      ((e.world n).state u).getPulledUpHeadState config head.root = .ok state →
+      ((e.world n).state u).getCurrentTarget config head.root = .ok target →
+      ((e.world n).state u).blockStates[target.root]? = some anc →
+      HonestTargetVotes e (margin + quorumReserve config state anc) u n head.root := by
     intro s sOk inside
     have same : s = slot := Except.ok.inj (sOk.symm.trans slotOk)
     subst s
-    exact e.call_targetVotes anchored start sound slots committees (by omega) maxAligned increment
-      caller callBound
-      headOk slotOk (fun state first last participants => committeeByzantine state first last
-        participants inside) (fun state first last participants total soFar =>
-        remaining state first last participants total soFar inside)
+    exact fun state target anc => reserve state target anc inside
   have startFacts : CallInvariant e margin limit anchor.finalizedCheckpoint.root u n selectedStart ∧
       (∀ time, (e.world n).time ≤ time → time ≤ limit → SafeAt e time selectedStart) := by
     obtain ⟨base, baseCase, selected⟩ := selection
@@ -5153,7 +5191,7 @@ theorem Execution.callInvariant_step {Δ : ℕ} (sync : e.Synchronous Δ)
       startFacts.2 weights slack late anchorParent nonzero inHorizon
       (fun w hw k state bounded counts epochLe => large w hw k state bounded counts
         (by have := UInt64.le_iff_toNat_le.mp epochLe; omega)) few unslashed supply exits
-        observedAge observedRead observedStart realized
+        quorumDrifts observedAge observedRead observedStart realized
         time afterCall bounded
   have headAbove : ((e.world n).state u).isAncestor ⟨head.root, .pending⟩
       ⟨after.confirmedRoot, .pending⟩ = .ok true := by
@@ -5291,6 +5329,18 @@ The boost percentage is at most 100, so the boost of one slot stays within 64 bi
 
 The margin covers the drift of such a state from the pulled-up state of a head, over two epochs.
 
+The quorum reserve of the pulled-up state of a head bounds the drift of its honest quorum.
+
+That drift runs to each state that weighs the target, in its epoch or the next, up to the horizon.
+
+The accountable theorem derives this bound; here it is a hypothesis, like the exits bound.
+
+The honest stores check signatures with BLS.
+
+`RuleBounds` guards each advance by realized recency and by a head that realized earlier epochs.
+
+A change to the rule that rejects an advance failing either guard would discharge them.
+
 Each block that an honest store holds has a nonzero state root.
 
 No honest store holds a block at the parent root of the anchor block, up to the last time.
@@ -5342,7 +5392,9 @@ The proof is a strong induction on the calls, with `Execution.callInvariant_step
 In [verified-fast-confirmation][vfc], this is `confirmed_root_safe_from_next_slot`.
 
 [vfc]: https://github.com/fradamt/verified-fast-confirmation -/
-theorem Execution.safeAt_confirmedRoot {Δ : ℕ} (sync : e.Synchronous Δ)
+theorem Execution.safeAt_confirmedRoot
+    {e : Execution (honestForkChoice config .bls sources anchorState anchorBlock assignment
+      genesisTimeMs) J} {Δ : ℕ} (sync : e.Synchronous Δ)
     (half : 2 * config.CONFIRMATION_BYZANTINE_THRESHOLD.toNat ≤ 100)
     (boost : config.PROPOSER_SCORE_BOOST.toNat ≤ 100)
     (slots : 0 < config.SLOT_DURATION_MS) (long : 1 < preset.SLOTS_PER_EPOCH)
@@ -5390,6 +5442,24 @@ theorem Execution.safeAt_confirmedRoot {Δ : ℕ} (sync : e.Synchronous Δ)
       stake (fun v => balanceAt source v.toNat)
           {v ∈ activeVoters source | isActiveAt hs epoch v.toNat = false} ≤
         exitReserve config source)
+    (quorumDrifts : ∀ u ∈ J, ∀ n (head : Root) (pulled anc : BeaconState preset fork)
+        (target : Checkpoint),
+      (e.world n).time ≤ limit →
+      ((e.world n).state u).getPulledUpHeadState config head = .ok pulled →
+      ((e.world n).state u).getCurrentTarget config head = .ok target →
+      ((e.world n).state u).blockStates[target.root]? = some anc →
+      ∀ w ∈ J, ∀ k (root : Root) (rootState state : BeaconState preset fork),
+      (e.world k).time ≤ limit → ((e.world k).state w).blockStates[root]? = some rootState →
+      ((e.world k).state w).getCheckpointBlock root target.epoch = .ok target.root →
+      (state = rootState ∨ ∃ slot, processSlots config .bls rootState slot = .ok state) →
+      target.epoch ≤ getCurrentEpoch state →
+      (getCurrentEpoch state).toNat ≤ target.epoch.toNat + 1 → getCurrentEpoch state ≤ horizon →
+      ∀ (voters : Finset ValidatorIndex) (total pulledTotal : Gwei),
+      (∀ v ∈ voters, v ∈ activeVoters pulled ∧ NotSlashed state v) →
+      getTotalActiveBalance state = .ok total → getTotalActiveBalance pulled = .ok pulledTotal →
+      2 * total.toNat + 3 * stake (fun v => balanceAt pulled v.toNat) voters ≤
+        2 * pulledTotal.toNat + 3 * stake (fun v => balanceAt state v.toNat) voters +
+          quorumReserve config pulled anc)
     (positive : 0 < preset.EFFECTIVE_BALANCE_INCREMENT)
     (enough : 3 * threshold < 200)
     (large : ∀ w ∈ J, ∀ k (state : BeaconState preset fork),
@@ -5411,7 +5481,7 @@ theorem Execution.safeAt_confirmedRoot {Δ : ℕ} (sync : e.Synchronous Δ)
         (getCurrentEpoch state).toNat ≤ epoch.toNat + 1 →
         DriftAtMost headState state margin)
     {u : ValidatorIndex} (caller : u ∈ J) {events : List ℕ} {firstSlot : Slot}
-    (upToDate : ∀ n ∈ events, UpToDate config checks sources (e.world n).time
+    (upToDate : ∀ n ∈ events, UpToDate config .bls sources (e.world n).time
       ((e.world n).view u) ((e.world n).state u))
     (lower : ∀ n ∈ events, ((e.world n).state u).ParentsBelow)
     (atSlots : ∀ i n, events[i]? = some n → ∃ slot begin,
@@ -5448,7 +5518,8 @@ theorem Execution.safeAt_confirmedRoot {Δ : ℕ} (sync : e.Synchronous Δ)
       exact e.callInvariant_step sync half boost slots long window lookahead votes fits prompt
         committees
         follows preGloas oneBlock admitted included anchored sound anchorSlot anchorAtBoundary
-        start noVotes maxAligned increment chain unique byzantine unslashed supply exits positive
+        start noVotes maxAligned increment chain unique byzantine unslashed supply exits
+        quorumDrifts positive
         enough
         large nonzero headDrifts caller upToDate lower atSlots bounds inHorizon anchorParent calls
         callBound fun i' lt n' fcr' after' calls' => ih i' lt n' fcr' after' calls'
