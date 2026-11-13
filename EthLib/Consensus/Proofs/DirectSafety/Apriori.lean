@@ -672,6 +672,12 @@ private def windowFloor (preset : Preset) (config : Config)
 
 The divisors are positive, and the whistleblower quotient exceeds one.
 
+The minimum churn per epoch is positive.
+
+With a zero minimum, a queue still lets one validator exit per epoch.
+
+The formula does not charge that exit.
+
 The withdrawal delay is at least two epochs.
 
 The window ends before half the slashings vector, and the floor stays positive through it.
@@ -683,6 +689,7 @@ private abbrev aprioriGuard (preset : Preset) (config : Config)
     (stake slashed penalised count score slack carry pending scheduled departures partials
       inactive funded horizon forkEpochs : Nat) : Prop :=
   0 < preset.EFFECTIVE_BALANCE_INCREMENT.toNat ∧ 0 < config.CHURN_LIMIT_QUOTIENT.toNat ∧
+    0 < config.MIN_PER_EPOCH_CHURN_LIMIT.toNat ∧
     0 < preset.MIN_ACTIVATION_BALANCE.toNat ∧ 0 < preset.downwardBand ∧
     0 < leakDivisor preset config ∧ 0 < slashingQuotient preset forkEpochs ∧
     1 < whistleblowerQuotient preset forkEpochs ∧
