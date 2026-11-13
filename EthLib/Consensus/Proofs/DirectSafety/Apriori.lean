@@ -875,11 +875,19 @@ private def slashableInactiveStake (x : ForkedBeaconState preset) : Nat :=
         decide (getCurrentEpoch x.state < v.withdrawableEpoch) then
       (withdrawalMaxEffectiveBalance preset x.fork v).toNat else 0).sum
 
-/-- `H₁`: the epochs of the window before Electra, and zero from Electra on. -/
+/-- `H₁`: the epochs of the window before Electra, and zero from Electra on.
+
+A state before Electra whose epoch has reached the fork epoch never upgrades.
+
+The upgrade fires only at the boundary of that epoch.
+
+`H₁ = 1` then fails the no-crossing clause of the guard, so the drift falls back to `W - Z`. -/
 private def forkEpochs (config : Config) (x : ForkedBeaconState preset) (high : Nat) : Nat :=
   if x.fork < .pectra then
-    min (driftHorizon x high + 2)
-      (config.ELECTRA_FORK_EPOCH.toNat - (getCurrentEpoch x.state).toNat)
+    if (getCurrentEpoch x.state).toNat < config.ELECTRA_FORK_EPOCH.toNat then
+      min (driftHorizon x high + 2)
+        (config.ELECTRA_FORK_EPOCH.toNat - (getCurrentEpoch x.state).toNat)
+    else 1
   else 0
 
 /-- The guard of a branch from `x` through `high + 1`, with every observable read at `x`. -/
