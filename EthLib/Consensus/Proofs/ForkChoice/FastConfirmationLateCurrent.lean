@@ -164,6 +164,103 @@ private theorem late_quorum_of_record {anchor : Store preset fork}
     stateOk, totalOk, targetOk, stored, slotOk, epochOk, firstOk, lastOk, participantsOk,
     targetRead, members, by omega⟩
 
+omit [DecidablePred (· ∈ J)] in
+/-- An ancestry that one honest store reads holds in another store that holds the descendant. -/
+private theorem late_copy_ancestor {anchor : Store preset fork}
+    (anchorStore : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (anchored : ∀ w ∈ J, e.start w = anchor) (preGloas : fork < .glamsterdam)
+    {limit : ℕ} (oneBlock : OneBlockPerRoot e limit)
+    {u w : ValidatorIndex} (caller : u ∈ J) (receiver : w ∈ J) {n k : ℕ}
+    (nBound : (e.world n).time ≤ limit) (kBound : (e.world k).time ≤ limit)
+    {a b : Root} {aBlock bBlock : BeaconBlock preset fork}
+    (bKnown : ((e.world n).state u).blocks[b]? = some bBlock)
+    (above : ((e.world n).state u).isAncestor ⟨a, .pending⟩ ⟨b, .pending⟩ = .ok true)
+    (aReceived : ((e.world k).state w).blocks[a]? = some aBlock) :
+    ((e.world k).state w).isAncestor ⟨a, .pending⟩ ⟨b, .pending⟩ = .ok true := by
+  have reached := e.reachable
+    (fun x hx => (anchored x hx) ▸ Store.Reachable.anchor anchorStore) n u caller
+  have received := e.reachable
+    (fun x hx => (anchored x hx) ▸ Store.Reachable.anchor anchorStore) k w receiver
+  have walk := Store.getAncestor_of_isAncestor_of_lt preGloas bKnown above
+  have copied := Store.getAncestor_of_same_blocks received
+    (oneBlock u caller w receiver n k nBound kBound) (reached.anchorSlot_le_block bKnown)
+    ⟨aBlock, aReceived⟩ walk
+  obtain ⟨other, otherHeld, _⟩ := Store.getAncestor_le copied
+  have same := oneBlock w receiver u caller k n kBound nBound b other bBlock otherHeld bKnown
+  subst same
+  simp [Store.isAncestor, Store.block_ok_iff.mpr otherHeld, copied, bind, Except.bind, pure,
+    Except.pure]
+
+omit [DecidablePred (· ∈ J)] in
+/-- Safety of a block protects each ancestor that an honest store reads below it. -/
+private theorem late_safe_ancestor {anchor : Store preset fork}
+    (anchorStore : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (anchored : ∀ w ∈ J, e.start w = anchor) (preGloas : fork < .glamsterdam)
+    {limit : ℕ} (oneBlock : OneBlockPerRoot e limit)
+    {u : ValidatorIndex} (caller : u ∈ J) {n : ℕ} (nBound : (e.world n).time ≤ limit)
+    {root origin : Root} {originBlock : BeaconBlock preset fork}
+    (originKnown : ((e.world n).state u).blocks[origin]? = some originBlock)
+    (descends : ((e.world n).state u).isAncestor ⟨root, .pending⟩ ⟨origin, .pending⟩ =
+      .ok true)
+    {time : ℕ} (bounded : time ≤ limit) (safe : SafeAt e time root) :
+    SafeAt e time origin := by
+  intro w receiver k head atTime ready headOk
+  have kBound : (e.world k).time ≤ limit := atTime ▸ bounded
+  have supports := safe w receiver k head atTime ready headOk
+  have rootRead := supports
+  unfold Store.isAncestor at rootRead
+  obtain ⟨rootBlock, rootBlockOk, _⟩ := bind_ok_iff.mp rootRead
+  have rootHeld := Store.block_ok_iff.mp rootBlockOk
+  have ancestry := late_copy_ancestor anchorStore anchored preGloas oneBlock caller receiver
+    nBound kBound originKnown descends rootHeld
+  have originRead := ancestry
+  unfold Store.isAncestor at originRead
+  obtain ⟨heldBlock, heldBlockOk, _⟩ := bind_ok_iff.mp originRead
+  exact Store.isAncestor_trans_of_lt preGloas rootHeld (Store.block_ok_iff.mp heldBlockOk)
+    supports ancestry
+
+/-- The boundary of the epoch after an epoch reads at a later slot two epochs on. -/
+private theorem late_next_boundary {epoch : Epoch} {current : Slot} {currentBegin : UInt64}
+    (positive : 0 < preset.SLOTS_PER_EPOCH.toNat)
+    (late : epoch.toNat + 1 < (computeEpochAtSlot preset current).toNat)
+    (currentBeginOk : computeTimeAtSlotMs config genesisTimeMs current = .ok currentBegin) :
+    ∃ (next : Epoch) (boundary : Slot) (begin : UInt64),
+      addChecked epoch 1 = .ok next ∧ computeStartSlotAtEpoch preset next = .ok boundary ∧
+      computeTimeAtSlotMs config genesisTimeMs boundary = .ok begin ∧ boundary < current ∧
+      begin ≤ currentBegin := by
+  have curNat : (computeEpochAtSlot preset current).toNat =
+      current.toNat / preset.SLOTS_PER_EPOCH.toNat := by
+    simp only [computeEpochAtSlot, UInt64.toNat_div]
+  rw [curNat] at late
+  have twoBelow : (epoch.toNat + 2) * preset.SLOTS_PER_EPOCH.toNat ≤ current.toNat :=
+    (Nat.le_div_iff_mul_le positive).mp (by omega)
+  have split : (epoch.toNat + 2) * preset.SLOTS_PER_EPOCH.toNat =
+      (epoch.toNat + 1) * preset.SLOTS_PER_EPOCH.toNat + preset.SLOTS_PER_EPOCH.toNat := by
+    ring
+  have fits : (epoch.toNat + 1) * preset.SLOTS_PER_EPOCH.toNat < current.toNat := by omega
+  have currentFits := current.toNat_lt
+  have nextFits : epoch.toNat + 1 < 2 ^ 64 := by
+    have := Nat.le_mul_of_pos_right (epoch.toNat + 1) positive
+    omega
+  have nextNat : (epoch + 1).toNat = epoch.toNat + 1 := by
+    rw [UInt64.toNat_add, UInt64.toNat_one]
+    exact Nat.mod_eq_of_lt nextFits
+  have nextOk : addChecked epoch 1 = .ok (epoch + 1) :=
+    addChecked_ok_iff.mpr ⟨by rw [UInt64.toNat_one]; exact nextFits,
+      by rw [nextNat, UInt64.toNat_one]⟩
+  have boundaryNat : (UInt64.ofNat ((epoch.toNat + 1) * preset.SLOTS_PER_EPOCH.toNat)).toNat =
+      (epoch.toNat + 1) * preset.SLOTS_PER_EPOCH.toNat := by
+    rw [UInt64.toNat_ofNat']
+    exact Nat.mod_eq_of_lt (by omega)
+  have boundaryOk : computeStartSlotAtEpoch preset (epoch + 1) =
+      .ok (UInt64.ofNat ((epoch.toNat + 1) * preset.SLOTS_PER_EPOCH.toNat)) :=
+    computeStartSlotAtEpoch_ok_iff.mpr ⟨by rw [nextNat]; omega, by rw [boundaryNat, nextNat]⟩
+  have boundaryLt : UInt64.ofNat ((epoch.toNat + 1) * preset.SLOTS_PER_EPOCH.toNat) < current :=
+    UInt64.lt_iff_toNat_lt.mpr (by rw [boundaryNat]; exact fits)
+  obtain ⟨begin, beginOk, _, beginLe⟩ :=
+    exists_timeAtSlotMs_of_le (UInt64.le_of_lt boundaryLt) currentBeginOk
+  exact ⟨epoch + 1, _, begin, nextOk, boundaryOk, beginOk, boundaryLt, beginLe⟩
+
 /-- A block of the call's own epoch stays covered or viable for each later receiver.
 
 The receiver is two or more epochs after the block, and its justified block is below it.
@@ -386,6 +483,80 @@ theorem Execution.coveredOrViableAt_late_current {Δ : ℕ} (sync : e.Synchronou
     totalQOk, targetQOk, ancQStored, slotQOk', targetEpochQ, firstQOk, lastQOk, participantsQOk,
     targetReadQ, members, quorum⟩ :=
     late_quorum_of_record anchorStore anchored preGloas caller checkQ countQ
+  -- The target of the record is of the call's epoch, and so is the origin.
+  have slotQEq := Except.ok.inj (slotQOk'.symm.trans slotQOk)
+  rw [slotQEq] at firstQOk lastQOk
+  have targetEpoch : target.epoch = computeEpochAtSlot preset callSlot :=
+    Except.ok.inj (targetEpochQ.symm.trans epochQ)
+  have firstOk : computeStartSlotAtEpoch preset target.epoch = .ok firstQ := by
+    have slotEpoch : computeEpochAtSlot preset slotQ = target.epoch := by
+      simpa [Store.getCurrentStoreEpoch, slotQOk, bind, Except.bind, pure, Except.pure]
+        using targetEpochQ
+    rw [← slotEpoch]
+    exact firstQOk
+  have originRead := originBelowHeadQ
+  unfold Store.isAncestor at originRead
+  obtain ⟨originBlock, originBlockOk, _⟩ := bind_ok_iff.mp originRead
+  have originHeldQ := Store.block_ok_iff.mp originBlockOk
+  have originHeldN := e.blocks_of_le qLe originHeldQ
+  have originEpochEq : computeEpochAtSlot preset originBlock.slot = target.epoch := by
+    rw [targetEpoch]
+    simpa [Store.getBlockEpoch, Store.block_ok_iff.mpr originHeldN, bind, Except.bind, pure,
+      Except.pure] using originEpoch
+  -- The boundary of the next epoch is before the receiver.
+  obtain ⟨currentBegin, currentBeginOk, currentBeginLe⟩ :=
+    exists_slot_start_of_current_slot receiverSlot
+  have currentBeginBound : currentBegin.toNat ≤ time := by
+    rw [← atTime, ← ready.1]
+    exact UInt64.le_iff_toNat_le.mp currentBeginLe
+  have lateNat : (computeEpochAtSlot preset callSlot).toNat + 1 <
+      (computeEpochAtSlot preset current).toNat := by
+    simpa only [sameEpoch] using lateEpoch
+  obtain ⟨nextEpoch, boundary, begin, nextOk, boundaryOk, beginOk, boundaryLt, _⟩ :=
+    late_next_boundary positive lateNat currentBeginOk
+  rw [← targetEpoch] at nextOk
+  have beginBefore : begin.toNat < time := by
+    have := coverage_delay_before_later_slot fits boundaryLt beginOk currentBeginOk
+    omega
+  have qBound : (e.world q).time ≤ time := (e.monotone_time qLe).trans later
+  -- The origin stays safe through the boundary: recorded before the call, then below the root.
+  have originSafe' : ∀ t, (e.world q).time ≤ t → t ≤ begin.toNat → SafeAt e t origin := by
+    intro t low high
+    by_cases early : t ≤ (e.world n).time
+    · exact originSafe t low early
+    · exact late_safe_ancestor anchorStore anchored preGloas oneBlock caller later originHeldN
+        rootAboveOrigin (by omega) (safe t (Nat.le_of_lt (Nat.lt_of_not_ge early)) (by omega))
+  -- Each counted honest voter signs the target before the next epoch.
+  have signed := e.signsTarget_by_boundary anchorStore sound anchored anchorSlot anchorAtBoundary
+    slots positive long window preGloas boost oneBlock prompt committees follows retained votes
+    fits nonzero anchorParent inHorizon large supply caller readyQ headQOk stateQOk targetQOk
+    targetEpochQ slotQOk beginQOk atQ firstOk lastQOk participantsQOk originHeldQ originEpochEq
+    originBelowHeadQ nextOk boundaryOk beginOk (Nat.le_of_lt beginBefore) originSafe' members
+  -- The receiver reads the target as the checkpoint of the root.
+  obtain ⟨receivedRoot, receivedRootHeld⟩ := known w receiver k atTime ready
+  have rootAboveOriginReceiver := late_copy_ancestor anchorStore anchored preGloas oneBlock
+    caller receiver later atTime.le originHeldN rootAboveOrigin receivedRootHeld
+  have rootRead := coverage_target_read anchorStore anchored preGloas oneBlock caller receiver
+    qBound atTime.le targetReadQ originHeldQ originBelowHeadQ originEpochEq
+    rootAboveOriginReceiver
+  have sameRoot := oneBlock u caller w receiver n k later atTime.le root rootBlock receivedRoot
+    rootKnown receivedRootHeld
+  subst sameRoot
+  have rootEpochReceiver : ((e.world k).state w).getBlockEpoch root = .ok target.epoch := by
+    simp [Store.getBlockEpoch, Store.block_ok_iff.mpr receivedRootHeld, sameEpoch, targetEpoch,
+      bind, Except.bind, pure, Except.pure]
+  have receiverEpochOk : ((e.world k).state w).getCurrentStoreEpoch config =
+      .ok (computeEpochAtSlot preset current) := by
+    simp [Store.getCurrentStoreEpoch, currentOk, bind, Except.bind, pure, Except.pure]
+  -- Assumption 3: a seed above the root carries the voters' target votes.
+  obtain ⟨seed, seedBlock, seedState, seedHeld, seedStored, seedAbove, seedLower, seedUpper,
+      seedRead, seedVotes⟩ :=
+    included u caller q n qLe later headQ stateQ totalQ target voters headQOk stateQOk targetQOk
+      totalQOk targetEpochQ (by rw [targetEpoch]; exact epochOk) (by omega) nextEpoch boundary
+      begin nextOk boundaryOk beginOk (fun v member => ⟨(members v member).1, signed v member⟩)
+      w receiver k (computeEpochAtSlot preset current) atTime.le (by rw [atTime]; exact later)
+      ready receiverEpochOk (by rw [targetEpoch]; omega) root target.epoch rootEpochReceiver
+      (UInt64.le_refl _) rootRead (fun t low high => safe t low (by rw [← atTime]; exact high))
   sorry
 
 end Models.Network

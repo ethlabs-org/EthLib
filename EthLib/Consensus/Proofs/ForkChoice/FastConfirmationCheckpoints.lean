@@ -3757,7 +3757,7 @@ private theorem coverage_justified_boundary_time
   exact ⟨begin, beginOk⟩
 
 /-- The start of a later slot is more than one delay after the start of an earlier slot. -/
-private theorem coverage_delay_before_later_slot {Δ : ℕ}
+theorem coverage_delay_before_later_slot {Δ : ℕ}
     (fits : DelayFits fork config genesisTimeMs Δ)
     {slot current : Slot} {begin currentBegin : UInt64} (later : slot < current)
     (beginOk : computeTimeAtSlotMs config genesisTimeMs slot = .ok begin)
@@ -4169,7 +4169,7 @@ The block is on the chain of the head and in the epoch of the checkpoint.
 Another honest store holds a block above it, at a time up to the last one.
 
 That store reads the same checkpoint root at that block for that epoch. -/
-private theorem coverage_target_read {anchor : Store preset fork}
+theorem coverage_target_read {anchor : Store preset fork}
     (anchorStore : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
     (anchored : ∀ w ∈ J, e.start w = anchor) (preGloas : fork < .glamsterdam)
     {limit : ℕ} (oneBlock : OneBlockPerRoot e limit)
