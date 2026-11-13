@@ -11,6 +11,8 @@ import EthLib.Consensus.Proofs.Transition.FfgSlack
 import EthLib.Consensus.Proofs.Transition.TargetSlots
 import EthLib.Consensus.Proofs.Transition.TargetVotes
 import EthLib.Consensus.Proofs.Transition.Upgrade
+import EthLib.Consensus.Proofs.Transition.BalanceSources
+import EthLib.Consensus.Proofs.Transition.PendingPartialsKept
 
 /-!
 # Accountable fast-confirmation safety
@@ -311,6 +313,378 @@ theorem exitStake_le_exitReserve_epoch {g y : ForkedBeaconState preset}
   unfold ExitChurn.activeSet ExitChurn.scheduled at bound
   unfold exitReserve activeVoters
   exact bound
+
+/-- Two registries with the same active positions in an epoch, and the same values there.
+
+Sums over their active positions agree. -/
+private theorem activeSum_congr {f h : Fork} {a : BeaconState preset f} {b : BeaconState preset h}
+    {epoch epoch' : Epoch} {first second : ℕ → ℕ}
+    (same : ∀ i, isActiveAt a epoch i = isActiveAt b epoch' i)
+    (values : ∀ i, isActiveAt a epoch i = true → first i = second i) :
+    ∑ i ∈ (Finset.range a.validators.data.size).filter (fun i => isActiveAt a epoch i = true),
+        first i =
+      ∑ i ∈ (Finset.range b.validators.data.size).filter
+        (fun i => isActiveAt b epoch' i = true), second i := by
+  have inside {f : Fork} {c : BeaconState preset f} {e : Epoch} {i : ℕ}
+      (active : isActiveAt c e i = true) : i < c.validators.data.size := by
+    obtain ⟨_, found, -⟩ := isActiveAt_eq_true_iff.mp active
+    exact (Array.getElem?_eq_some_iff.mp found).1
+  have sets : (Finset.range a.validators.data.size).filter (fun i => isActiveAt a epoch i = true) =
+      (Finset.range b.validators.data.size).filter (fun i => isActiveAt b epoch' i = true) := by
+    ext i
+    simp only [Finset.mem_filter, Finset.mem_range]
+    constructor
+    · rintro ⟨-, active⟩
+      rw [same] at active
+      exact ⟨inside active, active⟩
+    · rintro ⟨-, active⟩
+      rw [← same] at active
+      exact ⟨inside active, active⟩
+  rw [sets]
+  refine Finset.sum_congr rfl fun i member => ?_
+  rw [Finset.mem_filter] at member
+  exact values i (by rw [same]; exact member.2)
+
+/-- The blocks of two runs in sequence are the blocks of each. -/
+private theorem Run.blockCount_append {a b c : ForkedBeaconState preset}
+    (pre : Run config checks a b) (tail : Run config checks b c) :
+    (pre.append tail).blockCount = pre.blockCount + tail.blockCount := by
+  induction tail with
+  | nil => rfl
+  | snoc tail step ih =>
+    cases step <;> simp only [Run.append, Run.blockCount, ih, Nat.add_assoc]
+
+/-- A sum over some voters of a function of their positions is at most its sum over positions.
+
+Each voter's position must be one of those positions. -/
+private theorem voters_sum_le {voters : Finset ValidatorIndex} {positions : Finset ℕ}
+    (f : ℕ → ℕ) (inside : ∀ v ∈ voters, v.toNat ∈ positions) :
+    ∑ v ∈ voters, f v.toNat ≤ ∑ i ∈ positions, f i := by
+  rw [← Finset.sum_image (g := UInt64.toNat) fun a _ b _ same => UInt64.toNat_inj.mp same]
+  exact Finset.sum_le_sum_of_subset fun i member => by
+    obtain ⟨v, voter, rfl⟩ := Finset.mem_image.mp member
+    exact inside v voter
+
+/-- A sum of a function that is zero off a set is at most its sum over that set. -/
+private theorem sum_le_of_zero_off {s t : Finset ValidatorIndex} {f : ValidatorIndex → ℕ}
+    (zero : ∀ v, v ∉ t → f v = 0) : ∑ v ∈ s, f v ≤ ∑ v ∈ t, f v := by
+  calc ∑ v ∈ s, f v = ∑ v ∈ s.filter (· ∈ t), f v := by
+        refine (Finset.sum_filter_of_ne fun v _ nonzero => ?_).symm
+        by_contra outside
+        exact nonzero (zero v outside)
+    _ ≤ ∑ v ∈ t, f v := Finset.sum_le_sum_of_subset fun v member => (Finset.mem_filter.mp member).2
+
+/-- The validators active in the next epoch weigh at most those active now and those joining. -/
+private theorem sum_upcoming_le (s : Finset ℕ) (current upcoming : ℕ → Bool) (f : ℕ → ℕ) :
+    ∑ i ∈ s with upcoming i = true, f i ≤
+      ∑ i ∈ s with current i = true, f i +
+        ∑ i ∈ s with current i = false ∧ upcoming i = true, f i := by
+  rw [← Finset.sum_filter_add_sum_filter_not (s.filter fun i => upcoming i = true)
+    (fun i => current i = true)]
+  refine Nat.add_le_add (Finset.sum_le_sum_of_subset fun i member => ?_) (le_of_eq ?_)
+  · simp only [Finset.mem_filter] at member ⊢
+    exact ⟨member.1.1, member.2⟩
+  · rw [Finset.filter_filter]
+    refine Finset.sum_congr (Finset.filter_congr fun i _ => ?_) fun _ _ => rfl
+    cases current i <;> simp [and_comm]
+
+/-- A count of the blocks of a branch, kept or replaced by a larger count, bounds the credited. -/
+private theorem credited_mono {c : Prop} [Decidable c] {m n a b : ℕ} (counts : m ≤ n)
+    (deposits : a ≤ b) : (if c then 0 else m) + a ≤ (if c then 0 else n) + b := by
+  split <;> omega
+
+/-- The deposits read before Electra grow with the count of the blocks. -/
+private theorem blockDeposits_mono {c d : Prop} [Decidable c] [Decidable d] {k m n : ℕ}
+    {index : c → ℕ} (counts : m ≤ n) :
+    (if h : c then (if d then 0 else min (k * m) (index h)) else 0) ≤
+      (if h : c then (if d then 0 else min (k * n) (index h)) else 0) := by
+  split
+  · split
+    · exact Nat.le_refl _
+    · exact min_le_min (Nat.mul_le_mul_left _ counts) (Nat.le_refl _)
+  · exact Nat.le_refl _
+
+/-- The quorum of a call drifts by at most the reserve from the call's state to a later state.
+
+This is the drift bound C‴ of the fast confirmation rule.
+
+It is read by `Execution.quorumDriftsHead_of_oneBlock`.
+
+The call's state is in the epoch of a boundary state, which is right after its epoch transition.
+
+The bands of hysteresis hold at the boundary state, and genesis reaches it.
+
+A middle state follows the boundary state by at most one block.
+
+It holds the queue of partial withdrawals of the ancestor that the reserve reads.
+
+The call's state and the later state both follow the middle state.
+
+The blocks from the boundary state to the call's state number at most one per slot.
+
+The later state is in the call's epoch or the next one.
+
+Take voters that are active at the call's state and not slashed at the later state.
+
+Twice the later total and three times their stake at the call add up to at most a bound.
+
+That bound is twice the total at the call, three times their later stake, and the reserve.
+
+In the same epoch the active set and its effective balances stay, so nothing drifts.
+
+In the next epoch the total rises by at most the gain, and the voters fall by at most the loss.
+
+The safety proof pays for the reserve with honest votes beyond two thirds of the total.
+
+A rule that adds the reserve to its own justification test would remove that premise.
+-/
+theorem quorumDrift_le_quorumReserve {g : ForkedBeaconState preset}
+    {boundary middle pulled anc state : BeaconState preset fork}
+    (genesis : Genesis (config := config) (checks := checks) g)
+    (history : Run config checks g ⟨fork, boundary⟩)
+    (edge : Run config checks ⟨fork, boundary⟩ ⟨fork, middle⟩)
+    (tailP : Run config checks ⟨fork, middle⟩ ⟨fork, pulled⟩)
+    (tailS : Run config checks ⟨fork, middle⟩ ⟨fork, state⟩)
+    (early : fork < .glamsterdam) (bands : preset.IncrementWithinUpwardBand)
+    (withdrawDelay : 1 ≤ config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat)
+    (electraFloor : preset.MAX_EFFECTIVE_BALANCE = preset.MIN_ACTIVATION_BALANCE)
+    (electraCap : preset.MIN_ACTIVATION_BALANCE ≤ preset.MAX_EFFECTIVE_BALANCE_ELECTRA)
+    (lookahead : 1 ≤ preset.MAX_SEED_LOOKAHEAD.toNat)
+    (apart : preset.MIN_SEED_LOOKAHEAD.toNat + 2 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
+    (hysteresis : Hysteresis boundary) (single : edge.blockCount ≤ 1)
+    (counted : edge.blockCount + tailP.blockCount ≤
+      pulled.slot.toNat - (getCurrentEpoch pulled).toNat * preset.SLOTS_PER_EPOCH.toNat + 1)
+    (queue : ∀ electra : .pectra ≤ fork,
+      middle.pendingPartialWithdrawals electra = anc.pendingPartialWithdrawals electra)
+    (middleEpoch : getCurrentEpoch middle = getCurrentEpoch boundary)
+    (callEpoch : getCurrentEpoch pulled = getCurrentEpoch boundary)
+    (later : getCurrentEpoch pulled ≤ getCurrentEpoch state)
+    (near : (getCurrentEpoch state).toNat ≤ (getCurrentEpoch pulled).toNat + 1)
+    {voters : Finset ValidatorIndex} {total pulledTotal : Gwei}
+    (voting : ∀ v ∈ voters, v ∈ activeVoters pulled ∧ NotSlashed state v)
+    (totalOk : getTotalActiveBalance state = .ok total)
+    (pulledOk : getTotalActiveBalance pulled = .ok pulledTotal) :
+    2 * total.toNat + 3 * stake (fun v => balanceAt pulled v.toNat) voters ≤
+      2 * pulledTotal.toNat + 3 * stake (fun v => balanceAt state v.toNat) voters +
+        quorumReserve config pulled anc := by
+  have notGloas : ¬Fork.glamsterdam ≤ fork := fun late =>
+    Nat.lt_irrefl _ (Nat.lt_of_lt_of_le early late)
+  -- The reserve reads the queue of the ancestor, which the middle state holds.
+  have sameQueue : quorumReserve config pulled anc = quorumReserve config pulled middle := by
+    unfold quorumReserve
+    simp only [queue]
+  rw [sameQueue]
+  -- Each voter is active in the epoch of the call.
+  have voterActive : ∀ v ∈ voters, isActiveAt pulled (getCurrentEpoch pulled) v.toNat = true := by
+    intro v voter
+    obtain ⟨validator, found, active⟩ :=
+      (mem_getActiveValidatorIndices (pulled.validators.bound early)).mp
+        (List.mem_toFinset.mp (voting v voter).1)
+    exact isActiveAt_eq_true_iff.mpr ⟨validator, found, active⟩
+  have fixed : getCurrentEpoch boundary ≤ activityFixedEpoch boundary :=
+    getCurrentEpoch_le_activityFixedEpoch boundary
+  have activeP : ∀ i, isActiveAt pulled (getCurrentEpoch boundary) i =
+      isActiveAt boundary (getCurrentEpoch boundary) i :=
+    activeKept_of_chainSteps (edge.append tailP).chainSteps _ fixed
+  have keptP : EffectiveKept boundary pulled :=
+    (edge.append tailP).effectiveKept_of_same_epoch early callEpoch
+  have insideR {i : ℕ} (active : isActiveAt boundary (getCurrentEpoch boundary) i = true) :
+      i < boundary.validators.data.size := by
+    obtain ⟨_, found, -⟩ := isActiveAt_eq_true_iff.mp active
+    exact (Array.getElem?_eq_some_iff.mp found).1
+  rcases Nat.lt_or_ge (getCurrentEpoch pulled).toNat (getCurrentEpoch state).toNat with
+    advanced | stayed
+  rotate_left
+  · -- The state is in the epoch of the call: the active set and its effective balances stay.
+    have sameEpoch : getCurrentEpoch state = getCurrentEpoch boundary :=
+      (UInt64.le_antisymm (UInt64.le_iff_toNat_le.mpr stayed) later).trans callEpoch
+    have activeS : ∀ i, isActiveAt state (getCurrentEpoch boundary) i =
+        isActiveAt boundary (getCurrentEpoch boundary) i :=
+      activeKept_of_chainSteps (edge.append tailS).chainSteps _ fixed
+    have keptS : EffectiveKept boundary state :=
+      (edge.append tailS).effectiveKept_of_same_epoch early sameEpoch
+    have totals : total.toNat = pulledTotal.toNat := by
+      rw [getTotalActiveBalance_toNat totalOk, getTotalActiveBalance_toNat pulledOk, sameEpoch,
+        callEpoch]
+      congr 1
+      refine activeSum_congr (fun i => (activeS i).trans (activeP i).symm) fun i active => ?_
+      rw [activeS] at active
+      exact (keptS i (insideR active)).trans (keptP i (insideR active)).symm
+    have stakes : stake (fun v => balanceAt state v.toNat) voters =
+        stake (fun v => balanceAt pulled v.toNat) voters := by
+      refine Finset.sum_congr rfl fun v voter => ?_
+      have active := voterActive v voter
+      rw [callEpoch, activeP] at active
+      exact (keptS _ (insideR active)).trans (keptP _ (insideR active)).symm
+    omega
+  -- The state is in the next epoch.
+  have next : (getCurrentEpoch state).toNat = (getCurrentEpoch boundary).toNat + 1 := by
+    rw [← callEpoch]; omega
+  have caps : CapOrder preset := ⟨UInt64.le_of_eq electraFloor, electraCap⟩
+  have invariant {z : ForkedBeaconState preset} (run : Run config checks g z) :
+      Invariant z.state := by
+    induction run with
+    | nil =>
+      obtain ⟨_, _, _, ok⟩ := genesis
+      exact (initializeBeaconStateFromEth1_invariant ok).2
+    | snoc pre step ih =>
+      cases step with
+      | slot ok => exact (advanceSlotAcross_invariant ih ok).1
+      | block engine signed due ok =>
+        exact (frame_processBlock (applySignedBlock_ok ok).2.1).invariant ih
+  have invR := invariant history
+  have invM := invariant (history.append edge)
+  -- The branch corrections from the boundary state, and from the middle state.
+  obtain ⟨debitedKeys, -, -, -, debitedCard, -, gainSide, -, -, -, -, -, -, -, capsKept, -, -⟩ :=
+    branchCorrections (edge.append tailP) early callEpoch invR.balancesMatch invR.exitsOrdered
+  obtain ⟨-, creditedKeys, pc, deposit, -, creditedCard, -, lossSide, zeroOff, electraZero, budget,
+    -, -, -, -, -, -⟩ := branchCorrections tailP early (callEpoch.trans middleEpoch.symm)
+      invM.balancesMatch invM.exitsOrdered
+  have blocksLe : (edge.append tailP).blockCount ≤
+      pulled.slot.toNat - (getCurrentEpoch pulled).toNat * preset.SLOTS_PER_EPOCH.toNat + 1 := by
+    rw [Run.blockCount_append]; exact counted
+  -- The reserve, term by term.
+  unfold quorumReserve
+  simp -zeta only [notGloas, ↓reduceIte]
+  extract_lets epoch inc slots p positions validator effective actual cap capMax current upcoming
+    before recent slashed total' root perIncrement base num den flagWeight seatReward seats sync
+    limit depositChurn score delay inactivity credit penalty syncProposer proposerCredit
+    whistleblower depositCredit due dueStake proposers depositRecipients recipients nP debited
+    transfers depositGain slashBack syncP blockDeposits creditedP creditMax joining crossing
+    headroom gain partials fall syncPMax whistleblowerP maskBudget loss
+  have gainEq : gain = joining + min headroom (crossing + (recipients + debited) *
+      preset.upwardBand + debited * creditMax + transfers + depositGain) := rfl
+  have lossEq : loss = ∑ i ∈ positions with current i = true, fall i +
+      creditedP * (inc + 2 * preset.downwardBand + syncPMax) + maskBudget := rfl
+  have nPLe : edge.blockCount + tailP.blockCount ≤ nP := counted
+  -- The rise of the total: the active set of the next epoch is fixed at the boundary state.
+  have nextEpoch : getCurrentEpoch state = epoch + 1 := by
+    apply UInt64.toNat_inj.mp
+    have small := (getCurrentEpoch state).toNat_lt
+    rw [UInt64.toNat_add, UInt64.toNat_one, show epoch = getCurrentEpoch pulled from rfl]
+    omega
+  have fixedNext : epoch + 1 ≤ activityFixedEpoch boundary := by
+    have small := (getCurrentEpoch state).toNat_lt
+    rw [← nextEpoch, UInt64.le_iff_toNat_le, activityFixedEpoch_toNat]
+    omega
+  have nextS : ∀ i, isActiveAt state (epoch + 1) i = isActiveAt boundary (epoch + 1) i :=
+    activeKept_of_chainSteps (edge.append tailS).chainSteps _ fixedNext
+  have nextP : ∀ i, isActiveAt pulled (epoch + 1) i = isActiveAt boundary (epoch + 1) i :=
+    activeKept_of_chainSteps (edge.append tailP).chainSteps _ fixedNext
+  have totalS : total.toNat = max inc
+      (∑ i ∈ positions with upcoming i = true, effectiveAt ⟨fork, state⟩ i) := by
+    rw [getTotalActiveBalance_toNat totalOk, nextEpoch]
+    exact congrArg (max inc) (activeSum_congr (fun i => (nextS i).trans (nextP i).symm)
+      fun _ _ => rfl)
+  have totalP : pulledTotal.toNat = total' := getTotalActiveBalance_toNat pulledOk
+  have rise : ∑ i ∈ positions with upcoming i = true, (effectiveAt ⟨fork, state⟩ i - effective i) ≤
+      min headroom (crossing + (recipients + debited) * preset.upwardBand + debited * creditMax +
+        transfers + depositGain) :=
+    effectiveRise_le genesis history (edge.append tailP) (edge.append tailS) caps withdrawDelay
+      bands lookahead apart hysteresis early callEpoch next (n := nP) debitedKeys
+      (debitedCard.trans (Nat.mul_le_mul_left _ blocksLe))
+      (fun v off => (gainSide v off).trans
+        (Nat.add_le_add_left (Nat.mul_le_mul_right _ blocksLe) _))
+      capsKept
+  have split : ∑ i ∈ positions with upcoming i = true, effectiveAt ⟨fork, state⟩ i ≤
+      ∑ i ∈ positions with upcoming i = true, effective i +
+        ∑ i ∈ positions with upcoming i = true, (effectiveAt ⟨fork, state⟩ i - effective i) := by
+    rw [← Finset.sum_add_distrib]
+    exact Finset.sum_le_sum fun i _ => by omega
+  have joined := sum_upcoming_le positions current upcoming effective
+  have totalEq : total' = max inc (∑ i ∈ positions with current i = true, effective i) := rfl
+  have riseBound : total.toNat ≤ pulledTotal.toNat + gain := by
+    rw [totalS, totalP, totalEq, gainEq]
+    omega
+  -- The fall of the voters.
+  obtain ⟨below, owed, belowOff, belowSum, falls⟩ : ∃ (below : ValidatorIndex → ℕ)
+      (owed : Finset ValidatorIndex), (∀ v, v ∉ owed → below v = 0) ∧
+      ∑ v ∈ owed, below v ≤ (if Fork.pectra ≤ fork then
+        preset.MAX_PENDING_PARTIALS_PER_WITHDRAWALS_SWEEP.toNat *
+          (preset.MAX_EFFECTIVE_BALANCE_ELECTRA.toNat - preset.MIN_ACTIVATION_BALANCE.toNat)
+        else 0) ∧
+      ∀ v : ValidatorIndex, current v.toNat = true →
+        ((state.validators.data[v.toNat]?).map (·.slashed)).getD false = false →
+        effective v.toNat - effectiveAt ⟨fork, state⟩ v.toNat ≤ fall v.toNat +
+          (if pc v + deposit v = 0 then 0
+           else inc + 2 * preset.downwardBand + syncP v.toNat +
+             min (pc v + deposit v) (below v)) :=
+    effectiveFall_le genesis history edge tailP tailS caps bands withdrawDelay hysteresis early
+      middleEpoch callEpoch next single counted (fun v => pc v + deposit v)
+      (fun v => (lossSide v).trans (by rw [Nat.add_assoc]))
+  -- Each voter loses at most its computed fall, and a band and its share if it was credited.
+  have each : ∀ v ∈ voters, balanceAt pulled v.toNat ≤ balanceAt state v.toNat + fall v.toNat +
+      ((if v ∈ creditedKeys then inc + 2 * preset.downwardBand + syncPMax else 0) +
+        min (pc v + deposit v) (below v)) := by
+    intro v voter
+    have active : current v.toNat = true := voterActive v voter
+    have bound := falls v active (voting v voter).2
+    have fallen : balanceAt pulled v.toNat - balanceAt state v.toNat ≤ fall v.toNat +
+        (if pc v + deposit v = 0 then 0
+         else inc + 2 * preset.downwardBand + syncP v.toNat +
+           min (pc v + deposit v) (below v)) := bound
+    split at fallen
+    · omega
+    · rename_i credited
+      have member : v ∈ creditedKeys := by
+        by_contra outside
+        exact credited (by rw [(zeroOff v outside).1, (zeroOff v outside).2])
+      have position : v.toNat ∈ positions := by
+        obtain ⟨_, found, -⟩ := isActiveAt_eq_true_iff.mp active
+        exact Finset.mem_range.mpr (Array.getElem?_eq_some_iff.mp found).1
+      have largest := Finset.le_sup (f := fun i => if current i = true then syncP i else 0)
+        position
+      simp only [active, ↓reduceIte] at largest
+      have most : syncP v.toNat ≤ syncPMax := largest
+      simp only [member, ↓reduceIte]
+      omega
+  have voterSum := Finset.sum_le_sum each
+  rw [Finset.sum_add_distrib, Finset.sum_add_distrib, Finset.sum_add_distrib] at voterSum
+  have fallSum := voters_sum_le fall (positions := positions.filter fun i => current i = true)
+    fun v voter => by
+      have active : current v.toNat = true := voterActive v voter
+      obtain ⟨_, found, -⟩ := isActiveAt_eq_true_iff.mp active
+      exact Finset.mem_filter.mpr
+        ⟨Finset.mem_range.mpr (Array.getElem?_eq_some_iff.mp found).1, active⟩
+  -- The credited voters number at most the credited validators of the branch.
+  have creditedLe : creditedKeys.card ≤ creditedP :=
+    creditedCard.trans (credited_mono ((Nat.le_add_left _ _).trans nPLe)
+      (blockDeposits_mono ((Nat.le_add_left _ _).trans nPLe)))
+  have bandSum : ∑ v ∈ voters, (if v ∈ creditedKeys then
+      inc + 2 * preset.downwardBand + syncPMax else 0) ≤
+      creditedP * (inc + 2 * preset.downwardBand + syncPMax) := by
+    refine (sum_le_of_zero_off (t := creditedKeys) fun v outside => by simp [outside]).trans ?_
+    rw [Finset.sum_ite_of_true fun v member => member, Finset.sum_const, smul_eq_mul]
+    exact Nat.mul_le_mul_right _ creditedLe
+  -- The credits that hide a queued payment fit the mask budget.
+  have maskSum : ∑ v ∈ voters, min (pc v + deposit v) (below v) ≤ maskBudget := by
+    have byBelow : ∑ v ∈ voters, min (pc v + deposit v) (below v) ≤ ∑ v ∈ owed, below v :=
+      (Finset.sum_le_sum fun v _ => Nat.min_le_right _ _).trans
+        (sum_le_of_zero_off belowOff)
+    by_cases electra : Fork.pectra ≤ fork
+    · have byCredit : ∑ v ∈ voters, min (pc v + deposit v) (below v) ≤
+          ∑ v ∈ creditedKeys, pc v := by
+        refine (Finset.sum_le_sum fun v _ => Nat.min_le_left _ _).trans ?_
+        refine (sum_le_of_zero_off fun v outside => ?_).trans
+          (Finset.sum_le_sum fun v _ => by rw [electraZero electra v, Nat.add_zero])
+        rw [(zeroOff v outside).1, (zeroOff v outside).2]
+      have budget' : ∑ v ∈ creditedKeys, pc v ≤ proposerCredit + whistleblowerP := budget
+      have maskEq : maskBudget = min (proposerCredit + whistleblowerP)
+          (preset.MAX_PENDING_PARTIALS_PER_WITHDRAWALS_SWEEP.toNat *
+            (preset.MAX_EFFECTIVE_BALANCE_ELECTRA.toNat -
+              preset.MIN_ACTIVATION_BALANCE.toNat)) := by
+        simp only [maskBudget, capMax, electra, ↓reduceIte]
+      simp only [electra, ↓reduceIte] at belowSum
+      rw [maskEq]
+      exact le_min (byCredit.trans budget') (byBelow.trans belowSum)
+    · simp only [electra, ↓reduceIte] at belowSum
+      exact (byBelow.trans belowSum).trans (Nat.zero_le _)
+  have fallBound : stake (fun v => balanceAt pulled v.toNat) voters ≤
+      stake (fun v => balanceAt state v.toNat) voters + loss := by
+    simp only [stake]
+    rw [lossEq]
+    omega
+  omega
 
 /-- A balance rounded down to an increment, at most the largest value, lies within both bands.
 
@@ -2801,9 +3175,15 @@ The boundary state is at the start of that epoch, and genesis reaches it.
 
 The bands of hysteresis hold at the boundary state.
 
-A run from it reaches the pulled-up head state, with at most one block for each slot on the way.
+A middle state at the same slot holds the queue of partial withdrawals of the target block.
 
-Another run reaches the receiver state, and so does a run from the state of the target block. -/
+The target block itself, when it is at the start of the epoch, is the only block on the way to it.
+
+From the middle state, runs reach the pulled-up head state and the receiver state.
+
+The blocks from the boundary state to the pulled-up head state number at most one per slot.
+
+A run from the state of the target block also reaches the receiver state. -/
 theorem Execution.runs_of_call
     {e : Execution (honestForkChoice config .bls sources anchorState anchorBlock assignment
       genesisTimeMs) J}
@@ -2834,14 +3214,18 @@ theorem Execution.runs_of_call
     (later : target.epoch ≤ getCurrentEpoch state) (inside : getCurrentEpoch state ≤ horizon) :
     ((e.world k).state w).blockStates[target.root]? = some anc ∧
       getCurrentEpoch pulled = target.epoch ∧
-      ∃ boundary : BeaconState preset fork,
-        boundary.slot.toNat = target.epoch.toNat * preset.SLOTS_PER_EPOCH.toNat ∧
+      ∃ boundary middle : BeaconState preset fork,
+        getCurrentEpoch boundary = target.epoch ∧ getCurrentEpoch middle = target.epoch ∧
         Hysteresis boundary ∧ Nonempty (Run config .bls g ⟨fork, boundary⟩) ∧
-        (∃ tail : Run config .bls ⟨fork, boundary⟩ ⟨fork, pulled⟩,
-          tail.blockCount ≤
-            pulled.slot.toNat - target.epoch.toNat * preset.SLOTS_PER_EPOCH.toNat + 1) ∧
-        Nonempty (Run config .bls ⟨fork, boundary⟩ ⟨fork, state⟩) ∧
-        Nonempty (Run config .bls ⟨fork, anc⟩ ⟨fork, state⟩) := by
+        (∀ electra : .pectra ≤ fork,
+          middle.pendingPartialWithdrawals electra = anc.pendingPartialWithdrawals electra) ∧
+        ∃ (edge : Run config .bls ⟨fork, boundary⟩ ⟨fork, middle⟩)
+          (tail : Run config .bls ⟨fork, middle⟩ ⟨fork, pulled⟩),
+          edge.blockCount ≤ 1 ∧
+          edge.blockCount + tail.blockCount ≤
+            pulled.slot.toNat - target.epoch.toNat * preset.SLOTS_PER_EPOCH.toNat + 1 ∧
+          Nonempty (Run config .bls ⟨fork, middle⟩ ⟨fork, state⟩) ∧
+          Nonempty (Run config .bls ⟨fork, anc⟩ ⟨fork, state⟩) := by
   have early := forkWindow.1
   have positive : 0 < preset.SLOTS_PER_EPOCH.toNat := parameters.slots
   have reachU : Store.Reachable config anchorState anchorBlock ((e.world n).state u) :=
@@ -2940,16 +3324,24 @@ theorem Execution.runs_of_call
   obtain ⟨boundaryState, atBoundary, banded, first, link⟩ :=
     e.boundaryState_of_target anchored early genesis history bands electraFloor electraCap caller
       (start u caller) beforeU held boundaryOk boundaryBefore (ancSlot ▸ aLe) ahead
-  -- The state of the target block at the boundary, from the boundary state and the target block.
-  obtain ⟨s0, bridge, ⟨toS0⟩, ⟨fromAnc⟩⟩ : ∃ s0 : BeaconState preset fork,
+  -- The state of the target block at the boundary holds the queue of the target block.
+  --
+  -- At most the target block leads to it from the boundary state.
+  obtain ⟨s0, bridge, toS0, edgeCount, s0Slot, queue, ⟨fromAnc⟩⟩ : ∃ s0 : BeaconState preset fork,
       ((anc.slot = boundary ∧ s0 = anc) ∨
         (anc.slot < boundary ∧ processSlots config .bls anc boundary = .ok s0)) ∧
-      Nonempty (Run config .bls ⟨fork, boundaryState⟩ ⟨fork, s0⟩) ∧
-      Nonempty (Run config .bls ⟨fork, anc⟩ ⟨fork, s0⟩) := by
-    rcases link with ⟨below, processed⟩ | ⟨same, run⟩
-    · exact ⟨boundaryState, .inr ⟨below, processed⟩, ⟨.nil⟩,
+      ∃ toS0 : Run config .bls ⟨fork, boundaryState⟩ ⟨fork, s0⟩, toS0.blockCount ≤ 1 ∧
+        s0.slot = boundary ∧
+        (∀ electra : .pectra ≤ fork,
+          s0.pendingPartialWithdrawals electra = anc.pendingPartialWithdrawals electra) ∧
+        Nonempty (Run config .bls ⟨fork, anc⟩ ⟨fork, s0⟩) := by
+    rcases link with ⟨below, processed⟩ | ⟨same, ⟨run⟩⟩
+    · exact ⟨boundaryState, .inr ⟨below, processed⟩, .nil, Nat.zero_le _, atBoundary,
+        fun electra => processSlots_pendingPartialWithdrawals electra processed,
         run_of_processSlots processed boundaryBefore⟩
-    · exact ⟨anc, .inl ⟨same, rfl⟩, run, ⟨.nil⟩⟩
+    · have counted := run.blocks_le_slots (a := boundary.toNat) (b := boundary.toNat)
+        (by rw [atBoundary]) (by rw [same])
+      exact ⟨anc, .inl ⟨same, rfl⟩, run, by omega, same, fun _ => rfl, ⟨.nil⟩⟩
   -- The run to the pulled-up head state.
   have pulledEpoch : getCurrentEpoch pulled = epoch := by
     rcases pullUp with ⟨-, -, processed⟩ | ⟨headLater, rfl⟩
@@ -2975,22 +3367,26 @@ theorem Execution.runs_of_call
       · rw [epochNow]
         exact Nat.div_le_div_right upper
       · exact (Nat.le_div_iff_mul_le positive).mpr low
-  have toPulled : Nonempty (Run config .bls ⟨fork, boundaryState⟩ ⟨fork, pulled⟩) := by
+  -- When the head is older than the epoch, the call processes the same slots, so the run is empty.
+  have toPulled : Nonempty (Run config .bls ⟨fork, s0⟩ ⟨fork, pulled⟩) := by
     rcases pullUp with ⟨below, same, processed⟩ | ⟨headLater, rfl⟩
     · subst same
-      rcases link with ⟨-, processedR⟩ | ⟨equal, -⟩
-      · have equal : pulled = boundaryState :=
-          Except.ok.inj (processed.symm.trans processedR)
+      rcases bridge with ⟨equal, -⟩ | ⟨-, processedS⟩
+      · exact absurd (equal ▸ below) (UInt64.lt_irrefl _)
+      · have equal : pulled = s0 := Except.ok.inj (processed.symm.trans processedS)
         subst equal
         exact ⟨.nil⟩
-      · exact absurd (equal ▸ below) (UInt64.lt_irrefl _)
-    · obtain ⟨run⟩ := run_of_checkpoint anchored early anchorSlot start caller beforeU boundaryOk
+    · exact run_of_checkpoint anchored early anchorSlot start caller beforeU boundaryOk
         held bridge headStored checkpointOk (.inl rfl) headLater headBefore
-      exact ⟨toS0.append run⟩
   obtain ⟨tail⟩ := toPulled
-  have counted := tail.blocks_le_slots (a := boundary.toNat) (b := pulled.slot.toNat)
-    (by rw [atBoundary]) (Nat.le_refl _)
-  rw [boundaryNat] at counted
+  have counted := (toS0.append tail).blocks_le_slots (a := boundary.toNat)
+    (b := pulled.slot.toNat) (by rw [atBoundary]) (Nat.le_refl _)
+  rw [boundaryNat, Run.blockCount_append] at counted
+  have epochAt {s : BeaconState preset fork} (atSlot : s.slot = boundary) :
+      getCurrentEpoch s = epoch := by
+    simp only [getCurrentEpoch, atSlot]
+    exact computeEpochAtSlot_computeStartSlotAtEpoch (UInt64.lt_iff_toNat_lt.mpr positive)
+      boundaryOk
   -- The receiver holds the same target state, and its runs.
   obtain ⟨_, _, _, aFoundW, -, -⟩ :=
     Store.isAncestor_of_getCheckpointBlock early read
@@ -3012,8 +3408,85 @@ theorem Execution.runs_of_call
     exact (Nat.div_lt_iff_lt_mul positive).mp (by omega)
   obtain ⟨toState⟩ := run_of_checkpoint anchored early anchorSlot start receiver beforeW
     boundaryOk heldW bridge stored read reach stateLater stateBefore
-  exact ⟨heldW, pulledEpoch, boundaryState, by rw [atBoundary, boundaryNat], banded, first,
-    ⟨tail, counted⟩, ⟨toS0.append toState⟩, ⟨fromAnc.append toState⟩⟩
+  exact ⟨heldW, pulledEpoch, boundaryState, s0, epochAt atBoundary, epochAt s0Slot, banded, first,
+    queue, toS0, tail, edgeCount, counted, ⟨toState⟩, ⟨fromAnc.append toState⟩⟩
+
+omit [DecidablePred (· ∈ J)] in
+/-- The quorum of each call of an honest store drifts by at most its reserve, for every receiver.
+
+This is the producer of the contract `quorumDrifts` of the safety of the fast confirmation rule.
+
+The call is the pulled-up head state and the current target of an honest store, with BLS checks.
+
+The reserve reads the call's state and the block state of the target.
+
+The receiver state is on the chain of a held block.
+
+The checkpoint block of that chain for the target's epoch is the target.
+
+It is that block's state, or that state with more slots processed.
+
+It is in the target's epoch or the next one, and within the horizon.
+
+Take voters active at the call's state and not slashed at the receiver state.
+
+Twice the receiver's total and three times their stake at the call add up to at most a bound.
+
+That bound is twice the total at the call, three times their stake at the receiver, and the reserve.
+
+The runs come from `Execution.runs_of_call`, and the bound from `quorumDrift_le_quorumReserve`.
+
+The parameters must keep the bands of hysteresis, the withdrawal delay and the Electra caps. -/
+theorem Execution.quorumDriftsHead_of_oneBlock
+    {e : Execution (honestForkChoice config .bls sources anchorState anchorBlock assignment
+      genesisTimeMs) J}
+    {limit : ℕ} {anchor : Store preset fork}
+    (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (start : ∀ w ∈ J, e.start w = anchor) (anchorSlot : anchorBlock.slot = anchorState.slot)
+    (slots : 0 < config.SLOT_DURATION_MS) (parameters : DirectSafety.Parameters preset)
+    {g : ForkedBeaconState preset} (genesis : Genesis (config := config) (checks := .bls) g)
+    (history : Run config .bls g ⟨fork, anchorState⟩) {horizon : Epoch}
+    (forkWindow : fork < .glamsterdam ∧ ∀ next ∈ config.nextFork fork,
+      horizon.toNat < next.2.toNat)
+    (inHorizon : ∀ w ∈ J, ∀ k epoch, (e.world k).time ≤ limit →
+      ((e.world k).state w).getCurrentStoreEpoch config = .ok epoch → epoch ≤ horizon)
+    (oneBlock : OneBlockPerRoot e limit)
+    (lookahead : 1 ≤ preset.MAX_SEED_LOOKAHEAD.toNat)
+    (bands : preset.IncrementWithinUpwardBand)
+    (withdrawDelay : 1 ≤ config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat)
+    (electraFloor : preset.MAX_EFFECTIVE_BALANCE = preset.MIN_ACTIVATION_BALANCE)
+    (electraCap : preset.MIN_ACTIVATION_BALANCE ≤ preset.MAX_EFFECTIVE_BALANCE_ELECTRA) :
+    ∀ u ∈ J, ∀ n (head : Root) (pulled anc : BeaconState preset fork) (target : Checkpoint),
+      (e.world n).time ≤ limit →
+      ((e.world n).state u).getPulledUpHeadState config head = .ok pulled →
+      ((e.world n).state u).getCurrentTarget config head = .ok target →
+      ((e.world n).state u).blockStates[target.root]? = some anc →
+      ∀ w ∈ J, ∀ k (root : Root) (rootState state : BeaconState preset fork),
+      (e.world k).time ≤ limit → ((e.world k).state w).blockStates[root]? = some rootState →
+      ((e.world k).state w).getCheckpointBlock root target.epoch = .ok target.root →
+      (state = rootState ∨ ∃ slot, processSlots config .bls rootState slot = .ok state) →
+      target.epoch ≤ getCurrentEpoch state →
+      (getCurrentEpoch state).toNat ≤ target.epoch.toNat + 1 →
+      getCurrentEpoch state ≤ horizon →
+      ∀ (voters : Finset ValidatorIndex) (total pulledTotal : Gwei),
+      (∀ v ∈ voters, v ∈ activeVoters pulled ∧ NotSlashed state v) →
+      getTotalActiveBalance state = .ok total → getTotalActiveBalance pulled = .ok pulledTotal →
+      2 * total.toNat + 3 * stake (fun v => balanceAt pulled v.toNat) voters ≤
+        2 * pulledTotal.toNat + 3 * stake (fun v => balanceAt state v.toNat) voters +
+          quorumReserve config pulled anc := by
+  intro u caller n head pulled anc target callTime pulledOk targetOk held w receiver k root
+    rootState state receiveTime stored read reach later near inside voters total pulledTotal
+    voting totalOk pulledTotalOk
+  obtain ⟨-, pulledEpoch, boundary, middle, boundaryEpoch, middleEpoch, banded, ⟨toBoundary⟩,
+    queue, edge, tail, single, counted, ⟨toState⟩, -⟩ :=
+    e.runs_of_call anchored start anchorSlot slots parameters genesis history forkWindow inHorizon
+      oneBlock bands electraFloor electraCap caller callTime pulledOk targetOk held receiver
+      receiveTime stored read reach later inside
+  rw [← pulledEpoch] at counted later near
+  exact quorumDrift_le_quorumReserve genesis toBoundary edge tail toState forkWindow.1 bands
+    withdrawDelay electraFloor electraCap lookahead parameters.lookahead banded single counted
+    queue (middleEpoch.trans boundaryEpoch.symm) (pulledEpoch.trans boundaryEpoch.symm) later
+    near voting totalOk pulledTotalOk
 
 /-- Theorem 1, accountable safety: the stored block is safe, or two honest stores show a fault.
 
@@ -3041,11 +3514,9 @@ The honest stores check signatures with BLS.
 
 A change to the rule that rejects an advance failing either guard would discharge them.
 
-The hypothesis `quorumDrifts` is temporary, an intermediate assembly step.
+`Execution.quorumDriftsHead_of_oneBlock` bounds the drift of the honest quorum of each call.
 
-It bounds the drift of the honest quorum of each call by the quorum reserve of its pulled-up state.
-
-The accountable producer of that bound, from runs, replaces it when it lands. -/
+It needs the bands of hysteresis, the withdrawal delay and the Electra caps of the parameters. -/
 theorem Execution.safeAt_confirmedRoot_accountable
     {e : Execution (honestForkChoice config .bls sources anchorState anchorBlock assignment
       genesisTimeMs) J} {Δ : ℕ} (sync : e.Synchronous Δ)
@@ -3109,24 +3580,10 @@ theorem Execution.safeAt_confirmedRoot_accountable
         epoch.toNat ≤ (getCurrentEpoch state).toNat →
         (getCurrentEpoch state).toNat ≤ epoch.toNat + 1 →
         DriftAtMost headState state margin)
-    (quorumDrifts : ∀ u ∈ J, ∀ n (head : Root) (pulled anc : BeaconState preset fork)
-        (target : Checkpoint),
-      (e.world n).time ≤ limit →
-      ((e.world n).state u).getPulledUpHeadState config head = .ok pulled →
-      ((e.world n).state u).getCurrentTarget config head = .ok target →
-      ((e.world n).state u).blockStates[target.root]? = some anc →
-      ∀ w ∈ J, ∀ k (root : Root) (rootState state : BeaconState preset fork),
-      (e.world k).time ≤ limit → ((e.world k).state w).blockStates[root]? = some rootState →
-      ((e.world k).state w).getCheckpointBlock root target.epoch = .ok target.root →
-      (state = rootState ∨ ∃ slot, processSlots config .bls rootState slot = .ok state) →
-      target.epoch ≤ getCurrentEpoch state →
-      (getCurrentEpoch state).toNat ≤ target.epoch.toNat + 1 → getCurrentEpoch state ≤ horizon →
-      ∀ (voters : Finset ValidatorIndex) (total pulledTotal : Gwei),
-      (∀ v ∈ voters, v ∈ activeVoters pulled ∧ NotSlashed state v) →
-      getTotalActiveBalance state = .ok total → getTotalActiveBalance pulled = .ok pulledTotal →
-      2 * total.toNat + 3 * stake (fun v => balanceAt pulled v.toNat) voters ≤
-        2 * pulledTotal.toNat + 3 * stake (fun v => balanceAt state v.toNat) voters +
-          quorumReserve config pulled anc)
+    (bands : preset.IncrementWithinUpwardBand)
+    (withdrawDelay : 1 ≤ config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat)
+    (electraFloor : preset.MAX_EFFECTIVE_BALANCE = preset.MIN_ACTIVATION_BALANCE)
+    (electraCap : preset.MIN_ACTIVATION_BALANCE ≤ preset.MAX_EFFECTIVE_BALANCE_ELECTRA)
     {u : ValidatorIndex} (caller : u ∈ J) {events : List ℕ} {firstSlot : Slot}
     (upToDate : ∀ n ∈ events, UpToDate config .bls sources (e.world n).time
       ((e.world n).view u) ((e.world n).state u))
@@ -3183,7 +3640,9 @@ theorem Execution.safeAt_confirmedRoot_accountable
     unslashed supply
     (e.exitsHead_of_oneBlock anchored start anchorSlot slots parameters genesis history forkWindow
       historyEnough inHorizon large anchorParent oneBlock lookahead.2.1 long)
-    quorumDrifts positive enough large nonzero headDrifts caller upToDate lower atSlots ran
+    (e.quorumDriftsHead_of_oneBlock anchored start anchorSlot slots parameters genesis history
+      forkWindow inHorizon oneBlock lookahead.2.1 bands withdrawDelay electraFloor electraCap)
+    positive enough large nonzero headDrifts caller upToDate lower atSlots ran
     bounds inHorizon anchorParent lastCall slotOk nextOk followingOk nonempty)
 
 end EthLib.Consensus.Models.Network

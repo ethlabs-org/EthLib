@@ -318,7 +318,7 @@ theorem processAttestationAltair_targetFlag {attestation : Attestation preset fo
 /-! ## Flags kept forward -/
 
 /-- Adding a flag keeps each flag that was set. -/
-theorem hasFlag_addFlag_of_hasFlag {flags : ParticipationFlags} {flagIndex : UInt64}
+theorem hasFlag_addFlag_keeps {flags : ParticipationFlags} {flagIndex : UInt64}
     (added : UInt64) (set : hasFlag flags flagIndex = true) :
     hasFlag (addFlag flags added) flagIndex = true := by
   simp only [hasFlag, addFlag, beq_iff_eq] at set ⊢
@@ -344,7 +344,7 @@ private theorem addFlagReward_keeps {total : Gwei} {earned : List UInt64}
   split at computed
   · simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq, Prod.mk.injEq] at computed
     obtain ⟨_, _, _, _, _, _, rfl, _⟩ := computed
-    exact hasFlag_addFlag_of_hasFlag _ set
+    exact hasFlag_addFlag_keeps _ set
   · simp only [pure, Except.pure, Except.ok.injEq, Prod.mk.injEq] at computed
     obtain ⟨rfl, _⟩ := computed
     exact set
