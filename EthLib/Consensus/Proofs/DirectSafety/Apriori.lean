@@ -699,6 +699,30 @@ private abbrev aprioriGuard (preset : Preset) (config : Config)
       carry pending scheduled departures partials inactive funded horizon forkEpochs t) ∧
     (forkEpochs = 0 ∨ horizon + 2 ≤ forkEpochs)
 
+/-- The departures `Dnew` that the queues admit in the window, from their ends at `x`.
+
+It is the carry of the queues, and the churn of each epoch from the end of each queue on.
+
+Before the fork the exit churn is the count churn at the end of the active-count path.
+
+From Electra it is `MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT`, and consolidations add `Cc`.
+
+Two `MAX_EFFECTIVE_BALANCE_ELECTRA` cover one departure at each end of the window. -/
+private def departureBudget (preset : Preset) (config : Config)
+    (count scheduled pending carry inactive funded queued exitEnd consolidationEnd horizon
+      forkEpochs : Nat) : Nat :=
+  let ceiling := stakeCeiling preset config count scheduled pending carry inactive funded
+    horizon forkEpochs
+  let exitRate := if 0 < forkEpochs then
+      preset.MIN_ACTIVATION_BALANCE.toNat *
+        cohortCap config (countPath config (count + scheduled) (horizon + 1))
+    else config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat
+  let consolidationRate := if 0 < forkEpochs then 0
+    else consolidationChurn preset config (ceiling (horizon + 1))
+  queued + (horizon + 2 - exitEnd) * exitRate +
+    (horizon + 2 - consolidationEnd) * consolidationRate +
+    2 * preset.MAX_EFFECTIVE_BALANCE_ELECTRA.toNat
+
 /-- The a priori drift `f` of a branch, from the observables of its reference state.
 
 ```text
@@ -730,13 +754,8 @@ private def aprioriDrift (preset : Preset) (config : Config)
     let allowance := whistleblowerAllowance preset config count scheduled pending carry inactive
       horizon forkEpochs
     -- Dnew: the queue carry and the churn of each epoch from the ends of the queues.
-    let exitRate := if 0 < forkEpochs then exits 0
-      else config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat
-    let consolidationRate := if 0 < forkEpochs then 0
-      else consolidationChurn preset config last
-    let queues := queued + (horizon + 2 - exitEnd) * exitRate +
-      (horizon + 2 - consolidationEnd) * consolidationRate +
-      2 * preset.MAX_EFFECTIVE_BALANCE_ELECTRA.toNat
+    let queues := departureBudget preset config count scheduled pending carry inactive funded
+      queued exitEnd consolidationEnd horizon forkEpochs
     let dep := queues + partials + departures
     -- D: the non-slashing penalties of the epochs `0` to `H`.
     let penalties := ((List.range (horizon + 1)).map fun t =>
@@ -912,5 +931,165 @@ private noncomputable def aprioriDriftAt (config : Config) (x : ForkedBeaconStat
     (consolidationQueueStart x - (getCurrentEpoch x.state).toNat)
     (queueCarry x high) (boundaryLoad x (driftHorizon x high)) (slashableInactiveStake x)
     (fundedStake x) (driftHorizon x high) (forkEpochs config x high)
+
+/-! ## The departures of a branch
+
+The departures that a branch charges in its window fit the budget `Dnew` of the drift.
+
+This is the bound of `departure_charges_le_window_from` with the counts and rates of the drift.
+
+Two facts of the window are hypotheses here, since the ceiling of the active stake gives them.
+
+Before the fork each step of the window starts with at most `A_{H+1}` active validators.
+
+From Electra each step of the window starts with a consolidation churn of at most `Cc`.
+-/
+
+/-- A tail splits after its last step that starts by epoch `high + 1`.
+
+The second part starts after `high + 1`, so it charges only exits after `high + 1`. -/
+private theorem window_cut {x y : ForkedBeaconState preset} (tail : Run config checks x y)
+    (early : y.fork < .glamsterdam) (high : Nat) :
+    ∃ (m : ForkedBeaconState preset) (cut : Run config checks x m) (rest : Run config checks m y),
+      tail = cut.append rest ∧
+      (∀ {u w : ForkedBeaconState preset} (step : Step config checks u w), cut.Contains step →
+        (getCurrentEpoch u.state).toNat ≤ high + 1) ∧
+      (∀ {u w : ForkedBeaconState preset} (step : Step config checks u w), rest.Contains step →
+        high + 1 < (getCurrentEpoch u.state).toNat) ∧
+      ∀ charge ∈ rest.departureCharges, high + 1 < charge.epoch := by
+  induction tail with
+  | nil => exact ⟨x, .nil, .nil, rfl, fun _ member => (by cases member),
+      fun _ member => (by cases member),
+      fun _ member => by simp [Run.departureCharges] at member⟩
+  | @snoc b c pre step ih =>
+    obtain ⟨m, cut, rest, rfl, inside, outside, later⟩ :=
+      ih (Nat.lt_of_le_of_lt step.chainStep.fork_le early)
+    by_cases within : (getCurrentEpoch b.state).toNat ≤ high + 1
+    · -- The tail so far starts by `high + 1` at its end, so its second part is empty.
+      cases rest with
+      | nil =>
+        refine ⟨c, cut.snoc step, .nil, rfl, fun later member => ?_,
+          fun _ member => (by cases member),
+          fun _ member => by simp [Run.departureCharges] at member⟩
+        cases member with
+        | last => exact within
+        | earlier member => exact inside later member
+      | snoc rest last =>
+        have after := outside last (.last _ _)
+        have ordered := UInt64.le_iff_toNat_le.mp last.chainStep.currentEpoch_le
+        omega
+    · refine ⟨m, cut, rest.snoc step, rfl, inside, fun later member => ?_, fun charge member => ?_⟩
+      · cases member with
+        | last => omega
+        | earlier member => exact outside later member
+      · rcases List.mem_append.mp member with old | latest
+        · exact later charge old
+        · have lower := departureCharges_epoch_ge step early charge latest
+          omega
+
+/-- The departures that a branch charges in its window fit the budget `Dnew`.
+
+The window runs from the current epoch of `x` to `high + 1`.
+
+A branch from Electra is charged its queue carry and the Electra churn from each queue end.
+
+A branch before Electra ends before the fork epoch, so it is charged only the count churn. -/
+private theorem departures_le_budget {g x y : ForkedBeaconState preset}
+    (shared : Run config checks g x) (tail : Run config checks x y)
+    (genesis : Genesis (config := config) (checks := checks) g) (caps : CapOrder preset)
+    (early : y.fork < .glamsterdam) (high : Nat) (guard : aprioriGuardAt config x high)
+    (counted : ∀ {u w : ForkedBeaconState preset} (step : Step config checks u w),
+      tail.Contains step → (getCurrentEpoch u.state).toNat ≤ high + 1 → u.fork < .pectra →
+        activeCount u.state ≤
+          countPath config (refCount x + scheduledCount x) (driftHorizon x high + 1))
+    (rates : ∀ {u w : ForkedBeaconState preset} (step : Step config checks u w),
+      tail.Contains step → (getCurrentEpoch u.state).toNat ≤ high + 1 → .pectra ≤ u.fork →
+        ∀ rate : Gwei, getConsolidationChurnLimit config u.state = .ok rate →
+        rate.toNat ≤ consolidationChurn preset config
+          (stakeCeiling preset config (refCount x) (scheduledCount x) (preActiveStake x)
+            (fundingCarry x) (slashableInactiveStake x) (fundedStake x) (driftHorizon x high)
+            (forkEpochs config x high) (driftHorizon x high + 1))) :
+    ((tail.departureCharges.filter fun c => c.epoch ≤ high + 1).map (·.amount)).sum ≤
+      departureBudget preset config (refCount x) (scheduledCount x) (preActiveStake x)
+        (fundingCarry x) (slashableInactiveStake x) (fundedStake x) (queueCarry x high)
+        (exitQueueStart x - (getCurrentEpoch x.state).toNat)
+        (consolidationQueueStart x - (getCurrentEpoch x.state).toNat)
+        (driftHorizon x high) (forkEpochs config x high) := by
+  -- D-Q reads only the steps of the window, and the steps after it charge later exits.
+  obtain ⟨m, cut, rest, rfl, inside, -, later⟩ := window_cut tail early high
+  have cutEarly : m.fork < .glamsterdam :=
+    Nat.lt_of_le_of_lt (fork_le_of_chainSteps rest.chainSteps) early
+  have bound := departure_charges_le_window_from shared cut genesis caps cutEarly high _ _
+    (fun step member => counted step ((Run.contains_append _ _ _).mpr (.inl member))
+      (inside step member))
+    (fun step member => rates step ((Run.contains_append _ _ _).mpr (.inl member))
+      (inside step member))
+  have after : ((rest.departureCharges.filter fun c => c.epoch ≤ high + 1).map
+      (·.amount)).sum = 0 := by
+    rw [List.filter_eq_nil_iff.mpr fun c member => by
+      simpa using later c member]
+    rfl
+  rw [Run.departureCharges_append, List.filter_append, List.map_append, List.sum_append, after,
+    Nat.add_zero]
+  obtain ⟨-, -, minimum, -, -, -, -, -, -, -, -, crossing⟩ := guard
+  -- The written-out carry of D-Q is `queueCarry`.
+  change _ ≤ queueCarry x high + _ + _ at bound
+  simp only [departureBudget]
+  generalize countPath config (refCount x + scheduledCount x) (driftHorizon x high + 1) = A
+    at bound ⊢
+  generalize consolidationChurn preset config (stakeCeiling preset config (refCount x)
+    (scheduledCount x) (preActiveStake x) (fundingCarry x) (slashableInactiveStake x)
+    (fundedStake x) (driftHorizon x high) (forkEpochs config x high)
+    (driftHorizon x high + 1)) = Cc at bound ⊢
+  have horizon : driftHorizon x high = high + 2 - (getCurrentEpoch x.state).toNat := rfl
+  rw [horizon] at crossing ⊢
+  by_cases electra : .pectra ≤ x.fork
+  · -- From Electra the count term is off, and each gated churn is at most its ungated value.
+    have notBefore : ¬ x.fork < .pectra := Nat.not_lt_of_ge electra
+    have zero : forkEpochs config x high = 0 := by simp [forkEpochs, notBefore]
+    simp only [zero, lt_self_iff_false, ↓reduceIte, notBefore, Nat.zero_add] at bound ⊢
+    have exits : high + 2 - max (getCurrentEpoch x.state).toNat (exitQueueStart x) ≤
+        high + 2 - (getCurrentEpoch x.state).toNat + 2 -
+          (exitQueueStart x - (getCurrentEpoch x.state).toNat) := by
+      rcases Nat.le_total (getCurrentEpoch x.state).toNat (exitQueueStart x) with le | le
+      · rw [Nat.max_eq_right le]; omega
+      · rw [Nat.max_eq_left le]; omega
+    have consolidations : high + 2 - max (getCurrentEpoch x.state).toNat
+        (consolidationQueueStart x) ≤ high + 2 - (getCurrentEpoch x.state).toNat + 2 -
+          (consolidationQueueStart x - (getCurrentEpoch x.state).toNat) := by
+      rcases Nat.le_total (getCurrentEpoch x.state).toNat (consolidationQueueStart x) with le | le
+      · rw [Nat.max_eq_right le]; omega
+      · rw [Nat.max_eq_left le]; omega
+    have exitTerm := Nat.mul_le_mul_right
+      config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat exits
+    have consolidationTerm := Nat.mul_le_mul_right Cc consolidations
+    by_cases gate : config.ELECTRA_FORK_EPOCH.toNat ≤ high + 1 <;>
+      simp only [gate, ↓reduceIte, Nat.mul_zero] at bound <;> omega
+  · -- Before Electra the no-crossing clause puts the fork epoch after the window.
+    have before : x.fork < .pectra := Nat.lt_of_not_ge electra
+    have positive : 0 < forkEpochs config x high := by
+      simp only [forkEpochs, before, ↓reduceIte, driftHorizon]
+      split <;> omega
+    have ends : high + 2 - (getCurrentEpoch x.state).toNat + 2 ≤ forkEpochs config x high :=
+      crossing.resolve_left (Nat.ne_of_gt positive)
+    have late : ¬ config.ELECTRA_FORK_EPOCH.toNat ≤ high + 1 := by
+      simp only [forkEpochs, before, ↓reduceIte, driftHorizon] at ends
+      split at ends <;> omega
+    have starts : exitQueueStart x = (getCurrentEpoch x.state).toNat := by
+      simp [exitQueueStart, electra]
+    -- A positive minimum churn makes the floor of one in the count churn redundant.
+    have floor : max 1 (cohortCap config A) = cohortCap config A :=
+      Nat.max_eq_right (Nat.le_trans minimum (Nat.le_max_left _ _))
+    have rate := Nat.mul_le_mul_left (cohortCap config A)
+      (UInt64.le_iff_toNat_le.mp caps.activation)
+    simp only [before, ↓reduceIte, late, starts, Nat.max_self, Nat.add_zero, positive, floor,
+      Nat.sub_self] at bound ⊢
+    have horizon := Nat.mul_le_mul
+      (show high + 2 - (getCurrentEpoch x.state).toNat ≤
+        high + 2 - (getCurrentEpoch x.state).toNat + 2 - 0 by omega)
+      (show cohortCap config A * preset.MAX_EFFECTIVE_BALANCE.toNat ≤
+        preset.MIN_ACTIVATION_BALANCE.toNat * cohortCap config A by
+        rw [Nat.mul_comm preset.MIN_ACTIVATION_BALANCE.toNat]; exact rate)
+    omega
 
 end EthLib.Consensus.DirectSafety
