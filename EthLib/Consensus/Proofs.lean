@@ -19,6 +19,7 @@ public import EthLib.Consensus.Proofs.DirectSafety.TerminalFields
 public import EthLib.Consensus.Proofs.DirectSafety.TerminalQuorums
 public import EthLib.Consensus.Proofs.DirectSafety.TerminalSafety
 public import EthLib.Consensus.Proofs.Mutators
+public import EthLib.Consensus.Proofs.ParameterFacts
 public import EthLib.Consensus.Proofs.Participation
 public import EthLib.Consensus.Proofs.PayloadTimeliness
 public import EthLib.Consensus.Proofs.Proposers
