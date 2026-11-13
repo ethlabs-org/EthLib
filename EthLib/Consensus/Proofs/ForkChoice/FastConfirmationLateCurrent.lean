@@ -820,7 +820,43 @@ theorem Execution.coveredOrViableAt_late_current {Δ : ℕ} (sync : e.Synchronou
   by_cases atBoundary : isStartSlotAtEpoch preset callSlot = .ok false
   swap
   -- A root of the call's own epoch at an epoch start is the finalized root.
-  · sorry
+  · have startTrue : isStartSlotAtEpoch preset callSlot = .ok true := by
+      have first := computeStartSlotAtEpoch_computeEpochAtSlot (preset := preset) callSlot
+      unfold isStartSlotAtEpoch computeSlotsSinceEpochStart at atBoundary ⊢
+      rw [first] at atBoundary ⊢
+      simp only [Except.mapError, bind, Except.bind, pure, Except.pure, Except.ok.injEq]
+        at atBoundary ⊢
+      simpa using atBoundary
+    have finalRoot := atStart callSlot _ _ callSlotOk startTrue epochOk rootEpochOk rfl
+    obtain ⟨jb, jk⟩ := Store.filterNodeTree_known tree
+    rcases e.finalizedCheckpoint_eq_or_add_two_le anchorStore sound (anchored u caller)
+        epochOk with same | age
+    -- The anchor's root is below every block that an honest store holds.
+    · rw [finalRoot, same]
+      exact .inl (e.isAncestor_anchor_of_known anchorStore anchored receiver jk)
+    -- A later finalized root is at or before the first slot of an epoch two before the call.
+    have forwardCaller := e.forwardReachable
+      (fun v hv => (anchored v hv) ▸ Store.ForwardReachable.anchor anchorStore) n u caller
+    have justifiedHorizon := UInt64.le_trans ((forwardCaller.justified_epoch_le_current sound
+      slots (UInt64.le_of_eq anchorSlot) epochOk).1) (inHorizon u caller n _ later epochOk)
+    have read := chain u caller u caller n n later later _ (.inl rfl)
+      (forwardCaller.reachable.finalized_le_justified sound) justifiedHorizon
+    obtain ⟨boundary, finalBlock, boundaryOk, finalKnown, finalBefore, _⟩ :=
+      Store.isAncestor_of_getCheckpointBlock preGloas read
+    rw [← finalRoot, rootKnown, Option.some.injEq] at finalKnown
+    subst finalBlock
+    have boundaryNat := (computeStartSlotAtEpoch_ok_iff.mp boundaryOk).2
+    have slotLe := UInt64.le_iff_toNat_le.mp finalBefore
+    have rootEpochNat : (computeEpochAtSlot preset callSlot).toNat =
+        rootBlock.slot.toNat / preset.SLOTS_PER_EPOCH.toNat := by
+      rw [← sameEpoch]
+      simp only [computeEpochAtSlot, UInt64.toNat_div]
+    have bound := Nat.div_le_div_right (c := preset.SLOTS_PER_EPOCH.toNat)
+      (show rootBlock.slot.toNat ≤
+        ((e.world n).state u).finalizedCheckpoint.epoch.toNat * preset.SLOTS_PER_EPOCH.toNat
+        by omega)
+    rw [Nat.mul_div_cancel _ positive] at bound
+    omega
   -- The quorum record of the root's epoch.
   have record := late_root_checked preGloas upToDate headOk checked onChain callSlotOk
     callBeginOk atCall epochOk rootEpochOk
