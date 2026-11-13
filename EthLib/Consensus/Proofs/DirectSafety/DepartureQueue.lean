@@ -3547,6 +3547,42 @@ private theorem CountCohortStep.run {s t : ForkedBeaconState preset} (bound : Na
     exact (ih middleEarly fun later member => counted later (.earlier member _)).trans
       (CountCohortStep.step bound step early (counted step (.last _ _) middleEarly))
 
+/-- Before Gloas, a step charges each departure at an exit epoch no earlier than its input epoch.
+
+Before Electra the exit is placed from the current epoch on.
+
+From Electra each charge is a queue call, which starts no earlier than the current epoch. -/
+theorem departureCharges_epoch_ge {x y : ForkedBeaconState preset}
+    (step : Step config checks x y) (early : y.fork < .glamsterdam)
+    (charge : DepartureCharge) (member : charge ∈ step.departureCharges) :
+    (getCurrentEpoch x.state).toNat ≤ charge.epoch := by
+  by_cases electra : .pectra ≤ x.fork
+  · -- Every rate fits 64 bits, so that cap serves for the consolidation calls.
+    obtain ⟨_, _, firsts, covered, -⟩ := step_indexedTrace_sites step electra early
+      (Nat.le_trans electra step.chainStep.fork_le) (2 ^ 64)
+      (fun _ _ _ rate _ => (UInt64.toNat_lt rate).le)
+    obtain ⟨called, present, -, epoch, -⟩ := covered.step_charges step charge member
+    have placed := UInt64.le_iff_toNat_le.mp (churnQueue_spend called.call.computed).1
+    rw [Uint64.toNat_max] at placed
+    have first := firsts called present
+    omega
+  · obtain ⟨⟨old, i⟩, present, added⟩ := List.mem_filterMap.mp member
+    have found : x.state.validators.data[i]? = some old := by
+      simpa only [List.mem_zipIdx_iff_getElem?, Array.getElem?_toList] using present
+    dsimp only at added
+    split at added
+    · cases added
+    · rename_i next after
+      split at added
+      · rename_i assigned
+        cases Option.some.inj added
+        simp only [Bool.and_eq_true, beq_iff_eq, bne_iff_ne] at assigned
+        rcases (CountCohortStep.crossing (activeCount x.state) step (Nat.lt_of_not_ge electra)
+          early (Nat.le_refl _)).future i old next found after with same | lower
+        · exact False.elim (assigned.2 (same.trans assigned.1))
+        · exact lower
+      · cases added
+
 private theorem pre_electra_charge_step_bounds {g x y : ForkedBeaconState preset}
     (shared : Run config checks g x) (step : Step config checks x y)
     (genesis : Genesis (config := config) (checks := checks) g) (caps : CapOrder preset)
@@ -3564,14 +3600,7 @@ private theorem pre_electra_charge_step_bounds {g x y : ForkedBeaconState preset
     split at added
     · rename_i assigned
       cases Option.some.inj added
-      simp only [Bool.and_eq_true, beq_iff_eq, bne_iff_ne] at assigned
-      have placed :=
-        (CountCohortStep.crossing (activeCount x.state) step early targetEarly
-          (Nat.le_refl _)).future i old next found after
-      have lower : (getCurrentEpoch x.state).toNat ≤ next.exitEpoch.toNat := by
-        rcases placed with same | lower
-        · exact False.elim (assigned.2 (same.trans assigned.1))
-        · exact lower
+      have lower := departureCharges_epoch_ge step targetEarly _ member
       have capped := shared.effectiveBalance_capped genesis caps.activation caps.compounding
         (Nat.lt_trans early (by decide)) old (Array.mem_of_getElem? found)
       have notElectra : ¬ .pectra ≤ x.fork := Nat.not_le_of_lt early
