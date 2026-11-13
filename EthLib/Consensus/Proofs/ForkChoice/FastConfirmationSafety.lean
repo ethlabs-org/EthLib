@@ -1569,6 +1569,46 @@ private theorem walk_finalized_read_below_source {anchor : Store preset fork}
   exact walk_checkpoint_of_descendant before known descends boundaryOk
     (walk_finalized_boundary_below blockRecent age boundaryOk) read
 
+/-- A held block's voting source is no later than the store's justified checkpoint.
+
+A block of an earlier epoch reads its pulled-up count, which the store adopted at the boundary.
+
+A block of the current epoch reads its own state, which the store took in when it held it. -/
+private theorem walk_source_le_justified {store : Store preset fork}
+    (forward : Store.ForwardReachable config anchorState anchorBlock store)
+    (sound : Invariant anchorState) (positive : 0 < preset.SLOTS_PER_EPOCH.toNat)
+    (slots : 0 < config.SLOT_DURATION_MS) (anchorSlot : anchorBlock.slot = anchorState.slot)
+    (before : fork < .glamsterdam)
+    (anchorLower : getCurrentEpoch anchorState ≤ store.justifiedCheckpoint.epoch)
+    {tip : Root} {source : Checkpoint}
+    (read : store.getVotingSource config tip = .ok source) :
+    source.epoch ≤ store.justifiedCheckpoint.epoch := by
+  have reached := forward.reachable
+  unfold Store.getVotingSource at read
+  simp only [bind_ok_iff] at read
+  obtain ⟨block, blockOk, current, currentOk, read⟩ := read
+  split at read
+  · rename_i older
+    cases entry : store.unrealizedJustifications[tip]? with
+    | none => simp [entry] at read
+    | some value =>
+      simp only [entry, pure, Except.pure, Except.ok.injEq] at read
+      subst source
+      rcases walk_cache_origin reached before entry with anchorEpoch |
+        ⟨state, pulled, held, run, same⟩
+      · rw [anchorEpoch]
+        exact anchorLower
+      · rw [← same]
+        have slotEq := blockState_slot_eq reached anchorSlot (Store.block_ok_iff.mp blockOk) held
+        exact forward.pulled_justified_epoch_le_justified positive slots sound currentOk held run
+          (by simpa only [getCurrentEpoch, slotEq] using older)
+  · cases held : store.blockStates[tip]? with
+    | none => simp [held] at read
+    | some state =>
+      simp only [held, pure, Except.pure, Except.ok.injEq] at read
+      subst source
+      exact reset_state_justified_le reached sound held
+
 /-- A checked root outside the current epoch has a recent source on its chain. -/
 private theorem walk_checked_source {store : Store preset fork} {fcr : FastConfirmationStore}
     {head start root : Root} {epoch rootEpoch : Epoch}
@@ -3032,7 +3072,14 @@ theorem Execution.safeAt_of_walk {Δ : ℕ} (sync : e.Synchronous Δ)
       ∃ boundary, computeStartSlotAtEpoch preset
         fcr.currentEpochObservedJustifiedCheckpoint.epoch = .ok boundary ∧
           boundary ≤ startBlock.slot)
-    (realized : ((e.world n).state u).RealizedRecent (chain ++ [root])) :
+    (realized : ((e.world n).state u).RealizedRecent (chain ++ [root]))
+    (realizedHead : ∀ member ∈ chain ++ [root], ∀ epoch block,
+      ((e.world n).state u).getCurrentStoreEpoch config = .ok epoch →
+      ((e.world n).state u).blocks[member]? = some block →
+      computeEpochAtSlot preset block.slot < epoch →
+      ∃ headState, ((e.world n).state u).blockStates[head.root]? = some headState ∧
+        ((e.world n).state u).isAncestor head ⟨member, .pending⟩ = .ok true ∧
+        computeEpochAtSlot preset block.slot ≤ headState.currentJustifiedCheckpoint.epoch) :
     ∀ time, (e.world n).time ≤ time → time ≤ limit → SafeAt e time root := by
   classical
   intro time afterCall bounded
@@ -3149,6 +3196,11 @@ theorem Execution.safeAt_of_walk {Δ : ℕ} (sync : e.Synchronous Δ)
     (fun w hw k eq ready => ⟨rootBlock, known w hw k (afterNow.trans_eq eq.symm)
       (eq.trans_le boundedNow) ready⟩)
     (fun r mem => realized r (List.mem_append_right _ mem))
+    (fun _ _ epOk known => walk_member_recent checked walked rootMem epOk known)
+    (realizedHead root (by simp))
+    (fun w hw k _ _ _ lower read => walk_source_le_justified (e.forwardReachable
+      (fun v hv => (anchored v hv) ▸ Store.ForwardReachable.anchor anchorStore) k w hw) sound
+      positive slots anchorSlot preGloas lower read)
   intro w receiver k receiverHead atNow ready receiverHeadOk
   have receiverBound : (e.world k).time ≤ limit := atNow ▸ boundedNow
   have receiverLower := (reached k w receiver).parentsBelow (UInt64.le_of_eq anchorSlot)
@@ -4966,6 +5018,8 @@ theorem Execution.callInvariant_step {Δ : ℕ} (sync : e.Synchronous Δ)
     checked sourceOk walked confirmedAll
   have realized := bounds.realized i n fcr after head slot selectedStart balanceSource walk
     later calls headOk slotOk selection strict checked sourceOk walked confirmedAll
+  have realizedHead := bounds.realizedHead i n fcr after head slot selectedStart balanceSource
+    walk later calls headOk slotOk selection strict checked sourceOk walked confirmedAll
   have targetVotes : ∀ s, ((e.world n).state u).getCurrentSlot config = .ok s →
       isStartSlotAtEpoch preset s = .ok false → ∀ state target anc,
       ((e.world n).state u).getPulledUpHeadState config head.root = .ok state →
@@ -5191,7 +5245,7 @@ theorem Execution.callInvariant_step {Δ : ℕ} (sync : e.Synchronous Δ)
       startFacts.2 weights slack late anchorParent nonzero inHorizon
       (fun w hw k state bounded counts epochLe => large w hw k state bounded counts
         (by have := UInt64.le_iff_toNat_le.mp epochLe; omega)) few unslashed supply exits
-        quorumDrifts observedAge observedRead observedStart realized
+        quorumDrifts observedAge observedRead observedStart realized realizedHead
         time afterCall bounded
   have headAbove : ((e.world n).state u).isAncestor ⟨head.root, .pending⟩
       ⟨after.confirmedRoot, .pending⟩ = .ok true := by

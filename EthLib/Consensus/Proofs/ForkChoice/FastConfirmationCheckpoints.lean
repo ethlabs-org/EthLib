@@ -2799,6 +2799,34 @@ theorem walk_realized_mono {store : Store preset fork}
         subst p
         simp [notLower, throw, throwThe, MonadExceptOf.throw] at walk
 
+/-- Every descendant source is at least as recent as the root's realized justification. -/
+theorem walk_realized_le_source {store : Store preset fork}
+    (reachable : Store.Reachable config anchorState anchorBlock store)
+    (sound : Invariant anchorState) (before : fork < .glamsterdam)
+    {root tip : Root} {block : BeaconBlock preset fork} {base : BeaconState preset fork}
+    {source : Checkpoint}
+    (known : store.blocks[root]? = some block)
+    (stored : store.blockStates[root]? = some base)
+    (descends : store.isAncestor ⟨tip, .pending⟩ ⟨root, .pending⟩ = .ok true)
+    (read : store.getVotingSource config tip = .ok source) :
+    base.currentJustifiedCheckpoint.epoch ≤ source.epoch := by
+  unfold Store.getVotingSource at read
+  simp only [bind_ok_iff] at read
+  obtain ⟨tipBlock, tipRead, current, _, read⟩ := read
+  obtain ⟨state, held, _⟩ := reachable.blockStatesFromParents
+    (Store.block_ok_iff.mp tipRead)
+  have mono := walk_realized_mono reachable sound before known stored held descends
+  split at read
+  · cases entry : store.unrealizedJustifications[tip]? with
+    | none => simp [entry] at read
+    | some checkpoint =>
+      simp only [entry, pure, Except.pure, Except.ok.injEq] at read
+      subst source
+      exact UInt64.le_trans mono (walk_realized_le_unrealized reachable sound before held entry)
+  · simp only [held, pure, Except.pure, Except.ok.injEq] at read
+    subst source
+    exact mono
+
 /-- In the early window, every descendant source inherits the root's realized recency. -/
 theorem walk_source_recent_of_realized {store : Store preset fork}
     (reachable : Store.Reachable config anchorState anchorBlock store)
@@ -2813,25 +2841,9 @@ theorem walk_source_recent_of_realized {store : Store preset fork}
     (descends : store.isAncestor ⟨tip, .pending⟩ ⟨root, .pending⟩ = .ok true)
     (read : store.getVotingSource config tip = .ok source) :
     epoch.toNat ≤ source.epoch.toNat + 2 := by
-  unfold Store.getVotingSource at read
-  simp only [bind_ok_iff] at read
-  obtain ⟨tipBlock, tipRead, current, _, read⟩ := read
-  obtain ⟨state, held, _⟩ := reachable.blockStatesFromParents
-    (Store.block_ok_iff.mp tipRead)
-  have mono := UInt64.le_iff_toNat_le.mp
-    (walk_realized_mono reachable sound before known stored held descends)
-  split at read
-  · cases entry : store.unrealizedJustifications[tip]? with
-    | none => simp [entry] at read
-    | some checkpoint =>
-      simp only [entry, pure, Except.pure, Except.ok.injEq] at read
-      have upper := UInt64.le_iff_toNat_le.mp
-        (walk_realized_le_unrealized reachable sound before held entry)
-      subst source
-      omega
-  · simp only [held, pure, Except.pure, Except.ok.injEq] at read
-    subst source
-    omega
+  have lower := UInt64.le_iff_toNat_le.mp
+    (walk_realized_le_source reachable sound before known stored descends read)
+  omega
 
 /-- Both voting-source selectors return an anchor-era checkpoint or an ancestor. -/
 theorem walk_source_ancestor {store : Store preset fork}
@@ -3515,7 +3527,33 @@ private theorem coverage_copy_ancestor {sender receiver : Store preset fork}
   simp [Store.isAncestor, Store.block_ok_iff.mpr bKnown, copied,
     bind, Except.bind, pure, Except.pure]
 
-/-- A target read on a supporting head makes its checkpoint comparable with the root. -/
+/-- A block at or before an epoch boundary is below the checkpoint of each block above it. -/
+private theorem coverage_below_checkpoint {store : Store preset fork}
+    (before : fork < .glamsterdam) {head root checkpoint : Root} {epoch : Epoch}
+    {block : BeaconBlock preset fork} {boundary : Slot}
+    (known : store.blocks[root]? = some block)
+    (descends : store.isAncestor ⟨head, .pending⟩ ⟨root, .pending⟩ = .ok true)
+    (boundaryOk : computeStartSlotAtEpoch preset epoch = .ok boundary)
+    (early : block.slot ≤ boundary)
+    (read : store.getCheckpointBlock head epoch = .ok checkpoint) :
+    store.isAncestor ⟨checkpoint, .pending⟩ ⟨root, .pending⟩ = .ok true := by
+  unfold Store.getCheckpointBlock at read
+  simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at read
+  obtain ⟨readBoundary, readBoundaryOk, ancestor, walk, rootEq⟩ := read
+  have same := Except.ok.inj ((mapError_ok_iff.mp readBoundaryOk).symm.trans boundaryOk)
+  subst readBoundary
+  have pending := Store.getAncestor_pending_of_lt before rfl walk
+  have eq : ancestor = ⟨checkpoint, .pending⟩ := by
+    cases ancestor
+    simp_all
+  subst ancestor
+  have rootWalk := Store.getAncestor_of_isAncestor_of_lt before known descends
+  rw [Store.getAncestor_trans early walk] at rootWalk
+  exact ancestor_pending_of_walk known ⟨_, rootWalk, rfl, fun _ => rfl⟩
+
+/-- A target read on a supporting head makes its checkpoint comparable with the root.
+
+A checkpoint below the root is below it only when the root is after the checkpoint's boundary. -/
 private theorem coverage_comparable_of_target_read {sender receiver : Store preset fork}
     (reached : Store.Reachable config anchorState anchorBlock receiver)
     (before : fork < .glamsterdam)
@@ -3528,7 +3566,9 @@ private theorem coverage_comparable_of_target_read {sender receiver : Store pres
     (supports : sender.isAncestor head ⟨root, .pending⟩ = .ok true)
     (read : sender.getCheckpointBlock head.root checkpoint.epoch = .ok checkpoint.root) :
     receiver.isAncestor ⟨checkpoint.root, .pending⟩ ⟨root, .pending⟩ = .ok true ∨
-      receiver.isAncestor ⟨root, .pending⟩ ⟨checkpoint.root, .pending⟩ = .ok true := by
+      receiver.isAncestor ⟨root, .pending⟩ ⟨checkpoint.root, .pending⟩ = .ok true ∧
+        ∀ boundary, computeStartSlotAtEpoch preset checkpoint.epoch = .ok boundary →
+          boundary < rootBlock.slot := by
   obtain ⟨_, block, _, held, _, targetAbove⟩ :=
     Store.isAncestor_of_getCheckpointBlock before read
   have supportRead := supports
@@ -3552,7 +3592,16 @@ private theorem coverage_comparable_of_target_read {sender receiver : Store pres
       simp [Store.isAncestor, rbOk, walk, bind, Except.bind, pure, Except.pure]
   rcases coverage_ancestors_comparable before held rk targetAbove pendingSupport with h | h
   · exact .inl (coverage_copy_ancestor reached before same checkpointKnown known h)
-  · exact .inr (coverage_copy_ancestor reached before same known checkpointKnown h)
+  by_cases early : ∃ boundary, computeStartSlotAtEpoch preset checkpoint.epoch = .ok boundary ∧
+      rootBlock.slot ≤ boundary
+  · obtain ⟨boundary, boundaryOk, le⟩ := early
+    have eq := same _ _ _ rk known
+    subst eq
+    exact .inl (coverage_copy_ancestor reached before same checkpointKnown known
+      (coverage_below_checkpoint before rk pendingSupport boundaryOk le read))
+  · push Not at early
+    exact .inr ⟨coverage_copy_ancestor reached before same known checkpointKnown h,
+      fun boundary boundaryOk => UInt64.not_le.mp (early boundary boundaryOk)⟩
 
 omit [DecidablePred (· ∈ J)] in
 /-- An off-start numeric check makes a same-epoch justification comparable with the root. -/
@@ -3601,7 +3650,9 @@ private theorem coverage_comparable_of_numeric_check {anchor : Store preset fork
     (safe : ∀ t, (e.world n).time ≤ t → t < (e.world k).time → SafeAt e t root) :
     ((e.world k).state w).isAncestor ⟨checkpoint.root, .pending⟩ ⟨root, .pending⟩ = .ok true ∨
       ((e.world k).state w).isAncestor ⟨root, .pending⟩ ⟨checkpoint.root, .pending⟩ =
-        .ok true := by
+          .ok true ∧
+        ∀ boundary, computeStartSlotAtEpoch preset checkpoint.epoch = .ok boundary →
+          boundary < rootBlock.slot := by
   obtain ⟨target, current, first, last, participants, voters, targetOk, currentOk, targetEpochOk,
     firstOk, lastOk, participantsOk, targetRead, members, counted⟩ :=
     coverage_quorum_of_count count stateOk supportOk
@@ -3705,6 +3756,224 @@ private theorem coverage_justified_boundary_time
   obtain ⟨begin, beginOk, _⟩ := exists_timeAtSlotMs_of_le before startOk
   exact ⟨begin, beginOk⟩
 
+/-- The start of a later slot is more than one delay after the start of an earlier slot. -/
+private theorem coverage_delay_before_later_slot {Δ : ℕ}
+    (fits : DelayFits fork config genesisTimeMs Δ)
+    {slot current : Slot} {begin currentBegin : UInt64} (later : slot < current)
+    (beginOk : computeTimeAtSlotMs config genesisTimeMs slot = .ok begin)
+    (currentOk : computeTimeAtSlotMs config genesisTimeMs current = .ok currentBegin) :
+    begin.toNat + Δ < currentBegin.toNat := by
+  have lt := UInt64.lt_iff_toNat_lt.mp later
+  have bound := current.toNat_lt
+  have nextOk : addChecked slot 1 = .ok (slot + 1) :=
+    addChecked_ok_iff.mpr ⟨by simp only [UInt64.toNat_one]; omega,
+      by rw [UInt64.toNat_add, UInt64.toNat_one]; exact Nat.mod_eq_of_lt (by omega)⟩
+  have nextNat : (slot + 1).toNat = slot.toNat + 1 := by
+    rw [UInt64.toNat_add, UInt64.toNat_one]
+    exact Nat.mod_eq_of_lt (by omega)
+  obtain ⟨following, followingOk, _, followingLe⟩ := exists_timeAtSlotMs_of_le
+    (UInt64.le_iff_toNat_le.mpr (by rw [nextNat]; omega)) currentOk
+  obtain ⟨due, dueOk⟩ := fits.1
+  have fit := fits.2 slot (slot + 1) begin due following nextOk beginOk dueOk followingOk
+  have le := UInt64.le_iff_toNat_le.mp followingLe
+  omega
+
+/-- A viable leaf above a block of the justified subtree keeps the block in the filtered tree. -/
+private theorem coverage_mem_of_viable_leaf {store : Store preset fork}
+    (lower : store.ParentsBelow) (before : fork < .glamsterdam)
+    {start root leaf : Root} {nodes : List ForkChoiceNode} {rootBlock : BeaconBlock preset fork}
+    (rootKnown : store.blocks[root]? = some rootBlock)
+    (below : store.isAncestor ⟨root, .pending⟩ ⟨start, .pending⟩ = .ok true)
+    (above : store.isAncestor ⟨leaf, .pending⟩ ⟨root, .pending⟩ = .ok true)
+    (terminal : store.getNodeChildren ⟨leaf, .pending⟩ = .ok [])
+    (viable : store.isViableLeaf config ⟨leaf, .pending⟩ = .ok true)
+    (walk : store.filterNodeTree config ⟨start, .pending⟩ = .ok nodes) :
+    (⟨root, .pending⟩ : ForkChoiceNode) ∈ nodes := by
+  obtain ⟨startBlock, startKnown⟩ := Store.filterNodeTree_known walk
+  have rootPath := (Store.isAncestor_iff (lower := lower) before startKnown rfl below).mp rfl
+  have leafPath := (Store.isAncestor_iff (lower := lower) before rootKnown rfl above).mp rfl
+  obtain ⟨result, resultOk, lift⟩ :=
+    (Store.nodePath_of_ancestor (lower := lower) before startKnown rootPath).filterNodeTree walk
+  exact lift _ ((Store.nodePath_of_ancestor (lower := lower) before rootKnown
+    leafPath).self_mem_filterNodeTree resultOk terminal viable)
+
+omit [DecidablePred (· ∈ J)] in
+/-- A receiver justification of the call's epoch or later is above the root, or below it.
+
+When it is below the root, the root comes after the boundary of the justification's epoch.
+
+So for a root of an earlier epoch than the call, such a justification is above it. -/
+private theorem coverage_current_justified {anchor : Store preset fork}
+    (anchorStore : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (anchorSlot : anchorBlock.slot = anchorState.slot)
+    (anchored : ∀ w ∈ J, e.start w = anchor)
+    (preGloas : fork < .glamsterdam) (positive : 0 < preset.SLOTS_PER_EPOCH.toNat)
+    (slots : 0 < config.SLOT_DURATION_MS)
+    (incrementPositive : 0 < preset.EFFECTIVE_BALANCE_INCREMENT.toNat)
+    {Δ : ℕ} (fits : DelayFits fork config genesisTimeMs Δ)
+    {time : ℕ} {anchorEpoch horizon : Epoch} {margin : ℕ}
+    (oneBlock : OneBlockPerRoot e time)
+    (unique : OneJustifiedPerEpoch e horizon time)
+    (pins : HonestThirdPins e anchorEpoch horizon margin time)
+    (voted : JustifiedByHonestVote e anchorEpoch horizon time)
+    (committees : CommitteesFollow e time)
+    (retained : preset.MIN_SEED_LOOKAHEAD.toNat + 1 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
+    (anchorOk : anchor.justifiedCheckpoint.epoch = anchorEpoch)
+    (nonzero : ∀ v ∈ J, ∀ i, (e.world i).time ≤ time →
+      ∀ (r : Root) (b : BeaconBlock preset fork),
+        ((e.world i).state v).blocks[r]? = some b → b.stateRoot ≠ Vector.replicate 32 0)
+    (inHorizon : ∀ v ∈ J, ∀ i epoch, (e.world i).time ≤ time →
+      ((e.world i).state v).getCurrentStoreEpoch config = .ok epoch → epoch ≤ horizon)
+    {u w : ValidatorIndex} (caller : u ∈ J) (receiver : w ∈ J) {n k : ℕ}
+    (later : (e.world n).time ≤ time) (kBound : (e.world k).time ≤ time)
+    (ready : UpToDate config checks sources (e.world k).time ((e.world k).view w)
+      ((e.world k).state w))
+    {head : ForkChoiceNode} {fcr : FastConfirmationStore} {start root : Root}
+    (headOk : ((e.world n).state u).getHead config = .ok head)
+    (checked : ((e.world n).state u).Checked config fcr head.root start root)
+    (rootAbove : ((e.world n).state u).isAncestor head ⟨root, .pending⟩ = .ok true)
+    (atSlot : ∃ slot begin, ((e.world n).state u).getCurrentSlot config = .ok slot ∧
+      computeTimeAtSlotMs config genesisTimeMs slot = .ok begin ∧
+      (e.world n).time = begin.toNat)
+    (targetVotes : ∀ slot, ((e.world n).state u).getCurrentSlot config = .ok slot →
+      isStartSlotAtEpoch preset slot = .ok false → HonestTargetVotes e margin u n head.root)
+    {epoch rootEpoch startEpoch : Epoch}
+    (epochOk : ((e.world n).state u).getCurrentStoreEpoch config = .ok epoch)
+    (rootEpochOk : ((e.world n).state u).getBlockEpoch root = .ok rootEpoch)
+    (startEpochOk : ((e.world n).state u).getBlockEpoch start = .ok startEpoch)
+    (fresh : rootEpoch = epoch →
+      startEpoch < ((e.world k).state w).justifiedCheckpoint.epoch)
+    {current boundary : Slot}
+    (currentOk : ((e.world k).state w).getCurrentSlot config = .ok current)
+    (epochLe : epoch ≤ ((e.world k).state w).justifiedCheckpoint.epoch)
+    (afterAnchor : anchorEpoch < ((e.world k).state w).justifiedCheckpoint.epoch)
+    (cpHorizon : ((e.world k).state w).justifiedCheckpoint.epoch ≤ horizon)
+    (boundaryOk : computeStartSlotAtEpoch preset
+      ((e.world k).state w).justifiedCheckpoint.epoch = .ok boundary)
+    {rootBlock jb : BeaconBlock preset fork}
+    (known : ((e.world k).state w).blocks[root]? = some rootBlock)
+    (jk : ((e.world k).state w).blocks[((e.world k).state w).justifiedCheckpoint.root]? = some jb)
+    (safe : ∀ t, (e.world n).time ≤ t → t < (e.world k).time → SafeAt e t root) :
+    ((e.world k).state w).isAncestor
+        ⟨((e.world k).state w).justifiedCheckpoint.root, .pending⟩ ⟨root, .pending⟩ = .ok true ∨
+      ((e.world k).state w).isAncestor ⟨root, .pending⟩
+          ⟨((e.world k).state w).justifiedCheckpoint.root, .pending⟩ = .ok true ∧
+        ∀ boundary, computeStartSlotAtEpoch preset
+          ((e.world k).state w).justifiedCheckpoint.epoch = .ok boundary →
+          boundary < rootBlock.slot := by
+  let sender := (e.world n).state u
+  let receiverStore := (e.world k).state w
+  let cp := receiverStore.justifiedCheckpoint
+  have forward := e.forwardReachable
+    (fun a ha => (anchored a ha) ▸ Store.ForwardReachable.anchor anchorStore)
+  have rr := (forward k w receiver).reachable
+  have common := oneBlock u caller w receiver n k later kBound
+  have rootRead := rootAbove
+  unfold Store.isAncestor at rootRead
+  obtain ⟨rb, rbOk, _⟩ := bind_ok_iff.mp rootRead
+  have rk := Store.block_ok_iff.mp rbOk
+  obtain ⟨readEpoch, slot, readRootEpoch, readStartEpoch, readEpochOk, slotOk, readRootEpochOk,
+    readStartEpochOk, _, checks⟩ := checked
+  cases Except.ok.inj (readEpochOk.symm.trans epochOk)
+  cases Except.ok.inj (readRootEpochOk.symm.trans rootEpochOk)
+  cases Except.ok.inj (readStartEpochOk.symm.trans startEpochOk)
+  obtain ⟨callSlot, callBegin, callSlotOk, callBeginOk, atCall⟩ := atSlot
+  have eq := Except.ok.inj (callSlotOk.symm.trans slotOk)
+  subst callSlot
+  have slotEpoch : computeEpochAtSlot preset slot = epoch := by
+    simpa [Store.getCurrentStoreEpoch, slotOk, bind, Except.bind, pure, Except.pure] using epochOk
+  have rbEq := common _ _ _ rk known
+  subst rb
+  have rootSlotLe : rootBlock.slot ≤ slot := by
+    obtain ⟨s, sOk, held, _⟩ :=
+      (forward n u caller).slots_le_current slots (UInt64.le_of_eq anchorSlot)
+    have eq := Except.ok.inj (sOk.symm.trans slotOk)
+    simpa only [eq] using held root rootBlock rk
+  -- The receiver checkpoint's own boundary also handles calls exactly at that boundary.
+  have coverAtBoundary (slotBefore : slot ≤ boundary) :
+      receiverStore.isAncestor ⟨cp.root, .pending⟩ ⟨root, .pending⟩ = .ok true := by
+    obtain ⟨begin, beginOk⟩ := coverage_justified_boundary_time voted receiver kBound
+      (.inl rfl) currentOk afterAnchor cpHorizon boundaryOk
+    obtain ⟨callBegin', callBeginOk', _, le⟩ := exists_timeAtSlotMs_of_le slotBefore beginOk
+    have eq := Except.ok.inj (callBeginOk.symm.trans callBeginOk')
+    subst callBegin'
+    exact coverage_covered_of_later_justified anchorStore anchorSlot anchored preGloas positive
+      fits oneBlock voted anchorOk nonzero receiver kBound ready currentOk boundaryOk beginOk
+      (.inl rfl) afterAnchor cpHorizon (UInt64.le_refl _)
+      known jk (UInt64.le_trans rootSlotLe slotBefore) (fun t low high =>
+        safe t (by rw [atCall]; exact (UInt64.le_iff_toNat_le.mp le).trans low)
+          high)
+  by_cases callBefore : slot ≤ boundary
+  · exact .inl (coverAtBoundary callBefore)
+  have sameEpoch : cp.epoch = epoch := by
+    apply UInt64.le_antisymm _ epochLe
+    rw [UInt64.le_iff_toNat_le, ← slotEpoch, computeEpochAtSlot, UInt64.toNat_div]
+    apply (Nat.le_div_iff_mul_le positive).mpr
+    have eq := (computeStartSlotAtEpoch_ok_iff.mp boundaryOk).2
+    have := UInt64.lt_iff_toNat_lt.mp (UInt64.not_le.mp callBefore)
+    omega
+  have offStart : isStartSlotAtEpoch preset slot = .ok false := by
+    unfold isStartSlotAtEpoch computeSlotsSinceEpochStart
+    rw [slotEpoch, ← sameEpoch, boundaryOk]
+    simp only [Except.mapError, bind, Except.bind, pure, Except.pure, Except.ok.injEq]
+    apply decide_eq_false
+    intro zero
+    have below := UInt64.le_of_lt (UInt64.not_le.mp callBefore)
+    have eqNat := congrArg UInt64.toNat zero
+    rw [UInt64.toNat_sub_of_le _ _ below] at eqNat
+    exact callBefore (UInt64.le_iff_toNat_le.mpr (by simpa using Nat.le_of_sub_eq_zero eqNat))
+  have numeric (state : BeaconState preset fork) (total support : Gwei)
+      (stateOk : sender.getPulledUpHeadState config head.root = .ok state)
+      (totalOk : getTotalActiveBalance state = .ok total)
+      (supportOk : sender.computeHonestFfgSupportForCurrentTarget config head.root = .ok support)
+      (enough : total.toNat < 3 * support.toNat) :=
+    coverage_comparable_of_numeric_check anchorStore anchorSlot anchored preGloas positive slots
+      fits oneBlock pins committees retained anchorOk nonzero caller receiver later kBound ready
+      headOk rootAbove (targetVotes slot slotOk offStart) stateOk totalOk supportOk enough
+      slotOk epochOk callBeginOk atCall currentOk (.inl rfl) sameEpoch
+      (sameEpoch ▸ afterAnchor) (inHorizon u caller n _ later epochOk) known jk
+      (fun t low high => safe t low high)
+  have startNe (current : rootEpoch = epoch) : startEpoch ≠ epoch := by
+    rw [← sameEpoch]
+    exact UInt64.ne_of_lt (fresh current)
+  by_cases rootCurrent : rootEpoch = epoch
+  · have check : sender.willCurrentTargetBeJustified config head.root = .ok true := by
+      rcases checks with old | current
+      · exact (old.2.1 rootCurrent).elim
+      · exact current.2.1 rootCurrent (startNe rootCurrent)
+    simp only [Store.willCurrentTargetBeJustified, bind_ok_iff, mapError_ok_iff,
+      pure, Except.pure, Except.ok.injEq] at check
+    obtain ⟨state, stateOk, total, totalOk, support, supportOk, doubled, doubledOk,
+      tripled, tripledOk, bound⟩ := check
+    have two := (mulChecked_ok_iff.mp doubledOk).2
+    have three := (mulChecked_ok_iff.mp tripledOk).2
+    have le := UInt64.le_iff_toNat_le.mp (of_decide_eq_true bound)
+    have enough : 2 * total.toNat ≤ 3 * support.toNat := by
+      simpa only [two, three, UInt64.toNat_ofNat] using le
+    have floor := UInt64.le_iff_toNat_le.mp
+      (le_getTotalBalance (getTotalActiveBalance_ok totalOk))
+    exact numeric state total support stateOk totalOk supportOk (by omega)
+  · have check : sender.willNoConflictingCheckpointBeJustified config head.root = .ok true := by
+      rcases checks with old | current
+      · exact (old.2.2.2 offStart).1
+      · exact (current.2.2 rootCurrent).2 offStart
+    rcases coverage_no_conflict_cases check with targetOk |
+      ⟨s, total, support, hs, ht, hv, enough⟩
+    · have read := targetOk
+      simp only [sender, Store.getCurrentTarget, epochOk, Store.getCheckpointForBlock,
+        bind_ok_iff, pure, Except.pure, Except.ok.injEq] at read
+      obtain ⟨_, rfl, targetRoot, targetRead, targetEq⟩ := read
+      have targetEpoch : sender.unrealizedJustifiedCheckpoint.epoch = epoch :=
+        (congrArg Checkpoint.epoch targetEq).symm
+      have same := unique w receiver u caller k n kBound later cp
+        sender.unrealizedJustifiedCheckpoint (.inl rfl) (.inr (.inl rfl))
+        (sameEpoch.trans targetEpoch.symm) cpHorizon
+      have targetRead' : sender.getCheckpointBlock head.root cp.epoch = .ok cp.root := by
+        rw [same, targetEpoch, ← congrArg Checkpoint.root targetEq]
+        exact targetRead
+      exact coverage_comparable_of_target_read rr preGloas common known jk rootAbove targetRead'
+    · exact numeric s total support hs ht hv enough
+
 omit [DecidablePred (· ∈ J)] in
 /-- A checked root is comparable with receiver justification using only earlier root safety. -/
 theorem Execution.justified_comparable_of_checked {anchor : Store preset fork}
@@ -3801,6 +4070,7 @@ theorem Execution.justified_comparable_of_checked {anchor : Store preset fork}
   rcases coverage_ancestors_comparable preGloas jk rsk receiverJ receiverStart with aboveJ | belowJ
   · by_cases reverse : receiverStore.isAncestor ⟨start, .pending⟩ ⟨cp.root, .pending⟩ = .ok true
     · exact .inr (Store.isAncestor_trans_of_lt preGloas rsk jk startBelow reverse)
+    have checkedCopy := checked
     obtain ⟨epoch, slot, rootEpoch, startEpoch, epochOk, slotOk, rootEpochOk, startEpochOk,
       age, checks⟩ := checked
     obtain ⟨current, currentOk, _, blockBound⟩ :=
@@ -3858,102 +4128,13 @@ theorem Execution.justified_comparable_of_checked {anchor : Store preset fork}
     have epochLe : epoch ≤ cp.epoch := UInt64.le_iff_toNat_le.mpr (by
       have := UInt64.lt_iff_toNat_lt.mp epochStrict
       omega)
-    obtain ⟨callSlot, callBegin, callSlotOk, callBeginOk, atCall⟩ := atSlot
-    have eq := Except.ok.inj (callSlotOk.symm.trans slotOk)
-    subst callSlot
-    have slotEpoch : computeEpochAtSlot preset slot = epoch := by
-      simpa [Store.getCurrentStoreEpoch, slotOk, bind, Except.bind, pure, Except.pure] using epochOk
-    have rbEq := common _ _ _ rk known
-    subst rb
-    have rootSlotLe : rootBlock.slot ≤ slot := by
-      obtain ⟨s, sOk, held, _⟩ :=
-        (forward n u caller).slots_le_current slots (UInt64.le_of_eq anchorSlot)
-      have eq := Except.ok.inj (sOk.symm.trans slotOk)
-      simpa only [eq] using held root rootBlock rk
-    -- The receiver checkpoint's own boundary also handles calls exactly at that boundary.
-    have coverAtBoundary (slotBefore : slot ≤ boundary) :
-        receiverStore.isAncestor ⟨cp.root, .pending⟩ ⟨root, .pending⟩ = .ok true := by
-      obtain ⟨begin, beginOk⟩ := coverage_justified_boundary_time voted receiver kBound
-        (.inl rfl) currentOk afterAnchor cpHorizon boundaryOk
-      obtain ⟨callBegin', callBeginOk', _, le⟩ := exists_timeAtSlotMs_of_le slotBefore beginOk
-      have eq := Except.ok.inj (callBeginOk.symm.trans callBeginOk')
-      subst callBegin'
-      exact coverage_covered_of_later_justified anchorStore anchorSlot anchored preGloas positive
-        fits oneBlock voted anchorOk nonzero receiver kBound ready currentOk boundaryOk beginOk
-        (.inl rfl) afterAnchor cpHorizon (UInt64.le_refl _)
-        known jk (UInt64.le_trans rootSlotLe slotBefore) (fun t low high =>
-          safe t (by rw [atCall]; exact (UInt64.le_iff_toNat_le.mp le).trans low)
-            (by simpa only [atTime] using high))
-    by_cases callBefore : slot ≤ boundary
-    · exact .inl (coverAtBoundary callBefore)
-    have sameEpoch : cp.epoch = epoch := by
-      apply UInt64.le_antisymm _ epochLe
-      rw [UInt64.le_iff_toNat_le, ← slotEpoch, computeEpochAtSlot, UInt64.toNat_div]
-      apply (Nat.le_div_iff_mul_le positive).mpr
-      have eq := (computeStartSlotAtEpoch_ok_iff.mp boundaryOk).2
-      have := UInt64.lt_iff_toNat_lt.mp (UInt64.not_le.mp callBefore)
-      omega
-    have offStart : isStartSlotAtEpoch preset slot = .ok false := by
-      unfold isStartSlotAtEpoch computeSlotsSinceEpochStart
-      rw [slotEpoch, ← sameEpoch, boundaryOk]
-      simp only [Except.mapError, bind, Except.bind, pure, Except.pure, Except.ok.injEq]
-      apply decide_eq_false
-      intro zero
-      have below := UInt64.le_of_lt (UInt64.not_le.mp callBefore)
-      have eqNat := congrArg UInt64.toNat zero
-      rw [UInt64.toNat_sub_of_le _ _ below] at eqNat
-      exact callBefore (UInt64.le_iff_toNat_le.mpr (by simpa using Nat.le_of_sub_eq_zero eqNat))
-    have numeric (state : BeaconState preset fork) (total support : Gwei)
-        (stateOk : sender.getPulledUpHeadState config head.root = .ok state)
-        (totalOk : getTotalActiveBalance state = .ok total)
-        (supportOk : sender.computeHonestFfgSupportForCurrentTarget config head.root = .ok support)
-        (enough : total.toNat < 3 * support.toNat) :=
-      coverage_comparable_of_numeric_check anchorStore anchorSlot anchored preGloas positive slots
-        fits oneBlock pins committees retained anchorOk nonzero caller receiver later kBound ready
-        headOk rootAbove (targetVotes slot slotOk offStart) stateOk totalOk supportOk enough
-        slotOk epochOk callBeginOk atCall currentOk (.inl rfl) sameEpoch
-        (sameEpoch ▸ afterAnchor) (inHorizon u caller n _ later epochOk) known jk
-        (fun t low high => safe t low (by simpa only [atTime] using high))
-    have startNe : startEpoch ≠ epoch := by
-      rw [← sameEpoch]
-      exact UInt64.ne_of_lt epochStrict
-    by_cases rootCurrent : rootEpoch = epoch
-    · have check : sender.willCurrentTargetBeJustified config head.root = .ok true := by
-        rcases checks with old | current
-        · exact (old.2.1 rootCurrent).elim
-        · exact current.2.1 rootCurrent startNe
-      simp only [Store.willCurrentTargetBeJustified, bind_ok_iff, mapError_ok_iff,
-        pure, Except.pure, Except.ok.injEq] at check
-      obtain ⟨state, stateOk, total, totalOk, support, supportOk, doubled, doubledOk,
-        tripled, tripledOk, bound⟩ := check
-      have two := (mulChecked_ok_iff.mp doubledOk).2
-      have three := (mulChecked_ok_iff.mp tripledOk).2
-      have le := UInt64.le_iff_toNat_le.mp (of_decide_eq_true bound)
-      have enough : 2 * total.toNat ≤ 3 * support.toNat := by
-        simpa only [two, three, UInt64.toNat_ofNat] using le
-      have floor := UInt64.le_iff_toNat_le.mp
-        (le_getTotalBalance (getTotalActiveBalance_ok totalOk))
-      exact numeric state total support stateOk totalOk supportOk (by omega)
-    · have check : sender.willNoConflictingCheckpointBeJustified config head.root = .ok true := by
-        rcases checks with old | current
-        · exact (old.2.2.2 offStart).1
-        · exact (current.2.2 rootCurrent).2 offStart
-      rcases coverage_no_conflict_cases check with targetOk |
-        ⟨s, total, support, hs, ht, hv, enough⟩
-      · have read := targetOk
-        simp only [sender, Store.getCurrentTarget, epochOk, Store.getCheckpointForBlock,
-          bind_ok_iff, pure, Except.pure, Except.ok.injEq] at read
-        obtain ⟨_, rfl, targetRoot, targetRead, targetEq⟩ := read
-        have targetEpoch : sender.unrealizedJustifiedCheckpoint.epoch = epoch :=
-          (congrArg Checkpoint.epoch targetEq).symm
-        have same := unique w receiver u caller k n kBound later cp
-          sender.unrealizedJustifiedCheckpoint (.inl rfl) (.inr (.inl rfl))
-          (sameEpoch.trans targetEpoch.symm) cpHorizon
-        have targetRead' : sender.getCheckpointBlock head.root cp.epoch = .ok cp.root := by
-          rw [same, targetEpoch, ← congrArg Checkpoint.root targetEq]
-          exact targetRead
-        exact coverage_comparable_of_target_read rr preGloas common known jk rootAbove targetRead'
-      · exact numeric s total support hs ht hv enough
+    exact (coverage_current_justified anchorStore anchorSlot anchored preGloas positive slots
+      incrementPositive fits
+      oneBlock unique pins voted committees retained anchorOk nonzero inHorizon caller receiver
+      later kBound ready headOk checkedCopy rootAbove atSlot targetVotes epochOk rootEpochOk
+      startEpochOk (fun _ => epochStrict) currentOk epochLe afterAnchor cpHorizon boundaryOk
+      known jk (fun t low high => safe t low (by simpa only [atTime] using high))).imp id
+      And.left
   · exact .inr (Store.isAncestor_trans_of_lt preGloas rsk jk startBelow belowJ)
 
 omit [DecidablePred (· ∈ J)] in
@@ -4187,7 +4368,20 @@ theorem Execution.coveredOrViableAt_of_checked {Δ : ℕ} (sync : e.Synchronous 
       UpToDate config checks sources (e.world k).time ((e.world k).view w)
         ((e.world k).state w) →
       ∃ block, ((e.world k).state w).blocks[root]? = some block)
-    (realized : ((e.world n).state u).RealizedRecent [root]) :
+    (realized : ((e.world n).state u).RealizedRecent [root])
+    (rootRecent : ∀ epoch block, ((e.world n).state u).getCurrentStoreEpoch config = .ok epoch →
+      ((e.world n).state u).blocks[root]? = some block →
+      epoch.toNat ≤ (computeEpochAtSlot preset block.slot).toNat + 1)
+    (realizedHead : ∀ epoch block, ((e.world n).state u).getCurrentStoreEpoch config = .ok epoch →
+      ((e.world n).state u).blocks[root]? = some block →
+      computeEpochAtSlot preset block.slot < epoch →
+      ∃ headState, ((e.world n).state u).blockStates[head.root]? = some headState ∧
+        ((e.world n).state u).isAncestor head ⟨root, .pending⟩ = .ok true ∧
+        computeEpochAtSlot preset block.slot ≤ headState.currentJustifiedCheckpoint.epoch)
+    (sourceLe : ∀ w ∈ J, ∀ k (tip : Root) (source : Checkpoint), (e.world k).time = time →
+      getCurrentEpoch anchorState ≤ ((e.world k).state w).justifiedCheckpoint.epoch →
+      ((e.world k).state w).getVotingSource config tip = .ok source →
+      source.epoch ≤ ((e.world k).state w).justifiedCheckpoint.epoch) :
     CoveredOrViableAt e time root := by
   intro w receiver k nodes atTime ready tree
   obtain ⟨block, held⟩ := known w receiver k atTime ready
