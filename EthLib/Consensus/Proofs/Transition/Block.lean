@@ -2,8 +2,10 @@ module
 
 public import EthLib.Base.Proofs.MapM
 public import EthLib.Base.Proofs.Uint64
+public import EthLib.Cryptography.Proofs.Bls.SignaturesCorrect
 public import EthLib.Consensus.Proofs.Accessors
 public import EthLib.Consensus.Proofs.Mutators
+public import EthLib.Consensus.Proofs.Signing
 public import EthLib.Consensus.Transition.Block
 
 /-!
@@ -452,5 +454,27 @@ theorem sameSizes_processAttesterSlashing {config : Config} {checks : SignatureC
   simp only [pure, Except.pure, Except.ok.injEq] at computed
   obtain ⟨_, _, rfl⟩ := computed
   exact (foldlM_slashIfSlashable _ foldOk).1
+
+/-- A registered secret key supplies a block signature that passes the BLS check.
+
+The signing root is the block's root under the proposer's domain, not an input premise. -/
+theorem exists_verifyBlockSignature_bls [LawfulSszType (BeaconBlock preset fork)]
+    (config : Config) (state : BeaconState preset fork) (block : BeaconBlock preset fork)
+    (key : Cryptography.Bls.Signatures.SecretKey)
+    (registered : ∃ proposer, getValidator state block.proposerIndex = .ok proposer ∧
+      proposer.pubkey = Cryptography.Bls.Signatures.skToPk key) :
+    ∃ signed : SignedBeaconBlock preset fork,
+      signed.message = block ∧ verifyBlockSignature config .bls state signed = .ok true := by
+  obtain ⟨proposer, found, pk⟩ := registered
+  obtain ⟨domain, domainOk⟩ := getDomain_total config state DOMAIN_BEACON_PROPOSER none
+  obtain ⟨root, rootOk⟩ := computeSigningRoot_total block domain
+  obtain ⟨sig, _, verifies⟩ := Cryptography.Bls.Signatures.verify_sign key (packBytes root)
+  refine ⟨⟨block, sig⟩, rfl, ?_⟩
+  simp only [verifyBlockSignature, found, domainOk, rootOk,
+    liftAccessor, liftSsz, Except.mapError, bind, Except.bind, pure, Except.pure]
+  change Except.ok (Cryptography.Bls.Signatures.verify
+    (packBytes proposer.pubkey) (packBytes root) (packBytes sig)) = _
+  rw [pk]
+  exact congrArg Except.ok verifies
 
 end EthLib.Consensus
