@@ -536,6 +536,66 @@ structure RuleBounds
     (e : Execution (honestForkChoice config checks sources anchorState anchorBlock assignment
       genesisTimeMs) J) [DecidablePred (· ∈ J)] (u : ValidatorIndex) (events : List ℕ)
     (first : FastConfirmationStore) (margin shift limit : ℕ) : Prop where
+  /-- Realized recency holds on the accepted advanced prefix, not the selected start. -/
+  realized : ∀ i n fcr after head slot start balanceSource chain later,
+    CallAt e u events first i n fcr after →
+    ((e.world n).state u).getHead config = .ok head →
+    ((e.world n).state u).getCurrentSlot config = .ok slot →
+    (∃ base,
+      (base = fcr.confirmedRoot ∧
+          ((∃ epoch blockEpoch, ((e.world n).state u).getCurrentStoreEpoch config = .ok epoch ∧
+              ((e.world n).state u).getBlockEpoch fcr.confirmedRoot = .ok blockEpoch ∧
+              epoch.toNat ≤ blockEpoch.toNat + 1) ∧
+            ((e.world n).state u).isAncestor ⟨head.root, .pending⟩ ⟨fcr.confirmedRoot, .pending⟩ =
+              .ok true ∧
+            (isStartSlotAtEpoch preset slot = .ok true →
+              ((e.world n).state u).isConfirmedChainSafe config after head.root
+                fcr.confirmedRoot = .ok true)) ∨
+        base = ((e.world n).state u).finalizedCheckpoint.root ∧
+          ¬((∃ epoch blockEpoch, ((e.world n).state u).getCurrentStoreEpoch config = .ok epoch ∧
+               ((e.world n).state u).getBlockEpoch fcr.confirmedRoot = .ok blockEpoch ∧
+               epoch.toNat ≤ blockEpoch.toNat + 1) ∧
+             ((e.world n).state u).isAncestor ⟨head.root, .pending⟩ ⟨fcr.confirmedRoot, .pending⟩ =
+               .ok true ∧
+             (isStartSlotAtEpoch preset slot = .ok true →
+               ((e.world n).state u).isConfirmedChainSafe config after head.root
+                 fcr.confirmedRoot = .ok true))) ∧
+      (start = base ∧
+          ¬(isStartSlotAtEpoch preset slot = .ok true ∧
+             (∃ observedBlock epoch,
+               ((e.world n).state u).block after.currentEpochObservedJustifiedCheckpoint.root =
+                 .ok observedBlock ∧
+               ((e.world n).state u).getCurrentStoreEpoch config = .ok epoch ∧
+               Uint64.addChecked (computeEpochAtSlot preset observedBlock.slot) 1 = .ok epoch) ∧
+             ((e.world n).state u).unrealizedJustification head.root =
+               .ok after.currentEpochObservedJustifiedCheckpoint ∧
+             ∃ baseBlock observedBlock, ((e.world n).state u).block base = .ok baseBlock ∧
+               ((e.world n).state u).block after.currentEpochObservedJustifiedCheckpoint.root =
+                 .ok observedBlock ∧
+               baseBlock.slot < observedBlock.slot) ∨
+        start = after.currentEpochObservedJustifiedCheckpoint.root ∧
+          (isStartSlotAtEpoch preset slot = .ok true ∧
+            (∃ observedBlock epoch,
+              ((e.world n).state u).block after.currentEpochObservedJustifiedCheckpoint.root =
+                .ok observedBlock ∧
+              ((e.world n).state u).getCurrentStoreEpoch config = .ok epoch ∧
+              Uint64.addChecked (computeEpochAtSlot preset observedBlock.slot) 1 = .ok epoch) ∧
+            ((e.world n).state u).unrealizedJustification head.root =
+              .ok after.currentEpochObservedJustifiedCheckpoint ∧
+            ∃ baseBlock observedBlock, ((e.world n).state u).block base = .ok baseBlock ∧
+              ((e.world n).state u).block after.currentEpochObservedJustifiedCheckpoint.root =
+                .ok observedBlock ∧
+              baseBlock.slot < observedBlock.slot))) →
+    after.confirmedRoot ≠ start →
+    ((e.world n).state u).Checked config after head.root start after.confirmedRoot →
+    ((e.world n).state u).checkpointState after.currentEpochObservedJustifiedCheckpoint =
+      .ok balanceSource →
+    ((e.world n).state u).getAncestorRoots head.root start =
+      .ok (chain ++ after.confirmedRoot :: later) →
+    (∀ member ∈ chain ++ [after.confirmedRoot], ((e.world n).state u).isOneConfirmed config
+      head.root balanceSource (((e.world n).state u).tallyVotes balanceSource) member =
+        .ok true) →
+    ((e.world n).state u).RealizedRecent (chain ++ [after.confirmedRoot])
   /-- At a call that stores a block of its own walk, five bounds hold, in this order.
 
   The start is the one that the rule selects, as `Store.onFastConfirmation_checked` gives it.
@@ -2737,6 +2797,7 @@ It is `safeFrom_find_latest_confirmed_descendant_of_selectedCoveredMarginsAt_min
 [vfc]: https://github.com/fradamt/verified-fast-confirmation -/
 theorem Execution.safeAt_of_walk {Δ : ℕ} (sync : e.Synchronous Δ)
     (slots : 0 < config.SLOT_DURATION_MS) (positive : 0 < preset.SLOTS_PER_EPOCH.toNat)
+    (incrementPositive : 0 < preset.EFFECTIVE_BALANCE_INCREMENT.toNat)
     (window : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
     (lookahead : 1 ≤ preset.MIN_SEED_LOOKAHEAD.toNat ∧ 1 ≤ preset.MAX_SEED_LOOKAHEAD.toNat ∧
       preset.MIN_SEED_LOOKAHEAD.toNat + 3 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
@@ -2887,7 +2948,8 @@ theorem Execution.safeAt_of_walk {Δ : ℕ} (sync : e.Synchronous Δ)
     (observedStart : ∀ startBlock, ((e.world n).state u).blocks[start]? = some startBlock →
       ∃ boundary, computeStartSlotAtEpoch preset
         fcr.currentEpochObservedJustifiedCheckpoint.epoch = .ok boundary ∧
-          boundary ≤ startBlock.slot) :
+          boundary ≤ startBlock.slot)
+    (realized : ((e.world n).state u).RealizedRecent (chain ++ [root])) :
     ∀ time, (e.world n).time ≤ time → time ≤ limit → SafeAt e time root := by
   classical
   intro time afterCall bounded
@@ -2975,7 +3037,7 @@ theorem Execution.safeAt_of_walk {Δ : ℕ} (sync : e.Synchronous Δ)
     (by simp)
   intro now afterNow boundedNow earlier member mem block held parentSafe
   have rootSafe := fun t lower upper => earlier t lower upper root (by simp)
-  have coverage := e.coveredOrViableAt_of_checked sync slots positive window
+  have coverage := e.coveredOrViableAt_of_checked sync slots positive incrementPositive window
     (by omega) preGloas (admitted.of_le boundedNow) (oneBlock.of_le boundedNow)
     (votes.of_le boundedNow) fits (prompt.of_le boundedNow) (committees.of_le boundedNow)
     { reads := fun w hw k bounded => follows.reads w hw k (bounded.trans boundedNow)
@@ -3000,6 +3062,7 @@ theorem Execution.safeAt_of_walk {Δ : ℕ} (sync : e.Synchronous Δ)
     (fun t lower upper => startSafe t lower (upper.trans boundedNow)) rootSafe
     (fun w hw k eq ready => ⟨rootBlock, known w hw k (afterNow.trans_eq eq.symm)
       (eq.trans_le boundedNow) ready⟩)
+    (fun r mem => realized r (List.mem_append_right _ mem))
   intro w receiver k receiverHead atNow ready receiverHeadOk
   have receiverBound : (e.world k).time ≤ limit := atNow ▸ boundedNow
   have receiverLower := (reached k w receiver).parentsBelow (UInt64.le_of_eq anchorSlot)
@@ -4541,9 +4604,9 @@ The call before recorded it one slot before, and the first call reads the block 
 
 A walk gives a block safe from the call, by `Execution.safeAt_of_walk`.
 
-Its inputs come from the induction hypothesis and from the one field of `RuleBounds`.
+Its inputs come from the induction hypothesis and the fields of `RuleBounds`.
 
-That field reads the walk with its selected start from `Store.onFastConfirmation_checked`.
+Both fields read the walk with its selected start from `Store.onFastConfirmation_checked`.
 
 A call that returns its start unchanged reads no bound.
 
@@ -4863,6 +4926,8 @@ theorem Execution.callInvariant_step {Δ : ℕ} (sync : e.Synchronous Δ)
   obtain ⟨weights, slack, committeeByzantine, remaining, late⟩ := bounds.walked i n fcr after
     head slot selectedStart balanceSource walk later calls headOk slotOk selection strict
     checked sourceOk walked confirmedAll
+  have realized := bounds.realized i n fcr after head slot selectedStart balanceSource walk
+    later calls headOk slotOk selection strict checked sourceOk walked confirmedAll
   have targetVotes : ∀ s, ((e.world n).state u).getCurrentSlot config = .ok s →
       isStartSlotAtEpoch preset s = .ok false → HonestTargetVotes e margin u n head.root := by
     intro s sOk inside
@@ -5075,7 +5140,8 @@ theorem Execution.callInvariant_step {Δ : ℕ} (sync : e.Synchronous Δ)
       SafeAt e time after.confirmedRoot := by
     intro time afterCall bounded
     have callBound := afterCall.trans bounded
-    exact e.safeAt_of_walk sync slots positiveSlotsNat window lookahead preGloas admitted oneBlock half
+    exact e.safeAt_of_walk sync slots positiveSlotsNat (UInt64.lt_iff_toNat_lt.mp positive)
+      window lookahead preGloas admitted oneBlock half
       boost long
       votes fits prompt committees follows chain unique pins voted included anchored sound anchorSlot
       anchorAtBoundary start rfl noVotes maxAligned increment caller (upToDate n member) (lower n member)
@@ -5087,7 +5153,7 @@ theorem Execution.callInvariant_step {Δ : ℕ} (sync : e.Synchronous Δ)
       startFacts.2 weights slack late anchorParent nonzero inHorizon
       (fun w hw k state bounded counts epochLe => large w hw k state bounded counts
         (by have := UInt64.le_iff_toNat_le.mp epochLe; omega)) few unslashed supply exits
-        observedAge observedRead observedStart
+        observedAge observedRead observedStart realized
         time afterCall bounded
   have headAbove : ((e.world n).state u).isAncestor ⟨head.root, .pending⟩
       ⟨after.confirmedRoot, .pending⟩ = .ok true := by

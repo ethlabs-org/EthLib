@@ -3,12 +3,14 @@ module
 public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmationSafety
 public import EthLib.Consensus.Proofs.ForkChoice.AccountableCheckpoints
 public import EthLib.Consensus.Proofs.DirectSafety.TerminalSafety
+public import EthLib.Consensus.Proofs.Transition.EpochUpdates
 import EthLib.Consensus.Proofs.Transition.ExitReserve
 import EthLib.Consensus.Proofs.ForkChoice.HonestHeads
 import EthLib.Consensus.Proofs.Transition.BlockRoots
 import EthLib.Consensus.Proofs.Transition.FfgSlack
 import EthLib.Consensus.Proofs.Transition.TargetSlots
 import EthLib.Consensus.Proofs.Transition.TargetVotes
+import EthLib.Consensus.Proofs.Transition.Upgrade
 
 /-!
 # Accountable fast-confirmation safety
@@ -309,6 +311,126 @@ theorem exitStake_le_exitReserve_epoch {g y : ForkedBeaconState preset}
   unfold ExitChurn.activeSet ExitChurn.scheduled at bound
   unfold exitReserve activeVoters
   exact bound
+
+/-- A balance rounded down to an increment, at most the largest value, lies within both bands.
+
+Before Electra, the largest effective balance is the cap of every validator.
+
+The increment must be positive and at most the upward band. -/
+private theorem rounded_bands (bands : preset.IncrementWithinUpwardBand)
+    (preElectra : ¬.pectra ≤ fork) {balance : Gwei} {validator : Validator}
+    (effective : validator.effectiveBalance =
+      min (balance - balance % preset.EFFECTIVE_BALANCE_INCREMENT) preset.MAX_EFFECTIVE_BALANCE) :
+    (validator.effectiveBalance < withdrawalMaxEffectiveBalance preset fork validator →
+      balance.toNat ≤ validator.effectiveBalance.toNat + preset.upwardBand) ∧
+    validator.effectiveBalance.toNat ≤ balance.toNat + preset.downwardBand := by
+  simp only [withdrawalMaxEffectiveBalance, preElectra, ↓reduceIte]
+  rw [effective]
+  have modLe : balance % preset.EFFECTIVE_BALANCE_INCREMENT ≤ balance := by
+    rw [UInt64.le_iff_toNat_le, UInt64.toNat_mod]
+    exact Nat.mod_le _ _
+  have subNat : (balance - balance % preset.EFFECTIVE_BALANCE_INCREMENT).toNat =
+      balance.toNat - balance.toNat % preset.EFFECTIVE_BALANCE_INCREMENT.toNat := by
+    rw [UInt64.toNat_sub_of_le _ _ modLe, UInt64.toNat_mod]
+  have modLt := Nat.mod_lt balance.toNat bands.1
+  have narrow := bands.2
+  have modBound := Nat.mod_le balance.toNat preset.EFFECTIVE_BALANCE_INCREMENT.toNat
+  rw [UInt64.min_def]
+  split
+  · refine ⟨fun _ => ?_, ?_⟩ <;> rw [subNat] <;> omega
+  · rename_i above
+    refine ⟨fun below => absurd below (UInt64.lt_irrefl _), ?_⟩
+    have := UInt64.lt_iff_toNat_lt.mp (UInt64.not_le.mp above)
+    rw [subNat] at this
+    omega
+
+/-- A genesis state is within the bands of hysteresis.
+
+Its activation rounds each balance down to an increment, at most the largest effective balance.
+
+That largest value is the cap before Electra.
+
+The increment must be positive and at most the upward band. -/
+private theorem genesis_hysteresis {g : ForkedBeaconState preset}
+    (genesis : Genesis (config := config) (checks := checks) g)
+    (bands : preset.IncrementWithinUpwardBand) : Hysteresis g.state := by
+  obtain ⟨gFork, gState⟩ := g
+  obtain ⟨hash, time, deposits, initialized⟩ := genesis
+  obtain ⟨phase0, _, _, deposited, activated, root, -, activatedOk, rooted⟩ :=
+    initializeBeaconStateFromEth1_ok initialized
+  change Hysteresis gState
+  rw [show gState = _ from rooted]
+  have preElectra : ¬.pectra ≤ gFork := fun electra =>
+    Nat.lt_irrefl _ (Nat.lt_of_lt_of_le (Nat.lt_trans phase0 (by decide)) electra)
+  obtain ⟨balances, -, size, effective⟩ :=
+    foldlM_activateAtGenesis (Nat.lt_trans phase0 (by decide)) activatedOk
+  -- Each position holds its balance rounded down, as the activation sets it.
+  have within : ∀ (position : ℕ) (validator : Validator) (balance : Gwei),
+      activated.validators.data[position]? = some validator →
+      activated.balances.data[position]? = some balance →
+      validator.effectiveBalance =
+        min (balance - balance % preset.EFFECTIVE_BALANCE_INCREMENT)
+          preset.MAX_EFFECTIVE_BALANCE := by
+    intro position validator balance found read
+    have inside : position < deposited.validators.data.size := by
+      rw [← size]
+      exact (Array.getElem?_eq_some_iff.mp found).1
+    have rounded := effective position inside
+    rw [found, ← balances, read] at rounded
+    exact Option.some.inj rounded
+  exact ⟨fun position validator balance found read =>
+      (rounded_bands bands preElectra (within position validator balance found read)).1,
+    fun position validator balance found read =>
+      (rounded_bands bands preElectra (within position validator balance found read)).2⟩
+
+/-- A run from genesis to a state at the first slot of an epoch passes the boundary state.
+
+The boundary state is at the same slot, after the epoch transition and the upgrades of the slot.
+
+Only blocks at that slot lead from the boundary state to the last state.
+
+The bands of hysteresis hold at the boundary state.
+
+Genesis sets them, and so does the epoch transition.
+
+An upgrade keeps them, since every effective balance is at most its cap. -/
+private theorem run_boundaryState {g : ForkedBeaconState preset}
+    (genesis : Genesis (config := config) (checks := checks) g)
+    (bands : preset.IncrementWithinUpwardBand)
+    (electraFloor : preset.MAX_EFFECTIVE_BALANCE = preset.MIN_ACTIVATION_BALANCE)
+    (electraCap : preset.MIN_ACTIVATION_BALANCE ≤ preset.MAX_EFFECTIVE_BALANCE_ELECTRA) :
+    ∀ {x : ForkedBeaconState preset}, Run config checks g x → x.fork < .glamsterdam →
+      x.state.slot % preset.SLOTS_PER_EPOCH = 0 →
+      ∃ boundary : BeaconState preset x.fork, boundary.slot = x.state.slot ∧
+        Hysteresis boundary ∧ Nonempty (Run config checks g ⟨x.fork, boundary⟩) ∧
+        Nonempty (Run config checks ⟨x.fork, boundary⟩ x) := by
+  intro x run
+  induction run with
+  | nil =>
+    intro _ _
+    exact ⟨g.state, rfl, genesis_hysteresis genesis bands, ⟨.nil⟩, ⟨.nil⟩⟩
+  | @snoc middle last pre step ih =>
+    intro early atStart
+    cases step with
+    | slot ok =>
+      obtain ⟨advanced, advancedOk, upgraded⟩ := bind_ok_iff.mp ok
+      have middleEarly : middle.fork < .glamsterdam :=
+        Nat.lt_of_le_of_lt (processUpgrades_fork_le (forked := ⟨middle.fork, advanced⟩) upgraded)
+          early
+      have kept : last.state.slot = advanced.slot := processUpgrades_slot upgraded
+      have banded := hysteresis_of_advanceSlot bands advancedOk (kept ▸ atStart)
+      have capped := advanceSlot_effectiveBalance_capped middleEarly advancedOk
+        (pre.effectiveBalance_capped genesis (UInt64.le_of_eq electraFloor) electraCap
+          middleEarly)
+      exact ⟨last.state, rfl,
+        Hysteresis.upgrade (forked := ⟨middle.fork, advanced⟩) banded electraFloor electraCap
+          capped upgraded,
+        ⟨pre.snoc (.slot ok)⟩, ⟨.nil⟩⟩
+    | block engine signed due ok =>
+      have kept := processBlock_slot (applySignedBlock_ok ok).2.1
+      obtain ⟨boundary, atSlot, banded, first, ⟨rest⟩⟩ := ih early (kept ▸ atStart)
+      exact ⟨boundary, atSlot.trans kept.symm, banded, first,
+        ⟨rest.snoc (.block engine signed due ok)⟩⟩
 
 variable {e : Execution (honestForkChoice config checks sources anchorState anchorBlock assignment
   genesisTimeMs) J} [DecidablePred (· ∈ J)]
@@ -770,7 +892,7 @@ omit [DecidablePred (· ∈ J)] in
 The start is the state of an ancestor block, kept as it is or processed to the boundary.
 
 No block of the chain lies from the ancestor to the boundary except the ancestor itself. -/
-private theorem run_along_chain {anchor : Store preset fork}
+theorem run_along_chain {anchor : Store preset fork}
     (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
     (early : fork < .glamsterdam) (anchorSlot : anchorBlock.slot = anchorState.slot)
     {w : ValidatorIndex} (honest : w ∈ J) (start : e.start w = anchor) {k : ℕ}
@@ -894,7 +1016,7 @@ private theorem run_along_chain {anchor : Store preset fork}
 
 
 /-- A checkpoint read leaves no block of the chain from the checkpoint block to the boundary. -/
-private theorem clear_of_getCheckpointBlock {store : Store preset fork}
+theorem clear_of_getCheckpointBlock {store : Store preset fork}
     (early : fork < .glamsterdam) {b a : Root} {aBlock : BeaconBlock preset fork}
     {epoch : Epoch} {boundary : Slot}
     (boundaryOk : computeStartSlotAtEpoch preset epoch = .ok boundary)
@@ -924,7 +1046,7 @@ private theorem clear_of_getCheckpointBlock {store : Store preset fork}
   exact congrArg ForkChoiceNode.root through
 
 /-- From a start state at a boundary, the same slots lead to a later state of the same ancestor. -/
-private theorem run_from_bridge {sa s0 y : BeaconState preset fork} {boundary target : Slot}
+theorem run_from_bridge {sa s0 y : BeaconState preset fork} {boundary target : Slot}
     (bridge : (sa.slot = boundary ∧ s0 = sa) ∨
       (sa.slot < boundary ∧ processSlots config checks sa boundary = .ok s0))
     (later : boundary ≤ target)
@@ -2534,6 +2656,364 @@ theorem Execution.exitsHead_of_oneBlock {limit : ℕ} {anchor : Store preset for
     tail lookahead early yLe (by rw [sourceEpoch]; exact near)
   simp only [registry] at bound
   exact bound
+
+omit [DecidablePred (· ∈ J)] in
+/-- The state at the start of an epoch on the chain of a target block, before any block of it.
+
+The target block is at the start of the epoch or earlier, and before the next fork.
+
+The boundary state is at the start of the epoch, and genesis reaches it.
+
+The bands of hysteresis hold at the boundary state.
+
+An earlier target block has its state processed to the start, and that processing must succeed.
+
+A target block at the start has its state reached from the boundary state.
+
+That run holds only blocks at the start, such as the target block itself.
+
+When the target is the anchor, the last slot step of the history may cross an upgrade. -/
+theorem Execution.boundaryState_of_target {anchor : Store preset fork}
+    (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (early : fork < .glamsterdam)
+    {g : ForkedBeaconState preset} (genesis : Genesis (config := config) (checks := checks) g)
+    (history : Run config checks g ⟨fork, anchorState⟩)
+    (bands : preset.IncrementWithinUpwardBand)
+    (electraFloor : preset.MAX_EFFECTIVE_BALANCE = preset.MIN_ACTIVATION_BALANCE)
+    (electraCap : preset.MIN_ACTIVATION_BALANCE ≤ preset.MAX_EFFECTIVE_BALANCE_ELECTRA)
+    {w : ValidatorIndex} (honest : w ∈ J) (start : e.start w = anchor) {k : ℕ}
+    (before : ∀ (root : Root) (block : BeaconBlock preset fork),
+      ((e.world k).state w).blocks[root]? = some block →
+      ∀ next ∈ config.nextFork fork,
+        block.slot.toNat < next.2.toNat * preset.SLOTS_PER_EPOCH.toNat)
+    {root : Root} {target : BeaconState preset fork}
+    (stored : ((e.world k).state w).blockStates[root]? = some target)
+    {epoch : Epoch} {boundary : Slot}
+    (boundaryOk : computeStartSlotAtEpoch preset epoch = .ok boundary)
+    (boundaryBefore : ∀ next ∈ config.nextFork fork,
+      boundary.toNat < next.2.toNat * preset.SLOTS_PER_EPOCH.toNat)
+    (atMost : target.slot ≤ boundary)
+    (ahead : target.slot < boundary →
+      ∃ after, processSlots config checks target boundary = .ok after) :
+    ∃ state : BeaconState preset fork, state.slot = boundary ∧ Hysteresis state ∧
+      Nonempty (Run config checks g ⟨fork, state⟩) ∧
+      ((target.slot < boundary ∧ processSlots config checks target boundary = .ok state) ∨
+        (target.slot = boundary ∧
+          Nonempty (Run config checks ⟨fork, state⟩ ⟨fork, target⟩))) := by
+  obtain ⟨toTarget⟩ := e.exists_run_of_blockState anchored honest start before stored
+  have atStart : boundary % preset.SLOTS_PER_EPOCH = 0 := by
+    apply UInt64.toNat_inj.mp
+    rw [UInt64.toNat_mod, (computeStartSlotAtEpoch_ok_iff.mp boundaryOk).2, Nat.mul_mod_left,
+      UInt64.toNat_zero]
+  by_cases earlier : target.slot < boundary
+  · obtain ⟨after, processed⟩ := ahead earlier
+    obtain ⟨tail⟩ := run_of_processSlots processed boundaryBefore
+    exact ⟨after, (processSlots_slot processed).2,
+      hysteresis_of_processSlots bands processed atStart,
+      ⟨(history.append toTarget).append tail⟩, .inl ⟨earlier, processed⟩⟩
+  · have same : target.slot = boundary := UInt64.le_antisymm atMost (UInt64.not_lt.mp earlier)
+    obtain ⟨state, atSlot, banded, first, rest⟩ := run_boundaryState genesis bands electraFloor
+      electraCap (history.append toTarget) early (by rw [same]; exact atStart)
+    exact ⟨state, atSlot.trans same, banded, first, .inr ⟨same, rest⟩⟩
+
+omit [DecidablePred (· ∈ J)] in
+/-- A run from the boundary state of a target to a state on a chain that reads the target.
+
+The start is the state of the target block, kept at the boundary or processed to it.
+
+The chain is the one of a held block whose checkpoint block for the epoch is the target.
+
+The end is the state of that block, or that state with more slots processed.
+
+The end is at the boundary or later, and before the next fork. -/
+private theorem run_of_checkpoint {anchor : Store preset fork}
+    (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (early : fork < .glamsterdam) (anchorSlot : anchorBlock.slot = anchorState.slot)
+    (start : ∀ w ∈ J, e.start w = anchor) {w : ValidatorIndex} (honest : w ∈ J) {k : ℕ}
+    (before : ∀ (root : Root) (block : BeaconBlock preset fork),
+      ((e.world k).state w).blocks[root]? = some block →
+      ∀ next ∈ config.nextFork fork,
+        block.slot.toNat < next.2.toNat * preset.SLOTS_PER_EPOCH.toNat)
+    {a : Root} {sa s0 : BeaconState preset fork} {epoch : Epoch} {boundary : Slot}
+    (boundaryOk : computeStartSlotAtEpoch preset epoch = .ok boundary)
+    (storedA : ((e.world k).state w).blockStates[a]? = some sa)
+    (bridge : (sa.slot = boundary ∧ s0 = sa) ∨
+      (sa.slot < boundary ∧ processSlots config checks sa boundary = .ok s0))
+    {root : Root} {rootState state : BeaconState preset fork}
+    (stored : ((e.world k).state w).blockStates[root]? = some rootState)
+    (read : ((e.world k).state w).getCheckpointBlock root epoch = .ok a)
+    (reach : state = rootState ∨ ∃ slot, processSlots config checks rootState slot = .ok state)
+    (later : boundary ≤ state.slot)
+    (stateBefore : ∀ next ∈ config.nextFork fork,
+      state.slot.toNat < next.2.toNat * preset.SLOTS_PER_EPOCH.toNat) :
+    Nonempty (Run config checks ⟨fork, s0⟩ ⟨fork, state⟩) := by
+  have reachable : Store.Reachable config anchorState anchorBlock ((e.world k).state w) :=
+    e.reachable (fun v hv => (start v hv).symm ▸ Store.Reachable.anchor anchored) k w honest
+  obtain ⟨boundary', aBlock, boundaryOk', aFound, -, descends⟩ :=
+    Store.isAncestor_of_getCheckpointBlock early read
+  have same : boundary' = boundary := Except.ok.inj (boundaryOk'.symm.trans boundaryOk)
+  subst boundary'
+  have clearC := clear_of_getCheckpointBlock early boundaryOk read aFound
+  by_cases isA : root = a
+  · subst isA
+    have equal : rootState = sa := Option.some.inj (stored.symm.trans storedA)
+    subst equal
+    rcases reach with rfl | ⟨slot, processed⟩
+    · exact run_from_bridge bridge later (.inl ⟨rfl, rfl⟩) stateBefore
+    · have bounds := processSlots_slot processed
+      rw [bounds.2] at later stateBefore
+      exact run_from_bridge bridge later (.inr ⟨bounds.1, processed⟩) stateBefore
+  · obtain ⟨rootBlock, rootFound⟩ := reachable.known_of_blockState stored
+    obtain ⟨found, foundOk, aLeRoot⟩ := Store.slot_le_of_isAncestor aFound descends
+    have sameBlock : found = rootBlock := Option.some.inj (foundOk.symm.trans rootFound)
+    subst found
+    have far : boundary < rootBlock.slot := by
+      by_contra notFar
+      exact isA (clearC root rootBlock rootFound (Store.isAncestor_self rootFound) aLeRoot
+        (UInt64.not_lt.mp notFar))
+    obtain ⟨run⟩ := run_along_chain anchored early anchorSlot honest (start w honest) before
+      aFound storedA bridge rootBlock.slot.toNat root rootBlock rootState rfl rootFound stored
+      descends clearC far
+    rcases reach with rfl | ⟨slot, processed⟩
+    · exact ⟨run⟩
+    · rw [(processSlots_slot processed).2] at stateBefore
+      obtain ⟨tail⟩ := run_of_processSlots processed stateBefore
+      exact ⟨run.append tail⟩
+
+omit [DecidablePred (· ∈ J)] in
+/-- The runs from the boundary state of a call's target, to the call and to a receiver state.
+
+The call is the pulled-up head state and the current target of an honest store, with BLS checks.
+
+The receiver state is on the chain of a block of another honest store.
+
+The checkpoint block of that chain for the target's epoch is the target.
+
+The receiver state is the state of that block, or that state with more slots processed.
+
+It is in the target's epoch or later, and within the horizon.
+
+Both stores hold the same state for the target block.
+
+The pulled-up head state is in the target's epoch.
+
+The boundary state is at the start of that epoch, and genesis reaches it.
+
+The bands of hysteresis hold at the boundary state.
+
+A run from it reaches the pulled-up head state, with at most one block for each slot on the way.
+
+Another run reaches the receiver state, and so does a run from the state of the target block. -/
+theorem Execution.runs_of_call
+    {e : Execution (honestForkChoice config .bls sources anchorState anchorBlock assignment
+      genesisTimeMs) J}
+    {limit : ℕ} {anchor : Store preset fork}
+    (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (start : ∀ w ∈ J, e.start w = anchor) (anchorSlot : anchorBlock.slot = anchorState.slot)
+    (slots : 0 < config.SLOT_DURATION_MS) (parameters : DirectSafety.Parameters preset)
+    {g : ForkedBeaconState preset} (genesis : Genesis (config := config) (checks := .bls) g)
+    (history : Run config .bls g ⟨fork, anchorState⟩) {horizon : Epoch}
+    (forkWindow : fork < .glamsterdam ∧ ∀ next ∈ config.nextFork fork,
+      horizon.toNat < next.2.toNat)
+    (inHorizon : ∀ w ∈ J, ∀ k epoch, (e.world k).time ≤ limit →
+      ((e.world k).state w).getCurrentStoreEpoch config = .ok epoch → epoch ≤ horizon)
+    (oneBlock : OneBlockPerRoot e limit)
+    (bands : preset.IncrementWithinUpwardBand)
+    (electraFloor : preset.MAX_EFFECTIVE_BALANCE = preset.MIN_ACTIVATION_BALANCE)
+    (electraCap : preset.MIN_ACTIVATION_BALANCE ≤ preset.MAX_EFFECTIVE_BALANCE_ELECTRA)
+    {u : ValidatorIndex} (caller : u ∈ J) {n : ℕ} (callTime : (e.world n).time ≤ limit)
+    {head : Root} {pulled anc : BeaconState preset fork} {target : Checkpoint}
+    (pulledOk : ((e.world n).state u).getPulledUpHeadState config head = .ok pulled)
+    (targetOk : ((e.world n).state u).getCurrentTarget config head = .ok target)
+    (held : ((e.world n).state u).blockStates[target.root]? = some anc)
+    {w : ValidatorIndex} (receiver : w ∈ J) {k : ℕ} (receiveTime : (e.world k).time ≤ limit)
+    {root : Root} {rootState state : BeaconState preset fork}
+    (stored : ((e.world k).state w).blockStates[root]? = some rootState)
+    (read : ((e.world k).state w).getCheckpointBlock root target.epoch = .ok target.root)
+    (reach : state = rootState ∨ ∃ slot, processSlots config .bls rootState slot = .ok state)
+    (later : target.epoch ≤ getCurrentEpoch state) (inside : getCurrentEpoch state ≤ horizon) :
+    ((e.world k).state w).blockStates[target.root]? = some anc ∧
+      getCurrentEpoch pulled = target.epoch ∧
+      ∃ boundary : BeaconState preset fork,
+        boundary.slot.toNat = target.epoch.toNat * preset.SLOTS_PER_EPOCH.toNat ∧
+        Hysteresis boundary ∧ Nonempty (Run config .bls g ⟨fork, boundary⟩) ∧
+        (∃ tail : Run config .bls ⟨fork, boundary⟩ ⟨fork, pulled⟩,
+          tail.blockCount ≤
+            pulled.slot.toNat - target.epoch.toNat * preset.SLOTS_PER_EPOCH.toNat + 1) ∧
+        Nonempty (Run config .bls ⟨fork, boundary⟩ ⟨fork, state⟩) ∧
+        Nonempty (Run config .bls ⟨fork, anc⟩ ⟨fork, state⟩) := by
+  have early := forkWindow.1
+  have positive : 0 < preset.SLOTS_PER_EPOCH.toNat := parameters.slots
+  have reachU : Store.Reachable config anchorState anchorBlock ((e.world n).state u) :=
+    e.reachable (fun v hv => (start v hv).symm ▸ Store.Reachable.anchor anchored) n u caller
+  have reachW : Store.Reachable config anchorState anchorBlock ((e.world k).state w) :=
+    e.reachable (fun v hv => (start v hv).symm ▸ Store.Reachable.anchor anchored) k w receiver
+  obtain ⟨epoch, checkpoint, epochOk, checkpointOk, rfl⟩ :=
+    Store.getCurrentTarget_eq_ok_iff.mp targetOk
+  dsimp only at held read later ⊢
+  obtain ⟨boundary, aBlock, boundaryOk, aFound, aLe, descends⟩ :=
+    Store.isAncestor_of_getCheckpointBlock early checkpointOk
+  have boundaryNat := (computeStartSlotAtEpoch_ok_iff.mp boundaryOk).2
+  have epochNat (s : BeaconState preset fork) :
+      (getCurrentEpoch s).toNat = s.slot.toNat / preset.SLOTS_PER_EPOCH.toNat := by
+    simp only [getCurrentEpoch, computeEpochAtSlot, UInt64.toNat_div]
+  have epochHorizon := UInt64.le_iff_toNat_le.mp (inHorizon u caller n epoch callTime epochOk)
+  have boundaryBefore : ∀ next ∈ config.nextFork fork,
+      boundary.toNat < next.2.toNat * preset.SLOTS_PER_EPOCH.toNat := by
+    intro next member
+    have below := forkWindow.2 next member
+    rw [boundaryNat]
+    exact Nat.mul_lt_mul_of_pos_right (by omega) positive
+  have beforeU := blocks_before_fork anchored start anchorSlot slots parameters forkWindow
+    inHorizon caller callTime
+  have beforeW := blocks_before_fork anchored start anchorSlot slots parameters forkWindow
+    inHorizon receiver receiveTime
+  have ancSlot : anc.slot = aBlock.slot := blockState_slot_eq reachU anchorSlot aFound held
+  have clearC := clear_of_getCheckpointBlock early boundaryOk checkpointOk aFound
+  -- The head state, and the two cases of the pull-up.
+  simp only [Store.getPulledUpHeadState, bind_ok_iff] at pulledOk
+  obtain ⟨headState, headOk, current, currentOk, pulledOk⟩ := pulledOk
+  have headStored := Store.blockState_ok_iff.mp headOk
+  have sameEpoch : current = epoch := Except.ok.inj (currentOk.symm.trans epochOk)
+  subst current
+  obtain ⟨headBlock, headFound⟩ := reachU.known_of_blockState headStored
+  have headSlot : headState.slot = headBlock.slot :=
+    blockState_slot_eq reachU anchorSlot headFound headStored
+  have headBefore : ∀ next ∈ config.nextFork fork,
+      headState.slot.toNat < next.2.toNat * preset.SLOTS_PER_EPOCH.toNat := by
+    rw [headSlot]
+    exact beforeU head headBlock headFound
+  have pullUp : (headState.slot < boundary ∧ headState = anc ∧
+        processSlots config .bls headState boundary = .ok pulled) ∨
+      (boundary ≤ headState.slot ∧ pulled = headState) := by
+    split at pulledOk
+    · rename_i older
+      simp only [bind_ok_iff] at pulledOk
+      obtain ⟨boundary', boundaryOk', processed⟩ := pulledOk
+      have same : boundary' = boundary :=
+        Except.ok.inj ((mapError_ok_iff.mp boundaryOk').symm.trans boundaryOk)
+      subst boundary'
+      have below : headState.slot < boundary := by
+        have := UInt64.lt_iff_toNat_lt.mp older
+        rw [epochNat] at this
+        rw [UInt64.lt_iff_toNat_lt, boundaryNat]
+        exact (Nat.div_lt_iff_lt_mul positive).mp this
+      obtain ⟨found, foundOk, aLeHead⟩ := Store.slot_le_of_isAncestor aFound descends
+      have sameBlock : found = headBlock := Option.some.inj (foundOk.symm.trans headFound)
+      subst found
+      have isA : head = checkpoint := clearC head headBlock headFound
+        (Store.isAncestor_self headFound) aLeHead (UInt64.le_of_lt (headSlot ▸ below))
+      subst isA
+      exact .inl ⟨below, Option.some.inj (headStored.symm.trans held),
+        mapError_ok_iff.mp processed⟩
+    · rename_i notOlder
+      simp only [pure, Except.pure, Except.ok.injEq] at pulledOk
+      refine .inr ⟨?_, pulledOk.symm⟩
+      have := UInt64.le_iff_toNat_le.mp (UInt64.not_lt.mp notOlder)
+      rw [epochNat] at this
+      rw [UInt64.le_iff_toNat_le, boundaryNat]
+      exact (Nat.le_div_iff_mul_le positive).mp this
+  -- When the target block is before the boundary, its slots process to the boundary.
+  have ahead : anc.slot < boundary →
+      ∃ after, processSlots config .bls anc boundary = .ok after := by
+    intro below
+    rcases pullUp with ⟨_, same, processed⟩ | ⟨headLater, -⟩
+    · exact ⟨pulled, same ▸ processed⟩
+    · have headNe : head ≠ checkpoint := by
+        rintro rfl
+        have same : headState = anc := Option.some.inj (headStored.symm.trans held)
+        subst same
+        exact absurd (UInt64.lt_of_lt_of_le below headLater) (UInt64.lt_irrefl _)
+      obtain ⟨x, xBlock, xFound, xAbove, -, xLt, _, xSlots⟩ :=
+        exists_child_of_chain anchored early anchorSlot caller (start u caller) aFound held
+          headBlock.slot.toNat head headBlock headState rfl headFound headStored descends headNe
+      have xFar : boundary < xBlock.slot := by
+        by_contra notFar
+        have same := clearC x xBlock xFound xAbove (UInt64.le_of_lt xLt)
+          (UInt64.not_lt.mp notFar)
+        subst same
+        have equal : aBlock = xBlock := Option.some.inj (aFound.symm.trans xFound)
+        subst equal
+        exact UInt64.lt_irrefl _ xLt
+      obtain ⟨middle, middleOk, -⟩ := processSlots_split xSlots below xFar
+      exact ⟨middle, middleOk⟩
+  obtain ⟨boundaryState, atBoundary, banded, first, link⟩ :=
+    e.boundaryState_of_target anchored early genesis history bands electraFloor electraCap caller
+      (start u caller) beforeU held boundaryOk boundaryBefore (ancSlot ▸ aLe) ahead
+  -- The state of the target block at the boundary, from the boundary state and the target block.
+  obtain ⟨s0, bridge, ⟨toS0⟩, ⟨fromAnc⟩⟩ : ∃ s0 : BeaconState preset fork,
+      ((anc.slot = boundary ∧ s0 = anc) ∨
+        (anc.slot < boundary ∧ processSlots config .bls anc boundary = .ok s0)) ∧
+      Nonempty (Run config .bls ⟨fork, boundaryState⟩ ⟨fork, s0⟩) ∧
+      Nonempty (Run config .bls ⟨fork, anc⟩ ⟨fork, s0⟩) := by
+    rcases link with ⟨below, processed⟩ | ⟨same, run⟩
+    · exact ⟨boundaryState, .inr ⟨below, processed⟩, ⟨.nil⟩,
+        run_of_processSlots processed boundaryBefore⟩
+    · exact ⟨anc, .inl ⟨same, rfl⟩, run, ⟨.nil⟩⟩
+  -- The run to the pulled-up head state.
+  have pulledEpoch : getCurrentEpoch pulled = epoch := by
+    rcases pullUp with ⟨-, -, processed⟩ | ⟨headLater, rfl⟩
+    · simp only [getCurrentEpoch, (processSlots_slot processed).2]
+      exact computeEpochAtSlot_computeStartSlotAtEpoch (UInt64.lt_iff_toNat_lt.mpr positive)
+        boundaryOk
+    · have forward := e.forwardReachable (anchorState := anchorState) (anchorBlock := anchorBlock)
+        (fun v member => by rw [start v member]; exact .anchor anchored) n u caller
+      obtain ⟨now, nowOk, -, statesLe⟩ := forward.slots_le_current slots
+        (by rw [anchorSlot]; exact UInt64.le_refl _)
+      have epochNow : epoch.toNat = now.toNat / preset.SLOTS_PER_EPOCH.toNat := by
+        have epochEq : epoch = computeEpochAtSlot preset now := by
+          refine Except.ok.inj (epochOk.symm.trans ?_)
+          simp only [Store.getCurrentStoreEpoch, nowOk, bind, Except.bind, pure, Except.pure]
+        rw [epochEq]
+        simp only [computeEpochAtSlot, UInt64.toNat_div]
+      have upper := UInt64.le_iff_toNat_le.mp (statesLe head _ headStored)
+      have low := UInt64.le_iff_toNat_le.mp headLater
+      rw [boundaryNat] at low
+      apply UInt64.toNat_inj.mp
+      rw [epochNat]
+      apply Nat.le_antisymm
+      · rw [epochNow]
+        exact Nat.div_le_div_right upper
+      · exact (Nat.le_div_iff_mul_le positive).mpr low
+  have toPulled : Nonempty (Run config .bls ⟨fork, boundaryState⟩ ⟨fork, pulled⟩) := by
+    rcases pullUp with ⟨below, same, processed⟩ | ⟨headLater, rfl⟩
+    · subst same
+      rcases link with ⟨-, processedR⟩ | ⟨equal, -⟩
+      · have equal : pulled = boundaryState :=
+          Except.ok.inj (processed.symm.trans processedR)
+        subst equal
+        exact ⟨.nil⟩
+      · exact absurd (equal ▸ below) (UInt64.lt_irrefl _)
+    · obtain ⟨run⟩ := run_of_checkpoint anchored early anchorSlot start caller beforeU boundaryOk
+        held bridge headStored checkpointOk (.inl rfl) headLater headBefore
+      exact ⟨toS0.append run⟩
+  obtain ⟨tail⟩ := toPulled
+  have counted := tail.blocks_le_slots (a := boundary.toNat) (b := pulled.slot.toNat)
+    (by rw [atBoundary]) (Nat.le_refl _)
+  rw [boundaryNat] at counted
+  -- The receiver holds the same target state, and its runs.
+  obtain ⟨_, _, _, aFoundW, -, -⟩ :=
+    Store.isAncestor_of_getCheckpointBlock early read
+  obtain ⟨ancW, heldW, -⟩ := reachW.blockStatesFromParents aFoundW
+  have sameAnc : anc = ancW := e.blockStates_eq anchored caller receiver (start u caller)
+    (start w receiver) (oneBlock u caller w receiver n k callTime receiveTime) held heldW
+  subst sameAnc
+  have stateLater : boundary ≤ state.slot := by
+    have := UInt64.le_iff_toNat_le.mp later
+    rw [epochNat] at this
+    rw [UInt64.le_iff_toNat_le, boundaryNat]
+    exact (Nat.le_div_iff_mul_le positive).mp this
+  have stateBefore : ∀ next ∈ config.nextFork fork,
+      state.slot.toNat < next.2.toNat * preset.SLOTS_PER_EPOCH.toNat := by
+    intro next member
+    have below := forkWindow.2 next member
+    have := UInt64.le_iff_toNat_le.mp inside
+    rw [epochNat] at this
+    exact (Nat.div_lt_iff_lt_mul positive).mp (by omega)
+  obtain ⟨toState⟩ := run_of_checkpoint anchored early anchorSlot start receiver beforeW
+    boundaryOk heldW bridge stored read reach stateLater stateBefore
+  exact ⟨heldW, pulledEpoch, boundaryState, by rw [atBoundary, boundaryNat], banded, first,
+    ⟨tail, counted⟩, ⟨toS0.append toState⟩, ⟨fromAnc.append toState⟩⟩
 
 /-- Theorem 1, accountable safety: the stored block is safe, or two honest stores show a fault.
 

@@ -424,6 +424,64 @@ theorem getHeadFrom_mem {nodes : List ForkChoiceNode} {start head : ForkChoiceNo
           · exact .inr mem
         · cases walk
 
+/-- A successful traversal reads every child, including children with no viable nodes. -/
+theorem filterNodeTree_cases {node : ForkChoiceNode} {nodes : List ForkChoiceNode}
+    (walk : store.filterNodeTree config node = .ok nodes) :
+    ∃ children, store.getNodeChildren node = .ok children ∧
+      ((children = [] ∧ ∃ isViable, store.isViableLeaf config node = .ok isViable ∧
+          nodes = if isViable then [node] else []) ∨
+        (children ≠ [] ∧ ∃ viable : List ForkChoiceNode,
+          (∀ child ∈ children, ∃ below, store.nodeRank child < store.nodeRank node ∧
+            store.filterNodeTree config child = .ok below ∧ ∀ y ∈ below, y ∈ viable) ∧
+          (∀ y ∈ viable, ∃ child ∈ children, ∃ below,
+            store.nodeRank child < store.nodeRank node ∧
+            store.filterNodeTree config child = .ok below ∧ y ∈ below) ∧
+          ((viable = [] ∧ nodes = []) ∨ (viable ≠ [] ∧ nodes = viable ++ [node])))) := by
+  rw [filterNodeTree, bind_ok_iff] at walk
+  obtain ⟨children, childrenOk, walk⟩ := walk
+  refine ⟨children, childrenOk, ?_⟩
+  by_cases empty : children.isEmpty
+  · simp only [empty, ↓reduceIte, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at walk
+    obtain ⟨isViable, viableOk, rfl⟩ := walk
+    exact .inl ⟨List.isEmpty_iff.mp empty, isViable, viableOk, rfl⟩
+  simp only [empty, Bool.false_eq_true, ↓reduceIte, bind_ok_iff, pure, Except.pure,
+    Except.ok.injEq] at walk
+  obtain ⟨viable, viableOk, rfl⟩ := walk
+  refine .inr ⟨fun none => by simp [none] at empty, viable, ?_, ?_, ?_⟩
+  · intro child childMem
+    obtain ⟨below, belowOk⟩ := flatMapM_ok_of_mem viableOk child childMem
+    split at belowOk
+    · rename_i lowerRank
+      exact ⟨below, lowerRank, belowOk, fun y hy => (mem_of_flatMapM_ok viableOk y).mpr
+        ⟨child, childMem, below, by simp [lowerRank, belowOk], hy⟩⟩
+    · simp [throw, throwThe, MonadExceptOf.throw] at belowOk
+  · intro y hy
+    obtain ⟨child, childMem, below, belowOk, yMem⟩ := (mem_of_flatMapM_ok viableOk y).mp hy
+    split at belowOk
+    · exact ⟨child, childMem, below, ‹_›, belowOk, yMem⟩
+    · simp [throw, throwThe, MonadExceptOf.throw] at belowOk
+  · by_cases none : viable = []
+    · exact .inl ⟨none, by simp [none]⟩
+    · exact .inr ⟨none, by simp [none]⟩
+
+/-- A child traversal succeeds and its viable nodes occur in the parent result. -/
+theorem filterNodeTree_sub {node child : ForkChoiceNode}
+    {nodes children : List ForkChoiceNode}
+    (walk : store.filterNodeTree config node = .ok nodes)
+    (childrenOk : store.getNodeChildren node = .ok children) (childMem : child ∈ children) :
+    ∃ below, store.nodeRank child < store.nodeRank node ∧
+      store.filterNodeTree config child = .ok below ∧ ∀ y ∈ below, y ∈ nodes := by
+  obtain ⟨children', childrenOk', cases⟩ := filterNodeTree_cases walk
+  rw [childrenOk, Except.ok.injEq] at childrenOk'
+  subst childrenOk'
+  rcases cases with ⟨rfl, -⟩ | ⟨-, viable, lift, -, result⟩
+  · cases childMem
+  obtain ⟨below, lowerRank, belowOk, sub⟩ := lift child childMem
+  refine ⟨below, lowerRank, belowOk, fun y hy => ?_⟩
+  rcases result with ⟨rfl, -⟩ | ⟨-, rfl⟩
+  · cases sub y hy
+  · exact List.mem_append_left _ (sub y hy)
+
 /-- A nonempty list of viable nodes holds the node it starts from. -/
 theorem filterNodeTree_self {node : ForkChoiceNode} {nodes : List ForkChoiceNode}
     (walk : store.filterNodeTree config node = .ok nodes) (nonempty : nodes ≠ []) :
@@ -441,6 +499,65 @@ theorem filterNodeTree_self {node : ForkChoiceNode} {nodes : List ForkChoiceNode
     split
     · exact absurd (by simp_all) nonempty
     · exact List.mem_append_right _ (List.mem_singleton_self _)
+
+/-- A path through the children read by fork choice. -/
+inductive NodePath (store : Store preset fork) : ForkChoiceNode → ForkChoiceNode → Prop where
+  | refl (node) : NodePath store node node
+  | step {node child leaf children} : store.getNodeChildren node = .ok children →
+      child ∈ children → NodePath store child leaf → NodePath store node leaf
+
+/-- Child paths concatenate. -/
+theorem NodePath.trans {a b c : ForkChoiceNode} (ab : store.NodePath a b)
+    (bc : store.NodePath b c) : store.NodePath a c := by
+  induction ab with
+  | refl => exact bc
+  | step read mem _ ih => exact .step read mem (ih bc)
+
+/-- Traversal succeeds along every child path, even when its result is empty. -/
+theorem NodePath.filterNodeTree {node leaf : ForkChoiceNode}
+    (path : store.NodePath node leaf) {nodes : List ForkChoiceNode}
+    (walk : store.filterNodeTree config node = .ok nodes) :
+    ∃ below, store.filterNodeTree config leaf = .ok below ∧ ∀ y ∈ below, y ∈ nodes := by
+  induction path generalizing nodes with
+  | refl => exact ⟨nodes, walk, fun _ h => h⟩
+  | step childrenOk childMem _ ih =>
+    obtain ⟨below, -, belowOk, lift⟩ := filterNodeTree_sub walk childrenOk childMem
+    obtain ⟨result, resultOk, sub⟩ := ih belowOk
+    exact ⟨result, resultOk, fun y hy => lift y (sub y hy)⟩
+
+/-- A reached leaf has a successful viability read, whether it is viable or not. -/
+theorem NodePath.isViableLeaf_ok {node leaf : ForkChoiceNode}
+    (path : store.NodePath node leaf) {nodes : List ForkChoiceNode}
+    (walk : store.filterNodeTree config node = .ok nodes)
+    (terminal : store.getNodeChildren leaf = .ok []) :
+    ∃ b, store.isViableLeaf config leaf = .ok b := by
+  obtain ⟨below, belowOk, -⟩ := path.filterNodeTree walk
+  obtain ⟨children, childrenOk, cases⟩ := filterNodeTree_cases belowOk
+  rw [terminal, Except.ok.injEq] at childrenOk
+  subst childrenOk
+  rcases cases with ⟨-, b, read, -⟩ | ⟨ne, -⟩
+  · exact ⟨b, read⟩
+  · exact absurd rfl ne
+
+/-- A viable leaf belongs to the filtered result of every start on its child path. -/
+theorem NodePath.mem_filterNodeTree {node leaf : ForkChoiceNode}
+    (path : store.NodePath node leaf) {nodes : List ForkChoiceNode}
+    (walk : store.filterNodeTree config node = .ok nodes)
+    (terminal : store.getNodeChildren leaf = .ok [])
+    (viable : store.isViableLeaf config leaf = .ok true) : leaf ∈ nodes := by
+  obtain ⟨below, belowOk, lift⟩ := path.filterNodeTree walk
+  have result : below = [leaf] := by
+    rw [Store.filterNodeTree, terminal] at belowOk
+    simpa [viable, bind, Except.bind, pure, Except.pure] using belowOk.symm
+  exact lift leaf (result ▸ List.mem_singleton_self leaf)
+
+/-- A viable leaf retains the start of its child path. -/
+theorem NodePath.self_mem_filterNodeTree {node leaf : ForkChoiceNode}
+    (path : store.NodePath node leaf) {nodes : List ForkChoiceNode}
+    (walk : store.filterNodeTree config node = .ok nodes)
+    (terminal : store.getNodeChildren leaf = .ok [])
+    (viable : store.isViableLeaf config leaf = .ok true) : node ∈ nodes :=
+  filterNodeTree_self walk (List.ne_nil_of_mem (path.mem_filterNodeTree walk terminal viable))
 
 /-- A viable node that has children has a viable child. -/
 theorem filterNodeTree_child :

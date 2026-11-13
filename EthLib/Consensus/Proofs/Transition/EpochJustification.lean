@@ -296,6 +296,27 @@ theorem weighJustificationAndFinalization_ordered {total previous current : Gwei
   · rcases currentJustified with same | same | same <;> rw [same] <;> omega
   · rcases finalized with same | same | same <;> rw [same] <;> omega
 
+/-- Weighing votes cannot lower a justified epoch that is at most the previous epoch.
+
+The only replacements are the previous and current epochs.
+
+These are the recent targets of [Combining GHOST and Casper, section 8.5][gasper].
+
+[gasper]: https://arxiv.org/html/2003.03052v3#S8.SS5
+-/
+theorem weighJustificationAndFinalization_currentJustified_mono {total previous current : Gwei}
+    (settled : state.currentJustifiedCheckpoint.epoch ≤ getPreviousEpoch state)
+    (computed : weighJustificationAndFinalization state total previous current = .ok after) :
+    state.currentJustifiedCheckpoint.epoch ≤ after.currentJustifiedCheckpoint.epoch := by
+  obtain ⟨_, justified, _, _⟩ := weighJustificationAndFinalization_checkpoints computed
+  rcases justified with same | previous | current
+  · rw [same]
+    exact UInt64.le_refl _
+  · rw [previous]
+    exact settled
+  · rw [current]
+    exact UInt64.le_trans settled (getPreviousEpoch_le state)
+
 /-- In the first two epochs, justification and finalization change nothing before Altair. -/
 theorem processJustificationAndFinalization_early (before : fork < .altair)
     (early : getCurrentEpoch state ≤ GENESIS_EPOCH + 1) :

@@ -2823,6 +2823,15 @@ theorem processJustificationAndFinalization_keeps
 def JustifiedSettled (state : BeaconState preset fork) : Prop :=
   state.currentJustifiedCheckpoint.epoch ≤ getPreviousEpoch state
 
+/-- Justification and finalization cannot lower a settled current justified epoch. -/
+theorem processJustificationAndFinalization_currentJustified_mono
+    (settled : JustifiedSettled state)
+    (computed : processJustificationAndFinalization state = .ok after) :
+    state.currentJustifiedCheckpoint.epoch ≤ after.currentJustifiedCheckpoint.epoch := by
+  obtain rfl | ⟨_, _, _, weighed⟩ := processJustificationAndFinalization_ok computed
+  · exact UInt64.le_refl _
+  · exact weighJustificationAndFinalization_currentJustified_mono settled weighed
+
 /-- The properties that each valid block keeps.
 
 The last one says that each effective balance is a whole number of increments.
@@ -3032,5 +3041,65 @@ theorem stateTransition_invariant
   refine ⟨frame.invariant advancedHolds, ?_⟩
   rw [frame.finalized]
   exact finalized
+
+/-- An epoch transition cannot lower the current justified epoch of an invariant state. -/
+theorem processEpoch_currentJustified_mono (holds : Invariant state)
+    (computed : processEpoch config checks state = .ok after) :
+    state.currentJustifiedCheckpoint.epoch ≤ after.currentJustifiedCheckpoint.epoch := by
+  obtain ⟨justified, justifiedOk, frame⟩ := processEpoch_frame computed
+  rw [frame.toFrame.currentJustified]
+  exact processJustificationAndFinalization_currentJustified_mono holds.settled justifiedOk
+
+/-- Advancing one slot cannot lower the current justified epoch of an invariant state. -/
+theorem advanceSlot_currentJustified_mono (holds : Invariant state)
+    (computed : advanceSlot config checks state = .ok after) :
+    state.currentJustifiedCheckpoint.epoch ≤ after.currentJustifiedCheckpoint.epoch := by
+  obtain ⟨next, cached, epoched, _, cachedOk, epochedOk, rfl⟩ := advanceSlot_ok computed
+  have frame := frame_processSlot cachedOk
+  change state.currentJustifiedCheckpoint.epoch ≤ epoched.currentJustifiedCheckpoint.epoch
+  rw [← frame.currentJustified]
+  unfold epochIfLast at epochedOk
+  split at epochedOk
+  · exact processEpoch_currentJustified_mono (frame.invariant holds) epochedOk
+  · simp only [pure, Except.pure, Except.ok.injEq] at epochedOk
+    rw [← epochedOk]
+    exact UInt64.le_refl _
+
+/-- Any number of slot steps cannot lower the current justified epoch of an invariant state. -/
+theorem advanceSlots_currentJustified_mono :
+    ∀ {count : Nat} {state after : BeaconState preset fork}, Invariant state →
+      advanceSlots config checks count state = .ok after →
+      state.currentJustifiedCheckpoint.epoch ≤ after.currentJustifiedCheckpoint.epoch
+  | 0, state, after, _, computed => by
+    simp only [advanceSlots, pure, Except.pure, Except.ok.injEq] at computed
+    subst computed
+    exact UInt64.le_refl _
+  | count + 1, state, after, holds, computed => by
+    simp only [advanceSlots, bind_ok_iff] at computed
+    obtain ⟨next, nextOk, rest⟩ := computed
+    exact UInt64.le_trans (advanceSlot_currentJustified_mono holds nextOk)
+      (advanceSlots_currentJustified_mono (advanceSlot_invariant holds nextOk).1 rest)
+
+/-- Advancing to a slot cannot lower the current justified epoch of an invariant state. -/
+theorem processSlots_currentJustified_mono {slot : Slot} (holds : Invariant state)
+    (computed : processSlots config checks state slot = .ok after) :
+    state.currentJustifiedCheckpoint.epoch ≤ after.currentJustifiedCheckpoint.epoch := by
+  simp only [processSlots, bind_ok_iff, ensure_ok_iff] at computed
+  obtain ⟨_, _, advanced⟩ := computed
+  exact advanceSlots_currentJustified_mono holds advanced
+
+/-- A successful state transition cannot lower an invariant state's current justified epoch.
+
+Block processing keeps the checkpoint produced by the slot steps.
+
+The result holds for every signature check and either value of the result-validation flag.
+-/
+theorem stateTransition_currentJustified_mono
+    {signed : SignedBeaconBlock preset fork} {validateResult : Bool} (holds : Invariant state)
+    (computed : stateTransition config checks engine state signed validateResult = .ok after) :
+    state.currentJustifiedCheckpoint.epoch ≤ after.currentJustifiedCheckpoint.epoch := by
+  obtain ⟨advanced, slotsOk, _, _, blockOk, _⟩ := stateTransition_ok computed
+  rw [(frame_processBlock blockOk).currentJustified]
+  exact processSlots_currentJustified_mono holds slotsOk
 
 end EthLib.Consensus

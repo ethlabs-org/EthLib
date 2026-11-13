@@ -1000,8 +1000,17 @@ inductive ViableLeafAbove : ForkChoiceNode → ForkChoiceNode → Prop where
       store.getNodeChildren node = .ok children → child ∈ children →
       ViableLeafAbove child leaf → ViableLeafAbove node leaf
 
+/-- A viable-leaf witness gives its child path and terminal reads. -/
+theorem ViableLeafAbove.path {node leaf : ForkChoiceNode}
+    (reach : store.ViableLeafAbove config node leaf) :
+    store.NodePath node leaf ∧ store.getNodeChildren leaf = .ok [] ∧
+      store.isViableLeaf config leaf = .ok true := by
+  induction reach with
+  | leaf terminal viable => exact ⟨.refl _, terminal, viable⟩
+  | child read mem _ ih => exact ⟨.step read mem ih.1, ih.2⟩
+
 /-- A tree filtered from a node is non-empty exactly when a viable leaf is reached from it. -/
-private theorem filterNodeTree_ne_nil_iff :
+theorem filterNodeTree_ne_nil_iff :
     ∀ {node : ForkChoiceNode} {nodes : List ForkChoiceNode},
       store.filterNodeTree config node = .ok nodes →
       (nodes ≠ [] ↔ ∃ leaf, store.ViableLeafAbove config node leaf) := by
@@ -1009,6 +1018,7 @@ private theorem filterNodeTree_ne_nil_iff :
   induction hrank : store.nodeRank node using Nat.strong_induction_on generalizing node with
   | _ rank ih =>
   intro nodes walk
+  have original := walk
   rw [filterNodeTree, bind_ok_iff] at walk
   obtain ⟨children, childrenOk, walk⟩ := walk
   by_cases empty : children.isEmpty
@@ -1050,24 +1060,8 @@ private theorem filterNodeTree_ne_nil_iff :
       exact ⟨leaf, .child childrenOk childMem reach⟩
     · simp [throw, throwThe, MonadExceptOf.throw] at belowOk
   · rintro ⟨leaf, reach⟩
-    cases reach with
-    | leaf nil _ =>
-      rw [childrenOk, Except.ok.injEq] at nil
-      subst nil
-      simp at empty
-    | child ok childMem reach =>
-      rw [childrenOk, Except.ok.injEq] at ok
-      subst ok
-      obtain ⟨below, belowOk⟩ := flatMapM_ok_of_mem viableOk _ childMem
-      split at belowOk
-      · rename_i lower
-        have nonempty := (below_iff _ childMem below lower belowOk).mpr ⟨leaf, reach⟩
-        obtain ⟨y, yBelow⟩ := List.exists_mem_of_ne_nil _ nonempty
-        have yMem := (mem_of_flatMapM_ok viableOk y).mpr
-          ⟨_, childMem, below, by simp [lower, belowOk], yBelow⟩
-        have ne' : viable ≠ [] := List.ne_nil_of_mem yMem
-        simp [ne']
-      · simp [throw, throwThe, MonadExceptOf.throw] at belowOk
+    obtain ⟨path, terminal, leafViable⟩ := reach.path
+    exact List.ne_nil_of_mem (path.self_mem_filterNodeTree original terminal leafViable)
 
 /-- A tree filtered from a node is empty exactly when no viable leaf is reached from it. -/
 theorem filterNodeTree_eq_nil_iff {node : ForkChoiceNode} {nodes : List ForkChoiceNode}
