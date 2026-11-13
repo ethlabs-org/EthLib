@@ -70,8 +70,9 @@ theorem target_included {checks : SignatureChecks}
     (e : Execution (honestForkChoice config checks sources anchorState anchorBlock assignment
       genesisTimeMs) J)
     (genesis : ∀ w ∈ J, (e.start w).genesisTimeMs = 0) : TargetIncluded e 4000 := by
-  intro u caller n nBound head state total target voters stateOk totalOk epochOk signed quorum
-    w receiver k current kBound later updated currentOk aged
+  intro u caller q n ordered nBound head state total target voters headOk stateOk targetOk totalOk
+    epochOk confirmedOk quorum next first begin nextOk firstOk beginOk signed w receiver k current
+    kBound later updated currentOk aged
   have upper := receiver_epoch_le_one e genesis receiver kBound updated currentOk
   omega
 

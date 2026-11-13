@@ -858,23 +858,39 @@ def HonestTargetVotes
         (SignsTarget e v target (e.world n).time ∨ v ∉ participants)) ∧
       3 * support.toNat + margin ≤ 3 * stake (fun v => balanceAt state v.toNat) voters
 
-/-- Assumption 3 of the paper: a target with an honest quorum is included within an epoch.
+/-- Assumption 3 of the paper: an honest quorum for a target is included by the epoch after next.
 
-An honest store counts honest votes for the target of its current epoch.
+An honest store, at an event `q`, reads its head, the pulled-up state of the head and its target.
 
-Two thirds of the active balance of the pulled-up state of a head sign that target.
+The epoch of the store is the epoch of the target, `E`.
 
-Their votes are sent by the time of the counting store's event.
+Two thirds of the active balance of that state belong to honest voters.
 
-Take an honest store that is up to date at that event or later, two epochs after the target.
+Each of them signs a vote with that target before the start of epoch `E + 1`.
 
-A block that it holds has the target as its checkpoint, and its epoch is at most the target's.
+A later time, the event `n`, is still in epoch `E`.
 
-The block is safe from the start of the epoch after the target to the time of that store.
+Its reader takes `n` to be the call that confirmed a block; the definition takes any such event.
 
-Then the store holds a block above it, of an epoch before its own, with the target included.
+Take an honest store that is up to date at that time or later, from epoch `E + 2` on.
 
-Included means that the unrealized justification of that block is not before the target.
+A block that it holds has the target as its checkpoint of epoch `E`, and its epoch is at most `E`.
+
+The block is safe from the time of `n` to the time of that store.
+
+Nothing is asked of the block before `n`.
+
+Then the store holds a seed above the block, of epoch `E` or `E + 1`.
+
+The state of the seed reads the target as its block root of epoch `E`.
+
+That state has justified epoch `E` or a later one, or it holds the target votes of the voters.
+
+From Altair those votes are timely target flags, in the list of the current epoch for a seed of `E`.
+
+A seed of `E + 1` holds them in the list of the previous epoch.
+
+Before Altair they are pending attestations for the target that the voters attested.
 
 Both stores are at events up to the last time `limit`.
 
@@ -886,45 +902,31 @@ The paper takes a block `b` and an epoch `e` at least the epoch of `b`, after GS
 
 It asks that `b` be canonical throughout epoch `e + 1`.
 
-It also asks a condition on the votes in each view, for a link from a given source to `C(b, e)`.
+By the start of epoch `e + 2` each honest view then holds `b' ⪰ b` that includes `C(b, e)`.
 
-That condition discounts slashed stake, and it holds for every view of a descendant block.
+Here `e` is the epoch `E` of the confirming event, not the epoch of the block.
 
-By the start of epoch `e + 2` each honest view then holds `b' ⪰ b`, of an epoch before `e + 2`.
-
-The assumption says that `C(b, e)` is included in `AU(b')`.
-
-Here the target plays the role of `C(b, e)`, read at the later store.
-
-Safety asks this of each time from the start of epoch `e + 1` up to that store.
-
-Every honest store that is up to date at an event of that time has its head above the block.
-
-The votes are one count, for the target only, against one pulled-up head state.
-
-Here the seed is a block above the given one, of an epoch before `target + 2`, like `b'`.
-
-The conclusion is that the unrealized justification of the seed is of the target's epoch or later.
-
-It does not say that the target itself is included.
-
-The block is any such block of the later store, not one that the counting store already held.
+The quorum is the honest voter set of one count, against one pulled-up head state.
 
 The shape follows `EventualCheckpointInclusion.included` in [verified-fast-confirmation][vfc].
-
-Its conclusion there is `A32IncludedAtTip`, with the seed above the block it is applied to.
 
 [vfc]: https://github.com/fradamt/verified-fast-confirmation -/
 def TargetIncluded
     (e : Execution (honestForkChoice config checks sources anchorState anchorBlock assignment
       genesisTimeMs) J) (limit : ℕ) : Prop :=
-  ∀ u ∈ J, ∀ n, (e.world n).time ≤ limit →
-    ∀ head state total target, ∀ voters : Finset ValidatorIndex,
-    ((e.world n).state u).getPulledUpHeadState config head = .ok state →
+  ∀ u ∈ J, ∀ q n, q ≤ n → (e.world n).time ≤ limit →
+    ∀ (head : ForkChoiceNode) state total target, ∀ voters : Finset ValidatorIndex,
+    ((e.world q).state u).getHead config = .ok head →
+    ((e.world q).state u).getPulledUpHeadState config head.root = .ok state →
+    ((e.world q).state u).getCurrentTarget config head.root = .ok target →
     getTotalActiveBalance state = .ok total →
+    ((e.world q).state u).getCurrentStoreEpoch config = .ok target.epoch →
     ((e.world n).state u).getCurrentStoreEpoch config = .ok target.epoch →
-    (∀ v ∈ voters, v ∈ J ∧ SignsTarget e v target (e.world n).time) →
     2 * total.toNat ≤ 3 * stake (fun v => balanceAt state v.toNat) voters →
+    ∀ next first begin, addChecked target.epoch 1 = .ok next →
+    computeStartSlotAtEpoch preset next = .ok first →
+    computeTimeAtSlotMs config genesisTimeMs first = .ok begin →
+    (∀ v ∈ voters, v ∈ J ∧ SignsTarget e v target (begin.toNat - 1)) →
     ∀ w ∈ J, ∀ k current, (e.world k).time ≤ limit → (e.world n).time ≤ (e.world k).time →
       UpToDate config checks sources (e.world k).time ((e.world k).view w)
         ((e.world k).state w) →
@@ -933,16 +935,24 @@ def TargetIncluded
       ∀ root rootEpoch, ((e.world k).state w).getBlockEpoch root = .ok rootEpoch →
       rootEpoch ≤ target.epoch →
       ((e.world k).state w).getCheckpointBlock root target.epoch = .ok target.root →
-      ∀ next first begin, addChecked target.epoch 1 = .ok next →
-      computeStartSlotAtEpoch preset next = .ok first →
-      computeTimeAtSlotMs config genesisTimeMs first = .ok begin →
-      (∀ time, begin.toNat ≤ time → time < (e.world k).time → SafeAt e time root) →
-      ∃ (seed : Root) (seedBlock : BeaconBlock preset fork) (justification : Checkpoint),
+      (∀ time, (e.world n).time ≤ time → time < (e.world k).time → SafeAt e time root) →
+      ∃ (seed : Root) (seedBlock : BeaconBlock preset fork) (seedState : BeaconState preset fork),
         ((e.world k).state w).blocks[seed]? = some seedBlock ∧
+        ((e.world k).state w).blockStates[seed]? = some seedState ∧
         ((e.world k).state w).isAncestor ⟨seed, .pending⟩ ⟨root, .pending⟩ = .ok true ∧
+        target.epoch ≤ computeEpochAtSlot preset seedBlock.slot ∧
         (computeEpochAtSlot preset seedBlock.slot).toNat < target.epoch.toNat + 2 ∧
-        ((e.world k).state w).unrealizedJustifications[seed]? = some justification ∧
-        target.epoch.toNat ≤ justification.epoch.toNat
+        getBlockRoot seedState target.epoch = .ok target.root ∧
+        (target.epoch ≤ seedState.currentJustifiedCheckpoint.epoch ∨
+          (∃ altair : .altair ≤ fork, ∀ v ∈ voters,
+            TargetFlagAt (recentParticipation seedState altair
+              (decide (computeEpochAtSlot preset seedBlock.slot = target.epoch))) v.toNat) ∨
+          ∃ before : fork < .altair, ∀ v ∈ voters,
+            ∃ pending ∈ recentPending seedState before
+                (decide (computeEpochAtSlot preset seedBlock.slot = target.epoch)),
+              pending.data.target = target ∧
+              ∃ indices, getPendingAttestingIndices seedState pending = .ok indices ∧
+                v ∈ indices)
 
 /-- A block extends an origin whose target the rule checked in the block's epoch.
 
@@ -1192,10 +1202,12 @@ omit [DecidablePred (· ∈ J)] in
 /-- Inclusion up to a time gives inclusion up to every earlier time. -/
 theorem TargetIncluded.of_le {last later : ℕ} (included : TargetIncluded e later)
     (le : last ≤ later) : TargetIncluded e last :=
-  fun u caller n nBound head state total target voters stateOk totalOk epochOk signed quorum w
-    receiver k current kBound =>
-    included u caller n (nBound.trans le) head state total target voters stateOk totalOk epochOk
-      signed quorum w receiver k current (kBound.trans le)
+  fun u caller q n ordered nBound head state total target voters headOk stateOk targetOk totalOk
+    epochOk confirmedOk quorum next first begin nextOk firstOk beginOk signed w receiver k current
+    kBound =>
+    included u caller q n ordered (nBound.trans le) head state total target voters headOk stateOk
+      targetOk totalOk epochOk confirmedOk quorum next first begin nextOk firstOk beginOk signed w
+      receiver k current (kBound.trans le)
 
 omit [DecidablePred (· ∈ J)] in
 /-- Assignment agrees with a current-epoch prefix without an anchor-slot alignment premise. -/
