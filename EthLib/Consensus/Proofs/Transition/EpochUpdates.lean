@@ -1,6 +1,7 @@
 module
 
 public import EthLib.Consensus.Proofs.Transition.EpochRewards
+public import EthLib.Consensus.Proofs.Transition.StateTransition
 public import EthLib.Consensus.Transition.EpochUpdates
 
 /-!
@@ -41,6 +42,12 @@ The slashings reset clears the slashed balance of the next epoch.
 The RANDAO reset copies the mix of the current epoch to the next.
 
 The rotation of the pending attestations moves those of the current epoch to the previous one.
+
+Right after an epoch transition, each effective balance lies within the bands of hysteresis.
+
+Below its largest value, the balance exceeds it by at most the upward band.
+
+It exceeds the balance by at most the downward band.
 -/
 
 @[expose] public section
@@ -1313,5 +1320,266 @@ theorem processParticipationRecordUpdates_eq (before : fork < .altair) :
     currentEpochAttestations := fun _ => ⟨#[], by simp⟩ }, ?_, rfl, rfl, rfl⟩
   simp only [processParticipationRecordUpdates, notAltair, ↓reduceIte]
   try rfl
+
+/-! ## Hysteresis right after an epoch transition -/
+
+/-- The effective balances lie within the bands of hysteresis around the balances.
+
+Below its largest value, an effective balance has a balance at most the upward band above it.
+
+Every effective balance is at most the downward band above its balance.
+
+Both hold right after an epoch transition, before any block. -/
+structure Hysteresis (state : BeaconState preset fork) : Prop where
+  up : ∀ (position : Nat) (validator : Validator) (balance : Gwei),
+    state.validators.data[position]? = some validator →
+    state.balances.data[position]? = some balance →
+    validator.effectiveBalance < withdrawalMaxEffectiveBalance preset fork validator →
+    balance.toNat ≤ validator.effectiveBalance.toNat + preset.upwardBand
+  down : ∀ (position : Nat) (validator : Validator) (balance : Gwei),
+    state.validators.data[position]? = some validator →
+    state.balances.data[position]? = some balance →
+    validator.effectiveBalance.toNat ≤ balance.toNat + preset.downwardBand
+
+/-- The hysteresis carries over to a state with the same validators and the same balances.
+
+The largest effective balance of each validator must be the same at both forks. -/
+theorem Hysteresis.of_data {other : Fork} {next : BeaconState preset other}
+    (holds : Hysteresis state) (validators : next.validators.data = state.validators.data)
+    (balances : next.balances.data = state.balances.data)
+    (largest : ∀ validator, withdrawalMaxEffectiveBalance preset other validator =
+      withdrawalMaxEffectiveBalance preset fork validator) :
+    Hysteresis next where
+  up position validator balance found read below := by
+    rw [validators] at found
+    rw [balances] at read
+    rw [largest] at below
+    exact holds.up position validator balance found read below
+  down position validator balance found read := by
+    rw [validators] at found
+    rw [balances] at read
+    exact holds.down position validator balance found read
+
+/-- Both bands of hysteresis at one position. -/
+private def HysteresisAt (state : BeaconState preset fork) (position : Nat) : Prop :=
+  ∀ (validator : Validator) (balance : Gwei),
+    state.validators.data[position]? = some validator →
+    state.balances.data[position]? = some balance →
+    (validator.effectiveBalance < withdrawalMaxEffectiveBalance preset fork validator →
+      balance.toNat ≤ validator.effectiveBalance.toNat + preset.upwardBand) ∧
+    validator.effectiveBalance.toNat ≤ balance.toNat + preset.downwardBand
+
+/-- The update of one effective balance puts it within the bands of its balance.
+
+It keeps the bands at every other position, since it changes no balance and no other validator.
+-/
+private theorem updateEffectiveBalance_hysteresisAt (bands : preset.IncrementWithinUpwardBand)
+    {index : Nat} (computed : updateEffectiveBalance state index = .ok after) :
+    HysteresisAt after index ∧
+      ∀ position, HysteresisAt state position → HysteresisAt after position := by
+  simp only [updateEffectiveBalance, bind_ok_iff, liftAccessor_ok] at computed
+  obtain ⟨validator, found, balance, read, effectiveBalance, updated, set⟩ := computed
+  obtain ⟨inside, rfl⟩ := setValidatorAt_ok set
+  have read := getBalanceAt_eq_ok_iff.mp read
+  constructor
+  · intro written current seen kept
+    simp only [BeaconState.putValidator, RootedForkList.data_set, Array.getElem?_set_self,
+      Option.some.injEq] at seen kept
+    rw [read, Option.some.injEq] at kept
+    subst seen kept
+    refine ⟨fun below => ?_, updatedEffectiveBalance_le_add updated⟩
+    rcases updatedEffectiveBalance_band bands updated with within | capped
+    · exact within
+    · exact absurd capped (UInt64.not_le.mpr below)
+  · intro position holds written current seen kept
+    simp only [BeaconState.putValidator, RootedForkList.data_set, Array.getElem?_set] at seen kept
+    split at seen
+    · subst position
+      rw [read, Option.some.injEq] at kept
+      cases seen
+      subst kept
+      refine ⟨fun below => ?_, updatedEffectiveBalance_le_add updated⟩
+      rcases updatedEffectiveBalance_band bands updated with within | capped
+      · exact within
+      · exact absurd capped (UInt64.not_le.mpr below)
+    · exact holds written current seen kept
+
+/-- After the update of the effective balances, each lies within the bands of its balance. -/
+private theorem processEffectiveBalanceUpdates_hysteresis (bands : preset.IncrementWithinUpwardBand)
+    (computed : processEffectiveBalanceUpdates state = .ok after) : Hysteresis after := by
+  have sizes := sameSizes_processEffectiveBalanceUpdates computed
+  unfold processEffectiveBalanceUpdates at computed
+  obtain ⟨-, steps⟩ := foldlM_ok_steps
+    (fun first second => ∀ position, HysteresisAt first position → HysteresisAt second position)
+    (fun _ _ => id) (fun one two position holds => two position (one position holds))
+    (fun _ _ _ step => (updateEffectiveBalance_hysteresisAt bands step).2) computed
+  have within (position : Nat) : HysteresisAt after position := by
+    intro validator balance found read
+    have inside : position < state.validators.data.size := by
+      rw [← sizes.1]
+      exact (Array.getElem?_eq_some_iff.mp found).1
+    obtain ⟨_, next, _, step, kept⟩ := steps position (by simpa using inside)
+    rw [List.getElem_range] at step
+    exact kept position (updateEffectiveBalance_hysteresisAt bands step).1 validator balance
+      found read
+  exact ⟨fun position validator balance found read =>
+      (within position validator balance found read).1,
+    fun position validator balance found read => (within position validator balance found read).2⟩
+
+/-- Two states of one fork with the same validators and the same balances. -/
+private def SameRegistry (first second : BeaconState preset fork) : Prop :=
+  second.validators.data = first.validators.data ∧ second.balances.data = first.balances.data
+
+private theorem SameRegistry.trans {first second third : BeaconState preset fork}
+    (one : SameRegistry first second) (two : SameRegistry second third) :
+    SameRegistry first third :=
+  ⟨two.1.trans one.1, two.2.trans one.2⟩
+
+private theorem Hysteresis.of_same {first second : BeaconState preset fork}
+    (holds : Hysteresis first) (same : SameRegistry first second) : Hysteresis second :=
+  holds.of_data same.1 same.2 fun _ => rfl
+
+private theorem sameRegistry_processSlashingsReset
+    (computed : processSlashingsReset state = .ok after) : SameRegistry state after := by
+  obtain ⟨_, _, _, _, rfl⟩ := processSlashingsReset_eq computed
+  exact ⟨rfl, rfl⟩
+
+private theorem sameRegistry_processRandaoMixesReset
+    (computed : processRandaoMixesReset state = .ok after) : SameRegistry state after := by
+  obtain ⟨_, _, _, _, _, _, rfl⟩ := processRandaoMixesReset_eq computed
+  exact ⟨rfl, rfl⟩
+
+private theorem sameRegistry_processHistoricalRootsUpdate
+    (computed : processHistoricalRootsUpdate state = .ok after) : SameRegistry state after := by
+  unfold processHistoricalRootsUpdate at computed
+  simp only [bind, Except.bind, pure, Except.pure] at computed
+  repeat' (split at computed <;> try cases computed)
+  all_goals exact ⟨rfl, rfl⟩
+
+private theorem sameRegistry_processHistoricalSummariesUpdate {capella : .shapella ≤ fork}
+    (computed : processHistoricalSummariesUpdate state capella = .ok after) :
+    SameRegistry state after := by
+  unfold processHistoricalSummariesUpdate at computed
+  simp only [bind, Except.bind, pure, Except.pure] at computed
+  repeat' (split at computed <;> try cases computed)
+  all_goals exact ⟨rfl, rfl⟩
+
+private theorem sameRegistry_processSyncCommitteeUpdates {altair : .altair ≤ fork}
+    (computed : processSyncCommitteeUpdates state altair = .ok after) :
+    SameRegistry state after := by
+  unfold processSyncCommitteeUpdates at computed
+  simp only [bind, Except.bind, pure, Except.pure] at computed
+  repeat' (split at computed <;> try cases computed)
+  all_goals exact ⟨rfl, rfl⟩
+
+private theorem sameRegistry_processProposerLookahead {fulu : .fusaka ≤ fork}
+    (computed : processProposerLookahead state fulu = .ok after) : SameRegistry state after := by
+  simp only [processProposerLookahead, bind_ok_iff, pure, Except.pure, Except.ok.injEq]
+    at computed
+  obtain ⟨_, _, _, _, rfl⟩ := computed
+  exact ⟨rfl, rfl⟩
+
+private theorem sameRegistry_processPtcWindow {gloas : .glamsterdam ≤ fork}
+    (computed : processPtcWindow state gloas = .ok after) : SameRegistry state after := by
+  simp only [processPtcWindow, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at computed
+  obtain ⟨_, _, _, _, rfl⟩ := computed
+  exact ⟨rfl, rfl⟩
+
+private theorem sameRegistry_processParticipationRecordUpdates
+    (computed : processParticipationRecordUpdates state = .ok after) :
+    SameRegistry state after := by
+  unfold processParticipationRecordUpdates at computed
+  split at computed
+  · cases computed
+  · cases computed
+    exact ⟨rfl, rfl⟩
+
+variable {config : Config} {checks : SignatureChecks}
+
+/-- Right after the epoch transition, each effective balance lies within the bands of its balance.
+
+The update of the effective balances puts them there, and the later steps of the epoch keep both.
+
+The increment must be positive and at most the upward band. -/
+theorem hysteresis_of_epochTransition (bands : preset.IncrementWithinUpwardBand)
+    (computed : processEpoch config checks state = .ok after) : Hysteresis after := by
+  unfold processEpoch at computed
+  split at computed
+  · simp only [processEpochAltair, bind_ok_iff] at computed
+    obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, balanced, balancedOk, cleared,
+      clearedOk, mixed, mixedOk, computed⟩ := computed
+    have head := (processEffectiveBalanceUpdates_hysteresis bands balancedOk).of_same <|
+      (sameRegistry_processSlashingsReset clearedOk).trans
+        (sameRegistry_processRandaoMixesReset mixedOk)
+    split at computed <;> simp only [bind_ok_iff] at computed <;>
+      obtain ⟨rooted, rootedOk, synced, syncedOk, looked, lookedOk, windowed⟩ := computed
+    all_goals
+      have rootedSame : SameRegistry mixed rooted := by
+        first
+          | exact sameRegistry_processHistoricalSummariesUpdate rootedOk
+          | exact sameRegistry_processHistoricalRootsUpdate rootedOk
+      have lookedSame : SameRegistry synced looked := by
+        split at lookedOk
+        · exact sameRegistry_processProposerLookahead (liftAccessor_ok.mp lookedOk)
+        · simp only [pure, Except.pure, Except.ok.injEq] at lookedOk
+          exact lookedOk ▸ ⟨rfl, rfl⟩
+      have windowedSame : SameRegistry looked after := by
+        split at windowed
+        · exact sameRegistry_processPtcWindow (liftAccessor_ok.mp windowed)
+        · simp only [pure, Except.pure, Except.ok.injEq] at windowed
+          exact windowed ▸ ⟨rfl, rfl⟩
+      exact head.of_same <| rootedSame.trans <|
+        (show SameRegistry rooted _ from ⟨rfl, rfl⟩).trans <|
+        (sameRegistry_processSyncCommitteeUpdates syncedOk).trans <| lookedSame.trans windowedSame
+  · simp only [bind_ok_iff] at computed
+    obtain ⟨_, _, _, _, _, _, _, _, _, _, balanced, balancedOk, cleared, clearedOk, mixed,
+      mixedOk, rooted, rootedOk, rotated⟩ := computed
+    exact (processEffectiveBalanceUpdates_hysteresis bands balancedOk).of_same <|
+      (sameRegistry_processSlashingsReset clearedOk).trans <|
+      (sameRegistry_processRandaoMixesReset mixedOk).trans <|
+      (sameRegistry_processHistoricalRootsUpdate rootedOk).trans
+      (sameRegistry_processParticipationRecordUpdates rotated)
+
+/-- A slot step that reaches the first slot of an epoch ends within the bands of hysteresis.
+
+That step ran the epoch transition, and moving the slot on keeps the validators and balances.
+
+The increment must be positive and at most the upward band. -/
+theorem hysteresis_of_advanceSlot (bands : preset.IncrementWithinUpwardBand)
+    (computed : advanceSlot config checks state = .ok after)
+    (boundary : after.slot % preset.SLOTS_PER_EPOCH = 0) : Hysteresis after := by
+  obtain ⟨next, cached, epoched, -, -, epochOk, rfl⟩ := advanceSlot_ok computed
+  simp only [epochIfLast, show next % preset.SLOTS_PER_EPOCH = 0 from boundary, ↓reduceIte]
+    at epochOk
+  exact (hysteresis_of_epochTransition bands epochOk).of_same ⟨rfl, rfl⟩
+
+private theorem hysteresis_of_advanceSlots (bands : preset.IncrementWithinUpwardBand) :
+    ∀ (count : Nat) {state after : BeaconState preset fork},
+      advanceSlots config checks (count + 1) state = .ok after →
+      after.slot % preset.SLOTS_PER_EPOCH = 0 → Hysteresis after
+  | 0, _, _, computed, boundary => by
+    obtain ⟨_, first, rest⟩ := bind_ok_iff.mp computed
+    cases rest
+    exact hysteresis_of_advanceSlot bands first boundary
+  | count + 1, _, _, computed, boundary => by
+    obtain ⟨_, _, rest⟩ := bind_ok_iff.mp computed
+    exact hysteresis_of_advanceSlots bands count rest boundary
+
+/-- The state at the first slot of an epoch, reached by slot steps, is within the bands.
+
+The last slot step ran the epoch transition.
+
+The increment must be positive and at most the upward band. -/
+theorem hysteresis_of_processSlots (bands : preset.IncrementWithinUpwardBand) {slot : Slot}
+    (computed : processSlots config checks state slot = .ok after)
+    (boundary : slot % preset.SLOTS_PER_EPOCH = 0) : Hysteresis after := by
+  obtain ⟨later, reached⟩ := processSlots_slot computed
+  simp only [processSlots, bind_ok_iff, ensure_ok_iff] at computed
+  obtain ⟨_, _, advanced⟩ := computed
+  have gap := UInt64.lt_iff_toNat_lt.mp later
+  obtain ⟨count, counted⟩ : ∃ count, slot.toNat - state.slot.toNat = count + 1 :=
+    ⟨slot.toNat - state.slot.toNat - 1, by omega⟩
+  rw [counted] at advanced
+  exact hysteresis_of_advanceSlots bands count advanced (by rw [reached]; exact boundary)
 
 end EthLib.Consensus
