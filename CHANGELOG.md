@@ -88,7 +88,7 @@ Not yet released.
   `DirectSafety.TerminalView` reads the checkpoints of the last state of a run, or of one justification step on it, as fork choice runs it.
   `DirectSafety.accountable_safety_justified_terminal` states direct accountable safety for two such views, with no bound on the fork.
   `DirectSafety.accountable_safety_justified` is its case without a step, and its statement is unchanged.
-  The other new Lean declarations are `TerminalView.state`, `TerminalView.enough`, `TerminalQuorum`, `TerminalQuorum.source`, `TerminalQuorum.voters`, `TerminalQuorum.currentEpoch_le`, `ViewQuorum`, `ViewQuorum.source`, `ViewQuorum.target`, `ViewQuorum.voters`, `ViewQuorum.state`, `ViewQuorum.eq_inl_of_realized`, `view_field_crossing`, `view_finalized_quorums`, `view_quorum_attestations`, `view_quorum_count`, `view_quorum_target_binding`, `view_conflicting_fields_quorums`, `view_voters_recent`, `checkpoint_binding_prefixes` and `hashObjects_append_subset`, all in `DirectSafety`, and `Store.ancestorRoots_of_parent`, `Store.updateCheckpoints_unrealizedJustifications` and `Store.updateUnrealizedCheckpoints_unrealizedJustifications`.
+  The other new Lean declarations are `TerminalView.state`, `TerminalView.enough`, `TerminalQuorum`, `TerminalQuorum.source`, `TerminalQuorum.voters`, `TerminalQuorum.currentEpoch_le`, `ViewQuorum`, `ViewQuorum.source`, `ViewQuorum.target`, `ViewQuorum.voters`, `ViewQuorum.state`, `ViewQuorum.eq_inl_of_realized`, `view_field_crossing`, `view_finalized_quorums`, `view_quorum_attestations`, `view_quorum_count`, `view_quorum_target_binding`, `view_conflicting_fields_quorums`, `view_voters_recent`, `checkpoint_binding_prefixes`, `hashObjects_append_subset` and `StepRule`, all in `DirectSafety`, and `Store.ancestorRoots_of_parent`, `Store.updateCheckpoints_unrealizedJustifications` and `Store.updateUnrealizedCheckpoints_unrealizedJustifications`.
   `Store.storeTargetCheckpointState_frame`, `Store.onAttestation_frame`, `Store.onAttesterSlashing_frame`, `Store.recordBlockTimeliness_frame` and `Store.updateProposerBoostRoot_frame` end with five new conjuncts.
   They state that the justified, finalized, unrealized justified and unrealized finalized checkpoints are unchanged, and so are the unrealized justifications.
   `Store.onTickPerSlot_frame` ends with a new conjunct: the four checkpoints are those of the store, or those of `updateCheckpoints` with its unrealized checkpoints, and the unrealized justifications are unchanged.
@@ -99,6 +99,7 @@ Not yet released.
   A projection of the old last conjunct gains `.1`.
   So `.2.2` of `Store.onAttestation_frame` and `Store.onAttesterSlashing_frame` becomes `.2.2.1`, and `.2.2.2.2` of `Store.onTickPerSlot_frame` becomes `.2.2.2.2.1`.
   The `.2.2.2` of the other four frames becomes `.2.2.2.1`.
+  `DirectSafety.FinalizationRule` is now stated through `StepRule` for the call's cached and weighed states, with the same meaning, so its readers keep their statements.
   The new `Store.catchUp_preserves` states that catch-up keeps each property of the store that every tick within a slot keeps.
   It has the form of `Store.onBlockWithVotes_preserves`.
   `Store.catchUp_frame`, `Store.catchUp_ordered` and the catch-up step of `Store.onTick_checkpointStates_latestMessages` now read it, with unchanged statements.
