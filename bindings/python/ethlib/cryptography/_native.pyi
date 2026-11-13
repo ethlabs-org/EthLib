@@ -697,6 +697,14 @@ def consensus_api_chain_heads(name: str, fork: str, anchor_state: bytes, anchor_
     """The JSON response of the heads endpoint, as a `dict`."""
     ...
 
+def consensus_api_chain_events(name: str, fork: str, anchor_state: bytes, anchor_block: bytes, steps: list, verify: bool, first: int, genesis_root: bytes, optimistic_roots: list[bytes], config: dict[str, Any] | None) -> list[tuple[str, str]]:
+    """The events of the fork choice between two stores of a case."""
+    ...
+
+def consensus_api_fast_confirmation_event(name: str, fork: str, anchor_state: bytes, anchor_block: bytes, steps: list, verify: bool, config: dict[str, Any] | None) -> tuple[str, str]:
+    """The event of the last run of the fast confirmation rule in a case that passed."""
+    ...
+
 def consensus_api_aggregate_attestation(name: str, fork: str, state: bytes, attestations: list[bytes], singles: list[bytes], optimistic_roots: list[bytes], data_root: bytes, slot: int, committee_index: int) -> dict[str, Any]:
     """The JSON response of the aggregate endpoint, as a `dict`."""
     ...
@@ -1121,8 +1129,12 @@ def consensus_gossip_validation(name: str, fork: str, anchor_state: bytes, ancho
     """Validate the messages of a topic in turn, against the store of an anchor and later blocks."""
     ...
 
-def consensus_api_post(name: str, fork: str, anchor_state: bytes, anchor_block: bytes, blocks: list[tuple[int, int | None, bytes] | tuple[int, int | None, bytes, bytes | None]], finalized: tuple[int, bytes] | None, requests: list[tuple[int, str, list[bytes]] | tuple[int, str, list[bytes], str | None]], config: dict[str, Any] | None, verify: bool) -> list[tuple[int, list[tuple[int, str]]]]:
+def consensus_api_post(name: str, fork: str, anchor_state: bytes, anchor_block: bytes, blocks: list[tuple[int, int | None, bytes] | tuple[int, int | None, bytes, bytes | None]], finalized: tuple[int, bytes] | None, requests: list[tuple[int, str, list[bytes]] | tuple[int, str, list[bytes], str | None]], config: dict[str, Any] | None, verify: bool) -> list[tuple[int, list[tuple[int, str]], list[tuple[str, str]]]]:
     """Answer the requests to pool and publish endpoints in turn."""
+    ...
+
+def consensus_api_gossip_event(name: str, fork: str, topic: str, data: bytes) -> tuple[str, str] | None:
+    """The event that an object gives if gossip accepts it, by the name of its gossip topic."""
     ...
 
 def consensus_light_client_sync(name: str, fork: str, bootstrap_fork: str, config: dict[str, Any] | None, trusted: bytes, genesis_validators_root: bytes, bootstrap: bytes, steps: list[tuple[str, str, int, bytes] | tuple[str, int] | tuple[str, str]]) -> list[tuple[tuple[int, bytes, bytes], tuple[int, bytes, bytes]]]:
@@ -1993,6 +2005,14 @@ def engine_prepare_execution_payload_gloas(name: str, fork: str, anchor_state: b
     """From Gloas: the forkchoice update of a proposer, as the value of its JSON."""
     ...
 
+def engine_payload_attributes_event(name: str, fork: str, state: bytes, config: dict | None, safe_block_hash: bytes, finalized_block_hash: bytes, suggested_fee_recipient: bytes, pow_chain: list[bytes], terminal_number: int) -> tuple[str, str] | None:
+    """From Bellatrix to Fulu: the event of the payload attributes of a proposer."""
+    ...
+
+def engine_payload_attributes_event_gloas(name: str, fork: str, anchor_state: bytes, anchor_block: bytes, steps: list, head_root: bytes, head_status: int, state: bytes, safe_block_hash: bytes, suggested_fee_recipient: bytes, target_gas_limit: int, verify: bool, config: dict | None) -> tuple[str, str]:
+    """Gloas: the event of the payload attributes of a proposer."""
+    ...
+
 def engine_finalized_execution_block_hash(name: str, fork: str, anchor_state: bytes, anchor_block: bytes, steps: list, verify: bool, config: dict | None) -> bytes:
     """From Bellatrix: the 32 bytes of the finalized block hash of a store."""
     ...
@@ -2015,6 +2035,10 @@ def rpc_serve(view: tuple[dict[str, Any], bytes, list[tuple[str, bytes]], tuple[
 
 def rpc_encode_block_access_list(value: object) -> bytes:
     """Encode a block access-list JSON value as its EIP-7928 RLP bytes."""
+    ...
+
+def rpc_apply_overrides(state: bytes, overrides: object) -> bytes:
+    """The state root after the account overrides of one block of `eth_simulateV1`."""
     ...
 
 def pyvalue_echo(value: object) -> object:

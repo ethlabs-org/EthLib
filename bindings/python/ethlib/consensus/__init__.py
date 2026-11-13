@@ -1,5 +1,6 @@
 """The consensus layer: presets, configurations, containers, the shuffle, custody and networking."""
 
+import json
 from collections.abc import Sequence
 from typing import Any, Literal, TypeAlias
 
@@ -1304,6 +1305,54 @@ def api_chain_heads(
     )
 
 
+def api_chain_events(
+    name: str,
+    fork: str,
+    anchor_state: bytes,
+    anchor_block: bytes,
+    steps: list[ForkChoiceStep],
+    *,
+    first: int,
+    genesis_root: bytes,
+    optimistic_roots: Sequence[bytes] = (),
+    config: dict[str, Any] | None = None,
+    verify: bool = True,
+) -> list[tuple[str, str]]:
+    """The Beacon API events of the fork choice between two stores of a case, or ForkChoiceError."""
+    # The earlier store runs only the first `first` steps, the later one every step.
+    # Each event is the name of its topic and the text of its JSON data.
+    return _native.consensus_api_chain_events(
+        name,
+        fork,
+        anchor_state,
+        anchor_block,
+        steps,
+        verify,
+        first,
+        genesis_root,
+        list(optimistic_roots),
+        config,
+    )
+
+
+def api_fast_confirmation_event(
+    name: str,
+    fork: str,
+    anchor_state: bytes,
+    anchor_block: bytes,
+    steps: list[ForkChoiceStep],
+    *,
+    config: dict[str, Any] | None = None,
+    verify: bool = True,
+) -> tuple[str, str]:
+    """The Beacon API event of the last fast confirmation run of a case, or ForkChoiceError."""
+    # The slot of the clock is that of the store at that run.
+    # A case with no run of the rule that passed raises code 0.
+    return _native.consensus_api_fast_confirmation_event(
+        name, fork, anchor_state, anchor_block, steps, verify, config
+    )
+
+
 def api_aggregate_attestation(
     name: str,
     fork: str,
@@ -1582,8 +1631,8 @@ def api_post(
     blocks: Sequence[tuple[int, int | None, bytes] | tuple[int, int | None, bytes, bytes | None]]
     | None = None,
     finalized: tuple[int, bytes] | None = None,
-) -> list[tuple[int, list[tuple[int, str]]]]:
-    """The status and the failed items of each request to a Beacon API pool or publish endpoint."""
+) -> list[tuple[int, list[tuple[int, str]], list[tuple[str, dict[str, Any]]]]]:
+    """The status, the failed items and the events of each request to a pool or publish endpoint."""
     # The store is built as for gossip_validation, from the anchor and the later blocks.
     # A request is (time in milliseconds, endpoint name such as "attestations", SSZ items).
     # A request to "blocks" or "execution_payload_envelopes" may add its level; None is gossip.
@@ -1591,7 +1640,8 @@ def api_post(
     # They also share the store, which each integrated block or envelope extends.
     # A pool answer is 200, or 400 with the failed items and the reasons of gossip.
     # A publish answer is 200 if integrated, 202 if broadcast only, 400 if refused at position 0.
-    return _native.consensus_api_post(
+    # Each event is the name of its event stream topic and its JSON data.
+    answers = _native.consensus_api_post(
         name,
         fork,
         anchor_state,
@@ -1607,6 +1657,22 @@ def api_post(
         config,
         verify,
     )
+    return [
+        (status, failures, [(topic, json.loads(data)) for topic, data in events])
+        for status, failures, events in answers
+    ]
+
+
+def api_gossip_event(
+    name: str, fork: str, topic: str, data: bytes
+) -> tuple[str, dict[str, Any]] | None:
+    """The event stream topic and JSON data that an object gives if gossip accepts it, or None."""
+    # The topic is a gossip topic without its subnet, such as "beacon_attestation".
+    # No gossip validation runs; a gossip topic without an event gives None.
+    event = _native.consensus_api_gossip_event(name, fork, topic, data)
+    if event is None:
+        return None
+    return event[0], json.loads(event[1])
 
 
 def initialize_genesis(
@@ -2209,6 +2275,8 @@ __all__ = [
     "api_payload_attestation_data",
     "api_fork_choice",
     "api_chain_heads",
+    "api_chain_events",
+    "api_fast_confirmation_event",
     "api_aggregate_attestation",
     "api_sync_committee_contribution",
     "api_attestation_rewards",
@@ -2300,6 +2368,7 @@ __all__ = [
     "ForkChoiceError",
     "fork_choice",
     "api_post",
+    "api_gossip_event",
     "PostRequest",
     "gossip_validation",
     "light_client_sync",

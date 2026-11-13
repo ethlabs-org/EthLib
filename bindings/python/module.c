@@ -857,6 +857,10 @@ static PyMethodDef methods[] = {
    DOC_consensus_api_fork_choice},
   {"consensus_api_chain_heads", py_consensus_api_chain_heads, METH_VARARGS,
    DOC_consensus_api_chain_heads},
+  {"consensus_api_chain_events", py_consensus_api_chain_events, METH_VARARGS,
+   DOC_consensus_api_chain_events},
+  {"consensus_api_fast_confirmation_event", py_consensus_api_fast_confirmation_event,
+   METH_VARARGS, DOC_consensus_api_fast_confirmation_event},
   {"consensus_api_aggregate_attestation", py_consensus_api_aggregate_attestation, METH_VARARGS,
    DOC_consensus_api_aggregate_attestation},
   {"consensus_api_sync_committee_contribution", py_consensus_api_sync_committee_contribution, METH_VARARGS,
@@ -990,6 +994,8 @@ static PyMethodDef methods[] = {
     DOC_consensus_gossip_validation},
   {"consensus_api_post", py_consensus_api_post, METH_VARARGS,
    DOC_consensus_api_post},
+  {"consensus_api_gossip_event", py_consensus_api_gossip_event, METH_VARARGS,
+   DOC_consensus_api_gossip_event},
   {"consensus_initialize_genesis", py_consensus_initialize_genesis, METH_VARARGS,
    DOC_consensus_initialize_genesis},
   {"consensus_is_valid_genesis_state", py_consensus_is_valid_genesis_state, METH_VARARGS,
@@ -1355,6 +1361,10 @@ static PyMethodDef methods[] = {
    DOC_engine_prepare_execution_payload},
   {"engine_prepare_execution_payload_gloas", py_engine_prepare_execution_payload_gloas,
    METH_VARARGS, DOC_engine_prepare_execution_payload_gloas},
+  {"engine_payload_attributes_event", py_engine_payload_attributes_event, METH_VARARGS,
+   DOC_engine_payload_attributes_event},
+  {"engine_payload_attributes_event_gloas", py_engine_payload_attributes_event_gloas,
+   METH_VARARGS, DOC_engine_payload_attributes_event_gloas},
   {"engine_finalized_execution_block_hash", py_engine_finalized_execution_block_hash,
    METH_VARARGS, DOC_engine_finalized_execution_block_hash},
   {"rpc_read_param", py_rpc_read_param, METH_VARARGS, DOC_rpc_read_param},
@@ -1364,6 +1374,8 @@ static PyMethodDef methods[] = {
   {"rpc_serve", py_rpc_serve, METH_VARARGS, DOC_rpc_serve},
   {"rpc_encode_block_access_list", py_rpc_encode_block_access_list, METH_VARARGS,
    DOC_rpc_encode_block_access_list},
+  {"rpc_apply_overrides", py_rpc_apply_overrides, METH_VARARGS,
+   DOC_rpc_apply_overrides},
   {"pyvalue_echo", py_pyvalue_echo, METH_VARARGS, DOC_pyvalue_echo},
   {NULL, NULL, 0, NULL},
 };
@@ -1560,6 +1572,8 @@ PyInit__native(void) {
    * Each call builds its own Lean objects, and no two threads share one.
    * The objects that the Lean modules build when they load are persistent, so no count of theirs
    * changes after the load.
+   * The decoded KZG setup is a closed term evaluated on its first use.
+   * It is marked persistent before any thread can read it, so the same holds for it.
    * The exception classes and the sizes are written once, before the module is returned.
    * The wrappers read lists through a snapshot, so a list that another thread changes is safe. */
   PyUnstable_Module_SetGIL(m, Py_MOD_GIL_NOT_USED);
