@@ -674,7 +674,9 @@ The divisors are positive, and the whistleblower quotient exceeds one.
 
 The minimum churn per epoch is positive.
 
-With a zero minimum, a queue still lets one validator exit per epoch, which the formula does not charge.
+With a zero minimum, a queue still lets one validator exit per epoch.
+
+The formula does not charge that exit.
 
 The withdrawal delay is at least two epochs.
 
