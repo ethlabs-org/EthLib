@@ -3,12 +3,14 @@ module
 public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmationSafety
 public import EthLib.Consensus.Proofs.ForkChoice.AccountableCheckpoints
 public import EthLib.Consensus.Proofs.DirectSafety.TerminalSafety
+public import EthLib.Consensus.Proofs.Transition.EpochUpdates
 import EthLib.Consensus.Proofs.Transition.ExitReserve
 import EthLib.Consensus.Proofs.ForkChoice.HonestHeads
 import EthLib.Consensus.Proofs.Transition.BlockRoots
 import EthLib.Consensus.Proofs.Transition.FfgSlack
 import EthLib.Consensus.Proofs.Transition.TargetSlots
 import EthLib.Consensus.Proofs.Transition.TargetVotes
+import EthLib.Consensus.Proofs.Transition.Upgrade
 
 /-!
 # Accountable fast-confirmation safety
@@ -309,6 +311,176 @@ theorem exitStake_le_exitReserve_epoch {g y : ForkedBeaconState preset}
   unfold ExitChurn.activeSet ExitChurn.scheduled at bound
   unfold exitReserve activeVoters
   exact bound
+
+/-- Both bands of hysteresis at one position. -/
+private def BandsAt (state : BeaconState preset fork) (position : ℕ) : Prop :=
+  ∀ (validator : Validator) (balance : Gwei),
+    state.validators.data[position]? = some validator →
+    state.balances.data[position]? = some balance →
+    (validator.effectiveBalance < withdrawalMaxEffectiveBalance preset fork validator →
+      balance.toNat ≤ validator.effectiveBalance.toNat + preset.upwardBand) ∧
+    validator.effectiveBalance.toNat ≤ balance.toNat + preset.downwardBand
+
+/-- The activation at genesis puts one effective balance within the bands of its balance.
+
+Before Electra, the cap is the largest effective balance, which the activation rounds down to.
+
+It keeps the bands at every other position, since it changes no balance and no other validator.
+-/
+private theorem activateAtGenesis_bandsAt (bands : preset.IncrementWithinUpwardBand)
+    (preElectra : ¬.pectra ≤ fork) {state after : BeaconState preset fork} {index : ℕ}
+    (computed : activateAtGenesis state index = .ok after) :
+    after.validators.data.size = state.validators.data.size ∧ BandsAt after index ∧
+      ∀ position, BandsAt state position → BandsAt after position := by
+  simp only [activateAtGenesis, bind_ok_iff, liftAccessor_ok] at computed
+  obtain ⟨validator, _, balance, read, set⟩ := computed
+  obtain ⟨inside, rfl⟩ := setValidatorAt_ok set
+  have read := getBalanceAt_eq_ok_iff.mp read
+  have rounded : ∀ written : Validator, written.effectiveBalance =
+        min (balance - balance % preset.EFFECTIVE_BALANCE_INCREMENT) preset.MAX_EFFECTIVE_BALANCE →
+      (written.effectiveBalance < withdrawalMaxEffectiveBalance preset fork written →
+        balance.toNat ≤ written.effectiveBalance.toNat + preset.upwardBand) ∧
+      written.effectiveBalance.toNat ≤ balance.toNat + preset.downwardBand := by
+    intro written effective
+    simp only [withdrawalMaxEffectiveBalance, preElectra, ↓reduceIte]
+    rw [effective]
+    have modLe : balance % preset.EFFECTIVE_BALANCE_INCREMENT ≤ balance := by
+      rw [UInt64.le_iff_toNat_le, UInt64.toNat_mod]
+      exact Nat.mod_le _ _
+    have subNat : (balance - balance % preset.EFFECTIVE_BALANCE_INCREMENT).toNat =
+        balance.toNat - balance.toNat % preset.EFFECTIVE_BALANCE_INCREMENT.toNat := by
+      rw [UInt64.toNat_sub_of_le _ _ modLe, UInt64.toNat_mod]
+    have modLt := Nat.mod_lt balance.toNat bands.1
+    have narrow := bands.2
+    have modBound := Nat.mod_le balance.toNat preset.EFFECTIVE_BALANCE_INCREMENT.toNat
+    rw [UInt64.min_def]
+    split
+    · refine ⟨fun _ => ?_, ?_⟩ <;> rw [subNat] <;> omega
+    · rename_i above
+      refine ⟨fun below => absurd below (UInt64.lt_irrefl _), ?_⟩
+      have := UInt64.lt_iff_toNat_lt.mp (UInt64.not_le.mp above)
+      rw [subNat] at this
+      omega
+  have written : ∀ written : Validator,
+      (if min (balance - balance % preset.EFFECTIVE_BALANCE_INCREMENT)
+            preset.MAX_EFFECTIVE_BALANCE = preset.MAX_EFFECTIVE_BALANCE then
+          { validator with
+            effectiveBalance := min (balance - balance % preset.EFFECTIVE_BALANCE_INCREMENT)
+              preset.MAX_EFFECTIVE_BALANCE,
+            activationEligibilityEpoch := GENESIS_EPOCH, activationEpoch := GENESIS_EPOCH }
+        else { validator with
+          effectiveBalance := min (balance - balance % preset.EFFECTIVE_BALANCE_INCREMENT)
+            preset.MAX_EFFECTIVE_BALANCE }) = written →
+      written.effectiveBalance =
+        min (balance - balance % preset.EFFECTIVE_BALANCE_INCREMENT) preset.MAX_EFFECTIVE_BALANCE
+      := by
+    intro written chosen
+    subst chosen
+    split <;> rfl
+  refine ⟨by simp [BeaconState.putValidator], ?_, ?_⟩
+  · intro current kept seen balanceRead
+    simp only [BeaconState.putValidator, RootedForkList.data_set, Array.getElem?_set_self,
+      Option.some.injEq] at seen balanceRead
+    rw [read, Option.some.injEq] at balanceRead
+    subst balanceRead
+    exact rounded current (written current seen)
+  · intro position holds current kept seen balanceRead
+    simp only [BeaconState.putValidator, RootedForkList.data_set, Array.getElem?_set] at seen
+    simp only [BeaconState.putValidator] at balanceRead
+    split at seen
+    · subst position
+      rw [read, Option.some.injEq] at balanceRead
+      subst balanceRead
+      exact rounded current (written current (Option.some.inj seen))
+    · exact holds current kept seen balanceRead
+
+/-- A genesis state is within the bands of hysteresis.
+
+Its activation rounds each balance down to an increment, at most the largest effective balance.
+
+That largest value is the cap before Electra.
+
+The increment must be positive and at most the upward band. -/
+private theorem genesis_hysteresis {g : ForkedBeaconState preset}
+    (genesis : Genesis (config := config) (checks := checks) g)
+    (bands : preset.IncrementWithinUpwardBand) : Hysteresis g.state := by
+  obtain ⟨gFork, gState⟩ := g
+  obtain ⟨hash, time, deposits, initialized⟩ := genesis
+  obtain ⟨phase0, _, _, deposited, activated, root, -, activatedOk, rooted⟩ :=
+    initializeBeaconStateFromEth1_ok initialized
+  change Hysteresis gState
+  rw [show gState = _ from rooted]
+  have preElectra : ¬.pectra ≤ gFork := fun electra =>
+    Nat.lt_irrefl _ (Nat.lt_of_lt_of_le (Nat.lt_trans phase0 (by decide)) electra)
+  obtain ⟨⟨sizes, -⟩, steps⟩ := foldlM_ok_steps
+    (fun first second => second.validators.data.size = first.validators.data.size ∧
+      ∀ position, BandsAt first position → BandsAt second position)
+    (fun _ => ⟨rfl, fun _ => id⟩)
+    (fun one two => by
+      exact ⟨two.1.trans one.1, fun position holds => two.2 position (one.2 position holds)⟩)
+    (fun _ _ _ step => ⟨(activateAtGenesis_bandsAt bands preElectra step).1,
+      (activateAtGenesis_bandsAt bands preElectra step).2.2⟩) activatedOk
+  have within (position : ℕ) : BandsAt activated position := by
+    intro validator balance found read
+    have inside : position < deposited.validators.data.size := by
+      rw [← sizes]
+      exact (Array.getElem?_eq_some_iff.mp found).1
+    obtain ⟨_, next, _, step, -, kept⟩ := steps position (by simpa using inside)
+    rw [List.getElem_range] at step
+    exact kept position (activateAtGenesis_bandsAt bands preElectra step).2.1 validator balance
+      found read
+  exact ⟨fun position validator balance found read =>
+      (within position validator balance found read).1,
+    fun position validator balance found read => (within position validator balance found read).2⟩
+
+/-- A run from genesis to a state at the first slot of an epoch passes the boundary state.
+
+The boundary state is at the same slot, after the epoch transition and the upgrades of the slot.
+
+Only blocks at that slot lead from the boundary state to the last state.
+
+The bands of hysteresis hold at the boundary state.
+
+Genesis sets them, and so does the epoch transition.
+
+An upgrade keeps them, since every effective balance is at most its cap. -/
+private theorem run_boundaryState {g : ForkedBeaconState preset}
+    (genesis : Genesis (config := config) (checks := checks) g)
+    (bands : preset.IncrementWithinUpwardBand)
+    (electraFloor : preset.MAX_EFFECTIVE_BALANCE = preset.MIN_ACTIVATION_BALANCE)
+    (electraCap : preset.MIN_ACTIVATION_BALANCE ≤ preset.MAX_EFFECTIVE_BALANCE_ELECTRA) :
+    ∀ {x : ForkedBeaconState preset}, Run config checks g x → x.fork < .glamsterdam →
+      x.state.slot % preset.SLOTS_PER_EPOCH = 0 →
+      ∃ boundary : BeaconState preset x.fork, boundary.slot = x.state.slot ∧
+        Hysteresis boundary ∧ Nonempty (Run config checks g ⟨x.fork, boundary⟩) ∧
+        Nonempty (Run config checks ⟨x.fork, boundary⟩ x) := by
+  intro x run
+  induction run with
+  | nil =>
+    intro _ _
+    exact ⟨g.state, rfl, genesis_hysteresis genesis bands, ⟨.nil⟩, ⟨.nil⟩⟩
+  | @snoc middle last pre step ih =>
+    intro early atStart
+    cases step with
+    | slot ok =>
+      obtain ⟨advanced, advancedOk, upgraded⟩ := bind_ok_iff.mp ok
+      have middleEarly : middle.fork < .glamsterdam :=
+        Nat.lt_of_le_of_lt (processUpgrades_fork_le (forked := ⟨middle.fork, advanced⟩) upgraded)
+          early
+      have kept : last.state.slot = advanced.slot := processUpgrades_slot upgraded
+      have banded := hysteresis_of_advanceSlot bands advancedOk (kept ▸ atStart)
+      have capped := advanceSlot_effectiveBalance_capped middleEarly advancedOk
+        (pre.effectiveBalance_capped genesis (UInt64.le_of_eq electraFloor) electraCap
+          middleEarly)
+      exact ⟨last.state, rfl,
+        Hysteresis.upgrade (forked := ⟨middle.fork, advanced⟩) banded electraFloor electraCap
+          capped upgraded,
+        ⟨pre.snoc (.slot ok)⟩, ⟨.nil⟩⟩
+    | block engine signed due ok =>
+      have kept := processBlock_slot (applySignedBlock_ok ok).2.1
+      obtain ⟨boundary, atSlot, banded, first, ⟨rest⟩⟩ := ih early (kept ▸ atStart)
+      exact ⟨boundary, atSlot.trans kept.symm, banded, first,
+        ⟨rest.snoc (.block engine signed due ok)⟩⟩
 
 variable {e : Execution (honestForkChoice config checks sources anchorState anchorBlock assignment
   genesisTimeMs) J} [DecidablePred (· ∈ J)]
@@ -2534,6 +2706,65 @@ theorem Execution.exitsHead_of_oneBlock {limit : ℕ} {anchor : Store preset for
     tail lookahead early yLe (by rw [sourceEpoch]; exact near)
   simp only [registry] at bound
   exact bound
+
+omit [DecidablePred (· ∈ J)] in
+/-- The state at the start of an epoch on the chain of a target block, before any block of it.
+
+The target block is at the start of the epoch or earlier, and before the next fork.
+
+The boundary state is at the start of the epoch, and genesis reaches it.
+
+The bands of hysteresis hold at the boundary state.
+
+An earlier target block has its state processed to the start, and that processing must succeed.
+
+A target block at the start has its state reached from the boundary state.
+
+That run holds only blocks at the start, such as the target block itself.
+
+When the target is the anchor, the last slot step of the history may cross an upgrade. -/
+theorem Execution.boundaryState_of_target {anchor : Store preset fork}
+    (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (early : fork < .glamsterdam)
+    {g : ForkedBeaconState preset} (genesis : Genesis (config := config) (checks := checks) g)
+    (history : Run config checks g ⟨fork, anchorState⟩)
+    (bands : preset.IncrementWithinUpwardBand)
+    (electraFloor : preset.MAX_EFFECTIVE_BALANCE = preset.MIN_ACTIVATION_BALANCE)
+    (electraCap : preset.MIN_ACTIVATION_BALANCE ≤ preset.MAX_EFFECTIVE_BALANCE_ELECTRA)
+    {w : ValidatorIndex} (honest : w ∈ J) (start : e.start w = anchor) {k : ℕ}
+    (before : ∀ (root : Root) (block : BeaconBlock preset fork),
+      ((e.world k).state w).blocks[root]? = some block →
+      ∀ next ∈ config.nextFork fork,
+        block.slot.toNat < next.2.toNat * preset.SLOTS_PER_EPOCH.toNat)
+    {root : Root} {target : BeaconState preset fork}
+    (stored : ((e.world k).state w).blockStates[root]? = some target)
+    {epoch : Epoch} {boundary : Slot}
+    (boundaryOk : computeStartSlotAtEpoch preset epoch = .ok boundary)
+    (boundaryBefore : ∀ next ∈ config.nextFork fork,
+      boundary.toNat < next.2.toNat * preset.SLOTS_PER_EPOCH.toNat)
+    (atMost : target.slot ≤ boundary)
+    (ahead : target.slot < boundary →
+      ∃ after, processSlots config checks target boundary = .ok after) :
+    ∃ state : BeaconState preset fork, state.slot = boundary ∧ Hysteresis state ∧
+      Nonempty (Run config checks g ⟨fork, state⟩) ∧
+      ((target.slot < boundary ∧ processSlots config checks target boundary = .ok state) ∨
+        (target.slot = boundary ∧
+          Nonempty (Run config checks ⟨fork, state⟩ ⟨fork, target⟩))) := by
+  obtain ⟨toTarget⟩ := e.exists_run_of_blockState anchored honest start before stored
+  have atStart : boundary % preset.SLOTS_PER_EPOCH = 0 := by
+    apply UInt64.toNat_inj.mp
+    rw [UInt64.toNat_mod, (computeStartSlotAtEpoch_ok_iff.mp boundaryOk).2, Nat.mul_mod_left,
+      UInt64.toNat_zero]
+  by_cases earlier : target.slot < boundary
+  · obtain ⟨after, processed⟩ := ahead earlier
+    obtain ⟨tail⟩ := run_of_processSlots processed boundaryBefore
+    exact ⟨after, (processSlots_slot processed).2,
+      hysteresis_of_processSlots bands processed atStart,
+      ⟨(history.append toTarget).append tail⟩, .inl ⟨earlier, processed⟩⟩
+  · have same : target.slot = boundary := UInt64.le_antisymm atMost (UInt64.not_lt.mp earlier)
+    obtain ⟨state, atSlot, banded, first, rest⟩ := run_boundaryState genesis bands electraFloor
+      electraCap (history.append toTarget) early (by rw [same]; exact atStart)
+    exact ⟨state, atSlot.trans same, banded, first, .inr ⟨same, rest⟩⟩
 
 /-- Theorem 1, accountable safety: the stored block is safe, or two honest stores show a fault.
 

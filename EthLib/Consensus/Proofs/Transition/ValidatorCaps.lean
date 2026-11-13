@@ -984,6 +984,16 @@ theorem Run.effectiveBalance_capped {g x : ForkedBeaconState preset}
       v.effectiveBalance ≤ withdrawalMaxEffectiveBalance preset x.fork v :=
   (CapStep.run run activation compounding early).capped genesis.effectiveBalance_capped
 
+/-- A slot step before Gloas keeps every validator at or below its cap.
+
+The step may run the epoch transition, which leaves the upgrades of the slot still to come. -/
+theorem advanceSlot_effectiveBalance_capped {f : Fork} {s t : BeaconState preset f}
+    (early : f < .glamsterdam) (ok : advanceSlot config checks s = .ok t)
+    (capped : ∀ v ∈ s.validators.data,
+      v.effectiveBalance ≤ withdrawalMaxEffectiveBalance preset f v) :
+    ∀ v ∈ t.validators.data, v.effectiveBalance ≤ withdrawalMaxEffectiveBalance preset f v :=
+  (CapStep.slot early ok).capped capped
+
 /-- An existing validator's cap cannot decrease along a pre-Gloas run. -/
 theorem Run.validatorCap_mono {x y : ForkedBeaconState preset}
     (run : Run config checks x y)
