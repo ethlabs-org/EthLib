@@ -770,7 +770,7 @@ omit [DecidablePred (· ∈ J)] in
 The start is the state of an ancestor block, kept as it is or processed to the boundary.
 
 No block of the chain lies from the ancestor to the boundary except the ancestor itself. -/
-private theorem run_along_chain {anchor : Store preset fork}
+theorem run_along_chain {anchor : Store preset fork}
     (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
     (early : fork < .glamsterdam) (anchorSlot : anchorBlock.slot = anchorState.slot)
     {w : ValidatorIndex} (honest : w ∈ J) (start : e.start w = anchor) {k : ℕ}
@@ -894,7 +894,7 @@ private theorem run_along_chain {anchor : Store preset fork}
 
 
 /-- A checkpoint read leaves no block of the chain from the checkpoint block to the boundary. -/
-private theorem clear_of_getCheckpointBlock {store : Store preset fork}
+theorem clear_of_getCheckpointBlock {store : Store preset fork}
     (early : fork < .glamsterdam) {b a : Root} {aBlock : BeaconBlock preset fork}
     {epoch : Epoch} {boundary : Slot}
     (boundaryOk : computeStartSlotAtEpoch preset epoch = .ok boundary)
@@ -924,7 +924,7 @@ private theorem clear_of_getCheckpointBlock {store : Store preset fork}
   exact congrArg ForkChoiceNode.root through
 
 /-- From a start state at a boundary, the same slots lead to a later state of the same ancestor. -/
-private theorem run_from_bridge {sa s0 y : BeaconState preset fork} {boundary target : Slot}
+theorem run_from_bridge {sa s0 y : BeaconState preset fork} {boundary target : Slot}
     (bridge : (sa.slot = boundary ∧ s0 = sa) ∨
       (sa.slot < boundary ∧ processSlots config checks sa boundary = .ok s0))
     (later : boundary ≤ target)
