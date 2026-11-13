@@ -1,6 +1,9 @@
 module
 
 public import EthLib.Consensus.Proofs.Transition.EpochRewards
+public import EthLib.Base.Proofs.FilterM
+public import EthLib.Consensus.Proofs.Transition.RewardReads
+public import Mathlib.Algebra.Order.BigOperators.Group.Finset
 
 /-!
 # Proofs: the amount of each reward and penalty
@@ -1112,5 +1115,656 @@ theorem getAttestationDeltas_getD {config : Config} (before : fork < .altair)
     simp only [show j < sourceRewards.size from sizes.1 ▸ inside, ↓reduceIte]
   · rw [sumDeltas_getD penaltiesOk j]
     simp only [show j < sourcePenalties.size from sizes.2 ▸ inside, ↓reduceIte]
+
+/-! ## An envelope on what one validator gains and loses at the end of an epoch
+
+The rewards of the end of an epoch pay for the votes of the previous epoch.
+
+They scale the base reward by the balance that voted over the active balance of the current epoch.
+
+Validators active in the previous epoch that have left by the current one count only above the line.
+
+So the ratio can exceed one, and the envelope keeps it as a ratio of two sums of effective balances.
+
+The numerator sums the effective balances of the validators active in the previous epoch.
+
+The denominator is the total active balance, at least one increment.
+
+Each is counted in whole increments, and at least one.
+
+Every read is a formula on natural numbers, equal to the executable read when that succeeds. -/
+
+/-- Two quotients by one divisor add up to at most the quotient of the sum. -/
+private theorem div_add_div_le (a b c : Nat) : a / c + b / c ≤ (a + b) / c := by
+  rcases Nat.eq_zero_or_pos c with zero | positive
+  · simp [zero]
+  · rw [Nat.le_div_iff_mul_le positive, Nat.add_mul]
+    exact Nat.add_le_add (Nat.div_mul_le_self a c) (Nat.div_mul_le_self b c)
+
+/-- Deltas applied in turn to one balance move it up by at most their rewards.
+
+They move it down by at most their penalties.
+
+Each addition of a reward is checked, so none wraps. -/
+private theorem foldlM_deltas_bounds {j : Nat} :
+    ∀ {deltas : List (Array Gwei × Array Gwei)} {balance result : Gwei},
+      deltas.foldlM (fun balance delta => (addChecked balance (delta.1.getD j 0)).map
+          fun raised => saturatingSub raised (delta.2.getD j 0)) balance = .ok result →
+        result.toNat ≤ balance.toNat + (deltas.map fun delta => (delta.1.getD j 0).toNat).sum ∧
+          balance.toNat ≤ result.toNat + (deltas.map fun delta => (delta.2.getD j 0).toNat).sum
+  | [], balance, result, computed => by
+    simp only [List.foldlM_nil, pure, Except.pure, Except.ok.injEq] at computed
+    subst computed
+    simp
+  | delta :: rest, balance, result, computed => by
+    rw [List.foldlM_cons, bind_ok_iff] at computed
+    obtain ⟨next, stepped, folded⟩ := computed
+    obtain ⟨up, down⟩ := foldlM_deltas_bounds folded
+    cases added : addChecked balance (delta.1.getD j 0) with
+    | error failure =>
+      rw [added] at stepped
+      cases stepped
+    | ok raised =>
+      rw [added] at stepped
+      simp only [Except.map, Except.ok.injEq] at stepped
+      subst stepped
+      have sum := (addChecked_ok_iff.mp added).2
+      simp only [List.map_cons, List.sum_cons, toNat_saturatingSub] at up down ⊢
+      omega
+
+/-- The balance of a set of validators active in the previous epoch, in whole increments.
+
+It is at most the effective balance of all validators active then, in whole increments, and one.
+
+A balance below one increment is read as one increment. -/
+private theorem getTotalBalance_increments_le (within : state.RegistryWithinLimit)
+    {indices : List ValidatorIndex} {balance : Gwei}
+    (weighed : getTotalBalance state indices = .ok balance)
+    (active : ∀ index ∈ indices, index ∈ getActiveValidatorIndices state (getPreviousEpoch state)) :
+    balance.toNat / preset.EFFECTIVE_BALANCE_INCREMENT.toNat ≤
+      max 1 ((∑ i ∈ (Finset.range state.validators.data.size).filter
+          (fun i => isActiveAt state (getPreviousEpoch state) i = true),
+        ((state.validators.data[i]?).map (·.effectiveBalance.toNat)).getD 0) /
+        preset.EFFECTIVE_BALANCE_INCREMENT.toNat) := by
+  obtain ⟨_, small, rfl⟩ := getTotalBalance_ok_iff.mp weighed
+  rw [toNat_max, Nat.toUInt64_eq, UInt64.toNat_ofNat', Nat.mod_eq_of_lt small]
+  -- Each marked validator is active in the previous epoch.
+  have marked : sumMarked state.validators.data
+      (markIndices state.validators.data.size indices) ≤
+      ∑ i ∈ (Finset.range state.validators.data.size).filter
+          (fun i => isActiveAt state (getPreviousEpoch state) i = true),
+        ((state.validators.data[i]?).map (·.effectiveBalance.toNat)).getD 0 := by
+    rw [sumMarked_eq_sum, Finset.sum_filter, Finset.sum_eq_multiset_sum, Finset.range_val,
+      ← Multiset.coe_range, Multiset.map_coe, Multiset.sum_coe]
+    refine sum_map_le_sum_map fun j member => ?_
+    have inside := List.mem_range.mp member
+    rw [getElem?_markIndices]
+    simp only [inside, ↓reduceIte, Option.getD_some]
+    split
+    · rename_i listed
+      obtain ⟨index, member, named⟩ := List.any_eq_true.mp listed
+      obtain ⟨validator, found, isActive⟩ :=
+        (mem_getActiveValidatorIndices within).mp (active index member)
+      rw [beq_iff_eq] at named
+      rw [named] at found
+      have activeAt : isActiveAt state (getPreviousEpoch state) j = true :=
+        isActiveAt_eq_true_iff.mpr ⟨validator, found, isActive⟩
+      simp [activeAt]
+    · exact Nat.zero_le _
+  generalize preset.EFFECTIVE_BALANCE_INCREMENT.toNat = inc at *
+  rcases Nat.eq_zero_or_pos inc with zero | positive
+  · simp [zero]
+  -- One increment counts as one, and a larger balance counts its whole increments.
+  have bound : max inc (sumMarked state.validators.data
+      (markIndices state.validators.data.size indices)) / inc ≤
+      max 1 (sumMarked state.validators.data
+        (markIndices state.validators.data.size indices) / inc) := by
+    rcases Nat.le_total inc (sumMarked state.validators.data
+      (markIndices state.validators.data.size indices)) with le | le
+    · rw [Nat.max_eq_right le]
+      exact Nat.le_max_right _ _
+    · rw [Nat.max_eq_left le, Nat.div_self positive]
+      exact Nat.le_max_left _ _
+  exact bound.trans (Nat.max_le.mpr ⟨Nat.le_max_left _ _,
+    (Nat.div_le_div_right marked).trans (Nat.le_max_right _ _)⟩)
+
+/-- From Altair, the end of an epoch moves the balance of one validator within an envelope.
+
+It gains at most its base reward times 54/64, scaled by the ratio of two balances.
+
+The numerator is the effective balance active in the previous epoch, in increments and at least one.
+
+The denominator is the total active balance, in increments and at least one.
+
+It loses at most its base reward plus its inactivity penalty at its present score.
+
+The base reward and the total are formulas of the effective balances.
+
+That needs a registry within its limit. -/
+theorem processRewardsAndPenalties_balance_le_of_altair {config : Config}
+    {after : BeaconState preset fork} (altair : .altair ≤ fork) (within : state.RegistryWithinLimit)
+    (computed : processRewardsAndPenalties config state = .ok after)
+    (j : Nat) (inside : j < state.validators.data.size) :
+    let inc := preset.EFFECTIVE_BALANCE_INCREMENT.toNat
+    let effective (i : Nat) := ((state.validators.data[i]?).map (·.effectiveBalance.toNat)).getD 0
+    let total := max inc (∑ i ∈ (Finset.range state.validators.data.size).filter
+      (fun i => isActiveAt state (getCurrentEpoch state) i = true), effective i)
+    let perIncrement := inc * preset.BASE_REWARD_FACTOR.toNat /
+      (integerSquareroot (UInt64.ofNat total)).toNat
+    let base := effective j / inc * perIncrement
+    let num := max 1 ((∑ i ∈ (Finset.range state.validators.data.size).filter
+      (fun i => isActiveAt state (getPreviousEpoch state) i = true), effective i) / inc)
+    let den := max 1 (total / inc)
+    let score := (((state.inactivityScores altair).data[j]?).map (·.toNat)).getD 0
+    ((after.balances.data[j]?).map (·.toNat)).getD 0 ≤
+        ((state.balances.data[j]?).map (·.toNat)).getD 0 +
+          base * (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum * num /
+            (WEIGHT_DENOMINATOR.toNat * den) ∧
+      ((state.balances.data[j]?).map (·.toNat)).getD 0 ≤
+        ((after.balances.data[j]?).map (·.toNat)).getD 0 + base + effective j * score /
+          (config.INACTIVITY_SCORE_BIAS.toNat *
+            (parameters preset fork).INACTIVITY_PENALTY_QUOTIENT.toNat) := by
+  intro inc effective total perIncrement base num den score
+  by_cases genesis : getCurrentEpoch state = GENESIS_EPOCH
+  · rw [processRewardsAndPenalties_genesis config genesis] at computed
+    cases computed
+    exact ⟨Nat.le_add_right _ _, (Nat.le_add_right _ _).trans (Nat.le_add_right _ _)⟩
+  obtain ⟨flagDeltas, inactivityDeltas, flagged, penalized, balances⟩ :=
+    processRewardsAndPenalties_balances_of_altair altair genesis computed
+  have finRange : List.finRange PARTICIPATION_FLAG_WEIGHTS.length =
+      [⟨0, by decide⟩, ⟨1, by decide⟩, ⟨2, by decide⟩] := rfl
+  rw [finRange] at flagged
+  simp only [List.mapM_cons, List.mapM_nil, bind_ok_iff, pure, Except.pure,
+    Except.ok.injEq] at flagged
+  obtain ⟨⟨sourceRewards, sourcePenalties⟩, sourceOk, _, ⟨⟨targetRewards, targetPenalties⟩,
+    targetOk, _, ⟨⟨headRewards, headPenalties⟩, headOk, _, rfl, rfl⟩, rfl⟩, rfl⟩ := flagged
+  obtain ⟨inactivityRewards, inactivityPenalties⟩ := inactivityDeltas
+  -- A missing balance stays missing, and both sides read zero.
+  rcases found : state.balances.data[j]? with _ | balance
+  · rw [(balances j).1 inside, found]
+    simp
+  have fits := (balances j).2.1 inside balance found
+  rw [(balances j).1 inside, found]
+  obtain ⟨up, down⟩ := foldlM_deltas_bounds fits
+  simp only [List.cons_append, List.nil_append, List.map_cons, List.map_nil, List.sum_cons,
+    List.sum_nil, Nat.add_zero, getInactivityPenaltyDeltas_rewards penalized,
+    UInt64.toNat_zero] at up down
+  simp only [Option.map_some, Option.getD_some, List.cons_append, List.nil_append]
+  -- The reads of the deltas: the participants, the total and the base reward.
+  obtain ⟨source, sourceBalance, total', sourceOk', sourceWeighed, totalOk, sourceFacts⟩ :=
+    getFlagIndexDeltas_getD within sourceOk
+  obtain ⟨target, targetBalance, total'', targetOk', targetWeighed, totalOk', targetFacts⟩ :=
+    getFlagIndexDeltas_getD within targetOk
+  obtain ⟨head, headBalance, total''', headOk', headWeighed, totalOk'', headFacts⟩ :=
+    getFlagIndexDeltas_getD within headOk
+  obtain rfl : total' = total'' := Except.ok.inj (totalOk.symm.trans totalOk')
+  obtain rfl : total' = total''' := Except.ok.inj (totalOk.symm.trans totalOk'')
+  obtain ⟨matching, matchingOk, inactivityFacts⟩ :=
+    getInactivityPenaltyDeltas_getD_of_altair altair within penalized
+  have totalValue : total'.toNat = total := getTotalActiveBalance_toNat totalOk
+  have small := toNat_toUInt64_of_lt within inside
+  have baseValue {base' : Gwei} (based : getBaseReward state total' j.toUInt64 = .ok base') :
+      base'.toNat = base := by
+    rw [getBaseReward_toNat based, small, totalValue]
+    simp [altair, base, effective, perIncrement, inc]
+  -- Each participant set lies in the previous epoch, so it weighs at most the numerator.
+  have numerator {flag : Fin PARTICIPATION_FLAG_WEIGHTS.length} {participants : List ValidatorIndex}
+      {weight : Gwei}
+      (listed : getUnslashedParticipatingIndices state altair flag.val.toUInt64
+        (getPreviousEpoch state) = .ok participants)
+      (weighed : getTotalBalance state participants = .ok weight) :
+      weight.toNat / inc ≤ num :=
+    getTotalBalance_increments_le within weighed fun index member =>
+      (mem_getUnslashedParticipatingIndices listed index member).1
+  -- One flag earns at most its weight of the base reward, scaled by the two balances.
+  have flagReward {flag : Fin PARTICIPATION_FLAG_WEIGHTS.length}
+      {participants : List ValidatorIndex}
+      {weight : Gwei} {reward : Nat}
+      (listed : getUnslashedParticipatingIndices state altair flag.val.toUInt64
+        (getPreviousEpoch state) = .ok participants)
+      (weighed : getTotalBalance state participants = .ok weight)
+      {base' : Gwei} (based : getBaseReward state total' j.toUInt64 = .ok base') {leak : Bool}
+      (value : reward = if leak then 0 else
+        base'.toNat * PARTICIPATION_FLAG_WEIGHTS[flag].toNat * (weight.toNat / inc) /
+          (total'.toNat / inc * WEIGHT_DENOMINATOR.toNat)) :
+      reward * (WEIGHT_DENOMINATOR.toNat * den) ≤
+        PARTICIPATION_FLAG_WEIGHTS[flag].toNat * (base * num) := by
+    subst value
+    rw [baseValue based, totalValue]
+    split
+    · simp
+    rcases Nat.eq_zero_or_pos (total / inc) with zero | positive
+    · simp [zero]
+    have same : den = total / inc := Nat.max_eq_right positive
+    rw [same, Nat.mul_comm WEIGHT_DENOMINATOR.toNat]
+    refine (Nat.div_mul_le_self _ _).trans ?_
+    have := Nat.mul_le_mul_left (base * PARTICIPATION_FLAG_WEIGHTS[flag].toNat)
+      (numerator listed weighed)
+    calc base * PARTICIPATION_FLAG_WEIGHTS[flag].toNat * (weight.toNat / inc)
+        ≤ base * PARTICIPATION_FLAG_WEIGHTS[flag].toNat * num := this
+      _ = PARTICIPATION_FLAG_WEIGHTS[flag].toNat * (base * num) := by ac_rfl
+  -- The reward of one flag at the validator, and its penalty.
+  have flagBounds {flag : Fin PARTICIPATION_FLAG_WEIGHTS.length} {rewards penalties : Array Gwei}
+      {participants : List ValidatorIndex} {weight : Gwei}
+      (listed : getUnslashedParticipatingIndices state altair flag.val.toUInt64
+        (getPreviousEpoch state) = .ok participants)
+      (weighed : getTotalBalance state participants = .ok weight)
+      (facts : ∀ j (inside : j < state.validators.data.size), ∃ eligible,
+        isEligibleValidator (getPreviousEpoch state) state.validators.data[j] = .ok eligible ∧
+        (eligible = false → rewards.getD j 0 = 0 ∧ penalties.getD j 0 = 0) ∧
+        (eligible = true → ∃ base, getBaseReward state total' j.toUInt64 = .ok base ∧
+          (j.toUInt64 ∈ participants → ∃ leak, isInInactivityLeak state = .ok leak ∧
+            (rewards.getD j 0).toNat = (if leak then 0 else
+              base.toNat * PARTICIPATION_FLAG_WEIGHTS[flag].toNat *
+                (weight.toNat / preset.EFFECTIVE_BALANCE_INCREMENT.toNat) /
+                (total'.toNat / preset.EFFECTIVE_BALANCE_INCREMENT.toNat *
+                  WEIGHT_DENOMINATOR.toNat)) ∧
+            penalties.getD j 0 = 0) ∧
+          (j.toUInt64 ∉ participants → rewards.getD j 0 = 0 ∧
+            (penalties.getD j 0).toNat = (if flag.val.toUInt64 = TIMELY_HEAD_FLAG_INDEX then 0
+              else base.toNat * PARTICIPATION_FLAG_WEIGHTS[flag].toNat /
+                WEIGHT_DENOMINATOR.toNat)))) :
+      (rewards.getD j 0).toNat * (WEIGHT_DENOMINATOR.toNat * den) ≤
+          PARTICIPATION_FLAG_WEIGHTS[flag].toNat * (base * num) ∧
+        (penalties.getD j 0).toNat ≤ (if flag.val.toUInt64 = TIMELY_HEAD_FLAG_INDEX then 0
+          else base * PARTICIPATION_FLAG_WEIGHTS[flag].toNat / WEIGHT_DENOMINATOR.toNat) := by
+    obtain ⟨eligible, -, no, yes⟩ := facts j inside
+    cases eligible with
+    | false =>
+      obtain ⟨reward, penalty⟩ := no rfl
+      simp [reward, penalty]
+    | true =>
+      obtain ⟨base', based, present, absent⟩ := yes rfl
+      by_cases member : j.toUInt64 ∈ participants
+      · obtain ⟨leak, -, reward, penalty⟩ := present member
+        exact ⟨flagReward listed weighed based reward, by simp [penalty]⟩
+      · obtain ⟨reward, penalty⟩ := absent member
+        refine ⟨by simp [reward], ?_⟩
+        rw [penalty, baseValue based]
+  obtain ⟨sourceUp, sourceDown⟩ := flagBounds sourceOk' sourceWeighed sourceFacts
+  obtain ⟨targetUp, targetDown⟩ := flagBounds targetOk' targetWeighed targetFacts
+  obtain ⟨headUp, headDown⟩ := flagBounds headOk' headWeighed headFacts
+  -- The weights of the flags, and the inactivity penalty at the present score.
+  have weights : (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum = 54 := by decide
+  have w0 : (PARTICIPATION_FLAG_WEIGHTS[(⟨0, by decide⟩ :
+      Fin PARTICIPATION_FLAG_WEIGHTS.length)]).toNat = 14 := rfl
+  have w1 : (PARTICIPATION_FLAG_WEIGHTS[(⟨1, by decide⟩ :
+      Fin PARTICIPATION_FLAG_WEIGHTS.length)]).toNat = 26 := rfl
+  have w2 : (PARTICIPATION_FLAG_WEIGHTS[(⟨2, by decide⟩ :
+      Fin PARTICIPATION_FLAG_WEIGHTS.length)]).toNat = 14 := rfl
+  have denominator : WEIGHT_DENOMINATOR.toNat = 64 := by decide
+  have notHead0 : ¬ ((⟨0, by decide⟩ : Fin PARTICIPATION_FLAG_WEIGHTS.length).val.toUInt64 =
+      TIMELY_HEAD_FLAG_INDEX) := by decide +revert
+  have notHead1 : ¬ ((⟨1, by decide⟩ : Fin PARTICIPATION_FLAG_WEIGHTS.length).val.toUInt64 =
+      TIMELY_HEAD_FLAG_INDEX) := by decide +revert
+  have isHead2 : (⟨2, by decide⟩ : Fin PARTICIPATION_FLAG_WEIGHTS.length).val.toUInt64 =
+      TIMELY_HEAD_FLAG_INDEX := by decide +revert
+  simp only [w0, denominator, notHead0, ↓reduceIte] at sourceUp sourceDown
+  simp only [w1, denominator, notHead1, ↓reduceIte] at targetUp targetDown
+  simp only [w2, denominator, isHead2, ↓reduceIte] at headUp headDown
+  have inactivity : (inactivityPenalties.getD j 0).toNat ≤ effective j * score /
+      (config.INACTIVITY_SCORE_BIAS.toNat *
+        (parameters preset fork).INACTIVITY_PENALTY_QUOTIENT.toNat) := by
+    obtain ⟨eligible, -, -, exempt, paid⟩ := inactivityFacts j inside
+    by_cases pays : eligible = true ∧ j.toUInt64 ∉ matching
+    · obtain ⟨score', scored, value⟩ := paid pays.1 pays.2
+      have read : effective j = state.validators.data[j].effectiveBalance.toNat := by
+        simp [effective, Array.getElem?_eq_getElem inside]
+      rw [value, read]
+      simp [score, scored]
+    · cases eligible
+      · simp [exempt (.inl rfl)]
+      · have member : j.toUInt64 ∈ matching :=
+          Classical.byContradiction fun absent => pays ⟨rfl, absent⟩
+        simp [exempt (.inr member)]
+  rw [weights, denominator]
+  have positive : 0 < 64 * den := Nat.mul_pos (by decide) (Nat.lt_of_lt_of_le Nat.one_pos
+    (Nat.le_max_left _ _))
+  constructor
+  · -- The three flag rewards, in units of the common divisor, add up to the weight sum.
+    have sum : ((sourceRewards.getD j 0).toNat + (targetRewards.getD j 0).toNat +
+        (headRewards.getD j 0).toNat) * (64 * den) ≤ base * 54 * num := by
+      rw [Nat.add_mul, Nat.add_mul, Nat.mul_right_comm, Nat.mul_comm (base * num)]
+      generalize base * num = scale at *
+      omega
+    have := (Nat.le_div_iff_mul_le positive).mpr sum
+    omega
+  · have : base * 14 / 64 + base * 26 / 64 ≤ base := by omega
+    omega
+
+/-- In a list whose keys are distinct, at most one entry has a given key.
+
+So the values at that key add up to at most a bound on each. -/
+private theorem sum_ite_le_of_nodup {α : Type} {key value : α → Nat} {j bound : Nat} :
+    ∀ {xs : List α}, (xs.map key).Nodup → (∀ x ∈ xs, key x = j → value x ≤ bound) →
+      (xs.map fun x => if key x = j then value x else 0).sum ≤ bound
+  | [], _, _ => by simp
+  | x :: xs, distinct, each => by
+    rw [List.map_cons, List.nodup_cons] at distinct
+    simp only [List.map_cons, List.sum_cons]
+    by_cases here : key x = j
+    · have rest : (xs.map fun y => if key y = j then value y else 0).sum = 0 := by
+        refine List.sum_eq_zero fun v member => ?_
+        obtain ⟨y, inside, rfl⟩ := List.mem_map.mp member
+        have other : key y ≠ j := fun same =>
+          distinct.1 (by rw [here, ← same]; exact List.mem_map_of_mem inside)
+        simp [other]
+      rw [ite_eq_left here, rest, Nat.add_zero]
+      exact each x List.mem_cons_self here
+    · rw [ite_eq_right here, Nat.zero_add]
+      exact sum_ite_le_of_nodup distinct.2 fun y inside => each y (List.mem_cons_of_mem _ inside)
+
+/-- Values sent each to one position add up, over a range of positions, to at most their sum. -/
+private theorem sum_range_ite_le {α : Type} {key value : α → Nat} (n : Nat) :
+    ∀ xs : List α, ∑ i ∈ Finset.range n, (xs.map fun x => if key x = i then value x else 0).sum ≤
+      (xs.map value).sum
+  | [] => by simp
+  | x :: xs => by
+    simp only [List.map_cons, List.sum_cons, Finset.sum_add_distrib]
+    have one : ∑ i ∈ Finset.range n, (if key x = i then value x else 0) ≤ value x := by
+      simp only [Finset.sum_ite_eq, Finset.mem_range]
+      split <;> simp
+    exact Nat.add_le_add one (sum_range_ite_le n xs)
+
+/-- Before Altair, the unslashed signers of pending attestations are active in their epoch.
+
+The slot of each attestation must lie in that epoch, since its committee is cut from it. -/
+private theorem active_of_getUnslashedAttestingIndices
+    {attestations : Array (PendingAttestation preset)} {attesters : List ValidatorIndex}
+    (counted : getUnslashedAttestingIndices state attestations = .ok attesters) {epoch : Epoch}
+    (slots : ∀ pending ∈ attestations, computeEpochAtSlot preset pending.data.slot = epoch) :
+    ∀ index ∈ attesters, index ∈ getActiveValidatorIndices state epoch := by
+  intro index member
+  simp only [getUnslashedAttestingIndices, bind_ok_iff] at counted
+  obtain ⟨signers, signersOk, unslashed⟩ := counted
+  have flattened := mem_sortedSet.mp (mem_of_filterM_ok unslashed member)
+  obtain ⟨signed, signedMember, inside⟩ := List.mem_flatten.mp flattened
+  obtain ⟨length, each⟩ := mapM_eq_ok_iff.mp signersOk
+  obtain ⟨position, bound, rfl⟩ := List.getElem_of_mem signedMember
+  have attestersOk := each position (length ▸ bound)
+  simp only [getPendingAttestingIndices, bind_ok_iff] at attestersOk
+  obtain ⟨committee, committeeOk, attestersOk⟩ := attestersOk
+  have active := mem_getActiveValidatorIndices_of_getBeaconCommittee committeeOk
+    (mem_of_committeeAttesters attestersOk inside)
+  rwa [slots _ (Array.mem_toList_iff.mp (List.getElem_mem _))] at active
+
+/-- Before Altair, the attestations that match a target are among those that match the source. -/
+private theorem getMatchingTargetAttestations_sub {before : fork < .altair} {epoch : Epoch}
+    {target : Array (PendingAttestation preset)}
+    (computed : getMatchingTargetAttestations state before epoch = .ok target) :
+    ∃ source, getMatchingSourceAttestations state before epoch = .ok source ∧
+      ∀ pending ∈ target, pending ∈ source := by
+  simp only [getMatchingTargetAttestations, bind_ok_iff] at computed
+  obtain ⟨source, sourceOk, rest⟩ := computed
+  refine ⟨source, sourceOk, fun pending member => ?_⟩
+  split at rest
+  · simp only [pure, Except.pure, Except.ok.injEq] at rest
+    subst rest
+    simp at member
+  · simp only [bind_ok_iff, liftAccessor_ok, pure, Except.pure, Except.ok.injEq] at rest
+    obtain ⟨_, _, rfl⟩ := rest
+    exact (Array.mem_filter.mp member).1
+
+/-- Before Altair, the attestations that match a head are among those that match the target. -/
+private theorem getMatchingHeadAttestations_sub {before : fork < .altair} {epoch : Epoch}
+    {head : Array (PendingAttestation preset)}
+    (computed : getMatchingHeadAttestations state before epoch = .ok head) :
+    ∃ target, getMatchingTargetAttestations state before epoch = .ok target ∧
+      ∀ pending ∈ head, pending ∈ target := by
+  simp only [getMatchingHeadAttestations, bind_ok_iff] at computed
+  obtain ⟨target, targetOk, filtered⟩ := computed
+  refine ⟨target, targetOk, fun pending member => ?_⟩
+  have listed := congrArg (fun result => Array.toList <$> result) filtered
+  simp only [Array.toList_filterM] at listed
+  exact Array.mem_toList_iff.mp (mem_of_filterM_ok listed (Array.mem_toList_iff.mpr member))
+
+/-- Before Altair, the end of an epoch moves the balance of one validator within an envelope.
+
+It gains at most three base rewards scaled by the ratio of two balances, and one base reward.
+
+The numerator is the effective balance active in the previous epoch, in increments and at least one.
+
+The denominator is the total active balance, in increments and at least one.
+
+In a leak a matching vote earns the whole base reward, which the scaled bound covers.
+
+The inclusion reward of the validator is at most its base reward.
+
+It also earns the proposer shares of the attestations whose earliest inclusion it proposed.
+
+Over the registry, these shares add up to at most a share of the base rewards of the previous epoch.
+
+It loses at most three base rewards, and in a leak four more and its inactivity penalty.
+
+The pending attestations that match the source of the previous epoch must have slots in it.
+
+That needs a registry within its limit. -/
+theorem processRewardsAndPenalties_balance_le_of_lt_altair {config : Config}
+    {after : BeaconState preset fork} (before : fork < .altair)
+    (within : state.RegistryWithinLimit)
+    (computed : processRewardsAndPenalties config state = .ok after)
+    (previous : ∀ attestations, getMatchingSourceAttestations state before
+        (getPreviousEpoch state) = .ok attestations →
+      ∀ pending ∈ attestations,
+        computeEpochAtSlot preset pending.data.slot = getPreviousEpoch state) :
+    let inc := preset.EFFECTIVE_BALANCE_INCREMENT.toNat
+    let effective (i : Nat) := ((state.validators.data[i]?).map (·.effectiveBalance.toNat)).getD 0
+    let total := max inc (∑ i ∈ (Finset.range state.validators.data.size).filter
+      (fun i => isActiveAt state (getCurrentEpoch state) i = true), effective i)
+    let root := (integerSquareroot (UInt64.ofNat total)).toNat
+    let base (i : Nat) :=
+      effective i * preset.BASE_REWARD_FACTOR.toNat / root / BASE_REWARDS_PER_EPOCH.toNat
+    let recent (i : Nat) := isActiveAt state (getPreviousEpoch state) i = true
+    let num := max 1 ((∑ i ∈ (Finset.range state.validators.data.size).filter recent,
+      effective i) / inc)
+    let den := max 1 (total / inc)
+    let delay := (getPreviousEpoch state).toNat - state.finalizedCheckpoint.epoch.toNat
+    let inactivity (i : Nat) := if preset.MIN_EPOCHS_TO_INACTIVITY_PENALTY.toNat < delay then
+      4 * base i + effective i * delay / (parameters preset fork).INACTIVITY_PENALTY_QUOTIENT.toNat
+      else 0
+    ∃ share : Nat → Nat,
+      ∑ i ∈ Finset.range state.validators.data.size, share i ≤
+        ∑ i ∈ (Finset.range state.validators.data.size).filter recent,
+          base i / preset.PROPOSER_REWARD_QUOTIENT.toNat ∧
+      ∀ j < state.validators.data.size,
+        ((after.balances.data[j]?).map (·.toNat)).getD 0 ≤
+            ((state.balances.data[j]?).map (·.toNat)).getD 0 +
+              (3 * (base j * max num den / den) + base j) + share j ∧
+          ((state.balances.data[j]?).map (·.toNat)).getD 0 ≤
+            ((after.balances.data[j]?).map (·.toNat)).getD 0 + (3 * base j + inactivity j) := by
+  intro inc effective total root base recent num den delay inactivity
+  by_cases genesis : getCurrentEpoch state = GENESIS_EPOCH
+  · rw [processRewardsAndPenalties_genesis config genesis] at computed
+    cases computed
+    exact ⟨fun _ => 0, by simp, fun j _ => ⟨Nat.le_add_right _ _ |>.trans (Nat.le_add_right _ _),
+      Nat.le_add_right _ _⟩⟩
+  obtain ⟨rewards, penalties, deltasOk, balanceFacts⟩ :=
+    processRewardsAndPenalties_balances_of_lt_altair before genesis computed
+  obtain ⟨⟨sourceRewards, sourcePenalties⟩, ⟨targetRewards, targetPenalties⟩,
+    ⟨headRewards, headPenalties⟩, ⟨inclusionRewards, inclusionPenalties⟩,
+    ⟨inactivityRewards, inactivityPenalties⟩, sourceOk, targetOk, headOk, inclusionOk,
+    inactivityOk, sums⟩ := getAttestationDeltas_getD before deltasOk
+  obtain ⟨-, attestations, signers, attesters, total', attestationsOk, signersOk, attestersOk,
+    totalOk, shares, named, facts, inclusionSums⟩ := getInclusionDelayDeltas_getD before inclusionOk
+  have totalValue : total'.toNat = total := getTotalActiveBalance_toNat totalOk
+  have notAltair : ¬ .altair ≤ fork := Nat.not_le_of_lt before
+  have baseValue {index : ValidatorIndex} {base' : Gwei}
+      (based : getBaseReward state total' index = .ok base') : base'.toNat = base index.toNat := by
+    rw [getBaseReward_toNat based, totalValue]
+    simp [notAltair, base, effective, root]
+  -- The signers of the source are active in the previous epoch, once each.
+  have counted : getUnslashedAttestingIndices state attestations = .ok attesters := by
+    simp only [getUnslashedAttestingIndices, signersOk, bind, Except.bind]
+    exact attestersOk
+  have attestersActive := active_of_getUnslashedAttestingIndices counted
+    (previous attestations attestationsOk)
+  have distinct : (attesters.map (·.toNat)).Nodup := by
+    unfold unslashedAmong at attestersOk
+    refine List.Nodup.map (fun _ _ same => UInt64.toNat_inj.mp same) ?_
+    exact ((sortedSet_sorted _).imp fun lt => UInt64.ne_of_lt lt).sublist
+      (sublist_of_filterM_ok attestersOk)
+  have sharesDistinct : (shares.map fun share => share.1.toNat).Nodup := by
+    have same : (shares.map fun share => share.1.toNat) = attesters.map (·.toNat) := by
+      rw [← named, List.map_map]
+      rfl
+    rw [same]
+    exact distinct
+  let share (j : Nat) := (shares.map fun share =>
+    if share.2.1.proposerIndex.toNat = j then
+      share.2.2.toNat / preset.PROPOSER_REWARD_QUOTIENT.toNat else 0).sum
+  refine ⟨share, ?_, fun j inside => ?_⟩
+  · -- Each share goes to one proposer, and comes from a signer active in the previous epoch.
+    refine (sum_range_ite_le (key := fun share => share.2.1.proposerIndex.toNat)
+      (value := fun share => share.2.2.toNat / preset.PROPOSER_REWARD_QUOTIENT.toNat) _
+      shares).trans ?_
+    have byBase : (shares.map fun share =>
+        share.2.2.toNat / preset.PROPOSER_REWARD_QUOTIENT.toNat) =
+        (shares.map fun share => base share.1.toNat / preset.PROPOSER_REWARD_QUOTIENT.toNat) :=
+      List.map_congr_left fun share member => by rw [baseValue (facts share member).2.1]
+    have composed : (shares.map fun share =>
+        base share.1.toNat / preset.PROPOSER_REWARD_QUOTIENT.toNat) =
+        (shares.map fun share => share.1.toNat).map
+          (fun i => base i / preset.PROPOSER_REWARD_QUOTIENT.toNat) := by
+      rw [List.map_map]
+      rfl
+    rw [byBase, composed, ← List.sum_toFinset _ sharesDistinct]
+    refine Finset.sum_le_sum_of_subset fun i member => ?_
+    rw [List.mem_toFinset, List.mem_map] at member
+    obtain ⟨share, inShares, rfl⟩ := member
+    have signer : share.1 ∈ attesters := by
+      rw [← named]
+      exact List.mem_map_of_mem inShares
+    obtain ⟨validator, found, isActive⟩ :=
+      (mem_getActiveValidatorIndices within).mp (attestersActive _ signer)
+    exact Finset.mem_filter.mpr ⟨Finset.mem_range.mpr (Array.getElem?_eq_some_iff.mp found).1,
+      isActiveAt_eq_true_iff.mpr ⟨validator, found, isActive⟩⟩
+  -- The balance of the validator moves once, by its reward and its penalty.
+  obtain ⟨rewardSum, penaltySum⟩ := sums j inside
+  dsimp only at rewardSum penaltySum
+  obtain ⟨balance, found, fits, afterBalance⟩ := (balanceFacts j).1 inside
+  rw [found, afterBalance]
+  simp only [Option.map_some, Option.getD_some, toNat_saturatingSub, toNat_add_of_lt fits]
+  have small := toNat_toUInt64_of_lt within inside
+  have denPos : 0 < den := Nat.lt_of_lt_of_le Nat.one_pos (Nat.le_max_left _ _)
+  -- The inclusion reward splits into the proposer shares and the validator's own part.
+  have ownLe : (shares.map fun share => if share.1.toNat = j then
+      (share.2.2.toNat - share.2.2.toNat / preset.PROPOSER_REWARD_QUOTIENT.toNat) /
+        share.2.1.inclusionDelay.toNat else 0).sum ≤ base j := by
+    refine sum_ite_le_of_nodup sharesDistinct fun share member same => ?_
+    rw [← same, ← baseValue (facts share member).2.1]
+    exact (Nat.div_le_self _ _).trans (Nat.sub_le _ _)
+  have inclusionSplit : (inclusionRewards.getD j 0).toNat = share j +
+      (shares.map fun share => if share.1.toNat = j then
+        (share.2.2.toNat - share.2.2.toNat / preset.PROPOSER_REWARD_QUOTIENT.toNat) /
+          share.2.1.inclusionDelay.toNat else 0).sum := by
+    rw [inclusionSums j, List.sum_map_add]
+  -- One kind of vote earns at most the scaled base reward, and costs at most the base reward.
+  have component {votes : Array (PendingAttestation preset)} {voters : List ValidatorIndex}
+      {weight totalC : Gwei} {componentRewards componentPenalties : Array Gwei}
+      (votersOk : getUnslashedAttestingIndices state votes = .ok voters)
+      (slots : ∀ pending ∈ votes,
+        computeEpochAtSlot preset pending.data.slot = getPreviousEpoch state)
+      (weighed : getTotalBalance state voters = .ok weight)
+      (totalCOk : getTotalActiveBalance state = .ok totalC)
+      (componentFacts : ∀ j (inside : j < state.validators.data.size), ∃ eligible,
+        isEligibleValidator (getPreviousEpoch state) state.validators.data[j] = .ok eligible ∧
+        (eligible = false → componentRewards.getD j 0 = 0 ∧ componentPenalties.getD j 0 = 0) ∧
+        (eligible = true → ∃ base, getBaseReward state totalC j.toUInt64 = .ok base ∧
+          (j.toUInt64 ∈ voters → ∃ leak, isInInactivityLeak state = .ok leak ∧
+            (componentRewards.getD j 0).toNat = (if leak then base.toNat else
+              base.toNat * (weight.toNat / inc) / (totalC.toNat / inc)) ∧
+            componentPenalties.getD j 0 = 0) ∧
+          (j.toUInt64 ∉ voters → componentRewards.getD j 0 = 0 ∧
+            componentPenalties.getD j 0 = base))) :
+      (componentRewards.getD j 0).toNat ≤ base j * max num den / den ∧
+        (componentPenalties.getD j 0).toNat ≤ base j := by
+    obtain rfl : totalC = total' := Except.ok.inj (totalCOk.symm.trans totalOk)
+    obtain ⟨eligible, -, no, yes⟩ := componentFacts j inside
+    cases eligible with
+    | false =>
+      obtain ⟨reward, penalty⟩ := no rfl
+      simp [reward, penalty]
+    | true =>
+      obtain ⟨base', based, present, absent⟩ := yes rfl
+      have value := baseValue based
+      rw [small] at value
+      by_cases member : j.toUInt64 ∈ voters
+      · obtain ⟨leak, -, reward, penalty⟩ := present member
+        refine ⟨?_, by simp [penalty]⟩
+        rw [reward, value, totalValue]
+        split
+        · -- A leak pays the whole base reward, which the ratio of at least one covers.
+          rw [Nat.le_div_iff_mul_le denPos]
+          exact Nat.mul_le_mul_left _ (Nat.le_max_right _ _)
+        rcases Nat.eq_zero_or_pos (total / inc) with zero | positive
+        · simp [zero]
+        have same : den = total / inc := Nat.max_eq_right positive
+        rw [same]
+        refine Nat.div_le_div_right (Nat.mul_le_mul_left _ ?_)
+        exact (getTotalBalance_increments_le within weighed
+          (active_of_getUnslashedAttestingIndices votersOk slots)).trans (Nat.le_max_left _ _)
+      · obtain ⟨reward, penalty⟩ := absent member
+        rw [reward, penalty, value]
+        exact ⟨Nat.zero_le _, Nat.le_refl _⟩
+  -- The source, target and head votes.
+  obtain ⟨sourceUp, sourceDown⟩ : (sourceRewards.getD j 0).toNat ≤ base j * max num den / den ∧
+      (sourcePenalties.getD j 0).toNat ≤ base j := by
+    simp only [getSourceDeltas, bind_ok_iff] at sourceOk
+    obtain ⟨votes, votesOk, componentOk⟩ := sourceOk
+    obtain ⟨totalC, voters, weight, totalCOk, votersOk, weighed, componentFacts⟩ :=
+      getAttestationComponentDeltas_getD within componentOk
+    exact component votersOk (previous votes votesOk) weighed totalCOk componentFacts
+  obtain ⟨targetUp, targetDown⟩ : (targetRewards.getD j 0).toNat ≤ base j * max num den / den ∧
+      (targetPenalties.getD j 0).toNat ≤ base j := by
+    simp only [getTargetDeltas, bind_ok_iff] at targetOk
+    obtain ⟨votes, votesOk, componentOk⟩ := targetOk
+    obtain ⟨totalC, voters, weight, totalCOk, votersOk, weighed, componentFacts⟩ :=
+      getAttestationComponentDeltas_getD within componentOk
+    obtain ⟨source, sourceOk, sub⟩ := getMatchingTargetAttestations_sub votesOk
+    exact component votersOk (fun pending member => previous source sourceOk pending
+      (sub pending member)) weighed totalCOk componentFacts
+  obtain ⟨headUp, headDown⟩ : (headRewards.getD j 0).toNat ≤ base j * max num den / den ∧
+      (headPenalties.getD j 0).toNat ≤ base j := by
+    simp only [getHeadDeltas, bind_ok_iff] at headOk
+    obtain ⟨votes, votesOk, componentOk⟩ := headOk
+    obtain ⟨totalC, voters, weight, totalCOk, votersOk, weighed, componentFacts⟩ :=
+      getAttestationComponentDeltas_getD within componentOk
+    obtain ⟨target, targetOk, headSub⟩ := getMatchingHeadAttestations_sub votesOk
+    obtain ⟨source, sourceOk, sub⟩ := getMatchingTargetAttestations_sub targetOk
+    exact component votersOk (fun pending member => previous source sourceOk pending
+      (sub pending (headSub pending member))) weighed totalCOk componentFacts
+  -- The inactivity penalty, paid only in a leak.
+  have inactivityLe : (inactivityPenalties.getD j 0).toNat ≤ inactivity j := by
+    obtain ⟨-, leak, leakOk, quiet, loud⟩ :=
+      getInactivityPenaltyDeltas_getD_of_lt_altair before within inactivityOk
+    cases leak with
+    | false => simp [quiet rfl j]
+    | true =>
+      obtain ⟨-, voters, totalI, delayI, -, -, totalIOk, delayOk, inactivityFacts⟩ := loud rfl
+      obtain rfl : totalI = total' := Except.ok.inj (totalIOk.symm.trans totalOk)
+      obtain ⟨delay', delayOk', leaking⟩ := isInInactivityLeak_ok_iff.mp leakOk
+      rw [Except.ok.inj (delayOk'.symm.trans delayOk)] at leaking
+      have long : preset.MIN_EPOCHS_TO_INACTIVITY_PENALTY.toNat < delay := by
+        have := UInt64.lt_iff_toNat_lt.mp (leaking.mp rfl)
+        rw [(getFinalityDelay_ok_iff.mp delayOk).2] at this
+        exact this
+      obtain ⟨eligible, -, no, yes⟩ := inactivityFacts j inside
+      cases eligible with
+      | false => simp [no rfl]
+      | true =>
+        obtain ⟨base', based, value⟩ := yes rfl
+        have baseEq := baseValue based
+        rw [small] at baseEq
+        have four : BASE_REWARDS_PER_EPOCH.toNat = 4 := by decide
+        have read : state.validators.data[j].effectiveBalance.toNat = effective j := by
+          simp [effective, Array.getElem?_eq_getElem inside]
+        have delayValue : delayI.toNat = delay := (getFinalityDelay_ok_iff.mp delayOk).2
+        simp only [inactivity, long, ↓reduceIte]
+        rw [value, four, baseEq, read, delayValue]
+        generalize base j / preset.PROPOSER_REWARD_QUOTIENT.toNat = cut
+        generalize
+          effective j * delay / (parameters preset fork).INACTIVITY_PENALTY_QUOTIENT.toNat = extra
+        split <;> omega
+  constructor <;> omega
 
 end EthLib.Consensus
