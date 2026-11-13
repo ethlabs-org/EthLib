@@ -17,6 +17,8 @@ Electra starts an empty queue, requests append existing indices, and processing 
 With positive withdrawal delay, sources are distinct and keep their activation and exit ordering.
 
 An assigned exit prevents a source from being queued twice, and slashing only delays withdrawal.
+
+The queue is in the order of its sources' exits, so no pending source can withdraw yet.
 -/
 
 @[expose] public section
@@ -27,39 +29,76 @@ variable {preset : Preset} {config : Config} {checks : SignatureChecks}
 def SamePendingQueue {f : Fork} (s t : BeaconState preset f) : Prop :=
   t.pendingConsolidations = s.pendingConsolidations
 
-private theorem SamePendingQueue.trans {f : Fork} {s t u : BeaconState preset f}
-    (one : SamePendingQueue s t) (two : SamePendingQueue t u) : SamePendingQueue s u :=
+/-- A step keeps the pending consolidations and the earliest consolidation epoch.
+
+Only a consolidation request, the pass of an epoch and the Electra upgrade write either. -/
+private def QueueKept {f : Fork} (s t : BeaconState preset f) : Prop :=
+  (t.pendingConsolidations, t.earliestConsolidationEpoch) =
+    (s.pendingConsolidations, s.earliestConsolidationEpoch)
+
+private theorem QueueKept.queue {f : Fork} {s t : BeaconState preset f} (kept : QueueKept s t) :
+    SamePendingQueue s t :=
+  congrArg Prod.fst kept
+
+private theorem QueueKept.earliest {f : Fork} {s t : BeaconState preset f}
+    (kept : QueueKept s t) : t.earliestConsolidationEpoch = s.earliestConsolidationEpoch :=
+  congrArg Prod.snd kept
+
+private theorem QueueKept.trans {f : Fork} {s t u : BeaconState preset f}
+    (one : QueueKept s t) (two : QueueKept t u) : QueueKept s u :=
   Eq.trans two one
 
-private theorem SamePendingQueue.fold {f : Fork} {s t : BeaconState preset f} {α ε : Type}
+private theorem QueueKept.fold {f : Fork} {s t : BeaconState preset f} {α ε : Type}
     {step : BeaconState preset f → α → Except ε (BeaconState preset f)} {xs : List α}
-    (kept : ∀ a item b, step a item = .ok b → SamePendingQueue a b)
-    (ok : xs.foldlM step s = .ok t) : SamePendingQueue s t :=
-  foldlM_ok_invariant (SamePendingQueue s)
+    (kept : ∀ a item b, step a item = .ok b → QueueKept a b)
+    (ok : xs.foldlM step s = .ok t) : QueueKept s t :=
+  foldlM_ok_invariant (QueueKept s)
     (fun _ _ _ prior computed => prior.trans (kept _ _ _ computed)) rfl ok
 
-private theorem SamePendingQueue.setValidatorAt {f : Fork} {s t : BeaconState preset f}
-    {i : Nat} {v : Validator} (ok : s.setValidatorAt i v = .ok t) : SamePendingQueue s t := by
+private theorem QueueKept.setValidatorAt {f : Fork} {s t : BeaconState preset f}
+    {i : Nat} {v : Validator} (ok : s.setValidatorAt i v = .ok t) : QueueKept s t := by
   obtain ⟨_, rfl⟩ := setValidatorAt_ok ok
   rfl
 
-private theorem SamePendingQueue.setValidator {f : Fork} {s t : BeaconState preset f}
+private theorem QueueKept.setValidator {f : Fork} {s t : BeaconState preset f}
     {i : ValidatorIndex} {v : Validator} (ok : s.setValidator i v = .ok t) :
-    SamePendingQueue s t :=
+    QueueKept s t :=
   setValidatorAt (by rwa [← setValidator_eq_setValidatorAt])
 
-private theorem SamePendingQueue.increase {f : Fork} {s t : BeaconState preset f}
+private theorem QueueKept.increase {f : Fork} {s t : BeaconState preset f}
     {i : ValidatorIndex} {amount : Gwei} (ok : increaseBalance s i amount = .ok t) :
-    SamePendingQueue s t := by
+    QueueKept s t := by
   obtain ⟨_, set⟩ := increaseBalance_ok ok
   obtain ⟨_, rfl⟩ := setBalance_ok set
   rfl
 
-private theorem SamePendingQueue.decrease {f : Fork} {s t : BeaconState preset f}
+private theorem QueueKept.decrease {f : Fork} {s t : BeaconState preset f}
     {i : ValidatorIndex} {amount : Gwei} (ok : decreaseBalance s i amount = .ok t) :
-    SamePendingQueue s t := by
+    QueueKept s t := by
   obtain ⟨_, rfl⟩ := decreaseBalance_eq_ok_iff.mp ok
   rfl
+
+private theorem QueueKept.addValidator {f : Fork} {s t : BeaconState preset f}
+    {pubkey : Cryptography.Bls.BLSPubkey} {credentials : Bytes32} {amount : Gwei}
+    (ok : addValidatorToRegistry s pubkey credentials amount = .ok t) : QueueKept s t := by
+  unfold addValidatorToRegistry at ok
+  split at ok
+  · simp only [addValidatorToRegistryAltair, bind_ok_iff, liftAccessor_ok,
+      pure, Except.pure, Except.ok.injEq] at ok
+    obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, rfl⟩ := ok
+    rfl
+  · split at ok <;> cases ok
+    rfl
+
+/-- Starting an exit writes one validator and the exit queue only. -/
+private theorem initiateValidatorExit_kept {f : Fork} {s t : BeaconState preset f}
+    {index : ValidatorIndex} (ok : initiateValidatorExit config s index = .ok t) :
+    t.balances = s.balances ∧ QueueKept s t := by
+  obtain ⟨_, _, ⟨_, rfl⟩ | ⟨_, _, _, _, queue, _, set⟩⟩ := initiateValidatorExit_ok ok
+  · exact ⟨rfl, rfl⟩
+  · obtain ⟨_, _, rfl⟩ := exitQueue_eq queue
+    obtain ⟨_, rfl⟩ := setValidator_ok set
+    exact ⟨rfl, rfl⟩
 
 /-- Starting an exit writes one validator and the exit queue only.
 
@@ -67,31 +106,26 @@ So it keeps the balances and the pending consolidations. -/
 theorem initiateValidatorExit_balances_eq_and_pendingConsolidations_eq {f : Fork}
     {s t : BeaconState preset f} {index : ValidatorIndex}
     (ok : initiateValidatorExit config s index = .ok t) :
-    t.balances = s.balances ∧ t.pendingConsolidations = s.pendingConsolidations := by
-  obtain ⟨_, _, ⟨_, rfl⟩ | ⟨_, _, _, _, queue, _, set⟩⟩ := initiateValidatorExit_ok ok
-  · exact ⟨rfl, rfl⟩
-  · obtain ⟨_, _, rfl⟩ := exitQueue_eq queue
-    obtain ⟨_, rfl⟩ := setValidator_ok set
-    exact ⟨rfl, rfl⟩
+    t.balances = s.balances ∧ t.pendingConsolidations = s.pendingConsolidations :=
+  ⟨(initiateValidatorExit_kept ok).1, (initiateValidatorExit_kept ok).2.queue⟩
 
-private theorem SamePendingQueue.exit {f : Fork} {s t : BeaconState preset f}
-    {i : ValidatorIndex} (ok : initiateValidatorExit config s i = .ok t) :
-    SamePendingQueue s t :=
-  (initiateValidatorExit_balances_eq_and_pendingConsolidations_eq ok).2
+private theorem QueueKept.exit {f : Fork} {s t : BeaconState preset f}
+    {i : ValidatorIndex} (ok : initiateValidatorExit config s i = .ok t) : QueueKept s t :=
+  (initiateValidatorExit_kept ok).2
 
-private theorem SamePendingQueue.rewards {f : Fork} {s t : BeaconState preset f}
-    (ok : processRewardsAndPenalties config s = .ok t) : SamePendingQueue s t := by
-  show t.pendingConsolidations = s.pendingConsolidations
+private theorem QueueKept.rewards {f : Fork} {s t : BeaconState preset f}
+    (ok : processRewardsAndPenalties config s = .ok t) : QueueKept s t := by
+  unfold QueueKept
   rw [processRewardsAndPenalties_frame ok]
 
-private theorem SamePendingQueue.slashings {f : Fork} {s t : BeaconState preset f}
-    (ok : processSlashings s = .ok t) : SamePendingQueue s t := by
-  show t.pendingConsolidations = s.pendingConsolidations
+private theorem QueueKept.slashings {f : Fork} {s t : BeaconState preset f}
+    (ok : processSlashings s = .ok t) : QueueKept s t := by
+  unfold QueueKept
   rw [processSlashings_frame ok]
 
-theorem SamePendingQueue.compounding {f : Fork} {s t : BeaconState preset f}
+private theorem QueueKept.compounding {f : Fork} {s t : BeaconState preset f}
     {electra : .pectra ≤ f} {index : ValidatorIndex}
-    (ok : switchToCompoundingValidator s electra index = .ok t) : SamePendingQueue s t := by
+    (ok : switchToCompoundingValidator s electra index = .ok t) : QueueKept s t := by
   simp only [switchToCompoundingValidator, bind_ok_iff] at ok
   obtain ⟨_, _, middle, set, queued⟩ := ok
   apply (setValidator set).trans
@@ -104,13 +138,18 @@ theorem SamePendingQueue.compounding {f : Fork} {s t : BeaconState preset f}
     rfl
   · cases queued; rfl
 
+theorem SamePendingQueue.compounding {f : Fork} {s t : BeaconState preset f}
+    {electra : .pectra ≤ f} {index : ValidatorIndex}
+    (ok : switchToCompoundingValidator s electra index = .ok t) : SamePendingQueue s t :=
+  (QueueKept.compounding ok).queue
+
 /-- An epoch stage keeps the pending consolidations, unless it is the stage that processes them. -/
 theorem EpochStage.Edge.samePendingQueue {f : Fork} {stage : EpochStage}
     {s t : BeaconState preset f} (edge : EpochStage.Edge config checks stage s t)
     (other : stage ≠ .pendingConsolidations) : SamePendingQueue s t := by
   cases stage
-  case rewards => exact SamePendingQueue.rewards edge
-  case slashings => exact SamePendingQueue.slashings edge
+  case rewards => exact (QueueKept.rewards edge).queue
+  case slashings => exact (QueueKept.slashings edge).queue
   case pendingDeposits =>
     simp only [EpochStage.Edge] at edge
     split at edge
@@ -126,31 +165,29 @@ theorem EpochStage.Edge.samePendingQueue {f : Fork} {stage : EpochStage}
 variable {fork : Fork} {state after : BeaconState preset fork}
   {engine : ExecutionEngine preset fork}
 
-namespace SamePendingQueue
-
-theorem refl (s : BeaconState preset fork) : SamePendingQueue s s := rfl
+namespace QueueKept
 
 private theorem slash {i : ValidatorIndex} {whistleblower : Option ValidatorIndex}
     (ok : slashValidator config state i whistleblower = .ok after) :
-    SamePendingQueue state after := by
+    QueueKept state after := by
   obtain ⟨_, _, _, marked, _, _, slashings, _, _, _, _, last, exited, read, _, set,
     _, _, _, lowered, _, _, raised, paid, rfl⟩ := slashValidator_ok ok
   have first := (exit exited).trans (setValidator set)
-  have second : SamePendingQueue marked last :=
-    (show SamePendingQueue marked { marked with slashings } from rfl).trans
+  have second : QueueKept marked last :=
+    (show QueueKept marked { marked with slashings } from rfl).trans
       ((decrease lowered).trans ((increase raised).trans (increase paid)))
   apply (first.trans second).trans
   split <;> rfl
 
-theorem proposer {slashing : ProposerSlashing}
+private theorem proposer {slashing : ProposerSlashing}
     (ok : processProposerSlashing config checks state slashing = .ok after) :
-    SamePendingQueue state after := by
+    QueueKept state after := by
   simp only [processProposerSlashing, bind_ok_iff, ensure_ok_iff, liftAccessor_ok] at ok
   obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, slashed⟩ := ok
   exact slash slashed
 
 private theorem slashIf {step next : BeaconState preset fork × Bool} {index : ValidatorIndex}
-    (ok : slashIfSlashable config step index = .ok next) : SamePendingQueue step.1 next.1 := by
+    (ok : slashIfSlashable config step index = .ok next) : QueueKept step.1 next.1 := by
   obtain ⟨state, slashedAny⟩ := step
   simp only [slashIfSlashable, bind_ok_iff, liftAccessor_ok] at ok
   obtain ⟨_, _, ok⟩ := ok
@@ -160,42 +197,42 @@ private theorem slashIf {step next : BeaconState preset fork × Bool} {index : V
     exact slash slashed
   · cases ok; rfl
 
-theorem attester {slashing : AttesterSlashing preset fork}
+private theorem attester {slashing : AttesterSlashing preset fork}
     (ok : processAttesterSlashing config checks state slashing = .ok after) :
-    SamePendingQueue state after := by
+    QueueKept state after := by
   simp only [processAttesterSlashing, bind_ok_iff, ensure_ok_iff, pure, Except.pure,
     Except.ok.injEq] at ok
   obtain ⟨_, _, _, _, _, _, _, _, _, _, _, folded, _, _, rfl⟩ := ok
   exact foldlM_ok_invariant (fun step : BeaconState preset fork × Bool =>
-    SamePendingQueue state step.1)
+    QueueKept state step.1)
     (fun _ _ _ prior ok => prior.trans (slashIf ok))
-    (show SamePendingQueue state (state, false).1 from rfl) folded
+    (show QueueKept state (state, false).1 from rfl) folded
 
-theorem voluntary {signed : SignedVoluntaryExit}
+private theorem voluntary {signed : SignedVoluntaryExit}
     (ok : processVoluntaryExit config checks state signed = .ok after) :
-    SamePendingQueue state after :=
+    QueueKept state after :=
   exit (processVoluntaryExit_initiates ok)
 
-theorem bls {signed : SignedBLSToExecutionChange}
+private theorem bls {signed : SignedBLSToExecutionChange}
     (ok : processBlsToExecutionChange config checks state signed = .ok after) :
-    SamePendingQueue state after := by
+    QueueKept state after := by
   obtain ⟨_, _, _, _, _, set⟩ := processBlsToExecutionChange_ok ok
   exact setValidator set
 
-theorem deposit {before : fork < .hegota} {deposit : Deposit}
+private theorem deposit {before : fork < .hegota} {deposit : Deposit}
     (electra : .pectra ≤ fork)
     (ok : processDeposit config checks before state deposit = .ok after) :
-    SamePendingQueue state after := by
+    QueueKept state after := by
   obtain ⟨_, _, next, _, applied⟩ := processDeposit_ok ok
   rcases applyDeposit_cases applied with rfl | ⟨_, _, _, rfl | added, rfl⟩ | ⟨early, _⟩
   · rfl
   · rfl
-  · exact (addValidatorToRegistry_pendingConsolidations added :)
+  · exact (addValidator added :)
   · exact absurd electra (Nat.not_le_of_lt early)
 
-theorem depositRequest {electra : .pectra ≤ fork} {request : DepositRequest}
+private theorem depositRequest {electra : .pectra ≤ fork} {request : DepositRequest}
     (ok : processDepositRequest state electra request = .ok after) :
-    SamePendingQueue state after := by
+    QueueKept state after := by
   obtain ⟨start, recorded⟩ :=
     recordDepositRequestsStart_eq (state := state) (index := request.index)
   simp only [processDepositRequest, recorded, liftAccessor_ok, addPendingDeposit, bind_ok_iff,
@@ -203,30 +240,48 @@ theorem depositRequest {electra : .pectra ≤ fork} {request : DepositRequest}
   obtain ⟨_, _, rfl⟩ := ok
   rfl
 
-theorem withdrawalRequest {electra : .pectra ≤ fork} {request : WithdrawalRequest}
+/-- A partial withdrawal writes the exit churn and the pending partial withdrawals only. -/
+private theorem partialWithdrawal {electra : .pectra ≤ fork} {index : ValidatorIndex}
+    {v : Validator} {amount owed : Gwei}
+    (ok : requestPartialWithdrawal config state electra index v amount owed = .ok after) :
+    QueueKept state after := by
+  simp only [requestPartialWithdrawal, bind_ok_iff, liftAccessor_ok, pure, Except.pure] at ok
+  obtain ⟨_, _, _, _, ok⟩ := ok
+  split at ok
+  · simp only [bind_ok_iff, liftAccessor_ok, Except.ok.injEq] at ok
+    obtain ⟨⟨_, _⟩, churned, _, _, _, _, rfl⟩ := ok
+    simp only [computeExitEpochAndUpdateChurn, bind_ok_iff, pure, Except.pure,
+      Except.ok.injEq] at churned
+    obtain ⟨_, _, _, _, _, _, final⟩ := churned
+    cases final
+    rfl
+  · cases ok
+    rfl
+
+private theorem withdrawalRequest {electra : .pectra ≤ fork} {request : WithdrawalRequest}
     (ok : processWithdrawalRequest config state electra request = .ok after) :
-    SamePendingQueue state after := by
+    QueueKept state after := by
   rcases withdrawalRequest_cases ok with rfl | ⟨_, exited⟩ | ⟨_, _, _, withdrawn⟩
   · rfl
   · exact exit exited
-  · exact (requestPartialWithdrawal_kept withdrawn).2.2.1
+  · exact partialWithdrawal withdrawn
 
-theorem attestation {attestation : Attestation preset fork} {parentSlot : Slot}
+private theorem attestation {attestation : Attestation preset fork} {parentSlot : Slot}
     (electra : .pectra ≤ fork)
     (ok : processAttestation config checks state parentSlot attestation = .ok after) :
-    SamePendingQueue state after := by
+    QueueKept state after := by
   unfold processAttestation at ok
   rw [dite_eq_left (show .altair ≤ fork from Nat.le_trans (by decide) electra)] at ok
   unfold processAttestationAltair at ok
   simp only [bind_ok_iff, liftAccessor_ok] at ok
   obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _,
     _, _, raised, raisedOk, final⟩ := ok
-  have last : SamePendingQueue raised after := by
+  have last : QueueKept raised after := by
     split at final
     · rw [recordPaymentWeight_eq final]; rfl
     · cases final; rfl
   have flagged : ∀ (current : Bool) (participation : EpochParticipation preset fork),
-      SamePendingQueue state (setEpochParticipation state current participation) := by
+      QueueKept state (setEpochParticipation state current participation) := by
     intro current participation
     unfold setEpochParticipation
     split <;> rfl
@@ -236,7 +291,7 @@ private theorem withdrawals {capella : .shapella ≤ fork}
     {payload : Until .glamsterdam fork (ExecutionPayload preset fork)}
     (early : fork < .glamsterdam)
     (ok : processWithdrawals state capella payload = .ok after) :
-    SamePendingQueue state after := by
+    QueueKept state after := by
   unfold processWithdrawals at ok
   rw [dite_eq_right (show ¬ .glamsterdam ≤ fork from Nat.not_le_of_lt early)] at ok
   simp only [bind_ok_iff, ensure_ok_iff, liftAccessor_ok] at ok
@@ -244,7 +299,7 @@ private theorem withdrawals {capella : .shapella ≤ fork}
   unfold applyExpectedWithdrawals at applied
   simp only [bind_ok_iff] at applied
   obtain ⟨applied, appliedOk, indexed, indexedOk, finished, sweptOk, last⟩ := applied
-  have one : SamePendingQueue state applied := by
+  have one : QueueKept state applied := by
     unfold applyWithdrawals at appliedOk
     rw [← Array.foldlM_toList] at appliedOk
     exact fold (fun _ _ _ ok => by
@@ -255,7 +310,7 @@ private theorem withdrawals {capella : .shapella ≤ fork}
         obtain ⟨_, rfl⟩ := setBuilder_ok set
         rfl
       · exact decrease ok) appliedOk
-  have two : SamePendingQueue applied indexed := by
+  have two : QueueKept applied indexed := by
     unfold updateNextWithdrawalIndex at indexedOk
     split at indexedOk
     · simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at indexedOk
@@ -265,7 +320,7 @@ private theorem withdrawals {capella : .shapella ≤ fork}
   simp only [dite_eq_right (show ¬ .glamsterdam ≤ fork from Nat.not_le_of_lt early),
     pure, Except.pure, Except.ok.injEq] at sweptOk
   subst finished
-  have lastKept : SamePendingQueue indexed after := by
+  have lastKept : QueueKept indexed after := by
     split at last <;>
     unfold updateNextWithdrawalValidatorIndex at last
     all_goals
@@ -276,10 +331,10 @@ private theorem withdrawals {capella : .shapella ≤ fork}
       · cases last; rfl
   exact one.trans (two.trans lastKept)
 
-theorem blockExecution {body : BeaconBlockBody preset fork} {bellatrix : .bellatrix ≤ fork}
+private theorem blockExecution {body : BeaconBlockBody preset fork} {bellatrix : .bellatrix ≤ fork}
     (early : fork < .glamsterdam)
     (ok : processBlockExecution config checks engine state body bellatrix = .ok after) :
-    SamePendingQueue state after := by
+    QueueKept state after := by
   unfold processBlockExecution at ok
   rw [dite_eq_right (show ¬ .glamsterdam ≤ fork from Nat.not_le_of_lt early)] at ok
   split at ok
@@ -293,6 +348,60 @@ theorem blockExecution {body : BeaconBlockBody preset fork} {bellatrix : .bellat
     · obtain ⟨_, _, _, rfl⟩ := processExecutionPayload_ok ok
       rfl
     · cases ok; rfl
+
+end QueueKept
+
+namespace SamePendingQueue
+
+theorem refl (s : BeaconState preset fork) : SamePendingQueue s s := rfl
+
+theorem proposer {slashing : ProposerSlashing}
+    (ok : processProposerSlashing config checks state slashing = .ok after) :
+    SamePendingQueue state after :=
+  (QueueKept.proposer ok).queue
+
+theorem attester {slashing : AttesterSlashing preset fork}
+    (ok : processAttesterSlashing config checks state slashing = .ok after) :
+    SamePendingQueue state after :=
+  (QueueKept.attester ok).queue
+
+theorem voluntary {signed : SignedVoluntaryExit}
+    (ok : processVoluntaryExit config checks state signed = .ok after) :
+    SamePendingQueue state after :=
+  (QueueKept.voluntary ok).queue
+
+theorem bls {signed : SignedBLSToExecutionChange}
+    (ok : processBlsToExecutionChange config checks state signed = .ok after) :
+    SamePendingQueue state after :=
+  (QueueKept.bls ok).queue
+
+theorem deposit {before : fork < .hegota} {deposit : Deposit}
+    (electra : .pectra ≤ fork)
+    (ok : processDeposit config checks before state deposit = .ok after) :
+    SamePendingQueue state after :=
+  (QueueKept.deposit electra ok).queue
+
+theorem depositRequest {electra : .pectra ≤ fork} {request : DepositRequest}
+    (ok : processDepositRequest state electra request = .ok after) :
+    SamePendingQueue state after :=
+  (QueueKept.depositRequest ok).queue
+
+theorem withdrawalRequest {electra : .pectra ≤ fork} {request : WithdrawalRequest}
+    (ok : processWithdrawalRequest config state electra request = .ok after) :
+    SamePendingQueue state after :=
+  (QueueKept.withdrawalRequest ok).queue
+
+theorem attestation {attestation : Attestation preset fork} {parentSlot : Slot}
+    (electra : .pectra ≤ fork)
+    (ok : processAttestation config checks state parentSlot attestation = .ok after) :
+    SamePendingQueue state after :=
+  (QueueKept.attestation electra ok).queue
+
+theorem blockExecution {body : BeaconBlockBody preset fork} {bellatrix : .bellatrix ≤ fork}
+    (early : fork < .glamsterdam)
+    (ok : processBlockExecution config checks engine state body bellatrix = .ok after) :
+    SamePendingQueue state after :=
+  (QueueKept.blockExecution early ok).queue
 
 end SamePendingQueue
 
@@ -323,14 +432,14 @@ theorem upgradeNext_pending (P : ∀ {f : Fork}, BeaconState preset f → Prop)
   · obtain ⟨_, upgraded, rfl⟩ := ok
     simp only [upgradeToElectra, bind_ok_iff] at upgraded
     obtain ⟨_, _, _, _, _, _, _, _, _, queued, compounded⟩ := upgraded
-    have kept := SamePendingQueue.fold (fun _ _ _ ok => by
+    have kept := QueueKept.fold (fun _ _ _ ok => by
       simp only [queuePreActivation, bind_ok_iff, liftAccessor_ok, pure, Except.pure,
         Except.ok.injEq] at ok
       obtain ⟨_, _, _, _, _, _, b, balance, _, set, rfl⟩ := ok
       obtain ⟨_, rfl⟩ := setBalance_ok balance
-      have same := SamePendingQueue.setValidator set
+      have same := QueueKept.setValidator set
       exact same) queued
-    have kept' := SamePendingQueue.fold (fun _ _ _ ok => by
+    have kept' := QueueKept.fold (fun _ _ _ ok => by
       unfold queueCompoundingExcess at ok
       split at ok
       · split at ok
@@ -344,7 +453,7 @@ theorem upgradeNext_pending (P : ∀ {f : Fork}, BeaconState preset f → Prop)
           · cases ok; rfl
         · cases ok; rfl
       · cases ok; rfl) compounded
-    have queue := kept.trans kept'
+    have queue := (kept.trans kept').queue
     apply empty
     intro electra
     unfold SamePendingQueue at queue
@@ -659,6 +768,97 @@ theorem blockExecution {body : BeaconBlockBody preset fork} {bellatrix : .bellat
 
 end WithdrawalKept
 
+/-- The steps of an epoch keep the earliest consolidation epoch.
+
+Only a consolidation request writes it, and no epoch stage makes one. -/
+private theorem earliestLaws : EpochFrameLaws (preset := preset) (fork := fork)
+    fun s t => t.earliestConsolidationEpoch = s.earliestConsolidationEpoch where
+  refl _ := rfl
+  trans one two := two.trans one
+  setValidatorAt set _ _ _ _ _ := (QueueKept.setValidatorAt set).earliest
+  increaseBalance ok := (QueueKept.increase ok).earliest
+  decreaseBalance ok := (QueueKept.decrease ok).earliest
+  initiateValidatorExit ok := (QueueKept.exit ok).earliest
+  addValidatorToRegistry ok _ := (QueueKept.addValidator ok).earliest
+  eth1DataVotes _ _ := rfl
+  inactivityScores _ _ := rfl
+  slashings _ _ := rfl
+  randaoMixes _ _ := rfl
+  historicalRoots _ _ := rfl
+  historicalSummaries _ _ := rfl
+  participationRecords _ := rfl
+  pendingConsolidations _ _ := rfl
+  syncCommittees _ _ _ := rfl
+  proposerLookahead _ _ := rfl
+  ptcWindow _ _ := rfl
+  pendingDeposits _ _ _ := rfl
+
+/-- Every epoch stage keeps the earliest consolidation epoch.
+
+The laws above cover all stages but four, which keep it by their shape. -/
+private theorem EpochStage.Edge.consolidationEarliest {stage : EpochStage}
+    {s t : BeaconState preset fork} (edge : EpochStage.Edge config checks stage s t) :
+    t.earliestConsolidationEpoch = s.earliestConsolidationEpoch := by
+  cases stage
+  case justification =>
+    obtain rfl | ⟨_, _, _, weighed⟩ := processJustificationAndFinalization_ok edge
+    · rfl
+    · obtain ⟨_, _, _, rest⟩ := weighJustificationAndFinalization_checkpoints weighed
+      rw [← rest]
+  case payments =>
+    simp only [EpochStage.Edge] at edge
+    split at edge
+    · rw [processBuilderPendingPayments_eq edge]
+    · exact edge ▸ rfl
+  case participation =>
+    simp only [EpochStage.Edge] at edge
+    split at edge
+    · subst edge
+      rfl
+    · exact earliestLaws.processParticipationRecordUpdates edge
+  case pendingDeposits =>
+    simp only [EpochStage.Edge] at edge
+    split at edge
+    · exact earliestLaws.processPendingDeposits edge
+    · exact edge ▸ rfl
+  all_goals
+    exact earliestLaws.epochEdge (by exact ⟨nofun, nofun, nofun, nofun⟩)
+      (EpochStage.action_cases.mpr edge)
+
+/-- From Electra, an epoch stage other than the pending consolidations is a frame of the queue.
+
+It keeps the queue and the earliest consolidation epoch, every withdrawal and the slot. -/
+private theorem EpochStage.Edge.withdrawalFrame {stage : EpochStage}
+    {s t : BeaconState preset fork} (electra : .pectra ≤ fork)
+    (edge : EpochStage.Edge config checks stage s t) (other : stage ≠ .pendingConsolidations) :
+    QueueKept s t ∧ RegistryLifecycle s t ∧ WithdrawalKept s t ∧ t.slot = s.slot := by
+  have queue : QueueKept s t := by
+    have same : t.pendingConsolidations = s.pendingConsolidations := edge.samePendingQueue other
+    unfold QueueKept
+    rw [same, edge.consolidationEarliest]
+  cases stage
+  case registry =>
+    exact ⟨queue, registryLifecycle_processRegistryUpdates edge,
+      WithdrawalKept.registry electra edge, (frame_processRegistryUpdates edge).slot⟩
+  case pendingDeposits =>
+    simp only [EpochStage.Edge, electra, ↓reduceDIte] at edge
+    exact ⟨queue, registryLifecycle_processPendingDeposits edge,
+      WithdrawalKept.pendingDeposits edge, (frame_processPendingDeposits edge).slot⟩
+  case pendingConsolidations => exact absurd rfl other
+  case effectiveBalances =>
+    exact ⟨queue, registryLifecycle_processEffectiveBalanceUpdates edge,
+      WithdrawalKept.effectiveUpdates edge, (frame_processEffectiveBalanceUpdates edge).slot⟩
+  case rewards =>
+    have same := congrArg (·.data) (edge.validators_eq ⟨nofun, nofun, nofun⟩)
+    exact ⟨queue, .of_data same, .of_data same, (frame_processRewardsAndPenalties edge).slot⟩
+  case slashings =>
+    have same := congrArg (·.data) (edge.validators_eq ⟨nofun, nofun, nofun⟩)
+    exact ⟨queue, .of_data same, .of_data same, (frame_processSlashings edge).slot⟩
+  all_goals
+    have kept := edge.records ⟨nofun, nofun, nofun, nofun, nofun, nofun⟩
+    have same := congrArg (·.data) kept.1
+    exact ⟨queue, .of_data same, .of_data same, kept.2.2.2.2⟩
+
 /-- Distinct pending sources have activated and keep their assigned exit and withdrawal delay. -/
 def PendingConsolidationInvariant (config : Config) {fork : Fork}
     (s : BeaconState preset fork) : Prop :=
@@ -701,17 +901,6 @@ private theorem kept {s t : BeaconState preset fork}
     exact Nat.le_trans ordered (UInt64.le_iff_toNat_le.mp bound)
   · rw [later.exitEpoch assigned]; exact assigned
 
-private theorem registry (holds : PendingConsolidationInvariant config state)
-    (ok : processRegistryUpdates config state = .ok after) :
-    PendingConsolidationInvariant config after := by
-  by_cases electra : .pectra ≤ fork
-  · apply holds.kept (processRegistryUpdates_kept ok).2
-      (registryLifecycle_processRegistryUpdates ok) (WithdrawalKept.registry electra ok)
-    rw [show getCurrentEpoch after = getCurrentEpoch state from
-      congrArg (computeEpochAtSlot preset) (frame_processRegistryUpdates ok).slot]
-    exact UInt64.le_refl _
-  · intro h; exact False.elim (electra h)
-
 theorem pendingDeposits (holds : PendingConsolidationInvariant config state)
     {electra : .pectra ≤ fork}
     (ok : processPendingDeposits config checks state electra = .ok after) :
@@ -736,96 +925,6 @@ private theorem consolidations (holds : PendingConsolidationInvariant config sta
   refine ⟨?_, fun c mem => sources c (List.mem_of_mem_drop mem)⟩
   exact unique.sublist ((List.drop_sublist _ _).map _)
 
-private theorem queue {electra : .pectra ≤ fork} {sourceIndex targetIndex : ValidatorIndex}
-    {source : Validator} (holds : PendingConsolidationInvariant config state)
-    (found : state.validators.data[sourceIndex.toNat]? = some source)
-    (active : source.activationEpoch ≤ getCurrentEpoch state)
-    (far : source.exitEpoch = FAR_FUTURE_EPOCH)
-    (delay : 0 < config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat)
-    (ok : queueConsolidation config state electra sourceIndex source targetIndex = .ok after) :
-    PendingConsolidationInvariant config after := by
-  have frame := frame_queueConsolidation found ok
-  simp only [queueConsolidation, bind_ok_iff, liftAccessor_ok, liftArith, mapError_ok_iff,
-    pure, Except.pure] at ok
-  obtain ⟨⟨churned, epoch⟩, churnOk, withdrawal, added, written, set, pending, appended, final⟩ :=
-    ok
-  cases final
-  have data := appendWithinLimit_data appended
-  have churnRegistry := (computeConsolidationEpochAndUpdateChurn_earliest churnOk).2.1
-  have churnQueue : churned.pendingConsolidations = state.pendingConsolidations := by
-    simp only [computeConsolidationEpochAndUpdateChurn, bind_ok_iff, pure, Except.pure,
-      Except.ok.injEq] at churnOk
-    obtain ⟨_, _, _, _, _, _, final⟩ := churnOk
-    cases final; rfl
-  have queueEq := SamePendingQueue.setValidator set
-  change written.pendingConsolidations = churned.pendingConsolidations at queueEq
-  have sum := (Uint64.addChecked_ok_iff.mp added).2
-  have assigned : epoch ≠ FAR_FUTURE_EPOCH := by
-    intro eq
-    have bound := withdrawal.toNat_lt
-    rw [eq] at sum
-    have farNat : FAR_FUTURE_EPOCH.toNat = 18446744073709551615 := rfl
-    rw [farNat] at sum
-    omega
-  intro witness
-  obtain ⟨unique, sources⟩ := holds witness
-  have absent : sourceIndex ∉ ((state.pendingConsolidations witness).data.toList.map
-      (·.sourceIndex)) := by
-    intro mem
-    obtain ⟨c, mem, eq⟩ := List.mem_map.mp mem
-    obtain ⟨v, read, _, _, assigned⟩ := sources c mem
-    rw [eq, found] at read
-    cases read
-    exact assigned far
-  change (pending.data.toList.map (·.sourceIndex)).Nodup ∧ _
-  rw [data, queueEq, churnQueue, Array.toList_push]
-  refine ⟨?_, ?_⟩
-  · simpa [List.map_append, List.nodup_append, unique] using absent
-  · intro c mem
-    simp only [List.mem_append, List.mem_singleton] at mem
-    have sameEpoch : getCurrentEpoch written = getCurrentEpoch state :=
-      congrArg (computeEpochAtSlot preset) frame.slot
-    rcases mem with mem | rfl
-    · obtain ⟨v, read, activation, ordered, assigned⟩ := sources c mem
-      have distinct : c.sourceIndex ≠ sourceIndex := by
-        intro eq
-        rw [eq, found] at read
-        cases read
-        exact assigned far
-      refine ⟨v, ?_, ?_, ordered, assigned⟩
-      · have read' := getValidator_setValidator_of_ne set distinct
-        rw [getValidator_of_validators_eq churnRegistry] at read'
-        exact getValidator_eq_ok_iff.mp (read'.trans (getValidator_eq_ok_iff.mpr read))
-      · change v.activationEpoch ≤ getCurrentEpoch written
-        rw [sameEpoch]; exact activation
-    · refine ⟨{source with exitEpoch := epoch, withdrawableEpoch := withdrawal}, ?_, ?_, ?_,
-        assigned⟩
-      · have read := getValidator_eq_ok_iff.mp (getValidator_setValidator_self set)
-        exact read
-      · change source.activationEpoch ≤ getCurrentEpoch written
-        rw [sameEpoch]; exact active
-      · exact Nat.le_of_eq sum.symm
-
-private theorem request {electra : .pectra ≤ fork} {request : ConsolidationRequest}
-    (holds : PendingConsolidationInvariant config state)
-    (delay : 0 < config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat)
-    (ok : processConsolidationRequest config state electra request = .ok after) :
-    PendingConsolidationInvariant config after := by
-  have epoch : getCurrentEpoch after = getCurrentEpoch state :=
-    congrArg (computeEpochAtSlot preset) (frame_processConsolidationRequest ok).slot
-  unfold processConsolidationRequest at ok
-  simp only [bind, Except.bind, pure, Except.pure] at ok
-  repeat' split at ok
-  all_goals first
-    | (cases ok; done)
-    | (cases ok; exact holds)
-    | exact holds.kept (SamePendingQueue.compounding (liftAccessor_ok.mp ok))
-        (registryLifecycle_switchToCompoundingValidator (liftAccessor_ok.mp ok))
-        (WithdrawalKept.compounding (liftAccessor_ok.mp ok))
-        (by rw [epoch]; exact UInt64.le_refl _)
-    | exact holds.queue (getElem?_toNat_of_ofNatChecked (by assumption))
-        (by clear ok; simp_all [isActiveValidator]) (by clear ok; simp_all) delay ok
-
 private theorem framed (holds : PendingConsolidationInvariant config state)
     (queue : SamePendingQueue state after) (life : RegistryLifecycle state after)
     (withdrawal : WithdrawalKept state after) (slot : after.slot = state.slot) :
@@ -837,72 +936,374 @@ private theorem framed (holds : PendingConsolidationInvariant config state)
 
 /-- Every epoch stage keeps the invariant.
 
-Registry updates, pending deposits and pending consolidations have their own lemmas above.
+Pending consolidations have their own lemma above.
 
-Effective-balance updates keep the queue and the slot, and no withdrawal epoch decreases.
-
-Rewards and slashings change only balances.
-
-Each other stage keeps the queue, the validators and the slot. -/
+Every other stage keeps the queue, the slot and each withdrawal of a validator with an exit. -/
 theorem _root_.EthLib.Consensus.EpochStage.Edge.pendingConsolidationInvariant
     {stage : EpochStage} {s t : BeaconState preset fork}
     (edge : EpochStage.Edge config checks stage s t)
     (holds : PendingConsolidationInvariant config s) : PendingConsolidationInvariant config t := by
-  cases stage
-  case registry => exact holds.registry edge
-  case pendingDeposits | pendingConsolidations =>
-    simp only [EpochStage.Edge] at edge
-    split at edge
-    · first
-      | exact holds.pendingDeposits edge
-      | exact holds.consolidations edge
-    · exact edge ▸ holds
-  case effectiveBalances =>
-    exact holds.framed (edge.samePendingQueue nofun)
-      (registryLifecycle_processEffectiveBalanceUpdates edge)
-      (WithdrawalKept.effectiveUpdates edge) (frame_processEffectiveBalanceUpdates edge).slot
-  case rewards =>
-    simp only [EpochStage.Edge] at edge
-    rw [processRewardsAndPenalties_frame edge]
-    exact holds
-  case slashings =>
-    simp only [EpochStage.Edge] at edge
-    rw [processSlashings_frame edge]
-    exact holds
-  all_goals
-    have kept := edge.records ⟨nofun, nofun, nofun, nofun, nofun, nofun⟩
-    have same := congrArg (·.data) kept.1
-    exact holds.framed kept.2.2.1 (.of_data same) (WithdrawalKept.of_data same) kept.2.2.2.2
+  by_cases electra : .pectra ≤ fork
+  case neg => exact fun witness => absurd witness electra
+  by_cases pass : stage = .pendingConsolidations
+  · subst pass
+    simp only [EpochStage.Edge, electra, ↓reduceDIte] at edge
+    exact holds.consolidations edge
+  · obtain ⟨queue, life, withdrawal, slot⟩ := edge.withdrawalFrame electra pass
+    exact holds.framed queue.queue life withdrawal slot
 
-private theorem epoch (holds : PendingConsolidationInvariant config state)
+end PendingConsolidationInvariant
+
+/-- From Electra, the pending consolidations are in the order of their sources' exits.
+
+It adds four facts about each source to `PendingConsolidationInvariant`.
+
+- It exits no earlier than each source before it in the queue.
+- It exits no later than the earliest consolidation epoch.
+- If it is unslashed, it can withdraw exactly the withdrawal delay after its exit.
+- It can withdraw only after the epoch `bound`. -/
+def PendingConsolidationsOrdered (config : Config) (bound : Nat) {fork : Fork}
+    (s : BeaconState preset fork) : Prop :=
+  PendingConsolidationInvariant config s ∧ ∀ electra : .pectra ≤ fork,
+    (s.pendingConsolidations electra).data.toList.Pairwise (fun a b => ∀ v w,
+      s.validators.data[a.sourceIndex.toNat]? = some v →
+        s.validators.data[b.sourceIndex.toNat]? = some w → v.exitEpoch ≤ w.exitEpoch) ∧
+    ∀ c ∈ (s.pendingConsolidations electra).data.toList, ∀ v,
+      s.validators.data[c.sourceIndex.toNat]? = some v →
+        v.exitEpoch ≤ s.earliestConsolidationEpoch electra ∧
+        (v.slashed = false → v.withdrawableEpoch.toNat ≤
+          v.exitEpoch.toNat + config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat) ∧
+        bound < v.withdrawableEpoch.toNat
+
+namespace PendingConsolidationsOrdered
+
+variable {bound : Nat}
+
+private theorem mono {lower : Nat} (holds : PendingConsolidationsOrdered config bound state)
+    (le : lower ≤ bound) : PendingConsolidationsOrdered config lower state :=
+  ⟨holds.1, fun electra => ⟨(holds.2 electra).1, fun c mem v found =>
+    have ⟨opened, exact, late⟩ := (holds.2 electra).2 c mem v found
+    ⟨opened, exact, Nat.lt_of_le_of_lt le late⟩⟩⟩
+
+/-- A step keeps the order when it keeps the queue, the earliest epoch and every withdrawal. -/
+private theorem kept {s t : BeaconState preset fork}
+    (holds : PendingConsolidationsOrdered config bound s) (queue : QueueKept s t)
+    (life : RegistryLifecycle s t) (withdrawal : WithdrawalKept s t)
+    (epoch : getCurrentEpoch s ≤ getCurrentEpoch t) :
+    PendingConsolidationsOrdered config bound t := by
+  refine ⟨holds.1.kept queue.queue life withdrawal epoch, fun electra => ?_⟩
+  obtain ⟨sorted, sources⟩ := holds.2 electra
+  -- A queued source keeps its exit, and its withdrawal moves only if it is slashed.
+  have later : ∀ c ∈ (s.pendingConsolidations electra).data.toList, ∀ w,
+      t.validators.data[c.sourceIndex.toNat]? = some w → ∃ v,
+        s.validators.data[c.sourceIndex.toNat]? = some v ∧ w.exitEpoch = v.exitEpoch ∧
+        v.withdrawableEpoch ≤ w.withdrawableEpoch ∧
+        (w.slashed = false → v.slashed = false ∧ w.withdrawableEpoch = v.withdrawableEpoch) := by
+    intro c mem w now
+    obtain ⟨v, found, -, -, far⟩ := (holds.1 electra).2 c mem
+    obtain ⟨_, read, life'⟩ := life.validators _ v found
+    obtain ⟨_, read', grown, same⟩ := withdrawal _ v found far
+    obtain rfl := Option.some.inj (read.symm.trans now)
+    obtain rfl := Option.some.inj (read'.symm.trans now)
+    exact ⟨v, found, life'.exitEpoch far, grown, same⟩
+  have sameQueue : t.pendingConsolidations = s.pendingConsolidations := queue.queue
+  rw [sameQueue]
+  refine ⟨sorted.imp_of_mem fun memA memB order v' w' readA readB => ?_,
+    fun c mem w now => ?_⟩
+  · obtain ⟨v, foundA, exitA, -⟩ := later _ memA v' readA
+    obtain ⟨w, foundB, exitB, -⟩ := later _ memB w' readB
+    rw [exitA, exitB]
+    exact order v w foundA foundB
+  · obtain ⟨v, found, exit, grown, same⟩ := later c mem w now
+    obtain ⟨opened, exact, late⟩ := sources c mem v found
+    have grownNat := UInt64.le_iff_toNat_le.mp grown
+    refine ⟨?_, fun unslashed => ?_, by omega⟩
+    · rw [exit, queue.earliest]
+      exact opened
+    · obtain ⟨before, equal⟩ := same unslashed
+      rw [equal, exit]
+      exact exact before
+
+/-- A step at one slot keeps the order at the current epoch, under the conditions of `kept`. -/
+private theorem framed
+    (holds : PendingConsolidationsOrdered config (getCurrentEpoch state).toNat state)
+    (queue : QueueKept state after) (life : RegistryLifecycle state after)
+    (withdrawal : WithdrawalKept state after) (slot : after.slot = state.slot) :
+    PendingConsolidationsOrdered config (getCurrentEpoch after).toNat after := by
+  have epoch : getCurrentEpoch after = getCurrentEpoch state :=
+    congrArg (computeEpochAtSlot preset) slot
+  rw [epoch]
+  exact holds.kept queue life withdrawal (by rw [epoch]; exact UInt64.le_refl _)
+
+/-- The pass of an epoch leaves only sources that withdraw after the next epoch.
+
+It stops at an unslashed source that cannot withdraw in the next epoch.
+
+Each later source exits no earlier, so it withdraws no earlier. -/
+private theorem consolidations {electra : .pectra ≤ fork}
+    (holds : PendingConsolidationsOrdered config bound state)
+    (ok : processPendingConsolidations state electra = .ok after) :
+    PendingConsolidationsOrdered config (max bound (getCurrentEpoch state + 1).toNat) after := by
+  refine ⟨holds.1.consolidations ok, fun witness => ?_⟩
+  obtain ⟨sorted, sources⟩ := holds.2 witness
+  have queued := (holds.1 witness).2
+  obtain ⟨result, passed, -, queue⟩ := processPendingConsolidations_pass ok
+  have earliest : after.earliestConsolidationEpoch = state.earliestConsolidationEpoch :=
+    earliestLaws.processPendingConsolidations ok
+  rw [queue, passPendingConsolidations_drop passed, (processPendingConsolidations_kept ok).1,
+    earliest]
+  let stops := fun consolidation : PendingConsolidation =>
+    state.validators.data[consolidation.sourceIndex.toNat]?.any fun source =>
+      source.slashed || source.withdrawableEpoch ≤ getCurrentEpoch state + 1
+  have suffix := List.dropWhile_suffix (l := (state.pendingConsolidations witness).data.toList)
+    stops
+  refine ⟨sorted.sublist suffix.sublist, fun c mem v found => ?_⟩
+  have inQueue := suffix.subset mem
+  obtain ⟨opened, exact, late⟩ := sources c inQueue v found
+  refine ⟨opened, exact, Nat.max_lt.mpr ⟨late, ?_⟩⟩
+  -- The first source left is unslashed and withdraws after the next epoch.
+  obtain ⟨head, tail, split⟩ := List.exists_cons_of_ne_nil (List.ne_nil_of_mem mem)
+  have stopped := List.head?_dropWhile_not stops (state.pendingConsolidations witness).data.toList
+  rw [split] at stopped
+  simp only [List.head?_cons] at stopped
+  have headQueued := suffix.subset (split ▸ List.mem_cons_self)
+  obtain ⟨u, foundHead, -, -, -⟩ := queued head headQueued
+  obtain ⟨-, exactHead, -⟩ := sources head headQueued u foundHead
+  simp only [stops, foundHead, Option.any_some, Bool.or_eq_false_iff, decide_eq_false_iff_not,
+    UInt64.not_le] at stopped
+  have waits := UInt64.lt_iff_toNat_lt.mp stopped.2
+  -- A later source exits no earlier than the first one.
+  have ordered := sorted.sublist suffix.sublist
+  rw [split, List.pairwise_cons] at ordered
+  rw [split] at mem
+  rcases List.mem_cons.mp mem with rfl | inTail
+  · obtain rfl := Option.some.inj (found.symm.trans foundHead)
+    exact waits
+  · have exitOrder := UInt64.le_iff_toNat_le.mp (ordered.1 c inTail u v foundHead found)
+    obtain ⟨w, read, -, delayed, -⟩ := queued c inQueue
+    obtain rfl := Option.some.inj (read.symm.trans found)
+    have := exactHead stopped.1
+    omega
+
+/-- A consolidation request appends its source, which exits at the new earliest epoch.
+
+That exit is no earlier than any queued exit, and the source withdraws after the current epoch. -/
+private theorem queue {electra : .pectra ≤ fork} {sourceIndex targetIndex : ValidatorIndex}
+    {source : Validator}
+    (holds : PendingConsolidationsOrdered config (getCurrentEpoch state).toNat state)
+    (found : state.validators.data[sourceIndex.toNat]? = some source)
+    (active : source.activationEpoch ≤ getCurrentEpoch state)
+    (far : source.exitEpoch = FAR_FUTURE_EPOCH)
+    (delay : 0 < config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat)
+    (ok : queueConsolidation config state electra sourceIndex source targetIndex = .ok after) :
+    PendingConsolidationsOrdered config (getCurrentEpoch after).toNat after := by
+  have frame := frame_queueConsolidation found ok
+  have sameEpoch : getCurrentEpoch after = getCurrentEpoch state :=
+    congrArg (computeEpochAtSlot preset) frame.slot
+  simp only [queueConsolidation, bind_ok_iff, liftAccessor_ok, liftArith, mapError_ok_iff,
+    pure, Except.pure] at ok
+  obtain ⟨⟨churned, epoch⟩, churnOk, withdrawal, added, written, set, pending, appended, final⟩ :=
+    ok
+  cases final
+  have data := appendWithinLimit_data appended
+  obtain ⟨churnEarliest, churnRegistry, -⟩ :=
+    computeConsolidationEpochAndUpdateChurn_earliest churnOk
+  -- The churn call opens no earlier than the queue, and no earlier than the first exit epoch.
+  obtain ⟨first, firstOk⟩ : ∃ first,
+      computeActivationExitEpoch preset (getCurrentEpoch state) = .ok first := by
+    simp only [computeConsolidationEpochAndUpdateChurn, bind_ok_iff, liftArith,
+      mapError_ok_iff] at churnOk
+    obtain ⟨first, firstOk, -⟩ := churnOk
+    exact ⟨first, firstOk⟩
+  obtain ⟨firstLe, earliestLe⟩ := computeConsolidationEpochAndUpdateChurn_first firstOk churnOk
+  have firstNat := (computeActivationExitEpoch_ok_iff.mp firstOk).2
+  have firstLeNat := UInt64.le_iff_toNat_le.mp firstLe
+  have churnQueue : churned.pendingConsolidations = state.pendingConsolidations := by
+    simp only [computeConsolidationEpochAndUpdateChurn, bind_ok_iff, pure, Except.pure,
+      Except.ok.injEq] at churnOk
+    obtain ⟨_, _, _, _, _, _, final⟩ := churnOk
+    cases final; rfl
+  have writtenKept := QueueKept.setValidator set
+  have queueEq := writtenKept.queue
+  change written.pendingConsolidations = churned.pendingConsolidations at queueEq
+  have sum := (Uint64.addChecked_ok_iff.mp added).2
+  simp only at sum
+  have assigned : epoch ≠ FAR_FUTURE_EPOCH := by
+    intro eq
+    have bound := withdrawal.toNat_lt
+    rw [eq] at sum
+    have farNat : FAR_FUTURE_EPOCH.toNat = 18446744073709551615 := rfl
+    rw [farNat] at sum
+    omega
+  have newRead : written.validators.data[sourceIndex.toNat]? =
+      some { source with exitEpoch := epoch, withdrawableEpoch := withdrawal } :=
+    getValidator_eq_ok_iff.mp (getValidator_setValidator_self set)
+  -- Each queued source has an exit, so it is not the new source and keeps its validator.
+  have unchanged : ∀ witness : .pectra ≤ fork,
+      ∀ c ∈ (state.pendingConsolidations witness).data.toList,
+        written.validators.data[c.sourceIndex.toNat]? =
+          state.validators.data[c.sourceIndex.toNat]? := by
+    intro witness c mem
+    have distinct : c.sourceIndex ≠ sourceIndex := by
+      intro eq
+      obtain ⟨v, read, -, -, assignedOld⟩ := (holds.1 witness).2 c mem
+      rw [eq, found] at read
+      cases read
+      exact assignedOld far
+    have same := (getValidator_setValidator_of_ne set distinct).trans
+      (getValidator_of_validators_eq churnRegistry c.sourceIndex)
+    exact Option.ext fun v => by rw [← getValidator_eq_ok_iff, ← getValidator_eq_ok_iff, same]
+  refine ⟨fun witness => ?_, fun witness => ?_⟩
+  · obtain ⟨unique, sources⟩ := holds.1 witness
+    have absent : sourceIndex ∉ ((state.pendingConsolidations witness).data.toList.map
+        (·.sourceIndex)) := by
+      intro mem
+      obtain ⟨c, mem, eq⟩ := List.mem_map.mp mem
+      obtain ⟨v, read, _, _, assigned⟩ := sources c mem
+      rw [eq, found] at read
+      cases read
+      exact assigned far
+    change (pending.data.toList.map (·.sourceIndex)).Nodup ∧ _
+    rw [data, queueEq, churnQueue, Array.toList_push]
+    refine ⟨?_, ?_⟩
+    · simpa [List.map_append, List.nodup_append, unique] using absent
+    · intro c mem
+      simp only [List.mem_append, List.mem_singleton] at mem
+      rcases mem with mem | rfl
+      · obtain ⟨v, read, activation, ordered, assigned⟩ := sources c mem
+        refine ⟨v, by rw [unchanged witness c mem]; exact read, ?_, ordered, assigned⟩
+        change v.activationEpoch ≤ getCurrentEpoch written
+        rw [show getCurrentEpoch written = getCurrentEpoch state from sameEpoch]
+        exact activation
+      · refine ⟨_, newRead, ?_, Nat.le_of_eq sum.symm, assigned⟩
+        change source.activationEpoch ≤ getCurrentEpoch written
+        rw [show getCurrentEpoch written = getCurrentEpoch state from sameEpoch]
+        exact active
+  · obtain ⟨sorted, sources⟩ := holds.2 witness
+    have newEarliest : written.earliestConsolidationEpoch witness = epoch :=
+      (congrFun writtenKept.earliest witness).trans churnEarliest
+    rw [sameEpoch]
+    change (pending.data.toList.Pairwise fun a b => ∀ v w,
+        written.validators.data[a.sourceIndex.toNat]? = some v →
+          written.validators.data[b.sourceIndex.toNat]? = some w → v.exitEpoch ≤ w.exitEpoch) ∧
+      ∀ c ∈ pending.data.toList, ∀ v, written.validators.data[c.sourceIndex.toNat]? = some v →
+        v.exitEpoch ≤ written.earliestConsolidationEpoch witness ∧ _ ∧ _
+    rw [data, queueEq, churnQueue, Array.toList_push, newEarliest, List.pairwise_append]
+    refine ⟨⟨sorted.imp_of_mem fun memA memB order v w readA readB =>
+        order v w (by rwa [unchanged witness _ memA] at readA)
+          (by rwa [unchanged witness _ memB] at readB),
+      List.pairwise_singleton _ _, fun a memA b memB v w readA readB => ?_⟩,
+      fun c mem v read => ?_⟩
+    · rw [List.mem_singleton.mp memB, newRead, Option.some.injEq] at readB
+      subst readB
+      rw [unchanged witness a memA] at readA
+      exact UInt64.le_trans (sources a memA v readA).1 earliestLe
+    · rcases List.mem_append.mp mem with mem | mem
+      · rw [unchanged witness c mem] at read
+        obtain ⟨opened, exact, late⟩ := sources c mem v read
+        exact ⟨UInt64.le_trans opened earliestLe, exact, late⟩
+      · rw [List.mem_singleton.mp mem, newRead, Option.some.injEq] at read
+        subst read
+        refine ⟨UInt64.le_refl _, fun _ => ?_, ?_⟩ <;> simp only <;> omega
+
+private theorem request {electra : .pectra ≤ fork} {request : ConsolidationRequest}
+    (holds : PendingConsolidationsOrdered config (getCurrentEpoch state).toNat state)
+    (delay : 0 < config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat)
+    (ok : processConsolidationRequest config state electra request = .ok after) :
+    PendingConsolidationsOrdered config (getCurrentEpoch after).toNat after := by
+  unfold processConsolidationRequest at ok
+  simp only [bind, Except.bind, pure, Except.pure] at ok
+  repeat' split at ok
+  all_goals first
+    | (cases ok; done)
+    | (cases ok; exact holds)
+    | exact holds.framed (QueueKept.compounding (liftAccessor_ok.mp ok))
+        (registryLifecycle_switchToCompoundingValidator (liftAccessor_ok.mp ok))
+        (WithdrawalKept.compounding (liftAccessor_ok.mp ok))
+        (frame_switchToCompoundingValidator (liftAccessor_ok.mp ok)).slot
+    | exact holds.queue (getElem?_toNat_of_ofNatChecked (by assumption))
+        (by clear ok; simp_all [isActiveValidator]) (by clear ok; simp_all) delay ok
+
+/-- Every epoch stage keeps the order for a fixed bound. -/
+private theorem stage {stage : EpochStage} {s t : BeaconState preset fork}
+    (edge : EpochStage.Edge config checks stage s t)
+    (holds : PendingConsolidationsOrdered config bound s) :
+    PendingConsolidationsOrdered config bound t := by
+  by_cases electra : .pectra ≤ fork
+  case neg =>
+    exact ⟨fun witness => absurd witness electra, fun witness => absurd witness electra⟩
+  by_cases pass : stage = .pendingConsolidations
+  · subst pass
+    simp only [EpochStage.Edge, electra, ↓reduceDIte] at edge
+    exact (holds.consolidations edge).mono (Nat.le_max_left _ _)
+  · obtain ⟨queue, life, withdrawal, slot⟩ := edge.withdrawalFrame electra pass
+    exact holds.kept queue life withdrawal (by
+      rw [show getCurrentEpoch t = getCurrentEpoch s from
+        congrArg (computeEpochAtSlot preset) slot]
+      exact UInt64.le_refl _)
+
+/-- An epoch moves the bound from the current epoch to the next one.
+
+The bound holds up to the pass of the pending consolidations, which raises it. -/
+private theorem epoch
+    (holds : PendingConsolidationsOrdered config (getCurrentEpoch state).toNat state)
     (ok : processEpoch config checks state = .ok after) :
-    PendingConsolidationInvariant config after :=
-  (processEpoch_trace ok).transport
-    (fun a b => PendingConsolidationInvariant config a → PendingConsolidationInvariant config b)
-    (fun _ => id) (fun one two => two ∘ one)
-    (fun _ _ _ _ computed held =>
-      (EpochStage.action_cases.mp computed).pendingConsolidationInvariant held) holds
+    PendingConsolidationsOrdered config (getCurrentEpoch state + 1).toNat after := by
+  by_cases electra : .pectra ≤ fork
+  case neg =>
+    exact ⟨fun witness => absurd witness electra, fun witness => absurd witness electra⟩
+  -- Before the pass the bound is the current epoch, and after it the next one.
+  let Before (rest : List EpochStage) (a : BeaconState preset fork) : Prop :=
+    a.slot = state.slot ∧
+      (.pendingConsolidations ∈ rest →
+        PendingConsolidationsOrdered config (getCurrentEpoch state).toNat a) ∧
+      (.pendingConsolidations ∉ rest →
+        PendingConsolidationsOrdered config (getCurrentEpoch state + 1).toNat a)
+  have done : Before [] after := by
+    refine (processEpoch_trace ok).induction_on Before
+      ⟨rfl, fun _ => holds, fun absent =>
+        absurd (by simp [EpochStage.epochStages, EpochStage.prefixStages]) absent⟩ ?_
+    intro k rest a b computed ⟨slot, before, after⟩
+    have edge := EpochStage.action_cases.mp computed
+    by_cases pass : k = .pendingConsolidations
+    · subst pass
+      simp only [EpochStage.Edge, electra, ↓reduceDIte] at edge
+      refine ⟨(frame_processPendingConsolidations edge).slot.trans slot, ?_⟩
+      have raised := (before List.mem_cons_self).consolidations edge
+      rw [show getCurrentEpoch a = getCurrentEpoch state from
+        congrArg (computeEpochAtSlot preset) slot] at raised
+      exact ⟨fun _ => raised.mono (Nat.le_max_left _ _),
+        fun _ => raised.mono (Nat.le_max_right _ _)⟩
+    · have same : (EpochStage.pendingConsolidations ∈ k :: rest) ↔
+          .pendingConsolidations ∈ rest := by
+        simp only [List.mem_cons, Ne.symm pass, false_or]
+      exact ⟨(edge.withdrawalFrame electra pass).2.2.2.trans slot,
+        fun present => (before (same.mpr present)).stage edge,
+        fun absent => (after (mt same.mp absent)).stage edge⟩
+  exact done.2.2 List.not_mem_nil
 
 private theorem fold {α ε : Type}
     {step : BeaconState preset fork → α → Except ε (BeaconState preset fork)} {xs : List α}
-    (kept : ∀ a item b, PendingConsolidationInvariant config a → step a item = .ok b →
-      PendingConsolidationInvariant config b)
-    (holds : PendingConsolidationInvariant config state) (ok : xs.foldlM step state = .ok after) :
-    PendingConsolidationInvariant config after :=
-  foldlM_ok_invariant (PendingConsolidationInvariant config) kept holds ok
+    (kept : ∀ a item b, PendingConsolidationsOrdered config (getCurrentEpoch a).toNat a →
+      step a item = .ok b → PendingConsolidationsOrdered config (getCurrentEpoch b).toNat b)
+    (holds : PendingConsolidationsOrdered config (getCurrentEpoch state).toNat state)
+    (ok : xs.foldlM step state = .ok after) :
+    PendingConsolidationsOrdered config (getCurrentEpoch after).toNat after :=
+  foldlM_ok_invariant (fun a => PendingConsolidationsOrdered config (getCurrentEpoch a).toNat a)
+    kept holds ok
 
 private theorem executionRequests {body : BeaconBlockBody preset fork}
     {electra : .pectra ≤ fork ∧ fork < .glamsterdam}
-    (holds : PendingConsolidationInvariant config state)
+    (holds : PendingConsolidationsOrdered config (getCurrentEpoch state).toNat state)
     (delay : 0 < config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat)
     (ok : processExecutionRequests config state body electra = .ok after) :
-    PendingConsolidationInvariant config after := by
+    PendingConsolidationsOrdered config (getCurrentEpoch after).toNat after := by
   simp only [processExecutionRequests, bind_ok_iff, ← Array.foldlM_toList] at ok
   obtain ⟨_, deposits, _, withdrawals, consolidations⟩ := ok
-  have first := fold (fun _ _ _ h ok => h.framed (SamePendingQueue.depositRequest ok)
+  have first := fold (fun _ _ _ h ok => h.framed (QueueKept.depositRequest ok)
     (registryLifecycle_processDepositRequest ok) (WithdrawalKept.depositRequest ok)
     (frame_processDepositRequest ok).slot) holds deposits
-  have second := fold (fun _ _ _ h ok => h.framed (SamePendingQueue.withdrawalRequest ok)
+  have second := fold (fun _ _ _ h ok => h.framed (QueueKept.withdrawalRequest ok)
     (registryLifecycle_processWithdrawalRequest ok) (WithdrawalKept.withdrawalRequest ok)
     (frame_processWithdrawalRequest ok).slot) first withdrawals
   exact fold (fun _ _ _ h ok => h.request delay ok) second consolidations
@@ -911,23 +1312,25 @@ private theorem executionRequests {body : BeaconBlockBody preset fork}
 
 A block frame does not carry the queue, so each step reads its own queue lemma. -/
 private theorem block (early : fork < .glamsterdam)
-    (holds : PendingConsolidationInvariant config state)
+    (holds : PendingConsolidationsOrdered config (getCurrentEpoch state).toNat state)
     (delay : 0 < config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat)
     {block : BeaconBlock preset fork}
     (ok : processBlock config checks engine state block = .ok after) :
-    PendingConsolidationInvariant config after := by
+    PendingConsolidationsOrdered config (getCurrentEpoch after).toNat after := by
   by_cases electra : .pectra ≤ fork
-  case neg => exact fun witness => absurd witness electra
+  case neg =>
+    exact ⟨fun witness => absurd witness electra, fun witness => absurd witness electra⟩
   have noGloas : ¬ Fork.glamsterdam ≤ fork := Nat.not_le_of_lt early
   let Kept (a b : BeaconState preset fork) : Prop :=
-    PendingConsolidationInvariant config a → PendingConsolidationInvariant config b
+    PendingConsolidationsOrdered config (getCurrentEpoch a).toNat a →
+      PendingConsolidationsOrdered config (getCurrentEpoch b).toNat b
   have trans {a b c : BeaconState preset fork} (one : Kept a b) (two : Kept b c) : Kept a c :=
     two ∘ one
   obtain ⟨input, last, started, operated, -, synced⟩ := processBlock_operationsInput ok
   have head : Kept state input :=
     OperationsInput.step_of Kept (fun _ => id) trans (fun gloas _ => absurd gloas noGloas)
       (fun headed => by obtain ⟨_, _, rfl⟩ := processBlockHeader_eq headed; exact id)
-      (fun _ executed h => h.framed (SamePendingQueue.blockExecution early executed)
+      (fun _ executed h => h.framed (QueueKept.blockExecution early executed)
         (.of_data (congrArg (·.data) (processBlockExecution_validators executed)))
         (WithdrawalKept.blockExecution executed)
         (frame_processBlockExecution executed).slot)
@@ -941,14 +1344,14 @@ private theorem block (early : fork < .glamsterdam)
       started
   obtain ⟨_, _, _, proposersOk, slashingsOk, attestedOk, rest⟩ :=
     processOperations_folds_of Kept (fun _ => id) trans
-      (fun deposited h => h.framed (SamePendingQueue.deposit electra deposited)
+      (fun deposited h => h.framed (QueueKept.deposit electra deposited)
         (registryLifecycle_processDeposit deposited) (WithdrawalKept.blockDeposit electra deposited)
         (frame_processDeposit deposited).slot)
-      (fun exited h => h.framed (SamePendingQueue.voluntary exited)
+      (fun exited h => h.framed (QueueKept.voluntary exited)
         (registryLifecycle_processVoluntaryExit exited)
         (WithdrawalKept.exit (processVoluntaryExit_initiates exited))
         (frame_processVoluntaryExit exited).slot)
-      (fun changed h => h.framed (SamePendingQueue.bls changed)
+      (fun changed h => h.framed (QueueKept.bls changed)
         (registryLifecycle_processBlsToExecutionChange changed) (WithdrawalKept.bls changed)
         (frame_processBlsToExecutionChange changed).slot)
       (fun requested h => h.executionRequests delay requested)
@@ -959,77 +1362,152 @@ private theorem block (early : fork < .glamsterdam)
       exact fun h => h.framed rfl (.of_data rfl) .of_data rfl
     · cases synced
       exact id
-  have p := fold (fun _ _ _ h ok => h.framed (SamePendingQueue.proposer ok)
+  have p := fold (fun _ _ _ h ok => h.framed (QueueKept.proposer ok)
     (registryLifecycle_processProposerSlashing ok) (WithdrawalKept.proposer ok)
     (frame_processProposerSlashing ok).slot) (head holds) proposersOk
-  have a := fold (fun _ _ _ h ok => h.framed (SamePendingQueue.attester ok)
+  have a := fold (fun _ _ _ h ok => h.framed (QueueKept.attester ok)
     (registryLifecycle_processAttesterSlashing ok) (WithdrawalKept.attester ok)
     (frame_processAttesterSlashing ok).slot) p slashingsOk
-  have att := fold (fun _ _ _ h ok => h.framed (SamePendingQueue.attestation electra ok)
+  have att := fold (fun _ _ _ h ok => h.framed (QueueKept.attestation electra ok)
     (registryLifecycle_processAttestation ok) (WithdrawalKept.attestation ok)
     (frame_processAttestation ok).slot) a attestedOk
   exact tail (rest att)
 
-private theorem advance (holds : PendingConsolidationInvariant config state)
+/-- A slot keeps the order at the current epoch, and an epoch boundary moves the bound.
+
+The epoch boundary is the only case where the current epoch grows, by exactly one. -/
+private theorem advance
+    (holds : PendingConsolidationsOrdered config (getCurrentEpoch state).toNat state)
     (ok : advanceSlot config checks state = .ok after) :
-    PendingConsolidationInvariant config after := by
+    PendingConsolidationsOrdered config (getCurrentEpoch after).toNat after := by
   obtain ⟨next, cached, epoched, sum, cachedOk, epochedOk, rfl⟩ := advanceSlot_ok ok
   obtain ⟨_, _, _, _, cachedEq⟩ := processSlot_ok cachedOk
-  have first : PendingConsolidationInvariant config cached := by rw [cachedEq]; exact holds
-  have second : PendingConsolidationInvariant config epoched ∧ epoched.slot = state.slot := by
+  have first : PendingConsolidationsOrdered config (getCurrentEpoch cached).toNat cached := by
+    rw [cachedEq]; exact holds
+  have cachedEpoch : getCurrentEpoch cached = getCurrentEpoch state := by rw [cachedEq]; rfl
+  have bounded := next.toNat_lt
+  have slotEpoch := getCurrentEpoch_toNat state
+  have nextEpoch := getCurrentEpoch_toNat { epoched with slot := next }
+  simp only at nextEpoch
+  have below := Nat.div_le_self state.slot.toNat preset.SLOTS_PER_EPOCH.toNat
+  have second : ∃ bound, PendingConsolidationsOrdered config bound epoched ∧
+      epoched.slot = state.slot ∧
+      (getCurrentEpoch { epoched with slot := next }).toNat ≤ bound := by
     unfold epochIfLast at epochedOk
     split at epochedOk
-    · refine ⟨epoch first epochedOk, ?_⟩
-      obtain ⟨justified, justifiedOk, frame⟩ := processEpoch_frame epochedOk
-      have same : justified.slot = cached.slot := by
-        obtain rfl | ⟨_, _, _, weighed⟩ := processJustificationAndFinalization_ok justifiedOk
-        · rfl
-        · obtain ⟨_, _, _, rest⟩ := weighJustificationAndFinalization_checkpoints weighed
-          rw [← rest]
-      exact frame.slot.trans (same.trans (by rw [cachedEq]))
-    · cases epochedOk; exact ⟨first, by rw [cachedEq]⟩
-  apply second.1.kept (t := {epoched with slot := next}) rfl (.of_data rfl)
-    (WithdrawalKept.of_data rfl)
+    · rename_i last
+      refine ⟨_, epoch first epochedOk, ?_, ?_⟩
+      · obtain ⟨justified, justifiedOk, frame⟩ := processEpoch_frame epochedOk
+        have same : justified.slot = cached.slot := by
+          obtain rfl | ⟨_, _, _, weighed⟩ := processJustificationAndFinalization_ok justifiedOk
+          · rfl
+          · obtain ⟨_, _, _, rest⟩ := weighJustificationAndFinalization_checkpoints weighed
+            rw [← rest]
+        exact frame.slot.trans (same.trans (by rw [cachedEq]))
+      · have divides : preset.SLOTS_PER_EPOCH.toNat ∣ state.slot.toNat + 1 := by
+          rw [← sum]
+          exact Nat.dvd_of_mod_eq_zero (by simpa using congrArg UInt64.toNat last)
+        rw [nextEpoch, sum, Nat.succ_div_of_dvd divides, cachedEpoch, UInt64.toNat_add,
+          slotEpoch]
+        simp only [UInt64.toNat_one]
+        omega
+    · rename_i last
+      cases epochedOk
+      refine ⟨_, first, by rw [cachedEq], ?_⟩
+      have apart : ¬ preset.SLOTS_PER_EPOCH.toNat ∣ state.slot.toNat + 1 := fun divides =>
+        last (by
+          apply UInt64.toNat_inj.mp
+          rw [UInt64.toNat_mod, sum]
+          simpa using Nat.mod_eq_zero_of_dvd divides)
+      rw [nextEpoch, sum, Nat.succ_div_of_not_dvd apart, cachedEpoch, slotEpoch]
+      exact Nat.le_refl _
+  obtain ⟨bound, held, slot, le⟩ := second
+  refine (held.kept (t := { epoched with slot := next }) rfl (.of_data rfl)
+    (WithdrawalKept.of_data rfl) ?_).mono le
   apply UInt64.le_iff_toNat_le.mpr
   rw [getCurrentEpoch_toNat, getCurrentEpoch_toNat]
-  simp only [second.2, sum]
+  simp only [slot, sum]
   exact Nat.div_le_div_right (Nat.le_succ _)
 
 private theorem upgrade {pre : ForkedBeaconState preset}
     {post : {post : ForkedBeaconState preset // pre.fork < post.fork}}
-    (holds : PendingConsolidationInvariant config pre.state)
+    (holds : PendingConsolidationsOrdered config bound pre.state)
     (ok : upgradeNext config checks pre = .ok post)
     (early : post.val.fork < .glamsterdam) :
-    PendingConsolidationInvariant config post.val.state :=
-  upgradeNext_pending (P := PendingConsolidationInvariant config)
-    (fun _ before electra => absurd electra (Nat.not_le_of_lt before))
-    (fun _ empty electra => by simp [empty electra])
+    PendingConsolidationsOrdered config bound post.val.state :=
+  upgradeNext_pending (P := PendingConsolidationsOrdered config bound)
+    (fun _ before => ⟨fun electra => absurd electra (Nat.not_le_of_lt before),
+      fun electra => absurd electra (Nat.not_le_of_lt before)⟩)
+    (fun _ empty => ⟨fun electra => by simp [empty electra],
+      fun electra => by simp [empty electra]⟩)
     (fun upgraded holds => by
       simp only [upgradeToFulu, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at upgraded
       obtain ⟨_, _, rfl⟩ := upgraded
-      intro electra
-      simpa [carryFields, carryList, carryRooted, getCurrentEpoch] using
-        holds (show Fork.pectra ≤ .pectra from Nat.le_refl _))
+      refine ⟨fun electra => ?_, fun electra => ?_⟩
+      · simpa [carryFields, carryList, carryRooted, getCurrentEpoch] using
+          holds.1 (show Fork.pectra ≤ .pectra from Nat.le_refl _)
+      · simpa [carryFields, carryList, carryRooted] using
+          holds.2 (show Fork.pectra ≤ .pectra from Nat.le_refl _))
     holds ok early
 
 private theorem step {x y : ForkedBeaconState preset}
     (step : Step config checks x y) (early : y.fork < .glamsterdam)
-    (holds : PendingConsolidationInvariant config x.state)
+    (holds : PendingConsolidationsOrdered config (getCurrentEpoch x.state).toNat x.state)
     (delay : 0 < config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat) :
-    PendingConsolidationInvariant config y.state := by
+    PendingConsolidationsOrdered config (getCurrentEpoch y.state).toNat y.state := by
   cases step with
   | slot ok =>
     obtain ⟨advanced, slotOk, upgrades⟩ := bind_ok_iff.mp ok
     have initial := advance holds slotOk
     have rest := processUpgrades_induction
       (property := fun post => post.fork < .glamsterdam →
-        PendingConsolidationInvariant config post.state)
+        PendingConsolidationsOrdered config (getCurrentEpoch advanced).toNat post.state)
       (fun {pre post} h ok early => upgrade (h (Nat.lt_trans post.property early)) ok early)
       (fun _ => initial) upgrades
+    rw [show getCurrentEpoch y.state = getCurrentEpoch advanced from
+      congrArg (computeEpochAtSlot preset) (processUpgrades_slot upgrades)]
     exact rest early
   | block engine signed due ok => exact block early holds delay (applySignedBlock_ok ok).2.1
 
-end PendingConsolidationInvariant
+end PendingConsolidationsOrdered
+
+/-- An epoch stage keeps the order of the pending consolidations at the current epoch.
+
+So the state before each stage of an epoch has it, up to the pass that moves the bound. -/
+theorem EpochStage.Edge.pendingConsolidationsOrdered {stage : EpochStage}
+    {s t : BeaconState preset fork} (edge : EpochStage.Edge config checks stage s t)
+    (holds : PendingConsolidationsOrdered config (getCurrentEpoch s).toNat s) :
+    PendingConsolidationsOrdered config (getCurrentEpoch t).toNat t := by
+  by_cases electra : .pectra ≤ fork
+  case neg =>
+    exact ⟨fun witness => absurd witness electra, fun witness => absurd witness electra⟩
+  have slot : t.slot = s.slot := by
+    by_cases pass : stage = .pendingConsolidations
+    · subst pass
+      simp only [EpochStage.Edge, electra, ↓reduceDIte] at edge
+      exact (frame_processPendingConsolidations edge).slot
+    · exact (edge.withdrawalFrame electra pass).2.2.2
+  rw [show getCurrentEpoch t = getCurrentEpoch s from congrArg (computeEpochAtSlot preset) slot]
+  exact holds.stage edge
+
+/-- From genesis and before Gloas, the pending consolidations of a run are ordered.
+
+So no pending source can withdraw at the current epoch, whether it is slashed or not. -/
+theorem Run.pendingConsolidationsOrdered {g x : ForkedBeaconState preset}
+    (run : Run config checks g x)
+    (genesis : Genesis (config := config) (checks := checks) g)
+    (early : x.fork < .glamsterdam)
+    (delay : 0 < config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat) :
+    PendingConsolidationsOrdered config (getCurrentEpoch x.state).toNat x.state := by
+  induction run with
+  | nil =>
+    obtain ⟨_, _, _, ok⟩ := genesis
+    have before := (initializeBeaconStateFromEth1_invariant ok).1
+    have notElectra : ¬ Fork.pectra ≤ _ := Nat.not_le_of_lt (Nat.lt_trans before (by decide))
+    exact ⟨fun electra => absurd electra notElectra, fun electra => absurd electra notElectra⟩
+  | snoc pre step ih =>
+    exact PendingConsolidationsOrdered.step step early
+      (ih (Nat.lt_of_le_of_lt step.chainStep.fork_le early)) delay
 
 /-- Pending sources are distinct and retain their activation and withdrawal ordering. -/
 theorem Run.pendingConsolidation_invariant {g x : ForkedBeaconState preset}
@@ -1042,19 +1520,8 @@ theorem Run.pendingConsolidation_invariant {g x : ForkedBeaconState preset}
       ∃ v, x.state.validators.data[c.sourceIndex.toNat]? = some v ∧
         v.activationEpoch ≤ getCurrentEpoch x.state ∧
         v.exitEpoch.toNat + config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat ≤
-          v.withdrawableEpoch.toNat ∧ v.exitEpoch ≠ FAR_FUTURE_EPOCH := by
-  have holds : PendingConsolidationInvariant config x.state := by
-    clear electra
-    induction run with
-    | nil =>
-      obtain ⟨_, _, _, ok⟩ := genesis
-      have before := (initializeBeaconStateFromEth1_invariant ok).1
-      intro electra
-      exact False.elim (Nat.not_le_of_lt (Nat.lt_trans before (by decide)) electra)
-    | snoc pre step ih =>
-      exact PendingConsolidationInvariant.step step early
-        (ih (Nat.lt_of_le_of_lt step.chainStep.fork_le early)) delay
-  exact holds electra
+          v.withdrawableEpoch.toNat ∧ v.exitEpoch ≠ FAR_FUTURE_EPOCH :=
+  (run.pendingConsolidationsOrdered genesis early delay).1 electra
 
 /-- Every pending consolidation of a state of a run names a source inside the registry. -/
 theorem Run.pendingConsolidation_sources {g x : ForkedBeaconState preset}
