@@ -86,11 +86,14 @@ theorem findZeroRoot_eq_none_iff {objects : List (HashObject preset)} :
 
 Both are read among the given objects.
 
-Each alternative says that a search over those objects returns one. -/
+Each alternative names what a search over those objects returns, and says what makes it evidence. -/
 def HashEvidence (objects : List (HashObject preset)) : Prop :=
   (∃ x y, findMessageCollision (objects.flatMap HashObject.messages)
-      (objects.flatMap HashObject.messages) = some (x, y)) ∨
-    ∃ object, findZeroRoot objects = some object
+      (objects.flatMap HashObject.messages) = some (x, y) ∧
+    x ∈ objects.flatMap HashObject.messages ∧ y ∈ objects.flatMap HashObject.messages ∧
+      MessageCollision x y) ∨
+    ∃ object, findZeroRoot objects = some object ∧
+      object ∈ objects ∧ object.root = some (Vector.replicate 32 0)
 
 /-- The searches find evidence exactly when that evidence exists.
 
@@ -101,14 +104,17 @@ theorem hashEvidence_iff {objects : List (HashObject preset)} :
         MessageCollision x y) ∨
       ∃ object ∈ objects, object.root = some (Vector.replicate 32 0) := by
   constructor
-  · rintro (⟨x, y, found⟩ | ⟨object, found⟩)
-    · obtain ⟨xMember, yMember, collision⟩ := findMessageCollision_valid found
-      exact .inl ⟨x, xMember, y, yMember, collision⟩
-    · exact .inr ⟨object, findZeroRoot_valid found⟩
+  · rintro (⟨x, y, -, xMember, yMember, collision⟩ | ⟨object, -, member, zero⟩)
+    · exact .inl ⟨x, xMember, y, yMember, collision⟩
+    · exact .inr ⟨object, member, zero⟩
   · rintro (⟨x, xMember, y, yMember, collision⟩ | ⟨object, member, zero⟩)
-    · exact .inl (findMessageCollision_of_collision xMember yMember collision)
-    · refine .inr (Option.isSome_iff_exists.mp (Option.isSome_iff_ne_none.mpr fun none => ?_))
-      exact findZeroRoot_eq_none_iff.mp none object member zero
+    · obtain ⟨x', y', found⟩ := findMessageCollision_of_collision xMember yMember collision
+      exact .inl ⟨x', y', found, findMessageCollision_valid found⟩
+    · refine .inr ?_
+      obtain ⟨found, hasSome⟩ : ∃ found, findZeroRoot objects = some found :=
+        Option.isSome_iff_exists.mp (Option.isSome_iff_ne_none.mpr fun none =>
+          findZeroRoot_eq_none_iff.mp none object member zero)
+      exact ⟨found, hasSome, findZeroRoot_valid hasSome⟩
 
 private theorem header_binding (objects : List (HashObject preset)) (a b : BeaconBlockHeader)
     (one : .header a ∈ objects) (two : .header b ∈ objects) (root : Root)

@@ -37,6 +37,14 @@ Not yet released.
   A proof that unfolds `HashEvidence` to take it apart first rewrites with `hashEvidence_iff`, or applies `hashEvidence_iff.mp`.
   A proof that builds the evidence as an `Or` of the old form applies `hashEvidence_iff.mpr`.
 
+- In Lean, `DirectSafety.HashEvidence objects` states what makes a search result evidence, next to the search ([#2187](https://github.com/ethereum/EthLib/issues/2187)).
+  The first alternative is `∃ x y, findMessageCollision … = some (x, y) ∧ x ∈ … ∧ y ∈ … ∧ MessageCollision x y`, and the second is `∃ object, findZeroRoot objects = some object ∧ object ∈ objects ∧ object.root = some zero`.
+  The new conjuncts follow from `findMessageCollision_valid` and `findZeroRoot_valid`, so the evidence is the same.
+  No C export or Python function changes, no theorem that mentions `HashEvidence` changes its statement, and `hashEvidence_iff` keeps its statement.
+  A proof that unfolds `HashEvidence` without `hashEvidence_iff` destructures the extra conjuncts.
+  A proof that builds the evidence from a search result adds the two `_valid` facts to it.
+  A proof that goes through `hashEvidence_iff` is unchanged.
+
 - In Lean, `DirectSafety.StepRule state after checkpoint` is now public ([#2187](https://github.com/ethereum/EthLib/issues/2187)).
   It states the four rules by which one justification step finalizes `checkpoint`, for the state before the step and the state after it.
   `DirectSafety.FinalizationRule call checkpoint` is stated through it, as `StepRule call.cached call.weighed checkpoint`, with the same meaning and the same unfolded body.
