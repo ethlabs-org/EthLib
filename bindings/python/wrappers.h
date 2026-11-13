@@ -427,6 +427,8 @@ PyObject* py_consensus_api_attestation_data      (PyObject* self, PyObject* args
 PyObject* py_consensus_api_payload_attestation_data(PyObject* self, PyObject* args);
 PyObject* py_consensus_api_fork_choice           (PyObject* self, PyObject* args);
 PyObject* py_consensus_api_chain_heads           (PyObject* self, PyObject* args);
+PyObject* py_consensus_api_chain_events          (PyObject* self, PyObject* args);
+PyObject* py_consensus_api_fast_confirmation_event(PyObject* self, PyObject* args);
 PyObject* py_consensus_api_aggregate_attestation (PyObject* self, PyObject* args);
 PyObject* py_consensus_api_sync_committee_contribution(PyObject* self, PyObject* args);
 PyObject* py_consensus_api_attestation_rewards(PyObject* self, PyObject* args);
@@ -480,6 +482,7 @@ PyObject* py_consensus_state_transitions_across (PyObject* self, PyObject* args)
 PyObject* py_consensus_fork_choice (PyObject* self, PyObject* args);
 PyObject* py_consensus_gossip_validation (PyObject* self, PyObject* args);
 PyObject* py_consensus_api_post (PyObject* self, PyObject* args);
+PyObject* py_consensus_api_gossip_event (PyObject* self, PyObject* args);
 PyObject* py_consensus_initialize_genesis (PyObject* self, PyObject* args);
 PyObject* py_consensus_is_valid_genesis_state (PyObject* self, PyObject* args);
 PyObject* py_consensus_deposit_tree_new (PyObject* self, PyObject* args);
@@ -741,6 +744,8 @@ PyObject* py_engine_get_client_version                   (PyObject* self, PyObje
 PyObject* py_engine_rewrite_params                       (PyObject* self, PyObject* args);
 PyObject* py_engine_prepare_execution_payload            (PyObject* self, PyObject* args);
 PyObject* py_engine_prepare_execution_payload_gloas      (PyObject* self, PyObject* args);
+PyObject* py_engine_payload_attributes_event          (PyObject* self, PyObject* args);
+PyObject* py_engine_payload_attributes_event_gloas    (PyObject* self, PyObject* args);
 PyObject* py_engine_finalized_execution_block_hash       (PyObject* self, PyObject* args);
 
 /* ---- Execution JSON-RPC API (`rpc.c`) --------------------------------- */
@@ -750,6 +755,7 @@ PyObject* py_rpc_error_groups                            (PyObject* self, PyObje
 PyObject* py_rpc_pruned_history_unavailable              (PyObject* self, PyObject* args);
 PyObject* py_rpc_serve                                   (PyObject* self, PyObject* args);
 PyObject* py_rpc_encode_block_access_list                (PyObject* self, PyObject* args);
+PyObject* py_rpc_apply_overrides                         (PyObject* self, PyObject* args);
 
 /* ---- Typed values (`pyvalue.c`) --------------------------------------- */
 

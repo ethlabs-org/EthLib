@@ -17,6 +17,12 @@ extern lean_object*
 eth_engine_finalized_execution_block_hash(lean_object* args);
 
 extern lean_object*
+eth_engine_payload_attributes_event(lean_object* args);
+
+extern lean_object*
+eth_engine_payload_attributes_event_gloas(lean_object* args);
+
+extern lean_object*
 eth_consensus_get_custody_column_bits(lean_object* args);
 
 extern lean_object*
@@ -312,6 +318,29 @@ py_consensus_api_chain_heads(
   PyObject* args
 ) {
   return call_pyvalue_export(eth_consensus_api_chain_heads, args, 8, FORK_CHOICE_ERROR);
+}
+
+extern lean_object*
+eth_consensus_api_chain_events(lean_object* args);
+
+PyObject*
+py_consensus_api_chain_events(
+  PyObject* self,
+  PyObject* args
+) {
+  return call_pyvalue_export(eth_consensus_api_chain_events, args, 10, FORK_CHOICE_ERROR);
+}
+
+extern lean_object*
+eth_consensus_api_fast_confirmation_event(lean_object* args);
+
+PyObject*
+py_consensus_api_fast_confirmation_event(
+  PyObject* self,
+  PyObject* args
+) {
+  return call_pyvalue_export(
+    eth_consensus_api_fast_confirmation_event, args, 7, FORK_CHOICE_ERROR);
 }
 
 extern lean_object*
@@ -821,6 +850,7 @@ extern lean_object* eth_consensus_light_client_sync(lean_object* args);
 extern lean_object* eth_consensus_fork_choice(lean_object* args);
 extern lean_object* eth_consensus_gossip_validation(lean_object* args);
 extern lean_object* eth_consensus_api_post(lean_object* args);
+extern lean_object* eth_consensus_api_gossip_event(lean_object* args);
 extern lean_object* eth_consensus_block_to_light_client_header(lean_object* args);
 extern lean_object* eth_consensus_light_client_update_proofs(lean_object* args);
 extern lean_object* eth_consensus_is_better_update(lean_object* args);
@@ -1763,6 +1793,14 @@ py_consensus_api_post(
 }
 
 PyObject*
+py_consensus_api_gossip_event(
+  PyObject* self,
+  PyObject* args
+) {
+  return call_pyvalue_export(eth_consensus_api_gossip_event, args, 4, FORK_CHOICE_ERROR);
+}
+
+PyObject*
 py_consensus_block_to_light_client_header(
   PyObject* self,
   PyObject* args
@@ -2536,6 +2574,22 @@ py_engine_prepare_execution_payload_gloas(
   PyObject* args
 ) {
   return call_pyvalue_export(eth_engine_prepare_execution_payload_gloas, args, 14, PROPOSER_ERROR);
+}
+
+PyObject*
+py_engine_payload_attributes_event(
+  PyObject* self,
+  PyObject* args
+) {
+  return call_pyvalue_export(eth_engine_payload_attributes_event, args, 9, PROPOSER_ERROR);
+}
+
+PyObject*
+py_engine_payload_attributes_event_gloas(
+  PyObject* self,
+  PyObject* args
+) {
+  return call_pyvalue_export(eth_engine_payload_attributes_event_gloas, args, 13, PROPOSER_ERROR);
 }
 
 PyObject*
