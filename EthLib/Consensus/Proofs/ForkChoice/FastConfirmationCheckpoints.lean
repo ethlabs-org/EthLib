@@ -3380,7 +3380,7 @@ private theorem coverage_ancestors_comparable {store : Store preset fork}
 
 omit [DecidablePred (· ∈ J)] in
 /-- Exclusion from the caller's past committees places an unseen duty after the call. -/
-private theorem coverage_unseen_signer_time
+theorem Execution.unseen_signer_time
     {limit : ℕ} (committees : CommitteesFollow e limit)
     (retained : preset.MIN_SEED_LOOKAHEAD.toNat + 1 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
     {Δ : ℕ} (fits : DelayFits fork config genesisTimeMs Δ)
@@ -3687,7 +3687,7 @@ private theorem coverage_comparable_of_numeric_check {anchor : Store preset fork
   obtain ⟨endTime, endOk, endLe⟩ := exists_slot_start_of_current_slot clock
   have epochSlot : computeEpochAtSlot preset slot = epoch := by
     simpa [Store.getCurrentStoreEpoch, slotOk, bind, Except.bind, pure, Except.pure] using epochOk
-  have timeBounds := coverage_unseen_signer_time committees retained fits caller honest nBound
+  have timeBounds := e.unseen_signer_time committees retained fits caller honest nBound
     (forward n u caller) headOk slotOk firstOk lastOk participantsOk unseen duty
     (targetEq ▸ checkpointEpoch.trans epochSlot.symm) before beginOk endOk
   have endBound : endTime.toNat ≤ (e.world k).time := by
