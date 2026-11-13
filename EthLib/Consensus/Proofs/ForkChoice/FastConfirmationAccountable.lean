@@ -312,87 +312,37 @@ theorem exitStake_le_exitReserve_epoch {g y : ForkedBeaconState preset}
   unfold exitReserve activeVoters
   exact bound
 
-/-- Both bands of hysteresis at one position. -/
-private def BandsAt (state : BeaconState preset fork) (position : ℕ) : Prop :=
-  ∀ (validator : Validator) (balance : Gwei),
-    state.validators.data[position]? = some validator →
-    state.balances.data[position]? = some balance →
+/-- A balance rounded down to an increment, at most the largest value, lies within both bands.
+
+Before Electra, the largest effective balance is the cap of every validator.
+
+The increment must be positive and at most the upward band. -/
+private theorem rounded_bands (bands : preset.IncrementWithinUpwardBand)
+    (preElectra : ¬.pectra ≤ fork) {balance : Gwei} {validator : Validator}
+    (effective : validator.effectiveBalance =
+      min (balance - balance % preset.EFFECTIVE_BALANCE_INCREMENT) preset.MAX_EFFECTIVE_BALANCE) :
     (validator.effectiveBalance < withdrawalMaxEffectiveBalance preset fork validator →
       balance.toNat ≤ validator.effectiveBalance.toNat + preset.upwardBand) ∧
-    validator.effectiveBalance.toNat ≤ balance.toNat + preset.downwardBand
-
-/-- The activation at genesis puts one effective balance within the bands of its balance.
-
-Before Electra, the cap is the largest effective balance, which the activation rounds down to.
-
-It keeps the bands at every other position, since it changes no balance and no other validator.
--/
-private theorem activateAtGenesis_bandsAt (bands : preset.IncrementWithinUpwardBand)
-    (preElectra : ¬.pectra ≤ fork) {state after : BeaconState preset fork} {index : ℕ}
-    (computed : activateAtGenesis state index = .ok after) :
-    after.validators.data.size = state.validators.data.size ∧ BandsAt after index ∧
-      ∀ position, BandsAt state position → BandsAt after position := by
-  simp only [activateAtGenesis, bind_ok_iff, liftAccessor_ok] at computed
-  obtain ⟨validator, _, balance, read, set⟩ := computed
-  obtain ⟨inside, rfl⟩ := setValidatorAt_ok set
-  have read := getBalanceAt_eq_ok_iff.mp read
-  have rounded : ∀ written : Validator, written.effectiveBalance =
-        min (balance - balance % preset.EFFECTIVE_BALANCE_INCREMENT) preset.MAX_EFFECTIVE_BALANCE →
-      (written.effectiveBalance < withdrawalMaxEffectiveBalance preset fork written →
-        balance.toNat ≤ written.effectiveBalance.toNat + preset.upwardBand) ∧
-      written.effectiveBalance.toNat ≤ balance.toNat + preset.downwardBand := by
-    intro written effective
-    simp only [withdrawalMaxEffectiveBalance, preElectra, ↓reduceIte]
-    rw [effective]
-    have modLe : balance % preset.EFFECTIVE_BALANCE_INCREMENT ≤ balance := by
-      rw [UInt64.le_iff_toNat_le, UInt64.toNat_mod]
-      exact Nat.mod_le _ _
-    have subNat : (balance - balance % preset.EFFECTIVE_BALANCE_INCREMENT).toNat =
-        balance.toNat - balance.toNat % preset.EFFECTIVE_BALANCE_INCREMENT.toNat := by
-      rw [UInt64.toNat_sub_of_le _ _ modLe, UInt64.toNat_mod]
-    have modLt := Nat.mod_lt balance.toNat bands.1
-    have narrow := bands.2
-    have modBound := Nat.mod_le balance.toNat preset.EFFECTIVE_BALANCE_INCREMENT.toNat
-    rw [UInt64.min_def]
-    split
-    · refine ⟨fun _ => ?_, ?_⟩ <;> rw [subNat] <;> omega
-    · rename_i above
-      refine ⟨fun below => absurd below (UInt64.lt_irrefl _), ?_⟩
-      have := UInt64.lt_iff_toNat_lt.mp (UInt64.not_le.mp above)
-      rw [subNat] at this
-      omega
-  have written : ∀ written : Validator,
-      (if min (balance - balance % preset.EFFECTIVE_BALANCE_INCREMENT)
-            preset.MAX_EFFECTIVE_BALANCE = preset.MAX_EFFECTIVE_BALANCE then
-          { validator with
-            effectiveBalance := min (balance - balance % preset.EFFECTIVE_BALANCE_INCREMENT)
-              preset.MAX_EFFECTIVE_BALANCE,
-            activationEligibilityEpoch := GENESIS_EPOCH, activationEpoch := GENESIS_EPOCH }
-        else { validator with
-          effectiveBalance := min (balance - balance % preset.EFFECTIVE_BALANCE_INCREMENT)
-            preset.MAX_EFFECTIVE_BALANCE }) = written →
-      written.effectiveBalance =
-        min (balance - balance % preset.EFFECTIVE_BALANCE_INCREMENT) preset.MAX_EFFECTIVE_BALANCE
-      := by
-    intro written chosen
-    subst chosen
-    split <;> rfl
-  refine ⟨by simp [BeaconState.putValidator], ?_, ?_⟩
-  · intro current kept seen balanceRead
-    simp only [BeaconState.putValidator, RootedForkList.data_set, Array.getElem?_set_self,
-      Option.some.injEq] at seen balanceRead
-    rw [read, Option.some.injEq] at balanceRead
-    subst balanceRead
-    exact rounded current (written current seen)
-  · intro position holds current kept seen balanceRead
-    simp only [BeaconState.putValidator, RootedForkList.data_set, Array.getElem?_set] at seen
-    simp only [BeaconState.putValidator] at balanceRead
-    split at seen
-    · subst position
-      rw [read, Option.some.injEq] at balanceRead
-      subst balanceRead
-      exact rounded current (written current (Option.some.inj seen))
-    · exact holds current kept seen balanceRead
+    validator.effectiveBalance.toNat ≤ balance.toNat + preset.downwardBand := by
+  simp only [withdrawalMaxEffectiveBalance, preElectra, ↓reduceIte]
+  rw [effective]
+  have modLe : balance % preset.EFFECTIVE_BALANCE_INCREMENT ≤ balance := by
+    rw [UInt64.le_iff_toNat_le, UInt64.toNat_mod]
+    exact Nat.mod_le _ _
+  have subNat : (balance - balance % preset.EFFECTIVE_BALANCE_INCREMENT).toNat =
+      balance.toNat - balance.toNat % preset.EFFECTIVE_BALANCE_INCREMENT.toNat := by
+    rw [UInt64.toNat_sub_of_le _ _ modLe, UInt64.toNat_mod]
+  have modLt := Nat.mod_lt balance.toNat bands.1
+  have narrow := bands.2
+  have modBound := Nat.mod_le balance.toNat preset.EFFECTIVE_BALANCE_INCREMENT.toNat
+  rw [UInt64.min_def]
+  split
+  · refine ⟨fun _ => ?_, ?_⟩ <;> rw [subNat] <;> omega
+  · rename_i above
+    refine ⟨fun below => absurd below (UInt64.lt_irrefl _), ?_⟩
+    have := UInt64.lt_iff_toNat_lt.mp (UInt64.not_le.mp above)
+    rw [subNat] at this
+    omega
 
 /-- A genesis state is within the bands of hysteresis.
 
@@ -412,26 +362,26 @@ private theorem genesis_hysteresis {g : ForkedBeaconState preset}
   rw [show gState = _ from rooted]
   have preElectra : ¬.pectra ≤ gFork := fun electra =>
     Nat.lt_irrefl _ (Nat.lt_of_lt_of_le (Nat.lt_trans phase0 (by decide)) electra)
-  obtain ⟨⟨sizes, -⟩, steps⟩ := foldlM_ok_steps
-    (fun first second => second.validators.data.size = first.validators.data.size ∧
-      ∀ position, BandsAt first position → BandsAt second position)
-    (fun _ => ⟨rfl, fun _ => id⟩)
-    (fun one two => by
-      exact ⟨two.1.trans one.1, fun position holds => two.2 position (one.2 position holds)⟩)
-    (fun _ _ _ step => ⟨(activateAtGenesis_bandsAt bands preElectra step).1,
-      (activateAtGenesis_bandsAt bands preElectra step).2.2⟩) activatedOk
-  have within (position : ℕ) : BandsAt activated position := by
-    intro validator balance found read
+  obtain ⟨balances, -, size, effective⟩ :=
+    foldlM_activateAtGenesis (Nat.lt_trans phase0 (by decide)) activatedOk
+  -- Each position holds its balance rounded down, as the activation sets it.
+  have within : ∀ (position : ℕ) (validator : Validator) (balance : Gwei),
+      activated.validators.data[position]? = some validator →
+      activated.balances.data[position]? = some balance →
+      validator.effectiveBalance =
+        min (balance - balance % preset.EFFECTIVE_BALANCE_INCREMENT)
+          preset.MAX_EFFECTIVE_BALANCE := by
+    intro position validator balance found read
     have inside : position < deposited.validators.data.size := by
-      rw [← sizes]
+      rw [← size]
       exact (Array.getElem?_eq_some_iff.mp found).1
-    obtain ⟨_, next, _, step, -, kept⟩ := steps position (by simpa using inside)
-    rw [List.getElem_range] at step
-    exact kept position (activateAtGenesis_bandsAt bands preElectra step).2.1 validator balance
-      found read
+    have rounded := effective position inside
+    rw [found, ← balances, read] at rounded
+    exact Option.some.inj rounded
   exact ⟨fun position validator balance found read =>
-      (within position validator balance found read).1,
-    fun position validator balance found read => (within position validator balance found read).2⟩
+      (rounded_bands bands preElectra (within position validator balance found read)).1,
+    fun position validator balance found read =>
+      (rounded_bands bands preElectra (within position validator balance found read)).2⟩
 
 /-- A run from genesis to a state at the first slot of an epoch passes the boundary state.
 
