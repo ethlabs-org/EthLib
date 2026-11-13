@@ -3,7 +3,7 @@ module
 public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmationNonvacuity.Heads
 public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmationNonvacuity.Duties
 
-/-! The five implementation-level bounds at the witness's confirming call.
+/-! Realized recency and the five weight bounds at the witness's confirming call.
 
 The call has zero weight shift and zero balance-drift margin.
 
@@ -131,8 +131,28 @@ theorem only_call {i n : Nat} {fcr after : FastConfirmationStore}
     exact ⟨rfl, rfl, rfl, called.symm⟩
 
 set_option maxRecDepth 10000 in
-/-- All five rule bounds hold together at the genuinely advancing call. -/
+/-- Realized recency and all five weight bounds hold at the genuinely advancing call. -/
 theorem rule_bounds : RuleBounds execution 0 [112] (getFastConfirmationStore anchor) 0 0 4000 where
+  realized := by
+    intro i n fcr after head slot start balanceSource chain later call _ _ _ _ _ _ walked _
+    obtain ⟨rfl, rfl, rfl, rfl⟩ := only_call call
+    rw [call_store] at walked ⊢
+    intro root member
+    have inWalk : root ∈ chain ++ confirmed.confirmedRoot :: later := by
+      simpa only [List.mem_append, List.mem_singleton, List.mem_cons] using
+        (show root ∈ chain ∨ root = confirmed.confirmedRoot ∨ root ∈ later from
+          (List.mem_append.mp member).elim Or.inl (fun h => .inr (.inl (by simpa using h))))
+    obtain ⟨block, startBlock, blockOk, _, _⟩ :=
+      Store.slot_lt_of_mem_getAncestorRoots walked (by simp) inWalk
+    have held := Store.block_ok_iff.mp blockOk
+    rcases local_block (code := .running 3000 4) held with ⟨rfl, rfl⟩ | ⟨rfl, rfl⟩
+    · refine ⟨anchorBlock stateRoot, state bodyRoot, held, ?_, ?_⟩
+      · simp only [running, admitted, ticked, anchor, getElem?_insert_root]
+        simp [blockRoot_ne_anchorRoot]
+      · decide
+    · refine ⟨signedBlock.message, postState, held, ?_, ?_⟩
+      · simp [running, admitted]
+      · decide
   walked := by
     intro i n fcr after head slot start balanceSource chain later call headOk slotOk _ _ _
       sourceOk _ confirmedMembers
