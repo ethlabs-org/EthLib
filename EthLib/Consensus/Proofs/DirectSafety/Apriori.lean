@@ -44,11 +44,11 @@ variable {preset : Preset}
 It is the base reward factor times the integer square root of the total, plus two.
 
 It bounds the total base rewards of an epoch, and it is monotone in the total. -/
-def issuanceEnvelope (preset : Preset) (total : Nat) : Nat :=
+private def issuanceEnvelope (preset : Preset) (total : Nat) : Nat :=
   preset.BASE_REWARD_FACTOR.toNat * (total.sqrt + 2)
 
 /-- The issuance envelope does not decrease when the total active balance grows. -/
-theorem issuanceEnvelope_monotone : Monotone (issuanceEnvelope preset) := fun _ _ le =>
+private theorem issuanceEnvelope_monotone : Monotone (issuanceEnvelope preset) := fun _ _ le =>
   Nat.mul_le_mul_left _ (Nat.add_le_add_right (Nat.sqrt_le_sqrt le) 2)
 
 /-- The whole increments of a total, times the scaled factor over its square root, rounding down.
@@ -94,7 +94,7 @@ private theorem toNat_getBaseRewardPerIncrement {total perIncrement : Gwei}
 They are the whole increments of the total active balance, times the base reward per increment.
 
 The bound needs no premise beyond the success of the reward per increment. -/
-theorem totalBaseRewards_le_envelope {total perIncrement : Gwei}
+private theorem totalBaseRewards_le_envelope {total perIncrement : Gwei}
     (computed : getBaseRewardPerIncrement preset total = .ok perIncrement) :
     total.toNat / preset.EFFECTIVE_BALANCE_INCREMENT.toNat * perIncrement.toNat ≤
       issuanceEnvelope preset total.toNat := by
@@ -328,7 +328,7 @@ Its loss is then at most the weights of the source and target flags in that base
 The inactivity penalty of its new score, or of a zero score when it has none, adds to that loss.
 
 The two weights are applied together, which rounds down once and so can only raise the bound. -/
-theorem balance_sub_le_of_processRewardsAndPenalties (altair : .altair ≤ fork)
+private theorem balance_sub_le_of_processRewardsAndPenalties (altair : .altair ≤ fork)
     (within : state.RegistryWithinLimit)
     (updated : processInactivityUpdates config state altair = .ok scored)
     (computed : processRewardsAndPenalties config scored = .ok after)
@@ -349,7 +349,7 @@ theorem balance_sub_le_of_processRewardsAndPenalties (altair : .altair ≤ fork)
 /-- The total effective balance of the validators eligible for the rewards of the previous epoch.
 
 A validator whose eligibility cannot be decided counts nothing. -/
-def eligibleBalance (state : BeaconState preset fork) : Nat :=
+private def eligibleBalance (state : BeaconState preset fork) : Nat :=
   ∑ j ∈ Finset.range state.validators.data.size,
     match state.validators.data[j]? with
     | some validator =>
@@ -371,7 +371,7 @@ debits <= (W_source + W_target) * BASE_REWARD_FACTOR * E / (WEIGHT_DENOMINATOR *
 
 Each key rounds down on its own, and the sum of those quotients is at most the quotient of the sum.
 -/
-theorem balanceDebits_le_of_processRewardsAndPenalties (altair : .altair ≤ fork)
+private theorem balanceDebits_le_of_processRewardsAndPenalties (altair : .altair ≤ fork)
     (within : state.RegistryWithinLimit)
     (updated : processInactivityUpdates config state altair = .ok scored)
     (computed : processRewardsAndPenalties config scored = .ok after)
