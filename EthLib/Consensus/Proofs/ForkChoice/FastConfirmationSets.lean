@@ -141,14 +141,16 @@ theorem stake_equivocatorsOf {balanceSource : BeaconState preset fork}
       simp [validatorAt, found, isActive, bind, Except.bind, pure, Except.pure]
   have distinct : active.Nodup :=
     ((sublist_of_filterM_ok activeOk).trans List.filter_sublist).nodup
-      (participants_toList_nodup participants)
+      (Std.TreeSet.distinct_toList.imp Std.ReflCmp.ne_of_cmp_ne_eq)
   rw [← members, stake, List.sum_toFinset _ distinct]
   exact (toNat_eq_of_sumGwei summed fun _ _ _ valueOk =>
     toNat_eq_balanceAt_of_effectiveBalance valueOk).symm
 
 /-- The store's equivocation score of a range of slots is the stake of known equivocators.
 
-They are the known equivocators of the committees that the store reads for the range. -/
+They are the known equivocators of the committees that the store reads for the range.
+
+These supply the equivocator term of arXiv 2405.00549v4, Definition 5. -/
 theorem exists_stake_equivocatorsOf_of_getEquivocationScore {head : Root}
     {balanceSource : BeaconState preset fork} {startSlot endSlot : Slot} {score : Gwei}
     (computed : store.getEquivocationScore head balanceSource startSlot endSlot = .ok score) :
@@ -182,7 +184,9 @@ variable {config : Config}
 
 /-- With aligned effective balances, each stake is a whole number of 100 Gwei.
 
-An increment must be a whole number of 100 Gwei. -/
+An increment must be a whole number of 100 Gwei.
+
+This controls the rounded Byzantine share for arXiv 2405.00549v4, Definition 5. -/
 private theorem balanceAt_mod_of_aligned {balanceSource : BeaconState preset fork}
     (aligned : EffectiveBalancesAligned balanceSource)
     (increment : preset.EFFECTIVE_BALANCE_INCREMENT.toNat % 100 = 0) (index : ℕ) :
@@ -430,9 +434,11 @@ That node is the pending node of the parent, or the node of the parent that the 
 
 Before Gloas the two are the same node.
 
-The set differs from the supporters of the parent in the sense of `supportersOf`.
+This set differs from the supporters of the parent that Lemmas 4 and 3 count.
 
-The supporters of a node also hold the validators that vote for its descendants. -/
+The supporters of a node also hold the validators that vote for its descendants.
+
+These voters supply the discount of arXiv 2405.00549v4, Definition 5. -/
 def parentVotersOf (balanceSource : BeaconState preset fork)
     (participants : Std.TreeSet ValidatorIndex) (block parentBlock : BeaconBlock preset fork) :
     Finset ValidatorIndex :=
@@ -451,7 +457,9 @@ The source holds it, not slashed and active in the epoch of that source.
 
 The store does not know it to equivocate.
 
-Its latest message supports the pending node of the parent, or the node that the block builds on. -/
+Its latest message supports the pending node of the parent, or the node that the block builds on.
+
+These are the voters counted by arXiv 2405.00549v4, Definition 5. -/
 theorem mem_parentVotersOf {balanceSource : BeaconState preset fork}
     {participants : Std.TreeSet ValidatorIndex} {block parentBlock : BeaconBlock preset fork}
     {v : ValidatorIndex} :
@@ -499,9 +507,11 @@ The difference is zero when the adversary is larger.
 
 No hypothesis orders the slots of the two blocks.
 
-When no slot lies between them, the store reads no committee.
+If the parent sits at an earlier slot, both counted nodes are ancestors of the pending child.
 
-Then no validator is a voter, by `getCommitteesBetweenSlots_of_gt`. -/
+When no slot lies between them, the store reads no committee, so no validator is a voter.
+
+This is the store's form of the discount of arXiv 2405.00549v4, Definition 5. -/
 theorem exists_stake_parentVotersOf_of_computeEmptySlotSupportDiscount {head root : Root}
     {balanceSource : BeaconState preset fork} {firstSlot : Slot}
     {block parentBlock : BeaconBlock preset fork} {discount : Gwei}
@@ -518,7 +528,21 @@ theorem exists_stake_parentVotersOf_of_computeEmptySlotSupportDiscount {head roo
       discount.toNat =
         stake (fun v => balanceAt balanceSource v.toNat)
           (store.parentVotersOf balanceSource participants block parentBlock) -
-            adversary.toNat := by
+            adversary.toNat ∧
+      (parentBlock.slot < block.slot →
+        ∀ node ∈ [⟨block.parentRoot, .pending⟩,
+          ⟨block.parentRoot, parentPayloadStatus block parentBlock⟩],
+          store.isAncestor ⟨root, .pending⟩ node = .ok true) := by
+  have ancestry : parentBlock.slot < block.slot →
+      ∀ node ∈ [⟨block.parentRoot, .pending⟩,
+        ⟨block.parentRoot, parentPayloadStatus block parentBlock⟩],
+        store.isAncestor ⟨root, .pending⟩ node = .ok true := by
+    intro lower node member
+    rcases List.mem_pair.mp member with rfl | rfl
+    · exact isAncestor_pending_parent_of_slot_lt (block_ok_iff.mp blockOk)
+        (block_ok_iff.mp parentOk) lower
+    · exact isAncestor_of_getAncestor (getAncestor_parent_of_slot_lt
+        (block_ok_iff.mp blockOk) (block_ok_iff.mp parentOk) lower)
   obtain ⟨same, zero⟩ | ⟨parentNodes, lastEmpty, parentSupport, adversary, gloasNodes,
     beforeNodes, lastEmptyOk, supportOk, adversaryOk, final⟩ :=
       computeEmptySlotSupportDiscount_steps blockOk parentOk firstOk discountOk
@@ -536,12 +560,13 @@ theorem exists_stake_parentVotersOf_of_computeEmptySlotSupportDiscount {head roo
       Finset.eq_empty_of_forall_notMem fun v member =>
         absurd (mem_parentVotersOf.mp member).1 Std.TreeSet.not_mem_emptyc
     exact ⟨parentBlock.slot, ∅, 0, lastOk, getCommitteesBetweenSlots_of_gt empty,
-      computeAdversarialWeight_of_gt empty, by rw [noVoter, stake_empty]; rfl⟩
+      computeAdversarialWeight_of_gt empty, (by rw [noVoter, stake_empty]; rfl), ancestry⟩
   subst final
   -- The votes that the store counts are the stake of the voters for its list of nodes.
   obtain ⟨participants, voters, participantsOk, members, staked⟩ :=
     exists_stake_of_getNodeSupportBetweenSlots supportOk
-  refine ⟨lastEmpty, participants, adversary, lastEmptyOk, participantsOk, adversaryOk, ?_⟩
+  refine ⟨lastEmpty, participants, adversary, lastEmptyOk, participantsOk, adversaryOk, ?_,
+    ancestry⟩
   rw [toNat_saturatingSub, ← staked]
   congr 2
   ext v
@@ -583,7 +608,9 @@ An increment must be a whole number of 100 Gwei, as 10^9 Gwei in the presets is.
 
 No hypothesis says which votes the store holds.
 
-So an honest voter may have cast a later vote that the store does not hold. -/
+So an honest voter may have cast a later vote that the store does not hold.
+
+This is the honest lower bound of arXiv 2405.00549v4, Definition 5, under Assumption 2. -/
 theorem le_honest_parentVotersOf_of_computeEmptySlotSupportDiscount {J : Set ValidatorIndex}
     [DecidablePred (· ∈ J)] {head root : Root} {balanceSource : BeaconState preset fork}
     {firstSlot lastSlot : Slot} {block parentBlock : BeaconBlock preset fork}
@@ -603,7 +630,7 @@ theorem le_honest_parentVotersOf_of_computeEmptySlotSupportDiscount {J : Set Val
       config.CONFIRMATION_BYZANTINE_THRESHOLD.toNat 100) :
     discount.toNat ≤ stake (fun v => balanceAt balanceSource v.toNat)
       {v ∈ store.parentVotersOf balanceSource participants block parentBlock | v ∈ J} := by
-  obtain ⟨last, found, adversary, lastFound, foundOk, adversaryOk, equation⟩ :=
+  obtain ⟨last, found, adversary, lastFound, foundOk, adversaryOk, equation, -⟩ :=
     exists_stake_parentVotersOf_of_computeEmptySlotSupportDiscount blockOk parentOk firstOk
       discountOk
   rw [lastOk, Except.ok.injEq] at lastFound

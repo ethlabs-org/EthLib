@@ -769,24 +769,21 @@ theorem latestBlockHash_processBlock (gloas : .glamsterdam ≤ fork)
   rw [hash, kept, latestExecutionPayloadBid_processExecutionPayloadBid bid, parentHash]
   exact congrFun (payloadInputs_processExecutionPayloadBid bid).latestBlockHash gloas
 
-/-- From Gloas, a block leaves its header as the latest block header.
+/-- At every fork, a block leaves its header as the latest block header.
 
 The header holds the slot, the proposer and the parent root of the block, and the root of its body.
 
 Its state root is zero. -/
-theorem latestBlockHeader_processBlock (gloas : .glamsterdam ≤ fork)
+theorem latestBlockHeader_processBlock
     {block : BeaconBlock preset fork}
     (computed : processBlock config checks engine state block = .ok after) :
     ∃ bodyRoot, Serialization.Ssz.SszType.hashTreeRoot block.body = .ok bodyRoot ∧
       after.latestBlockHeader =
         { slot := block.slot, proposerIndex := block.proposerIndex,
           parentRoot := block.parentRoot, stateRoot := Vector.replicate 32 0, bodyRoot } := by
-  obtain ⟨_, _, _, _, _, _, headedOk, withdrawnOk, bid, -, header, -, -⟩ :=
-    processBlock_steps gloas computed
+  obtain ⟨_, _, -, headedOk, header⟩ := processBlock_header_split computed
   obtain ⟨bodyRoot, rooted, rfl⟩ := processBlockHeader_eq headedOk
-  refine ⟨bodyRoot, rooted, ?_⟩
-  exact header.trans ((payloadInputs_processExecutionPayloadBid bid).latestBlockHeader.trans
-    (payloadInputs_processWithdrawals withdrawnOk).latestBlockHeader)
+  exact ⟨bodyRoot, rooted, header⟩
 
 /-- Operations keep the block-root history and latest header at every fork. -/
 theorem processOperations_blockRoots_latestBlockHeader
@@ -918,23 +915,32 @@ theorem processBlock_blockRoots_latestBlockHeader {block : BeaconBlock preset fo
     exact ⟨operations.1.trans (voting.blockRoots.trans randao.blockRoots), root, hashed,
       operations.2.trans (voting.latestBlockHeader.trans randao.latestBlockHeader)⟩
 
-/-- A successful block checks its parent against the header before its block step. -/
+/-- At every fork, a block names the latest block header before it as its parent.
+
+The block is at the slot of the state, after the slot of that header.
+
+Its parent root is the root of that header. -/
 theorem processBlock_parentRoot {block : BeaconBlock preset fork}
     (computed : processBlock config checks engine state block = .ok after) :
-    Serialization.Ssz.SszType.hashTreeRoot state.latestBlockHeader = .ok block.parentRoot := by
+    block.slot = state.slot ∧ state.latestBlockHeader.slot < block.slot ∧
+      Serialization.Ssz.SszType.hashTreeRoot state.latestBlockHeader = .ok block.parentRoot := by
   unfold processBlock at computed
   split at computed
   · unfold processBlockAltair at computed
     simp only [bind_ok_iff] at computed
     obtain ⟨paid, paidOk, headed, headerOk, _⟩ := computed
-    have kept : paid.latestBlockHeader = state.latestBlockHeader := by
+    have kept : paid.slot = state.slot ∧ paid.latestBlockHeader = state.latestBlockHeader := by
       split at paidOk
-      · exact (payloadInputs_processParentExecutionPayload paidOk).latestBlockHeader
+      · exact ⟨(payloadInputs_processParentExecutionPayload paidOk).slot,
+          (payloadInputs_processParentExecutionPayload paidOk).latestBlockHeader⟩
       · cases paidOk
-        rfl
-    simpa only [kept] using (processBlockHeader_checks headerOk).2.2.2.1
+        exact ⟨rfl, rfl⟩
+    obtain ⟨atSlot, newer, -, parent, -⟩ := processBlockHeader_checks headerOk
+    rw [kept.2] at newer parent
+    exact ⟨atSlot.trans kept.1, newer, parent⟩
   · simp only [bind_ok_iff] at computed
     obtain ⟨headed, headerOk, _⟩ := computed
-    exact (processBlockHeader_checks headerOk).2.2.2.1
+    obtain ⟨atSlot, newer, -, parent, -⟩ := processBlockHeader_checks headerOk
+    exact ⟨atSlot, newer, parent⟩
 
 end EthLib.Consensus

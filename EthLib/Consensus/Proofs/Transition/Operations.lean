@@ -56,6 +56,31 @@ def pendingAmount (deposits : List PendingDeposit) : Nat :=
 def BalancesMatch (state : BeaconState preset fork) : Prop :=
   state.balances.data.size = state.validators.data.size
 
+/-- The public keys of the validators, in the order of the registry. -/
+def validatorKeys (state : BeaconState preset fork) : List BLSPubkey :=
+  state.validators.data.toList.map (·.pubkey)
+
+/-- No two validators of the registry have the same public key. -/
+def PubkeysDistinct (state : BeaconState preset fork) : Prop :=
+  (validatorKeys state).Nodup
+
+/-- A key at a position of a registry is at that position after, when the keys after extend them. -/
+theorem validators_getElem?_of_validatorKeys_prefix {post : Base.Fork}
+    {state : BeaconState preset fork} {after : BeaconState preset post}
+    (kept : validatorKeys state <+: validatorKeys after) {i : Nat} {old : Validator}
+    (found : state.validators.data[i]? = some old) :
+    ∃ current, after.validators.data[i]? = some current ∧ current.pubkey = old.pubkey := by
+  obtain ⟨inside, oldEq⟩ := Array.getElem?_eq_some_iff.mp found
+  have small : i < (validatorKeys state).length := by simpa [validatorKeys] using inside
+  have afterSmall : i < after.validators.data.size := by
+    simpa [validatorKeys] using Nat.lt_of_lt_of_le small kept.length_le
+  refine ⟨after.validators.data[i], by simp [afterSmall], ?_⟩
+  have same := kept.getElem small
+  simpa [validatorKeys, oldEq] using same.symm
+
+def depositRegistrationAmount (fork : Fork) (amount : Gwei) : Gwei :=
+  if .pectra ≤ fork then 0 else amount
+
 theorem balancesMatch_of_sameSizes (sizes : SameSizes state after)
     (holds : BalancesMatch state) : BalancesMatch after := by
   unfold BalancesMatch at holds ⊢
@@ -674,6 +699,22 @@ theorem addValidatorToRegistry_validators_eq_push {pubkey : BLSPubkey}
       rfl
     · cases computed
 
+/-- Adding a validator keeps the slot. -/
+theorem addValidatorToRegistry_slot {pubkey : BLSPubkey}
+    {withdrawalCredentials : Bytes32} {amount : Gwei}
+    (computed : addValidatorToRegistry state pubkey withdrawalCredentials amount = .ok after) :
+    after.slot = state.slot := by
+  unfold addValidatorToRegistry at computed
+  split at computed
+  · simp only [addValidatorToRegistryAltair, liftAccessor_ok, bind_ok_iff, pure, Except.pure,
+      Except.ok.injEq] at computed
+    obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, rfl⟩ := computed
+    rfl
+  split at computed
+  · cases computed
+    rfl
+  · cases computed
+
 /-- A new validator joins a registry of fewer than `2^64` validators.
 
 So its position fits a validator index. -/
@@ -984,28 +1025,51 @@ theorem applyPendingDeposit_new_valid {deposit : PendingDeposit}
   simp only [applyPendingDeposit, new, notBls, ↓reduceIte, bind, Except.bind, valid] at computed
   exact addValidatorToRegistry_push computed holds
 
+/-- A pending deposit changes nothing, raises a balance, or adds a fresh key.
+
+The first case covers a deposit to a new key with an invalid signature.
+
+From Heze it also covers a new key with BLS withdrawal credentials.
+
+The second case is a deposit to a known key.
+
+The third case adds a validator at the end of the registry, and no other validator has its key. -/
+theorem applyPendingDeposit_cases {deposit : PendingDeposit}
+    (computed : applyPendingDeposit config checks state deposit = .ok after) :
+    after = state ∨
+    (∃ index : ValidatorIndex, increaseBalance state index deposit.amount = .ok after) ∨
+    (deposit.pubkey ∉ validatorKeys state ∧
+      addValidatorToRegistry state deposit.pubkey deposit.withdrawalCredentials deposit.amount =
+        .ok after) := by
+  unfold applyPendingDeposit at computed
+  split at computed
+  · rename_i absent
+    split at computed
+    · cases computed
+      exact .inl rfl
+    simp only [bind_ok_iff] at computed
+    obtain ⟨_, _, computed⟩ := computed
+    split at computed
+    · refine .inr (.inr ⟨?_, computed⟩)
+      simp only [Array.findIdx?_eq_none_iff, beq_eq_false_iff_ne] at absent
+      simpa [validatorKeys, List.mem_map] using absent
+    · cases computed
+      exact .inl rfl
+  · simp only [liftAccessor_ok, bind_ok_iff, liftArith, mapError_ok_iff] at computed
+    obtain ⟨index, _, computed⟩ := computed
+    exact .inr (.inl ⟨index, computed⟩)
+
 /-- A deposit adds at most one entry to the registry, and keeps each validator there. -/
 theorem applyPendingDeposit_validators_size_le_and_mem {deposit : PendingDeposit}
     (computed : applyPendingDeposit config checks state deposit = .ok after) :
     after.validators.data.size ≤ state.validators.data.size + 1 ∧
       ∀ validator ∈ state.validators.data, validator ∈ after.validators.data := by
-  unfold applyPendingDeposit at computed
-  split at computed
-  · split at computed
-    · cases computed
-      exact ⟨Nat.le_succ _, fun _ member => member⟩
-    simp only [bind_ok_iff] at computed
-    obtain ⟨_, _, computed⟩ := computed
-    split at computed
-    · rw [addValidatorToRegistry_validators_eq_push computed]
-      exact ⟨by simp, fun _ member => Array.mem_push.mpr (.inl member)⟩
-    · simp only [pure, Except.pure, Except.ok.injEq] at computed
-      subst computed
-      exact ⟨Nat.le_succ _, fun _ member => member⟩
-  · simp only [liftAccessor_ok, bind_ok_iff] at computed
-    obtain ⟨_, _, computed⟩ := computed
-    rw [increaseBalance_validators computed]
+  rcases applyPendingDeposit_cases computed with rfl | ⟨_, raised⟩ | ⟨_, added⟩
+  · exact ⟨Nat.le_succ _, fun _ member => member⟩
+  · rw [increaseBalance_validators raised]
     exact ⟨Nat.le_succ _, fun _ member => member⟩
+  · rw [addValidatorToRegistry_validators_eq_push added]
+    exact ⟨by simp, fun _ member => Array.mem_push.mpr (.inl member)⟩
 
 /-- A deposit to a known key raises the balance at the index of that key by its amount.
 
@@ -1113,6 +1177,46 @@ theorem applyDepositElectra_kept {electra : .pectra ≤ fork} {pubkey : BLSPubke
       exact ⟨id, rfl, rfl⟩
   · obtain ⟨_, rfl⟩ := addPendingDeposit_eq (liftAccessor_ok.mp computed)
     exact ⟨id, rfl, rfl⟩
+
+theorem applyDeposit_cases {pubkey : BLSPubkey} {withdrawalCredentials : Bytes32}
+    {amount : Gwei} {signature : BLSSignature}
+    (computed : applyDeposit config checks state pubkey withdrawalCredentials amount signature =
+      .ok after) :
+    after.validators.data = state.validators.data ∨
+    (pubkey ∉ validatorKeys state ∧
+      after.validators.data = state.validators.data.push
+        (getValidatorFromDeposit preset fork pubkey withdrawalCredentials
+          (depositRegistrationAmount fork amount)) ∧
+      (BalancesMatch state → after.balances.data = state.balances.data.push
+        (depositRegistrationAmount fork amount))) := by
+  unfold applyDeposit at computed
+  split at computed
+  · rename_i electra
+    simp only [depositRegistrationAmount, electra, ↓reduceIte]
+    unfold applyDepositElectra at computed
+    split at computed
+    · rename_i absent
+      simp only [bind_ok_iff] at computed
+      obtain ⟨_, _, computed⟩ := computed
+      split at computed
+      · simp only [bind_ok_iff, liftAccessor_ok] at computed
+        obtain ⟨registered, added, queued⟩ := computed
+        obtain ⟨_, rfl⟩ := addPendingDeposit_eq queued
+        refine .inr ⟨?_, addValidatorToRegistry_validators_eq_push (after := registered) added,
+          fun holds => (addValidatorToRegistry_push added holds).2⟩
+        simp only [Array.findIdx?_eq_none_iff, beq_eq_false_iff_ne] at absent
+        simpa [validatorKeys, List.mem_map] using absent
+      · cases computed
+        exact .inl rfl
+    · obtain ⟨_, rfl⟩ := addPendingDeposit_eq (liftAccessor_ok.mp computed)
+      exact .inl rfl
+  · rename_i before
+    simp only [depositRegistrationAmount, before, ↓reduceIte]
+    rcases applyPendingDeposit_cases computed with rfl | ⟨_, raised⟩ | ⟨fresh, added⟩
+    · exact .inl rfl
+    · exact .inl (congrArg (·.data) (increaseBalance_validators raised))
+    · exact .inr ⟨fresh, addValidatorToRegistry_validators_eq_push added,
+        fun holds => (addValidatorToRegistry_push added holds).2⟩
 
 /-- A deposit keeps one balance for each validator. -/
 theorem balancesMatch_applyDeposit {pubkey : BLSPubkey} {withdrawalCredentials : Bytes32}

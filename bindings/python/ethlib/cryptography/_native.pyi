@@ -734,7 +734,7 @@ def consensus_read_slashing_interchange(text: bytes) -> bytes:
     ...
 
 def consensus_import_slashing_interchange(held: bytes, file: bytes) -> bytes:
-    """The record of a signer that keeps every message, after it imports a file, as JSON text."""
+    """The record after importing a file with the minimal strategy of EIP-3076, as JSON text."""
     ...
 
 def consensus_check_block_signing(interchange: bytes, pubkey: bytes, slot: int, signing_root: bytes) -> bool:
@@ -1203,6 +1203,10 @@ def eth_wire_hash(tx: bytes) -> bytes:
 
 def eth_receipts_match(version: int, fork: str, receipts_root: bytes, receipts: bytes) -> bool:
     """Whether the receipts of a block, as a version sends them, match the receipts root of its header."""
+    ...
+
+def eth_check_body(fork: str, header: bytes, body: bytes) -> bool:
+    """Whether the body `body` of a BlockBodies answer belongs to the header `header` at a fork."""
     ...
 
 def eth_access_lists_answer(version: int, request: bytes, response: bytes, expected: list[bytes]) -> bool:

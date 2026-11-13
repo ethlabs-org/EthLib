@@ -56,7 +56,7 @@ variable {config : Config} {anchorState : BeaconState preset fork}
   {anchorBlock : BeaconBlock preset fork} {store : Store preset fork}
 
 /-- A reachable store knows the anchor block, at its own root. -/
-private theorem Store.Reachable.anchor_known
+theorem Store.Reachable.anchor_known
     (reachable : Store.Reachable config anchorState anchorBlock store) :
     ∃ root, SszType.hashTreeRoot anchorBlock = .ok root ∧
       store.blocks[root]? = some anchorBlock := by
@@ -201,6 +201,30 @@ theorem Store.Reachable.anchorState_root
         simp only [not_not.mp same]
   | _ => assumption
 
+/-- An imported non-anchor block is later than its held parent. -/
+theorem Store.Reachable.parent_slot_lt_of_ne_anchor
+    (reachable : Store.Reachable config anchorState anchorBlock store)
+    (aligned : anchorBlock.slot ≤ anchorState.slot)
+    {root : Root} {block parent : BeaconBlock preset fork}
+    (found : store.blocks[root]? = some block) (different : block ≠ anchorBlock)
+    (parentFound : store.blocks[block.parentRoot]? = some parent) :
+    parent.slot < block.slot := by
+  obtain ⟨state, _, _, produced⟩ := reachable.blockStatesFromParents found
+  obtain ⟨pre, checks, engine, signed, same, held, transitioned⟩ := produced different
+  have earlier := (stateTransition_slot transitioned).1
+  rw [same] at earlier
+  obtain ⟨post, postOk, anchor, producedParent⟩ := reachable.blockStatesFromParents parentFound
+  rw [held, Option.some.injEq] at postOk
+  subst post
+  by_cases isAnchor : parent = anchorBlock
+  · rw [anchor isAnchor] at earlier
+    rw [isAnchor]
+    exact UInt64.lt_of_le_of_lt aligned earlier
+  · obtain ⟨_, _, _, parentSigned, parentSame, _, parentRun⟩ := producedParent isAnchor
+    have slotEq := (stateTransition_slot parentRun).2
+    rw [parentSame] at slotEq
+    rwa [slotEq] at earlier
+
 /-- A non-anchor block state has the block's slot and its header with an empty state root. -/
 theorem Store.Reachable.blockState_header
     (reachable : Store.Reachable config anchorState anchorBlock store)
@@ -312,7 +336,7 @@ theorem Store.Reachable.blockState_history_known
       have cached := getBlockRootAtSlot_processSlots_header
         (reachable.blockState_root parentKnown parentFound) (nonzero _ _ parentKnown)
         slotsOk advancedRead (UInt64.not_lt.mp old)
-      have parentHash := processBlock_parentRoot blockOk
+      have parentHash := (processBlock_parentRoot blockOk).2.2
       rw [message] at parentHash
       have eq := Except.ok.inj (cached.symm.trans parentHash)
       exact ⟨parentBlock, eq ▸ parentKnown⟩
@@ -405,7 +429,7 @@ theorem Store.Reachable.blockState_history_run
       have cached := getBlockRootAtSlot_processSlots_header
         (reachable.blockState_root parentKnown parentFound) (nonzero _ _ parentKnown)
         slotsOk advancedRead (UInt64.not_lt.mp old)
-      have parentHash := processBlock_parentRoot blockOk
+      have parentHash := (processBlock_parentRoot blockOk).2.2
       rw [message] at parentHash
       have eq := Except.ok.inj (cached.symm.trans parentHash)
       have high : query < signed.message.slot := by
@@ -458,7 +482,7 @@ theorem Store.Reachable.preBlock_history_run
     have cached := getBlockRootAtSlot_processSlots_header
       (reachable.blockState_root parentKnown parentFound) (nonzero _ _ parentKnown)
       slotsOk read (UInt64.not_lt.mp old)
-    have eq := Except.ok.inj (cached.symm.trans (processBlock_parentRoot blockOk))
+    have eq := Except.ok.inj (cached.symm.trans (processBlock_parentRoot blockOk).2.2)
     have high : query < block.slot := by
       rw [← (processSlots_slot slotsOk).2]
       exact UInt64.lt_iff_toNat_lt.mpr (getBlockRootAtSlot_ok_iff.mp read).1
@@ -528,7 +552,7 @@ theorem Store.Reachable.blockState_history_ancestor
     · have cached := getBlockRootAtSlot_processSlots_header
         (reachable.blockState_root parentKnown parentFound) (nonzero _ _ parentKnown)
         slotsOk advancedRead (UInt64.not_lt.mp old)
-      have parentHash := processBlock_parentRoot blockOk
+      have parentHash := (processBlock_parentRoot blockOk).2.2
       rw [message] at parentHash
       have eq := Except.ok.inj (cached.symm.trans parentHash)
       rw [Store.getAncestor_of_le parentKnown (UInt64.le_trans parentLe (UInt64.not_lt.mp old))]
@@ -562,7 +586,7 @@ theorem Store.Reachable.anchor_processSlots_header
     obtain ⟨childAdvanced, slotsOk, -, -, blockOk, -⟩ := stateTransition_ok transitioned
     rw [parentEq] at slotsOk
     rw [processSlots_latestBlockHeader_eq reachable.anchorState_root nonzero computed slotsOk]
-    have parentHash := processBlock_parentRoot blockOk
+    have parentHash := (processBlock_parentRoot blockOk).2.2
     rw [message] at parentHash
     exact parentHash.trans (by simpa only [same] using (reachable.root parentKnown).symm)
   · exact reachable.anchor_processSlots_header nonzero parentKnown parentFound same computed
@@ -696,7 +720,7 @@ theorem Store.Reachable.blockState_history_slot_le
       have cached := getBlockRootAtSlot_processSlots_header
         (reachable.blockState_root parentKnown parentFound) (nonzero _ _ parentKnown)
         slotsOk advancedRead (UInt64.not_lt.mp old)
-      have parentHash := processBlock_parentRoot blockOk
+      have parentHash := (processBlock_parentRoot blockOk).2.2
       rw [message] at parentHash
       have eq := Except.ok.inj (cached.symm.trans parentHash)
       refine ⟨parentBlock, eq ▸ parentKnown, ?_⟩
@@ -724,7 +748,9 @@ theorem CheckpointsSatisfy.of_frame {p : Checkpoint → Prop}
 /-- Justification selects old checkpoints or a checkpoint read from the state's history. -/
 theorem CheckpointsSatisfy.processJustification {p : Checkpoint → Prop}
     {state after : BeaconState preset fork} (holds : CheckpointsSatisfy p state)
-    (reads : ∀ checkpoint, getBlockRoot state checkpoint.epoch = .ok checkpoint.root →
+    (reads : ∀ checkpoint,
+      (checkpoint.epoch = getPreviousEpoch state ∨ checkpoint.epoch = getCurrentEpoch state) →
+      getBlockRoot state checkpoint.epoch = .ok checkpoint.root →
       p checkpoint)
     (computed : processJustificationAndFinalization state = .ok after) :
     CheckpointsSatisfy p after := by
@@ -733,9 +759,9 @@ theorem CheckpointsSatisfy.processJustification {p : Checkpoint → Prop}
   · obtain ⟨previous, _, final, _⟩ := weighJustificationAndFinalization_checkpoints weighed
     refine ⟨previous ▸ holds.2.1, ?_, ?_⟩
     · rcases weighJustificationAndFinalization_currentJustified weighed with
-        ⟨same, _⟩ | ⟨_, _, _, _, _, _, _, read⟩
+        ⟨same, _⟩ | ⟨current, _, _, _, _, _, epoch, read⟩
       · exact same ▸ holds.2.1
-      · exact reads _ read
+      · exact reads _ (by cases current; exact .inl epoch; exact .inr epoch) read
     · rcases final with same | same | same
       · exact same ▸ holds.2.2
       · exact same ▸ holds.1
@@ -747,7 +773,9 @@ theorem CheckpointsSatisfy.advanceSlots {p : Checkpoint → Prop}
     (holds : CheckpointsSatisfy p state)
     (reads : ∀ i, i < count → ∀ middle cached,
       advanceSlots config checks i state = .ok middle → processSlot middle = .ok cached →
-      ∀ checkpoint, getBlockRoot cached checkpoint.epoch = .ok checkpoint.root → p checkpoint)
+      ∀ checkpoint,
+      (checkpoint.epoch = getPreviousEpoch cached ∨ checkpoint.epoch = getCurrentEpoch cached) →
+      getBlockRoot cached checkpoint.epoch = .ok checkpoint.root → p checkpoint)
     (computed : advanceSlots config checks count state = .ok after) :
     CheckpointsSatisfy p after := by
   induction count generalizing state after with
@@ -782,7 +810,9 @@ theorem Store.Reachable.blockState_checkpointsSatisfy
       store.blockStates[root]? = some state →
       ∀ checks count middle cached,
         advanceSlots config checks count state = .ok middle → processSlot middle = .ok cached →
-        ∀ checkpoint, getBlockRoot cached checkpoint.epoch = .ok checkpoint.root → p checkpoint)
+        ∀ checkpoint,
+        (checkpoint.epoch = getPreviousEpoch cached ∨ checkpoint.epoch = getCurrentEpoch cached) →
+        getBlockRoot cached checkpoint.epoch = .ok checkpoint.root → p checkpoint)
     {root : Root} {state : BeaconState preset fork}
     (stored : store.blockStates[root]? = some state) : CheckpointsSatisfy p state := by
   obtain ⟨block, found⟩ := reachable.known_of_blockState stored
@@ -805,5 +835,166 @@ decreasing_by
   have bounds := stateTransition_slot transitioned
   rw [bounds.2]
   exact UInt64.lt_iff_toNat_lt.mp bounds.1
+
+/-- A lookahead history read names a held block once some non-anchor block fixes the anchor header.
+
+The query is after both anchor slots, so no equality of those slots is required. -/
+theorem Store.Reachable.processSlots_history_slot_le
+    (reachable : Store.Reachable config anchorState anchorBlock store)
+    (nonzero : ∀ (root : Root) (block : BeaconBlock preset fork), store.blocks[root]? = some block →
+      block.stateRoot ≠ Vector.replicate 32 0)
+    (child : ∃ (root : Root) (block : BeaconBlock preset fork),
+      store.blocks[root]? = some block ∧ block ≠ anchorBlock)
+    {root readRoot : Root} {state advanced : BeaconState preset fork} {slot query : Slot}
+    {checks : SignatureChecks} (stored : store.blockStates[root]? = some state)
+    (computed : processSlots config checks state slot = .ok advanced)
+    (read : getBlockRootAtSlot advanced query = .ok readRoot)
+    (stateLater : anchorState.slot ≤ query) (blockLater : anchorBlock.slot ≤ query) :
+    ∃ block, store.blocks[readRoot]? = some block ∧ block.slot ≤ query := by
+  by_cases old : query < state.slot
+  · have run := computed
+    simp only [processSlots, bind_ok_iff, ensure_ok_iff] at run
+    obtain ⟨_, _, run⟩ := run
+    exact reachable.blockState_history_slot_le nonzero stored
+      (getBlockRootAtSlot_of_advanceSlots run read old) stateLater blockLater
+  · obtain ⟨block, found⟩ := reachable.known_of_blockState stored
+    have later := UInt64.not_lt.mp old
+    by_cases same : block = anchorBlock
+    · obtain ⟨post, postOk, anchored, _⟩ := reachable.blockStatesFromParents found
+      rw [stored, Option.some.injEq] at postOk
+      subst post
+      have stateEq := anchored same
+      rw [stateEq] at computed
+      obtain ⟨childRoot, childBlock, childFound, other⟩ := child
+      obtain ⟨childState, childStored, _⟩ := reachable.blockStatesFromParents childFound
+      have header := reachable.anchor_processSlots_header (same ▸ nonzero _ _ found)
+        childFound childStored other computed
+      have hashed := getBlockRootAtSlot_processSlots_header reachable.anchorState_root
+        (same ▸ nonzero _ _ found) computed read stateLater
+      rw [header, ← same, reachable.root found, Except.ok.injEq] at hashed
+      exact ⟨block, hashed ▸ found, same ▸ blockLater⟩
+    · have slotEq := (reachable.blockState_header found stored same).1
+      have lower : block.slot ≤ query := slotEq ▸ later
+      have eq := reachable.blockState_processSlots_root found stored same
+        (nonzero _ _ found) computed read lower
+      exact ⟨block, eq ▸ found, lower⟩
+
+/-- A two-epoch history window keeps both justification reads strictly before its overwrite edge. -/
+theorem getBlockRoot_processSlot_of_recent_epoch {state cached : BeaconState preset fork}
+    (positive : 0 < preset.SLOTS_PER_EPOCH.toNat)
+    (window : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
+    (computed : processSlot state = .ok cached) {epoch : Epoch}
+    (recent : epoch = getPreviousEpoch state ∨ epoch = getCurrentEpoch state) :
+    getBlockRoot cached epoch = getBlockRoot state epoch := by
+  apply getBlockRoot_processSlot computed
+  have remainder := Nat.mod_lt state.slot.toNat positive
+  have divide := Nat.mod_add_div state.slot.toNat preset.SLOTS_PER_EPOCH.toNat
+  rw [Nat.mul_comm preset.SLOTS_PER_EPOCH.toNat] at divide
+  rcases recent with rfl | rfl
+  · rw [getPreviousEpoch_toNat, getCurrentEpoch_toNat]
+    have subtract : state.slot.toNat / preset.SLOTS_PER_EPOCH.toNat ≤
+        (state.slot.toNat / preset.SLOTS_PER_EPOCH.toNat - 1) + 1 := by omega
+    have multiplied := Nat.mul_le_mul_right preset.SLOTS_PER_EPOCH.toNat subtract
+    rw [Nat.add_mul, Nat.one_mul] at multiplied
+    omega
+  · rw [getCurrentEpoch_toNat]
+    omega
+
+/-- Checkpoints after the anchor epoch name held blocks no later than their epoch start. -/
+theorem Store.Reachable.blockState_checkpoint_roots
+    (reachable : Store.Reachable config anchorState anchorBlock store)
+    (sound : Invariant anchorState)
+    (positive : 0 < preset.SLOTS_PER_EPOCH.toNat)
+    (window : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
+    (aligned : anchorBlock.slot ≤ anchorState.slot)
+    (nonzero : ∀ (root : Root) (block : BeaconBlock preset fork), store.blocks[root]? = some block →
+      block.stateRoot ≠ Vector.replicate 32 0)
+    (child : ∃ (root : Root) (block : BeaconBlock preset fork),
+      store.blocks[root]? = some block ∧ block ≠ anchorBlock)
+    {root : Root} {state : BeaconState preset fork}
+    (stored : store.blockStates[root]? = some state) :
+    CheckpointsSatisfy (fun checkpoint => checkpoint.epoch ≤ getCurrentEpoch anchorState ∨
+      ∃ start block, computeStartSlotAtEpoch preset checkpoint.epoch = .ok start ∧
+        store.blocks[checkpoint.root]? = some block ∧ block.slot ≤ start) state := by
+  apply reachable.blockState_checkpointsSatisfy (p := fun checkpoint =>
+    checkpoint.epoch ≤ getCurrentEpoch anchorState ∨
+      ∃ start block, computeStartSlotAtEpoch preset checkpoint.epoch = .ok start ∧
+        store.blocks[checkpoint.root]? = some block ∧ block.slot ≤ start) ?_ ?_ stored
+  · have bound := UInt64.le_trans sound.settled (getPreviousEpoch_le anchorState)
+    exact ⟨.inl (UInt64.le_trans sound.ordered.2 bound), .inl bound,
+      .inl (UInt64.le_trans sound.ordered.1 (UInt64.le_trans sound.ordered.2 bound))⟩
+  · intro r base held checks count middle cached run cachedOk checkpoint recent read
+    by_cases old : checkpoint.epoch ≤ getCurrentEpoch anchorState
+    · exact .inl old
+    have recent' : checkpoint.epoch = getPreviousEpoch middle ∨
+        checkpoint.epoch = getCurrentEpoch middle := by
+      simpa only [getPreviousEpoch, getCurrentEpoch, processSlot_slot cachedOk] using recent
+    rw [getBlockRoot_processSlot_of_recent_epoch positive window cachedOk recent'] at read
+    obtain ⟨start, startOk, read⟩ := getBlockRoot_ok_iff.mp read
+    have later : anchorState.slot ≤ start := by
+      have epochLt := UInt64.lt_iff_toNat_lt.mp (UInt64.not_le.mp old)
+      rw [getCurrentEpoch_toNat] at epochLt
+      have next := (Nat.div_lt_iff_lt_mul positive).mp epochLt
+      have eq := (Base.Uint64.mulChecked_ok_iff.mp startOk).2
+      exact UInt64.le_iff_toNat_le.mpr (by omega)
+    have blockLater := UInt64.le_trans aligned later
+    have known : ∃ block, store.blocks[checkpoint.root]? = some block ∧ block.slot ≤ start := by
+      cases count with
+      | zero =>
+        cases Except.ok.inj run
+        exact reachable.blockState_history_slot_le nonzero held read later blockLater
+      | succ count =>
+        have atSlot := advanceSlots_slot (count + 1) run
+        have greater : base.slot < middle.slot := UInt64.lt_iff_toNat_lt.mpr (by omega)
+        have computed : processSlots config checks base middle.slot = .ok middle := by
+          simp only [processSlots, bind_ok_iff, ensure_ok_iff]
+          refine ⟨(), greater, ?_⟩
+          have countEq : middle.slot.toNat - base.slot.toNat = count + 1 := by omega
+          simpa only [countEq] using run
+        exact reachable.processSlots_history_slot_le nonzero child held computed read
+          later blockLater
+    obtain ⟨block, held, lower⟩ := known
+    exact .inr ⟨start, block, startOk, held, lower⟩
+
+/-- Pull-up finalization selects only checkpoints already present in its input state. -/
+theorem Store.Reachable.pulled_finalized_root
+    (reachable : Store.Reachable config anchorState anchorBlock store)
+    (sound : Invariant anchorState)
+    (positive : 0 < preset.SLOTS_PER_EPOCH.toNat)
+    (window : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
+    (aligned : anchorBlock.slot ≤ anchorState.slot)
+    (nonzero : ∀ (root : Root) (block : BeaconBlock preset fork), store.blocks[root]? = some block →
+      block.stateRoot ≠ Vector.replicate 32 0)
+    (child : ∃ (root : Root) (block : BeaconBlock preset fork),
+      store.blocks[root]? = some block ∧ block ≠ anchorBlock)
+    {root : Root} {state pulled : BeaconState preset fork}
+    (stored : store.blockStates[root]? = some state)
+    (computed : processJustificationAndFinalization state = .ok pulled) :
+    pulled.finalizedCheckpoint.epoch ≤ getCurrentEpoch anchorState ∨
+      ∃ start block, computeStartSlotAtEpoch preset pulled.finalizedCheckpoint.epoch = .ok start ∧
+        store.blocks[pulled.finalizedCheckpoint.root]? = some block ∧ block.slot ≤ start := by
+  have roots := reachable.blockState_checkpoint_roots sound positive window aligned nonzero
+    child stored
+  rcases processJustificationAndFinalization_ok computed with rfl | ⟨_, _, _, weighed⟩
+  · exact roots.2.2
+  · rcases (weighJustificationAndFinalization_checkpoints weighed).2.2.1 with same | same | same
+    · exact same ▸ roots.2.2
+    · exact same ▸ roots.1
+    · exact same ▸ roots.2.1
+
+/-- The state that a store keeps for a block is at the slot of the block. -/
+theorem Models.Network.blockState_slot_eq {store : Store preset fork}
+    (reachable : Store.Reachable config anchorState anchorBlock store)
+    (anchorSlot : anchorBlock.slot = anchorState.slot) {root : Root}
+    {block : BeaconBlock preset fork} {state : BeaconState preset fork}
+    (found : store.blocks[root]? = some block)
+    (stored : store.blockStates[root]? = some state) : state.slot = block.slot := by
+  by_cases same : block = anchorBlock
+  · obtain ⟨post, postOk, anchored, -⟩ := reachable.blockStatesFromParents found
+    rw [stored, Option.some.injEq] at postOk
+    subst post
+    rw [anchored same, same]
+    exact anchorSlot.symm
+  · exact (reachable.blockState_header found stored same).1
 
 end EthLib.Consensus

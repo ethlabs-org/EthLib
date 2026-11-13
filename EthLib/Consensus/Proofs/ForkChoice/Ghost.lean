@@ -122,6 +122,102 @@ theorem blockTree_isChild_iff {child root : Root} :
   simp only [BlockTree.IsChild, blockTree, ne_eq, reduceCtorEq, not_false_eq_true, true_and,
     treeParent, Option.map_eq_some_iff]
 
+/-- Before Gloas, every ancestor relation between held roots gives a child path. -/
+theorem nodePath_of_ancestor (before : fork < .glamsterdam)
+    {root leaf : Root} {block : BeaconBlock preset fork}
+    (found : store.blocks[root]? = some block)
+    (above : (blockTree lower).Ancestor (some root) (some leaf)) :
+    store.NodePath ⟨root, .pending⟩ ⟨leaf, .pending⟩ := by
+  induction h : store.nodeRank ⟨root, .pending⟩ using Nat.strong_induction_on
+      generalizing root block with
+  | _ rank ih =>
+  by_cases same : root = leaf
+  · subst same
+    exact .refl _
+  obtain ⟨child, childOf, childAbove⟩ := above.exists_child (by simpa using same)
+  cases child with
+  | none => exact False.elim (childOf.1 rfl)
+  | some child =>
+    obtain ⟨childBlock, childFound, parent⟩ := blockTree_isChild_iff.mp childOf
+    have childrenOk : ∃ children, store.getNodeChildren ⟨root, .pending⟩ = .ok children := by
+      have later : ¬ .glamsterdam ≤ fork := Nat.not_le_of_lt before
+      simp [getNodeChildren, later, pure, Except.pure]
+    obtain ⟨children, childrenOk⟩ := childrenOk
+    have childMem : (⟨child, .pending⟩ : ForkChoiceNode) ∈ children :=
+      (mem_getNodeChildren before childrenOk).mpr ⟨rfl, childBlock, childFound, parent⟩
+    have slots := UInt64.lt_iff_toNat_lt.mp
+      (lower child childBlock block childFound (parent ▸ found))
+    have bound := childBlock.slot.toNat_lt
+    have rankLower : store.nodeRank ⟨child, .pending⟩ < store.nodeRank ⟨root, .pending⟩ := by
+      simp only [nodeRank, childFound, found, ↓reduceIte]
+      omega
+    exact .step childrenOk childMem (ih _ (h ▸ rankLower) childFound childAbove rfl)
+
+/-- A held block has a held leaf above it in the finite strict-slot tree, before Gloas. -/
+theorem exists_leaf_above (lower : store.ParentsBelow) (before : fork < .glamsterdam)
+    {root : Root} {block : BeaconBlock preset fork}
+    (found : store.blocks[root]? = some block) :
+    ∃ leaf leafBlock, store.blocks[leaf]? = some leafBlock ∧
+      store.NodePath ⟨root, .pending⟩ ⟨leaf, .pending⟩ ∧
+      store.getNodeChildren ⟨leaf, .pending⟩ = .ok [] := by
+  induction h : store.nodeRank ⟨root, .pending⟩ using Nat.strong_induction_on
+      generalizing root block with
+  | _ rank ih =>
+  have childrenOk : ∃ children, store.getNodeChildren ⟨root, .pending⟩ = .ok children := by
+    have later : ¬ .glamsterdam ≤ fork := Nat.not_le_of_lt before
+    simp [getNodeChildren, later, pure, Except.pure]
+  obtain ⟨children, childrenOk⟩ := childrenOk
+  by_cases empty : children = []
+  · exact ⟨root, block, found, .refl _, empty ▸ childrenOk⟩
+  obtain ⟨child, childMem⟩ := List.exists_mem_of_ne_nil _ empty
+  obtain ⟨pending, childBlock, childFound, parent⟩ :=
+    (mem_getNodeChildren before childrenOk).mp childMem
+  have slots := UInt64.lt_iff_toNat_lt.mp
+    (lower child.root childBlock block childFound (parent ▸ found))
+  have bound := childBlock.slot.toNat_lt
+  have rankLower : store.nodeRank child < store.nodeRank ⟨root, .pending⟩ := by
+    simp only [nodeRank, childFound, found, pending, ↓reduceIte]
+    omega
+  have childEq : child = ⟨child.root, .pending⟩ := by cases child; simp_all
+  obtain ⟨leaf, leafBlock, leafFound, path, terminal⟩ :=
+    ih _ (h ▸ (childEq ▸ rankLower)) childFound rfl
+  exact ⟨leaf, leafBlock, leafFound, .step childrenOk childMem (childEq ▸ path), terminal⟩
+
+/-- Before Gloas, a child path follows the strict-slot block tree. -/
+theorem NodePath.ancestor {node leaf : ForkChoiceNode} (path : store.NodePath node leaf)
+    (before : fork < .glamsterdam) :
+    (blockTree lower).Ancestor (some node.root) (some leaf.root) := by
+  induction path with
+  | refl => exact .refl _
+  | step read mem _ ih =>
+    obtain ⟨-, block, found, parent⟩ := (mem_getNodeChildren before read).mp mem
+    exact (blockTree_isChild_iff.mpr ⟨block, found, parent⟩).ancestor.trans ih
+
+/-- Successful traversal from an ancestor reads a held leaf above the given root.
+
+The read can return false, and a true result retains the root in the ancestor's result. -/
+theorem exists_leaf_above_of_filterNodeTree {config : Config}
+    (before : fork < .glamsterdam) {start root : Root}
+    {block : BeaconBlock preset fork} {nodes : List ForkChoiceNode}
+    (found : store.blocks[root]? = some block)
+    (below : (blockTree lower).Ancestor (some start) (some root))
+    (walk : store.filterNodeTree config ⟨start, .pending⟩ = .ok nodes) :
+    ∃ leaf leafBlock, store.blocks[leaf]? = some leafBlock ∧
+      (blockTree lower).Ancestor (some root) (some leaf) ∧
+      store.getNodeChildren ⟨leaf, .pending⟩ = .ok [] ∧
+      (∃ b, store.isViableLeaf config ⟨leaf, .pending⟩ = .ok b) ∧
+      (store.isViableLeaf config ⟨leaf, .pending⟩ = .ok true →
+        (⟨root, .pending⟩ : ForkChoiceNode) ∈ nodes) := by
+  obtain ⟨startBlock, startRead⟩ := filterNodeTree_known walk
+  have path := nodePath_of_ancestor before startRead below
+  obtain ⟨leaf, leafBlock, leafRead, leafPath, terminal⟩ :=
+    exists_leaf_above (lower := lower) before found
+  refine ⟨leaf, leafBlock, leafRead, leafPath.ancestor before, terminal,
+    (path.trans leafPath).isViableLeaf_ok walk terminal, ?_⟩
+  intro viable
+  obtain ⟨result, resultOk, lift⟩ := path.filterNodeTree walk
+  exact lift _ (leafPath.self_mem_filterNodeTree resultOk terminal viable)
+
 /-- Before Gloas, the ancestor walk from a known block above the slot moves to its parent. -/
 theorem getAncestor_of_gt {node : ForkChoiceNode} {slot : Slot}
     {block parent : BeaconBlock preset fork} (before : fork < .glamsterdam)

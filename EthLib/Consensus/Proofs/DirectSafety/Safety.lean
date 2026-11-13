@@ -36,18 +36,18 @@ private theorem accountable_pair_bound {g x a b : ForkedBeaconState preset}
     (one two : EitherCall (shared.append left) (shared.append right))
     (overlap : ∀ key ∈ one.voters ∩ two.voters,
       Slashable (shared.append left) (shared.append right) key) :
-      Quorum.weight (effectiveWeight x.state) (activeKeys x.state) ≤
-        3 * Quorum.weight (effectiveWeight x.state)
+      Models.stake (effectiveWeight x.state) (activeKeys x.state) ≤
+        3 * Models.stake (effectiveWeight x.state)
           (accountableKeys (shared.append left) (shared.append right) x) +
         stateDrift x one.state + stateDrift x two.state := by
     classical
     let bad := (activeKeys x.state).filter (Accountable (shared.append left) (shared.append right))
     have facts (call : EitherCall (shared.append left) (shared.append right)) :
         call.voters ⊆ recentKeys call.state.state ∧
-        2 * Quorum.weight (effectiveWeight call.state.state) (activeKeys call.state.state) ≤
-          3 * Quorum.weight (effectiveWeight call.state.state) call.voters ∧
+        2 * Models.stake (effectiveWeight call.state.state) (activeKeys call.state.state) ≤
+          3 * Models.stake (effectiveWeight call.state.state) call.voters ∧
         (∑ k ∈ activeKeys x.state \ bad,
-          (effectiveWeight x.state k - Quorum.supported (recentKeys call.state.state)
+          (effectiveWeight x.state k - Models.supported (recentKeys call.state.state)
             (effectiveWeight call.state.state) k)) ≤ referenceLoss x call.state := by
       have branch {z : ForkedBeaconState preset} (run : Run config checks g z)
           (early : z.fork < .glamsterdam) (enough : EnoughStake run)
@@ -55,12 +55,13 @@ private theorem accountable_pair_bound {g x a b : ForkedBeaconState preset}
             Accountable (shared.append left) (shared.append right) k)
           (c : QuorumCall run) :
           c.voters ⊆ recentKeys c.cached ∧
-          2 * Quorum.weight (effectiveWeight c.cached) (activeKeys c.cached) ≤
-            3 * Quorum.weight (effectiveWeight c.cached) c.voters ∧
+          2 * Models.stake (effectiveWeight c.cached) (activeKeys c.cached) ≤
+            3 * Models.stake (effectiveWeight c.cached) c.voters ∧
           (∑ k ∈ activeKeys x.state \ bad,
-            (effectiveWeight x.state k - Quorum.supported (recentKeys c.cached)
+            (effectiveWeight x.state k - Models.supported (recentKeys c.cached)
               (effectiveWeight c.cached) k)) ≤ referenceLoss x ⟨c.before.fork, c.cached⟩ := by
-        refine ⟨quorum_voters_recent run parameters genesis early c,
+        refine ⟨quorum_voters_recent run parameters genesis
+          (Nat.lt_trans early (by decide)) c,
           quorum_count run genesis enough c, ?_⟩
         obtain ⟨pre, post, split, frame, validators, balances⟩ := c.toEpochCall.selected_prefix
         have earlyBefore : c.before.fork < .glamsterdam :=
@@ -72,7 +73,7 @@ private theorem accountable_pair_bound {g x a b : ForkedBeaconState preset}
           obtain ⟨active, absent⟩ := Finset.mem_sdiff.mp hk
           refine Finset.mem_filter.mpr ⟨active, ?_⟩
           rintro ⟨v, found, key, slashed⟩
-          have evidence := pre.slashed_evidence genesis earlyBefore v
+          have evidence := pre.slashed_evidence genesis (Nat.lt_trans earlyBefore (by decide)) v
             (by simpa only [validators] using found) slashed
           have all : run.SlashingEvidence v.pubkey := by
             obtain ⟨u, v, step, inside, ev⟩ := evidence
@@ -91,10 +92,10 @@ private theorem accountable_pair_bound {g x a b : ForkedBeaconState preset}
     let accountable := bad ∪ (one.voters ∩ two.voters)
     have outsideLoss (c : EitherCall (shared.append left) (shared.append right))
         (bound : (∑ k ∈ activeKeys x.state \ bad,
-          (effectiveWeight x.state k - Quorum.supported (recentKeys c.state.state)
+          (effectiveWeight x.state k - Models.supported (recentKeys c.state.state)
             (effectiveWeight c.state.state) k)) ≤ referenceLoss x c.state) :
         (∑ k ∈ activeKeys x.state \ accountable,
-          (effectiveWeight x.state k - Quorum.supported (recentKeys c.state.state)
+          (effectiveWeight x.state k - Models.supported (recentKeys c.state.state)
             (effectiveWeight c.state.state) k)) ≤ referenceLoss x c.state := by
       apply le_trans (Finset.sum_le_sum_of_subset_of_nonneg ?_ (by intros; omega)) bound
       exact Finset.sdiff_subset_sdiff (Finset.Subset.refl _) Finset.subset_union_left
@@ -106,7 +107,7 @@ private theorem accountable_pair_bound {g x a b : ForkedBeaconState preset}
         · exact h
         · exact ⟨active, .inl (overlap k (Finset.mem_inter.mpr h))⟩
       · intro h; exact ⟨h.1, .inl h⟩
-    have bound := Quorum.accountable_at_reference (activeKeys x.state)
+    have bound := Models.stake_le_accountable_add_change (activeKeys x.state)
       (activeKeys one.state.state) (activeKeys two.state.state)
       (recentKeys one.state.state) (recentKeys two.state.state) one.voters two.voters
       accountable (effectiveWeight x.state) (effectiveWeight one.state.state)
@@ -117,7 +118,7 @@ private theorem accountable_pair_bound {g x a b : ForkedBeaconState preset}
       Finset.subset_union_right (outsideLoss one lossOne) (outsideLoss two lossTwo)
       (Nat.le_refl _) (Nat.le_refl _) (Nat.le_refl _) (Nat.le_refl _)
     rw [same] at bound
-    change _ ≤ 3 * Quorum.weight (effectiveWeight x.state) bad +
+    change _ ≤ 3 * Models.stake (effectiveWeight x.state) bad +
       stateDrift x one.state + stateDrift x two.state
     dsimp only [stateDrift]
     omega
@@ -136,8 +137,8 @@ theorem accountable_safety_at_calls {g x a b : ForkedBeaconState preset}
     (∃ one two : EitherCall (shared.append left) (shared.append right),
       a.state.finalizedCheckpoint.epoch.toNat ≤ one.targetEpoch ∧ one.targetEpoch ≤ j.epoch.toNat ∧
       a.state.finalizedCheckpoint.epoch.toNat ≤ two.targetEpoch ∧ two.targetEpoch ≤ j.epoch.toNat ∧
-      Quorum.weight (effectiveWeight x.state) (activeKeys x.state) ≤
-        3 * Quorum.weight (effectiveWeight x.state)
+      Models.stake (effectiveWeight x.state) (activeKeys x.state) ≤
+        3 * Models.stake (effectiveWeight x.state)
           (accountableKeys (shared.append left) (shared.append right) x) +
         stateDrift x one.state + stateDrift x two.state) ∨
       HashEvidence ((shared.append left).hashObjects ++ (shared.append right).hashObjects) := by
@@ -217,8 +218,8 @@ theorem accountable_safety {g x a b : ForkedBeaconState preset}
       min a.state.finalizedCheckpoint.epoch.toNat b.state.finalizedCheckpoint.epoch.toNat *
         preset.SLOTS_PER_EPOCH.toNat) :
     let high := max a.state.finalizedCheckpoint.epoch.toNat b.state.finalizedCheckpoint.epoch.toNat
-    (Quorum.weight (effectiveWeight x.state) (activeKeys x.state) ≤
-      3 * Quorum.weight (effectiveWeight x.state)
+    (Models.stake (effectiveWeight x.state) (activeKeys x.state) ≤
+      3 * Models.stake (effectiveWeight x.state)
         (accountableKeys (shared.append left) (shared.append right) x) +
         2 * max (derivedDrift high left) (derivedDrift high right)) ∨
       HashEvidence ((shared.append left).hashObjects ++ (shared.append right).hashObjects) := by
@@ -258,8 +259,8 @@ theorem accountable_safety_justified {g x a b : ForkedBeaconState preset}
     (conflict : Conflict (shared.append left) (shared.append right) a.state.finalizedCheckpoint j)
     (starts : x.state.slot.toNat ≤
       a.state.finalizedCheckpoint.epoch.toNat * preset.SLOTS_PER_EPOCH.toNat) :
-    (Quorum.weight (effectiveWeight x.state) (activeKeys x.state) ≤
-      3 * Quorum.weight (effectiveWeight x.state)
+    (Models.stake (effectiveWeight x.state) (activeKeys x.state) ≤
+      3 * Models.stake (effectiveWeight x.state)
         (accountableKeys (shared.append left) (shared.append right) x) +
         2 * max (derivedDrift j.epoch.toNat left) (derivedDrift j.epoch.toNat right)) ∨
       HashEvidence ((shared.append left).hashObjects ++ (shared.append right).hashObjects) := by
@@ -294,8 +295,8 @@ theorem accountable_justified_unique {g x a b : ForkedBeaconState preset}
     (epoch : j.epoch = k.epoch)
     (starts : x.state.slot.toNat ≤ j.epoch.toNat * preset.SLOTS_PER_EPOCH.toNat) :
     j = k ∨
-      Quorum.weight (effectiveWeight x.state) (activeKeys x.state) ≤
-        3 * Quorum.weight (effectiveWeight x.state)
+      Models.stake (effectiveWeight x.state) (activeKeys x.state) ≤
+        3 * Models.stake (effectiveWeight x.state)
           (accountableKeys (shared.append left) (shared.append right) x) +
         2 * max (derivedDrift j.epoch.toNat left) (derivedDrift j.epoch.toNat right) ∨
       HashEvidence ((shared.append left).hashObjects ++ (shared.append right).hashObjects) := by
@@ -345,15 +346,64 @@ theorem accountable_justified_unique {g x a b : ForkedBeaconState preset}
       simp only [EitherCall.state] at bound
       exact .inr (.inl (by omega))
 
-/-- The signer interpretation is conditional, with no probability or sampling theorem. -/
-theorem accepted_evidence_is_signed {g a b : ForkedBeaconState preset}
+/-- Data that one of the two runs checked in an aggregate that names `key`. -/
+def VerifiedEither {g a b : ForkedBeaconState preset} (left : Run config checks g a)
+    (right : Run config checks g b) (key : BLSPubkey) (data : AttestationData) : Prop :=
+  (∃ c : AttestationCheck left key, c.indexed.data = data) ∨
+    ∃ c : AttestationCheck right key, c.indexed.data = data
+
+/-- Two conflicting messages that name `key`, each with a check that one of the runs executed. -/
+def VerifiedConflict {g a b : ForkedBeaconState preset} (left : Run config checks g a)
+    (right : Run config checks g b) (key : BLSPubkey) : Prop :=
+  (∃ d₁ d₂, VerifiedEither left right key d₁ ∧ VerifiedEither left right key d₂ ∧
+      isSlashableAttestationData d₁ d₂ = true) ∨
+    (∃ c : HeaderCheck left key, ProposerConflict c.slashing) ∨
+    ∃ c : HeaderCheck right key, ProposerConflict c.slashing
+
+/-- A slashing that a block of one run applied gives two checks of its own.
+
+They are two checks of attestations that conflict, or two checks of conflicting headers. -/
+private theorem checked_of_slashingEvidence {g a : ForkedBeaconState preset}
+    {run : Run config checks g a} {key : BLSPubkey} (evidence : run.SlashingEvidence key) :
+    (∃ one two : AttestationCheck run key,
+      isSlashableAttestationData one.indexed.data two.indexed.data = true) ∨
+    ∃ c : HeaderCheck run key, ProposerConflict c.slashing := by
+  obtain ⟨x, y, step, member, evidence⟩ := evidence
+  cases step with
+  | slot _ => exact evidence.elim
+  | block engine signed due applied =>
+    rcases evidence with ⟨slashing, included, v, found, rfl⟩ |
+      ⟨slashing, included, i, named, v, found, rfl⟩
+    · obtain ⟨c, same, conflict⟩ := Run.headerCheck_of_proposerSlashing member included found
+      exact .inr ⟨c, same ▸ conflict⟩
+    · obtain ⟨one, two, first, second, conflict⟩ :=
+        Run.attestationChecks_of_attesterSlashing member included named found
+      exact .inl ⟨one, two, by rw [first, second]; exact conflict⟩
+
+/-- Every accountable key has two conflicting messages, each checked by one of the runs.
+
+No assumption about the signature checks is made.
+
+The result is about the checks that the runs performed, not about who signed.
+
+It interprets the set `accountableKeys` of the `accountable_safety` headline. -/
+theorem verifiedConflict_of_accountable {g a b : ForkedBeaconState preset}
     (left : Run config checks g a) (right : Run config checks g b)
-    (signed : BLSPubkey → AttestationData → Prop)
-    (authA : Authenticated left signed) (authB : Authenticated right signed)
-    (key : BLSPubkey) (slashable : Slashable left right key) :
-    ∃ d₁ d₂, signed key d₁ ∧ signed key d₂ ∧ isSlashableAttestationData d₁ d₂ = true := by
-  obtain ⟨d₁, d₂, first, second, conflict⟩ := slashable
-  exact ⟨d₁, d₂, first.elim (authA key d₁) (authB key d₁),
-    second.elim (authA key d₂) (authB key d₂), conflict⟩
+    (lookahead : preset.MIN_SEED_LOOKAHEAD.toNat + 2 <
+      preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat) (key : BLSPubkey)
+    (accountable : Accountable left right key) :
+    VerifiedConflict left right key := by
+  rcases accountable with ⟨d₁, d₂, first, second, conflict⟩ | evidence | evidence
+  · have verified {data : AttestationData} (accepted : AcceptedEither left right key data) :
+        VerifiedEither left right key data :=
+      accepted.imp (Run.attestationCheck_of_accepted lookahead)
+        (Run.attestationCheck_of_accepted lookahead)
+    exact .inl ⟨d₁, d₂, verified first, verified second, conflict⟩
+  · rcases checked_of_slashingEvidence evidence with ⟨one, two, conflict⟩ | ⟨c, conflict⟩
+    · exact .inl ⟨_, _, .inl ⟨one, rfl⟩, .inl ⟨two, rfl⟩, conflict⟩
+    · exact .inr (.inl ⟨c, conflict⟩)
+  · rcases checked_of_slashingEvidence evidence with ⟨one, two, conflict⟩ | ⟨c, conflict⟩
+    · exact .inl ⟨_, _, .inr ⟨one, rfl⟩, .inr ⟨two, rfl⟩, conflict⟩
+    · exact .inr (.inr ⟨c, conflict⟩)
 
 end EthLib.Consensus.DirectSafety

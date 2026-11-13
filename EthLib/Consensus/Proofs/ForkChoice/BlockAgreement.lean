@@ -5,13 +5,13 @@ public import EthLib.Consensus.Proofs.ForkChoice.Reachable
 import EthLib.Consensus.Proofs.ForkChoice.BlockStates
 
 /-!
-# Statements: honest stores agree on the blocks of an honest chain
+# Proofs: block provenance, conditional state agreement and block delivery
 
-This file states part of step 3 of the plan for the safety of the fast confirmation rule.
+This module proves block provenance and state agreement under agreement on held blocks.
 
-The rule is that of [arXiv 2405.00549v4][fcr].
+It also proves delivery to a receiver that admits the blocks.
 
-The proofs are placeholders, and each statement may still change.
+The network model follows [arXiv 2405.00549v4, Section 2][fcr].
 
 A block of an honest store is a block of its start, or came in a signed block of its view.
 
@@ -21,7 +21,7 @@ So two honest stores with the same start hold the same state at a root that both
 
 That needs the two stores to hold the same block wherever both hold one.
 
-`OneBlockPerRoot` excludes conflicting held blocks at one root, without assuming hash injectivity.
+`OneBlockPerRoot` assumes collision freedom on held blocks, not injectivity on all blocks.
 
 Under synchrony, a block of an honest store reaches the view of each honest validator.
 
@@ -41,7 +41,7 @@ That last hypothesis covers the steps of the handler after the checks, and the v
 
 In the model here a vote that the store rejects makes the store reject its block.
 
-The agreement follows two lemmas of [verified-fast-confirmation][vfc].
+For an implementation comparison, [verified-fast-confirmation][vfc] has two related lemmas.
 
 They are `WellFormedExecution.blocks_agree` and `WalkCoveredBy.receiver_walk`.
 
@@ -321,25 +321,32 @@ variable {config : Config} {checks : SignatureChecks} {sources : BlockSources pr
 
 /-- Honest stores agree on blocks at shared roots.
 
-This is a collision-exclusion hypothesis on held blocks, not hash injectivity. -/
+This is a collision-exclusion hypothesis on held blocks, not hash injectivity.
+
+It speaks of events up to the last time `last` only. -/
 def OneBlockPerRoot
     (e : Execution (honestForkChoice config checks sources anchorState anchorBlock assignment
-      genesisTimeMs) J) : Prop :=
-  ∀ v ∈ J, ∀ u ∈ J, ∀ n k (root : Root) left right,
+      genesisTimeMs) J) (last : ℕ) : Prop :=
+  ∀ v ∈ J, ∀ u ∈ J, ∀ n k, (e.world n).time ≤ last → (e.world k).time ≤ last →
+    ∀ (root : Root) left right,
     ((e.world n).state v).blocks[root]? = some left →
     ((e.world k).state u).blocks[root]? = some right → left = right
 
-/-- A delayed block of an honest view passes the remaining handler checks when block validation passes.
+/-- Admission hypothesis: block validation suffices for the remaining handler checks.
 
 Partial synchrony supplies view membership, not successful `onBlockWithVotes`.
 
 The latter can fail on a carried vote even when the block transition succeeds.
 
-This hypothesis isolates that admission gap at the receiver and at the delivery deadline. -/
+This hypothesis isolates that admission gap at the receiver and at the delivery deadline.
+
+It speaks of receivers up to the last time `last` only.
+
+The sender's event is earlier. -/
 def BlocksAdmitted
     (e : Execution (honestForkChoice config checks sources anchorState anchorBlock assignment
-      genesisTimeMs) J) (GST Δ : ℕ) : Prop :=
-  ∀ v ∈ J, ∀ u ∈ J, ∀ n k signedBlock blockRoot state,
+      genesisTimeMs) J) (GST Δ last : ℕ) : Prop :=
+  ∀ v ∈ J, ∀ u ∈ J, ∀ n k, (e.world k).time ≤ last → ∀ signedBlock blockRoot state,
     .block signedBlock ∈ (e.world n).view v →
     ((e.world n).state v).blocks[blockRoot]? = some signedBlock.message →
     max (e.world n).time GST + Δ ≤ (e.world k).time →
@@ -349,6 +356,17 @@ def BlocksAdmitted
     ((e.world k).state u).validateOnBlock config checks sources signedBlock blockRoot =
       .ok state →
     ∃ after, ((e.world k).state u).onBlockWithVotes config checks sources signedBlock = .ok after
+
+/-- Agreement on blocks up to a time gives agreement up to every earlier time. -/
+theorem OneBlockPerRoot.of_le {last later : ℕ} (oneBlock : OneBlockPerRoot e later)
+    (le : last ≤ later) : OneBlockPerRoot e last :=
+  fun v honest u receiver n k nBound kBound =>
+    oneBlock v honest u receiver n k (nBound.trans le) (kBound.trans le)
+
+/-- Admission up to a time gives admission up to every earlier time. -/
+theorem BlocksAdmitted.of_le {GST Δ last later : ℕ} (admitted : BlocksAdmitted e GST Δ later)
+    (le : last ≤ later) : BlocksAdmitted e GST Δ last :=
+  fun v honest u receiver n k bounded => admitted v honest u receiver n k (bounded.trans le)
 
 /-- Under synchrony, an up-to-date honest store holds a block that an honest store held before.
 
@@ -367,14 +385,14 @@ In the first store, the chain of the block holds the finalized checkpoint of the
 The receiver must already hold its finalized root, and then holds the block.
 
 It also finds each checkpoint block at or above its finalized epoch that the first store finds. -/
-theorem Execution.blocks_of_partiallySynchronous {GST Δ : ℕ}
+theorem Execution.blocks_of_partiallySynchronous {GST Δ last : ℕ}
     (sync : e.PartiallySynchronous GST Δ)
-    (oneBlock : OneBlockPerRoot e) (admitted : BlocksAdmitted e GST Δ)
+    (oneBlock : OneBlockPerRoot e last) (admitted : BlocksAdmitted e GST Δ last)
     {anchor : Store preset fork}
     (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
     (start : ∀ u ∈ J, e.start u = anchor) {v u : ValidatorIndex} (honest : v ∈ J)
     (receiver : u ∈ J) {n k : ℕ}
-    (late : max (e.world n).time GST + Δ ≤ (e.world k).time)
+    (late : max (e.world n).time GST + Δ ≤ (e.world k).time) (bounded : (e.world k).time ≤ last)
     (upToDate : UpToDate config checks sources (e.world k).time ((e.world k).view u)
       ((e.world k).state u))
     (finalizedKnown : ∃ finalizedBlock,
@@ -401,6 +419,8 @@ theorem Execution.blocks_of_partiallySynchronous {GST Δ : ℕ}
     change (e.world k).time ≤ (e.world n).time at time
     have positive := sync.1
     omega
+  -- Every event used below is at or before the receiver's event, so within the last time.
+  have nBound : (e.world n).time ≤ last := by omega
   have verified {i j : ℕ} (le : i ≤ j) (gloas : .glamsterdam ≤ fork) (r : Root)
       (held : ((e.world i).state v).isPayloadVerified gloas r = true) :
       ((e.world j).state v).isPayloadVerified gloas r = true := by
@@ -431,11 +451,16 @@ theorem Execution.blocks_of_partiallySynchronous {GST Δ : ℕ}
         exact old
       exact e.blocks_of_le (Nat.zero_le k) initial
     have memN := e.monotone_view v (Nat.le_of_lt before) mem
+    have iBound : (e.world i).time ≤ last := by
+      have := e.monotone_time (Nat.le_of_lt before)
+      dsimp at this
+      omega
     have memK := sync.2.2 n k ordered v honest u receiver (.block sb) memN late
     obtain ⟨pre, preFound, payload, _, _⟩ := Store.validateOnBlock_ok valid
     obtain ⟨other, otherFound, _⟩ := (reached u receiver k).blockStatesFromParents pk
     have states : pre = other := e.blockStates_eq anchored honest receiver
-      (start v honest) (start u receiver) (oneBlock v honest u receiver i k)
+      (start v honest) (start u receiver)
+      (oneBlock v honest u receiver i k iBound bounded)
       preFound (msg ▸ otherFound)
     have otherPre : ((e.world k).state u).blockStates[sb.message.parentRoot]? = some pre := by
       rw [states, msg]
@@ -443,7 +468,8 @@ theorem Execution.blocks_of_partiallySynchronous {GST Δ : ℕ}
     have parentCheck : ((e.world k).state u).validateParentPayload sb.message = .ok () := by
       by_cases gloas : .glamsterdam ≤ fork
       · obtain ⟨ip, ipFound, needs⟩ := (Store.validateParentPayload_ok_iff gloas).mp payload
-        have ipSame : ip = p := oneBlock v honest v honest i n _ ip p ipFound (msg ▸ pf)
+        have ipSame : ip = p :=
+          oneBlock v honest v honest i n iBound nBound _ ip p ipFound (msg ▸ pf)
         subst ip
         apply (Store.validateParentPayload_ok_iff gloas).mpr
         refine ⟨p, msg ▸ pk, ?_⟩
@@ -481,7 +507,7 @@ theorem Execution.blocks_of_partiallySynchronous {GST Δ : ℕ}
         ancestorRoot] using rootWalk.symm
     have validated := Store.validateOnBlock_of_parent_state valid preFound otherPre parentCheck
       nextSlot (UInt64.le_trans notFuture increasing) finalStart (msg ▸ above) parentCheckpoint
-    obtain ⟨after, added⟩ := admitted v honest u receiver n k sb r post memN
+    obtain ⟨after, added⟩ := admitted v honest u receiver n k bounded sb r post memN
       (msg ▸ bf) late upToDate hash validated
     have fixed := upToDate.2 after (.block memK added)
     -- The first handler inserts the root, and its carried votes preserve it.
@@ -497,7 +523,7 @@ theorem Execution.blocks_of_partiallySynchronous {GST Δ : ℕ}
           cases blockedOk
           obtain ⟨existing, existingFound⟩ := Option.isSome_iff_exists.mp
             (by rwa [Std.TreeMap.contains_eq_isSome_getElem?] at known)
-          have eq := oneBlock v honest u receiver n k r b existing bf existingFound
+          have eq := oneBlock v honest u receiver n k nBound bounded r b existing bf existingFound
           simpa [msg, eq] using existingFound
         · exact (Store.onBlock_new hash known blockedOk).2.1
       have votes := foldlM_ok_invariant (fun s => s.blocks[r]? = some sb.message)
@@ -506,7 +532,7 @@ theorem Execution.blocks_of_partiallySynchronous {GST Δ : ℕ}
         (fun _ _ _ h ok => (Store.onAttesterSlashing_frame ok).2.1 ▸ h) votes slashed
     simpa [fixed, msg] using inserted
   obtain ⟨⟨b, bf, bk⟩, agree⟩ := Store.getAncestor_of_admission
-    (oneBlock v honest u receiver n k) base admission walk
+    (oneBlock v honest u receiver n k nBound bounded) base admission walk
   have eq := Option.some.inj (found.symm.trans bf)
   subst b
   refine ⟨bk, ?_⟩
@@ -529,14 +555,15 @@ Finalized-chain compatibility is checked at admission, not at the later observat
 The caller can choose a pre-boundary admission event supplied by prompt processing.
 
 This is the persistence step of the delivery argument in arXiv 2405.00549v4, Section 2. -/
-theorem Execution.blocks_after_partiallySynchronous {GST Δ : ℕ}
+theorem Execution.blocks_after_partiallySynchronous {GST Δ last : ℕ}
     (sync : e.PartiallySynchronous GST Δ)
-    (oneBlock : OneBlockPerRoot e) (admitted : BlocksAdmitted e GST Δ)
+    (oneBlock : OneBlockPerRoot e last) (admitted : BlocksAdmitted e GST Δ last)
     {anchor : Store preset fork}
     (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
     (start : ∀ u ∈ J, e.start u = anchor) {v u : ValidatorIndex} (honest : v ∈ J)
     (receiver : u ∈ J) {n arrival k : ℕ}
     (late : max (e.world n).time GST + Δ ≤ (e.world arrival).time)
+    (bounded : (e.world arrival).time ≤ last)
     (upToDate : UpToDate config checks sources (e.world arrival).time
       ((e.world arrival).view u) ((e.world arrival).state u))
     (finalizedKnown : ∃ finalizedBlock,
@@ -552,7 +579,7 @@ theorem Execution.blocks_after_partiallySynchronous {GST Δ : ℕ}
         .ok ((e.world arrival).state u).finalizedCheckpoint.root)
     (later : arrival ≤ k) : ((e.world k).state u).blocks[root]? = some block := by
   have held := (e.blocks_of_partiallySynchronous sync oneBlock admitted anchored start
-    honest receiver late upToDate finalizedKnown payloads found final).1
+    honest receiver late bounded upToDate finalizedKnown payloads found final).1
   exact e.blocks_of_le later held
 
 end EthLib.Consensus.Models.Network

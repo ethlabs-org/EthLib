@@ -3,18 +3,19 @@ module
 public import EthLib.Consensus.Proofs.Models.Network.Model
 
 /-!
-# Statements: an honest validator is the first to send each of its signed statements
+# Proof: an honest validator is the first to send each of its signed statements
 
-This file states a fact of the network model that the safety of the fast confirmation rule uses.
+This module derives first-send provenance from the network model's restriction on forgery.
 
-The proof is a placeholder, and the statement may still change.
+The signature assumption is in [arXiv 2405.00549v4, Section 2, Validators][fcr].
 
 No validator can carry a signed statement of an honest validator unless a sent message had it.
 
 So the first message with such a statement comes from the honest validator itself.
 
-The proofs in [verified-fast-confirmation][vfc] assume this as the premise `no_forgery`.
+For comparison, [verified-fast-confirmation][vfc] assumes the premise `no_forgery`.
 
+[fcr]: https://arxiv.org/abs/2405.00549v4
 [vfc]: https://github.com/fradamt/verified-fast-confirmation
 -/
 

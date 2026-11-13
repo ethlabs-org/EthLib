@@ -6,6 +6,7 @@ public import EthLib.Base.Proofs.MapM
 public import EthLib.Base.Proofs.Uint64
 public import EthLib.Consensus.ForkChoice.FastConfirmation
 public import EthLib.Consensus.Proofs.ForkChoice.Store
+public import EthLib.Consensus.Proofs.Accessors
 
 /-!
 # Proofs: the fast confirmation rule
@@ -14,7 +15,7 @@ An empty range of slots weighs nothing, and so does a sum over no items.
 
 The adversary has no weight in an empty range.
 
-A sum is the sum of its weights.
+A sum is the sum of its weights, so at most the sum of bounds on them.
 
 A range of slots that ends later has every member of the committees of a shorter one.
 
@@ -87,6 +88,28 @@ theorem toNat_eq_of_sumGwei {α : Type} {items : List α}
     subst summed
     rw [Nat.toUInt64_eq, UInt64.toNat_ofNat', Nat.mod_eq_of_lt (by omega)]
     omega
+
+/-- A sum that the store computes is at most the sum of bounds on its weights. -/
+theorem toNat_le_of_sumGwei {α : Type} {items : List α}
+    {weight : α → Except ForkChoiceError Gwei} {bound : α → Nat} {total : Gwei}
+    (summed : sumGwei items weight = .ok total)
+    (each : ∀ item ∈ items, ∀ value, weight item = .ok value → value.toNat ≤ bound item) :
+    total.toNat ≤ (items.map bound).sum := by
+  let value : α → Nat := fun item => match weight item with
+    | .ok computed => computed.toNat
+    | .error _ => 0
+  rw [toNat_eq_of_sumGwei (value := value) summed fun item _ computed computedOk => by
+    simp only [value, computedOk]]
+  clear summed
+  induction items with
+  | nil => simp
+  | cons first rest ih =>
+    simp only [List.map_cons, List.sum_cons]
+    refine Nat.add_le_add ?_ (ih fun item member => each item (List.mem_cons_of_mem _ member))
+    · cases computed : weight first with
+      | error _ => simp only [value, computed, Nat.zero_le]
+      | ok computed' =>
+        simpa only [value, computed] using each first List.mem_cons_self computed' computed
 
 /-- The validator at an index is the one that the registry holds there. -/
 theorem validatorAt_ok_iff {state : BeaconState preset fork} {index : ValidatorIndex}
@@ -243,7 +266,9 @@ theorem getCommitteesBetweenSlots_of_gt {head : Root} {startSlot endSlot : Slot}
 
 /-- A slot is before another when the committees of the slots between them have a member.
 
-The range starts at the slot after the first and ends at the slot before the second. -/
+The range starts at the slot after the first and ends at the slot before the second.
+
+This is the empty-slot range of arXiv 2405.00549v4, Definition 5. -/
 theorem lt_of_mem_getCommitteesBetweenSlots {head : Root} {low high firstSlot lastSlot : Slot}
     {participants : Std.TreeSet ValidatorIndex} {v : ValidatorIndex}
     (firstOk : Uint64.addChecked low 1 = .ok firstSlot)
@@ -376,7 +401,9 @@ theorem computeAdversarialWeight_eq_spec {config : Config} {head : Root}
   · have := getCommitteesBetweenSlots_of_computeCommitteeWeightAndMembers pair
     simp [bind, Except.bind, pure, Except.pure, getEquivocationScore, this]
 
-/-- A range of slots that starts after it ends has no adversarial weight. -/
+/-- A range of slots that starts after it ends has no adversarial weight.
+
+This serves the case of arXiv 2405.00549v4, Definition 5, with no empty slot. -/
 theorem computeAdversarialWeight_of_gt {config : Config} {head : Root}
     {balanceSource : BeaconState preset fork} {startSlot endSlot : Slot}
     (empty : endSlot < startSlot) :
@@ -388,7 +415,14 @@ theorem computeAdversarialWeight_of_gt {config : Config} {head : Root}
   have noScore : store.getEquivocationScoreOf balanceSource ∅ = .ok 0 := by
     unfold getEquivocationScoreOf
     rw [noMember]
-    simp [filterM_nil, sumGwei_nil, bind, Except.bind, pure, Except.pure]
+    obtain ⟨out, filtered⟩ := filterM_exists_ok
+      (test := fun v : ValidatorIndex => do
+        return isActiveValidator (← validatorAt balanceSource v) (getCurrentEpoch balanceSource))
+      (list := []) (by simp)
+    have emptyOut := List.eq_nil_of_sublist_nil (sublist_of_filterM_ok filtered)
+    simp only [List.filter_nil]
+    rw [filtered, emptyOut]
+    simp only [bind, Except.bind, sumGwei_nil]
   rw [computeAdversarialWeight_eq_spec, computeCommitteeWeightBetweenSlots_of_gt empty]
   simp only [getEquivocationScore, getCommitteesBetweenSlots_of_gt empty, noShare, noScore, bind,
     Except.bind, pure, Except.pure, Except.mapError]
@@ -524,6 +558,135 @@ theorem getFinalizedExecutionBlockHash_of_gloas {bellatrix : .bellatrix ≤ fork
       (fun block => (block.body.signedExecutionPayloadBid gloas).message.parentBlockHash) <$>
         store.block store.finalizedCheckpoint.root :=
   store.executionBlockHashAt_of_gloas gloas
+
+/-- A committee that has a value is cut from indices whose number times its end fits in 64 bits. -/
+private theorem fits_of_computeCommittee {indices : Array ValidatorIndex} {seed : Bytes32}
+    {index count : UInt64} {committee : Array ValidatorIndex}
+    (computed : computeCommittee preset indices seed index count = .ok committee) :
+    indices.size * (index.toNat + 1) < 2 ^ 64 := by
+  cases shuffle : computeShuffledPermutation preset (UInt64.ofNat indices.size) seed with
+  | error err =>
+    simp [computeCommittee, shuffle, bind, Except.bind] at computed
+  | ok shuffled =>
+    simp only [computeCommittee, shuffle, bind, Except.bind, shuffledCommittee] at computed
+    split at computed
+    · simp [throw, throwThe, MonadExcept.throw, MonadExceptOf.throw] at computed
+    · split at computed
+      · rename_i ok
+        exact ok.2
+      · simp [throw, throwThe, MonadExcept.throw, MonadExceptOf.throw] at computed
+
+open Uint64 in
+/-- A validator active in an epoch is a member of the committees of its whole range of slots.
+
+The range is that of a whole epoch, and the committees are read in the state of the head. -/
+theorem mem_getCommitteesBetweenSlots_of_isActiveAt {head : Root}
+    {headState : BeaconState preset fork} {epoch : Epoch} {epochStart next epochEnd : Slot}
+    {members : Std.TreeSet ValidatorIndex}
+    (positive : 0 < preset.SLOTS_PER_EPOCH.toNat)
+    (startOk : computeStartSlotAtEpoch preset epoch = .ok epochStart)
+    (nextOk : addChecked epochStart preset.SLOTS_PER_EPOCH = .ok next)
+    (endOk : subChecked next 1 = .ok epochEnd)
+    (stateOk : store.blockState head = .ok headState)
+    (computed : store.getCommitteesBetweenSlots head epochStart epochEnd = .ok members)
+    {v : ValidatorIndex} (active : isActiveAt headState epoch v.toNat = true) : v ∈ members := by
+  classical
+  have lengthLt := UInt64.toNat_lt preset.SLOTS_PER_EPOCH
+  obtain ⟨startFits, startNat⟩ := computeStartSlotAtEpoch_ok_iff.mp startOk
+  obtain ⟨nextFits, nextNat⟩ := addChecked_ok_iff.mp nextOk
+  obtain ⟨oneLe, endNat⟩ := subChecked_ok_iff.mp endOk
+  simp only [UInt64.toNat_one] at oneLe endNat
+  have endEpoch : computeEpochAtSlot preset epochEnd = epoch := by
+    apply UInt64.toNat_inj.mp
+    rw [computeEpochAtSlot, UInt64.toNat_div, endNat, nextNat, startNat]
+    apply Nat.div_eq_of_lt_le
+    · omega
+    · rw [Nat.succ_mul]
+      omega
+  simp only [getCommitteesBetweenSlots, bind_ok_iff, mapError_ok_iff] at computed
+  obtain ⟨afterEnd, afterEndOk, folded⟩ := computed
+  obtain ⟨afterEndFits, afterEndNat⟩ := addChecked_ok_iff.mp afterEndOk
+  simp only [UInt64.toNat_one] at afterEndFits afterEndNat
+  -- The last slot of the epoch has a committee that the rule reads.
+  have inRange : preset.SLOTS_PER_EPOCH.toNat - 1 ∈
+      List.range (afterEnd.toNat - epochStart.toNat) :=
+    List.mem_range.mpr (by omega)
+  obtain ⟨lastMembers, lastOk⟩ := foldlM_forall_of_ok
+    (fun _ _ _ stepOk => (bind_ok_iff.mp stepOk).imp fun _ read => read.1) _ _ _ folded _
+    inRange
+  have back : epochStart + (preset.SLOTS_PER_EPOCH.toNat - 1).toUInt64 = epochEnd := by
+    apply UInt64.toNat_inj.mp
+    rw [UInt64.toNat_add, Nat.toUInt64_eq, UInt64.toNat_ofNat',
+      Nat.mod_eq_of_lt (by omega : preset.SLOTS_PER_EPOCH.toNat - 1 < 2 ^ 64),
+      Nat.mod_eq_of_lt (by omega)]
+    omega
+  rw [back] at lastOk
+  simp only [getSlotCommittee, stateOk, bind, Except.bind, endEpoch] at lastOk
+  have perPos := UInt64.le_iff_toNat_le.mp (one_le_getCommitteeCountPerSlot headState epoch)
+  simp only [UInt64.toNat_one] at perPos
+  have perLt := UInt64.toNat_lt (getCommitteeCountPerSlot headState epoch)
+  obtain ⟨lastCommittee, lastCommitteeOk⟩ := foldlM_forall_of_ok
+    (P := fun index => ∃ committee,
+      getBeaconCommittee headState epochEnd index.toUInt64 = .ok committee)
+    (fun _ _ _ stepOk => by
+      obtain ⟨committee, read, -⟩ := bind_ok_iff.mp stepOk
+      exact ⟨committee, mapError_ok_iff.mp read⟩) _ _ _ lastOk
+    ((getCommitteeCountPerSlot headState epoch).toNat - 1) (List.mem_range.mpr (by omega))
+  obtain ⟨seed, position, count, seedOk, positionNat, countNat, committeeOk⟩ :=
+    getBeaconCommittee_ok lastCommitteeOk
+  obtain ⟨activeList, shuffled, shuffleOk⟩ :=
+    attesterShuffle_ok_of_getBeaconCommittee lastCommitteeOk
+  rw [endEpoch] at seedOk positionNat countNat committeeOk shuffleOk
+  have indicesFit := getActiveValidatorIndicesChecked_of_attesterShuffle shuffleOk
+  have fits := fits_of_computeCommittee committeeOk
+  have indexNat : ((getCommitteeCountPerSlot headState epoch).toNat - 1).toUInt64.toNat =
+      (getCommitteeCountPerSlot headState epoch).toNat - 1 := by
+    rw [Nat.toUInt64_eq, UInt64.toNat_ofNat', Nat.mod_eq_of_lt (by omega)]
+  have endMod : (epochEnd % preset.SLOTS_PER_EPOCH).toNat = preset.SLOTS_PER_EPOCH.toNat - 1 := by
+    rw [UInt64.toNat_mod, endNat, nextNat, startNat]
+    have : epoch.toNat * preset.SLOTS_PER_EPOCH.toNat + preset.SLOTS_PER_EPOCH.toNat - 1 =
+        (preset.SLOTS_PER_EPOCH.toNat - 1) + preset.SLOTS_PER_EPOCH.toNat * epoch.toNat := by
+      rw [Nat.mul_comm]
+      omega
+    rw [this, Nat.add_mul_mod_self_left, Nat.mod_eq_of_lt (by omega)]
+  rw [positionNat, endMod, indexNat] at fits
+  have equal : (preset.SLOTS_PER_EPOCH.toNat - 1) *
+      (getCommitteeCountPerSlot headState epoch).toNat +
+      ((getCommitteeCountPerSlot headState epoch).toNat - 1) + 1 =
+      (getCommitteeCountPerSlot headState epoch).toNat * preset.SLOTS_PER_EPOCH.toNat := by
+    obtain ⟨l, hl⟩ : ∃ l, preset.SLOTS_PER_EPOCH.toNat = l + 1 := ⟨_, (Nat.succ_pred_eq_of_pos
+      positive).symm⟩
+    obtain ⟨c, hc⟩ : ∃ c, (getCommitteeCountPerSlot headState epoch).toNat = c + 1 :=
+      ⟨_, (Nat.succ_pred_eq_of_pos (by omega)).symm⟩
+    rw [hl, hc]
+    simp only [Nat.add_sub_cancel]
+    simp only [Nat.mul_add, Nat.add_mul, Nat.mul_one, Nat.one_mul]
+    rw [Nat.mul_comm c l]
+    omega
+  rw [equal] at fits
+  simp only [List.size_toArray] at fits
+  have sizeFits : (getActiveValidatorIndices headState epoch).toArray.size < 2 ^ 64 := by
+    simpa only [List.size_toArray] using
+      Nat.lt_of_le_of_lt (Nat.le_mul_of_pos_right _ (Nat.mul_pos (by omega) positive)) fits
+  have small : (getActiveValidatorIndices headState epoch).length ≤ 2 ^ 40 := by
+    simpa using le_of_computeCommittee sizeFits committeeOk
+  obtain ⟨slot, index, committee, slotEpoch, indexLt, slotCommitteeOk, mem⟩ :=
+    exists_mem_getBeaconCommittee indicesFit seedOk (by
+      intro zero
+      have := congrArg UInt64.toNat zero
+      simp only [UInt64.toNat_zero] at this
+      omega) (by rw [Nat.succ_mul]; omega) small fits
+    (mem_getActiveValidatorIndices_of_isActiveAt active)
+  have slotNat := congrArg UInt64.toNat slotEpoch
+  rw [computeEpochAtSlot, UInt64.toNat_div] at slotNat
+  have divided := Nat.div_add_mod slot.toNat preset.SLOTS_PER_EPOCH.toNat
+  have remainder := Nat.mod_lt slot.toNat positive
+  rw [slotNat] at divided
+  rw [Nat.mul_comm] at divided
+  exact mem_getCommitteesBetweenSlots (by
+    simp only [getCommitteesBetweenSlots, bind_ok_iff, mapError_ok_iff]
+    exact ⟨afterEnd, afterEndOk, folded⟩) (UInt64.le_iff_toNat_le.mpr (by omega))
+    (UInt64.le_iff_toNat_le.mpr (by omega)) stateOk (slotEpoch ▸ indexLt) slotCommitteeOk mem
 
 end Store
 

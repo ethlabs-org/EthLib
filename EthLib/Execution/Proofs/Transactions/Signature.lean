@@ -2,6 +2,8 @@ module
 
 public import EthLib.Cryptography.Proofs.Secp256k1.Recovery
 public import EthLib.Execution.Transactions.Signature
+public import EthLib.Execution.Transactions.Validity
+public import EthLib.Serialization.Proofs.Rlp.Scalar
 
 /-!
 # Proofs: the sender of a transaction
@@ -19,6 +21,22 @@ An honest signer is the sender of the transaction that it signs.
 The signature of a transaction is not part of what it signs.
 
 So changing the signature of a transaction leaves its signing hash as it was.
+
+A legacy transaction that reports a chain signs a hash that covers that chain.
+
+So one that passes the chain check of a network signs a hash with no chain or the network's chain.
+
+A typed transaction carries its recovery id as a parity, which must be 0 or 1.
+
+An accepted parity is the recovery id itself, so each recovery id has one accepted parity.
+
+A typed transaction signs the hash of its fields before the signature, with its parity as the id.
+
+A parity above 1 names no sender, whatever the other fields, `r` and `s`.
+
+A typed hash with a type below `0xc0` that equals a legacy hash names a collision of Keccak-256.
+
+So do equal legacy hashes for two different chains, or for no chain and a chain.
 -/
 
 @[expose] public section
@@ -27,6 +45,8 @@ namespace EthLib.Execution.Transactions
 
 open EthLib.Base
 open EthLib.Cryptography.Secp256k1
+open EthLib.Serialization.Rlp
+open EthLib.Cryptography.Hash.Keccak (keccak256)
 
 /-! ## The ranges of `r` and `s` -/
 
@@ -197,6 +217,76 @@ theorem recoverSender_sign {fork : Fork} {tx : Transaction} {hash : Vector UInt8
   rw [hr, hsTx, hRecover, hQ]
   rfl
 
+/-! ## The chain of a legacy transaction -/
+
+/-- A legacy transaction that reports no chain signs the hash of its six fields.
+
+The chain that it reports and the hash that it signs both come from its `v`. -/
+theorem signingInput_legacy_no_chain {fork : Fork} {tx : LegacyTransaction} {hash : Hash32}
+    {id : Fin 2} (h : signingInput fork (.legacy tx) = .ok (hash, id))
+    (hc : Transaction.chainId fork (.legacy tx) = .ok none) :
+    signingHashPre155 tx = .ok hash := by
+  simp only [signingInput, bind, Except.bind] at h
+  cases hv : legacyRecovery fork tx.v with
+  | error e => simp only [hv] at h; cases h
+  | ok r =>
+    obtain ⟨chain, i⟩ := r
+    obtain rfl : chain = none := by
+      simp only [Transaction.chainId, hv, Functor.map, Except.map, Except.ok.injEq] at hc
+      exact hc
+    simp only [hv] at h
+    cases hh : signingHashPre155 tx with
+    | error e => simp only [hh, Except.mapError] at h; cases h
+    | ok h' =>
+      simp only [hh, Except.mapError, pure, Except.pure, Except.ok.injEq, Prod.mk.injEq] at h
+      simp [h.1]
+
+/-- A legacy transaction that reports the chain `c` signs the hash that covers `c`.
+
+[EIP-155](https://eips.ethereum.org/EIPS/eip-155#specification) puts the chain into that hash. -/
+theorem signingInput_legacy_chain {fork : Fork} {tx : LegacyTransaction} {hash : Hash32}
+    {id : Fin 2} {c : U256} (h : signingInput fork (.legacy tx) = .ok (hash, id))
+    (hc : Transaction.chainId fork (.legacy tx) = .ok (some c)) :
+    signingHash155 tx c = .ok hash := by
+  simp only [signingInput, bind, Except.bind] at h
+  cases hv : legacyRecovery fork tx.v with
+  | error e => simp only [hv] at h; cases h
+  | ok r =>
+    obtain ⟨chain, i⟩ := r
+    obtain rfl : chain = some c := by
+      simp only [Transaction.chainId, hv, Functor.map, Except.map, Except.ok.injEq] at hc
+      exact hc
+    simp only [hv] at h
+    cases hh : signingHash155 tx c with
+    | error e => simp only [hh, Except.mapError] at h; cases h
+    | ok h' =>
+      simp only [hh, Except.mapError, pure, Except.pure, Except.ok.injEq, Prod.mk.injEq] at h
+      simp [h.1]
+
+/-- A legacy transaction that passes the chain check of a network signs one of two hashes.
+
+It is the hash of its six fields, or the hash that covers the chain of that network. -/
+theorem signingInput_legacy_of_checkChainId {fork : Fork} {chainId : UInt64}
+    {tx : LegacyTransaction} {hash : Hash32} {id : Fin 2}
+    (hok : checkChainId fork chainId (.legacy tx) = .ok ())
+    (h : signingInput fork (.legacy tx) = .ok (hash, id)) :
+    signingHashPre155 tx = .ok hash ∨
+      signingHash155 tx (.ofNat 256 chainId.toNat) = .ok hash := by
+  unfold checkChainId at hok
+  cases hc : Transaction.chainId fork (.legacy tx) with
+  | error e => simp [hc, bind, Except.bind] at hok
+  | ok signed =>
+    cases signed with
+    | none => exact .inl (signingInput_legacy_no_chain h hc)
+    | some c =>
+      have heq : c.toNat = chainId.toNat := by
+        by_contra hne
+        simp [hc, bind, Except.bind, hne] at hok
+      have hc' : c = .ofNat 256 chainId.toNat := by
+        apply BitVec.eq_of_toNat_eq
+        rw [heq, BitVec.toNat_ofNat, Nat.mod_eq_of_lt (by have := chainId.toNat_lt; omega)]
+      exact .inr (hc' ▸ signingInput_legacy_chain h hc)
+
 /-! ## The signing hashes -/
 
 /-- The signing hash of a legacy transaction that signs no chain ignores `v`, `r` and `s`. -/
@@ -222,5 +312,200 @@ theorem signingHash4844_signature (tx : BlobTransaction) (yParity r s : U256) :
 /-- The signing hash of a transaction of type 4 ignores the parity, `r` and `s`. -/
 theorem signingHash7702_signature (tx : SetCodeTransaction) (yParity r s : U256) :
     signingHash7702 { tx with yParity := yParity, r := r, s := s } = signingHash7702 tx := rfl
+
+/-! ## The parity of a typed transaction -/
+
+/-- A parity is accepted exactly when it is the recovery id itself.
+
+So each recovery id of a typed transaction has one accepted parity. -/
+theorem parityRecovery_eq_ok_iff {yParity : U256} {id : Fin 2} :
+    parityRecovery yParity = .ok id ↔ yParity.toNat = id.val := by
+  unfold parityRecovery
+  constructor
+  · intro h
+    split at h
+    · rename_i h0
+      obtain rfl := Except.ok.inj h
+      simpa using h0
+    · split at h
+      · rename_i h1
+        obtain rfl := Except.ok.inj h
+        simpa using h1
+      · cases h
+  · intro h
+    obtain ⟨_ | _ | n, hn⟩ := id
+    · simp [show yParity.toNat = 0 from h]
+    · simp [show yParity.toNat = 1 from h]
+    · omega
+
+/-! ## The hash and the sender of a typed transaction -/
+
+/-- A typed branch of the signing input gives a hash and an id exactly when the hash encodes to it.
+
+Its parity must also be that id. -/
+private theorem typedInput_eq_ok_iff {e : Except Serialization.Rlp.RlpError Hash32}
+    {yParity : U256} {hash : Hash32} {id : Fin 2} :
+    (do return (← e.mapError TransactionError.encoding, ← parityRecovery yParity) :
+      Except TransactionError (Hash32 × Fin 2)) = .ok (hash, id) ↔
+      e = .ok hash ∧ yParity.toNat = id.val := by
+  rw [← parityRecovery_eq_ok_iff]
+  cases e <;> cases parityRecovery yParity <;>
+    simp [bind, Except.bind, Except.mapError, pure, Except.pure]
+
+/-- At every fork, a transaction of type 1 signs the hash of its type and its unsigned fields.
+
+Its parity is the recovery id. -/
+theorem signingInput_accessList_eq_ok_iff {fork : Fork} {tx : AccessListTransaction}
+    {hash : Hash32} {id : Fin 2} :
+    signingInput fork (.accessList tx) = .ok (hash, id) ↔
+      signingHash2930 tx = .ok hash ∧ tx.yParity.toNat = id.val :=
+  typedInput_eq_ok_iff
+
+/-- At every fork, a transaction of type 2 signs the hash of its type and its unsigned fields.
+
+Its parity is the recovery id. -/
+theorem signingInput_feeMarket_eq_ok_iff {fork : Fork} {tx : FeeMarketTransaction}
+    {hash : Hash32} {id : Fin 2} :
+    signingInput fork (.feeMarket tx) = .ok (hash, id) ↔
+      signingHash1559 tx = .ok hash ∧ tx.yParity.toNat = id.val :=
+  typedInput_eq_ok_iff
+
+/-- At every fork, a transaction of type 3 signs the hash of its type and its unsigned fields.
+
+Its parity is the recovery id. -/
+theorem signingInput_blob_eq_ok_iff {fork : Fork} {tx : BlobTransaction}
+    {hash : Hash32} {id : Fin 2} :
+    signingInput fork (.blob tx) = .ok (hash, id) ↔
+      signingHash4844 tx = .ok hash ∧ tx.yParity.toNat = id.val :=
+  typedInput_eq_ok_iff
+
+/-- At every fork, a transaction of type 4 signs the hash of its type and its unsigned fields.
+
+Its parity is the recovery id. -/
+theorem signingInput_setCode_eq_ok_iff {fork : Fork} {tx : SetCodeTransaction}
+    {hash : Hash32} {id : Fin 2} :
+    signingInput fork (.setCode tx) = .ok (hash, id) ↔
+      signingHash7702 tx = .ok hash ∧ tx.yParity.toNat = id.val :=
+  typedInput_eq_ok_iff
+
+/-- A transaction names no sender when its signing input can only give a recovery id above 1. -/
+private theorem recoverSender_ne_of_parity {fork : Fork} {tx : Transaction} {yParity : U256}
+    (hInput : ∀ hash id, signingInput fork tx = .ok (hash, id) → yParity.toNat = id.val)
+    (h : 1 < yParity.toNat) (sender : Address) : recoverSender fork tx ≠ .ok sender := by
+  intro hs
+  obtain ⟨hash, id, -, -, hi, -, -⟩ := recoverSender_eq_ok hs
+  have := hInput hash id hi
+  have := id.isLt
+  omega
+
+/-- A transaction of type 1 whose parity is above 1 names no sender.
+
+This holds whatever its other fields, `r` and `s`. -/
+theorem recoverSender_accessList_yParity_gt {fork : Fork} {tx : AccessListTransaction}
+    (h : 1 < tx.yParity.toNat) (sender : Address) :
+    recoverSender fork (.accessList tx) ≠ .ok sender :=
+  recoverSender_ne_of_parity (fun _ _ hi => (signingInput_accessList_eq_ok_iff.mp hi).2) h sender
+
+/-- A transaction of type 2 whose parity is above 1 names no sender.
+
+This holds whatever its other fields, `r` and `s`. -/
+theorem recoverSender_feeMarket_yParity_gt {fork : Fork} {tx : FeeMarketTransaction}
+    (h : 1 < tx.yParity.toNat) (sender : Address) :
+    recoverSender fork (.feeMarket tx) ≠ .ok sender :=
+  recoverSender_ne_of_parity (fun _ _ hi => (signingInput_feeMarket_eq_ok_iff.mp hi).2) h sender
+
+/-- A transaction of type 3 whose parity is above 1 names no sender.
+
+This holds whatever its other fields, `r` and `s`. -/
+theorem recoverSender_blob_yParity_gt {fork : Fork} {tx : BlobTransaction}
+    (h : 1 < tx.yParity.toNat) (sender : Address) :
+    recoverSender fork (.blob tx) ≠ .ok sender :=
+  recoverSender_ne_of_parity (fun _ _ hi => (signingInput_blob_eq_ok_iff.mp hi).2) h sender
+
+/-- A transaction of type 4 whose parity is above 1 names no sender.
+
+This holds whatever its other fields, `r` and `s`. -/
+theorem recoverSender_setCode_yParity_gt {fork : Fork} {tx : SetCodeTransaction}
+    (h : 1 < tx.yParity.toNat) (sender : Address) :
+    recoverSender fork (.setCode tx) ≠ .ok sender :=
+  recoverSender_ne_of_parity (fun _ _ hi => (signingInput_setCode_eq_ok_iff.mp hi).2) h sender
+
+/-! ## The bytes that each signing hash covers -/
+
+/-- The hash of a list of items is the Keccak-256 hash of the bytes that decode to that list. -/
+private theorem hashItems_eq_ok_iff {items : List Item} {hash : Hash32} :
+    hashItems items = .ok hash ↔
+      ∃ bytes, decode bytes = .ok (.list items) ∧ hash = keccak256 bytes := by
+  simp only [hashItems, decode_eq_ok_iff]
+  cases encode (.list items) <;> simp [bind, Except.bind, pure, Except.pure]
+  exact ⟨fun h => (Except.ok.inj h).symm, fun h => h ▸ rfl⟩
+
+/-- A typed hash is the Keccak-256 hash of the type byte, then the bytes that decode to the list. -/
+private theorem hashTypedItems_eq_ok_iff {type : UInt8} {items : List Item} {hash : Hash32} :
+    hashTypedItems type items = .ok hash ↔
+      ∃ payload, decode payload = .ok (.list items) ∧
+        hash = keccak256 (ByteArray.mk #[type] ++ payload) := by
+  simp only [hashTypedItems, typedBytes, decode_eq_ok_iff]
+  cases encode (.list items) <;> simp [bind, Except.bind, pure, Except.pure]
+  exact ⟨fun h => (Except.ok.inj h).symm, fun h => h ▸ rfl⟩
+
+/-- Two different lists with one hash give two different byte strings with one Keccak-256 hash. -/
+private theorem hashItems_collision {items items' : List Item} {hash : Hash32}
+    (h : hashItems items = .ok hash) (h' : hashItems items' = .ok hash) (hne : items ≠ items') :
+    ∃ bytes bytes', decode bytes = .ok (.list items) ∧ decode bytes' = .ok (.list items') ∧
+      bytes ≠ bytes' ∧ keccak256 bytes = keccak256 bytes' := by
+  obtain ⟨bytes, hb, rfl⟩ := hashItems_eq_ok_iff.mp h
+  obtain ⟨bytes', hb', hh⟩ := hashItems_eq_ok_iff.mp h'
+  refine ⟨bytes, bytes', hb, hb', ?_, hh⟩
+  rintro rfl
+  rw [hb] at hb'
+  exact hne (by injection hb' with hb'; injection hb')
+
+/-- A typed hash with a type below `0xc0` equal to the hash of a list names a Keccak-256 collision.
+
+The inputs differ, since an encoded list starts at `0xc0`.
+
+So a typed hash and a legacy hash differ, unless Keccak-256 collides. -/
+theorem hashTypedItems_eq_hashItems_collision {type : UInt8} (ht : type < 0xc0)
+    {items items' : List Item} {hash : Hash32} (h : hashTypedItems type items = .ok hash)
+    (h' : hashItems items' = .ok hash) :
+    ∃ payload bytes, decode payload = .ok (.list items) ∧ decode bytes = .ok (.list items') ∧
+      ByteArray.mk #[type] ++ payload ≠ bytes ∧
+      keccak256 (ByteArray.mk #[type] ++ payload) = keccak256 bytes := by
+  obtain ⟨payload, hp, rfl⟩ := hashTypedItems_eq_ok_iff.mp h
+  obtain ⟨bytes, hb, hh⟩ := hashItems_eq_ok_iff.mp h'
+  refine ⟨payload, bytes, hp, hb, ?_, hh⟩
+  rintro rfl
+  obtain ⟨first, rest, hl, hf⟩ := encode_list_head items' _ ((decode_eq_ok_iff _ _).mp hb)
+  simp only [ByteArray.toList_data_append, List.cons_append, List.nil_append] at hl
+  have : type = first := (List.cons.inj hl).1
+  subst this
+  exact absurd hf (UInt8.not_le.mpr ht)
+
+/-- Equal hashes of two legacy transactions for different chains name a collision of Keccak-256.
+
+So the hashes for two different chains differ, unless Keccak-256 collides. -/
+theorem signingHash155_eq_collision {tx tx' : LegacyTransaction} {c c' : U256} (hc : c ≠ c')
+    {hash : Hash32} (h : signingHash155 tx c = .ok hash) (h' : signingHash155 tx' c' = .ok hash) :
+    ∃ bytes bytes', decode bytes = .ok (.list (tx.signedItems ++
+        [.scalar c.toNat, .scalar 0, .scalar 0])) ∧
+      decode bytes' = .ok (.list (tx'.signedItems ++ [.scalar c'.toNat, .scalar 0, .scalar 0])) ∧
+      bytes ≠ bytes' ∧ keccak256 bytes = keccak256 bytes' := by
+  refine hashItems_collision h h' fun he => hc (BitVec.eq_of_toNat_eq ?_)
+  have := congrArg (fun l => l[6]?) he
+  simp [LegacyTransaction.signedItems] at this
+  exact scalar_injective _ _ this
+
+/-- A legacy hash with no chain equal to one with a chain names a collision of Keccak-256.
+
+So a hash with no chain differs from every hash with a chain, unless Keccak-256 collides. -/
+theorem signingHashPre155_eq_signingHash155_collision {tx tx' : LegacyTransaction} {c : U256}
+    {hash : Hash32} (h : signingHashPre155 tx = .ok hash) (h' : signingHash155 tx' c = .ok hash) :
+    ∃ bytes bytes', decode bytes = .ok (.list tx.signedItems) ∧
+      decode bytes' = .ok (.list (tx'.signedItems ++ [.scalar c.toNat, .scalar 0, .scalar 0])) ∧
+      bytes ≠ bytes' ∧ keccak256 bytes = keccak256 bytes' :=
+  hashItems_collision h h' fun he => by
+    have := congrArg List.length he
+    simp [LegacyTransaction.signedItems] at this
 
 end EthLib.Execution.Transactions

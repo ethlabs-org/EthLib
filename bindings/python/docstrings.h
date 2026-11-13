@@ -549,7 +549,7 @@
   "An interchange file as the format writes it again, from its JSON text."
 
 #define DOC_consensus_import_slashing_interchange \
-  "The record of a signer that keeps every message, after it imports a file, as JSON text."
+  "The record after importing a file with the minimal strategy of EIP-3076, as JSON text."
 
 #define DOC_consensus_check_block_signing \
   "Whether a key may sign a block of a slot with a signing root, given a record."
@@ -901,6 +901,9 @@
 
 #define DOC_eth_receipts_match \
   "Whether the receipts of a block, as a version sends them, match the receipts root of its header."
+
+#define DOC_eth_check_body \
+  "Whether the body `body` of a BlockBodies answer belongs to the header `header` at a fork."
 
 #define DOC_eth_access_lists_answer \
   "Whether `response` answers a GetBlockAccessLists `request`, given each block's access list hash."

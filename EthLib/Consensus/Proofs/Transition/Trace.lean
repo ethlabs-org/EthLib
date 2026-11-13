@@ -167,4 +167,37 @@ theorem Run.stateTransition {fork : Fork} {first : ForkedBeaconState preset}
   have due : upgradeDue config ⟨fork, advanced⟩ = false := done (by omega)
   exact ⟨advanced, pre, due, applied, slotsOk, slotsOnly, .last pre _⟩
 
+/-- A run of empty slots, when all of them stay before the next fork. -/
+theorem run_of_advanceSlots {fork : Fork} (count : Nat) {state after : BeaconState preset fork}
+    (advanced : advanceSlots config checks count state = .ok after)
+    (before : ∀ next ∈ config.nextFork fork,
+      after.slot.toNat < next.2.toNat * preset.SLOTS_PER_EPOCH.toNat) :
+    Nonempty (Run config checks ⟨fork, state⟩ ⟨fork, after⟩) := by
+  induction count generalizing state with
+  | zero =>
+    cases advanced
+    exact ⟨.nil⟩
+  | succ count ih =>
+    obtain ⟨next, stepped, rest⟩ := bind_ok_iff.mp advanced
+    have slotsEq := advanceSlots_slot count rest
+    have nextSlot := advanceSlot_slot stepped
+    have across : advanceSlotAcross config checks ⟨fork, state⟩ = .ok ⟨fork, next⟩ := by
+      rw [advanceSlotAcross_of_before (fun nextFork scheduled => by
+        have := before nextFork scheduled
+        omega), stepped]
+      rfl
+    obtain ⟨tail⟩ := ih rest
+    exact ⟨(Run.nil.snoc (.slot across)).append tail⟩
+
+/-- A run from a state to the state at a later slot, when the slot stays before the next fork. -/
+theorem run_of_processSlots {fork : Fork} {state after : BeaconState preset fork} {slot : Slot}
+    (processed : processSlots config checks state slot = .ok after)
+    (before : ∀ next ∈ config.nextFork fork,
+      slot.toNat < next.2.toNat * preset.SLOTS_PER_EPOCH.toNat) :
+    Nonempty (Run config checks ⟨fork, state⟩ ⟨fork, after⟩) := by
+  have lastSlot := (processSlots_slot processed).2
+  simp only [processSlots, bind_ok_iff, ensure_ok_iff] at processed
+  obtain ⟨_, _, advanced⟩ := processed
+  exact run_of_advanceSlots _ advanced (by simpa only [lastSlot] using before)
+
 end EthLib.Consensus

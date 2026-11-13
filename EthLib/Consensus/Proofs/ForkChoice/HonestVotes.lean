@@ -5,13 +5,15 @@ public import EthLib.Consensus.Proofs.ForkChoice.VoteOrigins
 public import EthLib.Consensus.Proofs.Models.Network.Signers
 
 /-!
-# Statements: the votes that honest stores hold for honest validators
+# Proofs: the votes that honest stores hold for honest validators
 
-This file states part of step 3 of the plan for the safety of the fast confirmation rule.
+This module proves vote provenance and the exclusion of honest validators from known equivocators.
 
-The rule is that of [arXiv 2405.00549v4][fcr].
+The signature model follows [arXiv 2405.00549v4, Section 2, Validators][fcr].
 
-The proofs are placeholders, and each statement may still change.
+The voting and slashing assumptions are in Section 3.1 of that paper.
+
+The exclusion requires empty initial lists of equivocators and a positive slot duration.
 
 Each statement of an honest validator in a sent message is a vote that its duty allowed.
 
@@ -23,7 +25,7 @@ Each latest vote of an honest store comes from a statement of a message of its v
 
 So the latest vote that an honest store holds for an honest validator is a vote of its duty.
 
-Two lemmas of [verified-fast-confirmation][vfc] state the same facts.
+For an implementation comparison, [verified-fast-confirmation][vfc] has two related lemmas.
 
 They are `Execution.honest_not_equivocating` and `Execution.latest_message_eq_honest_vote`.
 
@@ -325,23 +327,43 @@ theorem Execution.not_mem_equivocatingIndices (slots : 0 < config.SLOT_DURATION_
       obtain ⟨_, _, same⟩ := Store.onInclusionList_ok ‹_› step
       simpa only [same] using ih
 
-/-- Each latest vote of an honest store is a statement of a message of its view.
+/-- Each latest vote has one attestation witnessing both its signature and accepted origin.
 
 Each honest validator must start from a store built from the anchor. -/
-theorem Execution.exists_signed_of_latestMessages {anchor : Store preset fork}
+theorem Execution.exists_signed_origin_of_latestMessages {anchor : Store preset fork}
     (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
     (start : ∀ u ∈ J, e.start u = anchor) {u : ValidatorIndex} (receiver : u ∈ J) {n : ℕ}
     {v : ValidatorIndex} {message : LatestMessage fork}
     (found : ((e.world n).state u).latestMessages[v]? = some message) :
     ∃ attestation : Attestation preset fork, ∃ m ∈ (e.world n).view u,
       message = LatestMessage.ofAttestation attestation ∧
-      (v, attestation.data) ∈ statements config checks anchorState anchorBlock m := by
+      (v, attestation.data) ∈ statements config checks anchorState anchorBlock m ∧
+      ((e.world n).state u).VoteOrigin config v attestation := by
   let Origin := fun (view : Set (Message preset fork)) (store : Store preset fork) =>
     ∀ (v : ValidatorIndex) (message : LatestMessage fork),
       store.latestMessages[v]? = some message →
       ∃ a : Attestation preset fork, ∃ m ∈ view,
         message = LatestMessage.ofAttestation a ∧
-          (v, a.data) ∈ statements config checks anchorState anchorBlock m
+          (v, a.data) ∈ statements config checks anchorState anchorBlock m ∧
+          store.VoteOrigin config v a
+  have keep {s t : Store preset fork} {view} (old : Origin view s)
+      (messages : t.latestMessages = s.latestMessages)
+      (blocks : ∀ {r : Root} {b : BeaconBlock preset fork},
+        s.blocks[r]? = some b → t.blocks[r]? = some b)
+      (states : ∀ {c : Checkpoint} {st : BeaconState preset fork},
+        s.checkpointStates[c]? = some st → t.checkpointStates[c]? = some st)
+      (clock : ∀ {slot}, s.getCurrentSlot config = .ok slot →
+        ∃ later, t.getCurrentSlot config = .ok later ∧ slot ≤ later) : Origin view t := by
+    intro validator latest found
+    obtain ⟨a, m, seen, same, signed, origin⟩ := old validator latest (messages ▸ found)
+    exact ⟨a, m, seen, same, signed, origin.mono blocks states clock⟩
+  have slash {s t : Store preset fork} {view sl} (old : Origin view s)
+      (handled : s.onAttesterSlashing config checks sl = .ok t) : Origin view t := by
+    exact keep old (Store.onAttesterSlashing_checkpointStates_latestMessages handled).2
+      (fun known => (Store.onAttesterSlashing_frame handled).2.1 ▸ known)
+      (fun known => (Store.onAttesterSlashing_checkpointStates_latestMessages handled).1 ▸ known)
+      (fun slotOk => ⟨_, slotOk ▸ (Store.onAttesterSlashing_sameClock handled).getCurrentSlot,
+        UInt64.le_refl _⟩)
   have attestationStep : ∀ {store after : Store preset fork} {view}
       {a : Attestation preset fork} {fromBlock : Bool},
       Store.Reachable config anchorState anchorBlock store → Origin view store →
@@ -349,6 +371,20 @@ theorem Execution.exists_signed_of_latestMessages {anchor : Store preset fork}
         anchorState anchorBlock a ⊆ statements config checks anchorState anchorBlock m) →
       store.onAttestation config checks a fromBlock = .ok after → Origin view after := by
     intro store after view a fromBlock reachable old ⟨m, seen, carried⟩ handled v message found
+    have keepOld {message} (previous : store.latestMessages[v]? = some message) :
+        ∃ b, ∃ m ∈ view, message = LatestMessage.ofAttestation b ∧
+          (v, b.data) ∈ statements config checks anchorState anchorBlock m ∧
+          after.VoteOrigin config v b := by
+      obtain ⟨b, m, seen, same, signed, origin⟩ := old v message previous
+      have kept := origin.mono
+        (fun known => (Store.onAttestation_frame handled).2.1 ▸ known)
+        (Store.onAttestation_checkpointStates_of_found handled)
+        (fun slotOk => ⟨_, slotOk ▸ (Store.onAttestation_sameClock handled).getCurrentSlot,
+          UInt64.le_refl _⟩)
+      exact ⟨b, m, seen, same, signed, kept⟩
+    rcases Store.onAttestation_latestMessages_cases handled found with previous | ⟨same, origin⟩
+    · exact keepOld previous
+    have acceptedOrigin := origin
     unfold Store.onAttestation at handled
     simp only [bind_ok_iff] at handled
     obtain ⟨_, _, stored, storing, target, targetOk, _, _, indexed, indexedOk,
@@ -366,7 +402,7 @@ theorem Execution.exists_signed_of_latestMessages {anchor : Store preset fork}
           · simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at storing
             obtain ⟨_, _, rfl⟩ := storing
             rfl
-        exact old v message (kept ▸ previous)
+        exact keepOld (kept ▸ previous)
       · have indexedOk := mapError_ok_iff.mp indexedOk
         have dataSame : indexed.data = a.data := by
           obtain ⟨indices, indicesOk, _⟩ := getAttestingIndices_of_getIndexedAttestation indexedOk
@@ -374,7 +410,7 @@ theorem Execution.exists_signed_of_latestMessages {anchor : Store preset fork}
             getIndexedAttestation_of_getAttestingIndices indicesOk
           have same := Except.ok.inj (indexedOk.symm.trans made)
           exact same ▸ dataSame
-        refine ⟨a, m, seen, same, carried ?_⟩
+        refine ⟨a, m, seen, same, carried ?_, acceptedOrigin⟩
         exact ⟨store, indexed, reachable,
           ⟨stored, target, storing, targetOk, indexedOk,
             by simpa [validTrue] using mapError_ok_iff.mp validOk⟩,
@@ -409,8 +445,8 @@ theorem Execution.exists_signed_of_latestMessages {anchor : Store preset fork}
       have extend : ∀ {s}, Origin ((e.world n).view u) s →
           Origin ((e.world (n + 1)).view u) s := by
         intro s origin v message found
-        obtain ⟨a, m, seen, same, signed⟩ := origin v message found
-        exact ⟨a, m, e.monotone_view u (Nat.le_succ n) seen, same, signed⟩
+        obtain ⟨a, m, seen, same, signed, accepted⟩ := origin v message found
+        exact ⟨a, m, e.monotone_view u (Nat.le_succ n) seen, same, signed, accepted⟩
       rcases e.state_succ n u with same | ⟨_, handles⟩
       · rw [same]
         exact extend ih
@@ -418,15 +454,18 @@ theorem Execution.exists_signed_of_latestMessages {anchor : Store preset fork}
       have reachable := e.reachable
         (fun w hw => (start w hw) ▸ Store.Reachable.anchor anchored) n u receiver
       cases handles with
-      | tick _ _ ticked =>
-        intro v message found
-        exact ih v message ((Store.onTick_checkpointStates_latestMessages ticked).2 ▸ found)
+      | tick timeLe fits ticked =>
+        have clockLe : ((e.world n).state u).timeMs ≤ (e.world n).time.toUInt64 := by
+          rw [UInt64.le_iff_toNat_le, Nat.toUInt64, UInt64.toNat_ofNat_of_lt' fits]
+          exact timeLe
+        exact keep ih (Store.onTick_checkpointStates_latestMessages ticked).2
+          (fun known => (Store.onTick_frame ticked).2.2.1 ▸ known)
+          (fun known => (Store.onTick_checkpointStates_latestMessages ticked).1 ▸ known)
+          (Store.exists_getCurrentSlot_onTick_ge clockLe ticked)
       | attestation seen handled =>
         exact attestationStep reachable ih ⟨_, seen, fun _ h => h⟩ handled
       | attesterSlashing _ handled =>
-        intro v message found
-        exact ih v message
-          ((Store.onAttesterSlashing_checkpointStates_latestMessages handled).2 ▸ found)
+        exact slash ih handled
       | block seen handled =>
         rename_i signed
         unfold Store.onBlockWithVotes at handled
@@ -435,31 +474,52 @@ theorem Execution.exists_signed_of_latestMessages {anchor : Store preset fork}
         -- Each carried attestation is read in its own reachable intermediate store.
         let P := fun s => Store.Reachable config anchorState anchorBlock s ∧
           Origin ((e.world n).view u) s
-        have blockedP : P blocked := ⟨reachable.block blockOk, fun v message found =>
-          ih v message ((Store.onBlock_checkpointStates_latestMessages blockOk).2 ▸ found)⟩
+        have blockedP : P blocked := ⟨reachable.block blockOk,
+          keep ih (Store.onBlock_checkpointStates_latestMessages blockOk).2
+            (Store.onBlock_blocks_of_found blockOk)
+            (fun known => (Store.onBlock_checkpointStates_latestMessages blockOk).1 ▸ known)
+            (fun slotOk => ⟨_, slotOk ▸ (Store.onBlock_sameClock blockOk).getCurrentSlot,
+              UInt64.le_refl _⟩)⟩
         have votedP : P voted := foldStep _ _ P (fun a mem s s' holds step =>
           ⟨holds.1.attestation step, attestationStep holds.1 holds.2
             ⟨.block signed, seen, fun _ statement =>
               Or.inl ⟨a, by simpa using mem, statement⟩⟩
             step⟩) blocked voted blockedP votedOk
         exact (foldStep _ _ P (fun sl _ s s' holds step =>
-          ⟨holds.1.attesterSlashing step, fun v message found => holds.2 v message
-            ((Store.onAttesterSlashing_checkpointStates_latestMessages step).2 ▸ found)⟩)
+          ⟨holds.1.attesterSlashing step, slash holds.2 step⟩)
           voted _ votedP slashedOk).2
       | payloadAttestation _ handled =>
         obtain ⟨_, _, same⟩ := Store.onPayloadAttestationMessage_onlyPtcVotes handled
         rw [same]
-        exact ih
+        exact keep ih rfl (fun h => h) (fun h => h)
+          (fun slotOk => ⟨_, slotOk, UInt64.le_refl _⟩)
       | envelope _ handled =>
         obtain ⟨_, _, _, _, _, record, same⟩ := Store.onExecutionPayloadEnvelope_ok handled
         rw [same]
         obtain ⟨_, rfl⟩ := Store.recordEnvelope_frame record
-        exact ih
+        exact keep ih rfl (fun h => h) (fun h => h)
+          (fun slotOk => ⟨_, slotOk, UInt64.le_refl _⟩)
       | inclusionList _ handled =>
         obtain ⟨_, _, same⟩ := Store.onInclusionList_ok ‹_› handled
         rw [same]
-        exact ih
+        exact keep ih rfl (fun h => h) (fun h => h)
+          (fun slotOk => ⟨_, slotOk, UInt64.le_refl _⟩)
   exact invariant n v message found
+
+/-- Each latest vote of an honest store is a statement of a message of its view.
+
+Each honest validator must start from a store built from the anchor. -/
+theorem Execution.exists_signed_of_latestMessages {anchor : Store preset fork}
+    (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (start : ∀ u ∈ J, e.start u = anchor) {u : ValidatorIndex} (receiver : u ∈ J) {n : ℕ}
+    {v : ValidatorIndex} {message : LatestMessage fork}
+    (found : ((e.world n).state u).latestMessages[v]? = some message) :
+    ∃ attestation : Attestation preset fork, ∃ m ∈ (e.world n).view u,
+      message = LatestMessage.ofAttestation attestation ∧
+      (v, attestation.data) ∈ statements config checks anchorState anchorBlock m := by
+  obtain ⟨attestation, m, seen, same, signed, _⟩ :=
+    e.exists_signed_origin_of_latestMessages anchored start receiver found
+  exact ⟨attestation, m, seen, same, signed⟩
 
 /-- The latest vote that an honest store holds for an honest validator is a vote of its duty.
 

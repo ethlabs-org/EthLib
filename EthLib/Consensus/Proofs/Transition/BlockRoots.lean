@@ -138,6 +138,26 @@ theorem advanceSlot_cachedRoots
     subst epochedOk
     exact ⟨rfl, rfl, rfl, rfl, rfl, sum⟩
 
+/-- After one slot, the latest block header is the one before, with its state root filled if zero.
+
+The root that fills it is the root of the state before the slot. -/
+theorem advanceSlot_latestBlockHeader (computed : advanceSlot config checks state = .ok after) :
+    ∃ root, SszType.hashTreeRoot state = .ok root ∧
+      after.latestBlockHeader =
+        if state.latestBlockHeader.stateRoot = Vector.replicate 32 0 then
+          { state.latestBlockHeader with stateRoot := root } else state.latestBlockHeader := by
+  obtain ⟨cached, cachedOk, -, -, header, -⟩ := advanceSlot_cachedRoots computed
+  rw [header]
+  unfold processSlot at cachedOk
+  simp only [bind_ok_iff, liftSsz_ok, liftAccessor_ok] at cachedOk
+  obtain ⟨root, hashed, _, _, _, _, _, _, cachedOk⟩ := cachedOk
+  refine ⟨root, hashed, ?_⟩
+  split at cachedOk
+  · obtain ⟨_, _, _, _, rfl⟩ := unsetNextPayloadAvailability_ok (liftAccessor_ok.mp cachedOk)
+    rfl
+  · cases cachedOk
+    rfl
+
 /-- Advancing one slot keeps a header whose state root is nonzero. -/
 theorem advanceSlot_latestBlockHeader_of_nonzero
     (nonzero : state.latestBlockHeader.stateRoot ≠ Vector.replicate 32 0)
@@ -448,7 +468,7 @@ theorem getBlockRoot_processSlot {cached : BeaconState preset fork} {epoch : Epo
     exact recent
 
 /-- After one slot, the root at the slot before the new one is that of the header. -/
-private theorem advanceSlot_latestBlockRoot
+theorem advanceSlot_latestBlockRoot
     (computed : advanceSlot config checks state = .ok after) :
     ∃ root, SszType.hashTreeRoot after.latestBlockHeader = .ok root ∧
       readCircular after.blockRoots.elements (after.slot - 1) = .ok root := by
