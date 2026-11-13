@@ -2,6 +2,7 @@ module
 
 public import EthLib.Base.Proofs.Uint64
 public import EthLib.Consensus.Accessors
+public import EthLib.Consensus.Churn
 public import EthLib.Consensus.Credentials
 public import EthLib.Consensus.Proofs.ShufflePermutation
 public import EthLib.Consensus.Proofs.Signing
@@ -1790,5 +1791,50 @@ theorem getBlockRootAtSlot_congr {post : Fork} {state : BeaconState preset fork}
     (roots : other.blockRoots = state.blockRoots) (index : Slot) :
     getBlockRootAtSlot other index = getBlockRootAtSlot state index := by
   simp only [getBlockRootAtSlot, slot, roots]
+
+/-- From Electra, a successful deposit churn read is a share of the total active balance.
+
+The share is the total over a quotient of the configuration, or a minimum if that is larger.
+
+It is rounded down to a whole number of increments, then capped by a maximum.
+
+Gloas takes its own quotient and maximum, since it gives the activations a churn of their own. -/
+theorem depositChurnLimit_toNat {config : Config} {state : BeaconState preset fork}
+    {total churn : Gwei} (totalOk : getTotalActiveBalance state = .ok total)
+    (computed : depositChurnLimit config state = .ok churn) :
+    churn.toNat =
+      if .glamsterdam ≤ fork then
+        min config.MAX_PER_EPOCH_ACTIVATION_CHURN_LIMIT_GLOAS.toNat
+          (max config.MIN_PER_EPOCH_CHURN_LIMIT_ELECTRA.toNat
+            (total.toNat / config.CHURN_LIMIT_QUOTIENT_GLOAS.toNat) -
+           max config.MIN_PER_EPOCH_CHURN_LIMIT_ELECTRA.toNat
+            (total.toNat / config.CHURN_LIMIT_QUOTIENT_GLOAS.toNat) %
+              preset.EFFECTIVE_BALANCE_INCREMENT.toNat)
+      else
+        min config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat
+          (max config.MIN_PER_EPOCH_CHURN_LIMIT_ELECTRA.toNat
+            (total.toNat / config.CHURN_LIMIT_QUOTIENT.toNat) -
+           max config.MIN_PER_EPOCH_CHURN_LIMIT_ELECTRA.toNat
+            (total.toNat / config.CHURN_LIMIT_QUOTIENT.toNat) %
+              preset.EFFECTIVE_BALANCE_INCREMENT.toNat) := by
+  -- A rounded amount is the amount less its remainder, which is at most the amount.
+  have round : ∀ amount : Gwei, (roundToIncrement preset amount).toNat =
+      amount.toNat - amount.toNat % preset.EFFECTIVE_BALANCE_INCREMENT.toNat := fun amount => by
+    rw [roundToIncrement, UInt64.toNat_sub_of_le _ _ (UInt64.le_iff_toNat_le.mpr (by
+      rw [UInt64.toNat_mod]; exact Nat.mod_le _ _)), UInt64.toNat_mod]
+  unfold depositChurnLimit at computed
+  split at computed
+  · rename_i gloas
+    simp only [getActivationChurnLimit, getExitChurnLimit, totalOk, bind, Except.bind, pure,
+      Except.pure, Except.ok.injEq] at computed
+    subst computed
+    rw [toNat_min, round, toNat_max, UInt64.toNat_div]
+    simp [gloas]
+  · rename_i gloas
+    simp only [getActivationExitChurnLimit, getBalanceChurnLimit, totalOk, bind, Except.bind,
+      pure, Except.pure, Except.ok.injEq] at computed
+    subst computed
+    rw [toNat_min, round, toNat_max, UInt64.toNat_div]
+    simp [gloas]
 
 end EthLib.Consensus
