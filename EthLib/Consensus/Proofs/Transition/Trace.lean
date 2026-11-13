@@ -1,6 +1,9 @@
 module
 
 public import EthLib.Consensus.Proofs.Transition.Chain
+public import EthLib.Consensus.Proofs.Transition.PayloadInputs
+public import EthLib.Consensus.Proofs.Transition.Slot
+public import EthLib.Consensus.Proofs.Transition.TargetUpgrades
 public import EthLib.Consensus.Transition.Genesis
 
 /-!
@@ -9,6 +12,8 @@ public import EthLib.Consensus.Transition.Genesis
 The trace retains block inputs, which cannot be recovered computationally from Prop reachability.
 
 Erasure to ChainStep reuses its invariant and monotonicity theorems.
+
+A run has at most one block step for each slot it spans, counting the slot of its first state.
 -/
 
 @[expose] public section
@@ -199,5 +204,61 @@ theorem run_of_processSlots {fork : Fork} {state after : BeaconState preset fork
   simp only [processSlots, bind_ok_iff, ensure_ok_iff] at processed
   obtain ⟨_, _, advanced⟩ := processed
   exact run_of_advanceSlots _ advanced (by simpa only [lastSlot] using before)
+
+/-- The number of block steps of a run. -/
+def Run.blockCount {first last : ForkedBeaconState preset} :
+    Run config checks first last → Nat
+  | .nil => 0
+  | .snoc pre (.slot _) => pre.blockCount
+  | .snoc pre (.block ..) => pre.blockCount + 1
+
+/-- The block steps of a run, and one more if its last state can still take a block, fit its slots.
+
+A state can take a block when its latest block header is before its slot.
+
+A slot step moves the slot on by one, even across the upgrades due at it.
+
+A block step spends the slot of its state, and leaves the header of the block at that slot. -/
+private theorem Run.blockCount_le {first last : ForkedBeaconState preset}
+    (run : Run config checks first last) :
+    run.blockCount +
+      (if last.state.latestBlockHeader.slot < last.state.slot then 1 else 0) +
+        first.state.slot.toNat ≤ last.state.slot.toNat + 1 := by
+  induction run with
+  | nil =>
+    simp only [Run.blockCount]
+    split <;> omega
+  | @snoc middle last pre step ih =>
+    cases step with
+    | slot ok =>
+      obtain ⟨advanced, advancedOk, upgraded⟩ := bind_ok_iff.mp ok
+      have moved : last.state.slot.toNat = middle.state.slot.toNat + 1 :=
+        (congrArg UInt64.toNat (processUpgrades_slot upgraded)).trans (advanceSlot_slot advancedOk)
+      simp only [Run.blockCount]
+      split at ih <;> split <;> omega
+    | @block fork before after engine signed due ok =>
+      have processed := (applySignedBlock_ok ok).2.1
+      obtain ⟨atSlot, newer, -⟩ := processBlock_parentRoot processed
+      obtain ⟨parented, headed, -, headerOk, kept⟩ := processBlock_header_split processed
+      obtain ⟨_, _, rfl⟩ := processBlockHeader_eq headerOk
+      have slot := processBlock_slot processed
+      -- The state before the block has a free slot, which the block spends.
+      have free : before.latestBlockHeader.slot < before.slot := atSlot ▸ newer
+      have spent : ¬ after.latestBlockHeader.slot < after.slot := by
+        rw [kept, slot, ← atSlot]
+        exact UInt64.lt_irrefl _
+      have slotNat : after.slot.toNat = before.slot.toNat := congrArg UInt64.toNat slot
+      simp only [Run.blockCount, spent, ↓reduceIte]
+      simp only [free, ↓reduceIte] at ih
+      omega
+
+/-- A run has at most one block step for each slot of its range.
+
+Every state of the run is at a slot of the range, and a block spends the slot of its state. -/
+theorem Run.blocks_le_slots {first last : ForkedBeaconState preset}
+    (run : Run config checks first last) {a b : Nat} (low : a ≤ first.state.slot.toNat)
+    (high : last.state.slot.toNat ≤ b) : run.blockCount ≤ b - a + 1 := by
+  have := run.blockCount_le
+  split at this <;> omega
 
 end EthLib.Consensus
