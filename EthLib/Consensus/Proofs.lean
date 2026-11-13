@@ -189,10 +189,12 @@ public import EthLib.Consensus.Proofs.Transition.PaymentReleaseRun
 public import EthLib.Consensus.Proofs.Transition.PaymentReleaseWithdrawals
 public import EthLib.Consensus.Proofs.Transition.PendingConsolidations
 public import EthLib.Consensus.Proofs.Transition.PendingEpochs
+public import EthLib.Consensus.Proofs.Transition.PendingPartialsKept
 public import EthLib.Consensus.Proofs.Transition.ActivationExitOrder
 public import EthLib.Consensus.Proofs.Transition.RegistryLifecycle
 public import EthLib.Consensus.Proofs.Transition.Requests
 public import EthLib.Consensus.Proofs.Transition.RewardDeltas
+public import EthLib.Consensus.Proofs.Transition.RewardReads
 public import EthLib.Consensus.Proofs.Transition.RootLinks
 public import EthLib.Consensus.Proofs.Transition.RunKept
 public import EthLib.Consensus.Proofs.Transition.SlashedPersistence

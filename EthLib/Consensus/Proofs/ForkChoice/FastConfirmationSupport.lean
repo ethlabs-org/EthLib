@@ -9,6 +9,7 @@ public import EthLib.Consensus.Proofs.ForkChoice.JustifiedOrigins
 public import EthLib.Consensus.Proofs.ForkChoice.HonestVotes
 public import EthLib.Consensus.Proofs.Transition.RunKept
 import EthLib.Consensus.Proofs.HonestAggregation
+import EthLib.Consensus.Proofs.Transition.RewardReads
 import EthLib.Consensus.Proofs.ForkChoice.BlockStates
 
 /-!
