@@ -8,6 +8,7 @@ public import EthLib.Consensus.Proofs.Transition.PendingConsolidations
 public import EthLib.Consensus.Proofs.Accessors
 public import EthLib.Consensus.Proofs.Transition.EpochUpdates
 public import EthLib.Consensus.Proofs.Transition.Genesis
+public import EthLib.Consensus.Proofs.Transition.EpochParticipation
 public import Mathlib.Algebra.BigOperators.Group.Finset.Basic
 
 /-!
@@ -3041,5 +3042,90 @@ theorem processEffectiveBalanceUpdates_funding {fork : Fork} {s t : BeaconState 
       max (effectiveAt ⟨fork, s⟩ i) (actualBalanceAt ⟨fork, s⟩ i))
     (fun _ _ _ previous step => (updateEffectiveBalance_funding step i).trans previous)
     (Nat.le_refl _) ok
+
+/-! ## The rewards after the inactivity update -/
+
+/-- From Altair, the inactivity update and then the rewards move a balance within an envelope.
+
+It gains at most its base reward times 54/64, scaled by the ratio of two balances.
+
+The numerator is the effective balance active in the previous epoch, in increments and at least one.
+
+The denominator is the total active balance, in increments and at least one.
+
+It loses at most its base reward plus its inactivity penalty.
+
+The update raises a score by at most the score bias, so the penalty reads the score plus the bias.
+
+Every read is of the state before the update.
+
+That needs a registry within its limit. -/
+theorem processRewardsAndPenalties_balance_le_of_inactivityUpdates {fork : Fork}
+    {state scored after : BeaconState preset fork} (altair : .altair ≤ fork)
+    (within : state.RegistryWithinLimit)
+    (updated : processInactivityUpdates config state altair = .ok scored)
+    (computed : processRewardsAndPenalties config scored = .ok after)
+    (j : Nat) (inside : j < state.validators.data.size) :
+    let inc := preset.EFFECTIVE_BALANCE_INCREMENT.toNat
+    let effective (i : Nat) := ((state.validators.data[i]?).map (·.effectiveBalance.toNat)).getD 0
+    let total := max inc (∑ i ∈ (Finset.range state.validators.data.size).filter
+      (fun i => isActiveAt state (getCurrentEpoch state) i = true), effective i)
+    let perIncrement := inc * preset.BASE_REWARD_FACTOR.toNat /
+      (Uint64.integerSquareroot (UInt64.ofNat total)).toNat
+    let base := effective j / inc * perIncrement
+    let num := max 1 ((∑ i ∈ (Finset.range state.validators.data.size).filter
+      (fun i => isActiveAt state (getPreviousEpoch state) i = true), effective i) / inc)
+    let den := max 1 (total / inc)
+    let score := (((state.inactivityScores altair).data[j]?).map (·.toNat)).getD 0
+    ((after.balances.data[j]?).map (·.toNat)).getD 0 ≤
+        ((state.balances.data[j]?).map (·.toNat)).getD 0 +
+          base * (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum * num /
+            (WEIGHT_DENOMINATOR.toNat * den) ∧
+      ((state.balances.data[j]?).map (·.toNat)).getD 0 ≤
+        ((after.balances.data[j]?).map (·.toNat)).getD 0 + base +
+          effective j * (score + config.INACTIVITY_SCORE_BIAS.toNat) /
+            (config.INACTIVITY_SCORE_BIAS.toNat *
+              (parameters preset fork).INACTIVITY_PENALTY_QUOTIENT.toNat) := by
+  dsimp only
+  -- The update changes only the scores.
+  have frame := processInactivityUpdates_frame updated
+  have validators : scored.validators = state.validators := by rw [frame]
+  have balances : scored.balances = state.balances := by rw [frame]
+  have current : getCurrentEpoch scored = getCurrentEpoch state := by
+    simp only [getCurrentEpoch, show scored.slot = state.slot by rw [frame]]
+  have previous : getPreviousEpoch scored = getPreviousEpoch state := by
+    unfold getPreviousEpoch
+    rw [current]
+  have active (epoch : Epoch) (i : Nat) : isActiveAt scored epoch i = isActiveAt state epoch i := by
+    simp only [isActiveAt, validators]
+  -- It raises each score by at most the bias.
+  have raised : (((scored.inactivityScores altair).data[j]?).map (·.toNat)).getD 0 ≤
+      (((state.inactivityScores altair).data[j]?).map (·.toNat)).getD 0 +
+        config.INACTIVITY_SCORE_BIAS.toNat := by
+    by_cases genesis : getCurrentEpoch state = GENESIS_EPOCH
+    · unfold processInactivityUpdates at updated
+      simp only [genesis, ↓reduceIte, pure, Except.pure, Except.ok.injEq] at updated
+      subst updated
+      exact Nat.le_add_right _ _
+    obtain ⟨eligible, -, unlisted, listed⟩ := processInactivityUpdates_scores genesis updated
+    by_cases named : ∃ index ∈ eligible, index.toNat = j
+    · obtain ⟨index, member, rfl⟩ := named
+      obtain ⟨hitters, leak, score, score', -, -, before, after, value⟩ := listed index member
+      rw [before, after]
+      simp only [Option.map_some, Option.getD_some]
+      split at value <;> split at value <;> omega
+    · rw [unlisted j fun index member same => named ⟨index, member, same⟩]
+      exact Nat.le_add_right _ _
+  have within' : scored.RegistryWithinLimit := by
+    unfold BeaconState.RegistryWithinLimit
+    rw [validators]
+    exact within
+  have core := processRewardsAndPenalties_balance_le_of_altair altair within' computed j
+    (by rw [validators]; exact inside)
+  dsimp only at core
+  simp only [active, current, previous, validators, balances] at core
+  obtain ⟨up, down⟩ := core
+  refine ⟨up, down.trans (Nat.add_le_add_left (Nat.div_le_div_right
+    (Nat.mul_le_mul_left _ raised)) _)⟩
 
 end EthLib.Consensus
