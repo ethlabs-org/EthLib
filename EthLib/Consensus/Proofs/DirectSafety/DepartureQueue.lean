@@ -2580,28 +2580,36 @@ private theorem withdrawalRequest_consolidationFrame {fork : Fork}
       exact exitUpdate_consolidationFrame electra called
     · cases paid; rfl
 
-private theorem epoch_consolidationFrame {fork : Fork} {s t : BeaconState preset fork}
-    (electra : .pectra ≤ fork) (early : fork < .glamsterdam)
-    (ok : processEpoch config checks s = .ok t) :
+/-- Before Gloas, every epoch stage keeps the earliest consolidation epoch and its balance.
+
+Registry updates call only the exit queue, and no other stage calls a queue. -/
+private theorem epochStage_consolidationFrame {fork : Fork} {stage : EpochStage}
+    {s t : BeaconState preset fork} (electra : .pectra ≤ fork) (early : fork < .glamsterdam)
+    (edge : EpochStage.Edge config checks stage s t) :
     (departureQueues electra t).2.2 = (departureQueues electra s).2.2 := by
-  apply (processEpoch_trace ok).transport
-    (fun a b => (departureQueues electra b).2.2 = (departureQueues electra a).2.2)
-    (fun _ => rfl) (fun one two => two.trans one)
-  intro k _ a b computed
-  have edge := EpochStage.action_cases.mp computed
-  cases k
+  cases stage
   case registry =>
     simp only [EpochStage.Edge, processRegistryUpdates, electra, ↓reduceIte,
       bind_ok_iff] at edge
     obtain ⟨_, _, entries⟩ := edge
     refine foldlM_ok_invariant
-      (fun t => (departureQueues electra t).2.2 = (departureQueues electra a).2.2)
+      (fun t => (departureQueues electra t).2.2 = (departureQueues electra s).2.2)
       ?_ rfl entries
     intro c index d kept stepped
     rcases registryEntry_departureQueues electra stepped with frame | ⟨_, initiated⟩
     · exact (congrArg (fun q => q.2.2) frame).trans kept
     · exact (initiateExit_consolidationFrame electra initiated).trans kept
   all_goals exact congrArg (fun q => q.2.2) (epochStage_departureQueues electra early edge nofun)
+
+private theorem epoch_consolidationFrame {fork : Fork} {s t : BeaconState preset fork}
+    (electra : .pectra ≤ fork) (early : fork < .glamsterdam)
+    (ok : processEpoch config checks s = .ok t) :
+    (departureQueues electra t).2.2 = (departureQueues electra s).2.2 :=
+  (processEpoch_trace ok).transport
+    (fun a b => (departureQueues electra b).2.2 = (departureQueues electra a).2.2)
+    (fun _ => rfl) (fun one two => two.trans one)
+    (fun _ _ _ _ computed =>
+      epochStage_consolidationFrame electra early (EpochStage.action_cases.mp computed))
 
 private theorem block_indexedTrace_sites {fork : Fork} (electra : .pectra ≤ fork)
     (early : fork < .glamsterdam) {engine : ExecutionEngine preset fork}
