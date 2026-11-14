@@ -1326,7 +1326,7 @@ private theorem departures_le_budget {g x y : ForkedBeaconState preset}
     Nat.add_zero]
   obtain ⟨-, -, minimum, -, -, -, -, -, -, -, -, crossing⟩ := guard
   -- The written-out carry of D-Q is `queueCarry`.
-  change _ ≤ queueCarry x high + _ + _ at bound
+  change _ ≤ queueCarry x high + _ + _ + _ at bound
   simp only [departureBudget]
   generalize countPath config (refCount x + scheduledCount x) (driftHorizon x high + 1) = A
     at bound ⊢
@@ -1337,27 +1337,19 @@ private theorem departures_le_budget {g x y : ForkedBeaconState preset}
   have horizon : driftHorizon x high = high + 2 - (getCurrentEpoch x.state).toNat := rfl
   rw [horizon] at crossing ⊢
   by_cases electra : .pectra ≤ x.fork
-  · -- From Electra the count term is off, and each gated churn is at most its ungated value.
+  · -- From Electra the count term is off, and each churn counts from its queue end on.
     have notBefore : ¬ x.fork < .pectra := Nat.not_lt_of_ge electra
     have zero : forkEpochs config x high = 0 := by simp [forkEpochs, notBefore]
-    simp only [zero, lt_self_iff_false, ↓reduceIte, notBefore, Nat.zero_add] at bound ⊢
-    have exits : high + 2 - max (getCurrentEpoch x.state).toNat (exitQueueStart x) ≤
-        high + 2 - (getCurrentEpoch x.state).toNat + 2 -
-          (exitQueueStart x - (getCurrentEpoch x.state).toNat) := by
-      rcases Nat.le_total (getCurrentEpoch x.state).toNat (exitQueueStart x) with le | le
-      · rw [Nat.max_eq_right le]; omega
-      · rw [Nat.max_eq_left le]; omega
-    have consolidations : high + 2 - max (getCurrentEpoch x.state).toNat
-        (consolidationQueueStart x) ≤ high + 2 - (getCurrentEpoch x.state).toNat + 2 -
-          (consolidationQueueStart x - (getCurrentEpoch x.state).toNat) := by
-      rcases Nat.le_total (getCurrentEpoch x.state).toNat (consolidationQueueStart x) with le | le
-      · rw [Nat.max_eq_right le]; omega
-      · rw [Nat.max_eq_left le]; omega
+    simp only [zero, lt_self_iff_false, ↓reduceIte, notBefore, Nat.mul_zero,
+      Nat.add_zero] at bound ⊢
+    have from_ (start : Nat) : high + 2 - max (getCurrentEpoch x.state).toNat
+        (max start config.ELECTRA_FORK_EPOCH.toNat) ≤
+          high + 2 - (getCurrentEpoch x.state).toNat + 2 -
+            (start - (getCurrentEpoch x.state).toNat) := by omega
     have exitTerm := Nat.mul_le_mul_right
-      config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat exits
-    have consolidationTerm := Nat.mul_le_mul_right Cc consolidations
-    by_cases gate : config.ELECTRA_FORK_EPOCH.toNat ≤ high + 1 <;>
-      simp only [gate, ↓reduceIte, Nat.mul_zero] at bound <;> omega
+      config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat (from_ (exitQueueStart x))
+    have consolidationTerm := Nat.mul_le_mul_right Cc (from_ (consolidationQueueStart x))
+    omega
   · -- Before Electra the no-crossing clause puts the fork epoch after the window.
     have before : x.fork < .pectra := Nat.lt_of_not_ge electra
     have positive : 0 < forkEpochs config x high := by
@@ -1375,8 +1367,10 @@ private theorem departures_le_budget {g x y : ForkedBeaconState preset}
       Nat.max_eq_right (Nat.le_trans minimum (Nat.le_max_left _ _))
     have rate := Nat.mul_le_mul_left (cohortCap config A)
       (UInt64.le_iff_toNat_le.mp caps.activation)
-    simp only [before, ↓reduceIte, late, starts, Nat.max_self, Nat.add_zero, positive, floor,
-      Nat.sub_self] at bound ⊢
+    have empty (start : Nat) : high + 2 - max (getCurrentEpoch x.state).toNat
+        (max start config.ELECTRA_FORK_EPOCH.toNat) = 0 := by omega
+    simp only [before, ↓reduceIte, starts, Nat.max_self, Nat.add_zero, positive, floor,
+      Nat.sub_self, empty, Nat.zero_mul] at bound ⊢
     have horizon := Nat.mul_le_mul
       (show high + 2 - (getCurrentEpoch x.state).toNat ≤
         high + 2 - (getCurrentEpoch x.state).toNat + 2 - 0 by omega)

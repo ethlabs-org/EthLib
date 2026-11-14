@@ -4435,21 +4435,23 @@ The bound covers the charges whose exit epoch is at most `high + 1`.
 
 The first summand is the unspent capacity of the two queues at `x`, the value of `queueCarry`.
 
-Each queue then adds its cap for each epoch from the later of `e` and its start to `high + 1`.
-
 Here `e` is the current epoch of `x`.
 
-Before Electra at `x`, the exit cap is `L * MAX_EFFECTIVE_BALANCE`.
+Before Electra at `x`, the exit queue adds `L * MAX_EFFECTIVE_BALANCE` per epoch.
+
+It counts from the later of `e` and the start of the queue to `high + 1`.
 
 Here `L` is the larger of 1 and the pre-Electra churn limit of `countBound` validators.
 
 `countBound` bounds the active validators where each step of the run starts before Electra.
 
-The Electra caps count only when the Electra fork epoch is at most `high + 1`.
+The Electra caps count only from the Electra fork epoch on.
 
-The exit cap then adds `MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT`.
+The exit queue adds `MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT` per epoch.
 
-The consolidation queue then adds `consolidationCap` per epoch.
+The consolidation queue adds `consolidationCap` per epoch.
+
+Each counts from the latest of `e`, the start of its queue and the fork epoch, to `high + 1`.
 
 From Electra, the consolidation churn where each step starts is at most `consolidationCap`.
 
@@ -4473,13 +4475,14 @@ theorem departure_charges_le_window_from {g x y : ForkedBeaconState preset}
           (x.state.consolidationBalanceToConsume electra).toNat else 0)
        else 0) +
       (high + 2 - max (getCurrentEpoch x.state).toNat (exitQueueStart x)) *
-        ((if x.fork < .pectra then max 1 (cohortCap config countBound) *
+        (if x.fork < .pectra then max 1 (cohortCap config countBound) *
           preset.MAX_EFFECTIVE_BALANCE.toNat else 0) +
-         (if config.ELECTRA_FORK_EPOCH.toNat ≤ high + 1 then
-          config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat else 0)) +
-      (if config.ELECTRA_FORK_EPOCH.toNat ≤ high + 1 then
-        (high + 2 - max (getCurrentEpoch x.state).toNat (consolidationQueueStart x)) *
-          consolidationCap else 0) := by
+      (high + 2 - max (getCurrentEpoch x.state).toNat
+        (max (exitQueueStart x) config.ELECTRA_FORK_EPOCH.toNat)) *
+          config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat +
+      (high + 2 - max (getCurrentEpoch x.state).toNat
+        (max (consolidationQueueStart x) config.ELECTRA_FORK_EPOCH.toNat)) *
+          consolidationCap := by
   replace rates : ∀ site ∈ tail.consolidationSites, .pectra ≤ site.fork → ∀ (rate : Gwei),
       getConsolidationChurnLimit config site.state = .ok rate → rate.toNat ≤ consolidationCap := by
     intro site member electra rate computed
@@ -4489,46 +4492,34 @@ theorem departure_charges_le_window_from {g x y : ForkedBeaconState preset}
   · have bound := departure_charges_le_window_electra tail electra early high
       consolidationCap rates
     have notBefore : ¬ x.fork < .pectra := Nat.not_lt_of_ge electra
-    simp only [electra, ↓reduceDIte, notBefore, ↓reduceIte, Nat.zero_add, exitQueueStart,
-      consolidationQueueStart]
-    by_cases forked : config.ELECTRA_FORK_EPOCH.toNat ≤ high + 1
-    · simpa only [forked, ↓reduceIte] using bound
-    · -- A state from Electra is at or after the fork epoch, so the window is empty.
-      have late := reachable_electra_epoch shared genesis electra
-      simp only [forked, ↓reduceIte, Nat.mul_zero, Nat.add_zero]
-      have exits : high + 2 - max (getCurrentEpoch x.state).toNat
-          (x.state.earliestExitEpoch electra).toNat = 0 := by omega
-      have consolidations : high + 2 - max (getCurrentEpoch x.state).toNat
-          (x.state.earliestConsolidationEpoch electra).toNat = 0 := by omega
-      rw [exits, consolidations, Nat.zero_mul, Nat.zero_mul, Nat.add_zero, Nat.add_zero] at bound
-      exact bound
+    -- A state from Electra is at or after the fork epoch, so the fork epoch moves no start.
+    have late := reachable_electra_epoch shared genesis electra
+    have later (start : Nat) : max (getCurrentEpoch x.state).toNat
+        (max start config.ELECTRA_FORK_EPOCH.toNat) =
+          max (getCurrentEpoch x.state).toNat start := by omega
+    simp only [electra, ↓reduceDIte, notBefore, ↓reduceIte, Nat.mul_zero,
+      Nat.add_zero, exitQueueStart, consolidationQueueStart, later]
+    exact bound
   · have before : x.fork < .pectra := Nat.lt_of_not_ge electra
     simp only [electra, ↓reduceDIte, before, ↓reduceIte, Nat.zero_add, exitQueueStart,
       consolidationQueueStart, Nat.max_self]
     by_cases targetBefore : y.fork < .pectra
     · have bound := pre_electra_charges_le_window shared tail genesis caps targetBefore
         (high + 1) countBound counted
-      apply bound.trans
-      apply (Nat.mul_le_mul_left _ (Nat.le_add_right _ _)).trans
-      exact Nat.le_add_right _ _
-    · obtain ⟨v, ⟨reached⟩, vElectra, ordered, bound⟩ := crossing_charges_split shared tail
+      exact bound.trans (Nat.le_add_right_of_le (Nat.le_add_right _ _))
+    · -- The Electra caps count from the first Electra state, which is at the fork epoch or later.
+      obtain ⟨v, ⟨reached⟩, vElectra, ordered, bound⟩ := crossing_charges_split shared tail
         genesis caps early high countBound consolidationCap counted rates before
         (Nat.le_of_not_lt targetBefore)
       have late := reachable_electra_epoch reached genesis vElectra
-      rw [Nat.mul_add] at bound ⊢
-      by_cases forked : config.ELECTRA_FORK_EPOCH.toNat ≤ high + 1
-      · simp only [forked, ↓reduceIte]
-        have suffix : high + 2 - (getCurrentEpoch v.state).toNat ≤
-            high + 2 - (getCurrentEpoch x.state).toNat := Nat.sub_le_sub_left ordered _
-        have exits := Nat.mul_le_mul_right
-          config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat suffix
-        have consolidations := Nat.mul_le_mul_right consolidationCap suffix
-        omega
-      · -- The Electra part of the run starts after the window.
-        have empty : high + 2 - (getCurrentEpoch v.state).toNat = 0 := by omega
-        simp only [forked, ↓reduceIte, Nat.mul_zero, Nat.add_zero]
-        rw [empty, Nat.zero_mul, Nat.zero_mul, Nat.add_zero] at bound
-        exact bound
+      have suffix : high + 2 - (getCurrentEpoch v.state).toNat ≤
+          high + 2 - max (getCurrentEpoch x.state).toNat
+            (max (getCurrentEpoch x.state).toNat config.ELECTRA_FORK_EPOCH.toNat) := by omega
+      have exits := Nat.mul_le_mul_right
+        config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat suffix
+      have consolidations := Nat.mul_le_mul_right consolidationCap suffix
+      rw [Nat.mul_add] at bound
+      omega
 
 /-- Before Gloas, the departure charges of a run fit the queue capacity of a window of epochs.
 
@@ -4601,20 +4592,14 @@ theorem departure_charges_le_window {g x y : ForkedBeaconState preset}
   have horizon (start : Nat) : high + 2 - max (getCurrentEpoch x.state).toNat start ≤
       high + 2 - (getCurrentEpoch x.state).toNat :=
     Nat.sub_le_sub_left (Nat.le_max_left _ _) _
-  have exits := Nat.mul_le_mul (horizon (exitQueueStart x))
-    (Nat.add_le_add_left (show (if config.ELECTRA_FORK_EPOCH.toNat ≤ high + 1 then
-        config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat else 0) ≤
-      config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat by split <;> omega)
-      (if x.fork < .pectra then max 1 (cohortCap config registryBound) *
-        preset.MAX_EFFECTIVE_BALANCE.toNat else 0))
-  have consolidations : (if config.ELECTRA_FORK_EPOCH.toNat ≤ high + 1 then
-      (high + 2 - max (getCurrentEpoch x.state).toNat (consolidationQueueStart x)) *
-        consolidationCap else 0) ≤ (high + 2 - (getCurrentEpoch x.state).toNat) *
-          consolidationCap := by
-    split
-    · exact Nat.mul_le_mul_right _ (horizon _)
-    · exact Nat.zero_le _
-  rw [Nat.mul_add (high + 2 - (getCurrentEpoch x.state).toNat) (_ + _)]
+  have count := Nat.mul_le_mul_right (if x.fork < .pectra then
+    max 1 (cohortCap config registryBound) * preset.MAX_EFFECTIVE_BALANCE.toNat else 0)
+      (horizon (exitQueueStart x))
+  have exits := Nat.mul_le_mul_right config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat
+    (horizon (max (exitQueueStart x) config.ELECTRA_FORK_EPOCH.toNat))
+  have consolidations := Nat.mul_le_mul_right consolidationCap
+    (horizon (max (consolidationQueueStart x) config.ELECTRA_FORK_EPOCH.toNat))
+  rw [Nat.mul_add (high + 2 - (getCurrentEpoch x.state).toNat) (_ + _), Nat.mul_add]
   omega
 
 /-- A window that ends before the Electra fork epoch is charged only the count churn.
@@ -4645,12 +4630,13 @@ theorem departure_charges_le_window_before_fork {g x y : ForkedBeaconState prese
     exact (activeCount_le_size u.state).trans
       ((registryGrows_of_chainSteps ((Run.nil.snoc step).append post).chainSteps).trans
         registryBounded)
-  -- The Electra terms are gated off, so any bound on the rates serves: each rate fits 64 bits.
+  -- The Electra terms start after the window, so any bound on the rates serves: each fits 64 bits.
   have bound := departure_charges_le_window_from shared tail genesis caps early high
     registryBound (2 ^ 64) counted (fun _ _ _ rate _ => (UInt64.toNat_lt rate).le)
   have electra : ¬ .pectra ≤ x.fork := Nat.not_le_of_lt before
-  have forked : ¬ config.ELECTRA_FORK_EPOCH.toNat ≤ high + 1 := Nat.not_le_of_lt preFork
-  simpa only [electra, ↓reduceDIte, before, ↓reduceIte, forked, exitQueueStart, Nat.max_self,
-    Nat.zero_add, Nat.add_zero] using bound
+  have empty (start : Nat) : high + 2 - max (getCurrentEpoch x.state).toNat
+      (max start config.ELECTRA_FORK_EPOCH.toNat) = 0 := by omega
+  simpa only [electra, ↓reduceDIte, before, ↓reduceIte, empty, exitQueueStart, Nat.max_self,
+    Nat.zero_add, Nat.add_zero, Nat.zero_mul] using bound
 
 end EthLib.Consensus.DirectSafety
