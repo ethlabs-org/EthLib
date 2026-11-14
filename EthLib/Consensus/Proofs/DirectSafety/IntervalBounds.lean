@@ -1865,11 +1865,35 @@ private theorem intervalLoss_increase {fork : Fork} {s t : BeaconState preset fo
     simp only [actualBalanceAt, found, located, Option.map_some, Option.getD_some]
     omega
 
-private theorem intervalLoss_initial_slashing {fork : Fork} {s t : BeaconState preset fork}
+/-- A slashing debits only the slashed key, by at most its effective balance over the quotient.
+
+Every other key keeps its balance or gains, before Gloas. -/
+theorem slashValidator_balance_le {fork : Fork} {s t : BeaconState preset fork}
     {index : ValidatorIndex} {whistleblower : Option ValidatorIndex}
     (early : fork < .glamsterdam) (ok : slashValidator config s index whistleblower = .ok t)
-    (i : Nat) (different : index.toNat ≠ i) :
-    actualBalanceAt ⟨fork, s⟩ i ≤ actualBalanceAt ⟨fork, t⟩ i := by
+    (i : Nat) :
+    actualBalanceAt ⟨fork, s⟩ i ≤ actualBalanceAt ⟨fork, t⟩ i +
+      if index.toNat = i then effectiveAt ⟨fork, s⟩ i /
+        (EthLib.Consensus.parameters preset fork).MIN_SLASHING_PENALTY_QUOTIENT.toNat
+      else 0 := by
+  split
+  · rename_i same
+    subst same
+    obtain ⟨exited, _, _, _, _, _, _, _, _, _, _, _, exitedOk, _⟩ := slashValidator_ok ok
+    obtain ⟨v, found, _⟩ := initiateValidatorExit_ok exitedOk
+    have bound := (initial_slashing_bounds s t index whistleblower v found ok).1
+    have effective : effectiveAt ⟨fork, s⟩ index.toNat = v.effectiveBalance.toNat := by
+      simp [effectiveAt, getValidator_eq_ok_iff.mp found]
+    rw [effective]
+    by_cases inside : index.toNat < s.balances.data.size
+    · have single := Finset.single_le_sum (f := fun j =>
+        actualBalanceAt ⟨fork, s⟩ j - actualBalanceAt ⟨fork, t⟩ j)
+        (fun _ _ => Nat.zero_le _) (Finset.mem_range.mpr inside)
+      simp only [balanceDebits] at bound
+      omega
+    · simp [actualBalanceAt, Array.getElem?_eq_none (Nat.le_of_not_lt inside)]
+  rename_i different
+  rw [Nat.add_zero]
   obtain ⟨exited, validator, withdrawable, marked, slashed, total, slashings, lowered,
     proposer, reward, raised, last, exitedOk, _, _, markedOk, _, _, _, lower, _, _,
     raise, pay, final⟩ := slashValidator_ok ok
@@ -1886,6 +1910,13 @@ private theorem intervalLoss_initial_slashing {fork : Fork} {s t : BeaconState p
   subst t
   omega
 
+private theorem intervalLoss_initial_slashing {fork : Fork} {s t : BeaconState preset fork}
+    {index : ValidatorIndex} {whistleblower : Option ValidatorIndex}
+    (early : fork < .glamsterdam) (ok : slashValidator config s index whistleblower = .ok t)
+    (i : Nat) (different : index.toNat ≠ i) :
+    actualBalanceAt ⟨fork, s⟩ i ≤ actualBalanceAt ⟨fork, t⟩ i := by
+  simpa [different] using slashValidator_balance_le early ok i
+
 private theorem intervalLoss_unslashed_slashing {fork : Fork} {s t : BeaconState preset fork}
     {index other : ValidatorIndex} {whistleblower : Option ValidatorIndex}
     (early : fork < .glamsterdam) (ok : slashValidator config s index whistleblower = .ok t)
@@ -1898,44 +1929,59 @@ private theorem intervalLoss_unslashed_slashing {fork : Fork} {s t : BeaconState
   rw [same, unslashed] at marked
   cases marked
 
-private theorem intervalLoss_attester_slashing {fork : Fork} {s t : BeaconState preset fork}
-    (early : fork < .glamsterdam) (other : ValidatorIndex)
+/-- A fold of slashings debits a key only if it slashes that key, by at most its share.
+
+The share is its effective balance at the start over the quotient, before Gloas.
+
+The key must be unslashed at the start and slashed at the end. -/
+theorem slashIfSlashable_balance_le {fork : Fork} {s t : BeaconState preset fork}
+    (early : fork < .glamsterdam) (i : ValidatorIndex)
     (indices : List ValidatorIndex) (flag finalFlag : Bool)
-    (ok : indices.foldlM (slashIfSlashable config) (s, flag) = .ok (t, finalFlag))
-    (unslashed : slashedFlag t other = .ok false) :
-    actualBalanceAt ⟨fork, s⟩ other.toNat ≤ actualBalanceAt ⟨fork, t⟩ other.toNat := by
+    (ok : indices.foldlM (slashIfSlashable config) (s, flag) = .ok (t, finalFlag)) :
+    actualBalanceAt ⟨fork, s⟩ i.toNat ≤ actualBalanceAt ⟨fork, t⟩ i.toNat +
+      if slashedFlag s i = .ok false ∧ slashedFlag t i = .ok true then
+        effectiveAt ⟨fork, s⟩ i.toNat /
+          (EthLib.Consensus.parameters preset fork).MIN_SLASHING_PENALTY_QUOTIENT.toNat
+      else 0 := by
   induction indices generalizing s flag with
-  | nil => cases ok; exact Nat.le_refl _
+  | nil => cases ok; exact Nat.le_add_right _ _
   | cons index rest ih =>
     obtain ⟨⟨middle, nextFlag⟩, first, tail⟩ := bind_ok_iff.mp ok
-    have beforeFalse : slashedFlag middle other = .ok false := by
-      have flags := (foldlM_slashIfSlashable rest tail).2.1
-      cases before : slashedFlag middle other with
-      | error error =>
-        have sizes := (foldlM_slashIfSlashable rest tail).1.1
-        cases found : middle.validators.data[other.toNat]? with
-        | some v => simp [slashedFlag, getValidator, found, Except.map] at before
-        | none =>
-          have outside := Array.getElem?_eq_none_iff.mp found
-          have afterOutside : t.validators.data[other.toNat]? = none :=
-            Array.getElem?_eq_none_iff.mpr (by simpa only [sizes] using outside)
-          simp [slashedFlag, getValidator, afterOutside, Except.map] at unslashed
-      | ok value =>
-        cases value with
-        | false => rfl
-        | true => have marked := flags other before; rw [unslashed] at marked; cases marked
-    have restBound := ih nextFlag tail
-    have firstBound : actualBalanceAt ⟨fork, s⟩ other.toNat ≤
-        actualBalanceAt ⟨fork, middle⟩ other.toNat := by
-      simp only [slashIfSlashable, bind_ok_iff, liftAccessor_ok] at first
-      obtain ⟨v, _, first⟩ := first
-      split at first
-      · simp only [bind_ok_iff, liftAccessor_ok, pure, Except.pure, Except.ok.injEq,
-          Prod.mk.injEq] at first
-        obtain ⟨next, slashed, rfl, rfl⟩ := first
-        exact intervalLoss_unslashed_slashing early slashed beforeFalse
-      · cases first; exact Nat.le_refl _
-    exact firstBound.trans restBound
+    have later := ih nextFlag tail
+    have persists := (foldlM_slashIfSlashable rest tail).2.1 i
+    simp only [slashIfSlashable, bind_ok_iff, liftAccessor_ok] at first
+    obtain ⟨v, found, first⟩ := first
+    split at first
+    · rename_i slashable
+      simp only [bind_ok_iff, liftAccessor_ok, pure, Except.pure, Except.ok.injEq,
+        Prod.mk.injEq] at first
+      obtain ⟨next, slashed, rfl, rfl⟩ := first
+      have step := slashValidator_balance_le early slashed i.toNat
+      by_cases same : index = i
+      · subst same
+        have marked := (slashValidator_slashedFlag slashed).1
+        have unmarked : slashedFlag s index = .ok false := by
+          simp only [isSlashableValidator, Bool.and_eq_true, Bool.not_eq_true'] at slashable
+          simp [slashedFlag, found, Except.map, slashable.1.1]
+        simp only [marked, unmarked, persists marked, Except.ok.injEq, Bool.true_eq_false,
+          false_and, and_self, ↓reduceIte] at later step ⊢
+        omega
+      · have different : index.toNat ≠ i.toNat := fun equal => same (UInt64.toNat_inj.mp equal)
+        have flagged : slashedFlag next i = slashedFlag s i := by
+          have kept := (slashValidator_slashedFlag slashed).2 i.toNat (Ne.symm different)
+          simp only [slashedFlag, getValidator_eq_getValidatorAt]
+          cases one : next.validators.data[i.toNat]? <;>
+            cases two : s.validators.data[i.toNat]? <;> simp_all [getValidatorAt, Except.map]
+        have effective : effectiveAt ⟨fork, next⟩ i.toNat = effectiveAt ⟨fork, s⟩ i.toNat := by
+          by_cases inside : i.toNat < s.validators.data.size
+          · exact effectiveKept_slash slashed i.toNat inside
+          · have sizes := (sameSizes_slashValidator slashed).1
+            simp [effectiveAt, sizes, Nat.le_of_not_lt inside]
+        rw [flagged, effective] at later
+        simp only [different, ↓reduceIte, Nat.add_zero] at step
+        omega
+    · cases first
+      exact later
 
 private theorem intervalLoss_proposer_nondebit {fork : Fork} {s t : BeaconState preset fork}
     (early : fork < .glamsterdam) (sl : ProposerSlashing)
@@ -1954,7 +2000,7 @@ private theorem intervalLoss_attester_nondebit {fork : Fork} {s t : BeaconState 
   simp only [processAttesterSlashing, bind_ok_iff, ensure_ok_iff, pure, Except.pure,
     Except.ok.injEq] at ok
   obtain ⟨_, _, _, _, _, _, _, _, _, _, ⟨u, flag⟩, folded, _, _, rfl⟩ := ok
-  exact intervalLoss_attester_slashing early i _ false flag folded unslashed
+  simpa [unslashed] using slashIfSlashable_balance_le early i _ false flag folded
 
 private theorem intervalLoss_SlashingSite.nondebit {a b : ForkedBeaconState preset}
     (site : intervalLoss_SlashingSite config checks a b) (early : a.fork < .glamsterdam)
