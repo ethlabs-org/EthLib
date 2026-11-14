@@ -1726,11 +1726,11 @@ private def BalanceChain (x y : ForkedBeaconState preset) : List (BalanceEvent p
 private theorem BalanceChain.refl (x : ForkedBeaconState preset) : BalanceChain x x [] :=
   fun _ => rfl
 
-private theorem coverage_event (event : BalanceEvent preset) :
+private theorem balanceChain_event (event : BalanceEvent preset) :
     BalanceChain event.before event.after [event] :=
   ⟨fun _ => rfl, fun _ => rfl⟩
 
-private theorem coverage_trans {x y z : ForkedBeaconState preset}
+private theorem balanceChain_append {x y z : ForkedBeaconState preset}
     {left right : List (BalanceEvent preset)} (first : BalanceChain x y left)
     (last : BalanceChain y z right) : BalanceChain x z (left ++ right) := by
   induction left generalizing x with
@@ -1740,7 +1740,7 @@ private theorem coverage_trans {x y z : ForkedBeaconState preset}
     | cons event rest => exact ⟨fun i => (last.1 i).trans (first i), last.2⟩
   | cons event rest ih => exact ⟨first.1, ih first.2⟩
 
-private theorem coverage_same {fork : Fork} {s t : BeaconState preset fork}
+private theorem balanceChain_same {fork : Fork} {s t : BeaconState preset fork}
     (same : t.balances = s.balances) : BalanceChain ⟨fork, s⟩ ⟨fork, t⟩ [] := by
   intro i
   simp [actualBalanceAt, same]
@@ -1768,7 +1768,7 @@ abbrev ReplayCoverage {fork : Fork} (start : BeaconState preset fork)
 private abbrev ReplayChain {fork : Fork} (start : BeaconState preset fork)
     (pre : BalanceReplay preset fork) : Prop := BalanceChain ⟨fork, start⟩ ⟨fork, pre.1⟩ pre.2
 
-private theorem coverage_record {fork : Fork} {start : BeaconState preset fork}
+private theorem balanceChain_record {fork : Fork} {start : BeaconState preset fork}
     {source : BalanceSource}
     {limits : BeaconState preset fork → Except TransitionError (Nat × Nat)}
     {action : BeaconState preset fork → Except TransitionError (BeaconState preset fork)}
@@ -1776,7 +1776,7 @@ private theorem coverage_record {fork : Fork} {start : BeaconState preset fork}
     (ok : recordBalance source limits action pre = .ok post) : ReplayChain start post := by
   simp only [recordBalance, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at ok
   obtain ⟨⟨credit, debit⟩, _, after, _, rfl⟩ := ok
-  exact coverage_trans initial (coverage_event _)
+  exact balanceChain_append initial (balanceChain_event _)
 
 /-- The rewards replay appends its events in order, from the state where it starts. -/
 private theorem replayRewards_chain {fork : Fork} {pre post : BalanceReplay preset fork}
@@ -1789,7 +1789,8 @@ private theorem replayRewards_chain {fork : Fork} {pre post : BalanceReplay pres
     obtain ⟨added, events, chain⟩ := prior
     simp only [recordBalance, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at ok
     obtain ⟨_, _, after, _, rfl⟩ := ok
-    exact ⟨added ++ [_], by rw [events, List.append_assoc], coverage_trans chain (coverage_event _)⟩
+    exact ⟨added ++ [_], by rw [events, List.append_assoc],
+      balanceChain_append chain (balanceChain_event _)⟩
 
 /-- The rewards replay extends the coverage. -/
 theorem coverage_rewards {fork : Fork} {start : BeaconState preset fork}
@@ -1802,14 +1803,15 @@ theorem coverage_rewards {fork : Fork} {start : BeaconState preset fork}
   rw [events, List.map_append, List.sum_append]
   cases debit <;> simp only [coverageDelta, Bool.false_eq_true, ↓reduceIte] at one two ⊢ <;>
     omega
-private theorem coverage_carry {fork : Fork} {start : BeaconState preset fork}
+private theorem balanceChain_carry {fork : Fork} {start : BeaconState preset fork}
     {action : BeaconState preset fork → Except TransitionError (BeaconState preset fork)}
     (keeps : ∀ s t, action s = .ok t → t.balances = s.balances)
     {pre post : BalanceReplay preset fork} (initial : ReplayChain start pre)
     (ok : carryBalance action pre = .ok post) : ReplayChain start post := by
   simp only [carryBalance, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at ok
   obtain ⟨after, actionOk, rfl⟩ := ok
-  simpa only [List.append_nil] using coverage_trans initial (coverage_same (keeps _ _ actionOk))
+  simpa only [List.append_nil] using
+    balanceChain_append initial (balanceChain_same (keeps _ _ actionOk))
 
 theorem coverage_exit {fork : Fork} {s t : BeaconState preset fork}
     {i : ValidatorIndex} (ok : initiateValidatorExit config s i = .ok t) :
@@ -1841,26 +1843,26 @@ private theorem coverage_epoch {fork : Fork} {s : BeaconState preset fork}
   -- Justification, inactivity and the eth1 reset keep the balances, as epoch stages.
   cases k <;> simp only [epochReplayAction] at step
   case justification =>
-    exact coverage_carry (fun _ _ ok => EpochStage.Edge.balances_eq (config := config)
+    exact balanceChain_carry (fun _ _ ok => EpochStage.Edge.balances_eq (config := config)
       (checks := checks) (stage := .justification) ok
       ⟨nofun, nofun, nofun, nofun, nofun, nofun⟩) held step
   case inactivity =>
     split at step
     · rename_i altair
-      exact coverage_carry (fun _ _ ok => EpochStage.Edge.balances_eq (checks := checks)
+      exact balanceChain_carry (fun _ _ ok => EpochStage.Edge.balances_eq (checks := checks)
         (stage := .inactivity) (by simp only [EpochStage.Edge, altair, ↓reduceDIte]; exact ok)
         ⟨nofun, nofun, nofun, nofun, nofun, nofun⟩) held step
     · cases step; exact held
   case rewards =>
     obtain ⟨added, events, chain⟩ := replayRewards_chain step
     rw [ReplayChain, events]
-    exact coverage_trans held chain
-  case registry => exact coverage_carry (fun _ _ => processRegistryUpdates_balances) held step
-  case slashings => exact coverage_record held step
+    exact balanceChain_append held chain
+  case registry => exact balanceChain_carry (fun _ _ => processRegistryUpdates_balances) held step
+  case slashings => exact balanceChain_record held step
   case eth1Reset =>
     split at step
     · rename_i before
-      exact coverage_carry (fun _ _ ok => EpochStage.Edge.balances_eq (config := config)
+      exact balanceChain_carry (fun _ _ ok => EpochStage.Edge.balances_eq (config := config)
         (checks := checks) (stage := .eth1Reset)
         (by simp only [EpochStage.Edge, before, ↓reduceDIte]; exact ok)
         ⟨nofun, nofun, nofun, nofun, nofun, nofun⟩) held step
@@ -1870,7 +1872,8 @@ private theorem coverage_epoch {fork : Fork} {s : BeaconState preset fork}
     · rename_i electra
       simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at step
       obtain ⟨deposited, _, rfl⟩ := step
-      exact coverage_trans held (coverage_event ⟨.deposits, ⟨fork, pre.1⟩, ⟨fork, deposited⟩,
+      exact balanceChain_append held (balanceChain_event
+        ⟨.deposits, ⟨fork, pre.1⟩, ⟨fork, deposited⟩,
         consumedDeposits pre.1 deposited electra, 0⟩)
     · cases step; exact held
   case pendingConsolidations =>
@@ -1878,7 +1881,7 @@ private theorem coverage_epoch {fork : Fork} {s : BeaconState preset fork}
     · rename_i electra
       simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at step
       obtain ⟨consolidated, _, rfl⟩ := step
-      exact coverage_trans held (coverage_event ⟨.consolidations, ⟨fork, pre.1⟩,
+      exact balanceChain_append held (balanceChain_event ⟨.consolidations, ⟨fork, pre.1⟩,
         ⟨fork, consolidated⟩, consumedConsolidations pre.1 consolidated electra,
         consumedConsolidations pre.1 consolidated electra⟩)
     · cases step; exact held
@@ -1916,14 +1919,14 @@ private theorem coverage_block {fork : Fork} {s : BeaconState preset fork}
       early engine s block = .ok post) : ReplayChain s post := by
   unfold blockBalanceReplay at ok
   obtain ⟨headed, headerOk, ok⟩ := bind_ok_iff.mp ok
-  have headedCover := coverage_carry (fun a b action => by
+  have headedCover := balanceChain_carry (fun a b action => by
     obtain ⟨_, _, rfl⟩ := processBlockHeader_eq action
     rfl) (BalanceChain.refl ⟨fork, s⟩ : ReplayChain s (s, [])) headerOk
   by_cases bellatrix : .bellatrix ≤ fork
   case' pos =>
     simp only [bellatrix, ↓reduceDIte] at ok
     obtain ⟨executed, executionOk, rest⟩ := bind_ok_iff.mp ok
-    have executedCover := coverage_record headedCover executionOk
+    have executedCover := balanceChain_record headedCover executionOk
   case' neg =>
     simp only [bellatrix, ↓reduceDIte, pure, Except.pure, bind_ok_iff,
       Except.ok.injEq, exists_eq_left'] at ok
@@ -1934,28 +1937,28 @@ private theorem coverage_block {fork : Fork} {s : BeaconState preset fork}
     obtain ⟨randao, randaoOk, voted, votedOk, expected, _, _, _,
       proposed, proposedOk, attested, attestedOk, rewarded, rewardedOk, deposited, depositOk,
       exited, exitOk, changed, changedOk, rest⟩ := rest
-    have randaoCover := coverage_carry (fun a b action => by
+    have randaoCover := balanceChain_carry (fun a b action => by
       simp only [processRandao, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at action
       obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, rfl⟩ := action
       rfl) executedCover randaoOk
-    have votedCover := coverage_carry (fun a b action => by
+    have votedCover := balanceChain_carry (fun a b action => by
       simp only [processEth1Data] at action
       split at action
       · obtain ⟨_, _, action⟩ := bind_ok_iff.mp action
         split at action <;> cases action <;> rfl
       · cases action) randaoCover votedOk
     have proposedCover := foldlM_ok_invariant (ReplayChain s)
-      (fun _ _ _ h ok => coverage_record h ok) votedCover proposedOk
+      (fun _ _ _ h ok => balanceChain_record h ok) votedCover proposedOk
     have attestedCover := foldlM_ok_invariant (ReplayChain s)
-      (fun _ _ _ h ok => coverage_record h ok) proposedCover attestedOk
+      (fun _ _ _ h ok => balanceChain_record h ok) proposedCover attestedOk
     have rewardedCover := foldlM_ok_invariant (ReplayChain s)
-      (fun _ _ _ h ok => coverage_record h ok) attestedCover rewardedOk
+      (fun _ _ _ h ok => balanceChain_record h ok) attestedCover rewardedOk
     have depositedCover := foldlM_ok_invariant (ReplayChain s)
-      (fun _ _ _ h ok => coverage_record h ok) rewardedCover depositOk
-    have exitedCover := coverage_carry (fun _ _ ok =>
+      (fun _ _ _ h ok => balanceChain_record h ok) rewardedCover depositOk
+    have exitedCover := balanceChain_carry (fun _ _ ok =>
       coverage_fold_keeps (fun _ _ _ => coverage_voluntary)
         (by simpa only [← Array.foldlM_toList] using ok)) depositedCover exitOk
-    have changedCover := coverage_carry (fun _ _ ok => by
+    have changedCover := balanceChain_carry (fun _ _ ok => by
       unfold processBlsToExecutionChanges at ok
       split at ok
       · exact coverage_fold_keeps (fun _ _ _ => coverage_bls)
@@ -1966,7 +1969,7 @@ private theorem coverage_block {fork : Fork} {s : BeaconState preset fork}
       simp only [electra, ↓reduceDIte, bind_ok_iff] at rest
       obtain ⟨deposits, depositRequestOk, withdrawals, withdrawalOk,
         requested, consolidations, rest⟩ := rest
-      have depositsCover := coverage_carry (fun _ _ ok =>
+      have depositsCover := balanceChain_carry (fun _ _ ok =>
         coverage_fold_keeps (action := fun a req => processDepositRequest a electra req)
           (fun a req b action => by
           simp only [processDepositRequest, liftAccessor_ok, addPendingDeposit,
@@ -1975,18 +1978,18 @@ private theorem coverage_block {fork : Fork} {s : BeaconState preset fork}
           simp only [recordDepositRequestsStart]
           split <;> first | rfl | (split <;> rfl))
           (by simpa only [← Array.foldlM_toList] using ok)) changedCover depositRequestOk
-      have withdrawalsCover := coverage_carry (fun _ _ ok =>
+      have withdrawalsCover := balanceChain_carry (fun _ _ ok =>
         coverage_fold_keeps (fun _ _ _ => coverage_withdrawal_request)
           (by simpa only [← Array.foldlM_toList] using ok)) depositsCover withdrawalOk
       have requestedCover := foldlM_ok_invariant (ReplayChain s)
-        (fun _ _ _ h ok => coverage_record h ok) withdrawalsCover consolidations
+        (fun _ _ _ h ok => balanceChain_record h ok) withdrawalsCover consolidations
     case' neg =>
       simp only [electra, ↓reduceDIte, pure, Except.pure, bind_ok_iff,
         Except.ok.injEq, exists_eq_left'] at rest
       have requestedCover := changedCover
     all_goals
       split at rest
-      · exact coverage_record requestedCover rest
+      · exact balanceChain_record requestedCover rest
       · cases rest; exact requestedCover
 
 private theorem coverage_upgrade_kept {s : ForkedBeaconState preset}
@@ -2046,13 +2049,13 @@ private theorem coverage_upgrades {s t : ForkedBeaconState preset}
       simp only [↓reduceIte, show Fork.pectra ≤ .pectra from Nat.le_refl _, ↓reduceDIte,
         pure, Except.pure, Except.ok.injEq] at last
       subst events
-      exact coverage_trans (coverage_event
+      exact balanceChain_append (balanceChain_event
         ⟨.crossing, ⟨.dencun, state⟩, ⟨.pectra, after⟩, 0,
           ((after.pendingDeposits (by decide)).data.toList.map
             fun d => d.amount.toNat).sum⟩) covered
     · simp only [crossing, ↓reduceIte, pure, Except.pure, Except.ok.injEq] at last
       subst events
-      simpa only [List.nil_append] using coverage_trans
+      simpa only [List.nil_append] using balanceChain_append
         (coverage_upgrade_kept nextOk
           (Nat.lt_of_le_of_lt (processUpgrades_fork_le rest) early) crossing) covered
   | case2 s due =>
@@ -2087,7 +2090,7 @@ private theorem step_balanceChain {x y : ForkedBeaconState preset}
     obtain ⟨next, nextOk, cached, cachedOk, epoched, epochOk, afterEq⟩ := advanceCopy
     obtain ⟨_, _, _, _, cachedEq⟩ := processSlot_ok cachedOk
     have cachedChain : BalanceChain x ⟨x.fork, cached⟩ [] :=
-      coverage_same (by rw [cachedEq])
+      balanceChain_same (by rw [cachedEq])
     obtain ⟨crossings, crossingOk, _⟩ := upgradeBalanceReplay_bounded upgrades
     have path : (Step.slot ok).balancePath = [x, ⟨x.fork, advanced⟩, y] := by
       simp [Step.balancePath, advanceOk, Except.toOption]
@@ -2097,17 +2100,17 @@ private theorem step_balanceChain {x y : ForkedBeaconState preset}
       obtain ⟨middle, updated, recorded, recordOk, _, _, balances⟩ :=
         epochBalanceReplay_result cached epoched before epochOk
       have final : BalanceChain ⟨x.fork, middle⟩ ⟨x.fork, advanced⟩ [] :=
-        coverage_same (by rw [← afterEq]; exact balances.symm)
+        balanceChain_same (by rw [← afterEq]; exact balances.symm)
       refine ⟨_, recorded, crossings, .inr path, Except.ok.inj (replayed.symm.trans
         (Step.balanceEvents_epoch_slot ok cachedOk nextOk last recordOk advanceOk crossingOk)),
         ?_, crossed⟩
       simpa only [List.nil_append, List.append_nil] using
-        coverage_trans (coverage_trans cachedChain (coverage_epoch recordOk)) final
+        balanceChain_append (balanceChain_append cachedChain (coverage_epoch recordOk)) final
     · simp only [epochIfLast, last, ↓reduceIte, pure, Except.pure, Except.ok.injEq] at epochOk
       refine ⟨_, [], crossings, .inr path, ?_, ?_, crossed⟩
       · simpa [Step.balanceEvents, cachedOk, nextOk, last, advanceOk, crossingOk,
           pure, Except.pure, bind, Except.bind] using replayed.symm
-      · apply coverage_same
+      · apply balanceChain_same
         rw [← afterEq, ← epochOk, cachedEq]
 
 /-- A chain of events, in terms of its ends and of each pair of consecutive events. -/
@@ -2162,7 +2165,7 @@ private theorem coverage_step {x y : ForkedBeaconState preset} (step : Step conf
   intro debit i
   rw [List.map_append, List.sum_append]
   rcases path with ⟨path, rfl⟩ | path <;> rw [path]
-  · have both := (coverage_trans one two).coverage debit i
+  · have both := (balanceChain_append one two).coverage debit i
     rw [List.map_append, List.sum_append] at both
     cases debit <;> simpa [coveragePath, pathCredits, pathDebits, coverageDelta] using both
   · have both := Nat.add_le_add (one.coverage debit i) (two.coverage debit i)

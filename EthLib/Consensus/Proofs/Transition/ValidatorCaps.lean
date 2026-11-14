@@ -745,11 +745,11 @@ theorem processWithdrawalRequest_validatorCap_mono {f : Fork} {s t : BeaconState
 This needs `MIN_ACTIVATION_BALANCE` to be at most `MAX_EFFECTIVE_BALANCE_ELECTRA`. -/
 theorem processConsolidationRequest_validatorCap_mono {f : Fork} {s t : BeaconState preset f}
     {electra : .pectra ≤ f} {request : ConsolidationRequest}
-    (order : preset.MIN_ACTIVATION_BALANCE ≤ preset.MAX_EFFECTIVE_BALANCE_ELECTRA)
+    (compounding : preset.MIN_ACTIVATION_BALANCE ≤ preset.MAX_EFFECTIVE_BALANCE_ELECTRA)
     (ok : processConsolidationRequest config s electra request = .ok t)
     (i : Nat) (v : Validator) (found : s.validators.data[i]? = some v) :
     ∃ w, t.validators.data[i]? = some w ∧
       withdrawalMaxEffectiveBalance preset f v ≤ withdrawalMaxEffectiveBalance preset f w :=
-  (CapStep.consolidationRequest order ok).monotone i v found
+  (CapStep.consolidationRequest compounding ok).monotone i v found
 
 end EthLib.Consensus

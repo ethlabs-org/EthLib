@@ -802,12 +802,44 @@ private def intervalLoss_ReplaySites {config : Config} {checks : SignatureChecks
       intervalLoss_SiteStep e.before e.after ∧ intervalLoss_SiteStep e.after ⟨fork, pre.1⟩ ∧
       (e.source = .slashings → intervalLoss_SlashingSite config checks e.before e.after)
 
+/-- A step keeps the effective balances, and with ordered caps it lowers no cap. -/
+private def intervalLoss_KeepStep {fork : Fork} (a b : BeaconState preset fork) : Prop :=
+  EffectiveKept a b ∧ (preset.MIN_ACTIVATION_BALANCE ≤ preset.MAX_EFFECTIVE_BALANCE_ELECTRA →
+    ∀ (i : Nat) (v : Validator), a.validators.data[i]? = some v →
+      ∃ w, b.validators.data[i]? = some w ∧
+        withdrawalMaxEffectiveBalance preset fork v ≤ withdrawalMaxEffectiveBalance preset fork w)
+
+private theorem intervalLoss_KeepStep.of_data {fork : Fork} {a b : BeaconState preset fork}
+    (same : b.validators.data = a.validators.data) : intervalLoss_KeepStep a b :=
+  ⟨effectiveKept_data same, fun _ _ v found => ⟨v, same ▸ found, UInt64.le_refl _⟩⟩
+
+private theorem intervalLoss_KeepStep.trans {fork : Fork} {a b c : BeaconState preset fork}
+    (one : intervalLoss_KeepStep a b) (two : intervalLoss_KeepStep b c)
+    (grows : a.validators.data.size ≤ b.validators.data.size) : intervalLoss_KeepStep a c := by
+  refine ⟨effectiveKept_trans one.1 two.1 grows, fun compounding i v found => ?_⟩
+  obtain ⟨w, read, first⟩ := one.2 compounding i v found
+  obtain ⟨z, read', second⟩ := two.2 compounding i w read
+  exact ⟨z, read', UInt64.le_trans first second⟩
+
+private theorem intervalLoss_KeepStep.fold {fork : Fork} {α ε : Type}
+    {action : BeaconState preset fork → α → Except ε (BeaconState preset fork)}
+    (keeps : ∀ a item b, action a item = .ok b → intervalLoss_KeepStep a b)
+    (lifecycle : ∀ a item b, action a item = .ok b → RegistryLifecycle a b)
+    {items : List α} {s t : BeaconState preset fork} (ok : items.foldlM action s = .ok t) :
+    intervalLoss_KeepStep s t :=
+  (foldlM_ok_invariant (fun t => intervalLoss_KeepStep s t ∧ RegistryLifecycle s t)
+    (fun _ item _ prior ok => ⟨prior.1.trans (keeps _ item _ ok) prior.2.size_le,
+      prior.2.trans (lifecycle _ item _ ok)⟩) ⟨.of_data rfl, .refl s⟩ ok).1
+
 /-- An event of a block, from the start `start` of the block.
+
+The step to its start keeps the effective balances and the caps.
 
 The withdrawals event follows the header, and a consolidation request records `.excess`. -/
 private def intervalLoss_BlockEvent {fork : Fork} (start : BeaconState preset fork)
     (e : BalanceEvent preset) : Prop :=
   ∃ s t : BeaconState preset fork, e.before = ⟨fork, s⟩ ∧ e.after = ⟨fork, t⟩ ∧
+    intervalLoss_KeepStep start s ∧
     (e.source = .withdrawals → ∃ (block : BeaconBlock preset fork)
       (engine : ExecutionEngine preset fork) (bellatrix : .bellatrix ≤ fork),
       processBlockHeader start block = .ok s ∧
@@ -825,6 +857,7 @@ private def intervalLoss_EpochEvent (e : BalanceEvent preset) : Prop :=
 private def intervalLoss_BlockSites {fork : Fork} (start : BeaconState preset fork)
     (pre : BalanceReplay preset fork) : Prop :=
   intervalLoss_ReplaySites (config := config) (checks := checks) ⟨fork, start⟩ pre ∧
+    intervalLoss_KeepStep start pre.1 ∧
     ∀ e ∈ pre.2, intervalLoss_BlockEvent (config := config) (checks := checks) start e
 
 /-- A recorded event appends one event from the input of its action to the output. -/
@@ -904,17 +937,23 @@ private theorem intervalLoss_sites_fold {fork : Fork} {α : Type}
 private theorem intervalLoss_block_carry {fork : Fork} {start : BeaconState preset fork}
     {action : BeaconState preset fork → Except TransitionError (BeaconState preset fork)}
     (preserves : ∀ s t, action s = .ok t → intervalLoss_SiteStep ⟨fork, s⟩ ⟨fork, t⟩)
+    (keeps : ∀ s t, action s = .ok t → intervalLoss_KeepStep s t)
     {pre post : BalanceReplay preset fork}
     (prior : intervalLoss_BlockSites (config := config) (checks := checks) start pre)
     (ok : carryBalance action pre = .ok post) :
-    intervalLoss_BlockSites (config := config) (checks := checks) start post :=
-  ⟨intervalLoss_sites_carry preserves prior.1 ok, intervalLoss_carry_event _ prior.2 ok⟩
+    intervalLoss_BlockSites (config := config) (checks := checks) start post := by
+  have sites := intervalLoss_sites_carry preserves prior.1 ok
+  have events := intervalLoss_carry_event _ prior.2.2 ok
+  simp only [carryBalance, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at ok
+  obtain ⟨after, computed, rfl⟩ := ok
+  exact ⟨sites, prior.2.1.trans (keeps _ _ computed) prior.1.1.lifecycle.size_le, events⟩
 
 private theorem intervalLoss_block_record {fork : Fork} {start : BeaconState preset fork}
     {source : BalanceSource}
     {limits : BeaconState preset fork → Except TransitionError (Nat × Nat)}
     {action : BeaconState preset fork → Except TransitionError (BeaconState preset fork)}
     (preserves : ∀ s t, action s = .ok t → intervalLoss_SiteStep ⟨fork, s⟩ ⟨fork, t⟩)
+    (keeps : ∀ s t, action s = .ok t → intervalLoss_KeepStep s t)
     (classified : ∀ s t, action s = .ok t → source = .slashings →
       intervalLoss_SlashingSite config checks ⟨fork, s⟩ ⟨fork, t⟩)
     {pre post : BalanceReplay preset fork}
@@ -927,9 +966,13 @@ private theorem intervalLoss_block_record {fork : Fork} {start : BeaconState pre
       (source = .excess → ∃ (electra : .pectra ≤ fork) (request : ConsolidationRequest),
         processConsolidationRequest config pre.1 electra request = .ok t))
     (ok : recordBalance source limits action pre = .ok post) :
-    intervalLoss_BlockSites (config := config) (checks := checks) start post :=
-  ⟨intervalLoss_sites_record preserves prior.1 classified ok, intervalLoss_record_event _ prior.2
-    (fun t _ _ computed => ⟨pre.1, t, rfl, rfl, provenance t computed⟩) ok⟩
+    intervalLoss_BlockSites (config := config) (checks := checks) start post := by
+  have sites := intervalLoss_sites_record preserves prior.1 classified ok
+  have events := intervalLoss_record_event _ prior.2.2
+    (fun t _ _ computed => ⟨pre.1, t, rfl, rfl, prior.2.1, provenance t computed⟩) ok
+  simp only [recordBalance, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at ok
+  obtain ⟨_, _, after, computed, rfl⟩ := ok
+  exact ⟨sites, prior.2.1.trans (keeps _ _ computed) prior.1.1.lifecycle.size_le, events⟩
 
 private theorem intervalLoss_sites_rewards {fork : Fork}
     {start : ForkedBeaconState preset} {pre post : BalanceReplay preset fork}
@@ -1070,7 +1113,7 @@ private theorem intervalLoss_sites_block {fork : Fork} {s : BeaconState preset f
   unfold blockBalanceReplay at ok
   obtain ⟨headed, headerOk, ok⟩ := bind_ok_iff.mp ok
   have initial : intervalLoss_BlockSites (config := config) (checks := checks) s (s, []) :=
-    ⟨⟨.refl _, by simp⟩, by simp⟩
+    ⟨⟨.refl _, by simp⟩, .of_data rfl, by simp⟩
   have header : processBlockHeader s block = .ok headed.1 := by
     have copy := headerOk
     simp only [carryBalance, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at copy
@@ -1078,6 +1121,7 @@ private theorem intervalLoss_sites_block {fork : Fork} {s : BeaconState preset f
     exact computed
   have headedSites := intervalLoss_block_carry (fun _ _ ok => .of_frame
     (registryLifecycle_processBlockHeader ok) (frame_processBlockHeader ok).toFrame)
+    (fun _ _ ok => by obtain ⟨_, _, rfl⟩ := processBlockHeader_eq ok; exact .of_data rfl)
     initial headerOk
   by_cases bellatrix : .bellatrix ≤ fork
   case' pos =>
@@ -1086,6 +1130,7 @@ private theorem intervalLoss_sites_block {fork : Fork} {s : BeaconState preset f
     have executedSites := intervalLoss_block_record (fun _ _ ok => .of_frame
       (.of_data (congrArg (·.data) (processBlockExecution_validators ok)))
       (frame_processBlockExecution ok).toFrame)
+      (fun _ _ ok => .of_data (congrArg (·.data) (processBlockExecution_validators ok)))
       (fun _ _ _ h => by cases h) headedSites
       (fun _ ok => by exact ⟨fun _ => ⟨block, engine, bellatrix, header, ok⟩, nofun⟩) executionOk
   case' neg =>
@@ -1099,37 +1144,54 @@ private theorem intervalLoss_sites_block {fork : Fork} {s : BeaconState preset f
       proposed, proposedOk, attested, attestedOk, rewarded, rewardedOk, deposited, depositOk,
       exited, exitOk, changed, changedOk, rest⟩ := rest
     have randaoSites := intervalLoss_block_carry (fun _ _ ok => .of_frame
-      (registryLifecycle_processRandao ok) (frame_processRandao ok).toFrame) executedSites randaoOk
+      (registryLifecycle_processRandao ok) (frame_processRandao ok).toFrame)
+      (fun _ _ ok => by
+        obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, rfl⟩ := processRandao_eq ok
+        exact .of_data rfl) executedSites randaoOk
     have votedSites := intervalLoss_block_carry (fun _ _ ok => .of_frame
-      (registryLifecycle_processEth1Data ok) (frame_processEth1Data ok).toFrame) randaoSites votedOk
+      (registryLifecycle_processEth1Data ok) (frame_processEth1Data ok).toFrame)
+      (fun _ _ ok => .of_data (congrArg (·.validators.data) (processEth1Data_eq ok).2.2))
+      randaoSites votedOk
     have proposedSites := foldlM_ok_invariant
       (intervalLoss_BlockSites (config := config) (checks := checks) s)
       (fun _ _ _ h ok => intervalLoss_block_record (fun _ _ ok => .of_frame
         (registryLifecycle_processProposerSlashing ok) (frame_processProposerSlashing ok).toFrame)
+        (fun _ _ ok => ⟨effectiveKept_proposerSlashing ok,
+          fun _ => processProposerSlashing_validatorCap_mono ok⟩)
         (fun _ _ ok _ => .proposer ok) h (fun _ _ => by exact ⟨nofun, nofun⟩) ok)
       votedSites proposedOk
     have attestedSites := foldlM_ok_invariant
       (intervalLoss_BlockSites (config := config) (checks := checks) s)
       (fun _ _ _ h ok => intervalLoss_block_record (fun _ _ ok => .of_frame
         (registryLifecycle_processAttesterSlashing ok) (frame_processAttesterSlashing ok).toFrame)
+        (fun _ _ ok => ⟨effectiveKept_attesterSlashing ok,
+          fun _ => processAttesterSlashing_validatorCap_mono ok⟩)
         (fun _ _ ok _ => .attester ok) h (fun _ _ => by exact ⟨nofun, nofun⟩) ok)
       proposedSites attestedOk
     have rewardedSites := foldlM_ok_invariant
       (intervalLoss_BlockSites (config := config) (checks := checks) s)
       (fun _ _ _ h ok => intervalLoss_block_record (fun _ _ ok => .of_frame
         (registryLifecycle_processAttestation ok) (frame_processAttestation ok))
+        (fun _ _ ok => .of_data (congrArg (·.data) (processAttestation_registry ok).1))
         (fun _ _ _ h => by cases h) h (fun _ _ => by exact ⟨nofun, nofun⟩) ok)
       attestedSites rewardedOk
     have depositedSites := foldlM_ok_invariant
       (intervalLoss_BlockSites (config := config) (checks := checks) s)
       (fun _ _ _ h ok => intervalLoss_block_record (fun _ _ ok => .of_frame
         (registryLifecycle_processDeposit ok) (frame_processDeposit ok).toFrame)
+        (fun _ _ ok => ⟨effectiveKept_processDeposit ok,
+          fun _ => processDeposit_validatorCap_mono ok⟩)
         (fun _ _ _ h => by cases h) h (fun _ _ => by exact ⟨nofun, nofun⟩) ok)
       rewardedSites depositOk
     have exitedSites := intervalLoss_block_carry (fun _ _ ok =>
       intervalLoss_sites_fold _ (fun _ _ _ ok => .of_frame
         (registryLifecycle_processVoluntaryExit ok) (frame_processVoluntaryExit ok).toFrame)
-        _ (by simpa only [← Array.foldlM_toList] using ok)) depositedSites exitOk
+        _ (by simpa only [← Array.foldlM_toList] using ok))
+      (fun _ _ ok => intervalLoss_KeepStep.fold
+        (fun _ _ _ ok => ⟨effectiveKept_voluntaryExit ok,
+          fun _ => processVoluntaryExit_validatorCap_mono ok⟩)
+        (fun _ _ _ ok => registryLifecycle_processVoluntaryExit ok)
+        (by simpa only [← Array.foldlM_toList] using ok)) depositedSites exitOk
     have changedSites := intervalLoss_block_carry (fun _ _ ok => by
       unfold processBlsToExecutionChanges at ok
       split at ok
@@ -1137,7 +1199,16 @@ private theorem intervalLoss_sites_block {fork : Fork} {s : BeaconState preset f
           (registryLifecycle_processBlsToExecutionChange ok)
           (frame_processBlsToExecutionChange ok).toFrame)
           _ (by simpa only [← Array.foldlM_toList] using ok)
-      · cases ok; exact .refl _) exitedSites changedOk
+      · cases ok; exact .refl _)
+      (fun _ _ ok => by
+        unfold processBlsToExecutionChanges at ok
+        split at ok
+        · exact intervalLoss_KeepStep.fold
+            (fun _ _ _ ok => ⟨effectiveKept_blsChange ok,
+              fun _ => processBlsToExecutionChange_validatorCap_mono ok⟩)
+            (fun _ _ _ ok => registryLifecycle_processBlsToExecutionChange ok)
+            (by simpa only [← Array.foldlM_toList] using ok)
+        · cases ok; exact .of_data rfl) exitedSites changedOk
     by_cases electra : .pectra ≤ fork
     case' pos =>
       simp only [electra, ↓reduceDIte, bind_ok_iff] at rest
@@ -1146,17 +1217,28 @@ private theorem intervalLoss_sites_block {fork : Fork} {s : BeaconState preset f
       have depositsSites := intervalLoss_block_carry (fun _ _ ok =>
         intervalLoss_sites_fold _ (fun _ _ _ ok => .of_frame
           (registryLifecycle_processDepositRequest ok) (frame_processDepositRequest ok).toFrame)
-          _ (by simpa only [← Array.foldlM_toList] using ok)) changedSites depositRequestOk
+          _ (by simpa only [← Array.foldlM_toList] using ok))
+        (fun _ _ ok => intervalLoss_KeepStep.fold
+          (fun _ _ _ ok => .of_data (congrArg (·.data) (processDepositRequest_ok ok).2.1))
+          (fun _ _ _ ok => registryLifecycle_processDepositRequest ok)
+          (by simpa only [← Array.foldlM_toList] using ok)) changedSites depositRequestOk
       have withdrawalsSites := intervalLoss_block_carry (fun _ _ ok =>
         intervalLoss_sites_fold _ (fun _ _ _ ok => .of_frame
           (registryLifecycle_processWithdrawalRequest ok)
           (frame_processWithdrawalRequest ok).toFrame)
-          _ (by simpa only [← Array.foldlM_toList] using ok)) depositsSites withdrawalOk
+          _ (by simpa only [← Array.foldlM_toList] using ok))
+        (fun _ _ ok => intervalLoss_KeepStep.fold
+          (fun _ _ _ ok => ⟨effectiveKept_withdrawalRequest ok,
+            fun _ => processWithdrawalRequest_validatorCap_mono ok⟩)
+          (fun _ _ _ ok => registryLifecycle_processWithdrawalRequest ok)
+          (by simpa only [← Array.foldlM_toList] using ok)) depositsSites withdrawalOk
       have requestedSites := foldlM_ok_invariant
         (intervalLoss_BlockSites (config := config) (checks := checks) s)
         (fun _ request _ h ok => intervalLoss_block_record (fun _ _ ok => .of_frame
           (registryLifecycle_processConsolidationRequest ok)
           (frame_processConsolidationRequest ok).toFrame)
+          (fun _ _ ok => ⟨effectiveKept_consolidationRequest ok,
+            fun compounding => processConsolidationRequest_validatorCap_mono compounding ok⟩)
           (fun _ _ _ h => by cases h) h
           (fun _ ok => by exact ⟨nofun, fun _ => ⟨electra, request, ok⟩⟩) ok)
           withdrawalsSites consolidations
@@ -1169,6 +1251,7 @@ private theorem intervalLoss_sites_block {fork : Fork} {s : BeaconState preset f
       · exact intervalLoss_block_record (fun _ _ ok => .of_frame
           (by obtain ⟨_, rfl⟩ := processSyncAggregate_eq ok; exact .of_data rfl)
           (frame_processSyncAggregate ok).toFrame)
+          (fun _ _ ok => by obtain ⟨_, rfl⟩ := processSyncAggregate_eq ok; exact .of_data rfl)
           (fun _ _ _ h => by cases h) requestedSites (fun _ _ => by exact ⟨nofun, nofun⟩) rest
       · cases rest; exact requestedSites
 
@@ -1269,7 +1352,7 @@ private theorem intervalLoss_step_sites {x y : ForkedBeaconState preset}
     intro e member
     obtain ⟨first, middle, last, source⟩ := sites.1.2 e member
     exact intervalLoss_sites_between first middle last matched ordered early source
-      (.inr (.inl (sites.2 e member)))
+      (.inr (.inl (sites.2.2 e member)))
   | slot ok =>
     obtain ⟨advanced, advanceOk, upgrades⟩ := bind_ok_iff.mp ok
     obtain ⟨crossings, crossingOk, crossingStep, crossingSites⟩ :=
@@ -1526,7 +1609,12 @@ private theorem replay_electra_deposit_epoch {g x y : ForkedBeaconState preset}
     · exact intervalLoss_step_deposit_epoch step early
         (run_justified_separated (shared.append pre) genesis).1 addedOk event added deposit electra
 
-private theorem intervalLoss_charge_site {x y : ForkedBeaconState preset}
+/-- A departure charge of a run splits the run at the step that assigns its exit.
+
+Before that step the validator has no exit epoch, and after it the charged one.
+
+The charge holds the effective balance before the step. -/
+theorem intervalLoss_charge_site {x y : ForkedBeaconState preset}
     (tail : Run config checks x y) (charge : DepartureCharge)
     (member : charge ∈ tail.departureCharges) :
     ∃ a b, ∃ pre : Run config checks x a, ∃ step : Step config checks a b,
@@ -1992,7 +2080,7 @@ private theorem intervalLoss_increase {fork : Fork} {s t : BeaconState preset fo
 /-- A slashing debits only the slashed key, by at most its effective balance over the quotient.
 
 Every other key keeps its balance or gains, before Gloas. -/
-theorem slashValidator_balance_le {fork : Fork} {s t : BeaconState preset fork}
+private theorem slashValidator_balance_le {fork : Fork} {s t : BeaconState preset fork}
     {index : ValidatorIndex} {whistleblower : Option ValidatorIndex}
     (early : fork < .glamsterdam) (ok : slashValidator config s index whistleblower = .ok t)
     (i : Nat) :
@@ -2058,7 +2146,7 @@ private theorem intervalLoss_unslashed_slashing {fork : Fork} {s t : BeaconState
 The share is its effective balance at the start over the quotient, before Gloas.
 
 The key must be unslashed at the start and slashed at the end. -/
-theorem slashIfSlashable_balance_le {fork : Fork} {s t : BeaconState preset fork}
+private theorem slashIfSlashable_balance_le {fork : Fork} {s t : BeaconState preset fork}
     (early : fork < .glamsterdam) (i : ValidatorIndex)
     (indices : List ValidatorIndex) (flag finalFlag : Bool)
     (ok : indices.foldlM (slashIfSlashable config) (s, flag) = .ok (t, finalFlag)) :
@@ -2142,6 +2230,233 @@ private theorem intervalLoss_SlashingSite.nondebit {a b : ForkedBeaconState pres
   | attester ok =>
     exact intervalLoss_attester_nondebit early _ ok i
       (by simp [slashedFlag, getValidator, after, last, Except.map])
+
+/-- A slashing site lowers a key unslashed at its start only if it slashes that key.
+
+It lowers it by at most the effective balance at its start over the slashing quotient. -/
+private theorem intervalLoss_SlashingSite.debit {a b : ForkedBeaconState preset}
+    (site : intervalLoss_SlashingSite config checks a b) (early : a.fork < .glamsterdam)
+    (i : ValidatorIndex) (unslashed : slashedFlag a.state i = .ok false) :
+    actualBalanceAt a i.toNat ≤ actualBalanceAt b i.toNat +
+      if slashedFlag b.state i = .ok true then effectiveAt a i.toNat /
+        (EthLib.Consensus.parameters preset a.fork).MIN_SLASHING_PENALTY_QUOTIENT.toNat
+      else 0 := by
+  cases site with
+  | @delayed fork s t ok =>
+    cases found : getValidator s i with
+    | error _ => simp [slashedFlag, found, Except.map] at unslashed
+    | ok v =>
+      simp [slashedFlag, found, Except.map] at unslashed
+      have kept := intervalLoss_delayed_slashing early ok i.toNat v
+        (getValidator_eq_ok_iff.mp found) unslashed
+      dsimp only at kept ⊢
+      omega
+  | proposer ok =>
+    simp only [processProposerSlashing, bind_ok_iff, ensure_ok_iff, liftAccessor_ok] at ok
+    obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, slashed⟩ := ok
+    have bound := slashValidator_balance_le early slashed i.toNat
+    split at bound
+    · rename_i same
+      rw [UInt64.toNat_inj.mp same] at slashed
+      simp only [(slashValidator_slashedFlag slashed).1, ↓reduceIte]
+      exact bound
+    · dsimp only at bound ⊢
+      omega
+  | attester ok =>
+    simp only [processAttesterSlashing, bind_ok_iff, ensure_ok_iff, pure, Except.pure,
+      Except.ok.injEq] at ok
+    obtain ⟨_, _, _, _, _, _, _, _, _, _, ⟨u, flag⟩, folded, _, _, rfl⟩ := ok
+    simpa [unslashed] using slashIfSlashable_balance_le early i _ false flag folded
+
+/-- The execution part of a block pays the withdrawals that its state expects, from Capella on. -/
+private theorem intervalLoss_execution_balance {fork : Fork} {s t : BeaconState preset fork}
+    {engine : ExecutionEngine preset fork} {body : BeaconBlockBody preset fork}
+    {bellatrix : .bellatrix ≤ fork} (early : fork < .glamsterdam)
+    (ok : processBlockExecution config checks engine s body bellatrix = .ok t) :
+    (∀ i, actualBalanceAt ⟨fork, t⟩ i = actualBalanceAt ⟨fork, s⟩ i) ∨
+      ∃ (capella : .shapella ≤ fork) (expected : ExpectedWithdrawals),
+        getExpectedWithdrawals s capella = .ok expected ∧
+        ∀ i : ValidatorIndex, actualBalanceAt ⟨fork, t⟩ i.toNat =
+          actualBalanceAt ⟨fork, s⟩ i.toNat - withdrawnFrom expected.withdrawals i := by
+  have notGloas : ¬ .glamsterdam ≤ fork := Nat.not_le_of_lt early
+  simp only [processBlockExecution, notGloas, ↓reduceDIte] at ok
+  split at ok
+  · rename_i capella
+    obtain ⟨middle, withdrawn, payload⟩ := bind_ok_iff.mp ok
+    obtain ⟨_, _, _, rfl⟩ := processExecutionPayload_ok payload
+    obtain ⟨expected, found, carried, _⟩ := processWithdrawals_expected early withdrawn
+    refine .inr ⟨capella, expected, found, fun i => ?_⟩
+    cases read : s.balances.data[i.toNat]? with
+    | none =>
+      have sizes := (sameSizes_processWithdrawals withdrawn).2
+      have outside := Array.getElem?_eq_none_iff.mp read
+      have gone : middle.balances.data[i.toNat]? = none :=
+        Array.getElem?_eq_none_iff.mpr (by omega)
+      simp [actualBalanceAt, read, gone]
+    | some balance =>
+      have paid := processWithdrawals_balance early withdrawn read
+      rw [carried] at paid
+      change ((middle.balances.data[i.toNat]?).map UInt64.toNat).getD 0 = _
+      simp [paid, actualBalanceAt, read]
+  · split at ok
+    · obtain ⟨_, _, _, rfl⟩ := processExecutionPayload_ok ok
+      exact .inl fun _ => rfl
+    · cases ok
+      exact .inl fun _ => rfl
+
+/-- A consolidation request leaves each balance, or caps one at the activation balance.
+
+The capped key had execution credentials, which the request switches to compounding ones. -/
+private theorem intervalLoss_consolidationRequest_balance {fork : Fork}
+    {s t : BeaconState preset fork} {electra : .pectra ≤ fork} {request : ConsolidationRequest}
+    (ok : processConsolidationRequest config s electra request = .ok t) (i : Nat) :
+    actualBalanceAt ⟨fork, t⟩ i = actualBalanceAt ⟨fork, s⟩ i ∨
+      (actualBalanceAt ⟨fork, t⟩ i =
+          min (actualBalanceAt ⟨fork, s⟩ i) preset.MIN_ACTIVATION_BALANCE.toNat ∧
+        ∃ v, s.validators.data[i]? = some v ∧ hasEth1WithdrawalCredential v = true) := by
+  have switch {index : ValidatorIndex} {v : Validator}
+      (found : s.validators.data[index.toNat]? = some v)
+      (valid : isValidSwitchToCompoundingRequest s request v = true)
+      (switched : switchToCompoundingValidator s electra index = .ok t) :
+      actualBalanceAt ⟨fork, t⟩ i = actualBalanceAt ⟨fork, s⟩ i ∨
+        (actualBalanceAt ⟨fork, t⟩ i =
+            min (actualBalanceAt ⟨fork, s⟩ i) preset.MIN_ACTIVATION_BALANCE.toNat ∧
+          ∃ v, s.validators.data[i]? = some v ∧ hasEth1WithdrawalCredential v = true) := by
+    have eth1 : hasEth1WithdrawalCredential v = true := by
+      simp only [isValidSwitchToCompoundingRequest, Bool.and_eq_true] at valid
+      exact valid.1.1.2
+    simp only [switchToCompoundingValidator, bind_ok_iff] at switched
+    obtain ⟨_, _, _, set, queued⟩ := switched
+    obtain ⟨_, rfl⟩ := setValidator_ok set
+    by_cases same : index.toNat = i
+    · subst same
+      cases read : s.balances.data[index.toNat]? with
+      | none =>
+        simp only [queueExcessActiveBalance, bind_ok_iff] at queued
+        obtain ⟨_, got, _⟩ := queued
+        have := getBalance_eq_ok_iff.mp got
+        simp [BeaconState.putValidator, read] at this
+      | some balance =>
+        have capped := getBalance_eq_ok_iff.mp (queueExcessActiveBalance_balance
+          (getBalance_eq_ok_iff.mpr (by simpa [BeaconState.putValidator] using read)) queued).1
+        refine .inr ⟨?_, v, found, eth1⟩
+        simp [actualBalanceAt, read, capped, Uint64.toNat_min]
+    · left
+      simp only [queueExcessActiveBalance, bind_ok_iff] at queued
+      obtain ⟨_, _, queued⟩ := queued
+      split at queued
+      · simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at queued
+        obtain ⟨_, _, _, _, _, lowered, rfl⟩ := queued
+        obtain ⟨_, rfl⟩ := setBalance_ok lowered
+        simp [actualBalanceAt, BeaconState.putBalance, BeaconState.putValidator, same]
+      · cases queued
+        simp [actualBalanceAt, BeaconState.putValidator]
+  have consolidate {sourceIndex targetIndex : ValidatorIndex} {source : Validator}
+      (queued : queueConsolidation config s electra sourceIndex source targetIndex = .ok t) :
+      actualBalanceAt ⟨fork, t⟩ i = actualBalanceAt ⟨fork, s⟩ i := by
+    simp only [queueConsolidation, bind_ok_iff, liftAccessor_ok, pure, Except.pure,
+      Except.ok.injEq] at queued
+    obtain ⟨⟨_, _⟩, scheduled, _, _, _, set, _, _, rfl⟩ := queued
+    obtain ⟨_, rfl⟩ := setValidator_ok set
+    simp only [computeConsolidationEpochAndUpdateChurn, bind_ok_iff, pure, Except.pure,
+      Except.ok.injEq, Prod.mk.injEq] at scheduled
+    obtain ⟨_, _, _, _, ⟨_, _⟩, _, rfl, _⟩ := scheduled
+    rfl
+  by_cases same : request.sourcePubkey = request.targetPubkey
+  · unfold processConsolidationRequest at ok
+    simp only [same, beq_self_eq_true, ↓reduceIte, bind, Except.bind, pure, Except.pure] at ok
+    repeat' split at ok
+    all_goals try first
+      | (cases ok; done)
+      | (cases ok; exact .inl rfl)
+    all_goals
+      rename_i index checked valid
+      exact switch (getElem?_toNat_of_ofNatChecked checked) valid (liftAccessor_ok.mp ok)
+  · rcases eq_or_queueConsolidation_of_processConsolidationRequest same ok with
+      rfl | ⟨_, _, _, _, _, queued⟩
+    · exact .inl rfl
+    · exact .inl (consolidate queued)
+
+/-- The balance events of a step, read per key, before Gloas.
+
+A slashing event lowers a key unslashed at its start only if it slashes that key.
+
+It lowers it by at most the effective balance at the start of the step over the quotient.
+
+The withdrawals event of a block starts after the header and pays the expected withdrawals.
+
+A consolidation request leaves a balance, or caps it at the activation balance.
+
+It caps only a key whose cap at the start of the step is at most the activation balance. -/
+theorem _root_.EthLib.Consensus.Step.balanceEvents_sites {x y : ForkedBeaconState preset}
+    (step : Step config checks x y) (early : y.fork < .glamsterdam) (holds : Invariant x.state)
+    (compounding : preset.MIN_ACTIVATION_BALANCE ≤ preset.MAX_EFFECTIVE_BALANCE_ELECTRA)
+    {events : List (BalanceEvent preset)} (replayed : step.balanceEvents = .ok events) :
+    ∀ e ∈ events,
+      (e.source = .slashings → ∀ i : ValidatorIndex, i.toNat < x.state.validators.data.size →
+        slashedFlag e.before.state i = .ok false →
+        actualBalanceAt e.before i.toNat ≤ actualBalanceAt e.after i.toNat +
+          if slashedFlag e.after.state i = .ok true then effectiveAt x i.toNat /
+            (EthLib.Consensus.parameters preset x.fork).MIN_SLASHING_PENALTY_QUOTIENT.toNat
+          else 0) ∧
+      (e.source = .withdrawals → ∃ (block : BeaconBlock preset x.fork)
+        (s : BeaconState preset x.fork),
+        e.before = ⟨x.fork, s⟩ ∧ processBlockHeader x.state block = .ok s ∧
+        ((∀ i, actualBalanceAt e.after i = actualBalanceAt e.before i) ∨
+          ∃ (capella : .shapella ≤ x.fork) (expected : ExpectedWithdrawals),
+            getExpectedWithdrawals s capella = .ok expected ∧
+            ∀ i : ValidatorIndex, actualBalanceAt e.after i.toNat =
+              actualBalanceAt e.before i.toNat - withdrawnFrom expected.withdrawals i)) ∧
+      (e.source = .excess → ∀ i, actualBalanceAt e.after i = actualBalanceAt e.before i ∨
+        (actualBalanceAt e.after i =
+            min (actualBalanceAt e.before i) preset.MIN_ACTIVATION_BALANCE.toNat ∧
+          ∀ v, x.state.validators.data[i]? = some v →
+            withdrawalMaxEffectiveBalance preset x.fork v ≤ preset.MIN_ACTIVATION_BALANCE)) := by
+  have before : x.fork < .glamsterdam := Nat.lt_of_le_of_lt step.chainStep.fork_le early
+  intro e member
+  obtain ⟨_, _, _, _, _, _, _, beforeEarly, _, _, site, _, kind⟩ :=
+    intervalLoss_step_sites step early holds replayed e member
+  refine ⟨fun source i inside unslashed => ?_, fun source => ?_, fun source i => ?_⟩
+  · have bound := (site source).debit beforeEarly i unslashed
+    by_cases newly : slashedFlag e.after.state i = .ok true
+    · rcases kind with crossing | ⟨s, t, atStart, atEnd, keep, -, -⟩ | epoch
+      · rw [crossing] at source; cases source
+      · rw [atStart] at bound unslashed ⊢
+        simp only [newly, ↓reduceIte] at bound ⊢
+        rw [keep.1 i.toNat inside] at bound
+        exact bound
+      · obtain ⟨_, a, b, atStart, atEnd, slashOk⟩ := epoch.2.2 source
+        have same := EpochStage.Edge.validators_eq (config := config) (checks := checks)
+          (stage := .slashings) slashOk ⟨nofun, nofun, nofun⟩
+        rw [atStart] at unslashed
+        rw [atEnd] at newly
+        simp only [slashedFlag] at unslashed newly
+        rw [getValidator_of_validators_eq same, unslashed] at newly
+        cases newly
+    · simpa [newly] using bound
+  · rcases kind with crossing | ⟨s, t, atStart, atEnd, -, paid, -⟩ | epoch
+    · rw [crossing] at source; cases source
+    · obtain ⟨block, engine, bellatrix, header, executed⟩ := paid source
+      refine ⟨block, s, atStart, header, ?_⟩
+      rw [atStart, atEnd]
+      exact intervalLoss_execution_balance before executed
+    · exact absurd source epoch.1
+  · rcases kind with crossing | ⟨s, t, atStart, atEnd, keep, -, request⟩ | epoch
+    · rw [crossing] at source; cases source
+    · obtain ⟨electra, request, ok⟩ := request source
+      rw [atStart, atEnd]
+      rcases intervalLoss_consolidationRequest_balance ok i with same | ⟨capped, v, found, eth1⟩
+      · exact .inl same
+      · refine .inr ⟨capped, fun w located => ?_⟩
+        obtain ⟨z, read, mono⟩ := keep.2 compounding i w located
+        rw [found, Option.some.injEq] at read
+        subst z
+        have plain : hasCompoundingWithdrawalCredential v = false := by
+          simp only [hasEth1WithdrawalCredential, beq_iff_eq] at eth1
+          simp [hasCompoundingWithdrawalCredential, isCompoundingWithdrawalCredential, eth1,
+            ETH1_ADDRESS_WITHDRAWAL_PREFIX, COMPOUNDING_WITHDRAWAL_PREFIX]
+        simpa [withdrawalMaxEffectiveBalance, electra, getMaxEffectiveBalance, plain] using mono
+    · exact absurd source epoch.2.1
 
 private theorem intervalLoss_event_nondebit {g x y : ForkedBeaconState preset}
     (shared : Run config checks g x) (tail : Run config checks x y)
