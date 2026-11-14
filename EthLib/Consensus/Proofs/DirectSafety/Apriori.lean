@@ -2844,6 +2844,8 @@ Then the blocks and the rewards pass of `t` issue at most twice the envelope of 
 So the funding at the start of `t + 1` is at most the ceiling of `t + 1`.
 
 The other credits, the floor of the active stake and a few facts of the preset are hypotheses.
+
+The floor is read only at earlier epochs, so S2+S9 can supply it by a strong induction.
 -/
 
 /-- The funding credit of an event, unless it is a reward or a sync credit. -/
@@ -3183,7 +3185,9 @@ Each prefix ends inside an epoch that started at a state `r`.
 
 The run to `r` issues at most twice the envelope of each earlier ceiling.
 
-At `r` the keys active at the previous and at the current epoch weigh at most its ceiling. -/
+At `r` the keys active at the previous and at the current epoch weigh at most its ceiling.
+
+The ratio of the ceiling to the total active balance is read only before the epoch of `y`. -/
 private theorem apriori_prefix_induction {g v y : ForkedBeaconState preset}
     (shared : Run config checks g v) (genesis : Genesis (config := config) (checks := checks) g)
     (tail : Run config checks v y) (electra : .pectra ≤ v.fork) (early : y.fork < .glamsterdam)
@@ -3204,7 +3208,7 @@ private theorem apriori_prefix_induction {g v y : ForkedBeaconState preset}
       (getCurrentEpoch u.state).toNat ≤ high + 1 → ∀ found,
         head.balanceEvents high = .ok found → (found.map otherCredit).sum ≤ allowance)
     (ratio : ∀ {u : ForkedBeaconState preset}, Run config checks v u →
-      (getCurrentEpoch u.state).toNat ≤ high + 1 → ∀ total,
+      (getCurrentEpoch u.state).toNat < (getCurrentEpoch y.state).toNat → ∀ total,
         getTotalActiveBalance u.state = .ok total →
         2 * ceiling ((getCurrentEpoch u.state).toNat - (getCurrentEpoch v.state).toNat) ≤
           3 * total.toNat) :
@@ -3229,6 +3233,7 @@ private theorem apriori_prefix_induction {g v y : ForkedBeaconState preset}
   -- Each head ends inside an epoch that started at `r`, with the facts above at `r`.
   have key : ∀ {u : ForkedBeaconState preset} (head : Run config checks v u),
       u.fork < .glamsterdam → (getCurrentEpoch u.state).toNat ≤ high + 1 →
+      (getCurrentEpoch u.state).toNat ≤ (getCurrentEpoch y.state).toNat →
       ∃ (r : ForkedBeaconState preset) (pre : Run config checks v r)
         (inner : Run config checks r u) (before during : List (BalanceEvent preset)),
         pre.balanceEvents high = .ok before ∧ inner.balanceEvents high = .ok during ∧
@@ -3238,7 +3243,7 @@ private theorem apriori_prefix_induction {g v y : ForkedBeaconState preset}
     intro u head
     induction head with
     | nil =>
-      intro _ _
+      intro _ _ _
       refine ⟨v, .nil, .nil, [], [], rfl, rfl, rfl, ?_, ?_, by simp [sourceCredits]⟩
       · have funded : currentStake v ≤ fundedStake v := activeEffective_le_funded v vEarly vUnique
         have zero : ceiling 0 ≤ ceiling (index v) := mono (Nat.zero_le _)
@@ -3248,11 +3253,12 @@ private theorem apriori_prefix_induction {g v y : ForkedBeaconState preset}
         have zero : ceiling 0 ≤ ceiling (index v) := mono (Nat.zero_le _)
         omega
     | @snoc u u' pre step ih =>
-      intro lEarly lEpoch
+      intro lEarly lEpoch lEnd
       have uEarly := Nat.lt_of_le_of_lt step.chainStep.fork_le lEarly
       have uEpoch := (UInt64.le_iff_toNat_le.mp step.chainStep.currentEpoch_le).trans lEpoch
       obtain ⟨r, toR, inner, before, during, beforeOk, duringOk, same, current, previous,
         issuance⟩ := ih uEarly uEpoch
+        ((UInt64.le_iff_toNat_le.mp step.chainStep.currentEpoch_le).trans lEnd)
       obtain ⟨added, addedOk⟩ := step.balanceEvents_ok lEarly
       have stepEvents : (inner.snoc step).balanceEvents high = .ok (during ++ added) := by
         simp [Run.balanceEvents, duringOk, addedOk, uEpoch, pure, Except.pure, bind,
@@ -3282,7 +3288,9 @@ private theorem apriori_prefix_induction {g v y : ForkedBeaconState preset}
       obtain ⟨issue, next⟩ := epoch_issuance_le inner same rElectra boundary lEarly crossing high
         duringOk addedOk aligned inc scaled ((unit.trans (mono (Nat.zero_le _))))
         (Nat.lt_of_le_of_lt (mono rIndex) fits) previous current
-        (ratio toR (by omega))
+        (ratio toR (by
+          have := UInt64.lt_iff_toNat_lt.mp crossing
+          omega))
       -- The new epoch starts at `u'`, after the run to `u` and the slot.
       let toNext := (toR.append inner).snoc (.slot boundary)
       have middleOk := balanceEvents_append toR inner high beforeOk duringOk
@@ -3330,7 +3338,8 @@ private theorem apriori_prefix_induction {g v y : ForkedBeaconState preset}
       · simp only [previousStake, nextIndex]
         omega
       · simpa only [issued, nextIndex] using nextIssued
-  obtain ⟨r, toR, inner, -, -, -, -, same, current, -, -⟩ := key tail early endEpoch
+  obtain ⟨r, toR, inner, -, -, -, -, same, current, -, -⟩ :=
+    key tail early endEpoch (Nat.le_refl _)
   -- The stake active at `y` is the stake active at `r`, the start of its epoch.
   have rElectra : .pectra ≤ r.fork := Nat.le_trans electra (fork_le_of_chainSteps toR.chainSteps)
   have rEarly := Nat.lt_of_le_of_lt (fork_le_of_chainSteps inner.chainSteps) early
@@ -3384,7 +3393,7 @@ private theorem ceilingAt_mono {x : ForkedBeaconState preset} (electra : .pectra
 
 The hypotheses are left to the floor S2 and to the allowance SW.
 
-The floor `T⁻` bounds the total active balance of each state from below.
+The floor `T⁻` bounds the total active balance of each state of an earlier epoch from below.
 
 The credits other than rewards and sync credits fit the whistleblower allowance `Ω`.
 
@@ -3405,7 +3414,7 @@ private theorem activeStake_le_ceiling {g x y : ForkedBeaconState preset}
             (preActiveStake x) (fundingCarry x) (slashableInactiveCount x)
             (driftHorizon x high) (forkEpochs config x high))
     (floor : ∀ {u : ForkedBeaconState preset}, Run config checks x u →
-      (getCurrentEpoch u.state).toNat ≤ high + 1 → ∀ total,
+      (getCurrentEpoch u.state).toNat < (getCurrentEpoch y.state).toNat → ∀ total,
         getTotalActiveBalance u.state = .ok total →
         floorAt config x high
           ((getCurrentEpoch u.state).toNat - (getCurrentEpoch x.state).toNat) ≤ total.toNat) :
@@ -3488,7 +3497,9 @@ private theorem activeCount_le_countPath {g x z : ForkedBeaconState preset}
 
 /-- The consolidation churn of a state before Gloas is at most `C` of its total active balance.
 
-The churn rounds down to an increment before the activation and exit part is taken off. -/
+It rounds the balance churn down to an increment, then takes off the activation and exit part.
+
+`C` takes off the same part, but its balance churn rounds only the share. -/
 private theorem consolidationChurnLimit_le {f : Fork} {s : BeaconState preset f}
     (early : f < .glamsterdam) {total rate : Gwei} (read : getTotalActiveBalance s = .ok total)
     (computed : getConsolidationChurnLimit config s = .ok rate) :
@@ -3506,10 +3517,7 @@ private theorem consolidationChurnLimit_le {f : Fork} {s : BeaconState preset f}
     (total / config.CHURN_LIMIT_QUOTIENT) = amount at sum
   have value := congrArg UInt64.toNat hAmount
   rw [Uint64.toNat_max, UInt64.toNat_div] at value
-  have remainder : amount % preset.EFFECTIVE_BALANCE_INCREMENT ≤ amount := by
-    rw [UInt64.le_iff_toNat_le, UInt64.toNat_mod]
-    exact Nat.mod_le _ _
-  rw [roundToIncrement, UInt64.toNat_sub_of_le _ _ remainder, UInt64.toNat_mod] at sum
+  rw [toNat_roundToIncrement] at sum
   -- The rounded churn is at most the churn of the formula, which rounds only the share.
   have share := Nat.div_add_mod (total.toNat / config.CHURN_LIMIT_QUOTIENT.toNat)
     preset.EFFECTIVE_BALANCE_INCREMENT.toNat
