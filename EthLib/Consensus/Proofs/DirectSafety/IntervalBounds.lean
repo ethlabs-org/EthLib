@@ -937,7 +937,9 @@ private def intervalLoss_BlockEvent {fork : Fork} (start : BeaconState preset fo
     (e.source = .excess → ∃ (electra : .pectra ≤ fork) (request : ConsolidationRequest),
       processConsolidationRequest config s electra request = .ok t) ∧
     intervalLoss_Plain e ∧
-    (e.source = .slashings → s.validators.data.size = start.validators.data.size)
+    (e.source = .slashings → s.validators.data.size = start.validators.data.size ∧
+      ((∃ sl, processProposerSlashing config checks s sl = .ok t) ∨
+        ∃ sl, processAttesterSlashing config checks s sl = .ok t))
 
 /-- An event of an epoch records no withdrawal and no request, and its slashings are delayed. -/
 private def intervalLoss_EpochEvent (e : BalanceEvent preset) : Prop :=
@@ -1066,13 +1068,17 @@ private theorem intervalLoss_block_record {fork : Fork} {start : BeaconState pre
         processConsolidationRequest config pre.1 electra request = .ok t) ∧
       ∀ credit debit, intervalLoss_Plain ⟨source, ⟨fork, pre.1⟩, ⟨fork, t⟩, credit, debit⟩)
     (ok : recordBalance source limits action pre = .ok post)
-    (sized : source = .slashings → pre.1.validators.data.size = start.validators.data.size := by
+    (sized : source = .slashings → pre.1.validators.data.size = start.validators.data.size ∧
+      ∀ t, action pre.1 = .ok t →
+        ((∃ sl, processProposerSlashing config checks pre.1 sl = .ok t) ∨
+          ∃ sl, processAttesterSlashing config checks pre.1 sl = .ok t) := by
       intro h; cases h) :
     intervalLoss_BlockSites (config := config) (checks := checks) start post := by
   have sites := intervalLoss_sites_record preserves prior.1 classified ok
   have events := intervalLoss_record_event _ prior.2.2
     (fun t credit debit computed => ⟨pre.1, t, rfl, rfl, prior.2.1, (provenance t computed).1,
-      (provenance t computed).2.1, (provenance t computed).2.2 credit debit, sized⟩) ok
+      (provenance t computed).2.1, (provenance t computed).2.2 credit debit,
+      fun source => ⟨(sized source).1, (sized source).2 t computed⟩⟩) ok
   simp only [recordBalance, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at ok
   obtain ⟨_, _, after, computed, rfl⟩ := ok
   exact ⟨sites, prior.2.1.trans (keeps _ _ computed) prior.1.1.lifecycle.size_le, events⟩
@@ -1292,7 +1298,7 @@ private theorem intervalLoss_sites_block {fork : Fork} {s : BeaconState preset f
           fun _ => processProposerSlashing_validatorCap_mono ok⟩)
         (fun _ _ _ _ limited ok _ => .proposer ok limited) h.1
         (fun _ _ => by exact ⟨nofun, nofun, fun _ _ => ⟨nofun, nofun, nofun, nofun⟩⟩) ok
-        (fun _ => h.2), by
+        (fun _ => ⟨h.2, fun _ computed => .inl ⟨_, computed⟩⟩), by
           simp only [recordBalance, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at ok
           obtain ⟨_, _, after, computed, rfl⟩ := ok
           exact (sameSizes_processProposerSlashing computed).1.trans h.2⟩)
@@ -1306,7 +1312,7 @@ private theorem intervalLoss_sites_block {fork : Fork} {s : BeaconState preset f
           fun _ => processAttesterSlashing_validatorCap_mono ok⟩)
         (fun _ _ _ _ limited ok _ => .attester ok limited) h.1
         (fun _ _ => by exact ⟨nofun, nofun, fun _ _ => ⟨nofun, nofun, nofun, nofun⟩⟩) ok
-        (fun _ => h.2), by
+        (fun _ => ⟨h.2, fun _ computed => .inr ⟨_, computed⟩⟩), by
           simp only [recordBalance, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at ok
           obtain ⟨_, _, after, computed, rfl⟩ := ok
           exact (sameSizes_processAttesterSlashing computed).1.trans h.2⟩)
@@ -2319,6 +2325,39 @@ private theorem slashIfSlashable_balance_le {fork : Fork} {s t : BeaconState pre
     · cases first
       exact later
 
+/-- Initial slashings charge only keys that they newly slash. -/
+private theorem intervalLoss_initial_slashing_balance {fork : Fork}
+    {s t : BeaconState preset fork}
+    (site : (∃ sl, processProposerSlashing config checks s sl = .ok t) ∨
+      ∃ sl, processAttesterSlashing config checks s sl = .ok t)
+    (early : fork < .glamsterdam) (i : ValidatorIndex) (v : Validator)
+    (found : s.validators.data[i.toNat]? = some v) :
+    actualBalanceAt ⟨fork, s⟩ i.toNat ≤ actualBalanceAt ⟨fork, t⟩ i.toNat +
+      if v.slashed = false ∧ slashedFlag t i = .ok true then effectiveAt ⟨fork, s⟩ i.toNat /
+        (EthLib.Consensus.parameters preset fork).MIN_SLASHING_PENALTY_QUOTIENT.toNat
+      else 0 := by
+  rcases site with ⟨_, ok⟩ | ⟨_, ok⟩
+  · simp only [processProposerSlashing, bind_ok_iff, ensure_ok_iff, liftAccessor_ok] at ok
+    obtain ⟨_, _, _, _, _, _, named, read, _, slashable, _, _, _, _, slashed⟩ := ok
+    have bound := slashValidator_balance_le early slashed i.toNat
+    split at bound
+    · rename_i same
+      rw [UInt64.toNat_inj.mp same] at slashed read
+      rw [getValidator_eq_ok_iff, found, Option.some.injEq] at read
+      subst read
+      cases flag : v.slashed
+      · simpa [flag, (slashValidator_slashedFlag slashed).1] using bound
+      · simp [isSlashableValidator, flag] at slashable
+    · omega
+  · simp only [processAttesterSlashing, bind_ok_iff, ensure_ok_iff, pure, Except.pure,
+      Except.ok.injEq] at ok
+    obtain ⟨_, _, _, _, _, _, _, _, _, _, ⟨u, flag⟩, folded, _, _, rfl⟩ := ok
+    have read : slashedFlag s i = .ok v.slashed := by
+      simp [slashedFlag, getValidator, found, Except.map]
+    have bound := slashIfSlashable_balance_le early i _ false flag folded
+    rw [read] at bound
+    cases slashedV : v.slashed <;> simpa [slashedV] using bound
+
 private theorem intervalLoss_SlashingSite.credit {a b : ForkedBeaconState preset} {credit : Nat}
     (site : intervalLoss_SlashingSite config checks a b credit) :
     credit ≤ ∑ i ∈ Finset.range a.state.validators.data.size,
@@ -2346,29 +2385,8 @@ private theorem intervalLoss_SlashingSite.balance_le {a b : ForkedBeaconState pr
     have kept := intervalLoss_delayed_slashing early ok i.toNat v found notDue
     dsimp only at kept ⊢
     omega
-  | proposer ok _ =>
-    simp only [processProposerSlashing, bind_ok_iff, ensure_ok_iff, liftAccessor_ok] at ok
-    obtain ⟨_, _, _, _, _, _, named, read, _, slashable, _, _, _, _, slashed⟩ := ok
-    have bound := slashValidator_balance_le early slashed i.toNat
-    split at bound
-    · rename_i same
-      rw [UInt64.toNat_inj.mp same] at slashed read
-      rw [getValidator_eq_ok_iff, found, Option.some.injEq] at read
-      subst read
-      cases flag : v.slashed
-      · simpa [flag, (slashValidator_slashedFlag slashed).1] using bound
-      · simp [isSlashableValidator, flag] at slashable
-    · dsimp only at bound ⊢
-      omega
-  | @attester _ s _ _ ok _ _ _ =>
-    simp only [processAttesterSlashing, bind_ok_iff, ensure_ok_iff, pure, Except.pure,
-      Except.ok.injEq] at ok
-    obtain ⟨_, _, _, _, _, _, _, _, _, _, ⟨u, flag⟩, folded, _, _, rfl⟩ := ok
-    have read : slashedFlag s i = .ok v.slashed := by
-      simp [slashedFlag, getValidator, found, Except.map]
-    have bound := slashIfSlashable_balance_le early i _ false flag folded
-    rw [read] at bound
-    cases slashedV : v.slashed <;> simpa [slashedV] using bound
+  | proposer ok _ => exact intervalLoss_initial_slashing_balance (.inl ⟨_, ok⟩) early i v found
+  | attester ok _ => exact intervalLoss_initial_slashing_balance (.inr ⟨_, ok⟩) early i v found
 
 /-- A slashing site lowers a key unslashed at its start only if it slashes that key.
 
@@ -2386,6 +2404,28 @@ private theorem intervalLoss_SlashingSite.debit {a b : ForkedBeaconState preset}
     simp [slashedFlag, found, Except.map] at unslashed
     simpa [unslashed] using site.balance_le early i v (getValidator_eq_ok_iff.mp found)
       (by simp [SlashingPenaltyDue, unslashed])
+
+/-- Block slashings cannot apply an initial penalty to an already-slashed key. -/
+theorem _root_.EthLib.Consensus.Step.block_balanceEvents_slashed_nondebit {fork : Fork}
+    {s t : BeaconState preset fork} {engine : ExecutionEngine preset fork}
+    {signed : SignedBeaconBlock preset fork} {due : upgradeDue config ⟨fork, s⟩ = false}
+    {ok : applySignedBlock config checks engine s signed true = .ok t}
+    (early : fork < .glamsterdam) (_holds : Invariant s)
+    {events : List (BalanceEvent preset)}
+    (replayed : (Step.block engine signed due ok).balanceEvents = .ok events) :
+    ∀ e ∈ events, e.source = .slashings → ∀ (i : ValidatorIndex) (v : Validator),
+      e.before.state.validators.data[i.toNat]? = some v → v.slashed = true →
+        actualBalanceAt e.before i.toNat ≤ actualBalanceAt e.after i.toNat := by
+  have sites := intervalLoss_sites_block early engine signed.message
+    (Step.balanceEvents_block early replayed)
+  intro e member source i v found slashed
+  obtain ⟨a, b, before, after, _, _, _, _, operation⟩ := sites.2.2 e member
+  rcases e with ⟨tag, start, finish, credit, debit⟩
+  dsimp only at before after
+  subst start
+  subst finish
+  have bound := intervalLoss_initial_slashing_balance (operation source).2 early i v found
+  simpa [slashed] using bound
 
 /-- A slashing site lowers no key that is unslashed at both its ends. -/
 private theorem intervalLoss_SlashingSite.nondebit {a b : ForkedBeaconState preset} {credit : Nat}
@@ -2627,7 +2667,7 @@ theorem _root_.EthLib.Consensus.Step.balanceEvents_sites {x y : ForkedBeaconStat
     · rw [atStart]
       by_cases inside : i < x.state.validators.data.size
       · exact keep.1 i inside
-      · simp [effectiveAt, size source, Nat.le_of_not_lt inside]
+      · simp [effectiveAt, (size source).1, Nat.le_of_not_lt inside]
     · obtain ⟨_, a, b, atStart, atEnd, slashOk⟩ := epoch.2.2.1 source
       have same := EpochStage.Edge.validators_eq (config := config) (checks := checks)
         (stage := .slashings) slashOk ⟨nofun, nofun, nofun⟩

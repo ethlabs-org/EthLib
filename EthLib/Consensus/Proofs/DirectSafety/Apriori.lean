@@ -4049,6 +4049,79 @@ private theorem FloorTrace.reference_floor {effective balance quotient : Nat}
   have bound := trace.floor (floorBase_ge fork effective balance capped)
   omega
 
+/-- Block slashings spend the allowance once, at the recorded change of the slashed flag. -/
+private theorem FloorTrace.block_slashing {fork : Fork} {s t : BeaconState preset fork}
+    {engine : ExecutionEngine preset fork} {signed : SignedBeaconBlock preset fork}
+    {due : upgradeDue config ⟨fork, s⟩ = false}
+    {ok : applySignedBlock config checks engine s signed true = .ok t}
+    (early : fork < .glamsterdam) (holds : Invariant s)
+    {events : List (BalanceEvent preset)}
+    (replayed : (Step.block engine signed due ok).balanceEvents = .ok events)
+    (event : BalanceEvent preset) (member : event ∈ events) (source : event.source = .slashings)
+    (compounding : preset.MIN_ACTIVATION_BALANCE ≤ preset.MAX_EFFECTIVE_BALANCE_ELECTRA)
+    (i : ValidatorIndex) (v : Validator) (found : event.before.state.validators.data[i.toNat]? =
+      some v) (inside : i.toNat < s.validators.data.size)
+    {low base quotient : Nat} {a b : FloorAccount} (trace : FloorTrace low base quotient a b)
+    (balance : b.balance = actualBalanceAt event.before i.toNat)
+    (flags : b.slashedHigh = none ↔ v.slashed = false)
+    (high : effectiveAt ⟨fork, s⟩ i.toNat ≤ b.high)
+    (positive : 0 < quotient)
+    (quotient_le : quotient ≤
+      (EthLib.Consensus.parameters preset fork).MIN_SLASHING_PENALTY_QUOTIENT.toNat) :
+    ∃ last, FloorTrace low base quotient a last ∧
+      last.balance = actualBalanceAt event.after i.toNat ∧ last.debt = b.debt ∧
+      last.high = b.high ∧
+      (last.slashedHigh = none ↔ slashedFlag event.after.state i = .ok false) := by
+  have beforeFlag : slashedFlag event.before.state i = .ok v.slashed := by
+    simp [slashedFlag, getValidator, found, Except.map]
+  have sites := (Step.block engine signed due ok).balanceEvents_sites early holds compounding
+    replayed event member
+  have facts := sites
+  obtain ⟨_, _, _, _, _, _, _, _, _, during, _, _, markedAfter, _⟩ :=
+    facts
+  obtain ⟨w, afterFound, _⟩ := during.validators i.toNat v found
+  have afterFlag : slashedFlag event.after.state i = .ok w.slashed := by
+    simp [slashedFlag, getValidator, afterFound, Except.map]
+  by_cases marked : v.slashed = true
+  · have paid := Step.block_balanceEvents_slashed_nondebit early holds
+      replayed event member source i v found marked
+    have frozen : b.slashedHigh ≠ none := by
+      intro empty
+      have := flags.mp empty
+      simp [marked] at this
+    obtain ⟨z, located, slashed⟩ := markedAfter i.toNat v found marked
+    have same : z = w := Option.some.inj (located.symm.trans afterFound)
+    subst z
+    exact ⟨{ b with balance := actualBalanceAt event.after i.toNat },
+      trace.credit (by omega), rfl, rfl, rfl, by simp [frozen, afterFlag, slashed]⟩
+  · have unmarked : v.slashed = false := Bool.eq_false_iff.mpr marked
+    have first := flags.mpr unmarked
+    have paid := sites.1 source i inside
+        (by simpa [unmarked] using beforeFlag)
+    cases finalFlag : w.slashed with
+    | false =>
+      simp [afterFlag, finalFlag] at paid
+      exact ⟨{ b with balance := actualBalanceAt event.after i.toNat },
+        trace.credit (by omega), rfl, rfl, rfl, by simp [first, afterFlag, finalFlag]⟩
+    | true =>
+      simp only [afterFlag, finalFlag, ↓reduceIte] at paid
+      let penalty := effectiveAt ⟨fork, s⟩ i.toNat /
+        (EthLib.Consensus.parameters preset fork).MIN_SLASHING_PENALTY_QUOTIENT.toNat
+      have bounded : penalty ≤ base / quotient + (b.high - base) := by
+        have one := Nat.div_le_div_left quotient_le positive
+          (a := effectiveAt ⟨fork, s⟩ i.toNat)
+        have two := Nat.div_le_div_right high (c := quotient)
+        have three : b.high / quotient ≤ base / quotient + (b.high - base) := by
+          have scaled : b.high - base ≤ quotient * (b.high - base) := by
+            simpa using Nat.mul_le_mul_right (b.high - base) positive
+          have upper : b.high ≤ base + quotient * (b.high - base) := by omega
+          have bound := Nat.div_le_div_right upper (c := quotient)
+          rwa [Nat.add_mul_div_left _ _ positive] at bound
+        exact one.trans (two.trans three)
+      exact ⟨⟨actualBalanceAt event.after i.toNat, b.debt, b.high, some b.high⟩,
+        trace.slash first (by simpa only [balance] using paid) bounded,
+        rfl, rfl, rfl, by simp [afterFlag, finalFlag]⟩
+
 /-- S3's two hypotheses follow from S1 and the count path.
 
 Before the fork each step of the window starts with at most `A_{H+1}` active validators.
