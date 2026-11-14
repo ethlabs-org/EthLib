@@ -104,6 +104,177 @@ private theorem totalBaseRewards_le_envelope {total perIncrement : Gwei}
   rw [toNat_getBaseRewardPerIncrement computed]
   exact div_mul_div_sqrt_le _ _ _
 
+/-! ## The issuance of one epoch
+
+From Electra, an epoch pays three kinds of credit that no deposit funds.
+
+The rewards pass pays the flags of the previous epoch.
+
+The blocks pay their proposers for newly set flags, and the sync committee for each slot.
+
+They stay below twice the issuance envelope of the ceiling `T⁺`.
+
+That needs `T⁺` to be at most three halves of the total active balance.
+
+The bound is `3439 / 1792` of the envelope, where `3439 / 1792 < 2`.
+-/
+
+/-- Four times a stake `a` is at most `5 · √T · (√a + 2)`, in integer roots.
+
+The total must be positive and at least two thirds of the stake.
+
+It is the integer form of `√(3/2) < 5/4`. -/
+private theorem four_le_five_sqrt {a T : Nat} (positive : 0 < T) (ratio : 2 * a ≤ 3 * T) :
+    4 * a ≤ 5 * T.sqrt * (a.sqrt + 2) := by
+  have below := Nat.lt_succ_sqrt T
+  have belowStake := Nat.lt_succ_sqrt a
+  have one : 0 < T.sqrt := Nat.sqrt_pos.mpr positive
+  generalize T.sqrt = s at *
+  generalize a.sqrt = S at *
+  have total : T ≤ s * (s + 2) := by
+    have square : s.succ * s.succ = s * (s + 2) + 1 := by rw [Nat.succ_eq_add_one]; ring
+    omega
+  have stake : a ≤ S * (S + 2) := by
+    have square : S.succ * S.succ = S * (S + 2) + 1 := by rw [Nat.succ_eq_add_one]; ring
+    omega
+  by_cases wide : 6 * (s + 2) ≤ 5 * (S + 2)
+  · calc 4 * a ≤ s * (6 * (s + 2)) := by
+          rw [show s * (6 * (s + 2)) = 6 * (s * (s + 2)) by ring]
+          omega
+      _ ≤ s * (5 * (S + 2)) := Nat.mul_le_mul_left s wide
+      _ = 5 * s * (S + 2) := by ring
+  · have narrow : 4 * S ≤ 5 * s := by omega
+    calc 4 * a ≤ 4 * S * (S + 2) := by rw [Nat.mul_assoc]; omega
+      _ ≤ 5 * s * (S + 2) := Nat.mul_le_mul_right _ narrow
+
+/-- The credits of one epoch are at most twice the issuance envelope of the ceiling `a`.
+
+`F` bounds the flag rewards, `G` the proposer credits and `Y` the sync credits.
+
+They are read at a total `T` of `n` whole increments `I`, with base reward per increment `perInc`.
+
+`p` bounds the increments that set a flag, and `q` those that pay a proposer, over two epochs.
+
+The total is at most `a` and at least two thirds of it. -/
+private theorem issuance_certificate {I a T n perInc p q F G Y : Nat} (inc : 0 < I)
+    (aligned : n * I = T) (positive : 0 < T) (ratio : 2 * a ≤ 3 * T) (bounded : T ≤ a)
+    (rate : perInc * T.sqrt ≤ I * preset.BASE_REWARD_FACTOR.toNat)
+    (part : p * I ≤ a) (attesters : q * I ≤ 2 * a)
+    (flags : F * (n * 64) ≤ 54 * perInc * p ^ 2) (proposers : G * 448 ≤ 54 * perInc * q)
+    (sync : Y * 28 ≤ issuanceEnvelope preset T) :
+    F + G + Y ≤ 2 * issuanceEnvelope preset a := by
+  have key := four_le_five_sqrt positive ratio
+  have rootPos : 0 < T.sqrt := Nat.sqrt_pos.mpr positive
+  have roots : T.sqrt ≤ a.sqrt := Nat.sqrt_le_sqrt bounded
+  unfold issuanceEnvelope at sync ⊢
+  generalize preset.BASE_REWARD_FACTOR.toNat = B at *
+  generalize T.sqrt = s at *
+  generalize a.sqrt = S at *
+  -- The flag rewards: `F · 64 · T · s ≤ 54 · B · a²`, then `F · 256 ≤ 405 · B · (S + 2)`.
+  have flagsScaled : F * 64 * T * s * I ≤ 54 * B * a ^ 2 * I := by
+    calc F * 64 * T * s * I = F * (n * 64) * (s * I ^ 2) := by rw [← aligned]; ring
+      _ ≤ 54 * perInc * p ^ 2 * (s * I ^ 2) := Nat.mul_le_mul_right _ flags
+      _ = 54 * (perInc * s) * (p * I) ^ 2 := by ring
+      _ ≤ 54 * (I * B) * a ^ 2 :=
+          Nat.mul_le_mul (Nat.mul_le_mul_left _ rate) (Nat.pow_le_pow_left part 2)
+      _ = 54 * B * a ^ 2 * I := by ring
+  have flagsRatio : F * 64 * s * T ≤ 81 * B * a * T := by
+    calc F * 64 * s * T = F * 64 * T * s := by ring
+      _ ≤ 54 * B * a ^ 2 := Nat.le_of_mul_le_mul_right flagsScaled inc
+      _ = 27 * B * a * (2 * a) := by ring
+      _ ≤ 27 * B * a * (3 * T) := Nat.mul_le_mul_left _ ratio
+      _ = 81 * B * a * T := by ring
+  have flagsRoot : F * 256 * s ≤ 405 * B * (S + 2) * s := by
+    calc F * 256 * s = F * 64 * s * 4 := by ring
+      _ ≤ 81 * B * a * 4 := Nat.mul_le_mul_right _ (Nat.le_of_mul_le_mul_right flagsRatio positive)
+      _ = 81 * B * (4 * a) := by ring
+      _ ≤ 81 * B * (5 * s * (S + 2)) := Nat.mul_le_mul_left _ key
+      _ = 405 * B * (S + 2) * s := by ring
+  have flagsBound := Nat.le_of_mul_le_mul_right flagsRoot rootPos
+  -- The proposer credits: `G · 448 · s ≤ 108 · B · a`, then `G · 1792 ≤ 540 · B · (S + 2)`.
+  have proposersScaled : G * 448 * s * I ≤ 108 * B * a * I := by
+    calc G * 448 * s * I = G * 448 * (s * I) := by ring
+      _ ≤ 54 * perInc * q * (s * I) := Nat.mul_le_mul_right _ proposers
+      _ = 54 * (perInc * s) * (q * I) := by ring
+      _ ≤ 54 * (I * B) * (2 * a) := Nat.mul_le_mul (Nat.mul_le_mul_left _ rate) attesters
+      _ = 108 * B * a * I := by ring
+  have proposersRoot : G * 1792 * s ≤ 540 * B * (S + 2) * s := by
+    calc G * 1792 * s = G * 448 * s * 4 := by ring
+      _ ≤ 108 * B * a * 4 := Nat.mul_le_mul_right _ (Nat.le_of_mul_le_mul_right proposersScaled inc)
+      _ = 108 * B * (4 * a) := by ring
+      _ ≤ 108 * B * (5 * s * (S + 2)) := Nat.mul_le_mul_left _ key
+      _ = 540 * B * (S + 2) * s := by ring
+  have proposersBound := Nat.le_of_mul_le_mul_right proposersRoot rootPos
+  -- The sync credits read the total itself, which is at most the ceiling.
+  have syncBound : Y * 28 ≤ B * (S + 2) :=
+    sync.trans (Nat.mul_le_mul_left _ (Nat.add_le_add_right roots 2))
+  have flagsAtom : 405 * B * (S + 2) = 405 * (B * (S + 2)) := by ring
+  have proposersAtom : 540 * B * (S + 2) = 540 * (B * (S + 2)) := by ring
+  rw [flagsAtom] at flagsBound
+  rw [proposersAtom] at proposersBound
+  generalize B * (S + 2) = X at *
+  omega
+
+/-- The sync credits of one block are at most the issuance envelope over `28` per slot.
+
+The participant reward is the base rewards of the total, times `2 / 64`, per slot and member.
+
+The proposer share is at most a seventh of it. -/
+private theorem syncCredit_le {fork : Fork} {s : BeaconState preset fork}
+    {reward proposer total : Gwei} (rewardOk : syncParticipantReward s = .ok reward)
+    (share : proposer.toNat * 7 ≤ reward.toNat) (totalOk : getTotalActiveBalance s = .ok total) :
+    preset.SYNC_COMMITTEE_SIZE.toNat * (reward.toNat + proposer.toNat) *
+        (28 * preset.SLOTS_PER_EPOCH.toNat) ≤ issuanceEnvelope preset total.toNat := by
+  simp only [syncParticipantReward, bind_ok_iff, liftAccessor_ok, liftArith,
+    mapError_ok_iff] at rewardOk
+  obtain ⟨read, readOk, perIncrement, perOk, rewardOk⟩ := rewardOk
+  have same : read = total := Except.ok.inj (readOk.symm.trans totalOk)
+  subst read
+  obtain ⟨increments, incrementsOk, base, baseOk, weighted, weightedOk, perWeight, perWeightOk,
+    perSlot, perSlotOk, rewardOk⟩ := rewardOk
+  rw [divChecked_ok_iff] at incrementsOk perWeightOk perSlotOk rewardOk
+  rw [mulChecked_ok_iff] at baseOk weightedOk
+  have envelope := totalBaseRewards_le_envelope perOk
+  have weightValue : SYNC_REWARD_WEIGHT.toNat = 2 := rfl
+  have denominator : WEIGHT_DENOMINATOR.toNat = 64 := rfl
+  rw [weightValue] at weightedOk
+  rw [denominator] at perWeightOk
+  -- Each step of the reward rounds down, so the members' rewards of a slot fit its share.
+  have member : preset.SYNC_COMMITTEE_SIZE.toNat * reward.toNat ≤ perSlot.toNat := by
+    rw [rewardOk.2, Nat.mul_comm]
+    exact Nat.div_mul_le_self _ _
+  have slot : perSlot.toNat * preset.SLOTS_PER_EPOCH.toNat ≤ perWeight.toNat := by
+    rw [perSlotOk.2]
+    exact Nat.div_mul_le_self _ _
+  have weight : perWeight.toNat * 32 ≤ base.toNat := by
+    rw [perWeightOk.2, weightedOk.2]
+    have := Nat.div_mul_le_self (base.toNat * 2) 64
+    omega
+  have baseLe : base.toNat ≤ issuanceEnvelope preset total.toNat := by
+    rw [baseOk.2, incrementsOk.2, Nat.mul_comm]
+    exact envelope
+  have proposerLe : preset.SYNC_COMMITTEE_SIZE.toNat * proposer.toNat * 7 ≤
+      preset.SYNC_COMMITTEE_SIZE.toNat * reward.toNat := by
+    rw [Nat.mul_assoc]
+    exact Nat.mul_le_mul_left _ share
+  have members := Nat.mul_le_mul_right preset.SLOTS_PER_EPOCH.toNat member
+  have chain : preset.SYNC_COMMITTEE_SIZE.toNat * reward.toNat * preset.SLOTS_PER_EPOCH.toNat *
+      32 ≤ issuanceEnvelope preset total.toNat := by
+    have := Nat.mul_le_mul_right 32 (members.trans slot)
+    omega
+  have scaled := Nat.mul_le_mul_right (4 * preset.SLOTS_PER_EPOCH.toNat) proposerLe
+  calc preset.SYNC_COMMITTEE_SIZE.toNat * (reward.toNat + proposer.toNat) *
+        (28 * preset.SLOTS_PER_EPOCH.toNat) =
+      preset.SYNC_COMMITTEE_SIZE.toNat * reward.toNat * preset.SLOTS_PER_EPOCH.toNat * 28 +
+        preset.SYNC_COMMITTEE_SIZE.toNat * proposer.toNat * 7 *
+          (4 * preset.SLOTS_PER_EPOCH.toNat) := by ring
+    _ ≤ preset.SYNC_COMMITTEE_SIZE.toNat * reward.toNat * preset.SLOTS_PER_EPOCH.toNat * 28 +
+        preset.SYNC_COMMITTEE_SIZE.toNat * reward.toNat * (4 * preset.SLOTS_PER_EPOCH.toNat) :=
+        Nat.add_le_add_left scaled _
+    _ = preset.SYNC_COMMITTEE_SIZE.toNat * reward.toNat * preset.SLOTS_PER_EPOCH.toNat * 32 := by
+        ring
+    _ ≤ issuanceEnvelope preset total.toNat := chain
+
 /-! ## The penalties of one rewards pass
 
 From Altair, the rewards pass charges an eligible validator three penalties at most.
@@ -125,6 +296,109 @@ The sync committee penalties are not part of this pass.
 
 variable {config : Config} {fork : Fork} {state scored after : BeaconState preset fork}
   {total : Gwei}
+
+/-- One pass of deltas records the reward of each validator as its credit, and keeps the registry.
+
+Its penalties are recorded with no credit. -/
+private theorem replayDeltas_credits {fork : Fork} (source : BalanceSource)
+    (deltas : Array Gwei × Array Gwei) {pre post : BalanceReplay preset fork}
+    (ok : replayDeltas source deltas pre = .ok post) :
+    post.1.validators = pre.1.validators ∧
+      (post.2.map (·.creditLimit)).sum = (pre.2.map (·.creditLimit)).sum +
+        ((List.range pre.1.validators.data.size).map fun i => (deltas.1.getD i 0).toNat).sum := by
+  unfold replayDeltas at ok
+  generalize List.range pre.1.validators.data.size = indices at ok ⊢
+  induction indices generalizing pre with
+  | nil => cases ok; simp
+  | cons i rest ih =>
+    rw [List.foldlM_cons, bind_ok_iff] at ok
+    obtain ⟨middle, stepOk, restOk⟩ := ok
+    obtain ⟨registry, sum⟩ := ih restOk
+    simp only [recordBalance, bind_ok_iff, liftAccessor_ok, pure, Except.pure,
+      Except.ok.injEq, exists_eq_left'] at stepOk
+    obtain ⟨index, -, _, ⟨raised, raisedOk, rfl⟩, lowered, loweredOk, rfl⟩ := stepOk
+    refine ⟨registry.trans ((decreaseBalance_validators loweredOk).trans
+      (increaseBalance_validators raisedOk)), ?_⟩
+    rw [sum]
+    simp only [List.map_append, List.sum_append, List.map_cons, List.map_nil, List.sum_cons,
+      List.sum_nil]
+    omega
+
+/-- The credits of the rewards pass, from Altair, are its three flag rewards.
+
+Each flag pays at most `w · perInc · p² / (n · 64)`.
+
+There `w` is its weight, `p` its increments and `n` the active increments.
+
+The weights sum to `54`, and `P` bounds the balance that sets each flag. -/
+private theorem replayRewards_credits_le (altair : .altair ≤ fork)
+    (within : state.RegistryWithinLimit) {events : List (BalanceEvent preset)}
+    (replayed : replayRewards (config := config) (state, []) = .ok (after, events))
+    (active : getTotalActiveBalance state = .ok total) {perIncrement : Gwei}
+    (per : getBaseRewardPerIncrement preset total = .ok perIncrement) (P : Nat)
+    (participating : ∀ flag participating (balance : Gwei),
+      getUnslashedParticipatingIndices state altair flag (getPreviousEpoch state) =
+        .ok participating →
+      getTotalBalance state participating = .ok balance → balance.toNat ≤ P) :
+    (events.map (·.creditLimit)).sum *
+        (total.toNat / preset.EFFECTIVE_BALANCE_INCREMENT.toNat * 64) ≤
+      54 * perIncrement.toNat * (P / preset.EFFECTIVE_BALANCE_INCREMENT.toNat) ^ 2 := by
+  unfold replayRewards at replayed
+  split at replayed
+  · cases replayed
+    simp
+  rename_i genesis
+  simp only [bind_ok_iff] at replayed
+  obtain ⟨ordinary, ordinaryOk, inactivity, inactivityOk, middle, folded, last⟩ := replayed
+  simp only [rewardPasses, genesis, altair, ↓reduceIte, ↓reduceDIte] at ordinaryOk
+  have finRange : List.finRange PARTICIPATION_FLAG_WEIGHTS.length =
+      [⟨0, by decide⟩, ⟨1, by decide⟩, ⟨2, by decide⟩] := rfl
+  rw [finRange] at ordinaryOk
+  simp only [List.mapM_cons, List.mapM_nil, bind_ok_iff, pure, Except.pure,
+    Except.ok.injEq] at ordinaryOk
+  obtain ⟨source, sourceOk, _, ⟨target, targetOk, _, ⟨head, headOk, _, rfl, rfl⟩, rfl⟩, rfl⟩ :=
+    ordinaryOk
+  rw [List.foldlM_cons, bind_ok_iff] at folded
+  obtain ⟨first, firstOk, folded⟩ := folded
+  rw [List.foldlM_cons, bind_ok_iff] at folded
+  obtain ⟨second, secondOk, folded⟩ := folded
+  rw [List.foldlM_cons, bind_ok_iff] at folded
+  obtain ⟨third, thirdOk, folded⟩ := folded
+  obtain rfl : third = middle := Except.ok.inj folded
+  obtain ⟨firstSize, firstSum⟩ := replayDeltas_credits _ _ firstOk
+  obtain ⟨secondSize, secondSum⟩ := replayDeltas_credits _ _ secondOk
+  obtain ⟨-, thirdSum⟩ := replayDeltas_credits _ _ thirdOk
+  obtain ⟨-, lastSum⟩ := replayDeltas_credits _ _ last
+  -- The inactivity pass pays no reward.
+  have noReward : ((List.range third.1.validators.data.size).map fun i =>
+      (inactivity.1.getD i 0).toNat).sum = 0 := by
+    simp [getInactivityPenaltyDeltas_rewards inactivityOk]
+  -- Each flag pays at most its weight times the square of its increments.
+  have flag {index : Fin PARTICIPATION_FLAG_WEIGHTS.length} {deltas : Array Gwei × Array Gwei}
+      (computed : getFlagIndexDeltas state altair index = .ok deltas) :
+      ((List.range state.validators.data.size).map fun i => (deltas.1.getD i 0).toNat).sum *
+          (total.toNat / preset.EFFECTIVE_BALANCE_INCREMENT.toNat * 64) ≤
+        PARTICIPATION_FLAG_WEIGHTS[index].toNat * perIncrement.toNat *
+          (P / preset.EFFECTIVE_BALANCE_INCREMENT.toNat) ^ 2 := by
+    obtain ⟨rewards, penalties⟩ := deltas
+    obtain ⟨flagged, balance, total', flaggedOk, weighed, totalOk, -⟩ :=
+      getFlagIndexDeltas_getD within computed
+    obtain rfl : total' = total := Except.ok.inj (totalOk.symm.trans active)
+    have bound := getFlagIndexDeltas_rewards_le within computed flaggedOk weighed active per
+    have balanceLe := participating _ _ _ flaggedOk weighed
+    exact bound.trans (Nat.mul_le_mul_left _ (Nat.pow_le_pow_left
+      (Nat.div_le_div_right balanceLe) 2))
+  have one := flag sourceOk
+  have two := flag targetOk
+  have three := flag headOk
+  have weights : PARTICIPATION_FLAG_WEIGHTS[(⟨0, by decide⟩ : Fin 3)].toNat +
+      PARTICIPATION_FLAG_WEIGHTS[(⟨1, by decide⟩ : Fin 3)].toNat +
+      PARTICIPATION_FLAG_WEIGHTS[(⟨2, by decide⟩ : Fin 3)].toNat = 54 := rfl
+  rw [lastSum, noReward, thirdSum, secondSum, firstSum, secondSize, firstSize]
+  simp only [List.map_nil, List.sum_nil, Nat.zero_add, Nat.add_zero]
+  rw [← weights]
+  simp only [Nat.add_mul] at one two three ⊢
+  omega
 
 /-- A sum of quotients is at most the quotient of the sum. -/
 private theorem sum_div_le (s : Finset Nat) (f : Nat → Nat) (d : Nat) :
