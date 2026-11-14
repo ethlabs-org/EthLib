@@ -565,30 +565,6 @@ private theorem withdrawnConsolidationCredit_eq_zero_of_ordered {s t : BeaconSta
     · rfl
   · rfl
 
-/-- The upgrades of a slot record only crossings. -/
-private theorem upgradeBalanceReplay_crossing {checks : SignatureChecks}
-    {s : ForkedBeaconState preset} {events : List (BalanceEvent preset)}
-    (ok : upgradeBalanceReplay (config := config) (checks := checks) s = .ok events) :
-    ∀ e ∈ events, e.source = .crossing := by
-  fun_induction upgradeBalanceReplay (config := config) (checks := checks) s
-    generalizing events with
-  | case1 s due ih =>
-    obtain ⟨next, nextOk, rest⟩ := bind_ok_iff.mp ok
-    obtain ⟨prior, priorOk, last⟩ := bind_ok_iff.mp rest
-    have crossing := ih next priorOk
-    repeat' split at last
-    all_goals
-      cases last
-      first
-        | exact crossing
-        | intro e mem
-          rcases List.mem_cons.mp mem with rfl | mem
-          · rfl
-          · exact crossing e mem
-  | case2 =>
-    cases ok
-    exact fun _ mem => by cases mem
-
 /-- The epoch replay of an ordered state credits no withdrawable pending source.
 
 Each stage keeps the order at the current epoch, so the deposit event starts at an ordered state. -/

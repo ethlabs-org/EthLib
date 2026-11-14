@@ -3370,19 +3370,38 @@ private def funding_deposit_credit (e : BalanceEvent preset) : Nat :=
           false then 0 else actualBalanceAt e.after i - actualBalanceAt e.before i
   else 0
 
+/-- Every event of the upgrade replay is a fork crossing. -/
+theorem upgradeBalanceReplay_crossing {s : ForkedBeaconState preset}
+    {events : List (BalanceEvent preset)}
+    (ok : upgradeBalanceReplay (config := config) (checks := checks) s = .ok events) :
+    ∀ e ∈ events, e.source = .crossing := by
+  fun_induction upgradeBalanceReplay (config := config) (checks := checks) s
+    generalizing events with
+  | case1 s due ih =>
+    obtain ⟨next, nextOk, rest⟩ := bind_ok_iff.mp ok
+    obtain ⟨prior, priorOk, last⟩ := bind_ok_iff.mp rest
+    have crossing := ih next priorOk
+    repeat' split at last
+    all_goals
+      cases last
+      first
+        | exact crossing
+        | intro e mem
+          rcases List.mem_cons.mp mem with rfl | mem
+          · rfl
+          · exact crossing e mem
+  | case2 =>
+    cases ok
+    exact fun _ mem => by cases mem
+
 private theorem funding_upgrade_credit {s : ForkedBeaconState preset}
     {events : List (BalanceEvent preset)}
     (ok : upgradeBalanceReplay (config := config) (checks := checks) s = .ok events) :
     (events.map funding_deposit_credit).sum = 0 := by
-  fun_induction upgradeBalanceReplay (config := config) (checks := checks) s
-      generalizing events with
-  | case1 s due ih =>
-    obtain ⟨next, nextOk, rest⟩ := bind_ok_iff.mp ok
-    obtain ⟨prior, priorOk, last⟩ := bind_ok_iff.mp rest
-    have priorZero := ih next priorOk
-    repeat' (split at last)
-    all_goals cases last; simpa [funding_deposit_credit] using priorZero
-  | case2 => cases ok; rfl
+  apply List.sum_eq_zero
+  intro n member
+  obtain ⟨e, mem, rfl⟩ := List.mem_map.mp member
+  simp [funding_deposit_credit, upgradeBalanceReplay_crossing ok e mem]
 
 def funding_no_deposits (events : List (BalanceEvent preset)) : Prop :=
   ∀ e ∈ events, e.source = .deposits → .pectra ≤ e.before.fork → e.creditLimit = 0
