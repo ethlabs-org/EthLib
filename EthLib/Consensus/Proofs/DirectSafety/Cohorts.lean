@@ -1020,10 +1020,7 @@ private theorem churn_le_windowCount {x : ForkedBeaconState preset} {s : BeaconS
           omega
         · rw [← kept.exitEpoch exited]
           omega
-  have converted : (getActiveValidatorIndices s (getCurrentEpoch s)).length.toUInt64.toNat ≤
-      windowCount x s := (Nat.mod_le _ _).trans active
-  simp only [getValidatorChurnLimit, Uint64.toNat_max, UInt64.toNat_div, cohortCap]
-  exact max_le_max_left _ (Nat.div_le_div_right converted)
+  exact DirectSafety.validatorChurnLimit_le_of_active s _ active
 
 /-- One pre-Electra step of a window grows the window count by at most one count churn.
 

@@ -1940,7 +1940,7 @@ private theorem activeCount_le_size {fork : Fork} (s : BeaconState preset fork) 
   (List.length_filterMap_le _ _).trans (by simp)
 
 /-- The validator-count churn is bounded by the churn of any bound on the active count. -/
-private theorem validatorChurnLimit_le_of_active {fork : Fork} (s : BeaconState preset fork)
+theorem validatorChurnLimit_le_of_active {fork : Fork} (s : BeaconState preset fork)
     (bound : Nat) (counted : activeCount s ≤ bound) :
     (getValidatorChurnLimit config s).toNat ≤ cohortCap config bound := by
   have converted : (getActiveValidatorIndices s (getCurrentEpoch s)).length.toUInt64.toNat ≤
