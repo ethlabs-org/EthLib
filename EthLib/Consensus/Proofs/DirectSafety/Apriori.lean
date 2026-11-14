@@ -3931,6 +3931,22 @@ private theorem pre_effective_le {largest balance effective result : Gwei}
     simp only [Uint64.toNat_min]
     omega
 
+/-- The effective-balance pass preserves the per-index capped Pre potential. -/
+private theorem pre_effective_updates {fork : Fork} {s t : BeaconState preset fork}
+    (ok : processEffectiveBalanceUpdates s = .ok t) {i : Nat} {v : Validator} {balance : Gwei}
+    (found : s.validators.data[i]? = some v) (owned : s.balances.data[i]? = some balance) :
+    max (effectiveAt ⟨fork, t⟩ i)
+        (min (actualBalanceAt ⟨fork, t⟩ i)
+          (withdrawalMaxEffectiveBalance preset fork v).toNat) ≤
+      max (effectiveAt ⟨fork, s⟩ i)
+        (min (actualBalanceAt ⟨fork, s⟩ i)
+          (withdrawalMaxEffectiveBalance preset fork v).toNat) := by
+  obtain ⟨effective, read, updated⟩ :=
+    processEffectiveBalanceUpdates_effectiveBalance_eq ok found owned
+  have balances := processEffectiveBalanceUpdates_balances ok
+  simpa only [effectiveAt, actualBalanceAt, read, found, balances, owned,
+    Option.map_some, Option.getD_some] using pre_effective_le updated
+
 /-- Pending deposits fund the increase of capped balances without charging withdrawn keys.
 
 The effective balance and cap are fixed at the input to the deposit pass. -/
@@ -3951,5 +3967,17 @@ private theorem pre_pending_credit {fork : Fork} {config : Config} {checks : Sig
   split_ifs
   · exact Nat.le_refl _
   · exact pre_credit_le _ _ _ _
+
+/-- Charging each first eligibility at least MEB bounds the number of activations. -/
+private theorem pre_activation_count_le (keys : Finset Nat) (charge : Nat → Nat)
+    (budget : Nat) (positive : 0 < preset.MAX_EFFECTIVE_BALANCE.toNat)
+    (eligible : ∀ i ∈ keys, preset.MAX_EFFECTIVE_BALANCE.toNat ≤ charge i)
+    (funded : (∑ i ∈ keys, charge i) ≤ budget) :
+    keys.card ≤ budget / preset.MAX_EFFECTIVE_BALANCE.toNat := by
+  apply (Nat.le_div_iff_mul_le positive).mpr
+  calc keys.card * preset.MAX_EFFECTIVE_BALANCE.toNat
+      = ∑ _i ∈ keys, preset.MAX_EFFECTIVE_BALANCE.toNat := by simp
+    _ ≤ ∑ i ∈ keys, charge i := Finset.sum_le_sum eligible
+    _ ≤ budget := funded
 
 end EthLib.Consensus.DirectSafety
