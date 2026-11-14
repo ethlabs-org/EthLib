@@ -19,8 +19,11 @@ models = [
 ]
 
 refinement = [
-  # The exit reserve bounds the stake leaving the active set along a transition run.
-  "EthLib.Consensus.Proofs.Transition.ExitReserveBound",
+  # Checkpoint-to-head exit reserves in honest network executions.
+  "EthLib.Consensus.Proofs.ForkChoice.ExitReserve",
+  "EthLib.Consensus.Proofs.ForkChoice.BlockAgreement",
+  "EthLib.Consensus.Proofs.ForkChoice.HonestCheckpoints",
+  "EthLib.Consensus.Proofs.ForkChoice.HonestHeads",
   # The direct accountable safety proof: the stake of registry keys against the stake model.
   "EthLib.Consensus.Proofs.DirectSafety.Identity",
   # The fork choice of the specification against the models of the fork choice and the network.

@@ -439,7 +439,8 @@ private theorem CapStep.attesterSlashing {f : Fork} {s t : BeaconState preset f}
 private theorem CapStep.block {f : Fork} {s t : BeaconState preset f}
     {engine : ExecutionEngine preset f} {block : BeaconBlock preset f}
     (early : f < .glamsterdam)
-    (order : preset.MIN_ACTIVATION_BALANCE ≤ preset.MAX_EFFECTIVE_BALANCE_ELECTRA)
+    (order : .pectra ≤ f →
+      preset.MIN_ACTIVATION_BALANCE ≤ preset.MAX_EFFECTIVE_BALANCE_ELECTRA)
     (ok : processBlock config checks engine s block = .ok t) : CapStep s t := by
   have same {a b : BeaconState preset f} (validators : b.validators = a.validators) :
       CapStep a b :=
@@ -449,7 +450,8 @@ private theorem CapStep.block {f : Fork} {s t : BeaconState preset f}
   obtain ⟨_, _, _, proposersOk, slashingsOk, attestedOk, rest⟩ :=
     processOperations_folds_of CapStep CapStep.refl (fun one two => one.trans two)
       CapStep.processDeposit (fun exited => CapStep.exit (processVoluntaryExit_initiates exited))
-      CapStep.blsChange (CapStep.requests order)
+      CapStep.blsChange (fun {state after body electra} ok =>
+        CapStep.requests (order electra.1) ok)
       (fun attested => same (by rw [processPayloadAttestation_eq attested])) operated
   have tail : CapStep last t := by
     split at synced
@@ -550,25 +552,24 @@ private theorem CapStep.slot {f : Fork} {s t : BeaconState preset f}
   · cases advance
     exact CapStep.data rfl
 
-/-- Updating effective balances preserves the per-validator effective-balance cap. -/
-theorem processEffectiveBalanceUpdates_capped
-    {fork : Fork} {s t : BeaconState preset fork}
-    (capped : ∀ v ∈ s.validators.data,
-      v.effectiveBalance ≤ withdrawalMaxEffectiveBalance preset fork v)
-    (ok : processEffectiveBalanceUpdates s = .ok t) :
-    ∀ v ∈ t.validators.data,
-      v.effectiveBalance ≤ withdrawalMaxEffectiveBalance preset fork v :=
-  (CapStep.effective ok).capped capped
-
 private theorem CapStep.carry {f h : Fork} {s : BeaconState preset f}
     {t : BeaconState preset h} (same : t.validators.data = s.validators.data)
-    (activation : preset.MAX_EFFECTIVE_BALANCE ≤ preset.MIN_ACTIVATION_BALANCE)
-    (compounding : preset.MIN_ACTIVATION_BALANCE ≤ preset.MAX_EFFECTIVE_BALANCE_ELECTRA)
-    (forks : f ≤ h) : CapStep s t where
+    (activation : .pectra ≤ h →
+      preset.MAX_EFFECTIVE_BALANCE ≤ preset.MIN_ACTIVATION_BALANCE)
+    (compounding : .pectra ≤ h →
+      preset.MIN_ACTIVATION_BALANCE ≤ preset.MAX_EFFECTIVE_BALANCE_ELECTRA)
+    (forks : f ≤ h) : CapStep s t := by
+  have mono (v : Validator) : withdrawalMaxEffectiveBalance preset f v ≤
+      withdrawalMaxEffectiveBalance preset h v := by
+    by_cases later : .pectra ≤ h
+    · exact withdrawalMaxEffectiveBalance_mono (activation later) (compounding later) forks id
+    · have before : ¬ .pectra ≤ f := fun le => later (Nat.le_trans le forks)
+      simp only [withdrawalMaxEffectiveBalance, before, later, ↓reduceIte]
+      exact UInt64.le_refl _
+  exact {
   capped capped v member := UInt64.le_trans (capped v (same ▸ member))
-    (withdrawalMaxEffectiveBalance_mono activation compounding forks id)
-  monotone _i v found := ⟨v, same ▸ found,
-    withdrawalMaxEffectiveBalance_mono activation compounding forks id⟩
+    (mono v)
+  monotone _i v found := ⟨v, same ▸ found, mono v⟩ }
 
 private theorem CapStep.preActivation {f : Fork} {s t : BeaconState preset f}
     {electra : .pectra ≤ f} {i : ValidatorIndex}
@@ -584,8 +585,10 @@ private theorem CapStep.preActivation {f : Fork} {s t : BeaconState preset f}
 
 private theorem CapStep.upgrade {s : ForkedBeaconState preset}
     {t : {t : ForkedBeaconState preset // s.fork < t.fork}}
-    (activation : preset.MAX_EFFECTIVE_BALANCE ≤ preset.MIN_ACTIVATION_BALANCE)
-    (compounding : preset.MIN_ACTIVATION_BALANCE ≤ preset.MAX_EFFECTIVE_BALANCE_ELECTRA)
+    (activation : .pectra ≤ t.val.fork →
+      preset.MAX_EFFECTIVE_BALANCE ≤ preset.MIN_ACTIVATION_BALANCE)
+    (compounding : .pectra ≤ t.val.fork →
+      preset.MIN_ACTIVATION_BALANCE ≤ preset.MAX_EFFECTIVE_BALANCE_ELECTRA)
     (ok : upgradeNext config checks s = .ok t) (early : t.val.fork < .glamsterdam) :
     CapStep s.state t.val.state := by
   obtain ⟨fork, state⟩ := s
@@ -624,21 +627,28 @@ private theorem CapStep.upgrade {s : ForkedBeaconState preset}
     exact False.elim ((by decide : ¬Fork.hegota < Fork.glamsterdam) early)
 
 private theorem CapStep.upgrades {s t : ForkedBeaconState preset}
-    (activation : preset.MAX_EFFECTIVE_BALANCE ≤ preset.MIN_ACTIVATION_BALANCE)
-    (compounding : preset.MIN_ACTIVATION_BALANCE ≤ preset.MAX_EFFECTIVE_BALANCE_ELECTRA)
+    (activation : .pectra ≤ t.fork →
+      preset.MAX_EFFECTIVE_BALANCE ≤ preset.MIN_ACTIVATION_BALANCE)
+    (compounding : .pectra ≤ t.fork →
+      preset.MIN_ACTIVATION_BALANCE ≤ preset.MAX_EFFECTIVE_BALANCE_ELECTRA)
     (ok : processUpgrades config checks s = .ok t) (early : t.fork < .glamsterdam) :
     CapStep s.state t.state := by
   fun_induction processUpgrades config checks s generalizing t with
   | case1 s due ih =>
     obtain ⟨next, nextOk, rest⟩ := bind_ok_iff.mp ok
-    exact (CapStep.upgrade activation compounding nextOk
-      (Nat.lt_of_le_of_lt (processUpgrades_fork_le rest) early)).trans (ih next rest early)
+    exact (CapStep.upgrade
+      (fun le => activation (Nat.le_trans le (processUpgrades_fork_le rest)))
+      (fun le => compounding (Nat.le_trans le (processUpgrades_fork_le rest))) nextOk
+      (Nat.lt_of_le_of_lt (processUpgrades_fork_le rest) early)).trans
+        (ih next activation compounding rest early)
   | case2 s notDue => cases ok; exact CapStep.refl _
 
 private theorem CapStep.step {s t : ForkedBeaconState preset}
     (step : Step config checks s t)
-    (activation : preset.MAX_EFFECTIVE_BALANCE ≤ preset.MIN_ACTIVATION_BALANCE)
-    (compounding : preset.MIN_ACTIVATION_BALANCE ≤ preset.MAX_EFFECTIVE_BALANCE_ELECTRA)
+    (activation : .pectra ≤ t.fork →
+      preset.MAX_EFFECTIVE_BALANCE ≤ preset.MIN_ACTIVATION_BALANCE)
+    (compounding : .pectra ≤ t.fork →
+      preset.MIN_ACTIVATION_BALANCE ≤ preset.MAX_EFFECTIVE_BALANCE_ELECTRA)
     (early : t.fork < .glamsterdam) : CapStep s.state t.state := by
   cases step with
   | block engine signed due ok =>
@@ -650,13 +660,18 @@ private theorem CapStep.step {s t : ForkedBeaconState preset}
 
 private theorem CapStep.run {s t : ForkedBeaconState preset}
     (run : Run config checks s t)
-    (activation : preset.MAX_EFFECTIVE_BALANCE ≤ preset.MIN_ACTIVATION_BALANCE)
-    (compounding : preset.MIN_ACTIVATION_BALANCE ≤ preset.MAX_EFFECTIVE_BALANCE_ELECTRA)
+    (activation : .pectra ≤ t.fork →
+      preset.MAX_EFFECTIVE_BALANCE ≤ preset.MIN_ACTIVATION_BALANCE)
+    (compounding : .pectra ≤ t.fork →
+      preset.MIN_ACTIVATION_BALANCE ≤ preset.MAX_EFFECTIVE_BALANCE_ELECTRA)
     (early : t.fork < .glamsterdam) : CapStep s.state t.state := by
   induction run with
   | nil => exact CapStep.refl _
   | snoc pre step ih =>
-    exact (ih (Nat.lt_of_le_of_lt step.chainStep.fork_le early)).trans
+    exact (ih
+      (fun le => activation (Nat.le_trans le step.chainStep.fork_le))
+      (fun le => compounding (Nat.le_trans le step.chainStep.fork_le))
+      (Nat.lt_of_le_of_lt step.chainStep.fork_le early)).trans
       (CapStep.step step activation compounding early)
 
 /-- Before Gloas, each validator reached from genesis has an effective balance at most its cap.
@@ -674,7 +689,21 @@ theorem Run.effectiveBalance_capped {g x : ForkedBeaconState preset}
     (early : x.fork < .glamsterdam) :
     ∀ v ∈ x.state.validators.data,
       v.effectiveBalance ≤ withdrawalMaxEffectiveBalance preset x.fork v :=
-  (CapStep.run run activation compounding early).capped genesis.effectiveBalance_capped
+  (CapStep.run run (fun _ => activation) (fun _ => compounding) early).capped
+    genesis.effectiveBalance_capped
+
+/-- Before Electra, reaching a state from genesis bounds each effective balance by the cap.
+
+No ordering of the later forks' caps is needed. -/
+theorem Run.effectiveBalance_capped_before_electra {g x : ForkedBeaconState preset}
+    (run : Run config checks g x) (genesis : Genesis (config := config) (checks := checks) g)
+    (early : x.fork < .pectra) :
+    ∀ v ∈ x.state.validators.data, v.effectiveBalance ≤ preset.MAX_EFFECTIVE_BALANCE := by
+  have cap := (CapStep.run run (fun late => False.elim (Nat.not_le_of_lt early late))
+    (fun late => False.elim (Nat.not_le_of_lt early late))
+    (Nat.lt_trans early (by decide))).capped genesis.effectiveBalance_capped
+  have before : ¬ .pectra ≤ x.fork := Nat.not_le_of_lt early
+  simpa only [withdrawalMaxEffectiveBalance, before, ↓reduceIte] using cap
 
 /-- An existing validator's cap cannot decrease along a pre-Gloas run. -/
 theorem Run.validatorCap_mono {x y : ForkedBeaconState preset}
@@ -686,7 +715,7 @@ theorem Run.validatorCap_mono {x y : ForkedBeaconState preset}
     ∃ w, y.state.validators.data[i]? = some w ∧
       withdrawalMaxEffectiveBalance preset x.fork v ≤
         withdrawalMaxEffectiveBalance preset y.fork w :=
-  (CapStep.run run activation compounding early).monotone i v found
+  (CapStep.run run (fun _ => activation) (fun _ => compounding) early).monotone i v found
 
 /-- The cap at an existing index cannot decrease during an epoch. -/
 theorem processEpoch_validatorCap_mono {f : Fork} {s t : BeaconState preset f}

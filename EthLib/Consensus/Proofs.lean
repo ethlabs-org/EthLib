@@ -80,6 +80,7 @@ public import EthLib.Consensus.Proofs.ForkChoice.CheckpointAncestry
 public import EthLib.Consensus.Proofs.ForkChoice.CheckpointBlocks
 public import EthLib.Consensus.Proofs.ForkChoice.Checkpoints
 public import EthLib.Consensus.Proofs.ForkChoice.CommitteeAgreement
+public import EthLib.Consensus.Proofs.ForkChoice.ExitReserve
 public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmation
 public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmationCommittees
 public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmationConfirmedRoot
@@ -190,7 +191,6 @@ public import EthLib.Consensus.Proofs.Transition.EpochPending
 public import EthLib.Consensus.Proofs.Transition.EpochRewards
 public import EthLib.Consensus.Proofs.Transition.EpochUpdates
 public import EthLib.Consensus.Proofs.Transition.Execution
-public import EthLib.Consensus.Proofs.Transition.ExitReserveBound
 public import EthLib.Consensus.Proofs.Transition.FfgFinality
 public import EthLib.Consensus.Proofs.Transition.FfgFinalityChain
 public import EthLib.Consensus.Proofs.Transition.FfgFinalityMonotonicity

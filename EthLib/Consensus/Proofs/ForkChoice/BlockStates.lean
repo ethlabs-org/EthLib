@@ -328,4 +328,101 @@ theorem Store.ForwardReachable.slot_le_of_blockState_of_getCurrentSlot
     exact blockStates_le_of_same (Store.onInclusionList_frame accepted).2.2
       (Store.onInclusionList_sameClock accepted) ih
 
+
+
+/-- A non-anchor block state has the block's slot and its header with an empty state root. -/
+theorem Store.Reachable.blockState_header
+    (reachable : Store.Reachable config anchorState anchorBlock store)
+    {root : Root} {block : BeaconBlock preset fork} {state : BeaconState preset fork}
+    (found : store.blocks[root]? = some block) (stored : store.blockStates[root]? = some state)
+    (other : block ≠ anchorBlock) :
+    state.slot = block.slot ∧ SszType.hashTreeRoot state = .ok block.stateRoot ∧
+      ∃ bodyRoot, SszType.hashTreeRoot block.body = .ok bodyRoot ∧
+        state.latestBlockHeader =
+          { slot := block.slot, proposerIndex := block.proposerIndex,
+            parentRoot := block.parentRoot, stateRoot := Vector.replicate 32 0, bodyRoot } := by
+  obtain ⟨post, postOk, -, produced⟩ := reachable.blockStatesFromParents found
+  rw [stored, Option.some.injEq] at postOk
+  subst post
+  obtain ⟨parent, checks, engine, signed, -, message, -, transitioned⟩ := produced other
+  obtain ⟨advanced, -, -, -, processed, rooted⟩ := stateTransition_ok transitioned
+  refine ⟨by simpa [message] using (stateTransition_slot transitioned).2, ?_, ?_⟩
+  · simpa [message] using rooted rfl
+  · simpa [message] using latestBlockHeader_processBlock processed
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+/-- The state that a store keeps for a block is at the slot of the block. -/
+theorem Models.Network.blockState_slot_eq {store : Store preset fork}
+    (reachable : Store.Reachable config anchorState anchorBlock store)
+    (anchorSlot : anchorBlock.slot = anchorState.slot) {root : Root}
+    {block : BeaconBlock preset fork} {state : BeaconState preset fork}
+    (found : store.blocks[root]? = some block)
+    (stored : store.blockStates[root]? = some state) : state.slot = block.slot := by
+  by_cases same : block = anchorBlock
+  · obtain ⟨post, postOk, anchored, -⟩ := reachable.blockStatesFromParents found
+    rw [stored, Option.some.injEq] at postOk
+    subst post
+    rw [anchored same, same]
+    exact anchorSlot.symm
+  · exact (reachable.blockState_header found stored same).1
+
+/-- No held block precedes the anchor, even when the anchor state has a different slot. -/
+theorem _root_.EthLib.Consensus.Store.Reachable.anchorSlot_le_block
+    {store : Store preset fork}
+    (reachable : Store.Reachable config anchorState anchorBlock store)
+    {root : Root} {block : BeaconBlock preset fork}
+    (known : store.blocks[root]? = some block) : anchorBlock.slot ≤ block.slot := by
+  induction reachable generalizing root block with
+  | anchor made =>
+    obtain ⟨r, _, blocks, _⟩ := getForkchoiceStore_maps made
+    rw [blocks, getElem?_insert_root] at known
+    split at known
+    · cases known; exact UInt64.le_refl _
+    · simp at known
+  | tick _ step ih => exact ih ((Store.onTick_frame step).2.2.1 ▸ known)
+  | attestation _ step ih => exact ih ((Store.onAttestation_frame step).2.1 ▸ known)
+  | attesterSlashing _ step ih => exact ih ((Store.onAttesterSlashing_frame step).2.1 ▸ known)
+  | payloadAttestation _ step ih =>
+    exact ih ((Store.onPayloadAttestationMessage_onlyPtcVotes step).frame.2.1 ▸ known)
+  | envelope _ step ih => exact ih ((Store.onExecutionPayloadEnvelope_frame step).2.1 ▸ known)
+  | inclusionList _ step ih => exact ih ((Store.onInclusionList_frame step).2.1 ▸ known)
+  | @block before after checks sources signed reached step ih =>
+    rcases Store.onBlock_same_or_insert step with same | ⟨r, hashed, fresh, blocks, _⟩
+    · exact ih (same ▸ known)
+    rw [blocks, getElem?_insert_root] at known
+    split at known
+    · cases known
+      -- Admission walks to a held finalized block below the new block.
+      obtain ⟨_, ⟨slot, slotOk, later⟩, checkpoint⟩ := Store.onBlock_checks hashed
+        (by simp [Std.TreeMap.contains_eq_isSome_getElem?, fresh]) step
+      unfold Store.getCheckpointBlock at checkpoint
+      simp only [bind_ok_iff, mapError_ok_iff] at checkpoint
+      obtain ⟨s, sOk, ancestor, walk, _⟩ := checkpoint
+      rw [slotOk] at sOk
+      cases sOk
+      obtain ⟨b, found, lower⟩ := Store.getAncestor_le walk
+      exact UInt64.le_trans (ih found) (UInt64.le_trans lower (UInt64.le_of_lt later))
+    · exact ih known
+
 end EthLib.Consensus

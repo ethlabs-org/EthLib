@@ -42,7 +42,7 @@ variable {preset : Preset} {fork : Base.Fork} {config : Config} {checks : Signat
 /-! ## Steps that keep what the churn reads -/
 
 /-- Two states that hold the same exit and consolidation queues, from Electra. -/
-def QueuesSame (s t : BeaconState preset fork) : Prop :=
+private def QueuesSame (s t : BeaconState preset fork) : Prop :=
   ∀ electra : .pectra ≤ fork,
     t.earliestExitEpoch electra = s.earliestExitEpoch electra ∧
       t.exitBalanceToConsume electra = s.exitBalanceToConsume electra ∧
@@ -55,7 +55,7 @@ It may add validators.
 
 A new validator has no exit epoch yet, and is active in no epoch up to the current one.
 -/
-structure Kept (s t : BeaconState preset fork) : Prop where
+private structure Kept (s t : BeaconState preset fork) : Prop where
   epoch : getCurrentEpoch t = getCurrentEpoch s
   queues : QueuesSame s t
   active : ActiveKept (getCurrentEpoch s) s t
@@ -64,15 +64,12 @@ structure Kept (s t : BeaconState preset fork) : Prop where
       w.exitEpoch = v.exitEpoch ∧ w.effectiveBalance = v.effectiveBalance
   new : ∀ (i : Nat) (w : Validator), s.validators.data.size ≤ i → t.validators.data[i]? = some w →
     w.exitEpoch = FAR_FUTURE_EPOCH
-  newCapped : fork < .pectra → ∀ (i : Nat) (w : Validator), s.validators.data.size ≤ i →
-    t.validators.data[i]? = some w → w.effectiveBalance ≤ preset.MAX_EFFECTIVE_BALANCE
 
-theorem Kept.refl (s : BeaconState preset fork) : Kept s s :=
+private theorem Kept.refl (s : BeaconState preset fork) : Kept s s :=
   ⟨rfl, fun _ => ⟨rfl, rfl, rfl, rfl⟩, ActiveKept.refl _ _, fun _ v found => ⟨v, found, rfl, rfl⟩,
-    fun _ _ large found => absurd (Array.getElem?_eq_some_iff.mp found).1 (by omega),
-    fun _ _ _ large found => absurd (Array.getElem?_eq_some_iff.mp found).1 (by omega)⟩
+    fun _ _ large found => absurd (Array.getElem?_eq_some_iff.mp found).1 (by omega)⟩
 
-theorem Kept.trans {s m t : BeaconState preset fork} (one : Kept s m) (two : Kept m t) :
+private theorem Kept.trans {s m t : BeaconState preset fork} (one : Kept s m) (two : Kept m t) :
     Kept s t where
   epoch := two.epoch.trans one.epoch
   queues electra := by
@@ -92,17 +89,9 @@ theorem Kept.trans {s m t : BeaconState preset fork} (one : Kept s m) (two : Kep
       cases hw'
       exact ew'.trans (one.new i u large hu)
     · exact two.new i w (by omega) found
-  newCapped early i w large found := by
-    by_cases inside : i < m.validators.data.size
-    · obtain ⟨u, hu⟩ : ∃ u, m.validators.data[i]? = some u := ⟨_, Array.getElem?_eq_getElem inside⟩
-      obtain ⟨w', hw', _, bw'⟩ := two.old i u hu
-      rw [found] at hw'
-      cases hw'
-      exact bw' ▸ one.newCapped early i u large hu
-    · exact two.newCapped early i w (by omega) found
 
 /-- A kept step keeps every validator, so the registry does not shrink. -/
-theorem Kept.size_le {s t : BeaconState preset fork} (kept : Kept s t) :
+private theorem Kept.size_le {s t : BeaconState preset fork} (kept : Kept s t) :
     s.validators.data.size ≤ t.validators.data.size := by
   by_contra small
   have inside : t.validators.data.size < s.validators.data.size := by omega
@@ -111,7 +100,7 @@ theorem Kept.size_le {s t : BeaconState preset fork} (kept : Kept s t) :
   omega
 
 /-- A step that keeps the registry, the epoch and the queues. -/
-theorem Kept.of_epoch {s t : BeaconState preset fork}
+private theorem Kept.of_epoch {s t : BeaconState preset fork}
     (validators : t.validators.data = s.validators.data)
     (epoch : getCurrentEpoch t = getCurrentEpoch s)
     (queues : QueuesSame s t := by exact fun _ => ⟨rfl, rfl, rfl, rfl⟩) : Kept s t where
@@ -122,19 +111,16 @@ theorem Kept.of_epoch {s t : BeaconState preset fork}
   new i w large found := by
     rw [validators] at found
     exact absurd (Array.getElem?_eq_some_iff.mp found).1 (by omega)
-  newCapped _ i w large found := by
-    rw [validators] at found
-    exact absurd (Array.getElem?_eq_some_iff.mp found).1 (by omega)
 
 /-- A step that keeps the registry, the slot and the queues. -/
-theorem Kept.of_data {s t : BeaconState preset fork}
+private theorem Kept.of_data {s t : BeaconState preset fork}
     (validators : t.validators.data = s.validators.data := by rfl)
     (slot : t.slot = s.slot := by rfl)
     (queues : QueuesSame s t := by exact fun _ => ⟨rfl, rfl, rfl, rfl⟩) : Kept s t :=
   Kept.of_epoch validators (by unfold getCurrentEpoch; rw [slot]) queues
 
 /-- A state equal to an update of another field of the state keeps what the churn reads. -/
-theorem Kept.of_update {s t u : BeaconState preset fork} (rest : u = s)
+private theorem Kept.of_update {s t u : BeaconState preset fork} (rest : u = s)
     (validators : t.validators.data = u.validators.data := by rfl)
     (slot : t.slot = u.slot := by rfl)
     (queues : QueuesSame u t := by exact fun _ => ⟨rfl, rfl, rfl, rfl⟩) : Kept s t := by
@@ -142,14 +128,14 @@ theorem Kept.of_update {s t u : BeaconState preset fork} (rest : u = s)
   exact Kept.of_data validators slot queues
 
 /-- A validator write that keeps the exit epoch, the effective balance and the activity. -/
-theorem kept_setValidatorAt {s t : BeaconState preset fork} {i : Nat} {old v : Validator}
+private theorem kept_setValidatorAt {s t : BeaconState preset fork} {i : Nat} {old v : Validator}
     (found : getValidatorAt s i = .ok old) (set : s.setValidatorAt i v = .ok t)
     (exit : v.exitEpoch = old.exitEpoch) (balance : v.effectiveBalance = old.effectiveBalance)
     (activity : ∀ e ≤ getCurrentEpoch s, isActiveValidator v e = isActiveValidator old e) :
     Kept s t := by
   obtain ⟨inside, rfl⟩ := setValidatorAt_ok set
   have oldFound : s.validators.data[i]? = some old := getValidatorAt_eq_ok_iff.mp found
-  refine ⟨rfl, fun _ => ⟨rfl, rfl, rfl, rfl⟩, ?_, ?_, ?_, ?_⟩
+  refine ⟨rfl, fun _ => ⟨rfl, rfl, rfl, rfl⟩, ?_, ?_, ?_⟩
   · intro e le j
     simp only [isActiveAt, BeaconState.putValidator, RootedForkList.data_set, Array.getElem?_set]
     split
@@ -171,13 +157,9 @@ theorem kept_setValidatorAt {s t : BeaconState preset fork} {i : Nat} {old v : V
     split at found
     · omega
     · exact absurd (Array.getElem?_eq_some_iff.mp found).1 (by omega)
-  · intro _ j w large found
-    simp only [BeaconState.putValidator, RootedForkList.data_set, Array.getElem?_set] at found
-    split at found
-    · omega
-    · exact absurd (Array.getElem?_eq_some_iff.mp found).1 (by omega)
 
-theorem kept_setValidatorAt_same {s t : BeaconState preset fork} {i : Nat} {old v : Validator}
+private theorem kept_setValidatorAt_same {s t : BeaconState preset fork} {i : Nat}
+    {old v : Validator}
     (found : getValidatorAt s i = .ok old) (set : s.setValidatorAt i v = .ok t)
     (exit : v.exitEpoch = old.exitEpoch) (balance : v.effectiveBalance = old.effectiveBalance)
     (activation : v.activationEpoch = old.activationEpoch) : Kept s t :=
@@ -185,7 +167,8 @@ theorem kept_setValidatorAt_same {s t : BeaconState preset fork} {i : Nat} {old 
     unfold isActiveValidator
     rw [activation, exit]
 
-theorem kept_setValidator {s t : BeaconState preset fork} {i : ValidatorIndex} {old v : Validator}
+private theorem kept_setValidator {s t : BeaconState preset fork} {i : ValidatorIndex}
+    {old v : Validator}
     (found : getValidator s i = .ok old) (set : s.setValidator i v = .ok t)
     (exit : v.exitEpoch = old.exitEpoch) (balance : v.effectiveBalance = old.effectiveBalance)
     (activity : ∀ e ≤ getCurrentEpoch s, isActiveValidator v e = isActiveValidator old e) :
@@ -193,30 +176,34 @@ theorem kept_setValidator {s t : BeaconState preset fork} {i : ValidatorIndex} {
   kept_setValidatorAt (by rwa [← getValidator_eq_getValidatorAt])
     (by rwa [← setValidator_eq_setValidatorAt]) exit balance activity
 
-theorem kept_setValidator_same {s t : BeaconState preset fork} {i : ValidatorIndex}
+private theorem kept_setValidator_same {s t : BeaconState preset fork} {i : ValidatorIndex}
     {old v : Validator} (found : getValidator s i = .ok old) (set : s.setValidator i v = .ok t)
     (exit : v.exitEpoch = old.exitEpoch) (balance : v.effectiveBalance = old.effectiveBalance)
     (activation : v.activationEpoch = old.activationEpoch) : Kept s t :=
   kept_setValidatorAt_same (by rwa [← getValidator_eq_getValidatorAt])
     (by rwa [← setValidator_eq_setValidatorAt]) exit balance activation
 
-theorem kept_setBalance {s t : BeaconState preset fork} {i : ValidatorIndex} {balance : Gwei}
+private theorem kept_setBalance {s t : BeaconState preset fork} {i : ValidatorIndex}
+    {balance : Gwei}
     (set : s.setBalance i balance = .ok t) : Kept s t := by
   obtain ⟨_, rfl⟩ := setBalance_ok set
   exact Kept.of_data
 
-theorem kept_increaseBalance {s t : BeaconState preset fork} {i : ValidatorIndex} {delta : Gwei}
+private theorem kept_increaseBalance {s t : BeaconState preset fork} {i : ValidatorIndex}
+    {delta : Gwei}
     (ok : increaseBalance s i delta = .ok t) : Kept s t := by
   obtain ⟨_, set⟩ := increaseBalance_ok ok
   exact kept_setBalance set
 
-theorem kept_decreaseBalance {s t : BeaconState preset fork} {i : ValidatorIndex} {delta : Gwei}
+private theorem kept_decreaseBalance {s t : BeaconState preset fork} {i : ValidatorIndex}
+    {delta : Gwei}
     (ok : decreaseBalance s i delta = .ok t) : Kept s t := by
   obtain ⟨_, set⟩ := decreaseBalance_ok ok
   exact kept_setBalance set
 
 /-- A validator with no activation epoch is active in no epoch. -/
-theorem inactive_of_far {v : Validator} (far : v.activationEpoch = FAR_FUTURE_EPOCH) (e : Epoch) :
+private theorem inactive_of_far {v : Validator} (far : v.activationEpoch = FAR_FUTURE_EPOCH)
+    (e : Epoch) :
     isActiveValidator v e = false := by
   simp only [isActiveValidator, Bool.and_eq_false_iff, decide_eq_false_iff_not]
   have bound := v.exitEpoch.toNat_lt
@@ -225,11 +212,10 @@ theorem inactive_of_far {v : Validator} (far : v.activationEpoch = FAR_FUTURE_EP
   omega
 
 /-- Appending a validator that has no exit and is active in no epoch keeps what the churn reads. -/
-theorem kept_append {s t : BeaconState preset fork} {v : Validator}
+private theorem kept_append {s t : BeaconState preset fork} {v : Validator}
     (added : t.validators.data = s.validators.data.push v)
     (slot : t.slot = s.slot) (queues : QueuesSame s t)
-    (exit : v.exitEpoch = FAR_FUTURE_EPOCH) (far : v.activationEpoch = FAR_FUTURE_EPOCH)
-    (capped : fork < .pectra → v.effectiveBalance ≤ preset.MAX_EFFECTIVE_BALANCE) :
+    (exit : v.exitEpoch = FAR_FUTURE_EPOCH) (far : v.activationEpoch = FAR_FUTURE_EPOCH) :
     Kept s t where
   epoch := by unfold getCurrentEpoch; rw [slot]
   queues := queues
@@ -249,13 +235,8 @@ theorem kept_append {s t : BeaconState preset fork} {v : Validator}
     split at found
     · cases found; exact exit
     · exact absurd (Array.getElem?_eq_some_iff.mp found).1 (by omega)
-  newCapped early i w large found := by
-    rw [added, Array.getElem?_push] at found
-    split at found
-    · cases found; exact capped early
-    · exact absurd (Array.getElem?_eq_some_iff.mp found).1 (by omega)
 
-theorem kept_addValidatorToRegistry {s t : BeaconState preset fork}
+private theorem kept_addValidatorToRegistry {s t : BeaconState preset fork}
     {pubkey : Cryptography.Bls.BLSPubkey}
     {credentials : Bytes32} {amount : Gwei}
     (ok : addValidatorToRegistry s pubkey credentials amount = .ok t) : Kept s t := by
@@ -271,16 +252,12 @@ theorem kept_addValidatorToRegistry {s t : BeaconState preset fork}
       · cases ok
         exact ⟨rfl, fun _ => ⟨rfl, rfl, rfl, rfl⟩⟩
       · cases ok
-  refine kept_append added fields.1 fields.2 rfl rfl fun early => ?_
-  have notElectra : ¬ Fork.pectra ≤ fork := Nat.not_le_of_lt early
-  simp only [getValidatorFromDeposit, withdrawalMaxEffectiveBalance, notElectra, ↓reduceIte]
-  rw [UInt64.le_iff_toNat_le, Base.Uint64.toNat_min]
-  exact Nat.min_le_right _ _
+  exact kept_append added fields.1 fields.2 rfl rfl
 
 /-! ## The churn of a kept state -/
 
 /-- A sum over more positions that adds only zeros past the first ones. -/
-theorem sum_range_extend {n m : Nat} (le : n ≤ m) (f g : Nat → Nat)
+private theorem sum_range_extend {n m : Nat} (le : n ≤ m) (f g : Nat → Nat)
     (agree : ∀ j < n, f j = g j) (zero : ∀ j, n ≤ j → j < m → f j = 0) :
     ((List.range m).map f).sum = ((List.range n).map g).sum := by
   obtain ⟨k, rfl⟩ := Nat.exists_eq_add_of_le le
@@ -293,7 +270,7 @@ theorem sum_range_extend {n m : Nat} (le : n ≤ m) (f g : Nat → Nat)
     simp [zero (n + k) (by omega) (by omega)]
 
 /-- A kept step keeps the total active balance, and so every churn limit. -/
-theorem totalActiveBalance_eq {s t : BeaconState preset fork}
+private theorem totalActiveBalance_eq {s t : BeaconState preset fork}
     (epoch : getCurrentEpoch t = getCurrentEpoch s) (active : ActiveKept (getCurrentEpoch s) s t)
     (size : s.validators.data.size ≤ t.validators.data.size)
     (balanceKept : ∀ (i : Nat) (v : Validator), s.validators.data[i]? = some v →
@@ -348,28 +325,28 @@ theorem totalActiveBalance_eq {s t : BeaconState preset fork}
     simp only [findS, findT, sum]
 
 /-- A kept step keeps the total active balance. -/
-theorem Kept.totalActiveBalance {s t : BeaconState preset fork} (kept : Kept s t) :
+private theorem Kept.totalActiveBalance {s t : BeaconState preset fork} (kept : Kept s t) :
     getTotalActiveBalance t = getTotalActiveBalance s :=
   totalActiveBalance_eq kept.epoch kept.active kept.size_le fun i v found => by
     obtain ⟨w, hw, _, balance⟩ := kept.old i v found
     exact ⟨w, hw, balance⟩
 
 /-- The exit churn reads only the total active balance. -/
-theorem exitChurn_congr {s t : BeaconState preset fork}
+private theorem exitChurn_congr {s t : BeaconState preset fork}
     (total : getTotalActiveBalance t = getTotalActiveBalance s) :
     exitChurnLimit config t = exitChurnLimit config s := by
   unfold exitChurnLimit getExitChurnLimit getActivationExitChurnLimit getBalanceChurnLimit
   rw [total]
 
 /-- The consolidation churn reads only the total active balance. -/
-theorem consolidationChurn_congr {s t : BeaconState preset fork}
+private theorem consolidationChurn_congr {s t : BeaconState preset fork}
     (total : getTotalActiveBalance t = getTotalActiveBalance s) :
     getConsolidationChurnLimit config t = getConsolidationChurnLimit config s := by
   unfold getConsolidationChurnLimit getActivationExitChurnLimit getBalanceChurnLimit
   rw [total]
 
 /-- Before Electra the churn counts the active validators of the current epoch. -/
-theorem validatorChurn_congr {s t : BeaconState preset fork}
+private theorem validatorChurn_congr {s t : BeaconState preset fork}
     (epoch : getCurrentEpoch t = getCurrentEpoch s) (active : ActiveKept (getCurrentEpoch s) s t) :
     getValidatorChurnLimit config t = getValidatorChurnLimit config s := by
   unfold getValidatorChurnLimit
@@ -382,7 +359,7 @@ theorem validatorChurn_congr {s t : BeaconState preset fork}
 Kept steps keep it.
 
 So does each call of a queue: an exit, a partial withdrawal or a consolidation. -/
-structure Laws (config : Config) (Inv : BeaconState preset fork → Prop) : Prop where
+private structure Laws (config : Config) (Inv : BeaconState preset fork → Prop) : Prop where
   kept : ∀ {s t : BeaconState preset fork}, Kept s t → Inv s → Inv t
   exit : ∀ {s t : BeaconState preset fork} {index : ValidatorIndex},
     initiateValidatorExit config s index = .ok t → Inv s → Inv t
@@ -395,39 +372,41 @@ structure Laws (config : Config) (Inv : BeaconState preset fork → Prop) : Prop
     queueConsolidation config s electra sourceIndex source targetIndex = .ok t → Inv s → Inv t
 
 /-- A step after which an invariant holds when it held before. -/
-def Keeps (Inv : BeaconState preset fork → Prop) (s t : BeaconState preset fork) : Prop :=
+private def Keeps (Inv : BeaconState preset fork → Prop) (s t : BeaconState preset fork) : Prop :=
   Inv s → Inv t
 
 section Traversal
 
 variable {Inv : BeaconState preset fork → Prop}
 
-theorem Keeps.refl (s : BeaconState preset fork) : Keeps Inv s s := id
+private theorem Keeps.refl (s : BeaconState preset fork) : Keeps Inv s s := id
 
-theorem Keeps.trans {s m t : BeaconState preset fork} (one : Keeps Inv s m)
+private theorem Keeps.trans {s m t : BeaconState preset fork} (one : Keeps Inv s m)
     (two : Keeps Inv m t) : Keeps Inv s t := two ∘ one
 
-theorem Keeps.foldlM {α ε : Type} {step : BeaconState preset fork → α → Except ε _}
+private theorem Keeps.foldlM {α ε : Type} {step : BeaconState preset fork → α → Except ε _}
     (keeps : ∀ s a t, step s a = .ok t → Keeps Inv s t) {xs : List α}
     (ok : xs.foldlM step state = .ok after) : Keeps Inv state after :=
   foldlM_ok_invariant (Keeps Inv state)
     (fun _ _ _ h ok => h.trans (keeps _ _ _ ok)) (Keeps.refl state) ok
 
-theorem keeps_of_kept (laws : Laws config Inv) {s t : BeaconState preset fork} (kept : Kept s t) :
+private theorem keeps_of_kept (laws : Laws config Inv) {s t : BeaconState preset fork}
+    (kept : Kept s t) :
     Keeps Inv s t :=
   laws.kept kept
 
-theorem keeps_exit (laws : Laws config Inv) {s t : BeaconState preset fork} {index : ValidatorIndex}
+private theorem keeps_exit (laws : Laws config Inv) {s t : BeaconState preset fork}
+    {index : ValidatorIndex}
     (ok : initiateValidatorExit config s index = .ok t) : Keeps Inv s t :=
   laws.exit ok
 
 /-- A validator that activates later than an epoch is not active in it. -/
-theorem inactive_of_lt {v : Validator} {e : Epoch} (late : e < v.activationEpoch) :
+private theorem inactive_of_lt {v : Validator} {e : Epoch} (late : e < v.activationEpoch) :
     isActiveValidator v e = false := by
   simp only [isActiveValidator, Bool.and_eq_false_iff, decide_eq_false_iff_not]
   exact .inl (UInt64.not_le.mpr late)
 
-theorem keeps_slashValidator (laws : Laws config Inv) {i : ValidatorIndex}
+private theorem keeps_slashValidator (laws : Laws config Inv) {i : ValidatorIndex}
     {whistleblower : Option ValidatorIndex}
     (ok : slashValidator config state i whistleblower = .ok after) : Keeps Inv state after := by
   obtain ⟨exited, _, _, marked, _, _, slashings, lowered, _, _, raised, last, exitedOk, read, _,
@@ -443,14 +422,15 @@ theorem keeps_slashValidator (laws : Laws config Inv) {i : ValidatorIndex}
   · exact keeps_of_kept laws Kept.of_data
   · exact Keeps.refl _
 
-theorem keeps_processProposerSlashing (laws : Laws config Inv) {slashing : ProposerSlashing}
+private theorem keeps_processProposerSlashing (laws : Laws config Inv) {slashing : ProposerSlashing}
     (ok : processProposerSlashing config checks state slashing = .ok after) :
     Keeps Inv state after := by
   simp only [processProposerSlashing, bind_ok_iff, ensure_ok_iff, liftAccessor_ok] at ok
   obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, slashed⟩ := ok
   exact keeps_slashValidator laws slashed
 
-theorem keeps_slashIfSlashable (laws : Laws config Inv) {step next : BeaconState preset fork × Bool}
+private theorem keeps_slashIfSlashable (laws : Laws config Inv)
+    {step next : BeaconState preset fork × Bool}
     {index : ValidatorIndex} (ok : slashIfSlashable config step index = .ok next) :
     Keeps Inv step.1 next.1 := by
   obtain ⟨state, slashedAny⟩ := step
@@ -462,7 +442,7 @@ theorem keeps_slashIfSlashable (laws : Laws config Inv) {step next : BeaconState
     exact keeps_slashValidator laws slashed
   · cases ok; exact Keeps.refl _
 
-theorem keeps_processAttesterSlashing (laws : Laws config Inv)
+private theorem keeps_processAttesterSlashing (laws : Laws config Inv)
     {slashing : AttesterSlashing preset fork}
     (ok : processAttesterSlashing config checks state slashing = .ok after) :
     Keeps Inv state after := by
@@ -473,7 +453,7 @@ theorem keeps_processAttesterSlashing (laws : Laws config Inv)
     (fun _ _ _ before ok => before.trans (keeps_slashIfSlashable laws ok))
     (show Keeps Inv state (state, false).1 from Keeps.refl state) folded
 
-theorem keeps_attestation (laws : Laws config Inv) {attestation : Attestation preset fork}
+private theorem keeps_attestation (laws : Laws config Inv) {attestation : Attestation preset fork}
     {parentSlot : Slot}
     (ok : processAttestation config checks state parentSlot attestation = .ok after) :
     Keeps Inv state after := by
@@ -502,22 +482,14 @@ theorem keeps_attestation (laws : Laws config Inv) {attestation : Attestation pr
   · obtain ⟨_, rest⟩ := kept
     exact keeps_of_kept laws (Kept.of_update rest)
 
-theorem kept_applyPendingDeposit {deposit : PendingDeposit}
+private theorem kept_applyPendingDeposit {deposit : PendingDeposit}
     (ok : applyPendingDeposit config checks state deposit = .ok after) : Kept state after := by
-  unfold applyPendingDeposit at ok
-  split at ok
-  · split at ok
-    · cases ok; exact Kept.refl _
-    simp only [bind_ok_iff] at ok
-    obtain ⟨_, _, ok⟩ := ok
-    split at ok
-    · exact kept_addValidatorToRegistry ok
-    · cases ok; exact Kept.refl _
-  · simp only [liftAccessor_ok, bind_ok_iff] at ok
-    obtain ⟨_, _, ok⟩ := ok
-    exact kept_increaseBalance ok
+  rcases applyPendingDeposit_cases ok with rfl | ⟨_, raised⟩ | ⟨_, added⟩
+  · exact Kept.refl _
+  · exact kept_increaseBalance raised
+  · exact kept_addValidatorToRegistry added
 
-theorem kept_applyDeposit {pubkey : Cryptography.Bls.BLSPubkey} {credentials : Bytes32}
+private theorem kept_applyDeposit {pubkey : Cryptography.Bls.BLSPubkey} {credentials : Bytes32}
     {amount : Gwei} {signature : Cryptography.Bls.BLSSignature}
     (ok : applyDeposit config checks state pubkey credentials amount signature = .ok after) :
     Kept state after := by
@@ -537,13 +509,13 @@ theorem kept_applyDeposit {pubkey : Cryptography.Bls.BLSPubkey} {credentials : B
       exact Kept.of_data
   · exact kept_applyPendingDeposit ok
 
-theorem kept_processDeposit {before : fork < .hegota} {deposit : Deposit}
+private theorem kept_processDeposit {before : fork < .hegota} {deposit : Deposit}
     (ok : processDeposit config checks before state deposit = .ok after) : Kept state after := by
   obtain ⟨_, _, next, _, credited⟩ := processDeposit_ok ok
   exact (Kept.of_data (s := state) (t := { state with eth1DepositIndex := fun _ => next })).trans
     (kept_applyDeposit credited)
 
-theorem keeps_processVoluntaryExit (laws : Laws config Inv) {signed : SignedVoluntaryExit}
+private theorem keeps_processVoluntaryExit (laws : Laws config Inv) {signed : SignedVoluntaryExit}
     (ok : processVoluntaryExit config checks state signed = .ok after) :
     Keeps Inv state after := by
   unfold processVoluntaryExit at ok
@@ -551,13 +523,13 @@ theorem keeps_processVoluntaryExit (laws : Laws config Inv) {signed : SignedVolu
   obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, exited⟩ := ok
   exact laws.exit exited
 
-theorem kept_processBlsToExecutionChange {signed : SignedBLSToExecutionChange}
+private theorem kept_processBlsToExecutionChange {signed : SignedBLSToExecutionChange}
     (ok : processBlsToExecutionChange config checks state signed = .ok after) :
     Kept state after := by
   obtain ⟨_, found, _, _, _, set⟩ := processBlsToExecutionChange_ok ok
   exact kept_setValidator_same found set rfl rfl rfl
 
-theorem kept_queueExcessActiveBalance {electra : .pectra ≤ fork} {index : ValidatorIndex}
+private theorem kept_queueExcessActiveBalance {electra : .pectra ≤ fork} {index : ValidatorIndex}
     (ok : queueExcessActiveBalance state electra index = .ok after) : Kept state after := by
   simp only [queueExcessActiveBalance, bind_ok_iff] at ok
   obtain ⟨_, _, ok⟩ := ok
@@ -568,14 +540,15 @@ theorem kept_queueExcessActiveBalance {electra : .pectra ≤ fork} {index : Vali
     exact Kept.of_data
   · cases ok; exact Kept.refl _
 
-theorem kept_switchToCompoundingValidator {electra : .pectra ≤ fork} {index : ValidatorIndex}
+private theorem kept_switchToCompoundingValidator {electra : .pectra ≤ fork}
+    {index : ValidatorIndex}
     (ok : switchToCompoundingValidator state electra index = .ok after) : Kept state after := by
   simp only [switchToCompoundingValidator, bind_ok_iff] at ok
   obtain ⟨_, found, _, set, queued⟩ := ok
   exact (kept_setValidator_same found set rfl rfl rfl).trans
     (kept_queueExcessActiveBalance queued)
 
-theorem keeps_requestPartialWithdrawal (laws : Laws config Inv) {electra : .pectra ≤ fork}
+private theorem keeps_requestPartialWithdrawal (laws : Laws config Inv) {electra : .pectra ≤ fork}
     {index : ValidatorIndex} {validator : Validator} {amount owed : Gwei}
     (ok : requestPartialWithdrawal config state electra index validator amount owed =
       .ok after) : Keeps Inv state after := by
@@ -587,7 +560,7 @@ theorem keeps_requestPartialWithdrawal (laws : Laws config Inv) {electra : .pect
     exact (show Keeps Inv _ _ from laws.churn churned).trans (keeps_of_kept laws Kept.of_data)
   · cases ok; exact Keeps.refl _
 
-theorem keeps_processWithdrawalRequest (laws : Laws config Inv) {electra : .pectra ≤ fork}
+private theorem keeps_processWithdrawalRequest (laws : Laws config Inv) {electra : .pectra ≤ fork}
     {request : WithdrawalRequest}
     (ok : processWithdrawalRequest config state electra request = .ok after) :
     Keeps Inv state after := by
@@ -600,7 +573,8 @@ theorem keeps_processWithdrawalRequest (laws : Laws config Inv) {electra : .pect
     | exact keeps_requestPartialWithdrawal laws ok
     | exact laws.exit (liftAccessor_ok.mp ok)
 
-theorem keeps_processConsolidationRequest (laws : Laws config Inv) {electra : .pectra ≤ fork}
+private theorem keeps_processConsolidationRequest (laws : Laws config Inv)
+    {electra : .pectra ≤ fork}
     {request : ConsolidationRequest}
     (ok : processConsolidationRequest config state electra request = .ok after) :
     Keeps Inv state after := by
@@ -613,7 +587,7 @@ theorem keeps_processConsolidationRequest (laws : Laws config Inv) {electra : .p
     | exact keeps_of_kept laws (kept_switchToCompoundingValidator (liftAccessor_ok.mp ok))
     | exact laws.consolidate (getElem?_toNat_of_ofNatChecked (by assumption)) (by simp_all) ok
 
-theorem kept_processDepositRequest {electra : .pectra ≤ fork} {request : DepositRequest}
+private theorem kept_processDepositRequest {electra : .pectra ≤ fork} {request : DepositRequest}
     (ok : processDepositRequest state electra request = .ok after) : Kept state after := by
   obtain ⟨start, recorded⟩ :=
     recordDepositRequestsStart_eq (state := state) (index := request.index)
@@ -622,7 +596,7 @@ theorem kept_processDepositRequest {electra : .pectra ≤ fork} {request : Depos
   obtain ⟨_, _, rfl⟩ := ok
   exact Kept.of_data
 
-theorem keeps_processExecutionRequests (laws : Laws config Inv)
+private theorem keeps_processExecutionRequests (laws : Laws config Inv)
     {body : BeaconBlockBody preset fork} {electra : .pectra ≤ fork ∧ fork < .glamsterdam}
     (ok : processExecutionRequests config state body electra = .ok after) :
     Keeps Inv state after := by
@@ -633,7 +607,7 @@ theorem keeps_processExecutionRequests (laws : Laws config Inv)
     (Keeps.foldlM (fun _ _ _ ok => keeps_processWithdrawalRequest laws ok) withdrawals).trans
       (Keeps.foldlM (fun _ _ _ ok => keeps_processConsolidationRequest laws ok) consolidations)
 
-theorem kept_applyWithdrawal {withdrawal : Withdrawal}
+private theorem kept_applyWithdrawal {withdrawal : Withdrawal}
     (ok : applyWithdrawal state withdrawal = .ok after) : Kept state after := by
   unfold applyWithdrawal at ok
   split at ok
@@ -643,67 +617,17 @@ theorem kept_applyWithdrawal {withdrawal : Withdrawal}
     exact Kept.of_data
   · exact kept_decreaseBalance ok
 
-theorem kept_applyExpectedWithdrawals {capella : .shapella ≤ fork}
+private theorem kept_applyExpectedWithdrawals {capella : .shapella ≤ fork}
     {expected : ExpectedWithdrawals}
     (ok : applyExpectedWithdrawals state capella expected = .ok after) : Kept state after := by
-  unfold applyExpectedWithdrawals at ok
-  simp only [bind_ok_iff] at ok
-  obtain ⟨applied, appliedOk, indexed, indexedOk, finished, sweptOk, last⟩ := ok
-  have one : Kept state applied := by
-    unfold applyWithdrawals at appliedOk
-    rw [← Array.foldlM_toList] at appliedOk
-    exact foldlM_ok_invariant (Kept state)
-      (fun _ _ _ h ok => h.trans (kept_applyWithdrawal ok)) (Kept.refl state) appliedOk
-  have two : Kept applied indexed := by
-    unfold updateNextWithdrawalIndex at indexedOk
-    split at indexedOk
-    · simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at indexedOk
-      obtain ⟨_, _, rfl⟩ := indexedOk
-      exact Kept.of_data
-    · cases indexedOk; exact Kept.refl _
-  have queued : ∀ kept : BeaconState preset fork,
-      Kept kept (if gloas : .glamsterdam ≤ fork then
-        updateBuilderPendingWithdrawals
-          (updatePayloadExpectedWithdrawals kept gloas expected.withdrawals) gloas
-          expected.processedBuilderWithdrawalsCount
-      else kept) := by
-    intro kept
-    split
-    · exact Kept.of_data
-    · exact Kept.refl _
-  have partials : ∀ kept : BeaconState preset fork,
-      Kept kept (if electra : .pectra ≤ fork then
-        updatePendingPartialWithdrawals kept electra expected.processedPartialWithdrawalsCount
-      else kept) := by
-    intro kept
-    split
-    · exact Kept.of_data
-    · exact Kept.refl _
-  have swept : ∀ kept : BeaconState preset fork,
-      (if gloas : .glamsterdam ≤ fork then
-        updateNextWithdrawalBuilderIndex kept gloas expected.processedBuildersSweepCount
-      else pure kept) = .ok finished → Kept kept finished := by
-    intro kept ok
-    split at ok
-    · unfold updateNextWithdrawalBuilderIndex at ok
-      dsimp only at ok
-      split at ok
-      · cases ok; exact Kept.of_data
-      · simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at ok
-        obtain ⟨_, _, rfl⟩ := ok
-        exact Kept.of_data
-    · cases ok; exact Kept.refl _
-  have lastKept : Kept finished after := by
-    unfold updateNextWithdrawalValidatorIndex at last
-    simp only [bind_ok_iff] at last
-    obtain ⟨_, _, last⟩ := last
-    split at last
-    · cases last
-    · cases last; exact Kept.of_data
-  exact one.trans <| two.trans <| (queued _).trans <| (partials _).trans <|
-    (swept _ sweptOk).trans lastKept
+  apply applyExpectedWithdrawals_of Kept Kept.refl (fun one two => one.trans two)
+    (fun withdrawn => kept_applyWithdrawal withdrawn) ?_ ok
+  intro s t frame same exit left consolidation remaining
+  exact Kept.of_data (congrArg (·.data) same) frame.slot
+    (fun h => ⟨congrFun exit h, congrFun left h, congrFun consolidation h,
+      congrFun remaining h⟩)
 
-theorem kept_processWithdrawals {capella : .shapella ≤ fork}
+private theorem kept_processWithdrawals {capella : .shapella ≤ fork}
     {payload : Until .glamsterdam fork (ExecutionPayload preset fork)}
     (ok : processWithdrawals state capella payload = .ok after) : Kept state after := by
   unfold processWithdrawals at ok
@@ -717,14 +641,15 @@ theorem kept_processWithdrawals {capella : .shapella ≤ fork}
     obtain ⟨_, _, _, _, applied⟩ := ok
     exact kept_applyExpectedWithdrawals applied
 
-theorem kept_executionPayload {body : BeaconBlockBody preset fork}
+private theorem kept_executionPayload {body : BeaconBlockBody preset fork}
     {bellatrix : .bellatrix ≤ fork ∧ fork < .glamsterdam}
     (ok : processExecutionPayload config engine state body bellatrix = .ok after) :
     Kept state after := by
   obtain ⟨_, _, _, rfl⟩ := processExecutionPayload_ok ok
   exact Kept.of_data
 
-theorem kept_blockExecution (early : fork < .glamsterdam) {body : BeaconBlockBody preset fork}
+private theorem kept_blockExecution (early : fork < .glamsterdam)
+    {body : BeaconBlockBody preset fork}
     {bellatrix : .bellatrix ≤ fork}
     (ok : processBlockExecution config checks engine state body bellatrix = .ok after) :
     Kept state after := by
@@ -741,51 +666,38 @@ theorem kept_blockExecution (early : fork < .glamsterdam) {body : BeaconBlockBod
     · exact kept_executionPayload ok
     · cases ok; exact Kept.refl _
 
-theorem keeps_operations (laws : Laws config Inv) (early : fork < .glamsterdam)
+private theorem keeps_operations (laws : Laws config Inv) (early : fork < .glamsterdam)
     {body : BeaconBlockBody preset fork} {parentSlot : Slot}
     (ok : processOperations config checks state body parentSlot = .ok after) :
     Keeps Inv state after := by
-  unfold processOperations at ok
-  split at ok
-  · rename_i gloas
-    exact absurd gloas (Nat.not_le_of_lt early)
-  simp only [bind_ok_iff, ensure_ok_iff, ← Array.foldlM_toList] at ok
-  obtain ⟨_, _, _, _, _, proposers, _, attesters, _, attested, _, deposits, exited,
-    exits, changed, changes, requests⟩ := ok
-  have changesKept : Keeps Inv exited changed := by
-    unfold processBlsToExecutionChanges at changes
-    split at changes
-    · rw [← Array.foldlM_toList] at changes
-      exact Keeps.foldlM
-        (fun _ _ _ ok => keeps_of_kept laws (kept_processBlsToExecutionChange ok)) changes
-    · cases changes; exact Keeps.refl _
-  have requestsKept : Keeps Inv changed after := by
-    split at requests
-    · exact keeps_processExecutionRequests laws requests
-    · cases requests; exact Keeps.refl _
+  obtain ⟨_, _, _, proposers, attesters, attested, rest⟩ :=
+    processOperations_folds_of (Keeps Inv) Keeps.refl (fun one two => one.trans two)
+      (fun deposited => keeps_of_kept laws (kept_processDeposit deposited))
+      (keeps_processVoluntaryExit laws)
+      (fun changed => keeps_of_kept laws (kept_processBlsToExecutionChange changed))
+      (keeps_processExecutionRequests laws)
+      (fun {state after gloas} _ => absurd gloas (Nat.not_le_of_lt early)) ok
   exact (Keeps.foldlM (fun _ _ _ ok => keeps_processProposerSlashing laws ok) proposers).trans <|
     (Keeps.foldlM (fun _ _ _ ok => keeps_processAttesterSlashing laws ok) attesters).trans <|
     (Keeps.foldlM (fun _ _ _ ok => keeps_attestation laws ok) attested).trans <|
-    (Keeps.foldlM (fun _ _ _ ok => keeps_of_kept laws (kept_processDeposit ok)) deposits).trans <|
-    (Keeps.foldlM (fun _ _ _ ok => keeps_processVoluntaryExit laws ok) exits).trans <|
-    changesKept.trans requestsKept
+    rest
 
-theorem kept_blockHeader {block : BeaconBlock preset fork}
+private theorem kept_blockHeader {block : BeaconBlock preset fork}
     (ok : processBlockHeader state block = .ok after) : Kept state after := by
   obtain ⟨_, _, rfl⟩ := processBlockHeader_eq ok
   exact Kept.of_data
 
-theorem kept_randao {body : BeaconBlockBody preset fork}
+private theorem kept_randao {body : BeaconBlockBody preset fork}
     (ok : processRandao config checks state body = .ok after) : Kept state after := by
   obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, rfl⟩ := processRandao_eq ok
   exact Kept.of_data
 
-theorem kept_eth1Data {before : fork < .hegota} {body : BeaconBlockBody preset fork}
+private theorem kept_eth1Data {before : fork < .hegota} {body : BeaconBlockBody preset fork}
     (ok : processEth1Data before state body = .ok after) : Kept state after := by
   obtain ⟨_, _, rest⟩ := processEth1Data_eq ok
   exact Kept.of_update rest
 
-theorem kept_syncAggregate {altair : .altair ≤ fork} {aggregate : SyncAggregate preset}
+private theorem kept_syncAggregate {altair : .altair ≤ fork} {aggregate : SyncAggregate preset}
     (ok : processSyncAggregate config checks state altair aggregate = .ok after) :
     Kept state after := by
   unfold processSyncAggregate at ok
@@ -801,59 +713,40 @@ theorem kept_syncAggregate {altair : .altair ≤ fork} {aggregate : SyncAggregat
     · exact kept_decreaseBalance (liftAccessor_ok.mp ok))) (Kept.refl state) folded
 
 /-- A block keeps an invariant of the epoch, at every fork before Gloas. -/
-theorem keeps_processBlock (laws : Laws config Inv) (early : fork < .glamsterdam)
+private theorem keeps_processBlock (laws : Laws config Inv) (early : fork < .glamsterdam)
     {block : BeaconBlock preset fork}
     (ok : processBlock config checks engine state block = .ok after) : Keeps Inv state after := by
-  unfold processBlock at ok
-  split at ok
-  · unfold processBlockAltair stateBeforeOperations at ok
-    simp only [bind_assoc, bind_ok_iff] at ok
-    obtain ⟨paid, paidOk, headed, headedOk, executed, executedOk, revealed, revealedOk, voted,
-      votedOk, _, operatedOk, synced⟩ := ok
-    have paidKept : Kept state paid := by
-      split at paidOk
-      · rename_i gloas
-        exact absurd gloas (Nat.not_le_of_lt early)
-      · cases paidOk; exact Kept.refl _
-    have executedKept : Kept headed executed := by
-      split at executedOk
-      · exact kept_blockExecution early executedOk
-      · cases executedOk; exact Kept.refl _
-    have votedKept : Kept revealed voted := by
-      split at votedOk
-      · exact kept_eth1Data votedOk
-      · cases votedOk; exact Kept.refl _
-    exact (keeps_of_kept laws (paidKept.trans <| (kept_blockHeader headedOk).trans <|
-      executedKept.trans <| (kept_randao revealedOk).trans votedKept)).trans <|
-      (keeps_operations laws early operatedOk).trans
-        (keeps_of_kept laws (kept_syncAggregate synced))
-  have beforeAltair : fork < .altair := Nat.lt_of_not_le ‹¬ Fork.altair ≤ fork›
-  have notBellatrix : ¬ Fork.bellatrix ≤ fork :=
-    Nat.not_le_of_lt (Nat.lt_trans beforeAltair (by decide))
-  have beforeHeze : fork < .hegota := Nat.lt_trans beforeAltair (by decide)
-  simp only [stateBeforeOperations, show ¬ Fork.glamsterdam ≤ fork from Nat.not_le_of_lt early,
-    notBellatrix, beforeHeze, ↓reduceDIte, pure_bind, bind_assoc, bind_ok_iff] at ok
-  obtain ⟨_, headerOk, _, randaoOk, _, eth1Ok, operationsOk⟩ := ok
-  exact (keeps_of_kept laws ((kept_blockHeader headerOk).trans <| (kept_randao randaoOk).trans
-    (kept_eth1Data eth1Ok))).trans (keeps_operations laws early operationsOk)
+  obtain ⟨input, last, started, operated, -, synced⟩ := processBlock_operationsInput ok
+  have head : Kept state input := started.step_of Kept Kept.refl
+    (fun one two => one.trans two)
+    (fun gloas _ => absurd gloas (Nat.not_le_of_lt early)) kept_blockHeader
+    (fun _ executed => kept_blockExecution early executed) kept_randao
+    (fun _ voted => kept_eth1Data voted)
+  have tail : Kept last after := by
+    split at synced
+    · exact kept_syncAggregate synced
+    · cases synced
+      exact Kept.refl _
+  exact (keeps_of_kept laws head).trans
+    ((keeps_operations laws early operated).trans (keeps_of_kept laws tail))
 
 /-! ### The epoch step up to the registry updates -/
 
-theorem kept_justification (ok : processJustificationAndFinalization state = .ok after) :
+private theorem kept_justification (ok : processJustificationAndFinalization state = .ok after) :
     Kept state after := by
   obtain same | ⟨_, _, _, weighed⟩ := processJustificationAndFinalization_ok ok
   · subst same; exact Kept.refl _
   · obtain ⟨_, _, _, rest⟩ := weighJustificationAndFinalization_checkpoints weighed
     exact Kept.of_update rest
 
-theorem kept_applyAllDeltas {deltas : Array Gwei × Array Gwei}
+private theorem kept_applyAllDeltas {deltas : Array Gwei × Array Gwei}
     (ok : applyAllDeltas state deltas = .ok after) : Kept state after :=
   foldlM_ok_invariant (Kept state) (fun _ _ _ h ok => h.trans (by
     simp only [applyDeltas, bind_ok_iff, liftAccessor_ok] at ok
     obtain ⟨_, _, _, raised, lowered⟩ := ok
     exact (kept_increaseBalance raised).trans (kept_decreaseBalance lowered))) (Kept.refl state) ok
 
-theorem kept_rewards (ok : processRewardsAndPenalties config state = .ok after) :
+private theorem kept_rewards (ok : processRewardsAndPenalties config state = .ok after) :
     Kept state after := by
   unfold processRewardsAndPenalties at ok
   split at ok
@@ -867,7 +760,7 @@ theorem kept_rewards (ok : processRewardsAndPenalties config state = .ok after) 
     obtain ⟨_, _, applied⟩ := ok
     exact kept_applyAllDeltas applied
 
-theorem kept_inactivity {altair : .altair ≤ fork}
+private theorem kept_inactivity {altair : .altair ≤ fork}
     (ok : processInactivityUpdates config state altair = .ok after) : Kept state after := by
   unfold processInactivityUpdates at ok
   split at ok
@@ -876,7 +769,7 @@ theorem kept_inactivity {altair : .altair ≤ fork}
     obtain ⟨_, _, _, _, rfl⟩ := ok
     exact Kept.of_data
 
-theorem keeps_updateRegistryEntry (laws : Laws config Inv) {index : Nat}
+private theorem keeps_updateRegistryEntry (laws : Laws config Inv) {index : Nat}
     (ok : updateRegistryEntry config state index = .ok after) : Keeps Inv state after := by
   simp only [updateRegistryEntry, bind_ok_iff, liftAccessor_ok] at ok
   obtain ⟨v, found, queued, queuedOk, marked, markedOk, ok⟩ := ok
@@ -896,37 +789,24 @@ theorem keeps_updateRegistryEntry (laws : Laws config Inv) {index : Nat}
     exact (keeps_of_kept laws first).trans (keeps_exit laws exited)
   · cases ok; exact keeps_of_kept laws first
 
-theorem keeps_foldActivateValidator (laws : Laws config Inv) :
-    ∀ {indices : List ValidatorIndex} {state after : BeaconState preset fork},
-      indices.Nodup →
-      (∀ index ∈ indices, ∃ v, getValidator state index = .ok v ∧
-        v.activationEpoch = FAR_FUTURE_EPOCH) →
-      indices.foldlM activateValidator state = .ok after → Keeps Inv state after
-  | [], _, _, _, _, ok => by cases ok; exact Keeps.refl _
-  | index :: rest, state, after, unique, eligible, ok => by
-    rw [List.foldlM_cons, bind_ok_iff] at ok
-    obtain ⟨middle, first, tail⟩ := ok
-    obtain ⟨v, found, far⟩ := eligible index List.mem_cons_self
-    obtain ⟨absent, restUnique⟩ := List.nodup_cons.mp unique
-    simp only [activateValidator, bind_ok_iff, liftAccessor_ok] at first
-    obtain ⟨old, read, epoch, epochOk, set⟩ := first
-    have equal : old = v := Except.ok.inj (read.symm.trans found)
-    subst equal
-    have late := (computeActivationExitEpoch_ok_iff.mp (mapError_ok_iff.mp epochOk)).2
-    have kept : Kept state middle := kept_setValidator read set rfl rfl (fun e le => by
-      rw [inactive_of_far far e]
-      apply inactive_of_lt
-      rw [UInt64.lt_iff_toNat_lt]
-      have := UInt64.le_iff_toNat_le.mp le
-      change e.toNat < epoch.toNat
-      omega)
-    refine (keeps_of_kept laws kept).trans
-      (keeps_foldActivateValidator laws restUnique (fun other member => ?_) tail)
-    have distinct : other ≠ index := fun same => absent (same ▸ member)
-    obtain ⟨w, read', pending⟩ := eligible other (List.mem_cons_of_mem _ member)
-    exact ⟨w, (getValidator_setValidator_of_ne set distinct).trans read', pending⟩
+private theorem keeps_activateValidator (laws : Laws config Inv)
+    {index : ValidatorIndex} {v : Validator}
+    (found : getValidator state index = .ok v) (far : v.activationEpoch = FAR_FUTURE_EPOCH)
+    (ok : activateValidator state index = .ok after) : Keeps Inv state after := by
+  simp only [activateValidator, bind_ok_iff, liftAccessor_ok] at ok
+  obtain ⟨old, read, epoch, epochOk, set⟩ := ok
+  have equal : old = v := Except.ok.inj (read.symm.trans found)
+  subst equal
+  have late := (computeActivationExitEpoch_ok_iff.mp (mapError_ok_iff.mp epochOk)).2
+  exact keeps_of_kept laws (kept_setValidator read set rfl rfl (fun e le => by
+    rw [inactive_of_far far e]
+    apply inactive_of_lt
+    rw [UInt64.lt_iff_toNat_lt]
+    have := UInt64.le_iff_toNat_le.mp le
+    change e.toNat < epoch.toNat
+    omega))
 
-theorem keeps_updateRegistryEntryElectra (laws : Laws config Inv) {activationEpoch : Epoch}
+private theorem keeps_updateRegistryEntryElectra (laws : Laws config Inv) {activationEpoch : Epoch}
     {index : Nat} (late : getCurrentEpoch state < activationEpoch)
     (ok : updateRegistryEntryElectra config activationEpoch state index = .ok after) :
     Keeps Inv state after ∧ after.slot = state.slot := by
@@ -957,43 +837,14 @@ theorem keeps_updateRegistryEntryElectra (laws : Laws config Inv) {activationEpo
 /-- The registry updates keep an invariant of the epoch.
 
 Their activations land after the current epoch, and their ejections call the exit queue. -/
-theorem keeps_processRegistryUpdates (laws : Laws config Inv) (early : fork < .glamsterdam)
+private theorem keeps_processRegistryUpdates (laws : Laws config Inv)
     (ok : processRegistryUpdates config state = .ok after) : Keeps Inv state after := by
-  unfold processRegistryUpdates at ok
-  split at ok
-  · simp only [bind_ok_iff, liftAccessor_ok] at ok
-    obtain ⟨activation, activationOk, ok⟩ := ok
-    have late : getCurrentEpoch state < activation := by
-      have := (computeActivationExitEpoch_ok_iff.mp (mapError_ok_iff.mp activationOk)).2
-      rw [UInt64.lt_iff_toNat_lt]
-      omega
-    have both := foldlM_ok_invariant (fun m => Keeps Inv state m ∧ m.slot = state.slot)
-      (fun m _ _ ⟨keeps, slot⟩ step => by
-        have epoch : getCurrentEpoch m = getCurrentEpoch state := by
-          unfold getCurrentEpoch; rw [slot]
-        obtain ⟨next, nextSlot⟩ :=
-          keeps_updateRegistryEntryElectra laws (epoch ▸ late) step
-        exact ⟨keeps.trans next, nextSlot.trans slot⟩) ⟨Keeps.refl state, rfl⟩ ok
-    exact both.1
-  rename_i notElectra
-  simp only [bind_ok_iff] at ok
-  obtain ⟨updated, first, activated⟩ := ok
-  have small : updated.validators.data.size < 2 ^ 64 :=
-    Nat.lt_of_le_of_lt (updated.validators.bound early) (UInt64.toNat_lt _)
-  refine (Keeps.foldlM (fun _ _ _ ok => keeps_updateRegistryEntry laws ok) first).trans
-    (keeps_foldActivateValidator laws
-      (List.Nodup.sublist (List.take_sublist _ _) (activationQueue_nodup small))
-      (fun index member => ?_) activated)
-  obtain ⟨position, v, equal, found, eligible⟩ :=
-    mem_activationQueue (List.mem_of_mem_take member)
-  refine ⟨v, ?_, activationEpoch_of_isEligibleForActivation eligible⟩
-  have inside := (Array.getElem?_eq_some_iff.mp found).1
-  have exact : index.toNat = position := by
-    rw [← equal, Nat.toUInt64_eq, UInt64.toNat_ofNat_of_lt' (by simp only [UInt64.size]; omega)]
-  simp [getValidator, exact, found]
+  exact processRegistryUpdates_of Keeps.refl (fun one two => one.trans two)
+    (keeps_updateRegistryEntry laws) (keeps_updateRegistryEntryElectra laws)
+    (keeps_activateValidator laws) ok
 
 /-- Caching the roots of a slot keeps what the churn reads. -/
-theorem kept_processSlot (ok : processSlot state = .ok after) : Kept state after := by
+private theorem kept_processSlot (ok : processSlot state = .ok after) : Kept state after := by
   obtain ⟨_, _, _, _, cachedEq⟩ := processSlot_ok ok
   rw [cachedEq]
   exact Kept.of_data
@@ -1002,64 +853,45 @@ end Traversal
 
 /-! ## The rest of the epoch step keeps the exits -/
 
-/-- Every effective balance of a registry is at most the largest one before Electra. -/
-def CappedPre (s : BeaconState preset fork) : Prop :=
-  ∀ v ∈ s.validators.data, v.effectiveBalance ≤ preset.MAX_EFFECTIVE_BALANCE
-
 /-- Each validator keeps its exit epoch, whatever happens to its effective balance. -/
-def ExitsOnly (s t : BeaconState preset fork) : Prop :=
+private def ExitsOnly (s t : BeaconState preset fork) : Prop :=
   ∀ (i : Nat) (v : Validator), s.validators.data[i]? = some v →
     ∃ w : Validator, t.validators.data[i]? = some w ∧ w.exitEpoch = v.exitEpoch
 
-/-- Each validator keeps its exit epoch, and before Electra the effective balances stay capped. -/
-def ExitsSame (s t : BeaconState preset fork) : Prop :=
-  ExitsOnly s t ∧ (fork < .pectra → CappedPre s → CappedPre t)
+/-- Each existing validator keeps its exit epoch. -/
+private structure ExitsSame (s t : BeaconState preset fork) : Prop where
+  exits : ExitsOnly s t
 
-theorem ExitsSame.refl (s : BeaconState preset fork) : ExitsSame s s :=
-  ⟨fun _ v found => ⟨v, found, rfl⟩, fun _ => id⟩
+private theorem ExitsSame.refl (s : BeaconState preset fork) : ExitsSame s s :=
+  ⟨fun _ v found => ⟨v, found, rfl⟩⟩
 
-theorem ExitsSame.trans {s m t : BeaconState preset fork} (one : ExitsSame s m)
+private theorem ExitsSame.trans {s m t : BeaconState preset fork} (one : ExitsSame s m)
     (two : ExitsSame m t) : ExitsSame s t := by
-  refine ⟨?_, fun early capped => two.2 early (one.2 early capped)⟩
+  refine ⟨?_⟩
   intro i v found
   obtain ⟨u, hu, eu⟩ := one.1 i v found
   obtain ⟨w, hw, ew⟩ := two.1 i u hu
   exact ⟨w, hw, ew.trans eu⟩
 
-/-- A kept step keeps the effective balances capped before Electra. -/
-theorem Kept.capped {s t : BeaconState preset fork} (kept : Kept s t) (early : fork < .pectra)
-    (capped : CappedPre s) : CappedPre t := by
-  intro v member
-  obtain ⟨i, inside, rfl⟩ := Array.mem_iff_getElem.mp member
-  have found : t.validators.data[i]? = some t.validators.data[i] := Array.getElem?_eq_getElem inside
-  by_cases old : i < s.validators.data.size
-  · obtain ⟨w, hw, _, bw⟩ := kept.old i _ (Array.getElem?_eq_getElem old)
-    rw [found] at hw
-    cases hw
-    rw [bw]
-    exact capped _ (Array.getElem_mem old)
-  · exact kept.newCapped early i _ (by omega) found
-
-theorem ExitsSame.of_kept {s t : BeaconState preset fork} (kept : Kept s t) : ExitsSame s t := by
-  refine ⟨?_, kept.capped⟩
+private theorem ExitsSame.of_kept {s t : BeaconState preset fork}
+    (kept : Kept s t) : ExitsSame s t := by
+  refine ⟨?_⟩
   intro i v found
   obtain ⟨w, hw, ew, _⟩ := kept.old i v found
   exact ⟨w, hw, ew⟩
 
-theorem ExitsSame.of_data {s t : BeaconState preset fork}
-    (validators : t.validators.data = s.validators.data := by rfl) : ExitsSame s t := by
-  refine ⟨fun _ v found => ⟨v, by rw [validators]; exact found, rfl⟩, fun _ capped => ?_⟩
-  intro v member
-  rw [validators] at member
-  exact capped v member
+private theorem ExitsSame.of_data {s t : BeaconState preset fork}
+    (validators : t.validators.data = s.validators.data := by rfl) : ExitsSame s t :=
+  ⟨fun _ v found => ⟨v, by rw [validators]; exact found, rfl⟩⟩
 
-theorem ExitsSame.foldlM {α ε : Type} {step : BeaconState preset fork → α → Except ε _}
+private theorem ExitsSame.foldlM {α ε : Type} {step : BeaconState preset fork → α → Except ε _}
     (keeps : ∀ s a t, step s a = .ok t → ExitsSame s t) {xs : List α}
     (ok : xs.foldlM step state = .ok after) : ExitsSame state after :=
   foldlM_ok_invariant (ExitsSame state)
     (fun _ _ _ h ok => h.trans (keeps _ _ _ ok)) (ExitsSame.refl state) ok
 
-theorem exitsSame_setValidatorAt {s t : BeaconState preset fork} {i : Nat} {old v : Validator}
+private theorem exitsSame_setValidatorAt {s t : BeaconState preset fork} {i : Nat}
+    {old v : Validator}
     (found : getValidatorAt s i = .ok old) (set : s.setValidatorAt i v = .ok t)
     (exit : v.exitEpoch = old.exitEpoch) : ExitsOnly s t := by
   obtain ⟨inside, rfl⟩ := setValidatorAt_ok set
@@ -1074,63 +906,16 @@ theorem exitsSame_setValidatorAt {s t : BeaconState preset fork} {i : Nat} {old 
     exact ⟨v, by simp, exit⟩
   · exact ⟨w, read, rfl⟩
 
-theorem exitsSame_processPendingDeposits {stop : PendingDeposit → Bool} {nextEpoch : Epoch}
-    {available : Gwei} :
-    ∀ {deposits : List PendingDeposit} {state : BeaconState preset fork} {processed : Gwei}
-      {count : Nat} {postponed : Array PendingDeposit} {pass},
-      passPendingDeposits config checks stop nextEpoch available state processed count
-        postponed deposits = .ok pass → ExitsSame state pass.1.state
-  | [], _, _, _, _, _, ok => by cases ok; exact ExitsSame.refl _
-  | deposit :: rest, state, processed, count, postponed, pass, ok => by
-    unfold passPendingDeposits at ok
-    simp only [bind, Except.bind, pure, Except.pure] at ok
-    split at ok
-    · cases ok; exact ExitsSame.refl _
-    split at ok
-    · cases ok
-    split at ok
-    · split at ok
-      · cases ok
-      rename_i credited
-      split at ok
-      · cases ok
-      cases ok
-      exact (ExitsSame.of_kept (kept_applyPendingDeposit credited)).trans
-        (exitsSame_processPendingDeposits (deposits := rest) ‹_›)
-    split at ok
-    · split at ok
-      · cases ok
-      cases ok
-      exact exitsSame_processPendingDeposits (deposits := rest) ‹_›
-    split at ok
-    · cases ok
-    split at ok
-    · cases ok; exact ExitsSame.refl _
-    split at ok
-    · cases ok
-    rename_i credited
-    split at ok
-    · cases ok
-    cases ok
-    exact (ExitsSame.of_kept (kept_applyPendingDeposit credited)).trans
-      (exitsSame_processPendingDeposits (deposits := rest) ‹_›)
+private theorem exitsSame_processPendingDeposits {stop : PendingDeposit → Bool} {nextEpoch : Epoch}
+    {available : Gwei} {deposits : List PendingDeposit} {state : BeaconState preset fork}
+    {processed : Gwei} {count : Nat} {postponed : Array PendingDeposit} {pass}
+    (ok : passPendingDeposits config checks stop nextEpoch available state processed count
+      postponed deposits = .ok pass) : ExitsSame state pass.1.state :=
+  passPendingDeposits_of ExitsSame ExitsSame.refl (fun one two => one.trans two)
+    (fun credited => ExitsSame.of_kept (kept_applyPendingDeposit credited)) ok
 
-theorem exitsSame_processPendingBalances
-    (ok : processPendingBalances config checks state = .ok after) : ExitsSame state after := by
-  unfold processPendingBalances at ok
-  split at ok
-  · simp only [bind_ok_iff] at ok
-    obtain ⟨middle, deposited, consolidated⟩ := ok
-    have deposits : ExitsSame state middle := by
-      unfold processPendingDeposits at deposited
-      simp only [bind, Except.bind, pure, Except.pure] at deposited
-      repeat' (split at deposited <;> try cases deposited)
-      all_goals exact (exitsSame_processPendingDeposits ‹_›).trans ExitsSame.of_data
-    exact deposits.trans
-      (ExitsSame.of_data (by rw [(processPendingConsolidations_kept consolidated).1]))
-  · cases ok; exact ExitsSame.refl _
-
-theorem exitsSame_slashings (ok : processSlashings state = .ok after) : ExitsSame state after := by
+private theorem exitsSame_slashings (ok : processSlashings state = .ok after) :
+    ExitsSame state after := by
   unfold processSlashings at ok
   simp only [bind_ok_iff] at ok
   obtain ⟨_, _, _, _, _, _, ok⟩ := ok
@@ -1154,163 +939,95 @@ theorem exitsSame_slashings (ok : processSlashings state = .ok after) : ExitsSam
       | (cases ok; exact ExitsSame.refl _)
       | exact ExitsSame.of_kept (kept_decreaseBalance (liftAccessor_ok.mp ok))
 
-theorem exitsSame_eth1Reset {before : fork < .hegota}
+private theorem exitsSame_eth1Reset {before : fork < .hegota}
     (ok : processEth1DataReset before state = .ok after) : ExitsSame state after := by
   simp only [processEth1DataReset, bind_ok_iff, liftAccessor_ok] at ok
   obtain ⟨_, _, ok⟩ := ok
   split at ok <;> cases ok <;> exact ExitsSame.of_data
 
-theorem exitsSame_processEffectiveBalanceUpdates
+private theorem exitsSame_processEffectiveBalanceUpdates
     (ok : processEffectiveBalanceUpdates state = .ok after) : ExitsSame state after := by
-  refine ⟨?_, fun early capped => ?_⟩
-  · have folded := ok
-    unfold processEffectiveBalanceUpdates at folded
-    exact foldlM_ok_invariant (ExitsOnly state) (fun m _ _ prior step => by
-      simp only [updateEffectiveBalance, bind_ok_iff, liftAccessor_ok] at step
-      obtain ⟨_, found, _, _, _, _, set⟩ := step
-      intro i v hv
-      obtain ⟨u, hu, eu⟩ := prior i v hv
-      obtain ⟨w, hw, ew⟩ := exitsSame_setValidatorAt found set rfl i u hu
-      exact ⟨w, hw, ew.trans eu⟩) (fun _ v found => ⟨v, found, rfl⟩) folded
-  · have notElectra : ¬ .pectra ≤ fork := Nat.not_le_of_lt early
-    intro v member
-    have bound := processEffectiveBalanceUpdates_capped (fun w hw => by
-      simpa only [withdrawalMaxEffectiveBalance, notElectra, ↓reduceIte] using capped w hw)
-      ok v member
-    simpa only [withdrawalMaxEffectiveBalance, notElectra, ↓reduceIte] using bound
-
-theorem exitsSame_historicalRoots
-    (ok : processHistoricalRootsUpdate state = .ok after) : ExitsSame state after := by
-  unfold processHistoricalRootsUpdate at ok
-  split at ok
-  · cases ok
-  simp only [bind_ok_iff, liftAccessor_ok] at ok
-  obtain ⟨_, _, ok⟩ := ok
-  split at ok
-  · simp only [bind_ok_iff, liftSsz_ok, pure, Except.pure, Except.ok.injEq] at ok
-    obtain ⟨_, _, _, _, rfl⟩ := ok
-    exact ExitsSame.of_data
-  · cases ok; exact ExitsSame.refl _
-
-theorem exitsSame_historicalSummaries {capella : .shapella ≤ fork}
-    (ok : processHistoricalSummariesUpdate state capella = .ok after) : ExitsSame state after := by
-  unfold processHistoricalSummariesUpdate at ok
-  simp only [bind, Except.bind, pure, Except.pure] at ok
-  repeat' (split at ok <;> try cases ok)
-  all_goals exact ExitsSame.of_data
-
-theorem exitsSame_epochTail {altair : .altair ≤ fork}
-    {rooted synced looked : BeaconState preset fork}
-    (syncedOk : processSyncCommitteeUpdates (processParticipationFlagUpdates rooted altair)
-      altair = .ok synced)
-    (lookedOk : (if fulu : .fusaka ≤ fork then liftAccessor (processProposerLookahead synced fulu)
-      else pure synced) = .ok looked)
-    (windowed : (if gloas : .glamsterdam ≤ fork then liftAccessor (processPtcWindow looked gloas)
-      else pure looked) = .ok after) : ExitsSame rooted after := by
-  have first : ExitsSame rooted synced := by
-    unfold processSyncCommitteeUpdates at syncedOk
-    simp only [bind, Except.bind, pure, Except.pure] at syncedOk
-    repeat' (split at syncedOk <;> try cases syncedOk)
-    all_goals exact ExitsSame.of_data
-  have second : ExitsSame synced looked := by
-    split at lookedOk
-    · simp only [processProposerLookahead, liftAccessor_ok, bind_ok_iff, pure, Except.pure,
-        Except.ok.injEq] at lookedOk
-      obtain ⟨_, _, _, _, rfl⟩ := lookedOk
-      exact ExitsSame.of_data
-    · cases lookedOk; exact ExitsSame.refl _
-  have third : ExitsSame looked after := by
-    split at windowed
-    · simp only [processPtcWindow, liftAccessor_ok, bind_ok_iff, pure, Except.pure,
-        Except.ok.injEq] at windowed
-      obtain ⟨_, _, _, _, rfl⟩ := windowed
-      exact ExitsSame.of_data
-    · cases windowed; exact ExitsSame.refl _
-  exact first.trans (second.trans third)
+  refine ⟨?_⟩
+  unfold processEffectiveBalanceUpdates at ok
+  exact foldlM_ok_invariant (ExitsOnly state) (fun m _ _ prior step => by
+    simp only [updateEffectiveBalance, bind_ok_iff, liftAccessor_ok] at step
+    obtain ⟨_, found, _, _, _, _, set⟩ := step
+    intro i v hv
+    obtain ⟨u, hu, eu⟩ := prior i v hv
+    obtain ⟨w, hw, ew⟩ := exitsSame_setValidatorAt found set rfl i u hu
+    exact ⟨w, hw, ew.trans eu⟩) (fun _ v found => ⟨v, found, rfl⟩) ok
 
 /-- The epoch step reaches the state after its registry updates by steps that keep an invariant.
 
 After that state it changes no exit. -/
-theorem processEpoch_split {Inv : BeaconState preset fork → Prop} (laws : Laws config Inv)
-    (early : fork < .glamsterdam) (holds : Inv state)
+private theorem processEpoch_split {Inv : BeaconState preset fork → Prop} (laws : Laws config Inv)
+    (holds : Inv state)
     (ok : processEpoch config checks state = .ok after) :
     ∃ registered, Inv registered ∧ ExitsSame registered after := by
-  unfold processEpoch at ok
-  split at ok
-  · unfold processEpochAltair at ok
-    simp only [bind_ok_iff] at ok
-    obtain ⟨justified, justifiedOk, scored, scoredOk, rewarded, rewardedOk, registered,
-      registeredOk, slashed, slashedOk, reset, resetOk, pending, pendingOk, paid, paidOk,
-      balanced, balancedOk, cleared, clearedOk, mixed, mixedOk, ok⟩ := ok
-    have head : Inv registered :=
-      ((keeps_of_kept laws ((kept_justification justifiedOk).trans <|
-        (kept_inactivity scoredOk).trans (kept_rewards rewardedOk))).trans
-        (keeps_processRegistryUpdates laws early registeredOk)) holds
-    have resetKept : ExitsSame slashed reset := by
-      split at resetOk
-      · exact exitsSame_eth1Reset resetOk
-      · cases resetOk; exact ExitsSame.refl _
-    have paidKept : ExitsSame pending paid := by
-      split at paidOk
-      · rename_i gloas
-        exact absurd gloas (Nat.not_le_of_lt early)
-      · cases paidOk; exact ExitsSame.refl _
-    have clearKept : ExitsSame balanced cleared := by
-      obtain ⟨_, _, _, _, rfl⟩ := processSlashingsReset_eq clearedOk
-      exact ExitsSame.of_data
-    have mixKept : ExitsSame cleared mixed := by
-      obtain ⟨_, _, _, _, _, _, rfl⟩ := processRandaoMixesReset_eq mixedOk
-      exact ExitsSame.of_data
-    have tail := (exitsSame_slashings slashedOk).trans <| resetKept.trans <|
-      (exitsSame_processPendingBalances pendingOk).trans <| paidKept.trans <|
-      (exitsSame_processEffectiveBalanceUpdates balancedOk).trans <| clearKept.trans mixKept
-    refine ⟨registered, head, ?_⟩
-    split at ok <;> simp only [bind_ok_iff] at ok <;>
-      obtain ⟨_, roots, _, sync, _, look, window⟩ := ok
-    · exact tail.trans ((exitsSame_historicalSummaries roots).trans
-        (exitsSame_epochTail sync look window))
-    · exact tail.trans ((exitsSame_historicalRoots roots).trans
-        (exitsSame_epochTail sync look window))
-  simp only [bind_ok_iff] at ok
-  obtain ⟨justified, justifiedOk, rewarded, rewardedOk, registered, registeredOk, slashed,
-    slashedOk, reset, resetOk, balanced, balancedOk, cleared, clearOk, mixed, mixOk, rooted,
-    rootOk, rotated⟩ := ok
+  have trace := processEpoch_trace ok
+  cases trace; rename_i justified justifiedOk trace
+  cases trace; rename_i scored scoredOk trace
+  cases trace; rename_i rewarded rewardedOk trace
+  cases trace; rename_i registered registeredOk trace
+  have scoredKept : Kept justified scored := by
+    have edge := EpochStage.action_cases.mp scoredOk
+    simp only [EpochStage.Edge] at edge
+    split at edge
+    · exact kept_inactivity edge
+    · subst scored; exact Kept.refl _
   have head : Inv registered :=
-    ((keeps_of_kept laws ((kept_justification justifiedOk).trans (kept_rewards rewardedOk))).trans
-      (keeps_processRegistryUpdates laws early registeredOk)) holds
-  have clearKept : ExitsSame balanced cleared := by
-    obtain ⟨_, _, _, _, rfl⟩ := processSlashingsReset_eq clearOk
-    exact ExitsSame.of_data
-  have mixKept : ExitsSame cleared mixed := by
-    obtain ⟨_, _, _, _, _, _, rfl⟩ := processRandaoMixesReset_eq mixOk
-    exact ExitsSame.of_data
-  have last : ExitsSame rooted after := by
-    unfold processParticipationRecordUpdates at rotated
-    split at rotated
-    · cases rotated
-    · cases rotated; exact ExitsSame.of_data
-  exact ⟨registered, head, (exitsSame_slashings slashedOk).trans <|
-    (exitsSame_eth1Reset resetOk).trans <|
-    (exitsSame_processEffectiveBalanceUpdates balancedOk).trans <|
-    clearKept.trans <| mixKept.trans <| (exitsSame_historicalRoots rootOk).trans last⟩
+    ((keeps_of_kept laws ((kept_justification justifiedOk).trans <|
+      scoredKept.trans (kept_rewards rewardedOk))).trans
+      (keeps_processRegistryUpdates laws registeredOk)) holds
+  refine ⟨registered, head, ?_⟩
+  apply trace.transport ExitsSame ExitsSame.refl (fun one two => one.trans two)
+  intro k member a b computed
+  have edge := EpochStage.action_cases.mp computed
+  cases k
+  case justification | inactivity | rewards | registry =>
+    simp_all [EpochStage.middleStages, EpochStage.tailStages]
+  case slashings => exact exitsSame_slashings edge
+  case eth1Reset =>
+    simp only [EpochStage.Edge] at edge
+    split at edge
+    · exact exitsSame_eth1Reset edge
+    · subst b; exact ExitsSame.refl _
+  case pendingDeposits =>
+    simp only [EpochStage.Edge] at edge
+    split at edge
+    · unfold processPendingDeposits at edge
+      simp only [bind, Except.bind, pure, Except.pure] at edge
+      repeat' (split at edge <;> try cases edge)
+      all_goals exact (exitsSame_processPendingDeposits ‹_›).trans ExitsSame.of_data
+    · subst b; exact ExitsSame.refl _
+  case pendingConsolidations =>
+    simp only [EpochStage.Edge] at edge
+    split at edge
+    · exact ExitsSame.of_data (congrArg (·.data)
+        (processPendingConsolidations_kept edge).1)
+    · subst b; exact ExitsSame.refl _
+  case effectiveBalances => exact exitsSame_processEffectiveBalanceUpdates edge
+  all_goals
+    exact ExitsSame.of_data (congrArg (·.data)
+      (edge.validators_eq ⟨nofun, nofun, nofun⟩))
 
 /-! ## Exits charged in the epoch of a source state -/
 
 /-- Two epochs after the epoch of a source state: the last exit epoch that the reserve covers. -/
-def horizon (src : BeaconState preset fork) : Nat := (getCurrentEpoch src).toNat + 2
+private def horizon (src : BeaconState preset fork) : Nat := (getCurrentEpoch src).toNat + 2
 
 /-- A validator without an exit in the source has, in a later state, an exit by the horizon. -/
-def departs (src m : BeaconState preset fork) (v : ValidatorIndex) : Bool :=
+private def departs (src m : BeaconState preset fork) (v : ValidatorIndex) : Bool :=
   (src.validators.data[v.toNat]?.any fun w => w.exitEpoch == FAR_FUTURE_EPOCH) &&
     (m.validators.data[v.toNat]?.any fun w => decide (w.exitEpoch.toNat ≤ horizon src))
 
 /-- The validators active in the source that have no exit there and exit by the horizon later. -/
-def departed (src m : BeaconState preset fork) : Finset ValidatorIndex :=
+private def departed (src m : BeaconState preset fork) : Finset ValidatorIndex :=
   (getActiveValidatorIndices src (getCurrentEpoch src)).toFinset.filter
     fun v => departs src m v = true
 
 /-- Whether a validator departs reads only the exit epochs. -/
-theorem departs_of_exitsOnly {src m t : BeaconState preset fork} (same : ExitsOnly m t)
+private theorem departs_of_exitsOnly {src m t : BeaconState preset fork} (same : ExitsOnly m t)
     (size : src.validators.data.size ≤ m.validators.data.size) (v : ValidatorIndex) :
     departs src t v = departs src m v := by
   unfold departs
@@ -1324,14 +1041,15 @@ theorem departs_of_exitsOnly {src m t : BeaconState preset fork} (same : ExitsOn
     simp [hu, hw, ew]
 
 /-- Steps that keep the exit epochs keep the departed validators. -/
-theorem departed_of_exitsOnly {src m t : BeaconState preset fork} (same : ExitsOnly m t)
+private theorem departed_of_exitsOnly {src m t : BeaconState preset fork} (same : ExitsOnly m t)
     (size : src.validators.data.size ≤ m.validators.data.size) :
     departed src t = departed src m := by
   unfold departed
   exact Finset.filter_congr fun v _ => by rw [departs_of_exitsOnly same size v]
 
 /-- One validator changed: only it can join the departed validators, and only by the horizon. -/
-theorem departed_set {src m t : BeaconState preset fork} {index : ValidatorIndex} {nv : Validator}
+private theorem departed_set {src m t : BeaconState preset fork} {index : ValidatorIndex}
+    {nv : Validator}
     (read : ∀ i : Nat, t.validators.data[i]? =
       if index.toNat = i then some nv else m.validators.data[i]?) :
     departed src t ⊆ insert index (departed src m) ∧
@@ -1365,7 +1083,7 @@ theorem departed_set {src m t : BeaconState preset fork} {index : ValidatorIndex
       exact member.2
 
 /-- One more validator adds at most its own stake. -/
-theorem stake_insert_le {ν : Type} [DecidableEq ν] (w : ν → ℕ) (a : ν) (S : Finset ν) :
+private theorem stake_insert_le {ν : Type} [DecidableEq ν] (w : ν → ℕ) (a : ν) (S : Finset ν) :
     stake w (insert a S) ≤ stake w S + w a := by
   by_cases mem : a ∈ S
   · rw [Finset.insert_eq_of_mem mem]
@@ -1377,7 +1095,8 @@ theorem stake_insert_le {ν : Type} [DecidableEq ν] (w : ν → ℕ) (a : ν) (
 /-- Setting the unset exit of a validator to an epoch after the current one.
 
 The active set and the effective balances up to the current epoch stay. -/
-theorem exitSet_facts {m q t : BeaconState preset fork} {index : ValidatorIndex} {v0 : Validator}
+private theorem exitSet_facts {m q t : BeaconState preset fork} {index : ValidatorIndex}
+    {v0 : Validator}
     {e w : Epoch} (found : getValidator m index = .ok v0) (far : v0.exitEpoch = FAR_FUTURE_EPOCH)
     (set : q.setValidator index { v0 with exitEpoch := e, withdrawableEpoch := w } = .ok t)
     (validators : q.validators = m.validators) (slot : q.slot = m.slot)
@@ -1435,16 +1154,10 @@ An earlier open epoch means the horizon opens with a full churn; at the horizon,
 def potential (H : Nat) (epoch : Epoch) (left : Gwei) (rate : Nat) : Nat :=
   if epoch.toNat < H then rate else if epoch.toNat = H then left.toNat else 0
 
-/-- A queue can spend by the horizon at most its rate and what is left of its epoch. -/
-theorem potential_le (H : Nat) (epoch : Epoch) (left : Gwei) (rate : Nat) :
-    potential H epoch left rate ≤ rate + left.toNat := by
-  unfold potential
-  split_ifs <;> omega
-
 /-- A call that lands by the horizon spends its amount from the potential.
 
 A call that lands later leaves no potential. -/
-theorem potential_spend {E first R avail amount e left : UInt64} {H : Nat}
+private theorem potential_spend {E first R avail amount e left : UInt64} {H : Nat}
     (queued : churnQueue E first R avail amount = .ok (e, left)) (late : H ≤ first.toNat) :
     (if e.toNat ≤ H then amount.toNat else 0) + potential H e left R.toNat ≤
       potential H E avail R.toNat := by
@@ -1472,23 +1185,23 @@ theorem potential_spend {E first R avail amount e left : UInt64} {H : Nat}
     split_ifs <;> omega
 
 /-- The exit churn of a source state, or nothing if it cannot be read. -/
-def exitRateOf (config : Config) (src : BeaconState preset fork) : Nat :=
+private def exitRateOf (config : Config) (src : BeaconState preset fork) : Nat :=
   ((exitChurnLimit config src).toOption.getD 0).toNat
 
 /-- The consolidation churn of a source state, or nothing if it cannot be read. -/
-def consolidationRateOf (config : Config) (src : BeaconState preset fork) : Nat :=
+private def consolidationRateOf (config : Config) (src : BeaconState preset fork) : Nat :=
   ((getConsolidationChurnLimit config src).toOption.getD 0).toNat
 
 /-- What the exit and consolidation queues of a state can still spend by the horizon. -/
-def queuePotential (config : Config) (electra : .pectra ≤ fork) (src m : BeaconState preset fork) :
-    Nat :=
+private def queuePotential (config : Config) (electra : .pectra ≤ fork)
+    (src m : BeaconState preset fork) : Nat :=
   potential (horizon src) (m.earliestExitEpoch electra) (m.exitBalanceToConsume electra)
       (exitRateOf config src) +
     potential (horizon src) (m.earliestConsolidationEpoch electra)
       (m.consolidationBalanceToConsume electra) (consolidationRateOf config src)
 
 /-- The potential of the queues reads only their fields. -/
-theorem queuePotential_congr {electra : .pectra ≤ fork} {src s t : BeaconState preset fork}
+private theorem queuePotential_congr {electra : .pectra ≤ fork} {src s t : BeaconState preset fork}
     (same : QueuesSame s t) :
     queuePotential config electra src t = queuePotential config electra src s := by
   obtain ⟨a, b, c, d⟩ := same electra
@@ -1500,8 +1213,8 @@ theorem queuePotential_congr {electra : .pectra ≤ fork} {src s t : BeaconState
 The epoch, the churn and the source effective balances stay.
 
 The stake that the charges moved and the potential left fit the potential of the source. -/
-structure InvE (config : Config) (electra : .pectra ≤ fork) (src m : BeaconState preset fork) :
-    Prop where
+private structure InvE (config : Config) (electra : .pectra ≤ fork)
+    (src m : BeaconState preset fork) : Prop where
   epoch : getCurrentEpoch m = getCurrentEpoch src
   size : src.validators.data.size ≤ m.validators.data.size
   exitRate : exitChurnLimit config m = exitChurnLimit config src
@@ -1514,7 +1227,7 @@ structure InvE (config : Config) (electra : .pectra ≤ fork) (src m : BeaconSta
 /-- No validator departs between a source state and itself.
 
 An unset exit epoch is the largest epoch, after the horizon. -/
-theorem departed_self {src : BeaconState preset fork}
+private theorem departed_self {src : BeaconState preset fork}
     (bounded : horizon src < 2 ^ 64 - 1) : departed src src = ∅ := by
   unfold departed
   apply Finset.filter_false_of_mem
@@ -1529,7 +1242,7 @@ theorem departed_self {src : BeaconState preset fork}
     omega
 
 /-- The invariant of Electra holds at the source. -/
-theorem InvE.start (electra : .pectra ≤ fork) {src : BeaconState preset fork}
+private theorem InvE.start (electra : .pectra ≤ fork) {src : BeaconState preset fork}
     (bounded : horizon src < 2 ^ 64 - 1) : InvE config electra src src where
   epoch := rfl
   size := Nat.le_refl _
@@ -1539,7 +1252,8 @@ theorem InvE.start (electra : .pectra ≤ fork) {src : BeaconState preset fork}
   budget := by rw [departed_self bounded]; simp
 
 /-- A source weight is at most the effective balance it reads at a state that keeps it. -/
-theorem balanceAt_le {src m : BeaconState preset fork} {index : ValidatorIndex} {v0 : Validator}
+private theorem balanceAt_le {src m : BeaconState preset fork} {index : ValidatorIndex}
+    {v0 : Validator}
     (balances : ∀ (i : Nat) (v w : Validator), src.validators.data[i]? = some v →
       m.validators.data[i]? = some w → w.effectiveBalance = v.effectiveBalance)
     (found : getValidator m index = .ok v0) :
@@ -1556,7 +1270,7 @@ theorem balanceAt_le {src m : BeaconState preset fork} {index : ValidatorIndex} 
 An exit or a consolidation that lands by the horizon spends its effective balance from its queue.
 
 The seed lookahead puts the first epoch of a charge at the horizon or later. -/
-theorem lawsE (lookahead : 1 ≤ preset.MAX_SEED_LOOKAHEAD.toNat) (electra : .pectra ≤ fork)
+private theorem lawsE (lookahead : 1 ≤ preset.MAX_SEED_LOOKAHEAD.toNat) (electra : .pectra ≤ fork)
     (src : BeaconState preset fork) : Laws config (InvE config electra src) where
   kept {s t} kept inv := by
     refine ⟨kept.epoch.trans inv.epoch, Nat.le_trans inv.size kept.size_le,
@@ -1578,16 +1292,15 @@ theorem lawsE (lookahead : 1 ≤ preset.MAX_SEED_LOOKAHEAD.toNat) (electra : .pe
     · exact inv
     unfold exitQueue at queue
     simp only [electra, ↓reduceDIte] at queue
+    have charged := queue
     simp only [computeExitEpochAndUpdateChurn, bind_ok_iff, liftArith, mapError_ok_iff, pure,
       Except.pure, Except.ok.injEq] at queue
     obtain ⟨first, firstOk, rate, rateOk, ⟨placed, left⟩, queued, final⟩ := queue
     simp only [Prod.mk.injEq] at final
     obtain ⟨rfl, rfl⟩ := final
     have firstNat := (computeActivationExitEpoch_ok_iff.mp firstOk).2
-    have atLeast : first.toNat ≤ placed.toNat := by
-      have := UInt64.le_iff_toNat_le.mp (churnQueue_spend queued).1
-      rw [Base.Uint64.toNat_max] at this
-      omega
+    have atLeast := UInt64.le_iff_toNat_le.mp
+      (computeExitEpochAndUpdateChurn_first firstOk charged).1
     obtain ⟨epochT, activeT, sizeT, balanceT, read⟩ :=
       exitSet_facts found far set rfl rfl (by omega)
     have total := totalActiveBalance_eq epochT activeT sizeT balanceT
@@ -1662,16 +1375,15 @@ theorem lawsE (lookahead : 1 ≤ preset.MAX_SEED_LOOKAHEAD.toNat) (electra : .pe
       Except.pure] at ok
     obtain ⟨⟨churned, e⟩, churn, w, _, r, set, _, _, ok⟩ := ok
     simp only [Except.ok.injEq] at ok
+    have charged := churn
     simp only [computeConsolidationEpochAndUpdateChurn, bind_ok_iff, liftArith, mapError_ok_iff,
       pure, Except.pure, Except.ok.injEq] at churn
     obtain ⟨first, firstOk, rate, rateOk, ⟨placed, left⟩, queued, final⟩ := churn
     simp only [Prod.mk.injEq] at final
     obtain ⟨rfl, rfl⟩ := final
     have firstNat := (computeActivationExitEpoch_ok_iff.mp firstOk).2
-    have atLeast : first.toNat ≤ placed.toNat := by
-      have := UInt64.le_iff_toNat_le.mp (churnQueue_spend queued).1
-      rw [Base.Uint64.toNat_max] at this
-      omega
+    have atLeast := UInt64.le_iff_toNat_le.mp
+      (computeConsolidationEpochAndUpdateChurn_first firstOk charged).1
     have read0 : getValidator s sourceIndex = .ok source := getValidator_eq_ok_iff.mpr found
     obtain ⟨epochR, activeR, sizeR, balanceR, readR⟩ :=
       exitSet_facts read0 far set rfl rfl (by show (getCurrentEpoch s).toNat < placed.toNat; omega)
@@ -1731,31 +1443,25 @@ theorem lawsE (lookahead : 1 ≤ preset.MAX_SEED_LOOKAHEAD.toNat) (electra : .pe
         omega
 
 /-- From Electra: the charges of the epoch of the source move at most the churn of its queues. -/
-theorem InvE.departed_le {electra : .pectra ≤ fork} {src m : BeaconState preset fork}
+private theorem InvE.departed_le {electra : .pectra ≤ fork} {src m : BeaconState preset fork}
     (inv : InvE config electra src m) :
     stake (fun v => balanceAt src v.toNat) (departed src m) ≤
-      exitRateOf config src + (src.exitBalanceToConsume electra).toNat +
-        consolidationRateOf config src + (src.consolidationBalanceToConsume electra).toNat := by
+      queuePotential config electra src src := by
   have budget := inv.budget
-  have one := potential_le (horizon src) (src.earliestExitEpoch electra)
-    (src.exitBalanceToConsume electra) (exitRateOf config src)
-  have two := potential_le (horizon src) (src.earliestConsolidationEpoch electra)
-    (src.consolidationBalanceToConsume electra) (consolidationRateOf config src)
-  unfold queuePotential at budget
   omega
 
 /-! ## The exit queue before Electra -/
 
 /-- The exit epoch two epochs after the source. -/
-def cohortEpoch (src : BeaconState preset fork) : Epoch := UInt64.ofNat (horizon src)
+private def cohortEpoch (src : BeaconState preset fork) : Epoch := UInt64.ofNat (horizon src)
 
 /-- The positions of a registry whose exit epoch is two epochs after the source. -/
-def cohort (src m : BeaconState preset fork) : Finset Nat :=
+private def cohort (src m : BeaconState preset fork) : Finset Nat :=
   (Finset.range m.validators.data.size).filter fun i =>
     (m.validators.data[i]?.any fun w => w.exitEpoch == cohortEpoch src) = true
 
 /-- The validators of a list that pass a test are as many as their positions. -/
-theorem filter_length_eq_card (p : Validator → Bool) :
+private theorem filter_length_eq_card (p : Validator → Bool) :
     ∀ l : List Validator, (l.filter p).length =
       ((Finset.range l.length).filter fun i => (l[i]?.any p) = true).card := by
   intro l
@@ -1777,7 +1483,7 @@ theorem filter_length_eq_card (p : Validator → Bool) :
     · simp [hp, Finset.card_insert_of_notMem notMem]
 
 /-- The cohort of the horizon, counted as the exit queue counts it. -/
-theorem cohort_card (src m : BeaconState preset fork) :
+private theorem cohort_card (src m : BeaconState preset fork) :
     (m.validators.data.toList.filter (·.exitEpoch == cohortEpoch src)).length =
       (cohort src m).card := by
   rw [filter_length_eq_card]
@@ -1785,7 +1491,7 @@ theorem cohort_card (src m : BeaconState preset fork) :
   simp only [Array.length_toList, Array.getElem?_toList]
 
 /-- Before Electra: the epoch of a source state, with the exits charged in it. -/
-structure InvP (config : Config) (src m : BeaconState preset fork) : Prop where
+private structure InvP (config : Config) (src m : BeaconState preset fork) : Prop where
   epoch : getCurrentEpoch m = getCurrentEpoch src
   size : src.validators.data.size ≤ m.validators.data.size
   limit : getValidatorChurnLimit config m = getValidatorChurnLimit config src
@@ -1798,7 +1504,7 @@ structure InvP (config : Config) (src m : BeaconState preset fork) : Prop where
     max (cohort src src).card (max 1 (getValidatorChurnLimit config src).toNat)
 
 /-- The invariant before Electra holds at the source. -/
-theorem InvP.start (src : BeaconState preset fork) : InvP config src src where
+private theorem InvP.start (src : BeaconState preset fork) : InvP config src src where
   epoch := rfl
   size := Nat.le_refl _
   limit := rfl
@@ -1808,33 +1514,16 @@ theorem InvP.start (src : BeaconState preset fork) : InvP config src src where
   cap := Nat.le_max_left _ _
 
 /-- The horizon fits in an epoch. -/
-theorem cohortEpoch_toNat {src : BeaconState preset fork} (bounded : horizon src < 2 ^ 64 - 1) :
+private theorem cohortEpoch_toNat {src : BeaconState preset fork}
+    (bounded : horizon src < 2 ^ 64 - 1) :
     (cohortEpoch src).toNat = horizon src := by
   unfold cohortEpoch
   rw [UInt64.toNat_ofNat', Nat.mod_eq_of_lt (by omega)]
 
-/-- Before Electra the exit queue lands no earlier than the first epoch an exit may take. -/
-theorem exitQueueEpoch_late {m : BeaconState preset fork} {e : Epoch}
-    (ok : exitQueueEpoch config m = .ok e) :
-    (getCurrentEpoch m).toNat + 1 + preset.MAX_SEED_LOOKAHEAD.toNat ≤ e.toNat := by
-  simp only [exitQueueEpoch, bind, Except.bind, pure, Except.pure] at ok
-  split at ok
-  · cases ok
-  rename_i earliest earliestOk
-  have firstNat := (computeActivationExitEpoch_ok_iff.mp (mapError_ok_iff.mp earliestOk)).2
-  have start := UInt64.le_iff_toNat_le.mp (le_foldl_maxExitEpoch
-    (m.validators.data.toList.filter (·.exitEpoch != FAR_FUTURE_EPOCH)) earliest).1
-  split at ok
-  · have sum := (Uint64.addChecked_ok_iff.mp (mapError_ok_iff.mp ok)).2
-    have one : (1 : UInt64).toNat = 1 := rfl
-    omega
-  · cases ok
-    omega
-
 /-- Before Electra, every step of the epoch of the source keeps its invariant.
 
 An exit that lands at the horizon finds fewer exits there than the churn limit, or none. -/
-theorem lawsP (lookahead : 1 ≤ preset.MAX_SEED_LOOKAHEAD.toNat) (early : fork < .pectra)
+private theorem lawsP (lookahead : 1 ≤ preset.MAX_SEED_LOOKAHEAD.toNat) (early : fork < .pectra)
     (src : BeaconState preset fork) (bounded : horizon src < 2 ^ 64 - 1) :
     Laws config (InvP config src) where
   kept {s t} kept inv := by
@@ -1886,12 +1575,12 @@ theorem lawsP (lookahead : 1 ≤ preset.MAX_SEED_LOOKAHEAD.toNat) (early : fork 
   exit {s t index} ok inv := by
     obtain ⟨v0, found, ⟨_, rfl⟩ | ⟨far, q, e, w, queue, _, set⟩⟩ := initiateValidatorExit_ok ok
     · exact inv
+    have eLate := exitQueue_lt queue
     have notElectra : ¬ Fork.pectra ≤ fork := Nat.not_le_of_lt early
     unfold exitQueue at queue
     simp only [notElectra, ↓reduceDIte] at queue
     simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq, Prod.mk.injEq] at queue
     obtain ⟨e, eOk, rfl, rfl⟩ := queue
-    have eLate := exitQueueEpoch_late eOk
     obtain ⟨epochT, activeT, sizeT, _, read⟩ := exitSet_facts found far set rfl rfl (by omega)
     have v0Found := getValidator_eq_ok_iff.mp found
     have horizonEq : horizon src = (getCurrentEpoch s).toNat + 2 := by
@@ -1964,7 +1653,7 @@ theorem lawsP (lookahead : 1 ≤ preset.MAX_SEED_LOOKAHEAD.toNat) (early : fork 
   consolidate {_ _ electra'} _ _ _ _ := absurd electra' (Nat.not_le_of_lt early)
 
 /-- Before Electra: the charges of the epoch of the source are at most one churn of exits. -/
-theorem InvP.departed_card {src m : BeaconState preset fork} (inv : InvP config src m)
+private theorem InvP.departed_card {src m : BeaconState preset fork} (inv : InvP config src m)
     (bounded : horizon src < 2 ^ 64 - 1) :
     (departed src m).card ≤ max 1 (getValidatorChurnLimit config src).toNat := by
   have images : (departed src m).image UInt64.toNat ∪ cohort src src ⊆ cohort src m := by
@@ -2039,52 +1728,25 @@ theorem InvP.departed_card {src m : BeaconState preset fork} (inv : InvP config 
   have := inv.cap
   omega
 
-/-! ## Caps on effective balances before Electra -/
-
-/-- Before Electra, each step of an epoch keeps every effective balance at most the largest one. -/
-theorem lawsCap (early : fork < .pectra) :
-    Laws config (CappedPre (preset := preset) (fork := fork)) where
-  kept kept capped := kept.capped early capped
-  exit {s t index} ok capped := by
-    obtain ⟨v0, found, ⟨_, rfl⟩ | ⟨_, q, e, w, queue, _, set⟩⟩ := initiateValidatorExit_ok ok
-    · exact capped
-    have notElectra : ¬ Fork.pectra ≤ fork := Nat.not_le_of_lt early
-    unfold exitQueue at queue
-    simp only [notElectra, ↓reduceDIte] at queue
-    simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq, Prod.mk.injEq] at queue
-    obtain ⟨e, _, rfl, rfl⟩ := queue
-    obtain ⟨inside, rfl⟩ := setValidator_ok set
-    intro v member
-    simp only [BeaconState.putValidator, RootedForkList.data_set] at member
-    rcases Array.mem_or_eq_of_mem_set member with old | rfl
-    · exact capped v old
-    · exact capped v0 (mem_of_getValidator found)
-  churn {_ _ electra'} _ _ := absurd electra' (Nat.not_le_of_lt early)
-  consolidate {_ _ electra'} _ _ _ _ := absurd electra' (Nat.not_le_of_lt early)
-
 /-! ## Runs within the epoch of the source -/
 
 /-- A state of the fork of the source on which an invariant holds. -/
-def InvF (Inv : BeaconState preset fork → Prop) (x : ForkedBeaconState preset) : Prop :=
+private def InvF (Inv : BeaconState preset fork → Prop) (x : ForkedBeaconState preset) : Prop :=
   ∃ s : BeaconState preset fork, x = ⟨fork, s⟩ ∧ Inv s
 
 /-- A slot step moves the epoch on by one exactly when it reaches the first slot of an epoch. -/
-theorem epoch_next {f g : Fork} {s : BeaconState preset f} {a : BeaconState preset g}
+private theorem epoch_next {f g : Fork} {s : BeaconState preset f} {a : BeaconState preset g}
     {next : Slot}
     (sum : next.toNat = s.slot.toNat + 1) (slot : a.slot = next) :
     (getCurrentEpoch a).toNat =
       (getCurrentEpoch s).toNat + if next % preset.SLOTS_PER_EPOCH = 0 then 1 else 0 := by
-  have key : next % preset.SLOTS_PER_EPOCH = 0 ↔
-      preset.SLOTS_PER_EPOCH.toNat ∣ s.slot.toNat + 1 := by
-    rw [← sum, Nat.dvd_iff_mod_eq_zero, ← UInt64.toNat_mod, ← UInt64.toNat_inj]
-    rfl
-  rw [getCurrentEpoch_toNat, getCurrentEpoch_toNat, slot, sum, Nat.succ_div]
+  rw [getCurrentEpoch_toNat, getCurrentEpoch_toNat, slot]
   by_cases h : next % preset.SLOTS_PER_EPOCH = 0
-  · rw [ite_eq_left h, ite_eq_left (key.mp h)]
-  · rw [ite_eq_right h, ite_eq_right (mt key.mpr h)]
+  · simpa only [h, ↓reduceIte] using nextSlot_epoch_of_boundary sum h
+  · simpa only [h, ↓reduceIte, Nat.add_zero] using nextSlot_epoch_of_inside sum h
 
 /-- The upgrades of a slot keep its slot and the activity up to its fixed epoch. -/
-theorem upgrades_kept {a : BeaconState preset fork} {z : ForkedBeaconState preset}
+private theorem upgrades_kept {a : BeaconState preset fork} {z : ForkedBeaconState preset}
     (upgrades : processUpgrades config checks ⟨fork, a⟩ = .ok z) :
     z.state.slot = a.slot ∧ ActiveKept (activityFixedEpoch a) a z.state :=
   processUpgrades_induction
@@ -2097,7 +1759,7 @@ theorem upgrades_kept {a : BeaconState preset fork} {z : ForkedBeaconState prese
     ⟨rfl, ActiveKept.refl _ _⟩ upgrades
 
 /-- A step that stays in the epoch keeps the fork and the invariant. -/
-theorem step_within {Inv : BeaconState preset fork → Prop} (laws : Laws config Inv)
+private theorem step_within {Inv : BeaconState preset fork → Prop} (laws : Laws config Inv)
     (early : fork < .glamsterdam) {x z : ForkedBeaconState preset}
     (step : Step config checks x z) (holds : InvF Inv x)
     (same : getCurrentEpoch z.state = getCurrentEpoch x.state) : InvF Inv z := by
@@ -2132,7 +1794,7 @@ theorem step_within {Inv : BeaconState preset fork → Prop} (laws : Laws config
       (laws.kept (kept_processSlot cachedOk) inv)⟩
 
 /-- A run that ends in the epoch of its start keeps the fork and the invariant. -/
-theorem run_within {Inv : BeaconState preset fork → Prop} (laws : Laws config Inv)
+private theorem run_within {Inv : BeaconState preset fork → Prop} (laws : Laws config Inv)
     (early : fork < .glamsterdam) {x u : ForkedBeaconState preset}
     (pre : Run config checks x u) (holds : InvF Inv x)
     (same : getCurrentEpoch u.state = getCurrentEpoch x.state) : InvF Inv u := by
@@ -2146,7 +1808,7 @@ theorem run_within {Inv : BeaconState preset fork → Prop} (laws : Laws config 
     exact step_within laws early step (ih midSame) (same.trans midSame.symm)
 
 /-- A run that leaves the epoch of its start has a first step that leaves it. -/
-theorem run_split {x y : ForkedBeaconState preset} (tail : Run config checks x y)
+private theorem run_split {x y : ForkedBeaconState preset} (tail : Run config checks x y)
     (leaves : getCurrentEpoch y.state ≠ getCurrentEpoch x.state) :
     ∃ u z, ∃ _ : Run config checks x u, ∃ _ : Step config checks u z, ∃ _ : Run config checks z y,
       getCurrentEpoch u.state = getCurrentEpoch x.state ∧
@@ -2162,8 +1824,8 @@ theorem run_split {x y : ForkedBeaconState preset} (tail : Run config checks x y
 /-- The step that leaves the epoch of the source runs the epoch step on a state of that epoch.
 
 Its registry updates end the charges of the epoch, and no later step of it changes an exit. -/
-theorem crossing {Inv : BeaconState preset fork → Prop} (laws : Laws config Inv)
-    (early : fork < .glamsterdam) {s : BeaconState preset fork} {z : ForkedBeaconState preset}
+private theorem crossing {Inv : BeaconState preset fork → Prop} (laws : Laws config Inv)
+    {s : BeaconState preset fork} {z : ForkedBeaconState preset}
     (step : Step config checks ⟨fork, s⟩ z) (holds : Inv s)
     (leaves : getCurrentEpoch z.state ≠ getCurrentEpoch s) :
     ∃ a r : BeaconState preset fork, Inv r ∧ ExitsSame r a ∧
@@ -2188,79 +1850,12 @@ theorem crossing {Inv : BeaconState preset fork → Prop} (laws : Laws config In
       exact leaves (UInt64.toNat_inj.mp (by omega))
     unfold epochIfLast at epochedOk
     rw [ite_eq_left last] at epochedOk
-    obtain ⟨r, invR, exitsR⟩ := processEpoch_split laws early
+    obtain ⟨r, invR, exitsR⟩ := processEpoch_split laws
       (laws.kept (kept_processSlot cachedOk) holds) epochedOk
     have movedA := epoch_next (s := s) (next := next) (a := { epoched with slot := next }) sum rfl
     rw [ite_eq_left last] at movedA
     exact ⟨_, r, invR, exitsR.trans ExitsSame.of_data, movedA, activeSA, activeAZ,
       activityFixedEpoch_eq_of_slot zSlot⟩
-
-/-! ## Caps on effective balances along a run before Electra -/
-
-/-- An upgrade to a fork before Electra keeps the registry. -/
-theorem capped_upgradeNext {pre : ForkedBeaconState preset}
-    {post : {post : ForkedBeaconState preset // pre.fork < post.fork}}
-    (ok : upgradeNext config checks pre = .ok post) (early : post.val.fork < .pectra)
-    (capped : CappedPre pre.state) : CappedPre post.val.state := by
-  obtain ⟨fork, state⟩ := pre
-  cases fork <;>
-    simp only [upgradeNext, bind_ok_iff, pure, Except.pure, Except.ok.injEq, throw,
-      throwThe, MonadExceptOf.throw, reduceCtorEq] at ok
-  · obtain ⟨_, upgraded, rfl⟩ := ok
-    intro v member
-    rw [(upgradeToAltair_spec upgraded).1] at member
-    exact capped v member
-  · subst ok; exact capped
-  · subst ok; exact capped
-  · subst ok; exact capped
-  · obtain ⟨_, _, rfl⟩ := ok
-    exact absurd early (by decide : ¬ Fork.pectra < Fork.pectra)
-  · obtain ⟨_, _, rfl⟩ := ok
-    exact absurd early (by decide : ¬ Fork.fusaka < Fork.pectra)
-  · obtain ⟨_, _, rfl⟩ := ok
-    exact absurd early (by decide : ¬ Fork.glamsterdam < Fork.pectra)
-  · obtain ⟨_, _, rfl⟩ := ok
-    exact absurd early (by decide : ¬ Fork.hegota < Fork.pectra)
-
-/-- Before Electra, each effective balance of a reachable state is at most the largest one. -/
-theorem run_capped {g x : ForkedBeaconState preset}
-    (genesis : Genesis (config := config) (checks := checks) g) (run : Run config checks g x)
-    (early : x.fork < .pectra) : CappedPre x.state := by
-  induction run with
-  | nil =>
-    have notElectra : ¬ Fork.pectra ≤ g.fork := Nat.not_le_of_lt early
-    intro v member
-    simpa only [withdrawalMaxEffectiveBalance, notElectra, ↓reduceIte] using
-      genesis.effectiveBalance_capped v member
-  | @snoc middle last pre step ih =>
-    have before : middle.fork < .pectra := Nat.lt_of_le_of_lt step.chainStep.fork_le early
-    have capped := ih before
-    have gloas : ∀ {f : Fork}, f < .pectra → f < .glamsterdam :=
-      fun h => Nat.lt_trans h (by decide)
-    cases step with
-    | block engine signed due ok =>
-      exact keeps_processBlock (lawsCap (config := config) early) (gloas early)
-        (applySignedBlock_ok ok).2.1 capped
-    | slot ok =>
-      obtain ⟨advanced, slotOk, upgrades⟩ := bind_ok_iff.mp ok
-      obtain ⟨next, cached, epoched, _, cachedOk, epochedOk, rfl⟩ := advanceSlot_ok slotOk
-      have cappedCached : CappedPre cached :=
-        (lawsCap (config := config) before).kept (kept_processSlot cachedOk) capped
-      have cappedEpoched : CappedPre epoched := by
-        unfold epochIfLast at epochedOk
-        split at epochedOk
-        · obtain ⟨r, cappedR, exitsR⟩ :=
-            processEpoch_split (lawsCap (config := config) before) (gloas before) cappedCached
-              epochedOk
-          exact exitsR.2 before cappedR
-        · cases epochedOk
-          exact cappedCached
-      have cappedAdvanced : CappedPre { epoched with slot := next } := cappedEpoched
-      exact processUpgrades_induction
-        (property := fun p => p.fork < .pectra → CappedPre p.state)
-        (fun {pre} {post} prior stepOk later =>
-          capped_upgradeNext stepOk later (prior (Nat.lt_trans post.property later)))
-        (fun _ => cappedAdvanced) upgrades early
 
 /-! ## The stake that leaves the active set -/
 
@@ -2269,12 +1864,12 @@ def activeSet {f : Fork} (s : BeaconState preset f) : Finset ValidatorIndex :=
   (getActiveValidatorIndices s (getCurrentEpoch s)).toFinset
 
 /-- The validators active in a source state whose exit is set by two epochs later. -/
-def scheduled (src : BeaconState preset fork) : Finset ValidatorIndex :=
+private def scheduled (src : BeaconState preset fork) : Finset ValidatorIndex :=
   {v ∈ activeSet src | (src.validators.data[v.toNat]?).any fun validator =>
     validator.exitEpoch.toNat ≤ (getCurrentEpoch src).toNat + 2}
 
 /-- A validator is in the active set exactly when its position is active. -/
-theorem mem_activeSet {f : Fork} {s : BeaconState preset f} (early : f < .glamsterdam)
+private theorem mem_activeSet {f : Fork} {s : BeaconState preset f} (early : f < .glamsterdam)
     {v : ValidatorIndex} :
     v ∈ activeSet s ↔ isActiveAt s (getCurrentEpoch s) v.toNat = true := by
   unfold activeSet
@@ -2297,7 +1892,7 @@ The validator was scheduled to exit by then, or a queue call charged its exit.
 That call occurred in the source's epoch.
 
 Those calls are the ones that an invariant of the epoch counts. -/
-theorem departing_subset {Inv : BeaconState preset fork → Prop} (laws : Laws config Inv)
+private theorem departing_subset {Inv : BeaconState preset fork → Prop} (laws : Laws config Inv)
     {y : ForkedBeaconState preset} {source : BeaconState preset fork}
     (tail : Run config checks ⟨fork, source⟩ y) (holds : Inv source)
     (lookahead : 1 ≤ preset.MAX_SEED_LOOKAHEAD.toNat) (preGloas : y.fork < .glamsterdam)
@@ -2391,7 +1986,7 @@ theorem departing_subset {Inv : BeaconState preset fork → Prop} (laws : Laws c
   obtain ⟨s', rfl, invS⟩ := run_within laws early pre ⟨source, rfl, holds⟩ uEpoch
   change getCurrentEpoch s' = getCurrentEpoch source at uEpoch
   obtain ⟨a, r, invR, exitsR, aEpoch, activeSA, activeAZ, fixedZ⟩ :=
-    crossing laws early step invS (by rw [uEpoch]; exact zEpoch)
+    crossing laws step invS (by rw [uEpoch]; exact zEpoch)
   refine ⟨r, a, invR, exitsR, ?_⟩
   have fixedS : activityFixedEpoch s' = activityFixedEpoch source := by
     unfold activityFixedEpoch; rw [uEpoch]
@@ -2434,13 +2029,29 @@ theorem departing_subset {Inv : BeaconState preset fork → Prop} (laws : Laws c
   unfold horizon
   omega
 
+/-- Stake already scheduled to exit, plus the initial queues' remaining potential.
+
+The queues are read only through the two-epoch horizon.
+
+Before Electra, the allowance counts a churn of validators at the pre-Electra balance cap. -/
+def exitReserve (config : Config) (source : BeaconState preset fork) : Nat :=
+  stake (fun v => balanceAt source v.toNat)
+      {v ∈ activeSet source | (source.validators.data[v.toNat]?).any fun validator =>
+        validator.exitEpoch.toNat ≤ (getCurrentEpoch source).toNat + 2} +
+    if electra : .pectra ≤ fork then
+      potential ((getCurrentEpoch source).toNat + 2)
+          (source.earliestExitEpoch electra) (source.exitBalanceToConsume electra)
+          ((exitChurnLimit config source).toOption.getD 0).toNat +
+        potential ((getCurrentEpoch source).toNat + 2) (source.earliestConsolidationEpoch electra)
+          (source.consolidationBalanceToConsume electra)
+          ((getConsolidationChurnLimit config source).toOption.getD 0).toNat
+    else max 1 (getValidatorChurnLimit config source).toNat * preset.MAX_EFFECTIVE_BALANCE.toNat
+
 /-- The stake that leaves the active set by a queried epoch within two epochs of a reachable state.
 
 A later state reads the activity of the queried epoch, which is no earlier than its own epoch.
 
-The stake is at most the stake already scheduled to exit by then.
-
-The churn of the epoch of the first state adds what its charges can still move. -/
+The bound adds scheduled exit stake to the initial queues' potential through the horizon. -/
 theorem departing_stake_le_epoch {g y : ForkedBeaconState preset}
     {source : BeaconState preset fork}
     (genesis : Genesis (config := config) (checks := checks) g)
@@ -2452,15 +2063,10 @@ theorem departing_stake_le_epoch {g y : ForkedBeaconState preset}
     (near : Ep.toNat ≤ (getCurrentEpoch source).toNat + 2) :
     stake (fun v => balanceAt source v.toNat)
         {v ∈ activeSet source | isActiveAt y.state Ep v.toNat = false} ≤
-      stake (fun v => balanceAt source v.toNat) (scheduled source) +
-        if electra : .pectra ≤ fork then
-          ((exitChurnLimit config source).toOption.getD 0).toNat +
-            (source.exitBalanceToConsume electra).toNat +
-            ((getConsolidationChurnLimit config source).toOption.getD 0).toNat +
-            (source.consolidationBalanceToConsume electra).toNat +
-            2 * preset.MAX_EFFECTIVE_BALANCE_ELECTRA.toNat
-        else max 1 (getValidatorChurnLimit config source).toNat *
-          preset.MAX_EFFECTIVE_BALANCE.toNat := by
+      exitReserve config source := by
+  change _ ≤ stake (fun v => balanceAt source v.toNat) (scheduled source) +
+    if electra : .pectra ≤ fork then queuePotential config electra source source
+    else max 1 (getValidatorChurnLimit config source).toNat * preset.MAX_EFFECTIVE_BALANCE.toNat
   have early : fork < .glamsterdam :=
     Nat.lt_of_le_of_lt (fork_le_of_chainSteps tail.chainSteps) preGloas
   by_cases bounded : horizon source < 2 ^ 64 - 1
@@ -2484,7 +2090,6 @@ theorem departing_stake_le_epoch {g y : ForkedBeaconState preset}
       (InvE.start electra bounded) lookahead preGloas later near bounded
     have same := departed_of_exitsOnly exitsR.1 invR.size
     have bound := invR.departed_le
-    unfold exitRateOf consolidationRateOf at bound
     have union := (stake_mono (w := fun v => balanceAt source v.toNat) sub).trans
       (stake_union_le _ _)
     rw [same] at union
@@ -2495,7 +2100,7 @@ theorem departing_stake_le_epoch {g y : ForkedBeaconState preset}
       tail (InvP.start source) lookahead preGloas later near bounded
     have same := departed_of_exitsOnly exitsR.1 invR.size
     have count := invR.departed_card bounded
-    have capped : CappedPre source := run_capped genesis shared before
+    have capped := shared.effectiveBalance_capped_before_electra genesis before
     have each : ∀ v ∈ departed source r,
         balanceAt source v.toNat ≤ preset.MAX_EFFECTIVE_BALANCE.toNat := by
       intro v _
@@ -2516,6 +2121,5 @@ theorem departing_stake_le_epoch {g y : ForkedBeaconState preset}
       (stake_union_le _ _)
     rw [same] at union
     omega
-
 
 end EthLib.Consensus.ExitChurn
