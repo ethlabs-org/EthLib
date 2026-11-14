@@ -320,16 +320,38 @@ private theorem genesisDeposits_summary (before : fork < .altair)
     ⟨(emptyGenesisState_invariant before genesisTime eth1BlockHash _ bodyRoot).balancesMatch, rfl,
       by simp [balanceSum, emptyGenesisState], by simp [emptyGenesisState]⟩ computed
 
-/-- An unassigned validator at genesis has not yet been made eligible for activation. -/
+/-- An unassigned validator at genesis is funded and not yet eligible for activation. -/
 theorem initializeBeaconStateFromEth1_unassigned_eligibility {eth1BlockHash : Hash32}
     {eth1Timestamp : UInt64} {deposits : Array Deposit} {after : BeaconState preset fork}
     (computed : initializeBeaconStateFromEth1 config checks eth1BlockHash eth1Timestamp deposits =
       .ok after) (i : Nat) (v : Validator) (found : after.validators.data[i]? = some v)
     (unassigned : v.activationEpoch = FAR_FUTURE_EPOCH) :
-    v.activationEligibilityEpoch = FAR_FUTURE_EPOCH := by
+    (∃ balance, after.balances.data[i]? = some balance ∧ v.effectiveBalance ≤ balance) ∧
+      v.activationEligibilityEpoch = FAR_FUTURE_EPOCH := by
   obtain ⟨before, time, root, deposited, activated, _, depositedOk, activatedOk, stateEq⟩ :=
     initializeBeaconStateFromEth1_ok computed
-  rw [stateEq] at found
+  rw [stateEq] at found ⊢
+  obtain ⟨balances, _, size, effective⟩ :=
+    foldlM_activateAtGenesis (Nat.lt_trans before (by decide)) activatedOk
+  have inside : i < deposited.validators.data.size := by
+    have bound := (Array.getElem?_eq_some_iff.mp found).1
+    change i < activated.validators.data.size at bound
+    omega
+  have value := effective i inside
+  change activated.validators.data[i]? = some v at found
+  rw [found] at value
+  have funded : ∃ balance, activated.balances.data[i]? = some balance ∧
+      v.effectiveBalance ≤ balance := by
+    cases read : deposited.balances.data[i]? with
+    | none => simp [read] at value
+    | some balance =>
+      refine ⟨balance, ?_, ?_⟩
+      · rw [balances, read]
+      · simp only [read, Option.map_some, Option.some.injEq] at value
+        rw [value]
+        exact (min_sub_mod_le balance preset.EFFECTIVE_BALANCE_INCREMENT
+          preset.MAX_EFFECTIVE_BALANCE).2
+  refine ⟨funded, ?_⟩
   obtain ⟨original, read, _, same⟩ := foldlM_activateAtGenesis_unassigned
     (Nat.lt_trans before (by decide)) activatedOk i v found unassigned
   exact same.trans ((genesisDeposits_summary before time eth1BlockHash deposits root _
