@@ -550,6 +550,16 @@ private theorem CapStep.slot {f : Fork} {s t : BeaconState preset f}
   · cases advance
     exact CapStep.data rfl
 
+/-- Updating effective balances preserves the per-validator effective-balance cap. -/
+theorem processEffectiveBalanceUpdates_capped
+    {fork : Fork} {s t : BeaconState preset fork}
+    (capped : ∀ v ∈ s.validators.data,
+      v.effectiveBalance ≤ withdrawalMaxEffectiveBalance preset fork v)
+    (ok : processEffectiveBalanceUpdates s = .ok t) :
+    ∀ v ∈ t.validators.data,
+      v.effectiveBalance ≤ withdrawalMaxEffectiveBalance preset fork v :=
+  (CapStep.effective ok).capped capped
+
 private theorem CapStep.carry {f h : Fork} {s : BeaconState preset f}
     {t : BeaconState preset h} (same : t.validators.data = s.validators.data)
     (activation : preset.MAX_EFFECTIVE_BALANCE ≤ preset.MIN_ACTIVATION_BALANCE)
