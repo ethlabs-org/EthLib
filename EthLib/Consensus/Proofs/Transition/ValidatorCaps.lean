@@ -939,4 +939,38 @@ theorem processConsolidationRequest_validatorCap_mono {f : Fork} {s t : BeaconSt
       withdrawalMaxEffectiveBalance preset f v ≤ withdrawalMaxEffectiveBalance preset f w :=
   (CapStep.consolidationRequest compounding ok).monotone i v found
 
+/-- Before the slashings stage, a slashed validator with an assigned exit keeps that exit.
+
+Its withdrawable epoch cannot decrease across the preceding epoch stages. -/
+theorem EpochTrace.slashed_withdrawableEpoch_mono
+    {fork : Fork} {s t : BeaconState preset fork}
+    (trace : EpochTrace (EpochStage.action config checks)
+      [.justification, .inactivity, .rewards, .registry] s t)
+    (i : Nat) (v w : Validator)
+    (before : s.validators.data[i]? = some v)
+    (after : t.validators.data[i]? = some w)
+    (slashed : v.slashed = true) (assigned : v.exitEpoch ≠ FAR_FUTURE_EPOCH) :
+    w.slashed = true ∧ w.exitEpoch = v.exitEpoch ∧
+      v.withdrawableEpoch ≤ w.withdrawableEpoch := by
+  cases trace with | cons justified rest =>
+    cases rest with | cons inactivity rest =>
+      cases rest with | cons rewarded rest =>
+        cases rest with | cons registered rest =>
+          cases rest
+          have one := (EpochStage.action_cases.mp justified).validators_eq
+            ⟨nofun, nofun, nofun⟩
+          have two := (EpochStage.action_cases.mp inactivity).validators_eq
+            ⟨nofun, nofun, nofun⟩
+          have three := (EpochStage.action_cases.mp rewarded).validators_eq
+            ⟨nofun, nofun, nofun⟩
+          have atRegistry := before
+          rw [← one, ← two, ← three] at atRegistry
+          have ok := EpochStage.action_cases.mp registered
+          have kept := ((CapStep.registry ok).withdrawal i v w atRegistry after).1
+            slashed assigned
+          obtain ⟨last, located, life⟩ :=
+            (registryLifecycle_processRegistryUpdates ok).validators i v atRegistry
+          obtain rfl : last = w := Option.some.inj (located.symm.trans after)
+          exact ⟨kept.1, life.exitEpoch assigned, kept.2.2⟩
+
 end EthLib.Consensus
