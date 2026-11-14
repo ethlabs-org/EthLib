@@ -230,7 +230,7 @@ At depth 5 it costs at most about 1.45 points.
 
 From depth 6 the exit and consolidation queues and the late activations take it past 1.5 points.
 
-It is about 1.75 to 2.1 points at depth 6, and about 2.4 points at depth 10.
+It is about 1.9 to 2.2 points at depth 6, and about 2.4 to 2.6 points at depth 10.
 
 So the reserve grows with the number of epochs since finality.
 -/
