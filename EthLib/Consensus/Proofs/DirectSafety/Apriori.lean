@@ -3438,4 +3438,171 @@ private theorem activeStake_le_ceiling {g x y : ForkedBeaconState preset}
       simp only [ceilingAt, floorAt, zero] at lower ⊢
       omega
 
+/-- Before Electra, the active validators at each state of a branch from `x` follow `A_t`.
+
+Each of them is given an activation epoch, and it had not exited at `x`.
+
+So it is one of the validators that `windowActivations_le_countPath` counts. -/
+private theorem activeCount_le_countPath {g x z : ForkedBeaconState preset}
+    (shared : Run config checks g x) (genesis : Genesis (config := config) (checks := checks) g)
+    (tail : Run config checks x z) (early : z.fork < .pectra) :
+    activeCount z.state ≤ countPath config (refCount x + scheduledCount x)
+      ((getCurrentEpoch z.state).toNat - (getCurrentEpoch x.state).toNat) := by
+  have within := z.state.validators.bound (Nat.lt_trans early (by decide))
+  have far : FAR_FUTURE_EPOCH.toNat = 2 ^ 64 - 1 := rfl
+  have later := UInt64.le_iff_toNat_le.mp (currentEpoch_le_of_chainSteps tail.chainSteps)
+  have life := tail.registryLifecycle
+  refine Nat.le_trans ?_ (windowActivations_le_countPath shared genesis tail early)
+  have nodup : (getActiveValidatorIndices z.state (getCurrentEpoch z.state)).Nodup :=
+    (getActiveValidatorIndices_sorted within _).imp fun {a b} less (same : a = b) => by
+      subst same; exact UInt64.lt_irrefl _ less
+  rw [activeCount, ← List.toFinset_card_of_nodup nodup,
+    ← Finset.card_image_of_injective _ (fun a b same => UInt64.toNat_inj.mp same)]
+  refine Finset.card_le_card fun i member => ?_
+  obtain ⟨j, chosen, rfl⟩ := Finset.mem_image.mp member
+  obtain ⟨v, found, active⟩ := (mem_getActiveValidatorIndices within).mp
+    (List.mem_toFinset.mp chosen)
+  simp only [isActiveValidator, Bool.and_eq_true, decide_eq_true_eq,
+    UInt64.le_iff_toNat_le, UInt64.lt_iff_toNat_lt] at active
+  have exitBound := v.exitEpoch.toNat_lt
+  simp only [Finset.mem_filter, Finset.mem_range, found, Option.any_some, bne_iff_ne, ne_eq,
+    Bool.and_eq_true]
+  refine ⟨(Array.getElem?_eq_some_iff.mp found).1, fun same => ?_, ?_⟩
+  · rw [same, far] at active
+    omega
+  -- A validator that had exited at `x` keeps its exit epoch, so it is not active at `z`.
+  cases old : x.state.validators.data[j.toNat]? with
+  | none => rfl
+  | some w =>
+    obtain ⟨v', found', kept⟩ := life.validators _ w old
+    obtain rfl : v' = v := Option.some.inj (found'.symm.trans found)
+    simp only [Option.all_some, Bool.or_eq_true, beq_iff_eq, decide_eq_true_eq]
+    by_cases assigned : w.exitEpoch = FAR_FUTURE_EPOCH
+    · right
+      rw [UInt64.lt_iff_toNat_lt, assigned, far]
+      omega
+    · right
+      have same := kept.exitEpoch assigned
+      rw [UInt64.lt_iff_toNat_lt, ← same]
+      omega
+
+/-- The consolidation churn of a state before Gloas is at most `C` of its total active balance.
+
+The churn rounds down to an increment before the activation and exit part is taken off. -/
+private theorem consolidationChurnLimit_le {f : Fork} {s : BeaconState preset f}
+    (early : f < .glamsterdam) {total rate : Gwei} (read : getTotalActiveBalance s = .ok total)
+    (computed : getConsolidationChurnLimit config s = .ok rate) :
+    rate.toNat ≤ consolidationChurn preset config total.toNat := by
+  have wholeOk : getBalanceChurnLimit config s = .ok (roundToIncrement preset
+      (max config.MIN_PER_EPOCH_CHURN_LIMIT_ELECTRA (total / config.CHURN_LIMIT_QUOTIENT))) := by
+    simp [getBalanceChurnLimit, read, bind, Except.bind, pure, Except.pure]
+  have exitOk : getActivationExitChurnLimit config s = .ok
+      (min config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT (roundToIncrement preset
+        (max config.MIN_PER_EPOCH_CHURN_LIMIT_ELECTRA (total / config.CHURN_LIMIT_QUOTIENT)))) := by
+    simp [getActivationExitChurnLimit, wholeOk, bind, Except.bind, pure, Except.pure]
+  have sum := getConsolidationChurnLimit_add early computed exitOk wholeOk
+  rw [Uint64.toNat_min] at sum
+  generalize hAmount : max config.MIN_PER_EPOCH_CHURN_LIMIT_ELECTRA
+    (total / config.CHURN_LIMIT_QUOTIENT) = amount at sum
+  have value := congrArg UInt64.toNat hAmount
+  rw [Uint64.toNat_max, UInt64.toNat_div] at value
+  have remainder : amount % preset.EFFECTIVE_BALANCE_INCREMENT ≤ amount := by
+    rw [UInt64.le_iff_toNat_le, UInt64.toNat_mod]
+    exact Nat.mod_le _ _
+  rw [roundToIncrement, UInt64.toNat_sub_of_le _ _ remainder, UInt64.toNat_mod] at sum
+  -- The rounded churn is at most the churn of the formula, which rounds only the share.
+  have share := Nat.div_add_mod (total.toNat / config.CHURN_LIMIT_QUOTIENT.toNat)
+    preset.EFFECTIVE_BALANCE_INCREMENT.toNat
+  have rounded : amount.toNat - amount.toNat % preset.EFFECTIVE_BALANCE_INCREMENT.toNat ≤
+      balanceChurn preset config total.toNat := by
+    unfold balanceChurn
+    rw [← value, Nat.mul_comm (total.toNat / config.CHURN_LIMIT_QUOTIENT.toNat /
+      preset.EFFECTIVE_BALANCE_INCREMENT.toNat)]
+    rcases Nat.le_total config.MIN_PER_EPOCH_CHURN_LIMIT_ELECTRA.toNat
+      (total.toNat / config.CHURN_LIMIT_QUOTIENT.toNat) with low | high
+    · rw [Nat.max_eq_right low]
+      omega
+    · rw [Nat.max_eq_left high]
+      omega
+  unfold consolidationChurn exitChurn
+  omega
+
+/-- `C` does not decrease when the total active stake grows. -/
+private theorem consolidationChurn_mono {low high : Nat} (le : low ≤ high) :
+    consolidationChurn preset config low ≤ consolidationChurn preset config high := by
+  have churns : balanceChurn preset config low ≤ balanceChurn preset config high :=
+    max_le_max_left _ (Nat.mul_le_mul_right _ (Nat.div_le_div_right (Nat.div_le_div_right le)))
+  unfold consolidationChurn exitChurn
+  omega
+
+/-- S3's two hypotheses follow from S1 and the count path.
+
+Before the fork each step of the window starts with at most `A_{H+1}` active validators.
+
+From Electra each step starts with a consolidation churn of at most `C(T⁺_{H+1})`.
+
+There the total active balance is at most `T⁺_{H+1}`, by S1 at the start of the step. -/
+private theorem departures_le_budget_of_ceiling {g x y : ForkedBeaconState preset}
+    (shared : Run config checks g x) (tail : Run config checks x y)
+    (genesis : Genesis (config := config) (checks := checks) g) (caps : CapOrder preset)
+    (early : y.fork < .glamsterdam) (high : Nat) (guard : aprioriGuardAt config x high)
+    (unit : preset.EFFECTIVE_BALANCE_INCREMENT.toNat ≤
+      ceilingAt config x high (driftHorizon x high + 1))
+    (ceiling : .pectra ≤ x.fork → ∀ {u : ForkedBeaconState preset} (_ : Run config checks x u),
+      u.fork < .glamsterdam → (getCurrentEpoch u.state).toNat ≤ high + 1 →
+      ∑ i ∈ (getActiveValidatorIndices u.state (getCurrentEpoch u.state)).toFinset,
+          effectiveAt u i.toNat ≤
+        ceilingAt config x high
+          ((getCurrentEpoch u.state).toNat - (getCurrentEpoch x.state).toNat)) :
+    ((tail.departureCharges.filter fun c => c.epoch ≤ high + 1).map (·.amount)).sum ≤
+      departureBudget preset config (refCount x) (scheduledCount x) (preActiveStake x)
+        (fundingCarry x) (slashableInactiveCount x) (fundedStake x + previousOnlyStake x)
+        (queueCarry x high)
+        (exitQueueStart x - (getCurrentEpoch x.state).toNat)
+        (consolidationQueueStart x - (getCurrentEpoch x.state).toNat)
+        (driftHorizon x high) (forkEpochs config x high) := by
+  have index (u : ForkedBeaconState preset) (within : (getCurrentEpoch u.state).toNat ≤ high + 1) :
+      (getCurrentEpoch u.state).toNat - (getCurrentEpoch x.state).toNat ≤
+        driftHorizon x high + 1 := by
+    unfold driftHorizon
+    omega
+  refine departures_le_budget shared tail genesis caps early high guard
+    (fun {u w} step contained within before => ?_)
+    (fun {u w} step contained within electraU rate computed => ?_)
+  · -- Before the fork the active validators follow the count path.
+    obtain ⟨pre, _, _⟩ := tail.contains_split step contained
+    have paths : Monotone (countPath config (refCount x + scheduledCount x)) :=
+      monotone_nat_of_le_succ fun _ => Nat.le_add_right _ _
+    exact (activeCount_le_countPath shared genesis pre before).trans (paths (index u within))
+  · obtain ⟨pre, post, -⟩ := tail.contains_split step contained
+    have uEarly : u.fork < .glamsterdam := Nat.lt_of_le_of_lt
+      (Nat.le_trans step.chainStep.fork_le (fork_le_of_chainSteps post.chainSteps)) early
+    by_cases electra : .pectra ≤ x.fork
+    · -- From Electra the total active balance is at most `T⁺_{H+1}`, by S1.
+      have stake := (ceiling electra pre uEarly within).trans
+        (ceilingAt_mono electra high (index u within))
+      cases read : getTotalActiveBalance u.state with
+      | error error =>
+        have notGloas : ¬ .glamsterdam ≤ u.fork := Nat.not_le_of_lt uEarly
+        simp only [getConsolidationChurnLimit, notGloas, ↓reduceIte, getBalanceChurnLimit, read,
+          bind, Except.bind] at computed
+        cases computed
+      | ok total =>
+        obtain ⟨-, -, value⟩ := getTotalBalance_ok_iff_stake.mp (getTotalActiveBalance_ok read)
+        have totalLe : total.toNat ≤ ceilingAt config x high (driftHorizon x high + 1) := by
+          rw [value]
+          exact max_le unit stake
+        exact (consolidationChurnLimit_le uEarly read computed).trans
+          (consolidationChurn_mono totalLe)
+    · -- A window before the fork has no Electra state.
+      have before : x.fork < .pectra := Nat.lt_of_not_ge electra
+      have reached := reachable_electra_epoch (shared.append pre) genesis electraU
+      obtain ⟨-, -, -, -, -, -, -, -, -, -, -, -, crossing⟩ := guard
+      have positive : 0 < forkEpochs config x high := by
+        simp only [forkEpochs, before, ↓reduceIte, driftHorizon]
+        split <;> omega
+      have ends := crossing.resolve_left (Nat.ne_of_gt positive)
+      simp only [forkEpochs, before, ↓reduceIte, driftHorizon] at ends
+      split at ends <;> omega
+
 end EthLib.Consensus.DirectSafety
