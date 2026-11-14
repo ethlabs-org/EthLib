@@ -4204,6 +4204,13 @@ private theorem FloorTrace.excess {x y : ForkedBeaconState preset}
     · exact trace.credit (by omega)
     · exact trace.sweep (by omega)
 
+/-- An assigned exit is fixed; an unassigned exit is at least every later exit. -/
+private theorem floor_exit_le {v w : Validator} (kept : ValidatorLifecycle v w) :
+    w.exitEpoch.toNat ≤ v.exitEpoch.toNat := by
+  by_cases assigned : v.exitEpoch = FAR_FUTURE_EPOCH
+  · rw [assigned]; exact Nat.le_of_lt_succ w.exitEpoch.toNat_lt
+  · rw [kept.exitEpoch assigned]
+
 /-- A recorded withdrawal event uses the actual header state and the final validator's exit. -/
 private theorem withdrawal_site_floor {x y : ForkedBeaconState preset}
     (step : Step config checks x y) (caps : CapOrder preset)
@@ -4224,15 +4231,10 @@ private theorem withdrawal_site_floor {x y : ForkedBeaconState preset}
   obtain ⟨_, withdrawals, _, _, _, _, _, ordered, beforeLife, during, suffix, _⟩ :=
     step.balanceEvents_sites early holds caps.compounding replayed event member
   obtain ⟨u, found, _⟩ := beforeLife.validators i.toNat v initial
-  obtain ⟨later, laterFound, one⟩ := during.validators i.toNat u found
-  obtain ⟨last, lastFound, two⟩ := suffix.validators i.toNat later laterFound
+  obtain ⟨last, lastFound, kept⟩ := (during.trans suffix).validators i.toNat u found
   have same : last = w := Option.some.inj (lastFound.symm.trans final)
   subst last
-  have exitBound : w.exitEpoch.toNat ≤ u.exitEpoch.toNat := by
-    by_cases assigned : u.exitEpoch = FAR_FUTURE_EPOCH
-    · rw [assigned]
-      exact Nat.le_of_lt_succ w.exitEpoch.toNat_lt
-    · rw [(one.trans two).exitEpoch assigned]
+  have exitBound := floor_exit_le kept
   have waiting : getCurrentEpoch event.before.state < u.withdrawableEpoch := by
     have order := UInt64.le_iff_toNat_le.mp (ordered u (Array.mem_of_getElem? found))
     exact UInt64.lt_iff_toNat_lt.mpr (by omega)
@@ -4338,10 +4340,7 @@ private theorem FloorTrace.event {x y : ForkedBeaconState preset}
     obtain ⟨z, located, kept⟩ := (during.trans suffix).validators i.toNat u found
     have same : z = w := Option.some.inj (located.symm.trans final)
     subst z
-    have exitBound : w.exitEpoch.toNat ≤ u.exitEpoch.toNat := by
-      by_cases assigned : u.exitEpoch = FAR_FUTURE_EPOCH
-      · rw [assigned]; exact Nat.le_of_lt_succ w.exitEpoch.toNat_lt
-      · rw [kept.exitEpoch assigned]
+    have exitBound := floor_exit_le kept
     have waiting : getCurrentEpoch e.before.state + 1 < u.withdrawableEpoch := by
       have atEpoch := pendingEpoch source
       have order := UInt64.le_iff_toNat_le.mp (ordered u (Array.mem_of_getElem? found))
@@ -4370,7 +4369,8 @@ private theorem FloorTrace.step_events {x y : ForkedBeaconState preset}
       actualBalanceAt e.after i.toNat = actualBalanceAt e'.before i.toNat))
     {low base quotient : Nat} {a b : FloorAccount} (trace : FloorTrace low base quotient a b)
     (start : ∀ e ∈ part.head?, b.balance = actualBalanceAt e.before i.toNat)
-    (empty : b.slashedHigh = none)
+    (budget : (if b.slashedHigh.isSome then 1 else 0) +
+      part.countP (floorSlash i.toNat) ≤ 1)
     (capped : max low b.high ≤ (withdrawalMaxEffectiveBalance preset x.fork v).toNat)
     (slash : ∀ e ∈ part, e.source = .slashings → ∀ c,
       FloorTrace low base quotient a c → c.balance = actualBalanceAt e.before i.toNat →
@@ -4383,27 +4383,13 @@ private theorem FloorTrace.step_events {x y : ForkedBeaconState preset}
       (part = [] → last.balance = b.balance) ∧
       (∀ e ∈ part.getLast?, last.balance = actualBalanceAt e.after i.toNat) ∧
       last.debt = b.debt + (part.map (floorPenaltyDebit i.toNat)).sum +
-        (part.map (floorPartialDebit i)).sum ∧ last.high = b.high := by
+        (part.map (floorPartialDebit i)).sum ∧ last.high = b.high ∧
+      (if last.slashedHigh.isSome then 1 else 0) =
+        (if b.slashedHigh.isSome then 1 else 0) + part.countP (floorSlash i.toNat) := by
   have included := sublist.subset
-  have count : part.countP (floorSlash i.toNat) ≤ 1 := by
-    cases part with
-    | nil => simp
-    | cons e rest =>
-      have sites := step.balanceEvents_sites early holds caps.compounding replayed e
-        (included (by simp))
-      have bound := sites.2.2.2.2.2.2.2.2.2.2.2.2.2.2.1 i.toNat
-      have one := sublist.countP_le (p := floorSlash i.toNat)
-      have two := List.countP_mono_left (l := events) (p := floorSlash i.toNat)
-        (q := fun e => !(e.before.state.validators.data[i.toNat]?.map (·.slashed)).getD true &&
-          (e.after.state.validators.data[i.toNat]?.map (·.slashed)).getD false)
-        (fun e _ marked => by
-          simp only [floorSlash, Bool.and_eq_true] at marked
-          simp only [Bool.and_eq_true]
-          exact ⟨marked.1.2, marked.2⟩)
-      exact one.trans (two.trans bound)
-  obtain ⟨last, done, nil, finish, debt, kept, _⟩ :=
+  obtain ⟨last, done, nil, finish, debt, kept, used⟩ :=
     (show FloorTrace low base quotient a b from trace).events i part linked start
-      (by simpa [empty] using count) (fun e member c prior balance kept first => by
+      budget (fun e member c prior balance kept first => by
         by_cases source : e.source = .slashings
         · exact slash e member source c prior balance kept first
         · refine ⟨_, prior.event step caps early holds replayed e (included member) source
@@ -4411,7 +4397,7 @@ private theorem FloorTrace.step_events {x y : ForkedBeaconState preset}
             (pendingEpochs e (included member)) retained balance ?_, rfl, rfl, rfl, ?_⟩
           · simpa only [kept] using capped
           · simp [floorSlash, source])
-  exact ⟨last, done, fun h => congrArg FloorAccount.balance (nil h), finish, debt, kept⟩
+  exact ⟨last, done, fun h => congrArg FloorAccount.balance (nil h), finish, debt, kept, used⟩
 
 /-- Block slashings spend the allowance once, at the recorded change of the slashed flag. -/
 private theorem FloorTrace.block_slashing {fork : Fork} {s t : BeaconState preset fork}
