@@ -38,18 +38,9 @@ private theorem getNextSyncCommittee_keys {committee : SyncCommittee preset}
   intro key member
   obtain ⟨i, inside, equal⟩ := List.getElem_of_mem member
   obtain ⟨validator, found, keyEq⟩ := reads ⟨i, by simpa using inside⟩
-  have active := mem_getNextSyncCommitteeIndices drawn _
+  obtain ⟨_, candidatesOk, selected⟩ := getNextSyncCommitteeIndices_checked drawn
+  have member := selected _
     (by simpa using indices.getElem_mem (i := i) (by simpa using inside))
-  -- The successful draw has a checked candidate list, so no registry-size premise is needed.
-  have checked := drawn
-  simp only [getNextSyncCommitteeIndices, bind_ok_iff, liftArith, mapError_ok_iff] at checked
-  obtain ⟨epoch, next, _, _, candidates, candidatesOk, _⟩ := checked
-  have member := active
-  have epochEq : epoch = getCurrentEpoch state + 1 := by
-    obtain ⟨fits, value⟩ := addChecked_ok_iff.mp next
-    apply UInt64.toNat_inj.mp
-    rw [value, toNat_add_of_lt (by simpa using fits)]
-  rw [← epochEq, ← getActiveValidatorIndicesChecked_ok candidatesOk] at member
   obtain ⟨v, read, isActive⟩ :=
     (mem_iff_of_getActiveValidatorIndicesChecked_ok candidatesOk).mp member
   have same : v = validator := Option.some.inj (read.symm.trans (getValidator_eq_ok_iff.mp found))
