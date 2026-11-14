@@ -2641,7 +2641,8 @@ theorem _root_.EthLib.Consensus.Step.balanceEvents_sites {x y : ForkedBeaconStat
               (EthLib.Consensus.parameters preset
                 e.before.fork).WHISTLEBLOWER_REWARD_QUOTIENT.toNat else 0) ∧
       (e.source = .slashings → 0 < e.creditLimit →
-        ∀ i : Nat, effectiveAt e.before i = effectiveAt x i) := by
+        ∀ i : Nat, effectiveAt e.before i = effectiveAt x i) ∧
+      (e.source = .slashings → 0 < e.creditLimit → e.before.fork = x.fork) := by
   have before : x.fork < .glamsterdam := Nat.lt_of_le_of_lt step.chainStep.fork_le early
   intro e member
   have sites := intervalLoss_step_sites step early holds replayed
@@ -2661,10 +2662,16 @@ theorem _root_.EthLib.Consensus.Step.balanceEvents_sites {x y : ForkedBeaconStat
     (fun source => ?_), ordered, grown, duringLife, finalLife, prefixSlashed,
     duringSlashed, finalSlashed, sites.2, (fun source => (site source).credit), ?_⟩
   case refine_7 =>
-    intro source positive i
+    suffices bridge : e.source = .slashings → 0 < e.creditLimit →
+        (∀ i : Nat, effectiveAt e.before i = effectiveAt x i) ∧ e.before.fork = x.fork from
+      ⟨fun source positive => (bridge source positive).1,
+        fun source positive => (bridge source positive).2⟩
+    intro source positive
     rcases kind with crossing | ⟨s, t, atStart, _, keep, _, _, _, size⟩ | epoch
     · rw [crossing.1] at source; cases source
-    · rw [atStart]
+    · refine ⟨?_, by rw [atStart]⟩
+      intro i
+      rw [atStart]
       by_cases inside : i < x.state.validators.data.size
       · exact keep.1 i inside
       · simp [effectiveAt, (size source).1, Nat.le_of_not_lt inside]
