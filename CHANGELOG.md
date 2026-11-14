@@ -303,7 +303,7 @@ Not yet released.
   It counted two epochs and added the churn terms of the source's epoch.
   `Preset.ExitWindowFixed` asks for a seed lookahead of at least three epochs; mainnet and minimal satisfy it.
   Under it, `exitStake_le_exitReserve` shows that no other source stake leaves by then, in any later state that keeps the source's fixed activity.
-  `SourceWindowReserve` and `WindowExitBound` read the new value; a caller that proves `SourceWindowReserve` proves it for the new reserve.
+  `SourceWindowReserve` and `WindowExitBound` read the new value, and no theorem orders the two values, so a caller must prove `SourceWindowReserve` again for the new reserve.
   A caller that proves `WindowExitBound` bounds each near epoch with `windowExitBound_of_activeKept`; `exitReserve` no longer reads its `Config`.
 
 - The DER and e2store errors carry the values that their failed check compared.
