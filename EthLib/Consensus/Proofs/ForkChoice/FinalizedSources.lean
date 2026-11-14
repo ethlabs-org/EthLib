@@ -33,11 +33,10 @@ Inherited anchor bits cannot finalize a checkpoint after the anchor epoch.
 
 This is the signer part of Gasper Definition 4.9, arXiv 2003.03052v3.
 
-It corresponds to the finalizing-link witness in VFC's
-`acceptedGlobalFinalized_anchor_or_timedCertificate`.
+The corresponding VFC witness is `acceptedGlobalFinalized_anchor_or_timedCertificate`.
 
 The target epoch bound permits same-slot admission without an early-signer stake assumption. -/
-theorem Execution.exists_signsSource_of_finalized {anchor : Store preset fork}
+private theorem Execution.exists_signsSource_of_finalized {anchor : Store preset fork}
     (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
     (sound : Invariant anchorState)
     (slotsPositive : 0 < preset.SLOTS_PER_EPOCH.toNat)

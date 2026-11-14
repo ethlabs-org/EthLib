@@ -946,13 +946,8 @@ theorem Execution.signsTarget_by_boundary
     (originSafe (e.world r).time (by omega) (by omega))
   have targetRead : ((e.world q).state u).getCheckpointBlock head.root target.epoch =
       .ok target.root := by
-    have parsed := targetOk
-    simp only [Store.getCurrentTarget, Store.getCheckpointForBlock, epochOk,
-      bind_ok_iff] at parsed
-    obtain ⟨epoch, sameEpoch, root, read, sameTarget⟩ := parsed
-    cases Except.ok.inj sameEpoch
-    have rootEq := congrArg Checkpoint.root (Except.ok.inj sameTarget)
-    exact rootEq ▸ read
+    obtain ⟨epoch, root, _, read, rfl⟩ := Store.getCurrentTarget_eq_ok_iff.mp targetOk
+    exact read
   intro v member
   rcases (members v member).2.2 with signed | unseen
   · obtain ⟨k, before, rest⟩ := signed

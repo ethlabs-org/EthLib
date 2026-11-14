@@ -162,6 +162,48 @@ theorem BeaconBlockBody.getGeneralizedIndex_hegota {name : String}
     (rightActive := BeaconBlockBody.activeFields .glamsterdam) ?_ ?_ found
     ((BeaconBlockBody.fieldPlace_hegota name kept) ▸ found) <;> rfl
 
+open SszType in
+/-- A block has the root of its header, whose last field is the root of the body of the block.
+
+This holds with no assumption on the preset. -/
+theorem BeaconBlock.hashTreeRoot_header {block : BeaconBlock preset fork} {bodyRoot : Root}
+    (rooted : hashTreeRoot block.body = .ok bodyRoot) :
+    hashTreeRoot (BeaconBlockHeader.mk block.slot block.proposerIndex block.parentRoot
+      block.stateRoot bodyRoot) = hashTreeRoot block := by
+  -- The body and its root have the same untyped root.
+  have bodyOk : SszType.root block.body = .ok bodyRoot.toArray := by
+    revert rooted
+    unfold SszType.hashTreeRoot
+    cases SszType.root block.body with
+    | error fault => simp [bind, Except.bind]
+    | ok bytes =>
+      simp only [bind, Except.bind]
+      intro chunked
+      rw [toChunk_ok_iff.mp chunked]
+  have rootOk : SszType.root bodyRoot = .ok bodyRoot.toArray := by
+    rw [LawfulSszType.root_eq]
+    exact SszType.hashTreeRoot_ok_iff.mp (SszType.hashTreeRoot_bytes32 bodyRoot)
+  -- Both containers summarize the same five roots.
+  have headerEq : SszType.root (BeaconBlockHeader.mk block.slot block.proposerIndex
+      block.parentRoot block.stateRoot bodyRoot) =
+      SszFields.roots (block.slot, block.proposerIndex, block.parentRoot, block.stateRoot,
+        bodyRoot) >>= summaryRoot (.container ["slot", "proposer_index", "parent_root",
+          "state_root", "body_root"]) := rfl
+  have blockEq : SszType.root block =
+      SszFields.roots (block.slot, block.proposerIndex, block.parentRoot, block.stateRoot,
+        block.body) >>= summaryRoot (.container ["slot", "proposer_index", "parent_root",
+          "state_root", "body"]) := rfl
+  unfold SszType.hashTreeRoot
+  rw [headerEq, blockEq]
+  -- The names of the fields do not change the root.
+  have names : summaryRoot (.container ["slot", "proposer_index", "parent_root", "state_root",
+      "body_root"]) = summaryRoot (.container ["slot", "proposer_index", "parent_root",
+        "state_root", "body"]) := by
+    funext roots
+    exact hashTreeRoot_container_names _ _ _ _
+  rw [names]
+  simp only [SszFields.roots, bodyOk, rootOk]
+
 variable [NeZero preset.BYTES_PER_LOGS_BLOOM.toNat] [NeZero preset.SYNC_COMMITTEE_SIZE.toNat]
   [NeZero preset.MAX_COMMITTEES_PER_SLOT.toNat] [NeZero preset.PTC_SIZE.toNat]
   [NeZero preset.INCLUSION_LIST_COMMITTEE_SIZE.toNat]
@@ -259,36 +301,5 @@ theorem BeaconBlock.commitmentSized (block : BeaconBlock preset fork)
       simp +instances [gloas, before, heze, altair, bellatrix, capella, deneb, electra,
         Desc.uint64, Desc.uint256, boundedCounts, attesters, scalar]
   simpa [SszType.desc, SszFields.descs, Desc.uint64, boundedCounts] using body
-
-omit [NeZero preset.BYTES_PER_LOGS_BLOOM.toNat] [NeZero preset.SYNC_COMMITTEE_SIZE.toNat]
-  [NeZero preset.MAX_COMMITTEES_PER_SLOT.toNat] [NeZero preset.PTC_SIZE.toNat]
-  [NeZero preset.INCLUSION_LIST_COMMITTEE_SIZE.toNat] in
-/-- A block has the root of its header, whose last field is the root of the body of the block. -/
-theorem BeaconBlock.hashTreeRoot_header {block : BeaconBlock preset fork} {bodyRoot : Root}
-    (rooted : SszType.hashTreeRoot block.body = .ok bodyRoot) :
-    SszType.hashTreeRoot (BeaconBlockHeader.mk block.slot block.proposerIndex block.parentRoot
-      block.stateRoot bodyRoot) = SszType.hashTreeRoot block := by
-  have raw : SszType.root block.body = .ok bodyRoot.toArray := by
-    unfold SszType.hashTreeRoot at rooted
-    cases h : SszType.root block.body with
-    | error err => simp [h, bind, Except.bind] at rooted
-    | ok bytes =>
-      simp only [h, bind, Except.bind] at rooted
-      exact congrArg Except.ok (toChunk_ok_iff.mp rooted)
-  have chunk : SszType.root bodyRoot = .ok bodyRoot.toArray := by
-    rw [LawfulSszType.root_eq]
-    exact hashTreeRoot_chunk (by simp [bytesPerChunk])
-  change ((SszFields.roots
-      (block.slot, block.proposerIndex, block.parentRoot, block.stateRoot, bodyRoot) >>=
-    summaryRoot (.container
-      ["slot", "proposer_index", "parent_root", "state_root", "body_root"])) >>= toChunk) =
-    ((SszFields.roots
-      (block.slot, block.proposerIndex, block.parentRoot, block.stateRoot, block.body) >>=
-    summaryRoot (.container
-      ["slot", "proposer_index", "parent_root", "state_root", "body"])) >>= toChunk)
-  simp only [SszFields.roots, raw, chunk, bind, Except.bind, pure, Except.pure]
-  simp only [summaryRoot, hashTreeRoot_container_names
-    ["slot", "proposer_index", "parent_root", "state_root", "body_root"]
-    ["slot", "proposer_index", "parent_root", "state_root", "body"]]
 
 end EthLib.Consensus

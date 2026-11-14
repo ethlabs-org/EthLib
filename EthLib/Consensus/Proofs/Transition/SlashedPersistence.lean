@@ -8,7 +8,7 @@ public import EthLib.Consensus.Proofs.Transition.RegistryLifecycle
 
 A successful transition cannot clear a slashed flag or remove its registry entry.
 
-Each result follows from the frame of its step, through `of_frame` and `of_upgradeFrame`.
+Each result follows from the frame of its step, or from the upgrade frame at a fork boundary.
 -/
 
 @[expose] public section
@@ -51,14 +51,14 @@ theorem of_frame (frame : Frame s t) : SlashedPersistence s t := by
   have read := Array.getElem?_eq_getElem grown
   exact ⟨_, read, frame.slashed i v _ found read flag⟩
 
-/-- An upgrade frame never clears a slashed flag or removes a registry entry. -/
+/-- An upgrade frame keeps each slashed flag at its position, so it never clears one. -/
 theorem of_upgradeFrame {f h : Fork} {s : BeaconState preset f} {t : BeaconState preset h}
     (frame : UpgradeFrame config s t) : SlashedPersistence s t := by
   intro i v found flag
-  have inside := (Array.getElem?_eq_some_iff.mp found).1
-  have grown : i < t.validators.data.size := Nat.lt_of_lt_of_le inside frame.registryGrows
-  have read := Array.getElem?_eq_getElem grown
-  exact ⟨_, read, frame.slashed i v _ found read flag⟩
+  have same := frame.slashed i
+  rw [found] at same
+  obtain ⟨w, read, marked⟩ := Option.map_eq_some_iff.mp same
+  exact ⟨w, read, marked.trans flag⟩
 
 end SlashedPersistence
 

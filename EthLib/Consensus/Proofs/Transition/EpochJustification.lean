@@ -165,7 +165,65 @@ theorem finalizes_eq_true {justified : Bool} {source gap currentEpoch : Epoch}
     obtain ⟨sum, sumOk, rfl⟩ := computed
     exact ⟨rfl, ((addChecked_ok_iff.mp sumOk).2).symm⟩
 
-/-- What weighing the votes does to the three newest bits and to the finalized checkpoint.
+/-- The four rules by which one justification step finalizes a checkpoint, read from its bits.
+
+The bits are those of the state after the step.
+
+The epoch and the justified checkpoints are those of the state before the step.
+
+The old previous justified checkpoint needs bits 1 and 2, and also bit 3 when three epochs back.
+
+The old current justified checkpoint needs bits 0 and 1, and also bit 2 when two epochs back. -/
+def FinalizationStepRule (state after : BeaconState preset fork) (checkpoint : Checkpoint) :
+    Prop :=
+  let bits := after.justificationBits.bits
+  let e := (getCurrentEpoch state).toNat
+  (checkpoint = state.previousJustifiedCheckpoint ∧
+    ((bits[1] = true ∧ bits[2] = true ∧ bits[3] = true ∧ checkpoint.epoch.toNat + 3 = e) ∨
+      (bits[1] = true ∧ bits[2] = true ∧ checkpoint.epoch.toNat + 2 = e))) ∨
+  (checkpoint = state.currentJustifiedCheckpoint ∧
+    ((bits[0] = true ∧ bits[1] = true ∧ bits[2] = true ∧ checkpoint.epoch.toNat + 2 = e) ∨
+      (bits[0] = true ∧ bits[1] = true ∧ checkpoint.epoch.toNat + 1 = e)))
+
+/-- Weighing the votes keeps the finalized checkpoint, or finalizes an old justified one by a rule. -/
+theorem weighJustificationAndFinalization_finalized {total previousBalance currentBalance : Gwei}
+    (computed : weighJustificationAndFinalization state total previousBalance currentBalance =
+      .ok after) :
+    after.finalizedCheckpoint = state.finalizedCheckpoint ∨
+      FinalizationStepRule state after after.finalizedCheckpoint := by
+  unfold FinalizationStepRule
+  simp only [weighJustificationAndFinalization, bind_ok_iff, liftAccessor_ok, pure,
+    Except.pure, Except.ok.injEq] at computed
+  obtain ⟨_, _, _, _, _, _, _, _, _, _, b₃, h₃, b₂, h₂, c₂, hc₂, c₁, hc₁, eq⟩ := computed
+  subst eq
+  dsimp only
+  split
+  · rename_i yes
+    refine .inr (.inr ⟨rfl, ?_⟩)
+    rcases Bool.or_eq_true_iff.mp yes with yes | yes
+    · rw [yes] at hc₂
+      have rule := finalizes_eq_true hc₂
+      simp only [Bool.and_eq_true, UInt64.reduceToNat] at rule
+      exact .inl ⟨rule.1.1.1, rule.1.1.2, rule.1.2, rule.2⟩
+    · rw [yes] at hc₁
+      have rule := finalizes_eq_true hc₁
+      simp only [Bool.and_eq_true, UInt64.reduceToNat] at rule
+      exact .inr ⟨rule.1.1, rule.1.2, rule.2⟩
+  · split
+    · rename_i yes
+      refine .inr (.inl ⟨rfl, ?_⟩)
+      rcases Bool.or_eq_true_iff.mp yes with yes | yes
+      · rw [yes] at h₃
+        have rule := finalizes_eq_true h₃
+        simp only [Bool.and_eq_true, UInt64.reduceToNat] at rule
+        exact .inl ⟨rule.1.1.1, rule.1.1.2, rule.1.2, rule.2⟩
+      · rw [yes] at h₂
+        have rule := finalizes_eq_true h₂
+        simp only [Bool.and_eq_true, UInt64.reduceToNat] at rule
+        exact .inr ⟨rule.1.1, rule.1.2, rule.2⟩
+    · exact .inl rfl
+
+/-- What weighing the votes does to the four bits and to the finalized checkpoint.
 
 A set bit 0 means that the test of the current epoch passed.
 
@@ -175,7 +233,7 @@ A set bit 1 means that the test of the previous epoch passed, or that the old bi
 
 In the first case the state records a root for the previous epoch.
 
-Bit 2 is the old bit 1.
+Bits 2 and 3 are the old bits 1 and 2.
 
 The new finalized checkpoint is the old one, or an old justified one by one of the four rules.
 
@@ -196,6 +254,7 @@ theorem weighJustificationAndFinalization_bits {total previousBalance currentBal
             ∃ root, getBlockRoot state (getPreviousEpoch state) = .ok root) ∨
           state.justificationBits.bits[0] = true) ∧
       after.justificationBits.bits[2] = state.justificationBits.bits[1] ∧
+      after.justificationBits.bits[3] = state.justificationBits.bits[2] ∧
       (after.finalizedCheckpoint = state.finalizedCheckpoint ∨
         (after.finalizedCheckpoint = state.currentJustifiedCheckpoint ∧
           after.justificationBits.bits[0] = true ∧
@@ -208,6 +267,7 @@ theorem weighJustificationAndFinalization_bits {total previousBalance currentBal
             (after.justificationBits.bits[2] = true ∧
               state.previousJustifiedCheckpoint.epoch.toNat + 3 =
                 (getCurrentEpoch state).toNat)))) := by
+  have finalized := weighJustificationAndFinalization_finalized computed
   simp only [weighJustificationAndFinalization, bind_ok_iff, liftAccessor_ok, liftArith,
     mapError_ok_iff, pure, Except.pure, Except.ok.injEq] at computed
   obtain ⟨previousWeight, previousOk, threshold, thresholdOk, first, firstOk, currentWeight,
@@ -225,7 +285,7 @@ theorem weighJustificationAndFinalization_bits {total previousBalance currentBal
   have bit2 : bits[2] = state.justificationBits.bits[1] := by
     simp [bitsEq, shiftJustificationBits]
   refine ⟨threshold, previousWeight, currentWeight, thresholdOk, previousOk, currentOk, ?_, ?_,
-    ?_, ?_⟩
+    ?_, ?_, ?_⟩
   · rw [bitsAfter, bit0]
     intro passed
     refine ⟨of_decide_eq_true passed, ?_⟩
@@ -244,35 +304,20 @@ theorem weighJustificationAndFinalization_bits {total previousBalance currentBal
         cases failed
     · exact .inr old
   · rw [bitsAfter, bit2]
-  have finalizedEq : after.finalizedCheckpoint =
-      if c || d then state.currentJustifiedCheckpoint
-      else if a || b then state.previousJustifiedCheckpoint
-      else state.finalizedCheckpoint := by
-    rw [← afterEq]
-  rw [bitsAfter]
-  by_cases byCurrent : (c || d) = true
-  · simp only [byCurrent, ↓reduceIte] at finalizedEq
-    refine .inr (.inl ⟨finalizedEq, ?_⟩)
-    rcases Bool.or_eq_true_iff.mp byCurrent with two | one
-    · obtain ⟨set, sum⟩ := finalizes_eq_true (two ▸ cOk)
-      simp only [Bool.and_eq_true] at set
-      exact ⟨set.1.1, .inr ⟨set.1.2, by simpa using sum⟩⟩
-    · obtain ⟨set, sum⟩ := finalizes_eq_true (one ▸ dOk)
-      simp only [Bool.and_eq_true] at set
-      exact ⟨set.1, .inl (by simpa using sum)⟩
-  simp only [byCurrent, Bool.false_eq_true, ↓reduceIte] at finalizedEq
-  by_cases byPrevious : (a || b) = true
-  · simp only [byPrevious, ↓reduceIte] at finalizedEq
-    refine .inr (.inr ⟨finalizedEq, ?_⟩)
-    rcases Bool.or_eq_true_iff.mp byPrevious with three | two
-    · obtain ⟨set, sum⟩ := finalizes_eq_true (three ▸ aOk)
-      simp only [Bool.and_eq_true] at set
-      exact ⟨set.1.1, .inr ⟨set.1.2, by simpa using sum⟩⟩
-    · obtain ⟨set, sum⟩ := finalizes_eq_true (two ▸ bOk)
-      simp only [Bool.and_eq_true] at set
-      exact ⟨set.1, .inl (by simpa using sum)⟩
-  simp only [byPrevious, Bool.false_eq_true, ↓reduceIte] at finalizedEq
-  exact .inl finalizedEq
+  · rw [bitsAfter]
+    simp [bitsEq, shiftJustificationBits]
+  rcases finalized with same | ⟨same, rule⟩ | ⟨same, rule⟩
+  · exact .inl same
+  · refine .inr (.inr ⟨same, ?_⟩)
+    rw [same] at rule
+    rcases rule with ⟨one, two, -, sum⟩ | ⟨one, -, sum⟩
+    · exact ⟨one, .inr ⟨two, sum⟩⟩
+    · exact ⟨one, .inl sum⟩
+  · refine .inr (.inl ⟨same, ?_⟩)
+    rw [same] at rule
+    rcases rule with ⟨zero, one, -, sum⟩ | ⟨zero, -, sum⟩
+    · exact ⟨zero, .inr ⟨one, sum⟩⟩
+    · exact ⟨zero, .inl sum⟩
 
 /-- Weighing the votes keeps the checkpoints in order.
 
@@ -324,6 +369,90 @@ theorem processJustificationAndFinalization_early (before : fork < .altair)
   have notAltair : ¬Fork.altair ≤ fork := fun le => Nat.lt_irrefl _ (Nat.lt_of_lt_of_le before le)
   simp [processJustificationAndFinalization, notAltair, early, pure, Except.pure]
 
+/-- The indices that the justification test of an epoch counts for its target.
+
+From Altair they are the unslashed validators with the timely target flag.
+
+Before Altair they are the unslashed attesters of the matching target attestations. -/
+def targetIndices (state : BeaconState preset fork) (epoch : Epoch) :
+    Except TransitionError (List ValidatorIndex) := do
+  if altair : .altair ≤ fork then
+    liftAccessor (getUnslashedParticipatingIndices state altair TIMELY_TARGET_FLAG_INDEX epoch)
+  else
+    let pending ← getMatchingTargetAttestations state (Nat.lt_of_not_le altair) epoch
+    liftAccessor (getUnslashedAttestingIndices state pending)
+
+/-- The target indices come from the target flags from Altair.
+
+Before Altair they come from the unslashed attesters of the matching target attestations. -/
+theorem targetIndices_ok {epoch : Epoch} {indices : List ValidatorIndex}
+    (computed : targetIndices state epoch = .ok indices) :
+    (∃ altair : .altair ≤ fork,
+      getUnslashedParticipatingIndices state altair TIMELY_TARGET_FLAG_INDEX epoch = .ok indices) ∨
+      ∃ (before : fork < .altair) (pending : _),
+        getMatchingTargetAttestations state before epoch = .ok pending ∧
+        getUnslashedAttestingIndices state pending = .ok indices := by
+  unfold targetIndices at computed
+  split at computed
+  · exact .inl ⟨‹_›, liftAccessor_ok.mp computed⟩
+  · simp only [bind_ok_iff, liftAccessor_ok] at computed
+    obtain ⟨pending, matching, indicesOk⟩ := computed
+    exact .inr ⟨_, pending, matching, indicesOk⟩
+
+/-- What a successful justification and finalization read, and what it did.
+
+In the first two epochs it changed nothing.
+
+Later it read the target indices of the previous and the current epoch and their balances.
+
+It also read the total active balance, then weighed the three balances. -/
+theorem processJustificationAndFinalization_reads
+    (computed : processJustificationAndFinalization state = .ok after) :
+    (getCurrentEpoch state ≤ GENESIS_EPOCH + 1 ∧ after = state) ∨
+      GENESIS_EPOCH + 1 < getCurrentEpoch state ∧
+      ∃ (previous current : List ValidatorIndex) (total previousBalance currentBalance : Gwei),
+        targetIndices state (getPreviousEpoch state) = .ok previous ∧
+        targetIndices state (getCurrentEpoch state) = .ok current ∧
+        getTotalActiveBalance state = .ok total ∧
+        getTotalBalance state previous = .ok previousBalance ∧
+        getTotalBalance state current = .ok currentBalance ∧
+        weighJustificationAndFinalization state total previousBalance currentBalance =
+          .ok after := by
+  unfold processJustificationAndFinalization at computed
+  split at computed
+  · rename_i altair
+    unfold processJustificationAndFinalizationAltair at computed
+    split at computed
+    · rename_i early
+      simp only [pure, Except.pure, Except.ok.injEq] at computed
+      exact .inl ⟨early, computed.symm⟩
+    · rename_i late
+      simp only [bind_ok_iff, liftAccessor_ok] at computed
+      obtain ⟨previous, previousOk, current, currentOk, total, totalOk, previousBalance,
+        previousBalanceOk, currentBalance, currentBalanceOk, weighed⟩ := computed
+      refine .inr ⟨UInt64.not_le.mp late, previous, current, total, previousBalance,
+        currentBalance, ?_, ?_, totalOk, previousBalanceOk, currentBalanceOk, weighed⟩
+      · simpa [targetIndices, altair, liftAccessor_ok] using previousOk
+      · simpa [targetIndices, altair, liftAccessor_ok] using currentOk
+  · rename_i notAltair
+    split at computed
+    · rename_i early
+      simp only [pure, Except.pure, Except.ok.injEq] at computed
+      exact .inl ⟨early, computed.symm⟩
+    · rename_i late
+      -- Before Altair the attesting balance reads the unslashed attesters, then their balance.
+      simp only [bind_ok_iff, liftAccessor_ok, getAttestingBalance] at computed
+      obtain ⟨previous, previousOk, current, currentOk, total, totalOk, previousBalance,
+        ⟨previousIndices, previousIndicesOk, previousBalanceOk⟩, currentBalance,
+        ⟨currentIndices, currentIndicesOk, currentBalanceOk⟩, weighed⟩ := computed
+      refine .inr ⟨UInt64.not_le.mp late, previousIndices, currentIndices, total,
+        previousBalance, currentBalance, ?_, ?_, totalOk, previousBalanceOk, currentBalanceOk,
+        weighed⟩
+      · simp only [targetIndices, notAltair, ↓reduceDIte, bind_ok_iff, liftAccessor_ok]
+        exact ⟨_, previousOk, previousIndicesOk⟩
+      · simp only [targetIndices, notAltair, ↓reduceDIte, bind_ok_iff, liftAccessor_ok]
+        exact ⟨_, currentOk, currentIndicesOk⟩
+
 /-- What a successful justification and finalization did.
 
 It changed nothing in the first two epochs, and else weighed some target balances. -/
@@ -331,21 +460,10 @@ theorem processJustificationAndFinalization_ok
     (computed : processJustificationAndFinalization state = .ok after) :
     after = state ∨ ∃ total previous current,
       weighJustificationAndFinalization state total previous current = .ok after := by
-  unfold processJustificationAndFinalization at computed
-  split at computed
-  · unfold processJustificationAndFinalizationAltair at computed
-    split at computed
-    · simp only [pure, Except.pure, Except.ok.injEq] at computed
-      exact .inl computed.symm
-    · simp only [bind_ok_iff, liftAccessor_ok] at computed
-      obtain ⟨_, _, _, _, total, _, previous, _, current, _, weighed⟩ := computed
-      exact .inr ⟨total, previous, current, weighed⟩
-  split at computed
-  · simp only [pure, Except.pure, Except.ok.injEq] at computed
-    exact .inl computed.symm
-  · simp only [bind_ok_iff] at computed
-    obtain ⟨_, _, _, _, total, _, previous, _, current, _, weighed⟩ := computed
-    exact .inr ⟨total, previous, current, weighed⟩
+  rcases processJustificationAndFinalization_reads computed with ⟨-, same⟩ |
+    ⟨-, -, -, total, previous, current, -, -, -, -, -, weighed⟩
+  · exact .inl same
+  · exact .inr ⟨total, previous, current, weighed⟩
 
 /-- Justification and finalization keep the slot. -/
 theorem processJustificationAndFinalization_slot

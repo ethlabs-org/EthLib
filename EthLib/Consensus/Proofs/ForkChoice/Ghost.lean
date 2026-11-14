@@ -1376,8 +1376,7 @@ Balances are read only in this store's justified state, even if that state is ol
 
 The missing weight includes honest validators whose old votes do not support the node.
 
-This is the endpoint-weighted majority step of the fast-confirmation argument,
-arXiv 2405.00549v4, Lemma 2. -/
+This is the endpoint-weighted majority step in arXiv 2405.00549v4, Lemma 2. -/
 theorem isAncestor_getHead_of_missing_weight {nodes : List ForkChoiceNode}
     {node head : ForkChoiceNode} {score : Gwei} {J : Set ℕ} [DecidablePred (· ∈ J)]
     {num den missing : ℕ} (lower : store.ParentsBelow)

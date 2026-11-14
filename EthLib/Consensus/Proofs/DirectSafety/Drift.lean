@@ -2,15 +2,14 @@ module
 
 public import EthLib.Consensus.Proofs.DirectSafety.Core
 public import EthLib.Consensus.Proofs.Transition.TargetUpgrades
+public import EthLib.Consensus.Proofs.Transition.SlashedPersistence
 
 /-!
 # Drift computed from the concrete transitions
 
 Charge active departures and balance losses separately from recent arrivals and balance gains.
 
-Recent means active in either of the two epochs whose attestations justification may count.
-
-Interval bounds must include initial previous-epoch voters, even for a zero-length tail.
+Recent means unslashed and active in either of the two epochs that justification may count.
 -/
 
 @[expose] public section
@@ -21,44 +20,99 @@ open Base Cryptography.Bls
 
 variable {preset : Preset} {config : Config} {checks : SignatureChecks}
 
-noncomputable def leaving (x y : ForkedBeaconState preset) : Nat :=
-  Models.stake (effectiveWeight x.state) (activeKeys x.state \ activeKeys y.state)
+open Classical in
+attribute [local instance] propDecidable
 
-noncomputable def losing (x y : ForkedBeaconState preset) : Nat :=
-  ∑ k ∈ activeKeys x.state ∩ activeKeys y.state,
-    (effectiveWeight x.state k - effectiveWeight y.state k)
+/-- Exact loss of the unslashed reference stake, outside keys already slashed at this state.
 
-noncomputable def gaining (x y : ForkedBeaconState preset) : Nat :=
-  ∑ k ∈ activeKeys x.state ∩ recentKeys y.state,
-    (effectiveWeight y.state k - effectiveWeight x.state k)
-
-/-- Exact reference loss outside keys already slashed at this state. -/
+A key already slashed at `x` is not in the reference set, so it is not charged here. -/
 noncomputable def referenceLoss (x y : ForkedBeaconState preset) : Nat := by
   classical
-  let unslashed := (activeKeys x.state).filter fun k =>
-    ¬ ∃ v ∈ y.state.validators.data.toList, v.pubkey = k ∧ v.slashed = true
-  exact ∑ k ∈ unslashed,
+  exact ∑ k ∈ (unslashedKeys x.state).filter (¬ SlashedAt y.state ·),
     (effectiveWeight x.state k - Models.supported (recentKeys y.state)
       (effectiveWeight y.state) k)
 
-/-- Exact gains on the voting support, without charging reference stake that just exited. -/
+/-- Exact gains on the voting support over the unslashed reference stake.
+
+Reference stake that just exited is not charged.
+
+A key already slashed at `x` is outside the reference set.
+
+Along a run, slashed flags stay set, so such a key cannot enter the later voting support. -/
 noncomputable def referenceGain (x y : ForkedBeaconState preset) : Nat :=
   ∑ k ∈ recentKeys y.state,
-    (effectiveWeight y.state k - Models.supported (activeKeys x.state)
+    (effectiveWeight y.state k - Models.supported (unslashedKeys x.state)
       (effectiveWeight x.state) k)
 
-/-- Previous-epoch stake outside the current quorum denominator, at one boundary only. -/
+private theorem slashedAt_of_run {x y : ForkedBeaconState preset}
+    (run : Run config checks x y) {key : BLSPubkey}
+    (slashed : SlashedAt x.state key) : SlashedAt y.state key := by
+  obtain ⟨v, member, keyEq, flag⟩ := slashed
+  obtain ⟨i, found⟩ := List.mem_iff_getElem?.mp member
+  have read : x.state.validators.data[i]? = some v := by simpa using found
+  obtain ⟨w, later, marked⟩ := run.slashedPersistence i v read flag
+  obtain ⟨u, held, same⟩ := validators_getElem?_of_validatorKeys_prefix
+    (validatorKeys_prefix_and_distinct_of_chainSteps run.chainSteps).1 read
+  rw [later, Option.some.injEq] at held
+  subst u
+  exact ⟨w, by simpa using (Array.mem_of_getElem? later), same.trans keyEq, marked⟩
+
+/-- Along a run, excluding keys slashed at the later endpoint also excludes earlier slashings. -/
+theorem referenceLoss_eq_of_run {x y : ForkedBeaconState preset}
+    (run : Run config checks x y) :
+    referenceLoss x y = ∑ key ∈ (activeKeys x.state).filter (¬ SlashedAt y.state ·),
+      (effectiveWeight x.state key - Models.supported (recentKeys y.state)
+        (effectiveWeight y.state) key) := by
+  classical
+  unfold referenceLoss unslashedKeys
+  congr 1
+  ext key
+  simp only [Finset.mem_filter]
+  constructor
+  · exact fun ⟨⟨active, _⟩, clean⟩ => ⟨active, clean⟩
+  · exact fun ⟨active, clean⟩ =>
+      ⟨⟨active, fun old => clean (slashedAt_of_run run old)⟩, clean⟩
+
+/-- Later voting support contains no key slashed at the reference endpoint of the run. -/
+theorem referenceGain_eq_of_run {x y : ForkedBeaconState preset}
+    (run : Run config checks x y) :
+    referenceGain x y = ∑ key ∈ recentKeys y.state,
+      (effectiveWeight y.state key - Models.supported (activeKeys x.state)
+        (effectiveWeight x.state) key) := by
+  classical
+  unfold referenceGain
+  apply Finset.sum_congr rfl
+  intro key member
+  have clean := (Finset.mem_filter.mp member).2
+  have oldClean : ¬ SlashedAt x.state key := fun old => clean (slashedAt_of_run run old)
+  simp [Models.supported, unslashedKeys, oldClean]
+
+/-- Unslashed previous-epoch stake that is not active at the current epoch, at one boundary only. -/
 noncomputable def boundaryStake (y : ForkedBeaconState preset) : Nat :=
   Models.stake (effectiveWeight y.state) (recentKeys y.state \ activeKeys y.state)
 
 /-- The combined transfer assigns coefficients two, one and two to loss, gain and boundary stake.
 
-For current-active voters with fixed balances this gives the churn constants of [EIP-8061].
+In the bound, twice the drift divided by three weighs loss and gain at four thirds and two thirds.
+
+These are the weights of exits and of activations in [EIP-8061], Security Considerations.
 
 [EIP-8061]: https://eips.ethereum.org/EIPS/eip-8061#weak-subjectivity-period
 -/
 noncomputable def stateDrift (x y : ForkedBeaconState preset) : Nat :=
   2 * referenceLoss x y + referenceGain x y + 2 * boundaryStake y
+
+/-- Persistence identifies the unslashed-reference budget with the full-active-reference budget. -/
+theorem stateDrift_eq_of_run {x y : ForkedBeaconState preset}
+    (run : Run config checks x y) :
+    stateDrift x y =
+      2 * (∑ key ∈ (activeKeys x.state).filter (¬ SlashedAt y.state ·),
+        (effectiveWeight x.state key - Models.supported (recentKeys y.state)
+          (effectiveWeight y.state) key)) +
+      (∑ key ∈ recentKeys y.state,
+        (effectiveWeight y.state key - Models.supported (activeKeys x.state)
+          (effectiveWeight x.state) key)) + 2 * boundaryStake y := by
+  rw [stateDrift, referenceLoss_eq_of_run run, referenceGain_eq_of_run run]
 
 /-- Maximum observed state budget, including the initial state and excluding later epochs. -/
 noncomputable def derivedDrift {x : ForkedBeaconState preset} (high : Nat) :
@@ -69,16 +123,11 @@ noncomputable def derivedDrift {x : ForkedBeaconState preset} (high : Nat) :
       max (derivedDrift high pre) (stateDrift x y)
     else derivedDrift high pre
 
-/-- The boundary correction is a maximum single-epoch cohort, not cumulative exits. -/
-noncomputable def boundaryWindow {x : ForkedBeaconState preset} (high : Nat) :
-    {y : ForkedBeaconState preset} → Run config checks x y → Nat
-  | _, .nil => boundaryStake x
-  | y, .snoc pre _ =>
-    if (getCurrentEpoch y.state).toNat ≤ high + 1 then
-      max (boundaryWindow high pre) (boundaryStake y)
-    else boundaryWindow high pre
+/-- A quorum call of a prefix and a tail is in the tail when its target is not before epoch `low`.
 
-/-- The epoch test is in the tail, not in the inherited prefix, under this slot bound. -/
+The prefix must end no later than the first slot of epoch `low`.
+
+An epoch has a slot. -/
 theorem call_after_reference {g x a : ForkedBeaconState preset}
     (shared : Run config checks g x) (tail : Run config checks x a)
     (parameters : Parameters preset) (low : Nat)
@@ -88,24 +137,8 @@ theorem call_after_reference {g x a : ForkedBeaconState preset}
   rcases (shared.contains_append tail (.slot call.advanced)).mp call.member with member | member
   · exfalso
     -- A call in the shared prefix finishes strictly before the reference slot bound permits.
-    have forward {u v : ForkedBeaconState preset} (run : Run config checks u v) :
-        u.state.slot.toNat ≤ v.state.slot.toNat := by
-      induction run with
-      | nil => exact Nat.le_refl _
-      | snoc pre step ih =>
-        cases step with
-        | slot ok =>
-          obtain ⟨advanced, advancedOk, upgraded⟩ := bind_ok_iff.mp ok
-          have next := advanceSlot_slot advancedOk
-          have kept := processUpgrades_slot upgraded
-          simp only [kept] at *
-          omega
-        | block engine signed due ok =>
-          have kept := (frame_processBlock (applySignedBlock_ok ok).2.1).slot
-          simp only [kept] at *
-          exact ih
     obtain ⟨pre, post, _⟩ := shared.contains_split (.slot call.advanced) member
-    have afterEnd := forward post
+    have afterEnd := post.slot_le
     obtain ⟨advanced, advancedOk, upgraded⟩ := bind_ok_iff.mp call.advanced
     have next := advanceSlot_slot advancedOk
     have kept := processUpgrades_slot upgraded

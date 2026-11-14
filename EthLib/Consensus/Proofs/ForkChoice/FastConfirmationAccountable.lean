@@ -3,9 +3,11 @@ module
 public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmationSafety
 public import EthLib.Consensus.Proofs.ForkChoice.AccountableCheckpoints
 public import EthLib.Consensus.Proofs.DirectSafety.TerminalSafety
+public import EthLib.Consensus.Proofs.DirectSafety.BlockHashEvidence
 public import EthLib.Consensus.Proofs.Transition.EpochUpdates
 import EthLib.Consensus.Proofs.Transition.ExitReserve
 import EthLib.Consensus.Proofs.ForkChoice.HonestHeads
+import EthLib.Consensus.Proofs.ForkChoice.BlockRuns
 import EthLib.Consensus.Proofs.Transition.BlockRoots
 import EthLib.Consensus.Proofs.Transition.FfgSlack
 import EthLib.Consensus.Proofs.Transition.TargetSlots
@@ -17,21 +19,23 @@ import EthLib.Consensus.Proofs.Transition.PendingPartialsKept
 /-!
 # Accountable fast-confirmation safety
 
-`Execution.safeAt_confirmedRoot` assumes that honest stores agree on finalized prefixes, on one
-justified checkpoint per epoch and on one block per root, and that held blocks have nonzero state
-roots.
+`Execution.safeAt_confirmedRoot` assumes finalized-prefix agreement.
+
+It also assumes per-epoch justified-checkpoint agreement.
+
+It also assumes one block per root and nonzero state roots for held blocks.
 
 Here each of those facts is derived, or else the stores of two honest validators show a fault.
 
-A fault is accountable: validators with enough stake signed slashable votes, up to the drift of
-effective balances.
+A fault is accountable: enough stake signed slashable votes, up to effective-balance drift.
 
 Or it is a concrete hash fault: a collision of two hash inputs, or a hash input with a zero root.
 
 The derivation reads the runs of the state transition from a genesis state to the held states.
 
-It uses the accountable safety theorems of `DirectSafety`, which follow
-[Combining GHOST and Casper][gasper], Lemmas 4.11 and 5.1.
+It uses the accountable safety theorems of `DirectSafety`.
+
+They follow [Combining GHOST and Casper][gasper], Lemmas 4.11 and 5.1.
 
 [gasper]: https://arxiv.org/abs/2003.03052
 -/
@@ -79,11 +83,12 @@ def Execution.AccountableFault
     j.epoch ≤ horizon ∧
     (stake (effectiveWeight anchorState) (activeKeys anchorState) ≤
         3 * stake (effectiveWeight anchorState)
-          (accountableKeys (history.append left) (history.append right) ⟨fork, anchorState⟩) +
+          (fullRunAccountableKeys (history.append left) (history.append right)
+            ⟨fork, anchorState⟩) +
         2 * max (terminalDrift j.epoch.toNat left va) (terminalDrift j.epoch.toNat right vb) ∨
       stake (effectiveWeight g.state) (activeKeys g.state) ≤
         3 * stake (effectiveWeight g.state)
-          (accountableKeys ((Run.nil).append (history.append left))
+          (fullRunAccountableKeys ((Run.nil).append (history.append left))
             ((Run.nil).append (history.append right)) g) +
         2 * max (terminalDrift j.epoch.toNat (history.append left) va)
           (terminalDrift j.epoch.toNat (history.append right) vb))
@@ -102,9 +107,11 @@ def Execution.HashFault
     (right : Run config checks ⟨fork, anchorState⟩ ⟨fork, stateB⟩)
     (va : TerminalView ⟨fork, stateA⟩) (vb : TerminalView ⟨fork, stateB⟩),
     e.HeldState limit stateA ∧ e.HeldState limit stateB ∧
-    HashEvidence ((history.append left).hashObjects ++ (history.append right).hashObjects ++
-      va.hashObjects ++ vb.hashObjects ++ (blockHeader anchorBlock).toList.map HashObject.header ++
-      [HashObject.block fork anchorBlock])
+    FcrHashEvidence ((history.append left).fcrHashObjects ++
+      (history.append right).fcrHashObjects ++
+      va.fcrHashObjects ++ vb.fcrHashObjects ++
+      (blockHeader anchorBlock).toList.map FcrHashObject.header ++
+      [FcrHashObject.block fork anchorBlock])
 
 /-- A state holds the justified checkpoints of an epoch, and records its first root, at one root.
 
@@ -275,7 +282,7 @@ Its exit was scheduled before the first state, or charged during the epoch of th
 The first kind is the scheduled term of `exitReserve`; the queues bound the second kind.
 
 The seed lookahead puts the earliest exit of a new charge two epochs after its epoch. -/
-theorem exitStake_le_exitReserve {g y : ForkedBeaconState preset}
+private theorem exitStake_le_exitReserve {g y : ForkedBeaconState preset}
     {source : BeaconState preset fork}
     (genesis : Genesis (config := config) (checks := checks) g)
     (shared : Run config checks g ⟨fork, source⟩)
@@ -654,7 +661,8 @@ theorem quorumDrift_le_quorumReserve {g : ForkedBeaconState preset}
       inc + 2 * preset.downwardBand + syncPMax else 0) ≤
       creditedP * (inc + 2 * preset.downwardBand + syncPMax) := by
     refine (sum_le_of_zero_off (t := creditedKeys) fun v outside => by simp [outside]).trans ?_
-    rw [Finset.sum_ite_of_true fun v member => member, Finset.sum_const, smul_eq_mul]
+    rw [Finset.sum_ite_of_true fun v member => member, Finset.sum_const,
+      nsmul_eq_mul, Nat.cast_id]
     exact Nat.mul_le_mul_right _ creditedLe
   -- The credits that hide a queued payment fit the mask budget.
   have maskSum : ∑ v ∈ voters, min (pc v + deposit v) (below v) ≤ maskBudget := by
@@ -793,7 +801,7 @@ private theorem run_boundaryState {g : ForkedBeaconState preset}
           early
       have kept : last.state.slot = advanced.slot := processUpgrades_slot upgraded
       have banded := hysteresis_of_advanceSlot bands advancedOk (kept ▸ atStart)
-      have capped := advanceSlot_effectiveBalance_capped middleEarly advancedOk
+      have capped := advanceSlot_effectiveBalance_capped advancedOk
         (pre.effectiveBalance_capped genesis (UInt64.le_of_eq electraFloor) electraCap
           middleEarly)
       exact ⟨last.state, rfl,
@@ -816,8 +824,7 @@ The anchor block is at the start of a later epoch than the first one.
 
 The anchor state then neither justifies its own epoch nor reads its root.
 
-The first block after the anchor checks that its parent root is the root of the header after the
-anchor slot.
+The first block after the anchor checks its parent root against the header after the anchor slot.
 
 The store found the anchor state under that parent root, so it is the root of the anchor block.
 
@@ -919,7 +926,7 @@ theorem Execution.epochRootFixed_of_blockState {anchor : Store preset fork}
       anchorAtBoundary later nonzero rooted honest start parentFound
     obtain ⟨grand, grandSigned, grandMessage, grandFound, grandTransitioned⟩ :=
       e.exists_transition_of_nonanchor_block anchored honest start parentKnown parentFound first
-    have grandLe := UInt64.le_iff_toNat_le.mp ((reachable k).anchorSlot_le_blockState grandFound)
+    have grandLe := UInt64.le_iff_toNat_le.mp ((reachable k).anchorSlot_le_of_blockState grandFound)
     have parentSlots := stateTransition_slot grandTransitioned
     have parentLt := UInt64.lt_iff_toNat_lt.mp parentSlots.1
     have parentEq := congrArg UInt64.toNat parentSlots.2
@@ -964,7 +971,7 @@ theorem Execution.heldBlocks_before_nextFork {anchor : Store preset fork}
   exact lt_of_le_of_lt blockLe ((Nat.div_lt_iff_lt_mul epochSlots).mp epochLt)
 
 private theorem active_weight_eq_stake {state : BeaconState preset fork}
-    (early : fork < .glamsterdam) (unique : uniqueKeys state) :
+    (early : fork < .glamsterdam) (unique : PubkeysDistinct state) :
     stake (effectiveWeight state) (activeKeys state) =
       stake (fun v => balanceAt state v.toNat) (activeVoters state) := by
   apply keys_weight state _ unique
@@ -974,19 +981,20 @@ private theorem active_weight_eq_stake {state : BeaconState preset fork}
 
 private theorem enough_append {g x a : ForkedBeaconState preset}
     {pre : Run config checks g x} {tail : Run config checks x a}
-    (one : EnoughStake pre) (two : EnoughStake tail) : EnoughStake (pre.append tail) := by
-  intro call
+    (one : ∀ high, EnoughStake pre high) (two : ∀ high, EnoughStake tail high) :
+    ∀ high, EnoughStake (pre.append tail) high := by
+  intro high call bounded
   rcases (pre.contains_append tail (.slot call.advanced)).mp call.member with member | member
-  · exact one { call with member := member }
-  · exact two { call with member := member }
+  · exact one high { call with member := member } bounded
+  · exact two high { call with member := member } bounded
 
 private theorem enough_slot {state after : BeaconState preset fork}
-    (early : fork < .glamsterdam) (unique : uniqueKeys state)
+    (early : fork < .glamsterdam) (unique : PubkeysDistinct state)
     (advanced : advanceSlotAcross config checks ⟨fork, state⟩ = .ok ⟨fork, after⟩)
     (large : 3 * preset.EFFECTIVE_BALANCE_INCREMENT.toNat <
       2 * stake (fun v => balanceAt state v.toNat) (activeVoters state)) :
-    EnoughStake (Run.nil.snoc (.slot advanced)) := by
-  intro call
+    ∀ high, EnoughStake (Run.nil.snoc (.slot advanced)) high := by
+  intro high call _
   rcases call with ⟨before, after, advanced, member, boundary, cached, weighed,
     cachedOk, weighedOk, later⟩
   cases member with
@@ -994,7 +1002,7 @@ private theorem enough_slot {state after : BeaconState preset fork}
   | last =>
     have balances := processSlot_countingBalances cachedOk
     have same := (processSlot_ok cachedOk).choose_spec.choose_spec.choose_spec.choose_spec
-    have cachedUnique : uniqueKeys cached := by
+    have cachedUnique : PubkeysDistinct cached := by
       rw [same]
       exact unique
     rw [active_weight_eq_stake early cachedUnique, balances.2.2.2.2.1]
@@ -1009,7 +1017,7 @@ private theorem headers_append {g a b : ForkedBeaconState preset}
 
 private theorem run_enough_of_advanceSlots (count : ℕ)
     {state after : BeaconState preset fork}
-    (early : fork < .glamsterdam) (unique : uniqueKeys state)
+    (early : fork < .glamsterdam) (unique : PubkeysDistinct state)
     (advanced : advanceSlots config checks count state = .ok after)
     (before : ∀ next ∈ config.nextFork fork,
       after.slot.toNat < next.2.toNat * preset.SLOTS_PER_EPOCH.toNat)
@@ -1018,12 +1026,12 @@ private theorem run_enough_of_advanceSlots (count : ℕ)
       3 * preset.EFFECTIVE_BALANCE_INCREMENT.toNat <
         2 * stake (fun v => balanceAt current v.toNat) (activeVoters current)) :
     ∃ run : Run config checks ⟨fork, state⟩ ⟨fork, after⟩,
-      EnoughStake run ∧ run.headers = [] := by
+      (∀ high, EnoughStake run high) ∧ run.headers = [] := by
   induction count generalizing state with
   | zero =>
     cases advanced
     refine ⟨.nil, ?_, rfl⟩
-    rintro ⟨_, _, _, member, _⟩
+    rintro high ⟨_, _, _, member, _⟩
     cases member
   | succ count ih =>
     obtain ⟨next, stepped, rest⟩ := bind_ok_iff.mp advanced
@@ -1034,7 +1042,9 @@ private theorem run_enough_of_advanceSlots (count : ℕ)
         have := before nextFork scheduled
         omega), stepped]
       rfl
-    obtain ⟨tail, enough, empty⟩ := ih ((Run.nil.snoc (.slot across)).unique unique) rest
+    obtain ⟨tail, enough, empty⟩ := ih
+      ((validatorKeys_prefix_and_distinct_of_chainSteps
+        (Run.nil.snoc (.slot across)).chainSteps).2 unique) rest
       (fun i current small run => large (i + 1) current (by omega)
         (by simp only [advanceSlots, stepped, bind, Except.bind]; exact run))
     refine ⟨(Run.nil.snoc (.slot across)).append tail,
@@ -1062,7 +1072,7 @@ private theorem counts_epoch_le_current {store : Store preset fork}
 omit [DecidablePred (· ∈ J)] in
 private theorem run_enough_of_blockState {anchor : Store preset fork}
     (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
-    (unique : uniqueKeys anchorState) (early : fork < .glamsterdam)
+    (unique : PubkeysDistinct anchorState) (early : fork < .glamsterdam)
     (anchorSlot : anchorBlock.slot = anchorState.slot)
     {w : ValidatorIndex} (honest : w ∈ J) (start : e.start w = anchor) {k : ℕ}
     (before : ∀ (root : Root) (block : BeaconBlock preset fork),
@@ -1074,7 +1084,8 @@ private theorem run_enough_of_blockState {anchor : Store preset fork}
         2 * stake (fun v => balanceAt state v.toNat) (activeVoters state))
     {root : Root} {state : BeaconState preset fork}
     (stored : ((e.world k).state w).blockStates[root]? = some state) :
-    ∃ run : Run config checks ⟨fork, anchorState⟩ ⟨fork, state⟩, EnoughStake run ∧
+    ∃ run : Run config checks ⟨fork, anchorState⟩ ⟨fork, state⟩,
+      (∀ high, EnoughStake run high) ∧
       ∀ epoch boundary, computeStartSlotAtEpoch preset epoch = .ok boundary →
         anchorBlock.slot ≤ boundary →
         ((e.world k).state w).getCheckpointBlock root epoch =
@@ -1097,7 +1108,8 @@ private theorem run_enough_of_blockState {anchor : Store preset fork}
     have equal : post = state := Option.some.inj (postOk.symm.trans stored)
     rw [← equal, initial same]
     refine ⟨.nil, ?_, ?_⟩
-    · rintro ⟨_, _, _, member, _⟩
+    · intro high
+      rintro ⟨_, _, _, member, _⟩
       cases member
     · intro epoch boundary boundaryOk above
       have hashed := same ▸ (reachable k).root found
@@ -1128,7 +1140,8 @@ private theorem run_enough_of_blockState {anchor : Store preset fork}
     have slotRuns := slotsOk
     simp only [processSlots, bind_ok_iff, ensure_ok_iff] at slotRuns
     obtain ⟨_, _, advancedSlots⟩ := slotRuns
-    obtain ⟨tail, tailEnough, tailEmpty⟩ := run_enough_of_advanceSlots _ early (pre.unique unique)
+    obtain ⟨tail, tailEnough, tailEmpty⟩ := run_enough_of_advanceSlots _ early
+      ((validatorKeys_prefix_and_distinct_of_chainSteps pre.chainSteps).2 unique)
       advancedSlots (by simpa only [lastSlot, message] using before root block found) (by
         intro i current small reached
         apply large current
@@ -1150,13 +1163,13 @@ private theorem run_enough_of_blockState {anchor : Store preset fork}
             exact reached)
     refine ⟨pre.append (tail.snoc (.block sources.engine signed due applied)), ?_, ?_⟩
     · apply enough_append preEnough
-      intro call
+      intro high call bounded
       rcases call with ⟨before, after, advanced, member, boundary, cached, weighed,
         cachedOk, weighedOk, later⟩
       cases member with
       | earlier member =>
-        exact tailEnough ⟨before, after, advanced, member, boundary, cached, weighed,
-          cachedOk, weighedOk, later⟩
+        exact tailEnough high ⟨before, after, advanced, member, boundary, cached, weighed,
+          cachedOk, weighedOk, later⟩ bounded
     · intro epoch boundary boundaryOk above
       obtain ⟨_, _, bodyRoot, bodyOk, _⟩ := (reachable k).blockState_header found stored same
       let header : BeaconBlockHeader :=
@@ -1180,7 +1193,7 @@ private theorem run_enough_of_blockState {anchor : Store preset fork}
           rw [← bound, ← UInt64.le_iff_toNat_le]
           exact below
         obtain ⟨parentBlock, parentKnown⟩ := (reachable k).known_of_blockState parentFound
-        have parentLe := (reachable k).blockState_slot_le (UInt64.le_of_eq anchorSlot)
+        have parentLe := (reachable k).slot_le_of_blockState (UInt64.le_of_eq anchorSlot)
           parentKnown parentFound
         have parentLt : parent.slot < block.slot := by
           simpa only [message] using (stateTransition_slot transitioned).1
@@ -1207,7 +1220,7 @@ private theorem held_run_enough {anchor : Store preset fork}
       horizon.toNat < next.2.toNat) {limit : ℕ}
     (inHorizon : ∀ w ∈ J, ∀ k epoch, (e.world k).time ≤ limit →
       ((e.world k).state w).getCurrentStoreEpoch config = .ok epoch → epoch ≤ horizon)
-    (historyEnough : EnoughStake history)
+    (historyEnough : ∀ high, EnoughStake history high)
     (large : ∀ w ∈ J, ∀ k (state : BeaconState preset fork),
       (e.world k).time ≤ limit → ((e.world k).state w).Counts config state →
       (getCurrentEpoch state).toNat ≤ horizon.toNat + 1 →
@@ -1217,7 +1230,8 @@ private theorem held_run_enough {anchor : Store preset fork}
     {root : Root} {state : BeaconState preset fork}
     (stored : ((e.world k).state w).blockStates[root]? = some state) :
     ∃ run : Run config checks ⟨fork, anchorState⟩ ⟨fork, state⟩,
-      EnoughStake (history.append run) ∧ (∀ view : TerminalView ⟨fork, state⟩, view.enough) ∧
+      (∀ high, EnoughStake (history.append run) high) ∧
+      (∀ (view : TerminalView ⟨fork, state⟩) high, view.enough high) ∧
       ∀ epoch boundary, computeStartSlotAtEpoch preset epoch = .ok boundary →
         anchorBlock.slot ≤ boundary →
         ((e.world k).state w).getCheckpointBlock root epoch =
@@ -1234,7 +1248,7 @@ private theorem held_run_enough {anchor : Store preset fork}
     have low := UInt64.le_iff_toNat_le.mp bound
     exact large w honest k state bounded counts (by omega)
   obtain ⟨run, enough, reads⟩ := run_enough_of_blockState anchored
-    (history.unique (genesis_unique genesis)) forkWindow.1 anchorSlot honest (start w honest)
+    (history.pubkeysDistinct genesis) forkWindow.1 anchorSlot honest (start w honest)
     (by
       obtain ⟨current, currentOk, blocks, -⟩ := forward.slots_le_current slots
         (by rw [anchorSlot]; exact UInt64.le_refl _)
@@ -1252,12 +1266,12 @@ private theorem held_run_enough {anchor : Store preset fork}
         (Nat.div_lt_iff_lt_mul (by omega)).mp (by omega)
       omega) countLarge stored
   refine ⟨run, enough_append historyEnough enough, ?_, reads⟩
-  intro view
+  intro view high
   cases view with
   | realized => trivial
   | pulled after computed =>
-    intro _
-    rw [active_weight_eq_stake forkWindow.1 ((history.append run).unique (genesis_unique genesis))]
+    intro _ _
+    rw [active_weight_eq_stake forkWindow.1 ((history.append run).pubkeysDistinct genesis)]
     exact countLarge state ⟨root, state, stored, .inl rfl⟩
 
 omit [DecidablePred (· ∈ J)] in
@@ -1305,7 +1319,7 @@ theorem run_along_chain {anchor : Store preset fork}
         · exact moved.reachable ih
     exact all k
   have aLe : aBlock.slot ≤ boundary := by
-    have h2 := reachable.blockState_slot_le (UInt64.le_of_eq anchorSlot) aFound storedA
+    have h2 := reachable.slot_le_of_blockState (UInt64.le_of_eq anchorSlot) aFound storedA
     rcases bridge with ⟨h, _⟩ | ⟨h, _⟩
     · exact UInt64.le_trans h2 (UInt64.le_of_eq h)
     · exact UInt64.le_trans h2 (UInt64.le_of_lt h)
@@ -1322,7 +1336,7 @@ theorem run_along_chain {anchor : Store preset fork}
     obtain ⟨parent, signed, message, parentFound, transitioned⟩ :=
       e.exists_transition_of_nonanchor_block anchored honest start found stored other
     obtain ⟨pBlock, pFound⟩ := reachable.known_of_blockState parentFound
-    have parentLe := reachable.blockState_slot_le (UInt64.le_of_eq anchorSlot) pFound parentFound
+    have parentLe := reachable.slot_le_of_blockState (UInt64.le_of_eq anchorSlot) pFound parentFound
     have parentLt : parent.slot < block.slot := by
       simpa only [message] using (stateTransition_slot transitioned).1
     have pLt : pBlock.slot < block.slot := UInt64.lt_of_le_of_lt parentLe parentLt
@@ -1338,8 +1352,8 @@ theorem run_along_chain {anchor : Store preset fork}
       have viaS0 : processSlots config checks s0 signed.message.slot = .ok adv := by
         rcases bridge with ⟨_, rfl⟩ | ⟨lt, ran⟩
         · exact slotsOk
-        · obtain ⟨middle, middleOk, rest⟩ := processSlots_split slotsOk lt
-            (by simpa only [message] using far)
+        · obtain ⟨middle, middleOk, rest⟩ := processSlots_split lt
+            (by simpa only [message] using far) slotsOk
           rw [ran, Except.ok.injEq] at middleOk
           subst middleOk
           exact rest
@@ -1440,8 +1454,8 @@ theorem run_from_bridge {sa s0 y : BeaconState preset fork} {boundary target : S
         rw [ran, Except.ok.injEq] at processed
         subst processed
         exact ⟨.nil⟩
-      · obtain ⟨middle, middleOk, rest⟩ := processSlots_split processed low
-          (UInt64.lt_of_le_of_ne later equal)
+      · obtain ⟨middle, middleOk, rest⟩ := processSlots_split low
+          (UInt64.lt_of_le_of_ne later equal) processed
         rw [ran, Except.ok.injEq] at middleOk
         subst middleOk
         exact run_of_processSlots rest before
@@ -1498,7 +1512,7 @@ private theorem exists_child_of_chain {anchor : Store preset fork}
     obtain ⟨parent, signed, message, parentFound, transitioned⟩ :=
       e.exists_transition_of_nonanchor_block anchored honest start found stored other
     obtain ⟨pBlock, pFound⟩ := reachable.known_of_blockState parentFound
-    have parentLe := reachable.blockState_slot_le (UInt64.le_of_eq anchorSlot) pFound parentFound
+    have parentLe := reachable.slot_le_of_blockState (UInt64.le_of_eq anchorSlot) pFound parentFound
     have parentLt : parent.slot < block.slot := by
       simpa only [message] using (stateTransition_slot transitioned).1
     have pLt : pBlock.slot < block.slot := UInt64.lt_of_le_of_lt parentLe parentLt
@@ -1731,7 +1745,7 @@ private theorem run_to_epoch_late {anchor : Store preset fork}
         have eq : bEBlock = xBlock := Option.some.inj (bEFound.symm.trans xFound)
         subst eq
         exact UInt64.lt_irrefl _ xLt
-      obtain ⟨middle, middleOk, -⟩ := processSlots_split xSlots below xFar
+      obtain ⟨middle, middleOk, -⟩ := processSlots_split below xFar xSlots
       exact ⟨middle, .inr ⟨below, middleOk⟩⟩
   have ySlot : y.slot = S := by
     rcases reach with ⟨h, rfl⟩ | ⟨_, ran⟩
@@ -1989,7 +2003,7 @@ private theorem cache_origin {store : Store preset fork}
     rw [cache_attestation attested] at entry
     rcases ih entry with old | ⟨state, pulled, held, processed, same⟩
     · exact .inl old
-    · exact .inr ⟨state, pulled, (Store.onAttestation_frame attested).2.2.symm ▸ held,
+    · exact .inr ⟨state, pulled, (Store.onAttestation_frame attested).2.2.1.symm ▸ held,
         processed, same⟩
   | attesterSlashing prior slashed ih =>
     unfold Store.onAttesterSlashing at slashed
@@ -2032,25 +2046,13 @@ private theorem justified_origin {store : Store preset fork}
     · exact .inl anchor
     · exact .inr ⟨root, state, .pulled pulled processed, held, same⟩
 
-private theorem hash_evidence_mono {one two : List (HashObject preset)}
-    (subset : ∀ object ∈ one, object ∈ two) (evidence : HashEvidence one) :
-    HashEvidence two := by
-  have messages : ∀ message ∈ one.flatMap HashObject.messages,
-      message ∈ two.flatMap HashObject.messages := by
-    intro message member
-    obtain ⟨object, member, inside⟩ := List.mem_flatMap.mp member
-    exact List.mem_flatMap.mpr ⟨object, subset object member, inside⟩
-  rcases evidence with ⟨x, hx, y, hy, collision⟩ | ⟨object, member, zero⟩
-  · exact .inl ⟨x, messages x hx, y, messages y hy, collision⟩
-  · exact .inr ⟨object, subset object member, zero⟩
-
 private theorem endpoint_hashObject {g a : ForkedBeaconState preset}
-    (run : Run config checks g a) : HashObject.state a ∈ run.hashObjects := by
+    (run : Run config checks g a) : FcrHashObject.state a ∈ run.fcrHashObjects := by
   cases run with
-  | nil => simp [Run.hashObjects]
+  | nil => simp [Run.fcrHashObjects]
   | snoc pre step =>
     apply List.mem_append_right
-    cases step <;> simp [Step.hashObjects]
+    cases step <;> simp [Step.fcrHashObjects, Step.hashObjects, HashObject.fcr]
 
 private theorem nil_append_run {g a : ForkedBeaconState preset}
     (run : Run config checks g a) : Run.nil.append run = run := by
@@ -2228,7 +2230,7 @@ theorem Execution.oneJustifiedPerEpoch_or_fault {anchor : Store preset fork}
     {limit : ℕ}
     (inHorizon : ∀ w ∈ J, ∀ k epoch, (e.world k).time ≤ limit →
       ((e.world k).state w).getCurrentStoreEpoch config = .ok epoch → epoch ≤ horizon)
-    (historyEnough : EnoughStake history)
+    (historyEnough : ∀ high, EnoughStake history high)
     (large : ∀ w ∈ J, ∀ k (state : BeaconState preset fork),
       (e.world k).time ≤ limit → ((e.world k).state w).Counts config state →
       (getCurrentEpoch state).toNat ≤ horizon.toNat + 1 →
@@ -2256,10 +2258,12 @@ theorem Execution.oneJustifiedPerEpoch_or_fault {anchor : Store preset fork}
     apply fault
     right
     refine ⟨anchorState, anchorState, .nil, .nil, .realized, .realized,
-      anchorHeld, anchorHeld, .inr ⟨.state ⟨fork, anchorState⟩, ?_, ?_⟩⟩
+      anchorHeld, anchorHeld, ?_⟩
+    rw [fcrHashEvidence_iff]
+    refine .inr ⟨.state ⟨fork, anchorState⟩, ?_, ?_⟩
     · exact List.mem_append_left _ (List.mem_append_left _ (List.mem_append_left _
         (List.mem_append_left _ (List.mem_append_left _ (endpoint_hashObject history)))))
-    · simp only [HashObject.root, anchor_stateRoot anchored, zeroRoot, Except.toOption]
+    · simp only [FcrHashObject.root, anchor_stateRoot anchored, zeroRoot, Except.toOption]
   have anchorCase {v : ValidatorIndex} (honest : v ∈ J) {m : ℕ} {root : Root}
       {state : BeaconState preset fork}
       (stored : ((e.world m).state v).blockStates[root]? = some state)
@@ -2312,8 +2316,8 @@ theorem Execution.oneJustifiedPerEpoch_or_fault {anchor : Store preset fork}
         apply fault
         right
         refine ⟨stateA, stateB, left, right, va, vb, heldA, heldB, ?_⟩
-        exact hash_evidence_mono (fun _ member =>
-          List.mem_append_left _ (List.mem_append_left _ member)) evidence
+        exact (terminal_hashEvidence_fcr evidence).mono (fun _ member =>
+          List.mem_append_left _ (List.mem_append_left _ member))
       by_cases starts : anchorState.slot.toNat ≤ first.epoch.toNat * preset.SLOTS_PER_EPOCH.toNat
       · rcases accountable_terminal_justified_unique history left right va vb parameters genesis
           forkWindow.1 forkWindow.1 enoughA enoughB (terminalA va) (terminalB vb) first second
@@ -2364,8 +2368,8 @@ theorem Execution.oneBlockPerRoot_or_fault {anchor : Store preset fork}
       ∃ (state : BeaconState preset fork)
         (run : Run config checks ⟨fork, anchorState⟩ ⟨fork, state⟩),
         ((e.world k).state w).blockStates[root]? = some state ∧
-        HashObject.block fork block ∈
-          (history.append run).hashObjects ++ [HashObject.block fork anchorBlock] := by
+        FcrHashObject.block fork block ∈
+          (history.append run).fcrHashObjects ++ [FcrHashObject.block fork anchorBlock] := by
     have reached := e.reachable
       (fun v hv => (start v hv) ▸ Store.Reachable.anchor anchored) k w honest
     obtain ⟨state, stored, initial, -⟩ := reached.blockStatesFromParents found
@@ -2387,7 +2391,7 @@ theorem Execution.oneBlockPerRoot_or_fault {anchor : Store preset fork}
       refine ⟨state, pre.append (slotRun.snoc (.block sources.engine signed due applied)),
         stored, List.mem_append_left _ ?_⟩
       apply List.mem_append_right
-      unfold Step.hashObjects
+      unfold Step.fcrHashObjects
       simp [message]
   by_cases fault : e.HashFault history limit
   · exact .inr fault
@@ -2399,17 +2403,18 @@ theorem Execution.oneBlockPerRoot_or_fault {anchor : Store preset fork}
     (fun w hw => (start w hw) ▸ Store.Reachable.anchor anchored) n v honestV
   have reachedB := e.reachable
     (fun w hw => (start w hw) ▸ Store.Reachable.anchor anchored) k u honestU
-  let objects := (history.append left).hashObjects ++ (history.append right).hashObjects ++
-    (TerminalView.realized (a := ⟨fork, stateA⟩)).hashObjects ++
-    (TerminalView.realized (a := ⟨fork, stateB⟩)).hashObjects ++
-    (blockHeader anchorBlock).toList.map HashObject.header ++ [HashObject.block fork anchorBlock]
-  have one : HashObject.block fork a ∈ objects := by
+  let objects := (history.append left).fcrHashObjects ++ (history.append right).fcrHashObjects ++
+    (TerminalView.realized (a := ⟨fork, stateA⟩)).fcrHashObjects ++
+    (TerminalView.realized (a := ⟨fork, stateB⟩)).fcrHashObjects ++
+    (blockHeader anchorBlock).toList.map FcrHashObject.header ++
+    [FcrHashObject.block fork anchorBlock]
+  have one : FcrHashObject.block fork a ∈ objects := by
     simp only [objects, List.mem_append, List.mem_singleton] at memberA ⊢
     tauto
-  have two : HashObject.block fork b ∈ objects := by
+  have two : FcrHashObject.block fork b ∈ objects := by
     simp only [objects, List.mem_append, List.mem_singleton] at memberB ⊢
     tauto
-  rcases DirectSafety.block_binding forkWindow.1 objects a b one two root
+  rcases DirectSafety.fcr_block_binding forkWindow.1 objects a b one two root
       (reachedA.root foundA) (reachedB.root foundB) with same | evidence
   · exact same
   · exact (fault ⟨stateA, stateB, left, right, .realized, .realized,
@@ -2452,20 +2457,14 @@ theorem Execution.nonzero_or_fault {anchor : Store preset fork}
     (e.heldBlocks_before_nextFork anchored start anchorSlot slots epochSlots inHorizon
       forkWindow.2 honest bounded) stored
   have held : e.HeldState limit state := ⟨w, honest, k, root, bounded, stored⟩
-  have endpoint {first last : ForkedBeaconState preset} (path : Run config checks first last) :
-      HashObject.state last ∈ path.hashObjects := by
-    cases path with
-    | nil => simp [Run.hashObjects]
-    | snoc pre step =>
-      apply List.mem_append_right
-      unfold Step.hashObjects
-      exact List.mem_append_left _ (by simp)
   apply fault
   -- A zero-root fault can use the same held state and run on both sides.
-  refine ⟨state, state, run, run, .realized, .realized, held, held, Or.inr ?_⟩
+  refine ⟨state, state, run, run, .realized, .realized, held, held, ?_⟩
+  rw [fcrHashEvidence_iff]
+  right
   refine ⟨.state ⟨fork, state⟩, ?_, ?_⟩
   · simp only [List.mem_append]
-    exact Or.inl (Or.inl (Or.inl (Or.inl (Or.inl (endpoint (history.append run))))))
+    exact Or.inl (Or.inl (Or.inl (Or.inl (Or.inl (endpoint_hashObject (history.append run))))))
   · change (SszType.hashTreeRoot state).toOption = some (Vector.replicate 32 0)
     rw [rooted, zero]
     rfl
@@ -2493,12 +2492,12 @@ private theorem state_checkpoint_read {store : Store preset fork}
     have bound := UInt64.le_trans sound.settled (getPreviousEpoch_le anchorState)
     exact ⟨.inl (UInt64.le_trans sound.ordered.2 bound), .inl bound,
       .inl (UInt64.le_trans sound.ordered.1 (UInt64.le_trans sound.ordered.2 bound))⟩
-  · obtain ⟨parent, checks, engine, signed, message, parentFound, transitioned⟩ := produced same
+  · obtain ⟨parent, checks, engine, signed, -, message, parentFound, transitioned⟩ := produced same
     obtain ⟨advanced, slotsOk, _, _, blockOk, _⟩ := stateTransition_ok transitioned
     have prior := state_checkpoint_read reachable sound early positive window aligned
       nonzero parentFound
     obtain ⟨parentBlock, parentKnown⟩ := reachable.known_of_blockState parentFound
-    have parentLe := reachable.blockState_slot_le aligned parentKnown parentFound
+    have parentLe := reachable.slot_le_of_blockState aligned parentKnown parentFound
     have parentLt : parent.slot < block.slot := by
       simpa only [message] using (stateTransition_slot transitioned).1
     have parentBlockLt := UInt64.lt_of_le_of_lt parentLe parentLt
@@ -2719,7 +2718,7 @@ theorem Execution.finalizedPrefix_or_fault {anchor : Store preset fork}
     {limit : ℕ}
     (inHorizon : ∀ w ∈ J, ∀ k epoch, (e.world k).time ≤ limit →
       ((e.world k).state w).getCurrentStoreEpoch config = .ok epoch → epoch ≤ horizon)
-    (historyEnough : EnoughStake history)
+    (historyEnough : ∀ high, EnoughStake history high)
     (large : ∀ w ∈ J, ∀ k (state : BeaconState preset fork),
       (e.world k).time ≤ limit → ((e.world k).state w).Counts config state →
       (getCurrentEpoch state).toNat ≤ horizon.toNat + 1 →
@@ -2849,8 +2848,8 @@ theorem Execution.finalizedPrefix_or_fault {anchor : Store preset fork}
             refine ⟨stateA, stateB, left, right, va, vb,
               ⟨u, honestU, n, rootA, boundedN, storedA⟩,
               ⟨w, honestW, k, rootB, boundedK, storedB⟩, ?_⟩
-            exact hash_evidence_mono (fun _ member =>
-              List.mem_append_left _ (List.mem_append_left _ member)) hashes
+            exact (terminal_hashEvidence_fcr hashes).mono (fun _ member =>
+              List.mem_append_left _ (List.mem_append_left _ member))
     · exact (fault faults).elim
   · exact (fault (.inr hashes)).elim
 
@@ -2905,7 +2904,7 @@ theorem Execution.exitsHead_of_oneBlock {limit : ℕ} {anchor : Store preset for
     (history : Run config checks g ⟨fork, anchorState⟩) {horizon : Epoch}
     (forkWindow : fork < .glamsterdam ∧ ∀ next ∈ config.nextFork fork,
       horizon.toNat < next.2.toNat)
-    (historyEnough : EnoughStake history)
+    (historyEnough : ∀ high, EnoughStake history high)
     (inHorizon : ∀ w ∈ J, ∀ k epoch, (e.world k).time ≤ limit →
       ((e.world k).state w).getCurrentStoreEpoch config = .ok epoch → epoch ≤ horizon)
     (large : ∀ w ∈ J, ∀ k (state : BeaconState preset fork),
@@ -3319,7 +3318,7 @@ theorem Execution.runs_of_call
         have equal : aBlock = xBlock := Option.some.inj (aFound.symm.trans xFound)
         subst equal
         exact UInt64.lt_irrefl _ xLt
-      obtain ⟨middle, middleOk, -⟩ := processSlots_split xSlots below xFar
+      obtain ⟨middle, middleOk, -⟩ := processSlots_split below xFar xSlots
       exact ⟨middle, middleOk⟩
   obtain ⟨boundaryState, atBoundary, banded, first, link⟩ :=
     e.boundaryState_of_target anchored early genesis history bands electraFloor electraCap caller
@@ -3492,11 +3491,11 @@ theorem Execution.quorumDriftsHead_of_oneBlock
 
 This is `Execution.safeAt_confirmedRoot` without its hypotheses on agreement of honest stores.
 
-It does not assume that honest stores agree on finalized prefixes, on one justified checkpoint
-per epoch or on one block per root, or that held blocks have nonzero state roots.
+It does not assume finalized-prefix or per-epoch justified-checkpoint agreement.
 
-Instead the anchor state has an actual run from a genesis state, with enough stake for the count
-of each epoch.
+It also does not assume one block per root or nonzero state roots for held blocks.
+
+Instead the anchor state has a run from genesis, with enough stake for each epoch's count.
 
 The next fork activates after the horizon, so the stores stay at one fork.
 
@@ -3553,7 +3552,7 @@ theorem Execution.safeAt_confirmedRoot_accountable
     (parameters : DirectSafety.Parameters preset)
     {g : ForkedBeaconState preset} (genesis : Genesis (config := config) (checks := .bls) g)
     (history : Run config .bls g ⟨fork, anchorState⟩)
-    (historyEnough : EnoughStake history)
+    (historyEnough : ∀ high, EnoughStake history high)
     {threshold margin : ℕ}
     (byzantine : ∀ w ∈ J, ∀ k (state : BeaconState preset fork) total,
       (e.world k).time ≤ limit → ((e.world k).state w).Counts config state →

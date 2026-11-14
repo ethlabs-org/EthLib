@@ -40,7 +40,9 @@ public import EthLib.Serialization.Proofs.Ssz.Codec.Fits
 public import EthLib.Serialization.Proofs.Ssz.Codec.Layout
 public import EthLib.Serialization.Proofs.Ssz.Codec.JsonHex
 public import EthLib.Serialization.Proofs.Ssz.Codec.JsonLaws
+public import EthLib.Serialization.Proofs.Ssz.Codec.JsonHexCase
 public import EthLib.Serialization.Proofs.Ssz.Codec.JsonRoundTrip
+public import EthLib.Serialization.Proofs.Ssz.Codec.JsonTotal
 public import EthLib.Serialization.Proofs.Ssz.Codec.LayoutLaws
 public import EthLib.Serialization.Proofs.Ssz.Codec.LayoutMixin
 public import EthLib.Serialization.Proofs.Ssz.Codec.LayoutProofTree
@@ -105,12 +107,14 @@ public import EthLib.Serialization.Proofs.Ssz.Flat.Fold
 public import EthLib.Serialization.Proofs.Ssz.Flat.Walk
 public import EthLib.Serialization.Proofs.Ssz.Typed.Class
 public import EthLib.Serialization.Proofs.Ssz.Typed.Basic
+public import EthLib.Serialization.Proofs.Ssz.Typed.Choice
 public import EthLib.Serialization.Proofs.Ssz.Typed.Collections
 public import EthLib.Serialization.Proofs.Ssz.Typed.Container
 public import EthLib.Serialization.Proofs.Ssz.Typed.ForkKind
 public import EthLib.Serialization.Proofs.Ssz.Typed.Root
 public import EthLib.Serialization.Proofs.Ssz.Typed.Gindex
 public import EthLib.Serialization.Proofs.Ssz.Typed.Since
+public import EthLib.Serialization.Proofs.Ssz.Typed.Text
 public import EthLib.Serialization.Proofs.Ssz.RandomOracle
 public import EthLib.Serialization.Proofs.Ssz.Typed.Rooted
 public import EthLib.Serialization.Proofs.Ssz.Typed.RootedList

@@ -75,7 +75,7 @@ private theorem realized_tick {config : Config} {s t : Store preset fork}
     FinalOrigin anchor t (computeEpochAtSlot preset b) t.finalizedCheckpoint ∧
       (∀ epoch, computeEpochAtSlot preset b < epoch →
         FinalOrigin anchor t epoch t.unrealizedFinalizedCheckpoint) := by
-  have maps := (Store.onTickPerSlot_frame tick).2.2.2.2
+  have maps := (Store.onTickPerSlot_frame tick).2.2.2.2.1
   have carry {epoch checkpoint} (h : FinalOrigin anchor s epoch checkpoint) :
       FinalOrigin anchor t epoch checkpoint :=
     h.mono (fun _ _ found => maps.symm ▸ found) (UInt64.le_refl _)
@@ -231,8 +231,8 @@ private theorem realized_block {config : Config} {checks : SignatureChecks}
         (Store.recordBlockTimeliness_frame record).2.1]
       simp
     have sameClock : Store.SameClock s boosted :=
-      (Store.recordBlockTimeliness_frame record).2.2.2.trans
-        (Store.updateProposerBoostRoot_frame boost).2.2.2
+      (Store.recordBlockTimeliness_frame record).2.2.2.1.trans
+        (Store.updateProposerBoostRoot_frame boost).2.2.2.1
     have clock : (boosted.updateCheckpoints state.currentJustifiedCheckpoint
         state.finalizedCheckpoint).getCurrentStoreEpoch config =
         .ok (computeEpochAtSlot preset slot) := by
@@ -356,7 +356,7 @@ private theorem TimedOrigins.attestation {config : Config} {anchor : Checkpoint}
     (attested : s.onAttestation config checks attestation fromBlock = .ok t) :
     TimedOrigins config anchor t := by
   have clock := Store.onAttestation_sameClock attested
-  have maps := (Store.onAttestation_frame attested).2.2
+  have maps := (Store.onAttestation_frame attested).2.2.1
   apply h.frame clock maps
   all_goals
     unfold Store.onAttestation at attested

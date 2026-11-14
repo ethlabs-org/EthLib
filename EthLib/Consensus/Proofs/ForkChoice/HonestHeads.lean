@@ -1,6 +1,7 @@
 module
 
 public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmationSupport
+import EthLib.Consensus.Proofs.ForkChoice.BlockRuns
 
 /-!
 # The head of an honest store
@@ -13,15 +14,17 @@ It reads the filtered block tree, the tally of the latest votes in that state, a
 
 Each read succeeds in a store that honest moves build from an anchor.
 
-The justified checkpoint state is cached, because an honest store imports a block together with
-its votes, and each vote caches the state of its target.
+An honest store imports a block together with its votes.
+
+Each vote caches its target state, so the justified checkpoint state is cached.
 
 Every walk down the parents of a block stops at or above the anchor.
 
 A held block has its parent held, at a lower slot, and the anchor's parent is not held.
 
-The sums of balances stay below `2^64` because each checkpoint state that an honest store reads
-has at most `stakeCapGwei` of active stake.
+Each checkpoint state read by an honest store has at most `stakeCapGwei` of active stake.
+
+This keeps the balance sums below `2^64`.
 
 The boost is at most a committee's weight, because its percentage is at most 100.
 -/
@@ -717,8 +720,9 @@ A later justified checkpoint has an epoch above the anchor's, so a vote of a hel
 
 The store imported that block with its votes, and each vote cached the state of its target.
 
-The state is that of the checkpoint block, or its slots up to a held child, so the store counts
-with it.
+The state is that of the checkpoint block, or its slots up to a held child.
+
+The store therefore counts with it.
 
 The stake bound excludes justification by the balance floor alone. -/
 theorem Execution.exists_justified_checkpointState {anchor : Store preset fork}
@@ -873,7 +877,7 @@ private theorem p2_exists_getAncestor {store : Store preset fork}
       rintro rfl
       exact below above
     obtain ⟨_, _, _, produced⟩ := reachable.blockStatesFromParents known
-    obtain ⟨_, _, _, _, _, parentState, _⟩ := produced different
+    obtain ⟨_, _, _, _, _, -, parentState, _⟩ := produced different
     obtain ⟨parent, parentKnown⟩ := reachable.known_of_blockState parentState
     have lower := reachable.parentsBelow aligned unknown root block parent known parentKnown
     -- Strictly descending slots make this recursive walk finite.
@@ -911,8 +915,8 @@ theorem Execution.exists_isAncestor_of_held {anchor : Store preset fork}
     by_cases same : ancestorBlock = anchorBlock
     · exact same ▸ UInt64.le_refl _
     · obtain ⟨_, _, _, produced⟩ := reachable.blockStatesFromParents ancestorKnown
-      obtain ⟨_, _, _, signed, message, parentState, transitioned⟩ := produced same
-      have afterAnchor := reachable.anchorSlot_le_blockState parentState
+      obtain ⟨_, _, _, signed, -, message, parentState, transitioned⟩ := produced same
+      have afterAnchor := reachable.anchorSlot_le_of_blockState parentState
       have later := (stateTransition_slot transitioned).1
       rw [message] at later
       exact UInt64.le_trans aligned (UInt64.le_trans afterAnchor (UInt64.le_of_lt later))

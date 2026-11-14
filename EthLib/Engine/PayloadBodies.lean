@@ -57,11 +57,19 @@ The parameters are an array of 32-byte block hashes, or `start` and `count` as 6
 
 Any other parameters are invalid, with code `-32602`.
 
+The consensus layer also writes the parameters of both requests as JSON.
+
 The source orders no two checks.
 
 EthLib decodes the parameters first, then checks `start` and `count`, then the request size.
 
 The source sets no fork rule for these methods, so EthLib answers both versions at every fork.
+
+The answer is also written as JSON, and read back as a consensus node reads it.
+
+The reader drops a field whose value is `null`.
+
+So a missing field and a `null` field read the same.
 
 The method specifications state these rules, at commit `3284ee8` of execution-apis:
 
@@ -85,6 +93,8 @@ open Lean (Json)
 open EthLib.Base
 open EthLib.Execution.Blocks (Withdrawal)
 open EthLib.Engine.Json
+open EthLib.Serialization.JsonRpc
+open EthLib.Execution.Rpc (withdrawal withdrawalJson)
 
 /-- The fewest bodies that every node must take in one request. -/
 def MIN_BODIES_REQUEST_LIMIT : Nat := 32
@@ -190,11 +200,77 @@ def bodiesByHashParams (params : Json) : Decode (List Hash32) := do
   | [hashes] => array "hashes" (fixed "block hash" 32) hashes
   | _ => invalid s!"params: got {params.length}, expected 1"
 
+/-- The parameters of a request by hash as JSON: one array of block hashes. -/
+def bodiesByHashParamsJson (hashes : List Hash32) : Json :=
+  .arr #[listJson (dataJson ·.toList) hashes]
+
 /-- The parameters of a request by range: `start` and `count`, two 64-bit numbers. -/
 def bodiesByRangeParams (params : Json) : Decode (UInt64 × UInt64) := do
   let params ← paramsArray params
   match params with
   | [start, count] => return (← uint64 "start" start, ← uint64 "count" count)
   | _ => invalid s!"params: got {params.length}, expected 2"
+
+/-- The parameters of a request by range as JSON: `start` and `count`, as quantities. -/
+def bodiesByRangeParamsJson (start count : UInt64) : Json :=
+  .arr #[quantityJson start.toNat, quantityJson count.toNat]
+
+/-! ## The answer as JSON -/
+
+/-- A body of version 1 as JSON, with `null` for absent withdrawals. -/
+def bodyV1Json (b : ExecutionPayloadBodyV1) : Json :=
+  Json.mkObj [
+    ("transactions", listJson (dataJson ·.data.toList) b.transactions),
+    ("withdrawals", optionJson (listJson withdrawalJson) b.withdrawals)]
+
+/-- A body of version 2 as JSON: version 1, then the block access list or `null`. -/
+def bodyV2Json (b : ExecutionPayloadBodyV2) : Json :=
+  Json.mkObj [
+    ("transactions", listJson (dataJson ·.data.toList) b.transactions),
+    ("withdrawals", optionJson (listJson withdrawalJson) b.withdrawals),
+    ("blockAccessList", optionJson (dataJson ·.data.toList) b.blockAccessList)]
+
+/-- The fields of a body of version 1. -/
+def bodyFieldsV1 : List String := ["transactions", "withdrawals"]
+
+/-- The fields of a body of version 2: version 1 and the block access list. -/
+def bodyFieldsV2 : List String := bodyFieldsV1 ++ ["blockAccessList"]
+
+/-- A body of version 1: transactions, and withdrawals that may be `null` or absent.
+
+No other field with a value other than `null` is allowed. -/
+def bodyV1OfJson (j : Json) : Read ExecutionPayloadBodyV1 := do
+  let fs ← fields "body" j
+  unless hasOnly fs bodyFieldsV1 do reject "body: a field of no body of version 1"
+  return {
+    transactions := ← array "transactions" (bytes "transaction") (← field "body" fs "transactions")
+    withdrawals := ← (fs.lookup "withdrawals").mapM (array "withdrawals" withdrawal) }
+
+/-- A body of version 2: version 1, and a block access list that may be `null` or absent.
+
+No other field with a value other than `null` is allowed. -/
+def bodyV2OfJson (j : Json) : Read ExecutionPayloadBodyV2 := do
+  let fs ← fields "body" j
+  unless hasOnly fs bodyFieldsV2 do reject "body: a field of no body of version 2"
+  return {
+    transactions := ← array "transactions" (bytes "transaction") (← field "body" fs "transactions")
+    withdrawals := ← (fs.lookup "withdrawals").mapM (array "withdrawals" withdrawal)
+    blockAccessList := ← (fs.lookup "blockAccessList").mapM (bytes "blockAccessList") }
+
+/-- The answer of version 1, by hash or by range, as JSON: a body or `null` for each entry. -/
+def payloadBodiesV1Json (bodies : List (Option ExecutionPayloadBodyV1)) : Json :=
+  listJson (optionJson bodyV1Json) bodies
+
+/-- The answer of version 2, by hash or by range, as JSON: a body or `null` for each entry. -/
+def payloadBodiesV2Json (bodies : List (Option ExecutionPayloadBodyV2)) : Json :=
+  listJson (optionJson bodyV2Json) bodies
+
+/-- The answer of version 1, by hash or by range: an array of bodies, with `null` entries. -/
+def payloadBodiesV1OfJson (j : Json) : Decode (List (Option ExecutionPayloadBodyV1)) :=
+  lift (array "result" (nullable bodyV1OfJson) j)
+
+/-- The answer of version 2, by hash or by range: an array of bodies, with `null` entries. -/
+def payloadBodiesV2OfJson (j : Json) : Decode (List (Option ExecutionPayloadBodyV2)) :=
+  lift (array "result" (nullable bodyV2OfJson) j)
 
 end EthLib.Engine

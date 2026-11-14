@@ -20,6 +20,10 @@ The block handler uses this to show which parent a block it accepts names.
 
 The block, and from Gloas its bid, names that root as its parent.
 
+A root that is readable after one slot was readable before it, or is the root of the new header.
+
+The new header is the one before it, with its state root filled by the root of the state before.
+
 From Gloas the slots and the epoch transition also keep the latest block hash and the latest bid.
 
 The slots and the transition keep the genesis time.
@@ -35,7 +39,7 @@ variable {preset : Preset} {fork : Base.Fork} {config : Config} {checks : Signat
   {state after : BeaconState preset fork}
 
 /-- A successful slot run splits at any number of its steps. -/
-theorem advanceSlots_split {first rest : Nat}
+private theorem advanceSlots_split {first rest : Nat}
     (computed : advanceSlots config checks (first + rest) state = .ok after) :
     ∃ middle, advanceSlots config checks first state = .ok middle ∧
       advanceSlots config checks rest middle = .ok after := by
@@ -47,30 +51,6 @@ theorem advanceSlots_split {first rest : Nat}
     obtain ⟨next, stepped, tail⟩ := computed
     obtain ⟨middle, before, afterOk⟩ := ih tail
     exact ⟨middle, by simp only [advanceSlots, stepped, bind, Except.bind]; exact before, afterOk⟩
-
-/-- A successful slot run visits every intermediate slot. -/
-theorem processSlots_split {slot middleSlot : Slot}
-    (computed : processSlots config checks state slot = .ok after)
-    (low : state.slot < middleSlot) (high : middleSlot < slot) :
-    ∃ middle, processSlots config checks state middleSlot = .ok middle ∧
-      processSlots config checks middle slot = .ok after := by
-  have lo := UInt64.lt_iff_toNat_lt.mp low
-  have hi := UInt64.lt_iff_toNat_lt.mp high
-  simp only [processSlots, bind_ok_iff, ensure_ok_iff] at computed
-  obtain ⟨_, -, run⟩ := computed
-  have sum : slot.toNat - state.slot.toNat =
-      (middleSlot.toNat - state.slot.toNat) + (slot.toNat - middleSlot.toNat) := by omega
-  rw [sum] at run
-  obtain ⟨middle, before, afterOk⟩ := advanceSlots_split run
-  have middleAt : middle.slot = middleSlot := by
-    apply UInt64.toNat_inj.mp
-    have := advanceSlots_slot _ before
-    omega
-  refine ⟨middle, ?_, ?_⟩
-  · simp only [processSlots, bind_ok_iff, ensure_ok_iff]
-    exact ⟨(), low, before⟩
-  · simp only [processSlots, bind_ok_iff, ensure_ok_iff, middleAt]
-    exact ⟨(), high, afterOk⟩
 
 /-- A slot keeps a header whose state root is already nonzero. -/
 theorem processSlot_latestBlockHeader_of_nonzero
@@ -138,6 +118,59 @@ theorem advanceSlot_cachedRoots
     subst epochedOk
     exact ⟨rfl, rfl, rfl, rfl, rfl, sum⟩
 
+/-- A slot below another, by less than the length of the buffer of roots, has another position. -/
+private theorem slot_mod_ne {low high : Slot} (lt : low.toNat < high.toNat)
+    (close : high.toNat - low.toNat < preset.SLOTS_PER_HISTORICAL_ROOT.toNat) :
+    high % preset.SLOTS_PER_HISTORICAL_ROOT ≠ low % preset.SLOTS_PER_HISTORICAL_ROOT := by
+  intro same
+  have same' := congrArg UInt64.toNat same
+  rw [UInt64.toNat_mod, UInt64.toNat_mod] at same'
+  exact Nat.mod_ne_of_sub_lt lt close same'
+
+/-- One slot keeps the root recorded at a slot while that slot stays in the buffer of roots. -/
+theorem getBlockRootAtSlot_advanceSlot {slot : Slot} {root : Root}
+    (computed : advanceSlot config checks state = .ok after)
+    (read : getBlockRootAtSlot state slot = .ok root)
+    (recent : state.slot.toNat < slot.toNat + preset.SLOTS_PER_HISTORICAL_ROOT.toNat) :
+    getBlockRootAtSlot after slot = .ok root := by
+  obtain ⟨cached, cachedOk, -, roots, -, -, -, afterSlot⟩ := advanceSlot_cachedRoots computed
+  obtain ⟨_, -, written⟩ := processSlot_blockRoots cachedOk
+  obtain ⟨before, readOk⟩ := getBlockRootAtSlot_read read
+  have before' := UInt64.lt_iff_toNat_lt.mp before
+  have other : state.slot % preset.SLOTS_PER_HISTORICAL_ROOT ≠
+      slot % preset.SLOTS_PER_HISTORICAL_ROOT := slot_mod_ne before' (by omega)
+  unfold getBlockRootAtSlot at read
+  simp only [before, ↓reduceIte, bind_ok_iff, liftArith, mapError_ok_iff,
+    addChecked_ok_iff] at read
+  obtain ⟨bound, ⟨fits, boundEq⟩, -⟩ := read
+  unfold getBlockRootAtSlot
+  have later : slot < after.slot := UInt64.lt_iff_toNat_lt.mpr (by omega)
+  simp only [later, ↓reduceIte, bind_ok_iff, liftArith, mapError_ok_iff, addChecked_ok_iff]
+  refine ⟨bound, ⟨fits, boundEq⟩, ?_⟩
+  have within : after.slot ≤ bound := UInt64.le_iff_toNat_le.mpr (by omega)
+  simp only [within, ↓reduceIte, roots]
+  rw [readCircular_writeCircular_of_ne written other]
+  exact readOk
+
+/-- Caching a slot fills the state root of the latest block header, when it is zero.
+
+The root that fills it is the root of the state before. -/
+theorem processSlot_latestBlockHeader {cached : BeaconState preset fork}
+    (computed : processSlot state = .ok cached) :
+    ∃ root, SszType.hashTreeRoot state = .ok root ∧
+      cached.latestBlockHeader =
+        if state.latestBlockHeader.stateRoot = Vector.replicate 32 0 then
+          { state.latestBlockHeader with stateRoot := root } else state.latestBlockHeader := by
+  unfold processSlot at computed
+  simp only [bind_ok_iff, liftSsz_ok, liftAccessor_ok] at computed
+  obtain ⟨root, hashed, _, _, _, _, _, _, computed⟩ := computed
+  refine ⟨root, hashed, ?_⟩
+  split at computed
+  · obtain ⟨_, _, _, _, rfl⟩ := unsetNextPayloadAvailability_ok (liftAccessor_ok.mp computed)
+    rfl
+  · cases computed
+    rfl
+
 /-- After one slot, the latest block header is the one before, with its state root filled if zero.
 
 The root that fills it is the root of the state before the slot. -/
@@ -148,15 +181,7 @@ theorem advanceSlot_latestBlockHeader (computed : advanceSlot config checks stat
           { state.latestBlockHeader with stateRoot := root } else state.latestBlockHeader := by
   obtain ⟨cached, cachedOk, -, -, header, -⟩ := advanceSlot_cachedRoots computed
   rw [header]
-  unfold processSlot at cachedOk
-  simp only [bind_ok_iff, liftSsz_ok, liftAccessor_ok] at cachedOk
-  obtain ⟨root, hashed, _, _, _, _, _, _, cachedOk⟩ := cachedOk
-  refine ⟨root, hashed, ?_⟩
-  split at cachedOk
-  · obtain ⟨_, _, _, _, rfl⟩ := unsetNextPayloadAvailability_ok (liftAccessor_ok.mp cachedOk)
-    rfl
-  · cases cachedOk
-    rfl
+  exact processSlot_latestBlockHeader cachedOk
 
 /-- Advancing one slot keeps a header whose state root is nonzero. -/
 theorem advanceSlot_latestBlockHeader_of_nonzero
@@ -359,35 +384,6 @@ theorem getBlockRootAtSlot_processSlots_header {slot query : Slot} {root stateRo
     exact getBlockRootAtSlot_advanceSlots_of_zero zero hashed nonzero advanced read later
   · rw [processSlots_latestBlockHeader_of_nonzero zero computed]
     exact getBlockRootAtSlot_advanceSlots_of_nonzero zero advanced read later
-
-/-- One slot keeps the root recorded at a slot while that slot stays in the buffer of roots. -/
-theorem getBlockRootAtSlot_advanceSlot {slot : Slot} {root : Root}
-    (computed : advanceSlot config checks state = .ok after)
-    (read : getBlockRootAtSlot state slot = .ok root)
-    (recent : state.slot.toNat < slot.toNat + preset.SLOTS_PER_HISTORICAL_ROOT.toNat) :
-    getBlockRootAtSlot after slot = .ok root := by
-  obtain ⟨cached, cachedOk, -, roots, -, -, -, afterSlot⟩ := advanceSlot_cachedRoots computed
-  obtain ⟨_, -, written⟩ := processSlot_blockRoots cachedOk
-  obtain ⟨before, readOk⟩ := getBlockRootAtSlot_read read
-  have before' := UInt64.lt_iff_toNat_lt.mp before
-  have other : state.slot % preset.SLOTS_PER_HISTORICAL_ROOT ≠
-      slot % preset.SLOTS_PER_HISTORICAL_ROOT := by
-    intro same
-    have same' := congrArg UInt64.toNat same
-    rw [UInt64.toNat_mod, UInt64.toNat_mod] at same'
-    exact Nat.mod_ne_of_sub_lt before' (by omega) same'
-  unfold getBlockRootAtSlot at read
-  simp only [before, ↓reduceIte, bind_ok_iff, liftArith, mapError_ok_iff,
-    addChecked_ok_iff] at read
-  obtain ⟨bound, ⟨fits, boundEq⟩, -⟩ := read
-  unfold getBlockRootAtSlot
-  have later : slot < after.slot := UInt64.lt_iff_toNat_lt.mpr (by omega)
-  simp only [later, ↓reduceIte, bind_ok_iff, liftArith, mapError_ok_iff, addChecked_ok_iff]
-  refine ⟨bound, ⟨fits, boundEq⟩, ?_⟩
-  have within : after.slot ≤ bound := UInt64.le_iff_toNat_le.mpr (by omega)
-  simp only [within, ↓reduceIte, roots]
-  rw [readCircular_writeCircular_of_ne written other]
-  exact readOk
 
 /-- One slot keeps the root of the block at the first slot of an epoch.
 

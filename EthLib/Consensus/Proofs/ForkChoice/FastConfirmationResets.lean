@@ -351,7 +351,7 @@ theorem reset_state_justified_le {store : Store preset fork}
         exact UInt64.le_trans sound.settled (getPreviousEpoch_le _)
       · simp at found
     | @block before after checks sources signed _ added ih =>
-      have forward := Store.onBlock_epochsLe added
+      have forward := Store.onBlock_checkpointsAdvance added
       unfold Store.onBlock at added
       simp only [bind_ok_iff] at added
       obtain ⟨_, _, added⟩ := added
@@ -372,29 +372,29 @@ theorem reset_state_justified_le {store : Store preset fork}
         · cases found
           apply UInt64.le_trans (b := (boosted.updateCheckpoints
             state.currentJustifiedCheckpoint state.finalizedCheckpoint).justifiedCheckpoint.epoch)
-            ?_ later.1
+            ?_ later.1.epoch_le
           unfold Store.updateCheckpoints
           split <;> dsimp only <;> split
           all_goals first | exact UInt64.le_refl _ | exact UInt64.not_lt.mp ‹_›
-        · exact UInt64.le_trans (ih _ _ found) forward.1
+        · exact UInt64.le_trans (ih _ _ found) forward.1.epoch_le
     | tick _ handled ih =>
       obtain ⟨_, le, _, states⟩ := Store.onTick_frame handled
-      exact fun r s found => UInt64.le_trans (ih r s (states ▸ found)) le.1
+      exact fun r s found => UInt64.le_trans (ih r s (states ▸ found)) le.1.epoch_le
     | attestation _ handled ih =>
-      obtain ⟨le, _, states⟩ := Store.onAttestation_frame handled
-      exact fun r s found => UInt64.le_trans (ih r s (states ▸ found)) le.1
+      obtain ⟨le, _, states, -⟩ := Store.onAttestation_frame handled
+      exact fun r s found => UInt64.le_trans (ih r s (states ▸ found)) le.1.epoch_le
     | attesterSlashing _ handled ih =>
-      obtain ⟨le, _, states⟩ := Store.onAttesterSlashing_frame handled
-      exact fun r s found => UInt64.le_trans (ih r s (states ▸ found)) le.1
+      obtain ⟨le, _, states, -⟩ := Store.onAttesterSlashing_frame handled
+      exact fun r s found => UInt64.le_trans (ih r s (states ▸ found)) le.1.epoch_le
     | payloadAttestation _ handled ih =>
       obtain ⟨le, _, states⟩ := (Store.onPayloadAttestationMessage_onlyPtcVotes handled).frame
-      exact fun r s found => UInt64.le_trans (ih r s (states ▸ found)) le.1
+      exact fun r s found => UInt64.le_trans (ih r s (states ▸ found)) le.1.epoch_le
     | envelope _ handled ih =>
       obtain ⟨le, _, states⟩ := Store.onExecutionPayloadEnvelope_frame handled
-      exact fun r s found => UInt64.le_trans (ih r s (states ▸ found)) le.1
+      exact fun r s found => UInt64.le_trans (ih r s (states ▸ found)) le.1.epoch_le
     | inclusionList _ handled ih =>
       obtain ⟨le, _, states⟩ := Store.onInclusionList_frame handled
-      exact fun r s found => UInt64.le_trans (ih r s (states ▸ found)) le.1
+      exact fun r s found => UInt64.le_trans (ih r s (states ▸ found)) le.1.epoch_le
   exact all root state stored
 
 /-- Finality after the anchor requires a held block other than the anchor. -/
@@ -546,7 +546,8 @@ theorem Execution.finalized_epoch_le_justified_epoch {Δ : ℕ} (sync : e.Synchr
       ((e.world k).state w).justifiedCheckpoint.epoch := by
     have lower := (e.epochsLe_of_le w (Nat.zero_le k)).1
     obtain ⟨_, _, _, _, justified, _⟩ := getForkchoiceStore_anchor anchored
-    simpa only [Execution.world_zero, World.initial, start w receiver, justified] using lower
+    simpa only [Execution.world_zero, World.initial, start w receiver, justified] using
+      lower.epoch_le
   by_cases old : ((e.world n).state u).finalizedCheckpoint.epoch ≤ getCurrentEpoch anchorState
   · exact UInt64.le_trans old anchorLe
   by_cases covered : ((e.world n).state u).finalizedCheckpoint.epoch ≤
@@ -799,7 +800,7 @@ private theorem reset_catchUp_realizes {s t : Store preset fork} {old target : S
         refine ⟨clock, pending.trans same, ?_⟩
         intro cross
         by_cases first : computeEpochAtSlot preset old < computeEpochAtSlot preset next
-        · exact UInt64.le_trans (step first) (Store.catchUp_frame caught).2.1.1
+        · exact UInt64.le_trans (step first) (Store.catchUp_frame caught).2.1.1.epoch_le
         · rw [← same]
           apply realized
           exact UInt64.lt_of_le_of_lt (UInt64.not_lt.mp first) cross
@@ -828,7 +829,7 @@ private theorem reset_tick_realizes {s t : Store preset fork} {time : UInt64} {o
   obtain ⟨caughtSlot, pending, realized⟩ := reset_catchUp_realizes positive oldOk low caughtOk
   obtain ⟨same, _⟩ := reset_tick_slot positive caughtSlot targetFinal (by omega) tick
   exact ⟨target, targetFinal, same.trans pending, fun cross =>
-    UInt64.le_trans (realized cross) (Store.onTickPerSlot_frame tick).2.2.1.1⟩
+    UInt64.le_trans (realized cross) (Store.onTickPerSlot_frame tick).2.2.1.1.epoch_le⟩
 
 /-- A held state's pulled-up justification is pending, and realized after its epoch. -/
 private def ResetAdoption (store : Store preset fork) (epoch : Epoch) : Prop :=
@@ -866,7 +867,7 @@ private theorem reset_adoption_block {before after : Store preset fork} {epoch :
     (old : ResetAdoption before epoch)
     (added : before.onBlock config checks sources signed = .ok after) :
     ResetAdoption after epoch := by
-  have monotone := Store.onBlock_epochsLe added
+  have monotone := Store.onBlock_checkpointsAdvance added
   unfold Store.onBlock at added
   simp only [bind_ok_iff] at added
   obtain ⟨blockRoot, _, added⟩ := added
@@ -875,7 +876,8 @@ private theorem reset_adoption_block {before after : Store preset fork} {epoch :
     exact old
   · unfold Store.addBlock at added
     simp only [bind_ok_iff] at added
-    obtain ⟨state, transitioned, head, _, voted, vote, recorded, record, boosted, boost, added⟩ := added
+    obtain ⟨state, transitioned, head, _, voted, vote, recorded, record, boosted, boost, added⟩ :=
+      added
     obtain ⟨_, _, _, _, transition⟩ := Store.validateOnBlock_ok transitioned
     have stateSlot := (stateTransition_slot transition).2
     obtain ⟨_, _, rfl⟩ := Store.recordBlockPtcVotes_onlyPtcVotes vote
@@ -907,8 +909,8 @@ private theorem reset_adoption_block {before after : Store preset fork} {epoch :
         (Store.recordBlockTimeliness_frame record).2.2.1]
     have blockMap := (Store.updateProposerBoostRoot_frame boost).2.1
     rw [(Store.recordBlockTimeliness_frame record).2.1] at blockMap
-    have boostedClock := (Store.recordBlockTimeliness_frame record).2.2.2.trans
-      (Store.updateProposerBoostRoot_frame boost).2.2.2
+    have boostedClock := (Store.recordBlockTimeliness_frame record).2.2.2.1.trans
+      (Store.updateProposerBoostRoot_frame boost).2.2.2.1
     have epochClock : boosted.getCurrentStoreEpoch config = .ok epoch := by
       unfold Store.getCurrentStoreEpoch
       rw [boostedClock.getCurrentSlot]
@@ -964,7 +966,7 @@ private theorem reset_adoption_block {before after : Store preset fork} {epoch :
         exact ⟨pendingNew, realized⟩
       · obtain ⟨a, b⟩ := old r s p held run
         exact ⟨UInt64.le_trans a pendingOld,
-          fun earlier => UInt64.le_trans (b earlier) monotone.1⟩
+          fun earlier => UInt64.le_trans (b earlier) monotone.1.epoch_le⟩
     split at added
     · cases Except.ok.inj added
       apply finish
@@ -1014,7 +1016,7 @@ private theorem reset_adoption_forward {store : Store preset fork}
     by_cases cross : computeEpochAtSlot preset old < computeEpochAtSlot preset current
     · exact UInt64.le_trans a (realized cross)
     · exact UInt64.le_trans (b (UInt64.lt_of_lt_of_le earlier (UInt64.not_lt.mp cross)))
-        (Store.onTick_frame tick).2.1.1
+        (Store.onTick_frame tick).2.1.1.epoch_le
   | block _ added ih =>
     obtain ⟨current, clock, h⟩ := ih
     exact ⟨current, (Store.onBlock_sameClock added).getCurrentSlot.trans clock,
@@ -1139,7 +1141,8 @@ theorem Execution.unrealized_epoch_le_justified_epoch {Δ : ℕ} (sync : e.Synch
       ((e.world k).state w).justifiedCheckpoint.epoch := by
     have lower := (e.epochsLe_of_le w (Nat.zero_le k)).1
     obtain ⟨_, _, _, _, justified, _⟩ := getForkchoiceStore_anchor anchored
-    simpa only [Execution.world_zero, World.initial, start w receiver, justified] using lower
+    simpa only [Execution.world_zero, World.initial, start w receiver, justified] using
+      lower.epoch_le
   by_cases old : ((e.world n).state u).unrealizedJustifiedCheckpoint.epoch ≤
       getCurrentEpoch anchorState
   · exact UInt64.le_trans old anchorLe
@@ -1230,7 +1233,8 @@ theorem Execution.unrealized_epoch_le_justified_epoch {Δ : ℕ} (sync : e.Synch
     have eq := e.blockStates_eq anchored first receiver (start u first) (start w receiver)
       (oneBlock u first w receiver n k nBound bounded) stored postOk
     subst post
-    obtain ⟨slot, clock, adoption⟩ := reset_adoption_forward positive slots sound (forward w receiver k)
+    obtain ⟨slot, clock, adoption⟩ :=
+      reset_adoption_forward positive slots sound (forward w receiver k)
     have epochEq : computeEpochAtSlot preset slot = later := by
       simpa [Store.getCurrentStoreEpoch, clock, bind, Except.bind, pure, Except.pure] using laterOk
     obtain ⟨senderSlot, senderClock, _, stateBound⟩ := senderSlots

@@ -3,9 +3,12 @@ module
 public import EthLib.Base.Exports.PyDerive
 public import EthLib.Base.Exports.Proofs.PyValue
 public import EthLib.Networking.Libp2p.Mplex
+public import EthLib.Networking.Libp2p.MplexSession
 public import EthLib.Networking.Libp2p.Multistream
 public import EthLib.Networking.Libp2p.PeerId
+public import EthLib.Networking.Libp2p.Upgrade
 public import EthLib.Networking.Libp2p.Yamux
+public import EthLib.Networking.Libp2p.YamuxSession
 
 /-!
 # Exports: libp2p framing and peer IDs
@@ -13,6 +16,16 @@ public import EthLib.Networking.Libp2p.Yamux
 C-ABI exports for the libp2p codecs, callable from the Python C extension.
 
 They cover multistream-select messages, mplex and yamux frames, and secp256k1 peer IDs.
+
+They also run each peer of a multistream-select negotiation, and the upgrade of a TCP connection.
+
+A peer of a negotiation reads the messages at the start of its input until it stops.
+
+It returns its state, its protocol, the bytes it sent from its start, and the unread bytes.
+
+The state crosses as its name in snake case, such as `await_proposal`.
+
+The protocol is the agreed one, or the reply that a dialer did not expect, else empty.
 
 A decoder returns the value at the start of its input and the bytes after it.
 
@@ -33,6 +46,10 @@ Each such input breaks a rule of its source, so it has no bytes.
 Another export module that passes a frame imports its conversions from this module.
 
 The keys of a frame `dict` are the field names of its Lean structure, in snake case.
+
+The mplex streams of one side cross as a list of an ID, who opened it, and a state name.
+
+The yamux streams of one side cross as a list of an ID, a state name and the two windows.
 -/
 
 public section
@@ -72,6 +89,89 @@ def multistreamDecodeExport (args : PyValue) : Result PyValue :=
       fun e => (e.code, s!"multistream message rejected: {reprStr e}")
     return (message, (⟨rest.toArray⟩ : ByteArray))) args
 
+/-- The bytes of a list of messages, each encoded in turn. -/
+def encodeAll (messages : List ByteArray) : ByteArray :=
+  ⟨(messages.flatMap Multistream.encode).toArray⟩
+
+/-- The name and the protocol of a listener state. -/
+def listenerView : Multistream.Listener → String × ByteArray
+  | .awaitHeader _ => ("await_header", .empty)
+  | .awaitProposal _ => ("await_proposal", .empty)
+  | .agreed protocol => ("agreed", protocol)
+  | .aborted => ("aborted", .empty)
+
+/-- The name and the protocol of a dialer state. -/
+def dialerView : Multistream.Dialer → String × ByteArray
+  | .awaitHeader _ _ => ("await_header", .empty)
+  | .awaitAnswer _ _ => ("await_answer", .empty)
+  | .agreed protocol => ("agreed", protocol)
+  | .failed => ("failed", .empty)
+  | .unexpected reply => ("unexpected", reply)
+  | .aborted => ("aborted", .empty)
+
+/-- A peer of a negotiation that reads the messages at the start of the bytes in turn.
+
+It stops when its state is not waiting, or when the bytes end.
+
+Each message is at least two bytes long, so the size of the input bounds the steps. -/
+def runPeer {σ : Type} (step : σ → ByteArray → σ × List ByteArray) (waiting : σ → Bool)
+    (view : σ → String × ByteArray) (start : σ × List ByteArray) (data : ByteArray) :
+    Result (String × ByteArray × ByteArray × ByteArray) := do
+  let (first, opening) := start
+  let mut state := first
+  let mut sent := opening
+  let mut rest := data.data.toList
+  for index in List.range data.size do
+    if !waiting state || rest.isEmpty then break
+    let (message, after) ← (Multistream.decode rest).mapError
+      fun e => (e.code, s!"message {index} rejected: {reprStr e}")
+    let (next, out) := step state message
+    state := next
+    sent := sent ++ out
+    rest := after
+  let (name, protocol) := view state
+  return (name, protocol, encodeAll sent, ⟨rest.toArray⟩)
+
+/-- What a listener does with the bytes it receives, from its start.
+
+It returns its state, the agreed protocol or empty, the bytes it sent, and the unread bytes.
+
+A message that does not decode raises its error, and names its index. -/
+@[export eth_multistream_listen]
+def multistreamListenExport (args : PyValue) : Result PyValue :=
+  pyExport (fun ((supported, data) : List ByteArray × ByteArray) =>
+    runPeer Multistream.listen
+      (fun | .awaitHeader _ | .awaitProposal _ => true | _ => false)
+      listenerView (Multistream.Listener.start supported) data) args
+
+/-- What a dialer does with the bytes it receives, from its start.
+
+It proposes the protocols in order.
+
+It returns its state, its protocol, the bytes it sent, and the unread bytes.
+
+The protocol is the agreed one, or an answer that is neither its proposal nor `na`, else empty.
+
+A message that does not decode raises its error, and names its index. -/
+@[export eth_multistream_dial]
+def multistreamDialExport (args : PyValue) : Result PyValue :=
+  pyExport (fun ((proposals, data) : List ByteArray × ByteArray) =>
+    runPeer Multistream.dial
+      (fun | .awaitHeader _ _ | .awaitAnswer _ _ => true | _ => false)
+      dialerView (Multistream.Dialer.start proposals) data) args
+
+/-- The security protocol and the multiplexer of a TCP connection between consensus nodes.
+
+Each node says whether it supports yamux, the dialer first.
+
+Two such nodes always agree, so the upgrade never fails. -/
+@[export eth_libp2p_upgrade]
+def upgradeExport (args : PyValue) : Result PyValue :=
+  pyExport (fun ((dialer, listener) : Bool × Bool) => do
+    let some agreed := Upgrade.upgrade ⟨dialer⟩ ⟨listener⟩
+      | throw (0, "the upgrade found no common protocol")
+    return agreed) args
+
 /-- The bytes of a valid mplex frame. -/
 @[export eth_mplex_encode]
 def mplexEncodeExport (args : PyValue) : Result PyValue :=
@@ -89,6 +189,56 @@ def mplexDecodeExport (args : PyValue) : Result PyValue :=
       fun e => (e.code, s!"mplex frame rejected: {reprStr e}")
     return (frame, (⟨rest.toArray⟩ : ByteArray))) args
 
+/-- The name of a stream state in snake case, such as `remote_closed+local_reset`.
+
+The name says which sides closed the stream, then which sides reset it. -/
+def mplexStateName (s : Mplex.StreamState) : String :=
+  let closed := match s.localClosed, s.remoteClosed with
+    | false, false => "open"
+    | true, false => "local_closed"
+    | false, true => "remote_closed"
+    | true, true => "closed"
+  closed ++ (if s.localReset then "+local_reset" else "") ++
+    (if s.remoteReset then "+remote_reset" else "")
+
+/-- A message for a refused frame, phrased for someone reading a Python traceback. -/
+def mplexSessionMessage : Mplex.MplexSessionError → String
+  | .reusedId i l => s!"stream {i} (opened locally: {l}) was opened before"
+  | .unknownStream i l => s!"stream {i} (opened locally: {l}) is unknown"
+  | .writeAfterClose i l => s!"write on stream {i} (opened locally: {l}) after its close or reset"
+
+/-- The mplex frames at the start of the bytes, until the bytes end. -/
+def mplexFrames (data : List UInt8) : Except Mplex.MplexError (List Mplex.Frame) := do
+  let mut rest := data
+  let mut frames := #[]
+  for _ in List.range data.length do
+    if rest.isEmpty then break
+    let (frame, after) ← Mplex.decode rest
+    frames := frames.push frame
+    rest := after
+  return frames.toList
+
+/-- The streams of one side after the frames it receives and sends, from an empty table.
+
+Each event says whether this side receives its bytes, and holds whole frames.
+
+The streams come as their ID, whether this side opened them, and their state.
+
+A frame that does not decode, or that the side refuses, raises its error.
+
+The error names the index of the event. -/
+@[export eth_mplex_session]
+def mplexSessionExport (args : PyValue) : Result PyValue :=
+  pyExport (fun (events : List (Bool × ByteArray)) => do
+    let mut streams : Mplex.Streams := []
+    for ((received, data), index) in events.zipIdx do
+      let frames ← (mplexFrames data.data.toList).mapError
+        fun e => (e.code, s!"event {index}: mplex frame rejected: {reprStr e}")
+      for frame in frames do
+        streams ← (Mplex.step received streams frame).mapError
+          fun e => (e.code, s!"event {index}: {mplexSessionMessage e}")
+    return streams.map fun ((id, opened), state) => (id, opened, mplexStateName state)) args
+
 /-- The bytes of a valid yamux frame. -/
 @[export eth_yamux_encode]
 def yamuxEncodeExport (args : PyValue) : Result PyValue :=
@@ -104,6 +254,70 @@ def yamuxDecodeExport (args : PyValue) : Result PyValue :=
     let (frame, rest) ← (Yamux.decode data.data.toList).mapError
       fun e => (e.code, s!"yamux frame rejected: {reprStr e}")
     return (frame, (⟨rest.toArray⟩ : ByteArray))) args
+
+/-- The name of a yamux stream state in snake case, such as `syn_sent`. -/
+def yamuxStateName : Yamux.StreamState → String
+  | .synSent => "syn_sent"
+  | .synReceived => "syn_received"
+  | .established => "established"
+  | .localClosed => "local_closed"
+  | .remoteClosed => "remote_closed"
+  | .closed => "closed"
+  | .reset => "reset"
+
+/-- A message for a refused yamux frame, phrased for someone reading a Python traceback. -/
+def yamuxSessionMessage : Yamux.YamuxSessionError → String
+  | .sessionStream => "data or window update on stream 0, which names the session"
+  | .wrongParity i => s!"stream {i} has the parity of the other side"
+  | .reusedId i => s!"stream {i} was opened before"
+  | .unknownStream i => s!"stream {i} is unknown"
+  | .unexpectedAck i => s!"unexpected ACK on stream {i}"
+  | .afterReset i => s!"frame on stream {i} after its reset"
+  | .afterFin i => s!"data or FIN on stream {i} after its writer's FIN"
+  | .windowExceeded i l w => s!"data of {l} bytes on stream {i} exceeds its window of {w}"
+  | .missingAck i => s!"frame on stream {i} without ACK or RST before its ACK"
+
+/-- The yamux frames at the start of the bytes, until the bytes end. -/
+def yamuxFrames (data : List UInt8) : Except Yamux.YamuxError (List Yamux.Frame) := do
+  let mut rest := data
+  let mut frames := #[]
+  for _ in List.range data.length do
+    if rest.isEmpty then break
+    let (frame, after) ← Yamux.decode rest
+    frames := frames.push frame
+    rest := after
+  return frames.toList
+
+/-- One side of a yamux session after the frames it receives and sends, from no stream.
+
+The first argument says whether this side is the client.
+
+Each event says whether this side receives its bytes, and holds whole frames.
+
+The streams come as their ID, their state, and the windows to send and to receive.
+
+Then come whether the side received Go Away, and the bytes of the frames it sends back.
+
+A frame that does not decode, or that the side refuses, raises its error.
+
+The error names the index of the event. -/
+@[export eth_yamux_session]
+def yamuxSessionExport (args : PyValue) : Result PyValue :=
+  pyExport (fun ((isClient, events) : Bool × List (Bool × ByteArray)) => do
+    let mut session : Yamux.Session := { isClient }
+    let mut replies : Array ByteArray := #[]
+    for ((received, data), index) in events.zipIdx do
+      let frames ← (yamuxFrames data.data.toList).mapError
+        fun (e : Yamux.YamuxError) => (e.code, s!"event {index}: yamux frame rejected: {reprStr e}")
+      for frame in frames do
+        session ← (Yamux.step received session frame).mapError
+          fun (e : Yamux.YamuxSessionError) => (e.code, s!"event {index}: {yamuxSessionMessage e}")
+        if received then
+          replies := replies ++ (Yamux.reply frame).toArray.map
+            fun r => (⟨(Yamux.encode r).toArray⟩ : ByteArray)
+    let streams := session.streams.map fun ((id, s) : UInt32 × Yamux.Stream) =>
+      (id.toNat, yamuxStateName s.state, s.sendWindow, s.recvWindow)
+    return (streams, session.goneAway, replies.toList)) args
 
 /-- The result of a function on peer identities, with the code of its error. -/
 def identityResult {α : Type} (r : Except IdentityError α) : Result α :=

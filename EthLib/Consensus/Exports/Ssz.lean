@@ -1,9 +1,11 @@
 module
 
+public import EthLib.Consensus.BeaconApi.Spelling
 public import EthLib.Consensus.Containers.Attestation
 public import EthLib.Consensus.Containers.Bid
 public import EthLib.Consensus.Containers.Block
 public import EthLib.Consensus.Containers.BuilderApi
+public import EthLib.Consensus.Containers.BuilderConfig
 public import EthLib.Consensus.Containers.Builder
 public import EthLib.Consensus.Containers.Execution
 public import EthLib.Consensus.Containers.InclusionList
@@ -11,6 +13,7 @@ public import EthLib.Consensus.Containers.Operations
 public import EthLib.Consensus.Containers.PayloadAttestation
 public import EthLib.Consensus.Containers.PowBlock
 public import EthLib.Consensus.Containers.ProposerPreferences
+public import EthLib.Consensus.Containers.RelayApi
 public import EthLib.Consensus.Containers.Requests
 public import EthLib.Consensus.Containers.Signing
 public import EthLib.Consensus.Containers.State
@@ -38,7 +41,7 @@ From Glamsterdam on, a container whose form EthLib does not hold yet fails with 
 
 Another export upgrades an attestation, indexed attestation or attester slashing of Fulu to Gloas.
 
-From Bellatrix to Fulu the names also cover the containers of the Builder API.
+From Bellatrix to Fulu the names also cover the containers of the Builder API and the Relay API.
 -/
 
 public section
@@ -58,6 +61,19 @@ structure Container where
 
 attribute [instance] Container.codec
 
+/-- A container of the beacon chain, with its SSZ codec and its spelling in the Beacon API.
+
+Each container must declare its spelling, so none falls back to a default. -/
+structure BeaconContainer where
+  /-- The Lean type of the container. -/
+  type : Type
+  /-- Its SSZ codec. -/
+  [codec : SszType type]
+  /-- How the Beacon API writes it in JSON. -/
+  [spelling : BeaconApi.ApiSpelling type]
+
+attribute [instance] BeaconContainer.codec BeaconContainer.spelling
+
 /-- Whether EthLib holds the light client containers at a fork: from Altair. -/
 def lightClientAt (fork : Fork) : Bool := .altair ≤ fork
 
@@ -70,7 +86,7 @@ Capella stops adding historical batches, and adds historical summaries instead.
 Fulu carries blobs in data column sidecars instead of blob sidecars.
 
 The light client containers start at Altair; EthLib does not yet hold their Gloas form. -/
-def containerOf (preset : Preset) (fork : Fork) : String → Option Container
+def containerOf (preset : Preset) (fork : Fork) : String → Option BeaconContainer
   | "Fork" => some ⟨ForkVersions⟩
   | "ForkData" => some ⟨ForkData⟩
   | "SigningData" => some ⟨SigningData⟩
@@ -196,12 +212,24 @@ def containerOf (preset : Preset) (fork : Fork) : String → Option Container
     if HasBuilderApi fork then some ⟨BlindedBeaconBlock preset fork⟩ else none
   | "SignedBlindedBeaconBlock" =>
     if HasBuilderApi fork then some ⟨SignedBlindedBeaconBlock preset fork⟩ else none
+  | "BlobsBundle" =>
+    if .dencun ≤ fork ∧ fork < .glamsterdam then some ⟨BuilderBlobsBundle preset fork⟩ else none
+  | "ExecutionPayloadAndBlobsBundle" =>
+    if .dencun ≤ fork ∧ fork < .glamsterdam then some ⟨ExecutionPayloadAndBlobsBundle preset fork⟩
+    else none
   | "BuilderRequestAuth" => if .glamsterdam ≤ fork then some ⟨BuilderRequestAuth⟩ else none
   | "SignedBuilderRequestAuth" =>
     if .glamsterdam ≤ fork then some ⟨SignedBuilderRequestAuth⟩ else none
   | "BuilderPreferences" => if .glamsterdam ≤ fork then some ⟨BuilderPreferences⟩ else none
   | "BuilderPreferencesRequest" =>
     if .glamsterdam ≤ fork then some ⟨BuilderPreferencesRequest⟩ else none
+  | "BuilderEntry" => if .glamsterdam ≤ fork then some ⟨BuilderEntry⟩ else none
+  | "BuilderConfig" => if .glamsterdam ≤ fork then some ⟨BuilderConfig⟩ else none
+  | "BidTrace" => if HasBuilderApi fork then some ⟨BidTrace⟩ else none
+  | "SubmitBlockRequest" =>
+    if HasBuilderApi fork then some ⟨SubmitBlockRequest preset fork⟩ else none
+  | "BuilderSubmitNewBlockRequest" =>
+    if HasBuilderApi fork then some ⟨BuilderSubmitNewBlockRequest preset fork⟩ else none
   | _ => none
 
 /-- The containers whose form EthLib holds from Glamsterdam on.
@@ -209,7 +237,7 @@ def containerOf (preset : Preset) (fork : Fork) : String → Option Container
 Gloas and Heze change some containers, and EthLib holds those forms only as specified. -/
 def specifiedFromGlamsterdam : List String := [
   "BuilderRequestAuth", "SignedBuilderRequestAuth", "BuilderPreferences",
-  "BuilderPreferencesRequest",
+  "BuilderPreferencesRequest", "BuilderEntry", "BuilderConfig",
   "Fork", "ForkData", "SigningData", "Checkpoint", "Validator", "AttestationData", "Eth1Data",
   "DepositMessage", "DepositData", "BeaconBlockHeader", "SignedBeaconBlockHeader", "Eth1Block",
   "ProposerSlashing", "Deposit", "VoluntaryExit", "SignedVoluntaryExit", "SingleAttestation",

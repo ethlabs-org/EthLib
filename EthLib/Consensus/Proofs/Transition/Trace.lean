@@ -1,19 +1,21 @@
 module
 
 public import EthLib.Consensus.Proofs.Transition.Chain
-public import EthLib.Consensus.Proofs.Transition.PayloadInputs
-public import EthLib.Consensus.Proofs.Transition.Slot
-public import EthLib.Consensus.Proofs.Transition.TargetUpgrades
 public import EthLib.Consensus.Transition.Genesis
+import EthLib.Consensus.Proofs.Transition.PayloadInputs
 
 /-!
-# Selected inputs of a validated chain
+# Proofs: a trace of the steps of a chain, with their inputs
 
-The trace retains block inputs, which cannot be recovered computationally from Prop reachability.
+A step of a chain says that one state follows from another, but it does not keep the block.
 
-Erasure to ChainStep reuses its invariant and monotonicity theorems.
+A run keeps each step with its inputs: the slot step, or the signed block and its engine.
 
-A run has at most one block step for each slot it spans, counting the slot of its first state.
+So a theorem about a run can name the blocks of that run and the attestations in them.
+
+A block step of a run checks its state root, and is applied on a state with no upgrade due.
+
+Each step of a run is a step of a chain, so the invariants of chains hold along a run.
 -/
 
 @[expose] public section
@@ -24,11 +26,14 @@ open Base
 
 variable {preset : Preset} {config : Config} {checks : SignatureChecks}
 
-/-- Successful genesis initialization; launch-time validity is not needed for trace invariants. -/
-def Genesis (g : ForkedBeaconState preset) : Prop :=
+/-- A genesis state built from deposits.
+
+It need not be valid for launch. -/
+def Genesis (config : Config) (checks : SignatureChecks) (g : ForkedBeaconState preset) : Prop :=
   ∃ hash time deposits,
     initializeBeaconStateFromEth1 config checks hash time deposits = .ok g.state
 
+/-- One step of a run: a slot, or a signed block applied with its state root checked. -/
 inductive Step (config : Config) (checks : SignatureChecks) :
     ForkedBeaconState preset → ForkedBeaconState preset → Type where
   | slot {before after} (ok : advanceSlotAcross config checks before = .ok after) :
@@ -39,12 +44,14 @@ inductive Step (config : Config) (checks : SignatureChecks) :
       (ok : applySignedBlock config checks engine before signed true = .ok after) :
       Step config checks ⟨fork, before⟩ ⟨fork, after⟩
 
+/-- A sequence of steps from `first`, which keeps the input of each step. -/
 inductive Run (config : Config) (checks : SignatureChecks) (first : ForkedBeaconState preset) :
     ForkedBeaconState preset → Type where
   | nil : Run config checks first first
   | snoc {middle last} (pre : Run config checks first middle)
       (step : Step config checks middle last) : Run config checks first last
 
+/-- The steps of `pre`, then the steps of `tail`. -/
 def Run.append {first middle last : ForkedBeaconState preset}
     (pre : Run config checks first middle) (tail : Run config checks middle last) :
     Run config checks first last :=
@@ -52,7 +59,7 @@ def Run.append {first middle last : ForkedBeaconState preset}
   | .nil => pre
   | .snoc tail step => .snoc (pre.append tail) step
 
-/-- Membership retains the selected transition input, not only its endpoints. -/
+/-- A step is in a run, with its inputs, not only its two states. -/
 inductive Run.Contains {first : ForkedBeaconState preset} :
     {last before after : ForkedBeaconState preset} → Run config checks first last →
       Step config checks before after → Prop where
@@ -62,18 +69,29 @@ inductive Run.Contains {first : ForkedBeaconState preset} :
       {step : Step config checks before after} (member : Contains pre step)
       (next : Step config checks middle last) : Contains (.snoc pre next) step
 
+/-- A step of a run is a step of a chain. -/
 theorem Step.chainStep {x y : ForkedBeaconState preset} (step : Step config checks x y) :
     ChainStep config checks x y := by
   cases step with
   | slot ok => exact .slot ok
   | block engine signed _ ok => exact .block engine signed true ok
 
+/-- A run is a sequence of steps of a chain. -/
 theorem Run.chainSteps {x y : ForkedBeaconState preset} (run : Run config checks x y) :
     Relation.ReflTransGen (ChainStep config checks) x y := by
   induction run with
   | nil => exact .refl
   | snoc _ step ih => exact ih.tail step.chainStep
 
+/-- Appending runs is associative. -/
+theorem Run.append_assoc {a b c d : ForkedBeaconState preset} (one : Run config checks a b)
+    (two : Run config checks b c) (three : Run config checks c d) :
+    one.append (two.append three) = (one.append two).append three := by
+  induction three with
+  | nil => rfl
+  | snoc three step ih => exact congrArg (fun run => run.snoc step) ih
+
+/-- A step of two appended runs is a step of one of them. -/
 theorem Run.contains_append {g x y u v : ForkedBeaconState preset}
     (pre : Run config checks g x) (tail : Run config checks x y)
     (step : Step config checks u v) :
@@ -100,7 +118,7 @@ theorem Run.contains_append {g x y u v : ForkedBeaconState preset}
         | last => exact .last _ _
         | earlier member => exact .earlier (ih.mpr (.inr member)) next
 
-/-- A selected occurrence splits into its exact prefix, edge and suffix. -/
+/-- A step of a run splits it into the run before the step, the step and the run after it. -/
 theorem Run.contains_split {g a x y : ForkedBeaconState preset}
     (run : Run config checks g a) (step : Step config checks x y) (member : run.Contains step) :
     ∃ (pre : Run config checks g x) (post : Run config checks y a),
@@ -212,13 +230,7 @@ def Run.blockCount {first last : ForkedBeaconState preset} :
   | .snoc pre (.slot _) => pre.blockCount
   | .snoc pre (.block ..) => pre.blockCount + 1
 
-/-- The block steps of a run, and one more if its last state can still take a block, fit its slots.
-
-A state can take a block when its latest block header is before its slot.
-
-A slot step moves the slot on by one, even across the upgrades due at it.
-
-A block step spends the slot of its state, and leaves the header of the block at that slot. -/
+/-- Each block spends its state's free slot; each slot step supplies at most one more. -/
 private theorem Run.blockCount_le {first last : ForkedBeaconState preset}
     (run : Run config checks first last) :
     run.blockCount +
@@ -239,10 +251,8 @@ private theorem Run.blockCount_le {first last : ForkedBeaconState preset}
     | @block fork before after engine signed due ok =>
       have processed := (applySignedBlock_ok ok).2.1
       obtain ⟨atSlot, newer, -⟩ := processBlock_parentRoot processed
-      obtain ⟨parented, headed, -, headerOk, kept⟩ := processBlock_header_split processed
-      obtain ⟨_, _, rfl⟩ := processBlockHeader_eq headerOk
-      have slot := processBlock_slot processed
-      -- The state before the block has a free slot, which the block spends.
+      obtain ⟨_, _, kept⟩ := latestBlockHeader_processBlock processed
+      have slot := (frame_processBlock processed).slot
       have free : before.latestBlockHeader.slot < before.slot := atSlot ▸ newer
       have spent : ¬ after.latestBlockHeader.slot < after.slot := by
         rw [kept, slot, ← atSlot]
@@ -252,9 +262,7 @@ private theorem Run.blockCount_le {first last : ForkedBeaconState preset}
       simp only [free, ↓reduceIte] at ih
       omega
 
-/-- A run has at most one block step for each slot of its range.
-
-Every state of the run is at a slot of the range, and a block spends the slot of its state. -/
+/-- A run has at most one block step for each slot of its range. -/
 theorem Run.blocks_le_slots {first last : ForkedBeaconState preset}
     (run : Run config checks first last) {a b : Nat} (low : a ≤ first.state.slot.toNat)
     (high : last.state.slot.toNat ≤ b) : run.blockCount ≤ b - a + 1 := by

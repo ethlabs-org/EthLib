@@ -41,13 +41,15 @@ So it can only look at the state and the substate, apart from the logs and the r
 
 It must hold of each write of storage, of transient storage and of a log.
 
-It must hold of the rise of a nonce, and of a caller that takes in a child related to it.
+It must hold of the rise of a nonce that is not the greatest.
+
+It must hold of a caller that takes in a child related to it.
 
 It also relates a caller to the frame that ends each message the caller sends. -/
 structure OrdinaryStepRules (fork : Fork) (R : Evm fork Meter → Evm fork Meter → Prop) : Prop where
   /-- The relation is transitive. -/
   trans : ∀ {a b c}, R a b → R b c → R a c
-  /-- A step that keeps the state up to the records of its reads keeps the relation. -/
+  /-- A step that only adds reads keeps the relation. -/
   static : ∀ {a b}, StaticStep a b → R a b
   /-- A write of storage that changes the refund counter keeps the relation. -/
   sstore : ∀ (evm : Evm fork Meter) (address : Address) (key : Bytes32) (value : U256)
@@ -63,8 +65,9 @@ structure OrdinaryStepRules (fork : Fork) (R : Evm fork Meter → Evm fork Meter
   log : ∀ {a b : Evm fork Meter} (log : Blocks.Log), b.state = a.state →
     b.substate = { a.substate with logs := a.substate.logs.push log } → b.message = a.message →
     b.code = a.code → R a b
-  /-- The rise of a nonce keeps the relation. -/
+  /-- The rise of a nonce that is not the greatest keeps the relation. -/
   incrementNonce : ∀ (evm : Evm fork Meter) (address : Address) (state : TransactionState),
+    (evm.state.getAccount address).nonce ≠ MAX_NONCE →
     evm.state.incrementNonce fork address = .ok state → R evm { evm with state }
   /-- A caller that takes in a child related to it is related to its frame before. -/
   incorporate : ∀ {caller child : Evm fork Meter}, R caller child →
@@ -107,7 +110,7 @@ theorem stepRules_messageCode :
   tstore _ _ _ _ := ⟨rfl, rfl⟩
   log _ _ _ hm hc := ⟨hm, hc⟩
   selfdestruct _ _ h := ⟨message_finishSelfdestruct h, code_finishSelfdestruct h⟩
-  incrementNonce _ _ _ _ := ⟨rfl, rfl⟩
+  incrementNonce _ _ _ _ _ := ⟨rfl, rfl⟩
   incorporate _ := ⟨message_incorporateChild _ _, code_incorporateChild _ _⟩
 
 namespace OrdinaryStepRules
@@ -268,7 +271,7 @@ theorem finishCall (rules : OrdinaryStepRules fork R) {kind : CallKind} {call : 
   dsimp only at h
   have pre : StaticStep evm (recordAccountRead { evm with
       memory := memoryExtend evm.memory expandBy, gas := GasMeter.drain evm.gas }
-      evm.message.currentTarget) := ⟨StateKept.refl _, rfl, rfl, rfl, rfl, rfl, rfl⟩
+      evm.message.currentTarget) := ⟨.recordAccountRead _ _, rfl, rfl, rfl, rfl⟩
   split at h
   · obtain ⟨after, hs, rfl⟩ := Base.map_ok_iff.mp h
     exact (rules.static ((pre.trans (.of_sameContext (sameContext_refillStateGas _ _))).trans
@@ -317,6 +320,7 @@ theorem launchCreate (rules : OrdinaryStepRules fork R) {evm : Evm fork Meter} {
   split at h
   · obtain ⟨after, hs, rfl⟩ := Base.map_ok_iff.mp h
     exact (rules.static (pre.trans (staticStep_skipCall hs)) :)
+  rename_i hcheck
   obtain ⟨address, -, h⟩ := Base.bind_ok_iff.mp h
   have c0 : StaticStep evm (recordAccountRead (accessAddress (recordAccountRead
       { evm with returnData := .empty } evm.message.currentTarget) address).2 address) :=
@@ -325,9 +329,16 @@ theorem launchCreate (rules : OrdinaryStepRules fork R) {evm : Evm fork Meter} {
   · obtain ⟨e1, h1, hr⟩ := Base.bind_ok_iff.mp hr
     obtain ⟨e2, h2, hr⟩ := Base.bind_ok_iff.mp hr
     obtain ⟨state, hst, hr⟩ := Base.bind_ok_iff.mp hr
-    have ms : R evm { e2 with state } := rules.trans (rules.static (c0.trans (.of_sameContext
-      ((chargeStateGas_sameContext h1).trans (chargeGas_sameContext h2)))))
-      (rules.incrementNonce _ _ _ (Base.mapError_ok_iff.mp hst))
+    have c2 : StaticStep evm e2 := c0.trans (.of_sameContext
+      ((chargeStateGas_sameContext h1).trans (chargeGas_sameContext h2)))
+    have hn : (e2.state.getAccount evm.message.currentTarget).nonce ≠ MAX_NONCE := by
+      intro heq
+      refine hcheck (.inr (.inl ?_))
+      rw [← heq]
+      unfold TransactionState.getAccount
+      rw [(pre.state _ List.not_mem_nil).1, (c2.state _ List.not_mem_nil).1]
+    have ms : R evm { e2 with state } :=
+      rules.trans (rules.static c2) (rules.incrementNonce _ _ _ hn (Base.mapError_ok_iff.mp hst))
     split at hr
     · cases hr
       have md : R evm { e2 with state, gas := GasMeter.drain e2.gas } :=
@@ -443,8 +454,8 @@ theorem and {S : Evm fork Meter → Evm fork Meter → Prop} (r : StepRules fork
   log log hs hsub hm hc := ⟨r.log log hs hsub hm hc, s.log log hs hsub hm hc⟩
   selfdestruct beneficiary refund h :=
     ⟨r.selfdestruct beneficiary refund h, s.selfdestruct beneficiary refund h⟩
-  incrementNonce evm address state h :=
-    ⟨r.incrementNonce evm address state h, s.incrementNonce evm address state h⟩
+  incrementNonce evm address state hn h :=
+    ⟨r.incrementNonce evm address state hn h, s.incrementNonce evm address state hn h⟩
   incorporate h := ⟨r.incorporate h.1, s.incorporate h.2⟩
 
 /-- A successful SELFDESTRUCT keeps the relation. -/
@@ -478,7 +489,7 @@ theorem runFrame [LawfulGasMeter Meter] (rules : StepRules fork R) {bound : Nat}
     (h : Evm.runFrame (Evm.step fork) (step_decreases fork) bound runChild evm within = .ok after) :
     R evm after :=
   rel_runFrame (Inv := fun _ => True) rules.refl rules.trans (fun _ _ => trivial)
-    (fun _ _ _ => rules.static (staticStep_exceptionalHalt _ _)) (fun _ h => rules.step h)
+    (fun _ _ _ => rules.static (staticStep_exceptionalHalt _ _)) (fun _ _ h => rules.step h)
     (fun _ _ _ _ _ => runs _ _ _ _) trivial h
 
 /-- Every successful call and creation satisfies a relation `M` of messages.
@@ -533,7 +544,9 @@ The caller resumes as a call or as a creation.
 
 A creation goes to an address where a contract may be deployed in the state of `evm`.
 
-A call runs at the current target of `evm`, or runs code only at an account that holds code. -/
+A call runs at the current target of `evm`, or runs code only at an account that holds code.
+
+The state that the message starts from has read the account that the message runs at. -/
 private def Sends (evm : Evm fork Meter) : StepResult fork Meter → Prop
   | .next _ => True
   | .child caller message resume =>
@@ -542,7 +555,8 @@ private def Sends (evm : Evm fork Meter) : StepResult fork Meter → Prop
       ∃ newAccount address, resume = resumeCreate fork caller newAccount address) ∧
     (message.target = none → evm.state.accountDeployable message.currentTarget = true) ∧
     (message.target ≠ none → message.currentTarget = evm.message.currentTarget ∨
-      StaticCode evm.state message)
+      StaticCode evm.state message) ∧
+    message.currentTarget ∈ caller.state.accountReads
 
 /-- A result that says what it sends from a frame says it from a frame with the same accounts.
 
@@ -552,12 +566,12 @@ private theorem Sends.lift {evm evm' : Evm fork Meter} {result : StepResult fork
   cases result with
   | next _ => trivial
   | child caller message resume =>
-    obtain ⟨r1, r2, r3⟩ := r
+    obtain ⟨r1, r2, r3, r4⟩ := r
     have hd : ∀ a, evm'.state.accountDeployable a = evm.state.accountDeployable a := by
       intro a
       exact State.TransactionState.accountDeployable_congr (getAccount_of_staticStep h a)
         (h.state a List.not_mem_nil).2.1
-    refine ⟨r1, fun c => ?_, fun c => ?_⟩
+    refine ⟨r1, fun c => ?_, fun c => ?_, r4⟩
     · rw [← hd]
       exact r2 c
     · rcases r3 c with hc | hc
@@ -574,6 +588,7 @@ private theorem sends_finishCall {kind : CallKind} {call : CallOperands}
     {result : StepResult fork Meter}
     (hcallee : callee.code.size ≠ 0 →
       (evm.state.getAccount call.address).codeHash ≠ State.EMPTY_CODE_HASH)
+    (hread : call.address ∈ evm.state.accountReads)
     (h : finishCall kind call callee subCall newAccount expandBy evm = .ok result) :
     Sends evm result := by
   unfold Evm.finishCall at h
@@ -582,7 +597,7 @@ private theorem sends_finishCall {kind : CallKind} {call : CallOperands}
   dsimp only at h
   have pre : StaticStep evm (recordAccountRead { evm with
       memory := memoryExtend evm.memory expandBy, gas := GasMeter.drain evm.gas }
-      evm.message.currentTarget) := ⟨StateKept.refl _, rfl, rfl, rfl, rfl, rfl, rfl⟩
+      evm.message.currentTarget) := ⟨.recordAccountRead _ _, rfl, rfl, rfl, rfl⟩
   split at h
   · obtain ⟨after, -, rfl⟩ := Base.map_ok_iff.mp h
     trivial
@@ -593,9 +608,15 @@ private theorem sends_finishCall {kind : CallKind} {call : CallOperands}
     · obtain ⟨after, -, rfl⟩ := Base.map_ok_iff.mp h
       trivial
     · cases h
-      refine ⟨.inl ⟨_, _, _, rfl⟩, ?_, ?_⟩
+      refine ⟨.inl ⟨_, _, _, rfl⟩, ?_, ?_, ?_⟩
       · intro c
         simp at c
+      rotate_left
+      · by_cases hk : kind = .call ∨ kind = .staticcall
+        · simp only [hk, ↓reduceIte]
+          exact pre.tracker.accountReads _ hread
+        · simp only [hk, ↓reduceIte]
+          exact Std.ExtTreeSet.mem_insert_self
       intro _
       by_cases hk : kind = .call ∨ kind = .staticcall
       · refine .inr fun nonempty => ?_
@@ -628,7 +649,10 @@ private theorem sends_callStep {kind : CallKind} {evm : Evm fork Meter}
     dsimp only at h
     rcases keepReads_eq_ok h with h | ⟨e, rfl⟩
     · obtain ⟨⟨subCall, e5⟩, h5, h⟩ := Base.bind_ok_iff.mp h
-      refine Sends.lift (s4.trans (staticStep_payCall h5)) (sends_finishCall ?_ h)
+      refine Sends.lift (s4.trans (staticStep_payCall h5)) (sends_finishCall ?_ ?_ h)
+      rotate_left
+      · exact ((staticStep_accessDelegation h4).trans (staticStep_payCall h5)).tracker.accountReads
+          _ Std.ExtTreeSet.mem_insert_self
       intro nonempty
       have := accessDelegation_codeHash_ne h4 nonempty
       rw [getAccount_of_staticStep (staticStep_payCall h5),
@@ -657,13 +681,21 @@ private theorem sends_launchCreate {evm : Evm fork Meter} {value : U256}
   rcases keepReads_eq_ok h with hr | ⟨e, rfl⟩
   · obtain ⟨e1, h1, hr⟩ := Base.bind_ok_iff.mp hr
     obtain ⟨e2, h2, hr⟩ := Base.bind_ok_iff.mp hr
-    obtain ⟨state, -, hr⟩ := Base.bind_ok_iff.mp hr
-    have c2 : StaticStep evm e2 := c0.trans (.of_sameContext
-      ((chargeStateGas_sameContext h1).trans (chargeGas_sameContext h2)))
+    obtain ⟨state, hstate, hr⟩ := Base.bind_ok_iff.mp hr
+    have cx : StaticStep (recordAccountRead (accessAddress (recordAccountRead
+        { evm with returnData := .empty } evm.message.currentTarget) address).2 address) e2 :=
+      .of_sameContext ((chargeStateGas_sameContext h1).trans (chargeGas_sameContext h2))
+    have c2 : StaticStep evm e2 := c0.trans cx
     split at hr
     · rename_i hd
       cases hr
-      refine ⟨.inr ⟨_, _, rfl⟩, fun _ => ?_, fun c => absurd rfl c⟩
+      refine ⟨.inr ⟨_, _, rfl⟩, fun _ => ?_, fun c => absurd rfl c, ?_⟩
+      rotate_left
+      · obtain ⟨_, -, hacc, -⟩ := State.TransactionState.reads_modifyState
+          (Base.mapError_ok_iff.mp hstate)
+        rw [hacc]
+        exact Std.ExtTreeSet.mem_insert.mpr
+          (.inr (cx.tracker.accountReads _ Std.ExtTreeSet.mem_insert_self))
       rw [← State.TransactionState.accountDeployable_congr (getAccount_of_staticStep c2 _)
         (c2.state _ List.not_mem_nil).2.1]
       exact hd
@@ -740,6 +772,37 @@ theorem step_eq_child_resume {evm caller : Evm fork Meter} {message : Message fo
     ∃ newAccount address, resume = resumeCreate fork caller newAccount address :=
   (sends_step h).1
 
+/-- A call instruction sends only messages with a target. -/
+theorem callStep_target_ne {kind : CallKind} {evm caller : Evm fork Meter}
+    {message : Message fork} {resume : Evm fork Meter → Except EvmError (Evm fork Meter)}
+    (h : callStep kind evm = .ok (.child caller message resume)) : message.target ≠ none := by
+  unfold Evm.callStep at h
+  obtain ⟨⟨call, e1⟩, -, h⟩ := Base.bind_ok_iff.mp h
+  dsimp only at h
+  split at h
+  · simp only [throw, throwThe, MonadExceptOf.throw, bind, Except.bind] at h; cases h
+  rcases hacc : accessAddress e1 call.address with ⟨cold, e2⟩
+  simp only [hacc] at h
+  obtain ⟨_, -, h⟩ := Base.bind_ok_iff.mp h
+  rcases keepReads_eq_ok h with h | ⟨_, hc⟩
+  · obtain ⟨⟨callee, e4⟩, -, h⟩ := Base.bind_ok_iff.mp h
+    dsimp only at h
+    rcases keepReads_eq_ok h with h | ⟨_, hc⟩
+    · obtain ⟨⟨subCall, e5⟩, -, h⟩ := Base.bind_ok_iff.mp h
+      unfold Evm.finishCall at h
+      split at h
+      · cases h
+      dsimp only at h
+      split at h
+      · obtain ⟨_, -, hc⟩ := Base.map_ok_iff.mp h; cases hc
+      · unfold Evm.genericCall at h
+        dsimp only at h
+        split at h
+        · obtain ⟨_, -, hc⟩ := Base.map_ok_iff.mp h; cases hc
+        · cases h; simp
+    · cases hc
+  · cases hc
+
 /-- Each creation that a successful step sends goes to an address where a contract may be deployed.
 
 That holds in the state of the frame that takes the step, so the address has nonce 0. -/
@@ -756,7 +819,20 @@ theorem step_eq_child_staticCode {evm caller : Evm fork Meter} {message : Messag
     {resume : Evm fork Meter → Except EvmError (Evm fork Meter)}
     (h : step fork evm = .ok (.child caller message resume)) (call : message.target ≠ none) :
     message.currentTarget = evm.message.currentTarget ∨ StaticCode evm.state message :=
-  (sends_step h).2.2 call
+  (sends_step h).2.2.1 call
+
+/-- A message that a successful step sends starts from a state that has read the account it runs at.
+
+CALL and STATICCALL read the address they call.
+
+CALLCODE and DELEGATECALL read the current account.
+
+A creation reads the new address. -/
+theorem step_eq_child_currentRead {evm caller : Evm fork Meter} {message : Message fork}
+    {resume : Evm fork Meter → Except EvmError (Evm fork Meter)}
+    (h : step fork evm = .ok (.child caller message resume)) :
+    message.currentTarget ∈ caller.state.accountReads :=
+  (sends_step h).2.2.2
 
 /-- The frame that resumes after a message has the context of the caller that takes in the child.
 

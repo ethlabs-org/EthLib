@@ -25,6 +25,8 @@ What lies outside the beacon chain, such as the execution engine, is one source 
 The store of each honest validator stays reachable from the anchor along every execution.
 
 Along an execution of the network model, an honest store that starts with a forward clock keeps one.
+
+An honest store built with the signature checks of the model stays built that way.
 -/
 
 @[expose] public section
@@ -162,10 +164,11 @@ theorem Execution.blocks_of_le {ν κ : Type*} [DecidableEq ν] {checks : Signat
 /-- A network handler never lowers the realized justified or finalized epoch. -/
 theorem Handles.epochsLe {checks : SignatureChecks} {sources : BlockSources preset fork}
     {time : ℕ} {view : Set (Message preset fork)} {store after : Store preset fork}
-    (handles : Handles config checks sources time view store after) : store.EpochsLe after := by
+    (handles : Handles config checks sources time view store after) :
+    store.CheckpointsAdvance after := by
   cases handles with
   | tick _ _ ticked => exact (Store.onTick_frame ticked).2.1
-  | block _ added => exact Store.onBlockWithVotes_epochsLe added
+  | block _ added => exact Store.onBlockWithVotes_checkpointsAdvance added
   | attestation _ attested => exact (Store.onAttestation_frame attested).1
   | attesterSlashing _ slashed => exact (Store.onAttesterSlashing_frame slashed).1
   | payloadAttestation _ voted =>
@@ -179,9 +182,9 @@ theorem Execution.epochsLe_of_le {ν κ : Type*} [DecidableEq ν] {checks : Sign
     {sends : ν → ℕ → Set (Message preset fork) → Store preset fork → Message preset fork → Prop}
     {J : Set ν} (e : Execution (forkChoice config checks sources signed sends) J)
     (u : ν) {n k : ℕ} (later : n ≤ k) :
-    ((e.world n).state u).EpochsLe ((e.world k).state u) := by
+    ((e.world n).state u).CheckpointsAdvance ((e.world k).state u) := by
   induction k, later using Nat.le_induction with
-  | base => exact Store.EpochsLe.refl _
+  | base => exact Store.CheckpointsAdvance.refl _
   | succ k _ ih =>
     rcases e.state_succ k u with same | ⟨_, moved⟩
     · exact same ▸ ih
@@ -201,6 +204,22 @@ theorem Handles.reachable {checks : SignatureChecks} {sources : BlockSources pre
   | payloadAttestation _ voted => exact reachable.payloadAttestation voted
   | envelope _ accepted => exact reachable.envelope accepted
   | inclusionList _ accepted => exact reachable.inclusionList accepted
+
+/-- A move of the store keeps each checkpoint, or moves it to one at a greater epoch. -/
+theorem Handles.checkpointsAdvance {checks : SignatureChecks}
+    {sources : BlockSources preset fork} {time : ℕ} {view : Set (Message preset fork)}
+    {store after : Store preset fork}
+    (handles : Handles config checks sources time view store after) :
+    store.CheckpointsAdvance after := by
+  cases handles with
+  | tick _ _ ticked => exact (Store.onTick_frame ticked).2.1
+  | block _ added => exact Store.onBlockWithVotes_checkpointsAdvance added
+  | attestation _ attested => exact (Store.onAttestation_frame attested).1
+  | attesterSlashing _ slashed => exact (Store.onAttesterSlashing_frame slashed).1
+  | payloadAttestation _ voted =>
+    exact (Store.onPayloadAttestationMessage_onlyPtcVotes voted).frame.1
+  | envelope _ accepted => exact (Store.onExecutionPayloadEnvelope_frame accepted).1
+  | inclusionList _ accepted => exact (Store.onInclusionList_frame accepted).1
 
 /-- Along an execution, the store of each honest validator stays reachable from the anchor.
 
@@ -397,6 +416,40 @@ theorem Execution.forwardReachable {ν κ : Type*} [DecidableEq ν] {checks : Si
     (start : ∀ v ∈ J, Store.ForwardReachable config anchorState anchorBlock (e.start v)) (n : ℕ) :
     ∀ v ∈ J, Store.ForwardReachable config anchorState anchorBlock ((e.world n).state v) :=
   e.state_induction start (fun _ _ _ _ _ _ forward moved => moved.forwardReachable forward) n
+
+/-- A move of an honest validator keeps its store built with the setting of the checks of the model.
+
+The clock of that store also stays forward. -/
+theorem Handles.forwardReachableWith {checks : SignatureChecks}
+    {sources : BlockSources preset fork} {time : ℕ} {view : Set (Message preset fork)}
+    {store after : Store preset fork}
+    (handles : Handles config checks sources time view store after)
+    (reached : Store.ForwardReachableWith config checks anchorState anchorBlock store) :
+    Store.ForwardReachableWith config checks anchorState anchorBlock after := by
+  cases handles with
+  | tick le lt ticked =>
+    refine reached.tick ?_ ticked
+    rw [UInt64.le_iff_toNat_le, Nat.toUInt64, UInt64.toNat_ofNat_of_lt' lt]
+    exact le
+  | block _ added => exact reached.onBlockWithVotes added
+  | attestation _ attested => exact reached.attestation attested
+  | attesterSlashing _ slashed => exact reached.attesterSlashing slashed
+  | payloadAttestation _ voted => exact reached.payloadAttestation voted
+  | envelope _ accepted => exact reached.envelope accepted
+  | inclusionList _ accepted => exact reached.inclusionList accepted
+
+/-- Along an execution, each honest store stays built with the setting of the checks of the model.
+
+The stores of the honest validators must be built that way at the start. -/
+theorem Execution.forwardReachableWith {ν κ : Type*} [DecidableEq ν] {checks : SignatureChecks}
+    {sources : BlockSources preset fork} {signed : Message preset fork → Set (ν × κ)}
+    {sends : ν → ℕ → Set (Message preset fork) → Store preset fork → Message preset fork → Prop}
+    {J : Set ν} (e : Execution (forkChoice config checks sources signed sends) J)
+    (start : ∀ v ∈ J, Store.ForwardReachableWith config checks anchorState anchorBlock (e.start v))
+    (n : ℕ) :
+    ∀ v ∈ J, Store.ForwardReachableWith config checks anchorState anchorBlock
+      ((e.world n).state v) :=
+  e.state_induction start (fun _ _ _ _ _ _ reached moved => moved.forwardReachableWith reached) n
 
 /-- A store can start from a mainnet state at slot zero and a block with the root of that state.
 
@@ -640,12 +693,12 @@ private theorem CheckpointStatesChecked.step {store after : Store preset fork}
       (fun _ h attested => ⟨h.1.attestation attested,
         CheckpointStatesChecked.attestation h.2 attested⟩)
       (fun _ h slashed => ⟨h.1.attesterSlashing slashed,
-        h.2.of_maps (Store.onAttesterSlashing_frame slashed).2.2
+        h.2.of_maps (Store.onAttesterSlashing_frame slashed).2.2.1
           (Store.onAttesterSlashing_checkpointStates_latestMessages slashed).1⟩)
       ⟨reachable, holds⟩ added).2
   | attestation _ attested => exact CheckpointStatesChecked.attestation holds attested
   | attesterSlashing _ slashed =>
-    exact holds.of_maps (Store.onAttesterSlashing_frame slashed).2.2
+    exact holds.of_maps (Store.onAttesterSlashing_frame slashed).2.2.1
       (Store.onAttesterSlashing_checkpointStates_latestMessages slashed).1
   | payloadAttestation _ voted =>
     obtain ⟨_, _, rfl⟩ := Store.onPayloadAttestationMessage_onlyPtcVotes voted

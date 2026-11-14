@@ -1,24 +1,37 @@
 module
 
-public import EthLib.Consensus.Proofs.Transition.Trace
 public import EthLib.Consensus.Proofs.Transition.RegistryLifecycle
-public import EthLib.Consensus.Proofs.Transition.ValidatorCaps
-public import EthLib.Consensus.Proofs.Transition.SyncCommitteeProvenance
-public import EthLib.Consensus.Proofs.Transition.PendingConsolidations
-public import EthLib.Consensus.Proofs.Accessors
-public import EthLib.Consensus.Proofs.Transition.EpochUpdates
 public import EthLib.Consensus.Proofs.Transition.Genesis
-public import EthLib.Consensus.Proofs.Transition.EpochParticipation
-public import Mathlib.Algebra.BigOperators.Group.Finset.Basic
+import EthLib.Consensus.Proofs.Transition.ActiveKept
+import EthLib.Consensus.Proofs.Transition.ChainRoots
+import EthLib.Consensus.Proofs.Transition.Committees
+import EthLib.Consensus.Proofs.Transition.Requests
+import EthLib.Consensus.Proofs.Transition.ValidatorCaps
+import EthLib.Consensus.Proofs.Transition.SyncCommitteeProvenance
+public import EthLib.Consensus.Proofs.Transition.PendingConsolidations
+import EthLib.Consensus.Proofs.Transition.BalanceNotRaised
+import EthLib.Consensus.Proofs.Transition.EpochPending
 
 /-!
 # Effective-balance changes from the actual balance path
+
+A block operation keeps the effective balance of every validator that existed before it.
+
+A whole block keeps them, at every fork.
+
+Registry updates keep them as well.
+
+Only rewards, slashings and the two pending stages can change the balances.
+
+An effective-balance update never raises the larger of the effective and the actual balance.
 
 Loss uses initial slack, balance debits and rounding; gain uses initial excess and credits.
 
 An epoch's effective-balance update reads its intermediate balance, before later upgrades.
 
 For this reason a slot's balance path includes that intermediate state, not just its endpoints.
+
+A validator admitted along a run starts with an effective balance funded by its own balance.
 -/
 
 @[expose] public section
@@ -29,11 +42,13 @@ open Base
 
 variable {preset : Preset} {config : Config} {checks : SignatureChecks}
 
-def actualBalanceAt (s : ForkedBeaconState preset) (i : Nat) : Nat :=
-  ((s.state.balances.data[i]?).map (·.toNat)).getD 0
-
+/-- The effective balance at a registry position, or zero past the end of the registry. -/
 def effectiveAt (s : ForkedBeaconState preset) (i : Nat) : Nat :=
   ((s.state.validators.data[i]?).map (·.effectiveBalance.toNat)).getD 0
+
+/-- The balance at a registry position, or zero past the end of the balances. -/
+def actualBalanceAt (s : ForkedBeaconState preset) (i : Nat) : Nat :=
+  ((s.state.balances.data[i]?).map (·.toNat)).getD 0
 
 /-- Include the state before fork upgrades, where the effective balance was last updated. -/
 def _root_.EthLib.Consensus.Step.balancePath {x y : ForkedBeaconState preset}
@@ -45,60 +60,48 @@ def _root_.EthLib.Consensus.Step.balancePath {x y : ForkedBeaconState preset}
     | none => [x, y]
     | some s => [x, ⟨x.fork, s⟩, y]
 
+/-- The balance path of a run joins the paths of its steps. -/
 def _root_.EthLib.Consensus.Run.balancePath {x : ForkedBeaconState preset} :
     {y : ForkedBeaconState preset} → Run config checks x y → List (ForkedBeaconState preset)
   | _, .nil => [x]
   | _, .snoc pre step => pre.balancePath ++ step.balancePath
 
+/-- The balance increases at one position between consecutive states of a path. -/
 def pathCredits (i : Nat) : List (ForkedBeaconState preset) → Nat
   | x :: y :: rest => (actualBalanceAt y i - actualBalanceAt x i) + pathCredits i (y :: rest)
   | _ => 0
 
+/-- The balance decreases at one position between consecutive states of a path. -/
 def pathDebits (i : Nat) : List (ForkedBeaconState preset) → Nat
   | x :: y :: rest => (actualBalanceAt x i - actualBalanceAt y i) + pathDebits i (y :: rest)
   | _ => 0
 
+/-- The ordering of the effective-balance caps that the departure bound assumes. -/
 structure CapOrder (preset : Preset) : Prop where
   activation : preset.MAX_EFFECTIVE_BALANCE ≤ preset.MIN_ACTIVATION_BALANCE
   compounding : preset.MIN_ACTIVATION_BALANCE ≤ preset.MAX_EFFECTIVE_BALANCE_ELECTRA
 
-theorem reachable_effective_alignment {g x : ForkedBeaconState preset}
-    (run : Run config checks g x) (genesis : Genesis (config := config) (checks := checks) g)
-    (aligned : MaxEffectiveBalancesAligned preset)
-    (increment : 0 < preset.EFFECTIVE_BALANCE_INCREMENT.toNat)
-    (early : x.fork < .glamsterdam) (v : Validator) (found : v ∈ x.state.validators.data.toList) :
-    v.effectiveBalance.toNat % preset.EFFECTIVE_BALANCE_INCREMENT.toNat = 0 := by
-  have _ := increment
-  have _ := early
-  have invariant {y : ForkedBeaconState preset} (trace : Run config checks g y) :
-      Invariant y.state := by
-    induction trace with
-    | nil =>
-      obtain ⟨_, _, _, ok⟩ := genesis
-      exact (initializeBeaconStateFromEth1_invariant ok).2
-    | snoc pre step ih =>
-      cases step with
-      | slot ok => exact (advanceSlotAcross_invariant ih ok).1
-      | block engine signed due ok =>
-        exact (frame_processBlock (applySignedBlock_ok ok).2.1).invariant ih
-  have whole := (invariant run).aligned aligned v (by simpa using found)
-  have numeric := congrArg UInt64.toNat whole
-  simpa only [UInt64.toNat_mod, UInt64.reduceToNat] using numeric
+/-- The mainnet preset orders its effective-balance caps. -/
+theorem CapOrder.mainnet : CapOrder Preset.mainnet := ⟨by decide, by decide⟩
 
+/-- The minimal preset orders its effective-balance caps. -/
+theorem CapOrder.minimal : CapOrder Preset.minimal := ⟨by decide, by decide⟩
+
+/-- Each validator of the first state keeps its effective balance in the second. -/
 def EffectiveKept {f h : Fork} (s : BeaconState preset f)
     (t : BeaconState preset h) : Prop :=
   ∀ i, i < s.validators.data.size → effectiveAt ⟨h, t⟩ i = effectiveAt ⟨f, s⟩ i
 
-private theorem effectiveKept_refl {f : Fork} (s : BeaconState preset f) : EffectiveKept s s :=
+theorem effectiveKept_refl {f : Fork} (s : BeaconState preset f) : EffectiveKept s s :=
   fun _ _ => rfl
 
-private theorem effectiveKept_trans {f h k : Fork} {s : BeaconState preset f}
+theorem effectiveKept_trans {f h k : Fork} {s : BeaconState preset f}
     {t : BeaconState preset h} {u : BeaconState preset k}
     (one : EffectiveKept s t) (two : EffectiveKept t u)
     (grows : s.validators.data.size ≤ t.validators.data.size) : EffectiveKept s u :=
   fun i inside => (two i (Nat.lt_of_lt_of_le inside grows)).trans (one i inside)
 
-private theorem effectiveKept_data {f h : Fork} {s : BeaconState preset f}
+theorem effectiveKept_data {f h : Fork} {s : BeaconState preset f}
     {t : BeaconState preset h} (same : t.validators.data = s.validators.data := by rfl) :
     EffectiveKept s t := by
   intro i _
@@ -144,9 +147,9 @@ private theorem effectiveKept_exit {f : Fork} {s t : BeaconState preset f}
     exact effectiveKept_trans (effectiveKept_data (congrArg (·.data) same))
       (effectiveKept_setValidator (old := v)
         (by rw [getValidator_of_validators_eq same]; exact found) set rfl)
-      (by rw [same])
+      (Nat.le_of_eq (by rw [same]))
 
-private theorem effectiveKept_slash {f : Fork} {s t : BeaconState preset f}
+theorem effectiveKept_slash {f : Fork} {s t : BeaconState preset f}
     {index : ValidatorIndex} {whistleblower : Option ValidatorIndex}
     (ok : slashValidator config s index whistleblower = .ok t) : EffectiveKept s t := by
   obtain ⟨_, _, _, marked, _, _, slashings, _, _, _, _, last, exited, found, _, set,
@@ -159,11 +162,11 @@ private theorem effectiveKept_slash {f : Fork} {s t : BeaconState preset f}
   have middle := effectiveKept_trans (effectiveKept_data (s := marked)
     (t := { marked with slashings })) second (Nat.le_refl _)
   have total := effectiveKept_trans first middle
-    ((frame_initiateValidatorExit exited).registryGrows.trans
+    (Nat.le_trans (frame_initiateValidatorExit exited).registryGrows
       (Nat.le_of_eq (sameSizes_setValidator set).1.symm))
   split <;> exact total
 
-private theorem effectiveKept_fold {f : Fork} {s t : BeaconState preset f}
+theorem effectiveKept_fold {f : Fork} {s t : BeaconState preset f}
     {α ε : Type} {step : BeaconState preset f → α → Except ε _} {xs : List α}
     (kept : ∀ a b c, step a b = .ok c → EffectiveKept a c)
     (grows : ∀ a b c, step a b = .ok c → a.validators.data.size ≤ c.validators.data.size)
@@ -172,7 +175,7 @@ private theorem effectiveKept_fold {f : Fork} {s t : BeaconState preset f}
     (fun t => EffectiveKept s t ∧ s.validators.data.size ≤ t.validators.data.size)
     (fun a b c previous computed =>
       ⟨effectiveKept_trans previous.1 (kept a b c computed) previous.2,
-        previous.2.trans (grows a b c computed)⟩)
+        Nat.le_trans previous.2 (grows a b c computed)⟩)
     ⟨effectiveKept_refl s, Nat.le_refl _⟩ ok
   exact result.1
 
@@ -186,18 +189,10 @@ private theorem effectiveKept_add {f : Fork} {s t : BeaconState preset f}
 private theorem effectiveKept_deposit {f : Fork} {s t : BeaconState preset f}
     {deposit : PendingDeposit}
     (ok : applyPendingDeposit config checks s deposit = .ok t) : EffectiveKept s t := by
-  unfold applyPendingDeposit at ok
-  split at ok
-  · split at ok
-    · cases ok; exact effectiveKept_refl _
-    simp only [bind_ok_iff] at ok
-    obtain ⟨_, _, ok⟩ := ok
-    split at ok
-    · exact effectiveKept_add ok
-    · cases ok; exact effectiveKept_refl _
-  · simp only [liftAccessor_ok, bind_ok_iff] at ok
-    obtain ⟨_, _, ok⟩ := ok
-    exact effectiveKept_increase ok
+  rcases applyPendingDeposit_cases ok with rfl | ⟨_, raised⟩ | ⟨_, added⟩
+  · exact effectiveKept_refl _
+  · exact effectiveKept_increase raised
+  · exact effectiveKept_add added
 
 private theorem effectiveKept_applyDeposit {f : Fork} {s t : BeaconState preset f}
     {key : Cryptography.Bls.BLSPubkey} {credentials : Bytes32} {amount : Gwei}
@@ -221,7 +216,7 @@ private theorem effectiveKept_applyDeposit {f : Fork} {s t : BeaconState preset 
       exact effectiveKept_refl _
   · exact effectiveKept_deposit ok
 
-private theorem effectiveKept_processDeposit {f : Fork} {s t : BeaconState preset f}
+theorem effectiveKept_processDeposit {f : Fork} {s t : BeaconState preset f}
     {before : f < .hegota} {deposit : Deposit}
     (ok : processDeposit config checks before s deposit = .ok t) : EffectiveKept s t := by
   obtain ⟨_, _, next, _, credited⟩ := processDeposit_ok ok
@@ -229,32 +224,7 @@ private theorem effectiveKept_processDeposit {f : Fork} {s t : BeaconState prese
     (t := { s with eth1DepositIndex := fun _ => next }))
     (effectiveKept_applyDeposit credited) (Nat.le_refl _)
 
-private theorem effectiveKept_registryEntry {f : Fork} {s t : BeaconState preset f}
-    {index : Nat} (ok : updateRegistryEntry config s index = .ok t) : EffectiveKept s t := by
-  simp only [updateRegistryEntry, bind_ok_iff, liftAccessor_ok] at ok
-  obtain ⟨v, found, queued, queue, marked, set, ok⟩ := ok
-  have same : queued.effectiveBalance = v.effectiveBalance := by
-    unfold queueForActivation at queue
-    split at queue
-    · simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at queue
-      obtain ⟨_, _, rfl⟩ := queue
-      rfl
-    · cases queue; rfl
-  have first := effectiveKept_setValidatorAt found set same
-  split at ok
-  · simp only [bind_ok_iff, liftAccessor_ok] at ok
-    obtain ⟨_, _, exited⟩ := ok
-    exact effectiveKept_trans first (effectiveKept_exit exited)
-      (Nat.le_of_eq (sameSizes_setValidatorAt set).1.symm)
-  · cases ok; exact first
-
-private theorem effectiveKept_activate {f : Fork} {s t : BeaconState preset f}
-    {index : ValidatorIndex} (ok : activateValidator s index = .ok t) : EffectiveKept s t := by
-  simp only [activateValidator, bind_ok_iff, liftAccessor_ok] at ok
-  obtain ⟨_, found, _, _, set⟩ := ok
-  exact effectiveKept_setValidator found set rfl
-
-private theorem effectiveKept_registryElectra {f : Fork} {s t : BeaconState preset f}
+theorem effectiveKept_registryElectra {f : Fork} {s t : BeaconState preset f}
     {epoch : Epoch} {index : Nat}
     (ok : updateRegistryEntryElectra config epoch s index = .ok t) : EffectiveKept s t := by
   simp only [updateRegistryEntryElectra, bind_ok_iff, liftAccessor_ok] at ok
@@ -271,24 +241,13 @@ private theorem effectiveKept_registryElectra {f : Fork} {s t : BeaconState pres
   · exact effectiveKept_setValidatorAt found (liftAccessor_ok.mp ok) rfl
   · cases ok; exact effectiveKept_refl _
 
-private theorem effectiveKept_registry {f : Fork} {s t : BeaconState preset f}
+/-- Registry updates keep the effective balance of every validator. -/
+theorem effectiveKept_registry {f : Fork} {s t : BeaconState preset f}
     (ok : processRegistryUpdates config s = .ok t) : EffectiveKept s t := by
-  unfold processRegistryUpdates at ok
-  split at ok
-  · simp only [bind_ok_iff, liftAccessor_ok] at ok
-    obtain ⟨_, _, ok⟩ := ok
-    exact effectiveKept_fold (fun _ _ _ => effectiveKept_registryElectra)
-      (fun _ _ _ ok => (frame_updateRegistryEntryElectra ok).registryGrows) ok
-  · simp only [bind_ok_iff] at ok
-    obtain ⟨_, updated, activated⟩ := ok
-    exact effectiveKept_trans
-      (effectiveKept_fold (fun _ _ _ => effectiveKept_registryEntry)
-        (fun _ _ _ ok => (frame_updateRegistryEntry ok).registryGrows) updated)
-      (effectiveKept_fold (fun _ _ _ => effectiveKept_activate)
-        (fun _ _ _ ok => (frame_activateValidator ok).registryGrows) activated)
-      (foldlM_ok_invariant (fun t => s.validators.data.size ≤ t.validators.data.size)
-        (fun _ _ _ previous ok => previous.trans (frame_updateRegistryEntry ok).registryGrows)
-        (Nat.le_refl _) updated)
+  intro i inside
+  obtain ⟨_, found, _, same, _⟩ :=
+    (processRegistryUpdates_kept ok).1 i _ (Array.getElem?_eq_getElem inside)
+  simp [effectiveAt, found, same, Array.getElem?_eq_getElem inside]
 
 private theorem effectiveKept_excess {f : Fork} {s t : BeaconState preset f}
     {electra : .pectra ≤ f} {index : ValidatorIndex}
@@ -325,9 +284,9 @@ private theorem effectiveKept_consolidate {f : Fork} {s t : BeaconState preset f
     rw [getValidator, validators, found]
   exact effectiveKept_trans (effectiveKept_data (by rw [validators]))
     (effectiveKept_trans (effectiveKept_setValidator read set rfl) (effectiveKept_data rfl)
-      (Nat.le_of_eq (sameSizes_setValidator set).1.symm)) (by rw [validators])
+      (Nat.le_of_eq (sameSizes_setValidator set).1.symm)) (Nat.le_of_eq (by rw [validators]))
 
-private theorem effectiveKept_consolidationRequest {f : Fork} {s t : BeaconState preset f}
+theorem effectiveKept_consolidationRequest {f : Fork} {s t : BeaconState preset f}
     {electra : .pectra ≤ f} {request : ConsolidationRequest}
     (ok : processConsolidationRequest config s electra request = .ok t) : EffectiveKept s t := by
   unfold processConsolidationRequest at ok
@@ -351,7 +310,7 @@ private theorem effectiveKept_partial {f : Fork} {s t : BeaconState preset f}
     exact effectiveKept_data (by rw [(computeExitEpochAndUpdateChurn_earliest churned).2.1])
   · cases ok; exact effectiveKept_refl _
 
-private theorem effectiveKept_withdrawalRequest {f : Fork} {s t : BeaconState preset f}
+theorem effectiveKept_withdrawalRequest {f : Fork} {s t : BeaconState preset f}
     {electra : .pectra ≤ f} {request : WithdrawalRequest}
     (ok : processWithdrawalRequest config s electra request = .ok t) : EffectiveKept s t := by
   unfold processWithdrawalRequest at ok
@@ -363,7 +322,7 @@ private theorem effectiveKept_withdrawalRequest {f : Fork} {s t : BeaconState pr
     | exact effectiveKept_exit (liftAccessor_ok.mp ok)
     | exact effectiveKept_partial ok
 
-private theorem effectiveKept_depositRequest {f : Fork} {s t : BeaconState preset f}
+theorem effectiveKept_depositRequest {f : Fork} {s t : BeaconState preset f}
     {electra : .pectra ≤ f} {request : DepositRequest}
     (ok : processDepositRequest s electra request = .ok t) : EffectiveKept s t := by
   obtain ⟨start, recorded⟩ := recordDepositRequestsStart_eq (state := s) (index := request.index)
@@ -390,94 +349,14 @@ private theorem effectiveKept_requests {f : Fork} {s t : BeaconState preset f}
       (fun _ _ _ ok => (registryLifecycle_processConsolidationRequest ok).size_le) consolidations)
     grows'.size_le) grows.size_le
 
-private theorem effectiveKept_withdrawals {f : Fork} {s t : BeaconState preset f}
-    {capella : .shapella ≤ f} {payload : Until .glamsterdam f (ExecutionPayload preset f)}
-    (ok : processWithdrawals s capella payload = .ok t) : EffectiveKept s t := by
-  have applied {s t : BeaconState preset f} {expected : ExpectedWithdrawals}
-      (ok : applyExpectedWithdrawals s capella expected = .ok t) : EffectiveKept s t := by
-    unfold applyExpectedWithdrawals at ok
-    simp only [bind_ok_iff] at ok
-    obtain ⟨applied, appliedOk, indexed, indexedOk, finished, sweptOk, last⟩ := ok
-    have one : EffectiveKept s applied := by
-      unfold applyWithdrawals at appliedOk
-      rw [← Array.foldlM_toList] at appliedOk
-      refine effectiveKept_fold (fun _ _ _ ok => ?_)
-        (fun _ _ _ ok => (registryLifecycle_applyWithdrawal ok).size_le) appliedOk
-      unfold applyWithdrawal at ok
-      split at ok
-      · simp only [bind_ok_iff] at ok
-        obtain ⟨_, _, set⟩ := ok
-        obtain ⟨_, rfl⟩ := setBuilder_ok set
-        exact effectiveKept_refl _
-      · exact effectiveKept_decrease ok
-    have indexedSame : indexed.validators = applied.validators := by
-      unfold updateNextWithdrawalIndex at indexedOk
-      split at indexedOk
-      · simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at indexedOk
-        obtain ⟨_, _, rfl⟩ := indexedOk
-        rfl
-      · cases indexedOk; rfl
-    have sweptSame : finished.validators = indexed.validators := by
-      have swept {a : BeaconState preset f}
-          (computed : (if gloas : .glamsterdam ≤ f then
-            updateNextWithdrawalBuilderIndex a gloas expected.processedBuildersSweepCount
-            else pure a) = .ok finished) : finished.validators = a.validators := by
-        split at computed
-        · unfold updateNextWithdrawalBuilderIndex at computed
-          dsimp only at computed
-          split at computed
-          · cases computed; rfl
-          · simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at computed
-            obtain ⟨_, _, rfl⟩ := computed
-            rfl
-        · cases computed; rfl
-      rw [swept sweptOk]
-      split <;> (try split) <;> rfl
-    have lastSame : t.validators = finished.validators := by
-      unfold updateNextWithdrawalValidatorIndex at last
-      simp only [bind_ok_iff] at last
-      obtain ⟨_, _, last⟩ := last
-      split at last
-      · cases last
-      · cases last; rfl
-    intro i inside
-    simpa only [effectiveAt, lastSame, sweptSame, indexedSame] using one i inside
-  unfold processWithdrawals at ok
-  split at ok
-  · split at ok
-    · simp only [bind_ok_iff, liftAccessor_ok] at ok
-      obtain ⟨_, _, appliedOk⟩ := ok
-      exact applied appliedOk
-    · cases ok; exact effectiveKept_refl _
-  · simp only [bind_ok_iff, ensure_ok_iff, liftAccessor_ok] at ok
-    obtain ⟨_, _, _, _, appliedOk⟩ := ok
-    exact applied appliedOk
-
-private theorem effectiveKept_sync {f : Fork} {s t : BeaconState preset f}
-    {altair : .altair ≤ f} {aggregate : SyncAggregate preset}
-    (ok : processSyncAggregate config checks s altair aggregate = .ok t) : EffectiveKept s t := by
-  unfold processSyncAggregate at ok
-  simp only [bind_ok_iff] at ok
-  obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, folded⟩ := ok
-  rw [← Array.foldlM_toList] at folded
-  refine effectiveKept_fold (fun _ _ _ ok => ?_)
-    (fun _ _ _ ok => (frame_applySyncReward ok).registryGrows) folded
-  unfold applySyncReward at ok
-  split at ok
-  · simp only [bind_ok_iff, liftAccessor_ok] at ok
-    obtain ⟨_, raised, _, _, paid⟩ := ok
-    exact effectiveKept_trans (effectiveKept_increase raised) (effectiveKept_increase paid)
-      (frame_increaseBalance raised).registryGrows
-  · exact effectiveKept_decrease (liftAccessor_ok.mp ok)
-
-private theorem effectiveKept_proposerSlashing {f : Fork} {s t : BeaconState preset f}
+theorem effectiveKept_proposerSlashing {f : Fork} {s t : BeaconState preset f}
     {slashing : ProposerSlashing}
     (ok : processProposerSlashing config checks s slashing = .ok t) : EffectiveKept s t := by
   simp only [processProposerSlashing, bind_ok_iff, ensure_ok_iff, liftAccessor_ok] at ok
   obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, slashed⟩ := ok
   exact effectiveKept_slash slashed
 
-private theorem effectiveKept_attesterSlashing {f : Fork} {s t : BeaconState preset f}
+theorem effectiveKept_attesterSlashing {f : Fork} {s t : BeaconState preset f}
     {slashing : AttesterSlashing preset f}
     (ok : processAttesterSlashing config checks s slashing = .ok t) : EffectiveKept s t := by
   simp only [processAttesterSlashing, bind_ok_iff, ensure_ok_iff, pure, Except.pure,
@@ -496,158 +375,149 @@ private theorem effectiveKept_attesterSlashing {f : Fork} {s t : BeaconState pre
     · simp only [bind_ok_iff, liftAccessor_ok, pure, Except.pure, Except.ok.injEq] at ok
       obtain ⟨_, slashed, rfl⟩ := ok
       exact ⟨effectiveKept_trans before.1 (effectiveKept_slash slashed) before.2,
-        before.2.trans (frame_slashValidator slashed).registryGrows⟩
+        Nat.le_trans before.2 (frame_slashValidator slashed).registryGrows⟩
     · cases ok; exact before
 
-private theorem effectiveKept_voluntaryExit {f : Fork} {s t : BeaconState preset f}
+theorem effectiveKept_voluntaryExit {f : Fork} {s t : BeaconState preset f}
     {signed : SignedVoluntaryExit}
-    (ok : processVoluntaryExit config checks s signed = .ok t) : EffectiveKept s t := by
-  unfold processVoluntaryExit at ok
-  simp only [bind_ok_iff, ensure_ok_iff, liftAccessor_ok, liftSsz_ok] at ok
-  obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, exited⟩ := ok
-  exact effectiveKept_exit exited
+    (ok : processVoluntaryExit config checks s signed = .ok t) : EffectiveKept s t :=
+  effectiveKept_exit (processVoluntaryExit_initiates ok)
 
-private theorem effectiveKept_blsChange {f : Fork} {s t : BeaconState preset f}
+theorem effectiveKept_blsChange {f : Fork} {s t : BeaconState preset f}
     {signed : SignedBLSToExecutionChange}
     (ok : processBlsToExecutionChange config checks s signed = .ok t) : EffectiveKept s t := by
   obtain ⟨_, found, _, _, _, set⟩ := processBlsToExecutionChange_ok ok
   exact effectiveKept_setValidator found set rfl
 
-private theorem effectiveKept_operations {f : Fork} {s t : BeaconState preset f}
-    (early : f < .glamsterdam) {body : BeaconBlockBody preset f} {parentSlot : Slot}
-    (ok : processOperations config checks s body parentSlot = .ok t) : EffectiveKept s t := by
-  unfold processOperations at ok
-  split at ok
-  · rename_i later
-    exact False.elim (Nat.not_le_of_lt early later)
-  simp only [bind_ok_iff, ensure_ok_iff, ← Array.foldlM_toList] at ok
-  obtain ⟨_, _, _, _, _, proposers, _, attesters, _, attestations, _, deposits, exited,
-    exits, changed, changesOk, requestsOk⟩ := ok
-  have changes : EffectiveKept exited changed := by
-    unfold processBlsToExecutionChanges at changesOk
-    split at changesOk
-    · rw [← Array.foldlM_toList] at changesOk
-      exact effectiveKept_fold (fun _ _ _ => effectiveKept_blsChange)
-        (fun _ _ _ ok => (frame_processBlsToExecutionChange ok).registryGrows) changesOk
-    · cases changesOk; exact effectiveKept_refl _
-  have requests : EffectiveKept changed t := by
-    split at requestsOk
-    · exact effectiveKept_requests requestsOk
-    · cases requestsOk; exact effectiveKept_refl _
-  have compose {a b c : BeaconState preset f} (one : EffectiveKept a b)
-      (two : EffectiveKept b c) (size : a.validators.data.size ≤ b.validators.data.size) :=
-    effectiveKept_trans one two size
-  apply compose (effectiveKept_fold (fun _ _ _ => effectiveKept_proposerSlashing)
-    (fun _ _ _ ok => (frame_processProposerSlashing ok).registryGrows) proposers)
-  · apply compose (effectiveKept_fold (fun _ _ _ => effectiveKept_attesterSlashing)
-      (fun _ _ _ ok => (frame_processAttesterSlashing ok).registryGrows) attesters)
-    · apply compose (effectiveKept_fold
-        (fun _ _ _ ok => effectiveKept_data (by rw [(processAttestation_registry ok).1]))
-        (fun _ _ _ ok => (frame_processAttestation ok).registryGrows) attestations)
-      · apply compose (effectiveKept_fold (fun _ _ _ => effectiveKept_processDeposit)
-          (fun _ _ _ ok => (frame_processDeposit ok).registryGrows) deposits)
-        · apply compose (effectiveKept_fold (fun _ _ _ => effectiveKept_voluntaryExit)
-            (fun _ _ _ ok => (frame_processVoluntaryExit ok).registryGrows) exits)
-          · apply compose changes requests
-            unfold processBlsToExecutionChanges at changesOk
-            split at changesOk
-            · rw [← Array.foldlM_toList] at changesOk
-              exact (RegistryLifecycle.foldlM
-                (fun _ _ _ ok => registryLifecycle_processBlsToExecutionChange ok)
-                changesOk).size_le
-            · cases changesOk; exact Nat.le_refl _
-          · exact (RegistryLifecycle.foldlM
-              (fun _ _ _ ok => registryLifecycle_processVoluntaryExit ok) exits).size_le
-        · exact (RegistryLifecycle.foldlM
-            (fun _ _ _ ok => registryLifecycle_processDeposit ok) deposits).size_le
-      · exact (RegistryLifecycle.foldlM
-          (fun _ _ _ ok => registryLifecycle_processAttestation ok) attestations).size_le
-    · exact (RegistryLifecycle.foldlM
-        (fun _ _ _ ok => registryLifecycle_processAttesterSlashing ok) attesters).size_le
-  · exact (RegistryLifecycle.foldlM
-      (fun _ _ _ ok => registryLifecycle_processProposerSlashing ok) proposers).size_le
+/-- A block keeps the effective balance of every existing validator, at every fork.
 
-private theorem effectiveKept_block {f : Fork} {s t : BeaconState preset f}
+From Gloas the payload of the parent runs first, and its requests keep these balances too. -/
+theorem effectiveKept_processBlock {f : Fork} {s t : BeaconState preset f}
     {engine : ExecutionEngine preset f} {block : BeaconBlock preset f}
-    (early : f < .glamsterdam) (ok : processBlock config checks engine s block = .ok t) :
-    EffectiveKept s t := by
-  have header {a b : BeaconState preset f} {block : BeaconBlock preset f}
-      (ok : processBlockHeader a block = .ok b) : b.validators = a.validators := by
-    obtain ⟨_, _, rfl⟩ := processBlockHeader_eq ok
-    rfl
-  have randao {a b : BeaconState preset f} {body : BeaconBlockBody preset f}
-      (ok : processRandao config checks a body = .ok b) : b.validators = a.validators := by
-    obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, rfl⟩ := processRandao_eq ok
-    rfl
-  have vote {a b : BeaconState preset f} {body : BeaconBlockBody preset f} {before : f < .hegota}
-      (ok : processEth1Data before a body = .ok b) : b.validators = a.validators := by
-    obtain ⟨_, _, rest⟩ := processEth1Data_eq ok
-    rw [← rest]
-  have execution {a b : BeaconState preset f} {body : BeaconBlockBody preset f}
-      {bellatrix : .bellatrix ≤ f}
-      (ok : processBlockExecution config checks engine a body bellatrix = .ok b) :
-      EffectiveKept a b := by
-    have payload {a b : BeaconState preset f} {bellatrix : .bellatrix ≤ f ∧ f < .glamsterdam}
-        (ok : processExecutionPayload config engine a body bellatrix = .ok b) :
-        b.validators = a.validators := by
-      obtain ⟨_, _, _, rfl⟩ := processExecutionPayload_ok ok
-      rfl
-    unfold processBlockExecution at ok
-    split at ok
-    · exact False.elim (Nat.not_le_of_lt early (by assumption))
-    split at ok
-    · simp only [bind_ok_iff] at ok
-      obtain ⟨_, withdrawn, paid⟩ := ok
-      intro i inside
-      simpa only [effectiveAt, payload paid] using effectiveKept_withdrawals withdrawn i inside
-    · dsimp only at ok
-      split at ok
-      · exact effectiveKept_data (congrArg (·.data) (payload ok))
-      · cases ok; exact effectiveKept_refl _
-  unfold processBlock at ok
-  split at ok
-  · unfold processBlockAltair at ok
-    simp only [bind_ok_iff] at ok
-    obtain ⟨paid, paidOk, headed, headedOk, executed, executedOk, revealed, revealedOk, voted,
-      votedOk, operated, operatedOk, synced⟩ := ok
-    have paidSame : paid = s := by
-      split at paidOk
-      · exact False.elim (Nat.not_le_of_lt early (by assumption))
-      · cases paidOk; rfl
-    subst paid
-    have executionStep : EffectiveKept headed executed := by
-      split at executedOk
-      · exact execution executedOk
-      · cases executedOk; exact effectiveKept_refl _
-    have votedSame : voted.validators = revealed.validators := by
-      split at votedOk
-      · exact vote votedOk
-      · cases votedOk; rfl
-    have head : EffectiveKept s voted := by
-      intro i inside
-      have size : i < headed.validators.data.size := by simpa [header headedOk] using inside
-      simpa only [effectiveAt, votedSame, randao revealedOk, header headedOk] using
-        executionStep i size
-    have grows := (frame_processBlockHeader headedOk).registryGrows.trans
-      ((by
-        split at executedOk
-        · exact (frame_processBlockExecution executedOk).registryGrows
-        · cases executedOk; exact Nat.le_refl _) :
-          headed.validators.data.size ≤ executed.validators.data.size)
-    have grows' : s.validators.data.size ≤ voted.validators.data.size := by
-      simpa [votedSame, randao revealedOk] using grows
-    exact effectiveKept_trans head
-      (effectiveKept_trans (effectiveKept_operations early operatedOk) (effectiveKept_sync synced)
-        (frame_processOperations operatedOk).registryGrows) grows'
-  · simp only [bind_ok_iff] at ok
-    obtain ⟨_, headed, _, revealed, _, voted, operated⟩ := ok
-    intro i inside
-    have kept := effectiveKept_operations early operated i
-      (by simpa [vote voted, randao revealed, header headed] using inside)
-    simpa only [effectiveAt, vote voted, randao revealed, header headed] using kept
+    (ok : processBlock config checks engine s block = .ok t) : EffectiveKept s t := by
+  -- Composing two steps needs the registry growth of the first.
+  let Kept (a b : BeaconState preset f) : Prop :=
+    EffectiveKept a b ∧ a.validators.data.size ≤ b.validators.data.size
+  have refl (a : BeaconState preset f) : Kept a a := ⟨effectiveKept_refl a, Nat.le_refl _⟩
+  have trans {a b c : BeaconState preset f} (one : Kept a b) (two : Kept b c) : Kept a c :=
+    ⟨effectiveKept_trans one.1 two.1 one.2, Nat.le_trans one.2 two.2⟩
+  have same {a b : BeaconState preset f} (validators : b.validators = a.validators) : Kept a b :=
+    ⟨effectiveKept_data (congrArg (·.data) validators),
+      Nat.le_of_eq (congrArg (·.data.size) validators).symm⟩
+  have folds {α : Type} {step : BeaconState preset f → α → Except TransitionError _}
+      (each : ∀ a x b, step a x = .ok b → Kept a b) {items : List α}
+      {a b : BeaconState preset f} (computed : items.foldlM step a = .ok b) : Kept a b :=
+    foldlM_ok_invariant (Kept a) (fun _ _ _ before stepped => trans before (each _ _ _ stepped))
+      (refl a) computed
+  obtain ⟨input, last, started, operated, -, synced⟩ := processBlock_operationsInput ok
+  have head : Kept s input :=
+    started.step_of Kept refl trans
+      (fun _ paid => processParentExecutionPayload_step_of Kept refl trans
+        (fun _ validators => same validators)
+        (fun requested => ⟨effectiveKept_withdrawalRequest requested,
+          (registryLifecycle_processWithdrawalRequest requested).size_le⟩)
+        (fun requested => ⟨effectiveKept_consolidationRequest requested,
+          (registryLifecycle_processConsolidationRequest requested).size_le⟩) paid)
+      (fun headed => by
+        obtain ⟨_, _, rfl⟩ := processBlockHeader_eq headed
+        exact same rfl)
+      (fun _ executed => same (processBlockExecution_validators executed))
+      (fun revealed => by
+        obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, rfl⟩ := processRandao_eq revealed
+        exact same rfl)
+      (fun _ voted => by
+        obtain ⟨_, _, rest⟩ := processEth1Data_eq voted
+        rw [← rest]
+        exact same rfl)
+  obtain ⟨_, _, _, proposersOk, slashingsOk, attestedOk, rest⟩ :=
+    processOperations_folds_of Kept refl trans
+      (fun deposited => ⟨effectiveKept_processDeposit deposited,
+        (frame_processDeposit deposited).registryGrows⟩)
+      (fun exited => ⟨effectiveKept_voluntaryExit exited,
+        (frame_processVoluntaryExit exited).registryGrows⟩)
+      (fun changed => ⟨effectiveKept_blsChange changed,
+        (frame_processBlsToExecutionChange changed).registryGrows⟩)
+      (fun requested => ⟨effectiveKept_requests requested,
+        (registryLifecycle_processExecutionRequests requested).size_le⟩)
+      (fun attested => same (by rw [processPayloadAttestation_eq attested])) operated
+  have tail : Kept last t := by
+    split at synced
+    · obtain ⟨_, rfl⟩ := processSyncAggregate_eq synced
+      exact same rfl
+    · cases synced
+      exact refl _
+  exact (trans head <| trans (folds (fun _ _ _ slashed => ⟨effectiveKept_proposerSlashing slashed,
+      (frame_processProposerSlashing slashed).registryGrows⟩) proposersOk) <|
+    trans (folds (fun _ _ _ slashed => ⟨effectiveKept_attesterSlashing slashed,
+      (frame_processAttesterSlashing slashed).registryGrows⟩) slashingsOk) <|
+    trans (folds (fun _ _ _ attested => ⟨effectiveKept_data
+        (by rw [(processAttestation_registry attested).1]),
+      (frame_processAttestation attested).registryGrows⟩) attestedOk) <|
+    trans rest tail).1
 
-private theorem effectiveKept_pending {f : Fork} {s t : BeaconState preset f}
-    (ok : processPendingBalances config checks s = .ok t) : EffectiveKept s t := by
+/-- The stages after the effective-balance update keep the validators and the balances. -/
+theorem balanceDrift_late {f : Fork} {s t : BeaconState preset f}
+    (trace : EpochTrace (EpochStage.action config checks)
+      [.slashingsReset, .randaoReset, .history, .participation, .syncCommittees,
+        .proposerLookahead, .ptcWindow] s t) :
+    t.validators = s.validators ∧ t.balances = s.balances := by
+  refine EpochTrace.transport
+    (R := fun a b : BeaconState preset f => b.validators = a.validators ∧ b.balances = a.balances)
+    (fun _ => ⟨rfl, rfl⟩) (fun one two => ⟨two.1.trans one.1, two.2.trans one.2⟩) ?_ trace
+  intro k member a b computed
+  have edge := EpochStage.action_cases.mp computed
+  cases k
+  case rewards | registry | slashings | pendingDeposits | pendingConsolidations
+    | effectiveBalances => simp at member
+  all_goals
+    have kept := edge.records ⟨nofun, nofun, nofun, nofun, nofun, nofun⟩
+    exact ⟨kept.1, kept.2.1⟩
+
+/-- An effective-balance update cannot increase the funding held at any registry position. -/
+private theorem updateEffectiveBalance_funding {fork : Fork} {s t : BeaconState preset fork}
+    {index : Nat} (ok : updateEffectiveBalance s index = .ok t) (i : Nat) :
+    max (effectiveAt ⟨fork, t⟩ i) (actualBalanceAt ⟨fork, t⟩ i) ≤
+      max (effectiveAt ⟨fork, s⟩ i) (actualBalanceAt ⟨fork, s⟩ i) := by
+  simp only [updateEffectiveBalance, bind_ok_iff, liftAccessor_ok] at ok
+  obtain ⟨validator, found, balance, read, effective, updated, set⟩ := ok
+  obtain ⟨inside, rfl⟩ := setValidatorAt_ok set
+  have old : s.validators.data[index]? = some validator := by
+    simpa [getValidatorAt, inside] using found
+  by_cases same : i = index
+  · subst i
+    have actual : actualBalanceAt ⟨fork, s⟩ index = balance.toNat := by
+      simp [actualBalanceAt, getBalanceAt_eq_ok_iff.mp read]
+    have bound := updatedEffectiveBalance_le_max updated
+    simpa [effectiveAt, actualBalanceAt, BeaconState.putValidator,
+      Serialization.Ssz.RootedForkList.data_set, old, ← actual] using
+      (Nat.max_le.mpr ⟨bound, Nat.le_max_right validator.effectiveBalance.toNat balance.toNat⟩)
+  · simp [effectiveAt, actualBalanceAt, BeaconState.putValidator,
+      Serialization.Ssz.RootedForkList.data_set, Ne.symm same]
+
+/-- The full effective-balance pass cannot mint funding, including at inactive positions. -/
+theorem processEffectiveBalanceUpdates_max_le {fork : Fork} {s t : BeaconState preset fork}
+    (ok : processEffectiveBalanceUpdates s = .ok t) (i : Nat) :
+    max (effectiveAt ⟨fork, t⟩ i) (actualBalanceAt ⟨fork, t⟩ i) ≤
+      max (effectiveAt ⟨fork, s⟩ i) (actualBalanceAt ⟨fork, s⟩ i) := by
+  unfold processEffectiveBalanceUpdates at ok
+  exact foldlM_ok_invariant
+    (fun t => max (effectiveAt ⟨fork, t⟩ i) (actualBalanceAt ⟨fork, t⟩ i) ≤
+      max (effectiveAt ⟨fork, s⟩ i) (actualBalanceAt ⟨fork, s⟩ i))
+    (fun _ _ _ previous step => Nat.le_trans (updateEffectiveBalance_funding step i) previous)
+    (Nat.le_refl _) ok
+
+/-- A block keeps the effective balance of every existing validator.
+
+The fork bound is not needed. -/
+theorem effectiveKept_block {f : Fork} {s t : BeaconState preset f}
+    {engine : ExecutionEngine preset f} {block : BeaconBlock preset f}
+    (_early : f < .glamsterdam) (ok : processBlock config checks engine s block = .ok t) :
+    EffectiveKept s t :=
+  effectiveKept_processBlock ok
+
+private theorem effectiveKept_pendingDeposits {f : Fork} {s t : BeaconState preset f}
+    {electra : .pectra ≤ f}
+    (ok : processPendingDeposits config checks s electra = .ok t) : EffectiveKept s t := by
   have pass {stop : PendingDeposit → Bool} {nextEpoch : Epoch} {available : Gwei} :
       ∀ {deposits : List PendingDeposit} {state : BeaconState preset f} {processed : Gwei}
         {count : Nat} {postponed : Array PendingDeposit} {result},
@@ -690,210 +560,67 @@ private theorem effectiveKept_pending {f : Fork} {s t : BeaconState preset f}
       cases ok
       exact effectiveKept_trans (effectiveKept_deposit credited) (ih ‹_›)
         (registryLifecycle_applyPendingDeposit credited).size_le
-  unfold processPendingBalances at ok
-  split at ok
-  · simp only [bind_ok_iff] at ok
-    obtain ⟨middle, deposited, consolidated⟩ := ok
-    have deposits : EffectiveKept s middle := by
-      unfold processPendingDeposits at deposited
-      simp only [bind, Except.bind, pure, Except.pure] at deposited
-      repeat' (split at deposited <;> try cases deposited)
-      all_goals
-        intro i inside
-        exact pass ‹_› i inside
-    intro i inside
-    simpa only [effectiveAt, (processPendingConsolidations_kept consolidated).1] using
-      deposits i inside
-  · cases ok; exact effectiveKept_refl _
-
-private theorem balanceDrift_slashings {f : Fork} {s t : BeaconState preset f}
-    (ok : processSlashings s = .ok t) : t.validators = s.validators := by
-  have fold {step : BeaconState preset f → Nat → Except TransitionError _} {xs : List Nat}
-      (kept : ∀ a i b, step a i = .ok b → b.validators = a.validators)
-      (ok : xs.foldlM step s = .ok t) : t.validators = s.validators :=
-    foldlM_ok_invariant (fun t => t.validators = s.validators)
-      (fun _ _ _ previous ok => (kept _ _ _ ok).trans previous) rfl ok
-  unfold processSlashings at ok
-  simp only [bind_ok_iff] at ok
-  obtain ⟨_, _, _, _, _, _, ok⟩ := ok
-  split at ok
-  · simp only [bind_ok_iff] at ok
-    obtain ⟨_, _, applied⟩ := ok
-    refine fold (fun _ _ _ ok => ?_) applied
-    simp only [applySlashingPenaltyElectra, bind_ok_iff, liftAccessor_ok] at ok
-    obtain ⟨_, _, ok⟩ := ok
-    split at ok
-    · simp only [bind_ok_iff] at ok
-      obtain ⟨_, _, ok⟩ := ok
-      split at ok
-      · simp only [bind_ok_iff, liftAccessor_ok] at ok
-        obtain ⟨_, _, _, _, lowered⟩ := ok
-        exact decreaseBalance_validators lowered
-      · cases ok; rfl
-    · cases ok; rfl
-  · refine fold (fun _ _ _ ok => ?_) ok
-    simp only [applySlashingPenalty, bind_ok_iff, liftAccessor_ok] at ok
-    obtain ⟨_, _, ok⟩ := ok
-    split at ok
-    · simp only [bind_ok_iff] at ok
-      obtain ⟨_, _, ok⟩ := ok
-      split at ok
-      · simp only [bind_ok_iff, liftAccessor_ok] at ok
-        obtain ⟨_, _, _, _, _, _, lowered⟩ := ok
-        exact decreaseBalance_validators lowered
-      · cases ok; rfl
-    · cases ok; rfl
-
-private theorem balanceDrift_reset {f : Fork} {s t : BeaconState preset f}
-    {before : f < .hegota} (ok : processEth1DataReset before s = .ok t) :
-    t.validators = s.validators ∧ t.balances = s.balances := by
-  simp only [processEth1DataReset, bind_ok_iff, liftAccessor_ok] at ok
-  obtain ⟨_, _, ok⟩ := ok
-  split at ok <;> cases ok <;> exact ⟨rfl, rfl⟩
-
-private theorem balanceDrift_inactivity {f : Fork} {s t : BeaconState preset f}
-    {altair : .altair ≤ f} (ok : processInactivityUpdates config s altair = .ok t) :
-    t.validators = s.validators ∧ t.balances = s.balances := by
-  unfold processInactivityUpdates at ok
-  split at ok
-  · cases ok; exact ⟨rfl, rfl⟩
-  · simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at ok
-    obtain ⟨_, _, _, _, rfl⟩ := ok
-    exact ⟨rfl, rfl⟩
-
-private theorem balanceDrift_historical {f : Fork} {s t : BeaconState preset f}
-    (ok : processHistoricalRootsUpdate s = .ok t) :
-    t.validators = s.validators ∧ t.balances = s.balances := by
-  unfold processHistoricalRootsUpdate at ok
-  split at ok
-  · cases ok
-  simp only [bind_ok_iff, liftAccessor_ok] at ok
-  obtain ⟨_, _, ok⟩ := ok
-  split at ok
-  · simp only [bind_ok_iff, liftSsz_ok, pure, Except.pure, Except.ok.injEq] at ok
-    obtain ⟨_, _, _, _, rfl⟩ := ok
-    exact ⟨rfl, rfl⟩
-  · cases ok; exact ⟨rfl, rfl⟩
-
-private theorem balanceDrift_summaries {f : Fork} {s t : BeaconState preset f}
-    {capella : .shapella ≤ f} (ok : processHistoricalSummariesUpdate s capella = .ok t) :
-    t.validators = s.validators ∧ t.balances = s.balances := by
-  unfold processHistoricalSummariesUpdate at ok
+  unfold processPendingDeposits at ok
   simp only [bind, Except.bind, pure, Except.pure] at ok
   repeat' (split at ok <;> try cases ok)
-  all_goals exact ⟨rfl, rfl⟩
+  all_goals
+    intro i inside
+    exact pass ‹_› i inside
+/-- An epoch stage keeps the balances, unless it is one of six stages.
 
-private theorem balanceDrift_epochEnd {f : Fork} {s t : BeaconState preset f}
-    {altair : .altair ≤ f} {synced looked : BeaconState preset f}
-    (syncedOk : processSyncCommitteeUpdates (processParticipationFlagUpdates s altair)
-      altair = .ok synced)
-    (lookedOk : (if fulu : .fusaka ≤ f then liftAccessor (processProposerLookahead synced fulu)
-      else pure synced) = .ok looked)
-    (windowed : (if gloas : .glamsterdam ≤ f then liftAccessor (processPtcWindow looked gloas)
-      else pure looked) = .ok t) : t.validators = s.validators ∧ t.balances = s.balances := by
-  have sync : synced.validators = s.validators ∧ synced.balances = s.balances := by
-    unfold processSyncCommitteeUpdates at syncedOk
-    simp only [bind, Except.bind, pure, Except.pure] at syncedOk
-    repeat' (split at syncedOk <;> try cases syncedOk)
-    all_goals exact ⟨rfl, rfl⟩
-  have look : looked.validators = synced.validators ∧ looked.balances = synced.balances := by
-    split at lookedOk
-    · simp only [processProposerLookahead, liftAccessor_ok, bind_ok_iff, pure, Except.pure,
-        Except.ok.injEq] at lookedOk
-      obtain ⟨_, _, _, _, rfl⟩ := lookedOk
-      exact ⟨rfl, rfl⟩
-    · cases lookedOk; exact ⟨rfl, rfl⟩
-  have window : t.validators = looked.validators ∧ t.balances = looked.balances := by
-    split at windowed
-    · simp only [processPtcWindow, liftAccessor_ok, bind_ok_iff, pure, Except.pure,
-        Except.ok.injEq] at windowed
-      obtain ⟨_, _, _, _, rfl⟩ := windowed
-      exact ⟨rfl, rfl⟩
-    · cases windowed; exact ⟨rfl, rfl⟩
-  exact ⟨window.1.trans (look.1.trans sync.1), window.2.trans (look.2.trans sync.2)⟩
+Those are rewards, registry updates, slashings, the two pending stages and effective balances. -/
+theorem EpochStage.Edge.balances_eq {f : Fork} {stage : EpochStage}
+    {s t : BeaconState preset f} (edge : EpochStage.Edge config checks stage s t)
+    (other : stage ≠ .rewards ∧ stage ≠ .registry ∧ stage ≠ .slashings ∧
+      stage ≠ .pendingDeposits ∧ stage ≠ .pendingConsolidations ∧ stage ≠ .effectiveBalances) :
+    t.balances = s.balances :=
+  (edge.records other).2.1
 
+/-- An epoch keeps every existing effective balance until its effective-balance update.
+
+Before it, registry updates and pending deposits keep existing effective balances.
+
+The other stages before it keep the validators.
+
+The stages after it keep the validators and the balances. -/
 private theorem balanceDrift_epoch {f : Fork} {s t : BeaconState preset f}
-    (early : f < .glamsterdam) (ok : processEpoch config checks s = .ok t) :
+    (ok : processEpoch config checks s = .ok t) :
     ∃ before after, EffectiveKept s before ∧
       processEffectiveBalanceUpdates before = .ok after ∧
       t.validators = after.validators ∧ t.balances = before.balances := by
-  have balances {a b : BeaconState preset f} (ok : processEffectiveBalanceUpdates a = .ok b) :
-      b.balances = a.balances := by
-    unfold processEffectiveBalanceUpdates at ok
-    refine foldlM_ok_invariant (fun b => b.balances = a.balances)
-      (fun _ _ _ previous step => ?_) rfl ok
-    simp only [updateEffectiveBalance, bind_ok_iff, liftAccessor_ok] at step
-    obtain ⟨_, _, _, _, _, _, set⟩ := step
-    obtain ⟨_, rfl⟩ := setValidatorAt_ok set
-    exact previous
-  have tail {a b c d : BeaconState preset f}
-      (clear : processSlashingsReset a = .ok b) (mix : processRandaoMixesReset b = .ok c)
-      (same : d.validators = c.validators ∧ d.balances = c.balances) :
-      d.validators = a.validators ∧ d.balances = a.balances := by
-    obtain ⟨_, _, _, _, rfl⟩ := processSlashingsReset_eq clear
-    obtain ⟨_, _, _, _, _, _, rfl⟩ := processRandaoMixesReset_eq mix
-    exact same
-  unfold processEpoch at ok
-  split at ok
-  · unfold processEpochAltair at ok
-    simp only [bind_ok_iff] at ok
-    obtain ⟨justified, justifiedOk, scored, scoredOk, rewarded, rewardedOk, registered,
-      registeredOk, slashed, slashedOk, reset, resetOk, pending, pendingOk, paid, paidOk,
-      balanced, balancedOk, cleared, clearedOk, mixed, mixedOk, ok⟩ := ok
-    have paidEq : paid = pending := by
-      split at paidOk
-      · exact False.elim (Nat.not_le_of_lt early (by assumption))
-      · cases paidOk; rfl
-    subst paid
-    have resetSame : reset.validators = slashed.validators := by
-      split at resetOk
-      · exact (balanceDrift_reset resetOk).1
-      · cases resetOk; rfl
-    have first : EffectiveKept s pending := by
-      have one := effectiveKept_trans (effectiveKept_registry registeredOk)
-        (effectiveKept_trans (effectiveKept_data
-          (by rw [resetSame, balanceDrift_slashings slashedOk]))
-          (effectiveKept_pending pendingOk) (by rw [resetSame, balanceDrift_slashings slashedOk]))
-        (registryLifecycle_processRegistryUpdates registeredOk).size_le
-      intro i inside
-      have same : rewarded.validators = s.validators := by
-        rw [processRewardsAndPenalties_frame rewardedOk]
-        exact (balanceDrift_inactivity scoredOk).1.trans
-          (processJustificationAndFinalization_keeps justifiedOk).2.2.2.2.2.1
-      simpa only [effectiveAt, same] using one i (by simpa [same] using inside)
-    refine ⟨pending, balanced, first, balancedOk, ?_⟩
-    have last : t.validators = mixed.validators ∧ t.balances = mixed.balances := by
-      split at ok <;> simp only [bind_ok_iff] at ok <;>
-        obtain ⟨_, rooted, _, synced, _, looked, windowed⟩ := ok
-      · have endStep := balanceDrift_epochEnd synced looked windowed
-        have roots := balanceDrift_summaries rooted
-        exact ⟨endStep.1.trans roots.1, endStep.2.trans roots.2⟩
-      · have endStep := balanceDrift_epochEnd synced looked windowed
-        have roots := balanceDrift_historical rooted
-        exact ⟨endStep.1.trans roots.1, endStep.2.trans roots.2⟩
-    have final := tail clearedOk mixedOk last
-    exact ⟨final.1, final.2.trans (balances balancedOk)⟩
-  · simp only [bind_ok_iff] at ok
-    obtain ⟨justified, justifiedOk, rewarded, rewardedOk, registered, registeredOk,
-      slashed, slashedOk, reset, resetOk, balanced, balancedOk, cleared, clearedOk,
-      mixed, mixedOk, rooted, rootedOk, rotated⟩ := ok
-    have same : rewarded.validators = s.validators := by
-      rw [processRewardsAndPenalties_frame rewardedOk]
-      exact (processJustificationAndFinalization_keeps justifiedOk).2.2.2.2.2.1
-    have first : EffectiveKept s reset := by
-      intro i inside
-      simpa only [effectiveAt, (balanceDrift_reset resetOk).1,
-        balanceDrift_slashings slashedOk, same] using
-        effectiveKept_registry registeredOk i (by simpa [same] using inside)
-    have rotatedSame : t.validators = rooted.validators ∧ t.balances = rooted.balances := by
-      unfold processParticipationRecordUpdates at rotated
-      split at rotated
-      · cases rotated
-      · cases rotated; exact ⟨rfl, rfl⟩
-    have roots := balanceDrift_historical rootedOk
-    have final := tail clearedOk mixedOk
-      ⟨rotatedSame.1.trans roots.1, rotatedSame.2.trans roots.2⟩
-    exact ⟨reset, balanced, first, balancedOk, final.1, final.2.trans (balances balancedOk)⟩
+  have trace := processEpoch_trace ok
+  change EpochTrace _ ((EpochStage.prefixStages ++ [.payments]) ++
+    [.effectiveBalances, .slashingsReset, .randaoReset, .history, .participation,
+      .syncCommittees, .proposerLookahead, .ptcWindow]) _ _ at trace
+  obtain ⟨before, head, tail⟩ := EpochTrace.append_iff.mp trace
+  have kept : EffectiveKept s before ∧
+      s.validators.data.size ≤ before.validators.data.size := by
+    refine head.transport
+      (fun a b => EffectiveKept a b ∧ a.validators.data.size ≤ b.validators.data.size)
+      (fun a => ⟨effectiveKept_refl a, Nat.le_refl _⟩)
+      (fun one two => ⟨effectiveKept_trans one.1 two.1 one.2, Nat.le_trans one.2 two.2⟩) ?_
+    intro k member a b computed
+    have edge := EpochStage.action_cases.mp computed
+    cases k
+    case registry =>
+      exact ⟨effectiveKept_registry edge, (registryLifecycle_processRegistryUpdates edge).size_le⟩
+    case pendingDeposits =>
+      simp only [EpochStage.Edge] at edge
+      split at edge
+      · exact ⟨effectiveKept_pendingDeposits edge,
+          (registryLifecycle_processPendingDeposits edge).size_le⟩
+      · exact edge ▸ ⟨effectiveKept_refl _, Nat.le_refl _⟩
+    case effectiveBalances => simp [EpochStage.prefixStages] at member
+    all_goals
+      have same := edge.validators_eq ⟨nofun, nofun, nofun⟩
+      exact ⟨effectiveKept_data (congrArg (·.data) same),
+        Nat.le_of_eq (congrArg (·.data.size) same).symm⟩
+  cases tail
+  rename_i after updated tail
+  have last := balanceDrift_late tail
+  have updated := EpochStage.action_cases.mp updated
+  exact ⟨before, after, kept.1, updated, last.1,
+    last.2.trans (processEffectiveBalanceUpdates_balances updated)⟩
 
 private theorem balanceDrift_update_upper {f : Fork} {s t : BeaconState preset f}
     (ok : processEffectiveBalanceUpdates s = .ok t) (i : Nat) :
@@ -925,7 +652,7 @@ private theorem balanceDrift_update_upper {f : Fork} {s t : BeaconState preset f
         Ne.symm eq] using previous.2
 
 private theorem balanceDrift_slot_upper {f : Fork} {s t : BeaconState preset f}
-    (early : f < .glamsterdam) (ok : advanceSlot config checks s = .ok t)
+    (ok : advanceSlot config checks s = .ok t)
     (i : Nat) (inside : i < s.validators.data.size) :
     effectiveAt ⟨f, t⟩ i ≤ max (effectiveAt ⟨f, s⟩ i) (actualBalanceAt ⟨f, t⟩ i) := by
   simp only [advanceSlot, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at ok
@@ -933,7 +660,7 @@ private theorem balanceDrift_slot_upper {f : Fork} {s t : BeaconState preset f}
   obtain ⟨_, _, _, _, rfl⟩ := processSlot_ok cache
   unfold epochIfLast at advance
   split at advance
-  · obtain ⟨before, after, kept, updated, validators, balances⟩ := balanceDrift_epoch early advance
+  · obtain ⟨before, after, kept, updated, validators, balances⟩ := balanceDrift_epoch advance
     have bound := balanceDrift_update_upper updated i
     have same := kept i inside
     rw [same] at bound
@@ -1008,552 +735,8 @@ private theorem balanceDrift_upgrades_upper {s t : ForkedBeaconState preset}
       (Nat.lt_of_le_of_lt (processUpgrades_fork_le rest) early) i)
   | case2 s notDue => cases ok; exact Nat.le_refl _
 
-/-! ## Inactivity scores inside a block -/
-
-/-- The inactivity score at each existing position stays. -/
-private def ScoresKept {f : Fork} (s t : BeaconState preset f) : Prop :=
-  ∀ (altair : .altair ≤ f) (i : Nat), i < s.validators.data.size →
-    (t.inactivityScores altair).data[i]? = (s.inactivityScores altair).data[i]?
-
-private theorem scoresKept_refl {f : Fork} (s : BeaconState preset f) : ScoresKept s s :=
-  fun _ _ _ => rfl
-
-private theorem scoresKept_trans {f : Fork} {s t u : BeaconState preset f}
-    (one : ScoresKept s t) (two : ScoresKept t u)
-    (grows : s.validators.data.size ≤ t.validators.data.size) : ScoresKept s u :=
-  fun altair i inside =>
-    (two altair i (Nat.lt_of_lt_of_le inside grows)).trans (one altair i inside)
-
-private theorem scoresKept_of_eq {f : Fork} {s t : BeaconState preset f}
-    (same : t.inactivityScores = s.inactivityScores := by rfl) : ScoresKept s t := by
-  intro _ _ _
-  rw [same]
-
-private theorem scoresKept_setValidatorAt {f : Fork} {s t : BeaconState preset f}
-    {index : Nat} {v : Validator} (set : s.setValidatorAt index v = .ok t) : ScoresKept s t := by
-  obtain ⟨_, rfl⟩ := setValidatorAt_ok set
-  exact scoresKept_of_eq
-
-private theorem scoresKept_setValidator {f : Fork} {s t : BeaconState preset f}
-    {index : ValidatorIndex} {v : Validator} (set : s.setValidator index v = .ok t) :
-    ScoresKept s t :=
-  scoresKept_setValidatorAt (by rwa [← setValidator_eq_setValidatorAt])
-
-private theorem scoresKept_setBalance {f : Fork} {s t : BeaconState preset f}
-    {index : ValidatorIndex} {balance : Gwei} (set : s.setBalance index balance = .ok t) :
-    ScoresKept s t := by
-  obtain ⟨_, rfl⟩ := setBalance_ok set
-  exact scoresKept_of_eq
-
-private theorem scoresKept_increase {f : Fork} {s t : BeaconState preset f}
-    {index amount : UInt64} (ok : increaseBalance s index amount = .ok t) : ScoresKept s t :=
-  scoresKept_setBalance (increaseBalance_ok ok).choose_spec
-
-private theorem scoresKept_decrease {f : Fork} {s t : BeaconState preset f}
-    {index amount : UInt64} (ok : decreaseBalance s index amount = .ok t) : ScoresKept s t :=
-  scoresKept_setBalance (decreaseBalance_ok ok).choose_spec
-
-private theorem scoresKept_exit {f : Fork} {s t : BeaconState preset f}
-    {index : ValidatorIndex} (ok : initiateValidatorExit config s index = .ok t) :
-    ScoresKept s t := by
-  obtain ⟨_, _, ⟨_, rfl⟩ | ⟨_, _, _, _, queue, _, set⟩⟩ := initiateValidatorExit_ok ok
-  · exact scoresKept_refl _
-  · obtain ⟨_, _, rfl⟩ := exitQueue_eq queue
-    exact scoresKept_trans scoresKept_of_eq (scoresKept_setValidator set) (Nat.le_refl _)
-
-private theorem scoresKept_slash {f : Fork} {s t : BeaconState preset f}
-    {index : ValidatorIndex} {whistleblower : Option ValidatorIndex}
-    (ok : slashValidator config s index whistleblower = .ok t) : ScoresKept s t := by
-  obtain ⟨_, _, _, marked, _, _, slashings, _, _, _, _, last, exited, _, _, set,
-    _, _, _, lowered, _, _, raised, paid, rfl⟩ := slashValidator_ok ok
-  have first := scoresKept_trans (scoresKept_exit exited) (scoresKept_setValidator set)
-    (frame_initiateValidatorExit exited).registryGrows
-  have second := scoresKept_trans (scoresKept_decrease lowered)
-    (scoresKept_trans (scoresKept_increase raised) (scoresKept_increase paid)
-      (frame_increaseBalance raised).registryGrows) (frame_decreaseBalance lowered).registryGrows
-  have middle := scoresKept_trans (scoresKept_of_eq (s := marked)
-    (t := { marked with slashings })) second (Nat.le_refl _)
-  have total := scoresKept_trans first middle
-    ((frame_initiateValidatorExit exited).registryGrows.trans
-      (Nat.le_of_eq (sameSizes_setValidator set).1.symm))
-  split <;> exact total
-
-private theorem scoresKept_fold {f : Fork} {s t : BeaconState preset f}
-    {α ε : Type} {step : BeaconState preset f → α → Except ε _} {xs : List α}
-    (kept : ∀ a b c, step a b = .ok c → ScoresKept a c)
-    (grows : ∀ a b c, step a b = .ok c → a.validators.data.size ≤ c.validators.data.size)
-    (ok : xs.foldlM step s = .ok t) : ScoresKept s t := by
-  have result := foldlM_ok_invariant
-    (fun t => ScoresKept s t ∧ s.validators.data.size ≤ t.validators.data.size)
-    (fun a b c previous computed =>
-      ⟨scoresKept_trans previous.1 (kept a b c computed) previous.2,
-        previous.2.trans (grows a b c computed)⟩)
-    ⟨scoresKept_refl s, Nat.le_refl _⟩ ok
-  exact result.1
-
-/-- A new validator gets its inactivity score at the end of the registry. -/
-private theorem scoresKept_add {f : Fork} {s t : BeaconState preset f}
-    {key : Cryptography.Bls.BLSPubkey} {credentials : Bytes32} {amount : Gwei}
-    (ok : addValidatorToRegistry s key credentials amount = .ok t) : ScoresKept s t := by
-  intro altair i inside
-  unfold addValidatorToRegistry at ok
-  simp only [altair, ↓reduceDIte, addValidatorToRegistryAltair, liftAccessor_ok, bind_ok_iff,
-    pure, Except.pure, Except.ok.injEq] at ok
-  obtain ⟨index, indexOk, _, _, _, _, _, _, _, _, scores, scoresOk, rfl⟩ := ok
-  have atEnd := (getIndexForNewValidator_ok_iff.mp indexOk).2
-  show scores.data[i]? = _
-  rw [setOrAppendList_getElem? scoresOk, ite_eq_right (by omega)]
-
-private theorem scoresKept_deposit {f : Fork} {s t : BeaconState preset f}
-    {deposit : PendingDeposit}
-    (ok : applyPendingDeposit config checks s deposit = .ok t) : ScoresKept s t := by
-  unfold applyPendingDeposit at ok
-  split at ok
-  · split at ok
-    · cases ok; exact scoresKept_refl _
-    simp only [bind_ok_iff] at ok
-    obtain ⟨_, _, ok⟩ := ok
-    split at ok
-    · exact scoresKept_add ok
-    · cases ok; exact scoresKept_refl _
-  · simp only [liftAccessor_ok, bind_ok_iff] at ok
-    obtain ⟨_, _, ok⟩ := ok
-    exact scoresKept_increase ok
-
-private theorem scoresKept_applyDeposit {f : Fork} {s t : BeaconState preset f}
-    {key : Cryptography.Bls.BLSPubkey} {credentials : Bytes32} {amount : Gwei}
-    {signature : Cryptography.Bls.BLSSignature}
-    (ok : applyDeposit config checks s key credentials amount signature = .ok t) :
-    ScoresKept s t := by
-  unfold applyDeposit at ok
-  split at ok
-  · unfold applyDepositElectra at ok
-    split at ok
-    · simp only [bind_ok_iff] at ok
-      obtain ⟨_, _, ok⟩ := ok
-      split at ok
-      · simp only [bind_ok_iff, liftAccessor_ok] at ok
-        obtain ⟨middle, added, queued⟩ := ok
-        obtain ⟨_, rfl⟩ := addPendingDeposit_eq queued
-        exact scoresKept_trans (scoresKept_add added) scoresKept_of_eq
-          (by rw [addValidatorToRegistry_validators_eq_push added]; simp)
-      · cases ok; exact scoresKept_refl _
-    · obtain ⟨_, rfl⟩ := addPendingDeposit_eq (liftAccessor_ok.mp ok)
-      exact scoresKept_of_eq
-  · exact scoresKept_deposit ok
-
-private theorem scoresKept_processDeposit {f : Fork} {s t : BeaconState preset f}
-    {before : f < .hegota} {deposit : Deposit}
-    (ok : processDeposit config checks before s deposit = .ok t) : ScoresKept s t := by
-  obtain ⟨_, _, next, _, credited⟩ := processDeposit_ok ok
-  exact scoresKept_trans (scoresKept_of_eq (s := s)
-    (t := { s with eth1DepositIndex := fun _ => next }))
-    (scoresKept_applyDeposit credited) (Nat.le_refl _)
-
-private theorem scoresKept_excess {f : Fork} {s t : BeaconState preset f}
-    {electra : .pectra ≤ f} {index : ValidatorIndex}
-    (ok : queueExcessActiveBalance s electra index = .ok t) : ScoresKept s t := by
-  simp only [queueExcessActiveBalance, bind_ok_iff] at ok
-  obtain ⟨_, _, ok⟩ := ok
-  split at ok
-  · simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at ok
-    obtain ⟨_, _, _, _, _, set, rfl⟩ := ok
-    obtain ⟨_, rfl⟩ := setBalance_ok set
-    exact scoresKept_of_eq
-  · cases ok; exact scoresKept_refl _
-
-private theorem scoresKept_compounding {f : Fork} {s t : BeaconState preset f}
-    {electra : .pectra ≤ f} {index : ValidatorIndex}
-    (ok : switchToCompoundingValidator s electra index = .ok t) : ScoresKept s t := by
-  simp only [switchToCompoundingValidator, bind_ok_iff] at ok
-  obtain ⟨_, _, _, set, queued⟩ := ok
-  exact scoresKept_trans (scoresKept_setValidator set) (scoresKept_excess queued)
-    (Nat.le_of_eq (sameSizes_setValidator set).1.symm)
-
-/-- The exit churn changes only the churn fields. -/
-private theorem scoresKept_exitChurn {f : Fork} {s t : BeaconState preset f}
-    {electra : .pectra ≤ f} {balance : Gwei} {epoch : Epoch}
-    (ok : computeExitEpochAndUpdateChurn config s electra balance = .ok (t, epoch)) :
-    ScoresKept s t := by
-  simp only [computeExitEpochAndUpdateChurn, bind_ok_iff, liftArith, mapError_ok_iff, pure,
-    Except.pure, Except.ok.injEq] at ok
-  obtain ⟨_, _, _, _, _, _, final⟩ := ok
-  simp only [Prod.mk.injEq] at final
-  obtain ⟨rfl, rfl⟩ := final
-  exact scoresKept_of_eq
-
-/-- The consolidation churn changes only the churn fields. -/
-private theorem scoresKept_consolidationChurn {f : Fork} {s t : BeaconState preset f}
-    {electra : .pectra ≤ f} {balance : Gwei} {epoch : Epoch}
-    (ok : computeConsolidationEpochAndUpdateChurn config s electra balance = .ok (t, epoch)) :
-    ScoresKept s t := by
-  simp only [computeConsolidationEpochAndUpdateChurn, bind_ok_iff, liftArith, mapError_ok_iff,
-    pure, Except.pure, Except.ok.injEq] at ok
-  obtain ⟨_, _, _, _, _, _, final⟩ := ok
-  simp only [Prod.mk.injEq] at final
-  obtain ⟨rfl, rfl⟩ := final
-  exact scoresKept_of_eq
-
-private theorem scoresKept_consolidate {f : Fork} {s t : BeaconState preset f}
-    {electra : .pectra ≤ f} {sourceIndex targetIndex : ValidatorIndex} {source : Validator}
-    (ok : queueConsolidation config s electra sourceIndex source targetIndex = .ok t) :
-    ScoresKept s t := by
-  simp only [queueConsolidation, bind_ok_iff, liftAccessor_ok, liftArith,
-    mapError_ok_iff, Base.Uint64.addChecked_ok_iff, pure, Except.pure] at ok
-  obtain ⟨⟨churnedState, exitEpoch⟩, churned, withdrawal, _, marked, set, _, _, ok⟩ := ok
-  simp only [Except.ok.injEq] at ok
-  subst ok
-  have validators := (computeConsolidationEpochAndUpdateChurn_earliest churned).2.1
-  exact scoresKept_trans (scoresKept_consolidationChurn churned)
-    (scoresKept_trans (scoresKept_setValidator set) scoresKept_of_eq
-      (Nat.le_of_eq (sameSizes_setValidator set).1.symm)) (by rw [validators])
-
-private theorem scoresKept_consolidationRequest {f : Fork} {s t : BeaconState preset f}
-    {electra : .pectra ≤ f} {request : ConsolidationRequest}
-    (ok : processConsolidationRequest config s electra request = .ok t) : ScoresKept s t := by
-  unfold processConsolidationRequest at ok
-  simp only [bind, Except.bind, pure, Except.pure] at ok
-  repeat' split at ok
-  all_goals first
-    | (cases ok; done)
-    | (cases ok; exact scoresKept_refl _)
-    | exact scoresKept_compounding (liftAccessor_ok.mp ok)
-    | exact scoresKept_consolidate ok
-
-private theorem scoresKept_partial {f : Fork} {s t : BeaconState preset f}
-    {electra : .pectra ≤ f} {index : ValidatorIndex} {v : Validator} {amount owed : Gwei}
-    (ok : requestPartialWithdrawal config s electra index v amount owed = .ok t) :
-    ScoresKept s t := by
-  simp only [requestPartialWithdrawal, bind_ok_iff, liftAccessor_ok, pure, Except.pure] at ok
-  obtain ⟨_, _, _, _, ok⟩ := ok
-  split at ok
-  · simp only [bind_ok_iff, liftAccessor_ok, Except.ok.injEq] at ok
-    obtain ⟨⟨_, _⟩, churned, _, _, _, _, rfl⟩ := ok
-    exact scoresKept_trans (scoresKept_exitChurn churned) scoresKept_of_eq
-      (by rw [(computeExitEpochAndUpdateChurn_earliest churned).2.1])
-  · cases ok; exact scoresKept_refl _
-
-private theorem scoresKept_withdrawalRequest {f : Fork} {s t : BeaconState preset f}
-    {electra : .pectra ≤ f} {request : WithdrawalRequest}
-    (ok : processWithdrawalRequest config s electra request = .ok t) : ScoresKept s t := by
-  unfold processWithdrawalRequest at ok
-  simp only [bind, Except.bind, pure, Except.pure] at ok
-  repeat' split at ok
-  all_goals first
-    | (cases ok; done)
-    | (cases ok; exact scoresKept_refl _)
-    | exact scoresKept_exit (liftAccessor_ok.mp ok)
-    | exact scoresKept_partial ok
-
-private theorem scoresKept_depositRequest {f : Fork} {s t : BeaconState preset f}
-    {electra : .pectra ≤ f} {request : DepositRequest}
-    (ok : processDepositRequest s electra request = .ok t) : ScoresKept s t := by
-  obtain ⟨start, recorded⟩ := recordDepositRequestsStart_eq (state := s) (index := request.index)
-  simp only [processDepositRequest, recorded, liftAccessor_ok, addPendingDeposit,
-    bind_ok_iff, pure, Except.pure, Except.ok.injEq] at ok
-  obtain ⟨_, _, rfl⟩ := ok
-  exact scoresKept_of_eq
-
-private theorem scoresKept_requests {f : Fork} {s t : BeaconState preset f}
-    {body : BeaconBlockBody preset f} {electra : .pectra ≤ f ∧ f < .glamsterdam}
-    (ok : processExecutionRequests config s body electra = .ok t) : ScoresKept s t := by
-  simp only [processExecutionRequests, bind_ok_iff, ← Array.foldlM_toList] at ok
-  obtain ⟨deposited, deposits, withdrawn, withdrawals, consolidations⟩ := ok
-  have first := scoresKept_fold (fun _ _ _ => scoresKept_depositRequest)
-    (fun _ _ _ ok => (registryLifecycle_processDepositRequest ok).size_le) deposits
-  have grows := RegistryLifecycle.foldlM
-    (fun _ _ _ ok => registryLifecycle_processDepositRequest ok) deposits
-  have second := scoresKept_fold (fun _ _ _ => scoresKept_withdrawalRequest)
-    (fun _ _ _ ok => (registryLifecycle_processWithdrawalRequest ok).size_le) withdrawals
-  have grows' := RegistryLifecycle.foldlM
-    (fun _ _ _ ok => registryLifecycle_processWithdrawalRequest ok) withdrawals
-  exact scoresKept_trans first (scoresKept_trans second
-    (scoresKept_fold (fun _ _ _ => scoresKept_consolidationRequest)
-      (fun _ _ _ ok => (registryLifecycle_processConsolidationRequest ok).size_le) consolidations)
-    grows'.size_le) grows.size_le
-
-private theorem scoresKept_withdrawals {f : Fork} {s t : BeaconState preset f}
-    {capella : .shapella ≤ f} {payload : Until .glamsterdam f (ExecutionPayload preset f)}
-    (ok : processWithdrawals s capella payload = .ok t) : ScoresKept s t := by
-  have applied {s t : BeaconState preset f} {expected : ExpectedWithdrawals}
-      (ok : applyExpectedWithdrawals s capella expected = .ok t) : ScoresKept s t := by
-    unfold applyExpectedWithdrawals at ok
-    simp only [bind_ok_iff] at ok
-    obtain ⟨applied, appliedOk, indexed, indexedOk, finished, sweptOk, last⟩ := ok
-    have one : ScoresKept s applied := by
-      unfold applyWithdrawals at appliedOk
-      rw [← Array.foldlM_toList] at appliedOk
-      refine scoresKept_fold (fun _ _ _ ok => ?_)
-        (fun _ _ _ ok => (registryLifecycle_applyWithdrawal ok).size_le) appliedOk
-      unfold applyWithdrawal at ok
-      split at ok
-      · simp only [bind_ok_iff] at ok
-        obtain ⟨_, _, set⟩ := ok
-        obtain ⟨_, rfl⟩ := setBuilder_ok set
-        exact scoresKept_of_eq
-      · exact scoresKept_decrease ok
-    have indexedSame : indexed.inactivityScores = applied.inactivityScores := by
-      unfold updateNextWithdrawalIndex at indexedOk
-      split at indexedOk
-      · simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at indexedOk
-        obtain ⟨_, _, rfl⟩ := indexedOk
-        rfl
-      · cases indexedOk; rfl
-    have sweptSame : finished.inactivityScores = indexed.inactivityScores := by
-      have swept {a : BeaconState preset f}
-          (computed : (if gloas : .glamsterdam ≤ f then
-            updateNextWithdrawalBuilderIndex a gloas expected.processedBuildersSweepCount
-            else pure a) = .ok finished) : finished.inactivityScores = a.inactivityScores := by
-        split at computed
-        · unfold updateNextWithdrawalBuilderIndex at computed
-          dsimp only at computed
-          split at computed
-          · cases computed; rfl
-          · simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at computed
-            obtain ⟨_, _, rfl⟩ := computed
-            rfl
-        · cases computed; rfl
-      rw [swept sweptOk]
-      split <;> (try split) <;> rfl
-    have lastSame : t.inactivityScores = finished.inactivityScores := by
-      unfold updateNextWithdrawalValidatorIndex at last
-      simp only [bind_ok_iff] at last
-      obtain ⟨_, _, last⟩ := last
-      split at last
-      · cases last
-      · cases last; rfl
-    have sizes : s.validators.data.size ≤ applied.validators.data.size := by
-      unfold applyWithdrawals at appliedOk
-      rw [← Array.foldlM_toList] at appliedOk
-      exact (RegistryLifecycle.foldlM (fun _ _ _ ok => registryLifecycle_applyWithdrawal ok)
-        appliedOk).size_le
-    exact scoresKept_trans one (scoresKept_of_eq (lastSame.trans (sweptSame.trans indexedSame)))
-      sizes
-  unfold processWithdrawals at ok
-  split at ok
-  · split at ok
-    · simp only [bind_ok_iff, liftAccessor_ok] at ok
-      obtain ⟨_, _, appliedOk⟩ := ok
-      exact applied appliedOk
-    · cases ok; exact scoresKept_refl _
-  · simp only [bind_ok_iff, ensure_ok_iff, liftAccessor_ok] at ok
-    obtain ⟨_, _, _, _, appliedOk⟩ := ok
-    exact applied appliedOk
-
-private theorem scoresKept_sync {f : Fork} {s t : BeaconState preset f}
-    {altair : .altair ≤ f} {aggregate : SyncAggregate preset}
-    (ok : processSyncAggregate config checks s altair aggregate = .ok t) : ScoresKept s t := by
-  unfold processSyncAggregate at ok
-  simp only [bind_ok_iff] at ok
-  obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, folded⟩ := ok
-  rw [← Array.foldlM_toList] at folded
-  refine scoresKept_fold (fun _ _ _ ok => ?_)
-    (fun _ _ _ ok => (frame_applySyncReward ok).registryGrows) folded
-  unfold applySyncReward at ok
-  split at ok
-  · simp only [bind_ok_iff, liftAccessor_ok] at ok
-    obtain ⟨_, raised, _, _, paid⟩ := ok
-    exact scoresKept_trans (scoresKept_increase raised) (scoresKept_increase paid)
-      (frame_increaseBalance raised).registryGrows
-  · exact scoresKept_decrease (liftAccessor_ok.mp ok)
-
-private theorem scoresKept_proposerSlashing {f : Fork} {s t : BeaconState preset f}
-    {slashing : ProposerSlashing}
-    (ok : processProposerSlashing config checks s slashing = .ok t) : ScoresKept s t := by
-  simp only [processProposerSlashing, bind_ok_iff, ensure_ok_iff, liftAccessor_ok] at ok
-  obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, slashed⟩ := ok
-  exact scoresKept_slash slashed
-
-private theorem scoresKept_attesterSlashing {f : Fork} {s t : BeaconState preset f}
-    {slashing : AttesterSlashing preset f}
-    (ok : processAttesterSlashing config checks s slashing = .ok t) : ScoresKept s t := by
-  simp only [processAttesterSlashing, bind_ok_iff, ensure_ok_iff, pure, Except.pure,
-    Except.ok.injEq] at ok
-  obtain ⟨_, _, _, _, _, _, _, _, _, _, _, folded, _, _, rfl⟩ := ok
-  have result := foldlM_ok_invariant
-    (fun step => ScoresKept s step.1 ∧ s.validators.data.size ≤ step.1.validators.data.size)
-    (fun step _ next before ok => ?_)
-    (show ScoresKept s (s, false).1 ∧ s.validators.data.size ≤ (s, false).1.validators.data.size
-      from ⟨scoresKept_refl _, Nat.le_refl _⟩) folded
-  · exact result.1
-  · obtain ⟨middle, slashedAny⟩ := step
-    simp only [slashIfSlashable, bind_ok_iff, liftAccessor_ok] at ok
-    obtain ⟨_, _, ok⟩ := ok
-    split at ok
-    · simp only [bind_ok_iff, liftAccessor_ok, pure, Except.pure, Except.ok.injEq] at ok
-      obtain ⟨_, slashed, rfl⟩ := ok
-      exact ⟨scoresKept_trans before.1 (scoresKept_slash slashed) before.2,
-        before.2.trans (frame_slashValidator slashed).registryGrows⟩
-    · cases ok; exact before
-
-private theorem scoresKept_voluntaryExit {f : Fork} {s t : BeaconState preset f}
-    {signed : SignedVoluntaryExit}
-    (ok : processVoluntaryExit config checks s signed = .ok t) : ScoresKept s t := by
-  unfold processVoluntaryExit at ok
-  simp only [bind_ok_iff, ensure_ok_iff, liftAccessor_ok, liftSsz_ok] at ok
-  obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, exited⟩ := ok
-  exact scoresKept_exit exited
-
-private theorem scoresKept_blsChange {f : Fork} {s t : BeaconState preset f}
-    {signed : SignedBLSToExecutionChange}
-    (ok : processBlsToExecutionChange config checks s signed = .ok t) : ScoresKept s t := by
-  obtain ⟨_, _, _, _, _, set⟩ := processBlsToExecutionChange_ok ok
-  exact scoresKept_setValidator set
-
-/-- From Altair an attestation sets participation flags and pays the proposer. -/
-private theorem scoresKept_attestation {f : Fork} {s t : BeaconState preset f}
-    (early : f < .glamsterdam) {attestation : Attestation preset f} {parentSlot : Slot}
-    (ok : processAttestation config checks s parentSlot attestation = .ok t) :
-    ScoresKept s t := by
-  by_cases altair : .altair ≤ f
-  · simp only [processAttestation, altair, ↓reduceDIte, processAttestationAltair,
-      bind_ok_iff, liftAccessor_ok] at ok
-    obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, pair, _,
-      _, _, u, raised, final⟩ := ok
-    have notGloas : ¬ .glamsterdam ≤ f := Nat.not_le_of_lt early
-    simp only [notGloas, ↓reduceDIte, pure, Except.pure, Except.ok.injEq] at final
-    subst t
-    have flagged : (setEpochParticipation s (attestation.data.target.epoch == getCurrentEpoch s)
-        pair.1).inactivityScores = s.inactivityScores := by
-      unfold setEpochParticipation
-      split <;> rfl
-    exact scoresKept_trans (scoresKept_of_eq flagged) (scoresKept_increase raised)
-      (by unfold setEpochParticipation; split <;> exact Nat.le_refl _)
-  · exact fun later => absurd later altair
-
-private theorem scoresKept_operations {f : Fork} {s t : BeaconState preset f}
-    (early : f < .glamsterdam) {body : BeaconBlockBody preset f} {parentSlot : Slot}
-    (ok : processOperations config checks s body parentSlot = .ok t) : ScoresKept s t := by
-  unfold processOperations at ok
-  split at ok
-  · rename_i later
-    exact False.elim (Nat.not_le_of_lt early later)
-  simp only [bind_ok_iff, ensure_ok_iff, ← Array.foldlM_toList] at ok
-  obtain ⟨_, _, _, _, _, proposers, _, attesters, _, attestations, _, deposits, exited,
-    exits, changed, changesOk, requestsOk⟩ := ok
-  have changes : ScoresKept exited changed := by
-    unfold processBlsToExecutionChanges at changesOk
-    split at changesOk
-    · rw [← Array.foldlM_toList] at changesOk
-      exact scoresKept_fold (fun _ _ _ => scoresKept_blsChange)
-        (fun _ _ _ ok => (frame_processBlsToExecutionChange ok).registryGrows) changesOk
-    · cases changesOk; exact scoresKept_refl _
-  have requests : ScoresKept changed t := by
-    split at requestsOk
-    · exact scoresKept_requests requestsOk
-    · cases requestsOk; exact scoresKept_refl _
-  have compose {a b c : BeaconState preset f} (one : ScoresKept a b)
-      (two : ScoresKept b c) (size : a.validators.data.size ≤ b.validators.data.size) :=
-    scoresKept_trans one two size
-  apply compose (scoresKept_fold (fun _ _ _ => scoresKept_proposerSlashing)
-    (fun _ _ _ ok => (frame_processProposerSlashing ok).registryGrows) proposers)
-  · apply compose (scoresKept_fold (fun _ _ _ => scoresKept_attesterSlashing)
-      (fun _ _ _ ok => (frame_processAttesterSlashing ok).registryGrows) attesters)
-    · apply compose (scoresKept_fold (fun _ _ _ ok => scoresKept_attestation early ok)
-        (fun _ _ _ ok => (frame_processAttestation ok).registryGrows) attestations)
-      · apply compose (scoresKept_fold (fun _ _ _ => scoresKept_processDeposit)
-          (fun _ _ _ ok => (frame_processDeposit ok).registryGrows) deposits)
-        · apply compose (scoresKept_fold (fun _ _ _ => scoresKept_voluntaryExit)
-            (fun _ _ _ ok => (frame_processVoluntaryExit ok).registryGrows) exits)
-          · apply compose changes requests
-            unfold processBlsToExecutionChanges at changesOk
-            split at changesOk
-            · rw [← Array.foldlM_toList] at changesOk
-              exact (RegistryLifecycle.foldlM
-                (fun _ _ _ ok => registryLifecycle_processBlsToExecutionChange ok)
-                changesOk).size_le
-            · cases changesOk; exact Nat.le_refl _
-          · exact (RegistryLifecycle.foldlM
-              (fun _ _ _ ok => registryLifecycle_processVoluntaryExit ok) exits).size_le
-        · exact (RegistryLifecycle.foldlM
-            (fun _ _ _ ok => registryLifecycle_processDeposit ok) deposits).size_le
-      · exact (RegistryLifecycle.foldlM
-          (fun _ _ _ ok => registryLifecycle_processAttestation ok) attestations).size_le
-    · exact (RegistryLifecycle.foldlM
-        (fun _ _ _ ok => registryLifecycle_processAttesterSlashing ok) attesters).size_le
-  · exact (RegistryLifecycle.foldlM
-      (fun _ _ _ ok => registryLifecycle_processProposerSlashing ok) proposers).size_le
-
-/-- From Altair to Fulu, a block keeps the inactivity score of each existing index.
-
-Only a new validator gets a score, at the end of the registry. -/
-private theorem scoresKept_block {f : Fork} {s t : BeaconState preset f}
-    {engine : ExecutionEngine preset f} {block : BeaconBlock preset f}
-    (early : f < .glamsterdam) (ok : processBlock config checks engine s block = .ok t) :
-    ScoresKept s t := by
-  by_cases altair : .altair ≤ f
-  swap
-  · exact fun later => absurd later altair
-  simp only [processBlock, altair, ↓reduceDIte] at ok
-  unfold processBlockAltair at ok
-  simp only [bind_ok_iff] at ok
-  obtain ⟨paid, paidOk, headed, headedOk, executed, executedOk, revealed, revealedOk, voted,
-    votedOk, operated, operatedOk, synced⟩ := ok
-  have paidSame : paid = s := by
-    split at paidOk
-    · exact False.elim (Nat.not_le_of_lt early (by assumption))
-    · cases paidOk; rfl
-  subst paid
-  have header : headed.inactivityScores = s.inactivityScores := by
-    obtain ⟨_, _, rfl⟩ := processBlockHeader_eq headedOk
-    rfl
-  have execution : ScoresKept headed executed := by
-    split at executedOk
-    · unfold processBlockExecution at executedOk
-      split at executedOk
-      · exact False.elim (Nat.not_le_of_lt early (by assumption))
-      split at executedOk
-      · simp only [bind_ok_iff] at executedOk
-        obtain ⟨_, withdrawn, paid⟩ := executedOk
-        obtain ⟨_, _, _, rfl⟩ := processExecutionPayload_ok paid
-        exact scoresKept_trans (scoresKept_withdrawals withdrawn) scoresKept_of_eq
-          (registryLifecycle_processWithdrawals withdrawn).size_le
-      · dsimp only at executedOk
-        split at executedOk
-        · obtain ⟨_, _, _, rfl⟩ := processExecutionPayload_ok executedOk
-          exact scoresKept_of_eq
-        · cases executedOk; exact scoresKept_refl _
-    · cases executedOk; exact scoresKept_refl _
-  have headerValidators : headed.validators = s.validators := by
-    obtain ⟨_, _, rfl⟩ := processBlockHeader_eq headedOk
-    rfl
-  have randao : revealed.inactivityScores = executed.inactivityScores ∧
-      revealed.validators = executed.validators := by
-    obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, rfl⟩ := processRandao_eq revealedOk
-    exact ⟨rfl, rfl⟩
-  have vote : voted.inactivityScores = revealed.inactivityScores ∧
-      voted.validators = revealed.validators := by
-    split at votedOk
-    · obtain ⟨_, _, rest⟩ := processEth1Data_eq votedOk
-      rw [← rest]
-      exact ⟨rfl, rfl⟩
-    · cases votedOk; exact ⟨rfl, rfl⟩
-  have executedGrows : s.validators.data.size ≤ executed.validators.data.size := by
-    rw [← headerValidators]
-    split at executedOk
-    · exact (frame_processBlockExecution executedOk).registryGrows
-    · cases executedOk; exact Nat.le_refl _
-  have head : ScoresKept s voted :=
-    scoresKept_trans (scoresKept_trans (scoresKept_of_eq header) execution
-      (Nat.le_of_eq (by rw [headerValidators])))
-      (scoresKept_of_eq (vote.1.trans randao.1)) executedGrows
-  have votedGrows : s.validators.data.size ≤ voted.validators.data.size := by
-    rw [vote.2, randao.2]
-    exact executedGrows
-  exact scoresKept_trans head
-    (scoresKept_trans (scoresKept_operations early operatedOk) (scoresKept_sync synced)
-      (frame_processOperations operatedOk).registryGrows) votedGrows
-
-/-! ## Runs inside one epoch -/
-
-/-- A property of the states of a run inside one epoch before Gloas, step by step.
-
-It must hold at the start, and survive each block and each slot step.
-
-A slot step that stays in the epoch does not reach the first slot of an epoch.
-
-So it runs neither an epoch transition nor an upgrade, and only caches the slot. -/
-private theorem Run.induction_of_same_epoch {x : ForkedBeaconState preset}
+/-- Induct over the blocks and cached-slot writes of a run within one epoch. -/
+theorem Run.induction_of_same_epoch {x : ForkedBeaconState preset}
     (motive : ForkedBeaconState preset → Prop) (start : motive x)
     (blockStep : ∀ {f : Fork} {s t : BeaconState preset f} {engine : ExecutionEngine preset f}
       {block : BeaconBlock preset f}, Run config checks x ⟨f, s⟩ → f < .glamsterdam →
@@ -1584,7 +767,6 @@ private theorem Run.induction_of_same_epoch {x : ForkedBeaconState preset}
           simp only [getCurrentEpoch, slot]
         exact eq.symm.trans (same.trans midEpoch.symm)
       obtain ⟨slot, cached, epoched, sum, cachedOk, epochOk, rfl⟩ := advanceSlot_ok advanced
-      -- The new slot is not the first slot of an epoch, since the epoch stays the same.
       have notFirst : slot % preset.SLOTS_PER_EPOCH ≠ 0 := by
         intro firstSlot
         have rem : slot.toNat % preset.SLOTS_PER_EPOCH.toNat = 0 := by
@@ -1601,14 +783,7 @@ private theorem Run.induction_of_same_epoch {x : ForkedBeaconState preset}
       subst epoched
       exact slotStep cachedOk prior
 
-/-- Within one epoch before Gloas, each existing index keeps its effective balance.
-
-Only an epoch transition or a fork upgrade sets an effective balance.
-
-A slot step inside one epoch runs neither, since its new slot is not the first of an epoch.
-
-Every block operation before Gloas keeps the effective balance of each existing index.
--/
+/-- Within one epoch before Gloas, each existing index keeps its effective balance. -/
 theorem Run.effectiveKept_of_same_epoch {x y : ForkedBeaconState preset}
     (tail : Run config checks x y) (early : y.fork < .glamsterdam)
     (same : getCurrentEpoch y.state = getCurrentEpoch x.state) :
@@ -1621,31 +796,7 @@ theorem Run.effectiveKept_of_same_epoch {x y : ForkedBeaconState preset}
       exact prior)
     tail early same
 
-/-- Within one epoch before Gloas, each existing index keeps its inactivity score.
-
-Only the epoch transition updates the scores, and a block gives a score only to a new validator.
--/
-theorem Run.inactivityScores_getElem?_of_same_epoch {x y : ForkedBeaconState preset}
-    (tail : Run config checks x y) (early : y.fork < .glamsterdam)
-    (same : getCurrentEpoch y.state = getCurrentEpoch x.state)
-    (altairBefore : .altair ≤ x.fork) (altairAfter : .altair ≤ y.fork)
-    (i : Nat) (present : i < x.state.validators.data.size) :
-    (y.state.inactivityScores altairAfter).data[i]? =
-      (x.state.inactivityScores altairBefore).data[i]? :=
-  Run.induction_of_same_epoch (fun z => ∀ altair : .altair ≤ z.fork,
-      (z.state.inactivityScores altair).data[i]? =
-        (x.state.inactivityScores altairBefore).data[i]?)
-    (fun _ => rfl)
-    (fun pre early ok prior altair => (scoresKept_block early ok altair i
-      (Nat.lt_of_lt_of_le present pre.registryLifecycle.size_le)).trans (prior altair))
-    (fun cachedOk prior altair => by
-      obtain ⟨_, _, _, _, rfl⟩ := processSlot_ok cachedOk
-      exact prior altair)
-    tail early same altairAfter
-
-/-- Within one epoch before Gloas, the finalized checkpoint stays.
-
-Only the epoch transition finalizes a checkpoint. -/
+/-- Within one epoch before Gloas, the finalized checkpoint stays. -/
 theorem Run.finalizedCheckpoint_eq_of_same_epoch {x y : ForkedBeaconState preset}
     (tail : Run config checks x y) (early : y.fork < .glamsterdam)
     (same : getCurrentEpoch y.state = getCurrentEpoch x.state) :
@@ -1662,8 +813,46 @@ theorem Run.effectiveAt_le_of_same_epoch {x y : ForkedBeaconState preset}
     (tail : Run config checks x y) (early : y.fork < .pectra)
     (same : getCurrentEpoch y.state = getCurrentEpoch x.state)
     (i : Nat) (present : i < x.state.validators.data.size) :
-    effectiveAt y i ≤ effectiveAt x i :=
-  (tail.effectiveKept_of_same_epoch (Nat.lt_trans early (by decide)) same i present).le
+    effectiveAt y i ≤ effectiveAt x i := by
+  induction tail with
+  | nil => exact Nat.le_refl _
+  | @snoc middle last pre step ih =>
+    have middleEarly := Nat.lt_of_le_of_lt step.chainStep.fork_le early
+    have midEpoch : getCurrentEpoch middle.state = getCurrentEpoch x.state :=
+      UInt64.le_antisymm (same ▸ step.chainStep.currentEpoch_le)
+        (currentEpoch_le_of_chainSteps pre.chainSteps)
+    have prior := ih middleEarly midEpoch
+    have inside := Nat.lt_of_lt_of_le present pre.registryLifecycle.size_le
+    have early' : last.fork < .glamsterdam := Nat.lt_trans early (by decide)
+    cases step with
+    | block engine signed due ok =>
+      rw [effectiveKept_processBlock (applySignedBlock_ok ok).2.1 i inside]
+      exact prior
+    | slot ok =>
+      obtain ⟨next, advanced, upgraded⟩ := bind_ok_iff.mp ok
+      have upper := balanceDrift_upgrades_upper upgraded early' i
+      have epoch : getCurrentEpoch next = getCurrentEpoch middle.state := by
+        have slot : last.state.slot = next.slot := processUpgrades_induction
+          (property := fun t => t.state.slot = next.slot)
+          (fun prior ok => (upgradeFrame_upgradeNext ok).slot.trans prior) rfl upgraded
+        have eq : getCurrentEpoch last.state = getCurrentEpoch next := by
+          simp only [getCurrentEpoch, slot]
+        exact eq.symm.trans (same.trans midEpoch.symm)
+      obtain ⟨slot, cached, epoched, sum, cachedOk, epochOk, rfl⟩ := advanceSlot_ok advanced
+      have notLast : slot % preset.SLOTS_PER_EPOCH ≠ 0 := by
+        intro lastSlot
+        have rem : slot.toNat % preset.SLOTS_PER_EPOCH.toNat = 0 := by
+          simpa only [UInt64.toNat_mod, UInt64.toNat_zero] using congrArg UInt64.toNat lastSlot
+        have eq := congrArg UInt64.toNat epoch
+        simp only [getCurrentEpoch_toNat] at eq
+        have divide := Nat.mod_add_div slot.toNat preset.SLOTS_PER_EPOCH.toNat
+        have before := Nat.mod_add_div middle.state.slot.toNat preset.SLOTS_PER_EPOCH.toNat
+        rw [eq] at divide
+        omega
+      simp only [epochIfLast, ite_eq_right notLast, pure, Except.pure, Except.ok.injEq] at epochOk
+      subst epoched
+      obtain ⟨_, _, _, _, rfl⟩ := processSlot_ok cachedOk
+      exact upper.trans prior
 
 private theorem balanceDrift_credits_append (i : Nat) (a b : List (ForkedBeaconState preset))
     (x : ForkedBeaconState preset) :
@@ -1704,7 +893,7 @@ private theorem balanceDrift_gain {x y : ForkedBeaconState preset}
     obtain ⟨initial, path⟩ := balanceDrift_path_last pre
     cases step with
     | @block fork before after engine signed due ok =>
-      have kept := effectiveKept_block early (applySignedBlock_ok ok).2.1 i inside
+      have kept := effectiveKept_processBlock (applySignedBlock_ok ok).2.1 i inside
       have credits : pathCredits i (pre.snoc (.block engine signed due ok)).balancePath =
           pathCredits i pre.balancePath +
             (actualBalanceAt ⟨fork, after⟩ i - actualBalanceAt ⟨fork, before⟩ i) := by
@@ -1717,7 +906,7 @@ private theorem balanceDrift_gain {x y : ForkedBeaconState preset}
       omega
     | slot ok =>
       obtain ⟨next, advanced, upgraded⟩ := bind_ok_iff.mp ok
-      have update := balanceDrift_slot_upper middleEarly advanced i inside
+      have update := balanceDrift_slot_upper advanced i inside
       change effectiveAt ⟨middle.fork, next⟩ i ≤
         max (effectiveAt middle i) (actualBalanceAt ⟨middle.fork, next⟩ i) at update
       have upgrade := balanceDrift_upgrades_upper upgraded early i
@@ -1822,15 +1011,15 @@ private theorem balanceDrift_reference_update {f : Fork} {s t : BeaconState pres
   exact (fold _ ok cap).2 funded previous
 
 private theorem balanceDrift_reference_epoch {f : Fork} {s t : BeaconState preset f}
-    (ok : processEpoch config checks s = .ok t) (early : f < .glamsterdam)
+    (ok : processEpoch config checks s = .ok t)
     (i : Nat) (v : Validator) (found : s.validators.data[i]? = some v) (reference : Gwei)
     (aligned : reference.toNat % preset.EFFECTIVE_BALANCE_INCREMENT.toNat = 0)
     (funded : reference.toNat ≤ actualBalanceAt ⟨f, t⟩ i)
     (previous : reference.toNat ≤ effectiveAt ⟨f, s⟩ i)
     (cap : reference ≤ withdrawalMaxEffectiveBalance preset f v) :
     reference.toNat ≤ effectiveAt ⟨f, t⟩ i := by
-  obtain ⟨before, after, kept, updated, validators, balances⟩ := balanceDrift_epoch early ok
-  obtain ⟨w, located, monotone⟩ := processEpoch_validatorCap_mono early ok i v found
+  obtain ⟨before, after, kept, updated, validators, balances⟩ := balanceDrift_epoch ok
+  obtain ⟨w, located, monotone⟩ := processEpoch_validatorCap_mono ok i v found
   have capAfter : ∀ z, after.validators.data[i]? = some z →
       reference ≤ withdrawalMaxEffectiveBalance preset f z := by
     intro z read
@@ -1846,7 +1035,7 @@ private theorem balanceDrift_reference_epoch {f : Fork} {s t : BeaconState prese
   simpa only [effectiveAt, validators] using bound
 
 private theorem balanceDrift_reference_slot {f : Fork} {s t : BeaconState preset f}
-    (ok : advanceSlot config checks s = .ok t) (early : f < .glamsterdam)
+    (ok : advanceSlot config checks s = .ok t)
     (i : Nat) (v : Validator) (found : s.validators.data[i]? = some v) (reference : Gwei)
     (aligned : reference.toNat % preset.EFFECTIVE_BALANCE_INCREMENT.toNat = 0)
     (funded : reference.toNat ≤ actualBalanceAt ⟨f, t⟩ i)
@@ -1858,7 +1047,7 @@ private theorem balanceDrift_reference_slot {f : Fork} {s t : BeaconState preset
   obtain ⟨_, _, _, _, rfl⟩ := processSlot_ok cache
   unfold epochIfLast at advance
   split at advance
-  · exact balanceDrift_reference_epoch advance early i v found reference aligned funded previous cap
+  · exact balanceDrift_reference_epoch advance i v found reference aligned funded previous cap
   · cases advance
     exact previous
 
@@ -2011,7 +1200,7 @@ private theorem balanceDrift_reference_run {x y : ForkedBeaconState preset}
         simp [pathDebits]
       rw [debits] at funded ⊢
       have prior := ih middleEarly (by omega)
-      have kept := effectiveKept_block early (applySignedBlock_ok ok).2.1 i
+      have kept := effectiveKept_processBlock (applySignedBlock_ok ok).2.1 i
         (Array.getElem?_eq_some_iff.mp located).1
       exact ⟨by rw [kept]; exact prior.1, by omega⟩
     | slot ok =>
@@ -2027,13 +1216,16 @@ private theorem balanceDrift_reference_run {x y : ForkedBeaconState preset}
         simp [pathDebits]
       rw [debits] at funded ⊢
       have prior := ih middleEarly (by omega)
-      have updated := balanceDrift_reference_slot advanced middleEarly i w located reference
+      have updated := balanceDrift_reference_slot advanced i w located reference
         aligned (by omega) prior.1 capMiddle
       obtain ⟨a, read, life⟩ := (registryLifecycle_advanceSlot advanced).validators i w located
       have kept := balanceDrift_upgrades_active upgraded early i a read
         (by rwa [life.activationEpoch assigned])
       exact ⟨by rwa [kept], by omega⟩
 
+/-- An effective-balance loss is at most the debits less the initial headroom, and one increment.
+
+The headroom is the actual balance above the effective balance. -/
 theorem effective_loss_from_balance {g x y : ForkedBeaconState preset}
     (shared : Run config checks g x) (tail : Run config checks x y)
     (genesis : Genesis (config := config) (checks := checks) g) (caps : CapOrder preset)
@@ -2041,9 +1233,9 @@ theorem effective_loss_from_balance {g x y : ForkedBeaconState preset}
     (i : Nat) (v : Validator) (found : x.state.validators.data[i]? = some v)
     (activated : v.activationEpoch ≠ FAR_FUTURE_EPOCH) :
     effectiveAt x i - effectiveAt y i ≤
-      (effectiveAt x i - actualBalanceAt x i) + pathDebits i tail.balancePath +
+      (effectiveAt x i + pathDebits i tail.balancePath - actualBalanceAt x i) +
         (preset.EFFECTIVE_BALANCE_INCREMENT.toNat - 1) := by
-  let amount := min (effectiveAt x i) (actualBalanceAt x i) - pathDebits i tail.balancePath
+  let amount := min (effectiveAt x i) (actualBalanceAt x i - pathDebits i tail.balancePath)
   let rounded := amount - amount % preset.EFFECTIVE_BALANCE_INCREMENT.toNat
   have effective : effectiveAt x i = v.effectiveBalance.toNat := by simp [effectiveAt, found]
   have amount_le : amount ≤ v.effectiveBalance.toNat := by dsimp [amount]; omega
@@ -2075,6 +1267,7 @@ theorem effective_loss_from_balance {g x y : ForkedBeaconState preset}
     omega
   · omega
 
+/-- An effective-balance gain is at most the initial excess balance and the credits. -/
 theorem effective_gain_from_balance {x y : ForkedBeaconState preset}
     (tail : Run config checks x y) (early : y.fork < .glamsterdam)
     (i : Nat) (present : i < x.state.validators.data.size) :
@@ -2167,11 +1360,11 @@ private theorem balanceDrift_indexOfPubkey_lt {f : Fork} {s : BeaconState preset
 
 private theorem balanceDrift_old_key {f h : Fork} {s : BeaconState preset f}
     {t : BeaconState preset h} {key : Cryptography.Bls.BLSPubkey}
-    (identity : RegistryIdentity s t) (member : key ∈ validatorKeys s) :
+    (kept : validatorKeys s <+: validatorKeys t) (member : key ∈ validatorKeys s) :
     ∃ j, j < s.validators.data.size ∧ ∃ v,
       t.validators.data[j]? = some v ∧ v.pubkey = key := by
   obtain ⟨j, inside, value⟩ := List.mem_iff_getElem.mp member
-  have later := (List.prefix_iff_getElem?.mp identity.kept) j inside
+  have later := (List.prefix_iff_getElem?.mp kept) j inside
   rw [value] at later
   simp only [validatorKeys, List.getElem?_map, Array.getElem?_toList] at later
   cases found : t.validators.data[j]? with
@@ -2221,18 +1414,10 @@ private theorem admissionFunded_deposit {f : Fork} {s t : BeaconState preset f}
     {n : Nat} {deposit : PendingDeposit} (holds : AdmissionFunded n s)
     (matched : BalancesMatch s)
     (ok : applyPendingDeposit config checks s deposit = .ok t) : AdmissionFunded n t := by
-  unfold applyPendingDeposit at ok
-  split at ok
-  · split at ok
-    · cases ok; exact holds
-    simp only [bind_ok_iff] at ok
-    obtain ⟨_, _, ok⟩ := ok
-    split at ok
-    · exact admissionFunded_add holds matched ok
-    · cases ok; exact holds
-  · simp only [liftAccessor_ok, bind_ok_iff] at ok
-    obtain ⟨_, _, ok⟩ := ok
-    exact admissionFunded_increase holds ok
+  rcases applyPendingDeposit_cases ok with rfl | ⟨_, ok⟩ | ⟨_, ok⟩
+  · exact holds
+  · exact admissionFunded_increase holds ok
+  · exact admissionFunded_add holds matched ok
 
 private theorem admissionFunded_applyDeposit {f : Fork} {s t : BeaconState preset f}
     {n : Nat} {key : Cryptography.Bls.BLSPubkey} {credentials : Bytes32} {amount : Gwei}
@@ -2240,21 +1425,11 @@ private theorem admissionFunded_applyDeposit {f : Fork} {s t : BeaconState prese
     (matched : BalancesMatch s)
     (ok : applyDeposit config checks s key credentials amount signature = .ok t) :
     AdmissionFunded n t := by
-  unfold applyDeposit at ok
-  split at ok
-  · unfold applyDepositElectra at ok
-    split at ok
-    · simp only [bind_ok_iff] at ok
-      obtain ⟨_, _, ok⟩ := ok
-      split at ok
-      · simp only [bind_ok_iff, liftAccessor_ok] at ok
-        obtain ⟨middle, added, queued⟩ := ok
-        obtain ⟨_, rfl⟩ := addPendingDeposit_eq queued
-        simpa only [AdmissionFunded, effectiveAt, actualBalanceAt] using
-          admissionFunded_add holds matched added
-      · cases ok; exact holds
-    · obtain ⟨_, rfl⟩ := addPendingDeposit_eq (liftAccessor_ok.mp ok)
-      exact holds
+  rcases applyDeposit_cases ok with rfl | ⟨_, _, _, rfl | added, rfl⟩ | ⟨_, ok⟩
+  · exact holds
+  · exact holds
+  · simpa only [AdmissionFunded, effectiveAt, actualBalanceAt] using
+      admissionFunded_add holds matched added
   · exact admissionFunded_deposit holds matched ok
 
 private theorem admissionFunded_processDeposit {f : Fork} {s t : BeaconState preset f}
@@ -2264,18 +1439,6 @@ private theorem admissionFunded_processDeposit {f : Fork} {s t : BeaconState pre
   obtain ⟨_, _, next, _, credited⟩ := processDeposit_ok ok
   exact admissionFunded_applyDeposit
     (s := { s with eth1DepositIndex := fun _ => next }) holds matched credited
-
-private theorem admissionFunded_fold {f : Fork} {s t : BeaconState preset f}
-    {n : Nat} {α ε : Type} {step : BeaconState preset f → α → Except ε _} {xs : List α}
-    (holds : AdmissionFunded n s) (matched : BalancesMatch s)
-    (keeps : ∀ a item b, step a item = .ok b → AdmissionFunded n a → BalancesMatch a →
-      AdmissionFunded n b)
-    (matching : ∀ a item b, step a item = .ok b → BalancesMatch a → BalancesMatch b)
-    (ok : xs.foldlM step s = .ok t) : AdmissionFunded n t :=
-  (foldlM_ok_invariant (fun a => AdmissionFunded n a ∧ BalancesMatch a)
-    (fun a item b prior computed =>
-      ⟨keeps a item b computed prior.1 prior.2, matching a item b computed prior.2⟩)
-    ⟨holds, matched⟩ ok).1
 
 private theorem admissionFunded_kept {f : Fork} {s t : BeaconState preset f}
     {n : Nat} (holds : AdmissionFunded n s) (kept : EffectiveKept s t)
@@ -2299,14 +1462,6 @@ private theorem admissionFunded_exit {f : Fork} {s t : BeaconState preset f}
       exact (exitQueue_validators queue).2
   exact admissionFunded_kept holds (effectiveKept_exit ok) (sameSizes_initiateValidatorExit ok).1
     balances
-
-private theorem admissionFunded_voluntaryExit {f : Fork} {s t : BeaconState preset f}
-    {n : Nat} {signed : SignedVoluntaryExit} (holds : AdmissionFunded n s)
-    (ok : processVoluntaryExit config checks s signed = .ok t) : AdmissionFunded n t := by
-  unfold processVoluntaryExit at ok
-  simp only [bind_ok_iff, ensure_ok_iff, liftAccessor_ok, liftSsz_ok] at ok
-  obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, exited⟩ := ok
-  exact admissionFunded_exit holds exited
 
 private theorem admissionFunded_blsChange {f : Fork} {s t : BeaconState preset f}
     {n : Nat} {signed : SignedBLSToExecutionChange} (holds : AdmissionFunded n s)
@@ -2470,74 +1625,64 @@ private theorem balanceDrift_unassigned_before {f h : Fork}
   · by_contra assigned
     exact assigned ((life.exitEpoch assigned).symm.trans epochs.2)
 
+/-- Block operations fund every validator that they admit, from its deposit.
+
+The three folds before the deposits keep the registry size, so no entry needs funding there.
+
+After them each step funds new entries if the entries of its end state are still unassigned.
+
+The end state of the operations has all new entries unassigned. -/
 private theorem admissionFunded_operations {f : Fork} {s t : BeaconState preset f}
     (early : f < .glamsterdam) {body : BeaconBlockBody preset f} {parentSlot : Slot}
     (matched : BalancesMatch s)
     (ok : processOperations config checks s body parentSlot = .ok t) :
     AdmissionFunded s.validators.data.size t := by
-  have pending := processOperations_new_validator_epochs_unassigned ok
-  unfold processOperations at ok
-  split at ok
-  · exact False.elim (Nat.not_le_of_lt early (by assumption))
-  simp only [bind_ok_iff, ensure_ok_iff, ← Array.foldlM_toList] at ok
-  obtain ⟨_, _, _, _, proposers, proposersOk, attesters, attestersOk, attested, attestedOk,
-    deposited, depositedOk, exited, exitsOk, changed, changesOk, requestsOk⟩ := ok
+  let n := s.validators.data.size
+  let Pending (a : BeaconState preset f) : Prop := ∀ i v, n ≤ i → a.validators.data[i]? = some v →
+    v.activationEpoch = FAR_FUTURE_EPOCH ∧ v.exitEpoch = FAR_FUTURE_EPOCH
+  let Funds (a b : BeaconState preset f) : Prop := RegistryLifecycle a b ∧
+    (Pending b → AdmissionFunded n a → BalancesMatch a → AdmissionFunded n b ∧ BalancesMatch b)
+  have refl (a : BeaconState preset f) : Funds a a := ⟨.refl a, fun _ funded m => ⟨funded, m⟩⟩
+  have trans {a b c : BeaconState preset f} (one : Funds a b) (two : Funds b c) : Funds a c :=
+    ⟨one.1.trans two.1, fun pending funded m =>
+      have middle := one.2 (balanceDrift_unassigned_before two.1 pending) funded m
+      two.2 pending middle.1 middle.2⟩
+  obtain ⟨_, _, attested, proposersOk, slashingsOk, attestedOk, rest⟩ :=
+    processOperations_folds_of Funds refl trans
+      (fun deposited => ⟨registryLifecycle_processDeposit deposited, fun _ funded m =>
+        ⟨admissionFunded_processDeposit funded m deposited,
+          balancesMatch_processDeposit deposited m⟩⟩)
+      (fun exited => ⟨registryLifecycle_processVoluntaryExit exited, fun _ funded m =>
+        ⟨admissionFunded_exit funded (processVoluntaryExit_initiates exited),
+          balancesMatch_of_sameSizes (sameSizes_processVoluntaryExit exited) m⟩⟩)
+      (fun changed => ⟨registryLifecycle_processBlsToExecutionChange changed, fun _ funded m =>
+        ⟨admissionFunded_blsChange funded changed,
+          balancesMatch_of_sameSizes (sameSizes_processBlsToExecutionChange changed) m⟩⟩)
+      (fun requested => ⟨registryLifecycle_processExecutionRequests requested,
+        fun pending funded m => ⟨admissionFunded_requests funded (balanceDrift_unassigned_before
+          (registryLifecycle_processExecutionRequests requested) pending) requested,
+          (frame_processExecutionRequests requested).toFrame.balancesMatch m⟩⟩)
+      (fun {_ _ gloas} _ => absurd gloas (Nat.not_le_of_lt early)) ok
   have sizes {α : Type} {step : BeaconState preset f → α → Except TransitionError _}
       (keeps : ∀ a b c, step a b = .ok c → SameSizes a c) {xs : List α}
       {a b : BeaconState preset f} (ok : xs.foldlM step a = .ok b) : SameSizes a b :=
     foldlM_ok_invariant (SameSizes a)
       (fun _ _ _ prior ok => prior.trans (keeps _ _ _ ok)) (SameSizes.refl _) ok
   have before := (sizes (fun _ _ _ => sameSizes_processProposerSlashing) proposersOk).trans
-    ((sizes (fun _ _ _ => sameSizes_processAttesterSlashing) attestersOk).trans
+    ((sizes (fun _ _ _ => sameSizes_processAttesterSlashing) slashingsOk).trans
       (sizes (fun _ _ _ => sameSizes_processAttestation) attestedOk))
-  have initial : AdmissionFunded s.validators.data.size attested := by
-    rw [← before.1]; exact admissionFunded_empty _
-  have atDeposited := admissionFunded_fold initial (balancesMatch_of_sameSizes before matched)
-    (fun _ _ _ ok holds matched => admissionFunded_processDeposit holds matched ok)
-    (fun _ _ _ => balancesMatch_processDeposit) depositedOk
-  have depositMatch := foldlM_ok_invariant BalancesMatch
-    (fun _ _ _ prior ok => balancesMatch_processDeposit ok prior)
-    (balancesMatch_of_sameSizes before matched) depositedOk
-  have atExited := admissionFunded_fold atDeposited depositMatch
-    (fun _ _ _ ok holds _ => admissionFunded_voluntaryExit holds ok)
-    (fun _ _ _ ok => balancesMatch_of_sameSizes (sameSizes_processVoluntaryExit ok)) exitsOk
-  have exitMatch := balancesMatch_of_sameSizes
-    (sizes (fun _ _ _ => sameSizes_processVoluntaryExit) exitsOk) depositMatch
-  have atChanged : AdmissionFunded s.validators.data.size changed := by
-    unfold processBlsToExecutionChanges at changesOk
-    split at changesOk
-    · rw [← Array.foldlM_toList] at changesOk
-      exact admissionFunded_fold atExited exitMatch
-        (fun _ _ _ ok holds _ => admissionFunded_blsChange holds ok)
-        (fun _ _ _ ok => balancesMatch_of_sameSizes (sameSizes_processBlsToExecutionChange ok))
-        changesOk
-    · cases changesOk; exact atExited
-  split at requestsOk
-  · exact admissionFunded_requests atChanged
-      (balanceDrift_unassigned_before
-        (registryLifecycle_processExecutionRequests requestsOk) pending)
-      requestsOk
-  · cases requestsOk; exact atChanged
+  have initial : AdmissionFunded n attested := by
+    change AdmissionFunded s.validators.data.size attested
+    rw [← before.1]
+    exact admissionFunded_empty _
+  exact (rest.2 (processOperations_new_validator_epochs_unassigned ok) initial
+    (balancesMatch_of_sameSizes before matched)).1
 
-private theorem balanceDrift_execution_sizes {f : Fork} {s t : BeaconState preset f}
-    {engine : ExecutionEngine preset f} {body : BeaconBlockBody preset f}
-    {bellatrix : .bellatrix ≤ f} (early : f < .glamsterdam)
-    (ok : processBlockExecution config checks engine s body bellatrix = .ok t) : SameSizes s t := by
-  have payload {a b : BeaconState preset f} {supported : .bellatrix ≤ f ∧ f < .glamsterdam}
-      (ok : processExecutionPayload config engine a body supported = .ok b) : SameSizes a b := by
-    obtain ⟨_, _, _, rfl⟩ := processExecutionPayload_ok ok
-    exact ⟨rfl, rfl⟩
-  unfold processBlockExecution at ok
-  split at ok
-  · exact False.elim (Nat.not_le_of_lt early (by assumption))
-  split at ok
-  · obtain ⟨_, withdrawn, paid⟩ := bind_ok_iff.mp ok
-    exact (sameSizes_processWithdrawals withdrawn).trans (payload paid)
-  · dsimp only at ok
-    split at ok
-    · exact payload ok
-    · cases ok; exact SameSizes.refl _
+/-- A block funds every validator that it admits.
 
+The steps before the operations keep the validators, the current sync committee and the keys.
+
+The sync aggregate then pays only validators whose keys were in the registry before the block. -/
 private theorem admissionFunded_block {f : Fork} {s t : BeaconState preset f}
     {engine : ExecutionEngine preset f} {block : BeaconBlock preset f}
     (early : f < .glamsterdam) (matched : BalancesMatch s)
@@ -2545,81 +1690,36 @@ private theorem admissionFunded_block {f : Fork} {s t : BeaconState preset f}
       ∀ key ∈ (s.currentSyncCommittee altair).value.pubkeys.toList, key ∈ validatorKeys s)
     (ok : processBlock config checks engine s block = .ok t) :
     AdmissionFunded s.validators.data.size t := by
-  have header {a b : BeaconState preset f} (ok : processBlockHeader a block = .ok b) :
-      b.currentSyncCommittee = a.currentSyncCommittee := by
-    obtain ⟨_, _, rfl⟩ := processBlockHeader_eq ok
-    rfl
-  have randao {a b : BeaconState preset f}
-      (ok : processRandao config checks a block.body = .ok b) :
-      b.currentSyncCommittee = a.currentSyncCommittee := by
-    obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, rfl⟩ := processRandao_eq ok
-    rfl
-  have vote {a b : BeaconState preset f} {before : f < .hegota}
-      (ok : processEth1Data before a block.body = .ok b) :
-      b.currentSyncCommittee = a.currentSyncCommittee := by
-    obtain ⟨_, _, rest⟩ := processEth1Data_eq ok
-    rw [← rest]
-  unfold processBlock at ok
-  split at ok
+  obtain ⟨input, last, started, operated, -, synced⟩ := processBlock_operationsInput ok
+  have head (altair : .altair ≤ f) :
+      input.currentSyncCommittee altair = s.currentSyncCommittee altair :=
+    OperationsInput.step_of (fun a b : BeaconState preset f =>
+        b.currentSyncCommittee altair = a.currentSyncCommittee altair) (fun _ => rfl)
+      (fun one two => two.trans one)
+      (fun gloas _ => absurd gloas (Nat.not_le_of_lt early))
+      (fun headed => by obtain ⟨_, _, rfl⟩ := processBlockHeader_eq headed; rfl)
+      (fun _ executed => processBlockExecution_currentSyncCommittee altair executed)
+      (fun revealed => by
+        obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, rfl⟩ := processRandao_eq revealed
+        rfl)
+      (fun _ voted => by obtain ⟨_, _, rest⟩ := processEth1Data_eq voted; rw [← rest])
+      started
+  have frame := frame_operationsInput started
+  have funded := admissionFunded_operations early (frame.balancesMatch matched) operated
+  rw [OperationsInput.validators_eq early started] at funded
+  split at synced
   · rename_i altair
-    unfold processBlockAltair at ok
-    simp only [bind_ok_iff] at ok
-    obtain ⟨paid, paidOk, headed, headedOk, executed, executedOk, revealed, revealedOk, voted,
-      votedOk, operated, operatedOk, synced⟩ := ok
-    have paidSame : paid = s := by
-      split at paidOk
-      · exact False.elim (Nat.not_le_of_lt early (by assumption))
-      · cases paidOk; rfl
-    subst paid
-    have executionSize : SameSizes headed executed := by
-      split at executedOk
-      · exact balanceDrift_execution_sizes early executedOk
-      · cases executedOk; exact .refl _
-    have executionKeys : RegistryIdentity headed executed := by
-      split at executedOk
-      · exact (frame_processBlockExecution executedOk).toFrame.registryIdentity
-      · cases executedOk; exact .refl _
-    have executionCommittee : executed.currentSyncCommittee altair =
-        headed.currentSyncCommittee altair := by
-      split at executedOk
-      · exact processBlockExecution_currentSyncCommittee altair executedOk
-      · cases executedOk; rfl
-    have votedSize : SameSizes revealed voted := by
-      split at votedOk
-      · exact sameSizes_processEth1Data votedOk
-      · cases votedOk; exact .refl _
-    have votedKeys : RegistryIdentity revealed voted := by
-      split at votedOk
-      · exact (frame_processEth1Data votedOk).toFrame.registryIdentity
-      · cases votedOk; exact .refl _
-    have votedCommittee : voted.currentSyncCommittee = revealed.currentSyncCommittee := by
-      split at votedOk
-      · exact vote votedOk
-      · cases votedOk; rfl
-    have before := (sameSizes_processBlockHeader headedOk).trans
-      (executionSize.trans ((sameSizes_processRandao revealedOk).trans votedSize))
-    have funded := admissionFunded_operations early
-      (balancesMatch_of_sameSizes before matched) operatedOk
-    rw [before.1] at funded
     apply admissionFunded_sync funded ?_ synced
     intro key member index indexed
     apply balanceDrift_indexOfPubkey_lt ?_ indexed
     apply balanceDrift_old_key
-      ((frame_processBlockHeader headedOk).toFrame.registryIdentity.trans (executionKeys.trans
-        ((frame_processRandao revealedOk).toFrame.registryIdentity.trans (votedKeys.trans
-          (frame_processOperations operatedOk).registryIdentity))))
+      (frame.pubkeysPrefix.trans (frame_processOperations operated).pubkeysPrefix)
     apply keys altair key
-    have same : operated.currentSyncCommittee altair = s.currentSyncCommittee altair := by
-      rw [processOperations_currentSyncCommittee altair operatedOk, votedCommittee,
-        randao revealedOk, executionCommittee, header headedOk]
+    have same : last.currentSyncCommittee altair = s.currentSyncCommittee altair := by
+      rw [processOperations_currentSyncCommittee altair operated, head altair]
     simpa only [same, Vector.toList_toArray] using (Array.mem_toList_iff.mpr member)
-  · simp only [bind_ok_iff] at ok
-    obtain ⟨headed, headedOk, revealed, revealedOk, voted, votedOk, operated⟩ := ok
-    have before := (sameSizes_processBlockHeader headedOk).trans
-      ((sameSizes_processRandao revealedOk).trans (sameSizes_processEth1Data votedOk))
-    have funded := admissionFunded_operations early
-      (balancesMatch_of_sameSizes before matched) operated
-    simpa only [before.1] using funded
+  · cases synced
+    exact funded
 
 private theorem admissionFunded_pendingDeposits {f : Fork} {s t : BeaconState preset f}
     {n : Nat} {electra : .pectra ≤ f} (holds : AdmissionFunded n s)
@@ -2723,127 +1823,87 @@ private theorem admissionFunded_consolidations {f : Fork} {s t : BeaconState pre
   simpa only [effectiveAt, actualBalanceAt, (processPendingConsolidations_kept ok).1,
     (passPendingConsolidations_kept passed).1, balances] using funded i large
 
-private theorem admissionFunded_pending {f : Fork} {s t : BeaconState preset f}
-    {n : Nat} (holds : AdmissionFunded n s) (matched : BalancesMatch s)
-    (old : ∀ electra : .pectra ≤ f,
-      ∀ entry ∈ (s.pendingConsolidations electra).data.toList, entry.sourceIndex.toNat < n)
-    (ok : processPendingBalances config checks s = .ok t) : AdmissionFunded n t := by
-  unfold processPendingBalances at ok
-  split at ok
-  · rename_i electra
-    obtain ⟨middle, deposited, consolidated⟩ := bind_ok_iff.mp ok
-    apply admissionFunded_consolidations
-      (admissionFunded_pendingDeposits holds matched deposited) ?_ consolidated
-    simpa only [processPendingDeposits_pendingConsolidations deposited] using old electra
-  · cases ok; exact holds
+/-- Validators admitted by an epoch start with an effective balance funded by their balance.
 
-private def PendingSources {f : Fork} (s : BeaconState preset f) : Prop :=
-  ∀ electra : .pectra ≤ f, ∀ entry ∈ (s.pendingConsolidations electra).data.toList,
-    entry.sourceIndex.toNat < s.validators.data.size
+Before pending deposits the registry, the balances and the consolidation queue keep their sizes.
 
+Pending deposits and consolidations then fund new entries, and later stages keep the funding. -/
 private theorem admissionFunded_epoch {f : Fork} {s t : BeaconState preset f}
-    (early : f < .glamsterdam) (matched : BalancesMatch s) (sources : PendingSources s)
+    (matched : BalancesMatch s) (sources : PendingSources s)
     (ok : processEpoch config checks s = .ok t) :
     AdmissionFunded s.validators.data.size t := by
-  have update {a b : BeaconState preset f} {n : Nat} (funded : AdmissionFunded n a)
-      (ok : processEffectiveBalanceUpdates a = .ok b) : AdmissionFunded n b := by
-    have balances : b.balances = a.balances := by
-      apply foldlM_ok_invariant (fun b => b.balances = a.balances) ?_ rfl ok
-      intro before index after prior ok
-      simp only [updateEffectiveBalance, bind_ok_iff, liftAccessor_ok] at ok
-      obtain ⟨_, _, _, _, _, _, set⟩ := ok
-      obtain ⟨_, rfl⟩ := setValidatorAt_ok set
-      exact prior
-    intro i large
-    have bound := balanceDrift_update_upper ok i
-    have prior := funded i large
-    simpa only [actualBalanceAt, balances] using bound.trans (max_le prior (Nat.le_refl _))
   have transport {a b : BeaconState preset f} {n : Nat} (funded : AdmissionFunded n a)
       (same : b.validators = a.validators ∧ b.balances = a.balances) : AdmissionFunded n b := by
     intro i large
     simpa only [effectiveAt, actualBalanceAt, same.1, same.2] using funded i large
-  unfold processEpoch at ok
-  split at ok
-  · unfold processEpochAltair at ok
-    simp only [bind_ok_iff] at ok
-    obtain ⟨justified, justifiedOk, scored, scoredOk, rewarded, rewardedOk, registered,
-      registeredOk, slashed, slashedOk, reset, resetOk, pending, pendingOk, paid, paidOk,
-      balanced, balancedOk, cleared, clearedOk, mixed, mixedOk, ok⟩ := ok
-    have paidEq : paid = pending := by
-      split at paidOk
-      · exact False.elim (Nat.not_le_of_lt early (by assumption))
-      · cases paidOk; rfl
-    subst paid
-    have resetSame : reset.validators = slashed.validators ∧ reset.balances = slashed.balances := by
-      split at resetOk
-      · exact balanceDrift_reset resetOk
-      · cases resetOk; exact ⟨rfl, rfl⟩
-    have size : reset.validators.data.size = s.validators.data.size := by
-      rw [resetSame.1, (sameSizes_processSlashings slashedOk).1,
-        (sameSizes_processRegistryUpdates registeredOk).1,
-        (processRewardsAndPenalties_sameSizes rewardedOk).1, (balanceDrift_inactivity scoredOk).1,
-        (sameSizes_processJustificationAndFinalization justifiedOk).1]
-    have queue : reset.pendingConsolidations = s.pendingConsolidations := by
-      have last : reset.pendingConsolidations = slashed.pendingConsolidations := by
-        split at resetOk
-        · exact processEth1DataReset_pendingConsolidations resetOk
-        · cases resetOk; rfl
-      rw [last, processSlashings_pendingConsolidations slashedOk,
-        processRegistryUpdates_pendingConsolidations registeredOk,
-        processRewardsAndPenalties_pendingConsolidations rewardedOk,
-        processInactivityUpdates_pendingConsolidations scoredOk,
-        processJustificationAndFinalization_pendingConsolidations justifiedOk]
-    have resetMatched : BalancesMatch reset := by
-      rw [BalancesMatch, resetSame.1, resetSame.2]
-      exact balancesMatch_of_sameSizes (sameSizes_processSlashings slashedOk)
-        (balancesMatch_of_sameSizes (sameSizes_processRegistryUpdates registeredOk)
-          (balancesMatch_of_sameSizes (processRewardsAndPenalties_sameSizes rewardedOk)
-            (by simpa only [BalancesMatch, (balanceDrift_inactivity scoredOk).1,
-              (balanceDrift_inactivity scoredOk).2] using
-              (balancesMatch_of_sameSizes
-                (sameSizes_processJustificationAndFinalization justifiedOk) matched))))
-    have funded := admissionFunded_pending (admissionFunded_empty reset) resetMatched
-      (by simpa only [PendingSources, queue, size] using sources) pendingOk
-    rw [size] at funded
-    have atBalanced := update funded balancedOk
-    obtain ⟨_, _, _, _, rfl⟩ := processSlashingsReset_eq clearedOk
-    obtain ⟨_, _, _, _, _, _, rfl⟩ := processRandaoMixesReset_eq mixedOk
-    split at ok <;> simp only [bind_ok_iff] at ok <;>
-      obtain ⟨_, rooted, _, synced, _, looked, windowed⟩ := ok
-    · have roots := balanceDrift_summaries rooted
-      exact transport (transport atBalanced roots) (balanceDrift_epochEnd synced looked windowed)
-    · have roots := balanceDrift_historical rooted
-      exact transport (transport atBalanced roots) (balanceDrift_epochEnd synced looked windowed)
-  · simp only [bind_ok_iff] at ok
-    obtain ⟨justified, justifiedOk, rewarded, rewardedOk, registered, registeredOk,
-      slashed, slashedOk, reset, resetOk, balanced, balancedOk, cleared, clearedOk,
-      mixed, mixedOk, rooted, rootedOk, rotated⟩ := ok
-    have size : reset.validators.data.size = s.validators.data.size := by
-      rw [(balanceDrift_reset resetOk).1, (sameSizes_processSlashings slashedOk).1,
-        (sameSizes_processRegistryUpdates registeredOk).1,
-        (processRewardsAndPenalties_sameSizes rewardedOk).1,
-        (sameSizes_processJustificationAndFinalization justifiedOk).1]
-    have funded := update (admissionFunded_empty reset) balancedOk
-    rw [size] at funded
-    obtain ⟨_, _, _, _, rfl⟩ := processSlashingsReset_eq clearedOk
-    obtain ⟨_, _, _, _, _, _, rfl⟩ := processRandaoMixesReset_eq mixedOk
-    have roots := balanceDrift_historical rootedOk
-    apply transport (transport funded roots)
-    unfold processParticipationRecordUpdates at rotated
-    split at rotated
-    · cases rotated
-    · cases rotated; exact ⟨rfl, rfl⟩
+  have trace := processEpoch_trace ok
+  change EpochTrace _ ([.justification, .inactivity, .rewards, .registry, .slashings,
+    .eth1Reset] ++ [.pendingDeposits, .pendingConsolidations, .payments, .effectiveBalances,
+      .slashingsReset, .randaoReset, .history, .participation, .syncCommittees,
+      .proposerLookahead, .ptcWindow]) _ _ at trace
+  obtain ⟨reset, head, tail⟩ := EpochTrace.append_iff.mp trace
+  have start : SameSizes s reset ∧ reset.pendingConsolidations = s.pendingConsolidations := by
+    refine head.transport
+      (fun a b => SameSizes a b ∧ b.pendingConsolidations = a.pendingConsolidations)
+      (fun a => ⟨SameSizes.refl a, rfl⟩) (fun one two => ⟨one.1.trans two.1, two.2.trans one.2⟩)
+      ?_
+    intro k member a b computed
+    have edge := EpochStage.action_cases.mp computed
+    cases k
+    case rewards => exact ⟨processRewardsAndPenalties_sameSizes edge, edge.samePendingQueue nofun⟩
+    case registry => exact ⟨sameSizes_processRegistryUpdates edge, edge.samePendingQueue nofun⟩
+    case slashings => exact ⟨sameSizes_processSlashings edge, edge.samePendingQueue nofun⟩
+    case justification | inactivity | eth1Reset =>
+      have kept := edge.records ⟨nofun, nofun, nofun, nofun, nofun, nofun⟩
+      exact ⟨⟨congrArg (·.data.size) kept.1, congrArg (·.data.size) kept.2.1⟩, kept.2.2.1⟩
+    all_goals simp at member
+  have size := start.1.1
+  cases tail
+  rename_i deposited depositedOk tail
+  cases tail
+  rename_i consolidated consolidatedOk tail
+  cases tail
+  rename_i paid paidOk tail
+  cases tail
+  rename_i balanced balancedOk tail
+  -- Before pending deposits the registry has its old size, so no entry needs funding yet.
+  have pending : AdmissionFunded s.validators.data.size consolidated := by
+    have depositEdge := EpochStage.action_cases.mp depositedOk
+    have consolidationEdge := EpochStage.action_cases.mp consolidatedOk
+    simp only [EpochStage.Edge] at depositEdge consolidationEdge
+    rw [← size]
+    by_cases electra : Fork.pectra ≤ f
+    · simp only [electra, ↓reduceDIte] at depositEdge consolidationEdge
+      apply admissionFunded_consolidations (admissionFunded_pendingDeposits
+        (admissionFunded_empty reset) (balancesMatch_of_sameSizes start.1 matched) depositEdge)
+        ?_ consolidationEdge
+      simpa only [processPendingDeposits_pendingConsolidations depositEdge, start.2, size] using
+        sources electra
+    · simp only [electra, ↓reduceDIte] at depositEdge consolidationEdge
+      subst depositEdge consolidationEdge
+      exact admissionFunded_empty reset
+  have paidEdge := EpochStage.action_cases.mp paidOk
+  have atPaid := transport pending ⟨paidEdge.validators_eq ⟨nofun, nofun, nofun⟩,
+    paidEdge.balances_eq ⟨nofun, nofun, nofun, nofun, nofun, nofun⟩⟩
+  have updated := EpochStage.action_cases.mp balancedOk
+  change processEffectiveBalanceUpdates paid = .ok balanced at updated
+  have atBalanced : AdmissionFunded s.validators.data.size balanced := by
+    intro i large
+    have bound := balanceDrift_update_upper updated i
+    simpa only [actualBalanceAt, processEffectiveBalanceUpdates_balances updated] using
+      bound.trans (max_le (atPaid i large) (Nat.le_refl _))
+  exact transport atBalanced (balanceDrift_late tail)
 
 private theorem admissionFunded_slot {f : Fork} {s t : BeaconState preset f}
-    (early : f < .glamsterdam) (matched : BalancesMatch s) (sources : PendingSources s)
+    (matched : BalancesMatch s) (sources : PendingSources s)
     (ok : advanceSlot config checks s = .ok t) : AdmissionFunded s.validators.data.size t := by
   simp only [advanceSlot, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at ok
   obtain ⟨next, _, cached, cache, advanced, advance, rfl⟩ := ok
   obtain ⟨_, _, _, _, rfl⟩ := processSlot_ok cache
   unfold epochIfLast at advance
   split at advance
-  · have funded := admissionFunded_epoch (s := _) (t := advanced) early
-      (by exact matched) (by exact sources) advance
+  · have funded := admissionFunded_epoch (s := _) (t := advanced) (by exact matched)
+      (by exact sources) advance
     exact funded
   · cases advance
     exact admissionFunded_empty s
@@ -2896,28 +1956,12 @@ private theorem balanceDrift_join_of_admission {g x y : ForkedBeaconState preset
       omega
     · exact (admitted (shared.append pre) step early (by omega)).trans (Nat.le_add_left _ _)
 
-private theorem balanceDrift_reachable_matches {g x : ForkedBeaconState preset}
-    (run : Run config checks g x) (genesis : Genesis (config := config) (checks := checks) g) :
-    BalancesMatch x.state := by
-  have invariant {y : ForkedBeaconState preset} (trace : Run config checks g y) :
-      Invariant y.state := by
-    induction trace with
-    | nil =>
-      obtain ⟨_, _, _, ok⟩ := genesis
-      exact (initializeBeaconStateFromEth1_invariant ok).2
-    | snoc pre step ih =>
-      cases step with
-      | slot ok => exact (advanceSlotAcross_invariant ih ok).1
-      | block engine signed due ok =>
-        exact (frame_processBlock (applySignedBlock_ok ok).2.1).invariant ih
-  exact (invariant run).balancesMatch
-
 private theorem balanceDrift_admission_step {g x y : ForkedBeaconState preset}
     (run : Run config checks g x) (genesis : Genesis (config := config) (checks := checks) g)
     (sources : PendingSources x.state) (step : Step config checks x y)
     (early : y.fork < .glamsterdam) (i : Nat) (absent : x.state.validators.data.size ≤ i) :
     max (effectiveAt y i) (actualBalanceAt y i) ≤ pathCredits i step.balancePath := by
-  have matched := balanceDrift_reachable_matches run genesis
+  have matched := reachable_balancesMatch run genesis
   change x.state.balances.data.size = x.state.validators.data.size at matched
   have zero : actualBalanceAt x i = 0 := by
     have missing : x.state.balances.data[i]? = none :=
@@ -2932,9 +1976,7 @@ private theorem balanceDrift_admission_step {g x y : ForkedBeaconState preset}
     exact max_le funded (Nat.le_refl _)
   | slot ok =>
     obtain ⟨next, advanced, upgraded⟩ := bind_ok_iff.mp ok
-    have funded := admissionFunded_slot
-      (Nat.lt_of_le_of_lt (processUpgrades_fork_le upgraded) early)
-      matched sources advanced i absent
+    have funded := admissionFunded_slot matched sources advanced i absent
     change effectiveAt ⟨x.fork, next⟩ i ≤ actualBalanceAt ⟨x.fork, next⟩ i at funded
     have upper := balanceDrift_upgrades_upper upgraded early i
     simp only [Step.balancePath, advanced, Except.toOption, pathCredits, zero,
@@ -2950,182 +1992,21 @@ private theorem balanceDrift_join_of_sources {g x y : ForkedBeaconState preset}
     effectiveAt y i ≤ pathCredits i tail.balancePath := by
   apply (Nat.le_max_left _ _).trans
   apply balanceDrift_join_of_admission shared tail early i newKey
-    (balanceDrift_reachable_matches shared genesis)
+    (reachable_balancesMatch shared genesis)
   intro a b run step early absent
   exact balanceDrift_admission_step run genesis
     (sources run (Nat.lt_of_le_of_lt step.chainStep.fork_le early)) step early i absent
 
-/-- New keys are bounded from their actual admission balance, not a fictitious zero receipt. -/
+/-- New keys are bounded from their actual admission balance, not a fictitious zero receipt.
+
+The withdrawal delay is positive. -/
 theorem joining_growth_from_admission {g x y : ForkedBeaconState preset}
     (shared : Run config checks g x) (tail : Run config checks x y)
     (genesis : Genesis (config := config) (checks := checks) g) (early : y.fork < .glamsterdam)
-    (i : Nat) (newKey : x.state.validators.data.size ≤ i)
-    (present : i < y.state.validators.data.size) :
-    effectiveAt y i ≤ pathCredits i tail.balancePath := by
-  have _ := present
-  exact balanceDrift_join_of_sources shared tail genesis early
-    (fun run early electra => run.pendingConsolidation_sources genesis early electra) i newKey
-
-/-- A single hysteresis update loses less than one increment beyond its actual balance gap. -/
-theorem hysteresis_loss (largest balance old next : Gwei)
-    (increment : 0 < preset.EFFECTIVE_BALANCE_INCREMENT.toNat) (cap : old ≤ largest)
-    (ok : updatedEffectiveBalance preset largest balance old = .ok next) :
-    old.toNat - next.toNat ≤ old.toNat - balance.toNat +
-      (preset.EFFECTIVE_BALANCE_INCREMENT.toNat - 1) := by
-  rcases updatedEffectiveBalance_cases ok with rfl | rfl
-  · omega
-  · have rounded : balance % preset.EFFECTIVE_BALANCE_INCREMENT ≤ balance :=
-      UInt64.le_iff_toNat_le.mpr (by rw [UInt64.toNat_mod]; exact Nat.mod_le _ _)
-    have remainder := Nat.mod_lt balance.toNat increment
-    have capped := UInt64.le_iff_toNat_le.mp cap
-    rw [Base.Uint64.toNat_min, UInt64.toNat_sub_of_le _ _ rounded, UInt64.toNat_mod]
-    omega
-
-theorem hysteresis_gain (largest balance old next : Gwei)
-    (ok : updatedEffectiveBalance preset largest balance old = .ok next) :
-    next.toNat - old.toNat ≤ balance.toNat - old.toNat := by
-  rcases updatedEffectiveBalance_eq_or_le ok with rfl | ⟨below, _⟩
-  · omega
-  · exact Nat.sub_le_sub_right (UInt64.le_iff_toNat_le.mp below) _
-
-/-- Rounding cannot cross an aligned reference still covered by balance and cap. -/
-theorem hysteresis_reference_le (reference largest balance old next : Gwei)
-    (aligned : reference.toNat % preset.EFFECTIVE_BALANCE_INCREMENT.toNat = 0)
-    (previous : reference ≤ old) (funded : reference ≤ balance) (cap : reference ≤ largest)
-    (ok : updatedEffectiveBalance preset largest balance old = .ok next) : reference ≤ next := by
-  rcases updatedEffectiveBalance_cases ok with rfl | rfl
-  · exact previous
-  · have rounded : balance % preset.EFFECTIVE_BALANCE_INCREMENT ≤ balance :=
-      UInt64.le_iff_toNat_le.mpr (by rw [UInt64.toNat_mod]; exact Nat.mod_le _ _)
-    have quotient := Nat.div_le_div_right (UInt64.le_iff_toNat_le.mp funded)
-      (c := preset.EFFECTIVE_BALANCE_INCREMENT.toNat)
-    have product := Nat.mul_le_mul_left preset.EFFECTIVE_BALANCE_INCREMENT.toNat quotient
-    have referenceDivision := Nat.mod_add_div reference.toNat
-      preset.EFFECTIVE_BALANCE_INCREMENT.toNat
-    have balanceDivision := Nat.mod_add_div balance.toNat
-      preset.EFFECTIVE_BALANCE_INCREMENT.toNat
-    rw [aligned] at referenceDivision
-    rw [UInt64.le_iff_toNat_le, Base.Uint64.toNat_min,
-      UInt64.toNat_sub_of_le _ _ rounded, UInt64.toNat_mod]
-    have cap := UInt64.le_iff_toNat_le.mp cap
-    omega
-
-/-- An effective-balance update cannot increase the funding held at any registry position. -/
-theorem updateEffectiveBalance_funding {fork : Fork} {s t : BeaconState preset fork}
-    {index : Nat} (ok : updateEffectiveBalance s index = .ok t) (i : Nat) :
-    max (effectiveAt ⟨fork, t⟩ i) (actualBalanceAt ⟨fork, t⟩ i) ≤
-      max (effectiveAt ⟨fork, s⟩ i) (actualBalanceAt ⟨fork, s⟩ i) := by
-  simp only [updateEffectiveBalance, bind_ok_iff, liftAccessor_ok] at ok
-  obtain ⟨validator, found, balance, read, effective, updated, set⟩ := ok
-  obtain ⟨inside, rfl⟩ := setValidatorAt_ok set
-  have old : s.validators.data[index]? = some validator := by
-    simpa [getValidatorAt, inside] using found
-  by_cases same : i = index
-  · subst i
-    have actual : actualBalanceAt ⟨fork, s⟩ index = balance.toNat := by
-      simp [actualBalanceAt, getBalanceAt_eq_ok_iff.mp read]
-    have bound := updatedEffectiveBalance_le_max updated
-    simpa [effectiveAt, actualBalanceAt, BeaconState.putValidator,
-      Serialization.Ssz.RootedForkList.data_set, old, ← actual] using
-      (max_le bound (Nat.le_max_right validator.effectiveBalance.toNat balance.toNat))
-  · simp [effectiveAt, actualBalanceAt, BeaconState.putValidator,
-      Serialization.Ssz.RootedForkList.data_set, Ne.symm same]
-
-/-- The full effective-balance pass cannot mint funding, including at inactive positions. -/
-theorem processEffectiveBalanceUpdates_funding {fork : Fork} {s t : BeaconState preset fork}
-    (ok : processEffectiveBalanceUpdates s = .ok t) (i : Nat) :
-    max (effectiveAt ⟨fork, t⟩ i) (actualBalanceAt ⟨fork, t⟩ i) ≤
-      max (effectiveAt ⟨fork, s⟩ i) (actualBalanceAt ⟨fork, s⟩ i) := by
-  unfold processEffectiveBalanceUpdates at ok
-  exact foldlM_ok_invariant
-    (fun t => max (effectiveAt ⟨fork, t⟩ i) (actualBalanceAt ⟨fork, t⟩ i) ≤
-      max (effectiveAt ⟨fork, s⟩ i) (actualBalanceAt ⟨fork, s⟩ i))
-    (fun _ _ _ previous step => (updateEffectiveBalance_funding step i).trans previous)
-    (Nat.le_refl _) ok
-
-/-! ## The rewards after the inactivity update -/
-
-/-- From Altair, the inactivity update and then the rewards move a balance within an envelope.
-
-It gains at most its base reward times 54/64, scaled by the ratio of two balances.
-
-The numerator is the effective balance active in the previous epoch, in increments and at least one.
-
-The denominator is the total active balance, in increments and at least one.
-
-It loses at most its base reward plus its inactivity penalty.
-
-The update raises a score by at most the score bias, so the penalty reads the score plus the bias.
-
-Every read is of the state before the update.
-
-That needs a registry within its limit. -/
-theorem processRewardsAndPenalties_balance_le_of_inactivityUpdates {fork : Fork}
-    {state scored after : BeaconState preset fork} (altair : .altair ≤ fork)
-    (within : state.RegistryWithinLimit)
-    (updated : processInactivityUpdates config state altair = .ok scored)
-    (computed : processRewardsAndPenalties config scored = .ok after)
-    (j : Nat) (inside : j < state.validators.data.size) :
-    let inc := preset.EFFECTIVE_BALANCE_INCREMENT.toNat
-    let effective (i : Nat) := ((state.validators.data[i]?).map (·.effectiveBalance.toNat)).getD 0
-    let total := max inc (∑ i ∈ (Finset.range state.validators.data.size).filter
-      (fun i => isActiveAt state (getCurrentEpoch state) i = true), effective i)
-    let perIncrement := inc * preset.BASE_REWARD_FACTOR.toNat /
-      (Uint64.integerSquareroot (UInt64.ofNat total)).toNat
-    let base := effective j / inc * perIncrement
-    let num := max 1 ((∑ i ∈ (Finset.range state.validators.data.size).filter
-      (fun i => isActiveAt state (getPreviousEpoch state) i = true), effective i) / inc)
-    let den := max 1 (total / inc)
-    let score := (((state.inactivityScores altair).data[j]?).map (·.toNat)).getD 0
-    ((after.balances.data[j]?).map (·.toNat)).getD 0 ≤
-        ((state.balances.data[j]?).map (·.toNat)).getD 0 +
-          base * (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum * num /
-            (WEIGHT_DENOMINATOR.toNat * den) ∧
-      ((state.balances.data[j]?).map (·.toNat)).getD 0 ≤
-        ((after.balances.data[j]?).map (·.toNat)).getD 0 + base +
-          effective j * (score + config.INACTIVITY_SCORE_BIAS.toNat) /
-            (config.INACTIVITY_SCORE_BIAS.toNat *
-              (parameters preset fork).INACTIVITY_PENALTY_QUOTIENT.toNat) := by
-  dsimp only
-  -- The update changes only the scores.
-  have frame := processInactivityUpdates_frame updated
-  have validators : scored.validators = state.validators := by rw [frame]
-  have balances : scored.balances = state.balances := by rw [frame]
-  have current : getCurrentEpoch scored = getCurrentEpoch state := by
-    simp only [getCurrentEpoch, show scored.slot = state.slot by rw [frame]]
-  have previous : getPreviousEpoch scored = getPreviousEpoch state := by
-    unfold getPreviousEpoch
-    rw [current]
-  have active (epoch : Epoch) (i : Nat) : isActiveAt scored epoch i = isActiveAt state epoch i := by
-    simp only [isActiveAt, validators]
-  -- It raises each score by at most the bias.
-  have raised : (((scored.inactivityScores altair).data[j]?).map (·.toNat)).getD 0 ≤
-      (((state.inactivityScores altair).data[j]?).map (·.toNat)).getD 0 +
-        config.INACTIVITY_SCORE_BIAS.toNat := by
-    by_cases genesis : getCurrentEpoch state = GENESIS_EPOCH
-    · unfold processInactivityUpdates at updated
-      simp only [genesis, ↓reduceIte, pure, Except.pure, Except.ok.injEq] at updated
-      subst updated
-      exact Nat.le_add_right _ _
-    obtain ⟨eligible, -, unlisted, listed⟩ := processInactivityUpdates_scores genesis updated
-    by_cases named : ∃ index ∈ eligible, index.toNat = j
-    · obtain ⟨index, member, rfl⟩ := named
-      obtain ⟨hitters, leak, score, score', -, -, before, after, value⟩ := listed index member
-      rw [before, after]
-      simp only [Option.map_some, Option.getD_some]
-      split at value <;> split at value <;> omega
-    · rw [unlisted j fun index member same => named ⟨index, member, same⟩]
-      exact Nat.le_add_right _ _
-  have within' : scored.RegistryWithinLimit := by
-    unfold BeaconState.RegistryWithinLimit
-    rw [validators]
-    exact within
-  have core := processRewardsAndPenalties_balance_le_of_altair altair within' computed j
-    (by rw [validators]; exact inside)
-  dsimp only at core
-  simp only [active, current, previous, validators, balances] at core
-  obtain ⟨up, down⟩ := core
-  refine ⟨up, down.trans (Nat.add_le_add_left (Nat.div_le_div_right
-    (Nat.mul_le_mul_left _ raised)) _)⟩
+    (delay : 0 < config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat)
+    (i : Nat) (newKey : x.state.validators.data.size ≤ i) :
+    effectiveAt y i ≤ pathCredits i tail.balancePath :=
+  balanceDrift_join_of_sources shared tail genesis early
+    (fun run early => run.pendingConsolidation_sources genesis early delay) i newKey
 
 end EthLib.Consensus

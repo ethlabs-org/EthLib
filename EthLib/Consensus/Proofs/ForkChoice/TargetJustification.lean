@@ -307,7 +307,7 @@ theorem advanceSlot_justifies {config : Config} {checks : SignatureChecks}
           exact read
 
 /-- The boundary carries each current target flag and pending vote into the previous list. -/
-theorem advanceSlot_rotates_votes {config : Config} {checks : SignatureChecks}
+private theorem advanceSlot_rotates_votes {config : Config} {checks : SignatureChecks}
     {state after : BeaconState preset fork}
     (advanced : advanceSlot config checks state = .ok after)
     (lastSlot : (state.slot.toNat + 1) % preset.SLOTS_PER_EPOCH.toNat = 0)

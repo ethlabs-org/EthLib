@@ -1,7 +1,7 @@
 module
 
 public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmationResets
-public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmationCommittees
+public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmationSiblingCommittees
 import EthLib.Consensus.Proofs.ForkChoice.FastConfirmationSupporters
 import EthLib.Consensus.Proofs.ForkChoice.HonestVotes
 import EthLib.Consensus.Proofs.ForkChoice.JustifiedRegistry
@@ -105,9 +105,9 @@ theorem Execution.data_eq_of_signed_of_target_epoch (slots : 0 < config.SLOT_DUR
     (signedFirst : (v, data) ∈ statements config checks anchorState anchorBlock first)
     (signedSecond : (v, other) ∈ statements config checks anchorState anchorBlock second)
     (honest : v ∈ J) (epoch : data.target.epoch = other.target.epoch) : data = other := by
-  have nonslashable := e.isSlashableAttestationData_of_signed slots
+  have nonslashable := e.isSlashableAttestationData_honest slots (max n k) honest
     (e.monotone_sent (Nat.le_max_left n k) sentFirst)
-    (e.monotone_sent (Nat.le_max_right n k) sentSecond) signedFirst signedSecond honest
+    (e.monotone_sent (Nat.le_max_right n k) sentSecond) signedFirst signedSecond
   by_contra different
   simp [isSlashableAttestationData, different, epoch] at nonslashable
 
@@ -1125,12 +1125,12 @@ private theorem runKept_of_ancestor_walk {store : Store preset fork}
   obtain ⟨post, postHeld, _, produced⟩ := reachable.blockStatesFromParents known
   rw [held, Option.some.injEq] at postHeld
   subst post
-  obtain ⟨parent, checks, engine, signed, message, parentHeld, transition⟩ := produced other
+  obtain ⟨parent, checks, engine, signed, -, message, parentHeld, transition⟩ := produced other
   obtain ⟨parentBlock, parentKnown⟩ := reachable.known_of_blockState parentHeld
   have lower : parentBlock.slot < block.slot := by
     have bounds := (stateTransition_slot transition).1
     rw [message] at bounds
-    exact UInt64.lt_of_le_of_lt (reachable.blockState_slot_le anchorSlot parentKnown parentHeld)
+    exact UInt64.lt_of_le_of_lt (reachable.slot_le_of_blockState anchorSlot parentKnown parentHeld)
       bounds
   rw [Store.getAncestor_step known low parentKnown lower] at walk
   exact (runKept_of_ancestor_walk reachable anchorSlot baseKnown baseHeld parentHeld walk).trans
@@ -2466,6 +2466,7 @@ private theorem active_of_mem_committeeWindow {store : Store preset fork}
       omega
 
 /-- A window with a participant has read its head state.
+
 An empty slot range has no participants. -/
 private theorem headState_of_mem_committeeWindow {store : Store preset fork}
     {head : Root} {first last : Slot} {members : Std.TreeSet ValidatorIndex}
@@ -4663,12 +4664,12 @@ theorem Execution.honest_support_of_historical_anchor {Δ : ℕ} (sync : e.Synch
     exact rootAnchor (by simpa only [final] using rootHash.symm)
   obtain ⟨rootState, _, _, produced⟩ :=
     callerReachable.blockStatesFromParents callerKnown
-  obtain ⟨parentState, _, _, signedBlock, messageEq, parentStateKnown, transition⟩ :=
+  obtain ⟨parentState, _, _, signedBlock, -, messageEq, parentStateKnown, transition⟩ :=
     produced blockOther
   have parentLower : parentBlock.slot < block.slot := by
     have stateLower := (stateTransition_slot transition).1
     rw [messageEq] at stateLower
-    exact UInt64.lt_of_le_of_lt (callerReachable.blockState_slot_le
+    exact UInt64.lt_of_le_of_lt (callerReachable.slot_le_of_blockState
       (UInt64.le_of_eq anchorSlot) callerParentKnown parentStateKnown) stateLower
   have rootOnParent : ((e.world n).state u).isAncestor ⟨root, .pending⟩
       ⟨block.parentRoot, .pending⟩ = .ok true := by

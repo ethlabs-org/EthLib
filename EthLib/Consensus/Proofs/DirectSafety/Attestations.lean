@@ -1,18 +1,20 @@
 module
 
 public import EthLib.Consensus.Proofs.DirectSafety.Execution
+public import EthLib.Consensus.Proofs.Transition.FfgSlackChain
 public import EthLib.Consensus.Proofs.Transition.TargetPending
+public import EthLib.Consensus.Proofs.Transition.ValidatorKeys
 
 /-!
 # Accepted attestations of one selected execution
 
-The votes are upstream blockVotes, taken only from the actual validated block inputs.
+The votes are those that the blocks of the run cast, taken from the blocks that the run applied.
 
 Each index is interpreted in the registry before its own block, not in the other branch.
 
 Each accepted vote comes with the aggregate check that a block of the run executed on it.
 
-The check is the call of `isValidIndexedAttestation`, on the state where the operations ran it.
+The check is that of the indexed attestation, on the state where the operations ran it.
 
 No assumption about the signature checks is made.
 -/
@@ -25,21 +27,27 @@ open Base Cryptography.Bls
 
 variable {preset : Preset} {config : Config} {checks : SignatureChecks}
 
+/-- The votes that a step casts: none for a slot, and the votes of its block for a block. -/
 def Step.votes {before after : ForkedBeaconState preset}
     (step : Step config checks before after) : Set (ValidatorIndex × AttestationData) :=
   match step with
   | .slot _ => ∅
   | .block _ signed _ _ => blockVotes before.state signed.message
 
+/-- The votes that the steps of a run cast. -/
 def Run.votes {first last : ForkedBeaconState preset}
     (run : Run config checks first last) : Set (ValidatorIndex × AttestationData) :=
   {vote | ∃ before after, ∃ step : Step config checks before after,
     run.Contains step ∧ vote ∈ step.votes}
 
+/-- A vote of the step for `data` names a validator whose key is `key` before the step.
+
+The index is read in the registry of the state before the step. -/
 def Step.Accepted {before after : ForkedBeaconState preset}
     (step : Step config checks before after) (key : BLSPubkey) (data : AttestationData) : Prop :=
   ∃ i v, (i, data) ∈ step.votes ∧ before.state.validators.data[i.toNat]? = some v ∧ v.pubkey = key
 
+/-- A step of the run accepted a vote for `data` by the validator with key `key`. -/
 def Run.Accepted {first last : ForkedBeaconState preset}
     (run : Run config checks first last) (key : BLSPubkey) (data : AttestationData) : Prop :=
   ∃ before after, ∃ step : Step config checks before after,
@@ -60,45 +68,11 @@ structure CheckSite {g a : ForkedBeaconState preset} (run : Run config checks g 
   input : BeaconState preset fork
   started : OperationsInput config checks engine before signed.message input
 
-/-- Where the operations of a block check an indexed attestation, and on which state.
+/-- A check of an indexed attestation that a block of the run executed, and that accepted.
 
-An attester slashing checks both of its attestations on the state before it.
+The check ran where the operations of the block put it, at an attestation or a slashing.
 
-From Altair an attestation is checked on the state before it.
-
-Before Altair it is checked on the state after its pending attestation is recorded.
-
-That state is the one that the attestation returns. -/
-inductive AttestationSite (config : Config) (checks : SignatureChecks) {fork : Fork}
-    (input : BeaconState preset fork) (body : BeaconBlockBody preset fork) (parentSlot : Slot) :
-    BeaconState preset fork → IndexedAttestation preset fork → Prop where
-  | slashing {proposersDone checked next : BeaconState preset fork}
-      {pre post : List (AttesterSlashing preset fork)} {slashing : AttesterSlashing preset fork}
-      {indexed : IndexedAttestation preset fork}
-      (split : body.attesterSlashings.data.toList = pre ++ slashing :: post)
-      (proposers : body.proposerSlashings.data.toList.foldlM
-        (processProposerSlashing config checks) input = .ok proposersDone)
-      (earlier : pre.foldlM (processAttesterSlashing config checks) proposersDone = .ok checked)
-      (processed : processAttesterSlashing config checks checked slashing = .ok next)
-      (which : indexed = slashing.attestation1 ∨ indexed = slashing.attestation2) :
-      AttestationSite config checks input body parentSlot checked indexed
-  | attestation {proposersDone slashingsDone mid next : BeaconState preset fork}
-      {pre post : List (Attestation preset fork)} {attestation : Attestation preset fork}
-      {indexed : IndexedAttestation preset fork}
-      (split : body.attestations.data.toList = pre ++ attestation :: post)
-      (proposers : body.proposerSlashings.data.toList.foldlM
-        (processProposerSlashing config checks) input = .ok proposersDone)
-      (slashings : body.attesterSlashings.data.toList.foldlM
-        (processAttesterSlashing config checks) proposersDone = .ok slashingsDone)
-      (earlier : pre.foldlM (processAttestation config checks · parentSlot ·) slashingsDone =
-        .ok mid)
-      (processed : processAttestation config checks mid parentSlot attestation = .ok next)
-      (indexedOk : getIndexedAttestation (if .altair ≤ fork then mid else next) attestation =
-        .ok indexed) :
-      AttestationSite config checks input body parentSlot
-        (if .altair ≤ fork then mid else next) indexed
-
-/-- An aggregate check that a block of the run executed, on an indexed attestation naming `key`. -/
+An index of the indexed attestation holds `key` at the state of the check. -/
 structure AttestationCheck {g a : ForkedBeaconState preset} (run : Run config checks g a)
     (key : BLSPubkey) extends CheckSite run where
   checked : BeaconState preset fork
@@ -112,33 +86,13 @@ structure AttestationCheck {g a : ForkedBeaconState preset} (run : Run config ch
     checked.validators.data[i.toNat]? = some v ∧ v.pubkey = key
   valid : isValidIndexedAttestation config checks checked indexed = .ok true
 
-/-- The state on which `processAttestation` checks its indexed attestation, and the check.
+/-- A vote that the run accepted for `data` and `key` comes with a check that a block executed.
 
-Before Altair it is the state that the attestation returns, and from Altair its input. -/
-private theorem processAttestation_checked {fork : Fork} {state after : BeaconState preset fork}
-    {parentSlot : Slot} {attestation : Attestation preset fork}
-    (computed : processAttestation config checks state parentSlot attestation = .ok after) :
-    ∃ indexed,
-      getIndexedAttestation (if .altair ≤ fork then state else after) attestation =
-        .ok indexed ∧
-      isValidIndexedAttestation config checks (if .altair ≤ fork then state else after)
-        indexed = .ok true := by
-  by_cases altair : Fork.altair ≤ fork
-  · unfold processAttestation at computed
-    simp only [altair, ↓reduceDIte] at computed
-    unfold processAttestationAltair at computed
-    simp only [bind_ok_iff, liftAccessor_ok, ensure_ok_iff] at computed
-    obtain ⟨_, -, _, -, _, -, _, -, _, -, _, -, _, -, indexed, indexedOk, valid, validOk, _,
-      validTrue, -⟩ := computed
-    subst validTrue
-    simp only [altair, ↓reduceIte]
-    exact ⟨indexed, indexedOk, validOk⟩
-  · obtain ⟨_, _, _, _, _, _, indexed, indexedOk, validOk⟩ :=
-      processAttestation_records (Nat.lt_of_not_le altair) computed
-    simp only [altair, ↓reduceIte]
-    exact ⟨indexed, indexedOk, validOk⟩
+The check is of an indexed attestation with the data `data`, and it accepted.
 
-/-- Case 1: a vote that a block of the run accepted was checked in its attestation. -/
+An index of that attestation holds `key` at the state of the check.
+
+It holds for any signature checks, with more than `MIN_SEED_LOOKAHEAD + 2` epochs of mixes. -/
 theorem _root_.EthLib.Consensus.Run.attestationCheck_of_accepted {g a : ForkedBeaconState preset}
     {run : Run config checks g a}
     (lookahead : preset.MIN_SEED_LOOKAHEAD.toNat + 2 <
@@ -150,60 +104,15 @@ theorem _root_.EthLib.Consensus.Run.attestationCheck_of_accepted {g a : ForkedBe
   | slot ok => simp [Step.votes] at vote
   | @block fork before after engine signed due applied =>
     obtain ⟨_, processed, _⟩ := applySignedBlock_ok applied
-    obtain ⟨input, proposersDone, slashingsDone, _, started, proposers, slashings, folded, -⟩ :=
-      processBlock_folds processed
-    obtain ⟨attestation, included, dataEq, indices, indicesOk, iMem⟩ := vote
-    have dataEq : data = attestation.data := dataEq
-    -- The attestation sits at a position of the attestations of the block.
-    obtain ⟨pre, post, mid, next, split, earlier, processedA⟩ :=
-      foldlM_ok_of_mem (Array.mem_toList_iff.mpr included) folded
-    have same := getAttestingIndices_attestationsStart lookahead started proposers
-      slashings folded (Array.mem_toList_iff.mpr included)
-    -- Up to the attestation, the registry and the mixes are those where the attestations start.
-    have midKept : mid.validators = slashingsDone.validators ∧
-        mid.randaoMixes = slashingsDone.randaoMixes :=
-      foldlM_ok_invariant (fun s => s.validators = slashingsDone.validators ∧
-          s.randaoMixes = slashingsDone.randaoMixes)
-        (fun _ _ _ held ok => ⟨(processAttestation_registry ok).1.trans held.1,
-          (processAttestation_registry ok).2.trans held.2⟩) ⟨rfl, rfl⟩ earlier
-    have midFrame : Frame slashingsDone mid :=
-      Frame.foldlM (fun _ _ _ ok => frame_processAttestation ok) earlier
-    have nextFrame : Frame mid next := frame_processAttestation processedA
-    have kept : (if .altair ≤ fork then mid else next).validators = slashingsDone.validators ∧
-        (if .altair ≤ fork then mid else next).randaoMixes = slashingsDone.randaoMixes ∧
-        Frame slashingsDone (if .altair ≤ fork then mid else next) := by
-      by_cases altair : Fork.altair ≤ fork
-      · simp only [altair, ↓reduceIte]
-        exact ⟨midKept.1, midKept.2, midFrame⟩
-      · simp only [altair, ↓reduceIte]
-        exact ⟨(processAttestation_registry processedA).1.trans midKept.1,
-          (processAttestation_registry processedA).2.trans midKept.2, midFrame.trans nextFrame⟩
-    have headFrame : BlockFrame before slashingsDone :=
-      (frame_operationsInput started).trans <|
-        (BlockFrame.foldlM (fun _ _ _ ok => frame_processProposerSlashing ok) proposers).trans <|
-        BlockFrame.foldlM (fun _ _ _ ok => frame_processAttesterSlashing ok) slashings
-    -- The attesters at the check are those that the vote used.
-    obtain ⟨indexed, indexedOk, valid⟩ := processAttestation_checked processedA
-    have attestersX : getAttestingIndices (if .altair ≤ fork then mid else next) attestation =
-        .ok indices :=
-      ((getAttestingIndices_eq_of_eq (congrArg (·.data) kept.1)
-        (congrArg (·.elements) kept.2.1) attestation).trans same).trans indicesOk
-    obtain ⟨attesters, attestersOk, listed⟩ :=
-      getAttestingIndices_of_getIndexedAttestation indexedOk
-    obtain rfl : attesters = indices := Except.ok.inj (attestersOk.symm.trans attestersX)
-    obtain ⟨indexed', indexedOk', _, indexedData, _⟩ :=
-      getIndexedAttestation_of_getAttestingIndices attestersX
-    have indexedEq : indexed' = indexed := Except.ok.inj (indexedOk'.symm.trans indexedOk)
-    have signs : i ∈ indexed.attestingIndices.data.toList := by
-      rw [listed]
-      simpa using iMem
-    have dataOut : indexed.data = data := by rw [← indexedEq, indexedData, dataEq]
+    obtain ⟨input, checked, indexed, started, site, signs, dataEq, valid⟩ :=
+      blockVotes_verified lookahead processed vote
+    -- The validator of the vote keeps its key from the state before the block to the check.
     obtain ⟨current, foundCurrent, currentKey⟩ :=
       validators_getElem?_of_validatorKeys_prefix
-        (headFrame.toFrame.trans kept.2.2).pubkeysPrefix found
-    refine ⟨⟨⟨fork, before, after, engine, signed, due, applied, member, input, started⟩,
-      _, indexed, .attestation split proposers slashings earlier processedA indexedOk,
-      ⟨i, signs, current, foundCurrent, currentKey.trans keyEq⟩, valid⟩, dataOut⟩
+        ((frame_operationsInput started).toFrame.trans site.frame).pubkeysPrefix found
+    exact ⟨⟨⟨fork, before, after, engine, signed, due, applied, member, input, started⟩,
+      checked, indexed, site, ⟨i, signs, current, foundCurrent, currentKey.trans keyEq⟩, valid⟩,
+      dataEq⟩
 
 end DirectSafety
 end EthLib.Consensus

@@ -21,11 +21,13 @@ public import EthLib.Serialization.Ssz.Merkle.Verify
 public import EthLib.Serialization.Ssz.Merkle.Branch
 public import EthLib.Serialization.Ssz.Typed.Class
 public import EthLib.Serialization.Ssz.Typed.Basic
+public import EthLib.Serialization.Ssz.Typed.Choice
 public import EthLib.Serialization.Ssz.Typed.Collections
 public import EthLib.Serialization.Ssz.Typed.Container
 public import EthLib.Serialization.Ssz.Typed.ForkKind
 public import EthLib.Serialization.Ssz.Typed.Gindex
 public import EthLib.Serialization.Ssz.Typed.Since
+public import EthLib.Serialization.Ssz.Typed.Text
 public import EthLib.Serialization.Ssz.Typed.Rooted
 public import EthLib.Serialization.Ssz.Typed.RootedList
 public import EthLib.Serialization.Ssz.Typed.RootedValue

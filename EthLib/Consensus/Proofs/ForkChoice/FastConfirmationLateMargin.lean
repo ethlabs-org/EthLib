@@ -6,12 +6,17 @@ public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmationSafety
 # Static honest duties and the late margin
 
 The paper's Assumption 1 excludes honest exits; its epoch committees partition the active set.
+
 Here that consequence is explicit: each honest member of the receiver's tally has an epoch duty.
+
 The whole-tally Byzantine bound is the full-registry instance of Assumption 2.
+
 These are inputs, not a derivation of registry stability from executable transitions.
 
 The proposer boost is bounded by its specified fraction of an average slot committee.
+
 We assume at least two slots, at most 40 percent boost and at most 25 percent Byzantine stake.
+
 Then the boost is strictly below the remaining majority margin when the tally has positive stake.
 
 Source: arXiv 2405.00549v4, Section 2.1 and Assumptions 1 and 2 in Section 3.2.
@@ -24,7 +29,7 @@ namespace EthLib.Consensus
 open Base Uint64 Models Models.Network
 
 /-- Above the accessor's minimum, the executable proposer score is the rounded tally fraction. -/
-theorem computeProposerScore_eq_tally_fraction
+private theorem computeProposerScore_eq_tally_fraction
     {preset : Preset} {fork : Fork} {config : Config} {state : BeaconState preset fork}
     {score : Gwei}
     (floor : preset.EFFECTIVE_BALANCE_INCREMENT.toNat ≤
@@ -64,9 +69,11 @@ theorem lateMargin_boost_bound {total boost slots percent beta : ℕ}
 /-- Complete honest duty coverage makes the late margin follow from the tally bound.
 
 Coverage is the part of the paper's static setting needed here; Byzantine duties may change.
+
 The bound on the boost uses the formula of `calculateCommitteeFraction`, including rounding.
+
 No premise bounds missing stake: coverage makes that set empty. -/
-theorem lateMargin_of_static_honest_duties
+private theorem lateMargin_of_static_honest_duties
     {preset : Preset} {fork : Fork} {config : Config} {genesisTimeMs : UInt64}
     {assignment : Assignment preset} {J : Set ValidatorIndex} [DecidablePred (· ∈ J)]
     {first time : ℕ} {state : BeaconState preset fork} {boost : ℕ}
@@ -109,8 +116,9 @@ theorem lateMargin_of_static_honest_duties
 /-- Direct honest-duty majority suffices, without estimating the Byzantine fraction.
 
 `D` contains the members with an epoch duty and `S` the actual supporters.
+
 The late-duty proof supplies `supported`; the store majority theorem consumes the conclusion. -/
-theorem majority_of_honest_duties {ν : Type*} [DecidableEq ν]
+private theorem majority_of_honest_duties {ν : Type*} [DecidableEq ν]
     (w : ν → ℕ) (V D S : Finset ν) (J : Set ν) [DecidablePred (· ∈ J)] {boost : ℕ}
     (supported : ∀ v ∈ V, v ∈ J → v ∈ D → v ∈ S)
     (margin : stake w V + boost < 2 * stake w {v ∈ V | v ∈ J ∧ v ∈ D}) :

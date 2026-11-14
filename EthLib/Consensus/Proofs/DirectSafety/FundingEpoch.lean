@@ -1,8 +1,22 @@
 module
 
 public import EthLib.Consensus.Proofs.DirectSafety.IntervalFunding
-import all EthLib.Consensus.Proofs.DirectSafety.IntervalFunding
-import all EthLib.Consensus.Proofs.Transition.BalanceDrift
+import EthLib.Consensus.Proofs.DirectSafety.DepartureQueue
+import EthLib.Consensus.Proofs.Transition.BalanceNotRaised
+
+/-!
+# Funding across an epoch
+
+Before Gloas, the epoch passes conserve the funded stake and the deposit balance to consume.
+
+The exceptions are one epoch of activation and exit churn and the credits recorded by the replay.
+
+The epoch is cut on the shared schedule: the replay covers the stages before the payments.
+
+Before Gloas the payments are the identity.
+
+The stages after the effective-balance update keep the funding.
+-/
 
 @[expose] public section
 
@@ -15,7 +29,7 @@ noncomputable section
 variable {preset : Preset} {config : Config} {checks : SignatureChecks}
 
 private theorem funding_kept_prefix {fork : Fork} {s t : BeaconState preset fork}
-    (electra : .pectra ≤ fork) (credit : Nat)
+    (credit : Nat)
     (size : t.validators.data.size = s.validators.data.size)
     (life : RegistryLifecycle s t) (slot : t.slot = s.slot)
     (queue : t.pendingConsolidations = s.pendingConsolidations)
@@ -25,13 +39,13 @@ private theorem funding_kept_prefix {fork : Fork} {s t : BeaconState preset fork
       (actualBalanceAt ⟨fork, t⟩ i - actualBalanceAt ⟨fork, s⟩ i)) ≤ credit) :
     fundedStake ⟨fork, t⟩ ≤ fundedStake ⟨fork, s⟩ + credit := by
   have epoch : getCurrentEpoch t = getCurrentEpoch s := by simp [getCurrentEpoch, slot]
-  have bound := funding_potential_change
-    (s.pendingConsolidations electra).data.toList
-    (s.pendingConsolidations electra).data.toList
+  have sources : fundingSources t = fundingSources s := by
+    unfold fundingSources
+    rw [queue]
+  have bound := fundingPotential_change (fundingSources t) (fundingSources s)
     (fun i => actualBalanceAt ⟨fork, t⟩ i - actualBalanceAt ⟨fork, s⟩ i)
-    size life (by rw [epoch]) (fun _ h => Or.inl h) (fun i => ?_)
-  · rw [← queue, funding_potential_eq t electra] at bound
-    rw [queue, funding_potential_eq s electra] at bound
+    size life (by rw [epoch]) (fun _ h => Or.inl (sources ▸ h)) (fun i => ?_)
+  · rw [fundingPotential_eq, fundingPotential_eq] at bound
     omega
   · by_cases inside : i < s.validators.data.size
     · rw [effective i inside]; omega
@@ -56,39 +70,16 @@ private theorem funding_ordinary_record {fork : Fork} {pre post : BalanceReplay 
   · obtain rfl := List.mem_singleton.mp new
     exact ordinary
 
-private theorem funding_ordinary_deltas {fork : Fork} (source : BalanceSource)
-    (ordinary : source ≠ .deposits ∧ source ≠ .consolidations) (deltas : Array Gwei × Array Gwei)
-    {pre post : BalanceReplay preset fork} (initial : FundingOrdinary pre.2)
-    (ok : replayDeltas source deltas pre = .ok post) : FundingOrdinary post.2 := by
-  apply foldlM_ok_invariant (fun p => FundingOrdinary p.2) _ initial ok
-  intro pre i post initial ok
-  simp only [bind_ok_iff] at ok
-  obtain ⟨_, _, rewarded, rewardOk, penaltyOk⟩ := ok
-  exact funding_ordinary_record
-    (funding_ordinary_record initial (by decide) rewardOk) ordinary penaltyOk
-
 private theorem funding_ordinary_rewards {fork : Fork} {pre post : BalanceReplay preset fork}
     (initial : FundingOrdinary pre.2)
-    (ok : replayRewards (config := config) pre = .ok post) : FundingOrdinary post.2 := by
-  unfold replayRewards at ok
-  split at ok
-  · cases ok; exact initial
-  · simp only [bind_ok_iff] at ok
-    obtain ⟨ordinary, _, inactivity, _, ok⟩ := ok
-    split at ok
-    · obtain ⟨middle, folded, last⟩ := bind_ok_iff.mp ok
-      exact funding_ordinary_deltas _ (by decide) _
-        (foldlM_ok_invariant (fun p => FundingOrdinary p.2)
-          (fun _ _ _ h ok => funding_ordinary_deltas _ (by decide) _ h ok) initial folded) last
-    · simp only [bind_ok_iff] at ok
-      obtain ⟨rewards, _, rewarded, rewardOk, middle, folded, last⟩ := ok
-      exact funding_ordinary_deltas _ (by decide) _
-        (foldlM_ok_invariant (fun p => FundingOrdinary p.2)
-          (fun _ _ _ h ok => funding_ordinary_deltas _ (by decide) _ h ok)
-          (funding_ordinary_deltas _ (by decide) _ initial rewardOk) folded) last
+    (ok : replayRewards (config := config) pre = .ok post) : FundingOrdinary post.2 :=
+  replayRewards_induction (fun pre => FundingOrdinary pre.2)
+    (fun prior ok => funding_ordinary_record prior (by decide) ok)
+    (fun penalty prior ok => funding_ordinary_record prior
+      (by rcases penalty with rfl | rfl <;> decide) ok) initial ok
 
 private theorem funding_rewards {fork : Fork} {s t : BeaconState preset fork}
-    (electra : .pectra ≤ fork) (ok : processRewardsAndPenalties config s = .ok t)
+    (ok : processRewardsAndPenalties config s = .ok t)
     {events : List (BalanceEvent preset)}
     (replayed : replayRewards (config := config) (s, []) = .ok (t, events)) :
     fundedStake ⟨fork, t⟩ ≤ fundedStake ⟨fork, s⟩ + (events.map fundingCredit).sum := by
@@ -119,9 +110,9 @@ private theorem funding_rewards {fork : Fork} {s t : BeaconState preset fork}
             (ih (fun e h => pointwise e (by simp [h])))
   have registry : t.validators = s.validators := by
     rw [processRewardsAndPenalties_frame ok]
-  exact funding_kept_prefix electra _ (congrArg (·.data.size) registry)
-    (registryLifecycle_processRewardsAndPenalties ok) (frame_processRewardsAndPenalties ok).slot
-    (processRewardsAndPenalties_pendingConsolidations ok)
+  exact funding_kept_prefix _ (congrArg (·.data.size) registry)
+    (.of_data (congrArg (·.data) registry)) (frame_processRewardsAndPenalties ok).slot
+    (by rw [processRewardsAndPenalties_frame ok])
     (fun i _ => by simp only [effectiveAt, registry]) balanceBound
 
 private theorem funding_same {fork : Fork} {s t : BeaconState preset fork}
@@ -133,23 +124,24 @@ private theorem funding_same {fork : Fork} {s t : BeaconState preset fork}
   rfl
 
 private theorem funding_registry {fork : Fork} {s t : BeaconState preset fork}
-    (electra : .pectra ≤ fork) (ok : processRegistryUpdates config s = .ok t) :
+    (ok : processRegistryUpdates config s = .ok t) :
     fundedStake ⟨fork, t⟩ ≤ fundedStake ⟨fork, s⟩ := by
-  have bound := funding_kept_prefix electra 0 (sameSizes_processRegistryUpdates ok).1
+  have bound := funding_kept_prefix 0 (sameSizes_processRegistryUpdates ok).1
     (registryLifecycle_processRegistryUpdates ok) (frame_processRegistryUpdates ok).slot
-    (processRegistryUpdates_pendingConsolidations ok) (effectiveKept_registry ok)
-    (by simp only [actualBalanceAt, coverage_registry ok, Nat.sub_self, Finset.sum_const_zero]
+    (processRegistryUpdates_kept ok).2 (effectiveKept_registry ok)
+    (by simp only [actualBalanceAt, processRegistryUpdates_balances ok, Nat.sub_self,
+          Finset.sum_const_zero]
         exact Nat.le_refl _)
   simpa using bound
 
 private theorem funding_slashings {fork : Fork} {s t : BeaconState preset fork}
-    (electra : .pectra ≤ fork) (early : fork < .glamsterdam)
+    (early : fork < .glamsterdam)
     (ok : processSlashings s = .ok t) : fundedStake ⟨fork, t⟩ ≤ fundedStake ⟨fork, s⟩ := by
   obtain ⟨_, _, credits, _⟩ := delayed_slashing_bounds s t (s.validators.bound early) ok
-  have registry := balanceDrift_slashings ok
-  have bound := funding_kept_prefix electra 0 (sameSizes_processSlashings ok).1
-    (registryLifecycle_processSlashings ok) (frame_processSlashings ok).slot
-    (processSlashings_pendingConsolidations ok)
+  have registry : t.validators = s.validators := by rw [processSlashings_frame ok]
+  have bound := funding_kept_prefix 0 (sameSizes_processSlashings ok).1
+    (.of_data (congrArg (·.data) registry)) (frame_processSlashings ok).slot
+    (by rw [processSlashings_frame ok])
     (fun i _ => by simp only [effectiveAt, registry]) ?_
   · simpa using bound
   · have covered := coverage_event_sum
@@ -159,130 +151,115 @@ private theorem funding_slashings {fork : Fork} {s t : BeaconState preset fork}
       (actualBalanceAt ⟨fork, t⟩ i - actualBalanceAt ⟨fork, s⟩ i)) ≤ balanceCredits s t at covered
     omega
 
+/-- A stage that keeps the validators, the balances, the slot and the queue keeps the funding. -/
+private theorem funding_stage {fork : Fork} {k : EpochStage} {s t : BeaconState preset fork}
+    (edge : EpochStage.Edge config checks k s t)
+    (other : k ≠ .rewards ∧ k ≠ .registry ∧ k ≠ .slashings ∧ k ≠ .pendingDeposits ∧
+      k ≠ .pendingConsolidations ∧ k ≠ .effectiveBalances) :
+    fundedStake ⟨fork, t⟩ = fundedStake ⟨fork, s⟩ :=
+  have kept := edge.records other
+  funding_same kept.1 kept.2.1 kept.2.2.2.2 kept.2.2.1
+
+/-- The stages before the payments, before Gloas.
+
+The replay events are the rewards and the slashings.
+
+From Electra they also include the pending deposits and the consolidations.
+
+The stages before pending deposits change the funding by at most the credits they record.
+
+From Electra the pending deposits and consolidations then change it by at most the churn. -/
 private theorem funding_before {fork : Fork} {s t : BeaconState preset fork}
-    (electra : .pectra ≤ fork) (early : fork < .glamsterdam)
+    (early : fork < .glamsterdam)
     (delay : 2 ≤ config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat)
     (matched : BalancesMatch s) (ordered : ExitsOrdered s)
     (activation : ActivationExitOrder s) (pending : PendingConsolidationInvariant config s)
     (ok : epochBeforePayments config checks s = .ok t)
     (events : List (BalanceEvent preset))
     (replayed : epochBalanceReplay (config := config) (checks := checks) s = .ok (t, events)) :
-    fundedStake ⟨fork, t⟩ + funding_carry ⟨fork, t⟩ ≤
-      fundedStake ⟨fork, s⟩ + funding_carry ⟨fork, s⟩ +
+    fundedStake ⟨fork, t⟩ + fundingCarry ⟨fork, t⟩ ≤
+      fundedStake ⟨fork, s⟩ + fundingCarry ⟨fork, s⟩ +
         config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat +
         (events.map fundingCredit).sum := by
-  have altair : .altair ≤ fork := Nat.le_trans (by decide) electra
-  have before : fork < .hegota := Nat.lt_trans early (by decide)
-  simp only [epochBeforePayments, altair, before, ↓reduceDIte, bind_ok_iff] at ok
-  obtain ⟨justified, justifiedOk, scored, scoredOk, rewarded, rewardedOk, registered,
-    registeredOk, slashed, slashedOk, reset, resetOk, pendingOk⟩ := ok
-  have justifiedRegistry := (processJustificationAndFinalization_keeps justifiedOk).2.2.2.2.2.1
-  have justifiedSlot := (randaoMixes_slot_processJustificationAndFinalization justifiedOk).2
-  have justifiedFunding := funding_same justifiedRegistry (coverage_justification justifiedOk)
-    justifiedSlot (processJustificationAndFinalization_pendingConsolidations justifiedOk)
-  have scoredFunding := funding_same (balanceDrift_inactivity scoredOk).1
-    (coverage_inactivity scoredOk) (frame_processInactivityUpdates scoredOk).slot
-    (processInactivityUpdates_pendingConsolidations scoredOk)
-  obtain ⟨rewardEvents, rewardReplay⟩ := replayRewards_result scored rewarded [] rewardedOk
-  have rewardFunding := funding_rewards electra rewardedOk rewardReplay
-  have registryFunding := funding_registry electra registeredOk
-  have slashFunding := funding_slashings electra early slashedOk
-  have resetFunding := funding_same (balanceDrift_reset resetOk).1
-    (balanceDrift_reset resetOk).2 (frame_processEth1DataReset resetOk).slot
-    (processEth1DataReset_pendingConsolidations resetOk)
-  have resetMatch : BalancesMatch reset :=
-    (frame_processEth1DataReset resetOk).balancesMatch <|
-    (frame_processSlashings slashedOk).balancesMatch <|
-    (frame_processRegistryUpdates registeredOk).balancesMatch <|
-    (frame_processRewardsAndPenalties rewardedOk).balancesMatch <|
-    (frame_processInactivityUpdates scoredOk).balancesMatch <|
-    balancesMatch_of_sameSizes (sameSizes_processJustificationAndFinalization justifiedOk) matched
-  have resetOrder : ExitsOrdered reset :=
-    (frame_processEth1DataReset resetOk).exitsOrdered <|
-    (frame_processSlashings slashedOk).exitsOrdered <|
-    (frame_processRegistryUpdates registeredOk).exitsOrdered <|
-    (frame_processRewardsAndPenalties rewardedOk).exitsOrdered <|
-    (frame_processInactivityUpdates scoredOk).exitsOrdered <|
-    (by simpa only [ExitsOrdered, justifiedRegistry] using ordered)
-  have a₁ := activation.processJustificationAndFinalization justifiedOk
-  have a₂ := a₁.processInactivityUpdates scoredOk
-  have a₃ := a₂.processRewardsAndPenalties rewardedOk
-  have a₄ := a₃.processRegistryUpdates registeredOk
-  have resetActivation := (a₄.processSlashings slashedOk).processEth1DataReset resetOk
-  have resetPending := (((((pending.justification justifiedOk).inactivity scoredOk).rewards
-    rewardedOk).registry registeredOk).slashings slashedOk).eth1Reset resetOk
-  obtain ⟨deposited, depositedOk, consolidatedOk, pendingFunding⟩ :=
-    funding_pending_balances electra early delay resetMatch resetOrder resetActivation
-      resetPending pendingOk
-  have carry : reset.depositBalanceToConsume = s.depositBalanceToConsume := by
-    rw [depositCarry_processEth1DataReset resetOk,
-      depositCarry_processSlashings slashedOk, depositCarry_processRegistryUpdates registeredOk,
-      depositCarry_processRewardsAndPenalties rewardedOk,
-      depositCarry_processInactivityUpdates scoredOk,
-      depositCarry_processJustificationAndFinalization justifiedOk]
-  obtain ⟨limit, limitOk⟩ := delayedSlashingLimit_result slashedOk
-  have slashReplay : recordBalance .slashings
-      (fun s => return (0, ← delayedSlashingLimit s)) processSlashings
-      (registered, rewardEvents) = .ok
-        (slashed, rewardEvents ++
-          [⟨.slashings, ⟨fork, registered⟩, ⟨fork, slashed⟩, 0, limit⟩]) := by
-    simp [recordBalance, limitOk, slashedOk, bind, Except.bind, pure, Except.pure]
-  simp only [bind, Except.bind, pure, Except.pure] at slashReplay
-  have equal : events = rewardEvents ++
-      [⟨.slashings, ⟨fork, registered⟩, ⟨fork, slashed⟩, 0, limit⟩] ++
-      [⟨.deposits, ⟨fork, reset⟩, ⟨fork, deposited⟩,
-        consumedDeposits reset deposited electra, 0⟩] ++
-      [⟨.consolidations, ⟨fork, deposited⟩, ⟨fork, t⟩,
-        consumedConsolidations deposited t electra,
-        consumedConsolidations deposited t electra⟩] := by
-    simp only [epochBalanceReplay, altair, before, electra, ↓reduceDIte,
-      carryBalance_result justifiedOk [],
-      carryBalance_result (action := fun s => processInactivityUpdates config s altair) scoredOk [],
-      rewardReplay, carryBalance_result registeredOk rewardEvents, slashReplay,
-      carryBalance_result resetOk _, depositedOk, consolidatedOk,
-      bind, Except.bind, pure, Except.pure, Except.ok.injEq, Prod.mk.injEq] at replayed
-    exact replayed.2.symm
-  rw [equal, List.map_append, List.map_append, List.map_append,
-    List.sum_append, List.sum_append, List.sum_append]
-  simp only [List.map_cons, List.map_nil, List.sum_cons, List.sum_nil, fundingCredit,
-    Nat.add_zero, funding_carry, electra, ↓reduceDIte]
-  have withdrawn : withdrawnConsolidationCredit
-      ⟨.deposits, ⟨fork, reset⟩, ⟨fork, deposited⟩, consumedDeposits reset deposited electra, 0⟩ =
-      withdrawnConsolidationCredit ⟨.deposits, ⟨fork, reset⟩, ⟨fork, deposited⟩, 0, 0⟩ := rfl
-  rw [withdrawn]
-  rw [carry] at pendingFunding
-  rw [scoredFunding, justifiedFunding] at rewardFunding
-  omega
+  obtain ⟨justified, scored, rewarded, registered, slashed, reset, deposited, rewardEvents, limit,
+    trace, justifiedOk, scoredOk, rewardedOk, registeredOk, slashedOk, resetOk, depositedOk,
+    consolidatedOk, rewardReplay, equal⟩ := funding_epoch_site ok replayed
+  -- Justification, inactivity and the eth1 reset keep the funding, as epoch stages.
+  have justifiedFunding := funding_stage justifiedOk ⟨nofun, nofun, nofun, nofun, nofun, nofun⟩
+  have scoredFunding := funding_stage scoredOk ⟨nofun, nofun, nofun, nofun, nofun, nofun⟩
+  have rewardFunding := funding_rewards rewardedOk rewardReplay
+  have registryFunding := funding_registry registeredOk
+  have slashFunding := funding_slashings early slashedOk
+  have resetFunding := funding_stage resetOk ⟨nofun, nofun, nofun, nofun, nofun, nofun⟩
+  rw [equal]
+  simp only [List.map_append, List.sum_append, List.map_cons, List.map_nil, List.sum_cons,
+    List.sum_nil, fundingCredit, Nat.add_zero]
+  by_cases electra : .pectra ≤ fork
+  · have kept {P : BeaconState preset fork → Prop}
+        (step : ∀ {k : EpochStage} {a b : BeaconState preset fork},
+          EpochStage.Edge config checks k a b → P a → P b) (start : P s) : P reset :=
+      trace.transport (fun a b => P a → P b) (fun _ => id) (fun one two => two ∘ one)
+        (fun _ _ _ _ computed => step (EpochStage.action_cases.mp computed)) start
+    have resetActivation := kept (fun edge => edge.activationExitOrder) activation
+    have resetPending := kept (fun edge => edge.pendingConsolidationInvariant) pending
+    -- After justification, the stages up to the eth1 reset are mutator frames.
+    obtain ⟨carry, frame, resetMatch⟩ := funding_epoch_prefix electra early trace justifiedOk
+      scoredOk rewardedOk registeredOk slashedOk resetOk matched
+    simp only [EpochStage.Edge, electra, ↓reduceDIte] at depositedOk consolidatedOk
+    have resetOrder : ExitsOrdered reset := frame.exitsOrdered <| by
+      simpa only [ExitsOrdered, (processJustificationAndFinalization_keeps
+        justifiedOk).2.2.2.2.2.1] using ordered
+    have pendingOk : processPendingBalances config checks reset = .ok t := by
+      simp only [processPendingBalances, electra, ↓reduceDIte, bind_ok_iff]
+      exact ⟨deposited, depositedOk, consolidatedOk⟩
+    obtain ⟨deposited', depositedOk', _, pendingFunding⟩ :=
+      funding_pending_balances electra early delay resetMatch resetOrder resetActivation
+        resetPending pendingOk
+    rw [Except.ok.inj (depositedOk'.symm.trans depositedOk), carry] at pendingFunding
+    simp only [electra, ↓reduceDIte, List.map_cons, List.map_nil, List.sum_cons, List.sum_nil,
+      fundingCredit, fundingCarry, ↓reduceIte, Nat.add_zero]
+    have withdrawn : withdrawnConsolidationCredit
+        ⟨.deposits, ⟨fork, reset⟩, ⟨fork, deposited⟩, consumedDeposits reset deposited electra,
+          0⟩ =
+        withdrawnConsolidationCredit ⟨.deposits, ⟨fork, reset⟩, ⟨fork, deposited⟩, 0, 0⟩ := rfl
+    rw [withdrawn]
+    omega
+  · -- Before Electra the pending stages are absent and nothing is carried.
+    simp only [EpochStage.Edge, electra, ↓reduceDIte] at depositedOk consolidatedOk
+    subst depositedOk consolidatedOk
+    simp only [electra, ↓reduceDIte, List.map_nil, List.sum_nil, fundingCarry]
+    omega
 
-private theorem funding_tail {fork : Fork} {s t : BeaconState preset fork}
-    (altair : .altair ≤ fork) (capella : .shapella ≤ fork)
-    (ok : (do
-      let state ← processSlashingsReset s
-      let state ← processRandaoMixesReset state
-      let state ← processHistoricalSummariesUpdate state capella
-      let state := processParticipationFlagUpdates state altair
-      let state ← processSyncCommitteeUpdates state altair
-      if fulu : Fork.fusaka ≤ fork then liftAccessor (processProposerLookahead state fulu)
-      else pure state) = .ok t) :
-    fundedStake ⟨fork, t⟩ + funding_carry ⟨fork, t⟩ =
-      fundedStake ⟨fork, s⟩ + funding_carry ⟨fork, s⟩ := by
-  simp only [bind_ok_iff] at ok
-  obtain ⟨cleared, clearedOk, mixed, mixedOk, historical, historicalOk,
-    synced, syncedOk, rest⟩ := ok
-  obtain ⟨_, _, _, _, rfl⟩ := processSlashingsReset_eq clearedOk
-  obtain ⟨_, _, _, _, _, _, rfl⟩ := processRandaoMixesReset_eq mixedOk
-  simp only [processHistoricalSummariesUpdate, processSyncCommitteeUpdates,
-    processProposerLookahead, liftAccessor, Except.mapError,
-    bind, Except.bind, pure, Except.pure] at historicalOk syncedOk rest
-  repeat' (split at * <;> try contradiction)
-  all_goals
-    simp_all only [Except.ok.injEq]
-    subst_vars
-    rfl
+/-- The stages after the effective-balance update keep the funding and the deposit carry. -/
+private theorem funding_late {fork : Fork} {s t : BeaconState preset fork}
+    (trace : EpochTrace (EpochStage.action config checks)
+      [.slashingsReset, .randaoReset, .history, .participation, .syncCommittees,
+        .proposerLookahead, .ptcWindow] s t) :
+    fundedStake ⟨fork, t⟩ + fundingCarry ⟨fork, t⟩ =
+      fundedStake ⟨fork, s⟩ + fundingCarry ⟨fork, s⟩ := by
+  let Same (a b : BeaconState preset fork) : Prop :=
+    fundedStake ⟨fork, b⟩ = fundedStake ⟨fork, a⟩ ∧
+      b.depositBalanceToConsume = a.depositBalanceToConsume
+  have same : Same s t := by
+    refine trace.transport Same (fun _ => ⟨rfl, rfl⟩)
+      (fun one two => ⟨two.1.trans one.1, two.2.trans one.2⟩) ?_
+    intro k member a b computed
+    have edge := EpochStage.action_cases.mp computed
+    simp only [List.mem_cons, List.not_mem_nil, or_false] at member
+    have other : k ≠ .rewards ∧ k ≠ .registry ∧ k ≠ .slashings ∧ k ≠ .pendingDeposits ∧
+        k ≠ .pendingConsolidations ∧ k ≠ .effectiveBalances := by
+      rcases member with rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
+        exact ⟨nofun, nofun, nofun, nofun, nofun, nofun⟩
+    exact ⟨funding_stage edge other, (edge.records other).2.2.2.1⟩
+  simp only [fundingCarry, same.1, same.2]
 
-/-- The epoch passes conserve funding apart from churn and the recorded external credits. -/
+/-- The epoch passes conserve funding apart from churn and the recorded external credits.
+
+The epoch is cut after the stages before the payments, whose replay is unique.
+
+Before Gloas the payments are the identity. -/
 theorem funding_epoch {fork : Fork} {s t middle : BeaconState preset fork}
-    (electra : .pectra ≤ fork) (early : fork < .glamsterdam)
+    (early : fork < .glamsterdam)
     (delay : 2 ≤ config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat)
     (matched : BalancesMatch s) (ordered : ExitsOrdered s)
     (activation : ActivationExitOrder s)
@@ -290,41 +267,43 @@ theorem funding_epoch {fork : Fork} {s t middle : BeaconState preset fork}
     (ok : processEpoch config checks s = .ok t)
     (events : List (BalanceEvent preset))
     (replayed : epochBalanceReplay (config := config) (checks := checks) s = .ok (middle, events)) :
-    fundedStake ⟨fork, t⟩ + funding_carry ⟨fork, t⟩ ≤
-      fundedStake ⟨fork, s⟩ + funding_carry ⟨fork, s⟩ +
+    fundedStake ⟨fork, t⟩ + fundingCarry ⟨fork, t⟩ ≤
+      fundedStake ⟨fork, s⟩ + fundingCarry ⟨fork, s⟩ +
         config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat +
         (events.map fundingCredit).sum := by
-  have altair : .altair ≤ fork := Nat.le_trans (by decide) electra
-  have capella : .shapella ≤ fork := Nat.le_trans (by decide) electra
-  have notGloas : ¬ .glamsterdam ≤ fork := Nat.not_le.mpr early
-  simp only [processEpoch, altair, ↓reduceDIte,
-    processEpochAltair_eq_epochBeforePayments_bind, notGloas, capella,
-    ↓reduceDIte, pure_bind, bind_ok_iff] at ok
-  obtain ⟨before, beforeOk, updated, updatedOk, rest⟩ := ok
+  have gloas : ¬ .glamsterdam ≤ fork := Nat.not_le_of_lt early
+  have trace := processEpoch_trace ok
+  change EpochTrace _ ((EpochStage.prefixStages ++ [.payments, .effectiveBalances]) ++
+    [.slashingsReset, .randaoReset, .history, .participation, .syncCommittees,
+      .proposerLookahead, .ptcWindow]) _ _ at trace
+  obtain ⟨updated, head, tail⟩ := EpochTrace.append_iff.mp trace
+  obtain ⟨before, prefixTrace, rest⟩ := EpochTrace.append_iff.mp head
+  cases rest
+  rename_i paid paidOk rest
+  cases rest
+  rename_i updatedOk rest
+  cases rest
+  have paidEdge := EpochStage.action_cases.mp paidOk
+  simp only [EpochStage.Edge, gloas, ↓reduceDIte] at paidEdge
+  subst paidEdge
+  have updatedEdge := EpochStage.action_cases.mp updatedOk
+  have beforeOk : epochBeforePayments config checks s = .ok before :=
+    (epochBeforePayments_eq_run config checks s).trans (EpochTrace.run_ok_iff.mpr prefixTrace)
+  -- The replay of the stages before the payments is unique, so it ends at `before`.
   obtain ⟨recorded, recordedOk⟩ := epochBalanceReplay_before beforeOk
-  have same := Except.ok.inj (recordedOk.symm.trans replayed)
-  have states := (Prod.mk.inj same).1
-  subst middle
-  have bound := funding_before electra early delay matched ordered activation pending
-    beforeOk events replayed
-  have tail := funding_tail (s := updated) (t := t) altair capella
-    (by simpa only [bind_ok_iff, pure, Except.pure, Except.ok.injEq,
-      exists_eq_right] using rest)
-  have queue : updated.pendingConsolidations = before.pendingConsolidations := by
-    unfold processEffectiveBalanceUpdates at updatedOk
-    apply foldlM_ok_invariant (fun state : BeaconState preset fork =>
-      state.pendingConsolidations = before.pendingConsolidations) ?_ rfl updatedOk
-    intro state i next kept step
-    simp only [updateEffectiveBalance, bind_ok_iff, liftAccessor_ok] at step
-    obtain ⟨_, _, _, _, _, _, set⟩ := step
-    obtain ⟨_, rfl⟩ := setValidatorAt_ok set
-    exact kept
-  have effective := funding_effective_updates
-    (before.pendingConsolidations electra).data.toList updatedOk
-  rw [← queue, funding_potential_eq updated electra] at effective
-  rw [queue, funding_potential_eq before electra] at effective
-  have carry := depositCarry_processEffectiveBalanceUpdates updatedOk
-  simp only [funding_carry, electra, ↓reduceDIte, carry] at tail bound ⊢
+  obtain rfl := (Prod.mk.inj (Except.ok.inj (recordedOk.symm.trans replayed))).1
+  have bound :=
+    funding_before early delay matched ordered activation pending beforeOk events replayed
+  have late := funding_late tail
+  have queue := updatedEdge.samePendingQueue nofun
+  have sources : fundingSources updated = fundingSources before := by
+    unfold fundingSources
+    rw [show updated.pendingConsolidations = before.pendingConsolidations from queue]
+  have effective : fundedStake ⟨fork, updated⟩ ≤ fundedStake ⟨fork, before⟩ := by
+    rw [← fundingPotential_eq, ← fundingPotential_eq, sources]
+    exact funding_effective_updates (fundingSources before) updatedEdge
+  have carry := updatedEdge.depositCarry nofun
+  simp only [fundingCarry, carry] at late bound ⊢
   omega
 
 end

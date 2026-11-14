@@ -2,6 +2,7 @@ module
 
 public import EthLib.Consensus.Proofs.ForkChoice.HonestCheckpoints
 public import EthLib.Consensus.Proofs.ForkChoice.JustifiedOrigins
+import EthLib.Consensus.Proofs.ForkChoice.BlockRuns
 
 /-!
 # Registry positions at justified checkpoints
@@ -61,7 +62,8 @@ Phase0 `process_registry_updates` sets eligibility to the next epoch, never a wr
 private theorem PendingAfter.queueForActivation {epoch : Epoch} {validator queued : Validator}
     {state : BeaconState preset fork} (pending : PendingAfter epoch validator)
     (current : epoch ≤ getCurrentEpoch state)
-    (ok : Consensus.queueForActivation state validator = .ok queued) : PendingAfter epoch queued := by
+    (ok : Consensus.queueForActivation state validator = .ok queued) :
+    PendingAfter epoch queued := by
   unfold Consensus.queueForActivation at ok
   split at ok
   · simp only [bind_ok_iff, liftAccessor_ok, liftArith, mapError_ok_iff,
@@ -137,7 +139,8 @@ private theorem PendingTail.initiateValidatorExit {count : Nat} {epoch : Epoch}
 private theorem PendingTail.updateRegistryEntry {count : Nat} {epoch : Epoch}
     {state after : BeaconState preset fork} {index : Nat}
     (holds : PendingTail count epoch state) (current : epoch ≤ getCurrentEpoch state)
-    (ok : Consensus.updateRegistryEntry config state index = .ok after) : PendingTail count epoch after := by
+    (ok : Consensus.updateRegistryEntry config state index = .ok after) :
+    PendingTail count epoch after := by
   simp only [Consensus.updateRegistryEntry, bind_ok_iff, liftAccessor_ok] at ok
   obtain ⟨validator, found, queued, joined, middle, set, rest⟩ := ok
   have pending : count ≤ index → PendingAfter epoch queued := fun outside =>
@@ -218,7 +221,8 @@ private theorem PendingTail.processRegistryUpdates {count : Nat} {epoch : Epoch}
     {state after : BeaconState preset fork} (holds : PendingTail count epoch state)
     (current : epoch ≤ getCurrentEpoch state)
     (finalized : state.finalizedCheckpoint.epoch ≤ epoch)
-    (ok : Consensus.processRegistryUpdates config state = .ok after) : PendingTail count epoch after := by
+    (ok : Consensus.processRegistryUpdates config state = .ok after) :
+    PendingTail count epoch after := by
   unfold Consensus.processRegistryUpdates at ok
   split at ok
   · simp only [bind_ok_iff, liftAccessor_ok] at ok
@@ -334,7 +338,8 @@ private theorem PendingTail.applyDeposit {count : Nat} {epoch : Epoch}
     {state after : BeaconState preset fork} {pubkey : Cryptography.Bls.BLSPubkey}
     {credentials : Bytes32} {amount : Gwei} {signature : Cryptography.Bls.BLSSignature}
     (holds : PendingTail count epoch state) (finite : epoch < FAR_FUTURE_EPOCH)
-    (ok : Consensus.applyDeposit config checks state pubkey credentials amount signature = .ok after) :
+    (ok : Consensus.applyDeposit config checks state pubkey credentials amount signature =
+      .ok after) :
     PendingTail count epoch after := by
   unfold Consensus.applyDeposit at ok
   split at ok
@@ -359,8 +364,8 @@ private theorem PendingTail.processDeposit {count : Nat} {epoch : Epoch}
     (ok : processDeposit config checks before state deposit = .ok after) :
     PendingTail count epoch after := by
   obtain ⟨_, _, next, _, applied⟩ := processDeposit_ok ok
-  exact (holds.of_validators (after := { state with eth1DepositIndex := fun _ => next })).applyDeposit
-    finite applied
+  exact (holds.of_validators
+    (after := { state with eth1DepositIndex := fun _ => next })).applyDeposit finite applied
 
 private theorem PendingTail.passPendingDeposits {count : Nat} {epoch : Epoch}
     {stop : PendingDeposit → Bool} {nextEpoch : Epoch} {available : Gwei}
@@ -422,7 +427,8 @@ private theorem PendingTail.processPendingBalances {count : Nat} {epoch : Epoch}
       simp only [bind, Except.bind, pure, Except.pure] at deposited
       repeat' (split at deposited <;> try cases deposited)
       all_goals exact (PendingTail.passPendingDeposits finite holds ‹_›).of_validators
-    exact deposits.of_validators (congrArg (·.data) (processPendingConsolidations_kept consolidated).1)
+    exact deposits.of_validators
+      (congrArg (·.data) (processPendingConsolidations_kept consolidated).1)
   · cases ok
     exact holds
 
@@ -740,8 +746,9 @@ private theorem PendingTail.processEpochAltair {count : Nat} {epoch : Epoch}
   subst justifiedState
   have preFrame := (frame_processInactivityUpdates scored).trans
     (frame_processRewardsAndPenalties rewarded)
-  have beforeHolds := ((holds.processJustificationAndFinalization justified).processInactivityUpdates
-    scored).processRewardsAndPenalties rewarded
+  have beforeHolds :=
+    ((holds.processJustificationAndFinalization justified).processInactivityUpdates
+      scored).processRewardsAndPenalties rewarded
   have registeredHolds := beforeHolds.processRegistryUpdates
     (by simpa only [getCurrentEpoch, preFrame.slot,
       (activeStep_processJustificationAndFinalization justified).1] using current)
@@ -770,7 +777,8 @@ private theorem PendingTail.processEpoch {count : Nat} {epoch : Epoch}
     {state after : BeaconState preset fork}
     (holds : PendingTail count epoch state) (current : epoch ≤ getCurrentEpoch state)
     (finite : epoch < FAR_FUTURE_EPOCH) (finalized : after.finalizedCheckpoint.epoch ≤ epoch)
-    (ok : Consensus.processEpoch config checks state = .ok after) : PendingTail count epoch after := by
+    (ok : Consensus.processEpoch config checks state = .ok after) :
+    PendingTail count epoch after := by
   obtain ⟨justifiedState, justifiedOk, restFrame⟩ := processEpoch_frame ok
   unfold Consensus.processEpoch at ok
   split at ok
@@ -780,8 +788,8 @@ private theorem PendingTail.processEpoch {count : Nat} {epoch : Epoch}
       _, cleared, _, mixed, rooted, rootedOk, rotated⟩ := ok
     have same := Except.ok.inj (justified.symm.trans justifiedOk)
     subst justifiedState
-    have beforeHolds := (holds.processJustificationAndFinalization justified).processRewardsAndPenalties
-      rewarded
+    have beforeHolds :=
+      (holds.processJustificationAndFinalization justified).processRewardsAndPenalties rewarded
     have preFrame := frame_processRewardsAndPenalties rewarded
     have registeredHolds := beforeHolds.processRegistryUpdates
       (by simpa only [getCurrentEpoch, preFrame.slot,
@@ -798,7 +806,8 @@ private theorem PendingTail.processEpoch {count : Nat} {epoch : Epoch}
 private theorem PendingTail.applyWithdrawal {count : Nat} {epoch : Epoch}
     {state after : BeaconState preset fork} {withdrawal : Withdrawal}
     (holds : PendingTail count epoch state)
-    (ok : Consensus.applyWithdrawal state withdrawal = .ok after) : PendingTail count epoch after := by
+    (ok : Consensus.applyWithdrawal state withdrawal = .ok after) :
+    PendingTail count epoch after := by
   unfold Consensus.applyWithdrawal at ok
   split at ok
   · simp only [bind_ok_iff] at ok
@@ -1003,7 +1012,8 @@ private theorem PendingTail.processBlockExecution {count : Nat} {epoch : Epoch}
 private theorem PendingTail.processBlockHeader {count : Nat} {epoch : Epoch}
     {state after : BeaconState preset fork} {block : BeaconBlock preset fork}
     (holds : PendingTail count epoch state)
-    (ok : Consensus.processBlockHeader state block = .ok after) : PendingTail count epoch after := by
+    (ok : Consensus.processBlockHeader state block = .ok after) :
+    PendingTail count epoch after := by
   obtain ⟨_, _, rfl⟩ := processBlockHeader_eq ok
   exact holds.of_validators
 
@@ -1018,7 +1028,8 @@ private theorem PendingTail.processRandao {count : Nat} {epoch : Epoch}
 private theorem PendingTail.processEth1Data {count : Nat} {epoch : Epoch}
     {state after : BeaconState preset fork} {before : fork < .hegota}
     {body : BeaconBlockBody preset fork} (holds : PendingTail count epoch state)
-    (ok : Consensus.processEth1Data before state body = .ok after) : PendingTail count epoch after := by
+    (ok : Consensus.processEth1Data before state body = .ok after) :
+    PendingTail count epoch after := by
   obtain ⟨_, _, rest⟩ := processEth1Data_eq ok
   exact holds.of_validators (congrArg (fun s => s.validators.data) rest)
 
@@ -1031,8 +1042,8 @@ private theorem PendingTail.processBlock {count : Nat} {epoch : Epoch}
     PendingTail count epoch after := by
   unfold Consensus.processBlock at ok
   split at ok
-  · unfold processBlockAltair at ok
-    simp only [bind_ok_iff] at ok
+  · unfold processBlockAltair stateBeforeOperations at ok
+    simp only [bind_assoc, bind_ok_iff] at ok
     obtain ⟨paid, paidOk, headed, headedOk, executed, executedOk, revealed, revealedOk, voted,
       votedOk, _, operatedOk, synced⟩ := ok
     have paidHolds : PendingTail count epoch paid := by
@@ -1050,16 +1061,23 @@ private theorem PendingTail.processBlock {count : Nat} {epoch : Epoch}
       · exact revealedHolds.processEth1Data votedOk
       · cases votedOk; exact revealedHolds
     exact (votedHolds.processOperations finite preGloas operatedOk).processSyncAggregate synced
-  simp only [bind_ok_iff] at ok
+  have beforeAltair : fork < .altair := Nat.lt_of_not_le ‹¬ Fork.altair ≤ fork›
+  simp only [stateBeforeOperations,
+    show ¬ Fork.glamsterdam ≤ fork from Nat.not_le_of_lt preGloas,
+    show ¬ Fork.bellatrix ≤ fork from
+      Nat.not_le_of_lt (Nat.lt_trans beforeAltair (by decide)),
+    show fork < .hegota from Nat.lt_trans beforeAltair (by decide),
+    ↓reduceDIte, pure_bind, bind_assoc, bind_ok_iff] at ok
   obtain ⟨_, header, _, randao, _, eth1, operations⟩ := ok
-  exact (((holds.processBlockHeader header).processRandao randao).processEth1Data eth1).processOperations
-    finite preGloas operations
+  exact (((holds.processBlockHeader header).processRandao randao).processEth1Data
+    eth1).processOperations finite preGloas operations
 
 private theorem PendingTail.advanceSlot {count : Nat} {epoch : Epoch}
     {state after : BeaconState preset fork} (holds : PendingTail count epoch state)
     (current : epoch ≤ getCurrentEpoch state) (finite : epoch < FAR_FUTURE_EPOCH)
     (finalized : after.finalizedCheckpoint.epoch ≤ epoch)
-    (ok : Consensus.advanceSlot config checks state = .ok after) : PendingTail count epoch after := by
+    (ok : Consensus.advanceSlot config checks state = .ok after) :
+    PendingTail count epoch after := by
   obtain ⟨next, cached, epoched, _, cachedOk, epochedOk, rfl⟩ := advanceSlot_ok ok
   have cachedHolds : PendingTail count epoch cached := by
     obtain ⟨_, _, _, _, rfl⟩ := processSlot_ok cachedOk
@@ -1117,11 +1135,10 @@ private theorem PendingTail.stateTransition {count : Nat} {epoch : Epoch}
 
 /-- An activated position predates a transition whose starting epoch bounds finality.
 
-Phase0 `process_registry_updates` and Electra `process_registry_updates` cannot activate
-positions appended after this boundary while finality remains at or below it.
+Neither Phase0 nor Electra registry updates can activate these positions while finality is bounded.
 
 The queried activity epoch is unrestricted; only the activation sentinel is needed. -/
-theorem validatorAt_of_stateTransition_finalized_le
+private theorem validatorAt_of_stateTransition_finalized_le
     {state after : BeaconState preset fork} {signed : SignedBeaconBlock preset fork}
     {engine : ExecutionEngine preset fork} {validateResult : Bool} {epoch : Epoch}
     (sound : Invariant state) (current : epoch ≤ getCurrentEpoch state)
@@ -1174,7 +1191,7 @@ private theorem Store.Reachable.pendingTail_anchor
   have pending := reachable.pendingTail_anchor sound preGloas transitions parentFound low
     finite parentFinalized
   have epochLe : getCurrentEpoch anchorState ≤ getCurrentEpoch parent := by
-    have bound := reachable.anchorSlot_le_blockState parentFound
+    have bound := reachable.anchorSlot_le_of_blockState parentFound
     simp only [UInt64.le_iff_toNat_le, getCurrentEpoch, computeEpochAtSlot,
       UInt64.toNat_div] at bound ⊢
     exact Nat.div_le_div_right bound
@@ -1189,6 +1206,7 @@ decreasing_by
 /-- The registry suffix at a finalized boundary stays pending along the held chain.
 
 The boundary state is reconstructed with the same checks as its descendant transitions.
+
 This retains the lifecycle information that `RunKept` alone does not record. -/
 private theorem Store.Reachable.pendingTail_of_ancestor
     {store : Store preset fork} (reachable : Store.Reachable config anchorState anchorBlock store)
@@ -1213,7 +1231,8 @@ private theorem Store.Reachable.pendingTail_of_ancestor
       (·.root) <$> store.getAncestor ⟨root, status⟩ query = .ok ancestorRoot ∧
       PendingTail cut.validators.data.size (computeEpochAtSlot preset query) state := by
   obtain ⟨block, found⟩ := reachable.known_of_blockState stored
-  have blockLe := reachable.blockState_slot_le (UInt64.le_of_eq anchorSlot) found stored
+  have blockLe := Store.Reachable.slot_le_of_blockState
+    (UInt64.le_of_eq anchorSlot) reachable found stored
   by_cases atQuery : state.slot = query
   · refine ⟨root, state, state, stored, ?_, atQuery, ?_, ?_⟩
     · simp [lookaheadState, atQuery, pure, Except.pure]
@@ -1237,7 +1256,8 @@ private theorem Store.Reachable.pendingTail_of_ancestor
   have parentFinalized := UInt64.le_trans (stateTransition_invariant parentSound transitioned).2
     finalized
   obtain ⟨parentBlock, parentKnown⟩ := reachable.known_of_blockState parentFound
-  have parentLe := reachable.blockState_slot_le (UInt64.le_of_eq anchorSlot) parentKnown parentFound
+  have parentLe := Store.Reachable.slot_le_of_blockState
+    (UInt64.le_of_eq anchorSlot) reachable parentKnown parentFound
   have stateSlot := (reachable.blockState_header found stored notAnchor).1
   have parentLt : parentBlock.slot < block.slot := UInt64.lt_of_le_of_lt parentLe
     (message ▸ (stateTransition_slot transitioned).1)
@@ -1257,14 +1277,16 @@ private theorem Store.Reachable.pendingTail_of_ancestor
         finite preGloas finalized transitioned
   · have low := UInt64.not_le.mp parentReached
     have upper : query < signed.message.slot := by rwa [← (stateTransition_slot transitioned).2]
-    obtain ⟨cut, before, afterOk⟩ := processSlots_split slotsOk low upper
+    obtain ⟨cut, before, afterOk⟩ := processSlots_split low upper slotsOk
     have atSlot := (processSlots_slot before).2
     have cutSound := (processSlots_invariant parentSound before).1
-    have emptyTail : PendingTail cut.validators.data.size (computeEpochAtSlot preset query) cut := by
+    have emptyTail :
+        PendingTail cut.validators.data.size (computeEpochAtSlot preset query) cut := by
       intro index value outside read
       have inside := (Array.getElem?_eq_some_iff.mp read).1
       omega
-    have advancedFinalized : advanced.finalizedCheckpoint.epoch ≤ computeEpochAtSlot preset query := by
+    have advancedFinalized :
+        advanced.finalizedCheckpoint.epoch ≤ computeEpochAtSlot preset query := by
       simpa only [(frame_processBlock blockOk).finalized] using finalized
     refine ⟨block.parentRoot, parent, cut, parentFound, ?_, atSlot, ?_, ?_⟩
     · simp [lookaheadState, low, before, Except.mapError]
@@ -1282,7 +1304,9 @@ decreasing_by
 /-- A finite activation in a held state already has a position at a finality boundary.
 
 The boundary is after the anchor and no later than the held state.
+
 Its epoch bounds the held state's finalized epoch.
+
 The result identifies the boundary's ancestor root without a hash injectivity assumption. -/
 theorem Store.Reachable.validatorAt_ancestor_boundary
     {store : Store preset fork} (reachable : Store.Reachable config anchorState anchorBlock store)
@@ -1334,7 +1358,7 @@ private theorem lookahead_registry_le_of_le
     simp only [highAfter, ↓reduceIte] at two
     have slotsOne := mapError_ok_iff.mp one
     have slotsTwo := mapError_ok_iff.mp two
-    obtain ⟨middle, before, afterOk⟩ := processSlots_split slotsTwo advanced lt
+    obtain ⟨middle, before, afterOk⟩ := processSlots_split advanced lt slotsTwo
     rw [slotsOne, Except.ok.injEq] at before
     subst middle
     exact (runKept_processSlots afterOk).grows
@@ -1365,7 +1389,8 @@ private theorem Store.Reachable.registry_at_ancestor
       (·.root) <$> store.getAncestor ⟨root, status⟩ query = .ok ancestorRoot ∧
       cut.validators.data.size ≤ state.validators.data.size := by
   obtain ⟨block, found⟩ := reachable.known_of_blockState stored
-  have blockLe := reachable.blockState_slot_le (UInt64.le_of_eq anchorSlot) found stored
+  have blockLe := Store.Reachable.slot_le_of_blockState
+    (UInt64.le_of_eq anchorSlot) reachable found stored
   by_cases atQuery : state.slot = query
   · refine ⟨root, state, state, stored, ?_, atQuery, ?_, Nat.le_refl _⟩
     · simp [lookaheadState, atQuery, pure, Except.pure]
@@ -1383,7 +1408,8 @@ private theorem Store.Reachable.registry_at_ancestor
     transitions root block state found stored notAnchor
   obtain ⟨advanced, slotsOk, advancedSlot, _, blockOk, _⟩ := stateTransition_ok transitioned
   obtain ⟨parentBlock, parentKnown⟩ := reachable.known_of_blockState parentFound
-  have parentLe := reachable.blockState_slot_le (UInt64.le_of_eq anchorSlot) parentKnown parentFound
+  have parentLe := Store.Reachable.slot_le_of_blockState
+    (UInt64.le_of_eq anchorSlot) reachable parentKnown parentFound
   have stateSlot := (reachable.blockState_header found stored notAnchor).1
   have parentLt : parentBlock.slot < block.slot := UInt64.lt_of_le_of_lt parentLe
     (message ▸ (stateTransition_slot transitioned).1)
@@ -1398,7 +1424,7 @@ private theorem Store.Reachable.registry_at_ancestor
     rw [walk]; exact walked
   · have low := UInt64.not_le.mp parentReached
     have upper : query < signed.message.slot := by rwa [← (stateTransition_slot transitioned).2]
-    obtain ⟨cut, before, afterOk⟩ := processSlots_split slotsOk low upper
+    obtain ⟨cut, before, afterOk⟩ := processSlots_split low upper slotsOk
     refine ⟨block.parentRoot, parent, cut, parentFound, ?_, (processSlots_slot before).2, ?_,
       Nat.le_trans (runKept_processSlots afterOk).grows (runKept_processBlock blockOk).grows⟩
     · simp [lookaheadState, low, before, Except.mapError]
@@ -1447,14 +1473,14 @@ private theorem Store.Reachable.registry_at_cached_ancestor
     obtain ⟨cut, advanced⟩ : ∃ cut, lookaheadState config checks state query = .ok cut := by
       by_cases same : query = target
       · exact ⟨cached, same ▸ made⟩
-      · obtain ⟨cut, first, _⟩ := processSlots_split (mapError_ok_iff.mp slotsOk) low
-          (UInt64.lt_of_le_of_ne reached same)
+      · obtain ⟨cut, first, _⟩ := processSlots_split low
+          (UInt64.lt_of_le_of_ne reached same) (mapError_ok_iff.mp slotsOk)
         exact ⟨cut, by simp [lookaheadState, low, first, Except.mapError]⟩
     obtain ⟨block, found⟩ := reachable.known_of_blockState stored
     refine ⟨root, state, cut, stored, advanced, ?_,
       lookahead_registry_le_of_le advanced made reached⟩
     rw [Store.getAncestor_of_le found (UInt64.le_trans
-      (reachable.blockState_slot_le (UInt64.le_of_eq anchorSlot) found stored)
+      (Store.Reachable.slot_le_of_blockState (UInt64.le_of_eq anchorSlot) reachable found stored)
       (UInt64.le_of_lt low))]
     rfl
 
@@ -1539,7 +1565,8 @@ private theorem Store.Reachable.validatorAt_of_common_boundary_total
       targetWalk found activated
   · obtain ⟨block, heldBlock⟩ := reachable.known_of_blockState stored
     rw [Store.getAncestor_of_le heldBlock (UInt64.le_trans
-      (reachable.blockState_slot_le (UInt64.le_of_eq anchorSlot) heldBlock stored)
+      (Store.Reachable.slot_le_of_blockState
+        (UInt64.le_of_eq anchorSlot) reachable heldBlock stored)
       (UInt64.not_lt.mp high))] at sourceWalk
     have rootEq : root = common := Except.ok.inj sourceWalk
     obtain ⟨destRoot, destBase, destCut, destHeld, advanced, walked, grows⟩ :=
@@ -1574,7 +1601,7 @@ theorem Store.Reachable.anchor_registry_le_blockState
   subst post
   by_cases same : block = anchorBlock
   · rw [anchored same]
-  · obtain ⟨parent, checks, engine, signed, -, parentFound, transitioned⟩ := produced same
+  · obtain ⟨parent, checks, engine, signed, -, -, parentFound, transitioned⟩ := produced same
     exact Nat.le_trans (reachable.anchor_registry_le_blockState parentFound)
       (runKept_stateTransition transitioned).grows
 termination_by state.slot.toNat
@@ -1617,8 +1644,8 @@ private theorem addBlock_finalized_states
     Std.TreeMap.getElem?_insert] at found
   split at found
   · cases found
-    exact UInt64.le_trans (finalized_le_updateCheckpoints boosted _ _) later.2
-  · exact UInt64.le_trans (holds _ _ found) forward
+    exact UInt64.le_trans (finalized_le_updateCheckpoints boosted _ _) later.2.epoch_le
+  · exact UInt64.le_trans (holds _ _ found) forward.epoch_le
 
 /-- Every held block state has finality at most the store's realized finality.
 
@@ -1658,27 +1685,27 @@ theorem Reachable.blockState_finalized_le {store : Store preset fork}
     | tick _ handled ih =>
       obtain ⟨-, le, -, states⟩ := onTick_frame handled
       intro r s found
-      exact UInt64.le_trans (ih r s (states ▸ found)) le.2
+      exact UInt64.le_trans (ih r s (states ▸ found)) le.2.epoch_le
     | attestation _ handled ih =>
-      obtain ⟨le, -, states⟩ := onAttestation_frame handled
+      obtain ⟨le, -, states, -⟩ := onAttestation_frame handled
       intro r s found
-      exact UInt64.le_trans (ih r s (states ▸ found)) le.2
+      exact UInt64.le_trans (ih r s (states ▸ found)) le.2.epoch_le
     | attesterSlashing _ handled ih =>
-      obtain ⟨le, -, states⟩ := onAttesterSlashing_frame handled
+      obtain ⟨le, -, states, -⟩ := onAttesterSlashing_frame handled
       intro r s found
-      exact UInt64.le_trans (ih r s (states ▸ found)) le.2
+      exact UInt64.le_trans (ih r s (states ▸ found)) le.2.epoch_le
     | payloadAttestation _ handled ih =>
       obtain ⟨le, -, states⟩ := (onPayloadAttestationMessage_onlyPtcVotes handled).frame
       intro r s found
-      exact UInt64.le_trans (ih r s (states ▸ found)) le.2
+      exact UInt64.le_trans (ih r s (states ▸ found)) le.2.epoch_le
     | envelope _ handled ih =>
       obtain ⟨le, -, states⟩ := onExecutionPayloadEnvelope_frame handled
       intro r s found
-      exact UInt64.le_trans (ih r s (states ▸ found)) le.2
+      exact UInt64.le_trans (ih r s (states ▸ found)) le.2.epoch_le
     | inclusionList _ handled ih =>
       obtain ⟨le, -, states⟩ := onInclusionList_frame handled
       intro r s found
-      exact UInt64.le_trans (ih r s (states ▸ found)) le.2
+      exact UInt64.le_trans (ih r s (states ▸ found)) le.2.epoch_le
   exact all root state stored
 
 end Store
@@ -1717,8 +1744,9 @@ theorem Execution.validatorAt_checkpoint_of_anchor
 
 /-- An active head position already exists in the receiver's justified balance source.
 
-Activation requires finalized eligibility, so a position created after the finalized
-boundary cannot be active, even at a future queried epoch. -/
+Finalized eligibility prevents activation of positions created after the finalized boundary.
+
+This holds even at a future queried epoch. -/
 theorem Execution.validatorAt_justified_of_head_active
     {anchor : Store preset fork}
     (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)

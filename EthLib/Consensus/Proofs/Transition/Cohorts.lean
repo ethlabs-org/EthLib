@@ -1,6 +1,9 @@
 module
 
 public import EthLib.Consensus.Proofs.Transition.RegistryLifecycle
+import all EthLib.Consensus.Proofs.Transition.RegistryLifecycle
+import EthLib.Consensus.Proofs.Transition.Committees
+import EthLib.Consensus.Proofs.Transition.Genesis
 
 /-!
 # Count bounds for pre-Electra cohorts
@@ -479,7 +482,8 @@ private theorem cohorts_block (early : fork < .pectra) {engine : ExecutionEngine
   split at ok
   · have noGloas : ¬ Fork.glamsterdam ≤ fork :=
       Nat.not_le_of_lt (Nat.lt_trans early (by decide))
-    simp only [processBlockAltair, noGloas, ↓reduceDIte, bind_ok_iff,
+    simp only [processBlockAltair, stateBeforeOperations, bind_assoc, noGloas,
+      ↓reduceDIte, bind_ok_iff,
       pure, Except.pure, Except.ok.injEq] at ok
     obtain ⟨_, rfl, headed, header, executed, execution, revealed, randao, voted,
       vote, _, operations, sync⟩ := ok
@@ -495,7 +499,14 @@ private theorem cohorts_block (early : fork < .pectra) {engine : ExecutionEngine
         exact .refl _
     exact (cohorts_header header).trans <| executionKept.trans <| (cohorts_randao randao).trans <|
       voteKept.trans <| (cohorts_operations early operations).trans (cohorts_sync sync)
-  · simp only [bind_ok_iff] at ok
+  · have beforeAltair : fork < .altair := Nat.lt_of_not_le ‹¬ Fork.altair ≤ fork›
+    simp only [stateBeforeOperations,
+      show ¬ Fork.glamsterdam ≤ fork from
+        Nat.not_le_of_lt (Nat.lt_trans beforeAltair (by decide)),
+      show ¬ Fork.bellatrix ≤ fork from
+        Nat.not_le_of_lt (Nat.lt_trans beforeAltair (by decide)),
+      show fork < .hegota from Nat.lt_trans beforeAltair (by decide),
+      ↓reduceDIte, pure_bind, bind_assoc, bind_ok_iff] at ok
     obtain ⟨_, header, _, randao, _, vote, operations⟩ := ok
     exact (cohorts_header header).trans <| (cohorts_randao randao).trans <|
       (cohorts_eth1 vote).trans (cohorts_operations early operations)
@@ -1025,9 +1036,9 @@ theorem activationCohortBound_processEpoch (early : fork < .pectra)
     rw [tail.activations e finite]
     have bound :=
       activationCohortBound_registry_count early registeredOk atRegistry e finite nonGenesis
-    have grow := (registryLifecycle_processEpoch ok).size_le
+    have grow := registryLifecycle_processEpoch ok
     rw [(sameSizes_processRegistryUpdates registeredOk).1, size] at bound
-    exact Nat.le_trans bound (registryChurnCap_mono grow)
+    exact Nat.le_trans bound (registryChurnCap_mono grow.size_le)
   · have scheduled : ∀ v ∈ registered.validators.data,
         v.activationEpoch ≠ FAR_FUTURE_EPOCH →
         v.activationEpoch.toNat < scheduledActivationEpoch state + 1 := by

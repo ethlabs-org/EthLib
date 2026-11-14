@@ -125,6 +125,11 @@ def _make_extension() -> Extension:
         libraries.append("pthread")
         libraries.append("dl")
         libraries.append("m")
+        # The Lean objects export every symbol, and they refer to each other through those exports.
+        # Without this flag, loading the extension looks up each such reference by name.
+        # With it, the linker binds them to the extension's own definitions.
+        # No other loaded library defines these symbols, so every reference reaches the same code.
+        extra_link_args.append("-Wl,-Bsymbolic")
 
     # `LakeThenBuild.run` appends the Lean-toolchain include dir and the `.c.o.export` objects.
     # They are not resolved here.
@@ -177,9 +182,11 @@ def _make_extension() -> Extension:
             "bindings/python/era.c",
             "bindings/python/snappy.c",
             "bindings/python/libp2p.c",
+            "bindings/python/quic.c",
             "bindings/python/gossip.c",
             "bindings/python/transactions.c",
             "bindings/python/chain.c",
+            "bindings/python/rpc.c",
             "bindings/python/pyvalue.c",
         ],
         include_dirs=["bindings/python"],

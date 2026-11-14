@@ -3,6 +3,8 @@ module
 public import EthLib.Engine.NewPayload
 public import EthLib.Engine.Proofs.Block
 public import EthLib.Engine.Proofs.Json
+-- Showing that a written payload is not `null` unfolds the null test of Lean's JSON.
+import all Lean.Data.Json.Basic
 
 /-!
 # Proofs: the checks of `engine_newPayload`
@@ -15,11 +17,15 @@ Below version 5 the payload decodes exactly as a structure of a version that the
 
 From version 5 it decodes exactly as a payload of version 4, with its access list and its slot.
 
-Request lists that pass the checks have distinct types, in increasing order.
+From version 4, a request list passes its check exactly when two conditions hold.
 
-Each such request has more than one byte, so its type is its first byte.
+Each request has more than one byte, so its first byte is its type.
+
+The types strictly increase along the list.
 
 Without a JSON-RPC error, the parameters are an array of the values of the version, none null.
+
+The decoder reads back the parameters that the writer writes, at a version that takes the fork.
 
 A payload that fails the checks is invalid, or has an invalid block hash at version 1.
 
@@ -43,7 +49,8 @@ public section
 namespace EthLib.Engine
 
 open EthLib.Base
-open EthLib.Execution.Blocks (BlockChain RecentBlock stateTransition)
+open EthLib.Execution.Blocks (BlockChain RecentBlock stateTransition MAX_EXTRA_DATA_BYTES)
+open EthLib.Serialization.JsonRpc (fields hasExactly)
 
 /-- Two errors with one code come from one constructor. -/
 theorem EngineError.code_injective (e₁ e₂ : EngineError) (h : e₁.code = e₂.code) :
@@ -83,15 +90,15 @@ theorem acceptsFork_five_iff (fork : Fork) : acceptsFork 5 fork = true ↔ fork 
 
 The error is an invalid parameter, as step 2 of `engine_newPayloadV5` asks. -/
 theorem payloadParam_five_of_not_mem {j : Lean.Json} {fs : List (String × Lean.Json)}
-    (hfs : Json.fields "payload" j = .ok fs) (hmiss : "blockAccessList" ∉ fs.map Prod.fst) :
+    (hfs : fields "payload" j = .ok fs) (hmiss : "blockAccessList" ∉ fs.map Prod.fst) :
     payloadParam 5 j = .error (.invalidParams "payload: not the fields of version 4") := by
   -- No field has the name of the list, so the payload does not have the fields of version 4.
   have hany : (fs.any fun field => field.1 == "blockAccessList") = false := by
     rw [List.any_eq_false]
     intro field hmem heq
     exact hmiss (List.mem_map.mpr ⟨field, hmem, by simpa using heq⟩)
-  have hfields : Json.hasExactly fs Json.payloadFieldsV4 = false := by
-    simp [Json.hasExactly, Json.payloadFieldsV4, Json.amsterdamFields, hany]
+  have hfields : hasExactly fs Json.payloadFieldsV4 = false := by
+    simp [hasExactly, Json.payloadFieldsV4, Json.amsterdamFields, hany]
   simp [payloadParam, Json.payloadV4, hfs, hfields, bind, Except.bind]
 
 /-- Below version 5, the payload decodes exactly as a structure of a version that the method takes.
@@ -137,65 +144,80 @@ theorem payloadParam_eq_ok_iff_of_le {version : Nat} {j : Lean.Json}
   · rintro ⟨bal, slot, ha, rfl⟩
     simp [ha, bind, Except.bind, pure, Except.pure]
 
+/-- A list passes the check exactly when two conditions hold.
+
+Each request has more than one byte, so its first byte is its type.
+
+The types strictly increase along the list, with gaps between them allowed. -/
+theorem validRequests_iff : ∀ {requests : List ByteArray},
+    validRequests requests = true ↔
+      (∀ r ∈ requests, 1 < r.size) ∧ (requests.map fun r => r[0]!).Pairwise (· < ·)
+  | [] => by simp [validRequests]
+  | [r] => by simp [validRequests]
+  | r :: s :: rest => by
+    have ih := @validRequests_iff (s :: rest)
+    -- A request of more than one byte has a first byte, its type.
+    by_cases hr : 1 < r.size
+    · by_cases hs : 1 < s.size
+      · have hr0 : r[0]? = some r[0]! := by
+          rw [getElem!_def, getElem?_pos r 0 (by omega)]
+        have hs0 : s[0]? = some s[0]! := by
+          rw [getElem!_def, getElem?_pos s 0 (by omega)]
+        simp only [validRequests, hr0, hs0, hr, hs, decide_true, Bool.true_and,
+          Bool.and_eq_true, decide_eq_true_eq, ih]
+        simp only [List.forall_mem_cons, List.map_cons, List.pairwise_cons, List.mem_map,
+          forall_exists_index, and_imp, forall_apply_eq_imp_iff₂, hr, hs, true_and]
+        constructor
+        · rintro ⟨hab, hSize, hTail, hPair⟩
+          exact ⟨hSize, ⟨hab, fun t ht => UInt8.lt_trans hab (hTail t ht)⟩, hTail, hPair⟩
+        · rintro ⟨hSize, ⟨hab, -⟩, hTail, hPair⟩
+          exact ⟨hab, hSize, hTail, hPair⟩
+      · simp only [validRequests]
+        constructor
+        · intro h
+          split at h
+          · simp [hs] at h
+          · exact absurd h (by simp)
+        · rintro ⟨hSize, -⟩
+          exact absurd (hSize s (by simp)) hs
+    · simp only [validRequests]
+      constructor
+      · intro h
+        split at h
+        · simp [hr] at h
+        · exact absurd h (by simp)
+      · rintro ⟨hSize, -⟩
+        exact absurd (hSize r (by simp)) hr
+
 /-- Request lists that pass the check have strictly increasing types. -/
 theorem pairwise_of_validRequests {requests : List ByteArray}
     (h : validRequests requests = true) :
     requests.Pairwise fun r s => ∃ a b, r[0]? = some a ∧ s[0]? = some b ∧ a < b := by
-  induction requests with
-  | nil => exact .nil
-  | cons r rest ih =>
-    match rest, h with
-    | [], _ => exact List.pairwise_singleton _ r
-    | s :: rest', h =>
-      simp only [validRequests] at h
-      split at h
-      · rename_i a b hra hsb
-        simp only [Bool.and_eq_true, decide_eq_true_eq] at h
-        obtain ⟨⟨⟨-, -⟩, hab⟩, hRest⟩ := h
-        have hTail := ih hRest
-        refine List.Pairwise.cons (fun t ht => ?_) hTail
-        rcases List.mem_cons.mp ht with rfl | ht
-        · exact ⟨a, b, hra, hsb, hab⟩
-        · obtain ⟨b', c, hb', hc, hbc⟩ := List.rel_of_pairwise_cons hTail ht
-          rw [hsb] at hb'
-          cases hb'
-          exact ⟨a, c, hra, hc, UInt8.lt_trans hab hbc⟩
-      · exact absurd h (by simp)
+  obtain ⟨hSize, hTypes⟩ := validRequests_iff.mp h
+  rw [List.pairwise_map] at hTypes
+  refine List.Pairwise.imp_of_mem (fun {r s} hr hs hlt => ⟨r[0]!, s[0]!, ?_, ?_, hlt⟩) hTypes
+  · rw [getElem!_def, getElem?_pos r 0 (by have := hSize r hr; omega)]
+  · rw [getElem!_def, getElem?_pos s 0 (by have := hSize s hs; omega)]
 
 /-- Each request of a list that passes the check has more than one byte: its type and its data. -/
-theorem size_of_validRequests :
-    ∀ {requests : List ByteArray}, validRequests requests = true → ∀ r ∈ requests, 1 < r.size
-  | [], _ => by simp
-  | [r], h => by simpa [validRequests] using h
-  | r :: s :: rest, h => by
-    simp only [validRequests] at h
-    split at h
-    · simp only [Bool.and_eq_true, decide_eq_true_eq] at h
-      obtain ⟨⟨⟨hr, -⟩, -⟩, hrest⟩ := h
-      intro t ht
-      rcases List.mem_cons.mp ht with rfl | ht
-      · exact hr
-      · exact size_of_validRequests hrest t ht
-    · exact absurd h (by simp)
+theorem size_of_validRequests {requests : List ByteArray} (h : validRequests requests = true) :
+    ∀ r ∈ requests, 1 < r.size :=
+  (validRequests_iff.mp h).1
 
 /-- Request lists that pass the check have distinct types, their first bytes.
 
 Each request has a first byte, so no type here is a default value. -/
 theorem nodup_types_of_validRequests {requests : List ByteArray}
     (h : validRequests requests = true) : (requests.map fun r => r[0]!).Nodup :=
-  List.Pairwise.map _ (fun r s ⟨a, b, ha, hb, hlt⟩ => by
-    rw [getElem!_def, getElem!_def, ha, hb]
-    exact UInt8.ne_of_lt hlt)
-    (pairwise_of_validRequests h)
+  (validRequests_iff.mp h).2.imp UInt8.ne_of_lt
 
 /-! ## The parameters of the checks -/
 
-/-- Without a JSON-RPC error, the parameters are an array of the values of the version.
-
-None of them is null. -/
-theorem params_of_checkNewPayload_ok {config : ChainConfig} {version : Nat} {params : Lean.Json}
-    {r : Except (PayloadStatus × PayloadError) (CheckedBlock version)}
-    (h : checkNewPayload config version params = .ok r) :
+/-- Decoded parameters are an array of as many values as the version takes, none of them null. -/
+private theorem params_of_newPayloadParams_ok {version : Nat} {params : Lean.Json}
+    {x : Json.AnyPayload × Option (ByteArray × UInt64) × Option (List Hash32) × Option Hash32 ×
+      Option (List ByteArray)}
+    (h : newPayloadParams version params = .ok x) :
     ∃ items : Array Lean.Json, params = .arr items ∧ items.size = paramCount version ∧
       ∀ j ∈ items, j.isNull = false := by
   cases params with
@@ -205,7 +227,7 @@ theorem params_of_checkNewPayload_ok {config : ChainConfig} {version : Nat} {par
         (items.toList.all fun x => !x.isNull) = true
     · simp only [List.all_eq_true, Bool.not_eq_true', beq_iff_eq] at hc
       exact ⟨by simpa using hc.1, fun j hj => hc.2 j (by simpa using hj)⟩
-    · unfold checkNewPayload at h
+    · unfold newPayloadParams at h
       rw [bind_ok_iff] at h
       obtain ⟨l, hl, h⟩ := h
       cases hl
@@ -217,6 +239,18 @@ theorem params_of_checkNewPayload_ok {config : ChainConfig} {version : Nat} {par
       cases hInvalid
   -- Any other JSON value is not an array, so the read fails at once.
   | _ => cases h
+
+/-- Without a JSON-RPC error, the parameters are an array of the values of the version.
+
+None of them is null. -/
+theorem params_of_checkNewPayload_ok {config : ChainConfig} {version : Nat} {params : Lean.Json}
+    {r : Except (PayloadStatus × PayloadError) (CheckedBlock version)}
+    (h : checkNewPayload config version params = .ok r) :
+    ∃ items : Array Lean.Json, params = .arr items ∧ items.size = paramCount version ∧
+      ∀ j ∈ items, j.isNull = false := by
+  unfold checkNewPayload at h
+  obtain ⟨_, hx, -⟩ := bind_ok_iff.mp h
+  exact params_of_newPayloadParams_ok hx
 
 /-! ## A payload that fails the checks -/
 
@@ -233,41 +267,28 @@ private theorem status_cases_of_checkNewPayload {config : ChainConfig} {version 
           (version = 1 ∧ ∃ expected computed, reason = .wrongBlockHash expected computed) ∨
         status.status = .invalid ∧
           ¬(version = 1 ∧ ∃ expected computed, reason = .wrongBlockHash expected computed)) := by
-  cases params with
-  | arr items =>
-    unfold checkNewPayload at h
-    rw [bind_ok_iff] at h
-    obtain ⟨l, hl, h⟩ := h
-    cases hl
-    by_cases hc : (items.toList.length == paramCount version) = true ∧
-        (items.toList.all fun x => !x.isNull) = true
-    · dsimp only at h
-      rw [ite_eq_left hc] at h
-      -- Walk every step: a failing step contradicts the result, and each value read is kept.
-      repeat' (first
-        | (cases h; done)
-        | (obtain ⟨_, step, h⟩ := bind_ok_iff.mp h
-           first | cases step | obtain ⟨_, -, rfl⟩ := map_ok_iff.mp step | skip)
-        | split at h)
-      -- Only a wrong block hash at version 1 has that status; every other case is invalid.
-      all_goals
-        cases h
-        first
-          | exact ⟨rfl, .inl ⟨rfl, ‹version = 1›, _, _, rfl⟩⟩
-          | (refine ⟨rfl, .inr ⟨rfl, ?_⟩⟩
-             rintro ⟨hv, a, b, he⟩
-             first
-               | exact ‹¬version = 1› hv
-               | solve_by_elim
-               | (cases he; done))
-          | ((by_cases hv : version = 1 <;> simp [hv]) <;> done)
-    -- Parameters of the wrong shape fail with a JSON-RPC error, never with a status.
-    · dsimp -zeta only at h
-      rw [ite_eq_right hc, bind_ok_iff] at h
-      obtain ⟨_, hInvalid, -⟩ := h
-      cases hInvalid
-  -- Any other JSON value is not an array, so the read fails at once.
-  | _ => cases h
+  unfold checkNewPayload at h
+  -- The decoded parameters stay free; each later check is walked step by step.
+  obtain ⟨⟨any, amsterdam, hashes, beaconRoot, requests⟩, -, h⟩ := bind_ok_iff.mp h
+  dsimp only at h
+  -- Walk every step: a failing step contradicts the result, and each value read is kept.
+  repeat' (first
+    | (cases h; done)
+    | (obtain ⟨_, step, h⟩ := bind_ok_iff.mp h
+       first | cases step | obtain ⟨_, -, rfl⟩ := map_ok_iff.mp step | skip)
+    | split at h)
+  -- Only a wrong block hash at version 1 has that status; every other case is invalid.
+  all_goals
+    cases h
+    first
+      | exact ⟨rfl, .inl ⟨rfl, ‹version = 1›, _, _, rfl⟩⟩
+      | (refine ⟨rfl, .inr ⟨rfl, ?_⟩⟩
+         rintro ⟨hv, a, b, he⟩
+         first
+           | exact ‹¬version = 1› hv
+           | solve_by_elim
+           | (cases he; done))
+      | ((by_cases hv : version = 1 <;> simp [hv]) <;> done)
 
 /-- A payload that fails the checks is invalid, or has an invalid block hash at version 1.
 
@@ -327,10 +348,12 @@ theorem status_of_newPayloadWithoutState {config : ChainConfig} {version : Nat}
 /-- A payload that gives back a block and a state is valid.
 
 It passed the checks before execution, and its block passed the transition to that state. -/
-theorem of_newPayloadOnChain_some {chain : BlockChain} {version : Nat} {params : Lean.Json}
+theorem of_newPayloadOnChain_some {transition : TransitionConfiguration}
+    {totalDifficulty : Nat} {chain : BlockChain} {version : Nat} {params : Lean.Json}
     {status : PayloadStatus} {reason : Option PayloadError} {block : RecentBlock}
     {post : Execution.State.State}
-    (h : newPayloadOnChain chain version params = .ok (status, reason, some (block, post))) :
+    (h : newPayloadOnChain transition totalDifficulty chain version params =
+      .ok (status, reason, some (block, post))) :
     status.status = .valid ∧ ∃ checked, checkNewPayload chain.config version params =
       .ok (.ok checked) ∧ stateTransition chain checked.block false = .ok post ∧
         block = ⟨checked.fork, checked.block.header, []⟩ := by
@@ -345,22 +368,54 @@ theorem of_newPayloadOnChain_some {chain : BlockChain} {version : Nat} {params :
       split at h
       · split at h
         · split at h
-          · rename_i post' hRun
-            simp only [pure, Except.pure, Except.ok.injEq, Prod.mk.injEq, Option.some.injEq] at h
-            obtain ⟨rfl, -, rfl, rfl⟩ := h
-            exact ⟨rfl, checked, rfl, hRun, rfl⟩
-          · simp [pure, Except.pure] at h
+          · split at h
+            · rename_i post' hRun
+              simp only [pure, Except.pure, Except.ok.injEq, Prod.mk.injEq,
+                Option.some.injEq] at h
+              obtain ⟨rfl, -, rfl, rfl⟩ := h
+              exact ⟨rfl, checked, rfl, hRun, rfl⟩
+            · simp [pure, Except.pure] at h
+            · simp [pure, Except.pure] at h
           · simp [pure, Except.pure] at h
         · simp [pure, Except.pure] at h
       · simp [pure, Except.pure] at h
 
+/-- A payload that gives back a block and a state has a parent that passes the terminal check.
+
+So a valid answer never follows a block of proof of work that is not terminal. -/
+theorem passesTerminalCheck_of_newPayloadOnChain_some {transition : TransitionConfiguration}
+    {totalDifficulty : Nat} {chain : BlockChain} {version : Nat} {params : Lean.Json}
+    {status : PayloadStatus} {reason : Option PayloadError} {block : RecentBlock}
+    {post : Execution.State.State}
+    (h : newPayloadOnChain transition totalDifficulty chain version params =
+      .ok (status, reason, some (block, post))) :
+    ∃ parent, chain.recent.getLast? = some parent ∧
+      passesTerminalCheck transition totalDifficulty parent = true := by
+  unfold newPayloadOnChain at h
+  cases hC : checkNewPayload chain.config version params with
+  | error e => simp [hC, bind, Except.bind] at h
+  | ok r =>
+    cases r with
+    | error p => simp [hC, bind, Except.bind, pure, Except.pure] at h
+    | ok checked =>
+      cases hL : chain.recent.getLast? with
+      | none => simp [hC, hL, bind, Except.bind, pure, Except.pure] at h
+      | some parent =>
+        refine ⟨parent, rfl, ?_⟩
+        cases hT : passesTerminalCheck transition totalDifficulty parent
+        · simp only [hC, hL, hT, bind, Except.bind] at h
+          split at h <;> simp [pure, Except.pure] at h
+        · rfl
+
 /-- A payload on a chain is valid exactly when a block and a state come back.
 
 So a valid answer always comes from a block that passed the state transition. -/
-theorem valid_iff_of_newPayloadOnChain {chain : BlockChain} {version : Nat} {params : Lean.Json}
+theorem valid_iff_of_newPayloadOnChain {transition : TransitionConfiguration}
+    {totalDifficulty : Nat} {chain : BlockChain} {version : Nat} {params : Lean.Json}
     {status : PayloadStatus} {reason : Option PayloadError}
     {next : Option (RecentBlock × Execution.State.State)}
-    (h : newPayloadOnChain chain version params = .ok (status, reason, next)) :
+    (h : newPayloadOnChain transition totalDifficulty chain version params =
+      .ok (status, reason, next)) :
     status.status = .valid ↔ ∃ block post, next = some (block, post) := by
   constructor
   · intro hValid
@@ -389,12 +444,14 @@ theorem valid_iff_of_newPayloadOnChain {chain : BlockChain} {version : Nat} {par
 /-- A payload that passes the checks before execution is syncing without its parent.
 
 The chain lacks the parent when its last block is another block, or when it has no block. -/
-theorem newPayloadOnChain_of_not_parent {chain : BlockChain} {version : Nat} {params : Lean.Json}
+theorem newPayloadOnChain_of_not_parent {transition : TransitionConfiguration}
+    {totalDifficulty : Nat} {chain : BlockChain} {version : Nat} {params : Lean.Json}
     {checked : CheckedBlock version}
     (hCheck : checkNewPayload chain.config version params = .ok (.ok checked))
     (hParent : ∀ parent, chain.recent.getLast? = some parent →
       parent.header.hash ≠ .ok checked.block.header.parentHash) :
-    newPayloadOnChain chain version params = .ok (⟨.syncing, none⟩, none, none) := by
+    newPayloadOnChain transition totalDifficulty chain version params =
+      .ok (⟨.syncing, none⟩, none, none) := by
   cases hLast : chain.recent.getLast? with
   | none => simp [newPayloadOnChain, hCheck, hLast, bind, Except.bind, pure, Except.pure]
   | some parent =>
@@ -402,42 +459,264 @@ theorem newPayloadOnChain_of_not_parent {chain : BlockChain} {version : Nat} {pa
     cases hP : parent.header.hash <;>
       simp_all [newPayloadOnChain, bind, Except.bind, pure, Except.pure, Except.toOption]
 
+/-- A payload that passes the checks before execution is invalid on a parent that is not terminal.
+
+The parent is a block of proof of work.
+
+It fails the conditions of a terminal block, or has a total difficulty below its difficulty.
+
+The latest valid hash is zero, as step 2 of payload validation requires. -/
+theorem newPayloadOnChain_of_not_terminal {transition : TransitionConfiguration}
+    {totalDifficulty : Nat} {chain : BlockChain} {version : Nat} {params : Lean.Json}
+    {checked : CheckedBlock version} {parent : RecentBlock}
+    (hCheck : checkNewPayload chain.config version params = .ok (.ok checked))
+    (hParent : chain.recent.getLast? = some parent)
+    (hHash : parent.header.hash = .ok checked.block.header.parentHash)
+    (hPow : parent.fork < .paris)
+    (hTerminal : parent.header.difficulty ≤ totalDifficulty → isTerminalPowBlock transition
+      totalDifficulty (totalDifficulty - parent.header.difficulty) = false) :
+    newPayloadOnChain transition totalDifficulty chain version params =
+      .ok (⟨.invalid, some 0⟩, some .invalidTerminalBlock, none) := by
+  have hFail : passesTerminalCheck transition totalDifficulty parent = false := by
+    have hp : decide (Fork.paris ≤ parent.fork) = false := decide_eq_false (Nat.not_le.mpr hPow)
+    rw [passesTerminalCheck, hp, Bool.false_or]
+    by_cases hd : parent.header.difficulty ≤ totalDifficulty
+    · rw [hTerminal hd, Bool.and_false]
+    · simp [hd]
+  simp [newPayloadOnChain, hCheck, hParent, hHash, hFail, bind, Except.bind, pure, Except.pure,
+    Except.toOption]
+
 /-- A payload that passes the checks on its parent, and whose block passes the transition, is valid.
 
+Its parent passes the terminal block check.
+
 Its latest valid hash is its own block hash. -/
-theorem newPayloadOnChain_of_stateTransition_ok {chain : BlockChain} {version : Nat}
+theorem newPayloadOnChain_of_stateTransition_ok {transition : TransitionConfiguration}
+    {totalDifficulty : Nat} {chain : BlockChain} {version : Nat}
     {params : Lean.Json} {checked : CheckedBlock version} {parent : RecentBlock}
     {post : Execution.State.State}
     (hCheck : checkNewPayload chain.config version params = .ok (.ok checked))
     (hParent : chain.recent.getLast? = some parent)
     (hHash : parent.header.hash = .ok checked.block.header.parentHash)
+    (hTerminal : passesTerminalCheck transition totalDifficulty parent = true)
     (hRun : stateTransition chain checked.block false = .ok post) :
-    newPayloadOnChain chain version params =
+    newPayloadOnChain transition totalDifficulty chain version params =
       .ok (⟨.valid, checked.block.header.hash.toOption⟩, none,
         some (⟨checked.fork, checked.block.header, []⟩, post)) := by
-  simp [newPayloadOnChain, hCheck, hParent, hHash, hRun, bind, Except.bind, pure, Except.pure,
-    Except.toOption]
+  simp [newPayloadOnChain, hCheck, hParent, hHash, hTerminal, hRun, bind, Except.bind, pure,
+    Except.pure, Except.toOption]
 
 /-- A payload that passes the checks on its parent is invalid when its block fails the transition.
+
+Its parent passes the terminal block check.
 
 The failure is not an abort, and the reason of the status carries its error.
 
 Its latest valid hash is its parent's hash, or zero for a parent before Paris. -/
-theorem newPayloadOnChain_of_stateTransition_error {chain : BlockChain} {version : Nat}
+theorem newPayloadOnChain_of_stateTransition_error {transition : TransitionConfiguration}
+    {totalDifficulty : Nat} {chain : BlockChain} {version : Nat}
     {params : Lean.Json} {checked : CheckedBlock version} {parent : RecentBlock}
     {e : Execution.Blocks.BlockError}
     (hCheck : checkNewPayload chain.config version params = .ok (.ok checked))
     (hParent : chain.recent.getLast? = some parent)
     (hHash : parent.header.hash = .ok checked.block.header.parentHash)
+    (hTerminal : passesTerminalCheck transition totalDifficulty parent = true)
     (hRun : stateTransition chain checked.block false = .error e)
     (hAbort : ∀ cause, e ≠ .aborted cause) :
-    newPayloadOnChain chain version params =
+    newPayloadOnChain transition totalDifficulty chain version params =
       .ok (⟨.invalid, some (if parent.fork < .paris then 0 else checked.block.header.parentHash)⟩,
         some (.invalidBlock e), none) := by
   cases e with
   | aborted cause => exact absurd rfl (hAbort cause)
   | _ =>
-    simp [newPayloadOnChain, hCheck, hParent, hHash, hRun, bind, Except.bind, pure, Except.pure,
-      Except.toOption]
+    simp [newPayloadOnChain, hCheck, hParent, hHash, hTerminal, hRun, bind, Except.bind, pure,
+      Except.pure, Except.toOption]
+
+/-! ## The writer of the parameters -/
+
+open EthLib.Serialization.JsonRpc (listJson dataJson array fixed bytes array_listJson
+  fixed_dataJson bytes_hexString isNull_arr isNull_str) in
+/-- The decoder reads back an array of a decodable payload, then the values of the version. -/
+private theorem newPayloadParams_arr {version : Nat} {pj : Lean.Json} {any : Json.AnyPayload}
+    {amsterdam : Option (ByteArray × UInt64)} (hv : 1 ≤ version ∧ version ≤ 5)
+    (hnull : pj.isNull = false) (hp : payloadParam version pj = .ok (any, amsterdam))
+    (hashes : List Hash32) (beaconRoot : Hash32) (requests : List ByteArray) :
+    newPayloadParams version (.arr ([pj] ++
+      (if 3 ≤ version then [listJson (dataJson ·.toList) hashes, dataJson beaconRoot.toList]
+        else []) ++
+      (if 4 ≤ version then [listJson (dataJson ·.data.toList) requests] else [])).toArray) =
+      .ok (any, amsterdam, if 3 ≤ version then some hashes else none,
+        if 3 ≤ version then some beaconRoot else none,
+        if 4 ≤ version then some requests else none) := by
+  -- Each value after the payload reads back, and none of them is null.
+  have hh : array "expectedBlobVersionedHashes" (fun j => fixed "versioned hash" 32 j)
+      (listJson (dataJson ·.toList) hashes) = .ok hashes := by
+    rw [array_listJson]
+    simpa using mapM_eq_ok_map (g := id) fun x _ => fixed_dataJson "versioned hash" x false
+  have hr : array "executionRequests" (bytes "request")
+      (listJson (dataJson ·.data.toList) requests) = .ok requests := by
+    rw [array_listJson]
+    refine (mapM_eq_ok_map (g := id) fun r _ => ?_).trans (by simp)
+    rw [dataJson, bytes_hexString]
+    exact congrArg Except.ok (ByteArray.ext (Array.toList_inj.mp (by simp)))
+  have hb : fixed "parentBeaconBlockRoot" 32 (dataJson beaconRoot.toList) = .ok beaconRoot :=
+    fixed_dataJson _ beaconRoot false
+  have nh : (listJson (dataJson ·.toList) hashes).isNull = false := isNull_arr _
+  have nr : (listJson (dataJson ·.data.toList) requests).isNull = false := isNull_arr _
+  have nb : (dataJson beaconRoot.toList).isNull = false := isNull_str _
+  obtain rfl | rfl | rfl | rfl | rfl :
+      version = 1 ∨ version = 2 ∨ version = 3 ∨ version = 4 ∨ version = 5 := by omega
+  -- What is left binds values that already read back.
+  all_goals
+    simp [newPayloadParams, paramCount, hnull, hp, hh, hr, hb, nh, nr, nb]
+    rfl
+
+/-- A decoded payload that gives a payload at a fork has the structure version of that fork.
+
+It is version 3 from Dencun, version 2 at Shapella, and version 1 before. -/
+private theorem version_of_atFork {fork : Fork} {j : Lean.Json} {any : Json.AnyPayload}
+    {p : ExecutionPayload fork} (hj : Json.anyPayload j = .ok any)
+    (hat : any.atFork fork = .ok p) :
+    any.version = if .dencun ≤ fork then 3 else if .shapella ≤ fork then 2 else 1 := by
+  obtain ⟨hver, hw, hb, -⟩ := Json.shape_of_anyPayload hj
+  simp only [Json.AnyPayload.atFork, bind_ok_iff] at hat
+  obtain ⟨w, hw', b, hb', -⟩ := hat
+  -- The fields present fix the version of the structure from the fork.
+  have hw'' := Json.exists_since_iff.mp ⟨w, hw'⟩
+  have hb'' := Json.exists_since_iff.mp ⟨b, hb'⟩
+  rw [hw] at hw''
+  rw [hb] at hb''
+  rcases hver with h | h | h <;> rw [h] at hw'' hb'' ⊢ <;> cases fork <;>
+    revert hw'' hb'' <;> decide
+
+/-- The decoder of the parameters reads back their JSON when the version takes the structure.
+
+The version must be one of 1 to 5.
+
+Below version 5 it must take the structure version of the fork of the payload.
+
+From version 5 that fork must be from Dencun on.
+
+The extra data of the payload must hold at most 32 bytes.
+
+The access list and the slot are given exactly from version 5.
+
+The hashes and the root read back from version 3, and the requests from version 4.
+
+The payload reads back as one whose form at its fork is the given payload. -/
+theorem newPayloadParams_json_of_structure {fork : Fork} {version : Nat}
+    (payload : ExecutionPayload fork) (amsterdam : Option (ByteArray × UInt64))
+    (hashes : List Hash32) (beaconRoot : Hash32) (requests : List ByteArray)
+    (hv : 1 ≤ version ∧ version ≤ 5)
+    (layout : version < 5 → acceptsStructure version
+      (if .dencun ≤ fork then 3 else if .shapella ≤ fork then 2 else 1) = true)
+    (dencun : 5 ≤ version → .dencun ≤ fork)
+    (extra : payload.extraData.size ≤ MAX_EXTRA_DATA_BYTES)
+    (five : amsterdam.isSome ↔ 5 ≤ version) :
+    ∃ any, newPayloadParams version
+        (newPayloadParamsJson version payload amsterdam hashes beaconRoot requests) =
+        .ok (any, amsterdam, if 3 ≤ version then some hashes else none,
+          if 3 ≤ version then some beaconRoot else none,
+          if 4 ≤ version then some requests else none) ∧
+      any.atFork fork = .ok payload := by
+  unfold newPayloadParamsJson
+  cases amsterdam with
+  | none =>
+    -- Below version 5 the payload has the structure of its fork.
+    have hlt : version < 5 := by simpa using five
+    obtain ⟨any, hj, hat⟩ := Json.anyPayload_executionPayloadJson payload extra
+    have hs : acceptsStructure version any.version = true := by
+      rw [version_of_atFork hj hat]
+      exact layout hlt
+    have hp : payloadParam version (Json.executionPayloadJson payload) = .ok (any, none) :=
+      (payloadParam_eq_ok_iff_of_lt hlt).mpr ⟨hj, hs, rfl⟩
+    exact ⟨any, newPayloadParams_arr hv rfl hp hashes beaconRoot requests, hat⟩
+  | some x =>
+    -- Version 5 reads the structure of version 4, from Dencun on.
+    obtain ⟨accessList, slot⟩ := x
+    have h5 : 5 ≤ version := five.mp rfl
+    obtain ⟨any, hj, hat⟩ :=
+      Json.payloadV4_executionPayloadV4Json payload accessList slot (dencun h5) extra
+    have hp : payloadParam version (Json.executionPayloadV4Json payload accessList slot) =
+        .ok (any, some (accessList, slot)) :=
+      (payloadParam_eq_ok_iff_of_le h5).mpr ⟨accessList, slot, hj, rfl⟩
+    exact ⟨any, newPayloadParams_arr hv rfl hp hashes beaconRoot requests, hat⟩
+
+/-- The decoder of the parameters reads back the JSON of the parameters of a version.
+
+The version must take the fork of the payload, whose extra data holds at most 32 bytes.
+
+The access list and the slot are given exactly from version 5.
+
+The hashes and the root read back from version 3, and the requests from version 4.
+
+The payload reads back as one whose form at its fork is the given payload. -/
+theorem newPayloadParams_json {fork : Fork} {version : Nat} (payload : ExecutionPayload fork)
+    (amsterdam : Option (ByteArray × UInt64)) (hashes : List Hash32) (beaconRoot : Hash32)
+    (requests : List ByteArray) (accepts : acceptsFork version fork = true)
+    (extra : payload.extraData.size ≤ MAX_EXTRA_DATA_BYTES)
+    (five : amsterdam.isSome ↔ 5 ≤ version) :
+    ∃ any, newPayloadParams version
+        (newPayloadParamsJson version payload amsterdam hashes beaconRoot requests) =
+        .ok (any, amsterdam, if 3 ≤ version then some hashes else none,
+          if 3 ≤ version then some beaconRoot else none,
+          if 4 ≤ version then some requests else none) ∧
+      any.atFork fork = .ok payload := by
+  -- A version that takes a fork is one of 1 to 5.
+  have hv : 1 ≤ version ∧ version ≤ 5 := by
+    unfold acceptsFork at accepts
+    split at accepts <;> first | omega | simp at accepts
+  -- The fork fixes the structure that the version takes, and version 5 takes Glamsterdam alone.
+  refine newPayloadParams_json_of_structure payload amsterdam hashes beaconRoot requests hv
+    (fun h => ?_) (fun h => ?_) extra five
+  all_goals
+    revert h
+    obtain rfl | rfl | rfl | rfl | rfl :
+        version = 1 ∨ version = 2 ∨ version = 3 ∨ version = 4 ∨ version = 5 := by omega
+    all_goals (cases fork <;> revert accepts <;> decide)
+
+/-- Decoded parameters whose first value is a payload decode that payload. -/
+private theorem payloadParam_of_newPayloadParams {version : Nat} {pj : Lean.Json}
+    {rest : List Lean.Json}
+    {x : Json.AnyPayload × Option (ByteArray × UInt64) × Option (List Hash32) × Option Hash32 ×
+      Option (List ByteArray)}
+    (h : newPayloadParams version (.arr (pj :: rest).toArray) = .ok x) :
+    ∃ a, payloadParam version pj = .ok a := by
+  unfold newPayloadParams at h
+  obtain ⟨l, hl, h⟩ := bind_ok_iff.mp h
+  cases hl
+  dsimp only [List.getElem?_cons_zero] at h
+  -- Walk every step: a failing step contradicts the result, and each value read is kept.
+  repeat' (first
+    | (cases h; done)
+    | (obtain ⟨_, step, h⟩ := bind_ok_iff.mp h
+       first | cases step | skip)
+    | split at h)
+  all_goals exact ⟨_, ‹payloadParam _ _ = _›⟩
+
+/-- Decoded parameters written from a payload hold its extra data within 32 bytes.
+
+The structure of version 4 must come exactly from version 5, and only from Dencun on. -/
+theorem extraData_le_of_newPayloadParams_json {fork : Fork} {version : Nat}
+    {payload : ExecutionPayload fork} {amsterdam : Option (ByteArray × UInt64)}
+    {hashes : List Hash32} {beaconRoot : Hash32} {requests : List ByteArray}
+    (five : amsterdam.isSome ↔ 5 ≤ version) (dencun : amsterdam.isSome → .dencun ≤ fork)
+    {x : Json.AnyPayload × Option (ByteArray × UInt64) × Option (List Hash32) × Option Hash32 ×
+      Option (List ByteArray)}
+    (h : newPayloadParams version
+      (newPayloadParamsJson version payload amsterdam hashes beaconRoot requests) = .ok x) :
+    payload.extraData.size ≤ MAX_EXTRA_DATA_BYTES := by
+  unfold newPayloadParamsJson at h
+  obtain ⟨a, ha⟩ := payloadParam_of_newPayloadParams h
+  cases amsterdam with
+  | none =>
+    -- Below version 5 the payload decodes as a structure of version 1, 2 or 3.
+    have hlt : version < 5 := by simpa using five
+    exact Json.extraData_le_of_anyPayload_executionPayloadJson
+      ((payloadParam_eq_ok_iff_of_lt hlt).mp ha).1
+  | some x =>
+    -- From version 5 it decodes as a payload of version 4.
+    obtain ⟨_, _, hj, -⟩ := (payloadParam_eq_ok_iff_of_le (five.mp rfl)).mp ha
+    exact Json.extraData_le_of_payloadV4_executionPayloadV4Json (dencun rfl) hj
 
 end EthLib.Engine

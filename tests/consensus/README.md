@@ -236,3 +236,50 @@ For Gloas they are every file of `examples/gloas/`: a signed request authenticat
 It checks signed roots against the roots of their message and signature, and Gloas roots with independent SSZ calculations.
 It also compares a few fields with the JSON form.
 The signatures of the examples are placeholders, so the tests of the signature checks sign their own messages.
+
+The directory `beacon_api/` holds the schemas of the Beacon API, from `ethereum/beacon-APIs` at commit `7911555e6a30c51f9b69bb168111a59f1ff8ee49`, release v5.0.0-beta.0.
+A schema says how the JSON of the API spells a container: the keys of each object, and the pattern of each string.
+The files are copied byte for byte under their paths in that repository.
+`beacon_api/SHA256SUMS` records the digest of each file.
+They are the files of `types/` that define the containers of the `ssz_static/` cases, and the files that the schemas of those containers refer to.
+Two of those references, in `types/altair/sync_committee.yaml`, pass through `beacon-node-oapi.yaml`, so the directory holds that file too.
+Some other references of these files point to files that the directory does not hold, and the tests follow none of them.
+
+`bindings/python/tests/consensus/test_beacon_api_json.py` writes the JSON of the `ssz_static/` cases through the bindings, and checks it against the schemas.
+It checks every case of a fork that has a consensus version, so it leaves out the Heze cases.
+It also leaves out the containers that no schema defines, such as `SigningData`, and it asserts that list of names.
+It reads the JSON back, in lowercase and in uppercase hex, and compares the bytes with the case.
+The schemas give the lengths of lists and strings for the mainnet preset, so the test checks them only on mainnet cases.
+
+A schema can give an example of a string.
+The test takes the case with the most compressed bytes of each container at each preset and fork.
+In it, the test takes one string of each type and shape of path, where the indices of lists do not count.
+It puts the example in place of that string, unless the string is hex of a fixed length that the example does not have.
+It then reads the document through the bindings.
+
+The examples of `builder_api/` also come with JSON forms.
+The test compares the JSON of the bindings with them, and reads them back to the same bytes.
+
+The directory `relay_api/` holds files of the Relay API, from `flashbots/relay-specs` at commit `a4e0a50d9d46bfe881fd74cc7e0db366371f4eed`.
+The source has no tag and no release; this commit is its Fulu update.
+The files are copied byte for byte under their paths in that repository.
+`examples/<fork>/submit_block_request.json` is the JSON example of a block submission, from Bellatrix to Fulu.
+`specs/<fork>/builder.md` is the document that defines the containers of the submission at that fork.
+
+`bindings/python/tests/consensus/test_relay_api.py` reads the payload of each example through the bindings, and from Deneb its blobs bundle, from Electra its requests.
+The bid traces of the examples lack the key of the proposer, so the test checks that the bindings refuse them.
+The blobs of the Deneb and Electra examples hold 32 bytes, not the 131,072 bytes of a blob.
+The test checks that the bindings refuse those bundles too.
+It then adds the key and pads each blob with zeros, and checks the bytes and the root of the whole submission.
+It also reads the containers of the documents, and computes their roots in Python from the completed examples.
+They agree with the roots of EthLib, except for the requests.
+The Electra document bounds the consolidation requests of a payload by 1, and Fulu keeps that bound.
+The mainnet preset bounds them by 2, so the trees of the two lists have different depths.
+The test checks that the roots differ, and that they agree when the bound of the preset replaces that of the documents.
+Another test builds the bid that a relay serves from each completed example, and from a generated submission.
+It checks the header against the payload, with the roots of its lists computed in Python.
+It also checks the value, the key, and from Deneb the commitments and from Electra the requests.
+Two more tests build the list of validators that a relay serves from the minimal Fulu state of `light_client/minimal/fulu/light_client/single_merkle_proof/BeaconState/current_sync_committee_merkle_proof`.
+The first registers every validator and compares the list with the proposer lookahead of the state, read from its JSON; with no registration the list is empty.
+The second moves the state inside an epoch, replaces the lookahead, registers one validator, and checks that only the slots of that validator have entries.
+A last test checks that the list is refused at the forks before and after Fulu.

@@ -230,7 +230,8 @@ theorem onFastConfirmation_checked {fcr after : FastConfirmationStore}
         after.previousEpochObservedJustifiedCheckpoint =
           fcr.currentEpochObservedJustifiedCheckpoint) ∧
       (isStartSlotAtEpoch preset slot = .ok false →
-        after.currentEpochObservedJustifiedCheckpoint = fcr.currentEpochObservedJustifiedCheckpoint ∧
+        after.currentEpochObservedJustifiedCheckpoint =
+          fcr.currentEpochObservedJustifiedCheckpoint ∧
         after.previousEpochObservedJustifiedCheckpoint =
           fcr.previousEpochObservedJustifiedCheckpoint) ∧
       (∃ base,
@@ -522,7 +523,7 @@ They hold a third of the margin on top of it.
 
 No field says that honest validators are not known equivocators.
 
-`Execution.not_mem_equivocatingIndices` derives that, from the anchor store with no equivocator.
+`Execution.equivocatingIndices_honest` derives that, from the anchor store with no equivocator.
 
 Once a complete epoch lies between the call and a time, a receiver has `LateMargin`.
 
@@ -1056,7 +1057,7 @@ theorem Execution.rootFinal_or_justified_covers {anchor : Store preset fork}
       epochOk).1 inHorizon
   have endpointLe := reached.finalized_le_justified sound
   intro k' earlier
-  have finalLe := (e.epochsLe_of_le w earlier).2
+  have finalLe := (e.epochsLe_of_le w earlier).2.epoch_le
   -- The finalized chain places both finalized checkpoints below the justified block.
   have read := chain w receiver w receiver k' k ((e.monotone_time earlier).trans bounded) bounded
     justified (Or.inl rfl)
@@ -1691,7 +1692,8 @@ private theorem walk_vote_mem_window {limit : ℕ}
     (targetKept attestation.data.slot index origin.targetEpoch.symm).symm
   have active := (headRun.active.getActiveValidatorIndices_eq fixed).trans
     (targetRun.active.getActiveValidatorIndices_eq fixed).symm
-  have count : getCommitteeCountPerSlot headState (computeEpochAtSlot preset attestation.data.slot) =
+  have count : getCommitteeCountPerSlot headState
+      (computeEpochAtSlot preset attestation.data.slot) =
       getCommitteeCountPerSlot targetState (computeEpochAtSlot preset attestation.data.slot) := by
     simp only [← origin.targetEpoch, getCommitteeCountPerSlot, active]
   exact Store.mem_getCommitteesBetweenSlots windowOk low high stateOk
@@ -3352,7 +3354,8 @@ theorem Execution.safeAt_of_walk {Δ : ℕ} (sync : e.Synchronous Δ)
     simpa only [Store.getCurrentSlot, receiverClocks.trans clocks.symm] using
       (mapError_ok_iff.mp currentOk)
   obtain ⟨beforeBlock, participants, _, beforeOk, participantsOk, _, _⟩ :=
-    Store.exists_stake_parentVotersOf_of_computeEmptySlotSupportDiscount bOk parentOk firstOk discountOk
+    Store.exists_stake_parentVotersOf_of_computeEmptySlotSupportDiscount
+      bOk parentOk firstOk discountOk
   have slotPositive : 1 ≤ current.toNat := by
     have := (subChecked_ok_iff.mp lastOk).1
     have := UInt64.le_iff_toNat_le.mp currentLe
@@ -3377,7 +3380,8 @@ theorem Execution.safeAt_of_walk {Δ : ℕ} (sync : e.Synchronous Δ)
   obtain ⟨receiverWindow, receiverWindowOk⟩ := reads first (current - 1) lastLt
   obtain ⟨receiverParticipants, receiverParticipantsOk⟩ := reads first beforeBlock beforeLt
   have parentBelow := walk_parent_below preGloas lower startKnown prefixWalk member mem block held
-  obtain ⟨sameParent, sameParentKnown, startLe⟩ := Store.slot_le_of_isAncestor startKnown parentBelow
+  obtain ⟨sameParent, sameParentKnown, startLe⟩ :=
+    Store.slot_le_of_isAncestor startKnown parentBelow
   have eq := Option.some.inj ((Store.block_ok_iff.mp parentOk).symm.trans sameParentKnown)
   subst sameParent
   have recentParent : (computeEpochAtSlot preset slot).toNat ≤
@@ -3521,7 +3525,8 @@ theorem Execution.safeAt_of_walk {Δ : ℕ} (sync : e.Synchronous Δ)
     (BeaconState.registryWithinLimit_of_lt preGloas balanceSource)
     (Store.Reachable.checkpointState_aligned sound (reached n u caller) maxAligned sourceOk)
     increment supportOk discountOk adversaryOk
-    (slack member mem block parent first last beforeBlock participants maximum boost support discount
+    (slack member mem block parent first last beforeBlock participants maximum boost support
+      discount
       adversary bOk parentOk firstOk lastOk beforeOk participantsOk maximumOk boostOk supportOk
       discountOk adversaryOk) afterNow (weights now boundedNow complete)
     (‹FinalizedPrefix e horizon limit›.of_le boundedNow)
@@ -3538,7 +3543,8 @@ theorem Execution.safeAt_of_walk {Δ : ℕ} (sync : e.Synchronous Δ)
     committees follows receiver receiverBound ready receiverLower
     (nonzero w receiver k receiverBound)
     receiverHeadOk stateOk (Store.block_ok_iff.mpr memberKnown)
-    (Store.block_ok_iff.mpr receiverParentKnown) currentOk receiverEpochOk age firstOk receiverLastOk
+    (Store.block_ok_iff.mpr receiverParentKnown) currentOk receiverEpochOk age firstOk
+    receiverLastOk
     beforeOk receiverWindowOk scoreOk receiverParticipantsOk tree viable parentAbove
     (transported.resolve_right covered)
 
@@ -3984,7 +3990,8 @@ private theorem call_previous_not_boundary {slot previous : Slot}
   have sum := (addChecked_ok_iff.mp nextOk).2
   have longNat := UInt64.lt_iff_toNat_lt.mp long
   have dividesNow : preset.SLOTS_PER_EPOCH.toNat ∣ slot.toNat := by rw [now]; exact dvd_mul_left _ _
-  have dividesOld : preset.SLOTS_PER_EPOCH.toNat ∣ previous.toNat := by rw [old]; exact dvd_mul_left _ _
+  have dividesOld : preset.SLOTS_PER_EPOCH.toNat ∣ previous.toNat := by
+    rw [old]; exact dvd_mul_left _ _
   have dividesOne := Nat.dvd_sub dividesNow dividesOld
   have diff : slot.toNat - previous.toNat = 1 := by
     simpa using congrArg (fun x => x - previous.toNat) sum
@@ -5016,7 +5023,8 @@ theorem Execution.callInvariant_step {Δ : ℕ} (sync : e.Synchronous Δ)
       obtain ⟨oldSlot, oldTime, oldSlotOk, oldIndex, oldTimeOk, atOldSlot⟩ :=
         atSlots j m previous.1
       have sum : slot.toNat = oldSlot.toNat + 1 := by omega
-      obtain ⟨nextOk', eventLt, delayed⟩ := call_slots_order fits sum oldTimeOk beginOk atOldSlot atSlot
+      obtain ⟨nextOk', eventLt, delayed⟩ :=
+        call_slots_order fits sum oldTimeOk beginOk atOldSlot atSlot
       obtain ⟨_, s, _, _, sOk, _, _, recorded, _⟩ :=
         Store.onFastConfirmation_checked (lower m (List.mem_of_getElem? previous.1)) previous.2.2
       have same : s = oldSlot := Except.ok.inj (sOk.symm.trans oldSlotOk)
@@ -5130,7 +5138,8 @@ theorem Execution.callInvariant_step {Δ : ℕ} (sync : e.Synchronous Δ)
       obtain ⟨m, before, previous⟩ := callAt_previous calls
       have prevMem := List.mem_of_getElem? previous.1
       obtain ⟨oldSlot, oldTime, oldSlotOk, oldIndex, oldTimeOk, atOldSlot⟩ := atSlots j m previous.1
-      obtain ⟨nextOk, eventLt, _⟩ := call_slots_order fits (by omega) oldTimeOk beginOk atOldSlot atSlot
+      obtain ⟨nextOk, eventLt, _⟩ :=
+        call_slots_order fits (by omega) oldTimeOk beginOk atOldSlot atSlot
       obtain ⟨oldHead, _, _, oldHeadOk, _, _, oldHeadEq, _⟩ :=
         Store.onFastConfirmation_checked (lower m prevMem) previous.2.2
       exact Or.inr ⟨m, eventLt, oldHead, oldSlot, upToDate m prevMem, oldHeadOk,
@@ -5195,7 +5204,8 @@ theorem Execution.callInvariant_step {Δ : ℕ} (sync : e.Synchronous Δ)
           have oldEpochOk : ((e.world m).state u).getCurrentStoreEpoch config = .ok previous := by
             simp [Store.getCurrentStoreEpoch, oldSlotOk, previousSame,
               bind, Except.bind, pure, Except.pure]
-          obtain ⟨oldRootEpoch, oldRootOk⟩ := e.call_root_known anchored sound start positiveSlotsNat
+          obtain ⟨oldRootEpoch, oldRootOk⟩ :=
+            e.call_root_known anchored sound start positiveSlotsNat
             window caller (nonzero u caller m (by omega))
             (lower m (List.mem_of_getElem? previousCall.1))
             previousCall.2.2
@@ -5217,7 +5227,8 @@ theorem Execution.callInvariant_step {Δ : ℕ} (sync : e.Synchronous Δ)
         unfold Store.getBlockEpoch at known
         obtain ⟨block, found, _⟩ := bind_ok_iff.mp known
         exact ⟨n, le_rfl, _, rootOk, rootOk,
-          Store.isAncestor_self (Store.block_ok_iff.mp found), Or.inl (congrArg Checkpoint.root same),
+          Store.isAncestor_self (Store.block_ok_iff.mp found),
+          Or.inl (congrArg Checkpoint.root same),
           fun time _ _ => (congrArg Checkpoint.root same) ▸ e.safeAt_anchor anchored start time⟩
     · exact Or.inr ⟨justification, rfl⟩
   have pins := e.honestThirdPins anchored sound positiveSlotsNat window ring preGloas nonzero start
@@ -5294,13 +5305,16 @@ theorem Execution.callInvariant_step {Δ : ℕ} (sync : e.Synchronous Δ)
     exact e.safeAt_of_walk sync slots positiveSlotsNat (UInt64.lt_iff_toNat_lt.mp positive)
       window lookahead preGloas admitted oneBlock half
       boost long
-      votes fits prompt committees follows chain unique pins voted included anchored sound anchorSlot
-      anchorAtBoundary start rfl noVotes maxAligned increment caller (upToDate n member) (lower n member)
+      votes fits prompt committees follows chain unique pins voted included anchored sound
+      anchorSlot anchorAtBoundary start rfl noVotes maxAligned increment caller
+      (upToDate n member) (lower n member)
       slotOk beginOk atSlot headOk
-      ⟨_, slot, rootEpoch, startEpoch, epochOk, slotOk, rootEpochOk, startEpochOk, recent, checkedCases⟩
+      ⟨_, slot, rootEpoch, startEpoch, epochOk, slotOk, rootEpochOk, startEpochOk, recent,
+        checkedCases⟩
       sourceOk walked confirmedAll previousHead targetVotes (boundedLineage callBound)
-      (previousLineage callBound) epochOk callEpochs startBelow historicalOk historicalRecent epochStartOk
-      epochStartTimeOk (fun earlier lower beforeCall => historicalSafe earlier lower (Nat.le_trans (Nat.le_of_lt beforeCall) callBound))
+      (previousLineage callBound) epochOk callEpochs startBelow historicalOk historicalRecent
+      epochStartOk epochStartTimeOk (fun earlier lower beforeCall =>
+        historicalSafe earlier lower (Nat.le_trans (Nat.le_of_lt beforeCall) callBound))
       startFacts.2 weights slack late anchorParent nonzero inHorizon
       (fun w hw k state bounded counts epochLe => large w hw k state bounded counts
         (by have := UInt64.le_iff_toNat_le.mp epochLe; omega)) few unslashed supply exits
@@ -5310,7 +5324,8 @@ theorem Execution.callInvariant_step {Δ : ℕ} (sync : e.Synchronous Δ)
       ⟨after.confirmedRoot, .pending⟩ = .ok true := by
     rcases walk_member_ancestor preGloas walked _ rootMem with impossible | ⟨block, known, path⟩
     · cases impossible
-    · simp [Store.isAncestor, Store.block_ok_iff.mpr known, path, bind, Except.bind, pure, Except.pure]
+    · simp [Store.isAncestor, Store.block_ok_iff.mpr known, path, bind, Except.bind, pure,
+        Except.pure]
   have rootAbove : ((e.world n).state u).isAncestor ⟨after.confirmedRoot, .pending⟩
       ⟨selectedStart, .pending⟩ = .ok true := by
     apply walk_members_induction
@@ -5334,8 +5349,10 @@ theorem Execution.callInvariant_step {Δ : ℕ} (sync : e.Synchronous Δ)
     have sameSlot : s = slot := Except.ok.inj (sOk.symm.trans slotOk)
     subst s
     obtain ⟨beforeBlock, participants, _, beforeOk, participantsOk, _, _⟩ :=
-      Store.exists_stake_parentVotersOf_of_computeEmptySlotSupportDiscount blockOk parentOk firstOk discountOk
-    have marginOk := slack _ (by simp) block parent first last beforeBlock participants maximum score
+      Store.exists_stake_parentVotersOf_of_computeEmptySlotSupportDiscount
+        blockOk parentOk firstOk discountOk
+    have marginOk := slack _ (by simp) block parent first last beforeBlock participants maximum
+      score
       support discount adversary blockOk parentOk firstOk lastOk beforeOk participantsOk maximumOk
       scoreOk supportOk discountOk adversaryOk
     exact e.rootEpoch_ne_of_slack_at_epoch_start anchored start anchorSlot preGloas caller
@@ -5348,7 +5365,8 @@ theorem Execution.callInvariant_step {Δ : ℕ} (sync : e.Synchronous Δ)
     have late := fits.call_before_next_slot nextOk beginOk followingOk atSlot afterNext
     exact walkSafe time (by omega) bounded
   · intro epoch _ readEpoch _ _
-    have same : epoch = computeEpochAtSlot preset slot := Except.ok.inj (readEpoch.symm.trans epochOk)
+    have same : epoch = computeEpochAtSlot preset slot :=
+      Except.ok.inj (readEpoch.symm.trans epochOk)
     subst epoch
     have known := historicalOk
     unfold Store.getBlockEpoch at known
@@ -5358,7 +5376,8 @@ theorem Execution.callInvariant_step {Δ : ℕ} (sync : e.Synchronous Δ)
         (Store.block_ok_iff.mp found) rootAbove startBelow,
       historicalOk, historicalRecent, epochStartOk, epochStartTimeOk, historicalSafe⟩
   · intro epoch readEpoch readRootEpoch
-    have same : epoch = computeEpochAtSlot preset slot := Except.ok.inj (readEpoch.symm.trans epochOk)
+    have same : epoch = computeEpochAtSlot preset slot :=
+      Except.ok.inj (readEpoch.symm.trans epochOk)
     subst epoch
     have rootSame : rootEpoch = computeEpochAtSlot preset slot :=
       Except.ok.inj (rootEpochOk.symm.trans readRootEpoch)
@@ -5371,7 +5390,8 @@ theorem Execution.callInvariant_step {Δ : ℕ} (sync : e.Synchronous Δ)
       exact ⟨k, before, origin, originEpoch,
         Store.isAncestor_trans_of_lt preGloas (Store.block_ok_iff.mp startBlockOk)
           (Store.block_ok_iff.mp found) rootAbove above, checkedOrigin, safeOrigin⟩
-    · have target : ((e.world n).state u).willCurrentTargetBeJustified config head.root = .ok true := by
+    · have target : ((e.world n).state u).willCurrentTargetBeJustified config head.root =
+          .ok true := by
         rcases checkedCases with old | current
         · exact False.elim (old.2.1 rootSame)
         · exact current.2.1 rootSame startSame
@@ -5500,8 +5520,9 @@ The anchor need not be finalized, and a genesis anchor needs no such start.
 
 The proof does not use this premise: it only fixes which executions the theorem describes.
 
-The first call is in epoch 2 or later, by `confirmationEpoch`, and after the epoch of the anchor
-state, by `anchorEpochBefore`.
+The first call is in epoch 2 or later, by `confirmationEpoch`.
+
+It is after the epoch of the anchor state, by `anchorEpochBefore`.
 
 Justification skips the first two epochs, so votes for a target of epoch 1 count only in epoch 2.
 

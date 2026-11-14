@@ -3,6 +3,7 @@ module
 public import EthLib.Execution.Network.Snap
 public import EthLib.Execution.Proofs.Network.Protocol
 public import EthLib.Execution.Proofs.Network.Status
+public import EthLib.Execution.Proofs.Trie.HexPrefix
 
 /-!
 # Proofs: the snap capability
@@ -20,6 +21,16 @@ Each message reads back from its ID and its RLP item on the versions that use it
 snap/2 rejects the trie node messages of snap/1, and snap/1 the access list messages of snap/2.
 
 The codes and the access lists of a checked answer are the requested ones.
+
+A full trie node path reads as its 64 nibbles.
+
+A compact path of fewer than 32 bytes reads as the nibbles it encodes.
+
+The lists of paths read as one group each, in order.
+
+A group of paths asks for one node per path after the first, and for one node if it has one path.
+
+Every prefix of an accepted TrieNodes answer is accepted.
 -/
 
 @[expose] public section
@@ -181,6 +192,37 @@ theorem sublist_of_codesAnswer {requested : List Hash32} {codes : List ByteArray
     (codes.map Cryptography.Hash.Keccak.keccak256).Sublist requested :=
   List.isSublist_iff_sublist.mp h
 
+/-- An answer of access lists passes the check exactly when two conditions hold.
+
+It holds no more entries than there are expected hashes.
+
+Each entry is the empty string, or its RLP encoding hashes to the expected hash at its position. -/
+theorem accessListsAnswer_eq_true_iff {expected : List Hash32} {lists : List Item} :
+    accessListsAnswer expected lists = true ↔
+      lists.length ≤ expected.length ∧
+        ∀ (i : Nat) (hi : i < lists.length) (he : i < expected.length),
+          lists[i] = .bytes .empty ∨
+            ∃ bytes, Serialization.Rlp.encode lists[i] = .ok bytes ∧
+              Cryptography.Hash.Keccak.keccak256 bytes = expected[i] := by
+  simp only [accessListsAnswer, Bool.and_eq_true, decide_eq_true_eq, List.all_eq_true]
+  refine and_congr_right fun hlen => ?_
+  rw [List.forall_mem_iff_forall_getElem]
+  simp only [List.length_zip, List.getElem_zip, Bool.or_eq_true, beq_iff_eq]
+  refine ⟨fun H i hi he => ?_, fun H i hi => ?_⟩
+  · rcases H i (by omega) with h | h
+    · exact .inl h
+    · right
+      cases hb : Serialization.Rlp.encode lists[i] with
+      | error e => simp [hb] at h
+      | ok bytes =>
+        simp only [hb] at h
+        exact ⟨bytes, rfl, eq_of_beq h⟩
+  · rcases H i (by omega) (by omega) with h | ⟨bytes, hb, hh⟩
+    · exact .inl h
+    · right
+      simp only [hb, hh]
+      exact beq_self_eq_true _
+
 /-- Each access list of a checked answer is absent, or hashes to the access list hash of its block.
 
 That block is the one at its position. -/
@@ -190,21 +232,51 @@ theorem of_accessListsAnswer {expected : List Hash32} {lists : List Item}
       ∀ (i : Nat) (hi : i < lists.length) (he : i < expected.length),
         lists[i] = .bytes .empty ∨
           ∃ bytes, Serialization.Rlp.encode lists[i] = .ok bytes ∧
-            Cryptography.Hash.Keccak.keccak256 bytes = expected[i] := by
-  simp only [accessListsAnswer, Bool.and_eq_true, decide_eq_true_eq, List.all_eq_true] at h
-  obtain ⟨hlen, hall⟩ := h
-  refine ⟨hlen, fun i hi he => ?_⟩
-  have hmem : (lists[i], expected[i]) ∈ lists.zip expected :=
-    List.mem_iff_getElem.mpr ⟨i, by simp; omega, by simp⟩
-  have := hall _ hmem
-  simp only [Bool.or_eq_true, beq_iff_eq] at this
-  rcases this with he' | henc
-  · exact .inl he'
-  · right
-    cases hb : Serialization.Rlp.encode lists[i] with
-    | error e => simp [hb] at henc
-    | ok bytes =>
-      simp only [hb] at henc
-      exact ⟨bytes, rfl, eq_of_beq henc⟩
+            Cryptography.Hash.Keccak.keccak256 bytes = expected[i] :=
+  accessListsAnswer_eq_true_iff.mp h
+
+/-! ## Trie node paths -/
+
+/-- A path of 32 bytes reads as its 64 nibbles. -/
+theorem readPath_full {bytes : ByteArray} (h : bytes.size = 32) :
+    readPath bytes = .ok (Trie.bytesToNibbleList bytes) := by
+  simp [readPath, h]
+
+/-- A compact path of fewer than 32 bytes reads as the nibbles it encodes, whatever its flag. -/
+theorem readPath_compact (path : TriePath) (isLeaf : Bool)
+    (h : (Trie.nibbleListToCompact path isLeaf).size < 32) :
+    readPath (Trie.nibbleListToCompact path isLeaf) = .ok path := by
+  simp [readPath, Nat.ne_of_lt h, h, Trie.compactToNibbleList_nibbleListToCompact]
+
+/-- A group read from a list of paths asks for one node per path after the first.
+
+A list of one path asks for one node. -/
+theorem nodeCount_readGroup {paths : List ByteArray} {group : PathGroup}
+    (h : readGroup paths = .ok group) : nodeCount [group] = max 1 (paths.length - 1) := by
+  rcases paths with _ | ⟨account, _ | ⟨slot, more⟩⟩
+  · cases h
+  · simp only [readGroup] at h
+    cases hr : readPath account <;>
+      simp [hr, bind, Except.bind, pure, Except.pure] at h
+    subst h
+    simp [nodeCount]
+  · simp only [readGroup] at h
+    cases ha : readPath account <;> cases hs : readPath slot <;>
+      cases hm : more.mapM readPath <;>
+      simp [ha, hs, hm, bind, Except.bind, pure, Except.pure] at h
+    subst h
+    simp [nodeCount, mapM_ok_length hm]
+
+/-- The lists of paths read as one group each, in order. -/
+theorem length_readGroups {paths : List (List ByteArray)} {groups : List PathGroup}
+    (h : readGroups paths = .ok groups) : groups.length = paths.length :=
+  mapM_ok_length h
+
+/-- Every prefix of an accepted TrieNodes answer is accepted. -/
+theorem trieNodesAnswer_take {groups : List PathGroup} {nodes : List ByteArray}
+    (h : trieNodesAnswer groups nodes = true) (n : Nat) :
+    trieNodesAnswer groups (nodes.take n) = true := by
+  simp only [trieNodesAnswer, decide_eq_true_eq, List.length_take] at h ⊢
+  omega
 
 end EthLib.Execution.Network

@@ -2,20 +2,20 @@ module
 
 public import EthLib.Consensus.Proofs.DirectSafety.Execution
 public import EthLib.Serialization.Proofs.Ssz.Typed.Root
-import EthLib.Consensus.Proofs.Containers.Block
 import EthLib.Consensus.Proofs.Containers.Misc
 import EthLib.Consensus.Proofs.Transition.BlockRoots
 import EthLib.Consensus.Proofs.Transition.TargetUpgrades
 import EthLib.Consensus.Proofs.Transition.PayloadInputs
+import EthLib.Consensus.Proofs.Transition.RootLinks
 
 /-!
 # Hash evidence restricted to the supplied executions
 
-Collision evidence uses the selected block headers and full blocks, not beacon-state commitments.
+Collision evidence uses the selected block headers, not beacon-state commitments.
 
 States are included only for the zero-root alternative.
 
-A zero state root leaves processSlot's empty-root sentinel unset.
+Caching a slot fills a zero state root of the latest header, unless the state hashes to zero.
 
 A later slot can then refill it.
 -/
@@ -28,26 +28,27 @@ open Base Serialization.Ssz Serialization.Ssz.SszType
 
 variable {preset : Preset} {config : Config} {checks : SignatureChecks}
 
+/-- An object of a run whose root the evidence may name: a block header or a state. -/
 inductive HashObject (preset : Preset) where
   | header (value : BeaconBlockHeader)
   | state (value : ForkedBeaconState preset)
-  | block (fork : Fork) (value : BeaconBlock preset fork)
 
+/-- The root of the object, when hashing succeeds. -/
 def HashObject.root (object : HashObject preset) : Option Root :=
   match object with
   | .header h => (hashTreeRoot h).toOption
   | .state s => (hashTreeRoot s.state).toOption
-  | .block _ b => (hashTreeRoot b).toOption
 
+/-- The inputs of the binary hashes that the root of a header computes; none for a state. -/
 def HashObject.messages (object : HashObject preset) : List Bytes :=
   match object with
   | .header h => ((valueTree (SszType.desc BeaconBlockHeader) (SszType.toValue h)).toOption.map
       (fun tree => tree.messages)).getD []
   | .state _ => []
-  | .block fork b =>
-    ((valueTree (SszType.desc (BeaconBlock preset fork)) (SszType.toValue b)).toOption.map
-      (fun tree => tree.messages)).getD []
 
+/-- The objects that a step exposes: its two states, their headers and the header of its block.
+
+A slot step also exposes the state and the header after caching. -/
 def _root_.EthLib.Consensus.Step.hashObjects {before after : ForkedBeaconState preset}
     (step : Step config checks before after) : List (HashObject preset) :=
   [.state before, .state after, .header before.state.latestBlockHeader,
@@ -56,19 +57,58 @@ def _root_.EthLib.Consensus.Step.hashObjects {before after : ForkedBeaconState p
   | .slot _ => match (processSlot before.state).toOption with
     | none => []
     | some cached => [.state ⟨before.fork, cached⟩, .header cached.latestBlockHeader]
-  | .block _ signed _ _ => (blockHeader signed.message).toList.map HashObject.header ++
-      [.block _ signed.message])
+  | .block _ signed _ _ => (blockHeader signed.message).toList.map HashObject.header)
 
+/-- The objects of the steps of a run, with the first state and its header. -/
 def _root_.EthLib.Consensus.Run.hashObjects {first last : ForkedBeaconState preset}
     (run : Run config checks first last) : List (HashObject preset) :=
   match run with
   | .nil => [.state first, .header first.state.latestBlockHeader]
   | .snoc pre step => pre.hashObjects ++ step.hashObjects
 
+/-- The first object of the list whose root is zero, if any. -/
+def findZeroRoot (objects : List (HashObject preset)) : Option (HashObject preset) :=
+  objects.find? fun object => decide (object.root = some (Vector.replicate 32 0))
+
+/-- An object that the zero search returns is one of the objects, and its root is zero. -/
+theorem findZeroRoot_valid {objects : List (HashObject preset)} {object : HashObject preset}
+    (found : findZeroRoot objects = some object) :
+    object ∈ objects ∧ object.root = some (Vector.replicate 32 0) :=
+  ⟨List.mem_of_find?_eq_some found, by simpa using List.find?_some found⟩
+
+/-- The zero search fails exactly when no object has root zero. -/
+theorem findZeroRoot_eq_none_iff {objects : List (HashObject preset)} :
+    findZeroRoot objects = none ↔
+      ∀ object ∈ objects, object.root ≠ some (Vector.replicate 32 0) := by
+  simp [findZeroRoot, List.find?_eq_none]
+
+/-- Two different inputs of the SHA-256 node hash with one digest, or an object whose root is zero.
+
+Both are read among the given objects.
+
+Each alternative says that a search over those objects returns one. -/
 def HashEvidence (objects : List (HashObject preset)) : Prop :=
-  (∃ x ∈ objects.flatMap HashObject.messages, ∃ y ∈ objects.flatMap HashObject.messages,
-    MessageCollision x y) ∨
-  ∃ object ∈ objects, object.root = some (Vector.replicate 32 0)
+  (∃ x y, findMessageCollision (objects.flatMap HashObject.messages)
+      (objects.flatMap HashObject.messages) = some (x, y)) ∨
+    ∃ object, findZeroRoot objects = some object
+
+/-- The searches find evidence exactly when that evidence exists.
+
+Two different inputs of the node hash share a digest, or an object has root zero. -/
+theorem hashEvidence_iff {objects : List (HashObject preset)} :
+    HashEvidence objects ↔
+      (∃ x ∈ objects.flatMap HashObject.messages, ∃ y ∈ objects.flatMap HashObject.messages,
+        MessageCollision x y) ∨
+      ∃ object ∈ objects, object.root = some (Vector.replicate 32 0) := by
+  constructor
+  · rintro (⟨x, y, found⟩ | ⟨object, found⟩)
+    · obtain ⟨xMember, yMember, collision⟩ := findMessageCollision_valid found
+      exact .inl ⟨x, xMember, y, yMember, collision⟩
+    · exact .inr ⟨object, findZeroRoot_valid found⟩
+  · rintro (⟨x, xMember, y, yMember, collision⟩ | ⟨object, member, zero⟩)
+    · exact .inl (findMessageCollision_of_collision xMember yMember collision)
+    · refine .inr (Option.isSome_iff_exists.mp (Option.isSome_iff_ne_none.mpr fun none => ?_))
+      exact findZeroRoot_eq_none_iff.mp none object member zero
 
 private theorem header_binding (objects : List (HashObject preset)) (a b : BeaconBlockHeader)
     (one : .header a ∈ objects) (two : .header b ∈ objects) (root : Root)
@@ -85,36 +125,8 @@ private theorem header_binding (objects : List (HashObject preset)) (a b : Beaco
   · obtain ⟨leftTree, rightTree, leftOk, rightOk, x, y, _, leftMem, rightMem, collided⟩ :=
       collision
     right
-    left
-    refine ⟨x, List.mem_flatMap.mpr ⟨.header a, one, ?_⟩,
-      y, List.mem_flatMap.mpr ⟨.header b, two, ?_⟩, collided⟩
-    · simpa [HashObject.messages, leftOk, Except.toOption] using leftMem
-    · simpa [HashObject.messages, rightOk, Except.toOption] using rightMem
-
-/-- Before Gloas, equal roots of same-fork blocks give equality or evidence in their messages.
-
-At Gloas the `ForkList` bound does not imply `proposerSlashings.data.size < 2^256`.
-
-The same count restriction is needed for every nested progressive list. -/
-theorem block_binding {fork : Fork}
-    [NeZero preset.BYTES_PER_LOGS_BLOOM.toNat] [NeZero preset.SYNC_COMMITTEE_SIZE.toNat]
-    [NeZero preset.MAX_COMMITTEES_PER_SLOT.toNat] [NeZero preset.PTC_SIZE.toNat]
-    [NeZero preset.INCLUSION_LIST_COMMITTEE_SIZE.toNat]
-    (early : fork < .glamsterdam)
-    (objects : List (HashObject preset)) (a b : BeaconBlock preset fork)
-    (one : .block fork a ∈ objects)
-    (two : .block fork b ∈ objects) (root : Root)
-    (sameA : hashTreeRoot a = .ok root) (sameB : hashTreeRoot b = .ok root) :
-    a = b ∨ HashEvidence objects := by
-  rcases SszType.hashTreeRoot_binding (a.commitmentSized early) (b.commitmentSized early)
-      sameA sameB with same | collision
-  · exact .inl same
-  · obtain ⟨leftTree, rightTree, leftOk, rightOk, x, y, _, leftMem, rightMem, collided⟩ :=
-      collision
-    right
-    left
-    refine ⟨x, List.mem_flatMap.mpr ⟨.block fork a, one, ?_⟩,
-      y, List.mem_flatMap.mpr ⟨.block fork b, two, ?_⟩, collided⟩
+    refine hashEvidence_iff.mpr (.inl ⟨x, List.mem_flatMap.mpr ⟨.header a, one, ?_⟩,
+      y, List.mem_flatMap.mpr ⟨.header b, two, ?_⟩, collided⟩)
     · simpa [HashObject.messages, leftOk, Except.toOption] using leftMem
     · simpa [HashObject.messages, rightOk, Except.toOption] using rightMem
 
@@ -125,16 +137,8 @@ private theorem header_deposit {fork : Fork} {before after : BeaconState preset 
   obtain ⟨_, _, _, _, applied⟩ := processDeposit_ok ok
   exact (frame_applyDeposit applied).latestBlockHeader
 
-private theorem block_header {fork : Fork} {before after : BeaconState preset fork}
-    {engine : ExecutionEngine preset fork} {block : BeaconBlock preset fork}
-    (ok : processBlock config checks engine before block = .ok after) :
-    ∃ root, hashTreeRoot block.body = .ok root ∧
-      after.latestBlockHeader = ⟨block.slot, block.proposerIndex, block.parentRoot,
-        Vector.replicate 32 0, root⟩ := by
-  exact latestBlockHeader_processBlock ok
-
 private theorem genesis_header {g : ForkedBeaconState preset}
-    (genesis : Genesis (config := config) (checks := checks) g) :
+    (genesis : Genesis config checks g) :
     g.state.latestBlockHeader.slot = 0 ∧
       g.state.latestBlockHeader.stateRoot = Vector.replicate 32 0 := by
   obtain ⟨hash, time, deposits, initialized⟩ := genesis
@@ -160,209 +164,16 @@ private theorem genesis_header {g : ForkedBeaconState preset}
   rw [activatedHeader, depositedHeader]
   exact ⟨rfl, rfl⟩
 
-private theorem header_queue_pre {fork : Fork} {before after : BeaconState preset fork}
-    {electra : .pectra ≤ fork} {index : ValidatorIndex}
-    (ok : queuePreActivation before electra index = .ok after) :
-    after.latestBlockHeader = before.latestBlockHeader := by
-  simp only [queuePreActivation, bind_ok_iff, liftAccessor_ok, pure, Except.pure,
-    Except.ok.injEq] at ok
-  obtain ⟨_, _, _, _, _, _, _, set₁, _, set₂, rfl⟩ := ok
-  exact (payloadInputs_setValidator set₂).latestBlockHeader.trans
-    (payloadInputs_setBalance set₁).latestBlockHeader
-
-private theorem header_queue_excess {fork : Fork} {before after : BeaconState preset fork}
-    {electra : .pectra ≤ fork} {index : Nat}
-    (ok : queueCompoundingExcess before electra index = .ok after) :
-    after.latestBlockHeader = before.latestBlockHeader := by
-  unfold queueCompoundingExcess at ok
-  split at ok
-  · split at ok
-    · have ok := liftAccessor_ok.mp ok
-      simp only [queueExcessActiveBalance, bind_ok_iff] at ok
-      obtain ⟨_, _, ok⟩ := ok
-      split at ok
-      · simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at ok
-        obtain ⟨_, _, _, _, _, set, rfl⟩ := ok
-        exact (payloadInputs_setBalance set).latestBlockHeader
-      · cases ok
-        rfl
-    · cases ok
-      rfl
-  · cases ok
-    rfl
-
-private theorem header_upgrade {before : ForkedBeaconState preset}
-    {after : {after : ForkedBeaconState preset // before.fork < after.fork}}
-    (ok : upgradeNext config checks before = .ok after) :
-    after.val.state.latestBlockHeader = before.state.latestBlockHeader := by
-  obtain ⟨fork, before⟩ := before
-  cases fork <;> simp only [upgradeNext] at ok
-  all_goals try solve | cases ok; rfl | cases ok
-  all_goals try simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at ok
-  case phase0 =>
-    obtain ⟨after, upgraded, rfl⟩ := ok
-    obtain ⟨middle, folded, committee, rfl⟩ := upgradeToAltair_ok upgraded
-    obtain ⟨participation, rfl, _⟩ := foldlM_translateAttestation folded
-    rfl
-  case dencun =>
-    obtain ⟨after, upgraded, rfl⟩ := ok
-    simp only [upgradeToElectra, bind_ok_iff] at upgraded
-    obtain ⟨_, _, _, _, _, _, _, _, middle, queued, compounded⟩ := upgraded
-    have foldHeader {α : Type} {f : BeaconState preset .pectra → α → Except TransitionError _}
-        (keeps : ∀ s x t, f s x = .ok t → t.latestBlockHeader = s.latestBlockHeader)
-        {s t : BeaconState preset .pectra} {xs : List α} (h : xs.foldlM f s = .ok t) :
-        t.latestBlockHeader = s.latestBlockHeader :=
-      foldlM_ok_invariant (fun t => t.latestBlockHeader = s.latestBlockHeader)
-        (fun _ _ _ before ok => (keeps _ _ _ ok).trans before) rfl h
-    exact (foldHeader (fun _ _ _ => header_queue_excess) compounded).trans
-      (foldHeader (fun _ _ _ => header_queue_pre) queued)
-  case pectra =>
-    obtain ⟨after, upgraded, rfl⟩ := ok
-    simp only [upgradeToFulu, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at upgraded
-    obtain ⟨_, _, rfl⟩ := upgraded
-    rfl
-  case fusaka =>
-    obtain ⟨after, upgraded, rfl⟩ := ok
-    unfold upgradeToGloas at upgraded
-    obtain ⟨_, _, rest⟩ := bind_ok_iff.mp upgraded
-    obtain ⟨_, _, onboarded⟩ := bind_ok_iff.mp rest
-    obtain ⟨⟨_, _, rfl⟩, _⟩ := onboardBuildersFromPendingDeposits_spec onboarded
-    rfl
-  case glamsterdam =>
-    obtain ⟨after, upgraded, rfl⟩ := ok
-    obtain ⟨_, rfl⟩ := upgradeToHeze_ok_iff.mp upgraded
-    rfl
-
-private theorem header_upgrades {before after : ForkedBeaconState preset}
-    (ok : processUpgrades config checks before = .ok after) :
-    after.state.latestBlockHeader = before.state.latestBlockHeader :=
-  processUpgrades_induction (property := fun s =>
-    s.state.latestBlockHeader = before.state.latestBlockHeader)
-    (fun same ok => (header_upgrade ok).trans same) rfl ok
-
-private theorem block_parent {fork : Fork} {before after : BeaconState preset fork}
-    {engine : ExecutionEngine preset fork} {signed : SignedBeaconBlock preset fork}
-    (ok : applySignedBlock config checks engine before signed true = .ok after) :
-    before.latestBlockHeader.slot < signed.message.slot ∧
-      hashTreeRoot before.latestBlockHeader = .ok signed.message.parentRoot := by
-  have processed := (applySignedBlock_ok ok).2.1
-  by_cases gloas : .glamsterdam ≤ fork
-  · obtain ⟨parented, headed, _, _, _, parentOk, headerOk, _⟩ :=
-      processBlock_steps gloas processed
-    have kept := (payloadInputs_processParentExecutionPayload parentOk).latestBlockHeader
-    have checked := processBlockHeader_checks headerOk
-    rw [kept] at checked
-    exact ⟨checked.2.1, checked.2.2.2.1⟩
-  · obtain ⟨headed, headerOk⟩ := processBlock_header_of_lt_gloas
-      (Nat.lt_of_not_le gloas) processed
-    have checked := processBlockHeader_checks headerOk
-    exact ⟨checked.2.1, checked.2.2.2.1⟩
-
-private theorem block_slot {fork : Fork} {before after : BeaconState preset fork}
-    {engine : ExecutionEngine preset fork} {signed : SignedBeaconBlock preset fork}
-    (ok : applySignedBlock config checks engine before signed true = .ok after) :
-    signed.message.slot = before.slot := by
-  have processed := (applySignedBlock_ok ok).2.1
-  by_cases gloas : .glamsterdam ≤ fork
-  · obtain ⟨parented, headed, _, _, _, parentOk, headerOk, _⟩ :=
-      processBlock_steps gloas processed
-    exact (processBlockHeader_checks headerOk).1.trans
-      (payloadInputs_processParentExecutionPayload parentOk).slot
-  · obtain ⟨headed, headerOk⟩ := processBlock_header_of_lt_gloas
-      (Nat.lt_of_not_le gloas) processed
-    exact (processBlockHeader_checks headerOk).1
-
-private theorem slot_header {fork : Fork} {before after : BeaconState preset fork}
-    (ok : processSlot before = .ok after) :
-    ∃ root, hashTreeRoot before = .ok root ∧
-      after.latestBlockHeader =
-        (if before.latestBlockHeader.stateRoot = Vector.replicate 32 0 then
-          { before.latestBlockHeader with stateRoot := root } else before.latestBlockHeader) := by
-  unfold processSlot at ok
-  simp only [bind_ok_iff, liftSsz_ok, liftAccessor_ok] at ok
-  obtain ⟨root, hashed, _, _, _, _, _, _, ok⟩ := ok
-  refine ⟨root, hashed, ?_⟩
-  split at ok
-  · obtain ⟨_, _, _, _, rfl⟩ := unsetNextPayloadAvailability_ok (liftAccessor_ok.mp ok)
-    rfl
-  · cases ok
-    rfl
-
-private theorem slot_across_roots {before after : ForkedBeaconState preset}
-    (ok : advanceSlotAcross config checks before = .ok after) :
-    ∃ cached, processSlot before.state = .ok cached ∧
-      after.state.blockRoots = cached.blockRoots ∧
-      after.state.slot.toNat = before.state.slot.toNat + 1 := by
-  obtain ⟨advanced, advancedOk, upgraded⟩ := bind_ok_iff.mp ok
-  obtain ⟨cached, cachedOk, _, roots, _, _, _, slot⟩ := advanceSlot_cachedRoots advancedOk
-  exact ⟨cached, cachedOk, (processUpgrades_blockRoots upgraded).trans roots,
-    (congrArg UInt64.toNat (processUpgrades_slot upgraded)).trans slot⟩
-
-private theorem slot_root_origin {before after : ForkedBeaconState preset}
-    (ok : advanceSlotAcross config checks before = .ok after) {slot : Slot} {root : Root}
-    (read : getBlockRootAtSlot after.state slot = .ok root) :
-    getBlockRootAtSlot before.state slot = .ok root ∨
-      ∃ cached, processSlot before.state = .ok cached ∧
-        hashTreeRoot cached.latestBlockHeader = .ok root := by
-  obtain ⟨cached, cachedOk, roots, advanced⟩ := slot_across_roots ok
-  obtain ⟨lt, fits, recent, read⟩ := getBlockRootAtSlot_ok_iff.mp read
-  obtain ⟨writtenRoot, hashed, written⟩ := processSlot_blockRoots cachedOk
-  rw [roots] at read
-  by_cases same : slot = before.state.slot
-  · subst slot
-    rw [readCircular_writeCircular written] at read
-    cases read
-    exact .inr ⟨cached, cachedOk, hashed⟩
-  · left
-    have earlier : slot.toNat < before.state.slot.toNat := by
-      have different : slot.toNat ≠ before.state.slot.toNat :=
-        fun eq => same (UInt64.toNat_inj.mp eq)
-      omega
-    have other : before.state.slot % preset.SLOTS_PER_HISTORICAL_ROOT ≠
-        slot % preset.SLOTS_PER_HISTORICAL_ROOT := by
-      intro eq
-      have eq := congrArg UInt64.toNat eq
-      rw [UInt64.toNat_mod, UInt64.toNat_mod] at eq
-      exact Nat.mod_ne_of_sub_lt earlier (by omega) eq
-    rw [readCircular_writeCircular_of_ne written other] at read
-    exact getBlockRootAtSlot_ok_iff.mpr ⟨earlier, fits, by omega, read⟩
-
-private theorem run_root_observed {g a : ForkedBeaconState preset}
-    (run : Run config checks g a) (genesis : Genesis (config := config) (checks := checks) g)
-    {slot : Slot} {root : Root} (read : getBlockRootAtSlot a.state slot = .ok root) :
-    ∃ header : BeaconBlockHeader,
-      .header header ∈ run.hashObjects ∧ hashTreeRoot header = .ok root := by
-  induction run with
-  | nil =>
-    obtain ⟨hash, time, deposits, initialized⟩ := genesis
-    have zero := (initializeBeaconStateFromEth1_checkpoints initialized).1
-    have before := (getBlockRootAtSlot_ok_iff.mp read).1
-    rw [zero] at before
-    simp [GENESIS_SLOT] at before
-  | snoc pre step ih =>
-    cases step with
-    | slot ok =>
-      rcases slot_root_origin ok read with earlier | ⟨cached, cachedOk, hashed⟩
-      · obtain ⟨header, member, hashed⟩ := ih earlier
-        exact ⟨header, List.mem_append_left _ member, hashed⟩
-      · refine ⟨cached.latestBlockHeader, List.mem_append_right _ ?_, hashed⟩
-        simp [Step.hashObjects, cachedOk, Except.toOption]
-    | block engine signed due ok =>
-      rename_i fork before after
-      have frame := frame_processBlock (applySignedBlock_ok ok).2.1
-      have roots := processBlock_blockRoots (applySignedBlock_ok ok).2.1
-      have earlier : getBlockRootAtSlot before slot = .ok root := by
-        simpa only [getBlockRootAtSlot_congr frame.slot roots] using read
-      obtain ⟨header, member, hashed⟩ := ih earlier
-      exact ⟨header, List.mem_append_left _ member, hashed⟩
-
 private theorem step_slots {before after : ForkedBeaconState preset}
     (step : Step config checks before after) :
     before.state.slot.toNat ≤ after.state.slot.toNat ∧
       ∀ header ∈ step.headers, header.slot = before.state.slot := by
   cases step with
   | slot ok =>
-    obtain ⟨_, _, _, advanced⟩ := slot_across_roots ok
+    obtain ⟨advanced, advancedOk, upgraded⟩ := bind_ok_iff.mp ok
+    obtain ⟨-, -, -, -, -, -, -, next⟩ := advanceSlot_cachedRoots advancedOk
+    have kept : after.state.slot.toNat = advanced.slot.toNat :=
+      congrArg UInt64.toNat (processUpgrades_slot upgraded)
     exact ⟨by omega, by simp [Step.headers]⟩
   | block engine signed due ok =>
     have same := (frame_processBlock (applySignedBlock_ok ok).2.1).slot
@@ -373,15 +184,17 @@ private theorem step_slots {before after : ForkedBeaconState preset}
     cases body : (hashTreeRoot signed.message.body).toOption <;>
       simp [body] at member
     subst header
-    exact block_slot ok
+    exact (processBlock_parentRoot (applySignedBlock_ok ok).2.1).1
 
-private theorem run_slots {a b : ForkedBeaconState preset} (run : Run config checks a b) :
+/-- The slot never decreases along a run. -/
+theorem _root_.EthLib.Consensus.Run.slot_le {a b : ForkedBeaconState preset}
+    (run : Run config checks a b) :
     a.state.slot.toNat ≤ b.state.slot.toNat := by
   induction run with
   | nil => exact Nat.le_refl _
   | snoc _ edge ih => exact ih.trans (step_slots edge).1
 
-theorem path_append_stable {g a b : ForkedBeaconState preset}
+private theorem path_append_stable {g a b : ForkedBeaconState preset}
     (pre : Run config checks g a) (tail : Run config checks a b) (epoch : Epoch)
     (before : epoch.toNat * preset.SLOTS_PER_EPOCH.toNat < a.state.slot.toNat) :
     (pre.append tail).checkpointPath epoch = pre.checkpointPath epoch := by
@@ -393,11 +206,24 @@ theorem path_append_stable {g a b : ForkedBeaconState preset}
       apply List.filter_eq_nil_iff.mpr
       intro h member
       have same := (step_slots step).2 h member
-      have bound := run_slots tail
+      have bound := tail.slot_le
       simp only [same, decide_eq_true_eq]
       omega
     simpa only [Run.append, Run.checkpointPath, Run.headers, List.filter_append, empty,
       List.append_nil] using ih
+
+/-- Differing checkpoint paths put the shared state no later than the epoch's first slot. -/
+theorem _root_.EthLib.Consensus.Run.slot_le_of_checkpointPath_ne
+    {g x a b : ForkedBeaconState preset}
+    (shared : Run config checks g x) (left : Run config checks x a)
+    (right : Run config checks x b) (epoch : Epoch)
+    (differ : (shared.append left).checkpointPath epoch ≠
+      (shared.append right).checkpointPath epoch) :
+    x.state.slot.toNat ≤ epoch.toNat * preset.SLOTS_PER_EPOCH.toNat := by
+  by_contra later
+  have before := Nat.lt_of_not_ge later
+  exact differ ((path_append_stable shared left epoch before).trans
+    (path_append_stable shared right epoch before).symm)
 
 private inductive HeaderChain (objects : List (HashObject preset)) :
     List BeaconBlockHeader → BeaconBlockHeader → Prop where
@@ -457,7 +283,7 @@ private theorem HeaderState.cached {objects : List (HashObject preset)}
     (invariant : HeaderState objects headers state)
     {cached : BeaconState preset state.fork} (ok : processSlot state.state = .ok cached) :
     HeaderChain objects headers cached.latestBlockHeader := by
-  obtain ⟨root, hashed, header⟩ := slot_header ok
+  obtain ⟨root, hashed, header⟩ := processSlot_latestBlockHeader ok
   rcases invariant with ⟨nonzero, chain⟩ | ⟨zero, _, pending⟩
   · simpa only [header, nonzero, ↓reduceIte] using chain
   · simpa only [header, zero, ↓reduceIte] using pending root hashed
@@ -471,7 +297,7 @@ private theorem HeaderState.mono {one two : List (HashObject preset)}
   · exact .inr ⟨zero, slot, fun root hashed => (pending root hashed).mono subset⟩
 
 private theorem run_header_state {g a : ForkedBeaconState preset}
-    (run : Run config checks g a) (genesis : Genesis (config := config) (checks := checks) g)
+    (run : Run config checks g a) (genesis : Genesis config checks g)
     (nonzero : ∀ object ∈ run.hashObjects, object.root ≠ some (Vector.replicate 32 0)) :
     HeaderState run.hashObjects run.headers a := by
   induction run with
@@ -492,11 +318,11 @@ private theorem run_header_state {g a : ForkedBeaconState preset}
       obtain ⟨advanced, advancedOk, upgraded⟩ := bind_ok_iff.mp ok
       obtain ⟨cached, cachedOk, _, _, header, _, _, _⟩ :=
         advanceSlot_cachedRoots advancedOk
-      have header := (header_upgrades upgraded).trans header
+      have header := (latestBlockHeader_processUpgrades upgraded).trans header
       have chain := invariant.cached cachedOk
       left
       refine ⟨?_, ?_⟩
-      · obtain ⟨root, hashed, filled⟩ := slot_header cachedOk
+      · obtain ⟨root, hashed, filled⟩ := processSlot_latestBlockHeader cachedOk
         have nz := nonzero (.state middle) (by simp [Run.hashObjects, Step.hashObjects])
         have nzRoot : root ≠ Vector.replicate 32 0 := by
           intro eq
@@ -508,15 +334,15 @@ private theorem run_header_state {g a : ForkedBeaconState preset}
       · simpa only [Run.headers, Run.hashObjects, Step.headers, List.append_nil, header] using chain
     | block engine signed due ok =>
       rename_i fork before after
-      have later := (block_parent ok).1
-      have slot := block_slot ok
+      obtain ⟨slot, later, parent⟩ := processBlock_parentRoot (applySignedBlock_ok ok).2.1
       have ready : HeaderChain (pre.hashObjects ++ (Step.block engine signed due ok).hashObjects)
           pre.headers before.latestBlockHeader := by
         rcases invariant with ⟨_, chain⟩ | ⟨_, same, _⟩
         · exact chain
         · rw [same, slot] at later
           exact False.elim (UInt64.lt_irrefl _ later)
-      obtain ⟨bodyRoot, bodyOk, header⟩ := block_header (applySignedBlock_ok ok).2.1
+      obtain ⟨bodyRoot, bodyOk, header⟩ :=
+        latestBlockHeader_processBlock (applySignedBlock_ok ok).2.1
       have stateRoot := (applySignedBlock_ok ok).2.2 rfl
       right
       refine ⟨by simp only [header], ?_, ?_⟩
@@ -529,7 +355,7 @@ private theorem run_header_state {g a : ForkedBeaconState preset}
               signed.message.stateRoot, bodyRoot⟩ := by
           simp [blockHeader, bodyOk, Except.toOption]
         simp only [Run.headers, Step.headers, selected, Option.toList_some, header]
-        exact HeaderChain.block ready (block_parent ok).2 later
+        exact HeaderChain.block ready parent later
           (by simp [Run.hashObjects, Step.hashObjects, selected])
 
 private theorem run_headers_le {g a : ForkedBeaconState preset}
@@ -545,7 +371,7 @@ private theorem run_headers_le {g a : ForkedBeaconState preset}
       exact (step_slots step).1
 
 private theorem run_root_chain {g a : ForkedBeaconState preset}
-    (run : Run config checks g a) (genesis : Genesis (config := config) (checks := checks) g)
+    (run : Run config checks g a) (genesis : Genesis config checks g)
     (nonzero : ∀ object ∈ run.hashObjects, object.root ≠ some (Vector.replicate 32 0))
     {slot : Slot} {root : Root} (read : getBlockRootAtSlot a.state slot = .ok root) :
     ∃ header : BeaconBlockHeader, .header header ∈ run.hashObjects ∧
@@ -573,13 +399,14 @@ private theorem run_root_chain {g a : ForkedBeaconState preset}
         chain.mono (fun _ member => List.mem_append_left step.hashObjects member)
     cases step with
     | slot ok =>
-      by_cases same : slot = middle.state.slot
+      obtain ⟨-, -, origin, -⟩ := advanceSlotAcross_cases ok
+      rcases origin read with ⟨-, earlier⟩ | ⟨same, hashed⟩
+      · exact liftEarlier earlier (by simp [Step.headers])
+      -- The root at the slot before is that of the header that caching the slot leaves.
       · subst slot
-        obtain ⟨cached, cachedOk, roots, advanced⟩ := slot_across_roots ok
-        obtain ⟨_, _, _, read⟩ := getBlockRootAtSlot_ok_iff.mp read
-        obtain ⟨writtenRoot, hashed, written⟩ := processSlot_blockRoots cachedOk
-        rw [roots, readCircular_writeCircular written] at read
-        cases read
+        obtain ⟨advanced, advancedOk, upgraded⟩ := bind_ok_iff.mp ok
+        obtain ⟨cached, cachedOk, _, _, header, _⟩ := advanceSlot_cachedRoots advancedOk
+        rw [(latestBlockHeader_processUpgrades upgraded).trans header] at hashed
         have chain := ((run_header_state pre genesis nz).mono
           (fun _ member => List.mem_append_left (Step.slot ok).hashObjects member)).cached cachedOk
         refine ⟨cached.latestBlockHeader, ?_, hashed, ?_⟩
@@ -589,24 +416,6 @@ private theorem run_root_chain {g a : ForkedBeaconState preset}
             List.filter_eq_self.mpr (fun h member => by simpa using run_headers_le pre h member)
           simpa only [Run.headers, Run.hashObjects, Step.headers, List.append_nil, filtered]
             using chain
-      · rcases slot_root_origin ok read with earlier | observed
-        · exact liftEarlier earlier (by simp [Step.headers])
-        · obtain ⟨cached, cachedOk, roots, advanced⟩ := slot_across_roots ok
-          obtain ⟨lt, fits, recent, read⟩ := getBlockRootAtSlot_ok_iff.mp read
-          obtain ⟨writtenRoot, hashed, written⟩ := processSlot_blockRoots cachedOk
-          have earlier : slot.toNat < middle.state.slot.toNat := by
-            have ne : slot.toNat ≠ middle.state.slot.toNat :=
-              fun eq => same (UInt64.toNat_inj.mp eq)
-            omega
-          have other : middle.state.slot % preset.SLOTS_PER_HISTORICAL_ROOT ≠
-              slot % preset.SLOTS_PER_HISTORICAL_ROOT := by
-            intro eq
-            have eq := congrArg UInt64.toNat eq
-            rw [UInt64.toNat_mod, UInt64.toNat_mod] at eq
-            exact Nat.mod_ne_of_sub_lt earlier (by omega) eq
-          rw [roots, readCircular_writeCircular_of_ne written other] at read
-          exact liftEarlier (getBlockRootAtSlot_ok_iff.mpr ⟨earlier, fits, by omega, read⟩)
-            (by simp [Step.headers])
     | block engine signed due ok =>
       rename_i fork before after
       have frame := frame_processBlock (applySignedBlock_ok ok).2.1
@@ -622,21 +431,20 @@ private theorem run_root_chain {g a : ForkedBeaconState preset}
       omega
 
 /-- Equal checkpoint roots identify equal header prefixes, or the scan finds hash evidence. -/
-theorem checkpoint_binding {g a b : ForkedBeaconState preset}
+private theorem checkpoint_binding {g a b : ForkedBeaconState preset}
     (left : Run config checks g a) (right : Run config checks g b)
-    (parameters : Parameters preset) (genesis : Genesis (config := config) (checks := checks) g)
+    (genesis : Genesis config checks g)
     (epoch : Epoch) (root : Root)
     (one : getBlockRoot a.state epoch = .ok root)
     (two : getBlockRoot b.state epoch = .ok root) :
     left.checkpointPath epoch = right.checkpointPath epoch ∨
       HashEvidence (left.hashObjects ++ right.hashObjects) := by
-  have _ := parameters
   by_cases evidence : HashEvidence (left.hashObjects ++ right.hashObjects)
   · exact .inr evidence
   have nonzero : ∀ object ∈ left.hashObjects ++ right.hashObjects,
       object.root ≠ some (Vector.replicate 32 0) := by
     intro object member zero
-    exact evidence (.inr ⟨object, member, zero⟩)
+    exact evidence (hashEvidence_iff.mpr (.inr ⟨object, member, zero⟩))
   obtain ⟨slot₁, start₁, read₁⟩ := getBlockRoot_ok_iff.mp one
   obtain ⟨slot₂, start₂, read₂⟩ := getBlockRoot_ok_iff.mp two
   have sameSlot : slot₁ = slot₂ := Except.ok.inj (start₁.symm.trans start₂)
@@ -656,6 +464,7 @@ theorem checkpoint_binding {g a b : ForkedBeaconState preset}
     · exact False.elim (evidence collision)
   · exact False.elim (evidence collision)
 
+/-- A run that extends another hashes every object that the run it extends hashes. -/
 theorem hashObjects_append_subset {g a b : ForkedBeaconState preset}
     (pre : Run config checks g a) (tail : Run config checks a b) :
     pre.hashObjects ⊆ (pre.append tail).hashObjects := by
@@ -663,8 +472,9 @@ theorem hashObjects_append_subset {g a b : ForkedBeaconState preset}
   | nil => exact fun _ h => h
   | snoc tail step ih => exact fun _ h => List.mem_append_left _ (ih h)
 
-theorem hashEvidence_mono {one two : List (HashObject preset)}
+private theorem hashEvidence_mono {one two : List (HashObject preset)}
     (subset : one ⊆ two) (evidence : HashEvidence one) : HashEvidence two := by
+  rw [hashEvidence_iff] at evidence ⊢
   rcases evidence with ⟨x, xm, y, ym, collision⟩ | ⟨object, member, zero⟩
   · left
     have mem {z} (member : z ∈ one.flatMap HashObject.messages) :
@@ -674,10 +484,44 @@ theorem hashEvidence_mono {one two : List (HashObject preset)}
     exact ⟨x, mem xm, y, mem ym, collision⟩
   · exact .inr ⟨object, subset member, zero⟩
 
-/-- Cached reads before a selected slot bind the full runs at an already passed boundary. -/
+/-- Two runs whose prefixes record one root for an epoch have the same headers up to it.
+
+Each prefix ends after the first slot of the epoch, so the rest of its run adds no such header.
+
+Otherwise SHA-256 collides in the root of a header of the runs, or a header or state has root zero.
+
+The runs start at one genesis built from deposits. -/
+theorem checkpoint_binding_prefixes {g a b a' b' : ForkedBeaconState preset}
+    (genesis : Genesis config checks g)
+    (preA : Run config checks g a') (tailA : Run config checks a' a)
+    (preB : Run config checks g b') (tailB : Run config checks b' b)
+    (epoch : Epoch) (root : Root)
+    (readA : getBlockRoot a'.state epoch = .ok root)
+    (readB : getBlockRoot b'.state epoch = .ok root)
+    (earlyA : epoch.toNat * preset.SLOTS_PER_EPOCH.toNat < a'.state.slot.toNat)
+    (earlyB : epoch.toNat * preset.SLOTS_PER_EPOCH.toNat < b'.state.slot.toNat) :
+    (preA.append tailA).checkpointPath epoch = (preB.append tailB).checkpointPath epoch ∨
+      HashEvidence ((preA.append tailA).hashObjects ++ (preB.append tailB).hashObjects) := by
+  rcases checkpoint_binding preA preB genesis epoch root readA readB with same | evidence
+  · exact .inl ((path_append_stable preA tailA epoch earlyA).trans
+      (same.trans (path_append_stable preB tailB epoch earlyB).symm))
+  · right
+    apply hashEvidence_mono (one := preA.hashObjects ++ preB.hashObjects) _ evidence
+    intro object member
+    rcases List.mem_append.mp member with member | member
+    · exact List.mem_append_left _ (hashObjects_append_subset preA tailA member)
+    · exact List.mem_append_right _ (hashObjects_append_subset preB tailB member)
+
+/-- Two slot steps of the runs that cache one root for an epoch give the same headers up to it.
+
+Each step comes after the first slot of the epoch, while its root is still in the buffer.
+
+Otherwise SHA-256 collides in the root of a header of the runs, or a header or state has root zero.
+
+The runs start at one genesis built from deposits. -/
 theorem checkpoint_binding_cached {g a b before₁ after₁ before₂ after₂ : ForkedBeaconState preset}
     (left : Run config checks g a) (right : Run config checks g b)
-    (parameters : Parameters preset) (genesis : Genesis (config := config) (checks := checks) g)
+    (genesis : Genesis config checks g)
     (ok₁ : advanceSlotAcross config checks before₁ = .ok after₁)
     (ok₂ : advanceSlotAcross config checks before₂ = .ok after₂)
     (member₁ : left.Contains (.slot ok₁)) (member₂ : right.Contains (.slot ok₂))
@@ -699,25 +543,8 @@ theorem checkpoint_binding_cached {g a b before₁ after₁ before₂ after₂ :
   rw [getBlockRoot_processSlot cachedOk₂ recent₂] at read₂
   obtain ⟨pre₁, post₁, rfl⟩ := left.contains_split (.slot ok₁) member₁
   obtain ⟨pre₂, post₂, rfl⟩ := right.contains_split (.slot ok₂) member₂
-  have paths₁ := path_append_stable pre₁ ((Run.nil.snoc (.slot ok₁)).append post₁) epoch early₁
-  have paths₂ := path_append_stable pre₂ ((Run.nil.snoc (.slot ok₂)).append post₂) epoch early₂
-  have assoc {x y z w : ForkedBeaconState preset} (p : Run config checks x y)
-      (q : Run config checks y z) (r : Run config checks z w) :
-      p.append (q.append r) = (p.append q).append r := by
-    induction r with
-    | nil => rfl
-    | snoc r step ih => exact congrArg (fun run => run.snoc step) ih
-  rw [assoc] at paths₁ paths₂
-  rcases checkpoint_binding pre₁ pre₂ parameters genesis epoch root
-      read₁ read₂ with same | evidence
-  · exact .inl (paths₁.trans (same.trans paths₂.symm))
-  · right
-    apply hashEvidence_mono (one := pre₁.hashObjects ++ pre₂.hashObjects) _ evidence
-    intro object member
-    rcases List.mem_append.mp member with member | member
-    · exact List.mem_append_left _ (hashObjects_append_subset _ post₁
-        (List.mem_append_left _ member))
-    · exact List.mem_append_right _ (hashObjects_append_subset _ post₂
-        (List.mem_append_left _ member))
+  have result := checkpoint_binding_prefixes genesis pre₁ ((Run.nil.snoc (.slot ok₁)).append post₁)
+    pre₂ ((Run.nil.snoc (.slot ok₂)).append post₂) epoch root read₁ read₂ early₁ early₂
+  rwa [Run.append_assoc, Run.append_assoc] at result
 
 end EthLib.Consensus.DirectSafety

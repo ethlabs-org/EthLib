@@ -1,14 +1,19 @@
-/* Typed wrappers of the libp2p framing and secp256k1 peer ID exports. */
+/* Typed wrappers of the libp2p framing, secp256k1 peer ID and TLS certificate exports. */
 #include "wrappers.h"
 
 extern lean_object* eth_uvarint_encode(lean_object* args);
 extern lean_object* eth_uvarint_decode(lean_object* args);
 extern lean_object* eth_multistream_encode(lean_object* args);
 extern lean_object* eth_multistream_decode(lean_object* args);
+extern lean_object* eth_multistream_listen(lean_object* args);
+extern lean_object* eth_multistream_dial(lean_object* args);
+extern lean_object* eth_libp2p_upgrade(lean_object* args);
 extern lean_object* eth_mplex_encode(lean_object* args);
 extern lean_object* eth_mplex_decode(lean_object* args);
+extern lean_object* eth_mplex_session(lean_object* args);
 extern lean_object* eth_yamux_encode(lean_object* args);
 extern lean_object* eth_yamux_decode(lean_object* args);
+extern lean_object* eth_yamux_session(lean_object* args);
 extern lean_object* eth_libp2p_public_key(lean_object* args);
 extern lean_object* eth_libp2p_peer_id(lean_object* args);
 extern lean_object* eth_libp2p_decode_peer_id(lean_object* args);
@@ -46,6 +51,30 @@ py_multistream_decode(
 }
 
 PyObject*
+py_multistream_listen(
+  PyObject* self,
+  PyObject* args
+) {
+  return call_pyvalue_export(eth_multistream_listen, args, 2, MULTISTREAM_ERROR);
+}
+
+PyObject*
+py_multistream_dial(
+  PyObject* self,
+  PyObject* args
+) {
+  return call_pyvalue_export(eth_multistream_dial, args, 2, MULTISTREAM_ERROR);
+}
+
+PyObject*
+py_libp2p_upgrade(
+  PyObject* self,
+  PyObject* args
+) {
+  return call_pyvalue_export(eth_libp2p_upgrade, args, 2, MULTISTREAM_ERROR);
+}
+
+PyObject*
 py_mplex_encode(
   PyObject* self,
   PyObject* args
@@ -62,6 +91,14 @@ py_mplex_decode(
 }
 
 PyObject*
+py_mplex_session(
+  PyObject* self,
+  PyObject* args
+) {
+  return call_pyvalue_export(eth_mplex_session, args, 1, MPLEX_ERROR);
+}
+
+PyObject*
 py_yamux_encode(
   PyObject* self,
   PyObject* args
@@ -75,6 +112,14 @@ py_yamux_decode(
   PyObject* args
 ) {
   return call_pyvalue_export(eth_yamux_decode, args, 1, YAMUX_ERROR);
+}
+
+PyObject*
+py_yamux_session(
+  PyObject* self,
+  PyObject* args
+) {
+  return call_pyvalue_export(eth_yamux_session, args, 2, YAMUX_ERROR);
 }
 
 PyObject*
@@ -99,4 +144,44 @@ py_libp2p_decode_peer_id(
   PyObject* args
 ) {
   return call_pyvalue_export(eth_libp2p_decode_peer_id, args, 1, LIBP2P_IDENTITY_ERROR);
+}
+
+extern lean_object* eth_tls_certificate_read(lean_object* args);
+
+PyObject*
+py_tls_certificate_read(
+  PyObject* self,
+  PyObject* args
+) {
+  return call_pyvalue_export(eth_tls_certificate_read, args, 1, TLS_CERTIFICATE_ERROR);
+}
+
+extern lean_object* eth_tls_certificate_authenticate(lean_object* args);
+
+PyObject*
+py_tls_certificate_authenticate(
+  PyObject* self,
+  PyObject* args
+) {
+  return call_pyvalue_export(eth_tls_certificate_authenticate, args, 3, TLS_CERTIFICATE_ERROR);
+}
+
+extern lean_object* eth_tls_certificate_authenticate_peer(lean_object* args);
+
+PyObject*
+py_tls_certificate_authenticate_peer(
+  PyObject* self,
+  PyObject* args
+) {
+  return call_pyvalue_export(eth_tls_certificate_authenticate_peer, args, 4, TLS_CERTIFICATE_ERROR);
+}
+
+extern lean_object* eth_tls_certificate_verify_p256(lean_object* args);
+
+PyObject*
+py_tls_certificate_verify_p256(
+  PyObject* self,
+  PyObject* args
+) {
+  return call_pyvalue_export(eth_tls_certificate_verify_p256, args, 3, TLS_CERTIFICATE_ERROR);
 }

@@ -5,6 +5,7 @@ public import EthLib.Consensus.Proofs.ForkChoice.HonestDuties
 public import EthLib.Consensus.Proofs.ForkChoice.VoteRecords
 import EthLib.Consensus.Proofs.HonestAggregation
 import EthLib.Consensus.Proofs.ForkChoice.BlockStates
+import EthLib.Consensus.Proofs.ForkChoice.BlockRuns
 import EthLib.Consensus.Proofs.ForkChoice.Checkpoints
 
 /-!
@@ -257,7 +258,8 @@ theorem VoteAt.data_target {anchor : Store preset fork}
   have stored' := Store.blockState_ok_iff.mp stored
   obtain ⟨-, boundary, -, dataRoot, -, epoch⟩ := getAttestationData_eq_ok_iff.mp made
   have headLe : block.slot ≤ state.slot := by
-    have le := reachable.blockState_slot_le (UInt64.le_of_eq anchorSlot) found stored'
+    have le := Store.Reachable.slot_le_of_blockState
+      (UInt64.le_of_eq anchorSlot) reachable found stored'
     unfold lookaheadState at advanced
     split at advanced
     · exact UInt64.le_trans le (UInt64.le_of_lt (by
@@ -267,7 +269,7 @@ theorem VoteAt.data_target {anchor : Store preset fork}
       subst state
       exact le
   have anchorLe : anchorState.slot ≤ state.slot := by
-    have le := reachable.anchorSlot_le_blockState stored'
+    have le := reachable.anchorSlot_le_of_blockState stored'
     unfold lookaheadState at advanced
     split at advanced
     · have bounds := processSlots_slot (mapError_ok_iff.mp advanced)
@@ -349,7 +351,7 @@ theorem VoteAt.data_target {anchor : Store preset fork}
 The voter votes for the payload only when its head has the payload, which its store has verified.
 
 The vote satisfies `VoteAt`, the fork is at least Gloas, and its voter holds the voted block. -/
-theorem VoteAt.data_payload {v : ValidatorIndex} {slot : Slot}
+private theorem VoteAt.data_payload {v : ValidatorIndex} {slot : Slot}
     {committeeIndex : CommitteeIndex} {time n : ℕ} {attestation : Attestation preset fork}
     {indexed : IndexedAttestation preset fork}
     (vote : VoteAt e v slot committeeIndex time n attestation indexed)

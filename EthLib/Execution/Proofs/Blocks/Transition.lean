@@ -29,6 +29,8 @@ From Glamsterdam, the list that a body builds is well formed and fits the gas li
 
 A block that passes the checks then commits to that list by the hash in its header.
 
+A header filled from a body passes every check against what that body gave.
+
 From Hegotá the transition fails as not yet specified.
 
 When the hash of the last recent block succeeds, the recent blocks give hashes.
@@ -403,6 +405,20 @@ theorem applyTransaction_eq_ok {env : BlockEnvironment fork} {index : Nat}
   split at h <;>
     (obtain ⟨_, -, h⟩ := bind_ok_iff.mp h; cases h; exact ⟨rfl, rfl, mapError_ok_iff.mp hBody⟩)
 
+/-- A transaction that enters the body adds one receipt, with the new cumulative gas. -/
+theorem applyTransaction_receipts {env : BlockEnvironment fork} {index : Nat}
+    {before after : BodyOutput fork} {tx : Transaction}
+    (h : applyTransaction env index before tx = .ok after) :
+    ∃ outcome logs, after.receipts =
+      before.receipts ++ [(tx.type, makeReceipt outcome after.cumulativeGasUsed logs)] := by
+  unfold applyTransaction at h
+  obtain ⟨included, -, h⟩ := bind_ok_iff.mp h
+  obtain ⟨out, -, h⟩ := bind_ok_iff.mp h
+  obtain ⟨body, -, h⟩ := bind_ok_iff.mp h
+  dsimp only at h
+  split at h <;>
+    (obtain ⟨_, -, h⟩ := bind_ok_iff.mp h; cases h; exact ⟨_, _, rfl⟩)
+
 /-- A transaction that cannot enter its block makes the block invalid, with its error. -/
 theorem applyTransaction_of_checkInclusion {env : BlockEnvironment fork} {index : Nat}
     {before : BodyOutput fork} {tx : Transaction} {e : InclusionError}
@@ -520,6 +536,39 @@ theorem applyBody_eq_ok {config : ChainConfig} {env : BlockEnvironment fork}
     exact ⟨state, body, txs, _, requested, hState, mapError_ok_iff.mp hBody, hTxs,
       fun hYes => absurd hYes hShapella, fun _ => rfl, hRequests, hRewarded, rfl, hHash, rfl,
       rfl⟩
+
+/-- A body that runs takes the DAO transfer, then the system calls, then its transactions.
+
+Its receipts are those of the run of its transactions. -/
+theorem applyBody_receipts {config : ChainConfig} {env : BlockEnvironment fork}
+    {block : Block fork Transaction} {start : BlockState} {output : BlockOutput fork}
+    (h : applyBody config env block start = .ok output) :
+    ∃ state body txs, daoTransfer config fork block.header.number start = .ok state ∧
+      startSystemCalls env block.header.parentHash (.init state) = .ok body ∧
+      applyTransactions env body block.transactions = .ok txs ∧
+      output.receipts = txs.receipts := by
+  unfold applyBody at h
+  dsimp only at h
+  obtain ⟨state, hState, h⟩ := bind_ok_iff.mp h
+  obtain ⟨body, hBody, h⟩ := bind_ok_iff.mp h
+  obtain ⟨txs, hTxs, h⟩ := bind_ok_iff.mp h
+  refine ⟨state, body, txs, hState, mapError_ok_iff.mp hBody, hTxs, ?_⟩
+  split at h
+  · obtain ⟨tx, -, h⟩ := bind_ok_iff.mp h
+    obtain ⟨withdrawn, -, h⟩ := bind_ok_iff.mp h
+    obtain ⟨⟨requested, requests⟩, -, h⟩ := bind_ok_iff.mp h
+    dsimp only at h
+    obtain ⟨rewarded, -, h⟩ := bind_ok_iff.mp h
+    obtain ⟨_, -, h⟩ := bind_ok_iff.mp h
+    cases h
+    rfl
+  · obtain ⟨withdrawn, -, h⟩ := bind_ok_iff.mp h
+    obtain ⟨⟨requested, requests⟩, -, h⟩ := bind_ok_iff.mp h
+    dsimp only at h
+    obtain ⟨rewarded, -, h⟩ := bind_ok_iff.mp h
+    obtain ⟨_, -, h⟩ := bind_ok_iff.mp h
+    cases h
+    rfl
 
 /-- From Glamsterdam, a body gives the hash of the list that its builder built. -/
 theorem applyBody_accessListHash {config : ChainConfig} {env : BlockEnvironment fork}
@@ -713,5 +762,56 @@ theorem of_stateTransition {chain : BlockChain} {block : Block fork Transaction}
   refine ⟨hActive, ?_⟩
   rw [← (of_outputChecks hChecks).2.1]
   exact outputRoots_state hRoots
+
+/-- A header filled from a body passes every check against what that body gave.
+
+The blob gas used must fit 64 bits.
+
+From Shapella the withdrawals root must exist, and from Glamsterdam the access list hash. -/
+theorem outputChecks_fillHeader {fork : Fork} {header : Header fork} {output : BlockOutput fork}
+    {roots : OutputRoots} (hb : output.gas.blob < 2 ^ 64)
+    (hw : .shapella ≤ fork → roots.withdrawals.isSome)
+    (ha : .glamsterdam ≤ fork → output.accessListHash.isSome) :
+    firstFailure (outputChecks (fillHeader header output roots) output roots) = .ok () := by
+  rw [firstFailure_eq_ok_iff]
+  intro c hc
+  simp only [outputChecks, fillHeader, List.mem_append, List.mem_cons, List.not_mem_nil,
+    or_false] at hc
+  rcases hc with ((((hc | hc | hc | hc | hc) | hc) | hc) | hc) | hc <;>
+    (try subst hc) <;> (try simp only [decide_true])
+  · split at hc
+    · next h =>
+      simp only [List.mem_cons, List.not_mem_nil, or_false] at hc
+      subst hc
+      obtain ⟨r, hr⟩ := Option.isSome_iff_exists.mp (hw h)
+      simp [hr]
+    · simp at hc
+  · split at hc
+    · simp only [List.mem_cons, List.not_mem_nil, or_false] at hc
+      subst hc
+      simp [Nat.mod_eq_of_lt hb]
+    · simp at hc
+  · split at hc
+    · simp only [List.mem_cons, List.not_mem_nil, or_false] at hc
+      subst hc
+      simp
+    · simp at hc
+  · split at hc
+    · next h =>
+      simp only [List.mem_cons, List.not_mem_nil, or_false] at hc
+      subst hc
+      obtain ⟨r, hr⟩ := Option.isSome_iff_exists.mp (ha h)
+      simp [hr]
+    · simp at hc
+
+/-- The body of a block runs alike before and after its header is filled.
+
+The body reads none of the fields that the fill sets. -/
+theorem runBody_fillHeader {fork : Fork} {chain : BlockChain} {transactions : List Transaction}
+    {header : Header fork} {output : BlockOutput fork}
+    {roots : OutputRoots} {withdrawals : Since .shapella fork (List Withdrawal)} :
+    runBody chain ⟨fillHeader header output roots, transactions, [], withdrawals⟩ =
+      runBody chain ⟨header, transactions, [], withdrawals⟩ :=
+  rfl
 
 end EthLib.Execution.Blocks

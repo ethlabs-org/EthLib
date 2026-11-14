@@ -3,6 +3,7 @@ module
 public import EthLib.Base.Proofs.BigEndian
 public import EthLib.Networking.Libp2p.PeerId
 public import EthLib.Cryptography.Proofs.Secp256k1.Encoding
+public import EthLib.Cryptography.Proofs.Secp256k1.Sign
 
 /-!
 # Proofs: libp2p secp256k1 public keys, peer IDs and DER signatures
@@ -12,7 +13,9 @@ public import EthLib.Cryptography.Proofs.Secp256k1.Encoding
 - Two different points of the curve have two different peer IDs.
 - A decoded key's peer ID is the two bytes `00 25`, then the key protobuf.
 - A number below `2 ^ 256` is a DER INTEGER on the fewest bytes, the first with its top bit clear.
+- The scalar reader accepts exactly the encodings of r and s in [1, 2^256), and returns them.
 - The signature decoder accepts exactly the encodings of r and low s in range, and returns them.
+- A signature that the identity secret makes verifies under the key protobuf of that secret.
 -/
 
 @[expose] public section
@@ -222,43 +225,39 @@ private theorem exists_derInteger_eq {n : Nat} (hn : n < 2 ^ 256) :
     exact Nat.pow_le_pow_right (by decide) (by omega)
   omega
 
-/-- The decoder accepts exactly the encodings of r in [1, N) and s in [1, N/2], BIP 62.
+/-- The scalar reader accepts exactly the encodings of r and s in [1, 2^256), BIP 62.
 
-Here N is the order of the secp256k1 group, and N/2 rounds down.
-
-The decoder returns those r and s.
+It returns those r and s.
 
 Its last check is that the encoder writes the same bytes back, so acceptance gives the encoding.
 
-The converse is the content: the decoder parses back every encoding of scalars in those ranges.
+The converse is the content: the reader parses back every encoding of scalars in that range.
 
 So each accepted pair r, s has exactly one byte encoding. -/
-theorem decodeSignature_eq_ok_iff {signature : ByteArray} {r s : Nat} :
-    decodeSignature signature = .ok (r, s) ↔
-      0 < r ∧ r < Fn.modulus ∧ 0 < s ∧ s ≤ Fn.modulus / 2 ∧
-        encodeSignature r s = signature := by
+theorem decodeScalars_eq_some_iff {signature : ByteArray} {r s : Nat} :
+    decodeScalars signature = some (r, s) ↔
+      0 < r ∧ r < 2 ^ 256 ∧ 0 < s ∧ s < 2 ^ 256 ∧ encodeSignature r s = signature := by
   constructor
   · intro h
-    unfold decodeSignature at h
-    simp only [bind, Except.bind, pure, Except.pure, throw, throwThe, MonadExceptOf.throw] at h
+    unfold decodeScalars at h
     split at h
     · split at h
       · simp at h
       · split at h
         · split at h
           · simp at h
-          · split at h
+          · dsimp only at h
+            split at h
             · rename_i hc
-              simp only [Except.ok.injEq, Prod.mk.injEq] at h
+              simp only [Option.some.injEq, Prod.mk.injEq] at h
               obtain ⟨rfl, rfl⟩ := h
               exact hc
             · simp at h
         · simp at h
     · simp at h
-  · rintro ⟨hr, hrn, hs, hsn, rfl⟩
-    have hN : Fn.modulus < 2 ^ 256 := by decide
-    obtain ⟨kr, hkr1, hkr, hrk, hder_r⟩ := exists_derInteger_eq (n := r) (by omega)
-    obtain ⟨ks, hks1, hks, hsk, hder_s⟩ := exists_derInteger_eq (n := s) (by omega)
+  · rintro ⟨hr, hr256, hs, hs256, rfl⟩
+    obtain ⟨kr, hkr1, hkr, hrk, hder_r⟩ := exists_derInteger_eq hr256
+    obtain ⟨ks, hks1, hks, hsk, hder_s⟩ := exists_derInteger_eq hs256
     have hdata : (encodeSignature r s).data.toList =
         0x30 :: UInt8.ofNat (kr + ks + 4) :: 0x02 :: UInt8.ofNat kr ::
           (natToBytes kr r ++ 0x02 :: UInt8.ofNat ks :: natToBytes ks s) := by
@@ -274,14 +273,71 @@ theorem decodeSignature_eq_ok_iff {signature : ByteArray} {r s : Nat} :
     have hks8 : (UInt8.ofNat ks).toNat = ks := UInt8.toNat_ofNat_of_lt' (by rw [UInt8.size]; omega)
     have htotal : (UInt8.ofNat (kr + ks + 4)).toNat = kr + ks + 4 :=
       UInt8.toNat_ofNat_of_lt' (by rw [UInt8.size]; omega)
-    have hcond : 0 < r ∧ r < Fn.modulus ∧ 0 < s ∧ s ≤ Fn.modulus / 2 ∧
-        encodeSignature r s = encodeSignature r s := ⟨hr, hrn, hs, hsn, rfl⟩
-    unfold decodeSignature
+    have hcond : 0 < r ∧ r < 2 ^ 256 ∧ 0 < s ∧ s < 2 ^ 256 ∧
+        encodeSignature r s = encodeSignature r s := ⟨hr, hr256, hs, hs256, rfl⟩
+    unfold decodeScalars
     rw [hdata]
-    simp only [bind, Except.bind, pure, Except.pure, throw, throwThe, MonadExceptOf.throw,
-      hsize, htotal, hkr8, hks8, List.take_left' (natToBytes_length kr r),
+    simp only [hsize, htotal, hkr8, hks8, List.take_left' (natToBytes_length kr r),
       List.drop_left' (natToBytes_length kr r), natToBytes_length,
       bytesToNat_natToBytes_of_lt hrk, bytesToNat_natToBytes_of_lt hsk]
-    simp [hcond]
+    simp only [hcond, and_self, ite_true]
+    simp
+
+/-- The decoder accepts exactly the encodings of r in [1, N) and s in [1, N/2], BIP 62.
+
+Here N is the order of the secp256k1 group, and N/2 rounds down.
+
+The decoder returns those r and s, so each accepted pair has exactly one byte encoding. -/
+theorem decodeSignature_eq_ok_iff {signature : ByteArray} {r s : Nat} :
+    decodeSignature signature = .ok (r, s) ↔
+      0 < r ∧ r < Fn.modulus ∧ 0 < s ∧ s ≤ Fn.modulus / 2 ∧
+        encodeSignature r s = signature := by
+  have hN : Fn.modulus < 2 ^ 256 := by decide
+  unfold decodeSignature
+  constructor
+  · intro h
+    split at h
+    · rename_i r' s' hd
+      obtain ⟨hr, -, hs, -, he⟩ := decodeScalars_eq_some_iff.mp hd
+      split at h
+      · rename_i hc
+        simp only [Except.ok.injEq, Prod.mk.injEq] at h
+        obtain ⟨rfl, rfl⟩ := h
+        exact ⟨hr, hc.1, hs, hc.2, he⟩
+      · simp at h
+    · simp at h
+  · rintro ⟨hr, hrn, hs, hsn, he⟩
+    have hd := decodeScalars_eq_some_iff.mpr ⟨hr, by omega, hs, by omega, he⟩
+    simp [hd, hrn, hsn]
+
+/-- A signature that a secret makes verifies under the key protobuf of that secret.
+
+Signing returns a low s, so the strict DER decoder accepts the signature it encodes. -/
+theorem verify_sign {k : Fn} {message signature : ByteArray} (h : sign k message = .ok signature) :
+    verify (encodePublicKey (Point.mul k .generator)) message signature = true := by
+  have hk : k ≠ 0 := by
+    rintro rfl
+    simp [sign, bind, Except.bind, throw, throwThe, MonadExceptOf.throw] at h
+  unfold sign at h
+  simp only [hk, ite_false] at h
+  generalize hs : Ecdsa.sign k (EthLib.Cryptography.Hash.Sha256.hash32 message) = w at h
+  match w, h with
+  | .ok (r, s, odd), h =>
+    simp only [Except.mapError, bind, Except.bind, pure, Except.pure,
+      Except.ok.injEq] at h
+    subst h
+    have hv := Ecdsa.verify_sign_rfc6979 hs
+    obtain ⟨-, hr, hs0⟩ := Ecdsa.sign_ne_zero hs
+    have hlow := Ecdsa.isLowS_sign hs
+    have hcurve := Point.isOnCurve_mul k Point.isOnCurve_generator
+    have hdec := decodeSignature_eq_ok_iff (signature := encodeSignature r.val s.val)
+      (r := r.val) (s := s.val)
+    have hr0 : 0 < r.val := Nat.pos_of_ne_zero fun h0 => hr (Fin.ext h0)
+    have hs00 : 0 < s.val := Nat.pos_of_ne_zero fun h0 => hs0 (Fin.ext h0)
+    have hlow' : s.val ≤ Fn.modulus / 2 := by
+      simpa [Ecdsa.isLowS] using hlow
+    have hd := hdec.mpr ⟨hr0, r.isLt, hs00, hlow', rfl⟩
+    simp [verify, decodePublicKey_encodePublicKey hcurve (Ecdsa.mul_generator_ne_infinity hk),
+      hd, hv]
 
 end EthLib.Networking.Proofs.Libp2p.PeerId

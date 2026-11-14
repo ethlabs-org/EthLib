@@ -16,6 +16,153 @@ Not yet released.
   `VoteAt` gains the field `committees`: its constructors must prove that `checkAttestationCommittees` succeeds in every target state read by the voter's store.
   No C export or Python function changes.
 
+- In Lean, the shuffle, custody, keystore and discv5 callers of SHA-256 keep the digest as a `Vector UInt8 32` ([#2189](https://github.com/ethereum/EthLib/issues/2189)).
+  `Shuffle.bucketBits` and `Keystore.passwordChecksum` return one, and `Shuffle.bitAt` and `DataAvailability.firstUInt64` take one.
+  A caller that needs the bytes applies `packBytes`, and `Sha256.packBytes_hash32` gives back the byte-array digest.
+  The keystore checksum theorems compare the checksum with `store.checksum` directly, and `checksumVector` is removed: use `passwordChecksum`.
+  Nothing breaks in Python.
+
+- The execution RPC answers `eth_simulateV1` with its simulated blocks ([#2108](https://github.com/ethereum/EthLib/issues/2108)).
+  The results of the calls are not yet in the blocks.
+  In Lean, `fillHeader`, `outputChecks_fillHeader` and `runBody_fillHeader` move from `EthLib.Engine` to `EthLib.Execution.Blocks`, and `SimulateChoices` gains `gasCap`.
+  Nothing breaks in Python.
+
+- In Lean, the block environment gains the field `blobGasPrice` ([#2108](https://github.com/ethereum/EthLib/issues/2108)).
+  A simulation sets the base fee per blob gas with it, and its default `none` keeps the price of the excess blob gas.
+  Supply that field in positional constructors, or use structure notation with its default.
+  The checks and the run of a transaction, and the simulation overrides of a body, take optional lifted rules.
+  A simulation can skip the nonce check and lift the gas caps of EIP-8037 with them.
+  The sender check gains a flag for the nonce check.
+  Nothing breaks in Python.
+
+- In Lean, the transaction environment gains the field `precompiles` ([#2108](https://github.com/ethereum/EthLib/issues/2108)).
+  It gives the address of the precompile that a call to each address runs.
+  Its default `some` keeps each precompile at its own address, so a real block is unchanged.
+  Supply that field in positional constructors, or use structure notation with its default.
+  The checks of a transaction, its run and the body of a block take optional simulation overrides.
+  A simulation can give the sender in place of the signature, and that sender may have code.
+  The sender check gains a flag for that case.
+  Nothing breaks in Python.
+
+- The execution RPC checks the requests of `eth_simulateV1` before their blocks run ([#2107](https://github.com/ethereum/EthLib/issues/2107)).
+  In Lean, `call_unknown` requires the method name to differ from `eth_simulateV1`.
+  Nothing breaks in Python: `rpc.apply_overrides` gives the state root after the account overrides of one block.
+
+- The execution RPC serves `eth_getBlockAccessList` and `debug_getRawBlockAccessList` ([#2106](https://github.com/ethereum/EthLib/issues/2106)).
+  In Lean, `BlockRecord` gains the optional field `accessList` for the retained list.
+  Supply that field in positional constructors, or use structure notation with its `none` default.
+  `Follows` requires each retained list to equal the execution builder's list.
+  `call_unknown` requires the method name to differ from both access-list method names.
+  Nothing breaks in Python: `rpc.serve` takes the new optional argument `pruned_access_lists` for block numbers whose lists are unavailable.
+  `rpc.encode_block_access_list` encodes a JSON list as its EIP-7928 RLP bytes.
+
+- In Lean, `Frame` gains the field `slashed`, after `pubkeysDistinct` ([#1451](https://github.com/ethereum/EthLib/issues/1451)).
+  A validator slashed before a step, at a registry position, is slashed after it at the same position.
+  A proof that builds a `Frame` with an anonymous constructor adds that field.
+  `frame_setValidatorAt_of_whole`, `frame_setValidator_of_whole` and `frame_setValidator` take a new premise `old.slashed = true → validator.slashed = true` after the proof of the key.
+  A caller passes `id` when the new validator copies the flag of the old one, and `fun _ => rfl` when it is slashed.
+  `initiateValidatorExit_balances_eq_and_pendingConsolidations_eq` moves to `Consensus/Proofs/Transition/PendingConsolidations.lean`, which `BalanceDrift.lean` imports publicly.
+
+- In Lean, the results on slashed flags state them at each position of the registry, as `(state.validators.data[position]?).map (·.slashed)` ([#2187](https://github.com/ethereum/EthLib/issues/2187)).
+  From Gloas the registry has no limit in its type, so a position may lie beyond every `ValidatorIndex`.
+  `slashedFlag_initiateValidatorExit` takes a `position : Nat` in place of an index.
+  The second conjunct of `slashValidator_slashedFlag` holds at each position other than `slashedIndex.toNat`.
+  A caller that read either at an index `i` reads it at `i.toNat`.
+  The new `slashedFlag_eq_of_slashed` turns equal flags there into equal values of `slashedFlag` at `i`.
+  `slashIfSlashable_ok` and `foldlM_slashIfSlashable` gain a last conjunct: no slashed flag changes at a position other than that of their index, or that none of their indices names.
+  A pattern that takes them apart needs a fourth component.
+  `UpgradeFrame` gains the field `slashed`, since each upgrade keeps every slashed flag.
+  `ElectraKept` gains the same conjunct, so a pattern that takes it apart needs a fourth component too.
+  `UpgradeFrame.trans_blockFrame` takes the new premise `slashed`: the steps after the upgrade keep every slashed flag.
+  A block frame alone may slash, so it cannot give the field.
+  Compose the block frames of the steps first, and pass their slashed flags once.
+
+- `engine_forkchoiceUpdated` checks that the most recent block of proof of work on the chain of the head is terminal, as step 3 of the method and step 2 of payload validation of Paris require.
+  A head whose chain fails the check is `INVALID`, with the zero hash, and the head does not change.
+  Once the known finalized block is a payload of the tree, a zero safe or finalized hash gives `-38002`.
+  The latest valid hash of an invalid head is zero when its latest valid block is of proof of work.
+  In Lean, `KnownPayload` has the new field `powTotalDifficulty`, `none` for a payload, so its anonymous constructor takes a fifth value.
+  `forkchoiceUpdated` takes a `TransitionConfiguration` first, and `forkchoiceUpdatedCall` takes one after the chain configuration.
+  `forkchoiceUpdated_valid`, `forkchoiceUpdated_of_belowFinalized`, `forkchoiceUpdated_valid_none_iff`, `forkchoiceUpdated_of_invalid`, `forkchoiceUpdated_of_onChain` and `forkchoiceUpdated_eq_error_iff` state the terminal block check.
+  `forkchoiceUpdated_valid`, `forkchoiceUpdated_of_onChain` and `forkchoiceUpdated_eq_error_iff` also state the rule on zero hashes, and `forkchoiceUpdated_of_invalid` answers `latestValidHash` in place of `latestValid`.
+  In Python, a block of the tree of `engine.forkchoice_updated` may carry `totalDifficulty` and `parentTotalDifficulty`.
+  The function takes the required keyword-only argument `terminal_total_difficulty`, as `engine.new_payload_on_chain` does.
+  A tree with no block of proof of work passes the check whatever that value, which must be below `2^256`.
+  The native `engine_forkchoice_updated` takes that value after the finalized block.
+- `engine_newPayload` on a chain checks that a parent of proof of work is a terminal block, as step 2 of payload validation of Paris requires.
+  A parent that fails the check makes the payload `INVALID`, with the zero hash and the new reason code 407.
+  In Lean, `PayloadError` has the new constructor `invalidTerminalBlock`, with that code.
+  `newPayloadOnChain` takes two new arguments before the chain: a `TransitionConfiguration`, and the total difficulty of the last block of the chain.
+  Its theorems take both values, and `newPayloadOnChain_of_stateTransition_ok`, `newPayloadOnChain_of_stateTransition_error` and `newPayloadOnChain_of_buildPayload` take the hypothesis that the parent passes the check.
+  In Python, `engine.new_payload_on_chain` takes the required keyword-only arguments `terminal_total_difficulty` and `total_difficulty`, and the native `engine_new_payload_on_chain` takes them after the recent blocks.
+  A last block from Paris on passes the check, so then any total difficulty, and any terminal total difficulty below `2^256`, do.
+- In Lean, the bound on the extra data of an Engine payload is the named constant `Execution.Blocks.MAX_EXTRA_DATA_BYTES`, in place of the literal `32`.
+  The statements of `anyPayload_executionPayloadJson`, `payloadV4_executionPayloadV4Json`, `payloadOfBlock_extraData` and `newPayloadParams_json` change only by that name, and so do `payloadOfBlock` and `anyPayload`.
+  The constant is `32`, so a proof that used `omega` on the bound first unfolds it, as in `simp only [MAX_EXTRA_DATA_BYTES]; omega`.
+- In Lean, `EpochFrameLaws` now extends `EpochStepLaws`, which holds every law except those for a new validator and for the queue of pending deposits.
+  The theorems that need neither law moved from the `EpochFrameLaws` namespace to the `EpochStepLaws` namespace, with the same statements, and they now take the smaller structure.
+  Dot notation on a value of either structure still finds them; a full name such as `EpochFrameLaws.processSyncAggregate` becomes `EpochStepLaws.processSyncAggregate`.
+- In Lean, `processEpoch_split_of_lt_altair` moved from the `EpochFrameLaws` namespace to the `EpochStepLaws` namespace, with the same statement, and it now takes the smaller structure.
+  Dot notation on an `EpochFrameLaws` value still finds it.
+  A call by the full name `EpochFrameLaws.processEpoch_split_of_lt_altair laws` becomes `EpochStepLaws.processEpoch_split_of_lt_altair laws.toEpochStepLaws`.
+- In Lean, the JSON readers and writers of the base types moved from `EthLib.Engine.Json` to `EthLib.Serialization.JsonRpc`, with their theorems.
+  They are `hexValue`, `hexDigits`, `bytesOf`, `bytes`, `fixed`, `address`, `quantity`, `bytesMax`, `uint64`, `paramsArray`, `array`, `fields`, `hasExactly`, `field`, `dataJson`, `quantityJson`, `listJson` and `optionJson`.
+  Their namespace is now `EthLib.Serialization.JsonRpc`.
+  The readers among them return `Read`, an alias of `Except String`, in place of `Except EngineError`, and reject an input with a reason.
+  An Engine decoding lifts that reason to `EngineError.invalidParams`, through `Engine.Json.lift` and its `MonadLift` instance, so every Engine decoder returns what it returned before.
+  `withdrawal` and `withdrawalJson`, with their theorems, moved to `EthLib.Execution.Rpc`.
+  The Python bindings are unchanged.
+
+- In Lean, `DirectSafety.EnoughStake run high` requires the stake floor only at epoch calls whose current epoch is at most `high + 1`.
+  The floor reaches one epoch past the finalized epoch of `b` in `accountable_safety`, and one epoch past `j.epoch` in the other three direct safety endpoints.
+  Move `j` (and `k` for `accountable_justified_unique`) before the stake premises.
+  An existing unbounded floor proof adapts as `fun call _ => oldEnough call`.
+  Pass a target-epoch bound as the new `within` argument of `quorum_count`.
+  Remove the `starts` argument from `accountable_safety` and `accountable_safety_justified`, but keep it for `accountable_justified_unique`.
+  `conflict` and `ordered` imply the removed bound on the slot of `x`, so the theorems cover the same runs as before.
+  The drift horizon in the conclusion of `accountable_safety` is the finalized epoch of `b`, not the larger of the two finalized epochs; `ordered` makes them equal.
+
+- In Lean, the direct safety endpoints bound the unslashed active stake at `x`, `unslashedKeys x.state`, in place of `activeKeys x.state` ([#2187](https://github.com/ethereum/EthLib/issues/2187)).
+  `Accountable` takes the shared prefix and the two tails, `shared left right`, in place of the two full runs, and `accountableKeys` takes them in place of the two full runs and the reference state.
+  Slashing evidence counts only in the tails; double votes still count over the full runs, and proposer slashings in the tails still count.
+  `accountableKeys` keeps only the unslashed keys active at `x`.
+  `recentKeys` keeps only unslashed keys, `referenceLoss` sums over `unslashedKeys x`, and `referenceGain` subtracts the support of `unslashedKeys x`.
+  So `boundaryStake`, and through it `stateDrift` and `derivedDrift`, count only unslashed recent stake.
+  `Run.slashed_evidence` holds for a run from any state, with no `genesis` argument, and concludes `SlashedAt x.state v.pubkey ∨ run.SlashingEvidence v.pubkey`.
+  `SlashedAt` names the predicate that `referenceLoss` stated inline before.
+  `verifiedConflict_of_accountable` takes `shared left right` and concludes `VerifiedConflict (shared.append left) (shared.append right) key`.
+  Pass `shared left right` where a caller passed `shared.append left`, `shared.append right` and `x`.
+  `DirectSafety.accountable_safety_justified_terminal` and `Store.Reachable.finalized_ancestor_or_accountable` change the same way: their stake alternative bounds the unslashed active stake, at `x` or at the anchor state, by `accountableKeys` of the shared prefix and the two tails.
+  The new Lean declarations are `DirectSafety.SlashedAt`, `DirectSafety.unslashedKeys`, `DirectSafety.EpochCall.pubkeysDistinct` and `Run.pubkeysDistinct`.
+  `Run.pubkeysDistinct` gives distinct keys at the end of a run from genesis; `EpochCall.pubkeysDistinct`, `view_quorum_count` and `view_voters_recent` read it.
+
+- In Lean, `DirectSafety.HashEvidence objects` is stated through the searches `findMessageCollision` and the new `findZeroRoot`, in place of a bounded existential ([#2187](https://github.com/ethereum/EthLib/issues/2187)).
+  No C export or Python function changes, and every theorem that mentions `HashEvidence` keeps its statement.
+  `hashEvidence_iff` proves that the new body is equivalent to the old one, for every list of objects and with no hypothesis.
+  `findZeroRoot_valid` and `findZeroRoot_eq_none_iff` say what the new search returns and when it fails.
+  The two bodies are not definitionally equal.
+  A proof that unfolds `HashEvidence` to take it apart first rewrites with `hashEvidence_iff`, or applies `hashEvidence_iff.mp`.
+  A proof that builds the evidence as an `Or` of the old form applies `hashEvidence_iff.mpr`.
+
+- In Lean, the four rules by which one justification step finalizes a checkpoint have one definition, `FinalizationStepRule state after checkpoint` ([#2187](https://github.com/ethereum/EthLib/issues/2187)).
+  The bits come from the state after the step, the epoch and the justified checkpoints from the state before it.
+  `weighJustificationAndFinalization_finalized` states its second disjunct as `FinalizationStepRule state after after.finalizedCheckpoint`, with the same unfolded body.
+  `DirectSafety.FinalizationRule call checkpoint` is `FinalizationStepRule call.cached call.weighed checkpoint`, with the same unfolded body.
+  A proof that took either apart by name first unfolds `FinalizationStepRule`.
+  No C export or Python function changes.
+
+- `verify_kzg_proof` checks its inputs in the order of EIP-4844: the commitment, `z`, `y`, then the proof.
+  When more than one input is invalid, the first in that order gives the error.
+  Before, it checked the proof second, so an input with an invalid `z` and an invalid proof raised the error of the proof.
+  It now raises the error of `z`.
+  The verdicts are unchanged, and so are the errors of an input with at most one invalid argument.
+
+- In Lean, `verifyBlobKzgProof_binding` states its hypotheses as EIP-4844 converts the commitment and the proof.
+  It takes the raw bytes, the values that `bytesToKzgCommitment` and `bytesToKzgProof` return, and the points that `uncompressG1` decodes from them.
+  A caller that holds `validateKzgG1Point b = .ok C` gets the two new hypotheses from `bytesToKzgCommitment_of_validateKzgG1Point` and `uncompressG1_of_validateKzgG1Point`.
+  The same holds for the proof, with `bytesToKzgProof_of_validateKzgG1Point`.
+  The C exports and the Python functions are unchanged.
+
 - Along a chain from genesis, the public keys of the validators stay a prefix and stay distinct ([#1421](https://github.com/ethereum/EthLib/issues/1421)).
   No C export or Python function changes.
   In Lean, `Frame` and `UpgradeFrame` gain the fields `pubkeysPrefix` and `pubkeysDistinct`.
@@ -44,6 +191,38 @@ Not yet released.
   So a repeat of any message held before the import is refused, and so is a block at or before the slot limit, or a vote with a source before the source limit or a target at or before the target limit.
   The keys of the record come out in byte order.
   The JSON format and the C and Python signatures are unchanged.
+
+- A checkpoint of a fork-choice store comes from the anchor, a held state or its pull-up ([#1423](https://github.com/ethereum/EthLib/issues/1423)).
+  No C export or Python function changes.
+  In Lean, `Store.Reachable.justified_origins` and `Store.Reachable.finalized_origins` state this for a reachable store.
+  In the new module `Consensus.Proofs.ForkChoice.CheckpointAncestry`, `Store.Reachable.finalized_ancestor_or_accountable` gives three cases for the finalized checkpoint of the store.
+  It is at or before the anchor epoch, or it is on the chain of the justified checkpoint at the first slot of its epoch.
+  Otherwise two runs from the anchor to held states of the store bound the accountable stake, or show hash evidence.
+  It asks that every block was imported with the setting of the signature checks of the run from genesis, as `Store.BlockStatesFromParents`, which `Store.ForwardReachableWith.blockStatesFromParents` gives.
+  The drift of its bound counts from the anchor, so the bound loosens as the justified epoch moves away from the anchor epoch.
+  `DirectSafety.TerminalView` reads the checkpoints of the last state of a run, or of one justification step on it, as fork choice runs it.
+  `DirectSafety.accountable_safety_justified_terminal` states direct accountable safety for two such views, and like the theorems it extends it asks no bound on the fork of either run.
+  `DirectSafety.accountable_safety_justified` is its case without a step, and its statement is unchanged.
+  The other new Lean declarations are `TerminalView.state`, `TerminalView.enough`, `TerminalQuorum`, `TerminalQuorum.source`, `TerminalQuorum.voters`, `TerminalQuorum.currentEpoch_le`, `ViewQuorum`, `ViewQuorum.source`, `ViewQuorum.target`, `ViewQuorum.voters`, `ViewQuorum.state`, `ViewQuorum.eq_inl_of_realized`, `view_field_crossing`, `view_finalized_quorums`, `view_quorum_attestations`, `view_quorum_count`, `view_quorum_target_binding`, `view_conflicting_fields_quorums`, `view_voters_recent`, `checkpoint_binding_prefixes` and `hashObjects_append_subset`, all in `DirectSafety`, and `Store.ancestorRoots_of_parent`, `Store.updateCheckpoints_unrealizedJustifications` and `Store.updateUnrealizedCheckpoints_unrealizedJustifications`.
+  The new `Store.SameCheckpoints` says that two stores have the same justified, finalized, unrealized justified and unrealized finalized checkpoints.
+  `Store.SameCheckpoints.refl`, `.justified`, `.finalized`, `.unrealizedJustified` and `.unrealizedFinalized` read it; a caller that names these projections does not depend on the order of the four checkpoints.
+  `Store.storeTargetCheckpointState_frame`, `Store.onAttestation_frame`, `Store.onAttesterSlashing_frame`, `Store.recordBlockTimeliness_frame` and `Store.updateProposerBoostRoot_frame` end with two new conjuncts.
+  They state `Store.SameCheckpoints` of the store and the result, and that the unrealized justifications are unchanged.
+  `Store.onTickPerSlot_frame` ends with a new conjunct: a store `moved`, the store itself or `updateCheckpoints` with its unrealized checkpoints, has `Store.SameCheckpoints` with the result, and the unrealized justifications are unchanged.
+  `Store.computePulledUpTip_frame` ends with a new conjunct: the held state of the tip and the result of its justification and finalization.
+  The conjunct also gives a store `moved` with `Store.SameCheckpoints` of the result, built from that result, and the unrealized justifications with that result's current justified checkpoint added for the tip.
+  A pattern that destructures the four checkpoints destructures them in one nested pattern.
+  A caller that destructures one of these seven results adds one pattern, and only if its last pattern named the old last conjunct.
+  A pattern that ends in `-` needs no change.
+  A projection of the old last conjunct gains `.1`.
+  So `.2.2` of `Store.onAttestation_frame` and `Store.onAttesterSlashing_frame` becomes `.2.2.1`, and `.2.2.2.2` of `Store.onTickPerSlot_frame` becomes `.2.2.2.2.1`.
+  The `.2.2.2` of the other four frames becomes `.2.2.2.1`.
+  The new `Store.catchUp_preserves` states that catch-up keeps each property of the store that every tick within a slot keeps.
+  It has the form of `Store.onBlockWithVotes_preserves`.
+  `Store.catchUp_frame`, `Store.catchUp_ordered` and the catch-up step of `Store.onTick_checkpointStates_latestMessages` now read it, with unchanged statements.
+  The new `Store.onTick_ok` splits a tick into the slot of its time, the catch-up to that slot and one tick within it.
+  `Store.onTick_frame`, `Store.getCurrentSlot_onTick`, `Store.onTick_ordered`, `Store.onTick_checkpointStates_latestMessages` and `Store.exists_getCurrentSlot_onTick_ge` now read it, with unchanged statements.
+  The new `Store.Reachable.linked_of_unknown` gives the links of a reachable store whose anchor parent is unknown, and `Store.Reachable.parentsBelow` keeps its statement.
 
 - The theorem that a block leaves its header as the latest block header holds at every fork ([#2061](https://github.com/ethereum/EthLib/issues/2061)).
   In Lean, `latestBlockHeader_processBlock` drops its `gloas` argument, and its conclusion is unchanged.
@@ -564,6 +743,59 @@ Not yet released.
   It applies `OperationsInput.step_of` to it with the same step arguments.
   The block then continues with `processOperations`, as before.
   No C export or Python function changes.
+- A validator write in the epoch laws must keep the slashed flag ([#1421](https://github.com/ethereum/EthLib/issues/1421)).
+  No C export or Python function changes.
+  In Lean, the `setValidatorAt` field of `EpochFrameLaws` takes a proof of `validator.slashed = old.slashed`, after the proof of the key.
+  `EpochFrameLaws.setValidator`, `EpochFrameLaws.setValidator_of_sameBalance` and `EpochFrameLaws.setValidatorAt_of_sameBalance` take the same proof, after the proof of the key.
+  A caller passes `rfl` when the write leaves the flag alone, and an instance of the laws takes one more argument.
+- The place where a block checks an indexed attestation now also covers the two attestations of an attester slashing ([#1421](https://github.com/ethereum/EthLib/issues/1421)).
+  No C export or Python function changes.
+  In Lean, `AttestationSite` gains the constructor `slashing`, and a proof that eliminates an `AttestationSite` handles that case too.
+  `blockVotes_verified` and `blockStepVotes_verified` keep their statements, so the site that they give may now be either case.
+  `AttestationSite.frame` gives the frame from the input of the operations to the state of the check, in both cases.
+- The decompositions of a block and of its operations now name the steps after the attestations ([#1421](https://github.com/ethereum/EthLib/issues/1421)).
+  No C export or Python function changes.
+  In Lean, `processBlock_operationsInput` ends with a new conjunct for the step after the operations.
+  From Altair the sync aggregate takes the state after the operations to the state after the block, and before Altair the two are equal.
+  A caller that destructures its result adds one pattern at the end.
+  The new `processOperations_folds_of` gives the three folds of the operations and a step of any relation across the operations after them.
+  `processOperations_folds` is its case for `BlockFrame`, with the same statement.
+- An SSZ type path that selects a compatible union option which the union does not declare fails with `badDeclaration` ([#2190](https://github.com/ethereum/EthLib/issues/2190)).
+  Before, `Desc.resolveStep` returned the default type, a Boolean, when a union had fewer options than selectors.
+  A well-formed union has one option per selector, so its paths resolve as before.
+  No C export or Python function changes.
+  In Lean, `resolveStep_compatibleUnion` takes the selected child and a proof of `options[slot]? = some child`, and concludes with that child.
+  `union_options_share_one_tree` quantifies over that child in the same way.
+  `resolveStep_compatibleUnion_of_wellFormed` gives the child for a well-formed union.
+- In Lean, the hash of a message to elements of `Fp2` has its count in its type ([#2210](https://github.com/ethereum/EthLib/pull/2210)).
+  `hashToFieldFp2` returns `Vector (Fp2 F) count`, where it returned an `Array`, so a caller that needs an array takes `.toArray`.
+  The elements, the errors and the points of the hash to `G2` are the same.
+  `map_hashToFieldFp2` maps with `Vector.map`, and `hashToFieldFp2_eq_spec` states the same equation over the vector.
+  `hashToG2` no longer takes an `Inhabited` instance.
+  `map_hashToG2` no longer takes the two instances, or the hypothesis that the map sends the default to the default.
+  No C export or Python function changes.
+- In Lean, the RLP decoder reads only bytes inside its input ([#2211](https://github.com/ethereum/EthLib/pull/2211)).
+  `readPrefix`, `decodeItem`, `decodeItems` and `decodeItemsFrom` take a proof of `stop ≤ input.size`, which `omega` supplies by default.
+  `readBigEndian` takes a proof of `pos + k ≤ input.size`.
+  The proof helper `readItem` takes the same bound as `decodeItem`, also supplied by `omega` by default.
+  `readPrefix_short`, `decodeItemsFrom_eq` and `decodeItems_eq` take the same bound, and `decodeItem_of_readItem` takes it as an implicit argument.
+  `decode` keeps its type, the inputs it accepts, its values and its errors.
+  No C export or Python function changes.
+- In Lean, the reader of an `eth_getProof` answer moves into the specification ([#2099](https://github.com/ethereum/EthLib/issues/2099)).
+  `accountProofOfJson`, `storageProofOfJson` and `proofNodes` move from `EthLib.Engine.Exports` to `EthLib.Execution.Rpc`, in `Execution/Rpc/Proof.lean`.
+  They keep their types and their errors.
+  No C export or Python function changes.
+- The chain view serves `eth_getProof`, with the answer that `AccountProof.ofState` builds from the state after the block.
+
+- `eth_config` reports the current, next and last scheduled configurations from Dencun through Glamsterdam.
+  As EIP-7910 says, the report leaves out a future fork after Glamsterdam, and `next` and `last` are null when no supported fork remains.
+  A fork at a block after genesis is never a next or last configuration.
+  In Lean, `ChainView` adds `genesis` and `mergeForkBlock` for the fork checksum.
+  Supply both fields in positional constructors, or use structure notation with their `none` defaults.
+  `call_unknown` also requires that the method name differ from `eth_config`.
+  The configuration given to `rpc_serve` takes the optional keys `mergeForkBlock`, `genesisHash` and `genesisTime`.
+  It rejects a malformed value of these keys, one of the genesis pair without the other, and a genesis pair that disagrees with block zero.
+  The C and Python function signatures stay the same.
 
 ## 0.3.0
 

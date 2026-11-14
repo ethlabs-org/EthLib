@@ -147,7 +147,7 @@ private theorem terminal_current {a : ForkedBeaconState preset}
 
 /-- Projected justified fields retain the real history, with at most one terminal count. -/
 theorem terminal_justified_fields {g a : ForkedBeaconState preset}
-    (run : Run config checks g a) (parameters : Parameters preset)
+    (run : Run config checks g a) (_parameters : Parameters preset)
     (genesis : Genesis (config := config) (checks := checks) g)
     (view : TerminalView a) (j : Checkpoint)
     (field : j = view.state.previousJustifiedCheckpoint ∨
@@ -157,7 +157,7 @@ theorem terminal_justified_fields {g a : ForkedBeaconState preset}
       (field : j = a.state.previousJustifiedCheckpoint ∨
         j = a.state.currentJustifiedCheckpoint) :
       j = ⟨GENESIS_EPOCH, Vector.replicate 32 0⟩ ∨ Nonempty (ViewHistory run view j) := by
-    rcases justified_fields run parameters genesis j field with initial | history
+    rcases justified_fields run genesis j field with initial | history
     · exact .inl initial
     · obtain ⟨history⟩ := history
       exact .inr ⟨lift_history view history⟩
@@ -165,11 +165,11 @@ theorem terminal_justified_fields {g a : ForkedBeaconState preset}
   | realized => exact old _ j field
   | pulled after ok =>
     change j = after.previousJustifiedCheckpoint ∨ j = after.currentJustifiedCheckpoint at field
-    rcases justification_split ok with ⟨_, rfl⟩ | ⟨later, total, pb, cb, weighed⟩
+    rcases step_reads ok with ⟨_, rfl⟩ | ⟨later, ⟨reads⟩⟩
     · exact old _ j field
     · rcases field with previous | current
       · exact old _ j (.inr
-          (previous.trans (weighJustificationAndFinalization_checkpoints weighed).1))
+          (previous.trans (weighJustificationAndFinalization_checkpoints reads.weighed).1))
       · rcases terminal_current ok later with same | ⟨quorum, target, source⟩
         · exact old _ j (.inr (current.trans same))
         · have history := view_history_of_call (run := run) (Sum.inr quorum)
@@ -216,7 +216,7 @@ private theorem terminal_new_bits {a : ForkedBeaconState preset}
     · exact .inr old
 
 private theorem terminal_source_history {g a : ForkedBeaconState preset}
-    (run : Run config checks g a) (parameters : Parameters preset)
+    (run : Run config checks g a) (_parameters : Parameters preset)
     (genesis : Genesis (config := config) (checks := checks) g)
     {view : TerminalView a} (call : ViewQuorum run view) :
     call.source = ⟨GENESIS_EPOCH, Vector.replicate 32 0⟩ ∨
@@ -229,9 +229,9 @@ private theorem terminal_source_history {g a : ForkedBeaconState preset}
     · obtain ⟨history⟩ := history
       exact .inr ⟨lift_history view history⟩
   cases call with
-  | inl call => exact lift (quorum_source_history run parameters genesis call)
+  | inl call => exact lift (quorum_source_history run genesis call)
   | inr call =>
-    apply lift (justified_fields run parameters genesis call.source _)
+    apply lift (justified_fields run genesis call.source _)
     cases h : call.current <;> simp [TerminalQuorum.source, h]
 
 private theorem terminal_bit_history {g a : ForkedBeaconState preset}
@@ -355,7 +355,7 @@ theorem terminal_finalized_quorums {g a : ForkedBeaconState preset}
     rcases finalized_field run genesis with initial | ⟨call, _, rule⟩
     · exact .inl initial
     · obtain ⟨outgoing, source, gap, history, middle⟩ :=
-        finalization_rule_quorums run parameters genesis call _ rule
+        finalization_rule_quorums run genesis call _ rule
       rcases history with initial | history
       · exact .inl initial
       · obtain ⟨history⟩ := history
@@ -367,9 +367,9 @@ theorem terminal_finalized_quorums {g a : ForkedBeaconState preset}
   cases view with
   | realized => exact old _ rfl
   | pulled after ok =>
-    rcases justification_split ok with ⟨_, rfl⟩ | ⟨later, total, pb, cb, weighed⟩
+    rcases step_reads ok with ⟨_, rfl⟩ | ⟨later, ⟨reads⟩⟩
     · exact old _ rfl
-    · rcases terminal_rule weighed with same | rule
+    · rcases terminal_rule reads.weighed with same | rule
       · exact old _ same
       · have finish (outgoing : ViewQuorum run (.pulled after ok))
             (source : outgoing.source = after.finalizedCheckpoint)
@@ -430,56 +430,5 @@ theorem terminal_finalized_quorums {g a : ForkedBeaconState preset}
           exact finish (Sum.inr outgoing) (start.trans source.symm) (.inl (by
             change outgoing.target.epoch.toNat = _; omega))
             (fun gap => False.elim (by change outgoing.target.epoch.toNat = _ at gap; omega))
-
-private theorem view_target_prefix {g a : ForkedBeaconState preset}
-    (run : Run config checks g a) (parameters : Parameters preset)
-    (view : TerminalView a) (call : ViewQuorum run view) :
-    ∃ (b : ForkedBeaconState preset) (pre : Run config checks g b),
-      getBlockRoot b.state call.target.epoch = .ok call.target.root ∧
-      run.checkpointPath call.target.epoch = pre.checkpointPath call.target.epoch ∧
-      pre.hashObjects ⊆ run.hashObjects := by
-  cases call with
-  | inr call => exact ⟨a, run, call.targetRoot, rfl, fun _ h => h⟩
-  | inl call =>
-    -- The cached root is already in the real input ring, before this epoch call.
-    obtain ⟨early, recent⟩ := call_target_window parameters call
-    have read := call.targetRoot
-    rw [getBlockRoot_processSlot call.cachedOk recent] at read
-    obtain ⟨pre, post, same⟩ := run.contains_split (.slot call.advanced) call.member
-    refine ⟨call.before, pre, read, ?_, ?_⟩
-    · have stable := path_append_stable pre
-        ((Run.nil.snoc (.slot call.advanced)).append post) call.target.epoch early
-      have assoc : pre.append ((Run.nil.snoc (.slot call.advanced)).append post) =
-          (pre.snoc (.slot call.advanced)).append post :=
-        append_slot_tail pre (.slot call.advanced) post
-      change run.checkpointPath call.target.epoch = _
-      rw [assoc, ← same] at stable
-      exact stable
-    · intro object member
-      have included := hashObjects_append_subset (pre.snoc (.slot call.advanced)) post
-        (List.mem_append_left _ member)
-      exact (congrArg Run.hashObjects same).symm ▸ included
-
-/-- Equal targets bind the selected real paths, retaining collision and zero-root evidence. -/
-theorem view_quorum_target_binding {g a b : ForkedBeaconState preset}
-    (left : Run config checks g a) (right : Run config checks g b)
-    (parameters : Parameters preset) (genesis : Genesis (config := config) (checks := checks) g)
-    (va : TerminalView a) (vb : TerminalView b)
-    (one : ViewQuorum left va) (two : ViewQuorum right vb) (same : one.target = two.target) :
-    left.checkpointPath one.target.epoch = right.checkpointPath two.target.epoch ∨
-      HashEvidence (left.hashObjects ++ right.hashObjects ++ va.hashObjects ++ vb.hashObjects) := by
-  obtain ⟨a', preA, readA, pathA, objectsA⟩ := view_target_prefix left parameters va one
-  obtain ⟨b', preB, readB, pathB, objectsB⟩ := view_target_prefix right parameters vb two
-  rcases checkpoint_binding preA preB parameters genesis one.target.epoch one.target.root
-      readA (by simpa [same] using readB) with paths | evidence
-  · exact .inl (pathA.trans (paths.trans (by simpa [same] using pathB.symm)))
-  · right
-    apply hashEvidence_mono (one := preA.hashObjects ++ preB.hashObjects) _ evidence
-    intro object member
-    apply List.mem_append_left
-    apply List.mem_append_left
-    rcases List.mem_append.mp member with member | member
-    · exact List.mem_append_left _ (objectsA member)
-    · exact List.mem_append_right _ (objectsB member)
 
 end EthLib.Consensus.DirectSafety

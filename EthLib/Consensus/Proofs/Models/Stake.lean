@@ -178,7 +178,7 @@ theorem stake_inter [DecidableEq ν] {V A B : Finset ν} (hA : A ⊆ V) (hB : B 
   simp only [stake]
   omega
 
-/-- Restrict a stake function to its support, as used by the direct safety drift bounds. -/
+/-- The weight `w v` inside `S`, and zero outside it. -/
 def supported [DecidableEq ν] (S : Finset ν) (w : ν → ℕ) (v : ν) : ℕ :=
   if v ∈ S then w v else 0
 
@@ -194,9 +194,7 @@ private theorem sum_supported [DecidableEq ν] (S U : Finset ν) (w : ν → ℕ
 
 Gains cost once, losses twice, and support outside each active denominator costs twice.
 
-`DirectSafety.accountable_pair_bound` and `DirectSafety.terminal_pair_bound` read this bound.
-
-Separate applications of `two_mul_stake_le_add_weightChange` also charge accountable losses. -/
+Bounding each quorum on its own would also charge the losses of accountable keys. -/
 theorem stake_le_accountable_add_change [DecidableEq ν]
     (reference active₁ active₂ s₁ s₂ q₁ q₂ accountable : Finset ν)
     (old w₁ w₂ : ν → ℕ) (loss₁ loss₂ gain₁ gain₂ outside₁ outside₂ : ℕ)

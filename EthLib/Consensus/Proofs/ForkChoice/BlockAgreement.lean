@@ -168,15 +168,15 @@ theorem Execution.exists_signed_of_blocks
       | block mem added =>
         exact Store.onBlockWithVotes_preserves (fun h added => step h (incl mem) added)
           (fun _ h a => maps h (fun _ h => h) (Store.onAttestation_frame a).2.1
-            (Store.onAttestation_frame a).2.2)
+            (Store.onAttestation_frame a).2.2.1)
           (fun _ h a => maps h (fun _ h => h) (Store.onAttesterSlashing_frame a).2.1
-            (Store.onAttesterSlashing_frame a).2.2) ih' added
+            (Store.onAttesterSlashing_frame a).2.2.1) ih' added
       | attestation _ a =>
         exact maps ih' (fun _ h => h) (Store.onAttestation_frame a).2.1
-          (Store.onAttestation_frame a).2.2
+          (Store.onAttestation_frame a).2.2.1
       | attesterSlashing _ a =>
         exact maps ih' (fun _ h => h) (Store.onAttesterSlashing_frame a).2.1
-          (Store.onAttesterSlashing_frame a).2.2
+          (Store.onAttesterSlashing_frame a).2.2.1
       | payloadAttestation _ a =>
         exact maps ih' (fun _ h => h) (Store.onPayloadAttestationMessage_onlyPtcVotes a).frame.2.1
           (Store.onPayloadAttestationMessage_onlyPtcVotes a).frame.2.2
@@ -252,13 +252,14 @@ theorem Execution.blockStates_eq (e : Execution (forkChoice config checks source
       | block _ a =>
         exact Store.onBlockWithVotes_preserves blockStep
           (fun _ h a => maps h (Store.onAttestation_frame a).2.1
-            (Store.onAttestation_frame a).2.2)
+            (Store.onAttestation_frame a).2.2.1)
           (fun _ h a => maps h (Store.onAttesterSlashing_frame a).2.1
-            (Store.onAttesterSlashing_frame a).2.2) ih a
+            (Store.onAttesterSlashing_frame a).2.2.1) ih a
       | attestation _ a =>
-        exact maps ih (Store.onAttestation_frame a).2.1 (Store.onAttestation_frame a).2.2
+        exact maps ih (Store.onAttestation_frame a).2.1 (Store.onAttestation_frame a).2.2.1
       | attesterSlashing _ a =>
-        exact maps ih (Store.onAttesterSlashing_frame a).2.1 (Store.onAttesterSlashing_frame a).2.2
+        exact maps ih (Store.onAttesterSlashing_frame a).2.1
+          (Store.onAttesterSlashing_frame a).2.2.1
       | payloadAttestation _ a =>
         exact maps ih (Store.onPayloadAttestationMessage_onlyPtcVotes a).frame.2.1
           (Store.onPayloadAttestationMessage_onlyPtcVotes a).frame.2.2
@@ -555,7 +556,7 @@ Finalized-chain compatibility is checked at admission, not at the later observat
 The caller can choose a pre-boundary admission event supplied by prompt processing.
 
 This is the persistence step of the delivery argument in arXiv 2405.00549v4, Section 2. -/
-theorem Execution.blocks_after_partiallySynchronous {GST Δ last : ℕ}
+private theorem Execution.blocks_after_partiallySynchronous {GST Δ last : ℕ}
     (sync : e.PartiallySynchronous GST Δ)
     (oneBlock : OneBlockPerRoot e last) (admitted : BlocksAdmitted e GST Δ last)
     {anchor : Store preset fork}

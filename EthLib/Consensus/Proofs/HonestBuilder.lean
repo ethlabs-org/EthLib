@@ -23,8 +23,6 @@ From Gloas, take a block that passes its steps, with a bid that a builder built 
 
 The block must also commit to the root of the state after it.
 
-The vectors whose length the preset sets must have a positive length, for the root of the block.
-
 The envelope of that payload then passes the checks of the block root and the parent root.
 
 It also passes the checks of the builder, the mix, the gas limit and the block hash.
@@ -138,10 +136,6 @@ theorem getExecutionPayloadEnvelope_eq_ok_iff {block : BeaconBlock preset fork}
     rintro ⟨rooted, rfl, rfl, rfl, rfl⟩
     exact ⟨_, rooted, rfl⟩
 
-variable [NeZero preset.BYTES_PER_LOGS_BLOOM.toNat] [NeZero preset.SYNC_COMMITTEE_SIZE.toNat]
-  [NeZero preset.MAX_COMMITTEES_PER_SLOT.toNat] [NeZero preset.PTC_SIZE.toNat]
-  [NeZero preset.INCLUSION_LIST_COMMITTEE_SIZE.toNat]
-
 /-- The envelope of a payload passes most checks against the state after the block of its bid.
 
 The block carries a bid that a builder built from the payload and its requests.
@@ -156,9 +150,7 @@ It also agrees with that bid on the root of the requests.
 
 The slot of the bid is the slot of the state, so a payload for that slot passes the slot check.
 
-The payload also builds on the latest block hash of the state.
-
-The lengths of the vectors that the preset sets must be positive, for the root of the block. -/
+The payload also builds on the latest block hash of the state. -/
 theorem getExecutionPayloadEnvelope_checks {config : Config} {checks : SignatureChecks}
     {engine : ExecutionEngine preset fork} {pre post : BeaconState preset fork}
     (gloas : .glamsterdam ≤ fork) {block : BeaconBlock preset fork} {slot : Slot}
@@ -224,8 +216,8 @@ private theorem verify_of_signed {key : Signatures.SecretKey}
         let root ← rootResult.mapError BuilderSigningError.root
         (Signatures.sign key (packBytes root)).mapError .bls :
           Except BuilderSigningError BLSSignature) = .ok signature) :
-    ∃ root, rootResult = .ok root ∧ Signatures.verify (packBytes (Signatures.skToPk key))
-      (packBytes root) (packBytes signature) = true := by
+    ∃ root, rootResult = .ok root ∧ Signatures.verify (Signatures.skToPk key)
+      (packBytes root) signature = true := by
   -- Split the bind with lemmas, so the kernel never evaluates the signature.
   obtain ⟨root, rooted, signs⟩ := bind_ok_iff.mp signedBy
   rw [mapError_ok_iff] at rooted signs
@@ -252,8 +244,8 @@ theorem verifyExecutionPayloadBidSignature_of_sign {config : Config}
   unfold verifyExecutionPayloadBidSignature
   rw [show liftAccessor (getBuilder state gloas signed.message.builderIndex) = .ok builder by
     rw [registered]; rfl, rooted]
-  show Except.ok (Signatures.verify (packBytes builder.pubkey) (packBytes root)
-    (packBytes signed.signature)) = .ok true
+  show Except.ok (Signatures.verify builder.pubkey (packBytes root)
+    signed.signature) = .ok true
   rw [owned]
   exact congrArg Except.ok verifies
 
@@ -288,8 +280,8 @@ theorem verifyExecutionPayloadEnvelopeSignature_of_sign {config : Config}
   obtain ⟨root, rooted, verifies⟩ := verify_of_signed signedBy
   unfold verifyExecutionPayloadEnvelopeSignature
   rw [owned, show builderSigningRoot config state signed.message = .ok root from rooted]
-  show Except.ok (Signatures.verify (packBytes (Signatures.skToPk key)) (packBytes root)
-    (packBytes signed.signature)) = .ok true
+  show Except.ok (Signatures.verify (Signatures.skToPk key) (packBytes root)
+    signed.signature) = .ok true
   exact congrArg Except.ok verifies
 
 end EthLib.Consensus

@@ -1,6 +1,7 @@
 module
 
 public import EthLib.Consensus.Proofs.DirectSafety.Terminal
+import all EthLib.Consensus.Proofs.DirectSafety.Fields
 
 /-!
 # Quorums from a terminal justification projection
@@ -18,41 +19,35 @@ open Base Cryptography.Bls
 
 variable {preset : Preset} {config : Config} {checks : SignatureChecks}
 
-theorem terminal_quorum_count {g a : ForkedBeaconState preset}
+private theorem terminal_quorum_count {g a : ForkedBeaconState preset}
     (run : Run config checks g a) (genesis : Genesis (config := config) (checks := checks) g)
-    (view : TerminalView a) (enough : view.enough) (call : TerminalQuorum view) :
+    (view : TerminalView a) (enough : ∀ high, view.enough high) (call : TerminalQuorum view) :
     2 * Models.stake (effectiveWeight a.state) (activeKeys a.state) ≤
       3 * Models.stake (effectiveWeight a.state) call.voters := by
-  rw [call.selected] at enough
-  exact call.passes.stake_le (run.unique (genesis_unique genesis)) (enough call.later)
+  have floor := enough (getCurrentEpoch a.state).toNat
+  rw [call.selected] at floor
+  exact call.passes.stake_le (run.pubkeysDistinct genesis) (floor (by omega) call.later)
 
-theorem terminal_quorum_attestations {g a : ForkedBeaconState preset}
+private theorem terminal_quorum_attestations {g a : ForkedBeaconState preset}
     (run : Run config checks g a) (parameters : Parameters preset)
     (genesis : Genesis (config := config) (checks := checks) g)
-    (early : a.fork < .hegota) (view : TerminalView a) (call : TerminalQuorum view) :
+    (_early : a.fork < .hegota) (view : TerminalView a) (call : TerminalQuorum view) :
     ∀ key ∈ call.voters, ∃ data, run.Accepted key data ∧
       data.source = call.source ∧ data.target = call.target :=
-  counted_accepted run (run_participation run parameters genesis early) call.later call.current
-    call.target call.targetEpoch call.targetRoot call.counted
-    fun index data validator found voted =>
-      selected_vote_key run (genesis_unique genesis) index data validator found voted
+  view_quorum_attestations run parameters genesis (.inr call)
 
-theorem terminal_quorum_recent {g a : ForkedBeaconState preset}
+private theorem terminal_quorum_recent {g a : ForkedBeaconState preset}
     (run : Run config checks g a) (parameters : Parameters preset)
     (genesis : Genesis (config := config) (checks := checks) g)
-    (early : a.fork < .hegota) (view : TerminalView a) (call : TerminalQuorum view) :
+    (_early : a.fork < .hegota) (view : TerminalView a) (call : TerminalQuorum view) :
     call.voters ⊆ recentKeys a.state :=
-  counted_recent (run_participation run parameters genesis early).1 call.later call.current
-    call.target call.targetEpoch call.counted
+  view_voters_recent run parameters genesis (.inr call)
 
 theorem terminal_quorum_epochs {g a : ForkedBeaconState preset}
-    (run : Run config checks g a) (parameters : Parameters preset)
+    (run : Run config checks g a) (_parameters : Parameters preset)
     (genesis : Genesis (config := config) (checks := checks) g)
     (view : TerminalView a) (call : TerminalQuorum view) :
     call.source.epoch < call.target.epoch := by
-  have _ := parameters
-  obtain ⟨holds, _, separated⟩ := run_justified_separated run genesis
-  exact link_source_lt holds.settled separated call.later call.current call.target
-    call.targetEpoch
+  exact terminal_epochs run genesis call
 
 end EthLib.Consensus.DirectSafety

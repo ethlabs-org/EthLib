@@ -1,14 +1,19 @@
 module
 
+public import EthLib.Engine.Exports.BeaconApiEvents
 public import EthLib.Engine.Exports.BuildPayload
+public import EthLib.Engine.Exports.Capabilities
+public import EthLib.Engine.Exports.ExecutionEngine
 public import EthLib.Engine.Exports.ForkchoiceUpdated
 public import EthLib.Engine.Exports.GetBlobs
 public import EthLib.Engine.Exports.GetPayload
 public import EthLib.Engine.Exports.GetProof
 public import EthLib.Engine.Exports.Jwt
 public import EthLib.Engine.Exports.NewPayload
+public import EthLib.Engine.Exports.Params
 public import EthLib.Engine.Exports.PayloadBodies
 public import EthLib.Engine.Exports.PreparePayload
+public import EthLib.Engine.Exports.TransitionConfiguration
 
 /-!
 # `EthLib.Engine.Exports`

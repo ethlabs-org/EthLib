@@ -3,6 +3,7 @@ module
 public import EthLib.Base.ChainConfig
 public import EthLib.Engine.Block
 public import EthLib.Engine.Json
+public import EthLib.Engine.TransitionConfiguration
 public import EthLib.Execution.Blocks.Transition
 
 /-!
@@ -46,17 +47,27 @@ A payload that fails these checks is invalid.
 
 A payload that passes them still needs its parent's state, so without it the status is syncing.
 
-With that state, the block of the payload runs, and its status is valid or invalid.
+With that state, a parent of proof of work must be terminal, by step 2 of payload validation.
 
-The method specifications state these rules, at commit `3284ee8` of execution-apis:
+Otherwise the payload is invalid, with the zero hash as its latest valid hash.
+
+Then the block of the payload runs, and its status is valid or invalid.
+
+The consensus layer writes the parameters of each version as JSON, in the order it takes them.
+
+These sources state the rules, at commit `3284ee8` of execution-apis and `46976b2` of EIPs:
 
 - [`engine_newPayloadV1`][v1], which also defines the statuses
 - [`engine_newPayloadV2`][v2], with the structure by fork
 - [`engine_newPayloadV3`][v3], and its update by Pectra in [`prague.md`][v3-prague]
 - [`engine_newPayloadV4`][v4], and its update by Amsterdam in [`amsterdam.md`][v4-amsterdam]
 - [`engine_newPayloadV5`][v5]
+- the [payload validation][validation] of Paris, with its terminal block check
+- the [transition block validity][eip3675] of EIP-3675
 
 [v1]: https://github.com/ethereum/execution-apis/blob/3284ee80c3da3e516c53782dde75157cccf1ebdc/src/engine/paris.md#engine_newpayloadv1
+[validation]: https://github.com/ethereum/execution-apis/blob/3284ee80c3da3e516c53782dde75157cccf1ebdc/src/engine/paris.md#payload-validation
+[eip3675]: https://github.com/ethereum/EIPs/blob/46976b2a9bf99f727fb87dc8c809e3a3cdc6b445/EIPS/eip-3675.md#transition-block-validity
 [v2]: https://github.com/ethereum/execution-apis/blob/3284ee80c3da3e516c53782dde75157cccf1ebdc/src/engine/shanghai.md#engine_newpayloadv2
 [v3]: https://github.com/ethereum/execution-apis/blob/3284ee80c3da3e516c53782dde75157cccf1ebdc/src/engine/cancun.md#engine_newpayloadv3
 [v3-prague]: https://github.com/ethereum/execution-apis/blob/3284ee80c3da3e516c53782dde75157cccf1ebdc/src/engine/prague.md#update-the-methods-of-previous-forks
@@ -74,6 +85,8 @@ open EthLib.Base
 open EthLib.Execution.Blocks
 open EthLib.Execution.Transactions
 open EthLib.Engine.Json
+open EthLib.Serialization.JsonRpc
+open EthLib.Execution.Rpc (withdrawal)
 
 /-- Whether a version of the method takes payloads of a fork. -/
 def acceptsFork (version : Nat) (fork : Fork) : Bool :=
@@ -110,6 +123,58 @@ def payloadParam (version : Nat) (j : Json) :
       invalid s!"payload: version {any.version} of the structure"
     return (any, none)
 
+/-- The parameters of a version of the method, each decoded.
+
+They are an array of as many values as the version takes, none of them `null`.
+
+The payload comes first, with its access list and its slot from version 5.
+
+From version 3 the expected blob versioned hashes and the parent beacon block root follow.
+
+From version 4 the execution requests follow. -/
+def newPayloadParams (version : Nat) (params : Json) :
+    Decode (AnyPayload × Option (ByteArray × UInt64) × Option (List Hash32) × Option Hash32 ×
+      Option (List ByteArray)) := do
+  -- The parameters must have the structure of the version.
+  let params ← match params with
+    | .arr items => pure items.toList
+    | _ => invalid "params: not an array"
+  unless params.length == paramCount version ∧ params.all (!·.isNull) do
+    invalid s!"params: not {paramCount version} values"
+  let param (i : Nat) : Except EngineError Json :=
+    match params[i]? with
+    | some j => pure j
+    | none => invalid s!"params: no value {i}"
+  let (any, amsterdam) ← payloadParam version (← param 0)
+  let hashes ← if version ≥ 3 then
+    some <$> array "expectedBlobVersionedHashes" (fixed "versioned hash" 32) (← param 1)
+    else pure none
+  let beaconRoot ← if version ≥ 3 then
+    some <$> fixed "parentBeaconBlockRoot" 32 (← param 2) else pure none
+  let requests ← if version ≥ 4 then
+    some <$> array "executionRequests" (bytes "request") (← param 3) else pure none
+  return (any, amsterdam, hashes, beaconRoot, requests)
+
+/-- The parameters of a version of the method as JSON, in the order that the version takes.
+
+The payload has the structure of version 4 when its access list and its slot are given.
+
+The hashes and the root are written from version 3, and the requests from version 4.
+
+A valid request gives the access list and the slot exactly from version 5.
+
+Its version must also take the fork of the payload. -/
+def newPayloadParamsJson {fork : Fork} (version : Nat) (payload : ExecutionPayload fork)
+    (amsterdam : Option (ByteArray × UInt64)) (hashes : List Hash32) (beaconRoot : Hash32)
+    (requests : List ByteArray) : Json :=
+  let payload := match amsterdam with
+    | some (accessList, slot) => executionPayloadV4Json payload accessList slot
+    | none => executionPayloadJson payload
+  .arr ([payload] ++
+    (if 3 ≤ version then [listJson (dataJson ·.toList) hashes, dataJson beaconRoot.toList]
+      else []) ++
+    (if 4 ≤ version then [listJson (dataJson ·.data.toList) requests] else [])).toArray
+
 /-- Whether request lists have more than one byte each, with strictly increasing types. -/
 def validRequests : List ByteArray → Bool
   | [] => true
@@ -135,24 +200,7 @@ An error is a JSON-RPC error.
 Otherwise the result is the invalid status with its reason, or the block of the payload. -/
 def checkNewPayload (config : ChainConfig) (version : Nat) (params : Json) :
     Except EngineError (Except (PayloadStatus × PayloadError) (CheckedBlock version)) := do
-  -- The parameters must have the structure of the version.
-  let params ← match params with
-    | .arr items => pure items.toList
-    | _ => invalid "params: not an array"
-  unless params.length == paramCount version ∧ params.all (!·.isNull) do
-    invalid s!"params: not {paramCount version} values"
-  let param (i : Nat) : Except EngineError Json :=
-    match params[i]? with
-    | some j => pure j
-    | none => invalid s!"params: no value {i}"
-  let (any, amsterdam) ← payloadParam version (← param 0)
-  let hashes ← if version ≥ 3 then
-    some <$> array "expectedBlobVersionedHashes" (fixed "versioned hash" 32) (← param 1)
-    else pure none
-  let beaconRoot ← if version ≥ 3 then
-    some <$> fixed "parentBeaconBlockRoot" 32 (← param 2) else pure none
-  let requests ← if version ≥ 4 then
-    some <$> array "executionRequests" (bytes "request") (← param 3) else pure none
+  let (any, amsterdam, hashes, beaconRoot, requests) ← newPayloadParams version params
   if let some requests := requests then
     unless validRequests requests do invalid "executionRequests: out of order or too short"
   -- The fork of the payload must be one that the version takes.
@@ -190,11 +238,33 @@ def newPayloadWithoutState (config : ChainConfig) (version : Nat) (params : Json
   | .error (status, reason) => return (status, some reason)
   | .ok _ => return (⟨.syncing, none⟩, none)
 
+/-- Whether the parent of a payload passes the terminal block check, given its total difficulty.
+
+A block from Paris on passes.
+
+A block of proof of work must be terminal.
+
+The total difficulty of its own parent is its total minus its difficulty.
+
+A total below the difficulty is not that of a real chain, so such a block fails. -/
+def passesTerminalCheck (transition : TransitionConfiguration) (totalDifficulty : Nat)
+    (parent : RecentBlock) : Bool :=
+  decide (.paris ≤ parent.fork) || (decide (parent.header.difficulty ≤ totalDifficulty) &&
+    isTerminalPowBlock transition totalDifficulty (totalDifficulty - parent.header.difficulty))
+
 /-- The status of `engine_newPayload` from an execution layer that holds the parent's state.
 
-The chain holds the state after its last recent block.
+The chain holds the state after its last recent block, whose total difficulty is given.
 
 A payload whose parent is not that block stays syncing, since its parent's state is missing.
+
+A parent of proof of work that is not terminal makes the payload invalid, by payload validation.
+
+Its latest valid hash is then zero, as that step requires.
+
+A parent from Paris on is not checked: the chain is taken as valid, its terminal block included.
+
+The method keeps no invalid block, so a child of an invalid payload is syncing, not invalid.
 
 Otherwise a payload that passes the checks before execution runs as the next block of the chain.
 
@@ -207,7 +277,8 @@ That of a payload invalid in execution is its parent's hash, or zero for a paren
 An execution that aborts, such as on missing code, leaves the payload syncing.
 
 A valid payload also gives its block, as the new last recent block, and the state after it. -/
-def newPayloadOnChain (chain : BlockChain) (version : Nat) (params : Json) :
+def newPayloadOnChain (transition : TransitionConfiguration) (totalDifficulty : Nat)
+    (chain : BlockChain) (version : Nat) (params : Json) :
     Except EngineError
       (PayloadStatus × Option PayloadError × Option (RecentBlock × Execution.State.State)) := do
   match ← checkNewPayload chain.config version params with
@@ -217,6 +288,8 @@ def newPayloadOnChain (chain : BlockChain) (version : Nat) (params : Json) :
     let some parent := chain.recent.getLast? | return (⟨.syncing, none⟩, none, none)
     unless parent.header.hash.toOption = some header.parentHash do
       return (⟨.syncing, none⟩, none, none)
+    unless passesTerminalCheck transition totalDifficulty parent do
+      return (⟨.invalid, some 0⟩, some .invalidTerminalBlock, none)
     match stateTransition chain checked.block (checkSeal := false) with
     | .ok post =>
       return (⟨.valid, header.hash.toOption⟩, none, some (⟨checked.fork, header, []⟩, post))

@@ -4,6 +4,7 @@ public import EthLib.Consensus.Proofs.ForkChoice.Checkpoints
 import EthLib.Base.Proofs.FilterM
 import EthLib.Consensus.Proofs.Transition.Committees
 import EthLib.Consensus.Proofs.Transition.FfgStake
+import EthLib.Consensus.Proofs.Transition.RunKept
 
 /-!
 # Proofs: unrealized checkpoints are those of the next epoch
@@ -770,8 +771,8 @@ theorem processSlots_currentJustified_next_epoch {slot : Slot}
   by_cases same : boundary = slot
   · exact (processSlots_checkpoints_eq_of_justification window pulled
       (same ▸ boundaryOk) advanced).1
-  · obtain ⟨middle, before, rest⟩ := processSlots_split advanced lo
-      (UInt64.lt_of_le_of_ne hi same)
+  · obtain ⟨middle, before, rest⟩ := processSlots_split lo
+      (UInt64.lt_of_le_of_ne hi same) advanced
     have middleEpoch : getCurrentEpoch middle = getCurrentEpoch after := by
       rw [getCurrentEpoch, (processSlots_slot before).2]
       have h := computeEpochAtSlot_computeStartSlotAtEpoch positive boundaryOk

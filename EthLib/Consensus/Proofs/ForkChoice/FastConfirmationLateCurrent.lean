@@ -90,8 +90,7 @@ private theorem late_list_epoch {state : BeaconState preset fork} {epoch : Epoch
     rw [getPreviousEpoch_toNat]
     omega
 
-/-- Slots inside an epoch keep the run, the epoch, a recent root, each target flag and each
-pending attestation. -/
+/-- Slots inside an epoch keep its recent root, target flags and pending attestations. -/
 private theorem late_slots_keep {config : Config} {checks : SignatureChecks}
     (positive : 0 < preset.SLOTS_PER_EPOCH.toNat)
     (window : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
@@ -215,8 +214,7 @@ private theorem late_kept_trans {seed state after : BeaconState preset fork}
 
 namespace Models.Network
 
-/-- Above a seed, each block state keeps the seed's votes inside the seed's epoch, or has
-justified the epoch.
+/-- Above a seed, each block state keeps its votes within that epoch, or has justified it.
 
 The weighing at the last slot of the seed's epoch is the hypothesis `weigh`. -/
 private theorem late_carry {config : Config} {checks : SignatureChecks}
@@ -341,9 +339,9 @@ private theorem late_carry {config : Config} {checks : SignatureChecks}
         ((getCurrentEpoch parentState).toNat + 1) * preset.SLOTS_PER_EPOCH.toNat - 1 := by
       rw [UInt64.toNat_ofNat']
       exact Nat.mod_eq_of_lt (by omega)
-    obtain ⟨middle, firstOk, restOk⟩ := processSlots_split slotsOk
+    obtain ⟨middle, firstOk, restOk⟩ := processSlots_split
       (UInt64.lt_iff_toNat_lt.mpr (by rw [lastNat]; omega))
-      (UInt64.lt_iff_toNat_lt.mpr (by rw [lastNat]; omega))
+      (UInt64.lt_iff_toNat_lt.mpr (by rw [lastNat]; omega)) slotsOk
     have middleSlot := (processSlots_slot firstOk).2
     have firstCopy := firstOk
     simp only [processSlots, bind_ok_iff, ensure_ok_iff] at firstCopy
@@ -480,16 +478,10 @@ private theorem late_quorum_of_record {anchor : Store preset fork}
         (SignsTarget e v target (e.world q).time ∨ v ∉ participants)) ∧
       2 * total.toNat + (margin + quorumReserve config state anc) ≤
         3 * stake (fun v => balanceAt state v.toNat) voters := by
-  have checked := check
-  simp only [Store.willCurrentTargetBeJustified, bind_ok_iff, mapError_ok_iff,
-    pure, Except.pure, Except.ok.injEq] at checked
-  obtain ⟨state, stateOk, total, totalOk, support, supportOk, doubled, doubledOk,
-    tripled, tripledOk, bound⟩ := checked
-  have two := (mulChecked_ok_iff.mp doubledOk).2
-  have three := (mulChecked_ok_iff.mp tripledOk).2
-  have le := UInt64.le_iff_toNat_le.mp (of_decide_eq_true bound)
-  have enough : 2 * total.toNat ≤ 3 * support.toNat := by
-    simpa only [two, three, UInt64.toNat_ofNat] using le
+  obtain ⟨state, total, support, -, -, stateOk, totalOk, supportOk, -, -, -⟩ :=
+    Store.willCurrentTargetBeJustified_eq_ok_true_iff.mp check
+  have enough := Store.two_mul_le_three_mul_of_willCurrentTargetBeJustified
+    stateOk totalOk supportOk check
   have reachable := e.reachable
     (fun a ha => (anchored a ha) ▸ Store.Reachable.anchor anchorStore) q u caller
   obtain ⟨target, targetOk⟩ : ∃ target,
@@ -1252,7 +1244,8 @@ theorem Execution.coveredOrViableAt_late_current {Δ : ℕ} (sync : e.Synchronou
     -- The leaf is of the seed's epoch, so its source is its pull-up, which weighs the votes.
     have leafEpoch := kept.2.1.trans seedEpochEq
     have leafSlot := stateSlot leaf leafBlock leafState leafKnown leafStored
-    have leafEarly : computeEpochAtSlot preset leafBlock.slot < computeEpochAtSlot preset current := by
+    have leafEarly : computeEpochAtSlot preset leafBlock.slot <
+        computeEpochAtSlot preset current := by
       have eq : computeEpochAtSlot preset leafBlock.slot = getCurrentEpoch leafState := by
         simp only [getCurrentEpoch, leafSlot]
       rw [eq, leafEpoch]
@@ -1293,7 +1286,7 @@ theorem Execution.coveredOrViableAt_late_current {Δ : ℕ} (sync : e.Synchronou
   -- The source is the receiver's justification, so the leaf is viable.
   have anchorLowerJ : getCurrentEpoch anchorState ≤
       ((e.world k).state w).justifiedCheckpoint.epoch := by
-    have lowerJ := (e.epochsLe_of_le w (Nat.zero_le k)).1
+    have lowerJ := (e.epochsLe_of_le w (Nat.zero_le k)).1.epoch_le
     simp only [Execution.world_zero, World.initial, anchored w receiver, anchorOk] at lowerJ
     rw [← anchorEpochEq]
     exact lowerJ

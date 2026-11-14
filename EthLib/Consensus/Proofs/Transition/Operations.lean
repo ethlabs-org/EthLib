@@ -33,6 +33,8 @@ A voluntary exit is signed by an active validator, which then has an exit epoch.
 The operations of a block hold every outstanding deposit, up to the most per block.
 
 They keep one balance for each validator.
+
+From Gloas, an attestation weighs the payment of its slot by the balances of its new attesters.
 -/
 
 @[expose] public section
@@ -63,23 +65,6 @@ def validatorKeys (state : BeaconState preset fork) : List BLSPubkey :=
 /-- No two validators of the registry have the same public key. -/
 def PubkeysDistinct (state : BeaconState preset fork) : Prop :=
   (validatorKeys state).Nodup
-
-/-- A key at a position of a registry is at that position after, when the keys after extend them. -/
-theorem validators_getElem?_of_validatorKeys_prefix {post : Base.Fork}
-    {state : BeaconState preset fork} {after : BeaconState preset post}
-    (kept : validatorKeys state <+: validatorKeys after) {i : Nat} {old : Validator}
-    (found : state.validators.data[i]? = some old) :
-    ∃ current, after.validators.data[i]? = some current ∧ current.pubkey = old.pubkey := by
-  obtain ⟨inside, oldEq⟩ := Array.getElem?_eq_some_iff.mp found
-  have small : i < (validatorKeys state).length := by simpa [validatorKeys] using inside
-  have afterSmall : i < after.validators.data.size := by
-    simpa [validatorKeys] using Nat.lt_of_lt_of_le small kept.length_le
-  refine ⟨after.validators.data[i], by simp [afterSmall], ?_⟩
-  have same := kept.getElem small
-  simpa [validatorKeys, oldEq] using same.symm
-
-def depositRegistrationAmount (fork : Fork) (amount : Gwei) : Gwei :=
-  if .pectra ≤ fork then 0 else amount
 
 theorem balancesMatch_of_sameSizes (sizes : SameSizes state after)
     (holds : BalancesMatch state) : BalancesMatch after := by
@@ -496,6 +481,126 @@ theorem recordPaymentWeight_of_noWeight {gloas : .glamsterdam ≤ fork} {data : 
       rfl
     · exact Vector.getElem_set_ne _ _ (Ne.symm same)
   simp only [kept]
+
+/-- From Gloas, the weight of a payment after one attester.
+
+The attester must have an entry in both participation lists, else the index is out of range.
+
+It adds its effective balance exactly when it had no flag before and has one after.
+
+It must then be in the registry, and the sum must be below `2^64`, else it is an overflow.
+
+An attester that had a flag before, or has none after, leaves the weight as it was. -/
+theorem addPaymentWeight_eq_ok_iff {before updated : EpochParticipation preset fork}
+    {weight result : Gwei} {index : ValidatorIndex} :
+    addPaymentWeight state before updated weight index = .ok result ↔
+      ∃ old new, before.data[index.toNat]? = some old ∧ updated.data[index.toNat]? = some new ∧
+        if old = 0 ∧ new ≠ 0 then
+          ∃ validator, state.validators.data[index.toNat]? = some validator ∧
+            weight.toNat + validator.effectiveBalance.toNat < 2 ^ 64 ∧
+            result.toNat = weight.toNat + validator.effectiveBalance.toNat
+        else result = weight := by
+  unfold addPaymentWeight
+  rcases oldAt : before.data[index.toNat]? with _ | old
+  · simp
+  rcases newAt : updated.data[index.toNat]? with _ | new
+  · simp
+  simp only [Option.some.injEq, exists_and_left, exists_eq_left']
+  by_cases zero : old = 0
+  · subst zero
+    by_cases unflagged : new = 0
+    · subst unflagged
+      simp [pure, Except.pure, eq_comm]
+    · rcases found : state.validators.data[index.toNat]? with _ | validator <;>
+        simp [unflagged, found, getValidator, bind_ok_iff, liftAccessor_ok, liftArith,
+          mapError_ok_iff, addChecked_ok_iff]
+  · simp [zero, pure, Except.pure, eq_comm]
+
+/-- From Gloas, an attester that already had a flag in the epoch adds no weight to a payment.
+
+That holds even when the attester gains another flag. -/
+theorem addPaymentWeight_of_ne_zero {before updated : EpochParticipation preset fork}
+    {weight : Gwei} {index : ValidatorIndex} {old new : ParticipationFlags}
+    (oldAt : before.data[index.toNat]? = some old) (flagged : old ≠ 0)
+    (newAt : updated.data[index.toNat]? = some new) :
+    addPaymentWeight state before updated weight index = .ok weight :=
+  addPaymentWeight_eq_ok_iff.mpr ⟨old, new, oldAt, newAt, by simp [flagged]⟩
+
+/-- From Gloas, when no attester fails, the attesters add their effective balances to a weight.
+
+Each adds its balance when it had no flag before and has one after, and nothing otherwise. -/
+theorem foldlM_addPaymentWeight {before updated : EpochParticipation preset fork} :
+    ∀ {attesters : List ValidatorIndex} {weight result : Gwei},
+      attesters.foldlM (addPaymentWeight state before updated) weight = .ok result →
+        result.toNat = weight.toNat + (attesters.map fun index =>
+          if before.data[index.toNat]? = some 0 ∧ updated.data[index.toNat]? ≠ some 0 then
+            ((state.validators.data[index.toNat]?).map (·.effectiveBalance.toNat)).getD 0
+          else 0).sum
+  | [], _, _, computed => by
+    simp only [List.foldlM_nil, pure, Except.pure, Except.ok.injEq] at computed
+    simp [computed]
+  | index :: rest, weight, result, computed => by
+    simp only [List.foldlM_cons, bind_ok_iff] at computed
+    obtain ⟨next, step, folded⟩ := computed
+    rw [foldlM_addPaymentWeight folded, List.map_cons, List.sum_cons, ← Nat.add_assoc]
+    congr 1
+    obtain ⟨old, new, oldAt, newAt, value⟩ := addPaymentWeight_eq_ok_iff.mp step
+    rw [oldAt, newAt]
+    split at value
+    · rename_i fresh
+      obtain ⟨validator, found, _, sum⟩ := value
+      simp [fresh, found, sum]
+    · rename_i fresh
+      have notFresh : ¬(some old = some (0 : ParticipationFlags) ∧ some new ≠ some 0) := by
+        simpa using fresh
+      simp only [notFresh, value, ite_false, Nat.add_zero]
+
+/-- From Gloas, an attestation weighs the payment of its slot by the balances of its new attesters.
+
+A new attester had no flag in the epoch before the attestation and has one after it.
+
+Only a vote for the block of its own slot weighs, and only a payment of a positive amount.
+
+Only the weight of the payment changes. -/
+theorem recordPaymentWeight_weight {gloas : .glamsterdam ≤ fork} {data : AttestationData}
+    {current : Bool} {before updated : EpochParticipation preset fork}
+    {attesters : List ValidatorIndex} {sameSlot : Bool} {payment : BuilderPendingPayment}
+    (computed : recordPaymentWeight state gloas data current before updated attesters = .ok after)
+    (same : isAttestationSameSlot state data = .ok sameSlot)
+    (found : (state.builderPendingPayments gloas)[
+      attestationPaymentPosition preset current data.slot]? = some payment) :
+    ∃ weight : Gwei, (after.builderPendingPayments gloas)[
+        attestationPaymentPosition preset current data.slot]? = some { payment with weight } ∧
+      weight.toNat = payment.weight.toNat +
+        if sameSlot = true ∧ 0 < payment.withdrawal.amount then
+          (attesters.map fun index =>
+            if before.data[index.toNat]? = some 0 ∧ updated.data[index.toNat]? ≠ some 0 then
+              ((state.validators.data[index.toNat]?).map (·.effectiveBalance.toNat)).getD 0
+            else 0).sum
+        else 0 := by
+  unfold recordPaymentWeight at computed
+  dsimp only at computed
+  split at computed
+  rotate_left
+  · cases computed
+  rename_i inside
+  have stored : (state.builderPendingPayments gloas)[
+      attestationPaymentPosition preset current data.slot] = payment := by
+    rw [RootedVector.getElem?_eq, Vector.getElem?_eq_getElem inside] at found
+    exact Option.some.inj found
+  subst stored
+  simp only [bind_ok_iff, liftAccessor_ok, pure, Except.pure, Except.ok.injEq] at computed
+  obtain ⟨sameSlot', sameOk, weight, weightOk, rfl⟩ := computed
+  rw [same, Except.ok.injEq] at sameOk
+  subst sameOk
+  refine ⟨weight, by simp, ?_⟩
+  split at weightOk
+  · rename_i weighs
+    simp only [weighs, and_self, ite_true]
+    exact foldlM_addPaymentWeight weightOk
+  · rename_i weighs
+    simp only [Except.ok.injEq] at weightOk
+    simp [weighs, weightOk]
 
 /-- From Altair, an attestation keeps the sizes of the registry and the balances. -/
 theorem sameSizes_processAttestationAltair {attestation : Attestation preset fork}
@@ -1059,6 +1164,41 @@ theorem applyPendingDeposit_cases {deposit : PendingDeposit}
     obtain ⟨index, _, computed⟩ := computed
     exact .inr (.inl ⟨index, computed⟩)
 
+/-- A block deposit changes nothing, queues a pending deposit, or applies at once.
+
+The first case covers a new key with an invalid signature.
+
+The second case is from Electra: it queues the deposit, after it adds a new key with no balance.
+
+The third case is before Electra: the deposit applies as a pending deposit. -/
+theorem applyDeposit_cases {pubkey : BLSPubkey} {credentials : Bytes32} {amount : Gwei}
+    {signature : BLSSignature}
+    (computed : applyDeposit config checks state pubkey credentials amount signature = .ok after) :
+    after = state ∨
+    (.pectra ≤ fork ∧ ∃ middle pending,
+      (middle = state ∨ addValidatorToRegistry state pubkey credentials 0 = .ok middle) ∧
+        after = { middle with pendingDeposits := fun _ => pending }) ∨
+    (fork < .pectra ∧ applyPendingDeposit config checks state
+      ⟨pubkey, credentials, amount, signature, GENESIS_SLOT⟩ = .ok after) := by
+  unfold applyDeposit at computed
+  split at computed
+  · rename_i electra
+    unfold applyDepositElectra at computed
+    split at computed
+    · simp only [bind_ok_iff] at computed
+      obtain ⟨_, _, computed⟩ := computed
+      split at computed
+      · simp only [bind_ok_iff, liftAccessor_ok] at computed
+        obtain ⟨middle, added, queued⟩ := computed
+        obtain ⟨pending, rfl⟩ := addPendingDeposit_eq queued
+        exact .inr (.inl ⟨electra, middle, pending, .inr added, rfl⟩)
+      · cases computed
+        exact .inl rfl
+    · obtain ⟨pending, rfl⟩ := addPendingDeposit_eq (liftAccessor_ok.mp computed)
+      exact .inr (.inl ⟨electra, state, pending, .inl rfl, rfl⟩)
+  · rename_i early
+    exact .inr (.inr ⟨Nat.lt_of_not_le early, computed⟩)
+
 /-- A deposit adds at most one entry to the registry, and keeps each validator there. -/
 theorem applyPendingDeposit_validators_size_le_and_mem {deposit : PendingDeposit}
     (computed : applyPendingDeposit config checks state deposit = .ok after) :
@@ -1178,46 +1318,6 @@ theorem applyDepositElectra_kept {electra : .pectra ≤ fork} {pubkey : BLSPubke
   · obtain ⟨_, rfl⟩ := addPendingDeposit_eq (liftAccessor_ok.mp computed)
     exact ⟨id, rfl, rfl⟩
 
-theorem applyDeposit_cases {pubkey : BLSPubkey} {withdrawalCredentials : Bytes32}
-    {amount : Gwei} {signature : BLSSignature}
-    (computed : applyDeposit config checks state pubkey withdrawalCredentials amount signature =
-      .ok after) :
-    after.validators.data = state.validators.data ∨
-    (pubkey ∉ validatorKeys state ∧
-      after.validators.data = state.validators.data.push
-        (getValidatorFromDeposit preset fork pubkey withdrawalCredentials
-          (depositRegistrationAmount fork amount)) ∧
-      (BalancesMatch state → after.balances.data = state.balances.data.push
-        (depositRegistrationAmount fork amount))) := by
-  unfold applyDeposit at computed
-  split at computed
-  · rename_i electra
-    simp only [depositRegistrationAmount, electra, ↓reduceIte]
-    unfold applyDepositElectra at computed
-    split at computed
-    · rename_i absent
-      simp only [bind_ok_iff] at computed
-      obtain ⟨_, _, computed⟩ := computed
-      split at computed
-      · simp only [bind_ok_iff, liftAccessor_ok] at computed
-        obtain ⟨registered, added, queued⟩ := computed
-        obtain ⟨_, rfl⟩ := addPendingDeposit_eq queued
-        refine .inr ⟨?_, addValidatorToRegistry_validators_eq_push (after := registered) added,
-          fun holds => (addValidatorToRegistry_push added holds).2⟩
-        simp only [Array.findIdx?_eq_none_iff, beq_eq_false_iff_ne] at absent
-        simpa [validatorKeys, List.mem_map] using absent
-      · cases computed
-        exact .inl rfl
-    · obtain ⟨_, rfl⟩ := addPendingDeposit_eq (liftAccessor_ok.mp computed)
-      exact .inl rfl
-  · rename_i before
-    simp only [depositRegistrationAmount, before, ↓reduceIte]
-    rcases applyPendingDeposit_cases computed with rfl | ⟨_, raised⟩ | ⟨fresh, added⟩
-    · exact .inl rfl
-    · exact .inl (congrArg (·.data) (increaseBalance_validators raised))
-    · exact .inr ⟨fresh, addValidatorToRegistry_validators_eq_push added,
-        fun holds => (addValidatorToRegistry_push added holds).2⟩
-
 /-- A deposit keeps one balance for each validator. -/
 theorem balancesMatch_applyDeposit {pubkey : BLSPubkey} {withdrawalCredentials : Bytes32}
     {amount : Gwei} {signature : BLSSignature}
@@ -1331,8 +1431,7 @@ theorem processVoluntaryExit_checks {signed : SignedVoluntaryExit}
       ∃ domain signingRoot,
         voluntaryExitDomain config state signed.message.epoch = .ok domain ∧
         computeSigningRoot signed.message domain = .ok signingRoot ∧
-        checks.verify (packBytes validator.pubkey) (packBytes signingRoot)
-          (packBytes signed.signature) = true := by
+        checks.verify validator.pubkey (packBytes signingRoot) signed.signature = true := by
   unfold processVoluntaryExit at computed
   simp only [bind_ok_iff, ensure_ok_iff, liftAccessor_ok, liftSsz_ok, liftArith, mapError_ok_iff,
     addChecked_ok_iff] at computed

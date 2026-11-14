@@ -142,7 +142,7 @@ def HonestVoteData (store : Store preset fork) (slot : Slot) (committeeIndex : C
 Each held head state must admit the pull-up and satisfy the balance floor along its empty slots.
 
 This does not identify the pull-up with the store's unrealized checkpoint map. -/
-theorem HonestVoteData.source_selector {store : Store preset fork} {slot : Slot}
+private theorem HonestVoteData.source_selector {store : Store preset fork} {slot : Slot}
     {committeeIndex : CommitteeIndex} {data : AttestationData}
     (honest : HonestVoteData config checks store slot committeeIndex data)
     (positive : 0 < preset.SLOTS_PER_EPOCH)
@@ -352,7 +352,7 @@ private theorem computeSlotAtTimeMs_inside {config : Config} {genesisTimeMs due 
 /-- Before Gloas, a store that holds only an anchor block at slot zero has that block as head.
 
 The clock of the store is at slot zero, and both checkpoints are the anchor. -/
-private theorem getHead_anchor {config : Config} {store : Store preset fork}
+theorem getHead_anchor {config : Config} {store : Store preset fork}
     {anchorState : BeaconState preset fork} {anchorBlock : BeaconBlock preset fork}
     {anchorRoot : Root} (before : fork < .glamsterdam)
     (blocks : store.blocks =
@@ -532,13 +532,12 @@ theorem exists_votes_execution {anchorState : BeaconState preset fork}
     (first : committee[0]? = some v) (small : committee.size ≤ maxAttesters preset fork)
     (slots : 0 < config.SLOT_DURATION_MS) {due : UInt64}
     (dueOk : getAttestationDueMs config fork = .ok due) (inSlot : due < config.SLOT_DURATION_MS)
-    (fits : store.genesisTimeMs.toNat + due.toNat < 2 ^ 64) {Δ : ℕ} (positive : 0 < Δ)
-    (last : ℕ) :
+    (fits : store.genesisTimeMs.toNat + due.toNat < 2 ^ 64) {Δ : ℕ} (positive : 0 < Δ) :
     ∃ e : Execution (honestForkChoice config .acceptAll sources anchorState anchorBlock
         (Assignment.single v 0 0) store.genesisTimeMs) {v},
       e.startTime = store.timeMs.toNat ∧ e.start = (fun _ => store) ∧
       (∃ attestation, e.events 2 = .send v (.attestation attestation)) ∧
-      Votes 0 last e ∧ e.Synchronous Δ ∧
+      (∀ last, Votes 0 last e) ∧ e.Synchronous Δ ∧
       ∀ n, Store.Reachable config anchorState anchorBlock ((e.world n).state v) := by
   obtain ⟨anchorRoot, blockRooted, checkpoints⟩ := getForkchoiceStore_checkpointStates anchored
   have stored : store.checkpointStates[(⟨getCurrentEpoch anchorState, anchorRoot⟩ : Checkpoint)]? =
@@ -717,7 +716,7 @@ theorem exists_votes_execution {anchorState : BeaconState preset fork}
   refine ⟨e, rfl, rfl, ⟨attestation, rfl⟩, ?_, ⟨positive, fun T => ⟨T + 3, ?_⟩, ?_⟩,
     fun n => e.reachable (fun u _ => .anchor anchored) n v rfl⟩
   · -- The only duty is in slot zero, at the deadline, and the vote of the third event does it.
-    intro u honest slot committeeIndex time assigned atDeadline _ _ _
+    intro last u honest slot committeeIndex time assigned atDeadline _ _ _
     rw [Set.mem_singleton_iff] at honest
     subst honest
     obtain ⟨rfl, rfl⟩ : slot = 0 ∧ committeeIndex = 0 := by

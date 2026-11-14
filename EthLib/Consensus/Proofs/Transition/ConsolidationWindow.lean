@@ -120,7 +120,7 @@ theorem processPendingConsolidations_balance_le_of_slashable {electra : .pectra 
 /-- A consolidation cannot debit recent voting stake when withdrawal follows exit by two epochs.
 
 This includes previous-epoch voters outside the current active denominator. -/
-theorem processPendingConsolidations_balance_le_of_recent {electra : .pectra ≤ fork}
+private theorem processPendingConsolidations_balance_le_of_recent {electra : .pectra ≤ fork}
     (computed : processPendingConsolidations state electra = .ok after) {index : ValidatorIndex}
     {validator : Validator} {balance : Gwei} (read : getValidator state index = .ok validator)
     (current : getBalance state index = .ok balance)

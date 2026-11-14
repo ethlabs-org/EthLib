@@ -70,7 +70,7 @@ The honest voters for the parent come from the committees between the parent and
 Each of the two ranges of committees has at most β of its stake Byzantine, Assumption 2.
 
 The other hypotheses are those of the two bounds that the proof joins. -/
-theorem lt_honest_parentVotersOf_add_two_mul_supportersOf_of_isOneConfirmed
+private theorem lt_honest_parentVotersOf_add_two_mul_supportersOf_of_isOneConfirmed
     {J : Set ValidatorIndex} [DecidablePred (· ∈ J)] {head root : Root}
     {balanceSource : BeaconState preset fork}
     {currentSlot firstSlot lastSlot startSlot beforeBlock : Slot}
@@ -190,7 +190,7 @@ theorem getAncestor_of_same_blocks {receiver : Store preset fork}
       intro eq
       exact above (eq ▸ aboveAnchor)
     obtain ⟨state, _, _, provenance⟩ := reachable.blockStatesFromParents held
-    obtain ⟨parentState, _, _, _, _, parentStateFound, _⟩ := provenance notAnchor
+    obtain ⟨parentState, _, _, _, _, -, parentStateFound, _⟩ := provenance notAnchor
     obtain ⟨receiverParent, receiverParentFound⟩ := reachable.known_of_blockState parentStateFound
     have eq := same _ _ _ parentFound receiverParentFound
     subst receiverParent
@@ -425,8 +425,7 @@ Boundary processing admits votes after their slot has ended.
 
 This is a processing hypothesis, not a consequence of receipt in a network view.
 
-It makes explicit the processing needed in addition to the network bound of
-arXiv 2405.00549v4, Section 2. -/
+It requires processing in addition to the network bound of arXiv 2405.00549v4, Section 2. -/
 def Prompt
     (e : Execution (honestForkChoice config checks sources anchorState anchorBlock assignment
       genesisTimeMs) J) (last : ℕ) : Prop :=
@@ -973,7 +972,7 @@ theorem _root_.EthLib.Consensus.Store.Reachable.known_of_ancestor_walk
       rw [eq] at lower
       exact (UInt64.not_lt.mpr bound) lower
     obtain ⟨_, _, _, produced⟩ := received.blockStatesFromParents held
-    obtain ⟨pre, _, _, _, _, preFound, _⟩ := produced notAnchor
+    obtain ⟨pre, _, _, _, _, -, preFound, _⟩ := produced notAnchor
     have parentKnown := received.known_of_blockState preFound
     rw [Store.getAncestor_step found above parentFound lower] at walk
     exact ih parentKnown walk
@@ -1040,7 +1039,7 @@ omit [DecidablePred (· ∈ J)] in
 /-- An honest supporter held the voted head when it could sign the recorded vote.
 
 The caller computes ancestry in its own store; this does not yet transport that ancestry. -/
-theorem Execution.past_head_of_honest_supporter
+private theorem Execution.past_head_of_honest_supporter
     {anchor : Store preset fork}
     (anchorStore : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
     (anchored : ∀ w ∈ J, e.start w = anchor)
@@ -1769,7 +1768,7 @@ theorem Execution.justified_covers_of_finalized_covers {anchor : Store preset fo
       ⟨root, .pending⟩ = .ok true := by
   have reached := e.reachable
     (fun u hu => (start u hu).symm ▸ Store.Reachable.anchor anchored) endpoint w receiver
-  have le := UInt64.le_trans (e.epochsLe_of_le w later).2
+  have le := UInt64.le_trans (e.epochsLe_of_le w later).2.epoch_le
     (reached.finalized_le_justified sound)
   have checkpoint := chain w receiver w receiver arrival endpoint
     ((e.monotone_time later).trans bounded) bounded
@@ -1854,7 +1853,7 @@ theorem Execution.mem_supportersOf_of_duty_epoch {Δ : ℕ} (sync : e.Synchronou
     (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
     (sound : Invariant anchorState) (anchorSlot : anchorBlock.slot = anchorState.slot)
     (anchorBoundary : isStartSlotAtEpoch preset anchorBlock.slot = .ok true)
-    (start : ∀ w ∈ J, e.start w = anchor) (noVotes : anchor.latestMessages.isEmpty)
+    (start : ∀ w ∈ J, e.start w = anchor) (_noVotes : anchor.latestMessages.isEmpty)
     (started : e.startTime ≤ first)
     {horizon : Epoch} (chain : FinalizedPrefix e horizon time)
     (inHorizon : ∀ w ∈ J, ∀ k epoch, (e.world k).time ≤ time →
@@ -2010,18 +2009,10 @@ theorem Execution.mem_supportersOf_of_duty_epoch {Δ : ℕ} (sync : e.Synchronou
     (forward w receiver arrival).reachable (oneBlock v honest w receiver n arrival
       (by rw [vote.atTime]; omega) (by omega))
     targetBoundaryOk (UInt64.le_trans targetAbove targetLe) ⟨headBlock, votedKnown⟩ targetRead
-  have anchorEmpty : anchor.equivocatingIndices = [] := by
-    unfold getForkchoiceStore at anchored
-    simp only [bind_ok_iff] at anchored
-    obtain ⟨_, _, anchored⟩ := anchored
-    split at anchored
-    · simp [throw, throwThe, MonadExceptOf.throw, bind, Except.bind] at anchored
-    · simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at anchored
-      obtain ⟨_, _, _, _, rfl⟩ := anchored
-      rfl
-  have counted := fun j => e.not_mem_equivocatingIndices slots
-    (fun u hu => (start u hu) ▸ anchorEmpty)
-    receiver honest j
+  have anchorEmpty := Store.getForkchoiceStore_equivocatingIndices anchored
+  have counted := fun j member => e.equivocatingIndices_honest slots
+    (fun u hu v hv => by simp [start u hu, anchorEmpty] at hv)
+    j receiver v member honest
   obtain ⟨latest, latestOk, rank⟩ := vote.recorded_at_next_slot sync preGloas anchored start
     oneBlock honest receiver dataSlot dataEpoch nextSlotOk currentOk (by omega) arrivalCurrent
     (counted arrival) arrivalLe (by omega) votedKnown notFuture receiverRead
@@ -2067,7 +2058,7 @@ private theorem walk_indexed_checkpoints {store : Store preset fork}
   by_cases same : block = anchorBlock
   · rw [anchored same]
     exact anchor root (same ▸ found)
-  · obtain ⟨parent, checks, engine, signed, message, parentFound, transitioned⟩ := produced same
+  · obtain ⟨parent, checks, engine, signed, -, message, parentFound, transitioned⟩ := produced same
     obtain ⟨advanced, slotsOk, _, _, blockOk, _⟩ := stateTransition_ok transitioned
     have parentHolds := walk_indexed_checkpoints reachable anchor inherit reads parentFound
     -- Move inherited checkpoints across the parent edge before following the slot run.

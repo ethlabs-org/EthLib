@@ -1,7 +1,7 @@
 module
 
 public import EthLib.Consensus.ForkChoice.FastConfirmation
-public import EthLib.Consensus.Proofs.ForkChoice.Reachable
+public import EthLib.Consensus.Proofs.ForkChoice.ForwardClock
 
 /-!
 # Proofs: the checkpoints of a store and its states
@@ -32,7 +32,17 @@ The state of each checkpoint is the state of its block.
 
 It is processed to the start of the epoch of the checkpoint when it is before that start.
 
-The result does not say that the finalized block is an ancestor of the justified block.
+Another module ties the finalized checkpoint to the justified one after the anchor epoch.
+
+There it is on the justified chain, or two runs bound the accountable stake or show hash evidence.
+
+Other proofs take each checkpoint of a block state after the anchor epoch.
+
+They show that it names an ancestor of that block.
+
+They also show that each checkpoint of the store is that of the anchor, or names a known block.
+
+The one exception is an anchor state that hashes to the zero root.
 -/
 
 @[expose] public section
@@ -66,14 +76,16 @@ It is that state when that state is at the start of the epoch or later.
 
 Otherwise it is that state with its slots processed to the start of the epoch.
 
-The slots may run with any signature checks, as each call of the handler takes its own. -/
-def CheckpointStatesFromBlocks (config : Config) (store : Store preset fork) : Prop :=
+The slots run with a setting of the signature checks that the given predicate allows. -/
+def CheckpointStatesFromBlocks (config : Config) (allowed : SignatureChecks → Prop)
+    (store : Store preset fork) : Prop :=
   ∀ ⦃checkpoint : Checkpoint⦄ ⦃state : BeaconState preset fork⦄,
     store.checkpointStates[checkpoint]? = some state →
       ∃ base start, store.blockStates[checkpoint.root]? = some base ∧
         computeStartSlotAtEpoch preset checkpoint.epoch = .ok start ∧
         ((start ≤ base.slot ∧ state = base) ∨
-          (base.slot < start ∧ ∃ checks, processSlots config checks base start = .ok state))
+          (base.slot < start ∧
+            ∃ checks, allowed checks ∧ processSlots config checks base start = .ok state))
 
 variable {config : Config} {store after : Store preset fork}
 
@@ -122,63 +134,47 @@ theorem updateUnrealizedCheckpoints_ordered {justified finalized : Checkpoint}
   · exact UInt64.le_trans le (le_of_not_lt' j)
   · exact o2
 
+/-- A store with the checkpoints of an ordered store is ordered. -/
+private theorem EpochsOrdered.of_checkpoints (ordered : store.EpochsOrdered)
+    (same : SameCheckpoints store after) : after.EpochsOrdered := by
+  unfold EpochsOrdered
+  rw [same.justified, same.finalized, same.unrealizedJustified, same.unrealizedFinalized]
+  exact ordered
+
 /-- The tip pulled up to the end of its epoch keeps the checkpoints ordered. -/
 theorem computePulledUpTip_ordered {root : Root}
     (ordered : store.EpochsOrdered) (holds : store.StatesHold)
     (pulled : store.computePulledUpTip config root = .ok after) : after.EpochsOrdered := by
-  unfold computePulledUpTip at pulled
-  simp only [bind_ok_iff] at pulled
-  obtain ⟨state, found, pulledState, weighed, block, -, epoch, -, pulled⟩ := pulled
-  have invariant : Invariant state := holds (blockState_ok_iff.mp found)
+  obtain ⟨-, -, -, -, state, counted, found, countedOk, moved, which, same, -⟩ :=
+    computePulledUpTip_frame pulled
+  have invariant : Invariant state := holds found
   have le := finalized_le_currentJustified
-    (processJustificationAndFinalization_ordered invariant.ordered invariant.settled
-      (Base.mapError_ok_iff.mp weighed)).1
-  have unrealized := updateUnrealizedCheckpoints_ordered (store := { store with
-    unrealizedJustifications :=
-      store.unrealizedJustifications.insert root pulledState.currentJustifiedCheckpoint })
-    ordered le
-  split at pulled <;> simp only [pure, Except.pure, Except.ok.injEq] at pulled <;> subst pulled
-  · exact updateCheckpoints_ordered unrealized le
+    (processJustificationAndFinalization_ordered invariant.ordered invariant.settled countedOk).1
+  have unrealized := updateUnrealizedCheckpoints_ordered ordered le
+  refine EpochsOrdered.of_checkpoints ?_ same
+  rcases which with rfl | rfl
   · exact unrealized
+  · exact updateCheckpoints_ordered unrealized le
 
 /-- A tick within a slot keeps the checkpoints ordered. -/
 theorem onTickPerSlot_ordered {timeMs : UInt64} (ordered : store.EpochsOrdered)
     (ticked : store.onTickPerSlot config timeMs = .ok after) : after.EpochsOrdered := by
-  unfold onTickPerSlot at ticked
-  simp only [bind_ok_iff] at ticked
-  obtain ⟨previous, -, current, -, ticked⟩ := ticked
-  split at ticked <;>
-    · obtain ⟨_, _, ticked⟩ := ticked
-      split at ticked <;> simp only [pure, Except.pure, Except.ok.injEq] at ticked <;>
-        subst ticked
-      · exact updateCheckpoints_ordered ordered ordered.2
-      · exact ordered
+  obtain ⟨-, -, -, -, -, moved, which, same, -⟩ := onTickPerSlot_frame ticked
+  refine EpochsOrdered.of_checkpoints ?_ same
+  rcases which with rfl | rfl
+  · exact ordered
+  · exact updateCheckpoints_ordered ordered ordered.2
 
 /-- The catch-up loop keeps the checkpoints ordered. -/
 theorem catchUp_ordered {tickSlot : Slot} {start : Store preset fork}
     (ordered : start.EpochsOrdered) (caught : catchUp config start tickSlot = .ok after) :
-    after.EpochsOrdered := by
-  induction start using catchUp.induct config tickSlot with
-  | _ start ih =>
-    rw [catchUp.eq_1] at caught
-    simp only [bind_ok_iff] at caught
-    obtain ⟨current, -, caught⟩ := caught
-    split at caught
-    · simp only [bind_ok_iff] at caught
-      obtain ⟨next, -, nextTimeMs, -, ticked, tick, caught⟩ := caught
-      split at caught
-      · exact ih ticked ‹_› (onTickPerSlot_ordered ordered tick) caught
-      · cases caught
-    · simp only [pure, Except.pure, Except.ok.injEq] at caught
-      subst caught
-      exact ordered
+    after.EpochsOrdered :=
+  catchUp_preserves (fun ordered tick => onTickPerSlot_ordered ordered tick) ordered caught
 
 /-- A tick keeps the checkpoints ordered. -/
 theorem onTick_ordered {timeMs : UInt64} (ordered : store.EpochsOrdered)
     (ticked : store.onTick config timeMs = .ok after) : after.EpochsOrdered := by
-  unfold onTick at ticked
-  simp only [bind_ok_iff] at ticked
-  obtain ⟨tickSlot, -, caught, caughtUp, ticked⟩ := ticked
+  obtain ⟨_, caught, -, caughtUp, ticked⟩ := onTick_ok ticked
   exact onTickPerSlot_ordered (catchUp_ordered ordered caughtUp) ticked
 
 /-- An attestation keeps the checkpoints. -/
@@ -186,36 +182,14 @@ theorem onAttestation_ordered {checks : SignatureChecks} {attestation : Attestat
     {isFromBlock : Bool} (ordered : store.EpochsOrdered)
     (attested : store.onAttestation config checks attestation isFromBlock = .ok after) :
     after.EpochsOrdered := by
-  unfold onAttestation at attested
-  simp only [bind_ok_iff] at attested
-  obtain ⟨_, _, stored, storing, _, _, _, _, _, _, valid, _, attested⟩ := attested
-  have kept : stored.EpochsOrdered := by
-    unfold storeTargetCheckpointState at storing
-    split at storing
-    · simp only [pure, Except.pure, Except.ok.injEq] at storing
-      subst storing
-      exact ordered
-    · simp only [bind_ok_iff] at storing
-      obtain ⟨_, _, storing⟩ := storing
-      simp only [pure, Except.pure, Except.ok.injEq] at storing
-      subst storing
-      exact ordered
-  split at attested
-  · simp only [pure, Except.pure, Except.ok.injEq] at attested
-    subst attested
-    exact kept
-  · simp [throw, throwThe, MonadExceptOf.throw, bind, Except.bind] at attested
+  exact ordered.of_checkpoints (onAttestation_frame attested).2.2.2.1
 
 /-- An attester slashing keeps the checkpoints. -/
 theorem onAttesterSlashing_ordered {checks : SignatureChecks}
     {slashing : AttesterSlashing preset fork} (ordered : store.EpochsOrdered)
     (slashed : store.onAttesterSlashing config checks slashing = .ok after) :
     after.EpochsOrdered := by
-  unfold onAttesterSlashing at slashed
-  simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at slashed
-  obtain ⟨_, _, slashed⟩ := slashed
-  subst slashed
-  exact ordered
+  exact ordered.of_checkpoints (onAttesterSlashing_frame slashed).2.2.2.1
 
 /-- From Gloas, a vote of the payload committee keeps the checkpoints. -/
 theorem onPayloadAttestationMessage_ordered {checks : SignatureChecks}
@@ -282,25 +256,10 @@ theorem onBlock_ordered {checks : SignatureChecks}
     obtain ⟨_, _, rfl⟩ := recordBlockPtcVotes_onlyPtcVotes vote
     obtain ⟨pre, found, -, -, transition⟩ := validateOnBlock_ok valid
     have invariant := (stateTransition_invariant (holds found) transition).1
-    have recordedOrdered : recorded.EpochsOrdered := by
-      unfold recordBlockTimeliness at record
-      simp only [bind_ok_iff, pure, Except.pure] at record
-      obtain ⟨_, _, _, _, _, _, _, _, record⟩ := record
-      split at record
-      · simp only [bind_ok_iff, Except.ok.injEq] at record
-        obtain ⟨_, _, rfl⟩ := record
-        exact ordered
-      · cases record
-        exact ordered
-    have boostedOrdered : boosted.EpochsOrdered := by
-      unfold updateProposerBoostRoot at boost
-      split at boost
-      rotate_left
-      · simp [throw, throwThe, MonadExceptOf.throw, bind, Except.bind] at boost
-      simp only [bind_ok_iff, pure_bind] at boost
-      obtain ⟨_, _, _, _, _, _, boost⟩ := boost
-      split at boost <;> simp only [pure, Except.pure, Except.ok.injEq] at boost <;>
-        subst boost <;> exact recordedOrdered
+    have recordedOrdered : recorded.EpochsOrdered :=
+      ordered.of_checkpoints (recordBlockTimeliness_frame record).2.2.2.2.1
+    have boostedOrdered : boosted.EpochsOrdered :=
+      recordedOrdered.of_checkpoints (updateProposerBoostRoot_frame boost).2.2.2.2.1
     have statesHold : (boosted.updateCheckpoints state.currentJustifiedCheckpoint
         state.finalizedCheckpoint).StatesHold := by
       refine StatesHold.of_eq (store := { store with
@@ -360,32 +319,20 @@ private theorem onTickPerSlot_checkpointStates_latestMessages {timeMs : UInt64}
 private theorem catchUp_checkpointStates_latestMessages {tickSlot : Slot}
     {start : Store preset fork} (caught : catchUp config start tickSlot = .ok after) :
     after.checkpointStates = start.checkpointStates ∧
-      after.latestMessages = start.latestMessages := by
-  induction start using catchUp.induct config tickSlot with
-  | _ start ih =>
-    rw [catchUp.eq_1] at caught
-    simp only [bind_ok_iff] at caught
-    obtain ⟨current, -, caught⟩ := caught
-    split at caught
-    · simp only [bind_ok_iff] at caught
-      obtain ⟨next, -, nextTimeMs, -, ticked, tick, caught⟩ := caught
-      split at caught
-      · have rest := ih ticked ‹_› caught
-        have step := onTickPerSlot_checkpointStates_latestMessages tick
-        exact ⟨rest.1.trans step.1, rest.2.trans step.2⟩
-      · cases caught
-    · simp only [pure, Except.pure, Except.ok.injEq] at caught
-      subst caught
-      exact ⟨rfl, rfl⟩
+      after.latestMessages = start.latestMessages :=
+  catchUp_preserves (P := fun s => s.checkpointStates = start.checkpointStates ∧
+      s.latestMessages = start.latestMessages)
+    (fun same tick => by
+      have step := onTickPerSlot_checkpointStates_latestMessages tick
+      exact ⟨step.1.trans same.1, step.2.trans same.2⟩)
+    ⟨rfl, rfl⟩ caught
 
 /-- A tick keeps the states of the checkpoints and the latest votes. -/
 theorem onTick_checkpointStates_latestMessages {timeMs : UInt64}
     (ticked : store.onTick config timeMs = .ok after) :
     after.checkpointStates = store.checkpointStates ∧
       after.latestMessages = store.latestMessages := by
-  unfold onTick at ticked
-  simp only [bind_ok_iff] at ticked
-  obtain ⟨tickSlot, -, caught, caughtUp, ticked⟩ := ticked
+  obtain ⟨_, caught, -, caughtUp, ticked⟩ := onTick_ok ticked
   have step := onTickPerSlot_checkpointStates_latestMessages ticked
   have rest := catchUp_checkpointStates_latestMessages caughtUp
   exact ⟨step.1.trans rest.1, step.2.trans rest.2⟩
@@ -509,27 +456,30 @@ private theorem checkpoint_eq_of_compare_eq {a b : Checkpoint}
   rfl
 
 /-- The state of a checkpoint, computed by the store, comes from the state of its block. -/
-private theorem computeCheckpointState_fromBlock {checks : SignatureChecks} {target : Checkpoint}
-    {state : BeaconState preset fork}
+private theorem computeCheckpointState_fromBlock {allowed : SignatureChecks → Prop}
+    {checks : SignatureChecks} {target : Checkpoint} {state : BeaconState preset fork}
+    (ok : allowed checks)
     (computed : store.computeCheckpointState config checks target = .ok state) :
     ∃ base start, store.blockStates[target.root]? = some base ∧
       computeStartSlotAtEpoch preset target.epoch = .ok start ∧
       ((start ≤ base.slot ∧ state = base) ∨
-        (base.slot < start ∧ ∃ checks, processSlots config checks base start = .ok state)) := by
+        (base.slot < start ∧
+          ∃ checks, allowed checks ∧ processSlots config checks base start = .ok state)) := by
   unfold computeCheckpointState at computed
   simp only [bind_ok_iff] at computed
   obtain ⟨base, found, start, startOk, computed⟩ := computed
   refine ⟨base, start, blockState_ok_iff.mp found, Base.mapError_ok_iff.mp startOk, ?_⟩
   split at computed
-  · exact .inr ⟨‹_›, checks, Base.mapError_ok_iff.mp computed⟩
+  · exact .inr ⟨‹_›, checks, ok, Base.mapError_ok_iff.mp computed⟩
   · simp only [pure, Except.pure, Except.ok.injEq] at computed
     exact .inl ⟨UInt64.not_lt.mp ‹_›, computed.symm⟩
 
 /-- A store with the same states of blocks and of checkpoints keeps their link. -/
-private theorem CheckpointStatesFromBlocks.of_maps (holds : store.CheckpointStatesFromBlocks config)
+private theorem CheckpointStatesFromBlocks.of_maps {allowed : SignatureChecks → Prop}
+    (holds : store.CheckpointStatesFromBlocks config allowed)
     (states : after.blockStates = store.blockStates)
     (kept : after.checkpointStates = store.checkpointStates) :
-    after.CheckpointStatesFromBlocks config := by
+    after.CheckpointStatesFromBlocks config allowed := by
   intro checkpoint state found
   rw [kept] at found
   rw [states]
@@ -568,10 +518,10 @@ theorem Store.Reachable.ordered (anchor : Invariant anchorState)
     exact ⟨Store.onBlock_ordered ih.1 ih.2 added, Store.onBlock_statesHold ih.2 added⟩
   | attestation _ attested ih =>
     exact ⟨Store.onAttestation_ordered ih.1 attested,
-      Store.StatesHold.of_eq ih.2 (Store.onAttestation_frame attested).2.2⟩
+      Store.StatesHold.of_eq ih.2 (Store.onAttestation_frame attested).2.2.1⟩
   | attesterSlashing _ slashed ih =>
     exact ⟨Store.onAttesterSlashing_ordered ih.1 slashed,
-      Store.StatesHold.of_eq ih.2 (Store.onAttesterSlashing_frame slashed).2.2⟩
+      Store.StatesHold.of_eq ih.2 (Store.onAttesterSlashing_frame slashed).2.2.1⟩
   | payloadAttestation _ voted ih =>
     exact ⟨Store.onPayloadAttestationMessage_ordered ih.1 voted,
       Store.StatesHold.of_eq ih.2 (onPayloadAttestationMessage_onlyPtcVotes voted).frame.2.2⟩
@@ -680,84 +630,139 @@ theorem Store.Reachable.checkpointState_aligned (anchor : Invariant anchorState)
   ((reachable.checkpointStatesHold anchor) (Store.checkpointState_ok_iff.mp found)).aligned
     maxAligned
 
+/-- The store built from the anchor has each checkpoint state from its block. -/
+private theorem Store.CheckpointStatesFromBlocks.anchor {allowed : SignatureChecks → Prop}
+    (made : getForkchoiceStore config anchorState anchorBlock = .ok store) :
+    store.CheckpointStatesFromBlocks config allowed := by
+  obtain ⟨anchorRoot, rootOk, states⟩ := getForkchoiceStore_checkpointStates made
+  obtain ⟨_, rootOk', blocks, blockStates⟩ := getForkchoiceStore_maps made
+  rw [rootOk, Except.ok.injEq] at rootOk'
+  subst rootOk'
+  intro checkpoint state found
+  rw [states, Std.TreeMap.getElem?_insert] at found
+  split at found
+  · rename_i same
+    cases found
+    obtain rfl := Store.checkpoint_eq_of_compare_eq same
+    have startOk := computeStartSlotAtEpoch_computeEpochAtSlot (preset := preset)
+      anchorState.slot
+    refine ⟨anchorState, _, by simp [blockStates], startOk, .inl ⟨?_, rfl⟩⟩
+    obtain ⟨-, value⟩ := computeStartSlotAtEpoch_ok_iff.mp startOk
+    rw [UInt64.le_iff_toNat_le, value, computeEpochAtSlot, UInt64.toNat_div]
+    exact Nat.div_mul_le_self _ _
+  · simp at found
+
+/-- A block keeps each checkpoint state linked to the state of its block. -/
+private theorem Store.CheckpointStatesFromBlocks.onBlock {allowed : SignatureChecks → Prop}
+    {checks : SignatureChecks} {sources : BlockSources preset fork}
+    {signed : SignedBeaconBlock preset fork} {prior after : Store preset fork}
+    (previous : Store.Reachable config anchorState anchorBlock prior)
+    (ih : prior.CheckpointStatesFromBlocks config allowed)
+    (added : prior.onBlock config checks sources signed = .ok after) :
+    after.CheckpointStatesFromBlocks config allowed := by
+  rcases Store.onBlock_same_or_insert added with
+    same | ⟨blockRoot, -, fresh, blocks, -, state, -, -, states⟩
+  · subst same
+    exact ih
+  have kept := (Store.onBlock_checkpointStates_latestMessages added).1
+  intro checkpoint checkpointState found
+  rw [kept] at found
+  obtain ⟨base, start, baseFound, rest⟩ := ih found
+  refine ⟨base, start, ?_, rest⟩
+  have other : blockRoot ≠ checkpoint.root := by
+    rintro rfl
+    rw [previous.blockState_eq_none fresh] at baseFound
+    cases baseFound
+  rw [states, getElem?_insert_root]
+  simp only [other, ↓reduceIte]
+  exact baseFound
+
+/-- An attestation handled with an allowed setting keeps each checkpoint state linked to its block.
+
+Its target state is computed from the state of the block of the target. -/
+private theorem Store.CheckpointStatesFromBlocks.onAttestation
+    {allowed : SignatureChecks → Prop} {checks : SignatureChecks}
+    {attestation : Attestation preset fork} {isFromBlock : Bool} {prior after : Store preset fork}
+    (ok : allowed checks) (ih : prior.CheckpointStatesFromBlocks config allowed)
+    (attested : prior.onAttestation config checks attestation isFromBlock = .ok after) :
+    after.CheckpointStatesFromBlocks config allowed := by
+  obtain ⟨-, -, states, -⟩ := Store.onAttestation_frame attested
+  unfold Store.onAttestation at attested
+  simp only [bind_ok_iff] at attested
+  obtain ⟨_, _, stored, storing, _, _, _, _, _, _, _, _, attested⟩ := attested
+  have storedFrom : stored.CheckpointStatesFromBlocks config allowed := by
+    unfold Store.storeTargetCheckpointState at storing
+    split at storing
+    · simp only [pure, Except.pure, Except.ok.injEq] at storing
+      subst storing
+      exact ih
+    · simp only [bind_ok_iff] at storing
+      obtain ⟨computedState, computed, storing⟩ := storing
+      simp only [pure, Except.pure, Except.ok.injEq] at storing
+      subst storing
+      intro checkpoint state keptFound
+      simp only [Std.TreeMap.getElem?_insert] at keptFound
+      split at keptFound
+      · rename_i same
+        cases keptFound
+        obtain rfl := Store.checkpoint_eq_of_compare_eq same
+        exact Store.computeCheckpointState_fromBlock ok computed
+      · exact ih keptFound
+  split at attested
+  · simp only [pure, Except.pure, Except.ok.injEq] at attested
+    subst attested
+    intro checkpoint state found
+    exact storedFrom found
+  · simp [throw, throwThe, MonadExceptOf.throw, bind, Except.bind] at attested
+
 /-- Each state that a reachable store keeps for a checkpoint comes from the state of its block.
 
 It is that state when that state is at the start of the epoch or later.
 
-Otherwise it is that state with its slots processed to the start of the epoch. -/
+Otherwise it is that state with its slots processed to the start of the epoch.
+
+The slots may run with any setting of the signature checks. -/
 theorem Store.Reachable.checkpointStatesFromBlocks
     (reachable : Store.Reachable config anchorState anchorBlock store) :
-    store.CheckpointStatesFromBlocks config := by
+    store.CheckpointStatesFromBlocks config (fun _ => True) := by
   induction reachable with
-  | anchor made =>
-    obtain ⟨anchorRoot, rootOk, states⟩ := getForkchoiceStore_checkpointStates made
-    obtain ⟨_, rootOk', blocks, blockStates⟩ := getForkchoiceStore_maps made
-    rw [rootOk, Except.ok.injEq] at rootOk'
-    subst rootOk'
-    intro checkpoint state found
-    rw [states, Std.TreeMap.getElem?_insert] at found
-    split at found
-    · rename_i same
-      cases found
-      obtain rfl := Store.checkpoint_eq_of_compare_eq same
-      have startOk := computeStartSlotAtEpoch_computeEpochAtSlot (preset := preset)
-        anchorState.slot
-      refine ⟨anchorState, _, by simp [blockStates], startOk, .inl ⟨?_, rfl⟩⟩
-      obtain ⟨-, value⟩ := computeStartSlotAtEpoch_ok_iff.mp startOk
-      rw [UInt64.le_iff_toNat_le, value, computeEpochAtSlot, UInt64.toNat_div]
-      exact Nat.div_mul_le_self _ _
-    · simp at found
+  | anchor made => exact .anchor made
   | tick _ ticked ih =>
     exact ih.of_maps (Store.onTick_frame ticked).2.2.2
       (Store.onTick_checkpointStates_latestMessages ticked).1
-  | block previous added ih =>
-    rcases Store.onBlock_same_or_insert added with
-      same | ⟨blockRoot, -, fresh, blocks, -, state, -, -, states⟩
-    · subst same
-      exact ih
-    have kept := (Store.onBlock_checkpointStates_latestMessages added).1
-    intro checkpoint checkpointState found
-    rw [kept] at found
-    obtain ⟨base, start, baseFound, rest⟩ := ih found
-    refine ⟨base, start, ?_, rest⟩
-    have other : blockRoot ≠ checkpoint.root := by
-      rintro rfl
-      rw [previous.blockState_eq_none fresh] at baseFound
-      cases baseFound
-    rw [states, getElem?_insert_root]
-    simp only [other, ↓reduceIte]
-    exact baseFound
-  | attestation _ attested ih =>
-    obtain ⟨-, -, states⟩ := Store.onAttestation_frame attested
-    unfold Store.onAttestation at attested
-    simp only [bind_ok_iff] at attested
-    obtain ⟨_, _, stored, storing, _, _, _, _, _, _, _, _, attested⟩ := attested
-    have storedFrom : stored.CheckpointStatesFromBlocks config := by
-      unfold Store.storeTargetCheckpointState at storing
-      split at storing
-      · simp only [pure, Except.pure, Except.ok.injEq] at storing
-        subst storing
-        exact ih
-      · simp only [bind_ok_iff] at storing
-        obtain ⟨computedState, computed, storing⟩ := storing
-        simp only [pure, Except.pure, Except.ok.injEq] at storing
-        subst storing
-        intro checkpoint state keptFound
-        simp only [Std.TreeMap.getElem?_insert] at keptFound
-        split at keptFound
-        · rename_i same
-          cases keptFound
-          obtain rfl := Store.checkpoint_eq_of_compare_eq same
-          exact Store.computeCheckpointState_fromBlock computed
-        · exact ih keptFound
-    split at attested
-    · simp only [pure, Except.pure, Except.ok.injEq] at attested
-      subst attested
-      intro checkpoint state found
-      exact storedFrom found
-    · simp [throw, throwThe, MonadExceptOf.throw, bind, Except.bind] at attested
+  | block previous added ih => exact .onBlock previous ih added
+  | attestation _ attested ih => exact .onAttestation trivial ih attested
   | attesterSlashing _ slashed ih =>
-    exact ih.of_maps (Store.onAttesterSlashing_frame slashed).2.2
+    exact ih.of_maps (Store.onAttesterSlashing_frame slashed).2.2.1
+      (Store.onAttesterSlashing_checkpointStates_latestMessages slashed).1
+  | payloadAttestation _ voted ih =>
+    obtain ⟨_, _, rfl⟩ := onPayloadAttestationMessage_onlyPtcVotes voted
+    exact ih
+  | envelope _ accepted ih =>
+    obtain ⟨_, _, _, _, _, record, rfl⟩ := onExecutionPayloadEnvelope_ok accepted
+    obtain ⟨_, rfl⟩ := recordEnvelope_frame record
+    exact ih
+  | inclusionList _ accepted ih =>
+    obtain ⟨_, _, rfl⟩ := onInclusionList_ok ‹_› accepted
+    exact ih
+
+/-- In a store built with one setting of the checks, each checkpoint state comes from its block.
+
+It is the state of its block, or that state processed to the start of the epoch of the checkpoint.
+
+The slots run with that setting. -/
+theorem Store.ForwardReachableWith.checkpointStatesFromBlocks {checks : SignatureChecks}
+    (reached : Store.ForwardReachableWith config checks anchorState anchorBlock store) :
+    store.CheckpointStatesFromBlocks config (· = checks) := by
+  induction reached with
+  | anchor made => exact .anchor made
+  | tick _ _ ticked ih =>
+    exact ih.of_maps (Store.onTick_frame ticked).2.2.2
+      (Store.onTick_checkpointStates_latestMessages ticked).1
+  | block previous added ih => exact .onBlock previous.reachable ih added
+  | attestation _ attested ih => exact .onAttestation rfl ih attested
+  | attesterSlashing _ slashed ih =>
+    exact ih.of_maps (Store.onAttesterSlashing_frame slashed).2.2.1
       (Store.onAttesterSlashing_checkpointStates_latestMessages slashed).1
   | payloadAttestation _ voted ih =>
     obtain ⟨_, _, rfl⟩ := onPayloadAttestationMessage_onlyPtcVotes voted

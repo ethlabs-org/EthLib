@@ -806,8 +806,8 @@ theorem keeps_processBlock (laws : Laws config Inv) (early : fork < .glamsterdam
     (ok : processBlock config checks engine state block = .ok after) : Keeps Inv state after := by
   unfold processBlock at ok
   split at ok
-  · unfold processBlockAltair at ok
-    simp only [bind_ok_iff] at ok
+  · unfold processBlockAltair stateBeforeOperations at ok
+    simp only [bind_assoc, bind_ok_iff] at ok
     obtain ⟨paid, paidOk, headed, headedOk, executed, executedOk, revealed, revealedOk, voted,
       votedOk, _, operatedOk, synced⟩ := ok
     have paidKept : Kept state paid := by
@@ -827,7 +827,12 @@ theorem keeps_processBlock (laws : Laws config Inv) (early : fork < .glamsterdam
       executedKept.trans <| (kept_randao revealedOk).trans votedKept)).trans <|
       (keeps_operations laws early operatedOk).trans
         (keeps_of_kept laws (kept_syncAggregate synced))
-  simp only [bind_ok_iff] at ok
+  have beforeAltair : fork < .altair := Nat.lt_of_not_le ‹¬ Fork.altair ≤ fork›
+  have notBellatrix : ¬ Fork.bellatrix ≤ fork :=
+    Nat.not_le_of_lt (Nat.lt_trans beforeAltair (by decide))
+  have beforeHeze : fork < .hegota := Nat.lt_trans beforeAltair (by decide)
+  simp only [stateBeforeOperations, show ¬ Fork.glamsterdam ≤ fork from Nat.not_le_of_lt early,
+    notBellatrix, beforeHeze, ↓reduceDIte, pure_bind, bind_assoc, bind_ok_iff] at ok
   obtain ⟨_, headerOk, _, randaoOk, _, eth1Ok, operationsOk⟩ := ok
   exact (keeps_of_kept laws ((kept_blockHeader headerOk).trans <| (kept_randao randaoOk).trans
     (kept_eth1Data eth1Ok))).trans (keeps_operations laws early operationsOk)

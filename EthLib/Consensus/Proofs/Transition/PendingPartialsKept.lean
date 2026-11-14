@@ -125,52 +125,7 @@ private theorem partialsSame_addValidatorToRegistry {pubkey withdrawalCredential
 private theorem partialsEpochFrameLaws : EpochFrameLaws (@PartialsSame preset fork) where
   refl := PartialsSame.refl
   trans := PartialsSame.trans
-  setValidatorAt := fun set _ _ _ _ _ _ _ => partialsSame_setValidatorAt set
-  registryUpdates := by
-    intro config state after computed
-    have entry : ∀ (s : BeaconState preset fork) i t, updateRegistryEntry config s i = .ok t →
-        PartialsSame s t := by
-      intro s i t ok
-      simp only [updateRegistryEntry, bind_ok_iff, liftAccessor_ok] at ok
-      obtain ⟨_, _, _, _, _, set, ok⟩ := ok
-      split at ok
-      · simp only [bind_ok_iff, liftAccessor_ok] at ok
-        obtain ⟨_, _, exited⟩ := ok
-        exact (partialsSame_setValidatorAt set).trans (partialsSame_initiateValidatorExit exited)
-      · cases ok
-        exact partialsSame_setValidatorAt set
-    have activate : ∀ (s : BeaconState preset fork) i t,
-        activateValidator s i = .ok t → PartialsSame s t := by
-      intro s i t ok
-      simp only [activateValidator, bind_ok_iff, liftAccessor_ok] at ok
-      obtain ⟨_, _, _, _, set⟩ := ok
-      exact partialsSame_setValidator set
-    have electraEntry : ∀ epoch (s : BeaconState preset fork) i t,
-        updateRegistryEntryElectra config epoch s i = .ok t →
-        PartialsSame s t := by
-      intro epoch s i t ok
-      simp only [updateRegistryEntryElectra, bind_ok_iff, liftAccessor_ok] at ok
-      obtain ⟨_, _, ok⟩ := ok
-      split at ok
-      · simp only [bind_ok_iff, liftAccessor_ok] at ok
-        obtain ⟨_, _, set⟩ := ok
-        exact partialsSame_setValidatorAt set
-      split at ok
-      · simp only [bind_ok_iff, liftAccessor_ok] at ok
-        obtain ⟨_, _, exited⟩ := ok
-        exact partialsSame_initiateValidatorExit exited
-      split at ok
-      · exact partialsSame_setValidatorAt (liftAccessor_ok.mp ok)
-      · cases ok
-        exact PartialsSame.refl _
-    unfold processRegistryUpdates at computed
-    split at computed
-    · simp only [bind_ok_iff, liftAccessor_ok] at computed
-      obtain ⟨_, _, computed⟩ := computed
-      exact PartialsSame.foldlM (electraEntry _) computed
-    simp only [bind_ok_iff] at computed
-    obtain ⟨_, updated, activated⟩ := computed
-    exact (PartialsSame.foldlM entry updated).trans (PartialsSame.foldlM activate activated)
+  setValidatorAt := fun set _ _ _ _ _ => partialsSame_setValidatorAt set
   increaseBalance := partialsSame_increaseBalance
   decreaseBalance := partialsSame_decreaseBalance
   initiateValidatorExit := partialsSame_initiateValidatorExit

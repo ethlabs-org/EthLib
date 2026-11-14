@@ -45,7 +45,7 @@ variable {preset : Preset} {fork : Base.Fork} {config : Config} {checks : Signat
 Their target epoch is the epoch of their list, and the epoch of their slot.
 
 There must be more than `MIN_SEED_LOOKAHEAD + 2` epochs of mixes. -/
-theorem Run.pendingVoted_univ {g x : ForkedBeaconState preset}
+private theorem Run.pendingVoted_univ {g x : ForkedBeaconState preset}
     (genesis : Genesis (config := config) (checks := checks) g) (run : Run config checks g x)
     (apart : preset.MIN_SEED_LOOKAHEAD.toNat + 2 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat) :
     PendingVoted Set.univ x.state := by
@@ -340,9 +340,13 @@ private theorem processBlock_pendingProposer (early : fork < .altair)
     Nat.not_le_of_lt (Nat.lt_trans early (by decide : Fork.altair < Fork.pectra))
   have notGloas : ¬Fork.glamsterdam ≤ fork :=
     Nat.not_le_of_lt (Nat.lt_trans early (by decide : Fork.altair < Fork.glamsterdam))
+  have notBellatrix : ¬Fork.bellatrix ≤ fork :=
+    Nat.not_le_of_lt (Nat.lt_trans early (by decide))
+  have beforeHeze : fork < .hegota := Nat.lt_trans early (by decide)
   have beforeFulu : fork < .fusaka := Nat.lt_trans early (by decide)
   unfold processBlock at computed
-  simp only [notAltair, ↓reduceDIte, bind_ok_iff] at computed
+  simp only [notAltair, notGloas, notBellatrix, beforeHeze, stateBeforeOperations, ↓reduceDIte,
+    pure_bind, bind_assoc, bind_ok_iff] at computed
   obtain ⟨headed, headerOk, revealed, randaoOk, voted, eth1Ok, operationsOk⟩ := computed
   unfold processOperations at operationsOk
   simp only [notGloas, notElectra, ↓reduceDIte, bind_ok_iff, ensure_ok_iff,
@@ -481,7 +485,7 @@ private theorem Run.proposersFrom_length (positive : 0 < preset.SLOTS_PER_EPOCH.
     | @block fork before after engine signed due ok =>
       have processed := (applySignedBlock_ok ok).2.1
       obtain ⟨atSlot, newer, -⟩ := processBlock_parentRoot processed
-      obtain ⟨parented, headed, -, headerOk, kept⟩ := processBlock_header_split processed
+      obtain ⟨parented, headed, -, -, headerOk, kept⟩ := processBlock_header_split processed
       obtain ⟨_, _, rfl⟩ := processBlockHeader_eq headerOk
       have slot := (frame_processBlock processed).slot
       -- The state before the block has a free slot, which the block spends.
