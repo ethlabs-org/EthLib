@@ -805,6 +805,39 @@ private theorem balanceDrift_path_last {x y : ForkedBeaconState preset}
       exact ⟨pre.balancePath ++ [middle, ⟨middle.fork, next⟩], by
         simp [Run.balancePath, Step.balancePath, advance, Except.toOption, List.append_assoc]⟩
 
+/-- A run's balance path starts at the start of the run. -/
+private theorem balanceDrift_path_head {x y : ForkedBeaconState preset}
+    (run : Run config checks x y) : ∃ rest, run.balancePath = x :: rest := by
+  induction run with
+  | nil => exact ⟨[], rfl⟩
+  | snoc pre step ih =>
+    obtain ⟨rest, path⟩ := ih
+    exact ⟨rest ++ step.balancePath, by simp [Run.balancePath, path]⟩
+
+/-- A step raises an effective balance at most to a balance on its path.
+
+A block step keeps the effective balance.
+
+A slot step updates it at most to the balance after the slot, before the upgrades.
+
+The upgrades keep it or lower it, before Gloas. -/
+theorem _root_.EthLib.Consensus.Step.effectiveAt_le_max_balance {m l : ForkedBeaconState preset}
+    (step : Step config checks m l) (early : l.fork < .glamsterdam) (i : Nat)
+    (inside : i < m.state.validators.data.size) :
+    ∃ p ∈ step.balancePath, effectiveAt l i ≤ max (effectiveAt m i) (actualBalanceAt p i) := by
+  cases step with
+  | @block fork before after engine signed due ok =>
+    refine ⟨⟨fork, before⟩, by simp [Step.balancePath], ?_⟩
+    rw [effectiveKept_processBlock (applySignedBlock_ok ok).2.1 i inside]
+    exact Nat.le_max_left _ _
+  | slot ok =>
+    obtain ⟨next, advanced, upgraded⟩ := bind_ok_iff.mp ok
+    have update := balanceDrift_slot_upper advanced i inside
+    change effectiveAt ⟨m.fork, next⟩ i ≤
+      max (effectiveAt m i) (actualBalanceAt ⟨m.fork, next⟩ i) at update
+    exact ⟨⟨m.fork, next⟩, by simp [Step.balancePath, advanced, Except.toOption],
+      (balanceDrift_upgrades_upper upgraded early i).trans update⟩
+
 private theorem balanceDrift_gain {x y : ForkedBeaconState preset}
     (tail : Run config checks x y) (early : y.fork < .glamsterdam)
     (i : Nat) (present : i < x.state.validators.data.size) :
@@ -1083,28 +1116,43 @@ private theorem balanceDrift_upgrades_active {s t : ForkedBeaconState preset}
         (Nat.lt_of_le_of_lt (processUpgrades_fork_le rest) early) i v found activated)
   | case2 s notDue => cases ok; rfl
 
-private theorem balanceDrift_debits_append (i : Nat) (a b : List (ForkedBeaconState preset))
-    (x : ForkedBeaconState preset) :
-    pathDebits i (a ++ x :: b) = pathDebits i (a ++ [x]) + pathDebits i (x :: b) := by
-  induction a with
-  | nil => simp [pathDebits]
-  | cons first rest ih =>
-    cases rest with
-    | nil => simp [pathDebits]
-    | cons second rest => simpa [pathDebits, Nat.add_assoc] using ih
+/-- The balance at the start of a path is at most the balance at any of its states plus its debits.
+-/
+private theorem balanceDrift_le_add_pathDebits (i : Nat) :
+    ∀ (x : ForkedBeaconState preset) (rest : List (ForkedBeaconState preset))
+      (p : ForkedBeaconState preset), p ∈ x :: rest →
+      actualBalanceAt x i ≤ actualBalanceAt p i + pathDebits i (x :: rest)
+  | x, [], p, member => by
+    obtain rfl := List.mem_singleton.mp member
+    simp [pathDebits]
+  | x, y :: rest, p, member => by
+    simp only [pathDebits]
+    rcases List.mem_cons.mp member with rfl | member
+    · omega
+    · have later := balanceDrift_le_add_pathDebits i y rest p member
+      omega
 
-private theorem balanceDrift_reference_run {x y : ForkedBeaconState preset}
+/-- An effective balance stays at or above a reference while the balance does, before Gloas.
+
+The reference is a whole number of increments, and at most the effective balance at `x`.
+
+It is also at most the cap of the validator at `x`, which has an activation epoch.
+
+The balance must be at least the reference at every state of the balance path of the run.
+
+That path holds every state where an update of the effective balances reads the balance. -/
+theorem _root_.EthLib.Consensus.Run.effectiveAt_ge_of_balanceFloor
+    {x y : ForkedBeaconState preset}
     (tail : Run config checks x y) (caps : CapOrder preset) (early : y.fork < .glamsterdam)
     (i : Nat) (v : Validator) (found : x.state.validators.data[i]? = some v)
     (activated : v.activationEpoch ≠ FAR_FUTURE_EPOCH) (reference : Gwei)
     (aligned : reference.toNat % preset.EFFECTIVE_BALANCE_INCREMENT.toNat = 0)
-    (funded : reference.toNat + pathDebits i tail.balancePath ≤ actualBalanceAt x i)
+    (floor : ∀ p ∈ tail.balancePath, reference.toNat ≤ actualBalanceAt p i)
     (previous : reference.toNat ≤ effectiveAt x i)
     (cap : reference ≤ withdrawalMaxEffectiveBalance preset x.fork v) :
-    reference.toNat ≤ effectiveAt y i ∧
-      actualBalanceAt x i ≤ actualBalanceAt y i + pathDebits i tail.balancePath := by
+    reference.toNat ≤ effectiveAt y i := by
   induction tail with
-  | nil => exact ⟨previous, by simp [Run.balancePath, pathDebits]⟩
+  | nil => exact previous
   | @snoc middle last pre step ih =>
     have middleEarly := Nat.lt_of_le_of_lt step.chainStep.fork_le early
     obtain ⟨w, located, lifecycle⟩ := pre.registryLifecycle.validators i v found
@@ -1115,40 +1163,24 @@ private theorem balanceDrift_reference_run {x y : ForkedBeaconState preset}
     have eq : z = w := by rw [located, Option.some.injEq] at locatedZ; exact locatedZ.symm
     subst z
     have capMiddle := UInt64.le_trans cap capMono
-    obtain ⟨initial, path⟩ := balanceDrift_path_last pre
+    have prior := ih middleEarly fun p member => floor p (List.mem_append_left _ member)
+    have later (p : ForkedBeaconState preset) (member : p ∈ step.balancePath) :=
+      floor p (List.mem_append_right _ member)
     cases step with
     | @block fork before after engine signed due ok =>
-      have debits : pathDebits i (pre.snoc (.block engine signed due ok)).balancePath =
-          pathDebits i pre.balancePath +
-            (actualBalanceAt ⟨fork, before⟩ i - actualBalanceAt ⟨fork, after⟩ i) := by
-        simp only [Run.balancePath, Step.balancePath, path, List.append_assoc]
-        simp only [List.cons_append, List.nil_append]
-        rw [balanceDrift_debits_append]
-        simp [pathDebits]
-      rw [debits] at funded ⊢
-      have prior := ih middleEarly (by omega)
-      have kept := effectiveKept_processBlock (applySignedBlock_ok ok).2.1 i
-        (Array.getElem?_eq_some_iff.mp located).1
-      exact ⟨by rw [kept]; exact prior.1, by omega⟩
+      rw [effectiveKept_processBlock (applySignedBlock_ok ok).2.1 i
+        (Array.getElem?_eq_some_iff.mp located).1]
+      exact prior
     | slot ok =>
       obtain ⟨next, advanced, upgraded⟩ := bind_ok_iff.mp ok
-      have debits : pathDebits i (pre.snoc (.slot ok)).balancePath =
-          pathDebits i pre.balancePath +
-            ((actualBalanceAt middle i - actualBalanceAt ⟨middle.fork, next⟩ i) +
-              (actualBalanceAt ⟨middle.fork, next⟩ i - actualBalanceAt last i)) := by
-        simp only [Run.balancePath, Step.balancePath, advanced, Except.toOption,
-          path, List.append_assoc]
-        simp only [List.cons_append, List.nil_append]
-        rw [balanceDrift_debits_append]
-        simp [pathDebits]
-      rw [debits] at funded ⊢
-      have prior := ih middleEarly (by omega)
+      have funded := later ⟨middle.fork, next⟩
+        (by simp [Step.balancePath, advanced, Except.toOption])
       have updated := balanceDrift_reference_slot advanced i w located reference
-        aligned (by omega) prior.1 capMiddle
+        aligned funded prior capMiddle
       obtain ⟨a, read, life⟩ := (registryLifecycle_advanceSlot advanced).validators i w located
       have kept := balanceDrift_upgrades_active upgraded early i a read
         (by rwa [life.activationEpoch assigned])
-      exact ⟨by rwa [kept], by omega⟩
+      rwa [kept]
 
 /-- An effective-balance loss is at most the debits less the initial headroom, and one increment.
 
@@ -1176,14 +1208,19 @@ theorem effective_loss_from_balance {g x y : ForkedBeaconState preset}
   · have capped := shared.effectiveBalance_capped genesis caps.activation caps.compounding
       (Nat.lt_of_le_of_lt (fork_le_of_chainSteps tail.chainSteps) early) v
       (Array.mem_of_getElem? found)
-    have bound := balanceDrift_reference_run tail caps early i v found activated reference
+    obtain ⟨rest, path⟩ := balanceDrift_path_head tail
+    have bound := tail.effectiveAt_ge_of_balanceFloor caps early i v found activated reference
       (by rw [value]; dsimp [rounded]
           have division := Nat.mod_add_div amount preset.EFFECTIVE_BALANCE_INCREMENT.toNat
           have eq : amount - amount % preset.EFFECTIVE_BALANCE_INCREMENT.toNat =
               preset.EFFECTIVE_BALANCE_INCREMENT.toNat *
                 (amount / preset.EFFECTIVE_BALANCE_INCREMENT.toNat) := by omega
           rw [eq, Nat.mul_mod_right])
-      (by rw [value]; dsimp [rounded, amount]; omega)
+      (fun p member => by
+        rw [path] at member
+        have below := balanceDrift_le_add_pathDebits i x rest p member
+        rw [← path] at below
+        rw [value]; dsimp [rounded, amount]; omega)
       (by rw [value]; omega)
       (UInt64.le_iff_toNat_le.mpr (by
         have cap := UInt64.le_iff_toNat_le.mp capped
