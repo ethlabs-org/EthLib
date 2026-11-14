@@ -354,22 +354,17 @@ private theorem CapStep.registryEntry {f : Fork} {s t : BeaconState preset f}
     {i : Nat} (ok : updateRegistryEntry config s i = .ok t) : CapStep config s t := by
   simp only [updateRegistryEntry, bind_ok_iff, liftAccessor_ok] at ok
   obtain ⟨v, found, queued, queue, marked, set, ok⟩ := ok
-  have records : queued.slashed = v.slashed ∧ queued.exitEpoch = v.exitEpoch ∧
-      queued.withdrawableEpoch = v.withdrawableEpoch := by
+  have preserved : (queued.effectiveBalance = v.effectiveBalance ∧
+      queued.withdrawalCredentials = v.withdrawalCredentials) ∧
+      (queued.slashed = v.slashed ∧ queued.exitEpoch = v.exitEpoch ∧
+        queued.withdrawableEpoch = v.withdrawableEpoch) := by
     unfold queueForActivation at queue
     split at queue
     · simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at queue
       obtain ⟨_, _, rfl⟩ := queue
-      exact ⟨rfl, rfl, rfl⟩
-    · cases queue; exact ⟨rfl, rfl, rfl⟩
-  have same : queued.effectiveBalance = v.effectiveBalance ∧
-      queued.withdrawalCredentials = v.withdrawalCredentials := by
-    unfold queueForActivation at queue
-    split at queue
-    · simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at queue
-      obtain ⟨_, _, rfl⟩ := queue
-      exact ⟨rfl, rfl⟩
-    · cases queue; exact ⟨rfl, rfl⟩
+      exact ⟨⟨rfl, rfl⟩, rfl, rfl, rfl⟩
+    · cases queue; exact ⟨⟨rfl, rfl⟩, rfl, rfl, rfl⟩
+  obtain ⟨same, records⟩ := preserved
   have cap : withdrawalMaxEffectiveBalance preset f queued =
       withdrawalMaxEffectiveBalance preset f v := by
     simp only [withdrawalMaxEffectiveBalance, getMaxEffectiveBalance,
