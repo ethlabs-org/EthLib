@@ -4213,7 +4213,7 @@ private theorem pre_effective_le {largest balance effective result : Gwei}
     simp only [Uint64.toNat_min]
     omega
 
-/-- The effective-balance pass preserves the per-index capped Pre potential. -/
+/-- The effective-balance pass does not increase the per-index capped Pre potential. -/
 private theorem pre_effective_updates {fork : Fork} {s t : BeaconState preset fork}
     (ok : processEffectiveBalanceUpdates s = .ok t) {i : Nat} {v : Validator} {balance : Gwei}
     (found : s.validators.data[i]? = some v) (owned : s.balances.data[i]? = some balance) :
@@ -4261,5 +4261,329 @@ private theorem pre_activation_count_le (keys : Finset Nat) (charge : Nat → Na
       = ∑ _i ∈ keys, preset.MAX_EFFECTIVE_BALANCE.toNat := by simp
     _ ≤ ∑ i ∈ keys, charge i := Finset.sum_le_sum eligible
     _ ≤ budget := funded
+
+/-- An event charge supported on indices occurring at most once pays each index at most once. -/
+private theorem once_only_charge_le {α : Type} (events : List α) (keys : Finset Nat)
+    (chosen : α → Nat → Bool) (credit : α → Nat) (charge : Nat → Nat)
+    (supported : ∀ e ∈ events, credit e ≤ ∑ i ∈ keys, if chosen e i then charge i else 0)
+    (once : ∀ i ∈ keys, (events.countP fun e => chosen e i) ≤ 1) :
+    (events.map credit).sum ≤ ∑ i ∈ keys, charge i := by
+  have exchange : (events.map fun e => ∑ i ∈ keys,
+      if chosen e i then charge i else 0).sum =
+      ∑ i ∈ keys, (events.countP fun e => chosen e i) * charge i := by
+    clear supported once
+    induction events with
+    | nil => simp
+    | cons e rest ih =>
+      simp only [List.map_cons, List.sum_cons, List.countP_cons, ih,
+        Finset.sum_add_distrib, Nat.add_mul]
+      rw [Nat.add_comm, ← Finset.sum_add_distrib, ← Finset.sum_add_distrib]
+      apply Finset.sum_congr rfl
+      intro i _
+      cases chosen e i <;> simp
+  calc
+    (events.map credit).sum ≤ (events.map fun e =>
+        ∑ i ∈ keys, if chosen e i then charge i else 0).sum :=
+      List.sum_le_sum supported
+    _ = ∑ i ∈ keys, (events.countP fun e => chosen e i) * charge i := exchange
+    _ ≤ ∑ i ∈ keys, charge i := Finset.sum_le_sum fun i member => by
+      simpa using Nat.mul_le_mul_right (charge i) (once i member)
+
+/-- Each positive slashing credit is supported on the indices newly slashed by its event. -/
+private theorem slashing_step_support {config : Config} {checks : SignatureChecks}
+    {x y : ForkedBeaconState preset} (step : Step config checks x y)
+    (early : y.fork < .glamsterdam) (holds : Invariant x.state)
+    (compounding : preset.MIN_ACTIVATION_BALANCE ≤ preset.MAX_EFFECTIVE_BALANCE_ELECTRA)
+    {events : List (BalanceEvent preset)} (replayed : step.balanceEvents = .ok events)
+    (e : BalanceEvent preset) (member : e ∈ events) :
+    (if e.source = .slashings then e.creditLimit else 0) ≤
+      ∑ i ∈ Finset.range y.state.validators.data.size,
+        if !(e.before.state.validators.data[i]?.map (·.slashed)).getD true &&
+            (e.after.state.validators.data[i]?.map (·.slashed)).getD false then
+          effectiveAt x i /
+            (EthLib.Consensus.parameters preset x.fork).WHISTLEBLOWER_REWARD_QUOTIENT.toNat
+        else 0 := by
+  let chosen (e : BalanceEvent preset) (i : Nat) : Bool :=
+    !(e.before.state.validators.data[i]?.map (·.slashed)).getD true &&
+      (e.after.state.validators.data[i]?.map (·.slashed)).getD false
+  have sites := step.balanceEvents_sites early holds compounding replayed
+  by_cases source : e.source = .slashings
+  · simp only [source, ↓reduceIte]
+    by_cases positive : 0 < e.creditLimit
+    · obtain ⟨_, _, _, _, _, _, _, _, _, during, after, _, _, _, _, support, bridge, fork⟩ :=
+        sites e member
+      have input := bridge source positive
+      apply le_trans (support source)
+      apply le_trans (Finset.sum_le_sum fun i _ => ?_)
+        (Finset.sum_le_sum_of_subset (Finset.range_mono (during.trans after).size_le))
+      change (if chosen e i then _ else _) ≤ if chosen e i then _ else _
+      split_ifs
+      · rw [input i, fork source positive]
+      · exact Nat.le_refl _
+    · simp only [show e.creditLimit = 0 by omega]
+      exact Nat.zero_le _
+  · simp [source]
+
+/-- A step with no new slashing at an index has no replay event newly slashing that index. -/
+private theorem slashing_step_count_le {config : Config} {checks : SignatureChecks}
+    {x y : ForkedBeaconState preset} (step : Step config checks x y)
+    (early : y.fork < .glamsterdam) (holds : Invariant x.state)
+    (compounding : preset.MIN_ACTIVATION_BALANCE ≤ preset.MAX_EFFECTIVE_BALANCE_ELECTRA)
+    {events : List (BalanceEvent preset)} (replayed : step.balanceEvents = .ok events) (i : Nat) :
+    (events.countP fun e =>
+      !(e.before.state.validators.data[i]?.map (·.slashed)).getD true &&
+        (e.after.state.validators.data[i]?.map (·.slashed)).getD false) ≤
+      if !(x.state.validators.data[i]?.map (·.slashed)).getD false &&
+          (y.state.validators.data[i]?.map (·.slashed)).getD false then 1 else 0 := by
+  have sites := step.balanceEvents_sites early holds compounding replayed
+  by_cases active : (!(x.state.validators.data[i]?.map (·.slashed)).getD false &&
+      (y.state.validators.data[i]?.map (·.slashed)).getD false) = true
+  · rw [ite_eq_left active]
+    cases events with
+    | nil => simp
+    | cons e rest => exact (sites e (by simp)).2.2.2.2.2.2.2.2.2.2.2.2.2.2.1 i
+  · rw [ite_eq_right active]
+    apply Nat.le_zero.mpr
+    apply List.countP_eq_zero.mpr
+    intro e member marked
+    obtain ⟨_, _, _, _, _, _, _, _, _, _, _, first, _, last, _⟩ := sites e member
+    have flags : (!(e.before.state.validators.data[i]?.map (·.slashed)).getD true) = true ∧
+        (e.after.state.validators.data[i]?.map (·.slashed)).getD false = true := by
+      simpa only [Bool.and_eq_true] using marked
+    cases after : e.after.state.validators.data[i]? with
+    | none => simp [after] at flags
+    | some v =>
+      have slashed : v.slashed = true := by simpa [after] using flags.2
+      obtain ⟨w, final, flag⟩ := last i v after slashed
+      have start : (x.state.validators.data[i]?.map (·.slashed)).getD false = false := by
+        cases before : x.state.validators.data[i]? with
+        | none => simp
+        | some u =>
+          cases was : u.slashed with
+          | false => simp [was]
+          | true =>
+            obtain ⟨z, atEvent, was'⟩ := first i u before was
+            simp [atEvent, was'] at flags
+      exact active (by simp [start, final, flag])
+
+/-- Persistence composes the per-step single-slashing count over the replay of a run. -/
+private theorem slashing_run_count_le {config : Config} {checks : SignatureChecks}
+    {g x y : ForkedBeaconState preset} (shared : Run config checks g x)
+    (tail : Run config checks x y) (genesis : Genesis (config := config) (checks := checks) g)
+    (early : y.fork < .glamsterdam)
+    (compounding : preset.MIN_ACTIVATION_BALANCE ≤ preset.MAX_EFFECTIVE_BALANCE_ELECTRA)
+    (high : Nat) (endEpoch : (getCurrentEpoch y.state).toNat ≤ high + 1)
+    {events : List (BalanceEvent preset)} (replayed : tail.balanceEvents high = .ok events)
+    (i : Nat) :
+    (events.countP fun e =>
+      !(e.before.state.validators.data[i]?.map (·.slashed)).getD true &&
+        (e.after.state.validators.data[i]?.map (·.slashed)).getD false) ≤
+      if (y.state.validators.data[i]?.map (·.slashed)).getD false then 1 else 0 := by
+  induction tail generalizing events with
+  | nil => cases replayed; simp
+  | @snoc middle last pre step ih =>
+    have selected := (UInt64.le_iff_toNat_le.mp step.chainStep.currentEpoch_le).trans endEpoch
+    simp only [Run.balanceEvents, bind_ok_iff] at replayed
+    obtain ⟨prior, priorOk, rest⟩ := replayed
+    simp only [selected, ↓reduceIte, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at rest
+    obtain ⟨added, addedOk, rfl⟩ := rest
+    have previous := ih (Nat.lt_of_le_of_lt step.chainStep.fork_le early) selected priorOk
+    have next := slashing_step_count_le step early
+      (run_justified_separated (shared.append pre) genesis).1 compounding addedOk i
+    rw [List.countP_append]
+    cases flag : (middle.state.validators.data[i]?.map (·.slashed)).getD false with
+    | false =>
+      simp only [flag, Bool.not_false, Bool.true_and, Bool.false_eq_true, ↓reduceIte]
+        at previous next
+      omega
+    | true =>
+      have marked : (last.state.validators.data[i]?.map (·.slashed)).getD false = true := by
+        cases found : middle.state.validators.data[i]? with
+        | none => simp [found] at flag
+        | some v =>
+          have was : v.slashed = true := by simpa [found] using flag
+          obtain ⟨w, final, slashed⟩ := step.slashedPersistence i v found was
+          simp [final, slashed]
+      simp only [flag, marked, Bool.not_true, Bool.false_and, Bool.false_eq_true,
+        ↓reduceIte] at previous next ⊢
+      omega
+
+/-- Per-index event bounds sum once over the complete run, not once per step. -/
+private theorem slashing_run_charge_le {config : Config} {checks : SignatureChecks}
+    {g x y : ForkedBeaconState preset} (shared : Run config checks g x)
+    (tail : Run config checks x y) (genesis : Genesis (config := config) (checks := checks) g)
+    (early : y.fork < .glamsterdam)
+    (compounding : preset.MIN_ACTIVATION_BALANCE ≤ preset.MAX_EFFECTIVE_BALANCE_ELECTRA)
+    (high : Nat) (endEpoch : (getCurrentEpoch y.state).toNat ≤ high + 1)
+    {events : List (BalanceEvent preset)} (replayed : tail.balanceEvents high = .ok events)
+    (keys : Finset Nat) (charge : Nat → Nat)
+    (supported : ∀ e ∈ events,
+      (if e.source = .slashings then e.creditLimit else 0) ≤
+        ∑ i ∈ keys, if !(e.before.state.validators.data[i]?.map (·.slashed)).getD true &&
+            (e.after.state.validators.data[i]?.map (·.slashed)).getD false then charge i else 0) :
+    (events.map fun e => if e.source = .slashings then e.creditLimit else 0).sum ≤
+      ∑ i ∈ keys, charge i := by
+  apply once_only_charge_le events keys _ _ charge supported
+  intro i _
+  have counted :=
+    slashing_run_count_le shared tail genesis early compounding high endEpoch replayed i
+  exact counted.trans (by split <;> omega)
+
+/-- Bounds at the inputs of the run's steps support one charge per newly slashed index. -/
+private theorem slashing_run_support {config : Config} {checks : SignatureChecks}
+    {g x y : ForkedBeaconState preset} (shared : Run config checks g x)
+    (tail : Run config checks x y) (genesis : Genesis (config := config) (checks := checks) g)
+    (early : y.fork < .glamsterdam)
+    (compounding : preset.MIN_ACTIVATION_BALANCE ≤ preset.MAX_EFFECTIVE_BALANCE_ELECTRA)
+    (high : Nat) (keys : Finset Nat) (charge : Nat → Nat)
+    (bounded : ∀ {a b} (step : Step config checks a b), tail.Contains step →
+      ∀ i ∈ Finset.range b.state.validators.data.size,
+        (!(a.state.validators.data[i]?.map (·.slashed)).getD false &&
+          (b.state.validators.data[i]?.map (·.slashed)).getD false) = true →
+        i ∈ keys ∧
+          effectiveAt a i /
+            (EthLib.Consensus.parameters preset a.fork).WHISTLEBLOWER_REWARD_QUOTIENT.toNat ≤
+              charge i)
+    {events : List (BalanceEvent preset)} (replayed : tail.balanceEvents high = .ok events) :
+    ∀ e ∈ events, (if e.source = .slashings then e.creditLimit else 0) ≤
+      ∑ i ∈ keys, if !(e.before.state.validators.data[i]?.map (·.slashed)).getD true &&
+          (e.after.state.validators.data[i]?.map (·.slashed)).getD false then charge i else 0 := by
+  induction tail generalizing events with
+  | nil => cases replayed; simp
+  | @snoc middle last pre step ih =>
+    simp only [Run.balanceEvents, bind_ok_iff] at replayed
+    obtain ⟨prior, priorOk, rest⟩ := replayed
+    have previous := ih (Nat.lt_of_le_of_lt step.chainStep.fork_le early)
+      (fun one member => bounded one (.earlier member step)) priorOk
+    split at rest
+    · simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at rest
+      obtain ⟨added, addedOk, rfl⟩ := rest
+      intro e member
+      rcases List.mem_append.mp member with old | new
+      · exact previous e old
+      · have support := slashing_step_support step early
+          (run_justified_separated (shared.append pre) genesis).1 compounding addedOk e new
+        let selected (i : Nat) : Bool :=
+          !(e.before.state.validators.data[i]?.map (·.slashed)).getD true &&
+            (e.after.state.validators.data[i]?.map (·.slashed)).getD false
+        have charged (i : Nat) (inside : i ∈ Finset.range last.state.validators.data.size)
+            (chosen : selected i = true) := by
+          have positive : 0 < added.countP (fun event =>
+              !(event.before.state.validators.data[i]?.map (·.slashed)).getD true &&
+                (event.after.state.validators.data[i]?.map (·.slashed)).getD false) :=
+            List.countP_pos_iff.mpr ⟨e, new, chosen⟩
+          have counted := slashing_step_count_le step early
+            (run_justified_separated (shared.append pre) genesis).1 compounding addedOk i
+          have active : (!(middle.state.validators.data[i]?.map (·.slashed)).getD false &&
+              (last.state.validators.data[i]?.map (·.slashed)).getD false) = true := by
+            split at counted
+            · assumption
+            · omega
+          exact bounded step (.last pre step) i inside active
+        change (if e.source = .slashings then e.creditLimit else 0) ≤ _ at support
+        apply support.trans
+        change (∑ i ∈ Finset.range last.state.validators.data.size,
+          if selected i then _ else _) ≤ _
+        rw [← Finset.sum_filter]
+        apply le_trans (Finset.sum_le_sum fun i inside => (charged i
+          (Finset.mem_filter.mp inside).1 (Finset.mem_filter.mp inside).2).2)
+        rw [← Finset.sum_filter]
+        apply Finset.sum_le_sum_of_subset
+        intro i inside
+        exact Finset.mem_filter.mpr ⟨(charged i
+          (Finset.mem_filter.mp inside).1 (Finset.mem_filter.mp inside).2).1,
+            (Finset.mem_filter.mp inside).2⟩
+    · cases rest
+      exact previous
+
+/-- Uniform per-index bounds over step inputs pay all slashing credits only once. -/
+private theorem slashing_credits_le {config : Config} {checks : SignatureChecks}
+    {g x y : ForkedBeaconState preset} (shared : Run config checks g x)
+    (tail : Run config checks x y) (genesis : Genesis (config := config) (checks := checks) g)
+    (early : y.fork < .glamsterdam)
+    (compounding : preset.MIN_ACTIVATION_BALANCE ≤ preset.MAX_EFFECTIVE_BALANCE_ELECTRA)
+    (high : Nat) (endEpoch : (getCurrentEpoch y.state).toNat ≤ high + 1)
+    (keys : Finset Nat) (charge : Nat → Nat)
+    (bounded : ∀ {a b} (step : Step config checks a b), tail.Contains step →
+      ∀ i ∈ Finset.range b.state.validators.data.size,
+        (!(a.state.validators.data[i]?.map (·.slashed)).getD false &&
+          (b.state.validators.data[i]?.map (·.slashed)).getD false) = true →
+        i ∈ keys ∧
+          effectiveAt a i /
+            (EthLib.Consensus.parameters preset a.fork).WHISTLEBLOWER_REWARD_QUOTIENT.toNat ≤
+              charge i)
+    {events : List (BalanceEvent preset)} (replayed : tail.balanceEvents high = .ok events) :
+    (events.map fun e => if e.source = .slashings then e.creditLimit else 0).sum ≤
+      ∑ i ∈ keys, charge i :=
+  slashing_run_charge_le shared tail genesis early compounding high endEpoch replayed keys charge
+    (slashing_run_support shared tail genesis early compounding high keys charge bounded replayed)
+
+/-- From Electra, only indices newly slashed in the run pay the slashing credits. -/
+private theorem slashing_credits_le_newly_slashed {config : Config} {checks : SignatureChecks}
+    {g x y : ForkedBeaconState preset} (shared : Run config checks g x)
+    (tail : Run config checks x y) (genesis : Genesis (config := config) (checks := checks) g)
+    (electra : .pectra ≤ x.fork) (early : y.fork < .glamsterdam)
+    (activation : preset.MAX_EFFECTIVE_BALANCE ≤ preset.MIN_ACTIVATION_BALANCE)
+    (compounding : preset.MIN_ACTIVATION_BALANCE ≤ preset.MAX_EFFECTIVE_BALANCE_ELECTRA)
+    (high : Nat) (endEpoch : (getCurrentEpoch y.state).toNat ≤ high + 1)
+    {events : List (BalanceEvent preset)} (replayed : tail.balanceEvents high = .ok events) :
+    (events.map fun e => if e.source = .slashings then e.creditLimit else 0).sum ≤
+      ((Finset.range y.state.validators.data.size).filter fun i =>
+        !(x.state.validators.data[i]?.map (·.slashed)).getD false &&
+          (y.state.validators.data[i]?.map (·.slashed)).getD false).card *
+        (preset.MAX_EFFECTIVE_BALANCE_ELECTRA.toNat /
+          preset.WHISTLEBLOWER_REWARD_QUOTIENT_ELECTRA.toNat) := by
+  let keys := (Finset.range y.state.validators.data.size).filter fun i =>
+    !(x.state.validators.data[i]?.map (·.slashed)).getD false &&
+      (y.state.validators.data[i]?.map (·.slashed)).getD false
+  apply le_trans (slashing_credits_le shared tail genesis early compounding high endEpoch keys
+    (fun _ => preset.MAX_EFFECTIVE_BALANCE_ELECTRA.toNat /
+      preset.WHISTLEBLOWER_REWARD_QUOTIENT_ELECTRA.toNat) ?_ replayed)
+  · simp [keys]
+  intro a b step contained i inside marked
+  obtain ⟨pre, post, _⟩ := tail.contains_split step contained
+  have aEarly := Nat.lt_of_le_of_lt
+    (Nat.le_trans step.chainStep.fork_le (fork_le_of_chainSteps post.chainSteps)) early
+  have aElectra : Fork.pectra ≤ a.fork :=
+    Nat.le_trans electra (fork_le_of_chainSteps pre.chainSteps)
+  have flags : (a.state.validators.data[i]?.map (·.slashed)).getD false = false ∧
+      (b.state.validators.data[i]?.map (·.slashed)).getD false = true := by
+    simpa only [Bool.and_eq_true, Bool.not_eq_true'] using marked
+  have last : (y.state.validators.data[i]?.map (·.slashed)).getD false = true := by
+    cases found : b.state.validators.data[i]? with
+    | none => simp [found] at flags
+    | some v =>
+      have was : v.slashed = true := by simpa [found] using flags.2
+      obtain ⟨w, read, flag⟩ := post.slashedPersistence i v found was
+      simp [read, flag]
+  have first : (x.state.validators.data[i]?.map (·.slashed)).getD false = false := by
+    cases found : x.state.validators.data[i]? with
+    | none => simp
+    | some v =>
+      cases flag : v.slashed with
+      | false => simp [flag]
+      | true =>
+        obtain ⟨w, read, kept⟩ := pre.slashedPersistence i v found flag
+        simp [read, kept] at flags
+  refine ⟨Finset.mem_filter.mpr ⟨Finset.mem_range.mpr
+    (Nat.lt_of_lt_of_le (Finset.mem_range.mp inside) post.registryLifecycle.size_le),
+      by simp [first, last]⟩, ?_⟩
+  have cap : effectiveAt a i ≤ preset.MAX_EFFECTIVE_BALANCE_ELECTRA.toNat := by
+    cases found : a.state.validators.data[i]? with
+    | none => simp [effectiveAt, found]
+    | some v =>
+      have bounded := (shared.append pre).effectiveBalance_capped genesis activation compounding
+        aEarly v (Array.mem_of_getElem? found)
+      have largest : withdrawalMaxEffectiveBalance preset a.fork v ≤
+          preset.MAX_EFFECTIVE_BALANCE_ELECTRA := by
+        unfold withdrawalMaxEffectiveBalance getMaxEffectiveBalance
+        rw [ite_eq_left aElectra]
+        split
+        · exact UInt64.le_refl _
+        · exact compounding
+      simpa [effectiveAt, found] using UInt64.le_iff_toNat_le.mp
+        (UInt64.le_trans bounded largest)
+  simpa [EthLib.Consensus.parameters, aElectra] using Nat.div_le_div_right
+    (c := preset.WHISTLEBLOWER_REWARD_QUOTIENT_ELECTRA.toNat) cap
 
 end EthLib.Consensus.DirectSafety
