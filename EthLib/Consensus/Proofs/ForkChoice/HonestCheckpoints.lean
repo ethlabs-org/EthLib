@@ -2412,8 +2412,8 @@ private theorem countedFlags_advanceSlot {anchorEpoch : Epoch}
     obtain ⟨-, -, -, -, -, -, -, -, -, justifiedCurrent⟩ :=
       processJustificationAndFinalization_keeps justifiedOk
     cases current
-    · rcases (tail.flags altair position flags).1 found with rotated | rfl
-      · rcases (head.flags altair position flags).2 rotated with old | rfl
+    · rcases (tail.flags.1 altair position flags).1 found with rotated | rfl
+      · rcases (head.flags.1 altair position flags).2 rotated with old | rfl
         · rw [justifiedCurrent, cachedCurrent] at old
           have prior : anchorEpoch < getCurrentEpoch state := by
             simpa only [Bool.false_eq_true, ↓reduceIte, previousEq] using later
@@ -2445,7 +2445,7 @@ private theorem countedFlags_advanceSlot {anchorEpoch : Epoch}
             exact source above
         · exact absurd set (by decide)
       · exact absurd set (by decide)
-    · rcases (tail.flags altair position flags).2 found with rotated | rfl
+    · rcases (tail.flags.1 altair position flags).2 found with rotated | rfl
       · simp only [processParticipationFlagUpdates, Array.getElem?_replicate] at rotated
         split at rotated
         · cases rotated

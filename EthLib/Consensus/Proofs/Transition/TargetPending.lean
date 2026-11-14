@@ -456,4 +456,93 @@ theorem PendingVoted.attester {votes : Set (ValidatorIndex × AttestationData)}
   show getBlockRoot state pending.data.target.epoch = .ok pending.data.target.root
   rw [epoch, rootOk, beq_iff_eq.mp sameRoot]
 
+/-! ## Pending attestations kept forward -/
+
+/-- Before Altair, an attestation keeps each pending attestation of both epochs. -/
+theorem processAttestation_keepsPending {parentSlot : Slot} {attestation : Attestation preset fork}
+    (before : fork < .altair)
+    (computed : processAttestation config checks state parentSlot attestation = .ok after)
+    (current : Bool) {pending : PendingAttestation preset}
+    (member : pending ∈ recentPending state before current) :
+    pending ∈ recentPending after before current := by
+  obtain ⟨_, _, _, _, _, recorded, _⟩ := processAttestation_records before computed
+  obtain ⟨added, same⟩ := recordPendingAttestation_lists recorded
+  generalize (attestation.data.target.epoch == getCurrentEpoch state) = target at added same
+  by_cases here : current = target
+  · subst here
+    rw [added]
+    exact Array.mem_push_of_mem _ member
+  · have flipped : current = !target := by cases current <;> cases target <;> simp_all
+    subst flipped
+    rw [same]
+    exact member
+
+/-- A frame for pending attestations keeps both lists. -/
+private theorem PendingFrame.recentPending_eq {first second : BeaconState preset fork}
+    (frame : PendingFrame first second) (before : fork < .altair) (current : Bool) :
+    recentPending second before current = recentPending first before current := by
+  cases current <;> simp [recentPending, frame.previousPending, frame.currentPending]
+
+/-- Before Altair, a block keeps each pending attestation of both epochs. -/
+theorem processBlock_keepsPending (before : fork < .altair) {block : BeaconBlock preset fork}
+    (computed : processBlock config checks engine state block = .ok after)
+    (current : Bool) {pending : PendingAttestation preset}
+    (member : pending ∈ recentPending state before current) :
+    pending ∈ recentPending after before current := by
+  obtain ⟨first, last, head, attested, tail⟩ := processBlock_pendingSplit before computed
+  rw [tail.recentPending_eq before current]
+  refine foldlM_ok_invariant (fun s => pending ∈ recentPending s before current)
+    (fun _ _ _ holds ok => processAttestation_keepsPending before ok current holds) ?_ attested
+  rw [head.recentPending_eq before current]
+  exact member
+
+/-- Before Altair, one slot keeps each pending attestation.
+
+Inside an epoch each list keeps its attestations.
+
+At the end of an epoch the attestations of the current epoch become those of the previous one. -/
+theorem advanceSlot_keepsPending (before : fork < .altair)
+    (computed : advanceSlot config checks state = .ok after) (current : Bool)
+    {pending : PendingAttestation preset} (member : pending ∈ recentPending state before current) :
+    (getCurrentEpoch after = getCurrentEpoch state → pending ∈ recentPending after before current) ∧
+      (getCurrentEpoch after ≠ getCurrentEpoch state → current = true →
+        pending ∈ recentPending after before false) := by
+  obtain ⟨next, cached, epoched, sum, cachedOk, epochedOk, rfl⟩ := advanceSlot_ok computed
+  obtain ⟨_, _, _, _, cachedEq⟩ := processSlot_ok cachedOk
+  have cachedLists : ∀ current, recentPending cached before current =
+      recentPending state before current := by
+    intro current
+    cases current <;> simp [recentPending, cachedEq]
+  have stateEpoch := getCurrentEpoch_toNat state
+  have afterEpoch := getCurrentEpoch_toNat { epoched with slot := next }
+  dsimp only at afterEpoch
+  unfold epochIfLast at epochedOk
+  split at epochedOk
+  · rename_i boundary
+    have epochs := nextSlot_epoch_of_boundary sum boundary
+    have moved : getCurrentEpoch { epoched with slot := next } ≠ getCurrentEpoch state := by
+      intro same
+      have values := congrArg UInt64.toNat same
+      rw [afterEpoch, stateEpoch, epochs] at values
+      exact Nat.succ_ne_self _ values
+    refine ⟨fun same => absurd same moved, fun _ isCurrent => ?_⟩
+    subst isCurrent
+    obtain ⟨rotated, -⟩ := processEpoch_pendingRotation before epochedOk
+    have shifted : recentPending { epoched with slot := next } before false =
+        recentPending state before true := by
+      rw [← cachedLists true]
+      simp [recentPending, rotated]
+    rw [shifted]
+    exact member
+  · rename_i inside
+    simp only [pure, Except.pure, Except.ok.injEq] at epochedOk
+    subst epochedOk
+    refine ⟨fun _ => ?_, fun differ _ => absurd ?_ differ⟩
+    · rw [show recentPending { cached with slot := next } before current =
+        recentPending cached before current from rfl, cachedLists current]
+      exact member
+    · apply UInt64.toNat_inj.mp
+      rw [afterEpoch, stateEpoch]
+      exact nextSlot_epoch_of_inside sum inside
+
 end EthLib.Consensus

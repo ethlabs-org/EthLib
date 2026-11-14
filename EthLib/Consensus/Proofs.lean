@@ -54,6 +54,7 @@ public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmationCheckpoints
 public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmationCommittees
 public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmationConfirmedRoot
 public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmationIndicators
+public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmationLateCurrent
 public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmationLateMargin
 public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmationNonvacuity
 public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmationResets

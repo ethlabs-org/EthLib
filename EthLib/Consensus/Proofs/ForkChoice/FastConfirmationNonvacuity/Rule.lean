@@ -3,9 +3,11 @@ module
 public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmationNonvacuity.Heads
 public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmationNonvacuity.Duties
 
-/-! Realized recency and the five weight bounds at the witness's confirming call.
+/-! Realized recency, the realized head and the four walk bounds at the witness's confirming call.
 
 The call has zero weight shift and zero balance-drift margin.
+
+The quorum reserve of its pulled-up head state is zero, because the base reward factor is zero.
 
 Its two remaining honest duties have 400 Gwei, exceeding the 264 Gwei the rule requires.
 
@@ -113,6 +115,21 @@ theorem remaining_margin :
   change 792 ≤ 1200
   decide
 
+set_option maxRecDepth 100000 in
+set_option maxHeartbeats 4000000 in
+/-- The quorum reserve of the call's pulled-up head state is zero, for any ancestor state.
+
+Before Electra the reserve does not read the ancestor.
+
+With a zero base reward factor there are no credits or penalties.
+
+Every validator is at the largest effective balance, so no balance can rise. -/
+theorem call_reserve (anc : BeaconState preset .phase0) : quorumReserve config postState anc = 0 := by
+  have same : quorumReserve config postState anc = quorumReserve config postState postState := by
+    simp only [quorumReserve, show ¬ (Fork.pectra ≤ Fork.phase0) by decide, ↓reduceDIte]
+  rw [same]
+  decide +kernel
+
 set_option maxRecDepth 10000 in
 /-- The singleton call history starts at the anchor and returns the certified child. -/
 theorem only_call {i n : Nat} {fcr after : FastConfirmationStore}
@@ -131,7 +148,7 @@ theorem only_call {i n : Nat} {fcr after : FastConfirmationStore}
     exact ⟨rfl, rfl, rfl, called.symm⟩
 
 set_option maxRecDepth 10000 in
-/-- Realized recency and all five weight bounds hold at the genuinely advancing call. -/
+/-- Realized recency, the realized head and the weight bounds hold at the advancing call. -/
 theorem rule_bounds : RuleBounds execution 0 [112] (getFastConfirmationStore anchor) 0 0 4000 where
   realized := by
     intro i n fcr after head slot start balanceSource chain later call _ _ _ _ _ _ walked _
@@ -153,6 +170,19 @@ theorem rule_bounds : RuleBounds execution 0 [112] (getFastConfirmationStore anc
     · refine ⟨signedBlock.message, postState, held, ?_, ?_⟩
       · simp [running, admitted]
       · decide
+  realizedHead := by
+    -- The call is in epoch zero, so no accepted block is of an earlier epoch.
+    intro i n fcr after head slot start balanceSource chain later call _ _ _ _ _ _ _ _ member _
+      epoch block epochOk _ before
+    obtain ⟨rfl, rfl, rfl, rfl⟩ := only_call call
+    rw [call_store] at epochOk
+    simp only [Store.getCurrentStoreEpoch, call_slot, bind, Except.bind, pure, Except.pure,
+      Except.ok.injEq] at epochOk
+    subst epoch
+    have zero : computeEpochAtSlot preset (3 : Slot) = 0 := by decide
+    rw [zero] at before
+    exact (Nat.not_lt_zero (computeEpochAtSlot preset block.slot).toNat
+      (UInt64.lt_iff_toNat_lt.mp before)).elim
   walked := by
     intro i n fcr after head slot start balanceSource chain later call headOk slotOk _ _ _
       sourceOk _ confirmedMembers
@@ -164,7 +194,7 @@ theorem rule_bounds : RuleBounds execution 0 [112] (getFastConfirmationStore anc
     have source := local_checkpoint (code := .running 3000 4) sourceOk
     subst balanceSource
     rw [confirms_by_walk.1]
-    refine ⟨fun last bounded _ => weights bounded, ?_, ?_, ?_, ?_⟩
+    refine ⟨fun last bounded _ => weights bounded, ?_, ?_, ?_⟩
     · intro member inside block parent firstSlot lastSlot beforeBlock participants maximum score
         support discount adversary blockOk parentOk firstOk lastOk _ _ maximumOk scoreOk
         supportOk discountOk adversaryOk
@@ -176,29 +206,42 @@ theorem rule_bounds : RuleBounds execution 0 [112] (getFastConfirmationStore anc
         firstOk lastOk maximumOk discountOk adversaryOk thresholdOk
       have strict := UInt64.lt_iff_toNat_lt.mp exceeds
       omega
-    · intro s epochStart lastSlot participants _ pulled _ _ read
+    · -- The reserve is zero, so the honest count of the rule follows from the two duty bounds.
+      intro s target anc _ pulled _ _
       rw [call_pulled, Except.ok.injEq] at pulled
       subst s
-      change ByzantineStakeAtMost (fun v => balanceAt (state bodyRoot) v.toNat)
-        (Store.activeMembers (state bodyRoot) participants) honest 34 100
-      exact range_byzantine (code := .running 3000 4) read
-    · intro s epochStart lastSlot participants total soFar _ pulled startOk lastOk read totalOk
-        weightOk
-      rw [call_pulled, Except.ok.injEq] at pulled
-      subst s
-      have es : epochStart = 0 := (Except.ok.inj ((show
-        computeStartSlotAtEpoch preset (computeEpochAtSlot preset 3) = .ok 0 from rfl).symm.trans
-          startOk)).symm
-      have ls : lastSlot = 2 :=
-        (Except.ok.inj ((show subChecked 3 1 = .ok 2 from rfl).symm.trans lastOk)).symm
-      subst epochStart lastSlot
-      rw [call_past_members, Except.ok.injEq] at read
-      subst participants
+      rw [call_reserve]
+      have reached := execution.reachable (fun _ _ => Store.Reachable.anchor initialized) 112 0
+        (show (0 : ValidatorIndex) ∈ honest by decide)
+      have stateOk : ((execution.world 112).state 0).getPulledUpHeadState config blockRoot =
+          .ok postState := by
+        rw [call_store]
+        exact call_pulled
       have totalRead : getTotalActiveBalance postState = .ok 1600 := total_balance
-      rw [totalRead, Except.ok.injEq] at totalOk
-      rw [call_past_weight, Except.ok.injEq] at weightOk
-      subst total soFar
-      exact remaining_margin
+      have none : (running 3000 4).equivocatingIndices = [] := rfl
+      have headRead : ((execution.world 112).state 0).getHead config =
+          .ok ⟨blockRoot, .pending⟩ := by
+        rw [call_store]
+        exact call_head
+      have slotRead : ((execution.world 112).state 0).getCurrentSlot config = .ok 3 := by
+        rw [call_store]
+        exact call_slot
+      have weightRead : ((execution.world 112).state 0).computeCommitteeWeightBetweenSlots
+          blockRoot postState 0 2 = .ok 1200 := by
+        rw [call_store]
+        exact call_past_weight
+      have membersRead : ((execution.world 112).state 0).getCommitteesBetweenSlots blockRoot 0 2 =
+          .ok pastMembers := by
+        rw [call_store]
+        exact call_past_members
+      exact execution.honestTargetVotes_of_byzantineStakeAtMost initialized (fun _ _ => rfl)
+        committees_follow (by decide) (show (0 : ValidatorIndex) ∈ honest by decide)
+        (by rw [confirms_by_walk.1]; decide) ⟨_, headRead, rfl⟩ slotRead stateOk totalRead
+        (reached.getPulledUpHeadState_aligned (invariant bodyRoot) parameters.1 stateOk)
+        (by decide) rfl rfl weightRead membersRead
+        (range_byzantine (code := .running 3000 4) call_past_members)
+        (by rw [call_store, none]; simp)
+        remaining_margin
     · intro w _ k s full bounded _ _ _
       exact False.elim (no_complete_epoch bounded full)
 

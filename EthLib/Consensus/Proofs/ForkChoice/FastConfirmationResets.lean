@@ -331,7 +331,7 @@ theorem Execution.finalized_epoch_le_justified_of_carrier
     (reached.finalized_le_justified sound)
 
 /-- Importing a block includes its state's justified epoch in the store's maximum. -/
-private theorem reset_state_justified_le {store : Store preset fork}
+theorem reset_state_justified_le {store : Store preset fork}
     (reachable : Store.Reachable config anchorState anchorBlock store)
     (sound : Invariant anchorState) {root : Root} {state : BeaconState preset fork}
     (stored : store.blockStates[root]? = some state) :
@@ -1068,6 +1068,29 @@ theorem _root_.EthLib.Consensus.Store.ForwardReachable.pulled_justified_epoch_le
     pulled.currentJustifiedCheckpoint.epoch ≤ store.unrealizedJustifiedCheckpoint.epoch := by
   obtain ⟨_, _, adopted⟩ := reset_adoption_forward positive slots sound forward
   exact (adopted root state pulled stored computed).1
+
+/-- A held state of an earlier epoch than the store has its pulled-up justification justified.
+
+The store's justified checkpoint is no earlier than that pulled-up justification.
+
+The state must be of an epoch strictly before the store's current one.
+
+At the start of each epoch the store adopts the counts of the epoch before. -/
+theorem _root_.EthLib.Consensus.Store.ForwardReachable.pulled_justified_epoch_le_justified
+    {store : Store preset fork}
+    (forward : Store.ForwardReachable config anchorState anchorBlock store)
+    (positive : 0 < preset.SLOTS_PER_EPOCH.toNat) (slots : 0 < config.SLOT_DURATION_MS)
+    (sound : Invariant anchorState) {root : Root} {state pulled : BeaconState preset fork}
+    {epoch : Epoch} (epochOk : store.getCurrentStoreEpoch config = .ok epoch)
+    (stored : store.blockStates[root]? = some state)
+    (computed : processJustificationAndFinalization state = .ok pulled)
+    (old : getCurrentEpoch state < epoch) :
+    pulled.currentJustifiedCheckpoint.epoch ≤ store.justifiedCheckpoint.epoch := by
+  obtain ⟨current, currentOk, adopted⟩ := reset_adoption_forward positive slots sound forward
+  have same : computeEpochAtSlot preset current = epoch := by
+    simpa [Store.getCurrentStoreEpoch, currentOk, bind, Except.bind, pure, Except.pure]
+      using epochOk
+  exact (adopted root state pulled stored computed).2 (same ▸ old)
 
 /-- In the next epoch, each honest store has justified what an honest store saw as justified.
 
