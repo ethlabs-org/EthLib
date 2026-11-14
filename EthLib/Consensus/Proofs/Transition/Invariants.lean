@@ -217,22 +217,30 @@ theorem EpochFrame.of_validators (sizes : SameSizes state after)
 
 /-- From Altair, each byte of flags after a step is the byte at its position before, or zero.
 
+A zero appears only at a position at or past the size of the registry before the step.
+
 This holds for the flags of the previous epoch and for those of the current epoch. -/
 def FlagsKeptOrZero (state after : BeaconState preset fork) : Prop :=
   ∀ (altair : .altair ≤ fork) (position : Nat) (flags : ParticipationFlags),
     ((after.previousEpochParticipation altair).data[position]? = some flags →
-      (state.previousEpochParticipation altair).data[position]? = some flags ∨ flags = 0) ∧
+      (state.previousEpochParticipation altair).data[position]? = some flags ∨
+        flags = 0 ∧ state.validators.data.size ≤ position) ∧
     ((after.currentEpochParticipation altair).data[position]? = some flags →
-      (state.currentEpochParticipation altair).data[position]? = some flags ∨ flags = 0)
+      (state.currentEpochParticipation altair).data[position]? = some flags ∨
+        flags = 0 ∧ state.validators.data.size ≤ position)
 
 theorem FlagsKeptOrZero.refl (state : BeaconState preset fork) : FlagsKeptOrZero state state :=
   fun _ _ _ => ⟨.inl, .inl⟩
 
+/-- Two steps keep or zero each byte of flags, when the registry does not shrink between them. -/
 theorem FlagsKeptOrZero.trans {first second third : BeaconState preset fork}
-    (one : FlagsKeptOrZero first second) (two : FlagsKeptOrZero second third) :
+    (one : FlagsKeptOrZero first second) (two : FlagsKeptOrZero second third)
+    (grows : first.validators.data.size ≤ second.validators.data.size) :
     FlagsKeptOrZero first third := fun altair position flags =>
-  ⟨fun found => ((two altair position flags).1 found).elim (one altair position flags).1 .inr,
-    fun found => ((two altair position flags).2 found).elim (one altair position flags).2 .inr⟩
+  ⟨fun found => ((two altair position flags).1 found).elim (one altair position flags).1
+      fun ⟨zero, late⟩ => .inr ⟨zero, Nat.le_trans grows late⟩,
+    fun found => ((two altair position flags).2 found).elim (one altair position flags).2
+      fun ⟨zero, late⟩ => .inr ⟨zero, Nat.le_trans grows late⟩⟩
 
 /-- Two states with the same lists of flags keep each byte of flags. -/
 theorem FlagsKeptOrZero.of_eq
@@ -256,7 +264,8 @@ theorem BlockFrame.refl (state : BeaconState preset fork) : BlockFrame state sta
 
 theorem BlockFrame.trans {first second third : BeaconState preset fork}
     (one : BlockFrame first second) (two : BlockFrame second third) : BlockFrame first third :=
-  ⟨one.toFrame.trans two.toFrame, two.blockRoots.trans one.blockRoots, one.flags.trans two.flags⟩
+  ⟨one.toFrame.trans two.toFrame, two.blockRoots.trans one.blockRoots,
+    one.flags.trans two.flags one.registryGrows⟩
 
 /-- A step that keeps the registry, the number of balances and the fields of a block frame. -/
 theorem BlockFrame.of_validators (sizes : SameSizes state after)
@@ -309,7 +318,7 @@ theorem MutatorFrame.refl (state : BeaconState preset fork) : MutatorFrame state
 theorem MutatorFrame.trans {first second third : BeaconState preset fork}
     (one : MutatorFrame first second) (two : MutatorFrame second third) :
     MutatorFrame first third :=
-  ⟨one.toEpochFrame.trans two.toEpochFrame, one.flags.trans two.flags⟩
+  ⟨one.toEpochFrame.trans two.toEpochFrame, one.flags.trans two.flags one.registryGrows⟩
 
 theorem MutatorFrame.toBlockFrame (frame : MutatorFrame state after) : BlockFrame state after :=
   ⟨frame.toFrame, frame.blockRoots, frame.flags⟩
@@ -685,18 +694,22 @@ theorem frame_addValidatorToRegistry {pubkey : BLSPubkey}
   split at computed
   · simp only [addValidatorToRegistryAltair, liftAccessor_ok, bind_ok_iff, pure, Except.pure,
       Except.ok.injEq] at computed
-    obtain ⟨_, _, _, _, _, _, previous, previousOk, current, currentOk, _, _, rfl⟩ := computed
-    -- The new validator gets a zero byte of flags, and each other byte stays.
+    obtain ⟨index, indexOk, _, _, _, _, previous, previousOk, current, currentOk, _, _, rfl⟩ :=
+      computed
+    have fresh := (getIndexForNewValidator_ok_iff.mp indexOk).2
+    -- The new validator gets a zero byte of flags at the registry size, and each other byte stays.
     refine ⟨⟨⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, grows, kept, distinct, slashed, balances,
       exits, aligned⟩, rfl, rfl, rfl, rfl⟩,
       fun _ position flags => ⟨fun found => ?_, fun found => ?_⟩⟩
     · rw [setOrAppendList_getElem? previousOk] at found
       split at found
-      · exact .inr (Option.some.inj found).symm
+      · rename_i hit
+        exact .inr ⟨(Option.some.inj found).symm, by omega⟩
       · exact .inl found
     · rw [setOrAppendList_getElem? currentOk] at found
       split at found
-      · exact .inr (Option.some.inj found).symm
+      · rename_i hit
+        exact .inr ⟨(Option.some.inj found).symm, by omega⟩
       · exact .inl found
   split at computed
   · cases computed

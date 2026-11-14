@@ -9,6 +9,14 @@ Not yet released.
 
 ### Changes that break callers
 
+- In Lean, `FlagsKeptOrZero` is stronger.
+  A zero byte of flags appears only at a position at or past the size of the registry before the step.
+  So a step keeps the flags of each existing validator, or zeroes the byte of a new one.
+  `FlagsKeptOrZero.trans` takes a new premise: the registry of the first state is no larger than that of the second.
+  A caller passes that fact, for example from `Frame.registryGrows`.
+  A match on the zero case, `old | rfl`, becomes `old | ⟨rfl, -⟩`.
+  Nothing breaks in Python.
+
 - In Lean, the transaction environment gains the field `precompiles` ([#2108](https://github.com/ethereum/EthLib/issues/2108)).
   It gives the address of the precompile that a call to each address runs.
   Its default `some` keeps each precompile at its own address, so a real block is unchanged.
