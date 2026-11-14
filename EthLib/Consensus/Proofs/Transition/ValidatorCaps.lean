@@ -3,6 +3,7 @@ module
 public import EthLib.Consensus.Proofs.Transition.Totality.Genesis
 public import EthLib.Consensus.Proofs.Transition.RegistryLifecycle
 public import EthLib.Consensus.Proofs.Transition.Committees
+public import EthLib.Consensus.Proofs.Transition.RunKept
 
 /-!
 # Validator effective-balance caps
@@ -567,10 +568,7 @@ private theorem CapStep.epoch {f : Fork} {s t : BeaconState preset f}
 
 private theorem CapStep.slot {f : Fork} {s t : BeaconState preset f}
     (ok : advanceSlot config checks s = .ok t) : CapStep s t := by
-  have later : getCurrentEpoch s ≤ getCurrentEpoch t := by
-    rw [UInt64.le_iff_toNat_le]
-    simp only [getCurrentEpoch, computeEpochAtSlot, UInt64.toNat_div, advanceSlot_slot ok]
-    exact Nat.div_le_div_right (Nat.le_succ _)
+  have later := (runKept_advanceSlot ok).later
   simp only [advanceSlot, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at ok
   obtain ⟨next, _, cached, cache, advanced, advance, rfl⟩ := ok
   obtain ⟨_, _, _, _, rfl⟩ := processSlot_ok cache
