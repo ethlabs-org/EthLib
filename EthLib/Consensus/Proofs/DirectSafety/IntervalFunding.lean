@@ -3817,8 +3817,14 @@ private theorem funding_step_capacity {x y : ForkedBeaconState preset}
       simp only [fundingCarry, cachedCarry]
       omega
 
-/-- A potential grows along a run by at most the churn per epoch plus the event credits. -/
-private theorem funding_run_bound (potential : ForkedBeaconState preset → Nat)
+/-- A potential grows along a run by at most the churn per epoch plus the event credits.
+
+Each step must bound the potential after it, plus the spent part of its events.
+
+That bound is the potential before it, the churn of each epoch it enters and the gained part.
+
+The run then meets the same bound, with the epochs counted from its start. -/
+theorem funding_run_bound (potential : ForkedBeaconState preset → Nat)
     (spent gained : BalanceEvent preset → Nat) {x y : ForkedBeaconState preset}
     (tail : Run config checks x y) (early : y.fork < .glamsterdam)
     (high : Nat) (endEpoch : (getCurrentEpoch y.state).toNat ≤ high + 1)

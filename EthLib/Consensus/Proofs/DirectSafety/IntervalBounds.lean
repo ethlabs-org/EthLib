@@ -38,6 +38,38 @@ noncomputable section
 
 variable {preset : Preset} {config : Config} {checks : SignatureChecks}
 
+/-- A step from a reachable state raises the funding by at most its churn and its credits.
+
+The funding is the funded stake plus the deposit carry.
+
+The churn is that of each epoch the step enters, and the credits are its funding credits.
+
+The withdrawal delay must be at least two epochs. -/
+theorem funding_step_of_run {g a b : ForkedBeaconState preset}
+    (reachable : Run config checks g a)
+    (genesis : Genesis (config := config) (checks := checks) g)
+    (step : Step config checks a b) (before : b.fork < .glamsterdam)
+    (delay : 2 ≤ config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat)
+    (added : List (BalanceEvent preset)) (addedOk : step.balanceEvents = .ok added) :
+    fundedStake b + fundingCarry b ≤ fundedStake a + fundingCarry a +
+      ((getCurrentEpoch b.state).toNat - (getCurrentEpoch a.state).toNat) *
+        config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat +
+      (added.map fundingCredit).sum := by
+  have holds := (run_justified_separated reachable genesis).1
+  cases step with
+  | slot ok =>
+    exact funding_slot before delay holds.balancesMatch holds.exitsOrdered
+      (reachable.activationExitOrder genesis)
+      (fun witness => reachable.pendingConsolidation_invariant genesis
+        (Nat.lt_of_le_of_lt (Step.slot ok).chainStep.fork_le before) witness (by omega))
+      ok added addedOk
+  | block engine signed due ok =>
+    have processed := (applySignedBlock_ok ok).2.1
+    have bound := funding_block before holds.balancesMatch engine signed.message
+      processed added (Step.balanceEvents_block before addedOk)
+    have slot := (frame_processBlock processed).slot
+    simpa only [getCurrentEpoch, slot, Nat.sub_self, Nat.zero_mul, Nat.add_zero] using bound
+
 /-- With a withdrawal delay of at least two epochs, active stake fits the funded window.
 
 The run reaches `x` from genesis, and `y` is a later state at an epoch at most `high + 1`.
@@ -59,21 +91,7 @@ theorem active_stake_le_window {g x y : ForkedBeaconState preset}
     ((validatorKeys_prefix_and_distinct_of_genesis_chainSteps initialized
       (shared.append tail).chainSteps).2) high endEpoch events replayed
   intro a b pre step before added addedOk
-  have reachable := shared.append pre
-  have holds := (run_justified_separated reachable genesis).1
-  cases step with
-  | slot ok =>
-    exact funding_slot before delay holds.balancesMatch holds.exitsOrdered
-      (reachable.activationExitOrder genesis)
-      (fun witness => reachable.pendingConsolidation_invariant genesis
-        (Nat.lt_of_le_of_lt (Step.slot ok).chainStep.fork_le before) witness (by omega))
-      ok added addedOk
-  | block engine signed due ok =>
-    have processed := (applySignedBlock_ok ok).2.1
-    have bound := funding_block before holds.balancesMatch engine signed.message
-      processed added (Step.balanceEvents_block before addedOk)
-    have slot := (frame_processBlock processed).slot
-    simpa only [getCurrentEpoch, slot, Nat.sub_self, Nat.zero_mul, Nat.add_zero] using bound
+  exact funding_step_of_run (shared.append pre) genesis step before delay added addedOk
 
 private theorem registry_fold_bound {fork : Fork} {α : Type}
     {action : BeaconState preset fork → α → Except TransitionError (BeaconState preset fork)}

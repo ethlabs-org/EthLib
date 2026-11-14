@@ -1716,16 +1716,16 @@ private theorem windowActivations_le_countPath {g x z : ForkedBeaconState preset
     _) fun _ => Nat.le_refl _
 
 
-/-! ## The ceiling of the active stake -/
+/-! ## The ceiling of the funding -/
 
-/-- The active stake at a state `y` of a branch from `v` is at most its start bound plus the churn.
+/-- The funding at a state `y` of a branch from `v` is at most its start bound plus the churn.
 
-`start` bounds the funded stake and the deposit carry at `v`.
+The funding is the funded stake plus the deposit carry, and `start` bounds it at `v`.
 
-Each epoch from `v` to `high + 1` adds its deposit churn, and the replay adds its funding credits.
+Each epoch from `v` to `y` adds its deposit churn, and the replay adds its funding credits.
 
 From an Electra `x`, `v` is `x` and `start` is `fundedStake x + fundingCarry x`. -/
-private theorem activeStake_le_ceiling {g v y : ForkedBeaconState preset}
+private theorem funding_le_ceiling {g v y : ForkedBeaconState preset}
     (shared : Run config checks g v) (tail : Run config checks v y)
     (genesis : Genesis (config := config) (checks := checks) g)
     (early : y.fork < .glamsterdam)
@@ -1733,13 +1733,15 @@ private theorem activeStake_le_ceiling {g v y : ForkedBeaconState preset}
     (high : Nat) (endEpoch : (getCurrentEpoch y.state).toNat ≤ high + 1)
     (events : List (BalanceEvent preset)) (replayed : tail.balanceEvents high = .ok events)
     {start : Nat} (funded : fundedStake v + fundingCarry v ≤ start) :
-    Models.stake (effectiveWeight y.state) (activeKeys y.state) ≤
-      start + driftHorizon v high * config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat +
+    fundedStake y + fundingCarry y ≤
+      start + ((getCurrentEpoch y.state).toNat - (getCurrentEpoch v.state).toNat) *
+        config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat +
         (events.map fundingCredit).sum := by
-  have bound := active_stake_le_window shared tail genesis early delay high endEpoch events
-    replayed
-  simp only [activeStakeWindow, delay, ↓reduceIte, depositWindow] at bound
-  simp only [fundingCarry] at funded
+  have bound := funding_run_bound (fun s => fundedStake s + fundingCarry s) (fun _ => 0)
+    fundingCredit tail early high endEpoch events replayed (fun pre step early added ok => by
+      simpa using funding_step_of_run (shared.append pre) genesis step early delay added ok)
+  rw [show ∀ l : List (BalanceEvent preset), (l.map fun _ => 0).sum = 0 by simp,
+    Nat.add_zero] at bound
   omega
 
 end EthLib.Consensus.DirectSafety
