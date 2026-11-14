@@ -14,8 +14,10 @@ import EthLib.Base.Proofs.MapM
 import EthLib.Base.Proofs.Uint64
 import EthLib.Consensus.Proofs.Participation
 import EthLib.Consensus.Proofs.Transition.ActiveKept
+import EthLib.Consensus.Proofs.Transition.BalanceNotRaisedBlock
 import EthLib.Consensus.Proofs.Transition.BlockRewards
 import EthLib.Consensus.Proofs.Transition.EpochParticipation
+import EthLib.Consensus.Proofs.Transition.Totality.Inactivity
 import Mathlib.Algebra.BigOperators.Ring.Finset
 import Mathlib.Tactic.Ring
 
@@ -1282,7 +1284,7 @@ The condition also carries two fallbacks, both set through `forkEpochs = 1`.
 
 They are for a state before Altair and for a state that cannot reach Electra.
 
-A change that drops the condition for crossing windows must keep both in a clause of their own. -/
+Dropping the condition for crossing windows would also drop both fallbacks. -/
 private abbrev aprioriGuard (preset : Preset) (config : Config)
     (stake slashed penalised count score slack carry pending scheduled departures partials budget
       inactive funded horizon forkEpochs : Nat) : Prop :=
@@ -1557,6 +1559,227 @@ private noncomputable def aprioriDriftAt (config : Config) (x : ForkedBeaconStat
     (consolidationQueueStart x - (getCurrentEpoch x.state).toNat)
     (queueCarry x high) (boundaryLoad x (driftHorizon x high)) (slashableInactiveCount x)
     (fundedStake x + previousOnlyStake x) (driftHorizon x high) (forkEpochs config x high)
+
+/-! ## The inactivity scores of a branch
+
+From Altair, the score of a key rises by at most the score bias at each update.
+
+Every other step keeps the scores at the positions that exist before it.
+
+So a key of the registry at `x` has a score of at most `σ + bias · t` after `t` updates.
+
+`σ` is the start score `startScore`, at least each score at `x`.
+-/
+
+/-- From Altair, each score of a state at a position below `n` is at most `bound`. -/
+private def ScoresBelow (n bound : Nat) (s : ForkedBeaconState preset) : Prop :=
+  ∀ altair : .altair ≤ s.fork, ∀ i < n, ∀ score : UInt64,
+    (s.state.inactivityScores altair).data[i]? = some score → score.toNat ≤ bound
+
+/-- A step that keeps the scores below `n` keeps their bound. -/
+private theorem ScoresBelow.of_kept {f : Fork} {s t : BeaconState preset f} {n bound : Nat}
+    (kept : ∀ i < n, ScoreKept i s t) (below : ScoresBelow n bound ⟨f, s⟩) :
+    ScoresBelow n bound ⟨f, t⟩ := fun altair i member score found =>
+  below altair i member score (by rw [← kept i member altair]; exact found)
+
+/-- An update of the scores raises each one by at most the score bias. -/
+private theorem ScoresBelow.inactivity {f : Fork} {s t : BeaconState preset f} {n bound : Nat}
+    (altair : .altair ≤ f) (computed : processInactivityUpdates config s altair = .ok t)
+    (below : ScoresBelow n bound ⟨f, s⟩) :
+    ScoresBelow n (bound + config.INACTIVITY_SCORE_BIAS.toNat) ⟨f, t⟩ := by
+  intro _ i member score found
+  by_cases genesis : getCurrentEpoch s = GENESIS_EPOCH
+  · rw [processInactivityUpdates_genesis altair genesis, Except.ok.injEq] at computed
+    subst computed
+    exact (below altair i member score found).trans (Nat.le_add_right _ _)
+  obtain ⟨eligible, _, kept, changed⟩ := processInactivityUpdates_scores genesis computed
+  by_cases listed : ∃ index ∈ eligible, index.toNat = i
+  · obtain ⟨index, chosen, rfl⟩ := listed
+    obtain ⟨_, _, old, new, _, _, oldFound, newFound, value⟩ := changed index chosen
+    obtain rfl : new = score := Option.some.inj (newFound.symm.trans found)
+    have := below altair _ member old oldFound
+    rw [value]
+    split_ifs <;> omega
+  · simp only [not_exists, not_and] at listed
+    rw [kept i listed] at found
+    exact (below altair i member score found).trans (Nat.le_add_right _ _)
+
+/-- Justification keeps the scores, and the update after it raises each by the bias at most. -/
+private theorem ScoresBelow.pass {f : Fork} {s cached just pass : BeaconState preset f}
+    {n bound : Nat} (altair : .altair ≤ f) (below : ScoresBelow n bound ⟨f, s⟩)
+    (cachedOk : processSlot s = .ok cached)
+    (justified : processJustificationAndFinalization cached = .ok just)
+    (scored : processInactivityUpdates config just altair = .ok pass) :
+    ScoresBelow n (bound + config.INACTIVITY_SCORE_BIAS.toNat) ⟨f, pass⟩ := by
+  obtain ⟨_, _, _, _, rfl⟩ := processSlot_ok cachedOk
+  refine ScoresBelow.inactivity altair scored (ScoresBelow.of_kept (fun i _ =>
+    ScoreKept.of_scores (processJustificationAndFinalization_inactivityScores justified) i) ?_)
+  exact ScoresBelow.of_kept (fun i _ => ScoreKept.of_scores rfl i) below
+
+/-- An upgrade before Gloas from Altair keeps the scores, unless it is the upgrade to Electra. -/
+private theorem upgradeNext_scores {pre : ForkedBeaconState preset}
+    {post : {post : ForkedBeaconState preset // pre.fork < post.fork}}
+    (computed : upgradeNext config checks pre = .ok post) (altair : .altair ≤ pre.fork)
+    (early : post.val.fork < .glamsterdam) (era : .pectra ≤ pre.fork ∨ post.val.fork < .pectra)
+    (later : .altair ≤ post.val.fork) :
+    (post.val.state.inactivityScores later).data = (pre.state.inactivityScores altair).data := by
+  obtain ⟨fork, state⟩ := pre
+  cases fork
+  case altair | bellatrix | shapella =>
+    simp only [upgradeNext, pure, Except.pure, Except.ok.injEq] at computed
+    subst computed
+    simp [carryFields, carryList, altair]
+  case pectra =>
+    simp only [upgradeNext, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at computed
+    obtain ⟨_, upgraded, rfl⟩ := computed
+    simp only [upgradeToFulu, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at upgraded
+    obtain ⟨_, _, rfl⟩ := upgraded
+    simp [carryFields, carryList, altair]
+  case dencun =>
+    simp only [upgradeNext, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at computed
+    obtain ⟨_, _, rfl⟩ := computed
+    dsimp only at era
+    exact absurd era (by decide)
+  case fusaka | glamsterdam =>
+    simp only [upgradeNext, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at computed
+    obtain ⟨_, _, rfl⟩ := computed
+    dsimp only at early
+    exact absurd early (by decide)
+  all_goals
+    dsimp only at altair
+    first
+    | exact absurd altair (by decide)
+    | (simp only [upgradeNext] at computed; cases computed)
+
+/-- The upgrades of a slot step keep the bound of the scores below `n`, before Gloas. -/
+private theorem ScoresBelow.upgrades {s t : ForkedBeaconState preset} {n bound : Nat}
+    (computed : processUpgrades config checks s = .ok t) (altair : .altair ≤ s.fork)
+    (early : t.fork < .glamsterdam) (era : .pectra ≤ s.fork ∨ t.fork < .pectra)
+    (below : ScoresBelow n bound s) : ScoresBelow n bound t := by
+  refine (processUpgrades_induction (property := fun u => u.fork < .glamsterdam →
+      (.pectra ≤ s.fork ∨ u.fork < .pectra) → s.fork ≤ u.fork ∧ ScoresBelow n bound u)
+    (fun {pre post} held stepOk postEarly postEra => ?_)
+    (fun _ _ => ⟨Nat.le_refl _, below⟩) computed early era).2
+  have rising := post.property
+  obtain ⟨low, preBelow⟩ := held (Nat.lt_trans rising postEarly)
+    (postEra.imp id fun before => Nat.lt_trans rising before)
+  refine ⟨Nat.le_trans low (Nat.le_of_lt rising), fun later i member score found => ?_⟩
+  have same := upgradeNext_scores stepOk (Nat.le_trans altair low) postEarly
+    (postEra.imp (fun electra => Nat.le_trans electra low) id) later
+  rw [same] at found
+  exact preBelow (Nat.le_trans altair low) i member score found
+
+/-- A step from Altair keeps the bound of the scores below `n`, or raises it by the bias.
+
+It raises it only when it ends an epoch, and so moves the epoch on by one. -/
+private theorem ScoresBelow.step {m l : ForkedBeaconState preset} (step : Step config checks m l)
+    {n bound : Nat} (altair : .altair ≤ m.fork) (inside : n ≤ m.state.validators.data.size)
+    (early : l.fork < .glamsterdam) (era : .pectra ≤ m.fork ∨ l.fork < .pectra)
+    (below : ScoresBelow n bound m) :
+    ScoresBelow n (bound + config.INACTIVITY_SCORE_BIAS.toNat *
+      ((getCurrentEpoch l.state).toNat - (getCurrentEpoch m.state).toNat)) l := by
+  cases step with
+  | @block f before after engine signed due ok =>
+    -- A block keeps its slot and the scores of the registry before it.
+    have processed := (applySignedBlock_ok ok).2.1
+    have same : getCurrentEpoch after = getCurrentEpoch before := by
+      simp only [getCurrentEpoch, (frame_processBlock processed).slot]
+    show ScoresBelow n (bound + config.INACTIVITY_SCORE_BIAS.toNat *
+      ((getCurrentEpoch after).toNat - (getCurrentEpoch before).toNat)) ⟨_, after⟩
+    rw [same, Nat.sub_self, Nat.mul_zero, Nat.add_zero]
+    exact ScoresBelow.of_kept (fun i member =>
+      scoreKept_processBlock processed (Nat.lt_of_lt_of_le member inside)) below
+  | slot ok =>
+    obtain ⟨advanced, advanceOk, upgrades⟩ := bind_ok_iff.mp ok
+    obtain ⟨next, cached, epoched, sum, cachedOk, epochedOk, rfl⟩ := advanceSlot_ok advanceOk
+    have lSlot : l.state.slot = next := processUpgrades_slot upgrades
+    have lEpoch : (getCurrentEpoch l.state).toNat =
+        next.toNat / preset.SLOTS_PER_EPOCH.toNat := by
+      rw [getCurrentEpoch_toNat, lSlot]
+    refine ScoresBelow.upgrades upgrades altair early era ?_
+    rw [lEpoch, getCurrentEpoch_toNat]
+    unfold epochIfLast at epochedOk
+    split at epochedOk
+    · -- The last slot of an epoch updates the scores once, and moves the epoch on by one.
+      rename_i last
+      rw [nextSlot_epoch_of_boundary sum last, Nat.add_sub_cancel_left, Nat.mul_one]
+      have epochRun : processEpochAltair config checks cached altair = .ok epoched := by
+        unfold processEpoch at epochedOk
+        simpa only [altair, ↓reduceDIte] using epochedOk
+      have registry : cached.validators = m.state.validators := by
+        obtain ⟨_, _, _, _, rfl⟩ := processSlot_ok cachedOk
+        rfl
+      intro later i member score found
+      obtain ⟨just, pass, justified, scored, kept⟩ := scoreKept_processEpochAltair epochRun
+        (index := i) (by rw [registry]; exact Nat.lt_of_lt_of_le member inside)
+      exact ScoresBelow.pass altair below cachedOk justified scored later i member score
+        (by rw [← kept later]; exact found)
+    · -- Another slot keeps the epoch and the scores.
+      rename_i within
+      cases epochedOk
+      rw [nextSlot_epoch_of_inside sum within, Nat.sub_self, Nat.mul_zero, Nat.add_zero]
+      obtain ⟨_, _, _, _, rfl⟩ := processSlot_ok cachedOk
+      exact ScoresBelow.of_kept (fun i _ => ScoreKept.of_scores rfl i) below
+
+/-- Each score of a list is at most the largest one. -/
+private theorem le_foldr_max : ∀ {values : List Nat} {value : Nat}, value ∈ values →
+    value ≤ values.foldr max 0
+  | _ :: _, _, .head _ => Nat.le_max_left _ _
+  | _ :: _, _, .tail _ member => (le_foldr_max member).trans (Nat.le_max_right _ _)
+
+/-- On a branch from `x` from Altair, the scores of the registry at `x` follow `σ + bias · t`.
+
+`t` is the number of epochs from `x`, so the number of updates of the scores so far. -/
+private theorem scoresBelow_run {x y : ForkedBeaconState preset} (tail : Run config checks x y)
+    (altair : .altair ≤ x.fork) (early : y.fork < .glamsterdam)
+    (era : .pectra ≤ x.fork ∨ y.fork < .pectra) :
+    ScoresBelow x.state.validators.data.size (startScore config x +
+      config.INACTIVITY_SCORE_BIAS.toNat *
+        ((getCurrentEpoch y.state).toNat - (getCurrentEpoch x.state).toNat)) y := by
+  induction tail with
+  | nil =>
+    intro _ i _ score found
+    rw [Nat.sub_self, Nat.mul_zero, Nat.add_zero]
+    have member := le_foldr_max (List.mem_map_of_mem (f := UInt64.toNat)
+      (Array.mem_toList_iff.mpr (Array.mem_of_getElem? found)))
+    unfold startScore
+    simp only [altair, ↓reduceDIte]
+    exact member.trans (Nat.le_max_left _ _)
+  | @snoc m l pre step ih =>
+    have mEarly := Nat.lt_of_le_of_lt step.chainStep.fork_le early
+    have forks := fork_le_of_chainSteps pre.chainSteps
+    have before := ih mEarly
+      (era.imp id fun later => Nat.lt_of_le_of_lt step.chainStep.fork_le later)
+    have moved := ScoresBelow.step step (Nat.le_trans altair forks)
+      (registryGrows_of_chainSteps pre.chainSteps) early
+      (era.imp (fun electra => Nat.le_trans electra forks) id) before
+    have first := UInt64.le_iff_toNat_le.mp (currentEpoch_le_of_chainSteps pre.chainSteps)
+    have second := UInt64.le_iff_toNat_le.mp step.chainStep.currentEpoch_le
+    have epochs : (getCurrentEpoch m.state).toNat - (getCurrentEpoch x.state).toNat +
+        ((getCurrentEpoch l.state).toNat - (getCurrentEpoch m.state).toNat) =
+          (getCurrentEpoch l.state).toNat - (getCurrentEpoch x.state).toNat := by omega
+    rwa [Nat.add_assoc, ← Nat.mul_add, epochs] at moved
+
+/-- S2's score bound: after the update of pass `s`, each score of the registry at `x` is small.
+
+The pass ends epoch `s` of a branch from `x` from Altair, in the slot step from its last state `z`.
+
+The score is at most `σ + bias · (s + 1)`, with `σ` the start score that `f` reads. -/
+private theorem referenceScores_le {x z : ForkedBeaconState preset} (head : Run config checks x z)
+    (altair : .altair ≤ x.fork) (early : z.fork < .glamsterdam)
+    (era : .pectra ≤ x.fork ∨ z.fork < .pectra)
+    {cached just pass : BeaconState preset z.fork} (cachedOk : processSlot z.state = .ok cached)
+    (justified : EpochStage.Edge config checks .justification cached just)
+    (scored : EpochStage.Edge config checks .inactivity just pass)
+    {i : Nat} (inside : i < x.state.validators.data.size) (later : .altair ≤ z.fork)
+    {score : UInt64} (found : (pass.inactivityScores later).data[i]? = some score) :
+    score.toNat ≤ startScore config x + config.INACTIVITY_SCORE_BIAS.toNat *
+      ((getCurrentEpoch z.state).toNat - (getCurrentEpoch x.state).toNat + 1) := by
+  have scoredOk : processInactivityUpdates config just later = .ok pass := by
+    simpa only [EpochStage.Edge, later, ↓reduceDIte] using scored
+  have bound := ScoresBelow.pass later (scoresBelow_run head altair early era) cachedOk
+    justified scoredOk later i inside score found
+  rwa [Nat.mul_add, Nat.mul_one, ← Nat.add_assoc]
 
 /-! ## The departures of a branch
 
@@ -2110,6 +2333,16 @@ private theorem sourceCredits_append (source : BalanceSource)
       sourceCredits source first + sourceCredits source second := by
   simp [sourceCredits]
 
+/-- The debit limits of the events of one source. -/
+private def sourceDebits (source : BalanceSource) (events : List (BalanceEvent preset)) : Nat :=
+  (events.map fun e => if e.source = source then e.debitLimit else 0).sum
+
+private theorem sourceDebits_append (source : BalanceSource)
+    (first second : List (BalanceEvent preset)) :
+    sourceDebits source (first ++ second) =
+      sourceDebits source first + sourceDebits source second := by
+  simp [sourceDebits]
+
 private theorem finRange_flags :
     List.finRange PARTICIPATION_FLAG_WEIGHTS.length =
       [⟨0, by decide⟩, ⟨1, by decide⟩, ⟨2, by decide⟩] := rfl
@@ -2325,7 +2558,9 @@ private theorem flagPotential_le_of_flags {f : Fork} {a b : BeaconState preset f
 
 /-- The facts that a replay of a block keeps, from the start `b` of the block.
 
-The potential rises by `448` times the proposer credits, and no sync credit is recorded yet.
+The potential rises by `448` times the proposer credits.
+
+No sync credit and no sync debit is recorded yet.
 
 The registry does not shrink. -/
 private def BlockKept {f : Fork} (b : BeaconState preset f)
@@ -2333,22 +2568,25 @@ private def BlockKept {f : Fork} (b : BeaconState preset f)
     (base : ValidatorIndex → Nat) (pre : BalanceReplay preset f) : Prop :=
   flagPotential previous current base ⟨f, b⟩ + 448 * sourceCredits .rewards pre.2 ≤
       flagPotential previous current base ⟨f, pre.1⟩ ∧
-    sourceCredits .sync pre.2 = 0 ∧ b.validators.data.size ≤ pre.1.validators.data.size
+    sourceCredits .sync pre.2 = 0 ∧ sourceDebits .sync pre.2 = 0 ∧
+    b.validators.data.size ≤ pre.1.validators.data.size
 
-/-- A replayed step that forms a block frame and records neither reward nor sync credit. -/
+/-- A replayed step that forms a block frame and records no reward, sync credit or sync debit. -/
 private theorem BlockKept.step {f : Fork} {b : BeaconState preset f}
     {previous current : Finset ValidatorIndex} {base : ValidatorIndex → Nat}
     (inside : ∀ i ∈ previous ∪ current, i.toNat < b.validators.data.size)
     {pre : BalanceReplay preset f} {u : BeaconState preset f} {added : List (BalanceEvent preset)}
     (held : BlockKept b previous current base pre) (frame : BlockFrame pre.1 u)
-    (quiet : sourceCredits .rewards added = 0) (silent : sourceCredits .sync added = 0) :
+    (quiet : sourceCredits .rewards added = 0) (silent : sourceCredits .sync added = 0)
+    (mute : sourceDebits .sync added = 0) :
     BlockKept b previous current base (u, pre.2 ++ added) := by
   have raised := flagPotential_le_of_flags (base := base) frame.flags
-    fun i member => Nat.lt_of_lt_of_le (inside i member) held.2.2
-  refine ⟨?_, ?_, held.2.2.trans frame.registryGrows⟩
+    fun i member => Nat.lt_of_lt_of_le (inside i member) held.2.2.2
+  refine ⟨?_, ?_, ?_, held.2.2.2.trans frame.registryGrows⟩
   · simp only [sourceCredits_append, quiet, Nat.add_zero]
     exact held.1.trans raised
   · simp only [sourceCredits_append, silent, held.2.1]
+  · simp only [sourceDebits_append, mute, held.2.2.1]
 
 private theorem BlockKept.carry {f : Fork} {b : BeaconState preset f}
     {previous current : Finset ValidatorIndex} {base : ValidatorIndex → Nat}
@@ -2359,7 +2597,7 @@ private theorem BlockKept.carry {f : Fork} {b : BeaconState preset f}
     BlockKept b previous current base post := by
   simp only [carryBalance, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at ok
   obtain ⟨u, computed, rfl⟩ := ok
-  have kept := held.step inside (frame _ _ computed) (added := []) rfl rfl
+  have kept := held.step inside (frame _ _ computed) (added := []) rfl rfl rfl
   rwa [List.append_nil] at kept
 
 private theorem BlockKept.record {f : Fork} {b : BeaconState preset f}
@@ -2375,7 +2613,7 @@ private theorem BlockKept.record {f : Fork} {b : BeaconState preset f}
   simp only [recordBalance, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at ok
   obtain ⟨_, _, u, computed, rfl⟩ := ok
   exact held.step inside (frame _ _ computed) (by simp [sourceCredits, other.1])
-    (by simp [sourceCredits, other.2])
+    (by simp [sourceCredits, other.2]) (by simp [sourceDebits, other.2])
 
 private theorem BlockKept.fold {f : Fork} {b : BeaconState preset f}
     {previous current : Finset ValidatorIndex} {base : ValidatorIndex → Nat} {α : Type}
@@ -2439,6 +2677,8 @@ Its sync credit, times `28` per slot of an epoch, is at most the issuance envelo
 
 That total is the one after the block, which the sync aggregate reads.
 
+Its sync debit is at most its sync credit.
+
 Each attestation must raise the potential, at every state that keeps the start of the block. -/
 private theorem block_credits_le {f : Fork} {b t : BeaconState preset f}
     (early : f < .glamsterdam) (electra : .pectra ≤ f)
@@ -2458,7 +2698,9 @@ private theorem block_credits_le {f : Fork} {b t : BeaconState preset f}
     flagPotential previous current base ⟨f, b⟩ + 448 * sourceCredits .rewards events ≤
         flagPotential previous current base ⟨f, t⟩ ∧
       sourceCredits .sync events * (28 * preset.SLOTS_PER_EPOCH.toNat) ≤
-        issuanceEnvelope preset total.toNat ∧ 0 < preset.SLOTS_PER_EPOCH.toNat := by
+        issuanceEnvelope preset total.toNat ∧
+      sourceDebits .sync events ≤ sourceCredits .sync events ∧
+      0 < preset.SLOTS_PER_EPOCH.toNat := by
   have bellatrix : .bellatrix ≤ f := Nat.le_trans (by decide) electra
   have altair : .altair ≤ f := Nat.le_trans (by decide) electra
   simp only [blockBalanceReplay, bellatrix, electra, altair, ↓reduceDIte, bind_ok_iff,
@@ -2468,7 +2710,8 @@ private theorem block_credits_le {f : Fork} {b t : BeaconState preset f}
     exited, exitedOk, changed, changedOk, requested, requestedOk, withdrawn, withdrawnOk,
     consolidated, consolidatedOk, syncOk⟩ := replay
   have start : BlockKept b previous current base (b, []) ∧ SiteKept b (b, []) :=
-    ⟨⟨by simp [sourceCredits], rfl, Nat.le_refl _⟩, effectiveKept_refl _, .refl _, Nat.le_refl _⟩
+    ⟨⟨by simp [sourceCredits], rfl, rfl, Nat.le_refl _⟩, effectiveKept_refl _, .refl _,
+      Nat.le_refl _⟩
   -- The steps before the attestations keep the effective balances and the activity.
   have one := SiteKept.carry inside (fun _ _ ok => ⟨frame_processBlockHeader ok,
     effectiveKept_data (by obtain ⟨_, _, same⟩ := processBlockHeader_eq ok; rw [same]),
@@ -2506,7 +2749,7 @@ private theorem block_credits_le {f : Fork} {b t : BeaconState preset f}
       obtain ⟨_, creditOk, rfl, rfl⟩ := limitsOk
       have raised := attest prior.2.1 prior.2.2.1 processed creditOk
       have before := prior.1.1
-      refine ⟨⟨?_, ?_, prior.1.2.2.trans (frame_processAttestation processed).registryGrows⟩,
+      refine ⟨⟨?_, ?_, ?_, prior.1.2.2.2.trans (frame_processAttestation processed).registryGrows⟩,
         prior.2.step (effectiveKept_data (by rw [(processAttestation_registry processed).1]))
           (activeStep_processAttestation processed)
           (frame_processAttestation processed).registryGrows _⟩
@@ -2515,7 +2758,9 @@ private theorem block_credits_le {f : Fork} {b t : BeaconState preset f}
           List.sum_nil, Nat.add_zero] at before ⊢
         omega
       · simp only [sourceCredits_append, prior.1.2.1]
-        simp [sourceCredits]) six attestedOk
+        simp [sourceCredits]
+      · simp only [sourceDebits_append, prior.1.2.2.1]
+        simp [sourceDebits]) six attestedOk
   -- The steps after the attestations are block frames that record no credit of either kind.
   have eight := BlockKept.fold (fun _ _ _ computed prior => prior.record inside
     (fun _ _ ok => frame_processDeposit ok) computed ⟨by decide, by decide⟩) depositedOk seven.1
@@ -2553,7 +2798,7 @@ private theorem block_credits_le {f : Fork} {b t : BeaconState preset f}
       show (WEIGHT_DENOMINATOR - PROPOSER_WEIGHT).toNat = 56 from rfl]
     omega
   obtain ⟨bound, positive⟩ := syncCredit_le rewardOk share totalEnd
-  refine ⟨?_, ?_, positive⟩
+  refine ⟨?_, ?_, ?_, positive⟩
   · calc _ = flagPotential previous current base ⟨f, b⟩ +
           448 * sourceCredits .rewards consolidated.2 := by
           simp [sourceCredits]
@@ -2561,6 +2806,11 @@ private theorem block_credits_le {f : Fork} {b t : BeaconState preset f}
       _ = _ := rfl
   · simp only [sourceCredits_append, thirteen.2.1, Nat.zero_add]
     simpa [sourceCredits] using bound
+  · -- The sync debit is the members' rewards, and the credit adds the proposer's shares.
+    simp only [sourceCredits_append, sourceDebits_append, thirteen.2.1, thirteen.2.2.1,
+      Nat.zero_add]
+    simpa [sourceCredits, sourceDebits] using
+      Nat.mul_le_mul_left preset.SYNC_COMMITTEE_SIZE.toNat (Nat.le_add_right _ proposer.toNat)
 
 /-- A step of a run inside an epoch from Electra raises the flag potential by its proposer credits.
 
@@ -2572,7 +2822,9 @@ A slot step records no credit and moves the slot on, keeping the slot of the lat
 
 A block step stays at its slot, after the slot of the latest header, and makes that header its own.
 
-Its sync credit, times `28` per slot of an epoch, is at most the issuance envelope of the total. -/
+Its sync credit, times `28` per slot of an epoch, is at most the issuance envelope of the total.
+
+The sync debit of each step is at most its sync credit. -/
 private theorem step_credits {r m l : ForkedBeaconState preset} (pre : Run config checks r m)
     (step : Step config checks m l) (electra : .pectra ≤ r.fork) (early : l.fork < .glamsterdam)
     (same : getCurrentEpoch l.state = getCurrentEpoch r.state)
@@ -2587,6 +2839,7 @@ private theorem step_credits {r m l : ForkedBeaconState preset} (pre : Run confi
     {added : List (BalanceEvent preset)} (addedOk : step.balanceEvents = .ok added) :
     flagPotential previous current base m + 448 * sourceCredits .rewards added ≤
         flagPotential previous current base l ∧
+      sourceDebits .sync added ≤ sourceCredits .sync added ∧
       ((sourceCredits .sync added = 0 ∧ l.state.slot.toNat = m.state.slot.toNat + 1 ∧
           l.state.latestBlockHeader.slot = m.state.latestBlockHeader.slot) ∨
         (sourceCredits .sync added * (28 * preset.SLOTS_PER_EPOCH.toNat) ≤
@@ -2639,7 +2892,8 @@ private theorem step_credits {r m l : ForkedBeaconState preset} (pre : Run confi
     subst kept none
     obtain ⟨root, _, header⟩ := advanceSlot_latestBlockHeader advanceOk
     obtain ⟨_, _, _, _, rfl⟩ := processSlot_ok cachedOk
-    refine ⟨Nat.le_of_eq ?_, .inl ⟨by simp [sourceCredits], by rw [← advancedEq]; exact sum,
+    refine ⟨Nat.le_of_eq ?_, by simp [sourceDebits, sourceCredits],
+      .inl ⟨by simp [sourceCredits], by rw [← advancedEq]; exact sum,
       by rw [header]; split <;> rfl⟩⟩
     simp only [sourceCredits, List.map_nil, List.sum_nil, Nat.mul_zero, Nat.add_zero]
     rw [← advancedEq]
@@ -2706,11 +2960,12 @@ private theorem step_credits {r m l : ForkedBeaconState preset} (pre : Run confi
         rw [← effective i.toNat small, ← siteEffective i.toNat (Nat.lt_of_lt_of_le small sizeR)]
         simp [effectiveAt, found]
       rw [value, read, baseEq]
-    obtain ⟨potential, sync, positive⟩ := block_credits_le mEarly mElectra replay
+    obtain ⟨potential, sync, mute, positive⟩ := block_credits_le mEarly mElectra replay
       (fun i member => Nat.lt_of_lt_of_le (insideR i member) sizeR) attest totalAfter
     obtain ⟨atSlot, newer, -⟩ := processBlock_parentRoot processed
     obtain ⟨_, -, header⟩ := latestBlockHeader_processBlock processed
-    exact ⟨potential, .inr ⟨sync, positive, afterSlot, atSlot ▸ UInt64.lt_iff_toNat_lt.mp newer,
+    exact ⟨potential, mute, .inr ⟨sync, positive, afterSlot,
+      atSlot ▸ UInt64.lt_iff_toNat_lt.mp newer,
       by rw [header, afterSlot, atSlot]⟩⟩
 
 /-- The flag potential is at most `54` times the base rewards of the two sets of keys. -/
@@ -2736,6 +2991,8 @@ The sets are the keys active at the previous epoch of `r`, and those active at i
 
 The sync credits, times `28`, are at most the issuance envelope of the total active balance of `r`.
 
+So are the sync debits, since each block debits at most what it credits.
+
 A slot holds at most one block, so the epoch has at most `SLOTS_PER_EPOCH` of them. -/
 private theorem epoch_credits_le {r s : ForkedBeaconState preset} (inner : Run config checks r s)
     (electra : .pectra ≤ r.fork) (early : s.fork < .glamsterdam)
@@ -2749,7 +3006,8 @@ private theorem epoch_credits_le {r s : ForkedBeaconState preset} (inner : Run c
           effectiveAt r i.toNat) / preset.EFFECTIVE_BALANCE_INCREMENT.toNat +
         (∑ i ∈ (getActiveValidatorIndices r.state (getCurrentEpoch r.state)).toFinset,
           effectiveAt r i.toNat) / preset.EFFECTIVE_BALANCE_INCREMENT.toNat) ∧
-      sourceCredits .sync events * 28 ≤ issuanceEnvelope preset total.toNat := by
+      sourceCredits .sync events * 28 ≤ issuanceEnvelope preset total.toNat ∧
+      sourceDebits .sync events * 28 ≤ issuanceEnvelope preset total.toNat := by
   set previous := (getActiveValidatorIndices r.state (getPreviousEpoch r.state)).toFinset
   set current := (getActiveValidatorIndices r.state (getCurrentEpoch r.state)).toFinset
   let base (i : ValidatorIndex) : Nat :=
@@ -2760,6 +3018,7 @@ private theorem epoch_credits_le {r s : ForkedBeaconState preset} (inner : Run c
       ∀ found, tail.balanceEvents high = .ok found →
       flagPotential previous current base r + 448 * sourceCredits .rewards found ≤
           flagPotential previous current base u ∧
+        sourceDebits .sync found ≤ sourceCredits .sync found ∧
         ∃ count, sourceCredits .sync found * (28 * preset.SLOTS_PER_EPOCH.toNat) ≤
             count * issuanceEnvelope preset total.toNat ∧
           count + r.state.slot.toNat ≤ u.state.slot.toNat + 1 ∧
@@ -2771,8 +3030,8 @@ private theorem epoch_credits_le {r s : ForkedBeaconState preset} (inner : Run c
     | nil =>
       intro _ _ found ok
       cases ok
-      exact ⟨by simp [sourceCredits], 0, by simp [sourceCredits], by omega, by omega,
-        .inl (by simp [sourceCredits])⟩
+      exact ⟨by simp [sourceCredits], by simp [sourceDebits], 0, by simp [sourceCredits],
+        by omega, by omega, .inl (by simp [sourceCredits])⟩
     | @snoc m l pre step ih =>
       intro lEarly lEpoch found ok
       have mEarly := Nat.lt_of_le_of_lt step.chainStep.fork_le lEarly
@@ -2781,9 +3040,10 @@ private theorem epoch_credits_le {r s : ForkedBeaconState preset} (inner : Run c
           (currentEpoch_le_of_chainSteps pre.chainSteps)
       simp only [Run.balanceEvents, bind_ok_iff] at ok
       obtain ⟨prior, priorOk, rest⟩ := ok
-      obtain ⟨potential, count, sync, counted, full, positive⟩ := ih mEarly mEpoch prior priorOk
+      obtain ⟨potential, debits, count, sync, counted, full, positive⟩ :=
+        ih mEarly mEpoch prior priorOk
       obtain ⟨added, addedOk⟩ := step.balanceEvents_ok lEarly
-      obtain ⟨raised, kind⟩ := step_credits pre step electra lEarly lEpoch totalOk per
+      obtain ⟨raised, mute, kind⟩ := step_credits pre step electra lEarly lEpoch totalOk per
         (previous := previous) (current := current) (base := base) rfl rfl (fun _ => rfl) addedOk
       -- The step's events count only if it starts by `high + 1`.
       have events : ∃ taken, found = prior ++ taken ∧
@@ -2800,8 +3060,12 @@ private theorem epoch_credits_le {r s : ForkedBeaconState preset} (inner : Run c
         rcases choice with rfl | rfl
         · simp [sourceCredits]
         · exact ⟨Nat.le_refl _, Nat.le_refl _⟩
-      simp only [sourceCredits_append]
-      refine ⟨by omega, ?_⟩
+      have takenMute : sourceDebits .sync taken ≤ sourceCredits .sync taken := by
+        rcases choice with rfl | rfl
+        · simp [sourceDebits]
+        · exact mute
+      simp only [sourceCredits_append, sourceDebits_append]
+      refine ⟨by omega, by omega, ?_⟩
       rcases kind with ⟨silent, slot, header⟩ | ⟨blockSync, slotsPositive, slot, newer, header⟩
       · have none : sourceCredits .sync taken = 0 := by omega
         refine ⟨count, by rw [none, Nat.add_zero]; exact sync, by omega, by omega, ?_⟩
@@ -2818,23 +3082,10 @@ private theorem epoch_credits_le {r s : ForkedBeaconState preset} (inner : Run c
           omega
         · intro _
           rw [header]
-  obtain ⟨potential, count, sync, counted, -, positive⟩ :=
+  obtain ⟨potential, debits, count, sync, counted, -, positive⟩ :=
     key inner early same events replayed
-  refine ⟨?_, ?_⟩
-  · -- The potential at `s` is at most `54` base rewards for each key.
-    have most := flagPotential_le previous current base s
-    have stakes (keys : Finset ValidatorIndex) : ∑ i ∈ keys, base i ≤
-        perIncrement.toNat *
-          ((∑ i ∈ keys, effectiveAt r i.toNat) / preset.EFFECTIVE_BALANCE_INCREMENT.toNat) := by
-      rw [← Finset.sum_mul, Nat.mul_comm]
-      exact Nat.mul_le_mul_left _ (sum_div_le _ _ _)
-    have one := stakes previous
-    have two := stakes current
-    have joined := Nat.mul_le_mul_left 54 (Nat.add_le_add one two)
-    rw [← Nat.mul_add] at joined
-    rw [Nat.mul_assoc]
-    omega
-  · -- The blocks of the epoch are at most one per slot.
+  have syncBound : sourceCredits .sync events * 28 ≤ issuanceEnvelope preset total.toNat := by
+    -- The blocks of the epoch are at most one per slot.
     rcases positive with zero | slotsPositive
     · rw [zero]
       exact Nat.zero_le _
@@ -2854,6 +3105,20 @@ private theorem epoch_credits_le {r s : ForkedBeaconState preset} (inner : Run c
         _ ≤ slots * issuanceEnvelope preset total.toNat := Nat.mul_le_mul_right _ fewer
         _ = issuanceEnvelope preset total.toNat * slots := Nat.mul_comm _ _
     exact Nat.le_of_mul_le_mul_right scaled slotsPositive
+  refine ⟨?_, syncBound, (Nat.mul_le_mul_right 28 debits).trans syncBound⟩
+  -- The potential at `s` is at most `54` base rewards for each key.
+  have most := flagPotential_le previous current base s
+  have stakes (keys : Finset ValidatorIndex) : ∑ i ∈ keys, base i ≤
+      perIncrement.toNat *
+        ((∑ i ∈ keys, effectiveAt r i.toNat) / preset.EFFECTIVE_BALANCE_INCREMENT.toNat) := by
+    rw [← Finset.sum_mul, Nat.mul_comm]
+    exact Nat.mul_le_mul_left _ (sum_div_le _ _ _)
+  have one := stakes previous
+  have two := stakes current
+  have joined := Nat.mul_le_mul_left 54 (Nat.add_le_add one two)
+  rw [← Nat.mul_add] at joined
+  rw [Nat.mul_assoc]
+  omega
 
 /-! ## The active-stake ceiling S1
 
@@ -3134,7 +3399,8 @@ private theorem epoch_issuance_le {r s w : ForkedBeaconState preset}
     rw [totalValue]
     exact Nat.lt_of_lt_of_le inc (Nat.le_max_left _ _)
   obtain ⟨perIncrement, per⟩ := perIncrement_exists positive scaled
-  obtain ⟨proposers, sync⟩ := epoch_credits_le inner electra sEarly same totalOk per high insideOk
+  obtain ⟨proposers, sync, -⟩ :=
+    epoch_credits_le inner electra sEarly same totalOk per high insideOk
   -- The slot from `s` runs the epoch transition, whose replay holds the rewards pass.
   obtain ⟨advanced, advanceOk, upgrades⟩ := bind_ok_iff.mp boundary
   have advanceCopy := advanceOk
@@ -3215,7 +3481,9 @@ The run to `r` issues at most twice the envelope of each earlier ceiling.
 
 At `r` the keys active at the previous and at the current epoch weigh at most its ceiling.
 
-The ratio of the ceiling to the total active balance is read only before the epoch of `y`. -/
+The ratio of the ceiling to the total active balance is read only before the epoch of `y`.
+
+At `y` the keys active at the current and at the previous epoch weigh at most that ceiling. -/
 private theorem apriori_prefix_induction {g v y : ForkedBeaconState preset}
     (shared : Run config checks g v) (genesis : Genesis (config := config) (checks := checks) g)
     (tail : Run config checks v y) (electra : .pectra ≤ v.fork) (early : y.fork < .glamsterdam)
@@ -3241,6 +3509,9 @@ private theorem apriori_prefix_induction {g v y : ForkedBeaconState preset}
         2 * ceiling ((getCurrentEpoch u.state).toNat - (getCurrentEpoch v.state).toNat) ≤
           3 * total.toNat) :
     ∑ i ∈ (getActiveValidatorIndices y.state (getCurrentEpoch y.state)).toFinset,
+        effectiveAt y i.toNat ≤
+      ceiling ((getCurrentEpoch y.state).toNat - (getCurrentEpoch v.state).toNat) ∧
+    ∑ i ∈ (getActiveValidatorIndices y.state (getPreviousEpoch y.state)).toFinset,
         effectiveAt y i.toNat ≤
       ceiling ((getCurrentEpoch y.state).toNat - (getCurrentEpoch v.state).toNat) := by
   have mono : Monotone ceiling := monotone_nat_of_le_succ fun t =>
@@ -3366,29 +3637,27 @@ private theorem apriori_prefix_induction {g v y : ForkedBeaconState preset}
       · simp only [previousStake, nextIndex]
         omega
       · simpa only [issued, nextIndex] using nextIssued
-  obtain ⟨r, toR, inner, -, -, -, -, same, current, -, -⟩ :=
+  obtain ⟨r, toR, inner, -, -, -, -, same, current, previous, -⟩ :=
     key tail early endEpoch (Nat.le_refl _)
-  -- The stake active at `y` is the stake active at `r`, the start of its epoch.
+  -- The stakes active at `y` are the stakes active at `r`, the start of its epoch.
   have rElectra : .pectra ≤ r.fork := Nat.le_trans electra (fork_le_of_chainSteps toR.chainSteps)
   have rEarly := Nat.lt_of_le_of_lt (fork_le_of_chainSteps inner.chainSteps) early
-  have keys : getActiveValidatorIndices y.state (getCurrentEpoch y.state) =
-      getActiveValidatorIndices r.state (getCurrentEpoch r.state) := by
-    rw [same]
-    exact (activeKept_of_chainSteps inner.chainSteps).getActiveValidatorIndices_eq
-      (getCurrentEpoch_le_activityFixedEpoch _)
   have weights := run_same_epoch_effective inner rElectra early same
-  have equal : ∑ i ∈ (getActiveValidatorIndices y.state (getCurrentEpoch y.state)).toFinset,
-      effectiveAt y i.toNat = currentStake r := by
-    rw [keys]
+  have equal (epoch : Epoch) (low : epoch ≤ getCurrentEpoch r.state) :
+      ∑ i ∈ (getActiveValidatorIndices y.state epoch).toFinset, effectiveAt y i.toNat =
+        ∑ i ∈ (getActiveValidatorIndices r.state epoch).toFinset, effectiveAt r i.toNat := by
+    rw [(activeKept_of_chainSteps inner.chainSteps).getActiveValidatorIndices_eq
+      (UInt64.le_trans low (getCurrentEpoch_le_activityFixedEpoch _))]
     refine Finset.sum_congr rfl fun i member => weights i.toNat ?_
     obtain ⟨_, found, _⟩ := (mem_getActiveValidatorIndices (r.state.validators.bound rEarly)).mp
       (List.mem_toFinset.mp member)
     exact (Array.getElem?_eq_some_iff.mp found).1
-  rw [equal]
+  have previousSame : getPreviousEpoch y.state = getPreviousEpoch r.state := by
+    simp only [getPreviousEpoch, same]
   have epochs : (getCurrentEpoch y.state).toNat - (getCurrentEpoch v.state).toNat = index r := by
     simp only [index, same]
-  rw [epochs]
-  exact current
+  rw [epochs, same, equal _ (UInt64.le_refl _), previousSame, equal _ (getPreviousEpoch_le _)]
+  exact ⟨current, previous⟩
 
 /-- The ceiling `T⁺` of a branch from `x` through `high + 1`, with every observable read at `x`. -/
 private noncomputable def ceilingAt (config : Config) (x : ForkedBeaconState preset)
@@ -3425,6 +3694,8 @@ private theorem ceilingAt_mono {x : ForkedBeaconState preset} (electra : .pectra
 
 `T⁺` is read at the epoch of the state, and the stake is the effective stake of the active keys.
 
+The keys active at the previous epoch of the state weigh at most the same `T⁺`.
+
 The hypotheses are left to the floor S2 and to the allowance SW.
 
 The floor `T⁻` bounds the total active balance of each state of an earlier epoch from below.
@@ -3453,6 +3724,10 @@ private theorem activeStake_le_ceiling {g x y : ForkedBeaconState preset}
         floorAt config x high
           ((getCurrentEpoch u.state).toNat - (getCurrentEpoch x.state).toNat) ≤ total.toNat) :
     ∑ i ∈ (getActiveValidatorIndices y.state (getCurrentEpoch y.state)).toFinset,
+        effectiveAt y i.toNat ≤
+      ceilingAt config x high
+        ((getCurrentEpoch y.state).toNat - (getCurrentEpoch x.state).toNat) ∧
+    ∑ i ∈ (getActiveValidatorIndices y.state (getPreviousEpoch y.state)).toFinset,
         effectiveAt y i.toNat ≤
       ceilingAt config x high
         ((getCurrentEpoch y.state).toNat - (getCurrentEpoch x.state).toNat) := by
