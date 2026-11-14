@@ -329,31 +329,37 @@ theorem getElem?_toNat_of_ofNatChecked {position : Fin state.validators.data.siz
   rw [getElem?_toNat_eq_of_ofNatChecked checked]
   simp
 
+/-- Queueing a consolidation keeps the size of the registry and every balance. -/
+private theorem queueConsolidation_kept {electra : .pectra ≤ fork} {sourceIndex : ValidatorIndex}
+    {source : Validator} {targetIndex : ValidatorIndex}
+    (computed :
+      queueConsolidation config state electra sourceIndex source targetIndex = .ok after) :
+    after.validators.data.size = state.validators.data.size ∧
+      after.balances = state.balances := by
+  simp only [queueConsolidation, bind_ok_iff, liftAccessor_ok, pure, Except.pure,
+    Except.ok.injEq] at computed
+  obtain ⟨⟨_, _⟩, churned, _, _, _, set, _, _, rfl⟩ := computed
+  obtain ⟨_, validators, balances⟩ := computeConsolidationEpochAndUpdateChurn_earliest churned
+  have sizes := (sameSizes_setValidator set).1
+  obtain ⟨_, rfl⟩ := setValidator_ok set
+  exact ⟨sizes.trans (congrArg (·.data.size) validators), balances⟩
+
 /-- Queueing a consolidation keeps the sizes of the registry and the balances. -/
 theorem sameSizes_queueConsolidation {electra : .pectra ≤ fork} {sourceIndex : ValidatorIndex}
     {source : Validator} {targetIndex : ValidatorIndex}
     (computed :
       queueConsolidation config state electra sourceIndex source targetIndex = .ok after) :
-    SameSizes state after := by
-  simp only [queueConsolidation, bind_ok_iff, liftAccessor_ok, pure, Except.pure] at computed
-  obtain ⟨⟨_, _⟩, churned, computed⟩ := computed
-  simp only [Except.ok.injEq] at computed
-  obtain ⟨_, _, _, set, _, _, rfl⟩ := computed
-  obtain ⟨_, validators, balances⟩ := computeConsolidationEpochAndUpdateChurn_earliest churned
-  exact (SameSizes.trans ⟨congrArg (·.data.size) validators, congrArg (·.data.size) balances⟩
-    (sameSizes_setValidator set)).trans ⟨rfl, rfl⟩
+    SameSizes state after :=
+  have kept := queueConsolidation_kept computed
+  ⟨kept.1, congrArg (·.data.size) kept.2⟩
 
 /-- Queueing a consolidation keeps every balance. -/
 theorem queueConsolidation_balances {electra : .pectra ≤ fork} {sourceIndex : ValidatorIndex}
     {source : Validator} {targetIndex : ValidatorIndex}
     (computed :
       queueConsolidation config state electra sourceIndex source targetIndex = .ok after) :
-    after.balances = state.balances := by
-  simp only [queueConsolidation, bind_ok_iff, liftAccessor_ok, pure, Except.pure,
-    Except.ok.injEq] at computed
-  obtain ⟨⟨_, _⟩, churned, _, _, _, set, _, _, rfl⟩ := computed
-  obtain ⟨_, rfl⟩ := setValidator_ok set
-  exact (computeConsolidationEpochAndUpdateChurn_earliest churned).2.2
+    after.balances = state.balances :=
+  (queueConsolidation_kept computed).2
 
 /-- A consolidation request keeps the sizes of the registry and the balances. -/
 theorem sameSizes_processConsolidationRequest {electra : .pectra ≤ fork}
