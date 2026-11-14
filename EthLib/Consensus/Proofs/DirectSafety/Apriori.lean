@@ -18,6 +18,7 @@ import EthLib.Consensus.Proofs.Transition.BalanceNotRaisedBlock
 import EthLib.Consensus.Proofs.Transition.BlockRewards
 import EthLib.Consensus.Proofs.Transition.EpochParticipation
 import EthLib.Consensus.Proofs.Transition.Totality.Inactivity
+import EthLib.Consensus.Proofs.Transition.ValidatorCaps
 import Mathlib.Algebra.BigOperators.Ring.Finset
 import Mathlib.Tactic.Ring
 
@@ -3839,6 +3840,224 @@ private theorem consolidationChurn_mono {low high : Nat} (le : low ≤ high) :
     max_le_max_left _ (Nat.mul_le_mul_right _ (Nat.div_le_div_right (Nat.div_le_div_right le)))
   unfold consolidationChurn exitChurn
   omega
+
+/-- A delayed-slashing site keeps the withdrawal bound of a newly slashed Run prefix.
+
+The epoch prefix starts after slot processing, which keeps the validator registry. -/
+private theorem newly_slashed_epoch_prefix {x m : ForkedBeaconState preset}
+    (pre : Run config checks x m) (caps : CapOrder preset) (early : m.fork < .glamsterdam)
+    (delay : 0 < config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat)
+    {s t : BeaconState preset m.fork}
+    (same : s.validators = m.state.validators)
+    (trace : EpochTrace (EpochStage.action config checks)
+      [.justification, .inactivity, .rewards, .registry] s t)
+    (i : Nat) (v u w : Validator)
+    (initial : x.state.validators.data[i]? = some v)
+    (middle : m.state.validators.data[i]? = some u)
+    (site : t.validators.data[i]? = some w)
+    (unslashed : v.slashed = false) (slashed : u.slashed = true) :
+    w.slashed = true ∧ w.exitEpoch = u.exitEpoch ∧
+      (getCurrentEpoch x.state).toNat + preset.EPOCHS_PER_SLASHINGS_VECTOR.toNat ≤
+        w.withdrawableEpoch.toNat := by
+  have lower := pre.newly_slashed_withdrawableEpoch caps.activation caps.compounding early
+    delay i v u initial middle unslashed slashed
+  have located : s.validators.data[i]? = some u := by rwa [same]
+  have kept := trace.slashed_withdrawableEpoch_mono i u w located site slashed lower.1
+  exact ⟨kept.1, kept.2.1, lower.2.trans (UInt64.le_iff_toNat_le.mp kept.2.2)⟩
+
+/-- A withdrawal bound excludes the delayed penalty throughout the short window. -/
+private theorem newly_slashed_epoch_not_due (start epoch : Epoch) (w : Validator)
+    (lower : start.toNat + preset.EPOCHS_PER_SLASHINGS_VECTOR.toNat ≤
+      w.withdrawableEpoch.toNat)
+    (short : epoch.toNat < start.toNat +
+      preset.EPOCHS_PER_SLASHINGS_VECTOR.toNat -
+        (preset.EPOCHS_PER_SLASHINGS_VECTOR / 2).toNat) :
+    ¬ SlashingPenaltyDue preset epoch w := by
+  intro due
+  have equal := congrArg UInt64.toNat due.2
+  rw [UInt64.toNat_add] at equal
+  have bounded := Nat.mod_le (epoch.toNat +
+    (preset.EPOCHS_PER_SLASHINGS_VECTOR / 2).toNat) (2 ^ 64)
+  omega
+
+/-- Per-key accounting retains gross routed debits and the high-water mark at its first slashing.
+
+The high-water mark starts at the larger initial balance and effective balance. -/
+private structure FloorAccount where
+  balance : Nat
+  debt : Nat
+  high : Nat
+  slashedHigh : Option Nat
+
+/-- The initial slashing allowance also pays for effective balance gained before the slashing. -/
+private def FloorAccount.allowance (a : FloorAccount) (base quotient : Nat) : Nat :=
+  match a.slashedHigh with
+  | none => 0
+  | some high => base / quotient + (high - base)
+
+/-- The balance and gross debits support the running high-water mark above the initial base. -/
+private def FloorAccount.Holds (a : FloorAccount) (low base quotient : Nat) : Prop :=
+  base ≤ a.high ∧ (∀ high ∈ a.slashedHigh, base ≤ high ∧ high ≤ a.high) ∧
+    low + (a.high - base) ≤ a.balance + a.debt + a.allowance base quotient
+
+/-- The initial account has neither routed debits nor a slashing charge. -/
+private theorem FloorAccount.initial (effective balance quotient : Nat) :
+    (FloorAccount.mk balance 0 (max effective balance) none).Holds
+      (min effective balance) (max effective balance) quotient := by
+  simp only [Holds, allowance, Option.mem_def, reduceCtorEq,
+    Nat.sub_self, Nat.add_zero]
+  exact ⟨Nat.le_refl _, by simp, Nat.min_le_right _ _⟩
+
+/-- A credit raises the balance without paying back any earlier routed debit. -/
+private theorem FloorAccount.credit {a : FloorAccount} {low base quotient balance : Nat}
+    (held : a.Holds low base quotient) (raised : a.balance ≤ balance) :
+    { a with balance := balance }.Holds low base quotient := by
+  obtain ⟨high, slashed, bound⟩ := held
+  refine ⟨high, slashed, ?_⟩
+  change low + (a.high - base) ≤ balance + a.debt + a.allowance base quotient
+  omega
+
+/-- A routed debit raises the gross debit account by the amount lost. -/
+private theorem FloorAccount.debit {a : FloorAccount} {low base quotient balance debit : Nat}
+    (held : a.Holds low base quotient) (paid : a.balance ≤ balance + debit) :
+    { a with balance := balance, debt := a.debt + debit }.Holds low base quotient := by
+  obtain ⟨high, slashed, bound⟩ := held
+  refine ⟨high, slashed, ?_⟩
+  change low + (a.high - base) ≤ balance + (a.debt + debit) + a.allowance base quotient
+  omega
+
+/-- A sweep leaves enough balance for every effective balance reached so far. -/
+private theorem FloorAccount.sweep {a : FloorAccount} {low base quotient balance : Nat}
+    (held : a.Holds low base quotient) (initial : low ≤ base) (floor : a.high ≤ balance) :
+    { a with balance := balance }.Holds low base quotient := by
+  obtain ⟨high, slashed, _⟩ := held
+  refine ⟨high, slashed, ?_⟩
+  change low + (a.high - base) ≤ balance + a.debt + a.allowance base quotient
+  omega
+
+/-- An effective update can raise the high-water mark only to a balance that backs it. -/
+private theorem FloorAccount.update {a : FloorAccount} {low base quotient effective : Nat}
+    (held : a.Holds low base quotient) (initial : low ≤ base)
+    (backed : effective ≤ a.balance) :
+    { a with high := max a.high effective }.Holds low base quotient := by
+  obtain ⟨high, slashed, bound⟩ := held
+  refine ⟨high.trans (Nat.le_max_left _ _), fun h member =>
+    ⟨(slashed h member).1, (slashed h member).2.trans (Nat.le_max_left _ _)⟩, ?_⟩
+  change low + (max a.high effective - base) ≤
+    a.balance + a.debt + a.allowance base quotient
+  rcases Nat.le_total effective a.high with below | above
+  · simpa only [Nat.max_eq_left below] using bound
+  · rw [Nat.max_eq_right above]
+    omega
+
+/-- A first slashing spends its one-time allowance and freezes the excess at that point. -/
+private theorem FloorAccount.slash {a : FloorAccount} {low base quotient balance penalty : Nat}
+    (held : a.Holds low base quotient) (first : a.slashedHigh = none)
+    (paid : a.balance ≤ balance + penalty)
+    (bounded : penalty ≤ base / quotient + (a.high - base)) :
+    { a with balance := balance, slashedHigh := some a.high }.Holds low base quotient := by
+  obtain ⟨high, _, bound⟩ := held
+  simp only [allowance, first, Nat.add_zero] at bound
+  refine ⟨high, ?_, ?_⟩
+  · intro h member
+    have eq : a.high = h := Option.some.inj member
+    subst h
+    exact ⟨high, Nat.le_refl _⟩
+  · change low + (a.high - base) ≤
+      balance + a.debt + (base / quotient + (a.high - base))
+    omega
+
+/-- The frozen excess can be dropped from the invariant, but the gross routed debits remain. -/
+private theorem FloorAccount.floor {a : FloorAccount} {low base quotient : Nat}
+    (held : a.Holds low base quotient) :
+    low ≤ a.balance + a.debt + if a.slashedHigh.isSome then base / quotient else 0 := by
+  obtain ⟨high, slashed, bound⟩ := held
+  cases eq : a.slashedHigh with
+  | none => simp only [allowance, eq] at bound; simpa [eq] using (by omega :
+      low ≤ a.balance + a.debt)
+  | some h =>
+    have ordered := slashed h eq
+    simp only [allowance, eq] at bound
+    simp only [Option.isSome_some, ↓reduceIte]
+    omega
+
+/-- An accounting trace classifies only the effects relevant to the per-key floor.
+
+The event bridge supplies these cases from the actual replay and effective updates. -/
+private inductive FloorTrace (low base quotient : Nat) : FloorAccount → FloorAccount → Prop where
+  | nil : FloorTrace low base quotient a a
+  | credit : FloorTrace low base quotient a b → b.balance ≤ balance →
+      FloorTrace low base quotient a { b with balance := balance }
+  | debit : FloorTrace low base quotient a b → b.balance ≤ balance + debit →
+      FloorTrace low base quotient a { b with balance := balance, debt := b.debt + debit }
+  | sweep : FloorTrace low base quotient a b → b.high ≤ balance →
+      FloorTrace low base quotient a { b with balance := balance }
+  | update : FloorTrace low base quotient a b → effective ≤ b.balance →
+      FloorTrace low base quotient a { b with high := max b.high effective }
+  | slash : FloorTrace low base quotient a b → b.slashedHigh = none →
+      b.balance ≤ balance + penalty → penalty ≤ base / quotient + (b.high - base) →
+      FloorTrace low base quotient a { b with balance := balance, slashedHigh := some b.high }
+
+/-- Each classified effect keeps the prefix-sensitive invariant. -/
+private theorem FloorTrace.holds {low base quotient : Nat} {a b : FloorAccount}
+    (trace : FloorTrace low base quotient a b) (initial : low ≤ base)
+    (held : a.Holds low base quotient) : b.Holds low base quotient := by
+  induction trace with
+  | nil => exact held
+  | credit _ raised ih => exact FloorAccount.credit ih raised
+  | debit _ paid ih => exact FloorAccount.debit ih paid
+  | sweep _ floor ih => exact FloorAccount.sweep ih initial floor
+  | update _ backed ih => exact FloorAccount.update ih initial backed
+  | slash _ first paid bounded ih => exact FloorAccount.slash ih first paid bounded
+
+/-- The classified trace gives a balance floor with one slashing charge, not one per update. -/
+private theorem FloorTrace.floor {effective balance quotient : Nat} {last : FloorAccount}
+    (trace : FloorTrace (min effective balance) (max effective balance) quotient
+      ⟨balance, 0, max effective balance, none⟩ last) :
+    min effective balance ≤ last.balance + last.debt +
+      if last.slashedHigh.isSome then max effective balance / quotient else 0 :=
+  FloorAccount.floor (trace.holds ((Nat.min_le_left _ _).trans (Nat.le_max_left _ _))
+    (FloorAccount.initial effective balance quotient))
+
+/-- The actual delayed-slashing event is a credit-or-frame case of the accounting trace. -/
+private theorem delayed_slashing_floor_trace {x m n : ForkedBeaconState preset}
+    (pre : Run config checks x m) (step : Step config checks m n)
+    (caps : CapOrder preset) (early : n.fork < .glamsterdam) (holds : Invariant m.state)
+    (delay : 0 < config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat)
+    {s t : BeaconState preset m.fork} (same : s.validators = m.state.validators)
+    (stages : EpochTrace (EpochStage.action config checks)
+      [.justification, .inactivity, .rewards, .registry] s t)
+    (events : List (BalanceEvent preset)) (replayed : step.balanceEvents = .ok events)
+    (event : BalanceEvent preset) (member : event ∈ events) (source : event.source = .slashings)
+    (atSite : event.before = ⟨m.fork, t⟩)
+    (i : ValidatorIndex) (v u w : Validator)
+    (initial : x.state.validators.data[i.toNat]? = some v)
+    (middle : m.state.validators.data[i.toNat]? = some u)
+    (site : t.validators.data[i.toNat]? = some w)
+    (unslashed : v.slashed = false) (slashed : u.slashed = true)
+    (short : (getCurrentEpoch t).toNat < (getCurrentEpoch x.state).toNat +
+      preset.EPOCHS_PER_SLASHINGS_VECTOR.toNat -
+        (preset.EPOCHS_PER_SLASHINGS_VECTOR / 2).toNat)
+    {b : FloorAccount} {effective initialBalance quotient : Nat}
+    (trace : FloorTrace (min effective initialBalance) (max effective initialBalance) quotient
+      ⟨initialBalance, 0, max effective initialBalance, none⟩ b)
+    (balance : b.balance = actualBalanceAt event.before i.toNat) :
+    min effective initialBalance ≤ actualBalanceAt event.after i.toNat + b.debt +
+      if b.slashedHigh.isSome then max effective initialBalance / quotient else 0 := by
+  have beforeEarly := Nat.lt_of_le_of_lt step.chainStep.fork_le early
+  have kept := newly_slashed_epoch_prefix pre caps beforeEarly delay same stages
+    i.toNat v u w initial middle site unslashed slashed
+  have notDue := newly_slashed_epoch_not_due (getCurrentEpoch x.state)
+    (getCurrentEpoch t) w kept.2.2 short
+  obtain ⟨_, _, _, _, _, nondebit, _⟩ :=
+    step.balanceEvents_sites early holds caps.compounding replayed event member
+  apply FloorTrace.floor (last := { b with balance := actualBalanceAt event.after i.toNat })
+  apply FloorTrace.credit trace
+  rw [balance]
+  apply nondebit source i w
+  · rw [atSite]; exact site
+  · exact kept.1
+  · rw [atSite]; exact notDue
 
 /-- S3's two hypotheses follow from S1 and the count path.
 
