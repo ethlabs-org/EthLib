@@ -1128,15 +1128,18 @@ private def leakDivisor (preset : Preset) (config : Config) : Nat :=
 
 Before the fork they are the growth of the active-count path.
 
-From Electra each needs `MAX_EFFECTIVE_BALANCE` of funding.
+From Electra, keys already scheduled at `x` count separately.
 
-That funding comes from `Pre`, from `K`, or from the deposit churn of each epoch.
+Each other activation needs `MAX_EFFECTIVE_BALANCE` of funding.
+
+That funding comes from unassigned Pre, from `K`, or from the deposit churn of each epoch.
 
 A key made eligible before Electra has at least `MAX_EFFECTIVE_BALANCE` effective. -/
 private def windowActivations (preset : Preset) (config : Config)
     (count scheduled pending carry horizon forkEpochs : Nat) : Nat :=
   if 0 < forkEpochs then countPath config (count + scheduled) (horizon + 1) - count
-  else (pending + carry + config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat * (horizon + 2)) /
+  else scheduled +
+    (pending + carry + config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat * (horizon + 2)) /
     preset.MAX_EFFECTIVE_BALANCE.toNat
 
 /-- The fixed whistleblower allowance `Ω` of the window.
@@ -1345,24 +1348,24 @@ The floor `T⁻` behind `D` takes the departure budget `Dnew` at its start, not 
 
 Without the guard, `f` is the unslashed stake `W - Z`, which makes the bound trivial. -/
 private def aprioriDrift (preset : Preset) (config : Config)
-    (stake slashed penalised count high score slack excess carry pending scheduled departures
-      partials credits exitEnd consolidationEnd queued boundary inactive funded
+    (stake slashed penalised count high score slack excess carry pending unassigned scheduled
+      departures partials credits exitEnd consolidationEnd queued boundary inactive funded
       horizon forkEpochs : Nat) : Nat :=
   -- Dnew: the queue carry and the churn of each epoch from the ends of the queues.
-  let queues := departureBudget preset config count scheduled pending carry inactive funded
+  let queues := departureBudget preset config count scheduled unassigned carry inactive funded
     queued exitEnd consolidationEnd horizon forkEpochs
-  if aprioriGuard preset config stake slashed penalised count score slack carry pending scheduled
+  if aprioriGuard preset config stake slashed penalised count score slack carry unassigned scheduled
       departures partials queues inactive funded horizon forkEpochs then
     let increment := preset.EFFECTIVE_BALANCE_INCREMENT.toNat
     let down := preset.downwardBand
-    let ceiling := stakeCeiling preset config count scheduled pending carry inactive funded
+    let ceiling := stakeCeiling preset config count scheduled unassigned carry inactive funded
       horizon forkEpochs
     let last := ceiling (horizon + 1)
     let exits := exitFlow preset config count scheduled horizon forkEpochs ceiling
     let consolidations := consolidationFlow preset config horizon forkEpochs ceiling
-    let floor := windowFloor preset config stake slashed penalised count score slack carry pending
-      scheduled departures partials queues inactive funded horizon forkEpochs
-    let allowance := whistleblowerAllowance preset config count scheduled pending carry inactive
+    let floor := windowFloor preset config stake slashed penalised count score slack carry
+      unassigned scheduled departures partials queues inactive funded horizon forkEpochs
+    let allowance := whistleblowerAllowance preset config count scheduled unassigned carry inactive
       horizon forkEpochs
     let dep := queues + partials + departures
     -- D: the non-slashing penalties of the epochs `0` to `H`.
@@ -1450,6 +1453,16 @@ private def preActiveStake (x : ForkedBeaconState preset) : Nat :=
         (min (actualBalanceAt x i) (withdrawalMaxEffectiveBalance preset x.fork v).toNat)
     else 0).sum
 
+/-- `PreU`: Pre restricted to validators whose activation epoch is not assigned at `x`. -/
+private def unassignedPreStake (x : ForkedBeaconState preset) : Nat :=
+  (x.state.validators.data.toList.zipIdx.map fun (v, i) =>
+    if !isActiveValidator v (getCurrentEpoch x.state) &&
+        decide (getCurrentEpoch x.state < v.exitEpoch) &&
+        v.activationEpoch == FAR_FUTURE_EPOCH then
+      max (effectiveAt x i)
+        (min (actualBalanceAt x i) (withdrawalMaxEffectiveBalance preset x.fork v).toNat)
+    else 0).sum
+
 /-- `Sx`: the number of validators whose activation epoch is set and after `x`. -/
 private def scheduledCount (x : ForkedBeaconState preset) : Nat :=
   x.state.validators.data.toList.countP fun v =>
@@ -1532,10 +1545,10 @@ private def forkEpochs (config : Config) (x : ForkedBeaconState preset) (high : 
 private noncomputable def aprioriGuardAt (config : Config) (x : ForkedBeaconState preset)
     (high : Nat) : Prop :=
   aprioriGuard preset config (refStake x) (slashedActiveStake x) (slashedPenalisedStake x)
-    (refCount x) (startScore config x) (startSlack x) (fundingCarry x) (preActiveStake x)
+    (refCount x) (startScore config x) (startSlack x) (fundingCarry x) (unassignedPreStake x)
     (scheduledCount x) (scheduledDepartures x (driftHorizon x high))
     (duePartials x (driftHorizon x high))
-    (departureBudget preset config (refCount x) (scheduledCount x) (preActiveStake x)
+    (departureBudget preset config (refCount x) (scheduledCount x) (unassignedPreStake x)
       (fundingCarry x) (slashableInactiveCount x) (fundedStake x + previousOnlyStake x)
       (queueCarry x high) (exitQueueStart x - (getCurrentEpoch x.state).toNat)
       (consolidationQueueStart x - (getCurrentEpoch x.state).toNat)
@@ -1552,7 +1565,7 @@ private noncomputable def aprioriDriftAt (config : Config) (x : ForkedBeaconStat
     (high : Nat) : Nat :=
   aprioriDrift preset config (refStake x) (slashedActiveStake x) (slashedPenalisedStake x)
     (refCount x) (highKeys x) (startScore config x) (startSlack x) (initialExcess x)
-    (fundingCarry x) (preActiveStake x) (scheduledCount x)
+    (fundingCarry x) (preActiveStake x) (unassignedPreStake x) (scheduledCount x)
     (scheduledDepartures x (driftHorizon x high)) (duePartials x (driftHorizon x high))
     (dueCredits x (driftHorizon x high))
     -- `eX` and `eC`: the start of each queue less the current epoch, zero before Electra.
@@ -1844,11 +1857,11 @@ private theorem departures_le_budget {g x y : ForkedBeaconState preset}
       tail.Contains step → (getCurrentEpoch u.state).toNat ≤ high + 1 → .pectra ≤ u.fork →
         ∀ rate : Gwei, getConsolidationChurnLimit config u.state = .ok rate →
         rate.toNat ≤ consolidationChurn preset config
-          (stakeCeiling preset config (refCount x) (scheduledCount x) (preActiveStake x)
+          (stakeCeiling preset config (refCount x) (scheduledCount x) (unassignedPreStake x)
             (fundingCarry x) (slashableInactiveCount x) (fundedStake x + previousOnlyStake x)
             (driftHorizon x high) (forkEpochs config x high) (driftHorizon x high + 1))) :
     ((tail.departureCharges.filter fun c => c.epoch ≤ high + 1).map (·.amount)).sum ≤
-      departureBudget preset config (refCount x) (scheduledCount x) (preActiveStake x)
+      departureBudget preset config (refCount x) (scheduledCount x) (unassignedPreStake x)
         (fundingCarry x) (slashableInactiveCount x) (fundedStake x + previousOnlyStake x)
         (queueCarry x high)
         (exitQueueStart x - (getCurrentEpoch x.state).toNat)
@@ -1877,7 +1890,7 @@ private theorem departures_le_budget {g x y : ForkedBeaconState preset}
   generalize countPath config (refCount x + scheduledCount x) (driftHorizon x high + 1) = A
     at bound ⊢
   generalize consolidationChurn preset config (stakeCeiling preset config (refCount x)
-    (scheduledCount x) (preActiveStake x) (fundingCarry x) (slashableInactiveCount x)
+    (scheduledCount x) (unassignedPreStake x) (fundingCarry x) (slashableInactiveCount x)
     (fundedStake x + previousOnlyStake x) (driftHorizon x high) (forkEpochs config x high)
     (driftHorizon x high + 1)) = Cc at bound ⊢
   have horizon : driftHorizon x high = high + 2 - (getCurrentEpoch x.state).toNat := rfl
@@ -3651,7 +3664,7 @@ private theorem apriori_prefix_induction {g v y : ForkedBeaconState preset}
 /-- The ceiling `T⁺` of a branch from `x` through `high + 1`, with every observable read at `x`. -/
 private noncomputable def ceilingAt (config : Config) (x : ForkedBeaconState preset)
     (high : Nat) : Nat → Nat :=
-  stakeCeiling preset config (refCount x) (scheduledCount x) (preActiveStake x) (fundingCarry x)
+  stakeCeiling preset config (refCount x) (scheduledCount x) (unassignedPreStake x) (fundingCarry x)
     (slashableInactiveCount x) (fundedStake x + previousOnlyStake x) (driftHorizon x high)
     (forkEpochs config x high)
 
@@ -3659,10 +3672,10 @@ private noncomputable def ceilingAt (config : Config) (x : ForkedBeaconState pre
 private noncomputable def floorAt (config : Config) (x : ForkedBeaconState preset)
     (high : Nat) : Nat → Nat :=
   windowFloor preset config (refStake x) (slashedActiveStake x) (slashedPenalisedStake x)
-    (refCount x) (startScore config x) (startSlack x) (fundingCarry x) (preActiveStake x)
+    (refCount x) (startScore config x) (startSlack x) (fundingCarry x) (unassignedPreStake x)
     (scheduledCount x) (scheduledDepartures x (driftHorizon x high))
     (duePartials x (driftHorizon x high))
-    (departureBudget preset config (refCount x) (scheduledCount x) (preActiveStake x)
+    (departureBudget preset config (refCount x) (scheduledCount x) (unassignedPreStake x)
       (fundingCarry x) (slashableInactiveCount x) (fundedStake x + previousOnlyStake x)
       (queueCarry x high) (exitQueueStart x - (getCurrentEpoch x.state).toNat)
       (consolidationQueueStart x - (getCurrentEpoch x.state).toNat)
@@ -3705,7 +3718,7 @@ private theorem activeStake_le_ceiling {g x y : ForkedBeaconState preset}
       (getCurrentEpoch u.state).toNat ≤ high + 1 → ∀ found,
         head.balanceEvents high = .ok found → (found.map otherCredit).sum ≤
           whistleblowerAllowance preset config (refCount x) (scheduledCount x)
-            (preActiveStake x) (fundingCarry x) (slashableInactiveCount x)
+            (unassignedPreStake x) (fundingCarry x) (slashableInactiveCount x)
             (driftHorizon x high) (forkEpochs config x high))
     (floor : ∀ {u : ForkedBeaconState preset}, Run config checks x u →
       (getCurrentEpoch u.state).toNat < (getCurrentEpoch y.state).toNat → ∀ total,
@@ -3730,7 +3743,7 @@ private theorem activeStake_le_ceiling {g x y : ForkedBeaconState preset}
     simp [ceilingAt, stakeCeiling, zero]
   have mono := ceilingAt_mono (config := config) electra high
   have base : fundedStake x + previousOnlyStake x + fundingCarry x +
-      whistleblowerAllowance preset config (refCount x) (scheduledCount x) (preActiveStake x)
+      whistleblowerAllowance preset config (refCount x) (scheduledCount x) (unassignedPreStake x)
         (fundingCarry x) (slashableInactiveCount x) (driftHorizon x high) 0 ≤
       ceilingAt config x high 0 := by
     simp only [ceilingAt, stakeCeiling, zero, Nat.lt_irrefl, ↓reduceIte, Nat.le_refl]
@@ -4142,7 +4155,7 @@ private theorem departures_le_budget_of_ceiling {g x y : ForkedBeaconState prese
         ceilingAt config x high
           ((getCurrentEpoch u.state).toNat - (getCurrentEpoch x.state).toNat)) :
     ((tail.departureCharges.filter fun c => c.epoch ≤ high + 1).map (·.amount)).sum ≤
-      departureBudget preset config (refCount x) (scheduledCount x) (preActiveStake x)
+      departureBudget preset config (refCount x) (scheduledCount x) (unassignedPreStake x)
         (fundingCarry x) (slashableInactiveCount x) (fundedStake x + previousOnlyStake x)
         (queueCarry x high)
         (exitQueueStart x - (getCurrentEpoch x.state).toNat)
