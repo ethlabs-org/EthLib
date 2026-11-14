@@ -76,9 +76,10 @@ private structure CapStep {f h : Fork} (s : BeaconState preset f)
   monotone : ∀ (i : Nat) (v : Validator), s.validators.data[i]? = some v →
     ∃ w, t.validators.data[i]? = some w ∧
       withdrawalMaxEffectiveBalance preset f v ≤ withdrawalMaxEffectiveBalance preset h w
+  forward : getCurrentEpoch s ≤ getCurrentEpoch t
 
 private theorem CapStep.refl {f : Fork} (s : BeaconState preset f) : CapStep s s :=
-  ⟨id, fun _ v found => ⟨v, found, UInt64.le_refl _⟩⟩
+  ⟨id, fun _ v found => ⟨v, found, UInt64.le_refl _⟩, UInt64.le_refl _⟩
 
 private theorem CapStep.trans {f h k : Fork} {s : BeaconState preset f}
     {t : BeaconState preset h} {u : BeaconState preset k}
@@ -88,14 +89,18 @@ private theorem CapStep.trans {f h k : Fork} {s : BeaconState preset f}
     obtain ⟨w, read, first⟩ := one.monotone i v found
     obtain ⟨z, read', second⟩ := two.monotone i w read
     exact ⟨z, read', UInt64.le_trans first second⟩
+  forward := UInt64.le_trans one.forward two.forward
 
 private theorem CapStep.data {f : Fork} {s t : BeaconState preset f}
-    (same : t.validators.data = s.validators.data := by rfl) : CapStep s t := by
+    (same : t.validators.data = s.validators.data := by rfl)
+    (slot : t.slot = s.slot := by rfl) : CapStep s t := by
   constructor
   · simpa only [same] using (id : (∀ v ∈ s.validators.data,
       v.effectiveBalance ≤ withdrawalMaxEffectiveBalance preset f v) → _)
   · intro i v found
     exact ⟨v, same ▸ found, UInt64.le_refl _⟩
+  · rw [getCurrentEpoch, getCurrentEpoch, slot]
+    exact UInt64.le_refl _
 
 private theorem CapStep.fold {f : Fork} {s t : BeaconState preset f} {α ε : Type}
     {step : BeaconState preset f → α → Except ε (BeaconState preset f)} {xs : List α}
@@ -126,6 +131,8 @@ private theorem CapStep.setValidatorAt {f : Fork} {s t : BeaconState preset f}
     · refine ⟨old, ?_, UInt64.le_refl _⟩
       simpa [BeaconState.putValidator, Serialization.Ssz.RootedForkList.data_set,
         Ne.symm eq] using located
+  · obtain ⟨_, rfl⟩ := setValidatorAt_ok ok
+    exact UInt64.le_refl _
 
 private theorem CapStep.setValidator {f : Fork} {s t : BeaconState preset f}
     {i : ValidatorIndex} {v w : Validator} (found : getValidator s i = .ok v)
@@ -139,11 +146,11 @@ private theorem CapStep.setValidator {f : Fork} {s t : BeaconState preset f}
 
 private theorem CapStep.increase {f : Fork} {s t : BeaconState preset f}
     {i amount : UInt64} (ok : increaseBalance s i amount = .ok t) : CapStep s t :=
-  CapStep.data (congrArg (·.data) (increaseBalance_validators ok))
+  CapStep.data (congrArg (·.data) (increaseBalance_validators ok)) (frame_increaseBalance ok).slot
 
 private theorem CapStep.decrease {f : Fork} {s t : BeaconState preset f}
     {i amount : UInt64} (ok : decreaseBalance s i amount = .ok t) : CapStep s t :=
-  CapStep.data (congrArg (·.data) (decreaseBalance_validators ok))
+  CapStep.data (congrArg (·.data) (decreaseBalance_validators ok)) (frame_decreaseBalance ok).slot
 
 private theorem CapStep.exit {f : Fork} {s t : BeaconState preset f}
     {i : ValidatorIndex} (ok : initiateValidatorExit config s i = .ok t) : CapStep s t := by
@@ -151,7 +158,7 @@ private theorem CapStep.exit {f : Fork} {s t : BeaconState preset f}
     initiateValidatorExit_ok ok
   · rw [unchanged.2]; exact CapStep.refl _
   · have same := (exitQueue_validators queue).1
-    exact (CapStep.data (congrArg (·.data) same)).trans
+    exact (CapStep.data (congrArg (·.data) same) (frame_exitQueue queue).slot).trans
       (CapStep.setValidator (v := v)
         (by rw [getValidator_of_validators_eq same]; exact found)
         (by exact UInt64.le_refl _) (by exact id) set)
@@ -186,6 +193,8 @@ private theorem CapStep.add {f : Fork} {s t : BeaconState preset f}
     have inside := (Array.getElem?_eq_some_iff.mp found).1
     refine ⟨v, ?_, UInt64.le_refl _⟩
     simpa [data, Array.getElem?_push, Nat.ne_of_lt inside] using found
+  · rw [getCurrentEpoch, getCurrentEpoch, addValidatorToRegistry_slot ok]
+    exact UInt64.le_refl _
 
 private theorem CapStep.deposit {f : Fork} {s t : BeaconState preset f}
     {deposit : PendingDeposit}
@@ -353,7 +362,8 @@ private theorem CapStep.consolidate {f : Fork} {s t : BeaconState preset f}
   have validators := (computeConsolidationEpochAndUpdateChurn_earliest churn).2.1
   have read : getValidator churned sourceIndex = .ok source := by
     rw [getValidator, validators, found]
-  exact (CapStep.data (by rw [validators])).trans
+  exact (CapStep.data (by rw [validators])
+      (frame_computeConsolidationEpochAndUpdateChurn churn).slot).trans
     ((CapStep.setValidator read (by exact UInt64.le_refl _) (by exact id) set).trans
       (CapStep.data rfl))
 
@@ -379,6 +389,7 @@ private theorem CapStep.partialWithdrawal {f : Fork} {s t : BeaconState preset f
   · simp only [bind_ok_iff, liftAccessor_ok, Except.ok.injEq] at ok
     obtain ⟨⟨_, _⟩, churned, _, _, _, _, rfl⟩ := ok
     exact CapStep.data (by rw [(computeExitEpochAndUpdateChurn_earliest churned).2.1])
+      (frame_computeExitEpochAndUpdateChurn churned).slot
   · cases ok; exact CapStep.refl _
 
 private theorem CapStep.withdrawalRequest {f : Fork} {s t : BeaconState preset f}
@@ -441,27 +452,29 @@ private theorem CapStep.block {f : Fork} {s t : BeaconState preset f}
     (early : f < .glamsterdam)
     (order : preset.MIN_ACTIVATION_BALANCE ≤ preset.MAX_EFFECTIVE_BALANCE_ELECTRA)
     (ok : processBlock config checks engine s block = .ok t) : CapStep s t := by
-  have same {a b : BeaconState preset f} (validators : b.validators = a.validators) :
-      CapStep a b :=
-    CapStep.data (congrArg (·.data) validators)
+  have same {a b : BeaconState preset f} (validators : b.validators = a.validators)
+      (slot : b.slot = a.slot) : CapStep a b :=
+    CapStep.data (congrArg (·.data) validators) slot
   obtain ⟨input, last, started, operated, -, synced⟩ := processBlock_operationsInput ok
-  have head : CapStep s input := same (started.validators_eq early)
+  have head : CapStep s input :=
+    same (started.validators_eq early) (frame_operationsInput started).slot
   obtain ⟨_, _, _, proposersOk, slashingsOk, attestedOk, rest⟩ :=
     processOperations_folds_of CapStep CapStep.refl (fun one two => one.trans two)
       CapStep.processDeposit (fun exited => CapStep.exit (processVoluntaryExit_initiates exited))
       CapStep.blsChange (CapStep.requests order)
-      (fun attested => same (by rw [processPayloadAttestation_eq attested])) operated
+      (fun attested => same (by rw [processPayloadAttestation_eq attested])
+        (by rw [processPayloadAttestation_eq attested])) operated
   have tail : CapStep last t := by
     split at synced
     · obtain ⟨_, rfl⟩ := processSyncAggregate_eq synced
-      exact same rfl
+      exact same rfl rfl
     · cases synced
       exact CapStep.refl _
   exact head.trans <|
     (CapStep.fold (fun _ _ _ => CapStep.proposerSlashing) proposersOk).trans <|
     (CapStep.fold (fun _ _ _ => CapStep.attesterSlashing) slashingsOk).trans <|
-    (CapStep.fold (fun _ _ _ attested => same (processAttestation_registry attested).1)
-      attestedOk).trans (rest.trans tail)
+    (CapStep.fold (fun _ _ _ attested => same (processAttestation_registry attested).1
+      (frame_processAttestation attested).slot) attestedOk).trans (rest.trans tail)
 
 private theorem CapStep.pending {f : Fork} {s t : BeaconState preset f}
     {electra : .pectra ≤ f} (ok : processPendingDeposits config checks s electra = .ok t) :
@@ -536,29 +549,50 @@ private theorem CapStep.epoch {f : Fork} {s t : BeaconState preset f}
     · exact CapStep.pending edge
     · exact edge ▸ CapStep.refl _
   case effectiveBalances => exact CapStep.effective edge
-  all_goals exact CapStep.data (congrArg (·.data) (edge.validators_eq ⟨nofun, nofun, nofun⟩))
+  case rewards =>
+    exact CapStep.data (congrArg (·.data) (edge.validators_eq ⟨nofun, nofun, nofun⟩))
+      (by simp only [EpochStage.Edge] at edge; rw [processRewardsAndPenalties_frame edge])
+  case slashings =>
+    exact CapStep.data (congrArg (·.data) (edge.validators_eq ⟨nofun, nofun, nofun⟩))
+      (by simp only [EpochStage.Edge] at edge; rw [processSlashings_frame edge])
+  case pendingConsolidations =>
+    refine CapStep.data (congrArg (·.data) (edge.validators_eq ⟨nofun, nofun, nofun⟩)) ?_
+    simp only [EpochStage.Edge] at edge
+    split at edge
+    · exact (frame_processPendingConsolidations edge).slot
+    · exact edge ▸ rfl
+  all_goals
+    exact CapStep.data (congrArg (·.data) (edge.validators_eq ⟨nofun, nofun, nofun⟩))
+      (edge.records ⟨nofun, nofun, nofun, nofun, nofun, nofun⟩).2.2.2.2
 
 private theorem CapStep.slot {f : Fork} {s t : BeaconState preset f}
     (ok : advanceSlot config checks s = .ok t) : CapStep s t := by
+  have later : getCurrentEpoch s ≤ getCurrentEpoch t := by
+    rw [UInt64.le_iff_toNat_le]
+    simp only [getCurrentEpoch, computeEpochAtSlot, UInt64.toNat_div, advanceSlot_slot ok]
+    exact Nat.div_le_div_right (Nat.le_succ _)
   simp only [advanceSlot, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at ok
   obtain ⟨next, _, cached, cache, advanced, advance, rfl⟩ := ok
   obtain ⟨_, _, _, _, rfl⟩ := processSlot_ok cache
   unfold epochIfLast at advance
   split at advance
   · have step := CapStep.epoch advance
-    exact ⟨step.capped, step.monotone⟩
+    exact ⟨step.capped, step.monotone, later⟩
   · cases advance
-    exact CapStep.data rfl
+    exact ⟨id, fun _ v found => ⟨v, found, UInt64.le_refl _⟩, later⟩
 
 private theorem CapStep.carry {f h : Fork} {s : BeaconState preset f}
     {t : BeaconState preset h} (same : t.validators.data = s.validators.data)
     (activation : preset.MAX_EFFECTIVE_BALANCE ≤ preset.MIN_ACTIVATION_BALANCE)
     (compounding : preset.MIN_ACTIVATION_BALANCE ≤ preset.MAX_EFFECTIVE_BALANCE_ELECTRA)
-    (forks : f ≤ h) : CapStep s t where
+    (forks : f ≤ h) (slot : t.slot = s.slot := by rfl) : CapStep s t where
   capped capped v member := UInt64.le_trans (capped v (same ▸ member))
     (withdrawalMaxEffectiveBalance_mono activation compounding forks id)
   monotone _i v found := ⟨v, same ▸ found,
     withdrawalMaxEffectiveBalance_mono activation compounding forks id⟩
+  forward := by
+    rw [getCurrentEpoch, getCurrentEpoch, slot]
+    exact UInt64.le_refl _
 
 private theorem CapStep.preActivation {f : Fork} {s t : BeaconState preset f}
     {electra : .pectra ≤ f} {i : ValidatorIndex}
@@ -570,7 +604,7 @@ private theorem CapStep.preActivation {f : Fork} {s t : BeaconState preset f}
   have changed := CapStep.setValidator (v := v)
     (by simpa only [getValidator, BeaconState.putBalance] using found)
     (by exact UInt64.le_refl _) (by intro _; exact UInt64.zero_le) validator
-  exact ⟨changed.capped, changed.monotone⟩
+  exact ⟨changed.capped, changed.monotone, changed.forward⟩
 
 private theorem CapStep.upgrade {s : ForkedBeaconState preset}
     {t : {t : ForkedBeaconState preset // s.fork < t.fork}}
@@ -578,13 +612,14 @@ private theorem CapStep.upgrade {s : ForkedBeaconState preset}
     (compounding : preset.MIN_ACTIVATION_BALANCE ≤ preset.MAX_EFFECTIVE_BALANCE_ELECTRA)
     (ok : upgradeNext config checks s = .ok t) (early : t.val.fork < .glamsterdam) :
     CapStep s.state t.val.state := by
+  have frame := upgradeFrame_upgradeNext ok
   obtain ⟨fork, state⟩ := s
   cases fork <;>
     simp only [upgradeNext, bind_ok_iff, pure, Except.pure, Except.ok.injEq, throw,
       throwThe, MonadExceptOf.throw, reduceCtorEq] at ok
   · obtain ⟨_, upgraded, rfl⟩ := ok
     exact CapStep.carry (upgradeToAltair_spec upgraded).1
-      activation compounding (by change Fork.phase0 ≤ .altair; decide)
+      activation compounding (by change Fork.phase0 ≤ .altair; decide) frame.slot
   · subst ok
     exact CapStep.carry rfl activation compounding (by change Fork.altair ≤ .bellatrix; decide)
   · subst ok
@@ -607,7 +642,7 @@ private theorem CapStep.upgrade {s : ForkedBeaconState preset}
     · cases ok; exact CapStep.refl _
   · obtain ⟨_, upgraded, rfl⟩ := ok
     exact CapStep.carry (upgradeToFulu_spec upgraded).1
-      activation compounding (by change Fork.pectra ≤ .fusaka; decide)
+      activation compounding (by change Fork.pectra ≤ .fusaka; decide) frame.slot
   · obtain ⟨_, _, rfl⟩ := ok
     exact False.elim (Nat.lt_irrefl _ early)
   · obtain ⟨_, _, rfl⟩ := ok
