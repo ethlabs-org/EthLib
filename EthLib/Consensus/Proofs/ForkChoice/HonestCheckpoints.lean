@@ -35,7 +35,7 @@ variable {e : Execution (honestForkChoice config checks sources anchorState anch
 /-- Each non-anchor block in an honest store has a transition with the execution's checks. -/
 theorem Execution.exists_transition_of_nonanchor_block {anchor : Store preset fork}
     (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
-    {w : ValidatorIndex} (honest : w ∈ J) (start : e.start w = anchor) {k : ℕ}
+    {w : ValidatorIndex} (_honest : w ∈ J) (start : e.start w = anchor) {k : ℕ}
     {root : Root} {block : BeaconBlock preset fork} {state : BeaconState preset fork}
     (found : ((e.world k).state w).blocks[root]? = some block)
     (stored : ((e.world k).state w).blockStates[root]? = some state)
@@ -43,7 +43,7 @@ theorem Execution.exists_transition_of_nonanchor_block {anchor : Store preset fo
     ∃ parent signed, signed.message = block ∧
       ((e.world k).state w).blockStates[block.parentRoot]? = some parent ∧
       stateTransition config checks sources.engine parent signed true = .ok state := by
-  rcases e.exists_signed_of_blocks honest found with old |
+  rcases e.exists_signed_of_blocks found with old |
     ⟨signed, parent, post, -, message, -, parentFound, transitioned, postFound⟩
   · obtain ⟨anchorRoot, -, blocks, -⟩ := getForkchoiceStore_maps anchored
     rw [start, blocks, getElem?_insert_root] at old

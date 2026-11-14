@@ -25,7 +25,7 @@ variable {preset : Preset} {fork : Fork} {config : Config} {checks : SignatureCh
 variable {e : Execution (honestForkChoice config checks sources anchorState anchorBlock assignment
   genesisTimeMs) J}
 
-private theorem p2_exists_getAncestor {store : Store preset fork}
+private theorem exists_getAncestor_of_reachable {store : Store preset fork}
     (reachable : Store.Reachable config anchorState anchorBlock store)
     (aligned : anchorBlock.slot ≤ anchorState.slot)
     (unknown : store.blocks[anchorBlock.parentRoot]? = none)
@@ -43,7 +43,7 @@ private theorem p2_exists_getAncestor {store : Store preset fork}
     obtain ⟨parent, parentKnown⟩ := reachable.known_of_blockState parentState
     have lower := reachable.parentsBelow aligned unknown root block parent known parentKnown
     -- Strictly descending slots make this recursive walk finite.
-    obtain ⟨ancestor, walked⟩ := p2_exists_getAncestor reachable aligned unknown preGloas
+    obtain ⟨ancestor, walked⟩ := exists_getAncestor_of_reachable reachable aligned unknown preGloas
       parentKnown above
     refine ⟨ancestor, ?_⟩
     rw [Store.getAncestor_step known below parentKnown lower,
@@ -70,7 +70,7 @@ theorem Execution.exists_getCheckpointBlock_of_held {anchor : Store preset fork}
   have reachable := e.reachable
     (fun v member => (start v member).symm ▸ Store.Reachable.anchor anchored) k w honest
   have aligned : anchorBlock.slot ≤ anchorState.slot := anchorSlot ▸ UInt64.le_refl _
-  obtain ⟨ancestor, walked⟩ := p2_exists_getAncestor reachable aligned
+  obtain ⟨ancestor, walked⟩ := exists_getAncestor_of_reachable reachable aligned
     (anchorParent w honest k bounded) preGloas known above
   exact ⟨ancestor.root, by
     simp [Store.getCheckpointBlock, firstOk, walked, Except.mapError,

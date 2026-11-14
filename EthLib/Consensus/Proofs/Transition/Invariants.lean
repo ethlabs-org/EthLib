@@ -1162,19 +1162,33 @@ theorem applyWithdrawal {withdrawal : Withdrawal}
     exact keep (BlockFrame.of_validators ⟨rfl, rfl⟩) rfl
   · exact laws.decreaseBalance computed
 
-theorem updateNextWithdrawalIndex {withdrawals : Array Withdrawal}
+omit laws keep in
+private theorem updateNextWithdrawalIndex_of
+    (refl : ∀ s, R s s)
+    (keep : ∀ {s t : BeaconState preset fork}, BlockFrame s t →
+      t.validators = s.validators → t.earliestExitEpoch = s.earliestExitEpoch →
+      t.exitBalanceToConsume = s.exitBalanceToConsume →
+      t.earliestConsolidationEpoch = s.earliestConsolidationEpoch →
+      t.consolidationBalanceToConsume = s.consolidationBalanceToConsume → R s t)
+    {withdrawals : Array Withdrawal}
     (computed : Consensus.updateNextWithdrawalIndex state withdrawals = .ok after) :
     R state after := by
   unfold Consensus.updateNextWithdrawalIndex at computed
   split at computed
   · simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at computed
     obtain ⟨_, _, rfl⟩ := computed
-    exact keep (BlockFrame.of_validators ⟨rfl, rfl⟩) rfl
+    exact keep (BlockFrame.of_validators ⟨rfl, rfl⟩) rfl rfl rfl rfl rfl
   · cases computed
-    exact laws.refl _
+    exact refl _
 
-omit laws in
-theorem updateNextWithdrawalValidatorIndex {capella : .shapella ≤ fork}
+omit laws keep in
+private theorem updateNextWithdrawalValidatorIndex_of
+    (keep : ∀ {s t : BeaconState preset fork}, BlockFrame s t →
+      t.validators = s.validators → t.earliestExitEpoch = s.earliestExitEpoch →
+      t.exitBalanceToConsume = s.exitBalanceToConsume →
+      t.earliestConsolidationEpoch = s.earliestConsolidationEpoch →
+      t.consolidationBalanceToConsume = s.consolidationBalanceToConsume → R s t)
+    {capella : .shapella ≤ fork}
     {withdrawals : Array Withdrawal}
     (computed : Consensus.updateNextWithdrawalValidatorIndex state capella withdrawals =
       .ok after) :
@@ -1185,20 +1199,44 @@ theorem updateNextWithdrawalValidatorIndex {capella : .shapella ≤ fork}
   split at computed
   · cases computed
   · cases computed
-    exact keep (BlockFrame.of_validators ⟨rfl, rfl⟩) rfl
+    exact keep (BlockFrame.of_validators ⟨rfl, rfl⟩) rfl rfl rfl rfl rfl
 
-omit laws in
-theorem updateNextWithdrawalBuilderIndex {gloas : .glamsterdam ≤ fork} {count : Nat}
+omit laws keep in
+private theorem updateNextWithdrawalBuilderIndex_of
+    (keep : ∀ {s t : BeaconState preset fork}, BlockFrame s t →
+      t.validators = s.validators → t.earliestExitEpoch = s.earliestExitEpoch →
+      t.exitBalanceToConsume = s.exitBalanceToConsume →
+      t.earliestConsolidationEpoch = s.earliestConsolidationEpoch →
+      t.consolidationBalanceToConsume = s.consolidationBalanceToConsume → R s t)
+    {gloas : .glamsterdam ≤ fork} {count : Nat}
     (computed : Consensus.updateNextWithdrawalBuilderIndex state gloas count = .ok after) :
     R state after := by
   unfold Consensus.updateNextWithdrawalBuilderIndex at computed
   dsimp only at computed
   split at computed
   · cases computed
-    exact keep (BlockFrame.of_validators ⟨rfl, rfl⟩) rfl
+    exact keep (BlockFrame.of_validators ⟨rfl, rfl⟩) rfl rfl rfl rfl rfl
   · simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at computed
     obtain ⟨_, _, rfl⟩ := computed
-    exact keep (BlockFrame.of_validators ⟨rfl, rfl⟩) rfl
+    exact keep (BlockFrame.of_validators ⟨rfl, rfl⟩) rfl rfl rfl rfl rfl
+
+theorem updateNextWithdrawalIndex {withdrawals : Array Withdrawal}
+    (computed : Consensus.updateNextWithdrawalIndex state withdrawals = .ok after) :
+    R state after :=
+  updateNextWithdrawalIndex_of laws.refl (fun frame vals _ _ _ _ => keep frame vals) computed
+
+omit laws in
+theorem updateNextWithdrawalValidatorIndex {capella : .shapella ≤ fork}
+    {withdrawals : Array Withdrawal}
+    (computed : Consensus.updateNextWithdrawalValidatorIndex state capella withdrawals =
+      .ok after) : R state after :=
+  updateNextWithdrawalValidatorIndex_of (fun frame vals _ _ _ _ => keep frame vals) computed
+
+omit laws in
+theorem updateNextWithdrawalBuilderIndex {gloas : .glamsterdam ≤ fork} {count : Nat}
+    (computed : Consensus.updateNextWithdrawalBuilderIndex state gloas count = .ok after) :
+    R state after :=
+  updateNextWithdrawalBuilderIndex_of (fun frame vals _ _ _ _ => keep frame vals) computed
 
 end EpochFrameLaws
 
@@ -1245,32 +1283,13 @@ theorem applyExpectedWithdrawals_of
       else pure kept) = .ok finished → R kept finished := by
     intro kept ok
     split at ok
-    · unfold Consensus.updateNextWithdrawalBuilderIndex at ok
-      dsimp only at ok
-      split at ok
-      · cases ok
-        exact keep (BlockFrame.of_validators ⟨rfl, rfl⟩) rfl rfl rfl rfl rfl
-      · simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at ok
-        obtain ⟨_, _, rfl⟩ := ok
-        exact keep (BlockFrame.of_validators ⟨rfl, rfl⟩) rfl rfl rfl rfl rfl
+    · exact EpochFrameLaws.updateNextWithdrawalBuilderIndex_of keep ok
     · simp only [pure, Except.pure, Except.ok.injEq] at ok
       exact ok ▸ refl _
-  have indexed : R applied indexed := by
-    unfold Consensus.updateNextWithdrawalIndex at indexedOk
-    split at indexedOk
-    · simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at indexedOk
-      obtain ⟨_, _, rfl⟩ := indexedOk
-      exact keep (BlockFrame.of_validators ⟨rfl, rfl⟩) rfl rfl rfl rfl rfl
-    · cases indexedOk
-      exact refl _
-  have final : R finished after := by
-    unfold Consensus.updateNextWithdrawalValidatorIndex at last
-    simp only [bind_ok_iff] at last
-    obtain ⟨_, _, last⟩ := last
-    split at last
-    · cases last
-    · cases last
-      exact keep (BlockFrame.of_validators ⟨rfl, rfl⟩) rfl rfl rfl rfl rfl
+  have indexed : R applied indexed :=
+    EpochFrameLaws.updateNextWithdrawalIndex_of refl keep indexedOk
+  have final : R finished after :=
+    EpochFrameLaws.updateNextWithdrawalValidatorIndex_of keep last
   exact trans one <| trans indexed <|
     trans (queued _) <| trans (partials _) <| trans (swept _ sweptOk) final
 

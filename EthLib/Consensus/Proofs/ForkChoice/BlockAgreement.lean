@@ -50,7 +50,7 @@ In the second case the store holds the state of the parent of the block.
 
 The state of the block is the state transition of the signed block from that state. -/
 theorem Execution.exists_signed_of_blocks
-    (e : Execution (forkChoice config checks sources signed sends) J) {u : ν} (honest : u ∈ J)
+    (e : Execution (forkChoice config checks sources signed sends) J) {u : ν}
     {n : ℕ} {root : Root} {block : BeaconBlock preset fork}
     (found : ((e.world n).state u).blocks[root]? = some block) :
     ((e.start u).blocks[root]? = some block ∧
@@ -61,7 +61,6 @@ theorem Execution.exists_signed_of_blocks
         ((e.world n).state u).blockStates[block.parentRoot]? = some pre ∧
         stateTransition config checks sources.engine pre signedBlock true = .ok state ∧
         ((e.world n).state u).blockStates[root]? = some state := by
-  have _ := honest
   -- Keep the parent's block as well as its state, so later insertions cannot replace that state.
   let P (view : Set (Message preset fork)) (s : Store preset fork) : Prop :=
     ∀ r b, s.blocks[r]? = some b →
@@ -177,7 +176,7 @@ theorem Execution.blockStates_eq (e : Execution (forkChoice config checks source
     {anchorState : BeaconState preset fork} {anchorBlock : BeaconBlock preset fork}
     {anchor : Store preset fork}
     (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
-    {u w : ν} (first : u ∈ J) (second : w ∈ J) (startFirst : e.start u = anchor)
+    {u w : ν} (_first : u ∈ J) (_second : w ∈ J) (startFirst : e.start u = anchor)
     (startSecond : e.start w = anchor) {n k : ℕ}
     (sameBlocks : ∀ (root : Root) left right, ((e.world n).state u).blocks[root]? = some left →
       ((e.world k).state w).blocks[root]? = some right → left = right)
@@ -262,10 +261,10 @@ theorem Execution.blockStates_eq (e : Execution (forkChoice config checks source
       exact Option.some.inj (leftFound.symm.trans (leftKept.trans
         (rightKept.symm.trans rightFound)))
     | none =>
-      rcases e.exists_signed_of_blocks first lbFound with old | lnew
+      rcases e.exists_signed_of_blocks lbFound with old | lnew
       · rw [startFirst, initial] at old
         cases old.1
-      rcases e.exists_signed_of_blocks second rbFound with old | rnew
+      rcases e.exists_signed_of_blocks rbFound with old | rnew
       · rw [startSecond, initial] at old
         cases old.1
       obtain ⟨lsb, lp, ls, _, lmsg, _, lpFound, lt, lsFound⟩ := lnew

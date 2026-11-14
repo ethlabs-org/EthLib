@@ -130,34 +130,19 @@ private theorem state_mem_hashObjects_append {config : Config} {checks : Signatu
     | nil => simp [Run.hashObjects]
     | snoc pre step => exact List.mem_append.mpr (.inr (List.mem_append.mpr (.inl (by simp)))))
 
-/-- Slots of one fork before its next fork extend a run with slot steps.
-
-They add no header. -/
-private theorem exists_run_of_advanceSlots {config : Config} {checks : SignatureChecks}
-    {g x : ForkedBeaconState preset} {bound : Nat} (pre : Run config checks g x)
-    (early : ∀ next ∈ config.nextFork fork,
-      bound < next.2.toNat * preset.SLOTS_PER_EPOCH.toNat) :
-    ∀ (count : Nat) {state after : BeaconState preset fork}
-      (tail : Run config checks x ⟨fork, state⟩),
-      advanceSlots config checks count state = .ok after → state.slot.toNat + count ≤ bound →
-      ∃ next : Run config checks x ⟨fork, after⟩,
-        (pre.append next).headers = (pre.append tail).headers
-  | 0, state, after, tail, computed, _ => by
-    simp only [advanceSlots, pure, Except.pure, Except.ok.injEq] at computed
-    subst computed
-    exact ⟨tail, rfl⟩
-  | count + 1, state, after, tail, computed, within => by
-    simp only [advanceSlots, bind_ok_iff] at computed
-    obtain ⟨middle, stepOk, rest⟩ := computed
-    have slot := advanceSlot_slot stepOk
-    have across : advanceSlotAcross config checks ⟨fork, state⟩ = .ok ⟨fork, middle⟩ := by
-      rw [advanceSlotAcross_of_before fun next scheduled => by
-        have := early next scheduled
-        omega, stepOk]
-      rfl
-    obtain ⟨next, headers⟩ :=
-      exists_run_of_advanceSlots pre early count (tail.snoc (.slot across)) rest (by omega)
-    exact ⟨next, headers.trans (by simp [Run.append, Run.headers, Step.headers])⟩
+/-- Appending only slot steps adds no block header. -/
+private theorem headers_append_of_slots {config : Config} {checks : SignatureChecks}
+    {g x y : ForkedBeaconState preset} (pre : Run config checks g x)
+    (tail : Run config checks x y)
+    (slots : ∀ {a b} (step : Step config checks a b), tail.Contains step →
+      ∃ h : advanceSlotAcross config checks a = .ok b, step = .slot h) :
+    (pre.append tail).headers = pre.headers := by
+  induction tail with
+  | nil => rfl
+  | snoc tail step ih =>
+    obtain ⟨h, rfl⟩ := slots step (.last tail step)
+    simpa [Run.append, Run.headers, Step.headers] using
+      ih (fun s member => slots s (.earlier member _))
 
 /-- Two held blocks whose runs share their headers up to an epoch share its checkpoint block.
 
@@ -280,8 +265,13 @@ private theorem Store.Reachable.exists_run_of_blockState {config : Config}
       signed.message.slot.toNat < next.2.toNat * preset.SLOTS_PER_EPOCH.toNat :=
     fun next scheduled => bounds.2 ▸ early next scheduled held
   -- The slots up to the block extend the run of the parent, and the block step follows.
-  obtain ⟨tailA, headersA⟩ := exists_run_of_advanceSlots pre bound _ tailP run
-    (by have := UInt64.lt_iff_toNat_lt.mp bounds.1; omega)
+  obtain ⟨slots, slotsOnly⟩ := run_of_advanceSlots _ run
+    (fun next scheduled => advancedSlot ▸ bound next scheduled)
+  let tailA := tailP.append slots
+  have headersA : (pre.append tailA).headers = (pre.append tailP).headers := by
+    rw [show pre.append tailA = (pre.append tailP).append slots from
+      Run.append_assoc pre tailP slots]
+    exact headers_append_of_slots _ _ slotsOnly
   have due : upgradeDue config ⟨fork, advanced⟩ = false :=
     upgradeDue_of_before fun next scheduled => advancedSlot ▸ bound next scheduled
   let header : BeaconBlockHeader := ⟨signed.message.slot, signed.message.proposerIndex,

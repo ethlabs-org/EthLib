@@ -128,9 +128,8 @@ theorem Run.contains_split {g a x y : ForkedBeaconState preset}
     obtain ⟨pre, post, same⟩ := ih
     exact ⟨pre, post.snoc next, congrArg (fun run => run.snoc next) same⟩
 
-
 /-- A successful block transition selects its slot prefix and the supplied final block input. -/
-theorem Run.stateTransition {fork : Fork} {first : ForkedBeaconState preset}
+theorem Run.exists_of_stateTransitionAcross {fork : Fork} {first : ForkedBeaconState preset}
     {last : BeaconState preset fork} (engine : ExecutionEngine preset fork)
     (signed : SignedBeaconBlock preset fork)
     (ok : stateTransitionAcross config checks engine first signed true = .ok last) :
@@ -195,11 +194,13 @@ theorem run_of_advanceSlots {fork : Fork} (count : Nat) {state after : BeaconSta
     (advanced : advanceSlots config checks count state = .ok after)
     (before : ∀ next ∈ config.nextFork fork,
       after.slot.toNat < next.2.toNat * preset.SLOTS_PER_EPOCH.toNat) :
-    Nonempty (Run config checks ⟨fork, state⟩ ⟨fork, after⟩) := by
+    ∃ run : Run config checks ⟨fork, state⟩ ⟨fork, after⟩,
+      ∀ {x y} (step : Step config checks x y), run.Contains step →
+        ∃ h : advanceSlotAcross config checks x = .ok y, step = .slot h := by
   induction count generalizing state with
   | zero =>
     cases advanced
-    exact ⟨.nil⟩
+    exact ⟨.nil, by intro x y step member; cases member⟩
   | succ count ih =>
     obtain ⟨next, stepped, rest⟩ := bind_ok_iff.mp advanced
     have slotsEq := advanceSlots_slot count rest
@@ -209,8 +210,14 @@ theorem run_of_advanceSlots {fork : Fork} (count : Nat) {state after : BeaconSta
         have := before nextFork scheduled
         omega), stepped]
       rfl
-    obtain ⟨tail⟩ := ih rest
-    exact ⟨(Run.nil.snoc (.slot across)).append tail⟩
+    obtain ⟨tail, slotsOnly⟩ := ih rest
+    refine ⟨(Run.nil.snoc (.slot across)).append tail, ?_⟩
+    intro x y step member
+    rcases (Run.contains_append _ _ step).mp member with member | member
+    · cases member with
+      | last => exact ⟨across, rfl⟩
+      | earlier member => cases member
+    · exact slotsOnly step member
 
 /-- A run from a state to the state at a later slot, when the slot stays before the next fork. -/
 theorem run_of_processSlots {fork : Fork} {state after : BeaconState preset fork} {slot : Slot}
@@ -221,6 +228,7 @@ theorem run_of_processSlots {fork : Fork} {state after : BeaconState preset fork
   have lastSlot := (processSlots_slot processed).2
   simp only [processSlots, bind_ok_iff, ensure_ok_iff] at processed
   obtain ⟨_, _, advanced⟩ := processed
-  exact run_of_advanceSlots _ advanced (by simpa only [lastSlot] using before)
+  obtain ⟨run, -⟩ := run_of_advanceSlots _ advanced (by simpa only [lastSlot] using before)
+  exact ⟨run⟩
 
 end EthLib.Consensus

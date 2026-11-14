@@ -794,7 +794,7 @@ theorem activationQueue_nodup (small : state.validators.data.size < 2 ^ 64) :
 /-- Activating a distinct queue preserves a relation when each activation preserves it.
 
 Each callback sees the validator before activation and its unset activation epoch. -/
-theorem foldActivateValidator_of
+private theorem foldActivateValidator_of
     {R : BeaconState preset fork → BeaconState preset fork → Prop}
     (refl : ∀ s, R s s)
     (trans : ∀ {s m t}, R s m → R m t → R s t)
@@ -877,8 +877,7 @@ theorem registryLifecycle_processRegistryUpdates
     (fun ok => registryLifecycle_updateRegistryEntry ok) (fun late ok => ?_)
     registryLifecycle_activateValidator computed
   refine ⟨?_, (frame_updateRegistryEntryElectra ok).slot⟩
-  ·
-    simp only [updateRegistryEntryElectra, bind_ok_iff, liftAccessor_ok] at ok
+  · simp only [updateRegistryEntryElectra, bind_ok_iff, liftAccessor_ok] at ok
     obtain ⟨validator, found, ok⟩ := ok
     split at ok
     · simp only [bind_ok_iff, liftAccessor_ok] at ok

@@ -63,7 +63,7 @@ private theorem run_of_blockState {anchor : Store preset fork}
       rw [stateTransitionAcross_of_before (by simpa only [message] using before root block found)]
       exact transitioned
     obtain ⟨advanced, slotRun, due, applied, -, -, -⟩ :=
-      Run.stateTransition sources.engine signed across
+      Run.exists_of_stateTransitionAcross sources.engine signed across
     exact ⟨pre.append (slotRun.snoc (.block sources.engine signed due applied))⟩
 termination_by state.slot.toNat
 decreasing_by
@@ -114,7 +114,7 @@ private theorem run_along_chain {anchor : Store preset fork}
     have aLt : aBlock.slot < block.slot := UInt64.lt_of_le_of_lt aLe far
     have other : block ≠ anchorBlock := by
       intro same
-      have h1 := reachable.anchorSlot_le_block aFound
+      have h1 := reachable.anchorSlot_le (anchorSlot ▸ UInt64.le_refl _) aFound
       rw [same] at aLt
       exact UInt64.lt_irrefl _ (UInt64.lt_of_le_of_lt h1 aLt)
     obtain ⟨parent, signed, message, parentFound, transitioned⟩ :=
@@ -147,7 +147,7 @@ private theorem run_along_chain {anchor : Store preset fork}
         simp only [stateTransition, bind_ok_iff]
         exact ⟨adv, viaS0, applied⟩
       obtain ⟨advanced, slotRun, due, applied', -, -, -⟩ :=
-        Run.stateTransition sources.engine signed across
+        Run.exists_of_stateTransitionAcross sources.engine signed across
       exact ⟨slotRun.snoc (.block sources.engine signed due applied')⟩
     · -- The walk from the block to the ancestor passes through the parent.
       have walk := Store.getAncestor_of_isAncestor_of_lt early aFound descends
@@ -183,7 +183,7 @@ private theorem run_along_chain {anchor : Store preset fork}
         rw [stateTransitionAcross_of_before viaBefore]
         exact transitioned'
       obtain ⟨advanced, slotRun, due, applied', -, -, -⟩ :=
-        Run.stateTransition sources.engine signed across
+        Run.exists_of_stateTransitionAcross sources.engine signed across
       exact ⟨run.append (slotRun.snoc (.block sources.engine signed due applied'))⟩
 
 /-- A checkpoint read leaves no block of the chain from the checkpoint block to the boundary. -/
@@ -276,7 +276,7 @@ private theorem exists_child_of_chain {anchor : Store preset fork}
       exact distinct (congrArg ForkChoiceNode.root (Except.ok.inj walk))
     have other : block ≠ anchorBlock := by
       intro same
-      have h1 := reachable.anchorSlot_le_block aFound
+      have h1 := reachable.anchorSlot_le (anchorSlot ▸ UInt64.le_refl _) aFound
       rw [same] at aLt
       exact UInt64.lt_irrefl _ (UInt64.lt_of_le_of_lt h1 aLt)
     obtain ⟨parent, signed, message, parentFound, transitioned⟩ :=
@@ -711,7 +711,8 @@ theorem Execution.exitsHead_of_oneBlock {limit : ℕ} {anchor : Store preset for
         rw [SNat]
         exact Nat.mul_lt_mul_of_pos_right (by omega) (by omega)
       have anchorLe : anchorBlock.slot ≤ S :=
-        UInt64.le_trans (reachW.anchorSlot_le_block aFound) (UInt64.le_trans aLe boundaryLe)
+        UInt64.le_trans (reachW.anchorSlot_le (anchorSlot ▸ UInt64.le_refl _) aFound)
+          (UInt64.le_trans aLe boundaryLe)
       obtain ⟨bE, readE⟩ := e.exists_getCheckpointBlock_of_held anchored start anchorSlot early
         anchorParent hw bk headFound SOk anchorLe
       exact run_to_epoch_late anchored early anchorSlot positive hw (start w hw) before aFound

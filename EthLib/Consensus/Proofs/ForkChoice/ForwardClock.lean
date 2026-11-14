@@ -309,8 +309,6 @@ theorem ForwardReachable.slots_le_current
     exact transport (onInclusionList_sameClock step) (onInclusionList_frame step).2.1
       (onInclusionList_frame step).2.2 holds
 
-
-
 end Store
 
 end EthLib.Consensus

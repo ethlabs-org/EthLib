@@ -620,8 +620,7 @@ theorem isAncestor_trans_of_lt {node middle ancestor : ForkChoiceNode}
   rw [middleKnown, Option.some.injEq] at found
   subst block
   have walk := (getAncestor_trans le upperWalk).trans lowerWalk
-  simp [isAncestor, block_ok_iff.mpr ancestorKnown, walk,
-    bind, Except.bind, pure, Except.pure]
+  exact isAncestor_of_getAncestor walk
 
 /-- Before Gloas, a walk starting at a pending node returns a pending node. -/
 theorem getAncestor_pending_of_lt {node ancestor : ForkChoiceNode} {slot : Slot}
@@ -679,12 +678,8 @@ theorem isAncestor_of_getCheckpointBlock {root checkpoint : Root} {epoch : Epoch
     cases ancestor
     simp_all
   subst ancestor
-  have through := getAncestor_trans le walk
-  have atBlock := getAncestor_of_le (node := ⟨checkpoint, .pending⟩) held (UInt64.le_refl _)
-  have walk' := through.trans atBlock
-  refine ⟨boundary, block, mapError_ok_iff.mp boundaryOk, held, le, ?_⟩
-  simp [isAncestor, block_ok_iff.mpr held, walk', bind, Except.bind, pure, Except.pure]
-
+  exact ⟨boundary, block, mapError_ok_iff.mp boundaryOk, held, le,
+    isAncestor_of_getAncestor walk⟩
 
 end Store
 
