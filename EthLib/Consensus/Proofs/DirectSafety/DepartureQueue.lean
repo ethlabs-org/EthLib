@@ -5,6 +5,7 @@ public import EthLib.Consensus.Proofs.Transition.BalanceDrift
 import EthLib.Consensus.Proofs.Transition.ActiveKept
 import EthLib.Consensus.Proofs.Transition.FfgStake
 import EthLib.Consensus.Proofs.Transition.ValidatorCaps
+import EthLib.Consensus.Proofs.Transition.WithdrawalAmounts
 import Mathlib.Algebra.BigOperators.Fin
 import Mathlib.Algebra.Order.BigOperators.Group.Finset
 
@@ -146,19 +147,18 @@ private theorem departureCharges_run_indices {x y : ForkedBeaconState preset}
 
 /-- Calls carry the charged registry index, or no index for partial withdrawals.
 
-A call with no index comes from a partial withdrawal request, which queues the amount of the call.
+A call with no index comes from a partial withdrawal request, and carries the entry it queues.
 
-The queued entry is withdrawable from the epoch of the call plus the withdrawal delay. -/
+That entry holds the amount of the call, withdrawable from the epoch of the call plus the delay.
+-/
 private structure IndexedDepartureCall (preset : Preset) (config : Config) where
   index : Option Nat
   call : DepartureQueueCall
-  queued : index = none → ∃ (fork : Fork) (electra : .pectra ≤ fork)
-    (s t : BeaconState preset fork) (validator : ValidatorIndex) (v : Validator)
-    (amount owed : Gwei) (withdrawable : Epoch),
-    requestPartialWithdrawal config s electra validator v amount owed = .ok t ∧
-    (t.pendingPartialWithdrawals electra).data =
-      (s.pendingPartialWithdrawals electra).data.push ⟨validator, call.amount, withdrawable⟩ ∧
-    withdrawable.toNat = call.epoch.toNat + config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat
+  entry : Option PendingPartialWithdrawal
+  tagged : index = none ↔ entry.isSome
+  pushed : ∀ pending, entry = some pending → pending.amount = call.amount ∧
+    pending.withdrawableEpoch.toNat =
+      call.epoch.toNat + config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat
 
 /-- Every call starts no earlier than the chosen epoch. -/
 private def DepartureCallsFrom (start : Nat) (calls : List (IndexedDepartureCall preset config)) :
@@ -176,6 +176,39 @@ private theorem DepartureCallsFrom.append {start : Nat}
     DepartureCallsFrom start (first ++ second) := by
   intro called member
   exact (List.mem_append.mp member).elim (one called) (two called)
+
+/-- The calls append their entries, in order, to the queue of partial withdrawals. -/
+private def PartialsAppended {fork : Fork} (electra : .pectra ≤ fork)
+    (s t : BeaconState preset fork) (calls : List (IndexedDepartureCall preset config)) : Prop :=
+  (t.pendingPartialWithdrawals electra).data.toList =
+    (s.pendingPartialWithdrawals electra).data.toList ++ calls.filterMap (·.entry)
+
+private theorem PartialsAppended.append {fork : Fork} {electra : .pectra ≤ fork}
+    {s t u : BeaconState preset fork} {first second : List (IndexedDepartureCall preset config)}
+    (one : PartialsAppended electra s t first) (two : PartialsAppended electra t u second) :
+    PartialsAppended electra s u (first ++ second) := by
+  rw [PartialsAppended, two, one, List.filterMap_append, List.append_assoc]
+
+private theorem PartialsAppended.of_kept {fork : Fork} {electra : .pectra ≤ fork}
+    {s t : BeaconState preset fork}
+    (kept : (t.pendingPartialWithdrawals electra).data =
+      (s.pendingPartialWithdrawals electra).data) :
+    PartialsAppended (config := config) electra s t [] := by
+  rw [PartialsAppended, kept, List.filterMap_nil, List.append_nil]
+
+private theorem PartialsAppended.kept_left {fork : Fork} {electra : .pectra ≤ fork}
+    {s t u : BeaconState preset fork} {calls : List (IndexedDepartureCall preset config)}
+    (kept : (t.pendingPartialWithdrawals electra).data = (s.pendingPartialWithdrawals electra).data)
+    (two : PartialsAppended electra t u calls) : PartialsAppended electra s u calls := by
+  rw [PartialsAppended, two, kept]
+
+private theorem PartialsAppended.kept_right {fork : Fork} {electra : .pectra ≤ fork}
+    {s t u : BeaconState preset fork} {calls : List (IndexedDepartureCall preset config)}
+    (one : PartialsAppended electra s t calls)
+    (kept : (u.pendingPartialWithdrawals electra).data =
+      (t.pendingPartialWithdrawals electra).data) :
+    PartialsAppended electra s u calls := by
+  rw [PartialsAppended, kept, one]
 
 private def ConsolidationCallSites (preset : Preset) (config : Config)
     (calls : List (IndexedDepartureCall preset config)) (sites : List (ForkedBeaconState preset)) :
@@ -493,7 +526,8 @@ private theorem DepartureCoverage.foldlM {f : Fork} {α ε : Type}
         DepartureCallsFrom (getCurrentEpoch s).toNat calls ∧
         DepartureQueueTrace (s.earliestExitEpoch electra) (s.exitBalanceToConsume electra)
           (calls.map (·.call)) (t.earliestExitEpoch electra) (t.exitBalanceToConsume electra) ∧
-        DepartureCoverage s t calls ∧ (∀ called ∈ calls, called.call.rate.toNat ≤ cap))
+        DepartureCoverage s t calls ∧ (∀ called ∈ calls, called.call.rate.toNat ≤ cap) ∧
+        PartialsAppended electra s t calls)
     (lifecycle : ∀ s item t, operation s item = .ok t → RegistryLifecycle s t)
     (effective : ∀ s item t, operation s item = .ok t →
       ∀ i, i < s.validators.data.size → effectiveAt ⟨f, t⟩ i = effectiveAt ⟨f, s⟩ i)
@@ -504,21 +538,24 @@ private theorem DepartureCoverage.foldlM {f : Fork} {α ε : Type}
       DepartureCallsFrom (getCurrentEpoch s).toNat calls ∧
       DepartureQueueTrace (s.earliestExitEpoch electra) (s.exitBalanceToConsume electra)
         (calls.map (·.call)) (t.earliestExitEpoch electra) (t.exitBalanceToConsume electra) ∧
-      DepartureCoverage s t calls ∧ (∀ called ∈ calls, called.call.rate.toNat ≤ cap) := by
+      DepartureCoverage s t calls ∧ (∀ called ∈ calls, called.call.rate.toNat ≤ cap) ∧
+      PartialsAppended electra s t calls := by
   induction items generalizing s with
   | nil =>
     cases ok
-    exact ⟨[], by simp [DepartureCallsFrom], .nil _ _, DepartureCoverage.of_data rfl, by simp⟩
+    exact ⟨[], by simp [DepartureCallsFrom], .nil _ _, DepartureCoverage.of_data rfl, by simp,
+      .of_kept rfl⟩
   | cons item items ih =>
     simp only [List.foldlM_cons, bind_ok_iff] at ok
     obtain ⟨middle, stepped, rest⟩ := ok
-    obtain ⟨first, firstFrom, firstTrace, firstCoverage, firstRates⟩ :=
+    obtain ⟨first, firstFrom, firstTrace, firstCoverage, firstRates, firstAppended⟩ :=
       localTrace s item middle stepped
-    obtain ⟨later, laterFrom, laterTrace, laterCoverage, laterRates⟩ := ih rest
+    obtain ⟨later, laterFrom, laterTrace, laterCoverage, laterRates, laterAppended⟩ := ih rest
     have epoch : getCurrentEpoch middle = getCurrentEpoch s := by
       simp only [getCurrentEpoch, slots _ _ _ stepped]
     rw [epoch] at laterFrom
-    refine ⟨first ++ later, firstFrom.append laterFrom, ?_, ?_, ?_⟩
+    refine ⟨first ++ later, firstFrom.append laterFrom, ?_, ?_, ?_,
+      firstAppended.append laterAppended⟩
     · rw [List.map_append]
       have append {a b c : Epoch} {x y z : Gwei} {xs ys : List DepartureQueueCall}
           (one : DepartureQueueTrace a x xs b y) (two : DepartureQueueTrace b y ys c z) :
@@ -783,13 +820,14 @@ private theorem queueConsolidation_indexedTrace_site {fork : Fork} {s t : Beacon
         (t.earliestConsolidationEpoch electra) (t.consolidationBalanceToConsume electra) ∧
       getConsolidationChurnLimit config s = .ok called.call.rate ∧
       computeActivationExitEpoch preset (getCurrentEpoch s) = .ok called.call.first ∧
+      called.entry = none ∧
       ∀ other old next, getValidator s other = .ok old → getValidator t other = .ok next →
         old.exitEpoch = FAR_FUTURE_EPOCH → next.exitEpoch ≠ FAR_FUTURE_EPOCH →
         called.index = some other.toNat ∧ called.call.epoch = next.exitEpoch ∧
           called.call.amount = old.effectiveBalance := by
   obtain ⟨call, amount, earliest, available, placed, left, rate, firstOk, later, read, epoch⟩ :=
     queueConsolidation_call electra ok
-  refine ⟨⟨some sourceIndex.toNat, call, nofun⟩, ?_, ?_, rate, firstOk, ?_⟩
+  refine ⟨⟨some sourceIndex.toNat, call, none, by simp, nofun⟩, ?_, ?_, rate, firstOk, rfl, ?_⟩
   · have first := (computeActivationExitEpoch_ok_iff.mp firstOk).2
     dsimp only
     omega
@@ -805,11 +843,13 @@ private theorem queueConsolidation_indexedTrace_site {fork : Fork} {s t : Beacon
     subst old next
     exact ⟨rfl, epoch.symm, amount⟩
 
-/-- The two departure queues, excluding pending transfers and withdrawals. -/
+/-- The two departure queues and the queue of partial withdrawals, without pending transfers. -/
 private def departureQueues {fork : Fork} (electra : .pectra ≤ fork)
-    (s : BeaconState preset fork) : Epoch × Gwei × Epoch × Gwei :=
+    (s : BeaconState preset fork) :
+    Epoch × Gwei × Epoch × Gwei × Array PendingPartialWithdrawal :=
   (s.earliestExitEpoch electra, s.exitBalanceToConsume electra,
-    s.earliestConsolidationEpoch electra, s.consolidationBalanceToConsume electra)
+    s.earliestConsolidationEpoch electra, s.consolidationBalanceToConsume electra,
+    (s.pendingPartialWithdrawals electra).data)
 
 private theorem departureQueues_increase {fork : Fork} {s t : BeaconState preset fork}
     (electra : .pectra ≤ fork) {index : ValidatorIndex} {amount : Gwei}
@@ -1083,24 +1123,34 @@ private theorem withdrawalValidatorIndex_departureQueues {fork : Fork}
   · cases ok
   · cases ok; rfl
 
-/-- Paying withdrawals removes balances and pending entries without resetting churn. -/
+/-- Paying withdrawals removes balances and the queued partial withdrawals that were read.
+
+It resets neither departure queue. -/
 private theorem withdrawals_departureQueues {fork : Fork} {s t : BeaconState preset fork}
     (electra : .pectra ≤ fork) (early : fork < .glamsterdam)
     {capella : .shapella ≤ fork} {payload : Until .glamsterdam fork (ExecutionPayload preset fork)}
     (ok : processWithdrawals s capella payload = .ok t) :
-    departureQueues electra t = departureQueues electra s := by
+    ∃ expected, getExpectedWithdrawals s capella = .ok expected ∧
+      departureQueues electra t = departureQueues electra
+        (updatePendingPartialWithdrawals s electra expected.processedPartialWithdrawalsCount) := by
   have notGloas : ¬ .glamsterdam ≤ fork := Nat.not_le_of_lt early
   simp only [processWithdrawals, notGloas, ↓reduceDIte, bind_ok_iff, ensure_ok_iff,
     liftAccessor_ok] at ok
-  obtain ⟨expected, _, _, _, applied⟩ := ok
+  obtain ⟨expected, expectedOk, _, _, applied⟩ := ok
   simp only [applyExpectedWithdrawals, notGloas, electra, ↓reduceDIte, bind_ok_iff,
     pure, Except.pure, Except.ok.injEq, exists_eq_left'] at applied
   obtain ⟨withdrawn, paid, indexed, moved, swept⟩ := applied
-  exact (withdrawalValidatorIndex_departureQueues electra swept).trans
-    ((withdrawalIndex_departureQueues electra moved).trans
-      (applyWithdrawals_departureQueues electra early paid))
+  refine ⟨expected, expectedOk, (withdrawalValidatorIndex_departureQueues electra swept).trans ?_⟩
+  have kept := (withdrawalIndex_departureQueues electra moved).trans
+    (applyWithdrawals_departureQueues electra early paid)
+  simp only [departureQueues, Prod.mk.injEq] at kept
+  obtain ⟨one, two, three, four, five⟩ := kept
+  simp only [departureQueues, updatePendingPartialWithdrawals, Prod.mk.injEq]
+  exact ⟨one, two, three, four, by rw [five]⟩
 
 /-- From Electra and before Gloas, the execution part of a block keeps both departure queues.
+
+It removes the queued partial withdrawals that its withdrawals read.
 
 The payload step is read here: the shared block lemma gives only its frame and validators. -/
 private theorem blockExecution_departureQueues {fork : Fork}
@@ -1108,14 +1158,16 @@ private theorem blockExecution_departureQueues {fork : Fork}
     {body : BeaconBlockBody preset fork} {bellatrix : .bellatrix ≤ fork}
     (electra : .pectra ≤ fork) (early : fork < .glamsterdam)
     (ok : processBlockExecution config checks engine s body bellatrix = .ok t) :
-    departureQueues electra t = departureQueues electra s := by
+    ∃ expected, getExpectedWithdrawals s (Nat.le_trans (by decide) electra) = .ok expected ∧
+      departureQueues electra t = departureQueues electra
+        (updatePendingPartialWithdrawals s electra expected.processedPartialWithdrawalsCount) := by
   have notGloas : ¬ .glamsterdam ≤ fork := Nat.not_le_of_lt early
   have capella : .shapella ≤ fork := Nat.le_trans (by decide) electra
   simp only [processBlockExecution, notGloas, capella, ↓reduceDIte, bind_ok_iff] at ok
   obtain ⟨middle, withdrawn, payload⟩ := ok
   obtain ⟨_, _, _, rfl⟩ := processExecutionPayload_ok payload
-  change departureQueues electra middle = departureQueues electra s
-  exact withdrawals_departureQueues electra early withdrawn
+  obtain ⟨expected, expectedOk, frame⟩ := withdrawals_departureQueues electra early withdrawn
+  exact ⟨expected, expectedOk, frame⟩
 
 /-- A slashing changes the departure queues only in its initial exit scheduling call. -/
 private theorem slashValidator_departureQueues {fork : Fork} {s t : BeaconState preset fork}
@@ -1308,7 +1360,9 @@ private theorem compoundingExcess_departureQueues {fork : Fork} {s t : BeaconSta
     · cases ok; rfl
   · cases ok; rfl
 
-/-- The Electra upgrade sets both departure queues, and its two folds keep all four fields. -/
+/-- The Electra upgrade sets both departure queues and an empty queue of partial withdrawals.
+
+Its two folds keep all five fields. -/
 private theorem electra_departure_initialization {s : BeaconState preset .dencun}
     {t : BeaconState preset .pectra} (ok : upgradeToElectra config s = .ok t) :
     ∃ first exitEpoch exitRate consolidationRate,
@@ -1316,16 +1370,16 @@ private theorem electra_departure_initialization {s : BeaconState preset .dencun
       Uint64.addChecked (s.validators.data.foldl (init := first) fun latest validator =>
         if validator.exitEpoch = FAR_FUTURE_EPOCH then latest else max latest validator.exitEpoch)
         1 = .ok exitEpoch ∧
-      departureQueues (by decide) t = (exitEpoch, exitRate, first, consolidationRate) := by
+      departureQueues (by decide) t = (exitEpoch, exitRate, first, consolidationRate, #[]) := by
   simp only [upgradeToElectra, bind_ok_iff, liftAccessor_ok, liftArith, mapError_ok_iff] at ok
   obtain ⟨first, firstOk, exitEpoch, exitOk, exitRate, _, consolidationRate, _, middle,
     queued, compounded⟩ := ok
   have one := foldlM_ok_invariant
-    (fun u => departureQueues (by decide) u = (exitEpoch, exitRate, first, consolidationRate))
+    (fun u => departureQueues (by decide) u = (exitEpoch, exitRate, first, consolidationRate, #[]))
     (fun a i b kept step => (preActivation_departureQueues (by decide) step).trans kept)
     rfl queued
   have two := foldlM_ok_invariant
-    (fun u => departureQueues (by decide) u = (exitEpoch, exitRate, first, consolidationRate))
+    (fun u => departureQueues (by decide) u = (exitEpoch, exitRate, first, consolidationRate, #[]))
     (fun a i b kept step => (compoundingExcess_departureQueues (by decide) step).trans kept)
     one compounded
   exact ⟨first, exitEpoch, exitRate, consolidationRate, firstOk, exitOk, two⟩
@@ -1537,6 +1591,28 @@ private theorem exitChurnLimit_le_cap {fork : Fork} {s : BeaconState preset fork
   obtain ⟨whole, _, rfl⟩ := ok
   exact UInt64.le_iff_toNat_le.mp Std.min_le_left
 
+private theorem exitUpdate_consolidationFrame {fork : Fork} {s t : BeaconState preset fork}
+    (electra : .pectra ≤ fork) {amount : Gwei} {epoch : Epoch}
+    (ok : computeExitEpochAndUpdateChurn config s electra amount = .ok (t, epoch)) :
+    (departureQueues electra t).2.2 = (departureQueues electra s).2.2 := by
+  simp only [computeExitEpochAndUpdateChurn, bind_ok_iff, pure, Except.pure,
+    Except.ok.injEq, Prod.mk.injEq] at ok
+  obtain ⟨_, _, _, _, ⟨_, _⟩, _, rfl, _⟩ := ok
+  rfl
+
+private theorem initiateExit_consolidationFrame {fork : Fork} {s t : BeaconState preset fork}
+    (electra : .pectra ≤ fork) {index : ValidatorIndex}
+    (ok : initiateValidatorExit config s index = .ok t) :
+    (departureQueues electra t).2.2 = (departureQueues electra s).2.2 := by
+  obtain ⟨v, _, unchanged | ⟨_, queued, epoch, _, scheduled, _, set⟩⟩ :=
+    initiateValidatorExit_ok ok
+  · rw [unchanged.2]
+  · have called : computeExitEpochAndUpdateChurn config s electra v.effectiveBalance =
+        .ok (queued, epoch) := by simpa only [exitQueue, electra, ↓reduceDIte] using scheduled
+    obtain ⟨_, rfl⟩ := setValidator_ok set
+    change (departureQueues electra queued).2.2 = (departureQueues electra s).2.2
+    exact exitUpdate_consolidationFrame electra called
+
 /-- An exit trace tags its call and covers every newly assigned validator exit. -/
 private theorem initiateExit_indexedTrace {fork : Fork} {s t : BeaconState preset fork}
     (electra : .pectra ≤ fork) (early : fork < .glamsterdam) {index : ValidatorIndex}
@@ -1547,18 +1623,23 @@ private theorem initiateExit_indexedTrace {fork : Fork} {s t : BeaconState prese
         (calls.map (·.call)) (t.earliestExitEpoch electra) (t.exitBalanceToConsume electra) ∧
       (∀ called ∈ calls,
         called.call.rate.toNat ≤ config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat) ∧
+      PartialsAppended electra s t calls ∧
       ∀ other old next, getValidator s other = .ok old → getValidator t other = .ok next →
         old.exitEpoch = FAR_FUTURE_EPOCH → next.exitEpoch ≠ FAR_FUTURE_EPOCH →
         ∃ called ∈ calls, called.index = some other.toNat ∧
           called.call.epoch = next.exitEpoch ∧ called.call.amount = old.effectiveBalance := by
+  have kept : (t.pendingPartialWithdrawals electra).data =
+      (s.pendingPartialWithdrawals electra).data :=
+    congrArg (fun q => q.2.2) (initiateExit_consolidationFrame electra ok)
   obtain same | ⟨v, call, found, _, amount, earliest, available, placed, left, rate,
     firstOk, later, read, epoch⟩ := initiateExit_call electra ok
   · subst t
-    refine ⟨[], by simp [DepartureCallsFrom], .nil _ _, by simp, ?_⟩
+    refine ⟨[], by simp [DepartureCallsFrom], .nil _ _, by simp, .of_kept rfl, ?_⟩
     intro other old next before after unset assigned
     have equal := Except.ok.inj (before.symm.trans after)
     exact False.elim (assigned (equal ▸ unset))
-  · refine ⟨[⟨some index.toNat, call, nofun⟩], ?_, ?_, ?_, ?_⟩
+  · refine ⟨[⟨some index.toNat, call, none, by simp, nofun⟩], ?_, ?_, ?_,
+      by rw [PartialsAppended, kept]; simp, ?_⟩
     · intro called member
       obtain rfl := List.mem_singleton.mp member
       have first := (computeActivationExitEpoch_ok_iff.mp firstOk).2
@@ -1587,7 +1668,8 @@ private theorem registryEntry_indexedTrace {fork : Fork} {s t : BeaconState pres
       DepartureQueueTrace (s.earliestExitEpoch electra) (s.exitBalanceToConsume electra)
         (calls.map (·.call)) (t.earliestExitEpoch electra) (t.exitBalanceToConsume electra) ∧
       DepartureCoverage s t calls ∧ (∀ called ∈ calls,
-        called.call.rate.toNat ≤ config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat) := by
+        called.call.rate.toNat ≤ config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat) ∧
+      PartialsAppended electra s t calls := by
   simp only [updateRegistryEntryElectra, bind_ok_iff, liftAccessor_ok] at ok
   obtain ⟨validator, found, ok⟩ := ok
   split at ok
@@ -1595,19 +1677,21 @@ private theorem registryEntry_indexedTrace {fork : Fork} {s t : BeaconState pres
     obtain ⟨epoch, _, set⟩ := ok
     have covered := DepartureCoverage.setValidatorAt (config := config) found set rfl
     obtain ⟨_, rfl⟩ := setValidatorAt_ok set
-    exact ⟨[], by simp [DepartureCallsFrom], .nil _ _, covered, by simp⟩
+    exact ⟨[], by simp [DepartureCallsFrom], .nil _ _, covered, by simp, .of_kept rfl⟩
   split at ok
   · simp only [bind_ok_iff, liftAccessor_ok] at ok
     obtain ⟨validatorIndex, _, exited⟩ := ok
-    obtain ⟨calls, firsts, trace, rates, covered⟩ := initiateExit_indexedTrace electra early exited
-    exact ⟨calls, firsts, trace, DepartureCoverage.of_accessor early covered, rates⟩
+    obtain ⟨calls, firsts, trace, rates, appended, covered⟩ :=
+      initiateExit_indexedTrace electra early exited
+    exact ⟨calls, firsts, trace, DepartureCoverage.of_accessor early covered, rates, appended⟩
   split at ok
   · have set := liftAccessor_ok.mp ok
     have covered := DepartureCoverage.setValidatorAt (config := config) found set rfl
     obtain ⟨_, rfl⟩ := setValidatorAt_ok set
-    exact ⟨[], by simp [DepartureCallsFrom], .nil _ _, covered, by simp⟩
+    exact ⟨[], by simp [DepartureCallsFrom], .nil _ _, covered, by simp, .of_kept rfl⟩
   · cases ok
-    exact ⟨[], by simp [DepartureCallsFrom], .nil _ _, DepartureCoverage.of_data rfl, by simp⟩
+    exact ⟨[], by simp [DepartureCallsFrom], .nil _ _, DepartureCoverage.of_data rfl, by simp,
+      .of_kept rfl⟩
 
 /-- The Electra registry fold matches ejection charges before effective balances change. -/
 private theorem registryEntries_indexedTrace {fork : Fork} {s t : BeaconState preset fork}
@@ -1619,7 +1703,8 @@ private theorem registryEntries_indexedTrace {fork : Fork} {s t : BeaconState pr
       DepartureQueueTrace (s.earliestExitEpoch electra) (s.exitBalanceToConsume electra)
         (calls.map (·.call)) (t.earliestExitEpoch electra) (t.exitBalanceToConsume electra) ∧
       DepartureCoverage s t calls ∧ (∀ called ∈ calls,
-        called.call.rate.toNat ≤ config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat) := by
+        called.call.rate.toNat ≤ config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat) ∧
+      PartialsAppended electra s t calls := by
   apply DepartureCoverage.foldlM electra _
     (fun _ _ _ stepped => registryEntry_indexedTrace electra early stepped) ?_ ?_
     (fun _ _ _ stepped => (frame_updateRegistryEntryElectra stepped).slot) ok
@@ -1652,14 +1737,15 @@ private theorem partialWithdrawal_indexedTrace {fork : Fork} {s t : BeaconState 
       DepartureCallsFrom (getCurrentEpoch s).toNat calls ∧
       DepartureQueueTrace (s.earliestExitEpoch electra) (s.exitBalanceToConsume electra)
         (calls.map (·.call)) (t.earliestExitEpoch electra) (t.exitBalanceToConsume electra) ∧
+      PartialsAppended electra s t calls ∧
       ∀ called ∈ calls, called.index = none ∧
         called.call.rate.toNat ≤ config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat := by
   obtain ⟨registry, same | ⟨call, earliest, available, placed, left, rate, firstOk,
     withdrawable, appended, delayed⟩⟩ := partialWithdrawal_call electra ok
   · subst t
-    exact ⟨rfl, [], by simp [DepartureCallsFrom], .nil _ _, by simp⟩
-  · refine ⟨registry, [⟨none, call, fun _ => ⟨fork, electra, s, t, index, v, amount, owed,
-      withdrawable, ok, appended, delayed⟩⟩], ?_, ?_, ?_⟩
+    exact ⟨rfl, [], by simp [DepartureCallsFrom], .nil _ _, .of_kept rfl, by simp⟩
+  · refine ⟨registry, [⟨none, call, some ⟨index, call.amount, withdrawable⟩, by simp,
+      fun pending same => by cases same; exact ⟨rfl, delayed⟩⟩], ?_, ?_, ?_, ?_⟩
     · intro called member
       obtain rfl := List.mem_singleton.mp member
       have first := (computeActivationExitEpoch_ok_iff.mp firstOk).2
@@ -1668,6 +1754,8 @@ private theorem partialWithdrawal_indexedTrace {fork : Fork} {s t : BeaconState 
     · change DepartureQueueTrace _ _ [call] _ _
       rw [← earliest, ← available, ← placed, ← left]
       exact .cons call (.nil _ _)
+    · rw [PartialsAppended, appended, Array.toList_push]
+      rfl
     · intro called member
       obtain rfl := List.mem_singleton.mp member
       exact ⟨rfl, exitChurnLimit_le_cap early rate⟩
@@ -1682,10 +1770,12 @@ private theorem slashing_indexedTrace {fork : Fork} {s t : BeaconState preset fo
       DepartureQueueTrace (s.earliestExitEpoch electra) (s.exitBalanceToConsume electra)
         (calls.map (·.call)) (t.earliestExitEpoch electra) (t.exitBalanceToConsume electra) ∧
       DepartureCoverage s t calls ∧ (∀ called ∈ calls,
-        called.call.rate.toNat ≤ config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat) := by
+        called.call.rate.toNat ≤ config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat) ∧
+      PartialsAppended electra s t calls := by
   obtain ⟨exited, validator, withdrawable, marked, _, _, _, _, _, _, _, last, exitedOk,
     found, _, markedOk, _, _, _, lowered, _, _, raised, final, done⟩ := slashValidator_ok ok
-  obtain ⟨calls, firsts, trace, rates, covered⟩ := initiateExit_indexedTrace electra early exitedOk
+  obtain ⟨calls, firsts, trace, rates, appended, covered⟩ :=
+    initiateExit_indexedTrace electra early exitedOk
   have notGloas : ¬ .glamsterdam ≤ fork := Nat.not_le_of_lt early
   simp only [notGloas, ↓reduceDIte] at done
   subst t
@@ -1696,7 +1786,8 @@ private theorem slashing_indexedTrace {fork : Fork} {s t : BeaconState preset fo
       departureQueues_decrease electra lowered]
     obtain ⟨_, rfl⟩ := setValidator_ok markedOk
     rfl
-  refine ⟨calls, firsts, ?_, DepartureCoverage.of_accessor early ?_, rates⟩
+  refine ⟨calls, firsts, ?_, DepartureCoverage.of_accessor early ?_, rates,
+    appended.kept_right (congrArg (fun q => q.2.2.2.2) frame)⟩
   · have epoch := congrArg Prod.fst frame
     have balance := congrArg (fun q => q.2.1) frame
     change last.earliestExitEpoch electra = exited.earliestExitEpoch electra at epoch
@@ -1732,14 +1823,16 @@ private theorem slashableFold_indexedTrace {fork : Fork}
       DepartureQueueTrace (s.earliestExitEpoch electra) (s.exitBalanceToConsume electra)
         (calls.map (·.call)) (t.earliestExitEpoch electra) (t.exitBalanceToConsume electra) ∧
       DepartureCoverage s t calls ∧ (∀ called ∈ calls,
-        called.call.rate.toNat ≤ config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat) := by
+        called.call.rate.toNat ≤ config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat) ∧
+      PartialsAppended electra s t calls := by
   induction indices generalizing s flag with
   | nil =>
     cases ok
-    exact ⟨[], by simp [DepartureCallsFrom], .nil _ _, DepartureCoverage.of_data rfl, by simp⟩
+    exact ⟨[], by simp [DepartureCallsFrom], .nil _ _, DepartureCoverage.of_data rfl, by simp,
+      .of_kept rfl⟩
   | cons index rest ih =>
     obtain ⟨⟨middle, flag'⟩, stepped, remaining⟩ := bind_ok_iff.mp ok
-    obtain ⟨later, laterFrom, tail, laterCoverage, laterRates⟩ := ih remaining
+    obtain ⟨later, laterFrom, tail, laterCoverage, laterRates, laterAppended⟩ := ih remaining
     have slot : middle.slot = s.slot := (frame_slashIfSlashable stepped).slot
     have epoch : getCurrentEpoch middle = getCurrentEpoch s := by
       simp only [getCurrentEpoch, slot]
@@ -1754,15 +1847,16 @@ private theorem slashableFold_indexedTrace {fork : Fork}
     · simp only [bind_ok_iff, liftAccessor_ok, pure, Except.pure,
         Except.ok.injEq, Prod.mk.injEq] at stepped
       obtain ⟨_, slashed, rfl, _⟩ := stepped
-      obtain ⟨first, firstFrom, head, firstCoverage, firstRates⟩ :=
+      obtain ⟨first, firstFrom, head, firstCoverage, firstRates, firstAppended⟩ :=
         slashing_indexedTrace electra early slashed
-      refine ⟨first ++ later, firstFrom.append laterFrom, ?_, ?_, ?_⟩
+      refine ⟨first ++ later, firstFrom.append laterFrom, ?_, ?_, ?_,
+        firstAppended.append laterAppended⟩
       · simpa only [List.map_append] using head.append tail
       · exact firstCoverage.append_of_effectiveKept laterCoverage
           (registryLifecycle_slashValidator slashed) tailLifecycle (effectiveKept_slash slashed)
       · intro called member
         exact (List.mem_append.mp member).elim (firstRates called) (laterRates called)
-    · cases stepped; exact ⟨later, laterFrom, tail, laterCoverage, laterRates⟩
+    · cases stepped; exact ⟨later, laterFrom, tail, laterCoverage, laterRates, laterAppended⟩
 
 /-- Attester slashings retain charge coverage through their slashable-validator fold. -/
 private theorem attesterSlashing_indexedTrace {fork : Fork} {s t : BeaconState preset fork}
@@ -1774,7 +1868,8 @@ private theorem attesterSlashing_indexedTrace {fork : Fork} {s t : BeaconState p
       DepartureQueueTrace (s.earliestExitEpoch electra) (s.exitBalanceToConsume electra)
         (calls.map (·.call)) (t.earliestExitEpoch electra) (t.exitBalanceToConsume electra) ∧
       DepartureCoverage s t calls ∧ (∀ called ∈ calls,
-        called.call.rate.toNat ≤ config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat) := by
+        called.call.rate.toNat ≤ config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat) ∧
+      PartialsAppended electra s t calls := by
   simp only [processAttesterSlashing, bind_ok_iff, ensure_ok_iff] at ok
   obtain ⟨_, _, _, _, _, _, _, _, _, _, ⟨folded, flag⟩, foldedOk, ok⟩ := ok
   simp only [pure, Except.pure, Except.ok.injEq] at ok
@@ -1790,7 +1885,8 @@ private theorem proposerSlashing_indexedTrace {fork : Fork} {s t : BeaconState p
       DepartureQueueTrace (s.earliestExitEpoch electra) (s.exitBalanceToConsume electra)
         (calls.map (·.call)) (t.earliestExitEpoch electra) (t.exitBalanceToConsume electra) ∧
       DepartureCoverage s t calls ∧ (∀ called ∈ calls,
-        called.call.rate.toNat ≤ config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat) := by
+        called.call.rate.toNat ≤ config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat) ∧
+      PartialsAppended electra s t calls := by
   simp only [processProposerSlashing, bind_ok_iff, ensure_ok_iff, liftAccessor_ok] at ok
   obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, slashed⟩ := ok
   exact slashing_indexedTrace electra early slashed
@@ -1804,7 +1900,8 @@ private theorem epoch_indexedTrace {fork : Fork} {s t : BeaconState preset fork}
       DepartureQueueTrace (s.earliestExitEpoch electra) (s.exitBalanceToConsume electra)
         (calls.map (·.call)) (t.earliestExitEpoch electra) (t.exitBalanceToConsume electra) ∧
       DepartureCoverage s t calls ∧ (∀ called ∈ calls,
-        called.call.rate.toNat ≤ config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat) := by
+        called.call.rate.toNat ≤ config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat) ∧
+      PartialsAppended electra s t calls := by
   -- Cut the schedule at registry updates, the only stage that calls the exit queue.
   have trace := processEpoch_trace ok
   change EpochTrace _ ([.justification, .inactivity, .rewards] ++ .registry ::
@@ -1852,7 +1949,7 @@ private theorem epoch_indexedTrace {fork : Fork} {s t : BeaconState preset fork}
   have registryLife := registryLifecycle_processRegistryUpdates entriesOk
   simp only [processRegistryUpdates, electra, ↓reduceIte, bind_ok_iff] at entriesOk
   obtain ⟨_, _, entries⟩ := entriesOk
-  obtain ⟨calls, firsts, queued, covered, rates⟩ :=
+  obtain ⟨calls, firsts, queued, covered, rates, appended⟩ :=
     registryEntries_indexedTrace electra early entries
   have headEpoch : getCurrentEpoch rewarded = getCurrentEpoch s := by
     simp only [getCurrentEpoch, headKept.1]
@@ -1867,7 +1964,9 @@ private theorem epoch_indexedTrace {fork : Fork} {s t : BeaconState preset fork}
   change t.exitBalanceToConsume electra = registered.exitBalanceToConsume electra at lastBalance
   rw [firstEpoch, firstBalance] at queued
   rw [lastEpoch, lastBalance]
-  refine ⟨calls, firsts, queued, ?_, rates⟩
+  refine ⟨calls, firsts, queued, ?_, rates,
+    (appended.kept_left (congrArg (fun q => q.2.2.2.2) headKept.2.2)).kept_right
+      (congrArg (fun q => q.2.2.2.2) tailKept.1)⟩
   intro i old next a b
   apply covered.suffix_of_empty tailKept.2.1 registryLife tailKept.2.2 i old next _ b
   simpa only [headKept.2.1] using a
@@ -1881,16 +1980,18 @@ private theorem slot_indexedTrace {fork : Fork} {s t : BeaconState preset fork}
       DepartureQueueTrace (s.earliestExitEpoch electra) (s.exitBalanceToConsume electra)
         (calls.map (·.call)) (t.earliestExitEpoch electra) (t.exitBalanceToConsume electra) ∧
       DepartureCoverage s t calls ∧ (∀ called ∈ calls,
-        called.call.rate.toNat ≤ config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat) := by
+        called.call.rate.toNat ≤ config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat) ∧
+      PartialsAppended electra s t calls := by
   simp only [advanceSlot, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at ok
   obtain ⟨_, _, cached, cache, advanced, advance, rfl⟩ := ok
   obtain ⟨_, _, _, _, rfl⟩ := processSlot_ok cache
   unfold epochIfLast at advance
   split at advance
-  · obtain ⟨calls, firsts, trace, covered, rates⟩ := epoch_indexedTrace electra early advance
-    exact ⟨calls, firsts, trace, covered, rates⟩
+  · obtain ⟨calls, firsts, trace, covered, rates, appended⟩ :=
+      epoch_indexedTrace electra early advance
+    exact ⟨calls, firsts, trace, covered, rates, appended⟩
   · cases advance
-    exact ⟨[], by simp [DepartureCallsFrom], .nil _ _, .of_data rfl, by simp⟩
+    exact ⟨[], by simp [DepartureCallsFrom], .nil _ _, .of_data rfl, by simp, .of_kept rfl⟩
 
 /-- After Electra and before Gloas, upgrades carry both departure queues and the registry.
 
@@ -1946,20 +2047,21 @@ private theorem withdrawalRequest_indexedTrace {fork : Fork} {s t : BeaconState 
         (calls.map (·.call)) (t.earliestExitEpoch electra) (t.exitBalanceToConsume electra) ∧
       (∀ called ∈ calls,
         called.call.rate.toNat ≤ config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat) ∧
+      PartialsAppended electra s t calls ∧
       ∀ other old next, getValidator s other = .ok old → getValidator t other = .ok next →
         old.exitEpoch = FAR_FUTURE_EPOCH → next.exitEpoch ≠ FAR_FUTURE_EPOCH →
         ∃ called ∈ calls, called.index = some other.toNat ∧
           called.call.epoch = next.exitEpoch ∧ called.call.amount = old.effectiveBalance := by
   rcases withdrawalRequest_cases ok with same | ⟨index, exited⟩ | ⟨index, v, owed, withdrawn⟩
   · subst t
-    refine ⟨[], by simp [DepartureCallsFrom], .nil _ _, by simp, ?_⟩
+    refine ⟨[], by simp [DepartureCallsFrom], .nil _ _, by simp, .of_kept rfl, ?_⟩
     intro other old next before after unset assigned
     have equal := Except.ok.inj (before.symm.trans after)
     exact False.elim (assigned (equal ▸ unset))
   · exact initiateExit_indexedTrace electra early exited
-  · obtain ⟨registry, calls, firsts, trace, rates⟩ :=
+  · obtain ⟨registry, calls, firsts, trace, appended, rates⟩ :=
       partialWithdrawal_indexedTrace electra early withdrawn
-    refine ⟨calls, firsts, trace, fun called member => (rates called member).2, ?_⟩
+    refine ⟨calls, firsts, trace, fun called member => (rates called member).2, appended, ?_⟩
     intro other old next before after unset assigned
     have unchanged := getValidator_of_validators_eq registry other
     have equal := Except.ok.inj (before.symm.trans (unchanged ▸ after))
@@ -1975,14 +2077,15 @@ private theorem withdrawalRequests_indexedTrace {fork : Fork} {s t : BeaconState
       DepartureQueueTrace (s.earliestExitEpoch electra) (s.exitBalanceToConsume electra)
         (calls.map (·.call)) (t.earliestExitEpoch electra) (t.exitBalanceToConsume electra) ∧
       DepartureCoverage s t calls ∧ (∀ called ∈ calls,
-        called.call.rate.toNat ≤ config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat) := by
+        called.call.rate.toNat ≤ config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat) ∧
+      PartialsAppended electra s t calls := by
   apply DepartureCoverage.foldlM electra _ ?_
     (fun _ _ _ ok => registryLifecycle_processWithdrawalRequest ok) ?_
     (fun _ _ _ ok => (frame_processWithdrawalRequest ok).slot) ok
   · intro a request b stepped
-    obtain ⟨calls, firsts, trace, rates, coverage⟩ :=
+    obtain ⟨calls, firsts, trace, rates, appended, coverage⟩ :=
       withdrawalRequest_indexedTrace electra early stepped
-    exact ⟨calls, firsts, trace, DepartureCoverage.of_accessor early coverage, rates⟩
+    exact ⟨calls, firsts, trace, DepartureCoverage.of_accessor early coverage, rates, appended⟩
   · intro a request b stepped
     exact effectiveKept_withdrawalRequest stepped
 
@@ -2035,14 +2138,15 @@ private theorem voluntaryExits_indexedTrace {fork : Fork} {s t : BeaconState pre
       DepartureQueueTrace (s.earliestExitEpoch electra) (s.exitBalanceToConsume electra)
         (calls.map (·.call)) (t.earliestExitEpoch electra) (t.exitBalanceToConsume electra) ∧
       DepartureCoverage s t calls ∧ (∀ called ∈ calls,
-        called.call.rate.toNat ≤ config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat) := by
+        called.call.rate.toNat ≤ config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat) ∧
+      PartialsAppended electra s t calls := by
   apply DepartureCoverage.foldlM electra _ ?_
     (fun _ _ _ ok => registryLifecycle_processVoluntaryExit ok) ?_
     (fun _ _ _ ok => (frame_processVoluntaryExit ok).slot) ok
   · intro a signed b stepped
-    obtain ⟨calls, firsts, trace, rates, covered⟩ :=
+    obtain ⟨calls, firsts, trace, rates, appended, covered⟩ :=
       initiateExit_indexedTrace electra early (processVoluntaryExit_initiates stepped)
-    exact ⟨calls, firsts, trace, DepartureCoverage.of_accessor early covered, rates⟩
+    exact ⟨calls, firsts, trace, DepartureCoverage.of_accessor early covered, rates, appended⟩
   · intro a signed b stepped
     exact effectiveKept_voluntaryExit stepped
 
@@ -2109,9 +2213,11 @@ private theorem consolidationRequest_exitFrame {fork : Fork} {s t : BeaconState 
     (electra : .pectra ≤ fork) {request : ConsolidationRequest}
     (ok : processConsolidationRequest config s electra request = .ok t) :
     t.earliestExitEpoch electra = s.earliestExitEpoch electra ∧
-      t.exitBalanceToConsume electra = s.exitBalanceToConsume electra := by
+      t.exitBalanceToConsume electra = s.exitBalanceToConsume electra ∧
+      (t.pendingPartialWithdrawals electra).data = (s.pendingPartialWithdrawals electra).data := by
   rcases consolidationRequest_cases electra ok with frame | ⟨i, v, j, _, called⟩
-  · exact ⟨congrArg Prod.fst frame, congrArg (fun q => q.2.1) frame⟩
+  · exact ⟨congrArg Prod.fst frame, congrArg (fun q => q.2.1) frame,
+      congrArg (fun q => q.2.2.2.2) frame⟩
   · simp only [queueConsolidation, bind_ok_iff, liftAccessor_ok, pure, Except.pure,
       Except.ok.injEq] at called
     obtain ⟨⟨queued, epoch⟩, scheduled, _, _, changed, set, _, _, rfl⟩ := called
@@ -2119,7 +2225,7 @@ private theorem consolidationRequest_exitFrame {fork : Fork} {s t : BeaconState 
     simp only [computeConsolidationEpochAndUpdateChurn, bind_ok_iff,
       pure, Except.pure, Except.ok.injEq, Prod.mk.injEq] at scheduled
     obtain ⟨_, _, _, _, ⟨_, _⟩, _, rfl, _⟩ := scheduled
-    exact ⟨rfl, rfl⟩
+    exact ⟨rfl, rfl, rfl⟩
 
 private theorem queueExcess_registry {fork : Fork} {s t : BeaconState preset fork}
     (electra : .pectra ≤ fork) {index : ValidatorIndex}
@@ -2260,17 +2366,18 @@ private theorem consolidationRequestsSites_indexedTrace_sites {fork : Fork}
         (s.consolidationBalanceToConsume electra) (calls.map (·.call))
         (t.earliestConsolidationEpoch electra) (t.consolidationBalanceToConsume electra) ∧
       DepartureCoverage s t calls ∧ (∀ called ∈ calls, called.call.rate.toNat ≤ cap) ∧
-      ConsolidationCallSites preset config calls sites := by
+      ConsolidationCallSites preset config calls sites ∧ ∀ called ∈ calls, called.entry = none := by
   induction requests generalizing s sites with
   | nil =>
     cases ok
     exact ⟨[], by simp [DepartureCallsFrom], .nil _ _, DepartureCoverage.of_data rfl,
-      by simp, by simp [ConsolidationCallSites]⟩
+      by simp, by simp [ConsolidationCallSites], by simp⟩
   | cons request rest ih =>
     simp only [consolidationRequestsSites, bind_ok_iff, pure, Except.pure,
       Except.ok.injEq, Prod.mk.injEq] at ok
     obtain ⟨here, recorded, middle, stepped, ⟨last, later⟩, replayed, rfl, rfl⟩ := ok
-    obtain ⟨tailCalls, tailFrom, tail, tailCoverage, tailRates, tailSites⟩ := ih replayed
+    obtain ⟨tailCalls, tailFrom, tail, tailCoverage, tailRates, tailSites, tailEntries⟩ :=
+      ih replayed
       (fun site mem h rate computed => rates site (List.mem_append_right _ mem) h rate computed)
     have epoch : getCurrentEpoch middle = getCurrentEpoch s := by
       simp only [getCurrentEpoch, (frame_processConsolidationRequest stepped).slot]
@@ -2278,7 +2385,8 @@ private theorem consolidationRequestsSites_indexedTrace_sites {fork : Fork}
     have tailLifecycle : RegistryLifecycle middle last := by
       have result : rest.foldlM (processConsolidationRequest config · electra ·) middle =
           .ok last := by
-        clear tailFrom tail tailCoverage tailRates tailSites rates recorded stepped ih epoch
+        clear tailFrom tail tailCoverage tailRates tailSites tailEntries rates recorded stepped ih
+          epoch
         induction rest generalizing middle later last with
         | nil => cases replayed; rfl
         | cons request rest inner =>
@@ -2295,13 +2403,13 @@ private theorem consolidationRequestsSites_indexedTrace_sites {fork : Fork}
     | false =>
       have frame := consolidationRequest_notCalled electra stepped classified
       have epoch := congrArg (fun q => q.2.2.1) frame
-      have balance := congrArg (fun q => q.2.2.2) frame
+      have balance := congrArg (fun q => q.2.2.2.1) frame
       change middle.earliestConsolidationEpoch electra = s.earliestConsolidationEpoch electra
         at epoch
       change middle.consolidationBalanceToConsume electra =
         s.consolidationBalanceToConsume electra at balance
       rw [epoch, balance] at tail
-      refine ⟨tailCalls, tailFrom, tail, ?_, tailRates, ?_⟩
+      refine ⟨tailCalls, tailFrom, tail, ?_, tailRates, ?_, tailEntries⟩
       · exact DepartureCoverage.append_of_effectiveKept
           (consolidationRequest_notCalled_coverage electra stepped classified) tailCoverage
             (registryLifecycle_processConsolidationRequest stepped) tailLifecycle
@@ -2310,14 +2418,14 @@ private theorem consolidationRequestsSites_indexedTrace_sites {fork : Fork}
     | true =>
       obtain ⟨sourceIndex, source, targetIndex, found, scheduled⟩ :=
         consolidationRequest_called electra stepped classified
-      obtain ⟨call, first, head, rate, firstOk, covered⟩ :=
+      obtain ⟨call, first, head, rate, firstOk, entry, covered⟩ :=
         queueConsolidation_indexedTrace_site electra found scheduled
       have coverage : DepartureCoverage s middle [call] :=
         DepartureCoverage.of_accessor early (by
           intro other old next before after unset assigned
           exact ⟨call, List.mem_singleton_self _,
             covered other old next before after unset assigned⟩)
-      refine ⟨call :: tailCalls, ?_, head.append tail, ?_, ?_, ?_⟩
+      refine ⟨call :: tailCalls, ?_, head.append tail, ?_, ?_, ?_, ?_⟩
       · intro called member
         exact (List.mem_cons.mp member).elim (fun same => same ▸ first) (tailFrom called)
       · exact coverage.append_of_effectiveKept tailCoverage
@@ -2332,6 +2440,8 @@ private theorem consolidationRequestsSites_indexedTrace_sites {fork : Fork}
         · exact ⟨⟨fork, s⟩, by simp, firstOk, rate⟩
         · obtain ⟨site, present, paired⟩ := tailSites called member
           exact ⟨site, List.mem_append_right _ present, paired⟩
+      · intro called member
+        exact (List.mem_cons.mp member).elim (fun same => same ▸ entry) (tailEntries called)
 
 private theorem executionRequests_coverage_sites {fork : Fork} (electra : .pectra ≤ fork)
     (early : fork < .glamsterdam) {s deposited withdrawn t : BeaconState preset fork}
@@ -2358,14 +2468,15 @@ private theorem executionRequests_coverage_sites {fork : Fork} (electra : .pectr
       (∀ called ∈ exits,
         called.call.rate.toNat ≤ config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat) ∧
       (∀ called ∈ consolidations, called.call.rate.toNat ≤ cap) ∧
-      ConsolidationCallSites preset config consolidations sites := by
+      ConsolidationCallSites preset config consolidations sites ∧
+      PartialsAppended electra s t exits ∧ ∀ called ∈ consolidations, called.entry = none := by
   have depositsData : deposited.validators = s.validators :=
     foldlM_ok_invariant (fun t => t.validators = s.validators)
       (fun _ _ _ kept ok => (processDepositRequest_ok ok).2.1.trans kept) rfl depositedOk
-  obtain ⟨exitCalls, exitFrom, exitTrace, exitCoverage, exitRates⟩ :=
+  obtain ⟨exitCalls, exitFrom, exitTrace, exitCoverage, exitRates, exitAppended⟩ :=
     withdrawalRequests_indexedTrace electra early withdrawnOk
   obtain ⟨consolidationCalls, consolidationFrom, consolidationTrace,
-    consolidationCoverage, consolidationRates, consolidationSites⟩ :=
+    consolidationCoverage, consolidationRates, consolidationSites, consolidationEntries⟩ :=
     consolidationRequestsSites_indexedTrace_sites electra early replayed cap rates
   have depositedSlot :=
     (BlockFrame.foldlM (fun _ _ _ ok => frame_processDepositRequest ok) depositedOk).slot
@@ -2384,9 +2495,20 @@ private theorem executionRequests_coverage_sites {fork : Fork} (electra : .pectr
       (fun _ _ _ ok => registryLifecycle_processConsolidationRequest ok) consolidatedOk)
     (effectiveKept_fold (fun _ _ _ ok => effectiveKept_withdrawalRequest ok)
       (fun _ _ _ ok => (registryLifecycle_processWithdrawalRequest ok).size_le) withdrawnOk)
+  have depositsKept := congrArg (fun q => q.2.2.2.2)
+    (foldlM_ok_invariant (fun t => departureQueues electra t = departureQueues electra s)
+      (fun _ _ _ kept ok => (depositRequest_departureQueues electra ok).trans kept) rfl depositedOk)
+  have consolidatedKept : (t.pendingPartialWithdrawals electra).data =
+      (withdrawn.pendingPartialWithdrawals electra).data :=
+    foldlM_ok_invariant (fun t => (t.pendingPartialWithdrawals electra).data =
+        (withdrawn.pendingPartialWithdrawals electra).data)
+      (fun _ _ _ kept ok => (consolidationRequest_exitFrame electra ok).2.2.trans kept) rfl
+      consolidatedOk
   refine ⟨exitCalls, consolidationCalls, exitFrom.append consolidationFrom,
     ?_, exitTrace, consolidationTrace,
-    exitRates, consolidationRates, consolidationSites⟩
+    exitRates, consolidationRates, consolidationSites,
+    (exitAppended.kept_left depositsKept).kept_right consolidatedKept,
+    consolidationEntries⟩
   intro i old next before after
   apply coverage i old next _ after
   simpa only [depositsData] using before
@@ -2416,18 +2538,21 @@ private theorem operationsPrefix_coverage {fork : Fork} (electra : .pectra ≤ f
         called.call.rate.toNat ≤ config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat) ∧
       RegistryLifecycle s changed ∧
       (∀ i, i < s.validators.data.size →
-        effectiveAt ⟨fork, changed⟩ i = effectiveAt ⟨fork, s⟩ i) := by
-  obtain ⟨one, oneFrom, oneTrace, oneCoverage, oneRates⟩ := DepartureCoverage.foldlM electra _
+        effectiveAt ⟨fork, changed⟩ i = effectiveAt ⟨fork, s⟩ i) ∧
+      PartialsAppended electra s changed calls := by
+  obtain ⟨one, oneFrom, oneTrace, oneCoverage, oneRates, oneAppended⟩ :=
+    DepartureCoverage.foldlM electra _
     (fun _ _ _ ok => proposerSlashing_indexedTrace electra early ok)
     (fun _ _ _ ok => registryLifecycle_processProposerSlashing ok)
     (fun _ _ _ ok => effectiveKept_proposerSlashing ok)
     (fun _ _ _ ok => (frame_processProposerSlashing ok).slot) proposedOk
-  obtain ⟨two, twoFrom, twoTrace, twoCoverage, twoRates⟩ := DepartureCoverage.foldlM electra _
+  obtain ⟨two, twoFrom, twoTrace, twoCoverage, twoRates, twoAppended⟩ :=
+    DepartureCoverage.foldlM electra _
     (fun _ _ _ ok => attesterSlashing_indexedTrace electra early ok)
     (fun _ _ _ ok => registryLifecycle_processAttesterSlashing ok)
     (fun _ _ _ ok => effectiveKept_attesterSlashing ok)
     (fun _ _ _ ok => (frame_processAttesterSlashing ok).slot) attestedOk
-  obtain ⟨three, threeFrom, threeTrace, threeCoverage, threeRates⟩ :=
+  obtain ⟨three, threeFrom, threeTrace, threeCoverage, threeRates, threeAppended⟩ :=
     voluntaryExits_indexedTrace electra early exitedOk
   have proposedSlot :=
     (BlockFrame.foldlM (fun _ _ _ ok => frame_processProposerSlashing ok) proposedOk).slot
@@ -2497,7 +2622,10 @@ private theorem operationsPrefix_coverage {fork : Fork} (electra : .pectra ≤ f
   refine ⟨(one ++ two) ++ three, (oneFrom.append twoFrom).append threeFrom,
     prefixCoverage.suffix_of_empty changesCoverage
     ((((firstLife.trans secondLife).trans votesLife).trans depositsLife).trans exitsLife)
-    changesLife, ?_, ?_, ?_, ?_⟩
+    changesLife, ?_, ?_, ?_, ?_,
+    (((oneAppended.append twoAppended).kept_right
+      (congrArg (fun q => q.2.2.2.2) (depositsFrame.trans votesFrame))).append
+        threeAppended).kept_right (congrArg (fun q => q.2.2.2.2) changesFrame)⟩
   · have middleEpoch := congrArg Prod.fst (depositsFrame.trans votesFrame)
     have middleBalance := congrArg (fun q => q.2.1) (depositsFrame.trans votesFrame)
     have lastEpoch := congrArg Prod.fst changesFrame
@@ -2558,28 +2686,6 @@ private def blockConsolidationSites {fork : Fork} (config : Config) (checks : Si
       requests.consolidations.data.toList).2
   else return []
 
-private theorem exitUpdate_consolidationFrame {fork : Fork} {s t : BeaconState preset fork}
-    (electra : .pectra ≤ fork) {amount : Gwei} {epoch : Epoch}
-    (ok : computeExitEpochAndUpdateChurn config s electra amount = .ok (t, epoch)) :
-    (departureQueues electra t).2.2 = (departureQueues electra s).2.2 := by
-  simp only [computeExitEpochAndUpdateChurn, bind_ok_iff, pure, Except.pure,
-    Except.ok.injEq, Prod.mk.injEq] at ok
-  obtain ⟨_, _, _, _, ⟨_, _⟩, _, rfl, _⟩ := ok
-  rfl
-
-private theorem initiateExit_consolidationFrame {fork : Fork} {s t : BeaconState preset fork}
-    (electra : .pectra ≤ fork) {index : ValidatorIndex}
-    (ok : initiateValidatorExit config s index = .ok t) :
-    (departureQueues electra t).2.2 = (departureQueues electra s).2.2 := by
-  obtain ⟨v, _, unchanged | ⟨_, queued, epoch, _, scheduled, _, set⟩⟩ :=
-    initiateValidatorExit_ok ok
-  · rw [unchanged.2]
-  · have called : computeExitEpochAndUpdateChurn config s electra v.effectiveBalance =
-        .ok (queued, epoch) := by simpa only [exitQueue, electra, ↓reduceDIte] using scheduled
-    obtain ⟨_, rfl⟩ := setValidator_ok set
-    change (departureQueues electra queued).2.2 = (departureQueues electra s).2.2
-    exact exitUpdate_consolidationFrame electra called
-
 private theorem slashing_consolidationFrame {fork : Fork} {s t : BeaconState preset fork}
     (electra : .pectra ≤ fork) (early : fork < .glamsterdam)
     {index : ValidatorIndex} {whistleblower : Option ValidatorIndex}
@@ -2620,20 +2726,24 @@ private theorem attesterSlashing_consolidationFrame {fork : Fork}
     exact (slashing_consolidationFrame electra early slashed).trans kept
   · cases stepped; exact kept
 
+/-- A withdrawal request keeps the consolidation queue, and may add a partial withdrawal. -/
 private theorem withdrawalRequest_consolidationFrame {fork : Fork}
     {s t : BeaconState preset fork} (electra : .pectra ≤ fork) {request : WithdrawalRequest}
     (ok : processWithdrawalRequest config s electra request = .ok t) :
-    (departureQueues electra t).2.2 = (departureQueues electra s).2.2 := by
+    ((departureQueues electra t).2.2.1, (departureQueues electra t).2.2.2.1) =
+      ((departureQueues electra s).2.2.1, (departureQueues electra s).2.2.2.1) := by
   rcases withdrawalRequest_cases ok with rfl | ⟨index, initiated⟩ | ⟨index, v, owed, paid⟩
   · rfl
-  · exact initiateExit_consolidationFrame electra initiated
+  · have frame := initiateExit_consolidationFrame electra initiated
+    rw [frame]
   · simp only [requestPartialWithdrawal, bind_ok_iff, liftAccessor_ok] at paid
     obtain ⟨_, _, _, _, paid⟩ := paid
     split at paid
     · simp only [bind_ok_iff, liftAccessor_ok, pure, Except.pure, Except.ok.injEq] at paid
       obtain ⟨⟨queued, epoch⟩, called, _, _, _, _, rfl⟩ := paid
-      change (departureQueues electra queued).2.2 = (departureQueues electra s).2.2
-      exact exitUpdate_consolidationFrame electra called
+      have frame := exitUpdate_consolidationFrame electra called
+      change ((departureQueues electra queued).2.2.1, (departureQueues electra queued).2.2.2.1) = _
+      rw [frame]
     · cases paid; rfl
 
 private theorem epoch_consolidationFrame {fork : Fork} {s t : BeaconState preset fork}
@@ -2659,6 +2769,16 @@ private theorem epoch_consolidationFrame {fork : Fork} {s t : BeaconState preset
     · exact (initiateExit_consolidationFrame electra initiated).trans kept
   all_goals exact congrArg (fun q => q.2.2) (epochStage_departureQueues electra early edge nofun)
 
+/-- The number of queued partial withdrawals that a block reads.
+
+Its withdrawals are those that the state after its header expects, from Capella on. -/
+private def blockPartialsTaken {fork : Fork} (state : BeaconState preset fork)
+    (block : BeaconBlock preset fork) : Nat :=
+  if capella : .shapella ≤ fork then
+    (((processBlockHeader state block >>= (getExpectedWithdrawals · capella)).toOption).map
+      (·.processedPartialWithdrawalsCount)).getD 0
+  else 0
+
 private theorem block_indexedTrace_sites {fork : Fork} (electra : .pectra ≤ fork)
     (early : fork < .glamsterdam) {engine : ExecutionEngine preset fork}
     {s t : BeaconState preset fork} {block : BeaconBlock preset fork}
@@ -2678,7 +2798,12 @@ private theorem block_indexedTrace_sites {fork : Fork} (electra : .pectra ≤ fo
       (∀ called ∈ exits,
         called.call.rate.toNat ≤ config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat) ∧
       (∀ called ∈ consolidations, called.call.rate.toNat ≤ cap) ∧
-      ConsolidationCallSites preset config consolidations sites := by
+      ConsolidationCallSites preset config consolidations sites ∧
+      (∀ called ∈ consolidations, called.entry = none) ∧
+      blockPartialsTaken s block ≤ (s.pendingPartialWithdrawals electra).data.size ∧
+      (t.pendingPartialWithdrawals electra).data.toList =
+        (s.pendingPartialWithdrawals electra).data.toList.drop (blockPartialsTaken s block) ++
+          exits.filterMap (·.entry) := by
   have altair : .altair ≤ fork := Nat.le_trans (by decide) electra
   have bellatrix : .bellatrix ≤ fork := Nat.le_trans (by decide) electra
   have capella : .shapella ≤ fork := Nat.le_trans (by decide) electra
@@ -2712,11 +2837,12 @@ private theorem block_indexedTrace_sites {fork : Fork} (electra : .pectra ≤ fo
       requestedOk, withdrawnOk, replayed, pure, Except.pure, bind, Except.bind]
   rw [← Array.foldlM_toList] at proposedOk attestedOk votedAttOk depositedOk exitedOk
   rw [← Array.foldlM_toList] at requestedOk withdrawnOk consolidatedOk
-  obtain ⟨first, firstFrom, firstCoverage, firstTrace, firstRates, firstLife, firstBalances⟩ :=
+  obtain ⟨first, firstFrom, firstCoverage, firstTrace, firstRates, firstLife, firstBalances,
+    firstAppended⟩ :=
     operationsPrefix_coverage electra early proposedOk attestedOk votedAttOk depositedOk
       exitedOk changedOk
   obtain ⟨exits, consolidations, requestsFrom, covered, exitTrace, consolidationTrace,
-    exitRates, consolidationRates, consolidationSites⟩ :=
+    exitRates, consolidationRates, consolidationSites, requestsAppended, consolidationEntries⟩ :=
     executionRequests_coverage_sites electra early requestedOk withdrawnOk consolidatedOk
       replayed cap (rates sites recorded)
   have headSlot : voted.slot = s.slot :=
@@ -2748,10 +2874,12 @@ private theorem block_indexedTrace_sites {fork : Fork} (electra : .pectra ≤ fo
     foldlM_ok_invariant (fun t => departureQueues electra t = departureQueues electra changed)
       (fun _ _ _ kept ok => (depositRequest_departureQueues electra ok).trans kept)
       rfl requestedOk
-  have withdrawnFrame : (departureQueues electra withdrawn).2.2 =
-      (departureQueues electra requested).2.2 :=
+  have withdrawnFrame : ((departureQueues electra withdrawn).2.2.1,
+      (departureQueues electra withdrawn).2.2.2.1) =
+      ((departureQueues electra requested).2.2.1, (departureQueues electra requested).2.2.2.1) :=
     foldlM_ok_invariant
-      (fun t => (departureQueues electra t).2.2 = (departureQueues electra requested).2.2)
+      (fun t => ((departureQueues electra t).2.2.1, (departureQueues electra t).2.2.2.1) =
+        ((departureQueues electra requested).2.2.1, (departureQueues electra requested).2.2.2.1))
       (fun _ _ _ kept ok => (withdrawalRequest_consolidationFrame electra ok).trans kept)
       rfl withdrawnOk
   have operatedFrame : operated.earliestExitEpoch electra = withdrawn.earliestExitEpoch electra ∧
@@ -2761,7 +2889,7 @@ private theorem block_indexedTrace_sites {fork : Fork} (electra : .pectra ≤ fo
       t.exitBalanceToConsume electra = withdrawn.exitBalanceToConsume electra)
       (fun _ _ _ kept ok =>
         let frame := consolidationRequest_exitFrame electra ok
-        ⟨frame.1.trans kept.1, frame.2.trans kept.2⟩) ⟨rfl, rfl⟩ consolidatedOk
+        ⟨frame.1.trans kept.1, frame.2.1.trans kept.2⟩) ⟨rfl, rfl⟩ consolidatedOk
   have prefixFrame : (departureQueues electra changed).2.2 =
       (departureQueues electra voted).2.2 := by
     have one := foldlM_ok_invariant
@@ -2794,13 +2922,22 @@ private theorem block_indexedTrace_sites {fork : Fork} (electra : .pectra ≤ fo
       (fun _ _ _ kept ok =>
         (congrArg (fun q => q.2.2) (credentials_departureQueues electra ok)).trans kept)
       five changedOk
-  have headFrame : departureQueues electra voted = departureQueues electra s := by
+  obtain ⟨planned, plannedOk, executedFrame⟩ :=
+    blockExecution_departureQueues electra early executedOk
+  have headFrame : departureQueues electra voted = departureQueues electra
+      (updatePendingPartialWithdrawals s electra planned.processedPartialWithdrawalsCount) := by
     have voteFrame := congrArg (departureQueues electra) (processEth1Data_eq votedOk).2.2
     change departureQueues electra voted = departureQueues electra revealed at voteFrame
     rw [voteFrame]
     obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, rfl⟩ := processRandao_eq revealedOk
-    change departureQueues electra executed = departureQueues electra s
-    rw [blockExecution_departureQueues electra early executedOk]
+    change departureQueues electra executed = _
+    rw [executedFrame]
+    obtain ⟨_, _, rfl⟩ := processBlockHeader_eq headedOk
+    rfl
+  have taken : blockPartialsTaken s block = planned.processedPartialWithdrawalsCount := by
+    simp [blockPartialsTaken, capella, headedOk, plannedOk, Except.toOption, bind, Except.bind]
+  have headQueue :
+      headed.pendingPartialWithdrawals electra = s.pendingPartialWithdrawals electra := by
     obtain ⟨_, _, rfl⟩ := processBlockHeader_eq headedOk
     rfl
   obtain ⟨_, synced⟩ := processSyncAggregate_eq syncedOk
@@ -2813,7 +2950,7 @@ private theorem block_indexedTrace_sites {fork : Fork} (electra : .pectra ≤ fo
       firstCoverage.append_of_effectiveKept covered firstLife requestsLife firstBalances
   have tailData : t.validators = operated.validators := by rw [synced]
   refine ⟨sites, recorded, first ++ exits, consolidations, ?_, ?_, ?_, ?_, ?_, consolidationRates,
-    consolidationSites⟩
+    consolidationSites, consolidationEntries, ?_, ?_⟩
   · simpa only [List.append_assoc] using firstFrom.append requestsFrom
   · intro i old next a b
     apply operatedCoverage i old next
@@ -2839,12 +2976,13 @@ private theorem block_indexedTrace_sites {fork : Fork} (electra : .pectra ≤ fo
     rw [List.map_append, lastEpoch, lastBalance, operatedFrame.1, operatedFrame.2]
     exact linked
   · have initial := withdrawnFrame.trans
-      ((congrArg (fun q => q.2.2) requestedFrame).trans
-        (prefixFrame.trans (congrArg (fun q => q.2.2) headFrame)))
+      ((congrArg (fun q => (q.2.2.1, q.2.2.2.1)) requestedFrame).trans
+        ((congrArg (fun p => (p.1, p.2.1)) prefixFrame).trans
+          (congrArg (fun q => (q.2.2.1, q.2.2.2.1)) headFrame)))
     have firstEpoch := congrArg Prod.fst initial
     have firstBalance := congrArg Prod.snd initial
     have lastEpoch := congrArg (fun q => q.2.2.1) tailFrame
-    have lastBalance := congrArg (fun q => q.2.2.2) tailFrame
+    have lastBalance := congrArg (fun q => q.2.2.2.1) tailFrame
     change withdrawn.earliestConsolidationEpoch electra = s.earliestConsolidationEpoch electra
       at firstEpoch
     change withdrawn.consolidationBalanceToConsume electra = s.consolidationBalanceToConsume electra
@@ -2858,6 +2996,18 @@ private theorem block_indexedTrace_sites {fork : Fork} (electra : .pectra ≤ fo
     exact consolidationTrace
   · intro called member
     exact (List.mem_append.mp member).elim (firstRates called) (exitRates called)
+  · rw [taken, ← headQueue]
+    exact (getExpectedWithdrawals_bounds plannedOk).2.2.1 electra
+  · have last := congrArg (fun q => q.2.2.2.2.toList) tailFrame
+    have head := congrArg (fun q => q.2.2.2.2.toList) headFrame
+    change (t.pendingPartialWithdrawals electra).data.toList =
+      (operated.pendingPartialWithdrawals electra).data.toList at last
+    change (voted.pendingPartialWithdrawals electra).data.toList =
+      ((s.pendingPartialWithdrawals electra).data.extract planned.processedPartialWithdrawalsCount
+        (s.pendingPartialWithdrawals electra).data.size).toList at head
+    rw [last, requestsAppended, firstAppended, head, taken, List.filterMap_append,
+      List.append_assoc]
+    simp
 
 /-- The states at which a block reads the consolidation churn limit, in order. -/
 private def _root_.EthLib.Consensus.Step.consolidationSites {x y : ForkedBeaconState preset}
@@ -2872,6 +3022,19 @@ private def _root_.EthLib.Consensus.Run.consolidationSites {x : ForkedBeaconStat
     {y : ForkedBeaconState preset} → Run config checks x y → List (ForkedBeaconState preset)
   | _, .nil => []
   | _, .snoc pre step => pre.consolidationSites ++ step.consolidationSites
+
+/-- The number of queued partial withdrawals that a step reads. -/
+private def _root_.EthLib.Consensus.Step.partialsTaken {x y : ForkedBeaconState preset}
+    (step : Step config checks x y) : Nat :=
+  match step with
+  | .slot _ => 0
+  | .block _ signed _ _ => blockPartialsTaken x.state signed.message
+
+/-- The number of queued partial withdrawals that the steps of a run read. -/
+private def _root_.EthLib.Consensus.Run.partialsTaken {x : ForkedBeaconState preset} :
+    {y : ForkedBeaconState preset} → Run config checks x y → Nat
+  | _, .nil => 0
+  | _, .snoc pre step => pre.partialsTaken + step.partialsTaken
 
 /-- The consolidation sites of two runs in turn are those of the first, then the second. -/
 private theorem _root_.EthLib.Consensus.Run.consolidationSites_append
@@ -2917,14 +3080,19 @@ private theorem step_indexedTrace_sites {x y : ForkedBeaconState preset}
       (∀ called ∈ exits,
         called.call.rate.toNat ≤ config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat) ∧
       (∀ called ∈ consolidations, called.call.rate.toNat ≤ cap) ∧
-      ConsolidationCallSites preset config consolidations step.consolidationSites := by
+      ConsolidationCallSites preset config consolidations step.consolidationSites ∧
+      (∀ called ∈ consolidations, called.entry = none) ∧
+      step.partialsTaken ≤ (x.state.pendingPartialWithdrawals electra).data.size ∧
+      (y.state.pendingPartialWithdrawals targetElectra).data.toList =
+        (x.state.pendingPartialWithdrawals electra).data.toList.drop step.partialsTaken ++
+          exits.filterMap (·.entry) := by
   have sourceEarly := Nat.lt_of_le_of_lt step.chainStep.fork_le early
   cases step with
   | slot ok =>
     obtain ⟨advanced, advancedOk, upgraded⟩ := bind_ok_iff.mp ok
     obtain ⟨frame, data⟩ := upgrades_departureQueues (s := ⟨x.fork, advanced⟩)
       electra early upgraded targetElectra
-    obtain ⟨calls, firsts, trace, covered, exitRates⟩ :=
+    obtain ⟨calls, firsts, trace, covered, exitRates, appended⟩ :=
       slot_indexedTrace electra sourceEarly advancedOk
     have consolidationFrame := slot_consolidationFrame electra sourceEarly advancedOk
     have first := congrArg Prod.fst frame
@@ -2933,7 +3101,7 @@ private theorem step_indexedTrace_sites {x y : ForkedBeaconState preset}
     change y.state.exitBalanceToConsume targetElectra = advanced.exitBalanceToConsume electra
       at left
     refine ⟨calls, [], ?_, ?_, ?_, ?_, exitRates, by simp,
-      by simp [ConsolidationCallSites]⟩
+      by simp [ConsolidationCallSites], by simp, Nat.zero_le _, ?_⟩
     · simpa only [List.append_nil] using firsts
     · simpa only [List.append_nil] using
         (show DepartureCoverage x.state y.state calls from fun i old next before after =>
@@ -2942,13 +3110,18 @@ private theorem step_indexedTrace_sites {x y : ForkedBeaconState preset}
       exact trace
     · have both := (congrArg (fun q => q.2.2) frame).trans consolidationFrame
       have epoch := congrArg Prod.fst both
-      have balance := congrArg Prod.snd both
+      have balance := congrArg (fun q => q.2.1) both
       change y.state.earliestConsolidationEpoch targetElectra =
         x.state.earliestConsolidationEpoch electra at epoch
       change y.state.consolidationBalanceToConsume targetElectra =
         x.state.consolidationBalanceToConsume electra at balance
       rw [epoch, balance]
       exact .nil _ _
+    · have kept := congrArg (fun q => q.2.2.2.2.toList) frame
+      change (y.state.pendingPartialWithdrawals targetElectra).data.toList =
+        (advanced.pendingPartialWithdrawals electra).data.toList at kept
+      rw [kept, appended]
+      rfl
   | block engine signed due ok =>
     have processed := (applySignedBlock_ok ok).2.1
     obtain ⟨sites, recorded, traced⟩ := block_indexedTrace_sites electra early processed cap
@@ -2957,7 +3130,8 @@ private theorem step_indexedTrace_sites {x y : ForkedBeaconState preset}
         apply rates site ?_ h rate computed
         simpa only [Step.consolidationSites, recorded, Except.toOption, Option.getD_some] using
           member)
-    simpa only [Step.consolidationSites, recorded, Except.toOption, Option.getD_some] using traced
+    simpa only [Step.consolidationSites, Step.partialsTaken, recorded, Except.toOption,
+      Option.getD_some] using traced
 
 private theorem run_indexedTrace_sites {x y : ForkedBeaconState preset}
     (tail : Run config checks x y) (electra : .pectra ≤ x.fork)
@@ -2980,25 +3154,38 @@ private theorem run_indexedTrace_sites {x y : ForkedBeaconState preset}
       (∀ called ∈ exits,
         called.call.rate.toNat ≤ config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat) ∧
       (∀ called ∈ consolidations, called.call.rate.toNat ≤ cap) ∧
-      ConsolidationCallSites preset config consolidations tail.consolidationSites := by
+      ConsolidationCallSites preset config consolidations tail.consolidationSites ∧
+      (∀ called ∈ consolidations, called.entry = none) ∧
+      tail.partialsTaken ≤
+        ((x.state.pendingPartialWithdrawals electra).data.toList ++
+          exits.filterMap (·.entry)).length ∧
+      ((x.state.pendingPartialWithdrawals electra).data.toList ++
+          exits.filterMap (·.entry)).drop tail.partialsTaken =
+        (y.state.pendingPartialWithdrawals targetElectra).data.toList := by
   induction tail with
   | nil =>
     exact ⟨[], [], by simp [DepartureCallsFrom], by simp [Run.departureCharges],
-      .nil _ _, .nil _ _, by simp, by simp, by simp [ConsolidationCallSites]⟩
+      .nil _ _, .nil _ _, by simp, by simp, by simp [ConsolidationCallSites], by simp,
+      by simp [Run.partialsTaken], by simp [Run.partialsTaken]⟩
   | snoc pre step ih =>
     have middleElectra := Nat.le_trans electra (fork_le_of_chainSteps pre.chainSteps)
     obtain ⟨firstExits, firstConsolidations, firstFrom, firstMatched, firstExitTrace,
-      firstConsolidationTrace, firstExitRates, firstConsolidationRates, firstSites⟩ := ih
+      firstConsolidationTrace, firstExitRates, firstConsolidationRates, firstSites,
+      firstEntries, firstBound, firstQueue⟩ := ih
         (Nat.lt_of_le_of_lt step.chainStep.fork_le early) middleElectra
         (fun site member h rate computed =>
           rates site (List.mem_append_left _ member) h rate computed)
     obtain ⟨lastExits, lastConsolidations, lastFrom, covered, lastExitTrace,
-      lastConsolidationTrace, lastExitRates, lastConsolidationRates, lastSites⟩ :=
+      lastConsolidationTrace, lastExitRates, lastConsolidationRates, lastSites,
+      lastEntries, lastBound, lastQueue⟩ :=
       step_indexedTrace_sites step middleElectra early targetElectra cap
         (fun site member h rate computed =>
           rates site (List.mem_append_right _ member) h rate computed)
+    have middleLength := congrArg List.length firstQueue
+    rw [List.length_drop] at middleLength
+    rw [← Array.length_toList] at lastBound
     refine ⟨firstExits ++ lastExits, firstConsolidations ++ lastConsolidations,
-      ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩
+      ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩
     · have ordered := UInt64.le_iff_toNat_le.mp
         (currentEpoch_le_of_chainSteps pre.chainSteps)
       have lastFrom := DepartureCallsFrom.mono lastFrom ordered
@@ -3032,6 +3219,14 @@ private theorem run_indexedTrace_sites {x y : ForkedBeaconState preset}
         exact ⟨site, List.mem_append_left _ present, paired⟩
       · obtain ⟨site, present, paired⟩ := lastSites called last
         exact ⟨site, List.mem_append_right _ present, paired⟩
+    · intro called member
+      exact (List.mem_append.mp member).elim (firstEntries called) (lastEntries called)
+    · simp only [Run.partialsTaken, List.filterMap_append,
+        List.length_append] at firstBound middleLength ⊢
+      omega
+    · rw [Run.partialsTaken, List.filterMap_append, ← List.append_assoc, ← List.drop_drop,
+        List.drop_append_of_le_length firstBound, firstQueue,
+        List.drop_append_of_le_length lastBound, lastQueue]
 
 /-- The exit-queue calls of a run from Electra, and their spending in a window, before Gloas.
 
@@ -3039,7 +3234,11 @@ The calls carry the registry index of each departure, or no index for a partial 
 
 Each departure charge is a call with its index, its exit epoch and its amount.
 
-A call with no index queues its amount, withdrawable from its epoch plus the delay.
+A call with no index carries the entry it queues for its amount, from its epoch plus the delay.
+
+The queue of partial withdrawals at `y` is the queue at `x` followed by the entries of the calls.
+
+The entries that the blocks of the run read leave its front, in order.
 
 The calls with an epoch at most `high + 1` spend at most the carry of the queues and their churn.
 
@@ -3056,6 +3255,13 @@ private theorem exit_calls_le_window_electra {x y : ForkedBeaconState preset}
       (∀ charge ∈ tail.departureCharges, ∃ called ∈ calls,
         called.index = some charge.index ∧ called.call.epoch.toNat = charge.epoch ∧
           called.call.amount.toNat = charge.amount) ∧
+      (∀ targetElectra : .pectra ≤ y.fork,
+        tail.partialsTaken ≤
+          ((x.state.pendingPartialWithdrawals electra).data.toList ++
+            calls.filterMap (·.entry)).length ∧
+        ((x.state.pendingPartialWithdrawals electra).data.toList ++
+            calls.filterMap (·.entry)).drop tail.partialsTaken =
+          (y.state.pendingPartialWithdrawals targetElectra).data.toList) ∧
       ((calls.filter fun c => c.call.epoch.toNat ≤ high + 1).map
           fun c => c.call.amount.toNat).sum ≤
         (if (x.state.earliestExitEpoch electra).toNat ≤ high + 1 then
@@ -3069,9 +3275,13 @@ private theorem exit_calls_le_window_electra {x y : ForkedBeaconState preset}
           (x.state.earliestConsolidationEpoch electra).toNat) * cap := by
   have targetElectra := Nat.le_trans electra (fork_le_of_chainSteps tail.chainSteps)
   obtain ⟨exits, consolidations, firsts, matched, exitTrace, consolidationTrace,
-    exitRates, consolidationRates, -⟩ :=
+    exitRates, consolidationRates, -, entries, bound, queue⟩ :=
     run_indexedTrace_sites tail electra early targetElectra cap rates
-  refine ⟨exits ++ consolidations, matched, ?_⟩
+  have unqueued : consolidations.filterMap (·.entry) = [] :=
+    List.filterMap_eq_nil_iff.mpr entries
+  refine ⟨exits ++ consolidations, matched, fun _ => ?_, ?_⟩
+  · rw [List.filterMap_append, unqueued, List.append_nil]
+    exact ⟨bound, queue⟩
   have queueBound {calls : List (IndexedDepartureCall preset config)} {first last : Epoch}
       {available left : Gwei}
       (trace : DepartureQueueTrace first available (calls.map (·.call)) last left) (cap : Nat)
@@ -3115,7 +3325,8 @@ private theorem departure_charges_le_window_electra {x y : ForkedBeaconState pre
         config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat +
       (high + 2 - max (getCurrentEpoch x.state).toNat
         (x.state.earliestConsolidationEpoch electra).toNat) * cap := by
-  obtain ⟨calls, matched, bound⟩ := exit_calls_le_window_electra tail electra early high cap rates
+  obtain ⟨calls, matched, -, bound⟩ :=
+    exit_calls_le_window_electra tail electra early high cap rates
   exact (departureCharges_le_calls (departureCharges_run_indices tail) matched (high + 1)).trans
     bound
 
@@ -4301,7 +4512,7 @@ private theorem initialized_upgrades {s t : ForkedBeaconState preset}
   have exitEpoch := congrArg Prod.fst fields
   have exitBalance := congrArg (fun q => q.2.1) fields
   have consolidationEpoch := congrArg (fun q => q.2.2.1) fields
-  have consolidationBalance := congrArg (fun q => q.2.2.2) fields
+  have consolidationBalance := congrArg (fun q => q.2.2.2.1) fields
   change t.state.earliestExitEpoch targetElectra = s.state.earliestExitEpoch electra at exitEpoch
   change t.state.exitBalanceToConsume targetElectra = s.state.exitBalanceToConsume electra
     at exitBalance
@@ -4364,7 +4575,7 @@ private theorem initialized_charges_le_window {x y : ForkedBeaconState preset}
         (config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat + cap) := by
   have targetElectra := Nat.le_trans electra (fork_le_of_chainSteps tail.chainSteps)
   obtain ⟨exits, consolidations, _, matched, exitTrace, consolidationTrace,
-    exitRates, consolidationRates, sites⟩ :=
+    exitRates, consolidationRates, sites, -⟩ :=
     run_indexedTrace_sites tail electra early targetElectra cap rates
   have charges := departureCharges_le_calls (departureCharges_run_indices tail) matched high
   have exitBound := exitTrace.window_le_initialized (getCurrentEpoch x.state).toNat high
