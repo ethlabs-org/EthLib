@@ -2410,7 +2410,7 @@ theorem _root_.EthLib.Consensus.Step.block_balanceEvents_slashed_nondebit {fork 
     {s t : BeaconState preset fork} {engine : ExecutionEngine preset fork}
     {signed : SignedBeaconBlock preset fork} {due : upgradeDue config ⟨fork, s⟩ = false}
     {ok : applySignedBlock config checks engine s signed true = .ok t}
-    (early : fork < .glamsterdam) (_holds : Invariant s)
+    (early : fork < .glamsterdam)
     {events : List (BalanceEvent preset)}
     (replayed : (Step.block engine signed due ok).balanceEvents = .ok events) :
     ∀ e ∈ events, e.source = .slashings → ∀ (i : ValidatorIndex) (v : Validator),

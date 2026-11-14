@@ -4083,7 +4083,7 @@ private theorem FloorTrace.block_slashing {fork : Fork} {s t : BeaconState prese
   have afterFlag : slashedFlag event.after.state i = .ok w.slashed := by
     simp [slashedFlag, getValidator, afterFound, Except.map]
   by_cases marked : v.slashed = true
-  · have paid := Step.block_balanceEvents_slashed_nondebit early holds
+  · have paid := Step.block_balanceEvents_slashed_nondebit early
       replayed event member source i v found marked
     have frozen : b.slashedHigh ≠ none := by
       intro empty
