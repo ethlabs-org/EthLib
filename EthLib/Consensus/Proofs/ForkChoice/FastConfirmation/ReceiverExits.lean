@@ -38,7 +38,7 @@ Every exit placed at the source or later lands at least `MAX_SEED_LOOKAHEAD + 1`
 
 So when `MAX_SEED_LOOKAHEAD` is at least 3, no other validator leaves by those three epochs.
 
-`exitStake_le_exitReserveNear` proves that bound. -/
+`Execution.receiverWindowExitsNear_of_sourceOnParentChain` reads that bound. -/
 def exitReserveNear (source : BeaconState preset fork) : ℕ :=
   stake (fun v => balanceAt source v.toNat)
     {v ∈ activeVoters source | (source.validators.data[v.toNat]?).any fun validator =>
@@ -53,7 +53,7 @@ The epoch is from the source's epoch to three epochs after it.
 A validator active at the source and inactive at that epoch was inactive there in the source too.
 
 So its exit epoch in the source is at most that epoch, which `exitReserveNear` counts. -/
-theorem exitStake_le_exitReserveNear {post : Fork}
+private theorem exitStake_le_exitReserveNear {post : Fork}
     {source : BeaconState preset fork} {later : BeaconState preset post}
     (preGloas : fork < .glamsterdam) (fixedWindow : preset.ExitWindowFixed)
     (kept : ActiveKept (activityFixedEpoch source) source later)
@@ -92,7 +92,7 @@ Each full epoch of the window must lie between the source's epoch and three epoc
 The committees of a full epoch hold every validator active in it at the head state.
 
 So each omitted source validator is inactive there, and `exitStake_le_exitReserveNear` applies. -/
-theorem windowExitBoundWith_of_activeKept (store : Store preset fork)
+private theorem windowExitBoundWith_of_activeKept (store : Store preset fork)
     (source : BeaconState preset fork) (head : Root) (first last : Slot)
     {headState : BeaconState preset fork} (preGloas : fork < .glamsterdam)
     (positive : 0 < preset.SLOTS_PER_EPOCH.toNat) (fixedWindow : preset.ExitWindowFixed)
