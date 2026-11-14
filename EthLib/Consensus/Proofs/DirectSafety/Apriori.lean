@@ -3,6 +3,7 @@ module
 public import EthLib.Consensus.Participation
 public import EthLib.Consensus.Proofs.DirectSafety.BalanceSources
 public import EthLib.Consensus.Proofs.DirectSafety.IntervalFunding
+import EthLib.Consensus.Proofs.DirectSafety.Cohorts
 import EthLib.Consensus.Proofs.DirectSafety.DepartureQueue
 public import Mathlib.Data.Nat.Sqrt
 public import Mathlib.Order.Monotone.Defs
@@ -1380,5 +1381,44 @@ private theorem departures_le_budget {g x y : ForkedBeaconState preset}
         preset.MIN_ACTIVATION_BALANCE.toNat * cohortCap config A by
         rw [Nat.mul_comm preset.MIN_ACTIVATION_BALANCE.toNat]; exact rate)
     omega
+
+
+/-! ## The count path before Electra -/
+
+/-- The active validators at `x` are at most its active keys, since registry keys are distinct. -/
+private theorem activeCount_le_refCount {g x : ForkedBeaconState preset}
+    (shared : Run config checks g x) (genesis : Genesis (config := config) (checks := checks) g)
+    (early : x.fork < .glamsterdam) : activeCount x.state ≤ refCount x := by
+  have within := x.state.validators.bound early
+  have inside : ∀ i ∈ getActiveValidatorIndices x.state (getCurrentEpoch x.state),
+      i.toNat < x.state.validators.data.size := fun i member => by
+    obtain ⟨v, found, _⟩ := (mem_getActiveValidatorIndices within).mp member
+    exact (Array.getElem?_eq_some_iff.mp found).1
+  have nodup : (getActiveValidatorIndices x.state (getCurrentEpoch x.state)).Nodup :=
+    (getActiveValidatorIndices_sorted within _).imp fun {a b} less (same : a = b) => by
+      subst same; exact UInt64.lt_irrefl _ less
+  rw [activeCount, refCount, activeKeys, Finset.card_eq_sum_ones,
+    keys_sum x.state _ (shared.pubkeysDistinct genesis) inside fun _ => 1,
+    ← List.toFinset_card_of_nodup nodup, Finset.card_eq_sum_ones]
+  exact (Finset.sum_congr rfl fun i member => by
+    simp [Array.getElem?_eq_getElem (inside i (List.mem_toFinset.mp member))]).ge
+
+/-- Before Electra, the validators given an activation epoch in the window follow `A_t`.
+
+They are counted at the end `z` of a run from `x`, without those already exited at `x`.
+
+`A_t` is the count path from the active and scheduled validators at `x`, after `t` epochs. -/
+private theorem windowActivations_le_countPath {g x z : ForkedBeaconState preset}
+    (shared : Run config checks g x) (genesis : Genesis (config := config) (checks := checks) g)
+    (tail : Run config checks x z) (early : z.fork < .pectra) :
+    ((Finset.range z.state.validators.data.size).filter fun i =>
+      (z.state.validators.data[i]?).any (·.activationEpoch != FAR_FUTURE_EPOCH) &&
+        (x.state.validators.data[i]?).all fun w => w.activationEpoch == FAR_FUTURE_EPOCH ||
+          decide (getCurrentEpoch x.state < w.exitEpoch)).card ≤
+      countPath config (refCount x + scheduledCount x)
+        ((getCurrentEpoch z.state).toNat - (getCurrentEpoch x.state).toNat) :=
+  windowActivations_le tail early _ (Nat.add_le_add_right (activeCount_le_refCount shared genesis
+    (Nat.lt_of_le_of_lt (fork_le_of_chainSteps tail.chainSteps) (Nat.lt_trans early (by decide))))
+    _) fun _ => Nat.le_refl _
 
 end EthLib.Consensus.DirectSafety
