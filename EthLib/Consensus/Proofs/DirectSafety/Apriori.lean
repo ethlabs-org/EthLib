@@ -3910,4 +3910,46 @@ private theorem departures_le_budget_of_ceiling {g x y : ForkedBeaconState prese
       simp only [forkEpochs, before, ↓reduceIte, driftHorizon] at ends
       split_ifs at ends <;> omega
 
+/-! ## Whistleblower allowance -/
+
+/-- At fixed effective balance and cap, the Pre potential grows only with balance credits. -/
+private theorem pre_credit_le (effective cap before after : Nat) :
+    max effective (min after cap) - max effective (min before cap) ≤ after - before := by
+  omega
+
+/-- Rounding an effective balance cannot raise the capped Pre potential. -/
+private theorem pre_effective_le {largest balance effective result : Gwei}
+    (ok : updatedEffectiveBalance preset largest balance effective = .ok result) :
+    max result.toNat (min balance.toNat largest.toNat) ≤
+      max effective.toNat (min balance.toNat largest.toNat) := by
+  rcases updatedEffectiveBalance_cases ok with rfl | rfl
+  · exact Nat.le_refl _
+  · have remainder : balance % preset.EFFECTIVE_BALANCE_INCREMENT ≤ balance := by
+      rw [UInt64.le_iff_toNat_le, UInt64.toNat_mod]
+      exact Nat.mod_le _ _
+    have rounded := UInt64.le_iff_toNat_le.mp (UInt64.sub_le remainder)
+    simp only [Uint64.toNat_min]
+    omega
+
+/-- Pending deposits fund the increase of capped balances without charging withdrawn keys.
+
+The effective balance and cap are fixed at the input to the deposit pass. -/
+private theorem pre_pending_credit {fork : Fork} {config : Config} {checks : SignatureChecks}
+    {s t : BeaconState preset fork} (electra : .pectra ≤ fork) (early : fork < .glamsterdam)
+    (ok : processPendingDeposits config checks s electra = .ok t)
+    (matched : BalancesMatch s) (effective cap : Nat → Nat) :
+    (∑ i ∈ Finset.range t.validators.data.size,
+      if (s.validators.data[i]?.map (fun v =>
+          decide (v.withdrawableEpoch.toNat ≤ (getCurrentEpoch s).toNat))).getD false then 0
+      else max (effective i) (min (actualBalanceAt ⟨fork, t⟩ i) (cap i)) -
+        max (effective i) (min (actualBalanceAt ⟨fork, s⟩ i) (cap i))) +
+      (t.depositBalanceToConsume electra).toNat ≤
+        (s.depositBalanceToConsume electra).toNat +
+          config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat := by
+  apply le_trans (Nat.add_le_add_right (Finset.sum_le_sum fun i _ => ?_) _)
+    (funding_pending_capacity electra early ok matched)
+  split_ifs
+  · exact Nat.le_refl _
+  · exact pre_credit_le _ _ _ _
+
 end EthLib.Consensus.DirectSafety

@@ -3467,7 +3467,7 @@ private theorem funding_pending_selected {fork : Fork} {s t : BeaconState preset
   simp only [same, UInt64.toNat_zero, Nat.add_zero] at *
   omega
 
-private theorem funding_pending_capacity {fork : Fork} {s t : BeaconState preset fork}
+theorem funding_pending_capacity {fork : Fork} {s t : BeaconState preset fork}
     (electra : .pectra ≤ fork) (early : fork < .glamsterdam)
     (ok : processPendingDeposits config checks s electra = .ok t)
     (matched : BalancesMatch s) :
