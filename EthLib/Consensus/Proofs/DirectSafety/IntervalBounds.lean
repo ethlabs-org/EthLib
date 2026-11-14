@@ -1392,12 +1392,10 @@ private theorem intervalLoss_step_sites {x y : ForkedBeaconState preset}
     exact intervalLoss_sites_between first middle last matched ordered early source
       (.inr (.inl (sites.2.2 e member)))
   | slot ok =>
-    obtain ⟨advanced, advanceOk, upgrades⟩ := bind_ok_iff.mp ok
-    obtain ⟨crossings, crossingOk, crossingStep, crossingSites⟩ :=
-      intervalLoss_sites_upgrades upgrades
-    have advanceCopy := advanceOk
-    simp only [advanceSlot, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at advanceCopy
-    obtain ⟨next, nextOk, cached, cachedOk, epoched, epochOk, afterEq⟩ := advanceCopy
+    obtain ⟨advanced, cached, crossings, advanceOk, upgrades, cachedOk, crossingOk, split⟩ :=
+      Step.balanceEvents_slot ok early replayed
+    obtain ⟨sited, sitedOk, crossingStep, crossingSites⟩ := intervalLoss_sites_upgrades upgrades
+    obtain rfl : crossings = sited := Except.ok.inj (crossingOk.symm.trans sitedOk)
     obtain ⟨_, _, _, _, cachedEq⟩ := processSlot_ok cachedOk
     have cachedStep : intervalLoss_SiteStep x ⟨x.fork, cached⟩ := by
       rw [cachedEq]
@@ -1419,39 +1417,30 @@ private theorem intervalLoss_step_sites {x y : ForkedBeaconState preset}
       · rw [middle.epoch, last.epoch]
         exact advanceEpoch
       · rw [middle.epoch, last.epoch]
-    by_cases lastSlot : next % preset.SLOTS_PER_EPOCH = 0
-    · simp only [epochIfLast, lastSlot, ↓reduceIte] at epochOk
-      obtain ⟨middle, updated, recorded, recordOk, updatedOk, validators, balances⟩ :=
-        epochBalanceReplay_result cached epoched before epochOk
-      have sites := intervalLoss_sites_epoch recordOk
-      have finishLife : RegistryLifecycle middle advanced :=
-        (registryLifecycle_processEffectiveBalanceUpdates updatedOk).trans
-          (.of_data (by rw [← afterEq]; exact congrArg (·.data) validators.symm))
-      have finishSlashed : SlashedPersistence middle advanced :=
-        (SlashedPersistence.of_frame (frame_processEffectiveBalanceUpdates updatedOk).toFrame).trans
-          (.of_data (by rw [← afterEq]; exact congrArg (·.data) validators.symm))
-      have eventEq := Except.ok.inj (replayed.symm.trans
-        (Step.balanceEvents_epoch_slot ok cachedOk nextOk lastSlot recordOk advanceOk crossingOk))
-      rw [eventEq]
-      intro e member
-      rcases List.mem_append.mp member with member | member
-      · obtain ⟨first, during, last, source⟩ := sites.1.2 e member
-        have initial := cachedStep.trans first
-        refine ⟨initial.lifecycle, during.lifecycle,
-          (last.lifecycle.trans finishLife).trans crossingStep.lifecycle,
-          initial.ordered ordered, during.matched (initial.matched matched), ?_, ?_,
-          Nat.lt_of_le_of_lt (Nat.le_trans during.fork_le last.fork_le) before,
-          during.slashed, (last.slashed.trans finishSlashed).trans crossingStep.slashed, source,
-          Nat.le_trans (Nat.le_trans during.fork_le last.fork_le) crossingStep.fork_le,
-          .inr (.inr (sites.2 e member))⟩
-        · rw [initial.epoch]
-        · rw [← initial.epoch]; exact advanceEpoch
-      · exact crossingBound e member
-    · have eventEq : events = crossings := by
-        simpa [Step.balanceEvents, cachedOk, nextOk, lastSlot, advanceOk, crossingOk,
-          pure, Except.pure, bind, Except.bind] using replayed.symm
-      rw [eventEq]
-      exact crossingBound
+    rcases split with ⟨-, rfl⟩ |
+      ⟨middle, updated, recorded, recordOk, updatedOk, validators, -, rfl⟩
+    · exact crossingBound
+    have sites := intervalLoss_sites_epoch recordOk
+    have finishLife : RegistryLifecycle middle advanced :=
+      (registryLifecycle_processEffectiveBalanceUpdates updatedOk).trans
+        (.of_data (congrArg (·.data) validators))
+    have finishSlashed : SlashedPersistence middle advanced :=
+      (SlashedPersistence.of_frame (frame_processEffectiveBalanceUpdates updatedOk).toFrame).trans
+        (.of_data (congrArg (·.data) validators))
+    intro e member
+    rcases List.mem_append.mp member with member | member
+    · obtain ⟨first, during, last, source⟩ := sites.1.2 e member
+      have initial := cachedStep.trans first
+      refine ⟨initial.lifecycle, during.lifecycle,
+        (last.lifecycle.trans finishLife).trans crossingStep.lifecycle,
+        initial.ordered ordered, during.matched (initial.matched matched), ?_, ?_,
+        Nat.lt_of_le_of_lt (Nat.le_trans during.fork_le last.fork_le) before,
+        during.slashed, (last.slashed.trans finishSlashed).trans crossingStep.slashed, source,
+        Nat.le_trans (Nat.le_trans during.fork_le last.fork_le) crossingStep.fork_le,
+        .inr (.inr (sites.2 e member))⟩
+      · rw [initial.epoch]
+      · rw [← initial.epoch]; exact advanceEpoch
+    · exact crossingBound e member
 
 private theorem replay_event_provenance {g x y : ForkedBeaconState preset}
     (shared : Run config checks g x) (tail : Run config checks x y)
@@ -2084,11 +2073,9 @@ private theorem intervalLoss_filtered_coverage {x y : ForkedBeaconState preset}
 private theorem intervalLoss_delayed_slashing {fork : Fork} {s t : BeaconState preset fork}
     (early : fork < .glamsterdam) (ok : processSlashings s = .ok t)
     (i : Nat) (v : Validator) (found : s.validators.data[i]? = some v)
-    (unslashed : v.slashed = false) :
+    (notDue : ¬ SlashingPenaltyDue preset (getCurrentEpoch s) v) :
     actualBalanceAt ⟨fork, t⟩ i = actualBalanceAt ⟨fork, s⟩ i := by
   have inside := (Array.getElem?_eq_some_iff.mp found).1
-  have notDue : ¬ SlashingPenaltyDue preset (getCurrentEpoch s) v := by
-    simp [SlashingPenaltyDue, unslashed]
   by_cases electra : .pectra ≤ fork
   · obtain ⟨_, _, _, _, entries⟩ :=
       processSlashings_balances_of_electra electra (s.validators.bound early) ok
@@ -2204,6 +2191,46 @@ private theorem slashIfSlashable_balance_le {fork : Fork} {s t : BeaconState pre
     · cases first
       exact later
 
+/-- A slashing site lowers a key only when it slashes that key, unless its delayed penalty is due.
+
+It lowers a key that it slashes by at most its effective balance at its start over the quotient. -/
+private theorem intervalLoss_SlashingSite.balance_le {a b : ForkedBeaconState preset}
+    (site : intervalLoss_SlashingSite config checks a b) (early : a.fork < .glamsterdam)
+    (i : ValidatorIndex) (v : Validator) (found : a.state.validators.data[i.toNat]? = some v)
+    (notDue : ¬ SlashingPenaltyDue preset (getCurrentEpoch a.state) v) :
+    actualBalanceAt a i.toNat ≤ actualBalanceAt b i.toNat +
+      if v.slashed = false ∧ slashedFlag b.state i = .ok true then effectiveAt a i.toNat /
+        (EthLib.Consensus.parameters preset a.fork).MIN_SLASHING_PENALTY_QUOTIENT.toNat
+      else 0 := by
+  cases site with
+  | delayed ok =>
+    have kept := intervalLoss_delayed_slashing early ok i.toNat v found notDue
+    dsimp only at kept ⊢
+    omega
+  | proposer ok =>
+    simp only [processProposerSlashing, bind_ok_iff, ensure_ok_iff, liftAccessor_ok] at ok
+    obtain ⟨_, _, _, _, _, _, named, read, _, slashable, _, _, _, _, slashed⟩ := ok
+    have bound := slashValidator_balance_le early slashed i.toNat
+    split at bound
+    · rename_i same
+      rw [UInt64.toNat_inj.mp same] at slashed read
+      rw [getValidator_eq_ok_iff, found, Option.some.injEq] at read
+      subst read
+      cases flag : v.slashed
+      · simpa [flag, (slashValidator_slashedFlag slashed).1] using bound
+      · simp [isSlashableValidator, flag] at slashable
+    · dsimp only at bound ⊢
+      omega
+  | @attester _ s _ _ ok =>
+    simp only [processAttesterSlashing, bind_ok_iff, ensure_ok_iff, pure, Except.pure,
+      Except.ok.injEq] at ok
+    obtain ⟨_, _, _, _, _, _, _, _, _, _, ⟨u, flag⟩, folded, _, _, rfl⟩ := ok
+    have read : slashedFlag s i = .ok v.slashed := by
+      simp [slashedFlag, getValidator, found, Except.map]
+    have bound := slashIfSlashable_balance_le early i _ false flag folded
+    rw [read] at bound
+    cases slashedV : v.slashed <;> simpa [slashedV] using bound
+
 /-- A slashing site lowers a key unslashed at its start only if it slashes that key.
 
 It lowers it by at most the effective balance at its start over the slashing quotient. -/
@@ -2214,32 +2241,12 @@ private theorem intervalLoss_SlashingSite.debit {a b : ForkedBeaconState preset}
       if slashedFlag b.state i = .ok true then effectiveAt a i.toNat /
         (EthLib.Consensus.parameters preset a.fork).MIN_SLASHING_PENALTY_QUOTIENT.toNat
       else 0 := by
-  cases site with
-  | @delayed fork s t ok =>
-    cases found : getValidator s i with
-    | error _ => simp [slashedFlag, found, Except.map] at unslashed
-    | ok v =>
-      simp [slashedFlag, found, Except.map] at unslashed
-      have kept := intervalLoss_delayed_slashing early ok i.toNat v
-        (getValidator_eq_ok_iff.mp found) unslashed
-      dsimp only at kept ⊢
-      omega
-  | proposer ok =>
-    simp only [processProposerSlashing, bind_ok_iff, ensure_ok_iff, liftAccessor_ok] at ok
-    obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, slashed⟩ := ok
-    have bound := slashValidator_balance_le early slashed i.toNat
-    split at bound
-    · rename_i same
-      rw [UInt64.toNat_inj.mp same] at slashed
-      simp only [(slashValidator_slashedFlag slashed).1, ↓reduceIte]
-      exact bound
-    · dsimp only at bound ⊢
-      omega
-  | attester ok =>
-    simp only [processAttesterSlashing, bind_ok_iff, ensure_ok_iff, pure, Except.pure,
-      Except.ok.injEq] at ok
-    obtain ⟨_, _, _, _, _, _, _, _, _, _, ⟨u, flag⟩, folded, _, _, rfl⟩ := ok
-    simpa [unslashed] using slashIfSlashable_balance_le early i _ false flag folded
+  cases found : getValidator a.state i with
+  | error _ => simp [slashedFlag, found, Except.map] at unslashed
+  | ok v =>
+    simp [slashedFlag, found, Except.map] at unslashed
+    simpa [unslashed] using site.balance_le early i v (getValidator_eq_ok_iff.mp found)
+      (by simp [SlashingPenaltyDue, unslashed])
 
 /-- A slashing site lowers no key that is unslashed at both its ends. -/
 private theorem intervalLoss_SlashingSite.nondebit {a b : ForkedBeaconState preset}
@@ -2251,47 +2258,6 @@ private theorem intervalLoss_SlashingSite.nondebit {a b : ForkedBeaconState pres
     actualBalanceAt a i.toNat ≤ actualBalanceAt b i.toNat := by
   simpa [slashedFlag, getValidator, after, last, Except.map] using
     site.debit early i (by simp [slashedFlag, getValidator, before, first, Except.map])
-
-/-- A slashing site lowers no balance of a key already slashed at its start.
-
-The delayed penalty of that key must not be due at the epoch of the site. -/
-private theorem intervalLoss_SlashingSite.kept {a b : ForkedBeaconState preset}
-    (site : intervalLoss_SlashingSite config checks a b) (early : a.fork < .glamsterdam)
-    (i : ValidatorIndex) (v : Validator) (found : a.state.validators.data[i.toNat]? = some v)
-    (slashed : v.slashed = true) (due : ¬ SlashingPenaltyDue preset (getCurrentEpoch a.state) v) :
-    actualBalanceAt a i.toNat ≤ actualBalanceAt b i.toNat := by
-  have flagged : slashedFlag a.state i = .ok true := by
-    simp [slashedFlag, getValidator, found, slashed, Except.map]
-  cases site with
-  | @delayed fork s t ok =>
-    have inside := (Array.getElem?_eq_some_iff.mp found).1
-    have kept : t.balances.data[i.toNat]? = s.balances.data[i.toNat]? := by
-      by_cases electra : .pectra ≤ fork
-      case' pos => obtain ⟨_, _, _, _, balances⟩ :=
-        processSlashings_balances_of_electra electra (s.validators.bound early) ok
-      case' neg => obtain ⟨_, _, _, _, balances⟩ :=
-        processSlashings_balances_of_lt_electra (Nat.lt_of_not_le electra) ok
-      all_goals
-        obtain ⟨w, read, kept⟩ := (balances i.toNat).1 inside
-        rw [found, Option.some.injEq] at read
-        subst read
-        simpa [due] using kept
-    simp [actualBalanceAt, kept]
-  | proposer ok =>
-    simp only [processProposerSlashing, bind_ok_iff, ensure_ok_iff, liftAccessor_ok] at ok
-    obtain ⟨_, _, _, _, _, _, proposer, read, _, slashable, _, _, _, _, slashedOk⟩ := ok
-    have bound := slashValidator_balance_le early slashedOk i.toNat
-    split at bound
-    · rename_i same
-      rw [UInt64.toNat_inj.mp same, getValidator_eq_ok_iff, found, Option.some.injEq] at read
-      subst read
-      simp [isSlashableValidator, slashed] at slashable
-    · simpa using bound
-  | attester ok =>
-    simp only [processAttesterSlashing, bind_ok_iff, ensure_ok_iff, pure, Except.pure,
-      Except.ok.injEq] at ok
-    obtain ⟨_, _, _, _, _, _, _, _, _, _, ⟨u, flag⟩, folded, _, _, rfl⟩ := ok
-    simpa [flagged] using slashIfSlashable_balance_le early i _ false flag folded
 
 /-- The execution part of a block pays the withdrawals that its state expects, from Capella on. -/
 private theorem intervalLoss_execution_balance {fork : Fork} {s t : BeaconState preset fork}
@@ -2394,36 +2360,23 @@ private theorem intervalLoss_consolidationRequest_balance {fork : Fork}
 /-- A slot records no withdrawals and no consolidation request, before Gloas.
 
 Its events are the passes of an epoch and the fork upgrades. -/
-theorem _root_.EthLib.Consensus.Step.slot_balanceEvents_unfree {x y : ForkedBeaconState preset}
+theorem _root_.EthLib.Consensus.Step.slot_balanceEvents_source_ne
+    {x y : ForkedBeaconState preset}
     (ok : advanceSlotAcross config checks x = .ok y) (early : y.fork < .glamsterdam)
     {events : List (BalanceEvent preset)} (replayed : (Step.slot ok).balanceEvents = .ok events) :
     ∀ e ∈ events, e.source ≠ .withdrawals ∧ e.source ≠ .excess := by
-  have before : x.fork < .glamsterdam := Nat.lt_of_le_of_lt (Step.slot ok).chainStep.fork_le early
-  obtain ⟨advanced, advanceOk, upgrades⟩ := bind_ok_iff.mp ok
-  obtain ⟨crossings, crossingOk, -⟩ := upgradeBalanceReplay_bounded upgrades
+  obtain ⟨_, _, crossings, _, _, _, crossingOk, split⟩ := Step.balanceEvents_slot ok early replayed
   have crossed (e : BalanceEvent preset) (member : e ∈ crossings) :
       e.source ≠ .withdrawals ∧ e.source ≠ .excess := by
     rw [upgradeBalanceReplay_crossing crossingOk e member]
     exact ⟨nofun, nofun⟩
-  have advanceCopy := advanceOk
-  simp only [advanceSlot, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at advanceCopy
-  obtain ⟨next, nextOk, cached, cachedOk, epoched, epochOk, -⟩ := advanceCopy
-  by_cases lastSlot : next % preset.SLOTS_PER_EPOCH = 0
-  · simp only [epochIfLast, lastSlot, ↓reduceIte] at epochOk
-    obtain ⟨middle, -, recorded, recordOk, -⟩ :=
-      epochBalanceReplay_result cached epoched before epochOk
-    rw [Except.ok.inj (replayed.symm.trans
-      (Step.balanceEvents_epoch_slot ok cachedOk nextOk lastSlot recordOk advanceOk crossingOk))]
-    intro e member
-    rcases List.mem_append.mp member with member | member
-    · have epoch := (intervalLoss_sites_epoch recordOk).2 e member
-      exact ⟨epoch.1, epoch.2.1⟩
-    · exact crossed e member
-  · have eventEq : events = crossings := by
-      simpa [Step.balanceEvents, cachedOk, nextOk, lastSlot, advanceOk, crossingOk,
-        pure, Except.pure, bind, Except.bind] using replayed.symm
-    rw [eventEq]
-    exact crossed
+  rcases split with ⟨-, rfl⟩ | ⟨_, _, _, recordOk, -, -, -, rfl⟩
+  · exact crossed
+  intro e member
+  rcases List.mem_append.mp member with member | member
+  · have epoch := (intervalLoss_sites_epoch recordOk).2 e member
+    exact ⟨epoch.1, epoch.2.1⟩
+  · exact crossed e member
 
 /-- The balance events of a step, read per key, before Gloas.
 
@@ -2441,7 +2394,7 @@ It caps only a key whose cap at the start of the step is at most the activation 
 
 Rewards and deposits lower no balance of the registry at the start of the step.
 
-The pending consolidations lower no balance of a key that is slashed or not yet withdrawable.
+Pending consolidations lower no balance of a key that is slashed or cannot withdraw next epoch.
 
 A slashing event lowers no balance of a key slashed at its start, unless its penalty is due.
 
@@ -2494,7 +2447,8 @@ theorem _root_.EthLib.Consensus.Step.balanceEvents_sites {x y : ForkedBeaconStat
     · exact .inr epoch.2.2.2
   refine ⟨fun source i inside unslashed => ?_, fun source => ?_, fun source i => ?_,
     fun source i inside => ?_, fun source i v found waiting => ?_,
-    fun source i v found slashed due => (site source).kept beforeEarly i v found slashed due,
+    fun source i v found slashed due => by
+      simpa [slashed] using (site source).balance_le beforeEarly i v found due,
     fun source => ?_⟩
   rotate_left 3
   · rcases plain with crossing | plain

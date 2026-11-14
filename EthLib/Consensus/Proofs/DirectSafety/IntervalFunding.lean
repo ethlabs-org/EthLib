@@ -1598,6 +1598,53 @@ theorem upgradeBalanceReplay_bounded {s t : ForkedBeaconState preset}
     rw [upgradeBalanceReplay]
     simp [due, pure, Except.pure]
 
+/-- The balance events of a slot, before Gloas: its epoch passes, then its fork upgrades.
+
+The epoch passes run only at the last slot of an epoch, on the state after the slot processing.
+
+They end at the input of the effective-balance updates, which holds the balances after the slot.
+
+The updates give the validators after the slot.
+
+At any other slot the slot keeps the balances, and the events are those of the upgrades. -/
+theorem _root_.EthLib.Consensus.Step.balanceEvents_slot {x y : ForkedBeaconState preset}
+    (ok : advanceSlotAcross config checks x = .ok y) (early : y.fork < .glamsterdam)
+    {events : List (BalanceEvent preset)} (replayed : (Step.slot ok).balanceEvents = .ok events) :
+    ∃ (advanced cached : BeaconState preset x.fork) (crossings : List (BalanceEvent preset)),
+      advanceSlot config checks x.state = .ok advanced ∧
+      processUpgrades config checks ⟨x.fork, advanced⟩ = .ok y ∧
+      processSlot x.state = .ok cached ∧
+      upgradeBalanceReplay (config := config) (checks := checks) ⟨x.fork, advanced⟩ =
+        .ok crossings ∧
+      ((advanced.balances = cached.balances ∧ events = crossings) ∨
+        ∃ middle updated recorded,
+          epochBalanceReplay (config := config) (checks := checks) cached = .ok (middle, recorded) ∧
+          processEffectiveBalanceUpdates middle = .ok updated ∧
+          advanced.validators = updated.validators ∧ advanced.balances = middle.balances ∧
+          events = recorded ++ crossings) := by
+  have before : x.fork < .glamsterdam := Nat.lt_of_le_of_lt (Step.slot ok).chainStep.fork_le early
+  obtain ⟨advanced, advanceOk, upgrades⟩ := bind_ok_iff.mp ok
+  obtain ⟨crossings, crossingOk, -⟩ := upgradeBalanceReplay_bounded upgrades
+  have advanceCopy := advanceOk
+  simp only [advanceSlot, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at advanceCopy
+  obtain ⟨next, nextOk, cached, cachedOk, epoched, epochOk, afterEq⟩ := advanceCopy
+  refine ⟨advanced, cached, crossings, advanceOk, upgrades, cachedOk, crossingOk, ?_⟩
+  by_cases last : next % preset.SLOTS_PER_EPOCH = 0
+  · simp only [epochIfLast, last, ↓reduceIte] at epochOk
+    obtain ⟨middle, updated, recorded, recordOk, updatedOk, validators, balances⟩ :=
+      epochBalanceReplay_result cached epoched before epochOk
+    refine .inr ⟨middle, updated, recorded, recordOk, updatedOk, ?_, ?_, Except.ok.inj
+      (replayed.symm.trans (Step.balanceEvents_epoch_slot ok cachedOk nextOk last recordOk
+        advanceOk crossingOk))⟩
+    · rw [← afterEq]
+      exact validators.symm
+    · rw [← afterEq]
+      exact balances.symm
+  · simp only [epochIfLast, last, ↓reduceIte, pure, Except.pure, Except.ok.injEq] at epochOk
+    refine .inl ⟨by rw [← afterEq, ← epochOk], ?_⟩
+    simpa [Step.balanceEvents, cachedOk, nextOk, last, advanceOk, crossingOk,
+      pure, Except.pure, bind, Except.bind] using replayed.symm
+
 private theorem stepBalanceEvents_bounded {x y : ForkedBeaconState preset}
     (step : Step config checks x y) (matched : BalancesMatch x.state)
     (early : y.fork < .glamsterdam) :
@@ -2075,34 +2122,21 @@ private theorem step_balanceChain {x y : ForkedBeaconState preset}
     exact ⟨_, [], _, .inl ⟨rfl, rfl⟩, rfl, .refl _,
       coverage_block before engine signed.message replay⟩
   | slot ok =>
-    obtain ⟨advanced, advanceOk, upgrades⟩ := bind_ok_iff.mp ok
-    have advanceCopy := advanceOk
-    simp only [advanceSlot, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at advanceCopy
-    obtain ⟨next, nextOk, cached, cachedOk, epoched, epochOk, afterEq⟩ := advanceCopy
+    obtain ⟨advanced, cached, crossings, advanceOk, upgrades, cachedOk, crossingOk, split⟩ :=
+      Step.balanceEvents_slot ok early replayed
     obtain ⟨_, _, _, _, cachedEq⟩ := processSlot_ok cachedOk
-    have cachedChain : BalanceChain x ⟨x.fork, cached⟩ [] :=
-      balanceChain_same (by rw [cachedEq])
-    obtain ⟨crossings, crossingOk, _⟩ := upgradeBalanceReplay_bounded upgrades
     have path : (Step.slot ok).balancePath = [x, ⟨x.fork, advanced⟩, y] := by
       simp [Step.balancePath, advanceOk, Except.toOption]
     have crossed := coverage_upgrades upgrades early crossingOk
-    by_cases last : next % preset.SLOTS_PER_EPOCH = 0
-    · simp only [epochIfLast, last, ↓reduceIte] at epochOk
-      obtain ⟨middle, updated, recorded, recordOk, _, _, balances⟩ :=
-        epochBalanceReplay_result cached epoched before epochOk
-      have final : BalanceChain ⟨x.fork, middle⟩ ⟨x.fork, advanced⟩ [] :=
-        balanceChain_same (by rw [← afterEq]; exact balances.symm)
-      refine ⟨_, recorded, crossings, .inr path, Except.ok.inj (replayed.symm.trans
-        (Step.balanceEvents_epoch_slot ok cachedOk nextOk last recordOk advanceOk crossingOk)),
-        ?_, crossed⟩
+    rcases split with ⟨kept, rfl⟩ | ⟨middle, -, recorded, recordOk, -, -, balances, rfl⟩
+    · exact ⟨_, [], _, .inr path, rfl, balanceChain_same (by rw [kept, cachedEq]),
+        crossed⟩
+    · have cachedChain : BalanceChain x ⟨x.fork, cached⟩ [] :=
+        balanceChain_same (by rw [cachedEq])
+      refine ⟨_, recorded, crossings, .inr path, rfl, ?_, crossed⟩
       simpa only [List.nil_append, List.append_nil] using
-        balanceChain_append (balanceChain_append cachedChain (coverage_epoch recordOk)) final
-    · simp only [epochIfLast, last, ↓reduceIte, pure, Except.pure, Except.ok.injEq] at epochOk
-      refine ⟨_, [], crossings, .inr path, ?_, ?_, crossed⟩
-      · simpa [Step.balanceEvents, cachedOk, nextOk, last, advanceOk, crossingOk,
-          pure, Except.pure, bind, Except.bind] using replayed.symm
-      · apply balanceChain_same
-        rw [← afterEq, ← epochOk, cachedEq]
+        balanceChain_append (balanceChain_append cachedChain (coverage_epoch recordOk))
+          (balanceChain_same balances)
 
 /-- A chain of events, in terms of its ends and of each pair of consecutive events. -/
 private theorem BalanceChain.plain :
