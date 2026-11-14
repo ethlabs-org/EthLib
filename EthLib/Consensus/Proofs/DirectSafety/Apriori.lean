@@ -876,7 +876,9 @@ Before the fork it is `MIN_ACTIVATION_BALANCE` times the active-count path.
 
 From Electra it starts at the funded stake plus `K` plus `Ω`.
 
-Each epoch then adds the issuance envelope and `MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT`. -/
+Each epoch then adds twice the issuance envelope and `MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT`.
+
+The factor two covers one epoch's rewards, proposer rewards for two epochs of flags, and sync. -/
 private def stakeCeiling (preset : Preset) (config : Config)
     (count scheduled pending carry inactive funded horizon forkEpochs : Nat) : Nat → Nat
   | 0 =>
@@ -889,7 +891,7 @@ private def stakeCeiling (preset : Preset) (config : Config)
     else
       let previous := stakeCeiling preset config count scheduled pending carry inactive funded
         horizon forkEpochs t
-      previous + issuanceEnvelope preset previous +
+      previous + 2 * issuanceEnvelope preset previous +
         config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat
 
 /-- The exits `nX_t` of epoch `t`.
@@ -1066,7 +1068,7 @@ private def aprioriDrift (preset : Preset) (config : Config)
     let act := pending + carry + ((List.range (horizon + 1)).map exits).sum + headroom
     -- cred: excess, due consolidation credits, Ω, issuance and new consolidation credits.
     let issuance := (((List.range (horizon + 1)).filter (forkEpochs ≤ ·)).map
-      fun t => issuanceEnvelope preset (ceiling t)).sum
+      fun t => 2 * issuanceEnvelope preset (ceiling t)).sum
     let moved := (((List.range
       (horizon + 2 - config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat)).filter
         (max consolidationEnd forkEpochs ≤ ·)).map consolidations).sum
