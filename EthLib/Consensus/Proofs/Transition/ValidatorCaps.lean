@@ -686,4 +686,70 @@ theorem processEpoch_validatorCap_mono {f : Fork} {s t : BeaconState preset f}
       withdrawalMaxEffectiveBalance preset f v ≤ withdrawalMaxEffectiveBalance preset f w :=
   (CapStep.epoch ok).monotone i v found
 
+/-- The cap at an existing index cannot decrease in a proposer slashing. -/
+theorem processProposerSlashing_validatorCap_mono {f : Fork} {s t : BeaconState preset f}
+    {slashing : ProposerSlashing}
+    (ok : processProposerSlashing config checks s slashing = .ok t)
+    (i : Nat) (v : Validator) (found : s.validators.data[i]? = some v) :
+    ∃ w, t.validators.data[i]? = some w ∧
+      withdrawalMaxEffectiveBalance preset f v ≤ withdrawalMaxEffectiveBalance preset f w :=
+  (CapStep.proposerSlashing ok).monotone i v found
+
+/-- The cap at an existing index cannot decrease in an attester slashing. -/
+theorem processAttesterSlashing_validatorCap_mono {f : Fork} {s t : BeaconState preset f}
+    {slashing : AttesterSlashing preset f}
+    (ok : processAttesterSlashing config checks s slashing = .ok t)
+    (i : Nat) (v : Validator) (found : s.validators.data[i]? = some v) :
+    ∃ w, t.validators.data[i]? = some w ∧
+      withdrawalMaxEffectiveBalance preset f v ≤ withdrawalMaxEffectiveBalance preset f w :=
+  (CapStep.attesterSlashing ok).monotone i v found
+
+/-- The cap at an existing index cannot decrease in a deposit. -/
+theorem processDeposit_validatorCap_mono {f : Fork} {s t : BeaconState preset f}
+    {before : f < .hegota} {deposit : Deposit}
+    (ok : processDeposit config checks before s deposit = .ok t)
+    (i : Nat) (v : Validator) (found : s.validators.data[i]? = some v) :
+    ∃ w, t.validators.data[i]? = some w ∧
+      withdrawalMaxEffectiveBalance preset f v ≤ withdrawalMaxEffectiveBalance preset f w :=
+  (CapStep.processDeposit ok).monotone i v found
+
+/-- The cap at an existing index cannot decrease in a voluntary exit. -/
+theorem processVoluntaryExit_validatorCap_mono {f : Fork} {s t : BeaconState preset f}
+    {signed : SignedVoluntaryExit}
+    (ok : processVoluntaryExit config checks s signed = .ok t)
+    (i : Nat) (v : Validator) (found : s.validators.data[i]? = some v) :
+    ∃ w, t.validators.data[i]? = some w ∧
+      withdrawalMaxEffectiveBalance preset f v ≤ withdrawalMaxEffectiveBalance preset f w :=
+  (CapStep.exit (processVoluntaryExit_initiates ok)).monotone i v found
+
+/-- The cap at an existing index cannot decrease in a change of BLS credentials. -/
+theorem processBlsToExecutionChange_validatorCap_mono {f : Fork} {s t : BeaconState preset f}
+    {signed : SignedBLSToExecutionChange}
+    (ok : processBlsToExecutionChange config checks s signed = .ok t)
+    (i : Nat) (v : Validator) (found : s.validators.data[i]? = some v) :
+    ∃ w, t.validators.data[i]? = some w ∧
+      withdrawalMaxEffectiveBalance preset f v ≤ withdrawalMaxEffectiveBalance preset f w :=
+  (CapStep.blsChange ok).monotone i v found
+
+/-- The cap at an existing index cannot decrease in a withdrawal request. -/
+theorem processWithdrawalRequest_validatorCap_mono {f : Fork} {s t : BeaconState preset f}
+    {electra : .pectra ≤ f} {request : WithdrawalRequest}
+    (ok : processWithdrawalRequest config s electra request = .ok t)
+    (i : Nat) (v : Validator) (found : s.validators.data[i]? = some v) :
+    ∃ w, t.validators.data[i]? = some w ∧
+      withdrawalMaxEffectiveBalance preset f v ≤ withdrawalMaxEffectiveBalance preset f w :=
+  (CapStep.withdrawalRequest ok).monotone i v found
+
+/-- The cap at an existing index cannot decrease in a consolidation request.
+
+This needs `MIN_ACTIVATION_BALANCE` to be at most `MAX_EFFECTIVE_BALANCE_ELECTRA`. -/
+theorem processConsolidationRequest_validatorCap_mono {f : Fork} {s t : BeaconState preset f}
+    {electra : .pectra ≤ f} {request : ConsolidationRequest}
+    (order : preset.MIN_ACTIVATION_BALANCE ≤ preset.MAX_EFFECTIVE_BALANCE_ELECTRA)
+    (ok : processConsolidationRequest config s electra request = .ok t)
+    (i : Nat) (v : Validator) (found : s.validators.data[i]? = some v) :
+    ∃ w, t.validators.data[i]? = some w ∧
+      withdrawalMaxEffectiveBalance preset f v ≤ withdrawalMaxEffectiveBalance preset f w :=
+  (CapStep.consolidationRequest order ok).monotone i v found
+
 end EthLib.Consensus
