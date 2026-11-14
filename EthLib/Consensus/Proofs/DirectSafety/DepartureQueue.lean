@@ -3036,6 +3036,21 @@ private def _root_.EthLib.Consensus.Run.partialsTaken {x : ForkedBeaconState pre
   | _, .nil => 0
   | _, .snoc pre step => pre.partialsTaken + step.partialsTaken
 
+/-- The queued partial withdrawals that a step reads: the front of the queue at its start.
+
+A block reads them after its header, which keeps the queue. -/
+private def _root_.EthLib.Consensus.Step.partialsRemoved {x y : ForkedBeaconState preset}
+    (step : Step config checks x y) : List PendingPartialWithdrawal :=
+  if electra : .pectra ≤ x.fork then
+    (x.state.pendingPartialWithdrawals electra).data.toList.take step.partialsTaken
+  else []
+
+/-- The queued partial withdrawals that the steps of a run read, in order. -/
+private def _root_.EthLib.Consensus.Run.partialsRemoved {x : ForkedBeaconState preset} :
+    {y : ForkedBeaconState preset} → Run config checks x y → List PendingPartialWithdrawal
+  | _, .nil => []
+  | _, .snoc pre step => pre.partialsRemoved ++ step.partialsRemoved
+
 /-- The consolidation sites of two runs in turn are those of the first, then the second. -/
 private theorem _root_.EthLib.Consensus.Run.consolidationSites_append
     {a b c : ForkedBeaconState preset} (one : Run config checks a b)
@@ -3156,18 +3171,16 @@ private theorem run_indexedTrace_sites {x y : ForkedBeaconState preset}
       (∀ called ∈ consolidations, called.call.rate.toNat ≤ cap) ∧
       ConsolidationCallSites preset config consolidations tail.consolidationSites ∧
       (∀ called ∈ consolidations, called.entry = none) ∧
-      tail.partialsTaken ≤
-        ((x.state.pendingPartialWithdrawals electra).data.toList ++
-          exits.filterMap (·.entry)).length ∧
-      ((x.state.pendingPartialWithdrawals electra).data.toList ++
-          exits.filterMap (·.entry)).drop tail.partialsTaken =
-        (y.state.pendingPartialWithdrawals targetElectra).data.toList := by
+      tail.partialsRemoved.length = tail.partialsTaken ∧
+      tail.partialsRemoved ++ (y.state.pendingPartialWithdrawals targetElectra).data.toList =
+        (x.state.pendingPartialWithdrawals electra).data.toList ++
+          exits.filterMap (·.entry) := by
   induction tail with
   | nil =>
     exact ⟨[], [], by simp [DepartureCallsFrom], by simp [Run.departureCharges],
       .nil _ _, .nil _ _, by simp, by simp, by simp [ConsolidationCallSites], by simp,
-      by simp [Run.partialsTaken], by simp [Run.partialsTaken]⟩
-  | snoc pre step ih =>
+      by simp [Run.partialsRemoved, Run.partialsTaken], by simp [Run.partialsRemoved]⟩
+  | @snoc middle last pre step ih =>
     have middleElectra := Nat.le_trans electra (fork_le_of_chainSteps pre.chainSteps)
     obtain ⟨firstExits, firstConsolidations, firstFrom, firstMatched, firstExitTrace,
       firstConsolidationTrace, firstExitRates, firstConsolidationRates, firstSites,
@@ -3181,9 +3194,14 @@ private theorem run_indexedTrace_sites {x y : ForkedBeaconState preset}
       step_indexedTrace_sites step middleElectra early targetElectra cap
         (fun site member h rate computed =>
           rates site (List.mem_append_right _ member) h rate computed)
-    have middleLength := congrArg List.length firstQueue
-    rw [List.length_drop] at middleLength
     rw [← Array.length_toList] at lastBound
+    have removed : step.partialsRemoved =
+        (middle.state.pendingPartialWithdrawals middleElectra).data.toList.take
+          step.partialsTaken := by
+      unfold Step.partialsRemoved
+      split
+      · rfl
+      · contradiction
     refine ⟨firstExits ++ lastExits, firstConsolidations ++ lastConsolidations,
       ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩
     · have ordered := UInt64.le_iff_toNat_le.mp
@@ -3221,12 +3239,31 @@ private theorem run_indexedTrace_sites {x y : ForkedBeaconState preset}
         exact ⟨site, List.mem_append_right _ present, paired⟩
     · intro called member
       exact (List.mem_append.mp member).elim (firstEntries called) (lastEntries called)
-    · simp only [Run.partialsTaken, List.filterMap_append,
-        List.length_append] at firstBound middleLength ⊢
+    · simp only [Run.partialsRemoved, Run.partialsTaken, removed, List.length_append,
+        List.length_take, firstBound]
       omega
-    · rw [Run.partialsTaken, List.filterMap_append, ← List.append_assoc, ← List.drop_drop,
-        List.drop_append_of_le_length firstBound, firstQueue,
-        List.drop_append_of_le_length lastBound, lastQueue]
+    · rw [Run.partialsRemoved, removed, lastQueue, List.filterMap_append, List.append_assoc,
+        ← List.append_assoc (List.take _ _), List.take_append_drop, ← List.append_assoc,
+        firstQueue, List.append_assoc]
+
+/-- The entries of the calls hold the amounts of the calls with no index. -/
+private theorem partials_entries_sum (calls : List (IndexedDepartureCall preset config)) :
+    ((calls.filterMap (·.entry)).map (·.amount.toNat)).sum =
+      ((calls.filter (·.index.isNone)).map (·.call.amount.toNat)).sum := by
+  induction calls with
+  | nil => rfl
+  | cons called rest ih =>
+    cases entry : called.entry with
+    | none =>
+      have indexed : called.index.isNone = false := by
+        cases index : called.index with
+        | none => simpa [entry] using called.tagged.mp index
+        | some _ => rfl
+      simp [entry, indexed, ih]
+    | some pending =>
+      have unindexed : called.index = none := called.tagged.mpr (by simp [entry])
+      simp [entry, unindexed, ih,
+        (called.pushed pending entry).1]
 
 /-- The exit-queue calls of a run from Electra, and their spending in a window, before Gloas.
 
@@ -3236,9 +3273,11 @@ Each departure charge is a call with its index, its exit epoch and its amount.
 
 A call with no index carries the entry it queues for its amount, from its epoch plus the delay.
 
-The queue of partial withdrawals at `y` is the queue at `x` followed by the entries of the calls.
+The blocks of the run read entries from the front of the queue of partial withdrawals.
 
-The entries that the blocks of the run read leave its front, in order.
+Those entries, then the queue at `y`, are the queue at `x`, then the entries of the calls.
+
+So each entry read is pending at `x` or the entry of its own call with no index and its amount.
 
 The calls with an epoch at most `high + 1` spend at most the carry of the queues and their churn.
 
@@ -3256,12 +3295,13 @@ private theorem exit_calls_le_window_electra {x y : ForkedBeaconState preset}
         called.index = some charge.index ∧ called.call.epoch.toNat = charge.epoch ∧
           called.call.amount.toNat = charge.amount) ∧
       (∀ targetElectra : .pectra ≤ y.fork,
-        tail.partialsTaken ≤
-          ((x.state.pendingPartialWithdrawals electra).data.toList ++
-            calls.filterMap (·.entry)).length ∧
-        ((x.state.pendingPartialWithdrawals electra).data.toList ++
-            calls.filterMap (·.entry)).drop tail.partialsTaken =
-          (y.state.pendingPartialWithdrawals targetElectra).data.toList) ∧
+        tail.partialsRemoved.length = tail.partialsTaken ∧
+        tail.partialsRemoved ++ (y.state.pendingPartialWithdrawals targetElectra).data.toList =
+          (x.state.pendingPartialWithdrawals electra).data.toList ++
+            calls.filterMap (·.entry)) ∧
+      (tail.partialsRemoved.map (·.amount.toNat)).sum ≤
+        ((x.state.pendingPartialWithdrawals electra).data.toList.map (·.amount.toNat)).sum +
+          ((calls.filter (·.index.isNone)).map (·.call.amount.toNat)).sum ∧
       ((calls.filter fun c => c.call.epoch.toNat ≤ high + 1).map
           fun c => c.call.amount.toNat).sum ≤
         (if (x.state.earliestExitEpoch electra).toNat ≤ high + 1 then
@@ -3279,9 +3319,13 @@ private theorem exit_calls_le_window_electra {x y : ForkedBeaconState preset}
     run_indexedTrace_sites tail electra early targetElectra cap rates
   have unqueued : consolidations.filterMap (·.entry) = [] :=
     List.filterMap_eq_nil_iff.mpr entries
-  refine ⟨exits ++ consolidations, matched, fun _ => ?_, ?_⟩
+  refine ⟨exits ++ consolidations, matched, fun _ => ?_, ?_, ?_⟩
   · rw [List.filterMap_append, unqueued, List.append_nil]
     exact ⟨bound, queue⟩
+  · have sums := congrArg (fun l => (l.map (·.amount.toNat)).sum) queue
+    simp only [List.map_append, List.sum_append] at sums
+    rw [← partials_entries_sum, List.filterMap_append, unqueued, List.append_nil]
+    omega
   have queueBound {calls : List (IndexedDepartureCall preset config)} {first last : Epoch}
       {available left : Gwei}
       (trace : DepartureQueueTrace first available (calls.map (·.call)) last left) (cap : Nat)
@@ -3325,7 +3369,7 @@ private theorem departure_charges_le_window_electra {x y : ForkedBeaconState pre
         config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat +
       (high + 2 - max (getCurrentEpoch x.state).toNat
         (x.state.earliestConsolidationEpoch electra).toNat) * cap := by
-  obtain ⟨calls, matched, -, bound⟩ :=
+  obtain ⟨calls, matched, -, -, bound⟩ :=
     exit_calls_le_window_electra tail electra early high cap rates
   exact (departureCharges_le_calls (departureCharges_run_indices tail) matched (high + 1)).trans
     bound
