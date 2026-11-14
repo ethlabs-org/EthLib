@@ -1588,21 +1588,9 @@ private theorem ScoresBelow.inactivity {f : Fork} {s t : BeaconState preset f} {
     (below : ScoresBelow n bound ⟨f, s⟩) :
     ScoresBelow n (bound + config.INACTIVITY_SCORE_BIAS.toNat) ⟨f, t⟩ := by
   intro _ i member score found
-  by_cases genesis : getCurrentEpoch s = GENESIS_EPOCH
-  · rw [processInactivityUpdates_genesis altair genesis, Except.ok.injEq] at computed
-    subst computed
-    exact (below altair i member score found).trans (Nat.le_add_right _ _)
-  obtain ⟨eligible, _, kept, changed⟩ := processInactivityUpdates_scores genesis computed
-  by_cases listed : ∃ index ∈ eligible, index.toNat = i
-  · obtain ⟨index, chosen, rfl⟩ := listed
-    obtain ⟨_, _, old, new, _, _, oldFound, newFound, value⟩ := changed index chosen
-    obtain rfl : new = score := Option.some.inj (newFound.symm.trans found)
-    have := below altair _ member old oldFound
-    rw [value]
-    split_ifs <;> omega
-  · simp only [not_exists, not_and] at listed
-    rw [kept i listed] at found
-    exact (below altair i member score found).trans (Nat.le_add_right _ _)
+  obtain ⟨old, olds, raised⟩ := processInactivityUpdates_score_le computed found
+  have := below altair i member old olds
+  omega
 
 /-- Justification keeps the scores, and the update after it raises each by the bias at most. -/
 private theorem ScoresBelow.pass {f : Fork} {s cached just pass : BeaconState preset f}
@@ -2677,7 +2665,7 @@ Its sync credit, times `28` per slot of an epoch, is at most the issuance envelo
 
 That total is the one after the block, which the sync aggregate reads.
 
-Its sync debit is at most its sync credit.
+Its sync debit limit is at most its sync credit limit.
 
 Each attestation must raise the potential, at every state that keeps the start of the block. -/
 private theorem block_credits_le {f : Fork} {b t : BeaconState preset f}
@@ -2824,7 +2812,7 @@ A block step stays at its slot, after the slot of the latest header, and makes t
 
 Its sync credit, times `28` per slot of an epoch, is at most the issuance envelope of the total.
 
-The sync debit of each step is at most its sync credit. -/
+The sync debit limit of each step is at most its sync credit limit. -/
 private theorem step_credits {r m l : ForkedBeaconState preset} (pre : Run config checks r m)
     (step : Step config checks m l) (electra : .pectra ≤ r.fork) (early : l.fork < .glamsterdam)
     (same : getCurrentEpoch l.state = getCurrentEpoch r.state)
@@ -2991,7 +2979,7 @@ The sets are the keys active at the previous epoch of `r`, and those active at i
 
 The sync credits, times `28`, are at most the issuance envelope of the total active balance of `r`.
 
-So are the sync debits, since each block debits at most what it credits.
+So are the sync debit limits, since each block's debit limit is at most its credit limit.
 
 A slot holds at most one block, so the epoch has at most `SLOTS_PER_EPOCH` of them. -/
 private theorem epoch_credits_le {r s : ForkedBeaconState preset} (inner : Run config checks r s)
