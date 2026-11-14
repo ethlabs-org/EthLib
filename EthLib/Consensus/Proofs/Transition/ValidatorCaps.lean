@@ -29,6 +29,25 @@ theorem Genesis.effectiveBalance_capped {g : ForkedBeaconState preset}
   obtain ⟨hash, time, deposits, initialized⟩ := genesis
   exact (initializeBeaconStateFromEth1_withinBudget 0 (Nat.le_refl _) initialized).capped
 
+/-- Unassigned validators retain their effective-balance funding and eligibility threshold. -/
+private def UnassignedEligibleBalance {f : Fork} (s : BeaconState preset f) : Prop :=
+  ∀ (i : Nat) (v : Validator), s.validators.data[i]? = some v →
+    v.activationEpoch = FAR_FUTURE_EPOCH →
+    (∃ balance, s.balances.data[i]? = some balance ∧ v.effectiveBalance ≤ balance) ∧
+      (v.activationEligibilityEpoch ≠ FAR_FUTURE_EPOCH →
+        preset.MAX_EFFECTIVE_BALANCE ≤ v.effectiveBalance)
+
+/-- At genesis, unassigned validators are funded and none is eligible yet. -/
+private theorem genesis_unassigned_eligible_balance {g : ForkedBeaconState preset}
+    (genesis : Genesis (config := config) (checks := checks) g) :
+    UnassignedEligibleBalance g.state := by
+  intro i v found pending
+  obtain ⟨_, _, _, initialized⟩ := genesis
+  obtain ⟨funded, unassigned⟩ := initializeBeaconStateFromEth1_unassigned_eligibility
+    initialized i v found pending
+  refine ⟨funded, ?_⟩
+  exact fun assigned => False.elim (assigned unassigned)
+
 /-- Ordered preset caps and retained compounding credentials make a validator's cap monotone. -/
 private theorem withdrawalMaxEffectiveBalance_mono {f h : Fork} {v w : Validator}
     (activation : preset.MAX_EFFECTIVE_BALANCE ≤ preset.MIN_ACTIVATION_BALANCE)

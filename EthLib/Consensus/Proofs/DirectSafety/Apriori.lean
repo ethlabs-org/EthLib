@@ -1129,15 +1129,18 @@ private def leakDivisor (preset : Preset) (config : Config) : Nat :=
 
 Before the fork they are the growth of the active-count path.
 
-From Electra each needs `MAX_EFFECTIVE_BALANCE` of funding.
+From Electra, keys already scheduled at `x` count separately.
 
-That funding comes from `Pre`, from `K`, or from the deposit churn of each epoch.
+Each other activation needs `MAX_EFFECTIVE_BALANCE` of funding.
+
+That funding comes from unassigned Pre, from `K`, or from the deposit churn of each epoch.
 
 A key made eligible before Electra has at least `MAX_EFFECTIVE_BALANCE` effective. -/
 private def windowActivations (preset : Preset) (config : Config)
     (count scheduled pending carry horizon forkEpochs : Nat) : Nat :=
   if 0 < forkEpochs then countPath config (count + scheduled) (horizon + 1) - count
-  else (pending + carry + config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat * (horizon + 2)) /
+  else scheduled +
+    (pending + carry + config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat * (horizon + 2)) /
     preset.MAX_EFFECTIVE_BALANCE.toNat
 
 /-- The fixed whistleblower allowance `Ω` of the window.
@@ -1346,24 +1349,24 @@ The floor `T⁻` behind `D` takes the departure budget `Dnew` at its start, not 
 
 Without the guard, `f` is the unslashed stake `W - Z`, which makes the bound trivial. -/
 private def aprioriDrift (preset : Preset) (config : Config)
-    (stake slashed penalised count high score slack excess carry pending scheduled departures
-      partials credits exitEnd consolidationEnd queued boundary inactive funded
+    (stake slashed penalised count high score slack excess carry pending unassigned scheduled
+      departures partials credits exitEnd consolidationEnd queued boundary inactive funded
       horizon forkEpochs : Nat) : Nat :=
   -- Dnew: the queue carry and the churn of each epoch from the ends of the queues.
-  let queues := departureBudget preset config count scheduled pending carry inactive funded
+  let queues := departureBudget preset config count scheduled unassigned carry inactive funded
     queued exitEnd consolidationEnd horizon forkEpochs
-  if aprioriGuard preset config stake slashed penalised count score slack carry pending scheduled
+  if aprioriGuard preset config stake slashed penalised count score slack carry unassigned scheduled
       departures partials queues inactive funded horizon forkEpochs then
     let increment := preset.EFFECTIVE_BALANCE_INCREMENT.toNat
     let down := preset.downwardBand
-    let ceiling := stakeCeiling preset config count scheduled pending carry inactive funded
+    let ceiling := stakeCeiling preset config count scheduled unassigned carry inactive funded
       horizon forkEpochs
     let last := ceiling (horizon + 1)
     let exits := exitFlow preset config count scheduled horizon forkEpochs ceiling
     let consolidations := consolidationFlow preset config horizon forkEpochs ceiling
-    let floor := windowFloor preset config stake slashed penalised count score slack carry pending
-      scheduled departures partials queues inactive funded horizon forkEpochs
-    let allowance := whistleblowerAllowance preset config count scheduled pending carry inactive
+    let floor := windowFloor preset config stake slashed penalised count score slack carry
+      unassigned scheduled departures partials queues inactive funded horizon forkEpochs
+    let allowance := whistleblowerAllowance preset config count scheduled unassigned carry inactive
       horizon forkEpochs
     let dep := queues + partials + departures
     -- D: the non-slashing penalties of the epochs `0` to `H`.
@@ -1451,6 +1454,16 @@ private def preActiveStake (x : ForkedBeaconState preset) : Nat :=
         (min (actualBalanceAt x i) (withdrawalMaxEffectiveBalance preset x.fork v).toNat)
     else 0).sum
 
+/-- `PreU`: Pre restricted to validators whose activation epoch is not assigned at `x`. -/
+private def unassignedPreStake (x : ForkedBeaconState preset) : Nat :=
+  (x.state.validators.data.toList.zipIdx.map fun (v, i) =>
+    if !isActiveValidator v (getCurrentEpoch x.state) &&
+        decide (getCurrentEpoch x.state < v.exitEpoch) &&
+        v.activationEpoch == FAR_FUTURE_EPOCH then
+      max (effectiveAt x i)
+        (min (actualBalanceAt x i) (withdrawalMaxEffectiveBalance preset x.fork v).toNat)
+    else 0).sum
+
 /-- `Sx`: the number of validators whose activation epoch is set and after `x`. -/
 private def scheduledCount (x : ForkedBeaconState preset) : Nat :=
   x.state.validators.data.toList.countP fun v =>
@@ -1533,10 +1546,10 @@ private def forkEpochs (config : Config) (x : ForkedBeaconState preset) (high : 
 private noncomputable def aprioriGuardAt (config : Config) (x : ForkedBeaconState preset)
     (high : Nat) : Prop :=
   aprioriGuard preset config (refStake x) (slashedActiveStake x) (slashedPenalisedStake x)
-    (refCount x) (startScore config x) (startSlack x) (fundingCarry x) (preActiveStake x)
+    (refCount x) (startScore config x) (startSlack x) (fundingCarry x) (unassignedPreStake x)
     (scheduledCount x) (scheduledDepartures x (driftHorizon x high))
     (duePartials x (driftHorizon x high))
-    (departureBudget preset config (refCount x) (scheduledCount x) (preActiveStake x)
+    (departureBudget preset config (refCount x) (scheduledCount x) (unassignedPreStake x)
       (fundingCarry x) (slashableInactiveCount x) (fundedStake x + previousOnlyStake x)
       (queueCarry x high) (exitQueueStart x - (getCurrentEpoch x.state).toNat)
       (consolidationQueueStart x - (getCurrentEpoch x.state).toNat)
@@ -1553,7 +1566,7 @@ private noncomputable def aprioriDriftAt (config : Config) (x : ForkedBeaconStat
     (high : Nat) : Nat :=
   aprioriDrift preset config (refStake x) (slashedActiveStake x) (slashedPenalisedStake x)
     (refCount x) (highKeys x) (startScore config x) (startSlack x) (initialExcess x)
-    (fundingCarry x) (preActiveStake x) (scheduledCount x)
+    (fundingCarry x) (preActiveStake x) (unassignedPreStake x) (scheduledCount x)
     (scheduledDepartures x (driftHorizon x high)) (duePartials x (driftHorizon x high))
     (dueCredits x (driftHorizon x high))
     -- `eX` and `eC`: the start of each queue less the current epoch, zero before Electra.
@@ -1845,11 +1858,11 @@ private theorem departures_le_budget {g x y : ForkedBeaconState preset}
       tail.Contains step → (getCurrentEpoch u.state).toNat ≤ high + 1 → .pectra ≤ u.fork →
         ∀ rate : Gwei, getConsolidationChurnLimit config u.state = .ok rate →
         rate.toNat ≤ consolidationChurn preset config
-          (stakeCeiling preset config (refCount x) (scheduledCount x) (preActiveStake x)
+          (stakeCeiling preset config (refCount x) (scheduledCount x) (unassignedPreStake x)
             (fundingCarry x) (slashableInactiveCount x) (fundedStake x + previousOnlyStake x)
             (driftHorizon x high) (forkEpochs config x high) (driftHorizon x high + 1))) :
     ((tail.departureCharges.filter fun c => c.epoch ≤ high + 1).map (·.amount)).sum ≤
-      departureBudget preset config (refCount x) (scheduledCount x) (preActiveStake x)
+      departureBudget preset config (refCount x) (scheduledCount x) (unassignedPreStake x)
         (fundingCarry x) (slashableInactiveCount x) (fundedStake x + previousOnlyStake x)
         (queueCarry x high)
         (exitQueueStart x - (getCurrentEpoch x.state).toNat)
@@ -1878,7 +1891,7 @@ private theorem departures_le_budget {g x y : ForkedBeaconState preset}
   generalize countPath config (refCount x + scheduledCount x) (driftHorizon x high + 1) = A
     at bound ⊢
   generalize consolidationChurn preset config (stakeCeiling preset config (refCount x)
-    (scheduledCount x) (preActiveStake x) (fundingCarry x) (slashableInactiveCount x)
+    (scheduledCount x) (unassignedPreStake x) (fundingCarry x) (slashableInactiveCount x)
     (fundedStake x + previousOnlyStake x) (driftHorizon x high) (forkEpochs config x high)
     (driftHorizon x high + 1)) = Cc at bound ⊢
   have horizon : driftHorizon x high = high + 2 - (getCurrentEpoch x.state).toNat := rfl
@@ -3652,7 +3665,7 @@ private theorem apriori_prefix_induction {g v y : ForkedBeaconState preset}
 /-- The ceiling `T⁺` of a branch from `x` through `high + 1`, with every observable read at `x`. -/
 private noncomputable def ceilingAt (config : Config) (x : ForkedBeaconState preset)
     (high : Nat) : Nat → Nat :=
-  stakeCeiling preset config (refCount x) (scheduledCount x) (preActiveStake x) (fundingCarry x)
+  stakeCeiling preset config (refCount x) (scheduledCount x) (unassignedPreStake x) (fundingCarry x)
     (slashableInactiveCount x) (fundedStake x + previousOnlyStake x) (driftHorizon x high)
     (forkEpochs config x high)
 
@@ -3660,10 +3673,10 @@ private noncomputable def ceilingAt (config : Config) (x : ForkedBeaconState pre
 private noncomputable def floorAt (config : Config) (x : ForkedBeaconState preset)
     (high : Nat) : Nat → Nat :=
   windowFloor preset config (refStake x) (slashedActiveStake x) (slashedPenalisedStake x)
-    (refCount x) (startScore config x) (startSlack x) (fundingCarry x) (preActiveStake x)
+    (refCount x) (startScore config x) (startSlack x) (fundingCarry x) (unassignedPreStake x)
     (scheduledCount x) (scheduledDepartures x (driftHorizon x high))
     (duePartials x (driftHorizon x high))
-    (departureBudget preset config (refCount x) (scheduledCount x) (preActiveStake x)
+    (departureBudget preset config (refCount x) (scheduledCount x) (unassignedPreStake x)
       (fundingCarry x) (slashableInactiveCount x) (fundedStake x + previousOnlyStake x)
       (queueCarry x high) (exitQueueStart x - (getCurrentEpoch x.state).toNat)
       (consolidationQueueStart x - (getCurrentEpoch x.state).toNat)
@@ -3706,7 +3719,7 @@ private theorem activeStake_le_ceiling {g x y : ForkedBeaconState preset}
       (getCurrentEpoch u.state).toNat ≤ high + 1 → ∀ found,
         head.balanceEvents high = .ok found → (found.map otherCredit).sum ≤
           whistleblowerAllowance preset config (refCount x) (scheduledCount x)
-            (preActiveStake x) (fundingCarry x) (slashableInactiveCount x)
+            (unassignedPreStake x) (fundingCarry x) (slashableInactiveCount x)
             (driftHorizon x high) (forkEpochs config x high))
     (floor : ∀ {u : ForkedBeaconState preset}, Run config checks x u →
       (getCurrentEpoch u.state).toNat < (getCurrentEpoch y.state).toNat → ∀ total,
@@ -3731,7 +3744,7 @@ private theorem activeStake_le_ceiling {g x y : ForkedBeaconState preset}
     simp [ceilingAt, stakeCeiling, zero]
   have mono := ceilingAt_mono (config := config) electra high
   have base : fundedStake x + previousOnlyStake x + fundingCarry x +
-      whistleblowerAllowance preset config (refCount x) (scheduledCount x) (preActiveStake x)
+      whistleblowerAllowance preset config (refCount x) (scheduledCount x) (unassignedPreStake x)
         (fundingCarry x) (slashableInactiveCount x) (driftHorizon x high) 0 ≤
       ceilingAt config x high 0 := by
     simp only [ceilingAt, stakeCeiling, zero, Nat.lt_irrefl, ↓reduceIte, Nat.le_refl]
@@ -4492,7 +4505,7 @@ private theorem departures_le_budget_of_ceiling {g x y : ForkedBeaconState prese
         ceilingAt config x high
           ((getCurrentEpoch u.state).toNat - (getCurrentEpoch x.state).toNat)) :
     ((tail.departureCharges.filter fun c => c.epoch ≤ high + 1).map (·.amount)).sum ≤
-      departureBudget preset config (refCount x) (scheduledCount x) (preActiveStake x)
+      departureBudget preset config (refCount x) (scheduledCount x) (unassignedPreStake x)
         (fundingCarry x) (slashableInactiveCount x) (fundedStake x + previousOnlyStake x)
         (queueCarry x high)
         (exitQueueStart x - (getCurrentEpoch x.state).toNat)
@@ -4541,5 +4554,399 @@ private theorem departures_le_budget_of_ceiling {g x y : ForkedBeaconState prese
       have ends := crossing.resolve_left (Nat.ne_of_gt positive)
       simp only [forkEpochs, before, ↓reduceIte, driftHorizon] at ends
       split_ifs at ends <;> omega
+
+/-! ## Whistleblower allowance -/
+
+/-- At fixed effective balance and cap, the Pre potential grows only with balance credits. -/
+private theorem pre_credit_le (effective cap before after : Nat) :
+    max effective (min after cap) - max effective (min before cap) ≤ after - before := by
+  omega
+
+/-- Rounding an effective balance cannot raise the capped Pre potential. -/
+private theorem pre_effective_le {largest balance effective result : Gwei}
+    (ok : updatedEffectiveBalance preset largest balance effective = .ok result) :
+    max result.toNat (min balance.toNat largest.toNat) ≤
+      max effective.toNat (min balance.toNat largest.toNat) := by
+  rcases updatedEffectiveBalance_cases ok with rfl | rfl
+  · exact Nat.le_refl _
+  · have remainder : balance % preset.EFFECTIVE_BALANCE_INCREMENT ≤ balance := by
+      rw [UInt64.le_iff_toNat_le, UInt64.toNat_mod]
+      exact Nat.mod_le _ _
+    have rounded := UInt64.le_iff_toNat_le.mp (UInt64.sub_le remainder)
+    simp only [Uint64.toNat_min]
+    omega
+
+/-- The effective-balance pass does not increase the per-index capped Pre potential. -/
+private theorem pre_effective_updates {fork : Fork} {s t : BeaconState preset fork}
+    (ok : processEffectiveBalanceUpdates s = .ok t) {i : Nat} {v : Validator} {balance : Gwei}
+    (found : s.validators.data[i]? = some v) (owned : s.balances.data[i]? = some balance) :
+    max (effectiveAt ⟨fork, t⟩ i)
+        (min (actualBalanceAt ⟨fork, t⟩ i)
+          (withdrawalMaxEffectiveBalance preset fork v).toNat) ≤
+      max (effectiveAt ⟨fork, s⟩ i)
+        (min (actualBalanceAt ⟨fork, s⟩ i)
+          (withdrawalMaxEffectiveBalance preset fork v).toNat) := by
+  obtain ⟨effective, read, updated⟩ :=
+    processEffectiveBalanceUpdates_effectiveBalance_eq ok found owned
+  have balances := processEffectiveBalanceUpdates_balances ok
+  simpa only [effectiveAt, actualBalanceAt, read, found, balances, owned,
+    Option.map_some, Option.getD_some] using pre_effective_le updated
+
+/-- Pending deposits fund the increase of capped balances without charging withdrawn keys.
+
+The effective balance and cap are fixed at the input to the deposit pass. -/
+private theorem pre_pending_credit {fork : Fork} {config : Config} {checks : SignatureChecks}
+    {s t : BeaconState preset fork} (electra : .pectra ≤ fork) (early : fork < .glamsterdam)
+    (ok : processPendingDeposits config checks s electra = .ok t)
+    (matched : BalancesMatch s) (effective cap : Nat → Nat) :
+    (∑ i ∈ Finset.range t.validators.data.size,
+      if (s.validators.data[i]?.map (fun v =>
+          decide (v.withdrawableEpoch.toNat ≤ (getCurrentEpoch s).toNat))).getD false then 0
+      else max (effective i) (min (actualBalanceAt ⟨fork, t⟩ i) (cap i)) -
+        max (effective i) (min (actualBalanceAt ⟨fork, s⟩ i) (cap i))) +
+      (t.depositBalanceToConsume electra).toNat ≤
+        (s.depositBalanceToConsume electra).toNat +
+          config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat := by
+  apply le_trans (Nat.add_le_add_right (Finset.sum_le_sum fun i _ => ?_) _)
+    (funding_pending_capacity electra early ok matched)
+  split_ifs
+  · exact Nat.le_refl _
+  · exact pre_credit_le _ _ _ _
+
+/-- Charging each first eligibility at least MEB bounds the number of activations. -/
+private theorem pre_activation_count_le (keys : Finset Nat) (charge : Nat → Nat)
+    (budget : Nat) (positive : 0 < preset.MAX_EFFECTIVE_BALANCE.toNat)
+    (eligible : ∀ i ∈ keys, preset.MAX_EFFECTIVE_BALANCE.toNat ≤ charge i)
+    (funded : (∑ i ∈ keys, charge i) ≤ budget) :
+    keys.card ≤ budget / preset.MAX_EFFECTIVE_BALANCE.toNat := by
+  apply (Nat.le_div_iff_mul_le positive).mpr
+  calc keys.card * preset.MAX_EFFECTIVE_BALANCE.toNat
+      = ∑ _i ∈ keys, preset.MAX_EFFECTIVE_BALANCE.toNat := by simp
+    _ ≤ ∑ i ∈ keys, charge i := Finset.sum_le_sum eligible
+    _ ≤ budget := funded
+
+/-- An event charge supported on indices occurring at most once pays each index at most once. -/
+private theorem once_only_charge_le {α : Type} (events : List α) (keys : Finset Nat)
+    (chosen : α → Nat → Bool) (credit : α → Nat) (charge : Nat → Nat)
+    (supported : ∀ e ∈ events, credit e ≤ ∑ i ∈ keys, if chosen e i then charge i else 0)
+    (once : ∀ i ∈ keys, (events.countP fun e => chosen e i) ≤ 1) :
+    (events.map credit).sum ≤ ∑ i ∈ keys, charge i := by
+  have exchange : (events.map fun e => ∑ i ∈ keys,
+      if chosen e i then charge i else 0).sum =
+      ∑ i ∈ keys, (events.countP fun e => chosen e i) * charge i := by
+    clear supported once
+    induction events with
+    | nil => simp
+    | cons e rest ih =>
+      simp only [List.map_cons, List.sum_cons, List.countP_cons, ih,
+        Finset.sum_add_distrib, Nat.add_mul]
+      rw [Nat.add_comm, ← Finset.sum_add_distrib, ← Finset.sum_add_distrib]
+      apply Finset.sum_congr rfl
+      intro i _
+      cases chosen e i <;> simp
+  calc
+    (events.map credit).sum ≤ (events.map fun e =>
+        ∑ i ∈ keys, if chosen e i then charge i else 0).sum :=
+      List.sum_le_sum supported
+    _ = ∑ i ∈ keys, (events.countP fun e => chosen e i) * charge i := exchange
+    _ ≤ ∑ i ∈ keys, charge i := Finset.sum_le_sum fun i member => by
+      simpa using Nat.mul_le_mul_right (charge i) (once i member)
+
+/-- Each positive slashing credit is supported on the indices newly slashed by its event. -/
+private theorem slashing_step_support {config : Config} {checks : SignatureChecks}
+    {x y : ForkedBeaconState preset} (step : Step config checks x y)
+    (early : y.fork < .glamsterdam) (holds : Invariant x.state)
+    (compounding : preset.MIN_ACTIVATION_BALANCE ≤ preset.MAX_EFFECTIVE_BALANCE_ELECTRA)
+    {events : List (BalanceEvent preset)} (replayed : step.balanceEvents = .ok events)
+    (e : BalanceEvent preset) (member : e ∈ events) :
+    (if e.source = .slashings then e.creditLimit else 0) ≤
+      ∑ i ∈ Finset.range y.state.validators.data.size,
+        if !(e.before.state.validators.data[i]?.map (·.slashed)).getD true &&
+            (e.after.state.validators.data[i]?.map (·.slashed)).getD false then
+          effectiveAt x i /
+            (EthLib.Consensus.parameters preset x.fork).WHISTLEBLOWER_REWARD_QUOTIENT.toNat
+        else 0 := by
+  let chosen (e : BalanceEvent preset) (i : Nat) : Bool :=
+    !(e.before.state.validators.data[i]?.map (·.slashed)).getD true &&
+      (e.after.state.validators.data[i]?.map (·.slashed)).getD false
+  have sites := step.balanceEvents_sites early holds compounding replayed
+  by_cases source : e.source = .slashings
+  · simp only [source, ↓reduceIte]
+    by_cases positive : 0 < e.creditLimit
+    · obtain ⟨_, _, _, _, _, _, _, _, _, during, after, _, _, _, _, support, bridge, fork⟩ :=
+        sites e member
+      have input := bridge source positive
+      apply le_trans (support source)
+      apply le_trans (Finset.sum_le_sum fun i _ => ?_)
+        (Finset.sum_le_sum_of_subset (Finset.range_mono (during.trans after).size_le))
+      change (if chosen e i then _ else _) ≤ if chosen e i then _ else _
+      split_ifs
+      · rw [input i, fork source positive]
+      · exact Nat.le_refl _
+    · simp only [show e.creditLimit = 0 by omega]
+      exact Nat.zero_le _
+  · simp [source]
+
+/-- A step with no new slashing at an index has no replay event newly slashing that index. -/
+private theorem slashing_step_count_le {config : Config} {checks : SignatureChecks}
+    {x y : ForkedBeaconState preset} (step : Step config checks x y)
+    (early : y.fork < .glamsterdam) (holds : Invariant x.state)
+    (compounding : preset.MIN_ACTIVATION_BALANCE ≤ preset.MAX_EFFECTIVE_BALANCE_ELECTRA)
+    {events : List (BalanceEvent preset)} (replayed : step.balanceEvents = .ok events) (i : Nat) :
+    (events.countP fun e =>
+      !(e.before.state.validators.data[i]?.map (·.slashed)).getD true &&
+        (e.after.state.validators.data[i]?.map (·.slashed)).getD false) ≤
+      if !(x.state.validators.data[i]?.map (·.slashed)).getD false &&
+          (y.state.validators.data[i]?.map (·.slashed)).getD false then 1 else 0 := by
+  have sites := step.balanceEvents_sites early holds compounding replayed
+  by_cases active : (!(x.state.validators.data[i]?.map (·.slashed)).getD false &&
+      (y.state.validators.data[i]?.map (·.slashed)).getD false) = true
+  · rw [ite_eq_left active]
+    cases events with
+    | nil => simp
+    | cons e rest => exact (sites e (by simp)).2.2.2.2.2.2.2.2.2.2.2.2.2.2.1 i
+  · rw [ite_eq_right active]
+    apply Nat.le_zero.mpr
+    apply List.countP_eq_zero.mpr
+    intro e member marked
+    obtain ⟨_, _, _, _, _, _, _, _, _, _, _, first, _, last, _⟩ := sites e member
+    have flags : (!(e.before.state.validators.data[i]?.map (·.slashed)).getD true) = true ∧
+        (e.after.state.validators.data[i]?.map (·.slashed)).getD false = true := by
+      simpa only [Bool.and_eq_true] using marked
+    cases after : e.after.state.validators.data[i]? with
+    | none => simp [after] at flags
+    | some v =>
+      have slashed : v.slashed = true := by simpa [after] using flags.2
+      obtain ⟨w, final, flag⟩ := last i v after slashed
+      have start : (x.state.validators.data[i]?.map (·.slashed)).getD false = false := by
+        cases before : x.state.validators.data[i]? with
+        | none => simp
+        | some u =>
+          cases was : u.slashed with
+          | false => simp [was]
+          | true =>
+            obtain ⟨z, atEvent, was'⟩ := first i u before was
+            simp [atEvent, was'] at flags
+      exact active (by simp [start, final, flag])
+
+/-- Persistence composes the per-step single-slashing count over the replay of a run. -/
+private theorem slashing_run_count_le {config : Config} {checks : SignatureChecks}
+    {g x y : ForkedBeaconState preset} (shared : Run config checks g x)
+    (tail : Run config checks x y) (genesis : Genesis (config := config) (checks := checks) g)
+    (early : y.fork < .glamsterdam)
+    (compounding : preset.MIN_ACTIVATION_BALANCE ≤ preset.MAX_EFFECTIVE_BALANCE_ELECTRA)
+    (high : Nat) (endEpoch : (getCurrentEpoch y.state).toNat ≤ high + 1)
+    {events : List (BalanceEvent preset)} (replayed : tail.balanceEvents high = .ok events)
+    (i : Nat) :
+    (events.countP fun e =>
+      !(e.before.state.validators.data[i]?.map (·.slashed)).getD true &&
+        (e.after.state.validators.data[i]?.map (·.slashed)).getD false) ≤
+      if (y.state.validators.data[i]?.map (·.slashed)).getD false then 1 else 0 := by
+  induction tail generalizing events with
+  | nil => cases replayed; simp
+  | @snoc middle last pre step ih =>
+    have selected := (UInt64.le_iff_toNat_le.mp step.chainStep.currentEpoch_le).trans endEpoch
+    simp only [Run.balanceEvents, bind_ok_iff] at replayed
+    obtain ⟨prior, priorOk, rest⟩ := replayed
+    simp only [selected, ↓reduceIte, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at rest
+    obtain ⟨added, addedOk, rfl⟩ := rest
+    have previous := ih (Nat.lt_of_le_of_lt step.chainStep.fork_le early) selected priorOk
+    have next := slashing_step_count_le step early
+      (run_justified_separated (shared.append pre) genesis).1 compounding addedOk i
+    rw [List.countP_append]
+    cases flag : (middle.state.validators.data[i]?.map (·.slashed)).getD false with
+    | false =>
+      simp only [flag, Bool.not_false, Bool.true_and, Bool.false_eq_true, ↓reduceIte]
+        at previous next
+      omega
+    | true =>
+      have marked : (last.state.validators.data[i]?.map (·.slashed)).getD false = true := by
+        cases found : middle.state.validators.data[i]? with
+        | none => simp [found] at flag
+        | some v =>
+          have was : v.slashed = true := by simpa [found] using flag
+          obtain ⟨w, final, slashed⟩ := step.slashedPersistence i v found was
+          simp [final, slashed]
+      simp only [flag, marked, Bool.not_true, Bool.false_and, Bool.false_eq_true,
+        ↓reduceIte] at previous next ⊢
+      omega
+
+/-- Per-index event bounds sum once over the complete run, not once per step. -/
+private theorem slashing_run_charge_le {config : Config} {checks : SignatureChecks}
+    {g x y : ForkedBeaconState preset} (shared : Run config checks g x)
+    (tail : Run config checks x y) (genesis : Genesis (config := config) (checks := checks) g)
+    (early : y.fork < .glamsterdam)
+    (compounding : preset.MIN_ACTIVATION_BALANCE ≤ preset.MAX_EFFECTIVE_BALANCE_ELECTRA)
+    (high : Nat) (endEpoch : (getCurrentEpoch y.state).toNat ≤ high + 1)
+    {events : List (BalanceEvent preset)} (replayed : tail.balanceEvents high = .ok events)
+    (keys : Finset Nat) (charge : Nat → Nat)
+    (supported : ∀ e ∈ events,
+      (if e.source = .slashings then e.creditLimit else 0) ≤
+        ∑ i ∈ keys, if !(e.before.state.validators.data[i]?.map (·.slashed)).getD true &&
+            (e.after.state.validators.data[i]?.map (·.slashed)).getD false then charge i else 0) :
+    (events.map fun e => if e.source = .slashings then e.creditLimit else 0).sum ≤
+      ∑ i ∈ keys, charge i := by
+  apply once_only_charge_le events keys _ _ charge supported
+  intro i _
+  have counted :=
+    slashing_run_count_le shared tail genesis early compounding high endEpoch replayed i
+  exact counted.trans (by split <;> omega)
+
+/-- Bounds at the inputs of the run's steps support one charge per newly slashed index. -/
+private theorem slashing_run_support {config : Config} {checks : SignatureChecks}
+    {g x y : ForkedBeaconState preset} (shared : Run config checks g x)
+    (tail : Run config checks x y) (genesis : Genesis (config := config) (checks := checks) g)
+    (early : y.fork < .glamsterdam)
+    (compounding : preset.MIN_ACTIVATION_BALANCE ≤ preset.MAX_EFFECTIVE_BALANCE_ELECTRA)
+    (high : Nat) (keys : Finset Nat) (charge : Nat → Nat)
+    (bounded : ∀ {a b} (step : Step config checks a b), tail.Contains step →
+      ∀ i ∈ Finset.range b.state.validators.data.size,
+        (!(a.state.validators.data[i]?.map (·.slashed)).getD false &&
+          (b.state.validators.data[i]?.map (·.slashed)).getD false) = true →
+        i ∈ keys ∧
+          effectiveAt a i /
+            (EthLib.Consensus.parameters preset a.fork).WHISTLEBLOWER_REWARD_QUOTIENT.toNat ≤
+              charge i)
+    {events : List (BalanceEvent preset)} (replayed : tail.balanceEvents high = .ok events) :
+    ∀ e ∈ events, (if e.source = .slashings then e.creditLimit else 0) ≤
+      ∑ i ∈ keys, if !(e.before.state.validators.data[i]?.map (·.slashed)).getD true &&
+          (e.after.state.validators.data[i]?.map (·.slashed)).getD false then charge i else 0 := by
+  induction tail generalizing events with
+  | nil => cases replayed; simp
+  | @snoc middle last pre step ih =>
+    simp only [Run.balanceEvents, bind_ok_iff] at replayed
+    obtain ⟨prior, priorOk, rest⟩ := replayed
+    have previous := ih (Nat.lt_of_le_of_lt step.chainStep.fork_le early)
+      (fun one member => bounded one (.earlier member step)) priorOk
+    split at rest
+    · simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at rest
+      obtain ⟨added, addedOk, rfl⟩ := rest
+      intro e member
+      rcases List.mem_append.mp member with old | new
+      · exact previous e old
+      · have support := slashing_step_support step early
+          (run_justified_separated (shared.append pre) genesis).1 compounding addedOk e new
+        let selected (i : Nat) : Bool :=
+          !(e.before.state.validators.data[i]?.map (·.slashed)).getD true &&
+            (e.after.state.validators.data[i]?.map (·.slashed)).getD false
+        have charged (i : Nat) (inside : i ∈ Finset.range last.state.validators.data.size)
+            (chosen : selected i = true) := by
+          have positive : 0 < added.countP (fun event =>
+              !(event.before.state.validators.data[i]?.map (·.slashed)).getD true &&
+                (event.after.state.validators.data[i]?.map (·.slashed)).getD false) :=
+            List.countP_pos_iff.mpr ⟨e, new, chosen⟩
+          have counted := slashing_step_count_le step early
+            (run_justified_separated (shared.append pre) genesis).1 compounding addedOk i
+          have active : (!(middle.state.validators.data[i]?.map (·.slashed)).getD false &&
+              (last.state.validators.data[i]?.map (·.slashed)).getD false) = true := by
+            split at counted
+            · assumption
+            · omega
+          exact bounded step (.last pre step) i inside active
+        change (if e.source = .slashings then e.creditLimit else 0) ≤ _ at support
+        apply support.trans
+        change (∑ i ∈ Finset.range last.state.validators.data.size,
+          if selected i then _ else _) ≤ _
+        rw [← Finset.sum_filter]
+        apply le_trans (Finset.sum_le_sum fun i inside => (charged i
+          (Finset.mem_filter.mp inside).1 (Finset.mem_filter.mp inside).2).2)
+        rw [← Finset.sum_filter]
+        apply Finset.sum_le_sum_of_subset
+        intro i inside
+        exact Finset.mem_filter.mpr ⟨(charged i
+          (Finset.mem_filter.mp inside).1 (Finset.mem_filter.mp inside).2).1,
+            (Finset.mem_filter.mp inside).2⟩
+    · cases rest
+      exact previous
+
+/-- Uniform per-index bounds over step inputs pay all slashing credits only once. -/
+private theorem slashing_credits_le {config : Config} {checks : SignatureChecks}
+    {g x y : ForkedBeaconState preset} (shared : Run config checks g x)
+    (tail : Run config checks x y) (genesis : Genesis (config := config) (checks := checks) g)
+    (early : y.fork < .glamsterdam)
+    (compounding : preset.MIN_ACTIVATION_BALANCE ≤ preset.MAX_EFFECTIVE_BALANCE_ELECTRA)
+    (high : Nat) (endEpoch : (getCurrentEpoch y.state).toNat ≤ high + 1)
+    (keys : Finset Nat) (charge : Nat → Nat)
+    (bounded : ∀ {a b} (step : Step config checks a b), tail.Contains step →
+      ∀ i ∈ Finset.range b.state.validators.data.size,
+        (!(a.state.validators.data[i]?.map (·.slashed)).getD false &&
+          (b.state.validators.data[i]?.map (·.slashed)).getD false) = true →
+        i ∈ keys ∧
+          effectiveAt a i /
+            (EthLib.Consensus.parameters preset a.fork).WHISTLEBLOWER_REWARD_QUOTIENT.toNat ≤
+              charge i)
+    {events : List (BalanceEvent preset)} (replayed : tail.balanceEvents high = .ok events) :
+    (events.map fun e => if e.source = .slashings then e.creditLimit else 0).sum ≤
+      ∑ i ∈ keys, charge i :=
+  slashing_run_charge_le shared tail genesis early compounding high endEpoch replayed keys charge
+    (slashing_run_support shared tail genesis early compounding high keys charge bounded replayed)
+
+/-- From Electra, only indices newly slashed in the run pay the slashing credits. -/
+private theorem slashing_credits_le_newly_slashed {config : Config} {checks : SignatureChecks}
+    {g x y : ForkedBeaconState preset} (shared : Run config checks g x)
+    (tail : Run config checks x y) (genesis : Genesis (config := config) (checks := checks) g)
+    (electra : .pectra ≤ x.fork) (early : y.fork < .glamsterdam)
+    (activation : preset.MAX_EFFECTIVE_BALANCE ≤ preset.MIN_ACTIVATION_BALANCE)
+    (compounding : preset.MIN_ACTIVATION_BALANCE ≤ preset.MAX_EFFECTIVE_BALANCE_ELECTRA)
+    (high : Nat) (endEpoch : (getCurrentEpoch y.state).toNat ≤ high + 1)
+    {events : List (BalanceEvent preset)} (replayed : tail.balanceEvents high = .ok events) :
+    (events.map fun e => if e.source = .slashings then e.creditLimit else 0).sum ≤
+      ((Finset.range y.state.validators.data.size).filter fun i =>
+        !(x.state.validators.data[i]?.map (·.slashed)).getD false &&
+          (y.state.validators.data[i]?.map (·.slashed)).getD false).card *
+        (preset.MAX_EFFECTIVE_BALANCE_ELECTRA.toNat /
+          preset.WHISTLEBLOWER_REWARD_QUOTIENT_ELECTRA.toNat) := by
+  let keys := (Finset.range y.state.validators.data.size).filter fun i =>
+    !(x.state.validators.data[i]?.map (·.slashed)).getD false &&
+      (y.state.validators.data[i]?.map (·.slashed)).getD false
+  apply le_trans (slashing_credits_le shared tail genesis early compounding high endEpoch keys
+    (fun _ => preset.MAX_EFFECTIVE_BALANCE_ELECTRA.toNat /
+      preset.WHISTLEBLOWER_REWARD_QUOTIENT_ELECTRA.toNat) ?_ replayed)
+  · simp [keys]
+  intro a b step contained i inside marked
+  obtain ⟨pre, post, _⟩ := tail.contains_split step contained
+  have aEarly := Nat.lt_of_le_of_lt
+    (Nat.le_trans step.chainStep.fork_le (fork_le_of_chainSteps post.chainSteps)) early
+  have aElectra : Fork.pectra ≤ a.fork :=
+    Nat.le_trans electra (fork_le_of_chainSteps pre.chainSteps)
+  have flags : (a.state.validators.data[i]?.map (·.slashed)).getD false = false ∧
+      (b.state.validators.data[i]?.map (·.slashed)).getD false = true := by
+    simpa only [Bool.and_eq_true, Bool.not_eq_true'] using marked
+  have last : (y.state.validators.data[i]?.map (·.slashed)).getD false = true := by
+    cases found : b.state.validators.data[i]? with
+    | none => simp [found] at flags
+    | some v =>
+      have was : v.slashed = true := by simpa [found] using flags.2
+      obtain ⟨w, read, flag⟩ := post.slashedPersistence i v found was
+      simp [read, flag]
+  have first : (x.state.validators.data[i]?.map (·.slashed)).getD false = false := by
+    cases found : x.state.validators.data[i]? with
+    | none => simp
+    | some v =>
+      cases flag : v.slashed with
+      | false => simp [flag]
+      | true =>
+        obtain ⟨w, read, kept⟩ := pre.slashedPersistence i v found flag
+        simp [read, kept] at flags
+  refine ⟨Finset.mem_filter.mpr ⟨Finset.mem_range.mpr
+    (Nat.lt_of_lt_of_le (Finset.mem_range.mp inside) post.registryLifecycle.size_le),
+      by simp [first, last]⟩, ?_⟩
+  have cap : effectiveAt a i ≤ preset.MAX_EFFECTIVE_BALANCE_ELECTRA.toNat := by
+    cases found : a.state.validators.data[i]? with
+    | none => simp [effectiveAt, found]
+    | some v =>
+      have bounded := (shared.append pre).effectiveBalance_capped genesis activation compounding
+        aEarly v (Array.mem_of_getElem? found)
+      have largest : withdrawalMaxEffectiveBalance preset a.fork v ≤
+          preset.MAX_EFFECTIVE_BALANCE_ELECTRA := by
+        unfold withdrawalMaxEffectiveBalance getMaxEffectiveBalance
+        rw [ite_eq_left aElectra]
+        split
+        · exact UInt64.le_refl _
+        · exact compounding
+      simpa [effectiveAt, found] using UInt64.le_iff_toNat_le.mp
+        (UInt64.le_trans bounded largest)
+  simpa [EthLib.Consensus.parameters, aElectra] using Nat.div_le_div_right
+    (c := preset.WHISTLEBLOWER_REWARD_QUOTIENT_ELECTRA.toNat) cap
 
 end EthLib.Consensus.DirectSafety

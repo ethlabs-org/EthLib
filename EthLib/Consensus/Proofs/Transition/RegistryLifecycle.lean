@@ -720,7 +720,7 @@ theorem registryLifecycle_processBlsToExecutionChange {signed : SignedBLSToExecu
 
 /-! ## Blocks -/
 
-private theorem registryLifecycle_processBlock {block : BeaconBlock preset fork}
+theorem registryLifecycle_processBlock {block : BeaconBlock preset fork}
     (computed : processBlock config checks engine state block = .ok after) :
     RegistryLifecycle state after := by
   obtain ⟨input, last, started, operated, -, synced⟩ := processBlock_operationsInput computed
@@ -983,12 +983,9 @@ theorem registryLifecycle_processPendingDeposits {electra : .pectra ≤ fork}
   repeat' (split at computed <;> try cases computed)
   all_goals exact (registryLifecycle_passPendingDeposits ‹_›).trans (.of_data rfl)
 
-/-- The epoch step keeps the lifecycle, stage by stage of the epoch schedule. -/
-private theorem registryLifecycle_processEpoch
-    (computed : processEpoch config checks state = .ok after) : RegistryLifecycle state after := by
-  apply (processEpoch_trace computed).transport RegistryLifecycle .refl (fun a b => a.trans b)
-  intro k _ a b ok
-  have edge := EpochStage.action_cases.mp ok
+/-- Every epoch stage preserves assigned activation and exit epochs. -/
+theorem EpochStage.Edge.registryLifecycle {k : EpochStage}
+    (edge : EpochStage.Edge config checks k state after) : RegistryLifecycle state after := by
   cases k
   case registry => exact registryLifecycle_processRegistryUpdates edge
   case pendingDeposits =>
@@ -998,6 +995,13 @@ private theorem registryLifecycle_processEpoch
     · exact edge ▸ .refl _
   case effectiveBalances => exact registryLifecycle_processEffectiveBalanceUpdates edge
   all_goals exact .of_data (congrArg (·.data) (edge.validators_eq ⟨nofun, nofun, nofun⟩))
+
+/-- The epoch step keeps the lifecycle, stage by stage of the epoch schedule. -/
+private theorem registryLifecycle_processEpoch
+    (computed : processEpoch config checks state = .ok after) : RegistryLifecycle state after := by
+  apply (processEpoch_trace computed).transport RegistryLifecycle .refl (fun a b => a.trans b)
+  intro k _ a b ok
+  exact (EpochStage.action_cases.mp ok).registryLifecycle
 
 /-! ## Slots, upgrades and chains -/
 
