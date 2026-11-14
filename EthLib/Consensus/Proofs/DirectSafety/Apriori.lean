@@ -6,11 +6,14 @@ public import EthLib.Consensus.Proofs.DirectSafety.IntervalFunding
 import EthLib.Consensus.Proofs.DirectSafety.Cohorts
 import EthLib.Consensus.Proofs.DirectSafety.IntervalBounds
 import EthLib.Consensus.Proofs.DirectSafety.DepartureQueue
+import EthLib.Consensus.Proofs.DirectSafety.FundingEpoch
+import EthLib.Consensus.Proofs.DirectSafety.Provenance
 public import Mathlib.Data.Nat.Sqrt
 public import Mathlib.Order.Monotone.Defs
 import EthLib.Base.Proofs.MapM
 import EthLib.Base.Proofs.Uint64
 import EthLib.Consensus.Proofs.Participation
+import EthLib.Consensus.Proofs.Transition.ActiveKept
 import EthLib.Consensus.Proofs.Transition.EpochParticipation
 import Mathlib.Algebra.BigOperators.Ring.Finset
 import Mathlib.Tactic.Ring
@@ -1742,6 +1745,292 @@ private theorem funding_le_ceiling {g v y : ForkedBeaconState preset}
       simpa using funding_step_of_run (shared.append pre) genesis step early delay added ok)
   rw [show ∀ l : List (BalanceEvent preset), (l.map fun _ => 0).sum = 0 by simp,
     Nat.add_zero] at bound
+  omega
+
+/-! ## The participating balance of a rewards pass
+
+The rewards pass at the end of epoch `t` reads the participants of epoch `t - 1`.
+
+Each is active at `t - 1`, and its effective balance has not changed since an earlier state `u`.
+
+So their balance is at most the effective stake at `u` of the keys active at `t - 1`.
+
+For `t ≥ 1`, `u` is the output of the epoch transition that ends `t - 1`.
+
+Its current epoch is still `t - 1`, so its funded stake counts every such key.
+
+For `t = 0`, `u` is the start `x` of the branch.
+
+The keys active at the epoch before `x` but not at `x` are then counted by `previousOnlyStake x`.
+-/
+
+/-- The participants of the previous epoch weigh at most the stake at `u` of its active keys.
+
+The pass must keep the activity of `u` at that epoch, and its effective balances. -/
+private theorem participating_le_reference {f h : Fork} {u : BeaconState preset f}
+    {pass : BeaconState preset h} (early : f < .glamsterdam) (altair : .altair ≤ h)
+    (active : ActiveKept (getPreviousEpoch pass) u pass)
+    (effective : ∀ i, i < u.validators.data.size →
+      effectiveAt ⟨h, pass⟩ i = effectiveAt ⟨f, u⟩ i)
+    {flag : UInt64} {participating : List ValidatorIndex} {balance : Gwei}
+    (flagged : getUnslashedParticipatingIndices pass altair flag (getPreviousEpoch pass) =
+      .ok participating)
+    (weighed : getTotalBalance pass participating = .ok balance) :
+    balance.toNat ≤ max preset.EFFECTIVE_BALANCE_INCREMENT.toNat
+      (∑ i ∈ (getActiveValidatorIndices u (getPreviousEpoch pass)).toFinset,
+        effectiveAt ⟨f, u⟩ i.toNat) := by
+  obtain ⟨-, -, total⟩ := getTotalBalance_ok_iff_stake.mp weighed
+  rw [total]
+  refine max_le_max_left _ ?_
+  have same := active.getActiveValidatorIndices_eq (UInt64.le_refl _)
+  -- Each participant is active at `u`, so it is inside the registry of `u`.
+  have among (i : ValidatorIndex) (member : i ∈ participating.toFinset) :
+      i ∈ (getActiveValidatorIndices u (getPreviousEpoch pass)).toFinset := by
+    have chosen := (mem_getUnslashedParticipatingIndices flagged i
+      (List.mem_toFinset.mp member)).1
+    rw [same] at chosen
+    exact List.mem_toFinset.mpr chosen
+  calc Models.stake (fun i => balanceAt pass i.toNat) participating.toFinset
+      = ∑ i ∈ participating.toFinset, effectiveAt ⟨f, u⟩ i.toNat := by
+        refine Finset.sum_congr rfl fun i member => ?_
+        obtain ⟨v, found, _⟩ := (mem_getActiveValidatorIndices (u.validators.bound early)).mp
+          (List.mem_toFinset.mp (among i member))
+        exact effective i.toNat (Array.getElem?_eq_some_iff.mp found).1
+    _ ≤ _ := Finset.sum_le_sum_of_subset among
+
+/-- The effective balances of the active validators of a state sum to at most its funded stake.
+
+The keys of the registry must be distinct. -/
+private theorem activeEffective_le_funded (x : ForkedBeaconState preset)
+    (early : x.fork < .glamsterdam) (unique : PubkeysDistinct x.state) :
+    ∑ i ∈ (getActiveValidatorIndices x.state (getCurrentEpoch x.state)).toFinset,
+      effectiveAt x i.toNat ≤ fundedStake x := by
+  have inside : ∀ i ∈ getActiveValidatorIndices x.state (getCurrentEpoch x.state),
+      i.toNat < x.state.validators.data.size := fun i member => by
+    obtain ⟨v, found, _⟩ := (mem_getActiveValidatorIndices (x.state.validators.bound early)).mp
+      member
+    exact (Array.getElem?_eq_some_iff.mp found).1
+  have bound := funding_active_le x early unique
+  rw [activeKeys, keys_weight _ _ unique inside] at bound
+  exact bound
+
+/-- A run inside one epoch, then the stages of the next slot up to the rewards pass.
+
+They keep the activity of the start `r`, its effective balances and its current epoch. -/
+private theorem pass_kept {r s : ForkedBeaconState preset} (inner : Run config checks r s)
+    (electra : .pectra ≤ r.fork) (early : s.fork < .glamsterdam)
+    (same : getCurrentEpoch s.state = getCurrentEpoch r.state)
+    {cached just pass : BeaconState preset s.fork} (cachedOk : processSlot s.state = .ok cached)
+    (justified : EpochStage.Edge config checks .justification cached just)
+    (scored : EpochStage.Edge config checks .inactivity just pass) :
+    ActiveKept (activityFixedEpoch r.state) r.state pass ∧
+      (∀ i, i < r.state.validators.data.size →
+        effectiveAt ⟨s.fork, pass⟩ i = effectiveAt r i) ∧
+      getCurrentEpoch pass = getCurrentEpoch r.state := by
+  -- The stages before the rewards keep the validators and the slot.
+  have one := justified.records ⟨nofun, nofun, nofun, nofun, nofun, nofun⟩
+  have two := scored.records ⟨nofun, nofun, nofun, nofun, nofun, nofun⟩
+  obtain ⟨_, _, _, _, rfl⟩ := processSlot_ok cachedOk
+  have validators : pass.validators = s.state.validators := two.1.trans one.1
+  have slot : pass.slot = s.state.slot := two.2.2.2.2.trans one.2.2.2.2
+  refine ⟨(activeKept_of_chainSteps inner.chainSteps).trans fun _ _ _ => by
+      simp only [isActiveAt, validators], fun i inside => ?_, ?_⟩
+  · rw [← run_same_epoch_effective inner electra early same i inside]
+    simp only [effectiveAt, validators]
+  · rw [← same]
+    simp only [getCurrentEpoch, slot]
+
+/-- At the rewards pass of an epoch `t ≥ 1`, each flag's participants weigh at most the funding.
+
+That is the funding at the last state `z` of epoch `t - 1`, one epoch of churn and the credits.
+
+The credits are the funding credits of the slot from `z`, whose epoch transition ends `t - 1`.
+
+The run from the next state `w` to `s` stays inside epoch `t`.
+
+The pass follows the stages of the next slot from `s` before the rewards. -/
+private theorem participating_le_ceiling {g z w s : ForkedBeaconState preset}
+    (shared : Run config checks g z) (genesis : Genesis (config := config) (checks := checks) g)
+    (boundary : advanceSlotAcross config checks z = .ok w)
+    (crossing : getCurrentEpoch z.state < getCurrentEpoch w.state)
+    (inner : Run config checks w s) (same : getCurrentEpoch s.state = getCurrentEpoch w.state)
+    (electra : .pectra ≤ z.fork) (early : s.fork < .glamsterdam)
+    (delay : 2 ≤ config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat)
+    {events : List (BalanceEvent preset)}
+    (replayed : (Step.slot boundary).balanceEvents = .ok events)
+    {cached just pass : BeaconState preset s.fork} (cachedOk : processSlot s.state = .ok cached)
+    (justified : EpochStage.Edge config checks .justification cached just)
+    (scored : EpochStage.Edge config checks .inactivity just pass) (altair : .altair ≤ s.fork)
+    {flag : UInt64} {participating : List ValidatorIndex} {balance : Gwei}
+    (flagged : getUnslashedParticipatingIndices pass altair flag (getPreviousEpoch pass) =
+      .ok participating)
+    (weighed : getTotalBalance pass participating = .ok balance) :
+    balance.toNat ≤ max preset.EFFECTIVE_BALANCE_INCREMENT.toNat
+      (fundedStake z + fundingCarry z + config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat +
+        (events.map fundingCredit).sum) := by
+  have wEarly : w.fork < .glamsterdam :=
+    Nat.lt_of_le_of_lt (fork_le_of_chainSteps inner.chainSteps) early
+  have zEarly : z.fork < .glamsterdam :=
+    Nat.lt_of_le_of_lt (Step.slot boundary).chainStep.fork_le wEarly
+  have wElectra : .pectra ≤ w.fork := Nat.le_trans electra (Step.slot boundary).chainStep.fork_le
+  obtain ⟨advanced, advanceOk, upgrades⟩ := bind_ok_iff.mp boundary
+  have advanceCopy := advanceOk
+  simp only [advanceSlot, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at advanceCopy
+  obtain ⟨next, nextOk, cachedZ, cachedZOk, e, epochOk, advancedEq⟩ := advanceCopy
+  have sum := (Uint64.addChecked_ok_iff.mp (mapError_ok_iff.mp (liftAccessor_ok.mp nextOk))).2
+  simp only [UInt64.toNat_one] at sum
+  have wSlot : w.state.slot = next := by rw [processUpgrades_slot upgrades, ← advancedEq]
+  have registry : w.state.validators.data = e.validators.data := by
+    rw [processUpgrades_validators_of_electra (s := ⟨z.fork, advanced⟩) electra wEarly upgrades,
+      ← advancedEq]
+  obtain ⟨_, _, _, _, cachedZEq⟩ := processSlot_ok cachedZOk
+  -- The slot from `z` ends epoch `t - 1`, so it runs the epoch transition.
+  have last : next % preset.SLOTS_PER_EPOCH = 0 := by
+    by_contra inside
+    have epochs := nextSlot_epoch_of_inside sum inside
+    have later := UInt64.lt_iff_toNat_lt.mp crossing
+    rw [getCurrentEpoch_toNat, getCurrentEpoch_toNat, wSlot] at later
+    omega
+  have epochs := nextSlot_epoch_of_boundary sum last
+  simp only [epochIfLast, last, ↓reduceIte] at epochOk
+  obtain ⟨_, justifiedZ, frame⟩ := processEpoch_frame epochOk
+  have eSlot : e.slot = z.state.slot := by
+    rw [frame.slot, (EpochStage.Edge.records (config := config) (checks := checks)
+      (stage := .justification) justifiedZ ⟨nofun, nofun, nofun, nofun, nofun, nofun⟩).2.2.2.2,
+      cachedZEq]
+  obtain ⟨activeKept, effectiveKept, passEpoch⟩ := pass_kept inner wElectra early same cachedOk
+    justified scored
+  -- The previous epoch of the pass is the current epoch of `e`.
+  have previous : getPreviousEpoch pass = getCurrentEpoch e := by
+    apply UInt64.toNat_inj.mp
+    have passValue := getPreviousEpoch_toNat pass
+    have wValue := getCurrentEpoch_toNat w.state
+    have eValue := getCurrentEpoch_toNat e
+    rw [passEpoch] at passValue
+    rw [wSlot] at wValue
+    rw [eSlot] at eValue
+    omega
+  have toE : ActiveKept (getPreviousEpoch pass) e pass := fun epoch le position => by
+    have bound : epoch ≤ activityFixedEpoch w.state := UInt64.le_trans le (UInt64.le_trans
+      (passEpoch ▸ getPreviousEpoch_le pass) (getCurrentEpoch_le_activityFixedEpoch _))
+    rw [activeKept epoch bound position]
+    simp only [isActiveAt, registry]
+  have unique : PubkeysDistinct e := by
+    have distinct := (shared.snoc (.slot boundary)).pubkeysDistinct genesis
+    unfold PubkeysDistinct validatorKeys at distinct ⊢
+    rwa [registry] at distinct
+  have bound := participating_le_reference zEarly altair toE (fun i inside => by
+      rw [effectiveKept i (by rw [registry]; exact inside)]
+      simp only [effectiveAt, registry]) flagged weighed
+  rw [previous] at bound
+  have active : ∑ i ∈ (getActiveValidatorIndices e (getCurrentEpoch e)).toFinset,
+      effectiveAt ⟨z.fork, e⟩ i.toNat ≤ fundedStake ⟨z.fork, e⟩ :=
+    activeEffective_le_funded ⟨z.fork, e⟩ zEarly unique
+  -- The epoch transition raises the funding by one epoch of churn and its credits.
+  have holds := (run_justified_separated shared genesis).1
+  obtain ⟨middle, -, epochEvents, epochReplay, -⟩ :=
+    epochBalanceReplay_result cachedZ e zEarly epochOk
+  have funded := funding_epoch zEarly delay
+    ((frame_processSlot cachedZOk).balancesMatch holds.balancesMatch)
+    ((frame_processSlot cachedZOk).exitsOrdered holds.exitsOrdered)
+    (by rw [cachedZEq]; exact shared.activationExitOrder genesis)
+    (by rw [cachedZEq]; exact fun witness =>
+      shared.pendingConsolidation_invariant genesis zEarly witness (by omega))
+    epochOk epochEvents epochReplay
+  obtain ⟨crossings, crossingOk, _⟩ := upgradeBalanceReplay_bounded upgrades
+  have split := Step.balanceEvents_epoch_slot boundary cachedZOk nextOk last epochReplay
+    advanceOk crossingOk
+  obtain rfl := Except.ok.inj (replayed.symm.trans split)
+  have startFunded : fundedStake ⟨z.fork, cachedZ⟩ = fundedStake z := by rw [cachedZEq]; rfl
+  have startCarry : fundingCarry ⟨z.fork, cachedZ⟩ = fundingCarry z := by rw [cachedZEq]; rfl
+  rw [startFunded, startCarry] at funded
+  rw [List.map_append, List.sum_append]
+  refine bound.trans (max_le_max_left _ ?_)
+  omega
+
+/-- At the first rewards pass of a branch from `x`, each flag's participants weigh at most a sum.
+
+It is the funded stake of `x` and the stake at `x` of the keys active only at the epoch before.
+
+The run from `x` to `s` stays inside the epoch of `x`.
+
+The pass follows the stages of the next slot from `s` before the rewards. -/
+private theorem participating_le_start {g x s : ForkedBeaconState preset}
+    (shared : Run config checks g x) (genesis : Genesis (config := config) (checks := checks) g)
+    (inner : Run config checks x s) (same : getCurrentEpoch s.state = getCurrentEpoch x.state)
+    (electra : .pectra ≤ x.fork) (early : s.fork < .glamsterdam)
+    {cached just pass : BeaconState preset s.fork} (cachedOk : processSlot s.state = .ok cached)
+    (justified : EpochStage.Edge config checks .justification cached just)
+    (scored : EpochStage.Edge config checks .inactivity just pass) (altair : .altair ≤ s.fork)
+    {flag : UInt64} {participating : List ValidatorIndex} {balance : Gwei}
+    (flagged : getUnslashedParticipatingIndices pass altair flag (getPreviousEpoch pass) =
+      .ok participating)
+    (weighed : getTotalBalance pass participating = .ok balance) :
+    balance.toNat ≤ max preset.EFFECTIVE_BALANCE_INCREMENT.toNat
+      (fundedStake x + previousOnlyStake x) := by
+  have xEarly : x.fork < .glamsterdam :=
+    Nat.lt_of_le_of_lt (fork_le_of_chainSteps inner.chainSteps) early
+  have within := x.state.validators.bound xEarly
+  obtain ⟨activeKept, effectiveKept, passEpoch⟩ := pass_kept inner electra early same cachedOk
+    justified scored
+  have previous : getPreviousEpoch pass = getPreviousEpoch x.state := by
+    apply UInt64.toNat_inj.mp
+    rw [getPreviousEpoch_toNat, getPreviousEpoch_toNat, passEpoch]
+  have kept : ActiveKept (getPreviousEpoch pass) x.state pass :=
+    activeKept.mono (UInt64.le_trans (passEpoch ▸ getPreviousEpoch_le pass)
+      (getCurrentEpoch_le_activityFixedEpoch _))
+  have bound := participating_le_reference xEarly altair kept effectiveKept flagged weighed
+  rw [previous] at bound
+  refine bound.trans (max_le_max_left _ ?_)
+  change ∑ i ∈ (getActiveValidatorIndices x.state (getPreviousEpoch x.state)).toFinset,
+    effectiveAt x i.toNat ≤ _
+  -- Split the keys of the previous epoch by whether they are still active at `x`.
+  set current := (getActiveValidatorIndices x.state (getCurrentEpoch x.state)).toFinset
+  set before := (getActiveValidatorIndices x.state (getPreviousEpoch x.state)).toFinset
+  rw [← Finset.sum_filter_add_sum_filter_not before (· ∈ current)]
+  have stillActive : ∑ i ∈ before.filter (· ∈ current), effectiveAt x i.toNat ≤
+      ∑ i ∈ current, effectiveAt x i.toNat :=
+    Finset.sum_le_sum_of_subset fun i member => (Finset.mem_filter.mp member).2
+  have funded : ∑ i ∈ current, effectiveAt x i.toNat ≤ fundedStake x :=
+    activeEffective_le_funded x xEarly (shared.pubkeysDistinct genesis)
+  -- The others are the keys that `previousOnlyStake` counts.
+  have leaving : ∑ i ∈ before.filter (· ∉ current), effectiveAt x i.toNat ≤
+      previousOnlyStake x := by
+    let weight (v : Validator) : Nat :=
+      if isActiveValidator v (getPreviousEpoch x.state) &&
+          !isActiveValidator v (getCurrentEpoch x.state) then v.effectiveBalance.toNat else 0
+    have sum := funding_sum_zipIdx x.state.validators.data.toList fun v _ => weight v
+    have shape : (x.state.validators.data.toList.zipIdx.map fun (v, _) => weight v) =
+        x.state.validators.data.toList.map weight := by
+      have first := congrArg (List.map weight)
+        (List.zipIdx_map_fst 0 x.state.validators.data.toList)
+      rw [List.map_map] at first
+      rw [← first]
+      exact List.map_congr_left fun ⟨_, _⟩ _ => rfl
+    rw [shape] at sum
+    unfold previousOnlyStake
+    change _ ≤ (x.state.validators.data.toList.map weight).sum
+    rw [sum]
+    simp only [Array.length_toList, Array.getElem?_toList]
+    apply Finset.sum_le_sum_of_injOn (fun i => i.toNat)
+    · intro i _ j _ eq
+      exact UInt64.toNat_inj.mp eq
+    · intro i member
+      obtain ⟨j, chosen, rfl⟩ := Finset.mem_image.mp member
+      obtain ⟨v, found, _⟩ := (mem_getActiveValidatorIndices within).mp
+        (List.mem_toFinset.mp (Finset.mem_filter.mp chosen).1)
+      exact Finset.mem_range.mpr (Array.getElem?_eq_some_iff.mp found).1
+    · intro i member
+      obtain ⟨inPrevious, notCurrent⟩ := Finset.mem_filter.mp member
+      obtain ⟨v, found, activePrevious⟩ := (mem_getActiveValidatorIndices within).mp
+        (List.mem_toFinset.mp inPrevious)
+      have inactive : isActiveValidator v (getCurrentEpoch x.state) = false := by
+        by_contra activeNow
+        exact notCurrent (List.mem_toFinset.mpr ((mem_getActiveValidatorIndices within).mpr
+          ⟨v, found, by simpa using activeNow⟩))
+      simp [weight, found, effectiveAt, activePrevious, inactive]
+    · intro _ _ _
+      exact Nat.zero_le _
   omega
 
 end EthLib.Consensus.DirectSafety

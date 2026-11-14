@@ -2279,7 +2279,12 @@ theorem funding_sum_zipIdx (vs : List Validator) (f : Validator → Nat → Nat)
   rw [Finset.sum_eq_multiset_sum, Finset.range_val, ← Multiset.coe_range,
     Multiset.map_coe, Multiset.sum_coe, List.range_eq_range']
 
-private theorem funding_active_le (x : ForkedBeaconState preset)
+/-- The active stake of a state is at most its funded stake.
+
+The keys of the registry must be distinct, so each active key weighs its own validator.
+
+That validator is active, and the funded stake counts it at its effective balance or more. -/
+theorem funding_active_le (x : ForkedBeaconState preset)
     (early : x.fork < .glamsterdam) (unique : PubkeysDistinct x.state) :
     Models.stake (effectiveWeight x.state) (activeKeys x.state) ≤ fundedStake x := by
   have within : x.state.RegistryWithinLimit := x.state.validators.bound early

@@ -1880,6 +1880,16 @@ private theorem upgrades_departureQueues {s t : ForkedBeaconState preset}
       exact False.elim (Nat.lt_irrefl _ nextEarly)
   | case2 s notDue => cases ok; exact ⟨rfl, rfl⟩
 
+/-- After Electra and before Gloas, the upgrades of a slot keep the registry.
+
+The only such upgrade is the one to Fulu, which carries the validators as they are. -/
+theorem processUpgrades_validators_of_electra {s t : ForkedBeaconState preset}
+    (electra : .pectra ≤ s.fork) (early : t.fork < .glamsterdam)
+    (ok : processUpgrades config checks s = .ok t) :
+    t.state.validators.data = s.state.validators.data :=
+  (upgrades_departureQueues electra early ok
+    (Nat.le_trans electra (processUpgrades_fork_le ok))).2
+
 /-- Withdrawal requests cover full departures while retaining unmatched partial calls. -/
 private theorem withdrawalRequest_indexedTrace {fork : Fork} {s t : BeaconState preset fork}
     (electra : .pectra ≤ fork) (early : fork < .glamsterdam) {request : WithdrawalRequest}
@@ -3858,7 +3868,12 @@ private theorem step_same_epoch_effective {x y : ForkedBeaconState preset}
     intro i _
     simp only [effectiveAt, data]
 
-private theorem run_same_epoch_effective {x y : ForkedBeaconState preset}
+/-- From Electra and before Gloas, a run inside one epoch keeps every existing effective balance.
+
+Blocks keep them at every fork, and a slot inside the epoch runs no epoch transition.
+
+Its upgrades, if any, are the one to Fulu, which keeps the registry. -/
+theorem run_same_epoch_effective {x y : ForkedBeaconState preset}
     (tail : Run config checks x y) (electra : .pectra ≤ x.fork)
     (early : y.fork < .glamsterdam)
     (epoch : getCurrentEpoch y.state = getCurrentEpoch x.state) :
@@ -3878,7 +3893,12 @@ private theorem run_same_epoch_effective {x y : ForkedBeaconState preset}
     exact (two i (Nat.lt_of_lt_of_le inside (registryGrows_of_chainSteps pre.chainSteps))).trans
       (one i inside)
 
-private theorem total_active_congr {f h : Fork} {s : BeaconState preset f}
+/-- Two states with the same active validators and effective balances have the same total.
+
+The second state is in the same epoch and keeps the activity of that epoch.
+
+It also keeps the effective balance of every validator of the first state. -/
+theorem total_active_congr {f h : Fork} {s : BeaconState preset f}
     {t : BeaconState preset h} (before : f < .glamsterdam) (after : h < .glamsterdam)
     (active : ActiveKept (getCurrentEpoch s) s t) (epoch : getCurrentEpoch t = getCurrentEpoch s)
     (effective : ∀ i, i < s.validators.data.size →
