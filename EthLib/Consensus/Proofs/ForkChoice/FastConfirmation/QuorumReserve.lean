@@ -223,19 +223,21 @@ pinReserve = quorumReserve                         the call's branch
 
 On mainnet the depth is typically 4.
 
-There it costs about 1.06 to 1.42 points of the Byzantine threshold at an epoch's last slot.
+There it costs about 1.08 to 1.44 points of the Byzantine threshold at an epoch's last slot.
+
+It costs up to about 1.48 points when the window reaches a sync committee period boundary.
 
 It costs about 0.07 to 0.09 points at the middle of an epoch.
 
 These figures come from three mainnet states.
 
-Over 60 days of mainnet epochs, the most it costs is about 1.42 points.
+Over 60 days of mainnet epochs, the most it costs is about 1.44 points.
 
-At depth 5 it costs at most about 1.45 points.
+At depth 5 it costs up to about 1.47 points, and about 1.52 at a period boundary on one state.
 
 From depth 6 the exit and consolidation queues and the late activations take it past 1.5 points.
 
-It is about 1.9 to 2.2 points at depth 6, and about 2.4 to 2.6 points at depth 10.
+It is about 1.9 to 2.2 points at depth 6, and about 2.4 to 2.7 points at depth 10.
 
 So the reserve grows with the number of epochs since finality.
 -/

@@ -3190,11 +3190,12 @@ The theorems derive the agreement of justified checkpoints across honest stores 
 Three times its stake exceeds the total of the call's pulled-up head state plus `margin` plus the call's pin reserve `pinReserve`.
 So its stake exceeds a third of that sum.
 The pinned-checkpoint step pays for cross-state drift with that per-call reserve, carried by the count.
-At the typical non-finality depth of 4 epochs it costs about 1.06–1.42 points of the Byzantine threshold at the last slot of an epoch.
-It costs about 0.07–0.09 points at mid-epoch, on three mainnet states.
-Over 60 days of mainnet epochs it costs at most about 1.42 points, and at depth 5 at most about 1.45 points.
+At the typical non-finality depth of 4 epochs it costs about 1.08–1.44 points of the Byzantine threshold at the last slot of an epoch.
+It costs up to about 1.48 points at a sync committee period boundary, and about 0.07–0.09 points at mid-epoch, on three mainnet states.
+Over 60 days of mainnet epochs it costs at most about 1.44 points.
+At depth 5 it costs up to about 1.47 points, and about 1.52 at a period boundary on one state.
 From depth 6 the exit and consolidation queues and the late activations take it past 1.5 points.
-It costs about 1.9–2.2 points at depth 6 and about 2.4–2.6 points at depth 10.
+It costs about 1.9–2.2 points at depth 6 and about 2.4–2.7 points at depth 10.
 The bound grows with non-finality depth.
 
 `TargetIncluded` is a network-model premise.
