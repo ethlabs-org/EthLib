@@ -343,6 +343,18 @@ theorem sameSizes_queueConsolidation {electra : .pectra ≤ fork} {sourceIndex :
   exact (SameSizes.trans ⟨congrArg (·.data.size) validators, congrArg (·.data.size) balances⟩
     (sameSizes_setValidator set)).trans ⟨rfl, rfl⟩
 
+/-- Queueing a consolidation keeps every balance. -/
+theorem queueConsolidation_balances {electra : .pectra ≤ fork} {sourceIndex : ValidatorIndex}
+    {source : Validator} {targetIndex : ValidatorIndex}
+    (computed :
+      queueConsolidation config state electra sourceIndex source targetIndex = .ok after) :
+    after.balances = state.balances := by
+  simp only [queueConsolidation, bind_ok_iff, liftAccessor_ok, pure, Except.pure,
+    Except.ok.injEq] at computed
+  obtain ⟨⟨_, _⟩, churned, _, _, _, set, _, _, rfl⟩ := computed
+  obtain ⟨_, rfl⟩ := setValidator_ok set
+  exact (computeConsolidationEpochAndUpdateChurn_earliest churned).2.2
+
 /-- A consolidation request keeps the sizes of the registry and the balances. -/
 theorem sameSizes_processConsolidationRequest {electra : .pectra ≤ fork}
     {request : ConsolidationRequest}

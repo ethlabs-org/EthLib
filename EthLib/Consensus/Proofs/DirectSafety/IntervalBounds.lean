@@ -2281,15 +2281,6 @@ private theorem intervalLoss_consolidationRequest_balance {fork : Fork}
         simp [actualBalanceAt, BeaconState.putBalance, BeaconState.putValidator, same]
       · cases queued
         simp [actualBalanceAt, BeaconState.putValidator]
-  have consolidate {sourceIndex targetIndex : ValidatorIndex} {source : Validator}
-      (queued : queueConsolidation config s electra sourceIndex source targetIndex = .ok t) :
-      actualBalanceAt ⟨fork, t⟩ i = actualBalanceAt ⟨fork, s⟩ i := by
-    simp only [queueConsolidation, bind_ok_iff, liftAccessor_ok, pure, Except.pure,
-      Except.ok.injEq] at queued
-    obtain ⟨⟨_, _⟩, scheduled, _, _, _, set, _, _, rfl⟩ := queued
-    obtain ⟨_, rfl⟩ := setValidator_ok set
-    simp [actualBalanceAt, BeaconState.putValidator,
-      (computeConsolidationEpochAndUpdateChurn_earliest scheduled).2.2]
   by_cases same : request.sourcePubkey = request.targetPubkey
   · unfold processConsolidationRequest at ok
     simp only [same, beq_self_eq_true, ↓reduceIte, bind, Except.bind, pure, Except.pure] at ok
@@ -2303,7 +2294,7 @@ private theorem intervalLoss_consolidationRequest_balance {fork : Fork}
   · rcases eq_or_queueConsolidation_of_processConsolidationRequest same ok with
       rfl | ⟨_, _, _, _, _, queued⟩
     · exact .inl rfl
-    · exact .inl (consolidate queued)
+    · simp [actualBalanceAt, queueConsolidation_balances queued]
 
 /-- The balance events of a step, read per key, before Gloas.
 

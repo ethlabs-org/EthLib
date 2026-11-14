@@ -1499,15 +1499,9 @@ private theorem admissionFunded_consolidate {f : Fork} {s t : BeaconState preset
     {source : Validator} (holds : AdmissionFunded n s)
     (found : s.validators.data[sourceIndex.toNat]? = some source)
     (ok : queueConsolidation config s electra sourceIndex source targetIndex = .ok t) :
-    AdmissionFunded n t := by
-  have balances : t.balances = s.balances := by
-    simp only [queueConsolidation, bind_ok_iff, liftAccessor_ok, pure, Except.pure] at ok
-    obtain ⟨⟨_, _⟩, churned, _, _, _, set, _, _, rest⟩ := ok
-    cases rest
-    obtain ⟨_, rfl⟩ := setValidator_ok set
-    exact (computeConsolidationEpochAndUpdateChurn_earliest churned).2.2
-  exact admissionFunded_kept holds (effectiveKept_consolidate found ok)
-    (sameSizes_queueConsolidation ok).1 balances
+    AdmissionFunded n t :=
+  admissionFunded_kept holds (effectiveKept_consolidate found ok)
+    (sameSizes_queueConsolidation ok).1 (queueConsolidation_balances ok)
 
 private theorem admissionFunded_consolidationRequest {f : Fork} {s t : BeaconState preset f}
     {n : Nat} {electra : .pectra ≤ f} {request : ConsolidationRequest}

@@ -1358,15 +1358,6 @@ private theorem consolidation_request_bounds {fork : Fork} {s t : BeaconState pr
     rw [actual]
     simpa only [balanceCredits, balanceDebits, actualBalanceAt,
       BeaconState.putValidator] using And.intro bounds.1.le bounds.2
-  have queued (source : Validator) (sourceIndex targetIndex : ValidatorIndex)
-      (ok : queueConsolidation config s electra sourceIndex source targetIndex = .ok t) :
-      t.balances = s.balances := by
-    simp only [queueConsolidation, bind_ok_iff, liftAccessor_ok, pure, Except.pure,
-      Except.ok.injEq] at ok
-    obtain ⟨⟨u, epoch⟩, churned, _, _, v, set, _, _, rfl⟩ := ok
-    obtain ⟨_, _, balances⟩ := computeConsolidationEpochAndUpdateChurn_earliest churned
-    obtain ⟨_, rfl⟩ := setValidator_ok set
-    exact balances
   unfold processConsolidationRequest at ok
   split at ok
   · split at ok
@@ -1386,7 +1377,7 @@ private theorem consolidation_request_bounds {fork : Fork} {s t : BeaconState pr
     all_goals first
       | (cases ok; done)
       | (cases ok; exact unchanged rfl)
-      | exact unchanged (queued _ _ _ ok)
+      | exact unchanged (queueConsolidation_balances ok)
 
 private def ReplayBounded {fork : Fork} (pre : BalanceReplay preset fork) : Prop :=
   BalancesMatch pre.1 ∧ EventsBounded pre.2
