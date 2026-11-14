@@ -410,7 +410,7 @@ end SamePendingQueue
 It holds vacuously before Electra, and the Electra upgrade starts with an empty queue.
 
 The Fulu upgrade must carry it. -/
-theorem upgradeNext_pending (P : ∀ {f : Fork}, BeaconState preset f → Prop)
+private theorem upgradeNext_pending (P : ∀ {f : Fork}, BeaconState preset f → Prop)
     (vacuous : ∀ {f : Fork} (s : BeaconState preset f), f < .pectra → P s)
     (empty : ∀ t : BeaconState preset .pectra,
       (∀ electra, (t.pendingConsolidations electra).data.toList = []) → P t)
@@ -478,7 +478,7 @@ A validator that is unslashed in the later state was unslashed before.
 Its withdrawable epoch is then the same.
 
 Only a slashing moves the withdrawable epoch of an exited validator, and it sets the flag. -/
-def WithdrawalKept {f g : Fork} (s : BeaconState preset f)
+private def WithdrawalKept {f g : Fork} (s : BeaconState preset f)
     (t : BeaconState preset g) : Prop :=
   ∀ (i : Nat) (v : Validator), s.validators.data[i]? = some v →
     v.exitEpoch ≠ FAR_FUTURE_EPOCH →
@@ -488,7 +488,7 @@ def WithdrawalKept {f g : Fork} (s : BeaconState preset f)
 namespace WithdrawalKept
 
 /-- A later state with the same validators keeps every withdrawable epoch. -/
-theorem of_data {f g : Fork} {s : BeaconState preset f} {t : BeaconState preset g}
+private theorem of_data {f g : Fork} {s : BeaconState preset f} {t : BeaconState preset g}
     (same : t.validators.data = s.validators.data := by rfl) : WithdrawalKept s t := by
   intro i v found _
   exact ⟨v, by rw [same]; exact found, UInt64.le_refl _, fun unslashed => ⟨unslashed, rfl⟩⟩
@@ -554,7 +554,7 @@ private theorem set {i : ValidatorIndex} {old v : Validator}
     (by rwa [← setValidator_eq_setValidatorAt]) kept
 
 /-- Starting an exit writes an exit epoch only to a validator that has none. -/
-theorem exit {i : ValidatorIndex}
+private theorem exit {i : ValidatorIndex}
     (ok : initiateValidatorExit config state i = .ok after) : WithdrawalKept state after := by
   obtain ⟨v, found, ⟨_, rfl⟩ | ⟨far, queued, _, _, queue, _, written⟩⟩ :=
     initiateValidatorExit_ok ok
@@ -587,7 +587,7 @@ private theorem slash {i : ValidatorIndex} {whistleblower : Option ValidatorInde
     (registryLifecycle_initiateValidatorExit exitedOk)
 
 /-- Effective-balance updates write only effective balances. -/
-theorem effectiveUpdates
+private theorem effectiveUpdates
     (ok : processEffectiveBalanceUpdates state = .ok after) : WithdrawalKept state after := by
   refine fold (fun _ _ _ ok => ?_) (fun _ _ _ ok => ?_) ok
   · simp only [updateEffectiveBalance, bind_ok_iff, liftAccessor_ok] at ok
@@ -598,7 +598,7 @@ theorem effectiveUpdates
     exact .setValidatorAt found set ⟨fun _ => rfl, fun _ => rfl⟩
 
 /-- A switch to compounding credentials writes only the credentials and a balance. -/
-theorem compounding {electra : .pectra ≤ fork} {index : ValidatorIndex}
+private theorem compounding {electra : .pectra ≤ fork} {index : ValidatorIndex}
     (ok : switchToCompoundingValidator state electra index = .ok after) :
     WithdrawalKept state after := by
   simp only [switchToCompoundingValidator, bind_ok_iff] at ok
@@ -618,7 +618,7 @@ theorem compounding {electra : .pectra ≤ fork} {index : ValidatorIndex}
     (.setValidator found written ⟨fun _ => rfl, fun _ => rfl⟩)
 
 /-- From Electra, registry updates write eligibility, activation and new exits only. -/
-theorem registry (electra : .pectra ≤ fork)
+private theorem registry (electra : .pectra ≤ fork)
     (ok : processRegistryUpdates config state = .ok after) : WithdrawalKept state after := by
   unfold processRegistryUpdates at ok
   rw [ite_eq_left electra] at ok
@@ -673,7 +673,7 @@ private theorem deposit {deposit : PendingDeposit}
   · exact append (addValidatorToRegistry_validators_eq_push ok)
 
 /-- Pending deposits raise balances or append validators. -/
-theorem pendingDeposits {electra : .pectra ≤ fork}
+private theorem pendingDeposits {electra : .pectra ≤ fork}
     (ok : processPendingDeposits config checks state electra = .ok after) :
     WithdrawalKept state after := by
   obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, folded, rfl⟩ := processPendingDeposits_applied ok
@@ -681,7 +681,7 @@ theorem pendingDeposits {electra : .pectra ≤ fork}
     folded :)
 
 /-- A proposer slashing moves the withdrawable epoch only of the validator it slashes. -/
-theorem proposer {slashing : ProposerSlashing}
+private theorem proposer {slashing : ProposerSlashing}
     (ok : processProposerSlashing config checks state slashing = .ok after) :
     WithdrawalKept state after := by
   simp only [processProposerSlashing, bind_ok_iff, ensure_ok_iff, liftAccessor_ok] at ok
@@ -689,7 +689,7 @@ theorem proposer {slashing : ProposerSlashing}
   exact slash slashed
 
 /-- An attester slashing moves the withdrawable epochs only of the validators it slashes. -/
-theorem attester {slashing : AttesterSlashing preset fork}
+private theorem attester {slashing : AttesterSlashing preset fork}
     (ok : processAttesterSlashing config checks state slashing = .ok after) :
     WithdrawalKept state after := by
   have one {a b : BeaconState preset fork × Bool} {i : ValidatorIndex}
@@ -715,20 +715,20 @@ theorem attester {slashing : AttesterSlashing preset fork}
   exact both.1
 
 /-- A change to execution credentials writes only the credentials. -/
-theorem bls {signed : SignedBLSToExecutionChange}
+private theorem bls {signed : SignedBLSToExecutionChange}
     (ok : processBlsToExecutionChange config checks state signed = .ok after) :
     WithdrawalKept state after := by
   obtain ⟨_, found, _, _, _, written⟩ := processBlsToExecutionChange_ok ok
   exact set found written (kept_of_same rfl rfl)
 
 /-- An attestation keeps the validators. -/
-theorem attestation {attestation : Attestation preset fork} {parentSlot : Slot}
+private theorem attestation {attestation : Attestation preset fork} {parentSlot : Slot}
     (ok : processAttestation config checks state parentSlot attestation = .ok after) :
     WithdrawalKept state after :=
   of_data (congrArg (·.data) (processAttestation_registry ok).1)
 
 /-- From Electra, a block deposit keeps every validator or appends one. -/
-theorem blockDeposit {before : fork < .hegota} {deposit : Deposit}
+private theorem blockDeposit {before : fork < .hegota} {deposit : Deposit}
     (electra : .pectra ≤ fork)
     (ok : processDeposit config checks before state deposit = .ok after) :
     WithdrawalKept state after := by
@@ -741,7 +741,7 @@ theorem blockDeposit {before : fork < .hegota} {deposit : Deposit}
   · exact absurd electra (Nat.not_le_of_lt early)
 
 /-- A deposit request appends a pending deposit only. -/
-theorem depositRequest {electra : .pectra ≤ fork} {request : DepositRequest}
+private theorem depositRequest {electra : .pectra ≤ fork} {request : DepositRequest}
     (ok : processDepositRequest state electra request = .ok after) :
     WithdrawalKept state after := by
   obtain ⟨start, recorded⟩ :=
@@ -752,7 +752,7 @@ theorem depositRequest {electra : .pectra ≤ fork} {request : DepositRequest}
   exact of_data
 
 /-- A withdrawal request starts an exit or queues a partial withdrawal. -/
-theorem withdrawalRequest {electra : .pectra ≤ fork} {request : WithdrawalRequest}
+private theorem withdrawalRequest {electra : .pectra ≤ fork} {request : WithdrawalRequest}
     (ok : processWithdrawalRequest config state electra request = .ok after) :
     WithdrawalKept state after := by
   rcases withdrawalRequest_cases ok with rfl | ⟨_, exited⟩ | ⟨_, _, _, withdrawn⟩
@@ -761,7 +761,7 @@ theorem withdrawalRequest {electra : .pectra ≤ fork} {request : WithdrawalRequ
   · exact of_data (congrArg (·.data) (requestPartialWithdrawal_kept withdrawn).1)
 
 /-- The execution part of a block keeps the validators, so it keeps their withdrawal epochs. -/
-theorem blockExecution {body : BeaconBlockBody preset fork} {bellatrix : .bellatrix ≤ fork}
+private theorem blockExecution {body : BeaconBlockBody preset fork} {bellatrix : .bellatrix ≤ fork}
     (ok : processBlockExecution config checks engine state body bellatrix = .ok after) :
     WithdrawalKept state after :=
   of_data (congrArg (·.data) (processBlockExecution_validators ok))
