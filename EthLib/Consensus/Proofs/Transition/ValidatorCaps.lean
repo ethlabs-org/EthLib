@@ -29,6 +29,56 @@ theorem Genesis.effectiveBalance_capped {g : ForkedBeaconState preset}
   obtain ⟨hash, time, deposits, initialized⟩ := genesis
   exact (initializeBeaconStateFromEth1_withinBudget 0 (Nat.le_refl _) initialized).capped
 
+/-- Genesis rounds each effective balance down from the balance at the same index. -/
+private theorem genesis_effective_le_balance {g : ForkedBeaconState preset}
+    (genesis : Genesis (config := config) (checks := checks) g)
+    (i : Nat) (v : Validator) (found : g.state.validators.data[i]? = some v) :
+    ∃ balance, g.state.balances.data[i]? = some balance ∧ v.effectiveBalance ≤ balance := by
+  obtain ⟨hash, time, deposits, initialized⟩ := genesis
+  obtain ⟨before, _, _, deposited, activated, _, _, activatedOk, stateEq⟩ :=
+    initializeBeaconStateFromEth1_ok initialized
+  rw [stateEq] at found ⊢
+  obtain ⟨balances, _, size, effective⟩ :=
+    foldlM_activateAtGenesis (Nat.lt_trans before (by decide)) activatedOk
+  have inside : i < deposited.validators.data.size := by
+    have bound := (Array.getElem?_eq_some_iff.mp found).1
+    change i < activated.validators.data.size at bound
+    omega
+  have value := effective i inside
+  change activated.validators.data[i]? = some v at found
+  rw [found] at value
+  cases read : deposited.balances.data[i]? with
+  | none => simp [read] at value
+  | some balance =>
+    refine ⟨balance, ?_, ?_⟩
+    · change activated.balances.data[i]? = some balance
+      rw [balances, read]
+    · simp only [read, Option.map_some, Option.some.injEq] at value
+      rw [value, UInt64.le_iff_toNat_le, Base.Uint64.toNat_min]
+      have remainder : balance % preset.EFFECTIVE_BALANCE_INCREMENT ≤ balance := by
+        rw [UInt64.le_iff_toNat_le, UInt64.toNat_mod]
+        exact Nat.mod_le _ _
+      exact (Nat.min_le_left _ _).trans (UInt64.le_iff_toNat_le.mp (UInt64.sub_le remainder))
+
+/-- Unassigned validators retain their effective-balance funding and eligibility threshold. -/
+private def UnassignedEligibleBalance {f : Fork} (s : BeaconState preset f) : Prop :=
+  ∀ (i : Nat) (v : Validator), s.validators.data[i]? = some v →
+    v.activationEpoch = FAR_FUTURE_EPOCH →
+    (∃ balance, s.balances.data[i]? = some balance ∧ v.effectiveBalance ≤ balance) ∧
+      (v.activationEligibilityEpoch ≠ FAR_FUTURE_EPOCH →
+        preset.MAX_EFFECTIVE_BALANCE ≤ v.effectiveBalance)
+
+/-- At genesis, unassigned validators are funded and none is eligible yet. -/
+private theorem genesis_unassigned_eligible_balance {g : ForkedBeaconState preset}
+    (genesis : Genesis (config := config) (checks := checks) g) :
+    UnassignedEligibleBalance g.state := by
+  intro i v found pending
+  refine ⟨genesis_effective_le_balance genesis i v found, ?_⟩
+  obtain ⟨_, _, _, initialized⟩ := genesis
+  have unassigned := initializeBeaconStateFromEth1_unassigned_eligibility
+    initialized i v found pending
+  exact fun assigned => False.elim (assigned unassigned)
+
 /-- Ordered preset caps and retained compounding credentials make a validator's cap monotone. -/
 private theorem withdrawalMaxEffectiveBalance_mono {f h : Fork} {v w : Validator}
     (activation : preset.MAX_EFFECTIVE_BALANCE ≤ preset.MIN_ACTIVATION_BALANCE)
