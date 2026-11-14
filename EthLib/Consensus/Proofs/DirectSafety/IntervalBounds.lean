@@ -821,16 +821,6 @@ private theorem intervalLoss_KeepStep.trans {fork : Fork} {a b c : BeaconState p
   obtain ⟨z, read', second⟩ := two.2 compounding i w read
   exact ⟨z, read', UInt64.le_trans first second⟩
 
-private theorem intervalLoss_KeepStep.fold {fork : Fork} {α ε : Type}
-    {action : BeaconState preset fork → α → Except ε (BeaconState preset fork)}
-    (keeps : ∀ a item b, action a item = .ok b → intervalLoss_KeepStep a b)
-    (lifecycle : ∀ a item b, action a item = .ok b → RegistryLifecycle a b)
-    {items : List α} {s t : BeaconState preset fork} (ok : items.foldlM action s = .ok t) :
-    intervalLoss_KeepStep s t :=
-  (foldlM_ok_invariant (fun t => intervalLoss_KeepStep s t ∧ RegistryLifecycle s t)
-    (fun _ item _ prior ok => ⟨prior.1.trans (keeps _ item _ ok) prior.2.size_le,
-      prior.2.trans (lifecycle _ item _ ok)⟩) ⟨.of_data rfl, .refl s⟩ ok).1
-
 /-- An event of a block, from the start `start` of the block.
 
 The step to its start keeps the effective balances and the caps.
@@ -927,26 +917,29 @@ private theorem intervalLoss_sites_carry {fork : Fork}
 private theorem intervalLoss_sites_fold {fork : Fork} {α : Type}
     (action : BeaconState preset fork → α → Except TransitionError (BeaconState preset fork))
     (preserves : ∀ s item t, action s item = .ok t →
-      intervalLoss_SiteStep ⟨fork, s⟩ ⟨fork, t⟩)
+      intervalLoss_SiteStep ⟨fork, s⟩ ⟨fork, t⟩ ∧ intervalLoss_KeepStep s t)
     (items : List α) {s t : BeaconState preset fork}
     (ok : items.foldlM action s = .ok t) :
-    intervalLoss_SiteStep ⟨fork, s⟩ ⟨fork, t⟩ := by
-  exact foldlM_ok_invariant (fun t => intervalLoss_SiteStep ⟨fork, s⟩ ⟨fork, t⟩)
-    (fun _ item _ prior ok => prior.trans (preserves _ item _ ok)) (.refl _) ok
+    intervalLoss_SiteStep ⟨fork, s⟩ ⟨fork, t⟩ ∧ intervalLoss_KeepStep s t :=
+  foldlM_ok_invariant
+    (fun t => intervalLoss_SiteStep ⟨fork, s⟩ ⟨fork, t⟩ ∧ intervalLoss_KeepStep s t)
+    (fun _ item _ prior ok => ⟨prior.1.trans (preserves _ item _ ok).1,
+      prior.2.trans (preserves _ item _ ok).2 prior.1.lifecycle.size_le⟩)
+    ⟨.refl _, .of_data rfl⟩ ok
 
 private theorem intervalLoss_block_carry {fork : Fork} {start : BeaconState preset fork}
     {action : BeaconState preset fork → Except TransitionError (BeaconState preset fork)}
-    (preserves : ∀ s t, action s = .ok t → intervalLoss_SiteStep ⟨fork, s⟩ ⟨fork, t⟩)
-    (keeps : ∀ s t, action s = .ok t → intervalLoss_KeepStep s t)
+    (preserves : ∀ s t, action s = .ok t →
+      intervalLoss_SiteStep ⟨fork, s⟩ ⟨fork, t⟩ ∧ intervalLoss_KeepStep s t)
     {pre post : BalanceReplay preset fork}
     (prior : intervalLoss_BlockSites (config := config) (checks := checks) start pre)
     (ok : carryBalance action pre = .ok post) :
     intervalLoss_BlockSites (config := config) (checks := checks) start post := by
-  have sites := intervalLoss_sites_carry preserves prior.1 ok
+  have sites := intervalLoss_sites_carry (fun _ _ ok => (preserves _ _ ok).1) prior.1 ok
   have events := intervalLoss_carry_event _ prior.2.2 ok
   simp only [carryBalance, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at ok
   obtain ⟨after, computed, rfl⟩ := ok
-  exact ⟨sites, prior.2.1.trans (keeps _ _ computed) prior.1.1.lifecycle.size_le, events⟩
+  exact ⟨sites, prior.2.1.trans (preserves _ _ computed).2 prior.1.1.lifecycle.size_le, events⟩
 
 private theorem intervalLoss_block_record {fork : Fork} {start : BeaconState preset fork}
     {source : BalanceSource}
@@ -976,22 +969,29 @@ private theorem intervalLoss_block_record {fork : Fork} {start : BeaconState pre
 
 private theorem intervalLoss_sites_rewards {fork : Fork}
     {start : ForkedBeaconState preset} {pre post : BalanceReplay preset fork}
-    (initial : intervalLoss_ReplaySites (config := config) (checks := checks) start pre)
+    (initial : intervalLoss_ReplaySites (config := config) (checks := checks) start pre ∧
+      ∀ e ∈ pre.2, intervalLoss_EpochEvent e)
     (ok : replayRewards (config := config) pre = .ok post) :
-    intervalLoss_ReplaySites (config := config) (checks := checks) start post :=
-  replayRewards_induction (intervalLoss_ReplaySites (config := config) (checks := checks) start)
-    (fun prior ok => intervalLoss_sites_record (fun s t computed => by
+    intervalLoss_ReplaySites (config := config) (checks := checks) start post ∧
+      ∀ e ∈ post.2, intervalLoss_EpochEvent e :=
+  replayRewards_induction (fun next =>
+      intervalLoss_ReplaySites (config := config) (checks := checks) start next ∧
+        ∀ e ∈ next.2, intervalLoss_EpochEvent e)
+    (fun prior ok => ⟨intervalLoss_sites_record (fun s t computed => by
       have computed := liftAccessor_ok.mp computed
       apply intervalLoss_SiteStep.of_frame _ (frame_increaseBalance computed).toFrame
       obtain ⟨_, set⟩ := increaseBalance_ok computed
       obtain ⟨_, rfl⟩ := setBalance_ok set
-      exact .of_data rfl) prior (fun _ _ _ h => by cases h) ok)
-    (fun penalty prior ok => intervalLoss_sites_record (fun s t computed => by
+      exact .of_data rfl) prior.1 (fun _ _ _ h => by cases h) ok,
+      intervalLoss_record_event _ prior.2 (fun _ _ _ _ => by exact ⟨nofun, nofun, nofun⟩) ok⟩)
+    (fun penalty prior ok => ⟨intervalLoss_sites_record (fun s t computed => by
       have computed := liftAccessor_ok.mp computed
       apply intervalLoss_SiteStep.of_frame _ (frame_decreaseBalance computed).toFrame
       obtain ⟨_, set⟩ := decreaseBalance_ok computed
       obtain ⟨_, rfl⟩ := setBalance_ok set
-      exact .of_data rfl) prior (fun _ _ _ h => by rcases penalty with rfl | rfl <;> cases h) ok)
+      exact .of_data rfl) prior.1 (fun _ _ _ h => by rcases penalty with rfl | rfl <;> cases h) ok,
+      intervalLoss_record_event _ prior.2
+        (fun _ _ _ _ => by rcases penalty with rfl | rfl <;> exact ⟨nofun, nofun, nofun⟩) ok⟩)
     initial ok
 
 private theorem intervalLoss_sites_justification {fork : Fork}
@@ -1061,14 +1061,7 @@ private theorem intervalLoss_sites_epoch {fork : Fork} {s : BeaconState preset f
         (by simp only [EpochStage.Edge, altair, ↓reduceDIte]; exact ok) ⟨nofun, nofun, nofun⟩
         (frame_processInactivityUpdates ok).toFrame) step
     · cases step; exact held
-  case rewards =>
-    refine ⟨intervalLoss_sites_rewards held.1 step, ?_⟩
-    refine replayRewards_induction (fun next => ∀ e ∈ next.2, intervalLoss_EpochEvent e)
-      (fun prior ok => intervalLoss_record_event _ prior
-        (fun _ _ _ _ => by exact ⟨nofun, nofun, nofun⟩) ok)
-      (fun penalty prior ok => intervalLoss_record_event _ prior
-        (fun _ _ _ _ => by rcases penalty with rfl | rfl <;> exact ⟨nofun, nofun, nofun⟩) ok)
-      held.2 step
+  case rewards => exact intervalLoss_sites_rewards held step
   case registry =>
     exact carried (fun _ _ ok => .of_frame
       (registryLifecycle_processRegistryUpdates ok) (frame_processRegistryUpdates ok).toFrame)
@@ -1119,9 +1112,9 @@ private theorem intervalLoss_sites_block {fork : Fork} {s : BeaconState preset f
     simp only [carryBalance, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at copy
     obtain ⟨_, computed, rfl⟩ := copy
     exact computed
-  have headedSites := intervalLoss_block_carry (fun _ _ ok => .of_frame
-    (registryLifecycle_processBlockHeader ok) (frame_processBlockHeader ok).toFrame)
-    (fun _ _ ok => by obtain ⟨_, _, rfl⟩ := processBlockHeader_eq ok; exact .of_data rfl)
+  have headedSites := intervalLoss_block_carry (fun _ _ ok => ⟨.of_frame
+    (registryLifecycle_processBlockHeader ok) (frame_processBlockHeader ok).toFrame,
+    by obtain ⟨_, _, rfl⟩ := processBlockHeader_eq ok; exact .of_data rfl⟩)
     initial headerOk
   by_cases bellatrix : .bellatrix ≤ fork
   case' pos =>
@@ -1143,14 +1136,13 @@ private theorem intervalLoss_sites_block {fork : Fork} {s : BeaconState preset f
     obtain ⟨randao, randaoOk, voted, votedOk, expected, _, _, _,
       proposed, proposedOk, attested, attestedOk, rewarded, rewardedOk, deposited, depositOk,
       exited, exitOk, changed, changedOk, rest⟩ := rest
-    have randaoSites := intervalLoss_block_carry (fun _ _ ok => .of_frame
-      (registryLifecycle_processRandao ok) (frame_processRandao ok).toFrame)
-      (fun _ _ ok => by
+    have randaoSites := intervalLoss_block_carry (fun _ _ ok => ⟨.of_frame
+      (registryLifecycle_processRandao ok) (frame_processRandao ok).toFrame, by
         obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, rfl⟩ := processRandao_eq ok
-        exact .of_data rfl) executedSites randaoOk
-    have votedSites := intervalLoss_block_carry (fun _ _ ok => .of_frame
-      (registryLifecycle_processEth1Data ok) (frame_processEth1Data ok).toFrame)
-      (fun _ _ ok => .of_data (congrArg (·.validators.data) (processEth1Data_eq ok).2.2))
+        exact .of_data rfl⟩) executedSites randaoOk
+    have votedSites := intervalLoss_block_carry (fun _ _ ok => ⟨.of_frame
+      (registryLifecycle_processEth1Data ok) (frame_processEth1Data ok).toFrame,
+      .of_data (congrArg (·.validators.data) (processEth1Data_eq ok).2.2)⟩)
       randaoSites votedOk
     have proposedSites := foldlM_ok_invariant
       (intervalLoss_BlockSites (config := config) (checks := checks) s)
@@ -1184,54 +1176,36 @@ private theorem intervalLoss_sites_block {fork : Fork} {s : BeaconState preset f
         (fun _ _ _ h => by cases h) h (fun _ _ => by exact ⟨nofun, nofun⟩) ok)
       rewardedSites depositOk
     have exitedSites := intervalLoss_block_carry (fun _ _ ok =>
-      intervalLoss_sites_fold _ (fun _ _ _ ok => .of_frame
-        (registryLifecycle_processVoluntaryExit ok) (frame_processVoluntaryExit ok).toFrame)
-        _ (by simpa only [← Array.foldlM_toList] using ok))
-      (fun _ _ ok => intervalLoss_KeepStep.fold
-        (fun _ _ _ ok => ⟨effectiveKept_voluntaryExit ok,
-          fun _ => processVoluntaryExit_validatorCap_mono ok⟩)
-        (fun _ _ _ ok => registryLifecycle_processVoluntaryExit ok)
-        (by simpa only [← Array.foldlM_toList] using ok)) depositedSites exitOk
+      intervalLoss_sites_fold _ (fun _ _ _ ok => ⟨.of_frame
+        (registryLifecycle_processVoluntaryExit ok) (frame_processVoluntaryExit ok).toFrame,
+        effectiveKept_voluntaryExit ok, fun _ => processVoluntaryExit_validatorCap_mono ok⟩)
+        _ (by simpa only [← Array.foldlM_toList] using ok)) depositedSites exitOk
     have changedSites := intervalLoss_block_carry (fun _ _ ok => by
       unfold processBlsToExecutionChanges at ok
       split at ok
-      · exact intervalLoss_sites_fold _ (fun _ _ _ ok => .of_frame
+      · exact intervalLoss_sites_fold _ (fun _ _ _ ok => ⟨.of_frame
           (registryLifecycle_processBlsToExecutionChange ok)
-          (frame_processBlsToExecutionChange ok).toFrame)
+          (frame_processBlsToExecutionChange ok).toFrame,
+          effectiveKept_blsChange ok, fun _ => processBlsToExecutionChange_validatorCap_mono ok⟩)
           _ (by simpa only [← Array.foldlM_toList] using ok)
-      · cases ok; exact .refl _)
-      (fun _ _ ok => by
-        unfold processBlsToExecutionChanges at ok
-        split at ok
-        · exact intervalLoss_KeepStep.fold
-            (fun _ _ _ ok => ⟨effectiveKept_blsChange ok,
-              fun _ => processBlsToExecutionChange_validatorCap_mono ok⟩)
-            (fun _ _ _ ok => registryLifecycle_processBlsToExecutionChange ok)
-            (by simpa only [← Array.foldlM_toList] using ok)
-        · cases ok; exact .of_data rfl) exitedSites changedOk
+      · cases ok; exact ⟨.refl _, .of_data rfl⟩) exitedSites changedOk
     by_cases electra : .pectra ≤ fork
     case' pos =>
       simp only [electra, ↓reduceDIte, bind_ok_iff] at rest
       obtain ⟨deposits, depositRequestOk, withdrawals, withdrawalOk,
         requested, consolidations, rest⟩ := rest
       have depositsSites := intervalLoss_block_carry (fun _ _ ok =>
-        intervalLoss_sites_fold _ (fun _ _ _ ok => .of_frame
-          (registryLifecycle_processDepositRequest ok) (frame_processDepositRequest ok).toFrame)
-          _ (by simpa only [← Array.foldlM_toList] using ok))
-        (fun _ _ ok => intervalLoss_KeepStep.fold
-          (fun _ _ _ ok => .of_data (congrArg (·.data) (processDepositRequest_ok ok).2.1))
-          (fun _ _ _ ok => registryLifecycle_processDepositRequest ok)
-          (by simpa only [← Array.foldlM_toList] using ok)) changedSites depositRequestOk
+        intervalLoss_sites_fold _ (fun _ _ _ ok => ⟨.of_frame
+          (registryLifecycle_processDepositRequest ok) (frame_processDepositRequest ok).toFrame,
+          .of_data (congrArg (·.data) (processDepositRequest_ok ok).2.1)⟩)
+          _ (by simpa only [← Array.foldlM_toList] using ok)) changedSites depositRequestOk
       have withdrawalsSites := intervalLoss_block_carry (fun _ _ ok =>
-        intervalLoss_sites_fold _ (fun _ _ _ ok => .of_frame
+        intervalLoss_sites_fold _ (fun _ _ _ ok => ⟨.of_frame
           (registryLifecycle_processWithdrawalRequest ok)
-          (frame_processWithdrawalRequest ok).toFrame)
-          _ (by simpa only [← Array.foldlM_toList] using ok))
-        (fun _ _ ok => intervalLoss_KeepStep.fold
-          (fun _ _ _ ok => ⟨effectiveKept_withdrawalRequest ok,
-            fun _ => processWithdrawalRequest_validatorCap_mono ok⟩)
-          (fun _ _ _ ok => registryLifecycle_processWithdrawalRequest ok)
-          (by simpa only [← Array.foldlM_toList] using ok)) depositsSites withdrawalOk
+          (frame_processWithdrawalRequest ok).toFrame,
+          effectiveKept_withdrawalRequest ok,
+          fun _ => processWithdrawalRequest_validatorCap_mono ok⟩)
+          _ (by simpa only [← Array.foldlM_toList] using ok)) depositsSites withdrawalOk
       have requestedSites := foldlM_ok_invariant
         (intervalLoss_BlockSites (config := config) (checks := checks) s)
         (fun _ request _ h ok => intervalLoss_block_record (fun _ _ ok => .of_frame
@@ -1614,7 +1588,7 @@ private theorem replay_electra_deposit_epoch {g x y : ForkedBeaconState preset}
 Before that step the validator has no exit epoch, and after it the charged one.
 
 The charge holds the effective balance before the step. -/
-theorem intervalLoss_charge_site {x y : ForkedBeaconState preset}
+theorem _root_.EthLib.Consensus.Run.departure_charge_site {x y : ForkedBeaconState preset}
     (tail : Run config checks x y) (charge : DepartureCharge)
     (member : charge ∈ tail.departureCharges) :
     ∃ a b, ∃ pre : Run config checks x a, ∃ step : Step config checks a b,
@@ -2122,25 +2096,6 @@ private theorem slashValidator_balance_le {fork : Fork} {s t : BeaconState prese
   subst t
   omega
 
-private theorem intervalLoss_initial_slashing {fork : Fork} {s t : BeaconState preset fork}
-    {index : ValidatorIndex} {whistleblower : Option ValidatorIndex}
-    (early : fork < .glamsterdam) (ok : slashValidator config s index whistleblower = .ok t)
-    (i : Nat) (different : index.toNat ≠ i) :
-    actualBalanceAt ⟨fork, s⟩ i ≤ actualBalanceAt ⟨fork, t⟩ i := by
-  simpa [different] using slashValidator_balance_le early ok i
-
-private theorem intervalLoss_unslashed_slashing {fork : Fork} {s t : BeaconState preset fork}
-    {index other : ValidatorIndex} {whistleblower : Option ValidatorIndex}
-    (early : fork < .glamsterdam) (ok : slashValidator config s index whistleblower = .ok t)
-    (unslashed : slashedFlag t other = .ok false) :
-    actualBalanceAt ⟨fork, s⟩ other.toNat ≤ actualBalanceAt ⟨fork, t⟩ other.toNat := by
-  apply intervalLoss_initial_slashing early ok
-  intro equal
-  have same : index = other := UInt64.toNat_inj.mp equal
-  have marked := (slashValidator_slashedFlag ok).1
-  rw [same, unslashed] at marked
-  cases marked
-
 /-- A fold of slashings debits a key only if it slashes that key, by at most its share.
 
 The share is its effective balance at the start over the quotient, before Gloas.
@@ -2195,42 +2150,6 @@ private theorem slashIfSlashable_balance_le {fork : Fork} {s t : BeaconState pre
     · cases first
       exact later
 
-private theorem intervalLoss_proposer_nondebit {fork : Fork} {s t : BeaconState preset fork}
-    (early : fork < .glamsterdam) (sl : ProposerSlashing)
-    (ok : processProposerSlashing config checks s sl = .ok t) (i : ValidatorIndex)
-    (unslashed : slashedFlag t i = .ok false) :
-    actualBalanceAt ⟨fork, s⟩ i.toNat ≤ actualBalanceAt ⟨fork, t⟩ i.toNat := by
-  simp only [processProposerSlashing, bind_ok_iff, ensure_ok_iff, liftAccessor_ok] at ok
-  obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, slashed⟩ := ok
-  exact intervalLoss_unslashed_slashing early slashed unslashed
-
-private theorem intervalLoss_attester_nondebit {fork : Fork} {s t : BeaconState preset fork}
-    (early : fork < .glamsterdam) (sl : AttesterSlashing preset fork)
-    (ok : processAttesterSlashing config checks s sl = .ok t) (i : ValidatorIndex)
-    (unslashed : slashedFlag t i = .ok false) :
-    actualBalanceAt ⟨fork, s⟩ i.toNat ≤ actualBalanceAt ⟨fork, t⟩ i.toNat := by
-  simp only [processAttesterSlashing, bind_ok_iff, ensure_ok_iff, pure, Except.pure,
-    Except.ok.injEq] at ok
-  obtain ⟨_, _, _, _, _, _, _, _, _, _, ⟨u, flag⟩, folded, _, _, rfl⟩ := ok
-  simpa [unslashed] using slashIfSlashable_balance_le early i _ false flag folded
-
-private theorem intervalLoss_SlashingSite.nondebit {a b : ForkedBeaconState preset}
-    (site : intervalLoss_SlashingSite config checks a b) (early : a.fork < .glamsterdam)
-    (i : ValidatorIndex) (v w : Validator)
-    (before : a.state.validators.data[i.toNat]? = some v)
-    (after : b.state.validators.data[i.toNat]? = some w)
-    (first : v.slashed = false) (last : w.slashed = false) :
-    actualBalanceAt a i.toNat ≤ actualBalanceAt b i.toNat := by
-  cases site with
-  | delayed ok =>
-    exact le_of_eq (intervalLoss_delayed_slashing early ok i.toNat v before first).symm
-  | proposer ok =>
-    exact intervalLoss_proposer_nondebit early _ ok i
-      (by simp [slashedFlag, getValidator, after, last, Except.map])
-  | attester ok =>
-    exact intervalLoss_attester_nondebit early _ ok i
-      (by simp [slashedFlag, getValidator, after, last, Except.map])
-
 /-- A slashing site lowers a key unslashed at its start only if it slashes that key.
 
 It lowers it by at most the effective balance at its start over the slashing quotient. -/
@@ -2267,6 +2186,17 @@ private theorem intervalLoss_SlashingSite.debit {a b : ForkedBeaconState preset}
       Except.ok.injEq] at ok
     obtain ⟨_, _, _, _, _, _, _, _, _, _, ⟨u, flag⟩, folded, _, _, rfl⟩ := ok
     simpa [unslashed] using slashIfSlashable_balance_le early i _ false flag folded
+
+/-- A slashing site lowers no key that is unslashed at both its ends. -/
+private theorem intervalLoss_SlashingSite.nondebit {a b : ForkedBeaconState preset}
+    (site : intervalLoss_SlashingSite config checks a b) (early : a.fork < .glamsterdam)
+    (i : ValidatorIndex) (v w : Validator)
+    (before : a.state.validators.data[i.toNat]? = some v)
+    (after : b.state.validators.data[i.toNat]? = some w)
+    (first : v.slashed = false) (last : w.slashed = false) :
+    actualBalanceAt a i.toNat ≤ actualBalanceAt b i.toNat := by
+  simpa [slashedFlag, getValidator, after, last, Except.map] using
+    site.debit early i (by simp [slashedFlag, getValidator, before, first, Except.map])
 
 /-- The execution part of a block pays the withdrawals that its state expects, from Capella on. -/
 private theorem intervalLoss_execution_balance {fork : Fork} {s t : BeaconState preset fork}
@@ -2358,10 +2288,8 @@ private theorem intervalLoss_consolidationRequest_balance {fork : Fork}
       Except.ok.injEq] at queued
     obtain ⟨⟨_, _⟩, scheduled, _, _, _, set, _, _, rfl⟩ := queued
     obtain ⟨_, rfl⟩ := setValidator_ok set
-    simp only [computeConsolidationEpochAndUpdateChurn, bind_ok_iff, pure, Except.pure,
-      Except.ok.injEq, Prod.mk.injEq] at scheduled
-    obtain ⟨_, _, _, _, ⟨_, _⟩, _, rfl, _⟩ := scheduled
-    rfl
+    simp [actualBalanceAt, BeaconState.putValidator,
+      (computeConsolidationEpochAndUpdateChurn_earliest scheduled).2.2]
   by_cases same : request.sourcePubkey = request.targetPubkey
   · unfold processConsolidationRequest at ok
     simp only [same, beq_self_eq_true, ↓reduceIte, bind, Except.bind, pure, Except.pure] at ok
@@ -2383,7 +2311,9 @@ A slashing event lowers a key unslashed at its start only if it slashes that key
 
 It lowers it by at most the effective balance at the start of the step over the quotient.
 
-The withdrawals event of a block starts after the header and pays the expected withdrawals.
+The withdrawals event of a block starts after the header.
+
+It pays the expected withdrawals from Capella on, and otherwise keeps the balances.
 
 A consolidation request leaves a balance, or caps it at the activation balance.
 
@@ -2639,7 +2569,7 @@ private theorem intervalLoss_departing {g x y : ForkedBeaconState preset}
       (if deficit = 0 then 0 else deficit + preset.EFFECTIVE_BALANCE_INCREMENT.toNat - 1) := by
   have ⟨_, _, _, initialized⟩ := genesis
   obtain ⟨a, b, pre, step, post, equal, first, last, before, after, unset,
-    assigned, amount, epoch⟩ := intervalLoss_charge_site tail charge member
+    assigned, amount, epoch⟩ := tail.departure_charge_site charge member
   rw [index] at before after
   have decomposed : pre.append ((Run.nil.snoc step).append post) = tail := by
     have assoc : pre.append ((Run.nil.snoc step).append post) =
