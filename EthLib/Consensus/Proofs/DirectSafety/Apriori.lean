@@ -1211,7 +1211,7 @@ private def epochPenalty (preset : Preset) (config : Config) (score weight lower
 
 /-- The floor `T⁻_t` on the total active stake.
 
-Each epoch takes its exits, its consolidations and its penalty from it. -/
+Each epoch takes its outflow and its penalty from it. -/
 private def floorPath (preset : Preset) (config : Config) (score : Nat)
     (weight outflow : Nat → Nat) (start : Nat) : Nat → Nat
   | 0 => start
@@ -1230,24 +1230,28 @@ private def finalCount (preset : Preset) (stake count last : Nat) : Nat :=
 
 It is `W` less the slashed stake, the slack and one increment per key of `N⁺`.
 
-It also loses the slashing penalties of the ceiling, the due partials and the departures. -/
+It also loses the slashing penalties of the ceiling, the due partials and the departures.
+
+The departures are the scheduled ones and the whole departure budget `Dnew` of the window. -/
 private def floorStart (preset : Preset)
-    (stake slashed count slack departures partials last forkEpochs : Nat) : Nat :=
+    (stake slashed count slack departures partials budget last forkEpochs : Nat) : Nat :=
   stake - slashed - slack -
     preset.EFFECTIVE_BALANCE_INCREMENT.toNat * finalCount preset stake count last -
-    last / slashingQuotient preset forkEpochs - partials - departures
+    last / slashingQuotient preset forkEpochs - partials - departures - budget
 
-/-- The floor path of a window, with every input read from the observables. -/
+/-- The floor path of a window, with every input read from the observables.
+
+`budget` is the departure budget `Dnew`, which the start takes in full.
+
+So no epoch has an outflow, and each epoch takes only its penalty. -/
 private def windowFloor (preset : Preset) (config : Config)
-    (stake slashed penalised count score slack carry pending scheduled departures partials
+    (stake slashed penalised count score slack carry pending scheduled departures partials budget
       inactive funded horizon forkEpochs : Nat) : Nat → Nat :=
   let ceiling := stakeCeiling preset config count scheduled pending carry inactive funded horizon
     forkEpochs
-  floorPath preset config score (fun t => ceiling t + penalised)
-    (fun t => exitFlow preset config count scheduled horizon forkEpochs ceiling t +
-      consolidationFlow preset config horizon forkEpochs ceiling t)
-    (floorStart preset stake slashed count slack departures partials (ceiling (horizon + 1))
-      forkEpochs)
+  floorPath preset config score (fun t => ceiling t + penalised) (fun _ => 0)
+    (floorStart preset stake slashed count slack departures partials budget
+      (ceiling (horizon + 1)) forkEpochs)
 
 /-- The conditions under which `aprioriDrift` uses its formula.
 
@@ -1263,6 +1267,8 @@ The withdrawal delay is at least two epochs.
 
 The window ends before half the slashings vector, and the floor stays positive through it.
 
+The floor takes the departure budget `budget` at its start.
+
 From the fork on, twice the ceiling is at most three times the floor.
 
 That ratio keeps one epoch's issuance below twice the issuance envelope of the ceiling.
@@ -1271,7 +1277,7 @@ The last condition is temporary.
 
 A window from a state before Electra must end before the fork. -/
 private abbrev aprioriGuard (preset : Preset) (config : Config)
-    (stake slashed penalised count score slack carry pending scheduled departures partials
+    (stake slashed penalised count score slack carry pending scheduled departures partials budget
       inactive funded horizon forkEpochs : Nat) : Prop :=
   0 < preset.EFFECTIVE_BALANCE_INCREMENT.toNat ∧ 0 < config.CHURN_LIMIT_QUOTIENT.toNat ∧
     0 < config.MIN_PER_EPOCH_CHURN_LIMIT.toNat ∧
@@ -1281,12 +1287,12 @@ private abbrev aprioriGuard (preset : Preset) (config : Config)
     2 ≤ config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat ∧
     horizon + 2 < preset.EPOCHS_PER_SLASHINGS_VECTOR.toNat / 2 ∧
     (∀ t < horizon + 2, 0 < windowFloor preset config stake slashed penalised count score slack
-      carry pending scheduled departures partials inactive funded horizon forkEpochs t) ∧
+      carry pending scheduled departures partials budget inactive funded horizon forkEpochs t) ∧
     (∀ t, forkEpochs ≤ t → t ≤ horizon + 1 →
       2 * stakeCeiling preset config count scheduled pending carry inactive funded horizon
         forkEpochs t ≤
       3 * windowFloor preset config stake slashed penalised count score slack carry pending
-        scheduled departures partials inactive funded horizon forkEpochs t) ∧
+        scheduled departures partials budget inactive funded horizon forkEpochs t) ∧
     (forkEpochs = 0 ∨ horizon + 2 ≤ forkEpochs)
 
 /-- The departures `Dnew` that the queues admit in the window, from their ends at `x`.
@@ -1325,13 +1331,18 @@ f = 2 (dep + D + Λ + ρ) + act + cred + 2 B
 
 `act` is the stake that may activate, `cred` the credits and `B` the boundary stake.
 
+The floor `T⁻` behind `D` takes the departure budget `Dnew` at its start, not epoch by epoch.
+
 Without the guard, `f` is the unslashed stake `W - Z`, which makes the bound trivial. -/
 private def aprioriDrift (preset : Preset) (config : Config)
     (stake slashed penalised count high score slack excess carry pending scheduled departures
       partials credits exitEnd consolidationEnd queued boundary inactive funded
       horizon forkEpochs : Nat) : Nat :=
+  -- Dnew: the queue carry and the churn of each epoch from the ends of the queues.
+  let queues := departureBudget preset config count scheduled pending carry inactive funded
+    queued exitEnd consolidationEnd horizon forkEpochs
   if aprioriGuard preset config stake slashed penalised count score slack carry pending scheduled
-      departures partials inactive funded horizon forkEpochs then
+      departures partials queues inactive funded horizon forkEpochs then
     let increment := preset.EFFECTIVE_BALANCE_INCREMENT.toNat
     let down := preset.downwardBand
     let ceiling := stakeCeiling preset config count scheduled pending carry inactive funded
@@ -1340,12 +1351,9 @@ private def aprioriDrift (preset : Preset) (config : Config)
     let exits := exitFlow preset config count scheduled horizon forkEpochs ceiling
     let consolidations := consolidationFlow preset config horizon forkEpochs ceiling
     let floor := windowFloor preset config stake slashed penalised count score slack carry pending
-      scheduled departures partials inactive funded horizon forkEpochs
+      scheduled departures partials queues inactive funded horizon forkEpochs
     let allowance := whistleblowerAllowance preset config count scheduled pending carry inactive
       horizon forkEpochs
-    -- Dnew: the queue carry and the churn of each epoch from the ends of the queues.
-    let queues := departureBudget preset config count scheduled pending carry inactive funded
-      queued exitEnd consolidationEnd horizon forkEpochs
     let dep := queues + partials + departures
     -- D: the non-slashing penalties of the epochs `0` to `H`.
     let penalties := ((List.range (horizon + 1)).map fun t =>
@@ -1498,10 +1506,13 @@ A state before Electra whose epoch has reached the fork epoch never upgrades.
 
 The upgrade fires only at the boundary of that epoch.
 
-`H₁ = 1` then fails the no-crossing clause of the guard, so the drift falls back to `W - Z`. -/
+`H₁ = 1` then fails the no-crossing clause of the guard, so the drift falls back to `W - Z`.
+
+A state before Altair takes `H₁ = 1` too, so a window from it falls back in the same way. -/
 private def forkEpochs (config : Config) (x : ForkedBeaconState preset) (high : Nat) : Nat :=
   if x.fork < .pectra then
-    if (getCurrentEpoch x.state).toNat < config.ELECTRA_FORK_EPOCH.toNat then
+    if x.fork < .altair then 1
+    else if (getCurrentEpoch x.state).toNat < config.ELECTRA_FORK_EPOCH.toNat then
       min (driftHorizon x high + 2)
         (config.ELECTRA_FORK_EPOCH.toNat - (getCurrentEpoch x.state).toNat)
     else 1
@@ -1513,10 +1524,20 @@ private noncomputable def aprioriGuardAt (config : Config) (x : ForkedBeaconStat
   aprioriGuard preset config (refStake x) (slashedActiveStake x) (slashedPenalisedStake x)
     (refCount x) (startScore config x) (startSlack x) (fundingCarry x) (preActiveStake x)
     (scheduledCount x) (scheduledDepartures x (driftHorizon x high))
-    (duePartials x (driftHorizon x high)) (slashableInactiveCount x)
+    (duePartials x (driftHorizon x high))
+    (departureBudget preset config (refCount x) (scheduledCount x) (preActiveStake x)
+      (fundingCarry x) (slashableInactiveCount x) (fundedStake x + previousOnlyStake x)
+      (queueCarry x high) (exitQueueStart x - (getCurrentEpoch x.state).toNat)
+      (consolidationQueueStart x - (getCurrentEpoch x.state).toNat)
+      (driftHorizon x high) (forkEpochs config x high))
+    (slashableInactiveCount x)
     (fundedStake x + previousOnlyStake x) (driftHorizon x high) (forkEpochs config x high)
 
-/-- The drift `f` of a branch from `x` through `high + 1`, with every observable read at `x`. -/
+/-- The drift `f` of a branch from `x` through `high + 1`, with every observable read at `x`.
+
+It falls back to `W - Z` when `x` is before Altair, through the value of `forkEpochs`.
+
+It does the same when `x` is before Electra at or after the fork epoch. -/
 private noncomputable def aprioriDriftAt (config : Config) (x : ForkedBeaconState preset)
     (high : Nat) : Nat :=
   aprioriDrift preset config (refStake x) (slashedActiveStake x) (slashedPenalisedStake x)
@@ -1660,12 +1681,12 @@ private theorem departures_le_budget {g x y : ForkedBeaconState preset}
     have before : x.fork < .pectra := Nat.lt_of_not_ge electra
     have positive : 0 < forkEpochs config x high := by
       simp only [forkEpochs, before, ↓reduceIte, driftHorizon]
-      split <;> omega
+      split_ifs <;> omega
     have ends : high + 2 - (getCurrentEpoch x.state).toNat + 2 ≤ forkEpochs config x high :=
       crossing.resolve_left (Nat.ne_of_gt positive)
     have late : ¬ config.ELECTRA_FORK_EPOCH.toNat ≤ high + 1 := by
       simp only [forkEpochs, before, ↓reduceIte, driftHorizon] at ends
-      split at ends <;> omega
+      split_ifs at ends <;> omega
     have starts : exitQueueStart x = (getCurrentEpoch x.state).toNat := by
       simp [exitQueueStart, electra]
     -- A positive minimum churn makes the floor of one in the count churn redundant.
@@ -3375,7 +3396,13 @@ private noncomputable def floorAt (config : Config) (x : ForkedBeaconState prese
   windowFloor preset config (refStake x) (slashedActiveStake x) (slashedPenalisedStake x)
     (refCount x) (startScore config x) (startSlack x) (fundingCarry x) (preActiveStake x)
     (scheduledCount x) (scheduledDepartures x (driftHorizon x high))
-    (duePartials x (driftHorizon x high)) (slashableInactiveCount x)
+    (duePartials x (driftHorizon x high))
+    (departureBudget preset config (refCount x) (scheduledCount x) (preActiveStake x)
+      (fundingCarry x) (slashableInactiveCount x) (fundedStake x + previousOnlyStake x)
+      (queueCarry x high) (exitQueueStart x - (getCurrentEpoch x.state).toNat)
+      (consolidationQueueStart x - (getCurrentEpoch x.state).toNat)
+      (driftHorizon x high) (forkEpochs config x high))
+    (slashableInactiveCount x)
     (fundedStake x + previousOnlyStake x) (driftHorizon x high) (forkEpochs config x high)
 
 /-- From Electra, the ceiling `T⁺` does not decrease from one epoch to the next. -/
@@ -3608,9 +3635,9 @@ private theorem departures_le_budget_of_ceiling {g x y : ForkedBeaconState prese
       obtain ⟨-, -, -, -, -, -, -, -, -, -, -, -, crossing⟩ := guard
       have positive : 0 < forkEpochs config x high := by
         simp only [forkEpochs, before, ↓reduceIte, driftHorizon]
-        split <;> omega
+        split_ifs <;> omega
       have ends := crossing.resolve_left (Nat.ne_of_gt positive)
       simp only [forkEpochs, before, ↓reduceIte, driftHorizon] at ends
-      split at ends <;> omega
+      split_ifs at ends <;> omega
 
 end EthLib.Consensus.DirectSafety
