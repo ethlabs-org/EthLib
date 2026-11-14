@@ -4,6 +4,7 @@ public import EthLib.Consensus.Participation
 public import EthLib.Consensus.Proofs.DirectSafety.BalanceSources
 public import EthLib.Consensus.Proofs.DirectSafety.IntervalFunding
 import EthLib.Consensus.Proofs.DirectSafety.Cohorts
+import EthLib.Consensus.Proofs.DirectSafety.IntervalBounds
 import EthLib.Consensus.Proofs.DirectSafety.DepartureQueue
 public import Mathlib.Data.Nat.Sqrt
 public import Mathlib.Order.Monotone.Defs
@@ -1713,5 +1714,32 @@ private theorem windowActivations_le_countPath {g x z : ForkedBeaconState preset
   windowActivations_le tail early _ (Nat.add_le_add_right (activeCount_le_refCount shared genesis
     (Nat.lt_of_le_of_lt (fork_le_of_chainSteps tail.chainSteps) (Nat.lt_trans early (by decide))))
     _) fun _ => Nat.le_refl _
+
+
+/-! ## The ceiling of the active stake -/
+
+/-- The active stake at a state `y` of a branch from `v` is at most its start bound plus the churn.
+
+`start` bounds the funded stake and the deposit carry at `v`.
+
+Each epoch from `v` to `high + 1` adds its deposit churn, and the replay adds its funding credits.
+
+From an Electra `x`, `v` is `x` and `start` is `fundedStake x + fundingCarry x`. -/
+private theorem activeStake_le_ceiling {g v y : ForkedBeaconState preset}
+    (shared : Run config checks g v) (tail : Run config checks v y)
+    (genesis : Genesis (config := config) (checks := checks) g)
+    (early : y.fork < .glamsterdam)
+    (delay : 2 ≤ config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat)
+    (high : Nat) (endEpoch : (getCurrentEpoch y.state).toNat ≤ high + 1)
+    (events : List (BalanceEvent preset)) (replayed : tail.balanceEvents high = .ok events)
+    {start : Nat} (funded : fundedStake v + fundingCarry v ≤ start) :
+    Models.stake (effectiveWeight y.state) (activeKeys y.state) ≤
+      start + driftHorizon v high * config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat +
+        (events.map fundingCredit).sum := by
+  have bound := active_stake_le_window shared tail genesis early delay high endEpoch events
+    replayed
+  simp only [activeStakeWindow, delay, ↓reduceIte, depositWindow] at bound
+  simp only [fundingCarry] at funded
+  omega
 
 end EthLib.Consensus.DirectSafety
