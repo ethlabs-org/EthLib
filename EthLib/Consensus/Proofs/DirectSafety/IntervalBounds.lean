@@ -77,7 +77,7 @@ The run reaches `x` from genesis, and `y` is a later state at an epoch at most `
 The active stake of `y` is at most the funded stake and the deposit carry of `x`.
 
 Each epoch up to `high + 1` adds its deposit churn, and the replay adds its funding credits. -/
-theorem active_stake_le_window {g x y : ForkedBeaconState preset}
+private theorem active_stake_le_window {g x y : ForkedBeaconState preset}
     (shared : Run config checks g x) (tail : Run config checks x y)
     (genesis : Genesis (config := config) (checks := checks) g)
     (early : y.fork < .glamsterdam)
