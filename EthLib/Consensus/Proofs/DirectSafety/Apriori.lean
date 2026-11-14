@@ -14,6 +14,7 @@ import EthLib.Base.Proofs.MapM
 import EthLib.Base.Proofs.Uint64
 import EthLib.Consensus.Proofs.Participation
 import EthLib.Consensus.Proofs.Transition.ActiveKept
+import EthLib.Consensus.Proofs.Transition.BalanceCappedWithdrawals
 import EthLib.Consensus.Proofs.Transition.BalanceNotRaisedBlock
 import EthLib.Consensus.Proofs.Transition.BlockRewards
 import EthLib.Consensus.Proofs.Transition.EpochParticipation
@@ -4048,6 +4049,369 @@ private theorem FloorTrace.reference_floor {effective balance quotient : Nat}
         floorBase (preset := preset) fork effective balance / quotient else 0 := by
   have bound := trace.floor (floorBase_ge fork effective balance capped)
   omega
+
+/-- Gross penalty accounting also retains the net debit of each sync event. -/
+private def floorPenaltyDebit (i : Nat) (event : BalanceEvent preset) : Nat :=
+  penaltyDebit i event + if event.source = .sync then
+    actualBalanceAt event.before i - actualBalanceAt event.after i else 0
+
+/-- Only payments from the pending-partial pass enter the withdrawal debit account. -/
+private def floorPartialDebit (i : ValidatorIndex) (event : BalanceEvent preset) : Nat :=
+  if event.source = .withdrawals then
+    if electra : .pectra ≤ event.before.fork then
+      match getPendingPartialWithdrawals event.before.state electra
+          (event.before.state.nextWithdrawalIndex (Nat.le_trans (by decide) electra)) #[] with
+      | .ok (partials, _, _) => withdrawnFrom partials i
+      | .error _ => 0
+    else 0
+  else 0
+
+/-- Count recorded false-to-true changes, not a flag equivalence across unrecorded gaps. -/
+private def floorSlash (i : Nat) (event : BalanceEvent preset) : Bool :=
+  decide (event.source = .slashings) &&
+    !(event.before.state.validators.data[i]?.map (·.slashed)).getD true &&
+    (event.after.state.validators.data[i]?.map (·.slashed)).getD false
+
+/-- The occurrence budget supplies the first-slash side condition at each recorded event. -/
+private theorem FloorTrace.events {low base quotient : Nat} {a b : FloorAccount}
+    (trace : FloorTrace low base quotient a b) (i : ValidatorIndex)
+    (events : List (BalanceEvent preset))
+    (linked : events.IsChain (fun e e' =>
+      actualBalanceAt e.after i.toNat = actualBalanceAt e'.before i.toNat))
+    (start : ∀ e ∈ events.head?, b.balance = actualBalanceAt e.before i.toNat)
+    (budget : (if b.slashedHigh.isSome then 1 else 0) + events.countP (floorSlash i.toNat) ≤ 1)
+    (classify : ∀ e ∈ events, ∀ c, FloorTrace low base quotient a c →
+      c.balance = actualBalanceAt e.before i.toNat →
+      c.high = b.high →
+      (floorSlash i.toNat e = true → c.slashedHigh = none) →
+      ∃ d, FloorTrace low base quotient a d ∧
+        d.balance = actualBalanceAt e.after i.toNat ∧
+        d.debt = c.debt + floorPenaltyDebit i.toNat e + floorPartialDebit i e ∧
+        d.high = c.high ∧ d.slashedHigh =
+          if floorSlash i.toNat e then some c.high else c.slashedHigh) :
+    ∃ last, FloorTrace low base quotient a last ∧
+      (events = [] → last = b) ∧
+      (∀ e ∈ events.getLast?, last.balance = actualBalanceAt e.after i.toNat) ∧
+      last.debt = b.debt + (events.map (floorPenaltyDebit i.toNat)).sum +
+        (events.map (floorPartialDebit i)).sum ∧ last.high = b.high ∧
+      (if last.slashedHigh.isSome then 1 else 0) =
+        (if b.slashedHigh.isSome then 1 else 0) + events.countP (floorSlash i.toNat) := by
+  induction events generalizing b with
+  | nil => exact ⟨b, trace, fun _ => rfl, by simp, by simp, rfl, by simp⟩
+  | cons e rest ih =>
+    have first (marked : floorSlash i.toNat e = true) : b.slashedHigh = none := by
+      cases flag : b.slashedHigh with
+      | none => rfl
+      | some h => simp [marked, flag] at budget
+    obtain ⟨c, next, balance, debt, high, flag⟩ :=
+      classify e (by simp) b trace (start e (by simp)) rfl first
+    have count : (if c.slashedHigh.isSome then 1 else 0) =
+        (if b.slashedHigh.isSome then 1 else 0) +
+          (if floorSlash i.toNat e then 1 else 0) := by
+      by_cases marked : floorSlash i.toNat e = true
+      · simp [flag, marked, first marked]
+      · simp [flag, marked]
+    have remaining : (if c.slashedHigh.isSome then 1 else 0) +
+        rest.countP (floorSlash i.toNat) ≤ 1 := by
+      rw [count]; simp only [List.countP_cons] at budget; omega
+    obtain ⟨last, done, empty, finish, total, kept, used⟩ := ih next linked.tail
+      (fun e' member => balance.trans (linked.rel_head? member)) remaining
+      (fun e' member d prior balance kept =>
+        classify e' (by simp [member]) d prior balance (kept.trans high))
+    refine ⟨last, done, nofun, ?_, ?_, kept.trans high, ?_⟩
+    · cases rest with
+      | nil => simpa [empty rfl] using balance
+      | cons e' rest => simpa using finish
+    · simp only [List.map_cons, List.sum_cons]; omega
+    · rw [used, count, List.countP_cons]; omega
+
+/-- Every routed penalty debit pays for the actual loss at its event. -/
+private theorem floorPenaltyDebit_covers (i : Nat) (event : BalanceEvent preset)
+    (source : event.source = .penalties ∨ event.source = .inactivity ∨ event.source = .sync) :
+    actualBalanceAt event.before i ≤ actualBalanceAt event.after i +
+      floorPenaltyDebit i event := by
+  unfold floorPenaltyDebit penaltyDebit
+  rcases source with source | source | source <;> simp [source] <;> omega
+
+/-- The mixed withdrawal event retains a capped floor after charging only pending payments. -/
+private theorem floorPartialDebit_sweep {fork : Fork} {s : BeaconState preset fork}
+    (early : fork < .glamsterdam) (capella : .shapella ≤ fork)
+    (expected : ExpectedWithdrawals) (computed : getExpectedWithdrawals s capella = .ok expected)
+    (event : BalanceEvent preset) (source : event.source = .withdrawals)
+    (before : event.before = ⟨fork, s⟩)
+    (paid : ∀ i : ValidatorIndex, actualBalanceAt event.after i.toNat =
+      actualBalanceAt event.before i.toNat - withdrawnFrom expected.withdrawals i)
+    (i : ValidatorIndex) (v : Validator) (found : s.validators.data[i.toNat]? = some v)
+    (alive : getCurrentEpoch s < v.withdrawableEpoch) (matched : BalancesMatch s) :
+    min (actualBalanceAt event.before i.toNat - floorPartialDebit i event)
+        (withdrawalMaxEffectiveBalance preset fork v).toNat ≤
+      actualBalanceAt event.after i.toNat := by
+  rcases event with ⟨tag, start, finish, debit, credit⟩
+  dsimp only at before
+  subst start
+  have inside := (Array.getElem?_eq_some_iff.mp found).1
+  have insideBalance : i.toNat < s.balances.data.size := by rw [matched]; exact inside
+  let balance := s.balances.data[i.toNat]
+  have held : s.balances.data[i.toNat]? = some balance :=
+    Array.getElem?_eq_some_iff.mpr ⟨insideBalance, rfl⟩
+  obtain ⟨partials, next, partialOk, floor⟩ :=
+    getExpectedWithdrawals_sweep_floor early computed found alive held
+  have actual : actualBalanceAt ⟨fork, s⟩ i.toNat = balance.toNat := by
+    simp [actualBalanceAt, held]
+  have partialPaid : floorPartialDebit i ⟨tag, ⟨fork, s⟩, finish, debit, credit⟩ =
+      withdrawnFrom partials i := by
+    unfold floorPartialDebit
+    dsimp only at source ⊢
+    simp only [source, ↓reduceIte]
+    by_cases electra : .pectra ≤ fork
+    · simp only [electra, ↓reduceDIte] at partialOk ⊢
+      rw [partialOk]
+    · simp only [electra, ↓reduceDIte, Except.ok.injEq, Prod.mk.injEq] at partialOk
+      simp [electra, ← partialOk.1, withdrawnFrom]
+  rw [paid, actual, partialPaid]
+  exact floor
+
+/-- Pending payments are charged first; the ordinary sweep uses no debit allowance. -/
+private theorem FloorTrace.withdrawal {low base quotient : Nat} {a b : FloorAccount}
+    (trace : FloorTrace low base quotient a b) (balance pending cap : Nat)
+    (retained : min (b.balance - pending) cap ≤ balance)
+    (capped : max low b.high ≤ cap) :
+    FloorTrace low base quotient a { b with balance := balance, debt := b.debt + pending } := by
+  have paid : b.balance ≤ (b.balance - pending) + pending := by omega
+  have charged := trace.debit paid
+  by_cases enough : b.balance - pending ≤ balance
+  · exact charged.credit enough
+  · have floor : max low b.high ≤ balance := by omega
+    exact charged.sweep floor
+
+/-- A compounding switch spends no debit allowance when the high-water mark fits its old cap. -/
+private theorem FloorTrace.excess {x y : ForkedBeaconState preset}
+    (step : Step config checks x y) (caps : CapOrder preset)
+    (early : y.fork < .glamsterdam) (holds : Invariant x.state)
+    {events : List (BalanceEvent preset)} (replayed : step.balanceEvents = .ok events)
+    (event : BalanceEvent preset) (member : event ∈ events) (source : event.source = .excess)
+    (i : Nat) (v : Validator) (found : x.state.validators.data[i]? = some v)
+    {low base quotient : Nat} {a b : FloorAccount} (trace : FloorTrace low base quotient a b)
+    (balance : b.balance = actualBalanceAt event.before i)
+    (capped : max low b.high ≤ (withdrawalMaxEffectiveBalance preset x.fork v).toNat) :
+    FloorTrace low base quotient a { b with balance := actualBalanceAt event.after i } := by
+  obtain ⟨_, _, excess, _⟩ :=
+    step.balanceEvents_sites early holds caps.compounding replayed event member
+  rcases excess source i with unchanged | ⟨paid, cap⟩
+  · exact trace.credit (by omega)
+  · have upper := UInt64.le_iff_toNat_le.mp (cap v found)
+    by_cases enough : b.balance ≤ preset.MIN_ACTIVATION_BALANCE.toNat
+    · exact trace.credit (by omega)
+    · exact trace.sweep (by omega)
+
+/-- A recorded withdrawal event uses the actual header state and the final validator's exit. -/
+private theorem withdrawal_site_floor {x y : ForkedBeaconState preset}
+    (step : Step config checks x y) (caps : CapOrder preset)
+    (early : y.fork < .glamsterdam) (holds : Invariant x.state)
+    {events : List (BalanceEvent preset)} (replayed : step.balanceEvents = .ok events)
+    (event : BalanceEvent preset) (member : event ∈ events)
+    (source : event.source = .withdrawals) (i : ValidatorIndex) (v w : Validator)
+    (initial : x.state.validators.data[i.toNat]? = some v)
+    (final : y.state.validators.data[i.toNat]? = some w)
+    (high : Nat) (epoch : (getCurrentEpoch event.before.state).toNat ≤ high + 1)
+    (retained : high + 1 < w.exitEpoch.toNat) :
+    ∃ u, event.before.state.validators.data[i.toNat]? = some u ∧
+      withdrawalMaxEffectiveBalance preset event.before.fork u =
+        withdrawalMaxEffectiveBalance preset x.fork v ∧
+      min (actualBalanceAt event.before i.toNat - floorPartialDebit i event)
+        (withdrawalMaxEffectiveBalance preset event.before.fork u).toNat ≤
+          actualBalanceAt event.after i.toNat := by
+  obtain ⟨_, withdrawals, _, _, _, _, _, ordered, beforeLife, during, suffix, _⟩ :=
+    step.balanceEvents_sites early holds caps.compounding replayed event member
+  obtain ⟨u, found, _⟩ := beforeLife.validators i.toNat v initial
+  obtain ⟨later, laterFound, one⟩ := during.validators i.toNat u found
+  obtain ⟨last, lastFound, two⟩ := suffix.validators i.toNat later laterFound
+  have same : last = w := Option.some.inj (lastFound.symm.trans final)
+  subst last
+  have exitBound : w.exitEpoch.toNat ≤ u.exitEpoch.toNat := by
+    by_cases assigned : u.exitEpoch = FAR_FUTURE_EPOCH
+    · rw [assigned]
+      exact Nat.le_of_lt_succ w.exitEpoch.toNat_lt
+    · rw [(one.trans two).exitEpoch assigned]
+  have waiting : getCurrentEpoch event.before.state < u.withdrawableEpoch := by
+    have order := UInt64.le_iff_toNat_le.mp (ordered u (Array.mem_of_getElem? found))
+    exact UInt64.lt_iff_toNat_lt.mpr (by omega)
+  have cap : withdrawalMaxEffectiveBalance preset event.before.fork u =
+      withdrawalMaxEffectiveBalance preset x.fork v := by
+    obtain ⟨block, s, before, header, _⟩ := withdrawals source
+    rw [before] at found ⊢
+    obtain ⟨_, _, same⟩ := processBlockHeader_eq header
+    rw [same] at found
+    have equal : u = v := Option.some.inj (found.symm.trans initial)
+    subst u
+    rfl
+  refine ⟨u, found, cap, ?_⟩
+  obtain ⟨block, s, before, header, unchanged | ⟨capella, expected, computed, paid⟩⟩ :=
+    withdrawals source
+  · have kept := unchanged i.toNat
+    have below := Nat.min_le_left
+      (actualBalanceAt event.before i.toNat - floorPartialDebit i event)
+      (withdrawalMaxEffectiveBalance preset event.before.fork u).toNat
+    omega
+  · have headerFrame := frame_processBlockHeader header
+    have matched := headerFrame.balancesMatch holds.balancesMatch
+    have beforeEarly : x.fork < .glamsterdam :=
+      Nat.lt_of_le_of_lt step.chainStep.fork_le early
+    rcases event with ⟨tag, start, finish, debit, credit⟩
+    dsimp only at before
+    subst start
+    exact floorPartialDebit_sweep beforeEarly capella expected computed
+      ⟨tag, ⟨x.fork, s⟩, finish, debit, credit⟩ source rfl paid i u found waiting matched
+
+/-- The sweep reader pays only pending partials and keeps the trace's high-water mark. -/
+private theorem FloorTrace.withdrawal_site {x y : ForkedBeaconState preset}
+    (step : Step config checks x y) (caps : CapOrder preset)
+    (early : y.fork < .glamsterdam) (holds : Invariant x.state)
+    {events : List (BalanceEvent preset)} (replayed : step.balanceEvents = .ok events)
+    (event : BalanceEvent preset) (member : event ∈ events)
+    (source : event.source = .withdrawals) (i : ValidatorIndex) (v w : Validator)
+    (initial : x.state.validators.data[i.toNat]? = some v)
+    (final : y.state.validators.data[i.toNat]? = some w)
+    (high : Nat) (epoch : (getCurrentEpoch event.before.state).toNat ≤ high + 1)
+    (retained : high + 1 < w.exitEpoch.toNat)
+    {low base quotient : Nat} {a b : FloorAccount} (trace : FloorTrace low base quotient a b)
+    (balance : b.balance = actualBalanceAt event.before i.toNat)
+    (capped : max low b.high ≤ (withdrawalMaxEffectiveBalance preset x.fork v).toNat) :
+    FloorTrace low base quotient a
+      ⟨actualBalanceAt event.after i.toNat, b.debt + floorPartialDebit i event,
+        b.high, b.slashedHigh⟩ := by
+  obtain ⟨u, _, cap, floor⟩ := withdrawal_site_floor step caps early holds replayed
+    event member source i v w initial final high epoch retained
+  apply trace.withdrawal _ (floorPartialDebit i event)
+    (withdrawalMaxEffectiveBalance preset event.before.fork u).toNat
+  · simpa only [balance] using floor
+  · simpa only [cap] using capped
+
+/-- Non-slashing sites charge only routed penalties and pending partial payments. -/
+private theorem FloorTrace.event {x y : ForkedBeaconState preset}
+    (step : Step config checks x y) (caps : CapOrder preset)
+    (early : y.fork < .glamsterdam) (holds : Invariant x.state)
+    {events : List (BalanceEvent preset)} (replayed : step.balanceEvents = .ok events)
+    (e : BalanceEvent preset) (member : e ∈ events)
+    (ordinary : e.source ≠ .slashings) (noCrossing : e.source ≠ .crossing)
+    (i : ValidatorIndex) (v w : Validator)
+    (initial : x.state.validators.data[i.toNat]? = some v)
+    (final : y.state.validators.data[i.toNat]? = some w)
+    (high : Nat) (epoch : (getCurrentEpoch e.before.state).toNat ≤ high + 1)
+    (pendingEpoch : e.source = .consolidations →
+      (getCurrentEpoch e.before.state).toNat ≤ high)
+    (retained : high + 1 < w.exitEpoch.toNat)
+    {low base quotient : Nat} {a b : FloorAccount} (trace : FloorTrace low base quotient a b)
+    (balance : b.balance = actualBalanceAt e.before i.toNat)
+    (capped : max low b.high ≤ (withdrawalMaxEffectiveBalance preset x.fork v).toNat) :
+    FloorTrace low base quotient a
+      ⟨actualBalanceAt e.after i.toNat,
+        b.debt + floorPenaltyDebit i.toNat e + floorPartialDebit i e, b.high, b.slashedHigh⟩ := by
+  have sites := step.balanceEvents_sites early holds caps.compounding replayed e member
+  have inside := (Array.getElem?_eq_some_iff.mp initial).1
+  have rise (paid : actualBalanceAt e.before i.toNat ≤ actualBalanceAt e.after i.toNat) :
+      FloorTrace low base quotient a { b with balance := actualBalanceAt e.after i.toNat } :=
+    trace.credit (by omega)
+  have penalty (source : e.source = .penalties ∨ e.source = .inactivity ∨ e.source = .sync) :
+      FloorTrace low base quotient a
+        { b with balance := actualBalanceAt e.after i.toNat,
+                 debt := b.debt + floorPenaltyDebit i.toNat e } :=
+    trace.debit (by have paid := floorPenaltyDebit_covers i.toNat e source; omega)
+  cases source : e.source with
+  | slashings => exact False.elim (ordinary source)
+  | crossing => exact False.elim (noCrossing source)
+  | withdrawals =>
+    simpa [floorPenaltyDebit, penaltyDebit, source] using
+      trace.withdrawal_site step caps early holds replayed e member source i v w initial final
+        high epoch retained balance capped
+  | excess =>
+    simpa [floorPenaltyDebit, penaltyDebit, floorPartialDebit, source] using
+      trace.excess step caps early holds replayed e member source i.toNat v initial balance capped
+  | penalties | inactivity | sync =>
+    simpa [floorPartialDebit, source] using penalty (by simp [source])
+  | rewards | deposits =>
+    simpa [floorPenaltyDebit, penaltyDebit, floorPartialDebit, source] using
+      rise (sites.2.2.2.1 (by simp [source]) i.toNat inside)
+  | consolidations =>
+    obtain ⟨_, _, _, _, consolidation, _, _, ordered, beforeLife, during, suffix, _⟩ := sites
+    obtain ⟨u, found, _⟩ := beforeLife.validators i.toNat v initial
+    obtain ⟨z, located, kept⟩ := (during.trans suffix).validators i.toNat u found
+    have same : z = w := Option.some.inj (located.symm.trans final)
+    subst z
+    have exitBound : w.exitEpoch.toNat ≤ u.exitEpoch.toNat := by
+      by_cases assigned : u.exitEpoch = FAR_FUTURE_EPOCH
+      · rw [assigned]; exact Nat.le_of_lt_succ w.exitEpoch.toNat_lt
+      · rw [kept.exitEpoch assigned]
+    have waiting : getCurrentEpoch e.before.state + 1 < u.withdrawableEpoch := by
+      have atEpoch := pendingEpoch source
+      have order := UInt64.le_iff_toNat_le.mp (ordered u (Array.mem_of_getElem? found))
+      apply UInt64.lt_iff_toNat_lt.mpr
+      rw [UInt64.toNat_add]
+      simp only [UInt64.reduceToNat]
+      exact (Nat.mod_le _ _).trans_lt (by omega)
+    simpa [floorPenaltyDebit, penaltyDebit, floorPartialDebit, source] using
+      rise (consolidation source i.toNat u found (.inr waiting))
+
+/-- A step's existing occurrence bound and balance chain compose its classified sites. -/
+private theorem FloorTrace.step_events {x y : ForkedBeaconState preset}
+    (step : Step config checks x y) (caps : CapOrder preset)
+    (early : y.fork < .glamsterdam) (holds : Invariant x.state)
+    {events : List (BalanceEvent preset)} (replayed : step.balanceEvents = .ok events)
+    (i : ValidatorIndex) (v w : Validator)
+    (initial : x.state.validators.data[i.toNat]? = some v)
+    (final : y.state.validators.data[i.toNat]? = some w)
+    (high : Nat) (epochs : ∀ e ∈ events, (getCurrentEpoch e.before.state).toNat ≤ high + 1)
+    (pendingEpochs : ∀ e ∈ events, e.source = .consolidations →
+      (getCurrentEpoch e.before.state).toNat ≤ high)
+    (retained : high + 1 < w.exitEpoch.toNat)
+    (noCrossing : ∀ e ∈ events, e.source ≠ .crossing)
+    {part : List (BalanceEvent preset)} (sublist : part.Sublist events)
+    (linked : part.IsChain (fun e e' =>
+      actualBalanceAt e.after i.toNat = actualBalanceAt e'.before i.toNat))
+    {low base quotient : Nat} {a b : FloorAccount} (trace : FloorTrace low base quotient a b)
+    (start : ∀ e ∈ part.head?, b.balance = actualBalanceAt e.before i.toNat)
+    (empty : b.slashedHigh = none)
+    (capped : max low b.high ≤ (withdrawalMaxEffectiveBalance preset x.fork v).toNat)
+    (slash : ∀ e ∈ part, e.source = .slashings → ∀ c,
+      FloorTrace low base quotient a c → c.balance = actualBalanceAt e.before i.toNat →
+      c.high = b.high → (floorSlash i.toNat e = true → c.slashedHigh = none) →
+      ∃ d, FloorTrace low base quotient a d ∧ d.balance = actualBalanceAt e.after i.toNat ∧
+        d.debt = c.debt + floorPenaltyDebit i.toNat e + floorPartialDebit i e ∧
+        d.high = c.high ∧ d.slashedHigh =
+          if floorSlash i.toNat e then some c.high else c.slashedHigh) :
+    ∃ last, FloorTrace low base quotient a last ∧
+      (part = [] → last.balance = b.balance) ∧
+      (∀ e ∈ part.getLast?, last.balance = actualBalanceAt e.after i.toNat) ∧
+      last.debt = b.debt + (part.map (floorPenaltyDebit i.toNat)).sum +
+        (part.map (floorPartialDebit i)).sum ∧ last.high = b.high := by
+  have included := sublist.subset
+  have count : part.countP (floorSlash i.toNat) ≤ 1 := by
+    cases part with
+    | nil => simp
+    | cons e rest =>
+      have sites := step.balanceEvents_sites early holds caps.compounding replayed e
+        (included (by simp))
+      have bound := sites.2.2.2.2.2.2.2.2.2.2.2.2.2.2.1 i.toNat
+      have one := sublist.countP_le (p := floorSlash i.toNat)
+      have two := List.countP_mono_left (l := events) (p := floorSlash i.toNat)
+        (q := fun e => !(e.before.state.validators.data[i.toNat]?.map (·.slashed)).getD true &&
+          (e.after.state.validators.data[i.toNat]?.map (·.slashed)).getD false)
+        (fun e _ marked => by
+          simp only [floorSlash, Bool.and_eq_true] at marked
+          simp only [Bool.and_eq_true]
+          exact ⟨marked.1.2, marked.2⟩)
+      exact one.trans (two.trans bound)
+  obtain ⟨last, done, nil, finish, debt, kept, _⟩ :=
+    (show FloorTrace low base quotient a b from trace).events i part linked start
+      (by simpa [empty] using count) (fun e member c prior balance kept first => by
+        by_cases source : e.source = .slashings
+        · exact slash e member source c prior balance kept first
+        · refine ⟨_, prior.event step caps early holds replayed e (included member) source
+            (noCrossing e (included member)) i v w initial final high (epochs e (included member))
+            (pendingEpochs e (included member)) retained balance ?_, rfl, rfl, rfl, ?_⟩
+          · simpa only [kept] using capped
+          · simp [floorSlash, source])
+  exact ⟨last, done, fun h => congrArg FloorAccount.balance (nil h), finish, debt, kept⟩
 
 /-- Block slashings spend the allowance once, at the recorded change of the slashed flag. -/
 private theorem FloorTrace.block_slashing {fork : Fork} {s t : BeaconState preset fork}
