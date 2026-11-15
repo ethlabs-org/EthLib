@@ -97,8 +97,10 @@ private theorem balanceSum_genesisDeposit_le {state after : BeaconState preset f
       .ok after) :
     BalancesMatch after ∧ after.slashings = state.slashings ∧
       balanceSum after ≤ balanceSum state + entry.1.data.amount.toNat ∧
-      ((∀ v ∈ state.validators.data, v.activationEligibilityEpoch = FAR_FUTURE_EPOCH) →
-        ∀ v ∈ after.validators.data, v.activationEligibilityEpoch = FAR_FUTURE_EPOCH) := by
+      ((∀ v ∈ state.validators.data,
+          v.activationEligibilityEpoch = FAR_FUTURE_EPOCH ∧ v.slashed = false) →
+        ∀ v ∈ after.validators.data,
+          v.activationEligibilityEpoch = FAR_FUTURE_EPOCH ∧ v.slashed = false) := by
   refine ⟨(frame_genesisDeposit computed).balancesMatch holds, ?_⟩
   simp only [genesisDeposit, bind_ok_iff] at computed
   obtain ⟨_, _, deposited⟩ := computed
@@ -109,8 +111,10 @@ private theorem balanceSum_genesisDeposit_le {state after : BeaconState preset f
       applyPendingDeposit config checks middle deposit = .ok after →
       after.slashings = state.slashings ∧
         balanceSum after ≤ balanceSum state + deposit.amount.toNat ∧
-        ((∀ v ∈ middle.validators.data, v.activationEligibilityEpoch = FAR_FUTURE_EPOCH) →
-          ∀ v ∈ after.validators.data, v.activationEligibilityEpoch = FAR_FUTURE_EPOCH) := by
+        ((∀ v ∈ middle.validators.data,
+            v.activationEligibilityEpoch = FAR_FUTURE_EPOCH ∧ v.slashed = false) →
+          ∀ v ∈ after.validators.data,
+            v.activationEligibilityEpoch = FAR_FUTURE_EPOCH ∧ v.slashed = false) := by
     intro middle deposit balances slashings applied
     have same : balanceSum middle = balanceSum state := by unfold balanceSum; rw [balances]
     have := balanceSum_applyPendingDeposit_le applied
@@ -123,7 +127,7 @@ private theorem balanceSum_genesisDeposit_le {state after : BeaconState preset f
       rw [addValidatorToRegistry_validators_eq_push added, Array.mem_push] at member
       rcases member with old | rfl
       · exact pending v old
-      · rfl
+      · exact ⟨rfl, rfl⟩
   exact copy _ _ (by rfl) (by rfl) applied
 
 /-- Activation at genesis replaces one validator, keeping the other fields.
@@ -139,7 +143,8 @@ private theorem activateAtGenesis_eq {state after : BeaconState preset fork} {in
       (validator.activationEpoch = FAR_FUTURE_EPOCH →
         ∃ original, state.validators.data[index]? = some original ∧
           original.activationEpoch = FAR_FUTURE_EPOCH ∧
-          validator.activationEligibilityEpoch = original.activationEligibilityEpoch) := by
+          validator.activationEligibilityEpoch = original.activationEligibilityEpoch ∧
+          validator.slashed = original.slashed) := by
   simp only [activateAtGenesis, bind_ok_iff, liftAccessor_ok] at computed
   obtain ⟨validator, found, balance, read, set⟩ := computed
   obtain ⟨inside, rfl⟩ := setValidatorAt_ok set
@@ -149,7 +154,7 @@ private theorem activateAtGenesis_eq {state after : BeaconState preset fork} {in
     · intro unassigned
       exact False.elim ((by decide : GENESIS_EPOCH ≠ FAR_FUTURE_EPOCH) unassigned)
     · intro unassigned
-      exact ⟨validator, getValidatorAt_eq_ok_iff.mp found, unassigned, rfl⟩
+      exact ⟨validator, getValidatorAt_eq_ok_iff.mp found, unassigned, rfl, rfl⟩
 
 /-- A sum read in step over two lists is at most a sum over the second list.
 
@@ -200,7 +205,8 @@ private theorem foldlM_activateAtGenesis_decomposition {state after : BeaconStat
         v.activationEpoch = FAR_FUTURE_EPOCH →
         ∃ original, state.validators.data[i]? = some original ∧
           original.activationEpoch = FAR_FUTURE_EPOCH ∧
-          v.activationEligibilityEpoch = original.activationEligibilityEpoch := by
+          v.activationEligibilityEpoch = original.activationEligibilityEpoch ∧
+          v.slashed = original.slashed := by
   have step : ∀ (current next : BeaconState preset fork) (j : Nat),
       (inside : j < current.validators.data.size) → activateAtGenesis current j = .ok next →
       next.balances = current.balances ∧ next.slashings = current.slashings ∧
@@ -211,7 +217,8 @@ private theorem foldlM_activateAtGenesis_decomposition {state after : BeaconStat
             (validator.activationEpoch = FAR_FUTURE_EPOCH →
               ∃ original, current.validators.data[j]? = some original ∧
                 original.activationEpoch = FAR_FUTURE_EPOCH ∧
-                validator.activationEligibilityEpoch = original.activationEligibilityEpoch) := by
+                validator.activationEligibilityEpoch = original.activationEligibilityEpoch ∧
+                validator.slashed = original.slashed) := by
     intro current next j inside activated
     obtain ⟨_, validator, balance, rfl, read, effective, metadata⟩ := activateAtGenesis_eq activated
     exact ⟨rfl, rfl, validator, by simp [BeaconState.putValidator], balance, read, effective,
@@ -223,7 +230,8 @@ private theorem foldlM_activateAtGenesis_decomposition {state after : BeaconStat
         v.activationEpoch = FAR_FUTURE_EPOCH →
         ∃ original, state.validators.data[i]? = some original ∧
           original.activationEpoch = FAR_FUTURE_EPOCH ∧
-          v.activationEligibilityEpoch = original.activationEligibilityEpoch
+          v.activationEligibilityEpoch = original.activationEligibilityEpoch ∧
+          v.slashed = original.slashed
   have keeps : ∀ j ∈ List.range state.validators.data.size, ∀ current next, P current →
       activateAtGenesis current j = .ok next → P next := by
     intro j member current next ⟨balances, slashings, size, metadata⟩ activated
@@ -239,9 +247,11 @@ private theorem foldlM_activateAtGenesis_decomposition {state after : BeaconStat
       obtain ⟨old, read, pending, eligibility⟩ := transferred unassigned
       obtain ⟨original, originalRead, originalPending, originalEligibility⟩ :=
         metadata j old read pending
-      exact ⟨original, originalRead, originalPending, eligibility.trans originalEligibility⟩
+      exact ⟨original, originalRead, originalPending,
+        eligibility.1.trans originalEligibility.1, eligibility.2.trans originalEligibility.2⟩
     · exact metadata i v found unassigned
-  have start : P state := ⟨rfl, rfl, rfl, fun _ v found pending => ⟨v, found, pending, rfl⟩⟩
+  have start : P state := ⟨rfl, rfl, rfl,
+    fun _ v found pending => ⟨v, found, pending, rfl, rfl⟩⟩
   let view := fun (i : Nat) (current : BeaconState preset fork) =>
     (current.validators.data[i]?).map (·.effectiveBalance)
   let H := fun (i : Nat) (_ : Nat) (_ : Option Gwei) => (state.balances.data[i]?).map
@@ -290,7 +300,8 @@ private theorem foldlM_activateAtGenesis_unassigned {state after : BeaconState p
     (unassigned : v.activationEpoch = FAR_FUTURE_EPOCH) :
     ∃ original, state.validators.data[i]? = some original ∧
       original.activationEpoch = FAR_FUTURE_EPOCH ∧
-      v.activationEligibilityEpoch = original.activationEligibilityEpoch :=
+      v.activationEligibilityEpoch = original.activationEligibilityEpoch ∧
+      v.slashed = original.slashed :=
   (foldlM_activateAtGenesis_decomposition before computed).2.2.2.2 i v found unassigned
 
 private theorem genesisDeposits_summary (before : fork < .altair)
@@ -305,12 +316,14 @@ private theorem genesisDeposits_summary (before : fork < .altair)
         eth1BlockHash deposits.size.toUInt64 bodyRoot).slashings ∧
       balanceSum deposited ≤
         (deposits.toList.zipIdx.map fun entry : Deposit × Nat => entry.1.data.amount.toNat).sum ∧
-      ∀ v ∈ deposited.validators.data, v.activationEligibilityEpoch = FAR_FUTURE_EPOCH := by
+      ∀ v ∈ deposited.validators.data,
+        v.activationEligibilityEpoch = FAR_FUTURE_EPOCH ∧ v.slashed = false := by
   simpa only [Nat.zero_add] using foldlM_ok_weighted
     (fun current bound => BalancesMatch current ∧
       current.slashings = (emptyGenesisState (preset := preset) config before genesisTime
         eth1BlockHash deposits.size.toUInt64 bodyRoot).slashings ∧ balanceSum current ≤ bound ∧
-      ∀ v ∈ current.validators.data, v.activationEligibilityEpoch = FAR_FUTURE_EPOCH)
+      ∀ v ∈ current.validators.data,
+        v.activationEligibilityEpoch = FAR_FUTURE_EPOCH ∧ v.slashed = false)
     (fun entry : Deposit × Nat => entry.1.data.amount.toNat)
     (fun current entry next bound ⟨holds, slashings, summed, eligibility⟩ step => by
       obtain ⟨holds', slashings', summed', eligibility'⟩ :=
@@ -327,7 +340,7 @@ theorem initializeBeaconStateFromEth1_unassigned_eligibility {eth1BlockHash : Ha
       .ok after) (i : Nat) (v : Validator) (found : after.validators.data[i]? = some v)
     (unassigned : v.activationEpoch = FAR_FUTURE_EPOCH) :
     (∃ balance, after.balances.data[i]? = some balance ∧ v.effectiveBalance ≤ balance) ∧
-      v.activationEligibilityEpoch = FAR_FUTURE_EPOCH := by
+      v.activationEligibilityEpoch = FAR_FUTURE_EPOCH ∧ v.slashed = false := by
   obtain ⟨before, time, root, deposited, activated, _, depositedOk, activatedOk, stateEq⟩ :=
     initializeBeaconStateFromEth1_ok computed
   rw [stateEq] at found ⊢
@@ -354,8 +367,9 @@ theorem initializeBeaconStateFromEth1_unassigned_eligibility {eth1BlockHash : Ha
   refine ⟨funded, ?_⟩
   obtain ⟨original, read, _, same⟩ := foldlM_activateAtGenesis_unassigned
     (Nat.lt_trans before (by decide)) activatedOk i v found unassigned
-  exact same.trans ((genesisDeposits_summary before time eth1BlockHash deposits root _
-    depositedOk).2.2.2 original (Array.mem_of_getElem? read))
+  obtain ⟨eligibility, unslashed⟩ := (genesisDeposits_summary before time eth1BlockHash
+    deposits root _ depositedOk).2.2.2 original (Array.mem_of_getElem? read)
+  exact ⟨same.1.trans eligibility, same.2.trans unslashed⟩
 
 /-- A candidate genesis state is within every budget that covers the amounts of its deposits.
 

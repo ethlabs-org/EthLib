@@ -35,7 +35,7 @@ private def UnassignedEligibleBalance {f : Fork} (s : BeaconState preset f) : Pr
     v.activationEpoch = FAR_FUTURE_EPOCH →
     (∃ balance, s.balances.data[i]? = some balance ∧ v.effectiveBalance ≤ balance) ∧
       (v.activationEligibilityEpoch ≠ FAR_FUTURE_EPOCH →
-        preset.MAX_EFFECTIVE_BALANCE ≤ v.effectiveBalance)
+        preset.MAX_EFFECTIVE_BALANCE ≤ v.effectiveBalance) ∧ v.slashed = false
 
 /-- At genesis, unassigned validators are funded and none is eligible yet. -/
 private theorem genesis_unassigned_eligible_balance {g : ForkedBeaconState preset}
@@ -43,9 +43,9 @@ private theorem genesis_unassigned_eligible_balance {g : ForkedBeaconState prese
     UnassignedEligibleBalance g.state := by
   intro i v found pending
   obtain ⟨_, _, _, initialized⟩ := genesis
-  obtain ⟨funded, unassigned⟩ := initializeBeaconStateFromEth1_unassigned_eligibility
+  obtain ⟨funded, unassigned, unslashed⟩ := initializeBeaconStateFromEth1_unassigned_eligibility
     initialized i v found pending
-  refine ⟨funded, ?_⟩
+  refine ⟨funded, ?_, unslashed⟩
   exact fun assigned => False.elim (assigned unassigned)
 
 /-- Ordered preset caps and retained compounding credentials make a validator's cap monotone. -/
