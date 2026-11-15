@@ -317,6 +317,31 @@ theorem getSlotComponentDurationMs_lt {basisPoints duration : UInt64}
   have := Nat.mul_lt_mul_of_pos_right part positive
   rwa [Nat.mul_comm 10000] at this
 
+/-- Attestation deadlines fall strictly inside a nonempty slot, at every fork. -/
+structure Config.AttestationDeadlinesWithinSlot (config : Config) : Prop where
+  slotDuration : 0 < config.SLOT_DURATION_MS
+  attestation : config.ATTESTATION_DUE_BPS < BASIS_POINTS
+  gloas : config.ATTESTATION_DUE_BPS_GLOAS < BASIS_POINTS
+
+/-- Mainnet attestation deadlines fall inside their slots. -/
+theorem Config.attestationDeadlinesWithinSlot_mainnet :
+    Config.mainnet.AttestationDeadlinesWithinSlot := by
+  constructor <;> decide
+
+/-- Minimal attestation deadlines fall inside their slots. -/
+theorem Config.attestationDeadlinesWithinSlot_minimal :
+    Config.minimal.AttestationDeadlinesWithinSlot := by
+  constructor <;> decide
+
+/-- A successful attestation deadline read is shorter than the slot duration. -/
+theorem getAttestationDueMs_lt (deadlines : config.AttestationDeadlinesWithinSlot)
+    {fork : Fork} {due : UInt64} (ok : getAttestationDueMs config fork = .ok due) :
+    due < config.SLOT_DURATION_MS := by
+  unfold getAttestationDueMs at ok
+  split at ok
+  · exact getSlotComponentDurationMs_lt deadlines.gloas deadlines.slotDuration ok
+  · exact getSlotComponentDurationMs_lt deadlines.attestation deadlines.slotDuration ok
+
 /-- Before Gloas, an attestation is due at the part that the configuration gives before Gloas. -/
 theorem getAttestationDueMs_of_lt {fork : Fork} (before : fork < .glamsterdam) :
     getAttestationDueMs config fork =

@@ -1,6 +1,8 @@
 module
 
 public import EthLib.Consensus.Proofs.ForkChoice.Checkpoints
+public import EthLib.Consensus.Proofs.Transition.Totality.Bound
+import EthLib.Consensus.Proofs.Transition.RunKept
 
 /-!
 # Proofs: unrealized checkpoints are those of the next epoch
@@ -293,63 +295,131 @@ private theorem KeepsRoots.processSlot {cached : BeaconState preset fork}
   rw [Nat.sub_mul, Nat.one_mul] at lo
   exact Nat.mod_ne_of_sub_lt (by omega) (by omega) same'
 
-/-- The slots up to the first slot of the next epoch end as justification on the original state.
-
-The last of them runs the epoch transition, on a state that reads the same values. -/
-private theorem advanceSlots_outcome
-    (window : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
-    (pulled : processJustificationAndFinalization state = .ok tip) :
-    ∀ {count : Nat} {moved after : BeaconState preset fork}, Moved state moved →
-      KeepsRoots state moved → state.slot.toNat ≤ moved.slot.toNat →
-      moved.slot.toNat + count + 1 =
-        ((getCurrentEpoch state).toNat + 1) * preset.SLOTS_PER_EPOCH.toNat →
-      advanceSlots config checks (count + 1) moved = .ok after → SameOutcome tip after
-  | count, moved, after, same, keeps, low, total, computed => by
+/-- A prefix within one epoch preserves the state fields and, with enough history, its roots. -/
+private theorem advanceSlots_prefix
+    {count : Nat} {moved after : BeaconState preset fork}
+    (low : state.slot.toNat ≤ moved.slot.toNat)
+    (high : moved.slot.toNat + count <
+      ((getCurrentEpoch state).toNat + 1) * preset.SLOTS_PER_EPOCH.toNat)
+    (same : Moved state moved)
+    (computed : advanceSlots config checks count moved = .ok after) :
+    Moved state after ∧
+      (2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat →
+        KeepsRoots state moved → KeepsRoots state after) := by
+  induction count generalizing moved with
+  | zero =>
+    simp only [advanceSlots, pure, Except.pure, Except.ok.injEq] at computed
+    exact computed ▸ ⟨same, fun _ roots => roots⟩
+  | succ count ih =>
+    rw [Nat.add_mul, Nat.one_mul] at high
     simp only [advanceSlots, bind_ok_iff] at computed
     obtain ⟨stepped, steppedOk, rest⟩ := computed
     obtain ⟨nextSlot, cached, epoched, sum, cachedOk, epochedOk, rfl⟩ := advanceSlot_ok steppedOk
-    have cachedSlot := processSlot_slot cachedOk
+    have bounds := epoch_bounds state
     have cachedSame := same.processSlot cachedOk
-    have cachedKeeps := keeps.processSlot window cachedOk low (by omega)
-    have start := epoch_bounds state
-    have stateEpoch := getCurrentEpoch_toNat state
-    rw [Nat.add_mul, Nat.one_mul] at total
-    have epoch : getCurrentEpoch cached = getCurrentEpoch state := by
-      apply UInt64.toNat_inj.mp
-      rw [getCurrentEpoch_toNat cached, cachedSlot]
-      exact Nat.div_eq_of_lt_le (by omega) (by rw [Nat.add_mul, Nat.one_mul]; omega)
-    unfold epochIfLast at epochedOk
-    cases count with
-    | zero =>
-      simp only [advanceSlots, pure, Except.pure, Except.ok.injEq] at rest
-      subst rest
-      have boundary : nextSlot % preset.SLOTS_PER_EPOCH = 0 := by
-        apply UInt64.toNat_inj.mp
-        rw [UInt64.toNat_mod, sum, UInt64.toNat_zero, show moved.slot.toNat + 1 =
-          ((getCurrentEpoch state).toNat + 1) * preset.SLOTS_PER_EPOCH.toNat by
-            rw [Nat.add_mul, Nat.one_mul]; omega]
-        exact Nat.mul_mod_left _ _
-      simp only [boundary, ↓reduceIte] at epochedOk
-      obtain ⟨justified, justifiedOk, frame⟩ := processEpoch_frame epochedOk
-      obtain ⟨current, previous, finalized, justificationBits⟩ :=
-        justification_eq cachedSame epoch (sameRoots_of cachedKeeps) pulled justifiedOk
-      exact ⟨frame.currentJustified.trans current, frame.previousJustified.trans previous,
-        frame.finalized.trans finalized, frame.justificationBits.trans justificationBits⟩
-    | succ count =>
-      have notBoundary : ¬ nextSlot % preset.SLOTS_PER_EPOCH = 0 := by
-        intro boundary
-        have zero := congrArg UInt64.toNat boundary
-        rw [UInt64.toNat_mod, sum, UInt64.toNat_zero] at zero
-        have split := Nat.div_add_mod (moved.slot.toNat + 1) preset.SLOTS_PER_EPOCH.toNat
-        rw [zero, Nat.add_zero, Nat.div_eq_of_lt_le (k := (getCurrentEpoch state).toNat)
-          (by omega) (by rw [Nat.add_mul, Nat.one_mul]; omega), Nat.mul_comm] at split
-        omega
-      simp only [notBoundary, ↓reduceIte, pure, Except.pure, Except.ok.injEq] at epochedOk
-      subst epochedOk
-      exact advanceSlots_outcome window pulled (cachedSame.slot nextSlot) cachedKeeps
-        (by simp only; omega) (by simp only; rw [Nat.add_mul, Nat.one_mul]; omega) rest
+    have notBoundary : ¬ nextSlot % preset.SLOTS_PER_EPOCH = 0 := by
+      intro boundary
+      have zero := congrArg UInt64.toNat boundary
+      rw [UInt64.toNat_mod, sum, UInt64.toNat_zero] at zero
+      have split := Nat.div_add_mod (moved.slot.toNat + 1) preset.SLOTS_PER_EPOCH.toNat
+      rw [zero, Nat.add_zero, Nat.div_eq_of_lt_le (k := (getCurrentEpoch state).toNat)
+        (by omega) (by rw [Nat.add_mul, Nat.one_mul]; omega), Nat.mul_comm] at split
+      omega
+    simp only [epochIfLast, notBoundary, ↓reduceIte, pure, Except.pure,
+      Except.ok.injEq] at epochedOk
+    subst epochedOk
+    obtain ⟨movedAfter, rootsAfter⟩ := ih (by simp only; omega)
+      (by simp only; rw [Nat.add_mul, Nat.one_mul]; omega) (cachedSame.slot nextSlot) rest
+    refine ⟨movedAfter, fun window roots => rootsAfter window ?_⟩
+    change KeepsRoots state cached
+    exact roots.processSlot window cachedOk low (by rw [Nat.add_mul, Nat.one_mul]; omega)
+
+/-- Split off the last slot of a nonempty slot advance. -/
+private theorem advanceSlots_last {count : Nat} {moved after : BeaconState preset fork}
+    (computed : advanceSlots config checks (count + 1) moved = .ok after) :
+    ∃ last, advanceSlots config checks count moved = .ok last ∧
+      advanceSlot config checks last = .ok after := by
+  obtain ⟨last, preceding, final⟩ := advanceSlots_add count computed
+  exact ⟨last, preceding, by
+    simpa [advanceSlots, bind_ok_iff, pure, Except.pure] using final⟩
+
+/-- A within-epoch prefix followed by its boundary has the pulled-up checkpoints. -/
+private theorem advanceSlots_outcome
+    (window : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat)
+    (pulled : processJustificationAndFinalization state = .ok tip)
+    {count : Nat} {moved after : BeaconState preset fork} (same : Moved state moved)
+    (keeps : KeepsRoots state moved) (low : state.slot.toNat ≤ moved.slot.toNat)
+    (total : moved.slot.toNat + count + 1 =
+      ((getCurrentEpoch state).toNat + 1) * preset.SLOTS_PER_EPOCH.toNat)
+    (computed : advanceSlots config checks (count + 1) moved = .ok after) :
+    SameOutcome tip after := by
+  obtain ⟨last, preceding, final⟩ := advanceSlots_last computed
+  obtain ⟨lastSame, lastRoots⟩ := advanceSlots_prefix low (by omega) same preceding
+  have lastSlot := advanceSlots_slot count preceding
+  obtain ⟨nextSlot, cached, epoched, sum, cachedOk, epochedOk, rfl⟩ := advanceSlot_ok final
+  have cachedSlot := processSlot_slot cachedOk
+  have cachedSame := lastSame.processSlot cachedOk
+  have cachedKeeps := (lastRoots window keeps).processSlot window cachedOk
+    (by omega) (by omega)
+  have start := epoch_bounds state
+  have epoch : getCurrentEpoch cached = getCurrentEpoch state := by
+    apply UInt64.toNat_inj.mp
+    rw [getCurrentEpoch_toNat cached, cachedSlot]
+    exact Nat.div_eq_of_lt_le (by omega) (by rw [Nat.add_mul, Nat.one_mul] at total ⊢; omega)
+  have boundary : nextSlot % preset.SLOTS_PER_EPOCH = 0 := by
+    apply UInt64.toNat_inj.mp
+    rw [UInt64.toNat_mod, sum, lastSlot, total, UInt64.toNat_zero]
+    exact Nat.mul_mod_left _ _
+  simp only [epochIfLast, boundary, ↓reduceIte] at epochedOk
+  obtain ⟨justified, justifiedOk, frame⟩ := processEpoch_frame epochedOk
+  obtain ⟨current, previous, finalized, bits⟩ :=
+    justification_eq cachedSame epoch (sameRoots_of cachedKeeps) pulled justifiedOk
+  exact ⟨frame.currentJustified.trans current, frame.previousJustified.trans previous,
+    frame.finalized.trans finalized, frame.justificationBits.trans bits⟩
 
 end Helpers
+
+/-- Empty slots within one epoch keep the current justified checkpoint. -/
+theorem processSlots_currentJustified_of_sameEpoch
+    (positive : 0 < preset.SLOTS_PER_EPOCH.toNat)
+    (epoch : computeEpochAtSlot preset next = getCurrentEpoch state)
+    (advanced : processSlots config checks state next = .ok after) :
+    after.currentJustifiedCheckpoint = state.currentJustifiedCheckpoint := by
+  simp only [processSlots, bind_ok_iff, ensure_ok_iff] at advanced
+  obtain ⟨_, lt, advanced⟩ := advanced
+  have low := UInt64.lt_iff_toNat_lt.mp lt
+  have epochNat := congrArg UInt64.toNat epoch
+  simp only [computeEpochAtSlot, UInt64.toNat_div] at epochNat
+  have high := Nat.lt_div_mul_add (a := next.toNat) positive
+  rw [epochNat] at high
+  have same := (advanceSlots_prefix (Nat.le_refl state.slot.toNat)
+    (by rw [Nat.add_mul, Nat.one_mul]; omega)
+    ⟨state.slot, state.stateRoots, state.blockRoots, state.latestBlockHeader,
+      state.executionPayloadAvailability, rfl⟩ advanced).1
+  obtain ⟨_, _, _, _, _, rfl⟩ := same
+  rfl
+
+/-- Advancing within the block's epoch preserves the source used by fork choice. -/
+theorem Store.getVotingSource_eq_of_sameEpoch {store : Store preset fork}
+    {root : Root} {block : BeaconBlock preset fork}
+    (positive : 0 < preset.SLOTS_PER_EPOCH.toNat)
+    (blockOk : store.block root = .ok block)
+    (stateOk : store.blockStates[root]? = some state)
+    (clock : store.getCurrentStoreEpoch config = .ok (getCurrentEpoch state))
+    (blockSlot : block.slot = state.slot)
+    (epoch : computeEpochAtSlot preset next = getCurrentEpoch state)
+    (advanced : lookaheadState config checks state next = .ok after) :
+    store.getVotingSource config root = .ok after.currentJustifiedCheckpoint := by
+  have source : after.currentJustifiedCheckpoint = state.currentJustifiedCheckpoint := by
+    unfold lookaheadState at advanced
+    split at advanced
+    · exact processSlots_currentJustified_of_sameEpoch positive epoch
+        (mapError_ok_iff.mp advanced)
+    · simp only [pure, Except.pure, Except.ok.injEq] at advanced
+      exact advanced ▸ rfl
+  rw [source]
+  simp only [getVotingSource, blockOk, clock, bind, Except.bind, blockSlot,
+    getCurrentEpoch, UInt64.lt_irrefl, ↓reduceIte, stateOk, pure, Except.pure]
 
 /-- Advance a state to the first slot of the next epoch, with no block on the way.
 
@@ -416,5 +486,22 @@ theorem Store.computePulledUpTip_unrealizedJustification {store pulledStore : St
     start advanced).1]
   split at pulled <;> simp only [pure, Except.pure, Except.ok.injEq] at pulled <;> subst pulled <;>
     simp only [updateCheckpoints, updateUnrealizedCheckpoints] <;> split_ifs <;> simp
+
+/-- At the next epoch boundary, a pulled block's voting source is the advanced state's source. -/
+theorem Store.getVotingSource_eq_of_pulled {store pulledStore : Store preset fork}
+    {root : Root} {block : BeaconBlock preset fork} {epoch : Epoch}
+    (window : preset.RootsCoverTwoEpochs)
+    (pulled : store.computePulledUpTip config root = .ok pulledStore)
+    (stateOk : store.blockState root = .ok state)
+    (blockOk : pulledStore.block root = .ok block)
+    (clock : pulledStore.getCurrentStoreEpoch config = .ok epoch)
+    (older : computeEpochAtSlot preset block.slot < epoch)
+    (start : computeStartSlotAtEpoch preset (getCurrentEpoch state + 1) = .ok next)
+    (advanced : processSlots config checks state next = .ok after) :
+    pulledStore.getVotingSource config root = .ok after.currentJustifiedCheckpoint := by
+  have recorded := Store.computePulledUpTip_unrealizedJustification window.reach pulled stateOk
+    start advanced
+  simp only [getVotingSource, blockOk, clock, bind, Except.bind, older, ↓reduceIte, recorded,
+    pure, Except.pure]
 
 end EthLib.Consensus

@@ -127,6 +127,18 @@ theorem Preset.rootsReachPreviousEpoch_mainnet : Preset.mainnet.RootsReachPrevio
 theorem Preset.rootsReachPreviousEpoch_minimal : Preset.minimal.RootsReachPreviousEpoch := by
   constructor <;> decide
 
+/-- The block-root buffer covers two complete epochs. -/
+structure Preset.RootsCoverTwoEpochs (preset : Preset) : Prop where
+  reach : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat
+
+/-- Mainnet retains at least two epochs of block roots. -/
+theorem Preset.rootsCoverTwoEpochs_mainnet : Preset.mainnet.RootsCoverTwoEpochs := by
+  exact ⟨by decide⟩
+
+/-- Minimal retains at least two epochs of block roots. -/
+theorem Preset.rootsCoverTwoEpochs_minimal : Preset.minimal.RootsCoverTwoEpochs := by
+  exact ⟨by decide⟩
+
 /-- Each constant of a configuration that a run of slots divides by is positive.
 
 The limits of churn divide the active validators or the active balance by a quotient.

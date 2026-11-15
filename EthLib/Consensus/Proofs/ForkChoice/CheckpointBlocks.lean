@@ -316,7 +316,7 @@ The two justified checkpoints come from the current justified checkpoint of a st
 
 The two finalized checkpoints come from the finalized checkpoint of a state.
 
-Each unrealized justification has the anchor epoch.
+The anchor block's unrealized justification can be the synthetic anchor checkpoint.
 
 Otherwise it is the current justified checkpoint of its block state after justification. -/
 private structure Tracked (store : Store preset fork) (anchorState : BeaconState preset fork)
@@ -331,7 +331,8 @@ private structure Tracked (store : Store preset fork) (anchorState : BeaconState
     store.unrealizedFinalizedCheckpoint
   justifications : ∀ (root : Root) (checkpoint : Checkpoint),
     store.unrealizedJustifications[root]? = some checkpoint →
-      checkpoint.epoch = getCurrentEpoch anchorState ∨
+      (hashTreeRoot anchorBlock = .ok root ∧
+        checkpoint = ⟨getCurrentEpoch anchorState, root⟩) ∨
         ∃ state pulled, store.blockStates[root]? = some state ∧
           processJustificationAndFinalization state = .ok pulled ∧
           checkpoint = pulled.currentJustifiedCheckpoint
@@ -681,7 +682,7 @@ private theorem Store.Reachable.tracked
     rw [justifications, getElem?_insert_root] at found
     by_cases same : anchorRoot' = root
     · simp only [same, ↓reduceIte, Option.some.injEq] at found
-      exact .inl (by rw [← found])
+      exact .inl ⟨same ▸ hashed', found.symm⟩
     · simp [same] at found
   | tick _ ticked ih => exact ih.onTick ticked
   | block previous added ih => exact ih.onBlock previous added
@@ -697,6 +698,17 @@ private theorem Store.Reachable.tracked
   | inclusionList _ accepted ih =>
     obtain ⟨_, _, rfl⟩ := Store.onInclusionList_ok _ accepted
     exact ih.of_eq rfl rfl rfl rfl rfl rfl
+
+/-- An unrealized entry is the synthetic anchor entry or the pulled checkpoint of its block. -/
+theorem Store.Reachable.unrealizedJustification_origin
+    (reachable : Store.Reachable config anchorState anchorBlock store) {root : Root}
+    {checkpoint : Checkpoint} (found : store.unrealizedJustifications[root]? = some checkpoint) :
+    (hashTreeRoot anchorBlock = .ok root ∧
+      checkpoint = ⟨getCurrentEpoch anchorState, root⟩) ∨
+      ∃ state pulled, store.blockStates[root]? = some state ∧
+        processJustificationAndFinalization state = .ok pulled ∧
+        checkpoint = pulled.currentJustifiedCheckpoint :=
+  reachable.tracked.justifications root checkpoint found
 
 /-- In a reachable store, the unrealized justification of a block names an ancestor of it.
 
@@ -719,9 +731,9 @@ theorem Store.Reachable.getCheckpointBlock_of_unrealizedJustification
     (store.getCheckpointBlock root checkpoint.epoch = .ok checkpoint.root ∧
         store.blocks.contains checkpoint.root) ∨
       hashTreeRoot anchorState = .ok (Vector.replicate 32 0) := by
-  rcases reachable.tracked.justifications root checkpoint found with same |
+  rcases reachable.unrealizedJustification_origin found with same |
     ⟨state, pulled, stateFound, pulledOk, rfl⟩
-  · rw [same] at later
+  · rw [same.2] at later
     exact absurd later (UInt64.lt_irrefl _)
   · exact reachable.getCheckpointBlock_of_blockState anchor anchorSlot positive window stateFound
       (.inr ⟨pulled, pulledOk, by simp⟩) later

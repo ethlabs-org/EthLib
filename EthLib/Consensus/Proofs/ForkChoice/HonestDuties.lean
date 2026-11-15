@@ -4,6 +4,7 @@ public import EthLib.Consensus.HonestAggregation
 public import EthLib.Consensus.Proofs.ForkChoice.Network
 import EthLib.Consensus.Proofs.HonestAggregation
 import EthLib.Consensus.Proofs.Signing
+import EthLib.Consensus.Proofs.ForkChoice.UnrealizedCheckpoints
 
 /-!
 # Proofs: the duties of honest validators that run the fork choice
@@ -136,6 +137,23 @@ def HonestVoteData (store : Store preset fork) (slot : Slot) (committeeIndex : C
     lookaheadState config checks headState slot = .ok state ∧
     getAttestationData state head.root block.slot committeeIndex head.payloadStatus = .ok data
 
+/-- A vote for a head in the current epoch carries that head's fork-choice voting source. -/
+theorem HonestVoteData.source_of_sameEpoch (positive : 0 < preset.SLOTS_PER_EPOCH.toNat)
+    {store : Store preset fork} {slot : Slot} {committeeIndex : CommitteeIndex}
+    {data : AttestationData} (vote : HonestVoteData config checks store slot committeeIndex data)
+    (current : store.getCurrentStoreEpoch config = .ok (computeEpochAtSlot preset slot))
+    (held : ∀ head block state, store.getHead config = .ok head →
+      store.blocks[head.root]? = some block → store.blockState head.root = .ok state →
+      block.slot = state.slot ∧ getCurrentEpoch state = computeEpochAtSlot preset slot) :
+    store.getVotingSource config data.beaconBlockRoot = .ok data.source := by
+  obtain ⟨head, block, base, state, headOk, blockOk, baseOk, advanced, made⟩ := vote
+  obtain ⟨aligned, epoch⟩ := held head block base headOk blockOk baseOk
+  obtain ⟨_, _, _, root, source, _⟩ := getAttestationData_eq_ok_iff.mp made
+  rw [root, source]
+  exact Store.getVotingSource_eq_of_sameEpoch positive
+    (by simp [Store.block, blockOk, pure, Except.pure]) (Store.blockState_ok_iff.mp baseOk)
+    (epoch ▸ current) aligned epoch.symm advanced
+
 /-- A store is up to date at a time, with a view.
 
 Its clock shows the time, and each move at that time with that view keeps it as it is.
@@ -150,6 +168,15 @@ variable (fork) in
 def IsAttestationDeadline (genesisTimeMs : UInt64) (slot : Slot) (time : ℕ) : Prop :=
   ∃ start due, computeTimeAtSlotMs config genesisTimeMs slot = .ok start ∧
     getAttestationDueMs config fork = .ok due ∧ time = start.toNat + due.toNat
+
+/-- The slot of a representable attestation deadline is the assigned slot. -/
+theorem IsAttestationDeadline.slot (deadlines : config.AttestationDeadlinesWithinSlot)
+    {genesisTimeMs timeMs : UInt64} {slot : Slot}
+    (deadline : IsAttestationDeadline fork config genesisTimeMs slot timeMs.toNat) :
+    computeSlotAtTimeMs config genesisTimeMs timeMs = .ok slot := by
+  obtain ⟨start, due, startOk, dueOk, time⟩ := deadline
+  exact EthLib.Consensus.computeSlotAtTimeMs_inside startOk time
+    (getAttestationDueMs_lt deadlines dueOk)
 
 variable {config checks sources anchorState anchorBlock}
 
@@ -194,6 +221,16 @@ def MaySign (validator : ValidatorIndex) (time : ℕ) (view : Set (Message prese
     HonestVoteData config checks store data.slot committeeIndex data ∧
     ∀ m ∈ view, ∀ y ∈ statements config checks anchorState anchorBlock m, y.1 = validator →
       isSlashableAttestationData y.2 data = false ∧ isSlashableAttestationData data y.2 = false
+
+/-- The clock of a store signing at a deadline lies in the vote's slot. -/
+theorem MaySign.currentSlot (deadlines : config.AttestationDeadlinesWithinSlot)
+    {validator : ValidatorIndex} {time : ℕ} {view : Set (Message preset fork)}
+    {store : Store preset fork} {data : AttestationData}
+    (may : MaySign config checks sources anchorState anchorBlock assignment genesisTimeMs
+      validator time view store data) : store.getCurrentSlot config = .ok data.slot := by
+  obtain ⟨_, _, deadline, genesis, updated, _, _⟩ := may
+  have slotted := IsAttestationDeadline.slot config deadlines (updated.1 ▸ deadline)
+  simp only [Store.getCurrentSlot, genesis, slotted, Except.mapError]
 
 /-- The messages that an honest validator may send.
 

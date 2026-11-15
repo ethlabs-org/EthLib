@@ -123,7 +123,7 @@ theorem runKept_stateTransition {signed : SignedBeaconBlock preset fork} {valida
   exact (runKept_processSlots slotsOk).trans (runKept_processBlock blockOk)
 
 /-- Advancing by a sum of slot counts advances by the first count, then by the second. -/
-private theorem advanceSlots_add :
+theorem advanceSlots_add :
     ∀ (first : Nat) {second : Nat} {state after : BeaconState preset fork},
       advanceSlots config checks (first + second) state = .ok after →
         ∃ mid, advanceSlots config checks first state = .ok mid ∧
