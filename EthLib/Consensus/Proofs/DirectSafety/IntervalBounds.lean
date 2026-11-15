@@ -939,7 +939,8 @@ private def intervalLoss_BlockEvent {fork : Fork} (start : BeaconState preset fo
     intervalLoss_Plain e ∧
     (e.source = .slashings → s.validators.data.size = start.validators.data.size ∧
       ((∃ sl, processProposerSlashing config checks s sl = .ok t) ∨
-        ∃ sl, processAttesterSlashing config checks s sl = .ok t))
+        ∃ sl, processAttesterSlashing config checks s sl = .ok t)) ∧
+    e.source ≠ .consolidations
 
 /-- An event of an epoch records no withdrawal and no request, and its slashings are delayed. -/
 private def intervalLoss_EpochEvent (e : BalanceEvent preset) : Prop :=
@@ -1072,13 +1073,14 @@ private theorem intervalLoss_block_record {fork : Fork} {start : BeaconState pre
       ∀ t, action pre.1 = .ok t →
         ((∃ sl, processProposerSlashing config checks pre.1 sl = .ok t) ∨
           ∃ sl, processAttesterSlashing config checks pre.1 sl = .ok t) := by
-      intro h; cases h) :
+      intro h; cases h)
+    (notPending : source ≠ .consolidations := by decide) :
     intervalLoss_BlockSites (config := config) (checks := checks) start post := by
   have sites := intervalLoss_sites_record preserves prior.1 classified ok
   have events := intervalLoss_record_event _ prior.2.2
     (fun t credit debit computed => ⟨pre.1, t, rfl, rfl, prior.2.1, (provenance t computed).1,
       (provenance t computed).2.1, (provenance t computed).2.2 credit debit,
-      fun source => ⟨(sized source).1, (sized source).2 t computed⟩⟩) ok
+      (fun source => ⟨(sized source).1, (sized source).2 t computed⟩), notPending⟩) ok
   simp only [recordBalance, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at ok
   obtain ⟨_, _, after, computed, rfl⟩ := ok
   exact ⟨sites, prior.2.1.trans (keeps _ _ computed) prior.1.1.lifecycle.size_le, events⟩
@@ -1467,7 +1469,10 @@ private def intervalLoss_EventBetween {config : Config} {checks : SignatureCheck
     e.before.fork ≤ y.fork ∧
     ((e.source = .crossing ∧ e.before.fork = .dencun ∧ .pectra ≤ e.after.fork) ∨
       intervalLoss_BlockEvent (config := config) (checks := checks) x.state e ∨
-      intervalLoss_EpochEvent e) ∧ SlashedPersistence x.state e.before.state
+      intervalLoss_EpochEvent e) ∧ SlashedPersistence x.state e.before.state ∧
+    (e.source = .consolidations →
+      (getCurrentEpoch e.before.state).toNat < (getCurrentEpoch y.state).toNat) ∧
+    (e.source = .crossing → x.fork < .pectra ∧ .pectra ≤ y.fork)
 
 private theorem intervalLoss_sites_between {x y : ForkedBeaconState preset}
     {e : BalanceEvent preset} (first : intervalLoss_SiteStep x e.before)
@@ -1476,17 +1481,20 @@ private theorem intervalLoss_sites_between {x y : ForkedBeaconState preset}
     (ordered : ExitsOrdered x.state) (early : y.fork < .glamsterdam)
     (source : e.source = .slashings →
       intervalLoss_SlashingSite config checks e.before e.after e.creditLimit)
-    (kind : (e.source = .crossing ∧ e.before.fork = .dencun ∧ .pectra ≤ e.after.fork) ∨
-      intervalLoss_BlockEvent (config := config) (checks := checks) x.state e ∨
-      intervalLoss_EpochEvent e) :
+    (kind : intervalLoss_BlockEvent (config := config) (checks := checks) x.state e) :
     intervalLoss_EventBetween (config := config) (checks := checks) x y e := by
   have afterEarly := Nat.lt_of_le_of_lt last.fork_le early
   refine ⟨first.lifecycle, middle.lifecycle, last.lifecycle, first.ordered ordered,
     middle.matched (first.matched matched), ?_, ?_,
     Nat.lt_of_le_of_lt middle.fork_le afterEarly, middle.slashed,
-    last.slashed, source, Nat.le_trans middle.fork_le last.fork_le, kind, first.slashed⟩
+    last.slashed, source, Nat.le_trans middle.fork_le last.fork_le, .inr (.inl kind),
+    first.slashed, ?_, ?_⟩
   · rw [first.epoch]
   · rw [middle.epoch, last.epoch]
+  · obtain ⟨_, _, _, _, _, _, _, _, _, notPending⟩ := kind
+    exact fun pending => False.elim (notPending pending)
+  · obtain ⟨_, _, _, _, _, _, _, plain, _⟩ := kind
+    exact fun crossing => False.elim (plain.2.2.2 crossing)
 
 private theorem intervalLoss_step_sites {x y : ForkedBeaconState preset}
     (step : Step config checks x y) (early : y.fork < .glamsterdam)
@@ -1511,7 +1519,7 @@ private theorem intervalLoss_step_sites {x y : ForkedBeaconState preset}
     intro e member
     obtain ⟨first, middle, last, source⟩ := sites.1.2.1 e member
     exact intervalLoss_sites_between first middle last matched ordered early source
-      (.inr (.inl (sites.2.2 e member)))
+      (sites.2.2 e member)
   | slot ok =>
     obtain ⟨advanced, cached, crossings, advanceOk, upgrades, cachedOk, crossingOk, split⟩ :=
       Step.balanceEvents_slot ok early replayed
@@ -1541,14 +1549,19 @@ private theorem intervalLoss_step_sites {x y : ForkedBeaconState preset}
         ?_, ?_, ?_, ?_, Nat.lt_of_le_of_lt middle.fork_le afterEarly,
         middle.slashed, last.slashed, (fun h => by rw [source.1] at h; cases h),
         Nat.le_trans middle.fork_le last.fork_le, .inl source,
-        advancedSlashed.trans first.slashed⟩
+        advancedSlashed.trans first.slashed,
+        (fun pending => by rw [source.1] at pending; cases pending), ?_⟩
       · exact first.ordered advancedHolds.exitsOrdered
       · exact middle.matched (first.matched advancedHolds.balancesMatch)
       · rw [middle.epoch, last.epoch]
         exact advanceEpoch
       · rw [middle.epoch, last.epoch]
+      · intro _
+        exact ⟨Nat.lt_of_le_of_lt first.fork_le (source.2.1 ▸ (by decide)),
+          Nat.le_trans source.2.2 last.fork_le⟩
     rcases split with ⟨-, rfl⟩ |
-      ⟨middle, updated, recorded, recordOk, updatedOk, validators, -, rfl⟩
+      ⟨middle, updated, recorded, recordOk, updatedOk, validators, -, rfl,
+        next, sum, nextSlot, boundary, _⟩
     · exact ⟨crossingBound, fun i => by rw [crossingCounts]; omega⟩
     have sites := intervalLoss_sites_epoch recordOk
     refine ⟨?_, fun i => ?_⟩
@@ -1571,9 +1584,15 @@ private theorem intervalLoss_step_sites {x y : ForkedBeaconState preset}
         Nat.lt_of_le_of_lt (Nat.le_trans during.fork_le last.fork_le) before,
         during.slashed, (last.slashed.trans finishSlashed).trans crossingStep.slashed, source,
         Nat.le_trans (Nat.le_trans during.fork_le last.fork_le) crossingStep.fork_le,
-        .inr (.inr (sites.2 e member)), initial.slashed⟩
+        .inr (.inr (sites.2 e member)), initial.slashed, ?_, ?_⟩
       · rw [initial.epoch]
       · rw [← initial.epoch]; exact advanceEpoch
+      · intro _
+        have epochs := nextSlot_epoch_of_boundary sum boundary
+        rw [← initial.epoch, getCurrentEpoch_toNat, getCurrentEpoch_toNat,
+          processUpgrades_slot upgrades, nextSlot]
+        omega
+      · exact fun crossing => False.elim ((sites.2 e member).2.2.2.2.2.2 crossing)
     · exact crossingBound e member
 
 private theorem replay_event_provenance {g x y : ForkedBeaconState preset}
@@ -2419,7 +2438,7 @@ theorem _root_.EthLib.Consensus.Step.block_balanceEvents_slashed_nondebit {fork 
   have sites := intervalLoss_sites_block early engine signed.message
     (Step.balanceEvents_block early replayed)
   intro e member source i v found slashed
-  obtain ⟨a, b, before, after, _, _, _, _, operation⟩ := sites.2.2 e member
+  obtain ⟨a, b, before, after, _, _, _, _, operation, _⟩ := sites.2.2 e member
   rcases e with ⟨tag, start, finish, credit, debit⟩
   dsimp only at before after
   subst start
@@ -2549,7 +2568,7 @@ theorem _root_.EthLib.Consensus.Step.slot_balanceEvents_source_ne
       e.source ≠ .withdrawals ∧ e.source ≠ .excess := by
     rw [upgradeBalanceReplay_crossing crossingOk e member]
     exact ⟨nofun, nofun⟩
-  rcases split with ⟨-, rfl⟩ | ⟨_, _, _, recordOk, -, -, -, rfl⟩
+  rcases split with ⟨-, rfl⟩ | ⟨_, _, _, recordOk, -, -, -, rfl, _⟩
   · exact crossed
   intro e member
   rcases List.mem_append.mp member with member | member
@@ -2642,12 +2661,17 @@ theorem _root_.EthLib.Consensus.Step.balanceEvents_sites {x y : ForkedBeaconStat
                 e.before.fork).WHISTLEBLOWER_REWARD_QUOTIENT.toNat else 0) ∧
       (e.source = .slashings → 0 < e.creditLimit →
         ∀ i : Nat, effectiveAt e.before i = effectiveAt x i) ∧
-      (e.source = .slashings → 0 < e.creditLimit → e.before.fork = x.fork) := by
+      (e.source = .slashings → 0 < e.creditLimit → e.before.fork = x.fork) ∧
+      (getCurrentEpoch e.before.state).toNat ≤ (getCurrentEpoch y.state).toNat ∧
+      (e.source = .consolidations →
+        (getCurrentEpoch e.before.state).toNat < (getCurrentEpoch y.state).toNat) ∧
+      (e.source = .crossing → x.fork < .pectra ∧ .pectra ≤ y.fork) := by
   have before : x.fork < .glamsterdam := Nat.lt_of_le_of_lt step.chainStep.fork_le early
   intro e member
   have sites := intervalLoss_step_sites step early holds replayed
-  obtain ⟨grown, duringLife, finalLife, ordered, _, _, _, beforeEarly,
-    duringSlashed, finalSlashed, site, _, kind, prefixSlashed⟩ := sites.1 e member
+  obtain ⟨grown, duringLife, finalLife, ordered, _, _, epochBound, beforeEarly,
+    duringSlashed, finalSlashed, site, _, kind, prefixSlashed, pendingEpoch, crossed⟩ :=
+      sites.1 e member
   -- An event of a block or an epoch has the plain facts; a crossing has the upgrade.
   have plain : (e.source = .crossing ∧ e.before.fork = .dencun ∧ .pectra ≤ e.after.fork) ∨
       intervalLoss_Plain e := by
@@ -2655,19 +2679,10 @@ theorem _root_.EthLib.Consensus.Step.balanceEvents_sites {x y : ForkedBeaconStat
     · exact .inl crossing
     · exact .inr plain
     · exact .inr epoch.2.2.2
-  refine ⟨fun source i inside unslashed => ?_, fun source => ?_, fun source i => ?_,
-    fun source i inside => ?_, fun source i v found waiting => ?_,
-    fun source i v found slashed due => by
-      simpa [slashed] using (site source).balance_le beforeEarly i v found due,
-    (fun source => ?_), ordered, grown, duringLife, finalLife, prefixSlashed,
-    duringSlashed, finalSlashed, sites.2, (fun source => (site source).credit), ?_⟩
-  case refine_7 =>
-    suffices bridge : e.source = .slashings → 0 < e.creditLimit →
-        (∀ i : Nat, effectiveAt e.before i = effectiveAt x i) ∧ e.before.fork = x.fork from
-      ⟨fun source positive => (bridge source positive).1,
-        fun source positive => (bridge source positive).2⟩
+  have bridge : e.source = .slashings → 0 < e.creditLimit →
+      (∀ i : Nat, effectiveAt e.before i = effectiveAt x i) ∧ e.before.fork = x.fork := by
     intro source positive
-    rcases kind with crossing | ⟨s, t, atStart, _, keep, _, _, _, size⟩ | epoch
+    rcases kind with crossing | ⟨s, t, atStart, _, keep, _, _, _, size, _⟩ | epoch
     · rw [crossing.1] at source; cases source
     · refine ⟨?_, by rw [atStart]⟩
       intro i
@@ -2688,6 +2703,14 @@ theorem _root_.EthLib.Consensus.Step.balanceEvents_sites {x y : ForkedBeaconStat
         | some v => cases flag : v.slashed <;> simp [flag]
       simp only [zero, Bool.false_eq_true, ↓reduceIte, Finset.sum_const_zero] at bound
       omega
+  refine ⟨fun source i inside unslashed => ?_, fun source => ?_, fun source i => ?_,
+    fun source i inside => ?_, fun source i v found waiting => ?_,
+    fun source i v found slashed due => by
+      simpa [slashed] using (site source).balance_le beforeEarly i v found due,
+    (fun source => ?_), ordered, grown, duringLife, finalLife, prefixSlashed,
+    duringSlashed, finalSlashed, sites.2, (fun source => (site source).credit),
+    (fun source positive => (bridge source positive).1),
+    (fun source positive => (bridge source positive).2), epochBound, pendingEpoch, crossed⟩
   rotate_left 3
   · rcases plain with crossing | plain
     · rcases source with source | source <;> rw [crossing.1] at source <;> cases source

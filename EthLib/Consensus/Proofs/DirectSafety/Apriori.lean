@@ -4063,6 +4063,162 @@ private theorem FloorTrace.reference_floor {effective balance quotient : Nat}
   have bound := trace.floor (floorBase_ge fork effective balance capped)
   omega
 
+/-- The delayed-slashing operation recorded by an epoch replay cannot debit a newly slashed key.
+
+Its withdrawal bound comes from the Run prefix, transported through the actual registry stage. -/
+private theorem epoch_delayed_slashing_nondebit {x m n : ForkedBeaconState preset}
+    (pre : Run config checks x m) (step : Step config checks m n)
+    (caps : CapOrder preset) (early : n.fork < .glamsterdam) (holds : Invariant m.state)
+    (delay : 0 < config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat)
+    {cached middle : BeaconState preset m.fork}
+    (same : cached.validators = m.state.validators)
+    (processed : epochBeforePayments config checks cached = .ok middle)
+    {recorded events : List (BalanceEvent preset)}
+    (epochReplay : epochBalanceReplay (config := config) (checks := checks) cached =
+      .ok (middle, recorded))
+    (replayed : step.balanceEvents = .ok events) (included : recorded ⊆ events)
+    (i : ValidatorIndex) (v u : Validator)
+    (initial : x.state.validators.data[i.toNat]? = some v)
+    (located : m.state.validators.data[i.toNat]? = some u)
+    (unslashed : v.slashed = false)
+    (sameEpoch : getCurrentEpoch cached = getCurrentEpoch m.state)
+    (short : (getCurrentEpoch m.state).toNat < (getCurrentEpoch x.state).toNat +
+      preset.EPOCHS_PER_SLASHINGS_VECTOR.toNat -
+        (preset.EPOCHS_PER_SLASHINGS_VECTOR / 2).toNat) :
+    ∀ event ∈ recorded, event.source = .slashings →
+      actualBalanceAt event.before i.toNat ≤ actualBalanceAt event.after i.toNat ∧
+        event.after.state.validators.data = event.before.state.validators.data := by
+  obtain ⟨justified, scored, rewarded, registered, after, reset, deposited,
+    rewards, limit, _, justifiedOk, scoredOk, rewardedOk, registeredOk,
+    slashOk, _, _, _, rewardReplay, shape⟩ := funding_epoch_site processed epochReplay
+  have quiet := replayRewards_induction
+    (fun pre => ∀ e ∈ pre.2, e.source ≠ .slashings)
+    (fun held ok => by
+      simp only [recordBalance, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at ok
+      obtain ⟨_, _, _, _, rfl⟩ := ok
+      intro e member
+      rcases List.mem_append.mp member with old | added
+      · exact held e old
+      · simp only [List.mem_singleton] at added
+        subst e
+        simp)
+    (fun penalty held ok => by
+      simp only [recordBalance, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at ok
+      obtain ⟨_, _, _, _, rfl⟩ := ok
+      intro e member
+      rcases List.mem_append.mp member with old | added
+      · exact held e old
+      · simp only [List.mem_singleton] at added
+        subst e
+        rcases penalty with rfl | rfl <;> simp)
+    (by simp) rewardReplay
+  -- The recorded operation starts at the endpoint of these four actual stages.
+  have fixed : EpochTrace (EpochStage.action config checks)
+      [.justification, .inactivity, .rewards, .registry] cached registered :=
+    .cons (EpochStage.action_cases.mpr justifiedOk) <|
+      .cons (EpochStage.action_cases.mpr scoredOk) <|
+      .cons (EpochStage.action_cases.mpr rewardedOk) <|
+      .cons (EpochStage.action_cases.mpr registeredOk) .nil
+  have one := justifiedOk.validators_eq ⟨nofun, nofun, nofun⟩
+  have two := scoredOk.validators_eq ⟨nofun, nofun, nofun⟩
+  have three := (EpochStage.action_cases.mp
+    (show EpochStage.action config checks .rewards scored = .ok rewarded from rewardedOk)
+      ).validators_eq ⟨nofun, nofun, nofun⟩
+  have atRegistry : rewarded.validators.data[i.toNat]? = some u := by
+    rw [three, two, one, same]; exact located
+  obtain ⟨w, found, sameValidator⟩ :=
+    (processRegistryUpdates_kept registeredOk).1 i.toNat u atRegistry
+  have slot : registered.slot = cached.slot := by
+    refine fixed.transport (fun a b => b.slot = a.slot) (fun _ => rfl)
+      (fun {a b c} (one : b.slot = a.slot) (two : c.slot = b.slot) => two.trans one) ?_
+    intro k member a b computed
+    have edge := EpochStage.action_cases.mp computed
+    simp only [List.mem_cons, List.not_mem_nil, or_false] at member
+    rcases member with rfl | rfl | rfl | rfl
+    · exact (edge.records ⟨nofun, nofun, nofun, nofun, nofun, nofun⟩).2.2.2.2
+    · exact (edge.records ⟨nofun, nofun, nofun, nofun, nofun, nofun⟩).2.2.2.2
+    · exact (frame_processRewardsAndPenalties edge).slot
+    · exact (frame_processRegistryUpdates edge).slot
+  have epoch : getCurrentEpoch registered = getCurrentEpoch m.state := by
+    simpa only [getCurrentEpoch, slot] using sameEpoch
+  let recordedSlash : BalanceEvent preset :=
+    ⟨.slashings, ⟨m.fork, registered⟩, ⟨m.fork, after⟩, 0, limit⟩
+  intro event member source
+  have equal : event = recordedSlash := by
+    rw [shape] at member
+    simp only [List.mem_append, List.mem_singleton] at member
+    rcases member with (reward | slash) | pending
+    · exact False.elim (quiet event reward source)
+    · exact slash
+    · split at pending
+      · simp only [List.mem_cons, List.not_mem_nil, or_false] at pending
+        rcases pending with rfl | rfl <;> cases source
+      · simp at pending
+  subst event
+  refine ⟨?_, congrArg (·.data) (EpochStage.Edge.validators_eq
+    (config := config) (checks := checks) (stage := .slashings) slashOk ⟨nofun, nofun, nofun⟩)⟩
+  have sites :=
+    step.balanceEvents_sites early holds caps.compounding replayed recordedSlash (included member)
+  cases slashed : u.slashed with
+  | true =>
+    have kept := newly_slashed_epoch_prefix pre caps
+      (Nat.lt_of_le_of_lt step.chainStep.fork_le early) delay same fixed
+      i.toNat v u w initial located found unslashed slashed
+    exact sites.2.2.2.2.2.1 rfl i w found kept.1
+      (newly_slashed_epoch_not_due (getCurrentEpoch x.state)
+        (getCurrentEpoch registered) w kept.2.2 (by rwa [epoch]))
+  | false =>
+    have atStart : slashedFlag registered i = .ok false := by
+      simp [slashedFlag, getValidator, found, Except.map, sameValidator.2.2.2, slashed]
+    have atEnd : slashedFlag after i = .ok false := by
+      have same := EpochStage.Edge.validators_eq (config := config) (checks := checks)
+        (stage := .slashings) slashOk ⟨nofun, nofun, nofun⟩
+      simpa only [slashedFlag, getValidator, same] using atStart
+    simpa [recordedSlash, atEnd] using sites.1 rfl i
+      (Array.getElem?_eq_some_iff.mp located).1 atStart
+
+/-- Slot dispatch reads the actual epoch prefix exposed by the slot replay. -/
+private theorem slot_delayed_slashing_nondebit {x m n : ForkedBeaconState preset}
+    (pre : Run config checks x m) (ok : advanceSlotAcross config checks m = .ok n)
+    (caps : CapOrder preset) (early : n.fork < .glamsterdam) (holds : Invariant m.state)
+    (delay : 0 < config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat)
+    {events : List (BalanceEvent preset)}
+    (replayed : (Step.slot ok).balanceEvents = .ok events)
+    (i : ValidatorIndex) (v u : Validator)
+    (initial : x.state.validators.data[i.toNat]? = some v)
+    (located : m.state.validators.data[i.toNat]? = some u)
+    (unslashed : v.slashed = false)
+    (short : (getCurrentEpoch m.state).toNat < (getCurrentEpoch x.state).toNat +
+      preset.EPOCHS_PER_SLASHINGS_VECTOR.toNat -
+        (preset.EPOCHS_PER_SLASHINGS_VECTOR / 2).toNat) :
+    ∀ event ∈ events, event.source = .slashings →
+      actualBalanceAt event.before i.toNat ≤ actualBalanceAt event.after i.toNat ∧
+        event.after.state.validators.data = event.before.state.validators.data := by
+  intro event member source
+  obtain ⟨advanced, cached, crossings, _, _, cachedOk, crossingOk, split⟩ :=
+    Step.balanceEvents_slot ok early replayed
+  rcases split with ⟨_, rfl⟩ |
+    ⟨middle, _, recorded, recordedOk, _, _, _, shape, _, _, _, _, prefixOk⟩
+  · have crossing := upgradeBalanceReplay_crossing crossingOk event member
+    rw [crossing] at source
+    cases source
+  have same : cached.validators = m.state.validators := by
+    obtain ⟨_, _, _, _, rfl⟩ := processSlot_ok cachedOk
+    rfl
+  have epoch : getCurrentEpoch cached = getCurrentEpoch m.state := by
+    simp only [getCurrentEpoch, (frame_processSlot cachedOk).slot]
+  have included : event ∈ recorded := by
+    rw [shape] at member
+    rcases List.mem_append.mp member with recorded | crossing
+    · exact recorded
+    · have crossed := upgradeBalanceReplay_crossing crossingOk event crossing
+      rw [crossed] at source
+      cases source
+  exact epoch_delayed_slashing_nondebit pre (.slot ok)
+    caps early holds delay same prefixOk recordedOk replayed
+      (shape ▸ List.subset_append_left recorded crossings)
+        i v u initial located unslashed epoch short event included source
+
 /-- Gross penalty accounting also retains the net debit of each sync event. -/
 private def floorPenaltyDebit (i : Nat) (event : BalanceEvent preset) : Nat :=
   penaltyDebit i event + if event.source = .sync then
@@ -4084,6 +4240,58 @@ private def floorSlash (i : Nat) (event : BalanceEvent preset) : Bool :=
   decide (event.source = .slashings) &&
     !(event.before.state.validators.data[i]?.map (·.slashed)).getD true &&
     (event.after.state.validators.data[i]?.map (·.slashed)).getD false
+
+/-- M1's occurrence count and persistence bound the charge by the endpoint slashed flag. -/
+private theorem floorSlash_step_bound {x y : ForkedBeaconState preset}
+    (step : Step config checks x y) (caps : CapOrder preset)
+    (early : y.fork < .glamsterdam) (holds : Invariant x.state)
+    {events : List (BalanceEvent preset)} (replayed : step.balanceEvents = .ok events)
+    (i : Nat) (v w : Validator) (initial : x.state.validators.data[i]? = some v)
+    (final : y.state.validators.data[i]? = some w) :
+    (if v.slashed then 1 else 0) + events.countP (floorSlash i) ≤
+      if w.slashed then 1 else 0 := by
+  have zero (unmarked : w.slashed = false) : events.countP (floorSlash i) = 0 := by
+    apply List.countP_eq_zero.mpr
+    intro e member
+    have sites := step.balanceEvents_sites early holds caps.compounding replayed e member
+    obtain ⟨u, found, _⟩ := sites.2.2.2.2.2.2.2.2.1.validators i v initial
+    obtain ⟨z, located, _⟩ := sites.2.2.2.2.2.2.2.2.2.1.validators i u found
+    cases marked : z.slashed with
+    | false => simp [floorSlash, located, marked]
+    | true =>
+      obtain ⟨last, read, flag⟩ := sites.2.2.2.2.2.2.2.2.2.2.2.2.2.1 i z located marked
+      have same := Option.some.inj (read.symm.trans final)
+      subst last
+      simp [unmarked] at flag
+  cases first : v.slashed with
+  | true =>
+    obtain ⟨last, read, flag⟩ := step.slashedPersistence i v initial first
+    have same := Option.some.inj (read.symm.trans final)
+    subst last
+    have none : events.countP (floorSlash i) = 0 := by
+      apply List.countP_eq_zero.mpr
+      intro e member
+      have sites := step.balanceEvents_sites early holds caps.compounding replayed e member
+      obtain ⟨u, found, marked⟩ := sites.2.2.2.2.2.2.2.2.2.2.2.1 i v initial first
+      simp [floorSlash, found, marked]
+    simp [flag, none]
+  | false =>
+    cases last : w.slashed with
+    | false => simp [zero last]
+    | true =>
+      simp only [Bool.false_eq_true, ↓reduceIte, Nat.zero_add]
+      cases events with
+      | nil => simp
+      | cons e rest =>
+        have sites := step.balanceEvents_sites early holds caps.compounding replayed e
+          (by simp)
+        have bound := sites.2.2.2.2.2.2.2.2.2.2.2.2.2.2.1 i
+        apply Nat.le_trans ?_ bound
+        apply List.countP_mono_left
+        intro event member marked
+        simp only [floorSlash, Bool.and_eq_true] at marked
+        simp only [Bool.and_eq_true]
+        exact ⟨marked.1.2, marked.2⟩
 
 /-- The occurrence budget supplies the first-slash side condition at each recorded event. -/
 private theorem FloorTrace.events {low base quotient : Nat} {a b : FloorAccount}
@@ -4426,7 +4634,8 @@ private theorem FloorTrace.block_slashing {fork : Fork} {s t : BeaconState prese
       some v) (inside : i.toNat < s.validators.data.size)
     {low base quotient : Nat} {a b : FloorAccount} (trace : FloorTrace low base quotient a b)
     (balance : b.balance = actualBalanceAt event.before i.toNat)
-    (flags : b.slashedHigh = none ↔ v.slashed = false)
+    (first : v.slashed = false → slashedFlag event.after.state i = .ok true →
+      b.slashedHigh = none)
     (high : effectiveAt ⟨fork, s⟩ i.toNat ≤ b.high)
     (positive : 0 < quotient)
     (quotient_le : quotient ≤
@@ -4434,7 +4643,8 @@ private theorem FloorTrace.block_slashing {fork : Fork} {s t : BeaconState prese
     ∃ last, FloorTrace low base quotient a last ∧
       last.balance = actualBalanceAt event.after i.toNat ∧ last.debt = b.debt ∧
       last.high = b.high ∧
-      (last.slashedHigh = none ↔ slashedFlag event.after.state i = .ok false) := by
+      last.slashedHigh = if v.slashed = false ∧ slashedFlag event.after.state i = .ok true
+        then some b.high else b.slashedHigh := by
   have beforeFlag : slashedFlag event.before.state i = .ok v.slashed := by
     simp [slashedFlag, getValidator, found, Except.map]
   have sites := (Step.block engine signed due ok).balanceEvents_sites early holds compounding
@@ -4448,24 +4658,16 @@ private theorem FloorTrace.block_slashing {fork : Fork} {s t : BeaconState prese
   by_cases marked : v.slashed = true
   · have paid := Step.block_balanceEvents_slashed_nondebit early
       replayed event member source i v found marked
-    have frozen : b.slashedHigh ≠ none := by
-      intro empty
-      have := flags.mp empty
-      simp [marked] at this
-    obtain ⟨z, located, slashed⟩ := markedAfter i.toNat v found marked
-    have same : z = w := Option.some.inj (located.symm.trans afterFound)
-    subst z
     exact ⟨{ b with balance := actualBalanceAt event.after i.toNat },
-      trace.credit (by omega), rfl, rfl, rfl, by simp [frozen, afterFlag, slashed]⟩
+      trace.credit (by omega), rfl, rfl, rfl, by simp [marked]⟩
   · have unmarked : v.slashed = false := Bool.eq_false_iff.mpr marked
-    have first := flags.mpr unmarked
     have paid := sites.1 source i inside
         (by simpa [unmarked] using beforeFlag)
     cases finalFlag : w.slashed with
     | false =>
       simp [afterFlag, finalFlag] at paid
       exact ⟨{ b with balance := actualBalanceAt event.after i.toNat },
-        trace.credit (by omega), rfl, rfl, rfl, by simp [first, afterFlag, finalFlag]⟩
+        trace.credit (by omega), rfl, rfl, rfl, by simp [afterFlag, finalFlag]⟩
     | true =>
       simp only [afterFlag, finalFlag, ↓reduceIte] at paid
       let penalty := effectiveAt ⟨fork, s⟩ i.toNat /
@@ -4482,8 +4684,348 @@ private theorem FloorTrace.block_slashing {fork : Fork} {s t : BeaconState prese
           rwa [Nat.add_mul_div_left _ _ positive] at bound
         exact one.trans (two.trans three)
       exact ⟨⟨actualBalanceAt event.after i.toNat, b.debt, b.high, some b.high⟩,
-        trace.slash first (by simpa only [balance] using paid) bounded,
-        rfl, rfl, rfl, by simp [afterFlag, finalFlag]⟩
+        trace.slash (first unmarked (by simp [afterFlag, finalFlag]))
+          (by simpa only [balance] using paid) bounded,
+        rfl, rfl, rfl, by simp [unmarked, afterFlag, finalFlag]⟩
+
+/-- The block handler reads the recorded operation and the fold's first-occurrence budget. -/
+private theorem FloorTrace.block_event {fork : Fork} {s t : BeaconState preset fork}
+    {engine : ExecutionEngine preset fork} {signed : SignedBeaconBlock preset fork}
+    {due : upgradeDue config ⟨fork, s⟩ = false}
+    {ok : applySignedBlock config checks engine s signed true = .ok t}
+    (early : fork < .glamsterdam) (holds : Invariant s) (caps : CapOrder preset)
+    {events : List (BalanceEvent preset)}
+    (replayed : (Step.block engine signed due ok).balanceEvents = .ok events)
+    (event : BalanceEvent preset) (member : event ∈ events) (source : event.source = .slashings)
+    (i : ValidatorIndex) (v : Validator) (initial : s.validators.data[i.toNat]? = some v)
+    {low base quotient : Nat} {a b : FloorAccount} (trace : FloorTrace low base quotient a b)
+    (balance : b.balance = actualBalanceAt event.before i.toNat)
+    (first : floorSlash i.toNat event = true → b.slashedHigh = none)
+    (high : effectiveAt ⟨fork, s⟩ i.toNat ≤ b.high) (positive : 0 < quotient)
+    (quotient_le : quotient ≤
+      (EthLib.Consensus.parameters preset fork).MIN_SLASHING_PENALTY_QUOTIENT.toNat) :
+    ∃ last, FloorTrace low base quotient a last ∧
+      last.balance = actualBalanceAt event.after i.toNat ∧
+      last.debt = b.debt + floorPenaltyDebit i.toNat event + floorPartialDebit i event ∧
+      last.high = b.high ∧ last.slashedHigh =
+        if floorSlash i.toNat event then some b.high else b.slashedHigh := by
+  have sites := (Step.block engine signed due ok).balanceEvents_sites early holds caps.compounding
+    replayed event member
+  obtain ⟨u, found, _⟩ := sites.2.2.2.2.2.2.2.2.1.validators i.toNat v initial
+  obtain ⟨w, located, _⟩ := sites.2.2.2.2.2.2.2.2.2.1.validators i.toNat u found
+  have flag : floorSlash i.toNat event =
+      decide (u.slashed = false ∧ slashedFlag event.after.state i = .ok true) := by
+    simp [floorSlash, source, found, slashedFlag, getValidator, located, Except.map]
+  obtain ⟨last, done, balance, debt, high, marked⟩ := trace.block_slashing early holds replayed
+    event member source caps.compounding i u found (Array.getElem?_eq_some_iff.mp initial).1
+    balance (fun unmarked marked => first (by simp [flag, unmarked, marked])) high positive
+    quotient_le
+  refine ⟨last, done, balance, ?_, high, ?_⟩
+  · simpa [floorPenaltyDebit, penaltyDebit, floorPartialDebit, source] using debt
+  · simpa only [flag, decide_eq_true_eq] using marked
+
+/-- A concrete block composes its operation sites with the carried occurrence account. -/
+private theorem FloorTrace.block_step {fork : Fork} {s t : BeaconState preset fork}
+    {engine : ExecutionEngine preset fork} {signed : SignedBeaconBlock preset fork}
+    {due : upgradeDue config ⟨fork, s⟩ = false}
+    {ok : applySignedBlock config checks engine s signed true = .ok t}
+    (early : fork < .glamsterdam) (holds : Invariant s) (caps : CapOrder preset)
+    {events : List (BalanceEvent preset)}
+    (replayed : (Step.block engine signed due ok).balanceEvents = .ok events)
+    (i : ValidatorIndex) (v w : Validator) (initial : s.validators.data[i.toNat]? = some v)
+    (final : t.validators.data[i.toNat]? = some w) (high : Nat)
+    (endEpoch : (getCurrentEpoch t).toNat ≤ high + 1) (retained : high + 1 < w.exitEpoch.toNat)
+    {low base quotient : Nat} {a b : FloorAccount} (trace : FloorTrace low base quotient a b)
+    (balance : b.balance = actualBalanceAt ⟨fork, s⟩ i.toNat)
+    (budget : (if b.slashedHigh.isSome then 1 else 0) +
+      events.countP (floorSlash i.toNat) ≤ 1)
+    (capped : max low b.high ≤ (withdrawalMaxEffectiveBalance preset fork v).toNat)
+    (effective : effectiveAt ⟨fork, s⟩ i.toNat ≤ b.high) (positive : 0 < quotient)
+    (quotient_le : quotient ≤
+      (EthLib.Consensus.parameters preset fork).MIN_SLASHING_PENALTY_QUOTIENT.toNat) :
+    ∃ last, FloorTrace low base quotient a last ∧
+      last.balance = actualBalanceAt ⟨fork, t⟩ i.toNat ∧
+      last.debt = b.debt + (events.map (floorPenaltyDebit i.toNat)).sum +
+        (events.map (floorPartialDebit i)).sum ∧ last.high = b.high ∧
+      (if last.slashedHigh.isSome then 1 else 0) =
+        (if b.slashedHigh.isSome then 1 else 0) + events.countP (floorSlash i.toNat) := by
+  let step := Step.block engine signed due ok
+  obtain ⟨p, first, second, path, split, empty, start, finish, linked,
+    empty', start', finish', linked', _⟩ := step.balanceChain early replayed
+  have point : p = ⟨fork, s⟩ := by
+    simp only [step, Step.balancePath] at path
+    rcases path with ⟨_, rfl⟩ | impossible
+    · rfl
+    · simp at impossible
+  subst p
+  have chain : events.IsChain (fun e e' =>
+      actualBalanceAt e.after i.toNat = actualBalanceAt e'.before i.toNat) := by
+    rw [split]
+    exact (linked.imp (fun _ _ h => h i.toNat)).append
+      (linked'.imp (fun _ _ h => h i.toNat))
+      (fun e member e' member' => (finish e member i.toNat).trans
+        (start' e' member' i.toNat).symm)
+  have begins : ∀ e ∈ events.head?, b.balance = actualBalanceAt e.before i.toNat := by
+    rw [split]
+    cases first with
+    | nil => simpa using fun e member => balance.trans (start' e member i.toNat).symm
+    | cons e rest => simpa using balance.trans (start e (by simp) i.toNat).symm
+  have ends : ∀ e ∈ events.getLast?,
+      actualBalanceAt e.after i.toNat = actualBalanceAt ⟨fork, t⟩ i.toNat := by
+    rw [split]
+    cases second with
+    | nil => simpa using fun e member => (finish e member i.toNat).trans (empty' rfl i.toNat).symm
+    | cons e rest => simpa using fun e member => finish' e member i.toNat
+  have emptyAll (nil : events = []) :
+      actualBalanceAt ⟨fork, t⟩ i.toNat = actualBalanceAt ⟨fork, s⟩ i.toNat := by
+    rw [nil, List.nil_eq_append_iff] at split
+    exact (empty' split.2 i.toNat).trans (empty split.1 i.toNat)
+  have facts := step.balanceEvents_sites early holds caps.compounding replayed
+  obtain ⟨last, done, nil, finish, debt, kept, used⟩ := trace.step_events step caps early holds
+    replayed i v w initial final high
+    (fun e member => (facts e member).2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.1.trans endEpoch)
+    (fun e member pending => by
+      have bound := (facts e member).2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.1 pending
+      dsimp only at bound
+      omega) retained
+    (fun e member crossing => by
+      have bound := (facts e member).2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2 crossing
+      obtain ⟨before, after⟩ := bound
+      dsimp only at before after
+      exact Nat.not_le_of_lt before after)
+    (List.Sublist.refl events) chain begins budget capped
+    (fun e member source c prior balance kept first =>
+      prior.block_event early holds caps replayed e member source i v initial balance first
+        (by simpa only [kept] using effective) positive quotient_le)
+  refine ⟨last, done, ?_, debt, kept, used⟩
+  cases events with
+  | nil => exact (nil rfl).trans (balance.trans (emptyAll rfl).symm)
+  | cons e rest =>
+    have found : (e :: rest).getLast? = some ((e :: rest).getLast (by simp)) :=
+      List.getLast?_eq_some_getLast (by simp)
+    exact (finish _ found).trans (ends _ found)
+
+/-- The existing slot upper bound raises the account only at its actual backing-balance point. -/
+private theorem FloorTrace.slot_update {fork : Fork} {s t : BeaconState preset fork}
+    (computed : advanceSlot config checks s = .ok t) (i : Nat)
+    (inside : i < s.validators.data.size)
+    {low base quotient : Nat} {a b : FloorAccount} (trace : FloorTrace low base quotient a b)
+    (balance : b.balance = actualBalanceAt ⟨fork, t⟩ i)
+    (high : effectiveAt ⟨fork, s⟩ i ≤ b.high) :
+    ∃ last, FloorTrace low base quotient a last ∧ last.balance = b.balance ∧
+      last.debt = b.debt ∧ last.slashedHigh = b.slashedHigh ∧
+      last.high = max b.high (effectiveAt ⟨fork, t⟩ i) := by
+  have bound := balanceDrift_slot_upper computed i inside
+  by_cases unchanged : effectiveAt ⟨fork, t⟩ i ≤ b.high
+  · exact ⟨b, trace, rfl, rfl, rfl, (Nat.max_eq_left unchanged).symm⟩
+  · refine ⟨{ b with high := max b.high (effectiveAt ⟨fork, t⟩ i) },
+      trace.update ?_, rfl, rfl, rfl, rfl⟩
+    rw [balance]
+    omega
+
+/-- Upgrades keep an activated key's effective balance, and the reachable cap covers its high. -/
+private theorem FloorTrace.slot_transport {g x y : ForkedBeaconState preset}
+    (shared : Run config checks g x) (genesis : Genesis (config := config) (checks := checks) g)
+    (ok : advanceSlotAcross config checks x = .ok y) (caps : CapOrder preset)
+    (early : y.fork < .glamsterdam) {advanced : BeaconState preset x.fork}
+    (advanceOk : advanceSlot config checks x.state = .ok advanced)
+    (upgrades : processUpgrades config checks ⟨x.fork, advanced⟩ = .ok y)
+    (i : Nat) (v w : Validator) (initial : x.state.validators.data[i]? = some v)
+    (final : y.state.validators.data[i]? = some w)
+    (activated : v.activationEpoch ≠ FAR_FUTURE_EPOCH)
+    {low base quotient : Nat} {a b : FloorAccount} (trace : FloorTrace low base quotient a b)
+    (balance : b.balance = actualBalanceAt ⟨x.fork, advanced⟩ i)
+    (high : effectiveAt x i ≤ b.high)
+    (capped : max low b.high ≤ (withdrawalMaxEffectiveBalance preset x.fork v).toNat) :
+    ∃ last, FloorTrace low base quotient a last ∧ last.balance = b.balance ∧
+      last.debt = b.debt ∧ last.slashedHigh = b.slashedHigh ∧
+      effectiveAt y i ≤ last.high ∧
+      max low last.high ≤ (withdrawalMaxEffectiveBalance preset y.fork w).toNat := by
+  obtain ⟨u, found, life⟩ := (registryLifecycle_advanceSlot advanceOk).validators i v initial
+  have kept := balanceDrift_upgrades_active upgrades early i u found
+    (by rwa [life.activationEpoch activated])
+  obtain ⟨last, done, balance, debt, slashed, raised⟩ := trace.slot_update advanceOk i
+    (Array.getElem?_eq_some_iff.mp initial).1 balance high
+  have tail : Run config checks x y := Run.nil.snoc (.slot ok)
+  obtain ⟨z, located, mono⟩ := tail.validatorCap_mono caps.activation caps.compounding
+    early i v initial
+  have equal := Option.some.inj (located.symm.trans final)
+  subst z
+  have endpoint := (shared.append tail).effectiveBalance_capped genesis caps.activation
+    caps.compounding early w (Array.mem_of_getElem? final)
+  have old := capped.trans (UInt64.le_iff_toNat_le.mp mono)
+  have current : effectiveAt y i ≤ (withdrawalMaxEffectiveBalance preset y.fork w).toNat := by
+    simpa [effectiveAt, final] using UInt64.le_iff_toNat_le.mp endpoint
+  refine ⟨last, done, balance, debt, slashed, ?_, ?_⟩
+  · rw [raised, ← kept]
+    exact Nat.le_max_right _ _
+  · rw [raised, ← kept]
+    omega
+
+/-- A slot folds its epoch sites before updating the backed high-water mark. -/
+private theorem FloorTrace.slot_step {g x m y : ForkedBeaconState preset}
+    (shared : Run config checks g x) (pre : Run config checks x m)
+    (genesis : Genesis (config := config) (checks := checks) g) (caps : CapOrder preset)
+    (ok : advanceSlotAcross config checks m = .ok y) (early : y.fork < .glamsterdam)
+    (delay : 0 < config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat)
+    {events : List (BalanceEvent preset)} (replayed : (Step.slot ok).balanceEvents = .ok events)
+    (i : ValidatorIndex) (v u w : Validator)
+    (initial : x.state.validators.data[i.toNat]? = some v)
+    (middle : m.state.validators.data[i.toNat]? = some u)
+    (final : y.state.validators.data[i.toNat]? = some w)
+    (unslashed : v.slashed = false) (activated : u.activationEpoch ≠ FAR_FUTURE_EPOCH)
+    (short : (getCurrentEpoch m.state).toNat < (getCurrentEpoch x.state).toNat +
+      preset.EPOCHS_PER_SLASHINGS_VECTOR.toNat -
+        (preset.EPOCHS_PER_SLASHINGS_VECTOR / 2).toNat)
+    (high : Nat) (endEpoch : (getCurrentEpoch y.state).toNat ≤ high + 1)
+    (retained : high + 1 < w.exitEpoch.toNat)
+    (noCrossing : ∀ e ∈ events, e.source ≠ .crossing)
+    {low base quotient : Nat} {a b : FloorAccount} (trace : FloorTrace low base quotient a b)
+    (balance : b.balance = actualBalanceAt m i.toNat)
+    (budget : (if b.slashedHigh.isSome then 1 else 0) +
+      events.countP (floorSlash i.toNat) ≤ 1)
+    (capped : max low b.high ≤ (withdrawalMaxEffectiveBalance preset m.fork u).toNat)
+    (effective : effectiveAt m i.toNat ≤ b.high) :
+    ∃ before last, FloorTrace low base quotient a before ∧
+      FloorTrace low base quotient a last ∧
+      (∃ advanced, advanceSlot config checks m.state = .ok advanced ∧
+        before.balance = actualBalanceAt ⟨m.fork, advanced⟩ i.toNat) ∧
+      last.balance = actualBalanceAt y i.toNat ∧ before.debt = last.debt ∧
+      before.slashedHigh = last.slashedHigh ∧
+      last.debt = b.debt + (events.map (floorPenaltyDebit i.toNat)).sum +
+        (events.map (floorPartialDebit i)).sum ∧
+      effectiveAt y i.toNat ≤ last.high ∧
+      max low last.high ≤ (withdrawalMaxEffectiveBalance preset y.fork w).toNat ∧
+      (if last.slashedHigh.isSome then 1 else 0) =
+        (if b.slashedHigh.isSome then 1 else 0) + events.countP (floorSlash i.toNat) := by
+  let step := Step.slot ok
+  have holds := (run_justified_separated (shared.append pre) genesis).1
+  obtain ⟨advanced, advanceOk, upgrades⟩ := bind_ok_iff.mp ok
+  obtain ⟨p, first, second, path, split, empty, start, ends, linked,
+    empty', _, _, _, crossed⟩ := step.balanceChain early replayed
+  have pathEq : step.balancePath = [m, ⟨m.fork, advanced⟩, y] := by
+    simp [step, Step.balancePath, advanceOk, Except.toOption]
+  have point : p = ⟨m.fork, advanced⟩ := by
+    rw [pathEq] at path
+    rcases path with ⟨impossible, _⟩ | same
+    · simp at impossible
+    · simpa using same.symm
+  subst p
+  have none : second = [] := List.eq_nil_iff_forall_not_mem.mpr (fun e member =>
+    noCrossing e (split ▸ List.mem_append_right first member) (crossed pathEq e member))
+  subst second
+  simp only [List.append_nil] at split
+  subst first
+  have sites := step.balanceEvents_sites early holds caps.compounding replayed
+  have slash := slot_delayed_slashing_nondebit pre ok caps early holds delay replayed
+    i v u initial middle unslashed short
+  obtain ⟨before, folded, nil, finish, debt, kept, used⟩ := trace.step_events step caps early
+    holds replayed i u w middle final high
+    (fun e member => (sites e member).2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.1.trans endEpoch)
+    (fun e member pending => by
+      have bound := (sites e member).2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.2.1 pending
+      omega) retained noCrossing (List.Sublist.refl events)
+    (linked.imp (fun _ _ h => h i.toNat))
+    (fun e member => balance.trans (start e member i.toNat).symm) budget capped
+    (fun e member source c prior balance _ _ => by
+      obtain ⟨paid, validators⟩ := slash e member source
+      have zero : floorSlash i.toNat e = false := by
+        simp only [floorSlash, validators]
+        cases found : e.before.state.validators.data[i.toNat]? with
+        | none => simp
+        | some z => cases z.slashed <;> simp
+      exact ⟨{ c with balance := actualBalanceAt e.after i.toNat },
+        prior.credit (by omega), rfl, by simp [floorPenaltyDebit, penaltyDebit,
+          floorPartialDebit, source], rfl, by simp [zero]⟩)
+  have atBefore : before.balance = actualBalanceAt ⟨m.fork, advanced⟩ i.toNat := by
+    cases events with
+    | nil => exact (nil rfl).trans (balance.trans (empty rfl i.toNat).symm)
+    | cons e rest =>
+      have found := List.getLast?_eq_some_getLast (l := e :: rest) (by simp)
+      exact (finish _ found).trans (ends _ found i.toNat)
+  obtain ⟨last, done, atLast, lastDebt, flag, effective, cap⟩ := folded.slot_transport
+    (shared.append pre) genesis ok caps early advanceOk upgrades i.toNat u w middle final
+      activated atBefore (by simpa only [kept] using effective)
+      (by simpa only [kept] using capped)
+  exact ⟨before, last, folded, done, ⟨advanced, advanceOk, atBefore⟩,
+    atLast.trans (atBefore.trans (empty' rfl i.toNat).symm), lastDebt.symm,
+    flag.symm, lastDebt.trans debt, effective, cap, by simpa only [flag] using used⟩
+
+/-- Concrete Steps preserve the carried account and cover each balance-path point. -/
+private theorem FloorTrace.step {g x m y : ForkedBeaconState preset}
+    (shared : Run config checks g x) (pre : Run config checks x m)
+    (genesis : Genesis (config := config) (checks := checks) g) (caps : CapOrder preset)
+    (step : Step config checks m y) (early : y.fork < .glamsterdam)
+    (delay : 0 < config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat)
+    {events : List (BalanceEvent preset)} (replayed : step.balanceEvents = .ok events)
+    (i : ValidatorIndex) (v u w : Validator)
+    (initial : x.state.validators.data[i.toNat]? = some v)
+    (middle : m.state.validators.data[i.toNat]? = some u)
+    (final : y.state.validators.data[i.toNat]? = some w)
+    (unslashed : v.slashed = false) (activated : u.activationEpoch ≠ FAR_FUTURE_EPOCH)
+    (short : (getCurrentEpoch m.state).toNat < (getCurrentEpoch x.state).toNat +
+      preset.EPOCHS_PER_SLASHINGS_VECTOR.toNat -
+        (preset.EPOCHS_PER_SLASHINGS_VECTOR / 2).toNat)
+    (high : Nat) (endEpoch : (getCurrentEpoch y.state).toNat ≤ high + 1)
+    (retained : high + 1 < w.exitEpoch.toNat)
+    (noCrossing : ∀ e ∈ events, e.source ≠ .crossing)
+    {low base quotient : Nat} {a b : FloorAccount} (trace : FloorTrace low base quotient a b)
+    (balance : b.balance = actualBalanceAt m i.toNat)
+    (consumed : (if b.slashedHigh.isSome then 1 else 0) ≤ if u.slashed then 1 else 0)
+    (capped : max low b.high ≤ (withdrawalMaxEffectiveBalance preset m.fork u).toNat)
+    (effective : effectiveAt m i.toNat ≤ b.high) (positive : 0 < quotient)
+    (quotient_le : quotient ≤
+      (EthLib.Consensus.parameters preset m.fork).MIN_SLASHING_PENALTY_QUOTIENT.toNat) :
+    ∃ last, FloorTrace low base quotient a last ∧
+      last.balance = actualBalanceAt y i.toNat ∧
+      last.debt = b.debt + (events.map (floorPenaltyDebit i.toNat)).sum +
+        (events.map (floorPartialDebit i)).sum ∧
+      effectiveAt y i.toNat ≤ last.high ∧
+      max low last.high ≤ (withdrawalMaxEffectiveBalance preset y.fork w).toNat ∧
+      (if last.slashedHigh.isSome then 1 else 0) ≤ (if w.slashed then 1 else 0) ∧
+      ∀ p ∈ step.balancePath, ∃ c, FloorTrace low base quotient a c ∧
+        c.balance = actualBalanceAt p i.toNat ∧ c.debt ≤ last.debt ∧
+        (if c.slashedHigh.isSome then 1 else 0) ≤ (if last.slashedHigh.isSome then 1 else 0) := by
+  have holds := (run_justified_separated (shared.append pre) genesis).1
+  have count := floorSlash_step_bound step caps early holds replayed i.toNat u w middle final
+  have budget : (if b.slashedHigh.isSome then 1 else 0) +
+      events.countP (floorSlash i.toNat) ≤ 1 := by
+    have bound : (if w.slashed then 1 else 0) ≤ (1 : Nat) := by split <;> omega
+    omega
+  cases step with
+  | @block fork s t engine signed due ok =>
+    obtain ⟨last, done, balance', debt, kept, used⟩ := trace.block_step early holds caps
+      replayed i u w middle final high endEpoch retained balance budget capped effective
+        positive quotient_le
+    have tail : Run config checks ⟨fork, s⟩ ⟨fork, t⟩ := .snoc .nil (.block engine signed due ok)
+    obtain ⟨z, located, mono⟩ := tail.validatorCap_mono caps.activation caps.compounding
+      early i.toNat u middle
+    have same := Option.some.inj (located.symm.trans final)
+    subst z
+    refine ⟨last, done, balance', debt, ?_, ?_, by omega, ?_⟩
+    · rw [kept, effectiveKept_processBlock (applySignedBlock_ok ok).2.1 i.toNat
+        (Array.getElem?_eq_some_iff.mp middle).1]
+      exact effective
+    · rw [kept]; exact capped.trans (UInt64.le_iff_toNat_le.mp mono)
+    · intro p member
+      simp only [Step.balancePath, List.mem_cons, List.not_mem_nil, or_false] at member
+      rcases member with rfl | rfl
+      · exact ⟨b, trace, balance, by omega, by omega⟩
+      · exact ⟨last, done, balance', le_rfl, le_rfl⟩
+  | slot ok =>
+    obtain ⟨before, last, folded, done, ⟨advanced, advanceOk, atBefore⟩,
+      balance', sameDebt, sameFlag, debt, effective, cap, used⟩ :=
+      trace.slot_step shared pre genesis caps ok early delay replayed i v u w initial middle
+        final unslashed activated short high endEpoch retained noCrossing balance budget capped
+        effective
+    refine ⟨last, done, balance', debt, effective, cap, by omega, ?_⟩
+    intro p member
+    simp only [Step.balancePath, advanceOk, Except.toOption, List.mem_cons,
+      List.not_mem_nil, or_false] at member
+    rcases member with rfl | rfl | rfl
+    · exact ⟨b, trace, balance, by omega, by omega⟩
+    · exact ⟨before, folded, atBefore, by omega, by rw [sameFlag]⟩
+    · exact ⟨last, done, balance', le_rfl, le_rfl⟩
 
 /-- S3's two hypotheses follow from S1 and the count path.
 
@@ -4673,7 +5215,7 @@ private theorem slashing_step_support {config : Config} {checks : SignatureCheck
   by_cases source : e.source = .slashings
   · simp only [source, ↓reduceIte]
     by_cases positive : 0 < e.creditLimit
-    · obtain ⟨_, _, _, _, _, _, _, _, _, during, after, _, _, _, _, support, bridge, fork⟩ :=
+    · obtain ⟨_, _, _, _, _, _, _, _, _, during, after, _, _, _, _, support, bridge, fork, _⟩ :=
         sites e member
       have input := bridge source positive
       apply le_trans (support source)

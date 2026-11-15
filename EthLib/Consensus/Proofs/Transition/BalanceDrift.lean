@@ -651,7 +651,7 @@ private theorem balanceDrift_update_upper {f : Fork} {s t : BeaconState preset f
     · simpa [effectiveAt, BeaconState.putValidator, Serialization.Ssz.RootedForkList.data_set,
         Ne.symm eq] using previous.2
 
-private theorem balanceDrift_slot_upper {f : Fork} {s t : BeaconState preset f}
+theorem balanceDrift_slot_upper {f : Fork} {s t : BeaconState preset f}
     (ok : advanceSlot config checks s = .ok t)
     (i : Nat) (inside : i < s.validators.data.size) :
     effectiveAt ⟨f, t⟩ i ≤ max (effectiveAt ⟨f, s⟩ i) (actualBalanceAt ⟨f, t⟩ i) := by
@@ -1102,7 +1102,7 @@ private theorem balanceDrift_upgrade_active {s : ForkedBeaconState preset}
   · obtain ⟨_, _, rfl⟩ := ok
     exact False.elim ((by decide : ¬Fork.hegota < Fork.glamsterdam) early)
 
-private theorem balanceDrift_upgrades_active {s t : ForkedBeaconState preset}
+theorem balanceDrift_upgrades_active {s t : ForkedBeaconState preset}
     (ok : processUpgrades config checks s = .ok t) (early : t.fork < .glamsterdam)
     (i : Nat) (v : Validator) (found : s.state.validators.data[i]? = some v)
     (activated : v.activationEpoch ≠ FAR_FUTURE_EPOCH) :
