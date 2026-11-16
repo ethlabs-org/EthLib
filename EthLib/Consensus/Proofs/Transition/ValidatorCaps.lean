@@ -13,6 +13,7 @@ import EthLib.Consensus.Proofs.Transition.RewardDeltas
 import EthLib.Consensus.Proofs.Transition.ActivationExitOrder
 import EthLib.Consensus.Proofs.Transition.InactivityLeakVoter
 import EthLib.Consensus.Proofs.Transition.ValidatorKeys
+import EthLib.Consensus.Proofs.Transition.BalanceNotRaised
 import Mathlib.Algebra.Order.BigOperators.Group.Finset
 
 /-!
@@ -85,6 +86,31 @@ private theorem preKeyCharge_same {f : Fork} {s t : BeaconState preset f}
     ∀ i, preKeyCharge candidate t i = preKeyCharge candidate s i := by
   intro i
   simp only [preKeyCharge, same, balances]
+
+private theorem preKeyCharge_sum_range {f : Fork} (candidate : Nat → Bool)
+    (s : BeaconState preset f) {size : Nat} (contains : s.validators.data.size ≤ size) :
+    (∑ i ∈ Finset.range size, preKeyCharge candidate s i) =
+      ∑ i ∈ Finset.range s.validators.data.size, preKeyCharge candidate s i := by
+  symm
+  apply Finset.sum_subset (Finset.range_mono contains)
+  intro i _ outside
+  have absent : s.validators.data[i]? = none := Array.getElem?_eq_none (by
+    simpa only [Finset.mem_range, not_lt] using outside)
+  simp only [preKeyCharge, absent, Option.map_none, Option.getD_none, ite_self]
+
+private theorem preKeyCharge_notRaised {f : Fork} {s t : BeaconState preset f}
+    (candidate : Nat → Bool) (same : t.validators.data = s.validators.data)
+    (lowered : ∀ i, BalanceNotRaised i s t) :
+    ∀ i, preKeyCharge candidate t i ≤ preKeyCharge candidate s i := by
+  have growth := preKeyCharge_balance candidate same (fun _ => 0) (by
+    intro i
+    cases after : t.balances.data[i]? with
+    | none => simp only [Option.map_none, Option.getD_none, Nat.zero_le]
+    | some b =>
+      obtain ⟨a, before, low⟩ := lowered i b after
+      simpa only [after, before, Option.map_some, Option.getD_some, Nat.add_zero] using
+        UInt64.le_iff_toNat_le.mp low)
+  simpa only [Nat.add_zero] using growth
 
 /-- At genesis, unassigned validators are funded and none is eligible yet. -/
 private theorem genesis_unassigned_eligible_balance {g : ForkedBeaconState preset}
@@ -337,15 +363,15 @@ private theorem UnassignedEligibleBalance.ineligible {f : Fork} {s : BeaconState
     · exact Or.inl later
   simp [isEligibleValidator, inactive, unslashed, pure, Except.pure]
 
-private theorem UnassignedEligibleBalance.rewardsAltair {f : Fork}
+private theorem UnassignedEligibleBalance.rewardsAltair_balance {f : Fork}
     {s t : BeaconState preset f} (altair : .altair ≤ f) (early : f < .glamsterdam)
     (held : UnassignedEligibleBalance s)
-    (ok : processRewardsAndPenalties config s = .ok t) : UnassignedEligibleBalance t := by
+    (ok : processRewardsAndPenalties config s = .ok t) {i : Nat} {v : Validator} {b : Gwei}
+    (found : s.validators.data[i]? = some v) (pending : v.activationEpoch = FAR_FUTURE_EPOCH)
+    (read : s.balances.data[i]? = some b) : t.balances.data[i]? = some b := by
   by_cases genesis : getCurrentEpoch s = GENESIS_EPOCH
   · obtain rfl := Except.ok.inj ((processRewardsAndPenalties_genesis config genesis).symm.trans ok)
-    exact held
-  apply held.transfer (by rw [processRewardsAndPenalties_frame ok])
-  intro i v b found pending read low
+    exact read
   have inside := (Array.getElem?_eq_some_iff.mp found).1
   have equal : s.validators.data[i] = v := (Array.getElem?_eq_some_iff.mp found).2
   have ineligible := held.ineligible found pending
@@ -385,13 +411,43 @@ private theorem UnassignedEligibleBalance.rewardsAltair {f : Fork}
         rw [unchanged]
         exact ih (fun d member => empty d (List.mem_cons_of_mem _ member))
     exact unchanged _ zero
-  refine ⟨b, ?_, low⟩
   have value := (balances i).1 inside
   rw [read] at value
   change t.balances.data[i]? = some _ at value
   dsimp only at value
   rw [folded] at value
   exact value
+
+private theorem UnassignedEligibleBalance.rewardsAltair {f : Fork}
+    {s t : BeaconState preset f} (altair : .altair ≤ f) (early : f < .glamsterdam)
+    (held : UnassignedEligibleBalance s)
+    (ok : processRewardsAndPenalties config s = .ok t) : UnassignedEligibleBalance t := by
+  apply held.transfer (by rw [processRewardsAndPenalties_frame ok])
+  intro i v b found pending read low
+  exact ⟨b, held.rewardsAltair_balance altair early ok found pending read, low⟩
+
+private theorem preKeyCharge_rewardsAltair {f : Fork} {s t : BeaconState preset f}
+    (candidate : Nat → Bool) (altair : .altair ≤ f) (early : f < .glamsterdam)
+    (held : UnassignedEligibleBalance s)
+    (ok : processRewardsAndPenalties config s = .ok t) :
+    ∀ i, preKeyCharge candidate t i = preKeyCharge candidate s i := by
+  have registry : t.validators.data = s.validators.data := by
+    rw [processRewardsAndPenalties_frame ok]
+  intro i
+  cases found : s.validators.data[i]? with
+  | none => simp only [preKeyCharge, registry, found, Option.map_none, Option.getD_none]
+  | some v =>
+    by_cases pending : v.activationEpoch = FAR_FUTURE_EPOCH
+    · obtain ⟨⟨b, read, _⟩, _⟩ := held i v found pending
+      have same := held.rewardsAltair_balance altair early ok found pending read
+      simp only [preKeyCharge, registry, found, read, same]
+    · simp only [preKeyCharge, registry, found, Option.map_some, pending, ↓reduceIte]
+
+private theorem preKeyCharge_slashings {f : Fork} {s t : BeaconState preset f}
+    (candidate : Nat → Bool) (ok : processSlashings s = .ok t) :
+    ∀ i, preKeyCharge candidate t i ≤ preKeyCharge candidate s i :=
+  preKeyCharge_notRaised candidate (by rw [processSlashings_frame ok])
+    (balanceNotRaised_processSlashings ok)
 
 private theorem UnassignedEligibleBalance.rewards {f : Fork}
     {s t : BeaconState preset f} (early : f < .glamsterdam)
@@ -2474,6 +2530,31 @@ private theorem CapStep.effective {f : Fork} {s t : BeaconState preset f}
     exact (previous.2.1 aligned caps held).effective aligned (fun v _ => caps v)
       found read changed set
 
+private theorem preKeyCharge_epochEdge {f : Fork} {a b : BeaconState preset f} {k : EpochStage}
+    (edge : EpochStage.Edge config checks k a b) (other : k ≠ .pendingDeposits)
+    (electra : .pectra ≤ f) (early : f < .glamsterdam)
+    (activation : preset.MAX_EFFECTIVE_BALANCE ≤ preset.MIN_ACTIVATION_BALANCE)
+    (held : UnassignedEligibleBalance a) (targets : AssignedTargets a)
+    (finite : a.finalizedCheckpoint.epoch < FAR_FUTURE_EPOCH)
+    (candidate : Nat → Bool) :
+    ∀ i, preKeyCharge candidate b i ≤ preKeyCharge candidate a i := by
+  cases k
+  case registry => exact (CapStep.registry edge).2.2.2 electra activation held finite candidate
+  case effectiveBalances => exact (CapStep.effective (config := config) edge).2.2.2 candidate
+  case rewards =>
+    exact fun i => Nat.le_of_eq (preKeyCharge_rewardsAltair candidate
+      (Nat.le_trans (by decide) electra) early held edge i)
+  case slashings => exact preKeyCharge_slashings candidate edge
+  case pendingDeposits => exact (other rfl).elim
+  case pendingConsolidations =>
+    simp only [EpochStage.Edge, electra, ↓reduceDIte] at edge
+    exact preKeyCharge_consolidations candidate targets edge
+  all_goals
+    obtain ⟨validators, balances, _⟩ :=
+      edge.records ⟨nofun, nofun, nofun, nofun, nofun, nofun⟩
+    exact fun i => Nat.le_of_eq
+      (preKeyCharge_same candidate (congrArg (·.data) validators) balances i)
+
 /-- Each epoch stage keeps caps and the indexed assignment provenance. -/
 private theorem CapStep.epochEdge {f : Fork} {a b : BeaconState preset f} {k : EpochStage}
     (edge : EpochStage.Edge config checks k a b) :
@@ -3052,7 +3133,7 @@ private theorem preKeyCharge_pending {f : Fork} {s t : BeaconState preset f}
       (t.depositBalanceToConsume electra).toNat ≤ budget) :
     (∑ i ∈ Finset.range t.validators.data.size, preKeyCharge candidate t i) +
       (t.depositBalanceToConsume electra).toNat ≤
-        (∑ i ∈ Finset.range t.validators.data.size, preKeyCharge candidate s i) + budget := by
+        (∑ i ∈ Finset.range s.validators.data.size, preKeyCharge candidate s i) + budget := by
   have growth := (CapStep.pending (config := config) ok).2.2.2 matched candidate
   have each (i : Nat) : preKeyCharge candidate t i ≤ preKeyCharge candidate s i +
       if (s.validators.data[i]?.map (fun v =>
@@ -3080,6 +3161,8 @@ private theorem preKeyCharge_pending {f : Fork} {s t : BeaconState preset f}
   have sums := Finset.sum_le_sum (s := Finset.range t.validators.data.size)
     (fun i _ => each i)
   rw [Finset.sum_add_distrib] at sums
+  rw [preKeyCharge_sum_range candidate s (registryLifecycle_processPendingDeposits ok).size_le]
+    at sums
   omega
 
 private theorem run_unassigned_eligible_at_assignment {g x : ForkedBeaconState preset}
