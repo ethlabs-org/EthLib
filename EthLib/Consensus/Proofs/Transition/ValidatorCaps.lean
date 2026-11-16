@@ -672,6 +672,20 @@ private theorem CapStep.pending {f : Fork} {s t : BeaconState preset f}
   repeat' (split at ok <;> try cases ok)
   all_goals exact (pass ‹_›).trans (CapStep.data rfl)
 
+/-- Rounding an effective balance cannot raise the capped Pre potential. -/
+private theorem pre_effective_le {largest balance effective result : Gwei}
+    (ok : updatedEffectiveBalance preset largest balance effective = .ok result) :
+    max result.toNat (min balance.toNat largest.toNat) ≤
+      max effective.toNat (min balance.toNat largest.toNat) := by
+  rcases updatedEffectiveBalance_cases ok with rfl | rfl
+  · exact Nat.le_refl _
+  · have remainder : balance % preset.EFFECTIVE_BALANCE_INCREMENT ≤ balance := by
+      rw [UInt64.le_iff_toNat_le, UInt64.toNat_mod]
+      exact Nat.mod_le _ _
+    have rounded := UInt64.le_iff_toNat_le.mp (UInt64.sub_le remainder)
+    simp only [Uint64.toNat_min]
+    omega
+
 private theorem CapStep.effective {f : Fork} {s t : BeaconState preset f}
     (ok : processEffectiveBalanceUpdates s = .ok t) : CapStep config s t := by
   unfold processEffectiveBalanceUpdates at ok
@@ -681,7 +695,11 @@ private theorem CapStep.effective {f : Fork} {s t : BeaconState preset f}
   refine CapStep.setValidatorAt found ?_ ?_ set
   · exact UInt64.le_refl _
   · intro bound
-    exact updatedEffectiveBalance_le_largest bound changed
+    have potential := pre_effective_le changed
+    have capped := UInt64.le_iff_toNat_le.mp bound
+    apply UInt64.le_iff_toNat_le.mpr
+    change next.toNat ≤ (withdrawalMaxEffectiveBalance preset f v).toNat
+    omega
 
 /-- An epoch keeps the caps; only three of its stages change the validators. -/
 private theorem CapStep.epoch {f : Fork} {s t : BeaconState preset f}

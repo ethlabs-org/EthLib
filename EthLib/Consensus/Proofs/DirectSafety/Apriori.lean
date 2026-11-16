@@ -4980,36 +4980,6 @@ private theorem pre_credit_le (effective cap before after : Nat) :
     max effective (min after cap) - max effective (min before cap) ≤ after - before := by
   omega
 
-/-- Rounding an effective balance cannot raise the capped Pre potential. -/
-private theorem pre_effective_le {largest balance effective result : Gwei}
-    (ok : updatedEffectiveBalance preset largest balance effective = .ok result) :
-    max result.toNat (min balance.toNat largest.toNat) ≤
-      max effective.toNat (min balance.toNat largest.toNat) := by
-  rcases updatedEffectiveBalance_cases ok with rfl | rfl
-  · exact Nat.le_refl _
-  · have remainder : balance % preset.EFFECTIVE_BALANCE_INCREMENT ≤ balance := by
-      rw [UInt64.le_iff_toNat_le, UInt64.toNat_mod]
-      exact Nat.mod_le _ _
-    have rounded := UInt64.le_iff_toNat_le.mp (UInt64.sub_le remainder)
-    simp only [Uint64.toNat_min]
-    omega
-
-/-- The effective-balance pass does not increase the per-index capped Pre potential. -/
-private theorem pre_effective_updates {fork : Fork} {s t : BeaconState preset fork}
-    (ok : processEffectiveBalanceUpdates s = .ok t) {i : Nat} {v : Validator} {balance : Gwei}
-    (found : s.validators.data[i]? = some v) (owned : s.balances.data[i]? = some balance) :
-    max (effectiveAt ⟨fork, t⟩ i)
-        (min (actualBalanceAt ⟨fork, t⟩ i)
-          (withdrawalMaxEffectiveBalance preset fork v).toNat) ≤
-      max (effectiveAt ⟨fork, s⟩ i)
-        (min (actualBalanceAt ⟨fork, s⟩ i)
-          (withdrawalMaxEffectiveBalance preset fork v).toNat) := by
-  obtain ⟨effective, read, updated⟩ :=
-    processEffectiveBalanceUpdates_effectiveBalance_eq ok found owned
-  have balances := processEffectiveBalanceUpdates_balances ok
-  simpa only [effectiveAt, actualBalanceAt, read, found, balances, owned,
-    Option.map_some, Option.getD_some] using pre_effective_le updated
-
 /-- Pending deposits fund the increase of capped balances without charging withdrawn keys.
 
 The effective balance and cap are fixed at the input to the deposit pass. -/
