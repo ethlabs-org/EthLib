@@ -847,23 +847,32 @@ theorem activationQueue_nodup (small : state.validators.data.size < 2 ^ 64) :
   have unique : (entries.map (·.2)).Nodup := List.pairwise_map.mpr distinct
   exact ((List.mergeSort_perm entries _).map (·.2)).nodup_iff.mpr unique
 
-/-- Activating distinct validators, each eligible for activation at the start. -/
-private theorem registryLifecycle_foldActivateValidator :
+/-- Fold distinct activations through a relation using their initially unassigned validators.
+
+The relation supplies its own activation invariant; the fold retains the untouched tail. -/
+theorem foldActivateValidator_of_unassigned
+    (R : BeaconState preset fork → BeaconState preset fork → Prop)
+    (refl : ∀ s, R s s)
+    (trans : ∀ {a b c}, R a b → R b c → R a c)
+    (activate : ∀ {s t : BeaconState preset fork} {i : ValidatorIndex} {v : Validator},
+      getValidator s i = .ok v → v.activationEpoch = FAR_FUTURE_EPOCH →
+      activateValidator s i = .ok t → R s t) :
     ∀ {indices : List ValidatorIndex} {state after : BeaconState preset fork},
       indices.Nodup →
       (∀ index ∈ indices, ∃ validator, getValidator state index = .ok validator ∧
         validator.activationEpoch = FAR_FUTURE_EPOCH) →
-      indices.foldlM activateValidator state = .ok after → RegistryLifecycle state after
+      indices.foldlM activateValidator state = .ok after → R state after
   | [], state, after, _, _, computed => by
     simp only [List.foldlM_nil, pure, Except.pure, Except.ok.injEq] at computed
-    exact computed ▸ .refl _
+    exact computed ▸ refl state
   | index :: rest, state, after, unique, eligible, computed => by
     rw [List.foldlM_cons, bind_ok_iff] at computed
     obtain ⟨middle, first, tail⟩ := computed
     obtain ⟨validator, found, far⟩ := eligible index List.mem_cons_self
     obtain ⟨absent, restUnique⟩ := List.nodup_cons.mp unique
-    refine (registryLifecycle_activateValidator found far first).trans
-      (registryLifecycle_foldActivateValidator restUnique (fun other member => ?_) tail)
+    refine trans (activate found far first)
+      (foldActivateValidator_of_unassigned R refl trans activate restUnique
+        (fun other member => ?_) tail)
     -- The other validators of the queue are not touched by this activation.
     have distinct : other ≠ index := fun same => absent (same ▸ member)
     obtain ⟨otherValidator, otherFound, otherFar⟩ := eligible other (List.mem_cons_of_mem _ member)
@@ -905,7 +914,9 @@ theorem registryLifecycle_processRegistryUpdates
   have small : updated.validators.data.size < 2 ^ 64 :=
     Nat.lt_of_le_of_lt (updated.validators.bound before) (UInt64.toNat_lt _)
   refine (RegistryLifecycle.foldlM (fun _ _ _ ok => registryLifecycle_updateRegistryEntry ok)
-    updatedOk).trans (registryLifecycle_foldActivateValidator
+    updatedOk).trans (foldActivateValidator_of_unassigned RegistryLifecycle RegistryLifecycle.refl
+      (fun one two => one.trans two)
+      (fun found far ok => registryLifecycle_activateValidator found far ok)
       (List.Nodup.sublist (List.take_sublist _ _) (activationQueue_nodup small))
       (fun index member => ?_) activated)
   obtain ⟨position, validator, equal, found, eligible⟩ :=

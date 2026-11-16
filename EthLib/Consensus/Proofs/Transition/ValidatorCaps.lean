@@ -402,7 +402,9 @@ private theorem CapStep.registryEntry {f : Fork} {s t : BeaconState preset f}
   · cases ok; exact first
 
 private theorem CapStep.activate {f : Fork} {s t : BeaconState preset f}
-    {i : ValidatorIndex} (ok : activateValidator s i = .ok t) : CapStep config s t := by
+    {i : ValidatorIndex} {v : Validator} (_found : getValidator s i = .ok v)
+    (_far : v.activationEpoch = FAR_FUTURE_EPOCH)
+    (ok : activateValidator s i = .ok t) : CapStep config s t := by
   simp only [activateValidator, bind_ok_iff, liftAccessor_ok] at ok
   obtain ⟨_, found, _, _, set⟩ := ok
   exact CapStep.setValidator found (by exact UInt64.le_refl _) (by exact id) set
@@ -432,10 +434,28 @@ private theorem CapStep.registry {f : Fork} {s t : BeaconState preset f}
   · simp only [bind_ok_iff, liftAccessor_ok] at ok
     obtain ⟨_, _, ok⟩ := ok
     exact CapStep.fold (fun _ _ _ => CapStep.registryElectra) ok
-  · simp only [bind_ok_iff] at ok
-    obtain ⟨_, updated, activated⟩ := ok
-    exact (CapStep.fold (fun _ _ _ => CapStep.registryEntry) updated).trans
-      (CapStep.fold (fun _ _ _ => CapStep.activate) activated)
+  · rename_i notElectra
+    simp only [bind_ok_iff] at ok
+    obtain ⟨middle, updated, activated⟩ := ok
+    have before : f < .glamsterdam :=
+      Nat.lt_trans (Nat.lt_of_not_le notElectra) (by decide)
+    have small : middle.validators.data.size < 2 ^ 64 :=
+      Nat.lt_of_le_of_lt (middle.validators.bound before) (UInt64.toNat_lt _)
+    refine (CapStep.fold (fun _ _ _ => CapStep.registryEntry) updated).trans
+      (foldActivateValidator_of_unassigned (CapStep config) CapStep.refl
+        (fun one two => one.trans two) (fun found far ok => CapStep.activate found far ok)
+        (List.Nodup.sublist (List.take_sublist _ _) (activationQueue_nodup small))
+        (fun i member => ?_) activated)
+    obtain ⟨position, v, equal, found, eligible⟩ :=
+      mem_activationQueue (List.mem_of_mem_take member)
+    have inside := (Array.getElem?_eq_some_iff.mp found).1
+    have exactIndex : i.toNat = position := by
+      have fits : position < UInt64.size := by
+        change position < 2 ^ 64
+        omega
+      rw [← equal, Nat.toUInt64_eq, UInt64.toNat_ofNat_of_lt' fits]
+    exact ⟨v, by simp [getValidator, exactIndex, found],
+      activationEpoch_of_isEligibleForActivation eligible⟩
 
 private theorem CapStep.excess {f : Fork} {s t : BeaconState preset f}
     {electra : .pectra ≤ f} {i : ValidatorIndex}
