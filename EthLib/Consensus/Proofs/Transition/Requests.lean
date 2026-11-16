@@ -40,17 +40,32 @@ open Base Uint64
 variable {preset : Preset} {fork : Base.Fork} {config : Config}
   {state after : BeaconState preset fork}
 
-private theorem passPendingConsolidations_kept_cache {nextEpoch : Epoch} :
+/-- A pending-consolidation pass composes its actual balance transfers.
+
+The callback reads the queue entry before its debit and credit. -/
+theorem passPendingConsolidations_of {nextEpoch : Epoch}
+    (R : BeaconState preset fork → BeaconState preset fork → Prop)
+    (refl : ∀ s, R s s)
+    (trans : ∀ {a b c}, R a b → R b c → R a c)
+    (allowed : PendingConsolidation → Prop)
+    (transfer : ∀ {s lowered raised : BeaconState preset fork} {entry : PendingConsolidation}
+      {source : Validator} {balance : Gwei}, allowed entry →
+      getValidator s entry.sourceIndex = .ok source →
+      getBalance s entry.sourceIndex = .ok balance →
+      decreaseBalance s entry.sourceIndex (min balance source.effectiveBalance) = .ok lowered →
+      increaseBalance lowered entry.targetIndex (min balance source.effectiveBalance) = .ok raised →
+      R s raised) :
     ∀ {consolidations : List PendingConsolidation} {state : BeaconState preset fork} {result},
+      (∀ entry ∈ consolidations, allowed entry) →
       passPendingConsolidations nextEpoch state consolidations = .ok result →
-      (result.1.validators = state.validators ∧ balanceSum result.1 = balanceSum state) ∧
+      ((result.1.validators = state.validators ∧ balanceSum result.1 = balanceSum state) ∧
         result.1.proposerLookahead = state.proposerLookahead ∧
-        result.1.pendingPartialWithdrawals = state.pendingPartialWithdrawals
-  | [], _, _, computed => by
+        result.1.pendingPartialWithdrawals = state.pendingPartialWithdrawals) ∧ R state result.1
+  | [], _, _, _, computed => by
     simp only [passPendingConsolidations, pure, Except.pure, Except.ok.injEq] at computed
     subst computed
-    exact ⟨⟨rfl, rfl⟩, rfl, rfl⟩
-  | consolidation :: rest, state, result, computed => by
+    exact ⟨⟨⟨rfl, rfl⟩, rfl, rfl⟩, refl _⟩
+  | consolidation :: rest, state, result, permitted, computed => by
     unfold passPendingConsolidations at computed
     simp only [bind, Except.bind, pure, Except.pure] at computed
     split at computed
@@ -60,10 +75,12 @@ private theorem passPendingConsolidations_kept_cache {nextEpoch : Epoch} :
       · cases computed
       rename_i recur
       cases computed
-      exact (passPendingConsolidations_kept_cache (consolidations := rest) recur :)
+      have kept := passPendingConsolidations_of R refl trans allowed transfer
+        (fun entry member => permitted entry (List.mem_cons_of_mem _ member)) recur
+      exact kept
     split at computed
     · cases computed
-      exact ⟨⟨rfl, rfl⟩, rfl, rfl⟩
+      exact ⟨⟨⟨rfl, rfl⟩, rfl, rfl⟩, refl _⟩
     split at computed
     · cases computed
     rename_i balance found
@@ -79,10 +96,11 @@ private theorem passPendingConsolidations_kept_cache {nextEpoch : Epoch} :
     cases computed
     have lowered := liftAccessor_ok.mp loweredOk
     have raised := liftAccessor_ok.mp raisedOk
-    obtain ⟨⟨validators, summed⟩, cache, partials⟩ :=
-      passPendingConsolidations_kept_cache (consolidations := rest) recur
-    refine ⟨⟨validators.trans ((increaseBalance_validators raised).trans
-      (decreaseBalance_validators lowered)), ?_⟩, ?_⟩
+    obtain ⟨⟨⟨validators, summed⟩, cache, partials⟩, related⟩ :=
+      passPendingConsolidations_of R refl trans allowed transfer
+        (fun entry member => permitted entry (List.mem_cons_of_mem _ member)) recur
+    refine ⟨⟨⟨validators.trans ((increaseBalance_validators raised).trans
+      (decreaseBalance_validators lowered)), ?_⟩, ?_⟩, ?_⟩
     · have taken := balanceSum_decreaseBalance (liftAccessor_ok.mp found) Std.min_le_left lowered
       have given := balanceSum_increaseBalance raised
       simp only at summed ⊢
@@ -90,6 +108,18 @@ private theorem passPendingConsolidations_kept_cache {nextEpoch : Epoch} :
     · obtain ⟨_, _, rfl⟩ := increaseBalance_eq_ok_iff.mp raised
       obtain ⟨_, rfl⟩ := decreaseBalance_eq_ok_iff.mp lowered
       exact ⟨cache, partials⟩
+    · exact trans (transfer (permitted consolidation (by simp))
+        (liftAccessor_ok.mp (by assumption)) (liftAccessor_ok.mp found) lowered raised) related
+
+private theorem passPendingConsolidations_kept_cache {nextEpoch : Epoch}
+    {consolidations : List PendingConsolidation} {state : BeaconState preset fork} {result}
+    (computed : passPendingConsolidations nextEpoch state consolidations = .ok result) :
+    (result.1.validators = state.validators ∧ balanceSum result.1 = balanceSum state) ∧
+      result.1.proposerLookahead = state.proposerLookahead ∧
+      result.1.pendingPartialWithdrawals = state.pendingPartialWithdrawals :=
+  (passPendingConsolidations_of (fun _ _ => True) (fun _ => trivial)
+    (fun _ _ => trivial) (fun _ => True) (fun _ _ _ _ _ => trivial)
+    (fun _ _ => trivial) computed).1
 
 /-- A pass over the pending consolidations keeps the registry and the sum of the balances. -/
 theorem passPendingConsolidations_kept {nextEpoch : Epoch} :

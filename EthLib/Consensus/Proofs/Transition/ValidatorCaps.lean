@@ -60,6 +60,31 @@ private def preKeyCharge {f : Fork} (candidate : Nat → Bool)
       else preset.MAX_EFFECTIVE_BALANCE.toNat).getD 0
   else 0
 
+private theorem preKeyCharge_balance {f : Fork} {s t : BeaconState preset f}
+    (candidate : Nat → Bool) (same : t.validators.data = s.validators.data)
+    (credit : Nat → Nat)
+    (growth : ∀ i, ((t.balances.data[i]?.map UInt64.toNat).getD 0) ≤
+      ((s.balances.data[i]?.map UInt64.toNat).getD 0) + credit i) :
+    ∀ i, preKeyCharge candidate t i ≤ preKeyCharge candidate s i + credit i := by
+  intro i
+  have paid := growth i
+  unfold preKeyCharge
+  rw [same]
+  split
+  · cases found : s.validators.data[i]? with
+    | none => simp
+    | some v =>
+      simp only [Option.map_some, Option.getD_some]
+      split <;> omega
+  · omega
+
+private theorem preKeyCharge_same {f : Fork} {s t : BeaconState preset f}
+    (candidate : Nat → Bool) (same : t.validators.data = s.validators.data)
+    (balances : t.balances = s.balances) :
+    ∀ i, preKeyCharge candidate t i = preKeyCharge candidate s i := by
+  intro i
+  simp only [preKeyCharge, same, balances]
+
 /-- At genesis, unassigned validators are funded and none is eligible yet. -/
 private theorem genesis_unassigned_eligible_balance {g : ForkedBeaconState preset}
     (genesis : Genesis (config := config) (checks := checks) g) :
@@ -1028,6 +1053,80 @@ private theorem CapStep.decrease {f : Fork} {s t : BeaconState preset f}
     {i amount : UInt64} (ok : decreaseBalance s i amount = .ok t) : CapStep config s t := by
   obtain ⟨_, rfl⟩ := decreaseBalance_eq_ok_iff.mp ok
   exact CapStep.data rfl
+
+private theorem preKeyCharge_decrease {f : Fork} {s t : BeaconState preset f}
+    (candidate : Nat → Bool) {index amount : UInt64}
+    (ok : decreaseBalance s index amount = .ok t) :
+    ∀ j, preKeyCharge candidate t j ≤ preKeyCharge candidate s j := by
+  obtain ⟨inside, rfl⟩ := decreaseBalance_eq_ok_iff.mp ok
+  have growth := preKeyCharge_balance candidate (s := s)
+    (t := s.putBalance index.toNat inside
+      (Uint64.saturatingSub s.balances.data[index.toNat] amount)) rfl (fun _ => 0) ?_
+  · simpa only [Nat.add_zero] using growth
+  · intro j
+    by_cases equal : index.toNat = j
+    · subst j
+      simp only [BeaconState.putBalance,
+        Array.getElem?_set, ↓reduceIte, Option.map_some, Option.getD_some,
+        Array.getElem?_eq_getElem inside, Uint64.toNat_saturatingSub, Nat.add_zero]
+      omega
+    · simp only [BeaconState.putBalance,
+        Array.getElem?_set, equal, ↓reduceIte, Nat.add_zero, Nat.le_refl]
+
+private theorem preKeyCharge_increase_assigned {f : Fork} {s t : BeaconState preset f}
+    (candidate : Nat → Bool) {index amount : UInt64}
+    (assigned : ∀ v, s.validators.data[index.toNat]? = some v →
+      v.activationEpoch ≠ FAR_FUTURE_EPOCH)
+    (ok : increaseBalance s index amount = .ok t) :
+    ∀ j, preKeyCharge candidate t j = preKeyCharge candidate s j := by
+  obtain ⟨inside, _, rfl⟩ := increaseBalance_eq_ok_iff.mp ok
+  intro j
+  by_cases equal : index.toNat = j
+  · subst j
+    unfold preKeyCharge
+    simp only [BeaconState.putBalance]
+    split
+    · cases found : s.validators.data[index.toNat]? with
+      | none => rfl
+      | some v => simp only [Option.map_some, assigned v found, ↓reduceIte, Option.getD_some]
+    · rfl
+  · simp only [preKeyCharge, BeaconState.putBalance, Array.getElem?_set, equal, ↓reduceIte]
+
+private theorem preKeyCharge_consolidations {f : Fork} {s t : BeaconState preset f}
+    {electra : .pectra ≤ f} (candidate : Nat → Bool) (sources : AssignedTargets s)
+    (ok : processPendingConsolidations s electra = .ok t) :
+    ∀ j, preKeyCharge candidate t j ≤ preKeyCharge candidate s j := by
+  obtain ⟨result, passed, balances, _⟩ := processPendingConsolidations_pass ok
+  let R := fun (a b : BeaconState preset f) =>
+    a.validators.data = s.validators.data →
+      b.validators.data = s.validators.data ∧
+        ∀ j, preKeyCharge candidate b j ≤ preKeyCharge candidate a j
+  have composed := passPendingConsolidations_of R
+    (fun _ same => ⟨same, fun _ => Nat.le_refl _⟩)
+    (fun one two same => by
+      obtain ⟨middle, first⟩ := one same
+      obtain ⟨last, second⟩ := two middle
+      exact ⟨last, fun j => (second j).trans (first j)⟩)
+    (fun entry => entry ∈ (s.pendingConsolidations electra).data.toList)
+    (fun {a lowered raised entry source balance} member _ _ debit credit same => by
+      have downRegistry := decreaseBalance_validators debit
+      have upRegistry := increaseBalance_validators credit
+      refine ⟨(congrArg (·.data) (upRegistry.trans downRegistry)).trans same, ?_⟩
+      have assigned : ∀ v, lowered.validators.data[entry.targetIndex.toNat]? = some v →
+          v.activationEpoch ≠ FAR_FUTURE_EPOCH := by
+        intro v read
+        obtain ⟨w, located, active⟩ := sources electra entry member entry.targetIndex (by simp)
+        rw [downRegistry, same, located, Option.some.injEq] at read
+        subst v
+        exact active
+      intro j
+      rw [preKeyCharge_increase_assigned candidate assigned credit j]
+      exact preKeyCharge_decrease candidate debit j)
+    (fun _ member => member) passed
+  have output := (composed.2 rfl).2
+  intro j
+  simpa only [preKeyCharge, balances, (composed.2 rfl).1,
+    (processPendingConsolidations_kept ok).1] using output j
 
 /-- Record writes compare only the live reserve or its permanent assignment charge. -/
 private theorem preKeyCharge_setValidatorAt {f : Fork} {s t : BeaconState preset f}
