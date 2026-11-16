@@ -2530,6 +2530,30 @@ private theorem CapStep.effective {f : Fork} {s t : BeaconState preset f}
     exact (previous.2.1 aligned caps held).effective aligned (fun v _ => caps v)
       found read changed set
 
+private theorem epochEdge_frame {f : Fork} {a b : BeaconState preset f} {k : EpochStage}
+    (edge : EpochStage.Edge config checks k a b) (other : k ≠ .justification) :
+    Frame a b := by
+  by_cases ordinary : k ≠ .payments ∧ k ≠ .participation ∧ k ≠ .pendingDeposits
+  · exact mutatorEpochFrameLaws.toEpochStepLaws.epochEdge
+      ⟨other, ordinary⟩ (EpochStage.action_cases.mpr edge) |>.toFrame
+  cases k
+  case payments =>
+    simp only [EpochStage.Edge] at edge
+    split at edge
+    · exact (frame_processBuilderPendingPayments edge).toFrame
+    · cases edge; exact Frame.refl _
+  case participation =>
+    simp only [EpochStage.Edge] at edge
+    split at edge
+    · cases edge; exact (frame_processParticipationFlagUpdates _ _).toFrame
+    · exact (frame_processParticipationRecordUpdates edge).toFrame
+  case pendingDeposits =>
+    simp only [EpochStage.Edge] at edge
+    split at edge
+    · exact (frame_processPendingDeposits edge).toFrame
+    · cases edge; exact Frame.refl _
+  all_goals exact (ordinary ⟨nofun, nofun, nofun⟩).elim
+
 private theorem preKeyCharge_epochEdge {f : Fork} {a b : BeaconState preset f} {k : EpochStage}
     (edge : EpochStage.Edge config checks k a b) (other : k ≠ .pendingDeposits)
     (electra : .pectra ≤ f) (early : f < .glamsterdam)
@@ -2724,22 +2748,12 @@ private theorem CapStep.epoch {f : Fork} {s t : BeaconState preset f}
       intro k _ a b computed
       have edge := EpochStage.action_cases.mp computed
       refine ⟨(CapStep.epochEdge edge).1, ?_, (CapStep.epochEdge edge).2, ?_⟩
-      · cases k
-        case registry => exact (frame_processRegistryUpdates edge).balancesMatch
-        case rewards => exact (frame_processRewardsAndPenalties edge).balancesMatch
-        case slashings => exact (frame_processSlashings edge).balancesMatch
-        case effectiveBalances => exact (frame_processEffectiveBalanceUpdates edge).balancesMatch
-        case pendingDeposits | pendingConsolidations =>
-          simp only [EpochStage.Edge] at edge
-          split at edge
-          · first
-            | exact (frame_processPendingDeposits edge).balancesMatch
-            | exact (frame_processPendingConsolidations edge).balancesMatch
-          · cases edge; exact id
-        all_goals
+      · by_cases justification : k = .justification
+        · subst k
           obtain ⟨validators, balances, _⟩ :=
             edge.records ⟨nofun, nofun, nofun, nofun, nofun, nofun⟩
           simpa only [BalancesMatch, validators, balances] using (id : BalancesMatch a → _)
+        · exact (epochEdge_frame edge justification).balancesMatch
       · intro early activation aligned caps matched targets held
         cases k
         case registry => exact (CapStep.registry edge).2.1 activation held
