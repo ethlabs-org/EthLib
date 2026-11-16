@@ -3759,6 +3759,98 @@ private theorem activeStake_le_ceiling {g x y : ForkedBeaconState preset}
       simp only [ceilingAt, floorAt, zero] at lower ⊢
       omega
 
+/-- Before the epoch sentinel, the unassigned resource pot is exactly `PreU`. -/
+private theorem unassigned_resources_eq_pre {g x : ForkedBeaconState preset}
+    (shared : Run config checks g x) (genesis : Genesis (config := config) (checks := checks) g)
+    (finite : getCurrentEpoch x.state < FAR_FUTURE_EPOCH) :
+    (∑ i ∈ Finset.range x.state.validators.data.size,
+      if (x.state.validators.data[i]?.map (·.activationEpoch)).getD FAR_FUTURE_EPOCH =
+          FAR_FUTURE_EPOCH then
+        ((x.state.validators.data[i]?).map fun v => max v.effectiveBalance.toNat
+          (min (actualBalanceAt x i)
+            (withdrawalMaxEffectiveBalance preset x.fork v).toNat)).getD 0
+      else 0) = unassignedPreStake x := by
+  have order := shared.activationExitOrder genesis
+  unfold unassignedPreStake
+  rw [funding_sum_zipIdx x.state.validators.data.toList (fun v i =>
+    if !isActiveValidator v (getCurrentEpoch x.state) &&
+        decide (getCurrentEpoch x.state < v.exitEpoch) &&
+        v.activationEpoch == FAR_FUTURE_EPOCH then
+      max (effectiveAt x i)
+        (min (actualBalanceAt x i) (withdrawalMaxEffectiveBalance preset x.fork v).toNat)
+    else 0)]
+  simp only [Array.length_toList, Array.getElem?_toList]
+  apply Finset.sum_congr rfl
+  intro i _
+  cases found : x.state.validators.data[i]? with
+  | none => simp
+  | some v =>
+    by_cases pending : v.activationEpoch = FAR_FUTURE_EPOCH
+    · have exit : v.exitEpoch = FAR_FUTURE_EPOCH := by
+        have ordered := UInt64.le_iff_toNat_le.mp
+          (order v (Array.mem_of_getElem? found))
+        have limit := v.exitEpoch.toNat_lt
+        apply UInt64.toNat_inj.mp
+        rw [pending] at ordered
+        change v.exitEpoch.toNat = 18446744073709551615
+        change 18446744073709551615 ≤ v.exitEpoch.toNat at ordered
+        omega
+      have inactive : isActiveValidator v (getCurrentEpoch x.state) = false := by
+        have lower := UInt64.lt_iff_toNat_lt.mp finite
+        simp only [isActiveValidator, pending, exit, UInt64.le_iff_toNat_le,
+          UInt64.lt_iff_toNat_lt, Bool.and_eq_false_iff, decide_eq_false_iff_not]
+        left
+        omega
+      simp [found, pending, exit, inactive, finite, effectiveAt]
+    · simp [pending]
+
+/-- Newly assigned candidates are paid from `PreU`, carry and the epoch deposit allowance. -/
+private theorem unassigned_assignment_budget {g x u : ForkedBeaconState preset}
+    (shared : Run config checks g x) (genesis : Genesis (config := config) (checks := checks) g)
+    (head : Run config checks x u) (caps : CapOrder preset)
+    (aligned : MaxEffectiveBalancesAligned preset)
+    (electra : .pectra ≤ x.fork) (early : u.fork < .glamsterdam)
+    (finite : getCurrentEpoch x.state < FAR_FUTURE_EPOCH) :
+    preset.MAX_EFFECTIVE_BALANCE.toNat *
+      ((Finset.range u.state.validators.data.size).filter fun i =>
+        (x.state.validators.data[i]?.map (·.activationEpoch)).getD FAR_FUTURE_EPOCH =
+            FAR_FUTURE_EPOCH ∧
+          (u.state.validators.data[i]?.map (·.activationEpoch)).getD FAR_FUTURE_EPOCH ≠
+            FAR_FUTURE_EPOCH).card ≤
+      unassignedPreStake x + fundingCarry x +
+        config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat *
+          ((getCurrentEpoch u.state).toNat - (getCurrentEpoch x.state).toNat + 1) := by
+  have bound := shared.unassigned_assignment_resources genesis head caps.activation
+    caps.compounding aligned electra early
+  dsimp only at bound
+  change _ ≤ _ at bound
+  have initial := unassigned_resources_eq_pre shared genesis finite
+  dsimp only [actualBalanceAt] at initial
+  rw [initial] at bound
+  simp only [fundingCarry, electra, ↓reduceDIte, not_not] at bound ⊢
+  omega
+
+/-- Dividing the shared assignment budget by MEB bounds newly assigned keys. -/
+private theorem unassigned_assignment_count {g x u : ForkedBeaconState preset}
+    (shared : Run config checks g x) (genesis : Genesis (config := config) (checks := checks) g)
+    (head : Run config checks x u) (caps : CapOrder preset)
+    (aligned : MaxEffectiveBalancesAligned preset)
+    (electra : .pectra ≤ x.fork) (early : u.fork < .glamsterdam)
+    (finite : getCurrentEpoch x.state < FAR_FUTURE_EPOCH)
+    (positive : 0 < preset.MAX_EFFECTIVE_BALANCE.toNat) :
+    ((Finset.range u.state.validators.data.size).filter fun i =>
+      (x.state.validators.data[i]?.map (·.activationEpoch)).getD FAR_FUTURE_EPOCH =
+          FAR_FUTURE_EPOCH ∧
+        (u.state.validators.data[i]?.map (·.activationEpoch)).getD FAR_FUTURE_EPOCH ≠
+          FAR_FUTURE_EPOCH).card ≤
+      (unassignedPreStake x + fundingCarry x +
+        config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat *
+          ((getCurrentEpoch u.state).toNat - (getCurrentEpoch x.state).toNat + 1)) /
+        preset.MAX_EFFECTIVE_BALANCE.toNat := by
+  apply (Nat.le_div_iff_mul_le positive).mpr
+  rw [Nat.mul_comm]
+  exact unassigned_assignment_budget shared genesis head caps aligned electra early finite
+
 /-- Before Electra, the active validators at each state of a branch from `x` follow `A_t`.
 
 Each of them is given an activation epoch, and it had not exited at `x`.
