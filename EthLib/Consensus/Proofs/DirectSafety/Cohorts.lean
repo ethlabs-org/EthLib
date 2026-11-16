@@ -1129,7 +1129,7 @@ end DirectSafety
 
 namespace DirectSafety
 
-private theorem effectiveWeight_le_cap {g x : ForkedBeaconState preset}
+theorem effectiveWeight_le_cap {g x : ForkedBeaconState preset}
     (run : Run config checks g x) (genesis : Genesis (config := config) (checks := checks) g)
     (caps : CapOrder preset) (early : x.fork < .pectra) (key : Cryptography.Bls.BLSPubkey) :
     effectiveWeight x.state key ≤ preset.MAX_EFFECTIVE_BALANCE.toNat := by

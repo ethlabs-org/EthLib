@@ -5783,4 +5783,281 @@ private theorem scheduled_reserve_le_pre {g x : ForkedBeaconState preset}
         (min (actualBalanceAt x i) (withdrawalMaxEffectiveBalance preset x.fork v).toNat))
   · simp [selected]
 
+private theorem key_gain_envelope {α : Type} [DecidableEq α]
+    (initial recent : Finset α) (before after : α → Nat) (cap : Nat)
+    (first : ∀ k ∈ initial, before k ≤ cap)
+    (last : ∀ k ∈ recent, after k ≤ cap) :
+    (∑ k ∈ recent, (after k - (if k ∈ initial then before k else 0) : Nat)) ≤
+      cap * (initial ∪ recent).card - ∑ k ∈ initial, before k := by
+  have upper : (∑ k ∈ recent, (after k - (if k ∈ initial then before k else 0))) ≤
+      ∑ k ∈ initial ∪ recent, (cap - (if k ∈ initial then before k else 0)) := by
+    apply (Finset.sum_le_sum (fun k member =>
+      Nat.sub_le_sub_right (last k member) _)).trans
+    exact Finset.sum_le_sum_of_subset Finset.subset_union_right
+  have small : ∀ k ∈ initial ∪ recent, (if k ∈ initial then before k else 0) ≤ cap := by
+    intro k _
+    split
+    · exact first k ‹_›
+    · exact Nat.zero_le _
+  have sum : (∑ k ∈ initial ∪ recent, if k ∈ initial then before k else 0) =
+      ∑ k ∈ initial, before k := by
+    rw [← Finset.sum_filter]
+    congr 1
+    ext k
+    simp
+  rw [Finset.sum_tsub_distrib _ small, sum] at upper
+  simpa [Nat.mul_comm] using upper
+
+private theorem active_recent_window_keys {g x y : ForkedBeaconState preset}
+    (shared : Run config checks g x) (tail : Run config checks x y)
+    (genesis : Genesis (config := config) (checks := checks) g)
+    (twoSlots : 2 ≤ preset.SLOTS_PER_EPOCH.toNat) (early : y.fork < .pectra) :
+    (activeKeys x.state ∪ (recentKeys y.state \
+      (keysAt x.state (getActiveValidatorIndices x.state (getPreviousEpoch x.state)) \
+        activeKeys x.state))).card ≤
+      countPath config (refCount x + scheduledCount x)
+        ((getCurrentEpoch y.state).toNat - (getCurrentEpoch x.state).toNat) := by
+  classical
+  let indices := (Finset.range y.state.validators.data.size).filter fun i =>
+    (y.state.validators.data[i]?).any (·.activationEpoch != FAR_FUTURE_EPOCH) &&
+      (x.state.validators.data[i]?).all fun w => w.activationEpoch == FAR_FUTURE_EPOCH ||
+        decide (getCurrentEpoch x.state < w.exitEpoch)
+  let key := fun i : Nat => (y.state.validators.data[i]?.map (·.pubkey)).getD default
+  have xEarly : x.fork < .glamsterdam := Nat.lt_of_le_of_lt
+    (fork_le_of_chainSteps tail.chainSteps) (Nat.lt_trans early (by decide))
+  have finiteX := getCurrentEpoch_ne_farFuture twoSlots x.state
+  have finiteY := getCurrentEpoch_ne_farFuture twoSlots y.state
+  have finiteBelow {epoch current : Epoch} (finite : current ≠ FAR_FUTURE_EPOCH)
+      (lower : epoch ≤ current) : epoch ≠ FAR_FUTURE_EPOCH := by
+    intro far
+    have bound := UInt64.le_iff_toNat_le.mp lower
+    have maximum := current.toNat_lt
+    have different := mt UInt64.toNat_inj.mp finite
+    rw [far] at bound
+    change 18446744073709551615 ≤ _ at bound
+    change current.toNat ≠ 18446744073709551615 at different
+    omega
+  have later := currentEpoch_le_of_chainSteps tail.chainSteps
+  have life := tail.registryLifecycle
+  have subset : activeKeys x.state ∪ (recentKeys y.state \
+      (keysAt x.state (getActiveValidatorIndices x.state (getPreviousEpoch x.state)) \
+        activeKeys x.state)) ⊆ indices.image key := by
+    intro k member
+    rcases Finset.mem_union.mp member with active | recent
+    · obtain ⟨i, v, before, same, active⟩ := (mem_keysAt_epoch xEarly _ k).mp active
+      obtain ⟨w, after, kept⟩ := life.validators i v before
+      obtain ⟨z, zFound, zKey⟩ := validators_getElem?_of_validatorKeys_prefix
+        (validatorKeys_prefix_and_distinct_of_chainSteps tail.chainSteps).1 before
+      have equal : z = w := Option.some.inj (zFound.symm.trans after)
+      have assigned : v.activationEpoch ≠ FAR_FUTURE_EPOCH := by
+        simp only [isActiveValidator, Bool.and_eq_true, decide_eq_true_eq] at active
+        exact finiteBelow finiteX active.1
+      apply Finset.mem_image.mpr
+      refine ⟨i, Finset.mem_filter.mpr ⟨Finset.mem_range.mpr
+        (Array.getElem?_eq_some_iff.mp after).1, ?_⟩, ?_⟩
+      · simp only [after, Option.any_some, before, Option.all_some, kept.activationEpoch assigned,
+          bne_iff_ne, Bool.and_eq_true, Bool.or_eq_true, beq_iff_eq, decide_eq_true_eq]
+        have live : getCurrentEpoch x.state < v.exitEpoch := by
+          simpa only [isActiveValidator, Bool.and_eq_true, decide_eq_true_eq] using
+            (show v.activationEpoch ≤ getCurrentEpoch x.state ∧
+              getCurrentEpoch x.state < v.exitEpoch from by simpa [isActiveValidator] using active)
+            |>.2
+        exact ⟨assigned, Or.inr live⟩
+      · simp only [key, after, Option.map_some, Option.getD_some]
+        exact (equal ▸ zKey).trans same
+    · obtain ⟨recent, notPrevious⟩ := Finset.mem_sdiff.mp recent
+      have support := (Finset.mem_filter.mp recent).1
+      obtain ⟨i, w, after, same, active⟩ : ∃ i w, y.state.validators.data[i]? = some w ∧
+          w.pubkey = k ∧ (isActiveValidator w (getCurrentEpoch y.state) = true ∨
+            isActiveValidator w (getPreviousEpoch y.state) = true) := by
+        rcases Finset.mem_union.mp support with now | prev
+        · obtain ⟨i, w, found, same, active⟩ :=
+            (mem_keysAt_epoch (Nat.lt_trans early (by decide)) _ k).mp now
+          exact ⟨i, w, found, same, Or.inl active⟩
+        · obtain ⟨i, w, found, same, active⟩ :=
+            (mem_keysAt_epoch (Nat.lt_trans early (by decide)) _ k).mp prev
+          exact ⟨i, w, found, same, Or.inr active⟩
+      have assigned : w.activationEpoch ≠ FAR_FUTURE_EPOCH := by
+        have prev := getPreviousEpoch_le y.state
+        simp only [isActiveValidator, Bool.and_eq_true, decide_eq_true_eq] at active
+        have lower : w.activationEpoch ≤ getCurrentEpoch y.state :=
+          active.elim And.left (fun h => UInt64.le_trans h.1 prev)
+        exact finiteBelow finiteY lower
+      apply Finset.mem_image.mpr
+      refine ⟨i, Finset.mem_filter.mpr ⟨Finset.mem_range.mpr
+        (Array.getElem?_eq_some_iff.mp after).1, ?_⟩, by simp [key, after, same]⟩
+      simp only [after, Option.any_some, Bool.and_eq_true, bne_iff_ne]
+      refine ⟨assigned, ?_⟩
+      cases before : x.state.validators.data[i]? with
+      | none => rfl
+      | some v =>
+        by_cases pending : v.activationEpoch = FAR_FUTURE_EPOCH
+        · simp [pending]
+        · obtain ⟨z, zFound, kept⟩ := life.validators i v before
+          have equal : z = w := Option.some.inj (zFound.symm.trans after)
+          subst z
+          simp only [Option.all_some, Bool.or_eq_true, beq_iff_eq, pending, false_or,
+            decide_eq_true_eq]
+          by_contra exited
+          have exitLe := UInt64.not_lt.mp exited
+          have exitAssigned := finiteBelow finiteX exitLe
+          have exitSame := kept.exitEpoch exitAssigned
+          have epochSame : getCurrentEpoch y.state = getCurrentEpoch x.state := by
+            have prevX := getPreviousEpoch_toNat x.state
+            have prevY := getPreviousEpoch_toNat y.state
+            have le := UInt64.le_iff_toNat_le.mp later
+            have exitNat := UInt64.le_iff_toNat_le.mp exitLe
+            simp only [isActiveValidator, Bool.and_eq_true, decide_eq_true_eq,
+              exitSame, UInt64.lt_iff_toNat_lt, UInt64.le_iff_toNat_le] at active
+            apply UInt64.toNat_inj.mp
+            rcases active with now | prev <;> omega
+          have oldActive : isActiveValidator v (getPreviousEpoch x.state) = true := by
+            have activationSame := kept.activationEpoch pending
+            have previousSame : getPreviousEpoch y.state = getPreviousEpoch x.state := by
+              apply UInt64.toNat_inj.mp
+              simp only [getPreviousEpoch_toNat, epochSame]
+            simp only [isActiveValidator, Bool.and_eq_true, decide_eq_true_eq,
+              epochSame, previousSame, activationSame, exitSame] at active
+            exact active.elim (fun h => (UInt64.not_lt.mpr exitLe h.2).elim)
+              (fun h => by simp [isActiveValidator, h.1, h.2])
+          have keyEq := validators_getElem?_of_validatorKeys_prefix
+            (validatorKeys_prefix_and_distinct_of_chainSteps tail.chainSteps).1 before
+          obtain ⟨z, zFound, zKey⟩ := keyEq
+          have equal : z = w := Option.some.inj (zFound.symm.trans after)
+          have vKey : v.pubkey = k := (equal ▸ zKey).symm.trans same
+          apply notPrevious
+          refine Finset.mem_sdiff.mpr ⟨(mem_keysAt_epoch xEarly _ k).mpr
+            ⟨i, v, before, vKey, oldActive⟩, ?_⟩
+          intro activeKey
+          obtain ⟨j, u, uFound, uKey, uActive⟩ := (mem_keysAt_epoch xEarly _ k).mp activeKey
+          have unique := shared.pubkeysDistinct genesis
+          have eq : u = v := List.inj_on_of_nodup_map unique
+            (by simpa using Array.mem_of_getElem? uFound)
+            (by simpa using Array.mem_of_getElem? before) (uKey.trans vKey.symm)
+          subst u
+          have live : getCurrentEpoch x.state < v.exitEpoch := by
+            have both : v.activationEpoch ≤ getCurrentEpoch x.state ∧
+                getCurrentEpoch x.state < v.exitEpoch := by
+              simpa only [isActiveValidator, Bool.and_eq_true, decide_eq_true_eq] using uActive
+            exact both.2
+          exact UInt64.not_lt.mpr exitLe live
+  exact (Finset.card_le_card subset).trans
+    ((Finset.card_image_le).trans (windowActivations_le_countPath shared genesis tail early))
+
+private theorem gain_without_previous_le_count {g x y : ForkedBeaconState preset}
+    (shared : Run config checks g x) (tail : Run config checks x y)
+    (genesis : Genesis (config := config) (checks := checks) g)
+    (caps : CapOrder preset) (twoSlots : 2 ≤ preset.SLOTS_PER_EPOCH.toNat)
+    (early : y.fork < .pectra) :
+    (∑ k ∈ (recentKeys y.state \
+        (keysAt x.state (getActiveValidatorIndices x.state (getPreviousEpoch x.state)) \
+          activeKeys x.state)),
+      (effectiveWeight y.state k -
+        Models.supported (unslashedKeys x.state) (effectiveWeight x.state) k)) ≤
+      preset.MAX_EFFECTIVE_BALANCE.toNat *
+        countPath config (refCount x + scheduledCount x)
+          ((getCurrentEpoch y.state).toNat - (getCurrentEpoch x.state).toNat) - refStake x := by
+  classical
+  have support : ∀ k ∈ (recentKeys y.state \
+      (keysAt x.state (getActiveValidatorIndices x.state (getPreviousEpoch x.state)) \
+        activeKeys x.state)),
+      Models.supported (unslashedKeys x.state) (effectiveWeight x.state) k =
+        (if k ∈ activeKeys x.state then effectiveWeight x.state k else 0) := by
+    intro k member
+    have recent := (Finset.mem_sdiff.mp member).1
+    have unslashedX : ¬ SlashedAt x.state k := fun slashed =>
+      (Finset.mem_filter.mp recent).2 (slashedAt_forward tail slashed)
+    simp [Models.supported, unslashedKeys, unslashedX]
+  rw [Finset.sum_congr rfl (fun k member => by rw [support k member])]
+  have xEarly : x.fork < .pectra :=
+    Nat.lt_of_le_of_lt (fork_le_of_chainSteps tail.chainSteps) early
+  have envelope := key_gain_envelope (activeKeys x.state)
+    (recentKeys y.state \
+      (keysAt x.state (getActiveValidatorIndices x.state (getPreviousEpoch x.state)) \
+        activeKeys x.state))
+    (effectiveWeight x.state) (effectiveWeight y.state) preset.MAX_EFFECTIVE_BALANCE.toNat
+    (fun k _ => effectiveWeight_le_cap shared genesis caps xEarly k)
+    (fun k _ => effectiveWeight_le_cap (shared.append tail) genesis caps early k)
+  exact envelope.trans (Nat.sub_le_sub_right
+    (Nat.mul_le_mul_left _ (active_recent_window_keys shared tail genesis twoSlots early)) _)
+
+private theorem pre_count_headroom (cap activation initial scheduled final stake reserve flow : Nat)
+    (ordered : cap ≤ activation) (stakeCap : stake ≤ cap * initial)
+    (scheduledPaid : cap * scheduled ≤ reserve)
+    (grown : cap * (final - (initial + scheduled)) ≤ flow) :
+    cap * final - stake ≤ reserve + flow + (activation * initial - stake) := by
+  have initialCap := Nat.mul_le_mul_right initial ordered
+  have split : cap * final ≤ cap * initial + cap * scheduled +
+      cap * (final - (initial + scheduled)) := by
+    have partition : final ≤ initial + scheduled + (final - (initial + scheduled)) := by omega
+    exact (Nat.mul_le_mul_left cap partition).trans_eq (by simp only [Nat.mul_add])
+  omega
+
+private theorem pre_gain_budget {g x y : ForkedBeaconState preset}
+    (shared : Run config checks g x) (tail : Run config checks x y)
+    (genesis : Genesis (config := config) (checks := checks) g)
+    (caps : CapOrder preset) (aligned : MaxEffectiveBalancesAligned preset)
+    (twoSlots : 2 ≤ preset.SLOTS_PER_EPOCH.toNat) (early : y.fork < .pectra)
+    (high : Nat) (endEpoch : (getCurrentEpoch y.state).toNat ≤ high + 1)
+    (guard : aprioriGuardAt config x high) :
+    (∑ k ∈ (recentKeys y.state \
+        (keysAt x.state (getActiveValidatorIndices x.state (getPreviousEpoch x.state)) \
+          activeKeys x.state)),
+      (effectiveWeight y.state k -
+        Models.supported (unslashedKeys x.state) (effectiveWeight x.state) k)) ≤
+      preActiveStake x + fundingCarry x +
+        ((List.range (driftHorizon x high + 1)).map fun t =>
+          exitFlow preset config (refCount x) (scheduledCount x) (driftHorizon x high)
+            (forkEpochs config x high) (ceilingAt config x high) t).sum +
+        (if 0 < forkEpochs config x high then
+          preset.MIN_ACTIVATION_BALANCE.toNat * refCount x - refStake x else 0) := by
+  classical
+  have xEarly : x.fork < .pectra :=
+    Nat.lt_of_le_of_lt (fork_le_of_chainSteps tail.chainSteps) early
+  have forks := (guarded_fork_regime (shared.append tail) genesis high endEpoch guard).1
+  have positive := forks.mpr xEarly
+  have noCrossing : driftHorizon x high + 2 ≤ forkEpochs config x high := by
+    obtain ⟨-, -, -, -, -, -, -, -, -, -, -, -, -, crossing⟩ := guard
+    exact crossing.resolve_left (Nat.ne_of_gt positive)
+  let churn := cohortCap config
+    (countPath config (refCount x + scheduledCount x) (driftHorizon x high + 1))
+  have flow : ((List.range (driftHorizon x high + 1)).map fun t =>
+      exitFlow preset config (refCount x) (scheduledCount x) (driftHorizon x high)
+        (forkEpochs config x high) (ceilingAt config x high) t).sum =
+      (driftHorizon x high + 1) * (preset.MIN_ACTIVATION_BALANCE.toNat * churn) := by
+    have mapped : ((List.range (driftHorizon x high + 1)).map fun t =>
+        exitFlow preset config (refCount x) (scheduledCount x) (driftHorizon x high)
+          (forkEpochs config x high) (ceilingAt config x high) t) =
+        (List.range (driftHorizon x high + 1)).map
+          (fun _ => preset.MIN_ACTIVATION_BALANCE.toNat * churn) := by
+      apply List.map_congr_left
+      intro t member
+      have within := List.mem_range.mp member
+      simp only [exitFlow, show t < forkEpochs config x high by omega, ↓reduceIte, churn]
+    rw [mapped]
+    simp
+  have within : (getCurrentEpoch y.state).toNat - (getCurrentEpoch x.state).toNat ≤
+      driftHorizon x high + 1 := by unfold driftHorizon; omega
+  have growth := countPath_growth_window config (refCount x + scheduledCount x)
+    ((getCurrentEpoch y.state).toNat - (getCurrentEpoch x.state).toNat)
+    (driftHorizon x high + 1) within
+  have ordered := UInt64.le_iff_toNat_le.mp caps.activation
+  have grown : preset.MAX_EFFECTIVE_BALANCE.toNat *
+      (countPath config (refCount x + scheduledCount x)
+        ((getCurrentEpoch y.state).toNat - (getCurrentEpoch x.state).toNat) -
+          (refCount x + scheduledCount x)) ≤
+      (driftHorizon x high + 1) * (preset.MIN_ACTIVATION_BALANCE.toNat * churn) := by
+    exact (Nat.mul_le_mul_left _ growth).trans
+      ((Nat.mul_le_mul_right _ ordered).trans_eq (by dsimp [churn]; ac_rfl))
+  have stakeCap : refStake x ≤ preset.MAX_EFFECTIVE_BALANCE.toNat * refCount x := by
+    unfold refStake Models.stake refCount
+    exact (Finset.sum_le_sum fun k _ =>
+      effectiveWeight_le_cap shared genesis caps xEarly k).trans_eq
+      (by simp [Nat.mul_comm])
+  have paid := pre_count_headroom _ _ _ _ _ _ _ _ ordered stakeCap
+    (scheduled_reserve_le_pre shared genesis caps aligned xEarly) grown
+  have gain := (gain_without_previous_le_count shared tail genesis caps twoSlots early).trans paid
+  rw [flow, ite_eq_left positive]
+  omega
+
 end EthLib.Consensus.DirectSafety
