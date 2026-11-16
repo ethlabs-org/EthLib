@@ -40,15 +40,15 @@ open Base Uint64
 variable {preset : Preset} {fork : Base.Fork} {config : Config}
   {state after : BeaconState preset fork}
 
-/-- A pass over the pending consolidations keeps the registry and the sum of the balances. -/
-theorem passPendingConsolidations_kept {nextEpoch : Epoch} :
+private theorem passPendingConsolidations_kept_cache {nextEpoch : Epoch} :
     ∀ {consolidations : List PendingConsolidation} {state : BeaconState preset fork} {result},
       passPendingConsolidations nextEpoch state consolidations = .ok result →
-      result.1.validators = state.validators ∧ balanceSum result.1 = balanceSum state
+      (result.1.validators = state.validators ∧ balanceSum result.1 = balanceSum state) ∧
+        result.1.proposerLookahead = state.proposerLookahead
   | [], _, _, computed => by
     simp only [passPendingConsolidations, pure, Except.pure, Except.ok.injEq] at computed
     subst computed
-    exact ⟨rfl, rfl⟩
+    exact ⟨⟨rfl, rfl⟩, rfl⟩
   | consolidation :: rest, state, result, computed => by
     unfold passPendingConsolidations at computed
     simp only [bind, Except.bind, pure, Except.pure] at computed
@@ -59,10 +59,10 @@ theorem passPendingConsolidations_kept {nextEpoch : Epoch} :
       · cases computed
       rename_i recur
       cases computed
-      exact (passPendingConsolidations_kept (consolidations := rest) recur :)
+      exact (passPendingConsolidations_kept_cache (consolidations := rest) recur :)
     split at computed
     · cases computed
-      exact ⟨rfl, rfl⟩
+      exact ⟨⟨rfl, rfl⟩, rfl⟩
     split at computed
     · cases computed
     rename_i balance found
@@ -78,13 +78,25 @@ theorem passPendingConsolidations_kept {nextEpoch : Epoch} :
     cases computed
     have lowered := liftAccessor_ok.mp loweredOk
     have raised := liftAccessor_ok.mp raisedOk
-    obtain ⟨validators, summed⟩ := passPendingConsolidations_kept (consolidations := rest) recur
-    refine ⟨validators.trans ((increaseBalance_validators raised).trans
-      (decreaseBalance_validators lowered)), ?_⟩
-    have taken := balanceSum_decreaseBalance (liftAccessor_ok.mp found) Std.min_le_left lowered
-    have given := balanceSum_increaseBalance raised
-    simp only at summed ⊢
-    omega
+    obtain ⟨⟨validators, summed⟩, cache⟩ :=
+      passPendingConsolidations_kept_cache (consolidations := rest) recur
+    refine ⟨⟨validators.trans ((increaseBalance_validators raised).trans
+      (decreaseBalance_validators lowered)), ?_⟩, ?_⟩
+    · have taken := balanceSum_decreaseBalance (liftAccessor_ok.mp found) Std.min_le_left lowered
+      have given := balanceSum_increaseBalance raised
+      simp only at summed ⊢
+      omega
+    · obtain ⟨_, _, rfl⟩ := increaseBalance_eq_ok_iff.mp raised
+      obtain ⟨_, rfl⟩ := decreaseBalance_eq_ok_iff.mp lowered
+      exact cache
+
+/-- A pass over the pending consolidations keeps the registry and the sum of the balances. -/
+theorem passPendingConsolidations_kept {nextEpoch : Epoch} :
+    ∀ {consolidations : List PendingConsolidation} {state : BeaconState preset fork} {result},
+      passPendingConsolidations nextEpoch state consolidations = .ok result →
+      result.1.validators = state.validators ∧ balanceSum result.1 = balanceSum state := by
+  intro _ _ _ computed
+  exact (passPendingConsolidations_kept_cache computed).1
 
 /-- The pending consolidations of an epoch keep the registry and the sum of the balances. -/
 theorem processPendingConsolidations_kept {electra : .pectra ≤ fork}
@@ -98,6 +110,19 @@ theorem processPendingConsolidations_kept {electra : .pectra ≤ fork}
   rename_i passed
   cases computed
   exact passPendingConsolidations_kept passed
+
+/-- Processing pending consolidations leaves the cached proposers unchanged. -/
+theorem processPendingConsolidations_proposerLookahead {electra : .pectra ≤ fork}
+    (computed : processPendingConsolidations state electra = .ok after) :
+    after.proposerLookahead = state.proposerLookahead := by
+  simp only [processPendingConsolidations, bind, Except.bind, pure, Except.pure] at computed
+  split at computed
+  · cases computed
+  split at computed
+  · cases computed
+  rename_i passed
+  cases computed
+  exact (passPendingConsolidations_kept_cache passed).2
 
 /-- A pass leaves its list from the first source that is unslashed and cannot withdraw.
 
