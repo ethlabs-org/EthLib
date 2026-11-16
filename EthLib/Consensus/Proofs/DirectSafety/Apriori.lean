@@ -5513,4 +5513,65 @@ private theorem slashing_credits_le_newly_slashed {config : Config} {checks : Si
     (c := if .pectra ≤ x.fork then preset.WHISTLEBLOWER_REWARD_QUOTIENT_ELECTRA.toNat
       else preset.WHISTLEBLOWER_REWARD_QUOTIENT.toNat) cap
 
+/-- A fixed window key budget pays every slashing credit at the window cap, once. -/
+private theorem slashing_credits_le_allowance {g x y : ForkedBeaconState preset}
+    (shared : Run config checks g x) (genesis : Genesis (config := config) (checks := checks) g)
+    (tail : Run config checks x y) (caps : CapOrder preset)
+    (aligned : MaxEffectiveBalancesAligned preset) (early : y.fork < .glamsterdam)
+    (regime : .pectra ≤ x.fork ∨ y.fork < .pectra)
+    (finite : getCurrentEpoch y.state < FAR_FUTURE_EPOCH)
+    (positive : 0 < preset.MAX_EFFECTIVE_BALANCE.toNat)
+    (high : Nat) (endEpoch : (getCurrentEpoch y.state).toNat ≤ high + 1)
+    (forks : (0 < forkEpochs config x high) ↔ x.fork < .pectra)
+    {events : List (BalanceEvent preset)} (replayed : tail.balanceEvents high = .ok events) :
+    (events.map fun e => if e.source = .slashings then e.creditLimit else 0).sum ≤
+      whistleblowerAllowance preset config (refCount x) (scheduledCount x)
+        (unassignedPreStake x) (fundingCarry x) (slashableInactiveCount x)
+        (driftHorizon x high) (forkEpochs config x high) := by
+  have charged := slashing_credits_le_newly_slashed shared tail genesis regime early
+    caps.activation caps.compounding high endEpoch replayed
+  have classified := newly_slashed_count_le shared genesis tail caps aligned early finite
+  have index : (getCurrentEpoch y.state).toNat - (getCurrentEpoch x.state).toNat ≤
+      driftHorizon x high + 1 := by unfold driftHorizon; omega
+  have count : ((Finset.range y.state.validators.data.size).filter fun i =>
+      !(x.state.validators.data[i]?.map (·.slashed)).getD false &&
+        (y.state.validators.data[i]?.map (·.slashed)).getD false).card ≤
+      refCount x + windowActivations preset config (refCount x) (scheduledCount x)
+        (unassignedPreStake x) (fundingCarry x) (driftHorizon x high)
+        (forkEpochs config x high) + slashableInactiveCount x := by
+    by_cases electra : .pectra ≤ x.fork
+    · have firstFinite := UInt64.lt_of_le_of_lt
+        (currentEpoch_le_of_chainSteps tail.chainSteps) finite
+      have budget := windowAssignments_le_budget shared genesis tail caps aligned electra early
+        firstFinite positive
+      have deposit := Nat.mul_le_mul_left
+        config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat (Nat.add_le_add_right index 1)
+      have divided := Nat.div_le_div_right (c := preset.MAX_EFFECTIVE_BALANCE.toNat)
+        (Nat.add_le_add_left deposit (unassignedPreStake x + fundingCarry x))
+      have notBefore : ¬ 0 < forkEpochs config x high := mt forks.mp (Nat.not_lt_of_ge electra)
+      simp only [windowActivations, notBefore, ↓reduceIte]
+      have total := classified.trans (Nat.add_le_add_right
+        (budget.trans (Nat.add_le_add_left divided _)) _)
+      simpa only [Nat.add_assoc] using total
+    · have before := regime.resolve_left electra
+      have budget := windowActivations_le_countPath shared genesis tail before
+      have mono : Monotone (countPath config (refCount x + scheduledCount x)) :=
+        monotone_nat_of_le_succ fun _ => Nat.le_add_right _ _
+      have path := mono index
+      have starts : refCount x ≤
+          countPath config (refCount x + scheduledCount x) (driftHorizon x high + 1) :=
+        (Nat.le_add_right _ _).trans (by simpa only [countPath] using mono (Nat.zero_le
+          (driftHorizon x high + 1)))
+      simp only [windowActivations, forks.mpr (Nat.lt_of_not_ge electra), ↓reduceIte]
+      omega
+  apply charged.trans
+  apply (Nat.mul_le_mul_right _ count).trans
+  unfold whistleblowerAllowance whistleblowerQuotient
+  by_cases electra : .pectra ≤ x.fork
+  · have notBefore : ¬ 0 < forkEpochs config x high := mt forks.mp (Nat.not_lt_of_ge electra)
+    simp only [electra, notBefore, ↓reduceIte]
+    exact Nat.mul_div_le_mul_div_assoc _ _ _
+  · simp only [electra, forks.mpr (Nat.lt_of_not_ge electra), ↓reduceIte]
+    exact Nat.mul_div_le_mul_div_assoc _ _ _
+
 end EthLib.Consensus.DirectSafety
