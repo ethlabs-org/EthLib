@@ -12,6 +12,7 @@ import EthLib.Consensus.Proofs.Transition.BalanceCappedWithdrawals
 import EthLib.Consensus.Proofs.Transition.RewardDeltas
 import EthLib.Consensus.Proofs.Transition.ActivationExitOrder
 import EthLib.Consensus.Proofs.Transition.InactivityLeakVoter
+import EthLib.Consensus.Proofs.Transition.ValidatorKeys
 
 /-!
 # Validator effective-balance caps
@@ -2632,20 +2633,79 @@ private theorem CapStep.run {s t : ForkedBeaconState preset}
     (activation : preset.MAX_EFFECTIVE_BALANCE ≤ preset.MIN_ACTIVATION_BALANCE)
     (compounding : preset.MIN_ACTIVATION_BALANCE ≤ preset.MAX_EFFECTIVE_BALANCE_ELECTRA)
     (early : t.fork < .glamsterdam) :
-    CapStep config s.state t.state ∧ (AssignedPartials s.state → AssignedPartials t.state) := by
+    CapStep config s.state t.state ∧ (AssignedPartials s.state → AssignedPartials t.state) ∧
+      (Invariant s.state → Invariant t.state) ∧
+      (Genesis (config := config) (checks := checks) s → MaxEffectiveBalancesAligned preset →
+        getCurrentEpoch t.state < FAR_FUTURE_EPOCH → UnassignedEligibleBalance t.state) := by
   induction run with
-  | nil => exact ⟨CapStep.refl _, id⟩
+  | nil => exact ⟨CapStep.refl _, id, id, fun genesis _ _ =>
+      genesis_unassigned_eligible_balance genesis⟩
   | snoc pre step ih =>
-    obtain ⟨first, assigned⟩ := ih (Nat.lt_of_le_of_lt step.chainStep.fork_le early)
+    obtain ⟨first, assigned, invariant, funded⟩ :=
+      ih (Nat.lt_of_le_of_lt step.chainStep.fork_le early)
     obtain ⟨last, partials⟩ := CapStep.step step activation compounding early
-    exact ⟨first.trans last, partials ∘ assigned⟩
+    refine ⟨first.trans last, partials ∘ assigned, ?_, ?_⟩
+    · intro held
+      cases step with
+      | block _ _ _ ok =>
+        exact (frame_processBlock (applySignedBlock_ok ok).2.1).invariant
+          (invariant held)
+      | slot ok => exact (advanceSlotAcross_invariant (invariant held) ok).1
+    · intro genesis aligned finite
+      have finiteBefore := UInt64.lt_of_le_of_lt last.forward finite
+      have held := funded genesis aligned finiteBefore
+      have genesisWitness := genesis
+      obtain ⟨_, _, _, initialized⟩ := genesisWitness
+      have initialPartials : AssignedPartials s.state := by
+        intro electra
+        have before := (initializeBeaconStateFromEth1_ok initialized).1
+        exact (Nat.not_le_of_lt before (Nat.le_trans (by decide) electra)).elim
+      have initialTargets : AssignedTargets s.state := by
+        intro electra
+        have before := (initializeBeaconStateFromEth1_ok initialized).1
+        exact (Nat.not_le_of_lt before (Nat.le_trans (by decide) electra)).elim
+      have valid := invariant (initializeBeaconStateFromEth1_invariant initialized).2
+      have capped := first.capped genesis.effectiveBalance_capped
+      have targets := first.targets (Nat.lt_of_le_of_lt last.forks early) initialTargets
+      have assigned := assigned initialPartials
+      have caps {h : Fork} (v : Validator) :
+          preset.MAX_EFFECTIVE_BALANCE ≤ withdrawalMaxEffectiveBalance preset h v := by
+        unfold withdrawalMaxEffectiveBalance getMaxEffectiveBalance
+        split
+        · split
+          · exact UInt64.le_trans activation compounding
+          · exact activation
+        · exact UInt64.le_refl _
+      cases step with
+      | block engine signed due ok =>
+        exact (CapStep.block compounding (applySignedBlock_ok ok).2.1).2.2 early
+          (pre.activationExitOrder genesis) valid.exitsOrdered assigned finiteBefore capped
+          valid.balancesMatch
+          (validatorKeys_prefix_and_distinct_of_genesis_chainSteps initialized pre.chainSteps).2
+          (fun altair => (pre.syncCommittee_activation_assigned genesis altair).1) held
+      | slot ok =>
+        obtain ⟨advanced, slotOk, upgrades⟩ := bind_ok_iff.mp ok
+        obtain ⟨slotStep, _, slotFunded⟩ := CapStep.slot slotOk
+        obtain ⟨upStep, _, upFunded⟩ := CapStep.upgrades activation compounding upgrades
+        exact upFunded early (slotStep.capped capped)
+          (slotFunded (Nat.lt_of_le_of_lt upStep.forks early) activation aligned.1
+            caps valid.balancesMatch targets held)
+
+private theorem run_unassigned_eligible_balance {g x : ForkedBeaconState preset}
+    (run : Run config checks g x) (genesis : Genesis (config := config) (checks := checks) g)
+    (activation : preset.MAX_EFFECTIVE_BALANCE ≤ preset.MIN_ACTIVATION_BALANCE)
+    (compounding : preset.MIN_ACTIVATION_BALANCE ≤ preset.MAX_EFFECTIVE_BALANCE_ELECTRA)
+    (aligned : MaxEffectiveBalancesAligned preset) (early : x.fork < .glamsterdam)
+    (finite : getCurrentEpoch x.state < FAR_FUTURE_EPOCH) :
+    UnassignedEligibleBalance x.state :=
+  (CapStep.run run activation compounding early).2.2.2 genesis aligned finite
 
 private theorem run_assigned_partials {g x : ForkedBeaconState preset}
     (run : Run config checks g x) (genesis : Genesis (config := config) (checks := checks) g)
     (activation : preset.MAX_EFFECTIVE_BALANCE ≤ preset.MIN_ACTIVATION_BALANCE)
     (compounding : preset.MIN_ACTIVATION_BALANCE ≤ preset.MAX_EFFECTIVE_BALANCE_ELECTRA)
     (early : x.fork < .glamsterdam) : AssignedPartials x.state := by
-  apply (CapStep.run run activation compounding early).2
+  apply (CapStep.run run activation compounding early).2.1
   obtain ⟨_, _, _, initialized⟩ := genesis
   obtain ⟨before, _⟩ := initializeBeaconStateFromEth1_ok initialized
   intro electra
