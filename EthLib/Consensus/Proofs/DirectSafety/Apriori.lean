@@ -1034,7 +1034,10 @@ private theorem _root_.EthLib.Consensus.Run.withdrawnConsolidationCredit_eq_zero
     (delay : 0 < config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat)
     {high : Nat} {events : List (BalanceEvent preset)}
     (ok : tail.balanceEvents high = .ok events) :
-    ∀ e ∈ events, e.source = .deposits → withdrawnConsolidationCredit e = 0 := by
+    ∀ e ∈ events,
+      (e.source = .deposits → withdrawnConsolidationCredit e = 0) ∧
+      (0 < e.creditLimit → e.source = .rewards ∨ e.source = .sync ∨
+        e.source = .slashings ∨ e.source = .deposits ∨ e.source = .consolidations) := by
   -- Every event of the run is within its own limits.
   obtain ⟨recorded, recordedOk, bounded⟩ :=
     Run.balanceEvents_bounded shared tail genesis early high
@@ -1043,7 +1046,11 @@ private theorem _root_.EthLib.Consensus.Run.withdrawnConsolidationCredit_eq_zero
   have key : ∀ {z : ForkedBeaconState preset} (part : Run config checks x z),
       z.fork < .glamsterdam → ∀ {found : List (BalanceEvent preset)},
         part.balanceEvents high = .ok found → EventsBounded found →
-          ∀ e ∈ found, e.source = .deposits → withdrawnConsolidationCredit e = 0 := by
+          ∀ e ∈ found,
+            (e.source = .deposits → withdrawnConsolidationCredit e = 0) ∧
+            (0 < e.creditLimit → e.source = .rewards ∨ e.source = .sync ∨
+              e.source = .slashings ∨ e.source = .deposits ∨
+                e.source = .consolidations) := by
     intro z part
     induction part with
     | nil =>
@@ -1063,8 +1070,10 @@ private theorem _root_.EthLib.Consensus.Run.withdrawnConsolidationCredit_eq_zero
         rcases List.mem_append.mp mem with mem | mem
         · exact ih before priorOk (fun e member => bounded e (List.mem_append_left _ member))
             e mem
-        · exact stepBalanceEvents_withdrawnConsolidationCredit (shared.append pre) genesis step
-            early delay addedOk (fun e member => bounded e (List.mem_append_right _ member)) e mem
+        · exact ⟨stepBalanceEvents_withdrawnConsolidationCredit (shared.append pre) genesis step
+            early delay addedOk (fun e member => bounded e (List.mem_append_right _ member)) e mem,
+            step.balanceEvents_credit_sources early
+              (run_justified_separated (shared.append pre) genesis).1 addedOk e mem⟩
       · cases rest
         exact ih before priorOk bounded
   exact key tail early ok bounded
@@ -3163,6 +3172,35 @@ private theorem fundingCredit_sum (events : List (BalanceEvent preset)) :
       obtain ⟨source, _, _, _, _⟩ := event
       cases source <;> simp [fundingCredit, otherCredit]
     omega
+
+/-- Other credits are slashing credits and the immediate deposits before Electra. -/
+private theorem otherCredit_sum {g x y : ForkedBeaconState preset}
+    (shared : Run config checks g x) (tail : Run config checks x y)
+    (genesis : Genesis (config := config) (checks := checks) g)
+    (early : y.fork < .glamsterdam)
+    (delay : 0 < config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat)
+    {high : Nat} {events : List (BalanceEvent preset)}
+    (replayed : tail.balanceEvents high = .ok events) :
+    (events.map otherCredit).sum = (events.map fun e =>
+      (if e.source = .slashings then e.creditLimit else 0) +
+        (if e.source = .deposits ∧ e.before.fork < .pectra then e.creditLimit else 0)).sum := by
+  have sites := shared.withdrawnConsolidationCredit_eq_zero tail genesis early delay replayed
+  apply congrArg List.sum
+  apply List.map_congr_left
+  intro e member
+  obtain ⟨withdrawn, sources⟩ := sites e member
+  have zero : ¬ (e.source = .rewards ∨ e.source = .sync ∨ e.source = .slashings ∨
+      e.source = .deposits ∨ e.source = .consolidations) → e.creditLimit = 0 := by
+    intro outside
+    by_contra nonzero
+    exact outside (sources (Nat.pos_of_ne_zero nonzero))
+  cases source : e.source <;>
+    simp_all [otherCredit, fundingCredit]
+  by_cases electra : .pectra ≤ e.before.fork
+  · have before : ¬ e.before.fork < .pectra := Nat.not_lt_of_ge electra
+    simp [electra, before]
+  · have before : e.before.fork < .pectra := Nat.lt_of_not_ge electra
+    simp [electra, before]
 
 /-- The credit limits of one source are at most all the credit limits. -/
 private theorem sourceCredits_le (source : BalanceSource) (events : List (BalanceEvent preset)) :
