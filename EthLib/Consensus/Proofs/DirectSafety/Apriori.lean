@@ -5105,6 +5105,36 @@ private theorem FloorTrace.step {g x m y : ForkedBeaconState preset}
     · exact ⟨before, folded, atBefore, by omega, by rw [sameFlag]⟩
     · exact ⟨last, done, balance', le_rfl, le_rfl⟩
 
+/-- The numeric guard keeps every bounded reachable endpoint in the starting fork regime. -/
+private theorem guarded_fork_regime {g x y : ForkedBeaconState preset}
+    (reached : Run config checks g y)
+    (genesis : Genesis (config := config) (checks := checks) g)
+    (high : Nat) (endEpoch : (getCurrentEpoch y.state).toNat ≤ high + 1)
+    (guard : aprioriGuardAt config x high) :
+    ((0 < forkEpochs config x high) ↔ x.fork < .pectra) ∧
+      (.pectra ≤ x.fork ∨ y.fork < .pectra) := by
+  obtain ⟨-, -, -, -, -, -, -, -, -, -, -, -, -, crossing⟩ := guard
+  have forks : (0 < forkEpochs config x high) ↔ x.fork < .pectra := by
+    by_cases before : x.fork < .pectra
+    · simp only [before, iff_true]
+      unfold forkEpochs
+      simp only [before, ↓reduceIte]
+      split_ifs <;> omega
+    · simp [forkEpochs, before]
+  refine ⟨forks, ?_⟩
+  by_cases electra : .pectra ≤ x.fork
+  · exact .inl electra
+  · right
+    have before := Nat.lt_of_not_ge electra
+    have ends := crossing.resolve_left (Nat.ne_of_gt (forks.mpr before))
+    have late : high + 1 < config.ELECTRA_FORK_EPOCH.toNat := by
+      simp only [forkEpochs, driftHorizon] at ends
+      split_ifs at ends <;> omega
+    apply Nat.lt_of_not_ge
+    intro electraY
+    have epoch := reachable_electra_epoch reached genesis electraY
+    omega
+
 /-- S3's two hypotheses follow from S1 and the count path.
 
 Before the fork each step of the window starts with at most `A_{H+1}` active validators.
@@ -5165,15 +5195,9 @@ private theorem departures_le_budget_of_ceiling {g x y : ForkedBeaconState prese
         exact (consolidationChurnLimit_le uEarly read computed).trans
           (consolidationChurn_mono totalLe)
     · -- A window before the fork has no Electra state.
-      have before : x.fork < .pectra := Nat.lt_of_not_ge electra
-      have reached := reachable_electra_epoch (shared.append pre) genesis electraU
-      obtain ⟨-, -, -, -, -, -, -, -, -, -, -, -, -, crossing⟩ := guard
-      have positive : 0 < forkEpochs config x high := by
-        simp only [forkEpochs, before, ↓reduceIte, driftHorizon]
-        split_ifs <;> omega
-      have ends := crossing.resolve_left (Nat.ne_of_gt positive)
-      simp only [forkEpochs, before, ↓reduceIte, driftHorizon] at ends
-      split_ifs at ends <;> omega
+      have before := (guarded_fork_regime (shared.append pre) genesis high within guard).2
+        |>.resolve_left electra
+      exact False.elim (Nat.not_lt_of_ge electraU before)
 
 /-! ## Whistleblower allowance -/
 
@@ -5588,27 +5612,9 @@ private theorem slashing_credits_le_allowance_of_guard {g x y : ForkedBeaconStat
       whistleblowerAllowance preset config (refCount x) (scheduledCount x)
         (unassignedPreStake x) (fundingCarry x) (slashableInactiveCount x)
         (driftHorizon x high) (forkEpochs config x high) := by
-  obtain ⟨-, -, -, positive, -, -, -, -, -, -, -, -, -, crossing⟩ := guard
-  have forks : (0 < forkEpochs config x high) ↔ x.fork < .pectra := by
-    by_cases before : x.fork < .pectra
-    · simp only [before, iff_true]
-      unfold forkEpochs
-      simp only [before, ↓reduceIte]
-      split_ifs <;> omega
-    · simp [forkEpochs, before]
-  have regime : .pectra ≤ x.fork ∨ y.fork < .pectra := by
-    by_cases electra : .pectra ≤ x.fork
-    · exact .inl electra
-    · right
-      have before := Nat.lt_of_not_ge electra
-      have ends := crossing.resolve_left (Nat.ne_of_gt (forks.mpr before))
-      have late : high + 1 < config.ELECTRA_FORK_EPOCH.toNat := by
-        simp only [forkEpochs, driftHorizon] at ends
-        split_ifs at ends <;> omega
-      apply Nat.lt_of_not_ge
-      intro reached
-      have epoch := reachable_electra_epoch (shared.append tail) genesis reached
-      omega
+  obtain ⟨forks, regime⟩ :=
+    guarded_fork_regime (shared.append tail) genesis high endEpoch guard
+  obtain ⟨-, -, -, positive, -, -, -, -, -, -, -, -, -, -⟩ := guard
   have finite : getCurrentEpoch y.state < FAR_FUTURE_EPOCH := by
     rw [UInt64.lt_iff_toNat_lt, getCurrentEpoch_toNat]
     have bounded := y.state.slot.toNat_lt
