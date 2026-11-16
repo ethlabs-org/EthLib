@@ -2700,6 +2700,126 @@ private theorem run_unassigned_eligible_balance {g x : ForkedBeaconState preset}
     UnassignedEligibleBalance x.state :=
   (CapStep.run run activation compounding early).2.2.2 genesis aligned finite
 
+/-- A live candidate owns capped funding; assignment replaces it by a permanent MEB charge. -/
+private def preKeyCharge {f : Fork} (candidate : Nat → Bool)
+    (s : BeaconState preset f) (i : Nat) : Nat :=
+  if candidate i then
+    ((s.validators.data[i]?).map fun v =>
+      if v.activationEpoch = FAR_FUTURE_EPOCH then
+        max v.effectiveBalance.toNat
+          (min ((s.balances.data[i]?.map UInt64.toNat).getD 0)
+            (withdrawalMaxEffectiveBalance preset f v).toNat)
+      else preset.MAX_EFFECTIVE_BALANCE.toNat).getD 0
+  else 0
+
+private theorem preKeyCharge_assigned {f h : Fork} {s : BeaconState preset f}
+    {t : BeaconState preset h} (lifecycle : RegistryLifecycle s t)
+    (candidate : Nat → Bool) {i : Nat} {v : Validator}
+    (found : s.validators.data[i]? = some v)
+    (assigned : v.activationEpoch ≠ FAR_FUTURE_EPOCH) :
+    preKeyCharge candidate t i = preKeyCharge candidate s i := by
+  obtain ⟨w, read, kept⟩ := lifecycle.validators i v found
+  have later : w.activationEpoch ≠ FAR_FUTURE_EPOCH := by
+    rw [kept.activationEpoch assigned]
+    exact assigned
+  simp only [preKeyCharge, found, read, Option.map_some, assigned, later,
+    ↓reduceIte, Option.getD_some]
+
+private theorem run_unassigned_eligible_at_assignment {g x : ForkedBeaconState preset}
+    (run : Run config checks g x) (genesis : Genesis (config := config) (checks := checks) g)
+    (activation : preset.MAX_EFFECTIVE_BALANCE ≤ preset.MIN_ACTIVATION_BALANCE)
+    (compounding : preset.MIN_ACTIVATION_BALANCE ≤ preset.MAX_EFFECTIVE_BALANCE_ELECTRA)
+    (aligned : MaxEffectiveBalancesAligned preset) (early : x.fork < .glamsterdam)
+    {epoch : Epoch} (computed : computeActivationExitEpoch preset (getCurrentEpoch x.state) =
+      .ok epoch) {i : Nat} {v : Validator} (found : x.state.validators.data[i]? = some v)
+    (unassigned : v.activationEpoch = FAR_FUTURE_EPOCH)
+    (eligible : v.activationEligibilityEpoch ≠ FAR_FUTURE_EPOCH) :
+    preset.MAX_EFFECTIVE_BALANCE ≤ v.effectiveBalance := by
+  have room := (computeActivationExitEpoch_ok_iff.mp computed).1
+  have finite : getCurrentEpoch x.state < FAR_FUTURE_EPOCH := by
+    apply UInt64.lt_iff_toNat_lt.mpr
+    change (getCurrentEpoch x.state).toNat < 18446744073709551615
+    omega
+  exact ((run_unassigned_eligible_balance run genesis activation compounding aligned early
+    finite) i v found unassigned).2.1 eligible
+
+/-- An actual checked assignment can spend MEB from the same key's live reserve. -/
+private theorem preKeyCharge_at_assignment {g x : ForkedBeaconState preset}
+    (run : Run config checks g x) (genesis : Genesis (config := config) (checks := checks) g)
+    (activation : preset.MAX_EFFECTIVE_BALANCE ≤ preset.MIN_ACTIVATION_BALANCE)
+    (compounding : preset.MIN_ACTIVATION_BALANCE ≤ preset.MAX_EFFECTIVE_BALANCE_ELECTRA)
+    (aligned : MaxEffectiveBalancesAligned preset) (early : x.fork < .glamsterdam)
+    {epoch : Epoch} (computed : computeActivationExitEpoch preset (getCurrentEpoch x.state) =
+      .ok epoch) (candidate : Nat → Bool) {i : Nat} (chosen : candidate i = true)
+    {v : Validator} (found : x.state.validators.data[i]? = some v)
+    (unassigned : v.activationEpoch = FAR_FUTURE_EPOCH)
+    (eligible : v.activationEligibilityEpoch ≠ FAR_FUTURE_EPOCH) :
+    preset.MAX_EFFECTIVE_BALANCE.toNat ≤ preKeyCharge candidate x.state i := by
+  have reserve := UInt64.le_iff_toNat_le.mp
+    (run_unassigned_eligible_at_assignment run genesis activation compounding aligned early
+      computed found unassigned eligible)
+  simp only [preKeyCharge, chosen, ↓reduceIte, found, Option.map_some, unassigned,
+    Option.getD_some]
+  exact reserve.trans (Nat.le_max_left _ _)
+
+private theorem preKeyCharge_assign {g x : ForkedBeaconState preset}
+    (run : Run config checks g x) (genesis : Genesis (config := config) (checks := checks) g)
+    (activation : preset.MAX_EFFECTIVE_BALANCE ≤ preset.MIN_ACTIVATION_BALANCE)
+    (compounding : preset.MIN_ACTIVATION_BALANCE ≤ preset.MAX_EFFECTIVE_BALANCE_ELECTRA)
+    (aligned : MaxEffectiveBalancesAligned preset) (early : x.fork < .glamsterdam)
+    {epoch : Epoch} (computed : computeActivationExitEpoch preset (getCurrentEpoch x.state) =
+      .ok epoch) (candidate : Nat → Bool) {i : Nat} {v : Validator}
+    (found : getValidatorAt x.state i = .ok v)
+    (unassigned : v.activationEpoch = FAR_FUTURE_EPOCH)
+    (eligible : v.activationEligibilityEpoch ≠ FAR_FUTURE_EPOCH)
+    {t : BeaconState preset x.fork}
+    (set : x.state.setValidatorAt i { v with activationEpoch := epoch } = .ok t) :
+    ∀ j, preKeyCharge candidate t j ≤ preKeyCharge candidate x.state j := by
+  have atIndex := getValidatorAt_eq_ok_iff.mp found
+  obtain ⟨inside, rfl⟩ := setValidatorAt_ok set
+  intro j
+  by_cases equal : j = i
+  · subst j
+    by_cases chosen : candidate i = true
+    · have reserve := preKeyCharge_at_assignment run genesis activation compounding aligned
+        early computed candidate chosen atIndex unassigned eligible
+      by_cases assigned : epoch = FAR_FUTURE_EPOCH
+      · have same : { v with activationEpoch := epoch } = v := by
+          rw [assigned, ← unassigned]
+        simp only [same, preKeyCharge, BeaconState.putValidator,
+          Serialization.Ssz.RootedForkList.data_set, Array.getElem?_set, ↓reduceIte,
+          atIndex, Nat.le_refl]
+      · simpa only [preKeyCharge, chosen, BeaconState.putValidator,
+          Serialization.Ssz.RootedForkList.data_set, Array.getElem?_set, ↓reduceIte,
+          Option.map_some, Option.getD_some, assigned] using reserve
+    · simp only [preKeyCharge, chosen, Bool.false_eq_true, ↓reduceIte, Nat.le_refl]
+  · simp only [preKeyCharge, BeaconState.putValidator, Serialization.Ssz.RootedForkList.data_set,
+      Array.getElem?_set, Ne.symm equal, ↓reduceIte, Nat.le_refl]
+
+private theorem preKeyCharge_effective {f : Fork} {s t : BeaconState preset f}
+    (candidate : Nat → Bool) {i : Nat} {v : Validator} {balance result : Gwei}
+    (found : getValidatorAt s i = .ok v) (read : getBalanceAt s i = .ok balance)
+    (updated : updatedEffectiveBalance preset (withdrawalMaxEffectiveBalance preset f v)
+      balance v.effectiveBalance = .ok result)
+    (set : s.setValidatorAt i { v with effectiveBalance := result } = .ok t) :
+    ∀ j, preKeyCharge candidate t j ≤ preKeyCharge candidate s j := by
+  obtain ⟨inside, rfl⟩ := setValidatorAt_ok set
+  intro j
+  by_cases equal : j = i
+  · subst j
+    have atIndex := getValidatorAt_eq_ok_iff.mp found
+    have atBalance := getBalanceAt_eq_ok_iff.mp read
+    simp only [preKeyCharge, BeaconState.putValidator, Serialization.Ssz.RootedForkList.data_set,
+      Array.getElem?_set, ↓reduceIte, Option.map_some, Option.getD_some, atIndex, atBalance]
+    by_cases chosen : candidate i = true
+    · simp only [chosen, ↓reduceIte]
+      split
+      · exact pre_effective_le updated
+      · exact Nat.le_refl _
+    · simp only [chosen, Bool.false_eq_true, ↓reduceIte, Nat.le_refl]
+  · simp only [preKeyCharge, BeaconState.putValidator, Serialization.Ssz.RootedForkList.data_set,
+      Array.getElem?_set, Ne.symm equal, ↓reduceIte, Nat.le_refl]
+
 private theorem run_assigned_partials {g x : ForkedBeaconState preset}
     (run : Run config checks g x) (genesis : Genesis (config := config) (checks := checks) g)
     (activation : preset.MAX_EFFECTIVE_BALANCE ≤ preset.MIN_ACTIVATION_BALANCE)
