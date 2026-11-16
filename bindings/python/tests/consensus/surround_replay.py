@@ -90,8 +90,12 @@ def proposers_of(chain_post: bytes, epoch: int) -> set[int]:
     return {proposer(advance(chain_post, t), N) for t in range(epoch * SPE, (epoch + 1) * SPE)}
 
 
-def build(v: int | None, control: bool, fork: str = "phase0") -> dict:
-    # Altair: the chain launches at phase0 and upgrades at epoch 1 (the only replaced value).
+def make_anchor(fork: str) -> dict:
+    """The genesis state and the anchor of the store: genesis itself at phase0.
+
+    At Altair the chain launches at phase0 and upgrades at epoch 1 (the only replaced value),
+    and the anchor is the first block, at slot 16, with its post-state.
+    """
     cx.use(fork, None if fork == "phase0" else {"ALTAIR_FORK_EPOCH": 1})
     deposits = make_deposits(N)
     eth1_time = CONFIG["MIN_GENESIS_TIME"] - CONFIG["GENESIS_DELAY"]
@@ -114,6 +118,13 @@ def build(v: int | None, control: bool, fork: str = "phase0") -> dict:
         )
         assert across == g
         gb = cx.to_ssz("BeaconBlock", cx.to_json("SignedBeaconBlock", anchor_signed)["message"])
+    return {"genesis": genesis, "state": g, "block": gb, "root": g_root, "signed": anchor_signed}
+
+
+def build(v: int | None, control: bool, fork: str = "phase0") -> dict:
+    anchor = make_anchor(fork)
+    genesis, g, gb, g_root = anchor["genesis"], anchor["state"], anchor["block"], anchor["root"]
+    anchor_signed = anchor["signed"]
     gt = int(state_json(g)["genesis_time"])
     honest = (lambda x: x != v) if v is not None else (lambda x: True)
 
@@ -252,14 +263,8 @@ def build(v: int | None, control: bool, fork: str = "phase0") -> dict:
         tick(s_b + 1)
         steps.append(("attestation", b_att))
 
-    outcomes = consensus.fork_choice(PRESET, cx.FORK, g, gb, steps, True, cx.OVERRIDES)
-    assert len(outcomes) == len(steps)
-    failures = [
-        (k, steps[k][0], o)
-        for k, o in enumerate(outcomes)
-        if steps[k][0] != "checks" and o is not None
-    ]
-    assert not failures, failures
+    groups = consensus.fork_choice(PRESET, cx.FORK, g, gb, steps, True, cx.OVERRIDES)
+    outcomes = cx.handler_outcomes(steps, groups)
 
     def read(name: str) -> dict:
         o = outcomes[marks[name]]

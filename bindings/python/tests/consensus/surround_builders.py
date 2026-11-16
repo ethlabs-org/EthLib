@@ -199,6 +199,7 @@ def make_block(
     count: int,
     attestations: Sequence[bytes] = (),
     exits: Sequence[dict] = (),
+    attester_slashings: Sequence[dict] = (),
     graffiti: bytes = ZERO32,
 ) -> tuple[bytes, bytes, bytes]:
     """A fully signed block on a parent; returns (signed block, block root, post-state)."""
@@ -210,7 +211,7 @@ def make_block(
         "eth1_data": eth1,
         "graffiti": hx(graffiti),
         "proposer_slashings": [],
-        "attester_slashings": [],
+        "attester_slashings": list(attester_slashings),
         "attestations": [to_json("Attestation", a) for a in attestations],
         "deposits": [],
         "voluntary_exits": list(exits),
@@ -298,3 +299,27 @@ def is_slashable(a: dict, b: dict) -> bool:
     sb, tb = int(b["source"]["epoch"]), int(b["target"]["epoch"])
     surround = sa < sb and tb < ta
     return double or surround
+
+
+def handler_outcomes(steps: list, groups: list) -> list:
+    """The read of each step, after checking that every handler call of every step succeeded.
+
+    Each step gives a list: its own outcome, then the outcome of each operation that a block
+    carries (its attestations, then its attester slashings), run once the store admits it.
+    """
+    assert len(groups) == len(steps)
+    failures = [
+        (k, steps[k][0], group)
+        for k, group in enumerate(groups)
+        if steps[k][0] != "checks" and any(outcome is not None for outcome in group)
+    ]
+    assert not failures, failures
+    return [group[0] for group in groups]
+
+
+def indexed_vote(state_at_slot: bytes, data: bytes, index: int) -> dict:
+    """The API-JSON indexed attestation of one validator's signed vote on attestation data."""
+    signature = consensus.get_validator_signature(
+        PRESET, FORK, state_at_slot, "attestation", data, secret_key(index), OVERRIDES
+    )
+    return {"attesting_indices": [str(index)], "data": data_json(data), "signature": hx(signature)}

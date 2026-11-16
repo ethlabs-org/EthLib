@@ -240,48 +240,69 @@ def run_objects(genesis: bytes, chain: list[tuple[bytes, bytes]]) -> tuple[list,
     return states, headers, regs
 
 
-def evaluate(result: dict) -> dict:
-    """Each term of A on the canonical runs of a replay built by surround_replay.build."""
-    fork = result["fork"]
-    raw = result["_raw"]
-    g, posts, blocks, gossip = raw["anchor"], raw["posts"], raw["blocks"], raw["gossip"]
-    v = result["v"]
-    parents = {"X": g, "Q": posts["X"], "P": posts["Q"], "C": posts["P"], "B": posts["P"]}
+def slashing_names(block: dict) -> list[int]:
+    """The validators that the slashings of a block name, as Step.SlashingEvidence reads them."""
+    names = [
+        int(sl["signed_header_1"]["message"]["proposer_index"])
+        for sl in block["body"]["proposer_slashings"]
+    ]
+    for sl in block["body"]["attester_slashings"]:
+        second = set(sl["attestation_2"]["attesting_indices"])
+        names += sorted(int(i) for i in sl["attestation_1"]["attesting_indices"] if i in second)
+    return names
 
-    # Block-applied votes and slashings, per block.
+
+def evaluate_runs(
+    *,
+    fork: str,
+    v: int,
+    genesis: bytes,
+    anchor: bytes,
+    anchor_signed: bytes | None,
+    blocks: dict[str, bytes],
+    posts: dict[str, bytes],
+    parents: dict[str, bytes],
+    chains: dict[str, list[str]],
+    messages: list[tuple[bytes, bytes]],
+    high: int,
+    virtual: list[bytes],
+) -> dict:
+    """Each term of A on two canonical runs from the anchor, named by their blocks.
+
+    `messages` are the gossip attestations of the execution, each with the post-state of the
+    block it votes for; they count only for the report of slashable pairs among all messages.
+    `virtual` are lookahead states, charged only in a separate, informational drift figure.
+    """
+    names = sorted({n for chain in chains.values() for n in chain})
     applied: dict[str, list] = {}
-    slashings = {}
-    for name in ("X", "Q", "P", "C", "B"):
+    slashings: dict[str, list[int]] = {}
+    for name in names:
         votes, block = block_votes(parents[name], blocks[name])
         applied[name] = votes
-        body = block["body"]
-        slashings[name] = len(body["proposer_slashings"]) + len(body["attester_slashings"])
-    run_votes = {
-        "to B": applied["X"] + applied["Q"] + applied["P"] + applied["B"],
-        "to C": applied["X"] + applied["Q"] + applied["P"] + applied["C"],
-    }
-    accountable_runs = slashable_keys(run_votes["to B"] + run_votes["to C"])
+        slashings[name] = slashing_names(block)
+    run_votes = {label: [x for n in chain for x in applied[n]] for label, chain in chains.items()}
+    slashable_runs = slashable_keys([x for votes in run_votes.values() for x in votes])
+    evidence = {k for chain in chains.values() for n in chain for k in slashings[n]}
+    accountable_runs = set(slashable_runs) | evidence
 
-    # Every vote message of the execution, including gossip and v's two votes.
-    every = run_votes["to B"] + applied["C"]
-    every += gossip_votes(posts["B"], gossip["w1"])
-    every += [x for c in gossip["c_votes"] for x in gossip_votes(posts["C"], c)]
-    every += gossip_votes(posts["B"], gossip["a"]) + gossip_votes(posts["C"], gossip["b"])
+    # Every vote message of the execution, including gossip and v's own votes.
+    every = [x for n in names for x in applied[n]]
+    for post, attestation in messages:
+        every += gossip_votes(post, attestation)
     accountable_all = slashable_keys(every)
 
     # Drift and hash evidence along both canonical runs.
-    x = registry(g)
+    x = registry(anchor)
     reference = sum(x["eff"][k] for k in x["unslashed"])
-    high = result["reads"]["vote b (epoch r+3 duty)"]["justified"]["epoch"]
     drift, zero_roots, collisions, counts = {}, [], [], {}
     all_messages: dict[bytes, bytes] = {}
-    pre_roots, pre_headers = ([], [])
-    if raw["anchor_signed"] is not None:
-        pre_roots, pre_headers = pre_objects(raw["genesis"], raw["anchor_signed"], g)
+    pre_headers: list = []
+    if anchor_signed is not None:
+        pre_roots, pre_headers = pre_objects(genesis, anchor_signed, anchor)
         zero_roots += [("pre state", "pre") for r in pre_roots if r == ZERO32]
         counts["pre"] = {"states": len(pre_roots), "headers": len(pre_headers)}
-    for label, chain in (("to B", ["X", "Q", "P", "B"]), ("to C", ["X", "Q", "P", "C"])):
-        states, headers, regs = run_objects(g, [(blocks[n], posts[n]) for n in chain])
+    for label, chain in chains.items():
+        states, headers, regs = run_objects(anchor, [(blocks[n], posts[n]) for n in chain])
         drift[label] = max(state_drift(x, y) for y in regs if y["epoch"] <= high + 1)
         assert max(y["epoch"] for y in regs) <= high + 1
         counts[label] = {"states": len(states), "headers": len(headers)}
@@ -289,34 +310,32 @@ def evaluate(result: dict) -> dict:
             if root("BeaconState", s) == ZERO32:
                 zero_roots.append(("state", label))
         for h in headers + pre_headers:
-            top, messages = header_messages(h)
+            top, hashed = header_messages(h)
             if top == ZERO32:
                 zero_roots.append(("header", label))
-            for m in messages:
+            for m in hashed:
                 digest = hashlib.sha256(m).digest()
                 if all_messages.setdefault(digest, m) != m:
                     collisions.append((hx(digest), hx(m), hx(all_messages[digest])))
 
     # Not part of A: the drift the virtual lookahead states would show if they were charged.
-    s_a = result["duties"]["a"]["slot"]
-    s_b = result["duties"]["b"]["slot"]
-    after = replay.R + 1
-    virtual = [advance(posts["B"], t) for t in range(after * SPE, s_a + 1, SPE)]
-    virtual += [advance(posts["C"], t) for t in range(after * SPE, s_b + 1, SPE)]
-    virtual_drift = max(state_drift(x, registry(y)) for y in virtual)
+    virtual_drift = max((state_drift(x, registry(y)) for y in virtual), default=0)
 
     # Accountable stake: effective balances at the anchor of the accountable unslashed keys.
-    anchor_keys = [val["pubkey"] for val in state_json(g)["validators"]]
+    anchor_keys = [val["pubkey"] for val in state_json(anchor)["validators"]]
     acc_stake = sum(
         x["eff"][anchor_keys[k]] for k in accountable_runs if anchor_keys[k] in x["unslashed"]
     )
     rhs = 3 * acc_stake + 2 * max(drift.values())
-    report = {
+    return {
         "fork": fork,
         "v": v,
-        "slashings_in_blocks": slashings,
+        "slashing_names_in_blocks": slashings,
         "block_applied_votes": {k: len(vs) for k, vs in applied.items()},
+        "keys_with_slashable_block_votes": sorted(slashable_runs),
+        "keys_with_slashing_evidence": sorted(evidence),
         "accountable_keys_on_canonical_runs": sorted(accountable_runs),
+        "accountable_stake_gwei": acc_stake,
         "keys_with_a_slashable_pair_among_all_messages": {
             str(k): [
                 [
@@ -329,7 +348,7 @@ def evaluate(result: dict) -> dict:
         },
         "reference_stake_gwei": reference,
         "derived_drift_gwei": drift,
-        "high (store J epoch at vote b)": high,
+        "high (store J epoch at the last vote)": high,
         "drift_if_virtual_lookahead_states_were_charged_gwei": virtual_drift,
         "A_stake_inequality": f"{reference} <= 3*{acc_stake} + 2*{max(drift.values())} = {rhs}",
         "A_stake_inequality_holds": reference <= rhs,
@@ -341,7 +360,33 @@ def evaluate(result: dict) -> dict:
         },
         "HashEvidence_holds": bool(zero_roots or collisions),
     }
-    return report
+
+
+def evaluate(result: dict) -> dict:
+    """Each term of A on the canonical runs of a replay built by surround_replay.build."""
+    raw = result["_raw"]
+    g, posts, blocks, gossip = raw["anchor"], raw["posts"], raw["blocks"], raw["gossip"]
+    after = replay.R + 1
+    s_a = result["duties"]["a"]["slot"]
+    s_b = result["duties"]["b"]["slot"]
+    virtual = [advance(posts["B"], t) for t in range(after * SPE, s_a + 1, SPE)]
+    virtual += [advance(posts["C"], t) for t in range(after * SPE, s_b + 1, SPE)]
+    messages = [(posts["B"], gossip["w1"])] + [(posts["C"], c) for c in gossip["c_votes"]]
+    messages += [(posts["B"], gossip["a"]), (posts["C"], gossip["b"])]
+    return evaluate_runs(
+        fork=result["fork"],
+        v=result["v"],
+        genesis=raw["genesis"],
+        anchor=g,
+        anchor_signed=raw["anchor_signed"],
+        blocks=blocks,
+        posts=posts,
+        parents={"X": g, "Q": posts["X"], "P": posts["Q"], "C": posts["P"], "B": posts["P"]},
+        chains={"to B": ["X", "Q", "P", "B"], "to C": ["X", "Q", "P", "C"]},
+        messages=messages,
+        high=result["reads"]["vote b (epoch r+3 duty)"]["justified"]["epoch"],
+        virtual=virtual,
+    )
 
 
 def main() -> None:
