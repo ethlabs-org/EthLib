@@ -2151,7 +2151,7 @@ The variants `root_binding_foldl_trieSet` and `verifyProof_sound_foldl_trieSet` 
 Later entries replace earlier values of the same key, and an empty value removes its key.
 `nodup_keys_foldl_trieSet` proves that this construction gives distinct keys, as the trie of Yellow Paper Appendix D (Shanghai version) assumes, so callers need no distinctness hypothesis.
 This construction is the path of Python `trie.root`, through `Execution/Exports/Trie.lean`.
-`root_of_rootExport` (`Execution/Exports/Proofs/Trie.lean`) proves that the export returns the root of this trie, built from its decoded pairs.
+`root_of_rootExport` (`Execution/Proofs/Exports/Trie.lean`) proves that the export returns the root of this trie, built from its decoded pairs.
 `rootExport_of_root` proves the converse, so the two variants apply to the output of Python `trie.root`.
 The state and storage roots in `Execution/State/Root.lean` build tries directly, and `stateEntries_nodup` and `storageEntries_nodup` (`Execution/Proofs/State/Root.lean`) supply their distinct keys.
 `root_binding_secured` (`Execution/Proofs/Trie/Binding.lean`) applies `root_binding` to two secured tries with distinct keys and one root.
@@ -2893,13 +2893,27 @@ No theorem relates either test to the justification of the target in a later sta
 
 `Consensus/Proofs/ForkChoiceNetworkModel.lean` states the network conditions that `Execution.mem_supportersOf_of_duty_epoch` and `Execution.isAncestor_getHead_of_duty_epoch` add to synchrony.
 `DelayFits` requires a vote sent at its deadline, delayed by the bound, to arrive before the next slot; `Prompt` requires every honest store to be up to date at each slot start from the start of the execution up to the bound, and, at each slot start later than the start of the execution, one millisecond before it.
-`BlocksAdmitted` assumes that a delayed block passing `validateOnBlock` also passes the rest of `onBlockWithVotes`, including every vote and slashing the block carries.
-It restricts the adversary: a block may carry a vote or a slashing that a later honest receiver rejects, for example a vote whose target conflicts with that receiver's newer finalized checkpoint.
-Neither synchrony nor validation implies it, and no proof of handler totality can discharge it.
+`BlocksAdmitted` assumes that a delayed block passing `validateOnBlock` also passes the rest of `onBlock`.
+Success of the receiver's head, cache, proposer-boost, shuffling and pulled-up-checkpoint computations remains unproved.
+The network model handles carried attestations and attester slashings as separate moves, each available only once the receiving store holds the enclosing block.
+Their rejection does not undo earlier successful moves.
+These moves change the meaning of `forkChoice` executions and of `UpToDate`, which quantifies over `Handles`, and transitively of `Prompt`, `MaySign` and `VoteAt`, even where their signatures are unchanged.
+`BlocksAdmitted` is weaker than before, but `UpToDate`, and with it `Prompt`, `MaySign` and `VoteAt`, is stronger, so these theorems neither imply nor follow from their earlier forms.
+`UpToDate` is stronger because a store that every bare block move and every carried move leaves unchanged is also left unchanged by a block processed together with its carried operations.
+The assumption requires no carried-operation success, but synchrony and the validation proof alone do not discharge the remaining block-handler obligation.
 The two theorems on voting and the head also assume facts that hashing makes hard to break, without naming a witness for them.
 Every block held by an honest store has a nonzero state root, so no state that such a block commits to hashes to the zero root; the theorem on the head also assumes that no honest store holds a block at the root of the anchor's parent, which needs a preimage of that root.
 They also assume that every honest justified or unrealized justified checkpoint, from the finalized epoch up to the horizon, descends from every honest finalized checkpoint, a finality-safety assumption that an honest majority alone does not give.
 They also keep their duty, stake and ancestry hypotheses, and conclude their result or a hash collision between blocks held by honest stores at two points of the execution, up to the bound.
+
+`Execution.finalized_prefix_or_accountable` proves the narrower historical family used by those duty proofs: one honest store's later justified checkpoint reads back its earlier finalized checkpoint, or accountable-safety evidence exists.
+`Execution.mem_supportersOf_of_duty_epoch_or_accountable` and `Execution.isAncestor_getHead_of_duty_epoch_or_accountable` compose this family with the duty proofs, leaving the original statements unchanged.
+The companions retain the other network, duty, stake, ancestry and held-block nonzero conditions.
+They require a deposited genesis and a run to the anchor, `DirectSafety.Parameters`, held states before the next fork boundary, epoch-call and terminal stake floors, and an absent anchor parent.
+The head theorem already required the absent parent.
+Their additional conclusion supplies held states and runs for which reference unslashed stake is at most three times accountable stake plus twice the maximum derived drift, or `DirectSafety.HashEvidence` finds a node-hash collision or zero-root object.
+This alternative is outside the store-collision witnesses and provides no a priori drift bound or unconditional one-third slashing guarantee.
+The drift counts from the anchor, so on a long execution with enough churn since the anchor the alternative holds with no accountable key.
 
 `Consensus/Proofs/ForkChoice/FastConfirmation/TargetVotes.lean` states the assumed honest target-vote count, `HonestTargetVotes`.
 `SignsTarget`, in the network file above, describes a signing witness by a bounded time inside that count; it is not an additional hypothesis on its own.
@@ -4416,7 +4430,7 @@ The body records them without changing anything else that it computes.
 From Byzantium, the status of a call result agrees with its receipt: the receipt succeeds exactly when the result has no error (`applyTransaction_status`, `Proofs/Blocks/Transition.lean`).
 A body has as many results as receipts (`applyTransactions_results_length`), and a refund never raises the gas used (`runTransaction_gasUsed_le`, `Proofs/Transactions/Process.lean`).
 
-Each frame also records the logs that a simulation reports with `traceTransfers` (`Execution/Evm/Call/TransferLog.lean`).
+Each frame also records the logs that a simulation reports with `traceTransfers` (`Execution/Evm/TransferLog.lean`).
 They are its logs, with a log from `0xeeee…eeee` before Glamsterdam for each move of ether that EIP-7708 would log, in the order of execution.
 A frame that fails drops them with its logs.
 The flag is not an input of the blocks of a simulation, so they and their headers do not depend on it (`simulateBlocks_traceTransfers`, `Proofs/Rpc/SimulateCalls.lean`).
@@ -4784,6 +4798,32 @@ It needs the lookahead to name only validators of the state, the slots of the ep
 It covers every epoch whose slots fit, not only those of `dutiesResponse_proposer_internal_iff`, since the answers refuse the others with that error.
 `dutiesResponse_proposer_error_code` follows: such an answer fails only with code 400.
 That result holds even with no active validator, unlike the answers before Fulu.
+`dutiesResponse_attester_internal_iff` shows that an attester answer gets code 500 exactly when a requested committee assignment fails.
+The epoch must also pass the check of `checkDutyEpoch`.
+It reads the last clause of `dutyError`, which gives code 500 to every fault but an epoch or a period out of range.
+`getCommitteeAssignment_error` (`Consensus/Proofs/HonestValidator.lean`) shows that the assignment gives an epoch out of range only after the next epoch, which the check refuses first.
+It needs each requested index to name a validator, and the bound of `dependentRoot_error` on the slot of the state.
+`dutiesResponse_attester_error` shows that each refusal of the attester answer is the error of an empty request, an invalid epoch or an invalid index.
+It needs at most `2^40` validators in the registry.
+Their number times one more than the most committees of a slot, times the slots of an epoch, must be below `2^64`.
+It also needs the first slot after the epoch to fit in 64 bits.
+The epoch plus the length of the history of mixes must fit too, and the bound on the slot of the state must hold.
+`getCommitteeAssignment_exists` shows that the assignment succeeds under those bounds, for an epoch that passes the check.
+`dutiesResponse_attester_error_code` follows: such an answer fails only with code 400.
+`dutiesResponse_ptc_internal_iff` shows that from Gloas a PTC answer gets code 500 exactly when a requested PTC assignment fails.
+The epoch must also lie in the window of `ptcDuties_eq`, and at most at the end of the seed lookahead.
+The request must repeat no index.
+`getPtcAssignment_error` shows that the assignment gives an epoch out of range only past the seed lookahead.
+`getPtcAssignment_too_far` shows that it always does there, and `dutyError` gives that error code 400.
+It needs each requested index to name a validator, and the bound on the slot of the state.
+`dutiesResponse_ptc_error` shows that each refusal of the PTC answer is one of five errors, all with code 400.
+They are the errors of a state before Gloas, an empty request, an invalid epoch, a repeated index and an invalid index.
+It needs the last epoch of the seed lookahead and the length of the window to fit in 64 bits.
+It also needs the first slot after the epoch to fit, and the bound on the slot of the state.
+`getPtcAssignment_exists` shows that the assignment succeeds under those bounds, for an epoch that the window covers.
+`dutiesResponse_ptc_error_code` follows: such an answer fails only with code 400.
+`dutiesResponse_ptc_error` does not ask the epoch to be within the seed lookahead, so it covers the code 400 that an epoch past it gets.
+That error is reachable only at the next epoch, under a preset whose seed lookahead is zero.
 These cases of code 500 remain without a theorem:
 
 - No theorem bounds the entries of the lookahead by the registry along a chain from the Phase 0 genesis state of deposits.
@@ -4797,16 +4837,15 @@ These cases of code 500 remain without a theorem:
   The draw also fails for an epoch within `EPOCHS_PER_HISTORICAL_VECTOR` of `2^64`, which the current epoch of a mainnet or minimal state never is.
   `getBeaconProposerIndices_ok` shows that the draw succeeds under bounds when the draws of the epoch end (`ProposersDrawEnd`), as they do when an active validator is at the cap of the draw.
   No theorem carries that to the answers yet.
-- The committee assignment of the attester answer and the PTC assignment give code 500 for any fault but an epoch out of range.
-  On mainnet and minimal the attester fault needs more than `2^40` active validators, or an epoch or a slot near `2^64`.
-  The PTC fault needs an epoch or a slot near `2^64`.
+- No theorem excludes code 500 from the attester and PTC answers where a bound of their error theorems fails.
+  On mainnet and minimal, code 500 from a PTC assignment needs a slot of the state within two epochs of `2^64`.
+  Code 500 from an attester assignment needs such a slot, or a registry of more than `2^40` validators.
+  `getCommitteeAssignment_eq_error_of_overflow` shows that the assignment overflows at an epoch up to the next one whose slots pass 64 bits.
   Before Gloas the registry holds at most `2^40` validators on those presets by its type (`BeaconState.registryWithinLimit_of_lt`).
   From Gloas, `Run.registryWithinLimit` bounds it the same way along a run whose start and blocks leave room.
+  On those presets `ptcRoom_presets` gives the other bound on the registry from that one.
 - A dependent root can get code 500, by an overflow, at a slot of the state within `SLOTS_PER_HISTORICAL_ROOT` of `2^64`.
   So can a proposer answer for an epoch whose slots pass 64 bits.
-
-No theorem states the code 400 that the PTC assignment gives to an epoch past the seed lookahead.
-It is reachable only at the next epoch, under a preset whose seed lookahead is zero.
 
 The answers that hand a validator its data are in `Consensus/BeaconApi/ValidatorData.lean`: attestation data, payload attestation data, aggregates and sync committee contributions.
 `produceAttestationData_head` (`Consensus/Proofs/BeaconApi/ValidatorData.lean`) shows that the attestation data votes for the head of the store, at the requested slot, and that the head is not optimistic.

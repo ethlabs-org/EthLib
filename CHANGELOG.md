@@ -7,7 +7,50 @@ The version is the same in `pyproject.toml` and `lakefile.lean`.
 
 Not yet released.
 
+### Proof additions
+
+- `Execution.mem_supportersOf_of_duty_epoch_or_accountable` and `Execution.isAncestor_getHead_of_duty_epoch_or_accountable` add accountable companions to the honest-duty results.
+  They use a proved historical finalized-prefix family instead of assumed compatibility, while preserving the original theorems.
+  They retain the network and duty conditions and require deposited genesis history, preset bounds, a fixed-fork horizon, stake floors and an absent anchor parent.
+  The alternative is the reference-stake inequality with derived drift, or `DirectSafety.HashEvidence`, not an a priori drift bound.
+
 ### Changes that break callers
+
+- In Lean, `EthLib.Execution.Exports.Proofs.Evm` and `EthLib.Execution.Exports.Proofs.Trie` move to `EthLib.Execution.Proofs.Exports.Evm` and `EthLib.Execution.Proofs.Exports.Trie` ([#2630](https://github.com/ethereum/EthLib/issues/2630)).
+  Declaration names and statements are unchanged; update the imports.
+  Consumers that received these theorems through an `Exports` root must import the relevant proof module or `EthLib.Execution.Proofs`.
+
+- In Lean, `Evm.Call.TransferLog` becomes `Evm.TransferLog`, and the XMSS security modules `XmssSecurity.Scan.*` move to `XmssSecurity.Proof.Scan.*` ([#2629](https://github.com/ethereum/EthLib/pull/2629)).
+  The import checker now finds a cycle between directories through imports at any depth, and these moves break the two such cycles that remained.
+  Declaration names, namespaces and statements are unchanged; update the imports.
+
+- In Lean, specification modules keep only the theorems that their definitions and instances need, plus persistent `@[simp]` rules ([#2628](https://github.com/ethereum/EthLib/pull/2628)).
+  55 theorems move to the matching `Proofs` modules.
+  In Base, two move from `Base.BigEndian` to `Base.Proofs.BigEndian`, five from `Base.Except` to `Base.Proofs.Except`, and one from `Base.Hex` to `Base.Proofs.Hex`.
+  In Cryptography, twelve move from `Cryptography.Montgomery` to `Cryptography.Proofs.Montgomery.Core`, and one each from `Hash.Scrypt` and `Sphincs.Tree` to `Proofs.Hash.Scrypt` and `Proofs.Sphincs.Tree`.
+  The XMSS and SPHINCS+ constants follow: ten move from `Xmss.Constants` to `Proofs.Xmss.Constants`, and twenty-one from `Sphincs.Constants` to `Proofs.Sphincs.Constants`.
+  In Execution, one moves from `Evm.Step` to `Proofs.Evm.Step`, and in Serialization, one from `Ssz.Typed.Rooted` to `Proofs.Ssz.Typed.Rooted`.
+  The SSZ export proofs `EthLib.Serialization.Exports.Proofs.Ssz` become `EthLib.Serialization.Proofs.Exports.Ssz`, and `EthLib.Serialization.Exports` no longer imports them.
+  Declaration names and statements are unchanged; add the `Proofs` imports.
+
+- Fork-choice replay returns a nonempty list of handler outcomes for each input step ([#2622](https://github.com/ethereum/EthLib/pull/2622)).
+  An admitted block's first outcome reports admission; the rest report its attestations and attester slashings, in order.
+  Carried operations run only for an admitted block, so a rejected block gives one outcome, its error.
+  Each successful handler commits independently, and a failed carried operation does not stop later calls.
+  An invalid payload verdict applies its removal after the step, even a rejected one, and after the carried operations of an admitted block.
+  Other inputs have one outcome.
+  This changes `fork_choice`, `forkChoice`, `replayForkChoice` and `replayForkChoiceConfirming`.
+  Every export that takes fork-choice steps replays blocks this way.
+  Callers must inspect each nested outcome, not treat the input as one atomic operation.
+  The public `runForkChoiceStep` block branch now performs bare admission only; its type is unchanged.
+  `Store.onBlockWithVotes` and its nine wrapper-only lemmas are removed; call the spec handlers separately.
+
+- In Lean, `Models.Network.Handles.block` calls `Store.onBlock` without processing carried operations ([#2622](https://github.com/ethereum/EthLib/pull/2622)).
+  The `blockAttestation` and `blockAttesterSlashing` constructors process them separately.
+  Each requires the enclosing signed block in the view and its root among the blocks of the receiving store, so carried operations run only for an admitted block.
+  Update case analyses of `Handles` to cover both constructors and their two new premises.
+  This changes `forkChoice` executions and `UpToDate`, and transitively `Prompt` and `VoteAt`, even where their signatures are unchanged.
+  `BlocksAdmitted` requires only bare `onBlock` success, with its other conditions unchanged.
 
 - In Lean, modules move so that no two directories of a layer import each other ([#2617](https://github.com/ethereum/EthLib/pull/2617)).
   In Execution, `Evm.Call.Delegation`, `Evm.Machine.Errors`, `Blocks.Log` and `Fees.BlobGas` become `Evm.Delegation`, `Evm.Errors`, `Evm.Log` and `Transactions.BlobGas`.
@@ -248,7 +291,7 @@ Not yet released.
   So `.2.2` of `Store.onAttestation_frame` and `Store.onAttesterSlashing_frame` becomes `.2.2.1`, and `.2.2.2.2` of `Store.onTickPerSlot_frame` becomes `.2.2.2.2.1`.
   The `.2.2.2` of the other four frames becomes `.2.2.2.1`.
   The new `Store.catchUp_preserves` states that catch-up keeps each property of the store that every tick within a slot keeps.
-  It has the form of `Store.onBlockWithVotes_preserves`.
+  It composes preservation over the individual tick steps.
   `Store.catchUp_frame`, `Store.catchUp_ordered` and the catch-up step of `Store.onTick_checkpointStates_latestMessages` now read it, with unchanged statements.
   The new `Store.onTick_ok` splits a tick into the slot of its time, the catch-up to that slot and one tick within it.
   `Store.onTick_frame`, `Store.getCurrentSlot_onTick`, `Store.onTick_ordered`, `Store.onTick_checkpointStates_latestMessages` and `Store.exists_getCurrentSlot_onTick_ge` now read it, with unchanged statements.

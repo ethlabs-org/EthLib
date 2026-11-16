@@ -6,6 +6,7 @@ import sys
 import tomllib
 from collections import Counter, deque
 from collections.abc import Iterable, Mapping, Sequence, Set as AbstractSet
+from functools import cache
 from pathlib import Path
 from typing import NamedTuple
 
@@ -34,6 +35,8 @@ LAYERS = {
 AGGREGATORS = {"EthLib", "EthLib.Proofs", "EthLib.Exports"}
 # The packages of the Lean toolchain, which a specification and a C export may import.
 TOOLCHAIN = {"Init", "Std", "Lean"}
+# The only modules that may `import all` a module outside EthLib, as BUILDING.md states.
+TOOLCHAIN_HOME = ("EthLib", "Base", "Proofs", "Toolchain")
 # The first tier of Cryptography: hashes and Merkle trees, which import no other part of it.
 FIRST_TIER = ("Hash", "Merkle")
 # The two hash-based signatures, whose modules never reach each other through their imports.
@@ -43,7 +46,7 @@ KIND_NAMES = {"specification": "a specification", "property": "a property", "exp
 KINDS = "coverage/kinds.toml"
 
 HEADER_WORD = re.compile(r"\s*(module|prelude)\b")
-IMPORT = re.compile(r"\s*(?:public\s+)?(meta\s+)?import\s+(?:all\s+)?((?:«[^»]*»|[^\s«])+)")
+IMPORT = re.compile(r"\s*(?:public\s+)?(meta\s+)?import\s+(all\s+)?((?:«[^»]*»|[^\s«])+)")
 MODULE_COMPONENT = re.compile(r"«[^»]*»|[^.]+")
 LIBRARY = re.compile(r"^lean_lib\s+«?([A-Za-z0-9_]+)»?\s+where(.*?)(?=^\S|\Z)", re.M | re.S)
 ROOTS = re.compile(r"roots\s*:=\s*#\[(.*?)\]", re.S)
@@ -56,6 +59,7 @@ class Import(NamedTuple):
     module: str
     meta: bool
     line: int
+    all: bool = False
 
 
 def read_header(text: str) -> tuple[list[Import], str]:
@@ -66,10 +70,10 @@ def read_header(text: str) -> tuple[list[Import], str]:
         if word := HEADER_WORD.match(code, index):
             index = word.end()
         elif match := IMPORT.match(code, index):
-            module = join_module(module_parts(match.group(2)))
+            module = join_module(module_parts(match.group(3)))
             # `strip_lean` keeps every newline, so the line number is the one in the file.
-            line = code.count("\n", 0, match.start(2)) + 1
-            found.append(Import(module, bool(match.group(1)), line))
+            line = code.count("\n", 0, match.start(3)) + 1
+            found.append(Import(module, bool(match.group(1)), line, bool(match.group(2))))
             index = match.end()
         else:
             return found, code[index:]
@@ -212,12 +216,13 @@ def scheme_problems(graph: dict[str, list[str]]) -> list[tuple[str, str, str]]:
 
 def directory_cycles(
     graph: Mapping[str, Sequence[str]],
-    directory_roots: AbstractSet[str] = frozenset(),
+    directory_roots: AbstractSet[str],
 ) -> list[tuple[str, str, tuple[str, ...]]]:
     """
     Each import in a directory cycle, with one closed path of directories.
 
     `directory_roots` names root modules whose directories exist, even without Lean files.
+    Directory edges include every module reached through an import, at any depth.
     """
     directories = set(directory_roots) | {
         join_module(parts[:size])
@@ -227,6 +232,7 @@ def directory_cycles(
         for size in range(2, len(parts))
     }
 
+    @cache
     def containers(name: str) -> list[str]:
         # A root such as `BuilderApi.lean` belongs to `BuilderApi/`, when that directory exists.
         parts = module_parts(name)
@@ -234,17 +240,51 @@ def directory_cycles(
             parts = parts[:-1]
         return [join_module(parts[:size]) for size in range(3, len(parts) + 1)]
 
+    reached: dict[str, set[str]] = {}
+    module_layers = {name: layer(name) for name in graph}
+
+    def reachable(name: str) -> set[str]:
+        # Visit descendants before their importer without using Python's recursion stack.
+        stack = [(name, False)]
+        while stack:
+            current, expanded = stack.pop()
+            if expanded:
+                for imported in graph[current]:
+                    if imported in graph:
+                        reached[current].update(reached[imported])
+            elif current not in reached:
+                # Lean rejects module cycles; the mark keeps a broken tree from looping.
+                reached[current] = {imported for imported in graph[current] if imported in graph}
+                stack.append((current, True))
+                stack.extend(
+                    (imported, False) for imported in sorted(reached[current], reverse=True)
+                )
+        return reached[name]
+
+    @cache
+    def targets(name: str, source_layer: str) -> set[str]:
+        return {
+            target
+            for module in {name} | reachable(name)
+            if module_layers[module] == source_layer
+            for target in containers(module)
+        }
+
     edges: dict[tuple[str, str], list[tuple[str, str]]] = {}
     directory_graph: dict[str, set[str]] = {}
     for name in sorted(graph):
-        if layer(name) is None:
+        source_layer = module_layers[name]
+        if source_layer is None:
             continue
         for imported in sorted(set(graph[name])):
-            if imported not in graph or layer(name) != layer(imported):
+            if imported not in graph:
                 continue
             pairs = []
             for source in containers(name):
-                for target in containers(imported):
+                # An import inside `source` adds no pair; the line that leaves `source` reports it.
+                if source in containers(imported):
+                    continue
+                for target in sorted(targets(imported, source_layer)):
                     if (
                         source == target
                         or source.startswith(target + ".")
@@ -339,6 +379,42 @@ def reach_problems(graph: dict[str, list[str]]) -> list[tuple[str, str, str]]:
         for imported in graph[name]:
             if imported in reached and kind(imported) == "property":
                 problems.append((name, imported, reached[imported]))
+    return problems
+
+
+def toolchain_home(module: str) -> bool:
+    """Whether a module sits in the directory of the modules that read toolchain bodies."""
+    parts = module_parts(module)
+    return (
+        len(parts) > len(TOOLCHAIN_HOME) and tuple(parts[: len(TOOLCHAIN_HOME)]) == TOOLCHAIN_HOME
+    )
+
+
+def import_all_problems(headers: dict[str, list[Import]]) -> list[tuple[str, Import, str]]:
+    """
+    Each `import all` of a module outside EthLib that the rule of BUILDING.md does not allow.
+
+    Each problem is the module that writes the import, the import, and the rule it breaks.
+
+    Such an import reads private declarations and bodies, which a new version can change.
+    So only a module under `EthLib/Base/Proofs/Toolchain/` writes it, and states public theorems.
+    Each outside module has one such module, so a change to it breaks one file.
+    """
+    homes: dict[str, list[str]] = {}
+    problems = []
+    for name in sorted(headers):
+        for found in headers[name]:
+            if not found.all or module_parts(found.module)[0] == "EthLib":
+                continue
+            if toolchain_home(name):
+                homes.setdefault(found.module, []).append(name)
+            else:
+                home = "/".join(TOOLCHAIN_HOME)
+                problems.append((name, found, f"only a module under {home}/ reads its bodies"))
+    for imported, names in sorted(homes.items()):
+        for name in names[1:]:
+            found = next(item for item in headers[name] if item.all and item.module == imported)
+            problems.append((name, found, f"{names[0]} already reads its bodies"))
     return problems
 
 
@@ -531,6 +607,15 @@ def check(root: Path) -> list[str]:
                     problems.append(
                         f"{modules[name].relative_to(root)}: imports {imported}, but {problem}"
                     )
+
+    for name, found, rule in import_all_problems(headers):
+        if (name, found.module) in baseline:
+            used.add((name, found.module))
+        else:
+            problems.append(
+                f"{modules[name].relative_to(root)}:{found.line}: "
+                f"imports all of {found.module}, but {rule}"
+            )
 
     directory_roots = {name for name, path in modules.items() if path.with_suffix("").is_dir()}
     for name, imported, cycle in directory_cycles(graph, directory_roots):
