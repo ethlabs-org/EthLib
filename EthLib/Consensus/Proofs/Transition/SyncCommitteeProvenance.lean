@@ -398,15 +398,30 @@ private theorem processBlsToExecutionChange {signed : SignedBLSToExecutionChange
 /-- Block operations keep both committees, one fold of the operations at a time. -/
 private theorem processOperations {body : BeaconBlockBody preset fork} {parentSlot : Slot}
     (ok : Consensus.processOperations config checks state body parentSlot = .ok after) :
-    SameSyncCommittees state after := by
+    SameSyncCommittees state after ∧ RegistryLifecycle state after := by
+  let R := fun a b : BeaconState preset fork =>
+    SameSyncCommittees a b ∧ RegistryLifecycle a b
+  have refl (a) : R a a := ⟨.refl a, .refl a⟩
+  have trans {a b c} (one : R a b) (two : R b c) : R a c :=
+    ⟨one.1.trans two.1, one.2.trans two.2⟩
+  have fold {α : Type} {step : BeaconState preset fork → α → Except TransitionError _}
+      (each : ∀ a x b, step a x = .ok b → R a b)
+      {a b : BeaconState preset fork} {items : List α} (ok : items.foldlM step a = .ok b) :
+      R a b := (foldlM_ok_steps R refl (fun one two => trans one two) each ok).1
   obtain ⟨_, _, _, proposersOk, slashingsOk, attestedOk, rest⟩ :=
-    processOperations_folds_of SameSyncCommittees .refl (fun one two => one.trans two)
-      processDeposit (fun exited => initiateValidatorExit (processVoluntaryExit_initiates exited))
-      processBlsToExecutionChange processExecutionRequests
-      (fun paid => by rw [processPayloadAttestation_eq paid]; exact .refl _) ok
-  exact (foldlM (fun _ _ _ ok => processProposerSlashing ok) proposersOk).trans <|
-    (foldlM (fun _ _ _ ok => processAttesterSlashing ok) slashingsOk).trans <|
-    (foldlM (fun _ _ _ ok => processAttestation ok) attestedOk).trans rest
+    processOperations_folds_of R refl (fun one two => trans one two)
+      (fun ok => ⟨processDeposit ok, registryLifecycle_processDeposit ok⟩)
+      (fun exited => ⟨initiateValidatorExit (processVoluntaryExit_initiates exited),
+        registryLifecycle_processVoluntaryExit exited⟩)
+      (fun ok => ⟨processBlsToExecutionChange ok, registryLifecycle_processBlsToExecutionChange ok⟩)
+      (fun ok => ⟨processExecutionRequests ok, registryLifecycle_processExecutionRequests ok⟩)
+      (fun paid => by rw [processPayloadAttestation_eq paid]; exact refl _) ok
+  exact trans (fold (fun _ _ _ ok =>
+    ⟨processProposerSlashing ok, registryLifecycle_processProposerSlashing ok⟩) proposersOk) <|
+    trans (fold (fun _ _ _ ok =>
+      ⟨processAttesterSlashing ok, registryLifecycle_processAttesterSlashing ok⟩) slashingsOk) <|
+    trans (fold (fun _ _ _ ok =>
+      ⟨processAttestation ok, registryLifecycle_processAttestation ok⟩) attestedOk) rest
 
 private theorem processExecutionPayload {body : BeaconBlockBody preset fork}
     {engine : ExecutionEngine preset fork}
@@ -486,7 +501,7 @@ private theorem processBlock {block : BeaconBlock preset fork}
       exact .refl _
     · cases synced
       exact .refl _
-  exact head.trans ((processOperations operated).trans tail)
+  exact head.trans ((processOperations operated).1.trans tail)
 
 private theorem applyDeltas {rewards penalties : Array Gwei} {index : Nat}
     (ok : Consensus.applyDeltas rewards penalties state index = .ok after) :
@@ -733,6 +748,25 @@ private theorem queueCompoundingExcess {electra : .pectra ≤ fork} {index : Nat
 
 end SameSyncCommittees
 
+private theorem assigned_key_transfer
+    (keys : validatorKeys state <+: validatorKeys after)
+    (life : RegistryLifecycle state after) (key : BLSPubkey)
+    (prior : ∃ (i : Nat) (v : Validator),
+      state.validators.data[i]? = some v ∧ v.pubkey = key ∧
+      v.activationEpoch ≠ FAR_FUTURE_EPOCH) :
+    ∃ (i : Nat) (v : Validator), after.validators.data[i]? = some v ∧ v.pubkey = key ∧
+      v.activationEpoch ≠ FAR_FUTURE_EPOCH := by
+  obtain ⟨i, v, found, keyEq, assigned⟩ := prior
+  obtain ⟨w, read, kept⟩ := life.validators i v found
+  have pubkey : w.pubkey = v.pubkey := by
+    obtain ⟨suffix, eq⟩ := keys
+    have entry : (validatorKeys after)[i]? = (validatorKeys state)[i]? := by
+      rw [← eq, List.getElem?_append_left]
+      simpa [validatorKeys] using (Array.getElem?_eq_some_iff.mp found).1
+    simpa [validatorKeys, List.getElem?_map, found, read] using entry
+  exact ⟨i, w, read, pubkey.trans keyEq,
+    fun far => assigned ((kept.activationEpoch assigned).symm.trans far)⟩
+
 private theorem SyncCommitteeKeys.transfer (holds : SyncCommitteeKeys state)
     (same : after.currentSyncCommittee = state.currentSyncCommittee ∧
       after.nextSyncCommittee = state.nextSyncCommittee)
@@ -741,28 +775,13 @@ private theorem SyncCommitteeKeys.transfer (holds : SyncCommitteeKeys state)
     SyncCommitteeKeys after := by
   intro altair
   obtain ⟨current, next⟩ := holds altair
-  have carry (key) (prior : ∃ (i : Nat) (v : Validator),
-      state.validators.data[i]? = some v ∧ v.pubkey = key ∧
-      v.activationEpoch ≠ FAR_FUTURE_EPOCH) :
-      ∃ (i : Nat) (v : Validator), after.validators.data[i]? = some v ∧ v.pubkey = key ∧
-        v.activationEpoch ≠ FAR_FUTURE_EPOCH := by
-    obtain ⟨i, v, found, keyEq, assigned⟩ := prior
-    obtain ⟨w, read, kept⟩ := life.validators i v found
-    have pubkey : w.pubkey = v.pubkey := by
-      obtain ⟨suffix, eq⟩ := keys
-      have entry : (validatorKeys after)[i]? = (validatorKeys state)[i]? := by
-        rw [← eq, List.getElem?_append_left]
-        simpa [validatorKeys] using (Array.getElem?_eq_some_iff.mp found).1
-      simpa [validatorKeys, List.getElem?_map, found, read] using entry
-    exact ⟨i, w, read, pubkey.trans keyEq,
-      fun far => assigned ((kept.activationEpoch assigned).symm.trans far)⟩
   constructor
   · intro key member
     rw [same.1] at member
-    exact carry key (current key member)
+    exact assigned_key_transfer keys life key (current key member)
   · intro key member
     rw [same.2] at member
-    exact carry key (next key member)
+    exact assigned_key_transfer keys life key (next key member)
 
 namespace SyncCommitteeKeys
 
@@ -991,7 +1010,22 @@ theorem processOperations_currentSyncCommittee {body : BeaconBlockBody preset fo
     {parentSlot : Slot} (altair : .altair ≤ fork)
     (ok : processOperations config checks state body parentSlot = .ok after) :
     after.currentSyncCommittee altair = state.currentSyncCommittee altair :=
-  congrFun (SameSyncCommittees.processOperations ok).1 altair
+  congrFun (SameSyncCommittees.processOperations ok).1.1 altair
+
+/-- Block operations retain assigned activation epochs for every current sync committee key. -/
+theorem processOperations_syncCommittee_activation_assigned
+    {body : BeaconBlockBody preset fork} {parentSlot : Slot} (altair : .altair ≤ fork)
+    (holds : ∀ key ∈ (state.currentSyncCommittee altair).value.pubkeys.toList,
+      ∃ (i : Nat) (v : Validator), state.validators.data[i]? = some v ∧ v.pubkey = key ∧
+        v.activationEpoch ≠ FAR_FUTURE_EPOCH)
+    (ok : processOperations config checks state body parentSlot = .ok after) :
+    ∀ key ∈ (after.currentSyncCommittee altair).value.pubkeys.toList,
+      ∃ (i : Nat) (v : Validator), after.validators.data[i]? = some v ∧ v.pubkey = key ∧
+        v.activationEpoch ≠ FAR_FUTURE_EPOCH := by
+  intro key member
+  rw [processOperations_currentSyncCommittee altair ok] at member
+  exact assigned_key_transfer (frame_processOperations ok).pubkeysPrefix
+    (SameSyncCommittees.processOperations ok).2 key (holds key member)
 
 /-- Block execution retains the current sync committee. -/
 theorem processBlockExecution_currentSyncCommittee {body : BeaconBlockBody preset fork}
