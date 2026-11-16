@@ -14,6 +14,7 @@ import EthLib.Consensus.Proofs.Transition.ActivationExitOrder
 import EthLib.Consensus.Proofs.Transition.InactivityLeakVoter
 import EthLib.Consensus.Proofs.Transition.ValidatorKeys
 import EthLib.Consensus.Proofs.Transition.BalanceNotRaised
+import EthLib.Consensus.Proofs.Transition.DepositCarry
 import Mathlib.Algebra.Order.BigOperators.Group.Finset
 
 /-!
@@ -3077,7 +3078,19 @@ private theorem CapStep.epochEdge {f : Fork} {a b : BeaconState preset f} {k : E
          obtain ⟨_, _, _, _, rfl⟩ := edge; rfl
        · exact edge ▸ rfl)
 
-private theorem CapStep.epoch {f : Fork} {s t : BeaconState preset f}
+private theorem CapStep.epoch_of {f : Fork} {s t : BeaconState preset f}
+    (Q : List EpochStage → BeaconState preset f → Prop)
+    (start : Q EpochStage.epochStages s)
+    (each : ∀ k rest a b, EpochStage.Edge config checks k a b →
+      CapStep config s a → (BalancesMatch s → BalancesMatch a) →
+      (f < .glamsterdam →
+        preset.MAX_EFFECTIVE_BALANCE ≤ preset.MIN_ACTIVATION_BALANCE →
+        preset.MAX_EFFECTIVE_BALANCE % preset.EFFECTIVE_BALANCE_INCREMENT = 0 →
+        (∀ {h : Fork} (v : Validator),
+          preset.MAX_EFFECTIVE_BALANCE ≤ withdrawalMaxEffectiveBalance preset h v) →
+        BalancesMatch s → AssignedTargets s →
+        UnassignedEligibleBalance s → UnassignedEligibleBalance a) →
+      Q (k :: rest) a → Q rest b)
     (ok : processEpoch config checks s = .ok t) :
     CapStep config s t ∧ (AssignedPartials s → AssignedPartials t) ∧
       (f < .glamsterdam →
@@ -3086,7 +3099,7 @@ private theorem CapStep.epoch {f : Fork} {s t : BeaconState preset f}
         (∀ {h : Fork} (v : Validator),
           preset.MAX_EFFECTIVE_BALANCE ≤ withdrawalMaxEffectiveBalance preset h v) →
         BalancesMatch s → AssignedTargets s →
-        UnassignedEligibleBalance s → UnassignedEligibleBalance t) := by
+        UnassignedEligibleBalance s → UnassignedEligibleBalance t) ∧ Q [] t := by
   let R := fun (a b : BeaconState preset f) => CapStep config a b ∧
     (BalancesMatch a → BalancesMatch b) ∧
     (AssignedPartials a → AssignedPartials b) ∧
@@ -3097,15 +3110,16 @@ private theorem CapStep.epoch {f : Fork} {s t : BeaconState preset f}
         preset.MAX_EFFECTIVE_BALANCE ≤ withdrawalMaxEffectiveBalance preset h v) →
       BalancesMatch a → AssignedTargets a →
       UnassignedEligibleBalance a → UnassignedEligibleBalance b)
-  have whole : R s t := (processEpoch_trace ok).transport R
-    (fun a => ⟨CapStep.refl a, id, id, fun _ _ _ _ _ _ => id⟩)
-    (fun one two => ⟨one.1.trans two.1, two.2.1 ∘ one.2.1,
+  have refl (a) : R a a := ⟨CapStep.refl a, id, id, fun _ _ _ _ _ _ => id⟩
+  have trans {a b c} (one : R a b) (two : R b c) : R a c :=
+    ⟨one.1.trans two.1, two.2.1 ∘ one.2.1,
       two.2.2.1 ∘ one.2.2.1,
       fun early activation aligned caps matched targets held =>
-        two.2.2.2 early activation aligned caps (one.2.1 matched) (one.1.targets early targets)
-          (one.2.2.2 early activation aligned caps matched targets held)⟩) (by
-      intro k _ a b computed
-      have edge := EpochStage.action_cases.mp computed
+        two.2.2.2 early activation aligned caps (one.2.1 matched)
+          (one.1.targets early targets)
+          (one.2.2.2 early activation aligned caps matched targets held)⟩
+  have step k {a b : BeaconState preset f}
+      (edge : EpochStage.Edge config checks k a b) : R a b := by
       refine ⟨(CapStep.epochEdge edge).1, ?_, (CapStep.epochEdge edge).2, ?_⟩
       · by_cases justification : k = .justification
         · subst k
@@ -3131,8 +3145,28 @@ private theorem CapStep.epoch {f : Fork} {s t : BeaconState preset f}
           obtain ⟨validators, balances, _⟩ :=
             edge.records ⟨nofun, nofun, nofun, nofun, nofun, nofun⟩
           exact held.transfer (congrArg (·.data) validators)
-            (fun _ _ b _ _ read low => ⟨b, by rw [balances]; exact read, low⟩))
-  exact ⟨whole.1, whole.2.2⟩
+            (fun _ _ b _ _ read low => ⟨b, by rw [balances]; exact read, low⟩)
+  have whole := (processEpoch_trace ok).induction_on
+    (fun rest b => R s b ∧ Q rest b) ⟨refl s, start⟩ (by
+      intro k rest a b computed held
+      have edge := EpochStage.action_cases.mp computed
+      exact ⟨trans held.1 (step k edge),
+        each k rest a b edge held.1.1 held.1.2.1 held.1.2.2.2 held.2⟩)
+  exact ⟨whole.1.1, whole.1.2.2.1, whole.1.2.2.2, whole.2⟩
+
+private theorem CapStep.epoch {f : Fork} {s t : BeaconState preset f}
+    (ok : processEpoch config checks s = .ok t) :
+    CapStep config s t ∧ (AssignedPartials s → AssignedPartials t) ∧
+      (f < .glamsterdam →
+        preset.MAX_EFFECTIVE_BALANCE ≤ preset.MIN_ACTIVATION_BALANCE →
+        preset.MAX_EFFECTIVE_BALANCE % preset.EFFECTIVE_BALANCE_INCREMENT = 0 →
+        (∀ {h : Fork} (v : Validator),
+          preset.MAX_EFFECTIVE_BALANCE ≤ withdrawalMaxEffectiveBalance preset h v) →
+        BalancesMatch s → AssignedTargets s →
+        UnassignedEligibleBalance s → UnassignedEligibleBalance t) := by
+  have whole := CapStep.epoch_of (fun _ _ => True) True.intro
+    (fun _ _ _ _ _ _ _ _ _ => True.intro) ok
+  exact ⟨whole.1, whole.2.1, whole.2.2.1⟩
 
 private theorem CapStep.slot {f : Fork} {s t : BeaconState preset f}
     (ok : advanceSlot config checks s = .ok t) :
@@ -3567,6 +3601,111 @@ private theorem preKeyCharge_pending {f : Fork} {s t : BeaconState preset f}
   rw [preKeyCharge_sum_range candidate s (registryLifecycle_processPendingDeposits ok).size_le]
     at sums
   omega
+
+private theorem preKeyCharge_epoch {f : Fork} {s t : BeaconState preset f}
+    (electra : .pectra ≤ f) (early : f < .glamsterdam)
+    (activation : preset.MAX_EFFECTIVE_BALANCE ≤ preset.MIN_ACTIVATION_BALANCE)
+    (aligned : MaxEffectiveBalancesAligned preset)
+    (caps : ∀ {h : Fork} (v : Validator),
+      preset.MAX_EFFECTIVE_BALANCE ≤ withdrawalMaxEffectiveBalance preset h v)
+    (valid : Invariant s) (ordered : ActivationExitOrder s) (targets : AssignedTargets s)
+    (held : UnassignedEligibleBalance s) (finite : getCurrentEpoch s < FAR_FUTURE_EPOCH)
+    (candidate : Nat → Bool)
+    (pendingLaw : ∀ (a b : BeaconState preset f),
+      processPendingDeposits config checks a electra = .ok b → BalancesMatch a →
+      (∑ i ∈ Finset.range b.validators.data.size,
+        if (a.validators.data[i]?.map (fun v =>
+          decide (v.withdrawableEpoch.toNat ≤ (getCurrentEpoch a).toNat))).getD false then 0
+        else ((b.balances.data[i]?.map UInt64.toNat).getD 0) -
+          ((a.balances.data[i]?.map UInt64.toNat).getD 0)) +
+        (b.depositBalanceToConsume electra).toNat ≤
+          (a.depositBalanceToConsume electra).toNat +
+            config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat)
+    (ok : processEpoch config checks s = .ok t) :
+    (∑ i ∈ Finset.range t.validators.data.size, preKeyCharge candidate t i) +
+      (t.depositBalanceToConsume electra).toNat ≤
+        (∑ i ∈ Finset.range s.validators.data.size, preKeyCharge candidate s i) +
+          (s.depositBalanceToConsume electra).toNat +
+            config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat := by
+  let cap := config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat
+  let pendingStage : EpochStage → Bool := fun k =>
+    match k with | .pendingDeposits => true | _ => false
+  let total (a : BeaconState preset f) :=
+    (∑ i ∈ Finset.range a.validators.data.size, preKeyCharge candidate a i) +
+      (a.depositBalanceToConsume electra).toNat
+  let Q (rest : List EpochStage) (a : BeaconState preset f) :=
+    (EpochStage.justification ∈ rest → rest = EpochStage.epochStages ∧ a = s) ∧
+      a.slot = s.slot ∧
+      ActivationExitOrder a ∧ ExitsOrdered a ∧
+      a.finalizedCheckpoint.epoch ≤ getCurrentEpoch s ∧
+      total a + cap * rest.countP pendingStage ≤ total s + cap
+  have finalized : s.finalizedCheckpoint.epoch ≤ getCurrentEpoch s :=
+    UInt64.le_trans valid.ordered.1 (UInt64.le_trans valid.ordered.2
+      (UInt64.le_trans valid.settled (getPreviousEpoch_le s)))
+  have start : Q EpochStage.epochStages s := by
+    refine ⟨fun _ => ⟨rfl, rfl⟩, rfl, ordered, valid.exitsOrdered, finalized, ?_⟩
+    simp [EpochStage.epochStages, EpochStage.prefixStages, EpochStage.middleStages,
+      EpochStage.tailStages, pendingStage]
+  have whole := CapStep.epoch_of Q start (fun k rest a b edge previous matched funded state => by
+    obtain ⟨first, slot, activationOrder, exits, checkpoint, budget⟩ := state
+    have finiteA : getCurrentEpoch a < FAR_FUTURE_EPOCH := by
+      simpa only [getCurrentEpoch, slot] using finite
+    have slotStep : b.slot = a.slot := by
+      by_cases justification : k = .justification
+      · subst k
+        exact (edge.records ⟨nofun, nofun, nofun, nofun, nofun, nofun⟩).2.2.2.2
+      · exact (epochEdge_frame edge justification).slot
+    refine ⟨?_, slotStep.trans slot, edge.activationExitOrder activationOrder, ?_, ?_, ?_⟩
+    · intro remains
+      have schedule := (first (List.mem_cons_of_mem k remains)).1
+      simp only [EpochStage.epochStages, EpochStage.prefixStages, EpochStage.middleStages,
+        EpochStage.tailStages, List.cons_append, List.nil_append, List.cons.injEq] at schedule
+      obtain ⟨rfl, rfl⟩ := schedule
+      simp at remains
+    · by_cases justification : k = .justification
+      · subst k
+        obtain ⟨validators, _, _⟩ := edge.records ⟨nofun, nofun, nofun, nofun, nofun, nofun⟩
+        simpa only [ExitsOrdered, validators] using exits
+      · exact (epochEdge_frame edge justification).exitsOrdered exits
+    · by_cases justification : k = .justification
+      · subst k
+        have same := (first List.mem_cons_self).2
+        subst a
+        have result :=
+          processJustificationAndFinalization_invariant valid.ordered valid.settled edge
+        exact UInt64.le_trans result.1.1 (UInt64.le_trans result.1.2 result.2.2.1)
+      · simpa only [(epochEdge_frame edge justification).finalized] using checkpoint
+    · by_cases pending : k = .pendingDeposits
+      · subst k
+        have processed : processPendingDeposits config checks a electra = .ok b := by
+          simpa only [EpochStage.Edge, electra, ↓reduceDIte] using edge
+        have paid := preKeyCharge_pending candidate processed (matched valid.balancesMatch)
+          activationOrder exits finiteA _ (pendingLaw a b processed (matched valid.balancesMatch))
+        have count : (EpochStage.pendingDeposits :: rest).countP pendingStage =
+            rest.countP pendingStage + 1 := by
+          simp only [List.countP_cons, pendingStage, ↓reduceIte]
+        rw [count] at budget
+        rw [Nat.mul_add, Nat.mul_one] at budget
+        change total b + cap * rest.countP pendingStage ≤ total s + cap
+        have paid' : total b ≤ total a + cap := by
+          simpa only [total, cap, Nat.add_assoc] using paid
+        omega
+      · have keywise := preKeyCharge_epochEdge edge pending electra early activation
+          (funded early activation aligned.1 caps valid.balancesMatch targets held)
+          (previous.targets early targets) (UInt64.lt_of_le_of_lt checkpoint finite) candidate
+        have summed := Finset.sum_le_sum (s := Finset.range b.validators.data.size)
+          (fun i _ => keywise i)
+        rw [preKeyCharge_sum_range candidate a edge.registryLifecycle.size_le] at summed
+        have carry := edge.depositCarry pending
+        have absent : pendingStage k = false := by cases k <;> simp_all [pendingStage]
+        simp only [List.countP_cons, absent, Bool.false_eq_true, ↓reduceIte,
+          Nat.add_zero] at budget
+        change total b + cap * rest.countP pendingStage ≤ total s + cap
+        dsimp only [total] at budget ⊢
+        rw [carry]
+        omega) ok
+  simpa only [total, cap, List.countP_nil, Nat.mul_zero, Nat.add_zero]
+    using whole.2.2.2.2.2.2.2.2
 
 private theorem run_unassigned_eligible_at_assignment {g x : ForkedBeaconState preset}
     (run : Run config checks g x) (genesis : Genesis (config := config) (checks := checks) g)
