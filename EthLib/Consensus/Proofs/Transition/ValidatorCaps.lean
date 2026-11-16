@@ -14,7 +14,7 @@ import EthLib.Consensus.Proofs.Transition.ActivationExitOrder
 import EthLib.Consensus.Proofs.Transition.InactivityLeakVoter
 import EthLib.Consensus.Proofs.Transition.ValidatorKeys
 import EthLib.Consensus.Proofs.Transition.BalanceNotRaised
-import EthLib.Consensus.Proofs.Transition.DepositCarry
+import EthLib.Consensus.Proofs.Transition.DepositCarryCore
 import Mathlib.Algebra.Order.BigOperators.Group.Finset
 
 /-!
