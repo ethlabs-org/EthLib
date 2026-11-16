@@ -1295,6 +1295,7 @@ private abbrev aprioriGuard (preset : Preset) (config : Config)
       inactive funded horizon forkEpochs : Nat) : Prop :=
   0 < preset.EFFECTIVE_BALANCE_INCREMENT.toNat ∧ 0 < config.CHURN_LIMIT_QUOTIENT.toNat ∧
     0 < config.MIN_PER_EPOCH_CHURN_LIMIT.toNat ∧
+    0 < preset.MAX_EFFECTIVE_BALANCE.toNat ∧
     0 < preset.MIN_ACTIVATION_BALANCE.toNat ∧ 0 < preset.downwardBand ∧
     0 < leakDivisor preset config ∧ 0 < slashingQuotient preset forkEpochs ∧
     1 < whistleblowerQuotient preset forkEpochs ∧
@@ -1884,7 +1885,7 @@ private theorem departures_le_budget {g x y : ForkedBeaconState preset}
     rfl
   rw [Run.departureCharges_append, List.filter_append, List.map_append, List.sum_append, after,
     Nat.add_zero]
-  obtain ⟨-, -, minimum, -, -, -, -, -, -, -, -, -, crossing⟩ := guard
+  obtain ⟨-, -, minimum, -, -, -, -, -, -, -, -, -, -, crossing⟩ := guard
   -- The written-out carry of D-Q is `queueCarry`.
   change _ ≤ queueCarry x high + _ + _ + _ at bound
   simp only [departureBudget]
@@ -3736,7 +3737,7 @@ private theorem activeStake_le_ceiling {g x y : ForkedBeaconState preset}
         ((getCurrentEpoch y.state).toNat - (getCurrentEpoch x.state).toNat) := by
   have notBefore : ¬ x.fork < .pectra := Nat.not_lt_of_ge electra
   have zero : forkEpochs config x high = 0 := by simp [forkEpochs, notBefore]
-  obtain ⟨inc, -, -, -, -, -, -, -, delay, -, -, ratioGuard, -⟩ := guard
+  obtain ⟨inc, -, -, -, -, -, -, -, -, delay, -, -, ratioGuard, -⟩ := guard
   rw [zero] at ratioGuard
   have grows (t : Nat) : ceilingAt config x high t + 2 * issuanceEnvelope preset
       (ceilingAt config x high t) + config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat ≤
@@ -5166,7 +5167,7 @@ private theorem departures_le_budget_of_ceiling {g x y : ForkedBeaconState prese
     · -- A window before the fork has no Electra state.
       have before : x.fork < .pectra := Nat.lt_of_not_ge electra
       have reached := reachable_electra_epoch (shared.append pre) genesis electraU
-      obtain ⟨-, -, -, -, -, -, -, -, -, -, -, -, crossing⟩ := guard
+      obtain ⟨-, -, -, -, -, -, -, -, -, -, -, -, -, crossing⟩ := guard
       have positive : 0 < forkEpochs config x high := by
         simp only [forkEpochs, before, ↓reduceIte, driftHorizon]
         split_ifs <;> omega
