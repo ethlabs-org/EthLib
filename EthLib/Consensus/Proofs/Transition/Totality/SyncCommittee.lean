@@ -1,7 +1,7 @@
 module
 
 public import EthLib.Consensus.Proofs.Accessors
-public import EthLib.Consensus.Proofs.Accessors.Draw
+public import EthLib.Consensus.Proofs.Accessors.DrawBounds
 public import EthLib.Consensus.Proofs.Shuffle
 public import EthLib.Consensus.Proofs.ShufflePermutation
 public import EthLib.Consensus.Proofs.SyncCommittee
@@ -35,22 +35,6 @@ open Base
 
 variable {preset : Preset} {fork : Base.Fork}
 
-/-- The largest effective balance that the draw of a fork compares against.
-
-From Electra it is the cap of a compounding validator. -/
-def drawCap (preset : Preset) (fork : Base.Fork) : Nat :=
-  if .pectra ≤ fork then preset.MAX_EFFECTIVE_BALANCE_ELECTRA.toNat
-  else preset.MAX_EFFECTIVE_BALANCE.toNat
-
-/-- The products of the draw fit in 64 bits.
-
-The draw compares the cap times a random value with a balance times the largest such value.
-
-The value takes two bytes from Electra, and one before. -/
-def DrawFits (preset : Preset) (fork : Base.Fork) : Prop :=
-  if .pectra ≤ fork then preset.MAX_EFFECTIVE_BALANCE_ELECTRA.toNat * (2 ^ 16 - 1) < 2 ^ 64
-  else preset.MAX_EFFECTIVE_BALANCE.toNat * (2 ^ 8 - 1) < 2 ^ 64
-
 /-- The products of the draw fit in 64 bits for the mainnet and minimal presets, at every fork. -/
 theorem drawFits_presets (fork : Base.Fork) :
     DrawFits Preset.mainnet fork ∧ DrawFits Preset.minimal fork := by
@@ -68,29 +52,6 @@ theorem seedLookahead_lt_presets :
 theorem syncCommitteeSize_ne_zero_presets :
     Preset.mainnet.SYNC_COMMITTEE_SIZE ≠ 0 ∧ Preset.minimal.SYNC_COMMITTEE_SIZE ≠ 0 := by
   decide
-
-/-- A draw of a balance at most the cap succeeds, and accepts a balance at the cap. -/
-private theorem drawAccepts_ok_of_le (fits : DrawFits preset fork) (random : Bytes32) (i : Nat)
-    {e : Gwei} (capped : e.toNat ≤ drawCap preset fork) :
-    ∃ accepted, drawAccepts preset fork random i e = .ok accepted ∧
-      (e.toNat = drawCap preset fork → accepted = true) := by
-  unfold DrawFits at fits
-  unfold drawCap at capped
-  by_cases electra : .pectra ≤ fork
-  · rw [ite_eq_left electra] at fits capped
-    refine ⟨_, drawAccepts_eq_of_pectra preset fork electra random i e fits capped, ?_⟩
-    intro atCap
-    rw [atCap, drawCap, ite_eq_left electra]
-    have small : i % 16 * 2 + 1 < 32 := by have := Nat.mod_lt i (by decide : 0 < 16); omega
-    have low := (random[i % 16 * 2]'(by omega)).toNat_lt
-    have high := random[i % 16 * 2 + 1].toNat_lt
-    exact decide_eq_true (Nat.mul_le_mul_left _ (by omega))
-  · rw [ite_eq_right electra] at fits capped
-    refine ⟨_, drawAccepts_eq_of_before_pectra preset fork electra random i e fits capped, ?_⟩
-    intro atCap
-    rw [atCap, drawCap, ite_eq_right electra]
-    have byte := (random[i % 32]'(Nat.mod_lt i (by decide))).toNat_lt
-    exact decide_eq_true (Nat.mul_le_mul_left _ (by omega))
 
 /-- The search succeeds while this draw or a later one reads the capped position in time.
 
@@ -240,63 +201,131 @@ theorem computeBalanceWeightedSelection_ok {state : BeaconState preset fork}
   · exact search _ (fun _ lt => Shuffle.shuffledIndex_lt lt)
       ⟨_, Shuffle.unshuffledIndex_lt pLt, Shuffle.shuffledIndex_unshuffledIndex pLt⟩
 
-/-- The seed of an epoch exists when the epoch plus the length of the history of mixes fits.
+/-! ## The draw on a state of another fork -/
 
-The seed lookahead must also be shorter than that history. -/
-theorem getSeed_ok {state : BeaconState preset fork} {epoch : Epoch}
-    (domain : DomainType)
-    (epochRoom : epoch.toNat + preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat < 2 ^ 64)
-    (lookahead : preset.MIN_SEED_LOOKAHEAD.toNat < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat) :
-    ∃ seed, getSeed state epoch domain = .ok seed := by
-  have subOk : ∀ a b : UInt64, b.toNat ≤ a.toNat → Uint64.subChecked a b = .ok (a - b) :=
-    fun a b le => by simp [Uint64.subChecked, UInt64.le_iff_toNat_le, le]
-  have sum := Uint64.toNat_add_of_lt epochRoom
-  have first := subOk (epoch + preset.EPOCHS_PER_HISTORICAL_VECTOR) preset.MIN_SEED_LOOKAHEAD
-    (by omega)
-  have second := subOk (epoch + preset.EPOCHS_PER_HISTORICAL_VECTOR - preset.MIN_SEED_LOOKAHEAD) 1
-    (by rw [UInt64.toNat_sub_of_le _ _ (UInt64.le_iff_toNat_le.mpr (by omega))]; simp; omega)
-  have nonzero : preset.EPOCHS_PER_HISTORICAL_VECTOR ≠ 0 := by
-    intro zero
-    rw [zero] at lookahead
-    simp at lookahead
-  simp only [getSeed, getRandaoMix, readCircular, liftArith, Uint64.addChecked_of_lt epochRoom,
-    first, second, nonzero, bind, Except.bind, Except.mapError, pure, Except.pure, dite_false]
-  exact ⟨_, rfl⟩
+/-- A draw reads the same bytes and compares the same products at two forks.
 
-/-- No more validators are active in an epoch than the registry holds. -/
-theorem length_getActiveValidatorIndices_le (state : BeaconState preset fork)
-    (epoch : Epoch) :
-    (getActiveValidatorIndices state epoch).length ≤ state.validators.data.size := by
-  unfold getActiveValidatorIndices
-  refine Nat.le_trans (List.length_filterMap_le _ _) ?_
-  simp only [List.length_zipIdx, Array.length_toList, Nat.le_refl]
+The two forks must be on the same side of Electra. -/
+theorem proposerDraw_eq_of_electra_iff {fork' : Base.Fork}
+    (electra : .pectra ≤ fork' ↔ .pectra ≤ fork) :
+    proposerDraw preset fork' = proposerDraw preset fork := by
+  funext seed i balance
+  simp only [proposerDraw, drawHash, drawsPerHash, drawAccepts, electra]
 
-/-- The indices of the next sync committee are drawn under the bounds of the update. -/
-private theorem getNextSyncCommitteeIndices_ok {state : BeaconState preset fork}
+/-- The search of a balance-weighted selection is the same at two forks.
+
+The two forks must be on the same side of Electra. -/
+private theorem balanceWeightedSearch_eq_of_electra_iff {fork' : Base.Fork}
+    (electra : .pectra ≤ fork' ↔ .pectra ≤ fork) (indices : Array ValidatorIndex)
+    (balances : Array Gwei) (order : Nat → Nat) (seed : Bytes32) (size : Nat) :
+    ∀ left, ∀ {selected : Array ValidatorIndex} {bound : selected.size ≤ size} {i : Nat}
+      (random' : { random // random = drawHash fork' seed i })
+      (random : { random // random = drawHash fork seed i }), left = 2 ^ 64 - i →
+      balanceWeightedSearch preset fork' indices balances order seed size selected bound i
+          random' =
+        balanceWeightedSearch preset fork indices balances order seed size selected bound i
+          random := by
+  have hash : drawHash fork' = drawHash fork := by
+    funext seed i
+    simp only [drawHash, drawsPerHash, electra]
+  have accepts : drawAccepts preset fork' = drawAccepts preset fork := by
+    funext random i balance
+    simp only [drawAccepts, electra]
+  intro left
+  induction left using Nat.strongRecOn with
+  | _ left ih =>
+  intro selected bound i random' random leftEq
+  rw [balanceWeightedSearch, balanceWeightedSearch]
+  by_cases full : selected.size = size
+  · rw [dite_eq_left full, dite_eq_left full]
+  rw [dite_eq_right full, dite_eq_right full]
+  obtain ⟨random', rfl⟩ := random'
+  obtain ⟨random, rfl⟩ := random
+  dsimp only
+  rw [show drawAccepts preset fork' (drawHash fork' seed i) =
+    drawAccepts preset fork (drawHash fork seed i) by rw [hash, accepts]]
+  cases drawAccepts preset fork (drawHash fork seed i) i
+    (balances.getD (order (i % indices.size)) 0) with
+  | error e => simp only [bind, Except.bind]
+  | ok accepted =>
+    simp only [bind, Except.bind]
+    by_cases iLt : i + 1 < 2 ^ 64
+    · simp only [iLt, ↓reduceIte]
+      exact ih _ (leftEq ▸ Nat.sub_lt_sub_left (by omega) (Nat.lt_succ_self i)) _ _ rfl
+    · simp only [iLt, ↓reduceIte]
+
+/-- A balance-weighted selection is the same on two states with the same validators.
+
+The two forks must be on the same side of Electra. -/
+theorem computeBalanceWeightedSelection_eq_of_eq {fork' : Base.Fork}
+    {state : BeaconState preset fork} {other : BeaconState preset fork'}
+    (validators : other.validators.data = state.validators.data)
+    (electra : .pectra ≤ fork' ↔ .pectra ≤ fork) (indices : Array ValidatorIndex)
+    (seed : Bytes32) (size : UInt64) (shuffleIndices : Bool) :
+    computeBalanceWeightedSelection other indices seed size shuffleIndices =
+      computeBalanceWeightedSelection state indices seed size shuffleIndices := by
+  have search : ∀ (balances : Array Gwei) (order : Nat → Nat),
+      balanceWeightedSearch preset fork' indices balances order seed size.toNat #[]
+          (Nat.zero_le _) 0 ⟨drawHash fork' seed 0, rfl⟩ =
+        balanceWeightedSearch preset fork indices balances order seed size.toNat #[]
+          (Nat.zero_le _) 0 ⟨drawHash fork seed 0, rfl⟩ := fun balances order =>
+    balanceWeightedSearch_eq_of_electra_iff electra indices balances order seed _ _ _ _ rfl
+  unfold computeBalanceWeightedSelection
+  simp only [getValidator, validators, search]
+
+/-- Two states with the same mixes have the same seed for each epoch and domain. -/
+theorem getSeed_eq_of_eq {fork' : Base.Fork}
+    {state : BeaconState preset fork} {other : BeaconState preset fork'}
+    (mixes : other.randaoMixes.elements = state.randaoMixes.elements) (epoch : Epoch)
+    (domain : DomainType) :
+    getSeed other epoch domain = getSeed state epoch domain := by
+  simp only [getSeed, getRandaoMix, mixes]
+
+/-- Two states with the same validators have the same active validators in each epoch. -/
+theorem getActiveValidatorIndices_eq_of_eq {fork' : Base.Fork}
+    {state : BeaconState preset fork} {other : BeaconState preset fork'}
+    (validators : other.validators.data = state.validators.data) (epoch : Epoch) :
+    getActiveValidatorIndices other epoch = getActiveValidatorIndices state epoch := by
+  simp only [getActiveValidatorIndices, validators]
+
+/-! ## The draw of a sync committee ends -/
+
+/-- The draw of a sync committee for an epoch ends, at the seed of that epoch.
+
+It is the balance-weighted selection among the validators active in that epoch.
+
+A validator at the cap of the draw makes it end.
+
+In the random oracle model, with at least one candidate, the search ends with high probability.
+
+That is a bound on a probability, not a fact about the hash, so a run assumes the end. -/
+def SyncDrawEnds (state : BeaconState preset fork) (epoch : Epoch) : Prop :=
+  ∀ seed, getSeed state epoch DOMAIN_SYNC_COMMITTEE = .ok seed →
+    ∃ indices, computeBalanceWeightedSelection state
+      (getActiveValidatorIndices state epoch).toArray seed preset.SYNC_COMMITTEE_SIZE true =
+        .ok indices
+
+/-- The draw of a sync committee ends when a validator active in its epoch is at the cap.
+
+No effective balance is above the cap, and the registry holds at most `2^40` validators.
+
+The committee size times the number of validators is below `2^64`.
+
+The products of the draw fit in 64 bits. -/
+theorem SyncDrawEnds.of_atCap {state : BeaconState preset fork} {epoch : Epoch}
     (fits : DrawFits preset fork)
-    (epochRoom : (getCurrentEpoch state).toNat + 1 + preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat <
-      2 ^ 64)
-    (lookahead : preset.MIN_SEED_LOOKAHEAD.toNat < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
     (capped : ∀ validator ∈ state.validators.data,
       validator.effectiveBalance.toNat ≤ drawCap preset fork)
-    (full : ∃ validator ∈ state.validators.data,
-      isActiveValidator validator (getCurrentEpoch state + 1) ∧
-        validator.effectiveBalance.toNat = drawCap preset fork)
+    (full : ∃ validator ∈ state.validators.data, isActiveValidator validator epoch ∧
+      validator.effectiveBalance.toNat = drawCap preset fork)
     (few : state.validators.data.size ≤ 2 ^ 40)
     (room : preset.SYNC_COMMITTEE_SIZE.toNat * state.validators.data.size < 2 ^ 64) :
-    ∃ indices, getNextSyncCommitteeIndices state = .ok indices := by
-  have oneNat : (1 : UInt64).toNat = 1 := rfl
-  have sumFits : (getCurrentEpoch state).toNat + (1 : UInt64).toNat < 2 ^ 64 := by
-    rw [oneNat]; omega
-  have epochNat := Uint64.toNat_add_of_lt sumFits
-  rw [oneNat] at epochNat
-  obtain ⟨seed, seedOk⟩ := getSeed_ok (state := state) (epoch := getCurrentEpoch state + 1)
-    DOMAIN_SYNC_COMMITTEE (by rw [epochNat]; omega) lookahead
-  have checked := getActiveValidatorIndicesChecked_of_size_le (state := state) (by omega)
-    (getCurrentEpoch state + 1)
-  have lengthLe := length_getActiveValidatorIndices_le state (getCurrentEpoch state + 1)
-  obtain ⟨out, selected⟩ := computeBalanceWeightedSelection_ok (state := state)
-    (indices := (getActiveValidatorIndices state (getCurrentEpoch state + 1)).toArray)
+    SyncDrawEnds state epoch := by
+  intro seed _
+  have checked := getActiveValidatorIndicesChecked_of_size_le (state := state) (by omega) epoch
+  have lengthLe := length_getActiveValidatorIndices_le state epoch
+  exact computeBalanceWeightedSelection_ok (state := state)
+    (indices := (getActiveValidatorIndices state epoch).toArray)
     (seed := seed) (size := preset.SYNC_COMMITTEE_SIZE) (shuffleIndices := true) fits
     (fun index member => by
       obtain ⟨validator, read, _⟩ :=
@@ -318,6 +347,42 @@ private theorem getNextSyncCommitteeIndices_ok {state : BeaconState preset fork}
     (by
       simp only [List.size_toArray]
       exact Nat.lt_of_le_of_lt (Nat.mul_le_mul_left _ lengthLe) room)
+
+/-- The draw of a sync committee still ends on a state with the same validators and mixes.
+
+The two forks must be on the same side of Electra. -/
+theorem SyncDrawEnds.of_eq {fork' : Base.Fork}
+    {state : BeaconState preset fork} {other : BeaconState preset fork'} {epoch : Epoch}
+    (validators : other.validators.data = state.validators.data)
+    (mixes : other.randaoMixes.elements = state.randaoMixes.elements)
+    (electra : .pectra ≤ fork' ↔ .pectra ≤ fork) (ends : SyncDrawEnds state epoch) :
+    SyncDrawEnds other epoch := by
+  intro seed seedOk
+  rw [getSeed_eq_of_eq mixes] at seedOk
+  rw [getActiveValidatorIndices_eq_of_eq validators,
+    computeBalanceWeightedSelection_eq_of_eq validators electra]
+  exact ends seed seedOk
+
+/-- The indices of the next sync committee are drawn under the bounds of the update.
+
+The draw must end. -/
+private theorem getNextSyncCommitteeIndices_ok {state : BeaconState preset fork}
+    (epochRoom : (getCurrentEpoch state).toNat + 1 + preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat <
+      2 ^ 64)
+    (lookahead : preset.MIN_SEED_LOOKAHEAD.toNat < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
+    (few : state.validators.data.size ≤ 2 ^ 40)
+    (ends : SyncDrawEnds state (getCurrentEpoch state + 1)) :
+    ∃ indices, getNextSyncCommitteeIndices state = .ok indices := by
+  have oneNat : (1 : UInt64).toNat = 1 := rfl
+  have sumFits : (getCurrentEpoch state).toNat + (1 : UInt64).toNat < 2 ^ 64 := by
+    rw [oneNat]; omega
+  have epochNat := Uint64.toNat_add_of_lt sumFits
+  rw [oneNat] at epochNat
+  obtain ⟨seed, seedOk⟩ := getSeed_ok (state := state) (epoch := getCurrentEpoch state + 1)
+    DOMAIN_SYNC_COMMITTEE (by rw [epochNat]; omega) lookahead
+  have checked := getActiveValidatorIndicesChecked_of_size_le (state := state) (by omega)
+    (getCurrentEpoch state + 1)
+  obtain ⟨out, selected⟩ := ends seed seedOk
   refine ⟨out, ?_⟩
   simp only [getNextSyncCommitteeIndices, liftArith, Uint64.addChecked_of_lt sumFits, seedOk,
     checked, selected, bind, Except.bind, Except.mapError]
@@ -326,7 +391,7 @@ private theorem getNextSyncCommitteeIndices_ok {state : BeaconState preset fork}
 private theorem aggregatePubkeys_ok {pubkeys : Array Cryptography.Bls.BLSPubkey}
     (nonempty : pubkeys.size ≠ 0)
     (valid : ∀ pubkey ∈ pubkeys,
-      ∃ point, Cryptography.Bls.G1.keyValidatePoint (packBytes pubkey) = .ok point) :
+      ∃ point, Cryptography.Bls.G1.keyValidatePoint pubkey = .ok point) :
     ∃ aggregate, aggregatePubkeys pubkeys = .ok aggregate := by
   obtain ⟨sum, folded⟩ : ∃ sum, pubkeys.zipIdx.foldlM Cryptography.Bls.Signatures.addPubkeyPoint
       Cryptography.Bls.G1.zero = .ok sum := by
@@ -342,25 +407,22 @@ private theorem aggregatePubkeys_ok {pubkeys : Array Cryptography.Bls.BLSPubkey}
     Cryptography.Bls.Signatures.aggregatePubkeyPoint, notEmpty, folded, Bool.false_eq_true,
     ↓reduceIte, bind, Except.bind, pure, Except.pure, Except.mapError]
 
-/-- The next sync committee is drawn and aggregated under the bounds of the update. -/
-private theorem getNextSyncCommittee_ok {state : BeaconState preset fork}
-    (fits : DrawFits preset fork)
+/-- The next sync committee is drawn and aggregated under the bounds of the draw.
+
+It also needs valid keys, and its draw must end.
+
+Those are assumptions, not bounds. -/
+theorem getNextSyncCommittee_ok {state : BeaconState preset fork}
     (epochRoom : (getCurrentEpoch state).toNat + 1 + preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat <
       2 ^ 64)
     (lookahead : preset.MIN_SEED_LOOKAHEAD.toNat < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
     (keys : ∀ validator ∈ state.validators.data,
-      ∃ point, Cryptography.Bls.G1.keyValidatePoint (packBytes validator.pubkey) = .ok point)
-    (capped : ∀ validator ∈ state.validators.data,
-      validator.effectiveBalance.toNat ≤ drawCap preset fork)
-    (full : ∃ validator ∈ state.validators.data,
-      isActiveValidator validator (getCurrentEpoch state + 1) ∧
-        validator.effectiveBalance.toNat = drawCap preset fork)
+      ∃ point, Cryptography.Bls.G1.keyValidatePoint validator.pubkey = .ok point)
     (few : state.validators.data.size ≤ 2 ^ 40)
-    (room : preset.SYNC_COMMITTEE_SIZE.toNat * state.validators.data.size < 2 ^ 64)
+    (ends : SyncDrawEnds state (getCurrentEpoch state + 1))
     (members : preset.SYNC_COMMITTEE_SIZE ≠ 0) :
     ∃ committee, getNextSyncCommittee state = .ok committee := by
-  obtain ⟨indices, drawn⟩ :=
-    getNextSyncCommitteeIndices_ok fits epochRoom lookahead capped full few room
+  obtain ⟨indices, drawn⟩ := getNextSyncCommitteeIndices_ok epochRoom lookahead few ends
   have checked := getActiveValidatorIndicesChecked_of_size_le (state := state) (by omega)
     (getCurrentEpoch state + 1)
   -- Each drawn member is active next epoch, so it names a validator of the registry.
@@ -395,28 +457,17 @@ private theorem getNextSyncCommittee_ok {state : BeaconState preset fork}
 
 Every key of the registry passes key validation, as each deposit checked.
 
-No effective balance is above the cap of the draw.
-
-One validator active in the next epoch is at that cap: an assumption on the registry, not a bound.
-
 The registry holds at most `2^40` validators.
 
-Their number times the committee size is below `2^64`. -/
+The draw for the next epoch ends: an assumption, not a bound. -/
 structure SyncDrawable (state : BeaconState preset fork) : Prop where
   /-- Every key of the registry passes key validation. -/
   keys : ∀ validator ∈ state.validators.data,
-    ∃ point, Cryptography.Bls.G1.keyValidatePoint (packBytes validator.pubkey) = .ok point
-  /-- No effective balance is above the cap of the draw. -/
-  capped : ∀ validator ∈ state.validators.data,
-    validator.effectiveBalance.toNat ≤ drawCap preset fork
-  /-- One validator active in the next epoch is at the cap of the draw. -/
-  full : ∃ validator ∈ state.validators.data,
-    isActiveValidator validator (getCurrentEpoch state + 1) ∧
-      validator.effectiveBalance.toNat = drawCap preset fork
+    ∃ point, Cryptography.Bls.G1.keyValidatePoint validator.pubkey = .ok point
   /-- The registry holds at most `2^40` validators. -/
   few : state.validators.data.size ≤ 2 ^ 40
-  /-- The committee size times the number of validators is below `2^64`. -/
-  room : preset.SYNC_COMMITTEE_SIZE.toNat * state.validators.data.size < 2 ^ 64
+  /-- The draw for the next epoch ends. -/
+  ends : SyncDrawEnds state (getCurrentEpoch state + 1)
 
 /-- From Altair, the sync committee update succeeds under bounds on the state.
 
@@ -426,13 +477,10 @@ That room is asked at every epoch, though only a draw reads the history.
 
 The seed lookahead is shorter than that history.
 
-The products of the draw fit in 64 bits.
-
 The committee is not empty, since the keys of an empty one have no aggregate.
 
 The state must allow the draw only when the next epoch starts a period, the only time it draws. -/
 theorem processSyncCommitteeUpdates_ok (altair : .altair ≤ fork) {state : BeaconState preset fork}
-    (fits : DrawFits preset fork)
     (epochRoom : (getCurrentEpoch state).toNat + 1 + preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat <
       2 ^ 64)
     (lookahead : preset.MIN_SEED_LOOKAHEAD.toNat < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
@@ -448,11 +496,11 @@ theorem processSyncCommitteeUpdates_ok (altair : .altair ≤ fork) {state : Beac
     Except.mapError, pure, Except.pure]
   split
   · next boundary =>
-    obtain ⟨keys, capped, full, few, room⟩ := drawable boundary
+    obtain ⟨keys, few, ends⟩ := drawable boundary
     -- The committee is drawn from a state that differs only in its current committee.
     obtain ⟨committee, drawn⟩ := getNextSyncCommittee_ok
       (state := { state with currentSyncCommittee := fun _ => state.nextSyncCommittee altair })
-      fits epochRoom lookahead keys capped full few room members
+      epochRoom lookahead keys few (ends.of_eq rfl rfl Iff.rfl) members
     simp only [drawn]
     exact ⟨_, rfl⟩
   · exact ⟨_, rfl⟩

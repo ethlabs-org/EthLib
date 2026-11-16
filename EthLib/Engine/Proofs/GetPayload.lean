@@ -3,8 +3,7 @@ module
 public import EthLib.Engine.GetPayload
 public import EthLib.Engine.Proofs.Json
 public import EthLib.Execution.Proofs.Transactions.Network
--- Showing that a written result is not `null` unfolds the null test of Lean's JSON.
-import all Lean.Data.Json.Basic
+import EthLib.Base.Proofs.Toolchain.JsonBasic
 
 /-!
 # Proofs: `engine_getPayload`
@@ -22,6 +21,8 @@ Its blob or cell proofs pass the KZG verifier.
 Versions 3 and 4 return one proof per blob, and versions 5 and 6 return 128 per blob.
 
 The decoder reads back the parameters that the writer writes.
+
+It reads no JSON value other than what the writer writes.
 
 The result of a response reads back at its version and its fork.
 
@@ -213,11 +214,28 @@ theorem getPayload_eq_error_of_validateBlobs_eq_error
   simp [getPayload, hs, hf, hv, hr, hb, hp, hh, hversion, hv3, bind, Except.bind,
     Except.mapError]
 
+/-- A JSON value reads as the parameters exactly when it is an array of one payload ID.
+
+The ID is `0x` and 16 lowercase hex digits, two for each of its 8 bytes. -/
+theorem getPayloadParams_eq_ok_iff {params : Lean.Json} {id : PayloadId} :
+    getPayloadParams params = .ok id ↔ params = .arr #[.str (hexString id.toList)] := by
+  cases params with
+  | arr items =>
+    obtain ⟨xs⟩ := items
+    simp only [getPayloadParams, Serialization.JsonRpc.paramsArray]
+    match xs with
+    | [] => simp [bind, Except.bind, pure, Except.pure]
+    | [j] =>
+      simp only [Lean.Json.arr.injEq, Array.mk.injEq, List.cons.injEq, and_true,
+        ← Serialization.JsonRpc.fixed_false_eq_ok_iff (what := "payloadId")]
+      simp [bind, Except.bind, pure, Except.pure]
+    | _ :: _ :: _ => simp [bind, Except.bind, pure, Except.pure]
+  | _ => simp [getPayloadParams, Serialization.JsonRpc.paramsArray, bind, Except.bind]
+
 /-- The decoder of the parameters reads back the payload ID that the writer writes. -/
 theorem getPayloadParams_json (id : PayloadId) :
-    getPayloadParams (getPayloadParamsJson id) = .ok id := by
-  simp [getPayloadParams, getPayloadParamsJson, Serialization.JsonRpc.paramsArray, pure,
-    Except.pure, bind, Except.bind, Serialization.JsonRpc.fixed_dataJson]
+    getPayloadParams (getPayloadParamsJson id) = .ok id :=
+  getPayloadParams_eq_ok_iff.mpr rfl
 
 /-! ## The result -/
 
@@ -341,7 +359,7 @@ private theorem fork_of_accepts {version : Nat} {fork : Fork}
 private theorem payloadJson_isNull {fork : Fork} (r : GetPayloadResult fork) :
     r.payloadJson.isNull = false := by
   unfold GetPayloadResult.payloadJson Json.executionPayloadV4Json Json.executionPayloadJson
-  split <;> rfl
+  split <;> exact Base.Toolchain.isNull_mkObj _
 
 /-- The result of a response, written and read back at its version and its fork, is that result.
 
@@ -395,8 +413,8 @@ theorem getPayloadResultOfJson_json {r : GetPayloadResponse}
   have hd : L.Pairwise fun a b => a.1 ≠ b.1 := by
     by_cases h3 : 3 ≤ version <;> by_cases h4 : 4 ≤ version <;> simp [hL, hbb, hso, her, h3, h4]
   have hbn : (blobsBundleJson r.stored.bundle).isNull = false := by
-    unfold blobsBundleJson; rfl
-  have hbo : ∀ o : Bool, (Lean.Json.bool o).isNull = false := fun _ => rfl
+    unfold blobsBundleJson; exact Base.Toolchain.isNull_mkObj _
+  have hbo : ∀ o : Bool, (Lean.Json.bool o).isNull = false := Base.Toolchain.isNull_bool
   have hpres : ∀ p ∈ L, p.2.isNull = false := by
     by_cases h3 : 3 ≤ version <;> by_cases h4 : 4 ≤ version <;>
       simp [hL, hbb, hso, her, h3, h4, hbn, hbo, payloadJson_isNull,

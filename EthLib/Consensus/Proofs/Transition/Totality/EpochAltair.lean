@@ -17,7 +17,7 @@ This file states the hypotheses of its steps on the state before the epoch.
 
 Before Electra the steps keep the registry size and keys, and no effective balance passes the cap.
 
-The draw needs one active validator at the cap in the state the steps compute.
+The draw must end on the state the steps compute.
 
 So that is an assumption on the steps, not a bound on the state.
 -/
@@ -54,7 +54,9 @@ private theorem processEffectiveBalanceUpdates_mem {after : BeaconState preset f
 
 The divisors of the preset and the configuration are positive, and the hysteresis bands fit.
 
-The block roots reach the previous epoch, and the draw and the sync committee fit the preset.
+The block roots reach the previous epoch, and the seed lookahead is short.
+
+A sync committee is not empty.
 
 The step runs at the last slot of an epoch.
 
@@ -88,13 +90,13 @@ The list of history entries of the fork has room for one more.
 
 When the next epoch starts a sync committee period, a new committee is drawn.
 
-The registry must then hold at most `2^40` validators with valid keys.
+The registry must then hold at most `2^40` validators.
 
 The committee size times the registry size must also fit in 64 bits.
 
-The draw also needs one validator at the cap, active in the next epoch.
+The draw also needs valid keys, and it must end under those bounds.
 
-That validator is read in the state that the steps before the draw reach. -/
+Both are read in the state that the steps before the draw reach. -/
 theorem processEpoch_total_of_altair_of_lt_electra {config : Config} {checks : SignatureChecks}
     {budget scoreBound ceiling : Nat}
     [NeZero preset.EPOCHS_PER_SLASHINGS_VECTOR.toNat]
@@ -104,7 +106,6 @@ theorem processEpoch_total_of_altair_of_lt_electra {config : Config} {checks : S
     (roots : preset.RootsReachPreviousEpoch) (bands : preset.HysteresisBandsBelow)
     (fit : RewardsFit preset config budget (scoreBound + config.INACTIVITY_SCORE_BIAS.toNat))
     (half : preset.rewardsCeiling budget < 2 ^ 63)
-    (fits : DrawFits preset fork)
     (lookahead : preset.MIN_SEED_LOOKAHEAD.toNat < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
     (members : preset.SYNC_COMMITTEE_SIZE ≠ 0)
     (last : (state.slot.toNat + 1) % preset.SLOTS_PER_EPOCH.toNat = 0)
@@ -139,18 +140,22 @@ theorem processEpoch_total_of_altair_of_lt_electra {config : Config} {checks : S
     (summariesRoom : ∀ capella : .shapella ≤ fork,
       (state.historicalSummaries capella).data.size < preset.HISTORICAL_ROOTS_LIMIT.toNat)
     (keys : (getCurrentEpoch state + 1) % preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD = 0 →
-      ∀ validator ∈ state.validators.data,
-        ∃ point, Cryptography.Bls.G1.keyValidatePoint (packBytes validator.pubkey) = .ok point)
+      ∀ ready, run (action config checks) (prefixStages ++ middleStages ++ [.participation])
+          state = .ok ready →
+        ∀ validator ∈ ready.validators.data,
+          ∃ point, Cryptography.Bls.G1.keyValidatePoint validator.pubkey = .ok point)
     (few : (getCurrentEpoch state + 1) % preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD = 0 →
       state.validators.data.size ≤ 2 ^ 40)
     (syncRoom : (getCurrentEpoch state + 1) % preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD = 0 →
       preset.SYNC_COMMITTEE_SIZE.toNat * state.validators.data.size < 2 ^ 64)
-    (full : (getCurrentEpoch state + 1) % preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD = 0 →
+    (ends : (getCurrentEpoch state + 1) % preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD = 0 →
       ∀ ready, run (action config checks) (prefixStages ++ middleStages ++ [.participation])
           state = .ok ready →
-        ∃ validator ∈ ready.validators.data,
-          isActiveValidator validator (getCurrentEpoch state + 1) ∧
-            validator.effectiveBalance.toNat = drawCap preset fork) :
+        (∀ validator ∈ ready.validators.data,
+          validator.effectiveBalance.toNat ≤ drawCap preset fork) →
+        ready.validators.data.size ≤ 2 ^ 40 →
+        preset.SYNC_COMMITTEE_SIZE.toNat * ready.validators.data.size < 2 ^ 64 →
+        SyncDrawEnds ready (getCurrentEpoch state + 1)) :
     ∃ after, processEpoch config checks state = .ok after := by
   have notElectra : ¬Fork.pectra ≤ fork := Nat.not_le_of_lt before
   have notGloas : ¬Fork.glamsterdam ≤ fork := fun gloas =>
@@ -179,11 +184,8 @@ theorem processEpoch_total_of_altair_of_lt_electra {config : Config} {checks : S
   have kept1 : justified.balances = state.balances ∧ justified.slashings = state.slashings ∧
       justified.historicalRoots = state.historicalRoots ∧
       justified.historicalSummaries = state.historicalSummaries := by
-    obtain rfl | ⟨_, _, _, weighed⟩ := processJustificationAndFinalization_ok justifiedOk
-    · exact ⟨rfl, rfl, rfl, rfl⟩
-    · obtain ⟨_, _, _, rest⟩ := weighJustificationAndFinalization_checkpoints weighed
-      rw [← rest]
-      exact ⟨rfl, rfl, rfl, rfl⟩
+    rw [processJustificationAndFinalization_eq justifiedOk]
+    exact ⟨rfl, rfl, rfl, rfl⟩
   obtain ⟨balances1, slashings1, roots1, summaries1⟩ := kept1
   have within1 : justified.RegistryWithinLimit := by
     unfold BeaconState.RegistryWithinLimit
@@ -372,18 +374,10 @@ theorem processEpoch_total_of_altair_of_lt_electra {config : Config} {checks : S
     have size : flagged.validators.data.size = state.validators.data.size := by
       rw [validatorsFlagged, (sameSizes_processEffectiveBalanceUpdates updatedOk).1, validators6,
         size4]
-    refine ⟨fun validator member => ?_, fun validator member => ?_, ?_, ?_, ?_⟩
-    · rw [validatorsFlagged] at member
-      obtain ⟨old, oldMember, key, -⟩ :=
-        processEffectiveBalanceUpdates_mem matched6 updatedOk member
-      rw [validators6] at oldMember
-      obtain ⟨first, firstMember, same, -⟩ :=
-        (processRegistryUpdates_kept registeredOk).1.exists_of_mem
-          (Nat.le_of_eq (size4.trans (by rw [validators3]))) oldMember
-      rw [validators3] at firstMember
-      rw [key, same]
-      exact keys boundary first firstMember
-    · rw [validatorsFlagged] at member
+    have cappedFlagged : ∀ validator ∈ flagged.validators.data,
+        validator.effectiveBalance.toNat ≤ drawCap preset fork := by
+      intro validator member
+      rw [validatorsFlagged] at member
       obtain ⟨old, oldMember, -, bound⟩ :=
         processEffectiveBalanceUpdates_mem matched6 updatedOk member
       rw [validators6] at oldMember
@@ -394,13 +388,14 @@ theorem processEpoch_total_of_altair_of_lt_electra {config : Config} {checks : S
       · rw [cap]
         have := UInt64.le_iff_toNat_le.mp le
         simpa only [withdrawalMaxEffectiveBalance, notElectra, ↓reduceIte] using this
-    · rw [currentEpochFlagged]
-      exact full boundary flagged (run_ok_iff.mpr readyTrace)
-    · rw [size]
+    have fewFlagged : flagged.validators.data.size ≤ 2 ^ 40 := by
+      rw [size]
       exact few boundary
-    · rw [size]
-      exact syncRoom boundary
-  obtain ⟨synced, syncedOk⟩ := processSyncCommitteeUpdates_ok altair fits
+    refine ⟨keys boundary flagged (run_ok_iff.mpr readyTrace), fewFlagged, ?_⟩
+    rw [currentEpochFlagged]
+    exact ends boundary flagged (run_ok_iff.mpr readyTrace) cappedFlagged fewFlagged
+      (by rw [size]; exact syncRoom boundary)
+  obtain ⟨synced, syncedOk⟩ := processSyncCommitteeUpdates_ok altair
     (by rw [currentEpochFlagged]; exact epochRoom) lookahead members drawable
   refine ⟨synced, ?_⟩
   have whole : epochStages = (prefixStages ++ middleStages ++ [.participation]) ++

@@ -107,6 +107,26 @@ def pythonAliases : List PythonAlias := [noiseCipherAlias, noiseStateAlias, nois
 def pythonAliasesData : List (String × String × String × String) :=
   pythonAliases.map fun a => (a.pyModule, a.name, a.doc, a.type)
 
+/-- A shared Python type imported by the native stub instead of generated as an alias. -/
+structure PythonTypeImport where
+  pyModule : String
+  name : String
+  stubName : String
+
+/-- Shared codec types, under distinct names in the native stub. -/
+def pythonTypeImports : List PythonTypeImport := [
+  ⟨"ethlib.networking.quic._codec_types", "Header", "QuicHeader"⟩,
+  ⟨"ethlib.networking.quic._codec_types", "Frame", "QuicFrame"⟩,
+  ⟨"ethlib.networking.quic._codec_types", "PacketType", "QuicPacketType"⟩,
+  ⟨"ethlib.networking.quic._tls_types", "Message", "TlsMessage"⟩,
+  ⟨"ethlib.networking.quic._tls_types", "Extension", "TlsExtension"⟩,
+  ⟨"ethlib.networking.quic._tls_types", "Payload", "TlsPayload"⟩,
+  ⟨"ethlib.networking.quic._tls_types", "PayloadForm", "TlsPayloadForm"⟩]
+
+/-- The shared imports as plain data: module, original name and native-stub name. -/
+def pythonTypeImportsData : List (String × String × String) :=
+  pythonTypeImports.map fun value => (value.pyModule, value.name, value.stubName)
+
 /-- The name of the Python type of a Noise cipher state. -/
 def noiseCipherType : String := noiseCipherAlias.name
 
@@ -1097,7 +1117,7 @@ def bindings : List Binding := [
     [`EthLib.Consensus.TransitionError], some "TransitionError"⟩,
   ⟨"consensus_fork_choice", `EthLib.Consensus.Exports.forkChoiceExport,
     "(name: str, fork: str, anchor_state: bytes, anchor_block: bytes, steps: list, " ++
-      "verify: bool, config: dict | None) -> list",
+      "verify: bool, config: dict | None) -> list[list]",
     [`EthLib.Consensus.ForkChoiceError], some "ForkChoiceError"⟩,
   ⟨"consensus_gossip_validation", `EthLib.Consensus.Exports.gossipValidationExport,
     "(name: str, fork: str, anchor_state: bytes, anchor_block: bytes, " ++
@@ -1387,6 +1407,15 @@ def bindings : List Binding := [
   ⟨"ssz_hash_tree_root", `EthLib.Serialization.Ssz.Exports.hashTreeRootExport,
     "(type: str | dict[str, Any], value: dict[str, Any]) -> bytes",
     [`EthLib.Serialization.Ssz.Err], some "SszError"⟩,
+  ⟨"ssz_generalized_index", `EthLib.Serialization.Ssz.Exports.generalizedIndexExport,
+    "(type: str | dict[str, Any], path: list[int | str]) -> int",
+    [`EthLib.Serialization.Ssz.Err], some "SszError"⟩,
+  ⟨"ssz_merkle_proof", `EthLib.Serialization.Ssz.Exports.merkleProofExport,
+    "(type: str | dict[str, Any], value: dict[str, Any], index: int) -> list[bytes]",
+    [`EthLib.Serialization.Ssz.Err], some "SszError"⟩,
+  ⟨"ssz_merkleize_chunks", `EthLib.Serialization.Ssz.Exports.merkleizeChunksExport,
+    "(chunks: list[bytes], limit: int | None) -> bytes",
+    [`EthLib.Serialization.Ssz.Err], some "SszError"⟩,
   ⟨"rlpx_ecies_encrypt", `EthLib.Networking.Rlpx.Ecies.encrypt,
     "(recipient: bytes, ephemeral: bytes, iv: bytes, shared_mac: bytes, message: bytes) -> bytes",
     [`EthLib.Networking.Rlpx.Ecies.EciesError], some "RlpxError"⟩,
@@ -1539,6 +1568,24 @@ def bindings : List Binding := [
   ⟨"quic_packet_keys", `EthLib.Networking.Quic.Exports.packetExport,
     "(suite: str, secret: bytes) -> tuple[bytes, bytes, bytes]",
     [`EthLib.Cryptography.Hash.Tls13.Error], some "Tls13Error"⟩,
+  ⟨"quic_tls_client_start",
+    `EthLib.Networking.Quic.Tls.Handshake.Exports.clientStartExport,
+    "(config: dict[str, object]) -> dict[str, object]",
+    [`EthLib.Networking.Quic.Tls.Handshake.Error], some "TlsStepError"⟩,
+  ⟨"quic_tls_server_start",
+    `EthLib.Networking.Quic.Tls.Handshake.Exports.serverStartExport,
+    "(config: dict[str, object]) -> dict[str, object]",
+    [`EthLib.Networking.Quic.Tls.Handshake.Error], some "TlsStepError"⟩,
+  ⟨"quic_tls_client_step",
+    `EthLib.Networking.Quic.Tls.Handshake.Exports.clientStepExport,
+    "(config: dict[str, object], expected: bytes, state: dict[str, object], " ++
+      "message: dict[str, object]) -> dict[str, object]",
+    [`EthLib.Networking.Quic.Tls.Handshake.Error], some "TlsStepError"⟩,
+  ⟨"quic_tls_server_step",
+    `EthLib.Networking.Quic.Tls.Handshake.Exports.serverStepExport,
+    "(config: dict[str, object], state: dict[str, object], " ++
+      "message: dict[str, object]) -> dict[str, object]",
+    [`EthLib.Networking.Quic.Tls.Handshake.Error], some "TlsStepError"⟩,
   ⟨"quic_tls_key_schedule", `EthLib.Networking.Quic.Exports.scheduleExport,
     "(shared_secret: bytes, hello_transcript: bytes, server_transcript: bytes) -> " ++
       "tuple[bytes, bytes, bytes, bytes, bytes, bytes, bytes]",
@@ -1549,6 +1596,24 @@ def bindings : List Binding := [
   ⟨"quic_tls_finished", `EthLib.Networking.Quic.Exports.finishedExport,
     "(secret: bytes, transcript: bytes) -> bytes",
     [`EthLib.Cryptography.Hash.Tls13.Error], some "Tls13Error"⟩,
+  ⟨"quic_tls_message_encode", `EthLib.Networking.Quic.Exports.messageEncodeExport,
+    "(hash_length: int, message: TlsMessage) -> bytes",
+    [`EthLib.Networking.Quic.Tls.Wire.Error], some "TlsHandshakeError"⟩,
+  ⟨"quic_tls_message_decode", `EthLib.Networking.Quic.Exports.messageDecodeExport,
+    "(hash_length: int, data: bytes) -> tuple[TlsMessage, bytes]",
+    [`EthLib.Networking.Quic.Tls.Wire.Error], some "TlsHandshakeError"⟩,
+  ⟨"quic_tls_payload_encode", `EthLib.Networking.Quic.Exports.payloadEncodeExport,
+    "(payload: TlsPayload) -> TlsExtension",
+    [`EthLib.Networking.Quic.Tls.Wire.Error], some "TlsHandshakeError"⟩,
+  ⟨"quic_tls_payload_decode", `EthLib.Networking.Quic.Exports.payloadDecodeExport,
+    "(form: TlsPayloadForm, extension: TlsExtension) -> TlsPayload",
+    [`EthLib.Networking.Quic.Tls.Wire.Error], some "TlsHandshakeError"⟩,
+  ⟨"quic_tls_transcript", `EthLib.Networking.Quic.Exports.transcriptExport,
+    "(messages: list[bytes]) -> tuple[bytes, bytes]",
+    [`EthLib.Networking.Quic.Tls.Wire.Error], some "TlsHandshakeError"⟩,
+  ⟨"quic_tls_certificate_verify_input",
+    `EthLib.Networking.Quic.Exports.certificateVerifyInputExport,
+    "(server: bool, digest: bytes) -> bytes", [], some "TlsHandshakeError"⟩,
   ⟨"quic_protect", `EthLib.Networking.Quic.ProtectionExports.protectExport,
     "(suite: str, secret: bytes, number: int, offset: int, " ++
       "header: bytes, plaintext: bytes) -> bytes",
@@ -1566,16 +1631,16 @@ def bindings : List Binding := [
     "(data: bytes) -> tuple[int, bytes]",
     [`EthLib.Networking.Quic.Varint.VarintError], some "QuicVarintError"⟩,
   ⟨"quic_header_encode", `EthLib.Networking.Quic.Exports.headerEncodeExport,
-    "(header: Any) -> bytes",
+    "(header: QuicHeader) -> bytes",
     [`EthLib.Networking.Quic.Wire.Error], some "QuicError"⟩,
   ⟨"quic_header_decode", `EthLib.Networking.Quic.Exports.headerDecodeExport,
-    "(short_connection_id_length: int, data: bytes) -> tuple[Any, bytes]",
+    "(short_connection_id_length: int, data: bytes) -> tuple[QuicHeader, bytes]",
     [`EthLib.Networking.Quic.Wire.Error], some "QuicError"⟩,
   ⟨"quic_frame_encode", `EthLib.Networking.Quic.Exports.frameEncodeExport,
-    "(frame: Any) -> bytes",
+    "(frame: QuicFrame) -> bytes",
     [`EthLib.Networking.Quic.Wire.Error], some "QuicError"⟩,
   ⟨"quic_frame_decode", `EthLib.Networking.Quic.Exports.frameDecodeExport,
-    "(packet: str, data: bytes) -> tuple[Any, bytes]",
+    "(packet: QuicPacketType, data: bytes) -> tuple[QuicFrame, bytes]",
     [`EthLib.Networking.Quic.Wire.Error], some "QuicError"⟩,
   ⟨"quic_packet_number_encode", `EthLib.Networking.Quic.Exports.packetNumberEncodeExport,
     "(width: int, number: int) -> bytes",

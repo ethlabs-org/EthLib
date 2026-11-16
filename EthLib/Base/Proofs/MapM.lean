@@ -1,5 +1,6 @@
 module
 
+public import EthLib.Base.Proofs.Except
 public import EthLib.Base.Except
 
 /-!
@@ -436,6 +437,12 @@ theorem mapM_error {xs : List α} {e : ε} (h : xs.mapM f = .error e) :
         | zero => exact ⟨y, hx⟩
         | succ k => exact hbefore k (Nat.lt_of_succ_lt_succ hk)
 
+/-- A failed map fails with its error on one of its inputs. -/
+theorem exists_mem_of_mapM_error {xs : List α} {e : ε} (h : xs.mapM f = .error e) :
+    ∃ x ∈ xs, f x = .error e := by
+  obtain ⟨i, inside, entry, -⟩ := mapM_error h
+  exact ⟨_, List.getElem_mem inside, entry⟩
+
 /-- A computation with its error mapped succeeds with a value exactly when the computation does. -/
 theorem mapError_ok_iff {ε' : Type} {g : ε → ε'} {result : Except ε α} {value : α} :
     result.mapError g = .ok value ↔ result = .ok value := by
@@ -464,6 +471,19 @@ theorem foldlM_ok_invariant {g : β → α → Except ε β} (P : β → Prop)
     rw [List.foldlM_cons, bind_ok_iff] at computed
     obtain ⟨middle, first, rest⟩ := computed
     exact foldlM_ok_invariant P step (step b x middle holds first) rest
+
+/-- A fold keeps a property when each step of an item of the list keeps it. -/
+theorem foldlM_ok_invariant_of_mem {g : β → α → Except ε β} (P : β → Prop) :
+    ∀ {xs : List α}, (∀ b x b', x ∈ xs → P b → g b x = .ok b' → P b') →
+      ∀ {b b' : β}, P b → xs.foldlM g b = .ok b' → P b'
+  | [], _, _, _, holds, computed => by
+    simp only [List.foldlM_nil, pure, Except.pure, Except.ok.injEq] at computed
+    exact computed ▸ holds
+  | x :: _, step, b, _, holds, computed => by
+    rw [List.foldlM_cons, bind_ok_iff] at computed
+    obtain ⟨middle, first, rest⟩ := computed
+    exact foldlM_ok_invariant_of_mem P (fun b y b' mem => step b y b' (List.mem_cons_of_mem x mem))
+      (step b x middle List.mem_cons_self holds first) rest
 
 /-- A fold whose steps fail only with errors of a property fails only with them.
 

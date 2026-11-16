@@ -7,8 +7,7 @@ public import EthLib.Consensus.Proofs.BeaconApi.Encoding
 public import EthLib.Consensus.Proofs.Proposers
 public import EthLib.Consensus.Proofs.Transition.PayloadInputs
 public import Std.Data.String.ToInt
--- The received bid proofs unfold how Lean builds a JSON object.
-import all Lean.Data.Json.Basic
+import EthLib.Base.Proofs.Toolchain.JsonBasic
 
 /-!
 # Proofs: what a relay keeps from a submission, and the bid it serves
@@ -110,18 +109,37 @@ private theorem toApiJson_bid_obj (x : BidTraceV2) {document : Lean.Json}
     simp only [Bind.bind, Except.bind, pure, Except.pure, Except.ok.injEq] at wrote
     subst wrote
     refine ⟨Std.TreeMap.Raw.ofList ((BidTrace.names ++ ["block_number", "num_tx"]).zip parts)
-      (cmp := compare), by simp only [Lean.Json.mkObj], Std.TreeMap.Raw.WF.ofList,
+      (cmp := compare), by simp only [Base.Toolchain.mkObj_eq], Std.TreeMap.Raw.WF.ofList,
       fun name member => ?_⟩
     obtain ⟨pair, mem, rfl⟩ := List.mem_map.mp (objectNames_mkObj member)
     exact (List.of_mem_zip mem).1
 
 namespace BidTraceV2WithTimestamp
 
+/-- The decimal text of an integer reads back as that integer. -/
+theorem decimalInt_toString (i : Int) : decimalInt (toString i) = i := by
+  have noMinus (n : Nat) (rest : List Char) : Nat.toDigits 10 n ≠ '-' :: rest := fun h => by
+    have digit := Nat.isDigit_of_mem_toDigits (c := '-') (n := n) (by decide) (by decide)
+      (h ▸ List.mem_cons_self)
+    exact absurd digit (by decide)
+  rw [Int.toString_eq_repr, Int.repr_eq_ite]
+  split
+  · unfold decimalInt
+    rw [Nat.toList_repr]
+    split
+    · next rest h => exact absurd h (noMinus _ rest)
+    · rw [Nat.ofDigitChars_ten_toDigits]
+      omega
+  · unfold decimalInt
+    simp only [String.toList_append, Nat.toList_repr]
+    simp [Nat.ofDigitChars_ten_toDigits]
+    omega
+
 /-- A signed integer of 64 bits reads back from its JSON. -/
 theorem readInt64_int64Json (x : Int64) : readInt64 (int64Json x) = .ok x := by
   have low := Int64.le_toInt x
   have high := Int64.toInt_lt x
-  simp only [readInt64, int64Json, toString, Int.toInt?_repr]
+  simp only [readInt64, int64Json, decimalInt_toString]
   have inside : -2 ^ 63 ≤ x.toInt ∧ x.toInt < 2 ^ 63 := ⟨low, high⟩
   simp only [true_and, Int64.ofInt_toInt, inside, ite_true]
 
@@ -130,14 +148,12 @@ theorem int64Json_of_readInt64 {document : Lean.Json} {x : Int64}
     (read : readInt64 document = .ok x) : document = int64Json x := by
   unfold readInt64 at read
   split at read
-  · split at read
-    · rename_i text i _
-      split at read
-      · rename_i canonical
-        obtain ⟨spelled, low, high⟩ := canonical
-        cases read
-        simp only [int64Json, Int64.toInt_ofInt_of_le low high, spelled]
-      · cases read
+  · simp only at read
+    split at read
+    · rename_i canonical
+      obtain ⟨spelled, low, high⟩ := canonical
+      cases read
+      simp only [int64Json, Int64.toInt_ofInt_of_le low high, spelled]
     · cases read
   · cases read
 
@@ -177,15 +193,13 @@ theorem ofJson_toJson {entry : BidTraceV2WithTimestamp} {document : Lean.Json}
   have gMs : (Lean.Json.obj ((m.insert "timestamp" (int64Json entry.timestamp)).insert
       "timestamp_ms" (int64Json entry.timestampMs))).getObjVal? "timestamp_ms"
         = .ok (int64Json entry.timestampMs) := by
-    simp [Lean.Json.getObjVal?, Std.TreeMap.Raw.get?_eq_getElem?,
+    simp [Base.Toolchain.getObjVal?_eq, Std.TreeMap.Raw.get?_eq_getElem?,
       Std.TreeMap.Raw.getElem?_insert_self wf₁]
-    rfl
   have gTs : (Lean.Json.obj ((m.insert "timestamp" (int64Json entry.timestamp)).insert
       "timestamp_ms" (int64Json entry.timestampMs))).getObjVal? "timestamp"
         = .ok (int64Json entry.timestamp) := by
-    simp [Lean.Json.getObjVal?, Std.TreeMap.Raw.get?_eq_getElem?,
+    simp [Base.Toolchain.getObjVal?_eq, Std.TreeMap.Raw.get?_eq_getElem?,
       Std.TreeMap.Raw.getElem?_insert wf₁, Std.TreeMap.Raw.getElem?_insert_self wf]
-    rfl
   have wfe := (wf₂.erase (a := "timestamp_ms")).erase (a := "timestamp")
   have back : BeaconApi.ofApiJson BidTraceV2 (.obj ((((m.insert "timestamp"
       (int64Json entry.timestamp)).insert "timestamp_ms" (int64Json entry.timestampMs)).erase
@@ -600,46 +614,9 @@ private theorem kept_passPendingDeposits {stop : PendingDeposit → Bool} {nextE
       {count : Nat} {postponed : Array PendingDeposit} {pass},
       passPendingDeposits config checks stop nextEpoch available state processed count postponed
         deposits = .ok pass →
-      Kept state pass.1.state
-  | [], _, _, _, _, _, computed => by
-    simp only [passPendingDeposits, pure, Except.pure, Except.ok.injEq] at computed
-    subst computed
-    exact Kept.refl _
-  | deposit :: rest, state, processed, count, postponed, pass, computed => by
-    unfold passPendingDeposits at computed
-    simp only [bind, Except.bind, pure, Except.pure] at computed
-    split at computed
-    · cases computed
-      exact Kept.refl _
-    split at computed
-    · cases computed
-    split at computed
-    · split at computed
-      · cases computed
-      rename_i credited
-      split at computed
-      · cases computed
-      cases computed
-      exact (kept_applyPendingDeposit credited).trans
-        (kept_passPendingDeposits (deposits := rest) ‹_›)
-    split at computed
-    · split at computed
-      · cases computed
-      cases computed
-      exact kept_passPendingDeposits (deposits := rest) ‹_›
-    split at computed
-    · cases computed
-    split at computed
-    · cases computed
-      exact Kept.refl _
-    split at computed
-    · cases computed
-    rename_i credited
-    split at computed
-    · cases computed
-    cases computed
-    exact (kept_applyPendingDeposit credited).trans
-      (kept_passPendingDeposits (deposits := rest) ‹_›)
+      Kept state pass.1.state :=
+  fun computed => passPendingDeposits_of Kept Kept.refl
+    (fun one two => one.trans two) (fun ok => kept_applyPendingDeposit ok) computed
 
 /-- A pass over the pending consolidations keeps the lookahead. -/
 private theorem kept_passPendingConsolidations {nextEpoch : Epoch} :

@@ -1433,7 +1433,7 @@ private theorem intervalLoss_sites_upgrades {s t : ForkedBeaconState preset}
           have same := (upgradeFrame_upgradeNext nextOk).slashed i
           cases a : s.state.validators.data[i]? <;>
             cases b : next.val.state.validators.data[i]? <;>
-            simp_all
+            simp_all [slashedFlagAt]
         intro e member
         rcases List.mem_cons.mp member with rfl | member
         · exact ⟨.refl _, first, last, rfl, dencun, electra⟩
@@ -2329,10 +2329,8 @@ private theorem slashIfSlashable_balance_le {fork : Fork} {s t : BeaconState pre
         omega
       · have different : index.toNat ≠ i.toNat := fun equal => same (UInt64.toNat_inj.mp equal)
         have flagged : slashedFlag next i = slashedFlag s i := by
-          have kept := (slashValidator_slashedFlag slashed).2 i.toNat (Ne.symm different)
-          simp only [slashedFlag, getValidator_eq_getValidatorAt]
-          cases one : next.validators.data[i.toNat]? <;>
-            cases two : s.validators.data[i.toNat]? <;> simp_all [getValidatorAt, Except.map]
+          exact slashedFlag_eq_of_slashed
+            ((slashValidator_slashedFlag slashed).2 i.toNat (Ne.symm different))
         have effective : effectiveAt ⟨fork, next⟩ i.toNat = effectiveAt ⟨fork, s⟩ i.toNat := by
           by_cases inside : i.toNat < s.validators.data.size
           · exact effectiveKept_slash slashed i.toNat inside

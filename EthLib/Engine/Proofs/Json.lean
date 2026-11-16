@@ -5,8 +5,7 @@ public import EthLib.Serialization.Proofs.JsonRpc
 public import EthLib.Execution.Proofs.Rpc.Json
 public import EthLib.Base.Except
 public import EthLib.Base.Proofs.Fork
--- Showing that a payload field is not `null` unfolds the null test of Lean's JSON.
-import all Lean.Data.Json.Basic
+import EthLib.Base.Proofs.Toolchain.JsonBasic
 
 /-!
 # Proofs: the JSON decoders of the Engine API
@@ -34,6 +33,16 @@ A field decodes from an option exactly when reading the field back gives that op
 The decoders read back the payloads that the writers write.
 
 The extra data must then hold at most 32 bytes.
+
+A JSON value reads as a payload status exactly when it is an object of this form.
+
+Its members that are not `null` are among `status`, `latestValidHash` and `validationError`.
+
+The status is one of the five status names, and it must be present.
+
+The hash is 32 bytes in lowercase hex, and the error a string.
+
+The hash and the error may be absent.
 -/
 
 public section
@@ -507,11 +516,13 @@ theorem payloadStatusOfJson_json (s : PayloadStatus) (e : Option String) :
       [("status", a), ("latestValidHash", b), ("validationError", c)].lookup "validationError" =
         some c := fun _ _ _ => rfl
   have l1 : fs.lookup "status" = some (.str s.status.name) := by
-    rw [look, k1]; rfl
+    rw [look, k1]; simp [Option.filter_some, isNull_str]
   have l2 : fs.lookup "latestValidHash" = s.latestValidHash.map (dataJson ·.toList) := by
-    rw [look, k2]; cases s.latestValidHash <;> rfl
+    rw [look, k2]; cases s.latestValidHash <;> simp [optionJson, dataJson, Option.filter_some,
+      Base.Toolchain.isNull_null, isNull_str]
   have l3 : fs.lookup "validationError" = e.map .str := by
-    rw [look, k3]; cases e <;> rfl
+    rw [look, k3]; cases e <;> simp [optionJson, Option.filter_some,
+      Base.Toolchain.isNull_null, isNull_str]
   have hall : (fs.all (payloadStatusFields.contains ·.1)) = true := by
     rw [List.all_eq_true]
     intro p hm
@@ -526,6 +537,89 @@ theorem payloadStatusOfJson_json (s : PayloadStatus) (e : Option String) :
   obtain ⟨st, lvh⟩ := s
   cases lvh <;> cases e <;> simp [lift, fixed_dataJson, string, Option.mapM]
   all_goals rfl
+
+/-- A name reads as a status exactly when it is the name that the Engine API writes for it. -/
+theorem statusOfName_eq_some_iff {name : String} {s : Status} :
+    statusOfName name = some s ↔ name = s.name := by
+  constructor
+  · intro h
+    unfold statusOfName at h
+    have found := List.find?_some h
+    exact (beq_iff_eq.mp found).symm
+  · rintro rfl
+    exact statusOfName_name s
+
+/-- An optional value decodes exactly from the JSON of its value, and an absent value as absent.
+
+This holds for every reader that decodes a value exactly from one JSON form of it. -/
+theorem lift_mapM_eq_ok_iff {α : Type} {f : Lean.Json → Read α} {g : α → Lean.Json}
+    (hf : ∀ j a, f j = .ok a ↔ j = g a) {o : Option Lean.Json} {r : Option α} :
+    lift (o.mapM f) = .ok r ↔ o = r.map g := by
+  cases o with
+  | none => cases r <;> simp [lift, Option.mapM, Except.mapError, pure, Except.pure]
+  | some x =>
+    have e : lift (Option.mapM f (some x)) = (some <$> f x : Read _).mapError .invalidParams :=
+      rfl
+    rw [e]
+    cases h : f x <;> cases r <;> simp [Functor.map, Except.map, Except.mapError, ← hf, h]
+
+/-- A JSON value reads as a payload status exactly when it is an object of the form below.
+
+A member whose value is `null` counts as absent.
+
+Its other members are `status` and, if present, `latestValidHash` and `validationError`.
+
+The value of `status` is the name of the status.
+
+The latest valid hash is `0x` and 64 lowercase hex digits, or absent.
+
+The validation error is a string, or absent. -/
+theorem payloadStatusOfJson_eq_ok_iff {j : Lean.Json} {s : PayloadStatus} {e : Option String} :
+    payloadStatusOfJson j = .ok (s, e) ↔
+      ∃ fs, fields "payloadStatus" j = .ok fs ∧
+        (∀ f ∈ fs, f.1 = "status" ∨ f.1 = "latestValidHash" ∨ f.1 = "validationError") ∧
+        fs.lookup "status" = some (.str s.status.name) ∧
+        fs.lookup "latestValidHash" = s.latestValidHash.map (fun h => .str (hexString h.toList)) ∧
+        fs.lookup "validationError" = e.map .str := by
+  obtain ⟨st, lvh⟩ := s
+  unfold payloadStatusOfJson
+  simp only [bind_ok_iff, liftM_eq_ok_iff]
+  refine exists_congr fun fs => and_congr_right fun _ => ?_
+  have allIff : fs.all (payloadStatusFields.contains ·.1) = true ↔
+      ∀ f ∈ fs, f.1 = "status" ∨ f.1 = "latestValidHash" ∨ f.1 = "validationError" := by
+    simp [List.all_eq_true, payloadStatusFields]
+  by_cases hall : fs.all (payloadStatusFields.contains ·.1) = true
+  · rw [and_iff_right (allIff.mp hall)]
+    simp only [hall, ite_true, bind_ok_iff, liftM_eq_ok_iff, field_eq_ok_iff, string_eq_ok_iff]
+    constructor
+    · rintro ⟨_, hs, name, rfl, h⟩
+      cases hn : statusOfName name with
+      | none =>
+        rw [hn] at h
+        cases h
+      | some st' =>
+        rw [hn] at h
+        simp only [bind_ok_iff, lift_mapM_eq_ok_iff fun _ _ => fixed_false_eq_ok_iff,
+          lift_mapM_eq_ok_iff fun _ _ => string_eq_ok_iff] at h
+        obtain ⟨l, hl, v, hv, h⟩ := h
+        cases h
+        obtain rfl := statusOfName_eq_some_iff.mp hn
+        exact ⟨hs, hl, hv⟩
+    · rintro ⟨hs, hl, he⟩
+      refine ⟨_, hs, st.name, rfl, ?_⟩
+      rw [statusOfName_name]
+      simp only [bind_ok_iff, lift_mapM_eq_ok_iff fun _ _ => fixed_false_eq_ok_iff,
+        lift_mapM_eq_ok_iff fun _ _ => string_eq_ok_iff]
+      exact ⟨lvh, hl, e, he, rfl⟩
+  -- A member of another name fails with an invalid parameter, never with a status.
+  · constructor
+    · intro h
+      simp only [bind, Except.bind] at h
+      split at h
+      · contradiction
+      · cases h
+    · rintro ⟨members, -⟩
+      exact absurd (allIff.mpr members) hall
 
 end EthLib.Engine.Json
 

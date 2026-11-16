@@ -7,6 +7,13 @@ The version is the same in `pyproject.toml` and `lakefile.lean`.
 
 Not yet released.
 
+### Proof additions
+
+- `Execution.mem_supportersOf_of_duty_epoch_or_accountable` and `Execution.isAncestor_getHead_of_duty_epoch_or_accountable` add accountable companions to the honest-duty results.
+  They use a proved historical finalized-prefix family instead of assumed compatibility, while preserving the original theorems.
+  They retain the network and duty conditions and require deposited genesis history, preset bounds, a fixed-fork horizon, stake floors and an absent anchor parent.
+  The alternative is the reference-stake inequality with derived drift, or `DirectSafety.HashEvidence`, not an a priori drift bound.
+
 ### Changes that break callers
 
 - In Lean, `FlagsKeptOrZero` is stronger.
@@ -15,6 +22,111 @@ Not yet released.
   `FlagsKeptOrZero.trans` takes a new premise: the registry of the first state is no larger than that of the second.
   A caller passes that fact, for example from `Frame.registryGrows`.
   A match on the zero case, `old | rfl`, becomes `old | ⟨rfl, -⟩`.
+  Nothing breaks in Python.
+
+- In Lean, the honest-duty supporter and head theorems use `VotesInSlots` for one complete epoch, including their accountable companions.
+  For `Execution.mem_supportersOf_of_duty_epoch` and its accountable companion, pass the scoped votes after the epoch and slot binders, before `beginOk`.
+  For `Execution.isAncestor_getHead_of_duty_epoch` and its accountable companion, include the scoped votes inside the `margin` existential, after the time bounds and before the stake inequality.
+  For `Execution.exists_voteAt_of_duty_interval`, bind `begin`, `last` and `slot` before the scoped votes, and supply `beginTime` and `endTime` after `fits`.
+  `VotesInSlots` couples `VoteAt` and `VoteCommittees` on the same witness; the latter requires the committee check only after successful target-cache reads.
+  Conclusions and the existing unbounded `Votes` definition are unchanged.
+
+- In Lean, the compressed encoding of a point of `G1` has its 48 bytes in its type ([#2189](https://github.com/ethereum/EthLib/issues/2189)).
+  `G1.compress` returns a `Vector UInt8 48`, and `G1.uncompress`, `G1.keyValidatePoint` and `G1.keyValidate` take one.
+  A caller that holds bytes of another length reads them with `exactBytes? 48`, now in `EthLib.Base`, and rejects `none` as decompression did.
+  `G1.size_compress` and `keyValidatePoint_size_ne` are removed, since the type states the length.
+  `G1.uncompress_ok_cases` no longer states the size, and `uncompress_ok_cases_bytes` and `uncompress_eq_zero_or_bytes` state its facts on the bytes of the input.
+  `TrustedSetup.decodeG1` and `TrustedSetup.decodeG2` decode one point of a setup, and the theorems on decoded setups state their facts through them.
+  `Signatures.keyMessagePair` is the pair of one key and one message in the core aggregate verification.
+  `coreVerify_iff` takes the key as a vector, and `packBytes_pointToPubkey` and `packBytes_skToPk` become `pointToPubkey_eq` and `skToPk_eq`.
+  `SyncDrawable.keys` states key validation of each key as a vector.
+  No C export or Python function changes.
+
+- In Lean, `EthLib.Execution.Exports.Proofs.Evm` and `EthLib.Execution.Exports.Proofs.Trie` move to `EthLib.Execution.Proofs.Exports.Evm` and `EthLib.Execution.Proofs.Exports.Trie` ([#2630](https://github.com/ethereum/EthLib/issues/2630)).
+  Declaration names and statements are unchanged; update the imports.
+  Consumers that received these theorems through an `Exports` root must import the relevant proof module or `EthLib.Execution.Proofs`.
+
+- In Lean, `Evm.Call.TransferLog` becomes `Evm.TransferLog`, and the XMSS security modules `XmssSecurity.Scan.*` move to `XmssSecurity.Proof.Scan.*` ([#2629](https://github.com/ethereum/EthLib/pull/2629)).
+  The import checker now finds a cycle between directories through imports at any depth, and these moves break the two such cycles that remained.
+  Declaration names, namespaces and statements are unchanged; update the imports.
+
+- In Lean, specification modules keep only the theorems that their definitions and instances need, plus persistent `@[simp]` rules ([#2628](https://github.com/ethereum/EthLib/pull/2628)).
+  55 theorems move to the matching `Proofs` modules.
+  In Base, two move from `Base.BigEndian` to `Base.Proofs.BigEndian`, five from `Base.Except` to `Base.Proofs.Except`, and one from `Base.Hex` to `Base.Proofs.Hex`.
+  In Cryptography, twelve move from `Cryptography.Montgomery` to `Cryptography.Proofs.Montgomery.Core`, and one each from `Hash.Scrypt` and `Sphincs.Tree` to `Proofs.Hash.Scrypt` and `Proofs.Sphincs.Tree`.
+  The XMSS and SPHINCS+ constants follow: ten move from `Xmss.Constants` to `Proofs.Xmss.Constants`, and twenty-one from `Sphincs.Constants` to `Proofs.Sphincs.Constants`.
+  In Execution, one moves from `Evm.Step` to `Proofs.Evm.Step`, and in Serialization, one from `Ssz.Typed.Rooted` to `Proofs.Ssz.Typed.Rooted`.
+  The SSZ export proofs `EthLib.Serialization.Exports.Proofs.Ssz` become `EthLib.Serialization.Proofs.Exports.Ssz`, and `EthLib.Serialization.Exports` no longer imports them.
+  Declaration names and statements are unchanged; add the `Proofs` imports.
+
+- Fork-choice replay returns a nonempty list of handler outcomes for each input step ([#2622](https://github.com/ethereum/EthLib/pull/2622)).
+  An admitted block's first outcome reports admission; the rest report its attestations and attester slashings, in order.
+  Carried operations run only for an admitted block, so a rejected block gives one outcome, its error.
+  Each successful handler commits independently, and a failed carried operation does not stop later calls.
+  An invalid payload verdict applies its removal after the step, even a rejected one, and after the carried operations of an admitted block.
+  Other inputs have one outcome.
+  This changes `fork_choice`, `forkChoice`, `replayForkChoice` and `replayForkChoiceConfirming`.
+  Every export that takes fork-choice steps replays blocks this way.
+  Callers must inspect each nested outcome, not treat the input as one atomic operation.
+  The public `runForkChoiceStep` block branch now performs bare admission only; its type is unchanged.
+  `Store.onBlockWithVotes` and its nine wrapper-only lemmas are removed; call the spec handlers separately.
+
+- In Lean, `Models.Network.Handles.block` calls `Store.onBlock` without processing carried operations ([#2622](https://github.com/ethereum/EthLib/pull/2622)).
+  The `blockAttestation` and `blockAttesterSlashing` constructors process them separately.
+  Each requires the enclosing signed block in the view and its root among the blocks of the receiving store, so carried operations run only for an admitted block.
+  Update case analyses of `Handles` to cover both constructors and their two new premises.
+  This changes `forkChoice` executions and `UpToDate`, and transitively `Prompt` and `VoteAt`, even where their signatures are unchanged.
+  `BlocksAdmitted` requires only bare `onBlock` success, with its other conditions unchanged.
+
+- In Lean, modules move so that no two directories of a layer import each other ([#2617](https://github.com/ethereum/EthLib/pull/2617)).
+  In Execution, `Evm.Call.Delegation`, `Evm.Machine.Errors`, `Blocks.Log` and `Fees.BlobGas` become `Evm.Delegation`, `Evm.Errors`, `Evm.Log` and `Transactions.BlobGas`.
+  In Serialization, `Ssz.Codec.Error` becomes `Ssz.Error`, and the proof modules `Proofs.Ssz.Type.Bounds`, `DefaultLaws` and `FitsLaws` move to `Proofs.Ssz.Codec`.
+  In Consensus, the proof module `Models.Network.ForkChoice` becomes `Proofs.ForkChoiceNetworkModel`.
+  In Cryptography, the XMSS `Unforgeability` modules move to `Security.XmssSecurity`, with `Statement` renamed `ConcreteStatement`, and the SPHINCS+ security modules regroup under `Forgery`, `GraphView`, `HiddenOracle`, `PreparedRun`, `RefinedForgery`, `ScanSigner` and `SmallBudget`.
+  Declaration names, namespaces and statements are unchanged; update the imports.
+
+- The QUIC and TLS codecs use packed byte arrays for byte strings, as [Shared types](ARCHITECTURE.md#shared-types) requires ([#2616](https://github.com/ethereum/EthLib/pull/2616)).
+  In Lean, packet-header fields, frame payloads, TLS byte fields and transcripts use `ByteArray` in place of `List UInt8`.
+  `Varint`, `Packet`, `Frame` and TLS `encode` and `decode` use `ByteArray` at their byte boundaries.
+  Use `.size` for a byte length and `.data.toList` only when calling the internal list readers.
+  In Python, these fields use `bytes` in place of `list[int]`; convert an existing byte list with `bytes(value)` and write an empty byte string as `b""`.
+  Collections of messages, extensions, key shares and ALPN protocol names remain lists.
+  Encoded wire bytes and rejection codes are unchanged.
+
+- In Lean, the proof modules `FastConfirmationCommittees`, `FastConfirmationConfirmedRoot`, `FastConfirmationIndicators`, `FastConfirmationSets` and `FastConfirmationSupporters` move under `EthLib.Consensus.Proofs.ForkChoice.FastConfirmation` as `Committees`, `ConfirmedRoot`, `Indicators`, `Sets` and `Supporters` ([#2566](https://github.com/ethereum/EthLib/pull/2566)).
+  The declarations of the former `FastConfirmation` module move to `FastConfirmation.Basic`, and importing `FastConfirmation` still provides them and all five leaves.
+  Declaration namespaces and statements are unchanged.
+
+- `ssz.get_generalized_index` names a field of a container only by its name ([#2480](https://github.com/ethereum/EthLib/issues/2480)).
+  A position given for a field is refused with the error for an unknown field.
+  In addition, a path takes `__active_fields__` and `__selector__`, the mixed-in nodes of a progressive container and of a union.
+
+- In Python, `consensus.api_post` and `consensus.api_gossip_event` return the data of each event as its JSON text, instead of the parsed value ([#2515](https://github.com/ethereum/EthLib/pull/2515)).
+  This is the `data` field of the Beacon API event stream, and the form that the fork choice events already return.
+  A caller that needs the value applies `json.loads` to that text.
+
+- In Lean, the SSZ exports read a Python value directly, without writing it as JSON first ([#2475](https://github.com/ethereum/EthLib/issues/2475)).
+  In Lean, `valueOfJson` becomes `valueOf`, `jsonOfValue` and `jsonOfValues` become `pyOfValue` and `pyOfValues`, and `descOf`, `tagged`, `optionalNat`, `pair` and `readValue` take a `PyValue`.
+  Bytes given as `bytes` are taken as they are, instead of being written as hex and read back.
+  Nothing breaks in Python: every input gives the same result or the same error as before.
+
+- In Lean, the shuffle, custody, keystore and discv5 callers of SHA-256 keep the digest as a `Vector UInt8 32` ([#2189](https://github.com/ethereum/EthLib/issues/2189)).
+  `Shuffle.bucketBits` and `Keystore.passwordChecksum` return one, and `Shuffle.bitAt` and `DataAvailability.firstUInt64` take one.
+  A caller that needs the bytes applies `packBytes`, and `Sha256.packBytes_hash32` gives back the byte-array digest.
+  The keystore checksum theorems compare the checksum with `store.checksum` directly, and `checksumVector` is removed: use `passwordChecksum`.
+  Nothing breaks in Python.
+
+- The execution RPC answers `eth_simulateV1` with its simulated blocks ([#2108](https://github.com/ethereum/EthLib/issues/2108)).
+  The results of the calls are not yet in the blocks.
+  In Lean, `fillHeader`, `outputChecks_fillHeader` and `runBody_fillHeader` move from `EthLib.Engine` to `EthLib.Execution.Blocks`, and `SimulateChoices` gains `gasCap`.
+  Nothing breaks in Python.
+
+- In Lean, the block environment gains the field `blobGasPrice` ([#2108](https://github.com/ethereum/EthLib/issues/2108)).
+  A simulation sets the base fee per blob gas with it, and its default `none` keeps the price of the excess blob gas.
+  Supply that field in positional constructors, or use structure notation with its default.
+  The checks and the run of a transaction, and the simulation overrides of a body, take optional lifted rules.
+  A simulation can skip the nonce check and lift the gas caps of EIP-8037 with them.
+  The sender check gains a flag for the nonce check.
   Nothing breaks in Python.
 
 - In Lean, the transaction environment gains the field `precompiles` ([#2108](https://github.com/ethereum/EthLib/issues/2108)).
@@ -27,7 +139,6 @@ Not yet released.
   Nothing breaks in Python.
 
 - The execution RPC checks the requests of `eth_simulateV1` before their blocks run ([#2107](https://github.com/ethereum/EthLib/issues/2107)).
-  A request that passes the checks gets `-32603` until the simulated blocks are specified.
   In Lean, `call_unknown` requires the method name to differ from `eth_simulateV1`.
   Nothing breaks in Python: `rpc.apply_overrides` gives the state root after the account overrides of one block.
 
@@ -46,9 +157,10 @@ Not yet released.
   A caller passes `id` when the new validator copies the flag of the old one, and `fun _ => rfl` when it is slashed.
   `initiateValidatorExit_balances_eq_and_pendingConsolidations_eq` moves to `Consensus/Proofs/Transition/PendingConsolidations.lean`, which `BalanceDrift.lean` imports publicly.
 
-- In Lean, the results on slashed flags state them at each position of the registry, as `(state.validators.data[position]?).map (·.slashed)` ([#2187](https://github.com/ethereum/EthLib/issues/2187)).
+- In Lean, the results on slashed flags state them at each position of the registry, through `slashedFlagAt state position`, the read `(state.validators.data[position]?).map (·.slashed)` ([#2187](https://github.com/ethereum/EthLib/issues/2187)).
   From Gloas the registry has no limit in its type, so a position may lie beyond every `ValidatorIndex`.
-  `slashedFlag_initiateValidatorExit` takes a `position : Nat` in place of an index.
+  A proof whose goal spells out the read unfolds the name first, as in `simp only [slashedFlagAt] at h`.
+  `slashedFlag_initiateValidatorExit` is renamed `slashedFlagAt_initiateValidatorExit`, and it takes a `position : Nat` in place of an index.
   The second conjunct of `slashValidator_slashedFlag` holds at each position other than `slashedIndex.toNat`.
   A caller that read either at an index `i` reads it at `i.toNat`.
   The new `slashedFlag_eq_of_slashed` turns equal flags there into equal values of `slashedFlag` at `i`.
@@ -59,6 +171,10 @@ Not yet released.
   `UpgradeFrame.trans_blockFrame` takes the new premise `slashed`: the steps after the upgrade keep every slashed flag.
   A block frame alone may slash, so it cannot give the field.
   Compose the block frames of the steps first, and pass their slashed flags once.
+  `slashedFlagAt_processProposerSlashing` and `slashedFlagAt_processAttesterSlashing` state that a slashing changes flags only at the positions that it names.
+  `slashedFlagAt_foldlM` states the same for a fold of such steps.
+  `slashed_setValidatorAt` is renamed `slashedFlagAt_setValidatorAt`.
+  `foldlM_ok_invariant_of_mem` moves to `Base/Proofs/MapM.lean`, in the namespace `EthLib.Base`.
 
 - `engine_forkchoiceUpdated` checks that the most recent block of proof of work on the chain of the head is terminal, as step 3 of the method and step 2 of payload validation of Paris require.
   A head whose chain fails the check is `INVALID`, with the zero hash, and the head does not change.
@@ -212,7 +328,7 @@ Not yet released.
   So `.2.2` of `Store.onAttestation_frame` and `Store.onAttesterSlashing_frame` becomes `.2.2.1`, and `.2.2.2.2` of `Store.onTickPerSlot_frame` becomes `.2.2.2.2.1`.
   The `.2.2.2` of the other four frames becomes `.2.2.2.1`.
   The new `Store.catchUp_preserves` states that catch-up keeps each property of the store that every tick within a slot keeps.
-  It has the form of `Store.onBlockWithVotes_preserves`.
+  It composes preservation over the individual tick steps.
   `Store.catchUp_frame`, `Store.catchUp_ordered` and the catch-up step of `Store.onTick_checkpointStates_latestMessages` now read it, with unchanged statements.
   The new `Store.onTick_ok` splits a tick into the slot of its time, the catch-up to that slot and one tick within it.
   `Store.onTick_frame`, `Store.getCurrentSlot_onTick`, `Store.onTick_ordered`, `Store.onTick_checkpointStates_latestMessages` and `Store.exists_getCurrentSlot_onTick_ge` now read it, with unchanged statements.

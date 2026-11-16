@@ -3,6 +3,13 @@
 from typing import Any, Literal
 
 from ethlib.networking.noise._types import CipherState, Completion, HandshakeState, Identity, Libp2pState, Remote
+from ethlib.networking.quic._codec_types import Header as QuicHeader
+from ethlib.networking.quic._codec_types import Frame as QuicFrame
+from ethlib.networking.quic._codec_types import PacketType as QuicPacketType
+from ethlib.networking.quic._tls_types import Message as TlsMessage
+from ethlib.networking.quic._tls_types import Extension as TlsExtension
+from ethlib.networking.quic._tls_types import Payload as TlsPayload
+from ethlib.networking.quic._tls_types import PayloadForm as TlsPayloadForm
 
 
 def eth_aggregate_pubkeys(pubkeys: list[bytes]) -> bytes:
@@ -1121,8 +1128,8 @@ def consensus_upgrade_state(name: str, fork: str, pre: bytes, config: dict[str, 
     """The state that the upgrade to a fork makes of a state of the fork before, as SSZ bytes."""
     ...
 
-def consensus_fork_choice(name: str, fork: str, anchor_state: bytes, anchor_block: bytes, steps: list, verify: bool, config: dict | None) -> list:
-    """The outcome of each step of a fork choice case, from an anchor state and an anchor block."""
+def consensus_fork_choice(name: str, fork: str, anchor_state: bytes, anchor_block: bytes, steps: list, verify: bool, config: dict | None) -> list[list]:
+    """The handler outcomes of each step of a fork choice case, from an anchor state and block."""
     ...
 
 def consensus_gossip_validation(name: str, fork: str, anchor_state: bytes, anchor_block: bytes, blocks: list[tuple[int, int | None, bytes] | tuple[int, int | None, bytes, bytes | None]], finalized: tuple[int, bytes] | None, topic: str, messages: list[tuple[int, int, bytes] | tuple[int, int, bytes, str]], config: dict[str, Any] | None, verify: bool) -> list[tuple[str, str | None]]:
@@ -1445,6 +1452,18 @@ def ssz_hash_tree_root(type: str | dict[str, Any], value: dict[str, Any]) -> byt
     """The 32-byte hash tree root of a value of a type, both given in their tagged form."""
     ...
 
+def ssz_generalized_index(type: str | dict[str, Any], path: list[int | str]) -> int:
+    """The generalized index of the node that a path selects in the tree of a type."""
+    ...
+
+def ssz_merkle_proof(type: str | dict[str, Any], value: dict[str, Any], index: int) -> list[bytes]:
+    """The branch that proves the node at a generalized index of a value against its root."""
+    ...
+
+def ssz_merkleize_chunks(chunks: list[bytes], limit: int | None) -> bytes:
+    """The root of 32-byte chunks, in a tree padded to a power of two."""
+    ...
+
 def rlpx_ecies_encrypt(recipient: bytes, ephemeral: bytes, iv: bytes, shared_mac: bytes, message: bytes) -> bytes:
     """The ciphertext `R || iv || c || d` of `m` to the public key `recipient`."""
     ...
@@ -1625,6 +1644,22 @@ def quic_packet_keys(suite: str, secret: bytes) -> tuple[bytes, bytes, bytes]:
     """Derive the payload key, IV and header-protection key, in that order, RFC 9001 §5.1."""
     ...
 
+def quic_tls_client_start(config: dict[str, object]) -> dict[str, object]:
+    """Start a client certificate handshake under an explicit policy, RFC 8446 §4.1.2."""
+    ...
+
+def quic_tls_server_start(config: dict[str, object]) -> dict[str, object]:
+    """Start a server certificate handshake under an explicit policy."""
+    ...
+
+def quic_tls_client_step(config: dict[str, object], expected: bytes, state: dict[str, object], message: dict[str, object]) -> dict[str, object]:
+    """Process one complete server message and check the intended peer ID at authentication."""
+    ...
+
+def quic_tls_server_step(config: dict[str, object], state: dict[str, object], message: dict[str, object]) -> dict[str, object]:
+    """Process one complete client message and require libp2p client authentication."""
+    ...
+
 def quic_tls_key_schedule(shared_secret: bytes, hello_transcript: bytes, server_transcript: bytes) -> tuple[bytes, bytes, bytes, bytes, bytes, bytes, bytes]:
     """Return the early, handshake, master, two handshake traffic and two application traffic secrets."""
     ...
@@ -1635,6 +1670,30 @@ def quic_tls_derive_secret(secret: bytes, label: bytes, messages: bytes) -> byte
 
 def quic_tls_finished(secret: bytes, transcript: bytes) -> bytes:
     """Compute the Finished `verify_data` over the transcript that precedes it, RFC 8446 §4.4.4."""
+    ...
+
+def quic_tls_message_encode(hash_length: int, message: TlsMessage) -> bytes:
+    """Encode one handshake message with its header and the caller's hash length, RFC 8446 §4."""
+    ...
+
+def quic_tls_message_decode(hash_length: int, data: bytes) -> tuple[TlsMessage, bytes]:
+    """Decode one complete message and return its fields and trailing bytes, RFC 8446 §4."""
+    ...
+
+def quic_tls_payload_encode(payload: TlsPayload) -> TlsExtension:
+    """Encode a structured extension payload without selecting an algorithm or protocol."""
+    ...
+
+def quic_tls_payload_decode(form: TlsPayloadForm, extension: TlsExtension) -> TlsPayload:
+    """Decode an extension in the payload form that its message context requires."""
+    ...
+
+def quic_tls_transcript(messages: list[bytes]) -> tuple[bytes, bytes]:
+    """Return the SHA-256 transcript of complete handshake messages and its hash, RFC 8446 §4.4.1."""
+    ...
+
+def quic_tls_certificate_verify_input(server: bool, digest: bytes) -> bytes:
+    """Build the CertificateVerify signed content from a SHA-256 transcript hash, RFC 8446 §4.4.3."""
     ...
 
 def quic_protect(suite: str, secret: bytes, number: int, offset: int, header: bytes, plaintext: bytes) -> bytes:
@@ -1657,19 +1716,19 @@ def quic_varint_decode(data: bytes) -> tuple[int, bytes]:
     """Read a QUIC integer and return its value and the trailing bytes, RFC 9000 §16."""
     ...
 
-def quic_header_encode(header: Any) -> bytes:
+def quic_header_encode(header: QuicHeader) -> bytes:
     """Encode a QUIC header, with checked lengths and packet-number bounds (RFC 9000 §17)."""
     ...
 
-def quic_header_decode(short_connection_id_length: int, data: bytes) -> tuple[Any, bytes]:
+def quic_header_decode(short_connection_id_length: int, data: bytes) -> tuple[QuicHeader, bytes]:
     """Read an authenticated header and return its fields and remaining bytes (RFC 9000 §17)."""
     ...
 
-def quic_frame_encode(frame: Any) -> bytes:
+def quic_frame_encode(frame: QuicFrame) -> bytes:
     """Encode one well-formed QUIC frame (RFC 9000 §19)."""
     ...
 
-def quic_frame_decode(packet: str, data: bytes) -> tuple[Any, bytes]:
+def quic_frame_decode(packet: QuicPacketType, data: bytes) -> tuple[QuicFrame, bytes]:
     """Read one frame allowed in the given packet type (RFC 9000 §12.4)."""
     ...
 

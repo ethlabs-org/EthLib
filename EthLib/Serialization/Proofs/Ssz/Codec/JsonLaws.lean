@@ -5,8 +5,7 @@ public import EthLib.Serialization.Proofs.Ssz.Codec.RoundTrip
 public import Std.Data.TreeMap.Raw.WF
 public import Std.Data.TreeMap.Raw.Lemmas
 public import Std.Data.String.ToNat
--- The round-trip proof unfolds Lean's `Json.mkObj` and `Json.getObjVal?`.
-import all Lean.Data.Json.Basic
+import EthLib.Base.Proofs.Toolchain.JsonBasic
 
 /-! Reading back what the JSON mapping writes, and what the mapping does not pin down. -/
 
@@ -28,8 +27,8 @@ theorem getObjVal?_mkObj {pairs : List (String × Json)} {name : String} {value 
   have keys : pairs.Pairwise (fun a b => ¬ compare a.1 b.1 = .eq) := by
     exact distinct.imp fun different equal => different (compare_eq_iff_eq.mp equal)
   have read := Std.TreeMap.Raw.getElem?_ofList_of_mem (cmp := compare) compare_self keys member
-  simp only [Json.mkObj, Json.getObjVal?, Std.TreeMap.Raw.get?_eq_getElem?, read]
-  rfl
+  simp only [Base.Toolchain.mkObj_eq, Base.Toolchain.getObjVal?_eq,
+    Std.TreeMap.Raw.get?_eq_getElem?, read]
 
 /-- A name that was not written into an object is not found in it.
 
@@ -39,8 +38,8 @@ theorem getObjVal?_mkObj_of_not_mem {pairs : List (String × Json)} {name : Stri
     (Json.mkObj pairs).getObjVal? name = .error s!"property not found: {name}" := by
   have none : (Std.TreeMap.Raw.ofList pairs (cmp := compare))[name]? = none :=
     Std.TreeMap.Raw.getElem?_ofList_of_contains_eq_false (by simpa using absent)
-  simp only [Json.mkObj, Json.getObjVal?, Std.TreeMap.Raw.get?_eq_getElem?, none]
-  rfl
+  simp only [Base.Toolchain.mkObj_eq, Base.Toolchain.getObjVal?_eq,
+    Std.TreeMap.Raw.get?_eq_getElem?, none]
 
 /--
 Every name an object carries is one of the names it was written from.
@@ -50,7 +49,7 @@ A written struct therefore never trips the undeclared-field refusal.
 theorem objectNames_mkObj {pairs : List (String × Json)} {name : String}
     (member : name ∈ objectNames (Json.mkObj pairs)) : name ∈ pairs.map Prod.fst := by
   have wf : (Std.TreeMap.Raw.ofList pairs (cmp := compare)).WF := Std.TreeMap.Raw.WF.ofList
-  simp only [objectNames, Json.mkObj] at member
+  simp only [objectNames, Base.Toolchain.mkObj_eq] at member
   rw [Std.TreeMap.Raw.map_fst_toList_eq_keys] at member
   simpa using Std.TreeMap.Raw.mem_ofList.mp ((Std.TreeMap.Raw.mem_keys wf).mp member)
 
@@ -81,23 +80,23 @@ theorem valueOf_jsonOf_uint {spelling : Spelling} {width n : Nat} {document : Js
     (fitted : n < 2 ^ (8 * width))
     (written : jsonOf (.uint width) spelling (.uint n) = .ok document) :
     valueOf (.uint width) spelling document = .ok (.uint n) := by
-  have wide : ¬ (2 ^ (8 * width) ≤ n) := Nat.not_le.mpr fitted
+  have fits : ¬ ((!uintFits width n) = true) := by simpa using fitted
   rw [jsonOf] at written
   by_cases alias? : (spelling.isByte && width == 1) = true
   · have single : width = 1 := by simpa using ((Bool.and_eq_true ..).mp alias?).2
     have small : n < 256 := by rw [single] at fitted; simpa using fitted
     have byte : (UInt8.ofNat n).toNat = n := by
       simpa [UInt8.toNat_ofNat] using Nat.mod_eq_of_lt small
-    simp only [wide, ite_false, alias?, ite_true, Except.ok.injEq] at written
+    simp only [fits, Bool.false_eq_true, ite_false, alias?, ite_true, Except.ok.injEq] at written
     subst written
     rw [valueOf, ite_eq_left alias?]
     simp [ofHex_toHex, byte, Bind.bind, Except.bind, pure, Except.pure]
-  · rw [ite_eq_right wide, ite_eq_right (by simpa using alias?), Except.ok.injEq] at written
+  · rw [ite_eq_right fits, ite_eq_right (by simpa using alias?), Except.ok.injEq] at written
     subst written
     -- The digits have to be a constructor before the reader's own match can reduce.
     simp only [decimal]
     rw [valueOf, ite_eq_right alias?, readNat_str]
-    simp [wide, Bind.bind, Except.bind, pure, Except.pure]
+    simp [fits, Bind.bind, Except.bind, pure, Except.pure]
 
 /-- A byte array document reads back as the bytes it was written from. -/
 theorem valueOf_jsonOf_byteVector {spelling : Spelling} {length : Nat} {data : Bytes}
@@ -119,6 +118,34 @@ theorem byteDigitsFrom_map : ∀ (bytes : List UInt8) (out : Bytes),
       ite_false, UInt8.ofNat_toNat, byteDigitsFrom_map rest]
     simp
 
+/-- The UTF-8 bytes of a text decode back to it. -/
+private theorem fromUTF8?_toByteArray (text : String) :
+    String.fromUTF8? ⟨text.toByteArray.data⟩ = some text := by
+  have valid : ByteArray.IsValidUTF8 ⟨text.toByteArray.data⟩ := text.isValidUTF8
+  simp [String.fromUTF8?, valid, String.fromUTF8]
+
+/-- A text within the limit is written as itself, under the text spelling. -/
+theorem jsonOf_text {limit : Nat} {text : String} (fitted : text.utf8ByteSize ≤ limit) :
+    jsonOf (.byteList limit) .text (.bytes text.toByteArray.data) = .ok (.str text) := by
+  simp [jsonOf, fitted, byteListJson, Spelling.isDigits, Spelling.isText,
+    fromUTF8?_toByteArray]
+
+/-- A text within the limit reads back as its UTF-8 bytes, under the text spelling. -/
+theorem valueOf_text {limit : Nat} {text : String} (fitted : text.utf8ByteSize ≤ limit) :
+    valueOf (.byteList limit) .text (.str text) = .ok (.bytes text.toByteArray.data) := by
+  simp [valueOf, textBytes, Spelling.isDigits, Spelling.isText, fitted, Bind.bind, Except.bind,
+    pure, Except.pure]
+
+/-- Decimal strings of bytes that spell a text are refused under the text spelling. -/
+theorem valueOf_text_digits {limit : Nat} {data : Bytes} (valid : ByteArray.IsValidUTF8 ⟨data⟩) :
+    valueOf (.byteList limit) .text (byteDigitsJson data) = .error .typeMismatch := by
+  have digits := byteDigitsFrom_map data.toList #[]
+  simp only [Array.empty_append, Array.toArray_toList] at digits
+  have some : (String.fromUTF8? ⟨data⟩).isSome := by
+    simpa [String.fromUTF8?] using valid
+  simp [valueOf, textBytes, byteDigitsJson, Spelling.isDigits, Spelling.isText, digits, some,
+    Bind.bind, Except.bind, throw, throwThe, MonadExceptOf.throw]
+
 /-- A byte list document reads back as the bytes it was written from. -/
 theorem valueOf_jsonOf_byteList {spelling : Spelling} {limit : Nat} {data : Bytes}
     {document : Json} (fitted : data.size ≤ limit)
@@ -126,19 +153,45 @@ theorem valueOf_jsonOf_byteList {spelling : Spelling} {limit : Nat} {data : Byte
     valueOf (.byteList limit) spelling document = .ok (.bytes data) := by
   simp only [jsonOf, fitted, ↓reduceIte, Except.ok.injEq, byteListJson] at written
   by_cases digits : spelling.isDigits = true
-  · simp only [digits, ↓reduceIte] at written
+  · simp only [digits, ↓reduceIte, byteDigitsJson] at written
     subst written
     rw [valueOf]
     simp [digits, Array.toList_map, byteDigitsFrom_map, Nat.not_lt.mpr fitted, Bind.bind,
       Except.bind, pure, Except.pure]
   · rw [Bool.not_eq_true] at digits
     simp only [digits, Bool.false_eq_true, ↓reduceIte] at written
-    subst written
-    rw [valueOf]
-    simp [digits, collectionHex, ofHex_toHex, Nat.not_lt.mpr fitted, Bind.bind, Except.bind,
-      pure, Except.pure]
-    intro _ same
-    cases same
+    by_cases text : spelling.isText = true
+    · simp only [text, ↓reduceIte] at written
+      cases valid : String.fromUTF8? ⟨data⟩ with
+      | some s =>
+        simp only [valid] at written
+        subst written
+        have back : s.toByteArray = ⟨data⟩ := by
+          unfold String.fromUTF8? at valid
+          split at valid
+          · simp only [String.fromUTF8, Option.some.injEq] at valid
+            subst valid
+            rfl
+          · cases valid
+        rw [valueOf]
+        simp [digits, text, textBytes, back, Nat.not_lt.mpr fitted, Bind.bind, Except.bind,
+          pure, Except.pure]
+        intro _ same
+        cases same
+      | none =>
+        simp only [valid, byteDigitsJson] at written
+        subst written
+        rw [valueOf]
+        simp [digits, text, textBytes, Array.toList_map, byteDigitsFrom_map, valid,
+          Nat.not_lt.mpr fitted, Bind.bind, Except.bind, pure, Except.pure]
+    · rw [Bool.not_eq_true] at text
+      simp only [text, Bool.false_eq_true, ↓reduceIte] at written
+      subst written
+      rw [valueOf]
+      simp [digits, text, collectionHex, ofHex_toHex, Nat.not_lt.mpr fitted, Bind.bind,
+        Except.bind, pure, Except.pure]
+      intro _ same
+      cases same
 
 /--
 A bitfield document reads back as the bits it was written from.
@@ -299,7 +352,7 @@ theorem erase_insert_equiv {fields : TreeMap.Raw String Json} (wf : fields.WF) {
 theorem getObjVal?_obj_of_equiv {first second : TreeMap.Raw String Json} (wf₁ : first.WF)
     (wf₂ : second.WF) (same : first.Equiv second) (name : String) :
     (Json.obj first).getObjVal? name = (Json.obj second).getObjVal? name := by
-  simp only [Json.getObjVal?, Std.TreeMap.Raw.get?_eq_getElem?]
+  simp only [Base.Toolchain.getObjVal?_eq, Std.TreeMap.Raw.get?_eq_getElem?]
   rw [Std.TreeMap.Raw.Equiv.getElem?_eq wf₁ wf₂ same]
 
 /-- Two objects with the same fields carry the same names, in the same order. -/
@@ -333,6 +386,7 @@ theorem valueOf_obj_of_equiv {shape : Desc} {spelling : Spelling}
   have read := getObjVal?_obj_of_equiv wf₁ wf₂ same
   have fieldsOf := valueOfFields_obj_of_equiv wf₁ wf₂ same
   cases shape <;>
-    simp [valueOf, valueOfSequence, readBitfield, readNat, collectionHex, names, read, fieldsOf]
+    simp [valueOf, valueOfSequence, readBitfield, readNat, textBytes, collectionHex, names, read,
+      fieldsOf]
 
 end EthLib.Serialization.Ssz

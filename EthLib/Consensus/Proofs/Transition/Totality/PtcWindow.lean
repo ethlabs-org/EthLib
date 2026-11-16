@@ -23,22 +23,31 @@ open Base
 
 variable {preset : Preset} {fork : Base.Fork}
 
+/-- The draws of the payload timeliness committees of an epoch end, at the seed of that epoch.
+
+Each slot draws among the members of its beacon committees, with a seed of its own.
+
+A member at the cap of the draw in each slot makes them end.
+
+In the random oracle model, with at least one candidate, the search ends with high probability.
+
+That is a bound on a probability, not a fact about the hash, so a run assumes the end. -/
+def PtcDrawsEnd (state : BeaconState preset fork) (epoch : Epoch) : Prop :=
+  ∀ seed, getSeed state epoch DOMAIN_PTC_ATTESTER = .ok seed →
+    ∀ slot, computeEpochAtSlot preset slot = epoch → ∀ members,
+      slotCommitteeMembers state slot = .ok members →
+        ∃ committee, computeBalanceWeightedSelection state members
+          (Cryptography.Hash.Sha256.hash32 ⟨seed.toArray ++ (uintToBytes 8 slot.toNat).toArray⟩)
+          preset.PTC_SIZE false = .ok committee
+
 /-- The assumptions under which the payload timeliness committees of an epoch can be drawn.
 
-The member at the cap in each slot depends on the shuffle, so it is an assumption, not a bound. -/
+The draws of the epoch end: an assumption, not a bound. -/
 structure PtcDrawable (state : BeaconState preset fork) (epoch : Epoch) : Prop where
-  /-- No effective balance is above the cap of the draw. -/
-  capped : ∀ validator ∈ state.validators.data,
-    validator.effectiveBalance.toNat ≤ drawCap preset fork
-  /-- In each slot of the epoch, one member of the beacon committees is at the cap. -/
-  full : ∀ slot, computeEpochAtSlot preset slot = epoch → ∀ members,
-    slotCommitteeMembers state slot = .ok members →
-    ∃ index ∈ members, ∃ validator, getValidator state index = .ok validator ∧
-      validator.effectiveBalance.toNat = drawCap preset fork
+  /-- The draws of the epoch end. -/
+  ends : PtcDrawsEnd state epoch
   /-- The registry holds at most `2^40` validators. -/
   few : state.validators.data.size ≤ 2 ^ 40
-  /-- The size of a payload timeliness committee times the number of validators is below `2^64`. -/
-  room : preset.PTC_SIZE.toNat * state.validators.data.size < 2 ^ 64
   /-- The number of validators times a bound on the committees of an epoch is below `2^64`.
 
   The bound is one more than the most committees of a slot, times the slots of an epoch. -/
@@ -55,33 +64,32 @@ theorem slotCommitteeMembers_eq_of_eq {fork' : Fork}
     getActiveValidatorIndicesChecked getSeed getRandaoMix
   simp only [validators, mixes]
 
+/-- The draws of the committees of an epoch still end on a state with the same registry and mixes.
+
+The two forks must be on the same side of Electra. -/
+theorem PtcDrawsEnd.of_eq {fork' : Fork}
+    {state : BeaconState preset fork} {other : BeaconState preset fork'} {epoch : Epoch}
+    (validators : other.validators.data = state.validators.data)
+    (mixes : other.randaoMixes.elements = state.randaoMixes.elements)
+    (electra : .pectra ≤ fork' ↔ .pectra ≤ fork)
+    (ends : PtcDrawsEnd state epoch) : PtcDrawsEnd other epoch := by
+  intro seed seedOk slot inEpoch members found
+  rw [getSeed_eq_of_eq mixes] at seedOk
+  rw [slotCommitteeMembers_eq_of_eq validators mixes] at found
+  rw [computeBalanceWeightedSelection_eq_of_eq validators electra]
+  exact ends seed seedOk slot inEpoch members found
+
 /-- The committees of an epoch stay drawable on a state with the same registry and mixes.
 
-The cap of the draw must agree. -/
+The two forks must be on the same side of Electra. -/
 theorem PtcDrawable.of_eq {fork' : Fork}
     {state : BeaconState preset fork} {other : BeaconState preset fork'} {epoch : Epoch}
     (validators : other.validators.data = state.validators.data)
     (mixes : other.randaoMixes.elements = state.randaoMixes.elements)
-    (cap : drawCap preset fork' = drawCap preset fork)
-    (drawable : PtcDrawable state epoch) : PtcDrawable other epoch := by
-  obtain ⟨capped, full, few, room, committeeRoom⟩ := drawable
-  refine ⟨?_, ?_, ?_, ?_, ?_⟩
-  · intro validator member
-    rw [cap]
-    exact capped validator (validators ▸ member)
-  · intro slot inEpoch members computed
-    rw [slotCommitteeMembers_eq_of_eq validators mixes] at computed
-    obtain ⟨index, member, validator, got, atCap⟩ := full slot inEpoch members computed
-    refine ⟨index, member, validator, ?_, cap ▸ atCap⟩
-    unfold getValidator at got ⊢
-    rw [validators]
-    exact got
-  · rw [validators]
-    exact few
-  · rw [validators]
-    exact room
-  · rw [validators]
-    exact committeeRoom
+    (electra : .pectra ≤ fork' ↔ .pectra ≤ fork)
+    (drawable : PtcDrawable state epoch) : PtcDrawable other epoch :=
+  ⟨drawable.ends.of_eq validators mixes electra, validators ▸ drawable.few,
+    validators ▸ drawable.committeeRoom⟩
 
 /-- A committee that is cut has a nonzero count and the size of its range of positions. -/
 private theorem size_of_shuffledCommittee {indices : Array ValidatorIndex}
@@ -105,24 +113,6 @@ private theorem size_of_shuffledCommittee {indices : Array ValidatorIndex}
       simp [zero]
   · simp [zero, fits, bind, Except.bind, throw, throwThe, MonadExcept.throw,
       MonadExceptOf.throw] at cut
-
-/-- A committee with a nonzero count and a position below it is cut when its bounds fit. -/
-private theorem shuffledCommittee_ok {indices : Array ValidatorIndex} {shuffled : Array UInt64}
-    {index count : UInt64} (inside : index < count)
-    (fits : indices.size * (index.toNat + 1) < 2 ^ 64) :
-    ∃ committee, shuffledCommittee indices shuffled index count = .ok committee := by
-  have natLt : index.toNat < count.toNat := UInt64.lt_iff_toNat_lt.mp inside
-  have positive : count ≠ 0 := by
-    intro zero
-    simp [zero] at natLt
-  have bound : indices.size * (index.toNat + 1) ≤ indices.size * count.toNat :=
-    Nat.mul_le_mul_left _ natLt
-  have stopLe : indices.size * (index.toNat + 1) / count.toNat ≤ indices.size :=
-    Nat.div_le_of_le_mul (Nat.le_trans bound (Nat.le_of_eq (Nat.mul_comm _ _)))
-  have below : index.toNat + 1 < 2 ^ 64 := Nat.lt_of_le_of_lt natLt count.toNat_lt
-  simp only [shuffledCommittee, positive, below, fits, and_self, Nat.not_lt.mpr stopLe, and_false,
-    ↓reduceIte]
-  exact ⟨_, rfl⟩
 
 /-- A beacon committee that is cut has the size of its range of positions in the epoch. -/
 private theorem size_beaconCommitteeOf {slot : Slot} {index : CommitteeIndex} {perSlot : UInt64}
@@ -212,60 +202,37 @@ theorem size_slotCommitteeMembers_le {state : BeaconState preset fork} {slot : S
     calc n * (k * p + p) ≤ n * (p * e) := Nat.mul_le_mul_left _ step
       _ = p * e * n := Nat.mul_comm _ _
 
-/-- The shuffle of an epoch succeeds when the registry holds at most `2^40` validators. -/
-private theorem attesterShuffle_ok_of_le {state : BeaconState preset fork} {epoch : Epoch}
-    (seedRoom : epoch.toNat + preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat < 2 ^ 64)
-    (lookahead : preset.MIN_SEED_LOOKAHEAD.toNat < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
-    (few : state.validators.data.size ≤ 2 ^ 40) :
-    ∃ shuffled, attesterShuffle state epoch =
-      .ok ((getActiveValidatorIndices state epoch).toArray, shuffled) := by
-  obtain ⟨seed, seedOk⟩ := getSeed_ok (state := state) (epoch := epoch) DOMAIN_BEACON_ATTESTER
-    seedRoom lookahead
-  have checked := getActiveValidatorIndicesChecked_of_size_le (state := state) (by omega) epoch
-  have lengthLe := length_getActiveValidatorIndices_le state epoch
-  have lt : (getActiveValidatorIndices state epoch).toArray.size < 2 ^ 64 := by
-    simp only [List.size_toArray]
-    omega
-  have countNat := UInt64.toNat_ofNat_of_lt' lt
-  have permuted := computeShuffledPermutation_eq (preset := preset) (seed := seed)
-    (count := UInt64.ofNat (getActiveValidatorIndices state epoch).toArray.size)
-    (by rw [countNat]; simp only [List.size_toArray]; omega)
-  refine ⟨Shuffle.shuffledPositions preset.SHUFFLE_ROUND_COUNT.toNat seed
-    (UInt64.ofNat (getActiveValidatorIndices state epoch).toArray.size).toNat, ?_⟩
-  simp only [attesterShuffle, seedOk, checked, liftArith, bind, Except.bind, Except.mapError,
-    Base.Uint64.ofNatChecked_of_lt lt, Nat.toUInt64_eq, permuted, pure, Except.pure]
+/-- The draws of the payload timeliness committees end when each slot has a member at the cap.
 
-/-- A beacon committee is cut when its position is below the count of the epoch. -/
-private theorem beaconCommitteeOf_ok {slot : Slot} {index : CommitteeIndex} {perSlot : UInt64}
-    {active : Array ValidatorIndex} {shuffled : Array UInt64}
-    (count : perSlot.toNat * preset.SLOTS_PER_EPOCH.toNat < 2 ^ 64)
-    (inside : (slot % preset.SLOTS_PER_EPOCH).toNat * perSlot.toNat + index.toNat <
-      perSlot.toNat * preset.SLOTS_PER_EPOCH.toNat)
-    (fits : active.size * (perSlot.toNat * preset.SLOTS_PER_EPOCH.toNat) < 2 ^ 64) :
-    ∃ committee, beaconCommitteeOf preset slot index perSlot active shuffled = .ok committee := by
-  have productFits : (slot % preset.SLOTS_PER_EPOCH).toNat * perSlot.toNat < 2 ^ 64 := by omega
-  have sumFits : ((slot % preset.SLOTS_PER_EPOCH) * perSlot).toNat + index.toNat < 2 ^ 64 := by
-    rw [UInt64.toNat_mul, Nat.mod_eq_of_lt productFits]
-    omega
-  have positionNat : ((slot % preset.SLOTS_PER_EPOCH) * perSlot + index).toNat =
-      (slot % preset.SLOTS_PER_EPOCH).toNat * perSlot.toNat + index.toNat := by
-    rw [Base.Uint64.toNat_add_of_lt sumFits, UInt64.toNat_mul, Nat.mod_eq_of_lt productFits]
-  have countFits : perSlot.toNat * preset.SLOTS_PER_EPOCH.toNat < 2 ^ 64 := count
-  have countNat : (perSlot * preset.SLOTS_PER_EPOCH).toNat =
-      perSlot.toNat * preset.SLOTS_PER_EPOCH.toNat := by
-    rw [UInt64.toNat_mul, Nat.mod_eq_of_lt countFits]
-  obtain ⟨committee, cut⟩ := shuffledCommittee_ok (indices := active) (shuffled := shuffled)
-    (index := (slot % preset.SLOTS_PER_EPOCH) * perSlot + index)
-    (count := perSlot * preset.SLOTS_PER_EPOCH) (by
-      rw [UInt64.lt_iff_toNat_lt, positionNat, countNat]
-      exact inside) (by
-      rw [positionNat]
-      exact Nat.lt_of_le_of_lt (Nat.mul_le_mul_left _ (by omega)) fits)
-  refine ⟨committee, ?_⟩
-  simp only [beaconCommitteeOf, liftArith, Base.Uint64.mulChecked_of_lt
-    (by simpa only using productFits : (slot % preset.SLOTS_PER_EPOCH).toNat * perSlot.toNat <
-      2 ^ 64), Base.Uint64.addChecked_of_lt sumFits,
-    Base.Uint64.mulChecked_of_lt countFits, bind, Except.bind, Except.mapError, cut]
+No effective balance is above the cap, and the registry holds at most `2^40` validators.
+
+The size of a committee times the number of validators is below `2^64`.
+
+The products of the draw fit in 64 bits. -/
+theorem PtcDrawsEnd.of_atCap {state : BeaconState preset fork} {epoch : Epoch}
+    (fits : DrawFits preset fork)
+    (capped : ∀ validator ∈ state.validators.data,
+      validator.effectiveBalance.toNat ≤ drawCap preset fork)
+    (full : ∀ slot, computeEpochAtSlot preset slot = epoch → ∀ members,
+      slotCommitteeMembers state slot = .ok members →
+      ∃ index ∈ members, ∃ validator, getValidator state index = .ok validator ∧
+        validator.effectiveBalance.toNat = drawCap preset fork)
+    (few : state.validators.data.size ≤ 2 ^ 40)
+    (room : preset.PTC_SIZE.toNat * state.validators.data.size < 2 ^ 64) :
+    PtcDrawsEnd state epoch := by
+  intro seed _ slot inEpoch members found
+  have checked := getActiveValidatorIndicesChecked_of_size_le (state := state) (by omega)
+    (computeEpochAtSlot preset slot)
+  have membersLe := size_slotCommitteeMembers_le found
+  exact computeBalanceWeightedSelection_ok fits
+    (fun index member => by
+      obtain ⟨_, _, committee, got, mem⟩ := (mem_slotCommitteeMembers found).mp member
+      obtain ⟨validator, read, _⟩ := (mem_iff_of_getActiveValidatorIndicesChecked_ok checked).mp
+        (mem_getActiveValidatorIndices_of_getBeaconCommittee got mem)
+      exact ⟨validator, by unfold getValidator; rw [read],
+        capped validator (Array.mem_of_getElem? read)⟩)
+    (full slot inEpoch members found) (by omega)
+    (Nat.lt_of_le_of_lt (Nat.mul_le_mul_left _ membersLe) room)
 
 /-- The committees of a slot are all cut when each one is. -/
 private theorem foldlM_committees_ok {slot : Slot} {perSlot : UInt64}
@@ -292,75 +259,28 @@ The seed lookahead is shorter than that history.
 
 An epoch has at least one slot.
 
-The products of the draw fit in 64 bits.
-
-No effective balance is above the cap of the draw.
-
-One member of the beacon committees of the slot is at that cap.
+The draws of the epoch of the slot end.
 
 The registry holds at most `2^40` validators.
 
-Their number times the size of the committee is below `2^64`.
+Their number times a bound on the committees of an epoch is below `2^64`.
 
-So is their number times one more than the most committees of a slot, times the slots of an epoch.
--/
+The bound is one more than the most committees of a slot, times the slots of an epoch. -/
 theorem computePtc_ok {state : BeaconState preset fork} {slot : Slot}
-    (fits : DrawFits preset fork)
     (seedRoom : (computeEpochAtSlot preset slot).toNat +
       preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat < 2 ^ 64)
     (lookahead : preset.MIN_SEED_LOOKAHEAD.toNat < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
     (perEpoch : preset.SLOTS_PER_EPOCH ≠ 0)
-    (capped : ∀ validator ∈ state.validators.data,
-      validator.effectiveBalance.toNat ≤ drawCap preset fork)
-    (full : ∀ members, slotCommitteeMembers state slot = .ok members →
-      ∃ index ∈ members, ∃ validator, getValidator state index = .ok validator ∧
-        validator.effectiveBalance.toNat = drawCap preset fork)
+    (ends : PtcDrawsEnd state (computeEpochAtSlot preset slot))
     (few : state.validators.data.size ≤ 2 ^ 40)
-    (room : preset.PTC_SIZE.toNat * state.validators.data.size < 2 ^ 64)
     (committeeRoom : state.validators.data.size * (preset.MAX_COMMITTEES_PER_SLOT.toNat + 1) *
       preset.SLOTS_PER_EPOCH.toNat < 2 ^ 64) :
     ∃ committee, computePtc state slot = .ok committee := by
-  have perSlotPos := UInt64.le_iff_toNat_le.mp
-    (one_le_getCommitteeCountPerSlot state (computeEpochAtSlot preset slot))
-  have perSlotMax := UInt64.le_iff_toNat_le.mp
-    (getCommitteeCountPerSlot_le state (computeEpochAtSlot preset slot))
-  have lengthLe := length_getActiveValidatorIndices_le state (computeEpochAtSlot preset slot)
   have epochPos : 0 < preset.SLOTS_PER_EPOCH.toNat := by
     refine Nat.pos_of_ne_zero fun zero => perEpoch ?_
     exact UInt64.toNat_inj.mp zero
-  simp only [Base.Uint64.toNat_max] at perSlotMax
-  have one : (1 : UInt64).toNat = 1 := rfl
-  have empty : state.validators.data.size = 0 →
-      getCommitteeCountPerSlot state (computeEpochAtSlot preset slot) = 1 := by
-    intro zero
-    have hlen : (getActiveValidatorIndices state (computeEpochAtSlot preset slot)).length = 0 := by
-      omega
-    simp [getCommitteeCountPerSlot, committeeCountOf, hlen]
-    apply UInt64.toNat_inj.mp
-    simp [Base.Uint64.toNat_max, Base.Uint64.toNat_min]
-  have perSlotLe : (getCommitteeCountPerSlot state (computeEpochAtSlot preset slot)).toNat ≤
-      preset.MAX_COMMITTEES_PER_SLOT.toNat + 1 := by omega
-  have slotsSmall := preset.SLOTS_PER_EPOCH.toNat_lt
-  have countFits : (getCommitteeCountPerSlot state (computeEpochAtSlot preset slot)).toNat *
-      preset.SLOTS_PER_EPOCH.toNat < 2 ^ 64 := by
-    rcases Nat.eq_zero_or_pos state.validators.data.size with zero | pos
-    · rw [empty zero, one]
-      omega
-    · calc _ ≤ (preset.MAX_COMMITTEES_PER_SLOT.toNat + 1) * preset.SLOTS_PER_EPOCH.toNat :=
-            Nat.mul_le_mul_right _ perSlotLe
-        _ ≤ state.validators.data.size * (preset.MAX_COMMITTEES_PER_SLOT.toNat + 1) *
-            preset.SLOTS_PER_EPOCH.toNat :=
-            Nat.mul_le_mul_right _ (Nat.le_mul_of_pos_left _ pos)
-        _ < 2 ^ 64 := committeeRoom
-  have activeFits : (getActiveValidatorIndices state (computeEpochAtSlot preset slot)).length *
-      ((getCommitteeCountPerSlot state (computeEpochAtSlot preset slot)).toNat *
-        preset.SLOTS_PER_EPOCH.toNat) < 2 ^ 64 :=
-    calc _ ≤ state.validators.data.size * ((preset.MAX_COMMITTEES_PER_SLOT.toNat + 1) *
-            preset.SLOTS_PER_EPOCH.toNat) :=
-          Nat.mul_le_mul lengthLe (Nat.mul_le_mul_right _ perSlotLe)
-      _ = state.validators.data.size * (preset.MAX_COMMITTEES_PER_SLOT.toNat + 1) *
-            preset.SLOTS_PER_EPOCH.toNat := (Nat.mul_assoc _ _ _).symm
-      _ < 2 ^ 64 := committeeRoom
+  obtain ⟨countFits, activeFits⟩ := committeeCount_fits (state := state)
+    (computeEpochAtSlot preset slot) committeeRoom
   obtain ⟨seed, seedOk⟩ := getSeed_ok (state := state) (epoch := computeEpochAtSlot preset slot)
     DOMAIN_PTC_ATTESTER seedRoom lookahead
   obtain ⟨shuffled, shuffleOk⟩ := attesterShuffle_ok_of_le (state := state)
@@ -388,21 +308,8 @@ theorem computePtc_ok {state : BeaconState preset fork} {slot : Slot}
     unfold slotCommitteeMembers
     simp only [shuffleOk, bind, Except.bind]
     exact membersOk
-  have checked := getActiveValidatorIndicesChecked_of_size_le (state := state) (by omega)
-    (computeEpochAtSlot preset slot)
-  have membersLe := size_slotCommitteeMembers_le found
-  have drawn : ∀ seed, ∃ out, computeBalanceWeightedSelection state members seed
-      preset.PTC_SIZE false = .ok out := fun seed => computeBalanceWeightedSelection_ok fits
-    (fun index member => by
-      obtain ⟨_, _, committee, got, mem⟩ := (mem_slotCommitteeMembers found).mp member
-      obtain ⟨validator, read, _⟩ := (mem_iff_of_getActiveValidatorIndicesChecked_ok checked).mp
-        (mem_getActiveValidatorIndices_of_getBeaconCommittee got mem)
-      exact ⟨validator, by unfold getValidator; rw [read],
-        capped validator (Array.mem_of_getElem? read)⟩)
-    (full members found) (by omega)
-    (Nat.lt_of_le_of_lt (Nat.mul_le_mul_left _ membersLe) room)
   simp only [computePtc, computePtcOf, seedOk, shuffleOk, membersOk, bind, Except.bind]
-  exact drawn _
+  exact ends seed seedOk slot rfl members found
 
 /-- From Gloas, the move of the window of payload timeliness committees succeeds under bounds.
 
@@ -416,11 +323,10 @@ The first slot of the epoch after it is at most `2^64`, so every slot of it fits
 
 An epoch has at least one slot.
 
-The products of the draw fit in 64 bits, and that epoch meets the assumptions of the draw.
+That epoch meets the assumptions of the draw.
 
 The step changes only the window. -/
 theorem processPtcWindow_ok (gloas : .glamsterdam ≤ fork) {state : BeaconState preset fork}
-    (fits : DrawFits preset fork)
     (seedRoom : (getCurrentEpoch state).toNat + preset.MIN_SEED_LOOKAHEAD.toNat + 1 +
       preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat < 2 ^ 64)
     (lookahead : preset.MIN_SEED_LOOKAHEAD.toNat < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
@@ -502,10 +408,9 @@ theorem processPtcWindow_ok (gloas : .glamsterdam ≤ fork) {state : BeaconState
       have lt : offset < preset.SLOTS_PER_EPOCH.toNat := by simpa using member
       obtain ⟨slot, slotEq⟩ := slotOk offset lt
       have epochEq := computeEpochAtSlot_ptcWindowSlot lt slotEq
-      obtain ⟨committee, ok⟩ := computePtc_ok (state := state) (slot := slot) fits
+      obtain ⟨committee, ok⟩ := computePtc_ok (state := state) (slot := slot)
         (by rw [epochEq, epochNat]; omega) lookahead perEpoch
-        drawable.capped (drawable.full slot epochEq) drawable.few drawable.room
-        drawable.committeeRoom
+        (by rw [epochEq]; exact drawable.ends) drawable.few drawable.committeeRoom
       exact ⟨committee, by simp only [slotEq, bind, Except.bind, ok]⟩
     choose! out outOk using each
     refine ⟨Vector.ofFn fun i => out i.val, vector_mapM_eq_ok_iff.mpr fun i hi => ?_⟩
@@ -612,9 +517,8 @@ The first slot of the epoch after the last one drawn is at most `2^64`.
 
 So every slot drawn fits in 64 bits.
 
-An epoch has at least one slot, and the products of the draw fit in 64 bits. -/
+An epoch has at least one slot. -/
 theorem initializePtcWindow_ok {state : BeaconState preset fork}
-    (fits : DrawFits preset fork)
     (seedRoom : (getCurrentEpoch state).toNat + preset.MIN_SEED_LOOKAHEAD.toNat +
       preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat < 2 ^ 64)
     (lookahead : preset.MIN_SEED_LOOKAHEAD.toNat < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
@@ -703,10 +607,9 @@ theorem initializePtcWindow_ok {state : BeaconState preset fork}
         omega)]
     have drawn := drawable _ quotLe
     rw [← epochEq] at drawn
-    obtain ⟨committee, ok⟩ := computePtc_ok (state := state) (slot := slot) fits
+    obtain ⟨committee, ok⟩ := computePtc_ok (state := state) (slot := slot)
       (by rw [epochEq, Base.Uint64.toNat_add_of_lt (by rw [quotNat]; omega), quotNat]; omega)
-      lookahead perEpoch drawn.capped (drawn.full slot rfl) drawn.few drawn.room
-      drawn.committeeRoom
+      lookahead perEpoch drawn.ends drawn.few drawn.committeeRoom
     exact ⟨committee, by simp only [before, ↓reduceIte, slotEq, bind, Except.bind, ok]⟩
   choose! out outOk using each
   refine ⟨_, congrArg (Serialization.Ssz.RootedVector.ofVector <$> ·) (vector_mapM_eq_ok_iff

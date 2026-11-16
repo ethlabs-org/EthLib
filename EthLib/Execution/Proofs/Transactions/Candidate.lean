@@ -1,5 +1,6 @@
 module
 
+public import EthLib.Execution.Proofs.Transactions.Unfold
 public import EthLib.Execution.Proofs.Evm.Call.Candidate
 public import EthLib.Execution.Proofs.Transactions.Authorization
 public import EthLib.Execution.Proofs.Transactions.Deletion
@@ -211,7 +212,7 @@ theorem processMessageCall_noNewCandidate [LawfulGasMeter Meter] {block : BlockS
     (h : processMessageCall (Meter := Meter) chainId message state substate auths paid =
       .ok output) :
     NoNewCandidate block output.state := by
-  unfold processMessageCall at h
+  rw [processMessageCall_unfold] at h
   rcases hprep : prepareFirstFrame (Meter := Meter) chainId message state substate auths paid
     with ⟨e, read⟩ | first
   · rw [hprep] at h
@@ -247,6 +248,7 @@ theorem noNewCandidate_buyGas {env : BlockEnvironment fork} {block : BlockState}
     (hinv : NoNewCandidate block state) (h : buyGas env state sender tx = .ok state') :
     NoNewCandidate block state' := by
   unfold buyGas at h
+  rw [paidBaseFee_empty] at h
   obtain ⟨mid, h1, h2⟩ := bind_ok_iff.mp h
   have vmid : NoNewCandidate block mid :=
     hinv.modifyState (fun _ hupd hn _ => by cases hupd; exact absurd hn (Nat.succ_ne_zero _)) h1
@@ -265,6 +267,7 @@ private theorem noNewCandidate_settleGas {env : BlockEnvironment fork} {block : 
     (h : settleGas env state sender tx gasLeft refundCounter = .ok (state', used)) :
     NoNewCandidate block state' := by
   unfold settleGas at h
+  rw [paidBaseFee_empty] at h
   obtain ⟨mid, h1, h⟩ := bind_ok_iff.mp h
   obtain ⟨paid, h2, h⟩ := bind_ok_iff.mp h
   cases h
@@ -343,7 +346,7 @@ theorem processTransaction_noNewCandidate {env : BlockEnvironment fork} {block :
     {included : Included} {tx : Transaction} {output : TransactionOutput}
     (h : processTransaction env block included tx = .ok output) :
     NoNewCandidate block output.state := by
-  unfold processTransaction at h
+  rw [processTransaction_unfold] at h
   split at h
   · cases h
   split at h

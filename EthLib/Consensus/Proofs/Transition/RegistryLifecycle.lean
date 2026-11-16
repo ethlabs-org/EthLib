@@ -270,6 +270,97 @@ theorem EpochStage.Edge.validators_eq {stage : EpochStage} {s t : BeaconState pr
   case registry | pendingDeposits | effectiveBalances => simp at other
   all_goals exact (edge.records ⟨nofun, nofun, nofun, nofun, nofun, nofun⟩).1
 
+/-- Every epoch stage other than the registry updates keeps the end of the exit queue.
+
+It also keeps the balance left to consume in that last exit epoch. -/
+theorem EpochStage.Edge.exitQueue {stage : EpochStage} {s t : BeaconState preset fork}
+    (edge : EpochStage.Edge config checks stage s t) (other : stage ≠ .registry) :
+    t.earliestExitEpoch = s.earliestExitEpoch ∧
+      t.exitBalanceToConsume = s.exitBalanceToConsume := by
+  cases stage <;> simp only [EpochStage.Edge] at edge
+  case registry => exact absurd rfl other
+  case justification => rw [processJustificationAndFinalization_eq edge]; exact ⟨rfl, rfl⟩
+  case rewards => rw [processRewardsAndPenalties_frame edge]; exact ⟨rfl, rfl⟩
+  case slashings => rw [processSlashings_frame edge]; exact ⟨rfl, rfl⟩
+  case effectiveBalances => rw [processEffectiveBalanceUpdates_frame edge]; exact ⟨rfl, rfl⟩
+  case slashingsReset =>
+    obtain ⟨_, _, _, _, rfl⟩ := processSlashingsReset_eq edge
+    exact ⟨rfl, rfl⟩
+  case randaoReset =>
+    obtain ⟨_, _, _, _, _, _, rfl⟩ := processRandaoMixesReset_eq edge
+    exact ⟨rfl, rfl⟩
+  case participation =>
+    split at edge
+    · subst edge
+      exact ⟨rfl, rfl⟩
+    · rename_i early
+      obtain ⟨u, computed, _, _, restored⟩ :=
+        processParticipationRecordUpdates_eq (state := s) (Nat.lt_of_not_le early)
+      obtain rfl := Except.ok.inj (computed.symm.trans edge)
+      exact ⟨congrArg (·.earliestExitEpoch) restored, congrArg (·.exitBalanceToConsume) restored⟩
+  case pendingDeposits =>
+    split at edge
+    · obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, folded, rfl⟩ :=
+        processPendingDeposits_applied edge
+      refine foldlM_ok_invariant (fun b => b.earliestExitEpoch = s.earliestExitEpoch ∧
+        b.exitBalanceToConsume = s.exitBalanceToConsume) (fun _ _ _ prior step => ?_)
+        ⟨rfl, rfl⟩ folded
+      rcases applyPendingDeposit_cases step with rfl | ⟨_, raised⟩ | ⟨_, added⟩
+      · exact prior
+      · obtain ⟨_, _, rfl⟩ := increaseBalance_eq_ok_iff.mp raised
+        exact prior
+      · unfold addValidatorToRegistry at added
+        split at added
+        · simp only [addValidatorToRegistryAltair, bind_ok_iff, liftAccessor_ok,
+            pure, Except.pure, Except.ok.injEq] at added
+          obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, rfl⟩ := added
+          exact prior
+        · split at added <;> cases added
+          exact prior
+    · subst edge
+      exact ⟨rfl, rfl⟩
+  case pendingConsolidations =>
+    split at edge
+    · exact processPendingConsolidations_exitQueue edge
+    · subst edge
+      exact ⟨rfl, rfl⟩
+  case history =>
+    split at edge
+    · unfold processHistoricalSummariesUpdate at edge
+      simp only [bind, Except.bind, pure, Except.pure] at edge
+      repeat' (split at edge <;> try cases edge)
+      all_goals exact ⟨rfl, rfl⟩
+    · unfold processHistoricalRootsUpdate at edge
+      split at edge
+      · cases edge
+      simp only [bind_ok_iff, liftAccessor_ok] at edge
+      obtain ⟨_, _, edge⟩ := edge
+      split at edge
+      · simp only [bind_ok_iff, liftSsz_ok, pure, Except.pure, Except.ok.injEq] at edge
+        obtain ⟨_, _, _, _, rfl⟩ := edge
+        exact ⟨rfl, rfl⟩
+      · cases edge; exact ⟨rfl, rfl⟩
+  case syncCommittees =>
+    split at edge
+    · unfold processSyncCommitteeUpdates at edge
+      simp only [bind, Except.bind, pure, Except.pure] at edge
+      repeat' (split at edge <;> try cases edge)
+      all_goals exact ⟨rfl, rfl⟩
+    · subst edge
+      exact ⟨rfl, rfl⟩
+  all_goals
+    split at edge
+    · first
+        | rw [processInactivityUpdates_frame edge]
+        | rw [processEth1DataReset_frame edge]
+        | rw [processBuilderPendingPayments_eq edge]
+        | (simp only [processProposerLookahead, processPtcWindow, bind_ok_iff, pure,
+            Except.pure, Except.ok.injEq] at edge
+           obtain ⟨_, _, _, _, rfl⟩ := edge)
+      exact ⟨rfl, rfl⟩
+    · subst edge
+      exact ⟨rfl, rfl⟩
+
 /-! ## Mutators -/
 
 theorem registryLifecycle_initiateValidatorExit {index : ValidatorIndex}
@@ -591,65 +682,9 @@ private theorem processWithdrawals_validators {capella : .shapella ≤ fork}
   have expected {expected : ExpectedWithdrawals}
       (ok : applyExpectedWithdrawals state capella expected = .ok after) :
       after.validators = state.validators := by
-    unfold applyExpectedWithdrawals at ok
-    simp only [bind_ok_iff] at ok
-    obtain ⟨applied, appliedOk, indexed, indexedOk, finished, sweptOk, last⟩ := ok
-    have paid : applied.validators = state.validators := by
-      unfold applyWithdrawals at appliedOk
-      rw [← Array.foldlM_toList] at appliedOk
-      refine foldlM_ok_invariant (fun t => t.validators = state.validators) ?_ rfl appliedOk
-      intro _ _ _ kept stepped
-      rw [applyWithdrawal_eq stepped]
-      exact kept
-    have moved : indexed.validators = applied.validators := by
-      unfold updateNextWithdrawalIndex at indexedOk
-      split at indexedOk
-      · simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at indexedOk
-        obtain ⟨_, _, rfl⟩ := indexedOk
-        rfl
-      · cases indexedOk
-        rfl
-    -- The queue updates and the sweep of builders write only their own fields.
-    have queued : ∀ kept : BeaconState preset fork,
-        (if gloas : .glamsterdam ≤ fork then
-          updateBuilderPendingWithdrawals
-            (updatePayloadExpectedWithdrawals kept gloas expected.withdrawals) gloas
-            expected.processedBuilderWithdrawalsCount
-        else kept).validators = kept.validators := by
-      intro kept
-      split <;> rfl
-    have partials : ∀ kept : BeaconState preset fork,
-        (if electra : .pectra ≤ fork then
-          updatePendingPartialWithdrawals kept electra expected.processedPartialWithdrawalsCount
-        else kept).validators = kept.validators := by
-      intro kept
-      split <;> rfl
-    have sweep : ∀ kept : BeaconState preset fork,
-        (if gloas : .glamsterdam ≤ fork then
-          updateNextWithdrawalBuilderIndex kept gloas expected.processedBuildersSweepCount
-        else pure kept) = .ok finished → finished.validators = kept.validators := by
-      intro kept ok
-      split at ok
-      · unfold updateNextWithdrawalBuilderIndex at ok
-        dsimp only at ok
-        split at ok
-        · cases ok
-          rfl
-        · simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at ok
-          obtain ⟨_, _, rfl⟩ := ok
-          rfl
-      · simp only [pure, Except.pure, Except.ok.injEq] at ok
-        subst ok
-        rfl
-    have final : after.validators = finished.validators := by
-      unfold updateNextWithdrawalValidatorIndex at last
-      simp only [bind_ok_iff] at last
-      obtain ⟨_, _, last⟩ := last
-      split at last
-      · cases last
-      · cases last
-        rfl
-    rw [final, sweep _ sweptOk, partials, queued, moved, paid]
+    exact applyExpectedWithdrawals_of (fun a b => b.validators = a.validators)
+      (fun _ => rfl) (fun one two => two.trans one)
+      (fun step => by rw [applyWithdrawal_eq step]) (fun _ same => same) ok
   unfold processWithdrawals at computed
   split at computed
   · split at computed
@@ -940,51 +975,12 @@ theorem registryLifecycle_processEffectiveBalanceUpdates
 /-! ## The steps of an epoch from Altair -/
 
 theorem registryLifecycle_passPendingDeposits {stop : PendingDeposit → Bool} {nextEpoch : Epoch}
-    {available : Gwei} :
-    ∀ {deposits : List PendingDeposit} {state : BeaconState preset fork} {processed : Gwei}
-      {count : Nat} {postponed : Array PendingDeposit} {pass},
-      passPendingDeposits config checks stop nextEpoch available state processed count postponed
-        deposits = .ok pass →
-      RegistryLifecycle state pass.1.state
-  | [], _, _, _, _, _, computed => by
-    simp only [passPendingDeposits, pure, Except.pure, Except.ok.injEq] at computed
-    subst computed
-    exact .refl _
-  | deposit :: rest, state, processed, count, postponed, pass, computed => by
-    unfold passPendingDeposits at computed
-    simp only [bind, Except.bind, pure, Except.pure] at computed
-    split at computed
-    · cases computed
-      exact .refl _
-    split at computed
-    · cases computed
-    split at computed
-    · split at computed
-      · cases computed
-      rename_i credited
-      split at computed
-      · cases computed
-      cases computed
-      exact (registryLifecycle_applyPendingDeposit credited).trans
-        (registryLifecycle_passPendingDeposits (deposits := rest) ‹_›)
-    split at computed
-    · split at computed
-      · cases computed
-      cases computed
-      exact registryLifecycle_passPendingDeposits (deposits := rest) ‹_›
-    split at computed
-    · cases computed
-    split at computed
-    · cases computed
-      exact .refl _
-    split at computed
-    · cases computed
-    rename_i credited
-    split at computed
-    · cases computed
-    cases computed
-    exact (registryLifecycle_applyPendingDeposit credited).trans
-      (registryLifecycle_passPendingDeposits (deposits := rest) ‹_›)
+    {available : Gwei} {deposits : List PendingDeposit} {state : BeaconState preset fork}
+    {processed : Gwei} {count : Nat} {postponed : Array PendingDeposit} {pass}
+    (computed : passPendingDeposits config checks stop nextEpoch available state processed count
+      postponed deposits = .ok pass) : RegistryLifecycle state pass.1.state :=
+  passPendingDeposits_of RegistryLifecycle .refl (fun one two => one.trans two)
+    (fun ok => registryLifecycle_applyPendingDeposit ok) computed
 
 theorem registryLifecycle_processPendingDeposits {electra : .pectra ≤ fork}
     (computed : processPendingDeposits config checks state electra = .ok after) :

@@ -3,8 +3,7 @@ module
 public import EthLib.Engine.ForkchoiceUpdated
 public import EthLib.Base.Except
 public import EthLib.Engine.Proofs.Json
--- Showing that a written field is not `null` unfolds the null test of Lean's JSON.
-import all Lean.Data.Json.Basic
+import EthLib.Base.Proofs.Toolchain.JsonBasic
 
 /-!
 # Proofs: the parameters, the head and the payload attributes of `engine_forkchoiceUpdated`
@@ -82,6 +81,12 @@ No version takes another fork.
 A structure that is not that of the fork, or a timestamp not above the head's, gives `-38003`.
 
 The decoders read back the state, the attributes and the parameters that the writers write.
+
+A JSON value reads as a forkchoice response exactly when it is an object of this form.
+
+It holds a payload status, and its only other member that is not `null` may be an ID.
+
+The status is valid, invalid or syncing, and the ID 8 bytes in lowercase hex or absent.
 
 Attributes sent with a head that the update applies come back at the fork of the next block.
 -/
@@ -1249,7 +1254,7 @@ theorem forkchoiceUpdatedParams_json {fork : Fork} (version : Nat) (state : Fork
     cases attributes with
     | none => exact Or.inl ⟨rfl, rfl⟩
     | some a =>
-      obtain ⟨kvs, hk⟩ : ∃ kvs, payloadAttributesJson a = .obj kvs := ⟨_, rfl⟩
+      obtain ⟨kvs, hk⟩ : ∃ kvs, payloadAttributesJson a = .obj kvs := ⟨_, Base.Toolchain.mkObj_eq _⟩
       exact Or.inr ⟨kvs, hk, by simp [hk]⟩
   unfold forkchoiceUpdatedParamsJson
   rw [forkchoiceUpdatedParams_eq_ok_iff]
@@ -1379,9 +1384,12 @@ theorem forkchoiceUpdatedResponseOfJson_json (s : PayloadStatus) (e : Option Str
       [("payloadStatus", a), ("payloadId", b)].lookup "payloadId" = some b :=
     fun _ _ => rfl
   have l1 : fs.lookup "payloadStatus" = some (Json.payloadStatusJson s e) := by
-    rw [look, k1]; rfl
+    rw [look, k1]
+    simp [Option.filter_some, Json.payloadStatusJson, Base.Toolchain.isNull_mkObj]
   have l2 : fs.lookup "payloadId" = id.map (dataJson ·.toList) := by
-    rw [look, k2]; cases id <;> rfl
+    rw [look, k2]
+    cases id <;> simp [optionJson, dataJson, Option.filter_some, Base.Toolchain.isNull_null,
+      Base.Toolchain.isNull_str]
   have hall : (fs.all (["payloadStatus", "payloadId"].contains ·.1)) = true := by
     rw [List.all_eq_true]
     intro p hm
@@ -1394,6 +1402,68 @@ theorem forkchoiceUpdatedResponseOfJson_json (s : PayloadStatus) (e : Option Str
   unfold forkchoiceUpdatedResponseOfJson forkchoiceUpdatedResponseJson
   simp only [hfs, liftM_ok, ok_bind, hall, ite_true, hf, l2, Json.payloadStatusOfJson_json, h]
   cases id <;> simp [Json.lift, fixed_dataJson, Option.mapM] <;> rfl
+
+/-- A JSON value reads as a forkchoice response exactly when it is an object of the form below.
+
+A member whose value is `null` counts as absent.
+
+Its other members are `payloadStatus` and, if present, `payloadId`.
+
+The value of `payloadStatus` reads as the payload status and the validation error.
+
+The status is valid, invalid or syncing.
+
+The payload ID is `0x` and 16 lowercase hex digits, or absent. -/
+theorem forkchoiceUpdatedResponseOfJson_eq_ok_iff {j : Lean.Json} {s : PayloadStatus}
+    {e : Option String} {id : Option PayloadId} :
+    forkchoiceUpdatedResponseOfJson j = .ok (s, e, id) ↔
+      ∃ fs, fields "forkchoiceUpdatedResponse" j = .ok fs ∧
+        (∀ f ∈ fs, f.1 = "payloadStatus" ∨ f.1 = "payloadId") ∧
+        (∃ status, fs.lookup "payloadStatus" = some status ∧
+          Json.payloadStatusOfJson status = .ok (s, e)) ∧
+        (s.status = .valid ∨ s.status = .invalid ∨ s.status = .syncing) ∧
+        fs.lookup "payloadId" = id.map fun i => .str (hexString i.toList) := by
+  unfold forkchoiceUpdatedResponseOfJson
+  simp only [bind_ok_iff, Json.liftM_eq_ok_iff]
+  refine exists_congr fun fs => and_congr_right fun _ => ?_
+  have allIff : fs.all (["payloadStatus", "payloadId"].contains ·.1) = true ↔
+      ∀ f ∈ fs, f.1 = "payloadStatus" ∨ f.1 = "payloadId" := by
+    simp [List.all_eq_true]
+  have restrictedIff : s.status.restricted = true ↔
+      s.status = .valid ∨ s.status = .invalid ∨ s.status = .syncing := by
+    cases s.status <;> simp [Status.restricted]
+  by_cases hall : fs.all (["payloadStatus", "payloadId"].contains ·.1) = true
+  · rw [and_iff_right (allIff.mp hall)]
+    simp only [hall, ite_true, bind_ok_iff, Json.liftM_eq_ok_iff, field_eq_ok_iff]
+    constructor
+    · rintro ⟨status, hs, ⟨s', e'⟩, hp, h⟩
+      by_cases hr : s'.status.restricted = true
+      · simp only [hr, ite_true, bind_ok_iff,
+          Json.lift_mapM_eq_ok_iff fun _ _ =>
+            Serialization.JsonRpc.fixed_false_eq_ok_iff] at h
+        obtain ⟨i, hi, h⟩ := h
+        cases h
+        exact ⟨⟨status, hs, hp⟩, restrictedIff.mp hr, hi⟩
+      -- A status that the method does not answer fails with an invalid parameter.
+      · simp only [bind, Except.bind] at h
+        split at h
+        · contradiction
+        · cases h
+    · rintro ⟨⟨status, hs, hp⟩, hr, hi⟩
+      refine ⟨status, hs, (s, e), hp, ?_⟩
+      simp only [restrictedIff.mpr hr, ite_true, bind_ok_iff,
+        Json.lift_mapM_eq_ok_iff fun _ _ =>
+          Serialization.JsonRpc.fixed_false_eq_ok_iff]
+      exact ⟨id, hi, rfl⟩
+  -- A member of another name fails with an invalid parameter, never with a response.
+  · constructor
+    · intro h
+      simp only [bind, Except.bind] at h
+      split at h
+      · contradiction
+      · cases h
+    · rintro ⟨members, -⟩
+      exact absurd (allIff.mpr members) hall
 
 /-- The decoder reads back the response of every call, with any validation error. -/
 theorem forkchoiceUpdatedResponseOfJson_call {version : Nat} {params : Lean.Json}

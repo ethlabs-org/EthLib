@@ -1,5 +1,6 @@
 module
 
+public import EthLib.Execution.Proofs.Transactions.Unfold
 public import EthLib.Execution.Proofs.Evm.Call.MissingCode
 public import EthLib.Execution.Proofs.Transactions.Authorization
 public import EthLib.Execution.Proofs.Transactions.Process
@@ -159,7 +160,7 @@ private theorem allCodes_processMessageCall [LawfulGasMeter Meter] {chainId : Na
     (h : processMessageCall (Meter := Meter) chainId message state substate auths paid =
       .ok output) :
     AllCodes output.state := by
-  unfold processMessageCall at h
+  rw [processMessageCall_unfold] at h
   rcases hprep : prepareFirstFrame (Meter := Meter) chainId message state substate auths paid
     with ⟨e, read⟩ | first
   · rw [hprep] at h
@@ -195,6 +196,7 @@ private theorem allCodes_buyGas {env : BlockEnvironment fork} {state state' : Tr
     {sender : Address} {tx : Transaction} (available : AllCodes state)
     (h : buyGas env state sender tx = .ok state') : AllCodes state' := by
   unfold buyGas at h
+  rw [paidBaseFee_empty] at h
   obtain ⟨mid, h1, h2⟩ := Base.bind_ok_iff.mp h
   have vmid : AllCodes mid := available.modifyState (fun _ hf => by cases hf; rfl) h1
   refine vmid.modifyState (fun updated hupd => ?_) h2
@@ -222,6 +224,7 @@ private theorem allCodes_settleGas {env : BlockEnvironment fork}
     (h : settleGas env state sender tx gasLeft refundCounter = .ok (state', used)) :
     AllCodes state' := by
   unfold settleGas at h
+  rw [paidBaseFee_empty] at h
   obtain ⟨mid, h1, h⟩ := Base.bind_ok_iff.mp h
   obtain ⟨paid, h2, h⟩ := Base.bind_ok_iff.mp h
   cases h
@@ -453,7 +456,7 @@ private theorem noMiss_processMessageCall [LawfulGasMeter Meter] {chainId : Nat}
     {auths : List Authorization} {paid : Std.ExtTreeSet Address} (available : AllCodes state) :
     NoMiss (processMessageCall (Meter := Meter) chainId message state substate auths paid) := by
   intro c h
-  unfold processMessageCall at h
+  rw [processMessageCall_unfold] at h
   rcases hprep : prepareFirstFrame (Meter := Meter) chainId message state substate auths paid
     with ⟨e, read⟩ | first
   · rw [hprep] at h
@@ -512,7 +515,7 @@ private theorem noMiss_runTransaction [LawfulGasMeter Meter] {env : BlockEnviron
     (available : HasCodes (TransactionState.ofBlock block)) :
     NoMiss (runTransaction Meter env block included tx) := by
   intro c h
-  unfold runTransaction at h
+  rw [runTransaction_unfold] at h
   rcases Base.bind_eq_error h with h | ⟨target, -, h⟩
   · unfold messageTarget at h
     split at h
@@ -523,6 +526,7 @@ private theorem noMiss_runTransaction [LawfulGasMeter Meter] {env : BlockEnviron
   · obtain ⟨e, he, hee⟩ := Base.mapError_eq_error h
     cases hee
     unfold buyGas at he
+    rw [paidBaseFee_empty] at he
     rcases Base.bind_eq_error he with he | ⟨mid, -, he⟩
     · exact modifyState_ne_missingCode (fun _ _ h => by cases h) c he
     · exact modifyState_ne_missingCode (fun _ _ h => by split at h <;> cases h) c he
@@ -542,6 +546,7 @@ private theorem noMiss_runTransaction [LawfulGasMeter Meter] {env : BlockEnviron
   · obtain ⟨e, he, hee⟩ := Base.mapError_eq_error h
     cases hee
     unfold settleGas at he
+    rw [paidBaseFee_empty] at he
     rcases Base.bind_eq_error he with he | ⟨mid, -, he⟩
     · exact creditEther_ne_missingCode _ _ _ c he
     rcases Base.bind_eq_error he with he | ⟨paid, -, he⟩
@@ -585,7 +590,7 @@ theorem processTransaction_hasCodes {fork : Fork} {env : BlockEnvironment fork}
     (h : processTransaction env block included tx = .ok output)
     (available : HasCodes (TransactionState.ofBlock block)) :
     HasCodes output.state ∧ HasPreCodes output.state := by
-  unfold processTransaction at h
+  rw [processTransaction_unfold] at h
   split at h
   · cases h
   split at h
@@ -599,7 +604,7 @@ theorem processTransaction_ne_missingCode {fork : Fork} {env : BlockEnvironment 
     {block : BlockState} {included : Included} {tx : Transaction}
     (available : HasCodes (TransactionState.ofBlock block)) (codeHash : Hash32) :
     processTransaction env block included tx ≠ .error (.state (.missingCode codeHash)) := by
-  unfold processTransaction
+  rw [processTransaction_unfold]
   split
   · nofun
   split

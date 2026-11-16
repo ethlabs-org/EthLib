@@ -15,12 +15,16 @@ public import EthLib.Execution.Proofs.Rpc.Account
 public import EthLib.Execution.Proofs.Rpc.Call
 public import EthLib.Execution.Proofs.Rpc.Estimate
 public import EthLib.Execution.Proofs.Rpc.Simulate
+public import EthLib.Execution.Proofs.Rpc.SimulateBlocks
+public import EthLib.Execution.Proofs.Rpc.SimulateCalls
 public import EthLib.Execution.Proofs.Rpc.Proof
 public import EthLib.Execution.Proofs.Rpc.AccessList
 public import EthLib.Execution.Proofs.Rpc.Receipt
 public import EthLib.Execution.Proofs.Rpc.Filter
 public import EthLib.Execution.Proofs.Rpc.Fees
 public import EthLib.Execution.Proofs.Rpc.Submit
+public import EthLib.Execution.Proofs.Rpc.Trace
+public import EthLib.Execution.Proofs.Rpc.TraceGas
 public import EthLib.Execution.Proofs.Rpc.Transaction
 public import EthLib.Execution.Proofs.Rpc.TransactionInfo
 

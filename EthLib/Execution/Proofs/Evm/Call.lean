@@ -26,6 +26,8 @@ public import EthLib.Execution.Proofs.Evm.Call.Noninterference
 public import EthLib.Execution.Proofs.Evm.Call.NoninterferenceRun
 public import EthLib.Execution.Proofs.Evm.Call.Nonce
 public import EthLib.Execution.Proofs.Evm.Call.NoncesFit
+public import EthLib.Execution.Proofs.Evm.Call.Observe
+public import EthLib.Execution.Proofs.Evm.Call.ObserveMap
 public import EthLib.Execution.Proofs.Evm.Call.Overflow
 public import EthLib.Execution.Proofs.Evm.Call.Parent
 public import EthLib.Execution.Proofs.Evm.Call.Reads
@@ -33,6 +35,7 @@ public import EthLib.Execution.Proofs.Evm.Call.ReadsGrow
 public import EthLib.Execution.Proofs.Evm.Call.Rebuild
 public import EthLib.Execution.Proofs.Evm.Call.Run
 public import EthLib.Execution.Proofs.Evm.Call.Settled
+public import EthLib.Execution.Proofs.Evm.Call.SimulatedLogs
 public import EthLib.Execution.Proofs.Evm.Call.StateAborts
 public import EthLib.Execution.Proofs.Evm.Call.StateErrors
 public import EthLib.Execution.Proofs.Evm.Call.StaticMessage

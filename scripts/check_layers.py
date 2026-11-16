@@ -6,6 +6,7 @@ import sys
 import tomllib
 from collections import Counter, deque
 from collections.abc import Iterable, Mapping, Sequence, Set as AbstractSet
+from functools import cache
 from pathlib import Path
 from typing import NamedTuple
 
@@ -34,6 +35,8 @@ LAYERS = {
 AGGREGATORS = {"EthLib", "EthLib.Proofs", "EthLib.Exports"}
 # The packages of the Lean toolchain, which a specification and a C export may import.
 TOOLCHAIN = {"Init", "Std", "Lean"}
+# The only modules that may `import all` a module outside EthLib, as BUILDING.md states.
+TOOLCHAIN_HOME = ("EthLib", "Base", "Proofs", "Toolchain")
 # The first tier of Cryptography: hashes and Merkle trees, which import no other part of it.
 FIRST_TIER = ("Hash", "Merkle")
 # The two hash-based signatures, whose modules never reach each other through their imports.
@@ -43,7 +46,8 @@ KIND_NAMES = {"specification": "a specification", "property": "a property", "exp
 KINDS = "coverage/kinds.toml"
 
 HEADER_WORD = re.compile(r"\s*(module|prelude)\b")
-IMPORT = re.compile(r"\s*(?:public\s+)?(meta\s+)?import\s+(?:all\s+)?([^\s]+)")
+IMPORT = re.compile(r"\s*(?:public\s+)?(meta\s+)?import\s+(all\s+)?((?:«[^»]*»|[^\s«])+)")
+MODULE_COMPONENT = re.compile(r"«[^»]*»|[^.]+")
 LIBRARY = re.compile(r"^lean_lib\s+«?([A-Za-z0-9_]+)»?\s+where(.*?)(?=^\S|\Z)", re.M | re.S)
 ROOTS = re.compile(r"roots\s*:=\s*#\[(.*?)\]", re.S)
 LAYER_ROW = re.compile(r"^\|\s*([A-Za-z]+)\s*\|.*\|\s*`EthLib/([A-Za-z]+)/`\s*\|\s*$", re.M)
@@ -55,6 +59,7 @@ class Import(NamedTuple):
     module: str
     meta: bool
     line: int
+    all: bool = False
 
 
 def read_header(text: str) -> tuple[list[Import], str]:
@@ -65,10 +70,10 @@ def read_header(text: str) -> tuple[list[Import], str]:
         if word := HEADER_WORD.match(code, index):
             index = word.end()
         elif match := IMPORT.match(code, index):
-            module = match.group(2).replace("«", "").replace("»", "")
+            module = join_module(module_parts(match.group(3)))
             # `strip_lean` keeps every newline, so the line number is the one in the file.
-            line = code.count("\n", 0, match.start(2)) + 1
-            found.append(Import(module, bool(match.group(1)), line))
+            line = code.count("\n", 0, match.start(3)) + 1
+            found.append(Import(module, bool(match.group(1)), line, bool(match.group(2))))
             index = match.end()
         else:
             return found, code[index:]
@@ -114,7 +119,7 @@ def meta_problems(
         return reaches[module]
 
     # Walk breadth first, and remember an export that reaches each module.
-    exports = [name for name in sorted(graph) if "Exports" in name.split(".")]
+    exports = [name for name in sorted(graph) if "Exports" in module_parts(name)]
     reached = {name: name for name in exports}
     queue = deque(exports)
     while queue:
@@ -138,14 +143,29 @@ def meta_problems(
     return problems
 
 
+def module_parts(module: str) -> list[str]:
+    """The name components, keeping a dot inside a quoted identifier inside its component."""
+    return [
+        part[1:-1] if part.startswith("«") else part for part in MODULE_COMPONENT.findall(module)
+    ]
+
+
+def join_module(parts: Sequence[str]) -> str:
+    """Join name components without treating a literal dot as a directory separator."""
+    return ".".join(
+        f"«{part}»" if "." in part or any(char.isspace() for char in part) else part
+        for part in parts
+    )
+
+
 def module_name(path: Path, root: Path) -> str:
     """The Lean module name of a file under `root`."""
-    return ".".join(path.relative_to(root).with_suffix("").parts)
+    return join_module(path.relative_to(root).with_suffix("").parts)
 
 
 def kind(module: str) -> str:
     """The kind of a module: a property, an export or a specification."""
-    parts = module.split(".")
+    parts = module_parts(module)
     if "Proofs" in parts:
         return "property"
     if "Exports" in parts:
@@ -155,19 +175,19 @@ def kind(module: str) -> str:
 
 def layer(module: str) -> str | None:
     """The layer of an `EthLib` module, or None outside the layers."""
-    parts = module.split(".")
+    parts = module_parts(module)
     return parts[1] if len(parts) > 1 and parts[0] == "EthLib" and parts[1] in LAYERS else None
 
 
 def first_tier(module: str) -> bool:
     """Whether a module sits in the first tier of Cryptography."""
-    parts = module.split(".")
+    parts = module_parts(module)
     return parts[:2] == ["EthLib", "Cryptography"] and len(parts) > 2 and parts[2] in FIRST_TIER
 
 
 def scheme(module: str) -> str | None:
     """The hash-based signature whose tree holds a module, if exactly one does."""
-    found = [name for name in SCHEMES if name in module.split(".")]
+    found = [name for name in SCHEMES if name in module_parts(module)]
     return found[0] if len(found) == 1 else None
 
 
@@ -194,6 +214,122 @@ def scheme_problems(graph: dict[str, list[str]]) -> list[tuple[str, str, str]]:
     return problems
 
 
+def directory_cycles(
+    graph: Mapping[str, Sequence[str]],
+    directory_roots: AbstractSet[str],
+) -> list[tuple[str, str, tuple[str, ...]]]:
+    """
+    Each import in a directory cycle, with one closed path of directories.
+
+    `directory_roots` names root modules whose directories exist, even without Lean files.
+    Directory edges include every module reached through an import, at any depth.
+    """
+    directories = set(directory_roots) | {
+        join_module(parts[:size])
+        for name in graph
+        if layer(name) is not None
+        for parts in [module_parts(name)]
+        for size in range(2, len(parts))
+    }
+
+    @cache
+    def containers(name: str) -> list[str]:
+        # A root such as `BuilderApi.lean` belongs to `BuilderApi/`, when that directory exists.
+        parts = module_parts(name)
+        if name not in directories:
+            parts = parts[:-1]
+        return [join_module(parts[:size]) for size in range(3, len(parts) + 1)]
+
+    reached: dict[str, set[str]] = {}
+    module_layers = {name: layer(name) for name in graph}
+
+    def reachable(name: str) -> set[str]:
+        # Visit descendants before their importer without using Python's recursion stack.
+        stack = [(name, False)]
+        while stack:
+            current, expanded = stack.pop()
+            if expanded:
+                for imported in graph[current]:
+                    if imported in graph:
+                        reached[current].update(reached[imported])
+            elif current not in reached:
+                # Lean rejects module cycles; the mark keeps a broken tree from looping.
+                reached[current] = {imported for imported in graph[current] if imported in graph}
+                stack.append((current, True))
+                stack.extend(
+                    (imported, False) for imported in sorted(reached[current], reverse=True)
+                )
+        return reached[name]
+
+    @cache
+    def targets(name: str, source_layer: str) -> set[str]:
+        return {
+            target
+            for module in {name} | reachable(name)
+            if module_layers[module] == source_layer
+            for target in containers(module)
+        }
+
+    edges: dict[tuple[str, str], list[tuple[str, str]]] = {}
+    directory_graph: dict[str, set[str]] = {}
+    for name in sorted(graph):
+        source_layer = module_layers[name]
+        if source_layer is None:
+            continue
+        for imported in sorted(set(graph[name])):
+            if imported not in graph:
+                continue
+            pairs = []
+            for source in containers(name):
+                # An import inside `source` adds no pair; the line that leaves `source` reports it.
+                if source in containers(imported):
+                    continue
+                for target in sorted(targets(imported, source_layer)):
+                    if (
+                        source == target
+                        or source.startswith(target + ".")
+                        or target.startswith(source + ".")
+                    ):
+                        continue
+                    # Project onto ancestors too: `Evm/Call/` can depend on all of `Blocks/`.
+                    pairs.append((source, target))
+                    directory_graph.setdefault(source, set()).add(target)
+                    directory_graph.setdefault(target, set())
+            if pairs:
+                edges[name, imported] = pairs
+
+    # Cache a breadth-first search from each target, including the predecessor for a witness.
+    searches: dict[str, dict[str, str | None]] = {}
+
+    def predecessors(start: str) -> dict[str, str | None]:
+        if start not in searches:
+            found: dict[str, str | None] = {start: None}
+            queue = deque([start])
+            while queue:
+                current = queue.popleft()
+                for target in sorted(directory_graph[current]):
+                    if target not in found:
+                        found[target] = current
+                        queue.append(target)
+            searches[start] = found
+        return searches[start]
+
+    problems = []
+    for (name, imported), pairs in edges.items():
+        for source, target in pairs:
+            previous = predecessors(target)
+            if source not in previous:
+                continue
+            path = []
+            current: str | None = source
+            while current is not None:
+                path.append(current)
+                current = previous[current]
+            problems.append((name, imported, (source, *reversed(path))))
+            break
+    return problems
+
+
 def external_reached(graph: dict[str, list[str]]) -> dict[str, str]:
     """
     The first module outside EthLib and the toolchain that each property reaches, if any.
@@ -210,7 +346,7 @@ def external_reached(graph: dict[str, list[str]]) -> dict[str, str]:
         # Lean rejects a cycle of imports; the mark only keeps a broken tree from looping.
         found[name] = None
         for imported in graph[name]:
-            package = imported.split(".")[0]
+            package = module_parts(imported)[0]
             if package != "EthLib":
                 reached = None if package in TOOLCHAIN else imported
             elif imported in graph and kind(imported) == "property":
@@ -246,6 +382,42 @@ def reach_problems(graph: dict[str, list[str]]) -> list[tuple[str, str, str]]:
     return problems
 
 
+def toolchain_home(module: str) -> bool:
+    """Whether a module sits in the directory of the modules that read toolchain bodies."""
+    parts = module_parts(module)
+    return (
+        len(parts) > len(TOOLCHAIN_HOME) and tuple(parts[: len(TOOLCHAIN_HOME)]) == TOOLCHAIN_HOME
+    )
+
+
+def import_all_problems(headers: dict[str, list[Import]]) -> list[tuple[str, Import, str]]:
+    """
+    Each `import all` of a module outside EthLib that the rule of BUILDING.md does not allow.
+
+    Each problem is the module that writes the import, the import, and the rule it breaks.
+
+    Such an import reads private declarations and bodies, which a new version can change.
+    So only a module under `EthLib/Base/Proofs/Toolchain/` writes it, and states public theorems.
+    Each outside module has one such module, so a change to it breaks one file.
+    """
+    homes: dict[str, list[str]] = {}
+    problems = []
+    for name in sorted(headers):
+        for found in headers[name]:
+            if not found.all or module_parts(found.module)[0] == "EthLib":
+                continue
+            if toolchain_home(name):
+                homes.setdefault(found.module, []).append(name)
+            else:
+                home = "/".join(TOOLCHAIN_HOME)
+                problems.append((name, found, f"only a module under {home}/ reads its bodies"))
+    for imported, names in sorted(homes.items()):
+        for name in names[1:]:
+            found = next(item for item in headers[name] if item.all and item.module == imported)
+            problems.append((name, found, f"{names[0]} already reads its bodies"))
+    return problems
+
+
 def library_roots(lakefile: str) -> list[str]:
     """The root modules of each `lean_lib` of the lakefile; without `roots`, the library itself."""
     roots = []
@@ -261,7 +433,7 @@ def import_problems(module: str, imported: str) -> list[str]:
     """Why one import breaks a rule, if it does."""
     problems = []
     source, target = kind(module), kind(imported)
-    package = imported.split(".")[0]
+    package = module_parts(imported)[0]
     if package != "EthLib":
         if source != "property" and package not in TOOLCHAIN:
             problems.append(f"{KIND_NAMES[source]} imports only EthLib and the toolchain")
@@ -435,6 +607,27 @@ def check(root: Path) -> list[str]:
                     problems.append(
                         f"{modules[name].relative_to(root)}: imports {imported}, but {problem}"
                     )
+
+    for name, found, rule in import_all_problems(headers):
+        if (name, found.module) in baseline:
+            used.add((name, found.module))
+        else:
+            problems.append(
+                f"{modules[name].relative_to(root)}:{found.line}: "
+                f"imports all of {found.module}, but {rule}"
+            )
+
+    directory_roots = {name for name, path in modules.items() if path.with_suffix("").is_dir()}
+    for name, imported, cycle in directory_cycles(graph, directory_roots):
+        if (name, imported) in baseline:
+            used.add((name, imported))
+        else:
+            line = next(found.line for found in headers[name] if found.module == imported)
+            path = " -> ".join("/".join(module_parts(directory)) + "/" for directory in cycle)
+            problems.append(
+                f"{modules[name].relative_to(root)}:{line}: imports {imported}, "
+                f"which forms a directory cycle: {path}"
+            )
 
     kinds_path = root / KINDS
     kinds = None

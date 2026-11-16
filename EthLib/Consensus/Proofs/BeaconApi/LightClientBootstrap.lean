@@ -6,6 +6,7 @@ public import EthLib.Consensus.Proofs.Containers.State
 public import EthLib.Consensus.Proofs.LightClient.Authenticate
 public import EthLib.Consensus.Proofs.LightClient.Execution
 public import EthLib.Consensus.Proofs.LightClient.FullNode
+public import EthLib.Consensus.Proofs.BeaconApi.Responses
 public import EthLib.Consensus.Proofs.LightClient.Upgrade
 
 /-!
@@ -21,7 +22,19 @@ The sizes of the preset that the block and the state hold must be nonzero.
 
 The state type must be lawful.
 
+A block of a fork from Altair has a light client header.
+
+A state gives the bootstrap of a block when it passes the checks of the bootstrap on that block.
+
+The index of the current sync committee at its slot must also be that of the fork.
+
 The answer itself refuses a block of another fork than the fork of its slot.
+
+It refuses a root whose block or post state the store lacks.
+
+It refuses a root whose post state is before the Altair fork epoch.
+
+Each refusal has code 404, and the JSON answer passes it on unchanged.
 -/
 
 @[expose] public section
@@ -195,6 +208,83 @@ theorem blockToLightClientHeader_beacon {config : Config} {block : SignedBeaconB
     | (obtain ⟨_, -, _, -, rfl⟩ := rest; rfl)
     | (obtain ⟨_, -, _, -, _, -, rfl⟩ := rest; rfl)
 
+/-- A block of a fork from Altair has a light client header, under any schedule.
+
+It needs the sizes of the preset in the block to be nonzero. -/
+theorem blockToLightClientHeader_exists [NeZero preset.BYTES_PER_LOGS_BLOOM.toNat]
+    [NeZero preset.SYNC_COMMITTEE_SIZE.toNat] [NeZero preset.MAX_COMMITTEES_PER_SLOT.toNat]
+    [NeZero preset.PTC_SIZE.toNat] [NeZero preset.INCLUSION_LIST_COMMITTEE_SIZE.toNat]
+    {config : Config} (altair : .altair ≤ fork) (block : SignedBeaconBlock preset fork) :
+    ∃ header, blockToLightClientHeader config block = .ok header := by
+  obtain ⟨bodyRoot, bodyRooted⟩ := SszType.hashTreeRoot_total block.message.body
+  unfold blockToLightClientHeader
+  by_cases gloas : Fork.glamsterdam ≤ fork
+  · obtain ⟨-, proof, -, proved, -⟩ :=
+      computeMerkleProof_isValidNormalizedMerkleBranch block.message.body (by decide)
+        (BeaconBlockBody.nodeRoot_parentBlockHash gloas block.message.body)
+    have long : proof.length = Nat.log2 (executionBranchGindex fork) := by
+      rw [computeMerkleProof_length block.message.body (by decide) proved]
+      simp [executionBranchGindex, gloas]
+    simp [LightClientError.specifiedFork, altair, gloas, bodyRooted, proved, branchVector, long,
+      LightClientError.liftRoot, Except.mapError, bind, Except.bind, pure, Except.pure]
+  · by_cases capella : Fork.shapella ≤ fork
+    · have before : fork < .glamsterdam := Nat.lt_of_not_le gloas
+      obtain ⟨payloadHeader, made⟩ := ExecutionPayload.header_total
+        (block.message.body.executionPayload ⟨Nat.le_trans (by decide) capella, before⟩)
+      obtain ⟨payloadRoot, payloadRooted⟩ := SszType.hashTreeRoot_total
+        (block.message.body.executionPayload ⟨Nat.le_trans (by decide) capella, before⟩)
+      obtain ⟨-, proof, -, proved, -⟩ :=
+        computeMerkleProof_isValidNormalizedMerkleBranch block.message.body (by decide)
+          (BeaconBlockBody.nodeRoot_executionPayload capella before block.message.body
+            payloadRooted)
+      have long : proof.length = Nat.log2 (executionBranchGindex fork) := by
+        rw [computeMerkleProof_length block.message.body (by decide) proved]
+        simp [executionBranchGindex, gloas]
+      simp [LightClientError.specifiedFork, altair, gloas, capella, bodyRooted, made, proved,
+        branchVector, long, LightClientError.liftRoot, Except.mapError, bind, Except.bind, pure,
+        Except.pure]
+      split <;> simp
+    · simp [LightClientError.specifiedFork, altair, gloas, capella, bodyRooted,
+        LightClientError.liftRoot, Except.mapError, bind, Except.bind, pure, Except.pure]
+
+/-- A state gives the bootstrap of a block when it passes the checks of the bootstrap on that block.
+
+It needs the fork to be from Altair, and the state to be from the Altair fork epoch on.
+
+It needs the state to sit at the slot of its latest block header.
+
+It needs that header, with the root of the state, to have the root of the block.
+
+It needs the index of the current sync committee at the slot of the state to be that of the fork.
+
+It needs the state type to be lawful, and the sizes of the preset in the block to be nonzero. -/
+theorem createLightClientBootstrap_exists [NeZero preset.BYTES_PER_LOGS_BLOOM.toNat]
+    [NeZero preset.SYNC_COMMITTEE_SIZE.toNat] [NeZero preset.MAX_COMMITTEES_PER_SLOT.toNat]
+    [NeZero preset.PTC_SIZE.toNat] [NeZero preset.INCLUSION_LIST_COMMITTEE_SIZE.toNat]
+    [LawfulSszType (BeaconState preset fork)] {config : Config} {state : BeaconState preset fork}
+    {block : SignedBeaconBlock preset fork} {header : BeaconBlockHeader}
+    (altair : .altair ≤ fork)
+    (fromAltair : config.ALTAIR_FORK_EPOCH ≤ computeEpochAtSlot preset state.slot)
+    (atBlock : state.slot = state.latestBlockHeader.slot)
+    (headed : state.blockHeader = .ok header)
+    (ofBlock : SszType.hashTreeRoot header = SszType.hashTreeRoot block.message)
+    (layout : currentSyncCommitteeGindexAtSlot (preset := preset) (fork := fork) config
+      state.slot = .ok (currentSyncCommitteeGindex fork)) :
+    ∃ bootstrap, createLightClientBootstrap config state block = .ok bootstrap := by
+  obtain ⟨blockRoot, blockRooted⟩ := SszType.hashTreeRoot_total block.message
+  obtain ⟨lightHeader, madeHeader⟩ :=
+    blockToLightClientHeader_exists (config := config) altair block
+  obtain ⟨node, nodeRooted⟩ := SszType.hashTreeRoot_total (state.currentSyncCommittee altair)
+  have named := currentSyncCommitteeGindexAtSlot_named layout
+  obtain ⟨-, proof, -, proved, -⟩ := computeMerkleProof_isValidNormalizedMerkleBranch state named
+    (BeaconState.nodeRoot_currentSyncCommittee altair state nodeRooted)
+  have long := computeMerkleProof_length state named proved
+  have headerRooted : SszType.hashTreeRoot header = .ok blockRoot := ofBlock.trans blockRooted
+  unfold createLightClientBootstrap
+  simp [LightClientError.specifiedFork, altair, LightClientError.require, eq_true fromAltair,
+    eq_true atBlock, headed, headerRooted, blockRooted, layout, madeHeader, proved, branchVector,
+    long, LightClientError.liftRoot, Except.mapError, bind, Except.bind, pure, Except.pure]
+
 /-- Two layouts of the state whose current sync committee indices have one depth have one index.
 
 The depth of that index differs between the layouts of the state. -/
@@ -291,5 +381,68 @@ theorem bootstrapFor_valid [NeZero preset.BYTES_PER_LOGS_BLOOM.toNat]
     stateRoot, branchVector_toList fits, climbs, LightClientError.liftRoot, Except.mapError,
     LightClientError.require, bind, Except.bind, pure, Except.pure]
   exact ⟨_, rfl⟩
+
+/-- Each refusal of the bootstrap is the error that names the root. -/
+theorem bootstrapFor_error {config : Config} {store : Store preset fork} {root : Root}
+    {error : ErrorMessage} (refused : bootstrapFor config store root = .error error) :
+    error = noBootstrap root := by
+  unfold bootstrapFor at refused
+  split at refused
+  · split at refused
+    · cases refused
+      rfl
+    · simp only [Except.mapError] at refused
+      split at refused <;> cases refused
+      rfl
+  · cases refused
+    rfl
+
+/-- The bootstrap fails only with code 404. -/
+theorem bootstrapFor_error_code {config : Config} {store : Store preset fork} {root : Root}
+    {error : ErrorMessage} (refused : bootstrapFor config store root = .error error) :
+    error.code = 404 := by
+  rw [bootstrapFor_error refused]
+  rfl
+
+/-- The JSON answer of the bootstrap passes each refusal on unchanged. -/
+theorem bootstrapResponse_of_error {config : Config} {store : Store preset fork} {root : Root}
+    {error : ErrorMessage} (refused : bootstrapFor config store root = .error error) :
+    bootstrapResponse config store root = .error error :=
+  versioned_of_error refused
+
+/-- A root whose block or post state the store lacks gets the error with code 404 that names it. -/
+theorem bootstrapFor_of_missing {config : Config} {store : Store preset fork} {root : Root}
+    (missing : store.blocks[root]? = none ∨ store.blockStates[root]? = none) :
+    bootstrapFor config store root = .error (noBootstrap root) := by
+  unfold bootstrapFor
+  split
+  · simp_all
+  · rfl
+
+/-- A root whose post state is before Altair gets the error with code 404 that names it.
+
+It needs the store to hold that state under the root.
+
+It needs the epoch of that state to be before the Altair fork epoch.
+
+It holds for a store of any fork and under any schedule. -/
+theorem bootstrapFor_of_lt_altair {config : Config} {store : Store preset fork}
+    {root : Root} {state : BeaconState preset fork}
+    (heldState : store.blockStates[root]? = some state)
+    (early : computeEpochAtSlot preset state.slot < config.ALTAIR_FORK_EPOCH) :
+    bootstrapFor config store root = .error (noBootstrap root) := by
+  cases held : store.blocks[root]? with
+  | none => exact bootstrapFor_of_missing (.inl held)
+  | some block =>
+    have notStarted : ¬config.ALTAIR_FORK_EPOCH ≤ computeEpochAtSlot preset state.slot :=
+      UInt64.not_le.mpr early
+    by_cases scheduled : config.forkAtEpoch (computeEpochAtSlot preset block.slot) = fork
+    · by_cases altair : .altair ≤ fork
+      · simp [bootstrapFor, held, heldState, scheduled, createLightClientBootstrap,
+          LightClientError.specifiedFork, altair, LightClientError.require, notStarted, bind,
+          Except.bind, Except.mapError]
+      · simp [bootstrapFor, held, heldState, scheduled, createLightClientBootstrap,
+          LightClientError.specifiedFork, altair, bind, Except.bind, Except.mapError]
+    · simp [bootstrapFor, held, heldState, scheduled]
 
 end EthLib.Consensus.BeaconApi

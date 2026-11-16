@@ -1,5 +1,6 @@
 module
 
+public import EthLib.Execution.Proofs.Transactions.Unfold
 public import EthLib.Execution.Proofs.Evm.Call.CreatedRead
 public import EthLib.Execution.Proofs.Evm.Call.ToDelete
 public import EthLib.Execution.Proofs.Evm.Call.Touched
@@ -88,6 +89,7 @@ private theorem reads_settleGas (hfork : .paris ≤ fork) {env : BlockEnvironmen
     (h : settleGas env tx sender t gasLeft refund = .ok (tx', used)) :
     tx.ReadsLe tx' ∧ sender ∈ tx'.accountReads ∧ env.coinbase ∈ tx'.accountReads := by
   unfold settleGas at h
+  rw [paidBaseFee_empty] at h
   obtain ⟨refunded, hrefund, h⟩ := bind_ok_iff.mp h
   obtain ⟨paid, hpay, h⟩ := bind_ok_iff.mp h
   cases h
@@ -167,6 +169,7 @@ private theorem buyGas_agrees {env : BlockEnvironment fork} {tx other bought : T
     ∃ bought', buyGas env other sender t = .ok bought' ∧
       AgreesOn account allStorage slot code bought bought' := by
   unfold buyGas at h ⊢
+  rw [paidBaseFee_empty] at h ⊢
   obtain ⟨mid, hmid, h⟩ := bind_ok_iff.mp h
   obtain ⟨mid', hmid', hagree'⟩ := exists_ok_of_exceptRel (hagree.incrementNonce fork (.inr hs))
     hmid
@@ -198,6 +201,7 @@ private theorem settleGas_agrees (hfork : .paris ≤ fork) {env : BlockEnvironme
     ∃ other', settleGas env other sender t gasLeft refund = .ok (other', used) ∧
       AgreesOn account allStorage slot code tx' other' := by
   unfold settleGas at h ⊢
+  rw [paidBaseFee_empty] at h ⊢
   obtain ⟨refunded, hrefund, h⟩ := bind_ok_iff.mp h
   obtain ⟨paid, hpay, h⟩ := bind_ok_iff.mp h
   cases h
@@ -336,7 +340,7 @@ private theorem createdRead_processMessageCall [LawfulGasMeter Meter] {chainId :
     (h : processMessageCall (Meter := Meter) chainId message state substate auths paid =
       .ok output) :
     CreatedRead output.state := by
-  unfold processMessageCall at h
+  rw [processMessageCall_unfold] at h
   split at h
   · split at h
     · cases h
@@ -366,6 +370,7 @@ private theorem parent_buyGas {env : BlockEnvironment fork} {tx tx' : Transactio
     {sender : Address} {t : Transaction} (h : buyGas env tx sender t = .ok tx') :
     tx'.parent = tx.parent ∧ tx'.createdAccounts = tx.createdAccounts := by
   unfold buyGas at h
+  rw [paidBaseFee_empty] at h
   obtain ⟨mid, hmid, h⟩ := bind_ok_iff.mp h
   exact ⟨(TransactionState.parent_modifyState h).trans (TransactionState.parent_modifyState hmid),
     (TransactionState.createdAccounts_modifyState h).trans
@@ -376,6 +381,7 @@ private theorem hasCodes_buyGas {env : BlockEnvironment fork} {tx tx' : Transact
     {sender : Address} {t : Transaction} (h : buyGas env tx sender t = .ok tx')
     (hcodes : HasCodes tx) : HasCodes tx' := by
   unfold buyGas at h
+  rw [paidBaseFee_empty] at h
   obtain ⟨mid, hmid, h⟩ := bind_ok_iff.mp h
   refine hasCodes_modifyState h (hasCodes_incrementNonce hmid hcodes) fun _ hf => .inl ?_
   split at hf
@@ -402,7 +408,7 @@ theorem runTransaction_agrees {Meter : Type} [GasMeter Meter] [LawfulGasMeter Me
     ∃ output', runTransaction Meter env other included tx = .ok output' ∧
       output' = { output with state := output'.state } ∧
       AgreesOn account allStorage slot code output.state output'.state := by
-  unfold runTransaction at h
+  rw [runTransaction_unfold] at h
   obtain ⟨target, htarget, h⟩ := bind_ok_iff.mp h
   obtain ⟨bought, hbought, h⟩ := bind_ok_iff.mp h
   obtain ⟨message, hmessage, h⟩ := bind_ok_iff.mp h
@@ -464,8 +470,9 @@ theorem runTransaction_agrees {Meter : Type} [GasMeter Meter] [LawfulGasMeter Me
     simp at this
   obtain ⟨final', hfinal', hagreeF⟩ := deleteAccounts_agrees hagreeS hdel htouched hfinal
   refine ⟨⟨final', used, transactionBlockGas fork included.sender tx (out.gasLeft + out.reservoir)
-    out.refund out.stateGasUsed, out.logs, out.error⟩, ?_, rfl, hagreeF⟩
-  unfold runTransaction
+    out.refund out.stateGasUsed, out.logs, out.simulatedLogs, out.error, out.output,
+    gasUsed fork included.sender tx (out.gasLeft + out.reservoir) 0⟩, ?_, rfl, hagreeF⟩
+  rw [runTransaction_unfold]
   dsimp only
   rw [htarget']
   dsimp only [bind, Except.bind]
@@ -498,7 +505,7 @@ theorem processTransaction_agrees (hfork : .paris ≤ fork) {env : BlockEnvironm
     ∃ output', processTransaction env other included tx = .ok output' ∧
       output' = { output with state := output'.state } ∧
       AgreesOn account allStorage slot code output.state output'.state := by
-  unfold processTransaction at h ⊢
+  rw [processTransaction_unfold] at h ⊢
   split at h
   · cases h
   rename_i hhegota
@@ -520,7 +527,7 @@ theorem sender_mem_processTransaction (hfork : .paris ≤ fork) {env : BlockEnvi
       runTransaction Meter env block included tx = .ok output →
         included.sender ∈ output.state.accountReads := by
     intro Meter _ _ output h
-    unfold runTransaction at h
+    rw [runTransaction_unfold] at h
     obtain ⟨target, htarget, h⟩ := bind_ok_iff.mp h
     obtain ⟨bought, hbought, h⟩ := bind_ok_iff.mp h
     obtain ⟨message, hmessage, h⟩ := bind_ok_iff.mp h
@@ -530,7 +537,7 @@ theorem sender_mem_processTransaction (hfork : .paris ≤ fork) {env : BlockEnvi
     cases h
     exact (readsLe_deleteAccounts (mapError_ok_iff.mp hfinal)).accountReads _
       (reads_settleGas hfork (mapError_ok_iff.mp hsettle)).2.1
-  unfold processTransaction at h
+  rw [processTransaction_unfold] at h
   split at h
   · cases h
   split at h

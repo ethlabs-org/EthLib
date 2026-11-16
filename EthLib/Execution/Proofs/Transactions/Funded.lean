@@ -1,5 +1,6 @@
 module
 
+public import EthLib.Execution.Proofs.Transactions.Unfold
 public import EthLib.Execution.Proofs.Evm.Call.Funded
 public import EthLib.Execution.Proofs.Transactions.Process
 import EthLib.Execution.Proofs.Transactions.Inclusion
@@ -101,6 +102,7 @@ private theorem buyGas_ok {env : BlockEnvironment fork} {state : TransactionStat
   | error e =>
     exfalso
     unfold buyGas at hb
+    rw [paidBaseFee_empty] at hb
     obtain ⟨mid, hmid⟩ := State.TransactionState.incrementNonce_isOk fork state sender
     simp only [hmid, bind, Except.bind] at hb
     have hf := State.TransactionState.modifyState_eq_error.mp hb
@@ -309,7 +311,7 @@ theorem processMessageCall_ne_insufficientBalance [LawfulGasMeter Meter]
     processMessageCall (Meter := Meter) chainId message state substate auths paid ≠
       .error (.state (.insufficientBalance address)) := by
   intro h
-  unfold processMessageCall at h
+  rw [processMessageCall_unfold] at h
   rcases hprep : prepareFirstFrame (Meter := Meter) chainId message state substate auths paid
     with ⟨e, read⟩ | first
   · rw [hprep] at h
@@ -341,7 +343,7 @@ private theorem runTransaction_ne_insufficientBalance [LawfulGasMeter Meter]
     runTransaction Meter env block included tx ≠
       .error (.state (.insufficientBalance address)) := by
   intro h
-  unfold runTransaction at h
+  rw [runTransaction_unfold] at h
   rcases Base.bind_eq_error h with h | ⟨target, -, h⟩
   · unfold messageTarget at h
     split at h
@@ -383,6 +385,7 @@ private theorem runTransaction_ne_insufficientBalance [LawfulGasMeter Meter]
   · obtain ⟨e, he, hee⟩ := Base.mapError_eq_error h
     cases hee
     unfold settleGas at he
+    rw [paidBaseFee_empty] at he
     rcases Base.bind_eq_error he with he | ⟨mid, -, he⟩
     · exact creditEther_ne_insufficientBalance _ _ _ _ he
     rcases Base.bind_eq_error he with he | ⟨paid, -, he⟩
@@ -411,7 +414,7 @@ theorem processTransaction_ne_insufficientBalance {fork : Fork} {env : BlockEnvi
   have funds := checkInclusion_no_overdraw checked
   obtain ⟨-, -, -, hBlob, -, -, -, hPrice, -⟩ := checkInclusion_ok checked
   rw [hPrice, hBlob] at funds
-  unfold processTransaction
+  rw [processTransaction_unfold]
   split
   · nofun
   split

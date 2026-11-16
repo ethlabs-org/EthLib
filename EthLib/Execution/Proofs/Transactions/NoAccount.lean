@@ -1,5 +1,6 @@
 module
 
+public import EthLib.Execution.Proofs.Transactions.Unfold
 public import EthLib.Execution.Proofs.Evm.Call.NoAccount
 public import EthLib.Execution.Proofs.Transactions.Process
 
@@ -91,6 +92,7 @@ private theorem buyGas_ne_noAccount (env : BlockEnvironment fork) (state : Trans
     buyGas env state sender tx ≠ .error (.noAccount other) := by
   intro h
   unfold buyGas at h
+  rw [paidBaseFee_empty] at h
   obtain ⟨mid, hmid⟩ := State.TransactionState.incrementNonce_isOk fork state sender
   simp only [hmid, bind, Except.bind] at h
   refine modifyState_ne_noAccount (fun _ h => ?_) h
@@ -102,6 +104,7 @@ private theorem settleGas_ne_noAccount (env : BlockEnvironment fork) (state : Tr
     settleGas env state sender tx gasLeft refund ≠ .error (.noAccount other) := by
   intro he
   unfold settleGas at he
+  rw [paidBaseFee_empty] at he
   rcases Base.bind_eq_error he with he | ⟨mid, -, he⟩
   · exact creditEther_ne_noAccount _ _ _ _ he
   rcases Base.bind_eq_error he with he | ⟨paid, -, he⟩
@@ -272,7 +275,7 @@ theorem processMessageCall_ne_noAccount [LawfulGasMeter Meter]
     processMessageCall (Meter := Meter) chainId message state substate auths paid ≠
       .error (.state (.noAccount address)) := by
   intro h
-  unfold processMessageCall at h
+  rw [processMessageCall_unfold] at h
   rcases hprep : prepareFirstFrame (Meter := Meter) chainId message state substate auths paid
     with ⟨e, read⟩ | first
   · rw [hprep] at h
@@ -299,7 +302,7 @@ private theorem runTransaction_ne_noAccount [LawfulGasMeter Meter]
     (address : Address) :
     runTransaction Meter env block included tx ≠ .error (.state (.noAccount address)) := by
   intro h
-  unfold runTransaction at h
+  rw [runTransaction_unfold] at h
   rcases Base.bind_eq_error h with h | ⟨target, htarget, h⟩
   · unfold messageTarget at h
     split at h
@@ -356,7 +359,7 @@ end
 theorem processTransaction_ne_noAccount {fork : Fork} {env : BlockEnvironment fork}
     {block : BlockState} {included : Included} {tx : Transaction} (address : Address) :
     processTransaction env block included tx ≠ .error (.state (.noAccount address)) := by
-  unfold processTransaction
+  rw [processTransaction_unfold]
   split
   · nofun
   split

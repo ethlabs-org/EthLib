@@ -1,5 +1,6 @@
 module
 
+public import EthLib.Execution.Proofs.Transactions.Unfold
 public import EthLib.Base.Proofs.MapM
 public import EthLib.Execution.Proofs.Transactions.Authorization
 public import EthLib.Execution.Proofs.Transactions.Settlement
@@ -136,7 +137,7 @@ theorem startAccessedAddresses_of_lt_berlin (h : fork < .berlin) :
 theorem processTransaction_of_hegota_le {env : BlockEnvironment fork}
     {block : State.BlockState} {included : Included} (h : .hegota ≤ fork) :
     processTransaction env block included tx = .error (.forkNotYetSpecified fork) := by
-  simp only [processTransaction, h, ↓reduceIte]
+  simp only [processTransaction_unfold, h, ↓reduceIte]
 
 /-- A transaction that runs is from a fork before Hegotá. -/
 theorem processTransaction_lt_hegota {env : BlockEnvironment fork} {block : State.BlockState}
@@ -153,7 +154,7 @@ theorem processTransaction_of_glamsterdam {env : BlockEnvironment fork}
     processTransaction env block included tx =
       runTransaction StateGasMeter env block included tx := by
   have hpre : ¬Fork.hegota ≤ fork := Nat.not_le_of_lt hlt
-  simp only [processTransaction, hpre, h, ↓reduceIte, GE.ge]
+  simp only [processTransaction_unfold, hpre, h, ↓reduceIte, GE.ge]
 
 /-! ## The first frame -/
 
@@ -174,7 +175,7 @@ theorem processMessageCall_of_halt {e : EvmError} {read : State.TransactionState
     (halts : e.aborts = false) :
     processMessageCall (Meter := Meter) chainId message state substate auths paid =
       .ok (.ofHalt (state.withReadsOf read) message.reservoir e) := by
-  simp only [processMessageCall, h, halts, Bool.false_eq_true, ↓reduceIte]
+  simp only [processMessageCall_unfold, h, halts, Bool.false_eq_true, ↓reduceIte]
 
 omit [LawfulGasMeter Meter] in
 /-- The first frame of a call that moves no ether, after its authorizations end with `done`.
@@ -294,7 +295,7 @@ theorem processTransaction_of_lt_glamsterdam {env : BlockEnvironment fork}
     processTransaction env block included tx = runTransaction Nat env block included tx := by
   have hpre : ¬Fork.glamsterdam ≤ fork := Nat.not_le_of_lt h
   have hlate : ¬Fork.hegota ≤ fork := fun hh => hpre (Nat.le_trans (by decide) hh)
-  simp only [processTransaction, hlate, hpre, ↓reduceIte, GE.ge]
+  simp only [processTransaction_unfold, hlate, hpre, ↓reduceIte, GE.ge]
 
 /-! ## The meter of the first frame -/
 
@@ -423,7 +424,7 @@ private theorem processMessageCall_reservoir {chainId : Nat} {message : Message 
     (h : processMessageCall (Meter := Nat) chainId { message with reservoir := 0 } state substate
       auths paid = .ok output) :
     output.reservoir = 0 := by
-  unfold processMessageCall at h
+  rw [processMessageCall_unfold] at h
   split at h
   · split at h
     · cases h
@@ -482,7 +483,7 @@ theorem runTransaction_eq_ok {env : BlockEnvironment fork} {block : State.BlockS
     (h : runTransaction Meter env block included tx = .ok out) :
     ∃ target bought message output settled,
       TransactionRun Meter env block included tx out target bought message output settled := by
-  unfold runTransaction at h
+  rw [runTransaction_unfold] at h
   obtain ⟨target, hTarget, h⟩ := Base.bind_ok_iff.mp h
   obtain ⟨bought, hBought, h⟩ := Base.bind_ok_iff.mp h
   obtain ⟨message, hMessage, h⟩ := Base.bind_ok_iff.mp h
@@ -751,7 +752,7 @@ theorem processTransaction_blockGas_blob {env : BlockEnvironment fork}
     {block : State.BlockState} {included : Included} {out : TransactionOutput}
     (h : processTransaction env block included tx = .ok out) :
     out.blockGas.blob = Fees.BlobBaseFee.calculateTotalBlobGas tx := by
-  unfold processTransaction at h
+  rw [processTransaction_unfold] at h
   split at h
   · cases h
   · have hBlock : ∀ {Meter : Type} [GasMeter Meter] [LawfulGasMeter Meter],
@@ -793,5 +794,42 @@ theorem processTransaction_blockGas_state_of_lt {env : BlockEnvironment fork}
     out.blockGas.state = 0 := by
   obtain ⟨_, _, _, output, _, -, -, -, -, hBlock, -, -⟩ := processTransaction_eq_ok_of_lt hlt h
   rw [hBlock, transactionBlockGas_of_lt hlt]
+
+/-- A refund never raises the gas used: the gas used is at most the gas used with no refund. -/
+theorem gasUsed_le_gasUsed_zero (fork : Fork) (sender : Address) (tx : Transaction)
+    (gasLeft refundCounter : Nat) :
+    gasUsed fork sender tx gasLeft refundCounter ≤ gasUsed fork sender tx gasLeft 0 := by
+  unfold gasUsed gasRefund
+  simp only [Nat.min_zero, Nat.sub_zero]
+  split
+  · exact Nat.max_le.mpr ⟨Nat.le_trans (Nat.sub_le _ _) (Nat.le_max_left _ _), Nat.le_max_right _ _⟩
+  · exact Nat.sub_le _ _
+
+/-- A transaction that runs used at most the gas that it used before its refund.
+
+That holds for every map of the precompiles and every lifted rule of a simulation. -/
+theorem runTransaction_gasUsed_le {env : BlockEnvironment fork} {block : State.BlockState}
+    {included : Included} {out : TransactionOutput} {precompiles : Address → Option Address}
+    {lifted : LiftedRules}
+    (h : runTransaction Meter env block included tx precompiles lifted = .ok out) :
+    out.gasUsed ≤ out.gasBeforeRefund := by
+  rw [runTransaction_unfold] at h
+  obtain ⟨_, -, h⟩ := Base.bind_ok_iff.mp h
+  obtain ⟨_, -, h⟩ := Base.bind_ok_iff.mp h
+  obtain ⟨_, -, h⟩ := Base.bind_ok_iff.mp h
+  obtain ⟨output, -, h⟩ := Base.bind_ok_iff.mp h
+  obtain ⟨⟨settled, used⟩, hSettle, h⟩ := Base.bind_ok_iff.mp h
+  obtain ⟨_, -, h⟩ := Base.bind_ok_iff.mp h
+  cases h
+  have hUsed : used = gasUsed fork included.sender tx (output.gasLeft + output.reservoir)
+      output.refund := by
+    have hs := Base.mapError_ok_iff.mp hSettle
+    unfold settleGas at hs
+    obtain ⟨_, -, hs⟩ := Base.bind_ok_iff.mp hs
+    obtain ⟨_, -, hs⟩ := Base.bind_ok_iff.mp hs
+    cases hs
+    rfl
+  rw [hUsed]
+  exact gasUsed_le_gasUsed_zero _ _ _ _ _
 
 end EthLib.Execution.Transactions

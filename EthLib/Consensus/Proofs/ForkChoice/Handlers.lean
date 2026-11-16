@@ -10,8 +10,6 @@ public import EthLib.Consensus.Proofs.Time
 
 No handler lowers the epoch of the justified or of the finalized checkpoint.
 
-Nor does a block together with the votes that it carries.
-
 Each of these checkpoints stays as it was, or changes to one at a greater epoch.
 
 A tick sets the clock to its time, and the catch-up loop never stalls.
@@ -1158,6 +1156,44 @@ theorem validateOnBlock_merge {checks : SignatureChecks} {sources : BlockSources
   obtain ⟨_, _, _, _, _, checked, _⟩ := valid
   exact checked
 
+/-- Block validation transfers to the same parent state when the receiver passes local checks.
+
+Data availability, the transition and the merge check use the shared sources. -/
+theorem validateOnBlock_of_parent_state {checks : SignatureChecks}
+    {sources : BlockSources preset fork} {receiver : Store preset fork}
+    {signed : SignedBeaconBlock preset fork} {root : Root}
+    {state pre : BeaconState preset fork}
+    (valid : store.validateOnBlock config checks sources signed root = .ok state)
+    (parent : store.blockStates[signed.message.parentRoot]? = some pre)
+    (otherParent : receiver.blockStates[signed.message.parentRoot]? = some pre)
+    (payload : receiver.validateParentPayload signed.message = .ok ())
+    {current finalizedSlot : Slot}
+    (clock : receiver.getCurrentSlot config = .ok current)
+    (notFuture : signed.message.slot ≤ current)
+    (start : computeStartSlotAtEpoch preset receiver.finalizedCheckpoint.epoch = .ok finalizedSlot)
+    (above : finalizedSlot < signed.message.slot)
+    (ancestor : receiver.getCheckpointBlock signed.message.parentRoot
+      receiver.finalizedCheckpoint.epoch = .ok receiver.finalizedCheckpoint.root) :
+    receiver.validateOnBlock config checks sources signed root = .ok state := by
+  obtain ⟨p, pFound, _, available, transition⟩ := validateOnBlock_ok valid
+  have same : p = pre := Option.some.inj (pFound.symm.trans parent)
+  subst p
+  have merge := fun (bellatrix : fork = .bellatrix)
+      (range : .bellatrix ≤ fork ∧ fork < .glamsterdam)
+      (h : isMergeTransitionBlock pre signed.message.body range = true) =>
+    validateOnBlock_merge bellatrix range parent h valid
+  unfold validateOnBlock
+  simp only [blockState, otherParent, pure, Except.pure, bind, Except.bind, payload, clock,
+    UInt64.not_lt.mpr notFuture, ↓reduceIte, start, Except.mapError,
+    UInt64.not_le.mpr above, ancestor, ne_eq, not_true_eq_false, available, transition]
+  split
+  · rename_i bellatrix
+    split
+    · rename_i h
+      rw [merge bellatrix _ h]
+    · rfl
+  · rfl
+
 /-- A new block enters the store with the state after it, and no epoch falls.
 
 That state is the one the state transition computes from the state after the parent. -/
@@ -1297,45 +1333,34 @@ theorem onBlock_sameClock {checks : SignatureChecks} {sources : BlockSources pre
     · rw [third.1, updateCheckpoints_timeMs, second.1, first.1]
     · rw [third.2, updateCheckpoints_genesisTimeMs, second.2, first.2]
 
-/-- A property that a block, each attestation from it and each slashing in it keep is kept.
-
-It is kept by the block with its votes. -/
-theorem onBlockWithVotes_preserves {P : Store preset fork → Prop} {checks : SignatureChecks}
-    {sources : BlockSources preset fork} {signed : SignedBeaconBlock preset fork}
-    {after : Store preset fork}
-    (block : ∀ {s s'}, P s → s.onBlock config checks sources signed = .ok s' → P s')
-    (attestation : ∀ {s s'} (a : Attestation preset fork), P s →
-      s.onAttestation config checks a true = .ok s' → P s')
-    (slashing : ∀ {s s'} (sl : AttesterSlashing preset fork), P s →
-      s.onAttesterSlashing config checks sl = .ok s' → P s')
-    (holds : P store) (added : store.onBlockWithVotes config checks sources signed = .ok after) :
-    P after := by
-  unfold onBlockWithVotes at added
-  simp only [bind_ok_iff, ← Array.foldlM_toList] at added
-  obtain ⟨blocked, blockOk, voted, attested, slashed⟩ := added
-  have votes := foldlM_ok_invariant P (fun _ a _ h step => attestation a h step)
-    (block holds blockOk) attested
-  exact foldlM_ok_invariant P (fun _ sl _ h step => slashing sl h step) votes slashed
-
-/-- A block and the votes that it carries keep each checkpoint, or move it to a greater epoch. -/
-theorem onBlockWithVotes_checkpointsAdvance {checks : SignatureChecks}
-    {sources : BlockSources preset fork}
-    {signed : SignedBeaconBlock preset fork} {after : Store preset fork}
-    (added : store.onBlockWithVotes config checks sources signed = .ok after) :
-    store.CheckpointsAdvance after :=
-  onBlockWithVotes_preserves (P := store.CheckpointsAdvance) (fun le step => le.trans
-    (onBlock_checkpointsAdvance step)) (fun _ le step => le.trans (onAttestation_frame step).1)
-    (fun _ le step => le.trans (onAttesterSlashing_frame step).1) (.refl _) added
-
-/-- A block with the votes that it carries keeps the clock. -/
-theorem onBlockWithVotes_sameClock {checks : SignatureChecks}
-    {sources : BlockSources preset fork} {signed : SignedBeaconBlock preset fork}
-    {after : Store preset fork}
-    (added : store.onBlockWithVotes config checks sources signed = .ok after) :
-    SameClock store after :=
-  onBlockWithVotes_preserves (P := SameClock store) (fun same step => same.trans
-    (onBlock_sameClock step)) (fun _ same step => same.trans (onAttestation_sameClock step))
-    (fun _ same step => same.trans (onAttesterSlashing_sameClock step)) (.refl _) added
+/-- One more vote keeps each latest vote, or replaces it with a vote of a later rank. -/
+theorem recordVote_rank {equivocating : List ValidatorIndex} {message : LatestMessage fork}
+    {messages : Std.TreeMap ValidatorIndex (LatestMessage fork)} {i j : ValidatorIndex}
+    {old : LatestMessage fork} (found : messages[j]? = some old) :
+    ∃ m, (recordVote equivocating message messages i)[j]? = some m ∧ old.rank ≤ m.rank := by
+  unfold recordVote
+  split
+  · exact ⟨old, found, UInt64.le_refl _⟩
+  · split
+    · rename_i previous held
+      split
+      · rename_i later
+        by_cases same : i = j
+        · subst same
+          rw [found] at held
+          cases held
+          exact ⟨message, by simp, UInt64.le_of_lt later⟩
+        · exact ⟨old, by simpa [Std.TreeMap.getElem?_insert, same] using found,
+            UInt64.le_refl _⟩
+      · exact ⟨old, found, UInt64.le_refl _⟩
+    · rename_i absent
+      have other : i ≠ j := by
+        intro same
+        subst same
+        rw [found] at absent
+        cases absent
+      exact ⟨old, by simpa [Std.TreeMap.getElem?_insert, other] using found,
+        UInt64.le_refl _⟩
 
 /-- A vote keeps every other vote at or after its rank at or after it. -/
 theorem recordVote_keeps {equivocating : List ValidatorIndex} {message : LatestMessage fork}
@@ -1343,24 +1368,23 @@ theorem recordVote_keeps {equivocating : List ValidatorIndex} {message : LatestM
     {old : LatestMessage fork}
     (found : messages[j]? = some old) (late : message.rank ≤ old.rank) :
     ∃ m, (recordVote equivocating message messages i)[j]? = some m ∧ message.rank ≤ m.rank := by
-  unfold recordVote
-  split
-  · exact ⟨old, found, late⟩
-  · split
-    · split
-      · by_cases same : i = j
-        · subst same
-          exact ⟨message, by simp, UInt64.le_refl _⟩
-        · refine ⟨old, ?_, late⟩
-          rw [Std.TreeMap.getElem?_insert]
-          simp [same, found]
-      · exact ⟨old, found, late⟩
-    · by_cases same : i = j
-      · subst same
-        exact ⟨message, by simp, UInt64.le_refl _⟩
-      · refine ⟨old, ?_, late⟩
-        rw [Std.TreeMap.getElem?_insert]
-        simp [same, found]
+  obtain ⟨m, held, later⟩ := recordVote_rank (i := i) (message := message)
+    (equivocating := equivocating) found
+  exact ⟨m, held, UInt64.le_trans late later⟩
+
+/-- A run of votes keeps each latest vote, or replaces it with a vote of a later rank. -/
+theorem foldl_recordVote_rank {equivocating : List ValidatorIndex} {message : LatestMessage fork}
+    (indices : List ValidatorIndex) {messages : Std.TreeMap ValidatorIndex (LatestMessage fork)}
+    {j : ValidatorIndex} {old : LatestMessage fork} (found : messages[j]? = some old) :
+    ∃ m, (indices.foldl (recordVote equivocating message) messages)[j]? = some m ∧
+      old.rank ≤ m.rank := by
+  induction indices generalizing messages old with
+  | nil => exact ⟨old, found, UInt64.le_refl _⟩
+  | cons i rest ih =>
+    obtain ⟨m, held, later⟩ := recordVote_rank (i := i) (message := message)
+      (equivocating := equivocating) found
+    obtain ⟨latest, held', later'⟩ := ih held
+    exact ⟨latest, held', UInt64.le_trans later later'⟩
 
 /-- After the vote of a validator that does not equivocate, its vote is at or after the rank. -/
 theorem recordVote_self {equivocating : List ValidatorIndex} {message : LatestMessage fork}
@@ -1384,27 +1408,14 @@ theorem foldl_recordVote {equivocating : List ValidatorIndex} {message : LatestM
     {i : ValidatorIndex} (voted : i ∈ indices) (honest : i ∉ equivocating) :
     ∃ m, (indices.foldl (recordVote equivocating message) messages)[i]? = some m ∧
       message.rank ≤ m.rank := by
-  -- A vote at or after the rank survives the rest of the run.
-  have keep : ∀ (rest : List ValidatorIndex)
-      (messages : Std.TreeMap ValidatorIndex (LatestMessage fork))
-      (old : LatestMessage fork), messages[i]? = some old → message.rank ≤ old.rank →
-      ∃ m, (rest.foldl (recordVote equivocating message) messages)[i]? = some m ∧
-        message.rank ≤ m.rank := by
-    intro rest
-    induction rest with
-    | nil => exact fun messages old found late => ⟨old, found, late⟩
-    | cons j rest ih =>
-      intro messages old found late
-      obtain ⟨m, found', late'⟩ :=
-        recordVote_keeps (i := j) (equivocating := equivocating) found late
-      exact ih _ m found' late'
   induction indices generalizing messages with
   | nil => cases voted
   | cons j rest ih =>
     rw [List.foldl_cons]
     rcases List.mem_cons.mp voted with rfl | voted
     · obtain ⟨m, found, late⟩ := recordVote_self (message := message) (messages := messages) honest
-      exact keep rest _ m found late
+      obtain ⟨latest, held, later⟩ := foldl_recordVote_rank rest found
+      exact ⟨latest, held, UInt64.le_trans late later⟩
     · exact ih _ voted
 
 /-- One vote leaves a vote as it was, or sets it to the new vote for the voter. -/

@@ -10,7 +10,8 @@ public import EthLib.Execution.Rpc.AccessList
 public import EthLib.Execution.Rpc.Filter
 public import EthLib.Execution.Rpc.Proof
 public import EthLib.Execution.Rpc.Request
-public import EthLib.Execution.Rpc.Simulate
+public import EthLib.Execution.Rpc.Simulate.Blocks
+public import EthLib.Execution.Rpc.TraceView
 public import EthLib.Execution.Rpc.TransactionInfo
 
 /-!
@@ -252,6 +253,34 @@ def call (v : ChainView) (method : String) (params : List Json) : Except RpcErro
   | "debug_getRawReceipts" => oneParam params fun b => do
     let block ← readParam (blockNumberOrTagOrHash "block") b
     listJson (dataJson ·.toList) <$> v.rawReceipts block
+  | "debug_traceTransaction" => match params with
+    | [h] | [h, .null] => do
+      transactionTraceJson <$> v.traceTransactionByHash {}
+        (← readParam (hash32 "transaction hash") h)
+    | [h, c] => do
+      let config ← readParam traceConfig c
+      transactionTraceJson <$> v.traceTransactionByHash config
+        (← readParam (hash32 "transaction hash") h)
+    | [] => .error (RpcError.invalidParams "missing parameter")
+    | _ => .error (RpcError.invalidParams "the method takes two parameters")
+  | "debug_traceBlockByNumber" => match params with
+    | [b] | [b, .null] => do
+      blockTraceJson <$> v.traceBlockByParam {} (← readParam (blockNumberOrTag "block") b)
+    | [b, c] => do
+      let config ← readParam traceConfig c
+      blockTraceJson <$> v.traceBlockByParam config (← readParam (blockNumberOrTag "block") b)
+    | [] => .error (RpcError.invalidParams "missing parameter")
+    | _ => .error (RpcError.invalidParams "the method takes two parameters")
+  | "debug_traceBlockByHash" => match params with
+    | [h] | [h, .null] => do
+      let block := BlockParam.hash (← readParam (hash32 "block hash") h) false
+      blockTraceJson <$> v.traceBlockByParam {} block
+    | [h, c] => do
+      let config ← readParam traceConfig c
+      let block := BlockParam.hash (← readParam (hash32 "block hash") h) false
+      blockTraceJson <$> v.traceBlockByParam config block
+    | [] => .error (RpcError.invalidParams "missing parameter")
+    | _ => .error (RpcError.invalidParams "the method takes two parameters")
   | _ => .error (methodNotFound.toRpcError (some (.str method)))
 
 /-- The response of the view to a request. -/
@@ -282,11 +311,13 @@ def answerJson (v : ChainView) (j : Json) : Option Json :=
     | .error reason => { id := idOf j, outcome := .error (RpcError.invalidRequest reason) }
     | .ok r => v.answer r
 
-/-- The response of the view to the text of a request or a batch, as JSON, or none.
+/-- The response of the view to a request or a batch, as JSON, or none.
+
+The request is the JSON that its text holds, or the reason that the text is not JSON.
 
 A batch gets the array of the responses to its requests, and none when all are notifications. -/
-def serve (v : ChainView) (text : String) : Option Json :=
-  match Json.parse text with
+def serve (v : ChainView) (request : Except String Json) : Option Json :=
+  match request with
   | .error reason => some <| responseJson
       { id := .null, outcome := .error (parseError.toRpcError (some (.str reason))) }
   | .ok (.arr items) =>
