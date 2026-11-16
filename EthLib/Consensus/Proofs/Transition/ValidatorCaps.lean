@@ -3471,6 +3471,26 @@ private theorem CapStep.step {s t : ForkedBeaconState preset}
     obtain ⟨last, assigned, _⟩ := CapStep.upgrades activation compounding upgrades
     exact ⟨first.trans last, assigned early ∘ partials⟩
 
+private theorem minimum_cap
+    (activation : preset.MAX_EFFECTIVE_BALANCE ≤ preset.MIN_ACTIVATION_BALANCE)
+    (compounding : preset.MIN_ACTIVATION_BALANCE ≤ preset.MAX_EFFECTIVE_BALANCE_ELECTRA)
+    {h : Fork} (v : Validator) :
+    preset.MAX_EFFECTIVE_BALANCE ≤ withdrawalMaxEffectiveBalance preset h v := by
+  unfold withdrawalMaxEffectiveBalance getMaxEffectiveBalance
+  split
+  · split
+    · exact UInt64.le_trans activation compounding
+    · exact activation
+  · exact UInt64.le_refl _
+
+private theorem genesis_assigned_queues {g : ForkedBeaconState preset}
+    (genesis : Genesis (config := config) (checks := checks) g) :
+    AssignedPartials g.state ∧ AssignedTargets g.state ∧ AssignedProposers g.state := by
+  obtain ⟨_, _, _, initialized⟩ := genesis
+  have before := (initializeBeaconStateFromEth1_ok initialized).1
+  refine ⟨?_, ?_, ?_⟩ <;> intro fork
+  all_goals exact (Nat.not_le_of_lt before (Nat.le_trans (by decide) fork)).elim
+
 private theorem CapStep.run_of {g s t : ForkedBeaconState preset}
     (run : Run config checks s t)
     (shared : Run config checks g s)
@@ -3514,26 +3534,11 @@ private theorem CapStep.run_of {g s t : ForkedBeaconState preset}
       have held := funded genesis aligned finiteBefore
       have genesisWitness := genesis
       obtain ⟨_, _, _, initialized⟩ := genesisWitness
-      have initialPartials : AssignedPartials g.state := by
-        intro electra
-        have before := (initializeBeaconStateFromEth1_ok initialized).1
-        exact (Nat.not_le_of_lt before (Nat.le_trans (by decide) electra)).elim
-      have initialTargets : AssignedTargets g.state := by
-        intro electra
-        have before := (initializeBeaconStateFromEth1_ok initialized).1
-        exact (Nat.not_le_of_lt before (Nat.le_trans (by decide) electra)).elim
+      obtain ⟨initialPartials, initialTargets, _⟩ := genesis_assigned_queues genesis
       have valid := invariant (initializeBeaconStateFromEth1_invariant initialized).2
       have capped := first.capped genesis.effectiveBalance_capped
       have targets := first.targets (Nat.lt_of_le_of_lt last.forks early) initialTargets
       have assigned := assigned initialPartials
-      have caps {h : Fork} (v : Validator) :
-          preset.MAX_EFFECTIVE_BALANCE ≤ withdrawalMaxEffectiveBalance preset h v := by
-        unfold withdrawalMaxEffectiveBalance getMaxEffectiveBalance
-        split
-        · split
-          · exact UInt64.le_trans activation compounding
-          · exact activation
-        · exact UInt64.le_refl _
       cases step with
       | block engine signed due ok =>
         exact (CapStep.block compounding (applySignedBlock_ok ok).2.1).2.2.1 early
@@ -3550,7 +3555,7 @@ private theorem CapStep.run_of {g s t : ForkedBeaconState preset}
         obtain ⟨upStep, _, upFunded, _⟩ := CapStep.upgrades activation compounding upgrades
         exact upFunded early (slotStep.capped capped)
           (slotFunded (Nat.lt_of_le_of_lt upStep.forks early) activation aligned.1
-            caps valid.balancesMatch targets held)
+            (minimum_cap activation compounding) valid.balancesMatch targets held)
 
 private theorem CapStep.run {s t : ForkedBeaconState preset}
     (run : Run config checks s t)
@@ -3901,34 +3906,15 @@ private theorem preKeyCharge_run {g x u : ForkedBeaconState preset}
       intro finiteB
       have finiteA := UInt64.lt_of_le_of_lt last.forward finiteB
       have held := funded genesis aligned finiteA
+      obtain ⟨initialPartials, initialTargets, initialProposers⟩ := genesis_assigned_queues genesis
       obtain ⟨_, _, _, initialized⟩ := genesis
       have valid := invariant (initializeBeaconStateFromEth1_invariant initialized).2
-      have initialPartials : AssignedPartials g.state := by
-        intro e
-        exact (Nat.not_le_of_lt (initializeBeaconStateFromEth1_ok initialized).1
-          (Nat.le_trans (by decide) e)).elim
-      have initialTargets : AssignedTargets g.state := by
-        intro e
-        exact (Nat.not_le_of_lt (initializeBeaconStateFromEth1_ok initialized).1
-          (Nat.le_trans (by decide) e)).elim
-      have initialProposers : AssignedProposers g.state := by
-        intro e
-        exact (Nat.not_le_of_lt (initializeBeaconStateFromEth1_ok initialized).1
-          (Nat.le_trans (by decide) e)).elim
       have earlyA := Nat.lt_of_le_of_lt last.forks early
       have reachable := shared.append pre
       have ordered := reachable.activationExitOrder ⟨_, _, _, initialized⟩
       have capped := first.capped
         (Genesis.effectiveBalance_capped ⟨_, _, _, initialized⟩)
       have targets := first.targets earlyA initialTargets
-      have caps {h : Fork} (v : Validator) :
-          preset.MAX_EFFECTIVE_BALANCE ≤ withdrawalMaxEffectiveBalance preset h v := by
-        unfold withdrawalMaxEffectiveBalance getMaxEffectiveBalance
-        split
-        · split
-          · exact UInt64.le_trans activation compounding
-          · exact activation
-        · exact UInt64.le_refl _
       have paid := preKeyCharge_step activation compounding previous.1 early candidate
         (fun engine block after ok => by
           have charge := (CapStep.block compounding ok).2.2.2 previous.1 earlyA
@@ -3949,7 +3935,8 @@ private theorem preKeyCharge_run {g x u : ForkedBeaconState preset}
           have cacheTargets : AssignedTargets cached := by
             obtain ⟨_, _, _, _, rfl⟩ := processSlot_ok cacheOk
             exact targets
-          have epoch := preKeyCharge_epoch previous.1 earlyA activation aligned caps cacheValid
+          have epoch := preKeyCharge_epoch previous.1 earlyA activation aligned
+            (minimum_cap activation compounding) cacheValid
             (by simpa only [ActivationExitOrder, validators] using ordered) cacheTargets
             (held.transfer (congrArg (·.data) validators) (fun i v amount found pending read low =>
               ⟨amount, by rw [balances]; exact read, low⟩))
