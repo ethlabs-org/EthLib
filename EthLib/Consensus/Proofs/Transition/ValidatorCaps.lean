@@ -13,6 +13,7 @@ import EthLib.Consensus.Proofs.Transition.RewardDeltas
 import EthLib.Consensus.Proofs.Transition.ActivationExitOrder
 import EthLib.Consensus.Proofs.Transition.InactivityLeakVoter
 import EthLib.Consensus.Proofs.Transition.ValidatorKeys
+import Mathlib.Algebra.Order.BigOperators.Group.Finset
 
 /-!
 # Validator effective-balance caps
@@ -1073,6 +1074,24 @@ private theorem preKeyCharge_decrease {f : Fork} {s t : BeaconState preset f}
     · simp only [BeaconState.putBalance,
         Array.getElem?_set, equal, ↓reduceIte, Nat.add_zero, Nat.le_refl]
 
+private theorem preKeyCharge_increase {f : Fork} {s t : BeaconState preset f}
+    (candidate : Nat → Bool) {index amount : UInt64}
+    (ok : increaseBalance s index amount = .ok t) :
+    ∀ j, preKeyCharge candidate t j ≤ preKeyCharge candidate s j +
+      if j = index.toNat then amount.toNat else 0 := by
+  obtain ⟨inside, fits, rfl⟩ := increaseBalance_eq_ok_iff.mp ok
+  apply preKeyCharge_balance candidate (s := s)
+    (t := s.putBalance index.toNat inside (s.balances.data[index.toNat] + amount)) rfl
+    (fun j => if j = index.toNat then amount.toNat else 0)
+  intro j
+  by_cases equal : j = index.toNat
+  · subst j
+    simp only [BeaconState.putBalance, Array.getElem?_set, ↓reduceIte,
+      Option.map_some, Option.getD_some, Array.getElem?_eq_getElem inside,
+      UInt64.toNat_add, Nat.mod_eq_of_lt fits, Nat.le_refl]
+  · simp only [BeaconState.putBalance, Array.getElem?_set, Ne.symm equal, equal,
+      ↓reduceIte, Nat.add_zero, Nat.le_refl]
+
 private theorem preKeyCharge_increase_assigned {f : Fork} {s t : BeaconState preset f}
     (candidate : Nat → Bool) {index amount : UInt64}
     (assigned : ∀ v, s.validators.data[index.toNat]? = some v →
@@ -1303,6 +1322,35 @@ private theorem CapStep.slash {f : Fork} {s t : BeaconState preset f}
       (funding held active).transfer rfl (fun _ _ b _ _ read low => ⟨b, read, low⟩)), partials⟩
   · exact ⟨total, funding, partials⟩
 
+private theorem preKeyCharge_add {f : Fork} {s t : BeaconState preset f}
+    (candidate : Nat → Bool) {key : Cryptography.Bls.BLSPubkey}
+    {credentials : Bytes32} {amount : Gwei} (matched : BalancesMatch s)
+    (ok : addValidatorToRegistry s key credentials amount = .ok t) :
+    ∀ j, preKeyCharge candidate t j ≤ preKeyCharge candidate s j +
+      if j = s.validators.data.size then amount.toNat else 0 := by
+  obtain ⟨validators, balances⟩ := addValidatorToRegistry_push ok matched
+  have sizes : s.balances.data.size = s.validators.data.size := matched
+  intro j
+  by_cases equal : j = s.validators.data.size
+  · subst j
+    have funded : (getValidatorFromDeposit preset f key credentials amount).effectiveBalance.toNat ≤
+        amount.toNat := by
+      change (min (amount - amount % preset.EFFECTIVE_BALANCE_INCREMENT) _).toNat ≤ amount.toNat
+      rw [Uint64.toNat_min]
+      apply (Nat.min_le_left _ _).trans
+      exact UInt64.le_iff_toNat_le.mp (UInt64.sub_le (by
+        rw [UInt64.le_iff_toNat_le, UInt64.toNat_mod]
+        exact Nat.mod_le _ _))
+    simp only [preKeyCharge, validators, balances, Array.getElem?_push,
+      sizes, ↓reduceIte, Option.map_some, Option.getD_some]
+    split
+    · change max (getValidatorFromDeposit preset f key credentials amount).effectiveBalance.toNat
+        (min amount.toNat _) ≤ _
+      omega
+    · omega
+  · simp only [preKeyCharge, validators, balances, Array.getElem?_push,
+      sizes, equal, ↓reduceIte, Nat.add_zero, Nat.le_refl]
+
 private theorem CapStep.add {f : Fork} {s t : BeaconState preset f}
     {key : Cryptography.Bls.BLSPubkey} {credentials : Bytes32} {amount : Gwei}
     (ok : addValidatorToRegistry s key credentials amount = .ok t) :
@@ -1370,6 +1418,44 @@ private theorem CapStep.add {f : Fork} {s t : BeaconState preset f}
     subst w
     exact ⟨fun flag assigned => ⟨flag, assigned, UInt64.le_refl _⟩,
       fun _ unslashed slashed => by simp [unslashed] at slashed⟩
+
+private theorem preKeyCharge_deposit_growth {f : Fork} {s t : BeaconState preset f}
+    (candidate : Nat → Bool) {deposit : PendingDeposit} (matched : BalancesMatch s)
+    (ok : applyPendingDeposit config checks s deposit = .ok t) :
+    ∀ j, ((s.balances.data[j]?.map UInt64.toNat).getD 0) ≤
+        ((t.balances.data[j]?.map UInt64.toNat).getD 0) ∧
+      preKeyCharge candidate t j ≤ preKeyCharge candidate s j +
+        (((t.balances.data[j]?.map UInt64.toNat).getD 0) -
+          ((s.balances.data[j]?.map UInt64.toNat).getD 0)) := by
+  rcases applyPendingDeposit_cases ok with rfl | ⟨index, raised⟩ | ⟨_, added⟩
+  · exact fun _ => ⟨Nat.le_refl _, by simp⟩
+  · have growth := preKeyCharge_increase candidate raised
+    obtain ⟨inside, fits, rfl⟩ := increaseBalance_eq_ok_iff.mp raised
+    intro j
+    have bound := growth j
+    by_cases equal : j = index.toNat
+    · subst j
+      simp only [BeaconState.putBalance, Array.getElem?_set, ↓reduceIte,
+        Option.map_some, Option.getD_some, Array.getElem?_eq_getElem inside,
+        UInt64.toNat_add, Nat.mod_eq_of_lt fits] at bound ⊢
+      exact ⟨Nat.le_add_right _ _, by omega⟩
+    · simp only [BeaconState.putBalance, Array.getElem?_set, Ne.symm equal,
+        equal, ↓reduceIte, Nat.add_zero] at bound ⊢
+      exact ⟨Nat.le_refl _, by simpa using bound⟩
+  · have growth := preKeyCharge_add candidate matched added
+    obtain ⟨_, balances⟩ := addValidatorToRegistry_push added matched
+    have sizes : s.balances.data.size = s.validators.data.size := matched
+    intro j
+    have bound := growth j
+    by_cases equal : j = s.validators.data.size
+    · subst j
+      simp only [balances, Array.getElem?_push, sizes, ↓reduceIte,
+        Array.getElem?_eq_none (by omega : s.balances.data.size ≤ s.validators.data.size),
+        Option.map_none, Option.getD_none, Option.map_some, Option.getD_some] at bound ⊢
+      exact ⟨Nat.zero_le _, by simpa using bound⟩
+    · simp only [balances, Array.getElem?_push, sizes, equal, ↓reduceIte,
+        Nat.add_zero] at bound ⊢
+      exact ⟨Nat.le_refl _, by simpa using bound⟩
 
 private theorem CapStep.deposit {f : Fork} {s t : BeaconState preset f}
     {deposit : PendingDeposit}
@@ -2268,16 +2354,31 @@ private theorem CapStep.pending {f : Fork} {s t : BeaconState preset f}
     {electra : .pectra ≤ f} (ok : processPendingDeposits config checks s electra = .ok t) :
     CapStep config s t ∧
       (BalancesMatch s → UnassignedEligibleBalance s → UnassignedEligibleBalance t) ∧
-      (AssignedPartials s → AssignedPartials t) := by
+      (AssignedPartials s → AssignedPartials t) ∧
+      (BalancesMatch s → ∀ (candidate : Nat → Bool) j,
+        preKeyCharge candidate t j ≤ preKeyCharge candidate s j +
+          (((t.balances.data[j]?.map UInt64.toNat).getD 0) -
+            ((s.balances.data[j]?.map UInt64.toNat).getD 0))) := by
   let R := fun (a b : BeaconState preset f) => CapStep config a b ∧
     (BalancesMatch a → BalancesMatch b) ∧
     (BalancesMatch a → UnassignedEligibleBalance a → UnassignedEligibleBalance b) ∧
-    (AssignedPartials a → AssignedPartials b)
-  have refl (a) : R a a := ⟨CapStep.refl a, id, fun _ => id, id⟩
-  have trans {a b c} (one : R a b) (two : R b c) : R a c :=
-    ⟨one.1.trans two.1, two.2.1 ∘ one.2.1,
+    (AssignedPartials a → AssignedPartials b) ∧
+    (BalancesMatch a → ∀ (candidate : Nat → Bool) j,
+      ((a.balances.data[j]?.map UInt64.toNat).getD 0) ≤
+          ((b.balances.data[j]?.map UInt64.toNat).getD 0) ∧
+        preKeyCharge candidate b j ≤ preKeyCharge candidate a j +
+          (((b.balances.data[j]?.map UInt64.toNat).getD 0) -
+            ((a.balances.data[j]?.map UInt64.toNat).getD 0)))
+  have refl (a) : R a a :=
+    ⟨CapStep.refl a, id, fun _ => id, id, fun _ _ _ => ⟨Nat.le_refl _, by simp⟩⟩
+  have trans {a b c} (one : R a b) (two : R b c) : R a c := by
+    refine ⟨one.1.trans two.1, two.2.1 ∘ one.2.1,
       (fun matched held => two.2.2.1 (one.2.1 matched) (one.2.2.1 matched held)),
-      two.2.2.2 ∘ one.2.2.2⟩
+      two.2.2.2.1 ∘ one.2.2.2.1, ?_⟩
+    intro matched candidate j
+    obtain ⟨first, paid⟩ := one.2.2.2.2 matched candidate j
+    obtain ⟨second, paid'⟩ := two.2.2.2.2 (one.2.1 matched) candidate j
+    exact ⟨first.trans second, by omega⟩
   have pass {stop : PendingDeposit → Bool} {nextEpoch : Epoch} {available : Gwei} :
       ∀ {deposits : List PendingDeposit} {state : BeaconState preset f} {processed : Gwei}
         {count : Nat} {postponed : Array PendingDeposit} {result},
@@ -2286,7 +2387,8 @@ private theorem CapStep.pending {f : Fork} {s t : BeaconState preset f}
     fun ok => passPendingDeposits_of R refl (fun one two => trans one two)
       (fun credited => ⟨(CapStep.deposit credited).1,
         (applyPendingDeposit_kept credited).1, (CapStep.deposit credited).2.1,
-        (CapStep.deposit (config := config) credited).2.2⟩) ok
+        (CapStep.deposit (config := config) credited).2.2,
+        fun matched candidate => preKeyCharge_deposit_growth candidate matched credited⟩) ok
   unfold processPendingDeposits at ok
   simp only [bind, Except.bind, pure, Except.pure] at ok
   repeat' (split at ok <;> try cases ok)
@@ -2294,7 +2396,7 @@ private theorem CapStep.pending {f : Fork} {s t : BeaconState preset f}
     have passed := pass ‹_›
     exact ⟨passed.1.trans (CapStep.data rfl), (fun matched held =>
       (passed.2.2.1 matched held).transfer rfl (fun _ _ b _ _ read low => ⟨b, read, low⟩)),
-      passed.2.2.2⟩
+      passed.2.2.2.1, fun matched candidate j => (passed.2.2.2.2 matched candidate j).2⟩
 
 /-- Rounding an effective balance cannot raise the capped Pre potential. -/
 private theorem pre_effective_le {largest balance effective result : Gwei}
@@ -2381,7 +2483,7 @@ private theorem CapStep.epochEdge {f : Fork} {a b : BeaconState preset f} {k : E
   case pendingDeposits =>
     simp only [EpochStage.Edge] at edge
     split at edge
-    · exact ⟨(CapStep.pending edge).1, (CapStep.pending edge).2.2⟩
+    · exact ⟨(CapStep.pending edge).1, (CapStep.pending edge).2.2.1⟩
     · exact edge ▸ ⟨CapStep.refl _, id⟩
   case effectiveBalances =>
     exact ⟨(CapStep.effective edge).1, (CapStep.effective (config := config) edge).2.2.1⟩
@@ -2935,6 +3037,50 @@ private theorem preKeyCharge_assigned {f h : Fork} {s : BeaconState preset f}
     exact assigned
   simp only [preKeyCharge, found, read, Option.map_some, assigned, later,
     ↓reduceIte, Option.getD_some]
+
+private theorem preKeyCharge_pending {f : Fork} {s t : BeaconState preset f}
+    {electra : .pectra ≤ f} (candidate : Nat → Bool)
+    (ok : processPendingDeposits config checks s electra = .ok t)
+    (matched : BalancesMatch s) (activation : ActivationExitOrder s)
+    (exits : ExitsOrdered s) (finite : getCurrentEpoch s < FAR_FUTURE_EPOCH)
+    (budget : Nat)
+    (funded : (∑ i ∈ Finset.range t.validators.data.size,
+      if (s.validators.data[i]?.map (fun v =>
+        decide (v.withdrawableEpoch.toNat ≤ (getCurrentEpoch s).toNat))).getD false then 0
+      else ((t.balances.data[i]?.map UInt64.toNat).getD 0) -
+        ((s.balances.data[i]?.map UInt64.toNat).getD 0)) +
+      (t.depositBalanceToConsume electra).toNat ≤ budget) :
+    (∑ i ∈ Finset.range t.validators.data.size, preKeyCharge candidate t i) +
+      (t.depositBalanceToConsume electra).toNat ≤
+        (∑ i ∈ Finset.range t.validators.data.size, preKeyCharge candidate s i) + budget := by
+  have growth := (CapStep.pending (config := config) ok).2.2.2 matched candidate
+  have each (i : Nat) : preKeyCharge candidate t i ≤ preKeyCharge candidate s i +
+      if (s.validators.data[i]?.map (fun v =>
+        decide (v.withdrawableEpoch.toNat ≤ (getCurrentEpoch s).toNat))).getD false then 0
+      else ((t.balances.data[i]?.map UInt64.toNat).getD 0) -
+        ((s.balances.data[i]?.map UInt64.toNat).getD 0) := by
+    split
+    · rename_i withdrawn
+      cases found : s.validators.data[i]? with
+      | none => simp [found] at withdrawn
+      | some v =>
+        have member := Array.mem_of_getElem? found
+        have first := UInt64.le_iff_toNat_le.mp (activation v member)
+        have second := UInt64.le_iff_toNat_le.mp (exits v member)
+        have last := UInt64.lt_iff_toNat_lt.mp finite
+        have assigned : v.activationEpoch ≠ FAR_FUTURE_EPOCH := by
+          simp only [found, Option.map_some, Option.getD_some, decide_eq_true_eq] at withdrawn
+          intro far
+          rw [far] at first
+          omega
+        rw [preKeyCharge_assigned (registryLifecycle_processPendingDeposits ok)
+          candidate found assigned]
+        omega
+    · exact growth i
+  have sums := Finset.sum_le_sum (s := Finset.range t.validators.data.size)
+    (fun i _ => each i)
+  rw [Finset.sum_add_distrib] at sums
+  omega
 
 private theorem run_unassigned_eligible_at_assignment {g x : ForkedBeaconState preset}
     (run : Run config checks g x) (genesis : Genesis (config := config) (checks := checks) g)
