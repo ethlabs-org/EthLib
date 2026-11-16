@@ -1567,13 +1567,43 @@ theorem frame_processExecutionPayloadBid {gloas : .glamsterdam ≤ fork}
   obtain ⟨_, rfl⟩ := processExecutionPayloadBid_eq computed
   exact BlockFrame.of_validators ⟨rfl, rfl⟩
 
-/-- A relation holds across the execution part of a block when it holds across the withdrawals.
+/-- A relation holds across the execution part of a block when it holds across its operations.
 
 The relation must hold of each state to itself, and chain.
 
-It must hold across each step that keeps the registry and forms a block frame.
+It must hold across withdrawals, the bid from Gloas and the payload before it. -/
+theorem processBlockExecution_of
+    (step : BeaconState preset fork → BeaconState preset fork → Prop)
+    (refl : ∀ state, step state state)
+    (trans : ∀ {first second third}, step first second → step second third → step first third)
+    (payload : ∀ {state after} {body : BeaconBlockBody preset fork}
+      {execution : .bellatrix ≤ fork ∧ fork < .glamsterdam},
+      processExecutionPayload config engine state body execution = .ok after → step state after)
+    (bid : ∀ {state after} {gloas : .glamsterdam ≤ fork}
+      {signed : SignedExecutionPayloadBid preset fork},
+      processExecutionPayloadBid config checks state gloas signed = .ok after → step state after)
+    (withdrawals : ∀ {state after} {capella : .shapella ≤ fork}
+      {payload : Until .glamsterdam fork (ExecutionPayload preset fork)},
+      processWithdrawals state capella payload = .ok after → step state after)
+    {body : BeaconBlockBody preset fork} {bellatrix : .bellatrix ≤ fork}
+    (computed : processBlockExecution config checks engine state body bellatrix = .ok after) :
+    step state after := by
+  unfold processBlockExecution at computed
+  split at computed
+  · simp only [bind_ok_iff] at computed
+    obtain ⟨_, withdrawnOk, offered⟩ := computed
+    exact trans (withdrawals withdrawnOk) (bid offered)
+  split at computed
+  · simp only [bind_ok_iff] at computed
+    obtain ⟨_, withdrawnOk, paid⟩ := computed
+    exact trans (withdrawals withdrawnOk) (payload paid)
+  · dsimp only at computed
+    split at computed
+    · exact payload computed
+    · cases computed
+      exact refl _
 
-The bid from Gloas and the payload before it are such steps. -/
+/-- The execution part preserves a relation when withdrawals and registry-preserving frames do. -/
 theorem processBlockExecution_step_of
     (step : BeaconState preset fork → BeaconState preset fork → Prop)
     (refl : ∀ state, step state state)
@@ -1585,27 +1615,12 @@ theorem processBlockExecution_step_of
       processWithdrawals state capella payload = .ok after → step state after)
     {body : BeaconBlockBody preset fork} {bellatrix : .bellatrix ≤ fork}
     (computed : processBlockExecution config checks engine state body bellatrix = .ok after) :
-    step state after := by
-  have payload {s t : BeaconState preset fork}
-      {execution : .bellatrix ≤ fork ∧ fork < .glamsterdam}
-      (ok : processExecutionPayload config engine s body execution = .ok t) : step s t :=
-    keep (frame_processExecutionPayload ok)
-      (by obtain ⟨_, _, _, rfl⟩ := processExecutionPayload_ok ok; rfl)
-  unfold processBlockExecution at computed
-  split at computed
-  · simp only [bind_ok_iff] at computed
-    obtain ⟨_, withdrawnOk, bid⟩ := computed
-    exact trans (withdrawals withdrawnOk) (keep (frame_processExecutionPayloadBid bid)
-      (by obtain ⟨_, rfl⟩ := processExecutionPayloadBid_eq bid; rfl))
-  split at computed
-  · simp only [bind_ok_iff] at computed
-    obtain ⟨_, withdrawnOk, paid⟩ := computed
-    exact trans (withdrawals withdrawnOk) (payload paid)
-  · dsimp only at computed
-    split at computed
-    · exact payload computed
-    · cases computed
-      exact refl _
+    step state after :=
+  processBlockExecution_of step refl trans
+    (fun ok => keep (frame_processExecutionPayload ok)
+      (by obtain ⟨_, _, _, rfl⟩ := processExecutionPayload_ok ok; rfl))
+    (fun ok => keep (frame_processExecutionPayloadBid ok)
+      (by obtain ⟨_, rfl⟩ := processExecutionPayloadBid_eq ok; rfl)) withdrawals computed
 
 theorem frame_processBlockExecution {body : BeaconBlockBody preset fork}
     {bellatrix : .bellatrix ≤ fork}

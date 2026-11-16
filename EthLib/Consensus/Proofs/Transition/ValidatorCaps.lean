@@ -1743,7 +1743,8 @@ private theorem CapStep.withdrawals {f : Fork} {s t : BeaconState preset f}
     CapStep config s t ∧ (AssignedPartials s → AssignedPartials t) ∧
       (ActivationExitOrder s → ExitsOrdered s → AssignedPartials s →
         getCurrentEpoch s < FAR_FUTURE_EPOCH → EffectiveBalancesCapped s →
-        UnassignedEligibleBalance s → UnassignedEligibleBalance t) := by
+        UnassignedEligibleBalance s → UnassignedEligibleBalance t) ∧
+      t.validators.data = s.validators.data := by
   obtain ⟨expected, _, _, applied⟩ := processWithdrawals_expected early ok
   let R := fun (a b : BeaconState preset f) => CapStep config a b ∧
     (AssignedPartials a → AssignedPartials b) ∧ b.validators.data = a.validators.data
@@ -1759,7 +1760,47 @@ private theorem CapStep.withdrawals {f : Fork} {s t : BeaconState preset f}
       applied
     all_goals exact fun _ _ => ⟨CapStep.data rfl, id, rfl⟩
   exact ⟨kept.1, kept.2.1, fun activation exits partials before capped held =>
-    held.withdrawals_of_provenance activation exits partials kept.2.2 before capped ok⟩
+    held.withdrawals_of_provenance activation exits partials kept.2.2 before capped ok,
+    kept.2.2⟩
+
+private theorem CapStep.execution {f : Fork} {s t : BeaconState preset f}
+    {engine : ExecutionEngine preset f} {body : BeaconBlockBody preset f}
+    {bellatrix : .bellatrix ≤ f}
+    (early : f < .glamsterdam)
+    (ok : processBlockExecution config checks engine s body bellatrix = .ok t) :
+    CapStep config s t ∧ (AssignedPartials s → AssignedPartials t) ∧
+      (ActivationExitOrder s → ExitsOrdered s → AssignedPartials s →
+        getCurrentEpoch s < FAR_FUTURE_EPOCH → EffectiveBalancesCapped s →
+        UnassignedEligibleBalance s → UnassignedEligibleBalance t) := by
+  let R := fun (a b : BeaconState preset f) => CapStep config a b ∧
+    (AssignedPartials a → AssignedPartials b) ∧ b.validators.data = a.validators.data ∧
+    b.slot = a.slot ∧
+    (ActivationExitOrder a → ExitsOrdered a → AssignedPartials a →
+      getCurrentEpoch a < FAR_FUTURE_EPOCH → EffectiveBalancesCapped a →
+      UnassignedEligibleBalance a → UnassignedEligibleBalance b)
+  have refl (a) : R a a := ⟨CapStep.refl a, id, rfl, rfl, fun _ _ _ _ _ => id⟩
+  have trans {a b c} (one : R a b) (two : R b c) : R a c := by
+    refine ⟨one.1.trans two.1, two.2.1 ∘ one.2.1, two.2.2.1.trans one.2.2.1,
+      two.2.2.2.1.trans one.2.2.2.1, ?_⟩
+    intro activation exits partials before capped held
+    apply two.2.2.2.2
+    · simpa only [ActivationExitOrder, one.2.2.1] using activation
+    · simpa only [ExitsOrdered, one.2.2.1] using exits
+    · exact one.2.1 partials
+    · simpa only [getCurrentEpoch, one.2.2.2.1] using before
+    · exact one.1.capped capped
+    · exact one.2.2.2.2 activation exits partials before capped held
+  have whole : R s t := by
+    apply processBlockExecution_of R refl (fun one two => trans one two)
+      (fun paid => by
+        obtain ⟨_, _, _, rfl⟩ := processExecutionPayload_ok paid
+        exact ⟨CapStep.data rfl, id, rfl, rfl, fun _ _ _ _ _ held =>
+          held.transfer rfl (fun _ _ b _ _ read low => ⟨b, read, low⟩)⟩)
+      (fun _ => (Nat.not_le_of_lt early ‹.glamsterdam ≤ f›).elim)
+      (fun withdrawn => by
+        obtain ⟨step, partials, funded, same⟩ := CapStep.withdrawals early withdrawn
+        exact ⟨step, partials, same, (frame_processWithdrawals withdrawn).slot, funded⟩) ok
+  exact ⟨whole.1, whole.2.1, whole.2.2.2.2⟩
 
 private theorem CapStep.block {f : Fork} {s t : BeaconState preset f}
     {engine : ExecutionEngine preset f} {block : BeaconBlock preset f}
