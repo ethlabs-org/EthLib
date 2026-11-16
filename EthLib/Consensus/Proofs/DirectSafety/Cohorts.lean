@@ -709,48 +709,21 @@ private theorem Genesis.activationCohortBound {g : ForkedBeaconState preset}
     (genesis : Genesis (config := config) (checks := checks) g) :
     ActivationCohortBound config g.state := by
   obtain ⟨hash, time, deposits, ok⟩ := genesis
-  obtain ⟨before, genesisTime, root, deposited, activated, finalRoot, depositedOk, activatedOk,
-    equal⟩ := initializeBeaconStateFromEth1_ok ok
-  have first := CohortsKept.foldlM (fun s entry t computed => by
-    simp only [genesisDeposit, bind_ok_iff] at computed
-    obtain ⟨root, _, deposited⟩ := computed
-    exact (CohortsKept.of_data (s := s)
-      (t := { s with eth1Data := fun _ => { s.eth1Data (Nat.lt_trans before (by decide)) with
-        depositRoot := root } }) rfl).trans
-      (cohorts_deposit (Nat.lt_trans before (by decide)) deposited)) depositedOk
-  have initial : ∀ e, e ≠ FAR_FUTURE_EPOCH → e ≠ GENESIS_EPOCH →
-      validatorCohort Validator.activationEpoch deposited e = 0 := by
-    intro e finite _
-    rw [first.activations e finite]
-    simp [validatorCohort, emptyGenesisState]
-  have last := foldlM_ok_invariant
-    (fun s : BeaconState preset g.fork => ∀ e, e ≠ FAR_FUTURE_EPOCH → e ≠ GENESIS_EPOCH →
-      validatorCohort Validator.activationEpoch s e = 0)
-    (fun s i t bounded computed => by
-      simp only [activateAtGenesis, bind_ok_iff, liftAccessor_ok] at computed
-      obtain ⟨v, found, _, _, set⟩ := computed
-      intro e finite nonGenesis
-      have absent : (v.activationEpoch == e) = false := by
-        have zero := bounded e finite nonGenesis
-        have mem := mem_of_getValidatorAt found
-        exact Bool.eq_false_iff.mpr (List.countP_eq_zero.mp zero v (by simpa using mem))
-      rw [validatorCohort_setValidatorAt_eq (field := Validator.activationEpoch) found set e
-        (by
-          split
-          · rw [absent]
-            exact beq_eq_false_iff_ne.mpr (Ne.symm nonGenesis)
-          · rfl)]
-      exact bounded e finite nonGenesis) initial activatedOk
-  rw [equal]
+  have classified := initializeBeaconStateFromEth1_activation_epochs ok
   constructor
   · intro e finite nonGenesis
-    exact Nat.le_trans (Nat.le_of_eq (last e finite nonGenesis)) (Nat.zero_le _)
+    have empty : validatorCohort Validator.activationEpoch g.state e = 0 := by
+      apply List.countP_eq_zero.mpr
+      intro v member
+      have cases := classified v (by simpa using member)
+      simp only [beq_iff_eq]
+      rcases cases with future | first
+      · exact fun equal => finite (equal.symm.trans future)
+      · exact fun equal => nonGenesis (equal.symm.trans first)
+    exact Nat.le_trans (Nat.le_of_eq empty) (Nat.zero_le _)
   · intro v member finite
     have genesisEpoch : v.activationEpoch = GENESIS_EPOCH := by
-      apply Classical.byContradiction
-      intro other
-      exact List.countP_eq_zero.mp (last v.activationEpoch finite other) v
-        (by simpa using member) (by simp)
+      exact (classified v member).resolve_left finite
     simp only [genesisEpoch, GENESIS_EPOCH, UInt64.toNat_zero, scheduledActivationEpoch]
     omega
 

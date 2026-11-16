@@ -6,6 +6,7 @@ public import EthLib.Consensus.Proofs.Transition.Genesis
 public import EthLib.Consensus.Proofs.Transition.Trace
 public import EthLib.Consensus.Proofs.SyncCommittee
 import EthLib.Consensus.Proofs.Transition.RegistryLifecycle
+import EthLib.Consensus.Proofs.Transition.RunKept
 
 /-!
 # Registry provenance of sync committees
@@ -33,7 +34,8 @@ private theorem getNextSyncCommittee_keys {committee : SyncCommittee preset}
     (ok : getNextSyncCommittee state = .ok committee) :
     ∀ key ∈ committee.pubkeys.toList, ∃ (i : Nat) (v : Validator),
       state.validators.data[i]? = some v ∧ v.pubkey = key ∧
-        v.activationEpoch ≠ FAR_FUTURE_EPOCH := by
+        v.activationEpoch ≠ FAR_FUTURE_EPOCH ∧
+        v.activationEpoch.toNat ≤ (getCurrentEpoch state).toNat + 1 := by
   obtain ⟨indices, drawn, reads, _⟩ := getNextSyncCommittee_eq_ok_iff.mp ok
   intro key member
   obtain ⟨i, inside, equal⟩ := List.getElem_of_mem member
@@ -48,22 +50,29 @@ private theorem getNextSyncCommittee_keys {committee : SyncCommittee preset}
   refine ⟨_, validator, getValidator_eq_ok_iff.mp found,
     keyEq.symm.trans (by simpa using equal), ?_⟩
   simp only [isActiveValidator, Bool.and_eq_true, decide_eq_true_eq] at isActive
-  intro far
-  have less := UInt64.lt_iff_toNat_lt.mp (UInt64.lt_of_le_of_lt isActive.1 isActive.2)
-  rw [far] at less
-  have bound := validator.exitEpoch.toNat_lt
-  change (2 ^ 64 - 1 : Nat) < validator.exitEpoch.toNat at less
-  omega
+  constructor
+  · intro far
+    have less := UInt64.lt_iff_toNat_lt.mp (UInt64.lt_of_le_of_lt isActive.1 isActive.2)
+    rw [far] at less
+    have bound := validator.exitEpoch.toNat_lt
+    change (2 ^ 64 - 1 : Nat) < validator.exitEpoch.toNat at less
+    omega
+  · have active := UInt64.le_iff_toNat_le.mp isActive.1
+    exact Nat.le_trans active (by
+      rw [UInt64.toNat_add]
+      exact Nat.mod_le _ _)
 
 /-- Both committees contain only keys whose activation epoch has been assigned. -/
 private def SyncCommitteeKeys (state : BeaconState preset fork) : Prop :=
   ∀ altair : .altair ≤ fork,
     (∀ key ∈ (state.currentSyncCommittee altair).value.pubkeys.toList,
       ∃ (i : Nat) (v : Validator), state.validators.data[i]? = some v ∧ v.pubkey = key ∧
-        v.activationEpoch ≠ FAR_FUTURE_EPOCH) ∧
+        v.activationEpoch ≠ FAR_FUTURE_EPOCH ∧
+        v.activationEpoch.toNat ≤ (getCurrentEpoch state).toNat + 1) ∧
     (∀ key ∈ (state.nextSyncCommittee altair).value.pubkeys.toList,
       ∃ (i : Nat) (v : Validator), state.validators.data[i]? = some v ∧ v.pubkey = key ∧
-        v.activationEpoch ≠ FAR_FUTURE_EPOCH)
+        v.activationEpoch ≠ FAR_FUTURE_EPOCH ∧
+        v.activationEpoch.toNat ≤ (getCurrentEpoch state).toNat + 1)
 
 private def SameSyncCommittees (state after : BeaconState preset fork) : Prop :=
   after.currentSyncCommittee = state.currentSyncCommittee ∧
@@ -749,14 +758,15 @@ private theorem queueCompoundingExcess {electra : .pectra ≤ fork} {index : Nat
 end SameSyncCommittees
 
 private theorem assigned_key_transfer
+    (P : Epoch → Prop)
     (keys : validatorKeys state <+: validatorKeys after)
     (life : RegistryLifecycle state after) (key : BLSPubkey)
     (prior : ∃ (i : Nat) (v : Validator),
       state.validators.data[i]? = some v ∧ v.pubkey = key ∧
-      v.activationEpoch ≠ FAR_FUTURE_EPOCH) :
+      v.activationEpoch ≠ FAR_FUTURE_EPOCH ∧ P v.activationEpoch) :
     ∃ (i : Nat) (v : Validator), after.validators.data[i]? = some v ∧ v.pubkey = key ∧
-      v.activationEpoch ≠ FAR_FUTURE_EPOCH := by
-  obtain ⟨i, v, found, keyEq, assigned⟩ := prior
+      v.activationEpoch ≠ FAR_FUTURE_EPOCH ∧ P v.activationEpoch := by
+  obtain ⟨i, v, found, keyEq, assigned, property⟩ := prior
   obtain ⟨w, read, kept⟩ := life.validators i v found
   have pubkey : w.pubkey = v.pubkey := by
     obtain ⟨suffix, eq⟩ := keys
@@ -765,23 +775,32 @@ private theorem assigned_key_transfer
       simpa [validatorKeys] using (Array.getElem?_eq_some_iff.mp found).1
     simpa [validatorKeys, List.getElem?_map, found, read] using entry
   exact ⟨i, w, read, pubkey.trans keyEq,
-    fun far => assigned ((kept.activationEpoch assigned).symm.trans far)⟩
+    (fun far => assigned ((kept.activationEpoch assigned).symm.trans far)),
+    (kept.activationEpoch assigned) ▸ property⟩
 
 private theorem SyncCommitteeKeys.transfer (holds : SyncCommitteeKeys state)
     (same : after.currentSyncCommittee = state.currentSyncCommittee ∧
       after.nextSyncCommittee = state.nextSyncCommittee)
     (keys : validatorKeys state <+: validatorKeys after)
-    (life : RegistryLifecycle state after) :
+    (life : RegistryLifecycle state after)
+    (forward : (getCurrentEpoch state).toNat ≤ (getCurrentEpoch after).toNat := by
+      first | assumption | exact Nat.le_refl _) :
     SyncCommitteeKeys after := by
   intro altair
   obtain ⟨current, next⟩ := holds altair
   constructor
   · intro key member
     rw [same.1] at member
-    exact assigned_key_transfer keys life key (current key member)
+    obtain ⟨i, v, found, keyed, assigned, bounded⟩ :=
+      assigned_key_transfer (fun e => e.toNat ≤ (getCurrentEpoch state).toNat + 1)
+        keys life key (current key member)
+    exact ⟨i, v, found, keyed, assigned, by omega⟩
   · intro key member
     rw [same.2] at member
-    exact assigned_key_transfer keys life key (next key member)
+    obtain ⟨i, v, found, keyed, assigned, bounded⟩ :=
+      assigned_key_transfer (fun e => e.toNat ≤ (getCurrentEpoch state).toNat + 1)
+        keys life key (next key member)
+    exact ⟨i, v, found, keyed, assigned, by omega⟩
 
 namespace SyncCommitteeKeys
 
@@ -831,6 +850,9 @@ private theorem processEpoch (holds : SyncCommitteeKeys state)
   intro k _ a b computed held
   have edge := EpochStage.action_cases.mp computed
   have life := edge.registryLifecycle
+  have slot := edge.slot_eq
+  have forward : (getCurrentEpoch a).toNat ≤ (getCurrentEpoch b).toNat := by
+    simp only [getCurrentEpoch, slot, Nat.le_refl]
   cases k <;> simp only [EpochStage.Edge, altair, ↓reduceDIte] at edge
   case justification =>
     exact held.transfer (And.imp_right And.left
@@ -911,6 +933,7 @@ private theorem processEpoch (holds : SyncCommitteeKeys state)
 /-- A slot updates committees only through the epoch transition. -/
 private theorem advanceSlot (holds : SyncCommitteeKeys state)
     (ok : Consensus.advanceSlot config checks state = .ok after) : SyncCommitteeKeys after := by
+  have later := (runKept_advanceSlot ok).later
   obtain ⟨next, cached, epoched, _, cachedOk, epochedOk, rfl⟩ := advanceSlot_ok ok
   obtain ⟨_, _, _, _, cachedEq⟩ := processSlot_ok cachedOk
   have cachedKeys : SyncCommitteeKeys cached := by rw [cachedEq]; exact holds
@@ -919,7 +942,15 @@ private theorem advanceSlot (holds : SyncCommitteeKeys state)
     split at epochedOk
     · exact processEpoch cachedKeys epochedOk
     · cases epochedOk; exact cachedKeys
-  exact epochKeys
+  apply epochKeys.transfer (after := { epoched with slot := next })
+    ⟨rfl, rfl⟩ (List.prefix_refl _) (.of_data rfl) ?_
+  have epochedSlot : epoched.slot = state.slot := by
+    unfold epochIfLast at epochedOk
+    split at epochedOk
+    · obtain ⟨justified, justifiedOk, frame⟩ := processEpoch_frame epochedOk
+      rw [frame.slot, processJustificationAndFinalization_slot justifiedOk, cachedEq]
+    · cases epochedOk; rw [cachedEq]
+  simpa only [getCurrentEpoch, epochedSlot, UInt64.le_iff_toNat_le] using later
 
 /-- Blocks preserve the committees and retain all existing validator keys. -/
 private theorem processBlock {block : BeaconBlock preset fork}
@@ -929,13 +960,14 @@ private theorem processBlock {block : BeaconBlock preset fork}
   holds.transfer ((SameSyncCommittees.processBlock ok).imp_right And.left)
     (frame_processBlock ok).pubkeysPrefix
     (registryLifecycle_processBlock ok)
+    (by simp only [getCurrentEpoch, (frame_processBlock ok).slot, Nat.le_refl])
 
 private theorem carryFields {post : Fork} (upgrade : fork < post)
     (before : post < .glamsterdam) (altair : .altair ≤ fork)
     (holds : SyncCommitteeKeys state) :
     SyncCommitteeKeys (Consensus.carryFields config post state upgrade before) := by
   intro _
-  simpa [Consensus.carryFields, altair, validatorKeys, carryRooted]
+  simpa [Consensus.carryFields, altair, validatorKeys, carryRooted, getCurrentEpoch]
     using holds altair
 
 private theorem upgradeToElectra {checks : SignatureChecks} {pre : BeaconState preset .dencun}
@@ -954,10 +986,13 @@ private theorem upgradeToElectra {checks : SignatureChecks} {pre : BeaconState p
   have keys := ((BlockFrame.foldlM (fun _ _ _ ok => frame_queuePreActivation ok) queued).trans
     (BlockFrame.foldlM (fun _ _ _ ok => frame_queueCompoundingExcess ok)
       compounded)).pubkeysPrefix
-  apply transfer ?_ (same.imp_right And.left) keys ?_
+  apply transfer ?_ (same.imp_right And.left) keys ?_ ?_
   · exact carryFields (config := config) (post := .pectra)
       (by decide) (by decide) (by decide) holds
   · exact ⟨life.size_le, life.validators⟩
+  · have frame := (BlockFrame.foldlM (fun _ _ _ ok => frame_queuePreActivation ok) queued).trans
+      (BlockFrame.foldlM (fun _ _ _ ok => frame_queueCompoundingExcess ok) compounded)
+    simp only [getCurrentEpoch, frame.slot, Nat.le_refl]
 
 /-- Each upgrade either samples the first committees or carries their keys into the new registry. -/
 private theorem upgradeNext {pre : ForkedBeaconState preset}
@@ -1024,8 +1059,12 @@ theorem processOperations_syncCommittee_activation_assigned
         v.activationEpoch ≠ FAR_FUTURE_EPOCH := by
   intro key member
   rw [processOperations_currentSyncCommittee altair ok] at member
-  exact assigned_key_transfer (frame_processOperations ok).pubkeysPrefix
-    (SameSyncCommittees.processOperations ok).2 key (holds key member)
+  obtain ⟨i, v, found, keyed, assigned, _⟩ := assigned_key_transfer (fun _ => True)
+    (frame_processOperations ok).pubkeysPrefix
+    (SameSyncCommittees.processOperations ok).2 key (by
+      obtain ⟨i, v, found, keyed, assigned⟩ := holds key member
+      exact ⟨i, v, found, keyed, assigned, trivial⟩)
+  exact ⟨i, v, found, keyed, assigned⟩
 
 /-- Block execution retains the current sync committee. -/
 theorem processBlockExecution_currentSyncCommittee {body : BeaconBlockBody preset fork}
@@ -1049,16 +1088,18 @@ theorem processAttestation_proposerLookahead {attestation : Attestation preset f
     after.proposerLookahead = state.proposerLookahead :=
   (SameSyncCommittees.processAttestation ok).2.2
 
-/-- Every sync committee key in a run from genesis has an assigned activation epoch. -/
-theorem Run.syncCommittee_activation_assigned {g x : ForkedBeaconState preset}
+/-- Every sync committee key activates by the next epoch of the state that holds it. -/
+theorem Run.syncCommittee_activation_bounded {g x : ForkedBeaconState preset}
     (run : Run config checks g x)
     (genesis : Genesis (config := config) (checks := checks) g) (altair : .altair ≤ x.fork) :
     (∀ key ∈ (x.state.currentSyncCommittee altair).value.pubkeys.toList,
       ∃ (i : Nat) (v : Validator), x.state.validators.data[i]? = some v ∧ v.pubkey = key ∧
-        v.activationEpoch ≠ FAR_FUTURE_EPOCH) ∧
+        v.activationEpoch ≠ FAR_FUTURE_EPOCH ∧
+        v.activationEpoch.toNat ≤ (getCurrentEpoch x.state).toNat + 1) ∧
     (∀ key ∈ (x.state.nextSyncCommittee altair).value.pubkeys.toList,
       ∃ (i : Nat) (v : Validator), x.state.validators.data[i]? = some v ∧ v.pubkey = key ∧
-        v.activationEpoch ≠ FAR_FUTURE_EPOCH) := by
+        v.activationEpoch ≠ FAR_FUTURE_EPOCH ∧
+        v.activationEpoch.toNat ≤ (getCurrentEpoch x.state).toNat + 1) := by
   have holds : SyncCommitteeKeys x.state := by
     clear altair
     induction run with
@@ -1074,6 +1115,25 @@ theorem Run.syncCommittee_activation_assigned {g x : ForkedBeaconState preset}
       | block engine signed _ ok =>
         exact SyncCommitteeKeys.processBlock ih (applySignedBlock_ok ok).2.1
   exact holds altair
+
+/-- Every sync committee key in a run from genesis has an assigned activation epoch. -/
+theorem Run.syncCommittee_activation_assigned {g x : ForkedBeaconState preset}
+    (run : Run config checks g x)
+    (genesis : Genesis (config := config) (checks := checks) g) (altair : .altair ≤ x.fork) :
+    (∀ key ∈ (x.state.currentSyncCommittee altair).value.pubkeys.toList,
+      ∃ (i : Nat) (v : Validator), x.state.validators.data[i]? = some v ∧ v.pubkey = key ∧
+        v.activationEpoch ≠ FAR_FUTURE_EPOCH) ∧
+    (∀ key ∈ (x.state.nextSyncCommittee altair).value.pubkeys.toList,
+      ∃ (i : Nat) (v : Validator), x.state.validators.data[i]? = some v ∧ v.pubkey = key ∧
+        v.activationEpoch ≠ FAR_FUTURE_EPOCH) := by
+  obtain ⟨current, next⟩ := run.syncCommittee_activation_bounded genesis altair
+  constructor
+  · intro key member
+    obtain ⟨i, v, found, keyed, assigned, _⟩ := current key member
+    exact ⟨i, v, found, keyed, assigned⟩
+  · intro key member
+    obtain ⟨i, v, found, keyed, assigned, _⟩ := next key member
+    exact ⟨i, v, found, keyed, assigned⟩
 
 /-- Every current and next sync committee key in a run from genesis belongs to its registry. -/
 theorem Run.syncCommittee_keys {g x : ForkedBeaconState preset} (run : Run config checks g x)

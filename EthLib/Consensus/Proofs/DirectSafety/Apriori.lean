@@ -5704,4 +5704,83 @@ private theorem otherCredit_le_allowance_electra {g x y : ForkedBeaconState pres
   rw [otherCredit_sum_electra shared tail genesis electra early (by omega) replayed]
   exact allowance
 
+/-- The count path grows by at most the final count churn at each epoch. -/
+private theorem countPath_growth_le (config : Config) (start horizon : Nat) :
+    countPath config start horizon ≤
+      start + horizon * cohortCap config (countPath config start horizon) := by
+  have mono : Monotone (countPath config start) :=
+    monotone_nat_of_le_succ fun t => by
+      exact Nat.le_add_right _ _
+  induction horizon with
+  | zero => simp [countPath]
+  | succ horizon ih =>
+    have churn : cohortCap config (countPath config start horizon) ≤
+        cohortCap config (countPath config start (horizon + 1)) :=
+      max_le_max_left _ (Nat.div_le_div_right (mono (Nat.le_succ horizon)))
+    calc
+      countPath config start (horizon + 1) =
+          countPath config start horizon +
+            cohortCap config (countPath config start horizon) := rfl
+      _ ≤ start + horizon * cohortCap config (countPath config start (horizon + 1)) +
+          cohortCap config (countPath config start (horizon + 1)) :=
+        Nat.add_le_add (ih.trans (Nat.add_le_add_left (Nat.mul_le_mul_left horizon churn) _))
+          churn
+      _ = _ := by rw [Nat.succ_mul]; omega
+
+/-- The pre-fork count path pays its growth using the churn at the window endpoint. -/
+private theorem countPath_growth_window (config : Config) (start elapsed horizon : Nat)
+    (within : elapsed ≤ horizon) :
+    countPath config start elapsed - start ≤
+      horizon * cohortCap config (countPath config start horizon) := by
+  have mono : Monotone (countPath config start) :=
+    monotone_nat_of_le_succ fun t => Nat.le_add_right _ _
+  have bound := (mono within).trans (countPath_growth_le config start horizon)
+  omega
+
+/-- The scheduled cohort is already funded by the initial pre-active reserve. -/
+private theorem scheduled_reserve_le_pre {g x : ForkedBeaconState preset}
+    (shared : Run config checks g x) (genesis : Genesis (config := config) (checks := checks) g)
+    (caps : CapOrder preset) (aligned : MaxEffectiveBalancesAligned preset)
+    (early : x.fork < .pectra) :
+    preset.MAX_EFFECTIVE_BALANCE.toNat * scheduledCount x ≤ preActiveStake x := by
+  let p := fun v : Validator =>
+    decide (getCurrentEpoch x.state < v.activationEpoch) && v.activationEpoch != FAR_FUTURE_EPOCH
+  have counted (l : List Validator) : preset.MAX_EFFECTIVE_BALANCE.toNat * l.countP p =
+      (l.map fun v => if p v then preset.MAX_EFFECTIVE_BALANCE.toNat else 0).sum := by
+    induction l with
+    | nil => simp
+    | cons v rest ih => cases chosen : p v <;>
+        simp [chosen, Nat.mul_add, ih, Nat.add_comm]
+  have mapped : (x.state.validators.data.toList.zipIdx.map fun (v, _i) =>
+      if p v then preset.MAX_EFFECTIVE_BALANCE.toNat else 0) =
+      x.state.validators.data.toList.map
+        (fun v => if p v then preset.MAX_EFFECTIVE_BALANCE.toNat else 0) := by
+    simpa only [List.map_map, Function.comp_def] using
+      congrArg (List.map fun v => if p v then preset.MAX_EFFECTIVE_BALANCE.toNat else 0)
+        (List.zipIdx_map_fst 0 x.state.validators.data.toList)
+  change preset.MAX_EFFECTIVE_BALANCE.toNat * x.state.validators.data.toList.countP p ≤ _
+  rw [counted, ← mapped]
+  unfold preActiveStake
+  apply List.sum_le_sum
+  intro entry member
+  obtain ⟨v, i⟩ := entry
+  have found := List.mem_zipIdx_iff_getElem?.mp member
+  rw [Array.getElem?_toList] at found
+  by_cases selected : p v = true
+  · have chosen := selected
+    simp only [p, Bool.and_eq_true, decide_eq_true_eq, bne_iff_ne] at chosen
+    have ordered := shared.activationExitOrder genesis v (Array.mem_of_getElem? found)
+    have live := UInt64.lt_of_lt_of_le chosen.1 ordered
+    have inactive : isActiveValidator v (getCurrentEpoch x.state) = false := by
+      simp only [isActiveValidator, Bool.and_eq_false_iff, decide_eq_false_iff_not]
+      exact Or.inl (UInt64.not_le.mpr chosen.1)
+    have reserve := UInt64.le_iff_toNat_le.mp
+      (shared.scheduled_activation_reserve genesis caps.activation caps.compounding aligned
+        early i v found chosen.1 chosen.2)
+    simpa only [selected, ↓reduceIte, inactive, Bool.not_false, live, decide_true,
+      Bool.true_and, effectiveAt, actualBalanceAt, found, Option.map_some, Option.getD_some] using
+      reserve.trans (Nat.le_max_left v.effectiveBalance.toNat
+        (min (actualBalanceAt x i) (withdrawalMaxEffectiveBalance preset x.fork v).toNat))
+  · simp [selected]
+
 end EthLib.Consensus.DirectSafety
