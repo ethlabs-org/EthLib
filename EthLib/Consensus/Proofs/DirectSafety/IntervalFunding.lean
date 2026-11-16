@@ -557,12 +557,13 @@ The epoch is cut after the stages before the payments, which have a replay.
 Before Gloas the payments are the identity.
 
 The stages after the effective-balance update keep the validators and the balances. -/
-theorem epochBalanceReplay_result {fork : Fork} (s t : BeaconState preset fork)
+private theorem epochBalanceReplay_result_before {fork : Fork} (s t : BeaconState preset fork)
     (early : fork < .glamsterdam) (ok : processEpoch config checks s = .ok t) :
     ∃ middle updated events,
       epochBalanceReplay (config := config) (checks := checks) s = .ok (middle, events) ∧
       processEffectiveBalanceUpdates middle = .ok updated ∧
-      updated.validators = t.validators ∧ middle.balances = t.balances := by
+      updated.validators = t.validators ∧ middle.balances = t.balances ∧
+      epochBeforePayments config checks s = .ok middle := by
   have gloas : ¬ .glamsterdam ≤ fork := Nat.not_le_of_lt early
   have trace := processEpoch_trace ok
   change EpochTrace _ (EpochStage.prefixStages ++ [.payments, .effectiveBalances,
@@ -580,7 +581,19 @@ theorem epochBalanceReplay_result {fork : Fork} (s t : BeaconState preset fork)
   have updatedEdge := EpochStage.action_cases.mp updatedOk
   have kept := balanceDrift_late tail
   exact ⟨middle, updated, events, EpochTrace.run_ok_iff.mpr replay, updatedEdge, kept.1.symm,
-    ((kept.2).trans (processEffectiveBalanceUpdates_balances updatedEdge)).symm⟩
+    ((kept.2).trans (processEffectiveBalanceUpdates_balances updatedEdge)).symm,
+    (epochBeforePayments_eq_run config checks s).trans (EpochTrace.run_ok_iff.mpr head)⟩
+
+/-- The replay endpoint supplies the effective-update input and keeps the final balances. -/
+theorem epochBalanceReplay_result {fork : Fork} (s t : BeaconState preset fork)
+    (early : fork < .glamsterdam) (ok : processEpoch config checks s = .ok t) :
+    ∃ middle updated events,
+      epochBalanceReplay (config := config) (checks := checks) s = .ok (middle, events) ∧
+      processEffectiveBalanceUpdates middle = .ok updated ∧
+      updated.validators = t.validators ∧ middle.balances = t.balances := by
+  obtain ⟨middle, updated, events, replay, update, validators, balances, _⟩ :=
+    epochBalanceReplay_result_before s t early ok
+  exact ⟨middle, updated, events, replay, update, validators, balances⟩
 
 private theorem slashingLimits_result {fork : Fork} (s : BeaconState preset fork)
     (indices : List ValidatorIndex)
@@ -1739,17 +1752,8 @@ theorem _root_.EthLib.Consensus.Step.balanceEvents_slot {x y : ForkedBeaconState
   refine ⟨advanced, cached, crossings, advanceOk, upgrades, cachedOk, crossingOk, ?_⟩
   by_cases last : next % preset.SLOTS_PER_EPOCH = 0
   · simp only [epochIfLast, last, ↓reduceIte] at epochOk
-    obtain ⟨middle, updated, recorded, recordOk, updatedOk, validators, balances⟩ :=
-      epochBalanceReplay_result cached epoched before epochOk
-    have stages := processEpoch_trace epochOk
-    change EpochTrace _ (EpochStage.prefixStages ++ (EpochStage.middleStages ++
-      EpochStage.tailStages)) _ _ at stages
-    obtain ⟨cut, head, _⟩ := EpochTrace.append_iff.mp stages
-    have cutOk : epochBeforePayments config checks cached = .ok cut :=
-      (epochBeforePayments_eq_run config checks cached).trans (EpochTrace.run_ok_iff.mpr head)
-    obtain ⟨found, foundOk⟩ := epochBalanceReplay_before cutOk
-    have equal := (Prod.mk.inj (Except.ok.inj (foundOk.symm.trans recordOk))).1
-    subst cut
+    obtain ⟨middle, updated, recorded, recordOk, updatedOk, validators, balances, cutOk⟩ :=
+      epochBalanceReplay_result_before cached epoched before epochOk
     refine .inr ⟨middle, updated, recorded, recordOk, updatedOk, ?_, ?_, Except.ok.inj
       (replayed.symm.trans (Step.balanceEvents_epoch_slot ok cachedOk nextOk last recordOk
         advanceOk crossingOk)), next, ?_, ?_, last, cutOk⟩

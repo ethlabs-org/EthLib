@@ -3903,101 +3903,6 @@ private structure FloorAccount where
   high : Nat
   slashedHigh : Option Nat
 
-/-- The initial slashing allowance also pays for effective balance gained before the slashing. -/
-private def FloorAccount.allowance (a : FloorAccount) (base quotient : Nat) : Nat :=
-  match a.slashedHigh with
-  | none => 0
-  | some high => base / quotient + (high - base)
-
-/-- The balance and gross debits support the running high-water mark above the initial base. -/
-private def FloorAccount.Holds (a : FloorAccount) (low base quotient : Nat) : Prop :=
-  (∀ high ∈ a.slashedHigh, high ≤ a.high) ∧
-    low + (a.high - base) ≤ a.balance + a.debt + a.allowance base quotient
-
-/-- The initial account has neither routed debits nor a slashing charge. -/
-private theorem FloorAccount.initial (effective balance base quotient : Nat)
-    (capped : effective ≤ base) :
-    (FloorAccount.mk balance 0 effective none).Holds
-      (min effective balance) base quotient := by
-  simp only [Holds, allowance, Option.mem_def, reduceCtorEq,
-    Nat.sub_eq_zero_of_le capped, Nat.add_zero]
-  exact ⟨by simp, Nat.min_le_right _ _⟩
-
-/-- A credit raises the balance without paying back any earlier routed debit. -/
-private theorem FloorAccount.credit {a : FloorAccount} {low base quotient balance : Nat}
-    (held : a.Holds low base quotient) (raised : a.balance ≤ balance) :
-    { a with balance := balance }.Holds low base quotient := by
-  obtain ⟨slashed, bound⟩ := held
-  refine ⟨slashed, ?_⟩
-  change low + (a.high - base) ≤ balance + a.debt + a.allowance base quotient
-  omega
-
-/-- A routed debit raises the gross debit account by the amount lost. -/
-private theorem FloorAccount.debit {a : FloorAccount} {low base quotient balance debit : Nat}
-    (held : a.Holds low base quotient) (paid : a.balance ≤ balance + debit) :
-    { a with balance := balance, debt := a.debt + debit }.Holds low base quotient := by
-  obtain ⟨slashed, bound⟩ := held
-  refine ⟨slashed, ?_⟩
-  change low + (a.high - base) ≤ balance + (a.debt + debit) + a.allowance base quotient
-  omega
-
-/-- A sweep leaves enough balance for every effective balance reached so far. -/
-private theorem FloorAccount.sweep {a : FloorAccount} {low base quotient balance : Nat}
-    (held : a.Holds low base quotient) (initial : low ≤ base)
-    (floor : max low a.high ≤ balance) :
-    { a with balance := balance }.Holds low base quotient := by
-  obtain ⟨slashed, _⟩ := held
-  refine ⟨slashed, ?_⟩
-  change low + (a.high - base) ≤ balance + a.debt + a.allowance base quotient
-  have := Nat.le_max_left low a.high
-  have := Nat.le_max_right low a.high
-  omega
-
-/-- An effective update can raise the high-water mark only to a balance that backs it. -/
-private theorem FloorAccount.update {a : FloorAccount} {low base quotient effective : Nat}
-    (held : a.Holds low base quotient) (initial : low ≤ base)
-    (backed : effective ≤ a.balance) :
-    { a with high := max a.high effective }.Holds low base quotient := by
-  obtain ⟨slashed, bound⟩ := held
-  refine ⟨fun h member => (slashed h member).trans (Nat.le_max_left _ _), ?_⟩
-  change low + (max a.high effective - base) ≤
-    a.balance + a.debt + a.allowance base quotient
-  rcases Nat.le_total effective a.high with below | above
-  · simpa only [Nat.max_eq_left below] using bound
-  · rw [Nat.max_eq_right above]
-    omega
-
-/-- A first slashing spends its one-time allowance and freezes the excess at that point. -/
-private theorem FloorAccount.slash {a : FloorAccount} {low base quotient balance penalty : Nat}
-    (held : a.Holds low base quotient) (first : a.slashedHigh = none)
-    (paid : a.balance ≤ balance + penalty)
-    (bounded : penalty ≤ base / quotient + (a.high - base)) :
-    { a with balance := balance, slashedHigh := some a.high }.Holds low base quotient := by
-  obtain ⟨_, bound⟩ := held
-  simp only [allowance, first, Nat.add_zero] at bound
-  refine ⟨?_, ?_⟩
-  · intro h member
-    have eq : a.high = h := Option.some.inj member
-    subst h
-    exact Nat.le_refl _
-  · change low + (a.high - base) ≤
-      balance + a.debt + (base / quotient + (a.high - base))
-    omega
-
-/-- The frozen excess can be dropped from the invariant, but the gross routed debits remain. -/
-private theorem FloorAccount.floor {a : FloorAccount} {low base quotient : Nat}
-    (held : a.Holds low base quotient) :
-    low ≤ a.balance + a.debt + if a.slashedHigh.isSome then base / quotient else 0 := by
-  obtain ⟨slashed, bound⟩ := held
-  cases eq : a.slashedHigh with
-  | none => simp only [allowance, eq] at bound; simpa [eq] using (by omega :
-      low ≤ a.balance + a.debt)
-  | some h =>
-    have ordered := slashed h eq
-    simp only [allowance, eq] at bound
-    simp only [Option.isSome_some, ↓reduceIte]
-    omega
-
 /-- An accounting trace classifies only the effects relevant to the per-key floor.
 
 The event bridge supplies these cases from the actual replay and effective updates. -/
@@ -4014,54 +3919,6 @@ private inductive FloorTrace (low base quotient : Nat) : FloorAccount → FloorA
   | slash : FloorTrace low base quotient a b → b.slashedHigh = none →
       b.balance ≤ balance + penalty → penalty ≤ base / quotient + (b.high - base) →
       FloorTrace low base quotient a { b with balance := balance, slashedHigh := some b.high }
-
-/-- Each classified effect keeps the prefix-sensitive invariant. -/
-private theorem FloorTrace.holds {low base quotient : Nat} {a b : FloorAccount}
-    (trace : FloorTrace low base quotient a b) (initial : low ≤ base)
-    (held : a.Holds low base quotient) : b.Holds low base quotient := by
-  induction trace with
-  | nil => exact held
-  | credit _ raised ih => exact FloorAccount.credit ih raised
-  | debit _ paid ih => exact FloorAccount.debit ih paid
-  | sweep _ floor ih => exact FloorAccount.sweep ih initial floor
-  | update _ backed ih => exact FloorAccount.update ih initial backed
-  | slash _ first paid bounded ih => exact FloorAccount.slash ih first paid bounded
-
-/-- The classified trace gives a balance floor with one slashing charge, not one per update. -/
-private theorem FloorTrace.floor {effective balance base quotient : Nat} {last : FloorAccount}
-    (trace : FloorTrace (min effective balance) base quotient
-      ⟨balance, 0, effective, none⟩ last) (capped : effective ≤ base) :
-    min effective balance ≤ last.balance + last.debt +
-      if last.slashedHigh.isSome then base / quotient else 0 :=
-  FloorAccount.floor (trace.holds ((Nat.min_le_left _ _).trans capped)
-    (FloorAccount.initial effective balance base quotient capped))
-
-/-- Route F clips the initial allowance base at the pre-Electra effective-balance cap. -/
-private def floorBase (fork : Fork) (effective balance : Nat) : Nat :=
-  if fork < .pectra then min (max effective balance) preset.MAX_EFFECTIVE_BALANCE.toNat
-  else max effective balance
-
-/-- The clipped base still covers the initial effective balance. -/
-private theorem floorBase_ge (fork : Fork) (effective balance : Nat)
-    (capped : fork < .pectra → effective ≤ preset.MAX_EFFECTIVE_BALANCE.toNat) :
-    effective ≤ floorBase (preset := preset) fork effective balance := by
-  unfold floorBase
-  split
-  · exact Nat.le_min.mpr ⟨Nat.le_max_left _ _, capped ‹_›⟩
-  · exact Nat.le_max_left _ _
-
-/-- The initial slack and the frozen clipped allowance bound the loss of actual balance. -/
-private theorem FloorTrace.reference_floor {effective balance quotient : Nat}
-    {last : FloorAccount} (fork : Fork)
-    (trace : FloorTrace (min effective balance)
-      (floorBase (preset := preset) fork effective balance) quotient
-      ⟨balance, 0, effective, none⟩ last)
-    (capped : fork < .pectra → effective ≤ preset.MAX_EFFECTIVE_BALANCE.toNat) :
-    effective ≤ last.balance + (effective - balance) + last.debt +
-      if last.slashedHigh.isSome then
-        floorBase (preset := preset) fork effective balance / quotient else 0 := by
-  have bound := trace.floor (floorBase_ge fork effective balance capped)
-  omega
 
 /-- The delayed-slashing operation recorded by an epoch replay cannot debit a newly slashed key.
 
@@ -4241,6 +4098,48 @@ private def floorSlash (i : Nat) (event : BalanceEvent preset) : Bool :=
     !(event.before.state.validators.data[i]?.map (·.slashed)).getD true &&
     (event.after.state.validators.data[i]?.map (·.slashed)).getD false
 
+/-- A step with no new slashing at an index has no replay event newly slashing that index. -/
+private theorem slashing_step_count_le {config : Config} {checks : SignatureChecks}
+    {x y : ForkedBeaconState preset} (step : Step config checks x y)
+    (early : y.fork < .glamsterdam) (holds : Invariant x.state)
+    (compounding : preset.MIN_ACTIVATION_BALANCE ≤ preset.MAX_EFFECTIVE_BALANCE_ELECTRA)
+    {events : List (BalanceEvent preset)} (replayed : step.balanceEvents = .ok events) (i : Nat) :
+    (events.countP fun e =>
+      !(e.before.state.validators.data[i]?.map (·.slashed)).getD true &&
+        (e.after.state.validators.data[i]?.map (·.slashed)).getD false) ≤
+      if !(x.state.validators.data[i]?.map (·.slashed)).getD false &&
+          (y.state.validators.data[i]?.map (·.slashed)).getD false then 1 else 0 := by
+  have sites := step.balanceEvents_sites early holds compounding replayed
+  by_cases active : (!(x.state.validators.data[i]?.map (·.slashed)).getD false &&
+      (y.state.validators.data[i]?.map (·.slashed)).getD false) = true
+  · rw [ite_eq_left active]
+    cases events with
+    | nil => simp
+    | cons e rest => exact (sites e (by simp)).2.2.2.2.2.2.2.2.2.2.2.2.2.2.1 i
+  · rw [ite_eq_right active]
+    apply Nat.le_zero.mpr
+    apply List.countP_eq_zero.mpr
+    intro e member marked
+    obtain ⟨_, _, _, _, _, _, _, _, _, _, _, first, _, last, _⟩ := sites e member
+    have flags : (!(e.before.state.validators.data[i]?.map (·.slashed)).getD true) = true ∧
+        (e.after.state.validators.data[i]?.map (·.slashed)).getD false = true := by
+      simpa only [Bool.and_eq_true] using marked
+    cases after : e.after.state.validators.data[i]? with
+    | none => simp [after] at flags
+    | some v =>
+      have slashed : v.slashed = true := by simpa [after] using flags.2
+      obtain ⟨w, final, flag⟩ := last i v after slashed
+      have start : (x.state.validators.data[i]?.map (·.slashed)).getD false = false := by
+        cases before : x.state.validators.data[i]? with
+        | none => simp
+        | some u =>
+          cases was : u.slashed with
+          | false => simp [was]
+          | true =>
+            obtain ⟨z, atEvent, was'⟩ := first i u before was
+            simp [atEvent, was'] at flags
+      exact active (by simp [start, final, flag])
+
 /-- M1's occurrence count and persistence bound the charge by the endpoint slashed flag. -/
 private theorem floorSlash_step_bound {x y : ForkedBeaconState preset}
     (step : Step config checks x y) (caps : CapOrder preset)
@@ -4250,48 +4149,25 @@ private theorem floorSlash_step_bound {x y : ForkedBeaconState preset}
     (final : y.state.validators.data[i]? = some w) :
     (if v.slashed then 1 else 0) + events.countP (floorSlash i) ≤
       if w.slashed then 1 else 0 := by
-  have zero (unmarked : w.slashed = false) : events.countP (floorSlash i) = 0 := by
-    apply List.countP_eq_zero.mpr
-    intro e member
-    have sites := step.balanceEvents_sites early holds caps.compounding replayed e member
-    obtain ⟨u, found, _⟩ := sites.2.2.2.2.2.2.2.2.1.validators i v initial
-    obtain ⟨z, located, _⟩ := sites.2.2.2.2.2.2.2.2.2.1.validators i u found
-    cases marked : z.slashed with
-    | false => simp [floorSlash, located, marked]
-    | true =>
-      obtain ⟨last, read, flag⟩ := sites.2.2.2.2.2.2.2.2.2.2.2.2.2.1 i z located marked
-      have same := Option.some.inj (read.symm.trans final)
-      subst last
-      simp [unmarked] at flag
+  have filtered := List.countP_mono_left (l := events) (p := floorSlash i)
+    (q := fun e => !(e.before.state.validators.data[i]?.map (·.slashed)).getD true &&
+      (e.after.state.validators.data[i]?.map (·.slashed)).getD false)
+    (by
+      intro event _ marked
+      simp only [floorSlash, Bool.and_eq_true] at marked
+      simp only [Bool.and_eq_true]
+      exact ⟨marked.1.2, marked.2⟩)
+  have counted := filtered.trans (slashing_step_count_le step early holds caps.compounding
+    replayed i)
+  simp only [initial, final, Option.map_some, Option.getD_some] at counted
   cases first : v.slashed with
   | true =>
     obtain ⟨last, read, flag⟩ := step.slashedPersistence i v initial first
     have same := Option.some.inj (read.symm.trans final)
     subst last
-    have none : events.countP (floorSlash i) = 0 := by
-      apply List.countP_eq_zero.mpr
-      intro e member
-      have sites := step.balanceEvents_sites early holds caps.compounding replayed e member
-      obtain ⟨u, found, marked⟩ := sites.2.2.2.2.2.2.2.2.2.2.2.1 i v initial first
-      simp [floorSlash, found, marked]
-    simp [flag, none]
+    simpa [first, flag] using counted
   | false =>
-    cases last : w.slashed with
-    | false => simp [zero last]
-    | true =>
-      simp only [Bool.false_eq_true, ↓reduceIte, Nat.zero_add]
-      cases events with
-      | nil => simp
-      | cons e rest =>
-        have sites := step.balanceEvents_sites early holds caps.compounding replayed e
-          (by simp)
-        have bound := sites.2.2.2.2.2.2.2.2.2.2.2.2.2.2.1 i
-        apply Nat.le_trans ?_ bound
-        apply List.countP_mono_left
-        intro event member marked
-        simp only [floorSlash, Bool.and_eq_true] at marked
-        simp only [Bool.and_eq_true]
-        exact ⟨marked.1.2, marked.2⟩
+    simpa [first] using counted
 
 /-- The occurrence budget supplies the first-slash side condition at each recorded event. -/
 private theorem FloorTrace.events {low base quotient : Nat} {a b : FloorAccount}
@@ -5228,48 +5104,6 @@ private theorem slashing_step_support {config : Config} {checks : SignatureCheck
     · simp only [show e.creditLimit = 0 by omega]
       exact Nat.zero_le _
   · simp [source]
-
-/-- A step with no new slashing at an index has no replay event newly slashing that index. -/
-private theorem slashing_step_count_le {config : Config} {checks : SignatureChecks}
-    {x y : ForkedBeaconState preset} (step : Step config checks x y)
-    (early : y.fork < .glamsterdam) (holds : Invariant x.state)
-    (compounding : preset.MIN_ACTIVATION_BALANCE ≤ preset.MAX_EFFECTIVE_BALANCE_ELECTRA)
-    {events : List (BalanceEvent preset)} (replayed : step.balanceEvents = .ok events) (i : Nat) :
-    (events.countP fun e =>
-      !(e.before.state.validators.data[i]?.map (·.slashed)).getD true &&
-        (e.after.state.validators.data[i]?.map (·.slashed)).getD false) ≤
-      if !(x.state.validators.data[i]?.map (·.slashed)).getD false &&
-          (y.state.validators.data[i]?.map (·.slashed)).getD false then 1 else 0 := by
-  have sites := step.balanceEvents_sites early holds compounding replayed
-  by_cases active : (!(x.state.validators.data[i]?.map (·.slashed)).getD false &&
-      (y.state.validators.data[i]?.map (·.slashed)).getD false) = true
-  · rw [ite_eq_left active]
-    cases events with
-    | nil => simp
-    | cons e rest => exact (sites e (by simp)).2.2.2.2.2.2.2.2.2.2.2.2.2.2.1 i
-  · rw [ite_eq_right active]
-    apply Nat.le_zero.mpr
-    apply List.countP_eq_zero.mpr
-    intro e member marked
-    obtain ⟨_, _, _, _, _, _, _, _, _, _, _, first, _, last, _⟩ := sites e member
-    have flags : (!(e.before.state.validators.data[i]?.map (·.slashed)).getD true) = true ∧
-        (e.after.state.validators.data[i]?.map (·.slashed)).getD false = true := by
-      simpa only [Bool.and_eq_true] using marked
-    cases after : e.after.state.validators.data[i]? with
-    | none => simp [after] at flags
-    | some v =>
-      have slashed : v.slashed = true := by simpa [after] using flags.2
-      obtain ⟨w, final, flag⟩ := last i v after slashed
-      have start : (x.state.validators.data[i]?.map (·.slashed)).getD false = false := by
-        cases before : x.state.validators.data[i]? with
-        | none => simp
-        | some u =>
-          cases was : u.slashed with
-          | false => simp [was]
-          | true =>
-            obtain ⟨z, atEvent, was'⟩ := first i u before was
-            simp [atEvent, was'] at flags
-      exact active (by simp [start, final, flag])
 
 /-- Persistence composes the per-step single-slashing count over the replay of a run. -/
 private theorem slashing_run_count_le {config : Config} {checks : SignatureChecks}
