@@ -1037,7 +1037,8 @@ private theorem _root_.EthLib.Consensus.Run.withdrawnConsolidationCredit_eq_zero
     ∀ e ∈ events,
       (e.source = .deposits → withdrawnConsolidationCredit e = 0) ∧
       (0 < e.creditLimit → e.source = .rewards ∨ e.source = .sync ∨
-        e.source = .slashings ∨ e.source = .deposits ∨ e.source = .consolidations) := by
+        e.source = .slashings ∨ e.source = .deposits ∨ e.source = .consolidations) ∧
+      x.fork ≤ e.before.fork := by
   -- Every event of the run is within its own limits.
   obtain ⟨recorded, recordedOk, bounded⟩ :=
     Run.balanceEvents_bounded shared tail genesis early high
@@ -1050,7 +1051,7 @@ private theorem _root_.EthLib.Consensus.Run.withdrawnConsolidationCredit_eq_zero
             (e.source = .deposits → withdrawnConsolidationCredit e = 0) ∧
             (0 < e.creditLimit → e.source = .rewards ∨ e.source = .sync ∨
               e.source = .slashings ∨ e.source = .deposits ∨
-                e.source = .consolidations) := by
+                e.source = .consolidations) ∧ x.fork ≤ e.before.fork := by
     intro z part
     induction part with
     | nil =>
@@ -1070,10 +1071,11 @@ private theorem _root_.EthLib.Consensus.Run.withdrawnConsolidationCredit_eq_zero
         rcases List.mem_append.mp mem with mem | mem
         · exact ih before priorOk (fun e member => bounded e (List.mem_append_left _ member))
             e mem
-        · exact ⟨stepBalanceEvents_withdrawnConsolidationCredit (shared.append pre) genesis step
+        · have sites := step.balanceEvents_credit_sources early
+            (run_justified_separated (shared.append pre) genesis).1 addedOk e mem
+          exact ⟨stepBalanceEvents_withdrawnConsolidationCredit (shared.append pre) genesis step
             early delay addedOk (fun e member => bounded e (List.mem_append_right _ member)) e mem,
-            step.balanceEvents_credit_sources early
-              (run_justified_separated (shared.append pre) genesis).1 addedOk e mem⟩
+            sites.2, Nat.le_trans (fork_le_of_chainSteps pre.chainSteps) sites.1⟩
       · cases rest
         exact ih before priorOk bounded
   exact key tail early ok bounded
@@ -3188,7 +3190,7 @@ private theorem otherCredit_sum {g x y : ForkedBeaconState preset}
   apply congrArg List.sum
   apply List.map_congr_left
   intro e member
-  obtain ⟨withdrawn, sources⟩ := sites e member
+  obtain ⟨withdrawn, sources, _⟩ := sites e member
   have zero : ¬ (e.source = .rewards ∨ e.source = .sync ∨ e.source = .slashings ∨
       e.source = .deposits ∨ e.source = .consolidations) → e.creditLimit = 0 := by
     intro outside
@@ -3201,6 +3203,25 @@ private theorem otherCredit_sum {g x y : ForkedBeaconState preset}
     simp [electra, before]
   · have before : e.before.fork < .pectra := Nat.lt_of_not_ge electra
     simp [electra, before]
+
+/-- From Electra, only slashing events contribute other funding credits. -/
+private theorem otherCredit_sum_electra {g x y : ForkedBeaconState preset}
+    (shared : Run config checks g x) (tail : Run config checks x y)
+    (genesis : Genesis (config := config) (checks := checks) g)
+    (electra : .pectra ≤ x.fork) (early : y.fork < .glamsterdam)
+    (delay : 0 < config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat)
+    {high : Nat} {events : List (BalanceEvent preset)}
+    (replayed : tail.balanceEvents high = .ok events) :
+    (events.map otherCredit).sum =
+      (events.map fun e => if e.source = .slashings then e.creditLimit else 0).sum := by
+  rw [otherCredit_sum shared tail genesis early delay replayed]
+  apply congrArg List.sum
+  apply List.map_congr_left
+  intro e member
+  have fork := (shared.withdrawnConsolidationCredit_eq_zero tail genesis early delay
+    replayed e member).2.2
+  have before : ¬ e.before.fork < .pectra := Nat.not_lt_of_ge (Nat.le_trans electra fork)
+  simp [before]
 
 /-- The credit limits of one source are at most all the credit limits. -/
 private theorem sourceCredits_le (source : BalanceSource) (events : List (BalanceEvent preset)) :
@@ -5663,5 +5684,24 @@ private theorem slashing_credits_le_allowance_of_guard {g x y : ForkedBeaconStat
     omega
   exact slashing_credits_le_allowance shared genesis tail caps aligned early regime finite
     positive high endEpoch forks replayed
+
+/-- SW: from Electra, the guarded whistleblower allowance pays every other funding credit. -/
+private theorem otherCredit_le_allowance_electra {g x y : ForkedBeaconState preset}
+    (shared : Run config checks g x) (genesis : Genesis (config := config) (checks := checks) g)
+    (tail : Run config checks x y) (caps : CapOrder preset)
+    (aligned : MaxEffectiveBalancesAligned preset) (electra : .pectra ≤ x.fork)
+    (early : y.fork < .glamsterdam) (twoSlots : 2 ≤ preset.SLOTS_PER_EPOCH.toNat)
+    (high : Nat) (endEpoch : (getCurrentEpoch y.state).toNat ≤ high + 1)
+    (guard : aprioriGuardAt config x high)
+    {events : List (BalanceEvent preset)} (replayed : tail.balanceEvents high = .ok events) :
+    (events.map otherCredit).sum ≤
+      whistleblowerAllowance preset config (refCount x) (scheduledCount x)
+        (unassignedPreStake x) (fundingCarry x) (slashableInactiveCount x)
+        (driftHorizon x high) (forkEpochs config x high) := by
+  have allowance := slashing_credits_le_allowance_of_guard shared genesis tail caps aligned
+    early twoSlots high endEpoch guard replayed
+  obtain ⟨-, -, -, -, -, -, -, -, -, delay, -, -, -, -⟩ := guard
+  rw [otherCredit_sum_electra shared tail genesis electra early (by omega) replayed]
+  exact allowance
 
 end EthLib.Consensus.DirectSafety

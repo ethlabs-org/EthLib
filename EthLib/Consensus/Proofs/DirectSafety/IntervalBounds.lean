@@ -1503,7 +1503,8 @@ private def intervalLoss_EventBetween {config : Config} {checks : SignatureCheck
       intervalLoss_EpochEvent e) ∧ SlashedPersistence x.state e.before.state ∧
     (e.source = .consolidations →
       (getCurrentEpoch e.before.state).toNat < (getCurrentEpoch y.state).toNat) ∧
-    (e.source = .crossing → x.fork < .pectra ∧ .pectra ≤ y.fork)
+    (e.source = .crossing → x.fork < .pectra ∧ .pectra ≤ y.fork) ∧
+    x.fork ≤ e.before.fork
 
 private theorem intervalLoss_sites_between {x y : ForkedBeaconState preset}
     {e : BalanceEvent preset} (first : intervalLoss_SiteStep x e.before)
@@ -1519,7 +1520,7 @@ private theorem intervalLoss_sites_between {x y : ForkedBeaconState preset}
     middle.matched (first.matched matched), ?_, ?_,
     Nat.lt_of_le_of_lt middle.fork_le afterEarly, middle.slashed,
     last.slashed, source, Nat.le_trans middle.fork_le last.fork_le, .inr (.inl kind),
-    first.slashed, ?_, ?_⟩
+    first.slashed, ?_, ?_, first.fork_le⟩
   · rw [first.epoch]
   · rw [middle.epoch, last.epoch]
   · obtain ⟨_, _, _, _, _, _, _, _, _, notPending, _⟩ := kind
@@ -1581,7 +1582,7 @@ private theorem intervalLoss_step_sites {x y : ForkedBeaconState preset}
         middle.slashed, last.slashed, (fun h => by rw [source.1] at h; cases h),
         Nat.le_trans middle.fork_le last.fork_le, .inl source,
         advancedSlashed.trans first.slashed,
-        (fun pending => by rw [source.1] at pending; cases pending), ?_⟩
+        (fun pending => by rw [source.1] at pending; cases pending), ?_, first.fork_le⟩
       · exact first.ordered advancedHolds.exitsOrdered
       · exact middle.matched (first.matched advancedHolds.balancesMatch)
       · rw [middle.epoch, last.epoch]
@@ -1615,7 +1616,7 @@ private theorem intervalLoss_step_sites {x y : ForkedBeaconState preset}
         Nat.lt_of_le_of_lt (Nat.le_trans during.fork_le last.fork_le) before,
         during.slashed, (last.slashed.trans finishSlashed).trans crossingStep.slashed, source,
         Nat.le_trans (Nat.le_trans during.fork_le last.fork_le) crossingStep.fork_le,
-        .inr (.inr (sites.2 e member)), initial.slashed, ?_, ?_⟩
+        .inr (.inr (sites.2 e member)), initial.slashed, ?_, ?_, initial.fork_le⟩
       · rw [initial.epoch]
       · rw [← initial.epoch]; exact advanceEpoch
       · intro _
@@ -2610,12 +2611,14 @@ theorem _root_.EthLib.Consensus.Step.balanceEvents_credit_sources
     {x y : ForkedBeaconState preset} (step : Step config checks x y)
     (early : y.fork < .glamsterdam) (holds : Invariant x.state)
     {events : List (BalanceEvent preset)} (replayed : step.balanceEvents = .ok events) :
-    ∀ e ∈ events, 0 < e.creditLimit →
-      e.source = .rewards ∨ e.source = .sync ∨ e.source = .slashings ∨
-        e.source = .deposits ∨ e.source = .consolidations := by
-  intro e member positive
-  obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, kind, _⟩ :=
+    ∀ e ∈ events, x.fork ≤ e.before.fork ∧
+      (0 < e.creditLimit → e.source = .rewards ∨ e.source = .sync ∨
+        e.source = .slashings ∨ e.source = .deposits ∨ e.source = .consolidations) := by
+  intro e member
+  obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, kind, _, _, _, fork⟩ :=
     (intervalLoss_step_sites step early holds replayed).1 e member
+  refine ⟨fork, ?_⟩
+  intro positive
   have zero : (e.source = .withdrawals ∨ e.source = .excess ∨ e.source = .penalties ∨
       e.source = .inactivity ∨ e.source = .crossing) → e.creditLimit = 0 := by
     rcases kind with crossing | block | epoch
@@ -2719,7 +2722,7 @@ theorem _root_.EthLib.Consensus.Step.balanceEvents_sites {x y : ForkedBeaconStat
   intro e member
   have sites := intervalLoss_step_sites step early holds replayed
   obtain ⟨grown, duringLife, finalLife, ordered, _, _, epochBound, beforeEarly,
-    duringSlashed, finalSlashed, site, _, kind, prefixSlashed, pendingEpoch, crossed⟩ :=
+    duringSlashed, finalSlashed, site, _, kind, prefixSlashed, pendingEpoch, crossed, _⟩ :=
       sites.1 e member
   -- An event of a block or an epoch has the plain facts; a crossing has the upgrade.
   have plain : (e.source = .crossing ∧ e.before.fork = .dencun ∧ .pectra ≤ e.after.fork) ∨
