@@ -4354,6 +4354,20 @@ theorem Run.validatorCap_mono {x y : ForkedBeaconState preset}
         withdrawalMaxEffectiveBalance preset y.fork w :=
   (CapStep.run run activation compounding early).1.monotone i v found
 
+/-- Before the epoch sentinel, a slashed validator has an assigned activation epoch. -/
+theorem Run.slashed_activation_assigned {g x : ForkedBeaconState preset}
+    (run : Run config checks g x) (genesis : Genesis (config := config) (checks := checks) g)
+    (activation : preset.MAX_EFFECTIVE_BALANCE ≤ preset.MIN_ACTIVATION_BALANCE)
+    (compounding : preset.MIN_ACTIVATION_BALANCE ≤ preset.MAX_EFFECTIVE_BALANCE_ELECTRA)
+    (aligned : MaxEffectiveBalancesAligned preset) (early : x.fork < .glamsterdam)
+    (finite : getCurrentEpoch x.state < FAR_FUTURE_EPOCH)
+    (i : Nat) (v : Validator) (found : x.state.validators.data[i]? = some v)
+    (slashed : v.slashed = true) : v.activationEpoch ≠ FAR_FUTURE_EPOCH := by
+  intro pending
+  have unslashed := ((run_unassigned_eligible_balance run genesis activation compounding
+    aligned early finite) i v found pending).2.2
+  simp [slashed] at unslashed
+
 /-- A newly slashed key that had exited at the start was not yet withdrawable there. -/
 theorem Run.newly_slashed_initial_exited_unwithdrawable {x y : ForkedBeaconState preset}
     (run : Run config checks x y)

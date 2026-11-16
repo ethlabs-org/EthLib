@@ -3874,10 +3874,12 @@ private theorem windowAssignments_le_budget {g x u : ForkedBeaconState preset}
       (unassigned_assignment_count shared genesis head caps aligned electra early finite positive))
 
 /-- A newly slashed assigned key is a window assignment or an initially slashable exited key. -/
-private theorem newly_slashed_initial_classification {x y : ForkedBeaconState preset}
-    (tail : Run config checks x y) (caps : CapOrder preset) (early : y.fork < .glamsterdam)
+private theorem newly_slashed_initial_classification {g x y : ForkedBeaconState preset}
+    (shared : Run config checks g x) (genesis : Genesis (config := config) (checks := checks) g)
+    (tail : Run config checks x y) (caps : CapOrder preset)
+    (aligned : MaxEffectiveBalancesAligned preset) (early : y.fork < .glamsterdam)
+    (finite : getCurrentEpoch y.state < FAR_FUTURE_EPOCH)
     (i : Nat) (w : Validator) (after : y.state.validators.data[i]? = some w)
-    (assigned : w.activationEpoch ≠ FAR_FUTURE_EPOCH)
     (initialFlag : (x.state.validators.data[i]?.map (·.slashed)).getD false = false)
     (slashed : w.slashed = true) :
     ((y.state.validators.data[i]?).any (·.activationEpoch != FAR_FUTURE_EPOCH) &&
@@ -3885,6 +3887,8 @@ private theorem newly_slashed_initial_classification {x y : ForkedBeaconState pr
         decide (getCurrentEpoch x.state < v.exitEpoch)) = true ∨
     ∃ v, x.state.validators.data[i]? = some v ∧ v.slashed = false ∧
       v.exitEpoch ≤ getCurrentEpoch x.state ∧ getCurrentEpoch x.state < v.withdrawableEpoch := by
+  have assigned := (shared.append tail).slashed_activation_assigned genesis caps.activation
+    caps.compounding aligned early finite i w after slashed
   cases before : x.state.validators.data[i]? with
   | none => exact .inl (by simp [after, assigned])
   | some v =>
@@ -3895,6 +3899,66 @@ private theorem newly_slashed_initial_classification {x y : ForkedBeaconState pr
           early i v w before after unslashed slashed exited⟩
     · have live := UInt64.not_le.mp exited
       exact .inl (by simp [after, assigned, live])
+
+/-- The initially exited slashable keys are counted over their registry positions. -/
+private theorem slashableInactiveCount_eq_card (x : ForkedBeaconState preset) :
+    slashableInactiveCount x = ((Finset.range x.state.validators.data.size).filter fun i =>
+      (x.state.validators.data[i]?).any fun v => !v.slashed &&
+        decide (v.exitEpoch ≤ getCurrentEpoch x.state) &&
+        decide (getCurrentEpoch x.state < v.withdrawableEpoch)).card := by
+  let p := fun v : Validator => !v.slashed &&
+    decide (v.exitEpoch ≤ getCurrentEpoch x.state) &&
+    decide (getCurrentEpoch x.state < v.withdrawableEpoch)
+  have count (l : List Validator) : l.countP p =
+      (l.map fun v => if p v then 1 else 0).sum := by
+    induction l with
+    | nil => simp
+    | cons v l ih => cases chosen : p v <;> simp [chosen, ih, Nat.add_comm]
+  have mapped : (x.state.validators.data.toList.zipIdx.map fun (v, _i) =>
+      if p v then 1 else 0) =
+      x.state.validators.data.toList.map (fun v => if p v then 1 else 0) := by
+    simpa only [List.map_map, Function.comp_def] using
+      congrArg (List.map fun v => if p v then 1 else 0)
+        (List.zipIdx_map_fst 0 x.state.validators.data.toList)
+  rw [slashableInactiveCount, count, ← mapped,
+    funding_sum_zipIdx x.state.validators.data.toList (fun v _ => if p v then 1 else 0),
+    Array.length_toList, Finset.card_filter]
+  apply Finset.sum_congr rfl
+  intro i _
+  cases found : x.state.validators.data[i]? with
+  | none => simp [Array.getElem?_toList, found]
+  | some v => simp [Array.getElem?_toList, found, p]
+
+/-- Newly slashed keys belong to the window assignments or to the initial exited cohort. -/
+private theorem newly_slashed_count_le {g x y : ForkedBeaconState preset}
+    (shared : Run config checks g x) (genesis : Genesis (config := config) (checks := checks) g)
+    (tail : Run config checks x y) (caps : CapOrder preset)
+    (aligned : MaxEffectiveBalancesAligned preset) (early : y.fork < .glamsterdam)
+    (finite : getCurrentEpoch y.state < FAR_FUTURE_EPOCH) :
+    ((Finset.range y.state.validators.data.size).filter fun i =>
+      !(x.state.validators.data[i]?.map (·.slashed)).getD false &&
+        (y.state.validators.data[i]?.map (·.slashed)).getD false).card ≤
+      ((Finset.range y.state.validators.data.size).filter fun i =>
+        (y.state.validators.data[i]?).any (·.activationEpoch != FAR_FUTURE_EPOCH) &&
+          (x.state.validators.data[i]?).all fun v => v.activationEpoch == FAR_FUTURE_EPOCH ||
+            decide (getCurrentEpoch x.state < v.exitEpoch)).card + slashableInactiveCount x := by
+  rw [slashableInactiveCount_eq_card]
+  refine (Finset.card_le_card ?_).trans (Finset.card_union_le _ _)
+  intro i member
+  obtain ⟨inside, marked⟩ := Finset.mem_filter.mp member
+  have flags : (x.state.validators.data[i]?.map (·.slashed)).getD false = false ∧
+      (y.state.validators.data[i]?.map (·.slashed)).getD false = true := by
+    simpa only [Bool.and_eq_true, Bool.not_eq_true'] using marked
+  cases found : y.state.validators.data[i]? with
+  | none => simp [found] at flags
+  | some w =>
+    have slashed : w.slashed = true := by simpa [found] using flags.2
+    rcases newly_slashed_initial_classification shared genesis tail caps aligned early finite
+        i w found flags.1 slashed with assigned | ⟨v, before, unslashed, exited, withdrawn⟩
+    · exact Finset.mem_union_left _ (Finset.mem_filter.mpr ⟨inside, assigned⟩)
+    · exact Finset.mem_union_right _ (Finset.mem_filter.mpr
+        ⟨Finset.mem_range.mpr (Array.getElem?_eq_some_iff.mp before).1,
+          by simp [before, unslashed, exited, withdrawn]⟩)
 
 /-- Before Electra, the active validators at each state of a branch from `x` follow `A_t`.
 
