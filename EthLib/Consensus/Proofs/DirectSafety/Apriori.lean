@@ -5575,4 +5575,49 @@ private theorem slashing_credits_le_allowance {g x y : ForkedBeaconState preset}
   · simp only [electra, forks.mpr (Nat.lt_of_not_ge electra), ↓reduceIte]
     exact Nat.mul_div_le_mul_div_assoc _ _ _
 
+/-- The numeric guard supplies the fixed slashing allowance at every bounded early endpoint. -/
+private theorem slashing_credits_le_allowance_of_guard {g x y : ForkedBeaconState preset}
+    (shared : Run config checks g x) (genesis : Genesis (config := config) (checks := checks) g)
+    (tail : Run config checks x y) (caps : CapOrder preset)
+    (aligned : MaxEffectiveBalancesAligned preset) (early : y.fork < .glamsterdam)
+    (twoSlots : 2 ≤ preset.SLOTS_PER_EPOCH.toNat)
+    (high : Nat) (endEpoch : (getCurrentEpoch y.state).toNat ≤ high + 1)
+    (guard : aprioriGuardAt config x high)
+    {events : List (BalanceEvent preset)} (replayed : tail.balanceEvents high = .ok events) :
+    (events.map fun e => if e.source = .slashings then e.creditLimit else 0).sum ≤
+      whistleblowerAllowance preset config (refCount x) (scheduledCount x)
+        (unassignedPreStake x) (fundingCarry x) (slashableInactiveCount x)
+        (driftHorizon x high) (forkEpochs config x high) := by
+  obtain ⟨-, -, -, positive, -, -, -, -, -, -, -, -, -, crossing⟩ := guard
+  have forks : (0 < forkEpochs config x high) ↔ x.fork < .pectra := by
+    by_cases before : x.fork < .pectra
+    · simp only [before, iff_true]
+      unfold forkEpochs
+      simp only [before, ↓reduceIte]
+      split_ifs <;> omega
+    · simp [forkEpochs, before]
+  have regime : .pectra ≤ x.fork ∨ y.fork < .pectra := by
+    by_cases electra : .pectra ≤ x.fork
+    · exact .inl electra
+    · right
+      have before := Nat.lt_of_not_ge electra
+      have ends := crossing.resolve_left (Nat.ne_of_gt (forks.mpr before))
+      have late : high + 1 < config.ELECTRA_FORK_EPOCH.toNat := by
+        simp only [forkEpochs, driftHorizon] at ends
+        split_ifs at ends <;> omega
+      apply Nat.lt_of_not_ge
+      intro reached
+      have epoch := reachable_electra_epoch (shared.append tail) genesis reached
+      omega
+  have finite : getCurrentEpoch y.state < FAR_FUTURE_EPOCH := by
+    rw [UInt64.lt_iff_toNat_lt, getCurrentEpoch_toNat]
+    have bounded := y.state.slot.toNat_lt
+    have divided := Nat.div_mul_le_self y.state.slot.toNat preset.SLOTS_PER_EPOCH.toNat
+    have twice := (Nat.mul_le_mul_left
+      (y.state.slot.toNat / preset.SLOTS_PER_EPOCH.toNat) twoSlots).trans divided
+    change y.state.slot.toNat / preset.SLOTS_PER_EPOCH.toNat < 18446744073709551615
+    omega
+  exact slashing_credits_le_allowance shared genesis tail caps aligned early regime finite
+    positive high endEpoch forks replayed
+
 end EthLib.Consensus.DirectSafety
