@@ -44,11 +44,12 @@ private theorem passPendingConsolidations_kept_cache {nextEpoch : Epoch} :
     ∀ {consolidations : List PendingConsolidation} {state : BeaconState preset fork} {result},
       passPendingConsolidations nextEpoch state consolidations = .ok result →
       (result.1.validators = state.validators ∧ balanceSum result.1 = balanceSum state) ∧
-        result.1.proposerLookahead = state.proposerLookahead
+        result.1.proposerLookahead = state.proposerLookahead ∧
+        result.1.pendingPartialWithdrawals = state.pendingPartialWithdrawals
   | [], _, _, computed => by
     simp only [passPendingConsolidations, pure, Except.pure, Except.ok.injEq] at computed
     subst computed
-    exact ⟨⟨rfl, rfl⟩, rfl⟩
+    exact ⟨⟨rfl, rfl⟩, rfl, rfl⟩
   | consolidation :: rest, state, result, computed => by
     unfold passPendingConsolidations at computed
     simp only [bind, Except.bind, pure, Except.pure] at computed
@@ -62,7 +63,7 @@ private theorem passPendingConsolidations_kept_cache {nextEpoch : Epoch} :
       exact (passPendingConsolidations_kept_cache (consolidations := rest) recur :)
     split at computed
     · cases computed
-      exact ⟨⟨rfl, rfl⟩, rfl⟩
+      exact ⟨⟨rfl, rfl⟩, rfl, rfl⟩
     split at computed
     · cases computed
     rename_i balance found
@@ -78,7 +79,7 @@ private theorem passPendingConsolidations_kept_cache {nextEpoch : Epoch} :
     cases computed
     have lowered := liftAccessor_ok.mp loweredOk
     have raised := liftAccessor_ok.mp raisedOk
-    obtain ⟨⟨validators, summed⟩, cache⟩ :=
+    obtain ⟨⟨validators, summed⟩, cache, partials⟩ :=
       passPendingConsolidations_kept_cache (consolidations := rest) recur
     refine ⟨⟨validators.trans ((increaseBalance_validators raised).trans
       (decreaseBalance_validators lowered)), ?_⟩, ?_⟩
@@ -88,7 +89,7 @@ private theorem passPendingConsolidations_kept_cache {nextEpoch : Epoch} :
       omega
     · obtain ⟨_, _, rfl⟩ := increaseBalance_eq_ok_iff.mp raised
       obtain ⟨_, rfl⟩ := decreaseBalance_eq_ok_iff.mp lowered
-      exact cache
+      exact ⟨cache, partials⟩
 
 /-- A pass over the pending consolidations keeps the registry and the sum of the balances. -/
 theorem passPendingConsolidations_kept {nextEpoch : Epoch} :
@@ -122,7 +123,20 @@ theorem processPendingConsolidations_proposerLookahead {electra : .pectra ≤ fo
   · cases computed
   rename_i passed
   cases computed
-  exact (passPendingConsolidations_kept_cache passed).2
+  exact (passPendingConsolidations_kept_cache passed).2.1
+
+/-- Processing pending consolidations leaves the pending partial withdrawals unchanged. -/
+theorem processPendingConsolidations_pendingPartialWithdrawals {electra : .pectra ≤ fork}
+    (computed : processPendingConsolidations state electra = .ok after) :
+    after.pendingPartialWithdrawals = state.pendingPartialWithdrawals := by
+  simp only [processPendingConsolidations, bind, Except.bind, pure, Except.pure] at computed
+  split at computed
+  · cases computed
+  split at computed
+  · cases computed
+  rename_i passed
+  cases computed
+  exact (passPendingConsolidations_kept_cache passed).2.2
 
 /-- A pass over the pending consolidations keeps the end of the exit queue and its balance. -/
 theorem passPendingConsolidations_exitQueue {nextEpoch : Epoch} :
