@@ -710,6 +710,26 @@ private theorem UnassignedEligibleBalance.consolidations {f : Fork}
   obtain ⟨now, located, rose⟩ := processPendingConsolidations_balanceNotLowered ok excluded b read
   exact ⟨now, located, UInt64.le_trans low rose⟩
 
+private theorem assigned_of_key_provenance {f : Fork} {s : BeaconState preset f}
+    {keys : List Cryptography.Bls.BLSPubkey} (unique : PubkeysDistinct s)
+    (assigned : ∀ key ∈ keys,
+      ∃ (i : Nat) (v : Validator), s.validators.data[i]? = some v ∧ v.pubkey = key ∧
+        v.activationEpoch ≠ FAR_FUTURE_EPOCH) :
+    ∀ key ∈ keys, ∀ (i : Nat) (v : Validator),
+      s.validators.data[i]? = some v → v.pubkey = key →
+      v.activationEpoch ≠ FAR_FUTURE_EPOCH := by
+  intro key member i v found equal
+  obtain ⟨j, w, read, keyed, active⟩ := assigned key member
+  obtain ⟨inside, atIndex⟩ := Array.getElem?_eq_some_iff.mp found
+  obtain ⟨there, atOther⟩ := Array.getElem?_eq_some_iff.mp read
+  have same : i = j := unique.eq_of_getElem_eq
+    (by simpa [validatorKeys] using inside) (by simpa [validatorKeys] using there)
+    (by simpa [validatorKeys, atIndex, atOther] using equal.trans keyed.symm)
+  subst j
+  have sameValidator := Option.some.inj (found.symm.trans read)
+  subst w
+  simpa only [atIndex] using active
+
 private theorem UnassignedEligibleBalance.sync_of_provenance {f : Fork}
     {s t : BeaconState preset f} {altair : .altair ≤ f} {aggregate : SyncAggregate preset}
     (held : UnassignedEligibleBalance s) (unique : PubkeysDistinct s)
@@ -720,16 +740,7 @@ private theorem UnassignedEligibleBalance.sync_of_provenance {f : Fork}
     UnassignedEligibleBalance t := by
   apply held.sync (ok := ok)
   intro i v found pending key member equal
-  obtain ⟨j, w, read, keyed, active⟩ := assigned key member
-  obtain ⟨inside, atIndex⟩ := Array.getElem?_eq_some_iff.mp found
-  obtain ⟨there, atOther⟩ := Array.getElem?_eq_some_iff.mp read
-  have same : i = j := unique.eq_of_getElem_eq
-    (by simpa [validatorKeys] using inside) (by simpa [validatorKeys] using there)
-    (by simpa [validatorKeys, atIndex, atOther] using equal.symm.trans keyed.symm)
-  subst j
-  have sameValidator := Option.some.inj (found.symm.trans read)
-  subst w
-  exact active (by simpa [atIndex] using pending)
+  exact assigned_of_key_provenance unique assigned key member i v found equal.symm pending
 
 private def AssignedPartials {f : Fork} (s : BeaconState preset f) : Prop :=
   ∀ electra : .pectra ≤ f, ∀ entry ∈ (s.pendingPartialWithdrawals electra).data.toList,
@@ -2731,19 +2742,10 @@ private theorem CapStep.block {f : Fork} {s t : BeaconState preset f}
     split at synced
     · apply Nat.le_of_eq (preKeyCharge_sync candidate lastFunded ?_
         (operations.1.proposers early (head.1.proposers early proposers)) synced i)
-      intro key member j v found equal
-      obtain ⟨k, w, read, keyed, active⟩ :=
-        processOperations_syncCommittee_activation_assigned _ (inputAssigned _) operated key member
-      have distinct := (frame_processOperations operated).pubkeysDistinct
-        ((frame_operationsInput started).pubkeysDistinct unique)
-      obtain ⟨inside, atIndex⟩ := Array.getElem?_eq_some_iff.mp found
-      obtain ⟨there, atOther⟩ := Array.getElem?_eq_some_iff.mp read
-      have same : j = k := distinct.eq_of_getElem_eq
-        (by simpa [validatorKeys] using inside) (by simpa [validatorKeys] using there)
-        (by simpa [validatorKeys, atIndex, atOther] using equal.trans keyed.symm)
-      subst k
-      obtain rfl := Option.some.inj (found.symm.trans read)
-      exact active
+      exact assigned_of_key_provenance
+        ((frame_processOperations operated).pubkeysDistinct
+          ((frame_operationsInput started).pubkeysDistinct unique))
+        (processOperations_syncCommittee_activation_assigned _ (inputAssigned _) operated)
     · cases synced; exact Nat.le_refl _
   intro early activation exits partials finite capped matched unique assigned held
   obtain ⟨registry, slot, _, committee, funded, _⟩ := head.2 early
