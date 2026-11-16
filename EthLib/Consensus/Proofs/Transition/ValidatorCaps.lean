@@ -960,6 +960,10 @@ private structure CapStep (config : Config) {f h : Fork} (s : BeaconState preset
   forks : f ≤ h
   proposers : h < .glamsterdam → AssignedProposers s → AssignedProposers t
   targets : h < .glamsterdam → AssignedTargets s → AssignedTargets t
+  retired : ∀ (i : Nat) (v w : Validator), s.validators.data[i]? = some v →
+    t.validators.data[i]? = some w → v.exitEpoch ≤ getCurrentEpoch s →
+    v.slashed = false → v.withdrawableEpoch ≤ getCurrentEpoch s →
+    w.slashed = false ∧ w.exitEpoch = v.exitEpoch ∧ w.withdrawableEpoch = v.withdrawableEpoch
   withdrawal : ∀ (i : Nat) (v w : Validator), s.validators.data[i]? = some v →
     t.validators.data[i]? = some w →
     (v.slashed = true → v.exitEpoch ≠ FAR_FUTURE_EPOCH →
@@ -973,12 +977,15 @@ private structure CapStep (config : Config) {f h : Fork} (s : BeaconState preset
 
 private theorem CapStep.refl {f : Fork} (s : BeaconState preset f) : CapStep config s s := by
   refine ⟨id, fun _ v found => ⟨v, found, UInt64.le_refl _⟩, UInt64.le_refl _,
-    Nat.le_refl _, fun _ => id, fun _ => id, ?_⟩
-  intro i v w before after
-  have eq := Option.some.inj (before.symm.trans after)
-  subst w
-  exact ⟨fun slashed assigned => ⟨slashed, assigned, UInt64.le_refl _⟩,
-    fun _ unslashed slashed => by simp [unslashed] at slashed⟩
+    Nat.le_refl _, fun _ => id, fun _ => id, ?_, ?_⟩
+  · intro i v w before after _ flag _
+    obtain rfl := Option.some.inj (before.symm.trans after)
+    exact ⟨flag, rfl, rfl⟩
+  · intro i v w before after
+    have eq := Option.some.inj (before.symm.trans after)
+    subst w
+    exact ⟨fun slashed assigned => ⟨slashed, assigned, UInt64.le_refl _⟩,
+      fun _ unslashed slashed => by simp [unslashed] at slashed⟩
 
 private theorem CapStep.trans {f h k : Fork} {s : BeaconState preset f}
     {t : BeaconState preset h} {u : BeaconState preset k}
@@ -992,6 +999,13 @@ private theorem CapStep.trans {f h k : Fork} {s : BeaconState preset f}
   forks := Nat.le_trans one.forks two.forks
   proposers early := two.proposers early ∘ one.proposers (Nat.lt_of_le_of_lt two.forks early)
   targets early := two.targets early ∘ one.targets (Nat.lt_of_le_of_lt two.forks early)
+  retired i v z before after assigned flag withdrawn := by
+    obtain ⟨w, middle, _⟩ := one.monotone i v before
+    obtain ⟨flag', exit, withdrawal⟩ := one.retired i v w before middle assigned flag withdrawn
+    obtain ⟨flag'', exit', withdrawal'⟩ := two.retired i w z middle after
+      (exit ▸ UInt64.le_trans assigned one.forward) flag'
+      (withdrawal ▸ UInt64.le_trans withdrawn one.forward)
+    exact ⟨flag'', exit'.trans exit, withdrawal'.trans withdrawal⟩
   withdrawal i v z before after := by
     obtain ⟨w, middle, _⟩ := one.monotone i v before
     obtain ⟨kept, newly⟩ := one.withdrawal i v w before middle
@@ -1031,6 +1045,10 @@ private theorem CapStep.data {f : Fork} {s t : BeaconState preset f}
   · exact Nat.le_refl _
   · exact fun _ held => held.transfer (.of_data same) cache
   · exact fun _ => targets
+  · intro i v w before after _ flag _
+    rw [same, before, Option.some.injEq] at after
+    subst w
+    exact ⟨flag, rfl, rfl⟩
   · intro i v w before after
     rw [same, before, Option.some.injEq] at after
     subst w
@@ -1062,7 +1080,12 @@ private theorem CapStep.setValidatorAt {f : Fork} {s t : BeaconState preset f}
       intro _ unslashed slashed
       exact Bool.noConfusion (unslashed.symm.trans slashed))
     (assigned : v.activationEpoch ≠ FAR_FUTURE_EPOCH →
-      w.activationEpoch ≠ FAR_FUTURE_EPOCH := by exact id) : CapStep config s t := by
+      w.activationEpoch ≠ FAR_FUTURE_EPOCH := by exact id)
+    (retired : v.exitEpoch ≤ getCurrentEpoch s → v.slashed = false →
+      v.withdrawableEpoch ≤ getCurrentEpoch s →
+      w.slashed = false ∧ w.exitEpoch = v.exitEpoch ∧
+        w.withdrawableEpoch = v.withdrawableEpoch := by
+      intros; exact ⟨by assumption, rfl, rfl⟩) : CapStep config s t := by
   constructor
   · intro capped
     exact capped_setValidatorAt capped (bound (capped v (mem_of_getValidatorAt found))) ok
@@ -1106,6 +1129,18 @@ private theorem CapStep.setValidatorAt {f : Fork} {s t : BeaconState preset f}
       simpa [BeaconState.putValidator, Serialization.Ssz.RootedForkList.data_set,
         Array.getElem?_set, Ne.symm eq] using read
   · obtain ⟨inside, rfl⟩ := setValidatorAt_ok ok
+    intro j old final before after assigned flag withdrawn
+    simp only [BeaconState.putValidator, Serialization.Ssz.RootedForkList.data_set,
+      Array.getElem?_set] at after
+    split at after
+    · rename_i eq
+      subst j
+      obtain rfl := Option.some.inj ((getValidatorAt_eq_ok_iff.mp found).symm.trans before)
+      cases after
+      exact retired assigned flag withdrawn
+    · obtain rfl := Option.some.inj (before.symm.trans after)
+      exact ⟨flag, rfl, rfl⟩
+  · obtain ⟨inside, rfl⟩ := setValidatorAt_ok ok
     intro j old final before after
     simp only [BeaconState.putValidator, Serialization.Ssz.RootedForkList.data_set,
       Array.getElem?_set] at after
@@ -1140,9 +1175,14 @@ private theorem CapStep.setValidator {f : Fork} {s t : BeaconState preset f}
       intro _ unslashed slashed
       exact Bool.noConfusion (unslashed.symm.trans slashed))
     (assigned : v.activationEpoch ≠ FAR_FUTURE_EPOCH →
-      w.activationEpoch ≠ FAR_FUTURE_EPOCH := by exact id) : CapStep config s t :=
+      w.activationEpoch ≠ FAR_FUTURE_EPOCH := by exact id)
+    (retired : v.exitEpoch ≤ getCurrentEpoch s → v.slashed = false →
+      v.withdrawableEpoch ≤ getCurrentEpoch s →
+      w.slashed = false ∧ w.exitEpoch = v.exitEpoch ∧
+        w.withdrawableEpoch = v.withdrawableEpoch := by
+      intros; exact ⟨by assumption, rfl, rfl⟩) : CapStep config s t :=
   CapStep.setValidatorAt (by rwa [← getValidator_eq_getValidatorAt]) monotone bound
-    (by rwa [← setValidator_eq_setValidatorAt]) kept newly assigned
+    (by rwa [← setValidator_eq_setValidatorAt]) kept newly assigned retired
 
 private theorem CapStep.increase {f : Fork} {s t : BeaconState preset f}
     {i amount : UInt64} (ok : increaseBalance s i amount = .ok t) : CapStep config s t := by
@@ -1312,7 +1352,16 @@ private theorem CapStep.exit {f : Fork} {s t : BeaconState preset f}
         (CapStep.setValidator (v := v)
           (by rw [getValidator_of_validators_eq same]; exact found)
           (by exact UInt64.le_refl _) (by exact id) set
-          (fun _ assigned => False.elim (assigned unassigned)))
+          (fun _ assigned => False.elim (assigned unassigned))
+          (retired := by
+            intro assigned _ _
+            have later := exitQueue_lt queue
+            have epochSame := (frame_exitQueue queue).slot
+            have bound := UInt64.le_iff_toNat_le.mp assigned
+            rw [getCurrentEpoch, epochSame, ← getCurrentEpoch, unassigned] at bound
+            have limit := epoch.toNat_lt
+            change 18446744073709551615 ≤ _ at bound
+            omega))
     · intro held
       have balances : queued.balances = s.balances := by
         obtain ⟨_, _, rfl⟩ := exitQueue_eq queue
@@ -1357,6 +1406,8 @@ private theorem CapStep.exit {f : Fork} {s t : BeaconState preset f}
 
 private theorem CapStep.slash {f : Fork} {s t : BeaconState preset f}
     {i : ValidatorIndex} {whistleblower : Option ValidatorIndex}
+    (slashable : ∀ v, getValidator s i = .ok v →
+      isSlashableValidator v (getCurrentEpoch s) = true)
     (ok : slashValidator config s i whistleblower = .ok t) :
     CapStep config s t ∧
       (UnassignedEligibleBalance s →
@@ -1397,7 +1448,30 @@ private theorem CapStep.slash {f : Fork} {s t : BeaconState preset f}
         change (getCurrentEpoch exitedState).toNat + _ ≤
           (max v.withdrawableEpoch withdrawal).toNat
         rw [epoch, Base.Uint64.toNat_max]
-        omega⟩))
+        omega⟩)
+      (retired := by
+        intro assigned flag withdrawn
+        have epochSame : getCurrentEpoch exitedState = getCurrentEpoch s := by
+          rw [getCurrentEpoch, getCurrentEpoch, (frame_initiateValidatorExit exited).slot]
+        rw [epochSame] at withdrawn
+        obtain ⟨old, read, unchanged | ⟨far, queued, epoch, withdrawal', queue, add, written⟩⟩ :=
+          initiateValidatorExit_ok exited
+        · rw [unchanged.2] at found
+          obtain rfl := Except.ok.inj (read.symm.trans found)
+          have live := slashable old read
+          simp only [isSlashableValidator, Bool.and_eq_true, decide_eq_true_eq] at live
+          exact (UInt64.not_le.mpr live.2 withdrawn).elim
+        · obtain ⟨inside, rfl⟩ := setValidator_ok written
+          simp only [getValidator, BeaconState.putValidator,
+            Serialization.Ssz.RootedForkList.data_set, Array.getElem?_set_self,
+            Except.ok.injEq] at found
+          subst v
+          exact False.elim (by
+            have later := exitQueue_lt queue
+            have sum := Base.Uint64.addChecked_ok_iff.mp add
+            have withdrawn := UInt64.le_iff_toNat_le.mp withdrawn
+            change withdrawal'.toNat ≤ _ at withdrawn
+            omega)))
   have second := (CapStep.decrease (config := config) lowered).trans
     ((CapStep.increase raised).trans (CapStep.increase paid))
   have total := first.trans ((CapStep.data (s := marked)
@@ -1527,6 +1601,12 @@ private theorem CapStep.add {f : Fork} {s t : BeaconState preset f}
         rfl
     intro _ held
     exact held.transfer (.append data) (fun _ _ member => queue ▸ member)
+  · intro i v w before after _ flag _
+    have inside := (Array.getElem?_eq_some_iff.mp before).1
+    have read : t.validators.data[i]? = some v := by
+      simpa [data, Array.getElem?_push, Nat.ne_of_lt inside] using before
+    obtain rfl := Option.some.inj (read.symm.trans after)
+    exact ⟨flag, rfl, rfl⟩
   · intro i v w before after
     have inside := (Array.getElem?_eq_some_iff.mp before).1
     have read : t.validators.data[i]? = some v := by
@@ -1668,6 +1748,8 @@ private theorem CapStep.registryEntry {f : Fork} {s t : BeaconState preset f}
     (by intro _ unslashed slashed
         exact Bool.noConfusion (unslashed.symm.trans (records.1.symm.trans slashed)))
     (by rw [epoch]; exact id)
+    (by simp only [records.1, records.2.1, records.2.2];
+        exact fun _ flag _ => ⟨flag, trivial, trivial⟩)
   have funded (activation : preset.MAX_EFFECTIVE_BALANCE ≤ preset.MIN_ACTIVATION_BALANCE)
       (held : UnassignedEligibleBalance s) : UnassignedEligibleBalance marked := by
     apply held.setValidatorAt found set
@@ -2059,7 +2141,22 @@ private theorem CapStep.consolidate {f : Fork} {s t : BeaconState preset f}
     (fun held => held.transfer (.of_data (congrArg (·.data) validators))
       (fun _ _ member => queue ▸ member))).trans
     (CapStep.setValidator read (by exact UInt64.le_refl _) (by exact id) set
-      (fun _ assigned => False.elim (assigned far)))
+      (fun _ assigned => False.elim (assigned far))
+      (retired := by
+        intro assigned _ _
+        have sourceEpoch : getCurrentEpoch churned = getCurrentEpoch s := by
+          rw [getCurrentEpoch, getCurrentEpoch,
+            (frame_computeConsolidationEpochAndUpdateChurn churn).slot]
+        have bound := UInt64.le_iff_toNat_le.mp assigned
+        rw [sourceEpoch, far] at bound
+        have first := churn
+        simp only [computeConsolidationEpochAndUpdateChurn, bind_ok_iff] at first
+        obtain ⟨firstEpoch, first, _⟩ := first
+        have checked := computeActivationExitEpoch_ok_iff.mp (by
+          simpa only [liftArith, mapError_ok_iff] using first)
+        have limit := firstEpoch.toNat_lt
+        change 18446744073709551615 ≤ _ at bound
+        omega))
   refine first.trans (CapStep.data rfl rfl rfl ?_)
   intro held witness entry member
   have data := appendWithinLimit_data appended
@@ -2325,7 +2422,9 @@ private theorem CapStep.proposerSlashing {f : Fork} {s t : BeaconState preset f}
         preKeyCharge candidate t i ≤ preKeyCharge candidate s i) := by
   simp only [processProposerSlashing, bind_ok_iff, ensure_ok_iff, liftAccessor_ok] at ok
   obtain ⟨_, _, _, _, _, _, v, found, _, slashable, _, _, _, _, slashed⟩ := ok
-  obtain ⟨step, retained, partials⟩ := CapStep.slash slashed
+  obtain ⟨step, retained, partials⟩ := CapStep.slash (fun w read => by
+    obtain rfl := Except.ok.inj (found.symm.trans read)
+    exact slashable) slashed
   exact ⟨step, (fun held => retained held
     ⟨v, getValidator_eq_ok_iff.mp found, assigned_of_slashable slashable⟩), partials,
     fun early proposers candidate => preKeyCharge_slash candidate proposers early slashed⟩
@@ -2336,6 +2435,8 @@ private theorem CapStep.attesterSlashing_of {f : Fork} {s t : BeaconState preset
     (refl : ∀ a, R a a)
     (trans : ∀ {a b c}, R a b → R b c → R a c)
     (each : ∀ {a b : BeaconState preset f} {index : ValidatorIndex},
+      (∀ v, getValidator a index = .ok v →
+        isSlashableValidator v (getCurrentEpoch a) = true) →
       slashValidator config a index none = .ok b → R a b)
     (ok : processAttesterSlashing config checks s slashing = .ok t) :
     CapStep config s t ∧ (UnassignedEligibleBalance s → UnassignedEligibleBalance t) ∧
@@ -2355,10 +2456,15 @@ private theorem CapStep.attesterSlashing_of {f : Fork} {s t : BeaconState preset
   split at ok
   · simp only [bind_ok_iff, liftAccessor_ok, pure, Except.pure, Except.ok.injEq] at ok
     obtain ⟨_, slashed, rfl⟩ := ok
-    obtain ⟨step, retained, partials⟩ := CapStep.slash slashed
+    have slashable : ∀ w, getValidator middle i = .ok w →
+        isSlashableValidator w (getCurrentEpoch middle) = true := by
+      intro w read
+      obtain rfl := Except.ok.inj (found.symm.trans read)
+      assumption
+    obtain ⟨step, retained, partials⟩ := CapStep.slash slashable slashed
     exact ⟨previous.1.trans step, (fun held => retained (previous.2.1 held)
       ⟨v, getValidator_eq_ok_iff.mp found, assigned_of_slashable (by assumption)⟩),
-      partials ∘ previous.2.2.1, trans previous.2.2.2 (each slashed)⟩
+      partials ∘ previous.2.2.1, trans previous.2.2.2 (each slashable slashed)⟩
   · cases ok; exact previous
 
 private theorem CapStep.attesterSlashing {f : Fork} {s t : BeaconState preset f}
@@ -2377,7 +2483,7 @@ private theorem CapStep.attesterSlashing {f : Fork} {s t : BeaconState preset f}
       fun early proposers candidate i =>
         (two.2 early (one.1.proposers early proposers) candidate i).trans
           (one.2 early proposers candidate i)⟩)
-    (fun slashed => ⟨(CapStep.slash slashed).1,
+    (fun slashable slashed => ⟨(CapStep.slash slashable slashed).1,
       fun early proposers candidate => preKeyCharge_slash candidate proposers early slashed⟩) ok
   exact ⟨whole.1, whole.2.1, whole.2.2.1, whole.2.2.2.2⟩
 
@@ -2569,6 +2675,11 @@ private theorem CapStep.block {f : Fork} {s t : BeaconState preset f}
         held.transfer (.of_data (congrArg (·.data) validators)) (cache early)
       targets := fun early held => held.transfer (.of_data (congrArg (·.data) validators))
         (fun _ _ member => queue early ▸ member)
+      retired := by
+        intro i v w before after _ flag _
+        rw [data, before, Option.some.injEq] at after
+        subst w
+        exact ⟨flag, rfl, rfl⟩
       withdrawal := ?_ }
     intro i v w before after
     rw [data, before, Option.some.injEq] at after
@@ -3188,13 +3299,14 @@ private theorem CapStep.slot {f : Fork} {s t : BeaconState preset f}
   split at advance
   · obtain ⟨step, partials, funded⟩ := CapStep.epoch advance
     refine ⟨⟨step.capped, step.monotone, later, step.forks, step.proposers, step.targets,
-      step.withdrawal⟩, partials, ?_⟩
+      step.retired, step.withdrawal⟩, partials, ?_⟩
     intro early activation aligned caps matched targets held
     exact (funded early activation aligned caps matched targets held).transfer rfl
       (fun _ _ b _ _ read low => ⟨b, read, low⟩)
   · cases advance
     exact ⟨⟨id, fun _ v found => ⟨v, found, UInt64.le_refl _⟩, later,
-      Nat.le_refl _, fun _ => id, fun _ => id, (CapStep.refl s).withdrawal⟩,
+      Nat.le_refl _, fun _ => id, fun _ => id, (CapStep.refl (config := config) s).retired,
+      (CapStep.refl s).withdrawal⟩,
       id,
       fun _ _ _ _ _ _ held => held.transfer rfl
         (fun _ _ b _ _ read low => ⟨b, read, low⟩)⟩
@@ -3227,6 +3339,10 @@ private theorem CapStep.carry {f h : Fork} {s : BeaconState preset f}
   forks := forks
   proposers := proposers
   targets := targets
+  retired i v w before after _ flag _ := by
+    rw [same, before, Option.some.injEq] at after
+    subst w
+    exact ⟨flag, rfl, rfl⟩
   withdrawal i v w before after := by
     rw [same, before, Option.some.injEq] at after
     subst w
@@ -3247,7 +3363,7 @@ private theorem CapStep.preActivation {f : Fork} {s t : BeaconState preset f}
       (by simpa only [getValidator, BeaconState.putBalance] using found)
       (by exact UInt64.le_refl _) (by intro _; exact UInt64.zero_le) validator
     exact ⟨changed.capped, changed.monotone, changed.forward, changed.forks, changed.proposers,
-      changed.targets, changed.withdrawal⟩
+      changed.targets, changed.retired, changed.withdrawal⟩
   · intro held
     obtain ⟨_, rfl⟩ := setValidator_ok validator
     intro j w located pending
@@ -4237,6 +4353,23 @@ theorem Run.validatorCap_mono {x y : ForkedBeaconState preset}
       withdrawalMaxEffectiveBalance preset x.fork v ≤
         withdrawalMaxEffectiveBalance preset y.fork w :=
   (CapStep.run run activation compounding early).1.monotone i v found
+
+/-- A newly slashed key that had exited at the start was not yet withdrawable there. -/
+theorem Run.newly_slashed_initial_exited_unwithdrawable {x y : ForkedBeaconState preset}
+    (run : Run config checks x y)
+    (activation : preset.MAX_EFFECTIVE_BALANCE ≤ preset.MIN_ACTIVATION_BALANCE)
+    (compounding : preset.MIN_ACTIVATION_BALANCE ≤ preset.MAX_EFFECTIVE_BALANCE_ELECTRA)
+    (early : y.fork < .glamsterdam) (i : Nat) (v w : Validator)
+    (before : x.state.validators.data[i]? = some v)
+    (after : y.state.validators.data[i]? = some w)
+    (unslashed : v.slashed = false) (slashed : w.slashed = true)
+    (exited : v.exitEpoch ≤ getCurrentEpoch x.state) :
+    getCurrentEpoch x.state < v.withdrawableEpoch := by
+  apply UInt64.not_le.mp
+  intro withdrawn
+  have flag := ((CapStep.run run activation compounding early).1.retired
+    i v w before after exited unslashed withdrawn).1
+  simp [slashed] at flag
 
 /-- New slashings delay withdrawal by the slashings-vector length from the run's start epoch.
 

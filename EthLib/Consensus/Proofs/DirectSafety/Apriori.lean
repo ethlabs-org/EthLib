@@ -3873,6 +3873,29 @@ private theorem windowAssignments_le_budget {g x u : ForkedBeaconState preset}
       (Nat.lt_of_le_of_lt (fork_le_of_chainSteps head.chainSteps) early)) _)
       (unassigned_assignment_count shared genesis head caps aligned electra early finite positive))
 
+/-- A newly slashed assigned key is a window assignment or an initially slashable exited key. -/
+private theorem newly_slashed_initial_classification {x y : ForkedBeaconState preset}
+    (tail : Run config checks x y) (caps : CapOrder preset) (early : y.fork < .glamsterdam)
+    (i : Nat) (w : Validator) (after : y.state.validators.data[i]? = some w)
+    (assigned : w.activationEpoch ≠ FAR_FUTURE_EPOCH)
+    (initialFlag : (x.state.validators.data[i]?.map (·.slashed)).getD false = false)
+    (slashed : w.slashed = true) :
+    ((y.state.validators.data[i]?).any (·.activationEpoch != FAR_FUTURE_EPOCH) &&
+      (x.state.validators.data[i]?).all fun v => v.activationEpoch == FAR_FUTURE_EPOCH ||
+        decide (getCurrentEpoch x.state < v.exitEpoch)) = true ∨
+    ∃ v, x.state.validators.data[i]? = some v ∧ v.slashed = false ∧
+      v.exitEpoch ≤ getCurrentEpoch x.state ∧ getCurrentEpoch x.state < v.withdrawableEpoch := by
+  cases before : x.state.validators.data[i]? with
+  | none => exact .inl (by simp [after, assigned])
+  | some v =>
+    have unslashed : v.slashed = false := by simpa [before] using initialFlag
+    by_cases exited : v.exitEpoch ≤ getCurrentEpoch x.state
+    · exact .inr ⟨v, rfl, unslashed, exited,
+        tail.newly_slashed_initial_exited_unwithdrawable caps.activation caps.compounding
+          early i v w before after unslashed slashed exited⟩
+    · have live := UInt64.not_le.mp exited
+      exact .inl (by simp [after, assigned, live])
+
 /-- Before Electra, the active validators at each state of a branch from `x` follow `A_t`.
 
 Each of them is given an activation epoch, and it had not exited at `x`.
@@ -5341,11 +5364,11 @@ private theorem slashing_credits_le {config : Config} {checks : SignatureChecks}
   slashing_run_charge_le shared tail genesis early compounding high endEpoch replayed keys charge
     (slashing_run_support shared tail genesis early compounding high keys charge bounded replayed)
 
-/-- From Electra, only indices newly slashed in the run pay the slashing credits. -/
+/-- Within either cap regime, newly slashed indices pay the slashing credits once. -/
 private theorem slashing_credits_le_newly_slashed {config : Config} {checks : SignatureChecks}
     {g x y : ForkedBeaconState preset} (shared : Run config checks g x)
     (tail : Run config checks x y) (genesis : Genesis (config := config) (checks := checks) g)
-    (electra : .pectra ≤ x.fork) (early : y.fork < .glamsterdam)
+    (regime : .pectra ≤ x.fork ∨ y.fork < .pectra) (early : y.fork < .glamsterdam)
     (activation : preset.MAX_EFFECTIVE_BALANCE ≤ preset.MIN_ACTIVATION_BALANCE)
     (compounding : preset.MIN_ACTIVATION_BALANCE ≤ preset.MAX_EFFECTIVE_BALANCE_ELECTRA)
     (high : Nat) (endEpoch : (getCurrentEpoch y.state).toNat ≤ high + 1)
@@ -5354,21 +5377,32 @@ private theorem slashing_credits_le_newly_slashed {config : Config} {checks : Si
       ((Finset.range y.state.validators.data.size).filter fun i =>
         !(x.state.validators.data[i]?.map (·.slashed)).getD false &&
           (y.state.validators.data[i]?.map (·.slashed)).getD false).card *
-        (preset.MAX_EFFECTIVE_BALANCE_ELECTRA.toNat /
-          preset.WHISTLEBLOWER_REWARD_QUOTIENT_ELECTRA.toNat) := by
+        ((if .pectra ≤ x.fork then preset.MAX_EFFECTIVE_BALANCE_ELECTRA.toNat
+          else preset.MAX_EFFECTIVE_BALANCE.toNat) /
+          (if .pectra ≤ x.fork then preset.WHISTLEBLOWER_REWARD_QUOTIENT_ELECTRA.toNat
+            else preset.WHISTLEBLOWER_REWARD_QUOTIENT.toNat)) := by
   let keys := (Finset.range y.state.validators.data.size).filter fun i =>
     !(x.state.validators.data[i]?.map (·.slashed)).getD false &&
       (y.state.validators.data[i]?.map (·.slashed)).getD false
   apply le_trans (slashing_credits_le shared tail genesis early compounding high endEpoch keys
-    (fun _ => preset.MAX_EFFECTIVE_BALANCE_ELECTRA.toNat /
-      preset.WHISTLEBLOWER_REWARD_QUOTIENT_ELECTRA.toNat) ?_ replayed)
+    (fun _ => (if .pectra ≤ x.fork then preset.MAX_EFFECTIVE_BALANCE_ELECTRA.toNat
+        else preset.MAX_EFFECTIVE_BALANCE.toNat) /
+      (if .pectra ≤ x.fork then preset.WHISTLEBLOWER_REWARD_QUOTIENT_ELECTRA.toNat
+        else preset.WHISTLEBLOWER_REWARD_QUOTIENT.toNat)) ?_ replayed)
   · simp [keys]
   intro a b step contained i inside marked
   obtain ⟨pre, post, _⟩ := tail.contains_split step contained
   have aEarly := Nat.lt_of_le_of_lt
     (Nat.le_trans step.chainStep.fork_le (fork_le_of_chainSteps post.chainSteps)) early
-  have aElectra : Fork.pectra ≤ a.fork :=
-    Nat.le_trans electra (fork_le_of_chainSteps pre.chainSteps)
+  have sameRegime : (.pectra ≤ a.fork) ↔ .pectra ≤ x.fork := by
+    constructor
+    · intro atSite
+      rcases regime with electra | before
+      · exact electra
+      · exact (Nat.not_le_of_lt (Nat.lt_of_le_of_lt
+          (Nat.le_trans step.chainStep.fork_le (fork_le_of_chainSteps post.chainSteps))
+            before) atSite).elim
+    · exact fun electra => Nat.le_trans electra (fork_le_of_chainSteps pre.chainSteps)
   have flags : (a.state.validators.data[i]?.map (·.slashed)).getD false = false ∧
       (b.state.validators.data[i]?.map (·.slashed)).getD false = true := by
     simpa only [Bool.and_eq_true, Bool.not_eq_true'] using marked
@@ -5391,22 +5425,28 @@ private theorem slashing_credits_le_newly_slashed {config : Config} {checks : Si
   refine ⟨Finset.mem_filter.mpr ⟨Finset.mem_range.mpr
     (Nat.lt_of_lt_of_le (Finset.mem_range.mp inside) post.registryLifecycle.size_le),
       by simp [first, last]⟩, ?_⟩
-  have cap : effectiveAt a i ≤ preset.MAX_EFFECTIVE_BALANCE_ELECTRA.toNat := by
+  have cap : effectiveAt a i ≤
+      (if .pectra ≤ x.fork then preset.MAX_EFFECTIVE_BALANCE_ELECTRA.toNat
+        else preset.MAX_EFFECTIVE_BALANCE.toNat) := by
     cases found : a.state.validators.data[i]? with
     | none => simp [effectiveAt, found]
     | some v =>
       have bounded := (shared.append pre).effectiveBalance_capped genesis activation compounding
         aEarly v (Array.mem_of_getElem? found)
       have largest : withdrawalMaxEffectiveBalance preset a.fork v ≤
-          preset.MAX_EFFECTIVE_BALANCE_ELECTRA := by
+          (if .pectra ≤ x.fork then preset.MAX_EFFECTIVE_BALANCE_ELECTRA
+            else preset.MAX_EFFECTIVE_BALANCE) := by
         unfold withdrawalMaxEffectiveBalance getMaxEffectiveBalance
-        rw [ite_eq_left aElectra]
-        split
-        · exact UInt64.le_refl _
-        · exact compounding
-      simpa [effectiveAt, found] using UInt64.le_iff_toNat_le.mp
+        by_cases electra : .pectra ≤ x.fork
+        · simp only [sameRegime.mpr electra, electra, ↓reduceIte]
+          split
+          · exact UInt64.le_refl _
+          · exact compounding
+        · simp [electra, mt sameRegime.mp electra]
+      simpa [effectiveAt, found, apply_ite UInt64.toNat] using UInt64.le_iff_toNat_le.mp
         (UInt64.le_trans bounded largest)
-  simpa [EthLib.Consensus.parameters, aElectra] using Nat.div_le_div_right
-    (c := preset.WHISTLEBLOWER_REWARD_QUOTIENT_ELECTRA.toNat) cap
+  simpa [EthLib.Consensus.parameters, sameRegime, apply_ite UInt64.toNat] using Nat.div_le_div_right
+    (c := if .pectra ≤ x.fork then preset.WHISTLEBLOWER_REWARD_QUOTIENT_ELECTRA.toNat
+      else preset.WHISTLEBLOWER_REWARD_QUOTIENT.toNat) cap
 
 end EthLib.Consensus.DirectSafety
