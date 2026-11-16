@@ -979,6 +979,56 @@ private theorem windowCount_start (x : ForkedBeaconState preset) :
       (Nat.lt_of_not_le fun below => reached (UInt64.le_iff_toNat_le.mpr below))
     exact .inr ⟨inside, by simp [later, assigned]⟩
 
+/-- Window assignments are initially active or scheduled, or newly assigned in the run. -/
+theorem _root_.EthLib.Consensus.Run.windowAssignments_le_initial_add_new
+    {x u : ForkedBeaconState preset} (run : Run config checks x u) :
+    ((Finset.range u.state.validators.data.size).filter fun i =>
+      (u.state.validators.data[i]?).any (·.activationEpoch != FAR_FUTURE_EPOCH) &&
+        (x.state.validators.data[i]?).all fun w => w.activationEpoch == FAR_FUTURE_EPOCH ||
+          decide (getCurrentEpoch x.state < w.exitEpoch)).card ≤
+      activeCount x.state + x.state.validators.data.toList.countP (fun v =>
+        decide (getCurrentEpoch x.state < v.activationEpoch) &&
+          v.activationEpoch != FAR_FUTURE_EPOCH) +
+      ((Finset.range u.state.validators.data.size).filter fun i =>
+        (x.state.validators.data[i]?.map (·.activationEpoch)).getD FAR_FUTURE_EPOCH =
+            FAR_FUTURE_EPOCH ∧
+          (u.state.validators.data[i]?.map (·.activationEpoch)).getD FAR_FUTURE_EPOCH ≠
+            FAR_FUTURE_EPOCH).card := by
+  classical
+  apply le_trans (b := windowCount x x.state +
+    ((Finset.range u.state.validators.data.size).filter fun i =>
+      (x.state.validators.data[i]?.map (·.activationEpoch)).getD FAR_FUTURE_EPOCH =
+          FAR_FUTURE_EPOCH ∧
+        (u.state.validators.data[i]?.map (·.activationEpoch)).getD FAR_FUTURE_EPOCH ≠
+          FAR_FUTURE_EPOCH).card) ?_ (Nat.add_le_add_right (windowCount_start x) _)
+  apply (Finset.card_le_card (t :=
+    ((Finset.range x.state.validators.data.size).filter fun i =>
+      (x.state.validators.data[i]?).any (·.activationEpoch != FAR_FUTURE_EPOCH) &&
+        (x.state.validators.data[i]?).all fun w => w.activationEpoch == FAR_FUTURE_EPOCH ||
+          decide (getCurrentEpoch x.state < w.exitEpoch)) ∪ _ ) ?_).trans
+    (Finset.card_union_le _ _)
+  intro i member
+  obtain ⟨inside, chosen⟩ := Finset.mem_filter.mp member
+  cases old : x.state.validators.data[i]? with
+  | none =>
+    apply Finset.mem_union_right
+    exact Finset.mem_filter.mpr ⟨inside, by
+      cases found : u.state.validators.data[i]? with
+      | none => simp [old, found] at chosen
+      | some v => simpa [old, found] using chosen⟩
+  | some v =>
+    by_cases pending : v.activationEpoch = FAR_FUTURE_EPOCH
+    · apply Finset.mem_union_right
+      exact Finset.mem_filter.mpr ⟨inside, by
+        cases found : u.state.validators.data[i]? with
+        | none => simp [found] at chosen
+        | some w => simpa [old, found, pending] using chosen⟩
+    · apply Finset.mem_union_left
+      exact Finset.mem_filter.mpr ⟨Finset.mem_range.mpr
+        (Array.getElem?_eq_some_iff.mp old).1, by
+          obtain ⟨w, found, kept⟩ := run.registryLifecycle.validators i v old
+          simpa [old, found, pending, kept.activationEpoch pending] using chosen⟩
+
 /-- The count churn is at most the churn of the window count, at a later state of the window. -/
 private theorem churn_le_windowCount {x : ForkedBeaconState preset} {s : BeaconState preset fork}
     (life : RegistryLifecycle x.state s)

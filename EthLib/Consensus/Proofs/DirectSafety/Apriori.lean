@@ -3851,6 +3851,28 @@ private theorem unassigned_assignment_count {g x u : ForkedBeaconState preset}
   rw [Nat.mul_comm]
   exact unassigned_assignment_budget shared genesis head caps aligned electra early finite
 
+/-- Initial active and scheduled keys plus the assignment budget cover window assignments. -/
+private theorem windowAssignments_le_budget {g x u : ForkedBeaconState preset}
+    (shared : Run config checks g x) (genesis : Genesis (config := config) (checks := checks) g)
+    (head : Run config checks x u) (caps : CapOrder preset)
+    (aligned : MaxEffectiveBalancesAligned preset)
+    (electra : .pectra ≤ x.fork) (early : u.fork < .glamsterdam)
+    (finite : getCurrentEpoch x.state < FAR_FUTURE_EPOCH)
+    (positive : 0 < preset.MAX_EFFECTIVE_BALANCE.toNat) :
+    ((Finset.range u.state.validators.data.size).filter fun i =>
+      (u.state.validators.data[i]?).any (·.activationEpoch != FAR_FUTURE_EPOCH) &&
+        (x.state.validators.data[i]?).all fun w => w.activationEpoch == FAR_FUTURE_EPOCH ||
+          decide (getCurrentEpoch x.state < w.exitEpoch)).card ≤
+      refCount x + scheduledCount x +
+        (unassignedPreStake x + fundingCarry x +
+          config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat *
+            ((getCurrentEpoch u.state).toNat - (getCurrentEpoch x.state).toNat + 1)) /
+          preset.MAX_EFFECTIVE_BALANCE.toNat := by
+  exact head.windowAssignments_le_initial_add_new.trans
+    (Nat.add_le_add (Nat.add_le_add_right (activeCount_le_refCount shared genesis
+      (Nat.lt_of_le_of_lt (fork_le_of_chainSteps head.chainSteps) early)) _)
+      (unassigned_assignment_count shared genesis head caps aligned electra early finite positive))
+
 /-- Before Electra, the active validators at each state of a branch from `x` follow `A_t`.
 
 Each of them is given an activation epoch, and it had not exited at `x`.
