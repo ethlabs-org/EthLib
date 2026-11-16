@@ -7,6 +7,7 @@ public import EthLib.Consensus.Proofs.Transition.RewardDeltas
 public import EthLib.Consensus.Proofs.Transition.DepositCarry
 public import EthLib.Consensus.Proofs.Transition.PendingConsolidations
 public import EthLib.Consensus.Proofs.Transition.ActivationExitOrder
+public import EthLib.Consensus.Proofs.Transition.ValidatorCaps
 import EthLib.Consensus.Proofs.Transition.Totality.EffectiveBalances
 import EthLib.Consensus.Proofs.Transition.BalanceNotRaised
 import EthLib.Consensus.Proofs.DirectSafety.Provenance
@@ -3639,6 +3640,46 @@ theorem funding_pending_capacity {fork : Fork} {s t : BeaconState preset fork}
       decide_eq_false_iff_not, not_le] at chosen
     exact chosen)
   simpa only [selected, Finset.sum_filter, ite_not] using bound
+
+/-- Assignment charges and remaining resources consume one initial pot and deposit allowance. -/
+theorem _root_.EthLib.Consensus.Run.unassigned_assignment_resources
+    {g x u : ForkedBeaconState preset}
+    (shared : Run config checks g x)
+    (genesis : Genesis (config := config) (checks := checks) g)
+    (head : Run config checks x u)
+    (activation : preset.MAX_EFFECTIVE_BALANCE ≤ preset.MIN_ACTIVATION_BALANCE)
+    (compounding : preset.MIN_ACTIVATION_BALANCE ≤ preset.MAX_EFFECTIVE_BALANCE_ELECTRA)
+    (aligned : MaxEffectiveBalancesAligned preset)
+    (electra : .pectra ≤ x.fork) (early : u.fork < .glamsterdam) :
+    let candidate := fun i : Nat =>
+      (x.state.validators.data[i]?.map (·.activationEpoch)).getD FAR_FUTURE_EPOCH =
+        FAR_FUTURE_EPOCH
+    let assigned := fun i : Nat =>
+      (u.state.validators.data[i]?.map (·.activationEpoch)).getD FAR_FUTURE_EPOCH ≠
+        FAR_FUTURE_EPOCH
+    let value := fun (s : ForkedBeaconState preset) (i : Nat) =>
+      ((s.state.validators.data[i]?).map fun v =>
+        max v.effectiveBalance.toNat
+          (min ((s.state.balances.data[i]?.map UInt64.toNat).getD 0)
+            (withdrawalMaxEffectiveBalance preset s.fork v).toNat)).getD 0
+    preset.MAX_EFFECTIVE_BALANCE.toNat *
+        ((Finset.range u.state.validators.data.size).filter fun i =>
+          candidate i ∧ assigned i).card +
+      (∑ i ∈ Finset.range u.state.validators.data.size,
+        if candidate i ∧ ¬ assigned i then value u i else 0) +
+      ((if h : .pectra ≤ u.fork then
+        (u.state.depositBalanceToConsume h).toNat else 0) : Nat) ≤
+      (∑ i ∈ Finset.range x.state.validators.data.size,
+        if candidate i then value x i else 0) +
+      (x.state.depositBalanceToConsume electra).toNat +
+      config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat *
+        ((getCurrentEpoch u.state).toNat - (getCurrentEpoch x.state).toNat + 1) := by
+  apply shared.unassigned_assignment_resources_of_pending_law genesis head activation
+    compounding aligned electra early
+  · intro f a b e before ok matched
+    simpa only [actualBalanceAt] using funding_pending_capacity e before ok matched
+  · intro f a b engine block before ok
+    exact depositCarry_processBlock before ok
 
 /-- Unspent deposit capacity retained across post-Electra operations. -/
 def fundingCarry (x : ForkedBeaconState preset) : Nat :=
