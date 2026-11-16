@@ -1249,10 +1249,12 @@ end EpochFrameLaws
 
 It must hold across each single withdrawal.
 
-It must also hold across each write of a withdrawal index or a withdrawal queue.
+It must also hold across each write of a withdrawal index or a builder withdrawal queue.
+
+For partial withdrawals, it need only hold when the processed prefix leaves the queue.
 
 It must also hold across each write of the expected withdrawals of the payload. -/
-theorem applyExpectedWithdrawals_of_setters
+theorem applyExpectedWithdrawals_of_updates
     (R : BeaconState preset fork → BeaconState preset fork → Prop)
     (refl : ∀ s, R s s)
     (trans : ∀ {s m t}, R s m → R m t → R s t)
@@ -1267,8 +1269,8 @@ theorem applyExpectedWithdrawals_of_setters
       R s { s with payloadExpectedWithdrawals := value })
     (setBuilders : ∀ (s : BeaconState preset fork) value,
       R s { s with builderPendingWithdrawals := value })
-    (setPartials : ∀ (s : BeaconState preset fork) value,
-      R s { s with pendingPartialWithdrawals := value })
+    (dropPartials : ∀ (s : BeaconState preset fork) (electra : .pectra ≤ fork) count,
+      R s (updatePendingPartialWithdrawals s electra count))
     {capella : .shapella ≤ fork}
     {expected : ExpectedWithdrawals}
     (computed : Consensus.applyExpectedWithdrawals state capella expected = .ok after) :
@@ -1297,7 +1299,7 @@ theorem applyExpectedWithdrawals_of_setters
       else kept) := by
     intro kept
     split
-    · exact setPartials _ _
+    · exact dropPartials _ _ _
     · exact refl _
   have swept : ∀ kept : BeaconState preset fork,
       (if gloas : .glamsterdam ≤ fork then
@@ -1311,6 +1313,31 @@ theorem applyExpectedWithdrawals_of_setters
   exact trans one <| trans (EpochFrameLaws.updateNextWithdrawalIndex_of refl setIndex indexedOk) <|
     trans (queued _) <| trans (partials _) <| trans (swept _ sweptOk)
       (EpochFrameLaws.updateNextWithdrawalValidatorIndex_of setValidatorIndex last)
+
+/-- A relation preserved by individual withdrawals and bookkeeping setters holds across the step. -/
+theorem applyExpectedWithdrawals_of_setters
+    (R : BeaconState preset fork → BeaconState preset fork → Prop)
+    (refl : ∀ s, R s s)
+    (trans : ∀ {s m t}, R s m → R m t → R s t)
+    (withdraw : ∀ {s t} {w : Withdrawal}, applyWithdrawal s w = .ok t → R s t)
+    (setIndex : ∀ (s : BeaconState preset fork) value,
+      R s { s with nextWithdrawalIndex := value })
+    (setValidatorIndex : ∀ (s : BeaconState preset fork) value,
+      R s { s with nextWithdrawalValidatorIndex := value })
+    (setBuilderIndex : ∀ (s : BeaconState preset fork) value,
+      R s { s with nextWithdrawalBuilderIndex := value })
+    (setPayload : ∀ (s : BeaconState preset fork) value,
+      R s { s with payloadExpectedWithdrawals := value })
+    (setBuilders : ∀ (s : BeaconState preset fork) value,
+      R s { s with builderPendingWithdrawals := value })
+    (setPartials : ∀ (s : BeaconState preset fork) value,
+      R s { s with pendingPartialWithdrawals := value })
+    {capella : .shapella ≤ fork}
+    {expected : ExpectedWithdrawals}
+    (computed : Consensus.applyExpectedWithdrawals state capella expected = .ok after) :
+    R state after :=
+  applyExpectedWithdrawals_of_updates R refl trans withdraw setIndex setValidatorIndex
+    setBuilderIndex setPayload setBuilders (fun s _ _ => setPartials s _) computed
 
 /-- A reflexive, transitive relation holds across the expected withdrawals.
 

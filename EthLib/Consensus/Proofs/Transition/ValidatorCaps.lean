@@ -589,6 +589,27 @@ private theorem UnassignedEligibleBalance.consolidations {f : Fork}
   obtain ⟨now, located, rose⟩ := processPendingConsolidations_balanceNotLowered ok excluded b read
   exact ⟨now, located, UInt64.le_trans low rose⟩
 
+private theorem UnassignedEligibleBalance.sync_of_provenance {f : Fork}
+    {s t : BeaconState preset f} {altair : .altair ≤ f} {aggregate : SyncAggregate preset}
+    (held : UnassignedEligibleBalance s) (unique : PubkeysDistinct s)
+    (assigned : ∀ key ∈ (s.currentSyncCommittee altair).value.pubkeys.toList,
+      ∃ (i : Nat) (v : Validator), s.validators.data[i]? = some v ∧ v.pubkey = key ∧
+        v.activationEpoch ≠ FAR_FUTURE_EPOCH)
+    (ok : processSyncAggregate config checks s altair aggregate = .ok t) :
+    UnassignedEligibleBalance t := by
+  apply held.sync (ok := ok)
+  intro i v found pending key member equal
+  obtain ⟨j, w, read, keyed, active⟩ := assigned key member
+  obtain ⟨inside, atIndex⟩ := Array.getElem?_eq_some_iff.mp found
+  obtain ⟨there, atOther⟩ := Array.getElem?_eq_some_iff.mp read
+  have same : i = j := unique.eq_of_getElem_eq
+    (by simpa [validatorKeys] using inside) (by simpa [validatorKeys] using there)
+    (by simpa [validatorKeys, atIndex, atOther] using equal.symm.trans keyed.symm)
+  subst j
+  have sameValidator := Option.some.inj (found.symm.trans read)
+  subst w
+  exact active (by simpa [atIndex] using pending)
+
 private def AssignedPartials {f : Fork} (s : BeaconState preset f) : Prop :=
   ∀ electra : .pectra ≤ f, ∀ entry ∈ (s.pendingPartialWithdrawals electra).data.toList,
     ∃ v, s.validators.data[entry.validatorIndex.toNat]? = some v ∧
@@ -603,6 +624,15 @@ private theorem AssignedPartials.transfer {f : Fork} {s t : BeaconState preset f
   obtain ⟨v, found, assigned⟩ := held electra entry (subset electra entry member)
   obtain ⟨w, read, kept⟩ := life.validators entry.validatorIndex.toNat v found
   exact ⟨w, read, (kept.activationEpoch assigned) ▸ assigned⟩
+
+private theorem AssignedPartials.drop {f : Fork} {s : BeaconState preset f}
+    (held : AssignedPartials s) (electra : .pectra ≤ f) (count : Nat) :
+    AssignedPartials (updatePendingPartialWithdrawals s electra count) := by
+  intro witness entry member
+  apply held witness entry
+  simp only [updatePendingPartialWithdrawals, Array.toList_extract,
+    List.extract_eq_take_drop] at member
+  exact List.mem_of_mem_drop (List.mem_of_mem_take member)
 
 private theorem AssignedPartials.excludes {f : Fork} {s : BeaconState preset f}
     (held : AssignedPartials s) {i : Nat} {v : Validator}
@@ -1705,6 +1735,31 @@ private theorem CapStep.attesterSlashing {f : Fork} {s t : BeaconState preset f}
     exact ⟨previous.1.trans step, fun held => retained (previous.2 held)
       ⟨v, getValidator_eq_ok_iff.mp found, assigned_of_slashable (by assumption)⟩⟩
   · cases ok; exact previous
+
+private theorem CapStep.withdrawals {f : Fork} {s t : BeaconState preset f}
+    {capella : .shapella ≤ f} {payload : Until .glamsterdam f (ExecutionPayload preset f)}
+    (early : f < .glamsterdam)
+    (ok : processWithdrawals s capella payload = .ok t) :
+    CapStep config s t ∧ (AssignedPartials s → AssignedPartials t) ∧
+      (ActivationExitOrder s → ExitsOrdered s → AssignedPartials s →
+        getCurrentEpoch s < FAR_FUTURE_EPOCH → EffectiveBalancesCapped s →
+        UnassignedEligibleBalance s → UnassignedEligibleBalance t) := by
+  obtain ⟨expected, _, _, applied⟩ := processWithdrawals_expected early ok
+  let R := fun (a b : BeaconState preset f) => CapStep config a b ∧
+    (AssignedPartials a → AssignedPartials b) ∧ b.validators.data = a.validators.data
+  have kept : R s t := by
+    apply applyExpectedWithdrawals_of_updates R
+      (fun a => ⟨CapStep.refl a, id, rfl⟩)
+      (fun one two => ⟨one.1.trans two.1, two.2.1 ∘ one.2.1,
+        two.2.2.trans one.2.2⟩)
+      (fun withdrawn => by
+        rw [applyWithdrawal_eq withdrawn]
+        exact ⟨CapStep.data rfl, id, rfl⟩) _ _ _ _ _
+      (fun _ electra count => ⟨CapStep.data rfl, fun held => held.drop electra count, rfl⟩)
+      applied
+    all_goals exact fun _ _ => ⟨CapStep.data rfl, id, rfl⟩
+  exact ⟨kept.1, kept.2.1, fun activation exits partials before capped held =>
+    held.withdrawals_of_provenance activation exits partials kept.2.2 before capped ok⟩
 
 private theorem CapStep.block {f : Fork} {s t : BeaconState preset f}
     {engine : ExecutionEngine preset f} {block : BeaconBlock preset f}
