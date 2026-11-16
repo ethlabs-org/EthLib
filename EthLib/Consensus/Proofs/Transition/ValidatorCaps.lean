@@ -634,6 +634,43 @@ private theorem AssignedPartials.drop {f : Fork} {s : BeaconState preset f}
     List.extract_eq_take_drop] at member
   exact List.mem_of_mem_drop (List.mem_of_mem_take member)
 
+private theorem AssignedPartials.increase {f : Fork} {s t : BeaconState preset f}
+    {index amount : UInt64} (held : AssignedPartials s)
+    (ok : increaseBalance s index amount = .ok t) : AssignedPartials t := by
+  obtain ⟨_, _, rfl⟩ := increaseBalance_eq_ok_iff.mp ok
+  exact held
+
+private theorem AssignedPartials.decrease {f : Fork} {s t : BeaconState preset f}
+    {index amount : UInt64} (held : AssignedPartials s)
+    (ok : decreaseBalance s index amount = .ok t) : AssignedPartials t := by
+  obtain ⟨_, rfl⟩ := decreaseBalance_eq_ok_iff.mp ok
+  exact held
+
+private theorem AssignedPartials.attestation {f : Fork}
+    {s t : BeaconState preset f} {parentSlot : Slot} {attestation : Attestation preset f}
+    (held : AssignedPartials s)
+    (ok : processAttestation config checks s parentSlot attestation = .ok t) :
+    AssignedPartials t := by
+  by_cases altair : .altair ≤ f
+  · rw [processAttestation_of_altair altair] at ok
+    unfold processAttestationAltair at ok
+    simp only [bind_ok_iff, liftAccessor_ok] at ok
+    obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _,
+      _, _, raised, raisedOk, final⟩ := ok
+    have flags (participation : EpochParticipation preset f) :
+        AssignedPartials (setEpochParticipation s
+          (attestation.data.target.epoch == getCurrentEpoch s) participation) := by
+      unfold setEpochParticipation
+      split <;> exact held
+    have paid := (flags _).increase raisedOk
+    split at final
+    · rw [recordPaymentWeight_eq final]
+      exact paid
+    · cases final
+      exact paid
+  · intro electra
+    exact (altair (Nat.le_trans (by decide : Fork.altair ≤ .pectra) electra)).elim
+
 private theorem AssignedPartials.excludes {f : Fork} {s : BeaconState preset f}
     (held : AssignedPartials s) {i : Nat} {v : Validator}
     (found : s.validators.data[i]? = some v)
@@ -1034,7 +1071,8 @@ private theorem CapStep.slash {f : Fork} {s t : BeaconState preset f}
     CapStep config s t ∧
       (UnassignedEligibleBalance s →
         (∃ w, s.validators.data[i.toNat]? = some w ∧
-          w.activationEpoch ≠ FAR_FUTURE_EPOCH) → UnassignedEligibleBalance t) := by
+          w.activationEpoch ≠ FAR_FUTURE_EPOCH) → UnassignedEligibleBalance t) ∧
+      (AssignedPartials s → AssignedPartials t) := by
   obtain ⟨exitedState, v, withdrawal, marked, _, _, slashings, _, _, _, _, last,
     exited, found, summed, set,
     _, _, _, lowered, _, _, raised, paid, rfl⟩ := slashValidator_ok ok
@@ -1101,18 +1139,34 @@ private theorem CapStep.slash {f : Fork} {s t : BeaconState preset f}
     have slashingFunded := funded.transfer (t := { marked with slashings }) rfl
       (fun _ _ b _ _ read low => ⟨b, read, low⟩)
     exact ((slashingFunded.decrease markedAssigned lowered).increase raised).increase paid
+  have partials (held : AssignedPartials s) : AssignedPartials last := by
+    have exitedHeld := (CapStep.exit exited).2.2 held
+    have markedHeld := exitedHeld.setValidator found set (fun assigned => assigned)
+    have slashingHeld : AssignedPartials { marked with slashings } := markedHeld
+    exact ((slashingHeld.decrease lowered).increase raised).increase paid
   split
-  · exact ⟨total.trans (CapStep.data rfl), fun held active =>
-      (funding held active).transfer rfl (fun _ _ b _ _ read low => ⟨b, read, low⟩)⟩
-  · exact ⟨total, funding⟩
+  · exact ⟨total.trans (CapStep.data rfl), (fun held active =>
+      (funding held active).transfer rfl (fun _ _ b _ _ read low => ⟨b, read, low⟩)), partials⟩
+  · exact ⟨total, funding, partials⟩
 
 private theorem CapStep.add {f : Fork} {s t : BeaconState preset f}
     {key : Cryptography.Bls.BLSPubkey} {credentials : Bytes32} {amount : Gwei}
     (ok : addValidatorToRegistry s key credentials amount = .ok t) :
     CapStep config s t ∧
-      (BalancesMatch s → UnassignedEligibleBalance s → UnassignedEligibleBalance t) := by
+      (BalancesMatch s → UnassignedEligibleBalance s → UnassignedEligibleBalance t) ∧
+      (AssignedPartials s → AssignedPartials t) := by
   have data := addValidatorToRegistry_validators_eq_push ok
-  refine ⟨?_, fun matched held => held.add matched ok⟩
+  have partials : t.pendingPartialWithdrawals = s.pendingPartialWithdrawals := by
+    unfold addValidatorToRegistry at ok
+    split at ok
+    · simp only [addValidatorToRegistryAltair, liftAccessor_ok, bind_ok_iff,
+        pure, Except.pure, Except.ok.injEq] at ok
+      obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, rfl⟩ := ok
+      rfl
+    · split at ok <;> cases ok
+      rfl
+  refine ⟨?_, (fun matched held => held.add matched ok), fun held =>
+    held.transfer (.append data) (fun _ _ member => partials ▸ member)⟩
   constructor
   · intro capped v member
     rw [data, Array.mem_push] at member
@@ -1167,10 +1221,12 @@ private theorem CapStep.deposit {f : Fork} {s t : BeaconState preset f}
     {deposit : PendingDeposit}
     (ok : applyPendingDeposit config checks s deposit = .ok t) :
     CapStep config s t ∧
-      (BalancesMatch s → UnassignedEligibleBalance s → UnassignedEligibleBalance t) := by
+      (BalancesMatch s → UnassignedEligibleBalance s → UnassignedEligibleBalance t) ∧
+      (AssignedPartials s → AssignedPartials t) := by
   rcases applyPendingDeposit_cases ok with rfl | ⟨_, raised⟩ | ⟨_, added⟩
-  · exact ⟨CapStep.refl _, fun _ => id⟩
-  · exact ⟨CapStep.increase raised, fun _ held => held.increase raised⟩
+  · exact ⟨CapStep.refl _, fun _ => id, id⟩
+  · exact ⟨CapStep.increase raised, (fun _ held => held.increase raised),
+      fun held => held.increase raised⟩
   · exact CapStep.add added
 
 private theorem CapStep.applyDeposit {f : Fork} {s t : BeaconState preset f}
@@ -1178,7 +1234,8 @@ private theorem CapStep.applyDeposit {f : Fork} {s t : BeaconState preset f}
     {signature : Cryptography.Bls.BLSSignature}
     (ok : Consensus.applyDeposit config checks s key credentials amount signature = .ok t) :
     CapStep config s t ∧
-      (BalancesMatch s → UnassignedEligibleBalance s → UnassignedEligibleBalance t) := by
+      (BalancesMatch s → UnassignedEligibleBalance s → UnassignedEligibleBalance t) ∧
+      (AssignedPartials s → AssignedPartials t) := by
   unfold Consensus.applyDeposit at ok
   split at ok
   · unfold applyDepositElectra at ok
@@ -1189,26 +1246,29 @@ private theorem CapStep.applyDeposit {f : Fork} {s t : BeaconState preset f}
       · simp only [bind_ok_iff, liftAccessor_ok] at ok
         obtain ⟨middle, added, queued⟩ := ok
         obtain ⟨_, rfl⟩ := addPendingDeposit_eq queued
-        exact ⟨(CapStep.add added).1.trans (CapStep.data rfl), fun matched held =>
-          ((CapStep.add (config := config) added).2 matched held).transfer rfl
-            (fun _ _ b _ _ read low => ⟨b, read, low⟩)⟩
-      · cases ok; exact ⟨CapStep.refl _, fun _ => id⟩
+        exact ⟨(CapStep.add added).1.trans (CapStep.data rfl), (fun matched held =>
+          ((CapStep.add (config := config) added).2.1 matched held).transfer rfl
+            (fun _ _ b _ _ read low => ⟨b, read, low⟩)),
+          (CapStep.add (config := config) added).2.2⟩
+      · cases ok; exact ⟨CapStep.refl _, fun _ => id, id⟩
     · obtain ⟨_, rfl⟩ := addPendingDeposit_eq (liftAccessor_ok.mp ok)
-      exact ⟨CapStep.data rfl, fun _ held => held.transfer rfl
-        (fun _ _ b _ _ read low => ⟨b, read, low⟩)⟩
+      exact ⟨CapStep.data rfl, (fun _ held => held.transfer rfl
+        (fun _ _ b _ _ read low => ⟨b, read, low⟩)), id⟩
   · exact CapStep.deposit ok
 
 private theorem CapStep.processDeposit {f : Fork} {s t : BeaconState preset f}
     {before : f < .hegota} {deposit : Deposit}
     (ok : processDeposit config checks before s deposit = .ok t) :
     CapStep config s t ∧
-      (BalancesMatch s → UnassignedEligibleBalance s → UnassignedEligibleBalance t) := by
+      (BalancesMatch s → UnassignedEligibleBalance s → UnassignedEligibleBalance t) ∧
+      (AssignedPartials s → AssignedPartials t) := by
   obtain ⟨_, _, next, _, credited⟩ := processDeposit_ok ok
   exact ⟨(CapStep.data (s := s)
     (t := { s with eth1DepositIndex := fun _ => next })).trans
-      (CapStep.applyDeposit credited).1, fun matched held =>
-        (CapStep.applyDeposit (config := config) credited).2 matched
-          (held.transfer rfl (fun _ _ b _ _ read low => ⟨b, read, low⟩))⟩
+      (CapStep.applyDeposit credited).1, (fun matched held =>
+        (CapStep.applyDeposit (config := config) credited).2.1 matched
+          (held.transfer rfl (fun _ _ b _ _ read low => ⟨b, read, low⟩))),
+      (CapStep.applyDeposit (config := config) credited).2.2⟩
 
 private theorem CapStep.registryEntry {f : Fork} {s t : BeaconState preset f}
     {i : Nat} (ok : updateRegistryEntry config s i = .ok t) :
@@ -1433,10 +1493,11 @@ private theorem CapStep.compounding {f : Fork} {s t : BeaconState preset f}
 private theorem CapStep.blsChange {f : Fork} {s t : BeaconState preset f}
     {signed : SignedBLSToExecutionChange}
     (ok : processBlsToExecutionChange config checks s signed = .ok t) :
-    CapStep config s t ∧ (UnassignedEligibleBalance s → UnassignedEligibleBalance t) := by
+    CapStep config s t ∧ (UnassignedEligibleBalance s → UnassignedEligibleBalance t) ∧
+      (AssignedPartials s → AssignedPartials t) := by
   obtain ⟨v, found, bls, _, _, set⟩ := processBlsToExecutionChange_ok ok
-  refine ⟨?_, ?_⟩
-  swap
+  refine ⟨?_, ?_, fun held => held.setValidator found set id⟩
+  rotate_left
   · intro held
     have foundAt := found
     rw [getValidator_eq_getValidatorAt] at foundAt
@@ -1707,23 +1768,26 @@ private theorem CapStep.requests {f : Fork} {s t : BeaconState preset f}
 private theorem CapStep.proposerSlashing {f : Fork} {s t : BeaconState preset f}
     {slashing : ProposerSlashing}
     (ok : processProposerSlashing config checks s slashing = .ok t) :
-    CapStep config s t ∧ (UnassignedEligibleBalance s → UnassignedEligibleBalance t) := by
+    CapStep config s t ∧ (UnassignedEligibleBalance s → UnassignedEligibleBalance t) ∧
+      (AssignedPartials s → AssignedPartials t) := by
   simp only [processProposerSlashing, bind_ok_iff, ensure_ok_iff, liftAccessor_ok] at ok
   obtain ⟨_, _, _, _, _, _, v, found, _, slashable, _, _, _, _, slashed⟩ := ok
-  obtain ⟨step, retained⟩ := CapStep.slash slashed
-  exact ⟨step, fun held => retained held
-    ⟨v, getValidator_eq_ok_iff.mp found, assigned_of_slashable slashable⟩⟩
+  obtain ⟨step, retained, partials⟩ := CapStep.slash slashed
+  exact ⟨step, (fun held => retained held
+    ⟨v, getValidator_eq_ok_iff.mp found, assigned_of_slashable slashable⟩), partials⟩
 
 private theorem CapStep.attesterSlashing {f : Fork} {s t : BeaconState preset f}
     {slashing : AttesterSlashing preset f}
     (ok : processAttesterSlashing config checks s slashing = .ok t) :
-    CapStep config s t ∧ (UnassignedEligibleBalance s → UnassignedEligibleBalance t) := by
+    CapStep config s t ∧ (UnassignedEligibleBalance s → UnassignedEligibleBalance t) ∧
+      (AssignedPartials s → AssignedPartials t) := by
   simp only [processAttesterSlashing, bind_ok_iff, ensure_ok_iff, pure, Except.pure,
     Except.ok.injEq] at ok
   obtain ⟨_, _, _, _, _, _, _, _, _, _, _, folded, _, _, rfl⟩ := ok
   refine foldlM_ok_invariant (fun step => CapStep config s step.1 ∧
-    (UnassignedEligibleBalance s → UnassignedEligibleBalance step.1)) ?_
-    ⟨CapStep.refl s, id⟩ folded
+    (UnassignedEligibleBalance s → UnassignedEligibleBalance step.1) ∧
+    (AssignedPartials s → AssignedPartials step.1)) ?_
+    ⟨CapStep.refl s, id, id⟩ folded
   intro step i next previous ok
   obtain ⟨middle, slashedAny⟩ := step
   simp only [slashIfSlashable, bind_ok_iff, liftAccessor_ok] at ok
@@ -1731,9 +1795,10 @@ private theorem CapStep.attesterSlashing {f : Fork} {s t : BeaconState preset f}
   split at ok
   · simp only [bind_ok_iff, liftAccessor_ok, pure, Except.pure, Except.ok.injEq] at ok
     obtain ⟨_, slashed, rfl⟩ := ok
-    obtain ⟨step, retained⟩ := CapStep.slash slashed
-    exact ⟨previous.1.trans step, fun held => retained (previous.2 held)
-      ⟨v, getValidator_eq_ok_iff.mp found, assigned_of_slashable (by assumption)⟩⟩
+    obtain ⟨step, retained, partials⟩ := CapStep.slash slashed
+    exact ⟨previous.1.trans step, (fun held => retained (previous.2.1 held)
+      ⟨v, getValidator_eq_ok_iff.mp found, assigned_of_slashable (by assumption)⟩),
+      partials ∘ previous.2.2⟩
   · cases ok; exact previous
 
 private theorem CapStep.withdrawals {f : Fork} {s t : BeaconState preset f}
@@ -1771,7 +1836,8 @@ private theorem CapStep.execution {f : Fork} {s t : BeaconState preset f}
     CapStep config s t ∧ (AssignedPartials s → AssignedPartials t) ∧
       (ActivationExitOrder s → ExitsOrdered s → AssignedPartials s →
         getCurrentEpoch s < FAR_FUTURE_EPOCH → EffectiveBalancesCapped s →
-        UnassignedEligibleBalance s → UnassignedEligibleBalance t) := by
+        UnassignedEligibleBalance s → UnassignedEligibleBalance t) ∧
+      t.validators.data = s.validators.data ∧ t.slot = s.slot := by
   let R := fun (a b : BeaconState preset f) => CapStep config a b ∧
     (AssignedPartials a → AssignedPartials b) ∧ b.validators.data = a.validators.data ∧
     b.slot = a.slot ∧
@@ -1800,12 +1866,14 @@ private theorem CapStep.execution {f : Fork} {s t : BeaconState preset f}
       (fun withdrawn => by
         obtain ⟨step, partials, funded, same⟩ := CapStep.withdrawals early withdrawn
         exact ⟨step, partials, same, (frame_processWithdrawals withdrawn).slot, funded⟩) ok
-  exact ⟨whole.1, whole.2.1, whole.2.2.2.2⟩
+  exact ⟨whole.1, whole.2.1, whole.2.2.2.2, whole.2.2.1, whole.2.2.2.1⟩
 
 private theorem CapStep.block {f : Fork} {s t : BeaconState preset f}
     {engine : ExecutionEngine preset f} {block : BeaconBlock preset f}
     (order : preset.MIN_ACTIVATION_BALANCE ≤ preset.MAX_EFFECTIVE_BALANCE_ELECTRA)
-    (ok : processBlock config checks engine s block = .ok t) : CapStep config s t := by
+    (ok : processBlock config checks engine s block = .ok t) :
+    CapStep config s t ∧
+      (f < .glamsterdam → AssignedPartials s → AssignedPartials t) := by
   have same {a b : BeaconState preset f} (validators : b.validators = a.validators)
       (slot : b.slot = a.slot) (cache : b.proposerLookahead = a.proposerLookahead)
       (queue : b.pendingConsolidations = a.pendingConsolidations) :
@@ -1834,57 +1902,105 @@ private theorem CapStep.block {f : Fork} {s t : BeaconState preset f}
     subst w
     exact ⟨fun flag assigned => ⟨flag, assigned, UInt64.le_refl _⟩,
       fun _ unslashed slashed => by simp [unslashed] at slashed⟩
+  let R := fun (a b : BeaconState preset f) => CapStep config a b ∧
+    (f < .glamsterdam → b.validators.data = a.validators.data ∧ b.slot = a.slot ∧
+      (AssignedPartials a → AssignedPartials b) ∧
+      (ActivationExitOrder a → ExitsOrdered a → AssignedPartials a →
+        getCurrentEpoch a < FAR_FUTURE_EPOCH → EffectiveBalancesCapped a →
+        UnassignedEligibleBalance a → UnassignedEligibleBalance b))
+  have refl (a) : R a a :=
+    ⟨CapStep.refl a, fun _ => ⟨rfl, rfl, id, fun _ _ _ _ _ => id⟩⟩
+  have trans {a b c} (one : R a b) (two : R b c) : R a c := by
+    refine ⟨one.1.trans two.1, fun early => ?_⟩
+    obtain ⟨registry, slot, partials, funded⟩ := one.2 early
+    obtain ⟨registry', slot', partials', funded'⟩ := two.2 early
+    refine ⟨registry'.trans registry, slot'.trans slot, partials' ∘ partials, ?_⟩
+    intro activation exits queue before capped held
+    apply funded'
+    · simpa only [ActivationExitOrder, registry] using activation
+    · simpa only [ExitsOrdered, registry] using exits
+    · exact partials queue
+    · simpa only [getCurrentEpoch, slot] using before
+    · exact one.1.capped capped
+    · exact funded activation exits queue before capped held
+  have plain {a b : BeaconState preset f} (step : CapStep config a b)
+      (registry : b.validators.data = a.validators.data) (slot : b.slot = a.slot)
+      (balances : b.balances = a.balances)
+      (partials : b.pendingPartialWithdrawals = a.pendingPartialWithdrawals) : R a b :=
+    ⟨step, fun _ => ⟨registry, slot,
+      fun held => held.transfer (.of_data registry) (fun _ _ member => partials ▸ member),
+      fun _ _ _ _ _ held => held.transfer registry
+        (fun _ _ amount _ _ read low => ⟨amount, by rw [balances]; exact read, low⟩)⟩⟩
   -- From Gloas, a block first applies the payload of the parent, which runs the validator requests.
-  have head : CapStep config s input :=
-    started.step_of (CapStep config) CapStep.refl (fun one two => one.trans two)
-      (fun gloas paid => processParentExecutionPayload_step_of (CapStep config) CapStep.refl
+  have head : R s input :=
+    started.step_of R refl (fun one two => trans one two)
+      (fun gloas paid => ⟨processParentExecutionPayload_step_of (CapStep config) CapStep.refl
         (fun one two => one.trans two) (fun frame validators => framed frame validators
           (fun early => (Nat.not_le_of_lt early gloas).elim)
           (fun early => (Nat.not_le_of_lt early gloas).elim))
         (fun ok => (CapStep.withdrawalRequest ok).1)
-        (fun ok => (CapStep.consolidationRequest order ok).1) paid)
+        (fun ok => (CapStep.consolidationRequest order ok).1) paid,
+        fun early => (Nat.not_le_of_lt early gloas).elim⟩)
       (fun headed => by
         obtain ⟨_, _, rfl⟩ := processBlockHeader_eq headed
-        exact same rfl rfl rfl rfl)
-      (fun _ executed => framed (frame_processBlockExecution executed)
-        (processBlockExecution_validators executed)
-        (fun _ => processBlockExecution_proposerLookahead executed)
-        (fun early => SamePendingQueue.blockExecution early executed))
-      (fun revealed => same (by
+        exact plain (same rfl rfl rfl rfl) rfl rfl rfl rfl)
+      (fun _ executed => by
+        by_cases early : f < .glamsterdam
+        · obtain ⟨step, partials, funded, registry, slot⟩ := CapStep.execution early executed
+          exact ⟨step, fun _ => ⟨registry, slot, partials, funded⟩⟩
+        · exact ⟨framed (frame_processBlockExecution executed)
+            (processBlockExecution_validators executed)
+            (fun _ => processBlockExecution_proposerLookahead executed)
+            (fun before => SamePendingQueue.blockExecution before executed),
+            fun before => (early before).elim⟩)
+      (fun revealed => by
         obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, rfl⟩ := processRandao_eq revealed
-        rfl) (frame_processRandao revealed).slot
-        (by obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, rfl⟩ := processRandao_eq revealed; rfl)
-        (by obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, rfl⟩ := processRandao_eq revealed; rfl))
-      (fun _ voted => same (by
+        exact plain (same rfl rfl rfl rfl) rfl rfl rfl rfl)
+      (fun _ voted => by
         obtain ⟨_, _, rest⟩ := processEth1Data_eq voted
-        rw [← rest]) (frame_processEth1Data voted).slot
-        (by obtain ⟨_, _, rest⟩ := processEth1Data_eq voted; rw [← rest])
-        (by obtain ⟨_, _, rest⟩ := processEth1Data_eq voted; rw [← rest]))
+        rw [← rest]
+        exact plain (same rfl rfl rfl rfl) rfl rfl rfl rfl)
+  let P := fun (a b : BeaconState preset f) => CapStep config a b ∧
+    (f < .glamsterdam → AssignedPartials a → AssignedPartials b)
+  have reflP (a) : P a a := ⟨CapStep.refl a, fun _ => id⟩
+  have transP {a b c} (one : P a b) (two : P b c) : P a c :=
+    ⟨one.1.trans two.1, fun early => two.2 early ∘ one.2 early⟩
+  have foldP {α : Type} {step : BeaconState preset f → α → Except TransitionError _}
+      (each : ∀ a x b, step a x = .ok b → P a b)
+      {a b : BeaconState preset f} {items : List α} (ok : items.foldlM step a = .ok b) :
+      P a b := (foldlM_ok_steps P reflP (fun one two => transP one two) each ok).1
   obtain ⟨_, _, _, proposersOk, slashingsOk, attestedOk, rest⟩ :=
-    processOperations_folds_of (CapStep config) CapStep.refl (fun one two => one.trans two)
-      (fun ok => (CapStep.processDeposit ok).1)
-      (fun exited => (CapStep.exit (processVoluntaryExit_initiates exited)).1)
-      (fun ok => (CapStep.blsChange ok).1) (fun ok => (CapStep.requests order ok).1)
-      (fun attested => same (by rw [processPayloadAttestation_eq attested])
-        (by rw [processPayloadAttestation_eq attested])
-        (by rw [processPayloadAttestation_eq attested])
-        (by rw [processPayloadAttestation_eq attested])) operated
-  have tail : CapStep config last t := by
+    processOperations_folds_of P reflP (fun one two => transP one two)
+      (fun ok => ⟨(CapStep.processDeposit ok).1,
+        fun _ => (CapStep.processDeposit (config := config) ok).2.2⟩)
+      (fun exited => ⟨(CapStep.exit (processVoluntaryExit_initiates exited)).1,
+        fun _ => (CapStep.exit (config := config)
+          (processVoluntaryExit_initiates exited)).2.2⟩)
+      (fun ok => ⟨(CapStep.blsChange ok).1,
+        fun _ => (CapStep.blsChange (config := config) ok).2.2⟩)
+      (fun ok => ⟨(CapStep.requests order ok).1,
+        fun _ => (CapStep.requests (config := config) order ok).2.2⟩)
+      (fun attested => by
+        rw [processPayloadAttestation_eq attested]
+        exact reflP _) operated
+  have tail : P last t := by
     split at synced
     · obtain ⟨_, rfl⟩ := processSyncAggregate_eq synced
-      exact same rfl rfl rfl rfl
+      exact ⟨same rfl rfl rfl rfl, fun _ => id⟩
     · cases synced
-      exact CapStep.refl _
-  exact head.trans <|
-    (CapStep.fold (fun _ _ _ ok => (CapStep.proposerSlashing ok).1) proposersOk).trans <|
-    (CapStep.fold (fun _ _ _ ok => (CapStep.attesterSlashing ok).1) slashingsOk).trans <|
-    (CapStep.fold (fun _ _ _ attested => same (processAttestation_registry attested).1
+      exact reflP _
+  exact transP ⟨head.1, fun early => (head.2 early).2.2.1⟩ <|
+    transP (foldP (fun _ _ _ ok => ⟨(CapStep.proposerSlashing ok).1,
+      fun _ => (CapStep.proposerSlashing (config := config) ok).2.2⟩) proposersOk) <|
+    transP (foldP (fun _ _ _ ok => ⟨(CapStep.attesterSlashing ok).1,
+      fun _ => (CapStep.attesterSlashing (config := config) ok).2.2⟩) slashingsOk) <|
+    transP (foldP (fun _ _ _ attested => ⟨same (processAttestation_registry attested).1
       (frame_processAttestation attested).slot (processAttestation_proposerLookahead attested)
       (by
         by_cases electra : .pectra ≤ f
         · exact SamePendingQueue.attestation electra attested
-        · funext witness; exact (electra witness).elim))
-      attestedOk).trans (rest.trans tail)
+        · funext witness; exact (electra witness).elim),
+      fun _ held => held.attestation attested⟩) attestedOk) (transP rest tail)
 
 private theorem CapStep.pending {f : Fork} {s t : BeaconState preset f}
     {electra : .pectra ≤ f} (ok : processPendingDeposits config checks s electra = .ok t) :
@@ -1904,7 +2020,7 @@ private theorem CapStep.pending {f : Fork} {s t : BeaconState preset f}
           postponed deposits = .ok result → R state result.1.state :=
     fun ok => passPendingDeposits_of R refl (fun one two => trans one two)
       (fun credited => ⟨(CapStep.deposit credited).1,
-        (applyPendingDeposit_kept credited).1, (CapStep.deposit credited).2⟩) ok
+        (applyPendingDeposit_kept credited).1, (CapStep.deposit credited).2.1⟩) ok
   unfold processPendingDeposits at ok
   simp only [bind, Except.bind, pure, Except.pure] at ok
   repeat' (split at ok <;> try cases ok)
@@ -2372,7 +2488,7 @@ private theorem CapStep.step {s t : ForkedBeaconState preset}
     (early : t.fork < .glamsterdam) : CapStep config s.state t.state := by
   cases step with
   | block engine signed due ok =>
-    exact CapStep.block compounding (applySignedBlock_ok ok).2.1
+    exact (CapStep.block compounding (applySignedBlock_ok ok).2.1).1
   | slot ok =>
     obtain ⟨advanced, slotOk, upgrades⟩ := bind_ok_iff.mp ok
     exact (CapStep.slot slotOk).1.trans
@@ -2630,7 +2746,7 @@ theorem processBlock_capped {f : Fork} {s t : BeaconState preset f}
     (compounding : preset.MIN_ACTIVATION_BALANCE ≤ preset.MAX_EFFECTIVE_BALANCE_ELECTRA)
     (ok : processBlock config checks engine s block = .ok t) (capped : EffectiveBalancesCapped s) :
     EffectiveBalancesCapped t :=
-  (CapStep.block compounding ok).capped capped
+  (CapStep.block compounding ok).1.capped capped
 
 /-- The upgrade to the next fork keeps each effective balance at most the cap of its validator.
 
