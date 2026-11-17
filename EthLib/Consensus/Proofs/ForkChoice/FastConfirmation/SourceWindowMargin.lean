@@ -1443,7 +1443,7 @@ private theorem receiver_origins_fresh {Δ : ℕ} (sync : e.Synchronous Δ)
 
 /-- The honest stores by a time are reachable and agree on their blocks, or two of them collide.
 
-Proofs that compare two honest stores split on this once. -/
+It is public so that a proof in another module can split on it once, instead of repeating the split. -/
 public theorem historical_stores_or_collision {anchor : Store preset fork}
     (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
     (start : ∀ u ∈ J, e.start u = anchor) (time : ℕ) :
