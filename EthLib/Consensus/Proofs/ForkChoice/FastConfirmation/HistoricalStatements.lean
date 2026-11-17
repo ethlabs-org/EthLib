@@ -46,7 +46,9 @@ Every exit placed at the source or later lands at least `MAX_SEED_LOOKAHEAD + 1`
 
 So when `MAX_SEED_LOOKAHEAD` is at least 3, no other validator leaves by those three epochs.
 
-`exitStake_le_exitReserve` proves that bound. -/
+`exitStake_le_exitReserve` proves that bound.
+
+It keeps the `Config` argument so that its readers keep their statements. -/
 def exitReserve (_config : Config) (source : BeaconState preset fork) : Nat :=
   stake (fun v => balanceAt source v.toNat)
     {v ∈ activeVoters source | (source.validators.data[v.toNat]?).any fun validator =>

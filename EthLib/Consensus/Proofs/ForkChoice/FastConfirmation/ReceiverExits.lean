@@ -2,9 +2,6 @@ module
 
 public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmation.HistoricalStatements
 public import EthLib.Consensus.Proofs.Transition.Committees
-import EthLib.Consensus.Proofs.ForkChoice.BlockAgreement
-import EthLib.Consensus.Proofs.ForkChoice.BlockRuns
-import EthLib.Consensus.Proofs.ForkChoice.FastConfirmation.HistoricalTransport
 
 /-!
 # The exits that a near receiver's window can see
@@ -17,7 +14,7 @@ The stake that leaves the active set by then must fit `exitReserve` of the sourc
 
 Every exit is placed at `current + 1 + MAX_SEED_LOOKAHEAD` or later, from the epoch where it starts.
 
-So activity up to `current + MAX_SEED_LOOKAHEAD` is fixed at each state, as `ActiveKept` states.
+So each state fixes activity up to `current + MAX_SEED_LOOKAHEAD` (`activeKept_of_chainSteps`).
 
 With a lookahead of at least three epochs, every such exit was already scheduled at the source.
 -/
@@ -56,9 +53,9 @@ The later state keeps the source's activity up to its fixed epoch, as every run 
 
 The epoch is from the source's epoch to three epochs after it.
 
-A validator active at the source and inactive at that epoch was active there in the source too.
+A validator active at the source and inactive at that epoch was inactive there in the source too.
 
-So its exit was already set by that epoch, which `exitReserve` counts. -/
+So its exit epoch in the source is at most that epoch, which `exitReserve` counts. -/
 theorem exitStake_le_exitReserve (config : Config) {post : Fork}
     {source : BeaconState preset fork} {later : BeaconState preset post}
     (preGloas : fork < .glamsterdam) (fixedWindow : preset.ExitWindowFixed)
@@ -152,8 +149,9 @@ private theorem lookaheadState_slot {config : Config} {checks : SignatureChecks}
     cases computed
     exact UInt64.le_antisymm early (UInt64.not_lt.mp notBelow)
 
-/-- In a reachable store whose anchor block is at the anchor state's slot, a block's state is at
-the block's slot. -/
+/-- In a reachable store, a block's state is at the block's slot.
+
+The anchor block must be at the anchor state's slot. -/
 private theorem blockState_slot {config : Config} {anchorState : BeaconState preset fork}
     {anchorBlock : BeaconBlock preset fork} {store : Store preset fork}
     (anchorSlot : anchorBlock.slot = anchorState.slot)
@@ -186,7 +184,7 @@ A full epoch of a near receiver's window is one to three epochs after the source
 So `windowExitBound_of_activeKept` bounds it, with the seed lookahead of `ExitWindowFixed`.
 
 The alternative is a block collision between two honest stores by the horizon. -/
-theorem Execution.receiverWindowExitsNear_of_sourceOnParentChain [DecidablePred (· ∈ J)]
+theorem Execution.receiverWindowExitsNear_of_sourceOnParentChain
     {anchor : Store preset fork}
     (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
     (start : ∀ w ∈ J, e.start w = anchor) (anchorSlot : anchorBlock.slot = anchorState.slot)
