@@ -72,7 +72,7 @@ public theorem Execution.finalizedFamily_or_historical_evidence {anchor : Store 
     anchorSlot boundary nonzero absent justifiedBound early enough terminal
 
 /-- An honest held copy of the anchor block has a nonzero state root. -/
-private theorem Execution.anchor_stateRoot_nonzero {anchor : Store preset fork}
+public theorem Execution.anchor_stateRoot_nonzero {anchor : Store preset fork}
     (anchorStore : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
     (anchored : ∀ w ∈ J, e.start w = anchor) {last : Nat}
     (roots : HeldBlockStateRootsNonzero (e := e) last)
