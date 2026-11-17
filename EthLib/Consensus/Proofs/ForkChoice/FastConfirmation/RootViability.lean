@@ -2486,7 +2486,7 @@ private theorem late_justified_le_root {anchor : Store preset fork} {Δ time T :
 /-! ## A late receiver of a root before the call's epoch -/
 
 /-- A collision names a root where the two stores hold different blocks. -/
-private theorem findBlockCollision_held {first second : Store preset fork} {roots : List Root}
+theorem findBlockCollision_held {first second : Store preset fork} {roots : List Root}
     {root : Root} {left right : BeaconBlock preset fork}
     (found : Store.findBlockCollision first second roots = some (root, left, right)) :
     first.blocks[root]? = some left ∧ second.blocks[root]? = some right ∧ left ≠ right := by
