@@ -6,7 +6,6 @@ public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmation.Indicators
 public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmation.QuorumReserve
 public import EthLib.Consensus.Proofs.Transition.BalanceDrift
 public import EthLib.Consensus.Proofs.Transition.BuilderPayments
-public import EthLib.Consensus.Proofs.Transition.Totality.Genesis
 public import EthLib.Consensus.Proofs.Transition.Trace
 public import EthLib.Consensus.Proofs.Transition.Upgrade
 public import EthLib.Consensus.Proofs.Transition.ValidatorCaps
@@ -198,56 +197,33 @@ private theorem partialsSame_processJustificationAndFinalization
   · obtain ⟨_, _, _, rest⟩ := weighJustificationAndFinalization_checkpoints weighed
     exact fun _ => by rw [← rest]
 
-/-- The epoch transition keeps the queue. -/
-private theorem partialsSame_processEpoch
+/-- From Altair, the epoch transition keeps the queue. -/
+private theorem partialsSame_processEpoch (altair : .altair ≤ fork)
     (computed : processEpoch config checks state = .ok after) : PartialsSame state after := by
   unfold processEpoch at computed
-  split at computed
-  · rename_i altair
-    obtain ⟨pending, paid, rooted, pendingOk, paidOk, middle, tail⟩ :=
-      partialsEpochFrameLaws.processEpochAltair_paymentSplit computed
-    obtain ⟨justified, justifiedOk, head⟩ :=
-      partialsEpochFrameLaws.epochBeforePayments_split pendingOk
-    have paidSame : PartialsSame pending paid := by
-      split at paidOk
-      · rw [processBuilderPendingPayments_eq (liftAccessor_ok.mp paidOk)]
-        exact fun _ => rfl
-      · simp only [pure, Except.pure, Except.ok.injEq] at paidOk
-        exact paidOk ▸ PartialsSame.refl _
-    exact (partialsSame_processJustificationAndFinalization justifiedOk).trans <|
-      head.trans <| paidSame.trans <| middle.trans <|
-      (show PartialsSame rooted (processParticipationFlagUpdates rooted altair) from
-        fun _ => rfl).trans tail
-  simp only [bind_ok_iff] at computed
-  obtain ⟨justified, justifiedOk, rewarded, rewardedOk, registered, registeredOk, slashed,
-    slashedOk, reset, resetOk, balanced, balancedOk, cleared, clearedOk, mixed, mixedOk, rooted,
-    rootedOk, rotated⟩ := computed
-  exact (partialsSame_processJustificationAndFinalization justifiedOk).trans <|
-    (partialsEpochFrameLaws.processRewardsAndPenalties rewardedOk).trans <|
-    (partialsEpochFrameLaws.processRegistryUpdates registeredOk).trans <|
-    (partialsEpochFrameLaws.processSlashings slashedOk).trans <|
-    (partialsEpochFrameLaws.processEth1DataReset resetOk).trans <|
-    (partialsEpochFrameLaws.processEffectiveBalanceUpdates balancedOk).trans <|
-    (partialsEpochFrameLaws.processSlashingsReset clearedOk).trans <|
-    (partialsEpochFrameLaws.processRandaoMixesReset mixedOk).trans <|
-    (partialsEpochFrameLaws.processHistoricalRootsUpdate rootedOk).trans <|
-    partialsEpochFrameLaws.processParticipationRecordUpdates rotated
+  simp only [altair, ↓reduceDIte] at computed
+  obtain ⟨justified, rooted, justifiedOk, head, tail⟩ :=
+    partialsEpochFrameLaws.processEpochAltair_rotationSplit
+      (fun _ ok => by rw [processBuilderPendingPayments_eq ok]; exact fun _ => rfl) computed
+  exact (partialsSame_processJustificationAndFinalization justifiedOk).trans <| head.trans <|
+    (show PartialsSame rooted (processParticipationFlagUpdates rooted altair) from
+      fun _ => rfl).trans tail
 
 /-- One slot keeps the queue: it caches roots, and at the end of an epoch runs the transition. -/
-private theorem partialsSame_advanceSlot
+private theorem partialsSame_advanceSlot (altair : .altair ≤ fork)
     (computed : advanceSlot config checks state = .ok after) : PartialsSame state after := by
   intro electra
   obtain ⟨next, cached, epoched, -, cachedOk, epochedOk, rfl⟩ := advanceSlot_ok computed
   obtain ⟨_, _, _, _, rfl⟩ := processSlot_ok cachedOk
   unfold epochIfLast at epochedOk
   split at epochedOk
-  · exact partialsSame_processEpoch epochedOk electra
+  · exact partialsSame_processEpoch altair epochedOk electra
   · simp only [pure, Except.pure, Except.ok.injEq] at epochedOk
     subst epochedOk
     rfl
 
-/-- Advancing to a later slot keeps the queue of pending partial withdrawals. -/
-private theorem processSlots_pendingPartialWithdrawals {slot : Slot}
+/-- From Altair, advancing to a later slot keeps the queue of pending partial withdrawals. -/
+private theorem processSlots_pendingPartialWithdrawals (altair : .altair ≤ fork) {slot : Slot}
     (computed : processSlots config checks state slot = .ok after) : PartialsSame state after := by
   simp only [Consensus.processSlots, bind_ok_iff, ensure_ok_iff] at computed
   obtain ⟨-, -, advanced⟩ := computed
@@ -260,7 +236,7 @@ private theorem processSlots_pendingPartialWithdrawals {slot : Slot}
   | succ count step =>
     simp only [advanceSlots, bind_ok_iff] at advanced
     obtain ⟨next, nextOk, rest⟩ := advanced
-    exact (partialsSame_advanceSlot nextOk).trans (step rest)
+    exact (partialsSame_advanceSlot altair nextOk).trans (step rest)
 
 end Partials
 
@@ -328,77 +304,6 @@ private theorem hysteresis_of_processSlots (bands : preset.IncrementWithinUpward
 
 end Epochs
 
-/-- A balance rounded down to an increment, at most the largest value, lies within both bands.
-
-Before Electra, the largest effective balance is the cap of every validator.
-
-The increment must be positive and at most the upward band. -/
-private theorem rounded_bands (bands : preset.IncrementWithinUpwardBand)
-    (preElectra : ¬.pectra ≤ fork) {balance : Gwei} {validator : Validator}
-    (effective : validator.effectiveBalance =
-      min (balance - balance % preset.EFFECTIVE_BALANCE_INCREMENT) preset.MAX_EFFECTIVE_BALANCE) :
-    (validator.effectiveBalance < withdrawalMaxEffectiveBalance preset fork validator →
-      balance.toNat ≤ validator.effectiveBalance.toNat + preset.upwardBand) ∧
-    validator.effectiveBalance.toNat ≤ balance.toNat + preset.downwardBand := by
-  simp only [withdrawalMaxEffectiveBalance, preElectra, ↓reduceIte]
-  rw [effective]
-  have modLe : balance % preset.EFFECTIVE_BALANCE_INCREMENT ≤ balance := by
-    rw [UInt64.le_iff_toNat_le, UInt64.toNat_mod]
-    exact Nat.mod_le _ _
-  have subNat : (balance - balance % preset.EFFECTIVE_BALANCE_INCREMENT).toNat =
-      balance.toNat - balance.toNat % preset.EFFECTIVE_BALANCE_INCREMENT.toNat := by
-    rw [UInt64.toNat_sub_of_le _ _ modLe, UInt64.toNat_mod]
-  have modLt := Nat.mod_lt balance.toNat bands.1
-  have narrow := bands.2
-  have modBound := Nat.mod_le balance.toNat preset.EFFECTIVE_BALANCE_INCREMENT.toNat
-  rw [UInt64.min_def]
-  split
-  · refine ⟨fun _ => ?_, ?_⟩ <;> rw [subNat] <;> omega
-  · rename_i above
-    refine ⟨fun below => absurd below (UInt64.lt_irrefl _), ?_⟩
-    have := UInt64.lt_iff_toNat_lt.mp (UInt64.not_le.mp above)
-    rw [subNat] at this
-    omega
-
-/-- A genesis state is within the bands of hysteresis.
-
-Its activation rounds each balance down to an increment, at most the largest effective balance.
-
-That largest value is the cap before Electra.
-
-The increment must be positive and at most the upward band. -/
-private theorem genesis_hysteresis {g : ForkedBeaconState preset}
-    (genesis : Genesis config checks g) (bands : preset.IncrementWithinUpwardBand) :
-    Hysteresis g.state := by
-  obtain ⟨gFork, gState⟩ := g
-  obtain ⟨hash, time, deposits, initialized⟩ := genesis
-  obtain ⟨phase0, _, _, deposited, activated, root, -, activatedOk, rooted⟩ :=
-    initializeBeaconStateFromEth1_ok initialized
-  change Hysteresis gState
-  rw [show gState = _ from rooted]
-  have preElectra : ¬.pectra ≤ gFork := fun electra =>
-    Nat.lt_irrefl _ (Nat.lt_of_lt_of_le (Nat.lt_trans phase0 (by decide)) electra)
-  obtain ⟨balances, -, size, effective⟩ :=
-    foldlM_activateAtGenesis (Nat.lt_trans phase0 (by decide)) activatedOk
-  -- Each position holds its balance rounded down, as the activation sets it.
-  have within : ∀ (position : ℕ) (validator : Validator) (balance : Gwei),
-      activated.validators.data[position]? = some validator →
-      activated.balances.data[position]? = some balance →
-      validator.effectiveBalance =
-        min (balance - balance % preset.EFFECTIVE_BALANCE_INCREMENT)
-          preset.MAX_EFFECTIVE_BALANCE := by
-    intro position validator balance found read
-    have inside : position < deposited.validators.data.size := by
-      rw [← size]
-      exact (Array.getElem?_eq_some_iff.mp found).1
-    have rounded := effective position inside
-    rw [found, ← balances, read] at rounded
-    exact Option.some.inj rounded
-  exact ⟨fun position validator balance found read =>
-      (rounded_bands bands preElectra (within position validator balance found read)).1,
-    fun position validator balance found read =>
-      (rounded_bands bands preElectra (within position validator balance found read)).2⟩
-
 /-- A run from genesis to a state at the first slot of an epoch passes the boundary state.
 
 The boundary state is at the same slot, after the epoch transition and the upgrades of the slot.
@@ -407,7 +312,9 @@ Only blocks at that slot lead from the boundary state to the last state.
 
 The bands of hysteresis hold at the boundary state.
 
-Genesis sets them, and so does the epoch transition.
+Genesis is before Altair and the last state is at Fulu or later, so the run has a slot step.
+
+The epoch transition of that step sets the bands.
 
 An upgrade keeps them, since every effective balance is at most its cap. -/
 private theorem run_boundaryState {g : ForkedBeaconState preset}
@@ -415,17 +322,19 @@ private theorem run_boundaryState {g : ForkedBeaconState preset}
     (electraFloor : preset.MAX_EFFECTIVE_BALANCE = preset.MIN_ACTIVATION_BALANCE)
     (electraCap : preset.MIN_ACTIVATION_BALANCE ≤ preset.MAX_EFFECTIVE_BALANCE_ELECTRA) :
     ∀ {x : ForkedBeaconState preset}, Run config checks g x → x.fork < .glamsterdam →
-      x.state.slot % preset.SLOTS_PER_EPOCH = 0 →
+      .fusaka ≤ x.fork → x.state.slot % preset.SLOTS_PER_EPOCH = 0 →
       ∃ boundary : BeaconState preset x.fork, boundary.slot = x.state.slot ∧
         Hysteresis boundary ∧ Nonempty (Run config checks g ⟨x.fork, boundary⟩) ∧
         Nonempty (Run config checks ⟨x.fork, boundary⟩ x) := by
   intro x run
   induction run with
   | nil =>
-    intro _ _
-    exact ⟨g.state, rfl, genesis_hysteresis genesis bands, ⟨.nil⟩, ⟨.nil⟩⟩
+    intro _ fulu _
+    obtain ⟨_, _, _, initialized⟩ := genesis
+    obtain ⟨phase0, -⟩ := initializeBeaconStateFromEth1_ok initialized
+    exact absurd (Nat.lt_of_le_of_lt fulu phase0) (by decide)
   | @snoc middle last pre step ih =>
-    intro early atStart
+    intro early fulu atStart
     cases step with
     | slot ok =>
       obtain ⟨advanced, advancedOk, upgraded⟩ := bind_ok_iff.mp ok
@@ -444,7 +353,7 @@ private theorem run_boundaryState {g : ForkedBeaconState preset}
         ⟨pre.snoc (.slot ok)⟩, ⟨.nil⟩⟩
     | block engine signed due ok =>
       have kept := processBlock_slot (applySignedBlock_ok ok).2.1
-      obtain ⟨boundary, atSlot, banded, first, ⟨rest⟩⟩ := ih early (kept ▸ atStart)
+      obtain ⟨boundary, atSlot, banded, first, ⟨rest⟩⟩ := ih early fulu (kept ▸ atStart)
       exact ⟨boundary, atSlot.trans kept.symm, banded, first,
         ⟨rest.snoc (.block engine signed due ok)⟩⟩
 
@@ -538,21 +447,13 @@ private theorem run_of_held (forward : Store.ForwardReachableWith config checks 
     {root : Root} {state : BeaconState preset fork}
     (stored : store.blockStates[root]? = some state) :
     Nonempty (Run config checks ⟨fork, anchorState⟩ ⟨fork, state⟩) := by
-  induction hslot : state.slot.toNat using Nat.strong_induction_on generalizing root state with
-  | _ n ih =>
-  obtain ⟨block, found⟩ := forward.reachable.known_of_blockState stored
-  obtain ⟨kept, keptFound, isAnchor, notAnchor⟩ := forward.blockStatesFromParents found
-  rw [stored, Option.some.injEq] at keptFound
-  subst keptFound
-  by_cases same : block = anchorBlock
-  · rw [isAnchor same]
-    exact ⟨.nil⟩
-  · obtain ⟨parent, _, engine, signed, rfl, -, parentStored, transitioned⟩ := notAnchor same
-    have bounds := stateTransition_slot transitioned
-    -- The parent state is at an earlier slot, so a run reaches it first.
-    obtain ⟨pre⟩ := ih _ (hslot ▸ bounds.2 ▸ UInt64.lt_iff_toNat_lt.mp bounds.1) parentStored rfl
-    obtain ⟨last⟩ := (RunsTo.ofTransition transitioned).2 (before root _ stored)
-    exact ⟨pre.append last⟩
+  refine forward.reachable.blockState_induction forward.blockStatesFromParents
+    (fun _ state => Nonempty (Run config checks ⟨fork, anchorState⟩ ⟨fork, state⟩))
+    (fun _ _ => ⟨.nil⟩) (fun root _ _ _ _ _ _ _ held _ ok _ _ transitioned previous => ?_) stored
+  subst ok
+  obtain ⟨pre⟩ := previous
+  obtain ⟨last⟩ := (RunsTo.ofTransition transitioned).2 (before root _ held)
+  exact ⟨pre.append last⟩
 
 /-- A slot of an epoch within the horizon is before the next fork. -/
 private theorem beforeFork_of_epoch {horizon : Epoch}
@@ -650,7 +551,7 @@ private theorem runs_of_call
     (slots : 0 < config.SLOT_DURATION_MS) (positive : 0 < preset.SLOTS_PER_EPOCH.toNat)
     {g : ForkedBeaconState preset} (genesis : Genesis config .bls g)
     (history : Run config .bls g ⟨fork, anchorState⟩) (early : fork < .glamsterdam)
-    (window : ∀ next ∈ config.nextFork fork, horizon.toNat < next.2.toNat)
+    (fulu : .fusaka ≤ fork) (window : ∀ next ∈ config.nextFork fork, horizon.toNat < next.2.toNat)
     (bounded : HonestStoreEpochsBounded (e := e) horizon limit)
     (agree : HonestBlocksAgree (e := e) limit) (bands : preset.IncrementWithinUpwardBand)
     (electraFloor : preset.MAX_EFFECTIVE_BALANCE = preset.MIN_ACTIVATION_BALANCE)
@@ -833,11 +734,12 @@ private theorem runs_of_call
       obtain ⟨slotRun⟩ := run_of_processSlots processed boundaryBefore
       exact ⟨middle, middleBoundary, hysteresis_of_processSlots bands processed atStart,
         ⟨(history.append ancRun).append slotRun⟩, .nil, Nat.zero_le _,
-        processSlots_pendingPartialWithdrawals processed⟩
+        processSlots_pendingPartialWithdrawals
+          (Nat.le_trans (show Fork.altair ≤ Fork.fusaka by decide) fulu) processed⟩
     · obtain rfl : anc = middle := by
         simpa [lookaheadState, same, UInt64.lt_irrefl, pure, Except.pure] using lookOk
       obtain ⟨start, atSlot, banded, first, ⟨edge⟩⟩ :=
-        run_boundaryState genesis bands electraFloor electraCap (history.append ancRun) early
+        run_boundaryState genesis bands electraFloor electraCap (history.append ancRun) early fulu
           (show anc.slot % preset.SLOTS_PER_EPOCH = 0 from same ▸ atStart)
       have counted := edge.blocks_le_slots (a := boundary.toNat) (b := boundary.toNat)
         (by rw [atSlot, same]) (by rw [same])
@@ -850,7 +752,9 @@ private theorem runs_of_call
 
 /-- The quorum of each call of an honest store drifts by at most its reserve, at every receiver.
 
-This holds for executions whose honest stores check signatures with BLS.
+This holds for executions whose honest stores check signatures with BLS, at Fulu or later.
+
+Fast confirmation was implemented at Fulu.
 
 The spec pulls the head state of a call up with BLS checks, and the epoch transition reads them.
 
@@ -874,7 +778,7 @@ theorem Execution.quorumDriftWithin_of_bound
       ∀ (edge : Run config .bls ⟨fork, boundary⟩ ⟨fork, middle⟩)
         (tailP : Run config .bls ⟨fork, middle⟩ ⟨fork, pulled⟩),
       Run config .bls ⟨fork, middle⟩ ⟨fork, state⟩ →
-      fork < .glamsterdam → .altair ≤ fork → preset.IncrementWithinUpwardBand →
+      fork < .glamsterdam → .fusaka ≤ fork → preset.IncrementWithinUpwardBand →
       1 ≤ config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat → CapOrder preset →
       Hysteresis boundary → edge.blockCount ≤ 1 →
       edge.blockCount + tailP.blockCount ≤
@@ -897,7 +801,7 @@ theorem Execution.quorumDriftWithin_of_bound
     (start : ∀ w ∈ J, e.start w = anchor) (anchorSlot : anchorBlock.slot = anchorState.slot)
     (slots : 0 < config.SLOT_DURATION_MS) (parameters : DirectSafety.Parameters preset)
     (genesis : Genesis config .bls g) (history : Run config .bls g ⟨fork, anchorState⟩)
-    (early : fork < .glamsterdam) (altair : .altair ≤ fork)
+    (early : fork < .glamsterdam) (fulu : .fusaka ≤ fork)
     (window : ∀ next ∈ config.nextFork fork, horizon.toNat < next.2.toNat)
     (bounded : HonestStoreEpochsBounded (e := e) horizon limit)
     (agree : HonestBlocksAgree (e := e) limit) (bands : preset.IncrementWithinUpwardBand)
@@ -910,11 +814,11 @@ theorem Execution.quorumDriftWithin_of_bound
     voting totalOk pulledTotalOk
   obtain ⟨pulledEpoch, boundary, middle, boundaryEpoch, middleEpoch, banded, ⟨toBoundary⟩,
     queue, edge, tail, single, counted, ⟨toState⟩⟩ :=
-    runs_of_call anchored start anchorSlot slots parameters.slots genesis history early window
+    runs_of_call anchored start anchorSlot slots parameters.slots genesis history early fulu window
       bounded agree bands electraFloor electraCap caller callTime pulledOk targetOk held receiver
       receiveTime stored read reach later inside
   rw [← pulledEpoch] at counted later near
-  exact bound genesis toBoundary edge tail toState early altair bands withdrawDelay
+  exact bound genesis toBoundary edge tail toState early fulu bands withdrawDelay
     ⟨UInt64.le_of_eq electraFloor, electraCap⟩ banded single counted queue
     (middleEpoch.trans boundaryEpoch.symm) (pulledEpoch.trans boundaryEpoch.symm) later near
     voting totalOk pulledTotalOk
