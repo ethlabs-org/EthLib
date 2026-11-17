@@ -122,7 +122,7 @@ theorem windowExitBound_of_activeKept (config : Config) (store : Store preset fo
     have nextNat := (addChecked_ok_iff.mp nextOk).2
     have endNat := (subChecked_ok_iff.mp endOk)
     simp only [UInt64.toNat_one] at endNat
-    exact absurd (Store.mem_getCommitteesBetweenSlots_of_active (store := store) preGloas positive
+    exact absurd (Store.mem_getCommitteesBetweenSlots_of_active (store := store) positive
       membersOk headOk (by omega) (by rw [Nat.succ_mul]; omega)
       (mem_getActiveValidatorIndices_of_isActiveAt active)) member.2
 
