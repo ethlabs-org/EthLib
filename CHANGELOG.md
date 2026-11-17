@@ -24,6 +24,7 @@ Not yet released.
   The checkpoint's epoch is at most two epochs before the parent's, and the preset satisfies `Preset.ExitWindowFixed`.
   Each near receiver's head state keeps the source's activity three epochs ahead, so `windowExitBound_of_activeKept` bounds each full epoch of its window by `exitReserve`.
   `historical_stores_or_collision`, the split of honest stores into agreement or a collision, is now public; the proof reads it.
+  `Store.Reachable.blockState_slot_eq` states that a known block's state is at the block's slot, when the anchor block is at the anchor state's slot; the proof reads it.
 
 - `Execution.honestHeadsCover_of_historical_anchor` keeps a confirmed block on every honest head chain from the call to a horizon, by induction on time ([#1458](https://github.com/ethereum/EthLib/issues/1458)).
   It no longer assumes the root's own earlier coverage.

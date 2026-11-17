@@ -132,24 +132,6 @@ private theorem lookaheadState_slot {config : Config} {checks : SignatureChecks}
     cases computed
     exact UInt64.le_antisymm early (UInt64.not_lt.mp notBelow)
 
-/-- In a reachable store, a block's state is at the block's slot.
-
-The anchor block must be at the anchor state's slot. -/
-private theorem blockState_slot {config : Config} {anchorState : BeaconState preset fork}
-    {anchorBlock : BeaconBlock preset fork} {store : Store preset fork}
-    (anchorSlot : anchorBlock.slot = anchorState.slot)
-    (reachable : Store.Reachable config anchorState anchorBlock store) {root : Root}
-    {block : BeaconBlock preset fork} {state : BeaconState preset fork}
-    (found : store.blocks[root]? = some block)
-    (stateFound : store.blockStates[root]? = some state) : state.slot = block.slot := by
-  obtain ⟨kept, keptFound, isAnchor, notAnchor⟩ := reachable.blockStatesFromParents found
-  rw [stateFound, Option.some.injEq] at keptFound
-  subst keptFound
-  by_cases same : block = anchorBlock
-  · rw [isAnchor same, same, anchorSlot]
-  · obtain ⟨_, _, _, _, -, message, -, transition⟩ := notAnchor same
-    rw [(stateTransition_slot transition).2, message]
-
 variable {config : Config} {checks : SignatureChecks} {sources : BlockSources preset fork}
   {anchorState : BeaconState preset fork} {anchorBlock : BeaconBlock preset fork}
   {assignment : Assignment preset} {genesisTimeMs : UInt64} {J : Set ValidatorIndex}
@@ -255,7 +237,8 @@ theorem Execution.receiverWindowExitsNear_of_sourceOnParentChain
     Except.ok.inj (boundaryStateOk.symm.trans sourceComputed)
   subst sameSource
   -- The source is at the first slot of the checkpoint's epoch.
-  have baseSlot := blockState_slot anchorSlot (reached u caller n) checkpointFound callerBaseFound
+  have baseSlot := (reached u caller n).blockState_slot_eq anchorSlot checkpointFound
+    callerBaseFound
   have sourceSlot := lookaheadState_slot (baseSlot ▸ checkpointLe) sourceComputed
   have sourceEpoch : getCurrentEpoch boundaryState = checkpoint.epoch := by
     rw [getCurrentEpoch, sourceSlot]
