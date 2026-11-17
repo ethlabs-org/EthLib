@@ -952,12 +952,12 @@ theorem partialsSame_setValidatorAt {position : Nat} {validator : Validator}
   exact fun _ => rfl
 
 /-- Setting a validator keeps the queue. -/
-theorem partialsSame_setValidator {index : ValidatorIndex} {validator : Validator}
+private theorem partialsSame_setValidator {index : ValidatorIndex} {validator : Validator}
     (set : state.setValidator index validator = .ok after) : PartialsSame state after :=
   partialsSame_setValidatorAt (by rwa [← setValidator_eq_setValidatorAt])
 
 /-- Setting a balance keeps the queue. -/
-theorem partialsSame_setBalance {index : ValidatorIndex} {balance : Gwei}
+private theorem partialsSame_setBalance {index : ValidatorIndex} {balance : Gwei}
     (set : state.setBalance index balance = .ok after) : PartialsSame state after := by
   obtain ⟨_, rfl⟩ := setBalance_ok set
   exact fun _ => rfl
