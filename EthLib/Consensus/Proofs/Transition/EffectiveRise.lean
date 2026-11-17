@@ -1362,7 +1362,7 @@ private theorem gain_sum_le {list due : List PendingConsolidation}
 The share is the total over the churn quotient, or the minimum if that is larger.
 
 It is rounded down to a whole number of increments, then capped by the maximum. -/
-private theorem depositChurnLimit_toNat_of_lt {fork : Fork} {state : BeaconState preset fork}
+theorem depositChurnLimit_toNat_of_lt {fork : Fork} {state : BeaconState preset fork}
     {total churn : Gwei} (early : fork < .glamsterdam)
     (totalOk : getTotalActiveBalance state = .ok total)
     (computed : depositChurnLimit config state = .ok churn) :
