@@ -9,6 +9,7 @@ public import EthLib.Consensus.Proofs.Mutators
 import EthLib.Consensus.Proofs.Transition.ActiveKept
 import EthLib.Consensus.Proofs.Transition.ChainRoots
 import EthLib.Consensus.Proofs.Transition.Genesis
+import EthLib.Consensus.Proofs.Transition.RegistryLifecycle
 
 /-!
 # The quorum of a fast-confirmation call drifts by at most its reserve
@@ -79,15 +80,6 @@ private theorem voters_sum_le {voters : Finset ValidatorIndex} {positions : Fins
   exact Finset.sum_le_sum_of_subset fun i member => by
     obtain ⟨v, voter, rfl⟩ := Finset.mem_image.mp member
     exact inside v voter
-
-/-- A sum of a function that is zero off a set is at most its sum over that set. -/
-private theorem sum_le_of_zero_off {s t : Finset ValidatorIndex} {f : ValidatorIndex → ℕ}
-    (zero : ∀ v, v ∉ t → f v = 0) : ∑ v ∈ s, f v ≤ ∑ v ∈ t, f v := by
-  calc ∑ v ∈ s, f v = ∑ v ∈ s.filter (· ∈ t), f v := by
-        refine (Finset.sum_filter_of_ne fun v _ nonzero => ?_).symm
-        by_contra outside
-        exact nonzero (zero v outside)
-    _ ≤ ∑ v ∈ t, f v := Finset.sum_le_sum_of_subset fun v member => (Finset.mem_filter.mp member).2
 
 /-- The validators active in the next epoch weigh at most those active now and those joining. -/
 private theorem sum_upcoming_le (s : Finset ℕ) (current upcoming : ℕ → Bool) (f : ℕ → ℕ) :
@@ -252,10 +244,10 @@ theorem quorumDrift_le_quorumReserve
     have totals : total.toNat = pulledTotal.toNat := by
       rw [getTotalActiveBalance_toNat totalOk, getTotalActiveBalance_toNat pulledOk, sameEpoch,
         callEpoch]
+      -- Both totals sum the effective balances that the boundary state holds.
       congr 1
-      refine activeSum_congr (fun i => (activeS i).trans (activeP i).symm) fun i active => ?_
-      rw [activeS] at active
-      exact (keptS i (insideR active)).trans (keptP i (insideR active)).symm
+      exact (activeSum_eq activeS keptS (edge.append tailS).registryLifecycle.size_le).trans
+        (activeSum_eq activeP keptP (edge.append tailP).registryLifecycle.size_le).symm
     have stakes : stake (fun v => balanceAt state v.toNat) voters =
         stake (fun v => balanceAt pulled v.toNat) voters := by
       refine Finset.sum_congr rfl fun v voter => ?_
@@ -392,7 +384,8 @@ theorem quorumDrift_le_quorumReserve
   have bandSum : ∑ v ∈ voters, (if v ∈ creditedKeys then
       inc + 2 * preset.downwardBand + syncPMax else 0) ≤
       creditedP * (inc + 2 * preset.downwardBand + syncPMax) := by
-    refine (sum_le_of_zero_off (t := creditedKeys) fun v outside => by simp [outside]).trans ?_
+    refine (Finset.sum_le_sum_of_ne_zero (t := creditedKeys) fun v _ nonzero =>
+      by_contra fun outside => nonzero (by simp [outside])).trans ?_
     rw [Finset.sum_ite_of_true fun v member => member, Finset.sum_const,
       nsmul_eq_mul, Nat.cast_id]
     exact Nat.mul_le_mul_right _ creditedLe
@@ -400,14 +393,16 @@ theorem quorumDrift_le_quorumReserve
   have maskSum : ∑ v ∈ voters, min (pc v + deposit v) (below v) ≤ maskBudget := by
     have byBelow : ∑ v ∈ voters, min (pc v + deposit v) (below v) ≤ ∑ v ∈ owed, below v :=
       (Finset.sum_le_sum fun v _ => Nat.min_le_right _ _).trans
-        (sum_le_of_zero_off belowOff)
+        (Finset.sum_le_sum_of_ne_zero fun v _ nonzero =>
+          by_contra fun outside => nonzero (belowOff v outside))
     by_cases electra : Fork.pectra ≤ fork
     · have byCredit : ∑ v ∈ voters, min (pc v + deposit v) (below v) ≤
           ∑ v ∈ creditedKeys, pc v := by
         refine (Finset.sum_le_sum fun v _ => Nat.min_le_left _ _).trans ?_
-        refine (sum_le_of_zero_off fun v outside => ?_).trans
+        refine (Finset.sum_le_sum_of_ne_zero (f := fun v => pc v + deposit v) (t := creditedKeys)
+          fun v _ nonzero => by_contra fun outside =>
+            nonzero (by simp [(zeroOff v outside).1, (zeroOff v outside).2])).trans
           (Finset.sum_le_sum fun v _ => by rw [electraZero electra v, Nat.add_zero])
-        rw [(zeroOff v outside).1, (zeroOff v outside).2]
       have budget' : ∑ v ∈ creditedKeys, pc v ≤ proposerCredit + whistleblowerP := budget
       have maskEq : maskBudget = min (proposerCredit + whistleblowerP)
           (preset.MAX_PENDING_PARTIALS_PER_WITHDRAWALS_SWEEP.toNat *
