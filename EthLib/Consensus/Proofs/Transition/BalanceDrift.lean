@@ -725,7 +725,7 @@ private theorem balanceDrift_upgrade_upper {s : ForkedBeaconState preset}
   · obtain ⟨_, _, rfl⟩ := ok
     exact False.elim ((by decide : ¬Fork.hegota < Fork.glamsterdam) early)
 
-private theorem balanceDrift_upgrades_upper {s t : ForkedBeaconState preset}
+theorem balanceDrift_upgrades_upper {s t : ForkedBeaconState preset}
     (ok : processUpgrades config checks s = .ok t) (early : t.fork < .glamsterdam) (i : Nat) :
     effectiveAt t i ≤ effectiveAt s i := by
   fun_induction processUpgrades config checks s generalizing t with
