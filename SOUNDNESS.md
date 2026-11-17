@@ -135,26 +135,39 @@ The game does not count that as a win.
 ### Merkle trees
 
 leanXMSS, leanSPHINCS, the VRF tree and SSZ build their trees on one definition.
-Two theorems in `Proofs/Merkle/Binding.lean` describe what a path binds, for every node hash.
+Two theorems in `Proofs/Merkle/Binding/` describe what a path binds, for every node hash.
 The first is `climb_binding`, about two climbs from one position that reach one node.
 They are equal, or `findCollision` returns a collision of the node hash at an ancestor of that position.
 The second is `climb_binding_node`, about a climb that reaches an honest node but is not the honest climb.
 Then `findSecondPreimage` returns a second preimage of an honest ancestor.
+`root_binding_leaves` (`Proofs/Merkle/Binding/Collision.lean`) applies the first theorem at every leaf: the root binds the vector.
 
 Both searches are explicit algorithms, proved to return valid answers.
 Each can return nothing: on one climb compared with itself (`findCollision_self`), and on the honest climb (`findSecondPreimage_honest`).
 So the statements say something, even though every compressing hash has collisions.
 
-`Proofs/Merkle/RandomOracle.lean` bounds classical searches against an ideal random oracle with `N` outputs and an empty initial cache.
+`Proofs/Merkle/Binding/Index.lean` covers a path whose index or length is wrong.
+`climb_root_honest`: a climb from leaf `j` that reaches the root is the honest opening, or `findSecondPreimage` or `findPositionCollision` succeeds.
+The second search finds two inputs at different positions with one output, which is free for a hash that ignores the position.
+With such a hash, the verifier must check `j < 2^h` and the path length itself (`climb_const_shift_root`, `climb_const_interior`).
+An empty path and a tree of height 0 are not covered.
+
+A multiproof opens several nodes at once, with the helper nodes their paths need (`Merkle/Multiproof.lean`).
+`verify_complete` (`Proofs/Merkle/Multiproof/Basic.lean`) shows that an honest multiproof rebuilds the root.
+`verify_binding` (`Proofs/Merkle/Multiproof/Binding.lean`) is about two accepted multiproofs for the same positions and root.
+The opened positions are distinct and lie in the tree, and none is an ancestor of another.
+Each list of values has one value per position.
+They open the same values, or `findMultiproofCollision` returns a collision of the node hash.
+That search walks both rebuilds down from the root, and returns nothing on one rebuild compared with itself (`findMultiproofCollision_self`).
+
+`Proofs/Merkle/RandomOracle/Collision.lean` bounds classical searches against an ideal random oracle with `N` outputs and an empty initial cache.
 `prEvent_collision_le` bounds a collision among queried inputs by `q^2 / N` for at most `q` hash calls, and private uniform sampling is not counted.
 This bound exceeds the standard birthday bound `q(q - 1) / (2N)` by the factor `2q / (q - 1)`: at most 4 for `q >= 2`, and close to 2 for large `q`.
 `prEvent_experimentWith_le` applies it to an experiment where the adversary outputs a claim and an extraction then runs on it with the oracle alone.
 It bounds a win by `q^2 / N` when every replayed win of the extraction leaves a collision in the cache.
 
-`prEvent_secondPreimage_le` bounds by `q / N` a hit on a target digest fixed before the run, among queried inputs other than one honest input.
-The theorem does not tie the target to the digest of the honest input.
-Reading it as a second-preimage bound conditions on the honest digest and assumes that the other oracle answers stay independent and uniform.
-That conditioning is a modelling step, not a proved one.
+`prEvent_secondPreimageGame_le` bounds a second preimage of one fixed tree of height `h` by `(Q_f + h) / N`, for a forger with `Q_f` hash calls.
+The forger sees the root and all honest paths.
 
 The Merkle applications model the tuple `(level, position, left, right)` as the oracle input.
 They require an injective encoding of that tuple, for levels and positions inside the encodable range, not a hash that ignores the position.
@@ -188,8 +201,10 @@ It rests on `climb_binding`, above.
 `findBranchCollision_valid_of_width` states the collision for any hash with 32-byte digests.
 
 Multiproof binding is `verifyMerkleMultiproof_binding` and `verifyMerkleMultiproof_overlap_binding` (`Proofs/Ssz/Merkle/MultiproofBinding.lean`).
-Two accepted requests for one root agree on every position they both claim, or `findMessageCollision` returns a collision.
-That search tries each input one verifier hashes against each input the other hashes.
+Two accepted requests for one root agree on every position they both claim, or `findMultiproofMessageCollision` returns a collision.
+That search is the Merkle multiproof search over the two rebuilds, and returns the two inputs hashed at one node.
+Each input is one its own verifier hashes, in the record of `verifiedMultiproofMessages` (`findMultiproofCollision_recorded`, `Proofs/Merkle/Multiproof/Trace.lean`).
+It rests on `rebuild_go_binding` (`Proofs/Merkle/Multiproof/Binding.lean`).
 
 Whole-value binding is `hashTreeRoot_binding` (`Proofs/Ssz/Codec/Binding.lean`).
 Two values of one type with one root are equal, or `findMessageCollision` returns a collision between the hash inputs of the two root computations.
@@ -205,7 +220,7 @@ Two legal progressive containers with one root have one layout, or `findMixinCol
 It computes the roots of the all-zero subtrees with that hash too.
 
 No theorem bounds the probability of finding a collision in a multiproof.
-Its verifier hashes each pair with `combine` in `foldLevelNodes`, which takes no node hash as an argument, so no experiment runs it against the oracle.
+Its verifier is the Merkle rebuild, which takes the node hash as an argument, but no experiment runs it against the oracle.
 
 `Proofs/Ssz/RandomOracle.lean` bounds whole-value binding, with the node hash a random oracle.
 The merkleization takes its hash in any monad, so the experiment runs the root of the specification with a hasher that queries the oracle.
@@ -2988,7 +3003,7 @@ In that case the evidence names no accountable stake.
 The theorem does not assume hash injectivity.
 
 The endpoint assumes synchrony, prompt processing, block admission and validated honest duty votes through its time horizon.
-It also assumes agreement between assignment duties and head committee windows, common history for vote committees, and successful source-weight window reads.
+It also assumes agreement between assignment duties and head committee windows, the window membership of voters below the parent (`VotersInHeadWindow`), and successful source-weight window reads.
 Its stake hypotheses include a Byzantine and exit reserve for each nonempty committee window of the caller's head, from the caller's first slot to the receiver's last slot.
 They also include unslashed honest validators in counted states, a checkpoint stake ceiling and an explicit drift bound.
 Earlier honest-head coverage and receiver-finality coverage remain hypotheses.
@@ -3007,8 +3022,12 @@ The coverage of the parent over the same interval and the coverage of the histor
 Like the historical-anchor theorem, it does not assume finality across honest stores.
 Receiver finality coverage and the receiver's block lookup are derived from `RootViable`, the root's viability at each honest store, which is assumed.
 It assumes that no up-to-date honest justified checkpoint over the interval conflicts with the root: the checkpoint-consistency half of the safety of the confirmation, not derived.
-`HonestHeadReads` assumes that each honest head reads its justified state and its committee windows.
-`ReceiverWindowExits` assumes the exit bound of each receiver's window, and `LateDutyMajority` assumes the honest duty majority of the duty-epoch theorem.
+The receivers' reads are derived.
+When the root is above the justified block, the head computation weighed a child of that block and so read its state (`Store.checkpointState_justified_of_getHead`).
+Each committee window before the current slot reads from the head's state (`Store.getCommitteesBetweenSlots_exists`).
+That needs `Config.CommitteeWindowsFit`, a bound on the registry limit, the committees, the clock and the seed lookahead, which mainnet and minimal satisfy.
+`ReceiverWindowExitsNear` assumes the exit bound of the window of each receiver within two epochs of the parent.
+`LateDutyMajority` assumes the honest duty majority of the duty-epoch theorem.
 The receiver's proposer score is derived from the checkpoint stake ceiling and `Config.ProposerScoreFits`, a bound on the boost that mainnet and minimal satisfy.
 
 `Execution.honestHeadsCover_of_signed_justification` in the same file splits `RootViable` and derives one part of it.
@@ -3032,6 +3051,45 @@ The anchor's latest header must be the anchor block's, with a zero state root, a
 The anchor store checks neither, and without them a justified root may be one that no store holds.
 So the late half of the root's viability rests on the Byzantine bound, the stake floors and these conditions.
 The signed-justification theorem keeps its statement for callers that supply the signer.
+
+Three premises of these headlines need a word on when they hold.
+
+The headlines do not assume a common committee-preserving state behind every recent vote and the head.
+That assumption fails on ordinary runs.
+Let `MIN_SEED_LOOKAHEAD` be 1, as on mainnet, and take an epoch with no block.
+Then take a vote with the current target while the head block is still from before that epoch.
+A common state must be no later than the head state and within one seed lookahead of the target, and no state is both.
+The headlines assume `NewlyActiveVotersInHeadWindow` instead, which that assumption implies.
+It reads only the parent of the tested block, and only honest stores from the call's time to the horizon.
+It asks only about a far vote, one whose target is two epochs after the parent.
+Its voter must also have become active at that target epoch.
+Such a voter must lie in the head's window, from the slot after the parent to the slot before the current one.
+Every other voter below the parent lies in the window by a proof (`Execution.votersInHeadWindow_of_newlyActive`).
+A vote at most one epoch after the parent reads committees that the head state shares.
+For a far vote, the window holds the whole epoch before the target, where every validator active in the head state has a committee.
+
+The premise fails when the head state's shuffling places a newly active far voter at or after the current slot.
+An adversary can bring that about.
+Take a validator activated two epochs after the parent's epoch.
+It votes on a branch that left the head's branch after the parent, within the parent's epoch.
+With `MIN_SEED_LOOKAHEAD` 1, that branch has a different RANDAO mix, so a different seed for the target epoch, and the head's shuffling may place the voter late.
+Each such occurrence leaves out at most that voter's balance.
+Let the maximum seed lookahead be at least two epochs, as on mainnet.
+Then the parent's state already sets that activation epoch, so the head's branch activates the voter too.
+
+`SourceWindowReads` assumes two reads in the caller's source state.
+Each later window weight that a receiver computes with its own balances must also compute with the source state's.
+The source state's proposer score must also compute.
+A window that holds no whole epoch reads the validator record of each member in the source state.
+It sums the balances of the members active there.
+One way the premise fails is such a member that the source state does not hold, such as a validator deposited after it.
+The reads also fail on Gwei overflow, in the window's total or in the proposer score.
+With positive `SLOTS_PER_EPOCH`, it holds, barring overflow, when every member of each such window is in the source state.
+
+`ReceiverWindowExitsNear` asks the exit bound only of receivers within two epochs of the parent, where every step reads it.
+The former premise asked the same bound of every receiver up to the horizon.
+A receiver several epochs past the parent has several epochs of exits in its window.
+They count against one reserve, so that form can fail while validators keep exiting.
 
 `Consensus/Proofs/ForkChoice/FastConfirmation/Indicators.lean` also states the two FFG tests of the rule on the target of the current epoch.
 `getCurrentTarget_eq_ok_iff` states that target as the checkpoint of the store's epoch in the chain of the head, and `epoch_eq_of_getCurrentTarget` gives its epoch.
@@ -3988,6 +4046,72 @@ A payload withdraws from at most 16 keys, so over 225 epochs, about a day, at mo
 Then this rounding alone adds up to about 1.3% of a stake of 36 million ether to the bound, and a tighter deficit is open.
 The premise on the withdrawal delay comes from the proof, which reads the invariant of pending consolidations, not from the bound.
 The envelope is not yet put into the weak subjectivity margin of `accountable_safety_of_weakSubjectivityPeriod`.
+
+`accountable_safety_apriori` (`DirectSafety/Apriori.lean`) replaces the observed drift by `drift x high`.
+Its definitions are in the namespace `DirectSafety.Apriori`.
+`drift x high` is a function of numbers read at `x` and of the window to the finalized epoch of `b`.
+It combines quantities read at `x` with the ceilings that the specification puts on each epoch.
+The ceilings cover the exit, consolidation and deposit churn, slashing and whistleblower amounts, the leak penalty and the issuance.
+When the guard `aprioriGuardAt` fails, `drift` is the unslashed active stake at `x`, so the bound is empty.
+The guard fails for every window that crosses Electra, and for every window from a state before Altair.
+It also fails for a state before Electra whose epoch has reached the Electra fork epoch, since that state never upgrades.
+It fails for a long window: `H + 2 >= EPOCHS_PER_SLASHINGS_VECTOR / 2`, where `H` counts the epochs from `x` to `high + 1`.
+On mainnet that is 4096 epochs, about 18 days without finality.
+It fails as well when the floor on the stake reaches zero, or twice the ceiling exceeds three times the floor.
+A guard that holds does not by itself make the bound useful.
+Write `U` for the unslashed active stake at `x` and `A` for the accountable stake.
+Unless the runs show `HashEvidence`, the theorem gives `A >= (U - 2 * drift x high) / 3`.
+That lower bound is positive only when `2 * drift x high < U`.
+`AccountableDriftBound` and `AccountableWindowBound` take the premises of `source_safety`, and `AccountableWindowBound` also takes the guard.
+Like the envelope, `drift` is an upper bound, and nothing says that a run attains it.
+
+To check what `accountable_safety_apriori` says, read four layers in `DirectSafety/Apriori/Bound.lean`, each in terms of the next.
+
+First, the theorem is `AccountableDriftBound` and `AccountableWindowBound` together.
+`AccountableDriftBound` has the conclusion of `source_safety`, with `2 * drift x high` in place of the source envelope.
+Here `high` is the finalized epoch of `b`.
+`AccountableWindowBound` also takes `aprioriGuardAt config x high`.
+Unless the runs show `HashEvidence`, it finds two quorum calls, possibly of the same run, with target epochs in the finalized window.
+Let `cutoff` be the earlier of the two target epochs.
+It then adds three times the stake of `exitedBefore x cutoff` to the left side.
+
+Second, `exitedBefore x cutoff` is the set of unslashed keys active at `x` whose exit epoch is before `cutoff`.
+It is empty when `cutoff` is at most the epoch of `x`.
+These keys have exited by both target epochs, so they are absent from both calls.
+
+Third, `aprioriGuardAt config x high` is `aprioriGuard` applied to the observables of `x`.
+It asks for positive constants of the preset and the configuration, and a withdrawal delay of at least two epochs.
+It asks for `H + 2 < EPOCHS_PER_SLASHINGS_VECTOR / 2`.
+It asks that the floor `T_minus`, `stakeFloorAt`, stay positive in every epoch.
+From Electra on, it asks for `2 * T_plus <= 3 * T_minus`, where `T_plus` is the ceiling `stakeCeilingAt`.
+It asks that the window not cross Electra.
+
+Fourth, when the guard holds, `drift x high` is:
+
+```text
+  2 * (departureBudgetAt + duePartialWithdrawals + scheduledExitStake + startSlack
+       + windowPenalties (driftHorizon + 1) + roundingBudget)
++ gainBudget + 2 * adjacentExitStake + previousOnlyStake + 2 * exitCohortGrowth
++ 2 * max windowEdgeLoad gainBudget
+```
+
+When the guard fails, `drift` is `referenceStake x - slashedActiveStake x`, the unslashed active stake at `x`.
+
+The terms doubled in the first line are stake that can leave the support of `x`.
+They are departures, partial withdrawals, scheduled exits, slack below the effective balance, penalties and rounding.
+`gainBudget` is stake that can join or grow: `activationBudget`, `creditBudget` and `pendingSourceExcess`.
+From Electra it also includes `roundingBudget` and `dueConsolidationCarry`.
+`creditBudget` is the excess at `x`, due consolidation credits, the whistleblower allowance, issuance and consolidation transfers.
+The remaining terms cover the edges of the window.
+They are two adjacent exit epochs, the stake active only at the previous epoch, and the growth room of an exit cohort.
+
+The bound combines three kinds of terms.
+Some are read once at `x`, such as `startSlack`, `previousOnlyStake` and the carries of the queues.
+Some are sums over the window of a per-epoch ceiling, such as `windowPenalties`, `windowIssuance` and the flows.
+Others are maxima, such as `adjacentExitStake`, `exitCohortGrowth` and `windowEdgeLoad`.
+The per-epoch ceilings come from `stakeCeiling`, which gives `T_plus`, and `stakeFloor`, which gives `T_minus`.
+They follow the churn limits, the issuance bound `Preset.epochIssuanceBeforeAltair` and the penalty `epochPenalty` epoch by epoch.
+Each of these is a function of plain numbers, and its `At` form reads those numbers at `x`.
 
 ### Engine API
 
@@ -6042,8 +6166,8 @@ The binding of a proof of possession shares the bullet of leanXMSS, and the code
   The failure bounds of the codeword searches of leanSPHINCS rest on the same oracle.
 - Merkle search bounds: each new `(level, position, left, right)` input receives an independent uniform answer from a finite nonempty range.
   Repeated inputs receive the same answer, and the initial cache is empty.
-  The fixed-target bound excludes one honest input from the oracle domain and fixes the target before the run.
-  Reading it as a second-preimage bound conditions on the honest digest, a modelling step that no theorem proves.
+  The second-preimage game fixes the leaves independently of the oracle and covers one tree, with no tree address.
+  Its forger receives the root and every honest path.
   Only classical queries are counted.
   No SHA-256, Keccak or quantum security claim follows from this model.
 - SSZ root bound: the SHA-256 node hash is a random oracle on byte strings, shared by every node of the tree.
@@ -6319,6 +6443,7 @@ The files named `Proofs.lean` are roots that gather the proofs of a domain, so t
 - `EthLib/Cryptography/Proofs/Merkle/`
 - `EthLib/Cryptography/Proofs/ProgrammedPermutation.lean`
 - `EthLib/Cryptography/Proofs/QueryAvoidance.lean`
+- `EthLib/Cryptography/Proofs/RandomOracleFromCache.lean`
 - `EthLib/Cryptography/Proofs/RandomOracleTable.lean`
 - `EthLib/Cryptography/Proofs/Secp256k1/`
 - `EthLib/Cryptography/Proofs/Sphincs/`

@@ -89,7 +89,9 @@ def AssignmentWindowAgreement (last : Nat) : Prop :=
     ∀ v ∈ J, v ∈ participants ↔ ∃ slot committeeIndex, first ≤ slot ∧ slot ≤ finish ∧
       assignment.committee v slot = some committeeIndex
 
-/-- Each later successful window read also succeeds with the source state's weights and boost. -/
+/-- Each later successful window read also succeeds with the source state's weights and boost.
+
+With positive `SLOTS_PER_EPOCH`, only a member missing from the source, or overflow, breaks it. -/
 def SourceWindowReads (call last : Nat) (source : BeaconState preset fork) : Prop :=
   ∀ w ∈ J, ∀ k (head : ForkChoiceNode) state current first finish maximum,
     (e.world call).time ≤ (e.world k).time → (e.world k).time ≤ last →
@@ -107,91 +109,44 @@ def HonestStoreEpochsBounded (horizon : Epoch) (last : Nat) : Prop :=
   ∀ w ∈ J, ∀ k epoch, (e.world k).time ≤ last →
     ((e.world k).state w).getCurrentStoreEpoch config = .ok epoch → epoch ≤ horizon
 
-/-- Recent vote targets and the actual head have a common committee-preserving history. -/
-def VoteCommitteeCommonHistory (last : Nat) : Prop :=
-  ∀ w ∈ J, ∀ k, (e.world k).time ≤ last →
-    ∀ (head : ForkChoiceNode) headState current v (attestation : Attestation preset fork)
-      targetState,
-    ((e.world k).state w).getHead config = .ok head →
-    ((e.world k).state w).blockState head.root = .ok headState →
-    ((e.world k).state w).getCurrentStoreEpoch config = .ok current →
-    attestation.data.target.epoch.toNat ≤ current.toNat →
-    current.toNat ≤ attestation.data.target.epoch.toNat + 1 →
-    ((e.world k).state w).VoteOrigin config v attestation →
-    ((e.world k).state w).checkpointStates[attestation.data.target]? = some targetState →
-    ∃ common : BeaconState preset fork,
-      RunKept common headState ∧ RunKept common targetState ∧
-      attestation.data.target.epoch.toNat ≤
-        (getCurrentEpoch common).toNat + preset.MIN_SEED_LOOKAHEAD.toNat ∧
-      attestation.data.target.epoch ≤ activityFixedEpoch common ∧
-      (getCurrentEpoch headState).toNat + preset.MIN_SEED_LOOKAHEAD.toNat + 1 <
-        attestation.data.target.epoch.toNat + preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat ∧
-      (getCurrentEpoch targetState).toNat + preset.MIN_SEED_LOOKAHEAD.toNat + 1 <
-        attestation.data.target.epoch.toNat + preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat
+/-- A vote below a known block, with a slot in the window of the store's head after that block.
 
-/-- Each voter below an ancestor of an honest head lies in the head's window after that ancestor.
+The head descends from the block, and the store's epoch is at most two epochs after the block's.
 
-The ancestor is a known block, `parent`, and the store's current epoch is at most two after it.
+The window ends at the slot before the store's current slot.
 
-The window holds the committees of the head state for the slots after `parent`.
+The vote has an origin, and the members are the committees of the head state in the window. -/
+def VoteInHeadWindow (config : Config) (store : Store preset fork) (parentRoot : Root)
+    (parent : BeaconBlock preset fork) (members : Std.TreeSet ValidatorIndex)
+    (v : ValidatorIndex) (attestation : Attestation preset fork) : Prop :=
+  ∃ (head : ForkChoiceNode) (current first finish : Slot) (epoch : Epoch),
+    store.getHead config = .ok head ∧
+    store.blocks[parentRoot]? = some parent ∧
+    store.isAncestor ⟨head.root, .pending⟩ ⟨parentRoot, .pending⟩ = .ok true ∧
+    store.getCurrentSlot config = .ok current ∧
+    store.getCurrentStoreEpoch config = .ok epoch ∧
+    epoch.toNat ≤ (computeEpochAtSlot preset parent.slot).toNat + 2 ∧
+    addChecked parent.slot 1 = .ok first ∧ subChecked current 1 = .ok finish ∧
+    store.getCommitteesBetweenSlots head.root first finish = .ok members ∧
+    store.VoteOrigin config v attestation ∧
+    store.isAncestor ⟨attestation.data.beaconBlockRoot, .pending⟩ ⟨parentRoot, .pending⟩ =
+      .ok true ∧
+    first ≤ attestation.data.slot ∧ attestation.data.slot ≤ finish
 
-It ends at the slot before the current one.
-
-The vote has an origin and is for a block that descends from `parent`.
-
-Its slot is in the window. -/
-def VotersInHeadWindow (last : Nat) : Prop :=
-  ∀ w ∈ J, ∀ k, (e.world k).time ≤ last →
-    ∀ (head : ForkChoiceNode) (parentRoot : Root) (parent : BeaconBlock preset fork)
-      (current first finish : Slot) (epoch : Epoch) (members : Std.TreeSet ValidatorIndex)
-      (v : ValidatorIndex) (attestation : Attestation preset fork),
-    ((e.world k).state w).getHead config = .ok head →
-    ((e.world k).state w).blocks[parentRoot]? = some parent →
-    ((e.world k).state w).isAncestor ⟨head.root, .pending⟩ ⟨parentRoot, .pending⟩ = .ok true →
-    ((e.world k).state w).getCurrentSlot config = .ok current →
-    ((e.world k).state w).getCurrentStoreEpoch config = .ok epoch →
-    epoch.toNat ≤ (computeEpochAtSlot preset parent.slot).toNat + 2 →
-    addChecked parent.slot 1 = .ok first → subChecked current 1 = .ok finish →
-    ((e.world k).state w).getCommitteesBetweenSlots head.root first finish = .ok members →
-    ((e.world k).state w).VoteOrigin config v attestation →
-    ((e.world k).state w).isAncestor ⟨attestation.data.beaconBlockRoot, .pending⟩
-      ⟨parentRoot, .pending⟩ = .ok true →
-    first ≤ attestation.data.slot → attestation.data.slot ≤ finish →
+/-- From the first time to the last, each voter below the parent is in each honest head's window. -/
+def VotersInHeadWindow (parentRoot : Root) (first last : Nat) : Prop :=
+  ∀ w ∈ J, ∀ k, first ≤ (e.world k).time → (e.world k).time ≤ last →
+    ∀ parent members v attestation,
+    VoteInHeadWindow config ((e.world k).state w) parentRoot parent members v attestation →
     v ∈ members
 
-/-- The newly active voters of `VotersInHeadWindow` lie in the head's window.
+/-- The voters activated at the target of a vote two epochs after the parent are in the window.
 
-It covers only a vote whose target epoch is two after the epoch of `parent`.
-
-Its voter must have that target epoch as its activation epoch, in the target state.
-
-The window covers all of the epoch before the target.
-
-Every other such voter was active then, so it is in the window with no premise.
-
-The head's shuffling may give a newly active voter a slot at or after the current one.
-
-That slot is outside the window.
-
-If the rule's window weight paid one epoch's activation churn, this premise would go. -/
-def NewlyActiveVotersInHeadWindow (last : Nat) : Prop :=
-  ∀ w ∈ J, ∀ k, (e.world k).time ≤ last →
-    ∀ (head : ForkChoiceNode) (parentRoot : Root) (parent : BeaconBlock preset fork)
-      (current first finish : Slot) (epoch : Epoch) (members : Std.TreeSet ValidatorIndex)
-      (v : ValidatorIndex) (attestation : Attestation preset fork)
-      (targetState : BeaconState preset fork) (voter : Validator),
-    ((e.world k).state w).getHead config = .ok head →
-    ((e.world k).state w).blocks[parentRoot]? = some parent →
-    ((e.world k).state w).isAncestor ⟨head.root, .pending⟩ ⟨parentRoot, .pending⟩ = .ok true →
-    ((e.world k).state w).getCurrentSlot config = .ok current →
-    ((e.world k).state w).getCurrentStoreEpoch config = .ok epoch →
-    epoch.toNat ≤ (computeEpochAtSlot preset parent.slot).toNat + 2 →
-    addChecked parent.slot 1 = .ok first → subChecked current 1 = .ok finish →
-    ((e.world k).state w).getCommitteesBetweenSlots head.root first finish = .ok members →
-    ((e.world k).state w).VoteOrigin config v attestation →
-    ((e.world k).state w).isAncestor ⟨attestation.data.beaconBlockRoot, .pending⟩
-      ⟨parentRoot, .pending⟩ = .ok true →
-    first ≤ attestation.data.slot → attestation.data.slot ≤ finish →
+Every other voter below the parent lies in the window by a proof. -/
+def NewlyActiveVotersInHeadWindow (parentRoot : Root) (first last : Nat) : Prop :=
+  ∀ w ∈ J, ∀ k, first ≤ (e.world k).time → (e.world k).time ≤ last →
+    ∀ parent members v attestation (targetState : BeaconState preset fork) (voter : Validator),
+    VoteInHeadWindow config ((e.world k).state w) parentRoot parent members v attestation →
     (computeEpochAtSlot preset parent.slot).toNat + 2 = attestation.data.target.epoch.toNat →
     ((e.world k).state w).checkpointStates[attestation.data.target]? = some targetState →
     targetState.validators.data[v.toNat]? = some voter →
@@ -286,19 +241,6 @@ def HonestHeadsCover (root : Root) (first last : Nat) : Prop :=
     UpToDate config checks sources (e.world i).time ((e.world i).view a) ((e.world i).state a) →
     ((e.world i).state a).getHead config = .ok hd →
     ((e.world i).state a).isAncestor hd ⟨root, .pending⟩ = .ok true
-
-/-- Each up-to-date honest head in the interval reads its justified state and its windows.
-
-A window starts at the given slot and ends before the store's current slot. -/
-def HonestHeadReads (firstSlot : Slot) (first last : Nat) : Prop :=
-  ∀ w ∈ J, ∀ k (head : ForkChoiceNode), first ≤ (e.world k).time → (e.world k).time ≤ last →
-    UpToDate config checks sources (e.world k).time ((e.world k).view w) ((e.world k).state w) →
-    ((e.world k).state w).getHead config = .ok head →
-    (∃ state, ((e.world k).state w).checkpointState ((e.world k).state w).justifiedCheckpoint =
-      .ok state) ∧
-    ∀ current high, ((e.world k).state w).getCurrentSlot config = .ok current →
-      high < current → ∃ participants,
-        ((e.world k).state w).getCommitteesBetweenSlots head.root firstSlot high = .ok participants
 
 /-- Each up-to-date honest store has the root in its filtered tree or below its justified block.
 
@@ -396,25 +338,13 @@ def ByzantineCountedStake (epoch : Epoch) (first last : Nat) : Prop :=
     3 * stake (fun v => balanceAt state v.toNat) {v ∈ quorumVoters state | v ∉ J} <
       2 * total.toNat
 
-/-- Each honest head of the interval omits at most the exit reserve per full window epoch.
-
-The window starts at the given slot and ends at the slot before the store's current slot. -/
-def ReceiverWindowExits (source : BeaconState preset fork) (firstSlot : Slot)
-    (first last : Nat) : Prop :=
-  ∀ w ∈ J, ∀ k (head : ForkChoiceNode) (current finish : Slot),
-    first ≤ (e.world k).time → (e.world k).time ≤ last →
-    UpToDate config checks sources (e.world k).time ((e.world k).view w) ((e.world k).state w) →
-    ((e.world k).state w).getHead config = .ok head →
-    ((e.world k).state w).getCurrentSlot config = .ok current → subChecked current 1 = .ok finish →
-    WindowExitBound (config := config) ((e.world k).state w) source head.root firstSlot finish
-
-/-- The exit bound of `ReceiverWindowExits`, asked only of receivers near the parent.
+/-- Each near honest head of the interval omits at most the exit reserve per full window epoch.
 
 A receiver is near when its store epoch is at most two epochs after `parentEpoch`.
 
-It is asked only of these receivers, where every step of the historical-anchor proof reads it.
+The window starts at the given slot and ends at the slot before the store's current slot.
 
-The duty-epoch step, which covers later receivers, does not read it. -/
+Later receivers are covered by the duty-epoch step, which does not read it. -/
 def ReceiverWindowExitsNear (parentEpoch : Epoch) (source : BeaconState preset fork)
     (firstSlot : Slot) (first last : Nat) : Prop :=
   ∀ w ∈ J, ∀ k (head : ForkChoiceNode) (current finish : Slot) (receiverEpoch : Epoch),
@@ -427,14 +357,6 @@ def ReceiverWindowExitsNear (parentEpoch : Epoch) (source : BeaconState preset f
     WindowExitBound (config := config) ((e.world k).state w) source head.root firstSlot finish
 
 omit [DecidablePred (· ∈ J)] in
-/-- `ReceiverWindowExits` gives the bound for near receivers, at any parent epoch. -/
-theorem receiverWindowExitsNear_of_exits {parentEpoch : Epoch}
-    {source : BeaconState preset fork} {firstSlot : Slot} {first last : Nat}
-    (exits : ReceiverWindowExits (e := e) source firstSlot first last) :
-    ReceiverWindowExitsNear (e := e) parentEpoch source firstSlot first last :=
-  fun w hw k head current finish _ lowK highK upToDate headOk currentOk finishOk _ _ =>
-    exits w hw k head current finish lowK highK upToDate headOk currentOk finishOk
-
 open Classical in
 /-- The honest duties of one complete epoch outweigh the rest of the stake and the boost.
 

@@ -1,10 +1,8 @@
 module
 
-public import EthLib.Cryptography.Proofs.Merkle.Binding
+public import EthLib.Cryptography.Proofs.Merkle.RandomOracle.Basic
 public import VCVio.OracleComp.QueryTracking.RandomOracle.FreshAnswer
 public import VCVio.OracleComp.Constructions.SampleableType.Measure
-public import VCVio.OracleComp.QueryTracking.SubSpec
-public import VCVio.OracleComp.QueryTracking.RandomOracle.CachePartial
 
 /-!
 # Classical random-oracle collision bounds
@@ -127,29 +125,6 @@ theorem prEvent_collision_le [SampleableType R]
   exact (prEvent_mono_of_support _ _ _ fun z hz hc =>
     ⟨hc, enncard_le_of_mem_support_run_unifFwdImpl_add_randomOracle hq hz⟩).trans h
 
-/-- An experiment: the adversary outputs a claim, then an extraction runs on it.
-
-For example, the claim is a forged path, and the extraction is the collision search on it.
-
-The extraction only calls the oracle. -/
-def experimentWith {γ β : Type} (extraction : γ → OracleComp (D →ₒ R) β)
-    (adversary : OracleComp (unifSpec + (D →ₒ R)) γ) : OracleComp (unifSpec + (D →ₒ R)) β := do
-  let claim ← adversary
-  liftComp (extraction claim) (unifSpec + (D →ₒ R))
-
-omit [DecidableEq D] in
-/-- The experiment makes the adversary's oracle calls and those of the extraction.
-
-It needs the adversary to make at most `q` calls, and the extraction at most `n` on every claim. -/
-theorem experimentWith_queryBound {γ β : Type} {extraction : γ → OracleComp (D →ₒ R) β}
-    {adversary : OracleComp (unifSpec + (D →ₒ R)) γ} {q n : Nat}
-    (hq : IsQueryBoundP adversary (fun t => t.isRight = true) q)
-    (hn : ∀ claim, IsQueryBoundP (extraction claim) (fun _ => True) n) :
-    IsQueryBoundP (experimentWith extraction adversary) (fun t => t.isRight = true) (q + n) :=
-  -- The adversary spends its `q` calls, then the extraction its `n`, on whatever claim it got.
-  isQueryBoundP_bind hq fun claim _ => IsQueryBoundP.liftComp_subSpec
-    (fun _ => iff_of_true trivial rfl) (hn claim)
-
 /-- An experiment is won with probability at most `q * (q / N)`.
 
 The hypothesis: each replay of the extraction that ends in a win exposes a collision of the cache.
@@ -178,68 +153,6 @@ theorem prEvent_experimentWith_le [SampleableType R] {γ β : Type}
   -- The final cache replays the extraction without sampling again.
   exact collision (QueryImpl.simulateQ_toPartialImpl_snd_of_mem_support_run_simulateQ_withCaching
     _ (extraction claim) hz) hwins
-
-/-- Some queried input has the fixed target digest as its answer. -/
-def Hits (r : R) (c : (D →ₒ R).QueryCache) : Prop := ∃ x, c x = some r
-
-/-- A target digest fixed before the run is hit with probability at most `q / N` in `q` queries.
-
-Each fresh answer is uniform, so it equals the target with probability `1 / N`.
-
-Nothing here ties the target to the digest of any input.
--/
-theorem prEvent_hits_le [SampleableType R]
-    (r : R) (oa : OracleComp (unifSpec + (D →ₒ R)) α) {q : Nat}
-    (hq : IsQueryBoundP oa (fun t => t.isRight = true) q) :
-    Pr{let z ← (simulateQ (D →ₒ R).romImpl oa).run ∅}[Hits r z.2] ≤
-      (q : ℝ≥0∞) / Nat.card R := by
-  classical
-  have hfresh (t : D) (c : (D →ₒ R).QueryCache) (hc : ¬ Hits r c) (_ht : c t = none) :
-      Pr{let u ← $ᵗ R}[Hits r (c.cacheQuery t u)] ≤ 1 / (Nat.card R : ℝ≥0∞) := by
-    calc
-      -- A new hit can only be the new answer, so the new answer must be the target.
-      _ ≤ Pr{let u ← $ᵗ R}[u = r] := prEvent_mono _ _ _ fun u ⟨x, hx⟩ => by
-        by_cases hxt : x = t
-        · subst x
-          simpa using hx
-        · rw [QueryCache.cacheQuery_of_ne _ _ hxt] at hx
-          exact (hc ⟨x, hx⟩).elim
-      _ = _ := by simp [SampleableType.prEvent_uniformSample_eq_singleton_natCard, one_div]
-  have h := prEvent_run_le_of_fresh_bound_of_isQueryBoundP (Hits r)
-    (by simp [Hits]) (1 / (Nat.card R : ℝ≥0∞))
-    (ENNReal.div_ne_top (by simp) (by exact_mod_cast (Nat.card_pos.ne' : Nat.card R ≠ 0)))
-    hfresh oa hq
-  simpa [div_eq_mul_inv] using h
-
-/-- An oracle input includes the parent position and its ordered children.
-
-This models a node hash tweaked by its position.
-
-A concrete hash matches it through an injective encoding of this tuple.
-
-Such an encoding exists for levels and positions inside the encodable range.
--/
-abbrev NodeInput (R : Type) := Position × R × R
-
-/-- Read a complete oracle table as a node hash in the identity monad.
-
-A complete table gives an answer for every input, as a fixed function does. -/
-def nodeHash (g : NodeInput R → R) (p : Position) (a b : R) : Id R :=
-  pure (g (p, a, b))
-
-/-- The same node hash, with each call made to the oracle rather than read from a table.
-
-Run against a random oracle, it is the node hash of the random-oracle model. -/
-def queryNode (p : Position) (a b : R) : OracleComp (NodeInput R →ₒ R) R :=
-  liftM ((NodeInput R →ₒ R).query (p, a, b))
-
-/-- One node-hash call costs one query. -/
-theorem queryNode_queryBound (p : Position) (a b : R) :
-    IsTotalQueryBound (queryNode p a b) 1 := by
-  -- The call is one query followed by returning its answer.
-  change IsTotalQueryBound
-    (liftM ((NodeInput R →ₒ R).query (p, a, b)) >>= pure) 1
-  exact isTotalQueryBound_query_bind_iff.mpr ⟨Nat.one_pos, fun _ => trivial⟩
 
 /-- A successful collision search whose witness is covered gives a collision of the cache.
 
@@ -297,34 +210,6 @@ theorem collision_of_findSecondPreimage [DecidableEq R] (g : NodeInput R → R)
     rw [node_children_run _ leaves hlevel] at heq
     change g (w.position, w.y.1, w.y.2) = g (w.position, x.1, x.2) at heq
     exact hx.trans (congrArg some heq.symm)
-
-/-- The collision search against the oracle makes two calls per common level.
-
-The bound holds even if the lists have different lengths.
-
-The search stops when the shorter list runs out. -/
-theorem findCollision_queryBound [DecidableEq R] :
-    ∀ (s t : List R) (p : Position) (a b : R),
-      IsTotalQueryBound (findCollision queryNode p a b s t)
-        (2 * min s.length t.length) := by
-  intro s
-  induction s with
-  | nil => intros; trivial
-  | cons u s ih =>
-    intro t p a b
-    cases t with
-    | nil => trivial
-    | cons v t =>
-      -- This level makes two queries, one per climb.
-      simp only [List.length_cons, min_add_add_right,
-        findCollision, queryNode, isTotalQueryBound_query_bind_iff]
-      refine ⟨by omega, fun x => ⟨by omega, fun y => ?_⟩⟩
-      split
-      · -- A collision here stops the search, with no more queries.
-        trivial
-      · -- Otherwise the rest of the search makes two queries per remaining common level.
-        convert ih t p.parent x y using 1
-        omega
 
 /-- Replaying a successful collision search from a cache exposes a collision in that cache.
 
@@ -454,138 +339,6 @@ theorem prEvent_findSecondPreimage_le [SampleableType R] [DecidableEq R]
   intro z hz he
   obtain ⟨g, leaves, t, p, b, hs, hc⟩ := hsearch z hz he
   exact collision_of_findSecondPreimage g z.2 leaves t p b hc hs
-
-/-- Computing an honest node from fixed leaves makes `2^level - 1` hash calls.
-
-A subtree with `2^level` leaves has `2^level - 1` inner nodes, one call each. -/
-theorem node_queryBound (leaves : Nat → R) : ∀ p : Position,
-    IsTotalQueryBound (node queryNode (fun j => pure (leaves j)) p)
-      (2 ^ p.level - 1) := by
-  rintro ⟨level, j⟩
-  induction level generalizing j with
-  | zero => trivial
-  | succ level ih =>
-    -- Two subtrees, then one call: (2^level - 1) + (2^level - 1) + 1 = 2^(level + 1) - 1.
-    rw [node_succ]
-    have h := isTotalQueryBound_bind (ih (2 * j)) fun a =>
-      isTotalQueryBound_bind (ih (2 * j + 1)) fun b =>
-        queryNode_queryBound ⟨level + 1, j⟩ a b
-    convert h using 1
-    have := Nat.one_le_two_pow (n := level)
-    simp only [Nat.pow_succ]
-    omega
-
-/-- Worst-case calls of the second-preimage search, including honest recomputation.
-
-At each level it hashes the candidate and computes the two honest children and parent.
-
-Repeated honest calls still count, even though the oracle answers them from its cache.
-
-From level `l` over `n` siblings, the budget is `2^(l+n+2) - 2^(l+2) - 2n`.
-
-The search queries at most `2^(l+n) - 1 + n` distinct inputs.
-
-On a path of length at least 1, the budget is one to four times that count.
-
-It nears four only for long paths.
--/
-def secondPreimageQueries : Nat → Nat → Nat
-  | _, 0 => 0
-  | level, n + 1 =>
-    1 + 2 * (2 ^ level - 1) + (2 ^ (level + 1) - 1) + secondPreimageQueries (level + 1) n
-
-/-- The second-preimage search against the oracle respects its worst-case budget.
-
-The honest leaves are fixed values, so reading a leaf makes no oracle call. -/
-theorem findSecondPreimage_queryBound [DecidableEq R] (leaves : Nat → R) :
-    ∀ (t : List R) (p : Position) (b : R),
-      IsTotalQueryBound (findSecondPreimage queryNode (fun j => pure (leaves j)) p b t)
-        (secondPreimageQueries p.level t.length) := by
-  intro t
-  induction t with
-  | nil => intros; trivial
-  | cons v t ih =>
-    intro p b
-    simp only [findSecondPreimage]
-    -- This level makes one call for the forged pair, then computes three honest nodes.
-    have h := isTotalQueryBound_bind
-      (queryNode_queryBound p.parent (ordered p b v).1 (ordered p b v).2)
-      fun parent => isTotalQueryBound_bind (node_queryBound leaves p.parent.left)
-      fun left => isTotalQueryBound_bind (node_queryBound leaves p.parent.right)
-      fun right => isTotalQueryBound_bind (node_queryBound leaves p.parent)
-      fun honest => show IsTotalQueryBound
-        (if ordered p b v ≠ (left, right) ∧ parent = honest then
-          pure (some ⟨p.parent, ordered p b v⟩)
-        else findSecondPreimage queryNode (fun j => pure (leaves j)) p.parent parent t)
-        (secondPreimageQueries p.parent.level t.length) from by
-          split
-          · -- A second preimage here stops the search.
-            trivial
-          · -- Otherwise the rest of the search spends the budget of the levels above.
-            exact ih _ _
-    -- The calls of this level add up to its term of the budget.
-    convert h using 1
-    simp only [List.length_cons, secondPreimageQueries, Position.left_level,
-      Position.right_level, Position.parent_level, Nat.add_sub_cancel]
-    omega
-
-/-- Answering every call of a node from a complete table gives the node of that table's hash. -/
-theorem evalWithAnswerFn_node (g : NodeInput R → R) (leaves : Nat → R) : ∀ p : Position,
-    evalWithAnswerFn (QueryImpl.ofFn g)
-      (node queryNode (fun j => pure (leaves j)) p) =
-        (node (nodeHash g) (fun j => pure (leaves j)) p).run := by
-  rintro ⟨level, j⟩
-  induction level generalizing j with
-  | zero => rfl
-  | succ level ih =>
-    -- The children agree by induction, and the last call reads the table.
-    simp only [node_succ, evalWithAnswerFn_bind, ih, queryNode,
-      evalWithAnswerFn_liftM_query, QueryImpl.ofFn_apply]
-    rfl
-
-/-- A fixed target is hit with probability at most `q / N`, among queried inputs.
-
-The oracle answers only inputs other than one honest input.
-
-The target `r` is fixed before the run.
-
-As a second-preimage bound, `r` is the honest digest, and the other answers stay uniform.
-
-That conditioning is a modelling step, not a proved one: nothing here ties `r` to that input.
--/
-theorem prEvent_secondPreimage_le [SampleableType R] (honest : D) (r : R)
-    (oa : OracleComp (unifSpec + ({x : D // x ≠ honest} →ₒ R)) α) {q : Nat}
-    (hq : IsQueryBoundP oa (fun t => t.isRight = true) q) :
-    Pr{let z ← (simulateQ ({x : D // x ≠ honest} →ₒ R).romImpl oa).run ∅}[∃ x,
-      z.2 x = some r] ≤ (q : ℝ≥0∞) / Nat.card R :=
-  -- The honest input is out of reach, so this is the bound for a fixed target.
-  prEvent_hits_le r oa hq
-
-/-- A parent computed by a replay from a cache has its final call in that cache.
-
-The call hashes the parent's two honest children, at the parent's position.
-
-The cache must agree with a complete table, which gives the honest children. -/
-theorem cached_parent_of_partial_node (g : NodeInput R → R)
-    (c : (NodeInput R →ₒ R).QueryCache) (hf : c.AgreesWithFn (QueryImpl.ofFn g))
-    (leaves : Nat → R) (p : Position) (a : R)
-    (ha : simulateQ c.toPartialImpl
-      (node queryNode (fun j => pure (leaves j)) p.parent) = some a) :
-    c (p.parent,
-      (node (nodeHash g) (fun j => pure (leaves j)) p.parent.left).run,
-      (node (nodeHash g) (fun j => pure (leaves j)) p.parent.right).run) = some a := by
-  -- The parent replays its left child, then its right child, then its own call.
-  rw [node_children _ _ (p := p.parent) (by simp)] at ha
-  simp only [simulateQ_bind] at ha
-  obtain ⟨left, hl, ha⟩ := Option.bind_eq_some_iff.mp ha
-  obtain ⟨right, hr, ha⟩ := Option.bind_eq_some_iff.mp ha
-  -- The replayed children are the honest children of the table.
-  have hleft := c.evalWithAnswerFn_eq_of_agreesWithFn hf _ hl
-  have hright := c.evalWithAnswerFn_eq_of_agreesWithFn hf _ hr
-  rw [evalWithAnswerFn_node] at hleft hright
-  -- The final call was read from the cache, on those two children.
-  simp only [queryNode, simulateQ_spec_query, QueryCache.toPartialImpl_apply] at ha
-  rwa [← hleft, ← hright] at ha
 
 /-- Replaying a successful second-preimage search from a cache exposes a collision in that cache.
 
