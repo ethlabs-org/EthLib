@@ -503,6 +503,16 @@ private theorem CapStep.effective {f : Fork} {s t : BeaconState preset f}
   · intro bound
     exact updatedEffectiveBalance_le_largest bound changed
 
+/-- Updating effective balances preserves the per-validator effective-balance cap. -/
+theorem processEffectiveBalanceUpdates_capped
+    {fork : Fork} {s t : BeaconState preset fork}
+    (capped : ∀ v ∈ s.validators.data,
+      v.effectiveBalance ≤ withdrawalMaxEffectiveBalance preset fork v)
+    (ok : processEffectiveBalanceUpdates s = .ok t) :
+    ∀ v ∈ t.validators.data,
+      v.effectiveBalance ≤ withdrawalMaxEffectiveBalance preset fork v :=
+  (CapStep.effective ok).capped capped
+
 /-- An epoch keeps the caps; only three of its stages change the validators. -/
 private theorem CapStep.epoch {f : Fork} {s t : BeaconState preset f}
     (ok : processEpoch config checks s = .ok t) : CapStep s t := by
