@@ -10,6 +10,7 @@ public import EthLib.Consensus.Proofs.Transition.RewardDeltas
 public import EthLib.Consensus.Proofs.Mutators
 public import Mathlib.Algebra.Order.BigOperators.Group.Finset
 public import Mathlib.Algebra.BigOperators.Group.Finset.Piecewise
+public import EthLib.Consensus.Proofs.Transition.EpochPassAtCall
 import EthLib.Consensus.Proofs.Transition.ActiveKept
 import EthLib.Consensus.Proofs.Transition.ChainRoots
 import EthLib.Consensus.Proofs.Transition.Committees
@@ -1777,8 +1778,9 @@ private theorem rise_sum {U A D B : Finset ℕ} {rise crossing transfer : ℕ �
       simp only [inB, ↓reduceIte]
       omega
   refine (Finset.sum_le_sum pointwise).trans (le_of_eq ?_)
-  simp only [Finset.sum_add_distrib, Finset.sum_ite_mem, Finset.sum_const, smul_eq_mul,
+  simp only [Finset.sum_add_distrib, Finset.sum_ite_mem, Finset.sum_const,
     Nat.mul_add]
+  rfl
 
 /-- States that agree on activity in an epoch, with a longer later registry, share its actives. -/
 private theorem activeFilter_eq {f g : Fork} {a : BeaconState preset f}
@@ -1855,45 +1857,6 @@ private theorem gain_sum_le {list due : List PendingConsolidation}
       ← List.toFinset_card_of_nodup nodupDue]
     exact Finset.card_le_card sub
 
-
-/-- A successful active-balance read is the sum of the effective balances of the active validators.
-
-A total below one increment is read as one increment. -/
-private theorem getTotalActiveBalance_toNat {fork : Fork} {state : BeaconState preset fork}
-    {total : Gwei} (computed : getTotalActiveBalance state = .ok total) :
-    total.toNat = max preset.EFFECTIVE_BALANCE_INCREMENT.toNat
-      (∑ i ∈ (Finset.range state.validators.data.size).filter
-          (fun i => isActiveAt state (getCurrentEpoch state) i = true),
-        ((state.validators.data[i]?).map (·.effectiveBalance.toNat)).getD 0) := by
-  obtain ⟨indices, checked, computed⟩ := bind_ok_iff.mp computed
-  obtain ⟨-, lt, rfl⟩ := getTotalBalance_ok_iff.mp computed
-  have sum : sumMarked state.validators.data (markIndices state.validators.data.size indices) =
-      ∑ i ∈ (Finset.range state.validators.data.size).filter
-          (fun i => isActiveAt state (getCurrentEpoch state) i = true),
-        ((state.validators.data[i]?).map (·.effectiveBalance.toNat)).getD 0 := by
-    rw [sumMarked_eq_sum, Finset.sum_filter, Finset.sum_eq_multiset_sum, Finset.range_val,
-      ← Multiset.coe_range, Multiset.map_coe, Multiset.sum_coe]
-    congr 1
-    refine List.map_congr_left fun j member => ?_
-    have inside := List.mem_range.mp member
-    -- The mark of a position is set exactly when the position is active.
-    have marked : (indices.any (·.toNat == j)) = isActiveAt state (getCurrentEpoch state) j := by
-      rw [Bool.eq_iff_iff, List.any_eq_true, isActiveAt_eq_true_iff]
-      constructor
-      · rintro ⟨x, member, equal⟩
-        have := (mem_iff_of_getActiveValidatorIndicesChecked_ok checked).mp member
-        rw [beq_iff_eq] at equal
-        rwa [equal] at this
-      · rintro ⟨validator, found, active⟩
-        have fits := lt_of_getActiveValidatorIndicesChecked_ok checked found active
-        have same : j.toUInt64.toNat = j := by
-          rw [Nat.toUInt64_eq, UInt64.toNat_ofNat_of_lt' fits]
-        refine ⟨j.toUInt64, (mem_iff_of_getActiveValidatorIndicesChecked_ok checked).mpr
-          ⟨validator, by rw [same]; exact found, active⟩, ?_⟩
-        rw [beq_iff_eq, same]
-    rw [getElem?_markIndices]
-    simp only [inside, ↓reduceIte, Option.getD_some, marked]
-  rw [← sum, toNat_max, Nat.toUInt64_eq, UInt64.toNat_ofNat_of_lt' lt]
 
 /-- Before Gloas, a successful deposit churn read is a share of the total active balance.
 
