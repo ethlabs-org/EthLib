@@ -241,25 +241,24 @@ private theorem Store.Reachable.exists_run_of_blockState {config : Config}
             SszType.hashTreeRoot anchorBlock = .ok reached) ∨
           ∃ header, (extra.filter fun header => header.slot.toNat ≤ slot.toNat).getLast? =
               some header ∧ SszType.hashTreeRoot header = .ok reached) := by
-  obtain ⟨block, found⟩ := reachable.known_of_blockState held
-  obtain ⟨post, postOk, anchored, -⟩ := reachable.blockStatesFromParents found
-  rw [held, Option.some.injEq] at postOk
-  subst post
-  by_cases same : block = anchorBlock
+  refine reachable.blockState_induction imported (fun root state => ∃ (tail : Run config checks
+      ⟨fork, anchorState⟩ ⟨fork, state⟩) (extra : List BeaconBlockHeader),
+      (pre.append tail).headers = pre.headers ++ extra ∧
+      ∀ slot : Slot, anchorBlock.slot ≤ slot → ∃ reached : Root,
+        store.ancestorRoots root slot reached ∧
+        (((extra.filter fun header => header.slot.toNat ≤ slot.toNat).getLast? = none ∧
+            SszType.hashTreeRoot anchorBlock = .ok reached) ∨
+          ∃ header, (extra.filter fun header => header.slot.toNat ≤ slot.toNat).getLast? =
+              some header ∧ SszType.hashTreeRoot header = .ok reached))
+    (fun root found => ?_) (fun root block parent state _ engine signed found held _ ok message
+      parentHeld transitioned previous => ?_) held
   · -- The anchor state ends the run to the anchor, and every later walk stays at its block.
-    obtain rfl := anchored same
-    subst same
     exact ⟨.nil, [], by simp [Run.append], fun slot later =>
       ⟨root, ⟨_, Store.getAncestor_of_le found later, rfl⟩, .inl ⟨by simp, reachable.root found⟩⟩⟩
-  obtain ⟨imports, importsHeld, -, step⟩ := imported found
-  rw [held, Option.some.injEq] at importsHeld
-  subst imports
-  obtain ⟨parent, _, engine, signed, rfl, message, parentHeld, transitioned⟩ := step same
-  subst message
+  subst ok message
   obtain ⟨parentBlock, parentFound, -⟩ := linked.stateAfter _ _ parentHeld
   have lower := linked.parentsBelow _ _ _ found parentFound
-  obtain ⟨tailP, extraP, headersP, lastP⟩ :=
-    reachable.exists_run_of_blockState linked imported early pre parentHeld
+  obtain ⟨tailP, extraP, headersP, lastP⟩ := previous
   have bounds := stateTransition_slot transitioned
   obtain ⟨_, _, _, _, blockOk, _⟩ := stateTransition_ok transitioned
   obtain ⟨bodyRoot, bodyHashed, -⟩ := latestBlockHeader_processBlock blockOk
@@ -292,11 +291,6 @@ private theorem Store.Reachable.exists_run_of_blockState {config : Config}
       have : ¬ header.slot.toNat ≤ slot.toNat := fun le =>
         above (UInt64.le_iff_toNat_le.mpr le)
       simpa [List.filter_append, this] using cases
-termination_by state.slot.toNat
-decreasing_by
-  have bounds := stateTransition_slot transitioned
-  rw [bounds.2]
-  exact UInt64.lt_iff_toNat_lt.mp bounds.1
 
 /-- A store checkpoint is the anchor checkpoint or a field of a terminal view of a run.
 

@@ -79,7 +79,7 @@ theorem Store.Reachable.anchorSlot_le
 /-- The ancestor traversal composes a relation along the block transitions of the store.
 
 The relation needs to hold only for the transitions run with an allowed setting of the checks. -/
-theorem Store.Reachable.relation_of_getAncestor_with {allowed : SignatureChecks → Prop}
+private theorem Store.Reachable.relation_of_getAncestor_with {allowed : SignatureChecks → Prop}
     (R : BeaconState preset fork → BeaconState preset fork → Prop)
     (refl : ∀ s, R s s)
     (trans : ∀ {s m t}, R s m → R m t → R s t)
