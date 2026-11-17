@@ -507,6 +507,101 @@ private theorem eq_of_getCheckpointBlock {root checkpoint : Root} {epoch : Epoch
   rw [Store.getAncestor_of_le (node := ⟨root, .pending⟩) found atMost, Except.ok.injEq] at walk
   rw [← rooted, ← walk]
 
+/-- A held state whose chain reads a checkpoint runs on from the checkpoint's state at its start.
+
+The state may also have more slots processed, up to the start or later.
+
+The checkpoint's state at the start of its epoch is the lookahead of the checkpoint block's state.
+
+The lookahead exists: a block of the chain is at the start or later, or the slots reach it. -/
+private theorem lookahead_runsTo (anchorSlot : anchorBlock.slot = anchorState.slot)
+    (forward : Store.ForwardReachableWith config checks anchorState anchorBlock store)
+    {checkpoint : Checkpoint} {start : Slot} {base : BeaconState preset fork}
+    (startOk : computeStartSlotAtEpoch preset checkpoint.epoch = .ok start)
+    (baseFound : store.blockStates[checkpoint.root]? = some base)
+    {root : Root} {rootState state : BeaconState preset fork}
+    (stored : store.blockStates[root]? = some rootState)
+    (read : store.getCheckpointBlock root checkpoint.epoch = .ok checkpoint.root)
+    (reach : state = rootState ∨ ∃ slot, processSlots config checks rootState slot = .ok state)
+    (later : start ≤ state.slot) :
+    ∃ middle, lookaheadState config checks base start = .ok middle ∧
+      RunsTo config checks middle state := by
+  obtain ⟨rootBlock, rootFound⟩ := forward.reachable.known_of_blockState stored
+  have fromRoot : RunsTo config checks rootState state := by
+    rcases reach with rfl | ⟨_, processed⟩
+    · exact RunsTo.refl _
+    · exact RunsTo.ofProcessSlots processed
+  by_cases far : start ≤ rootBlock.slot
+  · obtain ⟨middle, lookOk, toRoot⟩ :=
+      forward.relation_of_checkpointPrefix_with (RunsTo config checks) RunsTo.refl
+        RunsTo.trans RunsTo.ofTransition RunsTo.ofPrefix (UInt64.le_of_eq anchorSlot) read
+        rootFound startOk far baseFound stored
+    exact ⟨middle, lookOk, toRoot.trans fromRoot⟩
+  · -- A root before the epoch is the checkpoint block, and its state is processed past the start.
+    have before := UInt64.not_le.mp far
+    obtain rfl : root = checkpoint.root :=
+      eq_of_getCheckpointBlock read startOk rootFound (UInt64.le_of_lt before)
+    obtain rfl : base = rootState := Option.some.inj (baseFound.symm.trans stored)
+    have baseBelow : base.slot < start :=
+      (forward.reachable.blockState_slot_eq anchorSlot rootFound stored) ▸ before
+    rcases reach with rfl | ⟨slot, processed⟩
+    · exact absurd (UInt64.lt_of_lt_of_le baseBelow later) (UInt64.lt_irrefl _)
+    · have reached := (processSlots_slot processed).2
+      rcases UInt64.lt_or_eq_of_le (reached ▸ later) with lower | same
+      · obtain ⟨middle, firstOk, restOk⟩ := processSlots_split baseBelow lower processed
+        exact ⟨middle, by simp [lookaheadState, baseBelow, firstOk, Except.mapError],
+          RunsTo.ofProcessSlots restOk⟩
+      · subst same
+        exact ⟨state, by simp [lookaheadState, baseBelow, processed, Except.mapError],
+          RunsTo.refl _⟩
+
+/-- The lookahead of a held state to the start of an epoch follows a boundary state there.
+
+The held state is at the start or before it, and a run from the anchor reaches it.
+
+The boundary state is at the start, within the bands of hysteresis, and genesis reaches it.
+
+At most one block, the held state's own when it is at the start, lies between the two.
+
+The lookahead state holds the queue of partial withdrawals of the held state. -/
+private theorem boundary_of_lookahead {g : ForkedBeaconState preset}
+    (genesis : Genesis config checks g) (history : Run config checks g ⟨fork, anchorState⟩)
+    (early : fork < .glamsterdam) (fulu : .fusaka ≤ fork)
+    (bands : preset.IncrementWithinUpwardBand)
+    (electraFloor : preset.MAX_EFFECTIVE_BALANCE = preset.MIN_ACTIVATION_BALANCE)
+    (electraCap : preset.MIN_ACTIVATION_BALANCE ≤ preset.MAX_EFFECTIVE_BALANCE_ELECTRA)
+    {start : Slot} {base middle : BeaconState preset fork}
+    (atStart : start % preset.SLOTS_PER_EPOCH = 0)
+    (startBefore : BeforeFork (preset := preset) config fork start)
+    (baseRun : Run config checks ⟨fork, anchorState⟩ ⟨fork, base⟩) (baseLe : base.slot ≤ start)
+    (lookOk : lookaheadState config checks base start = .ok middle) :
+    middle.slot = start ∧ ∃ boundary : BeaconState preset fork,
+      boundary.slot = start ∧ Hysteresis boundary ∧
+      Nonempty (Run config checks g ⟨fork, boundary⟩) ∧
+      ∃ edge : Run config checks ⟨fork, boundary⟩ ⟨fork, middle⟩, edge.blockCount ≤ 1 ∧
+        ∀ electra : .pectra ≤ fork,
+          middle.pendingPartialWithdrawals electra = base.pendingPartialWithdrawals electra := by
+  rcases UInt64.lt_or_eq_of_le baseLe with below | same
+  · -- Slots reach the start, and the last of them runs the epoch transition.
+    have processed : processSlots config checks base start = .ok middle := by
+      simp only [lookaheadState, below, ↓reduceIte] at lookOk
+      exact mapError_ok_iff.mp lookOk
+    have atSlot := (processSlots_slot processed).2
+    obtain ⟨slotRun⟩ := run_of_processSlots processed startBefore
+    exact ⟨atSlot, middle, atSlot, hysteresis_of_processSlots bands processed atStart,
+      ⟨(history.append baseRun).append slotRun⟩, .nil, Nat.zero_le _,
+      processSlots_pendingPartialWithdrawals
+        (Nat.le_trans (show Fork.altair ≤ Fork.fusaka by decide) fulu) processed⟩
+  · -- The held state is at the start, after its own block; the boundary state is before it.
+    obtain rfl : base = middle := by
+      simpa [lookaheadState, same, UInt64.lt_irrefl, pure, Except.pure] using lookOk
+    obtain ⟨boundary, atSlot, banded, first, ⟨edge⟩⟩ :=
+      run_boundaryState genesis bands electraFloor electraCap (history.append baseRun) early fulu
+        (show base.slot % preset.SLOTS_PER_EPOCH = 0 from same ▸ atStart)
+    have counted := edge.blocks_le_slots (a := start.toNat) (b := start.toNat)
+      (by rw [atSlot, same]) (by rw [same])
+    exact ⟨same, boundary, atSlot.trans same, banded, first, edge, by omega, fun _ => rfl⟩
+
 /-- The runs of a call, from one state at the start of its target's epoch.
 
 The call is the pulled-up head state and the current target of an honest store.
@@ -604,52 +699,33 @@ private theorem runs_of_call
   obtain ⟨headState, headOk, current, currentOk, pulledOk⟩ := pulledOk
   have headStored := Store.blockState_ok_iff.mp headOk
   obtain rfl : current = epoch := Except.ok.inj (currentOk.symm.trans epochOk)
-  obtain ⟨headBlock, headFound⟩ := (forward u caller n).reachable.known_of_blockState headStored
-  have headSlot : headState.slot = headBlock.slot :=
-    (forward u caller n).reachable.blockState_slot_eq anchorSlot headFound headStored
-  obtain ⟨middle, lookOk, toPulled, pulledEpoch⟩ : ∃ middle,
-      lookaheadState config .bls anc boundary = .ok middle ∧
-      RunsTo config .bls middle pulled ∧ getCurrentEpoch pulled = current := by
+  -- The pulled-up head state is the head state, or the target state processed to the start.
+  obtain ⟨pulledReach, pulledLater, pulledEpoch⟩ :
+      (pulled = headState ∨ ∃ slot, processSlots config .bls headState slot = .ok pulled) ∧
+        boundary ≤ pulled.slot ∧ getCurrentEpoch pulled = current := by
     split at pulledOk
-    · rename_i older
-      simp only [bind_ok_iff] at pulledOk
+    · simp only [bind_ok_iff] at pulledOk
       obtain ⟨boundary', boundaryOk', processed⟩ := pulledOk
-      obtain rfl : boundary' = boundary :=
-        Except.ok.inj ((mapError_ok_iff.mp boundaryOk').symm.trans boundaryOk)
+      obtain rfl : boundary = boundary' :=
+        Except.ok.inj (boundaryOk.symm.trans (mapError_ok_iff.mp boundaryOk'))
       have processed := mapError_ok_iff.mp processed
-      have below := (processSlots_slot processed).1
-      -- A head before the epoch is its own checkpoint block, so the call pulls up the target.
-      obtain rfl : head = checkpoint := eq_of_getCheckpointBlock checkpointOk boundaryOk
-        headFound (headSlot ▸ UInt64.le_of_lt below)
-      obtain rfl : headState = anc := Option.some.inj (headStored.symm.trans held)
-      refine ⟨pulled, ?_, RunsTo.refl _, epochAt (processSlots_slot processed).2⟩
-      simp [lookaheadState, below, processed, Except.mapError]
+      have atSlot := (processSlots_slot processed).2
+      exact ⟨.inr ⟨boundary, processed⟩, UInt64.le_of_eq atSlot.symm, epochAt atSlot⟩
     · rename_i notOlder
       simp only [pure, Except.pure, Except.ok.injEq] at pulledOk
       subst pulledOk
       have notOlderNat := UInt64.le_iff_toNat_le.mp (UInt64.not_lt.mp notOlder)
       rw [toNat_getCurrentEpoch] at notOlderNat
-      have atOrAfter : boundary ≤ headBlock.slot := by
-        rw [← headSlot, UInt64.le_iff_toNat_le, boundaryNat]
+      refine ⟨.inl rfl, ?_, ?_⟩
+      · rw [UInt64.le_iff_toNat_le, boundaryNat]
         exact (Nat.le_div_iff_mul_le positive).mp notOlderNat
-      obtain ⟨middle, lookOk, toHead⟩ :=
-        (forward u caller n).relation_of_checkpointPrefix_with (RunsTo config .bls) RunsTo.refl
-          RunsTo.trans RunsTo.ofTransition RunsTo.ofPrefix (UInt64.le_of_eq anchorSlot)
-          (checkpoint := ⟨current, checkpoint⟩) checkpointOk headFound boundaryOk atOrAfter held
-          headStored
-      refine ⟨middle, lookOk, toHead, ?_⟩
-      have upper := UInt64.le_iff_toNat_le.mp (statesLe head _ headStored)
-      apply UInt64.toNat_inj.mp
-      rw [toNat_getCurrentEpoch]
-      exact Nat.le_antisymm (epochNow ▸ Nat.div_le_div_right upper) notOlderNat
-  have middleBoundary : middle.slot = boundary := by
-    unfold lookaheadState at lookOk
-    split at lookOk
-    · exact (processSlots_slot (mapError_ok_iff.mp lookOk)).2
-    · rename_i notBelow
-      simp only [pure, Except.pure, Except.ok.injEq] at lookOk
-      subst lookOk
-      exact UInt64.le_antisymm ancLe (UInt64.not_lt.mp notBelow)
+      · have upper := UInt64.le_iff_toNat_le.mp (statesLe head _ headStored)
+        apply UInt64.toNat_inj.mp
+        rw [toNat_getCurrentEpoch]
+        exact Nat.le_antisymm (epochNow ▸ Nat.div_le_div_right upper) notOlderNat
+  obtain ⟨middle, lookOk, toPulled⟩ := lookahead_runsTo anchorSlot (forward u caller n)
+    (checkpoint := ⟨current, checkpoint⟩) boundaryOk held headStored checkpointOk pulledReach
+    pulledLater
   have epochBoundaryOk : ∀ slot : Slot, slot.toNat / preset.SLOTS_PER_EPOCH.toNat ≤
       current.toNat → BeforeFork (preset := preset) config fork slot :=
     epochBefore current epochOk
@@ -669,67 +745,17 @@ private theorem runs_of_call
   have stateBefore : BeforeFork (preset := preset) config fork state.slot :=
     beforeFork_of_epoch window positive
       (by rw [← toNat_getCurrentEpoch]; exact UInt64.le_iff_toNat_le.mp inside)
-  have toState : RunsTo config .bls middle state := by
-    obtain ⟨rootBlock, rootFound⟩ := (forward w receiver k).reachable.known_of_blockState stored
-    have fromRoot : RunsTo config .bls rootState state := by
-      rcases reach with rfl | ⟨_, processed⟩
-      · exact RunsTo.refl _
-      · exact RunsTo.ofProcessSlots processed
-    by_cases far : boundary ≤ rootBlock.slot
-    · obtain ⟨middle', lookOk', toRoot⟩ :=
-        (forward w receiver k).relation_of_checkpointPrefix_with (RunsTo config .bls)
-          RunsTo.refl RunsTo.trans RunsTo.ofTransition RunsTo.ofPrefix
-          (UInt64.le_of_eq anchorSlot) (checkpoint := ⟨current, checkpoint⟩) read rootFound
-          boundaryOk far heldW stored
-      obtain rfl : middle' = middle := Except.ok.inj (lookOk'.symm.trans lookOk)
-      exact toRoot.trans fromRoot
-    · -- A root before the epoch is the target block, and its state is processed past the start.
-      have before := UInt64.not_le.mp far
-      obtain rfl : root = checkpoint :=
-        eq_of_getCheckpointBlock read boundaryOk rootFound (UInt64.le_of_lt before)
-      obtain rfl : anc = rootState := Option.some.inj (heldW.symm.trans stored)
-      have ancBelow : anc.slot < boundary :=
-        ((forward w receiver k).reachable.blockState_slot_eq anchorSlot rootFound stored) ▸ before
-      have looked : processSlots config .bls anc boundary = .ok middle := by
-        simp only [lookaheadState, ancBelow, ↓reduceIte] at lookOk
-        exact mapError_ok_iff.mp lookOk
-      rcases reach with rfl | ⟨slot, processed⟩
-      · exact absurd (UInt64.lt_of_lt_of_le ancBelow stateLater) (UInt64.lt_irrefl _)
-      · have reached := (processSlots_slot processed).2
-        rcases UInt64.lt_or_eq_of_le (reached ▸ stateLater) with lower | same
-        · obtain ⟨middle', firstOk, restOk⟩ := processSlots_split ancBelow lower processed
-          obtain rfl : middle' = middle := Except.ok.inj (firstOk.symm.trans looked)
-          exact RunsTo.ofProcessSlots restOk
-        · subst same
-          obtain rfl : state = middle := Except.ok.inj (processed.symm.trans looked)
-          exact RunsTo.refl _
+  obtain ⟨middle', lookOk', toState⟩ := lookahead_runsTo anchorSlot (forward w receiver k)
+    (checkpoint := ⟨current, checkpoint⟩) boundaryOk heldW stored read reach stateLater
+  obtain rfl : middle = middle' := Except.ok.inj (lookOk.symm.trans lookOk')
   obtain ⟨toStateRun⟩ := toState.2 stateBefore
   -- The boundary state, before the target block when the block is at the start of the epoch.
   obtain ⟨ancRun⟩ := run_of_held (forward u caller n) heldBefore held
   have boundaryBefore :=
     epochBoundaryOk boundary (by rw [boundaryNat, Nat.mul_div_cancel _ positive])
-  obtain ⟨start, startSlot, banded, first, edge, single, queue⟩ : ∃ start : BeaconState preset fork,
-      start.slot = boundary ∧ Hysteresis start ∧ Nonempty (Run config .bls g ⟨fork, start⟩) ∧
-      ∃ edge : Run config .bls ⟨fork, start⟩ ⟨fork, middle⟩, edge.blockCount ≤ 1 ∧
-        ∀ electra : .pectra ≤ fork,
-          middle.pendingPartialWithdrawals electra = anc.pendingPartialWithdrawals electra := by
-    rcases UInt64.lt_or_eq_of_le ancLe with below | same
-    · have processed : processSlots config .bls anc boundary = .ok middle := by
-        simp only [lookaheadState, below, ↓reduceIte] at lookOk
-        exact mapError_ok_iff.mp lookOk
-      obtain ⟨slotRun⟩ := run_of_processSlots processed boundaryBefore
-      exact ⟨middle, middleBoundary, hysteresis_of_processSlots bands processed atStart,
-        ⟨(history.append ancRun).append slotRun⟩, .nil, Nat.zero_le _,
-        processSlots_pendingPartialWithdrawals
-          (Nat.le_trans (show Fork.altair ≤ Fork.fusaka by decide) fulu) processed⟩
-    · obtain rfl : anc = middle := by
-        simpa [lookaheadState, same, UInt64.lt_irrefl, pure, Except.pure] using lookOk
-      obtain ⟨start, atSlot, banded, first, ⟨edge⟩⟩ :=
-        run_boundaryState genesis bands electraFloor electraCap (history.append ancRun) early fulu
-          (show anc.slot % preset.SLOTS_PER_EPOCH = 0 from same ▸ atStart)
-      have counted := edge.blocks_le_slots (a := boundary.toNat) (b := boundary.toNat)
-        (by rw [atSlot, same]) (by rw [same])
-      exact ⟨start, atSlot.trans same, banded, first, edge, by omega, fun _ => rfl⟩
+  obtain ⟨middleBoundary, start, startSlot, banded, first, edge, single, queue⟩ :=
+    boundary_of_lookahead genesis history early fulu bands electraFloor electraCap atStart
+      boundaryBefore ancRun ancLe lookOk
   have counted := (edge.append tail).blocks_le_slots (a := boundary.toNat)
     (b := pulled.slot.toNat) (by rw [startSlot]) (Nat.le_refl _)
   rw [Run.blockCount_append, boundaryNat] at counted
