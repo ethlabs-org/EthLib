@@ -175,36 +175,6 @@ The base reward and the total are formulas of the effective balances.
 
 That needs a registry within its limit. -/
 private theorem processRewardsAndPenalties_balance_le_of_altair
-    -- TEMPORARY: S13a moves this lemma to RewardDeltas
-    (penaltyEntries_le : ∀ {config : Config} {fork : Fork} {state : BeaconState preset fork}
-      {total : Gwei} (altair : .altair ≤ fork) (_within : state.RegistryWithinLimit)
-      (_active : getTotalActiveBalance state = .ok total)
-      {source target head inactivity : Array Gwei × Array Gwei}
-      (_sourceOk : getFlagIndexDeltas state altair ⟨0, by decide⟩ = .ok source)
-      (_targetOk : getFlagIndexDeltas state altair ⟨1, by decide⟩ = .ok target)
-      (_headOk : getFlagIndexDeltas state altair ⟨2, by decide⟩ = .ok head)
-      (_inactivityOk : getInactivityPenaltyDeltas config state = .ok inactivity)
-      {j : Nat} (inside : j < state.validators.data.size),
-      (source.2.getD j 0).toNat + (target.2.getD j 0).toNat + (head.2.getD j 0).toNat +
-          (inactivity.2.getD j 0).toNat = 0 ∨
-        ∃ base, isEligibleValidator (getPreviousEpoch state) state.validators.data[j] = .ok true ∧
-          getBaseReward state total j.toUInt64 = .ok base ∧
-          (source.2.getD j 0).toNat + (target.2.getD j 0).toNat + (head.2.getD j 0).toNat +
-              (inactivity.2.getD j 0).toNat ≤
-            base.toNat * (TIMELY_SOURCE_WEIGHT.toNat + TIMELY_TARGET_WEIGHT.toNat) /
-                WEIGHT_DENOMINATOR.toNat +
-              state.validators.data[j].effectiveBalance.toNat *
-                (((state.inactivityScores altair).data[j]?.map UInt64.toNat).getD 0) /
-                (config.INACTIVITY_SCORE_BIAS.toNat *
-                  (parameters preset fork).INACTIVITY_PENALTY_QUOTIENT.toNat))
-    -- TEMPORARY: S13a moves this lemma to RewardDeltas
-    (toNat_getBaseReward_le : ∀ {fork : Fork} {state : BeaconState preset fork} {total : Gwei}
-      (_altair : .altair ≤ fork) {base : Gwei}
-      {index : ValidatorIndex} (_computed : getBaseReward state total index = .ok base)
-      {validator : Validator} (_found : state.validators.data[index.toNat]? = some validator),
-      base.toNat ≤ validator.effectiveBalance.toNat / preset.EFFECTIVE_BALANCE_INCREMENT.toNat *
-        (preset.EFFECTIVE_BALANCE_INCREMENT.toNat * preset.BASE_REWARD_FACTOR.toNat /
-          total.toNat.sqrt))
     {fork : Fork} {state : BeaconState preset fork}
     {after : BeaconState preset fork} (altair : .altair ≤ fork) (within : state.RegistryWithinLimit)
     (computed : processRewardsAndPenalties config state = .ok after)
@@ -404,36 +374,6 @@ It raises the score of the validator by at most the score bias.
 
 So the inactivity penalty reads the score before the update plus that bias. -/
 theorem processRewardsAndPenalties_balance_le_of_inactivityUpdates
-    -- TEMPORARY: S13a moves this lemma to RewardDeltas
-    (penaltyEntries_le : ∀ {config : Config} {fork : Fork} {state : BeaconState preset fork}
-      {total : Gwei} (altair : .altair ≤ fork) (_within : state.RegistryWithinLimit)
-      (_active : getTotalActiveBalance state = .ok total)
-      {source target head inactivity : Array Gwei × Array Gwei}
-      (_sourceOk : getFlagIndexDeltas state altair ⟨0, by decide⟩ = .ok source)
-      (_targetOk : getFlagIndexDeltas state altair ⟨1, by decide⟩ = .ok target)
-      (_headOk : getFlagIndexDeltas state altair ⟨2, by decide⟩ = .ok head)
-      (_inactivityOk : getInactivityPenaltyDeltas config state = .ok inactivity)
-      {j : Nat} (inside : j < state.validators.data.size),
-      (source.2.getD j 0).toNat + (target.2.getD j 0).toNat + (head.2.getD j 0).toNat +
-          (inactivity.2.getD j 0).toNat = 0 ∨
-        ∃ base, isEligibleValidator (getPreviousEpoch state) state.validators.data[j] = .ok true ∧
-          getBaseReward state total j.toUInt64 = .ok base ∧
-          (source.2.getD j 0).toNat + (target.2.getD j 0).toNat + (head.2.getD j 0).toNat +
-              (inactivity.2.getD j 0).toNat ≤
-            base.toNat * (TIMELY_SOURCE_WEIGHT.toNat + TIMELY_TARGET_WEIGHT.toNat) /
-                WEIGHT_DENOMINATOR.toNat +
-              state.validators.data[j].effectiveBalance.toNat *
-                (((state.inactivityScores altair).data[j]?.map UInt64.toNat).getD 0) /
-                (config.INACTIVITY_SCORE_BIAS.toNat *
-                  (parameters preset fork).INACTIVITY_PENALTY_QUOTIENT.toNat))
-    -- TEMPORARY: S13a moves this lemma to RewardDeltas
-    (toNat_getBaseReward_le : ∀ {fork : Fork} {state : BeaconState preset fork} {total : Gwei}
-      (_altair : .altair ≤ fork) {base : Gwei}
-      {index : ValidatorIndex} (_computed : getBaseReward state total index = .ok base)
-      {validator : Validator} (_found : state.validators.data[index.toNat]? = some validator),
-      base.toNat ≤ validator.effectiveBalance.toNat / preset.EFFECTIVE_BALANCE_INCREMENT.toNat *
-        (preset.EFFECTIVE_BALANCE_INCREMENT.toNat * preset.BASE_REWARD_FACTOR.toNat /
-          total.toNat.sqrt))
     {fork : Fork}
     {state scored after : BeaconState preset fork} (altair : .altair ≤ fork)
     (within : state.RegistryWithinLimit)
@@ -493,8 +433,8 @@ theorem processRewardsAndPenalties_balance_le_of_inactivityUpdates
     unfold BeaconState.RegistryWithinLimit
     rw [validators]
     exact within
-  have core := processRewardsAndPenalties_balance_le_of_altair penaltyEntries_le
-    toNat_getBaseReward_le altair within' computed j (by rw [validators]; exact inside)
+  have core := processRewardsAndPenalties_balance_le_of_altair altair within' computed j
+    (by rw [validators]; exact inside)
   dsimp only at core
   simp only [active, current, previous, validators, balances] at core
   obtain ⟨up, down⟩ := core

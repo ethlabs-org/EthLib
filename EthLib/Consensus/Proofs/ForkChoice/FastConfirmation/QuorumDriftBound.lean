@@ -110,40 +110,8 @@ In the same epoch the active set and its effective balances stay, so nothing dri
 In the next epoch the total rises by at most the gain, and the voters fall by at most the loss.
 
 The seed lookahead of `window` fixes activity in the next epoch inside the current one.
-
-The two hypotheses marked TEMPORARY are lemmas that the S13a pull request moves to RewardDeltas.
 -/
 theorem quorumDrift_le_quorumReserve
-    -- TEMPORARY: S13a moves this lemma to RewardDeltas
-    (penaltyEntries_le : ∀ {config : Config} {fork : Fork} {state : BeaconState preset fork}
-      {total : Gwei} (altair : .altair ≤ fork) (_within : state.RegistryWithinLimit)
-      (_active : getTotalActiveBalance state = .ok total)
-      {source target head inactivity : Array Gwei × Array Gwei}
-      (_sourceOk : getFlagIndexDeltas state altair ⟨0, by decide⟩ = .ok source)
-      (_targetOk : getFlagIndexDeltas state altair ⟨1, by decide⟩ = .ok target)
-      (_headOk : getFlagIndexDeltas state altair ⟨2, by decide⟩ = .ok head)
-      (_inactivityOk : getInactivityPenaltyDeltas config state = .ok inactivity)
-      {j : Nat} (inside : j < state.validators.data.size),
-      (source.2.getD j 0).toNat + (target.2.getD j 0).toNat + (head.2.getD j 0).toNat +
-          (inactivity.2.getD j 0).toNat = 0 ∨
-        ∃ base, isEligibleValidator (getPreviousEpoch state) state.validators.data[j] = .ok true ∧
-          getBaseReward state total j.toUInt64 = .ok base ∧
-          (source.2.getD j 0).toNat + (target.2.getD j 0).toNat + (head.2.getD j 0).toNat +
-              (inactivity.2.getD j 0).toNat ≤
-            base.toNat * (TIMELY_SOURCE_WEIGHT.toNat + TIMELY_TARGET_WEIGHT.toNat) /
-                WEIGHT_DENOMINATOR.toNat +
-              state.validators.data[j].effectiveBalance.toNat *
-                (((state.inactivityScores altair).data[j]?.map UInt64.toNat).getD 0) /
-                (config.INACTIVITY_SCORE_BIAS.toNat *
-                  (parameters preset fork).INACTIVITY_PENALTY_QUOTIENT.toNat))
-    -- TEMPORARY: S13a moves this lemma to RewardDeltas
-    (toNat_getBaseReward_le : ∀ {fork : Fork} {state : BeaconState preset fork} {total : Gwei}
-      (_altair : .altair ≤ fork) {base : Gwei}
-      {index : ValidatorIndex} (_computed : getBaseReward state total index = .ok base)
-      {validator : Validator} (_found : state.validators.data[index.toNat]? = some validator),
-      base.toNat ≤ validator.effectiveBalance.toNat / preset.EFFECTIVE_BALANCE_INCREMENT.toNat *
-        (preset.EFFECTIVE_BALANCE_INCREMENT.toNat * preset.BASE_REWARD_FACTOR.toNat /
-          total.toNat.sqrt))
     {g : ForkedBeaconState preset}
     {boundary middle pulled anc state : BeaconState preset fork}
     (genesis : Genesis config checks g) (history : Run config checks g ⟨fork, boundary⟩)
@@ -278,8 +246,8 @@ theorem quorumDrift_le_quorumReserve
   have rise : ∑ i ∈ positions with upcoming i = true, (effectiveAt ⟨fork, state⟩ i - effective i) ≤
       min headroom (crossing + (recipients + debited) * preset.upwardBand + debited * creditMax +
         transfers + depositGain) :=
-    effectiveRise_le penaltyEntries_le toNat_getBaseReward_le genesis history (edge.append tailP)
-      (edge.append tailS) caps withdrawDelay bands window hysteresis early fulu callEpoch next
+    effectiveRise_le genesis history (edge.append tailP) (edge.append tailS) caps withdrawDelay
+      bands window hysteresis early fulu callEpoch next
       (n := nP) debitedKeys
       (debitedCard.trans (Nat.mul_le_mul_left _ blocksLe))
       (fun v off => (gainSide v off).trans
@@ -308,8 +276,8 @@ theorem quorumDrift_le_quorumReserve
           (if pc v + deposit v = 0 then 0
            else inc + 2 * preset.downwardBand + syncP v.toNat +
              min (pc v + deposit v) (below v)) :=
-    effectiveFall_le penaltyEntries_le toNat_getBaseReward_le genesis history edge tailP tailS caps
-      bands withdrawDelay hysteresis early fulu
+    effectiveFall_le genesis history edge tailP tailS caps bands withdrawDelay hysteresis early
+      fulu
       middleEpoch callEpoch next single counted (fun v => pc v + deposit v)
       (fun v => (lossSide v).trans (by rw [Nat.add_assoc]))
   -- Each voter loses at most its computed fall, and a band and its share if it was credited.

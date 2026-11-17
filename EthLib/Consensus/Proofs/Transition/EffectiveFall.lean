@@ -1900,36 +1900,6 @@ It is capped at its effective balance above the activation balance.
 Those queued amounts add up to at most what one sweep can pay below the largest effective balance.
 -/
 theorem effectiveFall_le
-    -- TEMPORARY: S13a moves this lemma to RewardDeltas
-    (penaltyEntries_le : ∀ {config : Config} {fork : Fork} {state : BeaconState preset fork}
-      {total : Gwei} (altair : .altair ≤ fork) (_within : state.RegistryWithinLimit)
-      (_active : getTotalActiveBalance state = .ok total)
-      {source target head inactivity : Array Gwei × Array Gwei}
-      (_sourceOk : getFlagIndexDeltas state altair ⟨0, by decide⟩ = .ok source)
-      (_targetOk : getFlagIndexDeltas state altair ⟨1, by decide⟩ = .ok target)
-      (_headOk : getFlagIndexDeltas state altair ⟨2, by decide⟩ = .ok head)
-      (_inactivityOk : getInactivityPenaltyDeltas config state = .ok inactivity)
-      {j : Nat} (inside : j < state.validators.data.size),
-      (source.2.getD j 0).toNat + (target.2.getD j 0).toNat + (head.2.getD j 0).toNat +
-          (inactivity.2.getD j 0).toNat = 0 ∨
-        ∃ base, isEligibleValidator (getPreviousEpoch state) state.validators.data[j] = .ok true ∧
-          getBaseReward state total j.toUInt64 = .ok base ∧
-          (source.2.getD j 0).toNat + (target.2.getD j 0).toNat + (head.2.getD j 0).toNat +
-              (inactivity.2.getD j 0).toNat ≤
-            base.toNat * (TIMELY_SOURCE_WEIGHT.toNat + TIMELY_TARGET_WEIGHT.toNat) /
-                WEIGHT_DENOMINATOR.toNat +
-              state.validators.data[j].effectiveBalance.toNat *
-                (((state.inactivityScores altair).data[j]?.map UInt64.toNat).getD 0) /
-                (config.INACTIVITY_SCORE_BIAS.toNat *
-                  (parameters preset fork).INACTIVITY_PENALTY_QUOTIENT.toNat))
-    -- TEMPORARY: S13a moves this lemma to RewardDeltas
-    (toNat_getBaseReward_le : ∀ {fork : Fork} {state : BeaconState preset fork} {total : Gwei}
-      (_altair : .altair ≤ fork) {base : Gwei}
-      {index : ValidatorIndex} (_computed : getBaseReward state total index = .ok base)
-      {validator : Validator} (_found : state.validators.data[index.toNat]? = some validator),
-      base.toNat ≤ validator.effectiveBalance.toNat / preset.EFFECTIVE_BALANCE_INCREMENT.toNat *
-        (preset.EFFECTIVE_BALANCE_INCREMENT.toNat * preset.BASE_REWARD_FACTOR.toNat /
-          total.toNat.sqrt))
     {g R T P y : ForkedBeaconState preset}
     (genesis : Genesis (config := config) (checks := checks) g) (history : Run config checks g R)
     (boundary : Run config checks R T) (tailP : Run config checks T P)
@@ -2276,9 +2246,8 @@ theorem effectiveFall_le
     have penaltyBound : actualBalanceAt z v.toNat ≤
         actualBalanceAt ⟨z.fork, rewarded⟩ v.toNat + (base v.toNat + inactivity v.toNat) := by
       have altairT : .altair ≤ T.fork := by rw [← ZT]; exact altairZ
-      have bound := (processRewardsAndPenalties_balance_le_of_inactivityUpdates penaltyEntries_le
-        toNat_getBaseReward_le altairZ (justified.validators.bound Zearly) scoredOk rewardedOk
-        v.toNat insideJ).2
+      have bound := (processRewardsAndPenalties_balance_le_of_inactivityUpdates altairZ
+        (justified.validators.bound Zearly) scoredOk rewardedOk v.toNat insideJ).2
       dsimp only at bound
       rw [totalJ, effJ, balJ] at bound
       have scoreJ :

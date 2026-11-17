@@ -1408,40 +1408,8 @@ The epoch also transfers balance to other validators, to a bounded number of rec
 
 They are churn-limited deposits, due consolidations, proposer credits and whistleblower rewards.
 
-From Fulu a block deposit only queues, so no block deposit credits a balance inside the epoch.
-
-The two hypotheses marked TEMPORARY are lemmas that the S13a pull request moves to RewardDeltas. -/
+From Fulu a block deposit only queues, so no block deposit credits a balance inside the epoch. -/
 theorem effectiveRise_le
-    -- TEMPORARY: S13a moves this lemma to RewardDeltas
-    (penaltyEntries_le : ∀ {config : Config} {fork : Fork} {state : BeaconState preset fork}
-      {total : Gwei} (altair : .altair ≤ fork) (_within : state.RegistryWithinLimit)
-      (_active : getTotalActiveBalance state = .ok total)
-      {source target head inactivity : Array Gwei × Array Gwei}
-      (_sourceOk : getFlagIndexDeltas state altair ⟨0, by decide⟩ = .ok source)
-      (_targetOk : getFlagIndexDeltas state altair ⟨1, by decide⟩ = .ok target)
-      (_headOk : getFlagIndexDeltas state altair ⟨2, by decide⟩ = .ok head)
-      (_inactivityOk : getInactivityPenaltyDeltas config state = .ok inactivity)
-      {j : Nat} (inside : j < state.validators.data.size),
-      (source.2.getD j 0).toNat + (target.2.getD j 0).toNat + (head.2.getD j 0).toNat +
-          (inactivity.2.getD j 0).toNat = 0 ∨
-        ∃ base, isEligibleValidator (getPreviousEpoch state) state.validators.data[j] = .ok true ∧
-          getBaseReward state total j.toUInt64 = .ok base ∧
-          (source.2.getD j 0).toNat + (target.2.getD j 0).toNat + (head.2.getD j 0).toNat +
-              (inactivity.2.getD j 0).toNat ≤
-            base.toNat * (TIMELY_SOURCE_WEIGHT.toNat + TIMELY_TARGET_WEIGHT.toNat) /
-                WEIGHT_DENOMINATOR.toNat +
-              state.validators.data[j].effectiveBalance.toNat *
-                (((state.inactivityScores altair).data[j]?.map UInt64.toNat).getD 0) /
-                (config.INACTIVITY_SCORE_BIAS.toNat *
-                  (parameters preset fork).INACTIVITY_PENALTY_QUOTIENT.toNat))
-    -- TEMPORARY: S13a moves this lemma to RewardDeltas
-    (toNat_getBaseReward_le : ∀ {fork : Fork} {state : BeaconState preset fork} {total : Gwei}
-      (_altair : .altair ≤ fork) {base : Gwei}
-      {index : ValidatorIndex} (_computed : getBaseReward state total index = .ok base)
-      {validator : Validator} (_found : state.validators.data[index.toNat]? = some validator),
-      base.toNat ≤ validator.effectiveBalance.toNat / preset.EFFECTIVE_BALANCE_INCREMENT.toNat *
-        (preset.EFFECTIVE_BALANCE_INCREMENT.toNat * preset.BASE_REWARD_FACTOR.toNat /
-          total.toNat.sqrt))
   {g R P y : ForkedBeaconState preset}
     (genesis : Genesis (config := config) (checks := checks) g) (history : Run config checks g R)
     (tailP : Run config checks R P) (tailS : Run config checks R y) (caps : CapOrder preset)
@@ -1712,9 +1680,8 @@ theorem effectiveRise_le
     intro i inside
     have insideJ : i < justified.validators.data.size := by
       rw [Jvalidators]; exact Nat.lt_of_lt_of_le inside growsZ
-    have bound := (processRewardsAndPenalties_balance_le_of_inactivityUpdates penaltyEntries_le
-      toNat_getBaseReward_le altair (justified.validators.bound Fearly) scoredOk rewardedOk i
-      insideJ).1
+    have bound := (processRewardsAndPenalties_balance_le_of_inactivityUpdates altair
+      (justified.validators.bound Fearly) scoredOk rewardedOk i insideJ).1
     dsimp only at bound
     rw [totalJ, numJ, effJ i inside, balJ] at bound
     simp only [flagEq, altair, ↓reduceIte, base, perIncrement, root, den, flagWeight]
