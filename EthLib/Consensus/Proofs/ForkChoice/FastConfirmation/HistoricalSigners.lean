@@ -139,6 +139,7 @@ theorem Execution.exists_signer_of_counted (V : Set ValidatorIndex) [DecidablePr
       checkpoint.epoch ≤ getCurrentEpoch counted →
       (getCurrentEpoch counted).toNat ≤ checkpoint.epoch.toNat + 1 →
       getCurrentEpoch counted ≤ computeEpochAtSlot preset slot →
+      getBlockRoot counted checkpoint.epoch = .ok checkpoint.root →
       getTotalActiveBalance counted = .ok total →
       3 * stake (fun v => balanceAt counted v.toNat) {v ∈ quorumVoters counted | v ∉ V} <
         2 * total.toNat) :
@@ -160,17 +161,19 @@ theorem Execution.exists_signer_of_counted (V : Set ValidatorIndex) [DecidablePr
   -- The count moved the checkpoint, to the counting state's current or previous epoch.
   have moved : pulled.currentJustifiedCheckpoint ≠ counted.currentJustifiedCheckpoint :=
     fun same => changed (same.symm.trans pulledC)
-  obtain ⟨countedLater, countedEpoch⟩ : GENESIS_EPOCH + 1 < getCurrentEpoch counted ∧
-      (getCurrentEpoch counted).toNat ≤ checkpoint.epoch.toNat + 1 ∧
-      checkpoint.epoch.toNat ≤ (getCurrentEpoch counted).toNat := by
+  obtain ⟨countedLater, countedEpoch, rootRead⟩ : GENESIS_EPOCH + 1 < getCurrentEpoch counted ∧
+      ((getCurrentEpoch counted).toNat ≤ checkpoint.epoch.toNat + 1 ∧
+        checkpoint.epoch.toNat ≤ (getCurrentEpoch counted).toNat) ∧
+      getBlockRoot counted checkpoint.epoch = .ok checkpoint.root := by
     rcases processJustificationAndFinalization_reads pulledOk with ⟨-, same⟩ |
       ⟨late, _, _, _, _, _, _, _, _, _, _, weighed⟩
     · exact (moved (same ▸ rfl)).elim
     rcases weighJustificationAndFinalization_currentJustified weighed with ⟨same, -⟩ |
-      ⟨current, -, -, -, -, -, epochEq, -⟩
+      ⟨current, -, -, -, -, -, epochEq, rootOk⟩
     · exact (moved same).elim
-    rw [← pulledC, epochEq]
-    refine ⟨late, ?_⟩
+    rw [← pulledC]
+    refine ⟨late, ?_, rootOk⟩
+    rw [epochEq]
     cases current
     · simp only [Bool.false_eq_true, ↓reduceIte, getPreviousEpoch_toNat]
       have := UInt64.lt_iff_toNat_lt.mp late
@@ -240,8 +243,21 @@ theorem Execution.exists_signer_of_counted (V : Set ValidatorIndex) [DecidablePr
     rcases shape with rfl | ⟨state, childRoot, child, childFound, parent, before, path, -,
       countedOk⟩
     · exact few counted total ⟨root, counted, held, .inl rfl⟩ countedEpoch.2 countedEpoch.1
-        countedNow totalOk
-    · -- Caching a slot keeps the registry, the balances and the slot that the count reads.
+        countedNow rootRead totalOk
+    · -- The state before caching reads the checkpoint's root too, less than a buffer back.
+      have stateRoot : getBlockRoot state checkpoint.epoch = .ok checkpoint.root := by
+        obtain ⟨start, startOk, startRead⟩ := getBlockRoot_ok_iff.mp rootRead
+        refine getBlockRoot_ok_iff.mpr ⟨start, startOk,
+          getBlockRootAtSlot_of_processSlot countedOk startRead ?_⟩
+        have startNat := (computeStartSlotAtEpoch_ok_iff.mp startOk).2
+        have epochLe := countedEpoch.1
+        rw [getCurrentEpoch_toNat] at epochLe
+        have slotLt := Nat.lt_div_mul_add (a := counted.slot.toNat) positive
+        have spread := Nat.mul_le_mul_right preset.SLOTS_PER_EPOCH.toNat epochLe
+        rw [Nat.add_mul, Nat.one_mul] at spread
+        rw [startNat, ← processSlot_slot countedOk]
+        omega
+      -- Caching a slot keeps the registry, the balances and the slot that the count reads.
       obtain ⟨_, _, _, _, rfl⟩ := processSlot_ok countedOk
       have counts : CountedState ((e.world k).state w) config state := by
         refine ⟨root, base, held, ?_⟩
@@ -250,7 +266,7 @@ theorem Execution.exists_signer_of_counted (V : Set ValidatorIndex) [DecidablePr
         · refine .inr ⟨checks, reached, childRoot, child, childFound, parent, ?_, slotsOk⟩
           rw [← (processSlots_slot slotsOk).2]
           exact UInt64.le_of_lt before
-      exact few state total counts countedEpoch.2 countedEpoch.1 countedNow totalOk
+      exact few state total counts countedEpoch.2 countedEpoch.1 countedNow stateRoot totalOk
   -- The count's active stake is above one and a half increments.
   have large := counted_stake_large anchored start anchorSlot genesis pre absent heldEarly enough
     terminal honest high held shape countedLater upper
@@ -342,7 +358,7 @@ theorem Execution.justifiedHonestlySigned [DecidablePred (· ∈ J)] {anchor : S
   exact e.exists_signer_of_counted J anchored start anchorSlot anchorHeader anchorZero slots
     parameters delay genesis pre roots absent heldEarly bounded enough terminal afterAnchor honest
     high slotOk (.inl rfl) later
-    fun counted total counts atLeast _ _ totalOk =>
+    fun counted total counts atLeast _ _ _ totalOk =>
       byzantine w honest k counted total low high upToDate counts
         (UInt64.lt_of_lt_of_le later atLeast) totalOk
 
