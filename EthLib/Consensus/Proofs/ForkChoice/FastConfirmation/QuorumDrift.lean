@@ -5,6 +5,8 @@ public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmation.HistoricalStat
 public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmation.Indicators
 public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmation.QuorumReserve
 public import EthLib.Consensus.Proofs.Transition.BalanceDrift
+import EthLib.Consensus.Proofs.Transition.EffectiveFall
+import EthLib.Consensus.Proofs.ForkChoice.FastConfirmation.QuorumDriftBound
 public import EthLib.Consensus.Proofs.Transition.BuilderPayments
 public import EthLib.Consensus.Proofs.Transition.Trace
 public import EthLib.Consensus.Proofs.Transition.Upgrade
@@ -99,73 +101,6 @@ No step of a slot or of an epoch writes it ([EIP-7251]).
 section Partials
 
 variable {state after : BeaconState preset fork}
-
-/-- Two states hold the same queue of pending partial withdrawals, from Electra. -/
-private def PartialsSame (state after : BeaconState preset fork) : Prop :=
-  ∀ electra : .pectra ≤ fork,
-    after.pendingPartialWithdrawals electra = state.pendingPartialWithdrawals electra
-
-private theorem PartialsSame.refl (state : BeaconState preset fork) : PartialsSame state state :=
-  fun _ => rfl
-
-private theorem PartialsSame.trans {first second third : BeaconState preset fork}
-    (one : PartialsSame first second) (two : PartialsSame second third) :
-    PartialsSame first third :=
-  fun electra => (two electra).trans (one electra)
-
-private theorem partialsSame_setValidatorAt {position : Nat} {validator : Validator}
-    (set : state.setValidatorAt position validator = .ok after) : PartialsSame state after := by
-  obtain ⟨_, rfl⟩ := setValidatorAt_ok set
-  exact fun _ => rfl
-
-private theorem partialsSame_setValidator {index : ValidatorIndex} {validator : Validator}
-    (set : state.setValidator index validator = .ok after) : PartialsSame state after :=
-  partialsSame_setValidatorAt (by rwa [← setValidator_eq_setValidatorAt])
-
-private theorem partialsSame_setBalance {index : ValidatorIndex} {balance : Gwei}
-    (set : state.setBalance index balance = .ok after) : PartialsSame state after := by
-  obtain ⟨_, rfl⟩ := setBalance_ok set
-  exact fun _ => rfl
-
-private theorem partialsSame_increaseBalance {index : ValidatorIndex} {delta : Gwei}
-    (computed : increaseBalance state index delta = .ok after) : PartialsSame state after :=
-  let ⟨_, set⟩ := increaseBalance_ok computed
-  partialsSame_setBalance set
-
-private theorem partialsSame_decreaseBalance {index : ValidatorIndex} {delta : Gwei}
-    (computed : decreaseBalance state index delta = .ok after) : PartialsSame state after :=
-  let ⟨_, set⟩ := decreaseBalance_ok computed
-  partialsSame_setBalance set
-
-private theorem partialsSame_initiateValidatorExit {index : ValidatorIndex}
-    (computed : initiateValidatorExit config state index = .ok after) :
-    PartialsSame state after := by
-  obtain ⟨_, _, ⟨_, rfl⟩ | ⟨_, _, _, _, queue, _, set⟩⟩ := initiateValidatorExit_ok computed
-  · exact PartialsSame.refl _
-  refine PartialsSame.trans ?_ (partialsSame_setValidator set)
-  unfold exitQueue at queue
-  split at queue
-  · simp only [computeExitEpochAndUpdateChurn, bind_ok_iff, pure, Except.pure,
-      Except.ok.injEq, Prod.mk.injEq] at queue
-    obtain ⟨_, _, _, _, _, _, rfl, _⟩ := queue
-    exact fun _ => rfl
-  · simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq, Prod.mk.injEq] at queue
-    obtain ⟨_, _, rfl, _⟩ := queue
-    exact PartialsSame.refl _
-
-private theorem partialsSame_addValidatorToRegistry {pubkey withdrawalCredentials amount}
-    (computed : addValidatorToRegistry state pubkey withdrawalCredentials amount = .ok after) :
-    PartialsSame state after := by
-  unfold addValidatorToRegistry at computed
-  split at computed
-  · simp only [addValidatorToRegistryAltair, liftAccessor_ok, bind_ok_iff, pure, Except.pure,
-      Except.ok.injEq] at computed
-    obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, rfl⟩ := computed
-    exact fun _ => rfl
-  split at computed
-  · cases computed
-    exact fun _ => rfl
-  · cases computed
 
 /-- Keeping the queue satisfies the laws of the epoch steps. -/
 private theorem partialsEpochFrameLaws : EpochFrameLaws (@PartialsSame preset fork) where
@@ -772,11 +707,13 @@ The spec pulls the head state of a call up with BLS checks, and the epoch transi
 
 So only with BLS do the call and a receiver share the runs that the drift bound takes.
 
-The drift bound `bound` is taken as a hypothesis, in the form of the reserve inequality.
+The drift bound is `quorumDrift_le_quorumReserve`.
 
-It bounds the drift over runs from one middle state at the start of the target's epoch.
+It takes runs from one middle state at the start of the target's epoch.
 
 This theorem builds those runs from the stores of the call and of the receiver.
+
+The two hypotheses marked TEMPORARY are lemmas that the S13a pull request moves to RewardDeltas.
 
 The parameters must keep the bands of hysteresis, the withdrawal delay and the Electra caps.
 
@@ -786,30 +723,36 @@ The stores stay before the next fork through the horizon, and agree on the block
 theorem Execution.quorumDriftWithin_of_bound
     {e : Execution (honestForkChoice config .bls sources anchorState anchorBlock assignment
       genesisTimeMs) J}
-    (bound : ∀ {g : ForkedBeaconState preset}
-      {boundary middle pulled anc state : BeaconState preset fork},
-      Genesis config .bls g → Run config .bls g ⟨fork, boundary⟩ →
-      ∀ (edge : Run config .bls ⟨fork, boundary⟩ ⟨fork, middle⟩)
-        (tailP : Run config .bls ⟨fork, middle⟩ ⟨fork, pulled⟩),
-      Run config .bls ⟨fork, middle⟩ ⟨fork, state⟩ →
-      fork < .glamsterdam → .fusaka ≤ fork → preset.IncrementWithinUpwardBand →
-      1 ≤ config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat → CapOrder preset →
-      preset.ExitWindowFixed → Hysteresis boundary → edge.blockCount ≤ 1 →
-      edge.blockCount + tailP.blockCount ≤
-        pulled.slot.toNat - (getCurrentEpoch pulled).toNat * preset.SLOTS_PER_EPOCH.toNat + 1 →
-      (∀ electra : .pectra ≤ fork,
-        middle.pendingPartialWithdrawals electra = anc.pendingPartialWithdrawals electra) →
-      getCurrentEpoch middle = getCurrentEpoch boundary →
-      getCurrentEpoch pulled = getCurrentEpoch boundary →
-      getCurrentEpoch pulled ≤ getCurrentEpoch state →
-      (getCurrentEpoch state).toNat ≤ (getCurrentEpoch pulled).toNat + 1 →
-      ∀ {voters : Finset ValidatorIndex} {total pulledTotal : Gwei},
-      (∀ v ∈ voters,
-        v ∈ activeVoters pulled ∧ (slashedFlagAt state v.toNat).getD false = false) →
-      getTotalActiveBalance state = .ok total → getTotalActiveBalance pulled = .ok pulledTotal →
-      2 * total.toNat + 3 * stake (fun v => balanceAt pulled v.toNat) voters ≤
-        2 * pulledTotal.toNat + 3 * stake (fun v => balanceAt state v.toNat) voters +
-          quorumReserve config pulled anc)
+    -- TEMPORARY: S13a moves this lemma to RewardDeltas
+    (penaltyEntries_le : ∀ {config : Config} {fork : Fork} {state : BeaconState preset fork}
+      {total : Gwei} (altair : .altair ≤ fork) (_within : state.RegistryWithinLimit)
+      (_active : getTotalActiveBalance state = .ok total)
+      {source target head inactivity : Array Gwei × Array Gwei}
+      (_sourceOk : getFlagIndexDeltas state altair ⟨0, by decide⟩ = .ok source)
+      (_targetOk : getFlagIndexDeltas state altair ⟨1, by decide⟩ = .ok target)
+      (_headOk : getFlagIndexDeltas state altair ⟨2, by decide⟩ = .ok head)
+      (_inactivityOk : getInactivityPenaltyDeltas config state = .ok inactivity)
+      {j : Nat} (inside : j < state.validators.data.size),
+      (source.2.getD j 0).toNat + (target.2.getD j 0).toNat + (head.2.getD j 0).toNat +
+          (inactivity.2.getD j 0).toNat = 0 ∨
+        ∃ base, isEligibleValidator (getPreviousEpoch state) state.validators.data[j] = .ok true ∧
+          getBaseReward state total j.toUInt64 = .ok base ∧
+          (source.2.getD j 0).toNat + (target.2.getD j 0).toNat + (head.2.getD j 0).toNat +
+              (inactivity.2.getD j 0).toNat ≤
+            base.toNat * (TIMELY_SOURCE_WEIGHT.toNat + TIMELY_TARGET_WEIGHT.toNat) /
+                WEIGHT_DENOMINATOR.toNat +
+              state.validators.data[j].effectiveBalance.toNat *
+                (((state.inactivityScores altair).data[j]?.map UInt64.toNat).getD 0) /
+                (config.INACTIVITY_SCORE_BIAS.toNat *
+                  (parameters preset fork).INACTIVITY_PENALTY_QUOTIENT.toNat))
+    -- TEMPORARY: S13a moves this lemma to RewardDeltas
+    (toNat_getBaseReward_le : ∀ {fork : Fork} {state : BeaconState preset fork} {total : Gwei}
+      (_altair : .altair ≤ fork) {base : Gwei}
+      {index : ValidatorIndex} (_computed : getBaseReward state total index = .ok base)
+      {validator : Validator} (_found : state.validators.data[index.toNat]? = some validator),
+      base.toNat ≤ validator.effectiveBalance.toNat / preset.EFFECTIVE_BALANCE_INCREMENT.toNat *
+        (preset.EFFECTIVE_BALANCE_INCREMENT.toNat * preset.BASE_REWARD_FACTOR.toNat /
+          total.toNat.sqrt))
     {anchor : Store preset fork} {g : ForkedBeaconState preset} {horizon : Epoch} {limit : ℕ}
     (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
     (start : ∀ w ∈ J, e.start w = anchor) (anchorSlot : anchorBlock.slot = anchorState.slot)
@@ -833,7 +776,8 @@ theorem Execution.quorumDriftWithin_of_bound
       forkWindow bounded agree bands electraFloor electraCap caller callTime pulledOk targetOk held
       receiver receiveTime stored read reach later inside
   rw [← pulledEpoch] at counted later near
-  exact bound genesis toBoundary edge tail toState early fulu bands withdrawDelay
+  exact quorumDrift_le_quorumReserve penaltyEntries_le toNat_getBaseReward_le genesis toBoundary
+    edge tail toState early fulu bands withdrawDelay
     ⟨UInt64.le_of_eq electraFloor, electraCap⟩ window banded single counted queue
     (middleEpoch.trans boundaryEpoch.symm) (pulledEpoch.trans boundaryEpoch.symm) later near
     voting totalOk pulledTotalOk

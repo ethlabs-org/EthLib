@@ -927,14 +927,14 @@ Ported from the donor's PendingPartialsKept.lean and DirectSafety/PartialWithdra
 -/
 
 /-- Two states hold the same queue of pending partial withdrawals, from Electra. -/
-private def PartialsSame (state after : BeaconState preset fork) : Prop :=
+def PartialsSame (state after : BeaconState preset fork) : Prop :=
   ∀ electra : .pectra ≤ fork,
     after.pendingPartialWithdrawals electra = state.pendingPartialWithdrawals electra
 
-private theorem PartialsSame.refl (state : BeaconState preset fork) : PartialsSame state state :=
+theorem PartialsSame.refl (state : BeaconState preset fork) : PartialsSame state state :=
   fun _ => rfl
 
-private theorem PartialsSame.trans {first second third : BeaconState preset fork}
+theorem PartialsSame.trans {first second third : BeaconState preset fork}
     (one : PartialsSame first second) (two : PartialsSame second third) :
     PartialsSame first third :=
   fun electra => (two electra).trans (one electra)
@@ -946,36 +946,36 @@ private theorem PartialsSame.foldlM {α ε : Type} {step : BeaconState preset fo
     (fun _ _ _ before ok => before.trans (frame _ _ _ ok)) (PartialsSame.refl state) computed
 
 /-- Setting a validator at a plain position keeps the queue. -/
-private theorem partialsSame_setValidatorAt {position : Nat} {validator : Validator}
+theorem partialsSame_setValidatorAt {position : Nat} {validator : Validator}
     (set : state.setValidatorAt position validator = .ok after) : PartialsSame state after := by
   obtain ⟨_, rfl⟩ := setValidatorAt_ok set
   exact fun _ => rfl
 
 /-- Setting a validator keeps the queue. -/
-private theorem partialsSame_setValidator {index : ValidatorIndex} {validator : Validator}
+theorem partialsSame_setValidator {index : ValidatorIndex} {validator : Validator}
     (set : state.setValidator index validator = .ok after) : PartialsSame state after :=
   partialsSame_setValidatorAt (by rwa [← setValidator_eq_setValidatorAt])
 
 /-- Setting a balance keeps the queue. -/
-private theorem partialsSame_setBalance {index : ValidatorIndex} {balance : Gwei}
+theorem partialsSame_setBalance {index : ValidatorIndex} {balance : Gwei}
     (set : state.setBalance index balance = .ok after) : PartialsSame state after := by
   obtain ⟨_, rfl⟩ := setBalance_ok set
   exact fun _ => rfl
 
 /-- Raising a balance keeps the queue. -/
-private theorem partialsSame_increaseBalance {index : ValidatorIndex} {delta : Gwei}
+theorem partialsSame_increaseBalance {index : ValidatorIndex} {delta : Gwei}
     (computed : increaseBalance state index delta = .ok after) : PartialsSame state after :=
   let ⟨_, set⟩ := increaseBalance_ok computed
   partialsSame_setBalance set
 
 /-- Lowering a balance keeps the queue. -/
-private theorem partialsSame_decreaseBalance {index : ValidatorIndex} {delta : Gwei}
+theorem partialsSame_decreaseBalance {index : ValidatorIndex} {delta : Gwei}
     (computed : decreaseBalance state index delta = .ok after) : PartialsSame state after :=
   let ⟨_, set⟩ := decreaseBalance_ok computed
   partialsSame_setBalance set
 
 /-- Starting the exit of a validator keeps the queue. -/
-private theorem partialsSame_initiateValidatorExit {index : ValidatorIndex}
+theorem partialsSame_initiateValidatorExit {index : ValidatorIndex}
     (computed : initiateValidatorExit config state index = .ok after) :
     PartialsSame state after := by
   obtain ⟨_, _, ⟨_, rfl⟩ | ⟨_, _, _, _, queue, _, set⟩⟩ := initiateValidatorExit_ok computed
@@ -992,7 +992,7 @@ private theorem partialsSame_initiateValidatorExit {index : ValidatorIndex}
     exact PartialsSame.refl _
 
 /-- Adding a validator keeps the queue. -/
-private theorem partialsSame_addValidatorToRegistry {pubkey withdrawalCredentials amount}
+theorem partialsSame_addValidatorToRegistry {pubkey withdrawalCredentials amount}
     (computed : addValidatorToRegistry state pubkey withdrawalCredentials amount = .ok after) :
     PartialsSame state after := by
   unfold addValidatorToRegistry at computed
