@@ -476,8 +476,8 @@ theorem Store.Reachable.getCheckpointBlock_of_processed {store : Store preset fo
       b.stateRoot ≠ Vector.replicate 32 0)
     {root readRoot : Root} {base state : BeaconState preset fork} {epoch : Epoch}
     (held : store.blockStates[root]? = some base)
-    (advanced : state = base ∨
-      ∃ (checks' : SignatureChecks) (slot : Slot), processSlots config checks' base slot = .ok state)
+    (advanced : state = base ∨ ∃ (checks' : SignatureChecks) (slot : Slot),
+      processSlots config checks' base slot = .ok state)
     (read : getBlockRoot state epoch = .ok readRoot)
     (afterAnchor : ∀ start, computeStartSlotAtEpoch preset epoch = .ok start →
       anchorState.slot ≤ start) :
