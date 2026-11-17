@@ -107,7 +107,7 @@ theorem effectiveKept_data {f h : Fork} {s : BeaconState preset f}
   intro i _
   simp only [effectiveAt, same]
 
-private theorem effectiveKept_setValidatorAt {f : Fork} {s t : BeaconState preset f}
+theorem effectiveKept_setValidatorAt {f : Fork} {s t : BeaconState preset f}
     {index : Nat} {old v : Validator} (found : getValidatorAt s index = .ok old)
     (set : s.setValidatorAt index v = .ok t)
     (same : v.effectiveBalance = old.effectiveBalance) : EffectiveKept s t := by
@@ -122,7 +122,7 @@ private theorem effectiveKept_setValidatorAt {f : Fork} {s t : BeaconState prese
   · simp [effectiveAt, BeaconState.putValidator, Serialization.Ssz.RootedForkList.data_set,
       Ne.symm eq]
 
-private theorem effectiveKept_setValidator {f : Fork} {s t : BeaconState preset f}
+theorem effectiveKept_setValidator {f : Fork} {s t : BeaconState preset f}
     {index : ValidatorIndex} {old v : Validator} (found : getValidator s index = .ok old)
     (set : s.setValidator index v = .ok t)
     (same : v.effectiveBalance = old.effectiveBalance) : EffectiveKept s t :=
@@ -133,11 +133,11 @@ private theorem effectiveKept_increase {f : Fork} {s t : BeaconState preset f}
     {index amount : UInt64} (ok : increaseBalance s index amount = .ok t) : EffectiveKept s t :=
   effectiveKept_data (congrArg (·.data) (increaseBalance_validators ok))
 
-private theorem effectiveKept_decrease {f : Fork} {s t : BeaconState preset f}
+theorem effectiveKept_decrease {f : Fork} {s t : BeaconState preset f}
     {index amount : UInt64} (ok : decreaseBalance s index amount = .ok t) : EffectiveKept s t :=
   effectiveKept_data (congrArg (·.data) (decreaseBalance_validators ok))
 
-private theorem effectiveKept_exit {f : Fork} {s t : BeaconState preset f}
+theorem effectiveKept_exit {f : Fork} {s t : BeaconState preset f}
     {index : ValidatorIndex} (ok : initiateValidatorExit config s index = .ok t) :
     EffectiveKept s t := by
   obtain ⟨v, found, unchanged | ⟨_, queued, epoch, withdrawal, queue, _, set⟩⟩ :=
@@ -331,7 +331,7 @@ theorem effectiveKept_depositRequest {f : Fork} {s t : BeaconState preset f}
   obtain ⟨_, _, rfl⟩ := ok
   exact effectiveKept_refl _
 
-private theorem effectiveKept_requests {f : Fork} {s t : BeaconState preset f}
+theorem effectiveKept_requests {f : Fork} {s t : BeaconState preset f}
     {body : BeaconBlockBody preset f} {electra : .pectra ≤ f ∧ f < .glamsterdam}
     (ok : processExecutionRequests config s body electra = .ok t) : EffectiveKept s t := by
   simp only [processExecutionRequests, bind_ok_iff, ← Array.foldlM_toList] at ok
@@ -1107,7 +1107,7 @@ private theorem balanceDrift_upgrade_active {s : ForkedBeaconState preset}
   · obtain ⟨_, _, rfl⟩ := ok
     exact False.elim ((by decide : ¬Fork.hegota < Fork.glamsterdam) early)
 
-private theorem balanceDrift_upgrades_active {s t : ForkedBeaconState preset}
+theorem balanceDrift_upgrades_active {s t : ForkedBeaconState preset}
     (ok : processUpgrades config checks s = .ok t) (early : t.fork < .glamsterdam)
     (i : Nat) (v : Validator) (found : s.state.validators.data[i]? = some v)
     (activated : v.activationEpoch ≠ FAR_FUTURE_EPOCH) :
