@@ -2,6 +2,7 @@ module
 
 public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmation.HistoricalStatements
 public import EthLib.Consensus.Proofs.Transition.Committees
+import EthLib.Consensus.Proofs.ForkChoice.FastConfirmation.SourceWindowMargin
 
 /-!
 # The exits that a near receiver's window can see
@@ -202,18 +203,13 @@ theorem Execution.receiverWindowExitsNear_of_sourceOnParentChain
       ∃ a ∈ J, ∃ b ∈ J, ∃ i j, (e.world i).time ≤ time ∧ (e.world j).time ≤ time ∧
         ∃ r evidence, Store.findBlockCollision ((e.world i).state a) ((e.world j).state b) [r] =
           some evidence := by
-  classical
   -- The honest stores by the horizon agree on their blocks, or two of them collide.
-  rcases Store.blocks_agree_or_collision (fun i : ValidatorIndex × ℕ => (e.world i.2).state i.1)
-      (fun i => i.1 ∈ J ∧ (e.world i.2).time ≤ time) with agree | collision
+  rcases historical_stores_or_collision anchored start time with ⟨reached, agree⟩ | collision
   swap
-  · obtain ⟨⟨a, i⟩, ⟨ha, hi⟩, ⟨b, j⟩, ⟨hb, hj⟩, r, evidence, searched⟩ := collision
-    exact .inr ⟨a, ha, b, hb, i, j, hi, hj, r, evidence, searched⟩
+  · exact .inr collision
   left
   intro w receiver k head current finish receiverEpoch lowK highK upToDate headOk currentOk
     finishOk epochOk nearParent
-  have reached (a : ValidatorIndex) (honest : a ∈ J) (i : ℕ) :=
-    e.reachable (fun a ha => (start a ha) ▸ Store.Reachable.anchor anchored) i a honest
   have forward := e.forwardReachableWith
     (fun a ha => (start a ha) ▸ Store.ForwardReachableWith.anchor anchored) k w receiver
   have same : ∀ (r : Root) left right, ((e.world n).state u).blocks[r]? = some left →
