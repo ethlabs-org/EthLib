@@ -768,6 +768,8 @@ This theorem builds those runs from the stores of the call and of the receiver.
 
 The parameters must keep the bands of hysteresis, the withdrawal delay and the Electra caps.
 
+The seed lookahead must be at least one epoch, as the drift bound needs.
+
 The stores stay before the next fork through the horizon, and agree on the blocks they hold. -/
 theorem Execution.quorumDriftWithin_of_bound
     {e : Execution (honestForkChoice config .bls sources anchorState anchorBlock assignment
@@ -780,7 +782,7 @@ theorem Execution.quorumDriftWithin_of_bound
       Run config .bls ⟨fork, middle⟩ ⟨fork, state⟩ →
       fork < .glamsterdam → .fusaka ≤ fork → preset.IncrementWithinUpwardBand →
       1 ≤ config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat → CapOrder preset →
-      Hysteresis boundary → edge.blockCount ≤ 1 →
+      1 ≤ preset.MAX_SEED_LOOKAHEAD.toNat → Hysteresis boundary → edge.blockCount ≤ 1 →
       edge.blockCount + tailP.blockCount ≤
         pulled.slot.toNat - (getCurrentEpoch pulled).toNat * preset.SLOTS_PER_EPOCH.toNat + 1 →
       (∀ electra : .pectra ≤ fork,
@@ -804,7 +806,8 @@ theorem Execution.quorumDriftWithin_of_bound
     (early : fork < .glamsterdam) (fulu : .fusaka ≤ fork)
     (window : ∀ next ∈ config.nextFork fork, horizon.toNat < next.2.toNat)
     (bounded : HonestStoreEpochsBounded (e := e) horizon limit)
-    (agree : HonestBlocksAgree (e := e) limit) (bands : preset.IncrementWithinUpwardBand)
+    (agree : HonestBlocksAgree (e := e) limit) (lookahead : 1 ≤ preset.MAX_SEED_LOOKAHEAD.toNat)
+    (bands : preset.IncrementWithinUpwardBand)
     (withdrawDelay : 1 ≤ config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat)
     (electraFloor : preset.MAX_EFFECTIVE_BALANCE = preset.MIN_ACTIVATION_BALANCE)
     (electraCap : preset.MIN_ACTIVATION_BALANCE ≤ preset.MAX_EFFECTIVE_BALANCE_ELECTRA) :
@@ -819,7 +822,7 @@ theorem Execution.quorumDriftWithin_of_bound
       receiveTime stored read reach later inside
   rw [← pulledEpoch] at counted later near
   exact bound genesis toBoundary edge tail toState early fulu bands withdrawDelay
-    ⟨UInt64.le_of_eq electraFloor, electraCap⟩ banded single counted queue
+    ⟨UInt64.le_of_eq electraFloor, electraCap⟩ lookahead banded single counted queue
     (middleEpoch.trans boundaryEpoch.symm) (pulledEpoch.trans boundaryEpoch.symm) later near
     voting totalOk pulledTotalOk
 
