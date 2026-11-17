@@ -768,7 +768,7 @@ This theorem builds those runs from the stores of the call and of the receiver.
 
 The parameters must keep the bands of hysteresis, the withdrawal delay and the Electra caps.
 
-The seed lookahead must be at least one epoch, as the drift bound needs.
+The seed lookahead must fix activity three epochs ahead, as the drift bound needs.
 
 The stores stay before the next fork through the horizon, and agree on the blocks they hold. -/
 theorem Execution.quorumDriftWithin_of_bound
@@ -782,7 +782,7 @@ theorem Execution.quorumDriftWithin_of_bound
       Run config .bls ⟨fork, middle⟩ ⟨fork, state⟩ →
       fork < .glamsterdam → .fusaka ≤ fork → preset.IncrementWithinUpwardBand →
       1 ≤ config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat → CapOrder preset →
-      1 ≤ preset.MAX_SEED_LOOKAHEAD.toNat → Hysteresis boundary → edge.blockCount ≤ 1 →
+      preset.ExitWindowFixed → Hysteresis boundary → edge.blockCount ≤ 1 →
       edge.blockCount + tailP.blockCount ≤
         pulled.slot.toNat - (getCurrentEpoch pulled).toNat * preset.SLOTS_PER_EPOCH.toNat + 1 →
       (∀ electra : .pectra ≤ fork,
@@ -804,9 +804,9 @@ theorem Execution.quorumDriftWithin_of_bound
     (slots : 0 < config.SLOT_DURATION_MS) (parameters : DirectSafety.Parameters preset)
     (genesis : Genesis config .bls g) (history : Run config .bls g ⟨fork, anchorState⟩)
     (early : fork < .glamsterdam) (fulu : .fusaka ≤ fork)
-    (window : ∀ next ∈ config.nextFork fork, horizon.toNat < next.2.toNat)
+    (forkWindow : ∀ next ∈ config.nextFork fork, horizon.toNat < next.2.toNat)
     (bounded : HonestStoreEpochsBounded (e := e) horizon limit)
-    (agree : HonestBlocksAgree (e := e) limit) (lookahead : 1 ≤ preset.MAX_SEED_LOOKAHEAD.toNat)
+    (agree : HonestBlocksAgree (e := e) limit) (window : preset.ExitWindowFixed)
     (bands : preset.IncrementWithinUpwardBand)
     (withdrawDelay : 1 ≤ config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat)
     (electraFloor : preset.MAX_EFFECTIVE_BALANCE = preset.MIN_ACTIVATION_BALANCE)
@@ -817,12 +817,12 @@ theorem Execution.quorumDriftWithin_of_bound
     voting totalOk pulledTotalOk
   obtain ⟨pulledEpoch, boundary, middle, boundaryEpoch, middleEpoch, banded, ⟨toBoundary⟩,
     queue, edge, tail, single, counted, ⟨toState⟩⟩ :=
-    runs_of_call anchored start anchorSlot slots parameters.slots genesis history early fulu window
-      bounded agree bands electraFloor electraCap caller callTime pulledOk targetOk held receiver
-      receiveTime stored read reach later inside
+    runs_of_call anchored start anchorSlot slots parameters.slots genesis history early fulu
+      forkWindow bounded agree bands electraFloor electraCap caller callTime pulledOk targetOk held
+      receiver receiveTime stored read reach later inside
   rw [← pulledEpoch] at counted later near
   exact bound genesis toBoundary edge tail toState early fulu bands withdrawDelay
-    ⟨UInt64.le_of_eq electraFloor, electraCap⟩ lookahead banded single counted queue
+    ⟨UInt64.le_of_eq electraFloor, electraCap⟩ window banded single counted queue
     (middleEpoch.trans boundaryEpoch.symm) (pulledEpoch.trans boundaryEpoch.symm) later near
     voting totalOk pulledTotalOk
 
