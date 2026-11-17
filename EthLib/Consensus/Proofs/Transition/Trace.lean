@@ -133,56 +133,6 @@ theorem Run.contains_split {g a x y : ForkedBeaconState preset}
     obtain ⟨pre, post, same⟩ := ih
     exact ⟨pre, post.snoc next, congrArg (fun run => run.snoc next) same⟩
 
-/-- A run of empty slots, when the last of them stays before the next fork. -/
-private theorem run_of_advanceSlots {fork : Fork} (count : Nat)
-    {state after : BeaconState preset fork}
-    (advanced : advanceSlots config checks count state = .ok after)
-    (before : ∀ next ∈ config.nextFork fork,
-      after.slot.toNat < next.2.toNat * preset.SLOTS_PER_EPOCH.toNat) :
-    Nonempty (Run config checks ⟨fork, state⟩ ⟨fork, after⟩) := by
-  induction count generalizing state with
-  | zero =>
-    cases advanced
-    exact ⟨.nil⟩
-  | succ count ih =>
-    obtain ⟨next, stepped, rest⟩ := bind_ok_iff.mp advanced
-    have slotsEq := advanceSlots_slot count rest
-    have nextSlot := advanceSlot_slot stepped
-    -- No upgrade is due at the slot the step reaches, so the step stays in the fork.
-    have across : advanceSlotAcross config checks ⟨fork, state⟩ = .ok ⟨fork, next⟩ := by
-      rw [advanceSlotAcross_of_before (fun nextFork scheduled => by
-        have := before nextFork scheduled
-        omega), stepped]
-      rfl
-    obtain ⟨tail⟩ := ih rest
-    exact ⟨(Run.nil.snoc (.slot across)).append tail⟩
-
-/-- A run from a state to the state at a later slot, when the slot stays before the next fork. -/
-theorem run_of_processSlots {fork : Fork} {state after : BeaconState preset fork} {slot : Slot}
-    (processed : processSlots config checks state slot = .ok after)
-    (before : ∀ next ∈ config.nextFork fork,
-      slot.toNat < next.2.toNat * preset.SLOTS_PER_EPOCH.toNat) :
-    Nonempty (Run config checks ⟨fork, state⟩ ⟨fork, after⟩) := by
-  have lastSlot := (processSlots_slot processed).2
-  simp only [processSlots, bind_ok_iff, ensure_ok_iff] at processed
-  obtain ⟨_, _, advanced⟩ := processed
-  exact run_of_advanceSlots _ advanced (by simpa only [lastSlot] using before)
-
-/-- A run through the slots up to a block and the block, when its slot is before the next fork. -/
-theorem run_of_stateTransition {fork : Fork} {state after : BeaconState preset fork}
-    {engine : ExecutionEngine preset fork} {signed : SignedBeaconBlock preset fork}
-    (transitioned : stateTransition config checks engine state signed true = .ok after)
-    (before : ∀ next ∈ config.nextFork fork,
-      signed.message.slot.toNat < next.2.toNat * preset.SLOTS_PER_EPOCH.toNat) :
-    Nonempty (Run config checks ⟨fork, state⟩ ⟨fork, after⟩) := by
-  simp only [stateTransition, bind_ok_iff] at transitioned
-  obtain ⟨advanced, slotsOk, applied⟩ := transitioned
-  have advancedSlot := (processSlots_slot slotsOk).2
-  obtain ⟨slots⟩ := run_of_processSlots slotsOk before
-  have due : upgradeDue config ⟨fork, advanced⟩ = false :=
-    upgradeDue_of_before fun next scheduled => advancedSlot ▸ before next scheduled
-  exact ⟨slots.snoc (.block engine signed due applied)⟩
-
 /-- The number of block steps of a run. -/
 def Run.blockCount {first last : ForkedBeaconState preset} :
     Run config checks first last → Nat
@@ -198,6 +148,68 @@ theorem Run.blockCount_append {a b c : ForkedBeaconState preset}
   | nil => rfl
   | snoc tail step ih =>
     cases step <;> simp only [Run.append, Run.blockCount, ih, Nat.add_assoc]
+
+/-- A run of empty slots, when the last of them stays before the next fork.
+
+The run has no block step. -/
+theorem run_of_advanceSlots {fork : Fork} (count : Nat) {state after : BeaconState preset fork}
+    (advanced : advanceSlots config checks count state = .ok after)
+    (before : ∀ next ∈ config.nextFork fork,
+      after.slot.toNat < next.2.toNat * preset.SLOTS_PER_EPOCH.toNat) :
+    ∃ run : Run config checks ⟨fork, state⟩ ⟨fork, after⟩, run.blockCount = 0 := by
+  induction count generalizing state with
+  | zero =>
+    cases advanced
+    exact ⟨.nil, rfl⟩
+  | succ count ih =>
+    obtain ⟨next, stepped, rest⟩ := bind_ok_iff.mp advanced
+    have slotsEq := advanceSlots_slot count rest
+    have nextSlot := advanceSlot_slot stepped
+    -- No upgrade is due at the slot the step reaches, so the step stays in the fork.
+    have across : advanceSlotAcross config checks ⟨fork, state⟩ = .ok ⟨fork, next⟩ := by
+      rw [advanceSlotAcross_of_before (fun nextFork scheduled => by
+        have := before nextFork scheduled
+        omega), stepped]
+      rfl
+    obtain ⟨tail, none⟩ := ih rest
+    refine ⟨(Run.nil.snoc (.slot across)).append tail, ?_⟩
+    rw [Run.blockCount_append, none]
+    rfl
+
+/-- A run from a state to the state at a later slot, when the slot stays before the next fork. -/
+theorem run_of_processSlots {fork : Fork} {state after : BeaconState preset fork} {slot : Slot}
+    (processed : processSlots config checks state slot = .ok after)
+    (before : ∀ next ∈ config.nextFork fork,
+      slot.toNat < next.2.toNat * preset.SLOTS_PER_EPOCH.toNat) :
+    Nonempty (Run config checks ⟨fork, state⟩ ⟨fork, after⟩) := by
+  have lastSlot := (processSlots_slot processed).2
+  simp only [processSlots, bind_ok_iff, ensure_ok_iff] at processed
+  obtain ⟨_, _, advanced⟩ := processed
+  obtain ⟨run, -⟩ := run_of_advanceSlots _ advanced (by simpa only [lastSlot] using before)
+  exact ⟨run⟩
+
+/-- The slots up to a block and the block, when its slot is before the next fork.
+
+The slots form a run with no block step, to the state that the block applies to.
+
+No upgrade is due at that state, so the block is one step of a run after them. -/
+theorem run_of_stateTransition {fork : Fork} {state after : BeaconState preset fork}
+    {engine : ExecutionEngine preset fork} {signed : SignedBeaconBlock preset fork}
+    (transitioned : stateTransition config checks engine state signed true = .ok after)
+    (before : ∀ next ∈ config.nextFork fork,
+      signed.message.slot.toNat < next.2.toNat * preset.SLOTS_PER_EPOCH.toNat) :
+    ∃ (advanced : BeaconState preset fork) (slots : Run config checks ⟨fork, state⟩
+      ⟨fork, advanced⟩) (_ : upgradeDue config ⟨fork, advanced⟩ = false)
+      (_ : applySignedBlock config checks engine advanced signed true = .ok after),
+      slots.blockCount = 0 := by
+  simp only [stateTransition, bind_ok_iff] at transitioned
+  obtain ⟨advanced, slotsOk, applied⟩ := transitioned
+  have advancedSlot := (processSlots_slot slotsOk).2
+  simp only [processSlots, bind_ok_iff, ensure_ok_iff] at slotsOk
+  obtain ⟨_, _, run⟩ := slotsOk
+  obtain ⟨slots, none⟩ := run_of_advanceSlots _ run (by simpa only [advancedSlot] using before)
+  exact ⟨advanced, slots, upgradeDue_of_before fun next scheduled =>
+    advancedSlot ▸ before next scheduled, applied, none⟩
 
 /-- Each block spends its state's free slot, and each slot step supplies at most one more.
 
