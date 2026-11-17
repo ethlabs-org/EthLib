@@ -423,20 +423,6 @@ private theorem RunsTo.ofPrefix {first middle second : BeaconState preset fork} 
 
 variable {store : Store preset fork}
 
-/-- A held state is at the slot of its block. -/
-private theorem blockState_slot_eq (anchorSlot : anchorBlock.slot = anchorState.slot)
-    (reachable : Store.Reachable config anchorState anchorBlock store) {root : Root}
-    {block : BeaconBlock preset fork} {state : BeaconState preset fork}
-    (found : store.blocks[root]? = some block)
-    (stored : store.blockStates[root]? = some state) : state.slot = block.slot := by
-  obtain ⟨kept, keptFound, isAnchor, notAnchor⟩ := reachable.blockStatesFromParents found
-  rw [stored, Option.some.injEq] at keptFound
-  subst keptFound
-  by_cases same : block = anchorBlock
-  · rw [isAnchor same, same, anchorSlot]
-  · obtain ⟨_, _, _, _, -, message, -, transition⟩ := notAnchor same
-    rw [(stateTransition_slot transition).2, message]
-
 /-- In a store built with one setting of the checks, a run reaches each held state from the anchor.
 
 Each held state must be before the next fork. -/
@@ -602,7 +588,7 @@ private theorem runs_of_call
     exact computeEpochAtSlot_computeStartSlotAtEpoch (UInt64.lt_iff_toNat_lt.mpr positive)
       boundaryOk
   have ancSlot : anc.slot = aBlock.slot :=
-    blockState_slot_eq anchorSlot (forward u caller n).reachable aFound held
+    (forward u caller n).reachable.blockState_slot_eq anchorSlot aFound held
   have ancLe : anc.slot ≤ boundary := ancSlot ▸ aLe
   -- The epoch of the store's clock bounds every slot the call reads.
   obtain ⟨now, nowOk, -, statesLe⟩ := (forward u caller n).forwardReachable.slots_le_current
@@ -620,7 +606,7 @@ private theorem runs_of_call
   obtain rfl : current = epoch := Except.ok.inj (currentOk.symm.trans epochOk)
   obtain ⟨headBlock, headFound⟩ := (forward u caller n).reachable.known_of_blockState headStored
   have headSlot : headState.slot = headBlock.slot :=
-    blockState_slot_eq anchorSlot (forward u caller n).reachable headFound headStored
+    (forward u caller n).reachable.blockState_slot_eq anchorSlot headFound headStored
   obtain ⟨middle, lookOk, toPulled, pulledEpoch⟩ : ∃ middle,
       lookaheadState config .bls anc boundary = .ok middle ∧
       RunsTo config .bls middle pulled ∧ getCurrentEpoch pulled = current := by
@@ -703,7 +689,7 @@ private theorem runs_of_call
         eq_of_getCheckpointBlock read boundaryOk rootFound (UInt64.le_of_lt before)
       obtain rfl : anc = rootState := Option.some.inj (heldW.symm.trans stored)
       have ancBelow : anc.slot < boundary :=
-        (blockState_slot_eq anchorSlot (forward w receiver k).reachable rootFound stored) ▸ before
+        ((forward w receiver k).reachable.blockState_slot_eq anchorSlot rootFound stored) ▸ before
       have looked : processSlots config .bls anc boundary = .ok middle := by
         simp only [lookaheadState, ancBelow, ↓reduceIte] at lookOk
         exact mapError_ok_iff.mp lookOk
