@@ -11,6 +11,7 @@ public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmation.HistoricalCove
 public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmation.Indicators
 public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmation.Sets
 public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmation.Supporters
+public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmation.TargetCount
 public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmation.TargetVotes
 
 /-!
