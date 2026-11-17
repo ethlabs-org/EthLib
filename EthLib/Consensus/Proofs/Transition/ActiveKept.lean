@@ -59,7 +59,7 @@ theorem StepKeeps.trans {first second third : BeaconState preset fork}
     (one : StepKeeps first second) (two : StepKeeps second third) : StepKeeps first third :=
   ⟨Nat.le_trans one.1 two.1, one.2.trans two.2⟩
 
-theorem StepKeeps.foldlM {α ε : Type} {step : BeaconState preset fork → α → Except ε _}
+private theorem StepKeeps.foldlM {α ε : Type} {step : BeaconState preset fork → α → Except ε _}
     (keeps : ∀ s x s', step s x = .ok s' → StepKeeps s s') {items : List α}
     (computed : items.foldlM step state = .ok after) : StepKeeps state after :=
   foldlM_ok_invariant (StepKeeps state) (fun _ _ _ before ok => before.trans (keeps _ _ _ ok))

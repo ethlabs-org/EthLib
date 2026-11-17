@@ -10,6 +10,7 @@ public import Mathlib.Algebra.BigOperators.Group.Finset.Piecewise
 import Mathlib.Algebra.BigOperators.Ring.Finset
 import EthLib.Consensus.Proofs.Transition.ActiveKept
 import EthLib.Consensus.Proofs.Transition.EpochPassAtCall
+import EthLib.Consensus.Proofs.Transition.Totality.FlagsActive
 import EthLib.Consensus.Proofs.Transition.BlockRewards
 import EthLib.Consensus.Proofs.Transition.Committees
 import EthLib.Consensus.Proofs.Transition.ForkBoundary
@@ -868,8 +869,10 @@ private theorem validators_processBlockExecution {engine : ExecutionEngine prese
     · cases computed
       rfl
 
-/-- A balance increase adds its amount at its own index and keeps every other balance. -/
-private theorem actualBalanceAt_increaseBalance {u w : BeaconState preset fork}
+/-- A balance increase adds its amount at its own index and keeps every other balance.
+
+Readers: EffectiveRise. -/
+theorem actualBalanceAt_increaseBalance {u w : BeaconState preset fork}
     {index : ValidatorIndex} {delta : Gwei} (computed : increaseBalance u index delta = .ok w)
     (j : Nat) : actualBalanceAt ⟨fork, w⟩ j =
       actualBalanceAt ⟨fork, u⟩ j + if index.toNat = j then delta.toNat else 0 := by
@@ -885,8 +888,10 @@ private theorem actualBalanceAt_increaseBalance {u w : BeaconState preset fork}
     obtain ⟨raised, located, value⟩ := balance_increaseBalance computed found
     simp only [actualBalanceAt, found, located, Option.map_some, Option.getD_some, value]
 
-/-- A balance decrease subtracts its amount at its own index and keeps every other balance. -/
-private theorem actualBalanceAt_decreaseBalance {u w : BeaconState preset fork}
+/-- A balance decrease subtracts its amount at its own index and keeps every other balance.
+
+Readers: EffectiveRise. -/
+theorem actualBalanceAt_decreaseBalance {u w : BeaconState preset fork}
     {index : ValidatorIndex} {delta : Gwei} (computed : decreaseBalance u index delta = .ok w)
     (j : Nat) : actualBalanceAt ⟨fork, w⟩ j =
       actualBalanceAt ⟨fork, u⟩ j - if index.toNat = j then delta.toNat else 0 := by
@@ -1653,17 +1658,6 @@ private theorem countP_validatorIndexOfPubkey_le (v : ValidatorIndex) :
         Nat.add_zero, List.filter_cons]
       split <;> (try simp only [List.length_cons]) <;> omega
 
-/-- Pairing a list with another counts no more matches of the first entries than the list has. -/
-private theorem countP_zip_fst_le {α β : Type} (p : α → Bool) :
-    ∀ (first : List α) (second : List β),
-      (first.zip second).countP (fun m => p m.1) ≤ first.countP p
-  | [], _ => by simp
-  | _ :: _, [] => by simp
-  | a :: first, b :: second => by
-    have := countP_zip_fst_le p first second
-    simp only [List.zip_cons_cons, List.countP_cons]
-    split <;> omega
-
 /-- In the fold of the sync rewards, a balance moves by at most the reward for each seat.
 
 These seats are the seats of its validator.
@@ -1745,8 +1739,16 @@ private theorem ledger_processSyncAggregate {altair : .altair ≤ fork}
       rw [listed] at membersOk
       have same : list.toArray = members := Except.ok.inj membersOk
       subst same
-      have zipped := countP_zip_fst_le (fun m : ValidatorIndex => decide (m.toNat = v.toNat))
-        list aggregate.syncCommitteeBits.bits.toArray.toList
+      -- The first entries of the pairs are a prefix of the members.
+      have zipped : ((list.zip aggregate.syncCommitteeBits.bits.toArray.toList).countP
+          fun m => decide (m.1.toNat = v.toNat)) ≤
+          list.countP fun m => decide (m.toNat = v.toNat) := by
+        have firsts : List.Sublist
+            ((list.zip aggregate.syncCommitteeBits.bits.toArray.toList).map Prod.fst) list := by
+          rw [List.zip_eq_zip_take_min, List.map_fst_zip (by simp)]
+          exact List.take_sublist _ _
+        simpa [List.countP_map, Function.comp_def] using firsts.countP_le
+          (p := fun m : ValidatorIndex => decide (m.toNat = v.toNat))
       have seats := countP_validatorIndexOfPubkey_le v listed
       rw [pairsDef, Array.toList_zip]
       simp only [seatsOf, kept.1, kept.2]
@@ -2128,35 +2130,13 @@ private theorem grow_processAttesterSlashing {slashing : AttesterSlashing preset
     (fun _ _ _ before ok => FlagsGrow.trans before (grow_slashIfSlashable ok))
     (show FlagsGrow s (s, false).1 from FlagsGrow.refl s) folded
 
-/-- Adding a participation flag sets it. -/
-private theorem hasFlag_addFlag_self (flags : ParticipationFlags)
-    (added : Fin PARTICIPATION_FLAG_WEIGHTS.length) :
-    hasFlag (addFlag flags added.val.toUInt64) added.val.toUInt64 = true := by
-  simp only [hasFlag, addFlag, beq_iff_eq]
-  apply UInt8.toBitVec_inj.mp
-  simp only [UInt8.toBitVec_and, UInt8.toBitVec_or]
-  ext k
-  simp only [BitVec.getElem_and, BitVec.getElem_or]
-  cases (flags.toBitVec)[k] <;> cases (flagBit added.val.toUInt64).toBitVec[k] <;> rfl
-
-/-- Adding a participation flag clears no flag. -/
-private theorem hasFlag_addFlag_of_hasFlag {flags : ParticipationFlags}
-    (added : Fin PARTICIPATION_FLAG_WEIGHTS.length) {other : Fin PARTICIPATION_FLAG_WEIGHTS.length}
-    (set : hasFlag flags other.val.toUInt64 = true) :
-    hasFlag (addFlag flags added.val.toUInt64) other.val.toUInt64 = true := by
-  by_cases same : other = added
-  · subst same
-    exact hasFlag_addFlag_self flags other
-  · rw [hasFlag_addFlag_of_ne flags same]
-    exact set
-
 /-- Adding a flag that was not set adds its weight. -/
 private theorem flagWeight_addFlag {flags : ParticipationFlags}
     {added : Fin PARTICIPATION_FLAG_WEIGHTS.length}
     (unset : hasFlag flags added.val.toUInt64 = false) :
     flagWeight (addFlag flags added.val.toUInt64) =
       flagWeight flags + PARTICIPATION_FLAG_WEIGHTS[added].toNat := by
-  have self := hasFlag_addFlag_self flags added
+  have self := hasFlag_addFlag flags added.val.toUInt64
   have other : ∀ flag : Fin PARTICIPATION_FLAG_WEIGHTS.length, flag ≠ added →
       hasFlag (addFlag flags added.val.toUInt64) flag.val.toUInt64 =
         hasFlag flags flag.val.toUInt64 := fun _ different => hasFlag_addFlag_of_ne flags different
@@ -2216,7 +2196,12 @@ private theorem foldlM_addFlagReward_grow {total : Gwei} {earned : List UInt64}
       obtain ⟨reward, rewardOk, weighted, weightedOk, added, addedOk, rfl, rfl⟩ := stepped
       rw [mulChecked_ok_iff] at weightedOk
       rw [addChecked_ok_iff] at addedOk
-      refine ⟨fun other set => kept other (hasFlag_addFlag_of_hasFlag flag set), fun reads => ?_⟩
+      refine ⟨fun other set => kept other ?_, fun reads => ?_⟩
+      · by_cases same : other = flag
+        · subst same
+          exact hasFlag_addFlag _ _
+        · rw [hasFlag_addFlag_of_ne _ same]
+          exact set
       have more := gained reads
       have weight := flagWeight_addFlag newly.2
       rw [weight] at more
@@ -2524,24 +2509,6 @@ private theorem grow_processExecutionRequests {body : BeaconBlockBody preset for
   exact (FlagsGrow.foldlM (fun _ _ _ ok => grow_processDepositRequest ok) depositsOk).trans <|
     (FlagsGrow.foldlM (fun _ _ _ ok => grow_processWithdrawalRequest ok) withdrawalsOk).trans <|
     FlagsGrow.foldlM (fun _ _ _ ok => grow_processConsolidationRequest ok) consolidationsOk
-
-/-- An attester of an attestation holds a validator at its position.
-
-That validator is active in the epoch of the slot. -/
-private theorem isActiveAt_of_getAttestingIndices {attestation : Attestation preset fork}
-    {attesters : List ValidatorIndex} (computed : getAttestingIndices s attestation = .ok attesters)
-    {attester : ValidatorIndex} (mem : attester ∈ attesters) :
-    isActiveAt s (computeEpochAtSlot preset attestation.data.slot) attester.toNat = true := by
-  obtain ⟨_, _, -, committeeOk, -⟩ :=
-    exists_mem_getBeaconCommittee_of_getAttestingIndices computed mem
-  obtain ⟨_, _, shuffleOk⟩ := attesterShuffle_ok_of_getBeaconCommittee committeeOk
-  simp only [attesterShuffle, bind_ok_iff] at shuffleOk
-  obtain ⟨_, _, indices, indicesOk, _⟩ := shuffleOk
-  have member : attester ∈ indices := by
-    rw [getActiveValidatorIndicesChecked_ok indicesOk]
-    exact mem_getActiveValidatorIndices_of_getAttestingIndices computed mem
-  exact isActiveAt_eq_true_iff.mpr
-    ((mem_iff_of_getActiveValidatorIndicesChecked_ok indicesOk).mp member)
 
 /-- From Altair an attestation credits the proposer of the slot its reward, and nothing else.
 
