@@ -2367,35 +2367,36 @@ private theorem growBelow_addValidatorToRegistry {pubkey : Cryptography.Bls.BLSP
     exact (FlagsGrow.of_eq).below
   · cases computed
 
-/-- Take a step that clears no existing flag, and then a step that clears no flag.
+/-- A step that clears no flag of an existing validator, and never shrinks the registry. -/
+private def Grows (s t : BeaconState preset fork) : Prop :=
+  FlagsGrowBelow s t ∧ s.validators.data.size ≤ t.validators.data.size
 
-Together they clear no existing flag. -/
-private theorem FlagsGrowBelow.trans_grow {u : BeaconState preset fork}
-    (one : FlagsGrowBelow s u) (two : FlagsGrow u t) : FlagsGrowBelow s t :=
-  fun altair i flag inside =>
-    ⟨fun set => (two altair i flag).1 ((one altair i flag inside).1 set),
-      fun set => (two altair i flag).2 ((one altair i flag inside).2 set)⟩
-
-/-- Applying a deposit clears no flag of an existing validator. -/
-private theorem growBelow_applyDeposit {pubkey : Cryptography.Bls.BLSPubkey}
-    {withdrawalCredentials : Bytes32} {amount : Gwei} {signature : Cryptography.Bls.BLSSignature}
-    (computed : applyDeposit config checks s pubkey withdrawalCredentials amount signature =
-      .ok t) (electra : .pectra ≤ fork) : FlagsGrowBelow s t := by
-  unfold applyDeposit at computed
-  simp only [electra, ↓reduceDIte] at computed
-  unfold applyDepositElectra at computed
-  split at computed
-  · simp only [bind_ok_iff] at computed
-    obtain ⟨_, _, computed⟩ := computed
-    split at computed
-    · simp only [bind_ok_iff, liftAccessor_ok] at computed
-      obtain ⟨_, added, pushed⟩ := computed
-      obtain ⟨_, rfl⟩ := addPendingDeposit_eq pushed
-      exact (growBelow_addValidatorToRegistry added).trans_grow FlagsGrow.of_eq
-    · cases computed
-      exact (FlagsGrow.refl _).below
-  · obtain ⟨_, rfl⟩ := addPendingDeposit_eq (liftAccessor_ok.mp computed)
-    exact (FlagsGrow.of_eq).below
+/-- The steps of an epoch that `EpochFrameLaws` names clear no flag of an existing validator. -/
+private theorem growsLaws : EpochFrameLaws (@Grows preset fork) where
+  refl s := ⟨(FlagsGrow.refl s).below, Nat.le_refl _⟩
+  trans one two := ⟨one.1.trans two.1 one.2, Nat.le_trans one.2 two.2⟩
+  setValidatorAt set _ _ _ _ _ := by
+    have size := Nat.le_of_eq (sameSizes_setValidatorAt set).1.symm
+    obtain ⟨_, rfl⟩ := setValidatorAt_ok set
+    exact ⟨(FlagsGrow.of_eq).below, size⟩
+  increaseBalance ok := ⟨(grow_increaseBalance ok).below, (frame_increaseBalance ok).registryGrows⟩
+  decreaseBalance ok := ⟨(grow_decreaseBalance ok).below, (frame_decreaseBalance ok).registryGrows⟩
+  initiateValidatorExit ok :=
+    ⟨(grow_initiateValidatorExit ok).below, (frame_initiateValidatorExit ok).registryGrows⟩
+  addValidatorToRegistry ok fresh :=
+    ⟨growBelow_addValidatorToRegistry ok, (frame_addValidatorToRegistry ok fresh).registryGrows⟩
+  eth1DataVotes _ _ := ⟨(FlagsGrow.of_eq).below, Nat.le_refl _⟩
+  inactivityScores _ _ := ⟨(FlagsGrow.of_eq).below, Nat.le_refl _⟩
+  slashings _ _ := ⟨(FlagsGrow.of_eq).below, Nat.le_refl _⟩
+  randaoMixes _ _ := ⟨(FlagsGrow.of_eq).below, Nat.le_refl _⟩
+  historicalRoots _ _ := ⟨(FlagsGrow.of_eq).below, Nat.le_refl _⟩
+  historicalSummaries _ _ := ⟨(FlagsGrow.of_eq).below, Nat.le_refl _⟩
+  participationRecords _ := ⟨(FlagsGrow.of_eq).below, Nat.le_refl _⟩
+  pendingDeposits _ _ _ := ⟨(FlagsGrow.of_eq).below, Nat.le_refl _⟩
+  pendingConsolidations _ _ := ⟨(FlagsGrow.of_eq).below, Nat.le_refl _⟩
+  syncCommittees _ _ _ := ⟨(FlagsGrow.of_eq).below, Nat.le_refl _⟩
+  proposerLookahead _ _ := ⟨(FlagsGrow.of_eq).below, Nat.le_refl _⟩
+  ptcWindow _ _ := ⟨(FlagsGrow.of_eq).below, Nat.le_refl _⟩
 
 /-- A deposit clears no flag of an existing validator.
 
@@ -2403,29 +2404,10 @@ A new validator writes its zero flags at the position after the registry.
 
 That position may already hold flags when the lists are longer than the registry. -/
 private theorem grow_processDeposit {before : fork < .hegota} {deposit : Deposit}
-    (electra : .pectra ≤ fork) (computed : processDeposit config checks before s deposit = .ok t) :
-    FlagsGrowBelow s t := by
+    (computed : processDeposit config checks before s deposit = .ok t) : FlagsGrowBelow s t := by
   obtain ⟨_, _, next, _, applied⟩ := processDeposit_ok computed
   exact FlagsGrowBelow.trans (u := { s with eth1DepositIndex := fun _ => next })
-    (FlagsGrow.of_eq).below (growBelow_applyDeposit applied electra) (Nat.le_refl _)
-
-private theorem grow_processVoluntaryExit {signed : SignedVoluntaryExit}
-    (computed : processVoluntaryExit config checks s signed = .ok t) : FlagsGrow s t := by
-  unfold processVoluntaryExit at computed
-  simp only [bind_ok_iff, ensure_ok_iff, liftAccessor_ok, liftSsz_ok] at computed
-  obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, exited⟩ := computed
-  exact grow_initiateValidatorExit exited
-
-private theorem grow_processBlsToExecutionChanges {body : BeaconBlockBody preset fork}
-    (computed : processBlsToExecutionChanges config checks s body = .ok t) : FlagsGrow s t := by
-  unfold processBlsToExecutionChanges at computed
-  split at computed
-  · rw [← Array.foldlM_toList] at computed
-    refine FlagsGrow.foldlM (fun _ _ _ ok => ?_) computed
-    obtain ⟨_, _, _, _, _, set⟩ := processBlsToExecutionChange_ok ok
-    exact grow_setValidator set
-  · simp only [pure, Except.pure, Except.ok.injEq] at computed
-    exact computed ▸ FlagsGrow.refl _
+    (FlagsGrow.of_eq).below (growsLaws.applyDeposit applied).1 (Nat.le_refl _)
 
 /-- A deposit request clears no flag. -/
 private theorem grow_processDepositRequest {electra : .pectra ≤ fork} {request : DepositRequest}
@@ -2542,28 +2524,6 @@ private theorem grow_processExecutionRequests {body : BeaconBlockBody preset for
   exact (FlagsGrow.foldlM (fun _ _ _ ok => grow_processDepositRequest ok) depositsOk).trans <|
     (FlagsGrow.foldlM (fun _ _ _ ok => grow_processWithdrawalRequest ok) withdrawalsOk).trans <|
     FlagsGrow.foldlM (fun _ _ _ ok => grow_processConsolidationRequest ok) consolidationsOk
-
-/-- The reward or penalty of one member of the sync committee clears no flag. -/
-private theorem grow_applySyncReward {reward proposerReward : Gwei}
-    {proposer : Except AccessorError ValidatorIndex} {member : ValidatorIndex × Bool}
-    (computed : applySyncReward reward proposerReward proposer s member = .ok t) :
-    FlagsGrow s t := by
-  unfold applySyncReward at computed
-  split at computed
-  · simp only [bind_ok_iff, liftAccessor_ok] at computed
-    obtain ⟨_, raised, _, _, paid⟩ := computed
-    exact (grow_increaseBalance raised).trans (grow_increaseBalance paid)
-  · exact grow_decreaseBalance (liftAccessor_ok.mp computed)
-
-private theorem grow_processSyncAggregate {altair : .altair ≤ fork}
-    {aggregate : SyncAggregate preset}
-    (computed : processSyncAggregate config checks s altair aggregate = .ok t) :
-    FlagsGrow s t := by
-  unfold processSyncAggregate at computed
-  simp only [bind_ok_iff] at computed
-  obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, folded⟩ := computed
-  rw [← Array.foldlM_toList] at folded
-  exact FlagsGrow.foldlM (fun _ _ _ ok => grow_applySyncReward ok) folded
 
 /-- An attester of an attestation holds a validator at its position.
 
@@ -3192,20 +3152,27 @@ private theorem credited_processDeposit {before : fork < .hegota} {deposit : Dep
     (computed : processDeposit config checks before s deposit = .ok t) :
     ∃ p c sl o sh, Credited s t p c sl ∅ o sh :=
   ⟨_, _, _, _, _, Credited.of_ledger (ledger_processDeposit electra matched computed)
-    (kept_processDeposit electra computed) (grow_processDeposit electra computed)⟩
+    (kept_processDeposit electra computed) (grow_processDeposit computed)⟩
 
 private theorem credited_processVoluntaryExit {signed : SignedVoluntaryExit}
     (computed : processVoluntaryExit config checks s signed = .ok t) :
     ∃ p c sl o sh, Credited s t p c sl ∅ o sh :=
   ⟨_, _, _, _, _, Credited.of_ledger (ledger_processVoluntaryExit computed)
-    (kept_processVoluntaryExit computed) (grow_processVoluntaryExit computed).below⟩
+    (kept_processVoluntaryExit computed) (growsLaws.processVoluntaryExit computed).1⟩
 
 private theorem credited_processBlsToExecutionChanges {body : BeaconBlockBody preset fork}
     (computed : processBlsToExecutionChanges config checks s body = .ok t) :
     ∃ p c sl o sh, Credited s t p c sl ∅ o sh :=
   ⟨_, _, _, _, _, Credited.of_ledger (ledger_processBlsToExecutionChanges computed)
     (kept_processBlsToExecutionChanges computed)
-    (grow_processBlsToExecutionChanges computed).below⟩
+    (by
+      unfold processBlsToExecutionChanges at computed
+      split at computed
+      · rw [← Array.foldlM_toList] at computed
+        exact (growsLaws.foldlM (fun _ _ _ ok => growsLaws.processBlsToExecutionChange ok)
+          computed).1
+      · cases computed
+        exact (FlagsGrow.refl _).below)⟩
 
 private theorem credited_processExecutionRequests {body : BeaconBlockBody preset fork}
     {electra : .pectra ≤ fork ∧ fork < .glamsterdam}
@@ -3450,7 +3417,7 @@ private theorem block_balances {engine : ExecutionEngine preset fork}
   obtain ⟨proposer', reward, share, sync, rewardOk, read', shareBound, seats, syncLedger⟩ :=
     ledger_processSyncAggregate synced
   have syncKept := kept_processSyncAggregate synced
-  have syncGrow := grow_processSyncAggregate synced
+  have syncGrow := growsLaws.processSyncAggregate synced
   have totalSame : activeTotal operated = activeTotal s :=
     (steadyVoted.trans ops.kept.steady).activeTotal
   obtain ⟨rewardValue, perRead⟩ := rewardRead_of_ok rewardOk
@@ -3524,7 +3491,9 @@ private theorem block_balances {engine : ExecutionEngine preset fork}
     have first := flagPotential_mono growVoted altair' base count
     have second := ops.potential altair' base count big votedReads fun i outside =>
       support i (Nat.le_trans frameVoted.registryGrows outside)
-    have third := flagPotential_mono syncGrow altair' base count
+    have third := flagPotential_mono_below syncGrow.1 altair' base count fun i outside =>
+      support i (Nat.le_trans frameVoted.registryGrows
+        (Nat.le_trans ops.kept.frame.registryGrows outside))
     omega
   · exact (Lives.of_data votedValidators).trans (ops.kept.lives.trans syncKept.lives)
   · intro v member
