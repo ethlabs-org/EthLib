@@ -12,9 +12,10 @@ public import EthLib.Consensus.Proofs.Transition.FfgStake
 public import Mathlib.Algebra.Order.BigOperators.Group.Finset
 public import Mathlib.Algebra.BigOperators.Group.Finset.Piecewise
 public import EthLib.Consensus.Proofs.Transition.EpochPassAtCall
+public import EthLib.Consensus.Proofs.Transition.BranchLedger
 import EthLib.Consensus.Proofs.Transition.ActiveKept
 import EthLib.Consensus.Proofs.Transition.ChainRoots
-import EthLib.Consensus.Proofs.Transition.Committees
+public import EthLib.Consensus.Proofs.Transition.Committees
 import EthLib.Consensus.Proofs.Transition.DepositCarry
 import EthLib.Consensus.Proofs.Transition.EpochDecomposition
 import EthLib.Consensus.Proofs.Transition.EpochPending
@@ -1836,7 +1837,7 @@ They are churn-limited deposits, due consolidations, proposer credits and whistl
 
 From Fulu a block deposit only queues, so no block deposit credits a balance inside the epoch.
 
-The three hypotheses marked TEMPORARY are lemmas of other modules that have not landed yet. -/
+The two hypotheses marked TEMPORARY are lemmas that the S13a pull request moves to RewardDeltas. -/
 theorem effectiveRise_le
     -- TEMPORARY: S13a moves this lemma to RewardDeltas
     (penaltyEntries_le : ∀ {config : Config} {fork : Fork} {state : BeaconState preset fork}
@@ -1868,98 +1869,12 @@ theorem effectiveRise_le
       base.toNat ≤ validator.effectiveBalance.toNat / preset.EFFECTIVE_BALANCE_INCREMENT.toNat *
         (preset.EFFECTIVE_BALANCE_INCREMENT.toNat * preset.BASE_REWARD_FACTOR.toNat /
           total.toNat.sqrt))
-    -- TEMPORARY: prover A's `branchCorrections` (BranchLedger) replaces this hypothesis
-    (branchCorrections : ∀ {x y : ForkedBeaconState preset} (tail : Run config checks x y)
-        (early : y.fork < .glamsterdam) (fulu : .fusaka ≤ y.fork)
-        (same : getCurrentEpoch y.state = getCurrentEpoch x.state)
-        (matched : BalancesMatch x.state) (exits : ExitsOrdered x.state),
-        let state := y.state
-        let inc := preset.EFFECTIVE_BALANCE_INCREMENT.toNat
-        let slots := preset.SLOTS_PER_EPOCH.toNat
-        let p := parameters preset y.fork
-        let positions := Finset.range state.validators.data.size
-        let validator (i : ℕ) := state.validators.data[i]?
-        let effective (i : ℕ) := balanceAt state i
-        let current (i : ℕ) := isActiveAt state (getCurrentEpoch state) i
-        let before (i : ℕ) := isActiveAt state (getPreviousEpoch state) i
-        let recent (i : ℕ) := before i || current i
-        let slashed (i : ℕ) := ((validator i).map (·.slashed)).getD false
-        let total := max inc (∑ i ∈ positions with current i, effective i)
-        let root := (integerSquareroot (UInt64.ofNat total)).toNat
-        let perIncrement := inc * preset.BASE_REWARD_FACTOR.toNat / root
-        let base (i : ℕ) := if .altair ≤ y.fork then effective i / inc * perIncrement
-          else effective i * preset.BASE_REWARD_FACTOR.toNat / root / BASE_REWARDS_PER_EPOCH.toNat
-        let seatReward := if .altair ≤ y.fork then
-            total / inc * perIncrement * SYNC_REWARD_WEIGHT.toNat / WEIGHT_DENOMINATOR.toNat /
-              slots / preset.SYNC_COMMITTEE_SIZE.toNat
-          else 0
-        let seats (i : ℕ) := if altair : .altair ≤ y.fork then
-            ((state.currentSyncCommittee altair).value.pubkeys.toList.filter fun key =>
-              (validator i).any (·.pubkey == key)).length
-          else 0
-        let sync (i : ℕ) := seats i * seatReward
-        let syncProposer := if .altair ≤ y.fork then
-            slots * preset.SYNC_COMMITTEE_SIZE.toNat *
-              (seatReward * PROPOSER_WEIGHT.toNat /
-                (WEIGHT_DENOMINATOR.toNat - PROPOSER_WEIGHT.toNat))
-          else 0
-        let proposerCredit := (∑ i ∈ positions with recent i, base i) + syncProposer
-        let whistleblowerP :=
-          (∑ i ∈ positions with slashed i, effective i) / p.WHISTLEBLOWER_REWARD_QUOTIENT.toNat
-        let slashBack (i : ℕ) :=
-          if slashed i then effective i / p.MIN_SLASHING_PENALTY_QUOTIENT.toNat else 0
-        let blocks := tail.blockCount
-        let debited :=
-          ((if .shapella ≤ y.fork then preset.MAX_WITHDRAWALS_PER_PAYLOAD.toNat else 0) +
-          (if .pectra ≤ y.fork then preset.MAX_CONSOLIDATION_REQUESTS_PER_PAYLOAD.toNat else 0)) *
-            blocks
-        let blockDeposits := if h : y.fork < .hegota then
-            (if .pectra ≤ y.fork then 0
-             else min (preset.MAX_DEPOSITS.toNat * blocks) (state.eth1DepositIndex h).toNat)
-          else 0
-        let creditedP :=
-          (if proposerCredit = 0 ∧ seatReward = 0 ∧ positions.filter (slashed ·) = ∅ then 0
-            else blocks) + blockDeposits
-        ∃ (debitedKeys creditedKeys : Finset ValidatorIndex) (pc deposit : ValidatorIndex → ℕ),
-          debitedKeys.card ≤ debited ∧ creditedKeys.card ≤ creditedP ∧
-          (∀ v, v ∉ debitedKeys → actualBalanceAt x v.toNat ≤
-            actualBalanceAt y v.toNat + slashBack v.toNat + blocks * sync v.toNat) ∧
-          (∀ v, actualBalanceAt y v.toNat ≤
-            actualBalanceAt x v.toNat + blocks * sync v.toNat + pc v + deposit v) ∧
-          (∀ v, v ∉ creditedKeys → pc v = 0 ∧ deposit v = 0) ∧
-          (.pectra ≤ y.fork → ∀ v, deposit v = 0) ∧
-          ∑ v ∈ creditedKeys, pc v ≤ proposerCredit + whistleblowerP ∧
-          (∃ slashedNow : Finset ValidatorIndex,
-            (∀ v ∈ slashedNow, (∀ validator, x.state.validators.data[v.toNat]? = some validator →
-                validator.slashed = false) ∧ slashed v.toNat = true ∧
-              ∃ validator, x.state.validators.data[v.toNat]? = some validator ∧
-                validator.activationEpoch ≤ getCurrentEpoch x.state ∧
-                getCurrentEpoch x.state < validator.withdrawableEpoch) ∧
-            ∑ v ∈ creditedKeys, pc v ≤ (∑ i ∈ positions with recent i, base i) + syncProposer +
-              (∑ v ∈ slashedNow, effective v.toNat) / p.WHISTLEBLOWER_REWARD_QUOTIENT.toNat) ∧
-          (∀ v validator later, x.state.validators.data[v.toNat]? = some validator →
-            y.state.validators.data[v.toNat]? = some later →
-            withdrawalMaxEffectiveBalance preset y.fork later ≠
-              withdrawalMaxEffectiveBalance preset x.fork validator →
-            actualBalanceAt y v.toNat ≤ preset.MIN_ACTIVATION_BALANCE.toNat +
-              blocks * sync v.toNat + pc v + deposit v) ∧
-          (∃ proposerKeys depositKeys : Finset ValidatorIndex,
-            creditedKeys = proposerKeys ∪ depositKeys ∧
-            proposerKeys.card ≤ (if proposerCredit = 0 ∧ seatReward = 0 ∧
-              positions.filter (slashed ·) = ∅ then 0 else blocks) ∧
-            depositKeys.card ≤ blockDeposits ∧
-            (∀ v, v ∉ proposerKeys → pc v = 0) ∧ (∀ v, v ∉ depositKeys → deposit v = 0)) ∧
-          (∀ v validator, v ∉ debitedKeys → x.state.validators.data[v.toNat]? = some validator →
-            ∃ later, y.state.validators.data[v.toNat]? = some later ∧
-              withdrawalMaxEffectiveBalance preset y.fork later =
-                withdrawalMaxEffectiveBalance preset x.fork validator) ∧
-          x.fork = y.fork ∧ EffectiveKept x.state y.state)
-    {g R P y : ForkedBeaconState preset}
+  {g R P y : ForkedBeaconState preset}
     (genesis : Genesis (config := config) (checks := checks) g) (history : Run config checks g R)
     (tailP : Run config checks R P) (tailS : Run config checks R y) (caps : CapOrder preset)
     (withdrawDelay : 1 ≤ config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat)
     (bands : preset.IncrementWithinUpwardBand)
-    (lookahead : 1 ≤ preset.MAX_SEED_LOOKAHEAD.toNat)
+    (window : preset.ExitWindowFixed)
     (hysteresis : Hysteresis R.state) (early : y.fork < .glamsterdam)
     (fulu : .fusaka ≤ P.fork)
     (callEpoch : getCurrentEpoch P.state = getCurrentEpoch R.state)
@@ -2052,6 +1967,7 @@ theorem effectiveRise_le
       min headroom (crossing + (recipients + debited) * preset.upwardBand +
         debited * creditMax + transfers + depositGain)
   := by
+  have lookahead : 1 ≤ preset.MAX_SEED_LOOKAHEAD.toNat := Nat.le_trans (by decide) window.lookahead
   have hPR : P.fork = R.fork := Run.fork_eq_of_same_epoch tailP callEpoch
   obtain ⟨fR, r⟩ := R
   obtain ⟨F, q⟩ := P
