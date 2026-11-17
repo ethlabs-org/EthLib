@@ -627,21 +627,12 @@ theorem Execution.honestTargetVotes_of_byzantineStakeAtMost [DecidablePred (· �
   have outsideActive : ∀ v ∈ outside,
       v ∈ (getActiveValidatorIndices state (getCurrentEpoch state)).toFinset := by
     intro v member
-    obtain ⟨listed, _⟩ := Finset.mem_filter.mp member
-    obtain ⟨⟨index, balance⟩, listed, eq⟩ := List.mem_map.mp (List.mem_toFinset.mp listed)
-    simp only [unslashedActiveBalances, List.mem_filterMap, Option.ite_none_right_eq_some,
-      Option.some.injEq, Prod.mk.injEq, Prod.exists] at listed
-    obtain ⟨validator, i, inZip, active, rfl, _⟩ := listed
-    have found := List.mem_zipIdx_iff_getElem?.mp inZip
-    simp only [Bool.and_eq_true] at active
-    have active' := active.1
-    have fits := lt_of_getActiveValidatorIndicesChecked_ok activeOk (by simpa using found) active'
-    have indexNat : i.toUInt64.toNat = i := by
-      rw [Nat.toUInt64_eq, UInt64.toNat_ofNat_of_lt' fits]
+    obtain ⟨validator, found, active, -⟩ :=
+      (mem_unslashedActiveBalances_iff (BeaconState.registryWithinLimit_of_lt preGloas state)).mp
+        (List.mem_toFinset.mp (Finset.mem_filter.mp member).1)
     apply List.mem_toFinset.mpr
     apply mem_getActiveValidatorIndices_of_isActiveAt
-    apply isActiveAt_eq_true_iff.mpr
-    exact ⟨validator, by simpa [← eq, indexNat] using found, active'⟩
+    exact isActiveAt_eq_true_iff.mpr ⟨validator, found, active⟩
   -- A scored voter is in the committees, so no honest scored voter is outside them.
   have disjoint : Disjoint honest outside := by
     apply Finset.disjoint_left.mpr
