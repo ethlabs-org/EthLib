@@ -39,8 +39,9 @@ A validator at its largest effective balance rises only after a change of creden
 
 The epoch also moves balance to other validators.
 
-Those transfers are deposits within the churn, due consolidations, and proposer and whistleblower
-rewards.
+Those transfers are deposits within the churn and due consolidations.
+
+They are also proposer and whistleblower rewards.
 
 Each goes to a bounded number of recipients, and each recipient adds at most the upward band.
 -/
@@ -66,11 +67,13 @@ private def QueueFrom (L : List PendingConsolidation) (e : Epoch) {f : Fork}
     ∀ c ∈ (s.pendingConsolidations electra).data.toList, c ∈ L ∨
       ∃ w, s.validators.data[c.sourceIndex.toNat]? = some w ∧ e < w.exitEpoch
 
-/-- The queue only grows inside a block, and each new entry has a source whose exit is assigned
-after the current epoch.
+/-- The queue only grows inside a block.
 
-The exit is assigned when the entry is queued, so it is part of the step and not read from
-master's invariant, which holds only at the states of a run. -/
+Each new entry has a source whose exit is assigned after the current epoch.
+
+The exit is assigned when the entry is queued, so it is part of the step.
+
+It is not read from master's invariant, which holds only at the states of a run. -/
 private def QueueGrows {f : Fork} (s t : BeaconState preset f) : Prop :=
   ∀ electra : .pectra ≤ f,
     (∀ c ∈ (s.pendingConsolidations electra).data.toList,
@@ -945,8 +948,9 @@ The rewards read the state after the inactivity update, which follows justificat
 
 The registry updates, the slashings and the reset after the rewards only lower balances.
 
-Up to the pending balances the steps keep the slot, the queue, the churn left, activity, effective
-balances, credentials, slashes and assigned exits.
+Up to the pending balances the steps keep the slot, the queue, the churn left and activity.
+
+They also keep effective balances, credentials, slashes and assigned exits.
 
 The pending balances lead to the update of the effective balances, which gives the registry. -/
 private theorem rise_epoch {f : Fork} {c t : BeaconState preset f} (altair : .altair ≤ f)

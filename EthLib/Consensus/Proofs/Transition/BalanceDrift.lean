@@ -737,8 +737,9 @@ theorem balanceDrift_upgrades_upper {s t : ForkedBeaconState preset}
 
 /-- Induct over a run inside one epoch, with the run so far.
 
-Inside one epoch no slot crosses an epoch boundary, so a slot step only runs `processSlot` and
-sets the slot.
+Inside one epoch no slot crosses an epoch boundary.
+
+So a slot step only runs `processSlot` and sets the slot.
 
 Before Gloas, a block step is one `applySignedBlock` call. -/
 theorem Run.induction_of_same_epoch {x : ForkedBeaconState preset}

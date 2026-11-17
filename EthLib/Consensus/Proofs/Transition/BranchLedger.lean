@@ -401,7 +401,9 @@ private theorem Lives.refl (s : BeaconState preset fork) : Lives s s :=
 
 /-- Two later registries make one.
 
-The exits of the first come from master's lifecycle, and the slashes of the second from its frame. -/
+The exits of the first come from master's lifecycle.
+
+The slashes of the second come from its frame. -/
 private theorem Lives.trans (one : Lives s u) (two : Lives u t) (life : RegistryLifecycle s u)
     (slashed : SlashedPersistence u t) : Lives s t where
   later index old w found read := by
@@ -550,8 +552,9 @@ private theorem lives_processAttesterSlashing {slashing : AttesterSlashing prese
     (show Lives s (s, false).1 ∧ RegistryLifecycle s (s, false).1 from
       ⟨Lives.refl s, .refl s⟩) folded).1
 
-/-- From Electra a deposit keeps every old validator, and master's `UnassignedKept` reads the new
-one. -/
+/-- From Electra a deposit keeps every old validator.
+
+Master's `UnassignedKept` reads the new one. -/
 private theorem lives_processDeposit {before : fork < .hegota} {deposit : Deposit}
     (electra : .pectra ≤ fork)
     (computed : processDeposit config checks before s deposit = .ok t) : Lives s t := by
@@ -2803,7 +2806,8 @@ private theorem payloadInputs_addValidatorToRegistry' {pubkey : Cryptography.Bls
   · cases computed
 
 private theorem payloadInputs_processDeposit' {before : fork < .hegota} {deposit : Deposit}
-    (electra : .pectra ≤ fork) (computed : processDeposit config checks before s deposit = .ok t) : PayloadInputs s t := by
+    (electra : .pectra ≤ fork)
+    (computed : processDeposit config checks before s deposit = .ok t) : PayloadInputs s t := by
   obtain ⟨_, _, next, _, applied⟩ := processDeposit_ok computed
   refine PayloadInputs.trans (second := { s with eth1DepositIndex := fun _ => next })
     ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl⟩ ?_
@@ -3241,8 +3245,9 @@ end CreditedSteps
 
 Its effective balance is within its largest.
 
-Before Gloas, the operations never take its balance below the smaller of its balance and its
-effective balance.
+Before Gloas, the operations keep its balance at least the smaller of two amounts.
+
+They are its balance and its effective balance before the operations.
 
 A conversion to compounding credentials only lowers a balance to the activation balance.
 
@@ -3394,8 +3399,9 @@ private theorem block_balances {engine : ExecutionEngine preset fork}
       (steady_processBlockExecution early executedOk).trans <|
         (steady_processRandao revealedOk).trans (steady_processEth1Data votedOk)
   have growVoted : FlagsGrow s voted :=
-    (grow_processBlockHeader headedOk).trans <| (grow_processBlockExecution early executedOk).trans <|
-      (grow_processRandao revealedOk).trans (grow_processEth1Data votedOk)
+    (grow_processBlockHeader headedOk).trans <|
+      (grow_processBlockExecution early executedOk).trans <|
+        (grow_processRandao revealedOk).trans (grow_processEth1Data votedOk)
   have frameVoted : Frame s voted :=
     (frame_processBlockHeader headedOk).toFrame.trans <|
       (frame_processBlockExecution executedOk).toFrame.trans <|
@@ -3596,7 +3602,8 @@ private theorem Within.reads_back {a s : BeaconState preset fork} (w : Within a 
     {base : ℕ → ℕ} (reads : Reads s base) : Reads a base := by
   intro index total reward recent totalOk rewardOk
   have inside := inside_of_recent recent
-  refine reads index total reward ((w.recent _).mpr recent) (by rw [w.activeTotal]; exact totalOk) ?_
+  refine reads index total reward ((w.recent _).mpr recent)
+    (by rw [w.activeTotal]; exact totalOk) ?_
   rw [getBaseReward_congr (w.effective_map _ inside).symm]
   exact rewardOk
 
@@ -3727,7 +3734,8 @@ private structure Tally (a s : BeaconState preset fork) (n : ℕ)
   persist : ∀ (v : ValidatorIndex) validator, a.validators.data[v.toNat]? = some validator →
     validator.slashed = true → slashedAt s v = true
   debCard : deb.card ≤
-    (preset.MAX_WITHDRAWALS_PER_PAYLOAD.toNat + preset.MAX_CONSOLIDATION_REQUESTS_PER_PAYLOAD.toNat) *
+    (preset.MAX_WITHDRAWALS_PER_PAYLOAD.toNat +
+      preset.MAX_CONSOLIDATION_REQUESTS_PER_PAYLOAD.toNat) *
       n
   convSub : conv ⊆ deb
   down : ∀ v, v ∉ deb → actualBalanceAt ⟨fork, a⟩ v.toNat ≤
@@ -4071,7 +4079,8 @@ private theorem Run.tally {F : Fork} {a : BeaconState preset F} {y : ForkedBeaco
     Run.induction_of_same_epoch (fun z pre => ∃ s : BeaconState preset F, z = ⟨F, s⟩ ∧
       (.fusaka ≤ F → ∃ (deb conv props sl : Finset ValidatorIndex) (pc : ValidatorIndex → ℕ)
         (credits shares : ℕ), Tally a s pre.blockCount deb conv props sl pc credits shares))
-      ⟨a, rfl, fun _ => ⟨_, _, _, _, _, _, _, by simpa [Run.blockCount] using Tally.start a matched⟩⟩
+      ⟨a, rfl, fun _ => ⟨_, _, _, _, _, _, _,
+        by simpa [Run.blockCount] using Tally.start a matched⟩⟩
       (fun engine signed due ok pre early prior => by
         obtain ⟨_, eq, prior⟩ := prior
         cases eq
@@ -4090,8 +4099,9 @@ private theorem Run.tally {F : Fork} {a : BeaconState preset F} {y : ForkedBeaco
           exact ⟨_, _, _, _, _, _, _, tally.slot computed epoch⟩⟩)
       tail early same
 
-/-- Inside one epoch, from Fulu and before Gloas, the withdrawable epoch of each set exit only
-rises, and moves only for a slashed validator.
+/-- Inside one epoch, from Fulu and before Gloas, take each validator with an exit set.
+
+Its withdrawable epoch only rises, and moves only for a slashed validator.
 
 Reader: EffectiveRise. -/
 theorem Run.withdrawableKept_of_same_epoch {x y : ForkedBeaconState preset}
@@ -4105,8 +4115,9 @@ theorem Run.withdrawableKept_of_same_epoch {x y : ForkedBeaconState preset}
 
 /-! ## The branch corrections -/
 
-/-- The balances along a branch inside one epoch, from Fulu and before Gloas, read from its last
-state.
+/-- The balances along a branch inside one epoch, from Fulu and before Gloas.
+
+They are read from its last state.
 
 This is the branch correction of the fast confirmation rule.
 

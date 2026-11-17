@@ -15,7 +15,9 @@ import EthLib.Consensus.Proofs.Transition.SyncCommitteeProvenance
 
 From Altair, the rewards pass moves the balance of one validator within an envelope.
 
-The envelope reads only the effective balances, the balances and the inactivity scores before the pass.
+The envelope reads only three things before the pass.
+
+They are the effective balances, the balances and the inactivity scores.
 
 Inside one epoch a run keeps its fork and the keys of its current sync committee.
 
@@ -392,8 +394,9 @@ private theorem processRewardsAndPenalties_balance_le_of_altair
     omega
   · omega
 
-/-- From Altair, the rewards pass after the update of the inactivity scores moves one balance
-within the same envelope, read before that update.
+/-- From Altair, take the rewards pass after the update of the inactivity scores.
+
+It moves one balance within the same envelope, read before that update.
 
 The update keeps the registry, the balances and the slot.
 
@@ -608,8 +611,9 @@ theorem Run.currentSyncCommittee_eq_of_same_epoch {x y : ForkedBeaconState prese
 
 /-- The positions active in an epoch are the same in two registries when activity stays.
 
-The later registry keeps the positions of the earlier one, and a position past them is inactive
-in both. -/
+The later registry keeps the positions of the earlier one.
+
+A position past them is inactive in both. -/
 theorem activeFilter_eq {f g : Fork} {a : BeaconState preset f}
     {b : BeaconState preset g} {ep : Epoch} (active : ∀ i, isActiveAt b ep i = isActiveAt a ep i)
     (grows : a.validators.data.size ≤ b.validators.data.size) :

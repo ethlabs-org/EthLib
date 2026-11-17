@@ -279,7 +279,8 @@ theorem quorumDrift_le_quorumReserve
       min headroom (crossing + (recipients + debited) * preset.upwardBand + debited * creditMax +
         transfers + depositGain) :=
     effectiveRise_le penaltyEntries_le toNat_getBaseReward_le genesis history (edge.append tailP)
-      (edge.append tailS) caps withdrawDelay bands window hysteresis early fulu callEpoch next (n := nP) debitedKeys
+      (edge.append tailS) caps withdrawDelay bands window hysteresis early fulu callEpoch next
+      (n := nP) debitedKeys
       (debitedCard.trans (Nat.mul_le_mul_left _ blocksLe))
       (fun v off => (gainSide v off).trans
         (Nat.add_le_add_left (Nat.mul_le_mul_right _ blocksLe) _))

@@ -597,8 +597,13 @@ end WithdrawalKept
 
 /-- A queued consolidation assigns its source an exit epoch and pushes one entry on the queue.
 
-The exit epoch comes from the consolidation churn, and is assigned when the withdrawal delay is
-positive, since the withdrawal epoch is the exit epoch plus that delay and fits in 64 bits.
+That exit epoch is after the current epoch.
+
+The exit epoch comes from the consolidation churn.
+
+It is assigned when the withdrawal delay is positive.
+
+The reason is that the withdrawal epoch is the exit epoch plus that delay, and fits in 64 bits.
 
 The source is written over the state the churn returns, and the new state keeps its validators. -/
 theorem queueConsolidation_queued {electra : .pectra ≤ fork}
