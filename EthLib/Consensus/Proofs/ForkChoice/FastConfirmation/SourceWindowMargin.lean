@@ -1441,7 +1441,10 @@ private theorem receiver_origins_fresh {Δ : ℕ} (sync : e.Synchronous Δ)
   · exact (unfit (.inl (fitsHistorical k' le))).elim
   · exact .inr ⟨a, ha, b, hb, i, j, hi.trans upToTime, hj.trans upToTime, r, ev, s⟩
 
-private theorem historical_stores_or_collision {anchor : Store preset fork}
+/-- The honest stores by a time are reachable and agree on their blocks, or two of them collide.
+
+It is public so that a proof in another module splits on it instead of repeating the split. -/
+public theorem historical_stores_or_collision {anchor : Store preset fork}
     (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
     (start : ∀ u ∈ J, e.start u = anchor) (time : ℕ) :
     ((∀ a ∈ J, ∀ i, Store.Reachable config anchorState anchorBlock ((e.world i).state a)) ∧
@@ -2497,7 +2500,6 @@ public theorem Execution.source_surplus_or_historical_evidence [DecidablePred (�
     {receiverLast : Slot}
     (reserve : SourceWindowReserve (J := J) (config := config) ((e.world n).state u) head source
       first receiverLast) {horizon : Epoch}
-    (residual : ResidualFinalizedCheckpointCompatibility (e := e) horizon time)
     (bounded : HonestStoreEpochsBounded (e := e) horizon time)
     (roots : HeldBlockStateRootsNonzero (e := e) time)
     (unslashed : HonestCountedStatesUnslashed (e := e) time)
@@ -2597,9 +2599,9 @@ public theorem Execution.source_surplus_or_historical_evidence [DecidablePred (�
     callerAbsent slotOk blockOk parentOk firstOk lastOk supportOk discountOk margin
   -- The receiver reads its full maximum, then the source maximum and score.
   rcases receiver_fullMaximum_of_head_window anchored start sound anchorSlot anchorBoundary
-      positive slots preGloas (compatibility_of_residual residual family) bounded ceiling absent
-      caller receiver callerTime receiverTime parentOk receiverParent firstOk receiverHeadOk
-      stateOk receiverEpochOk receiverLastOk windowOk nonempty maximumOk with
+      positive preGloas ceiling absent caller receiver callerTime receiverTime
+      (family w receiver k k le_rfl receiverTime) parentOk receiverParent firstOk receiverHeadOk
+      stateOk receiverLastOk windowOk nonempty maximumOk with
     ⟨receiverMaximum, receiverMaximumOk⟩ | collision
   swap
   · exact .inr (.inr (.inl collision))
