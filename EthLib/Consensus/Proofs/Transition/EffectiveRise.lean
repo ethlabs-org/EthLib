@@ -1356,4 +1356,564 @@ private theorem pendingBalances_validators {f : Fork} {s t : BeaconState preset 
     exact pendingDeposits_validators depositedOk i inside
   · cases ok; rfl
 
+/-- A trace that starts with a stage runs that stage, then the rest. -/
+private theorem trace_cons {σ ε : Type} {action : EpochStage → σ → Except ε σ} {k : EpochStage}
+    {ks : List EpochStage} {s t : σ} (trace : EpochTrace action (k :: ks) s t) :
+    ∃ u, action k s = .ok u ∧ EpochTrace action ks u t := by
+  cases trace with
+  | cons first rest => exact ⟨_, first, rest⟩
+
+/-- An empty trace ends where it starts. -/
+private theorem trace_nil {σ ε : Type} {action : EpochStage → σ → Except ε σ} {s t : σ}
+    (trace : EpochTrace action [] s t) : s = t := by
+  cases trace
+  rfl
+
+/-- Two registries that agree on a position, up to its effective balance, agree on its activity. -/
+private theorem isActiveAt_eq_of_others {f g : Fork} {a : BeaconState preset f}
+    {b : BeaconState preset g} {i : ℕ} (epoch : Epoch)
+    (same : (b.validators.data[i]?).map withoutEffective =
+      (a.validators.data[i]?).map withoutEffective) :
+    isActiveAt b epoch i = isActiveAt a epoch i := by
+  unfold isActiveAt
+  cases hb : b.validators.data[i]? <;> cases ha : a.validators.data[i]? <;>
+    simp only [hb, ha, Option.map_none, Option.map_some, reduceCtorEq,
+      Option.some.injEq] at same ⊢
+  rename_i w v
+  have activation := congrArg Validator.activationEpoch same
+  have exit := congrArg Validator.exitEpoch same
+  simp only [withoutEffective] at activation exit
+  simp only [Option.getD_some, isActiveValidator, activation, exit]
+
+/-- From Altair and before Gloas, the steps of an epoch transition up to the pending balances.
+
+The rewards read the state after the inactivity update, which follows justification.
+
+The registry updates, the slashings and the reset after the rewards only lower balances.
+
+Up to the pending balances the steps keep the slot, the queue, the churn left, activity, effective
+balances, credentials, slashes and assigned exits.
+
+The pending balances lead to the update of the effective balances, which gives the registry. -/
+private theorem rise_epoch {f : Fork} {c t : BeaconState preset f} (altair : .altair ≤ f)
+    (early : f < .glamsterdam) (ok : processEpoch config checks c = .ok t) :
+    ∃ justified scored rewarded reset before after : BeaconState preset f,
+      processJustificationAndFinalization c = .ok justified ∧
+      processInactivityUpdates config justified altair = .ok scored ∧
+      processRewardsAndPenalties config scored = .ok rewarded ∧
+      (∀ i, actualBalanceAt ⟨f, reset⟩ i ≤ actualBalanceAt ⟨f, rewarded⟩ i) ∧
+      processPendingBalances config checks reset = .ok before ∧
+      processEffectiveBalanceUpdates before = .ok after ∧ t.validators = after.validators ∧
+      reset.slot = c.slot ∧ c.validators.data.size ≤ reset.validators.data.size ∧
+      (∀ epoch ≤ activityFixedEpoch c, ∀ i, isActiveAt reset epoch i = isActiveAt c epoch i) ∧
+      EffectiveKept c reset ∧ RecKeep c reset ∧
+      (ExitsOrdered c → ExitsOrdered reset) ∧ (BalancesMatch c → BalancesMatch reset) ∧
+      (PendingConsolidationInvariant config c → PendingConsolidationInvariant config reset) ∧
+      reset.pendingConsolidations = c.pendingConsolidations ∧
+      reset.depositBalanceToConsume = c.depositBalanceToConsume := by
+  have hegota : f < .hegota := Nat.lt_trans early (by decide)
+  have notGloas : ¬ .glamsterdam ≤ f := Nat.not_le_of_lt early
+  have trace := processEpoch_trace ok
+  change EpochTrace _ ([.justification, .inactivity, .rewards, .registry, .slashings,
+    .eth1Reset] ++ ([.pendingDeposits, .pendingConsolidations] ++ ([.payments,
+      .effectiveBalances] ++ [.slashingsReset, .randaoReset, .history, .participation,
+        .syncCommittees, .proposerLookahead, .ptcWindow]))) _ _ at trace
+  obtain ⟨reset, head, rest⟩ := EpochTrace.append_iff.mp trace
+  obtain ⟨before, pending, rest⟩ := EpochTrace.append_iff.mp rest
+  obtain ⟨after, updates, rest⟩ := EpochTrace.append_iff.mp rest
+  obtain ⟨justified, jA, head⟩ := trace_cons head
+  obtain ⟨scored, sA, head⟩ := trace_cons head
+  obtain ⟨rewarded, rA, head⟩ := trace_cons head
+  obtain ⟨registered, gA, head⟩ := trace_cons head
+  obtain ⟨slashed, lA, head⟩ := trace_cons head
+  obtain ⟨reset', eA, head⟩ := trace_cons head
+  cases trace_nil head
+  obtain ⟨deposited, dA, pending⟩ := trace_cons pending
+  obtain ⟨before', cA, pending⟩ := trace_cons pending
+  cases trace_nil pending
+  obtain ⟨paid, pA, updates⟩ := trace_cons updates
+  obtain ⟨after', uA, updates⟩ := trace_cons updates
+  cases trace_nil updates
+  have jE := EpochStage.action_cases.mp jA
+  have sE := EpochStage.action_cases.mp sA
+  have rE := EpochStage.action_cases.mp rA
+  have gE := EpochStage.action_cases.mp gA
+  have lE := EpochStage.action_cases.mp lA
+  have eE := EpochStage.action_cases.mp eA
+  have dE := EpochStage.action_cases.mp dA
+  have cE := EpochStage.action_cases.mp cA
+  have pE := EpochStage.action_cases.mp pA
+  have uE := EpochStage.action_cases.mp uA
+  have jOk : processJustificationAndFinalization c = .ok justified := jE
+  have sOk : processInactivityUpdates config justified altair = .ok scored := by
+    simpa only [EpochStage.Edge, altair, ↓reduceDIte] using sE
+  have rOk : processRewardsAndPenalties config scored = .ok rewarded := rE
+  have gOk : processRegistryUpdates config rewarded = .ok registered := gE
+  have lOk : processSlashings registered = .ok slashed := lE
+  have eOk : processEth1DataReset hegota slashed = .ok reset := by
+    simpa only [EpochStage.Edge, hegota, ↓reduceDIte] using eE
+  have paidEq : before = paid := by
+    simpa only [EpochStage.Edge, notGloas, ↓reduceDIte] using pE
+  subst paidEq
+  have uOk : processEffectiveBalanceUpdates before = .ok after := uE
+  -- The steps after the update keep the registry.
+  have last : t.validators = after.validators :=
+    EpochTrace.transport (fun a b : BeaconState preset f => b.validators = a.validators)
+      (fun _ => rfl) (fun {_ _ _} one two => two.trans one) (fun k member a b computed =>
+        (EpochStage.action_cases.mp computed).validators_eq (by
+          simp only [List.mem_cons, List.mem_nil_iff, or_false] at member
+          rcases member with rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
+            exact ⟨nofun, nofun, nofun⟩)) rest
+  -- The pending balances.
+  have pendingOk : processPendingBalances config checks reset = .ok before := by
+    unfold processPendingBalances
+    by_cases electra : .pectra ≤ f
+    · simp only [electra, ↓reduceDIte]
+      have dOk : processPendingDeposits config checks reset electra = .ok deposited := by
+        simpa only [EpochStage.Edge, electra, ↓reduceDIte] using dE
+      have cOk : processPendingConsolidations deposited electra = .ok before := by
+        simpa only [EpochStage.Edge, electra, ↓reduceDIte] using cE
+      exact bind_ok_iff.mpr ⟨_, dOk, cOk⟩
+    · simp only [electra, ↓reduceDIte]
+      have one : reset = deposited := by
+        simpa only [EpochStage.Edge, electra, ↓reduceDIte] using dE
+      have two : deposited = before := by
+        simpa only [EpochStage.Edge, electra, ↓reduceDIte] using cE
+      rw [one, two]
+      rfl
+  -- What each step before the pending balances keeps.
+  have jRec := jE.records ⟨nofun, nofun, nofun, nofun, nofun, nofun⟩
+  have sRec := sE.records ⟨nofun, nofun, nofun, nofun, nofun, nofun⟩
+  have eRec := eE.records ⟨nofun, nofun, nofun, nofun, nofun, nofun⟩
+  have rSame := rE.validators_eq ⟨nofun, nofun, nofun⟩
+  have lSame := lE.validators_eq ⟨nofun, nofun, nofun⟩
+  have laws := mutatorEpochFrameLaws.toEpochStepLaws (preset := preset) (fork := f)
+  have frame : MutatorFrame justified reset :=
+    (laws.epochEdge (stage := .inactivity) ⟨nofun, nofun, nofun, nofun⟩ sA).trans <|
+    (laws.epochEdge (stage := .rewards) ⟨nofun, nofun, nofun, nofun⟩ rA).trans <|
+    (laws.epochEdge (stage := .registry) ⟨nofun, nofun, nofun, nofun⟩ gA).trans <|
+    (laws.epochEdge (stage := .slashings) ⟨nofun, nofun, nofun, nofun⟩ lA).trans
+      (laws.epochEdge (stage := .eth1Reset) ⟨nofun, nofun, nofun, nofun⟩ eA)
+  have growsG : rewarded.validators.data.size ≤ registered.validators.data.size :=
+    (frame_processRegistryUpdates gOk).registryGrows
+  have sizeR : registered.validators.data.size = reset.validators.data.size := by
+    rw [eRec.1, lSame]
+  have rewardedV : rewarded.validators = c.validators := by
+    rw [rSame, sRec.1, jRec.1]
+  have growsReset : c.validators.data.size ≤ reset.validators.data.size := by
+    rw [← sizeR, ← rewardedV]; exact growsG
+  have keptReset : EffectiveKept c reset :=
+    effectiveKept_trans (effectiveKept_data (by rw [rewardedV]))
+      (effectiveKept_trans (effectiveKept_registry gOk)
+        (effectiveKept_data (by rw [eRec.1, lSame])) growsG) (by rw [rewardedV])
+  have recReset : RecKeep c reset :=
+    (RecKeep.of_data (by rw [rewardedV])).trans
+      ((recKeep_processRegistryUpdates gOk).trans (RecKeep.of_data (by rw [eRec.1, lSame])))
+  -- Activity at the reset reads the registry after the epoch, which keeps it.
+  have activeReset : ∀ epoch ≤ activityFixedEpoch c, ∀ i,
+      isActiveAt reset epoch i = isActiveAt c epoch i := by
+    intro epoch le i
+    by_cases inside : i < reset.validators.data.size
+    · have others : (t.validators.data[i]?).map withoutEffective =
+          (reset.validators.data[i]?).map withoutEffective := by
+        rw [last, effectiveUpdates_others uOk i]
+        by_cases electra : .pectra ≤ f
+        · have dOk : processPendingDeposits config checks reset electra = .ok deposited := by
+            simpa only [EpochStage.Edge, electra, ↓reduceDIte] using dE
+          have cOk : processPendingConsolidations deposited electra = .ok before := by
+            simpa only [EpochStage.Edge, electra, ↓reduceDIte] using cE
+          rw [(processPendingConsolidations_kept cOk).1, pendingDeposits_validators dOk i inside]
+        · have one : reset = deposited := by
+            simpa only [EpochStage.Edge, electra, ↓reduceDIte] using dE
+          have two : deposited = before := by
+            simpa only [EpochStage.Edge, electra, ↓reduceDIte] using cE
+          rw [one, two]
+      rw [← isActiveAt_eq_of_others epoch others]
+      exact activeKept_processEpoch ok epoch le i
+    · have absent : reset.validators.data[i]? = Option.none := Array.getElem?_eq_none (by omega)
+      have absent' : c.validators.data[i]? = Option.none := Array.getElem?_eq_none (by omega)
+      simp only [isActiveAt, absent, absent', Option.map_none]
+  refine ⟨justified, scored, rewarded, reset, before, after, jOk, sOk, rOk, fun i => ?_,
+    pendingOk, uOk, last, ?_, growsReset, activeReset, keptReset, recReset, fun h => ?_,
+    fun h => ?_, fun h => ?_, ?_, ?_⟩
+  · have one : actualBalanceAt ⟨f, reset⟩ i = actualBalanceAt ⟨f, slashed⟩ i := by
+      simp only [actualBalanceAt, eRec.2.1]
+    have two := slashings_lower early lOk i
+    have three : actualBalanceAt ⟨f, registered⟩ i = actualBalanceAt ⟨f, rewarded⟩ i := by
+      simp only [actualBalanceAt, registryUpdates_balances gOk]
+    omega
+  · rw [frame.slot, jRec.2.2.2.2]
+  · apply frame.exitsOrdered
+    unfold ExitsOrdered at h ⊢
+    rw [jRec.1]
+    exact h
+  · apply frame.balancesMatch
+    unfold BalancesMatch at h ⊢
+    rw [jRec.1, jRec.2.1]
+    exact h
+  · exact eE.pendingConsolidationInvariant <| lE.pendingConsolidationInvariant <|
+      gE.pendingConsolidationInvariant <| rE.pendingConsolidationInvariant <|
+      sE.pendingConsolidationInvariant <| jE.pendingConsolidationInvariant h
+  · rw [eE.samePendingQueue nofun, lE.samePendingQueue nofun, gE.samePendingQueue nofun,
+      rE.samePendingQueue nofun, sE.samePendingQueue nofun, jE.samePendingQueue nofun]
+  · rw [eE.depositCarry nofun, lE.depositCarry nofun, gE.depositCarry nofun,
+      rE.depositCarry nofun, sE.depositCarry nofun, jE.depositCarry nofun]
+
+/-- An upgrade never raises an effective balance before Gloas.
+
+The upgrade to Electra clears the effective balances of the validators not yet activated. -/
+private theorem rise_upgrade_upper {s : ForkedBeaconState preset}
+    {t : {t : ForkedBeaconState preset // s.fork < t.fork}}
+    (ok : upgradeNext config checks s = .ok t) (early : t.val.fork < .glamsterdam) (i : Nat) :
+    effectiveAt t.val i ≤ effectiveAt s i := by
+  have reset {f : Fork} {a b : BeaconState preset f} {electra : .pectra ≤ f}
+      {index : ValidatorIndex} (ok : queuePreActivation a electra index = .ok b) :
+      effectiveAt ⟨f, b⟩ i ≤ effectiveAt ⟨f, a⟩ i := by
+    simp only [queuePreActivation, bind_ok_iff, liftAccessor_ok, pure, Except.pure,
+      Except.ok.injEq] at ok
+    obtain ⟨_, _, _, _, _, _, _, balance, _, validator, rfl⟩ := ok
+    obtain ⟨_, rfl⟩ := setBalance_ok balance
+    obtain ⟨inside, rfl⟩ := setValidator_ok validator
+    by_cases eq : i = index.toNat
+    · subst i
+      simp [effectiveAt, BeaconState.putValidator, Serialization.Ssz.RootedForkList.data_set]
+    · simp [effectiveAt, BeaconState.putValidator, BeaconState.putBalance,
+        Serialization.Ssz.RootedForkList.data_set,
+        Ne.symm eq]
+  obtain ⟨fork, state⟩ := s
+  cases fork <;>
+    simp only [upgradeNext, bind_ok_iff, pure, Except.pure, Except.ok.injEq, throw,
+      throwThe, MonadExceptOf.throw, reduceCtorEq] at ok
+  · obtain ⟨_, upgraded, rfl⟩ := ok
+    simp only [effectiveAt, (upgradeToAltair_spec upgraded).1, Nat.le_refl]
+  · subst ok; exact Nat.le_refl _
+  · subst ok; exact Nat.le_refl _
+  · subst ok; exact Nat.le_refl _
+  · obtain ⟨_, upgraded, rfl⟩ := ok
+    simp only [upgradeToElectra, bind_ok_iff] at upgraded
+    obtain ⟨_, _, _, _, _, _, _, _, middle, queued, compounded⟩ := upgraded
+    have one := foldlM_ok_invariant
+      (fun t => effectiveAt ⟨.pectra, t⟩ i ≤ effectiveAt ⟨.dencun, state⟩ i)
+      (fun _ _ _ previous ok => (reset ok).trans previous) (Nat.le_refl _) queued
+    refine foldlM_ok_invariant
+      (fun t => effectiveAt ⟨.pectra, t⟩ i ≤ effectiveAt ⟨.dencun, state⟩ i)
+      (fun a index b previous ok => ?_) one compounded
+    unfold queueCompoundingExcess at ok
+    split at ok
+    · split at ok
+      · have step := liftAccessor_ok.mp ok
+        simp only [queueExcessActiveBalance, bind_ok_iff] at step
+        obtain ⟨_, _, step⟩ := step
+        split at step
+        · simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at step
+          obtain ⟨_, _, _, _, _, set, rfl⟩ := step
+          obtain ⟨_, rfl⟩ := setBalance_ok set
+          exact previous
+        · cases step; exact previous
+      · cases ok; exact previous
+    · cases ok; exact previous
+  · obtain ⟨_, upgraded, rfl⟩ := ok
+    simp only [effectiveAt, (upgradeToFulu_spec upgraded).1, Nat.le_refl]
+  · obtain ⟨_, _, rfl⟩ := ok
+    exact False.elim (Nat.lt_irrefl _ early)
+  · obtain ⟨_, _, rfl⟩ := ok
+    exact False.elim ((by decide : ¬Fork.hegota < Fork.glamsterdam) early)
+
+/-- The upgrades of a slot never raise an effective balance before Gloas. -/
+private theorem rise_upgrades_upper {s t : ForkedBeaconState preset}
+    (ok : processUpgrades config checks s = .ok t) (early : t.fork < .glamsterdam) (i : Nat) :
+    effectiveAt t i ≤ effectiveAt s i := by
+  fun_induction processUpgrades config checks s generalizing t with
+  | case1 s due ih =>
+    obtain ⟨next, nextOk, rest⟩ := bind_ok_iff.mp ok
+    exact (ih next rest early).trans (rise_upgrade_upper nextOk
+      (Nat.lt_of_le_of_lt (processUpgrades_fork_le rest) early) i)
+  | case2 s notDue => cases ok; exact Nat.le_refl _
+
+
+/-- From Altair and before Gloas, the slot that ends an epoch, read from its last state.
+
+The rewards read the state after the inactivity update, which follows justification.
+
+The steps after them up to the pending balances only lower balances, and keep the reads.
+
+An effective balance after the slot rises only past the upward band.
+
+It rises to at most the balance after the pending balances and the largest value before. -/
+private theorem rise_edge {z z' : ForkedBeaconState preset}
+    (ok : advanceSlotAcross config checks z = .ok z') (early : z'.fork < .glamsterdam)
+    (altair : .altair ≤ z.fork)
+    (next : (getCurrentEpoch z'.state).toNat = (getCurrentEpoch z.state).toNat + 1) :
+    ∃ cached justified scored rewarded reset before : BeaconState preset z.fork,
+      processSlot z.state = .ok cached ∧
+      processJustificationAndFinalization cached = .ok justified ∧
+      processInactivityUpdates config justified altair = .ok scored ∧
+      processRewardsAndPenalties config scored = .ok rewarded ∧
+      (∀ i, actualBalanceAt ⟨z.fork, reset⟩ i ≤ actualBalanceAt ⟨z.fork, rewarded⟩ i) ∧
+      processPendingBalances config checks reset = .ok before ∧
+      reset.slot = z.state.slot ∧ z.state.validators.data.size ≤ reset.validators.data.size ∧
+      (∀ epoch ≤ activityFixedEpoch z.state, ∀ i,
+        isActiveAt reset epoch i = isActiveAt z.state epoch i) ∧
+      EffectiveKept z.state reset ∧ RecKeep z.state reset ∧
+      (ExitsOrdered z.state → ExitsOrdered reset) ∧
+      (BalancesMatch z.state → BalancesMatch reset) ∧
+      (PendingConsolidationInvariant config z.state →
+        PendingConsolidationInvariant config reset) ∧
+      reset.pendingConsolidations = z.state.pendingConsolidations ∧
+      reset.depositBalanceToConsume = z.state.depositBalanceToConsume ∧
+      ∀ (i : ℕ) (v : Validator), z.state.validators.data[i]? = some v →
+        effectiveAt z' i ≤ v.effectiveBalance.toNat ∨
+          (v.effectiveBalance.toNat + preset.upwardBand < actualBalanceAt ⟨z.fork, before⟩ i ∧
+            effectiveAt z' i ≤ actualBalanceAt ⟨z.fork, before⟩ i ∧
+            effectiveAt z' i ≤ (withdrawalMaxEffectiveBalance preset z.fork v).toNat) := by
+  obtain ⟨advanced, advancedOk, upgraded⟩ := bind_ok_iff.mp ok
+  have forkEarly : z.fork < .glamsterdam := by
+    have := processUpgrades_fork_le upgraded
+    exact Nat.lt_of_le_of_lt this early
+  obtain ⟨nextSlot, cached, epoched, sum, cachedOk, epochedOk, rfl⟩ := advanceSlot_ok advancedOk
+  have slotAfter : z'.state.slot = nextSlot := processUpgrades_slot upgraded
+  have cachedOk' := cachedOk
+  obtain ⟨_, _, _, _, cachedEq⟩ := processSlot_ok cachedOk
+  unfold epochIfLast at epochedOk
+  split at epochedOk
+  swap
+  · rename_i inside
+    have same := nextSlot_epoch_of_inside sum inside
+    rw [getCurrentEpoch_toNat, getCurrentEpoch_toNat, slotAfter] at next
+    omega
+  obtain ⟨justified, scored, rewarded, reset, before, after, justifiedOk, scoredOk, rewardedOk,
+    lower, pendingOk, updated, validators, slot, size, active, kept, rec, exits, matched, holds,
+    queue, carry⟩ := rise_epoch altair forkEarly epochedOk
+  subst cachedEq
+  refine ⟨_, justified, scored, rewarded, reset, before, cachedOk', justifiedOk, scoredOk,
+    rewardedOk, lower, pendingOk, slot, size, active, kept, rec, exits, matched, holds, queue,
+    carry, fun i v found => ?_⟩
+  have inside := (Array.getElem?_eq_some_iff.mp found).1
+  obtain ⟨w, read, -, sameKeys⟩ := rec i v found
+  have insideReset := (Array.getElem?_eq_some_iff.mp read).1
+  have readBefore : before.validators.data[i]? = some w := by
+    rw [pendingBalances_validators pendingOk i insideReset]; exact read
+  have effective : w.effectiveBalance.toNat = v.effectiveBalance.toNat := by
+    have one := kept i inside
+    simp only [effectiveAt, read, found, Option.map_some, Option.getD_some] at one
+    exact one
+  have upgradedLe := rise_upgrades_upper upgraded early i
+  have endSame : effectiveAt ⟨z.fork, { epoched with slot := nextSlot }⟩ i =
+      effectiveAt ⟨z.fork, after⟩ i := by
+    simp only [effectiveAt, validators]
+  have capSame : withdrawalMaxEffectiveBalance preset z.fork w =
+      withdrawalMaxEffectiveBalance preset z.fork v := by
+    unfold withdrawalMaxEffectiveBalance getMaxEffectiveBalance hasCompoundingWithdrawalCredential
+    rw [sameKeys]
+  rw [← effective, ← capSame]
+  rcases rise_update updated readBefore with low | ⟨crossed, belowBalance, belowCap⟩
+  · exact .inl (by omega)
+  · exact .inr ⟨crossed, by omega, by omega⟩
+
+/-! ### The rise of one validator, in natural numbers -/
+
+/-- The rise of one effective balance over the end of an epoch, from bounds on its balance.
+
+Off the debited validators it is at most its crossing, plus the band and transfers if any.
+
+On them it is at most the upward band, its credit and its transfers. -/
+private theorem rise_one {EB effY band bal aZ aR aP flag extra blocksSync slotsSync pc dep
+      slashBack nSync capR capZ capP minAct : ℕ}
+    (update : effY ≤ EB ∨ (EB + band < bal ∧ effY ≤ bal ∧ effY ≤ capZ))
+    (balance : bal ≤ aZ + flag + extra)
+    (branch : aZ ≤ aR + blocksSync + pc + dep) (blocks : blocksSync ≤ slotsSync)
+    (converted : capZ ≠ capR → aZ ≤ minAct + blocksSync + pc + dep)
+    (activation : capR ≤ EB → capZ ≠ capR → minAct ≤ EB) :
+    ((aR ≤ aP + slashBack + nSync → capR = capP →
+      effY - EB ≤ (if EB < capP then
+          (if EB + band < aP + slashBack + nSync + (flag + slotsSync) then
+            aP + slashBack + nSync + (flag + slotsSync) - EB else 0)
+        else (if band < flag + slotsSync then flag + slotsSync else 0)) +
+        (if pc + extra + dep = 0 then 0 else band) + (pc + extra) + dep) ∧
+    ((EB < capR → aR ≤ EB + band) →
+      effY - EB ≤ band + (flag + slotsSync) + (pc + extra) + dep)) := by
+  constructor
+  · intro nondebited caps
+    rcases update with low | ⟨crossed, belowBalance, belowCap⟩
+    · have : effY - EB = 0 := by omega
+      omega
+    by_cases below : EB < capP
+    · simp only [below, ↓reduceIte]
+      split <;> split <;> omega
+    · simp only [below, ↓reduceIte]
+      by_cases same : capZ = capR
+      · omega
+      · have conv := converted same
+        have act := activation (by omega) same
+        split <;> split <;> omega
+  · intro debited
+    rcases update with low | ⟨crossed, belowBalance, belowCap⟩
+    · omega
+    by_cases below : EB < capR
+    · have := debited below
+      omega
+    · by_cases same : capZ = capR
+      · omega
+      · have conv := converted same
+        have act := activation (by omega) same
+        omega
+
+/-- The rises add up to the crossings, bands, largest credits, transfers and deposit caps. -/
+private theorem rise_sum {U A D B : Finset ℕ} {rise crossing transfer : ℕ → ℕ}
+    {band creditMax capMax : ℕ}
+    (each : ∀ i ∈ U, i ∉ B → rise i ≤ crossing i + (if i ∈ A then band else 0) +
+      (if i ∈ D then band + creditMax else 0) + transfer i)
+    (deposited : ∀ i ∈ U, i ∈ B → rise i ≤ capMax) :
+    ∑ i ∈ U, rise i ≤ ∑ i ∈ U, crossing i + (U ∩ A).card * band +
+      (U ∩ D).card * (band + creditMax) + ∑ i ∈ U, transfer i + (U ∩ B).card * capMax := by
+  have pointwise : ∀ i ∈ U, rise i ≤ crossing i + (if i ∈ A then band else 0) +
+      (if i ∈ D then band + creditMax else 0) + transfer i + (if i ∈ B then capMax else 0) := by
+    intro i member
+    by_cases inB : i ∈ B
+    · have := deposited i member inB
+      simp only [inB, ↓reduceIte]
+      omega
+    · have := each i member inB
+      simp only [inB, ↓reduceIte]
+      omega
+  refine (Finset.sum_le_sum pointwise).trans (le_of_eq ?_)
+  simp only [Finset.sum_add_distrib, Finset.sum_ite_mem, Finset.sum_const, smul_eq_mul,
+    Nat.mul_add]
+
+/-- States that agree on activity in an epoch, with a longer later registry, share its actives. -/
+private theorem activeFilter_eq {f g : Fork} {a : BeaconState preset f}
+    {b : BeaconState preset g} {ep : Epoch} (active : ∀ i, isActiveAt b ep i = isActiveAt a ep i)
+    (grows : a.validators.data.size ≤ b.validators.data.size) :
+    (Finset.range b.validators.data.size).filter (fun i => isActiveAt b ep i = true) =
+      (Finset.range a.validators.data.size).filter (fun i => isActiveAt a ep i = true) := by
+  ext i
+  simp only [Finset.mem_filter, Finset.mem_range, active]
+  constructor
+  · rintro ⟨-, hit⟩
+    obtain ⟨v, found, -⟩ := isActiveAt_eq_true_iff.mp hit
+    exact ⟨(Array.getElem?_eq_some_iff.mp found).1, hit⟩
+  · rintro ⟨inside, hit⟩
+    exact ⟨Nat.lt_of_lt_of_le inside grows, hit⟩
+
+/-- Within one epoch before Gloas, the churn left of the pending deposits stays. -/
+private theorem run_depositCarry {x y : ForkedBeaconState preset} (tail : Run config checks x y)
+    (early : y.fork < .glamsterdam) (same : getCurrentEpoch y.state = getCurrentEpoch x.state) :
+    ∀ (one : .pectra ≤ y.fork) (two : .pectra ≤ x.fork),
+      y.state.depositBalanceToConsume one = x.state.depositBalanceToConsume two :=
+  Run.induction_of_same_epoch
+    (fun w _ => ∀ (one : .pectra ≤ w.fork) (two : .pectra ≤ x.fork),
+      w.state.depositBalanceToConsume one = x.state.depositBalanceToConsume two)
+    (fun _ _ => rfl)
+    (fun _ _ _ ok _ early prior one two => by
+      rw [show _ = _ from congrFun (depositCarry_processBlock early (applySignedBlock_ok ok).2.1)
+        one]
+      exact prior one two)
+    (fun _ _ lastEq cachedOk _ prior => by
+      subst lastEq
+      obtain ⟨_, _, _, _, rfl⟩ := processSlot_ok cachedOk
+      exact prior)
+    tail early same
+
+/-- Gains of distinct entries, each on a distinct list with a value, sum to at most the values.
+
+Their keys number at most that list. -/
+private theorem gain_sum_le {list due : List PendingConsolidation}
+    {gain value : PendingConsolidation → ℕ} (key : PendingConsolidation → ℕ)
+    (nodupList : list.Nodup) (nodupDue : due.Nodup)
+    (into : ∀ c ∈ list, 0 < gain c → c ∈ due ∧ gain c = value c) :
+    (list.map gain).sum ≤ (due.map value).sum ∧
+      (((list.filter fun c => 0 < gain c).map key).toFinset).card ≤ due.length := by
+  have dropZero : ∀ l : List PendingConsolidation,
+      (l.map gain).sum = ((l.filter fun c => 0 < gain c).map gain).sum := by
+    intro l
+    induction l with
+    | nil => rfl
+    | cons c rest ih =>
+      simp only [List.map_cons, List.sum_cons, List.filter_cons]
+      split
+      · simp [ih]
+      · rename_i zero
+        simp only [decide_eq_true_eq, Nat.not_lt, Nat.le_zero] at zero
+        rw [zero, ih, Nat.zero_add]
+  set S := list.filter fun c => 0 < gain c with hS
+  have nodupS : S.Nodup := nodupList.filter _
+  have sub : S.toFinset ⊆ due.toFinset := by
+    intro c member
+    rw [List.mem_toFinset, hS, List.mem_filter, decide_eq_true_eq] at member
+    exact List.mem_toFinset.mpr (into c member.1 member.2).1
+  have values : (S.map gain).sum = (S.map value).sum := by
+    apply congrArg List.sum
+    apply List.map_congr_left
+    intro c member
+    rw [hS, List.mem_filter, decide_eq_true_eq] at member
+    exact (into c member.1 member.2).2
+  refine ⟨?_, ?_⟩
+  · rw [dropZero, values, ← List.sum_toFinset _ nodupS, ← List.sum_toFinset _ nodupDue]
+    exact Finset.sum_le_sum_of_subset sub
+  · refine (List.toFinset_card_le _).trans ?_
+    rw [List.length_map, ← List.toFinset_card_of_nodup nodupS,
+      ← List.toFinset_card_of_nodup nodupDue]
+    exact Finset.card_le_card sub
+
+
+/-- A successful active-balance read is the sum of the effective balances of the active validators.
+
+A total below one increment is read as one increment. -/
+private theorem getTotalActiveBalance_toNat {fork : Fork} {state : BeaconState preset fork}
+    {total : Gwei} (computed : getTotalActiveBalance state = .ok total) :
+    total.toNat = max preset.EFFECTIVE_BALANCE_INCREMENT.toNat
+      (∑ i ∈ (Finset.range state.validators.data.size).filter
+          (fun i => isActiveAt state (getCurrentEpoch state) i = true),
+        ((state.validators.data[i]?).map (·.effectiveBalance.toNat)).getD 0) := by
+  obtain ⟨indices, checked, computed⟩ := bind_ok_iff.mp computed
+  obtain ⟨-, lt, rfl⟩ := getTotalBalance_ok_iff.mp computed
+  have sum : sumMarked state.validators.data (markIndices state.validators.data.size indices) =
+      ∑ i ∈ (Finset.range state.validators.data.size).filter
+          (fun i => isActiveAt state (getCurrentEpoch state) i = true),
+        ((state.validators.data[i]?).map (·.effectiveBalance.toNat)).getD 0 := by
+    rw [sumMarked_eq_sum, Finset.sum_filter, Finset.sum_eq_multiset_sum, Finset.range_val,
+      ← Multiset.coe_range, Multiset.map_coe, Multiset.sum_coe]
+    congr 1
+    refine List.map_congr_left fun j member => ?_
+    have inside := List.mem_range.mp member
+    -- The mark of a position is set exactly when the position is active.
+    have marked : (indices.any (·.toNat == j)) = isActiveAt state (getCurrentEpoch state) j := by
+      rw [Bool.eq_iff_iff, List.any_eq_true, isActiveAt_eq_true_iff]
+      constructor
+      · rintro ⟨x, member, equal⟩
+        have := (mem_iff_of_getActiveValidatorIndicesChecked_ok checked).mp member
+        rw [beq_iff_eq] at equal
+        rwa [equal] at this
+      · rintro ⟨validator, found, active⟩
+        have fits := lt_of_getActiveValidatorIndicesChecked_ok checked found active
+        have same : j.toUInt64.toNat = j := by
+          rw [Nat.toUInt64_eq, UInt64.toNat_ofNat_of_lt' fits]
+        refine ⟨j.toUInt64, (mem_iff_of_getActiveValidatorIndicesChecked_ok checked).mpr
+          ⟨validator, by rw [same]; exact found, active⟩, ?_⟩
+        rw [beq_iff_eq, same]
+    rw [getElem?_markIndices]
+    simp only [inside, ↓reduceIte, Option.getD_some, marked]
+  rw [← sum, toNat_max, Nat.toUInt64_eq, UInt64.toNat_ofNat_of_lt' lt]
+
+/-- Before Gloas, a successful deposit churn read is a share of the total active balance.
+
+The share is the total over the churn quotient, or the minimum if that is larger.
+
+It is rounded down to a whole number of increments, then capped by the maximum. -/
+private theorem depositChurnLimit_toNat_of_lt {fork : Fork} {state : BeaconState preset fork}
+    {total churn : Gwei} (early : fork < .glamsterdam)
+    (totalOk : getTotalActiveBalance state = .ok total)
+    (computed : depositChurnLimit config state = .ok churn) :
+    churn.toNat = min config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat
+      (max config.MIN_PER_EPOCH_CHURN_LIMIT_ELECTRA.toNat
+          (total.toNat / config.CHURN_LIMIT_QUOTIENT.toNat) -
+        max config.MIN_PER_EPOCH_CHURN_LIMIT_ELECTRA.toNat
+          (total.toNat / config.CHURN_LIMIT_QUOTIENT.toNat) %
+            preset.EFFECTIVE_BALANCE_INCREMENT.toNat) := by
+  rw [depositChurnLimit_of_lt early] at computed
+  simp only [getActivationExitChurnLimit, getBalanceChurnLimit, totalOk, bind, Except.bind,
+    pure, Except.pure, Except.ok.injEq] at computed
+  subst computed
+  rw [toNat_min, toNat_roundToIncrement, toNat_max, UInt64.toNat_div]
+
 end EthLib.Consensus
