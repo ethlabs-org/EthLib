@@ -511,38 +511,6 @@ private theorem crossing_fall {z z' : ForkedBeaconState preset} (altair : .altai
 
 /-! ## The floor of a balance under the withdrawals of a block -/
 
-/-- In withdrawals that name each validator once, the one at `k` adds its amount to the total of
-those before it, and none after it names the same validator.
-
-This is master's private `withdrawnFrom_split` (WithdrawalAmounts.lean). -/
-private theorem withdrawnFrom_at {sweep : Array Withdrawal}
-    (distinct : (sweep.toList.map (·.validatorIndex.toNat)).Nodup) {k : Nat}
-    (inside : k < sweep.size) :
-    withdrawnFrom sweep sweep[k].validatorIndex =
-      withdrawnFrom (sweep.extract 0 k) sweep[k].validatorIndex + sweep[k].amount.toNat := by
-  have insideList : k < sweep.toList.length := by simpa using inside
-  have pieces : sweep.toList = sweep.toList.take k ++
-      sweep.toList[k] :: sweep.toList.drop (k + 1) := by
-    rw [← List.drop_eq_getElem_cons insideList, List.take_append_drop]
-  have later : ∀ other ∈ sweep.toList.drop (k + 1),
-      other.validatorIndex ≠ sweep[k].validatorIndex := by
-    intro other member same
-    have whole : (sweep.toList.take (k + 1) ++ sweep.toList.drop (k + 1)).map
-        (·.validatorIndex.toNat) |>.Nodup := by
-      rw [List.take_append_drop]
-      exact distinct
-    rw [List.map_append, List.nodup_append] at whole
-    refine whole.2.2 _ (List.mem_map_of_mem (List.getElem_mem (l := sweep.toList.take (k + 1))
-      (n := k) (by simp; omega))) _ (List.mem_map_of_mem member) ?_
-    simp [same]
-  unfold withdrawnFrom
-  rw [pieces]
-  simp only [List.filter_append, List.filter_cons, Array.getElem_toList, decide_true,
-    ↓reduceIte, List.map_append, List.map_cons, List.sum_append, List.sum_cons]
-  rw [List.filter_eq_nil_iff.mpr fun other member same => later other member
-    (of_decide_eq_true same)]
-  simp [Array.toList_extract, List.extract_eq_take_drop]
-
 /-- The queued partial withdrawals of a payload pay a validator only above the activation balance.
 
 They pay only a validator whose effective balance is at least that balance. -/
@@ -642,7 +610,7 @@ private theorem withdrawals_floor {f : Fork} {s t : BeaconState preset f}
       obtain ⟨pays, distinct⟩ := getValidatorsSweepWithdrawals_pays (s.validators.bound early)
         sweepOk
       obtain ⟨validator, left, validatorOk, leftOk, kind⟩ := pays k inside
-      have total := withdrawnFrom_at distinct inside
+      have total := withdrawnFrom_split distinct inside
       rw [named] at validatorOk leftOk total
       rw [getValidator_eq_ok_iff, found, Option.some.injEq] at validatorOk
       subst validator
@@ -861,7 +829,7 @@ The second is what the queued partial withdrawals pay it, up to its effective ba
 activation balance. -/
 private theorem block_floor {f : Fork}
     {s t : BeaconState preset f} {engine : ExecutionEngine preset f}
-    {block : BeaconBlock preset f} (early : f < .glamsterdam) (electra : .pectra ≤ f)
+    {block : BeaconBlock preset f} (early : f < .glamsterdam) (fulu : .fusaka ≤ f)
     (matched : BalancesMatch s) (computed : processBlock config checks engine s block = .ok t)
     {v : ValidatorIndex} {val : Validator} (found : s.validators.data[v.toNat]? = some val)
     (later : getCurrentEpoch s < val.withdrawableEpoch)
@@ -869,9 +837,10 @@ private theorem block_floor {f : Fork}
     (unslashed : ∀ w, t.validators.data[v.toNat]? = some w → w.slashed = false) :
     min (actualBalanceAt ⟨f, s⟩ v.toNat) val.effectiveBalance.toNat ≤
       actualBalanceAt ⟨f, t⟩ v.toNat +
-        seatsAt t (Nat.le_trans (by decide) electra) v.toNat * seatRewardAt t +
+        seatsAt t (Nat.le_trans (by decide) fulu) v.toNat * seatRewardAt t +
         min (blockQueuePaid s block v)
           (val.effectiveBalance.toNat - preset.MIN_ACTIVATION_BALANCE.toNat) := by
+  have electra : .pectra ≤ f := Nat.le_trans (by decide) fulu
   have altair : .altair ≤ f := Nat.le_trans (by decide) electra
   have notGloas : ¬ .glamsterdam ≤ f := Nat.not_le_of_lt early
   have bellatrix : .bellatrix ≤ f := Nat.le_trans (by decide) electra
@@ -916,7 +885,8 @@ private theorem block_floor {f : Fork}
     obtain ⟨_, syncedEq⟩ := processSyncAggregate_eq synced
     intro w read
     exact unslashed w (by rw [syncedEq]; exact read)
-  have operationsFloor := processOperations_floor early (startedFrame.balancesMatch matched) operatedOk
+  have operationsFloor := processOperations_floor early fulu (startedFrame.balancesMatch matched)
+    operatedOk
     inputFound capped lastClear
   obtain ⟨w, lastFound, samePubkey⟩ := validators_getElem?_of_validatorKeys_prefix
     (frame_processOperations operatedOk).pubkeysPrefix inputFound
@@ -2172,7 +2142,7 @@ theorem effectiveFall_le
       have toS := fromR.append pre
       have sEpochR : getCurrentEpoch s = getCurrentEpoch R.state := sEpoch.trans XEpoch
       have fEq : f = R.fork := Run.fork_eq_of_same_epoch toS sEpochR
-      have electraF : .pectra ≤ f := fEq ▸ electraR
+      have fuluF : .fusaka ≤ f := by rw [fEq, ← RT, ← PT]; exact fulu
       obtain ⟨-, keptS, -, activeS⟩ := readsAt toS fEarly sEpochR
       have activeAtS : isActiveAt s (getCurrentEpoch R.state) v.toNat = true := by
         rw [show isActiveAt s (getCurrentEpoch R.state) v.toNat =
@@ -2191,7 +2161,7 @@ theorem effectiveFall_le
         exact UInt64.lt_of_lt_of_le isActiveS.2 ordered
       have capS := (histX.append pre).effectiveBalance_capped genesis caps.activation
         caps.compounding fEarly valS (Array.mem_of_getElem? foundS)
-      have floor := block_floor fEarly electraF invS.balancesMatch
+      have floor := block_floor fEarly fuluF invS.balancesMatch
         (applySignedBlock_ok ok).2.1 foundS later capS clearAfter
       have tEpoch : getCurrentEpoch t = getCurrentEpoch R.state := by
         rw [← sEpochR]

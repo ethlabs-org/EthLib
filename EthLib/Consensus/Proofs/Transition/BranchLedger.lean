@@ -516,43 +516,26 @@ private theorem lives_addValidatorToRegistry {pubkey : Cryptography.Bls.BLSPubke
     Lives s t := by
   exact Lives.append (addValidatorToRegistry_validators_eq_push computed) rfl
 
-private theorem lives_applyPendingDeposit {deposit : PendingDeposit}
-    (computed : applyPendingDeposit config checks s deposit = .ok t) : Lives s t := by
-  unfold applyPendingDeposit at computed
-  split at computed
-  · split at computed
-    · cases computed
-      exact Lives.refl _
-    simp only [bind_ok_iff] at computed
-    obtain ⟨_, _, computed⟩ := computed
-    split at computed
-    · exact lives_addValidatorToRegistry computed
-    · simp only [pure, Except.pure, Except.ok.injEq] at computed
-      exact computed ▸ Lives.refl _
-  · simp only [liftAccessor_ok, bind_ok_iff] at computed
-    obtain ⟨_, _, computed⟩ := computed
-    exact lives_increaseBalance computed
-
 private theorem lives_processDeposit {before : fork < .hegota} {deposit : Deposit}
+    (electra : .pectra ≤ fork)
     (computed : processDeposit config checks before s deposit = .ok t) : Lives s t := by
   obtain ⟨_, _, next, _, applied⟩ := processDeposit_ok computed
   refine (Lives.of_data (s := s) (t := { s with eth1DepositIndex := fun _ => next }) rfl).trans ?_
   unfold applyDeposit at applied
+  simp only [electra, ↓reduceDIte] at applied
+  unfold applyDepositElectra at applied
   split at applied
-  · unfold applyDepositElectra at applied
+  · simp only [bind_ok_iff] at applied
+    obtain ⟨_, _, applied⟩ := applied
     split at applied
-    · simp only [bind_ok_iff] at applied
-      obtain ⟨_, _, applied⟩ := applied
-      split at applied
-      · simp only [bind_ok_iff, liftAccessor_ok] at applied
-        obtain ⟨_, added, pushed⟩ := applied
-        obtain ⟨_, rfl⟩ := addPendingDeposit_eq pushed
-        exact (lives_addValidatorToRegistry added).trans (Lives.of_data rfl)
-      · cases applied
-        exact Lives.refl _
-    · obtain ⟨_, rfl⟩ := addPendingDeposit_eq (liftAccessor_ok.mp applied)
-      exact Lives.of_data rfl
-  · exact lives_applyPendingDeposit applied
+    · simp only [bind_ok_iff, liftAccessor_ok] at applied
+      obtain ⟨_, added, pushed⟩ := applied
+      obtain ⟨_, rfl⟩ := addPendingDeposit_eq pushed
+      exact (lives_addValidatorToRegistry added).trans (Lives.of_data rfl)
+    · cases applied
+      exact Lives.refl _
+  · obtain ⟨_, rfl⟩ := addPendingDeposit_eq (liftAccessor_ok.mp applied)
+    exact Lives.of_data rfl
 
 private theorem lives_processVoluntaryExit {signed : SignedVoluntaryExit}
     (computed : processVoluntaryExit config checks s signed = .ok t) : Lives s t := by
@@ -1328,19 +1311,16 @@ private theorem actualBalanceAt_push {balance : Gwei}
   · simp
   · rfl
 
-/-- Before Electra a deposit credits its amount to one validator, maybe a new one.
+/-- From Electra a deposit moves no balance, since it only queues the amount.
 
-From Electra it moves no balance, since it only queues the amount.
+A new validator gets a zero balance, which reads like no balance.
 
 The balances must match the validators, so that a new validator gets a new balance. -/
 private theorem ledger_processDeposit {before : fork < .hegota} {deposit : Deposit}
-    (matched : BalancesMatch s)
+    (electra : .pectra ≤ fork) (matched : BalancesMatch s)
     (computed : processDeposit config checks before s deposit = .ok t) :
-    ∃ recipient : ValidatorIndex,
-      (t.eth1DepositIndex before).toNat = (s.eth1DepositIndex before).toNat + 1 ∧
-      Ledger s t ∅ ∅ 0 (fun v => if v = recipient ∧ fork < .pectra then
-        deposit.data.amount.toNat else 0) 0 := by
-  obtain ⟨-, index, next, -, applied⟩ := processDeposit_ok computed
+    Ledger s t ∅ ∅ 0 0 0 := by
+  obtain ⟨-, -, next, -, applied⟩ := processDeposit_ok computed
   generalize hs' : { s with eth1DepositIndex := fun _ => next } = s' at applied
   have balances' : s'.balances = s.balances := by rw [← hs']
   have validators' : s'.validators = s.validators := by rw [← hs']
@@ -1348,79 +1328,38 @@ private theorem ledger_processDeposit {before : fork < .hegota} {deposit : Depos
     unfold BalancesMatch at matched ⊢; rw [balances', validators']; exact matched
   have actual' (i : ℕ) : actualBalanceAt ⟨fork, s'⟩ i = actualBalanceAt ⟨fork, s⟩ i := by
     simp only [actualBalanceAt, balances']
-  -- An appended zero balance reads like no balance.
-  have zero {u : BeaconState preset fork} (pushed : u.balances.data = s'.balances.data.push 0)
-      (v : ValidatorIndex) :
-      actualBalanceAt ⟨fork, u⟩ v.toNat = actualBalanceAt ⟨fork, s⟩ v.toNat := by
-    rw [actualBalanceAt_push pushed, ← actual' v.toNat]
-    split
-    · rename_i at_end
-      simp [actualBalanceAt, at_end]
-    · rfl
   unfold applyDeposit at applied
+  simp only [electra, ↓reduceDIte] at applied
+  unfold applyDepositElectra at applied
   split at applied
-  · rename_i electra
-    have notBefore : ¬ fork < .pectra := Nat.not_lt_of_le electra
-    refine ⟨0, index, ?_⟩
-    simp only [notBefore, and_false, ↓reduceIte]
-    unfold applyDepositElectra at applied
+  · simp only [bind_ok_iff] at applied
+    obtain ⟨_, _, applied⟩ := applied
     split at applied
-    · simp only [bind_ok_iff] at applied
-      obtain ⟨_, _, applied⟩ := applied
-      split at applied
-      · simp only [bind_ok_iff, liftAccessor_ok] at applied
-        obtain ⟨registered, added, queued⟩ := applied
-        obtain ⟨_, queuedEq⟩ := addPendingDeposit_eq queued
-        obtain ⟨validatorsPushed, balancesPushed⟩ := addValidatorToRegistry_push added matched'
-        have finalBalances : t.balances.data = s'.balances.data.push 0 := by
-          rw [queuedEq]; exact balancesPushed
-        refine Ledger.of_append (.inr ⟨_, by rw [queuedEq, ← validators']; exact validatorsPushed⟩)
-          fun v => ?_
-        have := zero finalBalances v
-        exact ⟨by omega, by omega⟩
-      · cases applied
-        exact Ledger.of_append (.inl (by rw [validators'])) fun v => by
-          have := actual' v.toNat; exact ⟨by omega, by omega⟩
-    · obtain ⟨_, queuedEq⟩ := addPendingDeposit_eq (liftAccessor_ok.mp applied)
-      have finalBalances : t.balances = s'.balances := by rw [queuedEq]
-      exact Ledger.of_append (.inl (by rw [queuedEq, validators'])) fun v => by
-        have := actual' v.toNat
-        simp only [actualBalanceAt, finalBalances] at this ⊢
-        exact ⟨by omega, by omega⟩
-  · rename_i electra
-    have earlier : fork < .pectra := Nat.lt_of_not_le electra
-    rcases applyPendingDeposit_cases applied with rfl | ⟨recipient, raised⟩ | ⟨_, added⟩
-    · refine ⟨0, index, Ledger.of_append (.inl (by rw [validators'])) fun v => ?_⟩
-      have := actual' v.toNat
-      omega
-    · refine ⟨recipient, index, Ledger.of_append
-        (.inl (by rw [increaseBalance_validators raised, validators'])) fun v => ?_⟩
-      obtain ⟨inside, fits, rfl⟩ := increaseBalance_eq_ok_iff.mp raised
-      have := actual' v.toNat
-      by_cases same : v = recipient
-      · subst same
-        simp only [actualBalanceAt, BeaconState.putBalance, Array.getElem?_set_self,
-          Array.getElem?_eq_getElem inside, Option.map_some, Option.getD_some, earlier, and_self,
-          ↓reduceIte, toNat_add_of_lt fits] at this ⊢
-        omega
-      · have different : recipient.toNat ≠ v.toNat := fun equal =>
-          same (UInt64.toNat_inj.mp equal).symm
-        simp only [actualBalanceAt, BeaconState.putBalance, Array.getElem?_set, different,
-          same, false_and, ↓reduceIte] at this ⊢
-        exact ⟨by omega, by omega⟩
-    · obtain ⟨validatorsPushed, balancesPushed⟩ := addValidatorToRegistry_push added matched'
-      refine ⟨UInt64.ofNat s'.balances.data.size, index, Ledger.of_append
-        (.inr ⟨_, by simpa [validators'] using validatorsPushed⟩) fun v => ?_⟩
-      rw [actualBalanceAt_push balancesPushed, ← actual' v.toNat]
-      split
-      · rename_i at_end
-        have same : v = UInt64.ofNat s'.balances.data.size := by
-          rw [← at_end]; simp
-        have absent : actualBalanceAt ⟨fork, s'⟩ v.toNat = 0 := by
+    · simp only [bind_ok_iff, liftAccessor_ok] at applied
+      obtain ⟨registered, added, queued⟩ := applied
+      obtain ⟨_, queuedEq⟩ := addPendingDeposit_eq queued
+      obtain ⟨validatorsPushed, balancesPushed⟩ := addValidatorToRegistry_push added matched'
+      have finalBalances : t.balances.data = s'.balances.data.push 0 := by
+        rw [queuedEq]; exact balancesPushed
+      refine Ledger.of_append (.inr ⟨_, by rw [queuedEq, ← validators']; exact validatorsPushed⟩)
+        fun v => ?_
+      -- An appended zero balance reads like no balance.
+      have zero : actualBalanceAt ⟨fork, t⟩ v.toNat = actualBalanceAt ⟨fork, s⟩ v.toNat := by
+        rw [actualBalanceAt_push finalBalances, ← actual' v.toNat]
+        split
+        · rename_i at_end
           simp [actualBalanceAt, at_end]
-        rw [absent]
-        simp [same, earlier]
-      · omega
+        · rfl
+      exact ⟨by simp [zero], by omega⟩
+    · cases applied
+      exact Ledger.of_append (.inl (by rw [validators'])) fun v => by
+        have := actual' v.toNat; exact ⟨by simp; omega, by omega⟩
+  · obtain ⟨_, queuedEq⟩ := addPendingDeposit_eq (liftAccessor_ok.mp applied)
+    have finalBalances : t.balances = s'.balances := by rw [queuedEq]
+    exact Ledger.of_append (.inl (by rw [queuedEq, validators'])) fun v => by
+      have := actual' v.toNat
+      simp only [actualBalanceAt, finalBalances] at this ⊢
+      exact ⟨by simp; omega, by omega⟩
 
 /-- Writing a validator that compounds exactly when the old one did moves no balance. -/
 private theorem Ledger.setValidator {i : ValidatorIndex} {old new : Validator}
@@ -2441,26 +2380,22 @@ private theorem FlagsGrowBelow.trans_grow {u : BeaconState preset fork}
 private theorem growBelow_applyDeposit {pubkey : Cryptography.Bls.BLSPubkey}
     {withdrawalCredentials : Bytes32} {amount : Gwei} {signature : Cryptography.Bls.BLSSignature}
     (computed : applyDeposit config checks s pubkey withdrawalCredentials amount signature =
-      .ok t) : FlagsGrowBelow s t := by
+      .ok t) (electra : .pectra ≤ fork) : FlagsGrowBelow s t := by
   unfold applyDeposit at computed
+  simp only [electra, ↓reduceDIte] at computed
+  unfold applyDepositElectra at computed
   split at computed
-  · unfold applyDepositElectra at computed
+  · simp only [bind_ok_iff] at computed
+    obtain ⟨_, _, computed⟩ := computed
     split at computed
-    · simp only [bind_ok_iff] at computed
-      obtain ⟨_, _, computed⟩ := computed
-      split at computed
-      · simp only [bind_ok_iff, liftAccessor_ok] at computed
-        obtain ⟨_, added, pushed⟩ := computed
-        obtain ⟨_, rfl⟩ := addPendingDeposit_eq pushed
-        exact (growBelow_addValidatorToRegistry added).trans_grow FlagsGrow.of_eq
-      · cases computed
-        exact (FlagsGrow.refl _).below
-    · obtain ⟨_, rfl⟩ := addPendingDeposit_eq (liftAccessor_ok.mp computed)
-      exact (FlagsGrow.of_eq).below
-  · rcases applyPendingDeposit_cases computed with rfl | ⟨_, raised⟩ | ⟨_, added⟩
-    · exact (FlagsGrow.refl _).below
-    · exact (grow_increaseBalance raised).below
-    · exact growBelow_addValidatorToRegistry added
+    · simp only [bind_ok_iff, liftAccessor_ok] at computed
+      obtain ⟨_, added, pushed⟩ := computed
+      obtain ⟨_, rfl⟩ := addPendingDeposit_eq pushed
+      exact (growBelow_addValidatorToRegistry added).trans_grow FlagsGrow.of_eq
+    · cases computed
+      exact (FlagsGrow.refl _).below
+  · obtain ⟨_, rfl⟩ := addPendingDeposit_eq (liftAccessor_ok.mp computed)
+    exact (FlagsGrow.of_eq).below
 
 /-- A deposit clears no flag of an existing validator.
 
@@ -2468,11 +2403,11 @@ A new validator writes its zero flags at the position after the registry.
 
 That position may already hold flags when the lists are longer than the registry. -/
 private theorem grow_processDeposit {before : fork < .hegota} {deposit : Deposit}
-    (computed : processDeposit config checks before s deposit = .ok t) :
+    (electra : .pectra ≤ fork) (computed : processDeposit config checks before s deposit = .ok t) :
     FlagsGrowBelow s t := by
   obtain ⟨_, _, next, _, applied⟩ := processDeposit_ok computed
   exact FlagsGrowBelow.trans (u := { s with eth1DepositIndex := fun _ => next })
-    (FlagsGrow.of_eq).below (growBelow_applyDeposit applied) (Nat.le_refl _)
+    (FlagsGrow.of_eq).below (growBelow_applyDeposit applied electra) (Nat.le_refl _)
 
 private theorem grow_processVoluntaryExit {signed : SignedVoluntaryExit}
     (computed : processVoluntaryExit config checks s signed = .ok t) : FlagsGrow s t := by
@@ -2908,36 +2843,33 @@ private theorem payloadInputs_addValidatorToRegistry' {pubkey : Cryptography.Bls
   · cases computed
 
 private theorem payloadInputs_processDeposit' {before : fork < .hegota} {deposit : Deposit}
-    (computed : processDeposit config checks before s deposit = .ok t) : PayloadInputs s t := by
+    (electra : .pectra ≤ fork) (computed : processDeposit config checks before s deposit = .ok t) : PayloadInputs s t := by
   obtain ⟨_, _, next, _, applied⟩ := processDeposit_ok computed
   refine PayloadInputs.trans (second := { s with eth1DepositIndex := fun _ => next })
     ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl⟩ ?_
   unfold applyDeposit at applied
+  simp only [electra, ↓reduceDIte] at applied
+  unfold applyDepositElectra at applied
   split at applied
-  · unfold applyDepositElectra at applied
+  · simp only [bind_ok_iff] at applied
+    obtain ⟨_, _, applied⟩ := applied
     split at applied
-    · simp only [bind_ok_iff] at applied
-      obtain ⟨_, _, applied⟩ := applied
-      split at applied
-      · simp only [bind_ok_iff, liftAccessor_ok] at applied
-        obtain ⟨_, added, pushed⟩ := applied
-        obtain ⟨_, rfl⟩ := addPendingDeposit_eq pushed
-        exact (payloadInputs_addValidatorToRegistry' added).trans
-          ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl⟩
-      · cases applied
-        exact PayloadInputs.refl _
-    · obtain ⟨_, rfl⟩ := addPendingDeposit_eq (liftAccessor_ok.mp applied)
-      exact ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl⟩
-  · rcases applyPendingDeposit_cases applied with rfl | ⟨_, raised⟩ | ⟨_, added⟩
-    · exact PayloadInputs.refl _
-    · exact payloadInputs_increaseBalance raised
-    · exact payloadInputs_addValidatorToRegistry' added
+    · simp only [bind_ok_iff, liftAccessor_ok] at applied
+      obtain ⟨_, added, pushed⟩ := applied
+      obtain ⟨_, rfl⟩ := addPendingDeposit_eq pushed
+      exact (payloadInputs_addValidatorToRegistry' added).trans
+        ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl⟩
+    · cases applied
+      exact PayloadInputs.refl _
+  · obtain ⟨_, rfl⟩ := addPendingDeposit_eq (liftAccessor_ok.mp applied)
+    exact ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl⟩
 
 private theorem kept_processDeposit {before : fork < .hegota} {deposit : Deposit}
-    (computed : processDeposit config checks before s deposit = .ok t) : Kept s t :=
-  ⟨(frame_processDeposit computed).toFrame, payloadInputs_processDeposit' computed,
+    (electra : .pectra ≤ fork) (computed : processDeposit config checks before s deposit = .ok t) :
+    Kept s t :=
+  ⟨(frame_processDeposit computed).toFrame, payloadInputs_processDeposit' electra computed,
     stepKeeps_processDeposit computed, effectiveKept_processDeposit computed,
-    lives_processDeposit computed⟩
+    lives_processDeposit electra computed⟩
 
 private theorem kept_processVoluntaryExit {signed : SignedVoluntaryExit}
     (computed : processVoluntaryExit config checks s signed = .ok t) : Kept s t :=
@@ -2992,13 +2924,13 @@ The slashed validators were not slashed before, and pay their initial penalty.
 
 The proposer reward of the attestations is bounded by the flags they set. -/
 private structure Credited {fork : Fork} (o t : BeaconState preset fork)
-    (proposer : ValidatorIndex) (credit : ℕ) (slashed deposited conv : Finset ValidatorIndex)
+    (proposer : ValidatorIndex) (credit : ℕ) (slashed conv : Finset ValidatorIndex)
     (other slash : ValidatorIndex → ℕ) : Prop where
   ledger : Ledger o t ∅ conv 0 other slash
   kept : Kept o t
   grow : FlagsGrowBelow o t
   read : 0 < credit ∨ slashed.Nonempty → getBeaconProposerIndex o = .ok proposer
-  credited : ∀ v, v ∉ deposited → other v ≤ if v = proposer then
+  credited : ∀ v, other v ≤ if v = proposer then
     credit + ∑ x ∈ slashed, effectiveAt ⟨fork, t⟩ x.toNat /
       (parameters preset fork).WHISTLEBLOWER_REWARD_QUOTIENT.toNat else 0
   penalized : ∀ v, slash v ≤ if v ∈ slashed then effectiveAt ⟨fork, t⟩ v.toNat /
@@ -3010,8 +2942,6 @@ private structure Credited {fork : Fork} (o t : BeaconState preset fork)
     Reads o base → (∀ i, o.validators.data.size ≤ i → base i = 0) →
     credit * proposerDenominator + flagPotential o altair base count ≤
       flagPotential t altair base count
-  phase0 : fork < .altair → credit = 0
-  electra : .pectra ≤ fork → deposited = ∅
   eligible : ∀ v ∈ slashed, ∃ old, o.validators.data[v.toNat]? = some old ∧
     Eligible (getCurrentEpoch o) old
 
@@ -3021,18 +2951,16 @@ variable {fork : Fork} {o u t : BeaconState preset fork}
 
 /-- A kept step that moves no balance credits nothing. -/
 private theorem Credited.of_ledger (ledger : Ledger o t ∅ ∅ 0 0 0) (kept : Kept o t)
-    (grow : FlagsGrowBelow o t) : Credited o t 0 0 ∅ ∅ ∅ 0 0 where
+    (grow : FlagsGrowBelow o t) : Credited o t 0 0 ∅ ∅ 0 0 where
   ledger := ledger
   kept := kept
   grow := grow
   read hyp := by simp at hyp
-  credited v _ := by simp
+  credited v := by simp
   penalized v := by simp
   newly v member := absurd member (Finset.notMem_empty v)
   potential altair base count _ _ support := by
     simpa using flagPotential_mono_below grow altair base count support
-  phase0 _ := rfl
-  electra _ := rfl
   eligible v member := absurd member (Finset.notMem_empty v)
 
 /-- An effective balance at a later kept state is the one before, for an existing validator. -/
@@ -3042,12 +2970,12 @@ private theorem effectiveAt_of_kept (kept : Kept u t) {v : ValidatorIndex} {vali
   kept.effective v.toNat (Array.getElem?_eq_some_iff.mp found).1
 
 private theorem Credited.trans {proposer proposer' : ValidatorIndex} {credit credit' : ℕ}
-    {slashed slashed' deposited deposited' conv conv' : Finset ValidatorIndex}
+    {slashed slashed' conv conv' : Finset ValidatorIndex}
     {other other' slash slash' : ValidatorIndex → ℕ}
-    (one : Credited o u proposer credit slashed deposited conv other slash)
-    (two : Credited u t proposer' credit' slashed' deposited' conv' other' slash') :
+    (one : Credited o u proposer credit slashed conv other slash)
+    (two : Credited u t proposer' credit' slashed' conv' other' slash') :
     Credited o t (if 0 < credit' ∨ slashed'.Nonempty then proposer' else proposer)
-      (credit + credit') (slashed ∪ slashed') (deposited ∪ deposited') (conv ∪ conv')
+      (credit + credit') (slashed ∪ slashed') (conv ∪ conv')
       (other + other') (slash + slash') := by
   -- No validator is slashed in both parts.
   have apart : ∀ v ∈ slashed, v ∉ slashed' := by
@@ -3068,7 +2996,7 @@ private theorem Credited.trans {proposer proposer' : ValidatorIndex} {credit cre
     Finset.sum_congr rfl fun x member => by rw [kept x member]
   have proposerSame : getBeaconProposerIndex u = getBeaconProposerIndex o := one.kept.proposer
   refine ⟨by simpa using one.ledger.trans two.ledger, one.kept.trans two.kept,
-    one.grow.trans two.grow one.kept.frame.registryGrows, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩
+    one.grow.trans two.grow one.kept.frame.registryGrows, ?_, ?_, ?_, ?_, ?_, ?_⟩
   · intro positive
     split
     · rename_i later
@@ -3090,10 +3018,9 @@ private theorem Credited.trans {proposer proposer' : ValidatorIndex} {credit cre
       rcases same with zero | same
       · subst zero; split at bound <;> simp_all
       · rw [← same]; exact bound
-    intro v absent
-    simp only [Finset.mem_union, not_or] at absent
-    have first := one.credited v absent.1
-    have second := two.credited v absent.2
+    intro v
+    have first := one.credited v
+    have second := two.credited v
     rw [sumKept] at first
     have first' := moved v first (by
       by_cases earlier : 0 < credit ∨ slashed.Nonempty
@@ -3161,10 +3088,6 @@ private theorem Credited.trans {proposer proposer' : ValidatorIndex} {credit cre
       support i (Nat.le_trans one.kept.frame.registryGrows outside)
     rw [Nat.add_mul]
     omega
-  · intro early
-    rw [one.phase0 early, two.phase0 early]
-  · intro electra
-    rw [one.electra electra, two.electra electra, Finset.union_empty]
   · intro v member
     rcases Finset.mem_union.mp member with first | second
     · exact one.eligible v first
@@ -3177,17 +3100,17 @@ private theorem Credited.trans {proposer proposer' : ValidatorIndex} {credit cre
 /-- A fold of steps that each credit like operations, and convert nothing, does so too. -/
 private theorem Credited.foldlM {α ε : Type} {step : BeaconState preset fork → α → Except ε _}
     (each : ∀ a x b, BalancesMatch a → step a x = .ok b →
-      ∃ p c sl d o sh, Credited a b p c sl d ∅ o sh)
+      ∃ p c sl o sh, Credited a b p c sl ∅ o sh)
     {items : List α} (matched : BalancesMatch o) (computed : items.foldlM step o = .ok t) :
-    ∃ p c sl d o' sh, Credited o t p c sl d ∅ o' sh := by
-  refine foldlM_ok_invariant (fun b => ∃ p c sl d o' sh, Credited o b p c sl d ∅ o' sh)
-    (fun a x b ⟨_, _, _, _, _, _, before⟩ ok => ?_)
-    ⟨0, 0, ∅, ∅, 0, 0, Credited.of_ledger (Ledger.refl o) (Kept.refl o) (FlagsGrow.refl o).below⟩
+    ∃ p c sl o' sh, Credited o t p c sl ∅ o' sh := by
+  refine foldlM_ok_invariant (fun b => ∃ p c sl o' sh, Credited o b p c sl ∅ o' sh)
+    (fun a x b ⟨_, _, _, _, _, before⟩ ok => ?_)
+    ⟨0, 0, ∅, 0, 0, Credited.of_ledger (Ledger.refl o) (Kept.refl o) (FlagsGrow.refl o).below⟩
     computed
-  obtain ⟨_, _, _, _, _, _, next⟩ := each a x b (before.kept.frame.balancesMatch matched) ok
+  obtain ⟨_, _, _, _, _, next⟩ := each a x b (before.kept.frame.balancesMatch matched) ok
   have joined := before.trans next
   rw [Finset.empty_union] at joined
-  exact ⟨_, _, _, _, _, _, joined⟩
+  exact ⟨_, _, _, _, _, joined⟩
 
 end Credited
 
@@ -3203,16 +3126,16 @@ private theorem effectiveAt_eq_of_found {validator : Validator}
 private theorem credited_processProposerSlashing {slashing : ProposerSlashing}
     (early : fork < .glamsterdam)
     (computed : processProposerSlashing config checks s slashing = .ok t) :
-    ∃ p c sl d o sh, Credited s t p c sl d ∅ o sh := by
+    ∃ p c sl o sh, Credited s t p c sl ∅ o sh := by
   obtain ⟨proposer, slashed, validator, read, found, unslashed, ⟨later, laterFound, marked⟩,
     ledger, eligible⟩ := ledger_processProposerSlashing early computed
   have kept := kept_processProposerSlashing computed
   have grow := (grow_processProposerSlashing computed).below
   have effective : effectiveAt ⟨fork, t⟩ slashed.toNat = validator.effectiveBalance.toNat :=
     (effectiveAt_of_kept kept found).trans (effectiveAt_eq_of_found found)
-  refine ⟨proposer, 0, {slashed}, ∅, _, _, ledger, kept, grow, fun _ => read,
-    fun v _ => ?_, fun v => ?_, fun v member => ?_, fun altair base count _ _ support => ?_,
-    fun _ => rfl, fun _ => rfl, fun v member => ?_⟩
+  refine ⟨proposer, 0, {slashed}, _, _, ledger, kept, grow, fun _ => read,
+    fun v => ?_, fun v => ?_, fun v member => ?_, fun altair base count _ _ support => ?_,
+    fun v member => ?_⟩
   · simp only [Finset.sum_singleton, effective, zero_add]; exact le_rfl
   · by_cases same : v = slashed
     · subst same; simp [effective]
@@ -3227,7 +3150,7 @@ private theorem credited_processProposerSlashing {slashing : ProposerSlashing}
 private theorem credited_processAttesterSlashing {slashing : AttesterSlashing preset fork}
     (early : fork < .glamsterdam)
     (computed : processAttesterSlashing config checks s slashing = .ok t) :
-    ∃ p c sl d o sh, Credited s t p c sl d ∅ o sh := by
+    ∃ p c sl o sh, Credited s t p c sl ∅ o sh := by
   obtain ⟨proposer, slashed, read, newly, eligibles, ledger⟩ :=
     ledger_processAttesterSlashing early computed
   have kept := kept_processAttesterSlashing computed
@@ -3236,10 +3159,9 @@ private theorem credited_processAttesterSlashing {slashing : AttesterSlashing pr
     fun v member => by
       obtain ⟨validator, _, found, _⟩ := newly v member
       exact effectiveAt_of_kept kept found
-  refine ⟨proposer, 0, slashed, ∅, _, _, ledger, kept, grow,
-    fun hyp => read (by simpa using hyp), fun v _ => ?_, fun v => ?_, fun v member => ?_,
-    fun altair base count _ _ support => ?_, fun _ => rfl, fun _ => rfl,
-    eligibles⟩
+  refine ⟨proposer, 0, slashed, _, _, ledger, kept, grow,
+    fun hyp => read (by simpa using hyp), fun v => ?_, fun v => ?_, fun v member => ?_,
+    fun altair base count _ _ support => ?_, eligibles⟩
   · have same : ∑ x ∈ slashed, effectiveAt ⟨fork, s⟩ x.toNat /
         (parameters preset fork).WHISTLEBLOWER_REWARD_QUOTIENT.toNat =
         ∑ x ∈ slashed, effectiveAt ⟨fork, t⟩ x.toNat /
@@ -3255,86 +3177,59 @@ private theorem credited_processAttesterSlashing {slashing : AttesterSlashing pr
   · simpa using flagPotential_mono_below grow altair base count support
 
 private theorem credited_processAttestation {attestation : Attestation preset fork}
-    {parent : Slot} (early : fork < .glamsterdam)
+    {parent : Slot} (early : fork < .glamsterdam) (altair : .altair ≤ fork)
     (computed : processAttestation config checks s parent attestation = .ok t) :
-    ∃ p c sl d o sh, Credited s t p c sl d ∅ o sh := by
-  have kept := kept_processAttestation computed
-  have grow := (grow_processAttestation early computed).below
-  by_cases altair : .altair ≤ fork
-  · obtain ⟨proposer, credit, read, ledger, potential⟩ := attestation_credit altair early computed
-    exact ⟨proposer, credit, ∅, ∅, _, _, ledger, kept, grow, fun _ => read,
-      fun v _ => by simp, fun v => by simp, fun v member => absurd member (Finset.notMem_empty v),
-      fun altair' base count big reads _ => potential base big reads,
-      fun before => absurd altair (Nat.not_le_of_lt before), fun _ => rfl,
-      fun v member => absurd member (Finset.notMem_empty v)⟩
-  · obtain ⟨_, _, _, _, _, recorded, _⟩ :=
-      processAttestation_records (Nat.lt_of_not_le altair) computed
-    have balances : t.balances = s.balances := by
-      have h := recordPendingAttestation_ok recorded
-      split at h <;> have eq := congrArg (fun x => x.balances) h.2 <;> exact eq
-    have ledger : Ledger s t ∅ ∅ 0 0 0 :=
-      Ledger.of_eq (by rw [balances]) (by rw [(processAttestation_registry computed).1])
-    exact ⟨0, 0, ∅, ∅, _, _, ledger, kept, grow, fun hyp => by simp at hyp,
-      fun v _ => by simp, fun v => by simp, fun v member => absurd member (Finset.notMem_empty v),
-      fun altair' => absurd altair' altair, fun _ => rfl, fun _ => rfl,
-      fun v member => absurd member (Finset.notMem_empty v)⟩
+    ∃ p c sl o sh, Credited s t p c sl ∅ o sh := by
+  obtain ⟨proposer, credit, read, ledger, potential⟩ := attestation_credit altair early computed
+  exact ⟨proposer, credit, ∅, _, _, ledger, kept_processAttestation computed,
+    (grow_processAttestation early computed).below, fun _ => read,
+    fun v => by simp, fun v => by simp, fun v member => absurd member (Finset.notMem_empty v),
+    fun _ base count big reads _ => potential base big reads,
+    fun v member => absurd member (Finset.notMem_empty v)⟩
 
 private theorem credited_processDeposit {before : fork < .hegota} {deposit : Deposit}
-    (matched : BalancesMatch s)
+    (electra : .pectra ≤ fork) (matched : BalancesMatch s)
     (computed : processDeposit config checks before s deposit = .ok t) :
-    ∃ p c sl d o sh, Credited s t p c sl d ∅ o sh := by
-  obtain ⟨recipient, index, ledger⟩ := ledger_processDeposit matched computed
-  have kept := kept_processDeposit computed
-  have grow := grow_processDeposit computed
-  refine ⟨recipient, 0, ∅, if fork < .pectra then {recipient} else ∅, _, _, ledger, kept,
-    grow, fun hyp => by simp at hyp, fun v absent => ?_, fun v => by simp,
-    fun v member => absurd member (Finset.notMem_empty v),
-    fun altair base count _ _ support => by
-      simpa using flagPotential_mono_below grow altair base count support,
-    fun _ => rfl, fun electra => by
-      have notBefore : ¬ fork < .pectra := Nat.not_lt_of_le electra
-      simp [notBefore],
-    fun v member => absurd member (Finset.notMem_empty v)⟩
-  · by_cases credited : v = recipient ∧ fork < .pectra
-    · simp [credited.1, credited.2] at absent
-    · simp [credited]
+    ∃ p c sl o sh, Credited s t p c sl ∅ o sh :=
+  ⟨_, _, _, _, _, Credited.of_ledger (ledger_processDeposit electra matched computed)
+    (kept_processDeposit electra computed) (grow_processDeposit electra computed)⟩
 
 private theorem credited_processVoluntaryExit {signed : SignedVoluntaryExit}
     (computed : processVoluntaryExit config checks s signed = .ok t) :
-    ∃ p c sl d o sh, Credited s t p c sl d ∅ o sh :=
-  ⟨_, _, _, _, _, _, Credited.of_ledger (ledger_processVoluntaryExit computed)
+    ∃ p c sl o sh, Credited s t p c sl ∅ o sh :=
+  ⟨_, _, _, _, _, Credited.of_ledger (ledger_processVoluntaryExit computed)
     (kept_processVoluntaryExit computed) (grow_processVoluntaryExit computed).below⟩
 
 private theorem credited_processBlsToExecutionChanges {body : BeaconBlockBody preset fork}
     (computed : processBlsToExecutionChanges config checks s body = .ok t) :
-    ∃ p c sl d o sh, Credited s t p c sl d ∅ o sh :=
-  ⟨_, _, _, _, _, _, Credited.of_ledger (ledger_processBlsToExecutionChanges computed)
+    ∃ p c sl o sh, Credited s t p c sl ∅ o sh :=
+  ⟨_, _, _, _, _, Credited.of_ledger (ledger_processBlsToExecutionChanges computed)
     (kept_processBlsToExecutionChanges computed)
     (grow_processBlsToExecutionChanges computed).below⟩
 
 private theorem credited_processExecutionRequests {body : BeaconBlockBody preset fork}
     {electra : .pectra ≤ fork ∧ fork < .glamsterdam}
     (computed : processExecutionRequests config s body electra = .ok t) :
-    ∃ conv, Credited s t 0 0 ∅ ∅ conv 0 0 ∧
+    ∃ conv, Credited s t 0 0 ∅ conv 0 0 ∧
       conv.card ≤ preset.MAX_CONSOLIDATION_REQUESTS_PER_PAYLOAD.toNat := by
   obtain ⟨conv, ledger, count⟩ := ledger_processExecutionRequests computed
   have grow := (grow_processExecutionRequests computed).below
   exact ⟨conv, ⟨ledger, kept_processExecutionRequests computed, grow, fun hyp => by simp at hyp,
-    fun v _ => by simp, fun v => by simp, fun v member => absurd member (Finset.notMem_empty v),
+    fun v => by simp, fun v => by simp, fun v member => absurd member (Finset.notMem_empty v),
     fun altair base count _ _ support => by
       simpa using flagPotential_mono_below grow altair base count support,
-    fun _ => rfl, fun _ => rfl,
     fun v member => absurd member (Finset.notMem_empty v)⟩, count⟩
 
-/-- Before Gloas, the operations of a block credit like operations.
+/-- From Fulu and before Gloas, the operations of a block credit like operations.
 
 They convert at most one validator for each consolidation request. -/
 private theorem credited_processOperations {body : BeaconBlockBody preset fork} {parent : Slot}
-    (early : fork < .glamsterdam) (matched : BalancesMatch s)
+    (early : fork < .glamsterdam) (fulu : .fusaka ≤ fork) (matched : BalancesMatch s)
     (computed : processOperations config checks s body parent = .ok t) :
-    ∃ p c sl d cv o sh, Credited s t p c sl d cv o sh ∧
-      cv.card ≤ if .pectra ≤ fork then preset.MAX_CONSOLIDATION_REQUESTS_PER_PAYLOAD.toNat
-        else 0 := by
+    ∃ p c sl cv o sh, Credited s t p c sl cv o sh ∧
+      cv.card ≤ preset.MAX_CONSOLIDATION_REQUESTS_PER_PAYLOAD.toNat := by
+  have altair : .altair ≤ fork := Nat.le_trans (by decide) fulu
+  have electra : .pectra ≤ fork := Nat.le_trans (by decide) fulu
   unfold processOperations at computed
   split at computed
   · rename_i later
@@ -3342,38 +3237,35 @@ private theorem credited_processOperations {body : BeaconBlockBody preset fork} 
   simp only [bind_ok_iff, ensure_ok_iff, ← Array.foldlM_toList] at computed
   obtain ⟨_, _, _, _, a, proposersOk, b, attestersOk, c, attestationsOk, d, depositsOk, e,
     exitsOk, f, changesOk, requestsOk⟩ := computed
-  have step {x y : BeaconState preset fork} {p c sl d o sh p' c' sl' d' cv' o' sh'}
-      (one : Credited s x p c sl d ∅ o sh) (two : Credited x y p' c' sl' d' cv' o' sh') :
-      ∃ p c sl d o sh, Credited s y p c sl d cv' o sh := by
+  have step {x y : BeaconState preset fork} {p c sl o sh p' c' sl' cv' o' sh'}
+      (one : Credited s x p c sl ∅ o sh) (two : Credited x y p' c' sl' cv' o' sh') :
+      ∃ p c sl o sh, Credited s y p c sl cv' o sh := by
     have joined := one.trans two
     rw [Finset.empty_union] at joined
-    exact ⟨_, _, _, _, _, _, joined⟩
-  have matchedAt {x : BeaconState preset fork} {p c sl d o sh}
-      (held : Credited s x p c sl d ∅ o sh) : BalancesMatch x :=
+    exact ⟨_, _, _, _, _, joined⟩
+  have matchedAt {x : BeaconState preset fork} {p c sl o sh}
+      (held : Credited s x p c sl ∅ o sh) : BalancesMatch x :=
     held.kept.frame.balancesMatch matched
-  obtain ⟨_, _, _, _, _, _, one⟩ := Credited.foldlM
+  obtain ⟨_, _, _, _, _, one⟩ := Credited.foldlM
     (fun _ _ _ _ ok => credited_processProposerSlashing early ok) matched proposersOk
-  obtain ⟨_, _, _, _, _, _, two⟩ := Credited.foldlM
+  obtain ⟨_, _, _, _, _, two⟩ := Credited.foldlM
     (fun _ _ _ _ ok => credited_processAttesterSlashing early ok) (matchedAt one) attestersOk
-  obtain ⟨_, _, _, _, _, _, upTwo⟩ := step one two
-  obtain ⟨_, _, _, _, _, _, three⟩ := Credited.foldlM
-    (fun _ _ _ _ ok => credited_processAttestation early ok) (matchedAt upTwo) attestationsOk
-  obtain ⟨_, _, _, _, _, _, upThree⟩ := step upTwo three
-  obtain ⟨_, _, _, _, _, _, four⟩ := Credited.foldlM
-    (fun _ _ _ held ok => credited_processDeposit held ok) (matchedAt upThree) depositsOk
-  obtain ⟨_, _, _, _, _, _, upFour⟩ := step upThree four
-  obtain ⟨_, _, _, _, _, _, five⟩ := Credited.foldlM
+  obtain ⟨_, _, _, _, _, upTwo⟩ := step one two
+  obtain ⟨_, _, _, _, _, three⟩ := Credited.foldlM
+    (fun _ _ _ _ ok => credited_processAttestation early altair ok) (matchedAt upTwo)
+    attestationsOk
+  obtain ⟨_, _, _, _, _, upThree⟩ := step upTwo three
+  obtain ⟨_, _, _, _, _, four⟩ := Credited.foldlM
+    (fun _ _ _ held ok => credited_processDeposit electra held ok) (matchedAt upThree) depositsOk
+  obtain ⟨_, _, _, _, _, upFour⟩ := step upThree four
+  obtain ⟨_, _, _, _, _, five⟩ := Credited.foldlM
     (fun _ _ _ _ ok => credited_processVoluntaryExit ok) (matchedAt upFour) exitsOk
-  obtain ⟨_, _, _, _, _, _, upFive⟩ := step upFour five
-  obtain ⟨_, _, _, _, _, _, six⟩ := credited_processBlsToExecutionChanges changesOk
-  obtain ⟨_, _, _, _, _, _, upSix⟩ := step upFive six
-  split at requestsOk
-  · rename_i electra
-    obtain ⟨conv, seven, count⟩ := credited_processExecutionRequests requestsOk
-    obtain ⟨_, _, _, _, _, _, upSeven⟩ := step upSix seven
-    exact ⟨_, _, _, _, _, _, _, upSeven, by simpa [electra] using count⟩
-  · cases requestsOk
-    exact ⟨_, _, _, _, _, _, _, upSix, by simp⟩
+  obtain ⟨_, _, _, _, _, upFive⟩ := step upFour five
+  obtain ⟨_, _, _, _, _, six⟩ := credited_processBlsToExecutionChanges changesOk
+  obtain ⟨_, _, _, _, _, upSix⟩ := step upFive six
+  obtain ⟨conv, seven, count⟩ := credited_processExecutionRequests requestsOk
+  obtain ⟨_, _, _, _, _, upSeven⟩ := step upSix seven
+  exact ⟨_, _, _, _, _, _, upSeven, count⟩
 
 end CreditedSteps
 
@@ -3389,15 +3281,15 @@ A conversion to compounding credentials only lowers a balance to the activation 
 That is the largest effective balance before the conversion. -/
 theorem processOperations_floor {fork : Fork} {s t : BeaconState preset fork}
     {body : BeaconBlockBody preset fork} {parentSlot : Slot}
-    (early : fork < .glamsterdam) (matched : BalancesMatch s)
+    (early : fork < .glamsterdam) (fulu : .fusaka ≤ fork) (matched : BalancesMatch s)
     (computed : processOperations config checks s body parentSlot = .ok t)
     {v : ValidatorIndex} {val : Validator} (found : s.validators.data[v.toNat]? = some val)
     (capped : val.effectiveBalance ≤ withdrawalMaxEffectiveBalance preset fork val)
     (unslashed : ∀ w, t.validators.data[v.toNat]? = some w → w.slashed = false) :
     min (actualBalanceAt ⟨fork, s⟩ v.toNat) val.effectiveBalance.toNat ≤
       actualBalanceAt ⟨fork, t⟩ v.toNat := by
-  obtain ⟨_, _, _, _, conv, _, slash, ops, convCount⟩ :=
-    credited_processOperations early matched computed
+  obtain ⟨_, _, _, conv, _, slash, ops, -⟩ :=
+    credited_processOperations early fulu matched computed
   -- The validator stays unslashed, so the operations charge it no slashing penalty.
   have noSlash : slash v = 0 := by
     have bound := ops.penalized v
@@ -3412,11 +3304,7 @@ theorem processOperations_floor {fork : Fork} {s t : BeaconState preset fork}
     -- activation balance, where the conversion leaves its balance.
     have lowered := ops.ledger.lowered v converted (Finset.notMem_empty v)
     have fresh := ops.ledger.fresh v converted val found
-    have electra : .pectra ≤ fork := by
-      by_contra notElectra
-      simp only [notElectra, ↓reduceIte, Nat.le_zero, Finset.card_eq_zero] at convCount
-      rw [convCount] at converted
-      exact Finset.notMem_empty v converted
+    have electra : .pectra ≤ fork := Nat.le_trans (by decide) fulu
     have cap := UInt64.le_iff_toNat_le.mp capped
     simp only [withdrawalMaxEffectiveBalance, electra, ↓reduceIte, getMaxEffectiveBalance,
       fresh, Bool.false_eq_true] at cap
@@ -3557,9 +3445,8 @@ private theorem block_balances {engine : ExecutionEngine preset fork}
       rw [← rest]
     rw [h4, h3, h2, h1]
   -- The operations and the sync aggregate.
-  obtain ⟨proposer, credit, slashed, deposited, conv, other, slash, ops, convCount⟩ :=
-    credited_processOperations early (frameVoted.balancesMatch matched) operatedOk
-  have noDeposits : deposited = ∅ := ops.electra electra
+  obtain ⟨proposer, credit, slashed, conv, other, slash, ops, convCount⟩ :=
+    credited_processOperations early fulu (frameVoted.balancesMatch matched) operatedOk
   obtain ⟨proposer', reward, share, sync, rewardOk, read', shareBound, seats, syncLedger⟩ :=
     ledger_processSyncAggregate synced
   have syncKept := kept_processSyncAggregate synced
@@ -3583,9 +3470,9 @@ private theorem block_balances {engine : ExecutionEngine preset fork}
     0 + other + fun v => if v = proposer' then share else 0, 0 + slash + 0,
     if 0 < share then proposer' else proposer, credit, share,
     (toVoted.trans ops.ledger).trans syncLedger, by simpa [capella] using paidCount,
-    by simpa [electra] using convCount, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩
+    by simpa using convCount, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩
   · intro v
-    have first := ops.credited v (by rw [noDeposits]; exact Finset.notMem_empty v)
+    have first := ops.credited v
     have sumSame : ∑ x ∈ slashed, effectiveAt ⟨fork, operated⟩ x.toNat /
         (parameters preset fork).WHISTLEBLOWER_REWARD_QUOTIENT.toNat =
         ∑ x ∈ slashed, effectiveAt ⟨fork, t⟩ x.toNat /
