@@ -18,29 +18,11 @@ Every exit is placed at `current + 1 + MAX_SEED_LOOKAHEAD` or later, from the ep
 So each state fixes activity up to `current + MAX_SEED_LOOKAHEAD` (`activeKept_of_chainSteps`).
 
 With a lookahead of at least three epochs, every such exit was already scheduled at the source.
+
+`Preset.ExitWindowFixed` (Transition/Committees.lean) names that condition.
 -/
 
 @[expose] public section
-
-namespace EthLib.Consensus
-
-/-- The seed lookahead covers three epochs, so activity three epochs ahead of a state is fixed.
-
-The near window of a fast confirmation reaches three epochs after its source.
-
-Mainnet and minimal both use a lookahead of four epochs. -/
-structure Preset.ExitWindowFixed (preset : Preset) : Prop where
-  lookahead : 3 ≤ preset.MAX_SEED_LOOKAHEAD.toNat
-
-/-- The mainnet preset fixes activity three epochs ahead. -/
-theorem Preset.exitWindowFixed_mainnet : Preset.mainnet.ExitWindowFixed := by
-  constructor; decide
-
-/-- The minimal preset fixes activity three epochs ahead. -/
-theorem Preset.exitWindowFixed_minimal : Preset.minimal.ExitWindowFixed := by
-  constructor; decide
-
-end EthLib.Consensus
 
 namespace EthLib.Consensus.Models.Network
 
