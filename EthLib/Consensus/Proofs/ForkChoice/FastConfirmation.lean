@@ -9,6 +9,7 @@ public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmation.HistoricalTran
 public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmation.HistoricalAnchor
 public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmation.HistoricalCoverage
 public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmation.HistoricalSigners
+public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmation.HonestHeads
 public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmation.Indicators
 public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmation.Sets
 public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmation.Supporters
