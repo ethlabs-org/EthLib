@@ -353,20 +353,33 @@ private structure Later (old w : Validator) : Prop where
 private theorem Later.refl (v : Validator) : Later v v :=
   ⟨rfl, fun _ => ⟨UInt64.le_refl _, .inr rfl⟩⟩
 
+/-- The withdrawable epoch of one validator over two steps.
+
+The first step keeps the exit, and the second keeps the slash. -/
+private theorem withdrawable_trans {a b c : Validator}
+    (one : a.exitEpoch ≠ FAR_FUTURE_EPOCH → a.withdrawableEpoch ≤ b.withdrawableEpoch ∧
+      (b.slashed = true ∨ b.withdrawableEpoch = a.withdrawableEpoch))
+    (two : b.exitEpoch ≠ FAR_FUTURE_EPOCH → b.withdrawableEpoch ≤ c.withdrawableEpoch ∧
+      (c.slashed = true ∨ c.withdrawableEpoch = b.withdrawableEpoch))
+    (exit : a.exitEpoch ≠ FAR_FUTURE_EPOCH → b.exitEpoch = a.exitEpoch)
+    (slashed : b.slashed = true → c.slashed = true) (far : a.exitEpoch ≠ FAR_FUTURE_EPOCH) :
+    a.withdrawableEpoch ≤ c.withdrawableEpoch ∧
+      (c.slashed = true ∨ c.withdrawableEpoch = a.withdrawableEpoch) := by
+  obtain ⟨le, moved⟩ := one far
+  obtain ⟨le', moved'⟩ := two (by rw [exit far]; exact far)
+  refine ⟨UInt64.le_trans le le', ?_⟩
+  rcases moved' with flag | same'
+  · exact .inl flag
+  · rcases moved with flag | same
+    · exact .inl (slashed flag)
+    · exact .inr (same'.trans same)
+
 /-- Two later steps make one, given the exit kept by the first and the slash kept by the second. -/
 private theorem Later.trans {a b c : Validator} (one : Later a b) (two : Later b c)
     (exit : a.exitEpoch ≠ FAR_FUTURE_EPOCH → b.exitEpoch = a.exitEpoch)
     (slashed : b.slashed = true → c.slashed = true) : Later a c where
   activation := two.activation.trans one.activation
-  withdrawable far := by
-    obtain ⟨le, moved⟩ := one.withdrawable far
-    obtain ⟨le', moved'⟩ := two.withdrawable (by rw [exit far]; exact far)
-    refine ⟨UInt64.le_trans le le', ?_⟩
-    rcases moved' with flag | same'
-    · exact .inl flag
-    · rcases moved with flag | same
-      · exact .inl (slashed flag)
-      · exact .inr (same'.trans same)
+  withdrawable := withdrawable_trans one.withdrawable two.withdrawable exit slashed
 
 /-- A later registry inside an epoch keeps each old validator later.
 
@@ -4427,18 +4440,13 @@ private theorem WithdrawableKept.of_data {f g : Fork} {s : BeaconState preset f}
 private theorem WithdrawableKept.trans {f : Fork} {s u t : BeaconState preset f}
     (one : WithdrawableKept s u) (two : WithdrawableKept u t) (life : RegistryLifecycle s u)
     (slashed : SlashedPersistence u t) : WithdrawableKept s t := by
-  intro i v w found read far
+  intro i v w found read
   obtain ⟨x, middle, kept⟩ := life.validators i v found
-  obtain ⟨le, moved⟩ := one i v x found middle far
-  obtain ⟨le', moved'⟩ := two i x w middle read (by rw [kept.exitEpoch far]; exact far)
-  refine ⟨UInt64.le_trans le le', ?_⟩
-  rcases moved' with flag | same'
-  · exact .inl flag
-  · rcases moved with flag | same
-    · obtain ⟨w', read', marked⟩ := slashed i x middle flag
+  exact withdrawable_trans (one i v x found middle) (two i x w middle read) kept.exitEpoch
+    fun flag => by
+      obtain ⟨w', read', marked⟩ := slashed i x middle flag
       rw [read, Option.some.injEq] at read'
-      exact .inl (read' ▸ marked)
-    · exact .inr (same'.trans same)
+      exact read' ▸ marked
 
 /-- A write at a position that keeps the withdrawable epoch of an assigned exit. -/
 private theorem WithdrawableKept.setAt {f : Fork} {s t : BeaconState preset f} {i : ℕ}
