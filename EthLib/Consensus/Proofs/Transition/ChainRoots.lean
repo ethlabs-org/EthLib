@@ -509,6 +509,12 @@ private theorem Run.records_snoc {first middle last : ForkedBeaconState preset}
     · exact .inl ⟨middle, pre.last_mem, old⟩
     · exact .inr ⟨same, got, succ⟩
 
+/-- A genesis state built from deposits holds the invariant of the transition. -/
+theorem Genesis.invariant {g : ForkedBeaconState preset} (genesis : Genesis config checks g) :
+    Invariant g.state := by
+  obtain ⟨_, _, _, ok⟩ := genesis
+  exact (initializeBeaconStateFromEth1_invariant ok).2
+
 /-- The last state of a run keeps the invariant of the first. -/
 theorem Run.invariant {first last : ForkedBeaconState preset}
     (holds : Invariant first.state) (run : Run config checks first last) :

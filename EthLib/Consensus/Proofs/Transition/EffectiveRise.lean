@@ -1590,9 +1590,7 @@ theorem effectiveRise_le
   -- The reachable invariants.
   have histZ := history.append toZ
   have histP := history.append tailP
-  have invG : Invariant g.state := by
-    obtain ⟨_, _, _, ok⟩ := genesis
-    exact (initializeBeaconStateFromEth1_invariant ok).2
+  have invG : Invariant g.state := genesis.invariant
   have invR := Run.invariant invG history
   have invZ := Run.invariant invG histZ
   have invP := Run.invariant invG histP

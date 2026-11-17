@@ -227,9 +227,7 @@ theorem quorumDrift_le_quorumReserve
   have next : (getCurrentEpoch state).toNat = (getCurrentEpoch boundary).toNat + 1 := by
     rw [← callEpoch]; omega
   -- The invariant of the transition holds from genesis along the history.
-  have invG : Invariant g.state := by
-    obtain ⟨_, _, _, ok⟩ := genesis
-    exact (initializeBeaconStateFromEth1_invariant ok).2
+  have invG : Invariant g.state := genesis.invariant
   have invR := Run.invariant invG history
   have invM := Run.invariant invG (history.append edge)
   -- The branch corrections from the boundary state, and from the middle state.

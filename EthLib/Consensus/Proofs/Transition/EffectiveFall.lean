@@ -1809,9 +1809,8 @@ private theorem run_floor {x y : ForkedBeaconState preset} (tail : Run config ch
 /-- Every state of a run from genesis keeps the invariant of the transition. -/
 private theorem reach_invariant {g x : ForkedBeaconState preset}
     (genesis : Genesis (config := config) (checks := checks) g) (run : Run config checks g x) :
-    Invariant x.state := by
-  obtain ⟨_, _, _, ok⟩ := genesis
-  exact run.invariant (initializeBeaconStateFromEth1_invariant ok).2
+    Invariant x.state :=
+  run.invariant genesis.invariant
 
 /-- Justification and finalization keep the registry, the balances, the slot and the scores. -/
 private theorem justification_same {f : Fork} {s t : BeaconState preset f}
