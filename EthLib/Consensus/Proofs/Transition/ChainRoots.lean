@@ -530,9 +530,8 @@ theorem Run.invariant {first last : ForkedBeaconState preset}
 /-- A state reached from genesis has one balance for each validator. -/
 theorem reachable_balancesMatch {g x : ForkedBeaconState preset}
     (run : Run config checks g x) (genesis : Genesis (config := config) (checks := checks) g) :
-    BalancesMatch x.state := by
-  obtain ⟨_, _, _, ok⟩ := genesis
-  exact (run.invariant (initializeBeaconStateFromEth1_invariant ok).2).balancesMatch
+    BalancesMatch x.state :=
+  (run.invariant genesis.invariant).balancesMatch
 
 /-- The last state of a run agrees with the roots that the run records, above its first slot.
 
