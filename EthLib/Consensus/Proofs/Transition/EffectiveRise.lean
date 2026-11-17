@@ -8,6 +8,7 @@ public import EthLib.Consensus.Proofs.Transition.Operations
 public import EthLib.Consensus.Proofs.Transition.PendingConsolidations
 public import EthLib.Consensus.Proofs.Transition.RewardDeltas
 public import EthLib.Consensus.Proofs.Mutators
+public import EthLib.Consensus.Proofs.Transition.FfgStake
 public import Mathlib.Algebra.Order.BigOperators.Group.Finset
 public import Mathlib.Algebra.BigOperators.Group.Finset.Piecewise
 public import EthLib.Consensus.Proofs.Transition.EpochPassAtCall
@@ -20,6 +21,7 @@ import EthLib.Consensus.Proofs.Transition.EpochPending
 import EthLib.Consensus.Proofs.Transition.RegistryLifecycle
 import EthLib.Consensus.Proofs.Transition.Requests
 import EthLib.Consensus.Proofs.Transition.ValidatorCaps
+import EthLib.Consensus.Proofs.Transition.ValidatorKeys
 import EthLib.Consensus.Proofs.Transition.Withdrawals
 
 /-!
@@ -35,7 +37,8 @@ A validator at its largest effective balance rises only after a change of creden
 
 The epoch also moves balance to other validators.
 
-Those transfers are deposits within the churn, due consolidations, proposer and whistleblower rewards.
+Those transfers are deposits within the churn, due consolidations, and proposer and whistleblower
+rewards.
 
 Each goes to a bounded number of recipients, and each recipient adds at most the upward band.
 -/
@@ -677,13 +680,6 @@ private theorem RecKeep.trans {f g h : Fork} {s : BeaconState preset f}
   obtain ⟨x, read', step', same'⟩ := two i w read
   exact ⟨x, read', step.trans step', same'.trans same⟩
 
-/-- Kept records keep the records alone. -/
-private theorem RecKeep.rise {f g : Fork} {s : BeaconState preset f}
-    {t : BeaconState preset g} (kept : RecKeep s t) : RiseKeep s t := by
-  intro i v found
-  obtain ⟨w, read, step, -⟩ := kept i v found
-  exact ⟨w, read, step⟩
-
 /-- Writing a later record with the same credentials keeps every record. -/
 private theorem RecKeep.setAt {f : Fork} {s t : BeaconState preset f} {i : ℕ}
     {old v : Validator} (found : getValidatorAt s i = .ok old)
@@ -1265,7 +1261,8 @@ private def withoutEffective (v : Validator) : Validator := { v with effectiveBa
 /-- The update of the effective balances keeps every other field of each validator. -/
 private theorem effectiveUpdates_others {f : Fork} {s t : BeaconState preset f}
     (ok : processEffectiveBalanceUpdates s = .ok t) (i : ℕ) :
-    (t.validators.data[i]?).map withoutEffective = (s.validators.data[i]?).map withoutEffective := by
+    (t.validators.data[i]?).map withoutEffective =
+      (s.validators.data[i]?).map withoutEffective := by
   unfold processEffectiveBalanceUpdates at ok
   refine foldlM_ok_invariant
     (fun w : BeaconState preset f =>
@@ -1878,5 +1875,1011 @@ private theorem depositChurnLimit_toNat_of_lt {fork : Fork} {state : BeaconState
     pure, Except.pure, Except.ok.injEq] at computed
   subst computed
   rw [toNat_min, toNat_roundToIncrement, toNat_max, UInt64.toNat_div]
+
+/-- The effective balances of the validators active in the next epoch rise by at most the gain.
+
+This is the gain bound (rise) of the fast confirmation rule.
+
+It is read by `quorumDrift_le_quorumReserve`.
+
+The epoch starts at `R`, right after its epoch transition, where the hysteresis holds.
+
+One branch leads from `R` to the call's state `P`, inside the epoch.
+
+Another leads from `R` to `y` in the next epoch.
+
+Every read is at `P`.
+
+The branch of `P` has at most `n` blocks.
+
+`branchCorrections` gives a set of debited validators, at most the payload limits per block.
+
+Off that set, a balance at `R` exceeds the one at `P` by at most the slashing and sync amounts.
+
+Off that set, the largest effective balance stays.
+
+A validator below its cap rises only past the upward band, and by at most its balance.
+
+A validator at its cap rises only after a conversion (L4a), and then by at most its credits.
+
+The epoch also transfers balance to other validators, to a bounded number of recipients.
+
+They are churn-limited deposits, due consolidations, proposer credits and whistleblower rewards.
+
+From Fulu a block deposit only queues, so no block deposit credits a balance inside the epoch.
+
+The three hypotheses marked TEMPORARY are lemmas of other modules that have not landed yet. -/
+theorem effectiveRise_le
+    -- TEMPORARY: S13a moves this lemma to RewardDeltas
+    (penaltyEntries_le : ∀ {config : Config} {fork : Fork} {state : BeaconState preset fork}
+      {total : Gwei} (altair : .altair ≤ fork) (_within : state.RegistryWithinLimit)
+      (_active : getTotalActiveBalance state = .ok total)
+      {source target head inactivity : Array Gwei × Array Gwei}
+      (_sourceOk : getFlagIndexDeltas state altair ⟨0, by decide⟩ = .ok source)
+      (_targetOk : getFlagIndexDeltas state altair ⟨1, by decide⟩ = .ok target)
+      (_headOk : getFlagIndexDeltas state altair ⟨2, by decide⟩ = .ok head)
+      (_inactivityOk : getInactivityPenaltyDeltas config state = .ok inactivity)
+      {j : Nat} (inside : j < state.validators.data.size),
+      (source.2.getD j 0).toNat + (target.2.getD j 0).toNat + (head.2.getD j 0).toNat +
+          (inactivity.2.getD j 0).toNat = 0 ∨
+        ∃ base, isEligibleValidator (getPreviousEpoch state) state.validators.data[j] = .ok true ∧
+          getBaseReward state total j.toUInt64 = .ok base ∧
+          (source.2.getD j 0).toNat + (target.2.getD j 0).toNat + (head.2.getD j 0).toNat +
+              (inactivity.2.getD j 0).toNat ≤
+            base.toNat * (TIMELY_SOURCE_WEIGHT.toNat + TIMELY_TARGET_WEIGHT.toNat) /
+                WEIGHT_DENOMINATOR.toNat +
+              state.validators.data[j].effectiveBalance.toNat *
+                (((state.inactivityScores altair).data[j]?.map UInt64.toNat).getD 0) /
+                (config.INACTIVITY_SCORE_BIAS.toNat *
+                  (parameters preset fork).INACTIVITY_PENALTY_QUOTIENT.toNat))
+    -- TEMPORARY: S13a moves this lemma to RewardDeltas
+    (toNat_getBaseReward_le : ∀ {fork : Fork} {state : BeaconState preset fork} {total : Gwei}
+      (_altair : .altair ≤ fork) {base : Gwei}
+      {index : ValidatorIndex} (_computed : getBaseReward state total index = .ok base)
+      {validator : Validator} (_found : state.validators.data[index.toNat]? = some validator),
+      base.toNat ≤ validator.effectiveBalance.toNat / preset.EFFECTIVE_BALANCE_INCREMENT.toNat *
+        (preset.EFFECTIVE_BALANCE_INCREMENT.toNat * preset.BASE_REWARD_FACTOR.toNat /
+          total.toNat.sqrt))
+    -- TEMPORARY: prover A's `branchCorrections` (BranchLedger) replaces this hypothesis
+    (branchCorrections : ∀ {x y : ForkedBeaconState preset} (tail : Run config checks x y)
+        (early : y.fork < .glamsterdam) (fulu : .fusaka ≤ y.fork)
+        (same : getCurrentEpoch y.state = getCurrentEpoch x.state)
+        (matched : BalancesMatch x.state) (exits : ExitsOrdered x.state),
+        let state := y.state
+        let inc := preset.EFFECTIVE_BALANCE_INCREMENT.toNat
+        let slots := preset.SLOTS_PER_EPOCH.toNat
+        let p := parameters preset y.fork
+        let positions := Finset.range state.validators.data.size
+        let validator (i : ℕ) := state.validators.data[i]?
+        let effective (i : ℕ) := balanceAt state i
+        let current (i : ℕ) := isActiveAt state (getCurrentEpoch state) i
+        let before (i : ℕ) := isActiveAt state (getPreviousEpoch state) i
+        let recent (i : ℕ) := before i || current i
+        let slashed (i : ℕ) := ((validator i).map (·.slashed)).getD false
+        let total := max inc (∑ i ∈ positions with current i, effective i)
+        let root := (integerSquareroot (UInt64.ofNat total)).toNat
+        let perIncrement := inc * preset.BASE_REWARD_FACTOR.toNat / root
+        let base (i : ℕ) := if .altair ≤ y.fork then effective i / inc * perIncrement
+          else effective i * preset.BASE_REWARD_FACTOR.toNat / root / BASE_REWARDS_PER_EPOCH.toNat
+        let seatReward := if .altair ≤ y.fork then
+            total / inc * perIncrement * SYNC_REWARD_WEIGHT.toNat / WEIGHT_DENOMINATOR.toNat /
+              slots / preset.SYNC_COMMITTEE_SIZE.toNat
+          else 0
+        let seats (i : ℕ) := if altair : .altair ≤ y.fork then
+            ((state.currentSyncCommittee altair).value.pubkeys.toList.filter fun key =>
+              (validator i).any (·.pubkey == key)).length
+          else 0
+        let sync (i : ℕ) := seats i * seatReward
+        let syncProposer := if .altair ≤ y.fork then
+            slots * preset.SYNC_COMMITTEE_SIZE.toNat *
+              (seatReward * PROPOSER_WEIGHT.toNat /
+                (WEIGHT_DENOMINATOR.toNat - PROPOSER_WEIGHT.toNat))
+          else 0
+        let proposerCredit := (∑ i ∈ positions with recent i, base i) + syncProposer
+        let whistleblowerP :=
+          (∑ i ∈ positions with slashed i, effective i) / p.WHISTLEBLOWER_REWARD_QUOTIENT.toNat
+        let slashBack (i : ℕ) :=
+          if slashed i then effective i / p.MIN_SLASHING_PENALTY_QUOTIENT.toNat else 0
+        let blocks := tail.blockCount
+        let debited :=
+          ((if .shapella ≤ y.fork then preset.MAX_WITHDRAWALS_PER_PAYLOAD.toNat else 0) +
+          (if .pectra ≤ y.fork then preset.MAX_CONSOLIDATION_REQUESTS_PER_PAYLOAD.toNat else 0)) *
+            blocks
+        let blockDeposits := if h : y.fork < .hegota then
+            (if .pectra ≤ y.fork then 0
+             else min (preset.MAX_DEPOSITS.toNat * blocks) (state.eth1DepositIndex h).toNat)
+          else 0
+        let creditedP :=
+          (if proposerCredit = 0 ∧ seatReward = 0 ∧ positions.filter (slashed ·) = ∅ then 0
+            else blocks) + blockDeposits
+        ∃ (debitedKeys creditedKeys : Finset ValidatorIndex) (pc deposit : ValidatorIndex → ℕ),
+          debitedKeys.card ≤ debited ∧ creditedKeys.card ≤ creditedP ∧
+          (∀ v, v ∉ debitedKeys → actualBalanceAt x v.toNat ≤
+            actualBalanceAt y v.toNat + slashBack v.toNat + blocks * sync v.toNat) ∧
+          (∀ v, actualBalanceAt y v.toNat ≤
+            actualBalanceAt x v.toNat + blocks * sync v.toNat + pc v + deposit v) ∧
+          (∀ v, v ∉ creditedKeys → pc v = 0 ∧ deposit v = 0) ∧
+          (.pectra ≤ y.fork → ∀ v, deposit v = 0) ∧
+          ∑ v ∈ creditedKeys, pc v ≤ proposerCredit + whistleblowerP ∧
+          (∃ slashedNow : Finset ValidatorIndex,
+            (∀ v ∈ slashedNow, (∀ validator, x.state.validators.data[v.toNat]? = some validator →
+                validator.slashed = false) ∧ slashed v.toNat = true ∧
+              ∃ validator, x.state.validators.data[v.toNat]? = some validator ∧
+                validator.activationEpoch ≤ getCurrentEpoch x.state ∧
+                getCurrentEpoch x.state < validator.withdrawableEpoch) ∧
+            ∑ v ∈ creditedKeys, pc v ≤ (∑ i ∈ positions with recent i, base i) + syncProposer +
+              (∑ v ∈ slashedNow, effective v.toNat) / p.WHISTLEBLOWER_REWARD_QUOTIENT.toNat) ∧
+          (∀ v validator later, x.state.validators.data[v.toNat]? = some validator →
+            y.state.validators.data[v.toNat]? = some later →
+            withdrawalMaxEffectiveBalance preset y.fork later ≠
+              withdrawalMaxEffectiveBalance preset x.fork validator →
+            actualBalanceAt y v.toNat ≤ preset.MIN_ACTIVATION_BALANCE.toNat +
+              blocks * sync v.toNat + pc v + deposit v) ∧
+          (∃ proposerKeys depositKeys : Finset ValidatorIndex,
+            creditedKeys = proposerKeys ∪ depositKeys ∧
+            proposerKeys.card ≤ (if proposerCredit = 0 ∧ seatReward = 0 ∧
+              positions.filter (slashed ·) = ∅ then 0 else blocks) ∧
+            depositKeys.card ≤ blockDeposits ∧
+            (∀ v, v ∉ proposerKeys → pc v = 0) ∧ (∀ v, v ∉ depositKeys → deposit v = 0)) ∧
+          (∀ v validator, v ∉ debitedKeys → x.state.validators.data[v.toNat]? = some validator →
+            ∃ later, y.state.validators.data[v.toNat]? = some later ∧
+              withdrawalMaxEffectiveBalance preset y.fork later =
+                withdrawalMaxEffectiveBalance preset x.fork validator) ∧
+          x.fork = y.fork ∧ EffectiveKept x.state y.state)
+    {g R P y : ForkedBeaconState preset}
+    (genesis : Genesis (config := config) (checks := checks) g) (history : Run config checks g R)
+    (tailP : Run config checks R P) (tailS : Run config checks R y) (caps : CapOrder preset)
+    (withdrawDelay : 1 ≤ config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat)
+    (bands : preset.IncrementWithinUpwardBand)
+    (lookahead : 1 ≤ preset.MAX_SEED_LOOKAHEAD.toNat)
+    (hysteresis : Hysteresis R.state) (early : y.fork < .glamsterdam)
+    (fulu : .fusaka ≤ P.fork)
+    (callEpoch : getCurrentEpoch P.state = getCurrentEpoch R.state)
+    (next : (getCurrentEpoch y.state).toNat = (getCurrentEpoch R.state).toNat + 1)
+    {n : ℕ} (debitedKeys : Finset ValidatorIndex) :
+    let state := P.state
+    let epoch := getCurrentEpoch state
+    let inc := preset.EFFECTIVE_BALANCE_INCREMENT.toNat
+    let slots := preset.SLOTS_PER_EPOCH.toNat
+    let p := parameters preset P.fork
+    let positions := Finset.range state.validators.data.size
+    let validator (i : ℕ) := state.validators.data[i]?
+    let effective (i : ℕ) := balanceAt state i
+    let actual (i : ℕ) := ((state.balances.data[i]?).map (·.toNat)).getD 0
+    let cap (i : ℕ) :=
+      ((validator i).map fun v => (withdrawalMaxEffectiveBalance preset P.fork v).toNat).getD 0
+    let capMax := if .pectra ≤ P.fork then preset.MAX_EFFECTIVE_BALANCE_ELECTRA.toNat
+      else preset.MAX_EFFECTIVE_BALANCE.toNat
+    let current (i : ℕ) := isActiveAt state epoch i
+    let upcoming (i : ℕ) := isActiveAt state (epoch + 1) i
+    let before (i : ℕ) := isActiveAt state (getPreviousEpoch state) i
+    let recent (i : ℕ) := before i || current i
+    let slashed (i : ℕ) := ((validator i).map (·.slashed)).getD false
+    let total := max inc (∑ i ∈ positions with current i, effective i)
+    let root := (integerSquareroot (UInt64.ofNat total)).toNat
+    let perIncrement := inc * preset.BASE_REWARD_FACTOR.toNat / root
+    let base (i : ℕ) := if .altair ≤ P.fork then effective i / inc * perIncrement
+      else effective i * preset.BASE_REWARD_FACTOR.toNat / root / BASE_REWARDS_PER_EPOCH.toNat
+    let num := max 1 ((∑ i ∈ positions with before i, effective i) / inc)
+    let den := max 1 (total / inc)
+    let flagWeight := (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum
+    let seatReward := if .altair ≤ P.fork then
+        total / inc * perIncrement * SYNC_REWARD_WEIGHT.toNat / WEIGHT_DENOMINATOR.toNat /
+          slots / preset.SYNC_COMMITTEE_SIZE.toNat
+      else 0
+    let seats (i : ℕ) := if altair : .altair ≤ P.fork then
+        ((state.currentSyncCommittee altair).value.pubkeys.toList.filter fun key =>
+          (validator i).any (·.pubkey == key)).length
+      else 0
+    let sync (i : ℕ) := seats i * seatReward
+    let depositChurn :=
+      let limit := max config.MIN_PER_EPOCH_CHURN_LIMIT_ELECTRA.toNat
+        (total / config.CHURN_LIMIT_QUOTIENT.toNat)
+      min config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat (limit - limit % inc)
+    let credit (i : ℕ) :=
+      (if .altair ≤ P.fork then base i * flagWeight * num / (WEIGHT_DENOMINATOR.toNat * den)
+       else 3 * (base i * max num den / den) + base i) + slots * sync i
+    let syncProposer := if .altair ≤ P.fork then
+        slots * preset.SYNC_COMMITTEE_SIZE.toNat *
+          (seatReward * PROPOSER_WEIGHT.toNat / (WEIGHT_DENOMINATOR.toNat - PROPOSER_WEIGHT.toNat))
+      else 0
+    let proposerCredit := (∑ i ∈ positions with recent i, base i) + syncProposer
+    let whistleblower := (∑ i ∈ positions with (validator i).any (fun v =>
+        v.activationEpoch ≤ epoch && epoch < v.withdrawableEpoch), effective i) /
+      p.WHISTLEBLOWER_REWARD_QUOTIENT.toNat
+    let depositCredit := if electra : .pectra ≤ P.fork then
+        (state.depositBalanceToConsume electra).toNat + depositChurn else 0
+    let due := if electra : .pectra ≤ P.fork then
+        (state.pendingConsolidations electra).data.toList.filter fun c =>
+          ((validator c.sourceIndex.toNat).map fun v =>
+            v.slashed || decide (v.withdrawableEpoch ≤ epoch + 1)).getD false
+      else []
+    let dueStake := (due.map fun c => effective c.sourceIndex.toNat).sum
+    let proposers := if .altair ≤ P.fork then slots else 2 * slots
+    let depositRecipients := if .pectra ≤ P.fork then preset.MAX_PENDING_DEPOSITS_PER_EPOCH.toNat
+      else slots * preset.MAX_DEPOSITS.toNat
+    let recipients := (if .pectra ≤ P.fork then depositRecipients else 0) + due.length + proposers
+    let debited := ((if .shapella ≤ P.fork then preset.MAX_WITHDRAWALS_PER_PAYLOAD.toNat else 0) +
+      (if .pectra ≤ P.fork then preset.MAX_CONSOLIDATION_REQUESTS_PER_PAYLOAD.toNat else 0)) * n
+    let transfers := depositCredit + dueStake + proposerCredit + whistleblower
+    let depositGain := if .pectra ≤ P.fork then 0 else depositRecipients * capMax
+    let slashBack (i : ℕ) :=
+      if slashed i then effective i / p.MIN_SLASHING_PENALTY_QUOTIENT.toNat else 0
+    let syncP (i : ℕ) := n * sync i
+    let creditMax := positions.sup fun i => if upcoming i then credit i else 0
+    let crossing := ∑ i ∈ positions with upcoming i,
+      if effective i < cap i then
+        (let top := actual i + slashBack i + syncP i + credit i
+         if effective i + preset.upwardBand < top then top - effective i else 0)
+      else (if preset.upwardBand < credit i then credit i else 0)
+    let headroom := ∑ i ∈ positions with upcoming i, (capMax - effective i)
+    debitedKeys.card ≤ debited →
+    (∀ v, v ∉ debitedKeys → actualBalanceAt R v.toNat ≤
+      actualBalanceAt P v.toNat + slashBack v.toNat + syncP v.toNat) →
+    (∀ v validator, v ∉ debitedKeys → R.state.validators.data[v.toNat]? = some validator →
+      ∃ later, P.state.validators.data[v.toNat]? = some later ∧
+        withdrawalMaxEffectiveBalance preset P.fork later =
+          withdrawalMaxEffectiveBalance preset R.fork validator) →
+    ∑ i ∈ positions with upcoming i, (effectiveAt y i - effective i) ≤
+      min headroom (crossing + (recipients + debited) * preset.upwardBand +
+        debited * creditMax + transfers + depositGain)
+  := by
+  have hPR : P.fork = R.fork := Run.fork_eq_of_same_epoch tailP callEpoch
+  obtain ⟨fR, r⟩ := R
+  obtain ⟨F, q⟩ := P
+  dsimp only at hPR
+  subst fR
+  intro state epoch inc slots p positions validator effective actual cap capMax current upcoming
+    before recent slashed total root perIncrement base num den flagWeight seatReward seats sync
+    depositChurn credit syncProposer proposerCredit whistleblower depositCredit due dueStake
+    proposers depositRecipients recipients debited transfers depositGain slashBack syncP creditMax
+    crossing headroom debitedCard offDebited capsKept
+  have altair : .altair ≤ F := Nat.le_trans (by decide) fulu
+  have electraF : .pectra ≤ F := Nat.le_trans (by decide) fulu
+  -- The branch of `y` leaves the epoch at one slot, from its last state `z` in the epoch.
+  obtain ⟨z, z', toZ, edge, fromZ', zEpoch, z'Epoch⟩ := Run.split_next tailS next
+  have zFork : z.fork = F := Run.fork_eq_of_same_epoch toZ zEpoch
+  obtain ⟨fZ, zs⟩ := z
+  dsimp only at zFork
+  subst fZ
+  have z'Early : z'.fork < .glamsterdam :=
+    Nat.lt_of_le_of_lt (fork_le_of_chainSteps fromZ'.chainSteps) early
+  have Fearly : F < .glamsterdam := by
+    have := fork_le_of_chainSteps (Run.nil.snoc (.slot edge)).chainSteps
+    exact Nat.lt_of_le_of_lt this z'Early
+  -- The epoch `e` of the branches, and the next one.
+  obtain ⟨e, he⟩ : ∃ e, getCurrentEpoch r = e := ⟨_, rfl⟩
+  have epochP : getCurrentEpoch q = e := callEpoch.trans he
+  have epochZ : getCurrentEpoch zs = e := zEpoch.trans he
+  have nextR : (getCurrentEpoch y.state).toNat = e.toNat + 1 := by rw [← he]; exact next
+  have small := (getCurrentEpoch y.state).toNat_lt
+  have nextNat : (e + 1).toNat = e.toNat + 1 := by
+    rw [UInt64.toNat_add]
+    simp only [UInt64.toNat_one]
+    omega
+  have fixedNext : e + 1 ≤ activityFixedEpoch r := by
+    rw [UInt64.le_iff_toNat_le, activityFixedEpoch_toNat, nextNat, he]
+    exact Nat.le_min.mpr ⟨by omega, by omega⟩
+  have fixedNow : e ≤ activityFixedEpoch r := he ▸ getCurrentEpoch_le_activityFixedEpoch r
+  have fixedBefore : getPreviousEpoch r ≤ activityFixedEpoch r :=
+    UInt64.le_trans (getPreviousEpoch_le r) (getCurrentEpoch_le_activityFixedEpoch r)
+  -- What the states of the epoch keep from `R`.
+  have activeP := activeKept_of_chainSteps tailP.chainSteps
+  have activeZ := activeKept_of_chainSteps toZ.chainSteps
+  have keptP : EffectiveKept r q := tailP.effectiveKept_of_same_epoch Fearly callEpoch
+  have keptZ : EffectiveKept r zs := toZ.effectiveKept_of_same_epoch Fearly zEpoch
+  have growsP := tailP.registryLifecycle.size_le
+  have growsZ := toZ.registryLifecycle.size_le
+  have keysP := (validatorKeys_prefix_and_distinct_of_chainSteps tailP.chainSteps).1
+  have keysZ := (validatorKeys_prefix_and_distinct_of_chainSteps toZ.chainSteps).1
+  have committeeP := Run.currentSyncCommittee_eq_of_same_epoch tailP Fearly callEpoch
+  have committeeZ := Run.currentSyncCommittee_eq_of_same_epoch toZ Fearly zEpoch
+  -- The reachable invariants.
+  have histZ := history.append toZ
+  have histP := history.append tailP
+  have invG : Invariant g.state := by
+    obtain ⟨_, _, _, ok⟩ := genesis
+    exact (initializeBeaconStateFromEth1_invariant ok).2
+  have invR := Run.invariant invG history
+  have invZ := Run.invariant invG histZ
+  have invP := Run.invariant invG histP
+  have holdsZ : PendingConsolidationInvariant config zs := fun electra =>
+    histZ.pendingConsolidation_invariant genesis Fearly electra withdrawDelay
+  have holdsP : PendingConsolidationInvariant config q := fun electra =>
+    histP.pendingConsolidation_invariant genesis Fearly electra withdrawDelay
+  have holdsR : PendingConsolidationInvariant config r := fun electra =>
+    history.pendingConsolidation_invariant genesis Fearly electra withdrawDelay
+  -- The slashes, exits, withdrawal epochs and queues inside the epoch.
+  obtain ⟨wdP, queueP⟩ := run_riseKeep tailP Fearly callEpoch withdrawDelay
+  obtain ⟨wdZ, queueZ⟩ := run_riseKeep toZ Fearly zEpoch withdrawDelay
+  -- The slot that ends the epoch.
+  have nextZ : (getCurrentEpoch z'.state).toNat = (getCurrentEpoch zs).toNat + 1 := by
+    rw [z'Epoch, epochZ]; exact nextR
+  obtain ⟨cached, justified, scored, rewarded, reset, beforeState, cachedOk, justifiedOk,
+    scoredOk, rewardedOk, lower, pendingOk, resetSlot, resetSize, resetActive, resetKept,
+    resetRec, resetExits, resetMatch, resetHolds, resetQueue, resetCarry, updateBound⟩ :=
+    rise_edge edge z'Early altair nextZ
+  -- The sums of effective balances active in an epoch up to the fixed one read the same.
+  have sumPR : ∀ ep ≤ activityFixedEpoch r,
+      ∑ i ∈ (Finset.range q.validators.data.size).filter (fun i => isActiveAt q ep i = true),
+        ((q.validators.data[i]?).map (·.effectiveBalance.toNat)).getD 0 =
+      ∑ i ∈ (Finset.range r.validators.data.size).filter (fun i => isActiveAt r ep i = true),
+        ((r.validators.data[i]?).map (·.effectiveBalance.toNat)).getD 0 :=
+    fun ep le => activeSum_eq (fun i => activeP ep le i) keptP growsP
+  have sumZR : ∀ ep ≤ activityFixedEpoch r,
+      ∑ i ∈ (Finset.range zs.validators.data.size).filter (fun i => isActiveAt zs ep i = true),
+        ((zs.validators.data[i]?).map (·.effectiveBalance.toNat)).getD 0 =
+      ∑ i ∈ (Finset.range r.validators.data.size).filter (fun i => isActiveAt r ep i = true),
+        ((r.validators.data[i]?).map (·.effectiveBalance.toNat)).getD 0 :=
+    fun ep le => activeSum_eq (fun i => activeZ ep le i) keptZ growsZ
+  have prevP : getPreviousEpoch q = getPreviousEpoch r := by
+    unfold getPreviousEpoch; rw [epochP, he]
+  have prevZ : getPreviousEpoch zs = getPreviousEpoch r := by
+    unfold getPreviousEpoch; rw [epochZ, he]
+  have totalR : total = max inc
+      (∑ i ∈ (Finset.range r.validators.data.size).filter (fun i => isActiveAt r e i = true),
+        ((r.validators.data[i]?).map (·.effectiveBalance.toNat)).getD 0) := by
+    rw [← sumPR e fixedNow]
+    simp only [total, positions, current, effective, balanceAt, epoch, state, epochP]
+  have numR : num = max 1
+      ((∑ i ∈ (Finset.range r.validators.data.size).filter
+        (fun i => isActiveAt r (getPreviousEpoch r) i = true),
+        ((r.validators.data[i]?).map (·.effectiveBalance.toNat)).getD 0) / inc) := by
+    rw [← sumPR _ fixedBefore]
+    simp only [num, positions, before, effective, balanceAt, state, prevP]
+  -- The positions active in an epoch up to the fixed one are the same at `R`, `P` and `z`.
+  have filterP : ∀ ep ≤ activityFixedEpoch r,
+      (Finset.range q.validators.data.size).filter (fun i => isActiveAt q ep i = true) =
+        (Finset.range r.validators.data.size).filter (fun i => isActiveAt r ep i = true) :=
+    fun ep le => activeFilter_eq (fun i => activeP ep le i) growsP
+  have filterZ : ∀ ep ≤ activityFixedEpoch r,
+      (Finset.range zs.validators.data.size).filter (fun i => isActiveAt zs ep i = true) =
+        (Finset.range r.validators.data.size).filter (fun i => isActiveAt r ep i = true) :=
+    fun ep le => activeFilter_eq (fun i => activeZ ep le i) growsZ
+  -- The effective balances of the old positions read the same at `R`, `P` and `z`.
+  have effPR : ∀ i < r.validators.data.size, effective i = effectiveAt ⟨F, r⟩ i :=
+    fun i inside => keptP i inside
+  have effZR : ∀ i < r.validators.data.size, effectiveAt ⟨F, zs⟩ i = effectiveAt ⟨F, r⟩ i :=
+    fun i inside => keptZ i inside
+  -- The state that the rewards read is the last state of the epoch, after justification.
+  obtain ⟨_, _, _, _, cachedEq⟩ := processSlot_ok cachedOk
+  have justifiedSame :=
+    (show EpochStage.Edge config checks .justification cached justified from justifiedOk).records
+      ⟨nofun, nofun, nofun, nofun, nofun, nofun⟩
+  have Jvalidators : justified.validators = zs.validators := by rw [justifiedSame.1, cachedEq]
+  have Jbalances : justified.balances = zs.balances := by rw [justifiedSame.2.1, cachedEq]
+  have JEpoch : getCurrentEpoch justified = e := by
+    rw [← epochZ]; simp only [getCurrentEpoch, justifiedSame.2.2.2.2, cachedEq]
+  have JPrev : getPreviousEpoch justified = getPreviousEpoch r := by
+    unfold getPreviousEpoch; rw [JEpoch, he]
+  have sumJ : ∀ ep,
+      ∑ i ∈ (Finset.range justified.validators.data.size).filter
+          (fun i => isActiveAt justified ep i = true),
+        ((justified.validators.data[i]?).map (·.effectiveBalance.toNat)).getD 0 =
+      ∑ i ∈ (Finset.range zs.validators.data.size).filter (fun i => isActiveAt zs ep i = true),
+        ((zs.validators.data[i]?).map (·.effectiveBalance.toNat)).getD 0 := by
+    intro ep
+    have same : ∀ i, isActiveAt justified ep i = isActiveAt zs ep i := fun i => by
+      simp only [isActiveAt, Jvalidators]
+    simp only [same, Jvalidators]
+  have totalJ : max inc (∑ i ∈ (Finset.range justified.validators.data.size).filter
+      (fun i => isActiveAt justified (getCurrentEpoch justified) i = true),
+      ((justified.validators.data[i]?).map (·.effectiveBalance.toNat)).getD 0) = total := by
+    rw [sumJ, JEpoch, sumZR e fixedNow, totalR]
+  have numJ : max 1 ((∑ i ∈ (Finset.range justified.validators.data.size).filter
+      (fun i => isActiveAt justified (getPreviousEpoch justified) i = true),
+      ((justified.validators.data[i]?).map (·.effectiveBalance.toNat)).getD 0) / inc) = num := by
+    rw [sumJ, JPrev, sumZR _ fixedBefore, numR]
+  -- The rewards credit each old position at most its flag credit.
+  obtain ⟨flagP, flagEq⟩ : ∃ fl : ℕ → ℕ, ∀ i, fl i = (if .altair ≤ F then
+      base i * flagWeight * num / (WEIGHT_DENOMINATOR.toNat * den)
+      else 3 * (base i * max num den / den) + base i) := ⟨_, fun _ => rfl⟩
+  have creditEq : ∀ i, credit i = flagP i + slots * sync i := by
+    intro i; rw [flagEq]
+  have effJ : ∀ i < r.validators.data.size,
+      ((justified.validators.data[i]?).map (·.effectiveBalance.toNat)).getD 0 = effective i := by
+    intro i inside
+    rw [effPR i inside, ← effZR i inside]
+    simp only [effectiveAt, Jvalidators]
+  have balJ : ∀ i, ((justified.balances.data[i]?).map (·.toNat)).getD 0 =
+      actualBalanceAt ⟨F, zs⟩ i := by
+    intro i
+    simp only [actualBalanceAt, Jbalances]
+  have rewardBound : ∀ i < r.validators.data.size, actualBalanceAt ⟨F, rewarded⟩ i ≤
+      actualBalanceAt ⟨F, zs⟩ i + flagP i := by
+    intro i inside
+    have insideJ : i < justified.validators.data.size := by
+      rw [Jvalidators]; exact Nat.lt_of_lt_of_le inside growsZ
+    have bound := (processRewardsAndPenalties_balance_le_of_inactivityUpdates penaltyEntries_le
+      toNat_getBaseReward_le altair (justified.validators.bound Fearly) scoredOk rewardedOk i
+      insideJ).1
+    dsimp only at bound
+    rw [totalJ, numJ, effJ i inside, balJ] at bound
+    simp only [flagEq, altair, ↓reduceIte, base, perIncrement, root, den, flagWeight]
+    exact bound
+  -- The validators of `P` active in the next epoch are old, and active then at `R`, `z` and later.
+  have fixedZ : activityFixedEpoch zs = activityFixedEpoch r := by
+    simp only [activityFixedEpoch, epochZ, he]
+  have upcomingR : ∀ i, upcoming i = isActiveAt r (e + 1) i := by
+    intro i
+    show isActiveAt q (getCurrentEpoch q + 1) i = _
+    rw [epochP]
+    exact activeP _ fixedNext i
+  have upcomingZ : ∀ i, isActiveAt zs (e + 1) i = isActiveAt r (e + 1) i :=
+    fun i => activeZ _ fixedNext i
+  have upcomingReset : ∀ i, isActiveAt reset (e + 1) i = isActiveAt r (e + 1) i :=
+    fun i => (resetActive _ (fixedZ ▸ fixedNext) i).trans (upcomingZ i)
+  have insideU : ∀ i, upcoming i = true → i < r.validators.data.size := by
+    intro i up
+    rw [upcomingR] at up
+    obtain ⟨v, found, -⟩ := isActiveAt_eq_true_iff.mp up
+    exact (Array.getElem?_eq_some_iff.mp found).1
+  have resetEpoch : getCurrentEpoch reset = e := by
+    rw [← epochZ]; simp only [getCurrentEpoch, resetSlot]
+  -- The pending balances credit at most the churn and the due consolidations.
+  obtain ⟨pd, cs, pdKeys, csKeys, pendingBound, pdCard, pdOff, csCard, csOff, pdSum, csSum⟩ :
+      ∃ (pd cs : ℕ → ℕ) (pdKeys csKeys : Finset ℕ),
+        (∀ i < r.validators.data.size, actualBalanceAt ⟨F, beforeState⟩ i ≤
+          actualBalanceAt ⟨F, reset⟩ i + pd i + cs i) ∧
+        pdKeys.card ≤ preset.MAX_PENDING_DEPOSITS_PER_EPOCH.toNat ∧
+        (∀ i ∉ pdKeys, pd i = 0) ∧ csKeys.card ≤ due.length ∧ (∀ i ∉ csKeys, cs i = 0) ∧
+        ∑ i ∈ positions with upcoming i, pd i ≤ depositCredit ∧
+        ∑ i ∈ positions with upcoming i, cs i ≤ dueStake := by
+    have electra := electraF
+    unfold processPendingBalances at pendingOk
+    simp only [electra, ↓reduceDIte] at pendingOk
+    obtain ⟨deposited, depositedOk, consolidatedOk⟩ := bind_ok_iff.mp pendingOk
+    have matchedReset := resetMatch invZ.balancesMatch
+    obtain ⟨pd, pdKeys, pdCard, pdOff, pdBound, pdSumFn⟩ :=
+      rise_pendingDeposits depositedOk matchedReset
+    obtain ⟨result, passed, balances, -⟩ := processPendingConsolidations_pass consolidatedOk
+    obtain ⟨-, csBound⟩ := passConsolidations_gain passed
+    have depositedSlot : deposited.slot = reset.slot :=
+      (frame_processPendingDeposits depositedOk).slot
+    have depositedEpoch : getCurrentEpoch deposited = e := by
+      rw [← resetEpoch]; simp only [getCurrentEpoch, depositedSlot]
+    have depositedQueue : deposited.pendingConsolidations electra =
+        zs.pendingConsolidations electra := by
+      rw [show deposited.pendingConsolidations = reset.pendingConsolidations from
+        processPendingDeposits_pendingConsolidations depositedOk, resetQueue]
+    have depositedRead := pendingDeposits_validators depositedOk
+    -- Every entry of the queue at `z` that can pay is in the due list of `P`, with its value.
+    have into : ∀ c ∈ (deposited.pendingConsolidations electra).data.toList,
+        0 < consolidationGain deposited (getCurrentEpoch deposited + 1) c →
+        c ∈ due ∧ consolidationGain deposited (getCurrentEpoch deposited + 1) c =
+          effective c.sourceIndex.toNat := by
+      intro c member positive
+      have memberZ : c ∈ (zs.pendingConsolidations electra).data.toList := by
+        rw [← depositedQueue]; exact member
+      obtain ⟨vReset, readReset, -, ordered, -⟩ :=
+        ((resetHolds holdsZ) electra).2 c (by rw [resetQueue]; exact memberZ)
+      have insideReset := (Array.getElem?_eq_some_iff.mp readReset).1
+      have readDep : deposited.validators.data[c.sourceIndex.toNat]? = some vReset := by
+        rw [depositedRead _ insideReset]; exact readReset
+      have gainEq : consolidationGain deposited (getCurrentEpoch deposited + 1) c =
+          if vReset.slashed = false ∧ vReset.withdrawableEpoch ≤ getCurrentEpoch deposited + 1
+          then vReset.effectiveBalance.toNat else 0 := by
+        simp only [consolidationGain, readDep]
+      rw [gainEq] at positive ⊢
+      split at positive
+      swap
+      · exact absurd positive (Nat.lt_irrefl 0)
+      rename_i cond
+      obtain ⟨clear, dueReset⟩ := cond
+      rw [depositedEpoch] at dueReset
+      have dueNat := UInt64.le_iff_toNat_le.mp dueReset
+      rw [nextNat] at dueNat
+      have exitLe : vReset.exitEpoch.toNat ≤ e.toNat := by omega
+      obtain ⟨vZ, readZ, -, -, assignedZ⟩ := (holdsZ electra).2 c memberZ
+      -- The entry was already queued at `R`.
+      have inR : c ∈ (r.pendingConsolidations electra).data.toList := by
+        have queued := (queueZ (r.pendingConsolidations electra).data.toList
+          (fun _ => ⟨fun _ h => h, fun _ h => .inl h⟩)) electra
+        rcases queued.2 c memberZ with listed | ⟨w, readW, later, assigned⟩
+        · exact listed
+        · obtain ⟨later', readLater, step, -⟩ := resetRec _ w readW
+          rw [readReset, Option.some.injEq] at readLater
+          subst later'
+          have exitSame := (step.2 assigned).1
+          rw [he] at later
+          have := UInt64.lt_iff_toNat_lt.mp later
+          rw [← exitSame] at this
+          omega
+      obtain ⟨vR, readR, -, -, assignedR⟩ := (holdsR electra).2 c inR
+      -- The withdrawal epoch at `R` is due by the next epoch.
+      obtain ⟨wZ, readWZ, stepZ⟩ := wdZ _ vR readR
+      rw [readZ, Option.some.injEq] at readWZ
+      subst wZ
+      obtain ⟨-, -, movedZ⟩ := stepZ.2 assignedR
+      obtain ⟨wReset, readWReset, stepReset, -⟩ := resetRec _ vZ readZ
+      rw [readReset, Option.some.injEq] at readWReset
+      subst wReset
+      have wdLe' := (stepReset.2 assignedZ).2.1
+      have clearZ : vZ.slashed = false := by
+        cases flag : vZ.slashed
+        · rfl
+        · have := stepReset.1 flag
+          rw [this] at clear
+          cases clear
+      have wdR : vR.withdrawableEpoch ≤ e + 1 := by
+        rcases movedZ with slashedZ | same
+        · rw [slashedZ] at clearZ; cases clearZ
+        · rw [← same]; exact UInt64.le_trans wdLe' dueReset
+      -- At `P` the source is slashed or due.
+      obtain ⟨wQ, readQ, stepQ⟩ := wdP _ vR readR
+      obtain ⟨-, -, movedQ⟩ := stepQ.2 assignedR
+      have inQ := ((queueP (r.pendingConsolidations electra).data.toList
+        (fun _ => ⟨fun _ h => h, fun _ h => .inl h⟩)) electra).1 c inR
+      have insideR := (Array.getElem?_eq_some_iff.mp readR).1
+      refine ⟨?_, ?_⟩
+      · simp only [due, electra, dite_true, List.mem_filter]
+        refine ⟨inQ, ?_⟩
+        simp only [validator, state, readQ, Option.map_some, Option.getD_some, Bool.or_eq_true,
+          decide_eq_true_eq]
+        rcases movedQ with slashedQ | same
+        · exact .inl slashedQ
+        · right
+          rw [same]
+          show vR.withdrawableEpoch ≤ getCurrentEpoch q + 1
+          rw [epochP]
+          exact wdR
+      · rw [ite_eq_left ⟨clear, by rw [depositedEpoch]; exact dueReset⟩]
+        have one := resetKept _ (Nat.lt_of_lt_of_le insideR growsZ)
+        simp only [effectiveAt, readReset, readZ, Option.map_some, Option.getD_some] at one
+        rw [one, effPR _ insideR, ← effZR _ insideR]
+        simp [effectiveAt, readZ]
+    have nodupZ : (zs.pendingConsolidations electra).data.toList.Nodup :=
+      List.Nodup.of_map _ (holdsZ electra).1
+    have nodupList : (deposited.pendingConsolidations electra).data.toList.Nodup := by
+      rw [depositedQueue]; exact nodupZ
+    have nodupDue : due.Nodup := by
+      simp only [due, electra, dite_true]
+      exact (List.Nodup.of_map _ (holdsP electra).1).filter _
+    obtain ⟨gainSum, keysCard⟩ := gain_sum_le (·.targetIndex.toNat) nodupList nodupDue into
+    -- The churn of the pending deposits reads the total active balance of `P`.
+    obtain ⟨churn, -, -, -, -, -, -, churned, -⟩ := pendingDeposits_pass depositedOk
+    obtain ⟨total', totalOk⟩ : ∃ total', getTotalActiveBalance reset = .ok total' := by
+      cases h : getTotalActiveBalance reset with
+      | error err =>
+        rw [depositChurnLimit_of_lt Fearly] at churned
+        simp [getActivationExitChurnLimit, getBalanceChurnLimit, h, bind, Except.bind] at churned
+      | ok t => exact ⟨t, rfl⟩
+    have churnValue : churn.toNat = depositChurn := by
+      have value := depositChurnLimit_toNat_of_lt Fearly totalOk churned
+      have totalValue := getTotalActiveBalance_toNat totalOk
+      have sumReset := activeSum_eq (e := e)
+        (fun i => resetActive e (by rw [fixedZ]; exact fixedNow) i) resetKept resetSize
+      rw [resetEpoch, sumReset, sumZR e fixedNow, ← totalR] at totalValue
+      rw [value, totalValue]
+    have carry : (reset.depositBalanceToConsume electra).toNat =
+        (q.depositBalanceToConsume electra).toNat := by
+      rw [resetCarry, run_depositCarry toZ Fearly zEpoch electra electra,
+        ← run_depositCarry tailP Fearly callEpoch electra electra]
+    refine ⟨pd, fun i => ((deposited.pendingConsolidations electra).data.toList.map fun c =>
+        if c.targetIndex.toNat = i then
+          consolidationGain deposited (getCurrentEpoch deposited + 1) c else 0).sum, pdKeys,
+      (((deposited.pendingConsolidations electra).data.toList.filter fun c =>
+        0 < consolidationGain deposited (getCurrentEpoch deposited + 1) c).map
+          (·.targetIndex.toNat)).toFinset, fun i inside => ?_, pdCard,
+      pdOff, keysCard, fun i absent => ?_, ?_, ?_⟩
+    · have one := csBound i
+      have two := pdBound i (Nat.lt_of_lt_of_le inside (Nat.le_trans growsZ resetSize))
+      have same : actualBalanceAt ⟨F, beforeState⟩ i = actualBalanceAt ⟨F, result.1⟩ i := by
+        simp only [actualBalanceAt, balances]
+      dsimp only at one two same ⊢
+      omega
+    · apply List.sum_eq_zero
+      intro x member
+      obtain ⟨c, cMem, rfl⟩ := List.mem_map.mp member
+      split
+      · rename_i hit
+        by_contra nonzero
+        apply absent
+        rw [List.mem_toFinset, List.mem_map]
+        exact ⟨c, List.mem_filter.mpr ⟨cMem, decide_eq_true (Nat.pos_of_ne_zero nonzero)⟩, hit⟩
+      · rfl
+    · have bound := pdSumFn (positions.filter fun i => upcoming i = true) churn churned
+        (fun i member => by
+          have up := (Finset.mem_filter.mp member).2
+          rw [upcomingR, ← upcomingReset] at up
+          obtain ⟨v, found, active⟩ := isActiveAt_eq_true_iff.mp up
+          refine ⟨v, found, ?_⟩
+          have ordered := resetExits invZ.exitsOrdered v (Array.mem_of_getElem? found)
+          simp only [isActiveValidator, Bool.and_eq_true, decide_eq_true_eq] at active
+          rw [resetEpoch]
+          exact UInt64.not_lt.mpr (UInt64.le_of_lt (UInt64.lt_of_lt_of_le active.2 ordered)))
+      simp only [depositCredit, electra, dite_true]
+      rw [← carry, ← churnValue]
+      exact bound
+    · have swap : ∀ l : List PendingConsolidation,
+          ∑ i ∈ positions with upcoming i, (l.map fun c => if c.targetIndex.toNat = i then
+            consolidationGain deposited (getCurrentEpoch deposited + 1) c else 0).sum ≤
+          (l.map (consolidationGain deposited (getCurrentEpoch deposited + 1))).sum := by
+        intro l
+        induction l with
+        | nil => simp
+        | cons c rest ih =>
+          simp only [List.map_cons, List.sum_cons, Finset.sum_add_distrib, Finset.sum_ite_eq]
+          split <;> omega
+      refine (swap _).trans (gainSum.trans (le_of_eq ?_))
+      rfl
+  -- The corrections of the branch of `y` inside the epoch.
+  have bc := branchCorrections toZ Fearly fulu zEpoch invR.balancesMatch
+    invR.exitsOrdered
+  extract_lets stateZ pZ positionsZ validatorZ effectiveZ currentZ beforeZ recentZ
+    slashedZ totalZ rootZ perIncrementZ baseZ seatRewardZ seatsZ syncZ syncProposerZ
+    proposerCreditZ whistleblowerZ slashBackZ blocksZ debitedZ blockDepositsZ creditedZ at bc
+  obtain ⟨debS, creditedKeys, pc, dep, -, -, -, upS, -, electraDep, -,
+    ⟨slashedNow, slashedFacts, pcSlashed⟩, converted,
+    ⟨proposerKeys, depositKeys, credSplit, propCard, -, pcOff, -⟩, -, -, -⟩ := bc
+  have depZero : ∀ v, dep v = 0 := electraDep electraF
+  -- The reads of the branch of `y` are those of `P`.
+  have totalZeq : totalZ = total := by
+    simp only [totalZ, positionsZ, currentZ, effectiveZ, stateZ, balanceAt]
+    rw [epochZ, sumZR e fixedNow, ← totalR]
+  have rootZeq : rootZ = root := by simp only [rootZ, root, totalZeq]
+  have perIncrementZeq : perIncrementZ = perIncrement := by
+    simp only [perIncrementZ, perIncrement, rootZeq]
+  have seatRewardZeq : seatRewardZ = seatReward := by
+    simp only [seatRewardZ, seatReward, totalZeq, perIncrementZeq]
+  have syncProposerZeq : syncProposerZ = syncProposer := by
+    simp only [syncProposerZ, syncProposer, seatRewardZeq]
+  have pubkeyZP : ∀ i < r.validators.data.size,
+      (zs.validators.data[i]?).map (·.pubkey) = (q.validators.data[i]?).map (·.pubkey) := by
+    intro i inside
+    obtain ⟨vR, readR⟩ : ∃ v, r.validators.data[i]? = some v :=
+      ⟨_, Array.getElem?_eq_getElem inside⟩
+    obtain ⟨wZ, readZ, keyZ⟩ := validators_getElem?_of_validatorKeys_prefix keysZ readR
+    obtain ⟨wP, readP, keyP⟩ := validators_getElem?_of_validatorKeys_prefix keysP readR
+    simp only [readZ, readP, Option.map_some, keyZ, keyP]
+  have syncZeq : ∀ i < r.validators.data.size, syncZ i = sync i := by
+    intro i inside
+    simp only [syncZ, sync, seatRewardZeq]
+    congr 1
+    simp only [seatsZ, seats]
+    rw [dite_eq_left_of_eq_true (eq_true altair), dite_eq_left_of_eq_true (eq_true altair)]
+    refine seats_eq altair altair ?_ (pubkeyZP i inside)
+    rw [committeeZ altair altair, committeeP altair altair]
+  have baseZeq : ∀ i < r.validators.data.size, baseZ i = base i := by
+    intro i inside
+    have one : effectiveZ i = effective i := by
+      simp only [effectiveZ, stateZ]
+      rw [show balanceAt zs i = effectiveAt ⟨F, zs⟩ i from rfl, effZR i inside, ← effPR i inside]
+    simp only [baseZ, base, one, perIncrementZeq, rootZeq]
+  have setP : positions.filter (fun i => recent i = true) =
+      (Finset.range r.validators.data.size).filter
+        (fun i => isActiveAt r (getPreviousEpoch r) i = true) ∪
+      (Finset.range r.validators.data.size).filter (fun i => isActiveAt r e i = true) := by
+    simp only [positions, recent, before, current, state, epoch, Bool.or_eq_true,
+      Finset.filter_or]
+    rw [prevP, epochP, filterP _ fixedBefore, filterP _ fixedNow]
+  have recentZeq : ∑ i ∈ positionsZ with recentZ i, baseZ i =
+      ∑ i ∈ positions with recent i, base i := by
+    have setZ : positionsZ.filter (fun i => recentZ i = true) =
+        (Finset.range r.validators.data.size).filter
+          (fun i => isActiveAt r (getPreviousEpoch r) i = true) ∪
+        (Finset.range r.validators.data.size).filter (fun i => isActiveAt r e i = true) := by
+      simp only [positionsZ, recentZ, beforeZ, currentZ, stateZ, Bool.or_eq_true,
+        Finset.filter_or]
+      rw [prevZ, epochZ, filterZ _ fixedBefore, filterZ _ fixedNow]
+    rw [setZ, setP]
+    refine Finset.sum_congr rfl fun i member => baseZeq i ?_
+    simp only [Finset.mem_union, Finset.mem_filter, Finset.mem_range] at member
+    rcases member with ⟨h, _⟩ | ⟨h, _⟩ <;> exact h
+  -- The positions below the registry size are indices.
+  have toIdx : ∀ i < r.validators.data.size, (UInt64.ofNat i).toNat = i := by
+    intro i inside
+    have := BeaconState.validators_size_lt_of_lt_glamsterdam Fearly r
+    exact UInt64.toNat_ofNat_of_lt' (Nat.lt_trans inside this)
+  have slotsPos : 0 < slots := by
+    by_contra zero
+    have zero : slots = 0 := by omega
+    have epochY := getCurrentEpoch_toNat y.state
+    have epochR := getCurrentEpoch_toNat r
+    simp only [slots] at zero
+    rw [zero, Nat.div_zero] at epochY epochR
+    rw [he] at epochR
+    omega
+  -- The blocks of the epoch fit its slots.
+  have blocksLe : toZ.blockCount ≤ slots := by
+    have epochR := getCurrentEpoch_toNat r
+    have epochZ' := getCurrentEpoch_toNat zs
+    rw [epochZ, ← he] at epochZ'
+    have sameQuotient : zs.slot.toNat / slots = r.slot.toNat / slots := by
+      simp only [slots]
+      omega
+    have bound := toZ.blocks_le_slots (a := r.slot.toNat / slots * slots)
+      (b := r.slot.toNat / slots * slots + slots - 1) (Nat.div_mul_le_self _ _) (by
+        have split := Nat.div_add_mod zs.slot.toNat slots
+        have small := Nat.mod_lt zs.slot.toNat slotsPos
+        rw [sameQuotient, Nat.mul_comm] at split
+        show zs.slot.toNat ≤ _
+        omega)
+    omega
+  -- The largest effective balances are at most the largest of the fork.
+  have capLe : ∀ v : Validator, (withdrawalMaxEffectiveBalance preset F v).toNat ≤ capMax := by
+    intro v
+    simp only [capMax, electraF, ↓reduceIte, withdrawalMaxEffectiveBalance, getMaxEffectiveBalance]
+    split
+    · exact Nat.le_refl _
+    · exact UInt64.le_iff_toNat_le.mp caps.compounding
+  have cappedR := history.effectiveBalance_capped genesis caps.activation caps.compounding Fearly
+  -- The crossing of each validator.
+  obtain ⟨cross, crossEq⟩ : ∃ f : ℕ → ℕ, ∀ i, f i = (if effective i < cap i then
+      (if effective i + preset.upwardBand < actual i + slashBack i + syncP i + credit i then
+        actual i + slashBack i + syncP i + credit i - effective i else 0)
+      else (if preset.upwardBand < credit i then credit i else 0)) := ⟨_, fun _ => rfl⟩
+  have crossingEq : crossing = ∑ i ∈ positions with upcoming i, cross i := by
+    simp only [crossing, crossEq]
+  -- The rise of each validator active in the next epoch.
+  have each : ∀ i ∈ positions, upcoming i = true →
+      effectiveAt y i - effective i ≤ capMax - effective i ∧
+      (UInt64.ofNat i ∉ debitedKeys → effectiveAt y i - effective i ≤ cross i +
+        (if pc (UInt64.ofNat i) + (pd i + cs i) = 0 then 0
+          else preset.upwardBand) + (pc (UInt64.ofNat i) + (pd i + cs i))) ∧
+      (UInt64.ofNat i ∈ debitedKeys → effectiveAt y i - effective i ≤ preset.upwardBand +
+        credit i + (pc (UInt64.ofNat i) + (pd i + cs i))) := by
+    intro i member up
+    have inside := insideU i up
+    have idx := toIdx i inside
+    obtain ⟨vR, readR⟩ : ∃ v, r.validators.data[i]? = some v :=
+      ⟨_, Array.getElem?_eq_getElem inside⟩
+    obtain ⟨vZ, readZ⟩ : ∃ v, zs.validators.data[i]? = some v :=
+      ⟨_, Array.getElem?_eq_getElem (Nat.lt_of_lt_of_le inside growsZ)⟩
+    have effR : effective i = vR.effectiveBalance.toNat := by
+      rw [effPR i inside]; simp [effectiveAt, readR]
+    have effZ : vZ.effectiveBalance.toNat = vR.effectiveBalance.toNat := by
+      have := effZR i inside
+      simpa [effectiveAt, readZ, readR] using this
+    have insideZ' : i < z'.state.validators.data.size :=
+      Nat.lt_of_lt_of_le (Nat.lt_of_lt_of_le inside growsZ)
+        (Run.nil.snoc (.slot edge)).registryLifecycle.size_le
+    have yEff : effectiveAt y i = effectiveAt z' i :=
+      fromZ'.effectiveKept_of_same_epoch early z'Epoch.symm i insideZ'
+    have upd := updateBound i vZ readZ
+    rw [← yEff, effZ, ← effR] at upd
+    -- The balance at the update.
+    have balChain : actualBalanceAt ⟨F, beforeState⟩ i ≤
+        actualBalanceAt ⟨F, zs⟩ i + flagP i + (0 + pd i + cs i) := by
+      have a := pendingBound i inside
+      have b := lower i
+      have c := rewardBound i inside
+      dsimp only at a b c ⊢
+      omega
+    -- The branch of `y` inside the epoch.
+    have upI := upS (UInt64.ofNat i)
+    rw [idx, syncZeq i inside] at upI
+    have blocksI : blocksZ * sync i ≤ slots * sync i := Nat.mul_le_mul_right _ blocksLe
+    have convI : (withdrawalMaxEffectiveBalance preset F vZ).toNat ≠
+        (withdrawalMaxEffectiveBalance preset F vR).toNat →
+        actualBalanceAt ⟨F, zs⟩ i ≤ preset.MIN_ACTIVATION_BALANCE.toNat + blocksZ * sync i +
+          pc (UInt64.ofNat i) + dep (UInt64.ofNat i) := by
+      intro differ
+      have := converted (UInt64.ofNat i) vR vZ (by rw [idx]; exact readR) (by rw [idx]; exact readZ)
+        (fun same => differ (by rw [same]))
+      rw [idx, syncZeq i inside] at this
+      exact this
+    have actI : (withdrawalMaxEffectiveBalance preset F vR).toNat ≤ effective i →
+        (withdrawalMaxEffectiveBalance preset F vZ).toNat ≠
+          (withdrawalMaxEffectiveBalance preset F vR).toNat →
+        preset.MIN_ACTIVATION_BALANCE.toNat ≤ effective i := by
+      intro le _
+      have low : preset.MIN_ACTIVATION_BALANCE.toNat ≤
+          (withdrawalMaxEffectiveBalance preset F vR).toNat := by
+        simp only [withdrawalMaxEffectiveBalance, electraF, ↓reduceIte, getMaxEffectiveBalance]
+        split
+        · exact UInt64.le_iff_toNat_le.mp caps.compounding
+        · exact Nat.le_refl _
+      omega
+    have one := rise_one (EB := effective i) (effY := effectiveAt y i)
+      (band := preset.upwardBand) (bal := actualBalanceAt ⟨F, beforeState⟩ i)
+      (aZ := actualBalanceAt ⟨F, zs⟩ i) (aR := actualBalanceAt ⟨F, r⟩ i) (aP := actual i)
+      (flag := flagP i) (extra := 0 + pd i + cs i) (blocksSync := blocksZ * sync i)
+      (slotsSync := slots * sync i) (pc := pc (UInt64.ofNat i)) (dep := dep (UInt64.ofNat i))
+      (slashBack := slashBack i) (nSync := syncP i)
+      (capR := (withdrawalMaxEffectiveBalance preset F vR).toNat)
+      (capZ := (withdrawalMaxEffectiveBalance preset F vZ).toNat) (capP := cap i)
+      (minAct := preset.MIN_ACTIVATION_BALANCE.toNat) upd balChain upI blocksI convI actI
+    rw [depZero] at one
+    have capRle : vR.effectiveBalance.toNat ≤ (withdrawalMaxEffectiveBalance preset F vR).toNat :=
+      UInt64.le_iff_toNat_le.mp (cappedR vR (Array.mem_of_getElem? readR))
+    refine ⟨?_, fun absent => ?_, fun present => ?_⟩
+    · have := capLe vZ
+      have := capLe vR
+      dsimp only at upd
+      rw [effR] at upd
+      apply Nat.sub_le_sub_right
+      rcases upd with low | ⟨-, -, high⟩ <;> omega
+    · have nondebited := offDebited (UInt64.ofNat i) absent
+      rw [idx] at nondebited
+      obtain ⟨later, readP, sameCap⟩ :=
+        capsKept (UInt64.ofNat i) vR absent (by rw [idx]; exact readR)
+      rw [idx] at readP
+      have capEq : (withdrawalMaxEffectiveBalance preset F vR).toNat = cap i := by
+        simp only [cap, validator, state, readP, Option.map_some, Option.getD_some]
+        rw [sameCap]
+      have bound := one.1 nondebited capEq
+      rw [crossEq, creditEq]
+      simp only [Nat.zero_add, Nat.add_zero] at bound ⊢
+      exact bound
+    · have debitedI : effective i < (withdrawalMaxEffectiveBalance preset F vR).toNat →
+          actualBalanceAt ⟨F, r⟩ i ≤ effective i + preset.upwardBand := by
+        intro below
+        obtain ⟨balance, readBal⟩ : ∃ b, r.balances.data[i]? = some b :=
+          ⟨_, Array.getElem?_eq_getElem (by rw [invR.balancesMatch]; exact inside)⟩
+        have hys := hysteresis.up i vR balance readR readBal
+          (UInt64.lt_iff_toNat_lt.mpr (by rw [← effR]; exact below))
+        simp only [actualBalanceAt, readBal, Option.map_some, Option.getD_some]
+        rw [effR]
+        exact hys
+      have bound := one.2 debitedI
+      rw [creditEq]
+      simp only [Nat.zero_add, Nat.add_zero] at bound ⊢
+      exact bound
+  -- The recipients of the proposer credits fit the proposers.
+  have inKeys : ∀ i, 0 < pc (UInt64.ofNat i) → UInt64.ofNat i ∈ proposerKeys := by
+    intro i positive
+    by_contra absent
+    rw [pcOff _ absent] at positive
+    exact Nat.lt_irrefl 0 positive
+  have recipsCard : (proposerKeys.image UInt64.toNat).card ≤ proposers := by
+    have card := Finset.card_image_le (s := proposerKeys) (f := UInt64.toNat)
+    have blocksBound : proposerKeys.card ≤ blocksZ := propCard.trans (by split <;> omega)
+    simp only [proposers, altair, ↓reduceIte]
+    simp only [blocksZ] at blocksBound
+    omega
+  -- The validators slashed on the branch of `y` are among those that `P` can slash.
+  have farE : e.toNat < FAR_FUTURE_EPOCH.toNat := by
+    have farNat : FAR_FUTURE_EPOCH.toNat = 18446744073709551615 := rfl
+    omega
+  have wbLe : (∑ v ∈ slashedNow, effectiveZ v.toNat) / pZ.WHISTLEBLOWER_REWARD_QUOTIENT.toNat ≤
+      whistleblower := by
+    apply Nat.div_le_div_right
+    have inR : ∀ v ∈ slashedNow, v.toNat < r.validators.data.size := by
+      intro v member
+      obtain ⟨-, -, vR, readR, -⟩ := slashedFacts v member
+      exact (Array.getElem?_eq_some_iff.mp readR).1
+    calc ∑ v ∈ slashedNow, effectiveZ v.toNat = ∑ v ∈ slashedNow, effective v.toNat := by
+          refine Finset.sum_congr rfl fun v member => ?_
+          simp only [effectiveZ, stateZ]
+          rw [show balanceAt zs v.toNat = effectiveAt ⟨F, zs⟩ v.toNat from rfl,
+            effZR _ (inR v member), ← effPR _ (inR v member)]
+      _ = ∑ i ∈ slashedNow.image UInt64.toNat, effective i :=
+          (Finset.sum_image fun a _ b _ same => UInt64.toNat_inj.mp same).symm
+      _ ≤ _ := by
+          apply Finset.sum_le_sum_of_subset
+          intro i member
+          obtain ⟨v, vMem, rfl⟩ := Finset.mem_image.mp member
+          obtain ⟨-, -, vR, readR, activated, live⟩ := slashedFacts v vMem
+          have insideR := (Array.getElem?_eq_some_iff.mp readR).1
+          obtain ⟨wq, readQ, stepQ⟩ := wdP _ vR readR
+          obtain ⟨later, readLater, life⟩ := tailP.registryLifecycle.validators _ vR readR
+          rw [readQ, Option.some.injEq] at readLater
+          subst later
+          have activatedNat := UInt64.le_iff_toNat_le.mp activated
+          rw [he] at activatedNat
+          have activationSame : wq.activationEpoch = vR.activationEpoch :=
+            life.activationEpoch (fun far => by
+              rw [far] at activatedNat
+              omega)
+          have wdLater : e < wq.withdrawableEpoch := by
+            rw [he] at live
+            by_cases exited : vR.exitEpoch = FAR_FUTURE_EPOCH
+            · have activeR : isActiveAt r e v.toNat = true := by
+                apply isActiveAt_eq_true_iff.mpr
+                refine ⟨vR, readR, ?_⟩
+                simp only [isActiveValidator, Bool.and_eq_true, decide_eq_true_eq]
+                refine ⟨by rw [← he]; exact activated, ?_⟩
+                rw [exited]
+                exact UInt64.lt_iff_toNat_lt.mpr farE
+              rw [← activeP e fixedNow] at activeR
+              obtain ⟨w', read', active'⟩ := isActiveAt_eq_true_iff.mp activeR
+              rw [readQ, Option.some.injEq] at read'
+              subst w'
+              simp only [isActiveValidator, Bool.and_eq_true, decide_eq_true_eq] at active'
+              exact UInt64.lt_of_lt_of_le active'.2
+                (invP.exitsOrdered wq (Array.mem_of_getElem? readQ))
+            · exact UInt64.lt_of_lt_of_le live (stepQ.2 exited).2.1
+          simp only [Finset.mem_filter, positions, Finset.mem_range, validator, state, readQ,
+            Option.any_some, Bool.and_eq_true, decide_eq_true_eq, epoch, epochP]
+          refine ⟨Nat.lt_of_lt_of_le insideR growsP, ?_, wdLater⟩
+          rw [activationSame, ← he]
+          exact activated
+  -- The proposer credits of the upcoming validators are among those of the credited keys.
+  have pcSum : ∑ i ∈ positions with upcoming i, pc (UInt64.ofNat i) ≤
+      ∑ v ∈ creditedKeys, pc v := by
+    rw [← Finset.sum_image (f := pc) (fun a member b member' same => by
+      have ia := toIdx a (insideU a (Finset.mem_filter.mp member).2)
+      have ib := toIdx b (insideU b (Finset.mem_filter.mp member').2)
+      rw [← ia, ← ib, same])]
+    apply Finset.sum_le_sum_of_ne_zero
+    intro v _ nonzero
+    rw [credSplit]
+    apply Finset.mem_union_left
+    by_contra absent
+    exact nonzero (pcOff v absent)
+  -- The transfers of the upcoming validators.
+  have transferLe : ∑ i ∈ positions with upcoming i,
+      (pc (UInt64.ofNat i) + (pd i + cs i)) ≤ transfers := by
+    simp only [Finset.sum_add_distrib]
+    have pcBound := pcSum.trans pcSlashed
+    rw [recentZeq, syncProposerZeq] at pcBound
+    have := wbLe
+    simp only [transfers, proposerCredit]
+    omega
+  -- Put the rises together.
+  have eachSum : ∀ i ∈ positions.filter (fun i => upcoming i = true), i ∉ (∅ : Finset ℕ) →
+      effectiveAt y i - effective i ≤ cross i +
+        (if i ∈ (positions.filter (fun i => upcoming i = true)).filter
+            (fun i => 0 < pc (UInt64.ofNat i) + (pd i + cs i))
+          then preset.upwardBand else 0) +
+        (if i ∈ debitedKeys.image UInt64.toNat then preset.upwardBand + creditMax else 0) +
+        (pc (UInt64.ofNat i) + (pd i + cs i)) := by
+    intro i memberU _
+    obtain ⟨member, up⟩ := Finset.mem_filter.mp memberU
+    have idx := toIdx i (insideU i up)
+    obtain ⟨-, offBound, onBound⟩ := each i member up
+    by_cases debitedI : UInt64.ofNat i ∈ debitedKeys
+    · have inD : i ∈ debitedKeys.image UInt64.toNat := Finset.mem_image.mpr ⟨_, debitedI, idx⟩
+      have creditLe : credit i ≤ creditMax := by
+        have := Finset.le_sup (f := fun i => if upcoming i = true then credit i else 0) member
+        simp only [up, ↓reduceIte] at this
+        exact this
+      have := onBound debitedI
+      simp only [inD, ↓reduceIte]
+      split <;> omega
+    · have := offBound debitedI
+      by_cases zero : pc (UInt64.ofNat i) + (pd i + cs i) = 0
+      · simp only [zero, Nat.add_zero, ↓reduceIte] at this
+        split <;> split <;> omega
+      · have inA : i ∈ (positions.filter (fun i => upcoming i = true)).filter
+            (fun i => 0 < pc (UInt64.ofNat i) + (pd i + cs i)) :=
+          Finset.mem_filter.mpr ⟨memberU, Nat.pos_of_ne_zero zero⟩
+        simp only [zero, ↓reduceIte, inA] at this ⊢
+        split <;> omega
+  have sumBound := rise_sum (capMax := capMax) eachSum (fun _ _ absent => absurd absent nofun)
+  -- The recipients of transfers and the debited validators.
+  have cardA : (positions.filter (fun i => upcoming i = true) ∩
+      (positions.filter (fun i => upcoming i = true)).filter
+        (fun i => 0 < pc (UInt64.ofNat i) + (pd i + cs i))).card ≤ recipients := by
+    have sub : positions.filter (fun i => upcoming i = true) ∩
+        (positions.filter (fun i => upcoming i = true)).filter
+          (fun i => 0 < pc (UInt64.ofNat i) + (pd i + cs i)) ⊆
+        proposerKeys.image UInt64.toNat ∪ pdKeys ∪ csKeys := by
+      intro i member
+      obtain ⟨memberU, memberA⟩ := Finset.mem_inter.mp member
+      obtain ⟨member', up⟩ := Finset.mem_filter.mp memberU
+      have positive := (Finset.mem_filter.mp memberA).2
+      simp only [Finset.mem_union]
+      by_cases first : 0 < pc (UInt64.ofNat i)
+      · exact .inl (.inl (Finset.mem_image.mpr ⟨_, inKeys i first, toIdx i (insideU i up)⟩))
+      · by_cases second : 0 < pd i
+        · left; right
+          by_contra absent
+          rw [pdOff i absent] at second
+          exact Nat.lt_irrefl 0 second
+        · right
+          by_contra absent
+          rw [csOff i absent] at positive
+          omega
+    refine (Finset.card_le_card sub).trans ?_
+    have union := Finset.card_union_le (proposerKeys.image UInt64.toNat ∪ pdKeys) csKeys
+    have union' := Finset.card_union_le (proposerKeys.image UInt64.toNat) pdKeys
+    simp only [recipients, depositRecipients, electraF, ↓reduceIte]
+    omega
+  have cardD : (positions.filter (fun i => upcoming i = true) ∩
+      debitedKeys.image UInt64.toNat).card ≤ debited :=
+    (Finset.card_le_card Finset.inter_subset_right).trans (Finset.card_image_le.trans debitedCard)
+  refine le_min ?_ ?_
+  · exact Finset.sum_le_sum fun i memberU =>
+      (each i (Finset.mem_filter.mp memberU).1 (Finset.mem_filter.mp memberU).2).1
+  · refine sumBound.trans ?_
+    rw [crossingEq]
+    have one := Nat.mul_le_mul_right preset.upwardBand cardA
+    have two := Nat.mul_le_mul_right preset.upwardBand cardD
+    have three := Nat.mul_le_mul_right creditMax cardD
+    simp only [Finset.inter_empty, Finset.card_empty, Nat.zero_mul, Nat.add_zero]
+    rw [Nat.mul_add, Nat.add_mul]
+    omega
 
 end EthLib.Consensus
