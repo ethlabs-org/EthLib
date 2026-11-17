@@ -35,7 +35,7 @@ variable {preset : Preset} {config : Config} {checks : SignatureChecks}
 A total below one increment is read as one increment.
 
 The sum runs over the positions of the registry that are active in the current epoch. -/
-private theorem getTotalActiveBalance_toNat {fork : Fork} {state : BeaconState preset fork}
+theorem getTotalActiveBalance_toNat {fork : Fork} {state : BeaconState preset fork}
     {total : Gwei} (computed : getTotalActiveBalance state = .ok total) :
     total.toNat = max preset.EFFECTIVE_BALANCE_INCREMENT.toNat
       (∑ i ∈ (Finset.range state.validators.data.size).filter
