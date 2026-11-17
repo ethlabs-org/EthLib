@@ -27,6 +27,9 @@ Not yet released.
   `Execution.honestHeadsCover_of_historical_anchor` keeps its statement.
   `slotStart_le_clock` is now public.
 
+- `ReceiverWindowExitsNear` asks the exit bound of `ReceiverWindowExits` only of receivers within two epochs of the parent, the only receivers whose steps read it.
+  `receiverWindowExitsNear_of_exits` derives it from `ReceiverWindowExits`, so `Execution.honestHeadsCover_of_historical_anchor` and `Execution.honestHeadsCover_of_signed_justification` keep their statements.
+
 - `HonestVoteData.target_read` reads the target of an honest vote from its voter's head, without the reads of a duty vote.
   It needs the target block held by some store reachable from the same anchor.
   The anchor store does not tie the anchor state's latest header to the anchor block, so a read at the anchor needs that block.
@@ -36,6 +39,13 @@ Not yet released.
   Its checkpoint block at the finalized epoch is the finalized block.
   It asks that the anchor block is not after the anchor state and that its parent root names no known block.
   `Store.isViableLeaf_checkpointBlock` gives the checkpoint block that a viable leaf reads.
+
+- `Execution.honestHeadsCover_of_historical_anchor_of_newlyActive` and `Execution.honestHeadsCover_of_signed_justification_of_newlyActive` take `NewlyActiveVotersInHeadWindow` in place of `VoteCommitteeCommonHistory` ([#1458](https://github.com/ethereum/EthLib/issues/1458)).
+  It asks only that a voter activated at its target epoch lie in the head's window, for a vote two epochs after the parent.
+  Every other voter lies there by `VotersInHeadWindow`, which `Execution.votersInHeadWindow_of_newlyActive` derives.
+  The merged headlines keep their statements and reach the new ones through `Execution.votersInHeadWindow_of_commonHistory`.
+  `Store.mem_getCommitteesBetweenSlots_of_active` and `Store.ForwardReachableWith.active_or_newlyActive_of_voteOrigin` are the general steps.
+  If the rule's window weight paid one epoch's activation churn, the remaining premise would go.
 
 ### Changes that break callers
 
