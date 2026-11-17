@@ -1,6 +1,8 @@
 module
 
-public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmation.Indicators
+public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmation.TargetVotes
+import EthLib.Consensus.Proofs.ForkChoice.CommitteeAgreement
+import EthLib.Consensus.Proofs.ForkChoice.HonestVotes
 
 /-!
 # Proofs: the target count of the rule from the votes of the store
@@ -14,6 +16,12 @@ It adds the honest share of the slots still to come.
 The first lemma reads the votes so far as the stake of a list of voters.
 
 The second reads the count as those votes less the adversary, plus the honest share.
+
+A signed vote shows that its voter signed the target.
+
+A voter for the target of the head is in the committees that the rule reads.
+
+This holds when the block of the target is near.
 -/
 
 @[expose] public section
@@ -149,5 +157,135 @@ private theorem computeHonestFfgSupportForCurrentTarget_eq
     UInt64.toNat_ofNat] using sumNat
 
 end Store
+
+namespace Models.Network
+
+variable {config : Config} {checks : SignatureChecks} {sources : BlockSources preset fork}
+  {anchorState : BeaconState preset fork} {anchorBlock : BeaconBlock preset fork}
+  {assignment : Assignment preset} {genesisTimeMs : UInt64} {J : Set ValidatorIndex}
+  {e : Execution (honestForkChoice config checks sources anchorState anchorBlock assignment
+    genesisTimeMs) J}
+
+/-- A latest vote's checkpoint target has been signed by the event that holds the vote. -/
+private theorem Execution.signsTarget_of_latestMessages {anchor : Store preset fork}
+    (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (start : ∀ w ∈ J, e.start w = anchor) {u : ValidatorIndex} (caller : u ∈ J)
+    {n : ℕ} {v : ValidatorIndex} {message : LatestMessage fork}
+    (found : ((e.world n).state u).latestMessages[v]? = some message)
+    {target : Checkpoint}
+    (targetOk : ((e.world n).state u).getCheckpointForBlock message.root
+      (getLatestMessageEpoch preset message) = .ok target) :
+    SignsTarget e v target (e.world n).time := by
+  obtain ⟨attestation, m, seen, same, signed, origin⟩ :=
+    e.exists_signed_origin_of_latestMessages anchored start caller found
+  have epoch : getLatestMessageEpoch preset message = attestation.data.target.epoch := by
+    rw [same]
+    unfold getLatestMessageEpoch LatestMessage.ofAttestation
+    split
+    · exact origin.targetEpoch.symm
+    · rfl
+  have root : message.root = attestation.data.beaconBlockRoot := by rw [same]; rfl
+  rw [epoch, root] at targetOk
+  have targetEq : attestation.data.target = target := by
+    simpa [Store.getCheckpointForBlock, origin.targetRoot] using targetOk
+  exact ⟨n, le_rfl, m, e.view_subset_sent n u seen, attestation.data, signed, targetEq⟩
+
+/-- A voter for the target of the head is in the committees that the rule reads, with a near block.
+
+The target is the one of the current epoch, in the chain of the head.
+
+The block of the target is at most one epoch before the current epoch.
+
+The rule reads the committees of the current epoch so far, in the state of the head.
+
+The vote is for a node that descends from the block of the target, as the head does.
+
+So the target state and the state of the head agree on the committees of the epoch of the vote.
+
+The head state must be before the mix that the seed of the epoch reads is written again.
+-/
+private theorem Execution.mem_window_of_target_near {anchor : Store preset fork}
+    (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (start : ∀ w ∈ J, e.start w = anchor) (anchorSlot : anchorBlock.slot ≤ anchorState.slot)
+    (preGloas : fork < .glamsterdam)
+    (minLookahead : 1 ≤ preset.MIN_SEED_LOOKAHEAD.toNat)
+    (maxLookahead : 1 ≤ preset.MAX_SEED_LOOKAHEAD.toNat)
+    (ring : preset.MIN_SEED_LOOKAHEAD.toNat + 1 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
+    {w : ValidatorIndex} (honest : w ∈ J) {k : ℕ} {head : ForkChoiceNode}
+    {slot first lastSlot : Slot} {participants : Std.TreeSet ValidatorIndex}
+    {v : ValidatorIndex} {attestation : Attestation preset fork}
+    (slotOk : ((e.world k).state w).getCurrentSlot config = .ok slot)
+    (firstOk : computeStartSlotAtEpoch preset (computeEpochAtSlot preset slot) = .ok first)
+    (lastOk : subChecked slot 1 = .ok lastSlot)
+    (windowOk : ((e.world k).state w).getCommitteesBetweenSlots head.root first lastSlot =
+      .ok participants)
+    (targetOk : ((e.world k).state w).getCurrentTarget config head.root =
+      .ok attestation.data.target)
+    (origin : ((e.world k).state w).VoteOrigin config v attestation)
+    (near : ∀ rootBlock : BeaconBlock preset fork,
+      ((e.world k).state w).blocks[attestation.data.target.root]? = some rootBlock →
+      (computeEpochAtSlot preset slot).toNat ≤
+        (computeEpochAtSlot preset rootBlock.slot).toNat + 1) :
+    v ∈ participants := by
+  have reached := e.forwardReachableWith
+    (fun u member => (start u member) ▸ Store.ForwardReachableWith.anchor anchored) k w honest
+  -- The target is the current one, so its epoch is the epoch of the slot.
+  obtain ⟨epoch, targetRoot, epochOk, headTarget, targetEq⟩ :=
+    Store.getCurrentTarget_eq_ok_iff.mp targetOk
+  have epochRead : ((e.world k).state w).getCurrentStoreEpoch config =
+      .ok (computeEpochAtSlot preset slot) := by
+    simp [Store.getCurrentStoreEpoch, slotOk, bind, Except.bind, pure, Except.pure]
+  have epochEq : epoch = computeEpochAtSlot preset slot :=
+    Except.ok.inj (epochOk.symm.trans epochRead)
+  have targetEpoch : attestation.data.target.epoch = computeEpochAtSlot preset slot :=
+    (congrArg Checkpoint.epoch targetEq).trans epochEq
+  have rootEq : attestation.data.target.root = targetRoot := congrArg Checkpoint.root targetEq
+  obtain ⟨_, rootBlock, _, rootFound, _, headDescends⟩ :=
+    Store.isAncestor_of_getCheckpointBlock preGloas headTarget
+  have voteTarget := origin.targetRoot
+  rw [rootEq] at voteTarget
+  obtain ⟨_, _, _, _, _, voteDescends⟩ := Store.isAncestor_of_getCheckpointBlock preGloas voteTarget
+  rw [← rootEq] at rootFound headDescends voteDescends
+  -- The head has a state, at or before the current slot.
+  obtain ⟨headBlock, headBlockFound, -⟩ := Store.slot_le_of_isAncestor rootFound headDescends
+  obtain ⟨headState, headFound, -, -⟩ := reached.reachable.blockStatesFromParents headBlockFound
+  have headLe := reached.forwardReachable.slot_le_of_blockState_of_getCurrentSlot headFound slotOk
+  have headCurrent :
+      (getCurrentEpoch headState).toNat ≤ (computeEpochAtSlot preset slot).toNat := by
+    rw [getCurrentEpoch_toNat]
+    simp only [computeEpochAtSlot, UInt64.toNat_div]
+    exact Nat.div_le_div_right (UInt64.le_iff_toNat_le.mp headLe)
+  have voteEpoch :
+      computeEpochAtSlot preset attestation.data.slot = computeEpochAtSlot preset slot :=
+    origin.targetEpoch.symm.trans targetEpoch
+  -- The target state and the state of the head agree on the committees of the vote.
+  obtain ⟨targetState, index, committee, targetFound, below, committeeOk, member⟩ :=
+    origin.exists_mem_committee
+  obtain ⟨kept, count⟩ := reached.committeesKept_of_voteOrigin anchorSlot minLookahead
+    maxLookahead (by omega) rootFound headDescends origin rfl voteDescends
+    (by rw [voteEpoch]; exact near rootBlock rootFound) targetFound headFound
+    (by rw [voteEpoch]; omega)
+  -- The slot of the vote is in the range that the rule reads.
+  have low : first ≤ attestation.data.slot := by
+    have firstNat := (computeStartSlotAtEpoch_ok_iff.mp firstOk).2
+    have divLe := Nat.div_mul_le_self attestation.data.slot.toNat preset.SLOTS_PER_EPOCH.toNat
+    change (computeEpochAtSlot preset attestation.data.slot).toNat *
+      preset.SLOTS_PER_EPOCH.toNat ≤ attestation.data.slot.toNat at divLe
+    rw [voteEpoch] at divLe
+    exact UInt64.le_iff_toNat_le.mpr (by omega)
+  have high : attestation.data.slot ≤ lastSlot := by
+    obtain ⟨current, currentOk, past⟩ := origin.past
+    have currentEq := Except.ok.inj (currentOk.symm.trans slotOk)
+    subst current
+    have lastNat := (subChecked_ok_iff.mp lastOk).2
+    have pastNat := UInt64.lt_iff_toNat_lt.mp past
+    rw [UInt64.le_iff_toNat_le]
+    simp only [UInt64.toNat_one] at lastNat
+    omega
+  exact Store.mem_getCommitteesBetweenSlots windowOk low high
+    (Store.blockState_ok_iff.mpr headFound) (count ▸ below)
+    ((kept _ _ rfl).trans committeeOk) member
+
+end Models.Network
 
 end EthLib.Consensus
