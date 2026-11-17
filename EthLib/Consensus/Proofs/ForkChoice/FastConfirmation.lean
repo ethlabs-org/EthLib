@@ -25,6 +25,10 @@ Other proofs tie the stake tests of the rule to the supporters and the committee
 
 One module turns an assumed honest vote count into concrete voters when the one-third test passes.
 
+Another derives that count from a bound on the Byzantine stake.
+
+The bound is on the committees of the epoch so far and on the slots to come.
+
 Another shows that honest votes over a whole epoch keep the block on the head chain.
 
 It requires votes only in that epoch, with the committee check on each selected vote.

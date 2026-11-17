@@ -1,7 +1,10 @@
 module
 
+public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmation.Sets
 public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmation.TargetVotes
+public import EthLib.Consensus.Proofs.ForkChoice.VoteOrigins
 import EthLib.Consensus.Proofs.ForkChoice.CommitteeAgreement
+import EthLib.Consensus.Proofs.ForkChoice.HonestEquivocators
 import EthLib.Consensus.Proofs.ForkChoice.HonestVotes
 
 /-!
@@ -22,6 +25,14 @@ A signed vote shows that its voter signed the target.
 A voter for the target of the head is in the committees that the rule reads.
 
 This holds when the block of the target is near, or when the head is in the current epoch.
+
+The theorem derives the honest count of `TargetVotes` from a bound on the Byzantine stake.
+
+The bound is on the committees of the epoch so far.
+
+The honest stake of the slots still to come is bounded below.
+
+A head with an old block needs the premise `StaleHeadVotersInWindow`.
 -/
 
 @[expose] public section
@@ -116,18 +127,20 @@ private theorem getCurrentTargetScore_eq_stake
   | some message =>
     by_cases equiv : index ∈ store.equivocatingIndices <;> simp [equiv]
 
-/-- A successful target-support count is the discounted score plus the remaining honest share. -/
+/-- A successful target-support count is the discounted score plus the remaining honest share.
+
+The count reads the total balance, and the weight of the committees so far, as it does so.
+-/
 private theorem computeHonestFfgSupportForCurrentTarget_eq
-    {head : Root} {state : BeaconState preset fork} {slot epochStart lastSlot : Slot}
-    {total soFar support : Gwei}
+    {head : Root} {state : BeaconState preset fork} {slot : Slot} {support : Gwei}
     (stateOk : store.getPulledUpHeadState config head = .ok state)
     (slotOk : store.getCurrentSlot config = .ok slot)
-    (totalOk : getTotalActiveBalance state = .ok total)
-    (startOk : computeStartSlotAtEpoch preset (computeEpochAtSlot preset slot) = .ok epochStart)
-    (lastOk : subChecked slot 1 = .ok lastSlot)
-    (soFarOk : store.computeCommitteeWeightBetweenSlots head state epochStart lastSlot = .ok soFar)
     (supportOk : store.computeHonestFfgSupportForCurrentTarget config head = .ok support) :
-    ∃ score adversary,
+    ∃ total soFar epochStart lastSlot score adversary,
+      getTotalActiveBalance state = .ok total ∧
+      computeStartSlotAtEpoch preset (computeEpochAtSlot preset slot) = .ok epochStart ∧
+      subChecked slot 1 = .ok lastSlot ∧
+      store.computeCommitteeWeightBetweenSlots head state epochStart lastSlot = .ok soFar ∧
       store.getCurrentTargetScore config head = .ok score ∧
       store.computeAdversarialWeight config head state epochStart lastSlot = .ok adversary ∧
       support.toNat = score.toNat - adversary.toNat +
@@ -140,19 +153,12 @@ private theorem computeHonestFfgSupportForCurrentTarget_eq
     adversary, adversaryOk, sumOk⟩ := supportOk
   cases Except.ok.inj sOk
   cases Except.ok.inj stOk
-  rw [totalOk, Except.ok.injEq] at tOk
-  subst t
-  rw [startOk, Except.ok.injEq] at firstOk
-  subst first
-  rw [lastOk, Except.ok.injEq] at lastOk'
-  subst last
-  rw [soFarOk, Except.ok.injEq] at weightOk
-  subst weight
   have remainingNat := (subChecked_ok_iff.mp remainingOk).2
   have shareNat := (subChecked_ok_iff.mp shareOk).2
   have futureNat := (mulChecked_ok_iff.mp futureOk).2
   have sumNat := (addChecked_ok_iff.mp sumOk).2
-  refine ⟨score, adversary, scoreOk, adversaryOk, ?_⟩
+  refine ⟨t, weight, first, last, score, adversary, tOk, firstOk, lastOk', weightOk, scoreOk,
+    adversaryOk, ?_⟩
   simpa only [toNat_saturatingSub, futureNat, UInt64.toNat_div, remainingNat, shareNat,
     UInt64.toNat_ofNat] using sumNat
 
@@ -166,8 +172,86 @@ variable {config : Config} {checks : SignatureChecks} {sources : BlockSources pr
   {e : Execution (honestForkChoice config checks sources anchorState anchorBlock assignment
     genesisTimeMs) J}
 
-/-- A latest vote's checkpoint target has been signed by the event that holds the vote. -/
-private theorem Execution.signsTarget_of_latestMessages {anchor : Store preset fork}
+/-- A voter for the target of the current epoch is in the committees that the rule reads.
+
+This is the premise for a head with an old block.
+
+The block of such a head is before the start of the current epoch.
+
+It is also at least two epochs before the current epoch.
+
+The rule reads the committees of the current epoch from the state of the head.
+
+That state has not processed the epochs in between.
+
+The premise says that the committees it gives still hold the voter.
+
+For any other head the fact is proved.
+
+A run in which no honest head is that old satisfies the premise with nothing to prove.
+
+A rule that read these committees from the pulled-up state of the head would not need it.
+-/
+def StaleHeadVotersInWindow (last : ℕ) : Prop :=
+  ∀ w ∈ J, ∀ k, (e.world k).time ≤ last →
+    ∀ (head : ForkChoiceNode) (headBlock : BeaconBlock preset fork)
+      (slot first lastSlot : Slot) (participants : Std.TreeSet ValidatorIndex)
+      (v : ValidatorIndex) (attestation : Attestation preset fork),
+    ((e.world k).state w).getHead config = .ok head →
+    ((e.world k).state w).blocks[head.root]? = some headBlock →
+    ((e.world k).state w).getCurrentSlot config = .ok slot →
+    computeStartSlotAtEpoch preset (computeEpochAtSlot preset slot) = .ok first →
+    headBlock.slot < first →
+    (computeEpochAtSlot preset headBlock.slot).toNat + 1 <
+      (computeEpochAtSlot preset slot).toNat →
+    subChecked slot 1 = .ok lastSlot →
+    ((e.world k).state w).getCommitteesBetweenSlots head.root first lastSlot = .ok participants →
+    ((e.world k).state w).getCurrentTarget config head.root = .ok attestation.data.target →
+    ((e.world k).state w).VoteOrigin config v attestation →
+    v ∈ participants
+
+/-- The Byzantine stake that the count of a call assumes, for the reads of one head at one event.
+
+The state is the pulled-up state of the head.
+
+Its balances are aligned to the increment.
+
+The Byzantine validators hold at most the threshold share of the stake of the active members.
+
+Those members are in the committees of the epoch so far.
+
+This is Assumption 2 of the paper.
+
+The honest validators of the slots still to come hold what the rule counts for them.
+
+They hold a third of the margin on top of it.
+-/
+def TargetCountBounds [DecidablePred (· ∈ J)] (margin : ℕ) (u : ValidatorIndex) (n : ℕ)
+    (head : Root) : Prop :=
+  ∀ (state : BeaconState preset fork) (total soFar : Gwei) (slot epochStart lastSlot : Slot)
+    (participants : Std.TreeSet ValidatorIndex),
+    ((e.world n).state u).getPulledUpHeadState config head = .ok state →
+    getTotalActiveBalance state = .ok total →
+    ((e.world n).state u).getCurrentSlot config = .ok slot →
+    computeStartSlotAtEpoch preset (computeEpochAtSlot preset slot) = .ok epochStart →
+    subChecked slot 1 = .ok lastSlot →
+    ((e.world n).state u).computeCommitteeWeightBetweenSlots head state epochStart lastSlot =
+      .ok soFar →
+    ((e.world n).state u).getCommitteesBetweenSlots head epochStart lastSlot = .ok participants →
+    EffectiveBalancesAligned state ∧
+    ByzantineStakeAtMost (fun v => balanceAt state v.toNat)
+      (Store.activeMembers state participants) J
+      config.CONFIRMATION_BYZANTINE_THRESHOLD.toNat 100 ∧
+    3 * ((total.toNat - soFar.toNat) / 100 *
+        (100 - config.CONFIRMATION_BYZANTINE_THRESHOLD.toNat)) + margin ≤
+      3 * stake (fun v => balanceAt state v.toNat)
+        {v ∈ ((unslashedActiveBalances state).map (·.1)).toFinset | v ∉ participants ∧ v ∈ J}
+
+/-- A latest vote's checkpoint target has been signed by the event that holds the vote.
+
+The vote comes from an attestation with that target, which has an origin in the store.
+-/
+private theorem Execution.exists_attestation_of_latestMessages {anchor : Store preset fork}
     (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
     (start : ∀ w ∈ J, e.start w = anchor) {u : ValidatorIndex} (caller : u ∈ J)
     {n : ℕ} {v : ValidatorIndex} {message : LatestMessage fork}
@@ -175,7 +259,9 @@ private theorem Execution.signsTarget_of_latestMessages {anchor : Store preset f
     {target : Checkpoint}
     (targetOk : ((e.world n).state u).getCheckpointForBlock message.root
       (getLatestMessageEpoch preset message) = .ok target) :
-    SignsTarget e v target (e.world n).time := by
+    ∃ attestation : Attestation preset fork, attestation.data.target = target ∧
+      ((e.world n).state u).VoteOrigin config v attestation ∧
+      SignsTarget e v target (e.world n).time := by
   obtain ⟨attestation, m, seen, same, signed, origin⟩ :=
     e.exists_signed_origin_of_latestMessages anchored start caller found
   have epoch : getLatestMessageEpoch preset message = attestation.data.target.epoch := by
@@ -188,7 +274,8 @@ private theorem Execution.signsTarget_of_latestMessages {anchor : Store preset f
   rw [epoch, root] at targetOk
   have targetEq : attestation.data.target = target := by
     simpa [Store.getCheckpointForBlock, origin.targetRoot] using targetOk
-  exact ⟨n, le_rfl, m, e.view_subset_sent n u seen, attestation.data, signed, targetEq⟩
+  exact ⟨attestation, targetEq, origin,
+    n, le_rfl, m, e.view_subset_sent n u seen, attestation.data, signed, targetEq⟩
 
 /-- A voter for the target of the head is in the committees that the rule reads.
 
@@ -313,6 +400,272 @@ private theorem Execution.mem_window_of_target {anchor : Store preset fork}
   exact Store.mem_getCommitteesBetweenSlots windowOk low high
     (Store.blockState_ok_iff.mpr headFound) (count ▸ below)
     ((kept _ _ rfl).trans committeeOk) member
+
+/-- A voter for the target of the head is in the committees that the rule reads.
+
+The head is stale when its block is at least two epochs before the current epoch.
+
+Then the premise on stale heads gives the membership.
+
+For a head with a block in the current epoch, or a block at most one epoch back, it is proved.
+-/
+private theorem Execution.mem_window_of_target_or_stale {anchor : Store preset fork}
+    (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (start : ∀ w ∈ J, e.start w = anchor) (anchorSlot : anchorBlock.slot ≤ anchorState.slot)
+    (preGloas : fork < .glamsterdam)
+    (minLookahead : 1 ≤ preset.MIN_SEED_LOOKAHEAD.toNat)
+    (maxLookahead : 1 ≤ preset.MAX_SEED_LOOKAHEAD.toNat)
+    (ring : preset.MIN_SEED_LOOKAHEAD.toNat + 1 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
+    {limit : ℕ} (stale : StaleHeadVotersInWindow (e := e) limit)
+    {w : ValidatorIndex} (honest : w ∈ J) {k : ℕ} (bounded : (e.world k).time ≤ limit)
+    {head : ForkChoiceNode} {slot first lastSlot : Slot}
+    {participants : Std.TreeSet ValidatorIndex} {v : ValidatorIndex}
+    {attestation : Attestation preset fork}
+    (headOk : ((e.world k).state w).getHead config = .ok head)
+    (slotOk : ((e.world k).state w).getCurrentSlot config = .ok slot)
+    (firstOk : computeStartSlotAtEpoch preset (computeEpochAtSlot preset slot) = .ok first)
+    (lastOk : subChecked slot 1 = .ok lastSlot)
+    (windowOk : ((e.world k).state w).getCommitteesBetweenSlots head.root first lastSlot =
+      .ok participants)
+    (targetOk : ((e.world k).state w).getCurrentTarget config head.root =
+      .ok attestation.data.target)
+    (origin : ((e.world k).state w).VoteOrigin config v attestation) :
+    v ∈ participants := by
+  by_cases atOrAfter : ∀ headBlock : BeaconBlock preset fork,
+      ((e.world k).state w).blocks[head.root]? = some headBlock → first ≤ headBlock.slot
+  · exact Execution.mem_window_of_target anchored start anchorSlot preGloas minLookahead
+      maxLookahead ring honest slotOk firstOk lastOk windowOk targetOk origin (.inr atOrAfter)
+  -- The block of the head is before the start of the epoch, so it is the block of the target.
+  obtain ⟨headBlock, headFound, below⟩ : ∃ headBlock : BeaconBlock preset fork,
+      ((e.world k).state w).blocks[head.root]? = some headBlock ∧ headBlock.slot < first := by
+    simp only [not_forall] at atOrAfter
+    obtain ⟨headBlock, found, not_le⟩ := atOrAfter
+    exact ⟨headBlock, found, UInt64.not_le.mp not_le⟩
+  obtain ⟨epoch, targetRoot, epochOk, headTarget, targetEq⟩ :=
+    Store.getCurrentTarget_eq_ok_iff.mp targetOk
+  have epochRead : ((e.world k).state w).getCurrentStoreEpoch config =
+      .ok (computeEpochAtSlot preset slot) := by
+    simp [Store.getCurrentStoreEpoch, slotOk, bind, Except.bind, pure, Except.pure]
+  have epochEq : epoch = computeEpochAtSlot preset slot :=
+    Except.ok.inj (epochOk.symm.trans epochRead)
+  have rootIsHead : attestation.data.target.root = head.root := by
+    rw [targetEq]
+    simp only [Store.getCheckpointBlock, bind_ok_iff, mapError_ok_iff, pure, Except.pure,
+      Except.ok.injEq] at headTarget
+    obtain ⟨boundary, boundaryOk, ancestor, walk, rooted⟩ := headTarget
+    rw [epochEq, firstOk, Except.ok.injEq] at boundaryOk
+    subst boundaryOk
+    rw [Store.getAncestor_of_le (node := ⟨head.root, .pending⟩) headFound (UInt64.le_of_lt below),
+      Except.ok.injEq] at walk
+    subst walk
+    exact rooted.symm
+  by_cases near : (computeEpochAtSlot preset slot).toNat ≤
+      (computeEpochAtSlot preset headBlock.slot).toNat + 1
+  · refine Execution.mem_window_of_target anchored start anchorSlot preGloas minLookahead
+      maxLookahead ring honest slotOk firstOk lastOk windowOk targetOk origin (.inl ?_)
+    intro rootBlock found
+    rw [rootIsHead, headFound, Option.some.injEq] at found
+    subst found
+    exact near
+  · exact stale w honest k bounded head headBlock slot first lastSlot participants v attestation
+      headOk headFound slotOk firstOk below (by omega) lastOk windowOk targetOk origin
+
+/-- Honest validators hold the count that the rule makes for the target, with a margin.
+
+The caller is an honest validator, and each honest store starts from the store of the anchor.
+
+Each latest vote of an honest validator in the store of the caller is a vote that it signed.
+
+The Byzantine validators hold at most the threshold share of the committees of the epoch so far.
+
+So the votes for the target, less the weight of the adversary, are honest votes.
+
+The honest validators of the slots still to come hold the share that the rule counts for them.
+
+They hold a third of the margin on top of it.
+
+The stake is read in the pulled-up state of the head.
+
+Heads with a block at least two epochs before the current epoch have the premise on stale heads.
+
+The RANDAO buffer is longer than the minimum seed lookahead plus one epoch.
+
+The proof follows two lemmas of [verified-fast-confirmation][vfc].
+
+The first is `noConflict_arithmeticBranch_oneThird`.
+
+The second is `currentTarget_remaining_honest_le_future_weight`.
+
+[vfc]: https://github.com/fradamt/verified-fast-confirmation
+-/
+theorem Execution.honestTargetVotes_of_byzantineStakeAtMost [DecidablePred (· ∈ J)]
+    {anchor : Store preset fork}
+    (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (start : ∀ w ∈ J, e.start w = anchor) (anchorSlot : anchorBlock.slot ≤ anchorState.slot)
+    (slots : 0 < config.SLOT_DURATION_MS) (preGloas : fork < .glamsterdam)
+    (minLookahead : 1 ≤ preset.MIN_SEED_LOOKAHEAD.toNat)
+    (maxLookahead : 1 ≤ preset.MAX_SEED_LOOKAHEAD.toNat)
+    (ring : preset.MIN_SEED_LOOKAHEAD.toNat + 1 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
+    {limit : ℕ} (stale : StaleHeadVotersInWindow (e := e) limit)
+    (increment : preset.EFFECTIVE_BALANCE_INCREMENT.toNat % 100 = 0)
+    {margin : ℕ} {u : ValidatorIndex} (caller : u ∈ J) {n : ℕ} (bounded : (e.world n).time ≤ limit)
+    {head : Root}
+    (headOk : ∃ node, ((e.world n).state u).getHead config = .ok node ∧ node.root = head)
+    (bounds : TargetCountBounds (e := e) margin u n head) :
+    HonestTargetVotes e margin u n head := by
+  classical
+  intro state support target slot epochStart lastSlot participants stateOk supportOk targetOk
+    slotOk startOk lastOk participantsOk
+  obtain ⟨node, headRead, rfl⟩ := headOk
+  obtain ⟨total, soFar, epochStart', lastSlot', score, adversary, totalOk, startOk', lastOk',
+    soFarOk, scoreOk, adversaryOk, supportEq⟩ :=
+    Store.computeHonestFfgSupportForCurrentTarget_eq stateOk slotOk supportOk
+  obtain rfl := Except.ok.inj (startOk'.symm.trans startOk)
+  obtain rfl := Except.ok.inj (lastOk'.symm.trans lastOk)
+  obtain ⟨aligned, byzantine, remaining⟩ := bounds state total soFar slot epochStart' lastSlot'
+    participants stateOk totalOk slotOk startOk lastOk soFarOk participantsOk
+  have dishonest : ∀ v ∈ ((e.world n).state u).equivocatingIndices, v ∉ J :=
+    e.equivocatingIndices_honest slots (fun w honest v member => by
+      rw [start w honest, Store.getForkchoiceStore_equivocatingIndices anchored] at member
+      simp at member) n caller
+  obtain ⟨counted, countedOk, _, scoreEq⟩ :=
+    Store.getCurrentTargetScore_eq_stake stateOk targetOk totalOk scoreOk
+  let scored := counted.toFinset.filter fun index => (match
+      ((e.world n).state u).latestMessages[index]? with
+    | none => false
+    | some message => decide (index ∉ ((e.world n).state u).equivocatingIndices ∧
+        (((e.world n).state u).getCheckpointForBlock message.root
+          (getLatestMessageEpoch preset message)).toOption = some target)) = true
+  let outside := {v ∈ ((unslashedActiveBalances state).map (·.1)).toFinset |
+    v ∉ participants ∧ v ∈ J}
+  let honest := scored.filter (· ∈ J)
+  have totalRead := totalOk
+  simp only [getTotalActiveBalance, bind_ok_iff] at totalRead
+  obtain ⟨active, activeOk, _⟩ := totalRead
+  have activeEq := getActiveValidatorIndicesChecked_ok activeOk
+  have countedActive : ∀ v ∈ counted,
+      v ∈ (getActiveValidatorIndices state (getCurrentEpoch state)).toFinset := by
+    intro v member
+    exact List.mem_toFinset.mpr (mem_of_filterM_ok countedOk member)
+  have countedFound : ∀ v ∈ counted, ∃ validator,
+      state.validators.data[v.toNat]? = some validator ∧
+      isActiveValidator validator (getCurrentEpoch state) = true := by
+    intro v member
+    apply (mem_iff_of_getActiveValidatorIndicesChecked_ok activeOk).mp
+    rw [activeEq]
+    exact mem_of_filterM_ok countedOk member
+  have scoredMessage : ∀ v ∈ scored, ∃ message,
+      ((e.world n).state u).latestMessages[v]? = some message ∧
+      v ∉ ((e.world n).state u).equivocatingIndices ∧
+      ((e.world n).state u).getCheckpointForBlock message.root
+        (getLatestMessageEpoch preset message) = .ok target := by
+    intro v member
+    have test := (Finset.mem_filter.mp member).2
+    cases found : ((e.world n).state u).latestMessages[v]? with
+    | none => simp [found] at test
+    | some message =>
+      simp only [found, decide_eq_true_eq] at test
+      refine ⟨message, rfl, test.1, ?_⟩
+      cases read : ((e.world n).state u).getCheckpointForBlock message.root
+          (getLatestMessageEpoch preset message) with
+      | error error => simp [read, Except.toOption] at test
+      | ok checkpoint =>
+        have eq : checkpoint = target := by simpa [read, Except.toOption] using test.2
+        exact congrArg Except.ok eq
+  -- Each scored voter is in the committees that the rule reads, since it voted for the target.
+  have scoredIn : scored ⊆ Store.activeMembers state participants := by
+    intro v member
+    obtain ⟨message, latest, _, checkpointOk⟩ := scoredMessage v member
+    obtain ⟨attestation, targetEq, origin, _⟩ :=
+      Execution.exists_attestation_of_latestMessages anchored start caller latest checkpointOk
+    have currentTarget : ((e.world n).state u).getCurrentTarget config node.root =
+        .ok attestation.data.target := by
+      rw [targetEq]
+      exact targetOk
+    exact Store.mem_activeMembers.mpr
+      ⟨Execution.mem_window_of_target_or_stale anchored start anchorSlot preGloas minLookahead
+        maxLookahead ring stale caller bounded headRead slotOk startOk lastOk participantsOk
+        currentTarget origin,
+        countedFound v (List.mem_toFinset.mp (Finset.mem_filter.mp member).1)⟩
+  -- The Byzantine cap covers counted Byzantine voters and the disjoint known equivocators.
+  obtain ⟨weight, equivocation, weightOk, equivocationOk⟩ :=
+    Store.computeAdversarialWeight_eq_ok adversaryOk
+  obtain ⟨readMembers, readMembersOk, equivocationEq⟩ :=
+    Store.exists_stake_equivocatorsOf_of_getEquivocationScore equivocationOk
+  have readMembersEq := Except.ok.inj
+    (readMembersOk.symm.trans participantsOk)
+  subst readMembers
+  have cap := Store.threshold_mul_stake_le_of_computeAdversarialWeight weightOk equivocationOk
+    adversaryOk (Store.stake_le_computeCommitteeWeightBetweenSlots participantsOk weightOk
+      fun _ member => Store.mem_activeMembers.mp member)
+      (fun _ _ => Nat.mod_eq_zero_of_dvd
+        (dvd_balanceAt_of_aligned aligned (Nat.dvd_of_mod_eq_zero increment) _))
+  have badIn : scored.filter (· ∉ J) ∪ ((e.world n).state u).equivocatorsOf state participants ⊆
+      (Store.activeMembers state participants).filter (· ∉ J) := by
+    intro v member
+    rcases Finset.mem_union.mp member with member | member
+    · exact Finset.mem_filter.mpr ⟨scoredIn (Finset.mem_filter.mp member).1,
+        (Finset.mem_filter.mp member).2⟩
+    · have parts := Finset.mem_filter.mp member
+      exact Finset.mem_filter.mpr ⟨parts.1, dishonest v parts.2⟩
+  have apart : Disjoint (scored.filter (· ∉ J))
+      (((e.world n).state u).equivocatorsOf state participants) := by
+    apply Finset.disjoint_left.mpr
+    intro v member equiv
+    exact (scoredMessage v (Finset.mem_filter.mp member).1).choose_spec.2.1
+      (Finset.mem_filter.mp equiv).2
+  have badBound := stake_mono (w := fun v => balanceAt state v.toNat) badIn
+  rw [stake, Finset.sum_union apart, ← stake, ← stake, equivocationEq] at badBound
+  have badLe : stake (fun v => balanceAt state v.toNat) (scored.filter (· ∉ J)) ≤
+      adversary.toNat := by
+    have byzantineBound := byzantine.2
+    nlinarith
+  have splitStake : stake (fun v => balanceAt state v.toNat) honest +
+      stake (fun v => balanceAt state v.toNat) (scored.filter (· ∉ J)) =
+      stake (fun v => balanceAt state v.toNat) scored :=
+    Finset.sum_filter_add_sum_filter_not scored (· ∈ J) _
+  have outsideActive : ∀ v ∈ outside,
+      v ∈ (getActiveValidatorIndices state (getCurrentEpoch state)).toFinset := by
+    intro v member
+    obtain ⟨listed, _⟩ := Finset.mem_filter.mp member
+    obtain ⟨⟨index, balance⟩, listed, eq⟩ := List.mem_map.mp (List.mem_toFinset.mp listed)
+    simp only [unslashedActiveBalances, List.mem_filterMap, Option.ite_none_right_eq_some,
+      Option.some.injEq, Prod.mk.injEq, Prod.exists] at listed
+    obtain ⟨validator, i, inZip, active, rfl, _⟩ := listed
+    have found := List.mem_zipIdx_iff_getElem?.mp inZip
+    simp only [Bool.and_eq_true] at active
+    have active' := active.1
+    have fits := lt_of_getActiveValidatorIndicesChecked_ok activeOk (by simpa using found) active'
+    have indexNat : i.toUInt64.toNat = i := by
+      rw [Nat.toUInt64_eq, UInt64.toNat_ofNat_of_lt' fits]
+    apply List.mem_toFinset.mpr
+    apply mem_getActiveValidatorIndices_of_isActiveAt
+    apply isActiveAt_eq_true_iff.mpr
+    exact ⟨validator, by simpa [← eq, indexNat] using found, active'⟩
+  -- A scored voter is in the committees, so no honest scored voter is outside them.
+  have disjoint : Disjoint honest outside := by
+    apply Finset.disjoint_left.mpr
+    intro v member other
+    exact (Finset.mem_filter.mp other).2.1
+      (Store.mem_activeMembers.mp (scoredIn (Finset.mem_filter.mp member).1)).1
+  refine ⟨honest ∪ outside, ?_, ?_⟩
+  · intro v member
+    rcases Finset.mem_union.mp member with member | member
+    · obtain ⟨scoredMem, honestMem⟩ := Finset.mem_filter.mp member
+      obtain ⟨message, latest, _, checkpointOk⟩ := scoredMessage v scoredMem
+      obtain ⟨_, _, _, signs⟩ :=
+        Execution.exists_attestation_of_latestMessages anchored start caller latest checkpointOk
+      exact ⟨honestMem, countedActive v
+        (List.mem_toFinset.mp (Finset.mem_filter.mp scoredMem).1), Or.inl signs⟩
+    · exact ⟨(Finset.mem_filter.mp member).2.2, outsideActive v member,
+        Or.inr (Finset.mem_filter.mp member).2.1⟩
+  · have unionStake : stake (fun v => balanceAt state v.toNat) (honest ∪ outside) =
+        stake (fun v => balanceAt state v.toNat) honest +
+        stake (fun v => balanceAt state v.toNat) outside := Finset.sum_union disjoint
+    change score.toNat = stake (fun v => balanceAt state v.toNat) scored at scoreEq
+    rw [unionStake, supportEq]
+    change 3 * _ + margin ≤ 3 * stake _ outside at remaining
+    omega
 
 end Models.Network
 
