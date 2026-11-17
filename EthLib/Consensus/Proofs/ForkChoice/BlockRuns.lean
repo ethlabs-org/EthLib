@@ -40,22 +40,13 @@ variable {preset : Preset} {fork : Fork} {config : Config}
 theorem Store.Reachable.anchorSlot_le_of_blockState
     (reachable : Store.Reachable config anchorState anchorBlock store) {root : Root}
     {state : BeaconState preset fork} (found : store.blockStates[root]? = some state) :
-    anchorState.slot ≤ state.slot := by
-  induction hslot : state.slot.toNat using Nat.strong_induction_on generalizing root state with
-  | _ n ih =>
-  obtain ⟨block, blockFound⟩ := reachable.known_of_blockState found
-  obtain ⟨kept, keptFound, isAnchor, notAnchor⟩ := reachable.blockStatesFromParents blockFound
-  rw [found, Option.some.injEq] at keptFound
-  subst keptFound
-  by_cases same : block = anchorBlock
-  · rw [isAnchor same]
-    exact UInt64.le_refl _
-  · obtain ⟨parentState, checks, engine, signed, -, -, parentFound, transition⟩ :=
-      notAnchor same
-    obtain ⟨lower, atBlock⟩ := stateTransition_slot transition
-    rw [← atBlock] at lower
-    exact UInt64.le_trans (ih _ (hslot ▸ UInt64.lt_iff_toNat_lt.mp lower) parentFound rfl)
-      (UInt64.le_of_lt lower)
+    anchorState.slot ≤ state.slot :=
+  reachable.blockState_induction reachable.blockStatesFromParents
+    (fun _ state => anchorState.slot ≤ state.slot) (fun _ _ => UInt64.le_refl _)
+    (fun _ _ _ _ _ _ _ _ _ _ _ _ _ transition previous => by
+      obtain ⟨lower, atBlock⟩ := stateTransition_slot transition
+      exact UInt64.le_trans previous (UInt64.le_of_lt (atBlock ▸ lower)))
+    found
 
 /-- In a reachable store, each known block is at or after the anchor block.
 
