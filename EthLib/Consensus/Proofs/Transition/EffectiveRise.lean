@@ -1190,4 +1190,170 @@ private theorem slashings_lower {f : Fork} {s t : BeaconState preset f} (early :
       processSlashings_balances_toNat_of_lt_electra (Nat.lt_of_not_le electra) ok
     exact key rest
 
+/-! ### The end of an epoch -/
+
+/-- The registry updates keep every balance. -/
+private theorem registryUpdates_balances {f : Fork} {s t : BeaconState preset f}
+    (ok : processRegistryUpdates config s = .ok t) : t.balances = s.balances := by
+  have fold {α : Type} {step : BeaconState preset f → α → Except TransitionError _}
+      {xs : List α} {u w : BeaconState preset f}
+      (kept : ∀ a item b, step a item = .ok b → b.balances = a.balances)
+      (ok : xs.foldlM step u = .ok w) : w.balances = u.balances :=
+    foldlM_ok_invariant (fun b => b.balances = u.balances)
+      (fun _ _ _ prior computed => (kept _ _ _ computed).trans prior) rfl ok
+  have set {a b : BeaconState preset f} {i : ℕ} {v : Validator}
+      (ok : a.setValidatorAt i v = .ok b) : b.balances = a.balances := by
+    obtain ⟨_, rfl⟩ := setValidatorAt_ok ok
+    rfl
+  have exit {a b : BeaconState preset f} {i : ValidatorIndex}
+      (ok : initiateValidatorExit config a i = .ok b) : b.balances = a.balances :=
+    (initiateValidatorExit_balances_eq_and_pendingConsolidations_eq ok).1
+  unfold processRegistryUpdates at ok
+  split at ok
+  · obtain ⟨epoch, _, folded⟩ := bind_ok_iff.mp ok
+    refine fold (fun u i w ok => ?_) folded
+    simp only [updateRegistryEntryElectra, bind_ok_iff, liftAccessor_ok] at ok
+    obtain ⟨_, _, ok⟩ := ok
+    split at ok
+    · obtain ⟨_, _, written⟩ := bind_ok_iff.mp ok
+      exact set (liftAccessor_ok.mp written)
+    split at ok
+    · obtain ⟨_, _, exited⟩ := bind_ok_iff.mp ok
+      exact exit (liftAccessor_ok.mp exited)
+    split at ok
+    · exact set (liftAccessor_ok.mp ok)
+    · cases ok; rfl
+  · obtain ⟨u, first, last⟩ := bind_ok_iff.mp ok
+    refine (fold (fun a i b ok => ?_) last).trans (fold (fun a i b ok => ?_) first)
+    · simp only [activateValidator, bind_ok_iff, liftAccessor_ok] at ok
+      obtain ⟨_, _, _, _, written⟩ := ok
+      obtain ⟨_, rfl⟩ := setValidator_ok written
+      rfl
+    · simp only [updateRegistryEntry, bind_ok_iff, liftAccessor_ok] at ok
+      obtain ⟨_, _, _, _, marked, markedOk, ok⟩ := ok
+      split at ok
+      · obtain ⟨_, _, exited⟩ := bind_ok_iff.mp ok
+        exact (exit (liftAccessor_ok.mp exited)).trans (set markedOk)
+      · cases ok; exact set markedOk
+
+/-- The update of one effective balance changes only the validator at its position.
+
+It keeps the other fields of that validator and every balance. -/
+private theorem updateEffectiveBalance_read {f : Fork} {s t : BeaconState preset f} {j : ℕ}
+    (ok : updateEffectiveBalance s j = .ok t) :
+    t.balances = s.balances ∧ ∃ validator balance next,
+      s.validators.data[j]? = some validator ∧ s.balances.data[j]? = some balance ∧
+      updatedEffectiveBalance preset (withdrawalMaxEffectiveBalance preset f validator) balance
+        validator.effectiveBalance = .ok next ∧
+      ∀ i, t.validators.data[i]? =
+        if i = j then some { validator with effectiveBalance := next }
+        else s.validators.data[i]? := by
+  simp only [updateEffectiveBalance, bind_ok_iff, liftAccessor_ok] at ok
+  obtain ⟨validator, found, balance, read, next, updated, set⟩ := ok
+  obtain ⟨inside, rfl⟩ := setValidatorAt_ok set
+  refine ⟨rfl, validator, balance, next, getValidatorAt_eq_ok_iff.mp found,
+    getBalanceAt_eq_ok_iff.mp read, updated, fun i => ?_⟩
+  by_cases same : i = j
+  · subst i
+    simp [BeaconState.putValidator, Serialization.Ssz.RootedForkList.data_set]
+  · simp [BeaconState.putValidator, Serialization.Ssz.RootedForkList.data_set, Ne.symm same, same]
+
+/-- A validator with only its effective balance cleared, to compare the other fields. -/
+private def withoutEffective (v : Validator) : Validator := { v with effectiveBalance := 0 }
+
+/-- The update of the effective balances keeps every other field of each validator. -/
+private theorem effectiveUpdates_others {f : Fork} {s t : BeaconState preset f}
+    (ok : processEffectiveBalanceUpdates s = .ok t) (i : ℕ) :
+    (t.validators.data[i]?).map withoutEffective = (s.validators.data[i]?).map withoutEffective := by
+  unfold processEffectiveBalanceUpdates at ok
+  refine foldlM_ok_invariant
+    (fun w : BeaconState preset f =>
+      (w.validators.data[i]?).map withoutEffective = (s.validators.data[i]?).map withoutEffective)
+    (fun a j b prior step => ?_) rfl ok
+  obtain ⟨-, validator, -, next, found, -, -, reads⟩ := updateEffectiveBalance_read step
+  rw [reads i]
+  split
+  · rename_i here
+    subst here
+    rw [← prior, found]
+    rfl
+  · exact prior
+
+/-- Updates of the effective balances at other positions keep a position and every balance. -/
+private theorem updates_untouched {f : Fork} {i : ℕ} :
+    ∀ {L : List ℕ} {s t : BeaconState preset f}, i ∉ L →
+      L.foldlM updateEffectiveBalance s = .ok t →
+      t.balances = s.balances ∧ t.validators.data[i]? = s.validators.data[i]?
+  | [], _, _, _, ok => by cases ok; exact ⟨rfl, rfl⟩
+  | j :: rest, s, t, absent, ok => by
+    rw [List.foldlM_cons, bind_ok_iff] at ok
+    obtain ⟨u, step, ok⟩ := ok
+    obtain ⟨balances, _, _, _, _, _, _, reads⟩ := updateEffectiveBalance_read step
+    have other : i ≠ j := fun same => absent (same ▸ List.mem_cons_self)
+    obtain ⟨later, kept⟩ := updates_untouched (fun member => absent (List.mem_cons_of_mem _ member))
+      ok
+    refine ⟨later.trans balances, kept.trans ?_⟩
+    rw [reads i]
+    simp [other]
+
+private theorem rise_update {f : Fork} {s t : BeaconState preset f}
+    (ok : processEffectiveBalanceUpdates s = .ok t) {i : ℕ} {v : Validator}
+    (found : s.validators.data[i]? = some v) :
+    effectiveAt ⟨f, t⟩ i ≤ v.effectiveBalance.toNat ∨
+      (v.effectiveBalance.toNat + preset.upwardBand < actualBalanceAt ⟨f, s⟩ i ∧
+        effectiveAt ⟨f, t⟩ i ≤ actualBalanceAt ⟨f, s⟩ i ∧
+        effectiveAt ⟨f, t⟩ i ≤ (withdrawalMaxEffectiveBalance preset f v).toNat) := by
+  unfold processEffectiveBalanceUpdates at ok
+  have member : i ∈ List.range s.validators.data.size :=
+    List.mem_range.mpr (Array.getElem?_eq_some_iff.mp found).1
+  obtain ⟨A, B, split⟩ := List.append_of_mem member
+  have nodup := List.nodup_range (n := s.validators.data.size)
+  rw [split] at nodup ok
+  rw [List.nodup_append] at nodup
+  have notA : i ∉ A := fun inA => nodup.2.2 i inA i List.mem_cons_self rfl
+  have notB : i ∉ B := (List.nodup_cons.mp nodup.2.1).1
+  rw [List.foldlM_append, bind_ok_iff] at ok
+  obtain ⟨u, first, rest⟩ := ok
+  rw [List.foldlM_cons, bind_ok_iff] at rest
+  obtain ⟨u1, step, last⟩ := rest
+  obtain ⟨balances1, read1⟩ := updates_untouched notA first
+  obtain ⟨balances3, read3⟩ := updates_untouched notB last
+  obtain ⟨balances2, validator, balance, next, located, balanceRead, updated, reads⟩ :=
+    updateEffectiveBalance_read step
+  rw [read1, found, Option.some.injEq] at located
+  subst validator
+  have balanceValue : balance.toNat = actualBalanceAt ⟨f, s⟩ i := by
+    simp [actualBalanceAt, ← balances1, balanceRead]
+  have eff : effectiveAt ⟨f, t⟩ i = next.toNat := by
+    simp [effectiveAt, read3, reads i]
+  rw [eff, ← balanceValue]
+  rcases updatedEffectiveBalance_split updated with ⟨rfl, -, -⟩ | ⟨rfl, crossed⟩
+  · exact .inl (Nat.le_refl _)
+  · have rounded : balance % preset.EFFECTIVE_BALANCE_INCREMENT ≤ balance :=
+      UInt64.le_iff_toNat_le.mpr (by rw [UInt64.toNat_mod]; exact Nat.mod_le _ _)
+    have value : (min (balance - balance % preset.EFFECTIVE_BALANCE_INCREMENT)
+        (withdrawalMaxEffectiveBalance preset f v)).toNat =
+        min (balance.toNat - balance.toNat % preset.EFFECTIVE_BALANCE_INCREMENT.toNat)
+          (withdrawalMaxEffectiveBalance preset f v).toNat := by
+      rw [Base.Uint64.toNat_min, UInt64.toNat_sub_of_le _ _ rounded, UInt64.toNat_mod]
+    rw [value]
+    have := Nat.mod_le balance.toNat preset.EFFECTIVE_BALANCE_INCREMENT.toNat
+    have low := Nat.min_le_left (balance.toNat - balance.toNat %
+      preset.EFFECTIVE_BALANCE_INCREMENT.toNat) (withdrawalMaxEffectiveBalance preset f v).toNat
+    rcases crossed with down | up
+    · exact .inl (by omega)
+    · exact .inr ⟨up, by omega, Nat.min_le_right _ _⟩
+
+/-- The pending balances keep every existing validator. -/
+private theorem pendingBalances_validators {f : Fork} {s t : BeaconState preset f}
+    (ok : processPendingBalances config checks s = .ok t) (i : ℕ)
+    (inside : i < s.validators.data.size) :
+    t.validators.data[i]? = s.validators.data[i]? := by
+  unfold processPendingBalances at ok
+  split at ok
+  · obtain ⟨deposited, depositedOk, consolidatedOk⟩ := bind_ok_iff.mp ok
+    rw [(processPendingConsolidations_kept consolidatedOk).1]
+    exact pendingDeposits_validators depositedOk i inside
+  · cases ok; rfl
+
 end EthLib.Consensus
