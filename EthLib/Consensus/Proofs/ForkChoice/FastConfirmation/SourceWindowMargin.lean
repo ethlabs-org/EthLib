@@ -1587,7 +1587,10 @@ private theorem receiver_origins_fresh {Δ : ℕ} (sync : e.Synchronous Δ)
   · exact (unfit (.inl (fitsHistorical k' le))).elim
   · exact .inr ⟨a, ha, b, hb, i, j, hi.trans upToTime, hj.trans upToTime, r, ev, s⟩
 
-private theorem historical_stores_or_collision {anchor : Store preset fork}
+/-- The honest stores by a time are reachable and agree on their blocks, or two of them collide.
+
+It is public so that a proof in another module splits on it instead of repeating the split. -/
+public theorem historical_stores_or_collision {anchor : Store preset fork}
     (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
     (start : ∀ u ∈ J, e.start u = anchor) (time : ℕ) :
     ((∀ a ∈ J, ∀ i, Store.Reachable config anchorState anchorBlock ((e.world i).state a)) ∧

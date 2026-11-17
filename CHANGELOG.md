@@ -62,6 +62,11 @@ Not yet released.
   It takes the premises of `source_safety`.
   When its guard fails, `drift` is the unslashed active stake at `x`, and the bound says nothing.
 
+- `Execution.receiverWindowExitsNear_of_sourceOnParentChain` proves `ReceiverWindowExitsNear` when the call's balance source is on the parent's chain (`SourceOnParentChain`), or names a block collision between honest stores.
+  The checkpoint's epoch is at most two epochs before the parent's, and the preset satisfies `Preset.ExitWindowFixed`.
+  Each near receiver's head state keeps the source's activity three epochs ahead, so `windowExitBound_of_activeKept` bounds each full epoch of its window by `exitReserve`.
+  `historical_stores_or_collision`, the split of honest stores into agreement or a collision, is now public; the proof reads it.
+
 - `Execution.honestHeadsCover_of_historical_anchor` keeps a confirmed block on every honest head chain from the call to a horizon, by induction on time ([#1458](https://github.com/ethereum/EthLib/issues/1458)).
   It no longer assumes the root's own earlier coverage.
   It assumes the parent's coverage, the root's viability, the receivers' exits, and a late duty majority.
@@ -153,6 +158,13 @@ Not yet released.
   A caller with the common vote history passes the window membership that it implies, or the corner premise.
   A caller with the old exit bound passes its restriction to receivers within two epochs of the parent.
   `VoteCommitteeCommonHistory` and `ReceiverWindowExits` are removed: no statement reads them any more.
+
+- `exitReserve` is now the active source stake already scheduled to exit within three epochs of the source, the reach of a confirmation's near window, and nothing else.
+  It counted two epochs and added the churn terms of the source's epoch.
+  `Preset.ExitWindowFixed` asks for a seed lookahead of at least three epochs; mainnet and minimal satisfy it.
+  Under it, `exitStake_le_exitReserve` shows that no other source stake leaves by then, in any later state that keeps the source's fixed activity.
+  `SourceWindowReserve` and `WindowExitBound` read the new value; a caller that proves `SourceWindowReserve` proves it for the new reserve.
+  A caller that proves `WindowExitBound` bounds each near epoch with `windowExitBound_of_activeKept`; `exitReserve` no longer reads its `Config`.
 
 - In Lean, the historical-anchor theorems no longer assume finality across honest stores ([#1458](https://github.com/ethereum/EthLib/issues/1458)).
   `Execution.source_surplus_or_historical_evidence`, `Execution.isAncestor_getHead_of_historical_anchor`, `Execution.honestHeadsCover_of_historical_anchor`, `Execution.honestHeadsCover_of_signed_justification` and `Execution.honestHeadsCover_of_byzantine_bound` drop their `residual` argument; their conclusions are unchanged.
