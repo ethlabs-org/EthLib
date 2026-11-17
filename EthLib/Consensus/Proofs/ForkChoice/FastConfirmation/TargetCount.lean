@@ -21,7 +21,7 @@ A signed vote shows that its voter signed the target.
 
 A voter for the target of the head is in the committees that the rule reads.
 
-This holds when the block of the target is near.
+This holds when the block of the target is near, or when the head is in the current epoch.
 -/
 
 @[expose] public section
@@ -190,21 +190,27 @@ private theorem Execution.signsTarget_of_latestMessages {anchor : Store preset f
     simpa [Store.getCheckpointForBlock, origin.targetRoot] using targetOk
   exact ⟨n, le_rfl, m, e.view_subset_sent n u seen, attestation.data, signed, targetEq⟩
 
-/-- A voter for the target of the head is in the committees that the rule reads, with a near block.
+/-- A voter for the target of the head is in the committees that the rule reads.
 
 The target is the one of the current epoch, in the chain of the head.
 
-The block of the target is at most one epoch before the current epoch.
-
 The rule reads the committees of the current epoch so far, in the state of the head.
 
-The vote is for a node that descends from the block of the target, as the head does.
+The target state and the state of the head must agree on the committees of the epoch of the vote.
 
-So the target state and the state of the head agree on the committees of the epoch of the vote.
+That holds in two cases.
+
+The block of the target is at most one epoch before the current epoch.
+
+Then the vote and the head descend from that block, so the store's committee agreement applies.
+
+Or the block of the head is in the current epoch.
+
+Then the state of the target checkpoint runs on to the state of the head.
 
 The head state must be before the mix that the seed of the epoch reads is written again.
 -/
-private theorem Execution.mem_window_of_target_near {anchor : Store preset fork}
+private theorem Execution.mem_window_of_target {anchor : Store preset fork}
     (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
     (start : ∀ w ∈ J, e.start w = anchor) (anchorSlot : anchorBlock.slot ≤ anchorState.slot)
     (preGloas : fork < .glamsterdam)
@@ -222,10 +228,12 @@ private theorem Execution.mem_window_of_target_near {anchor : Store preset fork}
     (targetOk : ((e.world k).state w).getCurrentTarget config head.root =
       .ok attestation.data.target)
     (origin : ((e.world k).state w).VoteOrigin config v attestation)
-    (near : ∀ rootBlock : BeaconBlock preset fork,
+    (inReach : (∀ rootBlock : BeaconBlock preset fork,
       ((e.world k).state w).blocks[attestation.data.target.root]? = some rootBlock →
       (computeEpochAtSlot preset slot).toNat ≤
-        (computeEpochAtSlot preset rootBlock.slot).toNat + 1) :
+        (computeEpochAtSlot preset rootBlock.slot).toNat + 1) ∨
+      ∀ headBlock : BeaconBlock preset fork,
+        ((e.world k).state w).blocks[head.root]? = some headBlock → first ≤ headBlock.slot) :
     v ∈ participants := by
   have reached := e.forwardReachableWith
     (fun u member => (start u member) ▸ Store.ForwardReachableWith.anchor anchored) k w honest
@@ -261,10 +269,49 @@ private theorem Execution.mem_window_of_target_near {anchor : Store preset fork}
   -- The target state and the state of the head agree on the committees of the vote.
   obtain ⟨targetState, index, committee, targetFound, below, committeeOk, member⟩ :=
     origin.exists_mem_committee
-  obtain ⟨kept, count⟩ := reached.committeesKept_of_voteOrigin anchorSlot minLookahead
-    maxLookahead (by omega) rootFound headDescends origin rfl voteDescends
-    (by rw [voteEpoch]; exact near rootBlock rootFound) targetFound headFound
-    (by rw [voteEpoch]; omega)
+  have agree : CommitteesKept (computeEpochAtSlot preset attestation.data.slot) targetState
+        headState ∧
+      getCommitteeCountPerSlot headState (computeEpochAtSlot preset attestation.data.slot) =
+        getCommitteeCountPerSlot targetState (computeEpochAtSlot preset attestation.data.slot) := by
+    rcases inReach with near | atOrAfter
+    · exact reached.committeesKept_of_voteOrigin anchorSlot minLookahead maxLookahead (by omega)
+        rootFound headDescends origin rfl voteDescends
+        (by rw [voteEpoch]; exact near rootBlock rootFound) targetFound headFound
+        (by rw [voteEpoch]; omega)
+    · -- The state of the target checkpoint runs on to the state of the head.
+      have startOk : computeStartSlotAtEpoch preset attestation.data.target.epoch = .ok first := by
+        rw [targetEpoch]
+        exact firstOk
+      have checkpoint : ((e.world k).state w).getCheckpointBlock head.root
+          attestation.data.target.epoch = .ok attestation.data.target.root := by
+        rw [targetEq]
+        exact headTarget
+      have run := reached.runKept_of_checkpointState anchorSlot checkpoint headBlockFound startOk
+        (atOrAfter headBlock headBlockFound) targetFound headFound
+      -- The target state is at the start of the epoch or later.
+      obtain ⟨base, start', baseFound, startOk', fromBlock⟩ :=
+        reached.checkpointStatesFromBlocks targetFound
+      rw [startOk, Except.ok.injEq] at startOk'
+      subst startOk'
+      have targetLe : first ≤ targetState.slot := by
+        rcases fromBlock with ⟨baseLe, rfl⟩ | ⟨-, _, -, slotsOk⟩
+        · exact baseLe
+        · exact (processSlots_slot slotsOk).2 ▸ UInt64.le_refl _
+      have targetEpochLe : (computeEpochAtSlot preset attestation.data.slot).toNat ≤
+          (getCurrentEpoch targetState).toNat := by
+        rcases Nat.eq_zero_or_pos preset.SLOTS_PER_EPOCH.toNat with zero | positive
+        · rw [computeEpochAtSlot, UInt64.toNat_div, zero, Nat.div_zero]
+          exact Nat.zero_le _
+        · have voteStart : computeStartSlotAtEpoch preset
+              (computeEpochAtSlot preset attestation.data.slot) = .ok first := by
+            rw [voteEpoch]
+            exact firstOk
+          rw [← computeEpochAtSlot_computeStartSlotAtEpoch (UInt64.lt_iff_toNat_lt.mpr positive)
+            voteStart, getCurrentEpoch_toNat]
+          exact epoch_le_of_slot_le _ _ (UInt64.le_iff_toNat_le.mp targetLe)
+      exact run.committees_count (by omega) (le_activityFixedEpoch maxLookahead (by omega))
+        (by rw [voteEpoch]; omega)
+  obtain ⟨kept, count⟩ := agree
   -- The slot of the vote is in the range that the rule reads.
   have low : first ≤ attestation.data.slot := by
     have firstNat := (computeStartSlotAtEpoch_ok_iff.mp firstOk).2
