@@ -9,12 +9,43 @@ Not yet released.
 
 ### Proof additions
 
+- `Execution.rootViable_of_checked_call` shows that the confirmed root of a call of the fast confirmation rule stays viable from the call to a horizon ([#2058](https://github.com/ethereum/EthLib/issues/2058), Theorem 3, for the confirmed root).
+  At each up-to-date honest store whose fork choice returns a head, the root is in the filtered tree or below the justified block.
+  The alternatives are a collision of two honest stores and accountable-safety evidence.
+  Stores whose `getHead` returns an error are not covered, pending [#2060](https://github.com/ethereum/EthLib/issues/2060).
+  `Execution.honestHeadsCover_of_checked_call` keeps the root on every up-to-date honest head chain over the same interval.
+  It replaces the consistency, the leaf and the call-epoch signer of `Execution.honestHeadsCover_of_signed_justification` with the rule's checks.
+  `Execution.rootInFilteredTree_of_checked` and `Execution.justified_comparable_of_checked` give the root's step at one time.
+  `Execution.rootHeld_of_honest_vote` holds the root from the call on, from the honest vote that `Execution.honest_vote_of_caller_margin` finds behind the caller's margin.
+  `Execution.heldFinality_or_evidence` reads a store's finalized checkpoint on a held state's justified chain, or gives `HeldStateFinalityEvidence`.
+  `DelayFits.deadline_add_le`, `Store.ForwardReachable.finalized_add_two_le_or_anchor` and `Store.getCheckpointBlock_trans` are general steps.
+  The new premises `CallCheckpointInputs`, `AcceptedRealizedRecent`, `AcceptedRealizedHead`, `CallRolloverRead`, `JustifiedPinned`, `TargetIncluded` and `QuorumDriftWithin` are described in `SOUNDNESS.md`.
+
+- `advanceSlot_epochs` splits one slot into the end of an epoch or a step inside it, with the epochs on each side.
+  `recentPending_advanceSlot` adds the two lists of pending attestations, and `recentPending_pendingFrame` keeps them across a frame.
+  `TargetFlagsVoted.of_advanceSlot` and `PendingVoted.of_advanceSlot` read them, as does the proof of `Execution.rootViable_of_checked_call`.
+
+- `mem_getUnslashedParticipatingIndices_of_recent_flag` places an active, unslashed validator with a flag among the participants of the current or the previous epoch.
+  `mem_getUnslashedParticipatingIndices_of_flag` keeps its statement and is now its case of the previous epoch.
+
+- `Store.onTick_slot_induction` passes a fact of a store at its slot through a forward tick, from each tick within a slot.
+  `epoch_lt_of_offset_zero` places a slot at the start of its epoch in a later epoch than each earlier slot.
+  The proofs of the justified and finalized ages of a forward-reachable store read them.
+
+- `slotStart_le_of_slotAtTime` shows that each slot up to the slot at a time starts by that time.
+  `nextSlotStart_le_of_slotAtTime` shows it for the slot after an earlier one.
+  `slotStart_le_clock`, `DelayFits.deadline_add_le` and `duty_window_of_slot_le` read them.
+  `isAncestor_of_getCheckpointBlock_above` places a checkpoint read above a block at or before the epoch's first slot.
+  `signerHead_of_duty` gives the head on which an honest duty's signer reads its target.
+
 - `Execution.honestTargetVotes_signed_of_checked` shows that an accepted current-target test has honest signers with two thirds of the active balance ([#2058](https://github.com/ethereum/EthLib/issues/2058), Theorem 2).
   Three times their stake is at least twice the total active balance plus the margin of the count.
-  Each of them sent a vote for the target before the start of the next epoch.
+  Each of them is active in the pulled-up head state, and sent a vote for the target before the start of the next epoch.
   It assumes the honest count `HonestTargetVotes`, and that every honest head descends from a block of the target's epoch until then.
   It also assumes `HonestBlocksAgree`, that honest stores agree on the blocks that they both hold.
-  `RolloverWindowRead` assumes that the caller has a head at the start of the next epoch and reads its committee window over the target's epoch.
+  `RolloverWindowRead` assumes that the caller has a head at the start of the next epoch.
+  The theorem takes `fit : config.CommitteeWindowsFit preset` and derives that head's committee window over the target's epoch.
+  `headState_of_descends` is now public, and the proof reads it.
 
 - `quorum_of_current_target` names the honest voters of `HonestTargetVotes` when the two-thirds test on the current target passes.
   Three times their stake is at least twice the total active balance plus the margin of the count.
@@ -24,6 +55,11 @@ Not yet released.
   The checkpoint's epoch is at most two epochs before the parent's, and the preset satisfies `Preset.ExitWindowFixed`.
   Each near receiver's head state keeps the source's activity three epochs ahead, so `windowExitBound_of_activeKept` bounds each full epoch of its window by `exitReserve`.
   `historical_stores_or_collision`, the split of honest stores into agreement or a collision, is now public; the proof reads it.
+
+- `Store.Reachable.blockState_slot_eq` states that a known block's state is at the block's slot, when the anchor block is at the anchor state's slot.
+
+- `le_computeStartSlotAtEpoch_of_isStartSlotAtEpoch` shows that a slot at the start of an epoch is at most the first slot of the epoch of each later slot.
+  `HonestVoteData.target_read`, `Store.Reachable.getCheckpointBlock_anchor`, a step of `DutySupport.lean` and `Execution.honestTargetVotes_signed_of_checked` read it.
 
 - `DirectSafety.accountable_safety_apriori` bounds the drift of accountable safety from the reference state alone.
   For two runs that finalize conflicting checkpoints, the unslashed stake at the shared state `x` is at most three times the accountable stake plus `2 * drift x high`, or the runs show `HashEvidence`.
@@ -87,6 +123,10 @@ Not yet released.
   `ReceiverWindowExitsNear` asks the receivers' exit bound only of receivers within two epochs of the parent.
 
 ### Changes that break callers
+
+- In Lean, the historical-anchor theorems read the slot count of an epoch from `fit` ([#1458](https://github.com/ethereum/EthLib/issues/1458)).
+  `Execution.honestHeadsCover_of_historical_anchor`, `Execution.honestHeadsCover_of_signed_justification` and `Execution.honestHeadsCover_of_byzantine_bound` drop `positive : 0 < preset.SLOTS_PER_EPOCH.toNat`, which `fit.positive` gives; their conclusions are unchanged.
+  A caller drops the argument.
 
 - In Lean, `processDepositRequest_ok` also gives the state after the request.
   It is the state before, with only the pending deposits and the start index of the requests changed.
@@ -238,6 +278,10 @@ Not yet released.
   `tooManyPendingAttestations` holds the count and the limit; `registryFull`, `historicalRootsFull` and `historicalSummariesFull` hold the limit.
   The codes do not change.
   `appendHistoricalRoot_eq_error_iff`, `processHistoricalRootsUpdate_eq_error_iff` and `processHistoricalSummariesUpdate_eq_error_iff` state the limit in the error.
+
+- `DirectSafety.same_epoch_histories` is removed, because nothing reads it.
+  `DirectSafety.view_same_epoch` replaces it: pass the two quorum calls as `.inl` quorums of the realized views.
+  `DirectSafety.accountable_justified_unique_terminal` covers its one use, in `accountable_justified_unique`.
 
 - The transaction, inclusion and network-form errors carry the values that their failed check compared.
   Each code keeps its meaning, and each error fires on the same inputs as before.

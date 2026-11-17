@@ -221,12 +221,24 @@ def WindowExitBound (store : Store preset fork) (source : BeaconState preset for
 def HeldBlockStateRootsNonzero (last : Nat) : Prop :=
   ∀ w ∈ J, ∀ k, (e.world k).time ≤ last → HeldStateRootsNonzero ((e.world k).state w)
 
-/-- Honest stores up to a time agree on every block they both hold. -/
+/-- Honest stores up to a time agree on every block they both hold.
+
+A reachable store keeps each block at its own root (`Store.Reachable.root`).
+
+So this holds when no two different blocks held by honest stores up to that time share a root.
+
+It asks nothing of the hash on blocks that no honest store holds. -/
 def HonestBlocksAgree (time : Nat) : Prop :=
   ∀ a ∈ J, ∀ b ∈ J, ∀ i j, (e.world i).time ≤ time → (e.world j).time ≤ time →
     ∀ (r : Root) (left right : BeaconBlock preset fork),
     ((e.world i).state a).blocks[r]? = some left →
     ((e.world j).state b).blocks[r]? = some right → left = right
+
+/-- Two honest stores collide on one root, by a time. -/
+def HonestCollision (time : ℕ) : Prop :=
+  ∃ a ∈ J, ∃ b ∈ J, ∃ i j, (e.world i).time ≤ time ∧ (e.world j).time ≤ time ∧
+    ∃ r evidence, Store.findBlockCollision ((e.world i).state a) ((e.world j).state b) [r] =
+      some evidence
 
 /-- No honest validator has a true slashed flag in a counted state through the horizon. -/
 def HonestCountedStatesUnslashed (last : Nat) : Prop :=
@@ -241,6 +253,20 @@ def HonestHeadsCover (root : Root) (first last : Nat) : Prop :=
     UpToDate config checks sources (e.world i).time ((e.world i).view a) ((e.world i).state a) →
     ((e.world i).state a).getHead config = .ok hd →
     ((e.world i).state a).isAncestor hd ⟨root, .pending⟩ = .ok true
+
+/-- The root is viable at one time in every up-to-date honest store at that time.
+
+It is in the store's filtered tree, or below the store's justified block.
+
+Only stores whose head read succeeds are covered. -/
+def RootViableAt (root : Root) (T : Nat) : Prop :=
+  ∀ w ∈ J, ∀ k (nodes : List ForkChoiceNode) (hd : ForkChoiceNode), (e.world k).time = T →
+    UpToDate config checks sources (e.world k).time ((e.world k).view w) ((e.world k).state w) →
+    ((e.world k).state w).getHead config = .ok hd →
+    ((e.world k).state w).getFilteredNodeTree config = .ok nodes →
+    ((e.world k).state w).isAncestor
+        ⟨((e.world k).state w).justifiedCheckpoint.root, .pending⟩ ⟨root, .pending⟩ = .ok true ∨
+      (⟨root, .pending⟩ : ForkChoiceNode) ∈ nodes
 
 /-- Each up-to-date honest store has the root in its filtered tree or below its justified block.
 
@@ -512,6 +538,41 @@ def CrossStoreJustifiedEvidence {g : ForkedBeaconState preset}
           (DirectSafety.accountableKeys pre left right) +
         2 * max (DirectSafety.derivedDrift first.epoch.toNat left)
           (DirectSafety.derivedDrift first.epoch.toNat right) ∨
+        DirectSafety.HashEvidence ((pre.append left).hashObjects ++ (pre.append right).hashObjects))
+
+/-- An honest store's finalized checkpoint conflicts with the justified checkpoint of a held state.
+
+The held state is held by an honest store, the same one or another, at an event by the time.
+
+Its realized justified checkpoint is at the finalized epoch or later.
+
+Runs from the anchor go to a held state of each store.
+
+A terminal view of the first state has the finalized checkpoint, and the second state is the view.
+
+The evidence is the direct-safety stake inequality on those runs, or hash evidence on them.
+
+Its drift counts from the anchor, up to one epoch past the held justified epoch.
+
+With enough churn since the anchor, the stake inequality holds with no accountable key. -/
+def HeldStateFinalityEvidence {g : ForkedBeaconState preset}
+    (pre : Run config checks g ⟨fork, anchorState⟩) (time : Nat) : Prop :=
+  ∃ a ∈ J, ∃ b ∈ J, ∃ i j, (e.world i).time ≤ time ∧ (e.world j).time ≤ time ∧
+    ∃ (stateA stateB : BeaconState preset fork)
+      (left : Run config checks ⟨fork, anchorState⟩ ⟨fork, stateA⟩)
+      (right : Run config checks ⟨fork, anchorState⟩ ⟨fork, stateB⟩)
+      (va : DirectSafety.TerminalView ⟨fork, stateA⟩)
+      (vb : DirectSafety.TerminalView ⟨fork, stateB⟩),
+      (∃ r : Root, ((e.world i).state a).blockStates[r]? = some stateA) ∧
+      (∃ r : Root, ((e.world j).state b).blockStates[r]? = some stateB) ∧
+      va.state.finalizedCheckpoint = ((e.world i).state a).finalizedCheckpoint ∧
+      vb.state.currentJustifiedCheckpoint = stateB.currentJustifiedCheckpoint ∧
+      ((e.world i).state a).finalizedCheckpoint.epoch ≤ stateB.currentJustifiedCheckpoint.epoch ∧
+      (stake (DirectSafety.effectiveWeight anchorState) (DirectSafety.unslashedKeys anchorState) ≤
+        3 * stake (DirectSafety.effectiveWeight anchorState)
+          (DirectSafety.accountableKeys pre left right) +
+        2 * max (DirectSafety.derivedDrift stateB.currentJustifiedCheckpoint.epoch.toNat left)
+          (DirectSafety.derivedDrift stateB.currentJustifiedCheckpoint.epoch.toNat right) ∨
         DirectSafety.HashEvidence ((pre.append left).hashObjects ++ (pre.append right).hashObjects))
 
 /-- Two honest stores have two runs from the anchor to held states that give direct-safety evidence.
