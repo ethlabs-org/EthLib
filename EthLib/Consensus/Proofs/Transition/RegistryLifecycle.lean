@@ -1089,19 +1089,19 @@ theorem Run.registryLifecycle {first last : ForkedBeaconState preset}
 /-! ## Admissions within one step -/
 
 -- Keeping both epochs unassigned lets activity checks rule out a later exit request.
-private def Unassigned (v : Validator) : Prop :=
+def Unassigned (v : Validator) : Prop :=
   v.activationEpoch = FAR_FUTURE_EPOCH ∧ v.exitEpoch = FAR_FUTURE_EPOCH
 
-private def UnassignedFrom (n : Nat) {fork : Fork} (s : BeaconState preset fork) : Prop :=
+def UnassignedFrom (n : Nat) {fork : Fork} (s : BeaconState preset fork) : Prop :=
   ∀ i v, n ≤ i → s.validators.data[i]? = some v → Unassigned v
 
-private theorem unassignedFrom_size (s : BeaconState preset fork) :
+theorem unassignedFrom_size (s : BeaconState preset fork) :
     UnassignedFrom s.validators.data.size s := by
   intro i v large found
   have := (Array.getElem?_eq_some_iff.mp found).1
   omega
 
-private def UnassignedKept {f g : Fork} (s : BeaconState preset f)
+def UnassignedKept {f g : Fork} (s : BeaconState preset f)
     (t : BeaconState preset g) : Prop :=
   ∀ n, UnassignedFrom n s → UnassignedFrom n t
 
@@ -1179,7 +1179,7 @@ private theorem applyDeposit {pubkey : BLSPubkey} {credentials : Bytes32} {amoun
       (of_data (state := middle))
   · exact applyPendingDeposit ok
 
-private theorem processDeposit {before : fork < .hegota} {deposit : Deposit}
+theorem processDeposit {before : fork < .hegota} {deposit : Deposit}
     (ok : Consensus.processDeposit config checks before state deposit = .ok after) :
     UnassignedKept state after := by
   obtain ⟨_, _, next, _, credited⟩ := processDeposit_ok ok
