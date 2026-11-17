@@ -201,40 +201,64 @@ private theorem WdStep.slash {f : Fork} {s t : BeaconState preset f} {i : Valida
 
 /-! ### The pending consolidations inside one epoch -/
 
-/-- The queue keeps a list, and each other entry has a source that exits after an epoch. -/
+/-- The queue keeps a list, and each other entry has a source that exits after an epoch.
+
+Master's `PendingConsolidationInvariant` gives that the exit of each source is assigned. -/
 private def QueueFrom (L : List PendingConsolidation) (e : Epoch) {f : Fork}
     (s : BeaconState preset f) : Prop :=
   ∀ electra : .pectra ≤ f, (∀ c ∈ L, c ∈ (s.pendingConsolidations electra).data.toList) ∧
     ∀ c ∈ (s.pendingConsolidations electra).data.toList, c ∈ L ∨
-      ∃ w, s.validators.data[c.sourceIndex.toNat]? = some w ∧ e < w.exitEpoch ∧
-        w.exitEpoch ≠ FAR_FUTURE_EPOCH
+      ∃ w, s.validators.data[c.sourceIndex.toNat]? = some w ∧ e < w.exitEpoch
 
-/-- A step that keeps the queue keeps its property, since master's lifecycle keeps each exit. -/
-private theorem QueueFrom.kept {f : Fork} {s t : BeaconState preset f}
-    {L : List PendingConsolidation} {e : Epoch} (holds : QueueFrom L e s)
-    (life : RegistryLifecycle s t) (queue : .pectra ≤ f → SamePendingQueue s t) :
-    QueueFrom L e t := by
+/-- The queue only grows inside a block, and each new entry has a source whose exit is assigned
+after the current epoch.
+
+The exit is assigned when the entry is queued, so it is part of the step and not read from
+master's invariant, which holds only at the states of a run. -/
+private def QueueGrows {f : Fork} (s t : BeaconState preset f) : Prop :=
+  ∀ electra : .pectra ≤ f,
+    (∀ c ∈ (s.pendingConsolidations electra).data.toList,
+      c ∈ (t.pendingConsolidations electra).data.toList) ∧
+    ∀ c ∈ (t.pendingConsolidations electra).data.toList,
+      c ∈ (s.pendingConsolidations electra).data.toList ∨
+        ∃ w, t.validators.data[c.sourceIndex.toNat]? = some w ∧
+          getCurrentEpoch s < w.exitEpoch ∧ w.exitEpoch ≠ FAR_FUTURE_EPOCH
+
+/-- A step that keeps the queue grows it by nothing. -/
+private theorem QueueGrows.of_same {f : Fork} {s t : BeaconState preset f}
+    (queue : .pectra ≤ f → SamePendingQueue s t) : QueueGrows s t := by
   intro electra
-  obtain ⟨old, new⟩ := holds electra
   rw [show t.pendingConsolidations electra = s.pendingConsolidations electra from
     congrFun (queue electra) electra]
-  refine ⟨old, fun c member => ?_⟩
-  rcases new c member with listed | ⟨w, read, later, assigned⟩
-  · exact .inl listed
-  · obtain ⟨w', read', kept⟩ := life.validators _ w read
-    have exit := kept.exitEpoch assigned
-    exact .inr ⟨w', read', by rw [exit]; exact later, by rw [exit]; exact assigned⟩
+  exact ⟨fun _ h => h, fun _ h => .inl h⟩
 
-/-- A block step: master's frame and lifecycle, the withdrawal epochs and the queue. -/
+/-- Growths compose: master's lifecycle keeps each exit that is assigned. -/
+private theorem QueueGrows.trans {f : Fork} {s u t : BeaconState preset f}
+    (one : QueueGrows s u) (two : QueueGrows u t) (life : RegistryLifecycle u t)
+    (slot : u.slot = s.slot) : QueueGrows s t := by
+  intro electra
+  obtain ⟨old, new⟩ := one electra
+  obtain ⟨old', new'⟩ := two electra
+  have epoch : getCurrentEpoch u = getCurrentEpoch s := by simp only [getCurrentEpoch, slot]
+  refine ⟨fun c member => old' c (old c member), fun c member => ?_⟩
+  rcases new' c member with middle | ⟨w, read, later, assigned⟩
+  · rcases new c middle with first | ⟨w, read, later, assigned⟩
+    · exact .inl first
+    · obtain ⟨w', read', kept⟩ := life.validators _ w read
+      have exit := kept.exitEpoch assigned
+      exact .inr ⟨w', read', by rw [exit]; exact later, by rw [exit]; exact assigned⟩
+  · exact .inr ⟨w, read, epoch ▸ later, assigned⟩
+
+/-- A block step: master's frame and lifecycle, the withdrawal epochs, and the growth of the
+queue. -/
 private def RiseStep {f : Fork} (s t : BeaconState preset f) : Prop :=
-  Frame s t ∧ RegistryLifecycle s t ∧ WdStep s t ∧
-    ∀ L e, e ≤ getCurrentEpoch s → QueueFrom L e s → QueueFrom L e t
+  Frame s t ∧ RegistryLifecycle s t ∧ WdStep s t ∧ QueueGrows s t
 
 /-- A step that keeps the queue. -/
 private theorem RiseStep.of_same {f : Fork} {s t : BeaconState preset f} (frame : Frame s t)
     (life : RegistryLifecycle s t) (wd : WdStep s t)
     (queue : .pectra ≤ f → SamePendingQueue s t) : RiseStep s t :=
-  ⟨frame, life, wd, fun _ _ _ holds => holds.kept life queue⟩
+  ⟨frame, life, wd, QueueGrows.of_same queue⟩
 
 /-- A step that keeps the registry and the queue. -/
 private theorem RiseStep.of_data {f : Fork} {s t : BeaconState preset f} (frame : Frame s t)
@@ -250,9 +274,8 @@ private theorem RiseStep.refl {f : Fork} (s : BeaconState preset f) : RiseStep s
 private theorem RiseStep.trans {f : Fork} {s u t : BeaconState preset f} (one : RiseStep s u)
     (two : RiseStep u t) : RiseStep s t := by
   refine ⟨one.1.trans two.1, one.2.1.trans two.2.1,
-    one.2.2.1.trans two.2.2.1 one.2.1 two.1.slashed, fun L e le holds => ?_⟩
-  have epoch : getCurrentEpoch u = getCurrentEpoch s := by simp only [getCurrentEpoch, one.1.slot]
-  exact two.2.2.2 L e (epoch ▸ le) (one.2.2.2 L e le holds)
+    one.2.2.1.trans two.2.2.1 one.2.1 two.1.slashed,
+    one.2.2.2.trans two.2.2.2 two.2.1 one.1.slot⟩
 
 /-- A fold of steps is a step. -/
 private theorem RiseStep.fold {f : Fork} {s t : BeaconState preset f} {α ε : Type}
@@ -445,10 +468,10 @@ The lifecycle of the whole request keeps the exits of the sources already queued
 private theorem queueStep_queueConsolidation {electra : .pectra ≤ f}
     {sourceIndex targetIndex : ValidatorIndex} {source : Validator}
     (found : s.validators.data[sourceIndex.toNat]? = some source)
-    (far : source.exitEpoch = FAR_FUTURE_EPOCH) (life : RegistryLifecycle s t)
+    (far : source.exitEpoch = FAR_FUTURE_EPOCH)
     (delay : 1 ≤ config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat)
     (ok : queueConsolidation config s electra sourceIndex source targetIndex = .ok t) :
-    WdStep s t ∧ ∀ L e, e ≤ getCurrentEpoch s → QueueFrom L e s → QueueFrom L e t := by
+    WdStep s t ∧ QueueGrows s t := by
   simp only [queueConsolidation, bind_ok_iff, liftAccessor_ok, liftArith, mapError_ok_iff,
     pure, Except.pure] at ok
   obtain ⟨⟨churned, epoch⟩, churnOk, withdrawal, added, written, set, pending, appended, final⟩ :=
@@ -485,27 +508,19 @@ private theorem queueStep_queueConsolidation {electra : .pectra ≤ f}
   have read : getValidator churned sourceIndex = .ok source := by
     rw [getValidator, churnRegistry, found]
   refine ⟨WdStep.of_data_left (by rw [churnRegistry])
-    ((WdStep.set read set fun h => absurd far h).of_data_right rfl), fun L e le holds => ?_⟩
-  intro electra'
-  obtain ⟨old, new⟩ := holds electra'
-  change (∀ c ∈ L, c ∈ pending.data.toList) ∧ ∀ c ∈ pending.data.toList, c ∈ L ∨
-    ∃ w, written.validators.data[c.sourceIndex.toNat]? = some w ∧ e < w.exitEpoch ∧
-      w.exitEpoch ≠ FAR_FUTURE_EPOCH
+    ((WdStep.set read set fun h => absurd far h).of_data_right rfl), fun electra' => ?_⟩
+  change (∀ c ∈ (s.pendingConsolidations electra').data.toList, c ∈ pending.data.toList) ∧
+    ∀ c ∈ pending.data.toList, c ∈ (s.pendingConsolidations electra').data.toList ∨
+      ∃ w, written.validators.data[c.sourceIndex.toNat]? = some w ∧
+        getCurrentEpoch s < w.exitEpoch ∧ w.exitEpoch ≠ FAR_FUTURE_EPOCH
   rw [data, queueEq, churnQueue, Array.toList_push]
-  refine ⟨fun c member => List.mem_append_left _ (old c member), fun c member => ?_⟩
+  refine ⟨fun c member => List.mem_append_left _ member, fun c member => ?_⟩
   rcases List.mem_append.mp member with member | member
-  · rcases new c member with listed | ⟨w, read', bound, assignedW⟩
-    · exact .inl listed
-    · obtain ⟨w', read'', kept⟩ := life.validators _ w read'
-      have exit := kept.exitEpoch assignedW
-      exact .inr ⟨w', read'', by rw [exit]; exact bound, by rw [exit]; exact assignedW⟩
+  · exact .inl member
   · rw [List.mem_singleton] at member
     subst member
     refine .inr ⟨_, getValidator_eq_ok_iff.mp (getValidator_setValidator_self set), ?_, assigned⟩
-    show e < epoch
-    apply UInt64.lt_iff_toNat_lt.mpr
-    have := UInt64.le_iff_toNat_le.mp le
-    omega
+    exact UInt64.lt_iff_toNat_lt.mpr later
 
 /-- A consolidation request switches credentials or queues a consolidation. -/
 private theorem riseStep_processConsolidationRequest {electra : .pectra ≤ f}
@@ -514,20 +529,18 @@ private theorem riseStep_processConsolidationRequest {electra : .pectra ≤ f}
     (ok : processConsolidationRequest config s electra request = .ok t) : RiseStep s t := by
   have frame := (frame_processConsolidationRequest ok).toFrame
   have life := registryLifecycle_processConsolidationRequest ok
-  suffices new : WdStep s t ∧
-      ∀ L e, e ≤ getCurrentEpoch s → QueueFrom L e s → QueueFrom L e t from
-    ⟨frame, life, new⟩
-  clear frame
+  suffices new : WdStep s t ∧ QueueGrows s t from ⟨frame, life, new⟩
+  clear frame life
   unfold processConsolidationRequest at ok
   simp only [bind, Except.bind, pure, Except.pure] at ok
   repeat' split at ok
   all_goals try first
     | (cases ok; done)
-    | (cases ok; exact ⟨WdStep.of_data rfl, fun _ _ _ h => h⟩)
+    | (cases ok; exact ⟨WdStep.of_data rfl, QueueGrows.of_same fun _ => rfl⟩)
     | exact (riseStep_switchToCompoundingValidator (liftAccessor_ok.mp ok)).2.2
   rename_i bothFar _ _ _ _ _ _ _ _
   exact queueStep_queueConsolidation (getElem?_toNat_of_ofNatChecked (by assumption))
-    (beq_iff_eq.mp ((Bool.and_eq_true _ _).mp bothFar).1) life delay ok
+    (beq_iff_eq.mp ((Bool.and_eq_true _ _).mp bothFar).1) delay ok
 
 /-- The requests of the execution layer keep the withdrawal epochs and the queue. -/
 private theorem riseStep_processExecutionRequests {body : BeaconBlockBody preset f}
@@ -618,7 +631,9 @@ end RiseBlock
 private theorem run_riseKeep {x y : ForkedBeaconState preset} (tail : Run config checks x y)
     (early : y.fork < .glamsterdam) (altair : .altair ≤ y.fork)
     (same : getCurrentEpoch y.state = getCurrentEpoch x.state)
-    (delay : 1 ≤ config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat) :
+    (delay : 1 ≤ config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat)
+    (holds : ∀ {w : ForkedBeaconState preset}, Run config checks x w → w.fork < .glamsterdam →
+      PendingConsolidationInvariant config w.state) :
     WdStep x.state y.state ∧ ∀ L, QueueFrom L (getCurrentEpoch x.state) x.state →
       QueueFrom L (getCurrentEpoch x.state) y.state := by
   revert altair
@@ -632,8 +647,21 @@ private theorem run_riseKeep {x y : ForkedBeaconState preset} (tail : Run config
   · have step := riseStep_processBlock altair early delay (applySignedBlock_ok ok).2.1
     have le := currentEpoch_le_of_chainSteps pre.chainSteps
     have held := prior altair
-    exact ⟨held.1.trans step.2.2.1 pre.registryLifecycle step.1.slashed,
-      fun L holds => step.2.2.2 L _ le (held.2 L holds)⟩
+    refine ⟨held.1.trans step.2.2.1 pre.registryLifecycle step.1.slashed,
+      fun L start electra => ?_⟩
+    -- An entry queued before the block keeps its source exit, which master's invariant assigns.
+    obtain ⟨old, new⟩ := held.2 L start electra
+    obtain ⟨grows, added⟩ := step.2.2.2 electra
+    refine ⟨fun c member => grows c (old c member), fun c member => ?_⟩
+    rcases added c member with before | ⟨w, read, later, -⟩
+    · rcases new c before with listed | ⟨w, read, later⟩
+      · exact .inl listed
+      · obtain ⟨v, found, -, -, assigned⟩ := (holds pre early electra).2 c before
+        rw [read, Option.some.injEq] at found
+        subst found
+        obtain ⟨w', read', kept⟩ := step.2.1.validators _ w read
+        exact .inr ⟨w', read', by rw [kept.exitEpoch assigned]; exact later⟩
+    · exact .inr ⟨w, read, UInt64.lt_of_le_of_lt le later⟩
   · subst lastEq
     obtain ⟨_, _, _, _, rfl⟩ := processSlot_ok cachedOk
     exact prior altair
@@ -1916,8 +1944,12 @@ theorem effectiveRise_le
   have holdsR : PendingConsolidationInvariant config r := fun electra =>
     history.pendingConsolidation_invariant genesis Fearly electra withdrawDelay
   -- The slashes, exits, withdrawal epochs and queues inside the epoch.
-  obtain ⟨wdP, queueP⟩ := run_riseKeep tailP Fearly altair callEpoch withdrawDelay
-  obtain ⟨wdZ, queueZ⟩ := run_riseKeep toZ Fearly altair zEpoch withdrawDelay
+  have reachable : ∀ {w : ForkedBeaconState preset}, Run config checks ⟨F, r⟩ w →
+      w.fork < .glamsterdam → PendingConsolidationInvariant config w.state :=
+    fun pre early electra =>
+      (history.append pre).pendingConsolidation_invariant genesis early electra withdrawDelay
+  obtain ⟨wdP, queueP⟩ := run_riseKeep tailP Fearly altair callEpoch withdrawDelay reachable
+  obtain ⟨wdZ, queueZ⟩ := run_riseKeep toZ Fearly altair zEpoch withdrawDelay reachable
   -- The slot that ends the epoch.
   have nextZ : (getCurrentEpoch z'.state).toNat = (getCurrentEpoch zs).toNat + 1 := by
     rw [z'Epoch, epochZ]; exact nextR
@@ -2102,12 +2134,14 @@ theorem effectiveRise_le
       have inR : c ∈ (r.pendingConsolidations electra).data.toList := by
         have queued := (queueZ (r.pendingConsolidations electra).data.toList
           (fun _ => ⟨fun _ h => h, fun _ h => .inl h⟩)) electra
-        rcases queued.2 c memberZ with listed | ⟨w, readW, later, assigned⟩
+        rcases queued.2 c memberZ with listed | ⟨w, readW, later⟩
         · exact listed
-        · obtain ⟨later', readLater, kept⟩ := resetLife.validators _ w readW
+        · rw [readZ, Option.some.injEq] at readW
+          subst readW
+          obtain ⟨later', readLater, kept⟩ := resetLife.validators _ _ readZ
           rw [readReset, Option.some.injEq] at readLater
           subst later'
-          have exitSame := kept.exitEpoch assigned
+          have exitSame := kept.exitEpoch assignedZ
           rw [he] at later
           have := UInt64.lt_iff_toNat_lt.mp later
           rw [← exitSame] at this
