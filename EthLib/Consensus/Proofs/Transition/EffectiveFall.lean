@@ -1016,8 +1016,7 @@ private theorem getPendingPartialWithdrawals_loop_ledger {fork : Fork}
       (∀ k, count ≤ k → pay k = 0) ∧
       (∀ k < count, ∃ w, queue[k]? = some w ∧ pay k ≤ w.amount.toNat ∧
         (0 < pay k → w.withdrawableEpoch ≤ epoch)) ∧
-      ∀ v, ((result.1.toList.filter (·.validatorIndex = v)).map (·.amount.toNat)).sum =
-        ((withdrawals.toList.filter (·.validatorIndex = v)).map (·.amount.toNat)).sum +
+      ∀ v, withdrawnFrom result.1 v = withdrawnFrom withdrawals v +
           ∑ k ∈ Finset.range count,
             if queue[k]?.map (·.validatorIndex) = some v then pay k else 0
   | [], _, _, _, _, computed => by
@@ -1058,11 +1057,11 @@ private theorem getPendingPartialWithdrawals_loop_ledger {fork : Fork}
         | zero => exact ⟨pending, rfl, UInt64.le_iff_toNat_le.mp Std.min_le_right, fun _ => due⟩
         | succ k => exact entries k (by omega)
       · intro v
-        rw [sums v, Finset.sum_range_succ']
+        rw [sums v, Finset.sum_range_succ', withdrawnFrom_push]
         by_cases named : pending.validatorIndex = v
-        · simp [named, Array.toList_push, List.filter_append]
+        · simp [named]
           omega
-        · simp [named, Array.toList_push, List.filter_append]
+        · simp [named]
     · obtain ⟨count, pay, counted, bounded, beyond, entries, sums⟩ :=
         getPendingPartialWithdrawals_loop_ledger rest _ _ _ computed
       refine ⟨count + 1, fun k => k.casesOn 0 pay, by omega,
@@ -1088,8 +1087,7 @@ private theorem getPendingPartialWithdrawals_ledger {fork : Fork}
       (∀ k, count ≤ k → pay k = 0) ∧
       (∀ k < count, ∃ w, (state.pendingPartialWithdrawals electra).data.toList[k]? = some w ∧
         pay k ≤ w.amount.toNat ∧ (0 < pay k → w.withdrawableEpoch ≤ getCurrentEpoch state)) ∧
-      ∀ v, ((partials.toList.filter (·.validatorIndex = v)).map (·.amount.toNat)).sum =
-        ∑ k ∈ (Finset.range count).filter (fun k =>
+      ∀ v, withdrawnFrom partials v = ∑ k ∈ (Finset.range count).filter (fun k =>
           (state.pendingPartialWithdrawals electra).data.toList[k]?.map (·.validatorIndex) =
             some v), pay k := by
   unfold getPendingPartialWithdrawals at computed
@@ -1101,7 +1099,7 @@ private theorem getPendingPartialWithdrawals_ledger {fork : Fork}
   subst counted
   refine ⟨pay, bounded, beyond, entries, fun v => ?_⟩
   rw [sums v, Finset.sum_filter]
-  simp
+  simp [withdrawnFrom]
 
 private theorem withdrawals_pendingPartials {fork : Fork} {s t : BeaconState preset fork}
     (electra : .pectra ≤ fork) (early : fork < .glamsterdam)
@@ -1541,11 +1539,10 @@ private theorem run_partialLedger {x y : ForkedBeaconState preset}
     obtain ⟨pay, counted, stepBeyond, stepEntries, stepSums⟩ :=
       getPendingPartialWithdrawals_ledger partialsOk
     have paidBlock : ∀ v, stepQueuePaid (Step.block engine signed due ok) v =
-        ((partials.toList.filter (·.validatorIndex = v)).map (·.amount.toNat)).sum := by
+        withdrawnFrom partials v := by
       intro v
       simp only [stepQueuePaid, blockQueuePaid, electraT, ↓reduceDIte, headedOk, partialsOk,
         bind, Except.bind, pure, Except.pure, Except.toOption, Option.getD_some]
-      rfl
     obtain ⟨_, _, rfl⟩ := processBlockHeader_eq headedOk
     simp only at stepEntries stepSums counted
     generalize ledgerDef : (x.state.pendingPartialWithdrawals electra).data.toList ++
