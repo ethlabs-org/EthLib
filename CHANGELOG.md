@@ -9,6 +9,12 @@ Not yet released.
 
 ### Proof additions
 
+- `Execution.exists_signer_of_counted` finds a signer of a later justified checkpoint in any set of validators ([#2656](https://github.com/ethereum/EthLib/issues/2656)).
+  The checkpoint is the store's justified checkpoint or its unrealized one.
+  It assumes that, in each state that counts votes for it, the quorum voters outside the set hold less than two thirds of the total.
+  `Execution.justifiedHonestlySigned` is its case of the honest set, and keeps its statement.
+  `Store.ForwardReachableWith.checkpoint_counted` traces either justified field to the count that set it; `justified_counted` is its case of the justified field.
+
 - `Execution.honestTargetVotes_signed_of_checked` shows that an accepted current-target test has honest signers with two thirds of the active balance ([#2058](https://github.com/ethereum/EthLib/issues/2058), Theorem 2).
   Three times their stake is at least twice the total active balance plus the margin of the count.
   Each of them sent a vote for the target before the start of the next epoch.
