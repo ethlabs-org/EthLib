@@ -606,6 +606,24 @@ theorem Run.currentSyncCommittee_eq_of_same_epoch {x y : ForkedBeaconState prese
       exact prior)
     tail early same altair altair'
 
+/-- The positions active in an epoch are the same in two registries when activity stays.
+
+The later registry keeps the positions of the earlier one, and a position past them is inactive
+in both. -/
+theorem activeFilter_eq {f g : Fork} {a : BeaconState preset f}
+    {b : BeaconState preset g} {ep : Epoch} (active : ∀ i, isActiveAt b ep i = isActiveAt a ep i)
+    (grows : a.validators.data.size ≤ b.validators.data.size) :
+    (Finset.range b.validators.data.size).filter (fun i => isActiveAt b ep i = true) =
+      (Finset.range a.validators.data.size).filter (fun i => isActiveAt a ep i = true) := by
+  ext i
+  simp only [Finset.mem_filter, Finset.mem_range, active]
+  constructor
+  · rintro ⟨-, hit⟩
+    obtain ⟨v, found, -⟩ := isActiveAt_eq_true_iff.mp hit
+    exact ⟨(Array.getElem?_eq_some_iff.mp found).1, hit⟩
+  · rintro ⟨inside, hit⟩
+    exact ⟨Nat.lt_of_lt_of_le inside grows, hit⟩
+
 /-- The effective balances active in an epoch sum the same when three things stay.
 
 These are activity in that epoch, the effective balances and the registry before. -/
@@ -616,22 +634,9 @@ theorem activeSum_eq {f h : Fork} {a : BeaconState preset f} {b : BeaconState pr
         ((b.validators.data[i]?).map (·.effectiveBalance.toNat)).getD 0 =
       ∑ i ∈ (Finset.range a.validators.data.size).filter (fun i => isActiveAt a e i = true),
         ((a.validators.data[i]?).map (·.effectiveBalance.toNat)).getD 0 := by
-  rw [Finset.sum_filter, Finset.sum_filter]
-  obtain ⟨extra, sizes⟩ : ∃ extra, b.validators.data.size = a.validators.data.size + extra :=
-    ⟨_, (Nat.add_sub_of_le grows).symm⟩
-  rw [sizes, Finset.sum_range_add]
-  -- A position past the old registry is inactive, since it is inactive in the old one.
-  have tail : ∑ k ∈ Finset.range extra, (if isActiveAt b e (a.validators.data.size + k) = true then
-      ((b.validators.data[a.validators.data.size + k]?).map (·.effectiveBalance.toNat)).getD 0
-      else 0) = 0 := by
-    refine Finset.sum_eq_zero fun k _ => ?_
-    rw [active]
-    simp [isActiveAt]
-  rw [tail, add_zero]
+  rw [activeFilter_eq active grows]
   refine Finset.sum_congr rfl fun i member => ?_
-  rw [active, show ((b.validators.data[i]?).map (·.effectiveBalance.toNat)).getD 0 =
-    effectiveAt ⟨h, b⟩ i from rfl, kept i (Finset.mem_range.mp member)]
-  rfl
+  exact kept i (Finset.mem_range.mp (Finset.mem_filter.mp member).1)
 
 /-- Take two states with the same keys of the current sync committee.
 
