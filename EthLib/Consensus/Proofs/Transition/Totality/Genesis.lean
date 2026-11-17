@@ -163,7 +163,7 @@ private theorem min_sub_mod_le (value step cap : UInt64) :
 /-- Before Gloas, the activation at genesis keeps the balances, the slashed balances and the size.
 
 Each effective balance is then its balance rounded down to an increment, capped at the largest. -/
-private theorem foldlM_activateAtGenesis {state after : BeaconState preset fork}
+theorem foldlM_activateAtGenesis {state after : BeaconState preset fork}
     (_before : fork < .glamsterdam)
     (computed : (List.range state.validators.data.size).foldlM activateAtGenesis state =
       .ok after) :

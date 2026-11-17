@@ -991,9 +991,9 @@ private theorem queuePreActivation_bands {state after : BeaconState preset .pect
     ElectraBelow after ∧ ElectraBands after := by
   simp only [queuePreActivation, bind_ok_iff, liftAccessor_ok, pure, Except.pure,
     Except.ok.injEq] at computed
-  obtain ⟨validator, -, _, -, _, -, _, set₁, _, set₂, rfl⟩ := computed
-  obtain ⟨_, rfl⟩ := setBalance_ok set₁
-  obtain ⟨_, rfl⟩ := setValidator_ok set₂
+  obtain ⟨validator, -, _, -, _, -, _, set1, _, set2, rfl⟩ := computed
+  obtain ⟨_, rfl⟩ := setBalance_ok set1
+  obtain ⟨_, rfl⟩ := setValidator_ok set2
   refine ⟨fun written member => ?_, fun position written current seen read => ?_⟩
   · simp only [BeaconState.putValidator, RootedForkList.data_set] at member
     rcases Array.mem_or_eq_of_mem_set member with old | rfl

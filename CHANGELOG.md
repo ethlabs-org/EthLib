@@ -20,6 +20,11 @@ Not yet released.
   Three times their stake is at least twice the total active balance plus the margin of the count.
   `quorum_of_count` and `headState_epoch_le` are now public.
 
+- `Execution.receiverWindowExitsNear_of_sourceOnParentChain` proves `ReceiverWindowExitsNear` when the call's balance source is on the parent's chain (`SourceOnParentChain`), or names a block collision between honest stores.
+  The checkpoint's epoch is at most two epochs before the parent's, and the preset satisfies `Preset.ExitWindowFixed`.
+  Each near receiver's head state keeps the source's activity three epochs ahead, so `windowExitBound_of_activeKept` bounds each full epoch of its window by `exitReserve`.
+  `historical_stores_or_collision`, the split of honest stores into agreement or a collision, is now public; the proof reads it.
+
 - `Execution.honestHeadsCover_of_historical_anchor` keeps a confirmed block on every honest head chain from the call to a horizon, by induction on time ([#1458](https://github.com/ethereum/EthLib/issues/1458)).
   It no longer assumes the root's own earlier coverage.
   It assumes the parent's coverage, the root's viability, the receivers' reads and exits, and a late duty majority.
@@ -38,6 +43,9 @@ Not yet released.
   `Execution.honestHeadsCover_of_historical_anchor` keeps its statement.
   `slotStart_le_clock` is now public.
 
+- `ReceiverWindowExitsNear` asks the exit bound of `ReceiverWindowExits` only of receivers within two epochs of the parent, the only receivers whose steps read it.
+  `receiverWindowExitsNear_of_exits` derives it from `ReceiverWindowExits`, so `Execution.honestHeadsCover_of_historical_anchor` and `Execution.honestHeadsCover_of_signed_justification` keep their statements.
+
 - `HonestVoteData.target_read` reads the target of an honest vote from its voter's head, without the reads of a duty vote.
   It needs the target block held by some store reachable from the same anchor.
   The anchor store does not tie the anchor state's latest header to the anchor block, so a read at the anchor needs that block.
@@ -47,6 +55,13 @@ Not yet released.
   Its checkpoint block at the finalized epoch is the finalized block.
   It asks that the anchor block is not after the anchor state and that its parent root names no known block.
   `Store.isViableLeaf_checkpointBlock` gives the checkpoint block that a viable leaf reads.
+
+- `Execution.honestHeadsCover_of_historical_anchor_of_newlyActive` and `Execution.honestHeadsCover_of_signed_justification_of_newlyActive` take `NewlyActiveVotersInHeadWindow` in place of `VoteCommitteeCommonHistory` ([#1458](https://github.com/ethereum/EthLib/issues/1458)).
+  It asks only that a voter activated at its target epoch lie in the head's window, for a vote two epochs after the parent.
+  Every other voter lies there by `VotersInHeadWindow`, which `Execution.votersInHeadWindow_of_newlyActive` derives.
+  The merged headlines keep their statements and reach the new ones through `Execution.votersInHeadWindow_of_commonHistory`.
+  `Store.mem_getCommitteesBetweenSlots_of_active` and `Store.ForwardReachableWith.active_or_newlyActive_of_voteOrigin` are the general steps.
+  If the rule's window weight paid one epoch's activation churn, the remaining premise would go.
 
 ### Changes that break callers
 
@@ -70,6 +85,18 @@ Not yet released.
   - `KeyPath.KeyPathError.invalidRoot root` carries the text before the first `/`, and `tooShort count` the number of segments after `m`.
   - `Gcm.checkLengths_shortTag`, `Gcm.encrypt_shortTag`, `Gcm.decrypt_shortTag` and `ChaCha20Poly1305.crypt_eq_error_of_counter_exhausted` state the error with its fields.
   - `Aes.Gcm.Error.code_injective` now concludes that two errors with one code share a constructor, `e₁.ctorIdx = e₂.ctorIdx`, as the KZG and secp256k1 forms do.
+
+- `exitReserve` is now the active source stake already scheduled to exit within three epochs of the source, the reach of a confirmation's near window, and nothing else.
+  It counted two epochs and added the churn terms of the source's epoch.
+  `Preset.ExitWindowFixed` asks for a seed lookahead of at least three epochs; mainnet and minimal satisfy it.
+  Under it, `exitStake_le_exitReserve` shows that no other source stake leaves by then, in any later state that keeps the source's fixed activity.
+  `SourceWindowReserve` and `WindowExitBound` read the new value; a caller that proves `SourceWindowReserve` proves it for the new reserve.
+  A caller that proves `WindowExitBound` bounds each near epoch with `windowExitBound_of_activeKept`; `exitReserve` no longer reads its `Config`.
+
+- In Lean, the historical-anchor theorems no longer assume finality across honest stores ([#1458](https://github.com/ethereum/EthLib/issues/1458)).
+  `Execution.source_surplus_or_historical_evidence`, `Execution.isAncestor_getHead_of_historical_anchor`, `Execution.honestHeadsCover_of_historical_anchor` and `Execution.honestHeadsCover_of_signed_justification` drop their `residual` argument; their conclusions are unchanged.
+  `receiver_fullMaximum_of_head_window` takes the receiver's own finalized checkpoint on its own justified chain, `finalizedRead`, instead of `compatible`, `bounded`, `slots` and `epochOk`.
+  `SelectedCheckpoint`, `FinalizedCheckpointCompatibility`, `ResidualFinalizedCheckpointCompatibility` and `compatibility_of_residual` are removed: no proof read them any more.
 
 - The transaction, inclusion and network-form errors carry the values that their failed check compared.
   Each code keeps its meaning, and each error fires on the same inputs as before.
