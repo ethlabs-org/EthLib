@@ -278,7 +278,8 @@ private theorem Store.Reachable.exists_run_of_blockState {config : Config}
     (BeaconBlock.hashTreeRoot_header bodyHashed).trans (reachable.root found)
   refine ⟨(tailP.append slots).snoc (.block engine signed due applied), extraP ++ [header], ?_,
     fun slot later => ?_⟩
-  · show (pre.append (tailP.append slots)).headers ++ (DirectSafety.blockHeader signed.message).toList = _
+  · show (pre.append (tailP.append slots)).headers ++
+      (DirectSafety.blockHeader signed.message).toList = _
     rw [headersA, headersP, headerOk]
     simp
   · by_cases above : signed.message.slot ≤ slot
