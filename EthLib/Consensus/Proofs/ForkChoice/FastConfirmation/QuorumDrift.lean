@@ -51,42 +51,6 @@ variable {preset : Preset} {fork : Fork} {config : Config} {checks : SignatureCh
   {e : Execution (honestForkChoice config checks sources anchorState anchorBlock assignment
     genesisTimeMs) J}
 
-/-- The drift of an honest voter set's stake between a call and a later state is within the reserve.
-
-The call reads the pulled-up head state and the current target of an honest store.
-
-The reserve reads the pulled-up head state and the state of the target block.
-
-The later state is on the chain of a block that another honest store holds.
-
-The checkpoint block of that chain for the target's epoch is the target.
-
-The later state is the state of that block, or that state with more slots processed.
-
-It is in the target's epoch or the next one, and within the horizon.
-
-The voters are active at the call's state and not slashed at the later state.
-
-With the count's `margin + quorumReserve`, the reserve cancels against this drift. -/
-def QuorumDriftWithin (horizon : Epoch) (last : ℕ) : Prop :=
-  ∀ u ∈ J, ∀ n (head : Root) (pulled anc : BeaconState preset fork) (target : Checkpoint),
-    (e.world n).time ≤ last →
-    ((e.world n).state u).getPulledUpHeadState config head = .ok pulled →
-    ((e.world n).state u).getCurrentTarget config head = .ok target →
-    ((e.world n).state u).blockStates[target.root]? = some anc →
-    ∀ w ∈ J, ∀ k (root : Root) (rootState state : BeaconState preset fork),
-    (e.world k).time ≤ last → ((e.world k).state w).blockStates[root]? = some rootState →
-    ((e.world k).state w).getCheckpointBlock root target.epoch = .ok target.root →
-    (state = rootState ∨ ∃ slot, processSlots config checks rootState slot = .ok state) →
-    target.epoch ≤ getCurrentEpoch state →
-    (getCurrentEpoch state).toNat ≤ target.epoch.toNat + 1 → getCurrentEpoch state ≤ horizon →
-    ∀ (voters : Finset ValidatorIndex) (total pulledTotal : Gwei),
-    (∀ v ∈ voters, v ∈ activeVoters pulled ∧ (slashedFlagAt state v.toNat).getD false = false) →
-    getTotalActiveBalance state = .ok total → getTotalActiveBalance pulled = .ok pulledTotal →
-    2 * total.toNat + 3 * stake (fun v => balanceAt pulled v.toNat) voters ≤
-      2 * pulledTotal.toNat + 3 * stake (fun v => balanceAt state v.toNat) voters +
-        quorumReserve config pulled anc
-
 /-! ## Slots keep the queue of pending partial withdrawals
 
 From Electra, only two steps of a block write the queue of pending partial withdrawals.

@@ -86,26 +86,6 @@ theorem VoteAt.data_head {anchor : Store preset fork}
   exact ⟨dataSlot.trans atSlot, by simpa [getCurrentEpoch, atSlot] using epoch,
     head, block, headOk, known, dataRoot, blocks head.root block known⟩
 
-/-- A slot at the start of an epoch is at most the first slot of the epoch of each later slot. -/
-theorem le_computeStartSlotAtEpoch_of_isStartSlotAtEpoch {start slot first : Slot}
-    (boundary : isStartSlotAtEpoch preset start = .ok true) (le : start ≤ slot)
-    (firstOk : computeStartSlotAtEpoch preset (computeEpochAtSlot preset slot) = .ok first) :
-    start ≤ first := by
-  have rounded : start / preset.SLOTS_PER_EPOCH * preset.SLOTS_PER_EPOCH = start := by
-    apply epoch_floor_eq_of_sub_eq_zero
-    simpa [isStartSlotAtEpoch, computeSlotsSinceEpochStart,
-      computeStartSlotAtEpoch_computeEpochAtSlot, Except.mapError, bind, Except.bind,
-      pure, Except.pure] using boundary
-  have a := (computeStartSlotAtEpoch_ok_iff.mp
-    (computeStartSlotAtEpoch_computeEpochAtSlot (preset := preset) start)).2
-  rw [rounded] at a
-  simp only [computeEpochAtSlot, UInt64.toNat_div] at a
-  have b := (computeStartSlotAtEpoch_ok_iff.mp firstOk).2
-  simp only [computeEpochAtSlot, UInt64.toNat_div] at b
-  have mono := Nat.mul_le_mul_right preset.SLOTS_PER_EPOCH.toNat
-    (Nat.div_le_div_right (c := preset.SLOTS_PER_EPOCH.toNat) (UInt64.le_iff_toNat_le.mp le))
-  exact UInt64.le_iff_toNat_le.mpr (by omega)
-
 /-- An honest vote names the checkpoint obtained by walking its voter's head.
 
 Some store reachable from the same anchor must hold the target block.
@@ -241,6 +221,22 @@ theorem DelayFits.before_boundary {Δ : ℕ}
   subst start'
   rw [timeEq]
   exact fits.2 slot next start due following nextOk startOk dueOk followingOk
+
+/-- A past slot's attestation deadline plus the delay is at most the current clock.
+
+The slot after the deadline's starts at or before the clock.
+
+A fitting delay puts the deadline plus the delay before the start of that slot. -/
+theorem DelayFits.deadline_add_le {Δ time : ℕ} {slot current : Slot} {clock : UInt64}
+    (fits : DelayFits fork config genesisTimeMs Δ)
+    (deadline : IsAttestationDeadline fork config genesisTimeMs slot time)
+    (currentOk : computeSlotAtTimeMs config genesisTimeMs clock = .ok current)
+    (past : slot < current) : time + Δ ≤ clock.toNat := by
+  have ⟨start, _, startOk, _, _⟩ := deadline
+  obtain ⟨nextOk, following, followingOk, followingLe⟩ :=
+    nextSlotStart_le_of_slotAtTime currentOk past
+  have before := fits.before_boundary nextOk startOk followingOk deadline
+  omega
 
 /-- A fitting delay places the attestation deadline inside each representable slot. -/
 theorem DelayFits.due_lt_slot {Δ : ℕ}
