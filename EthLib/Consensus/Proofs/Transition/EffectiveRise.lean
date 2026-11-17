@@ -1053,41 +1053,6 @@ private theorem rise_pendingDeposits {f : Fork} {s t : BeaconState preset f}
     simp only [UInt64.toNat_zero, Nat.zero_add] at used
     omega
 
-/-- A balance increase adds its amount at its own index and keeps every other balance. -/
-private theorem actualBalanceAt_increaseBalance {fork : Fork} {u w : BeaconState preset fork}
-    {index : ValidatorIndex} {delta : Gwei} (computed : increaseBalance u index delta = .ok w)
-    (j : Nat) : actualBalanceAt ⟨fork, w⟩ j =
-      actualBalanceAt ⟨fork, u⟩ j + if index.toNat = j then delta.toNat else 0 := by
-  cases found : u.balances.data[j]? with
-  | none =>
-    obtain ⟨inside, _, rfl⟩ := increaseBalance_eq_ok_iff.mp computed
-    have apart : index.toNat ≠ j := by
-      rintro rfl
-      rw [Array.getElem?_eq_getElem inside] at found
-      cases found
-    simp [actualBalanceAt, BeaconState.putBalance, found, apart]
-  | some balance =>
-    obtain ⟨raised, located, value⟩ := balance_increaseBalance computed found
-    simp only [actualBalanceAt, found, located, Option.map_some, Option.getD_some, value]
-
-/-- A balance decrease subtracts its amount at its own index and keeps every other balance. -/
-private theorem actualBalanceAt_decreaseBalance {fork : Fork} {u w : BeaconState preset fork}
-    {index : ValidatorIndex} {delta : Gwei} (computed : decreaseBalance u index delta = .ok w)
-    (j : Nat) : actualBalanceAt ⟨fork, w⟩ j =
-      actualBalanceAt ⟨fork, u⟩ j - if index.toNat = j then delta.toNat else 0 := by
-  cases found : u.balances.data[j]? with
-  | none =>
-    obtain ⟨inside, rfl⟩ := decreaseBalance_eq_ok_iff.mp computed
-    have apart : index.toNat ≠ j := by
-      rintro rfl
-      rw [Array.getElem?_eq_getElem inside] at found
-      cases found
-    simp [actualBalanceAt, BeaconState.putBalance, found, apart]
-  | some balance =>
-    obtain ⟨lowered, located, value⟩ := balance_decreaseBalance computed found
-    simp only [actualBalanceAt, found, located, Option.map_some, Option.getD_some, value]
-    split <;> omega
-
 /-- A consolidation moves at most the effective balance of a due source that is not slashed. -/
 private def consolidationGain {f : Fork} (s : BeaconState preset f) (next : Epoch)
     (c : PendingConsolidation) : ℕ :=
