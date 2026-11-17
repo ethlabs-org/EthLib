@@ -317,43 +317,6 @@ private theorem Store.ForwardReachableWith.counted_of_blockState {store : Store 
     · rw [← same, blockKeeps]
       exact countedOther
 
-/-- A justified checkpoint of the store after the anchor's epoch was set anew by one justification.
-
-It is the store's justified checkpoint or its unrealized one.
-
-Either the step ran on a held state, as the store pulls up a tip.
-
-Or it ran in the epoch step of the slots from a held state toward a held child.
-
-That epoch step runs on the cached last slot of an epoch. -/
-theorem Store.ForwardReachableWith.checkpoint_counted {store : Store preset fork}
-    (reached : Store.ForwardReachableWith config checks anchorState anchorBlock store)
-    (sound : Invariant anchorState) {checkpoint : Checkpoint}
-    (field : checkpoint = store.justifiedCheckpoint ∨
-      checkpoint = store.unrealizedJustifiedCheckpoint)
-    (after : getCurrentEpoch anchorState < checkpoint.epoch) :
-    ∃ (root : Root) (base counted pulled : BeaconState preset fork),
-      store.blockStates[root]? = some base ∧
-      (counted = base ∨
-        ∃ (state : BeaconState preset fork) (childRoot : Root) (child : BeaconBlock preset fork),
-          store.blocks[childRoot]? = some child ∧ child.parentRoot = root ∧
-          state.slot < child.slot ∧
-          (state = base ∨ ∃ slot, processSlots config checks base slot = .ok state) ∧
-          (state.slot.toNat + 1) % preset.SLOTS_PER_EPOCH.toNat = 0 ∧
-          processSlot state = .ok counted) ∧
-      processJustificationAndFinalization counted = .ok pulled ∧
-      pulled.currentJustifiedCheckpoint = checkpoint ∧
-      counted.currentJustifiedCheckpoint ≠ checkpoint := by
-  rcases reached.reachable.justified_origins _ field with ⟨_, -, anchored⟩ |
-      ⟨root, state, found, same⟩ | ⟨root, state, pulled, found, pulledOk, same⟩
-  · -- The anchor checkpoint is at the anchor's epoch.
-    rw [anchored] at after
-    exact absurd after (UInt64.lt_irrefl _)
-  · exact reached.counted_of_blockState sound after found same.symm
-  · by_cases kept : state.currentJustifiedCheckpoint = checkpoint
-    · exact reached.counted_of_blockState sound after found kept
-    · exact ⟨root, state, state, pulled, found, .inl rfl, pulledOk, same.symm, kept⟩
-
 /-- The store's justified checkpoint after the anchor's epoch was set anew by one justification.
 
 Either the step ran on a held state, as the store pulls up a tip.
@@ -376,8 +339,16 @@ theorem Store.ForwardReachableWith.justified_counted {store : Store preset fork}
           processSlot state = .ok counted) ∧
       processJustificationAndFinalization counted = .ok pulled ∧
       pulled.currentJustifiedCheckpoint = store.justifiedCheckpoint ∧
-      counted.currentJustifiedCheckpoint ≠ store.justifiedCheckpoint :=
-  reached.checkpoint_counted sound (.inl rfl) after
+      counted.currentJustifiedCheckpoint ≠ store.justifiedCheckpoint := by
+  rcases reached.reachable.justified_origins _ (.inl rfl) with ⟨_, -, anchored⟩ |
+      ⟨root, state, found, same⟩ | ⟨root, state, pulled, found, pulledOk, same⟩
+  · -- The anchor checkpoint is at the anchor's epoch.
+    rw [anchored] at after
+    exact absurd after (UInt64.lt_irrefl _)
+  · exact reached.counted_of_blockState sound after found same.symm
+  · by_cases kept : state.currentJustifiedCheckpoint = store.justifiedCheckpoint
+    · exact reached.counted_of_blockState sound after found kept
+    · exact ⟨root, state, state, pulled, found, .inl rfl, pulledOk, same.symm, kept⟩
 
 /-- Caching a slot keeps the root read at an earlier slot that stays in the buffer of roots.
 

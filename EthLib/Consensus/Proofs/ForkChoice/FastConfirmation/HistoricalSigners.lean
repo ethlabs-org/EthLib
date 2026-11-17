@@ -88,9 +88,7 @@ private theorem counted_stake_large {anchor : Store preset fork} {g : ForkedBeac
       early pre (enough w honest k bound) genesis held childFound parent before path boundary
       countedOk later upper
 
-/-- A justified checkpoint of an up-to-date honest store after an epoch has a signer in a set.
-
-The checkpoint is the store's justified checkpoint or its unrealized one.
+/-- The justified checkpoint of an up-to-date honest store after an epoch has a signer in a set.
 
 The epoch is at or after the anchor's.
 
@@ -130,22 +128,20 @@ theorem Execution.exists_signer_of_counted (V : Set ValidatorIndex) [DecidablePr
     (afterAnchor : getCurrentEpoch anchorState ≤ epoch)
     {w : ValidatorIndex} (honest : w ∈ J) {k : ℕ} (high : (e.world k).time ≤ last)
     {slot : Slot} (slotOk : ((e.world k).state w).getCurrentSlot config = .ok slot)
-    {checkpoint : Checkpoint}
-    (field : checkpoint = ((e.world k).state w).justifiedCheckpoint ∨
-      checkpoint = ((e.world k).state w).unrealizedJustifiedCheckpoint)
-    (later : epoch < checkpoint.epoch)
+    (later : epoch < ((e.world k).state w).justifiedCheckpoint.epoch)
     (few : ∀ (counted : BeaconState preset fork) (total : Gwei),
       CountedState ((e.world k).state w) config counted →
-      checkpoint.epoch ≤ getCurrentEpoch counted →
-      (getCurrentEpoch counted).toNat ≤ checkpoint.epoch.toNat + 1 →
+      ((e.world k).state w).justifiedCheckpoint.epoch ≤ getCurrentEpoch counted →
+      (getCurrentEpoch counted).toNat ≤ ((e.world k).state w).justifiedCheckpoint.epoch.toNat + 1 →
       getCurrentEpoch counted ≤ computeEpochAtSlot preset slot →
-      getBlockRoot counted checkpoint.epoch = .ok checkpoint.root →
+      getBlockRoot counted ((e.world k).state w).justifiedCheckpoint.epoch =
+        .ok ((e.world k).state w).justifiedCheckpoint.root →
       getTotalActiveBalance counted = .ok total →
       3 * stake (fun v => balanceAt counted v.toNat) {v ∈ quorumVoters counted | v ∉ V} <
         2 * total.toNat) :
     ∃ v ∈ V, ∃ i, (e.world i).time ≤ (e.world k).time ∧ ∃ m ∈ (e.world i).sent, ∃ data,
       (v, data) ∈ statements config checks anchorState anchorBlock m ∧
-      data.target = checkpoint ∧ data.slot < slot := by
+      data.target = ((e.world k).state w).justifiedCheckpoint ∧ data.slot < slot := by
   have reached := e.forwardReachableWith
     (fun u hu => (start u hu) ▸ Store.ForwardReachableWith.anchor anchored) k w honest
   obtain ⟨sound, anchorEarly, -⟩ := DirectSafety.run_justified_separated pre genesis
@@ -157,14 +153,15 @@ theorem Execution.exists_signer_of_counted (V : Set ValidatorIndex) [DecidablePr
   have afterNat := UInt64.lt_iff_toNat_lt.mp later
   have anchorNat := UInt64.le_iff_toNat_le.mp afterAnchor
   obtain ⟨root, base, counted, pulled, held, shape, pulledOk, pulledC, changed⟩ :=
-    reached.checkpoint_counted sound field (UInt64.lt_iff_toNat_lt.mpr (by omega))
+    reached.justified_counted sound (UInt64.lt_iff_toNat_lt.mpr (by omega))
   -- The count moved the checkpoint, to the counting state's current or previous epoch.
   have moved : pulled.currentJustifiedCheckpoint ≠ counted.currentJustifiedCheckpoint :=
     fun same => changed (same.symm.trans pulledC)
   obtain ⟨countedLater, countedEpoch, rootRead⟩ : GENESIS_EPOCH + 1 < getCurrentEpoch counted ∧
-      ((getCurrentEpoch counted).toNat ≤ checkpoint.epoch.toNat + 1 ∧
-        checkpoint.epoch.toNat ≤ (getCurrentEpoch counted).toNat) ∧
-      getBlockRoot counted checkpoint.epoch = .ok checkpoint.root := by
+      ((getCurrentEpoch counted).toNat ≤ ((e.world k).state w).justifiedCheckpoint.epoch.toNat + 1 ∧
+        ((e.world k).state w).justifiedCheckpoint.epoch.toNat ≤ (getCurrentEpoch counted).toNat) ∧
+      getBlockRoot counted ((e.world k).state w).justifiedCheckpoint.epoch =
+        .ok ((e.world k).state w).justifiedCheckpoint.root := by
     rcases processJustificationAndFinalization_reads pulledOk with ⟨-, same⟩ |
       ⟨late, _, _, _, _, _, _, _, _, _, _, weighed⟩
     · exact (moved (same ▸ rfl)).elim
@@ -184,11 +181,8 @@ theorem Execution.exists_signer_of_counted (V : Set ValidatorIndex) [DecidablePr
   have epochOk : ((e.world k).state w).getCurrentStoreEpoch config =
       .ok (computeEpochAtSlot preset slot) := by
     simp [Store.getCurrentStoreEpoch, slotOk, bind, Except.bind, pure, Except.pure]
-  have checkpointBound : checkpoint.epoch ≤ computeEpochAtSlot preset slot := by
-    have bounds := reached.forwardReachable.justified_epoch_le_current sound slots
-      (UInt64.le_of_eq anchorSlot) epochOk
-    rcases field with rfl | rfl
-    exacts [bounds.1, bounds.2]
+  have checkpointBound := (reached.forwardReachable.justified_epoch_le_current sound slots
+    (UInt64.le_of_eq anchorSlot) epochOk).1
   have horizonBound := bounded w honest k _ high epochOk
   have upper : (getCurrentEpoch counted).toNat ≤ horizon.toNat + 1 := by
     have := UInt64.le_iff_toNat_le.mp checkpointBound
@@ -245,7 +239,8 @@ theorem Execution.exists_signer_of_counted (V : Set ValidatorIndex) [DecidablePr
     · exact few counted total ⟨root, counted, held, .inl rfl⟩ countedEpoch.2 countedEpoch.1
         countedNow rootRead totalOk
     · -- The state before caching reads the checkpoint's root too, less than a buffer back.
-      have stateRoot : getBlockRoot state checkpoint.epoch = .ok checkpoint.root := by
+      have stateRoot : getBlockRoot state ((e.world k).state w).justifiedCheckpoint.epoch =
+          .ok ((e.world k).state w).justifiedCheckpoint.root := by
         obtain ⟨start, startOk, startRead⟩ := getBlockRoot_ok_iff.mp rootRead
         refine getBlockRoot_ok_iff.mpr ⟨start, startOk,
           getBlockRootAtSlot_of_processSlot countedOk startRead ?_⟩
@@ -357,7 +352,7 @@ theorem Execution.justifiedHonestlySigned [DecidablePred (· ∈ J)] {anchor : S
   intro w honest k slot low high upToDate slotOk later
   exact e.exists_signer_of_counted J anchored start anchorSlot anchorHeader anchorZero slots
     parameters delay genesis pre roots absent heldEarly bounded enough terminal afterAnchor honest
-    high slotOk (.inl rfl) later
+    high slotOk later
     fun counted total counts atLeast _ _ _ totalOk =>
       byzantine w honest k counted total low high upToDate counts
         (UInt64.lt_of_lt_of_le later atLeast) totalOk
