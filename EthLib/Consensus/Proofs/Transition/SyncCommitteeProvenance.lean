@@ -953,6 +953,13 @@ theorem processBlockExecution_currentSyncCommittee {body : BeaconBlockBody prese
     after.currentSyncCommittee altair = state.currentSyncCommittee altair :=
   congrFun (SameSyncCommittees.processBlockExecution ok).1 altair
 
+/-- A block retains the current sync committee. -/
+theorem processBlock_currentSyncCommittee {block : BeaconBlock preset fork}
+    {engine : ExecutionEngine preset fork} (altair : .altair ≤ fork)
+    (ok : processBlock config checks engine state block = .ok after) :
+    after.currentSyncCommittee altair = state.currentSyncCommittee altair :=
+  congrFun (SameSyncCommittees.processBlock ok).1 altair
+
 /-- Every current and next sync committee key in a run from genesis belongs to its registry. -/
 theorem Run.syncCommittee_keys {g x : ForkedBeaconState preset} (run : Run config checks g x)
     (genesis : Genesis (config := config) (checks := checks) g) (altair : .altair ≤ x.fork) :
