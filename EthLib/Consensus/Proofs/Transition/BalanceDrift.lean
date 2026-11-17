@@ -107,7 +107,7 @@ theorem effectiveKept_data {f h : Fork} {s : BeaconState preset f}
   intro i _
   simp only [effectiveAt, same]
 
-theorem effectiveKept_setValidatorAt {f : Fork} {s t : BeaconState preset f}
+private theorem effectiveKept_setValidatorAt {f : Fork} {s t : BeaconState preset f}
     {index : Nat} {old v : Validator} (found : getValidatorAt s index = .ok old)
     (set : s.setValidatorAt index v = .ok t)
     (same : v.effectiveBalance = old.effectiveBalance) : EffectiveKept s t := by
