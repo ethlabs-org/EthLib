@@ -11,6 +11,7 @@ import Mathlib.Algebra.BigOperators.Ring.Finset
 import EthLib.Consensus.Proofs.Transition.ActiveKept
 import EthLib.Consensus.Proofs.Transition.EpochPassAtCall
 import EthLib.Consensus.Proofs.Transition.Totality.FlagsActive
+import EthLib.Consensus.Proofs.Transition.SlashedPersistence
 import EthLib.Consensus.Proofs.Transition.BlockRewards
 import EthLib.Consensus.Proofs.Transition.Committees
 import EthLib.Consensus.Proofs.Transition.ForkBoundary
@@ -324,139 +325,149 @@ section Lives
 
 variable {fork : Fork} {s u t : BeaconState preset fork}
 
-/-- One validator later inside an epoch keeps its slashed flag and its activation epoch.
+/-- Once the exit of a validator is set, its withdrawable epoch only rises.
 
-It keeps its exit epoch once set, and its withdrawable epoch while unslashed with its exit set. -/
+It moves only when the later record is slashed.
+
+The states may be of different forks.
+
+Reader: EffectiveRise. -/
+def WithdrawableKept {f g : Fork} (s : BeaconState preset f) (t : BeaconState preset g) : Prop :=
+  ∀ (i : ℕ) (v w : Validator), s.validators.data[i]? = some v → t.validators.data[i]? = some w →
+    v.exitEpoch ≠ FAR_FUTURE_EPOCH →
+      v.withdrawableEpoch ≤ w.withdrawableEpoch ∧
+        (w.slashed = true ∨ w.withdrawableEpoch = v.withdrawableEpoch)
+
+/-- One validator later inside an epoch keeps its activation epoch.
+
+Once its exit is set, its withdrawable epoch only rises, and moves only when it is slashed.
+
+Its slashed flag and its exit epoch are read from master's frame and lifecycle. -/
 private structure Later (old w : Validator) : Prop where
-  slashed : old.slashed = true → w.slashed = true
   activation : w.activationEpoch = old.activationEpoch
-  exit : old.exitEpoch ≠ FAR_FUTURE_EPOCH → w.exitEpoch = old.exitEpoch
-  withdrawable : w.slashed = false → old.exitEpoch ≠ FAR_FUTURE_EPOCH →
-    w.withdrawableEpoch = old.withdrawableEpoch
+  withdrawable : old.exitEpoch ≠ FAR_FUTURE_EPOCH →
+    old.withdrawableEpoch ≤ w.withdrawableEpoch ∧
+      (w.slashed = true ∨ w.withdrawableEpoch = old.withdrawableEpoch)
 
 /-- Every validator is later than itself. -/
-private theorem Later.refl (v : Validator) : Later v v := ⟨id, rfl, fun _ => rfl, fun _ _ => rfl⟩
+private theorem Later.refl (v : Validator) : Later v v :=
+  ⟨rfl, fun _ => ⟨UInt64.le_refl _, .inr rfl⟩⟩
 
-/-- Two later steps make one. -/
-private theorem Later.trans {a b c : Validator} (one : Later a b) (two : Later b c) :
-    Later a c where
-  slashed h := two.slashed (one.slashed h)
+/-- Two later steps make one, given the exit kept by the first and the slash kept by the second. -/
+private theorem Later.trans {a b c : Validator} (one : Later a b) (two : Later b c)
+    (exit : a.exitEpoch ≠ FAR_FUTURE_EPOCH → b.exitEpoch = a.exitEpoch)
+    (slashed : b.slashed = true → c.slashed = true) : Later a c where
   activation := two.activation.trans one.activation
-  exit h := (two.exit (by rw [one.exit h]; exact h)).trans (one.exit h)
-  withdrawable h far := by
-    have mid : b.slashed = false := by
-      cases hb : b.slashed
-      · rfl
-      · rw [two.slashed hb] at h; cases h
-    have farB : b.exitEpoch ≠ FAR_FUTURE_EPOCH := by rw [one.exit far]; exact far
-    rw [two.withdrawable h farB, one.withdrawable mid far]
+  withdrawable far := by
+    obtain ⟨le, moved⟩ := one.withdrawable far
+    obtain ⟨le', moved'⟩ := two.withdrawable (by rw [exit far]; exact far)
+    refine ⟨UInt64.le_trans le le', ?_⟩
+    rcases moved' with flag | same'
+    · exact .inl flag
+    · rcases moved with flag | same
+      · exact .inl (slashed flag)
+      · exact .inr (same'.trans same)
 
 /-- A later registry inside an epoch keeps each old validator later.
 
 Its new validators are not activated. -/
 private structure Lives (s t : BeaconState preset fork) : Prop where
-  size_le : s.validators.data.size ≤ t.validators.data.size
-  validators : ∀ (index : ℕ) old, s.validators.data[index]? = some old →
-    ∃ w, t.validators.data[index]? = some w ∧ Later old w
+  later : ∀ (index : ℕ) old w, s.validators.data[index]? = some old →
+    t.validators.data[index]? = some w → Later old w
   fresh : ∀ (index : ℕ) w, s.validators.data[index]? = none →
     t.validators.data[index]? = some w → w.activationEpoch = FAR_FUTURE_EPOCH
 
+/-- The withdrawable epochs of a later registry. -/
+private theorem Lives.withdrawableKept (lives : Lives s t) : WithdrawableKept s t :=
+  fun i v w found read far => (lives.later i v w found read).withdrawable far
+
 /-- Every state lives on in itself. -/
 private theorem Lives.refl (s : BeaconState preset fork) : Lives s s :=
-  ⟨Nat.le_refl _, fun _ old found => ⟨old, found, .refl old⟩,
+  ⟨fun _ old w found read => by rw [found, Option.some.injEq] at read; exact read ▸ .refl old,
     fun _ _ none found => by rw [none] at found; cases found⟩
 
-/-- Two later registries make one. -/
-private theorem Lives.trans (one : Lives s u) (two : Lives u t) : Lives s t where
-  size_le := Nat.le_trans one.size_le two.size_le
-  validators index old found := by
-    obtain ⟨middle, middleFound, first⟩ := one.validators index old found
-    obtain ⟨later, laterFound, second⟩ := two.validators index middle middleFound
-    exact ⟨later, laterFound, first.trans second⟩
+/-- Two later registries make one.
+
+The exits of the first come from master's lifecycle, and the slashes of the second from its frame. -/
+private theorem Lives.trans (one : Lives s u) (two : Lives u t) (life : RegistryLifecycle s u)
+    (slashed : SlashedPersistence u t) : Lives s t where
+  later index old w found read := by
+    obtain ⟨middle, middleFound, kept⟩ := life.validators index old found
+    exact (one.later index old middle found middleFound).trans
+      (two.later index middle w middleFound read) kept.exitEpoch fun flag => by
+        obtain ⟨w', read', marked⟩ := slashed index middle middleFound flag
+        rw [read, Option.some.injEq] at read'
+        exact read' ▸ marked
   fresh index w none found := by
     cases middle : u.validators.data[index]? with
     | none => exact two.fresh index w middle found
     | some m =>
-      obtain ⟨later, laterFound, step⟩ := two.validators index m middle
-      rw [found] at laterFound
-      cases laterFound
-      rw [step.activation]
+      rw [(two.later index m w middle found).activation]
       exact one.fresh index m none middle
+
+/-- A registry that keeps every old position lives on, when its new validators are not active. -/
+private theorem Lives.of_prefix
+    (same : ∀ (index : ℕ) old, s.validators.data[index]? = some old →
+      t.validators.data[index]? = some old)
+    (fresh : ∀ (index : ℕ) w, s.validators.data[index]? = none →
+      t.validators.data[index]? = some w → w.activationEpoch = FAR_FUTURE_EPOCH) : Lives s t :=
+  ⟨fun index old w found read => by
+    rw [same index old found, Option.some.injEq] at read; exact read ▸ .refl old, fresh⟩
 
 /-- A state with the same validators lives on. -/
 private theorem Lives.of_data (same : t.validators.data = s.validators.data) : Lives s t :=
-  ⟨Nat.le_of_eq (by rw [same]), fun _ old found => ⟨old, by rw [same]; exact found, .refl old⟩,
-    fun _ _ none found => by rw [same, none] at found; cases found⟩
+  Lives.of_prefix (fun _ _ found => by rw [same]; exact found)
+    (fun _ _ none found => by rw [same, none] at found; cases found)
 
-/-- A fold whose every step lives on does too. -/
+/-- A step before a state with the same validators. -/
+private theorem Lives.of_data_left (same : u.validators.data = s.validators.data)
+    (two : Lives u t) : Lives s t :=
+  ⟨fun index old w found => two.later index old w (by rw [same]; exact found),
+    fun index w none => two.fresh index w (by rw [same]; exact none)⟩
+
+/-- A step after a state with the same validators. -/
+private theorem Lives.of_data_right (one : Lives s u)
+    (same : t.validators.data = u.validators.data) : Lives s t :=
+  ⟨fun index old w found read => one.later index old w found (by rw [← same]; exact read),
+    fun index w none read => one.fresh index w none (by rw [← same]; exact read)⟩
+
+/-- A fold whose steps live on, keep master's lifecycle and keep each slash, does all three. -/
 private theorem Lives.foldlM {α ε : Type} {step : BeaconState preset fork → α → Except ε _}
-    (each : ∀ a x b, step a x = .ok b → Lives a b) {items : List α}
+    (each : ∀ a x b, step a x = .ok b →
+      Lives a b ∧ RegistryLifecycle a b ∧ SlashedPersistence a b) {items : List α}
     (computed : items.foldlM step s = .ok t) : Lives s t :=
-  foldlM_ok_invariant (Lives s) (fun _ _ _ before ok => before.trans (each _ _ _ ok))
-    (Lives.refl s) computed
-
-/-- Replacing a validator by one later than it. -/
-private theorem Lives.putValidator {index : Nat} {validator : Validator}
-    (inside : index < s.validators.data.size)
-    (step : Later s.validators.data[index] validator) :
-    Lives s (s.putValidator index inside validator) where
-  size_le := by simp [BeaconState.putValidator]
-  validators other old found := by
-    simp only [BeaconState.putValidator, Serialization.Ssz.RootedForkList.data_set,
-      Array.getElem?_set]
-    split
-    · rename_i same
-      subst same
-      have equal : s.validators.data[index] = old := by
-        rw [Array.getElem?_eq_getElem inside] at found
-        exact Option.some.inj found
-      exact ⟨validator, by simp, equal ▸ step⟩
-    · exact ⟨old, found, .refl _⟩
-  fresh other w none found := by
-    simp only [BeaconState.putValidator, Serialization.Ssz.RootedForkList.data_set,
-      Array.getElem?_set] at found
-    split at found
-    · rename_i same
-      subst same
-      rw [Array.getElem?_eq_getElem inside] at none
-      cases none
-    · rw [none] at found
-      cases found
+  (foldlM_ok_invariant (fun b => Lives s b ∧ RegistryLifecycle s b)
+    (fun _ _ _ before ok => by
+      obtain ⟨lives, life, slashed⟩ := each _ _ _ ok
+      exact ⟨before.1.trans lives before.2 slashed, before.2.trans life⟩)
+    ⟨Lives.refl s, .refl s⟩ computed).1
 
 /-- Replacing a validator, read by its index, by one later than it. -/
 private theorem Lives.setValidator {index : ValidatorIndex} {old validator : Validator}
     (found : getValidator s index = .ok old) (set : s.setValidator index validator = .ok t)
     (step : Later old validator) : Lives s t := by
   obtain ⟨inside, rfl⟩ := setValidator_ok set
-  refine Lives.putValidator inside ?_
   have read : s.validators.data[index.toNat]? = some old := getValidator_eq_ok_iff.mp found
-  rw [Array.getElem?_eq_getElem inside] at read
-  exact Option.some.inj read ▸ step
-
-/-- Appending a validator that is not activated. -/
-private theorem Lives.append {validator : Validator}
-    (added : t.validators.data = s.validators.data.push validator)
-    (pending : validator.activationEpoch = FAR_FUTURE_EPOCH) : Lives s t where
-  size_le := by simp [added]
-  validators index old found := by
-    have inside := (Array.getElem?_eq_some_iff.mp found).1
-    refine ⟨old, ?_, .refl _⟩
-    simpa [added, Array.getElem?_push, Nat.ne_of_lt inside] using found
-  fresh index w none found := by
-    rw [added, Array.getElem?_push] at found
-    split at found
-    · cases found
-      exact pending
-    · rw [none] at found
-      cases found
-
-private theorem lives_increaseBalance {index : ValidatorIndex} {delta : Gwei}
-    (computed : increaseBalance s index delta = .ok t) : Lives s t :=
-  Lives.of_data (by rw [increaseBalance_validators computed])
-
-private theorem lives_decreaseBalance {index : ValidatorIndex} {delta : Gwei}
-    (computed : decreaseBalance s index delta = .ok t) : Lives s t :=
-  Lives.of_data (by rw [decreaseBalance_validators computed])
+  refine ⟨fun other v w found' read' => ?_, fun other w none read' => ?_⟩
+  · simp only [BeaconState.putValidator, Serialization.Ssz.RootedForkList.data_set,
+      Array.getElem?_set] at read'
+    split at read'
+    · rename_i same
+      subst same
+      rw [read, Option.some.injEq] at found'
+      cases Option.some.inj read'
+      exact found' ▸ step
+    · rw [found', Option.some.injEq] at read'
+      exact read' ▸ .refl v
+  · simp only [BeaconState.putValidator, Serialization.Ssz.RootedForkList.data_set,
+      Array.getElem?_set] at read'
+    split at read'
+    · rename_i same
+      subst same
+      rw [read] at none
+      cases none
+    · rw [none] at read'
+      cases read'
 
 private theorem lives_initiateValidatorExit {index : ValidatorIndex}
     (computed : initiateValidatorExit config s index = .ok t) : Lives s t := by
@@ -464,24 +475,36 @@ private theorem lives_initiateValidatorExit {index : ValidatorIndex}
     initiateValidatorExit_ok computed
   · exact Lives.refl _
   · have same := (exitQueue_validators queue).1
-    exact (Lives.of_data (by rw [same])).trans <|
+    exact Lives.of_data_left (by rw [same]) <|
       Lives.setValidator ((getValidator_of_validators_eq same index).trans found) set
-        ⟨id, rfl, fun set => absurd far set, fun _ set => absurd far set⟩
+        ⟨rfl, fun set => absurd far set⟩
 
 private theorem lives_slashValidator {slashedIndex : ValidatorIndex}
     {whistleblowerIndex : Option ValidatorIndex}
     (computed : slashValidator config s slashedIndex whistleblowerIndex = .ok t) : Lives s t := by
-  simp only [slashValidator, bind_ok_iff, liftArith, mapError_ok_iff] at computed
-  obtain ⟨exited, exitedOk, validator, found, delay, _, marked, markedOk, _, _, _, _, _, _,
-    lowered, loweredOk,
-    proposer, _, _, _, raised, raisedOk, last, lastOk, done⟩ := computed
-  exact (lives_initiateValidatorExit exitedOk).trans <|
-    ((Lives.setValidator found markedOk
-      ⟨fun _ => rfl, rfl, fun _ => rfl, fun h _ => by simp at h⟩).trans
-        (by exact Lives.of_data rfl)).trans <|
-    (lives_decreaseBalance loweredOk).trans <|
-    (lives_increaseBalance raisedOk).trans <|
-    (lives_increaseBalance lastOk).trans (Lives.of_data (by rw [(slashValidator_last done).1]))
+  obtain ⟨exited, validator, withdrawal, marked, _, _, _, _, _, _, _, last, exitedOk,
+    found, _, markedOk, _, _, _, lowered, _, _, raised, final, done⟩ := slashValidator_ok computed
+  have same := (slashValidator_last (last := last) (after := t) (index := slashedIndex)
+    (by subst done; rfl)).1.trans ((increaseBalance_validators final).trans
+    ((increaseBalance_validators raised).trans (decreaseBalance_validators lowered)))
+  have later : validator.withdrawableEpoch ≤ max validator.withdrawableEpoch withdrawal := by
+    rw [UInt64.max_def]
+    split
+    · assumption
+    · exact UInt64.le_refl _
+  -- The write marks the validator, so every slash stays.
+  have slashed : SlashedPersistence exited marked := by
+    obtain ⟨inside, rfl⟩ := setValidator_ok markedOk
+    intro j x read flag
+    simp only [BeaconState.putValidator, Serialization.Ssz.RootedForkList.data_set,
+      Array.getElem?_set]
+    split
+    · exact ⟨_, rfl, rfl⟩
+    · exact ⟨x, read, flag⟩
+  exact ((lives_initiateValidatorExit exitedOk).trans
+    (Lives.setValidator found markedOk ⟨rfl, fun _ => ⟨later, .inl rfl⟩⟩)
+    (registryLifecycle_initiateValidatorExit exitedOk) slashed).of_data_right
+      (congrArg (·.data) same)
 
 private theorem lives_processProposerSlashing {slashing : ProposerSlashing}
     (computed : processProposerSlashing config checks s slashing = .ok t) : Lives s t := by
@@ -507,21 +530,24 @@ private theorem lives_processAttesterSlashing {slashing : AttesterSlashing prese
   simp only [processAttesterSlashing, bind_ok_iff, ensure_ok_iff, pure, Except.pure,
     Except.ok.injEq] at computed
   obtain ⟨_, _, _, _, _, _, _, _, _, _, _, folded, _, _, rfl⟩ := computed
-  exact foldlM_ok_invariant (fun step => Lives s step.1)
-    (fun _ _ _ before ok => before.trans (lives_slashIfSlashable ok))
-    (show Lives s (s, false).1 from Lives.refl s) folded
+  exact (foldlM_ok_invariant (fun step => Lives s step.1 ∧ RegistryLifecycle s step.1)
+    (fun _ _ _ before ok => ⟨before.1.trans (lives_slashIfSlashable ok) before.2
+        (.of_frame (frame_slashIfSlashable ok).toFrame),
+      before.2.trans (registryLifecycle_slashIfSlashable ok)⟩)
+    (show Lives s (s, false).1 ∧ RegistryLifecycle s (s, false).1 from
+      ⟨Lives.refl s, .refl s⟩) folded).1
 
-private theorem lives_addValidatorToRegistry {pubkey : Cryptography.Bls.BLSPubkey}
-    {withdrawalCredentials : Bytes32} {amount : Gwei}
-    (computed : addValidatorToRegistry s pubkey withdrawalCredentials amount = .ok t) :
-    Lives s t := by
-  exact Lives.append (addValidatorToRegistry_validators_eq_push computed) rfl
-
+/-- From Electra a deposit keeps every old validator, and master's `UnassignedKept` reads the new
+one. -/
 private theorem lives_processDeposit {before : fork < .hegota} {deposit : Deposit}
     (electra : .pectra ≤ fork)
     (computed : processDeposit config checks before s deposit = .ok t) : Lives s t := by
+  refine Lives.of_prefix ?_ fun index w none read =>
+    (UnassignedKept.processDeposit computed s.validators.data.size (unassignedFrom_size s) index w
+      (Nat.le_of_not_lt fun inside => by
+        rw [Array.getElem?_eq_getElem inside] at none; cases none) read).1
   obtain ⟨_, _, next, _, applied⟩ := processDeposit_ok computed
-  refine (Lives.of_data (s := s) (t := { s with eth1DepositIndex := fun _ => next }) rfl).trans ?_
+  intro index old found
   unfold applyDeposit at applied
   simp only [electra, ↓reduceDIte] at applied
   unfold applyDepositElectra at applied
@@ -532,11 +558,13 @@ private theorem lives_processDeposit {before : fork < .hegota} {deposit : Deposi
     · simp only [bind_ok_iff, liftAccessor_ok] at applied
       obtain ⟨_, added, pushed⟩ := applied
       obtain ⟨_, rfl⟩ := addPendingDeposit_eq pushed
-      exact (lives_addValidatorToRegistry added).trans (Lives.of_data rfl)
+      have inside := (Array.getElem?_eq_some_iff.mp found).1
+      simpa [addValidatorToRegistry_validators_eq_push added, Array.getElem?_push,
+        Nat.ne_of_lt inside] using found
     · cases applied
-      exact Lives.refl _
+      exact found
   · obtain ⟨_, rfl⟩ := addPendingDeposit_eq (liftAccessor_ok.mp applied)
-    exact Lives.of_data rfl
+    exact found
 
 private theorem lives_processVoluntaryExit {signed : SignedVoluntaryExit}
     (computed : processVoluntaryExit config checks s signed = .ok t) : Lives s t := by
@@ -544,24 +572,6 @@ private theorem lives_processVoluntaryExit {signed : SignedVoluntaryExit}
   simp only [bind_ok_iff, ensure_ok_iff, liftAccessor_ok, liftSsz_ok] at computed
   obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, exited⟩ := computed
   exact lives_initiateValidatorExit exited
-
-private theorem lives_processDepositRequest {electra : .pectra ≤ fork} {request : DepositRequest}
-    (computed : processDepositRequest s electra request = .ok t) : Lives s t := by
-  obtain ⟨start, recorded⟩ := recordDepositRequestsStart_eq (state := s) (index := request.index)
-  simp only [processDepositRequest, recorded, liftAccessor_ok, addPendingDeposit, bind_ok_iff,
-    pure, Except.pure, Except.ok.injEq] at computed
-  obtain ⟨_, _, rfl⟩ := computed
-  exact Lives.of_data rfl
-
-private theorem lives_computeExitEpochAndUpdateChurn {electra : .pectra ≤ fork}
-    {exitBalance : Gwei} {epoch : Epoch}
-    (computed : computeExitEpochAndUpdateChurn config s electra exitBalance = .ok (t, epoch)) :
-    Lives s t := by
-  simp only [computeExitEpochAndUpdateChurn, bind_ok_iff, pure, Except.pure,
-    Except.ok.injEq] at computed
-  obtain ⟨_, _, _, _, _, _, computed⟩ := computed
-  cases computed
-  exact Lives.of_data rfl
 
 private theorem lives_requestPartialWithdrawal {electra : .pectra ≤ fork}
     {index : ValidatorIndex} {validator : Validator} {amount owed : Gwei}
@@ -572,7 +582,7 @@ private theorem lives_requestPartialWithdrawal {electra : .pectra ≤ fork}
   split at computed
   · simp only [bind_ok_iff, liftAccessor_ok, Except.ok.injEq] at computed
     obtain ⟨⟨_, _⟩, churned, _, _, _, _, rfl⟩ := computed
-    exact (lives_computeExitEpochAndUpdateChurn churned).trans (Lives.of_data rfl)
+    exact Lives.of_data (by rw [(computeExitEpochAndUpdateChurn_earliest churned).2.1])
   · cases computed
     exact Lives.refl _
 
@@ -588,25 +598,13 @@ private theorem lives_processWithdrawalRequest {electra : .pectra ≤ fork}
     | exact lives_initiateValidatorExit (liftAccessor_ok.mp computed)
     | exact lives_requestPartialWithdrawal computed
 
-private theorem lives_queueExcessActiveBalance {electra : .pectra ≤ fork} {index : ValidatorIndex}
-    (computed : queueExcessActiveBalance s electra index = .ok t) : Lives s t := by
-  simp only [queueExcessActiveBalance, bind_ok_iff] at computed
-  obtain ⟨_, _, computed⟩ := computed
-  split at computed
-  · simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at computed
-    obtain ⟨_, _, _, _, _, set, rfl⟩ := computed
-    obtain ⟨_, rfl⟩ := setBalance_ok set
-    exact Lives.of_data rfl
-  · cases computed
-    exact Lives.refl _
-
 private theorem lives_switchToCompoundingValidator {electra : .pectra ≤ fork}
     {index : ValidatorIndex}
     (computed : switchToCompoundingValidator s electra index = .ok t) : Lives s t := by
   simp only [switchToCompoundingValidator, bind_ok_iff] at computed
   obtain ⟨validator, found, _, set, queued⟩ := computed
-  exact (Lives.setValidator found set ⟨id, rfl, fun _ => rfl, fun _ _ => rfl⟩).trans
-    (lives_queueExcessActiveBalance queued)
+  exact (Lives.setValidator found set ⟨rfl, fun _ => ⟨UInt64.le_refl _, .inr rfl⟩⟩).of_data_right
+    (congrArg (·.data) (queueExcessActiveBalance_validators queued))
 
 private theorem lives_queueConsolidation {electra : .pectra ≤ fork} {sourceIndex : ValidatorIndex}
     {source : Validator} {targetIndex : ValidatorIndex}
@@ -620,15 +618,10 @@ private theorem lives_queueConsolidation {electra : .pectra ≤ fork} {sourceInd
     computed
   simp only [Except.ok.injEq] at computed
   subst computed
-  have same : churnedState.validators.data = s.validators.data := by
-    simp only [computeConsolidationEpochAndUpdateChurn, bind_ok_iff, pure, Except.pure,
-      Except.ok.injEq] at churned
-    obtain ⟨_, _, _, _, _, _, churned⟩ := churned
-    cases churned
-    rfl
-  exact (Lives.of_data same).trans <|
-    (Lives.setValidator (old := source) (by simp [getValidator, same, found]) set
-      ⟨id, rfl, fun set => absurd far set, fun _ set => absurd far set⟩).trans (Lives.of_data rfl)
+  have same := congrArg (·.data) (computeConsolidationEpochAndUpdateChurn_earliest churned).2.1
+  exact (Lives.of_data_left same <|
+    Lives.setValidator (old := source) (by simp [getValidator, same, found]) set
+      ⟨rfl, fun set => absurd far set⟩).of_data_right rfl
 
 private theorem lives_processConsolidationRequest {electra : .pectra ≤ fork}
     {request : ConsolidationRequest}
@@ -648,9 +641,22 @@ private theorem lives_processExecutionRequests {body : BeaconBlockBody preset fo
     (computed : processExecutionRequests config s body electra = .ok t) : Lives s t := by
   simp only [processExecutionRequests, bind_ok_iff, ← Array.foldlM_toList] at computed
   obtain ⟨_, depositsOk, _, withdrawalsOk, consolidationsOk⟩ := computed
-  exact (Lives.foldlM (fun _ _ _ ok => lives_processDepositRequest ok) depositsOk).trans <|
-    (Lives.foldlM (fun _ _ _ ok => lives_processWithdrawalRequest ok) withdrawalsOk).trans <|
-    Lives.foldlM (fun _ _ _ ok => lives_processConsolidationRequest ok) consolidationsOk
+  -- The deposit requests only queue, so they keep the registry.
+  have deposits := foldlM_ok_invariant
+    (fun u : BeaconState preset fork => u.validators = s.validators)
+    (fun _ _ _ before ok => (processDepositRequest_ok ok).2.1.trans before) rfl depositsOk
+  have withdrawals := Lives.foldlM (fun _ _ _ ok => ⟨lives_processWithdrawalRequest ok,
+    registryLifecycle_processWithdrawalRequest ok,
+    .of_frame (frame_processWithdrawalRequest ok).toFrame⟩)
+    withdrawalsOk
+  have consolidations := Lives.foldlM (fun _ _ _ ok => ⟨lives_processConsolidationRequest ok,
+    registryLifecycle_processConsolidationRequest ok,
+    .of_frame (frame_processConsolidationRequest ok).toFrame⟩) consolidationsOk
+  exact Lives.of_data_left (congrArg (·.data) deposits) <| withdrawals.trans consolidations
+    (RegistryLifecycle.foldlM (fun _ _ _ ok => registryLifecycle_processWithdrawalRequest ok)
+      withdrawalsOk)
+    (.of_frame (Frame.foldlM (fun _ _ _ ok => (frame_processConsolidationRequest ok).toFrame)
+      consolidationsOk))
 
 /-- A validator that a slashing could still slash at an epoch, or whose exit is unset. -/
 private def Eligible (E : Epoch) (w : Validator) : Prop :=
@@ -669,8 +675,11 @@ private theorem eligible_of_slashable {E : Epoch} {w : Validator}
   rw [UInt64.lt_iff_toNat_lt] at before ⊢
   omega
 
-/-- An eligible validator of a later registry was eligible before. -/
-private theorem Lives.back (lives : Lives s t) {E : Epoch} {i : ℕ} {w : Validator}
+/-- An eligible validator of a later registry was eligible before.
+
+Its slashed flag comes from master's frame and its exit epoch from master's lifecycle. -/
+private theorem Lives.back (lives : Lives s t) (life : RegistryLifecycle s t)
+    (slashed : SlashedPersistence s t) {E : Epoch} {i : ℕ} {w : Validator}
     (found : t.validators.data[i]? = some w) (eligible : Eligible E w) :
     ∃ old, s.validators.data[i]? = some old ∧ Eligible E old := by
   obtain ⟨unslashed, active, below, window⟩ := eligible
@@ -680,20 +689,25 @@ private theorem Lives.back (lives : Lives s t) {E : Epoch} {i : ℕ} {w : Valida
     rw [pending] at active
     exact absurd (UInt64.lt_of_le_of_lt active below) (UInt64.lt_irrefl _)
   | some old =>
-    obtain ⟨later, laterFound, step⟩ := lives.validators i old read
+    have step := lives.later i old w read found
+    obtain ⟨later, laterFound, kept⟩ := life.validators i old read
     rw [found] at laterFound
     cases laterFound
     refine ⟨old, rfl, ?_, step.activation ▸ active, below, ?_⟩
     · cases flag : old.slashed
       · rfl
-      · rw [step.slashed flag] at unslashed; cases unslashed
+      · obtain ⟨w', read', marked⟩ := slashed i old read flag
+        rw [found, Option.some.injEq] at read'
+        rw [read', marked] at unslashed; cases unslashed
     · by_cases far : old.exitEpoch = FAR_FUTURE_EPOCH
       · exact Or.inl far
       · right
         rcases window with exitFar | early
-        · exact absurd ((step.exit far).symm.trans exitFar) far
-        · rw [← step.withdrawable unslashed far]
-          exact early
+        · exact absurd ((kept.exitEpoch far).symm.trans exitFar) far
+        · obtain ⟨-, moved⟩ := step.withdrawable far
+          rcases moved with flag | same
+          · rw [flag] at unslashed; cases unslashed
+          · rw [← same]; exact early
 
 end Lives
 
@@ -1221,7 +1235,8 @@ private theorem ledger_foldSlashIfSlashable {r : BeaconState preset fork}
           rw [← epoch]
           exact eligible_of_slashable slashable
         · obtain ⟨entry, entryRead, entryEligible⟩ := eligibles v inside
-          exact (lives_slashValidator slashed).back entryRead entryEligible
+          exact (lives_slashValidator slashed).back (registryLifecycle_slashValidator slashed)
+            (.of_frame (frame_slashValidator slashed).toFrame) entryRead entryEligible
       · have both := one.trans two
         rw [add_zero] at both
         refine both.mono ∅ (subset_refl _) (fun v => ?_) (fun v => ?_)
@@ -2625,15 +2640,18 @@ private structure Kept (s t : BeaconState preset fork) : Prop where
   inputs : PayloadInputs s t
   keeps : StepKeeps s t
   effective : EffectiveKept s t
+  lifecycle : RegistryLifecycle s t
   lives : Lives s t
 
 private theorem Kept.refl (s : BeaconState preset fork) : Kept s s :=
-  ⟨Frame.refl s, PayloadInputs.refl s, StepKeeps.refl s, effectiveKept_refl s, Lives.refl s⟩
+  ⟨Frame.refl s, PayloadInputs.refl s, StepKeeps.refl s, effectiveKept_refl s, .refl s,
+    Lives.refl s⟩
 
 private theorem Kept.trans (one : Kept s u) (two : Kept u t) : Kept s t :=
   ⟨one.frame.trans two.frame, one.inputs.trans two.inputs, one.keeps.trans two.keeps,
     effectiveKept_trans one.effective two.effective one.keeps.1,
-    one.lives.trans two.lives⟩
+    one.lifecycle.trans two.lifecycle,
+    one.lives.trans two.lives one.lifecycle (.of_frame two.frame)⟩
 
 /-- A step that keeps the slot, activity up to the fixed epoch and effective balances. -/
 private structure Steady (s t : BeaconState preset fork) : Prop where
@@ -2738,19 +2756,21 @@ private theorem kept_processProposerSlashing {slashing : ProposerSlashing}
     (computed : processProposerSlashing config checks s slashing = .ok t) : Kept s t :=
   ⟨(frame_processProposerSlashing computed).toFrame, payloadInputs_processProposerSlashing computed,
     stepKeeps_processProposerSlashing computed, effectiveKept_proposerSlashing computed,
-    lives_processProposerSlashing computed⟩
+    registryLifecycle_processProposerSlashing computed, lives_processProposerSlashing computed⟩
 
 private theorem kept_processAttesterSlashing {slashing : AttesterSlashing preset fork}
     (computed : processAttesterSlashing config checks s slashing = .ok t) : Kept s t :=
   ⟨(frame_processAttesterSlashing computed).toFrame,
     payloadInputs_processAttesterSlashing computed, stepKeeps_processAttesterSlashing computed,
-    effectiveKept_attesterSlashing computed, lives_processAttesterSlashing computed⟩
+    effectiveKept_attesterSlashing computed, registryLifecycle_processAttesterSlashing computed,
+    lives_processAttesterSlashing computed⟩
 
 private theorem kept_processAttestation {attestation : Attestation preset fork} {parent : Slot}
     (computed : processAttestation config checks s parent attestation = .ok t) : Kept s t :=
   ⟨frame_processAttestation computed, payloadInputs_processAttestation computed,
     stepKeeps_processAttestation computed,
     effectiveKept_data (by rw [(processAttestation_registry computed).1]),
+    registryLifecycle_processAttestation computed,
     Lives.of_data (by rw [(processAttestation_registry computed).1])⟩
 
 /-- A new validator keeps the inputs of a payload. -/
@@ -2796,13 +2816,13 @@ private theorem kept_processDeposit {before : fork < .hegota} {deposit : Deposit
     Kept s t :=
   ⟨(frame_processDeposit computed).toFrame, payloadInputs_processDeposit' electra computed,
     stepKeeps_processDeposit computed, effectiveKept_processDeposit computed,
-    lives_processDeposit electra computed⟩
+    registryLifecycle_processDeposit computed, lives_processDeposit electra computed⟩
 
 private theorem kept_processVoluntaryExit {signed : SignedVoluntaryExit}
     (computed : processVoluntaryExit config checks s signed = .ok t) : Kept s t :=
   ⟨(frame_processVoluntaryExit computed).toFrame, payloadInputs_processVoluntaryExit computed,
     stepKeeps_processVoluntaryExit computed, effectiveKept_voluntaryExit computed,
-    lives_processVoluntaryExit computed⟩
+    registryLifecycle_processVoluntaryExit computed, lives_processVoluntaryExit computed⟩
 
 private theorem kept_processBlsToExecutionChanges {body : BeaconBlockBody preset fork}
     (computed : processBlsToExecutionChanges config checks s body = .ok t) : Kept s t := by
@@ -2811,9 +2831,10 @@ private theorem kept_processBlsToExecutionChanges {body : BeaconBlockBody preset
   · rw [← Array.foldlM_toList] at computed
     exact Kept.foldlM (fun _ _ _ ok => ⟨(frame_processBlsToExecutionChange ok).toFrame,
       payloadInputs_processBlsToExecutionChange ok, stepKeeps_processBlsToExecutionChange ok,
-      effectiveKept_blsChange ok,
+      effectiveKept_blsChange ok, registryLifecycle_processBlsToExecutionChange ok,
       (by obtain ⟨validator, found, _, _, _, set⟩ := processBlsToExecutionChange_ok ok
-          exact Lives.setValidator found set ⟨id, rfl, fun _ => rfl, fun _ _ => rfl⟩)⟩) computed
+          exact Lives.setValidator found set ⟨rfl, fun _ => ⟨UInt64.le_refl _, .inr rfl⟩⟩)⟩)
+      computed
   · cases computed; exact Kept.refl _
 
 private theorem kept_processExecutionRequests {body : BeaconBlockBody preset fork}
@@ -2830,7 +2851,7 @@ private theorem kept_processExecutionRequests {body : BeaconBlockBody preset for
         consolidations
   exact ⟨(frame_processExecutionRequests computed).toFrame, inputs,
     stepKeeps_processExecutionRequests computed, effectiveKept_requests computed,
-    lives_processExecutionRequests computed⟩
+    registryLifecycle_processExecutionRequests computed, lives_processExecutionRequests computed⟩
 
 end KeptSteps
 
@@ -3022,7 +3043,7 @@ private theorem Credited.trans {proposer proposer' : ValidatorIndex} {credit cre
       have epoch : getCurrentEpoch u = getCurrentEpoch o := by
         simp only [getCurrentEpoch, one.kept.inputs.slot]
       rw [epoch] at eligible
-      exact one.kept.lives.back found eligible
+      exact one.kept.lives.back one.kept.lifecycle (.of_frame one.kept.frame) found eligible
 
 /-- A fold of steps that each credit like operations, and convert nothing, does so too. -/
 private theorem Credited.foldlM {α ε : Type} {step : BeaconState preset fork → α → Except ε _}
@@ -3289,6 +3310,7 @@ private theorem kept_processSyncAggregate {altair : .altair ≤ fork}
   ⟨(frame_processSyncAggregate computed).toFrame, payloadInputs_processSyncAggregate computed,
     stepKeeps_processSyncAggregate computed,
     effectiveKept_data (congrArg (·.data) (processSyncAggregate_kept computed).1),
+    .of_data (by rw [(processSyncAggregate_kept computed).1]),
     Lives.of_data (by rw [(processSyncAggregate_kept computed).1])⟩
 
 /-- The balances of a block from Fulu and before Gloas, read at each validator.
@@ -3332,7 +3354,7 @@ private theorem block_balances {engine : ExecutionEngine preset fork}
         (∀ i, s.validators.data.size ≤ i → base i = 0) →
         credit * proposerDenominator + flagPotential s altair base count ≤
           flagPotential t altair base count) ∧
-      Lives s t ∧
+      Lives s t ∧ RegistryLifecycle s t ∧
       (∀ v ∈ slashed, ∃ old, s.validators.data[v.toNat]? = some old ∧
         Eligible (getCurrentEpoch s) old) := by
   have altair : .altair ≤ fork := Nat.le_trans (by decide) fulu
@@ -3404,7 +3426,7 @@ private theorem block_balances {engine : ExecutionEngine preset fork}
     0 + other + fun v => if v = proposer' then share else 0, 0 + slash + 0,
     if 0 < share then proposer' else proposer, credit, share,
     (toVoted.trans ops.ledger).trans syncLedger, by simpa [capella] using paidCount,
-    by simpa using convCount, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩
+    by simpa using convCount, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩
   · intro v
     have first := ops.credited v
     have sumSame : ∑ x ∈ slashed, effectiveAt ⟨fork, operated⟩ x.toNat /
@@ -3462,7 +3484,10 @@ private theorem block_balances {engine : ExecutionEngine preset fork}
       support i (Nat.le_trans frameVoted.registryGrows
         (Nat.le_trans ops.kept.frame.registryGrows outside))
     omega
-  · exact (Lives.of_data votedValidators).trans (ops.kept.lives.trans syncKept.lives)
+  · exact Lives.of_data_left votedValidators
+      (ops.kept.lives.trans syncKept.lives ops.kept.lifecycle (.of_frame syncKept.frame))
+  · exact (RegistryLifecycle.of_data votedValidators).trans
+      (ops.kept.lifecycle.trans syncKept.lifecycle)
   · intro v member
     obtain ⟨old, found, eligible⟩ := ops.eligible v member
     have epoch : getCurrentEpoch voted = getCurrentEpoch s := by
@@ -3718,6 +3743,8 @@ private structure Tally (a s : BeaconState preset fork) (n : ℕ)
   propsPos : props.Nonempty → 0 < credits ∨ 0 < shares ∨ sl.Nonempty
   perIncrement : 0 < n → PerIncrementRead a
   lives : Lives a s
+  life : RegistryLifecycle a s
+  persists : SlashedPersistence a s
   eligible : ∀ v ∈ sl, ∃ old, a.validators.data[v.toNat]? = some old ∧
     Eligible (getCurrentEpoch a) old
 
@@ -3743,6 +3770,8 @@ private theorem Tally.start (a : BeaconState preset fork) (matched : BalancesMat
   propsPos h := absurd h (by simp)
   perIncrement h := absurd h (Nat.lt_irrefl 0)
   lives := Lives.refl a
+  life := .refl a
+  persists := .refl a
   eligible v member := absurd member (Finset.notMem_empty v)
 
 /-- A slot step inside the epoch keeps the tally. -/
@@ -3757,7 +3786,9 @@ private theorem Tally.slot {a s cached : BeaconState preset fork} {next : Slot} 
   exact { tally with
     within := { tally.within with epoch := epoch.trans tally.within.epoch
                                   active := tally.within.active }
-    lives := tally.lives.trans (Lives.of_data rfl) }
+    lives := tally.lives.of_data_right rfl
+    life := tally.life.trans (.of_data rfl)
+    persists := tally.persists.trans (.of_data rfl) }
 
 /-- A block from Fulu and before Gloas extends the tally by one block. -/
 private theorem Tally.block {a s t : BeaconState preset fork} {engine : ExecutionEngine preset fork}
@@ -3769,7 +3800,7 @@ private theorem Tally.block {a s t : BeaconState preset fork} {engine : Executio
     ∃ (deb' conv' props' sl' : Finset ValidatorIndex) (pc' : ValidatorIndex → ℕ)
       (credits' shares' : ℕ), Tally a t (n + 1) deb' conv' props' sl' pc' credits' shares' := by
   obtain ⟨paid, cv, slashed, sync, other, slash, proposer, credit, share, ledger,
-    paidCard, convCard, credited, penalized, newly, rewards, perRead, potential, livesB,
+    paidCard, convCard, credited, penalized, newly, rewards, perRead, potential, livesB, lifeB,
     eligibleB⟩ := block_balances early fulu tally.matched computed
   have altair : .altair ≤ fork := Nat.le_trans (by decide) fulu
   have frame := frame_processBlock computed
@@ -3840,7 +3871,9 @@ private theorem Tally.block {a s t : BeaconState preset fork} {engine : Executio
       perIncrement := fun _ => by
         obtain ⟨total, per, totalValue, perOk, perValue⟩ := perRead
         exact ⟨total, per, totalValue.trans tally.within.activeTotal, perOk, perValue⟩
-      lives := tally.lives.trans livesB
+      lives := tally.lives.trans livesB tally.life (.of_frame frame)
+      life := tally.life.trans lifeB
+      persists := tally.persists.trans (.of_frame frame)
       eligible := ?_ }⟩
   · have one := Finset.card_union_le deb (paid ∪ cv)
     have two := Finset.card_union_le paid cv
@@ -3972,7 +4005,7 @@ private theorem Tally.block {a s t : BeaconState preset fork} {engine : Executio
     · exact tally.eligible v old
     · obtain ⟨w, found, eligible⟩ := eligibleB v fresh
       rw [tally.within.epoch] at eligible
-      exact tally.lives.back found eligible
+      exact tally.lives.back tally.life tally.persists found eligible
 
 /-- The flags of one byte weigh at most the sum of all flag weights, `54`. -/
 private theorem flagWeight_le (flags : ParticipationFlags) : flagWeight flags ≤ 54 := by
@@ -4014,6 +4047,48 @@ private theorem sum_div_le_div_sum {α : Type} (S : Finset α) (f : α → ℕ) 
       exact Nat.add_le_add (Nat.div_mul_le_self _ _) (Nat.div_mul_le_self _ _)
 
 end Epoch
+
+/-- The tally of a run inside one epoch, from Fulu and before Gloas, read at its last state. -/
+private theorem Run.tally {F : Fork} {a : BeaconState preset F} {y : ForkedBeaconState preset}
+    (tail : Run config checks ⟨F, a⟩ y) (early : y.fork < .glamsterdam)
+    (same : getCurrentEpoch y.state = getCurrentEpoch a) (matched : BalancesMatch a) :
+    ∃ b : BeaconState preset F, y = ⟨F, b⟩ ∧
+      (.fusaka ≤ F → ∃ (deb conv props sl : Finset ValidatorIndex) (pc : ValidatorIndex → ℕ)
+        (credits shares : ℕ), Tally a b tail.blockCount deb conv props sl pc credits shares) :=
+    Run.induction_of_same_epoch (fun z pre => ∃ s : BeaconState preset F, z = ⟨F, s⟩ ∧
+      (.fusaka ≤ F → ∃ (deb conv props sl : Finset ValidatorIndex) (pc : ValidatorIndex → ℕ)
+        (credits shares : ℕ), Tally a s pre.blockCount deb conv props sl pc credits shares))
+      ⟨a, rfl, fun _ => ⟨_, _, _, _, _, _, _, by simpa [Run.blockCount] using Tally.start a matched⟩⟩
+      (fun engine signed due ok pre early prior => by
+        obtain ⟨_, eq, prior⟩ := prior
+        cases eq
+        refine ⟨_, rfl, fun fulu => ?_⟩
+        obtain ⟨_, _, _, _, _, _, _, tally⟩ := prior fulu
+        exact tally.block early fulu (applySignedBlock_ok ok).2.1)
+      (fun pre ok last computed epoch prior => by
+        have count : (pre.snoc (.slot ok)).blockCount = pre.blockCount := rfl
+        generalize pre.snoc (.slot ok) = run at count ⊢
+        clear ok
+        obtain ⟨_, rfl, prior⟩ := prior
+        subst last
+        rw [count]
+        exact ⟨_, rfl, fun fulu => by
+          obtain ⟨_, _, _, _, _, _, _, tally⟩ := prior fulu
+          exact ⟨_, _, _, _, _, _, _, tally.slot computed epoch⟩⟩)
+      tail early same
+
+/-- Inside one epoch, from Fulu and before Gloas, the withdrawable epoch of each set exit only
+rises, and moves only for a slashed validator.
+
+Reader: EffectiveRise. -/
+theorem Run.withdrawableKept_of_same_epoch {x y : ForkedBeaconState preset}
+    (tail : Run config checks x y) (early : y.fork < .glamsterdam) (fulu : .fusaka ≤ y.fork)
+    (same : getCurrentEpoch y.state = getCurrentEpoch x.state) (matched : BalancesMatch x.state) :
+    WithdrawableKept x.state y.state := by
+  obtain ⟨F, a⟩ := x
+  obtain ⟨b, rfl, tallied⟩ := Run.tally tail early same matched
+  obtain ⟨_, _, _, _, _, _, _, tally⟩ := tallied fulu
+  exact tally.lives.withdrawableKept
 
 /-! ## The branch corrections -/
 
@@ -4133,28 +4208,7 @@ theorem branchCorrections {x y : ForkedBeaconState preset} (tail : Run config ch
             withdrawalMaxEffectiveBalance preset x.fork validator) ∧
       x.fork = y.fork ∧ EffectiveKept x.state y.state := by
   obtain ⟨F, a⟩ := x
-  obtain ⟨b, rfl, tallied⟩ :=
-    Run.induction_of_same_epoch (fun z pre => ∃ s : BeaconState preset F, z = ⟨F, s⟩ ∧
-      (.fusaka ≤ F → ∃ (deb conv props sl : Finset ValidatorIndex) (pc : ValidatorIndex → ℕ)
-        (credits shares : ℕ), Tally a s pre.blockCount deb conv props sl pc credits shares))
-      ⟨a, rfl, fun _ => ⟨_, _, _, _, _, _, _, by simpa [Run.blockCount] using Tally.start a matched⟩⟩
-      (fun engine signed due ok pre early prior => by
-        obtain ⟨_, eq, prior⟩ := prior
-        cases eq
-        refine ⟨_, rfl, fun fulu => ?_⟩
-        obtain ⟨_, _, _, _, _, _, _, tally⟩ := prior fulu
-        exact tally.block early fulu (applySignedBlock_ok ok).2.1)
-      (fun pre ok last computed epoch prior => by
-        have count : (pre.snoc (.slot ok)).blockCount = pre.blockCount := rfl
-        generalize pre.snoc (.slot ok) = run at count ⊢
-        clear ok
-        obtain ⟨_, rfl, prior⟩ := prior
-        subst last
-        rw [count]
-        exact ⟨_, rfl, fun fulu => by
-          obtain ⟨_, _, _, _, _, _, _, tally⟩ := prior fulu
-          exact ⟨_, _, _, _, _, _, _, tally.slot computed epoch⟩⟩)
-      tail early same
+  obtain ⟨b, rfl, tallied⟩ := Run.tally tail early same matched
   obtain ⟨deb, conv, props, sl, pc, credits, shares, tally⟩ := tallied fulu
   intro state inc slots p positions validator effective current before recent slashed total root
     perIncrement base seatReward seats sync syncProposer proposerCredit whistleblowerP slashBack
@@ -4360,5 +4414,85 @@ theorem branchCorrections {x y : ForkedBeaconState preset} (tail : Run config ch
     exact ⟨later, foundB,
       by simp only [withdrawalMaxEffectiveBalance, getMaxEffectiveBalance, same]⟩
 
+
+/-- The same registry keeps every withdrawable epoch. -/
+private theorem WithdrawableKept.of_data {f g : Fork} {s : BeaconState preset f}
+    {t : BeaconState preset g} (same : t.validators.data = s.validators.data) :
+    WithdrawableKept s t := by
+  intro i v w found read _
+  rw [same, found, Option.some.injEq] at read
+  exact read ▸ ⟨UInt64.le_refl _, .inr rfl⟩
+
+/-- Steps compose, given master's lifecycle of the first and the slashes the second keeps. -/
+private theorem WithdrawableKept.trans {f : Fork} {s u t : BeaconState preset f}
+    (one : WithdrawableKept s u) (two : WithdrawableKept u t) (life : RegistryLifecycle s u)
+    (slashed : SlashedPersistence u t) : WithdrawableKept s t := by
+  intro i v w found read far
+  obtain ⟨x, middle, kept⟩ := life.validators i v found
+  obtain ⟨le, moved⟩ := one i v x found middle far
+  obtain ⟨le', moved'⟩ := two i x w middle read (by rw [kept.exitEpoch far]; exact far)
+  refine ⟨UInt64.le_trans le le', ?_⟩
+  rcases moved' with flag | same'
+  · exact .inl flag
+  · rcases moved with flag | same
+    · obtain ⟨w', read', marked⟩ := slashed i x middle flag
+      rw [read, Option.some.injEq] at read'
+      exact .inl (read' ▸ marked)
+    · exact .inr (same'.trans same)
+
+/-- A write at a position that keeps the withdrawable epoch of an assigned exit. -/
+private theorem WithdrawableKept.setAt {f : Fork} {s t : BeaconState preset f} {i : ℕ}
+    {old v : Validator} (found : getValidatorAt s i = .ok old)
+    (set : s.setValidatorAt i v = .ok t)
+    (step : old.exitEpoch ≠ FAR_FUTURE_EPOCH → old.withdrawableEpoch ≤ v.withdrawableEpoch ∧
+      (v.slashed = true ∨ v.withdrawableEpoch = old.withdrawableEpoch)) :
+    WithdrawableKept s t := by
+  obtain ⟨inside, rfl⟩ := setValidatorAt_ok set
+  intro j u w read read' far
+  simp only [BeaconState.putValidator, Serialization.Ssz.RootedForkList.data_set,
+    Array.getElem?_set] at read'
+  split at read'
+  · rename_i here
+    subst here
+    rw [getValidatorAt_eq_ok_iff.mp found, Option.some.injEq] at read
+    subst read
+    cases read'
+    exact step far
+  · rw [read, Option.some.injEq] at read'
+    exact read' ▸ ⟨UInt64.le_refl _, .inr rfl⟩
+
+/-- From Electra, the registry updates keep the withdrawable epochs of assigned exits.
+
+Reader: EffectiveRise. -/
+theorem withdrawableKept_processRegistryUpdates {f : Fork} {s t : BeaconState preset f}
+    (electra : .pectra ≤ f) (ok : processRegistryUpdates config s = .ok t) :
+    WithdrawableKept s t := by
+  unfold processRegistryUpdates at ok
+  simp only [electra, ↓reduceIte] at ok
+  obtain ⟨_, _, folded⟩ := bind_ok_iff.mp ok
+  refine (foldlM_ok_invariant (fun u => RegistryLifecycle s u ∧ WithdrawableKept s u)
+    (fun u _ w prior ok => ?_) ⟨RegistryLifecycle.refl s, .of_data rfl⟩ folded).2
+  have frame := frame_updateRegistryEntryElectra ok
+  have entry : RegistryLifecycle u w ∧ WithdrawableKept u w := by
+    simp only [updateRegistryEntryElectra, bind_ok_iff, liftAccessor_ok] at ok
+    obtain ⟨v, found, ok⟩ := ok
+    split at ok
+    · simp only [bind_ok_iff, liftAccessor_ok] at ok
+      obtain ⟨_, _, written⟩ := ok
+      exact ⟨.setValidatorAt found written ⟨fun _ => rfl, fun _ => rfl⟩,
+        .setAt found written fun _ => ⟨UInt64.le_refl _, .inr rfl⟩⟩
+    split at ok
+    · simp only [bind_ok_iff, liftAccessor_ok] at ok
+      obtain ⟨_, _, exited⟩ := ok
+      exact ⟨registryLifecycle_initiateValidatorExit exited,
+        (lives_initiateValidatorExit exited).withdrawableKept⟩
+    split at ok
+    · rename_i eligible
+      have far := activationEpoch_of_isEligibleForActivation eligible
+      have written := liftAccessor_ok.mp ok
+      exact ⟨.setValidatorAt found written ⟨fun set => absurd far set, fun _ => rfl⟩,
+        .setAt found written fun _ => ⟨UInt64.le_refl _, .inr rfl⟩⟩
+    · cases ok; exact ⟨RegistryLifecycle.refl _, .of_data rfl⟩
+  exact ⟨prior.1.trans entry.1, prior.2.trans entry.2 prior.1 (.of_frame frame.toFrame)⟩
 
 end EthLib.Consensus
