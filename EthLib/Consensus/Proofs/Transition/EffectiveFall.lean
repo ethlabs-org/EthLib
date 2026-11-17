@@ -732,13 +732,6 @@ private theorem syncFold_floor {j : Nat} {reward proposerReward : Nat} {chosen :
       | (rw [Nat.add_mul, Nat.one_mul]; omega)
       | omega
 
-/-- The first parts of a zip are a sublist of the first list. -/
-private theorem zip_fst_sublist {α β : Type} :
-    ∀ (first : List α) (second : List β), ((first.zip second).map Prod.fst).Sublist first
-  | [], _ => by simp
-  | _ :: _, [] => by simp
-  | a :: first, _ :: second => by simpa using (zip_fst_sublist first second).cons_cons a
-
 /-- From Altair, the sync aggregate lowers the balance of a validator by at most the participant
 reward for each of its seats in the current committee. -/
 private theorem syncAggregate_floor {f : Fork} {s t : BeaconState preset f}
@@ -768,8 +761,8 @@ private theorem syncAggregate_floor {f : Fork} {s t : BeaconState preset f}
     have counted := members_count_le found onList
     have prefixed : ((members.zip aggregate.syncCommitteeBits.bits.toArray).toList.map
         Prod.fst).Sublist members.toList := by
-      rw [Array.toList_zip]
-      exact zip_fst_sublist _ _
+      rw [Array.toList_zip, List.zip_eq_zip_take_min, List.map_fst_zip (by simp)]
+      exact List.take_sublist _ _
     have sub := (prefixed.filter (·.toNat = index)).length_le
     rw [List.filter_map, List.length_map] at sub
     exact sub.trans counted
