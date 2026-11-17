@@ -39,6 +39,10 @@ Not yet released.
 
 ### Changes that break callers
 
+- `DirectSafety.same_epoch_histories` is removed, because nothing reads it.
+  `DirectSafety.view_same_epoch` replaces it: pass the two quorum calls as `.inl` quorums of the realized views.
+  `DirectSafety.accountable_justified_unique_terminal` covers its one use, in `accountable_justified_unique`.
+
 - The transaction, inclusion and network-form errors carry the values that their failed check compared.
   Each code keeps its meaning, and each error fires on the same inputs as before.
   The messages of transaction and inclusion errors name each value, as `(name := value)`, with hashes and addresses in hex.
