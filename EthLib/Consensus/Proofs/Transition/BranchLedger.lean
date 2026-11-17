@@ -11,6 +11,7 @@ import Mathlib.Algebra.BigOperators.Ring.Finset
 import EthLib.Consensus.Proofs.Transition.ActiveKept
 import EthLib.Consensus.Proofs.Transition.EpochPassAtCall
 import EthLib.Consensus.Proofs.Transition.Totality.FlagsActive
+import EthLib.Consensus.Proofs.Transition.Totality.SupplyBlock
 import EthLib.Consensus.Proofs.Transition.SlashedPersistence
 import EthLib.Consensus.Proofs.Transition.BlockRewards
 import EthLib.Consensus.Proofs.Transition.Committees
@@ -1826,17 +1827,34 @@ end Steps
 
 /-! ### The participation flags behind the proposer rewards of attestations -/
 
-/-- The weight of the flags that a byte of participation flags has set. -/
-private def flagWeight (flags : ParticipationFlags) : ℕ :=
-  ((List.finRange PARTICIPATION_FLAG_WEIGHTS.length).map fun flag =>
-    if hasFlag flags flag.val.toUInt64 then PARTICIPATION_FLAG_WEIGHTS[flag].toNat else 0).sum
-
 /-- The flags of both epochs at the first positions, each weighed by a base reward. -/
 private def flagPotential {fork : Fork} (s : BeaconState preset fork) (altair : .altair ≤ fork)
     (base : ℕ → ℕ) (count : ℕ) : ℕ :=
-  ∑ i ∈ Finset.range count, base i *
-    (flagWeight (((s.previousEpochParticipation altair).data[i]?).getD 0) +
-      flagWeight (((s.currentEpochParticipation altair).data[i]?).getD 0))
+  flagSumOf base count (s.previousEpochParticipation altair) +
+    flagSumOf base count (s.currentEpochParticipation altair)
+
+/-- A missing entry weighs as the empty flags, which weigh nothing. -/
+private theorem flagTerm (flags : Option ParticipationFlags) (base : ℕ) :
+    (flags.map (flagValue · base)).getD 0 = flagValue (flags.getD 0) base := by
+  cases flags with
+  | none =>
+    have empty : ∀ flag : Fin PARTICIPATION_FLAG_WEIGHTS.length,
+        hasFlag 0 flag.val.toUInt64 = false := by decide
+    simp [flagValue, empty]
+  | some flags => rfl
+
+/-- More flags weigh at least as much. -/
+private theorem flagValue_mono {a b : ParticipationFlags} (base : ℕ)
+    (more : ∀ flag : Fin PARTICIPATION_FLAG_WEIGHTS.length,
+      hasFlag a flag.val.toUInt64 = true → hasFlag b flag.val.toUInt64 = true) :
+    flagValue a base ≤ flagValue b base := by
+  unfold flagValue
+  apply List.sum_le_sum
+  intro flag _
+  by_cases set : hasFlag a flag.val.toUInt64 = true
+  · simp [set, more flag set]
+  · simp only [Bool.not_eq_true] at set
+    simp [set]
 
 /-- No flag is cleared, in either epoch. -/
 private def FlagsGrow {fork : Fork} (s t : BeaconState preset fork) : Prop :=
@@ -1858,23 +1876,12 @@ private theorem FlagsGrow.trans {fork : Fork} {s u t : BeaconState preset fork}
 private theorem flagPotential_mono {fork : Fork} {s t : BeaconState preset fork}
     (grow : FlagsGrow s t) (altair : .altair ≤ fork) (base : ℕ → ℕ) (count : ℕ) :
     flagPotential s altair base count ≤ flagPotential t altair base count := by
-  unfold flagPotential
-  apply Finset.sum_le_sum
-  intro i _
-  apply Nat.mul_le_mul_left
-  have weight (a b : ParticipationFlags)
-      (more : ∀ flag : Fin PARTICIPATION_FLAG_WEIGHTS.length,
-        hasFlag a flag.val.toUInt64 = true → hasFlag b flag.val.toUInt64 = true) :
-      flagWeight a ≤ flagWeight b := by
-    unfold flagWeight
-    apply List.sum_le_sum
-    intro flag _
-    by_cases set : hasFlag a flag.val.toUInt64 = true
-    · simp [set, more flag set]
-    · simp only [Bool.not_eq_true] at set
-      simp [set]
-  exact Nat.add_le_add (weight _ _ fun flag => (grow altair i flag).1)
-    (weight _ _ fun flag => (grow altair i flag).2)
+  unfold flagPotential flagSumOf
+  refine Nat.add_le_add (List.sum_le_sum fun i _ => ?_) (List.sum_le_sum fun i _ => ?_)
+  · rw [flagTerm, flagTerm]
+    exact flagValue_mono _ fun flag => (grow altair i flag).1
+  · rw [flagTerm, flagTerm]
+    exact flagValue_mono _ fun flag => (grow altair i flag).2
 
 /-- No flag of an existing validator is cleared, in either epoch. -/
 private def FlagsGrowBelow {fork : Fork} (s t : BeaconState preset fork) : Prop :=
@@ -1902,26 +1909,16 @@ private theorem flagPotential_mono_below {fork : Fork} {s t : BeaconState preset
     (grow : FlagsGrowBelow s t) (altair : .altair ≤ fork) (base : ℕ → ℕ) (count : ℕ)
     (support : ∀ i, s.validators.data.size ≤ i → base i = 0) :
     flagPotential s altair base count ≤ flagPotential t altair base count := by
-  unfold flagPotential
-  apply Finset.sum_le_sum
-  intro i _
-  by_cases inside : i < s.validators.data.size
-  · apply Nat.mul_le_mul_left
-    have weight (a b : ParticipationFlags)
-        (more : ∀ flag : Fin PARTICIPATION_FLAG_WEIGHTS.length,
-          hasFlag a flag.val.toUInt64 = true → hasFlag b flag.val.toUInt64 = true) :
-        flagWeight a ≤ flagWeight b := by
-      unfold flagWeight
-      apply List.sum_le_sum
-      intro flag _
-      by_cases set : hasFlag a flag.val.toUInt64 = true
-      · simp [set, more flag set]
-      · simp only [Bool.not_eq_true] at set
-        simp [set]
-    exact Nat.add_le_add (weight _ _ fun flag => (grow altair i flag inside).1)
-      (weight _ _ fun flag => (grow altair i flag inside).2)
-  · rw [support i (Nat.le_of_not_lt inside)]
-    simp
+  unfold flagPotential flagSumOf
+  refine Nat.add_le_add (List.sum_le_sum fun i _ => ?_) (List.sum_le_sum fun i _ => ?_)
+  all_goals
+    rw [flagTerm, flagTerm]
+    by_cases inside : i < s.validators.data.size
+    · first
+        | exact flagValue_mono _ fun flag => (grow altair i flag inside).1
+        | exact flagValue_mono _ fun flag => (grow altair i flag inside).2
+    · rw [support i (Nat.le_of_not_lt inside)]
+      simp [flagValue]
 
 section Grow
 
@@ -2161,170 +2158,27 @@ private theorem grow_processAttesterSlashing {slashing : AttesterSlashing preset
     (fun _ _ _ before ok => FlagsGrow.trans before (grow_slashIfSlashable ok))
     (show FlagsGrow s (s, false).1 from FlagsGrow.refl s) folded
 
-/-- Adding a flag that was not set adds its weight. -/
-private theorem flagWeight_addFlag {flags : ParticipationFlags}
-    {added : Fin PARTICIPATION_FLAG_WEIGHTS.length}
-    (unset : hasFlag flags added.val.toUInt64 = false) :
-    flagWeight (addFlag flags added.val.toUInt64) =
-      flagWeight flags + PARTICIPATION_FLAG_WEIGHTS[added].toNat := by
-  have self := hasFlag_addFlag flags added.val.toUInt64
-  have other : ∀ flag : Fin PARTICIPATION_FLAG_WEIGHTS.length, flag ≠ added →
-      hasFlag (addFlag flags added.val.toUInt64) flag.val.toUInt64 =
-        hasFlag flags flag.val.toUInt64 := fun _ different => hasFlag_addFlag_of_ne flags different
-  unfold flagWeight
-  have range : List.finRange PARTICIPATION_FLAG_WEIGHTS.length =
-      [⟨0, by decide⟩, ⟨1, by decide⟩, ⟨2, by decide⟩] := by decide
-  rw [range]
-  match added with
-  | ⟨0, _⟩ =>
-    have one := other ⟨1, by decide⟩ (by simp)
-    have two := other ⟨2, by decide⟩ (by simp)
-    simp only at self one two unset
-    simp only [List.map_cons, List.map_nil, List.sum_cons, List.sum_nil, self, one, two, unset]
-    simp only [ite_true, ite_false, Bool.false_eq_true]
-    omega
-  | ⟨1, _⟩ =>
-    have zero := other ⟨0, by decide⟩ (by simp)
-    have two := other ⟨2, by decide⟩ (by simp)
-    simp only at self zero two unset
-    simp only [List.map_cons, List.map_nil, List.sum_cons, List.sum_nil, self, zero, two, unset]
-    simp only [ite_true, ite_false, Bool.false_eq_true]
-    omega
-  | ⟨2, _⟩ =>
-    have zero := other ⟨0, by decide⟩ (by simp)
-    have one := other ⟨1, by decide⟩ (by simp)
-    simp only at self zero one unset
-    simp only [List.map_cons, List.map_nil, List.sum_cons, List.sum_nil, self, zero, one, unset]
-    simp only [ite_true, ite_false, Bool.false_eq_true]
-    omega
-
-/-- Setting the flags of one attester clears none of them.
-
-Weighed by its base reward, the flags gain at least the added numerator. -/
-private theorem foldlM_addFlagReward_grow {total : Gwei} {earned : List UInt64}
-    {index : ValidatorIndex} {base : ℕ} :
-    ∀ {flagList : List (Fin PARTICIPATION_FLAG_WEIGHTS.length)} {flags flags' : ParticipationFlags}
-      {numerator numerator' : Gwei},
-      flagList.foldlM (addFlagReward s total earned index) (flags, numerator) =
-        .ok (flags', numerator') →
-      (∀ flag : Fin PARTICIPATION_FLAG_WEIGHTS.length, hasFlag flags flag.val.toUInt64 = true →
-        hasFlag flags' flag.val.toUInt64 = true) ∧
-      ((∀ reward, getBaseReward s total index = .ok reward → reward.toNat = base) →
-        numerator'.toNat + base * flagWeight flags ≤ numerator.toNat + base * flagWeight flags')
-  | [], flags, flags', numerator, numerator', computed => by
-    simp only [List.foldlM_nil, pure, Except.pure, Except.ok.injEq, Prod.mk.injEq] at computed
-    obtain ⟨rfl, rfl⟩ := computed
-    exact ⟨fun _ => id, fun _ => Nat.le_refl _⟩
-  | flag :: flagList, flags, flags', numerator, numerator', computed => by
-    rw [List.foldlM_cons, bind_ok_iff] at computed
-    obtain ⟨⟨middleFlags, middle⟩, stepped, folded⟩ := computed
-    obtain ⟨kept, gained⟩ := foldlM_addFlagReward_grow folded
-    simp only [addFlagReward] at stepped
-    split at stepped
-    · rename_i newly
-      simp only [bind_ok_iff, liftAccessor_ok, liftArith, mapError_ok_iff, pure, Except.pure,
-        Except.ok.injEq, Prod.mk.injEq] at stepped
-      obtain ⟨reward, rewardOk, weighted, weightedOk, added, addedOk, rfl, rfl⟩ := stepped
-      rw [mulChecked_ok_iff] at weightedOk
-      rw [addChecked_ok_iff] at addedOk
-      refine ⟨fun other set => kept other ?_, fun reads => ?_⟩
-      · by_cases same : other = flag
-        · subst same
-          exact hasFlag_addFlag _ _
-        · rw [hasFlag_addFlag_of_ne _ same]
-          exact set
-      have more := gained reads
-      have weight := flagWeight_addFlag newly.2
-      rw [weight] at more
-      rw [addedOk.2, weightedOk.2, reads reward rewardOk] at more
-      rw [Nat.mul_add] at more
-      omega
-    · simp only [pure, Except.pure, Except.ok.injEq, Prod.mk.injEq] at stepped
-      obtain ⟨rfl, rfl⟩ := stepped
-      exact ⟨kept, gained⟩
-
-/-- Setting the flags of attesters in turn clears none of them.
-
-Suppose that each attester is in range and that its weight is its base reward.
-
-Then the weighed flags gain at least the added numerator. -/
-private theorem foldlM_addAttesterFlags_grow {total : Gwei} {earned : List UInt64}
-    {base : ℕ → ℕ} {count : ℕ} :
-    ∀ {attesters : List ValidatorIndex}
-      {participation participation' : EpochParticipation preset fork}
-      {numerator numerator' : Gwei},
-      attesters.foldlM (addAttesterFlags s total earned) (participation, numerator) =
-        .ok (participation', numerator') →
-      (∀ (i : ℕ) (flag : Fin PARTICIPATION_FLAG_WEIGHTS.length),
-        hasFlag ((participation.data[i]?).getD 0) flag.val.toUInt64 = true →
-          hasFlag ((participation'.data[i]?).getD 0) flag.val.toUInt64 = true) ∧
-      ((∀ attester ∈ attesters, attester.toNat < count ∧
-          ∀ reward, getBaseReward s total attester = .ok reward →
-            reward.toNat = base attester.toNat) →
-        numerator'.toNat + ∑ i ∈ Finset.range count,
-            base i * flagWeight ((participation.data[i]?).getD 0) ≤
-          numerator.toNat + ∑ i ∈ Finset.range count,
-            base i * flagWeight ((participation'.data[i]?).getD 0))
-  | [], participation, participation', numerator, numerator', computed => by
-    simp only [List.foldlM_nil, pure, Except.pure, Except.ok.injEq, Prod.mk.injEq] at computed
-    obtain ⟨rfl, rfl⟩ := computed
-    exact ⟨fun _ _ => id, fun _ => Nat.le_refl _⟩
-  | attester :: attesters, participation, participation', numerator, numerator', computed => by
-    rw [List.foldlM_cons, bind_ok_iff] at computed
-    obtain ⟨⟨middle, middleNumerator⟩, stepped, folded⟩ := computed
-    obtain ⟨kept, gained⟩ := foldlM_addAttesterFlags_grow (base := base) (count := count) folded
-    unfold addAttesterFlags at stepped
-    dsimp only at stepped
-    split at stepped
-    · rename_i inside
-      simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq, Prod.mk.injEq] at stepped
-      obtain ⟨⟨flags, raised⟩, loop, written, rfl⟩ := stepped
-      subst written
-      obtain ⟨flagsKept, flagsGained⟩ :=
-        foldlM_addFlagReward_grow (base := base attester.toNat) loop
-      have read : ∀ i, (((participation.data.set attester.toNat flags inside)[i]?).getD 0) =
-          if i = attester.toNat then flags else (participation.data[i]?).getD 0 := by
-        intro i
-        by_cases same : i = attester.toNat
-        · subst same
-          simp [inside]
-        · simp [Ne.symm same, same]
-      have own : (participation.data[attester.toNat]?).getD 0 =
-          participation.data[attester.toNat] := by
-        rw [Array.getElem?_eq_getElem inside]
-        rfl
-      refine ⟨fun i flag set => ?_, fun facts => ?_⟩
-      · apply kept i flag
-        dsimp only
-        rw [read i]
-        split
-        · rename_i same
-          subst same
-          rw [own] at set
-          exact flagsKept flag set
-        · exact set
-      · obtain ⟨below, reads⟩ := facts attester List.mem_cons_self
-        have rest := gained fun later member => facts later (List.mem_cons_of_mem _ member)
-        have step := flagsGained reads
-        have member : attester.toNat ∈ Finset.range count := Finset.mem_range.mpr below
-        dsimp only at rest
-        have others : ∑ i ∈ (Finset.range count).erase attester.toNat,
-            base i * flagWeight
-              (((participation.data.set attester.toNat flags inside)[i]?).getD 0) =
-            ∑ i ∈ (Finset.range count).erase attester.toNat,
-              base i * flagWeight ((participation.data[i]?).getD 0) := by
-          apply Finset.sum_congr rfl
-          intro i erased
-          rw [read i, ite_eq_right_iff.mpr fun same => absurd same (Finset.ne_of_mem_erase erased)]
-        have after := (Finset.add_sum_erase _ (fun i => base i * flagWeight
-          (((participation.data.set attester.toNat flags inside)[i]?).getD 0)) member).symm
-        have before := (Finset.add_sum_erase _ (fun i => base i * flagWeight
-          ((participation.data[i]?).getD 0)) member).symm
-        rw [others, read attester.toNat] at after
-        simp only [↓reduceIte] at after
-        rw [own] at before
-        omega
-    · cases stepped
+/-- Setting the flags of attesters, each named once, clears no flag. -/
+private theorem foldlM_addAttesterFlags_kept {total : Gwei} {earned : List UInt64}
+    {attesters : List ValidatorIndex} {participation : EpochParticipation preset fork}
+    {numerator : Gwei} {result : EpochParticipation preset fork × Gwei}
+    (distinct : (attesters.map UInt64.toNat).Nodup)
+    (computed : attesters.foldlM (addAttesterFlags s total earned) (participation, numerator) =
+      .ok result)
+    (i : ℕ) (flag : Fin PARTICIPATION_FLAG_WEIGHTS.length)
+    (set : hasFlag ((participation.data[i]?).getD 0) flag.val.toUInt64 = true) :
+    hasFlag ((result.1.data[i]?).getD 0) flag.val.toUInt64 = true := by
+  by_cases named : ∃ attester ∈ attesters, attester.toNat = i
+  · obtain ⟨attester, member, rfl⟩ := named
+    obtain ⟨old, new, oldAt, newAt, flags⟩ :=
+      foldlM_addAttesterFlags_hasFlag distinct computed attester member
+    rw [oldAt] at set
+    rw [newAt]
+    simp only [Option.getD_some] at set ⊢
+    rw [flags flag, set, Bool.true_or]
+  · rw [(foldlM_addAttesterFlags distinct computed).1 i
+      fun attester member same => named ⟨attester, member, same⟩]
+    exact set
 
 private theorem grow_processAttestation {attestation : Attestation preset fork} {parent : Slot}
     (early : fork < .glamsterdam)
@@ -2333,12 +2187,12 @@ private theorem grow_processAttestation {attestation : Attestation preset fork} 
   unfold processAttestation at computed
   split at computed
   · simp only [processAttestationAltair, bind_ok_iff, liftAccessor_ok] at computed
-    obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _,
+    obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, attestersOk,
       ⟨updated, numerator⟩, folded, _, _, raised, raisedOk, final⟩ := computed
     have notGloas : ¬ .glamsterdam ≤ fork := Nat.not_le_of_lt early
     simp only [notGloas, ↓reduceDIte, pure, Except.pure, Except.ok.injEq] at final
     subst final
-    obtain ⟨kept, -⟩ := foldlM_addAttesterFlags_grow (base := fun _ => 0) (count := 0) folded
+    have kept := foldlM_addAttesterFlags_kept (getAttestingIndices_nodup attestersOk) folded
     refine FlagsGrow.trans (fun _ i flag => ?_) (grow_increaseBalance raisedOk)
     unfold setEpochParticipation
     split
@@ -2601,46 +2455,33 @@ private theorem attestation_credit {attestation : Attestation preset fork}
         finalValue]
       by_cases equal : v = proposer <;> simp [equal, same]
   rw [UInt64.toNat_div, denominator, denominatorNat]
-  have key : ∀ a b c d : ℕ, a + c ≤ d → a / 448 * 448 + (c + b) ≤ d + b := by
-    intro a b c d le
-    calc a / 448 * 448 + (c + b) ≤ a + (c + b) :=
-          Nat.add_le_add_right (Nat.div_mul_le_self a 448) _
-      _ = a + c + b := (Nat.add_assoc _ _ _).symm
-      _ ≤ d + b := Nat.add_le_add_right le b
   -- Each attester is inside the range and reads its weight as its base reward.
   have facts : ∀ attester ∈ attesters, attester.toNat < count ∧
       ∀ reward, getBaseReward s total attester = .ok reward →
-        reward.toNat = base attester.toNat := by
+        reward.toNat ≤ base attester.toNat := by
     intro attester member
-    refine ⟨Nat.lt_of_lt_of_le attester.toNat_lt big, fun reward rewardOk => ?_⟩
+    refine ⟨Nat.lt_of_lt_of_le attester.toNat_lt big, fun reward rewardOk => Nat.le_of_eq ?_⟩
     have active := isActiveAt_of_getAttestingIndices attestersOk member
     rw [← slotEpoch] at active
     refine reads attester total reward ?_ (getTotalActiveBalance_toNat totalOk) rewardOk
     rcases recent with previous | current
     · exact .inl (previous ▸ active)
     · exact .inr (current ▸ active)
-  obtain ⟨-, gained⟩ := foldlM_addAttesterFlags_grow (base := base) (count := count) folded
-  have more := gained facts
+  have more := flagSumOf_foldlM_addAttesterFlags facts folded
   -- The balance step keeps both lists of flags.
   obtain ⟨_, set⟩ := increaseBalance_ok raisedOk
   obtain ⟨_, rfl⟩ := setBalance_ok set
   simp only [UInt64.toNat_zero, Nat.zero_add] at more
-  unfold flagPotential
-  simp only [Nat.mul_add, Finset.sum_add_distrib]
-  unfold setEpochParticipation
+  unfold flagPotential setEpochParticipation
   split
   · rename_i current
     simp only [current, ↓reduceIte] at more
     dsimp only [BeaconState.putBalance]
-    rw [Nat.add_comm (∑ x ∈ Finset.range count, _ * flagWeight
-      (((s.previousEpochParticipation altair).data[x]?).getD 0)),
-      Nat.add_comm _ (∑ x ∈ Finset.range count, _ * flagWeight
-        ((updated.data[x]?).getD 0))]
-    exact key _ _ _ _ more
+    omega
   · rename_i current
     simp only [current, Bool.false_eq_true, ↓reduceIte] at more
     dsimp only [BeaconState.putBalance]
-    exact key _ _ _ _ more
+    omega
 
 end Grow
 
@@ -4028,30 +3869,18 @@ private theorem Tally.block {a s t : BeaconState preset fork} {engine : Executio
       rw [tally.within.epoch] at eligible
       exact tally.lives.back tally.life tally.persists found eligible
 
-/-- The flags of one byte weigh at most the sum of all flag weights, `54`. -/
-private theorem flagWeight_le (flags : ParticipationFlags) : flagWeight flags ≤ 54 := by
-  unfold flagWeight
-  calc _ ≤ ((List.finRange PARTICIPATION_FLAG_WEIGHTS.length).map fun flag =>
-        PARTICIPATION_FLAG_WEIGHTS[flag].toNat).sum := by
-        apply List.sum_le_sum
-        intro flag _
-        split
-        · exact Nat.le_refl _
-        · exact Nat.zero_le _
-    _ = 54 := by decide
-
 /-- The flag potential is at most `108` times the sum of the weights it reads. -/
 private theorem flagPotential_le (s : BeaconState preset fork) (altair : .altair ≤ fork)
     (base : ℕ → ℕ) (count : ℕ) :
     flagPotential s altair base count ≤ 108 * ∑ i ∈ Finset.range count, base i := by
-  unfold flagPotential
-  rw [Finset.mul_sum]
-  apply Finset.sum_le_sum
-  intro i _
-  have one := flagWeight_le (((s.previousEpochParticipation altair).data[i]?).getD 0)
-  have two := flagWeight_le (((s.currentEpochParticipation altair).data[i]?).getD 0)
-  rw [Nat.mul_comm 108]
-  exact Nat.mul_le_mul_left _ (by omega)
+  unfold flagPotential flagSumOf
+  rw [Finset.sum_eq_multiset_sum, Finset.range_val, ← Multiset.coe_range, Multiset.map_coe,
+    Multiset.sum_coe, ← List.sum_map_mul_left, ← List.sum_map_add]
+  refine List.sum_le_sum fun i _ => ?_
+  rw [flagTerm, flagTerm]
+  have one := flagValue_le (((s.previousEpochParticipation altair).data[i]?).getD 0) (base i)
+  have two := flagValue_le (((s.currentEpochParticipation altair).data[i]?).getD 0) (base i)
+  omega
 
 /-- A sum of quotients is at most the quotient of the sum. -/
 private theorem sum_div_le_div_sum {α : Type} (S : Finset α) (f : α → ℕ) (q : ℕ) :
