@@ -208,6 +208,40 @@ private theorem getCheckpointBlock_eq_of_checkpointPath {config : Config}
     subst lastRight
     exact Except.ok.inj (hashRight.symm.trans hashLeft)
 
+/-- A block applied to a state extends a run to that state by the block's slots and the block.
+
+No upgrade is due up to the slot of the block, so each of these is a step of the run.
+
+The extended run adds the header of the block, and only that header.
+
+It contains the slot step from each state on the slot walk to the block. -/
+private theorem exists_run_of_stateTransition {config : Config} {checks : SignatureChecks}
+    {g x : ForkedBeaconState preset} {parent state : BeaconState preset fork}
+    {engine : ExecutionEngine preset fork} {signed : SignedBeaconBlock preset fork}
+    (pre : Run config checks g x) (tailP : Run config checks x ⟨fork, parent⟩)
+    (transitioned : stateTransition config checks engine parent signed true = .ok state)
+    (early : ∀ next ∈ config.nextFork fork,
+      state.slot.toNat < next.2.toNat * preset.SLOTS_PER_EPOCH.toNat) :
+    ∃ tail : Run config checks x ⟨fork, state⟩,
+      (pre.append tail).headers =
+        (pre.append tailP).headers ++ (DirectSafety.blockHeader signed.message).toList ∧
+      ∀ k < signed.message.slot.toNat - parent.slot.toNat, ∀ {mid : BeaconState preset fork},
+        advanceSlots config checks k parent = .ok mid →
+        ∃ (stepped : ForkedBeaconState preset)
+          (across : advanceSlotAcross config checks ⟨fork, mid⟩ = .ok stepped),
+          tail.Contains (.slot across) := by
+  have bounds := stateTransition_slot transitioned
+  -- The slots up to the block extend the run of the parent with no header, and the block follows.
+  obtain ⟨advanced, slots, due, applied, none, walk⟩ := run_of_stateTransition transitioned
+    fun next scheduled => bounds.2 ▸ early next scheduled
+  refine ⟨(tailP.append slots).snoc (.block engine signed due applied), ?_,
+    fun k below mid reached => ?_⟩
+  · show (pre.append (tailP.append slots)).headers ++
+      (DirectSafety.blockHeader signed.message).toList = _
+    rw [Run.append_assoc, Run.headers_append, Run.headers_eq_nil slots none, List.append_nil]
+  · obtain ⟨stepped, across, member⟩ := walk k below reached
+    exact ⟨stepped, across, .earlier ((Run.contains_append tailP slots _).mpr (.inr member)) _⟩
+
 /-- A held state follows from the anchor state by a run whose blocks are those of its chain.
 
 Every block of the store was imported with the signature checks of the run.
@@ -259,27 +293,19 @@ private theorem Store.Reachable.exists_run_of_blockState {config : Config}
   obtain ⟨parentBlock, parentFound, -⟩ := linked.stateAfter _ _ parentHeld
   have lower := linked.parentsBelow _ _ _ found parentFound
   obtain ⟨tailP, extraP, headersP, lastP⟩ := previous
-  have bounds := stateTransition_slot transitioned
   obtain ⟨_, _, _, _, blockOk, _⟩ := stateTransition_ok transitioned
   obtain ⟨bodyRoot, bodyHashed, -⟩ := latestBlockHeader_processBlock blockOk
-  have bound : ∀ next ∈ config.nextFork fork,
-      signed.message.slot.toNat < next.2.toNat * preset.SLOTS_PER_EPOCH.toNat :=
-    fun next scheduled => bounds.2 ▸ early next scheduled held
-  -- The slots up to the block extend the run of the parent, with no header, and the block follows.
-  obtain ⟨advanced, slots, due, applied, none⟩ := run_of_stateTransition transitioned bound
-  have headersA : (pre.append (tailP.append slots)).headers = (pre.append tailP).headers := by
-    rw [Run.append_assoc, Run.headers_append, Run.headers_eq_nil slots none, List.append_nil]
+  obtain ⟨tail, headersT, -⟩ :=
+    exists_run_of_stateTransition pre tailP transitioned fun next scheduled =>
+      early next scheduled held
   let header : BeaconBlockHeader := ⟨signed.message.slot, signed.message.proposerIndex,
     signed.message.parentRoot, signed.message.stateRoot, bodyRoot⟩
   have headerOk : DirectSafety.blockHeader signed.message = some header := by
     simp [DirectSafety.blockHeader, bodyHashed, Except.toOption, header]
   have headerRoot : SszType.hashTreeRoot header = .ok root :=
     (BeaconBlock.hashTreeRoot_header bodyHashed).trans (reachable.root found)
-  refine ⟨(tailP.append slots).snoc (.block engine signed due applied), extraP ++ [header], ?_,
-    fun slot later => ?_⟩
-  · show (pre.append (tailP.append slots)).headers ++
-      (DirectSafety.blockHeader signed.message).toList = _
-    rw [headersA, headersP, headerOk]
+  refine ⟨tail, extraP ++ [header], ?_, fun slot later => ?_⟩
+  · rw [headersT, headersP, headerOk]
     simp
   · by_cases above : signed.message.slot ≤ slot
     · refine ⟨root, ⟨_, Store.getAncestor_of_le found above, rfl⟩, .inr ⟨header, ?_, headerRoot⟩⟩
@@ -411,6 +437,157 @@ private theorem Store.Reachable.terminalView_of_after {config : Config}
     | realized => exact ⟨root, state, tail, .realized, held, eq, .inl rfl, trivial, headers⟩
     | pulled pulled ok => exact ⟨root, state, tail, .pulled pulled ok, held, eq, .inr ok,
         (fun horizon later => heldEnough held horizon later), headers⟩
+
+/-- The keys of the registry of each held state are distinct.
+
+The store imported each block with the signature checks of a run from a genesis built from deposits.
+
+No upgrade is due at a held slot, so the chain of a held state extends that run to the state.
+
+Such a run never gives one key to two validators. -/
+theorem Store.ForwardReachableWith.pubkeysDistinct_of_blockState {config : Config}
+    {checks : SignatureChecks} {anchorState : BeaconState preset fork}
+    {anchorBlock : BeaconBlock preset fork} {store : Store preset fork}
+    {g : ForkedBeaconState preset}
+    (forward : Store.ForwardReachableWith config checks anchorState anchorBlock store)
+    (anchorSlot : anchorBlock.slot ≤ anchorState.slot)
+    (unknownParent : store.blocks[anchorBlock.parentRoot]? = none)
+    (early : ∀ next ∈ config.nextFork fork, ∀ ⦃root : Root⦄ ⦃state : BeaconState preset fork⦄,
+      store.blockStates[root]? = some state →
+      state.slot.toNat < next.2.toNat * preset.SLOTS_PER_EPOCH.toNat)
+    (pre : Run config checks g ⟨fork, anchorState⟩) (genesis : Genesis config checks g)
+    {root : Root} {state : BeaconState preset fork}
+    (held : store.blockStates[root]? = some state) :
+    PubkeysDistinct state := by
+  have reachable := forward.reachable
+  obtain ⟨tail, -⟩ := reachable.exists_run_of_blockState
+    (reachable.linked_of_unknown anchorSlot unknownParent) forward.blockStatesFromParents early
+    pre held
+  exact (pre.append tail).pubkeysDistinct genesis
+
+/-- With distinct keys, the stake of the active keys is the stake of the active indices.
+
+Each active index names a validator, and no two validators share a key.
+
+So each active key weighs the effective balance of the one validator that has it. -/
+theorem stake_activeKeys_eq {fork : Fork} {state : BeaconState preset fork}
+    (unique : PubkeysDistinct state) :
+    Models.stake (DirectSafety.effectiveWeight state) (DirectSafety.activeKeys state) =
+      Models.stake (fun index => balanceAt state index.toNat)
+        (getActiveValidatorIndices state (getCurrentEpoch state)).toFinset :=
+  DirectSafety.keys_weight state _ unique fun _ member =>
+    lt_size_of_mem_getActiveValidatorIndices member
+
+/-- The active indices of a state counted at an epoch boundary carry enough stake.
+
+The state is on the slot walk from a held state to the slot of a held child block.
+
+It is at the last slot of an epoch, and `counted` is it after caching the slot.
+
+The child's state extends the run to the anchor by the slots up to the child and the child.
+
+The slot step from the state is one of them, and it ran justification on `counted`.
+
+So it is an epoch call of that run, and the stake floor at such calls holds at `counted`.
+
+The keys of a run from a genesis built from deposits are distinct.
+
+So the stake of the active keys is the stake of the active indices. -/
+theorem Store.ForwardReachableWith.countedRun_enoughStake {config : Config}
+    {checks : SignatureChecks} {anchorState : BeaconState preset fork}
+    {anchorBlock : BeaconBlock preset fork} {store : Store preset fork}
+    {g : ForkedBeaconState preset} {high : Nat}
+    (forward : Store.ForwardReachableWith config checks anchorState anchorBlock store)
+    (anchorSlot : anchorBlock.slot ≤ anchorState.slot)
+    (unknownParent : store.blocks[anchorBlock.parentRoot]? = none)
+    (early : ∀ next ∈ config.nextFork fork, ∀ ⦃root : Root⦄ ⦃state : BeaconState preset fork⦄,
+      store.blockStates[root]? = some state →
+      state.slot.toNat < next.2.toNat * preset.SLOTS_PER_EPOCH.toNat)
+    (pre : Run config checks g ⟨fork, anchorState⟩)
+    (enough : ∀ (root : Root) (state : BeaconState preset fork),
+      store.blockStates[root]? = some state →
+      ∀ tail : Run config checks ⟨fork, anchorState⟩ ⟨fork, state⟩,
+      DirectSafety.EnoughStake (pre.append tail) high)
+    (genesis : Genesis config checks g)
+    {root childRoot : Root} {base state counted : BeaconState preset fork}
+    {child : BeaconBlock preset fork}
+    (held : store.blockStates[root]? = some base)
+    (childFound : store.blocks[childRoot]? = some child)
+    (parent : child.parentRoot = root) (before : state.slot < child.slot)
+    (path : state = base ∨ ∃ slot, processSlots config checks base slot = .ok state)
+    (boundary : (state.slot.toNat + 1) % preset.SLOTS_PER_EPOCH.toNat = 0)
+    (countedOk : processSlot state = .ok counted)
+    (later : GENESIS_EPOCH + 1 < getCurrentEpoch counted)
+    (upper : (getCurrentEpoch counted).toNat ≤ high + 1) :
+    3 * preset.EFFECTIVE_BALANCE_INCREMENT.toNat <
+      2 * Models.stake (fun index => balanceAt counted index.toNat)
+        (getActiveValidatorIndices counted (getCurrentEpoch counted)).toFinset := by
+  have reachable := forward.reachable
+  have linked := reachable.linked_of_unknown anchorSlot unknownParent
+  have imported := forward.blockStatesFromParents
+  -- The child is not the anchor block, whose parent the store does not hold.
+  have notAnchor : child ≠ anchorBlock := by
+    rintro rfl
+    obtain ⟨_, parentFound⟩ := reachable.known_of_blockState held
+    rw [← parent, unknownParent] at parentFound
+    cases parentFound
+  obtain ⟨post, childHeld, -, step⟩ := imported childFound
+  obtain ⟨parentState, used, engine, signed, sameChecks, message, parentHeld, transitioned⟩ :=
+    step notAnchor
+  subst used message
+  rw [parent, held, Option.some.injEq] at parentHeld
+  subst parentHeld
+  obtain ⟨tailP, -⟩ := reachable.exists_run_of_blockState linked imported early pre held
+  have bounds := stateTransition_slot transitioned
+  have bound : ∀ next ∈ config.nextFork fork,
+      signed.message.slot.toNat < next.2.toNat * preset.SLOTS_PER_EPOCH.toNat :=
+    fun next scheduled => bounds.2 ▸ early next scheduled childHeld
+  obtain ⟨tail, -, slots⟩ :=
+    exists_run_of_stateTransition pre tailP transitioned fun next scheduled =>
+      early next scheduled childHeld
+  -- `state` is on the slot walk from `base` to the block, some count of slots in.
+  have onPath : ∃ k, k < signed.message.slot.toNat - base.slot.toNat ∧
+      advanceSlots config checks k base = .ok state := by
+    have beforeNat := UInt64.lt_iff_toNat_lt.mp before
+    rcases path with rfl | ⟨slot, reached⟩
+    · exact ⟨0, by omega, rfl⟩
+    · have reachedSlot := processSlots_slot reached
+      simp only [processSlots, bind_ok_iff, ensure_ok_iff] at reached
+      obtain ⟨-, -, walk⟩ := reached
+      have := UInt64.lt_iff_toNat_lt.mp reachedSlot.1
+      have := congrArg UInt64.toNat reachedSlot.2
+      rw [← reachedSlot.2] at walk
+      exact ⟨_, by omega, walk⟩
+  obtain ⟨k, below, reached⟩ := onPath
+  obtain ⟨stepped, across, member⟩ := slots k below reached
+  -- No upgrade is due, so the slot step from `state` is the plain slot transition.
+  have stateSlot : state.slot.toNat < signed.message.slot.toNat :=
+    UInt64.lt_iff_toNat_lt.mp before
+  have plain := across
+  rw [advanceSlotAcross_of_before fun next scheduled => by
+    have := bound next scheduled
+    omega] at plain
+  cases slotOk : advanceSlot config checks state with
+  | error e => simp [slotOk, Except.map] at plain
+  | ok slotAfter =>
+  obtain ⟨next, cached, epoched, nextSlot, cachedOk, epochOk, -⟩ := advanceSlot_ok slotOk
+  rw [countedOk, Except.ok.injEq] at cachedOk
+  subst cachedOk
+  -- The next slot starts an epoch, so the slot step ran the epoch transition on `counted`.
+  have starts : next % preset.SLOTS_PER_EPOCH = 0 :=
+    UInt64.toNat_inj.mp (by rw [UInt64.toNat_mod, nextSlot]; simpa using boundary)
+  simp only [epochIfLast, starts, ↓reduceIte] at epochOk
+  obtain ⟨weighed, weighedOk, -⟩ := processEpoch_frame epochOk
+  let call : DirectSafety.EpochCall (pre.append tail) :=
+    { before := ⟨fork, state⟩, after := stepped, advanced := across,
+      member := (pre.contains_append tail _).mpr (.inr member),
+      boundary, cached := counted, weighed, cachedOk := countedOk, weighedOk, later }
+  have floor : 3 * preset.EFFECTIVE_BALANCE_INCREMENT.toNat <
+      2 * Models.stake (DirectSafety.effectiveWeight counted) (DirectSafety.activeKeys counted) :=
+    enough childRoot _ childHeld tail call upper
+  -- With distinct keys, the stake of the active keys is that of the active indices.
+  have unique := call.pubkeysDistinct genesis
+  rwa [stake_activeKeys_eq unique] at floor
 
 /-- One store's finalized checkpoint is early, or on the justified chain of another store.
 

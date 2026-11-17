@@ -151,16 +151,23 @@ theorem Run.blockCount_append {a b c : ForkedBeaconState preset}
 
 /-- A run of empty slots, when the last of them stays before the next fork.
 
-The run has no block step. -/
+The run has no block step.
+
+It contains the slot step from each state on the way, so an epoch call can name it. -/
 theorem run_of_advanceSlots {fork : Fork} (count : Nat) {state after : BeaconState preset fork}
     (advanced : advanceSlots config checks count state = .ok after)
     (before : ∀ next ∈ config.nextFork fork,
       after.slot.toNat < next.2.toNat * preset.SLOTS_PER_EPOCH.toNat) :
-    ∃ run : Run config checks ⟨fork, state⟩ ⟨fork, after⟩, run.blockCount = 0 := by
+    ∃ run : Run config checks ⟨fork, state⟩ ⟨fork, after⟩, run.blockCount = 0 ∧
+      ∀ k < count, ∀ {mid : BeaconState preset fork},
+        advanceSlots config checks k state = .ok mid →
+        ∃ (stepped : ForkedBeaconState preset)
+          (across : advanceSlotAcross config checks ⟨fork, mid⟩ = .ok stepped),
+          run.Contains (.slot across) := by
   induction count generalizing state with
   | zero =>
     cases advanced
-    exact ⟨.nil, rfl⟩
+    exact ⟨.nil, rfl, fun k below => absurd below (Nat.not_lt_zero k)⟩
   | succ count ih =>
     obtain ⟨next, stepped, rest⟩ := bind_ok_iff.mp advanced
     have slotsEq := advanceSlots_slot count rest
@@ -171,10 +178,21 @@ theorem run_of_advanceSlots {fork : Fork} (count : Nat) {state after : BeaconSta
         have := before nextFork scheduled
         omega), stepped]
       rfl
-    obtain ⟨tail, none⟩ := ih rest
-    refine ⟨(Run.nil.snoc (.slot across)).append tail, ?_⟩
-    rw [Run.blockCount_append, none]
-    rfl
+    obtain ⟨tail, none, slots⟩ := ih rest
+    refine ⟨(Run.nil.snoc (.slot across)).append tail, ?_, fun k below mid reached => ?_⟩
+    · rw [Run.blockCount_append, none]
+      rfl
+    cases k with
+    | zero =>
+      -- No slot yet: the step from `state` is the first step of the run.
+      simp only [advanceSlots, pure, Except.pure, Except.ok.injEq] at reached
+      subst reached
+      exact ⟨_, across, (Run.contains_append _ tail _).mpr (.inl (.last _ _))⟩
+    | succ k =>
+      -- The first slot leads to `next`, and the rest of the walk is that of the later slots.
+      simp only [advanceSlots, bind_ok_iff, stepped, Except.ok.injEq, exists_eq_left'] at reached
+      obtain ⟨stepped', across', member⟩ := slots k (by omega) reached
+      exact ⟨stepped', across', (Run.contains_append _ tail _).mpr (.inr member)⟩
 
 /-- A run from a state to the state at a later slot, when the slot stays before the next fork. -/
 theorem run_of_processSlots {fork : Fork} {state after : BeaconState preset fork} {slot : Slot}
@@ -201,15 +219,20 @@ theorem run_of_stateTransition {fork : Fork} {state after : BeaconState preset f
     ∃ (advanced : BeaconState preset fork) (slots : Run config checks ⟨fork, state⟩
       ⟨fork, advanced⟩) (_ : upgradeDue config ⟨fork, advanced⟩ = false)
       (_ : applySignedBlock config checks engine advanced signed true = .ok after),
-      slots.blockCount = 0 := by
+      slots.blockCount = 0 ∧
+      ∀ k < signed.message.slot.toNat - state.slot.toNat, ∀ {mid : BeaconState preset fork},
+        advanceSlots config checks k state = .ok mid →
+        ∃ (stepped : ForkedBeaconState preset)
+          (across : advanceSlotAcross config checks ⟨fork, mid⟩ = .ok stepped),
+          slots.Contains (.slot across) := by
   simp only [stateTransition, bind_ok_iff] at transitioned
   obtain ⟨advanced, slotsOk, applied⟩ := transitioned
   have advancedSlot := (processSlots_slot slotsOk).2
   simp only [processSlots, bind_ok_iff, ensure_ok_iff] at slotsOk
   obtain ⟨_, _, run⟩ := slotsOk
-  obtain ⟨slots, none⟩ := run_of_advanceSlots _ run (by simpa only [advancedSlot] using before)
+  obtain ⟨slots, walk⟩ := run_of_advanceSlots _ run (by simpa only [advancedSlot] using before)
   exact ⟨advanced, slots, upgradeDue_of_before fun next scheduled =>
-    advancedSlot ▸ before next scheduled, applied, none⟩
+    advancedSlot ▸ before next scheduled, applied, walk⟩
 
 /-- Each block spends its state's free slot, and each slot step supplies at most one more.
 
