@@ -12,6 +12,7 @@ import EthLib.Consensus.Proofs.Transition.ActiveKept
 import EthLib.Consensus.Proofs.Transition.EpochPassAtCall
 import EthLib.Consensus.Proofs.Transition.Totality.FlagsActive
 import EthLib.Consensus.Proofs.Transition.Totality.SupplyBlock
+import EthLib.Consensus.Proofs.Transition.ParticipationFlagsKept
 import EthLib.Consensus.Proofs.Transition.SlashedPersistence
 import EthLib.Consensus.Proofs.Transition.BlockRewards
 import EthLib.Consensus.Proofs.Transition.Committees
@@ -1932,6 +1933,10 @@ private theorem FlagsGrow.of_eq
   rw [previous, current]
   exact ⟨id, id⟩
 
+/-- A step that keeps both lists of flags, in master's frame, clears no flag. -/
+private theorem FlagsGrow.of_flags (flags : Flags s t) : FlagsGrow s t :=
+  FlagsGrow.of_eq flags.1 flags.2
+
 /-- A fold whose every step clears no flag clears no flag. -/
 private theorem FlagsGrow.foldlM {α ε : Type}
     {step : BeaconState preset fork → α → Except ε (BeaconState preset fork)}
@@ -1979,184 +1984,6 @@ private theorem grow_initiateValidatorExit {index : ValidatorIndex}
   obtain ⟨_, _, ⟨_, rfl⟩ | ⟨_, _, _, _, queue, _, set⟩⟩ := initiateValidatorExit_ok computed
   · exact FlagsGrow.refl _
   · exact (grow_exitQueue queue).trans (grow_setValidator set)
-
-/-- Slashing a validator clears no flag. -/
-private theorem grow_slashValidator {slashedIndex : ValidatorIndex}
-    {whistleblowerIndex : Option ValidatorIndex}
-    (computed : slashValidator config s slashedIndex whistleblowerIndex = .ok t) :
-    FlagsGrow s t := by
-  obtain ⟨_, _, _, marked, _, _, slashings, _, _, _, _, last, exitedOk, -, -, markedOk, -, -, -,
-    loweredOk, -, -, raisedOk, lastOk, done⟩ := slashValidator_ok computed
-  refine (grow_initiateValidatorExit exitedOk).trans <| (grow_setValidator markedOk).trans <|
-    (FlagsGrow.of_eq (s := marked) (t := { marked with slashings })).trans <|
-    (grow_decreaseBalance loweredOk).trans <| (grow_increaseBalance raisedOk).trans <|
-    (grow_increaseBalance lastOk).trans ?_
-  subst done
-  split
-  · exact FlagsGrow.of_eq
-  · exact FlagsGrow.refl _
-
-private theorem grow_processBlockHeader {block : BeaconBlock preset fork}
-    (computed : processBlockHeader s block = .ok t) : FlagsGrow s t := by
-  obtain ⟨_, _, rfl⟩ := processBlockHeader_eq computed
-  exact FlagsGrow.of_eq
-
-/-- One withdrawal clears no flag. -/
-private theorem grow_applyWithdrawal {withdrawal : Withdrawal}
-    (computed : applyWithdrawal s withdrawal = .ok t) : FlagsGrow s t := by
-  unfold applyWithdrawal at computed
-  split at computed
-  · simp only [bind_ok_iff] at computed
-    obtain ⟨_, _, set⟩ := computed
-    obtain ⟨_, rfl⟩ := setBuilder_ok set
-    exact FlagsGrow.of_eq
-  · exact grow_decreaseBalance computed
-
-/-- The withdrawals that a block expects clear no flag. -/
-private theorem grow_applyExpectedWithdrawals {capella : .shapella ≤ fork}
-    {expected : ExpectedWithdrawals}
-    (computed : applyExpectedWithdrawals s capella expected = .ok t) : FlagsGrow s t := by
-  unfold applyExpectedWithdrawals at computed
-  simp only [bind_ok_iff] at computed
-  obtain ⟨applied, appliedOk, indexed, indexedOk, finished, sweptOk, last⟩ := computed
-  have one : FlagsGrow s applied := by
-    unfold applyWithdrawals at appliedOk
-    rw [← Array.foldlM_toList] at appliedOk
-    exact FlagsGrow.foldlM (fun _ _ _ ok => grow_applyWithdrawal ok) appliedOk
-  have two : FlagsGrow applied indexed := by
-    unfold updateNextWithdrawalIndex at indexedOk
-    split at indexedOk
-    · simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at indexedOk
-      obtain ⟨_, _, rfl⟩ := indexedOk
-      exact FlagsGrow.of_eq
-    · cases indexedOk
-      exact FlagsGrow.refl _
-  have queued : ∀ kept : BeaconState preset fork,
-      FlagsGrow kept (if gloas : .glamsterdam ≤ fork then
-        updateBuilderPendingWithdrawals
-          (updatePayloadExpectedWithdrawals kept gloas expected.withdrawals) gloas
-          expected.processedBuilderWithdrawalsCount
-      else kept) := by
-    intro kept
-    split
-    · exact FlagsGrow.of_eq
-    · exact FlagsGrow.refl _
-  have partials : ∀ kept : BeaconState preset fork,
-      FlagsGrow kept (if electra : .pectra ≤ fork then
-        updatePendingPartialWithdrawals kept electra expected.processedPartialWithdrawalsCount
-      else kept) := by
-    intro kept
-    split
-    · exact FlagsGrow.of_eq
-    · exact FlagsGrow.refl _
-  have swept : ∀ kept : BeaconState preset fork,
-      (if gloas : .glamsterdam ≤ fork then
-        updateNextWithdrawalBuilderIndex kept gloas expected.processedBuildersSweepCount
-      else pure kept) = .ok finished → FlagsGrow kept finished := by
-    intro kept ok
-    split at ok
-    · unfold updateNextWithdrawalBuilderIndex at ok
-      dsimp only at ok
-      split at ok
-      · cases ok
-        exact FlagsGrow.of_eq
-      · simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at ok
-        obtain ⟨_, _, rfl⟩ := ok
-        exact FlagsGrow.of_eq
-    · simp only [pure, Except.pure, Except.ok.injEq] at ok
-      exact ok ▸ FlagsGrow.refl _
-  have final : FlagsGrow finished t := by
-    unfold updateNextWithdrawalValidatorIndex at last
-    simp only [bind_ok_iff] at last
-    obtain ⟨_, _, last⟩ := last
-    split at last
-    · cases last
-    · cases last
-      exact FlagsGrow.of_eq
-  exact one.trans <| two.trans <| (queued _).trans <| (partials _).trans <|
-    (swept _ sweptOk).trans final
-
-/-- The withdrawals of a block clear no flag. -/
-private theorem grow_processWithdrawals {capella : .shapella ≤ fork}
-    {payload : Until .glamsterdam fork (ExecutionPayload preset fork)}
-    (computed : processWithdrawals s capella payload = .ok t) : FlagsGrow s t := by
-  unfold processWithdrawals at computed
-  split at computed
-  · split at computed
-    · simp only [bind_ok_iff, liftAccessor_ok] at computed
-      obtain ⟨_, _, applied⟩ := computed
-      exact grow_applyExpectedWithdrawals applied
-    · cases computed
-      exact FlagsGrow.refl _
-  · simp only [bind_ok_iff, ensure_ok_iff, liftAccessor_ok] at computed
-    obtain ⟨_, _, _, _, applied⟩ := computed
-    exact grow_applyExpectedWithdrawals applied
-
-/-- The execution payload of a block clears no flag. -/
-private theorem grow_processExecutionPayload {engine : ExecutionEngine preset fork}
-    {body : BeaconBlockBody preset fork} {bellatrix : .bellatrix ≤ fork ∧ fork < .glamsterdam}
-    (computed : processExecutionPayload config engine s body bellatrix = .ok t) :
-    FlagsGrow s t := by
-  obtain ⟨_, _, _, rfl⟩ := processExecutionPayload_ok computed
-  exact FlagsGrow.of_eq
-
-private theorem grow_processBlockExecution {engine : ExecutionEngine preset fork}
-    {body : BeaconBlockBody preset fork} {bellatrix : .bellatrix ≤ fork}
-    (early : fork < .glamsterdam)
-    (computed : processBlockExecution config checks engine s body bellatrix = .ok t) :
-    FlagsGrow s t := by
-  unfold processBlockExecution at computed
-  split at computed
-  · exact absurd early (Nat.not_lt_of_le (by assumption))
-  split at computed
-  · simp only [bind_ok_iff] at computed
-    obtain ⟨_, withdrawnOk, paid⟩ := computed
-    exact (grow_processWithdrawals withdrawnOk).trans (grow_processExecutionPayload paid)
-  · dsimp only at computed
-    split at computed
-    · exact grow_processExecutionPayload computed
-    · cases computed
-      exact FlagsGrow.refl _
-
-private theorem grow_processRandao {body : BeaconBlockBody preset fork}
-    (computed : processRandao config checks s body = .ok t) : FlagsGrow s t := by
-  obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, rfl⟩ := processRandao_eq computed
-  exact FlagsGrow.of_eq
-
-private theorem grow_processEth1Data {before : fork < .hegota} {body : BeaconBlockBody preset fork}
-    (computed : processEth1Data before s body = .ok t) : FlagsGrow s t := by
-  obtain ⟨_, _, rest⟩ := processEth1Data_eq computed
-  rw [← rest]
-  exact FlagsGrow.of_eq
-
-private theorem grow_processProposerSlashing {slashing : ProposerSlashing}
-    (computed : processProposerSlashing config checks s slashing = .ok t) : FlagsGrow s t := by
-  simp only [processProposerSlashing, bind_ok_iff, ensure_ok_iff, liftAccessor_ok] at computed
-  obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, slashed⟩ := computed
-  exact grow_slashValidator slashed
-
-/-- Slashing a validator if it is slashable clears no flag. -/
-private theorem grow_slashIfSlashable {step next : BeaconState preset fork × Bool}
-    {index : ValidatorIndex} (computed : slashIfSlashable config step index = .ok next) :
-    FlagsGrow step.1 next.1 := by
-  obtain ⟨state, slashedAny⟩ := step
-  simp only [slashIfSlashable, bind_ok_iff, liftAccessor_ok] at computed
-  obtain ⟨_, _, computed⟩ := computed
-  split at computed
-  · simp only [bind_ok_iff, liftAccessor_ok, pure, Except.pure, Except.ok.injEq] at computed
-    obtain ⟨_, slashed, rfl⟩ := computed
-    exact grow_slashValidator slashed
-  · simp only [pure, Except.pure, Except.ok.injEq] at computed
-    exact computed ▸ FlagsGrow.refl _
-
-private theorem grow_processAttesterSlashing {slashing : AttesterSlashing preset fork}
-    (computed : processAttesterSlashing config checks s slashing = .ok t) : FlagsGrow s t := by
-  simp only [processAttesterSlashing, bind_ok_iff, ensure_ok_iff, pure, Except.pure,
-    Except.ok.injEq] at computed
-  obtain ⟨_, _, _, _, _, _, _, _, _, _, _, folded, _, _, rfl⟩ := computed
-  exact foldlM_ok_invariant (fun step : BeaconState preset fork × Bool => FlagsGrow s step.1)
-    (fun _ _ _ before ok => FlagsGrow.trans before (grow_slashIfSlashable ok))
-    (show FlagsGrow s (s, false).1 from FlagsGrow.refl s) folded
 
 /-- Setting the flags of attesters, each named once, clears no flag. -/
 private theorem foldlM_addAttesterFlags_kept {total : Gwei} {earned : List UInt64}
@@ -2278,122 +2105,6 @@ private theorem grow_processDeposit {before : fork < .hegota} {deposit : Deposit
   obtain ⟨_, _, next, _, applied⟩ := processDeposit_ok computed
   exact FlagsGrowBelow.trans (u := { s with eth1DepositIndex := fun _ => next })
     (FlagsGrow.of_eq).below (growsLaws.applyDeposit applied).1 (Nat.le_refl _)
-
-/-- A deposit request clears no flag. -/
-private theorem grow_processDepositRequest {electra : .pectra ≤ fork} {request : DepositRequest}
-    (computed : processDepositRequest s electra request = .ok t) : FlagsGrow s t := by
-  obtain ⟨start, recorded⟩ :=
-    recordDepositRequestsStart_eq (state := s) (index := request.index)
-  simp only [processDepositRequest, recorded, liftAccessor_ok, addPendingDeposit, bind_ok_iff,
-    pure, Except.pure, Except.ok.injEq] at computed
-  obtain ⟨_, _, rfl⟩ := computed
-  exact FlagsGrow.of_eq
-
-/-- The churn of exits clears no flag. -/
-private theorem grow_computeExitEpochAndUpdateChurn {electra : .pectra ≤ fork}
-    {exitBalance : Gwei} {epoch : Epoch}
-    (computed : computeExitEpochAndUpdateChurn config s electra exitBalance = .ok (t, epoch)) :
-    FlagsGrow s t := by
-  simp only [computeExitEpochAndUpdateChurn, bind_ok_iff, pure, Except.pure,
-    Except.ok.injEq] at computed
-  obtain ⟨_, _, _, _, _, _, computed⟩ := computed
-  cases computed
-  exact FlagsGrow.of_eq
-
-/-- The churn of consolidations clears no flag. -/
-private theorem grow_computeConsolidationEpochAndUpdateChurn {electra : .pectra ≤ fork}
-    {balance : Gwei} {epoch : Epoch}
-    (computed :
-      computeConsolidationEpochAndUpdateChurn config s electra balance = .ok (t, epoch)) :
-    FlagsGrow s t := by
-  simp only [computeConsolidationEpochAndUpdateChurn, bind_ok_iff, pure, Except.pure,
-    Except.ok.injEq] at computed
-  obtain ⟨_, _, _, _, _, _, computed⟩ := computed
-  cases computed
-  exact FlagsGrow.of_eq
-
-/-- A partial withdrawal request clears no flag. -/
-private theorem grow_requestPartialWithdrawal {electra : .pectra ≤ fork} {index : ValidatorIndex}
-    {validator : Validator} {amount owed : Gwei}
-    (computed : requestPartialWithdrawal config s electra index validator amount owed = .ok t) :
-    FlagsGrow s t := by
-  simp only [requestPartialWithdrawal, bind_ok_iff, liftAccessor_ok, pure, Except.pure] at computed
-  obtain ⟨_, _, _, _, computed⟩ := computed
-  split at computed
-  · simp only [bind_ok_iff, liftAccessor_ok, Except.ok.injEq] at computed
-    obtain ⟨⟨_, _⟩, churned, _, _, _, _, rfl⟩ := computed
-    exact (grow_computeExitEpochAndUpdateChurn churned).trans FlagsGrow.of_eq
-  · cases computed
-    exact FlagsGrow.refl _
-
-/-- A withdrawal request clears no flag. -/
-private theorem grow_processWithdrawalRequest {electra : .pectra ≤ fork}
-    {request : WithdrawalRequest}
-    (computed : processWithdrawalRequest config s electra request = .ok t) : FlagsGrow s t := by
-  unfold processWithdrawalRequest at computed
-  simp only [bind, Except.bind, pure, Except.pure] at computed
-  repeat' split at computed
-  all_goals first
-    | (cases computed; done)
-    | (cases computed; exact FlagsGrow.refl _)
-    | exact grow_initiateValidatorExit (liftAccessor_ok.mp computed)
-    | exact grow_requestPartialWithdrawal computed
-
-/-- Moving the excess balance to the deposit queue clears no flag. -/
-private theorem grow_queueExcessActiveBalance {electra : .pectra ≤ fork} {index : ValidatorIndex}
-    (computed : queueExcessActiveBalance s electra index = .ok t) : FlagsGrow s t := by
-  simp only [queueExcessActiveBalance, bind_ok_iff] at computed
-  obtain ⟨_, _, computed⟩ := computed
-  split at computed
-  · simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at computed
-    obtain ⟨_, _, _, _, _, set, rfl⟩ := computed
-    obtain ⟨_, rfl⟩ := setBalance_ok set
-    exact FlagsGrow.of_eq
-  · cases computed
-    exact FlagsGrow.refl _
-
-/-- Switching to compounding credentials clears no flag. -/
-private theorem grow_switchToCompoundingValidator {electra : .pectra ≤ fork}
-    {index : ValidatorIndex}
-    (computed : switchToCompoundingValidator s electra index = .ok t) : FlagsGrow s t := by
-  simp only [switchToCompoundingValidator, bind_ok_iff] at computed
-  obtain ⟨_, _, _, set, queued⟩ := computed
-  exact (grow_setValidator set).trans (grow_queueExcessActiveBalance queued)
-
-/-- Queueing a consolidation clears no flag. -/
-private theorem grow_queueConsolidation {electra : .pectra ≤ fork} {sourceIndex : ValidatorIndex}
-    {source : Validator} {targetIndex : ValidatorIndex}
-    (computed : queueConsolidation config s electra sourceIndex source targetIndex = .ok t) :
-    FlagsGrow s t := by
-  simp only [queueConsolidation, bind_ok_iff, liftAccessor_ok, liftArith, mapError_ok_iff,
-    addChecked_ok_iff, pure, Except.pure] at computed
-  obtain ⟨⟨_, _⟩, churned, _, _, _, set, _, _, computed⟩ := computed
-  simp only [Except.ok.injEq] at computed
-  subst computed
-  exact (grow_computeConsolidationEpochAndUpdateChurn churned).trans <|
-    (grow_setValidator set).trans FlagsGrow.of_eq
-
-/-- A consolidation request clears no flag. -/
-private theorem grow_processConsolidationRequest {electra : .pectra ≤ fork}
-    {request : ConsolidationRequest}
-    (computed : processConsolidationRequest config s electra request = .ok t) : FlagsGrow s t := by
-  unfold processConsolidationRequest at computed
-  simp only [bind, Except.bind, pure, Except.pure] at computed
-  repeat' split at computed
-  all_goals first
-    | (cases computed; done)
-    | (cases computed; exact FlagsGrow.refl _)
-    | exact grow_switchToCompoundingValidator (liftAccessor_ok.mp computed)
-    | exact grow_queueConsolidation computed
-
-private theorem grow_processExecutionRequests {body : BeaconBlockBody preset fork}
-    {electra : .pectra ≤ fork ∧ fork < .glamsterdam}
-    (computed : processExecutionRequests config s body electra = .ok t) : FlagsGrow s t := by
-  simp only [processExecutionRequests, bind_ok_iff, ← Array.foldlM_toList] at computed
-  obtain ⟨_, depositsOk, _, withdrawalsOk, consolidationsOk⟩ := computed
-  exact (FlagsGrow.foldlM (fun _ _ _ ok => grow_processDepositRequest ok) depositsOk).trans <|
-    (FlagsGrow.foldlM (fun _ _ _ ok => grow_processWithdrawalRequest ok) withdrawalsOk).trans <|
-    FlagsGrow.foldlM (fun _ _ _ ok => grow_processConsolidationRequest ok) consolidationsOk
 
 /-- From Altair an attestation credits the proposer of the slot its reward, and nothing else.
 
@@ -2936,7 +2647,7 @@ private theorem credited_processProposerSlashing {slashing : ProposerSlashing}
   obtain ⟨proposer, slashed, validator, read, found, unslashed, ⟨later, laterFound, marked⟩,
     ledger, eligible⟩ := ledger_processProposerSlashing early computed
   have kept := kept_processProposerSlashing computed
-  have grow := (grow_processProposerSlashing computed).below
+  have grow := (FlagsGrow.of_flags (flags_proposerSlashing computed)).below
   have effective : effectiveAt ⟨fork, t⟩ slashed.toNat = validator.effectiveBalance.toNat :=
     (effectiveAt_of_kept kept found).trans (effectiveAt_eq_of_found found)
   refine ⟨proposer, 0, {slashed}, _, _, ledger, kept, grow, fun _ => read,
@@ -2960,7 +2671,7 @@ private theorem credited_processAttesterSlashing {slashing : AttesterSlashing pr
   obtain ⟨proposer, slashed, read, newly, eligibles, ledger⟩ :=
     ledger_processAttesterSlashing early computed
   have kept := kept_processAttesterSlashing computed
-  have grow := (grow_processAttesterSlashing computed).below
+  have grow := (FlagsGrow.of_flags (flags_attesterSlashing computed)).below
   have effective : ∀ v ∈ slashed, effectiveAt ⟨fork, t⟩ v.toNat = effectiveAt ⟨fork, s⟩ v.toNat :=
     fun v member => by
       obtain ⟨validator, _, found, _⟩ := newly v member
@@ -3026,7 +2737,7 @@ private theorem credited_processExecutionRequests {body : BeaconBlockBody preset
     ∃ conv, Credited s t 0 0 ∅ conv 0 0 ∧
       conv.card ≤ preset.MAX_CONSOLIDATION_REQUESTS_PER_PAYLOAD.toNat := by
   obtain ⟨conv, ledger, count⟩ := ledger_processExecutionRequests computed
-  have grow := (grow_processExecutionRequests computed).below
+  have grow := (FlagsGrow.of_flags (flags_processExecutionRequests computed)).below
   exact ⟨conv, ⟨ledger, kept_processExecutionRequests computed, grow, fun hyp => by simp at hyp,
     fun v => by simp, fun v => by simp, fun v member => absurd member (Finset.notMem_empty v),
     fun altair base count _ _ support => by
@@ -3239,10 +2950,10 @@ private theorem block_balances {engine : ExecutionEngine preset fork}
     (steady_processBlockHeader headedOk).trans <|
       (steady_processBlockExecution early executedOk).trans <|
         (steady_processRandao revealedOk).trans (steady_processEth1Data votedOk)
-  have growVoted : FlagsGrow s voted :=
-    (grow_processBlockHeader headedOk).trans <|
-      (grow_processBlockExecution early executedOk).trans <|
-        (grow_processRandao revealedOk).trans (grow_processEth1Data votedOk)
+  -- The steps before the operations are master's operations input, which keeps both flag lists.
+  have growVoted : FlagsGrow s voted := .of_flags <| flags_operationsInput
+    ⟨s, headed, executed, revealed, by simp [notGloas]; rfl, headedOk,
+      by simpa [bellatrix] using executedOk, revealedOk, by simpa [hegota] using votedOk⟩
   have frameVoted : Frame s voted :=
     (frame_processBlockHeader headedOk).toFrame.trans <|
       (frame_processBlockExecution executedOk).toFrame.trans <|
