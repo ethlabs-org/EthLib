@@ -8,6 +8,8 @@ public import EthLib.Consensus.Proofs.Transition.Operations
 public import EthLib.Consensus.Proofs.Transition.PendingConsolidations
 public import EthLib.Consensus.Proofs.Transition.RewardDeltas
 public import EthLib.Consensus.Proofs.Mutators
+public import Mathlib.Algebra.Order.BigOperators.Group.Finset
+public import Mathlib.Algebra.BigOperators.Group.Finset.Piecewise
 import EthLib.Consensus.Proofs.Transition.ActiveKept
 import EthLib.Consensus.Proofs.Transition.ChainRoots
 import EthLib.Consensus.Proofs.Transition.Committees
@@ -651,5 +653,541 @@ private theorem run_riseKeep {x y : ForkedBeaconState preset} (tail : Run config
       obtain ⟨_, _, _, _, rfl⟩ := processSlot_ok cachedOk
       exact prior)
     tail early same
+
+/-! ### The records and credentials up to the update of the effective balances -/
+
+/-- Each validator of a state has a later record with the same credentials in another state. -/
+private def RecKeep {f g : Fork} (s : BeaconState preset f) (t : BeaconState preset g) : Prop :=
+  ∀ (i : ℕ) (v : Validator), s.validators.data[i]? = some v →
+    ∃ w, t.validators.data[i]? = some w ∧ RiseWd v w ∧
+      w.withdrawalCredentials = v.withdrawalCredentials
+
+/-- The same registry keeps every record. -/
+private theorem RecKeep.of_data {f g : Fork} {s : BeaconState preset f}
+    {t : BeaconState preset g} (same : t.validators.data = s.validators.data) : RecKeep s t :=
+  fun _ v found => ⟨v, by rw [same]; exact found, RiseWd.of_eq rfl rfl rfl, rfl⟩
+
+/-- Kept records compose. -/
+private theorem RecKeep.trans {f g h : Fork} {s : BeaconState preset f}
+    {t : BeaconState preset g} {u : BeaconState preset h} (one : RecKeep s t)
+    (two : RecKeep t u) : RecKeep s u := by
+  intro i v found
+  obtain ⟨w, read, step, same⟩ := one i v found
+  obtain ⟨x, read', step', same'⟩ := two i w read
+  exact ⟨x, read', step.trans step', same'.trans same⟩
+
+/-- Kept records keep the records alone. -/
+private theorem RecKeep.rise {f g : Fork} {s : BeaconState preset f}
+    {t : BeaconState preset g} (kept : RecKeep s t) : RiseKeep s t := by
+  intro i v found
+  obtain ⟨w, read, step, -⟩ := kept i v found
+  exact ⟨w, read, step⟩
+
+/-- Writing a later record with the same credentials keeps every record. -/
+private theorem RecKeep.setAt {f : Fork} {s t : BeaconState preset f} {i : ℕ}
+    {old v : Validator} (found : getValidatorAt s i = .ok old)
+    (set : s.setValidatorAt i v = .ok t) (step : RiseWd old v)
+    (same : v.withdrawalCredentials = old.withdrawalCredentials) : RecKeep s t := by
+  obtain ⟨inside, rfl⟩ := setValidatorAt_ok set
+  have oldEq : s.validators.data[i] = old := by simpa [getValidatorAt, inside] using found
+  intro j w read
+  by_cases here : j = i
+  · subst j
+    have eq : w = old := by simpa [Array.getElem?_eq_getElem inside, oldEq] using read.symm
+    subst w
+    refine ⟨v, ?_, step, same⟩
+    simp [BeaconState.putValidator, Serialization.Ssz.RootedForkList.data_set, inside]
+  · refine ⟨w, ?_, RiseWd.of_eq rfl rfl rfl, rfl⟩
+    simpa [BeaconState.putValidator, Serialization.Ssz.RootedForkList.data_set,
+      Array.getElem?_set, here, Ne.symm here] using read
+
+/-- Starting an exit assigns it only to a validator without one, and keeps every credential. -/
+private theorem RecKeep.exit {f : Fork} {s t : BeaconState preset f} {i : ValidatorIndex}
+    (ok : initiateValidatorExit config s i = .ok t) : RecKeep s t := by
+  obtain ⟨v, found, ⟨_, rfl⟩ | ⟨far, queued, _, _, queue, _, written⟩⟩ :=
+    initiateValidatorExit_ok ok
+  · exact RecKeep.of_data rfl
+  · have same := (exitQueue_validators queue).1
+    have read : getValidator queued i = .ok v := (getValidator_of_validators_eq same i).trans found
+    rw [getValidator_eq_getValidatorAt] at read
+    rw [setValidator_eq_setValidatorAt] at written
+    exact (RecKeep.of_data (congrArg (·.data) same)).trans
+      (RecKeep.setAt read written ⟨id, fun assigned => absurd far assigned⟩ rfl)
+
+/-- The registry updates keep every record and every credential. -/
+private theorem recKeep_processRegistryUpdates {f : Fork} {s t : BeaconState preset f}
+    (ok : processRegistryUpdates config s = .ok t) : RecKeep s t := by
+  have fold {α : Type} {step : BeaconState preset f → α → Except TransitionError _}
+      {xs : List α} {u w : BeaconState preset f}
+      (kept : ∀ a item b, step a item = .ok b → RecKeep a b)
+      (ok : xs.foldlM step u = .ok w) : RecKeep u w :=
+    foldlM_ok_invariant (RecKeep u) (fun _ _ _ prior computed => prior.trans (kept _ _ _ computed))
+      (RecKeep.of_data rfl) ok
+  unfold processRegistryUpdates at ok
+  split at ok
+  · obtain ⟨epoch, _, folded⟩ := bind_ok_iff.mp ok
+    refine fold (fun u i w ok => ?_) folded
+    simp only [updateRegistryEntryElectra, bind_ok_iff, liftAccessor_ok] at ok
+    obtain ⟨v, found, ok⟩ := ok
+    split at ok
+    · simp only [bind_ok_iff, liftAccessor_ok] at ok
+      obtain ⟨_, _, written⟩ := ok
+      exact RecKeep.setAt found written (RiseWd.of_eq rfl rfl rfl) rfl
+    split at ok
+    · simp only [bind_ok_iff, liftAccessor_ok] at ok
+      obtain ⟨_, _, exited⟩ := ok
+      exact RecKeep.exit exited
+    split at ok
+    · exact RecKeep.setAt found (liftAccessor_ok.mp ok) (RiseWd.of_eq rfl rfl rfl) rfl
+    · cases ok; exact RecKeep.of_data rfl
+  · obtain ⟨u, first, last⟩ := bind_ok_iff.mp ok
+    refine (fold (fun a i b ok => ?_) first).trans (fold (fun a i b ok => ?_) last)
+    · simp only [updateRegistryEntry, bind_ok_iff, liftAccessor_ok] at ok
+      obtain ⟨validator, found, queued, queuedOk, marked, markedOk, ok⟩ := ok
+      have same : RiseWd validator queued ∧
+          queued.withdrawalCredentials = validator.withdrawalCredentials := by
+        unfold queueForActivation at queuedOk
+        split at queuedOk
+        · simp only [bind_ok_iff, liftAccessor_ok, pure, Except.pure, Except.ok.injEq] at queuedOk
+          obtain ⟨_, _, rfl⟩ := queuedOk
+          exact ⟨RiseWd.of_eq rfl rfl rfl, rfl⟩
+        · simp only [pure, Except.pure, Except.ok.injEq] at queuedOk
+          rw [← queuedOk]
+          exact ⟨RiseWd.of_eq rfl rfl rfl, rfl⟩
+      have set := RecKeep.setAt found markedOk same.1 same.2
+      split at ok
+      · simp only [bind_ok_iff, liftAccessor_ok] at ok
+        obtain ⟨_, _, exited⟩ := ok
+        exact set.trans (RecKeep.exit exited)
+      · simp only [pure, Except.pure, Except.ok.injEq] at ok
+        exact ok ▸ set
+    · simp only [activateValidator, bind_ok_iff, liftAccessor_ok] at ok
+      obtain ⟨_, found, _, _, set⟩ := ok
+      rw [getValidator_eq_getValidatorAt] at found
+      rw [setValidator_eq_setValidatorAt] at set
+      exact RecKeep.setAt found set (RiseWd.of_eq rfl rfl rfl) rfl
+
+private theorem pendingDeposits_validators {f : Fork} {s t : BeaconState preset f}
+    {electra : .pectra ≤ f} (ok : processPendingDeposits config checks s electra = .ok t)
+    (i : ℕ) (inside : i < s.validators.data.size) :
+    t.validators.data[i]? = s.validators.data[i]? := by
+  obtain ⟨_, _, applied, _, next, _, _, _, _, _, _, _, _, appliedOk, rfl⟩ :=
+    processPendingDeposits_applied ok
+  have kept := foldlM_ok_invariant
+    (fun u : BeaconState preset f => s.validators.data.size ≤ u.validators.data.size ∧
+      u.validators.data[i]? = s.validators.data[i]?)
+    (fun u deposit u' previous step => by
+      rcases applyPendingDeposit_cases step with rfl | ⟨index, raised⟩ | ⟨_, added⟩
+      · exact previous
+      · rw [increaseBalance_validators raised]
+        exact previous
+      · rw [addValidatorToRegistry_validators_eq_push added, Array.size_push,
+          Array.getElem?_push]
+        refine ⟨by omega, ?_⟩
+        split
+        · omega
+        · exact previous.2)
+    ⟨Nat.le_refl _, rfl⟩ appliedOk
+  exact kept.2
+
+/-- From Electra, the pending deposits run one pass with the churn available. -/
+private theorem pendingDeposits_pass {f : Fork} {s t : BeaconState preset f}
+    {electra : .pectra ≤ f} (ok : processPendingDeposits config checks s electra = .ok t) :
+    ∃ (churn available : Gwei) (stop : PendingDeposit → Bool)
+      (pass : PendingDepositsPass preset f) (read applied moved : List PendingDeposit),
+      depositChurnLimit config s = .ok churn ∧
+      available.toNat = (s.depositBalanceToConsume electra).toNat + churn.toNat ∧
+      PassPendingDepositsFacts config checks stop (getCurrentEpoch s + 1) available s 0 0 #[]
+        (s.pendingDeposits electra).data.toList pass read applied moved ∧
+      pass.processed ≤ available ∧ t.balances = pass.state.balances := by
+  unfold processPendingDeposits at ok
+  simp only [bind, Except.bind, pure, Except.pure] at ok
+  repeat' (split at ok <;> try cases ok)
+  all_goals
+    have added := liftAccessor_ok.mp
+      ‹liftAccessor (liftArith (addChecked (getCurrentEpoch s) 1)) = .ok _›
+    rw [liftArith, mapError_ok_iff, addChecked_ok_iff] at added
+    obtain rfl := UInt64.toNat_inj.mp (added.2.trans (toNat_add_of_lt added.1).symm)
+    have avail := liftAccessor_ok.mp
+      ‹liftAccessor (liftArith (addChecked (s.depositBalanceToConsume electra) _)) = .ok _›
+    rw [liftArith, mapError_ok_iff, addChecked_ok_iff] at avail
+    have churned := liftAccessor_ok.mp ‹liftAccessor (depositChurnLimit config s) = .ok _›
+    have passed := ‹passPendingDeposits config checks _ _ _ s 0 0 #[] _ = .ok _›
+    obtain ⟨read, applied, moved, facts⟩ := passPendingDeposits_applied passed
+    exact ⟨_, _, _, _, read, applied, moved, churned, avail.2, facts,
+      passPendingDeposits_processed_le passed UInt64.zero_le, rfl⟩
+
+/-- A first match in a longer registry that lies in a prefix is the first match there. -/
+private theorem findIdx?_of_prefix {u s : Array Validator} {p : Validator → Bool} {k : ℕ}
+    (inside : k < s.size) (same : ∀ j < s.size, u[j]? = s[j]?) (found : u.findIdx? p = some k) :
+    s.findIdx? p = some k := by
+  obtain ⟨lt, hit, earlier⟩ := Array.findIdx?_eq_some_iff_getElem.mp found
+  have get : ∀ j (lj : j < s.size) (lu : j < u.size), u[j] = s[j] := by
+    intro j lj lu
+    have := same j lj
+    rw [Array.getElem?_eq_getElem lu, Array.getElem?_eq_getElem lj] at this
+    exact Option.some.inj this
+  refine Array.findIdx?_eq_some_iff_getElem.mpr ⟨inside, ?_, fun j lt' => ?_⟩
+  · rw [← get k inside lt]; exact hit
+  · rw [← get j (Nat.lt_trans lt' inside) (Nat.lt_trans lt' lt)]; exact earlier j lt'
+
+/-- The status that the pending deposits read of a key is that of its first validator. -/
+private theorem depositTargetStatus_of_found {f : Fork} {s : BeaconState preset f} {next : Epoch}
+    {pubkey : Cryptography.Bls.BLSPubkey} {i : ℕ} {status : Bool × Bool}
+    (found : s.validators.data.findIdx? (·.pubkey == pubkey) = some i)
+    (ok : depositTargetStatus s next pubkey = .ok status) :
+    ∃ v, s.validators.data[i]? = some v ∧
+      status = (decide (v.exitEpoch < FAR_FUTURE_EPOCH), decide (v.withdrawableEpoch < next)) := by
+  unfold depositTargetStatus at ok
+  rw [found] at ok
+  simp only [bind, Except.bind, liftArith, Except.mapError] at ok
+  split at ok
+  · cases ok
+  rename_i index converted
+  have conv : ofNatChecked i = .ok index := by
+    split at converted
+    · cases converted
+    · rename_i v h
+      cases converted
+      exact h
+  obtain ⟨_, same⟩ := ofNatChecked_ok_iff.mp conv
+  rw [same] at ok
+  split at ok
+  · rename_i v read
+    cases ok
+    exact ⟨v, read, rfl⟩
+  · cases ok
+
+/-- Applied deposits credit an old position only with deposits whose key first sits there. -/
+private theorem appliedDeposits_balances {f : Fork} {s : BeaconState preset f} :
+    ∀ (A : List PendingDeposit) (u w : BeaconState preset f), BalancesMatch u →
+      s.validators.data.size ≤ u.validators.data.size →
+      (∀ j < s.validators.data.size, u.validators.data[j]? = s.validators.data[j]?) →
+      A.foldlM (applyPendingDeposit config checks) u = .ok w →
+      ∀ i < s.validators.data.size, actualBalanceAt ⟨f, w⟩ i ≤ actualBalanceAt ⟨f, u⟩ i +
+        pendingAmount (A.filter fun d =>
+          s.validators.data.findIdx? (·.pubkey == d.pubkey) == some i)
+  | [], u, w, _, _, _, ok, i, _ => by
+    cases ok
+    simp [pendingAmount]
+  | d :: rest, u, w, matched, grows, same, ok, i, inside => by
+    rw [List.foldlM_cons, bind_ok_iff] at ok
+    obtain ⟨u1, step, ok⟩ := ok
+    have matched1 := (applyPendingDeposit_kept step).1 matched
+    have one : (s.validators.data.size ≤ u1.validators.data.size ∧
+        ∀ j < s.validators.data.size, u1.validators.data[j]? = s.validators.data[j]?) ∧
+        actualBalanceAt ⟨f, u1⟩ i ≤ actualBalanceAt ⟨f, u⟩ i +
+          (if (s.validators.data.findIdx? (·.pubkey == d.pubkey) == some i) = true then
+            d.amount.toNat else 0) := by
+      cases known : u.validators.data.findIdx? (·.pubkey == d.pubkey) with
+      | some k =>
+        obtain ⟨⟨balance, raised, before, after, value⟩, others⟩ :=
+          applyPendingDeposit_known_balances known step
+        have validators : u1.validators = u.validators := by
+          simp only [applyPendingDeposit, known, liftAccessor_ok, bind_ok_iff] at step
+          obtain ⟨_, _, raised⟩ := step
+          exact increaseBalance_validators raised
+        refine ⟨⟨by rw [validators]; exact grows, fun j lt => by rw [validators]; exact same j lt⟩,
+          ?_⟩
+        by_cases here : k = i
+        · subst here
+          have first := findIdx?_of_prefix inside same known
+          simp only [first, beq_self_eq_true, ↓reduceIte]
+          simp [actualBalanceAt, before, after, value]
+        · have kept : actualBalanceAt ⟨f, u1⟩ i = actualBalanceAt ⟨f, u⟩ i := by
+            simp [actualBalanceAt, others i (Ne.symm here)]
+          omega
+      | none =>
+        unfold applyPendingDeposit at step
+        split at step
+        · split at step
+          · cases step
+            exact ⟨⟨grows, same⟩, Nat.le_add_right _ _⟩
+          simp only [bind_ok_iff] at step
+          obtain ⟨_, _, step⟩ := step
+          split at step
+          · obtain ⟨validators, balances⟩ := addValidatorToRegistry_push step matched
+            have small : i < u.balances.data.size := by
+              have := matched; unfold BalancesMatch at this; omega
+            refine ⟨⟨by rw [validators, Array.size_push]; omega, fun j lt => ?_⟩, ?_⟩
+            · rw [validators, Array.getElem?_push]
+              split
+              · omega
+              · exact same j lt
+            · simp only [actualBalanceAt, balances, Array.getElem?_push, Nat.ne_of_lt small,
+                ↓reduceIte]
+              exact Nat.le_add_right _ _
+          · cases step
+            exact ⟨⟨grows, same⟩, Nat.le_add_right _ _⟩
+        · rename_i position found
+          rw [known] at found
+          cases found
+    have later := appliedDeposits_balances rest u1 w matched1 one.1.1 one.1.2 ok i inside
+    have two := one.2
+    simp only [List.filter_cons]
+    split
+    · rename_i hit
+      simp only [hit, ↓reduceIte] at two
+      simp only [pendingAmount, List.map_cons, List.sum_cons] at later ⊢
+      omega
+    · rename_i miss
+      simp only [miss, Bool.false_eq_true, ↓reduceIte] at two
+      omega
+
+/-- Pending amounts grow with the filter. -/
+private theorem pendingAmount_filter_le (l : List PendingDeposit) {p q : PendingDeposit → Bool}
+    (le : ∀ d ∈ l, p d = true → q d = true) :
+    pendingAmount (l.filter p) ≤ pendingAmount (l.filter q) := by
+  induction l with
+  | nil => simp [pendingAmount]
+  | cons d rest ih =>
+    have tail := ih (fun x member => le x (List.mem_cons_of_mem _ member))
+    simp only [List.filter_cons]
+    by_cases hp : p d = true
+    · simp only [hp, le d List.mem_cons_self hp, ↓reduceIte, pendingAmount, List.map_cons,
+        List.sum_cons] at tail ⊢
+      omega
+    · simp only [hp, Bool.false_eq_true, ↓reduceIte]
+      split
+      · simp only [pendingAmount, List.map_cons, List.sum_cons] at tail ⊢
+        omega
+      · exact tail
+
+/-- From Electra, the pending deposits credit at most the limit of validators per epoch.
+
+They credit the validators that do not withdraw at most the churn available. -/
+private theorem rise_pendingDeposits {f : Fork} {s t : BeaconState preset f}
+    {electra : .pectra ≤ f} (ok : processPendingDeposits config checks s electra = .ok t)
+    (matched : BalancesMatch s) :
+    ∃ (credit : ℕ → ℕ) (keys : Finset ℕ),
+      keys.card ≤ preset.MAX_PENDING_DEPOSITS_PER_EPOCH.toNat ∧ (∀ i ∉ keys, credit i = 0) ∧
+      (∀ i < s.validators.data.size,
+        actualBalanceAt ⟨f, t⟩ i ≤ actualBalanceAt ⟨f, s⟩ i + credit i) ∧
+      ∀ (U : Finset ℕ) (churn : Gwei), depositChurnLimit config s = .ok churn →
+        (∀ i ∈ U, ∃ v, s.validators.data[i]? = some v ∧
+          ¬ v.withdrawableEpoch < getCurrentEpoch s + 1) →
+        ∑ i ∈ U, credit i ≤ (s.depositBalanceToConsume electra).toNat + churn.toNat := by
+  obtain ⟨churn, available, stop, pass, read, applied, moved, churned, avail, facts, within,
+    balances⟩ := pendingDeposits_pass ok
+  let tgt (d : PendingDeposit) := s.validators.data.findIdx? (·.pubkey == d.pubkey)
+  refine ⟨fun i => pendingAmount (applied.filter fun d => tgt d == some i),
+    (applied.filterMap tgt).toFinset, ?_, ?_, ?_, ?_⟩
+  · refine (List.toFinset_card_le _).trans ((List.length_filterMap_le _ _).trans
+      (facts.appliedSublist.length_le.trans ?_))
+    have := facts.bounded
+    omega
+  · intro i absent
+    show pendingAmount _ = 0
+    have empty : (applied.filter fun d => tgt d == some i) = [] := by
+      rw [List.filter_eq_nil_iff]
+      intro d member hit
+      apply absent
+      rw [List.mem_toFinset, List.mem_filterMap]
+      exact ⟨d, member, by simpa using hit⟩
+    rw [empty]
+    rfl
+  · intro i inside
+    have bound := appliedDeposits_balances applied s pass.state matched (Nat.le_refl _)
+      (fun _ _ => rfl) facts.applies i inside
+    simpa only [actualBalanceAt, balances] using bound
+  · intro U churn' churnedOk hU
+    rw [churnedOk] at churned
+    cases churned
+    -- The credits to the validators of `U` come from the deposits whose key first sits in `U`.
+    let inU (d : PendingDeposit) : Bool := match tgt d with
+      | some i => decide (i ∈ U)
+      | none => false
+    have split (A : List PendingDeposit) :
+        ∑ i ∈ U, pendingAmount (A.filter fun d => tgt d == some i) =
+          pendingAmount (A.filter inU) := by
+      induction A with
+      | nil => simp [pendingAmount]
+      | cons d rest ih =>
+        have each : ∀ i, pendingAmount ((d :: rest).filter fun d => tgt d == some i) =
+            (if tgt d = some i then d.amount.toNat else 0) +
+              pendingAmount (rest.filter fun d => tgt d == some i) := by
+          intro i
+          simp only [List.filter_cons]
+          split
+          · rename_i hit
+            simp only [beq_iff_eq] at hit
+            simp [hit, pendingAmount]
+          · rename_i miss
+            simp only [beq_iff_eq] at miss
+            simp [miss]
+        rw [Finset.sum_congr rfl (fun i _ => each i), Finset.sum_add_distrib, ih]
+        simp only [List.filter_cons]
+        cases hd : tgt d with
+        | none => simp [inU, hd]
+        | some j =>
+          simp only [Option.some.injEq, Finset.sum_ite_eq, inU, hd]
+          by_cases member : j ∈ U
+          · simp [member, pendingAmount]
+          · simp [member]
+    show ∑ i ∈ U, pendingAmount (applied.filter fun d => tgt d == some i) ≤ _
+    rw [split, facts.appliedFilter, List.filter_filter]
+    have le := pendingAmount_filter_le read (q := fun deposit =>
+        (depositTargetStatus s (getCurrentEpoch s + 1) deposit.pubkey).toOption ==
+          some (false, false))
+      (p := fun d => inU d && ((depositTargetStatus s (getCurrentEpoch s + 1) d.pubkey).toOption !=
+          some (true, false))) (by
+        intro d member both
+        simp only [Bool.and_eq_true] at both
+        obtain ⟨inside, applies⟩ := both
+        obtain ⟨status, statusOk⟩ := facts.statusOk d member
+        cases hd : tgt d with
+        | none => simp [inU, hd] at inside
+        | some j =>
+          simp only [inU, hd, decide_eq_true_eq] at inside
+          obtain ⟨v, read, rfl⟩ := depositTargetStatus_of_found hd statusOk
+          obtain ⟨v', read', notWithdrawn⟩ := hU j inside
+          rw [read, Option.some.injEq] at read'
+          subst v'
+          simp only [statusOk, Except.toOption, bne_iff_ne, ne_eq] at applies
+          simp only [statusOk, Except.toOption, beq_iff_eq]
+          simp only [notWithdrawn, decide_false] at applies ⊢
+          cases h : decide (v.exitEpoch < FAR_FUTURE_EPOCH)
+          · rfl
+          · rw [h] at applies
+            exact absurd rfl applies)
+    have used := facts.used
+    have availLe := UInt64.le_iff_toNat_le.mp within
+    simp only [UInt64.toNat_zero, Nat.zero_add] at used
+    omega
+
+/-- A balance increase adds its amount at its own index and keeps every other balance. -/
+private theorem actualBalanceAt_increaseBalance {fork : Fork} {u w : BeaconState preset fork}
+    {index : ValidatorIndex} {delta : Gwei} (computed : increaseBalance u index delta = .ok w)
+    (j : Nat) : actualBalanceAt ⟨fork, w⟩ j =
+      actualBalanceAt ⟨fork, u⟩ j + if index.toNat = j then delta.toNat else 0 := by
+  cases found : u.balances.data[j]? with
+  | none =>
+    obtain ⟨inside, _, rfl⟩ := increaseBalance_eq_ok_iff.mp computed
+    have apart : index.toNat ≠ j := by
+      rintro rfl
+      rw [Array.getElem?_eq_getElem inside] at found
+      cases found
+    simp [actualBalanceAt, BeaconState.putBalance, found, apart]
+  | some balance =>
+    obtain ⟨raised, located, value⟩ := balance_increaseBalance computed found
+    simp only [actualBalanceAt, found, located, Option.map_some, Option.getD_some, value]
+
+/-- A balance decrease subtracts its amount at its own index and keeps every other balance. -/
+private theorem actualBalanceAt_decreaseBalance {fork : Fork} {u w : BeaconState preset fork}
+    {index : ValidatorIndex} {delta : Gwei} (computed : decreaseBalance u index delta = .ok w)
+    (j : Nat) : actualBalanceAt ⟨fork, w⟩ j =
+      actualBalanceAt ⟨fork, u⟩ j - if index.toNat = j then delta.toNat else 0 := by
+  cases found : u.balances.data[j]? with
+  | none =>
+    obtain ⟨inside, rfl⟩ := decreaseBalance_eq_ok_iff.mp computed
+    have apart : index.toNat ≠ j := by
+      rintro rfl
+      rw [Array.getElem?_eq_getElem inside] at found
+      cases found
+    simp [actualBalanceAt, BeaconState.putBalance, found, apart]
+  | some balance =>
+    obtain ⟨lowered, located, value⟩ := balance_decreaseBalance computed found
+    simp only [actualBalanceAt, found, located, Option.map_some, Option.getD_some, value]
+    split <;> omega
+
+/-- A consolidation moves at most the effective balance of a due source that is not slashed. -/
+private def consolidationGain {f : Fork} (s : BeaconState preset f) (next : Epoch)
+    (c : PendingConsolidation) : ℕ :=
+  match s.validators.data[c.sourceIndex.toNat]? with
+  | some w => if w.slashed = false ∧ w.withdrawableEpoch ≤ next then w.effectiveBalance.toNat
+    else 0
+  | none => 0
+
+/-- A pass of the consolidations keeps the registry and credits each target at most its gains. -/
+private theorem passConsolidations_gain {f : Fork} {next : Epoch} :
+    ∀ {list : List PendingConsolidation} {s : BeaconState preset f} {result},
+      passPendingConsolidations next s list = .ok result →
+      result.1.validators = s.validators ∧
+      ∀ i, actualBalanceAt ⟨f, result.1⟩ i ≤ actualBalanceAt ⟨f, s⟩ i +
+        (list.map fun c => if c.targetIndex.toNat = i then consolidationGain s next c else 0).sum
+  | [], _, _, computed => by
+    simp only [passPendingConsolidations, pure, Except.pure, Except.ok.injEq] at computed
+    subst computed
+    exact ⟨rfl, fun _ => Nat.le_add_right _ _⟩
+  | consolidation :: rest, s, result, computed => by
+    unfold passPendingConsolidations at computed
+    simp only [bind, Except.bind, pure, Except.pure] at computed
+    split at computed
+    · cases computed
+    rename_i source sourceOk
+    have sourceRead := getValidator_eq_ok_iff.mp (liftAccessor_ok.mp sourceOk)
+    split at computed
+    · split at computed
+      · cases computed
+      rename_i recur
+      cases computed
+      obtain ⟨same, bound⟩ := passConsolidations_gain recur
+      refine ⟨same, fun i => (bound i).trans ?_⟩
+      simp only [List.map_cons, List.sum_cons]
+      omega
+    split at computed
+    · cases computed
+      exact ⟨rfl, fun _ => Nat.le_add_right _ _⟩
+    rename_i notSlashed waiting
+    split at computed
+    · cases computed
+    split at computed
+    · cases computed
+    rename_i loweredState loweredOk
+    split at computed
+    · cases computed
+    rename_i raisedState raisedOk
+    split at computed
+    · cases computed
+    rename_i recur
+    cases computed
+    have lowered := liftAccessor_ok.mp loweredOk
+    have raised := liftAccessor_ok.mp raisedOk
+    have validators : raisedState.validators = s.validators :=
+      (increaseBalance_validators raised).trans (decreaseBalance_validators lowered)
+    obtain ⟨same, bound⟩ := passConsolidations_gain recur
+    have gains : ∀ c, consolidationGain raisedState next c = consolidationGain s next c := by
+      intro c
+      simp only [consolidationGain, validators]
+    simp only [gains] at bound
+    refine ⟨same.trans validators, fun i => ?_⟩
+    have down := actualBalanceAt_decreaseBalance lowered i
+    have up := actualBalanceAt_increaseBalance raised i
+    have head : (if consolidation.targetIndex.toNat = i then
+        consolidationGain s next consolidation else 0) =
+        if consolidation.targetIndex.toNat = i then source.effectiveBalance.toNat else 0 := by
+      have clear : source.slashed = false := by simpa using notSlashed
+      have due : source.withdrawableEpoch ≤ next := UInt64.not_lt.mp waiting
+      simp [consolidationGain, sourceRead, clear, due]
+    have moved := Base.Uint64.toNat_min ‹Gwei› source.effectiveBalance
+    have movedLe : (min ‹Gwei› source.effectiveBalance).toNat ≤ source.effectiveBalance.toNat := by
+      rw [moved]; exact Nat.min_le_right _ _
+    have later := bound i
+    simp only [List.map_cons, List.sum_cons, head]
+    split at up <;> split <;> omega
+
+/-- The slashings of an epoch never raise a balance. -/
+private theorem slashings_lower {f : Fork} {s t : BeaconState preset f} (early : f < .glamsterdam)
+    (ok : processSlashings s = .ok t) (i : ℕ) :
+    actualBalanceAt ⟨f, t⟩ i ≤ actualBalanceAt ⟨f, s⟩ i := by
+  have key {penalty : Validator → ℕ}
+      (facts : ∀ i, (i < s.validators.data.size → ∃ validator,
+        s.validators.data[i]? = some validator ∧
+        t.balances.data[i]?.map UInt64.toNat =
+          s.balances.data[i]?.map fun balance => balance.toNat - penalty validator) ∧
+        (s.validators.data.size ≤ i → t.balances.data[i]? = s.balances.data[i]?)) :
+      actualBalanceAt ⟨f, t⟩ i ≤ actualBalanceAt ⟨f, s⟩ i := by
+    by_cases inside : i < s.validators.data.size
+    · obtain ⟨v, _, eq⟩ := (facts i).1 inside
+      simp only [actualBalanceAt]
+      cases h : s.balances.data[i]? <;> cases h' : t.balances.data[i]? <;> simp_all
+    · simp [actualBalanceAt, (facts i).2 (by omega)]
+  by_cases electra : .pectra ≤ f
+  · obtain ⟨_, _, _, _, _, rest⟩ :=
+      processSlashings_balances_toNat_of_electra electra (s.validators.bound early) ok
+    exact key rest
+  · obtain ⟨_, _, _, _, _, rest⟩ :=
+      processSlashings_balances_toNat_of_lt_electra (Nat.lt_of_not_le electra) ok
+    exact key rest
 
 end EthLib.Consensus
