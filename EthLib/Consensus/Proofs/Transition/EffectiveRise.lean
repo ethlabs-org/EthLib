@@ -960,41 +960,6 @@ private theorem rise_pendingDeposits {f : Fork} {s t : BeaconState preset f}
     simp only [UInt64.toNat_zero, Nat.zero_add] at used
     omega
 
-/-- A balance increase adds its amount at its own index and keeps every other balance. -/
-private theorem actualBalanceAt_increaseBalance {fork : Fork} {u w : BeaconState preset fork}
-    {index : ValidatorIndex} {delta : Gwei} (computed : increaseBalance u index delta = .ok w)
-    (j : Nat) : actualBalanceAt ⟨fork, w⟩ j =
-      actualBalanceAt ⟨fork, u⟩ j + if index.toNat = j then delta.toNat else 0 := by
-  cases found : u.balances.data[j]? with
-  | none =>
-    obtain ⟨inside, _, rfl⟩ := increaseBalance_eq_ok_iff.mp computed
-    have apart : index.toNat ≠ j := by
-      rintro rfl
-      rw [Array.getElem?_eq_getElem inside] at found
-      cases found
-    simp [actualBalanceAt, BeaconState.putBalance, found, apart]
-  | some balance =>
-    obtain ⟨raised, located, value⟩ := balance_increaseBalance computed found
-    simp only [actualBalanceAt, found, located, Option.map_some, Option.getD_some, value]
-
-/-- A balance decrease subtracts its amount at its own index and keeps every other balance. -/
-private theorem actualBalanceAt_decreaseBalance {fork : Fork} {u w : BeaconState preset fork}
-    {index : ValidatorIndex} {delta : Gwei} (computed : decreaseBalance u index delta = .ok w)
-    (j : Nat) : actualBalanceAt ⟨fork, w⟩ j =
-      actualBalanceAt ⟨fork, u⟩ j - if index.toNat = j then delta.toNat else 0 := by
-  cases found : u.balances.data[j]? with
-  | none =>
-    obtain ⟨inside, rfl⟩ := decreaseBalance_eq_ok_iff.mp computed
-    have apart : index.toNat ≠ j := by
-      rintro rfl
-      rw [Array.getElem?_eq_getElem inside] at found
-      cases found
-    simp [actualBalanceAt, BeaconState.putBalance, found, apart]
-  | some balance =>
-    obtain ⟨lowered, located, value⟩ := balance_decreaseBalance computed found
-    simp only [actualBalanceAt, found, located, Option.map_some, Option.getD_some, value]
-    split <;> omega
-
 /-- A consolidation moves at most the effective balance of a due source that is not slashed. -/
 private def consolidationGain {f : Fork} (s : BeaconState preset f) (next : Epoch)
     (c : PendingConsolidation) : ℕ :=
@@ -1639,21 +1604,6 @@ private theorem rise_sum {U A D B : Finset ℕ} {rise crossing transfer : ℕ �
   simp only [Finset.sum_add_distrib, Finset.sum_ite_mem, Finset.sum_const,
     Nat.mul_add]
   rfl
-
-/-- States that agree on activity in an epoch, with a longer later registry, share its actives. -/
-private theorem activeFilter_eq {f g : Fork} {a : BeaconState preset f}
-    {b : BeaconState preset g} {ep : Epoch} (active : ∀ i, isActiveAt b ep i = isActiveAt a ep i)
-    (grows : a.validators.data.size ≤ b.validators.data.size) :
-    (Finset.range b.validators.data.size).filter (fun i => isActiveAt b ep i = true) =
-      (Finset.range a.validators.data.size).filter (fun i => isActiveAt a ep i = true) := by
-  ext i
-  simp only [Finset.mem_filter, Finset.mem_range, active]
-  constructor
-  · rintro ⟨-, hit⟩
-    obtain ⟨v, found, -⟩ := isActiveAt_eq_true_iff.mp hit
-    exact ⟨(Array.getElem?_eq_some_iff.mp found).1, hit⟩
-  · rintro ⟨inside, hit⟩
-    exact ⟨Nat.lt_of_lt_of_le inside grows, hit⟩
 
 /-- Within one epoch before Gloas, the churn left of the pending deposits stays. -/
 private theorem run_depositCarry {x y : ForkedBeaconState preset} (tail : Run config checks x y)
