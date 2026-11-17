@@ -83,6 +83,22 @@ def blockPerIncrement (preset : Preset) (state : BeaconState preset fork) : Nat 
     | .error _ => 0
   else 0
 
+/-- The weighted base reward of each flag set, for one validator. -/
+def flagValue (flags : ParticipationFlags) (base : Nat) : Nat :=
+  ((List.finRange PARTICIPATION_FLAG_WEIGHTS.length).map fun flag =>
+    if hasFlag flags flag.val.toUInt64 then base * PARTICIPATION_FLAG_WEIGHTS[flag].toNat
+    else 0).sum
+
+/-- The weighted base rewards of the flags set in a list, over its first `count` positions.
+
+Position `j` weighs its flags by the base reward `base j`.
+
+A position past the end of the list weighs nothing. -/
+def flagSumOf (base : Nat → Nat) (count : Nat) (participation : EpochParticipation preset fork) :
+    Nat :=
+  ((List.range count).map fun j =>
+    ((participation.data[j]?).map (flagValue · (base j))).getD 0).sum
+
 /-- From Altair, the weight of the participation flags of a state, at a base reward per increment.
 
 It sums over the positions of the registry, in the previous and the current epoch.
@@ -95,16 +111,11 @@ It is zero before Altair. -/
 def flagRewardWeight (preset : Preset) (perIncrement : Nat) (state : BeaconState preset fork) :
     Nat :=
   if altair : .altair ≤ fork then
-    let weigh (participation : EpochParticipation preset fork) : Nat :=
-      ((List.range state.validators.data.size).map fun j =>
-        ((participation.data[j]?).map fun flags =>
-          ((List.finRange PARTICIPATION_FLAG_WEIGHTS.length).map fun flag =>
-            if hasFlag flags flag.val.toUInt64 then
-              ((state.validators.data[j]?).map (·.effectiveBalance.toNat)).getD 0 /
-                preset.EFFECTIVE_BALANCE_INCREMENT.toNat * perIncrement *
-                  PARTICIPATION_FLAG_WEIGHTS[flag].toNat
-            else 0).sum).getD 0).sum
-    weigh (state.previousEpochParticipation altair) + weigh (state.currentEpochParticipation altair)
+    let base (j : Nat) : Nat :=
+      ((state.validators.data[j]?).map (·.effectiveBalance.toNat)).getD 0 /
+        preset.EFFECTIVE_BALANCE_INCREMENT.toNat * perIncrement
+    flagSumOf base state.validators.data.size (state.previousEpochParticipation altair) +
+      flagSumOf base state.validators.data.size (state.currentEpochParticipation altair)
   else 0
 
 /-- From Altair, a bound on the rewards that a block pays for its sync aggregate.
@@ -1108,25 +1119,9 @@ end Totals
 
 section Flags
 
-/-- The weighted base reward of each flag set, for one validator. -/
-def flagValue (flags : ParticipationFlags) (base : Nat) : Nat :=
-  ((List.finRange PARTICIPATION_FLAG_WEIGHTS.length).map fun flag =>
-    if hasFlag flags flag.val.toUInt64 then base * PARTICIPATION_FLAG_WEIGHTS[flag].toNat
-    else 0).sum
-
 /-- The base reward of a position, read from the effective balances of a fixed state. -/
 private def baseAt (first : BeaconState preset fork) (perIncrement : Nat) (j : Nat) : Nat :=
   effectiveAt ⟨fork, first⟩ j / preset.EFFECTIVE_BALANCE_INCREMENT.toNat * perIncrement
-
-/-- The weighted base rewards of the flags set in a list, over its first `count` positions.
-
-Position `j` weighs its flags by the base reward `base j`.
-
-A position past the end of the list weighs nothing. -/
-def flagSumOf (base : Nat → Nat) (count : Nat) (participation : EpochParticipation preset fork) :
-    Nat :=
-  ((List.range count).map fun j =>
-    ((participation.data[j]?).map (flagValue · (base j))).getD 0).sum
 
 /-- The weighted base rewards of the flags set in a list, over the positions of a fixed registry.
 -/
