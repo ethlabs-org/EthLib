@@ -43,7 +43,7 @@ end EthLib.Consensus
 
 namespace EthLib.Consensus.Models.Network
 
-open Base Models
+open Base Uint64 Models
 
 variable {preset : Preset} {fork : Fork}
 
@@ -87,5 +87,42 @@ theorem exitStake_le_exitReserve (config : Config) {post : Fork}
     decide_eq_false_iff_not, UInt64.le_iff_toNat_le, UInt64.lt_iff_toNat_lt] at current absent
   rw [UInt64.le_iff_toNat_le] at low
   omega
+
+/-- A head state that keeps the source's fixed activity omits at most the reserve per near epoch.
+
+Each full epoch of the window must lie between the source's epoch and three epochs after it.
+
+The committees of a full epoch hold every validator active in it at the head state.
+
+So an omitted source validator is inactive at that epoch, and `exitStake_le_exitReserve` applies. -/
+theorem windowExitBound_of_activeKept (config : Config) (store : Store preset fork)
+    (source : BeaconState preset fork) (head : Root) (first last : Slot)
+    {headState : BeaconState preset fork} (preGloas : fork < .glamsterdam)
+    (positive : 0 < preset.SLOTS_PER_EPOCH.toNat) (fixedWindow : preset.ExitWindowFixed)
+    (headOk : store.blockState head = .ok headState)
+    (kept : ActiveKept (activityFixedEpoch source) source headState)
+    (near : ∀ (epoch : Epoch) (epochStart next epochEnd : Slot),
+      computeStartSlotAtEpoch preset epoch = .ok epochStart →
+      addChecked epochStart preset.SLOTS_PER_EPOCH = .ok next →
+      subChecked next 1 = .ok epochEnd → first ≤ epochStart → epochEnd ≤ last →
+      getCurrentEpoch source ≤ epoch ∧ epoch.toNat ≤ (getCurrentEpoch source).toNat + 3) :
+    WindowExitBound (config := config) store source head first last := by
+  intro epoch epochStart next epochEnd members startOk nextOk endOk firstLe lastLe membersOk
+  obtain ⟨low, high⟩ := near epoch epochStart next epochEnd startOk nextOk endOk firstLe lastLe
+  refine Nat.le_trans (stake_mono ?_)
+    (exitStake_le_exitReserve config preGloas fixedWindow kept low high)
+  intro v member
+  simp only [Finset.mem_filter] at member ⊢
+  refine ⟨member.1, ?_⟩
+  cases active : isActiveAt headState epoch v.toNat
+  · rfl
+  · -- The window's slots cover the whole epoch, so its committees hold the active validator.
+    have startNat := (computeStartSlotAtEpoch_ok_iff.mp startOk).2
+    have nextNat := (addChecked_ok_iff.mp nextOk).2
+    have endNat := (subChecked_ok_iff.mp endOk)
+    simp only [UInt64.toNat_one] at endNat
+    exact absurd (Store.mem_getCommitteesBetweenSlots_of_active (store := store) preGloas positive
+      membersOk headOk (by omega) (by rw [Nat.succ_mul]; omega)
+      (mem_getActiveValidatorIndices_of_isActiveAt active)) member.2
 
 end EthLib.Consensus.Models.Network
