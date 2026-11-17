@@ -288,27 +288,8 @@ private theorem Execution.mem_window_of_target {anchor : Store preset fork}
         exact headTarget
       have run := reached.runKept_of_checkpointState anchorSlot checkpoint headBlockFound startOk
         (atOrAfter headBlock headBlockFound) targetFound headFound
-      -- The target state is at the start of the epoch or later.
-      obtain ⟨base, start', baseFound, startOk', fromBlock⟩ :=
-        reached.checkpointStatesFromBlocks targetFound
-      rw [startOk, Except.ok.injEq] at startOk'
-      subst startOk'
-      have targetLe : first ≤ targetState.slot := by
-        rcases fromBlock with ⟨baseLe, rfl⟩ | ⟨-, _, -, slotsOk⟩
-        · exact baseLe
-        · exact (processSlots_slot slotsOk).2 ▸ UInt64.le_refl _
-      have targetEpochLe : (computeEpochAtSlot preset attestation.data.slot).toNat ≤
-          (getCurrentEpoch targetState).toNat := by
-        rcases Nat.eq_zero_or_pos preset.SLOTS_PER_EPOCH.toNat with zero | positive
-        · rw [computeEpochAtSlot, UInt64.toNat_div, zero, Nat.div_zero]
-          exact Nat.zero_le _
-        · have voteStart : computeStartSlotAtEpoch preset
-              (computeEpochAtSlot preset attestation.data.slot) = .ok first := by
-            rw [voteEpoch]
-            exact firstOk
-          rw [← computeEpochAtSlot_computeStartSlotAtEpoch (UInt64.lt_iff_toNat_lt.mpr positive)
-            voteStart, getCurrentEpoch_toNat]
-          exact epoch_le_of_slot_le _ _ (UInt64.le_iff_toNat_le.mp targetLe)
+      -- The target state is in the epoch of the vote or a later one.
+      have targetEpochLe := reached.epoch_le_of_checkpointState targetFound origin.targetEpoch
       exact run.committees_count (by omega) (le_activityFixedEpoch maxLookahead (by omega))
         (by rw [voteEpoch]; omega)
   obtain ⟨kept, count⟩ := agree
