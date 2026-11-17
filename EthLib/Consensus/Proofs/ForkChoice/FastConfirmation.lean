@@ -10,6 +10,7 @@ public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmation.HistoricalAnch
 public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmation.HistoricalCoverage
 public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmation.Indicators
 public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmation.QuorumDrift
+public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmation.QuorumDriftBound
 public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmation.QuorumReserve
 public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmation.ReceiverExits
 public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmation.RootViability
