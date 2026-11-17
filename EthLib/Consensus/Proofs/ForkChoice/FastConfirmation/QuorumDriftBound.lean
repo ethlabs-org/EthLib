@@ -38,38 +38,6 @@ open Base Uint64 Models
 variable {preset : Preset} {fork : Fork} {config : Config} {checks : SignatureChecks}
 
 
-/-- Two registries with the same active positions in an epoch, and the same values there.
-
-Sums over their active positions agree. -/
-private theorem activeSum_congr {f h : Fork} {a : BeaconState preset f} {b : BeaconState preset h}
-    {epoch epoch' : Epoch} {first second : ℕ → ℕ}
-    (same : ∀ i, isActiveAt a epoch i = isActiveAt b epoch' i)
-    (values : ∀ i, isActiveAt a epoch i = true → first i = second i) :
-    ∑ i ∈ (Finset.range a.validators.data.size).filter (fun i => isActiveAt a epoch i = true),
-        first i =
-      ∑ i ∈ (Finset.range b.validators.data.size).filter
-        (fun i => isActiveAt b epoch' i = true), second i := by
-  have inside {f : Fork} {c : BeaconState preset f} {e : Epoch} {i : ℕ}
-      (active : isActiveAt c e i = true) : i < c.validators.data.size := by
-    obtain ⟨_, found, -⟩ := isActiveAt_eq_true_iff.mp active
-    exact (Array.getElem?_eq_some_iff.mp found).1
-  have sets : (Finset.range a.validators.data.size).filter (fun i => isActiveAt a epoch i = true) =
-      (Finset.range b.validators.data.size).filter (fun i => isActiveAt b epoch' i = true) := by
-    ext i
-    simp only [Finset.mem_filter, Finset.mem_range]
-    constructor
-    · rintro ⟨-, active⟩
-      rw [same] at active
-      exact ⟨inside active, active⟩
-    · rintro ⟨-, active⟩
-      rw [← same] at active
-      exact ⟨inside active, active⟩
-  rw [sets]
-  refine Finset.sum_congr rfl fun i member => ?_
-  rw [Finset.mem_filter] at member
-  exact values i (by rw [same]; exact member.2)
-
-
 /-- A sum over some voters of a function of their positions is at most its sum over positions.
 
 Each voter's position must be one of those positions. -/
@@ -304,8 +272,10 @@ theorem quorumDrift_le_quorumReserve
   have totalS : total.toNat = max inc
       (∑ i ∈ positions with upcoming i = true, effectiveAt ⟨fork, state⟩ i) := by
     rw [getTotalActiveBalance_toNat totalOk, nextEpoch]
-    exact congrArg (max inc) (activeSum_congr (fun i => (nextS i).trans (nextP i).symm)
-      fun _ _ => rfl)
+    -- Both states take their active set in the next epoch from the boundary state.
+    rw [activeFilter_eq nextS (edge.append tailS).registryLifecycle.size_le,
+      activeFilter_eq nextP (edge.append tailP).registryLifecycle.size_le]
+    rfl
   have totalP : pulledTotal.toNat = total' := getTotalActiveBalance_toNat pulledOk
   have rise : ∑ i ∈ positions with upcoming i = true, (effectiveAt ⟨fork, state⟩ i - effective i) ≤
       min headroom (crossing + (recipients + debited) * preset.upwardBand + debited * creditMax +
