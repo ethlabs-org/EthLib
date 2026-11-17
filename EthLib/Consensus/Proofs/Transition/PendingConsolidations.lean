@@ -595,6 +595,48 @@ private theorem blockExecution {body : BeaconBlockBody preset fork} {bellatrix :
 
 end WithdrawalKept
 
+/-- A queued consolidation assigns its source an exit epoch and pushes one entry on the queue.
+
+The exit epoch comes from the consolidation churn, and is assigned when the withdrawal delay is
+positive, since the withdrawal epoch is the exit epoch plus that delay and fits in 64 bits.
+
+The source is written over the state the churn returns, and the new state keeps its validators. -/
+theorem queueConsolidation_queued {electra : .pectra ≤ fork}
+    {sourceIndex targetIndex : ValidatorIndex} {source : Validator}
+    (delay : 0 < config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat)
+    (ok : queueConsolidation config state electra sourceIndex source targetIndex = .ok after) :
+    ∃ (churned written : BeaconState preset fork) (epoch withdrawal : Epoch),
+      computeConsolidationEpochAndUpdateChurn config state electra source.effectiveBalance =
+        .ok (churned, epoch) ∧
+      epoch ≠ FAR_FUTURE_EPOCH ∧
+      withdrawal.toNat = epoch.toNat + config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat ∧
+      churned.setValidator sourceIndex
+        { source with exitEpoch := epoch, withdrawableEpoch := withdrawal } = .ok written ∧
+      after.validators = written.validators ∧
+      (after.pendingConsolidations electra).data.toList =
+        (state.pendingConsolidations electra).data.toList ++ [⟨sourceIndex, targetIndex⟩] := by
+  simp only [queueConsolidation, bind_ok_iff, liftAccessor_ok, liftArith, mapError_ok_iff,
+    pure, Except.pure] at ok
+  obtain ⟨⟨churned, epoch⟩, churnOk, withdrawal, added, written, set, pending, appended, final⟩ :=
+    ok
+  cases final
+  have churnQueue : churned.pendingConsolidations = state.pendingConsolidations := by
+    simp only [computeConsolidationEpochAndUpdateChurn, bind_ok_iff, pure, Except.pure,
+      Except.ok.injEq] at churnOk
+    obtain ⟨_, _, _, _, _, _, final⟩ := churnOk
+    cases final; rfl
+  have queueEq := SamePendingQueue.setValidator set
+  change written.pendingConsolidations = churned.pendingConsolidations at queueEq
+  have sum := (Uint64.addChecked_ok_iff.mp added).2
+  refine ⟨churned, written, epoch, withdrawal, churnOk, fun eq => ?_, sum, set, rfl, ?_⟩
+  · have bound := withdrawal.toNat_lt
+    rw [eq] at sum
+    have farNat : FAR_FUTURE_EPOCH.toNat = 18446744073709551615 := rfl
+    rw [farNat] at sum
+    omega
+  · show pending.data.toList = _
+    rw [appendWithinLimit_data appended, queueEq, churnQueue, Array.toList_push]
+
 /-- Distinct pending sources have activated and keep their assigned exit and withdrawal delay. -/
 def PendingConsolidationInvariant (config : Config) {fork : Fork}
     (s : BeaconState preset fork) : Prop :=
@@ -681,28 +723,9 @@ private theorem queue {electra : .pectra ≤ fork} {sourceIndex targetIndex : Va
     (ok : queueConsolidation config state electra sourceIndex source targetIndex = .ok after) :
     PendingConsolidationInvariant config after := by
   have frame := frame_queueConsolidation found ok
-  simp only [queueConsolidation, bind_ok_iff, liftAccessor_ok, liftArith, mapError_ok_iff,
-    pure, Except.pure] at ok
-  obtain ⟨⟨churned, epoch⟩, churnOk, withdrawal, added, written, set, pending, appended, final⟩ :=
-    ok
-  cases final
-  have data := appendWithinLimit_data appended
+  obtain ⟨churned, written, epoch, withdrawal, churnOk, assigned, sum, set, validators, pushed⟩ :=
+    queueConsolidation_queued delay ok
   have churnRegistry := (computeConsolidationEpochAndUpdateChurn_earliest churnOk).2.1
-  have churnQueue : churned.pendingConsolidations = state.pendingConsolidations := by
-    simp only [computeConsolidationEpochAndUpdateChurn, bind_ok_iff, pure, Except.pure,
-      Except.ok.injEq] at churnOk
-    obtain ⟨_, _, _, _, _, _, final⟩ := churnOk
-    cases final; rfl
-  have queueEq := SamePendingQueue.setValidator set
-  change written.pendingConsolidations = churned.pendingConsolidations at queueEq
-  have sum := (Uint64.addChecked_ok_iff.mp added).2
-  have assigned : epoch ≠ FAR_FUTURE_EPOCH := by
-    intro eq
-    have bound := withdrawal.toNat_lt
-    rw [eq] at sum
-    have farNat : FAR_FUTURE_EPOCH.toNat = 18446744073709551615 := rfl
-    rw [farNat] at sum
-    omega
   intro witness
   obtain ⟨unique, sources⟩ := holds witness
   have absent : sourceIndex ∉ ((state.pendingConsolidations witness).data.toList.map
@@ -713,14 +736,13 @@ private theorem queue {electra : .pectra ≤ fork} {sourceIndex targetIndex : Va
     rw [eq, found] at read
     cases read
     exact assigned far
-  change (pending.data.toList.map (·.sourceIndex)).Nodup ∧ _
-  rw [data, queueEq, churnQueue, Array.toList_push]
+  have sameEpoch : getCurrentEpoch after = getCurrentEpoch state :=
+    congrArg (computeEpochAtSlot preset) frame.slot
+  rw [pushed, validators, sameEpoch]
   refine ⟨?_, ?_⟩
   · simpa [List.map_append, List.nodup_append, unique] using absent
   · intro c mem
     simp only [List.mem_append, List.mem_singleton] at mem
-    have sameEpoch : getCurrentEpoch written = getCurrentEpoch state :=
-      congrArg (computeEpochAtSlot preset) frame.slot
     rcases mem with mem | rfl
     · obtain ⟨v, read, activation, ordered, assigned⟩ := sources c mem
       have distinct : c.sourceIndex ≠ sourceIndex := by
@@ -732,14 +754,12 @@ private theorem queue {electra : .pectra ≤ fork} {sourceIndex targetIndex : Va
       · have read' := getValidator_setValidator_of_ne set distinct
         rw [getValidator_of_validators_eq churnRegistry] at read'
         exact getValidator_eq_ok_iff.mp (read'.trans (getValidator_eq_ok_iff.mpr read))
-      · change v.activationEpoch ≤ getCurrentEpoch written
-        rw [sameEpoch]; exact activation
+      · exact activation
     · refine ⟨{source with exitEpoch := epoch, withdrawableEpoch := withdrawal}, ?_, ?_, ?_,
         assigned⟩
       · have read := getValidator_eq_ok_iff.mp (getValidator_setValidator_self set)
         exact read
-      · change source.activationEpoch ≤ getCurrentEpoch written
-        rw [sameEpoch]; exact active
+      · exact active
       · exact Nat.le_of_eq sum.symm
 
 private theorem request {electra : .pectra ≤ fork} {request : ConsolidationRequest}

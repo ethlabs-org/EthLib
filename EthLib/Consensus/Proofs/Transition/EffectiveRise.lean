@@ -202,28 +202,8 @@ private theorem queueStep_queueConsolidation {electra : .pectra ≤ f}
     (delay : 1 ≤ config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat)
     (ok : queueConsolidation config s electra sourceIndex source targetIndex = .ok t) :
     QueueGrows s t := by
-  simp only [queueConsolidation, bind_ok_iff, liftAccessor_ok, liftArith, mapError_ok_iff,
-    pure, Except.pure] at ok
-  obtain ⟨⟨churned, epoch⟩, churnOk, withdrawal, added, written, set, pending, appended, final⟩ :=
-    ok
-  cases final
-  have data := appendWithinLimit_data appended
-  have churnQueue : churned.pendingConsolidations = s.pendingConsolidations := by
-    simp only [computeConsolidationEpochAndUpdateChurn, bind_ok_iff, pure, Except.pure,
-      Except.ok.injEq] at churnOk
-    obtain ⟨_, _, _, _, _, _, final⟩ := churnOk
-    cases final; rfl
-  have queueEq : written.pendingConsolidations = churned.pendingConsolidations := by
-    obtain ⟨_, rfl⟩ := setValidator_ok set
-    rfl
-  have sum := (Uint64.addChecked_ok_iff.mp added).2
-  have assigned : epoch ≠ FAR_FUTURE_EPOCH := by
-    intro eq
-    have bound := withdrawal.toNat_lt
-    rw [eq] at sum
-    have farNat : FAR_FUTURE_EPOCH.toNat = 18446744073709551615 := rfl
-    rw [farNat] at sum
-    omega
+  obtain ⟨churned, written, epoch, withdrawal, churnOk, assigned, -, set, validators, pushed⟩ :=
+    queueConsolidation_queued delay ok
   have later : (getCurrentEpoch s).toNat < epoch.toNat := by
     cases first : computeActivationExitEpoch preset (getCurrentEpoch s) with
     | error =>
@@ -235,12 +215,7 @@ private theorem queueStep_queueConsolidation {electra : .pectra ≤ f}
       have firstEq := (computeActivationExitEpoch_ok_iff.mp first).2
       omega
   intro electra'
-
-  change (∀ c ∈ (s.pendingConsolidations electra').data.toList, c ∈ pending.data.toList) ∧
-    ∀ c ∈ pending.data.toList, c ∈ (s.pendingConsolidations electra').data.toList ∨
-      ∃ w, written.validators.data[c.sourceIndex.toNat]? = some w ∧
-        getCurrentEpoch s < w.exitEpoch ∧ w.exitEpoch ≠ FAR_FUTURE_EPOCH
-  rw [data, queueEq, churnQueue, Array.toList_push]
+  rw [pushed, validators]
   refine ⟨fun c member => List.mem_append_left _ member, fun c member => ?_⟩
   rcases List.mem_append.mp member with member | member
   · exact .inl member
