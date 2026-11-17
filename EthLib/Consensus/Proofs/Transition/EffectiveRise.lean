@@ -1557,78 +1557,6 @@ private theorem rise_epoch {f : Fork} {c t : BeaconState preset f} (altair : .al
   · rw [eE.depositCarry nofun, lE.depositCarry nofun, gE.depositCarry nofun,
       rE.depositCarry nofun, sE.depositCarry nofun, jE.depositCarry nofun]
 
-/-- An upgrade never raises an effective balance before Gloas.
-
-The upgrade to Electra clears the effective balances of the validators not yet activated. -/
-private theorem rise_upgrade_upper {s : ForkedBeaconState preset}
-    {t : {t : ForkedBeaconState preset // s.fork < t.fork}}
-    (ok : upgradeNext config checks s = .ok t) (early : t.val.fork < .glamsterdam) (i : Nat) :
-    effectiveAt t.val i ≤ effectiveAt s i := by
-  have reset {f : Fork} {a b : BeaconState preset f} {electra : .pectra ≤ f}
-      {index : ValidatorIndex} (ok : queuePreActivation a electra index = .ok b) :
-      effectiveAt ⟨f, b⟩ i ≤ effectiveAt ⟨f, a⟩ i := by
-    simp only [queuePreActivation, bind_ok_iff, liftAccessor_ok, pure, Except.pure,
-      Except.ok.injEq] at ok
-    obtain ⟨_, _, _, _, _, _, _, balance, _, validator, rfl⟩ := ok
-    obtain ⟨_, rfl⟩ := setBalance_ok balance
-    obtain ⟨inside, rfl⟩ := setValidator_ok validator
-    by_cases eq : i = index.toNat
-    · subst i
-      simp [effectiveAt, BeaconState.putValidator, Serialization.Ssz.RootedForkList.data_set]
-    · simp [effectiveAt, BeaconState.putValidator, BeaconState.putBalance,
-        Serialization.Ssz.RootedForkList.data_set,
-        Ne.symm eq]
-  obtain ⟨fork, state⟩ := s
-  cases fork <;>
-    simp only [upgradeNext, bind_ok_iff, pure, Except.pure, Except.ok.injEq, throw,
-      throwThe, MonadExceptOf.throw, reduceCtorEq] at ok
-  · obtain ⟨_, upgraded, rfl⟩ := ok
-    simp only [effectiveAt, (upgradeToAltair_spec upgraded).1, Nat.le_refl]
-  · subst ok; exact Nat.le_refl _
-  · subst ok; exact Nat.le_refl _
-  · subst ok; exact Nat.le_refl _
-  · obtain ⟨_, upgraded, rfl⟩ := ok
-    simp only [upgradeToElectra, bind_ok_iff] at upgraded
-    obtain ⟨_, _, _, _, _, _, _, _, middle, queued, compounded⟩ := upgraded
-    have one := foldlM_ok_invariant
-      (fun t => effectiveAt ⟨.pectra, t⟩ i ≤ effectiveAt ⟨.dencun, state⟩ i)
-      (fun _ _ _ previous ok => (reset ok).trans previous) (Nat.le_refl _) queued
-    refine foldlM_ok_invariant
-      (fun t => effectiveAt ⟨.pectra, t⟩ i ≤ effectiveAt ⟨.dencun, state⟩ i)
-      (fun a index b previous ok => ?_) one compounded
-    unfold queueCompoundingExcess at ok
-    split at ok
-    · split at ok
-      · have step := liftAccessor_ok.mp ok
-        simp only [queueExcessActiveBalance, bind_ok_iff] at step
-        obtain ⟨_, _, step⟩ := step
-        split at step
-        · simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at step
-          obtain ⟨_, _, _, _, _, set, rfl⟩ := step
-          obtain ⟨_, rfl⟩ := setBalance_ok set
-          exact previous
-        · cases step; exact previous
-      · cases ok; exact previous
-    · cases ok; exact previous
-  · obtain ⟨_, upgraded, rfl⟩ := ok
-    simp only [effectiveAt, (upgradeToFulu_spec upgraded).1, Nat.le_refl]
-  · obtain ⟨_, _, rfl⟩ := ok
-    exact False.elim (Nat.lt_irrefl _ early)
-  · obtain ⟨_, _, rfl⟩ := ok
-    exact False.elim ((by decide : ¬Fork.hegota < Fork.glamsterdam) early)
-
-/-- The upgrades of a slot never raise an effective balance before Gloas. -/
-private theorem rise_upgrades_upper {s t : ForkedBeaconState preset}
-    (ok : processUpgrades config checks s = .ok t) (early : t.fork < .glamsterdam) (i : Nat) :
-    effectiveAt t i ≤ effectiveAt s i := by
-  fun_induction processUpgrades config checks s generalizing t with
-  | case1 s due ih =>
-    obtain ⟨next, nextOk, rest⟩ := bind_ok_iff.mp ok
-    exact (ih next rest early).trans (rise_upgrade_upper nextOk
-      (Nat.lt_of_le_of_lt (processUpgrades_fork_le rest) early) i)
-  | case2 s notDue => cases ok; exact Nat.le_refl _
-
-
 /-- From Altair and before Gloas, the slot that ends an epoch, read from its last state.
 
 The rewards read the state after the inactivity update, which follows justification.
@@ -1695,7 +1623,7 @@ private theorem rise_edge {z z' : ForkedBeaconState preset}
     have one := kept i inside
     simp only [effectiveAt, read, found, Option.map_some, Option.getD_some] at one
     exact one
-  have upgradedLe := rise_upgrades_upper upgraded early i
+  have upgradedLe := balanceDrift_upgrades_upper upgraded early i
   have endSame : effectiveAt ⟨z.fork, { epoched with slot := nextSlot }⟩ i =
       effectiveAt ⟨z.fork, after⟩ i := by
     simp only [effectiveAt, validators]
