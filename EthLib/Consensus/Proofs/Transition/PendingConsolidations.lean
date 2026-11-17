@@ -608,7 +608,7 @@ theorem queueConsolidation_queued {electra : .pectra ≤ fork}
     ∃ (churned written : BeaconState preset fork) (epoch withdrawal : Epoch),
       computeConsolidationEpochAndUpdateChurn config state electra source.effectiveBalance =
         .ok (churned, epoch) ∧
-      epoch ≠ FAR_FUTURE_EPOCH ∧
+      epoch ≠ FAR_FUTURE_EPOCH ∧ getCurrentEpoch state < epoch ∧
       withdrawal.toNat = epoch.toNat + config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat ∧
       churned.setValidator sourceIndex
         { source with exitEpoch := epoch, withdrawableEpoch := withdrawal } = .ok written ∧
@@ -628,7 +628,19 @@ theorem queueConsolidation_queued {electra : .pectra ≤ fork}
   have queueEq := SamePendingQueue.setValidator set
   change written.pendingConsolidations = churned.pendingConsolidations at queueEq
   have sum := (Uint64.addChecked_ok_iff.mp added).2
-  refine ⟨churned, written, epoch, withdrawal, churnOk, fun eq => ?_, sum, set, rfl, ?_⟩
+  -- The churn places the exit no earlier than the first epoch an exit may take.
+  have later : getCurrentEpoch state < epoch := by
+    apply UInt64.lt_iff_toNat_lt.mpr
+    cases first : computeActivationExitEpoch preset (getCurrentEpoch state) with
+    | error =>
+      simp [computeConsolidationEpochAndUpdateChurn, first, liftArith, Except.mapError, bind,
+        Except.bind] at churnOk
+    | ok firstEpoch =>
+      have early := UInt64.le_iff_toNat_le.mp
+        (computeConsolidationEpochAndUpdateChurn_first first churnOk).1
+      have firstEq := (computeActivationExitEpoch_ok_iff.mp first).2
+      omega
+  refine ⟨churned, written, epoch, withdrawal, churnOk, fun eq => ?_, later, sum, set, rfl, ?_⟩
   · have bound := withdrawal.toNat_lt
     rw [eq] at sum
     have farNat : FAR_FUTURE_EPOCH.toNat = 18446744073709551615 := rfl
@@ -723,7 +735,8 @@ private theorem queue {electra : .pectra ≤ fork} {sourceIndex targetIndex : Va
     (ok : queueConsolidation config state electra sourceIndex source targetIndex = .ok after) :
     PendingConsolidationInvariant config after := by
   have frame := frame_queueConsolidation found ok
-  obtain ⟨churned, written, epoch, withdrawal, churnOk, assigned, sum, set, validators, pushed⟩ :=
+  obtain ⟨churned, written, epoch, withdrawal, churnOk, assigned, -, sum, set, validators,
+    pushed⟩ :=
     queueConsolidation_queued delay ok
   have churnRegistry := (computeConsolidationEpochAndUpdateChurn_earliest churnOk).2.1
   intro witness
