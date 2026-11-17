@@ -1478,19 +1478,6 @@ private def runQueuePaid {x : ForkedBeaconState preset} :
   | _, .nil, _ => 0
   | _, .snoc pre step, v => runQueuePaid pre v + stepQueuePaid step v
 
-/-- A run without blocks pays nothing from the queue. -/
-private theorem runQueuePaid_eq_zero {x y : ForkedBeaconState preset}
-    (run : Run config checks x y) (none : run.blockCount = 0) (v : ValidatorIndex) :
-    runQueuePaid run v = 0 := by
-  induction run with
-  | nil => rfl
-  | snoc pre step ih =>
-    cases step with
-    | slot ok =>
-      simp only [Run.blockCount] at none
-      simp [runQueuePaid, ih none, stepQueuePaid]
-    | block engine signed due ok => simp [Run.blockCount] at none
-
 /-- Inside one epoch from Electra and before Gloas, the queue of a run's last state is the queue
 of its first state, with entries appended that are not yet withdrawable, less a prefix.
 
@@ -1702,26 +1689,38 @@ private theorem blockQueuePaid_support {fork : Fork} (before : BeaconState prese
           exact List.mem_toFinset.mpr (List.mem_map.mpr ⟨w, present, by simpa using named⟩)
   · exact ⟨∅, by simp, fun v paid => by simp [blockQueuePaid, electra] at paid⟩
 
-/-- A run with at most one block pays from the queue at most the validators that one sweep may
-pay. -/
+/-- Inside one epoch before Gloas, a run with at most one block pays from the queue at most the
+validators that one sweep may pay.
+
+A run without blocks pays nothing from the queue. -/
 private theorem owed_card {x y : ForkedBeaconState preset} (run : Run config checks x y)
+    (early : y.fork < .glamsterdam) (same : getCurrentEpoch y.state = getCurrentEpoch x.state)
     (single : run.blockCount ≤ 1) :
-    ∃ owed : Finset ValidatorIndex,
+    (∃ owed : Finset ValidatorIndex,
       owed.card ≤ preset.MAX_PENDING_PARTIALS_PER_WITHDRAWALS_SWEEP.toNat ∧
-      ∀ v, runQueuePaid run v ≠ 0 → v ∈ owed := by
-  induction run with
-  | nil => exact ⟨∅, by simp, fun v paid => by simp [runQueuePaid] at paid⟩
-  | @snoc middle last pre step ih =>
-    cases step with
-    | slot ok =>
-      obtain ⟨owed, card, covers⟩ := ih (by simpa [Run.blockCount] using single)
-      exact ⟨owed, card, fun v paid => covers v (by
-        simpa [runQueuePaid, stepQueuePaid] using paid)⟩
-    | @block f before after engine signed due ok =>
-      have none : pre.blockCount = 0 := by simp [Run.blockCount] at single; omega
-      obtain ⟨indices, card, covers⟩ := blockQueuePaid_support before signed.message
-      refine ⟨indices, card, fun v paid => covers v ?_⟩
-      simpa [runQueuePaid, runQueuePaid_eq_zero pre none v, stepQueuePaid] using paid
+      ∀ v, runQueuePaid run v ≠ 0 → v ∈ owed) ∧
+    (run.blockCount = 0 → ∀ v, runQueuePaid run v = 0) := by
+  refine Run.induction_of_same_epoch
+    (motive := fun _ r => r.blockCount ≤ 1 →
+      (∃ owed : Finset ValidatorIndex,
+        owed.card ≤ preset.MAX_PENDING_PARTIALS_PER_WITHDRAWALS_SWEEP.toNat ∧
+        ∀ v, runQueuePaid r v ≠ 0 → v ∈ owed) ∧
+      (r.blockCount = 0 → ∀ v, runQueuePaid r v = 0))
+    ?_ ?_ ?_ run early same single
+  · exact fun _ => ⟨⟨∅, by simp, fun v paid => by simp [runQueuePaid] at paid⟩,
+      fun _ _ => rfl⟩
+  · intro f s t engine signed due ok pre _ ih count
+    have none : pre.blockCount = 0 := by simp [Run.blockCount] at count; omega
+    have zero := (ih (by omega)).2 none
+    obtain ⟨indices, card, covers⟩ := blockQueuePaid_support s signed.message
+    refine ⟨⟨indices, card, fun v paid => covers v ?_⟩, fun blocks => by
+      simp [Run.blockCount] at blocks⟩
+    simpa [runQueuePaid, zero v, stepQueuePaid] using paid
+  · intro _ _ _ _ pre ok _ _ _ ih count
+    obtain ⟨⟨owed, card, covers⟩, zero⟩ := ih (by simpa [Run.blockCount] using count)
+    refine ⟨⟨owed, card, fun v paid => covers v (by
+      simpa [runQueuePaid, stepQueuePaid] using paid)⟩, fun none v => ?_⟩
+    simpa [runQueuePaid, stepQueuePaid] using zero (by simpa [Run.blockCount] using none) v
 
 /-! ## The floor of a balance over the blocks of one epoch -/
 
@@ -1794,7 +1793,7 @@ private theorem run_floor {x y : ForkedBeaconState preset} (tail : Run config ch
     · intro count
       simp only [Run.blockCount] at count
       have none : pre.blockCount = 0 := by omega
-      have zero := runQueuePaid_eq_zero pre none v
+      have zero := (owed_card pre fEarly epochS (by omega)).2 none v
       have extraZero : extra = 0 := by
         have := single (by omega)
         rw [zero] at this
@@ -2043,7 +2042,7 @@ theorem effectiveFall_le
     simp only [positions, current, epoch, state, effective, balanceAt, callEpoch]
     exact this
   -- The validators that the boundary block pays from the queue.
-  obtain ⟨owed, owedCard, covers⟩ := owed_card boundary single
+  obtain ⟨⟨owed, owedCard, covers⟩, -⟩ := owed_card boundary Tearly boundaryEpoch single
   refine ⟨fun v => min (runQueuePaid boundary v)
     (effective v.toNat - preset.MIN_ACTIVATION_BALANCE.toNat), owed, ?_, ?_, ?_⟩
   · intro v absent
