@@ -49,6 +49,11 @@ Not yet released.
 
 ### Changes that break callers
 
+- `exitReserve` is now the active source stake already scheduled to exit within three epochs of the source, and nothing else.
+  It counted two epochs and added the churn of the source's epoch; the near window of a confirmation reaches three epochs after its source.
+  With `Preset.ExitWindowFixed`, a seed lookahead of at least three epochs, no other source stake leaves by then: `exitStake_le_exitReserve` proves it, and mainnet and minimal satisfy the bundle.
+  `SourceWindowReserve` and `WindowExitBound` read the new value; a caller that proves `SourceWindowReserve` proves it for the new reserve.
+
 - In Lean, the historical-anchor theorems no longer assume finality across honest stores ([#1458](https://github.com/ethereum/EthLib/issues/1458)).
   `Execution.source_surplus_or_historical_evidence`, `Execution.isAncestor_getHead_of_historical_anchor`, `Execution.honestHeadsCover_of_historical_anchor` and `Execution.honestHeadsCover_of_signed_justification` drop their `residual` argument; their conclusions are unchanged.
   `receiver_fullMaximum_of_head_window` takes the receiver's own finalized checkpoint on its own justified chain, `finalizedRead`, instead of `compatible`, `bounded`, `slots` and `epochOk`.
