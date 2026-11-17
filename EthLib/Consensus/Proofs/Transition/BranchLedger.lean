@@ -1582,7 +1582,7 @@ private theorem ledger_processExecutionRequests {body : BeaconBlockBody preset f
   simp only [processExecutionRequests, bind_ok_iff, ← Array.foldlM_toList] at computed
   obtain ⟨deposited, deposits, withdrawn, withdrawals, consolidations⟩ := computed
   have one : Ledger s deposited ∅ ∅ 0 0 0 := Ledger.foldlM (fun _ _ _ ok =>
-    Ledger.of_eq (by rw [(processDepositRequest_ok ok).2.2])
+    Ledger.of_eq (by rw [(processDepositRequest_ok ok).2.2.1])
       (by rw [(processDepositRequest_ok ok).2.1])) deposits
   have two : Ledger deposited withdrawn ∅ ∅ 0 0 0 := by
     refine Ledger.foldlM (fun _ _ _ ok => ?_) withdrawals

@@ -84,21 +84,9 @@ private theorem le_activityFixedEpoch {state : BeaconState preset fork} {epoch :
   have := epoch.toNat_lt
   omega
 
-/-- The runs behind a vote and a head that descend from a known block.
+/-- A known block's state runs to the head state and to the state of a vote's target block.
 
-The target state of the vote comes from the state of its target block, `base`.
-
-Take the block at or before the start of the target epoch.
-
-Then the state of the block runs to `base` and to the head state.
-
-The target block is then at or before that start.
-
-When it is the anchor block, `base` itself runs to the head state.
-
-Otherwise the target block is an ancestor of the head, so the target state runs to the head state.
-
-The store is built with one setting of the checks, and the anchor block is not after its state. -/
+When the block is after the start of the target epoch, the target state runs to the head state. -/
 private theorem Store.ForwardReachableWith.runs_of_voteOrigin {checks : SignatureChecks}
     (anchorSlot : anchorBlock.slot ≤ anchorState.slot)
     (reached : Store.ForwardReachableWith config checks anchorState anchorBlock store)
@@ -219,19 +207,8 @@ theorem Store.ForwardReachableWith.committeesKept_of_voteOrigin {checks : Signat
     reached.checkpointStatesFromBlocks targetFound
   have startEpoch := startOk
   rw [origin.targetEpoch] at startEpoch
-  have targetLe : start ≤ targetState.slot := by
-    rcases fromBlock with ⟨baseLe, rfl⟩ | ⟨-, _, -, slotsOk⟩
-    · exact baseLe
-    · exact (processSlots_slot slotsOk).2 ▸ UInt64.le_refl _
   -- The epoch of the vote is that of its first slot, which is no later than the target state.
-  have targetEpochLe : (computeEpochAtSlot preset attestation.data.slot).toNat ≤
-      (getCurrentEpoch targetState).toNat := by
-    rcases Nat.eq_zero_or_pos preset.SLOTS_PER_EPOCH.toNat with zero | positive
-    · rw [computeEpochAtSlot, UInt64.toNat_div, zero, Nat.div_zero]
-      exact Nat.zero_le _
-    · rw [← computeEpochAtSlot_computeStartSlotAtEpoch (UInt64.lt_iff_toNat_lt.mpr positive)
-        startEpoch, getCurrentEpoch_toNat]
-      exact epoch_le_of_slot_le _ _ (UInt64.le_iff_toNat_le.mp targetLe)
+  have targetEpochLe := reached.epoch_le_of_checkpointState targetFound origin.targetEpoch
   rcases reached.runs_of_voteOrigin anchorSlot found headDescends origin votedRoot voteDescends
       targetFound headFound baseFound startOk with
     ⟨-, common, targetBlock, commonFound, targetBlockFound, targetBlockLe, toTarget, toHead,
@@ -265,19 +242,9 @@ theorem Store.ForwardReachableWith.committeesKept_of_voteOrigin {checks : Signat
   · exact run.committees_count (by omega) (le_activityFixedEpoch maxLookahead (by omega))
       headInRing
 
-/-- The voter of a vote was active in the head state in the epoch before the target of the vote.
+/-- A voter was active in the head state in the epoch before its target, or activated at it.
 
-Otherwise it became active at the target epoch itself.
-
-The voted block and the head descend from a known block.
-
-The target is at most two epochs after that block.
-
-The two states agree on activity up to one epoch after that block.
-
-That covers the epoch before the target.
-
-The store is built with one setting of the checks, and the anchor block is not after its state. -/
+The target is at most two epochs after a known block that the vote and the head descend from. -/
 theorem Store.ForwardReachableWith.active_or_newlyActive_of_voteOrigin {checks : SignatureChecks}
     (anchorSlot : anchorBlock.slot ≤ anchorState.slot)
     (reached : Store.ForwardReachableWith config checks anchorState anchorBlock store)
@@ -290,7 +257,8 @@ theorem Store.ForwardReachableWith.active_or_newlyActive_of_voteOrigin {checks :
     (origin : store.VoteOrigin config validator attestation)
     (voteDescends : store.isAncestor ⟨attestation.data.beaconBlockRoot, .pending⟩
       ⟨root, .pending⟩ = .ok true)
-    (near : attestation.data.target.epoch.toNat ≤ (computeEpochAtSlot preset block.slot).toNat + 2)
+    (horizon : attestation.data.target.epoch.toNat ≤
+      (computeEpochAtSlot preset block.slot).toNat + 2)
     (before : previous.toNat + 1 = attestation.data.target.epoch.toNat)
     (targetFound : store.checkpointStates[attestation.data.target]? = some targetState)
     (headFound : store.blockStates[head]? = some headState) :
@@ -301,10 +269,6 @@ theorem Store.ForwardReachableWith.active_or_newlyActive_of_voteOrigin {checks :
   -- The target state is the state of the target block, perhaps processed to the start.
   obtain ⟨base, start, baseFound, startOk, fromBlock⟩ :=
     reached.checkpointStatesFromBlocks targetFound
-  have targetLe : start ≤ targetState.slot := by
-    rcases fromBlock with ⟨baseLe, rfl⟩ | ⟨-, _, -, slotsOk⟩
-    · exact baseLe
-    · exact (processSlots_slot slotsOk).2 ▸ UInt64.le_refl _
   -- The two states have the same active validators in the epoch before the target.
   have same : getActiveValidatorIndices headState previous =
       getActiveValidatorIndices targetState previous := by
@@ -326,14 +290,8 @@ theorem Store.ForwardReachableWith.active_or_newlyActive_of_voteOrigin {checks :
       rw [toHead.active.getActiveValidatorIndices_eq fixed,
         (toTarget.trans baseToTarget).active.getActiveValidatorIndices_eq fixed]
     · -- The target state is at or after the start of the target epoch, and runs to the head.
-      have targetEpochLe : attestation.data.target.epoch.toNat ≤
-          (getCurrentEpoch targetState).toNat := by
-        rcases Nat.eq_zero_or_pos preset.SLOTS_PER_EPOCH.toNat with zero | positive
-        · rw [origin.targetEpoch, computeEpochAtSlot, UInt64.toNat_div, zero, Nat.div_zero]
-          exact Nat.zero_le _
-        · rw [← computeEpochAtSlot_computeStartSlotAtEpoch
-            (UInt64.lt_iff_toNat_lt.mpr positive) startOk, getCurrentEpoch_toNat]
-          exact epoch_le_of_slot_le _ _ (UInt64.le_iff_toNat_le.mp targetLe)
+      have targetEpochLe := reached.epoch_le_of_checkpointState targetFound origin.targetEpoch
+      rw [← origin.targetEpoch] at targetEpochLe
       exact run.active.getActiveValidatorIndices_eq
         (le_activityFixedEpoch maxLookahead (by omega))
   rw [same]

@@ -26,12 +26,26 @@ Not yet released.
   `historical_stores_or_collision`, the split of honest stores into agreement or a collision, is now public; the proof reads it.
   `Store.Reachable.blockState_slot_eq` states that a known block's state is at the block's slot, when the anchor block is at the anchor state's slot; the proof reads it.
 
+- `DirectSafety.accountable_safety_apriori` bounds the drift of accountable safety from the reference state alone.
+  For two runs that finalize conflicting checkpoints, the unslashed stake at the shared state `x` is at most three times the accountable stake plus `2 * drift x high`, or the runs show `HashEvidence`.
+  `drift x high` reads only numbers at `x` and the window to the later finalized epoch, so it needs no replay of the tails.
+  It takes the premises of `source_safety`.
+  When its guard fails, `drift` is the unslashed active stake at `x`, and the bound says nothing.
+
 - `Execution.honestHeadsCover_of_historical_anchor` keeps a confirmed block on every honest head chain from the call to a horizon, by induction on time ([#1458](https://github.com/ethereum/EthLib/issues/1458)).
   It no longer assumes the root's own earlier coverage.
-  It assumes the parent's coverage, the root's viability, the receivers' reads and exits, and a late duty majority.
+  It assumes the parent's coverage, the root's viability, the receivers' exits, and a late duty majority.
   The root's viability rules out honest justified checkpoints that conflict with the root, so it assumes the checkpoint-consistency half of safety.
   The alternatives are a block collision between honest stores and `HistoricalDirectSafetyEvidence`, which holds with no accountable key once the churn since the anchor is large enough.
   `Config.ProposerScoreFits` bounds the proposer boost so that the score fits in 64 bits; mainnet and minimal satisfy it.
+
+- New lemmas derive the reads of the fast confirmation rule from a held head state ([#2060](https://github.com/ethereum/EthLib/issues/2060)).
+  `Store.checkpointState_justified_of_getHead` shows that, before Gloas, a head with a viable node besides the justified block has read the justified state.
+  `Store.getCommitteesBetweenSlots_exists` reads every committee window before the current slot, under `Config.CommitteeWindowsFit`.
+  `Store.getCommitteesBetweenSlots_ok_of_slots` reads a window whose slots read and whose end has a checked successor.
+  `getBeaconCommittee_exists` cuts a committee whose index is below the count of its slot, and `beaconCommitteeOf_ok_of_lt` does so for one shuffle.
+  `Config.committeeWindowsFit_mainnet` and `Config.committeeWindowsFit_minimal` show that mainnet and minimal satisfy those bounds.
+  `computeSlotAtTimeMs_le` bounds the slot at a time by the largest 64-bit integer divided by the slot duration.
 
 - `Execution.mem_supportersOf_of_duty_epoch_or_accountable` and `Execution.isAncestor_getHead_of_duty_epoch_or_accountable` add accountable companions to the honest-duty results.
   They use a proved historical finalized-prefix family instead of assumed compatibility, while preserving the original theorems.
@@ -43,9 +57,6 @@ Not yet released.
   It takes `EarlyJustifiedConsistent`, `RootKeepsViableLeaf` and `JustifiedHonestlySigned` instead of `RootViable`.
   `Execution.honestHeadsCover_of_historical_anchor` keeps its statement.
   `slotStart_le_clock` is now public.
-
-- `ReceiverWindowExitsNear` asks the exit bound of `ReceiverWindowExits` only of receivers within two epochs of the parent, the only receivers whose steps read it.
-  `receiverWindowExitsNear_of_exits` derives it from `ReceiverWindowExits`, so `Execution.honestHeadsCover_of_historical_anchor` and `Execution.honestHeadsCover_of_signed_justification` keep their statements.
 
 - `Execution.honestHeadsCover_of_byzantine_bound` derives the honest signer of the signed-justification headline ([#2656](https://github.com/ethereum/EthLib/issues/2656)).
   It takes `ByzantineCountedStake`, Byzantine stake below two thirds in each state that counts later votes, instead of `JustifiedHonestlySigned`.
@@ -69,14 +80,45 @@ Not yet released.
   It asks that the anchor block is not after the anchor state and that its parent root names no known block.
   `Store.isViableLeaf_checkpointBlock` gives the checkpoint block that a viable leaf reads.
 
-- `Execution.honestHeadsCover_of_historical_anchor_of_newlyActive` and `Execution.honestHeadsCover_of_signed_justification_of_newlyActive` take `NewlyActiveVotersInHeadWindow` in place of `VoteCommitteeCommonHistory` ([#1458](https://github.com/ethereum/EthLib/issues/1458)).
-  It asks only that a voter activated at its target epoch lie in the head's window, for a vote two epochs after the parent.
-  Every other voter lies there by `VotersInHeadWindow`, which `Execution.votersInHeadWindow_of_newlyActive` derives.
-  The merged headlines keep their statements and reach the new ones through `Execution.votersInHeadWindow_of_commonHistory`.
-  `Store.mem_getCommitteesBetweenSlots_of_active` and `Store.ForwardReachableWith.active_or_newlyActive_of_voteOrigin` are the general steps.
-  If the rule's window weight paid one epoch's activation churn, the remaining premise would go.
+- `VotersInHeadWindow` states that, between two times, each voter below a given parent block lies in each honest head's window after that parent ([#1458](https://github.com/ethereum/EthLib/issues/1458)).
+  `VoteInHeadWindow` is the vote and the window that it reads.
+  `Execution.votersInHeadWindow_of_newlyActive` derives it from `NewlyActiveVotersInHeadWindow`, which asks it only of a voter activated at the target epoch of a vote two epochs after that parent.
+  `Store.mem_getCommitteesBetweenSlots_of_active`, `Store.ForwardReachableWith.active_or_newlyActive_of_voteOrigin` and `Store.ForwardReachableWith.epoch_le_of_checkpointState` are the general steps.
+  `fits_of_shuffledCommittee` states that a cut committee has the number of indices times one past its position below `2^64`.
+  `ReceiverWindowExitsNear` asks the receivers' exit bound only of receivers within two epochs of the parent.
 
 ### Changes that break callers
+
+- In Lean, `processDepositRequest_ok` also gives the state after the request.
+  It is the state before, with only the pending deposits and the start index of the requests changed.
+  A caller that took the balances as `.2.2` takes `.2.2.1`, and a pattern with three parts gets a fourth.
+  Nothing breaks in Python.
+
+- In Lean, `FlagsKeptOrZero` is stronger.
+  A zero byte of flags appears only at a position at or past the size of the registry before the step.
+  So a step keeps the flags of each existing validator, or zeroes the byte of a new one.
+  `FlagsKeptOrZero.trans` takes a new premise: the registry of the first state is no larger than that of the second.
+  A caller passes that fact, for example from `Frame.registryGrows`.
+  A match on the zero case, `old | rfl`, becomes `old | ⟨rfl, -⟩`.
+  Nothing breaks in Python.
+
+- In Lean, the historical-anchor theorems no longer assume the receivers' reads ([#2060](https://github.com/ethereum/EthLib/issues/2060)).
+  `Execution.honestHeadsCover_of_historical_anchor`, `Execution.honestHeadsCover_of_signed_justification` and `Execution.honestHeadsCover_of_byzantine_bound` take `fit : config.CommitteeWindowsFit preset` instead of `reads`; their conclusions are unchanged.
+  `Config.CommitteeWindowsFit` bounds the registry limit, the committees of an epoch, the clock and the seed lookahead, and requires an epoch to have a slot.
+  A caller on mainnet or minimal passes `Config.committeeWindowsFit_mainnet` or `Config.committeeWindowsFit_minimal`.
+  `HonestHeadReads` is removed.
+  The receiver's justified state comes from `Store.checkpointState_justified_of_getHead`, and its committee windows from `Store.getCommitteesBetweenSlots_exists`.
+  `Store.getCommitteesBetweenSlots_ok_of_slots` reads a window from its slots, `getBeaconCommittee_exists` cuts one committee, and `beaconCommitteeOf_ok_of_lt` bounds its position; all three are new.
+
+- In Lean, the historical-anchor theorems assume less about recent votes and receiver exits ([#1458](https://github.com/ethereum/EthLib/issues/1458)).
+  Each new statement implies the old one.
+  `Execution.honestHeadsCover_of_historical_anchor`, `Execution.honestHeadsCover_of_signed_justification` and `Execution.honestHeadsCover_of_byzantine_bound` take `newVoters : NewlyActiveVotersInHeadWindow` in place of the common vote history, `history`, and `exits : ReceiverWindowExitsNear` in place of the exit bound for every receiver.
+  `Execution.isAncestor_getHead_of_historical_anchor` and `ancestor_head_of_window_margin` take `membership : VotersInHeadWindow` in place of `history`.
+  Both window premises name the parent of the tested block and hold only from the call's time.
+  `ancestor_head_of_window_margin` also drops `minLookahead`, `maxLookahead` and `ring`, which now only the derivation of the window membership reads.
+  A caller with the common vote history passes the window membership that it implies, or the corner premise.
+  A caller with the old exit bound passes its restriction to receivers within two epochs of the parent.
+  `VoteCommitteeCommonHistory` and `ReceiverWindowExits` are removed: no statement reads them any more.
 
 - In Lean, the historical-anchor theorems no longer assume finality across honest stores ([#1458](https://github.com/ethereum/EthLib/issues/1458)).
   `Execution.source_surplus_or_historical_evidence`, `Execution.isAncestor_getHead_of_historical_anchor`, `Execution.honestHeadsCover_of_historical_anchor`, `Execution.honestHeadsCover_of_signed_justification` and `Execution.honestHeadsCover_of_byzantine_bound` drop their `residual` argument; their conclusions are unchanged.
@@ -652,6 +694,17 @@ Not yet released.
   The two bodies are not definitionally equal.
   A proof that unfolds `HashEvidence` to take it apart first rewrites with `hashEvidence_iff`, or applies `hashEvidence_iff.mp`.
   A proof that builds the evidence as an `Or` of the old form applies `hashEvidence_iff.mpr`.
+
+- In Lean, `DirectSafety.slashingLimits` counts only the indices that are slashable at the operation.
+  It still reads every index with `getValidator`, so its errors are unchanged.
+  It then keeps the validators for which `isSlashableValidator` holds at the current epoch, the test of `slashIfSlashable`.
+  An attester slashing pays nothing for an index that is already slashed, so its limits no longer count one.
+  So every value derived from it can only decrease.
+  These are the `creditLimit` and `debitLimit` of the `.slashings` events, and through `fundingCredit (.slashings)` the values `activeStakeWindow`, `consolidationRate` and the right side of `departure_charges_le_funded_window`.
+  `residualCredit` and `sourceDrift` read the same limits, so they can only decrease too.
+  A call on one proposer that is not slashable now gives zero limits.
+  The replay of a successful proposer slashing is unchanged, since `processProposerSlashing` requires the proposer to be slashable.
+  Every theorem statement is unchanged.
 
 - In Lean, the four rules by which one justification step finalizes a checkpoint have one definition, `FinalizationStepRule state after checkpoint` ([#2187](https://github.com/ethereum/EthLib/issues/2187)).
   The bits come from the state after the step, the epoch and the justified checkpoints from the state before it.
