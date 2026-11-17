@@ -86,6 +86,26 @@ theorem VoteAt.data_head {anchor : Store preset fork}
   exact ⟨dataSlot.trans atSlot, by simpa [getCurrentEpoch, atSlot] using epoch,
     head, block, headOk, known, dataRoot, blocks head.root block known⟩
 
+/-- A slot at the start of an epoch is at most the first slot of the epoch of each later slot. -/
+theorem le_computeStartSlotAtEpoch_of_isStartSlotAtEpoch {start slot first : Slot}
+    (boundary : isStartSlotAtEpoch preset start = .ok true) (le : start ≤ slot)
+    (firstOk : computeStartSlotAtEpoch preset (computeEpochAtSlot preset slot) = .ok first) :
+    start ≤ first := by
+  have rounded : start / preset.SLOTS_PER_EPOCH * preset.SLOTS_PER_EPOCH = start := by
+    apply epoch_floor_eq_of_sub_eq_zero
+    simpa [isStartSlotAtEpoch, computeSlotsSinceEpochStart,
+      computeStartSlotAtEpoch_computeEpochAtSlot, Except.mapError, bind, Except.bind,
+      pure, Except.pure] using boundary
+  have a := (computeStartSlotAtEpoch_ok_iff.mp
+    (computeStartSlotAtEpoch_computeEpochAtSlot (preset := preset) start)).2
+  rw [rounded] at a
+  simp only [computeEpochAtSlot, UInt64.toNat_div] at a
+  have b := (computeStartSlotAtEpoch_ok_iff.mp firstOk).2
+  simp only [computeEpochAtSlot, UInt64.toNat_div] at b
+  have mono := Nat.mul_le_mul_right preset.SLOTS_PER_EPOCH.toNat
+    (Nat.div_le_div_right (c := preset.SLOTS_PER_EPOCH.toNat) (UInt64.le_iff_toNat_le.mp le))
+  exact UInt64.le_iff_toNat_le.mpr (by omega)
+
 /-- An honest vote names the checkpoint obtained by walking its voter's head.
 
 Some store reachable from the same anchor must hold the target block.
@@ -149,24 +169,10 @@ theorem HonestVoteData.target_read {store other : Store preset fork}
       unfold getBlockRoot at read
       rw [← epoch, firstOk] at read
       exact read
-    have firstAfter : anchorState.slot ≤ first := by
-      have rounded : anchorState.slot / preset.SLOTS_PER_EPOCH * preset.SLOTS_PER_EPOCH =
-          anchorState.slot := by
-        apply epoch_floor_eq_of_sub_eq_zero
-        simpa [isStartSlotAtEpoch, computeSlotsSinceEpochStart, anchorSlot,
-          computeStartSlotAtEpoch_computeEpochAtSlot, Except.mapError, bind, Except.bind,
-          pure, Except.pure] using anchorAtBoundary
-      have mono := Nat.mul_le_mul_right preset.SLOTS_PER_EPOCH.toNat
-        (Nat.div_le_div_right (c := preset.SLOTS_PER_EPOCH.toNat)
-          (UInt64.le_iff_toNat_le.mp anchorLe))
-      have a := (computeStartSlotAtEpoch_ok_iff.mp
-        (computeStartSlotAtEpoch_computeEpochAtSlot (preset := preset) anchorState.slot)).2
-      have b := (computeStartSlotAtEpoch_ok_iff.mp firstOk).2
-      rw [rounded] at a
-      simp only [computeEpochAtSlot, UInt64.toNat_div] at a
-      rw [epoch] at b
-      simp only [getCurrentEpoch, computeEpochAtSlot, UInt64.toNat_div] at b
-      exact UInt64.le_iff_toNat_le.mpr (by omega)
+    have firstAfter : anchorState.slot ≤ first :=
+      le_computeStartSlotAtEpoch_of_isStartSlotAtEpoch
+        (by rw [← anchorSlot]; exact anchorAtBoundary) anchorLe
+        (computeStartSlotAtEpoch_computeEpochAtSlot state.slot)
     exact reachable.lookahead_history_ancestor_of_held (UInt64.le_of_eq anchorSlot) nonzero
       holder stored' known advanced read' firstAfter .pending
 
