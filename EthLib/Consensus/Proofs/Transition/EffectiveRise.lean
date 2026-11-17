@@ -202,18 +202,8 @@ private theorem queueStep_queueConsolidation {electra : .pectra ≤ f}
     (delay : 1 ≤ config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat)
     (ok : queueConsolidation config s electra sourceIndex source targetIndex = .ok t) :
     QueueGrows s t := by
-  obtain ⟨churned, written, epoch, withdrawal, churnOk, assigned, -, set, validators, pushed⟩ :=
+  obtain ⟨churned, written, epoch, withdrawal, -, assigned, later, -, set, validators, pushed⟩ :=
     queueConsolidation_queued delay ok
-  have later : (getCurrentEpoch s).toNat < epoch.toNat := by
-    cases first : computeActivationExitEpoch preset (getCurrentEpoch s) with
-    | error =>
-      simp [computeConsolidationEpochAndUpdateChurn, first, liftArith, Except.mapError, bind,
-        Except.bind] at churnOk
-    | ok firstEpoch =>
-      have early := UInt64.le_iff_toNat_le.mp
-        (computeConsolidationEpochAndUpdateChurn_first first churnOk).1
-      have firstEq := (computeActivationExitEpoch_ok_iff.mp first).2
-      omega
   intro electra'
   rw [pushed, validators]
   refine ⟨fun c member => List.mem_append_left _ member, fun c member => ?_⟩
@@ -221,8 +211,8 @@ private theorem queueStep_queueConsolidation {electra : .pectra ≤ f}
   · exact .inl member
   · rw [List.mem_singleton] at member
     subst member
-    refine .inr ⟨_, getValidator_eq_ok_iff.mp (getValidator_setValidator_self set), ?_, assigned⟩
-    exact UInt64.lt_iff_toNat_lt.mpr later
+    exact .inr ⟨_, getValidator_eq_ok_iff.mp (getValidator_setValidator_self set), later,
+      assigned⟩
 
 /-- A consolidation request switches credentials or queues a consolidation. -/
 private theorem riseStep_processConsolidationRequest {electra : .pectra ≤ f}
