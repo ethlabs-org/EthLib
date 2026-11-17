@@ -4268,79 +4268,17 @@ theorem branchCorrections {x y : ForkedBeaconState preset} (tail : Run config ch
       by simp only [withdrawalMaxEffectiveBalance, getMaxEffectiveBalance, same]⟩
 
 
-/-- The same registry keeps every withdrawable epoch. -/
-private theorem WithdrawableKept.of_data {f g : Fork} {s : BeaconState preset f}
-    {t : BeaconState preset g} (same : t.validators.data = s.validators.data) :
-    WithdrawableKept s t := by
-  intro i v w found read _
-  rw [same, found, Option.some.injEq] at read
-  exact read ▸ ⟨UInt64.le_refl _, .inr rfl⟩
-
-/-- Steps compose, given master's lifecycle of the first and the slashes the second keeps. -/
-private theorem WithdrawableKept.trans {f : Fork} {s u t : BeaconState preset f}
-    (one : WithdrawableKept s u) (two : WithdrawableKept u t) (life : RegistryLifecycle s u)
-    (slashed : SlashedPersistence u t) : WithdrawableKept s t := by
-  intro i v w found read
-  obtain ⟨x, middle, kept⟩ := life.validators i v found
-  exact withdrawable_trans (one i v x found middle) (two i x w middle read) kept.exitEpoch
-    fun flag => by
-      obtain ⟨w', read', marked⟩ := slashed i x middle flag
-      rw [read, Option.some.injEq] at read'
-      exact read' ▸ marked
-
-/-- A write at a position that keeps the withdrawable epoch of an assigned exit. -/
-private theorem WithdrawableKept.setAt {f : Fork} {s t : BeaconState preset f} {i : ℕ}
-    {old v : Validator} (found : getValidatorAt s i = .ok old)
-    (set : s.setValidatorAt i v = .ok t)
-    (step : old.exitEpoch ≠ FAR_FUTURE_EPOCH → old.withdrawableEpoch ≤ v.withdrawableEpoch ∧
-      (v.slashed = true ∨ v.withdrawableEpoch = old.withdrawableEpoch)) :
-    WithdrawableKept s t := by
-  obtain ⟨inside, rfl⟩ := setValidatorAt_ok set
-  intro j u w read read' far
-  simp only [BeaconState.putValidator, Serialization.Ssz.RootedForkList.data_set,
-    Array.getElem?_set] at read'
-  split at read'
-  · rename_i here
-    subst here
-    rw [getValidatorAt_eq_ok_iff.mp found, Option.some.injEq] at read
-    subst read
-    cases read'
-    exact step far
-  · rw [read, Option.some.injEq] at read'
-    exact read' ▸ ⟨UInt64.le_refl _, .inr rfl⟩
-
 /-- From Electra, the registry updates keep the withdrawable epochs of assigned exits.
 
 Reader: EffectiveRise. -/
 theorem withdrawableKept_processRegistryUpdates {f : Fork} {s t : BeaconState preset f}
     (electra : .pectra ≤ f) (ok : processRegistryUpdates config s = .ok t) :
     WithdrawableKept s t := by
-  unfold processRegistryUpdates at ok
-  simp only [electra, ↓reduceIte] at ok
-  obtain ⟨_, _, folded⟩ := bind_ok_iff.mp ok
-  refine (foldlM_ok_invariant (fun u => RegistryLifecycle s u ∧ WithdrawableKept s u)
-    (fun u _ w prior ok => ?_) ⟨RegistryLifecycle.refl s, .of_data rfl⟩ folded).2
-  have frame := frame_updateRegistryEntryElectra ok
-  have entry : RegistryLifecycle u w ∧ WithdrawableKept u w := by
-    simp only [updateRegistryEntryElectra, bind_ok_iff, liftAccessor_ok] at ok
-    obtain ⟨v, found, ok⟩ := ok
-    split at ok
-    · simp only [bind_ok_iff, liftAccessor_ok] at ok
-      obtain ⟨_, _, written⟩ := ok
-      exact ⟨.setValidatorAt found written ⟨fun _ => rfl, fun _ => rfl⟩,
-        .setAt found written fun _ => ⟨UInt64.le_refl _, .inr rfl⟩⟩
-    split at ok
-    · simp only [bind_ok_iff, liftAccessor_ok] at ok
-      obtain ⟨_, _, exited⟩ := ok
-      exact ⟨registryLifecycle_initiateValidatorExit exited,
-        (lives_initiateValidatorExit exited).withdrawableKept⟩
-    split at ok
-    · rename_i eligible
-      have far := activationEpoch_of_isEligibleForActivation eligible
-      have written := liftAccessor_ok.mp ok
-      exact ⟨.setValidatorAt found written ⟨fun set => absurd far set, fun _ => rfl⟩,
-        .setAt found written fun _ => ⟨UInt64.le_refl _, .inr rfl⟩⟩
-    · cases ok; exact ⟨RegistryLifecycle.refl _, .of_data rfl⟩
-  exact ⟨prior.1.trans entry.1, prior.2.trans entry.2 prior.1 (.of_frame frame.toFrame)⟩
+  intro i v w old new assigned
+  obtain ⟨kept, found, same⟩ :=
+    processRegistryUpdates_withdrawableEpoch_of_assigned electra ok i v old assigned
+  rw [new, Option.some.injEq] at found
+  subst found
+  exact ⟨UInt64.le_of_eq same.symm, .inr same⟩
 
 end EthLib.Consensus
