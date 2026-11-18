@@ -1323,7 +1323,6 @@ private theorem advanceSlotAcross_currentSyncCommittee {forked after : ForkedBea
       (fun committee => (committee a).value.pubkeys.toList) step⟩ upgrades
   exact kept.2 early altair
 
-
 /-- Inside one period of sync committees before Gloas, the keys of the current committee stay. -/
 theorem Run.currentSyncCommittee_eq_of_same_period {x y : ForkedBeaconState preset}
     (tail : Run config checks x y) (early : y.fork < .glamsterdam)
