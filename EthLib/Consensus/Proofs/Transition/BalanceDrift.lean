@@ -1010,6 +1010,68 @@ theorem advanceSlotAcross_of_same_epoch {middle last : ForkedBeaconState preset}
   subst epoched
   exact ⟨cached, slot, cachedOk, rfl⟩
 
+/-- A later epoch of the same period is the same epoch, or it does not start a period. -/
+private theorem epoch_same_or_not_start {period earlier later : ℕ} (le : earlier ≤ later)
+    (same : later / max 1 period = earlier / max 1 period) :
+    later = earlier ∨ later % period ≠ 0 := by
+  by_cases start : later % period = 0
+  · left
+    rcases Nat.eq_zero_or_pos period with zero | positive
+    · subst zero
+      simp only [Nat.mod_zero] at start
+      omega
+    · have divides := Nat.div_add_mod later period
+      have rest := Nat.div_add_mod earlier period
+      have same' : later / period = earlier / period := by
+        simpa only [Nat.max_eq_right (Nat.succ_le_of_lt positive)] using same
+      rw [start, same'] at divides
+      omega
+  · exact .inr start
+
+/-- Induct over a run inside one period of epochs, with the run so far.
+
+A slot step that crosses to a later epoch of the period does not start a new period.
+
+Before Gloas, a block step is one `applySignedBlock` call. -/
+theorem Run.induction_of_same_period {x : ForkedBeaconState preset} (period : Epoch)
+    (motive : (z : ForkedBeaconState preset) → Run config checks x z → Prop)
+    (start : motive x .nil)
+    (blockStep : ∀ {f : Fork} {s t : BeaconState preset f} (engine : ExecutionEngine preset f)
+      (signed : SignedBeaconBlock preset f) (due : upgradeDue config ⟨f, s⟩ = false)
+      (ok : applySignedBlock config checks engine s signed true = .ok t)
+      (pre : Run config checks x ⟨f, s⟩), f < .glamsterdam → motive ⟨f, s⟩ pre →
+        motive ⟨f, t⟩ (pre.snoc (.block engine signed due ok)))
+    (slotStep : ∀ {middle last : ForkedBeaconState preset} (pre : Run config checks x middle)
+      (ok : advanceSlotAcross config checks middle = .ok last), last.fork < .glamsterdam →
+      (getCurrentEpoch last.state = getCurrentEpoch middle.state ∨
+        getCurrentEpoch last.state % period ≠ 0) →
+      motive middle pre → motive last (pre.snoc (.slot ok)))
+    {y : ForkedBeaconState preset} (tail : Run config checks x y)
+    (early : y.fork < .glamsterdam)
+    (same : (getCurrentEpoch y.state).toNat / max 1 period.toNat =
+      (getCurrentEpoch x.state).toNat / max 1 period.toNat) :
+    motive y tail := by
+  induction tail with
+  | nil => exact start
+  | @snoc middle last pre step ih =>
+    have middleEarly := Nat.lt_of_le_of_lt step.chainStep.fork_le early
+    have low := UInt64.le_iff_toNat_le.mp (currentEpoch_le_of_chainSteps pre.chainSteps)
+    have high := UInt64.le_iff_toNat_le.mp step.chainStep.currentEpoch_le
+    have midSame : (getCurrentEpoch middle.state).toNat / max 1 period.toNat =
+        (getCurrentEpoch x.state).toNat / max 1 period.toNat := by
+      have above := Nat.div_le_div_right (c := max 1 period.toNat) high
+      have below := Nat.div_le_div_right (c := max 1 period.toNat) low
+      omega
+    have prior := ih middleEarly midSame
+    cases step with
+    | block engine signed due ok => exact blockStep engine signed due ok pre early prior
+    | slot ok =>
+      refine slotStep pre ok early ?_ prior
+      rcases epoch_same_or_not_start high (same.trans midSame.symm) with equal | inside
+      · exact .inl (UInt64.toNat_inj.mp equal)
+      · exact .inr fun zero => inside (by simpa only [UInt64.toNat_mod, UInt64.toNat_zero] using
+          congrArg UInt64.toNat zero)
+
 /-- Induct over a run inside one epoch, with the run so far.
 
 Inside one epoch no slot crosses an epoch boundary.
@@ -1036,21 +1098,16 @@ theorem Run.induction_of_same_epoch {x : ForkedBeaconState preset}
     {y : ForkedBeaconState preset} (tail : Run config checks x y)
     (early : y.fork < .glamsterdam) (same : getCurrentEpoch y.state = getCurrentEpoch x.state) :
     motive y tail := by
-  induction tail with
-  | nil => exact start
-  | @snoc middle last pre step ih =>
-    have middleEarly := Nat.lt_of_le_of_lt step.chainStep.fork_le early
-    have midEpoch : getCurrentEpoch middle.state = getCurrentEpoch x.state :=
-      UInt64.le_antisymm (same ▸ step.chainStep.currentEpoch_le)
-        (currentEpoch_le_of_chainSteps pre.chainSteps)
-    have prior := ih middleEarly midEpoch
-    cases step with
-    | block engine signed due ok => exact blockStep engine signed due ok pre early prior
-    | slot ok =>
-      have kept := same.trans midEpoch.symm
-      obtain ⟨cached, next, cachedOk, lastEq⟩ := advanceSlotAcross_of_same_epoch ok kept
-      rw [lastEq] at kept
-      exact slotStep pre ok lastEq cachedOk kept prior
+  refine Run.induction_of_same_period 1 motive start blockStep ?_ tail early
+    (by simp only [same])
+  intro middle last pre ok lastEarly inside prior
+  have kept : getCurrentEpoch last.state = getCurrentEpoch middle.state := by
+    rcases inside with equal | inside
+    · exact equal
+    · exact (inside (UInt64.toNat_inj.mp (by simp [UInt64.toNat_mod]))).elim
+  obtain ⟨cached, next, cachedOk, lastEq⟩ := advanceSlotAcross_of_same_epoch ok kept
+  rw [lastEq] at kept
+  exact slotStep pre ok lastEq cachedOk kept prior
 
 /-- Within one epoch before Gloas, each existing index keeps its effective balance. -/
 theorem Run.effectiveKept_of_same_epoch {x y : ForkedBeaconState preset}
