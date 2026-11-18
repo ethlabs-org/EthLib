@@ -11,7 +11,6 @@ public import EthLib.Consensus.Proofs.Transition.ActivationReserve
 import EthLib.Consensus.Proofs.Transition.Totality.EffectiveBalances
 import EthLib.Consensus.Proofs.Transition.Totality.PendingDeposits
 import EthLib.Consensus.Proofs.Transition.BalanceNotRaised
-import EthLib.Consensus.Proofs.Transition.EffectiveRise
 import EthLib.Consensus.Proofs.DirectSafety.Provenance
 
 /-!
