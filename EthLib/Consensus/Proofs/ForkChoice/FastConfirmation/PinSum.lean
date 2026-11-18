@@ -1268,7 +1268,7 @@ private theorem proposerCredits_le_baseSum
   obtain ⟨-, -, -, -, -, -, -, -, -, -, -, -, ratioGuard, -⟩ := id h.guard
   rw [zeroEpochs] at ratioGuard
   have ratio := ratioGuard ((getCurrentEpoch pulled).toNat + 1 - (getCurrentEpoch fin).toNat)
-    (Nat.zero_le _) (by unfold driftHorizon; omega)
+    (Nat.zero_le _) (by unfold driftHorizon; dsimp only; omega)
   have mono := stakeCeilingAt_mono (config := config) (x := (⟨fork, fin⟩ : ForkedBeaconState preset))
     (high := (getCurrentEpoch pulled).toNat) electra
     (s := (getCurrentEpoch m).toNat - (getCurrentEpoch fin).toNat)
@@ -1325,7 +1325,7 @@ private theorem proposerCredits_le_baseSum
       (getCurrentEpoch pulled).toNat
         ((getCurrentEpoch m).toNat - (getCurrentEpoch fin).toNat) /
           preset.EFFECTIVE_BALANCE_INCREMENT.toNat) ≤ 3 * steps := by
-    refine Nat.le_of_mul_le_mul_right (a := preset.EFFECTIVE_BALANCE_INCREMENT.toNat) ?_ incPos
+    refine Nat.le_of_mul_le_mul_right (c := preset.EFFECTIVE_BALANCE_INCREMENT.toNat) ?_ incPos
     calc 2 * (stakeCeilingAt config (⟨fork, fin⟩ : ForkedBeaconState preset)
           (getCurrentEpoch pulled).toNat
             ((getCurrentEpoch m).toNat - (getCurrentEpoch fin).toNat) /
@@ -1356,9 +1356,10 @@ private theorem proposerCredits_le_baseSum
         (getCurrentEpoch pulled).toNat
           ((getCurrentEpoch m).toNat - (getCurrentEpoch fin).toNat) /
             preset.EFFECTIVE_BALANCE_INCREMENT.toNat) := by
-    have one := Nat.div_le_div_right (c := preset.EFFECTIVE_BALANCE_INCREMENT.toNat) prevM
-    have another := Nat.div_le_div_right (c := preset.EFFECTIVE_BALANCE_INCREMENT.toNat) curM
-    omega
+    exact le_trans
+      (Nat.add_le_add (Nat.div_le_div_right (c := preset.EFFECTIVE_BALANCE_INCREMENT.toNat) prevM)
+        (Nat.div_le_div_right (c := preset.EFFECTIVE_BALANCE_INCREMENT.toNat) curM))
+      (Nat.two_mul _).symm.le
   have first := Nat.mul_le_mul_left (54 * pm.toNat) sums
   have second := Nat.mul_le_mul_left (54 * pm.toNat) two
   have third := Nat.mul_le_mul_right (3 * steps) (Nat.mul_le_mul_left 54 rate)
