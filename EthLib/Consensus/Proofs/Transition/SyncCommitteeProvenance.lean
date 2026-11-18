@@ -853,8 +853,9 @@ private theorem processSyncCommitteeUpdates_current_eq {altair : .altair ≤ for
   subst ok
   rfl
 
-/-- An epoch keeps committee provenance and the slot, and the current committee unless the epoch
-ahead starts a period.
+/-- An epoch keeps committee provenance and the slot.
+
+It keeps the current committee unless the epoch ahead starts a period.
 
 Every stage but the committee update keeps both committees and the key prefix of the registry. -/
 private theorem processEpochStep
@@ -988,8 +989,9 @@ private theorem processEpoch (holds : SyncCommitteeKeys state)
 
 /-- A slot updates committees only through the epoch transition.
 
-It keeps the current committee unless its epoch starts a period, so that the committee changes only
-in a slot whose epoch is neither the epoch before nor off the period start. -/
+It keeps the current committee unless the slot reaches the first epoch of a period.
+
+The condition on the epoch says so: the epoch stays, or it is not a multiple of the period. -/
 private theorem advanceSlotStep
     (ok : Consensus.advanceSlot config checks state = .ok after)
     (period : getCurrentEpoch after = getCurrentEpoch state ∨
@@ -1029,14 +1031,16 @@ private theorem advanceSlotStep
         simpa only [UInt64.toNat_mod, UInt64.toNat_zero] using congrArg UInt64.toNat last
       have divides := Nat.dvd_of_mod_eq_zero remainder
       have stateEpoch := getCurrentEpoch_toNat state
-      have nextEpoch : (getCurrentEpoch ({ epoched with slot := next } : BeaconState preset fork)).toNat =
-          (getCurrentEpoch state).toNat + 1 := by
+      have nextEpoch : (getCurrentEpoch
+          ({ epoched with slot := next } : BeaconState preset fork)).toNat =
+            (getCurrentEpoch state).toNat + 1 := by
         rw [getCurrentEpoch_toNat, stateEpoch]
         show next.toNat / _ = _
         rw [nextVal]
         rw [nextVal] at divides
         exact Nat.succ_div_of_dvd divides
-      have bound := (getCurrentEpoch ({ epoched with slot := next } : BeaconState preset fork)).toNat_lt
+      have bound := (getCurrentEpoch
+        ({ epoched with slot := next } : BeaconState preset fork)).toNat_lt
       have plus : getCurrentEpoch cached + 1 =
           getCurrentEpoch ({ epoched with slot := next } : BeaconState preset fork) := by
         apply UInt64.toNat_inj.mp
@@ -1094,14 +1098,16 @@ private theorem carryFields {post : Fork} (upgrade : fork < post)
 
 private theorem carryFields_current {post : Fork} (upgrade : fork < post)
     (before : post < .glamsterdam) (altair : .altair ≤ fork) (a : .altair ≤ post) :
-    ((Consensus.carryFields config post state upgrade before).currentSyncCommittee a).value.pubkeys.toList =
+    ((Consensus.carryFields config post state upgrade before).currentSyncCommittee
+      a).value.pubkeys.toList =
       (state.currentSyncCommittee altair).value.pubkeys.toList := by
   simp [Consensus.carryFields, altair]
 
 private theorem upgradeToElectra {checks : SignatureChecks} {pre : BeaconState preset .dencun}
     {post : BeaconState preset .pectra}
     (ok : Consensus.upgradeToElectra config pre = .ok post) :
-    (SyncCommitteeKeys pre → SyncCommitteeKeys post) ∧ ∀ (a : .altair ≤ Fork.pectra) (a' : .altair ≤ Fork.dencun),
+    (SyncCommitteeKeys pre → SyncCommitteeKeys post) ∧
+      ∀ (a : .altair ≤ Fork.pectra) (a' : .altair ≤ Fork.dencun),
       (post.currentSyncCommittee a).value.pubkeys.toList =
         (pre.currentSyncCommittee a').value.pubkeys.toList := by
   have life := registryLifecycle_upgradeNext (pre := ⟨.dencun, pre⟩)
@@ -1134,7 +1140,8 @@ It also keeps the keys of the current committee, up to Fulu. -/
 private theorem upgradeNextStep {pre : ForkedBeaconState preset}
     {post : {post : ForkedBeaconState preset // pre.fork < post.fork}}
     (ok : Consensus.upgradeNext config checks pre = .ok post) :
-    (SyncCommitteeKeys pre.state → SyncCommitteeKeys post.val.state) ∧ (post.val.fork < .glamsterdam →
+    (SyncCommitteeKeys pre.state → SyncCommitteeKeys post.val.state) ∧
+      (post.val.fork < .glamsterdam →
       ∀ (a : .altair ≤ post.val.fork) (a' : .altair ≤ pre.fork),
         (post.val.state.currentSyncCommittee a).value.pubkeys.toList =
           (pre.state.currentSyncCommittee a').value.pubkeys.toList) := by
@@ -1143,7 +1150,8 @@ private theorem upgradeNextStep {pre : ForkedBeaconState preset}
   case phase0 =>
     simp only [Consensus.upgradeNext, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at ok
     obtain ⟨_, upgraded, rfl⟩ := ok
-    exact ⟨fun _ => upgradeToAltair upgraded, fun _ _ a' => absurd a' (by change ¬ Fork.altair ≤ Fork.phase0; decide)⟩
+    exact ⟨fun _ => upgradeToAltair upgraded,
+      fun _ _ a' => absurd a' (by change ¬ Fork.altair ≤ Fork.phase0; decide)⟩
   case altair | bellatrix | shapella =>
     simp only [Consensus.upgradeNext, pure, Except.pure, Except.ok.injEq] at ok
     subst ok
@@ -1307,7 +1315,8 @@ theorem Run.syncCommittee_keys {g x : ForkedBeaconState preset} (run : Run confi
   exact ⟨fun key member => project key (current key member),
     fun key member => project key (next key member)⟩
 
-/-- A slot with its upgrades keeps the keys of the current sync committee, unless it starts a period. -/
+/-- A slot with its upgrades keeps the keys of the current sync committee unless it starts a period.
+-/
 theorem advanceSlotAcross_currentSyncCommittee {forked after : ForkedBeaconState preset}
     (ok : advanceSlotAcross config checks forked = .ok after) (early : after.fork < .glamsterdam)
     (period : getCurrentEpoch after.state = getCurrentEpoch forked.state ∨
