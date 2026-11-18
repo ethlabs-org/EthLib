@@ -86,6 +86,32 @@ open Base Uint64
 
 variable {preset : Preset} {fork : Fork} {config : Config} {checks : SignatureChecks}
 
+/-- A key slashed on R's branch and unslashed on C's has waited the slashings vector from the split.
+
+It may be a key of the split's registry, slashed after the split.
+
+Or it may be a key that joined the registry after the split. -/
+private theorem slashed_waits {split pulled counted : BeaconState preset fork}
+    (toPulled : Run config checks ⟨fork, split⟩ ⟨fork, pulled⟩)
+    (toCounted : Run config checks ⟨fork, split⟩ ⟨fork, counted⟩)
+    (early : fork < .glamsterdam) (caps : CapOrder preset)
+    (withdrawDelay : 1 ≤ config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat)
+    {i : ℕ} {validator : Validator} (found : pulled.validators.data[i]? = some validator)
+    (slashed : validator.slashed = true)
+    (unslashedC : ((counted.validators.data[i]?).map (·.slashed)).getD true = false) :
+    (getCurrentEpoch split).toNat + preset.EPOCHS_PER_SLASHINGS_VECTOR.toNat ≤
+      validator.withdrawableEpoch.toNat := by
+  by_cases inside : i < split.validators.data.size
+  · have oldFound := Array.getElem?_eq_getElem inside
+    cases oldSlashed : split.validators.data[i].slashed
+    · exact (toPulled.newly_slashed_withdrawableEpoch caps.activation caps.compounding early
+        withdrawDelay i _ validator oldFound found oldSlashed slashed).2
+    · obtain ⟨now, nowFound, nowSlashed⟩ :=
+        toCounted.slashedPersistence i _ oldFound oldSlashed
+      simp [nowFound, nowSlashed] at unslashedC
+  · exact ((CapStep.run toPulled caps.activation caps.compounding early).1.appended
+      withdrawDelay i validator (by omega) found slashed).2
+
 /-- A key in the counting state's quorum that is not active at its epoch is in `exiting`.
 
 Activity up to the counting state's epoch is fixed at the split, so both states read it alike.
@@ -164,16 +190,10 @@ private theorem previousOnly_mem_exiting {split pulled counted anc : BeaconState
   · -- A slashing that R holds and the counting state does not came after the split.
     cases slashed : validator.slashed
     · exact .inl rfl
-    · obtain ⟨old, oldFound, -⟩ := isActiveAt_eq_true_iff.mp splitP
-      cases oldSlashed : old.slashed
-      · have delayed := (toPulled.newly_slashed_withdrawableEpoch caps.activation
-          caps.compounding early withdrawDelay v.toNat old validator oldFound found oldSlashed
-          slashed).2
-        have := UInt64.le_iff_toNat_le.mp finalized
-        exact .inr (Nat.le_trans (Nat.add_le_add_right this _) delayed)
-      · obtain ⟨now, nowFound, nowSlashed⟩ :=
-          toCounted.slashedPersistence v.toNat old oldFound oldSlashed
-        simp [nowFound, nowSlashed] at unslashedC
+    · have delayed := slashed_waits toPulled toCounted early caps withdrawDelay found slashed
+        unslashedC
+      have := UInt64.le_iff_toNat_le.mp finalized
+      exact .inr (Nat.le_trans (Nat.add_le_add_right this _) delayed)
 
 open DirectSafety DirectSafety.Apriori.Internal
 
