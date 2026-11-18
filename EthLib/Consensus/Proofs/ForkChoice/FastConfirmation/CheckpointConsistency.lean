@@ -232,14 +232,6 @@ private theorem comparable_of_ancestors {store : Store preset fork}
     simp [Store.isAncestor, Store.block_ok_iff.mpr aKnown, walk,
       bind, Except.bind, pure, Except.pure]
 
-/-- A known block of a descent test: the ancestor is held. -/
-private theorem held_of_isAncestor {store : Store preset fork} {node : ForkChoiceNode}
-    {root : Root} (descends : store.isAncestor node ⟨root, .pending⟩ = .ok true) :
-    ∃ block, store.blocks[root]? = some block := by
-  unfold Store.isAncestor at descends
-  obtain ⟨b, ok, -⟩ := bind_ok_iff.mp descends
-  exact ⟨b, Store.block_ok_iff.mp ok⟩
-
 /-- Same-block agreement carries pending descent to a receiver that holds the descendant. -/
 private theorem copy_ancestor {sender receiver : Store preset fork}
     (anchorSlot : anchorBlock.slot = anchorState.slot)
@@ -252,7 +244,7 @@ private theorem copy_ancestor {sender receiver : Store preset fork}
     (aKnown : receiver.blocks[a]? = some aBlock)
     (above : sender.isAncestor ⟨a, .pending⟩ ⟨b, .pending⟩ = .ok true) :
     receiver.isAncestor ⟨a, .pending⟩ ⟨b, .pending⟩ = .ok true := by
-  obtain ⟨block, held⟩ := held_of_isAncestor above
+  obtain ⟨block, held⟩ := Store.known_of_isAncestor above
   exact Store.isAncestor_of_same_blocks reached before same held
     (senderReached.anchorSlot_le (UInt64.le_of_eq anchorSlot) held) ⟨aBlock, aKnown⟩ above
 
@@ -275,7 +267,7 @@ private theorem comparable_of_target_read {sender receiver : Store preset fork}
     receiver.isAncestor ⟨checkpoint.root, .pending⟩ ⟨root, .pending⟩ = .ok true ∨
       receiver.isAncestor ⟨root, .pending⟩ ⟨checkpoint.root, .pending⟩ = .ok true := by
   obtain ⟨_, block, _, held, _, targetAbove⟩ := Store.isAncestor_of_getCheckpointBlock before read
-  obtain ⟨rb, rk⟩ := held_of_isAncestor supports
+  obtain ⟨rb, rk⟩ := Store.known_of_isAncestor supports
   rcases comparable_of_ancestors before held rk targetAbove supports with h | h
   · exact .inl (copy_ancestor anchorSlot senderReached reached before same checkpointKnown h)
   · exact .inr (copy_ancestor anchorSlot senderReached reached before same known h)
@@ -565,12 +557,12 @@ private theorem justified_comparable_of_pin {anchor : Store preset fork} {Δ tim
   have receiverBase := baseCovers (e.world k).time (by omega) (by omega) w receiver k hd rfl ready
     hdOk
   have receiverJ := Store.isAncestor_getHead hdOk
-  obtain ⟨sb, sk⟩ := held_of_isAncestor callerBase
-  obtain ⟨rb, rk⟩ := held_of_isAncestor rootAbove
-  obtain ⟨rsb, rsk⟩ := held_of_isAncestor receiverBase
+  obtain ⟨sb, sk⟩ := Store.known_of_isAncestor callerBase
+  obtain ⟨rb, rk⟩ := Store.known_of_isAncestor rootAbove
+  obtain ⟨rsb, rsk⟩ := Store.known_of_isAncestor receiverBase
   have seq := common _ _ _ sk rsk
   subst rsb
-  obtain ⟨jb, jk⟩ := held_of_isAncestor receiverJ
+  obtain ⟨jb, jk⟩ := Store.known_of_isAncestor receiverJ
   obtain ⟨rootBlock, known⟩ := holds w receiver k (by omega) kBound ready
   -- Compare the base with the root before comparing the receiver's justification with the base.
   rcases comparable_of_ancestors preGloas sk rk callerBase rootAbove with below | above

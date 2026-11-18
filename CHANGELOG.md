@@ -39,6 +39,7 @@ Not yet released.
   The step reads these new or newly public lemmas:
   - `Store.parentRoot_of_getAncestorRoots` and `Store.isAncestor_terminal_of_getAncestorRoots` give the parent and ancestry of each walked root.
   - `Store.viable_of_ancestor` passes viability from a root to its ancestors before Gloas.
+  - `Store.known_of_isAncestor` gives the known block at the root of an ancestor.
   - `Execution.walk_covers` covers a walk of roots from its start and a step.
   - `Execution.honestHeadsCover_of_viableAt` is the induction behind the historical-anchor headlines, with the root's viability given per time.
     Its window reserve and its receivers' exits read one reserve value; the headlines pass `exitReserve`.
