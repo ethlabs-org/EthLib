@@ -454,13 +454,17 @@ private theorem Credited.mono {weak strong : Prop} {index : Nat}
 
 /-- From Altair, a new validator at the end keeps each validator and the consolidations.
 
-It keeps the balance and the score at a position that holds a validator. -/
-theorem addValidatorToRegistry_kept {index : Nat} {pubkey : Cryptography.Bls.BLSPubkey}
+It keeps the balance and the score at each position that holds a validator.
+
+It takes the score zero, and no other score moves. -/
+theorem addValidatorToRegistry_keeps {pubkey : Cryptography.Bls.BLSPubkey}
     {withdrawalCredentials : Bytes32} {amount : Gwei} (altair : .altair ≤ fork)
-    (computed : addValidatorToRegistry state pubkey withdrawalCredentials amount = .ok after)
-    (inside : index < state.validators.data.size) :
-    ValidatorsKept state after ∧ after.balances.data[index]? = state.balances.data[index]? ∧
-      after.pendingConsolidations = state.pendingConsolidations ∧ ScoreKept index state after := by
+    (computed : addValidatorToRegistry state pubkey withdrawalCredentials amount = .ok after) :
+    ValidatorsKept state after ∧ after.pendingConsolidations = state.pendingConsolidations ∧
+      (∀ index, index < state.validators.data.size →
+        after.balances.data[index]? = state.balances.data[index]? ∧ ScoreKept index state after) ∧
+      ∀ (i : Nat) (v : UInt64), (after.inactivityScores altair).data[i]? = some v →
+        (state.inactivityScores altair).data[i]? = some v ∨ v = 0 := by
   have pushed := addValidatorToRegistry_validators_eq_push computed
   have kept : ValidatorsKept state after := by
     intro i old found
@@ -473,26 +477,27 @@ theorem addValidatorToRegistry_kept {index : Nat} {pubkey : Cryptography.Bls.BLS
     pure, Except.pure, Except.ok.injEq] at computed
   obtain ⟨_, indexOk, _, _, _, balancesOk, _, _, _, _, _, scoresOk, rfl⟩ := computed
   have atEnd := (getIndexForNewValidator_ok_iff.mp indexOk).2
-  refine ⟨kept, ?_, rfl, fun _ => ?_⟩
+  refine ⟨kept, rfl, fun index inside => ⟨?_, fun _ => ?_⟩, fun i v found => ?_⟩
   · rw [setOrAppendList_getElem? balancesOk, ite_eq_right_of_eq_false _ _ (eq_false (by omega))]
   · show _ = _
     rw [setOrAppendList_getElem? scoresOk, ite_eq_right_of_eq_false _ _ (eq_false (by omega))]
+  · simp only at found
+    rw [setOrAppendList_getElem? scoresOk] at found
+    split at found
+    · exact .inr (Option.some.inj found).symm
+    · exact .inl found
 
-/-- From Altair, a new validator takes the score zero, and no other score moves. -/
-theorem addValidatorToRegistry_scores {pubkey : Cryptography.Bls.BLSPubkey}
+/-- From Altair, a new validator at the end keeps each validator and the consolidations.
+
+It keeps the balance and the score at a position that holds a validator. -/
+theorem addValidatorToRegistry_kept {index : Nat} {pubkey : Cryptography.Bls.BLSPubkey}
     {withdrawalCredentials : Bytes32} {amount : Gwei} (altair : .altair ≤ fork)
     (computed : addValidatorToRegistry state pubkey withdrawalCredentials amount = .ok after)
-    (i : Nat) (v : UInt64) (found : (after.inactivityScores altair).data[i]? = some v) :
-    (state.inactivityScores altair).data[i]? = some v ∨ v = 0 := by
-  unfold addValidatorToRegistry at computed
-  simp only [altair, ↓reduceDIte, addValidatorToRegistryAltair, liftAccessor_ok, bind_ok_iff,
-    pure, Except.pure, Except.ok.injEq] at computed
-  obtain ⟨_, _, _, _, _, _, _, _, _, _, _, scoresOk, rfl⟩ := computed
-  simp only at found
-  rw [setOrAppendList_getElem? scoresOk] at found
-  split at found
-  · exact .inr (Option.some.inj found).symm
-  · exact .inl found
+    (inside : index < state.validators.data.size) :
+    ValidatorsKept state after ∧ after.balances.data[index]? = state.balances.data[index]? ∧
+      after.pendingConsolidations = state.pendingConsolidations ∧ ScoreKept index state after := by
+  obtain ⟨kept, consolidations, indexed, -⟩ := addValidatorToRegistry_keeps altair computed
+  exact ⟨kept, (indexed index inside).1, consolidations, (indexed index inside).2⟩
 
 /-- From Altair, a new validator at the end keeps each validator and the balance at a position.
 
@@ -992,26 +997,6 @@ theorem balanceNotRaised_processEpochAltair {altair : .altair ≤ fork}
   exact ⟨justified, scored, rewarded, settled, updated, kept, justifiedOk, balances, validators,
     scoredOk, rewardedOk, raised unnamed untargeted, rest⟩
 
-/-- From Altair, the steps of an epoch after the update of the inactivity scores keep a score.
-
-This holds when the epoch succeeds, at each position of the registry before the epoch.
-
-It needs no premise on the deposits or the consolidations.
-
-The update of the scores follows justification, as in the epoch itself. -/
-theorem scoreKept_processEpochAltair {altair : .altair ≤ fork}
-    (computed : processEpochAltair config checks state altair = .ok after) {index : Nat}
-    (inside : index < state.validators.data.size) :
-    ∃ justified scored, processJustificationAndFinalization state = .ok justified ∧
-      processInactivityUpdates config justified altair = .ok scored ∧
-      ScoreKept index scored after := by
-  obtain ⟨justified, scored, rewarded, -, -, -, justifiedOk, -, -, scoredOk, rewardedOk, -, -, -,
-    -, -, -, -, kept⟩ := processEpochAltair_walk computed (Array.getElem?_eq_getElem inside)
-  refine ⟨justified, scored, justifiedOk, scoredOk, ?_⟩
-  have scores : rewarded.inactivityScores = scored.inactivityScores := by
-    rw [processRewardsAndPenalties_frame rewardedOk]
-  exact (ScoreKept.of_scores scores index).trans kept
-
 /-- From Altair, the pending deposits write a score only as a zero.
 
 Each score after the deposits was there before, or is zero. -/
@@ -1031,23 +1016,29 @@ private theorem scoresKeptOrZero_processPendingDeposits {electra : .pectra ≤ f
       · exact held j w seen
       · obtain ⟨_, _, rfl⟩ := increaseBalance_eq_ok_iff.mp raised
         exact held j w seen
-      · exact (addValidatorToRegistry_scores altair added j w seen).elim (held j w) .inr)
+      · exact ((addValidatorToRegistry_keeps altair added).2.2.2 j w seen).elim (held j w) .inr)
     (fun _ _ found => .inl found) applies
   exact each i v found
 
-/-- From Altair, the steps of an epoch after the update of the inactivity scores write only zeros.
+/-- From Altair, the steps of an epoch after the update of the inactivity scores keep a score.
 
-This holds when the epoch succeeds, at every position, also past the registry before the epoch.
+This holds when the epoch succeeds, at each position of the registry before the epoch.
+
+It needs no premise on the deposits or the consolidations.
+
+At every position, also past that registry, a later score is the score after the update, or zero.
 
 Only the pending deposits write a score, and each such score is zero.
 
 The update of the scores follows justification, as in the epoch itself. -/
-theorem scoresKeptOrZero_processEpochAltair {altair : .altair ≤ fork}
+theorem scoresKept_processEpochAltair {altair : .altair ≤ fork}
     (computed : processEpochAltair config checks state altair = .ok after) :
     ∃ justified scored, processJustificationAndFinalization state = .ok justified ∧
       processInactivityUpdates config justified altair = .ok scored ∧
+      (∀ index, index < state.validators.data.size → ScoreKept index scored after) ∧
       ∀ (i : Nat) (v : UInt64), (after.inactivityScores altair).data[i]? = some v →
         (scored.inactivityScores altair).data[i]? = some v ∨ v = 0 := by
+  have original := computed
   rw [processEpochAltair_eq_run] at computed
   obtain ⟨justified, scored, rewarded, registered, slashed, reset, deposited, consolidated, settled,
     updated, justifiedOk, scoredOk, rewardedOk, registeredOk, slashedOk, resetOk, depositedOk,
@@ -1055,7 +1046,16 @@ theorem scoresKeptOrZero_processEpochAltair {altair : .altair ≤ fork}
     (EpochTrace.run_ok_iff.mp computed).through_effectiveBalances
   have scoredEq := EpochStage.action_cases.mp scoredOk
   simp only [EpochStage.Edge, altair, ↓reduceDIte] at scoredEq
-  refine ⟨justified, scored, EpochStage.action_cases.mp justifiedOk, scoredEq, ?_⟩
+  have justifiedEq := EpochStage.action_cases.mp justifiedOk
+  refine ⟨justified, scored, justifiedEq, scoredEq, fun index inside => ?_, ?_⟩
+  · -- Every step after the update keeps the score at a position of the registry.
+    obtain ⟨just', scored', rewarded', -, -, -, justifiedOk', -, -, scoredOk', rewardedOk', -, -,
+      -, -, -, -, -, kept⟩ := processEpochAltair_walk original (Array.getElem?_eq_getElem inside)
+    obtain rfl := Except.ok.inj (justifiedOk'.symm.trans justifiedEq)
+    obtain rfl := Except.ok.inj (scoredOk'.symm.trans scoredEq)
+    have scores : rewarded'.inactivityScores = scored'.inactivityScores := by
+      rw [processRewardsAndPenalties_frame rewardedOk']
+    exact (ScoreKept.of_scores scores index).trans kept
   have rewardedEq : processRewardsAndPenalties config scored = .ok rewarded :=
     EpochStage.action_cases.mp rewardedOk
   have rewardedScores : rewarded.inactivityScores = scored.inactivityScores := by
@@ -1114,5 +1114,22 @@ theorem scoresKeptOrZero_processEpochAltair {altair : .altair ≤ fork}
   · rw [toReset.2.2.2.2, rewardedScores] at kept
     exact .inl kept
   · exact .inr zero
+
+/-- From Altair, the steps of an epoch after the update of the inactivity scores keep a score.
+
+This holds when the epoch succeeds, at each position of the registry before the epoch.
+
+It needs no premise on the deposits or the consolidations.
+
+The update of the scores follows justification, as in the epoch itself. -/
+theorem scoreKept_processEpochAltair {altair : .altair ≤ fork}
+    (computed : processEpochAltair config checks state altair = .ok after) {index : Nat}
+    (inside : index < state.validators.data.size) :
+    ∃ justified scored, processJustificationAndFinalization state = .ok justified ∧
+      processInactivityUpdates config justified altair = .ok scored ∧
+      ScoreKept index scored after := by
+  obtain ⟨justified, scored, justifiedOk, scoredOk, kept, -⟩ :=
+    scoresKept_processEpochAltair computed
+  exact ⟨justified, scored, justifiedOk, scoredOk, kept index inside⟩
 
 end EthLib.Consensus
