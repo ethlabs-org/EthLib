@@ -1076,9 +1076,7 @@ private theorem creditScan_snoc_fst (blockP slotP : BalanceSource → Bool) (v h
   change (if (getCurrentEpoch m.state).toNat ≤ high + 1 then
       ((creditScan blockP slotP v high pre).1 + stepCredit blockP slotP v step, _)
     else creditScan blockP slotP v high pre).1 = _
-  by_cases c : (getCurrentEpoch m.state).toNat ≤ high + 1
-  · simp only [c, ↓reduceIte]
-  · simp only [c, ↓reduceIte]
+  split_ifs <;> rfl
 
 /-- The credits of a run to a key, read as a scan, add over `append`. -/
 private theorem creditScan_append (blockP slotP : BalanceSource → Bool) (v high : ℕ)
@@ -1132,16 +1130,20 @@ private theorem creditScan_le_events (blockP slotP : BalanceSource → Bool) (v 
     rw [creditScan_snoc_fst]
     split at rest
     · rename_i within
-      rw [if_pos within]
-      simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at rest
-      obtain ⟨added, addedOk, rfl⟩ := rest
-      simp only [List.filter_append, List.map_append, List.sum_append]
-      have credit := stepCredit_le blockP slotP v step addedOk
-      omega
+      split
+      · simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at rest
+        obtain ⟨added, addedOk, rfl⟩ := rest
+        simp only [List.filter_append, List.map_append, List.sum_append]
+        have credit := stepCredit_le blockP slotP v step addedOk
+        omega
+      · rename_i outside
+        exact absurd within outside
     · rename_i outside
-      cases rest
-      rw [if_neg outside]
-      exact before
+      split
+      · rename_i within
+        exact absurd within outside
+      · cases rest
+        exact before
 
 /-- R1 (branchR): R's credits to V keys since the split, weight 3.
 
