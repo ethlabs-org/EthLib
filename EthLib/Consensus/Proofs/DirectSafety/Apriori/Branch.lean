@@ -456,7 +456,8 @@ private theorem ScoresBelowAt.upgrades {s t : ForkedBeaconState preset} {n : Nat
 It needs no premise on the registry: a validator that the step adds takes the score zero.
 
 It raises the bound only when the step ends an epoch, and so moves the epoch on by one. -/
-theorem ScoresBelowAt.step_all {m l : ForkedBeaconState preset} (step : Step config checks m l)
+private theorem ScoresBelowAt.step_all {m l : ForkedBeaconState preset}
+    (step : Step config checks m l)
     {n : Nat} {bound : Nat → Nat} (altair : .altair ≤ m.fork)
     (early : l.fork < .glamsterdam) (era : .pectra ≤ m.fork ∨ l.fork < .pectra)
     (below : ScoresBelowAt n bound m) :
@@ -472,7 +473,7 @@ theorem ScoresBelowAt.step_all {m l : ForkedBeaconState preset} (step : Step con
       ((getCurrentEpoch after).toNat - (getCurrentEpoch before).toNat)) ⟨_, after⟩
     simp only [same, Nat.sub_self, Nat.mul_zero, Nat.add_zero]
     intro later i member score found
-    rcases scoresKeptOrZero_processBlock processed early later i score found with old | zero
+    rcases (scoresKept_processBlock processed).2 later i score found with old | zero
     · exact below later i member score old
     · simp [zero]
   | slot ok =>
@@ -493,7 +494,7 @@ theorem ScoresBelowAt.step_all {m l : ForkedBeaconState preset} (step : Step con
         unfold processEpoch at epochedOk
         simpa only [altair, ↓reduceDIte] using epochedOk
       intro later i member score found
-      obtain ⟨just, pass, justified, scored, kept⟩ := scoresKeptOrZero_processEpochAltair epochRun
+      obtain ⟨just, pass, justified, scored, -, kept⟩ := scoresKept_processEpochAltair epochRun
       rcases kept i score found with old | zero
       · exact ScoresBelowAt.pass altair below cachedOk justified scored later i member score old
       · simp [zero]
@@ -522,7 +523,8 @@ theorem ScoresBelowAt.step {m l : ForkedBeaconState preset} (step : Step config 
 It needs no premise on the registry at `x`: a validator that the branch adds takes the score zero.
 
 `t` is the number of epochs from `x`, so the number of updates of the scores so far. -/
-theorem scoresBelowAt_run_all {x y : ForkedBeaconState preset} (tail : Run config checks x y)
+private theorem scoresBelowAt_run_all {x y : ForkedBeaconState preset}
+    (tail : Run config checks x y)
     (altair : .altair ≤ x.fork) (early : y.fork < .glamsterdam)
     (era : .pectra ≤ x.fork ∨ y.fork < .pectra) {n : Nat} {start : Nat → Nat}
     (initial : ScoresBelowAt n start x) :
@@ -605,21 +607,9 @@ private theorem scoresBelowAt_start (x : ForkedBeaconState preset) (altair : .al
   simp only [altair, ↓reduceDIte]
   exact member.trans (Nat.le_max_left _ _)
 
-/-- On a branch from `x` from Altair, the scores of the registry at `x` follow `sigma + bias * t`.
-
-`t` is the number of epochs from `x`, so the number of updates of the scores so far. -/
-private theorem scoresBelow_run {x y : ForkedBeaconState preset} (tail : Run config checks x y)
-    (altair : .altair ≤ x.fork) (early : y.fork < .glamsterdam)
-    (era : .pectra ≤ x.fork ∨ y.fork < .pectra) :
-    ScoresBelow x.state.validators.data.size (startInactivityScore config x +
-      config.INACTIVITY_SCORE_BIAS.toNat *
-        ((getCurrentEpoch y.state).toNat - (getCurrentEpoch x.state).toNat)) y :=
-  scoresBelowAt_run_all (start := fun _ => startInactivityScore config x) tail altair early era
-    (scoresBelowAt_start x altair _)
-
 /-- On a branch from `x` from Altair, each score of a state is small, new positions too.
 
-It is `scoresBelow_run` for every position of the state, also those that the branch adds.
+It holds for every position of the state, also those that the branch adds.
 
 The score is at most `sigma + bias * t`, with `sigma` the start score that the floor reads.
 
@@ -650,7 +640,8 @@ theorem referenceScores_le {x z : ForkedBeaconState preset} (head : Run config c
       ((getCurrentEpoch z.state).toNat - (getCurrentEpoch x.state).toNat + 1) := by
   have scoredOk : processInactivityUpdates config just later = .ok pass := by
     simpa only [EpochStage.Edge, later, ↓reduceDIte] using scored
-  have bound := ScoresBelow.pass later (scoresBelow_run head altair early era) cachedOk
+  have bound := ScoresBelow.pass (n := x.state.validators.data.size) later
+    (fun later' _ _ _ found' => runScores_le head altair early era later' found') cachedOk
     justified scoredOk later i inside score found
   rwa [Nat.mul_add, Nat.mul_one, ← Nat.add_assoc]
 

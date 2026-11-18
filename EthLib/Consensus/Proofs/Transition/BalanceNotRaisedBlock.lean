@@ -626,7 +626,7 @@ private theorem fixed_addValidatorToRegistry {pubkey : Cryptography.Bls.BLSPubke
     refine ⟨⟨rfl, rfl, rfl, rfl, grows, fun i below _ => ?_⟩, fun later i v found => ?_⟩
     · show _ = _
       rw [setOrAppendList_getElem? scoresOk, ite_eq_right_of_eq_false _ _ (eq_false (by omega))]
-    · exact addValidatorToRegistry_scores later original i v found
+    · exact (addValidatorToRegistry_keeps later original).2.2.2 i v found
   · split at computed
     · cases computed
       exact FixedZ.of_eq (grows := grows)
@@ -1549,39 +1549,6 @@ theorem fixed_processOperations {body : BeaconBlockBody preset fork} {parentSlot
     BlockFixed state after :=
   (fixedZ_processOperations computed).1
 
-/-- A block keeps the inactivity score at each position of the registry before it.
-
-This holds when the block succeeds; before Altair there are no scores.
-
-A new validator takes the position at the end of the registry, so it moves no earlier score. -/
-theorem scoreKept_processBlock {block : BeaconBlock preset fork}
-    (computed : processBlock config checks engine state block = .ok after) {index : Nat}
-    (inside : index < state.validators.data.size) : ScoreKept index state after := by
-  obtain ⟨input, last, started, operated, -, synced⟩ := processBlock_operationsInput computed
-  -- The steps before the operations write no score, and keep the registry or grow it.
-  have before : BlockScored state input :=
-    started.step_of BlockScored BlockScored.refl BlockScored.trans
-      (fun _ ok => (down_processParentExecutionPayload (index := 0) ok).2.2.2.2.2)
-      (fun ok => by
-        obtain ⟨_, _, rfl⟩ := processBlockHeader_eq ok
-        exact BlockScored.of_eq rfl rfl)
-      (fun _ ok => (down_processBlockExecution (index := 0) ok).2.2.2.2.2)
-      (fun ok => by
-        obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, rfl⟩ := processRandao_eq ok
-        exact BlockScored.of_eq rfl rfl)
-      (fun _ ok => by
-        obtain ⟨_, _, rest⟩ := processEth1Data_eq ok
-        rw [← rest]
-        exact BlockScored.of_eq rfl rfl)
-  -- From Altair the sync aggregate changes only the balances.
-  have synced : BlockScored last after := by
-    split at synced
-    · obtain ⟨_, rfl⟩ := processSyncAggregate_eq synced
-      exact BlockScored.of_eq rfl rfl
-    · cases synced
-      exact BlockScored.refl _
-  exact ((before.trans (fixed_processOperations operated).2.2.2.2).trans synced).2 index inside
-
 /-- The execution part of a block writes a score only as a zero. -/
 private theorem scoreZero_processBlockExecution {body : BeaconBlockBody preset fork}
     {bellatrix : .bellatrix ≤ fork}
@@ -1608,36 +1575,96 @@ private theorem scoreZero_processBlockExecution {body : BeaconBlockBody preset f
     · cases computed
       exact ScoreZero.refl _
 
-/-- A block before Gloas writes a score only as a zero.
+/-- From Gloas, the payload of the parent writes a score only as a zero. -/
+private theorem scoreZero_processParentExecutionPayload {gloas : .glamsterdam ≤ fork}
+    {body : BeaconBlockBody preset fork}
+    (computed : processParentExecutionPayload config checks state gloas body = .ok after) :
+    ScoreZero state after := by
+  rcases processParentExecutionPayload_ok computed with ⟨-, -, rfl⟩ |
+    ⟨-, _, _, _, _, _, _, _, settledOk, depositsOk, withdrawalsOk, consolidationsOk, buildersOk,
+      exitsOk, -, rfl⟩
+  · exact ScoreZero.refl _
+  have settled := settleParentPayment_eq settledOk
+  refine (show ScoreZero state _ from ScoreZero.of_scores (by rw [settled])).trans <|
+    (FixedZ.foldlM (fun _ _ _ ok => fixed_processDepositRequest ok) depositsOk).2.trans <|
+    (FixedZ.foldlM (fun _ _ _ ok => fixed_processWithdrawalRequest ok) withdrawalsOk).2.trans <|
+    (FixedZ.foldlM (fun _ _ _ ok => fixed_processConsolidationRequest ok)
+      consolidationsOk).2.trans <|
+    (FixedZ.foldlM (fun _ _ _ ok => ?_) buildersOk).2.trans <|
+    (FixedZ.foldlM (fun _ _ _ ok => ?_) exitsOk).2.trans (ScoreZero.of_scores rfl)
+  · obtain ⟨_, rfl⟩ := processBuilderDepositRequest_builders ok
+    exact FixedZ.of_eq
+  · obtain ⟨_, rfl⟩ := processBuilderExitRequest_builders ok
+    exact FixedZ.of_eq
 
-Each score after it was there before, or is zero.
+/-- A block keeps the inactivity score at each position of the registry before it.
 
-A new validator takes the score zero at the end of the registry, and no step writes another. -/
-theorem scoresKeptOrZero_processBlock {block : BeaconBlock preset fork}
-    (computed : processBlock config checks engine state block = .ok after)
-    (early : fork < .glamsterdam) (later : .altair ≤ fork) (i : Nat) (v : UInt64)
-    (found : (after.inactivityScores later).data[i]? = some v) :
-    (state.inactivityScores later).data[i]? = some v ∨ v = 0 := by
+This holds when the block succeeds; before Altair there are no scores.
+
+A new validator takes the position at the end of the registry, so it moves no earlier score.
+
+Each score after the block, at every position, was there before it, or is zero. -/
+theorem scoresKept_processBlock {block : BeaconBlock preset fork}
+    (computed : processBlock config checks engine state block = .ok after) :
+    (∀ index, index < state.validators.data.size → ScoreKept index state after) ∧
+      ∀ (altair : .altair ≤ fork) (i : Nat) (v : UInt64),
+        (after.inactivityScores altair).data[i]? = some v →
+          (state.inactivityScores altair).data[i]? = some v ∨ v = 0 := by
   obtain ⟨input, last, started, operated, -, synced⟩ := processBlock_operationsInput computed
-  have before : ScoreZero state input :=
-    started.step_of ScoreZero ScoreZero.refl ScoreZero.trans
-      (fun gloas _ => absurd (Nat.lt_of_le_of_lt gloas early) (Nat.lt_irrefl _))
-      (fun ok => by
-        obtain ⟨_, _, rfl⟩ := processBlockHeader_eq ok
-        exact ScoreZero.of_scores rfl)
-      (fun _ ok => scoreZero_processBlockExecution ok)
-      (fun ok => by
-        obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, rfl⟩ := processRandao_eq ok
-        exact ScoreZero.of_scores rfl)
-      (fun _ ok => by
-        obtain ⟨_, _, rest⟩ := processEth1Data_eq ok
-        rw [← rest]
-        exact ScoreZero.of_scores rfl)
-  have synced : ScoreZero last after := by
-    simp only [later, ↓reduceDIte] at synced
-    obtain ⟨_, rfl⟩ := processSyncAggregate_eq synced
-    exact ScoreZero.of_scores rfl
-  exact (before.trans ((fixedZ_processOperations operated).2.trans synced)) later i v found
+  refine ⟨fun index inside => ?_, fun later i v found => ?_⟩
+  · -- The steps before the operations write no score, and keep the registry or grow it.
+    have before : BlockScored state input :=
+      started.step_of BlockScored BlockScored.refl BlockScored.trans
+        (fun _ ok => (down_processParentExecutionPayload (index := 0) ok).2.2.2.2.2)
+        (fun ok => by
+          obtain ⟨_, _, rfl⟩ := processBlockHeader_eq ok
+          exact BlockScored.of_eq rfl rfl)
+        (fun _ ok => (down_processBlockExecution (index := 0) ok).2.2.2.2.2)
+        (fun ok => by
+          obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, rfl⟩ := processRandao_eq ok
+          exact BlockScored.of_eq rfl rfl)
+        (fun _ ok => by
+          obtain ⟨_, _, rest⟩ := processEth1Data_eq ok
+          rw [← rest]
+          exact BlockScored.of_eq rfl rfl)
+    -- From Altair the sync aggregate changes only the balances.
+    have synced : BlockScored last after := by
+      split at synced
+      · obtain ⟨_, rfl⟩ := processSyncAggregate_eq synced
+        exact BlockScored.of_eq rfl rfl
+      · cases synced
+        exact BlockScored.refl _
+    exact ((before.trans (fixed_processOperations operated).2.2.2.2).trans synced).2 index inside
+  · -- A new validator takes the score zero, and no other step writes a score.
+    have before : ScoreZero state input :=
+      started.step_of ScoreZero ScoreZero.refl ScoreZero.trans
+        (fun _ ok => scoreZero_processParentExecutionPayload ok)
+        (fun ok => by
+          obtain ⟨_, _, rfl⟩ := processBlockHeader_eq ok
+          exact ScoreZero.of_scores rfl)
+        (fun _ ok => scoreZero_processBlockExecution ok)
+        (fun ok => by
+          obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, rfl⟩ := processRandao_eq ok
+          exact ScoreZero.of_scores rfl)
+        (fun _ ok => by
+          obtain ⟨_, _, rest⟩ := processEth1Data_eq ok
+          rw [← rest]
+          exact ScoreZero.of_scores rfl)
+    have synced : ScoreZero last after := by
+      simp only [later, ↓reduceDIte] at synced
+      obtain ⟨_, rfl⟩ := processSyncAggregate_eq synced
+      exact ScoreZero.of_scores rfl
+    exact (before.trans ((fixedZ_processOperations operated).2.trans synced)) later i v found
+
+/-- A block keeps the inactivity score at each position of the registry before it.
+
+This holds when the block succeeds; before Altair there are no scores.
+
+A new validator takes the position at the end of the registry, so it moves no earlier score. -/
+theorem scoreKept_processBlock {block : BeaconBlock preset fork}
+    (computed : processBlock config checks engine state block = .ok after) {index : Nat}
+    (inside : index < state.validators.data.size) : ScoreKept index state after :=
+  (scoresKept_processBlock computed).1 index inside
 
 /-! ## The proposer through the steps of a block -/
 
