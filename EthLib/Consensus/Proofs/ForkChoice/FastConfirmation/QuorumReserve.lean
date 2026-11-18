@@ -428,7 +428,6 @@ def pinReserve (config : Config) (state ancestor finalizedState : BeaconState pr
         ((validator c.sourceIndex.toNat).map fun v =>
           v.slashed || decide (v.withdrawableEpoch ≤ epoch + 1)).getD false
     else []
-  let dueStake := (due.map fun c => effective c.sourceIndex.toNat).sum
   let depositRecipients := preset.MAX_PENDING_DEPOSITS_PER_EPOCH.toNat
   let creditedKeys := depth * slots + (depth / period + 2) * preset.SYNC_COMMITTEE_SIZE.toNat +
     depth * depositRecipients + due.length
@@ -436,7 +435,7 @@ def pinReserve (config : Config) (state ancestor finalizedState : BeaconState pr
   --
   -- The band of each credited key is not scaled.
   let credits :=
-    (11 * (depth * proposerCredit + depositCarry + depthFin * depositChurn + dueStake +
+    (11 * (depth * proposerCredit + depositCarry + depthFin * depositChurn +
       whistleblowerExtra) + 9) / 10 +
       creditedKeys * preset.upwardBand
   -- Each key the call's branch credits or debits can move by a rounding step and a band.
@@ -463,12 +462,14 @@ def pinReserve (config : Config) (state ancestor finalizedState : BeaconState pr
       (slashed i = false ∨ recentSlashing i = true) ∧
       ((validator i).map fun v => decide (v.exitEpoch.toNat ≤ epoch.toNat + 1)).getD false = true,
     rise i
-  -- An exiting key can still be credited as a proposer or as the target of a due consolidation.
+  -- An exiting key can still be credited as a proposer.
   --
   -- `credits` charges those credits once at eleven tenths and their bands once.
   --
   -- These charge them twice more, also at eleven tenths, rounded up; `exitingBands` has the bands.
-  let exitingCredits := (22 * (depth * proposerCredit + dueStake) + 9) / 10
+  --
+  -- A due consolidation's credit is charged by `consolidationsX`, to every target.
+  let exitingCredits := (22 * (depth * proposerCredit) + 9) / 10
   -- A lower bound on a key's effective balance on another branch, up to the counting state.
   --
   -- It starts at the finalized block's state, which lies on every branch, and at most this one's.
