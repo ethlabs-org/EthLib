@@ -142,7 +142,7 @@ theorem Run.scheduled_activation_reserve {g x : ForkedBeaconState preset}
     change v.activationEpoch.toNat ≠ 18446744073709551615 at different
     omega
   have reserve := (run_scheduled_reserve run genesis activation compounding aligned
-    (Nat.lt_trans early (by decide)) epochFinite) early i v found
+    (Nat.lt_trans early (by decide)) epochFinite) i v found
       (UInt64.lt_iff_toNat_lt.mp future) assigned
   exact reserve.1
 

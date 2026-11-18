@@ -61,10 +61,19 @@ def UnassignedEligibleBalance {f : Fork} (s : BeaconState preset f) : Prop :=
       (v.activationEligibilityEpoch ≠ FAR_FUTURE_EPOCH →
         preset.MAX_EFFECTIVE_BALANCE ≤ v.effectiveBalance) ∧ v.slashed = false
 
-/-- Before Electra, a scheduled key keeps its activation reserve until it becomes active. -/
+/-- From Electra, an eligible key that is not yet active keeps its activation reserve. -/
+def ScheduledEligibleBalanceElectra {f : Fork} (s : BeaconState preset f) : Prop :=
+  .pectra ≤ f → ∀ (i : Nat) (v : Validator), s.validators.data[i]? = some v →
+    (v.activationEpoch ≠ FAR_FUTURE_EPOCH ∨ v.activationEligibilityEpoch ≠ FAR_FUTURE_EPOCH) →
+    getCurrentEpoch s < v.activationEpoch →
+    ((getCurrentEpoch s).toNat + 1 < v.activationEpoch.toNat →
+      ∃ balance, s.balances.data[i]? = some balance ∧ v.effectiveBalance ≤ balance) ∧
+      preset.MAX_EFFECTIVE_BALANCE ≤ v.effectiveBalance ∧ v.slashed = false
+
+/-- A scheduled key keeps its activation reserve until it becomes active. -/
 def ScheduledEligibleBalance {f : Fork} (s : BeaconState preset f)
     (cutoff : Nat := (getCurrentEpoch s).toNat) : Prop :=
-  f < .pectra → ∀ (i : Nat) (v : Validator), s.validators.data[i]? = some v →
+  ∀ (i : Nat) (v : Validator), s.validators.data[i]? = some v →
     cutoff < v.activationEpoch.toNat → v.activationEpoch ≠ FAR_FUTURE_EPOCH →
     preset.MAX_EFFECTIVE_BALANCE ≤ v.effectiveBalance ∧
       ((getCurrentEpoch s).toNat + 1 < v.activationEpoch.toNat →
@@ -74,18 +83,18 @@ def ScheduledEligibleBalance {f : Fork} (s : BeaconState preset f)
 private theorem ScheduledEligibleBalance.restrict {f : Fork} {s : BeaconState preset f}
     {before after : Nat} (held : ScheduledEligibleBalance s before) (later : before ≤ after) :
     ScheduledEligibleBalance s after := by
-  intro early i v found future assigned
-  exact held early i v found (Nat.lt_of_le_of_lt later future) assigned
+  intro i v found future assigned
+  exact held i v found (Nat.lt_of_le_of_lt later future) assigned
 
 private theorem ScheduledEligibleBalance.reframe {f h : Fork}
     {s : BeaconState preset f} {t : BeaconState preset h} {before after : Nat}
-    (held : ScheduledEligibleBalance s before) (forks : f ≤ h) (later : before ≤ after)
+    (held : ScheduledEligibleBalance s before) (later : before ≤ after)
     (forward : (getCurrentEpoch s).toNat ≤ (getCurrentEpoch t).toNat)
     (validators : t.validators.data = s.validators.data)
     (balances : t.balances.data = s.balances.data) :
     ScheduledEligibleBalance t after := by
-  intro early i v found future assigned
-  obtain ⟨minimum, funding, unslashed⟩ := held (Nat.lt_of_le_of_lt forks early)
+  intro i v found future assigned
+  obtain ⟨minimum, funding, unslashed⟩ := held
     i v (validators ▸ found) (Nat.lt_of_le_of_lt later future) assigned
   refine ⟨minimum, ?_, unslashed⟩
   intro distant
@@ -358,7 +367,7 @@ private theorem updatedEffectiveBalance_minimum {cap balance effective result : 
 
 private theorem ScheduledEligibleBalance.transfer {f h : Fork}
     {s : BeaconState preset f} {t : BeaconState preset h}
-    (held : ScheduledEligibleBalance s) (forks : f ≤ h)
+    (held : ScheduledEligibleBalance s)
     (forward : getCurrentEpoch s ≤ getCurrentEpoch t)
     (same : t.validators.data = s.validators.data)
     (balances : ∀ (i : Nat) (v : Validator) (b : Gwei),
@@ -368,12 +377,12 @@ private theorem ScheduledEligibleBalance.transfer {f h : Fork}
       v.effectiveBalance ≤ b →
       ∃ c, t.balances.data[i]? = some c ∧ v.effectiveBalance ≤ c) :
     ScheduledEligibleBalance t := by
-  intro early i v found future assigned
+  intro i v found future assigned
   have before := same ▸ found
   have pending : (getCurrentEpoch s).toNat < v.activationEpoch.toNat :=
     Nat.lt_of_le_of_lt (UInt64.le_iff_toNat_le.mp forward) future
   obtain ⟨minimum, funding, unslashed⟩ :=
-    held (Nat.lt_of_le_of_lt forks early) i v before pending assigned
+    held i v before pending assigned
   refine ⟨minimum, ?_, unslashed⟩
   intro distant
   have pendingFar : (getCurrentEpoch s).toNat + 1 < v.activationEpoch.toNat := by
@@ -388,7 +397,7 @@ private theorem ScheduledEligibleBalance.increase {f : Fork}
     (ok : increaseBalance s index amount = .ok t) : ScheduledEligibleBalance t := by
   obtain ⟨inside, fits, rfl⟩ := increaseBalance_eq_ok_iff.mp ok
   apply held.transfer (t := s.putBalance index.toNat inside
-    (s.balances.data[index.toNat] + amount)) (Nat.le_refl _) (UInt64.le_refl _) rfl
+    (s.balances.data[index.toNat] + amount)) (UInt64.le_refl _) rfl
   intro i v b _ _ _ read low
   by_cases same : index.toNat = i
   · subst i
@@ -412,7 +421,7 @@ private theorem ScheduledEligibleBalance.decrease {f : Fork}
   obtain ⟨inside, rfl⟩ := decreaseBalance_eq_ok_iff.mp ok
   apply held.transfer (t := s.putBalance index.toNat inside
     (Uint64.saturatingSub s.balances.data[index.toNat] amount))
-    (Nat.le_refl _) (UInt64.le_refl _) rfl
+    (UInt64.le_refl _) rfl
   intro i v b found future _ read low
   have different : index.toNat ≠ i := by
     rintro rfl
@@ -421,6 +430,24 @@ private theorem ScheduledEligibleBalance.decrease {f : Fork}
   refine ⟨b, ?_, low⟩
   simpa [BeaconState.putBalance, Serialization.Ssz.RootedForkList.data_set,
     Array.getElem?_set, different] using read
+
+private theorem ScheduledEligibleBalance.setBalance {f : Fork}
+    {s t : BeaconState preset f} {index amount : UInt64}
+    (held : ScheduledEligibleBalance s)
+    (floor : ∀ v, s.validators.data[index.toNat]? = some v →
+      getCurrentEpoch s < v.activationEpoch → v.activationEpoch ≠ FAR_FUTURE_EPOCH →
+      v.effectiveBalance ≤ amount)
+    (ok : s.setBalance index amount = .ok t) : ScheduledEligibleBalance t := by
+  obtain ⟨inside, rfl⟩ := setBalance_ok ok
+  apply held.transfer (t := s.putBalance index.toNat inside amount) (UInt64.le_refl _) rfl
+  intro i v b found distant assigned read low
+  by_cases same : index.toNat = i
+  · subst i
+    exact ⟨amount, by simp [BeaconState.putBalance],
+      floor v found (UInt64.lt_iff_toNat_lt.mpr (by omega)) assigned⟩
+  · refine ⟨b, ?_, low⟩
+    simpa [BeaconState.putBalance, Serialization.Ssz.RootedForkList.data_set,
+      Array.getElem?_set, same] using read
 
 private theorem ScheduledEligibleBalance.effective {f : Fork}
     {s t : BeaconState preset f} {i : Nat} {v : Validator} {balance result : Gwei}
@@ -434,7 +461,7 @@ private theorem ScheduledEligibleBalance.effective {f : Fork}
     (set : s.setValidatorAt i { v with effectiveBalance := result } = .ok t) :
     ScheduledEligibleBalance t ((getCurrentEpoch s).toNat + 1) := by
   obtain ⟨inside, rfl⟩ := setValidatorAt_ok set
-  intro early j w located future assigned
+  intro j w located future assigned
   simp only [BeaconState.putValidator, Serialization.Ssz.RootedForkList.data_set,
     Array.getElem?_set] at located
   split at located
@@ -442,7 +469,7 @@ private theorem ScheduledEligibleBalance.effective {f : Fork}
     subst j
     cases located
     obtain ⟨minimum, funding, unslashed⟩ :=
-      held early i v (getValidatorAt_eq_ok_iff.mp found) future assigned
+      held i v (getValidatorAt_eq_ok_iff.mp found) future assigned
     obtain ⟨b, owned, funded⟩ := funding future
     have equal := Option.some.inj (owned.symm.trans (getBalanceAt_eq_ok_iff.mp read))
     subst b
@@ -451,28 +478,28 @@ private theorem ScheduledEligibleBalance.effective {f : Fork}
     rcases updatedEffectiveBalance_eq_or_le scalar with rfl | ⟨lower, _⟩
     · exact funded
     · exact lower
-  · exact held early j w located future assigned
+  · exact held j w located future assigned
 
 private theorem ScheduledEligibleBalance.setValidatorAt {f : Fork}
     {s t : BeaconState preset f} {i : Nat} {v w : Validator}
     (held : ScheduledEligibleBalance s) (_found : getValidatorAt s i = .ok v)
     (set : s.setValidatorAt i w = .ok t)
-    (kept : f < .pectra → getCurrentEpoch s < w.activationEpoch →
+    (kept : getCurrentEpoch s < w.activationEpoch →
       w.activationEpoch ≠ FAR_FUTURE_EPOCH →
       preset.MAX_EFFECTIVE_BALANCE ≤ w.effectiveBalance ∧
         ((getCurrentEpoch s).toNat + 1 < w.activationEpoch.toNat →
           ∃ b, s.balances.data[i]? = some b ∧ w.effectiveBalance ≤ b) ∧ w.slashed = false) :
     ScheduledEligibleBalance t := by
   obtain ⟨inside, rfl⟩ := setValidatorAt_ok set
-  intro early j old read future assigned
+  intro j old read future assigned
   simp only [BeaconState.putValidator, Serialization.Ssz.RootedForkList.data_set,
     Array.getElem?_set] at read
   split at read
   · rename_i equal
     subst j
     cases read
-    exact kept early (UInt64.lt_iff_toNat_lt.mpr future) assigned
-  · exact held early j old read future assigned
+    exact kept (UInt64.lt_iff_toNat_lt.mpr future) assigned
+  · exact held j old read future assigned
 
 private theorem ScheduledEligibleBalance.setValidatorAt_kept {f : Fork}
     {s t : BeaconState preset f} {i : Nat} {v w : Validator}
@@ -482,8 +509,8 @@ private theorem ScheduledEligibleBalance.setValidatorAt_kept {f : Fork}
     (effective : w.effectiveBalance = v.effectiveBalance)
     (flag : w.slashed = v.slashed) : ScheduledEligibleBalance t := by
   apply held.setValidatorAt found set
-  intro early future assigned
-  obtain ⟨minimum, funding, unslashed⟩ := held early i v
+  intro future assigned
+  obtain ⟨minimum, funding, unslashed⟩ := held i v
     (getValidatorAt_eq_ok_iff.mp found)
     (by simpa only [epoch] using UInt64.lt_iff_toNat_lt.mp future) (epoch ▸ assigned)
   simpa only [epoch, effective, flag] using And.intro minimum (And.intro funding unslashed)
@@ -495,13 +522,13 @@ private theorem ScheduledEligibleBalance.add {f : Fork} {s t : BeaconState prese
     ScheduledEligibleBalance t := by
   obtain ⟨validators, balances⟩ := addValidatorToRegistry_push ok matched
   have slot : t.slot = s.slot := addValidatorToRegistry_slot ok
-  intro early i v found future assigned
+  intro i v found future assigned
   rw [validators, Array.getElem?_push] at found
   split at found
   · cases found
     exact (assigned rfl).elim
   · rename_i different
-    have input := held early i v found (by simpa only [getCurrentEpoch, slot] using future) assigned
+    have input := held i v found (by simpa only [getCurrentEpoch, slot] using future) assigned
     refine ⟨input.1, ?_, input.2.2⟩
     intro distant
     obtain ⟨b, located, low⟩ := input.2.1 (by simpa only [getCurrentEpoch, slot] using distant)
@@ -656,12 +683,12 @@ private theorem UnassignedEligibleBalance.rewardsAltair_balance {f : Fork}
   rewardsAltair_ineligible_balance altair early ok found (held.ineligible found pending) read
 
 private theorem ScheduledEligibleBalance.ineligible {f : Fork} {s : BeaconState preset f}
-    (held : ScheduledEligibleBalance s) (early : f < .pectra)
+    (held : ScheduledEligibleBalance s)
     {i : Nat} {v : Validator} (found : s.validators.data[i]? = some v)
     (future : getCurrentEpoch s < v.activationEpoch)
     (assigned : v.activationEpoch ≠ FAR_FUTURE_EPOCH) :
     isEligibleValidator (getPreviousEpoch s) v = .ok false := by
-  have unslashed := (held early i v found (UInt64.lt_iff_toNat_lt.mp future) assigned).2.2
+  have unslashed := (held i v found (UInt64.lt_iff_toNat_lt.mp future) assigned).2.2
   have inactive : isActiveValidator v (getPreviousEpoch s) = false := by
     simp only [isActiveValidator, Bool.and_eq_false_iff, decide_eq_false_iff_not]
     left
@@ -676,13 +703,12 @@ private theorem ScheduledEligibleBalance.rewardsAltair {f : Fork}
   have same : t.validators.data = s.validators.data := by
     rw [processRewardsAndPenalties_frame ok]
   have slot : t.slot = s.slot := by rw [processRewardsAndPenalties_frame ok]
-  intro before
-  apply held.transfer (t := t) (Nat.le_refl _)
+  apply held.transfer (t := t)
     (by simp only [getCurrentEpoch, slot, UInt64.le_refl])
-    same _ before
+    same _
   intro i v b found future assigned read low
   exact ⟨b, rewardsAltair_ineligible_balance altair early ok found
-    (held.ineligible before found (UInt64.lt_iff_toNat_lt.mpr (by omega)) assigned) read, low⟩
+    (held.ineligible found (UInt64.lt_iff_toNat_lt.mpr (by omega)) assigned) read, low⟩
 
 private theorem UnassignedEligibleBalance.rewardsAltair {f : Fork}
     {s t : BeaconState preset f} (altair : .altair ≤ f) (early : f < .glamsterdam)
@@ -795,13 +821,12 @@ private theorem ScheduledEligibleBalance.rewards {f : Fork}
   have same : t.validators.data = s.validators.data := by
     rw [processRewardsAndPenalties_frame ok]
   have slot : t.slot = s.slot := by rw [processRewardsAndPenalties_frame ok]
-  intro before
-  apply held.transfer (t := t) (Nat.le_refl _)
+  apply held.transfer (t := t)
     (by simp only [getCurrentEpoch, slot, UInt64.le_refl])
-    same _ before
+    same _
   intro i v b found future assigned read low
   obtain ⟨c, located, raised⟩ := rewardsPhase0_ineligible_balance (Nat.lt_of_not_le altair)
-    ok found (held.ineligible before found (UInt64.lt_iff_toNat_lt.mpr (by omega)) assigned) read
+    ok found (held.ineligible found (UInt64.lt_iff_toNat_lt.mpr (by omega)) assigned) read
   exact ⟨c, located, UInt64.le_trans low raised⟩
 
 private theorem slashings_unslashed_balance {f : Fork}
@@ -838,12 +863,11 @@ private theorem ScheduledEligibleBalance.slashings {f : Fork}
     ScheduledEligibleBalance t := by
   have same : t.validators.data = s.validators.data := by rw [processSlashings_frame ok]
   have slot : t.slot = s.slot := by rw [processSlashings_frame ok]
-  intro before
-  apply held.transfer (t := t) (Nat.le_refl _)
-    (by simp only [getCurrentEpoch, slot, UInt64.le_refl]) same _ before
+  apply held.transfer (t := t)
+    (by simp only [getCurrentEpoch, slot, UInt64.le_refl]) same _
   intro i v b found future assigned read low
   exact ⟨b, slashings_unslashed_balance early ok found
-    (held before i v found (by omega) assigned).2.2 read, low⟩
+    (held i v found (by omega) assigned).2.2 read, low⟩
 
 private theorem attestation_balance_not_lowered {f : Fork}
     {s t : BeaconState preset f} {parentSlot : Slot} {attestation : Attestation preset f}
@@ -885,7 +909,7 @@ private theorem ScheduledEligibleBalance.attestation {f : Fork}
     (ok : processAttestation config checks s parentSlot attestation = .ok t) :
     ScheduledEligibleBalance t := by
   have slot := (frame_processAttestation ok).slot
-  apply held.transfer (t := t) (Nat.le_refl _)
+  apply held.transfer (t := t)
     (by simp only [getCurrentEpoch, slot, UInt64.le_refl])
     (congrArg (·.data) (processAttestation_registry ok).1)
   intro i v b _ _ _ read low
@@ -1003,22 +1027,25 @@ def AssignedProposers {f : Fork} (s : BeaconState preset f) : Prop :=
   ∀ fulu : .fusaka ≤ f, ∀ i ∈ (s.proposerLookahead fulu).toList,
     ∃ v, s.validators.data[i.toNat]? = some v ∧ v.activationEpoch ≠ FAR_FUTURE_EPOCH
 
-/-- Each end of a queued consolidation has assigned activation at its stable index. -/
+/-- Each end of a queued consolidation has reached its assigned activation at its stable index. -/
 def AssignedTargets {f : Fork} (s : BeaconState preset f) : Prop :=
   ∀ electra : .pectra ≤ f, ∀ entry ∈ (s.pendingConsolidations electra).data.toList,
     ∀ index ∈ [entry.sourceIndex, entry.targetIndex],
       ∃ v, s.validators.data[index.toNat]? = some v ∧
-        v.activationEpoch ≠ FAR_FUTURE_EPOCH
+        v.activationEpoch ≠ FAR_FUTURE_EPOCH ∧ v.activationEpoch ≤ getCurrentEpoch s
 
 private theorem AssignedTargets.transfer {f : Fork} {s t : BeaconState preset f}
     (held : AssignedTargets s) (life : RegistryLifecycle s t)
+    (forward : getCurrentEpoch s ≤ getCurrentEpoch t)
     (subset : ∀ electra : .pectra ≤ f,
       ∀ entry ∈ (t.pendingConsolidations electra).data.toList,
         entry ∈ (s.pendingConsolidations electra).data.toList) : AssignedTargets t := by
   intro electra entry member index named
-  obtain ⟨v, found, assigned⟩ := held electra entry (subset electra entry member) index named
+  obtain ⟨v, found, assigned, active⟩ := held electra entry (subset electra entry member) index
+    named
   obtain ⟨w, read, kept⟩ := life.validators index.toNat v found
-  exact ⟨w, read, (kept.activationEpoch assigned) ▸ assigned⟩
+  rw [← kept.activationEpoch assigned] at active
+  exact ⟨w, read, (kept.activationEpoch assigned) ▸ assigned, UInt64.le_trans active forward⟩
 
 private theorem UnassignedEligibleBalance.consolidations {f : Fork}
     {s t : BeaconState preset f} {electra : .pectra ≤ f}
@@ -1031,11 +1058,32 @@ private theorem UnassignedEligibleBalance.consolidations {f : Fork}
       (member : entry ∈ (s.pendingConsolidations electra).data) :
       entry.sourceIndex.toNat ≠ i := by
     intro same
-    obtain ⟨w, located, assigned⟩ := sources electra entry (by simpa using member)
+    obtain ⟨w, located, assigned, _⟩ := sources electra entry (by simpa using member)
       entry.sourceIndex (by simp)
     rw [same, found, Option.some.injEq] at located
     subst w
     exact assigned pending
+  obtain ⟨now, located, rose⟩ := processPendingConsolidations_balanceNotLowered ok excluded b read
+  exact ⟨now, located, UInt64.le_trans low rose⟩
+
+private theorem ScheduledEligibleBalance.consolidations {f : Fork}
+    {s t : BeaconState preset f} {electra : .pectra ≤ f}
+    (held : ScheduledEligibleBalance s) (sources : AssignedTargets s)
+    (ok : processPendingConsolidations s electra = .ok t) :
+    ScheduledEligibleBalance t := by
+  apply held.transfer (t := t)
+    (by simp only [getCurrentEpoch, (frame_processPendingConsolidations ok).slot, UInt64.le_refl])
+    (congrArg (·.data) (processPendingConsolidations_kept ok).1)
+  intro i v b found distant _ read low
+  have excluded (entry : PendingConsolidation)
+      (member : entry ∈ (s.pendingConsolidations electra).data) :
+      entry.sourceIndex.toNat ≠ i := by
+    intro same
+    obtain ⟨w, located, _, active⟩ := sources electra entry (by simpa using member)
+      entry.sourceIndex (by simp)
+    rw [same, found, Option.some.injEq] at located
+    subst w
+    exact UInt64.not_le.mpr (UInt64.lt_iff_toNat_lt.mpr (by omega)) active
   obtain ⟨now, located, rose⟩ := processPendingConsolidations_balanceNotLowered ok excluded b read
   exact ⟨now, located, UInt64.le_trans low rose⟩
 
@@ -1078,7 +1126,7 @@ private theorem ScheduledEligibleBalance.sync {f : Fork}
     ScheduledEligibleBalance t := by
   obtain ⟨_, shape⟩ := processSyncAggregate_eq ok
   have slot : t.slot = s.slot := by rw [shape]
-  apply held.transfer (t := t) (Nat.le_refl _)
+  apply held.transfer (t := t)
     (by simp only [getCurrentEpoch, slot, UInt64.le_refl]) (by rw [shape])
   intro i v b found distant _ read low
   have excluded : ∀ key ∈ (s.currentSyncCommittee altair).value.pubkeys.toList,
@@ -1092,20 +1140,23 @@ private theorem ScheduledEligibleBalance.sync {f : Fork}
   obtain ⟨c, located, raised⟩ := sync_excluded_balance_not_lowered ok found excluded read
   exact ⟨c, located, UInt64.le_trans low raised⟩
 
+/-- Each queued partial withdrawal belongs to a key whose assigned activation epoch has come. -/
 def AssignedPartials {f : Fork} (s : BeaconState preset f) : Prop :=
   ∀ electra : .pectra ≤ f, ∀ entry ∈ (s.pendingPartialWithdrawals electra).data.toList,
     ∃ v, s.validators.data[entry.validatorIndex.toNat]? = some v ∧
-      v.activationEpoch ≠ FAR_FUTURE_EPOCH
+      v.activationEpoch ≠ FAR_FUTURE_EPOCH ∧ v.activationEpoch ≤ getCurrentEpoch s
 
 private theorem AssignedPartials.transfer {f : Fork} {s t : BeaconState preset f}
     (held : AssignedPartials s) (life : RegistryLifecycle s t)
+    (forward : getCurrentEpoch s ≤ getCurrentEpoch t)
     (subset : ∀ electra : .pectra ≤ f,
       ∀ entry ∈ (t.pendingPartialWithdrawals electra).data.toList,
         entry ∈ (s.pendingPartialWithdrawals electra).data.toList) : AssignedPartials t := by
   intro electra entry member
-  obtain ⟨v, found, assigned⟩ := held electra entry (subset electra entry member)
+  obtain ⟨v, found, assigned, active⟩ := held electra entry (subset electra entry member)
   obtain ⟨w, read, kept⟩ := life.validators entry.validatorIndex.toNat v found
-  exact ⟨w, read, (kept.activationEpoch assigned) ▸ assigned⟩
+  rw [← kept.activationEpoch assigned] at active
+  exact ⟨w, read, (kept.activationEpoch assigned) ▸ assigned, UInt64.le_trans active forward⟩
 
 private theorem AssignedPartials.drop {f : Fork} {s : BeaconState preset f}
     (held : AssignedPartials s) (electra : .pectra ≤ f) (count : Nat) :
@@ -1161,27 +1212,44 @@ private theorem AssignedPartials.excludes {f : Fork} {s : BeaconState preset f}
     (member : entry ∈ (s.pendingPartialWithdrawals electra).data) :
     entry.validatorIndex.toNat ≠ i := by
   intro same
-  obtain ⟨w, read, assigned⟩ := held electra entry (List.mem_toArray.mp (by simpa using member))
+  obtain ⟨w, read, assigned, _⟩ := held electra entry
+    (List.mem_toArray.mp (by simpa using member))
   rw [same, found, Option.some.injEq] at read
   subst w
   exact assigned pending
 
+private theorem AssignedPartials.excludes_scheduled {f : Fork} {s : BeaconState preset f}
+    (held : AssignedPartials s) {i : Nat} {v : Validator}
+    (found : s.validators.data[i]? = some v)
+    (future : getCurrentEpoch s < v.activationEpoch) (electra : .pectra ≤ f)
+    (entry : PendingPartialWithdrawal)
+    (member : entry ∈ (s.pendingPartialWithdrawals electra).data) :
+    entry.validatorIndex.toNat ≠ i := by
+  intro same
+  obtain ⟨w, read, _, active⟩ := held electra entry
+    (List.mem_toArray.mp (by simpa using member))
+  rw [same, found, Option.some.injEq] at read
+  subst w
+  exact UInt64.not_le.mpr future active
+
 private theorem AssignedPartials.setValidator {f : Fork} {s t : BeaconState preset f}
     {i : ValidatorIndex} {v w : Validator} (held : AssignedPartials s)
     (found : getValidator s i = .ok v) (set : s.setValidator i w = .ok t)
-    (assigned : v.activationEpoch ≠ FAR_FUTURE_EPOCH →
-      w.activationEpoch ≠ FAR_FUTURE_EPOCH) : AssignedPartials t := by
+    (kept : v.activationEpoch ≠ FAR_FUTURE_EPOCH → w.activationEpoch = v.activationEpoch) :
+    AssignedPartials t := by
   obtain ⟨inside, rfl⟩ := setValidator_ok set
   intro electra entry member
-  obtain ⟨old, read, active⟩ := held electra entry member
+  obtain ⟨old, read, assigned, active⟩ := held electra entry member
   by_cases equal : entry.validatorIndex.toNat = i.toNat
   · have same := Option.some.inj ((getValidator_eq_ok_iff.mp found).symm.trans (equal ▸ read))
     subst old
-    exact ⟨w, by simp [BeaconState.putValidator,
-      Serialization.Ssz.RootedForkList.data_set, equal], assigned active⟩
+    refine ⟨w, by simp [BeaconState.putValidator,
+      Serialization.Ssz.RootedForkList.data_set, equal], ?_, ?_⟩
+    · rw [kept assigned]; exact assigned
+    · rw [kept assigned]; exact active
   · exact ⟨old, by simpa [BeaconState.putValidator,
       Serialization.Ssz.RootedForkList.data_set, Array.getElem?_set, Ne.symm equal] using read,
-      active⟩
+      assigned, active⟩
 
 private theorem unassigned_withdrawable_far {f : Fork} {s : BeaconState preset f}
     (activation : ActivationExitOrder s) (exits : ExitsOrdered s)
@@ -1219,14 +1287,14 @@ private theorem ScheduledEligibleBalance.withdrawals {f : Fork}
     {s t : BeaconState preset f} {capella : .shapella ≤ f}
     {payload : Until .glamsterdam f (ExecutionPayload preset f)}
     (held : ScheduledEligibleBalance s) (activation : ActivationExitOrder s)
-    (exits : ExitsOrdered s) (same : t.validators.data = s.validators.data)
+    (exits : ExitsOrdered s) (partials : AssignedPartials s)
+    (same : t.validators.data = s.validators.data)
     (capped : ∀ v ∈ s.validators.data,
       v.effectiveBalance ≤ withdrawalMaxEffectiveBalance preset f v)
     (ok : processWithdrawals s capella payload = .ok t) : ScheduledEligibleBalance t := by
-  intro early
-  apply held.transfer (t := t) (Nat.le_refl _)
+  apply held.transfer (t := t)
     (by simp only [getCurrentEpoch, (frame_processWithdrawals ok).slot, UInt64.le_refl])
-    same _ early
+    same
   intro i v b found distant _ read low
   have member := Array.mem_of_getElem? found
   have unwithdrawable : getCurrentEpoch s < v.withdrawableEpoch := by
@@ -1234,7 +1302,8 @@ private theorem ScheduledEligibleBalance.withdrawals {f : Fork}
       (show getCurrentEpoch s < v.activationEpoch from UInt64.lt_iff_toNat_lt.mpr (by omega))
       (UInt64.le_trans (activation v member) (exits v member))
   obtain ⟨later, located, retained⟩ := processWithdrawals_capped ok found unwithdrawable
-    (fun electra => (Nat.not_le_of_lt early electra).elim) b read
+    (fun electra entry member => partials.excludes_scheduled found
+      (UInt64.lt_iff_toNat_lt.mpr (by omega)) electra entry member) b read
   refine ⟨later, located, ?_⟩
   exact UInt64.le_trans (by
       apply UInt64.le_iff_toNat_le.mpr
@@ -1255,6 +1324,16 @@ private theorem assigned_of_active {v : Validator} {epoch : Epoch}
   have bound := v.exitEpoch.toNat_lt
   change (2 ^ 64 - 1 : Nat) < v.exitEpoch.toNat at less
   omega
+
+private theorem activation_le_of_active {v : Validator} {epoch : Epoch}
+    (active : isActiveValidator v epoch = true) : v.activationEpoch ≤ epoch := by
+  simp only [isActiveValidator, Bool.and_eq_true, decide_eq_true_eq] at active
+  exact active.1
+
+private theorem assigned_and_le_of_active {v : Validator} {epoch : Epoch}
+    (active : isActiveValidator v epoch = true) :
+    v.activationEpoch ≠ FAR_FUTURE_EPOCH ∧ v.activationEpoch ≤ epoch :=
+  ⟨assigned_of_active active, activation_le_of_active active⟩
 
 private theorem assigned_of_slashable {v : Validator} {epoch : Epoch}
     (slashable : isSlashableValidator v epoch = true) : v.activationEpoch ≠ FAR_FUTURE_EPOCH := by
@@ -1434,11 +1513,15 @@ theorem CapStep.data {f : Fork} {s t : BeaconState preset f}
     (same : t.validators.data = s.validators.data := by rfl)
     (slot : t.slot = s.slot := by rfl)
     (cache : t.proposerLookahead = s.proposerLookahead := by rfl)
-    (targets : AssignedTargets s → AssignedTargets t := by
-      intro held electra entry member index named
-      exact ⟨_, (held electra entry member index named).choose_spec.1,
-        (held electra entry member index named).choose_spec.2⟩) :
+    (targets : getCurrentEpoch s ≤ getCurrentEpoch t →
+      AssignedTargets s → AssignedTargets t := by
+      intro forward held electra entry member index named
+      obtain ⟨v, found, assigned, active⟩ := held electra entry member index named
+      exact ⟨v, found, assigned, UInt64.le_trans active forward⟩) :
     CapStep config s t := by
+  have forward : getCurrentEpoch s ≤ getCurrentEpoch t := by
+    rw [getCurrentEpoch, getCurrentEpoch, slot]
+    exact UInt64.le_refl _
   constructor
   · simpa only [same] using (id : (∀ v ∈ s.validators.data,
       v.effectiveBalance ≤ withdrawalMaxEffectiveBalance preset f v) → _)
@@ -1448,7 +1531,7 @@ theorem CapStep.data {f : Fork} {s t : BeaconState preset f}
     exact UInt64.le_refl _
   · exact Nat.le_refl _
   · exact fun _ held => held.transfer (.of_data same) cache
-  · exact fun _ => targets
+  · exact fun _ => targets forward
   · intro i v w before after _ flag _
     rw [same, before, Option.some.injEq] at after
     subst w
@@ -1486,7 +1569,7 @@ private theorem CapStep.setValidatorAt {f : Fork} {s t : BeaconState preset f}
       intro _ unslashed slashed
       exact Bool.noConfusion (unslashed.symm.trans slashed))
     (assigned : v.activationEpoch ≠ FAR_FUTURE_EPOCH →
-      w.activationEpoch ≠ FAR_FUTURE_EPOCH := by exact id)
+      w.activationEpoch = v.activationEpoch := by intro _; rfl)
     (retired : v.exitEpoch ≤ getCurrentEpoch s → v.slashed = false →
       v.withdrawableEpoch ≤ getCurrentEpoch s →
       w.slashed = false ∧ w.exitEpoch = v.exitEpoch ∧
@@ -1521,21 +1604,21 @@ private theorem CapStep.setValidatorAt {f : Fork} {s t : BeaconState preset f}
     · have same := Option.some.inj ((getValidatorAt_eq_ok_iff.mp found).symm.trans
         (eq ▸ read))
       subst old
-      refine ⟨w, ?_, assigned active⟩
+      refine ⟨w, ?_, (assigned active) ▸ active⟩
       simp [BeaconState.putValidator, Serialization.Ssz.RootedForkList.data_set, eq]
     · refine ⟨old, ?_, active⟩
       simpa [BeaconState.putValidator, Serialization.Ssz.RootedForkList.data_set,
         Array.getElem?_set, Ne.symm eq] using read
   · intro _ held electra entry member index named
     obtain ⟨inside, rfl⟩ := setValidatorAt_ok ok
-    obtain ⟨old, read, active⟩ := held electra entry member index named
+    obtain ⟨old, read, active, reached⟩ := held electra entry member index named
     by_cases eq : index.toNat = i
     · have same := Option.some.inj ((getValidatorAt_eq_ok_iff.mp found).symm.trans
         (eq ▸ read))
       subst old
-      refine ⟨w, ?_, assigned active⟩
+      refine ⟨w, ?_, (assigned active) ▸ active, (assigned active) ▸ reached⟩
       simp [BeaconState.putValidator, Serialization.Ssz.RootedForkList.data_set, eq]
-    · refine ⟨old, ?_, active⟩
+    · refine ⟨old, ?_, active, reached⟩
       simpa [BeaconState.putValidator, Serialization.Ssz.RootedForkList.data_set,
         Array.getElem?_set, Ne.symm eq] using read
   · obtain ⟨inside, rfl⟩ := setValidatorAt_ok ok
@@ -1604,7 +1687,7 @@ private theorem CapStep.setValidator {f : Fork} {s t : BeaconState preset f}
       intro _ unslashed slashed
       exact Bool.noConfusion (unslashed.symm.trans slashed))
     (assigned : v.activationEpoch ≠ FAR_FUTURE_EPOCH →
-      w.activationEpoch ≠ FAR_FUTURE_EPOCH := by exact id)
+      w.activationEpoch = v.activationEpoch := by intro _; rfl)
     (retired : v.exitEpoch ≤ getCurrentEpoch s → v.slashed = false →
       v.withdrawableEpoch ≤ getCurrentEpoch s →
       w.slashed = false ∧ w.exitEpoch = v.exitEpoch ∧
@@ -1707,7 +1790,8 @@ private theorem preKeyCharge_consolidations {f : Fork} {s t : BeaconState preset
       have assigned : ∀ v, lowered.validators.data[entry.targetIndex.toNat]? = some v →
           v.activationEpoch ≠ FAR_FUTURE_EPOCH := by
         intro v read
-        obtain ⟨w, located, active⟩ := sources electra entry member entry.targetIndex (by simp)
+        obtain ⟨w, located, active, _⟩ := sources electra entry member entry.targetIndex
+          (by simp)
         rw [downRegistry, same, located, Option.some.injEq] at read
         subst v
         exact active
@@ -1782,7 +1866,7 @@ theorem CapStep.exit {f : Fork} {s t : BeaconState preset f}
       rfl
     refine ⟨?_, ?_, ?_, ?_, ?_⟩
     · exact (CapStep.data (congrArg (·.data) same) (frame_exitQueue queue).slot cache
-        (by obtain ⟨_, _, rfl⟩ := exitQueue_eq queue; exact id)).trans
+        (by obtain ⟨_, _, rfl⟩ := exitQueue_eq queue; exact fun _ => id)).trans
         (CapStep.setValidator (v := v)
           (by rw [getValidator_of_validators_eq same]; exact found)
           (by exact UInt64.le_refl _) (by exact id) set
@@ -1816,17 +1900,20 @@ theorem CapStep.exit {f : Fork} {s t : BeaconState preset f}
       have queueSame : queued.pendingPartialWithdrawals = s.pendingPartialWithdrawals := by
         obtain ⟨_, _, rfl⟩ := exitQueue_eq queue
         rfl
-      obtain ⟨old, read, active⟩ := held witness entry
+      obtain ⟨old, read, assigned, active⟩ := held witness entry
         (by simpa [BeaconState.putValidator, queueSame] using member)
+      have epochSame : getCurrentEpoch queued = getCurrentEpoch s := by
+        rw [getCurrentEpoch, getCurrentEpoch, (frame_exitQueue queue).slot]
+      have later := UInt64.le_trans active (UInt64.le_of_eq epochSame.symm)
       by_cases equal : entry.validatorIndex.toNat = i.toNat
       · have eq := Option.some.inj ((getValidator_eq_ok_iff.mp found).symm.trans (equal ▸ read))
         subst old
         exact ⟨{ v with exitEpoch := epoch, withdrawableEpoch := withdrawal },
           by simp [BeaconState.putValidator,
-          Serialization.Ssz.RootedForkList.data_set, equal], active⟩
+          Serialization.Ssz.RootedForkList.data_set, equal], assigned, later⟩
       · exact ⟨old, by simpa [BeaconState.putValidator,
           Serialization.Ssz.RootedForkList.data_set, Array.getElem?_set,
-          (Ne.symm equal), same] using read, active⟩
+          (Ne.symm equal), same] using read, assigned, later⟩
     · intro candidate j
       have balances : queued.balances = s.balances := by
         obtain ⟨_, _, rfl⟩ := exitQueue_eq queue
@@ -1842,7 +1929,7 @@ theorem CapStep.exit {f : Fork} {s t : BeaconState preset f}
       have balances : queued.balances = s.balances := by
         obtain ⟨_, _, rfl⟩ := exitQueue_eq queue
         rfl
-      have middle := held.transfer (t := queued) (Nat.le_refl _)
+      have middle := held.transfer (t := queued)
         (by simp only [getCurrentEpoch, (frame_exitQueue queue).slot, UInt64.le_refl])
         (congrArg (·.data) same)
         (fun _ _ b _ _ _ read low => ⟨b, by rw [balances]; exact read, low⟩)
@@ -1954,7 +2041,7 @@ private theorem CapStep.slash {f : Fork} {s t : BeaconState preset f}
     exact ((slashingFunded.decrease markedAssigned lowered).increase raised).increase paid
   have partials (held : AssignedPartials s) : AssignedPartials last := by
     have exitedHeld := (CapStep.exit exited).2.2.1 held
-    have markedHeld := exitedHeld.setValidator found set (fun assigned => assigned)
+    have markedHeld := exitedHeld.setValidator found set (fun _ => rfl)
     have slashingHeld : AssignedPartials { marked with slashings } := markedHeld
     exact ((slashingHeld.decrease lowered).increase raised).increase paid
   have scheduled (held : ScheduledEligibleBalance s) : ScheduledEligibleBalance last := by
@@ -1974,7 +2061,7 @@ private theorem CapStep.slash {f : Fork} {s t : BeaconState preset f}
       (w := { v with slashed := true, withdrawableEpoch := max v.withdrawableEpoch withdrawal })
       (by simpa only [getValidator_eq_getValidatorAt] using found)
       (by simpa only [setValidator_eq_setValidatorAt] using set)
-      (fun _ future _ => (UInt64.not_le.mpr future active).elim)
+      (fun future _ => (UInt64.not_le.mpr future active).elim)
     have slashingHeld : ScheduledEligibleBalance { marked with slashings } := markedHeld
     have markedActive : ∀ w,
         ({ marked with slashings } : BeaconState preset f).validators.data[i.toNat]? = some w →
@@ -1986,21 +2073,14 @@ private theorem CapStep.slash {f : Fork} {s t : BeaconState preset f}
       subst w
       exact active
     exact ((slashingHeld.decrease markedActive lowered).increase raised).increase paid
-  have finalScheduled (held : ScheduledEligibleBalance s) :
-      ScheduledEligibleBalance
-        (if gloas : Fork.glamsterdam ≤ f then cancelProposerPayments last gloas i else last) := by
-    intro early
-    have notGloas : ¬ Fork.glamsterdam ≤ f :=
-      Nat.not_le_of_lt (Nat.lt_trans early (by decide))
-    simpa only [notGloas, ↓reduceDIte] using scheduled held early
-  split
-  · exact ⟨total.trans (CapStep.data rfl), (fun held active =>
+  by_cases gloas : Fork.glamsterdam ≤ f
+  · rw [dite_eq_left_of_eq_true (eq_true gloas)]
+    exact ⟨total.trans (CapStep.data rfl), (fun held active =>
       (funding held active).transfer rfl (fun _ _ b _ _ read low => ⟨b, read, low⟩)), partials,
-      fun _ early => (Nat.not_le_of_lt (Nat.lt_trans early
-        (show Fork.pectra < .glamsterdam by decide)) (by assumption)).elim⟩
-  · refine ⟨total, funding, partials, ?_⟩
-    simpa only [show ¬ Fork.glamsterdam ≤ f from by assumption, ↓reduceDIte]
-      using finalScheduled
+      fun held => (scheduled held).transfer (UInt64.le_refl _) rfl
+        (fun _ _ b _ _ _ read low => ⟨b, read, low⟩)⟩
+  · rw [dite_eq_right_of_eq_false (eq_false gloas)]
+    exact ⟨total, funding, partials, scheduled⟩
 
 private theorem preKeyCharge_add {f : Fork} {s t : BeaconState preset f}
     (candidate : Nat → Bool) {key : Cryptography.Bls.BLSPubkey}
@@ -2047,8 +2127,11 @@ private theorem CapStep.add {f : Fork} {s t : BeaconState preset f}
       rfl
     · split at ok <;> cases ok
       rfl
+  have forward : getCurrentEpoch s ≤ getCurrentEpoch t := by
+    rw [getCurrentEpoch, getCurrentEpoch, addValidatorToRegistry_slot ok]
+    exact UInt64.le_refl _
   refine ⟨?_, (fun matched held => held.add matched ok), fun held =>
-    held.transfer (.append data) (fun _ _ member => partials ▸ member)⟩
+    held.transfer (.append data) forward (fun _ _ member => partials ▸ member)⟩
   constructor
   · intro capped v member
     rw [data, Array.mem_push] at member
@@ -2089,7 +2172,7 @@ private theorem CapStep.add {f : Fork} {s t : BeaconState preset f}
       · split at ok <;> cases ok
         rfl
     intro _ held
-    exact held.transfer (.append data) (fun _ _ member => queue ▸ member)
+    exact held.transfer (.append data) forward (fun _ _ member => queue ▸ member)
   · intro i v w before after _ flag _
     have inside := (Array.getElem?_eq_some_iff.mp before).1
     have read : t.validators.data[i]? = some v := by
@@ -2200,13 +2283,13 @@ private theorem CapStep.applyDeposit {f : Fork} {s t : BeaconState preset f}
             have growth := preKeyCharge_add candidate matched added i
             simpa only [preKeyCharge, UInt64.toNat_zero, ite_self, Nat.add_zero] using growth),
           fun matched held => (held.add matched added).reframe (Nat.le_refl _)
-            (Nat.le_refl _) (Nat.le_refl _) rfl rfl⟩
+            (Nat.le_refl _) rfl rfl⟩
       · cases ok
         exact ⟨CapStep.refl _, fun _ => id, id, (fun _ _ _ _ => Nat.le_refl _), fun _ => id⟩
     · obtain ⟨_, rfl⟩ := addPendingDeposit_eq (liftAccessor_ok.mp ok)
       exact ⟨CapStep.data rfl, (fun _ held => held.transfer rfl
         (fun _ _ b _ _ read low => ⟨b, read, low⟩)), id, (fun _ _ _ _ => Nat.le_refl _),
-        fun _ held => held.reframe (Nat.le_refl _) (Nat.le_refl _) (Nat.le_refl _) rfl rfl⟩
+        fun _ held => held.reframe (Nat.le_refl _) (Nat.le_refl _) rfl rfl⟩
   · obtain ⟨step, funded, partials, scheduled⟩ := CapStep.deposit ok
     exact ⟨step, funded, partials, (fun electra => (by contradiction)), scheduled⟩
 
@@ -2229,7 +2312,7 @@ theorem CapStep.processDeposit {f : Fork} {s t : BeaconState preset f}
       (fun electra matched candidate i =>
         (CapStep.applyDeposit (config := config) credited).2.2.2.1 electra matched candidate i),
       fun matched held => (CapStep.applyDeposit (config := config) credited).2.2.2.2 matched
-        (held.reframe (Nat.le_refl _) (Nat.le_refl _) (Nat.le_refl _) rfl rfl)⟩
+        (held.reframe (Nat.le_refl _) (Nat.le_refl _) rfl rfl)⟩
 
 private theorem CapStep.registryEntry {f : Fork} {s t : BeaconState preset f}
     {i : Nat} (ok : updateRegistryEntry config s i = .ok t) :
@@ -2262,7 +2345,7 @@ private theorem CapStep.registryEntry {f : Fork} {s t : BeaconState preset f}
         exact fun flag assigned => ⟨flag, assigned, UInt64.le_refl _⟩)
     (by intro _ unslashed slashed
         exact Bool.noConfusion (unslashed.symm.trans (records.1.symm.trans slashed)))
-    (by rw [epoch]; exact id)
+    (by intro _; exact epoch)
     (by simp only [records.1, records.2.1, records.2.2];
         exact fun _ flag _ => ⟨flag, trivial, trivial⟩)
     (frozen := fun _ => ⟨records.2.1, fun compound => by
@@ -2307,7 +2390,7 @@ private theorem CapStep.activate {f : Fork} {s t : BeaconState preset f}
   · intro eligible funded held
     rw [setValidator_eq_setValidatorAt] at set
     apply held.setValidatorAt (by simpa only [getValidator_eq_getValidatorAt] using found) set
-    intro _ _ _
+    intro _ _
     obtain ⟨balance, minimum, unslashed⟩ := funded i.toNat old
       (getValidator_eq_ok_iff.mp found) far
     exact ⟨minimum eligible, fun _ => balance, unslashed⟩
@@ -2320,7 +2403,9 @@ private theorem CapStep.registryElectra {f : Fork} {s t : BeaconState preset f}
         UnassignedEligibleBalance s → UnassignedEligibleBalance t) ∧
       (AssignedPartials s → AssignedPartials t) ∧
       (UnassignedEligibleBalance s → s.finalizedCheckpoint.epoch < FAR_FUTURE_EPOCH →
-        ∀ (candidate : Nat → Bool) j, preKeyCharge candidate t j ≤ preKeyCharge candidate s j) := by
+        ∀ (candidate : Nat → Bool) j, preKeyCharge candidate t j ≤ preKeyCharge candidate s j) ∧
+      (s.finalizedCheckpoint.epoch < FAR_FUTURE_EPOCH → UnassignedEligibleBalance s →
+        ScheduledEligibleBalance s → ScheduledEligibleBalance t) := by
   simp only [updateRegistryEntryElectra, bind_ok_iff, liftAccessor_ok] at ok
   obtain ⟨v, found, ok⟩ := ok
   split at ok
@@ -2329,7 +2414,9 @@ private theorem CapStep.registryElectra {f : Fork} {s t : BeaconState preset f}
     refine ⟨CapStep.setValidatorAt found (by exact UInt64.le_refl _)
       (by exact id) set, ?_, (fun held =>
         held.transfer (.setValidatorAt found set ⟨fun _ => rfl, fun _ => rfl⟩)
-          (by obtain ⟨_, rfl⟩ := setValidatorAt_ok set; exact fun _ _ => id)), ?_⟩
+          (by obtain ⟨_, rfl⟩ := setValidatorAt_ok set; exact UInt64.le_refl _)
+          (by obtain ⟨_, rfl⟩ := setValidatorAt_ok set; exact fun _ _ => id)), ?_,
+      fun _ _ held => held.setValidatorAt_kept found set rfl rfl rfl⟩
     · intro activation held
       apply held.setValidatorAt found set
       intro pending
@@ -2348,7 +2435,8 @@ private theorem CapStep.registryElectra {f : Fork} {s t : BeaconState preset f}
     obtain ⟨_, _, exited⟩ := ok
     exact ⟨(CapStep.exit exited).1, (fun _ => (CapStep.exit exited).2.1),
       (CapStep.exit (config := config) exited).2.2.1,
-      fun _ _ => (CapStep.exit (config := config) exited).2.2.2.1⟩
+      fun _ _ => (CapStep.exit (config := config) exited).2.2.2.1,
+      fun _ _ => (CapStep.exit (config := config) exited).2.2.2.2⟩
   split at ok
   · have set := liftAccessor_ok.mp ok
     refine ⟨CapStep.setValidatorAt found (by exact UInt64.le_refl _) (by exact id) set
@@ -2357,7 +2445,8 @@ private theorem CapStep.registryElectra {f : Fork} {s t : BeaconState preset f}
           held.transfer (.setValidatorAt found set
             ⟨fun assigned => (assigned (activationEpoch_of_isEligibleForActivation
               (by assumption))).elim, fun _ => rfl⟩)
-            (by obtain ⟨_, rfl⟩ := setValidatorAt_ok set; exact fun _ _ => id)), ?_⟩
+            (by obtain ⟨_, rfl⟩ := setValidatorAt_ok set; exact UInt64.le_refl _)
+            (by obtain ⟨_, rfl⟩ := setValidatorAt_ok set; exact fun _ _ => id)), ?_, ?_⟩
     · intro _ held
       apply held.setValidatorAt found set
       intro _
@@ -2378,7 +2467,24 @@ private theorem CapStep.registryElectra {f : Fork} {s t : BeaconState preset f}
       have strict := UInt64.lt_iff_toNat_lt.mp (UInt64.lt_of_le_of_lt low finite)
       rw [equal] at strict
       omega
-  · cases ok; exact ⟨CapStep.refl _, fun _ => id, id, fun _ _ _ _ => Nat.le_refl _⟩
+    · intro finite funded held
+      have eligible : isEligibleForActivation s v = true := by assumption
+      have pending := activationEpoch_of_isEligibleForActivation eligible
+      apply held.setValidatorAt found set
+      intro _ _
+      obtain ⟨⟨b, read, low⟩, minimum, unslashed⟩ :=
+        funded i v (getValidatorAt_eq_ok_iff.mp found) pending
+      have low' : v.activationEligibilityEpoch ≤ s.finalizedCheckpoint.epoch := by
+        simp only [isEligibleForActivation, Bool.and_eq_true, decide_eq_true_eq] at eligible
+        exact eligible.1
+      have notFar : v.activationEligibilityEpoch ≠ FAR_FUTURE_EPOCH := by
+        intro equal
+        have strict := UInt64.lt_iff_toNat_lt.mp (UInt64.lt_of_le_of_lt low' finite)
+        rw [equal] at strict
+        omega
+      exact ⟨minimum notFar, fun _ => ⟨b, read, low⟩, unslashed⟩
+  · cases ok; exact ⟨CapStep.refl _, fun _ => id, id, fun _ _ _ _ => Nat.le_refl _,
+      fun _ _ => id⟩
 
 theorem CapStep.registry {f : Fork} {s t : BeaconState preset f}
     (ok : processRegistryUpdates config s = .ok t) :
@@ -2427,9 +2533,11 @@ theorem CapStep.registry {f : Fork} {s t : BeaconState preset f}
       (fun _ _ _ previous edge => trans previous
         ⟨(CapStep.registryElectra edge).1, (CapStep.registryElectra edge).2.1,
           (CapStep.registryElectra edge).2.2.1,
-          (fun _ _ => (CapStep.registryElectra edge).2.2.2),
+          (fun _ _ => (CapStep.registryElectra edge).2.2.2.1),
           (frame_updateRegistryEntryElectra edge).finalized,
-          fun _ _ _ held early => (Nat.not_lt_of_ge (by assumption) early).elim⟩) (refl s) ok
+          fun _ finite funded held => (CapStep.registryElectra edge).2.2.2.2
+            (by rw [previous.2.2.2.2.1]; exact finite) funded held⟩)
+      (refl s) ok
   · rename_i notElectra
     simp only [bind_ok_iff] at ok
     obtain ⟨middle, updated, activated⟩ := ok
@@ -2497,20 +2605,29 @@ private theorem CapStep.excess {f : Fork} {s t : BeaconState preset f}
           v.activationEpoch = FAR_FUTURE_EPOCH →
           v.effectiveBalance ≤ preset.MIN_ACTIVATION_BALANCE) →
         UnassignedEligibleBalance t) ∧
-      t.pendingPartialWithdrawals = s.pendingPartialWithdrawals := by
+      t.pendingPartialWithdrawals = s.pendingPartialWithdrawals ∧
+      (ScheduledEligibleBalance s →
+        (∀ v, s.validators.data[i.toNat]? = some v →
+          getCurrentEpoch s < v.activationEpoch → v.activationEpoch ≠ FAR_FUTURE_EPOCH →
+          v.effectiveBalance ≤ preset.MIN_ACTIVATION_BALANCE) →
+        ScheduledEligibleBalance t) := by
   simp only [queueExcessActiveBalance, bind_ok_iff] at ok
   obtain ⟨_, _, ok⟩ := ok
   split at ok
   · simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at ok
     obtain ⟨_, _, _, _, middle, set, rfl⟩ := ok
-    refine ⟨?_, ?_, by obtain ⟨_, rfl⟩ := setBalance_ok set; rfl⟩
+    refine ⟨?_, ?_, by obtain ⟨_, rfl⟩ := setBalance_ok set; rfl, ?_⟩
     · obtain ⟨_, rfl⟩ := setBalance_ok set
       exact CapStep.data rfl
     · intro held retained
       exact (held.setBalance retained set).transfer rfl
         (fun _ _ b _ _ read low => ⟨b, read, low⟩)
+    · intro held retained
+      exact (held.setBalance (fun v found future assigned => retained v found future assigned)
+        set).transfer (UInt64.le_refl _) rfl
+        (fun _ _ b _ _ _ read low => ⟨b, read, low⟩)
   · cases ok
-    exact ⟨CapStep.refl _, fun held _ => held, rfl⟩
+    exact ⟨CapStep.refl _, fun held _ => held, rfl, fun held _ => held⟩
 
 private theorem preKeyCharge_excess {f : Fork} {s t : BeaconState preset f}
     {electra : .pectra ≤ f} {index : ValidatorIndex} (candidate : Nat → Bool)
@@ -2550,12 +2667,14 @@ private theorem CapStep.compounding {f : Fork} {s t : BeaconState preset f}
       (AssignedPartials s → AssignedPartials t) ∧
       ((∀ v, s.validators.data[i.toNat]? = some v →
         v.activationEpoch ≠ FAR_FUTURE_EPOCH) → ∀ candidate j,
-        preKeyCharge candidate t j ≤ preKeyCharge candidate s j) := by
+        preKeyCharge candidate t j ≤ preKeyCharge candidate s j) ∧
+      (ScheduledEligibleBalance s → (∀ v, s.validators.data[i.toNat]? = some v →
+        v.activationEpoch ≤ getCurrentEpoch s) → ScheduledEligibleBalance t) := by
   simp only [switchToCompoundingValidator, bind_ok_iff] at ok
   obtain ⟨v, found, middle, set, queued⟩ := ok
-  obtain ⟨cap, funding, partials⟩ := CapStep.excess (config := config) queued
-  refine ⟨?_, ?_, ?_, ?_⟩
-  · apply CapStep.trans (CapStep.setValidator found ?_ ?_ set
+  obtain ⟨cap, funding, partials, scheduled⟩ := CapStep.excess (config := config) queued
+  have step : CapStep config s t := by
+    apply CapStep.trans (CapStep.setValidator found ?_ ?_ set
       (frozen := fun assigned => False.elim (assigned (unassigned v
         (getValidator_eq_ok_iff.mp found))))) cap
     · simp only [withdrawalMaxEffectiveBalance, electra, ↓reduceIte,
@@ -2574,6 +2693,7 @@ private theorem CapStep.compounding {f : Fork} {s t : BeaconState preset f}
       by_cases h : (v.withdrawalCredentials[0] == COMPOUNDING_WITHDRAWAL_PREFIX[0]) = true
       · simp only [h]; exact UInt64.le_refl _
       · simp only [h]; exact order
+  refine ⟨step, ?_, ?_, ?_, ?_⟩
   · intro held assigned
     have notFar := assigned v (getValidator_eq_ok_iff.mp found)
     have foundAt := found
@@ -2588,13 +2708,26 @@ private theorem CapStep.compounding {f : Fork} {s t : BeaconState preset f}
     subst w
     exact (notFar pending).elim
   · intro held
-    exact (held.setValidator found set id).transfer
+    obtain ⟨inside, rfl⟩ := setValidator_ok set
+    exact (held.setValidator found set (fun _ => rfl)).transfer
       (.of_data (congrArg (·.data) (queueExcessActiveBalance_validators queued)))
-      (fun _ _ member => by simpa [partials] using member)
+      step.forward (fun _ _ member => by simpa [partials] using member)
   · intro assigned candidate j
     have active := assigned v (getValidator_eq_ok_iff.mp found)
     have charge := preKeyCharge_setAssigned candidate found set active active j
     exact (preKeyCharge_excess candidate queued j).trans (Nat.le_of_eq charge)
+  · intro held active
+    have foundAt := found
+    rw [getValidator_eq_getValidatorAt] at foundAt
+    have setAt := set
+    rw [setValidator_eq_setValidatorAt] at setAt
+    refine scheduled (held.setValidatorAt_kept foundAt setAt rfl rfl rfl) ?_
+    intro w located future _
+    obtain ⟨inside, rfl⟩ := setValidator_ok set
+    simp only [BeaconState.putValidator, Serialization.Ssz.RootedForkList.data_set,
+      Array.getElem?_set_self, Option.some.injEq] at located
+    subst w
+    exact (UInt64.not_le.mpr future (active v (getValidator_eq_ok_iff.mp found))).elim
 
 theorem CapStep.blsChange {f : Fork} {s t : BeaconState preset f}
     {signed : SignedBLSToExecutionChange}
@@ -2616,7 +2749,7 @@ theorem CapStep.blsChange {f : Fork} {s t : BeaconState preset f}
       { v with withdrawalCredentials := executionCredentials signed.message.toExecutionAddress } =
       withdrawalMaxEffectiveBalance preset f v := by
     simp only [withdrawalMaxEffectiveBalance, getMaxEffectiveBalance, before, after]
-  refine ⟨?_, ?_, (fun held => held.setValidator found set id), ?_,
+  refine ⟨?_, ?_, (fun held => held.setValidator found set (fun _ => rfl)), ?_,
     fun held => held.setValidatorAt_kept
       (v := v) (w := { v with
         withdrawalCredentials := executionCredentials signed.message.toExecutionAddress })
@@ -2650,12 +2783,14 @@ private theorem CapStep.consolidate {f : Fork} {s t : BeaconState preset f}
     (found : s.validators.data[sourceIndex.toNat]? = some source)
     (far : source.exitEpoch = FAR_FUTURE_EPOCH)
     (sourceAssigned : source.activationEpoch ≠ FAR_FUTURE_EPOCH)
+    (sourceActive : source.activationEpoch ≤ getCurrentEpoch s)
     (target : ∃ v, s.validators.data[targetIndex.toNat]? = some v ∧
-      v.activationEpoch ≠ FAR_FUTURE_EPOCH)
+      v.activationEpoch ≠ FAR_FUTURE_EPOCH ∧ v.activationEpoch ≤ getCurrentEpoch s)
     (ok : queueConsolidation config s electra sourceIndex source targetIndex = .ok t) :
     CapStep config s t ∧ (UnassignedEligibleBalance s → UnassignedEligibleBalance t) ∧
       (AssignedPartials s → AssignedPartials t) ∧
-      (∀ candidate i, preKeyCharge candidate t i ≤ preKeyCharge candidate s i) := by
+      (∀ candidate i, preKeyCharge candidate t i ≤ preKeyCharge candidate s i) ∧
+      (ScheduledEligibleBalance s → ScheduledEligibleBalance t) := by
   simp only [queueConsolidation, bind_ok_iff, liftAccessor_ok, liftArith,
     mapError_ok_iff, Base.Uint64.addChecked_ok_iff, pure, Except.pure] at ok
   obtain ⟨⟨churned, epoch⟩, churn, withdrawal, _, marked, set, pending, appended, ok⟩ := ok
@@ -2679,15 +2814,34 @@ private theorem CapStep.consolidate {f : Fork} {s t : BeaconState preset f}
       obtain ⟨_, _, _, _, _, _, rest⟩ := churn
       cases rest; rfl
     simpa only [preKeyCharge, validators, balances] using Nat.le_of_eq step
-  refine ⟨?_, ?_, ?_, charge⟩
-  rotate_left 2
-  · intro held
-    have middle := held.transfer (.of_data (congrArg (·.data) validators))
+  have forward : getCurrentEpoch s ≤ getCurrentEpoch churned := by
+    rw [getCurrentEpoch, getCurrentEpoch,
+      (frame_computeConsolidationEpochAndUpdateChurn churn).slot]
+    exact UInt64.le_refl _
+  refine ⟨?cap, ?funded, ?partials, charge, ?scheduled⟩
+  case partials =>
+    intro held
+    have middle := held.transfer (.of_data (congrArg (·.data) validators)) forward
       (fun _ _ member => by simpa [partials] using member)
-    exact (middle.setValidator read set id).transfer (.of_data rfl)
-      (fun _ _ member => member)
-  rotate_left
-  · intro held
+    exact (middle.setValidator read set (fun _ => rfl)).transfer (.of_data rfl)
+      (UInt64.le_refl _) (fun _ _ member => member)
+  case scheduled =>
+    intro held
+    have balances : churned.balances = s.balances := by
+      simp only [computeConsolidationEpochAndUpdateChurn, bind_ok_iff, pure, Except.pure,
+        Except.ok.injEq] at churn
+      obtain ⟨_, _, _, _, _, _, rest⟩ := churn
+      cases rest; rfl
+    have middle := held.transfer forward (congrArg (·.data) validators)
+      (fun _ _ b _ _ _ located low => ⟨b, by rw [balances]; exact located, low⟩)
+    have setAt := set
+    rw [setValidator_eq_setValidatorAt] at setAt
+    exact (middle.setValidatorAt_kept (v := source)
+      (w := { source with exitEpoch := epoch, withdrawableEpoch := withdrawal })
+      (by simpa only [getValidator_eq_getValidatorAt] using read) setAt rfl rfl rfl).transfer
+      (UInt64.le_refl _) rfl (fun _ _ b _ _ _ located low => ⟨b, located, low⟩)
+  case funded =>
+    intro held
     have balances : churned.balances = s.balances := by
       simp only [computeConsolidationEpochAndUpdateChurn, bind_ok_iff, pure, Except.pure,
         Except.ok.injEq] at churn
@@ -2702,62 +2856,64 @@ private theorem CapStep.consolidate {f : Fork} {s t : BeaconState preset f}
         obtain ⟨_, eligible, unslashed⟩ := held sourceIndex.toNat source found pending
         exact ⟨pending, UInt64.le_refl _, eligible, unslashed⟩)
     exact retained.transfer rfl (fun _ _ b _ _ located low => ⟨b, located, low⟩)
-  have cache : churned.proposerLookahead = s.proposerLookahead := by
-    simp only [computeConsolidationEpochAndUpdateChurn, bind_ok_iff, pure, Except.pure,
-      Except.ok.injEq] at churn
-    obtain ⟨_, _, _, _, _, _, rest⟩ := churn
-    cases rest; rfl
-  have queue : churned.pendingConsolidations = s.pendingConsolidations := by
-    simp only [computeConsolidationEpochAndUpdateChurn, bind_ok_iff, pure, Except.pure,
-      Except.ok.injEq] at churn
-    obtain ⟨_, _, _, _, _, _, rest⟩ := churn
-    cases rest; rfl
-  have first := (CapStep.data (config := config) (by rw [validators])
-    (frame_computeConsolidationEpochAndUpdateChurn churn).slot cache
-    (fun held => held.transfer (.of_data (congrArg (·.data) validators))
-      (fun _ _ member => queue ▸ member))).trans
-    (CapStep.setValidator read (by exact UInt64.le_refl _) (by exact id) set
-      (fun _ assigned => False.elim (assigned far))
-      (retired := by
-        intro assigned _ _
-        have sourceEpoch : getCurrentEpoch churned = getCurrentEpoch s := by
-          rw [getCurrentEpoch, getCurrentEpoch,
-            (frame_computeConsolidationEpochAndUpdateChurn churn).slot]
-        have bound := UInt64.le_iff_toNat_le.mp assigned
-        rw [sourceEpoch, far] at bound
-        have first := churn
-        simp only [computeConsolidationEpochAndUpdateChurn, bind_ok_iff] at first
-        obtain ⟨firstEpoch, first, _⟩ := first
-        have checked := computeActivationExitEpoch_ok_iff.mp (by
-          simpa only [liftArith, mapError_ok_iff] using first)
-        have limit := firstEpoch.toNat_lt
-        change 18446744073709551615 ≤ _ at bound
-        omega)
-      (frozen := fun assigned => False.elim (assigned far)))
-  refine first.trans (CapStep.data rfl rfl rfl ?_)
-  intro held witness entry member
-  have data := appendWithinLimit_data appended
-  change entry ∈ pending.data.toList at member
-  rw [data, Array.toList_push, List.mem_append, List.mem_singleton] at member
-  rcases member with old | rfl
-  · exact held witness entry old
-  · intro index named
-    have located : ∃ v, s.validators.data[index.toNat]? = some v ∧
-        v.activationEpoch ≠ FAR_FUTURE_EPOCH := by
-      simp only [List.mem_cons, List.not_mem_nil, or_false] at named
-      rcases named with rfl | rfl
-      · exact ⟨source, found, sourceAssigned⟩
-      · exact target
-    obtain ⟨v, foundTarget, assigned⟩ := located
-    obtain ⟨inside, rfl⟩ := setValidator_ok set
-    by_cases eq : index.toNat = sourceIndex.toNat
-    · have same := Option.some.inj (found.symm.trans (eq ▸ foundTarget))
-      subst v
-      refine ⟨{ source with exitEpoch := epoch, withdrawableEpoch := withdrawal }, ?_, assigned⟩
-      simp [BeaconState.putValidator, Serialization.Ssz.RootedForkList.data_set, eq]
-    · refine ⟨v, ?_, assigned⟩
-      simpa [BeaconState.putValidator, Serialization.Ssz.RootedForkList.data_set,
-        Array.getElem?_set, Ne.symm eq, validators] using foundTarget
+  case cap =>
+    have cache : churned.proposerLookahead = s.proposerLookahead := by
+      simp only [computeConsolidationEpochAndUpdateChurn, bind_ok_iff, pure, Except.pure,
+        Except.ok.injEq] at churn
+      obtain ⟨_, _, _, _, _, _, rest⟩ := churn
+      cases rest; rfl
+    have queue : churned.pendingConsolidations = s.pendingConsolidations := by
+      simp only [computeConsolidationEpochAndUpdateChurn, bind_ok_iff, pure, Except.pure,
+        Except.ok.injEq] at churn
+      obtain ⟨_, _, _, _, _, _, rest⟩ := churn
+      cases rest; rfl
+    have first := (CapStep.data (config := config) (by rw [validators])
+      (frame_computeConsolidationEpochAndUpdateChurn churn).slot cache
+      (fun fwd held => held.transfer (.of_data (congrArg (·.data) validators)) fwd
+        (fun _ _ member => queue ▸ member))).trans
+      (CapStep.setValidator read (by exact UInt64.le_refl _) (by exact id) set
+        (fun _ assigned => False.elim (assigned far))
+        (retired := by
+          intro assigned _ _
+          have sourceEpoch : getCurrentEpoch churned = getCurrentEpoch s := by
+            rw [getCurrentEpoch, getCurrentEpoch,
+              (frame_computeConsolidationEpochAndUpdateChurn churn).slot]
+          have bound := UInt64.le_iff_toNat_le.mp assigned
+          rw [sourceEpoch, far] at bound
+          have first := churn
+          simp only [computeConsolidationEpochAndUpdateChurn, bind_ok_iff] at first
+          obtain ⟨firstEpoch, first, _⟩ := first
+          have checked := computeActivationExitEpoch_ok_iff.mp (by
+            simpa only [liftArith, mapError_ok_iff] using first)
+          have limit := firstEpoch.toNat_lt
+          change 18446744073709551615 ≤ _ at bound
+          omega)
+        (frozen := fun assigned => False.elim (assigned far)))
+    refine first.trans (CapStep.data rfl rfl rfl ?_)
+    intro _ held witness entry member
+    have data := appendWithinLimit_data appended
+    change entry ∈ pending.data.toList at member
+    rw [data, Array.toList_push, List.mem_append, List.mem_singleton] at member
+    rcases member with old | rfl
+    · exact held witness entry old
+    · intro index named
+      have located : ∃ v, s.validators.data[index.toNat]? = some v ∧
+          v.activationEpoch ≠ FAR_FUTURE_EPOCH ∧ v.activationEpoch ≤ getCurrentEpoch s := by
+        simp only [List.mem_cons, List.not_mem_nil, or_false] at named
+        rcases named with rfl | rfl
+        · exact ⟨source, found, sourceAssigned, sourceActive⟩
+        · exact target
+      obtain ⟨v, foundTarget, assigned, reached⟩ := located
+      obtain ⟨inside, rfl⟩ := setValidator_ok set
+      by_cases eq : index.toNat = sourceIndex.toNat
+      · have same := Option.some.inj (found.symm.trans (eq ▸ foundTarget))
+        subst v
+        refine ⟨{ source with exitEpoch := epoch, withdrawableEpoch := withdrawal }, ?_, assigned,
+          UInt64.le_trans reached forward⟩
+        simp [BeaconState.putValidator, Serialization.Ssz.RootedForkList.data_set, eq]
+      · refine ⟨v, ?_, assigned, UInt64.le_trans reached forward⟩
+        simpa [BeaconState.putValidator, Serialization.Ssz.RootedForkList.data_set,
+          Array.getElem?_set, Ne.symm eq, validators] using foundTarget
 
 theorem CapStep.consolidationRequest {f : Fork} {s t : BeaconState preset f}
     {electra : .pectra ≤ f} {request : ConsolidationRequest}
@@ -2765,7 +2921,8 @@ theorem CapStep.consolidationRequest {f : Fork} {s t : BeaconState preset f}
     (ok : processConsolidationRequest config s electra request = .ok t) :
     CapStep config s t ∧ (UnassignedEligibleBalance s → UnassignedEligibleBalance t) ∧
       (AssignedPartials s → AssignedPartials t) ∧
-      (∀ candidate i, preKeyCharge candidate t i ≤ preKeyCharge candidate s i) := by
+      (∀ candidate i, preKeyCharge candidate t i ≤ preKeyCharge candidate s i) ∧
+      (ScheduledEligibleBalance s → ScheduledEligibleBalance t) := by
   unfold processConsolidationRequest at ok
   split at ok
   · split at ok
@@ -2782,7 +2939,7 @@ theorem CapStep.consolidationRequest {f : Fork} {s t : BeaconState preset f}
           subst v
           simp only [isValidSwitchToCompoundingRequest, Bool.and_eq_true, beq_iff_eq] at valid
           exact valid.2
-        obtain ⟨step, retained, partials, charge⟩ :=
+        obtain ⟨step, retained, partials, charge, scheduled⟩ :=
           CapStep.compounding order (liftAccessor_ok.mp ok) unassigned
         have assigned : ∀ v, s.validators.data[index.toNat]? = some v →
             v.activationEpoch ≠ FAR_FUTURE_EPOCH := by
@@ -2793,19 +2950,30 @@ theorem CapStep.consolidationRequest {f : Fork} {s t : BeaconState preset f}
           apply assigned_of_active (epoch := getCurrentEpoch s)
           simp only [isValidSwitchToCompoundingRequest, Bool.and_eq_true] at valid
           exact valid.1.2
-        exact ⟨step, (fun held => retained held assigned), partials, charge assigned⟩
-      · cases ok; exact ⟨CapStep.refl _, id, id, fun _ _ => Nat.le_refl _⟩
-    · cases ok; exact ⟨CapStep.refl _, id, id, fun _ _ => Nat.le_refl _⟩
+        have active : ∀ v, s.validators.data[index.toNat]? = some v →
+            v.activationEpoch ≤ getCurrentEpoch s := by
+          intro v found
+          have read := getElem?_toNat_of_ofNatChecked (state := s) checked
+          have equal := Option.some.inj (read.symm.trans found)
+          subst v
+          apply activation_le_of_active
+          simp only [isValidSwitchToCompoundingRequest, Bool.and_eq_true] at valid
+          exact valid.1.2
+        exact ⟨step, (fun held => retained held assigned), partials, charge assigned,
+          fun held => scheduled held active⟩
+      · cases ok; exact ⟨CapStep.refl _, id, id, fun _ _ => Nat.le_refl _, id⟩
+    · cases ok; exact ⟨CapStep.refl _, id, id, fun _ _ => Nat.le_refl _, id⟩
   simp only [bind, Except.bind, pure, Except.pure] at ok
   repeat' split at ok
   all_goals first
     | (cases ok; done)
-    | (cases ok; exact ⟨CapStep.refl _, id, id, fun _ _ => Nat.le_refl _⟩)
+    | (cases ok; exact ⟨CapStep.refl _, id, id, fun _ _ => Nat.le_refl _, id⟩)
     | (refine CapStep.consolidate (getElem?_toNat_of_ofNatChecked (by assumption))
         (by clear ok; simp_all)
-        (assigned_of_active (epoch := getCurrentEpoch s) (by clear ok; simp_all)) ?_ ok
+        (assigned_of_active (epoch := getCurrentEpoch s) (by clear ok; simp_all))
+        (activation_le_of_active (epoch := getCurrentEpoch s) (by clear ok; simp_all)) ?_ ok
        refine ⟨_, getElem?_toNat_of_ofNatChecked (by assumption), ?_⟩
-       apply assigned_of_active (epoch := getCurrentEpoch s)
+       apply assigned_and_le_of_active (epoch := getCurrentEpoch s)
        clear ok; simp_all)
 
 private theorem CapStep.partialWithdrawal {f : Fork} {s t : BeaconState preset f}
@@ -2815,8 +2983,10 @@ private theorem CapStep.partialWithdrawal {f : Fork} {s t : BeaconState preset f
       (UnassignedEligibleBalance s → UnassignedEligibleBalance t) ∧
       (AssignedPartials s →
         (∃ w, s.validators.data[i.toNat]? = some w ∧
-          w.activationEpoch ≠ FAR_FUTURE_EPOCH) → AssignedPartials t) ∧
-      (∀ candidate i, preKeyCharge candidate t i ≤ preKeyCharge candidate s i) := by
+          w.activationEpoch ≠ FAR_FUTURE_EPOCH ∧ w.activationEpoch ≤ getCurrentEpoch s) →
+        AssignedPartials t) ∧
+      (∀ candidate i, preKeyCharge candidate t i ≤ preKeyCharge candidate s i) ∧
+      (ScheduledEligibleBalance s → ScheduledEligibleBalance t) := by
   simp only [requestPartialWithdrawal, bind_ok_iff, liftAccessor_ok, pure, Except.pure] at ok
   obtain ⟨_, _, _, _, ok⟩ := ok
   split at ok
@@ -2833,8 +3003,11 @@ private theorem CapStep.partialWithdrawal {f : Fork} {s t : BeaconState preset f
         Except.ok.injEq] at churned
       obtain ⟨_, _, _, _, _, _, rest⟩ := churned
       cases rest; rfl
+    have forward : getCurrentEpoch s ≤ getCurrentEpoch middle := by
+      rw [getCurrentEpoch, getCurrentEpoch, (frame_computeExitEpochAndUpdateChurn churned).slot]
+      exact UInt64.le_refl _
     refine ⟨?_, ?_, ?_, fun candidate i => Nat.le_of_eq
-      (preKeyCharge_same candidate (congrArg (·.data) validators) balances i)⟩
+      (preKeyCharge_same candidate (congrArg (·.data) validators) balances i), ?_⟩
     · exact CapStep.data (by rw [validators])
         (frame_computeExitEpochAndUpdateChurn churned).slot
         (by
@@ -2846,7 +3019,7 @@ private theorem CapStep.partialWithdrawal {f : Fork} {s t : BeaconState preset f
           simp only [computeExitEpochAndUpdateChurn, bind_ok_iff, pure, Except.pure,
             Except.ok.injEq] at churned
           obtain ⟨_, _, _, _, _, _, rest⟩ := churned
-          cases rest; exact id)
+          cases rest; exact fun _ => id)
     · intro held
       apply held.transfer (congrArg (·.data) validators)
       intro j w b found far read low
@@ -2861,33 +3034,38 @@ private theorem CapStep.partialWithdrawal {f : Fork} {s t : BeaconState preset f
       rw [appendWithinLimit_data appended, Array.toList_push,
         List.mem_append, List.mem_singleton] at member
       rcases member with old | rfl
-      · obtain ⟨w, read, active⟩ := held witness entry (by simpa [queue] using old)
-        exact ⟨w, by simpa [validators] using read, active⟩
-      · obtain ⟨w, read, active⟩ := assigned
-        exact ⟨w, by simpa [validators] using read, active⟩
-  · cases ok; exact ⟨CapStep.refl _, id, fun held _ => held, fun _ _ => Nat.le_refl _⟩
+      · obtain ⟨w, read, far, active⟩ := held witness entry (by simpa [queue] using old)
+        exact ⟨w, by simpa [validators] using read, far, UInt64.le_trans active forward⟩
+      · obtain ⟨w, read, far, active⟩ := assigned
+        exact ⟨w, by simpa [validators] using read, far, UInt64.le_trans active forward⟩
+    · intro held
+      apply held.transfer forward (congrArg (·.data) validators)
+      intro j w b found far assigned read low
+      exact ⟨b, by simpa [balances] using read, low⟩
+  · cases ok; exact ⟨CapStep.refl _, id, fun held _ => held, fun _ _ => Nat.le_refl _, id⟩
 
 theorem CapStep.withdrawalRequest {f : Fork} {s t : BeaconState preset f}
     {electra : .pectra ≤ f} {request : WithdrawalRequest}
     (ok : processWithdrawalRequest config s electra request = .ok t) :
     CapStep config s t ∧ (UnassignedEligibleBalance s → UnassignedEligibleBalance t) ∧
       (AssignedPartials s → AssignedPartials t) ∧
-      (∀ candidate i, preKeyCharge candidate t i ≤ preKeyCharge candidate s i) := by
+      (∀ candidate i, preKeyCharge candidate t i ≤ preKeyCharge candidate s i) ∧
+      (ScheduledEligibleBalance s → ScheduledEligibleBalance t) := by
   unfold processWithdrawalRequest at ok
   simp only [bind, Except.bind, pure, Except.pure] at ok
   repeat' split at ok
   all_goals first
     | (cases ok; done)
-    | (cases ok; exact ⟨CapStep.refl _, id, id, fun _ _ => Nat.le_refl _⟩)
+    | (cases ok; exact ⟨CapStep.refl _, id, id, fun _ _ => Nat.le_refl _, id⟩)
     | (have step := CapStep.exit (liftAccessor_ok.mp ok)
-       exact ⟨step.1, step.2.1, step.2.2.1, step.2.2.2.1⟩)
-    | (obtain ⟨step, funded, retained, charge⟩ := CapStep.partialWithdrawal ok
+       exact ⟨step.1, step.2.1, step.2.2.1, step.2.2.2.1, step.2.2.2.2⟩)
+    | (obtain ⟨step, funded, retained, charge, scheduled⟩ := CapStep.partialWithdrawal ok
        rename_i noRoom candidate position located checkedResult index checked credentials
          acceptedResult allowed accepted yes owedResult owed owedOk isPartial
-       refine ⟨step, funded, (fun held => retained held ?_), charge⟩
+       refine ⟨step, funded, (fun held => retained held ?_), charge, scheduled⟩
        have read := getElem?_toNat_of_ofNatChecked (by assumption)
        refine ⟨_, read, ?_⟩
-       apply assigned_of_active (epoch := getCurrentEpoch s)
+       apply assigned_and_le_of_active (epoch := getCurrentEpoch s)
        have acceptedTrue : canRequest config s s.validators.data[position] = .ok true :=
          yes ▸ accepted
        unfold canRequest at acceptedTrue
@@ -2903,13 +3081,16 @@ private theorem CapStep.depositRequest {f : Fork} {s t : BeaconState preset f}
     (ok : processDepositRequest s electra request = .ok t) :
     CapStep config s t ∧ (UnassignedEligibleBalance s → UnassignedEligibleBalance t) ∧
       (AssignedPartials s → AssignedPartials t) ∧
-      (∀ candidate i, preKeyCharge candidate t i ≤ preKeyCharge candidate s i) := by
+      (∀ candidate i, preKeyCharge candidate t i ≤ preKeyCharge candidate s i) ∧
+      (ScheduledEligibleBalance s → ScheduledEligibleBalance t) := by
   obtain ⟨start, recorded⟩ := recordDepositRequestsStart_eq (state := s) (index := request.index)
   simp only [processDepositRequest, recorded, liftAccessor_ok, addPendingDeposit,
     bind_ok_iff, pure, Except.pure, Except.ok.injEq] at ok
   obtain ⟨_, _, rfl⟩ := ok
   exact ⟨CapStep.data rfl, fun held => held.transfer rfl
-    (fun _ _ b _ _ read low => ⟨b, read, low⟩), id, fun _ _ => Nat.le_refl _⟩
+    (fun _ _ b _ _ read low => ⟨b, read, low⟩), id, fun _ _ => Nat.le_refl _,
+    fun held => held.transfer (UInt64.le_refl _) rfl
+      (fun _ _ b _ _ _ read low => ⟨b, read, low⟩)⟩
 
 private theorem CapStep.requests {f : Fork} {s t : BeaconState preset f}
     {body : BeaconBlockBody preset f} {electra : .pectra ≤ f ∧ f < .glamsterdam}
@@ -2917,15 +3098,18 @@ private theorem CapStep.requests {f : Fork} {s t : BeaconState preset f}
     (ok : processExecutionRequests config s body electra = .ok t) :
     CapStep config s t ∧ (UnassignedEligibleBalance s → UnassignedEligibleBalance t) ∧
       (AssignedPartials s → AssignedPartials t) ∧
-      (∀ candidate i, preKeyCharge candidate t i ≤ preKeyCharge candidate s i) := by
+      (∀ candidate i, preKeyCharge candidate t i ≤ preKeyCharge candidate s i) ∧
+      (ScheduledEligibleBalance s → ScheduledEligibleBalance t) := by
   let R := fun (a b : BeaconState preset f) => CapStep config a b ∧
     (UnassignedEligibleBalance a → UnassignedEligibleBalance b) ∧
     (AssignedPartials a → AssignedPartials b) ∧
-    (∀ candidate i, preKeyCharge candidate b i ≤ preKeyCharge candidate a i)
-  have refl (a) : R a a := ⟨CapStep.refl a, id, id, fun _ _ => Nat.le_refl _⟩
+    (∀ candidate i, preKeyCharge candidate b i ≤ preKeyCharge candidate a i) ∧
+    (ScheduledEligibleBalance a → ScheduledEligibleBalance b)
+  have refl (a) : R a a := ⟨CapStep.refl a, id, id, fun _ _ => Nat.le_refl _, id⟩
   have trans {a b c} (one : R a b) (two : R b c) : R a c :=
     ⟨one.1.trans two.1, two.2.1 ∘ one.2.1, two.2.2.1 ∘ one.2.2.1,
-      fun candidate i => (two.2.2.2 candidate i).trans (one.2.2.2 candidate i)⟩
+      fun candidate i => (two.2.2.2.1 candidate i).trans (one.2.2.2.1 candidate i),
+      two.2.2.2.2 ∘ one.2.2.2.2⟩
   have fold {α : Type} {step : BeaconState preset f → α → Except TransitionError _}
       (kept : ∀ a x b, step a x = .ok b → R a b)
       {a b : BeaconState preset f} {xs : List α} (ok : xs.foldlM step a = .ok b) : R a b :=
@@ -3149,8 +3333,8 @@ private theorem CapStep.withdrawals {f : Fork} {s t : BeaconState preset f}
         UnassignedEligibleBalance s → UnassignedEligibleBalance t) ∧
       t.validators.data = s.validators.data ∧
       (∀ candidate i, preKeyCharge candidate t i ≤ preKeyCharge candidate s i) ∧
-      (ActivationExitOrder s → ExitsOrdered s → EffectiveBalancesCapped s →
-        ScheduledEligibleBalance s → ScheduledEligibleBalance t) := by
+      (ActivationExitOrder s → ExitsOrdered s → AssignedPartials s →
+        EffectiveBalancesCapped s → ScheduledEligibleBalance s → ScheduledEligibleBalance t) := by
   obtain ⟨expected, _, _, applied⟩ := processWithdrawals_expected early ok
   let R := fun (a b : BeaconState preset f) => CapStep config a b ∧
     (AssignedPartials a → AssignedPartials b) ∧ b.validators.data = a.validators.data ∧
@@ -3175,8 +3359,8 @@ private theorem CapStep.withdrawals {f : Fork} {s t : BeaconState preset f}
     all_goals exact fun _ _ => ⟨CapStep.data rfl, id, rfl, fun _ _ => Nat.le_refl _⟩
   exact ⟨kept.1, kept.2.1, fun activation exits partials before capped held =>
     held.withdrawals_of_provenance activation exits partials kept.2.2.1 before capped ok,
-    kept.2.2.1, kept.2.2.2, fun activation exits capped held =>
-      held.withdrawals activation exits kept.2.2.1 capped ok⟩
+    kept.2.2.1, kept.2.2.2, fun activation exits partials capped held =>
+      held.withdrawals activation exits partials kept.2.2.1 capped ok⟩
 
 private theorem CapStep.execution {f : Fork} {s t : BeaconState preset f}
     {engine : ExecutionEngine preset f} {body : BeaconBlockBody preset f}
@@ -3189,8 +3373,8 @@ private theorem CapStep.execution {f : Fork} {s t : BeaconState preset f}
         UnassignedEligibleBalance s → UnassignedEligibleBalance t) ∧
       t.validators.data = s.validators.data ∧ t.slot = s.slot ∧
       (∀ candidate i, preKeyCharge candidate t i ≤ preKeyCharge candidate s i) ∧
-      (ActivationExitOrder s → ExitsOrdered s → EffectiveBalancesCapped s →
-        ScheduledEligibleBalance s → ScheduledEligibleBalance t) := by
+      (ActivationExitOrder s → ExitsOrdered s → AssignedPartials s →
+        EffectiveBalancesCapped s → ScheduledEligibleBalance s → ScheduledEligibleBalance t) := by
   let R := fun (a b : BeaconState preset f) => CapStep config a b ∧
     (AssignedPartials a → AssignedPartials b) ∧ b.validators.data = a.validators.data ∧
     b.slot = a.slot ∧
@@ -3198,11 +3382,11 @@ private theorem CapStep.execution {f : Fork} {s t : BeaconState preset f}
       getCurrentEpoch a < FAR_FUTURE_EPOCH → EffectiveBalancesCapped a →
       UnassignedEligibleBalance a → UnassignedEligibleBalance b) ∧
     (∀ candidate i, preKeyCharge candidate b i ≤ preKeyCharge candidate a i) ∧
-    (ActivationExitOrder a → ExitsOrdered a → EffectiveBalancesCapped a →
-      ScheduledEligibleBalance a → ScheduledEligibleBalance b)
+    (ActivationExitOrder a → ExitsOrdered a → AssignedPartials a →
+      EffectiveBalancesCapped a → ScheduledEligibleBalance a → ScheduledEligibleBalance b)
   have refl (a) : R a a :=
     ⟨CapStep.refl a, id, rfl, rfl, (fun _ _ _ _ _ => id),
-      (fun _ _ => Nat.le_refl _), fun _ _ _ => id⟩
+      (fun _ _ => Nat.le_refl _), fun _ _ _ _ => id⟩
   have trans {a b c} (one : R a b) (two : R b c) : R a c := by
     refine ⟨one.1.trans two.1, two.2.1 ∘ one.2.1, two.2.2.1.trans one.2.2.1,
       two.2.2.2.1.trans one.2.2.2.1, ?_,
@@ -3216,12 +3400,13 @@ private theorem CapStep.execution {f : Fork} {s t : BeaconState preset f}
       · simpa only [getCurrentEpoch, one.2.2.2.1] using before
       · exact one.1.capped capped
       · exact one.2.2.2.2.1 activation exits partials before capped held
-    · intro activation exits capped held
+    · intro activation exits partials capped held
       apply two.2.2.2.2.2.2
       · simpa only [ActivationExitOrder, one.2.2.1] using activation
       · simpa only [ExitsOrdered, one.2.2.1] using exits
+      · exact one.2.1 partials
       · exact one.1.capped capped
-      · exact one.2.2.2.2.2.2 activation exits capped held
+      · exact one.2.2.2.2.2.2 activation exits partials capped held
   have whole : R s t := by
     apply processBlockExecution_of R refl (fun one two => trans one two)
       (fun paid => by
@@ -3229,7 +3414,7 @@ private theorem CapStep.execution {f : Fork} {s t : BeaconState preset f}
         exact ⟨CapStep.data rfl, id, rfl, rfl, (fun _ _ _ _ _ held =>
           held.transfer rfl (fun _ _ b _ _ read low => ⟨b, read, low⟩)),
           (fun _ _ => Nat.le_refl _),
-          fun _ _ _ held => held.reframe (Nat.le_refl _) (Nat.le_refl _)
+          fun _ _ _ _ held => held.reframe (Nat.le_refl _)
             (Nat.le_refl _) rfl rfl⟩)
       (fun _ => (Nat.not_le_of_lt early ‹.glamsterdam ≤ f›).elim)
       (fun withdrawn => by
@@ -3262,7 +3447,7 @@ theorem CapStep.block {f : Fork} {s t : BeaconState preset f}
               v.activationEpoch ≠ FAR_FUTURE_EPOCH) →
         ∀ candidate i,
           preKeyCharge candidate t i ≤ preKeyCharge candidate s i) ∧
-      (f < .glamsterdam → ActivationExitOrder s → ExitsOrdered s →
+      (f < .glamsterdam → ActivationExitOrder s → ExitsOrdered s → AssignedPartials s →
         EffectiveBalancesCapped s → BalancesMatch s → PubkeysDistinct s →
         (∀ altair : .altair ≤ f,
           ∀ key ∈ (s.currentSyncCommittee altair).value.pubkeys.toList,
@@ -3274,7 +3459,7 @@ theorem CapStep.block {f : Fork} {s t : BeaconState preset f}
       (slot : b.slot = a.slot) (cache : b.proposerLookahead = a.proposerLookahead)
       (queue : b.pendingConsolidations = a.pendingConsolidations) :
       CapStep config a b := CapStep.data (congrArg (·.data) validators) slot cache
-        (fun held => held.transfer (.of_data (congrArg (·.data) validators))
+        (fun fwd held => held.transfer (.of_data (congrArg (·.data) validators)) fwd
           (fun _ _ member => queue ▸ member))
   obtain ⟨input, last, started, operated, -, synced⟩ := processBlock_operationsInput ok
   have framed {a b : BeaconState preset f} (frame : BlockFrame a b)
@@ -3291,6 +3476,7 @@ theorem CapStep.block {f : Fork} {s t : BeaconState preset f}
       proposers := fun early held =>
         held.transfer (.of_data (congrArg (·.data) validators)) (cache early)
       targets := fun early held => held.transfer (.of_data (congrArg (·.data) validators))
+        (by rw [getCurrentEpoch, getCurrentEpoch, frame.slot]; exact UInt64.le_refl _)
         (fun _ _ member => queue early ▸ member)
       retired := by
         intro i v w before after _ flag _
@@ -3321,11 +3507,11 @@ theorem CapStep.block {f : Fork} {s t : BeaconState preset f}
         getCurrentEpoch a < FAR_FUTURE_EPOCH → EffectiveBalancesCapped a →
         UnassignedEligibleBalance a → UnassignedEligibleBalance b) ∧
       (∀ candidate i, preKeyCharge candidate b i ≤ preKeyCharge candidate a i) ∧
-      (ActivationExitOrder a → ExitsOrdered a → EffectiveBalancesCapped a →
-        ScheduledEligibleBalance a → ScheduledEligibleBalance b))
+      (ActivationExitOrder a → ExitsOrdered a → AssignedPartials a →
+        EffectiveBalancesCapped a → ScheduledEligibleBalance a → ScheduledEligibleBalance b))
   have refl (a) : R a a :=
     ⟨CapStep.refl a, fun _ => ⟨rfl, rfl, id, rfl, (fun _ _ _ _ _ => id),
-      (fun _ _ => Nat.le_refl _), fun _ _ _ => id⟩⟩
+      (fun _ _ => Nat.le_refl _), fun _ _ _ _ => id⟩⟩
   have trans {a b c} (one : R a b) (two : R b c) : R a c := by
     refine ⟨one.1.trans two.1, fun early => ?_⟩
     obtain ⟨registry, slot, partials, committee, funded, charge, scheduled⟩ := one.2 early
@@ -3341,25 +3527,26 @@ theorem CapStep.block {f : Fork} {s t : BeaconState preset f}
       · simpa only [getCurrentEpoch, slot] using before
       · exact one.1.capped capped
       · exact funded activation exits queue before capped held
-    · intro activation exits capped held
+    · intro activation exits queue capped held
       apply scheduled'
       · simpa only [ActivationExitOrder, registry] using activation
       · simpa only [ExitsOrdered, registry] using exits
+      · exact partials queue
       · exact one.1.capped capped
-      · exact scheduled activation exits capped held
+      · exact scheduled activation exits queue capped held
   have plain {a b : BeaconState preset f} (step : CapStep config a b)
       (registry : b.validators.data = a.validators.data) (slot : b.slot = a.slot)
       (balances : b.balances = a.balances)
       (partials : b.pendingPartialWithdrawals = a.pendingPartialWithdrawals)
       (committee : b.currentSyncCommittee = a.currentSyncCommittee := by rfl) : R a b :=
     ⟨step, fun _ => ⟨registry, slot,
-      fun held => held.transfer (.of_data registry) (fun _ _ member => partials ▸ member),
+      fun held => held.transfer (.of_data registry) step.forward
+        (fun _ _ member => partials ▸ member),
       committee,
       fun _ _ _ _ _ held => held.transfer registry
         (fun _ _ amount _ _ read low => ⟨amount, by rw [balances]; exact read, low⟩),
       (fun candidate i => Nat.le_of_eq (by simp only [preKeyCharge, registry, balances])),
-      fun _ _ _ held => held.reframe (Nat.le_refl _)
-        (by simp only [getCurrentEpoch, slot, Nat.le_refl])
+      fun _ _ _ _ held => held.reframe (by simp only [getCurrentEpoch, slot, Nat.le_refl])
         (by simp only [getCurrentEpoch, slot, Nat.le_refl]) registry
         (congrArg (·.data) balances)⟩⟩
   -- From Gloas, a block first applies the payload of the parent, which runs the validator requests.
@@ -3451,8 +3638,8 @@ theorem CapStep.block {f : Fork} {s t : BeaconState preset f}
         fun _ => (CapStep.requests (config := config) order ok).2.2.1,
         (frame_processExecutionRequests ok).balancesMatch,
         fun _ => (CapStep.requests (config := config) order ok).2.1,
-        (fun _ _ _ _ => (CapStep.requests (config := config) order ok).2.2.2),
-        (fun _ _ early => (Nat.not_le_of_lt early ‹.pectra ≤ f ∧ _›.1).elim),
+        (fun _ _ _ _ => (CapStep.requests (config := config) order ok).2.2.2.1),
+        (fun _ => (CapStep.requests (config := config) order ok).2.2.2.2),
         registryLifecycle_processExecutionRequests ok⟩)
       (fun attested => by
         rw [processPayloadAttestation_eq attested]
@@ -3519,9 +3706,9 @@ theorem CapStep.block {f : Fork} {s t : BeaconState preset f}
           ((frame_operationsInput started).pubkeysDistinct unique))
         (processOperations_syncCommittee_activation_assigned _ (inputAssigned _) operated)
     · cases synced; exact Nat.le_refl _
-  · intro early activation exits capped matched unique bounded held
+  · intro early activation exits partials capped matched unique bounded held
     obtain ⟨registry, slot, _, committee, _, _, scheduled⟩ := head.2 early
-    have inputHeld := scheduled activation exits capped held
+    have inputHeld := scheduled activation exits partials capped held
     have lastHeld := operations.2.2.2.2.2.1
       ((frame_operationsInput started).balancesMatch matched) inputHeld
     have lastSlot : last.slot = s.slot := (frame_processOperations operated).slot.trans slot
@@ -3575,7 +3762,8 @@ private theorem CapStep.pending {f : Fork} {s t : BeaconState preset f}
       (BalancesMatch s → ∀ (candidate : Nat → Bool) j,
         preKeyCharge candidate t j ≤ preKeyCharge candidate s j +
           (((t.balances.data[j]?.map UInt64.toNat).getD 0) -
-            ((s.balances.data[j]?.map UInt64.toNat).getD 0))) := by
+            ((s.balances.data[j]?.map UInt64.toNat).getD 0))) ∧
+      (BalancesMatch s → ScheduledEligibleBalance s → ScheduledEligibleBalance t) := by
   let R := fun (a b : BeaconState preset f) => CapStep config a b ∧
     (BalancesMatch a → BalancesMatch b) ∧
     (BalancesMatch a → UnassignedEligibleBalance a → UnassignedEligibleBalance b) ∧
@@ -3585,16 +3773,18 @@ private theorem CapStep.pending {f : Fork} {s t : BeaconState preset f}
           ((b.balances.data[j]?.map UInt64.toNat).getD 0) ∧
         preKeyCharge candidate b j ≤ preKeyCharge candidate a j +
           (((b.balances.data[j]?.map UInt64.toNat).getD 0) -
-            ((a.balances.data[j]?.map UInt64.toNat).getD 0)))
+            ((a.balances.data[j]?.map UInt64.toNat).getD 0))) ∧
+    (BalancesMatch a → ScheduledEligibleBalance a → ScheduledEligibleBalance b)
   have refl (a) : R a a :=
-    ⟨CapStep.refl a, id, fun _ => id, id, fun _ _ _ => ⟨Nat.le_refl _, by simp⟩⟩
+    ⟨CapStep.refl a, id, fun _ => id, id, fun _ _ _ => ⟨Nat.le_refl _, by simp⟩, fun _ => id⟩
   have trans {a b c} (one : R a b) (two : R b c) : R a c := by
     refine ⟨one.1.trans two.1, two.2.1 ∘ one.2.1,
       (fun matched held => two.2.2.1 (one.2.1 matched) (one.2.2.1 matched held)),
-      two.2.2.2.1 ∘ one.2.2.2.1, ?_⟩
+      two.2.2.2.1 ∘ one.2.2.2.1, ?_,
+      fun matched held => two.2.2.2.2.2 (one.2.1 matched) (one.2.2.2.2.2 matched held)⟩
     intro matched candidate j
-    obtain ⟨first, paid⟩ := one.2.2.2.2 matched candidate j
-    obtain ⟨second, paid'⟩ := two.2.2.2.2 (one.2.1 matched) candidate j
+    obtain ⟨first, paid⟩ := one.2.2.2.2.1 matched candidate j
+    obtain ⟨second, paid'⟩ := two.2.2.2.2.1 (one.2.1 matched) candidate j
     exact ⟨first.trans second, by omega⟩
   have pass {stop : PendingDeposit → Bool} {nextEpoch : Epoch} {available : Gwei} :
       ∀ {deposits : List PendingDeposit} {state : BeaconState preset f} {processed : Gwei}
@@ -3605,7 +3795,8 @@ private theorem CapStep.pending {f : Fork} {s t : BeaconState preset f}
       (fun credited => ⟨(CapStep.deposit credited).1,
         (applyPendingDeposit_kept credited).1, (CapStep.deposit credited).2.1,
         (CapStep.deposit (config := config) credited).2.2.1,
-        fun matched candidate => preKeyCharge_deposit_growth candidate matched credited⟩) ok
+        fun matched candidate => preKeyCharge_deposit_growth candidate matched credited,
+        (CapStep.deposit (config := config) credited).2.2.2⟩) ok
   unfold processPendingDeposits at ok
   simp only [bind, Except.bind, pure, Except.pure] at ok
   repeat' (split at ok <;> try cases ok)
@@ -3613,7 +3804,9 @@ private theorem CapStep.pending {f : Fork} {s t : BeaconState preset f}
     have passed := pass ‹_›
     exact ⟨passed.1.trans (CapStep.data rfl), (fun matched held =>
       (passed.2.2.1 matched held).transfer rfl (fun _ _ b _ _ read low => ⟨b, read, low⟩)),
-      passed.2.2.2.1, fun matched candidate j => (passed.2.2.2.2 matched candidate j).2⟩
+      passed.2.2.2.1, fun matched candidate j => (passed.2.2.2.2.1 matched candidate j).2,
+      fun matched held => (passed.2.2.2.2.2 matched held).transfer (UInt64.le_refl _) rfl
+        (fun _ _ b _ _ _ read low => ⟨b, read, low⟩)⟩
 
 /-- Rounding an effective balance cannot raise the capped Pre potential. -/
 private theorem pre_effective_le {largest balance effective result : Gwei}
@@ -3689,6 +3882,7 @@ private theorem CapStep.effective {f : Fork} {s t : BeaconState preset f}
   obtain ⟨v, found, balance, read, next, changed, set⟩ := ok
   refine ⟨?_, ?_, (fun held => (previous.2.2.1 held).transfer
     (.setValidatorAt found set ⟨fun _ => rfl, fun _ => rfl⟩)
+    (by obtain ⟨_, rfl⟩ := setValidatorAt_ok set; exact UInt64.le_refl _)
     (by obtain ⟨_, rfl⟩ := setValidatorAt_ok set; exact fun _ _ => id)),
     fun candidate j => (preKeyCharge_effective candidate found read changed set j).trans
       (previous.2.2.2.1 candidate j), ?_, ?_⟩
@@ -3776,32 +3970,37 @@ private theorem CapStep.epochEdge {f : Fork} {a b : BeaconState preset f} {k : E
   case effectiveBalances =>
     exact ⟨(CapStep.effective edge).1, (CapStep.effective (config := config) edge).2.2.1⟩
   case rewards =>
-    refine ⟨CapStep.data (congrArg (·.data) (edge.validators_eq ⟨nofun, nofun, nofun⟩))
+    have step : CapStep config a b :=
+      CapStep.data (congrArg (·.data) (edge.validators_eq ⟨nofun, nofun, nofun⟩))
       (by simp only [EpochStage.Edge] at edge; rw [processRewardsAndPenalties_frame edge])
       (by rw [processRewardsAndPenalties_frame edge])
-      (fun held => held.transfer (.of_data (congrArg (·.data)
-        (edge.validators_eq ⟨nofun, nofun, nofun⟩)))
-        (fun _ _ member => (edge.samePendingQueue nofun) ▸ member)), ?_⟩
+      (fun fwd held => held.transfer (.of_data (congrArg (·.data)
+        (edge.validators_eq ⟨nofun, nofun, nofun⟩))) fwd
+        (fun _ _ member => (edge.samePendingQueue nofun) ▸ member))
+    refine ⟨step, ?_⟩
     intro held
-    apply held.transfer edge.registryLifecycle
+    apply held.transfer edge.registryLifecycle step.forward
     intro electra entry member
     rw [processRewardsAndPenalties_frame edge] at member
     exact member
   case slashings =>
-    refine ⟨CapStep.data (congrArg (·.data) (edge.validators_eq ⟨nofun, nofun, nofun⟩))
+    have step : CapStep config a b :=
+      CapStep.data (congrArg (·.data) (edge.validators_eq ⟨nofun, nofun, nofun⟩))
       (by simp only [EpochStage.Edge] at edge; rw [processSlashings_frame edge])
       (by rw [processSlashings_frame edge])
-      (fun held => held.transfer (.of_data (congrArg (·.data)
-        (edge.validators_eq ⟨nofun, nofun, nofun⟩)))
-        (fun _ _ member => (edge.samePendingQueue nofun) ▸ member)), ?_⟩
+      (fun fwd held => held.transfer (.of_data (congrArg (·.data)
+        (edge.validators_eq ⟨nofun, nofun, nofun⟩))) fwd
+        (fun _ _ member => (edge.samePendingQueue nofun) ▸ member))
+    refine ⟨step, ?_⟩
     intro held
-    apply held.transfer edge.registryLifecycle
+    apply held.transfer edge.registryLifecycle step.forward
     intro electra entry member
     rw [processSlashings_frame edge] at member
     exact member
   case pendingConsolidations =>
-    have targets : AssignedTargets a → AssignedTargets b := by
-      intro held
+    have targets : getCurrentEpoch a ≤ getCurrentEpoch b →
+        AssignedTargets a → AssignedTargets b := by
+      intro fwd held
       simp only [EpochStage.Edge] at edge
       split at edge
       · intro electra entry member index named
@@ -3809,21 +4008,24 @@ private theorem CapStep.epochEdge {f : Fork} {a b : BeaconState preset f} {k : E
         rw [queue] at member
         have before : entry ∈ (a.pendingConsolidations electra).data.toList :=
           List.mem_of_mem_drop member
-        obtain ⟨v, found, assigned⟩ := held electra entry before index named
-        exact ⟨v, by rw [(processPendingConsolidations_kept edge).1]; exact found, assigned⟩
+        obtain ⟨v, found, assigned, active⟩ := held electra entry before index named
+        exact ⟨v, by rw [(processPendingConsolidations_kept edge).1]; exact found, assigned,
+          UInt64.le_trans active fwd⟩
       · cases edge; exact held
-    refine ⟨CapStep.data (congrArg (·.data) (edge.validators_eq ⟨nofun, nofun, nofun⟩))
-      ?_ ?_ targets, ?_⟩
-    · simp only [EpochStage.Edge] at edge
-      split at edge
-      · exact (frame_processPendingConsolidations edge).slot
-      · exact edge ▸ rfl
-    · simp only [EpochStage.Edge] at edge
-      split at edge
-      · exact processPendingConsolidations_proposerLookahead edge
-      · exact edge ▸ rfl
+    have step : CapStep config a b := by
+      refine CapStep.data (congrArg (·.data) (edge.validators_eq ⟨nofun, nofun, nofun⟩))
+        ?_ ?_ targets
+      · simp only [EpochStage.Edge] at edge
+        split at edge
+        · exact (frame_processPendingConsolidations edge).slot
+        · exact edge ▸ rfl
+      · simp only [EpochStage.Edge] at edge
+        split at edge
+        · exact processPendingConsolidations_proposerLookahead edge
+        · exact edge ▸ rfl
+    refine ⟨step, ?_⟩
     · intro held
-      apply held.transfer edge.registryLifecycle
+      apply held.transfer edge.registryLifecycle step.forward
       simp only [EpochStage.Edge] at edge
       split at edge
       · rw [processPendingConsolidations_pendingPartialWithdrawals edge]
@@ -3842,12 +4044,14 @@ private theorem CapStep.epochEdge {f : Fork} {a b : BeaconState preset f} {k : E
   all_goals
     suffices fields : b.proposerLookahead = a.proposerLookahead ∧
         b.pendingPartialWithdrawals = a.pendingPartialWithdrawals by
-      exact ⟨CapStep.data (congrArg (·.data) (edge.validators_eq ⟨nofun, nofun, nofun⟩))
-      (edge.records ⟨nofun, nofun, nofun, nofun, nofun, nofun⟩).2.2.2.2 fields.1
-      (fun held => held.transfer (.of_data (congrArg (·.data)
-        (edge.validators_eq ⟨nofun, nofun, nofun⟩)))
-        (fun _ _ member => (edge.samePendingQueue nofun) ▸ member)),
-        fun held => held.transfer edge.registryLifecycle (by rw [fields.2]; exact fun _ _ => id)⟩
+      have step : CapStep config a b :=
+        CapStep.data (congrArg (·.data) (edge.validators_eq ⟨nofun, nofun, nofun⟩))
+        (edge.records ⟨nofun, nofun, nofun, nofun, nofun, nofun⟩).2.2.2.2 fields.1
+        (fun fwd held => held.transfer (.of_data (congrArg (·.data)
+          (edge.validators_eq ⟨nofun, nofun, nofun⟩))) fwd
+          (fun _ _ member => (edge.samePendingQueue nofun) ▸ member))
+      exact ⟨step, fun held => held.transfer edge.registryLifecycle step.forward
+        (by rw [fields.2]; exact fun _ _ => id)⟩
     constructor <;>
     simp only [EpochStage.Edge] at edge
     all_goals
@@ -3987,7 +4191,7 @@ theorem CapStep.epoch {f : Fork} {s t : BeaconState preset f}
           preset.MAX_EFFECTIVE_BALANCE ≤ withdrawalMaxEffectiveBalance preset h v) →
         BalancesMatch s → AssignedTargets s →
         UnassignedEligibleBalance s → UnassignedEligibleBalance t) ∧
-      (Invariant s → getCurrentEpoch s < FAR_FUTURE_EPOCH →
+      (f < .glamsterdam → Invariant s → getCurrentEpoch s < FAR_FUTURE_EPOCH →
         preset.MAX_EFFECTIVE_BALANCE ≤ preset.MIN_ACTIVATION_BALANCE →
         MaxEffectiveBalancesAligned preset →
         (∀ {h : Fork} (v : Validator),
@@ -3998,7 +4202,7 @@ theorem CapStep.epoch {f : Fork} {s t : BeaconState preset f}
   let Q (rest : List EpochStage) (a : BeaconState preset f) :=
     rest <:+ EpochStage.epochStages ∧ a.slot = s.slot ∧
     (EpochStage.justification ∈ rest → rest = EpochStage.epochStages ∧ a = s) ∧
-    (Invariant s → getCurrentEpoch s < FAR_FUTURE_EPOCH →
+    (f < .glamsterdam → Invariant s → getCurrentEpoch s < FAR_FUTURE_EPOCH →
       preset.MAX_EFFECTIVE_BALANCE ≤ preset.MIN_ACTIVATION_BALANCE →
       MaxEffectiveBalancesAligned preset →
       (∀ {h : Fork} (v : Validator),
@@ -4009,7 +4213,7 @@ theorem CapStep.epoch {f : Fork} {s t : BeaconState preset f}
           if EpochStage.effectiveBalances ∈ rest then 0 else 1))
   have initial : Q EpochStage.epochStages s := by
     refine ⟨List.suffix_rfl, rfl, fun _ => ⟨rfl, rfl⟩, ?_⟩
-    intro valid _ _ _ _ _ _ held
+    intro _ valid _ _ _ _ _ _ held
     refine ⟨UInt64.le_trans valid.ordered.1 (UInt64.le_trans valid.ordered.2
       (UInt64.le_trans valid.settled (getPreviousEpoch_le s))), ?_⟩
     simpa [EpochStage.epochStages, EpochStage.prefixStages, EpochStage.middleStages] using held
@@ -4019,14 +4223,11 @@ theorem CapStep.epoch {f : Fork} {s t : BeaconState preset f}
     have slotStep := edge.slot_eq
     refine ⟨(List.suffix_cons k rest).trans schedule, slotStep.trans slot,
       scheduleStep.1, ?_⟩
-    · intro valid finite activation aligned caps targets unassigned held
-      obtain ⟨checkpoint, reserve⟩ := carried valid finite activation aligned caps targets
+    · intro early valid finite activation aligned caps targets unassigned held
+      obtain ⟨checkpoint, reserve⟩ := carried early valid finite activation aligned caps targets
         unassigned held
       have checkpointStep := scheduleStep.2 valid checkpoint
       refine ⟨checkpointStep, ?_⟩
-      by_cases early : f < .pectra
-      swap
-      · exact fun h => (early h).elim
       by_cases before : .effectiveBalances ∈ rest
       · have input : ScheduledEligibleBalance a := by
           simpa only [List.mem_cons, before, or_true, ↓reduceIte, Nat.add_zero,
@@ -4036,12 +4237,12 @@ theorem CapStep.epoch {f : Fork} {s t : BeaconState preset f}
           case registry =>
             exact (CapStep.registry edge).2.2.2.2 activation
               (UInt64.lt_of_le_of_lt checkpoint finite)
-              (funded (Nat.lt_trans early (by decide)) activation aligned.1
+              (funded early activation aligned.1
                 caps valid.balancesMatch targets unassigned) input
           case rewards =>
-            exact input.rewards (Nat.lt_trans early (by decide)) edge
+            exact input.rewards early edge
           case slashings =>
-            exact input.slashings (Nat.lt_trans early (by decide)) edge
+            exact input.slashings early edge
           case effectiveBalances =>
             simp only [EpochStage.epochStages, EpochStage.prefixStages,
               EpochStage.middleStages, EpochStage.tailStages, List.cons_append,
@@ -4049,16 +4250,22 @@ theorem CapStep.epoch {f : Fork} {s t : BeaconState preset f}
               reduceCtorEq, false_and, false_or, true_and, or_false] at schedule
             obtain rfl := schedule
             simp at before
-          case pendingDeposits | pendingConsolidations =>
-            have notElectra : ¬ Fork.pectra ≤ f := Nat.not_le_of_lt early
-            simp only [EpochStage.Edge, notElectra, ↓reduceDIte] at edge
-            subst b
-            exact input
+          case pendingDeposits =>
+            simp only [EpochStage.Edge] at edge
+            split at edge
+            · exact (CapStep.pending edge).2.2.2.2 (matched valid.balancesMatch) input
+            · subst b
+              exact input
+          case pendingConsolidations =>
+            simp only [EpochStage.Edge] at edge
+            split at edge
+            · exact input.consolidations (previous.targets early targets) edge
+            · subst b
+              exact input
           all_goals
             obtain ⟨validators, balances, _⟩ :=
               edge.records ⟨nofun, nofun, nofun, nofun, nofun, nofun⟩
-            exact input.reframe (Nat.le_refl _)
-              (by simp only [getCurrentEpoch, slotStep, Nat.le_refl])
+            exact input.reframe (by simp only [getCurrentEpoch, slotStep, Nat.le_refl])
               (by simp only [getCurrentEpoch, slotStep, Nat.le_refl])
               (congrArg (·.data) validators) (congrArg (·.data) balances)
         simpa only [before, ↓reduceIte, Nat.add_zero, getCurrentEpoch, slotStep, slot] using output
@@ -4085,13 +4292,14 @@ theorem CapStep.epoch {f : Fork} {s t : BeaconState preset f}
           obtain ⟨validators, balances, _⟩ :=
             edge.records ⟨late.1, late.2.1, late.2.2.1, late.2.2.2.1,
               late.2.2.2.2, effective⟩
-          have output := input.reframe (Nat.le_refl _) (Nat.le_refl _)
+          have output := input.reframe (Nat.le_refl _)
             (by simp only [getCurrentEpoch, slotStep, Nat.le_refl])
             (congrArg (·.data) validators) (congrArg (·.data) balances)
           simpa only [before, ↓reduceIte] using output) ok
   exact ⟨whole.1, whole.2.1, whole.2.2.1, by
-    intro valid finite activation aligned caps targets unassigned held
-    exact (whole.2.2.2.2.2.2 valid finite activation aligned caps targets unassigned held).2⟩
+    intro early valid finite activation aligned caps targets unassigned held
+    exact (whole.2.2.2.2.2.2 early valid finite activation aligned caps targets unassigned
+      held).2⟩
 
 theorem CapStep.slot {f : Fork} {s t : BeaconState preset f}
     (ok : advanceSlot config checks s = .ok t) :
@@ -4103,7 +4311,7 @@ theorem CapStep.slot {f : Fork} {s t : BeaconState preset f}
           preset.MAX_EFFECTIVE_BALANCE ≤ withdrawalMaxEffectiveBalance preset h v) →
         BalancesMatch s → AssignedTargets s →
         UnassignedEligibleBalance s → UnassignedEligibleBalance t) ∧
-      (Invariant s → getCurrentEpoch s < FAR_FUTURE_EPOCH →
+      (f < .glamsterdam → Invariant s → getCurrentEpoch s < FAR_FUTURE_EPOCH →
         preset.MAX_EFFECTIVE_BALANCE ≤ preset.MIN_ACTIVATION_BALANCE →
         MaxEffectiveBalancesAligned preset →
         (∀ {h : Fork} (v : Validator),
@@ -4118,30 +4326,40 @@ theorem CapStep.slot {f : Fork} {s t : BeaconState preset f}
   split at advance
   · rename_i boundary
     obtain ⟨step, partials, funded, scheduled⟩ := CapStep.epoch advance
-    refine ⟨⟨step.capped, step.monotone, later, step.forks, step.proposers, step.targets,
-      step.retired, step.withdrawal, step.appended, step.frozen⟩, partials, ?_, ?_⟩
+    have same : advanced.slot = s.slot := by
+      obtain ⟨justified, justifiedOk, frame⟩ := processEpoch_frame advance
+      rw [frame.slot, processJustificationAndFinalization_slot justifiedOk]
+    refine ⟨⟨step.capped, step.monotone, later, step.forks, step.proposers, ?_,
+      step.retired, step.withdrawal, step.appended, step.frozen⟩, ?_, ?_, ?_⟩
+    · intro early held
+      refine (step.targets early held).transfer (.of_data rfl) ?_ (fun _ _ => id)
+      have : getCurrentEpoch advanced = getCurrentEpoch s := by
+        rw [getCurrentEpoch, getCurrentEpoch, same]
+      exact UInt64.le_trans (UInt64.le_of_eq this) later
+    · intro held
+      refine (partials held).transfer (.of_data rfl) ?_ (fun _ _ => id)
+      have : getCurrentEpoch advanced = getCurrentEpoch s := by
+        rw [getCurrentEpoch, getCurrentEpoch, same]
+      exact UInt64.le_trans (UInt64.le_of_eq this) later
     · intro early activation aligned caps matched targets held
       exact (funded early activation aligned caps matched targets held).transfer rfl
         (fun _ _ b _ _ read low => ⟨b, read, low⟩)
-    · intro valid finite activation aligned caps targets unassigned held
-      have reserve := scheduled (cachedInvariant valid) finite activation aligned caps targets
-        unassigned held
+    · intro early valid finite activation aligned caps targets unassigned held
+      have reserve := scheduled early (cachedInvariant valid) finite activation aligned caps
+        targets unassigned held
       have epochs := nextSlot_epoch_of_boundary sum boundary
-      have same : advanced.slot = s.slot := by
-        obtain ⟨justified, justifiedOk, frame⟩ := processEpoch_frame advance
-        rw [frame.slot, processJustificationAndFinalization_slot justifiedOk]
-      exact reserve.reframe (Nat.le_refl _)
-        (by simpa only [getCurrentEpoch_toNat] using Nat.le_of_eq epochs.symm)
+      exact reserve.reframe (by simpa only [getCurrentEpoch_toNat] using Nat.le_of_eq epochs.symm)
         (by simp only [getCurrentEpoch_toNat, same]; omega) rfl rfl
   · cases advance
     exact ⟨⟨id, fun _ v found => ⟨v, found, UInt64.le_refl _⟩, later,
-      Nat.le_refl _, fun _ => id, fun _ => id, (CapStep.refl (config := config) s).retired,
+      Nat.le_refl _, fun _ => id, fun _ held => held.transfer (.of_data rfl) later (fun _ _ => id),
+      (CapStep.refl (config := config) s).retired,
       (CapStep.refl s).withdrawal, (CapStep.refl s).appended,
       (CapStep.refl (config := config) s).frozen⟩,
-      id,
+      fun held => held.transfer (.of_data rfl) later (fun _ _ => id),
       fun _ _ _ _ _ _ held => held.transfer rfl
         (fun _ _ b _ _ read low => ⟨b, read, low⟩),
-      fun _ _ _ _ _ _ _ held => held.transfer (Nat.le_refl _) later rfl
+      fun _ _ _ _ _ _ _ _ held => held.transfer later rfl
         (fun _ _ b _ _ _ read low => ⟨b, read, low⟩)⟩
 
 private theorem CapStep.carry {f h : Fork} {s : BeaconState preset f}
@@ -4228,6 +4446,131 @@ private theorem CapStep.preActivation {f : Fork} {s t : BeaconState preset f}
   · obtain ⟨_, rfl⟩ := setValidator_ok validator
     rfl
 
+/-- Queueing a waiting key leaves each assigned key, with its record and balance, as it was. -/
+private theorem queuePreActivation_assigned {a b : BeaconState preset .pectra}
+    {index : ValidatorIndex}
+    (pending : ∀ v, a.validators.data[index.toNat]? = some v →
+      v.activationEpoch = FAR_FUTURE_EPOCH)
+    (ok : queuePreActivation a (by decide) index = .ok b) :
+    b.slot = a.slot ∧ b.validators.data.size = a.validators.data.size ∧
+      ∀ (j : Nat) (v : Validator), a.validators.data[j]? = some v →
+        ∃ w, b.validators.data[j]? = some w ∧ w.activationEpoch = v.activationEpoch ∧
+          (v.activationEpoch ≠ FAR_FUTURE_EPOCH →
+            w = v ∧ b.balances.data[j]? = a.balances.data[j]?) := by
+  simp only [queuePreActivation, bind_ok_iff, liftAccessor_ok, pure, Except.pure,
+    Except.ok.injEq] at ok
+  obtain ⟨v, found, _, _, _, _, _, balance, _, validator, rfl⟩ := ok
+  obtain ⟨_, rfl⟩ := setBalance_ok balance
+  obtain ⟨inside, rfl⟩ := setValidator_ok validator
+  have read : a.validators.data[index.toNat]? = some v := by
+    unfold getValidator at found
+    split at found <;> simp_all
+  refine ⟨rfl, by simp [BeaconState.putValidator, BeaconState.putBalance], ?_⟩
+  intro j old oldFound
+  by_cases equal : index.toNat = j
+  · subst j
+    have same := Option.some.inj (oldFound.symm.trans read)
+    subst old
+    exact ⟨{ v with effectiveBalance := 0, activationEligibilityEpoch := FAR_FUTURE_EPOCH },
+      by simp [BeaconState.putValidator, BeaconState.putBalance,
+        Serialization.Ssz.RootedForkList.data_set],
+      rfl, fun assigned => (assigned (pending v read)).elim⟩
+  · refine ⟨old, ?_, rfl, fun _ => ⟨rfl, ?_⟩⟩
+    · simpa [BeaconState.putValidator, BeaconState.putBalance,
+        Serialization.Ssz.RootedForkList.data_set, Array.getElem?_set, equal] using oldFound
+    · simp [BeaconState.putValidator, BeaconState.putBalance, equal]
+
+/-- Every index that the Electra upgrade queues belongs to a key with no assigned activation. -/
+private theorem preActivationIndices_waiting {a : BeaconState preset .pectra}
+    {index : ValidatorIndex} (member : index ∈ preActivationIndices a) :
+    ∃ v, a.validators.data[index.toNat]? = some v ∧ v.activationEpoch = FAR_FUTURE_EPOCH := by
+  obtain ⟨⟨v, i⟩, sorted, rfl⟩ := List.mem_map.mp member
+  rw [List.mem_mergeSort] at sorted
+  obtain ⟨member, waiting⟩ := List.mem_filter.mp sorted
+  have found : a.validators.data[i]? = some v := by
+    simpa using List.mem_zipIdx_iff_getElem?.mp member
+  have small := toNat_toUInt64_of_lt (state := a) (a.validators.bound (by decide))
+    (Array.getElem?_eq_some_iff.mp found).1
+  exact ⟨v, by simpa [small] using found, by simpa using waiting⟩
+
+/-- The queued keys leave the assigned ones of the registry as they were. -/
+private theorem queuePreActivation_fold_assigned (a b : BeaconState preset .pectra)
+    (ok : (preActivationIndices a).foldlM
+      (fun s i => queuePreActivation s (by decide) i) a = .ok b) :
+    b.slot = a.slot ∧ b.validators.data.size = a.validators.data.size ∧
+      ∀ (j : Nat) (v : Validator), a.validators.data[j]? = some v →
+        ∃ w, b.validators.data[j]? = some w ∧ w.activationEpoch = v.activationEpoch ∧
+          (v.activationEpoch ≠ FAR_FUTURE_EPOCH →
+            w = v ∧ b.balances.data[j]? = a.balances.data[j]?) := by
+  refine foldlM_ok_invariant_of_mem (xs := preActivationIndices a)
+    (P := fun s => s.slot = a.slot ∧ s.validators.data.size = a.validators.data.size ∧
+      ∀ (j : Nat) (v : Validator), a.validators.data[j]? = some v →
+        ∃ w, s.validators.data[j]? = some w ∧ w.activationEpoch = v.activationEpoch ∧
+          (v.activationEpoch ≠ FAR_FUTURE_EPOCH →
+            w = v ∧ s.balances.data[j]? = a.balances.data[j]?))
+    ?_ ⟨rfl, rfl, fun j v found => ⟨v, found, rfl, fun _ => ⟨rfl, rfl⟩⟩⟩ ok
+  intro s x t member ⟨slot, size, kept⟩ step
+  obtain ⟨va, foundA, waiting⟩ := preActivationIndices_waiting member
+  obtain ⟨w, located, epoch, _⟩ := kept x.toNat va foundA
+  obtain ⟨slot', size', next⟩ := queuePreActivation_assigned (a := s) (b := t) (index := x)
+    (fun v found => by
+      rw [located, Option.some.injEq] at found
+      subst v
+      exact epoch.trans waiting) step
+  refine ⟨slot'.trans slot, size'.trans size, ?_⟩
+  intro j v found
+  obtain ⟨u, locatedU, epochU, keepU⟩ := kept j v found
+  obtain ⟨z, locatedZ, epochZ, keepZ⟩ := next j u locatedU
+  refine ⟨z, locatedZ, epochZ.trans epochU, fun assigned => ?_⟩
+  obtain ⟨rfl, balanceU⟩ := keepU assigned
+  obtain ⟨sameZ, balanceZ⟩ := keepZ (epochU ▸ assigned)
+  exact ⟨sameZ, balanceZ.trans balanceU⟩
+
+private theorem ScheduledEligibleBalance.preActivation {a b : BeaconState preset .pectra}
+    (held : ScheduledEligibleBalance a) (slot : b.slot = a.slot)
+    (size : b.validators.data.size = a.validators.data.size)
+    (kept : ∀ (j : Nat) (v : Validator), a.validators.data[j]? = some v →
+      ∃ w, b.validators.data[j]? = some w ∧ w.activationEpoch = v.activationEpoch ∧
+        (v.activationEpoch ≠ FAR_FUTURE_EPOCH →
+          w = v ∧ b.balances.data[j]? = a.balances.data[j]?)) :
+    ScheduledEligibleBalance b := by
+  intro j w located future assigned
+  have outside : j < a.validators.data.size := by
+    have := (Array.getElem?_eq_some_iff.mp located).1
+    omega
+  have read : a.validators.data[j]? = some a.validators.data[j] :=
+    Array.getElem?_eq_some_iff.mpr ⟨outside, rfl⟩
+  obtain ⟨u, locatedU, epoch, keep⟩ := kept j _ read
+  obtain rfl := Option.some.inj (located.symm.trans locatedU)
+  obtain ⟨same, balances⟩ := keep (epoch ▸ assigned)
+  have cur : getCurrentEpoch b = getCurrentEpoch a := by simp only [getCurrentEpoch, slot]
+  have future' : (getCurrentEpoch a).toNat < a.validators.data[j].activationEpoch.toNat := by
+    rw [← cur, ← epoch]
+    exact future
+  obtain ⟨minimum, funding, unslashed⟩ := held j _ read future' (epoch ▸ assigned)
+  subst same
+  refine ⟨minimum, fun distant => ?_, unslashed⟩
+  obtain ⟨balance, located, low⟩ := funding (by rw [← cur]; exact distant)
+  exact ⟨balance, by rw [balances]; exact located, low⟩
+
+private theorem ScheduledEligibleBalance.compoundingExcess {config : Config}
+    {a b : BeaconState preset .pectra}
+    {index : Nat} (held : ScheduledEligibleBalance a)
+    (bound : ∀ v ∈ a.validators.data, v.effectiveBalance ≤ preset.MIN_ACTIVATION_BALANCE)
+    (ok : queueCompoundingExcess a (by decide) index = .ok b) :
+    ScheduledEligibleBalance b ∧ ∀ v ∈ b.validators.data,
+      v.effectiveBalance ≤ preset.MIN_ACTIVATION_BALANCE := by
+  unfold queueCompoundingExcess at ok
+  split at ok
+  · split at ok
+    · have excess := liftAccessor_ok.mp ok
+      exact ⟨(CapStep.excess (config := config) excess).2.2.2 held
+          (fun v found _ _ => bound v (Array.mem_of_getElem? found)),
+        fun w member => bound w
+          (by rw [queueExcessActiveBalance_validators excess] at member; exact member)⟩
+    · cases ok; exact ⟨held, bound⟩
+  · cases ok; exact ⟨held, bound⟩
+
 theorem CapStep.upgrade {s : ForkedBeaconState preset}
     {t : {t : ForkedBeaconState preset // s.fork < t.fork}}
     (activation : preset.MAX_EFFECTIVE_BALANCE ≤ preset.MIN_ACTIVATION_BALANCE)
@@ -4239,7 +4582,10 @@ theorem CapStep.upgrade {s : ForkedBeaconState preset}
         (∀ v ∈ s.state.validators.data,
           v.effectiveBalance ≤ withdrawalMaxEffectiveBalance preset s.fork v) →
         UnassignedEligibleBalance s.state → UnassignedEligibleBalance t.val.state) ∧
-      (ScheduledEligibleBalance s.state → ScheduledEligibleBalance t.val.state) := by
+      (t.val.fork < .glamsterdam →
+        (∀ v ∈ s.state.validators.data,
+          v.effectiveBalance ≤ withdrawalMaxEffectiveBalance preset s.fork v) →
+        ScheduledEligibleBalance s.state → ScheduledEligibleBalance t.val.state) := by
   have frame := upgradeFrame_upgradeNext ok
   obtain ⟨fork, state⟩ := s
   cases fork <;>
@@ -4252,28 +4598,30 @@ theorem CapStep.upgrade {s : ForkedBeaconState preset}
       fun _ _ held => held.transfer (upgradeToAltair_spec upgraded).1
         (fun _ _ b _ _ read low => ⟨b, by
           rw [(upgradeToAltair_spec upgraded).2.1]; exact read, low⟩),
-      fun held => held.reframe frame.forward
-        (by change (getCurrentEpoch state).toNat ≤ (getCurrentEpoch _).toNat
-            rw [getCurrentEpoch, getCurrentEpoch, show _ = state.slot from frame.slot])
-        (by change (getCurrentEpoch state).toNat ≤ (getCurrentEpoch _).toNat
-            rw [getCurrentEpoch, getCurrentEpoch, show _ = state.slot from frame.slot])
+      fun _ _ held => held.reframe
+        (by
+          change (getCurrentEpoch state).toNat ≤ (getCurrentEpoch _).toNat
+          rw [getCurrentEpoch, getCurrentEpoch, show _ = state.slot from frame.slot])
+        (by
+          change (getCurrentEpoch state).toNat ≤ (getCurrentEpoch _).toNat
+          rw [getCurrentEpoch, getCurrentEpoch, show _ = state.slot from frame.slot])
         (upgradeToAltair_spec upgraded).1
         (upgradeToAltair_spec upgraded).2.1⟩
   · subst ok
     exact ⟨CapStep.carry rfl activation compounding (by change Fork.altair ≤ .bellatrix; decide),
       fun _ _ impossible => (by decide : ¬ Fork.pectra ≤ .bellatrix) impossible |>.elim,
       (fun _ _ held => held.transfer rfl (fun _ _ b _ _ read low => ⟨b, read, low⟩)),
-      fun held => held.reframe frame.forward (Nat.le_refl _) (Nat.le_refl _) rfl rfl⟩
+      fun _ _ held => held.reframe (Nat.le_refl _) (Nat.le_refl _) rfl rfl⟩
   · subst ok
     exact ⟨CapStep.carry rfl activation compounding (by change Fork.bellatrix ≤ .shapella; decide),
       fun _ _ impossible => (by decide : ¬ Fork.pectra ≤ .shapella) impossible |>.elim,
       (fun _ _ held => held.transfer rfl (fun _ _ b _ _ read low => ⟨b, read, low⟩)),
-      fun held => held.reframe frame.forward (Nat.le_refl _) (Nat.le_refl _) rfl rfl⟩
+      fun _ _ held => held.reframe (Nat.le_refl _) (Nat.le_refl _) rfl rfl⟩
   · subst ok
     exact ⟨CapStep.carry rfl activation compounding (by change Fork.shapella ≤ .dencun; decide),
       fun _ _ impossible => (by decide : ¬ Fork.pectra ≤ .dencun) impossible |>.elim,
       (fun _ _ held => held.transfer rfl (fun _ _ b _ _ read low => ⟨b, read, low⟩)),
-      fun held => held.reframe frame.forward (Nat.le_refl _) (Nat.le_refl _) rfl rfl⟩
+      fun _ _ held => held.reframe (Nat.le_refl _) (Nat.le_refl _) rfl rfl⟩
   · obtain ⟨_, upgraded, rfl⟩ := ok
     simp only [upgradeToElectra, bind_ok_iff] at upgraded
     obtain ⟨_, _, _, _, _, _, _, _, middle, queued, compounded⟩ := upgraded
@@ -4314,7 +4662,7 @@ theorem CapStep.upgrade {s : ForkedBeaconState preset}
                 (by rw [queueExcessActiveBalance_validators excess] at member; exact member),
               (fun bound held => (CapStep.excess (config := config) excess).2.1 held
                 (fun v found _ => bound v (Array.mem_of_getElem? found))),
-              (CapStep.excess (config := config) excess).2.2⟩
+              (CapStep.excess (config := config) excess).2.2.1⟩
           · cases computed; exact ⟨CapStep.refl _, id, (fun _ => id), rfl⟩
         · cases computed; exact ⟨CapStep.refl _, id, (fun _ => id), rfl⟩))
       ⟨CapStep.refl _, id, (fun _ => id), rfl⟩ compounded
@@ -4324,7 +4672,7 @@ theorem CapStep.upgrade {s : ForkedBeaconState preset}
       (by intro _ _ electra entry member
           simp [carryFields, show ¬ Fork.pectra ≤ .dencun by decide] at member)).trans
         (queuedStep.1.trans compoundedStep.1), ?_, ?_,
-        fun _ early => (Nat.lt_irrefl _ early).elim⟩
+        ?_⟩
     · intro _ _ electra entry member
       rw [compoundedStep.2.2.2, queuedStep.2.2.2] at member
       simp [carryFields, show ¬ Fork.pectra ≤ .dencun by decide] at member
@@ -4338,6 +4686,22 @@ theorem CapStep.upgrade {s : ForkedBeaconState preset}
       exact compoundedStep.2.2.1 (queuedStep.2.1 bound)
         (queuedStep.2.2.1 bound (held.transfer rfl
           (fun _ _ b _ _ read low => ⟨b, read, low⟩)))
+    · intro _ capped held
+      have bound : ∀ v ∈ state.validators.data,
+          v.effectiveBalance ≤ preset.MIN_ACTIVATION_BALANCE := by
+        intro v member
+        exact UInt64.le_trans (capped v member) (by
+          simpa [withdrawalMaxEffectiveBalance, show ¬ Fork.pectra ≤ .dencun by decide]
+            using activation)
+      have kept := queuePreActivation_fold_assigned _ _ queued
+      have waiting := ScheduledEligibleBalance.preActivation
+        (held.reframe (Nat.le_refl _) (Nat.le_refl _) rfl rfl) kept.1 kept.2.1 kept.2.2
+      exact (foldlM_ok_invariant (fun b => ScheduledEligibleBalance b ∧
+        ∀ v ∈ b.validators.data, v.effectiveBalance ≤ preset.MIN_ACTIVATION_BALANCE)
+        (fun _ _ _ previous computed =>
+          ScheduledEligibleBalance.compoundingExcess (config := config) previous.1 previous.2
+            computed)
+        ⟨waiting, queuedStep.2.1 bound⟩ compounded).1
   · obtain ⟨_, upgraded, rfl⟩ := ok
     refine ⟨CapStep.carry (upgradeToFulu_spec upgraded).1
       activation compounding (by change Fork.pectra ≤ .fusaka; decide) frame.slot
@@ -4345,23 +4709,36 @@ theorem CapStep.upgrade {s : ForkedBeaconState preset}
         held.transfer (upgradeToFulu_spec upgraded).1
           (fun _ _ b _ _ read low => ⟨b, by
             rw [(upgradeToFulu_spec upgraded).2.1]; exact read, low⟩),
-        fun _ early => ((by decide : ¬ Fork.fusaka < .pectra) early).elim⟩
+        fun _ _ held => held.transfer
+          (by rw [getCurrentEpoch, getCurrentEpoch, show _ = state.slot from frame.slot]
+              exact UInt64.le_refl _)
+          (upgradeToFulu_spec upgraded).1
+          (fun _ _ b _ _ _ read low => ⟨b, by
+            rw [(upgradeToFulu_spec upgraded).2.1]; exact read, low⟩)⟩
     · obtain ⟨lookahead, initialized, final⟩ := bind_ok_iff.mp upgraded
       cases final
       intro _ i member
       exact initialized_proposers (liftAccessor_ok.mp initialized) i member
     · obtain ⟨lookahead, initialized, final⟩ := bind_ok_iff.mp upgraded
       cases final
-      intro electra entry member
-      simpa [carryFields, carryRooted] using
+      intro electra entry member index named
+      obtain ⟨v, found, assigned, active⟩ :=
         held (show Fork.pectra ≤ .pectra by decide) entry
-          (by simpa [carryFields, carryList] using member)
+          (by simpa [carryFields, carryList] using member) index named
+      refine ⟨v, by simpa [carryFields, carryRooted] using found, assigned,
+        UInt64.le_trans active ?_⟩
+      rw [getCurrentEpoch, getCurrentEpoch, show _ = state.slot from frame.slot]
+      exact UInt64.le_refl _
     · intro _ held electra entry member
       obtain ⟨lookahead, initialized, final⟩ := bind_ok_iff.mp upgraded
       cases final
-      simpa [carryFields, carryRooted] using
+      obtain ⟨v, found, assigned, active⟩ :=
         held (show Fork.pectra ≤ .pectra by decide) entry
           (by simpa [carryFields, carryList] using member)
+      refine ⟨v, by simpa [carryFields, carryRooted] using found, assigned,
+        UInt64.le_trans active ?_⟩
+      rw [getCurrentEpoch, getCurrentEpoch, show _ = state.slot from frame.slot]
+      exact UInt64.le_refl _
   · obtain ⟨_, upgraded, rfl⟩ := ok
     exact ⟨CapStep.carry (upgradeToGloas_spec upgraded).1
       activation compounding (by change Fork.fusaka ≤ .glamsterdam; decide) frame.slot
@@ -4369,7 +4746,7 @@ theorem CapStep.upgrade {s : ForkedBeaconState preset}
       (fun early => (Nat.lt_irrefl _ early).elim),
       (fun early => (Nat.lt_irrefl _ early).elim),
       (fun early => (Nat.lt_irrefl _ early).elim),
-      fun _ early => ((by decide : ¬ Fork.glamsterdam < .pectra) early).elim⟩
+      fun early => (Nat.lt_irrefl _ early).elim⟩
   · obtain ⟨_, upgraded, rfl⟩ := ok
     obtain ⟨-, rfl⟩ := upgradeToHeze_ok_iff.mp upgraded
     exact ⟨CapStep.carry (upgradeHezeFields_lists state).1
@@ -4378,7 +4755,7 @@ theorem CapStep.upgrade {s : ForkedBeaconState preset}
       (fun early => ((by decide : ¬ Fork.hegota < .glamsterdam) early).elim),
       (fun early => ((by decide : ¬ Fork.hegota < .glamsterdam) early).elim),
       (fun early => ((by decide : ¬ Fork.hegota < .glamsterdam) early).elim),
-      fun _ early => ((by decide : ¬ Fork.hegota < .pectra) early).elim⟩
+      fun early => ((by decide : ¬ Fork.hegota < .glamsterdam) early).elim⟩
 
 private theorem preKeyCharge_upgrade {s : ForkedBeaconState preset}
     {t : {t : ForkedBeaconState preset // s.fork < t.fork}}
@@ -4414,7 +4791,10 @@ private theorem CapStep.upgrades {s t : ForkedBeaconState preset}
         UnassignedEligibleBalance s.state → UnassignedEligibleBalance t.state) ∧
       (.pectra ≤ s.fork → t.fork < .glamsterdam → ∀ candidate i,
         preKeyCharge candidate t.state i = preKeyCharge candidate s.state i) ∧
-      (ScheduledEligibleBalance s.state → ScheduledEligibleBalance t.state) := by
+      (t.fork < .glamsterdam →
+        (∀ v ∈ s.state.validators.data,
+          v.effectiveBalance ≤ withdrawalMaxEffectiveBalance preset s.fork v) →
+        ScheduledEligibleBalance s.state → ScheduledEligibleBalance t.state) := by
   fun_induction processUpgrades config checks s generalizing t with
   | case1 s due ih =>
     obtain ⟨next, nextOk, rest⟩ := bind_ok_iff.mp ok
@@ -4427,10 +4807,12 @@ private theorem CapStep.upgrades {s t : ForkedBeaconState preset}
       fun electra early candidate i =>
         (charge (Nat.le_trans electra first.forks) early candidate i).trans
           (preKeyCharge_upgrade nextOk electra (Nat.lt_of_le_of_lt last.forks early)
-            candidate i), reserve ∘ scheduled⟩
+            candidate i),
+      fun early capped => reserve early (first.capped capped) ∘
+        scheduled (Nat.lt_of_le_of_lt last.forks early) capped⟩
   | case2 s notDue =>
     cases ok
-    exact ⟨CapStep.refl _, fun _ => id, (fun _ _ => id), (fun _ _ _ _ => rfl), id⟩
+    exact ⟨CapStep.refl _, fun _ => id, (fun _ _ => id), (fun _ _ _ _ => rfl), fun _ _ => id⟩
 
 private theorem CapStep.step {s t : ForkedBeaconState preset}
     (step : Step config checks s t)
@@ -4552,7 +4934,7 @@ private theorem genesis_scheduled_reserve {g : ForkedBeaconState preset}
     (genesis : Genesis (config := config) (checks := checks) g) :
     ScheduledEligibleBalance g.state := by
   obtain ⟨hash, time, deposits, initialized⟩ := genesis
-  intro _ i v found future assigned
+  intro i v found future assigned
   have classified := initializeBeaconStateFromEth1_activation_epochs initialized v
     (Array.mem_of_getElem? found)
   rcases classified with unassigned | first
@@ -4560,13 +4942,13 @@ private theorem genesis_scheduled_reserve {g : ForkedBeaconState preset}
   · simp only [first, GENESIS_EPOCH, UInt64.toNat_zero] at future
     omega
 
-theorem run_scheduled_reserve {g x : ForkedBeaconState preset}
+private theorem run_scheduled_walk {g x : ForkedBeaconState preset}
     (run : Run config checks g x) (genesis : Genesis (config := config) (checks := checks) g)
     (activation : preset.MAX_EFFECTIVE_BALANCE ≤ preset.MIN_ACTIVATION_BALANCE)
     (compounding : preset.MIN_ACTIVATION_BALANCE ≤ preset.MAX_EFFECTIVE_BALANCE_ELECTRA)
     (aligned : MaxEffectiveBalancesAligned preset)
     (early : x.fork < .glamsterdam) (finite : getCurrentEpoch x.state < FAR_FUTURE_EPOCH) :
-    ScheduledEligibleBalance x.state := by
+    UnassignedEligibleBalance x.state ∧ ScheduledEligibleBalance x.state := by
   let Q := fun {a} (_ : Run config checks g a) =>
     getCurrentEpoch a.state < FAR_FUTURE_EPOCH → ScheduledEligibleBalance a.state
   have whole := CapStep.run_of run .nil activation compounding
@@ -4582,7 +4964,8 @@ theorem run_scheduled_reserve {g x : ForkedBeaconState preset}
       cases step with
       | block engine signed due ok =>
         exact (CapStep.block compounding (applySignedBlock_ok ok).2.1).2.2.2.2
-          before (pre.activationExitOrder genesis) valid.exitsOrdered capped valid.balancesMatch
+          before (pre.activationExitOrder genesis) valid.exitsOrdered (assigned partials)
+          capped valid.balancesMatch
           (by obtain ⟨_, _, _, initialized⟩ := genesis
               exact (validatorKeys_prefix_and_distinct_of_genesis_chainSteps initialized
                 pre.chainSteps).2)
@@ -4592,11 +4975,41 @@ theorem run_scheduled_reserve {g x : ForkedBeaconState preset}
         obtain ⟨advanced, slotOk, upgrades⟩ := bind_ok_iff.mp ok
         have slot := CapStep.slot slotOk
         have upgrade := CapStep.upgrades activation compounding upgrades
-        exact upgrade.2.2.2.2 (slot.2.2.2 valid finiteA activation aligned
-          (minimum_cap activation compounding)
-          (first.targets (Nat.lt_of_le_of_lt last.forks before) targets)
-          (funded genesis aligned finiteA) (held finiteA))) early
-  exact whole.2 finite
+        exact upgrade.2.2.2.2 before (slot.1.capped capped)
+          (slot.2.2.2 (Nat.lt_of_le_of_lt last.forks before) valid finiteA activation aligned
+            (minimum_cap activation compounding)
+            (first.targets (Nat.lt_of_le_of_lt last.forks before) targets)
+            (funded genesis aligned finiteA) (held finiteA))) early
+  exact ⟨whole.1.2.2.2 genesis aligned finite, whole.2 finite⟩
+
+theorem run_scheduled_reserve {g x : ForkedBeaconState preset}
+    (run : Run config checks g x) (genesis : Genesis (config := config) (checks := checks) g)
+    (activation : preset.MAX_EFFECTIVE_BALANCE ≤ preset.MIN_ACTIVATION_BALANCE)
+    (compounding : preset.MIN_ACTIVATION_BALANCE ≤ preset.MAX_EFFECTIVE_BALANCE_ELECTRA)
+    (aligned : MaxEffectiveBalancesAligned preset)
+    (early : x.fork < .glamsterdam) (finite : getCurrentEpoch x.state < FAR_FUTURE_EPOCH) :
+    ScheduledEligibleBalance x.state :=
+  (run_scheduled_walk run genesis activation compounding aligned early finite).2
+
+/-- A key without an activation epoch keeps its effective balance funded.
+
+From Electra, the eligible keys that are not yet active also keep their activation reserve. -/
+theorem run_eligible_balance {g x : ForkedBeaconState preset}
+    (run : Run config checks g x) (genesis : Genesis (config := config) (checks := checks) g)
+    (activation : preset.MAX_EFFECTIVE_BALANCE ≤ preset.MIN_ACTIVATION_BALANCE)
+    (compounding : preset.MIN_ACTIVATION_BALANCE ≤ preset.MAX_EFFECTIVE_BALANCE_ELECTRA)
+    (aligned : MaxEffectiveBalancesAligned preset) (early : x.fork < .glamsterdam)
+    (finite : getCurrentEpoch x.state < FAR_FUTURE_EPOCH) :
+    UnassignedEligibleBalance x.state ∧ ScheduledEligibleBalanceElectra x.state := by
+  obtain ⟨unassigned, scheduled⟩ :=
+    run_scheduled_walk run genesis activation compounding aligned early finite
+  refine ⟨unassigned, fun _ i v found guard future => ?_⟩
+  by_cases far : v.activationEpoch = FAR_FUTURE_EPOCH
+  · obtain ⟨⟨b, read, low⟩, minimum, unslashed⟩ := unassigned i v found far
+    exact ⟨fun _ => ⟨b, read, low⟩, minimum (guard.resolve_left (not_not.mpr far)), unslashed⟩
+  · obtain ⟨minimum, funding, unslashed⟩ :=
+      scheduled i v found (UInt64.lt_iff_toNat_lt.mp future) far
+    exact ⟨funding, minimum, unslashed⟩
 
 theorem run_unassigned_eligible_balance {g x : ForkedBeaconState preset}
     (run : Run config checks g x) (genesis : Genesis (config := config) (checks := checks) g)
@@ -4605,7 +5018,7 @@ theorem run_unassigned_eligible_balance {g x : ForkedBeaconState preset}
     (aligned : MaxEffectiveBalancesAligned preset) (early : x.fork < .glamsterdam)
     (finite : getCurrentEpoch x.state < FAR_FUTURE_EPOCH) :
     UnassignedEligibleBalance x.state :=
-  (CapStep.run run activation compounding early).2.2.2 genesis aligned finite
+  (run_eligible_balance run genesis activation compounding aligned early finite).1
 
 private theorem preKeyCharge_assigned {f h : Fork} {s : BeaconState preset f}
     {t : BeaconState preset h} (lifecycle : RegistryLifecycle s t)
@@ -4635,7 +5048,7 @@ private theorem preKeyCharge_pending {f : Fork} {s t : BeaconState preset f}
     (∑ i ∈ Finset.range t.validators.data.size, preKeyCharge candidate t i) +
       (t.depositBalanceToConsume electra).toNat ≤
         (∑ i ∈ Finset.range s.validators.data.size, preKeyCharge candidate s i) + budget := by
-  have growth := (CapStep.pending (config := config) ok).2.2.2 matched candidate
+  have growth := (CapStep.pending (config := config) ok).2.2.2.1 matched candidate
   have each (i : Nat) : preKeyCharge candidate t i ≤ preKeyCharge candidate s i +
       if (s.validators.data[i]?.map (fun v =>
         decide (v.withdrawableEpoch.toNat ≤ (getCurrentEpoch s).toNat))).getD false then 0
