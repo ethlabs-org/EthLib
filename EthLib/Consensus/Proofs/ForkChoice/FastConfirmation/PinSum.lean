@@ -864,7 +864,21 @@ theorem bud_whistle (h : Setting config checks g split fin pulled anc counted V)
 
 /-- Glue: V keys are current at R, and distinct keys have distinct positions. -/
 theorem bud_fall (h : Setting config checks g split fin pulled anc counted V) :
-    (∑ v ∈ V, (pinTerms config pulled anc fin).fall v.toNat) ≤ ∑ i ∈ (pinTerms config pulled anc fin).positions with (pinTerms config pulled anc fin).current i = true, (pinTerms config pulled anc fin).fall i := sorry
+    (∑ v ∈ V, (pinTerms config pulled anc fin).fall v.toNat) ≤ ∑ i ∈ (pinTerms config pulled anc fin).positions with (pinTerms config pulled anc fin).current i = true, (pinTerms config pulled anc fin).fall i := by
+  have within := BeaconState.registryWithinLimit_of_lt h.early pulled
+  have sub : V.image UInt64.toNat ⊆ (pinTerms config pulled anc fin).positions.filter
+      (fun i => (pinTerms config pulled anc fin).current i = true) := by
+    intro i member
+    obtain ⟨v, voter, rfl⟩ := Finset.mem_image.mp member
+    have listed : v ∈ getActiveValidatorIndices pulled (getCurrentEpoch pulled) := by
+      simpa [activeVoters] using (h.voting v voter).1
+    obtain ⟨validator, found, active⟩ := (mem_getActiveValidatorIndices within).mp listed
+    rw [Finset.mem_filter]
+    exact ⟨Finset.mem_range.mpr (Array.getElem?_eq_some_iff.mp found).1,
+      isActiveAt_eq_true_iff.mpr ⟨validator, found, active⟩⟩
+  rw [← Finset.sum_image (f := (pinTerms config pulled anc fin).fall)
+    fun a _ b _ same => UInt64.toNat_inj.mp same]
+  exact Finset.sum_le_sum_of_subset sub
 
 /-- Glue: (K4 pulled counted V) keys are current at R. -/
 theorem bud_rise (h : Setting config checks g split fin pulled anc counted V) :
