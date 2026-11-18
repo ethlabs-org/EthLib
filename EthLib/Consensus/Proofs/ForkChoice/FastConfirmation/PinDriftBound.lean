@@ -2243,30 +2243,68 @@ private def sourceBound {f : Fork} (s : BeaconState preset f) (next : Epoch)
   | some v => if v.slashed = false ∧ v.withdrawableEpoch ≤ next then v.effectiveBalance.toNat else 0
   | none => 0
 
+/-- A sublist of a list has a sum of images that is no larger. -/
+private theorem sum_map_filter_le {α : Type} (L : List α) (f : α → ℕ) (p : α → Bool) :
+    ((L.filter p).map f).sum ≤ (L.map f).sum := by
+  induction L with
+  | nil => simp
+  | cons a rest ih =>
+    by_cases h : p a = true <;> simp [h] <;> omega
+
+/-- Summing over a list of events and over some keys can be done in either order. -/
+private theorem list_sum_finset_comm (S : Finset ℕ) (g : ℕ → BalanceEvent preset → ℕ) :
+    ∀ L : List (BalanceEvent preset),
+      (L.map fun e => ∑ j ∈ S, g j e).sum = ∑ j ∈ S, (L.map (g j)).sum
+  | [] => by simp
+  | e :: rest => by
+    simp only [List.map_cons, List.sum_cons, list_sum_finset_comm S g rest, Finset.sum_add_distrib]
+
+/-- The credits of some events are within the credits of their keys below a bound on the sizes. -/
+private theorem credits_sum_le_targets (L : List (BalanceEvent preset)) :
+    (L.map BalanceEvent.credits).sum ≤
+      ((Finset.range ((L.map fun e => e.after.state.balances.data.size).foldr max 0)).sum fun i =>
+        (L.map (keyCredit i)).sum) := by
+  rw [← list_sum_finset_comm]
+  refine List.sum_le_sum fun e member => ?_
+  exact Finset.sum_le_sum_of_subset (Finset.range_mono
+    (Base.le_foldr_max (List.mem_map_of_mem (f := fun e : BalanceEvent preset =>
+      e.after.state.balances.data.size) member)))
+
 /-- The credits of the balances from one state to another, over the later balances. -/
 private def credited {f : Fork} (s t : BeaconState preset f) : ℕ :=
   ∑ j ∈ Finset.range t.balances.data.size,
     (actualBalanceAt ⟨f, t⟩ j - actualBalanceAt ⟨f, s⟩ j)
 
+/-- The credits of the balances at some positions, from one state to another. -/
+private def creditedAt {f : Fork} (T : Finset ℕ) (s t : BeaconState preset f) : ℕ :=
+  ∑ j ∈ T, (actualBalanceAt ⟨f, t⟩ j - actualBalanceAt ⟨f, s⟩ j)
+
+/-- The credits at some positions telescope along two steps. -/
+private theorem creditedAt_trans {f : Fork} (T : Finset ℕ) {a b c : BeaconState preset f} :
+    creditedAt T a c ≤ creditedAt T a b + creditedAt T b c := by
+  unfold creditedAt
+  rw [← Finset.sum_add_distrib]
+  exact Finset.sum_le_sum fun j _ => by omega
+
 private theorem credited_trans {f : Fork} {a b c : BeaconState preset f}
     (ab : b.balances.data.size = a.balances.data.size)
     (bc : c.balances.data.size = b.balances.data.size) :
     credited a c ≤ credited a b + credited b c := by
-  unfold credited
-  rw [bc, ab, ← ab, ← Finset.sum_add_distrib]
-  rw [ab, bc] at *
-  apply Finset.sum_le_sum
-  intro j _
-  omega
+  have _ := ab
+  show creditedAt (Finset.range c.balances.data.size) a c ≤
+    creditedAt (Finset.range b.balances.data.size) a b +
+      creditedAt (Finset.range c.balances.data.size) b c
+  rw [bc]
+  exact creditedAt_trans _
 
-/-- One transfer of a pass credits at most the amount moved. -/
-private theorem credited_transfer {f : Fork} {s lowered raised : BeaconState preset f}
-    {source target : ValidatorIndex} {moved : Gwei}
+/-- One transfer of a pass credits at most the amount moved, and only at its target. -/
+private theorem creditedAt_transfer {f : Fork} (T : Finset ℕ)
+    {s lowered raised : BeaconState preset f} {source target : ValidatorIndex} {moved : Gwei}
     (lowerOk : decreaseBalance s source moved = .ok lowered)
     (raiseOk : increaseBalance lowered target moved = .ok raised) :
-    credited s raised ≤ moved.toNat := by
+    creditedAt T s raised ≤ if target.toNat ∈ T then moved.toNat else 0 := by
   have sizes := (sameSizes_increaseBalance raiseOk).2.trans (sameSizes_decreaseBalance lowerOk).2
-  unfold credited
+  unfold creditedAt
   have pointwise : ∀ j, actualBalanceAt ⟨f, raised⟩ j - actualBalanceAt ⟨f, s⟩ j ≤
       if target.toNat = j then moved.toNat else 0 := by
     intro j
@@ -2280,28 +2318,39 @@ private theorem credited_transfer {f : Fork} {s lowered raised : BeaconState pre
     · have missing : s.balances.data[j]? = Option.none := Array.getElem?_eq_none (by omega)
       have outside : raised.balances.data[j]? = Option.none := Array.getElem?_eq_none (by omega)
       simp [actualBalanceAt, missing, outside]
-  calc ∑ j ∈ Finset.range raised.balances.data.size,
-        (actualBalanceAt ⟨f, raised⟩ j - actualBalanceAt ⟨f, s⟩ j)
-      ≤ ∑ j ∈ Finset.range raised.balances.data.size, if target.toNat = j then moved.toNat else 0 :=
+  calc ∑ j ∈ T, (actualBalanceAt ⟨f, raised⟩ j - actualBalanceAt ⟨f, s⟩ j)
+      ≤ ∑ j ∈ T, if target.toNat = j then moved.toNat else 0 :=
         Finset.sum_le_sum fun j _ => pointwise j
-    _ ≤ moved.toNat := by
-        rw [Finset.sum_ite_eq]
-        split <;> omega
+    _ = if target.toNat ∈ T then moved.toNat else 0 := by rw [Finset.sum_ite_eq]
 
-/-- A pass credits at most the effective balances of the unslashed due sources it reads.
+/-- One transfer of a pass credits at most the amount moved. -/
+private theorem credited_transfer {f : Fork} {s lowered raised : BeaconState preset f}
+    {source target : ValidatorIndex} {moved : Gwei}
+    (lowerOk : decreaseBalance s source moved = .ok lowered)
+    (raiseOk : increaseBalance lowered target moved = .ok raised) :
+    credited s raised ≤ moved.toNat := by
+  have bound := creditedAt_transfer (Finset.range raised.balances.data.size) lowerOk raiseOk
+  refine Nat.le_trans bound ?_
+  split <;> omega
+
+/-- A pass credits the targets in `T` at most the effective balances of the due sources it reads.
+
+The sources are those of the entries whose target is in `T`.
 
 It keeps the registry and the number of balances. -/
-private theorem pass_credits_le {f : Fork} (next : Epoch) :
+private theorem pass_credits_le_targets {f : Fork} (next : Epoch) (T : Finset ℕ) :
     ∀ (items : List PendingConsolidation) {s t : BeaconState preset f} {read : ℕ},
       passPendingConsolidations next s items = .ok (t, read) →
       t.validators = s.validators ∧ t.balances.data.size = s.balances.data.size ∧
-        credited s t ≤ ((items.take read).map (sourceBound s next)).sum
+        creditedAt T s t ≤
+          (((items.take read).filter fun c => c.targetIndex.toNat ∈ T).map
+            (sourceBound s next)).sum
   | [], s, t, read, computed => by
     simp only [passPendingConsolidations, pure, Except.pure, Except.ok.injEq,
       Prod.mk.injEq] at computed
     obtain ⟨rfl, rfl⟩ := computed
     refine ⟨rfl, rfl, ?_⟩
-    simp [credited, actualBalanceAt]
+    simp [creditedAt, actualBalanceAt]
   | c :: rest, s, t, read, computed => by
     simp only [passPendingConsolidations, liftAccessor, bind_ok_iff, mapError_ok_iff] at computed
     obtain ⟨source, sourceRead, computed⟩ := computed
@@ -2313,43 +2362,66 @@ private theorem pass_credits_le {f : Fork} (next : Epoch) :
     · simp only [slashed, ↓reduceIte, bind_ok_iff, pure, Except.pure, Except.ok.injEq,
         Prod.mk.injEq] at computed
       obtain ⟨⟨state', read'⟩, passed, rfl, rfl⟩ := computed
-      obtain ⟨validators, sizes, credits⟩ := pass_credits_le next rest passed
+      obtain ⟨validators, sizes, credits⟩ := pass_credits_le_targets next T rest passed
       refine ⟨validators, sizes, ?_⟩
-      simpa [bound, slashed, List.take_succ_cons] using credits
+      by_cases inT : c.targetIndex.toNat ∈ T <;>
+        simpa [bound, slashed, List.take_succ_cons, List.filter_cons, inT] using credits
     · replace slashed : source.slashed = false := by simpa using slashed
       by_cases early : next < source.withdrawableEpoch
       · simp only [slashed, early, Bool.false_eq_true, ↓reduceIte, pure, Except.pure,
           Except.ok.injEq, Prod.mk.injEq] at computed
         obtain ⟨rfl, rfl⟩ := computed
         refine ⟨rfl, rfl, ?_⟩
-        simp [credited, actualBalanceAt]
+        simp [creditedAt, actualBalanceAt]
       · simp only [slashed, early, Bool.false_eq_true, ↓reduceIte, bind_ok_iff,
           mapError_ok_iff, pure, Except.pure, Except.ok.injEq, Prod.mk.injEq] at computed
         obtain ⟨balance, balanceOk, lowered, loweredOk, raised, raisedOk,
           ⟨state', read'⟩, passed, rfl, rfl⟩ := computed
-        obtain ⟨validators, sizes, credits⟩ := pass_credits_le next rest passed
+        obtain ⟨validators, sizes, credits⟩ := pass_credits_le_targets next T rest passed
         have sameValidators := (increaseBalance_validators raisedOk).trans
           (decreaseBalance_validators loweredOk)
-        have step := credited_transfer loweredOk raisedOk
+        have step := creditedAt_transfer T loweredOk raisedOk
         have sizeStep := (sameSizes_increaseBalance raisedOk).2.trans
           (sameSizes_decreaseBalance loweredOk).2
         have moved : (min balance source.effectiveBalance).toNat ≤
             source.effectiveBalance.toNat := by
           rw [Uint64.toNat_min]; exact Nat.min_le_right _ _
-        have restBound : ((rest.take read').map (sourceBound raised next)) =
-            ((rest.take read').map (sourceBound s next)) := by
+        have restBound : (((rest.take read').filter fun c => c.targetIndex.toNat ∈ T).map
+            (sourceBound raised next)) =
+            (((rest.take read').filter fun c => c.targetIndex.toNat ∈ T).map
+              (sourceBound s next)) := by
           congr 1
           funext d
           simp only [sourceBound, sameValidators]
         refine ⟨validators.trans sameValidators, sizes.trans sizeStep, ?_⟩
-        have total := credited_trans (a := s) (b := raised) (c := state') sizeStep sizes
+        have total := creditedAt_trans T (a := s) (b := raised) (c := state')
         rw [restBound] at credits
         have isDue : sourceBound s next c = source.effectiveBalance.toNat := by
           rw [bound]; simp [slashed, UInt64.not_lt.mp early]
-        simp only [List.take_succ_cons, List.map_cons, List.sum_cons, isDue]
-        omega
+        by_cases inT : c.targetIndex.toNat ∈ T
+        · simp only [inT, ↓reduceIte] at step
+          simp only [List.take_succ_cons, List.filter_cons, inT, decide_true, ↓reduceIte,
+            List.map_cons, List.sum_cons, isDue]
+          omega
+        · simp only [inT, ↓reduceIte] at step
+          simp only [List.take_succ_cons, List.filter_cons, inT, decide_false,
+            Bool.false_eq_true, ↓reduceIte]
+          omega
 
 /-! ## The queue of pending consolidations over a block -/
+
+/-- A pass credits at most the effective balances of the unslashed due sources it reads.
+
+It keeps the registry and the number of balances. -/
+private theorem pass_credits_le {f : Fork} (next : Epoch) :
+    ∀ (items : List PendingConsolidation) {s t : BeaconState preset f} {read : ℕ},
+      passPendingConsolidations next s items = .ok (t, read) →
+      t.validators = s.validators ∧ t.balances.data.size = s.balances.data.size ∧
+        credited s t ≤ ((items.take read).map (sourceBound s next)).sum := by
+  intro items s t read passed
+  obtain ⟨validators, sizes, credits⟩ :=
+    pass_credits_le_targets next (Finset.range t.balances.data.size) items passed
+  exact ⟨validators, sizes, credits.trans (sum_map_filter_le _ _ _)⟩
 
 /-- The queue only grows at its end inside a block.
 
@@ -2737,6 +2809,60 @@ private theorem new_entry_zero {x : ForkedBeaconState preset} {high : ℕ} {f : 
     omega
   · rfl
 
+/-- A pass, from a state with the shape, credits the targets in `T` at most the caps at X.
+
+The caps are those of the entries it reads whose target is in `T`. -/
+private theorem pass_step_targets {x : ForkedBeaconState preset} {high : ℕ} {f : Fork}
+    {p t : BeaconState preset f} {n : ℕ} (facts : PassFacts (config := config) x high p)
+    (shape : Shape (x.state.pendingConsolidations facts.electraX).data.toList
+      (getCurrentEpoch x.state) n p)
+    (computed : processPendingConsolidations p facts.electraP = .ok t) :
+    ∃ r, Shape (x.state.pendingConsolidations facts.electraX).data.toList
+        (getCurrentEpoch x.state) (n + r) t ∧ RegistryLifecycle p t ∧
+      ∀ T : Finset ℕ, creditedAt T p t ≤
+        (((((x.state.pendingConsolidations facts.electraX).data.toList.drop n).take r).filter
+          fun c => c.targetIndex.toNat ∈ T).map (capBound x high)).sum := by
+  obtain ⟨result, passed, balancesEq, queueEq⟩ := processPendingConsolidations_pass computed
+  have sameValidators := (processPendingConsolidations_kept computed).1
+  have life : RegistryLifecycle p t := .of_data (congrArg (·.data) sameValidators)
+  have queue : fundingSources t = (fundingSources p).drop result.2 := by
+    rw [fundingSources_eq facts.electraP, fundingSources_eq facts.electraP]
+    exact queueEq
+  refine ⟨result.2, shape.pass queue life, life, fun T => ?_⟩
+  obtain ⟨validators, sizes, credits⟩ :=
+    pass_credits_le_targets (getCurrentEpoch p + 1) T _ passed
+  have creditsEq : creditedAt T p t = creditedAt T p result.1 := by
+    simp [creditedAt, actualBalanceAt, balancesEq]
+  rw [creditsEq]
+  refine Nat.le_trans credits ?_
+  obtain ⟨N, eq, new⟩ := shape
+  rw [← fundingSources_eq facts.electraP, eq, List.take_append, List.filter_append,
+    List.map_append, List.sum_append]
+  have oldPart : (((((x.state.pendingConsolidations facts.electraX).data.toList.drop n).take
+      result.2).filter fun c => c.targetIndex.toNat ∈ T).map
+        (sourceBound p (getCurrentEpoch p + 1))).sum ≤
+      (((((x.state.pendingConsolidations facts.electraX).data.toList.drop n).take
+        result.2).filter fun c => c.targetIndex.toNat ∈ T).map (capBound x high)).sum := by
+    apply List.sum_le_sum
+    intro c member
+    have inDrop := List.mem_of_mem_take (List.mem_of_mem_filter member)
+    refine old_entry_bound facts (List.mem_of_mem_drop inDrop) ?_
+    rw [← fundingSources_eq facts.electraP, eq]
+    exact List.mem_append_left _ inDrop
+  have newPart : (((N.take (result.2 -
+      ((x.state.pendingConsolidations facts.electraX).data.toList.drop n).length)).filter
+        fun c => c.targetIndex.toNat ∈ T).map
+        (sourceBound p (getCurrentEpoch p + 1))).sum = 0 := by
+    apply List.sum_eq_zero
+    intro m member
+    obtain ⟨c, inTake, rfl⟩ := List.mem_map.mp member
+    have inN := List.mem_of_mem_take (List.mem_of_mem_filter inTake)
+    obtain ⟨w, foundW, fresh, -⟩ := new c inN
+    refine new_entry_zero facts ?_ foundW fresh
+    rw [← fundingSources_eq facts.electraP, eq]
+    exact List.mem_append_right _ inN
+  omega
+
 /-- A pass, from a state with the shape, credits at most the caps at X of the entries it reads. -/
 private theorem pass_step {x : ForkedBeaconState preset} {high : ℕ} {f : Fork}
     {p t : BeaconState preset f} {n : ℕ} (facts : PassFacts (config := config) x high p)
@@ -2748,44 +2874,9 @@ private theorem pass_step {x : ForkedBeaconState preset} {high : ℕ} {f : Fork}
       credited p t ≤
         ((((x.state.pendingConsolidations facts.electraX).data.toList.drop n).take r).map
           (capBound x high)).sum := by
-  obtain ⟨result, passed, balancesEq, queueEq⟩ := processPendingConsolidations_pass computed
-  obtain ⟨validators, sizes, credits⟩ :=
-    pass_credits_le (getCurrentEpoch p + 1) _ passed
-  have sameValidators := (processPendingConsolidations_kept computed).1
-  have life : RegistryLifecycle p t := .of_data (congrArg (·.data) sameValidators)
-  have queue : fundingSources t = (fundingSources p).drop result.2 := by
-    rw [fundingSources_eq facts.electraP, fundingSources_eq facts.electraP]
-    exact queueEq
-  refine ⟨result.2, shape.pass queue life, life, ?_⟩
-  have creditsEq : credited p t = credited p result.1 := by
-    simp [credited, actualBalanceAt, balancesEq]
-  rw [creditsEq]
-  refine Nat.le_trans credits ?_
-  obtain ⟨N, eq, new⟩ := shape
-  rw [← fundingSources_eq facts.electraP, eq, List.take_append, List.map_append,
-    List.sum_append]
-  have oldPart : ((((x.state.pendingConsolidations facts.electraX).data.toList.drop n).take
-      result.2).map (sourceBound p (getCurrentEpoch p + 1))).sum ≤
-      ((((x.state.pendingConsolidations facts.electraX).data.toList.drop n).take result.2).map
-        (capBound x high)).sum := by
-    apply List.sum_le_sum
-    intro c member
-    have inDrop := List.mem_of_mem_take member
-    refine old_entry_bound facts (List.mem_of_mem_drop inDrop) ?_
-    rw [← fundingSources_eq facts.electraP, eq]
-    exact List.mem_append_left _ inDrop
-  have newPart : ((N.take (result.2 -
-      ((x.state.pendingConsolidations facts.electraX).data.toList.drop n).length)).map
-        (sourceBound p (getCurrentEpoch p + 1))).sum = 0 := by
-    apply List.sum_eq_zero
-    intro m member
-    obtain ⟨c, inTake, rfl⟩ := List.mem_map.mp member
-    have inN := List.mem_of_mem_take inTake
-    obtain ⟨w, foundW, fresh, -⟩ := new c inN
-    refine new_entry_zero facts ?_ foundW fresh
-    rw [← fundingSources_eq facts.electraP, eq]
-    exact List.mem_append_right _ inN
-  omega
+  obtain ⟨r, shapeT, life, credits⟩ := pass_step_targets facts shape computed
+  exact ⟨r, shapeT, life, (credits (Finset.range t.balances.data.size)).trans
+    (sum_map_filter_le _ _ _)⟩
 
 /-- The upgrades due at a slot keep the shape of the queue. -/
 private theorem upgrade_shape {L : List PendingConsolidation} {e0 : Epoch} {n : ℕ}
@@ -2886,8 +2977,10 @@ private abbrev queueX (x : ForkedBeaconState preset) (h : .pectra ≤ x.fork) :
     List PendingConsolidation :=
   (x.state.pendingConsolidations h).data.toList
 
-/-- A slot step moves the shape of the queue on, and its consolidation credits are bounded. -/
-private theorem slot_step {g x m last : ForkedBeaconState preset}
+/-- A slot step moves the shape of the queue on.
+
+It credits the targets in `T` at most the caps of the entries it reads that have such a target. -/
+private theorem slot_step_targets {g x m last : ForkedBeaconState preset}
     (shared : Run config checks g x) (pre : Run config checks x m)
     (genesis : Genesis (config := config) (checks := checks) g) (caps : CapOrder preset)
     (delay : 0 < config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat) (electra : .pectra ≤ x.fork)
@@ -2899,8 +2992,10 @@ private theorem slot_step {g x m last : ForkedBeaconState preset}
     ∃ r, Shape (queueX x electra) (getCurrentEpoch x.state) (n + r) last.state ∧
       ∀ {events : List (BalanceEvent preset)},
         (Step.slot ok : Step config checks m last).balanceEvents = .ok events →
-        ((events.filter (·.source = .consolidations)).map BalanceEvent.credits).sum ≤
-          ((((queueX x electra).drop n).take r).map (capBound x high)).sum := by
+        ∀ T : Finset ℕ,
+          (T.sum fun i => ((events.filter (·.source = .consolidations)).map (keyCredit i)).sum) ≤
+            (((((queueX x electra).drop n).take r).filter fun c => c.targetIndex.toNat ∈ T).map
+              (capBound x high)).sum := by
   have beforeFork : m.fork < .glamsterdam :=
     Nat.lt_of_le_of_lt (Step.slot ok).chainStep.fork_le early
   have mFork : .pectra ≤ m.fork := Nat.le_trans electra (fork_le_of_chainSteps pre.chainSteps)
@@ -2981,8 +3076,8 @@ private theorem slot_step {g x m last : ForkedBeaconState preset}
         next := nextBound, nextNat := nextNat }
     have shapeD : Shape (queueX x electra) (getCurrentEpoch x.state) n deposited :=
       shapeCached.carry queueCD lifeCD
-    obtain ⟨r, shapeMiddle, lifePM, credits⟩ := pass_step facts shapeD consolidatedOk
-    refine ⟨r, ?_, fun {events} replayed => ?_⟩
+    obtain ⟨r, shapeMiddle, lifePM, credits⟩ := pass_step_targets facts shapeD consolidatedOk
+    refine ⟨r, ?_, fun {events} replayed T => ?_⟩
     · have trace := processEpoch_trace epochOk
       change EpochTrace _ (EpochStage.prefixStages ++ [.payments, .effectiveBalances,
         .slashingsReset, .randaoReset, .history, .participation, .syncCommittees,
@@ -3017,10 +3112,10 @@ private theorem slot_step {g x m last : ForkedBeaconState preset}
           simp [upgradeBalanceReplay_crossing crossingOk e member]
       rw [eventsEq, recordedEq]
       simp only [List.append_assoc, List.filter_append, f1, f2]
-      simpa [List.filter_cons, credited, BalanceEvent.credits, actualBalanceAt] using credits
+      simpa [List.filter_cons, creditedAt, keyCredit, actualBalanceAt] using credits T
   · simp only [epochIfLast, boundary, ↓reduceIte, pure, Except.pure, Except.ok.injEq] at epochOk
     subst epochOk
-    refine ⟨0, ?_, fun {events} replayed => ?_⟩
+    refine ⟨0, ?_, fun {events} replayed T => ?_⟩
     · have shapeAdvanced : Shape (queueX x electra) (getCurrentEpoch x.state) (n + 0)
           advanced := by
         rw [← afterEq]
@@ -3037,6 +3132,26 @@ private theorem slot_step {g x m last : ForkedBeaconState preset}
         simp [upgradeBalanceReplay_crossing crossingOk e member]
       simp [none]
 
+/-- A slot step moves the shape of the queue on, and its consolidation credits are bounded. -/
+private theorem slot_step {g x m last : ForkedBeaconState preset}
+    (shared : Run config checks g x) (pre : Run config checks x m)
+    (genesis : Genesis (config := config) (checks := checks) g) (caps : CapOrder preset)
+    (delay : 0 < config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat) (electra : .pectra ≤ x.fork)
+    (high : ℕ) (within : high + 2 ≤ (getCurrentEpoch x.state).toNat +
+      config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat)
+    (ok : advanceSlotAcross config checks m = .ok last) (early : last.fork < .glamsterdam)
+    (endEpoch : (getCurrentEpoch last.state).toNat ≤ high + 1) {n : ℕ}
+    (shape : Shape (queueX x electra) (getCurrentEpoch x.state) n m.state) :
+    ∃ r, Shape (queueX x electra) (getCurrentEpoch x.state) (n + r) last.state ∧
+      ∀ {events : List (BalanceEvent preset)},
+        (Step.slot ok : Step config checks m last).balanceEvents = .ok events →
+        ((events.filter (·.source = .consolidations)).map BalanceEvent.credits).sum ≤
+          ((((queueX x electra).drop n).take r).map (capBound x high)).sum := by
+  obtain ⟨r, shapeLast, credits⟩ := slot_step_targets shared pre genesis caps delay electra high
+    within ok early endEpoch shape
+  refine ⟨r, shapeLast, fun {events} replayed => ?_⟩
+  exact (credits_sum_le_targets _).trans ((credits replayed _).trans (sum_map_filter_le _ _ _))
+
 /-- A block keeps the shape of the queue: it only appends entries that are new since X. -/
 private theorem block_step {f : Fork} {e0 : Epoch} {L : List PendingConsolidation} {n : ℕ}
     (electra : .pectra ≤ f) (early : f < .glamsterdam)
@@ -3049,8 +3164,10 @@ private theorem block_step {f : Fork} {e0 : Epoch} {L : List PendingConsolidatio
     (applySignedBlock_ok ok).2.1
   exact shape.grow electra grown.2.2 grown.2.1 started
 
-/-- The consolidation credits of a run from X are within the caps of the entries it reads. -/
-private theorem run_credits {g x y : ForkedBeaconState preset}
+/-- The consolidation credits of a run from X to the targets in `T` are within the caps.
+
+The caps are those of the entries it reads whose target is in `T`. -/
+private theorem run_credits_targets {g x y : ForkedBeaconState preset}
     (shared : Run config checks g x) (genesis : Genesis (config := config) (checks := checks) g)
     (caps : CapOrder preset) (delay : 0 < config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat)
     (electra : .pectra ≤ x.fork) (high : ℕ)
@@ -3060,12 +3177,14 @@ private theorem run_credits {g x y : ForkedBeaconState preset}
     (endEpoch : (getCurrentEpoch y.state).toNat ≤ high + 1)
     {events : List (BalanceEvent preset)} (replayed : tail.balanceEvents high = .ok events) :
     ∃ n, Shape (queueX x electra) (getCurrentEpoch x.state) n y.state ∧
-      ((events.filter (·.source = .consolidations)).map BalanceEvent.credits).sum ≤
-        (((queueX x electra).take n).map (capBound x high)).sum := by
+      ∀ T : Finset ℕ,
+        (T.sum fun i => ((events.filter (·.source = .consolidations)).map (keyCredit i)).sum) ≤
+          ((((queueX x electra).take n).filter fun c => c.targetIndex.toNat ∈ T).map
+            (capBound x high)).sum := by
   induction tail generalizing events with
   | nil =>
     cases replayed
-    refine ⟨0, ⟨[], ?_, fun c member => by simp at member⟩, by simp⟩
+    refine ⟨0, ⟨[], ?_, fun c member => by simp at member⟩, fun T => by simp⟩
     rw [fundingSources_eq electra]
     simp [queueX]
   | @snoc middle last pre step ih =>
@@ -3080,39 +3199,64 @@ private theorem run_credits {g x y : ForkedBeaconState preset}
       currentEpoch_le_of_chainSteps pre.chainSteps
     have beforeFork : middle.fork < .glamsterdam :=
       Nat.lt_of_le_of_lt step.chainStep.fork_le early
-    have growth : ∀ {r : ℕ}, (((queueX x electra).take n).map (capBound x high)).sum +
-        ((((queueX x electra).drop n).take r).map (capBound x high)).sum =
-        (((queueX x electra).take (n + r)).map (capBound x high)).sum := by
-      intro r
-      rw [List.take_add, List.map_append, List.sum_append]
+    have growth : ∀ {r : ℕ} {T : Finset ℕ},
+        ((((queueX x electra).take n).filter fun c => c.targetIndex.toNat ∈ T).map
+          (capBound x high)).sum +
+        (((((queueX x electra).drop n).take r).filter fun c => c.targetIndex.toNat ∈ T).map
+          (capBound x high)).sum =
+        ((((queueX x electra).take (n + r)).filter fun c => c.targetIndex.toNat ∈ T).map
+          (capBound x high)).sum := by
+      intro r T
+      rw [List.take_add, List.filter_append, List.map_append, List.sum_append]
     have stepResult : ∃ r, Shape (queueX x electra) (getCurrentEpoch x.state) (n + r) last.state ∧
-        ∀ {added : List (BalanceEvent preset)}, step.balanceEvents = .ok added →
-          ((added.filter (·.source = .consolidations)).map BalanceEvent.credits).sum ≤
-            ((((queueX x electra).drop n).take r).map (capBound x high)).sum := by
+        ∀ {added : List (BalanceEvent preset)}, step.balanceEvents = .ok added → ∀ T : Finset ℕ,
+          (T.sum fun i => ((added.filter (·.source = .consolidations)).map (keyCredit i)).sum) ≤
+            (((((queueX x electra).drop n).take r).filter fun c => c.targetIndex.toNat ∈ T).map
+              (capBound x high)).sum := by
       cases step with
       | block engine signed due ok =>
-        refine ⟨0, block_step inFork early (by omega) ok started shape, fun {added} addedOk => ?_⟩
+        refine ⟨0, block_step inFork early (by omega) ok started shape, fun {added} addedOk T => ?_⟩
         have none : (added.filter (·.source = .consolidations)) = [] :=
           List.filter_eq_nil_iff.mpr fun e member => by
             simpa using blockReplay_noConsolidations inFork early engine _ _
               (Step.balanceEvents_block early addedOk) e member
         simp [none]
       | slot ok =>
-        obtain ⟨r, shapeLast, credits⟩ := slot_step shared pre genesis caps delay electra high
-          within ok early endEpoch shape
+        obtain ⟨r, shapeLast, credits⟩ := slot_step_targets shared pre genesis caps delay electra
+          high within ok early endEpoch shape
         exact ⟨r, shapeLast, fun {added} addedOk => credits addedOk⟩
     obtain ⟨r, shapeLast, credits⟩ := stepResult
-    refine ⟨n + r, shapeLast, ?_⟩
+    refine ⟨n + r, shapeLast, fun T => ?_⟩
+    have bound := bound T
     by_cases selected : (getCurrentEpoch middle.state).toNat ≤ high + 1
     · simp only [selected, ↓reduceIte, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at rest
       obtain ⟨added, addedOk, rfl⟩ := rest
-      have := credits addedOk
-      rw [List.filter_append, List.map_append, List.sum_append, ← growth]
+      have := credits addedOk T
+      have growth' := growth (r := r) (T := T)
+      simp only [List.filter_append, List.map_append, List.sum_append, Finset.sum_add_distrib]
       omega
     · simp only [selected, ↓reduceIte, pure, Except.pure, Except.ok.injEq] at rest
       subst rest
-      rw [← growth]
+      have growth' := growth (r := r) (T := T)
       omega
+
+/-- The consolidation credits of a run from X are within the caps of the entries it reads. -/
+private theorem run_credits {g x y : ForkedBeaconState preset}
+    (shared : Run config checks g x) (genesis : Genesis (config := config) (checks := checks) g)
+    (caps : CapOrder preset) (delay : 0 < config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat)
+    (electra : .pectra ≤ x.fork) (high : ℕ)
+    (within : high + 2 ≤ (getCurrentEpoch x.state).toNat +
+      config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat)
+    (tail : Run config checks x y) (early : y.fork < .glamsterdam)
+    (endEpoch : (getCurrentEpoch y.state).toNat ≤ high + 1)
+    {events : List (BalanceEvent preset)} (replayed : tail.balanceEvents high = .ok events) :
+    ∃ n, Shape (queueX x electra) (getCurrentEpoch x.state) n y.state ∧
+      ((events.filter (·.source = .consolidations)).map BalanceEvent.credits).sum ≤
+        (((queueX x electra).take n).map (capBound x high)).sum := by
+  obtain ⟨n, shape, bound⟩ := run_credits_targets shared genesis caps delay electra high within
+    tail early endEpoch replayed
+  exact ⟨n, shape, (credits_sum_le_targets _).trans
+    ((bound _).trans (sum_map_filter_le _ _ _))⟩
 
 /-- The caps of the entries of a queue, as the caps of their sources that X lets move. -/
 private theorem capBound_sum (x : ForkedBeaconState preset) (high : ℕ)
@@ -3247,6 +3391,37 @@ private theorem Run.consolidation_credits_le_X {g x y : ForkedBeaconState preset
   refine Nat.le_trans bound ?_
   have split := List.take_append_drop n (x.state.pendingConsolidations electra).data.toList
   conv_rhs => rw [← split, List.map_append, List.sum_append]
+  exact Nat.le_add_right _ _
+
+/-- A2'' for a set of targets.
+
+The consolidation credits to the keys in `T` along the run of `Run.consolidation_credits_le_X`.
+
+They are at most the caps at X of the due entries of X's queue whose target is in `T`.
+
+Each entry credits only its target, so the sum over the entries splits by target. -/
+private theorem Run.consolidation_credits_le_X_targets {g x y : ForkedBeaconState preset}
+    (shared : Run config checks g x) (genesis : Genesis (config := config) (checks := checks) g)
+    (caps : CapOrder preset)
+    (tail : Run config checks x y) (electra : .pectra ≤ x.fork) (early : y.fork < .glamsterdam)
+    (high : ℕ) {events : List (BalanceEvent preset)}
+    (replayed : tail.balanceEvents high = .ok events)
+    (endEpoch : (getCurrentEpoch y.state).toNat ≤ high + 1)
+    (withinDelay : high + 2 ≤
+      (getCurrentEpoch x.state).toNat + config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat)
+    (delay : 0 < config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat) (T : Finset ℕ) :
+    (T.sum fun i => ((events.filter (·.source = .consolidations)).map (keyCredit i)).sum) ≤
+      ((((((x.state.pendingConsolidations electra).data.toList.filter fun c =>
+          c.targetIndex.toNat ∈ T).filterMap fun c =>
+        x.state.validators.data[c.sourceIndex.toNat]?).filter fun v =>
+          !v.slashed && decide (v.withdrawableEpoch.toNat ≤ high + 1)).map fun v =>
+            (withdrawalMaxEffectiveBalance preset x.fork v).toNat).sum) := by
+  obtain ⟨n, -, bound⟩ := run_credits_targets shared genesis caps delay electra high withinDelay
+    tail early endEpoch replayed
+  rw [← capBound_sum]
+  refine Nat.le_trans (bound T) ?_
+  have split := List.take_append_drop n (x.state.pendingConsolidations electra).data.toList
+  conv_rhs => rw [← split, List.filter_append, List.map_append, List.sum_append]
   exact Nat.le_add_right _ _
 end PinSplit
 
