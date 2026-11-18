@@ -1175,39 +1175,51 @@ private theorem fixed_processWithdrawals {capella : .shapella ≤ fork}
     obtain ⟨_, _, _, _, applied⟩ := computed
     exact fixed_applyExpectedWithdrawals applied
 
-/-- The execution part of a block keeps a balance from rising, and keeps the fields. -/
-theorem down_processBlockExecution {body : BeaconBlockBody preset fork}
+/-- The execution part of a block keeps a balance from rising and keeps the fields.
+
+It also writes a score only as a zero. -/
+private theorem fixedZ_processBlockExecution {body : BeaconBlockBody preset fork}
     {bellatrix : .bellatrix ≤ fork} {index : Nat}
     (computed : processBlockExecution config checks engine state body bellatrix = .ok after) :
-    BalanceDown index state after ∧ BlockFixed state after := by
+    (BalanceDown index state after ∧ BlockFixed state after) ∧ ScoreZero state after := by
   have withdrawals {s t : BeaconState preset fork} {capella : .shapella ≤ fork}
       {payload : Until .glamsterdam fork (ExecutionPayload preset fork)}
       (ok : processWithdrawals s capella payload = .ok t) :
-      BalanceDown index s t ∧ BlockFixed s t :=
-    ⟨down_processWithdrawals ok index, (fixed_processWithdrawals ok).1⟩
+      (BalanceDown index s t ∧ BlockFixed s t) ∧ ScoreZero s t :=
+    ⟨⟨down_processWithdrawals ok index, (fixed_processWithdrawals ok).1⟩,
+      (fixed_processWithdrawals ok).2⟩
   have payload {s t : BeaconState preset fork}
       {execution : .bellatrix ≤ fork ∧ fork < .glamsterdam}
       (ok : processExecutionPayload config engine s body execution = .ok t) :
-      BalanceDown index s t ∧ BlockFixed s t := by
+      (BalanceDown index s t ∧ BlockFixed s t) ∧ ScoreZero s t := by
     obtain ⟨_, _, _, rfl⟩ := processExecutionPayload_ok ok
-    exact ⟨BalanceDown.of_balances rfl, BlockFixed.of_eq⟩
+    exact ⟨⟨BalanceDown.of_balances rfl, BlockFixed.of_eq⟩, ScoreZero.of_scores rfl⟩
   unfold processBlockExecution at computed
   split at computed
   · simp only [bind_ok_iff] at computed
     obtain ⟨_, withdrawnOk, bid⟩ := computed
     obtain ⟨_, rfl⟩ := processExecutionPayloadBid_eq bid
-    exact ⟨(withdrawals withdrawnOk).1.trans (BalanceDown.of_balances rfl),
-      (withdrawals withdrawnOk).2.trans BlockFixed.of_eq⟩
+    exact ⟨⟨(withdrawals withdrawnOk).1.1.trans (BalanceDown.of_balances rfl),
+      (withdrawals withdrawnOk).1.2.trans BlockFixed.of_eq⟩,
+      (withdrawals withdrawnOk).2.trans (ScoreZero.of_scores rfl)⟩
   split at computed
   · simp only [bind_ok_iff] at computed
     obtain ⟨_, withdrawnOk, paid⟩ := computed
-    exact ⟨(withdrawals withdrawnOk).1.trans (payload paid).1,
+    exact ⟨⟨(withdrawals withdrawnOk).1.1.trans (payload paid).1.1,
+      (withdrawals withdrawnOk).1.2.trans (payload paid).1.2⟩,
       (withdrawals withdrawnOk).2.trans (payload paid).2⟩
   · dsimp only at computed
     split at computed
     · exact payload computed
     · cases computed
-      exact ⟨BalanceDown.refl _ _, BlockFixed.refl _⟩
+      exact ⟨⟨BalanceDown.refl _ _, BlockFixed.refl _⟩, ScoreZero.refl _⟩
+
+/-- The execution part of a block keeps a balance from rising, and keeps the fields. -/
+theorem down_processBlockExecution {body : BeaconBlockBody preset fork}
+    {bellatrix : .bellatrix ≤ fork} {index : Nat}
+    (computed : processBlockExecution config checks engine state body bellatrix = .ok after) :
+    BalanceDown index state after ∧ BlockFixed state after :=
+  (fixedZ_processBlockExecution computed).1
 
 /-- The execution part of a block keeps a balance from rising. -/
 private theorem kept_processBlockExecution {body : BeaconBlockBody preset fork}
@@ -1220,15 +1232,17 @@ private theorem kept_processBlockExecution {body : BeaconBlockBody preset fork}
     simp only [validatorKeys, validators]
     exact List.prefix_refl _⟩
 
-/-- From Gloas, the payload of the parent keeps a balance from rising, and keeps the fields. -/
-theorem down_processParentExecutionPayload {gloas : .glamsterdam ≤ fork}
+/-- From Gloas, the payload of the parent keeps a balance from rising and keeps the fields.
+
+It also writes a score only as a zero. -/
+private theorem fixedZ_processParentExecutionPayload {gloas : .glamsterdam ≤ fork}
     {body : BeaconBlockBody preset fork} {index : Nat}
     (computed : processParentExecutionPayload config checks state gloas body = .ok after) :
-    BalanceDown index state after ∧ BlockFixed state after := by
+    (BalanceDown index state after ∧ BlockFixed state after) ∧ ScoreZero state after := by
   rcases processParentExecutionPayload_ok computed with ⟨-, -, rfl⟩ |
     ⟨-, _, _, _, _, _, _, _, settledOk, depositsOk, withdrawalsOk, consolidationsOk, buildersOk,
       exitsOk, -, rfl⟩
-  · exact ⟨BalanceDown.refl _ _, BlockFixed.refl _⟩
+  · exact ⟨⟨BalanceDown.refl _ _, BlockFixed.refl _⟩, ScoreZero.refl _⟩
   have settled := settleParentPayment_eq settledOk
   have builders {s t : BeaconState preset fork} {request : BuilderDepositRequest}
       (ok : processBuilderDepositRequest config checks s gloas request = .ok t) :
@@ -1239,7 +1253,15 @@ theorem down_processParentExecutionPayload {gloas : .glamsterdam ≤ fork}
       (ok : processBuilderExitRequest config s gloas request = .ok t) : BalanceDown index s t := by
     obtain ⟨_, rfl⟩ := processBuilderExitRequest_builders ok
     exact BalanceDown.of_balances rfl
-  refine ⟨(BalanceDown.of_balances (by rw [settled])).trans <|
+  have fixed : FixedZ state _ :=
+    (show FixedZ state _ by rw [settled]; exact FixedZ.of_eq).trans <|
+    (FixedZ.foldlM (fun _ _ _ ok => fixed_processDepositRequest ok) depositsOk).trans <|
+    (FixedZ.foldlM (fun _ _ _ ok => fixed_processWithdrawalRequest ok) withdrawalsOk).trans <|
+    (FixedZ.foldlM (fun _ _ _ ok => fixed_processConsolidationRequest ok)
+      consolidationsOk).trans <|
+    (FixedZ.foldlM (fun _ _ _ ok => ?_) buildersOk).trans <|
+    (FixedZ.foldlM (fun _ _ _ ok => ?_) exitsOk).trans FixedZ.of_eq
+  · exact ⟨⟨(BalanceDown.of_balances (by rw [settled])).trans <|
       (BalanceDown.foldlM (fun _ _ _ ok => down_processDepositRequest ok index) depositsOk).trans <|
       (BalanceDown.foldlM (fun _ _ _ ok => down_processWithdrawalRequest ok index)
         withdrawalsOk).trans <|
@@ -1247,19 +1269,18 @@ theorem down_processParentExecutionPayload {gloas : .glamsterdam ≤ fork}
         consolidationsOk).trans <|
       (BalanceDown.foldlM (fun _ _ _ ok => builders ok) buildersOk).trans <|
       (BalanceDown.foldlM (fun _ _ _ ok => exits ok) exitsOk).trans
-        (BalanceDown.of_balances rfl), ?_⟩
-  refine (show BlockFixed state _ by rw [settled]; exact BlockFixed.of_eq).trans <|
-    (BlockFixed.foldlM (fun _ _ _ ok => (fixed_processDepositRequest ok).1) depositsOk).trans <|
-    (BlockFixed.foldlM (fun _ _ _ ok => (fixed_processWithdrawalRequest ok).1)
-      withdrawalsOk).trans <|
-    (BlockFixed.foldlM (fun _ _ _ ok => (fixed_processConsolidationRequest ok).1)
-      consolidationsOk).trans <|
-    (BlockFixed.foldlM (fun _ _ _ ok => ?_) buildersOk).trans <|
-    (BlockFixed.foldlM (fun _ _ _ ok => ?_) exitsOk).trans BlockFixed.of_eq
+        (BalanceDown.of_balances rfl), fixed.1⟩, fixed.2⟩
   · obtain ⟨_, rfl⟩ := processBuilderDepositRequest_builders ok
-    exact BlockFixed.of_eq
+    exact FixedZ.of_eq
   · obtain ⟨_, rfl⟩ := processBuilderExitRequest_builders ok
-    exact BlockFixed.of_eq
+    exact FixedZ.of_eq
+
+/-- From Gloas, the payload of the parent keeps a balance from rising, and keeps the fields. -/
+theorem down_processParentExecutionPayload {gloas : .glamsterdam ≤ fork}
+    {body : BeaconBlockBody preset fork} {index : Nat}
+    (computed : processParentExecutionPayload config checks state gloas body = .ok after) :
+    BalanceDown index state after ∧ BlockFixed state after :=
+  (fixedZ_processParentExecutionPayload computed).1
 
 /-- The header step reads the proposer of the block. -/
 private theorem processBlockHeader_proposer {block : BeaconBlock preset fork}
@@ -1549,54 +1570,6 @@ theorem fixed_processOperations {body : BeaconBlockBody preset fork} {parentSlot
     BlockFixed state after :=
   (fixedZ_processOperations computed).1
 
-/-- The execution part of a block writes a score only as a zero. -/
-private theorem scoreZero_processBlockExecution {body : BeaconBlockBody preset fork}
-    {bellatrix : .bellatrix ≤ fork}
-    (computed : processBlockExecution config checks engine state body bellatrix = .ok after) :
-    ScoreZero state after := by
-  have payload {s t : BeaconState preset fork}
-      {execution : .bellatrix ≤ fork ∧ fork < .glamsterdam}
-      (ok : processExecutionPayload config engine s body execution = .ok t) : ScoreZero s t := by
-    obtain ⟨_, _, _, rfl⟩ := processExecutionPayload_ok ok
-    exact ScoreZero.of_scores rfl
-  unfold processBlockExecution at computed
-  split at computed
-  · simp only [bind_ok_iff] at computed
-    obtain ⟨_, withdrawnOk, bid⟩ := computed
-    obtain ⟨_, rfl⟩ := processExecutionPayloadBid_eq bid
-    exact (fixed_processWithdrawals withdrawnOk).2.trans (ScoreZero.of_scores rfl)
-  split at computed
-  · simp only [bind_ok_iff] at computed
-    obtain ⟨_, withdrawnOk, paid⟩ := computed
-    exact (fixed_processWithdrawals withdrawnOk).2.trans (payload paid)
-  · dsimp only at computed
-    split at computed
-    · exact payload computed
-    · cases computed
-      exact ScoreZero.refl _
-
-/-- From Gloas, the payload of the parent writes a score only as a zero. -/
-private theorem scoreZero_processParentExecutionPayload {gloas : .glamsterdam ≤ fork}
-    {body : BeaconBlockBody preset fork}
-    (computed : processParentExecutionPayload config checks state gloas body = .ok after) :
-    ScoreZero state after := by
-  rcases processParentExecutionPayload_ok computed with ⟨-, -, rfl⟩ |
-    ⟨-, _, _, _, _, _, _, _, settledOk, depositsOk, withdrawalsOk, consolidationsOk, buildersOk,
-      exitsOk, -, rfl⟩
-  · exact ScoreZero.refl _
-  have settled := settleParentPayment_eq settledOk
-  refine (show ScoreZero state _ from ScoreZero.of_scores (by rw [settled])).trans <|
-    (FixedZ.foldlM (fun _ _ _ ok => fixed_processDepositRequest ok) depositsOk).2.trans <|
-    (FixedZ.foldlM (fun _ _ _ ok => fixed_processWithdrawalRequest ok) withdrawalsOk).2.trans <|
-    (FixedZ.foldlM (fun _ _ _ ok => fixed_processConsolidationRequest ok)
-      consolidationsOk).2.trans <|
-    (FixedZ.foldlM (fun _ _ _ ok => ?_) buildersOk).2.trans <|
-    (FixedZ.foldlM (fun _ _ _ ok => ?_) exitsOk).2.trans (ScoreZero.of_scores rfl)
-  · obtain ⟨_, rfl⟩ := processBuilderDepositRequest_builders ok
-    exact FixedZ.of_eq
-  · obtain ⟨_, rfl⟩ := processBuilderExitRequest_builders ok
-    exact FixedZ.of_eq
-
 /-- A block keeps the inactivity score at each position of the registry before it.
 
 This holds when the block succeeds; before Altair there are no scores.
@@ -1611,50 +1584,40 @@ theorem scoresKept_processBlock {block : BeaconBlock preset fork}
         (after.inactivityScores altair).data[i]? = some v →
           (state.inactivityScores altair).data[i]? = some v ∨ v = 0 := by
   obtain ⟨input, last, started, operated, -, synced⟩ := processBlock_operationsInput computed
+  -- The steps before the operations write no score but a zero, and keep the registry or grow it.
+  have before : BlockScored state input ∧ ScoreZero state input :=
+    started.step_of (fun s t => BlockScored s t ∧ ScoreZero s t)
+      (fun s => ⟨BlockScored.refl s, ScoreZero.refl s⟩)
+      (fun one two => ⟨one.1.trans two.1, one.2.trans two.2⟩)
+      (fun _ ok => ⟨(fixedZ_processParentExecutionPayload (index := 0) ok).1.2.2.2.2.2,
+        (fixedZ_processParentExecutionPayload (index := 0) ok).2⟩)
+      (fun ok => by
+        obtain ⟨_, _, rfl⟩ := processBlockHeader_eq ok
+        exact ⟨BlockScored.of_eq rfl rfl, ScoreZero.of_scores rfl⟩)
+      (fun _ ok => ⟨(fixedZ_processBlockExecution (index := 0) ok).1.2.2.2.2.2,
+        (fixedZ_processBlockExecution (index := 0) ok).2⟩)
+      (fun ok => by
+        obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, rfl⟩ := processRandao_eq ok
+        exact ⟨BlockScored.of_eq rfl rfl, ScoreZero.of_scores rfl⟩)
+      (fun _ ok => by
+        obtain ⟨_, _, rest⟩ := processEth1Data_eq ok
+        rw [← rest]
+        exact ⟨BlockScored.of_eq rfl rfl, ScoreZero.of_scores rfl⟩)
   refine ⟨fun index inside => ?_, fun later i v found => ?_⟩
-  · -- The steps before the operations write no score, and keep the registry or grow it.
-    have before : BlockScored state input :=
-      started.step_of BlockScored BlockScored.refl BlockScored.trans
-        (fun _ ok => (down_processParentExecutionPayload (index := 0) ok).2.2.2.2.2)
-        (fun ok => by
-          obtain ⟨_, _, rfl⟩ := processBlockHeader_eq ok
-          exact BlockScored.of_eq rfl rfl)
-        (fun _ ok => (down_processBlockExecution (index := 0) ok).2.2.2.2.2)
-        (fun ok => by
-          obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, rfl⟩ := processRandao_eq ok
-          exact BlockScored.of_eq rfl rfl)
-        (fun _ ok => by
-          obtain ⟨_, _, rest⟩ := processEth1Data_eq ok
-          rw [← rest]
-          exact BlockScored.of_eq rfl rfl)
-    -- From Altair the sync aggregate changes only the balances.
+  · -- From Altair the sync aggregate changes only the balances.
     have synced : BlockScored last after := by
       split at synced
       · obtain ⟨_, rfl⟩ := processSyncAggregate_eq synced
         exact BlockScored.of_eq rfl rfl
       · cases synced
         exact BlockScored.refl _
-    exact ((before.trans (fixed_processOperations operated).2.2.2.2).trans synced).2 index inside
+    exact ((before.1.trans (fixed_processOperations operated).2.2.2.2).trans synced).2 index inside
   · -- A new validator takes the score zero, and no other step writes a score.
-    have before : ScoreZero state input :=
-      started.step_of ScoreZero ScoreZero.refl ScoreZero.trans
-        (fun _ ok => scoreZero_processParentExecutionPayload ok)
-        (fun ok => by
-          obtain ⟨_, _, rfl⟩ := processBlockHeader_eq ok
-          exact ScoreZero.of_scores rfl)
-        (fun _ ok => scoreZero_processBlockExecution ok)
-        (fun ok => by
-          obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, rfl⟩ := processRandao_eq ok
-          exact ScoreZero.of_scores rfl)
-        (fun _ ok => by
-          obtain ⟨_, _, rest⟩ := processEth1Data_eq ok
-          rw [← rest]
-          exact ScoreZero.of_scores rfl)
     have synced : ScoreZero last after := by
       simp only [later, ↓reduceDIte] at synced
       obtain ⟨_, rfl⟩ := processSyncAggregate_eq synced
       exact ScoreZero.of_scores rfl
-    exact (before.trans ((fixedZ_processOperations operated).2.trans synced)) later i v found
+    exact (before.2.trans ((fixedZ_processOperations operated).2.trans synced)) later i v found
 
 /-- A block keeps the inactivity score at each position of the registry before it.
 
