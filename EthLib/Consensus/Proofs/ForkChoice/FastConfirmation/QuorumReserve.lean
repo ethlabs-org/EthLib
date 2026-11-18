@@ -173,7 +173,7 @@ Up to the seed lookahead plus one, the exit and consolidation queues add nothing
 
 Neither do the late activations at that depth.
 
-Every epoch of that window was fixed before the branches split.
+The reserve treats every epoch of that window as fixed before the branches split.
 
 Rates are read at a quarter of the call's total active balance.
 
@@ -203,9 +203,9 @@ A key whose exit the call reads can be active only in the previous epoch of a co
 
 There it weighs three times, so its rise and its credits are charged three times.
 
-A key slashed on another branch pays for its whistleblower reward from its own effective balance.
+The whistleblower reward of a key slashed on another branch is charged where that key has exited.
 
-That fails only for a key that has exited or whose effective balance can fall low, which is charged.
+It is also charged where that key's effective balance can fall below what pays for it in the count.
 
 Inactivity scores and the queue of partial withdrawals are read at the finalized block's state. -/
 def pinReserve (config : Config) (state ancestor finalizedState : BeaconState preset fork) : ℕ :=
@@ -422,7 +422,9 @@ def pinReserve (config : Config) (state ancestor finalizedState : BeaconState pr
     2 * (depth * slots + due.length) * preset.upwardBand
   -- Outside the tight window, keys can start to exit on the other branch.
   --
-  -- The queues hold at most this many, each with at least the ejection balance less an increment.
+  -- This assumes each such key leaves with at least the ejection balance less an increment.
+  --
+  -- No lemma here proves that yet; under it, the queues hold at most this many.
   --
   -- The `+ 2` counts one key at each end of the window that the churn covers only in part.
   let queueKeys := depth * (exitChurn + consolidationChurn) /
@@ -434,7 +436,7 @@ def pinReserve (config : Config) (state ancestor finalizedState : BeaconState pr
     3 * queueKeys * (preset.upwardBand + depth * gainRateMax)
   -- A key slashed on another branch credits its whistleblower, the block's proposer.
   --
-  -- A key still active there pays three times that reward from its own effective balance.
+  -- A key still active there is meant to pay three times that reward from its own balance.
   --
   -- A key that has exited there by then has no such balance in the count, so it is charged here.
   --
@@ -449,7 +451,7 @@ def pinReserve (config : Config) (state ancestor finalizedState : BeaconState pr
       depth * (exitChurn + consolidationChurn) + 2 * capMax +
         queueKeys * (preset.upwardBand + depth * gainRateMax))) /
     p.WHISTLEBLOWER_REWARD_QUOTIENT.toNat
-  -- A key active there pays for its reward unless its effective balance there can be low.
+  -- A key active there is meant to pay for its reward unless its effective balance can be low.
   --
   -- `lowEB` bounds that balance from below, before the slashing penalty and sync-seat debits.
   --
@@ -466,6 +468,7 @@ def pinReserve (config : Config) (state ancestor finalizedState : BeaconState pr
   let drop (i : ℕ) := depthFin * leak i + preset.downwardBand + inc
   let lowEB (i : ℕ) := min (min (effective i) (finEB i) - partialsDue i)
     preset.MIN_ACTIVATION_BALANCE.toNat - drop i
+  -- The reward is read at `ebUp`.
   let flagged := ∑ i ∈ positions with slashable i ∧
       2 * (lowEB i - ebUp i / p.MIN_SLASHING_PENALTY_QUOTIENT.toNat) <
         3 * (ebUp i / p.WHISTLEBLOWER_REWARD_QUOTIENT.toNat),
