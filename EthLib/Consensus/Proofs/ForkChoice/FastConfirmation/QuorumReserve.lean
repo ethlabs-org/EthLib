@@ -315,8 +315,12 @@ def pinReserve (config : Config) (state ancestor finalizedState : BeaconState pr
   -- Within that depth it predates finality and sits in the queue of the finalized block's state.
   let partialDelay := config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat
   let partialsDue (i : ℕ) := max (partialsX i) (partialsR i)
-  -- Deeper than `partialDelay`, a key can fall to nothing, so its whole balance is charged.
-  let fall (i : ℕ) := if depth ≤ partialDelay then
+  -- Deeper than `partialDelay` from the finalized block's state, a key can fall to nothing.
+  --
+  -- A partial requested after that state can then be paid on a branch.
+  --
+  -- It sits in no queue read here, so the key's whole balance is charged.
+  let fall (i : ℕ) := if depthFin ≤ partialDelay then
       let low := min (actual i) (cap i) - (depth * (leak i + gainRate i) + partialsDue i)
       if effective i ≤ low + preset.downwardBand then 0 else effective i - (low - low % inc)
     else effective i
@@ -331,7 +335,7 @@ def pinReserve (config : Config) (state ancestor finalizedState : BeaconState pr
     -- So the rise is the key's whole headroom.
     --
     -- It is too once eleven times the gain over the depth reaches that bound on the key's balance.
-    if depth ≤ partialDelay then
+    if depthFin ≤ partialDelay then
       if 11 * depth * gainRate i ≥ ebUp i then capFor i - effective i
       else if high ≤ effective i + preset.upwardBand then 0
       else min (capFor i) (high - high % inc) - effective i
@@ -438,11 +442,14 @@ def pinReserve (config : Config) (state ancestor finalizedState : BeaconState pr
   --
   -- Its exit here is not its exit there.
   --
-  -- A key created on the other branch enters at the activation balance.
+  -- A key not active by this epoch here, or created on the other branch, can activate there.
+  --
+  -- It activates only with at least the activation balance, which it keeps until then.
   --
   -- No lemma here proves yet that it stays above that bound through the window.
   let lowKeys := (positions.filter fun i =>
-    (validator i).any (fun v => decide (finalized < v.withdrawableEpoch.toNat)) ∧
+    (validator i).any (fun v => decide (finalized < v.withdrawableEpoch.toNat) &&
+      decide (v.activationEpoch.toNat ≤ epoch.toNat)) ∧
       lowEB i < config.EJECTION_BALANCE.toNat - inc).card
   -- Outside the tight window, keys can start to exit on the other branch.
   --
@@ -492,6 +499,27 @@ def pinReserve (config : Config) (state ancestor finalizedState : BeaconState pr
       2 * (lowEB i - ebUp i / p.MIN_SLASHING_PENALTY_QUOTIENT.toNat) <
         3 * (ebUp i / p.WHISTLEBLOWER_REWARD_QUOTIENT.toNat),
     3 * (ebUp i / p.WHISTLEBLOWER_REWARD_QUOTIENT.toNat)
+  -- A due consolidation can be applied on one branch and not the other.
+  --
+  -- Its source can be slashed on one branch only, which drops it there.
+  --
+  -- Within `partialDelay` of the finalized block's state, each one applied is queued there.
+  --
+  -- Its source is unslashed there and withdrawable by the next epoch.
+  --
+  -- Each moves at most the source's effective balance, which stays within its cap there.
+  --
+  -- An exited key cannot switch to compounding.
+  --
+  -- Deeper, the charge is moot: `fall` charges every key's whole effective balance at this depth.
+  let consolidationsX := if depthFin ≤ partialDelay then
+      (if electra : .pectra ≤ fork then
+        ((((finalizedState.pendingConsolidations electra).data.toList.filterMap fun c =>
+          finalizedState.validators.data[c.sourceIndex.toNat]?).filter fun v =>
+            !v.slashed && decide (v.withdrawableEpoch.toNat ≤ epoch.toNat + 1)).map fun v =>
+              (withdrawalMaxEffectiveBalance preset fork v).toNat).sum
+      else 0)
+    else 0
   -- No key's sync-seat debits are bounded from what the call reads, so they are charged together.
   --
   -- Twice the debits of every seat in the window covers what they take from the test.
@@ -499,7 +527,8 @@ def pinReserve (config : Config) (state ancestor finalizedState : BeaconState pr
   quorumReserve config state ancestor + (3 * exiting + queues + credits + branchR + late +
     syncSeats + (∑ i ∈ positions with current i = true, rise i) +
     3 * (∑ i ∈ positions with current i = true, fall i) +
-    3 * exitingRise + exitingCredits + queueRise + reserveW + flagged + seatShortfall)
+    3 * exitingRise + exitingCredits + queueRise + reserveW + flagged + seatShortfall +
+    (33 * consolidationsX + 9) / 10)
 
 /-- The pin reserve contains the quorum reserve. -/
 theorem quorumReserve_le_pinReserve (config : Config)
