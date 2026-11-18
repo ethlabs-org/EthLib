@@ -1035,11 +1035,75 @@ theorem bud_exitingBands (h : Setting config checks g split fin pulled anc count
     2 * (∑ v ∈ (K5 counted V), bandC tailC highC eventsC v.toNat) ≤
       (pinTerms config pulled anc fin).exitingBands := sorry
 
+/-- The pending keys of `pinTerms` are validators of R's registry.
+
+Each is not yet eligible at R's epoch, and has no activation epoch. -/
+private theorem pendingRB_iff (config : Config) (pulled anc fin : BeaconState preset fork)
+    (i : ℕ) : (pinTerms config pulled anc fin).pendingRB i = true ↔
+      ∃ w, pulled.validators.data[i]? = some w ∧
+        (getCurrentEpoch pulled).toNat < w.activationEligibilityEpoch.toNat ∧
+        w.activationEpoch = FAR_FUTURE_EPOCH := by
+  simp only [pinTerms]
+  cases pulled.validators.data[i]? <;> simp
+
+/-- Outside the tight window, `pendingR` is the stake and rise of the pending keys. -/
+private theorem pendingR_eq (config : Config) (pulled anc fin : BeaconState preset fork) :
+    (pinTerms config pulled anc fin).pendingR =
+      if (pinTerms config pulled anc fin).tight = true then 0 else
+        ∑ i ∈ (pinTerms config pulled anc fin).positions with
+          (pinTerms config pulled anc fin).pendingRB i = true,
+          (balanceAt pulled i + (pinTerms config pulled anc fin).rise i) := rfl
+
 /-- K6 keys of R's registry that are not yet eligible at R: their stake at R and their rise. -/
 theorem bud_pendingR (h : Setting config checks g split fin pulled anc counted V) :
     (∑ v ∈ (K6 pulled counted) with (pinTerms config pulled anc fin).pendingRB v.toNat = true,
       (eR pulled v + (pinTerms config pulled anc fin).rise v.toNat)) ≤
-        (pinTerms config pulled anc fin).pendingR := sorry
+        (pinTerms config pulled anc fin).pendingR := by
+  classical
+  rw [pendingR_eq]
+  by_cases tight : (pinTerms config pulled anc fin).tight = true
+  · -- Tight: no key of K6 is pending, since activity near the split is shared.
+    rw [ite_eq_left tight]
+    have fin_le := UInt64.le_iff_toNat_le.mp h.finalized
+    have called := UInt64.le_iff_toNat_le.mp h.called
+    have bound := (tight_iff config pulled anc fin).mp tight
+    have near : (getCurrentEpoch counted).toNat ≤ (getCurrentEpoch pulled).toNat + 1 := h.near
+    apply Nat.le_of_eq
+    apply Finset.sum_eq_zero
+    intro v hv
+    exfalso
+    have hv' := Finset.mem_filter.mp hv
+    obtain ⟨w, found, -, far⟩ := (pendingRB_iff config pulled anc fin v.toNat).mp hv'.2
+    obtain ⟨u, foundU, activeU⟩ := active_of_activeVoters h.early (Finset.mem_filter.mp hv'.1).1
+    obtain ⟨rp⟩ := h.toPulled
+    obtain ⟨rc⟩ := h.toCounted
+    have splitEpoch := UInt64.le_iff_toNat_le.mp (currentEpoch_le_of_chainSteps rp.chainSteps)
+    have bound' : getCurrentEpoch counted ≤ activityFixedEpoch split := by
+      rw [UInt64.le_iff_toNat_le, activityFixedEpoch_toNat]
+      have := (getCurrentEpoch counted).toNat_lt
+      omega
+    have kc := activeKept_of_chainSteps rc.chainSteps (getCurrentEpoch counted) bound' v.toNat
+    have kp := activeKept_of_chainSteps rp.chainSteps (getCurrentEpoch counted) bound' v.toNat
+    have activeAtC : isActiveAt counted (getCurrentEpoch counted) v.toNat = true :=
+      isActiveAt_eq_true_iff.mpr ⟨u, foundU, activeU⟩
+    have activeAtP : isActiveAt pulled (getCurrentEpoch counted) v.toNat = true := by
+      rw [kp, ← kc]
+      exact activeAtC
+    obtain ⟨w', found', active⟩ := isActiveAt_eq_true_iff.mp activeAtP
+    rw [found] at found'
+    cases found'
+    simp only [isActiveValidator, Bool.and_eq_true, decide_eq_true_eq] at active
+    have le := UInt64.le_iff_toNat_le.mp active.1
+    have farNat : w.activationEpoch.toNat = 2 ^ 64 - 1 := by rw [far]; rfl
+    have below := getCurrentEpoch_succ_lt_farFuture h.twoSlots counted
+    have farValue : FAR_FUTURE_EPOCH.toNat = 2 ^ 64 - 1 := rfl
+    omega
+  · rw [ite_eq_right tight]
+    refine sum_toNat_le (fun i => balanceAt pulled i + (pinTerms config pulled anc fin).rise i)
+      fun v hv => ?_
+    have flag := (Finset.mem_filter.mp hv).2
+    obtain ⟨w, found, -⟩ := (pendingRB_iff config pulled anc fin v.toNat).mp flag
+    exact mem_positions_filter config pulled anc fin found flag
 
 /-- D-4: the keys whose exit R reads. -/
 theorem bud_exiting (h : Setting config checks g split fin pulled anc counted V) :
