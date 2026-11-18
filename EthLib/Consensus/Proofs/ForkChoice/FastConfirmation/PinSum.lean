@@ -1663,8 +1663,58 @@ theorem bud_sync (h : Setting config checks g split fin pulled anc counted V)
       (∑ v ∈ (K5 counted V), (syncF events v.toNat + syncF eventsC v.toNat))) +
       (∑ v ∈ (K6 pulled counted), (syncF events v.toNat + syncF eventsC v.toNat)) ≤
         (pinTerms config pulled anc fin).syncSeats +
-          6 * ((pinTerms config pulled anc fin).depth * (pinTerms config pulled anc fin).syncProposer) := sorry
-
+          6 * ((pinTerms config pulled anc fin).depth * (pinTerms config pulled anc fin).syncProposer) := by
+  classical
+  obtain ⟨shared⟩ := h.toFin
+  obtain ⟨fromFin⟩ := h.fromFin
+  obtain ⟨toPulled⟩ := h.toPulled
+  obtain ⟨pulledTotal, pulledOk⟩ := h.pulledTotal
+  have electra : .pectra ≤ fork := Nat.le_trans (by decide) h.fulu
+  have finalized := UInt64.le_iff_toNat_le.mp h.finalized
+  have called := UInt64.le_iff_toNat_le.mp h.called
+  have later := UInt64.le_iff_toNat_le.mp h.later
+  have near := h.near
+  -- the sync movement of a run from the split over any keys, at the pulled state's total
+  have run : ∀ {e : BeaconState preset fork} (t : Run config checks ⟨fork, split⟩ ⟨fork, e⟩),
+      (getCurrentEpoch e).toNat ≤ (getCurrentEpoch pulled).toNat + 1 →
+      ∀ (highE : ℕ) {evs : List (BalanceEvent preset)}, t.balanceEvents highE = .ok evs →
+      ∀ keys : Finset ℕ, ∑ i ∈ keys, syncF evs i ≤
+        ((getCurrentEpoch e).toNat + 1 - (getCurrentEpoch split).toNat) *
+          preset.SLOTS_PER_EPOCH.toNat * preset.SYNC_COMMITTEE_SIZE.toNat *
+            syncSeatEnvelope preset pulledTotal.toNat := by
+    intro e t within highE evs replayed keys
+    have band : ∀ {u w : ForkedBeaconState preset} (step : Step config checks u w),
+        t.Contains step → ∀ T : Gwei, getTotalActiveBalance w.state = .ok T →
+          2 * T.toNat ≤ 3 * pulledTotal.toNat := by
+      intro u w step member T read
+      obtain ⟨pre, post, _, _, _⟩ := Run.contains_step_facts member h.early
+      have wEarly : w.fork < .glamsterdam :=
+        Nat.lt_of_le_of_lt (fork_le_of_chainSteps post.chainSteps) h.early
+      have wEpoch := UInt64.le_iff_toNat_le.mp (currentEpoch_le_of_chainSteps post.chainSteps)
+      exact total_band_of_guard shared h.genesis h.parameters h.caps h.aligned h.twoSlots electra
+        h.guard (fromFin.append toPulled) h.early (Nat.le_succ _)
+        (fromFin.append (pre.snoc step)) wEarly (by omega) pulledOk read
+    have moves := (Run.syncDebits_le t h.fulu h.early highE replayed pulledTotal.toNat band keys).2
+    exact (Finset.sum_le_sum fun i _ => (syncF_eq evs i).le).trans moves
+  -- the four sets are pairwise disjoint
+  have voters : ∀ v ∈ V, v ∈ AR pulled := fun v member => (h.voting v member).1
+  have d1 : Disjoint V (K4 pulled counted V) := Finset.disjoint_left.mpr fun v first second =>
+    (Finset.mem_filter.mp second).2.2.2 first
+  have d2 : Disjoint (V ∪ K4 pulled counted V) (K5 counted V) :=
+    Finset.disjoint_left.mpr fun v first second => by
+      rcases Finset.mem_union.mp first with inV | inK4
+      · exact (Finset.mem_filter.mp second).2.2 inV
+      · exact (Finset.mem_filter.mp second).2.1 (Finset.mem_filter.mp inK4).1
+  have d3 : Disjoint (V ∪ K4 pulled counted V ∪ K5 counted V) (K6 pulled counted) :=
+    Finset.disjoint_left.mpr fun v first second => by
+      have notR := (Finset.mem_filter.mp second).2.2
+      have active := (Finset.mem_filter.mp second).1
+      rcases Finset.mem_union.mp first with first | inK5
+      · rcases Finset.mem_union.mp first with inV | inK4
+        · exact notR (voters v inV)
+        · exact notR (Finset.mem_filter.mp inK4).2.1
+      · exact (Finset.mem_filter.mp inK5).2.1 active
+  sorry
 /-- W (`reserveW`, `flagged`, `seatShortfall`, K7, cS): whistleblower rewards on C's branch,
 weight 3, are paid by the slashed key's own slack, or charged. -/
 theorem bud_whistle (h : Setting config checks g split fin pulled anc counted V)

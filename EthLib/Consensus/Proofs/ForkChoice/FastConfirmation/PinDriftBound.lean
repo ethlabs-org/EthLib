@@ -4365,7 +4365,7 @@ Each block moves the keys at most one participant reward and its proposer share 
 private theorem Run.syncDebits_le {x y : ForkedBeaconState preset} (tail : Run config checks x y)
     (fulu : .fusaka ≤ x.fork) (early : y.fork < .glamsterdam) (high : ℕ)
     {events : List (BalanceEvent preset)} (replayed : tail.balanceEvents high = .ok events)
-    (total : ℕ) (_positive : 0 < total)
+    (total : ℕ)
     (band : ∀ {u w : ForkedBeaconState preset} (step : Step config checks u w),
       tail.Contains step → ∀ t : Gwei, getTotalActiveBalance w.state = .ok t →
         2 * t.toNat ≤ 3 * total)
