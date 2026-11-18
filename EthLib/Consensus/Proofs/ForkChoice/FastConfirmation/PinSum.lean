@@ -1270,6 +1270,29 @@ private theorem epochRewards_le {m n : ForkedBeaconState preset}
         exact Nat.zero_le _
       · exact reward_sum_le _ _ _ _ P scaled none small
 
+/-- The rate read at a state of a run from the finalized state, inside the epochs the call reads.
+
+It is at most the reward per increment at the quarter of the pulled total, per active increment.
+
+This is the premise `epochRewards_le` reads as `rate`.
+
+It is not proved yet, since the guard's two thirds band leaves a degenerate total open. -/
+private theorem rate_of_guard (h : Setting config checks g split fin pulled anc counted V)
+    {m : BeaconState preset fork} (toM : Run config checks ⟨fork, fin⟩ ⟨fork, m⟩)
+    (inside : (getCurrentEpoch m).toNat ≤ (getCurrentEpoch pulled).toNat)
+    (stake : preset.EFFECTIVE_BALANCE_INCREMENT.toNat ≤
+      ∑ v ∈ activeVoters pulled, balanceAt pulled v.toNat)
+    {pq : Gwei} (pqOk : getBaseRewardPerIncrement preset
+      (max preset.EFFECTIVE_BALANCE_INCREMENT
+        (((getTotalActiveBalance pulled).toOption.getD 0) / 4)) = .ok pq) :
+    ∀ total perIncrement : Gwei, getTotalActiveBalance m = .ok total →
+      getBaseRewardPerIncrement preset total = .ok perIncrement →
+      perIncrement.toNat *
+          ((∑ i ∈ (getActiveValidatorIndices m (getPreviousEpoch m)).toFinset,
+            effectiveAt (⟨fork, m⟩ : ForkedBeaconState preset) i.toNat) /
+              preset.EFFECTIVE_BALANCE_INCREMENT.toNat) ≤
+        pq.toNat * (total.toNat / preset.EFFECTIVE_BALANCE_INCREMENT.toNat) := sorry
+
 /-- The per-key core of the rise.
 
 A key of R's registry rises from R to C by at most its rise term.
