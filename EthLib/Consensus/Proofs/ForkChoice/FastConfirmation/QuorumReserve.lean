@@ -532,6 +532,14 @@ def pinReserve (config : Config) (state ancestor finalizedState : BeaconState pr
   -- The largest gain rate of one key, its gain rate at the largest effective balance.
   let gainRateMax := capMax / inc * perIncrement *
     (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum / WEIGHT_DENOMINATOR.toNat
+  -- An exiting key weighs three times, so each credited one needs two more upward bands.
+  --
+  -- Those are the keys whose exit the call reads and those the queues let exit there.
+  let exitingCount := (positions.filter fun i => (before i || current i) = true ∧
+      (slashed i = false ∨ recentSlashing i = true) ∧
+      ((validator i).map fun v =>
+        decide (v.exitEpoch.toNat ≤ epoch.toNat + 1)).getD false = true).card
+  let exitingBands := 2 * (exitingCount + queueKeys) * preset.upwardBand
   let queueRise := if tight then 0 else
     3 * queueKeys * (preset.upwardBand + depth * gainRateMax)
   -- A key slashed on another branch credits its whistleblower, the block's proposer.
@@ -610,8 +618,8 @@ def pinReserve (config : Config) (state ancestor finalizedState : BeaconState pr
   quorumReserve config state ancestor + (3 * exiting + queues + credits + branchR + late +
     syncSeats + (∑ i ∈ positions with current i = true, rise i) +
     3 * (∑ i ∈ positions with current i = true, fall i) +
-    3 * exitingRise + exitingCredits + queueRise + reserveW + flagged + seatShortfall +
-    (33 * consolidationsX + 9) / 10 + exitedR + pendingR)
+    3 * exitingRise + exitingCredits + exitingBands + queueRise + reserveW + flagged +
+    seatShortfall + (33 * consolidationsX + 9) / 10 + exitedR + pendingR)
 
 /-- The pin reserve contains the quorum reserve. -/
 theorem quorumReserve_le_pinReserve (config : Config)
