@@ -1776,15 +1776,19 @@ theorem bud_sync (h : Setting config checks g split fin pulled anc counted V)
     (P := (V ∪ K4 pulled counted V ∪ K5 counted V ∪ K6 pulled counted).image
       fun v : ValidatorIndex => v.toNat)
     (fun i => syncF events i + syncF eventsC i) fun v member => Finset.mem_image_of_mem _ member
-  rw [Finset.sum_add_distrib] at covered
   have first := run tail (Nat.le_succ _) high replayed
     ((V ∪ K4 pulled counted V ∪ K5 counted V ∪ K6 pulled counted).image
       fun v : ValidatorIndex => v.toNat)
   have second := run tailC near highC replayedC
     ((V ∪ K4 pulled counted V ∪ K5 counted V ∪ K6 pulled counted).image
       fun v : ValidatorIndex => v.toNat)
+  generalize (V ∪ K4 pulled counted V ∪ K5 counted V ∪ K6 pulled counted).image
+    (fun v : ValidatorIndex => v.toNat) = P at covered first second
+  have splitP : ∑ i ∈ P, (syncF events i + syncF eventsC i) =
+      ∑ i ∈ P, syncF events i + ∑ i ∈ P, syncF eventsC i := Finset.sum_add_distrib
   have totalEq : ((getTotalActiveBalance pulled).toOption.getD 0).toNat = pulledTotal.toNat := by
-    simp [pulledOk]
+    rw [pulledOk]
+    rfl
   have seats : (pinTerms config pulled anc fin).syncSeats =
       3 * (2 * (pinTerms config pulled anc fin).depth * preset.SLOTS_PER_EPOCH.toNat *
         preset.SYNC_COMMITTEE_SIZE.toNat * PinSplit5.syncEnvelope preset
