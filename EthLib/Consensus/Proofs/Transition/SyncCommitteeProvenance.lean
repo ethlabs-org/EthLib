@@ -7,7 +7,6 @@ public import EthLib.Consensus.Proofs.Transition.Trace
 public import EthLib.Consensus.Proofs.SyncCommittee
 import EthLib.Consensus.Proofs.Transition.RegistryLifecycle
 import EthLib.Consensus.Proofs.Transition.RunKept
-import EthLib.Consensus.Proofs.Transition.ActiveKept
 
 /-!
 # Registry provenance of sync committees
@@ -992,19 +991,18 @@ private theorem processEpoch (holds : SyncCommitteeKeys state)
 It keeps the current committee unless the slot reaches the first epoch of a period.
 
 The condition on the epoch says so: the epoch stays, or it is not a multiple of the period. -/
-private theorem advanceSlotStep
-    (ok : Consensus.advanceSlot config checks state = .ok after)
-    (period : getCurrentEpoch after = getCurrentEpoch state ∨
-      getCurrentEpoch after % preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD ≠ 0) :
+private theorem advanceSlotStep (ok : Consensus.advanceSlot config checks state = .ok after) :
     (SyncCommitteeKeys state → SyncCommitteeKeys after) ∧
-      after.currentSyncCommittee = state.currentSyncCommittee := by
+      (getCurrentEpoch after = getCurrentEpoch state ∨
+        getCurrentEpoch after % preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD ≠ 0 →
+          after.currentSyncCommittee = state.currentSyncCommittee) := by
   have later := (runKept_advanceSlot ok).later
   obtain ⟨next, cached, epoched, nextVal, cachedOk, epochedOk, rfl⟩ := advanceSlot_ok ok
   obtain ⟨_, _, _, _, cachedEq⟩ := processSlot_ok cachedOk
   have cachedEpoch : getCurrentEpoch cached = getCurrentEpoch state := by
     rw [cachedEq]
     rfl
-  refine ⟨fun holds => ?_, ?_⟩
+  refine ⟨fun holds => ?_, fun period => ?_⟩
   · have cachedKeys : SyncCommitteeKeys cached := by rw [cachedEq]; exact holds
     have epochKeys : SyncCommitteeKeys epoched := by
       unfold epochIfLast at epochedOk
@@ -1026,7 +1024,6 @@ private theorem advanceSlotStep
     unfold epochIfLast at epochedOk
     split at epochedOk
     · rename_i last
-      -- The epoch transition runs, so the slot after starts the next epoch.
       have remainder : next.toNat % preset.SLOTS_PER_EPOCH.toNat = 0 := by
         simpa only [UInt64.toNat_mod, UInt64.toNat_zero] using congrArg UInt64.toNat last
       have divides := Nat.dvd_of_mod_eq_zero remainder
@@ -1057,26 +1054,8 @@ private theorem advanceSlotStep
 
 /-- A slot updates committees only through the epoch transition. -/
 private theorem advanceSlot (holds : SyncCommitteeKeys state)
-    (ok : Consensus.advanceSlot config checks state = .ok after) : SyncCommitteeKeys after := by
-  -- The period condition is not needed for provenance, so it is given by the epoch itself.
-  have later := (runKept_advanceSlot ok).later
-  obtain ⟨next, cached, epoched, _, cachedOk, epochedOk, rfl⟩ := advanceSlot_ok ok
-  obtain ⟨_, _, _, _, cachedEq⟩ := processSlot_ok cachedOk
-  have cachedKeys : SyncCommitteeKeys cached := by rw [cachedEq]; exact holds
-  have epochKeys : SyncCommitteeKeys epoched := by
-    unfold epochIfLast at epochedOk
-    split at epochedOk
-    · exact processEpoch cachedKeys epochedOk
-    · cases epochedOk; exact cachedKeys
-  apply epochKeys.transfer (after := { epoched with slot := next })
-    ⟨rfl, rfl⟩ (List.prefix_refl _) (.of_data rfl) ?_
-  have epochedSlot : epoched.slot = state.slot := by
-    unfold epochIfLast at epochedOk
-    split at epochedOk
-    · obtain ⟨justified, justifiedOk, frame⟩ := processEpoch_frame epochedOk
-      rw [frame.slot, processJustificationAndFinalization_slot justifiedOk, cachedEq]
-    · cases epochedOk; rw [cachedEq]
-  simpa only [getCurrentEpoch, epochedSlot, UInt64.le_iff_toNat_le] using later
+    (ok : Consensus.advanceSlot config checks state = .ok after) : SyncCommitteeKeys after :=
+  (advanceSlotStep ok).1 holds
 
 /-- Blocks preserve the committees and retain all existing validator keys. -/
 private theorem processBlock {block : BeaconBlock preset fork}
@@ -1317,7 +1296,7 @@ theorem Run.syncCommittee_keys {g x : ForkedBeaconState preset} (run : Run confi
 
 /-- A slot with its upgrades keeps the keys of the current sync committee unless it starts a period.
 -/
-theorem advanceSlotAcross_currentSyncCommittee {forked after : ForkedBeaconState preset}
+private theorem advanceSlotAcross_currentSyncCommittee {forked after : ForkedBeaconState preset}
     (ok : advanceSlotAcross config checks forked = .ok after) (early : after.fork < .glamsterdam)
     (period : getCurrentEpoch after.state = getCurrentEpoch forked.state ∨
       getCurrentEpoch after.state % preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD ≠ 0)
@@ -1328,7 +1307,7 @@ theorem advanceSlotAcross_currentSyncCommittee {forked after : ForkedBeaconState
   have epoch : getCurrentEpoch after.state = getCurrentEpoch advanced := by
     simp only [getCurrentEpoch, processUpgrades_slot upgrades]
   rw [epoch] at period
-  have step := SyncCommitteeKeys.advanceSlotStep slotOk period
+  have step := (SyncCommitteeKeys.advanceSlotStep slotOk).2 period
   have kept := processUpgrades_induction (config := config) (checks := checks)
     (property := fun post => forked.fork ≤ post.fork ∧ (post.fork < .glamsterdam →
       ∀ a : .altair ≤ post.fork, (post.state.currentSyncCommittee a).value.pubkeys.toList =
@@ -1341,7 +1320,29 @@ theorem advanceSlotAcross_currentSyncCommittee {forked after : ForkedBeaconState
         (Nat.le_trans altair' holds.1)
       exact moved.trans (holds.2 preEarly (Nat.le_trans altair' holds.1)))
     (forked := ⟨forked.fork, advanced⟩) ⟨Nat.le_refl _, fun _ a => congrArg
-      (fun committee => (committee a).value.pubkeys.toList) step.2⟩ upgrades
+      (fun committee => (committee a).value.pubkeys.toList) step⟩ upgrades
   exact kept.2 early altair
+
+/-- Inside one period of sync committees before Gloas, the keys of the current committee stay. -/
+theorem Run.currentSyncCommittee_eq_of_same_period {x y : ForkedBeaconState preset}
+    (tail : Run config checks x y) (early : y.fork < .glamsterdam)
+    (same : (getCurrentEpoch y.state).toNat / max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat =
+      (getCurrentEpoch x.state).toNat / max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat)
+    (altair : .altair ≤ y.fork) (altair' : .altair ≤ x.fork) :
+    (y.state.currentSyncCommittee altair).value.pubkeys.toList =
+      (x.state.currentSyncCommittee altair').value.pubkeys.toList :=
+  Run.induction_of_same_period preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD
+    (fun w _ => ∀ (altair : .altair ≤ w.fork) (altair' : .altair ≤ x.fork),
+      (w.state.currentSyncCommittee altair).value.pubkeys.toList =
+        (x.state.currentSyncCommittee altair').value.pubkeys.toList)
+    (fun _ _ => rfl)
+    (fun _ _ _ ok _ _ prior altair altair' => by
+      rw [processBlock_currentSyncCommittee altair (applySignedBlock_ok ok).2.1]
+      exact prior altair altair')
+    (fun pre ok lastEarly period prior altair altair' =>
+      (advanceSlotAcross_currentSyncCommittee ok lastEarly period altair
+        (Nat.le_trans altair' (fork_le_of_chainSteps pre.chainSteps))).trans
+          (prior _ altair'))
+    tail early same altair altair'
 
 end EthLib.Consensus
