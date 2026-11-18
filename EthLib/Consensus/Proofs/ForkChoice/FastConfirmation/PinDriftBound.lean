@@ -5113,6 +5113,7 @@ private theorem Run.cross_split {x y : ForkedBeaconState preset} (tail : Run con
     have same := processBlock_slot (applySignedBlock_ok ok).2.1
     have e : (getCurrentEpoch after).toNat = (getCurrentEpoch before).toNat := by
       simp only [getCurrentEpoch, same]
+    simp only at missing gained
     omega
 
 /-- A run that starts at or before an epoch and ends at or after it passes a state of that epoch. -/
