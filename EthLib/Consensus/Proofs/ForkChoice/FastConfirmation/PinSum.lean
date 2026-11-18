@@ -1214,6 +1214,7 @@ private theorem baseSum_ge {pulled : BeaconState preset fork} (early : fork < .g
   have current := isActiveAt_eq_true_iff.mpr ⟨w, found, active⟩
   simp [current]
 
+open DirectSafety.Apriori in
 /-- The block proposer credits of one epoch of a run from fin fit one epoch of `baseSum`.
 
 The epoch is read at its start state `m`, and `pulled` is the state whose total the window reads.
@@ -1267,7 +1268,7 @@ private theorem proposerCredits_le_baseSum
   obtain ⟨-, -, -, -, -, -, -, -, -, -, -, -, ratioGuard, -⟩ := id h.guard
   rw [zeroEpochs] at ratioGuard
   have ratio := ratioGuard ((getCurrentEpoch pulled).toNat + 1 - (getCurrentEpoch fin).toNat)
-    (Nat.zero_le _) (by unfold driftHorizon; show _ ≤ _; omega)
+    (Nat.zero_le _) (by unfold driftHorizon; omega)
   have mono := stakeCeilingAt_mono (config := config) (x := (⟨fork, fin⟩ : ForkedBeaconState preset))
     (high := (getCurrentEpoch pulled).toNat) electra
     (s := (getCurrentEpoch m).toNat - (getCurrentEpoch fin).toNat)
