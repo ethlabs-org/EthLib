@@ -171,6 +171,20 @@ Every epoch of that window was fixed before the branches split.
 
 Rates are read at a quarter of the call's total active balance.
 
+A key's leak and gain are read at the largest effective balance it reaches on any branch.
+
+The exit and consolidation churns are read at three halves of the call's total active balance.
+
+The sync seats count on both branches, each at an envelope of its reward at that total.
+
+A key's fall starts from the lesser of its balance and its cap.
+
+A key's rise is its headroom once eleven times its gain over the depth reaches that largest balance.
+
+Below that, its gain and the credits are scaled by eleven tenths, rounded up.
+
+A key active from the next epoch earns a proposer credit too.
+
 Inactivity scores and the queue of partial withdrawals are read at the finalized block's state. -/
 def pinReserve (config : Config) (state ancestor finalizedState : BeaconState preset fork) : ℕ :=
   let epoch := getCurrentEpoch state
@@ -183,6 +197,7 @@ def pinReserve (config : Config) (state ancestor finalizedState : BeaconState pr
   let actual (i : ℕ) := ((state.balances.data[i]?).map (·.toNat)).getD 0
   let current (i : ℕ) := isActiveAt state epoch i
   let before (i : ℕ) := isActiveAt state (getPreviousEpoch state) i
+  let upcoming (i : ℕ) := isActiveAt state (epoch + 1) i
   let slashed (i : ℕ) := ((validator i).map (·.slashed)).getD false
   let cap (i : ℕ) :=
     ((validator i).map fun v => (withdrawalMaxEffectiveBalance preset fork v).toNat).getD 0
@@ -205,12 +220,33 @@ def pinReserve (config : Config) (state ancestor finalizedState : BeaconState pr
   let perIncrement := ((getBaseRewardPerIncrement preset quarter).toOption.getD 0).toNat
   let base (i : ℕ) := effective i / inc * perIncrement
   let depositChurn := config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat
-  let exitChurn := ((exitChurnLimit config state).toOption.getD 0).toNat
-  let consolidationChurn := ((getConsolidationChurnLimit config state).toOption.getD 0).toNat
+  -- The exit and consolidation churns are read at three halves of the call's total.
+  --
+  -- A counting state on another branch can spend churn at a total up to that much.
+  --
+  -- They follow `exitChurnLimit` and `getConsolidationChurnLimit` on natural numbers.
+  let wide := 3 * total / 2
+  let round (amount : ℕ) := amount - amount % inc
+  let balanceChurn := round (max config.MIN_PER_EPOCH_CHURN_LIMIT_ELECTRA.toNat
+    (wide / config.CHURN_LIMIT_QUOTIENT.toNat))
+  let activationExitChurn :=
+    min config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat balanceChurn
+  let exitChurn := if .glamsterdam ≤ fork then
+      round (max config.MIN_PER_EPOCH_CHURN_LIMIT_ELECTRA.toNat
+        (wide / config.CHURN_LIMIT_QUOTIENT_GLOAS.toNat))
+    else activationExitChurn
+  let consolidationChurn := if .glamsterdam ≤ fork then
+      round (wide / config.CONSOLIDATION_CHURN_LIMIT_QUOTIENT.toNat)
+    else balanceChurn - activationExitChurn
   let queues := 3 * (depth * depositChurn + capMax) +
     (if tight then 0 else 3 * (depth * (exitChurn + consolidationChurn) + 2 * capMax))
-  let seatReward := total / inc * perIncrement * SYNC_REWARD_WEIGHT.toNat /
-    WEIGHT_DENOMINATOR.toNat / slots / preset.SYNC_COMMITTEE_SIZE.toNat
+  -- A sync seat's reward is bounded by its envelope at three halves of the call's total.
+  --
+  -- The integer reward is not monotone in the total, and the envelope is.
+  --
+  -- `div_mul_div_sqrt_le` bounds the reward of any total up to that much by it.
+  let syncEnvelope := preset.BASE_REWARD_FACTOR.toNat * (Nat.sqrt (3 * total / 2) + 2) *
+    SYNC_REWARD_WEIGHT.toNat / WEIGHT_DENOMINATOR.toNat / slots / preset.SYNC_COMMITTEE_SIZE.toNat
   -- The inactivity score is read at the finalized block's state, with depth from its epoch.
   --
   -- That state lies on every branch, and a score rises by at most the bias per epoch on any.
@@ -220,11 +256,9 @@ def pinReserve (config : Config) (state ancestor finalizedState : BeaconState pr
       (((finalizedState.inactivityScores altair).data[i]?).map (·.toNat)).getD 0 else 0
   let depthFin := epoch.toNat + 2 - (getCurrentEpoch finalizedState).toNat
   -- Sync-seat penalties are charged in aggregate (`syncSeats`), not per key.
-  let leak (i : ℕ) := 2 * base i +
-    effective i * (scoreFin i + depthFin * config.INACTIVITY_SCORE_BIAS.toNat) /
+  let leakAt (eb : ℕ) (i : ℕ) := 2 * (eb / inc * perIncrement) +
+    eb * (scoreFin i + depthFin * config.INACTIVITY_SCORE_BIAS.toNat) /
       (config.INACTIVITY_SCORE_BIAS.toNat * p.INACTIVITY_PENALTY_QUOTIENT.toNat)
-  let gainRate (i : ℕ) := base i * (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum /
-    WEIGHT_DENOMINATOR.toNat
   let partialsR (i : ℕ) := if electra : .pectra ≤ fork then
       (((state.pendingPartialWithdrawals electra).data.toList.filter fun w =>
         w.validatorIndex.toNat = i ∧ w.withdrawableEpoch.toNat ≤ epoch.toNat + 1).map
@@ -235,31 +269,49 @@ def pinReserve (config : Config) (state ancestor finalizedState : BeaconState pr
         w.validatorIndex.toNat = i ∧ w.withdrawableEpoch.toNat ≤ epoch.toNat + 1).map
           (·.amount.toNat)).sum
     else 0
+  -- The rates are read at the largest effective balance the key reaches on any branch.
+  --
+  -- That is at least its effective balance here and at the finalized block's state.
+  --
+  -- A key can rise by its leak at the cap and its partials, then by a band, up to its cap.
+  let finEB (i : ℕ) := balanceAt finalizedState i
+  let ebUp (i : ℕ) :=
+    let top := actual i + depth * leakAt (cap i) i + (partialsX i - partialsR i) +
+      preset.downwardBand + inc - 1
+    max (max (effective i) (finEB i)) (min (cap i) (top - top % inc))
+  let leak (i : ℕ) := leakAt (ebUp i) i
+  let gainRate (i : ℕ) := ebUp i / inc * perIncrement *
+    (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum / WEIGHT_DENOMINATOR.toNat
   -- A partial due by the next epoch was queued at least `partialDelay` epochs before it.
   --
   -- Within that depth it predates finality and sits in the queue of the finalized block's state.
   --
   -- Deeper, another branch can queue new partials, which withdraw at most the key's excess.
-  let partialDelay := 1 + preset.MAX_SEED_LOOKAHEAD.toNat +
-    config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat
+  let partialDelay := config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat
   let partialsDue (i : ℕ) := if depth ≤ partialDelay + 1 then max (partialsX i) (partialsR i)
     else max (max (partialsX i) (partialsR i)) (actual i - preset.MIN_ACTIVATION_BALANCE.toNat)
   let fall (i : ℕ) :=
-    let low := actual i - (depth * (leak i + gainRate i) + partialsDue i)
+    let low := min (actual i) (cap i) - (depth * (leak i + gainRate i) + partialsDue i)
     if effective i ≤ low + preset.downwardBand then 0 else effective i - (low - low % inc)
   let capFor (i : ℕ) := if depth * gainRate i < inc then cap i else capMax
+  -- Gains compound across the window, so the rise reads the gain at eleven tenths, rounded up.
+  let gainScaled (i : ℕ) := (11 * gainRate i + 9) / 10
   let rise (i : ℕ) :=
-    let high := actual i + depth * (gainRate i + leak i) + (partialsX i - partialsR i)
+    let high := actual i + depth * (gainScaled i + leak i) + (partialsX i - partialsR i)
     -- Deeper than `partialDelay + 1`, the call's branch can pay partials that neither queue holds.
     --
     -- So the rise is the key's whole headroom.
+    --
+    -- It is too once eleven times the gain over the depth reaches the key's largest balance.
     if depth ≤ partialDelay + 1 then
-      if high ≤ effective i + preset.upwardBand then 0
+      if 11 * depth * gainRate i ≥ ebUp i then capFor i - effective i
+      else if high ≤ effective i + preset.upwardBand then 0
       else min (capFor i) (high - high % inc) - effective i
     else capFor i - effective i
   let syncProposer := slots * preset.SYNC_COMMITTEE_SIZE.toNat *
-    ((syncProposerReward (UInt64.ofNat seatReward)).toOption.getD 0).toNat
-  let proposerCredit := (∑ i ∈ positions with (before i || current i) = true, base i) +
+    (syncEnvelope * PROPOSER_WEIGHT.toNat / (WEIGHT_DENOMINATOR.toNat - PROPOSER_WEIGHT.toNat))
+  let proposerCredit :=
+    (∑ i ∈ positions with (before i || current i || upcoming i) = true, base i) +
     syncProposer
   -- The slashable keys of the window that the whistleblower term of `quorumReserve` leaves out.
   --
@@ -283,12 +335,12 @@ def pinReserve (config : Config) (state ancestor finalizedState : BeaconState pr
       decide (v.activationEligibilityEpoch.toNat ≤ epoch.toNat) &&
         decide (finalized + preset.MAX_SEED_LOOKAHEAD.toNat < v.activationEpoch.toNat)), effective i
   let period := max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat
-  -- Every seat of every sync committee in the window counts, at the call's seat reward.
+  -- Every seat of every sync committee in the window counts, at the seat's envelope.
   --
   -- The window can include the call's previous period, which its state does not store.
-  let syncSeats := 3 * (depth * slots * preset.SYNC_COMMITTEE_SIZE.toNat * seatReward)
-  let syncFar := 3 * ((depth / period) * preset.SYNC_COMMITTEE_SIZE.toNat * period * slots *
-    seatReward)
+  --
+  -- Both branches can credit and debit those seats, so they count twice.
+  let syncSeats := 3 * (2 * depth * slots * preset.SYNC_COMMITTEE_SIZE.toNat * syncEnvelope)
   let depositCredit := if electra : .pectra ≤ fork then
       (state.depositBalanceToConsume electra).toNat + depositChurn else 0
   let due := if electra : .pectra ≤ fork then
@@ -300,12 +352,27 @@ def pinReserve (config : Config) (state ancestor finalizedState : BeaconState pr
   let depositRecipients := preset.MAX_PENDING_DEPOSITS_PER_EPOCH.toNat
   let creditedKeys := depth * slots + (depth / period + 2) * preset.SYNC_COMMITTEE_SIZE.toNat +
     depth * depositRecipients + due.length
-  let credits := depth * (proposerCredit + depositCredit) + dueStake +
-    creditedKeys * preset.upwardBand + whistleblowerExtra
+  -- The credits are scaled by eleven tenths, rounded up, for the gains they compound.
+  --
+  -- The band of each credited key is not scaled.
+  let credits :=
+    (11 * (depth * (proposerCredit + depositCredit) + dueStake + whistleblowerExtra) + 9) / 10 +
+      creditedKeys * preset.upwardBand
+  -- Each key the call's branch credits or debits can move by a rounding step and a band.
+  --
+  -- The keys are the window's proposers and deposit recipients.
+  --
+  -- They also hold the sync seats of each period from the finalized epoch to the next epoch.
+  --
+  -- Each period crossing adds one more set of seats.
+  let roundedKeys := depth * slots + depth * preset.MAX_PENDING_DEPOSITS_PER_EPOCH.toNat +
+    preset.SYNC_COMMITTEE_SIZE.toNat *
+      (((epoch.toNat + 1) / period - finalized / period + 1) + depth / period)
+  -- The rounding is weighted 3 exactly once, by the `3 *` of this branch term.
   let branchR := 3 * (whistleblowerR + inc * slashedR + depth * proposerCredit +
-    inc * (depth * slots + preset.SYNC_COMMITTEE_SIZE.toNat))
+    (inc + preset.downwardBand - 1) * roundedKeys)
   quorumReserve config state ancestor + (3 * exiting + queues + credits + branchR + late +
-    syncSeats + syncFar + (∑ i ∈ positions with current i = true, rise i) +
+    syncSeats + (∑ i ∈ positions with current i = true, rise i) +
     3 * (∑ i ∈ positions with current i = true, fall i))
 
 /-- The pin reserve contains the quorum reserve. -/
