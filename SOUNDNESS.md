@@ -3184,6 +3184,7 @@ An accepted root of an earlier epoch is realized as justified by the head's stat
 Its anchor store comes from a successful `getForkchoiceStore`, every honest participant starts at it, and `anchorBlock.slot = anchorState.slot`.
 `SLOT_DURATION_MS` is positive, and the preset satisfies `DirectSafety.Parameters`.
 A deposited `Genesis` under BLS checks reaches `anchorState` by a `Run` under BLS checks.
+`Execution.rootViable_of_checked_call` takes the same genesis and run for any signature checks, and this theorem fixes them to BLS.
 The horizon is before the next fork, and `HonestStoreEpochsBounded` and `HonestBlocksAgree` hold up to the time bound.
 The preset satisfies `Preset.ExitWindowFixed` and `IncrementWithinUpwardBand`.
 The withdrawal delay is at least one epoch, `MAX_EFFECTIVE_BALANCE = MIN_ACTIVATION_BALANCE`, and `MIN_ACTIVATION_BALANCE <= MAX_EFFECTIVE_BALANCE_ELECTRA`.
@@ -3195,6 +3196,7 @@ The theorems derive the agreement of justified checkpoints across honest stores 
 Three times its stake exceeds the total of the call's pulled-up head state plus `margin` plus the call's pin reserve `pinReserve`.
 So its stake exceeds a third of that sum.
 The pinned-checkpoint step pays for cross-state drift with that per-call reserve, carried by the count.
+The figures below are the cost of `pinReserve`, which includes `quorumReserve`.
 At the typical non-finality depth of 4 epochs it costs about 1.06–1.42 points of the Byzantine threshold at the last slot of an epoch, and about 0.07–0.09 points at mid-epoch, on three mainnet states.
 Over 60 days of mainnet epochs it costs at most about 1.42 points, and at depth 5 at most about 1.45 points.
 From depth 6 the exit and consolidation queues and the late activations take it past 1.5 points: about 1.75–2.1 points at depth 6 and about 2.4 points at depth 10.

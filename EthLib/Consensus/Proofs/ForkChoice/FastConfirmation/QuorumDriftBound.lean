@@ -81,8 +81,6 @@ private theorem blockDeposits_mono {c d : Prop} [Decidable c] [Decidable d] {k m
 
 /-- The quorum of a call drifts by at most the reserve from the call's state to a later state.
 
-This is the drift bound C‴ of the fast confirmation rule.
-
 Fast confirmation was implemented at Fulu, so earlier forks are out of scope.
 
 The call's state is in the epoch of a boundary state, which is right after its epoch transition.

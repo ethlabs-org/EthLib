@@ -672,7 +672,21 @@ It takes runs from one middle state at the start of the target's epoch.
 
 This theorem builds those runs from the stores of the call and of the receiver.
 
-The parameters must keep the bands of hysteresis, the withdrawal delay and the Electra caps.
+The anchor store comes from a successful `getForkchoiceStore`.
+
+Every honest participant starts at the anchor store.
+
+The anchor block is at the anchor state's slot, and slots last a positive time.
+
+The anchor state is reached by a run with BLS checks from a genesis built from deposits.
+
+The preset meets `DirectSafety.Parameters`, and the bands of hysteresis.
+
+The withdrawal delay is at least one epoch.
+
+`MAX_EFFECTIVE_BALANCE` equals `MIN_ACTIVATION_BALANCE`.
+
+`MIN_ACTIVATION_BALANCE` is at most `MAX_EFFECTIVE_BALANCE_ELECTRA`.
 
 The seed lookahead must fix activity three epochs ahead, as the drift bound needs.
 

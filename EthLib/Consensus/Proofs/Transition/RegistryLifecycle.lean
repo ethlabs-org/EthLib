@@ -1189,19 +1189,24 @@ theorem Run.registryLifecycle {first last : ForkedBeaconState preset}
 
 /-! ## Admissions within one step -/
 
--- Keeping both epochs unassigned lets activity checks rule out a later exit request.
+/-- A validator with neither an activation epoch nor an exit epoch assigned.
+
+Keeping both unassigned lets activity checks exclude a later exit request. -/
 def Unassigned (v : Validator) : Prop :=
   v.activationEpoch = FAR_FUTURE_EPOCH ∧ v.exitEpoch = FAR_FUTURE_EPOCH
 
+/-- Every validator at position `n` or later is unassigned. -/
 def UnassignedFrom (n : Nat) {fork : Fork} (s : BeaconState preset fork) : Prop :=
   ∀ i v, n ≤ i → s.validators.data[i]? = some v → Unassigned v
 
+/-- No validator lies past the end of the registry, so the registry size is unassigned from. -/
 theorem unassignedFrom_size (s : BeaconState preset fork) :
     UnassignedFrom s.validators.data.size s := by
   intro i v large found
   have := (Array.getElem?_eq_some_iff.mp found).1
   omega
 
+/-- Each position from which the earlier registry is unassigned stays so in the later one. -/
 def UnassignedKept {f g : Fork} (s : BeaconState preset f)
     (t : BeaconState preset g) : Prop :=
   ∀ n, UnassignedFrom n s → UnassignedFrom n t
