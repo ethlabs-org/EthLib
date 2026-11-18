@@ -713,14 +713,13 @@ The ceiling is at least an increment, and the floor falls with the epoch of the 
 So the first floor is at least two thirds of an increment.
 
 The window is shorter than the slashings vector, and an increment is at least 900 vectors. -/
-private theorem room_of_guard {g x y : ForkedBeaconState preset} {high : ℕ}
+private theorem room_of_guard {g x : ForkedBeaconState preset} {high : ℕ}
     (shared : Run config checks g x) (genesis : Genesis (config := config) (checks := checks) g)
     (aligned : MaxEffectiveBalancesAligned preset)
+    (xEarly : x.fork < .glamsterdam)
     (electra : .pectra ≤ x.fork) (guard : aprioriGuardAt config x high)
-    (toY : Run config checks x y) (yEarly : y.fork < .glamsterdam)
     (facts : PinPresetFacts preset) :
     600 * (high + 2 - (getCurrentEpoch x.state).toNat) ≤ stakeFloorAt config x high 0 := by
-  have xEarly := Nat.lt_of_le_of_lt (fork_le_of_chainSteps toY.chainSteps) yEarly
   have notBefore : ¬ x.fork < .pectra := Nat.not_lt_of_ge electra
   have zero : preElectraEpochs config x high = 0 := by simp [preElectraEpochs, notBefore]
   obtain ⟨-, -, -, -, -, -, -, -, -, -, window, -, ratioGuard, -⟩ := id guard
