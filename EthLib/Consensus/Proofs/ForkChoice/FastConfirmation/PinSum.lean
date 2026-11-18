@@ -1254,7 +1254,8 @@ private theorem K6_class {g : ForkedBeaconState preset}
           rw [far, farNat]
           omega
       · have eligible := Run.eligibility_le_finalized chain h.genesis v.toNat w found far
-        have eligNat := UInt64.le_iff_toNat_le.mp eligible
+        have eligNat : w.activationEligibilityEpoch.toNat ≤
+            pulled.finalizedCheckpoint.epoch.toNat := UInt64.le_iff_toNat_le.mp eligible
         by_cases first : w.activationEpoch.toNat = (getCurrentEpoch pulled).toNat + 1
         · left
           refine joins first ?_
@@ -1397,7 +1398,7 @@ theorem stub_J (h : Setting config checks g split fin pulled anc counted V)
     intro v _ hin
     have := key_core (config := config) h tail high endEpoch replayed tailC highC endEpochC
       replayedC v.toNat hin
-    change balanceAt counted v.toNat ≤ _
+    unfold eC eR
     omega
   have classes : ∀ v ∈ K6 pulled counted, v.toNat < pulled.validators.data.size →
       eR pulled v + (pinTerms config pulled anc fin).rise v.toNat ≤
@@ -1416,11 +1417,11 @@ theorem stub_J (h : Setting config checks g split fin pulled anc counted V)
     obtain ⟨w, found⟩ : ∃ w, pulled.validators.data[v.toNat]? = some w :=
       ⟨_, Array.getElem?_eq_getElem hin⟩
     rcases K6_class h hK found with c | c | c | c | c
-    · rw [if_pos c]; omega
-    · rw [if_pos c]; omega
-    · rw [if_pos c]; omega
-    · rw [if_pos c]; omega
-    · rw [if_pos c]; omega
+    · rw [ite_eq_left c]; omega
+    · rw [ite_eq_left c]; omega
+    · rw [ite_eq_left c]; omega
+    · rw [ite_eq_left c]; omega
+    · rw [ite_eq_left c]; omega
   -- Sum the classes over the keys inside R's registry.
   set inside := (K6 pulled counted).filter (fun v => v.toNat < pulled.validators.data.size)
     with hInside
