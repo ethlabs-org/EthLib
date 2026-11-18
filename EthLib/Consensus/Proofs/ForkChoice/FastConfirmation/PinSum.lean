@@ -1585,7 +1585,8 @@ private theorem charge_epoch_le_of_K5 (early : fork < .glamsterdam)
 
 The gains are the epoch rewards of the key after its exit starts, over the epochs of the run. -/
 private theorem riseQ_le (h : Setting config checks g split fin pulled anc counted V)
-    (tailC : Run config checks ⟨fork, split⟩ ⟨fork, counted⟩) (highC : ℕ) (v : ℕ) :
+    (tailC : Run config checks ⟨fork, split⟩ ⟨fork, counted⟩) (highC : ℕ)
+    (endEpochC : (getCurrentEpoch counted).toNat ≤ highC + 1) (v : ℕ) :
     riseQ tailC highC v ≤ preset.upwardBand + (pinTerms config pulled anc fin).depth *
       (pinTerms config pulled anc fin).gainRateMax := sorry
 
@@ -1647,7 +1648,7 @@ theorem bud_queueRise (h : Setting config checks g split fin pulled anc counted 
       (fun v : ValidatorIndex => riseQ tailC highC v.toNat)
       (preset.upwardBand + (pinTerms config pulled anc fin).depth *
         (pinTerms config pulled anc fin).gainRateMax)
-      fun v _ => riseQ_le h tailC highC v.toNat
+      fun v _ => riseQ_le h tailC highC endEpochC v.toNat
     have count := charged_count h tailC highC
     rw [smul_eq_mul] at each
     rw [← sumEq]
