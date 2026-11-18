@@ -795,7 +795,35 @@ theorem bud_exitingRise (h : Setting config checks g split fin pulled anc counte
     (∑ v ∈ (K5 counted V) with (pinTerms config pulled anc fin).exitingB v.toNat = true, (pinTerms config pulled anc fin).rise v.toNat) +
       (∑ v ∈ (K6 pulled counted) with (pinTerms config pulled anc fin).exitingB v.toNat = true,
         (pinTerms config pulled anc fin).rise v.toNat) ≤
-      (pinTerms config pulled anc fin).exitingRise := sorry
+      (pinTerms config pulled anc fin).exitingRise := by
+  have _ := h
+  classical
+  have exitingRise : (pinTerms config pulled anc fin).exitingRise =
+      ∑ i ∈ (pinTerms config pulled anc fin).positions with
+        (pinTerms config pulled anc fin).exitingB i = true,
+        (pinTerms config pulled anc fin).rise i := by
+    simp only [pinTerms, decide_eq_true_eq]
+  have apart : Disjoint
+      ((K5 counted V).filter fun v => (pinTerms config pulled anc fin).exitingB v.toNat = true)
+      ((K6 pulled counted).filter fun v => (pinTerms config pulled anc fin).exitingB v.toNat = true) := by
+    refine Finset.disjoint_left.mpr fun v first second => ?_
+    have active := (Finset.mem_filter.mp (Finset.mem_filter.mp second).1).1
+    exact (Finset.mem_filter.mp (Finset.mem_filter.mp first).1).2.1 active
+  rw [← Finset.sum_union apart, exitingRise,
+    ← Finset.sum_image (f := (pinTerms config pulled anc fin).rise)
+      (fun a _ b _ same => UInt64.toNat_inj.mp same)]
+  apply Finset.sum_le_sum_of_subset
+  intro i member
+  obtain ⟨v, selected, rfl⟩ := Finset.mem_image.mp member
+  have exiting : (pinTerms config pulled anc fin).exitingB v.toNat = true := by
+    rcases Finset.mem_union.mp selected with chosen | chosen <;> exact (Finset.mem_filter.mp chosen).2
+  refine Finset.mem_filter.mpr ⟨?_, exiting⟩
+  simp only [pinTerms, decide_eq_true_eq] at exiting ⊢
+  refine Finset.mem_range.mpr ?_
+  obtain ⟨-, -, found⟩ := exiting
+  cases validator : pulled.validators.data[v.toNat]? with
+  | none => simp [validator] at found
+  | some _ => exact (Array.getElem?_eq_some_iff.mp validator).1
 
 /-- K5 (`exitingCredits` with `credits`): C's proposer credits to K5 keys, weight 3.
 
