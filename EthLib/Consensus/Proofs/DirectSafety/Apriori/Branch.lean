@@ -161,7 +161,7 @@ theorem epochReplay_events {f : Fork} (altair : .altair ≤ f)
 /-- The replay of an epoch, from Altair, records at most one deposit event.
 
 Only the pending-deposit stage records one, and the rewards pass records none. -/
-theorem epochReplay_deposit_count {f : Fork} (altair : .altair ≤ f)
+private theorem epochReplay_deposit_count {f : Fork} (altair : .altair ≤ f)
     {cached : BeaconState preset f} {post : BalanceReplay preset f}
     (trace : EpochTrace (epochReplayAction (config := config) (checks := checks))
       EpochStage.prefixStages (cached, []) post) :
@@ -540,9 +540,7 @@ private theorem stepBalanceEvents_withdrawnConsolidationCredit {checks : Signatu
     ∀ e ∈ events, e.source = .deposits → withdrawnConsolidationCredit e = 0 :=
   (stepBalanceEvents_deposits shared genesis step early delay ok).1 bounded
 
-/-- A deposit event of a slot step is a pending-deposit pass, in a slot that ends an epoch.
-
-A slot step records at most one deposit event. -/
+/-- A slot step records at most one deposit event, a pending-deposit pass at an epoch's end. -/
 theorem Step.slot_deposit_site {checks : SignatureChecks} {g x y : ForkedBeaconState preset}
     (shared : Run config checks g x) (genesis : Genesis (config := config) (checks := checks) g)
     (across : advanceSlotAcross config checks x = .ok y) (early : y.fork < .glamsterdam)
