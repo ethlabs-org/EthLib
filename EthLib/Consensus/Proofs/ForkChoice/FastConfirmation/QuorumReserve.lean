@@ -422,14 +422,12 @@ def pinReserve (config : Config) (state ancestor finalizedState : BeaconState pr
   -- The largest gain rate of one key, its gain rate at the largest effective balance.
   let gainRateMax := capMax / inc * perIncrement *
     (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum / WEIGHT_DENOMINATOR.toNat
-  -- A late key weighs three times its effective balance here.
-  --
-  -- Past the gain bound that `creditGain` tests, its rise is charged too.
+  -- A late key weighs three times its effective balance here, and its rise.
   let late := if tight then 0 else
     ∑ i ∈ positions with (validator i).any (fun v =>
       decide (v.activationEligibilityEpoch.toNat ≤ epoch.toNat) &&
         decide (finalized + preset.MAX_SEED_LOOKAHEAD.toNat < v.activationEpoch.toNat)),
-      (3 * effective i + if 11 * depth * gainRateMax < capMax then 0 else rise i)
+      (3 * effective i + rise i)
   let period := max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat
   -- Every seat of every sync committee in the window counts, at the seat's envelope.
   --
