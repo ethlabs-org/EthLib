@@ -3189,7 +3189,8 @@ A deposited `Genesis` under BLS checks reaches `anchorState` by a `Run` under BL
 `Execution.rootViable_of_checked_call` takes the same genesis and run for any signature checks, and this theorem fixes them to BLS.
 The horizon is before the next fork, and `HonestStoreEpochsBounded` and `HonestBlocksAgree` hold up to the time bound.
 The preset satisfies `Preset.ExitWindowFixed` and `IncrementWithinUpwardBand`.
-The withdrawal delay is at least one epoch, `MAX_EFFECTIVE_BALANCE = MIN_ACTIVATION_BALANCE`, and `MIN_ACTIVATION_BALANCE <= MAX_EFFECTIVE_BALANCE_ELECTRA`.
+The withdrawal delay is at least one epoch, and `MAX_EFFECTIVE_BALANCE` equals `MIN_ACTIVATION_BALANCE`.
+`MIN_ACTIVATION_BALANCE` is at most `MAX_EFFECTIVE_BALANCE_ELECTRA`.
 `Execution.rootViable_of_checked_call` and `Execution.honestHeadsCover_of_checked_call` still take `QuorumDriftWithin` as a premise.
 `Execution.rootViable_of_checked_call_of_drift_bound` and `Execution.honestHeadsCover_of_checked_call_of_drift_bound` discharge it, with BLS checks from Fulu to before Gloas.
 Seven premises replace it.
