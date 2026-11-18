@@ -14,6 +14,7 @@ public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmation.HistoricalSign
 public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmation.IncludedVotes
 public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmation.Indicators
 public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmation.QuorumReserve
+public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmation.PinDeep
 public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmation.RootHeld
 public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmation.RootViability
 public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmation.Sets
