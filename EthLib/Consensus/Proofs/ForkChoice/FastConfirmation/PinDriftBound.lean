@@ -2446,7 +2446,8 @@ private theorem pass_credits_le {f : Fork} (next : Epoch) :
   intro items s t read passed
   obtain ⟨validators, sizes, credits⟩ :=
     pass_credits_le_targets next (Finset.range t.balances.data.size) items passed
-  exact ⟨validators, sizes, credits.trans ((List.filter_sublist.map _).sum_le_sum fun _ _ => Nat.zero_le _)⟩
+  exact ⟨validators, sizes,
+    credits.trans ((List.filter_sublist.map _).sum_le_sum fun _ _ => Nat.zero_le _)⟩
 
 /-- The queue only grows at its end inside a block.
 
@@ -3175,7 +3176,8 @@ private theorem slot_step {g x m last : ForkedBeaconState preset}
   obtain ⟨r, shapeLast, credits⟩ := slot_step_targets shared pre genesis caps delay electra high
     within ok early endEpoch shape
   refine ⟨r, shapeLast, fun {events} replayed => ?_⟩
-  exact (credits_sum_le_targets _).trans ((credits replayed _).trans ((List.filter_sublist.map _).sum_le_sum fun _ _ => Nat.zero_le _))
+  exact (credits_sum_le_targets _).trans ((credits replayed _).trans
+    ((List.filter_sublist.map _).sum_le_sum fun _ _ => Nat.zero_le _))
 
 /-- A block keeps the shape of the queue: it only appends entries that are new since X. -/
 private theorem block_step {f : Fork} {e0 : Epoch} {L : List PendingConsolidation} {n : ℕ}
