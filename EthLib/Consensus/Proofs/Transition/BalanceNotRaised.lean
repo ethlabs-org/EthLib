@@ -478,6 +478,22 @@ theorem addValidatorToRegistry_kept {index : Nat} {pubkey : Cryptography.Bls.BLS
   · show _ = _
     rw [setOrAppendList_getElem? scoresOk, ite_eq_right_of_eq_false _ _ (eq_false (by omega))]
 
+/-- From Altair, a new validator takes the score zero, and no other score moves. -/
+theorem addValidatorToRegistry_scores {pubkey : Cryptography.Bls.BLSPubkey}
+    {withdrawalCredentials : Bytes32} {amount : Gwei} (altair : .altair ≤ fork)
+    (computed : addValidatorToRegistry state pubkey withdrawalCredentials amount = .ok after)
+    (i : Nat) (v : UInt64) (found : (after.inactivityScores altair).data[i]? = some v) :
+    (state.inactivityScores altair).data[i]? = some v ∨ v = 0 := by
+  unfold addValidatorToRegistry at computed
+  simp only [altair, ↓reduceDIte, addValidatorToRegistryAltair, liftAccessor_ok, bind_ok_iff,
+    pure, Except.pure, Except.ok.injEq] at computed
+  obtain ⟨_, _, _, _, _, _, _, _, _, _, _, scoresOk, rfl⟩ := computed
+  simp only at found
+  rw [setOrAppendList_getElem? scoresOk] at found
+  split at found
+  · exact .inr (Option.some.inj found).symm
+  · exact .inl found
+
 /-- From Altair, a new validator at the end keeps each validator and the balance at a position.
 
 The position holds a validator. -/
@@ -995,5 +1011,108 @@ theorem scoreKept_processEpochAltair {altair : .altair ≤ fork}
   have scores : rewarded.inactivityScores = scored.inactivityScores := by
     rw [processRewardsAndPenalties_frame rewardedOk]
   exact (ScoreKept.of_scores scores index).trans kept
+
+/-- From Altair, the pending deposits write a score only as a zero.
+
+Each score after the deposits was there before, or is zero. -/
+private theorem scoresKeptOrZero_processPendingDeposits {electra : .pectra ≤ fork}
+    (computed : processPendingDeposits config checks state electra = .ok after)
+    (altair : .altair ≤ fork) (i : Nat) (v : UInt64)
+    (found : (after.inactivityScores altair).data[i]? = some v) :
+    (state.inactivityScores altair).data[i]? = some v ∨ v = 0 := by
+  obtain ⟨_, _, _, _, next, _, _, _, _, _, _, _, _, applies, rfl⟩ :=
+    processPendingDeposits_applied computed
+  have each := foldlM_ok_invariant
+    (fun s : BeaconState preset fork => ∀ (i : Nat) (v : UInt64),
+      (s.inactivityScores altair).data[i]? = some v →
+        (state.inactivityScores altair).data[i]? = some v ∨ v = 0)
+    (fun s deposit t held step j w seen => by
+      rcases applyPendingDeposit_cases step with rfl | ⟨_, raised⟩ | ⟨_, added⟩
+      · exact held j w seen
+      · obtain ⟨_, _, rfl⟩ := increaseBalance_eq_ok_iff.mp raised
+        exact held j w seen
+      · exact (addValidatorToRegistry_scores altair added j w seen).elim (held j w) .inr)
+    (fun _ _ found => .inl found) applies
+  exact each i v found
+
+/-- From Altair, the steps of an epoch after the update of the inactivity scores write only zeros.
+
+This holds when the epoch succeeds, at every position, also past the registry before the epoch.
+
+Only the pending deposits write a score, and each such score is zero.
+
+The update of the scores follows justification, as in the epoch itself. -/
+theorem scoresKeptOrZero_processEpochAltair {altair : .altair ≤ fork}
+    (computed : processEpochAltair config checks state altair = .ok after) :
+    ∃ justified scored, processJustificationAndFinalization state = .ok justified ∧
+      processInactivityUpdates config justified altair = .ok scored ∧
+      ∀ (i : Nat) (v : UInt64), (after.inactivityScores altair).data[i]? = some v →
+        (scored.inactivityScores altair).data[i]? = some v ∨ v = 0 := by
+  rw [processEpochAltair_eq_run] at computed
+  obtain ⟨justified, scored, rewarded, registered, slashed, reset, deposited, consolidated, settled,
+    updated, justifiedOk, scoredOk, rewardedOk, registeredOk, slashedOk, resetOk, depositedOk,
+    consolidatedOk, settledOk, updatedOk, trace⟩ :=
+    (EpochTrace.run_ok_iff.mp computed).through_effectiveBalances
+  have scoredEq := EpochStage.action_cases.mp scoredOk
+  simp only [EpochStage.Edge, altair, ↓reduceDIte] at scoredEq
+  refine ⟨justified, scored, EpochStage.action_cases.mp justifiedOk, scoredEq, ?_⟩
+  have rewardedEq : processRewardsAndPenalties config scored = .ok rewarded :=
+    EpochStage.action_cases.mp rewardedOk
+  have rewardedScores : rewarded.inactivityScores = scored.inactivityScores := by
+    rw [processRewardsAndPenalties_frame rewardedEq]
+  -- The registry updates, the slashings and the reset of the votes keep the scores.
+  have resetKept : Kept slashed reset := by
+    have edge := EpochStage.action_cases.mp resetOk
+    simp only [EpochStage.Edge] at edge
+    split at edge
+    · simp only [processEth1DataReset, bind_ok_iff, liftAccessor_ok] at edge
+      obtain ⟨_, _, edge⟩ := edge
+      split at edge <;>
+        (simp only [pure, Except.pure, Except.ok.injEq] at edge
+         subst edge
+         exact ⟨ValidatorsKept.refl _, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl⟩)
+    · subst edge
+      exact Kept.refl _
+  have toReset : Lowered 0 rewarded reset :=
+    (Lowered.of_kept (kept_processRegistryUpdates (EpochStage.action_cases.mp registeredOk))).trans
+      ((lowered_processSlashings (EpochStage.action_cases.mp slashedOk)).trans
+        (Lowered.of_kept resetKept))
+  -- Only the deposits write a score; the later steps keep the scores.
+  have depositedZero : ∀ (i : Nat) (v : UInt64),
+      (deposited.inactivityScores altair).data[i]? = some v →
+        (reset.inactivityScores altair).data[i]? = some v ∨ v = 0 := by
+    have edge := EpochStage.action_cases.mp depositedOk
+    simp only [EpochStage.Edge] at edge
+    split at edge
+    · exact scoresKeptOrZero_processPendingDeposits edge altair
+    · subst edge
+      exact fun _ _ found => .inl found
+  have consolidatedScores : consolidated.inactivityScores = deposited.inactivityScores := by
+    have edge := EpochStage.action_cases.mp consolidatedOk
+    simp only [EpochStage.Edge] at edge
+    split at edge
+    · exact (kept_processPendingConsolidations edge (index := 0)).2.2
+    · subst edge
+      rfl
+  have settledScores : settled.inactivityScores = consolidated.inactivityScores := by
+    have edge := EpochStage.action_cases.mp settledOk
+    simp only [EpochStage.Edge] at edge
+    split at edge
+    · rw [processBuilderPendingPayments_eq edge]
+    · subst edge
+      rfl
+  have tail := sameBalancesRegistryScores_tail altair trace
+  intro i v found
+  have afterUpdated : (updated.inactivityScores altair).data[i]? = some v := by
+    rw [← tail.2.2]
+    exact found
+  have afterSettled : (settled.inactivityScores altair).data[i]? = some v := by
+    rw [← processEffectiveBalanceUpdates_scores (EpochStage.action_cases.mp updatedOk)]
+    exact afterUpdated
+  rw [settledScores, consolidatedScores] at afterSettled
+  rcases depositedZero i v afterSettled with kept | zero
+  · rw [toReset.2.2.2.2, rewardedScores] at kept
+    exact .inl kept
+  · exact .inr zero
 
 end EthLib.Consensus
