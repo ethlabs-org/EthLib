@@ -2085,6 +2085,103 @@ private theorem Ctx.claimEnd {g x z y zz n : ForkedBeaconState preset} {high : �
   have := Nat.min_le_left (actualBalanceAt n i) preset.MAX_EFFECTIVE_BALANCE.toNat
   omega
 
+/-- The state inside a slot step has the registry and the balances of the state after its upgrades.
+
+The upgrades after Electra and before Gloas keep both. -/
+private theorem mid_data {s n : ForkedBeaconState preset}
+    (electra : .pectra ≤ s.fork) (early : n.fork < .glamsterdam)
+    (upgrades : processUpgrades config checks s = .ok n) :
+    n.state.validators.data = s.state.validators.data ∧
+      n.state.balances.data = s.state.balances.data := by
+  have target : .pectra ≤ n.fork := Nat.le_trans electra (processUpgrades_fork_le upgrades)
+  obtain ⟨validators, balances, -⟩ := processUpgrades_retained_data electra early upgrades target
+  exact ⟨validators, balances⟩
+
+/-- Every state on the balance path of the climb has the key, and the floor of the pin. -/
+private theorem Ctx.floors {g x z y zz n : ForkedBeaconState preset} {high : ℕ}
+    (c : Ctx config checks g x high) (hz : Run config checks x z)
+    (early : y.fork < .glamsterdam) (within : (getCurrentEpoch y.state).toNat ≤ high + 1)
+    (i : ℕ) (v0 : Validator) (found0 : z.state.validators.data[i]? = some v0)
+    (unslashed0 : v0.slashed = false) (activated0 : v0.activationEpoch ≠ FAR_FUTURE_EPOCH)
+    (bal0 : preset.MAX_EFFECTIVE_BALANCE.toNat ≤ actualBalanceAt z i)
+    (hystZ : effectiveAt z i ≤ actualBalanceAt z i + preset.downwardBand)
+    (exitLate : ∀ (n : ForkedBeaconState preset) (_rest : Run config checks n y) (w : Validator),
+      n.state.validators.data[i]? = some w → (getCurrentEpoch y.state).toNat < w.exitEpoch.toNat)
+    (pre0 : Run config checks z zz) (ok : advanceSlotAcross config checks zz = .ok n)
+    (rest0 : Run config checks n y)
+    (stepN : (getCurrentEpoch n.state).toNat = (getCurrentEpoch zz.state).toNat + 1)
+    {Ef : List (BalanceEvent preset)}
+    (hEf : (pre0.snoc (Step.slot ok)).balanceEvents high = .ok Ef) :
+    ∀ p ∈ (pre0.snoc (Step.slot ok)).balancePath,
+      (∃ val, p.state.validators.data[i]? = some val) ∧
+        2 * preset.MAX_EFFECTIVE_BALANCE.toNat / 3 -
+          preset.MAX_EFFECTIVE_BALANCE.toNat /
+            (EthLib.Consensus.parameters preset .fusaka).MIN_SLASHING_PENALTY_QUOTIENT.toNat -
+          preset.downwardBand - 1 ≤ actualBalanceAt p i + keyDebits i Ef := by
+  have nY := UInt64.le_iff_toNat_le.mp (currentEpoch_le_of_chainSteps rest0.chainSteps)
+  have nEarly : n.fork < .glamsterdam :=
+    Nat.lt_of_le_of_lt (fork_le_of_chainSteps rest0.chainSteps) early
+  -- a state of the run before the last step
+  have runState : ∀ (p : ForkedBeaconState preset) (rp : Run config checks z p)
+      (rest : Run config checks p zz), pre0 = rp.append rest →
+      (∃ val, p.state.validators.data[i]? = some val) ∧
+        2 * preset.MAX_EFFECTIVE_BALANCE.toNat / 3 -
+          preset.MAX_EFFECTIVE_BALANCE.toNat /
+            (EthLib.Consensus.parameters preset .fusaka).MIN_SLASHING_PENALTY_QUOTIENT.toNat -
+          preset.downwardBand - 1 ≤ actualBalanceAt p i + keyDebits i Ef := by
+    intro p rp rest eq
+    have pz := UInt64.le_iff_toNat_le.mp (currentEpoch_le_of_chainSteps rest.chainSteps)
+    obtain ⟨val, found, -⟩ := rp.registryLifecycle.validators i v0 found0
+    refine ⟨⟨val, found⟩, ?_⟩
+    refine c.floorRun hz early within i v0 found0 unslashed0 activated0 bal0 hystZ exitLate rp
+      (rest.snoc (Step.slot ok)) ((rest.snoc (Step.slot ok)).append rest0) (by omega) ?_
+    rw [eq] at hEf
+    exact hEf
+  intro p member
+  simp only [Run.balancePath, List.mem_append] at member
+  rcases member with member | member
+  · rcases Run.mem_balancePath_split pre0 member with ⟨rp, rest, eq⟩ |
+      ⟨q, n', rq, ok', rest, adv, eq, advOk, hp, upgrades⟩
+    · exact runState p rp rest eq
+    · have step := runState n' (rq.snoc (Step.slot ok')) rest eq
+      have qFork : x.fork ≤ q.fork :=
+        Nat.le_trans (fork_le_of_chainSteps hz.chainSteps) (fork_le_of_chainSteps rq.chainSteps)
+      have n'Early : n'.fork < .glamsterdam :=
+        Nat.lt_of_le_of_lt (fork_le_of_chainSteps rest.chainSteps)
+          (Nat.lt_of_le_of_lt (fork_le_of_chainSteps (Run.nil.snoc (Step.slot ok)).chainSteps)
+            nEarly)
+      have data := mid_data (config := config) (checks := checks) (s := ⟨q.fork, adv⟩)
+        (Nat.le_trans c.electra qFork) n'Early upgrades
+      subst hp
+      obtain ⟨⟨val, found⟩, bound⟩ := step
+      refine ⟨⟨val, ?_⟩, ?_⟩
+      · simpa [data.1] using found
+      · have : actualBalanceAt ⟨q.fork, adv⟩ i = actualBalanceAt n' i := by
+          simp only [actualBalanceAt, data.2]
+        rw [this]
+        exact bound
+  · obtain ⟨adv, advOk, upgrades⟩ := bind_ok_iff.mp ok
+    simp only [Step.balancePath, advOk, Except.toOption, List.mem_cons, List.not_mem_nil,
+      or_false] at member
+    rcases member with rfl | rfl | rfl
+    · exact runState _ pre0 .nil rfl
+    · have zzFork : .pectra ≤ zz.fork := Nat.le_trans c.electra
+        (Nat.le_trans (fork_le_of_chainSteps hz.chainSteps) (fork_le_of_chainSteps pre0.chainSteps))
+      have data := mid_data (config := config) (checks := checks) (s := ⟨zz.fork, adv⟩) zzFork
+        nEarly upgrades
+      obtain ⟨val, found, -⟩ := (pre0.snoc (Step.slot ok)).registryLifecycle.validators i v0 found0
+      refine ⟨⟨val, ?_⟩, ?_⟩
+      · simpa [data.1] using found
+      · have := c.claimEnd hz early within i v0 found0 unslashed0 activated0 bal0 hystZ exitLate
+          pre0 ok rest0 stepN hEf
+        have e : actualBalanceAt ⟨zz.fork, adv⟩ i = actualBalanceAt n i := by
+          simp only [actualBalanceAt, data.2]
+        rw [e]
+        exact this
+    · obtain ⟨val, found, -⟩ := (pre0.snoc (Step.slot ok)).registryLifecycle.validators i v0 found0
+      exact ⟨⟨val, found⟩, c.claimEnd hz early within i v0 found0 unslashed0 activated0 bal0 hystZ
+        exitLate pre0 ok rest0 stepN hEf⟩
+
 end Epoch
 
 /-- C2 (item 16).
