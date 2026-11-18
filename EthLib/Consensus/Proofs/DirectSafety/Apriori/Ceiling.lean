@@ -1275,7 +1275,8 @@ private theorem epoch_delayed_slashing_nondebit {x m n : ForkedBeaconState prese
     (cachedOk : processSlot m.state = .ok cached)
     (assigned : v.slashed = true → v.exitEpoch ≠ FAR_FUTURE_EPOCH)
     (sameEpoch : getCurrentEpoch cached = getCurrentEpoch m.state)
-    (start : (v.slashed = false ∧ (getCurrentEpoch m.state).toNat < (getCurrentEpoch x.state).toNat +
+    (start : (v.slashed = false ∧
+      (getCurrentEpoch m.state).toNat < (getCurrentEpoch x.state).toNat +
       preset.EPOCHS_PER_SLASHINGS_VECTOR.toNat -
         (preset.EPOCHS_PER_SLASHINGS_VECTOR / 2).toNat) ∨
       (v.slashed = true ∧ (getCurrentEpoch m.state).toNat +
@@ -1401,7 +1402,8 @@ private theorem slot_delayed_slashing_nondebit_general {x m n : ForkedBeaconStat
     (initial : x.state.validators.data[i.toNat]? = some v)
     (located : m.state.validators.data[i.toNat]? = some u)
     (assigned : v.slashed = true → v.exitEpoch ≠ FAR_FUTURE_EPOCH)
-    (start : (v.slashed = false ∧ (getCurrentEpoch m.state).toNat < (getCurrentEpoch x.state).toNat +
+    (start : (v.slashed = false ∧
+      (getCurrentEpoch m.state).toNat < (getCurrentEpoch x.state).toNat +
       preset.EPOCHS_PER_SLASHINGS_VECTOR.toNat -
         (preset.EPOCHS_PER_SLASHINGS_VECTOR / 2).toNat) ∨
       (v.slashed = true ∧ (getCurrentEpoch m.state).toNat +
@@ -2217,7 +2219,8 @@ private theorem FloorTrace.slot_step {g x m y : ForkedBeaconState preset}
     (final : y.state.validators.data[i.toNat]? = some w)
     (assigned : v.slashed = true → v.exitEpoch ≠ FAR_FUTURE_EPOCH)
     (activated : u.activationEpoch ≠ FAR_FUTURE_EPOCH)
-    (window : (v.slashed = false ∧ (getCurrentEpoch m.state).toNat < (getCurrentEpoch x.state).toNat +
+    (window : (v.slashed = false ∧
+      (getCurrentEpoch m.state).toNat < (getCurrentEpoch x.state).toNat +
       preset.EPOCHS_PER_SLASHINGS_VECTOR.toNat -
         (preset.EPOCHS_PER_SLASHINGS_VECTOR / 2).toNat) ∨
       (v.slashed = true ∧ (getCurrentEpoch m.state).toNat +
@@ -2304,7 +2307,9 @@ private theorem FloorTrace.slot_step {g x m y : ForkedBeaconState preset}
 
 The key is unslashed at the start of the run and within the short window of a slash.
 
-Or it is slashed at the start, with an assigned exit, and its delayed penalty is not due in the epoch of the step.
+Or it is slashed at the start with an assigned exit.
+
+Then its delayed penalty is not due in the epoch of the step.
 
 The high-water mark of the carried account rises at most to the effective balance after the step. -/
 theorem FloorTrace.step_general {g x m y : ForkedBeaconState preset}
@@ -2319,7 +2324,8 @@ theorem FloorTrace.step_general {g x m y : ForkedBeaconState preset}
     (final : y.state.validators.data[i.toNat]? = some w)
     (assigned : v.slashed = true → v.exitEpoch ≠ FAR_FUTURE_EPOCH)
     (activated : u.activationEpoch ≠ FAR_FUTURE_EPOCH)
-    (window : (v.slashed = false ∧ (getCurrentEpoch m.state).toNat < (getCurrentEpoch x.state).toNat +
+    (window : (v.slashed = false ∧
+      (getCurrentEpoch m.state).toNat < (getCurrentEpoch x.state).toNat +
       preset.EPOCHS_PER_SLASHINGS_VECTOR.toNat -
         (preset.EPOCHS_PER_SLASHINGS_VECTOR / 2).toNat) ∨
       (v.slashed = true ∧ (getCurrentEpoch m.state).toNat +

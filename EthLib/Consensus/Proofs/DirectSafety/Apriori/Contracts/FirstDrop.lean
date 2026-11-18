@@ -348,9 +348,11 @@ Each step extends the trace, keeping the carried account.
 
 The trace is marked slashed only if the key ends the branch slashed.
 
-The key is unslashed at the start, or slashed at the start with its delayed penalty not due along the branch.
+The key is unslashed at the start.
 
-The high-water mark of the trace stays within any bound on the effective balance along the branch. -/
+Or it is slashed at the start, and its delayed penalty is not due along the branch.
+
+The high-water mark of the trace stays within any bound on the effective balance of the branch. -/
 theorem FloorTrace.run_of_le_cap_general
     (shared : Run config checks g x) (tail : Run config checks x y)
     (genesis : Genesis (config := config) (checks := checks) g) (caps : CapOrder preset)
