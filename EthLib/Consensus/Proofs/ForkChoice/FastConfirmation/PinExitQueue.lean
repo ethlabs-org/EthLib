@@ -727,6 +727,32 @@ private theorem Run.start_state {x y : ForkedBeaconState preset} (tail : Run con
   exact ⟨z, pre, post, v0, w, split, foundZ, foundY, (life.activationEpoch assigned).symm,
     by omega, lowY, highY⟩
 
+/-! ## The scores of a pass -/
+
+open DirectSafety.Apriori in
+/-- After the update of pass `s`, each inactivity score of a position is small, new positions too.
+
+It is `referenceScores_le` (Branch.lean) without its premise `i < x.state.validators.data.size`.
+
+The pass ends epoch `s` of a branch from `x` from Altair, in the slot step from its last state `z`.
+
+The score is at most `sigma + bias * (s + 1)`, with `sigma` the start score that the floor reads.
+
+A position that the branch adds starts with the score zero.
+
+It then rises by at most the bias per epoch. -/
+def AllScoresStatement (preset : Preset) (config : Config) (checks : SignatureChecks) : Prop :=
+  ∀ {x z : ForkedBeaconState preset} (_head : Run config checks x z) (_altair : .altair ≤ x.fork)
+    (_early : z.fork < .glamsterdam) (_era : .pectra ≤ x.fork ∨ z.fork < .pectra)
+    {cached just pass : BeaconState preset z.fork}
+    (_cachedOk : processSlot z.state = .ok cached)
+    (_justified : EpochStage.Edge config checks .justification cached just)
+    (_scored : EpochStage.Edge config checks .inactivity just pass)
+    {i : ℕ} (later : .altair ≤ z.fork) {score : UInt64}
+    (_found : (pass.inactivityScores later).data[i]? = some score),
+    score.toNat ≤ startInactivityScore config x + config.INACTIVITY_SCORE_BIAS.toNat *
+      ((getCurrentEpoch z.state).toNat - (getCurrentEpoch x.state).toNat + 1)
+
 /-! ## The floor of one epoch of a key -/
 
 /-- The sync debit of one key in one event (PinDriftBound's private `syncDebit`, verbatim). -/
