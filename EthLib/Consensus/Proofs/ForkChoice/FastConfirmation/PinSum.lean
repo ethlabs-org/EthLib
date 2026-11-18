@@ -1232,6 +1232,101 @@ private theorem sum_exitQ_le {x y : ForkedBeaconState preset} (tail : Run config
   rw [← swap]
   exact List.sum_le_sum fun c _ => by split <;> simp
 
+/-- The departure charges of C's branch fit the window's churn and carries.
+
+They are the charges with an epoch up to the run's last epoch.
+
+It is the sum of the exit and consolidation churn of every epoch of the window, and the two carries
+at the split. -/
+private theorem charges_le_queueWindow (h : Setting config checks g split fin pulled anc counted V)
+    (tailC : Run config checks ⟨fork, split⟩ ⟨fork, counted⟩) :
+    ((tailC.departureCharges.filter fun c =>
+      c.epoch ≤ (getCurrentEpoch counted).toNat - 1 + 1).map (·.amount)).sum ≤
+        (pinTerms config pulled anc fin).queueWindow := by
+  classical
+  obtain ⟨shared⟩ := h.toFin
+  obtain ⟨fromFin⟩ := h.fromFin
+  obtain ⟨toPulled⟩ := h.toPulled
+  obtain ⟨pulledTotal, pulledOk⟩ := h.pulledTotal
+  have electra : .pectra ≤ fork := Nat.le_trans (by decide) h.fulu
+  have early := h.early
+  have finalized := UInt64.le_iff_toNat_le.mp h.finalized
+  have called := UInt64.le_iff_toNat_le.mp h.called
+  have later := UInt64.le_iff_toNat_le.mp h.later
+  have near := h.near
+  -- the exit and consolidation churn of every state on the runs from the finalized state
+  have band : ∀ (u : ForkedBeaconState preset) (run : Run config checks ⟨fork, fin⟩ u),
+      u.fork < .glamsterdam →
+      (getCurrentEpoch u.state).toNat ≤ (getCurrentEpoch pulled).toNat + 1 →
+      ∀ t : Gwei, getTotalActiveBalance u.state = .ok t → t.toNat ≤ pinWide pulled := by
+    intro u run uEarly uWithin t read
+    have := total_band_of_guard shared h.genesis h.parameters h.caps h.aligned h.twoSlots electra
+      h.guard (fromFin.append toPulled) h.early (Nat.le_succ_of_le (Nat.le_refl _)) run uEarly
+      uWithin pulledOk read
+    simp only [pinWide, pulledOk, Except.toOption, Option.getD_some]
+    omega
+  have exitBound : ∀ {u w : ForkedBeaconState preset} (step : Step config checks u w),
+      tailC.Contains step → ∀ rate : Gwei, exitChurnLimit config u.state = .ok rate →
+        rate.toNat ≤ pinExit preset config (pinWide pulled) := by
+    intro u w step member rate computed
+    obtain ⟨pre, post, _, uEarly, uEpoch⟩ := Run.contains_step_facts member h.early
+    have uEpoch' : (getCurrentEpoch u.state).toNat ≤ (getCurrentEpoch counted).toNat := uEpoch
+    exact exitRate_le uEarly _ (band u (fromFin.append pre) uEarly (by omega)) computed
+  have consTail : ∀ site ∈ tailC.consolidationSites, ∀ (_h : .pectra ≤ site.fork) (rate : Gwei),
+      getConsolidationChurnLimit config site.state = .ok rate →
+        rate.toNat ≤ pinCons preset config (pinWide pulled) := by
+    intro site member _ rate computed
+    obtain ⟨u, w, step, contained, _, same⟩ := consolidationSite_rate tailC h.early site member
+    obtain ⟨pre, post, _, uEarly, uEpoch⟩ := Run.contains_step_facts contained h.early
+    have uEpoch' : (getCurrentEpoch u.state).toNat ≤ (getCurrentEpoch counted).toNat := uEpoch
+    exact consRate_le uEarly _ (band u (fromFin.append pre) uEarly (by omega))
+      (same rate computed)
+  have consFin : ∀ site ∈ fromFin.consolidationSites, ∀ (_h : .pectra ≤ site.fork) (rate : Gwei),
+      getConsolidationChurnLimit config site.state = .ok rate →
+        rate.toNat ≤ pinCons preset config (pinWide pulled) := by
+    intro site member _ rate computed
+    obtain ⟨u, w, step, contained, _, same⟩ := consolidationSite_rate fromFin h.early site member
+    obtain ⟨pre, post, _, uEarly, uEpoch⟩ := Run.contains_step_facts contained h.early
+    have uEpoch' : (getCurrentEpoch u.state).toNat ≤ (getCurrentEpoch split).toNat := uEpoch
+    exact consRate_le uEarly _ (band u pre uEarly (by omega)) (same rate computed)
+  obtain ⟨exitCarry, consolidationCarry⟩ :
+      (split.exitBalanceToConsume electra).toNat ≤
+        config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat ∧
+      (split.consolidationBalanceToConsume electra).toNat ≤
+        max (fin.consolidationBalanceToConsume electra).toNat
+          (pinCons preset config (pinWide pulled)) :=
+    queueCarry_le_of_run shared h.genesis fromFin electra h.early electra _ consFin
+  have window := departure_charges_le_window_electra_cap tailC electra h.early
+    ((getCurrentEpoch counted).toNat - 1) (pinCons preset config (pinWide pulled))
+    (pinExit preset config (pinWide pulled)) exitBound consTail
+  dsimp only at window
+  have depthEq : (pinTerms config pulled anc fin).depth =
+      (getCurrentEpoch pulled).toNat + 2 - anc.finalizedCheckpoint.epoch.toNat := rfl
+  rw [queueWindow_unfold h.early]
+  simp only [electra, ↓reduceDIte]
+  generalize (pinTerms config pulled anc fin).depth = depth at depthEq ⊢
+  generalize pinExit preset config (pinWide pulled) = E at *
+  generalize pinCons preset config (pinWide pulled) = C at *
+  have firstLe : (getCurrentEpoch counted).toNat - 1 + 2 - max (getCurrentEpoch split).toNat
+      (split.earliestExitEpoch electra).toNat ≤ depth := by omega
+  have secondLe : (getCurrentEpoch counted).toNat - 1 + 2 - max (getCurrentEpoch split).toNat
+      (split.earliestConsolidationEpoch electra).toNat ≤ depth := by omega
+  have exitTerm : (if (split.earliestExitEpoch electra).toNat ≤
+        (getCurrentEpoch counted).toNat - 1 + 1
+      then (split.exitBalanceToConsume electra).toNat else 0) ≤
+      max preset.MAX_EFFECTIVE_BALANCE_ELECTRA.toNat
+        config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat := by
+    split <;> omega
+  have consolidationTerm : (if (split.earliestConsolidationEpoch electra).toNat ≤
+        (getCurrentEpoch counted).toNat - 1 + 1
+      then (split.consolidationBalanceToConsume electra).toNat else 0) ≤
+      max (fin.consolidationBalanceToConsume electra).toNat C := by
+    split <;> omega
+  have a := Nat.mul_le_mul_right E firstLe
+  have b := Nat.mul_le_mul_right C secondLe
+  rw [Nat.mul_add depth E C]
+  omega
+
 /-- D-8 (queues): exits and consolidations initiated on C's branch (none in the tight window). -/
 theorem bud_queues (h : Setting config checks g split fin pulled anc counted V)
     (tailC : Run config checks ⟨fork, split⟩ ⟨fork, counted⟩) :
@@ -1279,79 +1374,11 @@ theorem bud_queues (h : Setting config checks g split fin pulled anc counted V)
       simp [exitQ, missing]
     simp [none]
   · simp only [tight, Bool.false_eq_true, ↓reduceIte]
-    -- the exit and consolidation churn of every state on the runs from the finalized state
-    have band : ∀ (u : ForkedBeaconState preset) (run : Run config checks ⟨fork, fin⟩ u),
-        u.fork < .glamsterdam →
-        (getCurrentEpoch u.state).toNat ≤ (getCurrentEpoch pulled).toNat + 1 →
-        ∀ t : Gwei, getTotalActiveBalance u.state = .ok t → t.toNat ≤ pinWide pulled := by
-      intro u run uEarly uWithin t read
-      have := total_band_of_guard shared h.genesis h.parameters h.caps h.aligned h.twoSlots electra
-        h.guard (fromFin.append toPulled) h.early (Nat.le_succ_of_le (Nat.le_refl _)) run uEarly
-        uWithin pulledOk read
-      simp only [pinWide, pulledOk, Except.toOption, Option.getD_some]
-      omega
-    have exitBound : ∀ {u w : ForkedBeaconState preset} (step : Step config checks u w),
-        tailC.Contains step → ∀ rate : Gwei, exitChurnLimit config u.state = .ok rate →
-          rate.toNat ≤ pinExit preset config (pinWide pulled) := by
-      intro u w step member rate computed
-      obtain ⟨pre, post, _, uEarly, uEpoch⟩ := Run.contains_step_facts member h.early
-      have uEpoch' : (getCurrentEpoch u.state).toNat ≤ (getCurrentEpoch counted).toNat := uEpoch
-      exact exitRate_le uEarly _ (band u (fromFin.append pre) uEarly (by omega)) computed
-    have consTail : ∀ site ∈ tailC.consolidationSites, ∀ (_h : .pectra ≤ site.fork) (rate : Gwei),
-        getConsolidationChurnLimit config site.state = .ok rate →
-          rate.toNat ≤ pinCons preset config (pinWide pulled) := by
-      intro site member _ rate computed
-      obtain ⟨u, w, step, contained, _, same⟩ := consolidationSite_rate tailC h.early site member
-      obtain ⟨pre, post, _, uEarly, uEpoch⟩ := Run.contains_step_facts contained h.early
-      have uEpoch' : (getCurrentEpoch u.state).toNat ≤ (getCurrentEpoch counted).toNat := uEpoch
-      exact consRate_le uEarly _ (band u (fromFin.append pre) uEarly (by omega))
-        (same rate computed)
-    have consFin : ∀ site ∈ fromFin.consolidationSites, ∀ (_h : .pectra ≤ site.fork) (rate : Gwei),
-        getConsolidationChurnLimit config site.state = .ok rate →
-          rate.toNat ≤ pinCons preset config (pinWide pulled) := by
-      intro site member _ rate computed
-      obtain ⟨u, w, step, contained, _, same⟩ := consolidationSite_rate fromFin h.early site member
-      obtain ⟨pre, post, _, uEarly, uEpoch⟩ := Run.contains_step_facts contained h.early
-      have uEpoch' : (getCurrentEpoch u.state).toNat ≤ (getCurrentEpoch split).toNat := uEpoch
-      exact consRate_le uEarly _ (band u pre uEarly (by omega)) (same rate computed)
-    obtain ⟨exitCarry, consolidationCarry⟩ :
-        (split.exitBalanceToConsume electra).toNat ≤
-          config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat ∧
-        (split.consolidationBalanceToConsume electra).toNat ≤
-          max (fin.consolidationBalanceToConsume electra).toNat
-            (pinCons preset config (pinWide pulled)) :=
-      queueCarry_le_of_run shared h.genesis fromFin electra h.early electra _ consFin
-    have window := departure_charges_le_window_electra_cap tailC electra h.early
-      ((getCurrentEpoch counted).toNat - 1) (pinCons preset config (pinWide pulled))
-      (pinExit preset config (pinWide pulled)) exitBound consTail
-    dsimp only at window
+    have window := charges_le_queueWindow h tailC
+    rw [queueWindow_unfold early] at window
     have kept := sum_exitQ_le tailC ((getCurrentEpoch counted).toNat - 1 + 1)
       (by simp only; omega) ((VN counted V) ∪
         ((K5 counted V).filter fun v => (pinTerms config pulled anc fin).exitingB v.toNat = false))
-    have depthEq : (pinTerms config pulled anc fin).depth =
-        (getCurrentEpoch pulled).toNat + 2 - anc.finalizedCheckpoint.epoch.toNat := rfl
-    simp only [electra, ↓reduceDIte]
-    generalize (pinTerms config pulled anc fin).depth = depth at depthEq ⊢
-    generalize pinExit preset config (pinWide pulled) = E at *
-    generalize pinCons preset config (pinWide pulled) = C at *
-    have firstLe : (getCurrentEpoch counted).toNat - 1 + 2 - max (getCurrentEpoch split).toNat
-        (split.earliestExitEpoch electra).toNat ≤ depth := by omega
-    have secondLe : (getCurrentEpoch counted).toNat - 1 + 2 - max (getCurrentEpoch split).toNat
-        (split.earliestConsolidationEpoch electra).toNat ≤ depth := by omega
-    have exitTerm : (if (split.earliestExitEpoch electra).toNat ≤
-          (getCurrentEpoch counted).toNat - 1 + 1
-        then (split.exitBalanceToConsume electra).toNat else 0) ≤
-        max preset.MAX_EFFECTIVE_BALANCE_ELECTRA.toNat
-          config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat := by
-      split <;> omega
-    have consolidationTerm : (if (split.earliestConsolidationEpoch electra).toNat ≤
-          (getCurrentEpoch counted).toNat - 1 + 1
-        then (split.consolidationBalanceToConsume electra).toNat else 0) ≤
-        max (fin.consolidationBalanceToConsume electra).toNat C := by
-      split <;> omega
-    have a := Nat.mul_le_mul_right E firstLe
-    have b := Nat.mul_le_mul_right C secondLe
-    rw [Nat.mul_add depth E C]
     omega
 
 /-- D-8 (deposit queue): deposits applied on R's branch to V keys, weight 3. -/
