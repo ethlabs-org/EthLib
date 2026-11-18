@@ -994,7 +994,8 @@ private theorem seat_positions {g : ForkedBeaconState preset}
       ∃ w, y.state.validators.data[i]? = some w ∧ w.pubkey ∈ L, ?_, ?_⟩
   · have mapped : ((Finset.range y.state.validators.data.size).filter fun i =>
         ∃ w, y.state.validators.data[i]? = some w ∧ w.pubkey ∈ L).card ≤ L.toFinset.card := by
-      refine Finset.card_le_card_of_injOn (keyAt y.state) (fun i member => ?_) (fun i mi j mj eq => ?_)
+      refine Finset.card_le_card_of_injOn (keyAt y.state) (fun i member => ?_)
+        (fun i mi j mj eq => ?_)
       · obtain ⟨w, found, mem⟩ := (Finset.mem_filter.mp member).2
         simp only [keyAt, found, Option.map_some, Option.getD_some]
         exact List.mem_toFinset.mpr mem
@@ -1270,7 +1271,63 @@ private theorem credited_keys_le (h : Setting config checks g split fin pulled a
         preset.SYNC_COMMITTEE_SIZE.toNat *
           ((getCurrentEpoch x).toNat / max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat -
             (getCurrentEpoch split).toNat / max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat +
-              1) := sorry
+              1) := by
+  classical
+  obtain ⟨toFin⟩ := h.toFin
+  obtain ⟨fromFin⟩ := h.fromFin
+  have shared : Run config checks g ⟨fork, split⟩ := toFin.append fromFin
+  have slots := h.twoSlots
+  have positive : 0 < preset.SLOTS_PER_EPOCH.toNat := by omega
+  have low := UInt64.le_iff_toNat_le.mp (currentEpoch_le_of_chainSteps tail.chainSteps)
+  have periodLe := Nat.div_le_div_right
+    (c := max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat) low
+  obtain ⟨B, S, cardB, cardS, hBS⟩ := credited_pieces h.genesis (y := ⟨fork, x⟩) h.early high
+    ((getCurrentEpoch x).toNat / max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat -
+      (getCurrentEpoch split).toNat / max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat)
+    shared tail h.fulu (by simp only []; omega)
+  obtain ⟨D, cardD, hD⟩ := credited_deposits h.genesis shared tail h.early h.delay high
+  have subset : ((Finset.range x.validators.data.size).filter fun i =>
+        0 < netScan i high tail +
+          (creditScan (fun _ => false) (fun s => decide (s = .deposits)) i high tail).1) ⊆
+      B ∪ S ∪ D := fun i member => by
+    have pos := (Finset.mem_filter.mp member).2
+    by_cases net : 0 < netScan i high tail
+    · rcases hBS i net with inB | inS
+      · exact Finset.mem_union_left _ (Finset.mem_union_left _ inB)
+      · exact Finset.mem_union_left _ (Finset.mem_union_right _ inS)
+    · exact Finset.mem_union_right _ (hD i (by omega))
+  -- The blocks of the run are at most one for each slot of its epochs.
+  have blocks : tail.blockCount ≤
+      ((getCurrentEpoch x).toNat - (getCurrentEpoch split).toNat + 1) *
+        preset.SLOTS_PER_EPOCH.toNat := by
+    have start : (getCurrentEpoch split).toNat * preset.SLOTS_PER_EPOCH.toNat ≤
+        split.slot.toNat := by
+      rw [getCurrentEpoch_toNat]
+      exact Nat.div_mul_le_self _ _
+    have finish : x.slot.toNat <
+        ((getCurrentEpoch x).toNat + 1) * preset.SLOTS_PER_EPOCH.toNat := by
+      rw [getCurrentEpoch_toNat]
+      exact Nat.lt_mul_div_succ _ positive
+    have count := tail.blocks_le_slots (a := (getCurrentEpoch split).toNat *
+      preset.SLOTS_PER_EPOCH.toNat) (b := ((getCurrentEpoch x).toNat + 1) *
+        preset.SLOTS_PER_EPOCH.toNat - 1) start (by omega)
+    have shape : ((getCurrentEpoch x).toNat - (getCurrentEpoch split).toNat + 1) *
+        preset.SLOTS_PER_EPOCH.toNat = ((getCurrentEpoch x).toNat + 1) *
+          preset.SLOTS_PER_EPOCH.toNat - (getCurrentEpoch split).toNat *
+            preset.SLOTS_PER_EPOCH.toNat := by
+      rw [← Nat.sub_mul]
+      congr 1
+      omega
+    omega
+  have total := (Finset.card_le_card subset).trans
+    ((Finset.card_union_le _ _).trans (Nat.add_le_add_right (Finset.card_union_le _ _) _))
+  have expand : ((getCurrentEpoch x).toNat - (getCurrentEpoch split).toNat + 1) *
+      (preset.SLOTS_PER_EPOCH.toNat + preset.MAX_PENDING_DEPOSITS_PER_EPOCH.toNat) =
+        ((getCurrentEpoch x).toNat - (getCurrentEpoch split).toNat + 1) *
+          preset.SLOTS_PER_EPOCH.toNat + preset.MAX_PENDING_DEPOSITS_PER_EPOCH.toNat *
+            ((getCurrentEpoch x).toNat - (getCurrentEpoch split).toNat) +
+              preset.MAX_PENDING_DEPOSITS_PER_EPOCH.toNat := by ring
+  omega
 
 /-! ## The classes of keys and their costs -/
 
