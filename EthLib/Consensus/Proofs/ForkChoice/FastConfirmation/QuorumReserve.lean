@@ -394,9 +394,31 @@ def pinReserve (config : Config) (state ancestor finalizedState : BeaconState pr
   -- The rounding is weighted 3 exactly once, by the `3 *` of this branch term.
   let branchR := 3 * (whistleblowerR + inc * slashedR + depth * proposerCredit +
     (inc + preset.downwardBand - 1) * roundedKeys)
+  -- A key previous-epoch-only in a counting state weighs three times there, at its balance there.
+  --
+  -- `exiting` reads it here, so its rise since the split also weighs three times.
+  --
+  -- That rise is its gains, the call's branch's penalties and the other branch's proposer credits.
+  --
+  -- A credit raises a balance by at most itself plus the upward band.
+  let exitingRise := ∑ i ∈ positions with (before i || current i) = true ∧
+      (slashed i = false ∨ recentSlashing i = true) ∧
+      ((validator i).map fun v => decide (v.exitEpoch.toNat ≤ epoch.toNat + 1)).getD false = true,
+    rise i
+  let exitingCredits := 2 * depth * (proposerCredit + slots * preset.upwardBand)
+  -- Outside the tight window, keys can start to exit on the other branch.
+  --
+  -- The queues hold at most this many, each with at least the ejection balance less an increment.
+  let queueKeys := depth * (exitChurn + consolidationChurn) /
+    (config.EJECTION_BALANCE.toNat - inc) + 2
+  let gainRateMax := capMax / inc * perIncrement *
+    (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum / WEIGHT_DENOMINATOR.toNat
+  let queueRise := if tight then 0 else
+    3 * queueKeys * (preset.upwardBand + depth * gainRateMax)
   quorumReserve config state ancestor + (3 * exiting + queues + credits + branchR + late +
     syncSeats + (∑ i ∈ positions with current i = true, rise i) +
-    3 * (∑ i ∈ positions with current i = true, fall i))
+    3 * (∑ i ∈ positions with current i = true, fall i) +
+    3 * exitingRise + exitingCredits + queueRise)
 
 /-- The pin reserve contains the quorum reserve. -/
 theorem quorumReserve_le_pinReserve (config : Config)
