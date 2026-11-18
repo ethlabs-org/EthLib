@@ -179,7 +179,7 @@ Neither do the late activations at that depth.
 
 The reserve treats every epoch of that window as fixed before the branches split.
 
-Rates are read at a quarter of the call's total active balance.
+Rates are read at a quarter of the call's total active balance, or at a fifth of an increment.
 
 A key's leak and gain are read at a computed envelope of its effective balance on any branch.
 
@@ -260,7 +260,10 @@ def pinReserve (config : Config) (state ancestor finalizedState : BeaconState pr
   -- The rates are read at a quarter of the call's total.
   --
   -- A counting state that keeps that much has a base reward per increment at most twice this one.
-  let quarter := max preset.EFFECTIVE_BALANCE_INCREMENT (totalGwei / 4)
+  --
+  -- Below eighteen increments the rates are read at a fifth of an increment, below any total.
+  let quarter := if 18 * inc ≤ total then totalGwei / 4
+    else preset.EFFECTIVE_BALANCE_INCREMENT / 5
   let perIncrement := ((getBaseRewardPerIncrement preset quarter).toOption.getD 0).toNat
   let base (i : ℕ) := effective i / inc * perIncrement
   let depositChurn := config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat
