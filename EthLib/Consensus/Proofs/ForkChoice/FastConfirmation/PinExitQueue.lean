@@ -1151,6 +1151,7 @@ private structure Ctx (config : Config) (checks : SignatureChecks) {preset : Pre
   room : 600 * (high + 2 - (getCurrentEpoch x.state).toNat) ≤ stakeFloorAt config x high 0
   epochFloor : EpochFloorStatement preset config checks
   scores : RunScoresStatement preset config checks
+  hysteresis : EpochStartHysteresis preset config checks
   mono : CeilingMonoStatement preset config
   anti : FloorAntiStatement preset config
 
@@ -1697,6 +1698,100 @@ private theorem Ctx.advance {g x z m p n : ForkedBeaconState preset} {high : ℕ
       (getCurrentEpoch m.state).toNat - (getCurrentEpoch z.state).toNat + 1 := by omega
   rw [e2]
   exact stepIneq
+
+/-- The potential claim holds at the start of the epoch of every state of the climb.
+
+The climb runs from `z`, where the key holds the maximum effective balance and is unslashed.
+
+The key never exits before the end `y` of the climb.
+
+The state `p` reaches `y`, so it ends no later than `y`. -/
+private theorem Ctx.inv {g x z y : ForkedBeaconState preset} {high : ℕ}
+    (c : Ctx config checks g x high) (hz : Run config checks x z)
+    (early : y.fork < .glamsterdam) (within : (getCurrentEpoch y.state).toNat ≤ high + 1)
+    (i : ℕ) (v0 : Validator) (found0 : z.state.validators.data[i]? = some v0)
+    (unslashed0 : v0.slashed = false) (activated0 : v0.activationEpoch ≠ FAR_FUTURE_EPOCH)
+    (bal0 : preset.MAX_EFFECTIVE_BALANCE.toNat ≤ actualBalanceAt z i)
+    (hystZ : effectiveAt z i ≤ actualBalanceAt z i + preset.downwardBand)
+    (exitLate : ∀ (n : ForkedBeaconState preset) (_rest : Run config checks n y) (w : Validator),
+      n.state.validators.data[i]? = some w → (getCurrentEpoch y.state).toNat < w.exitEpoch.toNat)
+    {p : ForkedBeaconState preset} (rp : Run config checks z p) :
+    ∀ (_rest : Run config checks p y), ∃ (m : ForkedBeaconState preset)
+      (rm : Run config checks z m) (ins : Run config checks m p),
+      rp = rm.append ins ∧ getCurrentEpoch m.state = getCurrentEpoch p.state ∧
+      effectiveAt m i ≤ actualBalanceAt m i + preset.downwardBand ∧
+      EpochClaim (config := config) (checks := checks) x z high i rm := by
+  induction rp with
+  | nil =>
+    intro _
+    refine ⟨z, .nil, .nil, rfl, rfl, hystZ, [], rfl, ?_⟩
+    have unflagged : ¬ ∃ w, z.state.validators.data[i]? = some w ∧ w.slashed = true := by
+      rintro ⟨w, h, hf⟩
+      rw [found0] at h
+      cases h
+      rw [unslashed0] at hf
+      cases hf
+    have charge : slashedCharge preset z i = 0 := by simp [slashedCharge, unflagged]
+    rw [charge, min_eq_right bal0]
+    simp [keyDebits]
+  | @snoc q p' pre step ih =>
+    intro rest
+    obtain ⟨m, rm, ins, eq, cm, hyst, claim⟩ := ih ((Run.nil.snoc step).append rest)
+    by_cases same : getCurrentEpoch p'.state = getCurrentEpoch q.state
+    · refine ⟨m, rm, ins.snoc step, ?_, cm.trans same.symm, hyst, claim⟩
+      rw [eq]
+      rfl
+    · have bound := ChainStep.epoch_le_succ step.chainStep
+      have order := UInt64.le_iff_toNat_le.mp step.chainStep.currentEpoch_le
+      have differ : (getCurrentEpoch p'.state).toNat ≠ (getCurrentEpoch q.state).toNat :=
+        fun h => same (UInt64.toNat_inj.mp h)
+      cases step with
+      | @block fork before after engine signed due ok =>
+        exfalso
+        apply same
+        simp only [getCurrentEpoch, processBlock_slot (applySignedBlock_ok ok).2.1]
+      | slot ok =>
+        have restEpoch := UInt64.le_iff_toNat_le.mp
+          (currentEpoch_le_of_chainSteps rest.chainSteps)
+        have pEarly : p'.fork < .glamsterdam :=
+          Nat.lt_of_le_of_lt (fork_le_of_chainSteps rest.chainSteps) early
+        have cmN : (getCurrentEpoch m.state).toNat = (getCurrentEpoch q.state).toNat :=
+          congrArg UInt64.toNat cm
+        obtain ⟨val, found, life⟩ := rm.registryLifecycle.validators i v0 found0
+        have activated : val.activationEpoch ≠ FAR_FUTURE_EPOCH := by
+          rw [life.activationEpoch activated0]
+          exact activated0
+        have mEarly : m.fork < .glamsterdam :=
+          Nat.lt_of_le_of_lt (Nat.le_trans (fork_le_of_chainSteps ins.chainSteps)
+            (Step.slot ok).chainStep.fork_le) pEarly
+        have slashedCond : val.slashed = true → (getCurrentEpoch p'.state).toNat +
+            preset.EPOCHS_PER_SLASHINGS_VECTOR.toNat / 2 < val.withdrawableEpoch.toNat := by
+          intro flag
+          have lower := rm.newly_slashed_withdrawableEpoch c.caps.activation c.caps.compounding
+            mEarly c.delay i v0 val found0 found unslashed0 flag
+          have window := c.guard.2.2.2.2.2.2.2.2.2.2.1
+          have xz := UInt64.le_iff_toNat_le.mp (currentEpoch_le_of_chainSteps hz.chainSteps)
+          unfold driftHorizon at window
+          omega
+        have sameQ : getCurrentEpoch q.state = getCurrentEpoch m.state := cm.symm
+        have stepP : (getCurrentEpoch p'.state).toNat = (getCurrentEpoch m.state).toNat + 1 := by
+          omega
+        have exit' : ∀ w, p'.state.validators.data[i]? = some w →
+            (getCurrentEpoch m.state).toNat + 1 < w.exitEpoch.toNat := fun w hw => by
+          have := exitLate p' rest w hw
+          omega
+        have claim' := Ctx.advance c hz rm ins ok pEarly (by omega) sameQ stepP i val found
+          activated exit' slashedCond hyst claim
+        have grown : Run config checks z p' := rm.append (ins.snoc (Step.slot ok))
+        obtain ⟨val', found', -⟩ := (rm.append (ins.snoc (Step.slot ok))).registryLifecycle.validators
+          i v0 found0
+        have lt : getCurrentEpoch q.state < getCurrentEpoch p'.state :=
+          UInt64.lt_iff_toNat_lt.mpr (by omega)
+        have hystP := Ctx.hyst_start c (hz.append (rm.append (ins.snoc (Step.slot ok))))
+          (c.hysteresis (Step.slot ok) lt) found'
+        refine ⟨p', rm.append (ins.snoc (Step.slot ok)), .nil, ?_, rfl, hystP, claim'⟩
+        rw [eq]
+        rfl
 
 end Epoch
 
