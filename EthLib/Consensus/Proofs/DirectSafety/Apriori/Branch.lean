@@ -150,7 +150,7 @@ private theorem epochBalanceReplay_deposits {checks : SignatureChecks}
   have done : Settled post := by
     refine (epochBalanceReplay_trace ok).transport (fun a b => Settled a → Settled b)
       (fun _ => id) (fun one two => two ∘ one) ?_
-      ⟨holds, fun _ mem => by cases mem, fun matched => ⟨matched, fun _ mem => by cases mem⟩⟩
+      ⟨holds, fun _ mem => (by cases mem), fun matched => ⟨matched, fun _ mem => (by cases mem)⟩⟩
     intro k member pre next step held
     cases k <;> simp only [epochReplayAction] at step
     case justification =>
@@ -252,7 +252,7 @@ private theorem epochBalanceReplay_deposits {checks : SignatureChecks}
       · cases step
         exact held
     all_goals simp [EpochStage.prefixStages] at member
-  exact ⟨done.2.1, done.2.2⟩
+  exact ⟨done.2.1, fun matched => (done.2.2 matched).2⟩
 
 /-- The epoch replay of an ordered state credits no withdrawable pending source.
 
@@ -313,7 +313,7 @@ private theorem stepBalanceEvents_deposits {checks : SignatureChecks}
       cases ok
       have matched : BalancesMatch cached :=
         (frame_processSlot cachedOk).balancesMatch
-          (Run.invariant genesis.invariant shared).balancesMatch
+          (run_justified_separated shared genesis).1.balancesMatch
       have ordered : PendingConsolidationsOrdered config (getCurrentEpoch cached).toNat
           cached := by
         obtain ⟨_, _, _, _, rfl⟩ := processSlot_ok cachedOk
