@@ -784,11 +784,10 @@ structure WithdrawalAccepted (config : Config) (state : BeaconState preset fork)
   address : credentialAddress validator.withdrawalCredentials = request.sourceAddress
   allowed : canRequest config state validator = .ok true
 
-/-- The validator of an accepted withdrawal request is active. -/
-theorem WithdrawalAccepted.active {request : WithdrawalRequest} {index : ValidatorIndex}
-    {validator : Validator} (accepted : WithdrawalAccepted config state request index validator) :
+/-- A validator that may make a request is active. -/
+theorem isActiveValidator_of_canRequest {validator : Validator}
+    (allowed : canRequest config state validator = .ok true) :
     isActiveValidator validator (getCurrentEpoch state) = true := by
-  have allowed := accepted.allowed
   unfold canRequest at allowed
   dsimp only at allowed
   split at allowed
@@ -797,7 +796,7 @@ theorem WithdrawalAccepted.active {request : WithdrawalRequest} {index : Validat
     have both := (not_or.mp (by simpa only [Bool.or_eq_true] using active)).1
     simpa using both
 
-/-- Withdrawal requests do nothing, exit an accepted validator, or queue its partial withdrawal. -/
+/-- Withdrawal requests do nothing, exit an accepted validator, or run its partial withdrawal. -/
 theorem withdrawalRequest_cases {fork : Fork} {s t : BeaconState preset fork}
     {electra : .pectra ≤ fork} {request : WithdrawalRequest}
     (ok : processWithdrawalRequest config s electra request = .ok t) :

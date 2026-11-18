@@ -1332,7 +1332,8 @@ private theorem processWithdrawalRequest {electra : .pectra ≤ fork} {request :
     ⟨_, _, _, _, withdrawn⟩
   · exact refl _
   · exact initiateValidatorExit (config := config) (getValidator_eq_ok_iff.mpr accepted.found)
-      (fun pending => Bool.false_ne_true ((inactive pending _).symm.trans accepted.active)) exited
+      (fun pending => Bool.false_ne_true ((inactive pending _).symm.trans
+        (isActiveValidator_of_canRequest accepted.allowed))) exited
   · exact requestPartialWithdrawal withdrawn
 
 private theorem queueConsolidation {electra : .pectra ≤ fork}

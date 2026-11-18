@@ -2845,7 +2845,8 @@ theorem CapStep.withdrawalRequest {f : Fork} {s t : BeaconState preset f}
     exact ⟨step.1, step.2.1, step.2.2.1, step.2.2.2.1⟩
   · obtain ⟨step, funded, retained, charge⟩ := CapStep.partialWithdrawal withdrawn
     exact ⟨step, funded, fun held => retained held
-      ⟨_, accepted.found, assigned_of_active (epoch := getCurrentEpoch s) accepted.active⟩,
+      ⟨_, accepted.found, assigned_of_active (epoch := getCurrentEpoch s)
+        (isActiveValidator_of_canRequest accepted.allowed)⟩,
       charge⟩
 
 private theorem CapStep.depositRequest {f : Fork} {s t : BeaconState preset f}

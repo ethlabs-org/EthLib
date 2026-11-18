@@ -223,7 +223,7 @@ Not yet released.
 - In Lean, the exit and partial-withdrawal cases of `withdrawalRequest_cases` record the validator in `WithdrawalAccepted` ([#2334](https://github.com/ethereum/EthLib/issues/2334)).
   The index is the first with the key of the request.
   The validator there has execution credentials from the address of the request, and it may make a request.
-  `WithdrawalAccepted.active` gives that the validator is active.
+  `isActiveValidator_of_canRequest` gives that a validator that may make a request is active.
   A caller that matched the cases as `⟨index, exited⟩` and `⟨index, v, owed, withdrawn⟩` writes `⟨index, v, accepted, exited⟩` and `⟨index, v, owed, accepted, withdrawn⟩`.
 
 - In Lean, the switch case of `consolidationRequest_cases` records the switched validator in `SwitchAccepted` ([#2334](https://github.com/ethereum/EthLib/issues/2334)).
