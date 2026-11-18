@@ -420,15 +420,43 @@ def pinReserve (config : Config) (state ancestor finalizedState : BeaconState pr
   -- These charge them twice more, also at eleven tenths, rounded up.
   let exitingCredits := (22 * (depth * proposerCredit + dueStake) + 9) / 10 +
     2 * (depth * slots + due.length) * preset.upwardBand
+  -- A lower bound on a key's effective balance on another branch, up to the counting state.
+  --
+  -- It starts at the finalized block's state, which lies on every branch, and at most this one's.
+  --
+  -- Leak over the depth from there, partials, the band and one increment of rounding are drops.
+  --
+  -- A partial in that state's own epoch can be paid before it, but leaves the activation balance.
+  let drop (i : ℕ) := depthFin * leak i + preset.downwardBand + inc
+  let lowEB (i : ℕ) := min (min (effective i) (finEB i) - partialsDue i)
+    preset.MIN_ACTIVATION_BALANCE.toNat - drop i
+  -- A key can exit on the other branch with an effective balance below the ejection balance.
+  --
+  -- Such a key uses little churn, so each one whose `lowEB` falls below that bound is counted.
+  --
+  -- Every key not yet withdrawable after the finalized epoch counts.
+  --
+  -- Its exit here is not its exit there.
+  --
+  -- A key created on the other branch enters at the activation balance.
+  --
+  -- No lemma here proves yet that it stays above that bound through the window.
+  let lowKeys := (positions.filter fun i =>
+    (validator i).any (fun v => decide (finalized < v.withdrawableEpoch.toNat)) ∧
+      lowEB i < config.EJECTION_BALANCE.toNat - inc).card
   -- Outside the tight window, keys can start to exit on the other branch.
   --
-  -- This assumes each such key leaves with at least the ejection balance less an increment.
-  --
-  -- No lemma here proves that yet; under it, the queues hold at most this many.
+  -- The queues admit at most this many keys at the ejection balance less an increment each.
   --
   -- The `+ 2` counts one key at each end of the window that the churn covers only in part.
+  --
+  -- `lowKeys` adds every key whose effective balance can fall below that.
+  --
+  -- After an exit starts, the key's proposer and due-consolidation credits are in `exitingCredits`.
+  --
+  -- Its whistleblower credits are in `reserveW`, `flagged` and the drift's slashed keys.
   let queueKeys := depth * (exitChurn + consolidationChurn) /
-    (config.EJECTION_BALANCE.toNat - inc) + 2
+    (config.EJECTION_BALANCE.toNat - inc) + 2 + lowKeys
   -- The largest gain rate of one key, its gain rate at the largest effective balance.
   let gainRateMax := capMax / inc * perIncrement *
     (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum / WEIGHT_DENOMINATOR.toNat
@@ -455,19 +483,10 @@ def pinReserve (config : Config) (state ancestor finalizedState : BeaconState pr
   --
   -- `lowEB` bounds that balance from below, before the slashing penalty and sync-seat debits.
   --
-  -- It starts at the finalized block's state, which lies on every branch, and at most this one's.
-  --
-  -- Leak over the depth from there, partials, the band and one increment of rounding are drops.
-  --
-  -- A partial in that state's own epoch can be paid before it, but leaves the activation balance.
-  --
   -- A key that fails the test is charged its reward three times.
   let slashable (i : ℕ) := slashed i = false ∧ (validator i).any (fun v =>
     decide (v.activationEpoch.toNat ≤ epoch.toNat + 1) &&
       decide (finalized < v.withdrawableEpoch.toNat))
-  let drop (i : ℕ) := depthFin * leak i + preset.downwardBand + inc
-  let lowEB (i : ℕ) := min (min (effective i) (finEB i) - partialsDue i)
-    preset.MIN_ACTIVATION_BALANCE.toNat - drop i
   -- The reward is read at `ebUp`.
   let flagged := ∑ i ∈ positions with slashable i ∧
       2 * (lowEB i - ebUp i / p.MIN_SLASHING_PENALTY_QUOTIENT.toNat) <
