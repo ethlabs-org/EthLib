@@ -337,8 +337,9 @@ private theorem stepBalanceEvents_deposits {checks : SignatureChecks}
         have divides := Nat.dvd_of_mod_eq_zero remainder
         rw [nextVal] at divides
         have slotEq := processUpgrades_slot upgrades
+        simp only [pure, Except.pure, Except.ok.injEq] at advancedEq
         have advancedSlot : advanced.slot = next := by
-          first | rw [← advancedEq] | rw [advancedEq]
+          rw [← advancedEq]
         rw [getCurrentEpoch_toNat, getCurrentEpoch_toNat, slotEq, advancedSlot, nextVal]
         exact Nat.succ_div_of_dvd divides
     · have replayed : (Step.slot across).balanceEvents = .ok ([] ++ crossings) := by
