@@ -1263,7 +1263,6 @@ private theorem epoch_delayed_slashing_nondebit {x m n : ForkedBeaconState prese
     (caps : CapOrder preset) (early : n.fork < .glamsterdam) (holds : Invariant m.state)
     (delay : 0 < config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat)
     {cached middle : BeaconState preset m.fork}
-    (same : cached.validators = m.state.validators)
     (processed : epochBeforePayments config checks cached = .ok middle)
     {recorded events : List (BalanceEvent preset)}
     (epochReplay : epochBalanceReplay (config := config) (checks := checks) cached =
@@ -1274,7 +1273,6 @@ private theorem epoch_delayed_slashing_nondebit {x m n : ForkedBeaconState prese
     (located : m.state.validators.data[i.toNat]? = some u)
     (cachedOk : processSlot m.state = .ok cached)
     (assigned : v.slashed = true → v.exitEpoch ≠ FAR_FUTURE_EPOCH)
-    (sameEpoch : getCurrentEpoch cached = getCurrentEpoch m.state)
     (start : (v.slashed = false ∧
       (getCurrentEpoch m.state).toNat < (getCurrentEpoch x.state).toNat +
       preset.EPOCHS_PER_SLASHINGS_VECTOR.toNat -
@@ -1284,6 +1282,11 @@ private theorem epoch_delayed_slashing_nondebit {x m n : ForkedBeaconState prese
     ∀ event ∈ recorded, event.source = .slashings →
       actualBalanceAt event.before i.toNat ≤ actualBalanceAt event.after i.toNat ∧
         event.after.state.validators.data = event.before.state.validators.data := by
+  have same : cached.validators = m.state.validators := by
+    obtain ⟨_, _, _, _, rfl⟩ := processSlot_ok cachedOk
+    rfl
+  have sameEpoch : getCurrentEpoch cached = getCurrentEpoch m.state := by
+    simp only [getCurrentEpoch, (frame_processSlot cachedOk).slot]
   obtain ⟨justified, scored, rewarded, registered, after, reset, deposited,
     rewards, limit, _, justifiedOk, scoredOk, rewardedOk, registeredOk,
     slashOk, _, _, _, rewardReplay, shape⟩ := funding_epoch_site processed epochReplay
@@ -1419,11 +1422,6 @@ private theorem slot_delayed_slashing_nondebit_general {x m n : ForkedBeaconStat
   · have crossing := upgradeBalanceReplay_crossing crossingOk event member
     rw [crossing] at source
     cases source
-  have same : cached.validators = m.state.validators := by
-    obtain ⟨_, _, _, _, rfl⟩ := processSlot_ok cachedOk
-    rfl
-  have epoch : getCurrentEpoch cached = getCurrentEpoch m.state := by
-    simp only [getCurrentEpoch, (frame_processSlot cachedOk).slot]
   have included : event ∈ recorded := by
     rw [shape] at member
     rcases List.mem_append.mp member with recorded | crossing
@@ -1432,9 +1430,9 @@ private theorem slot_delayed_slashing_nondebit_general {x m n : ForkedBeaconStat
       rw [crossed] at source
       cases source
   exact epoch_delayed_slashing_nondebit pre (.slot ok)
-    caps early holds delay same prefixOk recordedOk replayed
+    caps early holds delay prefixOk recordedOk replayed
       (shape ▸ List.subset_append_left recorded crossings)
-        i v u initial located cachedOk assigned epoch start event included source
+        i v u initial located cachedOk assigned start event included source
 
 /-- Slot dispatch reads the actual epoch prefix exposed by the slot replay. -/
 theorem slot_delayed_slashing_nondebit {x m n : ForkedBeaconState preset}

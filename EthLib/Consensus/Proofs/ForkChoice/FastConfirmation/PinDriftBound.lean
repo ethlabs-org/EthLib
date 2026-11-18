@@ -2275,28 +2275,21 @@ private def sourceBound {f : Fork} (s : BeaconState preset f) (next : Epoch)
   | some v => if v.slashed = false ∧ v.withdrawableEpoch ≤ next then v.effectiveBalance.toNat else 0
   | none => 0
 
-/-- A sublist of a list has a sum of images that is no larger. -/
-private theorem sum_map_filter_le {α : Type} (L : List α) (f : α → ℕ) (p : α → Bool) :
-    ((L.filter p).map f).sum ≤ (L.map f).sum := by
-  induction L with
-  | nil => simp
-  | cons a rest ih =>
-    by_cases h : p a = true <;> simp [h] <;> omega
-
-/-- Summing over a list of events and over some keys can be done in either order. -/
-private theorem list_sum_finset_comm (S : Finset ℕ) (g : ℕ → BalanceEvent preset → ℕ) :
-    ∀ L : List (BalanceEvent preset),
-      (L.map fun e => ∑ j ∈ S, g j e).sum = ∑ j ∈ S, (L.map (g j)).sum
-  | [] => by simp
-  | e :: rest => by
-    simp only [List.map_cons, List.sum_cons, list_sum_finset_comm S g rest, Finset.sum_add_distrib]
-
 /-- The credits of some events are within the credits of their keys below a bound on the sizes. -/
 private theorem credits_sum_le_targets (L : List (BalanceEvent preset)) :
     (L.map BalanceEvent.credits).sum ≤
       ((Finset.range ((L.map fun e => e.after.state.balances.data.size).foldr max 0)).sum fun i =>
         (L.map (keyCredit i)).sum) := by
-  rw [← list_sum_finset_comm]
+  have comm : (L.map fun e =>
+      ∑ j ∈ Finset.range ((L.map fun e => e.after.state.balances.data.size).foldr max 0),
+        keyCredit j e).sum =
+      ∑ j ∈ Finset.range ((L.map fun e => e.after.state.balances.data.size).foldr max 0),
+        (L.map (keyCredit j)).sum := by
+    have := Multiset.sum_map_sum (m := (↑L : Multiset (BalanceEvent preset)))
+      (s := Finset.range ((L.map fun e => e.after.state.balances.data.size).foldr max 0))
+      (f := fun e j => keyCredit j e)
+    exact this
+  rw [← comm]
   refine List.sum_le_sum fun e member => ?_
   exact Finset.sum_le_sum_of_subset (Finset.range_mono
     (Base.le_foldr_max (List.mem_map_of_mem (f := fun e : BalanceEvent preset =>
@@ -2453,7 +2446,7 @@ private theorem pass_credits_le {f : Fork} (next : Epoch) :
   intro items s t read passed
   obtain ⟨validators, sizes, credits⟩ :=
     pass_credits_le_targets next (Finset.range t.balances.data.size) items passed
-  exact ⟨validators, sizes, credits.trans (sum_map_filter_le _ _ _)⟩
+  exact ⟨validators, sizes, credits.trans ((List.filter_sublist.map _).sum_le_sum fun _ _ => Nat.zero_le _)⟩
 
 /-- The queue only grows at its end inside a block.
 
@@ -2908,7 +2901,7 @@ private theorem pass_step {x : ForkedBeaconState preset} {high : ℕ} {f : Fork}
           (capBound x high)).sum := by
   obtain ⟨r, shapeT, life, credits⟩ := pass_step_targets facts shape computed
   exact ⟨r, shapeT, life, (credits (Finset.range t.balances.data.size)).trans
-    (sum_map_filter_le _ _ _)⟩
+    ((List.filter_sublist.map _).sum_le_sum fun _ _ => Nat.zero_le _)⟩
 
 /-- The upgrades due at a slot keep the shape of the queue. -/
 private theorem upgrade_shape {L : List PendingConsolidation} {e0 : Epoch} {n : ℕ}
@@ -3182,7 +3175,7 @@ private theorem slot_step {g x m last : ForkedBeaconState preset}
   obtain ⟨r, shapeLast, credits⟩ := slot_step_targets shared pre genesis caps delay electra high
     within ok early endEpoch shape
   refine ⟨r, shapeLast, fun {events} replayed => ?_⟩
-  exact (credits_sum_le_targets _).trans ((credits replayed _).trans (sum_map_filter_le _ _ _))
+  exact (credits_sum_le_targets _).trans ((credits replayed _).trans ((List.filter_sublist.map _).sum_le_sum fun _ _ => Nat.zero_le _))
 
 /-- A block keeps the shape of the queue: it only appends entries that are new since X. -/
 private theorem block_step {f : Fork} {e0 : Epoch} {L : List PendingConsolidation} {n : ℕ}
@@ -3288,7 +3281,7 @@ private theorem run_credits {g x y : ForkedBeaconState preset}
   obtain ⟨n, shape, bound⟩ := run_credits_targets shared genesis caps delay electra high within
     tail early endEpoch replayed
   exact ⟨n, shape, (credits_sum_le_targets _).trans
-    ((bound _).trans (sum_map_filter_le _ _ _))⟩
+    ((bound _).trans ((List.filter_sublist.map _).sum_le_sum fun _ _ => Nat.zero_le _))⟩
 
 /-- The caps of the entries of a queue, as the caps of their sources that X lets move. -/
 private theorem capBound_sum (x : ForkedBeaconState preset) (high : ℕ)
