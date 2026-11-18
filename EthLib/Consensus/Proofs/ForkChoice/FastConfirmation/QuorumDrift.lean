@@ -743,7 +743,7 @@ So `genesis` uses BLS checks, and `pre` is a run with BLS checks.
 
 `Execution.quorumDriftWithin` proves the premise, unless two honest stores collide on a root.
 
-A collision is an existing evidence alternative of the conclusion.
+A collision is an existing alternative of the conclusion.
 
 Seven premises replace `QuorumDriftWithin`:
 
@@ -899,7 +899,7 @@ So `genesis` uses BLS checks, and `pre` is a run with BLS checks.
 
 `Execution.quorumDriftWithin` proves the premise, unless two honest stores collide on a root.
 
-A collision is an existing evidence alternative of the conclusion.
+A collision is an existing alternative of the conclusion.
 
 Seven premises replace `QuorumDriftWithin`:
 
