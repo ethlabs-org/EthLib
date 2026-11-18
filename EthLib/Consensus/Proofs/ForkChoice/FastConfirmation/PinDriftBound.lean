@@ -536,8 +536,9 @@ It starts from the smaller of its balance and its largest effective balance.
 
 A sweep of its excess and a switch to compounding leave at least that much.
 
-The debits are its passes, at most its pass rate per epoch ended, its sync penalties, and the
-partial withdrawals that the branch pays it.
+The debits are its passes, at most its pass rate per epoch ended.
+
+They also hold its sync penalties and the partial withdrawals that the branch pays it.
 
 The guards are those of the per-key floor of the a priori bound, `FloorTrace.run_of_le_cap`. -/
 private theorem Run.balanceFloor {g x y : ForkedBeaconState preset}
@@ -1225,25 +1226,31 @@ open Base Uint64 Models
 
 variable {preset : Preset} {config : Config}
 
-/-- The rate at which one rewards pass can debit a key at a state is at most the leak rate the pin reserve reads.
+/-- One rewards pass debits a key at a state at a rate of at most the pin reserve's leak rate.
 
 The rate is taken at the key's effective balance at the state.
 
 `pulledTotal` is R's total read, and `quarter` is `max inc (pulledTotal / 4)`.
+
 The reserve reads the base reward per increment at the quarter.
 
 The state's total is at least two thirds of R's, so its square root is at least the quarter's.
 
-The score bound `scoreBound` covers the pass's score after its update, which is the score plus one bias.
+The score bound `scoreBound` covers the pass's score after its update.
+
+That score is the score plus one bias.
 
 Effective balances are whole increments.
 
 `roomy` makes the rounding of the per-increment reward lose less than its fraction.
 
 The flag term is `40 / 64` of a base reward per increment for each increment.
-It fits in `2 * (increments * perIncrement)`, because the floor of a quotient that is at least one is at least half of it.
 
-The left side is `passPenaltyRate config z v` of `PinDriftBound`, restated. -/
+It fits in `2 * (increments * perIncrement)`.
+
+The floor of a quotient that is at least one is at least half of it.
+
+The left side is `passPenaltyRate config z v` of this file, restated. -/
 private theorem passPenaltyRate_le_leak (z : ForkedBeaconState preset) (v : ℕ) (pulledTotal : ℕ)
     (scoreBound : ℕ)
     (positive : 0 < preset.EFFECTIVE_BALANCE_INCREMENT.toNat)
@@ -1366,7 +1373,9 @@ variable {preset : Preset} {fork : Fork}
 
 /-- The loop of the queued partial withdrawals keeps a floor of a key's balance.
 
-What the withdrawals take from the key, plus a floor at most the activation balance, stays within its balance.
+What the withdrawals take from the key, plus a floor, stays within its balance.
+
+The floor is at most the activation balance.
 
 Each entry pays at most the balance left above the activation balance. -/
 private theorem getPendingPartialWithdrawals_loop_floor {state : BeaconState preset fork}
@@ -1422,11 +1431,16 @@ private theorem getPendingPartialWithdrawals_loop_floor {state : BeaconState pre
         · simpa using bounded
       · exact getPendingPartialWithdrawals_loop_floor found capped rest _ _ _ bounded computed
 
-/-- From Electra and before Gloas, a block's withdrawals leave a key that is not yet withdrawable
-with at least the least of its balance before and `MIN_ACTIVATION_BALANCE`.
+/-- From Electra and before Gloas, a block's withdrawals leave a key that is not yet withdrawable.
+
+It keeps at least the least of its balance before and `MIN_ACTIVATION_BALANCE`.
 
 A pending partial pays at most the balance above `MIN_ACTIVATION_BALANCE`.
-The sweep pays at most the balance above the key's cap, which is at least `MIN_ACTIVATION_BALANCE` because `compounding` bounds the cap of a compounding key.
+
+The sweep pays at most the balance above the key's cap.
+
+That cap is at least `MIN_ACTIVATION_BALANCE`, because `compounding` bounds a compounding cap.
+
 Only a withdrawable key is paid in full. -/
 private theorem processWithdrawals_balance_floor {state after : BeaconState preset fork}
     (capella : .shapella ≤ fork) (electra : .pectra ≤ fork) (early : fork < .glamsterdam)
@@ -1501,7 +1515,9 @@ variable {preset : Preset} {config : Config} {checks : SignatureChecks}
 
 /-- What a chain of steps keeps of the registry, at any forks.
 
-Assigned exits stay, a slash stays, and the withdrawable epoch of a key with an exit set only rises, and only for a slashed key. -/
+Assigned exits stay, and a slash stays.
+
+The withdrawable epoch of a key with an exit set only rises, and only for a slashed key. -/
 private structure Kept {f g : Fork} (s : BeaconState preset f) (t : BeaconState preset g) :
     Prop where
   life : RegistryLifecycle s t
@@ -1540,7 +1556,7 @@ private theorem Kept.of_data {f g : Fork} {s : BeaconState preset f} {t : Beacon
     subst read
     exact ⟨UInt64.le_refl _, .inr rfl⟩
 
-/-- A step that keeps the lifecycle and the slashes, and each withdrawable epoch, keeps everything. -/
+/-- A step that keeps the lifecycle, the slashes and each withdrawable epoch keeps everything. -/
 private theorem Kept.of_withdrawable {f g : Fork} {s : BeaconState preset f}
     {t : BeaconState preset g} (life : RegistryLifecycle s t) (slashed : SlashedPersistence s t)
     (same : ∀ (i : ℕ) (v : Validator), s.validators.data[i]? = some v →
@@ -1838,11 +1854,16 @@ private theorem replay_stage {f : Fork} (electra : .pectra ≤ f) {k : EpochStag
 
 A slot step records a deposit event only for the pending deposits of its epoch pass.
 
-So the event starts at the input of that pass: the state after justification, inactivity, rewards, registry updates, slashings and the eth1 reset.
+So the event starts at the input of that pass.
+
+That input is the state after the first six stages of the epoch.
+
+They are justification, inactivity, rewards, registry updates, slashings and the eth1 reset.
 
 The steps of the run before the slot keep the registry, and so does each of those stages.
 
 Block deposits are not covered.
+
 From Electra they credit no existing key. -/
 private theorem Run.events_kept {g x y : ForkedBeaconState preset}
     (shared : Run config checks g x) (genesis : Genesis (config := config) (checks := checks) g)
@@ -2114,7 +2135,8 @@ private theorem blockReplay_noConsolidations {f : Fork} (electra : .pectra ≤ f
 /-- The deposit events of an epoch replay leave the balance of an exiting key alone.
 
 The pending deposits of an epoch are the only deposit events of the replay. -/
-private theorem epochReplay_quiet {f : Fork} {s : BeaconState preset f} {post : BalanceReplay preset f}
+private theorem epochReplay_quiet {f : Fork} {s : BeaconState preset f}
+    {post : BalanceReplay preset f}
     (ok : epochBalanceReplay (config := config) (checks := checks) s = .ok post) :
     Quiet post.2 := by
   refine (epochBalanceReplay_trace ok).transport
@@ -2157,7 +2179,8 @@ private theorem epochReplay_quiet {f : Fork} {s : BeaconState preset f} {post : 
   all_goals simp [EpochStage.prefixStages] at member
 
 /-- The deposit events of a slot step leave the balance of an exiting key alone. -/
-private theorem slot_quiet {x y : ForkedBeaconState preset} (ok : advanceSlotAcross config checks x = .ok y)
+private theorem slot_quiet {x y : ForkedBeaconState preset}
+    (ok : advanceSlotAcross config checks x = .ok y)
     (early : y.fork < .glamsterdam)
     {events : List (BalanceEvent preset)} (replayed : (Step.slot ok).balanceEvents = .ok events) :
     Quiet events := by
@@ -3550,8 +3573,8 @@ private theorem Run.exits_started_le {x y : ForkedBeaconState preset} (tail : Ru
         (x.state.earliestConsolidationEpoch electra).toNat) * consolidationChurn := by
   classical
   have _ := positive
-  refine Nat.le_trans ?_ (departure_charges_le_window_electra_cap tail electra early high consolidationChurn churn ?_
-    consolidationChurnOk)
+  refine Nat.le_trans ?_ (departure_charges_le_window_electra_cap tail electra early high
+    consolidationChurn churn ?_ consolidationChurnOk)
   swap
   · -- The input of each step lies on the balance path, at a fork from Electra.
     intro u w step member rate computed
@@ -3659,7 +3682,9 @@ open Base Uint64 Models DirectSafety
 
 variable {preset : Preset} {config : Config} {checks : SignatureChecks}
 
-/-- The participant reward of the sync committee, at the most that a total within three halves of the given total allows.
+/-- The participant reward of the sync committee, at the most that a total allows.
+
+The total is within three halves of the given total.
 
 The reward is the base rewards of the total, times the sync weight, per slot and per member.
 
@@ -3669,7 +3694,9 @@ private def syncEnvelope (preset : Preset) (total : ℕ) : ℕ :=
     SYNC_REWARD_WEIGHT.toNat / WEIGHT_DENOMINATOR.toNat / preset.SLOTS_PER_EPOCH.toNat /
       preset.SYNC_COMMITTEE_SIZE.toNat
 
-/-- The participant reward at a state whose total is within three halves of a total is at most the envelope. -/
+/-- The participant reward at a state is at most the envelope of a total.
+
+The total of the state is within three halves of that total. -/
 private theorem syncReward_le_envelope {fork : Fork} {s : BeaconState preset fork}
     {reward T : Gwei} (rewardOk : syncParticipantReward s = .ok reward)
     (totalOk : getTotalActiveBalance s = .ok T) (total : ℕ) (band : 2 * T.toNat ≤ 3 * total) :
@@ -3961,11 +3988,15 @@ private theorem run_syncDebits_le {x y : ForkedBeaconState preset} (tail : Run c
       | slot ok => simpa [Run.blockCount] using priorBound
       | block => exact priorBound.trans (Nat.mul_le_mul_right _ (Nat.le_succ _))
 
-/-- The sync debits of any set of keys over a run from Fulu are at most one envelope per seat per slot of the epochs the run touches.
+/-- The sync debits of any set of keys over a run from Fulu fit one envelope per seat per slot.
+
+The slots are those of the epochs that the run touches.
 
 Every total along the run is within three halves of `total`.
 
-The run has at most one block for each slot that it covers, and each block debits the keys at most one participant reward per seat. -/
+The run has at most one block for each slot that it covers.
+
+Each block debits the keys at most one participant reward per seat. -/
 private theorem Run.syncDebits_le {x y : ForkedBeaconState preset} (tail : Run config checks x y)
     (fulu : .fusaka ≤ x.fork) (early : y.fork < .glamsterdam) (high : ℕ)
     {events : List (BalanceEvent preset)} (replayed : tail.balanceEvents high = .ok events)
@@ -4002,7 +4033,8 @@ private theorem Run.syncDebits_le {x y : ForkedBeaconState preset} (tail : Run c
     calc x.state.slot.toNat / preset.SLOTS_PER_EPOCH.toNat * preset.SLOTS_PER_EPOCH.toNat
         ≤ y.state.slot.toNat / preset.SLOTS_PER_EPOCH.toNat * preset.SLOTS_PER_EPOCH.toNat :=
           Nat.mul_le_mul_right _ epochLe
-      _ < preset.SLOTS_PER_EPOCH.toNat * (y.state.slot.toNat / preset.SLOTS_PER_EPOCH.toNat + 1) := by
+      _ < preset.SLOTS_PER_EPOCH.toNat *
+          (y.state.slot.toNat / preset.SLOTS_PER_EPOCH.toNat + 1) := by
           rw [Nat.mul_add, Nat.mul_one, Nat.mul_comm]
           omega
   have counted : tail.blockCount ≤ (y.state.slot.toNat / preset.SLOTS_PER_EPOCH.toNat + 1 -
