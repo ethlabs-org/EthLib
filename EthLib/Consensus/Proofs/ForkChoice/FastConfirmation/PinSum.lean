@@ -564,6 +564,23 @@ def creditScan (blockP slotP : BalanceSource → Bool) (v high : ℕ) {x : Forke
         | .slot _ => 0)
     else before
 
+/-- The net credits to the key in the block steps of a run.
+
+A block step counts the rise of the key's balance across the whole step.
+
+A credit that the same step takes back counts for nothing.
+
+The steps count from the one whose start epoch is at most `high + 1`, as in `Run.balanceEvents`. -/
+def netScan (v high : ℕ) {x : ForkedBeaconState preset} :
+    {y : ForkedBeaconState preset} → Run config checks x y → ℕ
+  | _, .nil => 0
+  | y, .snoc (middle := m) pre step =>
+    if (getCurrentEpoch m.state).toNat ≤ high + 1 then
+      netScan v high pre + match step with
+        | .block .. => actualBalanceAt y v - actualBalanceAt m v
+        | .slot _ => 0
+    else netScan v high pre
+
 /-- Proposer and due-consolidation credits to the key on C's branch since the split.
 
 The rounding slack of a credited key is `bandC`, once for each key.
@@ -572,6 +589,24 @@ The consolidation bands are not here: `bud_consolidations` charges them. -/
 def propC {x y : ForkedBeaconState preset} (tail : Run config checks x y) (high v : ℕ) : ℕ :=
   (creditScan (fun s => decide (s = .rewards ∨ s = .consolidations))
     (fun s => decide (s = .consolidations)) v high tail).1
+
+/-- Proposer credits to the key on C's branch since the split, without the consolidation credits.
+
+A credited stake compounds by at most a tenth, which the stubs charge as `propN / 10`.
+
+The consolidation credits are under `consolidationsX`, so their compounding is not charged here. -/
+def propN {x y : ForkedBeaconState preset} (tail : Run config checks x y) (high v : ℕ) : ℕ :=
+  (creditScan (fun s => decide (s = .rewards)) (fun _ => false) v high tail).1
+
+/-- Proposer and deposit credits to the key on C's branch since the split.
+
+They are `credC` without its consolidation credits.
+
+A credited stake compounds by at most a tenth, which the stubs charge as `credN / 10`.
+
+The tenth is rounded down, so that the tenths of several keys add up to at most the tenth of their sum. -/
+def credN {x y : ForkedBeaconState preset} (tail : Run config checks x y) (high v : ℕ) : ℕ :=
+  (creditScan (fun s => decide (s = .rewards)) (fun s => decide (s = .deposits)) v high tail).1
 
 /-- Non-attestation credits to the key on C's branch since the split, whistleblower and sync credits
 excluded: proposer, deposits applied and consolidations.
@@ -585,13 +620,17 @@ def credC {x y : ForkedBeaconState preset} (tail : Run config checks x y) (high 
 
 A slot step's credits are not here: `fall` reads the epoch rewards at its gain rate.
 
-A key with a proposer, deposit or sync credit then moves by one more rounding step and band.
+A key that gains in a block step or by a deposit moves by one more rounding step.
+
+The band comes with the step.
+
+A block step that nets the key no credit cannot push its effective balance up.
 
 That step is `inc + downwardBand - 1`, the one that `branchR` charges for each of its keys. -/
 def credR {x y : ForkedBeaconState preset} (tail : Run config checks x y) (high v : ℕ) : ℕ :=
   (creditScan (fun s => decide (s ≠ .deposits ∧ s ≠ .sync ∧ s ≠ .consolidations))
     (fun _ => false) v high tail).1 +
-    if (creditScan (fun s => decide (s ≠ .consolidations)) (fun s => decide (s = .deposits))
+    if netScan v high tail = 0 ∧ (creditScan (fun _ => false) (fun s => decide (s = .deposits))
         v high tail).1 = 0 then 0
     else preset.EFFECTIVE_BALANCE_INCREMENT.toNat + preset.downwardBand - 1
 
@@ -639,16 +678,17 @@ def slashR (t : PinTerms preset) (i : ℕ) : ℕ :=
 
 /-- The rounding slack of a key with any C-side credit, once for each key.
 
-The credits are a proposer reward, a whistleblower reward, a deposit and a sync reward.
+The credits are those of a block step that nets the key a rise, and an applied deposit.
+
+A proposer reward, a whistleblower reward and a sync reward are block credits.
 
 A consolidation credit is not here: `bud_consolidations` charges its band for each entry.
 
 `credits` charges `upwardBand` for each credited key. -/
-def bandC {x y : ForkedBeaconState preset} (tail : Run config checks x y) (high : ℕ)
-    (events : List (BalanceEvent preset)) (v : ℕ) : ℕ :=
-  if 0 < (creditScan (fun s => decide (s = .rewards ∨ s = .slashings))
-        (fun s => decide (s = .deposits)) v high tail).1 +
-      ((events.filter (·.source = .sync)).map (keyCredit v)).sum then preset.upwardBand else 0
+def bandC {x y : ForkedBeaconState preset} (tail : Run config checks x y) (high v : ℕ) : ℕ :=
+  if 0 < netScan v high tail +
+      (creditScan (fun _ => false) (fun s => decide (s = .deposits)) v high tail).1 then
+    preset.upwardBand else 0
 
 /-- The rounding slack of a key whose balance on R's branch took a sync debit that `high` omits.
 
@@ -702,6 +742,31 @@ those rewards over the slot steps that come after the step with its departure ch
 It is 0 for a key whose exit does not start on the run. -/
 def riseQ {x y : ForkedBeaconState preset} (tail : Run config checks x y) (high v : ℕ) : ℕ :=
   if (riseScan v high tail).1 = true then preset.upwardBand + (riseScan v high tail).2 else 0
+
+/-! ### The keys that a run credits -/
+
+/-- The keys that a run from the split credits.
+
+They are at most its proposers, its seat holders and its deposit recipients.
+
+A key counts if a block step of the run nets it a rise, or an epoch pass applies a deposit to it.
+
+A block step has one proposer, and an epoch has at most one block for each slot.
+
+The seat holders are those of one sync committee for each period that the run touches.
+
+An epoch pass applies at most `MAX_PENDING_DEPOSITS_PER_EPOCH` deposits. -/
+private theorem credited_keys_le (h : Setting config checks g split fin pulled anc counted V)
+    {x : BeaconState preset fork} (tail : Run config checks ⟨fork, split⟩ ⟨fork, x⟩) (high : ℕ) :
+    ((Finset.range x.validators.data.size).filter fun i =>
+        0 < netScan i high tail +
+          (creditScan (fun _ => false) (fun s => decide (s = .deposits)) i high tail).1).card ≤
+      ((getCurrentEpoch x).toNat - (getCurrentEpoch split).toNat + 1) *
+          (preset.SLOTS_PER_EPOCH.toNat + preset.MAX_PENDING_DEPOSITS_PER_EPOCH.toNat) +
+        preset.SYNC_COMMITTEE_SIZE.toNat *
+          ((getCurrentEpoch x).toNat / max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat -
+            (getCurrentEpoch split).toNat / max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat +
+              1) := sorry
 
 /-! ## The classes of keys and their costs -/
 
@@ -797,6 +862,38 @@ variable {g : ForkedBeaconState preset} {split fin pulled anc counted : BeaconSt
   {V : Finset ValidatorIndex}
 
 
+/-- A key active at C's epoch is activated by then at R, when that epoch is within the lookahead.
+
+Activity up to the seed lookahead after the split is the same on both branches. -/
+private theorem activation_le_of_active {g : ForkedBeaconState preset}
+    {split fin pulled anc counted : BeaconState preset fork} {V : Finset ValidatorIndex}
+    (h : Setting config checks g split fin pulled anc counted V)
+    (bound : (getCurrentEpoch counted).toNat ≤
+      anc.finalizedCheckpoint.epoch.toNat + preset.MAX_SEED_LOOKAHEAD.toNat)
+    {v : ValidatorIndex} (member : v ∈ AC counted) {w : Validator}
+    (found : pulled.validators.data[v.toNat]? = some w) :
+    w.activationEpoch.toNat ≤ (getCurrentEpoch counted).toNat := by
+  have finalized := UInt64.le_iff_toNat_le.mp h.finalized
+  obtain ⟨u, foundU, activeU⟩ := active_of_activeVoters h.early member
+  obtain ⟨rp⟩ := h.toPulled
+  obtain ⟨rc⟩ := h.toCounted
+  have fixed : getCurrentEpoch counted ≤ activityFixedEpoch split := by
+    rw [UInt64.le_iff_toNat_le, activityFixedEpoch_toNat]
+    have := (getCurrentEpoch counted).toNat_lt
+    omega
+  have kc := activeKept_of_chainSteps rc.chainSteps (getCurrentEpoch counted) fixed v.toNat
+  have kp := activeKept_of_chainSteps rp.chainSteps (getCurrentEpoch counted) fixed v.toNat
+  have activeAtC : isActiveAt counted (getCurrentEpoch counted) v.toNat = true :=
+    isActiveAt_eq_true_iff.mpr ⟨u, foundU, activeU⟩
+  have activeAtR : isActiveAt pulled (getCurrentEpoch counted) v.toNat = true := by
+    rw [kp, ← kc]
+    exact activeAtC
+  obtain ⟨w', found', active⟩ := isActiveAt_eq_true_iff.mp activeAtR
+  rw [found] at found'
+  cases found'
+  simp only [isActiveValidator, Bool.and_eq_true, decide_eq_true_eq] at active
+  exact UInt64.le_iff_toNat_le.mp active.1
+
 /-- Glue: an unslashed V key active in C counts in C's quorum. -/
 theorem glue_quorum (h : Setting config checks g split fin pulled anc counted V) :
     ∀ v ∈ V, v ∈ AC counted → v ∈ Q counted := by
@@ -836,7 +933,9 @@ It also rises by the credits and slacks that `rise` does not read.
 
 The slacks are one increment for a slashing on R's branch.
 
-They are one rounding step for a credit on C's branch or a sync debit on R's. -/
+They are one rounding step for a credit on C's branch or a sync debit on R's.
+
+A credit on C's branch also compounds by a tenth of its amount, without its consolidation credits. -/
 private theorem key_core (h : Setting config checks g split fin pulled anc counted V)
     (tail : Run config checks ⟨fork, split⟩ ⟨fork, pulled⟩) (high : ℕ)
     (endEpoch : (getCurrentEpoch pulled).toNat ≤ high + 1)
@@ -846,8 +945,9 @@ private theorem key_core (h : Setting config checks g split fin pulled anc count
     {eventsC : List (BalanceEvent preset)} (replayedC : tailC.balanceEvents highC = .ok eventsC)
     (i : ℕ) (inside : i < pulled.validators.data.size) :
     balanceAt counted i ≤ balanceAt pulled i + (pinTerms config pulled anc fin).rise i +
-      credC tailC highC i + whistC tailC highC i + (syncF events i + syncF eventsC i) +
-      slashR (pinTerms config pulled anc fin) i + bandC tailC highC eventsC i + bandR events i :=
+      (credC tailC highC i + credN tailC highC i / 10) + whistC tailC highC i +
+      (syncF events i + syncF eventsC i) + slashR (pinTerms config pulled anc fin) i +
+      bandC tailC highC i + bandR events i :=
   sorry
 
 /-- D-7 (rise): other keys active in both. -/
@@ -858,9 +958,9 @@ theorem stub_N (h : Setting config checks g split fin pulled anc counted V)
     (tailC : Run config checks ⟨fork, split⟩ ⟨fork, counted⟩) (highC : ℕ)
     (endEpochC : (getCurrentEpoch counted).toNat ≤ highC + 1)
     {eventsC : List (BalanceEvent preset)} (replayedC : tailC.balanceEvents highC = .ok eventsC) :
-    cN pulled counted V ≤ ((∑ v ∈ (K4 pulled counted V), ((pinTerms config pulled anc fin).rise v.toNat + credC tailC highC v.toNat +
-      whistC tailC highC v.toNat + (syncF events v.toNat + syncF eventsC v.toNat) +
-      slashR (pinTerms config pulled anc fin) v.toNat + bandC tailC highC eventsC v.toNat +
+    cN pulled counted V ≤ ((∑ v ∈ (K4 pulled counted V), ((pinTerms config pulled anc fin).rise v.toNat +
+      (credC tailC highC v.toNat + credN tailC highC v.toNat / 10) + whistC tailC highC v.toNat + (syncF events v.toNat + syncF eventsC v.toNat) +
+      slashR (pinTerms config pulled anc fin) v.toNat + bandC tailC highC v.toNat +
       bandR events v.toNat)) : ℕ) := sorry
 
 /-- D-4 (+ D-8 exits): other keys previous-epoch-only in C. A key whose exit R reads is at its
@@ -877,9 +977,10 @@ theorem stub_P (h : Setting config checks g split fin pulled anc counted V)
         (eR pulled v + (pinTerms config pulled anc fin).rise v.toNat)) +
       (∑ v ∈ (K5 counted V) with (pinTerms config pulled anc fin).exitingB v.toNat = false,
         (exitQ tailC v.toNat + riseQ tailC highC v.toNat)) +
-      (∑ v ∈ (K5 counted V), (propC tailC highC v.toNat + whistC tailC highC v.toNat +
+      (∑ v ∈ (K5 counted V), ((propC tailC highC v.toNat + propN tailC highC v.toNat / 10) +
+        whistC tailC highC v.toNat +
         (syncF events v.toNat + syncF eventsC v.toNat) +
-        slashR (pinTerms config pulled anc fin) v.toNat + bandC tailC highC eventsC v.toNat +
+        slashR (pinTerms config pulled anc fin) v.toNat + bandC tailC highC v.toNat +
         bandR events v.toNat)) : ℕ) := sorry
 
 /-- D-8 (activations): keys counted in C and not active at R.
@@ -896,15 +997,16 @@ theorem stub_J (h : Setting config checks g split fin pulled anc counted V)
     (tailC : Run config checks ⟨fork, split⟩ ⟨fork, counted⟩) (highC : ℕ)
     (endEpochC : (getCurrentEpoch counted).toNat ≤ highC + 1)
     {eventsC : List (BalanceEvent preset)} (replayedC : tailC.balanceEvents highC = .ok eventsC) :
-    cJ pulled counted ≤ (((pinTerms config pulled anc fin).joining + (∑ v ∈ (K6 pulled counted) with (pinTerms config pulled anc fin).lateB v.toNat = true, eR pulled v) +
+    cJ pulled counted ≤ (((pinTerms config pulled anc fin).joining + 3 * (∑ v ∈ (K6 pulled counted) with (pinTerms config pulled anc fin).lateB v.toNat = true, eR pulled v) +
       (∑ v ∈ (K6 pulled counted) with (pinTerms config pulled anc fin).exitedRB v.toNat = true,
         (eR pulled v + (pinTerms config pulled anc fin).rise v.toNat)) +
       (∑ v ∈ (K6 pulled counted) with (pinTerms config pulled anc fin).exitingB v.toNat = true,
         (eR pulled v + (pinTerms config pulled anc fin).rise v.toNat)) +
-      (∑ v ∈ (K6 pulled counted), (credC tailC highC v.toNat + whistC tailC highC v.toNat)) +
+      (∑ v ∈ (K6 pulled counted), ((credC tailC highC v.toNat + credN tailC highC v.toNat / 10) +
+        whistC tailC highC v.toNat)) +
       (∑ v ∈ (K6 pulled counted), (syncF events v.toNat + syncF eventsC v.toNat)) +
       (∑ v ∈ (K6 pulled counted),
-        (slashR (pinTerms config pulled anc fin) v.toNat + bandC tailC highC eventsC v.toNat +
+        (slashR (pinTerms config pulled anc fin) v.toNat + bandC tailC highC v.toNat +
           bandR events v.toNat)) +
       (∑ v ∈ (K6 pulled counted) with (pinTerms config pulled anc fin).pendingRB v.toNat = true,
         (eR pulled v + (pinTerms config pulled anc fin).rise v.toNat)) +
@@ -916,9 +1018,8 @@ theorem stub_J (h : Setting config checks g split fin pulled anc counted V)
 Split by `exitingB`: the keys whose exit R reads and those the queues let exit on C. -/
 theorem bud_exitingBands (h : Setting config checks g split fin pulled anc counted V)
     (tailC : Run config checks ⟨fork, split⟩ ⟨fork, counted⟩) (highC : ℕ)
-    (endEpochC : (getCurrentEpoch counted).toNat ≤ highC + 1)
-    {eventsC : List (BalanceEvent preset)} (replayedC : tailC.balanceEvents highC = .ok eventsC) :
-    2 * (∑ v ∈ (K5 counted V), bandC tailC highC eventsC v.toNat) ≤
+    (endEpochC : (getCurrentEpoch counted).toNat ≤ highC + 1) :
+    2 * (∑ v ∈ (K5 counted V), bandC tailC highC v.toNat) ≤
       (pinTerms config pulled anc fin).exitingBands := sorry
 
 /-- K6 keys of R's registry that are not yet eligible at R: their stake at R and their rise. -/
@@ -934,10 +1035,10 @@ theorem bud_exiting (h : Setting config checks g split fin pulled anc counted V)
       (∑ v ∈ (K6 pulled counted) with (pinTerms config pulled anc fin).exitingB v.toNat = true,
         eR pulled v) ≤ (pinTerms config pulled anc fin).exiting := sorry
 
-/-- Late activations, weight 3 for V keys and 1 for new keys. -/
+/-- Late activations, weight 3 for V keys and for new keys. -/
 theorem bud_late (h : Setting config checks g split fin pulled anc counted V) :
     3 * (∑ v ∈ (VN counted V) with (pinTerms config pulled anc fin).lateB v.toNat = true, eR pulled v) +
-      (∑ v ∈ (K6 pulled counted) with (pinTerms config pulled anc fin).lateB v.toNat = true, eR pulled v) ≤ (pinTerms config pulled anc fin).late := sorry
+      3 * (∑ v ∈ (K6 pulled counted) with (pinTerms config pulled anc fin).lateB v.toNat = true, eR pulled v) ≤ (pinTerms config pulled anc fin).late := sorry
 
 /-- D-8 (queues): exits and consolidations initiated on C's branch (none in the tight window). -/
 theorem bud_queues (h : Setting config checks g split fin pulled anc counted V)
@@ -976,12 +1077,15 @@ The `syncProposer` part of the bound is not here: `bud_sync` uses it.
 
 The bound is scaled by ten, to take the eleven tenths and the rounding of `exitingCredits`.
 
+The compounding of the credits, a tenth of each key's amount rounded down, is in the bound.
+
 The two further bands of each credited K5 key are in `bud_exitingBands`. -/
 theorem bud_exitingCredits (h : Setting config checks g split fin pulled anc counted V)
     (tailC : Run config checks ⟨fork, split⟩ ⟨fork, counted⟩) (highC : ℕ)
     (endEpochC : (getCurrentEpoch counted).toNat ≤ highC + 1)
     {eventsC : List (BalanceEvent preset)} (replayedC : tailC.balanceEvents highC = .ok eventsC) :
-    10 * (2 * (∑ v ∈ (K5 counted V), propC tailC highC v.toNat)) +
+    10 * (2 * ((∑ v ∈ (K5 counted V), propC tailC highC v.toNat) +
+      (∑ v ∈ (K5 counted V), propN tailC highC v.toNat / 10))) +
         22 * ((pinTerms config pulled anc fin).depth * (pinTerms config pulled anc fin).syncProposer) ≤
       10 * (pinTerms config pulled anc fin).exitingCredits +
         20 * (∑ v ∈ (K5 counted V), consAmt eventsC v.toNat) := sorry
@@ -994,6 +1098,8 @@ The `syncProposer` part of `credits` is not here: `bud_sync` uses it.
 
 The bound is scaled by ten, to take the eleven tenths and the rounding of `credits`.
 
+The compounding of the credits, a tenth of each key's amount rounded down, is in the bound.
+
 The rounding slacks of the credited keys of `K4` and `K5` are paid by `creditedKeys`. -/
 theorem bud_credits (h : Setting config checks g split fin pulled anc counted V)
     (tailC : Run config checks ⟨fork, split⟩ ⟨fork, counted⟩) (highC : ℕ)
@@ -1002,9 +1108,12 @@ theorem bud_credits (h : Setting config checks g split fin pulled anc counted V)
     10 * ((∑ v ∈ (K4 pulled counted V), credC tailC highC v.toNat) +
       (∑ v ∈ (K6 pulled counted), credC tailC highC v.toNat) +
       (∑ v ∈ (K5 counted V), propC tailC highC v.toNat) +
-      (∑ v ∈ (K4 pulled counted V), bandC tailC highC eventsC v.toNat) +
-      (∑ v ∈ (K5 counted V), bandC tailC highC eventsC v.toNat) +
-      (∑ v ∈ (K6 pulled counted), bandC tailC highC eventsC v.toNat)) +
+      (∑ v ∈ (K4 pulled counted V), credN tailC highC v.toNat / 10) +
+      (∑ v ∈ (K6 pulled counted), credN tailC highC v.toNat / 10) +
+      (∑ v ∈ (K5 counted V), propN tailC highC v.toNat / 10) +
+      (∑ v ∈ (K4 pulled counted V), bandC tailC highC v.toNat) +
+      (∑ v ∈ (K5 counted V), bandC tailC highC v.toNat) +
+      (∑ v ∈ (K6 pulled counted), bandC tailC highC v.toNat)) +
         11 * ((pinTerms config pulled anc fin).depth * (pinTerms config pulled anc fin).syncProposer) ≤
       10 * (pinTerms config pulled anc fin).credits +
         10 * ((∑ v ∈ (K4 pulled counted V), consAmt eventsC v.toNat) +
@@ -1704,7 +1813,7 @@ theorem pinDrift_le_of_stubs (h : Setting config checks g split fin pulled anc c
   have b11 := bud_queueRise (config := config) h tailC highC endEpochC
   have b12 := bud_exitingRise (config := config) h
   have b13 := bud_exitingCredits (config := config) h tailC highC endEpochC replayedC
-  have b17 := bud_exitingBands (config := config) h tailC highC endEpochC replayedC
+  have b17 := bud_exitingBands (config := config) h tailC highC endEpochC
   have b18 := bud_pendingR (config := config) h
   -- `stub_J` reads `creditGain` only in its high regime.
   have gainHighLe : (if (pinTerms config pulled anc fin).gainHigh then
