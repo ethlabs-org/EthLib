@@ -101,26 +101,40 @@ private theorem withdrawnConsolidationCredit_eq_zero_of_ordered {s t : BeaconSta
     · rfl
   · rfl
 
-/-- The epoch replay of an ordered state credits no withdrawable pending source.
+/-- The deposit events of the epoch replay of an ordered state credit no withdrawable pending source.
 
-Each stage keeps the order at the current epoch, so the deposit event starts at an ordered state. -/
-private theorem epochBalanceReplay_withdrawnConsolidationCredit {checks : SignatureChecks}
+Each stage keeps the order at the current epoch, so the deposit event starts at an ordered state.
+
+A deposit event of the replay is the pending-deposit pass at the state before it. -/
+private theorem epochBalanceReplay_deposits {checks : SignatureChecks}
     {s : BeaconState preset fork} {post : BalanceReplay preset fork}
     (holds : PendingConsolidationsOrdered config (getCurrentEpoch s).toNat s)
     (ok : epochBalanceReplay (config := config) (checks := checks) s = .ok post) :
-    ∀ e ∈ post.2, e.source = .deposits → withdrawnConsolidationCredit e = 0 := by
+    (∀ e ∈ post.2, e.source = .deposits → withdrawnConsolidationCredit e = 0) ∧
+    ∀ e ∈ post.2, e.source = .deposits →
+      ∃ (electra : .pectra ≤ fork) (u v : BeaconState preset fork),
+        processPendingDeposits config checks u electra = .ok v ∧
+          e.before = ⟨fork, u⟩ ∧ e.after = ⟨fork, v⟩ := by
   let Settled (pre : BalanceReplay preset fork) : Prop :=
     PendingConsolidationsOrdered config (getCurrentEpoch pre.1).toNat pre.1 ∧
-      ∀ e ∈ pre.2, e.source = .deposits → withdrawnConsolidationCredit e = 0
+      (∀ e ∈ pre.2, e.source = .deposits → withdrawnConsolidationCredit e = 0) ∧
+      ∀ e ∈ pre.2, e.source = .deposits →
+        ∃ (electra : .pectra ≤ fork) (u v : BeaconState preset fork),
+          processPendingDeposits config checks u electra = .ok v ∧
+            e.before = ⟨fork, u⟩ ∧ e.after = ⟨fork, v⟩
   -- A stage moves the state along its edge and records events that are not deposits.
   have moved {k : EpochStage} {pre : BalanceReplay preset fork} {u : BeaconState preset fork}
       (added : List (BalanceEvent preset)) (held : Settled pre)
       (edge : EpochStage.Edge config checks k pre.1 u)
       (quiet : ∀ e ∈ added, e.source ≠ .deposits) : Settled (u, pre.2 ++ added) := by
-    refine ⟨edge.pendingConsolidationsOrdered held.1, fun e mem deposit => ?_⟩
-    rcases List.mem_append.mp mem with mem | mem
-    · exact held.2 e mem deposit
-    · exact absurd deposit (quiet e mem)
+    refine ⟨edge.pendingConsolidationsOrdered held.1, fun e mem deposit => ?_,
+      fun e mem deposit => ?_⟩
+    · rcases List.mem_append.mp mem with mem | mem
+      · exact held.2.1 e mem deposit
+      · exact absurd deposit (quiet e mem)
+    · rcases List.mem_append.mp mem with mem | mem
+      · exact held.2.2 e mem deposit
+      · exact absurd deposit (quiet e mem)
   -- A carried stage moves the state along its edge and records nothing.
   have carried {k : EpochStage} {action : BeaconState preset fork → Except TransitionError _}
       {pre next : BalanceReplay preset fork} (held : Settled pre)
@@ -132,7 +146,7 @@ private theorem epochBalanceReplay_withdrawnConsolidationCredit {checks : Signat
     rwa [List.append_nil] at settled
   have done : Settled post := by
     refine (epochBalanceReplay_trace ok).transport (fun a b => Settled a → Settled b)
-      (fun _ => id) (fun one two => two ∘ one) ?_ ⟨holds, fun _ mem => by cases mem⟩
+      (fun _ => id) (fun one two => two ∘ one) ?_ ⟨holds, fun _ mem => by cases mem, fun _ mem => by cases mem⟩
     intro k member pre next step held
     cases k <;> simp only [epochReplayAction] at step
     case justification => exact carried (k := .justification) held id step
@@ -161,20 +175,28 @@ private theorem epochBalanceReplay_withdrawnConsolidationCredit {checks : Signat
         obtain ⟨_, _, u, raised, rfl⟩ := ok
         obtain ⟨_, set⟩ := increaseBalance_ok raised
         obtain ⟨_, rfl⟩ := setBalance_ok set
-        refine ⟨held.1, fun e mem deposit => ?_⟩
-        rcases List.mem_append.mp mem with mem | mem
-        · exact held.2 e mem deposit
-        · rw [List.mem_singleton.mp mem] at deposit
-          cases deposit
+        refine ⟨held.1, fun e mem deposit => ?_, fun e mem deposit => ?_⟩
+        · rcases List.mem_append.mp mem with mem | mem
+          · exact held.2.1 e mem deposit
+          · rw [List.mem_singleton.mp mem] at deposit
+            cases deposit
+        · rcases List.mem_append.mp mem with mem | mem
+          · exact held.2.2 e mem deposit
+          · rw [List.mem_singleton.mp mem] at deposit
+            cases deposit
       · simp only [recordBalance, bind_ok_iff, liftAccessor_ok, pure, Except.pure,
           Except.ok.injEq] at ok
         obtain ⟨_, _, u, lowered, rfl⟩ := ok
         obtain ⟨_, rfl⟩ := decreaseBalance_eq_ok_iff.mp lowered
-        refine ⟨held.1, fun e mem deposit => ?_⟩
-        rcases List.mem_append.mp mem with mem | mem
-        · exact held.2 e mem deposit
-        · rw [List.mem_singleton.mp mem] at deposit
-          rcases penalty with rfl | rfl <;> cases deposit
+        refine ⟨held.1, fun e mem deposit => ?_, fun e mem deposit => ?_⟩
+        · rcases List.mem_append.mp mem with mem | mem
+          · exact held.2.1 e mem deposit
+          · rw [List.mem_singleton.mp mem] at deposit
+            rcases penalty with rfl | rfl <;> cases deposit
+        · rcases List.mem_append.mp mem with mem | mem
+          · exact held.2.2 e mem deposit
+          · rw [List.mem_singleton.mp mem] at deposit
+            rcases penalty with rfl | rfl <;> cases deposit
     case slashings =>
       simp only [recordBalance, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at step
       obtain ⟨_, _, u, slashed, rfl⟩ := step
@@ -187,11 +209,16 @@ private theorem epochBalanceReplay_withdrawnConsolidationCredit {checks : Signat
         have edge : EpochStage.Edge config checks .pendingDeposits pre.1 u := by
           simp only [EpochStage.Edge, electra, ↓reduceDIte]
           exact deposited
-        refine ⟨edge.pendingConsolidationsOrdered held.1, fun e mem deposit => ?_⟩
-        rcases List.mem_append.mp mem with mem | mem
-        · exact held.2 e mem deposit
-        · rw [List.mem_singleton.mp mem]
-          exact withdrawnConsolidationCredit_eq_zero_of_ordered held.1
+        refine ⟨edge.pendingConsolidationsOrdered held.1, fun e mem deposit => ?_,
+          fun e mem deposit => ?_⟩
+        · rcases List.mem_append.mp mem with mem | mem
+          · exact held.2.1 e mem deposit
+          · rw [List.mem_singleton.mp mem]
+            exact withdrawnConsolidationCredit_eq_zero_of_ordered held.1
+        · rcases List.mem_append.mp mem with mem | mem
+          · exact held.2.2 e mem deposit
+          · rw [List.mem_singleton.mp mem]
+            exact ⟨electra, pre.1, u, deposited, rfl, rfl⟩
       · cases step
         exact held
     case pendingConsolidations =>
@@ -205,6 +232,16 @@ private theorem epochBalanceReplay_withdrawnConsolidationCredit {checks : Signat
         exact held
     all_goals simp [EpochStage.prefixStages] at member
   exact done.2
+
+/-- The epoch replay of an ordered state credits no withdrawable pending source.
+
+Each stage keeps the order at the current epoch, so the deposit event starts at an ordered state. -/
+private theorem epochBalanceReplay_withdrawnConsolidationCredit {checks : SignatureChecks}
+    {s : BeaconState preset fork} {post : BalanceReplay preset fork}
+    (holds : PendingConsolidationsOrdered config (getCurrentEpoch s).toNat s)
+    (ok : epochBalanceReplay (config := config) (checks := checks) s = .ok post) :
+    ∀ e ∈ post.2, e.source = .deposits → withdrawnConsolidationCredit e = 0 :=
+  (epochBalanceReplay_deposits holds ok).1
 
 /-- The deposit events of one step before Gloas credit no withdrawable pending source.
 
@@ -261,6 +298,45 @@ private theorem stepBalanceEvents_withdrawnConsolidationCredit {checks : Signatu
       rw [replayed] at ok
       cases ok
       simpa using crossed
+
+/-- A deposit event of a slot step is the pending-deposit pass at some state of its fork. -/
+theorem Step.slot_deposit_site {checks : SignatureChecks} {g x y : ForkedBeaconState preset}
+    (shared : Run config checks g x) (genesis : Genesis (config := config) (checks := checks) g)
+    (across : advanceSlotAcross config checks x = .ok y) (early : y.fork < .glamsterdam)
+    (delay : 0 < config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat)
+    {events : List (BalanceEvent preset)} (ok : (Step.slot across).balanceEvents = .ok events) :
+    ∀ e ∈ events, e.source = .deposits →
+      ∃ (electra : .pectra ≤ x.fork) (u v : BeaconState preset x.fork),
+        processPendingDeposits config checks u electra = .ok v ∧
+          e.before = ⟨x.fork, u⟩ ∧ e.after = ⟨x.fork, v⟩ := by
+  have sourceEarly := Nat.lt_of_le_of_lt (Step.slot across).chainStep.fork_le early
+  obtain ⟨advanced, advanceOk, upgrades⟩ := bind_ok_iff.mp across
+  have steps := advanceOk
+  simp only [advanceSlot, bind_ok_iff] at steps
+  obtain ⟨next, nextOk, cached, cachedOk, epoched, epochedOk, -⟩ := steps
+  obtain ⟨crossings, crossingOk, -⟩ := upgradeBalanceReplay_bounded upgrades
+  have crossed : ∀ e ∈ crossings, e.source ≠ .deposits := fun e mem deposit =>
+    absurd ((upgradeBalanceReplay_crossing crossingOk e mem).symm.trans deposit) (by decide)
+  obtain ⟨last, epochedOk⟩ | ⟨last, rfl⟩ := epochIfLast_cases epochedOk
+  · obtain ⟨_, _, epochEvents, replayOk, -⟩ :=
+      epochBalanceReplay_result cached epoched sourceEarly epochedOk
+    rw [Step.balanceEvents_epoch_slot across cachedOk nextOk last replayOk advanceOk
+      crossingOk] at ok
+    cases ok
+    intro e mem deposit
+    rcases List.mem_append.mp mem with mem | mem
+    · have ordered : PendingConsolidationsOrdered config (getCurrentEpoch cached).toNat cached := by
+        obtain ⟨_, _, _, _, rfl⟩ := processSlot_ok cachedOk
+        exact shared.pendingConsolidationsOrdered genesis sourceEarly delay
+      exact (epochBalanceReplay_deposits ordered replayOk).2 e mem deposit
+    · exact absurd deposit (crossed e mem)
+  · have replayed : (Step.slot across).balanceEvents = .ok ([] ++ crossings) := by
+      simp only [Step.balanceEvents, cachedOk, nextOk, last, ↓reduceIte, advanceOk,
+        crossingOk, bind, Except.bind, pure, Except.pure]
+    rw [replayed] at ok
+    cases ok
+    intro e mem deposit
+    exact absurd deposit (crossed e (by simpa using mem))
 
 /-- Lemma WC: on a run from genesis, no deposit event credits a withdrawable pending source.
 
