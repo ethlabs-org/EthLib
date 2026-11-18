@@ -5,6 +5,8 @@ public import EthLib.Consensus.Proofs.DirectSafety.IntervalFunding
 public import EthLib.Consensus.Proofs.DirectSafety.Apriori.Bound
 public import EthLib.Consensus.Proofs.DirectSafety.Apriori.Ceiling
 import EthLib.Consensus.Proofs.Transition.EpochPassAtCall
+import EthLib.Consensus.Proofs.DirectSafety.Apriori.Penalties
+import EthLib.Consensus.Proofs.DirectSafety.Apriori.Contracts.Producers
 
 /-!
 # Exit counts, gain rate and preset facts for the pin split
@@ -1069,6 +1071,410 @@ private theorem passRate_mul_le {x z : ForkedBeaconState preset} (high t i : ℕ
   linarith
 
 end FloorPath
+
+/-! ## One epoch of a new key -/
+
+section Epoch
+
+open DirectSafety.Apriori DirectSafety.Apriori.Internal
+
+/-- Every fork from Fulu to before Gloas has the slashing quotient of Fulu. -/
+private theorem mspq_eq (f : Fork) (h1 : .fusaka ≤ f) (h2 : f < .glamsterdam) :
+    (EthLib.Consensus.parameters preset f).MIN_SLASHING_PENALTY_QUOTIENT =
+      (EthLib.Consensus.parameters preset .fusaka).MIN_SLASHING_PENALTY_QUOTIENT := by
+  cases f <;> first | rfl | (exfalso; revert h1 h2; decide)
+
+/-- One epoch with no pass, and the penalty of a slashing in it. -/
+private theorem same_arith (b' b cap K band X sl Q Bq EB : ℕ)
+    (hcap : K ≤ cap) (hQ : 2 ≤ Q) (hB : K + band ≤ Q * Bq)
+    (seg : min b' cap ≤ b + X + sl) (hsl : Q * sl ≤ EB)
+    (hyst : EB ≤ b' + band) (hcapEB : EB ≤ cap) :
+    min b' K ≤ b + X + (if sl = 0 then 0 else Bq) := by
+  by_cases z : sl = 0
+  · subst z
+    simp only [ite_true] at *
+    have : min b' K ≤ min b' cap := min_le_min_left _ hcap
+    omega
+  · simp only [z, ite_false]
+    set C := min b' cap with hC
+    have hEB : EB ≤ C + band := by
+      rcases le_total b' cap with h | h
+      · have : C = b' := min_eq_left h
+        omega
+      · have : C = cap := min_eq_right h
+        omega
+    by_cases cK : C ≤ K
+    · have hcle : min b' K ≤ C := le_min (min_le_left _ _) ((min_le_right _ _).trans hcap)
+      have slB : sl ≤ Bq := by
+        have : Q * sl ≤ Q * Bq := by omega
+        exact Nat.le_of_mul_le_mul_left this (by omega)
+      omega
+    · have above : K < C := Nat.lt_of_not_ge cK
+      have : min b' K = K := by
+        apply min_eq_right
+        have := min_le_left b' cap
+        omega
+      rw [this]
+      have : Q * sl ≤ Q * (Bq + (C - K)) := by
+        have h1 : Q * (C - K) ≥ C - K := Nat.le_mul_of_pos_left _ (by omega)
+        have : Q * (Bq + (C - K)) = Q * Bq + Q * (C - K) := by ring
+        omega
+      have := Nat.le_of_mul_le_mul_left this (by omega)
+      omega
+
+/-- The standing hypotheses of the floor of a new key.
+
+They are the guard and the facts that it reads.
+
+They also hold the preset facts, and the statements that the floor takes as hypotheses. -/
+private structure Ctx (config : Config) (checks : SignatureChecks) {preset : Preset}
+    (g x : ForkedBeaconState preset) (high : ℕ) where
+  shared : Run config checks g x
+  genesis : Genesis (config := config) (checks := checks) g
+  parameters : DirectSafety.Parameters preset
+  caps : CapOrder preset
+  aligned : MaxEffectiveBalancesAligned preset
+  twoSlots : 2 ≤ preset.SLOTS_PER_EPOCH.toNat
+  electra : .pectra ≤ x.fork
+  fulu : .fusaka ≤ x.fork
+  guard : aprioriGuardAt config x high
+  delay : 0 < config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat
+  vector : 4 ≤ preset.EPOCHS_PER_SLASHINGS_VECTOR.toNat
+  quotient :
+    6 * (EthLib.Consensus.parameters preset .fusaka).MIN_SLASHING_PENALTY_QUOTIENT.toNat ≤ 400
+  quotientTwo :
+    2 ≤ (EthLib.Consensus.parameters preset .fusaka).MIN_SLASHING_PENALTY_QUOTIENT.toNat
+  room : 600 * (high + 2 - (getCurrentEpoch x.state).toNat) ≤ stakeFloorAt config x high 0
+  epochFloor : EpochFloorStatement preset config checks
+  scores : RunScoresStatement preset config checks
+  mono : CeilingMonoStatement preset config
+  anti : FloorAntiStatement preset config
+
+/-- The total active balance of a state of a run lies between the floor and the ceiling.
+
+It is `total_within_guard` (PinDriftBound, private) at the index of the state. -/
+private theorem Ctx.total_bounds {g x z : ForkedBeaconState preset} {high : ℕ}
+    (c : Ctx config checks g x high) (run : Run config checks x z) (early : z.fork < .glamsterdam)
+    (within : (getCurrentEpoch z.state).toNat ≤ high + 1) {total : Gwei}
+    (totalOk : getTotalActiveBalance z.state = .ok total) :
+    stakeFloorAt config x high (ix x z) ≤ total.toNat ∧
+      total.toNat ≤ stakeCeilingAt config x high (ix x z) := by
+  obtain ⟨ceiling, -, floor⟩ := ceilingFloor_electra c.shared run high
+    ⟨c.genesis, c.parameters, c.caps, c.aligned, early, within, c.guard⟩ c.twoSlots c.electra
+  have xEarly := Nat.lt_of_le_of_lt (fork_le_of_chainSteps run.chainSteps) early
+  have unit := (ceiling_unit_of_guard c.shared c.genesis c.aligned xEarly c.electra c.guard).trans
+    (c.mono c.electra (Nat.zero_le (ix x z)))
+  refine ⟨floor total totalOk, ?_⟩
+  obtain ⟨-, -, value⟩ := getTotalBalance_ok_iff_stake.mp (getTotalActiveBalance_ok totalOk)
+  rw [value]
+  exact max_le unit ceiling
+
+/-- Along the window, the floor stays within three halves of its start.
+
+The start floor is below the stake at the start, which the funded stake covers.
+
+The funded stake is below the first ceiling, which is below the last.
+
+The guard asks that twice the last ceiling be at most three times the last floor. -/
+private theorem Ctx.ratio {g x : ForkedBeaconState preset} {high : ℕ}
+    (c : Ctx config checks g x high) (early : x.fork < .glamsterdam) {s : ℕ}
+    (inside : s ≤ high + 1 - (getCurrentEpoch x.state).toNat)
+    (within : (getCurrentEpoch x.state).toNat ≤ high + 1) :
+    2 * stakeFloorAt config x high 0 ≤ 3 * stakeFloorAt config x high s := by
+  have notBefore : ¬ x.fork < .pectra := Nat.not_lt_of_ge c.electra
+  have zero : preElectraEpochs config x high = 0 := by simp [preElectraEpochs, notBefore]
+  obtain ⟨-, -, -, -, -, -, -, -, -, -, -, -, ratioGuard, -⟩ := id c.guard
+  rw [zero] at ratioGuard
+  have ratio := ratioGuard (high + 1 - (getCurrentEpoch x.state).toNat) (Nat.zero_le _)
+    (by unfold driftHorizon; omega)
+  have first : stakeFloorAt config x high 0 ≤ stakeCeilingAt config x high 0 :=
+    (floor_initial_le_reference x high).trans
+      ((funding_active_le x early (c.shared.pubkeysDistinct c.genesis)).trans
+        (funded_le_ceiling_initial c.electra))
+  have anti : stakeFloorAt config x high (high + 1 - (getCurrentEpoch x.state).toNat) ≤
+      stakeFloorAt config x high s := c.anti inside
+  have mono : stakeCeilingAt config x high 0 ≤
+      stakeCeilingAt config x high (high + 1 - (getCurrentEpoch x.state).toNat) :=
+    c.mono c.electra (Nat.zero_le _)
+  have ratio' : 2 * stakeCeilingAt config x high (high + 1 - (getCurrentEpoch x.state).toNat) ≤
+      3 * stakeFloorAt config x high (high + 1 - (getCurrentEpoch x.state).toNat) := by
+    simpa [stakeCeilingAt, stakeFloorAt, zero] using ratio
+  omega
+
+/-- Every cap is at least `MAX_EFFECTIVE_BALANCE`. -/
+private theorem minimum_cap (caps : CapOrder preset) {h : Fork} (v : Validator) :
+    preset.MAX_EFFECTIVE_BALANCE ≤ withdrawalMaxEffectiveBalance preset h v := by
+  unfold withdrawalMaxEffectiveBalance getMaxEffectiveBalance
+  split
+  · split
+    · exact UInt64.le_trans caps.activation caps.compounding
+    · exact caps.activation
+  · exact UInt64.le_refl _
+
+/-- The rounded-up quotient `Bq` covers its numerator. -/
+private theorem ceil_div_cover (a Q : ℕ) (positive : 0 < Q) : a ≤ Q * ((a + Q - 1) / Q) := by
+  have h1 := Nat.div_add_mod (a + Q - 1) Q
+  have h2 := Nat.mod_lt (a + Q - 1) positive
+  omega
+
+/-- The floor of a new key over one epoch that a slot step ends.
+
+The potential of a key is the least of its balance and `MAX_EFFECTIVE_BALANCE`, plus the band.
+
+The potential at the start keeps the fraction of the floor, less the rounding error.
+
+It is charged the key's sync debits, its partial payments, and its slashing, once. -/
+private theorem Ctx.cross {g x m n z : ForkedBeaconState preset} {high : ℕ}
+    (c : Ctx config checks g x high) (hm : Run config checks x m)
+    (pre : Run config checks m z) (ok : advanceSlotAcross config checks z = .ok n)
+    (early : n.fork < .glamsterdam)
+    (within : (getCurrentEpoch n.state).toNat ≤ high + 1)
+    (same : getCurrentEpoch z.state = getCurrentEpoch m.state)
+    (step : (getCurrentEpoch n.state).toNat = (getCurrentEpoch m.state).toNat + 1)
+    (i : ℕ) (val : Validator) (found : m.state.validators.data[i]? = some val)
+    (activated : val.activationEpoch ≠ FAR_FUTURE_EPOCH)
+    (exit : ∀ w, n.state.validators.data[i]? = some w →
+      (getCurrentEpoch m.state).toNat + 1 < w.exitEpoch.toNat)
+    (slashedCond : val.slashed = true → (getCurrentEpoch n.state).toNat +
+      preset.EPOCHS_PER_SLASHINGS_VECTOR.toNat / 2 < val.withdrawableEpoch.toNat)
+    (hyst : effectiveAt m i ≤ actualBalanceAt m i + preset.downwardBand)
+    {events : List (BalanceEvent preset)}
+    (replayed : (pre.snoc (Step.slot ok)).balanceEvents (getCurrentEpoch m.state).toNat =
+      .ok events) :
+    (min (actualBalanceAt m i) preset.MAX_EFFECTIVE_BALANCE.toNat + preset.downwardBand) *
+        stakeFloorAt config x high
+          ((getCurrentEpoch m.state).toNat - (getCurrentEpoch x.state).toNat + 1) ≤
+      (min (actualBalanceAt n i) preset.MAX_EFFECTIVE_BALANCE.toNat + preset.downwardBand) *
+          stakeFloorAt config x high
+            ((getCurrentEpoch m.state).toNat - (getCurrentEpoch x.state).toNat) +
+        2 * (preset.MAX_EFFECTIVE_BALANCE.toNat + preset.downwardBand) +
+        ((events.map (keySyncDebit i)).sum + (events.map (floorPartialDebit i.toUInt64)).sum +
+          (if val.slashed = false ∧ ∃ w, n.state.validators.data[i]? = some w ∧ w.slashed = true
+            then (preset.MAX_EFFECTIVE_BALANCE.toNat + preset.downwardBand +
+              (EthLib.Consensus.parameters preset .fusaka).MIN_SLASHING_PENALTY_QUOTIENT.toNat -
+                1) /
+              (EthLib.Consensus.parameters preset .fusaka).MIN_SLASHING_PENALTY_QUOTIENT.toNat
+            else 0)) *
+          stakeFloorAt config x high
+            ((getCurrentEpoch m.state).toNat - (getCurrentEpoch x.state).toNat) := by
+  classical
+  have mz := fork_le_of_chainSteps pre.chainSteps
+  have hxm := fork_le_of_chainSteps hm.chainSteps
+  have zn : z.fork ≤ n.fork := (Step.slot ok).chainStep.fork_le
+  have mEarly : m.fork < .glamsterdam := Nat.lt_of_le_of_lt (Nat.le_trans mz zn) early
+  have fuluM : .fusaka ≤ m.fork := Nat.le_trans c.fulu hxm
+  have shared' := c.shared.append hm
+  have xm := UInt64.le_iff_toNat_le.mp (currentEpoch_le_of_chainSteps hm.chainSteps)
+  have capLe : preset.MAX_EFFECTIVE_BALANCE.toNat ≤
+      (withdrawalMaxEffectiveBalance preset m.fork val).toNat :=
+    UInt64.le_iff_toNat_le.mp (minimum_cap c.caps val)
+  have positiveQ :
+      0 < (EthLib.Consensus.parameters preset .fusaka).MIN_SLASHING_PENALTY_QUOTIENT.toNat := by
+    have := c.quotientTwo
+    omega
+  obtain ⟨z', pre', post', hr, hz', ineq⟩ := c.epochFloor shared' c.genesis c.caps c.delay
+    c.vector positiveQ (pre.snoc (Step.slot ok)) fuluM early
+    (Or.inr ⟨z, pre, ok, rfl, same, step⟩) i val found activated exit slashedCond
+    (withdrawalMaxEffectiveBalance preset m.fork val).toNat le_rfl replayed
+  have zForkLe : z'.fork ≤ n.fork := fork_le_of_chainSteps post'.chainSteps
+  have z'Early : z'.fork < .glamsterdam := Nat.lt_of_le_of_lt zForkLe early
+  have z'x : Run config checks x z' := hm.append pre'
+  have z'epoch : (getCurrentEpoch z'.state).toNat = (getCurrentEpoch m.state).toNat :=
+    congrArg UInt64.toNat hz'
+  have nz' := UInt64.le_iff_toNat_le.mp (currentEpoch_le_of_chainSteps post'.chainSteps)
+  have insideM : i < m.state.validators.data.size := (Array.getElem?_eq_some_iff.mp found).1
+  have effEq : effectiveAt z' i = effectiveAt m i :=
+    run_same_epoch_effective pre' z'Early hz' i insideM
+  have altairX : .altair ≤ x.fork := Nat.le_trans (by decide) c.fulu
+  have altairZ : .altair ≤ z'.fork :=
+    Nat.le_trans altairX (Nat.le_trans hxm (fork_le_of_chainSteps pre'.chainSteps))
+  have pass : (if getCurrentEpoch m.state < getCurrentEpoch n.state ∧
+        ∃ total, getTotalActiveBalance z'.state = .ok total then passRate config z' i else 0) *
+      stakeFloorAt config x high
+        ((getCurrentEpoch m.state).toNat - (getCurrentEpoch x.state).toNat) ≤
+      effectiveAt m i * (stakeFloorAt config x high
+        ((getCurrentEpoch m.state).toNat - (getCurrentEpoch x.state).toNat) -
+          stakeFloorAt config x high
+            ((getCurrentEpoch m.state).toNat - (getCurrentEpoch x.state).toNat + 1) + 2) := by
+    by_cases h : ∃ total, getTotalActiveBalance z'.state = .ok total
+    · obtain ⟨total, totalOk⟩ := h
+      have lt : getCurrentEpoch m.state < getCurrentEpoch n.state :=
+        UInt64.lt_iff_toNat_lt.mpr (by omega)
+      rw [ite_eq_left ⟨lt, total, totalOk⟩]
+      have bounds := c.total_bounds z'x z'Early (by omega) totalOk
+      have ixeq : ix x z' = (getCurrentEpoch m.state).toNat - (getCurrentEpoch x.state).toNat := by
+        simp only [ix]
+        omega
+      rw [ixeq] at bounds
+      have positive : 0 < stakeFloorAt config x high
+          ((getCurrentEpoch m.state).toNat - (getCurrentEpoch x.state).toNat + 1) :=
+        c.guard.2.2.2.2.2.2.2.2.2.2.2.1 _ (by unfold driftHorizon; omega)
+      have divisor : 0 < inactivityPenaltyDivisor preset config := c.guard.2.2.2.2.2.2.1
+      have scored : (if altair : .altair ≤ z'.fork then
+          (((z'.state.inactivityScores altair).data[i]?).map (·.toNat)).getD 0 else 0) +
+            config.INACTIVITY_SCORE_BIAS.toNat ≤ startInactivityScore config x +
+          config.INACTIVITY_SCORE_BIAS.toNat * ((getCurrentEpoch m.state).toNat -
+            (getCurrentEpoch x.state).toNat + 1) := by
+        rw [dite_eq_left altairZ]
+        have grow : config.INACTIVITY_SCORE_BIAS.toNat ≤ config.INACTIVITY_SCORE_BIAS.toNat *
+            ((getCurrentEpoch m.state).toNat - (getCurrentEpoch x.state).toNat + 1) :=
+          Nat.le_mul_of_pos_right _ (by omega)
+        cases found' : (z'.state.inactivityScores altairZ).data[i]? with
+        | none =>
+          simp only [Option.map_none, Option.getD_none]
+          omega
+        | some score =>
+          have := c.scores z'x altairX z'Early (Or.inl c.electra) altairZ found'
+          simp only [Option.map_some, Option.getD_some]
+          have e : (getCurrentEpoch z'.state).toNat - (getCurrentEpoch x.state).toNat =
+              (getCurrentEpoch m.state).toNat - (getCurrentEpoch x.state).toNat := by omega
+          rw [e] at this
+          rw [Nat.mul_add, Nat.mul_one]
+          omega
+      have := passRate_mul_le (config := config) (x := x) (z := z') high
+        ((getCurrentEpoch m.state).toNat - (getCurrentEpoch x.state).toNat) i total totalOk
+        bounds.1 (by omega) positive divisor scored
+      rw [effEq] at this
+      exact this
+    · rw [ite_eq_right (fun h' => h h'.2)]
+      simp
+  rw [mspq_eq m.fork fuluM mEarly] at ineq
+  set K := preset.MAX_EFFECTIVE_BALANCE.toNat with hK
+  set Q := (EthLib.Consensus.parameters preset .fusaka).MIN_SLASHING_PENALTY_QUOTIENT.toNat
+    with hQ
+  set band := preset.downwardBand with hband
+  set t := (getCurrentEpoch m.state).toNat - (getCurrentEpoch x.state).toNat with ht
+  set Bq := (K + band + Q - 1) / Q with hBq
+  have hB : K + band ≤ Q * Bq := ceil_div_cover _ _ positiveQ
+  have hanti : stakeFloorAt config x high (t + 1) ≤ stakeFloorAt config x high t :=
+    c.anti (Nat.le_succ t)
+  have hzero : stakeFloorAt config x high t ≤ stakeFloorAt config x high 0 :=
+    c.anti (Nat.zero_le t)
+  have nWithin := step
+  have cxIn : (getCurrentEpoch x.state).toNat ≤ high + 1 := by omega
+  have xEarly : x.fork < .glamsterdam :=
+    Nat.lt_of_le_of_lt (Nat.le_trans hxm (Nat.le_trans mz zn)) early
+  have ratio := c.ratio xEarly (s := t + 1) (by omega) cxIn
+  have roomT := c.room
+  have hφ : 6 * Q ≤ stakeFloorAt config x high (t + 1) := by
+    have := c.quotient
+    have : 1 ≤ high + 2 - (getCurrentEpoch x.state).toNat := by omega
+    omega
+  have hband' : 2 * stakeFloorAt config x high t ≤ 3 * stakeFloorAt config x high (t + 1) := by
+    omega
+  have capEB : effectiveAt m i ≤ (withdrawalMaxEffectiveBalance preset m.fork val).toNat := by
+    have := Run.effectiveBalance_capped shared' c.genesis c.caps.activation c.caps.compounding
+      mEarly val (Array.mem_of_getElem? found)
+    have e : effectiveAt m i = val.effectiveBalance.toNat := by simp [effectiveAt, found]
+    rw [e]
+    exact UInt64.le_iff_toNat_le.mp this
+  have bound := step_arith_slash (actualBalanceAt m i) (actualBalanceAt n i)
+    (withdrawalMaxEffectiveBalance preset m.fork val).toNat K band
+    (if getCurrentEpoch m.state < getCurrentEpoch n.state ∧
+        ∃ total, getTotalActiveBalance z'.state = .ok total then passRate config z' i else 0)
+    ((events.map (keySyncDebit i)).sum + (events.map (floorPartialDebit i.toUInt64)).sum)
+    (if val.slashed = false ∧ ∃ w, n.state.validators.data[i]? = some w ∧ w.slashed = true
+      then effectiveAt m i / Q else 0)
+    Q Bq (stakeFloorAt config x high t) (stakeFloorAt config x high (t + 1))
+    (stakeFloorAt config x high t - stakeFloorAt config x high (t + 1)) (effectiveAt m i)
+    capLe c.quotientTwo hB (by omega)
+    (by split <;> [exact Nat.mul_div_le _ _; simp])
+    hyst capEB pass (by omega) hφ hband'
+  have charge : (if (if val.slashed = false ∧ ∃ w, n.state.validators.data[i]? = some w ∧
+        w.slashed = true then effectiveAt m i / Q else 0) = 0 then 0 else Bq) ≤
+      (if val.slashed = false ∧ ∃ w, n.state.validators.data[i]? = some w ∧ w.slashed = true
+        then Bq else 0) := by
+    by_cases h : val.slashed = false ∧ ∃ w, n.state.validators.data[i]? = some w ∧
+      w.slashed = true
+    · rw [ite_eq_left h, ite_eq_left h]
+      by_cases e : effectiveAt m i / Q = 0 <;> simp [e]
+    · rw [ite_eq_right h, ite_eq_right h]
+      simp
+  have mul := Nat.mul_le_mul_right (stakeFloorAt config x high t)
+    (Nat.add_le_add_left charge ((events.map (keySyncDebit i)).sum +
+      (events.map (floorPartialDebit i.toUInt64)).sum))
+  linarith
+
+/-- The floor of a new key over a run inside one epoch.
+
+The least of its balance and `MAX_EFFECTIVE_BALANCE` at the start is at most its balance at the end.
+
+It is charged the key's sync debits, its partial payments, and its slashing, once. -/
+private theorem Ctx.inside {g x m n : ForkedBeaconState preset} {high : ℕ}
+    (c : Ctx config checks g x high) (hm : Run config checks x m) (seg : Run config checks m n)
+    (early : n.fork < .glamsterdam)
+    (same : getCurrentEpoch n.state = getCurrentEpoch m.state)
+    (i : ℕ) (val : Validator) (found : m.state.validators.data[i]? = some val)
+    (activated : val.activationEpoch ≠ FAR_FUTURE_EPOCH)
+    (exit : ∀ w, n.state.validators.data[i]? = some w →
+      (getCurrentEpoch m.state).toNat + 1 < w.exitEpoch.toNat)
+    (slashedCond : val.slashed = true → (getCurrentEpoch n.state).toNat +
+      preset.EPOCHS_PER_SLASHINGS_VECTOR.toNat / 2 < val.withdrawableEpoch.toNat)
+    (hyst : effectiveAt m i ≤ actualBalanceAt m i + preset.downwardBand)
+    {events : List (BalanceEvent preset)}
+    (replayed : seg.balanceEvents (getCurrentEpoch m.state).toNat = .ok events) :
+    min (actualBalanceAt m i) preset.MAX_EFFECTIVE_BALANCE.toNat ≤ actualBalanceAt n i +
+      ((events.map (keySyncDebit i)).sum + (events.map (floorPartialDebit i.toUInt64)).sum +
+        (if val.slashed = false ∧ ∃ w, n.state.validators.data[i]? = some w ∧ w.slashed = true
+          then (preset.MAX_EFFECTIVE_BALANCE.toNat + preset.downwardBand +
+            (EthLib.Consensus.parameters preset .fusaka).MIN_SLASHING_PENALTY_QUOTIENT.toNat -
+              1) / (EthLib.Consensus.parameters preset .fusaka).MIN_SLASHING_PENALTY_QUOTIENT.toNat
+          else 0)) := by
+  classical
+  have hxm := fork_le_of_chainSteps hm.chainSteps
+  have mn := fork_le_of_chainSteps seg.chainSteps
+  have mEarly : m.fork < .glamsterdam := Nat.lt_of_le_of_lt mn early
+  have fuluM : .fusaka ≤ m.fork := Nat.le_trans c.fulu hxm
+  have shared' := c.shared.append hm
+  have capLe : preset.MAX_EFFECTIVE_BALANCE.toNat ≤
+      (withdrawalMaxEffectiveBalance preset m.fork val).toNat :=
+    UInt64.le_iff_toNat_le.mp (minimum_cap c.caps val)
+  have positiveQ :
+      0 < (EthLib.Consensus.parameters preset .fusaka).MIN_SLASHING_PENALTY_QUOTIENT.toNat := by
+    have := c.quotientTwo
+    omega
+  obtain ⟨z', pre', post', hr, hz', ineq⟩ := c.epochFloor shared' c.genesis c.caps c.delay
+    c.vector positiveQ seg fuluM early (Or.inl same) i val found activated exit slashedCond
+    (withdrawalMaxEffectiveBalance preset m.fork val).toNat le_rfl replayed
+  rw [mspq_eq m.fork fuluM mEarly] at ineq
+  have noPass : ¬ (getCurrentEpoch m.state < getCurrentEpoch n.state ∧
+      ∃ total, getTotalActiveBalance z'.state = .ok total) := by
+    intro h
+    rw [same] at h
+    exact UInt64.lt_irrefl _ h.1
+  rw [ite_eq_right noPass] at ineq
+  set K := preset.MAX_EFFECTIVE_BALANCE.toNat with hK
+  set Q := (EthLib.Consensus.parameters preset .fusaka).MIN_SLASHING_PENALTY_QUOTIENT.toNat
+    with hQ
+  set band := preset.downwardBand with hband
+  set Bq := (K + band + Q - 1) / Q with hBq
+  have hB : K + band ≤ Q * Bq := ceil_div_cover _ _ positiveQ
+  have capEB : effectiveAt m i ≤ (withdrawalMaxEffectiveBalance preset m.fork val).toNat := by
+    have := Run.effectiveBalance_capped shared' c.genesis c.caps.activation c.caps.compounding
+      mEarly val (Array.mem_of_getElem? found)
+    have e : effectiveAt m i = val.effectiveBalance.toNat := by simp [effectiveAt, found]
+    rw [e]
+    exact UInt64.le_iff_toNat_le.mp this
+  have bound := same_arith (actualBalanceAt m i) (actualBalanceAt n i)
+    (withdrawalMaxEffectiveBalance preset m.fork val).toNat K band
+    ((events.map (keySyncDebit i)).sum + (events.map (floorPartialDebit i.toUInt64)).sum)
+    (if val.slashed = false ∧ ∃ w, n.state.validators.data[i]? = some w ∧ w.slashed = true
+      then effectiveAt m i / Q else 0)
+    Q Bq (effectiveAt m i) capLe c.quotientTwo hB (by omega)
+    (by split <;> [exact Nat.mul_div_le _ _; simp]) hyst capEB
+  have charge : (if (if val.slashed = false ∧ ∃ w, n.state.validators.data[i]? = some w ∧
+        w.slashed = true then effectiveAt m i / Q else 0) = 0 then 0 else Bq) ≤
+      (if val.slashed = false ∧ ∃ w, n.state.validators.data[i]? = some w ∧ w.slashed = true
+        then Bq else 0) := by
+    by_cases h : val.slashed = false ∧ ∃ w, n.state.validators.data[i]? = some w ∧
+      w.slashed = true
+    · rw [ite_eq_left h, ite_eq_left h]
+      by_cases e : effectiveAt m i / Q = 0 <;> simp [e]
+    · rw [ite_eq_right h, ite_eq_right h]
+      simp
+  omega
+
+end Epoch
 
 /-- C2 (item 16).
 
