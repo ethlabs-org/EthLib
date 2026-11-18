@@ -143,23 +143,10 @@ private theorem epoch_fall {f : Fork} {c t : BeaconState preset f} (altair : .al
       old.effectiveBalance.toNat ≤ effectiveAt ⟨f, t⟩ i +
         fallGap preset.EFFECTIVE_BALANCE_INCREMENT.toNat preset.downwardBand
           old.effectiveBalance.toNat (actualBalanceAt ⟨f, rewarded⟩ i) := by
-  have trace := processEpoch_trace ok
-  change EpochTrace _ (.justification :: .inactivity :: .rewards :: .registry :: .slashings ::
-    .eth1Reset :: .pendingDeposits :: .pendingConsolidations :: .payments ::
-    .effectiveBalances :: [.slashingsReset, .randaoReset, .history, .participation,
-      .syncCommittees, .proposerLookahead, .ptcWindow]) _ _ at trace
-  obtain _ | ⟨justifiedOk, trace⟩ := trace
-  obtain _ | ⟨scoredOk, trace⟩ := trace
-  obtain _ | ⟨rewardedOk, trace⟩ := trace
-  obtain _ | ⟨registeredOk, trace⟩ := trace
-  obtain _ | ⟨slashedOk, trace⟩ := trace
-  obtain _ | ⟨resetOk, trace⟩ := trace
-  obtain _ | ⟨depositedOk, trace⟩ := trace
-  obtain _ | ⟨consolidatedOk, trace⟩ := trace
-  obtain _ | ⟨settledOk, trace⟩ := trace
-  obtain _ | ⟨updatedOk, trace⟩ := trace
-  rename_i justified scored rewarded registered slashed reset deposited consolidated settled
-    updated
+  obtain ⟨justified, scored, rewarded, registered, slashed, reset, deposited, consolidated, settled,
+    updated, justifiedOk, scoredOk, rewardedOk, registeredOk, slashedOk, resetOk, depositedOk,
+    consolidatedOk, settledOk, updatedOk, trace⟩ :=
+    (processEpoch_trace ok).through_effectiveBalances
   have justifiedEdge := EpochStage.action_cases.mp justifiedOk
   have scoredEdge := EpochStage.action_cases.mp scoredOk
   have rewardedEq : processRewardsAndPenalties config scored = .ok rewarded :=
