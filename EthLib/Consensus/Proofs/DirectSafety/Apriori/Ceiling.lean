@@ -1391,7 +1391,7 @@ private theorem epoch_delayed_slashing_nondebit {x m n : ForkedBeaconState prese
 The key is unslashed at the start and the slot is within the short window of its slash.
 
 Or it is slashed at the start, with an assigned exit, and its penalty is not due in this epoch. -/
-theorem slot_delayed_slashing_nondebit_general {x m n : ForkedBeaconState preset}
+private theorem slot_delayed_slashing_nondebit_general {x m n : ForkedBeaconState preset}
     (pre : Run config checks x m) (ok : advanceSlotAcross config checks m = .ok n)
     (caps : CapOrder preset) (early : n.fork < .glamsterdam) (holds : Invariant m.state)
     (delay : 0 < config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat)
@@ -1550,7 +1550,7 @@ theorem floorSlash_step_bound {x y : ForkedBeaconState preset}
 /-- The occurrence budget supplies the first-slash side condition at each recorded event.
 
 A slash recorded along the events marks the high-water mark of the account before them. -/
-theorem FloorTrace.events_general {low base quotient : Nat} {a b : FloorAccount}
+private theorem FloorTrace.events_general {low base quotient : Nat} {a b : FloorAccount}
     (trace : FloorTrace low base quotient a b) (i : ValidatorIndex)
     (events : List (BalanceEvent preset))
     (linked : events.IsChain (fun e e' =>
@@ -1869,7 +1869,7 @@ private theorem FloorTrace.event {x y : ForkedBeaconState preset}
 /-- A step's existing occurrence bound and balance chain compose its classified sites.
 
 A slash recorded along them marks the high-water mark of the account before them. -/
-theorem FloorTrace.step_events_general {x y : ForkedBeaconState preset}
+private theorem FloorTrace.step_events_general {x y : ForkedBeaconState preset}
     (step : Step config checks x y) (caps : CapOrder preset)
     (early : y.fork < .glamsterdam) (holds : Invariant x.state)
     {events : List (BalanceEvent preset)} (replayed : step.balanceEvents = .ok events)
