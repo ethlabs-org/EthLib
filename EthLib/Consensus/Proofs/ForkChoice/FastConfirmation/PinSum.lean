@@ -1197,7 +1197,9 @@ private theorem baseSum_ge {pulled : BeaconState preset fork} (early : fork < .g
       (Nat.mul_div_cancel' (dvd_balanceAt_of_aligned aligned dvd_rfl v.toNat)).symm
   rw [sumEq, Nat.mul_div_cancel_left _ incPos, Finset.mul_sum]
   unfold baseSum
-  simp only [perOk, Except.toOption, Option.getD_some]
+  dsimp only
+  rw [perOk]
+  simp only [Except.toOption, Option.getD_some]
   have swap : ∑ v ∈ activeVoters pulled, per.toNat *
       (balanceAt pulled v.toNat / preset.EFFECTIVE_BALANCE_INCREMENT.toNat) =
       ∑ v ∈ activeVoters pulled, balanceAt pulled v.toNat /
@@ -1211,6 +1213,158 @@ private theorem baseSum_ge {pulled : BeaconState preset fork} (early : fork < .g
   refine ⟨Finset.mem_range.mpr (Array.getElem?_eq_some_iff.mp found).1, ?_⟩
   have current := isActiveAt_eq_true_iff.mpr ⟨w, found, active⟩
   simp [current]
+
+/-- The block proposer credits of one epoch of a run from fin fit one epoch of `baseSum`.
+
+The epoch is read at its start state `m`, and `pulled` is the state whose total the window reads.
+
+The active stake at `pulled` must be at least one increment. -/
+private theorem proposerCredits_le_baseSum
+    (h : Setting config checks g split fin pulled anc counted V)
+    {m n : BeaconState preset fork} (toM : Run config checks ⟨fork, fin⟩ ⟨fork, m⟩)
+    (inner : Run config checks ⟨fork, m⟩ ⟨fork, n⟩)
+    (same : getCurrentEpoch n = getCurrentEpoch m)
+    {high : ℕ} (highLe : high ≤ (getCurrentEpoch pulled).toNat)
+    (started : (getCurrentEpoch m).toNat ≤ high + 1)
+    (stake : preset.EFFECTIVE_BALANCE_INCREMENT.toNat ≤
+      ∑ v ∈ activeVoters pulled, balanceAt pulled v.toNat)
+    {events : List (BalanceEvent preset)} (replayed : inner.balanceEvents high = .ok events) :
+    DirectSafety.Apriori.Internal.sourceCredits .rewards events ≤ baseSum pulled := by
+  classical
+  have electra : .pectra ≤ fork := Nat.le_trans (by decide) h.fulu
+  obtain ⟨toFin⟩ := h.toFin
+  obtain ⟨fromFin⟩ := h.fromFin
+  obtain ⟨toPulled⟩ := h.toPulled
+  have fullP : Run config checks ⟨fork, fin⟩ ⟨fork, pulled⟩ := fromFin.append toPulled
+  have mWithin : (getCurrentEpoch m).toNat ≤ (getCurrentEpoch pulled).toNat + 1 := by omega
+  have supportedM : DirectSafety.Apriori.Internal.Supported toFin toM
+      (getCurrentEpoch pulled).toNat :=
+    ⟨h.genesis, h.parameters, h.caps, h.aligned, h.early, mWithin, h.guard⟩
+  obtain ⟨curM, prevM, -⟩ := DirectSafety.Apriori.Internal.ceilingFloor_electra toFin toM
+    (getCurrentEpoch pulled).toNat supportedM h.twoSlots electra
+  have data := DirectSafety.Apriori.Internal.epoch_credits_data inner electra h.early same high
+    replayed
+  rcases data.1 with ⟨Tm, pm, TmOk, pmOk⟩ | ⟨zero, -, -, -⟩
+  swap
+  · rw [zero]
+    exact Nat.zero_le _
+  obtain ⟨Tp, TpOk⟩ := h.pulledTotal
+  have bound := (data.2 Tm pm TmOk pmOk).1
+  have incPos : 0 < preset.EFFECTIVE_BALANCE_INCREMENT.toNat := by
+    refine Nat.pos_of_ne_zero fun zero => ?_
+    have room := h.room
+    rw [zero, Nat.zero_mul] at room
+    exact absurd room (by decide)
+  -- The two totals are within three halves of each other, and the ceiling of the epoch of `m`.
+  have band := total_band_of_guard toFin h.genesis h.parameters h.caps h.aligned h.twoSlots
+    electra h.guard toM h.early mWithin fullP h.early (Nat.le_succ _) TmOk TpOk
+  obtain ⟨floorLast, -⟩ := total_within_guard toFin h.genesis h.parameters h.caps h.aligned
+    h.twoSlots electra h.guard fullP h.early (Nat.le_succ _) TpOk
+  have notBefore : ¬ (⟨fork, fin⟩ : ForkedBeaconState preset).fork < .pectra :=
+    Nat.not_lt_of_ge electra
+  have zeroEpochs : preElectraEpochs config (⟨fork, fin⟩ : ForkedBeaconState preset)
+      (getCurrentEpoch pulled).toNat = 0 := by simp [preElectraEpochs, notBefore]
+  obtain ⟨-, -, -, -, -, -, -, -, -, -, -, -, ratioGuard, -⟩ := id h.guard
+  rw [zeroEpochs] at ratioGuard
+  have ratio := ratioGuard ((getCurrentEpoch pulled).toNat + 1 - (getCurrentEpoch fin).toNat)
+    (Nat.zero_le _) (by unfold driftHorizon; show _ ≤ _; omega)
+  have mono := stakeCeilingAt_mono (config := config) (x := (⟨fork, fin⟩ : ForkedBeaconState preset))
+    (high := (getCurrentEpoch pulled).toNat) electra
+    (s := (getCurrentEpoch m).toNat - (getCurrentEpoch fin).toNat)
+    (t := (getCurrentEpoch pulled).toNat + 1 - (getCurrentEpoch fin).toNat) (by omega)
+  have ceilingBound : 2 * stakeCeilingAt config (⟨fork, fin⟩ : ForkedBeaconState preset)
+      (getCurrentEpoch pulled).toNat
+        ((getCurrentEpoch m).toNat - (getCurrentEpoch fin).toNat) ≤ 3 * Tp.toNat := by
+    simp only [stakeCeilingAt, stakeFloorAt, zeroEpochs] at mono floorLast ratio ⊢
+    omega
+  -- The totals as stakes.
+  obtain ⟨-, -, valueP⟩ := getTotalBalance_ok_iff_stake.mp (getTotalActiveBalance_ok TpOk)
+  obtain ⟨-, -, valueM⟩ := getTotalBalance_ok_iff_stake.mp (getTotalActiveBalance_ok TmOk)
+  have TpEq : Tp.toNat = ∑ v ∈ activeVoters pulled, balanceAt pulled v.toNat := by
+    rw [valueP]
+    exact max_eq_right stake
+  have TmLow : preset.EFFECTIVE_BALANCE_INCREMENT.toNat ≤ Tm.toNat := by
+    rw [valueM]
+    exact le_max_left _ _
+  -- The quarter total and its reward per increment.
+  have getTotalEq : (getTotalActiveBalance pulled).toOption.getD 0 = Tp := by
+    rw [TpOk]
+    rfl
+  have quarterNat : (max preset.EFFECTIVE_BALANCE_INCREMENT
+      (((getTotalActiveBalance pulled).toOption.getD 0) / 4)).toNat =
+        max preset.EFFECTIVE_BALANCE_INCREMENT.toNat (Tp.toNat / 4) := by
+    rw [getTotalEq, toNat_max, UInt64.toNat_div]
+    rfl
+  have quarterLe : (max preset.EFFECTIVE_BALANCE_INCREMENT
+      (((getTotalActiveBalance pulled).toOption.getD 0) / 4)).toNat ≤ Tm.toNat := by
+    rw [quarterNat]
+    exact max_le TmLow (by omega)
+  have quarterPos : 0 < (max preset.EFFECTIVE_BALANCE_INCREMENT
+      (((getTotalActiveBalance pulled).toOption.getD 0) / 4)).toNat := by
+    rw [quarterNat]
+    exact Nat.lt_of_lt_of_le incPos (le_max_left _ _)
+  obtain ⟨pq, pqOk⟩ := perIncrement_ok_of pmOk quarterPos
+  have rate : pm.toNat ≤ pq.toNat := by
+    rw [toNat_getBaseRewardPerIncrement pmOk, toNat_getBaseRewardPerIncrement pqOk]
+    exact Nat.div_le_div_left (Nat.sqrt_le_sqrt quarterLe) (Nat.sqrt_pos.mpr quarterPos)
+  -- The base rewards of the recent keys hold one quarter-rate reward for each active increment.
+  have alignedP : EffectiveBalancesAligned pulled :=
+    (run_justified_separated (toFin.append fullP) h.genesis).1.aligned h.aligned
+  have recent := baseSum_ge h.early incPos alignedP pqOk
+  -- The arithmetic of increments.
+  have divides : preset.EFFECTIVE_BALANCE_INCREMENT.toNat ∣
+      ∑ v ∈ activeVoters pulled, balanceAt pulled v.toNat :=
+    Finset.dvd_sum fun v _ => dvd_balanceAt_of_aligned alignedP dvd_rfl v.toNat
+  obtain ⟨steps, stepsEq⟩ := divides
+  have stepsDiv : (∑ v ∈ activeVoters pulled, balanceAt pulled v.toNat) /
+      preset.EFFECTIVE_BALANCE_INCREMENT.toNat = steps := by
+    rw [stepsEq, Nat.mul_div_cancel_left _ incPos]
+  rw [stepsDiv] at recent
+  have two : 2 * (stakeCeilingAt config (⟨fork, fin⟩ : ForkedBeaconState preset)
+      (getCurrentEpoch pulled).toNat
+        ((getCurrentEpoch m).toNat - (getCurrentEpoch fin).toNat) /
+          preset.EFFECTIVE_BALANCE_INCREMENT.toNat) ≤ 3 * steps := by
+    refine Nat.le_of_mul_le_mul_right (a := preset.EFFECTIVE_BALANCE_INCREMENT.toNat) ?_ incPos
+    calc 2 * (stakeCeilingAt config (⟨fork, fin⟩ : ForkedBeaconState preset)
+          (getCurrentEpoch pulled).toNat
+            ((getCurrentEpoch m).toNat - (getCurrentEpoch fin).toNat) /
+              preset.EFFECTIVE_BALANCE_INCREMENT.toNat) *
+            preset.EFFECTIVE_BALANCE_INCREMENT.toNat
+        = 2 * (stakeCeilingAt config (⟨fork, fin⟩ : ForkedBeaconState preset)
+          (getCurrentEpoch pulled).toNat
+            ((getCurrentEpoch m).toNat - (getCurrentEpoch fin).toNat) /
+              preset.EFFECTIVE_BALANCE_INCREMENT.toNat *
+            preset.EFFECTIVE_BALANCE_INCREMENT.toNat) := by rw [Nat.mul_assoc]
+      _ ≤ 2 * stakeCeilingAt config (⟨fork, fin⟩ : ForkedBeaconState preset)
+          (getCurrentEpoch pulled).toNat
+            ((getCurrentEpoch m).toNat - (getCurrentEpoch fin).toNat) :=
+          Nat.mul_le_mul_left _ (Nat.div_mul_le_self _ _)
+      _ ≤ 3 * Tp.toNat := ceilingBound
+      _ = 3 * steps * preset.EFFECTIVE_BALANCE_INCREMENT.toNat := by
+          rw [TpEq, stepsEq]
+          ring
+  have sums : (∑ i ∈ (getActiveValidatorIndices (⟨fork, m⟩ : ForkedBeaconState preset).state
+        (getPreviousEpoch (⟨fork, m⟩ : ForkedBeaconState preset).state)).toFinset,
+        effectiveAt (⟨fork, m⟩ : ForkedBeaconState preset) i.toNat) /
+          preset.EFFECTIVE_BALANCE_INCREMENT.toNat +
+      (∑ i ∈ (getActiveValidatorIndices (⟨fork, m⟩ : ForkedBeaconState preset).state
+        (getCurrentEpoch (⟨fork, m⟩ : ForkedBeaconState preset).state)).toFinset,
+        effectiveAt (⟨fork, m⟩ : ForkedBeaconState preset) i.toNat) /
+          preset.EFFECTIVE_BALANCE_INCREMENT.toNat ≤
+      2 * (stakeCeilingAt config (⟨fork, fin⟩ : ForkedBeaconState preset)
+        (getCurrentEpoch pulled).toNat
+          ((getCurrentEpoch m).toNat - (getCurrentEpoch fin).toNat) /
+            preset.EFFECTIVE_BALANCE_INCREMENT.toNat) := by
+    have one := Nat.div_le_div_right (c := preset.EFFECTIVE_BALANCE_INCREMENT.toNat) prevM
+    have another := Nat.div_le_div_right (c := preset.EFFECTIVE_BALANCE_INCREMENT.toNat) curM
+    omega
+  have first := Nat.mul_le_mul_left (54 * pm.toNat) sums
+  have second := Nat.mul_le_mul_left (54 * pm.toNat) two
+  have third := Nat.mul_le_mul_right (3 * steps) (Nat.mul_le_mul_left 54 rate)
+  have scaled : DirectSafety.Apriori.Internal.sourceCredits .rewards events * 448 ≤
+      54 * pq.toNat * (3 * steps) := bound.trans (first.trans (second.trans third))
+  have regroup : 54 * pq.toNat * (3 * steps) = 162 * (pq.toNat * steps) := by ring
+  omega
 
 /-- R1 (branchR): R's credits to V keys since the split, weight 3.
 
