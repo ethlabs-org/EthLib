@@ -727,31 +727,27 @@ private theorem Run.start_state {x y : ForkedBeaconState preset} (tail : Run con
   exact ⟨z, pre, post, v0, w, split, foundZ, foundY, (life.activationEpoch assigned).symm,
     by omega, lowY, highY⟩
 
-/-! ## The scores of a pass -/
+/-! ## The scores along a run -/
 
 open DirectSafety.Apriori in
-/-- After the update of pass `s`, each inactivity score of a position is small, new positions too.
+/-- On a run from `x` from Altair, each inactivity score of a state is small, new positions too.
 
-It is `referenceScores_le` (Branch.lean) without its premise `i < x.state.validators.data.size`.
+It is `scoresBelowAt_run` (Branch.lean) for every position of the registry.
 
-The pass ends epoch `s` of a branch from `x` from Altair, in the slot step from its last state `z`.
+The score is at most `sigma + bias * t`, with `sigma` the start score that the floor reads.
 
-The score is at most `sigma + bias * (s + 1)`, with `sigma` the start score that the floor reads.
+Here `t` is the number of epochs from `x`, so the number of updates of the scores so far.
 
-A position that the branch adds starts with the score zero.
+A position that the run adds starts with the score zero.
 
 It then rises by at most the bias per epoch. -/
-def AllScoresStatement (preset : Preset) (config : Config) (checks : SignatureChecks) : Prop :=
-  ∀ {x z : ForkedBeaconState preset} (_head : Run config checks x z) (_altair : .altair ≤ x.fork)
-    (_early : z.fork < .glamsterdam) (_era : .pectra ≤ x.fork ∨ z.fork < .pectra)
-    {cached just pass : BeaconState preset z.fork}
-    (_cachedOk : processSlot z.state = .ok cached)
-    (_justified : EpochStage.Edge config checks .justification cached just)
-    (_scored : EpochStage.Edge config checks .inactivity just pass)
-    {i : ℕ} (later : .altair ≤ z.fork) {score : UInt64}
-    (_found : (pass.inactivityScores later).data[i]? = some score),
+def RunScoresStatement (preset : Preset) (config : Config) (checks : SignatureChecks) : Prop :=
+  ∀ {x y : ForkedBeaconState preset} (_run : Run config checks x y) (_altair : .altair ≤ x.fork)
+    (_early : y.fork < .glamsterdam) (_era : .pectra ≤ x.fork ∨ y.fork < .pectra)
+    (later : .altair ≤ y.fork) {i : ℕ} {score : UInt64}
+    (_found : (y.state.inactivityScores later).data[i]? = some score),
     score.toNat ≤ startInactivityScore config x + config.INACTIVITY_SCORE_BIAS.toNat *
-      ((getCurrentEpoch z.state).toNat - (getCurrentEpoch x.state).toNat + 1)
+      ((getCurrentEpoch y.state).toNat - (getCurrentEpoch x.state).toNat)
 
 /-! ## The floor of one epoch of a key -/
 
@@ -775,7 +771,7 @@ def passRate (config : Config) (z : ForkedBeaconState preset) (v : ℕ) : ℕ :=
       (config.INACTIVITY_SCORE_BIAS.toNat *
         (EthLib.Consensus.parameters preset z.fork).INACTIVITY_PENALTY_QUOTIENT.toNat)
 
-open DirectSafety.Apriori.Internal in
+open DirectSafety.Apriori.Internal Classical in
 /-- The floor of one key over a run that crosses at most one epoch boundary.
 
 The run starts at `m` and ends at `n`, from Fulu and before Gloas.
@@ -791,6 +787,10 @@ Take any `C` below the key's largest effective balance at `m`.
 The least of the balance at `m` and `C` is at most the balance at `n`, plus its debits.
 
 The first debit is the pass at the last state `z` of the first epoch, if the run crosses its end.
+
+The pass is a debit only when it reads a total active balance there.
+
+Otherwise it records no penalty.
 
 The others are the key's sync debits and its payments from the queue of partial withdrawals.
 
@@ -817,7 +817,8 @@ def EpochFloorStatement (preset : Preset) (config : Config) (checks : SignatureC
     ∃ (z : ForkedBeaconState preset) (pre : Run config checks m z) (post : Run config checks z n),
       r = pre.append post ∧ getCurrentEpoch z.state = getCurrentEpoch m.state ∧
       min (actualBalanceAt m i) C ≤ actualBalanceAt n i +
-        (if getCurrentEpoch m.state < getCurrentEpoch n.state then passRate config z i else 0) +
+        (if getCurrentEpoch m.state < getCurrentEpoch n.state ∧
+            ∃ total, getTotalActiveBalance z.state = .ok total then passRate config z i else 0) +
         (events.map (keySyncDebit i)).sum + (events.map (floorPartialDebit i.toUInt64)).sum +
         (if val.slashed = false ∧ ∃ w, n.state.validators.data[i]? = some w ∧ w.slashed = true
           then effectiveAt m i /
