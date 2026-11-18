@@ -1871,8 +1871,6 @@ private theorem fall_credit_arith {EB after gRewarded gTrue gSub gLow c credit q
 
 /-- The fall of the effective balance of a voter that is never slashed, over the end of an epoch.
 
-This is the loss bound of the fast confirmation rule, read by `quorumDrift_le_quorumReserve`.
-
 The epoch starts at `R`, right after its epoch transition, where the hysteresis holds.
 
 A boundary run of at most one block leads to `T`, the block state of the target.

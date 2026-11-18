@@ -1380,10 +1380,6 @@ theorem depositChurnLimit_toNat_of_lt {fork : Fork} {state : BeaconState preset 
 
 /-- The effective balances of the validators active in the next epoch rise by at most the gain.
 
-This is the gain bound (rise) of the fast confirmation rule.
-
-It is read by `quorumDrift_le_quorumReserve`.
-
 The epoch starts at `R`, right after its epoch transition, where the hysteresis holds.
 
 One branch leads from `R` to the call's state `P`, inside the epoch.
@@ -1402,7 +1398,7 @@ Off that set, the largest effective balance stays.
 
 A validator below its cap rises only past the upward band, and by at most its balance.
 
-A validator at its cap rises only after a conversion (L4a), and then by at most its credits.
+A validator at its cap rises only after a conversion, and then by at most its credits.
 
 The epoch also transfers balance to other validators, to a bounded number of recipients.
 
