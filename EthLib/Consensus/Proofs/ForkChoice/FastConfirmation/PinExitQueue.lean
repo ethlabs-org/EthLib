@@ -399,6 +399,154 @@ theorem Run.exits_started_le {x y : ForkedBeaconState preset} (tail : Run config
     ((List.filter_sublist).map _).sum_le_sum fun _ _ => Nat.zero_le _
   exact (Nat.mul_le_mul_right bound cardLe).trans (owns.trans sub)
 
+/-! ## A potential that retains a decreasing floor -/
+
+/-- Potentials that retain a decreasing floor, up to a rounding error per epoch.
+
+The floor `φ` never rises, and stays within three halves of its start.
+
+Each potential `d` keeps a fraction `φ (t + 1) / φ t` of the one before, less an error `e`.
+
+So `d j` keeps the fraction `φ j / φ 0` of `d 0`, less `3 e j / 2` over `φ 0`. -/
+private theorem retain_arith (φ d : ℕ → ℕ) (e T : ℕ) (pos : ∀ t < T, 0 < φ t)
+    (anti : ∀ t < T, φ (t + 1) ≤ φ t) (band : ∀ t ≤ T, 2 * φ 0 ≤ 3 * φ t)
+    (step : ∀ t < T, d t * φ (t + 1) ≤ d (t + 1) * φ t + e) :
+    ∀ j ≤ T, 2 * d 0 * φ j ≤ 2 * d j * φ 0 + 3 * e * j := by
+  intro j
+  induction j with
+  | zero => intro _; simp
+  | succ j ih =>
+    intro hj
+    have hlt : j < T := hj
+    have ih' := ih (Nat.le_of_lt hlt)
+    have p := pos j hlt
+    have a := anti j hlt
+    have b := band j (Nat.le_of_lt hlt)
+    have s := step j hlt
+    refine Nat.le_of_mul_le_mul_right ?_ p
+    calc 2 * d 0 * φ (j + 1) * φ j = (2 * d 0 * φ j) * φ (j + 1) := by ring
+      _ ≤ (2 * d j * φ 0 + 3 * e * j) * φ (j + 1) := Nat.mul_le_mul_right _ ih'
+      _ = 2 * φ 0 * (d j * φ (j + 1)) + 3 * e * j * φ (j + 1) := by ring
+      _ ≤ 2 * φ 0 * (d (j + 1) * φ j + e) + 3 * e * j * φ j := by
+          apply Nat.add_le_add
+          · exact Nat.mul_le_mul_left _ s
+          · exact Nat.mul_le_mul_left _ a
+      _ = 2 * d (j + 1) * φ 0 * φ j + 2 * φ 0 * e + 3 * e * j * φ j := by ring
+      _ ≤ 2 * d (j + 1) * φ 0 * φ j + 3 * φ j * e + 3 * e * j * φ j := by
+          have := Nat.mul_le_mul_right e b
+          omega
+      _ = (2 * d (j + 1) * φ 0 + 3 * e * (j + 1)) * φ j := by ring
+
+/-! ## The state before a new key is scheduled -/
+
+/-- One step of a chain moves the current epoch on by at most one. -/
+private theorem ChainStep.epoch_le_succ {a b : ForkedBeaconState preset}
+    (step : ChainStep config checks a b) :
+    (getCurrentEpoch b.state).toNat ≤ (getCurrentEpoch a.state).toNat + 1 := by
+  cases step with
+  | slot ok =>
+    obtain ⟨advanced, slotOk, upgrades⟩ := bind_ok_iff.mp ok
+    have kept := processUpgrades_slot upgrades
+    have next := advanceSlot_slot slotOk
+    rw [getCurrentEpoch_toNat, getCurrentEpoch_toNat]
+    simp only at kept next ⊢
+    rw [kept, next]
+    by_cases zero : preset.SLOTS_PER_EPOCH.toNat = 0
+    · simp [zero]
+    · have positive : 1 ≤ preset.SLOTS_PER_EPOCH.toNat := Nat.pos_of_ne_zero zero
+      calc (a.state.slot.toNat + 1) / preset.SLOTS_PER_EPOCH.toNat
+          ≤ (a.state.slot.toNat + preset.SLOTS_PER_EPOCH.toNat) /
+              preset.SLOTS_PER_EPOCH.toNat :=
+            Nat.div_le_div_right (Nat.add_le_add_left positive _)
+        _ = a.state.slot.toNat / preset.SLOTS_PER_EPOCH.toNat + 1 :=
+            Nat.add_div_right _ positive
+  | block engine signed validate ok =>
+    have same := processBlock_slot (applySignedBlock_ok ok).2.1
+    simp only [getCurrentEpoch, same]
+    exact Nat.le_succ _
+
+/-- A run that starts at or before an epoch and ends at or after it passes a state of that epoch. -/
+private theorem Run.exists_epoch_split {x y : ForkedBeaconState preset}
+    (tail : Run config checks x y) (k : ℕ)
+    (low : (getCurrentEpoch x.state).toNat ≤ k) (high : k ≤ (getCurrentEpoch y.state).toNat) :
+    ∃ (z : ForkedBeaconState preset) (pre : Run config checks x z) (post : Run config checks z y),
+      (getCurrentEpoch z.state).toNat = k ∧ tail = pre.append post := by
+  induction tail with
+  | nil => exact ⟨x, .nil, .nil, by omega, rfl⟩
+  | @snoc middle last pre step ih =>
+    by_cases inside : k ≤ (getCurrentEpoch middle.state).toNat
+    · obtain ⟨z, a, b, epoch, split⟩ := ih inside
+      refine ⟨z, a, b.snoc step, epoch, ?_⟩
+      rw [split]
+      rfl
+    · have bound := ChainStep.epoch_le_succ step.chainStep
+      exact ⟨last, pre.snoc step, .nil, by omega, rfl⟩
+
+/-- A key that is active at the end of a run is scheduled two epochs before its activation.
+
+It is not active by the epoch after the start of the run.
+
+At the state `z` that the run reaches in that epoch, the key holds its activation epoch `A`.
+
+Activity up to `A` is fixed at `z`, since the seed lookahead is at least three epochs. -/
+private theorem Run.start_state {x y : ForkedBeaconState preset} (tail : Run config checks x y)
+    (window : preset.ExitWindowFixed) (i : ℕ)
+    (pending : ∀ v, x.state.validators.data[i]? = some v →
+      (getCurrentEpoch x.state).toNat + 1 < v.activationEpoch.toNat)
+    (active : isActiveAt y.state (getCurrentEpoch y.state) i = true) :
+    ∃ (z : ForkedBeaconState preset) (pre : Run config checks x z) (post : Run config checks z y)
+      (v0 vy : Validator), tail = pre.append post ∧ z.state.validators.data[i]? = some v0 ∧
+      y.state.validators.data[i]? = some vy ∧ v0.activationEpoch = vy.activationEpoch ∧
+      (getCurrentEpoch z.state).toNat + 2 = vy.activationEpoch.toNat ∧
+      vy.activationEpoch.toNat ≤ (getCurrentEpoch y.state).toNat ∧
+      (getCurrentEpoch y.state).toNat < vy.exitEpoch.toNat := by
+  obtain ⟨vy, foundY, activeY⟩ := isActiveAt_eq_true_iff.mp active
+  simp only [isActiveValidator, Bool.and_eq_true, decide_eq_true_eq] at activeY
+  have lowY := UInt64.le_iff_toNat_le.mp activeY.1
+  have highY := UInt64.lt_iff_toNat_lt.mp activeY.2
+  have exitBound := vy.exitEpoch.toNat_lt
+  have fixedWindow := window.lookahead
+  -- Activity at the epoch `A` of the key, as the end state reads it.
+  have activeAtA : isActiveAt y.state vy.activationEpoch i = true := by
+    refine isActiveAt_eq_true_iff.mpr ⟨vy, foundY, ?_⟩
+    simp only [isActiveValidator, Bool.and_eq_true, decide_eq_true_eq]
+    exact ⟨UInt64.le_refl _, UInt64.lt_iff_toNat_lt.mpr (by omega)⟩
+  have kept (h : ForkedBeaconState preset) (run : Run config checks h y)
+      (le : vy.activationEpoch.toNat ≤ (getCurrentEpoch h.state).toNat +
+        preset.MAX_SEED_LOOKAHEAD.toNat) :
+      isActiveAt h.state vy.activationEpoch i = true := by
+    have bound : vy.activationEpoch ≤ activityFixedEpoch h.state := by
+      rw [UInt64.le_iff_toNat_le, activityFixedEpoch_toNat]
+      omega
+    rw [← activeKept_of_chainSteps run.chainSteps _ bound]
+    exact activeAtA
+  -- The key is not active by the epoch after the start of the run.
+  have later : (getCurrentEpoch x.state).toNat + 1 < vy.activationEpoch.toNat := by
+    by_contra early
+    have atX := kept x tail (by omega)
+    obtain ⟨vx, foundX, activeX⟩ := isActiveAt_eq_true_iff.mp atX
+    simp only [isActiveValidator, Bool.and_eq_true, decide_eq_true_eq] at activeX
+    have := pending vx foundX
+    have := UInt64.le_iff_toNat_le.mp activeX.1
+    omega
+  have startEpoch := UInt64.le_iff_toNat_le.mp (currentEpoch_le_of_chainSteps tail.chainSteps)
+  obtain ⟨z, pre, post, epoch, split⟩ :=
+    Run.exists_epoch_split tail (vy.activationEpoch.toNat - 2) (by omega) (by omega)
+  have atZ := kept z post (by omega)
+  obtain ⟨v0, foundZ, activeZ⟩ := isActiveAt_eq_true_iff.mp atZ
+  simp only [isActiveValidator, Bool.and_eq_true, decide_eq_true_eq] at activeZ
+  have assigned : v0.activationEpoch ≠ FAR_FUTURE_EPOCH := by
+    intro far
+    have := UInt64.le_iff_toNat_le.mp activeZ.1
+    rw [far] at this
+    have : FAR_FUTURE_EPOCH.toNat = 2 ^ 64 - 1 := rfl
+    omega
+  obtain ⟨w, foundW, life⟩ := post.registryLifecycle.validators i v0 foundZ
+  have same : w = vy := Option.some.inj (foundW.symm.trans foundY)
+  subst same
+  exact ⟨z, pre, post, v0, w, split, foundZ, foundY, (life.activationEpoch assigned).symm,
+    by omega, lowY, highY⟩
+
 /-! ## The floor of one epoch of a key -/
 
 /-- The sync debit of one key in one event (PinDriftBound's private `syncDebit`, verbatim). -/
