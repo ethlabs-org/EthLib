@@ -907,17 +907,6 @@ private theorem slashValidator_exit_churn {state after : BeaconState preset fork
       omega
     simp [BeaconState.putValidator, finite]
 
-/-- A value of a list is at most the largest value of the list. -/
-private theorem le_foldr_max {α : Type} (f : α → ℕ) {l : List α} {z : α} (member : z ∈ l) :
-    f z ≤ (l.map f).foldr max 0 := by
-  induction l with
-  | nil => cases member
-  | cons head rest ih =>
-    simp only [List.map_cons, List.foldr_cons]
-    rcases List.mem_cons.mp member with rfl | inRest
-    · exact Nat.le_max_left _ _
-    · exact (ih inRest).trans (Nat.le_max_right _ _)
-
 /-- Events within their credit limits credit the slashing events at most their limits. -/
 private theorem slashing_credits_le_limits (events : List (BalanceEvent preset))
     (bounded : ∀ e ∈ events, e.credits ≤ e.creditLimit) :
@@ -1000,7 +989,7 @@ private theorem Run.slashed_once {g x y : ForkedBeaconState preset}
     (Nat.lt_of_lt_of_le (Finset.mem_range.mp inside) post.registryLifecycle.size_le),
       first, last⟩, ?_⟩
   rw [sameQuotient]
-  exact Nat.div_le_div_right (le_foldr_max (fun z => effectiveAt z i) onPath)
+  exact Nat.div_le_div_right (Base.le_foldr_max (List.mem_map_of_mem onPath))
 end PinSplit
 
 /-! ## PinEffectiveFloor -/
@@ -3404,28 +3393,6 @@ private theorem ExitFarFrom.of_epoch {n : ℕ} {f : Fork} {s t : BeaconState pre
           exact ⟨nofun, nofun, nofun, nofun, nofun, nofun⟩) computed) rest
   exact atUpdated.of_data (congrArg (·.data) same)
 
-/-- From Electra, a fork upgrade keeps the registry. -/
-private theorem upgradeNext_validators {pre : ForkedBeaconState preset}
-    {post : {post : ForkedBeaconState preset // pre.fork < post.fork}}
-    (electra : .pectra ≤ pre.fork) (computed : upgradeNext config checks pre = .ok post) :
-    post.val.state.validators.data = pre.state.validators.data := by
-  obtain ⟨fork, state⟩ := pre
-  cases fork <;>
-    simp only [upgradeNext, bind_ok_iff, pure, Except.pure, Except.ok.injEq, throw,
-      throwThe, MonadExceptOf.throw, reduceCtorEq] at computed
-  · exact absurd (show Fork.pectra ≤ Fork.phase0 from electra) (by decide)
-  · exact absurd (show Fork.pectra ≤ Fork.altair from electra) (by decide)
-  · exact absurd (show Fork.pectra ≤ Fork.bellatrix from electra) (by decide)
-  · exact absurd (show Fork.pectra ≤ Fork.shapella from electra) (by decide)
-  · exact absurd (show Fork.pectra ≤ Fork.dencun from electra) (by decide)
-  · obtain ⟨_, upgraded, rfl⟩ := computed
-    exact (upgradeToFulu_spec upgraded).1
-  · obtain ⟨_, upgraded, rfl⟩ := computed
-    exact (upgradeToGloas_spec upgraded).1
-  · obtain ⟨_, upgraded, rfl⟩ := computed
-    obtain ⟨-, rfl⟩ := upgradeToHeze_ok_iff.mp upgraded
-    exact (upgradeHezeFields_lists _).1
-
 /-- From Electra, a step before Gloas leaves every validator that it creates with no exit epoch. -/
 private theorem ExitFarFrom.of_chainStep {a b : ForkedBeaconState preset}
     (step : ChainStep config checks a b) (electra : .pectra ≤ a.fork)
@@ -3448,7 +3415,7 @@ private theorem ExitFarFrom.of_chainStep {a b : ForkedBeaconState preset}
       (property := fun post => ExitFarFrom a.state.validators.data.size post.state ∧
         .pectra ≤ post.fork)
       (fun {pre post} kept ok =>
-        ⟨kept.1.of_data (upgradeNext_validators kept.2 ok),
+        ⟨kept.1.of_data (PinSplit4.upgradeNext_validators kept.2 ok),
           Nat.le_trans kept.2 (Nat.le_of_lt post.property)⟩)
       ⟨atAdvanced, electra⟩ upgrades).1
   | block engine signed validate ok =>
