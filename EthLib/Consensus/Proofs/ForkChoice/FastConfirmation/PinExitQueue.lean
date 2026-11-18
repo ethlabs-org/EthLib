@@ -4,6 +4,7 @@ public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmation.PinDriftBound
 public import EthLib.Consensus.Proofs.DirectSafety.IntervalFunding
 public import EthLib.Consensus.Proofs.DirectSafety.Apriori.Bound
 public import EthLib.Consensus.Proofs.DirectSafety.Apriori.Ceiling
+import EthLib.Consensus.Proofs.Transition.EpochPassAtCall
 
 /-!
 # Exit counts, gain rate and preset facts for the pin split
@@ -727,6 +728,81 @@ private theorem Run.start_state {x y : ForkedBeaconState preset} (tail : Run con
   exact ⟨z, pre, post, v0, w, split, foundZ, foundY, (life.activationEpoch assigned).symm,
     by omega, lowY, highY⟩
 
+/-! ## Hypotheses of the new key's floor -/
+
+/-- A key scheduled for activation holds the maximum effective balance and is unslashed (prover E).
+
+The key has an assigned activation or eligibility epoch.
+
+It is at least two epochs before its activation.
+
+Then its balance is at least its effective balance, which is at least `MAX_EFFECTIVE_BALANCE`. -/
+def ScheduledEligibleBalanceElectra {f : Fork} (s : BeaconState preset f) : Prop :=
+  .pectra ≤ f → ∀ (i : ℕ) (v : Validator), s.validators.data[i]? = some v →
+    (v.activationEpoch ≠ FAR_FUTURE_EPOCH ∨ v.activationEligibilityEpoch ≠ FAR_FUTURE_EPOCH) →
+    getCurrentEpoch s + 1 < v.activationEpoch →
+    (∃ balance, s.balances.data[i]? = some balance ∧ v.effectiveBalance ≤ balance) ∧
+      preset.MAX_EFFECTIVE_BALANCE ≤ v.effectiveBalance ∧ v.slashed = false
+
+/-- The invariant of a scheduled key holds at every state reached from genesis (prover E). -/
+def EligibleBalanceStatement (preset : Preset) (config : Config) (checks : SignatureChecks) :
+    Prop :=
+  ∀ {g x : ForkedBeaconState preset} (_run : Run config checks g x)
+    (_genesis : Genesis (config := config) (checks := checks) g)
+    (_activation : preset.MAX_EFFECTIVE_BALANCE ≤ preset.MIN_ACTIVATION_BALANCE)
+    (_compounding : preset.MIN_ACTIVATION_BALANCE ≤ preset.MAX_EFFECTIVE_BALANCE_ELECTRA)
+    (_aligned : MaxEffectiveBalancesAligned preset) (_early : x.fork < .glamsterdam)
+    (_finite : getCurrentEpoch x.state < FAR_FUTURE_EPOCH),
+    ScheduledEligibleBalanceElectra x.state
+
+/-- The cap of a key at a state, `0` past the registry (prover D's `capAt`). -/
+def keyCapAt (z : ForkedBeaconState preset) (i : ℕ) : ℕ :=
+  ((z.state.validators.data[i]?).map fun v =>
+    (withdrawalMaxEffectiveBalance preset z.fork v).toNat).getD 0
+
+/-- H4: a balance floor along a run gives an effective balance floor.
+
+Suppose the key's balance stays at least `floor` at every state of the run.
+
+Suppose also that its cap stays at least `capLow`.
+
+Then its effective balance at the end is at least the least of three numbers.
+
+They are its effective balance at the start, `capLow`, and `floor` less one increment. -/
+def EffectiveFloorStatement (preset : Preset) (config : Config) (checks : SignatureChecks) :
+    Prop :=
+  ∀ {x y : ForkedBeaconState preset} (_tail : Run config checks x y)
+    (_early : y.fork < .glamsterdam)
+    (_fulu : .fusaka ≤ x.fork) (_bands : preset.IncrementWithinUpwardBand) (i : ℕ)
+    (_inside : i < x.state.validators.data.size) (floor capLow : ℕ)
+    (_balanceFloor : ∀ z ∈ _tail.balancePath, floor ≤ actualBalanceAt z i)
+    (_capFloor : ∀ z ∈ _tail.balancePath, capLow ≤ keyCapAt z i),
+    min (effectiveAt x i) (min capLow (floor + 1 - preset.EFFECTIVE_BALANCE_INCREMENT.toNat)) ≤
+      effectiveAt y i
+
+/-- Right after a slot step that moves the epoch on, the effective balances lie within the bands.
+
+The step ran the epoch transition, and its upgrades keep the bands. -/
+def EpochStartHysteresis (preset : Preset) (config : Config) (checks : SignatureChecks) : Prop :=
+  ∀ {a b : ForkedBeaconState preset} (_step : Step config checks a b),
+    getCurrentEpoch a.state < getCurrentEpoch b.state → Hysteresis b.state
+
+open DirectSafety.Apriori in
+/-- From Electra, the ceiling of a window grows with the epoch of the window.
+
+It is `stakeCeilingAt_mono` (PinDriftBound, private). -/
+def CeilingMonoStatement (preset : Preset) (config : Config) : Prop :=
+  ∀ {x : ForkedBeaconState preset} {high : ℕ} (_electra : .pectra ≤ x.fork) {s t : ℕ},
+    s ≤ t → stakeCeilingAt config x high s ≤ stakeCeilingAt config x high t
+
+open DirectSafety.Apriori in
+/-- The floor of a window falls with the epoch of the window.
+
+It is `stakeFloorAt_anti` (PinDriftBound, private). -/
+def FloorAntiStatement (preset : Preset) (config : Config) : Prop :=
+  ∀ {x : ForkedBeaconState preset} {high s t : ℕ},
+    s ≤ t → stakeFloorAt config x high t ≤ stakeFloorAt config x high s
+
 /-! ## The scores along a run -/
 
 open DirectSafety.Apriori in
@@ -855,6 +931,144 @@ def EpochFloorStatement (preset : Preset) (config : Config) (checks : SignatureC
           then effectiveAt m i /
             (EthLib.Consensus.parameters preset m.fork).MIN_SLASHING_PENALTY_QUOTIENT.toNat
           else 0)
+
+/-! ## The pass rate against the floor path -/
+
+section FloorPath
+
+open DirectSafety.Apriori
+
+/-- The base-reward part of the pass rate fits the base-reward part of the floor's penalty.
+
+The pass reads the root of a total at least that of the floor.
+
+The floor's penalty is read at a weight at least the floor.
+
+The constants satisfy `a * d ≤ c * b`, and the rounding costs one. -/
+private theorem pass_first (a b c d BRF EB φ w s T : ℕ) (hb : 0 < b) (hd : 0 < d) (hs : 0 < s)
+    (sT : s ≤ T) (hw : φ ≤ w) (ratio : a * d ≤ c * b) :
+    a * BRF * EB / (b * T) * φ ≤ EB * (c * BRF * w / (d * s) + 1) := by
+  set Q1 := a * BRF * EB / (b * T) with hQ1
+  set P := c * BRF * w / (d * s) with hP
+  have h1 : Q1 * (b * T) ≤ a * BRF * EB := Nat.div_mul_le_self _ _
+  have h2 : c * BRF * w < (P + 1) * (d * s) := by
+    have := Nat.lt_mul_div_succ (c * BRF * w) (Nat.mul_pos hd hs)
+    rw [← hP] at this
+    linarith
+  have key : Q1 * φ * (b * d * s) ≤ EB * (P + 1) * (b * d * s) := by
+    calc Q1 * φ * (b * d * s) = (Q1 * (b * s)) * φ * d := by ring
+      _ ≤ (Q1 * (b * T)) * φ * d := by
+          apply Nat.mul_le_mul_right; apply Nat.mul_le_mul_right
+          exact Nat.mul_le_mul_left _ (Nat.mul_le_mul_left _ sT)
+      _ ≤ (a * BRF * EB) * φ * d := by
+          apply Nat.mul_le_mul_right; exact Nat.mul_le_mul_right _ h1
+      _ = (a * d) * BRF * EB * φ := by ring
+      _ ≤ (c * b) * BRF * EB * φ := by
+          apply Nat.mul_le_mul_right; apply Nat.mul_le_mul_right; apply Nat.mul_le_mul_right
+          exact ratio
+      _ ≤ (c * b) * BRF * EB * w := Nat.mul_le_mul_left _ hw
+      _ = b * EB * (c * BRF * w) := by ring
+      _ ≤ b * EB * ((P + 1) * (d * s)) := Nat.mul_le_mul_left _ h2.le
+      _ = EB * (P + 1) * (b * d * s) := by ring
+  exact Nat.le_of_mul_le_mul_right key (Nat.mul_pos (Nat.mul_pos hb hd) hs)
+
+/-- The leak part of the pass rate fits the leak part of the floor's penalty.
+
+The divisor of the penalty is at most the divisor of the pass.
+
+The score of the pass is at most that of the penalty, and the rounding costs one. -/
+private theorem pass_second (bias IPQ IPD EB score S' φ w : ℕ) (hIPD : 0 < IPD)
+    (div : IPD ≤ bias * IPQ) (sc : score + bias ≤ S') (hw : φ ≤ w) :
+    EB * (score + bias) / (bias * IPQ) * φ ≤ EB * (w * S' / IPD + 1) := by
+  set Q2 := EB * (score + bias) / (bias * IPQ) with hQ2
+  set R := w * S' / IPD with hR
+  have h0 : Q2 ≤ EB * (score + bias) / IPD := Nat.div_le_div_left div hIPD
+  have h1 : (EB * (score + bias) / IPD) * IPD ≤ EB * (score + bias) := Nat.div_mul_le_self _ _
+  have h2 : w * S' < (R + 1) * IPD := by
+    have := Nat.lt_mul_div_succ (w * S') hIPD
+    rw [← hR] at this
+    linarith
+  have key : Q2 * φ * IPD ≤ EB * (R + 1) * IPD := by
+    calc Q2 * φ * IPD ≤ (EB * (score + bias) / IPD) * φ * IPD :=
+          Nat.mul_le_mul_right _ (Nat.mul_le_mul_right _ h0)
+      _ = ((EB * (score + bias) / IPD) * IPD) * φ := by ring
+      _ ≤ (EB * (score + bias)) * φ := Nat.mul_le_mul_right _ h1
+      _ ≤ (EB * S') * w := Nat.mul_le_mul (Nat.mul_le_mul_left _ sc) hw
+      _ = EB * (w * S') := by ring
+      _ ≤ EB * ((R + 1) * IPD) := Nat.mul_le_mul_left _ h2.le
+      _ = EB * (R + 1) * IPD := by ring
+  exact Nat.le_of_mul_le_mul_right key hIPD
+/-- The floor path falls by the penalty of its epoch. -/
+private theorem floor_succ (x : ForkedBeaconState preset) (high t : ℕ) :
+    stakeFloorAt config x high (t + 1) = stakeFloorAt config x high t -
+      epochPenalty preset config (startInactivityScore config x)
+        (stakeCeilingAt config x high t + slashedUnwithdrawnStake x)
+        (stakeFloorAt config x high t) t := by
+  rfl
+
+/-- The pass rate of a key against the fall of the floor path.
+
+The floor lies below the total active balance read by the pass, and below the weight of the penalty.
+
+The floor after the epoch is positive, so its fall is the penalty.
+
+The score of the key at the pass, plus the bias, is within that of the penalty.
+
+The rate times the floor is at most the key's effective balance times the fall, plus two. -/
+private theorem passRate_mul_le {x z : ForkedBeaconState preset} (high t i : ℕ)
+    (total : Gwei) (totalOk : getTotalActiveBalance z.state = .ok total)
+    (floor : stakeFloorAt config x high t ≤ total.toNat)
+    (floorLe : stakeFloorAt config x high t ≤
+      stakeCeilingAt config x high t + slashedUnwithdrawnStake x)
+    (positive : 0 < stakeFloorAt config x high (t + 1))
+    (divisor : 0 < inactivityPenaltyDivisor preset config)
+    (scored : (if altair : .altair ≤ z.fork then
+        (((z.state.inactivityScores altair).data[i]?).map (·.toNat)).getD 0 else 0) +
+      config.INACTIVITY_SCORE_BIAS.toNat ≤
+        startInactivityScore config x + config.INACTIVITY_SCORE_BIAS.toNat * (t + 1)) :
+    passRate config z i * stakeFloorAt config x high t ≤
+      effectiveAt z i *
+        (stakeFloorAt config x high t - stakeFloorAt config x high (t + 1) + 2) := by
+  have succ := floor_succ (config := config) x high t
+  have eq : stakeFloorAt config x high t = stakeFloorAt config x high (t + 1) +
+      epochPenalty preset config (startInactivityScore config x)
+        (stakeCeilingAt config x high t + slashedUnwithdrawnStake x)
+        (stakeFloorAt config x high t) t := by
+    omega
+  have pen : stakeFloorAt config x high t - stakeFloorAt config x high (t + 1) =
+      epochPenalty preset config (startInactivityScore config x)
+        (stakeCeilingAt config x high t + slashedUnwithdrawnStake x)
+        (stakeFloorAt config x high t) t := by omega
+  rw [pen]
+  have totalValue := getTotalActiveBalance_toNat totalOk
+  have fpos : 0 < stakeFloorAt config x high t := by omega
+  have rootPos : 0 < (stakeFloorAt config x high t).sqrt := Nat.sqrt_pos.mpr fpos
+  have roots := Nat.sqrt_le_sqrt floor
+  have quotient : inactivityPenaltyDivisor preset config ≤ config.INACTIVITY_SCORE_BIAS.toNat *
+      (EthLib.Consensus.parameters preset z.fork).INACTIVITY_PENALTY_QUOTIENT.toNat := by
+    unfold inactivityPenaltyDivisor
+    apply Nat.mul_le_mul_left
+    simp only [EthLib.Consensus.parameters]
+    split_ifs <;> omega
+  have first := pass_first (TIMELY_SOURCE_WEIGHT.toNat + TIMELY_TARGET_WEIGHT.toNat)
+    WEIGHT_DENOMINATOR.toNat (3 + BASE_REWARDS_PER_EPOCH.toNat) BASE_REWARDS_PER_EPOCH.toNat
+    preset.BASE_REWARD_FACTOR.toNat (effectiveAt z i) (stakeFloorAt config x high t)
+    (stakeCeilingAt config x high t + slashedUnwithdrawnStake x)
+    (stakeFloorAt config x high t).sqrt total.toNat.sqrt (by decide) (by decide) rootPos
+    roots floorLe (by decide)
+  have second := pass_second config.INACTIVITY_SCORE_BIAS.toNat
+    (EthLib.Consensus.parameters preset z.fork).INACTIVITY_PENALTY_QUOTIENT.toNat
+    (inactivityPenaltyDivisor preset config) (effectiveAt z i) _
+    (startInactivityScore config x + config.INACTIVITY_SCORE_BIAS.toNat * (t + 1))
+    (stakeFloorAt config x high t)
+    (stakeCeilingAt config x high t + slashedUnwithdrawnStake x) divisor quotient scored floorLe
+  unfold passRate epochPenalty
+  dsimp only
+  rw [totalValue] at first
+  rw [add_mul]
+  linarith
+
+end FloorPath
 
 /-- C2 (item 16).
 
