@@ -8,11 +8,13 @@ import EthLib.Consensus.Proofs.Transition.RegistryLifecycle
 public import EthLib.Consensus.Proofs.Transition.Totality.SupplyBlock
 
 /-!
-# Proofs: a block keeps the target flags it finds
+# Proofs: a block keeps the flags it finds
 
 From Altair the state keeps one byte of flags for each validator, in each of two epochs.
 
-A block never clears the timely target flag of a validator that the registry held before it.
+A block never clears a flag of a validator that the registry held before it.
+
+The timely target flag is the case that the fork choice reads.
 
 Its attestations only add flags.
 
@@ -29,24 +31,30 @@ variable {preset : Preset} {fork : Fork}
 
 /-! ## The forward relation -/
 
-/-- The registry does not shrink, and each target flag at a position of it before is kept. -/
-private def FlagKeeps (state after : BeaconState preset fork) : Prop :=
+/-- The registry does not shrink, and each flag at a position of it before is kept.
+
+A position past the end of a list of flags reads as the empty flags. -/
+def FlagKeeps (state after : BeaconState preset fork) : Prop :=
   state.validators.data.size ≤ after.validators.data.size ∧
-    ∀ (altair : .altair ≤ fork) (current : Bool) (position : Nat),
-      position < state.validators.data.size →
-      TargetFlagAt (recentParticipation state altair current) position →
-      TargetFlagAt (recentParticipation after altair current) position
+    ∀ (altair : .altair ≤ fork) (current : Bool) (position : Nat)
+      (flag : Fin PARTICIPATION_FLAG_WEIGHTS.length), position < state.validators.data.size →
+      hasFlag (((recentParticipation state altair current).data[position]?).getD 0)
+          flag.val.toUInt64 = true →
+        hasFlag (((recentParticipation after altair current).data[position]?).getD 0)
+          flag.val.toUInt64 = true
 
 variable {config : Config} {checks : SignatureChecks} {state after : BeaconState preset fork}
 
-private theorem FlagKeeps.refl (state : BeaconState preset fork) : FlagKeeps state state :=
-  ⟨Nat.le_refl _, fun _ _ _ _ flagged => flagged⟩
+/-- Every state keeps its own flags. -/
+theorem FlagKeeps.refl (state : BeaconState preset fork) : FlagKeeps state state :=
+  ⟨Nat.le_refl _, fun _ _ _ _ _ set => set⟩
 
-private theorem FlagKeeps.trans {first second third : BeaconState preset fork}
+/-- Two steps that keep the flags keep them together. -/
+theorem FlagKeeps.trans {first second third : BeaconState preset fork}
     (one : FlagKeeps first second) (two : FlagKeeps second third) : FlagKeeps first third :=
-  ⟨Nat.le_trans one.1 two.1, fun altair current position inside flagged =>
-    two.2 altair current position (Nat.lt_of_lt_of_le inside one.1)
-      (one.2 altair current position inside flagged)⟩
+  ⟨Nat.le_trans one.1 two.1, fun altair current position flag inside set =>
+    two.2 altair current position flag (Nat.lt_of_lt_of_le inside one.1)
+      (one.2 altair current position flag inside set)⟩
 
 private theorem FlagKeeps.foldlM {α ε : Type} {step : BeaconState preset fork → α → Except ε _}
     (each : ∀ a x b, step a x = .ok b → FlagKeeps a b) {items : List α}
@@ -54,20 +62,19 @@ private theorem FlagKeeps.foldlM {α ε : Type} {step : BeaconState preset fork 
   (foldlM_ok_steps FlagKeeps FlagKeeps.refl FlagKeeps.trans each computed).1
 
 /-- A step that grows the registry and keeps both lists of flags keeps each flag. -/
-private theorem FlagKeeps.of_flags
+theorem FlagKeeps.of_flags
     (grows : state.validators.data.size ≤ after.validators.data.size)
     (flags : Flags state after) : FlagKeeps state after :=
-  ⟨grows, fun altair current _ _ flagged => by
-    cases current <;> simpa [recentParticipation, flags.1, flags.2] using flagged⟩
+  ⟨grows, fun altair current _ _ _ set => by
+    cases current <;> simpa [recentParticipation, flags.1, flags.2] using set⟩
 
 /-- A step that grows the registry and keeps the flags below its old size keeps each flag. -/
-private theorem FlagKeeps.of_below
+theorem FlagKeeps.of_below
     (grows : state.validators.data.size ≤ after.validators.data.size)
     (below : FlagsBelow state after) : FlagKeeps state after :=
-  ⟨grows, fun altair current position inside ⟨flags, found, set⟩ => by
+  ⟨grows, fun altair current position _ inside set => by
     have kept := below altair position inside
-    refine ⟨flags, ?_, set⟩
-    cases current <;> simpa [recentParticipation, kept.1, kept.2] using found⟩
+    cases current <;> simpa [recentParticipation, kept.1, kept.2] using set⟩
 
 /-! ## Steps that keep both lists of flags -/
 
@@ -84,28 +91,28 @@ theorem flags_processExecutionRequests {body : BeaconBlockBody preset fork}
 
 /-! ## Flags kept forward -/
 
-/-- One flag of one attester keeps the target flag. -/
+/-- One flag of one attester keeps each flag already set. -/
 private theorem addFlagReward_keeps {total : Gwei} {earned : List UInt64}
     {index : ValidatorIndex} {flags flags' : ParticipationFlags} {numerator numerator' : Gwei}
-    {flag : Fin PARTICIPATION_FLAG_WEIGHTS.length}
+    {flag kept : Fin PARTICIPATION_FLAG_WEIGHTS.length}
     (computed :
       addFlagReward state total earned index (flags, numerator) flag = .ok (flags', numerator'))
-    (set : hasFlag flags TIMELY_TARGET_FLAG_INDEX = true) :
-    hasFlag flags' TIMELY_TARGET_FLAG_INDEX = true := by
+    (set : hasFlag flags kept.val.toUInt64 = true) :
+    hasFlag flags' kept.val.toUInt64 = true := by
   unfold addFlagReward at computed
   dsimp only at computed
   split at computed
   · simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq, Prod.mk.injEq] at computed
     obtain ⟨_, _, _, _, _, _, rfl, _⟩ := computed
-    by_cases same : flag = ⟨1, by decide⟩
+    by_cases same : flag = kept
     · subst same
-      exact hasFlag_addFlag flags TIMELY_TARGET_FLAG_INDEX
-    · exact (hasFlag_addFlag_of_ne flags (other := ⟨1, by decide⟩) (Ne.symm same)).trans set
+      exact hasFlag_addFlag flags _
+    · exact (hasFlag_addFlag_of_ne flags (other := kept) (Ne.symm same)).trans set
   · simp only [pure, Except.pure, Except.ok.injEq, Prod.mk.injEq] at computed
     obtain ⟨rfl, _⟩ := computed
     exact set
 
-/-- One attester keeps the size of the list of flags and each target flag. -/
+/-- One attester keeps the size of the list of flags and each flag already set. -/
 private theorem addAttesterFlags_keeps {total : Gwei} {earned : List UInt64}
     {index : ValidatorIndex} {participation updated : EpochParticipation preset fork}
     {numerator numerator' : Gwei}
@@ -113,7 +120,9 @@ private theorem addAttesterFlags_keeps {total : Gwei} {earned : List UInt64}
       addAttesterFlags state total earned (participation, numerator) index =
         .ok (updated, numerator')) :
     updated.data.size = participation.data.size ∧
-      ∀ position, TargetFlagAt participation position → TargetFlagAt updated position := by
+      ∀ (position : Nat) (kept : Fin PARTICIPATION_FLAG_WEIGHTS.length),
+        hasFlag ((participation.data[position]?).getD 0) kept.val.toUInt64 = true →
+          hasFlag ((updated.data[position]?).getD 0) kept.val.toUInt64 = true := by
   unfold addAttesterFlags at computed
   dsimp only at computed
   split at computed
@@ -122,32 +131,32 @@ private theorem addAttesterFlags_keeps {total : Gwei} {earned : List UInt64}
     obtain ⟨⟨flags, _⟩, fold, final⟩ := computed
     simp only [pure, Except.pure, Except.ok.injEq, Prod.mk.injEq] at final
     obtain ⟨rfl, _⟩ := final
-    have byte : hasFlag participation.data[index.toNat] TIMELY_TARGET_FLAG_INDEX = true →
-        hasFlag flags TIMELY_TARGET_FLAG_INDEX = true := fun set =>
-      foldlM_ok_invariant (fun step => hasFlag step.1 TIMELY_TARGET_FLAG_INDEX = true)
-        (fun ⟨_, _⟩ _ ⟨_, _⟩ holds step => addFlagReward_keeps step holds) set fold
-    refine ⟨by simp, fun position ⟨value, found, set⟩ => ?_⟩
+    refine ⟨by simp, fun position kept set => ?_⟩
     by_cases same : index.toNat = position
     · subst same
-      rw [Array.getElem?_eq_getElem inside, Option.some.injEq] at found
-      subst found
-      exact ⟨flags, by simp, byte set⟩
-    · exact ⟨value, by rw [Array.getElem?_set]; simp [same, found], set⟩
+      rw [Array.getElem?_eq_getElem inside, Option.getD_some] at set
+      have byte : hasFlag flags kept.val.toUInt64 = true :=
+        foldlM_ok_invariant (fun step => hasFlag step.1 kept.val.toUInt64 = true)
+          (fun ⟨_, _⟩ _ ⟨_, _⟩ holds step => addFlagReward_keeps step holds) set fold
+      simpa [inside] using byte
+    · simpa [Array.getElem?_set, same] using set
   · cases computed
 
-/-- From Altair, an attestation keeps each target flag of both epochs. -/
-private theorem processAttestationAltair_keepsTargetFlag {attestation : Attestation preset fork}
+/-- From Altair, an attestation keeps each flag of both epochs. -/
+private theorem processAttestationAltair_keepsFlag {attestation : Attestation preset fork}
     {altair : .altair ≤ fork} {parentSlot : Slot}
     (computed :
       processAttestationAltair config checks state attestation altair parentSlot = .ok after)
-    (current : Bool) (position : Nat)
-    (flagged : TargetFlagAt (recentParticipation state altair current) position) :
-    TargetFlagAt (recentParticipation after altair current) position := by
+    (current : Bool) (position : Nat) (kept : Fin PARTICIPATION_FLAG_WEIGHTS.length)
+    (flagged : hasFlag (((recentParticipation state altair current).data[position]?).getD 0)
+      kept.val.toUInt64 = true) :
+    hasFlag (((recentParticipation after altair current).data[position]?).getD 0)
+      kept.val.toUInt64 = true := by
   unfold processAttestationAltair at computed
   simp only [bind_ok_iff, liftAccessor_ok] at computed
   obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, ⟨updated, _⟩,
     fold, _, _, raised, raisedOk, final⟩ := computed
-  have kept :
+  have same :
       recentParticipation after altair current = recentParticipation raised altair current := by
     split at final
     · rw [recordPaymentWeight_eq final]
@@ -156,29 +165,35 @@ private theorem processAttestationAltair_keepsTargetFlag {attestation : Attestat
       rfl
   obtain ⟨_, set⟩ := increaseBalance_ok raisedOk
   obtain ⟨_, rfl⟩ := setBalance_ok set
-  simp only [BeaconState.putBalance, recentParticipation] at kept
+  simp only [BeaconState.putBalance, recentParticipation] at same
   unfold recentParticipation at flagged ⊢
-  rw [kept]
-  generalize (attestation.data.target.epoch == getCurrentEpoch state) = same at fold ⊢
-  have moved : TargetFlagAt _ position → TargetFlagAt _ position := fun holds =>
+  rw [same]
+  generalize (attestation.data.target.epoch == getCurrentEpoch state) = target at fold ⊢
+  have moved : hasFlag (((_ : EpochParticipation preset fork).data[position]?).getD 0)
+      kept.val.toUInt64 = true →
+      hasFlag (((_ : EpochParticipation preset fork).data[position]?).getD 0)
+        kept.val.toUInt64 = true := fun holds =>
     foldlM_ok_invariant
-      (fun (carried : EpochParticipation preset fork × Gwei) => TargetFlagAt carried.1 position)
-      (fun ⟨_, _⟩ _ ⟨_, _⟩ holds ok => (addAttesterFlags_keeps ok).2 position holds) holds fold
-  cases same <;> cases current
+      (fun (carried : EpochParticipation preset fork × Gwei) =>
+        hasFlag ((carried.1.data[position]?).getD 0) kept.val.toUInt64 = true)
+      (fun ⟨_, _⟩ _ ⟨_, _⟩ holds ok => (addAttesterFlags_keeps ok).2 position kept holds)
+      holds fold
+  cases target <;> cases current
   · simpa [setEpochParticipation] using moved (by simpa using flagged)
   · simpa [setEpochParticipation] using flagged
   · simpa [setEpochParticipation] using flagged
   · simpa [setEpochParticipation] using moved (by simpa using flagged)
 
-private theorem flagKeeps_processAttestation {attestation : Attestation preset fork}
+/-- An attestation keeps each flag of both epochs, and grows no smaller registry. -/
+theorem flagKeeps_processAttestation {attestation : Attestation preset fork}
     {parentSlot : Slot}
     (computed : processAttestation config checks state parentSlot attestation = .ok after) :
     FlagKeeps state after := by
   refine ⟨(frame_processAttestation computed).registryGrows,
-    fun altair current position _ flagged => ?_⟩
+    fun altair current position kept _ flagged => ?_⟩
   unfold processAttestation at computed
   split at computed
-  · exact processAttestationAltair_keepsTargetFlag computed current position flagged
+  · exact processAttestationAltair_keepsFlag computed current position kept flagged
   · rename_i before
     exact absurd altair before
 
@@ -224,7 +239,20 @@ theorem TargetFlagAt.of_processBlock {engine : ExecutionEngine preset fork}
     (altair : .altair ≤ fork) (current : Bool) {position : Nat}
     (inside : position < state.validators.data.size)
     (flagged : TargetFlagAt (recentParticipation state altair current) position) :
-    TargetFlagAt (recentParticipation after altair current) position :=
-  (flagKeeps_processBlock computed).2 altair current position inside flagged
+    TargetFlagAt (recentParticipation after altair current) position := by
+  -- The target flag is the flag at position one.
+  have target : (⟨1, by decide⟩ : Fin PARTICIPATION_FLAG_WEIGHTS.length).val.toUInt64 =
+      TIMELY_TARGET_FLAG_INDEX := by decide
+  obtain ⟨flags, found, set⟩ := flagged
+  have kept := (flagKeeps_processBlock computed).2 altair current position ⟨1, by decide⟩ inside
+    (by rw [found, Option.getD_some, target]; exact set)
+  rw [target] at kept
+  cases read : (recentParticipation after altair current).data[position]? with
+  | none =>
+    rw [read, Option.getD_none] at kept
+    exact absurd kept (by decide)
+  | some later =>
+    rw [read, Option.getD_some] at kept
+    exact ⟨later, read, kept⟩
 
 end EthLib.Consensus
