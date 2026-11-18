@@ -1236,8 +1236,7 @@ private theorem sum_exitQ_le {x y : ForkedBeaconState preset} (tail : Run config
 
 They are the charges with an epoch up to the run's last epoch.
 
-It is the sum of the exit and consolidation churn of every epoch of the window, and the two carries
-at the split. -/
+The bound is the churn of the window and the two carries. -/
 private theorem charges_le_queueWindow (h : Setting config checks g split fin pulled anc counted V)
     (tailC : Run config checks ⟨fork, split⟩ ⟨fork, counted⟩) :
     ((tailC.departureCharges.filter fun c =>
