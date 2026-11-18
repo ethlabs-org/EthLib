@@ -5088,7 +5088,7 @@ private theorem Run.split_at_flip {x y : ForkedBeaconState preset} (tail : Run c
   | nil => exact absurd held missing
   | @snoc middle last pre step ih =>
     by_cases inside : P middle
-    · obtain ⟨m, n, a, one, rest, split, hm, hn⟩ := ih missing inside
+    · obtain ⟨m, n, a, one, rest, split, hm, hn⟩ := ih inside
       refine ⟨m, n, a, one, rest.snoc step, ?_, hm, hn⟩
       rw [split]
       rfl
