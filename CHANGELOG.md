@@ -43,6 +43,7 @@ Not yet released.
   - `Execution.rootViableAt_of_checked` gives that viability for the root of a checked call.
   - `Store.not_isOneConfirmed_of_slot_eq_current` leaves a block at the current slot unconfirmed.
   - `Store.ForwardReachable.justified_origins_epoch`, `Store.ForwardReachable.pulledUp_le_unrealized`, `Store.Reachable.justified_epoch_le_unrealized` and `Execution.unrealizedJustified_epoch_le_of_le` bound the justified checkpoints of a store.
+    `Store.onBlock_pulledUp` gives the pull-up of a block that the store adds, which their block steps read.
   - `Store.adversaryRange_start` and `Store.ForwardReachableWith.supportersOf_mem_committees_of_near` read the adversary's range of a block and its committees; `Store.ForwardReachableWith.supportersOf_mem_committees` now reads the second.
 
 - `Execution.rootViable_of_checked_call` shows that the confirmed root of a call of the fast confirmation rule stays viable from the call to a horizon ([#2058](https://github.com/ethereum/EthLib/issues/2058), Theorem 3, for the confirmed root).
