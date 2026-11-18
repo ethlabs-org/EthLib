@@ -33,26 +33,38 @@ def FirstDown (tail : Run config checks x y) (i : Nat) : Prop :=
     tail.balancePath[j + 1]? = some after ∧ effectiveAt after i < effectiveAt before i ∧
     ∀ k u v, k < j → tail.balancePath[k]? = some u →
       tail.balancePath[k + 1]? = some v → effectiveAt u i ≤ effectiveAt v i
-theorem FloorTrace.unslashed_balance_floor
+/-- A trace from an account keeps the floor, less the penalty of a slash if it holds one.
+
+The penalty is the slash term of the trace at the high-water mark of the slash. -/
+theorem FloorTrace.balance_floor_general
     {low base quotient : Nat} {a b : FloorAccount}
-    (trace : FloorTrace low base quotient a b)
-    (initial : low ≤ a.balance + a.debt) (unslashed : b.slashedHigh = none) :
-    low ≤ b.balance + b.debt := by
+    (trace : FloorTrace low base quotient a b) (initial : low ≤ a.balance + a.debt) :
+    low ≤ b.balance + b.debt +
+      b.slashedHigh.elim 0 (fun h => base / quotient + (h - base)) := by
   induction trace with
-  | nil => exact initial
+  | nil => exact Nat.le_trans initial (Nat.le_add_right _ _)
   | credit prior paid ih =>
-    have bound := ih unslashed
     dsimp only at *
     omega
   | debit prior paid ih =>
-    have bound := ih unslashed
     dsimp only at *
     omega
   | sweep prior paid ih =>
     dsimp only at *
     omega
-  | update prior backed ih => exact ih unslashed
-  | slash prior unused paid cap ih => cases unslashed
+  | update prior backed ih => exact ih
+  | slash prior unused paid cap ih =>
+    rename_i b balance penalty
+    dsimp only at *
+    rw [unused] at ih
+    simp only [Option.elim] at ih ⊢
+    omega
+theorem FloorTrace.unslashed_balance_floor
+    {low base quotient : Nat} {a b : FloorAccount}
+    (trace : FloorTrace low base quotient a b)
+    (initial : low ≤ a.balance + a.debt) (unslashed : b.slashedHigh = none) :
+    low ≤ b.balance + b.debt := by
+  simpa [unslashed] using trace.balance_floor_general initial
 theorem FloorTrace.unslashed_high_deficit
     {low base quotient : Nat} {a b : FloorAccount}
     (trace : FloorTrace low base quotient a b) (unslashed : b.slashedHigh = none) :

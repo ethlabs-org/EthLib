@@ -4297,33 +4297,6 @@ private def EpochFloorStatement (preset : Preset) (config : Config)
             (EthLib.Consensus.parameters preset m.fork).MIN_SLASHING_PENALTY_QUOTIENT.toNat
           else 0)
 
-
-/-- A trace from an account keeps the floor, less the penalty of a slash if it holds one.
-
-The penalty is the slash term of the trace at the high-water mark of the slash. -/
-private theorem FloorTrace.slashed_balance_floor {low base quotient : ℕ} {a b : FloorAccount}
-    (trace : FloorTrace low base quotient a b) (initial : low ≤ a.balance + a.debt) :
-    low ≤ b.balance + b.debt +
-      b.slashedHigh.elim 0 (fun h => base / quotient + (h - base)) := by
-  induction trace with
-  | nil => exact Nat.le_trans initial (Nat.le_add_right _ _)
-  | credit prior paid ih =>
-    dsimp only at *
-    omega
-  | debit prior paid ih =>
-    dsimp only at *
-    omega
-  | sweep prior paid ih =>
-    dsimp only at *
-    omega
-  | update prior backed ih => exact ih
-  | slash prior unused paid cap ih =>
-    rename_i b balance penalty
-    dsimp only at *
-    rw [unused] at ih
-    simp only [Option.elim] at ih ⊢
-    omega
-
 /-- Every fork from Fulu on has the slashing quotient of Electra. -/
 private theorem mspq_fusaka {f : Fork} (h : .fusaka ≤ f) :
     (EthLib.Consensus.parameters preset f).MIN_SLASHING_PENALTY_QUOTIENT =
@@ -4484,7 +4457,7 @@ private theorem epochFloor : EpochFloorStatement preset config checks := by
       replayed
   obtain ⟨-, slashBound⟩ := bounded (effectiveAt m iv.toNat) le_rfl
     (fun pre' step post' split => (effEq pre' step post' split).le)
-  have floor := FloorTrace.slashed_balance_floor trace
+  have floor := FloorTrace.balance_floor_general trace
     (by simp)
   have split : (events.map (floorPenaltyDebit iv.toNat)).sum =
       (events.map (penaltyDebit iv.toNat)).sum + (events.map (syncDebit iv.toNat)).sum := by
