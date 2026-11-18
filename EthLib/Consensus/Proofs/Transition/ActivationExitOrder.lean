@@ -42,24 +42,6 @@ private theorem exit_pending {v : Validator} (ordered : v.activationEpoch ≤ v.
     (pending : v.activationEpoch = FAR_FUTURE_EPOCH) : v.exitEpoch = FAR_FUTURE_EPOCH := by
   exact UInt64.le_antisymm (far_max _) (pending ▸ ordered)
 
-/-- An assigned exit comes at least the seed lookahead and one epoch after the activation. -/
-private def Gap (preset : Preset) (v : Validator) : Prop :=
-  v.exitEpoch ≠ FAR_FUTURE_EPOCH →
-    v.activationEpoch.toNat + 1 + preset.MAX_SEED_LOOKAHEAD.toNat ≤ v.exitEpoch.toNat
-
-/-- Every validator with an assigned exit has the gap after its activation. -/
-private def ExitGap (s : BeaconState preset fork) : Prop :=
-  ∀ v ∈ s.validators.data, Gap preset v
-
-private theorem gap_far {v : Validator} (gap : Gap preset v)
-    (pending : v.activationEpoch = FAR_FUTURE_EPOCH) : v.exitEpoch = FAR_FUTURE_EPOCH := by
-  refine Classical.byContradiction fun assigned => ?_
-  have bound := gap assigned
-  have far : FAR_FUTURE_EPOCH.toNat = 2 ^ 64 - 1 := rfl
-  have := v.exitEpoch.toNat_lt
-  rw [pending] at bound
-  omega
-
 private theorem active_le {v : Validator} {e : Epoch}
     (active : isActiveValidator v e = true) : v.activationEpoch ≤ e := by
   simp only [isActiveValidator, Bool.and_eq_true, decide_eq_true_eq] at active
@@ -80,26 +62,23 @@ private def Delayed (config : Config) (v : Validator) : Prop :=
 private def ExitDelay (config : Config) (s : BeaconState preset fork) : Prop :=
   ∀ v ∈ s.validators.data, Delayed config v
 
-/-- A step after which the order, the exit delay and the exit gap hold whenever they held before. -/
-private structure Kept (config : Config) {f g : Fork} (s : BeaconState preset f)
-    (t : BeaconState preset g) : Prop where
-  order : ActivationExitOrder s → ActivationExitOrder t
-  delay : ExitDelay config s → ExitDelay config t
-  gap : ExitGap s → ExitGap t
+/-- A step after which the order, and the exit delay, hold whenever they held before. -/
+private def Kept (config : Config) {f g : Fork} (s : BeaconState preset f)
+    (t : BeaconState preset g) : Prop :=
+  (ActivationExitOrder s → ActivationExitOrder t) ∧ (ExitDelay config s → ExitDelay config t)
 
 namespace Kept
 
-private theorem refl (s : BeaconState preset fork) : Kept config s s := ⟨id, id, id⟩
+private theorem refl (s : BeaconState preset fork) : Kept config s s := ⟨id, id⟩
 
 private theorem trans {f g h : Fork} {s : BeaconState preset f} {t : BeaconState preset g}
     {u : BeaconState preset h} (one : Kept config s t) (two : Kept config t u) :
-    Kept config s u := ⟨two.1 ∘ one.1, two.2 ∘ one.2, two.3 ∘ one.3⟩
+    Kept config s u := ⟨two.1 ∘ one.1, two.2 ∘ one.2⟩
 
 private theorem of_data {g : Fork} {t : BeaconState preset g}
     (same : t.validators.data = state.validators.data := by rfl) :
     Kept config state t :=
-  ⟨fun h v member => h v (same ▸ member), fun h v member => h v (same ▸ member),
-    fun h v member => h v (same ▸ member)⟩
+  ⟨fun h v member => h v (same ▸ member), fun h v member => h v (same ▸ member)⟩
 
 private theorem foldlM {α ε : Type} {step : BeaconState preset fork → α → Except ε _}
     (keeps : ∀ s a t, step s a = .ok t → Kept config s t) {xs : List α}
@@ -111,8 +90,7 @@ private theorem setValidatorAt {i : Nat} {old v : Validator}
     (found : getValidatorAt state i = .ok old)
     (set : state.setValidatorAt i v = .ok after)
     (keeps : old.activationEpoch ≤ old.exitEpoch → v.activationEpoch ≤ v.exitEpoch)
-    (delays : Delayed config old → Delayed config v)
-    (gaps : Gap preset old → Gap preset v) :
+    (delays : Delayed config old → Delayed config v) :
     Kept config state after := by
   obtain ⟨inside, rfl⟩ := setValidatorAt_ok set
   have oldEq : state.validators.data[i] = old := by simpa [getValidatorAt, inside] using found
@@ -124,18 +102,15 @@ private theorem setValidatorAt {i : Nat} {old v : Validator}
   · exact keeps (h old mem)
   · exact h w member
   · exact delays (h old mem)
-  · exact h w member
-  · exact gaps (h old mem)
 
 private theorem setValidator {i : ValidatorIndex} {old v : Validator}
     (found : getValidator state i = .ok old)
     (set : state.setValidator i v = .ok after)
     (keeps : old.activationEpoch ≤ old.exitEpoch → v.activationEpoch ≤ v.exitEpoch)
-    (delays : Delayed config old → Delayed config v)
-    (gaps : Gap preset old → Gap preset v) :
+    (delays : Delayed config old → Delayed config v) :
     Kept config state after :=
   setValidatorAt (by rwa [← getValidator_eq_getValidatorAt])
-    (by rwa [← setValidator_eq_setValidatorAt]) keeps delays gaps
+    (by rwa [← setValidator_eq_setValidatorAt]) keeps delays
 
 private theorem append {v : Validator}
     (added : after.validators.data = state.validators.data.push v)
@@ -144,8 +119,6 @@ private theorem append {v : Validator}
     rcases Array.mem_push.mp member with member | rfl
   · exact h w member
   · rw [pending]; exact far_max _
-  · exact h w member
-  · exact fun assigned => absurd pending assigned
   · exact h w member
   · exact fun assigned => absurd pending assigned
 
@@ -160,7 +133,7 @@ private theorem initiateValidatorExit {i : ValidatorIndex} {v : Validator}
   · have equal := Except.ok.inj (read.symm.trans found)
     have same := (exitQueue_validators queue).1
     exact (of_data (congrArg (·.data) same)).trans <|
-      setValidator (config := config) ((getValidator_of_validators_eq same i).trans read) set
+      setValidator ((getValidator_of_validators_eq same i).trans read) set
         (fun _ => by
           have later := exitQueue_lt queue
           have bound := UInt64.le_iff_toNat_le.mp assigned
@@ -172,13 +145,6 @@ private theorem initiateValidatorExit {i : ValidatorIndex} {v : Validator}
         (fun _ _ => by
           have sum := (Uint64.addChecked_ok_iff.mp delayed).2
           dsimp only
-          omega)
-        -- The new exit is beyond the seed lookahead of the current epoch.
-        (fun _ _ => by
-          have later := exitQueue_lt queue
-          have bound := UInt64.le_iff_toNat_le.mp assigned
-          subst equal
-          dsimp only at *
           omega)
 
 private theorem increaseBalance {i : ValidatorIndex} {amount : Gwei}
@@ -200,13 +166,13 @@ private theorem slashValidator {i : ValidatorIndex} {v : Validator}
   obtain ⟨_, _, _, marked, _, _, slashings, _, _, _, _, last, exited, read, _, set,
     _, _, _, lowered, _, _, raised, paid, rfl⟩ := slashValidator_ok ok
   have first := (initiateValidatorExit found assigned exited).trans
-    (setValidator (config := config) read set (fun h => h) (fun h assigned => by
+    (setValidator read set (fun h => h) (fun h assigned => by
       -- Slashing only raises the withdrawable epoch.
       refine Nat.le_trans (h assigned) (UInt64.le_iff_toNat_le.mp ?_)
       rw [UInt64.max_def]
       split
       · assumption
-      · exact UInt64.le_refl _) (fun g => g))
+      · exact UInt64.le_refl _))
   have second := (of_data (config := config) (state := marked)
     (t := { marked with slashings })).trans
     ((decreaseBalance lowered).trans ((increaseBalance raised).trans (increaseBalance paid)))
@@ -282,8 +248,7 @@ private theorem processBlsToExecutionChange {signed : SignedBLSToExecutionChange
     (ok : Consensus.processBlsToExecutionChange config checks state signed = .ok after) :
     Kept config state after := by
   obtain ⟨_, found, _, _, _, set⟩ := processBlsToExecutionChange_ok ok
-  exact setValidator (config := config) found set id (by unfold Delayed; exact id)
-    (by unfold Gap; exact id)
+  exact setValidator found set id (by unfold Delayed; exact id)
 
 private theorem queueExcessActiveBalance {electra : .pectra ≤ fork} {index : ValidatorIndex}
     (ok : Consensus.queueExcessActiveBalance state electra index = .ok after) :
@@ -302,7 +267,7 @@ private theorem switchToCompoundingValidator {electra : .pectra ≤ fork} {index
     Kept config state after := by
   simp only [Consensus.switchToCompoundingValidator, bind_ok_iff] at ok
   obtain ⟨_, found, _, set, queued⟩ := ok
-  exact (setValidator (config := config) found set id id id).trans (queueExcessActiveBalance queued)
+  exact (setValidator found set id id).trans (queueExcessActiveBalance queued)
 
 private theorem processWithdrawalRequest {electra : .pectra ≤ fork} {request : WithdrawalRequest}
     (ok : Consensus.processWithdrawalRequest config state electra request = .ok after) :
@@ -335,13 +300,10 @@ private theorem queueConsolidation {electra : .pectra ≤ fork}
     (assigned : source.activationEpoch ≤ getCurrentEpoch state)
     (ok : Consensus.queueConsolidation config state electra sourceIndex source targetIndex =
       .ok after) : Kept config state after := by
-  obtain ⟨exitEpoch, withdrawable, rest, written, _, churn, delayed, set, _, rfl⟩ :=
+  obtain ⟨exitEpoch, withdrawable, _, written, _, churn, delayed, set, _, rfl⟩ :=
     queueConsolidation_steps ok
-  exact (of_data (config := config) (state := state)
-    (t := { state with
-      consolidationBalanceToConsume := fun _ => rest
-      earliestConsolidationEpoch := fun _ => exitEpoch }) rfl).trans <|
-    (setValidator (config := config) (by exact getValidator_eq_ok_iff.mpr found) set (fun _ => by
+  exact (of_data rfl).trans <|
+    (setValidator (by exact getValidator_eq_ok_iff.mpr found) set (fun _ => by
       cases first : computeActivationExitEpoch preset (getCurrentEpoch state) with
       | error =>
         simp [computeConsolidationEpochAndUpdateChurn, first, liftArith, Except.mapError,
@@ -358,22 +320,7 @@ private theorem queueConsolidation {electra : .pectra ≤ fork}
       (fun _ _ => by
         have sum := (Uint64.addChecked_ok_iff.mp delayed).2
         dsimp only at *
-        omega)
-      -- The source's new exit is beyond the seed lookahead of the current epoch.
-      (fun _ _ => by
-        cases first : computeActivationExitEpoch preset (getCurrentEpoch state) with
-        | error =>
-          simp [computeConsolidationEpochAndUpdateChurn, first, liftArith, Except.mapError,
-            bind, Except.bind] at churn
-        | ok firstEpoch =>
-          have early := UInt64.le_iff_toNat_le.mp
-            (computeConsolidationEpochAndUpdateChurn_first first churn).1
-          have eq := (computeActivationExitEpoch_ok_iff.mp first).2
-          have bound := UInt64.le_iff_toNat_le.mp assigned
-          change source.activationEpoch.toNat + 1 + preset.MAX_SEED_LOOKAHEAD.toNat ≤
-            UInt64.toNat _
-          dsimp only at *
-          omega)).trans of_data
+        omega)).trans of_data
 
 private theorem processConsolidationRequest {electra : .pectra ≤ fork}
     {request : ConsolidationRequest}
@@ -422,13 +369,6 @@ private theorem activateAtGenesis {index : Nat}
     · intro _; change (0 : UInt64) ≤ _; exact UInt64.zero_le
     · exact id
   · split <;> exact id
-  · split
-    · intro gap assigned
-      have bound := gap assigned
-      dsimp only at *
-      change 0 + 1 + preset.MAX_SEED_LOOKAHEAD.toNat ≤ _
-      omega
-    · exact id
 
 private theorem updateRegistryEntry {index : Nat}
     (ok : Consensus.updateRegistryEntry config state index = .ok after) :
@@ -446,7 +386,6 @@ private theorem updateRegistryEntry {index : Nat}
   have first := setValidatorAt (config := config) found markedOk
     (by simpa only [epochs.1, epochs.2.1] using id)
     (by simpa only [Delayed, epochs.2.1, epochs.2.2] using id)
-    (by simpa only [Gap, epochs.1, epochs.2.1] using id)
   split at ok
   · rename_i active
     simp only [bind_ok_iff, liftAccessor_ok] at ok
@@ -467,7 +406,7 @@ private theorem updateRegistryEntryElectra {epoch : Epoch} {index : Nat}
   split at ok
   · simp only [bind_ok_iff, liftAccessor_ok] at ok
     obtain ⟨_, _, set⟩ := ok
-    exact setValidatorAt found set id id id
+    exact setValidatorAt found set id id
   split at ok
   · rename_i active
     simp only [bind_ok_iff, liftAccessor_ok] at ok
@@ -479,13 +418,11 @@ private theorem updateRegistryEntryElectra {epoch : Epoch} {index : Nat}
     exact active_le active.1
   split at ok
   · rename_i eligible
-    apply setValidatorAt found (liftAccessor_ok.mp ok) _ id _
-    · intro h
-      change epoch ≤ v.exitEpoch
-      rw [exit_pending h (activationEpoch_of_isEligibleForActivation eligible)]
-      exact far_max _
-    · intro gap assigned
-      exact absurd (gap_far gap (activationEpoch_of_isEligibleForActivation eligible)) assigned
+    apply setValidatorAt found (liftAccessor_ok.mp ok) _ id
+    intro h
+    change epoch ≤ v.exitEpoch
+    rw [exit_pending h (activationEpoch_of_isEligibleForActivation eligible)]
+    exact far_max _
   · cases ok; exact refl _
 
 private theorem foldActivateValidator :
@@ -503,12 +440,10 @@ private theorem foldActivateValidator :
     simp only [activateValidator, bind_ok_iff, liftAccessor_ok] at first
     obtain ⟨old, read, _, _, set⟩ := first
     have equal := Except.ok.inj (read.symm.trans found)
-    have farOld : old.activationEpoch = FAR_FUTURE_EPOCH := by rw [equal]; exact far
     have kept := setValidator (config := config) read set (fun h => by
       change _ ≤ old.exitEpoch
-      rw [exit_pending h farOld]
-      exact far_max _) id (fun gap assigned =>
-        absurd (gap_far gap farOld) assigned)
+      rw [exit_pending h (equal ▸ far)]
+      exact far_max _) id
     refine kept.trans (foldActivateValidator restUnique (fun other member => ?_) tail)
     have distinct : other ≠ index := fun same => absent (same ▸ member)
     obtain ⟨w, read, pending⟩ := eligible other (List.mem_cons_of_mem _ member)
@@ -555,7 +490,7 @@ private theorem queuePreActivation {electra : .pectra ≤ fork} {index : Validat
   obtain ⟨v, found, _, _, _, _, _, set₁, _, set₂, rfl⟩ := ok
   obtain ⟨_, rfl⟩ := setBalance_ok set₁
   exact (of_data (state := state)).trans <|
-    (setValidator (config := config) (old := v) (by exact found) set₂ id id id).trans of_data
+    (setValidator (old := v) (by exact found) set₂ id id).trans of_data
 
 private theorem upgradeNext {pre : ForkedBeaconState preset}
     {post : {post : ForkedBeaconState preset // pre.fork < post.fork}}
@@ -596,7 +531,7 @@ private theorem processEffectiveBalanceUpdates
   apply foldlM (fun _ _ _ ok => ?_) ok
   simp only [updateEffectiveBalance, bind_ok_iff, liftAccessor_ok] at ok
   obtain ⟨_, found, _, _, _, _, set⟩ := ok
-  exact setValidatorAt found set id id id
+  exact setValidatorAt found set id id
 
 /-- Only three epoch stages change the validators, and each of them keeps the order. -/
 private theorem edge {stage : EpochStage}
@@ -679,7 +614,7 @@ end Kept
 
 private theorem genesis {g : ForkedBeaconState preset}
     (genesis : Genesis (config := config) (checks := checks) g) :
-    ExitGap g.state ∧ ActivationExitOrder g.state ∧ ExitDelay config g.state := by
+    ActivationExitOrder g.state ∧ ExitDelay config g.state := by
   obtain ⟨hash, time, deposits, ok⟩ := genesis
   obtain ⟨before, genesisTime, root, deposited, activated, finalRoot, depositedOk, activatedOk,
     equal⟩ := initializeBeaconStateFromEth1_ok ok
@@ -688,30 +623,26 @@ private theorem genesis {g : ForkedBeaconState preset}
     activatedOk
   rw [equal]
   -- The empty state before the deposits has no validator.
-  exact ⟨(first.trans second).3 (by intro v member; simp [emptyGenesisState] at member),
-    (first.trans second).1 (by intro v member; simp [emptyGenesisState] at member),
+  exact ⟨(first.trans second).1 (by intro v member; simp [emptyGenesisState] at member),
     (first.trans second).2 (by intro v member; simp [emptyGenesisState] at member)⟩
 
 private theorem chainStep {first last : ForkedBeaconState preset}
-    (holds : ExitGap first.state ∧ ActivationExitOrder first.state ∧ ExitDelay config first.state)
+    (holds : ActivationExitOrder first.state ∧ ExitDelay config first.state)
     (step : ChainStep config checks first last) :
-    ExitGap last.state ∧ ActivationExitOrder last.state ∧ ExitDelay config last.state := by
+    ActivationExitOrder last.state ∧ ExitDelay config last.state := by
   cases step with
   | slot ok =>
     obtain ⟨advanced, slotOk, upgrades⟩ := bind_ok_iff.mp ok
     have slot := Kept.advanceSlot slotOk
     exact processUpgrades_induction
-      (property := fun post => ExitGap post.state ∧ ActivationExitOrder post.state ∧
-        ExitDelay config post.state)
-      (fun before ok => ⟨(Kept.upgradeNext ok).3 before.1, (Kept.upgradeNext ok).1 before.2.1,
-        (Kept.upgradeNext ok).2 before.2.2⟩)
-      (show ExitGap (⟨first.fork, advanced⟩ : ForkedBeaconState preset).state ∧
-          ActivationExitOrder (⟨first.fork, advanced⟩ : ForkedBeaconState preset).state ∧
+      (property := fun post => ActivationExitOrder post.state ∧ ExitDelay config post.state)
+      (fun before ok => ⟨(Kept.upgradeNext ok).1 before.1, (Kept.upgradeNext ok).2 before.2⟩)
+      (show ActivationExitOrder (⟨first.fork, advanced⟩ : ForkedBeaconState preset).state ∧
           ExitDelay config (⟨first.fork, advanced⟩ : ForkedBeaconState preset).state from
-        ⟨slot.3 holds.1, slot.1 holds.2.1, slot.2 holds.2.2⟩) upgrades
+        ⟨slot.1 holds.1, slot.2 holds.2⟩) upgrades
   | block engine signed validate ok =>
     have block := Kept.processBlock (applySignedBlock_ok ok).2.1
-    exact ⟨block.3 holds.1, block.1 holds.2.1, block.2 holds.2.2⟩
+    exact ⟨block.1 holds.1, block.2 holds.2⟩
 
 /-- Every epoch stage keeps the order. -/
 theorem _root_.EthLib.Consensus.EpochStage.Edge.activationExitOrder {k : EpochStage}
@@ -750,8 +681,7 @@ Each one with an assigned exit can withdraw only the withdrawal delay after that
 private theorem Run.activationExitDelay {first last : ForkedBeaconState preset}
     (run : Run config checks first last)
     (genesis : Genesis (config := config) (checks := checks) first) :
-    ActivationExitOrder.ExitGap last.state ∧ ActivationExitOrder last.state ∧
-      ActivationExitOrder.ExitDelay config last.state := by
+    ActivationExitOrder last.state ∧ ActivationExitOrder.ExitDelay config last.state := by
   induction run with
   | nil => exact ActivationExitOrder.genesis genesis
   | snoc pre step ih => exact ActivationExitOrder.chainStep ih step.chainStep
@@ -761,17 +691,7 @@ theorem Run.activationExitOrder {first last : ForkedBeaconState preset}
     (run : Run config checks first last)
     (genesis : Genesis (config := config) (checks := checks) first) :
     ActivationExitOrder last.state :=
-  (run.activationExitDelay genesis).2.1
-
-/-- From genesis, an assigned exit comes one epoch and the seed lookahead after the activation. -/
-theorem Run.exit_activation_gap {first last : ForkedBeaconState preset}
-    (run : Run config checks first last)
-    (genesis : Genesis (config := config) (checks := checks) first) :
-    ∀ (i : Nat) (v : Validator), last.state.validators.data[i]? = some v →
-      v.exitEpoch ≠ FAR_FUTURE_EPOCH →
-        v.activationEpoch.toNat + 1 + preset.MAX_SEED_LOOKAHEAD.toNat ≤ v.exitEpoch.toNat := by
-  intro i v found
-  exact (run.activationExitDelay genesis).1 v (Array.mem_of_getElem? found)
+  (run.activationExitDelay genesis).1
 
 /-- Each assigned exit reached from genesis waits the withdrawal delay. -/
 theorem Run.exit_withdrawable_delay {first last : ForkedBeaconState preset}
@@ -782,6 +702,6 @@ theorem Run.exit_withdrawable_delay {first last : ForkedBeaconState preset}
         v.exitEpoch.toNat + config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat ≤
           v.withdrawableEpoch.toNat := by
   intro i v found
-  exact (run.activationExitDelay genesis).2.2 v (Array.mem_of_getElem? found)
+  exact (run.activationExitDelay genesis).2 v (Array.mem_of_getElem? found)
 
 end EthLib.Consensus
