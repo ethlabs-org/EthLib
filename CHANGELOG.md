@@ -9,6 +9,16 @@ Not yet released.
 
 ### Proof additions
 
+- `quorumDrift_le_quorumReserve` bounds the drift of a fast-confirmation call's quorum by `quorumReserve`.
+  It compares the call's pulled-up state with a later state in the target's epoch or the next, before Gloas from Fulu.
+  `Execution.quorumDriftWithin` builds those runs from the stores and proves `QuorumDriftWithin` with BLS checks.
+  Its premises fix the bands of hysteresis, the withdrawal delay, the Electra caps and `Preset.ExitWindowFixed`.
+  `Preset.exitWindowFixed_mainnet` and `Preset.exitWindowFixed_minimal` show that premise holds on both presets, as `Config.committeeWindowsFit_mainnet` does for its bundle.
+  `effectiveRise_le` bounds the rise of the active effective balances over an epoch end, and `effectiveFall_le` the fall of a voter's.
+  `branchCorrections` bounds the balances along a branch inside one epoch.
+  `Hysteresis`, `Run.blockCount`, `Run.blocks_le_slots` and `run_of_stateTransition` are general steps.
+  `flagSumOf` states the flag sums of `SupplyBlock` for any base reward; `flagRewardWeight` keeps its statement.
+
 - `Execution.rootViable_of_checked_call` shows that the confirmed root of a call of the fast confirmation rule stays viable from the call to a horizon ([#2058](https://github.com/ethereum/EthLib/issues/2058), Theorem 3, for the confirmed root).
   At each up-to-date honest store whose fork choice returns a head, the root is in the filtered tree or below the justified block.
   The alternatives are a collision of two honest stores and accountable-safety evidence.
