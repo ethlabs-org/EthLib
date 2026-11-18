@@ -1431,7 +1431,7 @@ theorem stub_J (h : Setting config checks g split fin pulled anc counted V)
       (K6 pulled counted).filter (fun v => pulled.validators.data.size ≤ v.toNat) := by
     refine Finset.filter_congr fun v _ => ?_
     omega
-  rw [notInside] at partition
+  rw [notInside, ← hInside] at partition
   have insideSum : ∑ v ∈ inside, eC counted v ≤
       ∑ v ∈ inside, (((eR pulled v + (pinTerms config pulled anc fin).rise v.toNat) +
         (((credC tailC highC v.toNat + credN tailC highC v.toNat / 10) +
@@ -1456,7 +1456,8 @@ theorem stub_J (h : Setting config checks g split fin pulled anc counted V)
         (eR pulled v + (pinTerms config pulled anc fin).rise v.toNat)) := by
     refine Nat.le_trans (Finset.sum_le_sum fun v hv =>
       classes v (Finset.mem_filter.mp hv).1 (Finset.mem_filter.mp hv).2) (Nat.le_of_eq ?_)
-    simp only [Finset.sum_add_distrib, Finset.sum_filter]
+    simp only [Finset.sum_filter]
+    simp only [Finset.sum_add_distrib]
   -- Each class of inside keys is within the matching class of `K6`.
   have restrict : ∀ (p : ValidatorIndex → Prop) [DecidablePred p] (f : ValidatorIndex → ℕ),
       ∑ v ∈ inside with p v, f v ≤ ∑ v ∈ (K6 pulled counted) with p v, f v := fun p _ f =>
@@ -1502,7 +1503,7 @@ theorem stub_J (h : Setting config checks g split fin pulled anc counted V)
           (syncF events v.toNat + syncF eventsC v.toNat) +
           (slashR (pinTerms config pulled anc fin) v.toNat + bandC tailC highC v.toNat +
             bandR events v.toNat)))
-  rw [notInside] at bounds
+  rw [notInside, ← hInside] at bounds
   have boundSplit : ∑ v ∈ K6 pulled counted,
       (((credC tailC highC v.toNat + credN tailC highC v.toNat / 10) +
             whistC tailC highC v.toNat) +
