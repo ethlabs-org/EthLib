@@ -9,6 +9,27 @@ Not yet released.
 
 ### Proof additions
 
+- `quorumDrift_le_quorumReserve` bounds the drift of a fast-confirmation call's quorum by `quorumReserve` ([#2058](https://github.com/ethereum/EthLib/issues/2058)).
+  It compares the call's pulled-up state with a later state in the target's epoch or the next, before Gloas from Fulu.
+  `Execution.quorumDriftWithin` builds those runs from the stores and proves `QuorumDriftWithin` with BLS checks.
+  The anchor state is reached by a run with BLS checks from a genesis built from deposits, and the preset meets `DirectSafety.Parameters`.
+  `Execution.rootViable_of_checked_call` takes the same genesis and run for any signature checks; this theorem fixes them to BLS.
+  The other premises are the anchor store and slot, and positive slot durations.
+  The preset keeps the bands of hysteresis and `Preset.ExitWindowFixed`, and the withdrawal delay is at least one epoch.
+  `MAX_EFFECTIVE_BALANCE` must equal `MIN_ACTIVATION_BALANCE`, which is at most `MAX_EFFECTIVE_BALANCE_ELECTRA`.
+  `Preset.exitWindowFixed_mainnet` and `Preset.exitWindowFixed_minimal` show that premise holds on both presets, as `Config.committeeWindowsFit_mainnet` does for its bundle.
+  `Execution.rootViable_of_checked_call_of_drift_bound` and `Execution.honestHeadsCover_of_checked_call_of_drift_bound` are the two checked-call headlines with `QuorumDriftWithin` discharged, with BLS checks from Fulu to before Gloas.
+  Seven premises replace it.
+  They are Fulu or later, a horizon before the next fork, `Preset.ExitWindowFixed` and `IncrementWithinUpwardBand`.
+  The others are a withdrawal delay of at least one epoch and the two Electra balance conditions.
+  `effectiveRise_le` bounds the rise of the active effective balances over an epoch end, and `effectiveFall_le` the fall of a voter's.
+  `branchCorrections` bounds the balances along a branch inside one epoch.
+  `Hysteresis`, `Run.blockCount`, `Run.blocks_le_slots` and `run_of_stateTransition` are general steps.
+  `flagSumOf` states the flag sums of `SupplyBlock` for any base reward; `flagRewardWeight` keeps its value.
+  `getBaseReward_congr` reads the base reward of two validators with the same effective balance, in one state or in two.
+  `processAttestation_keepsFlag` keeps each flag an attestation finds, and `flags_exit` and `flags_processExecutionRequests` keep both lists of flags.
+  `flags_operationsInput`, `flags_proposerSlashing`, `flags_attesterSlashing`, `flags_increase`, `flags_decrease`, `flagsBelow_add` and `flagsBelow_deposit` are now public.
+
 - `Execution.rootViable_of_checked_call` shows that the confirmed root of a call of the fast confirmation rule stays viable from the call up to `time` ([#2058](https://github.com/ethereum/EthLib/issues/2058), Theorem 3, for the confirmed root).
   At each up-to-date honest store whose fork choice returns a head, the root is in the filtered tree or below the justified block.
   The alternatives are a collision of two honest stores and accountable-safety evidence.
