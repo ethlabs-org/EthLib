@@ -1493,8 +1493,7 @@ private theorem proposerCredits_le_baseSum
     {m n : BeaconState preset fork} (toM : Run config checks ⟨fork, fin⟩ ⟨fork, m⟩)
     (inner : Run config checks ⟨fork, m⟩ ⟨fork, n⟩)
     (same : getCurrentEpoch n = getCurrentEpoch m)
-    {high : ℕ} (highLe : high ≤ (getCurrentEpoch pulled).toNat)
-    (started : (getCurrentEpoch m).toNat ≤ high + 1)
+    {high : ℕ} (inside : (getCurrentEpoch m).toNat ≤ (getCurrentEpoch pulled).toNat)
     (stake : preset.EFFECTIVE_BALANCE_INCREMENT.toNat ≤
       ∑ v ∈ activeVoters pulled, balanceAt pulled v.toNat)
     {events : List (BalanceEvent preset)} (replayed : inner.balanceEvents high = .ok events) :
@@ -1635,6 +1634,158 @@ private theorem proposerCredits_le_baseSum
       54 * pq.toNat * (3 * steps) := bound.trans (first.trans (second.trans third))
   have regroup : 54 * pq.toNat * (3 * steps) = 162 * (pq.toNat * steps) := by ring
   omega
+
+/-- The credits to some keys at the events that a test selects are at most the events' credit
+limits, when each event is within its limit. -/
+private theorem keyCredits_le_limits (S : Finset ValidatorIndex) (q : BalanceEvent preset → Bool)
+    {events : List (BalanceEvent preset)} (bounded : ∀ e ∈ events, e.credits ≤ e.creditLimit) :
+    ∑ v ∈ S, ((events.filter q).map (keyCredit v.toNat)).sum ≤
+      ((events.filter q).map (·.creditLimit)).sum := by
+  induction events with
+  | nil => simp
+  | cons a rest ih =>
+    have tail := ih fun e member => bounded e (List.mem_cons_of_mem _ member)
+    have head := bounded a List.mem_cons_self
+    have single := sum_keyCredit_le_credits S a
+    by_cases hq : q a = true
+    · rw [List.filter_cons_of_pos hq]
+      simp only [List.map_cons, List.sum_cons, Finset.sum_add_distrib]
+      omega
+    · rw [List.filter_cons_of_neg hq]
+      exact tail
+
+/-- The credit limits of one source are the sum over the events that name it. -/
+private theorem sourceCredits_eq_filter (source : BalanceSource) (events : List (BalanceEvent preset)) :
+    DirectSafety.Apriori.Internal.sourceCredits source events =
+      ((events.filter fun e => decide (e.source = source)).map (·.creditLimit)).sum := by
+  induction events with
+  | nil => simp [DirectSafety.Apriori.Internal.sourceCredits]
+  | cons a rest ih =>
+    have split : DirectSafety.Apriori.Internal.sourceCredits source (a :: rest) =
+        (if a.source = source then a.creditLimit else 0) +
+          DirectSafety.Apriori.Internal.sourceCredits source rest := by
+      simp [DirectSafety.Apriori.Internal.sourceCredits]
+    rw [split, ih]
+    by_cases hs : a.source = source
+    · simp [hs]
+    · simp [hs]
+
+/-- A slot step has no scanned credit when the slot test selects nothing. -/
+private theorem stepCredit_slot_zero (p : BalanceSource → Bool) (v : ℕ)
+    {x y : ForkedBeaconState preset} (ok : advanceSlotAcross config checks x = .ok y) :
+    stepCredit p (fun _ => false) v (Step.slot ok : Step config checks x y) = 0 := by
+  show ((((Step.slot (config := config) (checks := checks) ok).balanceEvents.toOption.getD
+    []).filter ((fun _ => false) ·.source)).map (keyCredit v)).sum = 0
+  rw [List.filter_eq_nil_iff.mpr (fun a _ => by simp)]
+  rfl
+
+/-- A run whose steps all start in the epoch of its first state scans, for a test that ignores slot
+steps, no more than a run that ends in that epoch.
+
+The last step is a block step, which stays in the epoch, or a slot step, which scans for nothing. -/
+private theorem run_in_epoch {m n : ForkedBeaconState preset} (mid : Run config checks m n)
+    (inside : ∀ {u w : ForkedBeaconState preset} (step : Step config checks u w),
+      mid.Contains step → getCurrentEpoch u.state = getCurrentEpoch m.state) :
+    ∃ (k : ForkedBeaconState preset) (kept : Run config checks m k),
+      getCurrentEpoch k.state = getCurrentEpoch m.state ∧ k.fork ≤ n.fork ∧
+        ∀ (p : BalanceSource → Bool) (v high : ℕ),
+          (creditScan p (fun _ => false) v high mid).1 ≤
+            (creditScan p (fun _ => false) v high kept).1 := by
+  cases mid with
+  | nil => exact ⟨m, .nil, rfl, Nat.le_refl _, fun _ _ _ => Nat.le_refl _⟩
+  | @snoc u l pre step =>
+    have start := inside step (.last pre step)
+    cases step with
+    | slot ok =>
+      refine ⟨_, pre, start, (Step.slot ok : Step config checks _ _).chainStep.fork_le,
+        fun p v high => ?_⟩
+      rw [creditScan_snoc_fst]
+      split
+      · rw [stepCredit_slot_zero]
+        omega
+      · exact Nat.le_refl _
+    | block engine signed due ok =>
+      refine ⟨_, pre.snoc (.block engine signed due ok), ?_, Nat.le_refl _,
+        fun _ _ _ => Nat.le_refl _⟩
+      have slotEq := processBlock_slot (applySignedBlock_ok ok).2.1
+      have kept : getCurrentEpoch _ = getCurrentEpoch _ := by
+        simp only [getCurrentEpoch, slotEq]
+      exact kept.trans start
+
+/-- One epoch of a run from fin credits the keys of `V` at most `baseSum` in rewards. -/
+private theorem segment_rewards_le (h : Setting config checks g split fin pulled anc counted V)
+    {m : BeaconState preset fork} (toM : Run config checks ⟨fork, fin⟩ ⟨fork, m⟩)
+    {n : BeaconState preset fork} (inner : Run config checks ⟨fork, m⟩ ⟨fork, n⟩)
+    (same : getCurrentEpoch n = getCurrentEpoch m)
+    (inside : (getCurrentEpoch m).toNat ≤ (getCurrentEpoch pulled).toNat) (high : ℕ)
+    (stake : preset.EFFECTIVE_BALANCE_INCREMENT.toNat ≤
+      ∑ v ∈ activeVoters pulled, balanceAt pulled v.toNat) :
+    ∑ v ∈ V, (creditScan (fun s => decide (s = .rewards)) (fun _ => false) v.toNat high
+      inner).1 ≤ baseSum pulled := by
+  obtain ⟨toFin⟩ := h.toFin
+  obtain ⟨events, replayed, bounded⟩ :=
+    Run.balanceEvents_bounded (toFin.append toM) inner h.genesis h.early high
+  have scans : ∀ v : ValidatorIndex, (creditScan (fun s => decide (s = .rewards))
+      (fun _ => false) v.toNat high inner).1 ≤
+        ((events.filter fun e => decide (e.source = .rewards)).map (keyCredit v.toNat)).sum := by
+    intro v
+    have := creditScan_le_events (fun s => decide (s = .rewards)) (fun _ => false) v.toNat high
+      inner replayed
+    simpa only [Bool.or_false] using this
+  have limits := keyCredits_le_limits V (fun e => decide (e.source = .rewards))
+    (fun e member => (bounded e member).1)
+  have epoch := proposerCredits_le_baseSum h toM inner same inside stake replayed
+  rw [← sourceCredits_eq_filter .rewards events] at limits
+  exact (Finset.sum_le_sum fun v _ => scans v).trans (limits.trans epoch)
+
+/-- R's rewards to the keys of `V` since the split are at most one `baseSum` for each epoch. -/
+private theorem rewards_le_total (h : Setting config checks g split fin pulled anc counted V)
+    (tail : Run config checks ⟨fork, split⟩ ⟨fork, pulled⟩) (high : ℕ)
+    (stake : preset.EFFECTIVE_BALANCE_INCREMENT.toNat ≤
+      ∑ v ∈ activeVoters pulled, balanceAt pulled v.toNat) :
+    ∑ v ∈ V, (creditScan (fun s => decide (s = .rewards)) (fun _ => false) v.toNat high
+      tail).1 ≤
+        ((getCurrentEpoch pulled).toNat - (getCurrentEpoch split).toNat + 1) *
+          baseSum pulled := by
+  obtain ⟨fromFin⟩ := h.fromFin
+  have cuts := DirectSafety.Apriori.Internal.run_cuts_measure_le (config := config)
+    (checks := checks) tail h.early
+    (fun {_ _} r => ∑ v ∈ V, (creditScan (fun s => decide (s = .rewards)) (fun _ => false)
+      v.toNat high r).1)
+    (fun {_} => Finset.sum_eq_zero fun _ _ => rfl)
+    (fun {_ _ _} pre post _ => by simp only [creditScan_append, Finset.sum_add_distrib])
+    (fun _ => True) (fun _ => baseSum pulled) (fun _ _ _ _ => trivial)
+    (fun {m n} toM mid rest inside _ => by
+      obtain ⟨k, kept, kEpoch, kFork, scanLe⟩ := run_in_epoch mid inside
+      obtain ⟨mf, ms⟩ := m
+      have mFork : mf = fork := by
+        have low := fork_le_of_chainSteps toM.chainSteps
+        have high := fork_le_of_chainSteps (mid.append rest).chainSteps
+        exact Nat.le_antisymm high low
+      subst mFork
+      obtain ⟨kf, ks⟩ := k
+      have kFork' : kf = mf := by
+        have low := fork_le_of_chainSteps kept.chainSteps
+        have above := fork_le_of_chainSteps rest.chainSteps
+        exact Nat.le_antisymm (Nat.le_trans kFork above) low
+      subst kFork'
+      have epochLe := UInt64.le_iff_toNat_le.mp
+        (currentEpoch_le_of_chainSteps (mid.append rest).chainSteps)
+      exact (Finset.sum_le_sum fun v _ => scanLe _ _ _).trans
+        (segment_rewards_le h (fromFin.append toM) kept kEpoch epochLe high stake))
+    ((getCurrentEpoch pulled).toNat - (getCurrentEpoch split).toNat + 1)
+    (fun {u w} step member => by
+      obtain ⟨pre, post, -⟩ := tail.contains_split step member
+      have le := UInt64.le_iff_toNat_le.mp (UInt64.le_trans step.chainStep.currentEpoch_le
+        (currentEpoch_le_of_chainSteps post.chainSteps))
+      have called := UInt64.le_iff_toNat_le.mp h.called
+      dsimp only at le ⊢
+      omega)
+  have sumConst : ((List.range ((getCurrentEpoch pulled).toNat - (getCurrentEpoch split).toNat +
+      1)).map fun _ => baseSum pulled).sum =
+        ((getCurrentEpoch pulled).toNat - (getCurrentEpoch split).toNat + 1) * baseSum pulled := by
+    simp [List.map_const', List.sum_replicate]
+  exact cuts.trans sumConst.le
 
 /-- R1 (branchR): R's credits to V keys since the split, weight 3.
 
