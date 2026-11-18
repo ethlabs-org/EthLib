@@ -772,13 +772,36 @@ def passRate (config : Config) (z : ForkedBeaconState preset) (v : ℕ) : ℕ :=
         (EthLib.Consensus.parameters preset z.fork).INACTIVITY_PENALTY_QUOTIENT.toNat)
 
 open DirectSafety.Apriori.Internal Classical in
+/-- The rewards pass debits a key at most its pass rate at the last state of the epoch.
+
+It is the instance of `segment_passDebit_le` (PinDriftBound, private) at the last step of a segment.
+
+The segment `pre` stays in the epoch of `m`, and the slot step `ok` leaves it.
+
+The pass is a debit only when it reads a total active balance at `z`.
+
+Otherwise it records no penalty. -/
+def PassBoundStatement (preset : Preset) (config : Config) (checks : SignatureChecks) : Prop :=
+  ∀ {m z n : ForkedBeaconState preset} (pre : Run config checks m z)
+    (ok : advanceSlotAcross config checks z = .ok n),
+    .altair ≤ m.fork → n.fork < .glamsterdam →
+    getCurrentEpoch z.state = getCurrentEpoch m.state →
+    (getCurrentEpoch z.state).toNat < (getCurrentEpoch n.state).toNat →
+    ∀ (i : ℕ) {events : List (BalanceEvent preset)},
+      (pre.snoc (Step.slot ok)).balanceEvents (getCurrentEpoch m.state).toNat = .ok events →
+      (events.map (penaltyDebit i)).sum ≤
+        if ∃ total, getTotalActiveBalance z.state = .ok total then passRate config z i else 0
+
+open DirectSafety.Apriori.Internal Classical in
 /-- The floor of one key over a run that crosses at most one epoch boundary.
 
-The run starts at `m` and ends at `n`, from Fulu and before Gloas.
+The run starts at `m`, reached from genesis, and ends at `n`, from Fulu and before Gloas.
 
-It ends in the epoch of `m`, or at the first slot of the next epoch.
+It stays in the epoch of `m`.
 
-The key must be assigned an activation at `m`, and not exit by the epoch of `n`.
+Or it ends with the slot step that leaves that epoch, at the first slot of the next epoch.
+
+The key must be assigned an activation at `m`, and not exit by the epoch after that of `m`.
 
 If it is slashed at `m`, its delayed slashing penalty must not be due by the epoch of `n`.
 
@@ -800,15 +823,23 @@ That penalty is the effective balance at `m` over the slashing quotient.
 
 The effective balance changes only at the boundary, after any slashing before it. -/
 def EpochFloorStatement (preset : Preset) (config : Config) (checks : SignatureChecks) : Prop :=
-  ∀ {m n : ForkedBeaconState preset} (r : Run config checks m n),
+  ∀ {g m n : ForkedBeaconState preset} (_shared : Run config checks g m)
+    (_genesis : Genesis (config := config) (checks := checks) g) (_caps : CapOrder preset)
+    (_delay : 0 < config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat)
+    (_vector : 4 ≤ preset.EPOCHS_PER_SLASHINGS_VECTOR.toNat)
+    (_positive :
+      0 < (EthLib.Consensus.parameters preset .fusaka).MIN_SLASHING_PENALTY_QUOTIENT.toNat)
+    (r : Run config checks m n),
     .fusaka ≤ m.fork → n.fork < .glamsterdam →
     (getCurrentEpoch n.state = getCurrentEpoch m.state ∨
-      ((getCurrentEpoch n.state).toNat = (getCurrentEpoch m.state).toNat + 1 ∧
-        n.state.slot % preset.SLOTS_PER_EPOCH = 0)) →
+      ∃ (z : ForkedBeaconState preset) (pre : Run config checks m z)
+        (ok : advanceSlotAcross config checks z = .ok n),
+        r = pre.snoc (Step.slot ok) ∧ getCurrentEpoch z.state = getCurrentEpoch m.state ∧
+          (getCurrentEpoch n.state).toNat = (getCurrentEpoch m.state).toNat + 1) →
     ∀ (i : ℕ) (val : Validator), m.state.validators.data[i]? = some val →
     val.activationEpoch ≠ FAR_FUTURE_EPOCH →
     (∀ w, n.state.validators.data[i]? = some w →
-      (getCurrentEpoch n.state).toNat < w.exitEpoch.toNat) →
+      (getCurrentEpoch m.state).toNat + 1 < w.exitEpoch.toNat) →
     (val.slashed = true → (getCurrentEpoch n.state).toNat +
       preset.EPOCHS_PER_SLASHINGS_VECTOR.toNat / 2 < val.withdrawableEpoch.toNat) →
     ∀ C : ℕ, C ≤ (withdrawalMaxEffectiveBalance preset m.fork val).toNat →
