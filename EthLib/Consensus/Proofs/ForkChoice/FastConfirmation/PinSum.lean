@@ -907,13 +907,30 @@ private theorem sum_filter_mono {α : Type} (l : List α) (p q : α → Bool) (f
   | cons a rest ih =>
     by_cases hp : p a = true
     · have hq := h a hp
-      simp only [List.filter_cons, hp, hq, ↓reduceIte, List.map_cons, List.sum_cons]
+      rw [List.filter_cons_of_pos hp, List.filter_cons_of_pos hq]
+      simp only [List.map_cons, List.sum_cons]
       omega
     · by_cases hq : q a = true
-      · simp only [List.filter_cons, hp, hq, ↓reduceIte, List.map_cons, List.sum_cons]
+      · rw [List.filter_cons_of_neg hp, List.filter_cons_of_pos hq]
+        simp only [List.map_cons, List.sum_cons]
         omega
-      · simp only [List.filter_cons, hp, hq]
+      · rw [List.filter_cons_of_neg hp, List.filter_cons_of_neg hq]
         exact ih
+
+/-- The credits that a scan reads from a run, after one more step. -/
+private theorem creditScan_snoc_fst (blockP slotP : BalanceSource → Bool) (v high : ℕ)
+    {x m y : ForkedBeaconState preset} (pre : Run config checks x m)
+    (step : Step config checks m y) :
+    (creditScan blockP slotP v high (pre.snoc step)).1 =
+      if (getCurrentEpoch m.state).toNat ≤ high + 1 then
+        (creditScan blockP slotP v high pre).1 + stepCredit blockP slotP v step
+      else (creditScan blockP slotP v high pre).1 := by
+  change (if (getCurrentEpoch m.state).toNat ≤ high + 1 then
+      ((creditScan blockP slotP v high pre).1 + stepCredit blockP slotP v step, _)
+    else creditScan blockP slotP v high pre).1 = _
+  by_cases c : (getCurrentEpoch m.state).toNat ≤ high + 1
+  · simp only [c, ↓reduceIte]
+  · simp only [c, ↓reduceIte]
 
 /-- The credits of a run to a key, read as a scan, add over `append`. -/
 private theorem creditScan_append (blockP slotP : BalanceSource → Bool) (v high : ℕ)
@@ -922,13 +939,35 @@ private theorem creditScan_append (blockP slotP : BalanceSource → Bool) (v hig
     (creditScan blockP slotP v high (pre.append post)).1 =
       (creditScan blockP slotP v high pre).1 + (creditScan blockP slotP v high post).1 := by
   induction post with
-  | nil => simp [Run.append, creditScan]
+  | nil => rfl
   | snoc post step ih =>
-    simp only [Run.append, creditScan]
+    change (creditScan blockP slotP v high ((pre.append post).snoc step)).1 = _
+    rw [creditScan_snoc_fst, creditScan_snoc_fst]
     split
-    · simp only [ih]
-      omega
+    · omega
     · exact ih
+
+/-- A step's scanned credit is at most the matching credits of its events. -/
+private theorem stepCredit_le (blockP slotP : BalanceSource → Bool) (v : ℕ)
+    {x y : ForkedBeaconState preset} (step : Step config checks x y)
+    {added : List (BalanceEvent preset)} (addedOk : step.balanceEvents = .ok added) :
+    stepCredit blockP slotP v step ≤
+      ((added.filter fun e => blockP e.source || slotP e.source).map (keyCredit v)).sum := by
+  cases step with
+  | slot ok =>
+    show ((((Step.slot (config := config) (checks := checks) ok).balanceEvents.toOption.getD
+      []).filter (slotP ·.source)).map (keyCredit v)).sum ≤ _
+    rw [addedOk]
+    exact sum_filter_mono added _ _ _ fun a ha => by
+      simp only [Bool.or_eq_true]
+      exact Or.inr ha
+  | block engine signed due ok =>
+    show ((((Step.block engine signed due ok : Step config checks _ _).balanceEvents.toOption.getD
+      []).filter (blockP ·.source)).map (keyCredit v)).sum ≤ _
+    rw [addedOk]
+    exact sum_filter_mono added _ _ _ fun a ha => by
+      simp only [Bool.or_eq_true]
+      exact Or.inl ha
 
 /-- The credits that a scan reads from a run are at most the matching credits of its events. -/
 private theorem creditScan_le_events (blockP slotP : BalanceSource → Bool) (v high : ℕ)
@@ -937,29 +976,23 @@ private theorem creditScan_le_events (blockP slotP : BalanceSource → Bool) (v 
     (creditScan blockP slotP v high tail).1 ≤
       ((events.filter fun e => blockP e.source || slotP e.source).map (keyCredit v)).sum := by
   induction tail generalizing events with
-  | nil =>
-    cases replayed
-    simp [creditScan]
+  | nil => exact Nat.zero_le _
   | @snoc m l pre step ih =>
     simp only [Run.balanceEvents, bind_ok_iff] at replayed
     obtain ⟨prior, priorOk, rest⟩ := replayed
     have before := ih priorOk
-    simp only [creditScan]
+    rw [creditScan_snoc_fst]
     split at rest
     · rename_i within
+      rw [if_pos within]
       simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at rest
       obtain ⟨added, addedOk, rfl⟩ := rest
-      simp only [within, ↓reduceIte, List.filter_append, List.map_append, List.sum_append]
-      have credit : stepCredit blockP slotP v step ≤
-          ((added.filter fun e => blockP e.source || slotP e.source).map (keyCredit v)).sum := by
-        unfold stepCredit
-        simp only [addedOk, Except.toOption, Option.getD_some]
-        cases step
-        · exact sum_filter_mono added _ _ _ fun a ha => by simp [ha]
-        · exact sum_filter_mono added _ _ _ fun a ha => by simp [ha]
+      simp only [List.filter_append, List.map_append, List.sum_append]
+      have credit := stepCredit_le blockP slotP v step addedOk
       omega
-    · cases rest
-      simp only [‹¬_›, ↓reduceIte]
+    · rename_i outside
+      cases rest
+      rw [if_neg outside]
       exact before
 
 /-- R1 (branchR): R's credits to V keys since the split, weight 3.
