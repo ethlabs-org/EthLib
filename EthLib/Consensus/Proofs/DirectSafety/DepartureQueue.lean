@@ -6312,42 +6312,46 @@ private theorem expected_partial_pass {fork : Fork} {state : BeaconState preset 
   cases first
   cases third
   exact ⟨partials, index2, partialsOk⟩
-private theorem partial_event_expected_le
-    (partialDebit_eq : partialDebit = fun i event =>
-  if event.source = .withdrawals then
-    if electra : .pectra ≤ event.before.fork then
-      match getPendingPartialWithdrawals event.before.state electra
-          (event.before.state.nextWithdrawalIndex (Nat.le_trans (by decide) electra)) #[] with
-      | .ok (partials, _, _) => withdrawnFrom partials i
-      | .error _ => 0
-    else 0
-  else 0) {fork : Fork} {state finish : BeaconState preset fork}
+/-- A cost of balance events that only payload withdrawals pay.
+
+A withdrawals event costs at most the amounts of the queued partial withdrawals it reads that
+`keep` selects. Every other event, and every slot, costs nothing.
+
+The debits of all keys select every entry; the debit of one key selects its entries. -/
+structure PartialCost (cost : BalanceEvent preset → Nat)
+    (keep : PendingPartialWithdrawal → Bool) : Prop where
+  quiet : ∀ e : BalanceEvent preset, e.source ≠ .withdrawals → cost e = 0
+  paid : ∀ {fork : Fork} {state finish : BeaconState preset fork} (electra : .pectra ≤ fork)
+    {partials : Array Withdrawal} {next : WithdrawalIndex} {count : Nat} (credit debit : Nat),
+    fork < .glamsterdam →
+    getPendingPartialWithdrawals state electra
+      (state.nextWithdrawalIndex (Nat.le_trans (by decide) electra)) #[] =
+        .ok (partials, next, count) →
+    cost ⟨.withdrawals, ⟨fork, state⟩, ⟨fork, finish⟩, credit, debit⟩ ≤
+      ((((state.pendingPartialWithdrawals electra).data.toList.take count).filter keep).map
+        (·.amount.toNat)).sum
+  slot : ∀ {x y : ForkedBeaconState preset} (ok : advanceSlotAcross config checks x = .ok y),
+    y.fork < .glamsterdam → ∀ {events : List (BalanceEvent preset)},
+    (Step.slot ok).balanceEvents = .ok events → (events.map cost).sum = 0
+
+variable {cost : BalanceEvent preset → Nat} {keep : PendingPartialWithdrawal → Bool}
+
+private theorem partial_event_expected_le (charged : PartialCost (config := config)
+      (checks := checks) cost keep) {fork : Fork} {state finish : BeaconState preset fork}
     {electra : .pectra ≤ fork} {expected : ExpectedWithdrawals} {credit debit : Nat}
     (early : fork < .glamsterdam)
     (computed : getExpectedWithdrawals state (Nat.le_trans (by decide) electra) = .ok expected) :
-    (∑ i ∈ Finset.range state.validators.data.size,
-      partialDebit (UInt64.ofNat i)
-        ⟨.withdrawals, ⟨fork, state⟩, ⟨fork, finish⟩, credit, debit⟩) ≤
-      (((state.pendingPartialWithdrawals electra).data.toList.take
-        expected.processedPartialWithdrawalsCount).map (·.amount.toNat)).sum ∧
+    cost ⟨.withdrawals, ⟨fork, state⟩, ⟨fork, finish⟩, credit, debit⟩ ≤
+      ((((state.pendingPartialWithdrawals electra).data.toList.take
+        expected.processedPartialWithdrawalsCount).filter keep).map (·.amount.toNat)).sum ∧
       ∀ entry ∈ (state.pendingPartialWithdrawals electra).data.toList.take
         expected.processedPartialWithdrawalsCount,
         entry.withdrawableEpoch ≤ getCurrentEpoch state := by
   obtain ⟨partials, next, partialsOk⟩ := expected_partial_pass early computed
-  constructor
-  · simpa only [partialDebit_eq, electra, ↓reduceIte, ↓reduceDIte, partialsOk] using
-      partial_withdrawals_total_le early partialsOk
-  · exact (getPendingPartialWithdrawals_taken partialsOk).1
-private theorem execution_partial_consumption
-    (partialDebit_eq : partialDebit = fun i event =>
-  if event.source = .withdrawals then
-    if electra : .pectra ≤ event.before.fork then
-      match getPendingPartialWithdrawals event.before.state electra
-          (event.before.state.nextWithdrawalIndex (Nat.le_trans (by decide) electra)) #[] with
-      | .ok (partials, _, _) => withdrawnFrom partials i
-      | .error _ => 0
-    else 0
-  else 0) {fork : Fork} {s t : BeaconState preset fork}
+  exact ⟨charged.paid electra credit debit early partialsOk,
+    (getPendingPartialWithdrawals_taken partialsOk).1⟩
+private theorem execution_partial_consumption (charged : PartialCost (config := config)
+      (checks := checks) cost keep) {fork : Fork} {s t : BeaconState preset fork}
     {engine : ExecutionEngine preset fork} {body : BeaconBlockBody preset fork}
     {bellatrix : .bellatrix ≤ fork} {credit debit : Nat}
     (electra : .pectra ≤ fork) (early : fork < .glamsterdam)
@@ -6357,11 +6361,9 @@ private theorem execution_partial_consumption
           expected.processedPartialWithdrawalsCount ++
         (t.pendingPartialWithdrawals electra).data.toList =
           (s.pendingPartialWithdrawals electra).data.toList ∧
-      (∑ i ∈ Finset.range s.validators.data.size,
-        partialDebit (UInt64.ofNat i)
-          ⟨.withdrawals, ⟨fork, s⟩, ⟨fork, t⟩, credit, debit⟩) ≤
-        (((s.pendingPartialWithdrawals electra).data.toList.take
-          expected.processedPartialWithdrawalsCount).map (·.amount.toNat)).sum ∧
+      cost ⟨.withdrawals, ⟨fork, s⟩, ⟨fork, t⟩, credit, debit⟩ ≤
+        ((((s.pendingPartialWithdrawals electra).data.toList.take
+          expected.processedPartialWithdrawalsCount).filter keep).map (·.amount.toNat)).sum ∧
       ∀ entry ∈ (s.pendingPartialWithdrawals electra).data.toList.take
         expected.processedPartialWithdrawalsCount,
         entry.withdrawableEpoch ≤ getCurrentEpoch s := by
@@ -6371,7 +6373,7 @@ private theorem execution_partial_consumption
     (s.pendingPartialWithdrawals electra).data.extract
       expected.processedPartialWithdrawalsCount (s.pendingPartialWithdrawals electra).data.size
           at same
-  have reads := partial_event_expected_le (partialDebit_eq := partialDebit_eq) (electra := electra)
+  have reads := partial_event_expected_le charged (electra := electra)
     (finish := t) (credit := credit) (debit := debit)
     early expectedOk
   refine ⟨expected, expectedOk, ?_, reads⟩
@@ -6398,16 +6400,8 @@ private theorem block_partial_removal {fork : Fork} {s headed finish : BeaconSta
   simp only [Step.partialsRemoved, electra, ↓reduceDIte, Step.partialsTaken, taken]
   obtain ⟨_, _, rfl⟩ := processBlockHeader_eq header
   rfl
-private theorem block_execution_partial_bound
-    (partialDebit_eq : partialDebit = fun i event =>
-  if event.source = .withdrawals then
-    if electra : .pectra ≤ event.before.fork then
-      match getPendingPartialWithdrawals event.before.state electra
-          (event.before.state.nextWithdrawalIndex (Nat.le_trans (by decide) electra)) #[] with
-      | .ok (partials, _, _) => withdrawnFrom partials i
-      | .error _ => 0
-    else 0
-  else 0) {fork : Fork}
+private theorem block_execution_partial_bound (charged : PartialCost (config := config)
+      (checks := checks) cost keep) {fork : Fork}
     {s headed executed finish : BeaconState preset fork}
     {engine : ExecutionEngine preset fork} {signed : SignedBeaconBlock preset fork}
     {due : upgradeDue config ⟨fork, s⟩ = false}
@@ -6416,14 +6410,13 @@ private theorem block_execution_partial_bound
     (header : processBlockHeader s signed.message = .ok headed)
     (execution : processBlockExecution config checks engine headed signed.message.body
       (Nat.le_trans (by decide) electra) = .ok executed) :
-    (∑ i ∈ Finset.range headed.validators.data.size,
-      partialDebit (UInt64.ofNat i)
-        ⟨.withdrawals, ⟨fork, headed⟩, ⟨fork, executed⟩, credit, debit⟩) ≤
-      (((Step.block engine signed due applied).partialsRemoved).map (·.amount.toNat)).sum ∧
+    cost ⟨.withdrawals, ⟨fork, headed⟩, ⟨fork, executed⟩, credit, debit⟩ ≤
+      ((((Step.block engine signed due applied).partialsRemoved).filter keep).map
+        (·.amount.toNat)).sum ∧
     ∀ entry ∈ (Step.block engine signed due applied).partialsRemoved,
       entry.withdrawableEpoch ≤ getCurrentEpoch s := by
   obtain ⟨expected, expectedOk, _, bound, dueEntries⟩ :=
-    execution_partial_consumption (partialDebit_eq := partialDebit_eq) (credit := credit)
+    execution_partial_consumption charged (credit := credit)
         (debit := debit) electra early execution
   rw [block_partial_removal electra header expectedOk]
   refine ⟨bound, ?_⟩
@@ -6522,58 +6515,37 @@ private theorem block_withdrawal_filter {fork : Fork} {s : BeaconState preset fo
   split at rest
   · exact (record_nonwithdrawal_filter (by decide) rest).trans requestedKept
   · cases rest; exact requestedKept
-private theorem partial_sum_filter
-    (partialDebit_eq : partialDebit = fun i event =>
-  if event.source = .withdrawals then
-    if electra : .pectra ≤ event.before.fork then
-      match getPendingPartialWithdrawals event.before.state electra
-          (event.before.state.nextWithdrawalIndex (Nat.le_trans (by decide) electra)) #[] with
-      | .ok (partials, _, _) => withdrawnFrom partials i
-      | .error _ => 0
-    else 0
-  else 0) (events : List (BalanceEvent preset)) :
-    (events.map fun e => ∑ i ∈ Finset.range e.before.state.validators.data.size,
-      partialDebit (UInt64.ofNat i) e).sum =
-    ((events.filter (fun e => e.source == .withdrawals)).map fun e =>
-      ∑ i ∈ Finset.range e.before.state.validators.data.size,
-        partialDebit (UInt64.ofNat i) e).sum := by
+private theorem partial_sum_filter (charged : PartialCost (config := config) (checks := checks)
+      cost keep) (events : List (BalanceEvent preset)) :
+    (events.map cost).sum =
+      ((events.filter (fun e => e.source == .withdrawals)).map cost).sum := by
   induction events with
   | nil => rfl
   | cons e events ih =>
     by_cases source : e.source = .withdrawals
-    · simpa [source] using congrArg
-        (fun total => (∑ i ∈ Finset.range e.before.state.validators.data.size,
-          partialDebit (UInt64.ofNat i) e) + total) ih
-    · simpa [source, partialDebit_eq] using ih
-private theorem block_partial_sum
-    (partialDebit_eq : partialDebit = fun i event =>
-  if event.source = .withdrawals then
-    if electra : .pectra ≤ event.before.fork then
-      match getPendingPartialWithdrawals event.before.state electra
-          (event.before.state.nextWithdrawalIndex (Nat.le_trans (by decide) electra)) #[] with
-      | .ok (partials, _, _) => withdrawnFrom partials i
-      | .error _ => 0
-    else 0
-  else 0) {fork : Fork} {s finish : BeaconState preset fork}
+    · simpa [source] using congrArg (fun total => cost e + total) ih
+    · simpa [source, charged.quiet e source] using ih
+private theorem block_partial_sum (charged : PartialCost (config := config) (checks := checks)
+      cost keep) {fork : Fork} {s finish : BeaconState preset fork}
     {engine : ExecutionEngine preset fork} {signed : SignedBeaconBlock preset fork}
     {due : upgradeDue config ⟨fork, s⟩ = false}
     {applied : applySignedBlock config checks engine s signed true = .ok finish}
     (electra : .pectra ≤ fork) (early : fork < .glamsterdam)
     {events : List (BalanceEvent preset)}
     (replayed : (Step.block engine signed due applied).balanceEvents = .ok events) :
-    (events.map fun e => ∑ i ∈ Finset.range e.before.state.validators.data.size,
-      partialDebit (UInt64.ofNat i) e).sum ≤
-      (((Step.block engine signed due applied).partialsRemoved).map (·.amount.toNat)).sum ∧
+    (events.map cost).sum ≤
+      ((((Step.block engine signed due applied).partialsRemoved).filter keep).map
+        (·.amount.toNat)).sum ∧
     ∀ entry ∈ (Step.block engine signed due applied).partialsRemoved,
       entry.withdrawableEpoch ≤ getCurrentEpoch s := by
   obtain ⟨headed, executed, credit, debit, header, execution, filtered⟩ :=
     block_withdrawal_filter early engine signed.message electra
       (Step.balanceEvents_block early replayed)
   have bound :=
-      block_execution_partial_bound (partialDebit_eq := partialDebit_eq) (due := due)
+      block_execution_partial_bound charged (due := due)
       (applied := applied)
     (credit := credit) (debit := debit) electra early header execution
-  rw [partial_sum_filter (partialDebit_eq := partialDebit_eq), filtered]
+  rw [partial_sum_filter charged, filtered]
   simpa only [List.map_cons, List.map_nil, List.sum_cons, List.sum_nil, Nat.add_zero]
     using bound
 /-- Before Gloas, a computed consolidation churn limit reads a total active balance. -/
@@ -6593,48 +6565,26 @@ variable (slot_zero : ∀ {x y : ForkedBeaconState preset}
     (events.map fun e => ∑ i ∈ Finset.range e.before.state.validators.data.size,
       partialDebit (UInt64.ofNat i) e).sum = 0)
 
-include slot_zero in
-private theorem step_partial_sum
-    (partialDebit_eq : partialDebit = fun i event =>
-  if event.source = .withdrawals then
-    if electra : .pectra ≤ event.before.fork then
-      match getPendingPartialWithdrawals event.before.state electra
-          (event.before.state.nextWithdrawalIndex (Nat.le_trans (by decide) electra)) #[] with
-      | .ok (partials, _, _) => withdrawnFrom partials i
-      | .error _ => 0
-    else 0
-  else 0) {x y : ForkedBeaconState preset}
+private theorem step_partial_sum (charged : PartialCost (config := config) (checks := checks)
+      cost keep) {x y : ForkedBeaconState preset}
     (step : Step config checks x y) (electra : .pectra ≤ x.fork)
     (early : y.fork < .glamsterdam) {events : List (BalanceEvent preset)}
     (replayed : step.balanceEvents = .ok events) :
-    (events.map fun e => ∑ i ∈ Finset.range e.before.state.validators.data.size,
-      partialDebit (UInt64.ofNat i) e).sum ≤
-      (step.partialsRemoved.map (·.amount.toNat)).sum ∧
+    (events.map cost).sum ≤ ((step.partialsRemoved.filter keep).map (·.amount.toNat)).sum ∧
     ∀ entry ∈ step.partialsRemoved,
       entry.withdrawableEpoch ≤ getCurrentEpoch x.state := by
   cases step with
   | slot ok =>
-    rw [slot_zero ok early replayed]
+    rw [charged.slot ok early replayed]
     exact ⟨Nat.zero_le _, by simp [Step.partialsRemoved, electra, Step.partialsTaken]⟩
   | block engine signed due applied =>
-    exact block_partial_sum (partialDebit_eq := partialDebit_eq) electra early replayed
-include slot_zero in
-private theorem run_partial_sum
-    (partialDebit_eq : partialDebit = fun i event =>
-  if event.source = .withdrawals then
-    if electra : .pectra ≤ event.before.fork then
-      match getPendingPartialWithdrawals event.before.state electra
-          (event.before.state.nextWithdrawalIndex (Nat.le_trans (by decide) electra)) #[] with
-      | .ok (partials, _, _) => withdrawnFrom partials i
-      | .error _ => 0
-    else 0
-  else 0) {x y : ForkedBeaconState preset}
+    exact block_partial_sum charged electra early replayed
+private theorem run_partial_sum (charged : PartialCost (config := config) (checks := checks)
+      cost keep) {x y : ForkedBeaconState preset}
     (tail : Run config checks x y) (electra : .pectra ≤ x.fork)
     (early : y.fork < .glamsterdam) {events : List (BalanceEvent preset)}
     (replayed : tail.balanceEvents high = .ok events) :
-    (events.map fun e => ∑ i ∈ Finset.range e.before.state.validators.data.size,
-      partialDebit (UInt64.ofNat i) e).sum ≤
-      (tail.partialsRemoved.map (·.amount.toNat)).sum ∧
+    (events.map cost).sum ≤ ((tail.partialsRemoved.filter keep).map (·.amount.toNat)).sum ∧
     ∀ entry ∈ tail.partialsRemoved,
       entry.withdrawableEpoch ≤ getCurrentEpoch y.state := by
   induction tail generalizing events with
@@ -6655,27 +6605,72 @@ private theorem run_partial_sum
       | block engine signed due applied =>
         obtain ⟨headed, executed, header, execution⟩ :=
           block_partial_stages middleElectra early applied
-        have bound :=
-            block_execution_partial_bound (partialDebit_eq := partialDebit_eq) (due := due)
-            (applied := applied)
+        have bound := block_execution_partial_bound charged (due := due) (applied := applied)
           (credit := 0) (debit := 0) middleElectra early header execution
         exact fun entry member => UInt64.le_trans (bound.2 entry member) later
     constructor
     · split at rest
       · simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at rest
         obtain ⟨added, addedOk, rfl⟩ := rest
-        have one :=
-            (step_partial_sum (partialDebit_eq := partialDebit_eq) (slot_zero := slot_zero) step
-              middleElectra early addedOk).1
-        simp only [List.map_append, List.sum_append, Run.partialsRemoved]
+        have one := (step_partial_sum charged step middleElectra early addedOk).1
+        simp only [List.map_append, List.sum_append, Run.partialsRemoved, List.filter_append]
         omega
       · cases rest
-        simp only [Run.partialsRemoved, List.map_append, List.sum_append]
+        simp only [Run.partialsRemoved, List.map_append, List.sum_append, List.filter_append]
         omega
     · intro entry member
       rcases List.mem_append.mp member with old | new
       · exact UInt64.le_trans (first.2 entry old) later
       · exact lastDue entry new
+/-- The cost of the events of a branch is at most the selected entries of the queue at its start,
+and of the entries appended along it, that are due by a cutoff at or after its end.
+
+The queue at the end, after the entries the branch removed, is the queue at the start followed by
+the appended entries. -/
+private theorem run_partial_queue_due_of
+    (charged : PartialCost (config := config) (checks := checks) cost keep)
+    {x y : ForkedBeaconState preset}
+    (tail : Run config checks x y) (electra : .pectra ≤ x.fork)
+    (early : y.fork < .glamsterdam) {events : List (BalanceEvent preset)}
+    (replayed : tail.balanceEvents high = .ok events)
+    (cutoff : Nat) (endpoint : (getCurrentEpoch y.state).toNat ≤ cutoff)
+    (added : List PendingPartialWithdrawal)
+    (queue : tail.partialsRemoved ++
+        (y.state.pendingPartialWithdrawals
+          (Nat.le_trans electra (fork_le_of_chainSteps tail.chainSteps))).data.toList =
+      (x.state.pendingPartialWithdrawals electra).data.toList ++ added) :
+    (events.map cost).sum ≤
+      ((((x.state.pendingPartialWithdrawals electra).data.toList.filter keep).filter
+        (fun entry => entry.withdrawableEpoch.toNat ≤ cutoff)).map (·.amount.toNat)).sum +
+      (((added.filter keep).filter (fun entry => entry.withdrawableEpoch.toNat ≤ cutoff)).map
+        (·.amount.toNat)).sum := by
+  have replay := run_partial_sum charged tail electra early replayed
+  have kept := congrArg (List.filter keep) queue
+  simp only [List.filter_append] at kept
+  exact replay.1.trans (partial_queue_telescope_due _ _ _ _ cutoff kept
+    (fun entry member => (UInt64.le_iff_toNat_le.mp
+      (replay.2 entry (List.mem_of_mem_filter member))).trans endpoint))
+include slot_zero in
+/-- The debits of all keys are a cost that selects every queued entry. -/
+private theorem partialCost_all
+    (partialDebit_eq : partialDebit = fun i event =>
+  if event.source = .withdrawals then
+    if electra : .pectra ≤ event.before.fork then
+      match getPendingPartialWithdrawals event.before.state electra
+          (event.before.state.nextWithdrawalIndex (Nat.le_trans (by decide) electra)) #[] with
+      | .ok (partials, _, _) => withdrawnFrom partials i
+      | .error _ => 0
+    else 0
+  else 0) :
+    PartialCost (config := config) (checks := checks)
+      (fun e => ∑ i ∈ Finset.range e.before.state.validators.data.size,
+        partialDebit (UInt64.ofNat i) e) (fun _ => true) where
+  quiet e source := by simp [partialDebit_eq, source]
+  paid := by
+    intro _ _ _ electra _ _ _ _ _ early computed
+    simpa only [partialDebit_eq, electra, ↓reduceIte, ↓reduceDIte, computed, List.filter_true]
+      using partial_withdrawals_total_le early computed
+  slot ok early _ replayed := slot_zero ok early replayed
 include slot_zero in
 private theorem run_partial_queue_due
     (partialDebit_eq : partialDebit = fun i event =>
@@ -6702,11 +6697,9 @@ private theorem run_partial_queue_due
         (fun entry => entry.withdrawableEpoch.toNat ≤ cutoff)).map (·.amount.toNat)).sum +
       ((added.filter (fun entry => entry.withdrawableEpoch.toNat ≤ cutoff)).map
         (·.amount.toNat)).sum := by
-  have replay :=
-      run_partial_sum (partialDebit_eq := partialDebit_eq) (slot_zero := slot_zero) tail electra
-      early replayed
-  exact replay.1.trans (partial_queue_telescope_due _ _ _ _ cutoff queue
-    (fun entry member => (UInt64.le_iff_toNat_le.mp (replay.2 entry member)).trans endpoint))
+  simpa only [List.filter_true] using run_partial_queue_due_of
+    (partialCost_all slot_zero partialDebit_eq) tail electra early replayed cutoff endpoint
+    added queue
 private theorem partials_entries_due_sum (calls : List (IndexedDepartureCall preset config))
     (cutoff : Nat) :
     (((calls.filterMap (·.entry)).filter
@@ -7298,6 +7291,50 @@ theorem run_partial_queue_trace
     (calls.filterMap (·.entry)) queue
   rw [partials_entries_due_sum] at partials
   exact ⟨calls, trace, firsts, rates, partials⟩
+
+/-- A cost of the partial payments of a branch fits the queued entries that it selects.
+
+They are the entries of the queue at the start, and those appended along the branch, due by the
+cutoff. Each appended entry is due no earlier than the withdrawal delay after the start: it waits
+for an exit epoch at or after the first exit epoch of its request, which is after the start. -/
+theorem run_partial_queue_kept {cost : BalanceEvent preset → Nat}
+    {keep : PendingPartialWithdrawal → Bool}
+    (charged : PartialCost (config := config) (checks := checks) cost keep) (high cutoff : Nat)
+    (electra : .pectra ≤ x.fork) {y : ForkedBeaconState preset}
+    (tail : Run config checks x y) (early : y.fork < .glamsterdam)
+    {events : List (BalanceEvent preset)} (replayed : tail.balanceEvents high = .ok events)
+    (endpoint : (getCurrentEpoch y.state).toNat ≤ cutoff) :
+    ∃ added : List PendingPartialWithdrawal,
+      (∀ entry ∈ added, (getCurrentEpoch x.state).toNat +
+        config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat ≤ entry.withdrawableEpoch.toNat) ∧
+      (events.map cost).sum ≤
+        ((((x.state.pendingPartialWithdrawals electra).data.toList.filter keep).filter
+          (fun entry => entry.withdrawableEpoch.toNat ≤ cutoff)).map (·.amount.toNat)).sum +
+        (((added.filter keep).filter (fun entry => entry.withdrawableEpoch.toNat ≤ cutoff)).map
+          (·.amount.toNat)).sum := by
+  obtain ⟨calls, _, _, _, queue, _, _, _, _, firsts, _⟩ :=
+    run_exit_rates (ceilingValue := fun _ => 2 ^ 64) (exitEnvelope := fun _ => 2 ^ 64)
+      (callRate := by intros; exact (UInt64.toNat_lt _).le)
+      (consEnvelope := fun _ => 2 ^ 64)
+      (consRate := by intros; exact (UInt64.toNat_lt _).le)
+      (consMono := monotone_const)
+      electra tail early (Nat.le_trans electra (fork_le_of_chainSteps tail.chainSteps))
+      (fun _ _ total _ => (UInt64.toNat_lt total).le)
+  refine ⟨calls.filterMap (·.entry), ?_,
+    run_partial_queue_due_of charged tail electra early replayed cutoff endpoint _ queue⟩
+  intro entry member
+  obtain ⟨called, present, found⟩ := List.mem_filterMap.mp member
+  have pushed := (called.pushed entry found).2
+  have spent := (churnQueue_spend called.call.computed).1
+  rw [UInt64.max_def] at spent
+  replace spent : called.call.first.toNat ≤ called.call.epoch.toNat := by
+    split at spent
+    · exact UInt64.le_iff_toNat_le.mp spent
+    · rename_i order
+      exact (Nat.le_of_lt (UInt64.lt_iff_toNat_lt.mp (UInt64.not_le.mp order))).trans
+        (UInt64.le_iff_toNat_le.mp spent)
+  have first := firsts called present
+  omega
 
 end
 end EthLib.Consensus.DirectSafety
