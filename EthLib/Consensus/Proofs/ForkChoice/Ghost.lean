@@ -625,15 +625,6 @@ theorem filterNodeTree_parent {config : Config} (before : fork < .glamsterdam)
   rw [parentRoot, ← pPending]
   exact pMem
 
-/-- A node that descends from another node has a known block at the root of that node. -/
-private theorem known_of_isAncestor {node ancestor : ForkChoiceNode}
-    (descends : store.isAncestor node ancestor = .ok true) :
-    ∃ block, store.blocks[ancestor.root]? = some block := by
-  simp only [isAncestor, bind, Except.bind] at descends
-  cases known : store.block ancestor.root with
-  | error e => simp [known] at descends
-  | ok block => exact ⟨block, block_ok_iff.mp known⟩
-
 /-- Before Gloas, a block that descends from another root, and is not that root, has a parent.
 
 The store holds the parent at an earlier slot, and the parent descends from that root too. -/
