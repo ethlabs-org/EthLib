@@ -605,6 +605,13 @@ def pinReserve (config : Config) (state ancestor finalizedState : BeaconState pr
       decide (finalized + 1 + preset.MAX_SEED_LOOKAHEAD.toNat ≤ v.exitEpoch.toNat) &&
         decide (v.exitEpoch.toNat + 1 ≤ epoch.toNat)),
     (effective i + rise i)
+  -- A key created on the other branch compounds its gains from its deposit.
+  --
+  -- The credits' eleven tenths pay them while eleven gains over the depth stay below the cap.
+  --
+  -- Past that, each deposit the window can apply is charged up to the cap.
+  let newKeyRise := if 11 * depth * gainRateMax < capMax then 0
+    else depthFin * preset.MAX_PENDING_DEPOSITS_PER_EPOCH.toNat * capMax
   -- A key here that is not yet eligible can be topped up on the other branch alone.
   --
   -- It can then become eligible there and activate deep in the window, while inactive here.
@@ -618,7 +625,8 @@ def pinReserve (config : Config) (state ancestor finalizedState : BeaconState pr
     syncSeats + (∑ i ∈ positions with current i = true, rise i) +
     3 * (∑ i ∈ positions with current i = true, fall i) +
     3 * exitingRise + exitingCredits + exitingBands + queueRise + reserveW + flagged +
-    seatShortfall + (33 * consolidationsX + 9) / 10 + exitedR + pendingR)
+    seatShortfall + (33 * consolidationsX + 9) / 10 + exitedR + pendingR +
+    newKeyRise)
 
 /-- The pin reserve contains the quorum reserve. -/
 theorem quorumReserve_le_pinReserve (config : Config)
