@@ -174,8 +174,7 @@ Not yet released.
   Three times their stake is at least twice the total active balance plus the margin of the count.
 
 - `exitReserveNear` is the active source stake already scheduled to exit within three epochs of the source, the reach of a confirmation's near window.
-  `Preset.ExitWindowFixed` asks for a seed lookahead of at least three epochs; mainnet and minimal satisfy it.
-  Under it, no other source stake leaves by then, in any later state that keeps the source's fixed activity.
+  Under `Preset.ExitWindowFixed`, no other source stake leaves by then, in any later state that keeps the source's fixed activity.
   `exitReserve` keeps its value, and no theorem orders the two values.
   `SourceWindowReserveWith`, `WindowExitBoundWith` and `ReceiverWindowExitsNearWith` take the reserve as an argument.
   `SourceWindowReserve`, `WindowExitBound` and `ReceiverWindowExitsNear` are their instances at `exitReserve`, with their statements unchanged.
