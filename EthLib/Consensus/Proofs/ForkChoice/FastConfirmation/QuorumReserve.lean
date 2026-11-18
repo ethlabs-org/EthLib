@@ -609,11 +609,11 @@ def pinReserve (config : Config) (state ancestor finalizedState : BeaconState pr
   --
   -- It can then become eligible there and activate deep in the window, while inactive here.
   --
-  -- Its effective balance here is charged once; the top-up is the other branch's credit.
+  -- Its effective balance here and its rise are charged once; the top-up is the other branch's.
   let pendingR := if tight then 0 else
     ∑ i ∈ positions with (validator i).any (fun v =>
       decide (epoch.toNat < v.activationEligibilityEpoch.toNat) &&
-        v.activationEpoch == FAR_FUTURE_EPOCH), effective i
+        v.activationEpoch == FAR_FUTURE_EPOCH), (effective i + rise i)
   quorumReserve config state ancestor + (3 * exiting + queues + credits + branchR + late +
     syncSeats + (∑ i ∈ positions with current i = true, rise i) +
     3 * (∑ i ∈ positions with current i = true, fall i) +
