@@ -41,26 +41,19 @@ def activeVoters (state : BeaconState preset fork) : Finset ValidatorIndex :=
 
 /-- Stake of the source state that may leave the active set soon.
 
-It counts the active validators whose exit epoch is at most two epochs after the current one.
+It counts the active validators whose exit epoch is at most three epochs after the current one.
 
-From Electra, it adds the exit and consolidation churn limits and the balances left to consume.
+Every exit placed at the source or later lands at least `MAX_SEED_LOOKAHEAD + 1` epochs after it.
 
-A churn limit that fails to read counts as 0.
+So when `MAX_SEED_LOOKAHEAD` is at least 3, no other validator leaves by those three epochs.
 
-From Electra, it also adds a slack of `2 * MAX_EFFECTIVE_BALANCE_ELECTRA`.
+`exitStake_le_exitReserve` proves that bound.
 
-Before Electra, it adds the validator churn limit, at least 1, times `MAX_EFFECTIVE_BALANCE`. -/
-def exitReserve (config : Config) (source : BeaconState preset fork) : Nat :=
+It keeps the `Config` argument so that its readers keep their statements. -/
+def exitReserve (_config : Config) (source : BeaconState preset fork) : Nat :=
   stake (fun v => balanceAt source v.toNat)
     {v ∈ activeVoters source | (source.validators.data[v.toNat]?).any fun validator =>
-      validator.exitEpoch.toNat ≤ (getCurrentEpoch source).toNat + 2} +
-    if electra : .pectra ≤ fork then
-      ((exitChurnLimit config source).toOption.getD 0).toNat +
-        (source.exitBalanceToConsume electra).toNat +
-        ((getConsolidationChurnLimit config source).toOption.getD 0).toNat +
-        (source.consolidationBalanceToConsume electra).toNat +
-        2 * preset.MAX_EFFECTIVE_BALANCE_ELECTRA.toNat
-    else max 1 (getValidatorChurnLimit config source).toNat * preset.MAX_EFFECTIVE_BALANCE.toNat
+      validator.exitEpoch.toNat ≤ (getCurrentEpoch source).toNat + 3}
 
 /-- Every block held by the store has a nonzero state root. -/
 def HeldStateRootsNonzero (store : Store preset fork) : Prop :=
