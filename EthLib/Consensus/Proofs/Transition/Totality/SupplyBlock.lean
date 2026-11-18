@@ -83,6 +83,22 @@ def blockPerIncrement (preset : Preset) (state : BeaconState preset fork) : Nat 
     | .error _ => 0
   else 0
 
+/-- The weighted base reward of each flag set, for one validator. -/
+def flagValue (flags : ParticipationFlags) (base : Nat) : Nat :=
+  ((List.finRange PARTICIPATION_FLAG_WEIGHTS.length).map fun flag =>
+    if hasFlag flags flag.val.toUInt64 then base * PARTICIPATION_FLAG_WEIGHTS[flag].toNat
+    else 0).sum
+
+/-- The weighted base rewards of the flags set in a list, over its first `count` positions.
+
+Position `j` weighs its flags by the base reward `base j`.
+
+A position past the end of the list weighs nothing. -/
+def flagSumOf (base : Nat → Nat) (count : Nat) (participation : EpochParticipation preset fork) :
+    Nat :=
+  ((List.range count).map fun j =>
+    ((participation.data[j]?).map (flagValue · (base j))).getD 0).sum
+
 /-- From Altair, the weight of the participation flags of a state, at a base reward per increment.
 
 It sums over the positions of the registry, in the previous and the current epoch.
@@ -95,16 +111,11 @@ It is zero before Altair. -/
 def flagRewardWeight (preset : Preset) (perIncrement : Nat) (state : BeaconState preset fork) :
     Nat :=
   if altair : .altair ≤ fork then
-    let weigh (participation : EpochParticipation preset fork) : Nat :=
-      ((List.range state.validators.data.size).map fun j =>
-        ((participation.data[j]?).map fun flags =>
-          ((List.finRange PARTICIPATION_FLAG_WEIGHTS.length).map fun flag =>
-            if hasFlag flags flag.val.toUInt64 then
-              ((state.validators.data[j]?).map (·.effectiveBalance.toNat)).getD 0 /
-                preset.EFFECTIVE_BALANCE_INCREMENT.toNat * perIncrement *
-                  PARTICIPATION_FLAG_WEIGHTS[flag].toNat
-            else 0).sum).getD 0).sum
-    weigh (state.previousEpochParticipation altair) + weigh (state.currentEpochParticipation altair)
+    let base (j : Nat) : Nat :=
+      ((state.validators.data[j]?).map (·.effectiveBalance.toNat)).getD 0 /
+        preset.EFFECTIVE_BALANCE_INCREMENT.toNat * perIncrement
+    flagSumOf base state.validators.data.size (state.previousEpochParticipation altair) +
+      flagSumOf base state.validators.data.size (state.currentEpochParticipation altair)
   else 0
 
 /-- From Altair, a bound on the rewards that a block pays for its sync aggregate.
@@ -1108,12 +1119,6 @@ end Totals
 
 section Flags
 
-/-- The weighted base reward of each flag set, for one validator. -/
-private def flagValue (flags : ParticipationFlags) (base : Nat) : Nat :=
-  ((List.finRange PARTICIPATION_FLAG_WEIGHTS.length).map fun flag =>
-    if hasFlag flags flag.val.toUInt64 then base * PARTICIPATION_FLAG_WEIGHTS[flag].toNat
-    else 0).sum
-
 /-- The base reward of a position, read from the effective balances of a fixed state. -/
 private def baseAt (first : BeaconState preset fork) (perIncrement : Nat) (j : Nat) : Nat :=
   effectiveAt ⟨fork, first⟩ j / preset.EFFECTIVE_BALANCE_INCREMENT.toNat * perIncrement
@@ -1122,8 +1127,7 @@ private def baseAt (first : BeaconState preset fork) (perIncrement : Nat) (j : N
 -/
 private def flagSum (first : BeaconState preset fork) (perIncrement : Nat)
     (participation : EpochParticipation preset fork) : Nat :=
-  ((List.range first.validators.data.size).map fun j =>
-    ((participation.data[j]?).map (flagValue · (baseAt first perIncrement j))).getD 0).sum
+  flagSumOf (baseAt first perIncrement) first.validators.data.size participation
 
 /-- A sum over a list with no repeat gains one term when one test turns from false to true. -/
 private theorem sum_ite_flip {α : Type} [DecidableEq α] {P Q : α → Bool} {c : α → Nat} {f : α}
@@ -1164,7 +1168,7 @@ private theorem flagValue_addFlag {flags : ParticipationFlags}
   exact key
 
 /-- The flags of one validator weigh at most 54 base rewards. -/
-private theorem flagValue_le (flags : ParticipationFlags) (base : Nat) :
+theorem flagValue_le (flags : ParticipationFlags) (base : Nat) :
     flagValue flags base ≤ base * 54 := by
   unfold flagValue
   have bound := sum_map_le_sum_map (xs := List.finRange PARTICIPATION_FLAG_WEIGHTS.length)
@@ -1226,33 +1230,46 @@ private theorem sum_range_offset {f g : Nat → Nat} {i a c : Nat} :
       omega
 
 /-- Writing the flags of one position moves the flag sum by the change at that position. -/
-private theorem flagSum_step {first : BeaconState preset fork} {perIncrement : Nat}
+private theorem flagSumOf_step {base : Nat → Nat} {count : Nat}
     {p q : EpochParticipation preset fork} {i a c : Nat} {old new : ParticipationFlags}
-    (oldAt : p.data[i]? = some old) (newAt : q.data[i]? = some new)
+    (inside : i < count) (oldAt : p.data[i]? = some old) (newAt : q.data[i]? = some new)
     (others : ∀ j, j ≠ i → q.data[j]? = p.data[j]?)
-    (step : a + flagValue old (baseAt first perIncrement i) ≤
-      c + flagValue new (baseAt first perIncrement i)) :
-    a + flagSum first perIncrement p ≤ c + flagSum first perIncrement q := by
-  unfold flagSum
-  by_cases inside : i < first.validators.data.size
-  · refine sum_range_offset inside (by simpa [oldAt, newAt] using step) fun j _ apart => ?_
-    rw [others j apart]
-  · rw [baseAt_of_le (Nat.le_of_not_lt inside), flagValue_zero, flagValue_zero] at step
-    have same : ((List.range first.validators.data.size).map fun j =>
-        ((q.data[j]?).map (flagValue · (baseAt first perIncrement j))).getD 0) =
-        (List.range first.validators.data.size).map fun j =>
-          ((p.data[j]?).map (flagValue · (baseAt first perIncrement j))).getD 0 :=
-      List.map_congr_left fun j member => by
-        rw [others j fun equal => inside (equal ▸ List.mem_range.mp member)]
-    rw [same]
-    omega
+    (step : a + flagValue old (base i) ≤ c + flagValue new (base i)) :
+    a + flagSumOf base count p ≤ c + flagSumOf base count q := by
+  unfold flagSumOf
+  refine sum_range_offset inside (by simpa [oldAt, newAt] using step) fun j _ apart => ?_
+  rw [others j apart]
+
+/-- Positions past the fixed registry add nothing to the flag sum. -/
+private theorem flagSumOf_baseAt_of_le {first : BeaconState preset fork} {perIncrement : Nat}
+    {participation : EpochParticipation preset fork} :
+    ∀ {count : Nat}, first.validators.data.size ≤ count →
+      flagSumOf (baseAt first perIncrement) count participation =
+        flagSum first perIncrement participation
+  | 0, le => by
+    unfold flagSum
+    rw [Nat.le_zero.mp le]
+  | count + 1, le => by
+    rcases Nat.lt_or_eq_of_le le with lt | same
+    · have rest := flagSumOf_baseAt_of_le (first := first) (perIncrement := perIncrement)
+        (participation := participation) (Nat.le_of_lt_succ lt)
+      -- The position at `count` is past the registry, so its base reward is zero.
+      have zero : ((participation.data[count]?).map
+          (flagValue · (baseAt first perIncrement count))).getD 0 = 0 := by
+        rw [baseAt_of_le (Nat.le_of_lt_succ lt)]
+        cases participation.data[count]? <;> simp [flagValue_zero]
+      rw [← rest]
+      simp only [flagSumOf, List.range_succ, List.map_append, List.sum_append, List.map_cons,
+        List.map_nil, List.sum_cons, List.sum_nil, zero, Nat.add_zero]
+    · unfold flagSum
+      rw [same]
 
 /-- Setting the flags of one attester raises its flag value by at least the numerator gained.
 
-The base reward of the attester must be the one given, whenever it is read. -/
+The base reward of the attester must be at most the one given, whenever it is read. -/
 private theorem flagValue_foldlM_addFlagReward {s : BeaconState preset fork} {total : Gwei}
     {earned : List UInt64} {index : ValidatorIndex} {b : Nat}
-    (based : ∀ base, getBaseReward s total index = .ok base → base.toNat = b)
+    (based : ∀ base, getBaseReward s total index = .ok base → base.toNat ≤ b)
     {flagList : List (Fin PARTICIPATION_FLAG_WEIGHTS.length)} {flags : ParticipationFlags}
     {numerator : Gwei} {result : ParticipationFlags × Gwei}
     (computed :
@@ -1271,13 +1288,53 @@ private theorem flagValue_foldlM_addFlagReward {s : BeaconState preset fork} {to
     rw [Uint64.mulChecked_ok_iff] at weightedOk
     rw [Uint64.addChecked_ok_iff] at addedOk
     have value := flagValue_addFlag newly.2 b
-    have read := based reward rewardOk
+    -- The weight of the flag scales the bound on the base reward.
+    have read := Nat.mul_le_mul_right PARTICIPATION_FLAG_WEIGHTS[flag].toNat
+      (based reward rewardOk)
     simp only at before ⊢
-    rw [value, addedOk.2, weightedOk.2, read]
+    rw [value, addedOk.2, weightedOk.2]
     omega
   · simp only [pure, Except.pure, Except.ok.injEq] at ok
     subst ok
     exact before
+
+/-- Setting the flags of the attesters raises the flag sum by at least the numerator gained.
+
+Each attester must be among the first `count` positions.
+
+Its base reward must be at most its weight, whenever it is read. -/
+theorem flagSumOf_foldlM_addAttesterFlags {s : BeaconState preset fork} {total : Gwei}
+    {earned : List UInt64} {base : Nat → Nat} {count : Nat}
+    {attesters : List ValidatorIndex} {participation : EpochParticipation preset fork}
+    {numerator : Gwei} {result : EpochParticipation preset fork × Gwei}
+    (based : ∀ a ∈ attesters, a.toNat < count ∧
+      ∀ reward, getBaseReward s total a = .ok reward → reward.toNat ≤ base a.toNat)
+    (computed : attesters.foldlM (addAttesterFlags s total earned) (participation, numerator) =
+      .ok result) :
+    result.2.toNat + flagSumOf base count participation ≤
+      numerator.toNat + flagSumOf base count result.1 := by
+  refine foldlM_ok_invariant_of_mem (fun step : EpochParticipation preset fork × Gwei =>
+      step.2.toNat + flagSumOf base count participation ≤
+        numerator.toNat + flagSumOf base count step.1)
+    (fun step index next member before ok => ?_) (Nat.le_refl _) computed
+  obtain ⟨current, gained⟩ := step
+  obtain ⟨below, reads⟩ := based index member
+  unfold addAttesterFlags at ok
+  dsimp only at ok
+  split at ok
+  · rename_i inside
+    simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at ok
+    obtain ⟨⟨flags, raised⟩, loop, rfl⟩ := ok
+    have inner := flagValue_foldlM_addFlagReward reads loop
+    simp only at before inner ⊢
+    have moved := flagSumOf_step (base := base) (p := current)
+      (q := ⟨current.data.set index.toNat flags inside, by
+        intro early
+        simpa using current.bound early⟩)
+      below (Array.getElem?_eq_getElem inside) (by simp)
+      (fun j apart => by simp [Ne.symm apart]) inner
+    omega
+  · cases ok
 
 /-- Setting the flags of the attesters raises the flag sum by at least the numerator gained.
 
@@ -1292,27 +1349,15 @@ private theorem flagSum_foldlM_addAttesterFlags {s first : BeaconState preset fo
       .ok result) :
     result.2.toNat + flagSum first perIncrement participation ≤
       numerator.toNat + flagSum first perIncrement result.1 := by
-  refine foldlM_ok_invariant (fun step : EpochParticipation preset fork × Gwei =>
-      step.2.toNat + flagSum first perIncrement participation ≤
-        numerator.toNat + flagSum first perIncrement step.1)
-    (fun step index next before ok => ?_) (Nat.le_refl _) computed
-  obtain ⟨current, gained⟩ := step
-  unfold addAttesterFlags at ok
-  dsimp only at ok
-  split at ok
-  · rename_i inside
-    simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at ok
-    obtain ⟨⟨flags, raised⟩, loop, rfl⟩ := ok
-    have inner := flagValue_foldlM_addFlagReward (based index) loop
-    simp only at before inner ⊢
-    have moved := flagSum_step (first := first) (perIncrement := perIncrement) (p := current)
-      (q := ⟨current.data.set index.toNat flags inside, by
-        intro early
-        simpa using current.bound early⟩)
-      (Array.getElem?_eq_getElem inside) (by simp)
-      (fun j apart => by simp [Ne.symm apart]) inner
-    omega
-  · cases ok
+  -- No premise ties the registry of `s` to `first`, so an attester may lie past `first`'s registry.
+  --
+  -- Every index is below `2 ^ 64`, so summing that far past the registry takes in each attester.
+  have wide := flagSumOf_foldlM_addAttesterFlags (base := baseAt first perIncrement)
+    (count := first.validators.data.size + 2 ^ 64)
+    (fun index _ => ⟨by have := index.toNat_lt; omega,
+      fun reward ok => Nat.le_of_eq (based index reward ok)⟩) computed
+  rwa [flagSumOf_baseAt_of_le (Nat.le_add_right _ _),
+    flagSumOf_baseAt_of_le (Nat.le_add_right _ _)] at wide
 
 /-- The flag sums of the two recent epochs of a state, over a fixed registry. -/
 private def potential (altair : .altair ≤ fork) (first : BeaconState preset fork)
@@ -1397,7 +1442,7 @@ private theorem flagSum_le (first : BeaconState preset fork) (perIncrement : Nat
     flagSum first perIncrement participation ≤
       effectiveBalanceSum first / preset.EFFECTIVE_BALANCE_INCREMENT.toNat *
         (perIncrement * 54) := by
-  unfold flagSum
+  unfold flagSum flagSumOf
   have each := sum_map_le_sum_map (xs := List.range first.validators.data.size)
     (f := fun j => ((participation.data[j]?).map
       (flagValue · (baseAt first perIncrement j))).getD 0)
@@ -1843,7 +1888,7 @@ private theorem flagSum_congr {a b : BeaconState preset fork} (size :
     b.validators.data.size = a.validators.data.size) (kept : EffectiveKept a b)
     (perIncrement : Nat) (participation : EpochParticipation preset fork) :
     flagSum b perIncrement participation = flagSum a perIncrement participation := by
-  unfold flagSum
+  unfold flagSum flagSumOf
   rw [size]
   refine congrArg List.sum (List.map_congr_left fun j member => ?_)
   simp only [baseAt, kept j (List.mem_range.mp member)]
@@ -1867,7 +1912,7 @@ private theorem potential_le_of_tail (altair : .altair ≤ fork) (perIncrement :
   have one (select : BeaconState preset fork → EpochParticipation preset fork)
       (same : ∀ j, j < a.validators.data.size → (select b).data[j]? = (select a).data[j]?) :
       flagSum a perIncrement (select a) ≤ flagSum b perIncrement (select b) := by
-    unfold flagSum
+    unfold flagSum flagSumOf
     refine Nat.le_trans (Nat.le_of_eq (congrArg List.sum (List.map_congr_left
       fun j member => ?_))) (sum_range_le_of_le _ tail.1)
     have inside := List.mem_range.mp member
