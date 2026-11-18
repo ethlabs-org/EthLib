@@ -422,7 +422,7 @@ def pinReserve (config : Config) (state ancestor finalizedState : BeaconState pr
   -- The largest gain rate of one key, its gain rate at the largest effective balance.
   let gainRateMax := capMax / inc * perIncrement *
     (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum / WEIGHT_DENOMINATOR.toNat
-  -- A late key weighs three times its effective balance here, and its rise.
+  -- A late key is charged three times its effective balance here, and its rise once.
   let late := if tight then 0 else
     ∑ i ∈ positions with (validator i).any (fun v =>
       decide (v.activationEligibilityEpoch.toNat ≤ epoch.toNat) &&
