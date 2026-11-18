@@ -949,6 +949,79 @@ private theorem runs_of_finalized
       epochAt startEOk middleSlot, bandedE, firstE, queueE, edgeE, ancRun.append ancToMiddle,
       tailM, rootRun.append rootToCounted, single, countedE⟩
 
+/-- The runs and epochs of the pin's `Setting`, for one call and one counting state.
+
+The finalized block's state `fin` is reached from genesis, and the split state from `fin`.
+
+From the split state, runs reach the pulled-up head state and the counting state.
+
+The split state is at or after the finalized epoch and at or before the call's epoch. -/
+private theorem setting_runs_of_call
+    {e : Execution (honestForkChoice config .bls sources anchorState anchorBlock assignment
+      genesisTimeMs) J}
+    {limit : ℕ} {anchor : Store preset fork} {horizon : Epoch}
+    (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (start : ∀ w ∈ J, e.start w = anchor) (anchorSlot : anchorBlock.slot = anchorState.slot)
+    (slots : 0 < config.SLOT_DURATION_MS) (positive : 0 < preset.SLOTS_PER_EPOCH.toNat)
+    {g : ForkedBeaconState preset} (genesis : Genesis config .bls g)
+    (history : Run config .bls g ⟨fork, anchorState⟩) (early : fork < .glamsterdam)
+    (fulu : .fusaka ≤ fork) (window : ∀ next ∈ config.nextFork fork, horizon.toNat < next.2.toNat)
+    (bounded : HonestStoreEpochsBounded (e := e) horizon limit)
+    (agree : ∀ a ∈ J, ∀ b ∈ J, ∀ i j, (e.world i).time ≤ limit → (e.world j).time ≤ limit →
+      ∀ (r : Root) (left right : BeaconBlock preset fork),
+      ((e.world i).state a).blocks[r]? = some left →
+      ((e.world j).state b).blocks[r]? = some right → left = right)
+    (bands : preset.IncrementWithinUpwardBand)
+    (electraFloor : preset.MAX_EFFECTIVE_BALANCE = preset.MIN_ACTIVATION_BALANCE)
+    (electraCap : preset.MIN_ACTIVATION_BALANCE ≤ preset.MAX_EFFECTIVE_BALANCE_ELECTRA)
+    (sound : Invariant anchorState)
+    {u : ValidatorIndex} (caller : u ∈ J) {n : ℕ} (callTime : (e.world n).time ≤ limit)
+    {head : Root} {pulled anc fin : BeaconState preset fork} {target : Checkpoint}
+    (pulledOk : ((e.world n).state u).getPulledUpHeadState config head = .ok pulled)
+    (targetOk : ((e.world n).state u).getCurrentTarget config head = .ok target)
+    (held : ((e.world n).state u).blockStates[target.root]? = some anc)
+    (finHeld : getCurrentEpoch anchorState < anc.finalizedCheckpoint.epoch →
+      ((e.world n).state u).blockStates[anc.finalizedCheckpoint.root]? = some fin)
+    (finAnchor : anc.finalizedCheckpoint.epoch ≤ getCurrentEpoch anchorState → fin = anchorState)
+    (ancRead : getCurrentEpoch anchorState < anc.finalizedCheckpoint.epoch →
+      ((e.world n).state u).getCheckpointBlock target.root anc.finalizedCheckpoint.epoch =
+        .ok anc.finalizedCheckpoint.root)
+    {w : ValidatorIndex} (receiver : w ∈ J) {k : ℕ} (receiveTime : (e.world k).time ≤ limit)
+    {root : Root} {rootState counted : BeaconState preset fork}
+    (stored : ((e.world k).state w).blockStates[root]? = some rootState)
+    (reach : counted = rootState ∨ ∃ slot, processSlots config .bls rootState slot = .ok counted)
+    (finRead : getCurrentEpoch anchorState < anc.finalizedCheckpoint.epoch →
+      ((e.world k).state w).getCheckpointBlock root anc.finalizedCheckpoint.epoch =
+        .ok anc.finalizedCheckpoint.root)
+    (later : target.epoch ≤ getCurrentEpoch counted) (inside : getCurrentEpoch counted ≤ horizon) :
+    getCurrentEpoch pulled = target.epoch ∧
+      ∃ split : BeaconState preset fork,
+        Nonempty (Run config .bls g ⟨fork, fin⟩) ∧
+        Nonempty (Run config .bls ⟨fork, fin⟩ ⟨fork, split⟩) ∧
+        Nonempty (Run config .bls ⟨fork, split⟩ ⟨fork, pulled⟩) ∧
+        Nonempty (Run config .bls ⟨fork, split⟩ ⟨fork, counted⟩) ∧
+        anc.finalizedCheckpoint.epoch ≤ getCurrentEpoch split ∧
+        getCurrentEpoch split ≤ getCurrentEpoch pulled ∧
+        getCurrentEpoch pulled ≤ getCurrentEpoch counted := by
+  have forward (v : ValidatorIndex) (honest : v ∈ J) (i : ℕ) :=
+    e.forwardReachableWith (anchorState := anchorState) (anchorBlock := anchorBlock)
+      (fun a member => (start a member) ▸ Store.ForwardReachableWith.anchor anchored) i v honest
+  obtain ⟨-, heldBefore⟩ := held_beforeFork window positive slots anchorSlot
+    (forward u caller n).forwardReachable (fun epoch ok => bounded u caller n epoch callTime ok)
+  obtain ⟨pulledEpoch, common, split, -, -, -, ⟨fromFin⟩, -, -, ancLe, boundaryE, middleE, -, -,
+    -, -, -, edgeE, toMiddle, tailM, tailS, -, -⟩ :=
+    runs_of_finalized anchored start anchorSlot slots positive genesis history early fulu window
+      bounded agree bands electraFloor electraCap sound caller callTime pulledOk targetOk held
+      finHeld finAnchor ancRead receiver receiveTime stored reach finRead later inside
+  have toPulled := toMiddle.append tailM
+  refine ⟨pulledEpoch, split, ?_, ⟨fromFin⟩, ⟨toPulled⟩, ⟨tailS⟩, ancLe,
+    currentEpoch_le_of_chainSteps toPulled.chainSteps, pulledEpoch ▸ later⟩
+  by_cases guard : getCurrentEpoch anchorState < anc.finalizedCheckpoint.epoch
+  · obtain ⟨finRun⟩ := run_of_held (forward u caller n) heldBefore (finHeld guard)
+    exact ⟨history.append finRun⟩
+  · obtain rfl := finAnchor (UInt64.not_lt.mp guard)
+    exact ⟨history⟩
+
 /-- The quorum of each call of an honest store drifts by at most its reserve, at every receiver.
 
 This holds for executions whose honest stores check signatures with BLS, at Fulu or later.
