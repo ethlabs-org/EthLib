@@ -1031,15 +1031,6 @@ private theorem consRate_le {fork' : Fork} {s : BeaconState preset fork'}
   unfold pinCons pinExit pinBalance
   omega
 
-/-- The charges at each of some positions have the amounts of the charges at those positions. -/
-private theorem sum_indicator_swap (L : List DepartureCharge) (T : Finset ℕ) :
-    ∑ v ∈ T, (L.map fun c => if c.index = v then c.amount else 0).sum =
-      (L.map fun c => if c.index ∈ T then c.amount else 0).sum := by
-  induction L with
-  | nil => simp
-  | cons c rest ih =>
-    simp only [List.map_cons, List.sum_cons, Finset.sum_add_distrib, ih, Finset.sum_ite_eq]
-
 /-- The amount that `exitQ` reads is at most the amounts of the charges at its position.
 
 Those charges are the ones with an epoch up to a later one. -/
@@ -1076,7 +1067,12 @@ private theorem sum_exitQ_le {x y : ForkedBeaconState preset} (tail : Run config
     (fun n => ((tail.departureCharges.filter fun c => c.epoch ≤ b).map
       fun c => if c.index = n then c.amount else 0).sum)
     fun v member => Finset.mem_image_of_mem _ member).trans ?_
-  rw [sum_indicator_swap]
+  have swap := Multiset.sum_map_sum
+    (m := (tail.departureCharges.filter fun c => c.epoch ≤ b : List DepartureCharge))
+    (s := S.image fun v : ValidatorIndex => v.toNat)
+    (f := fun (c : DepartureCharge) (n : ℕ) => if c.index = n then c.amount else 0)
+  simp only [Multiset.map_coe, Multiset.sum_coe, Finset.sum_ite_eq] at swap
+  rw [← swap]
   exact List.sum_le_sum fun c _ => by split <;> simp
 
 /-- A departure charge of a run exits no earlier than the activation-exit epoch of its start. -/
