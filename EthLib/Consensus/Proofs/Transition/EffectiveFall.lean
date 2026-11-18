@@ -1297,20 +1297,11 @@ private theorem deposit_partialsSame {fork : Fork} {s t : BeaconState preset for
     (electra : .pectra ≤ fork) {before : fork < .hegota} {deposit : Deposit}
     (ok : processDeposit config checks before s deposit = .ok t) : PartialsSame s t := by
   obtain ⟨_, _, _, _, credited⟩ := processDeposit_ok ok
-  simp only [applyDeposit, electra, ↓reduceDIte] at credited
-  unfold applyDepositElectra at credited
-  split at credited
-  · simp only [bind_ok_iff] at credited
-    obtain ⟨_, _, credited⟩ := credited
-    split at credited
-    · simp only [bind_ok_iff, liftAccessor_ok] at credited
-      obtain ⟨_, added, queued⟩ := credited
-      obtain ⟨_, rfl⟩ := addPendingDeposit_eq queued
-      intro e
-      exact partialsSame_addValidatorToRegistry added e
-    · cases credited; exact PartialsSame.refl _
-  · obtain ⟨_, rfl⟩ := addPendingDeposit_eq (liftAccessor_ok.mp credited)
-    exact PartialsSame.refl _
+  rcases applyDeposit_cases credited with rfl | ⟨_, _, _, rfl | added, rfl⟩ | ⟨early, _⟩
+  · exact PartialsSame.refl _
+  · exact PartialsSame.refl _
+  · exact fun e => partialsSame_addValidatorToRegistry added e
+  · exact absurd electra (Nat.not_le_of_lt early)
 
 private theorem credentials_partialsSame {fork : Fork} {s t : BeaconState preset fork}
     {signed : SignedBLSToExecutionChange}
