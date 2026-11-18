@@ -23,9 +23,8 @@ Not yet released.
   `effectiveRise_le` bounds the rise of the active effective balances over an epoch end, and `effectiveFall_le` the fall of a voter's.
   `Run.balanceCorrections_of_same_epoch` bounds the balances along a branch inside one epoch.
 
-- `FloorTrace.step_general_or_fulu`, `FloorTrace.run_of_le_cap_general_or_fulu` and `FloorTrace.run_of_le_cap_or_fulu` extend the per-key floor trace to a key with no activation epoch.
-  They need the branch to start from Fulu or later, where the upgrades leave the state as it is.
-  Their old forms stay as the cases of an activated key.
+- `FloorTrace.step_general_or_fulu` and `FloorTrace.run_of_le_cap_or_fulu` extend the per-key floor trace to a key with no activation epoch, from Fulu.
+  `FloorTrace.step_general`, `FloorTrace.run_of_le_cap_general` and `FloorTrace.run_of_le_cap` are the activated cases.
   `processUpgrades_eq_of_window` states that the upgrades from Fulu up to before Gloas leave the state as it is.
   The pin's drift bound reads them for keys that are not yet active.
 
@@ -34,6 +33,9 @@ Not yet released.
 
 - `Run.eligibility_le_finalized` shows that a validator with an assigned activation in a run from genesis was eligible by the finalized epoch.
   The pin's drift bound reads it.
+
+- `preActivation_waiting` shows that each validator put back into the activation queue at an upgrade has no activation epoch.
+  The exit-order walk, `queues_preActivation_fold` in the churn bounds and `balanceDrift_preActivation_excludes` in the balance drift now read it.
 
 - The quorum drift bound adds these facts of runs.
   `Run.blockCount` counts the blocks of a run, `Run.blockCount_append` adds them over two runs, and `Run.blocks_le_slots` bounds them by one per slot.
@@ -44,6 +46,9 @@ Not yet released.
   `Run.induction_of_same_period` inducts over a run inside one period of epochs, and `Run.induction_of_same_epoch` is its instance for one epoch.
   `Run.currentSyncCommittee_eq_of_same_period` keeps the keys of the current sync committee inside one period of the committee rotation.
   Their readers are the count of the keys that a branch credits, and the bound on the sync-seat holders that a branch debits, in the pin reserve bound.
+  `pending_deposit_rises` bounds the positions whose balance the pending-deposit pass raises by the deposits that it may read, and `pending_deposit_bound` is its projection.
+  `Step.slot_deposit_site` says that a deposit event of a slot step is the pending-deposit pass at some state with matching sizes.
+  Their reader is the count of the keys that a branch credits, in the pin reserve bound.
   `Run.withdrawableKept_of_same_epoch` and `withdrawableKept_processRegistryUpdates` keep `WithdrawableKept` inside an epoch and through the registry updates.
   `Genesis.invariant` gives the invariant of a genesis built from deposits, and `Run.invariant` keeps it along a run.
 
