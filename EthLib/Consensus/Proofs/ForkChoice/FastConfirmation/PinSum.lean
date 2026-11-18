@@ -1704,11 +1704,11 @@ private theorem run_in_epoch {m n : ForkedBeaconState preset} (mid : Run config 
       · rw [stepCredit_slot_zero]
         omega
       · exact Nat.le_refl _
-    | block engine signed due ok =>
+    | @block f s t engine signed due ok =>
       refine ⟨_, pre.snoc (.block engine signed due ok), ?_, Nat.le_refl _,
         fun _ _ _ => Nat.le_refl _⟩
       have slotEq := processBlock_slot (applySignedBlock_ok ok).2.1
-      have kept : getCurrentEpoch _ = getCurrentEpoch _ := by
+      have kept : getCurrentEpoch t = getCurrentEpoch s := by
         simp only [getCurrentEpoch, slotEq]
       exact kept.trans start
 
@@ -1761,13 +1761,13 @@ private theorem rewards_le_total (h : Setting config checks g split fin pulled a
       have mFork : mf = fork := by
         have low := fork_le_of_chainSteps toM.chainSteps
         have high := fork_le_of_chainSteps (mid.append rest).chainSteps
-        exact Nat.le_antisymm high low
+        exact Fork.ctorIdx_injective (Nat.le_antisymm high low)
       subst mFork
       obtain ⟨kf, ks⟩ := k
       have kFork' : kf = mf := by
         have low := fork_le_of_chainSteps kept.chainSteps
         have above := fork_le_of_chainSteps rest.chainSteps
-        exact Nat.le_antisymm (Nat.le_trans kFork above) low
+        exact Fork.ctorIdx_injective (Nat.le_antisymm (Nat.le_trans kFork above) low)
       subst kFork'
       have epochLe := UInt64.le_iff_toNat_le.mp
         (currentEpoch_le_of_chainSteps (mid.append rest).chainSteps)
