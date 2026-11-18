@@ -1802,12 +1802,6 @@ end Steps
 
 /-! ### The participation flags behind the proposer rewards of attestations -/
 
-/-- The flags of both epochs at the first positions, each weighed by a base reward. -/
-private def flagPotential {fork : Fork} (s : BeaconState preset fork) (altair : .altair ≤ fork)
-    (base : ℕ → ℕ) (count : ℕ) : ℕ :=
-  flagSumOf base count (s.previousEpochParticipation altair) +
-    flagSumOf base count (s.currentEpochParticipation altair)
-
 /-- A missing entry weighs as the empty flags, which weigh nothing. -/
 private theorem flagTerm (flags : Option ParticipationFlags) (base : ℕ) :
     (flags.map (flagValue · base)).getD 0 = flagValue (flags.getD 0) base := by
@@ -1831,57 +1825,10 @@ private theorem flagValue_mono {a b : ParticipationFlags} (base : ℕ)
   · simp only [Bool.not_eq_true] at set
     simp [set]
 
-/-- No flag is cleared, in either epoch. -/
-private def FlagsGrow {fork : Fork} (s t : BeaconState preset fork) : Prop :=
-  ∀ (altair : .altair ≤ fork) (i : ℕ) (flag : Fin PARTICIPATION_FLAG_WEIGHTS.length),
-    (hasFlag (((s.previousEpochParticipation altair).data[i]?).getD 0) flag.val.toUInt64 = true →
-      hasFlag (((t.previousEpochParticipation altair).data[i]?).getD 0) flag.val.toUInt64 = true) ∧
-    (hasFlag (((s.currentEpochParticipation altair).data[i]?).getD 0) flag.val.toUInt64 = true →
-      hasFlag (((t.currentEpochParticipation altair).data[i]?).getD 0) flag.val.toUInt64 = true)
-
-private theorem FlagsGrow.refl {fork : Fork} (s : BeaconState preset fork) : FlagsGrow s s :=
-  fun _ _ _ => ⟨id, id⟩
-
-private theorem FlagsGrow.trans {fork : Fork} {s u t : BeaconState preset fork}
-    (one : FlagsGrow s u) (two : FlagsGrow u t) : FlagsGrow s t :=
-  fun altair i flag => ⟨fun set => (two altair i flag).1 ((one altair i flag).1 set),
-    fun set => (two altair i flag).2 ((one altair i flag).2 set)⟩
-
-/-- Flags that grow raise the potential. -/
-private theorem flagPotential_mono {fork : Fork} {s t : BeaconState preset fork}
-    (grow : FlagsGrow s t) (altair : .altair ≤ fork) (base : ℕ → ℕ) (count : ℕ) :
-    flagPotential s altair base count ≤ flagPotential t altair base count := by
-  unfold flagPotential flagSumOf
-  refine Nat.add_le_add (List.sum_le_sum fun i _ => ?_) (List.sum_le_sum fun i _ => ?_)
-  · rw [flagTerm, flagTerm]
-    exact flagValue_mono _ fun flag => (grow altair i flag).1
-  · rw [flagTerm, flagTerm]
-    exact flagValue_mono _ fun flag => (grow altair i flag).2
-
-/-- No flag of an existing validator is cleared, in either epoch. -/
-private def FlagsGrowBelow {fork : Fork} (s t : BeaconState preset fork) : Prop :=
-  ∀ (altair : .altair ≤ fork) (i : ℕ) (flag : Fin PARTICIPATION_FLAG_WEIGHTS.length),
-    i < s.validators.data.size →
-    (hasFlag (((s.previousEpochParticipation altair).data[i]?).getD 0) flag.val.toUInt64 = true →
-      hasFlag (((t.previousEpochParticipation altair).data[i]?).getD 0) flag.val.toUInt64 = true) ∧
-    (hasFlag (((s.currentEpochParticipation altair).data[i]?).getD 0) flag.val.toUInt64 = true →
-      hasFlag (((t.currentEpochParticipation altair).data[i]?).getD 0) flag.val.toUInt64 = true)
-
-private theorem FlagsGrow.below {fork : Fork} {s t : BeaconState preset fork}
-    (grow : FlagsGrow s t) : FlagsGrowBelow s t := fun altair i flag _ => grow altair i flag
-
-private theorem FlagsGrowBelow.trans {fork : Fork} {s u t : BeaconState preset fork}
-    (one : FlagsGrowBelow s u) (two : FlagsGrowBelow u t)
-    (grows : s.validators.data.size ≤ u.validators.data.size) : FlagsGrowBelow s t :=
-  fun altair i flag inside =>
-    ⟨fun set => (two altair i flag (Nat.lt_of_lt_of_le inside grows)).1
-        ((one altair i flag inside).1 set),
-      fun set => (two altair i flag (Nat.lt_of_lt_of_le inside grows)).2
-        ((one altair i flag inside).2 set)⟩
-
-/-- Flags of existing validators that grow raise a potential weighed on existing validators. -/
+/-- Flags of existing validators that are kept raise a potential weighed on existing validators.
+-/
 private theorem flagPotential_mono_below {fork : Fork} {s t : BeaconState preset fork}
-    (grow : FlagsGrowBelow s t) (altair : .altair ≤ fork) (base : ℕ → ℕ) (count : ℕ)
+    (grow : FlagKeeps s t) (altair : .altair ≤ fork) (base : ℕ → ℕ) (count : ℕ)
     (support : ∀ i, s.validators.data.size ≤ i → base i = 0) :
     flagPotential s altair base count ≤ flagPotential t altair base count := by
   unfold flagPotential flagSumOf
@@ -1890,8 +1837,10 @@ private theorem flagPotential_mono_below {fork : Fork} {s t : BeaconState preset
     rw [flagTerm, flagTerm]
     by_cases inside : i < s.validators.data.size
     · first
-        | exact flagValue_mono _ fun flag => (grow altair i flag inside).1
-        | exact flagValue_mono _ fun flag => (grow altair i flag inside).2
+        | exact flagValue_mono _ fun flag => by
+            simpa [recentParticipation] using grow.2 altair false i flag inside
+        | exact flagValue_mono _ fun flag => by
+            simpa [recentParticipation] using grow.2 altair true i flag inside
     · rw [support i (Nat.le_of_not_lt inside)]
       simp [flagValue]
 
@@ -1899,186 +1848,34 @@ section Grow
 
 variable {fork : Fork} {s t : BeaconState preset fork}
 
-/-- A step that keeps both lists of flags clears no flag. -/
-private theorem FlagsGrow.of_eq
-    (previous : t.previousEpochParticipation = s.previousEpochParticipation := by rfl)
-    (current : t.currentEpochParticipation = s.currentEpochParticipation := by rfl) :
-    FlagsGrow s t := fun _ _ _ => by
-  rw [previous, current]
-  exact ⟨id, id⟩
-
-/-- A step that keeps both lists of flags, in master's frame, clears no flag. -/
-private theorem FlagsGrow.of_flags (flags : Flags s t) : FlagsGrow s t :=
-  FlagsGrow.of_eq flags.1 flags.2
-
-/-- A fold whose every step clears no flag clears no flag. -/
-private theorem FlagsGrow.foldlM {α ε : Type}
-    {step : BeaconState preset fork → α → Except ε (BeaconState preset fork)}
-    (grow : ∀ u x u', step u x = .ok u' → FlagsGrow u u') {items : List α}
-    (computed : items.foldlM step s = .ok t) : FlagsGrow s t :=
-  foldlM_ok_invariant (FlagsGrow s) (fun _ _ _ before ok => before.trans (grow _ _ _ ok))
-    (FlagsGrow.refl s) computed
-
-/-- A balance increase clears no flag. -/
-private theorem grow_increaseBalance {index : ValidatorIndex} {delta : Gwei}
-    (computed : increaseBalance s index delta = .ok t) : FlagsGrow s t := by
-  obtain ⟨_, set⟩ := increaseBalance_ok computed
-  obtain ⟨_, rfl⟩ := setBalance_ok set
-  exact FlagsGrow.of_eq
-
-/-- A balance decrease clears no flag. -/
-private theorem grow_decreaseBalance {index : ValidatorIndex} {delta : Gwei}
-    (computed : decreaseBalance s index delta = .ok t) : FlagsGrow s t := by
-  obtain ⟨_, set⟩ := decreaseBalance_ok computed
-  obtain ⟨_, rfl⟩ := setBalance_ok set
-  exact FlagsGrow.of_eq
-
-/-- A validator write clears no flag. -/
-private theorem grow_setValidator {index : ValidatorIndex} {validator : Validator}
-    (computed : s.setValidator index validator = .ok t) : FlagsGrow s t := by
-  obtain ⟨_, rfl⟩ := setValidator_ok computed
-  exact FlagsGrow.of_eq
-
-/-- The exit queue clears no flag. -/
-private theorem grow_exitQueue {exitBalance : Gwei} {exitEpoch : Epoch}
-    (computed : exitQueue config s exitBalance = .ok (t, exitEpoch)) : FlagsGrow s t := by
-  unfold exitQueue at computed
-  split at computed
-  · simp only [computeExitEpochAndUpdateChurn, bind_ok_iff, pure, Except.pure,
-      Except.ok.injEq, Prod.mk.injEq] at computed
-    obtain ⟨_, _, _, _, _, _, rfl, _⟩ := computed
-    exact FlagsGrow.of_eq
-  · simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq, Prod.mk.injEq] at computed
-    obtain ⟨_, _, rfl, _⟩ := computed
-    exact FlagsGrow.refl _
-
-/-- Starting an exit clears no flag. -/
-private theorem grow_initiateValidatorExit {index : ValidatorIndex}
-    (computed : initiateValidatorExit config s index = .ok t) : FlagsGrow s t := by
-  obtain ⟨_, _, ⟨_, rfl⟩ | ⟨_, _, _, _, queue, _, set⟩⟩ := initiateValidatorExit_ok computed
-  · exact FlagsGrow.refl _
-  · exact (grow_exitQueue queue).trans (grow_setValidator set)
-
-/-- Setting the flags of attesters, each named once, clears no flag. -/
-private theorem foldlM_addAttesterFlags_kept {total : Gwei} {earned : List UInt64}
-    {attesters : List ValidatorIndex} {participation : EpochParticipation preset fork}
-    {numerator : Gwei} {result : EpochParticipation preset fork × Gwei}
-    (distinct : (attesters.map UInt64.toNat).Nodup)
-    (computed : attesters.foldlM (addAttesterFlags s total earned) (participation, numerator) =
-      .ok result)
-    (i : ℕ) (flag : Fin PARTICIPATION_FLAG_WEIGHTS.length)
-    (set : hasFlag ((participation.data[i]?).getD 0) flag.val.toUInt64 = true) :
-    hasFlag ((result.1.data[i]?).getD 0) flag.val.toUInt64 = true := by
-  by_cases named : ∃ attester ∈ attesters, attester.toNat = i
-  · obtain ⟨attester, member, rfl⟩ := named
-    obtain ⟨old, new, oldAt, newAt, flags⟩ :=
-      foldlM_addAttesterFlags_hasFlag distinct computed attester member
-    rw [oldAt] at set
-    rw [newAt]
-    simp only [Option.getD_some] at set ⊢
-    rw [flags flag, set, Bool.true_or]
-  · rw [(foldlM_addAttesterFlags distinct computed).1 i
-      fun attester member same => named ⟨attester, member, same⟩]
-    exact set
-
-private theorem grow_processAttestation {attestation : Attestation preset fork} {parent : Slot}
-    (early : fork < .glamsterdam)
-    (computed : processAttestation config checks s parent attestation = .ok t) :
-    FlagsGrow s t := by
-  unfold processAttestation at computed
-  split at computed
-  · simp only [processAttestationAltair, bind_ok_iff, liftAccessor_ok] at computed
-    obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, attestersOk,
-      ⟨updated, numerator⟩, folded, _, _, raised, raisedOk, final⟩ := computed
-    have notGloas : ¬ .glamsterdam ≤ fork := Nat.not_le_of_lt early
-    simp only [notGloas, ↓reduceDIte, pure, Except.pure, Except.ok.injEq] at final
-    subst final
-    have kept := foldlM_addAttesterFlags_kept (getAttestingIndices_nodup attestersOk) folded
-    refine FlagsGrow.trans (fun _ i flag => ?_) (grow_increaseBalance raisedOk)
-    unfold setEpochParticipation
-    split
-    · rename_i current
-      simp only [current, ↓reduceIte] at kept
-      exact ⟨id, kept i flag⟩
-    · rename_i current
-      simp only [current, Bool.false_eq_true, ↓reduceIte] at kept
-      exact ⟨kept i flag, id⟩
-  simp only [bind_ok_iff, ensure_ok_iff, liftAccessor_ok, pure, Except.pure,
-    Except.ok.injEq] at computed
-  obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, _,
-    _, _, _, _, _, _, _, _, _, _, recorded, _, _, _, _, _, _, rfl⟩ := computed
-  have kept := recordPendingAttestation_ok recorded
-  split at kept
-  all_goals
-    obtain ⟨_, rest⟩ := kept
-    rw [← rest]
-    exact FlagsGrow.of_eq
-
-/-- A new validator clears no flag of an existing validator. -/
-private theorem growBelow_addValidatorToRegistry {pubkey : Cryptography.Bls.BLSPubkey}
-    {withdrawalCredentials : Bytes32} {amount : Gwei}
-    (computed : addValidatorToRegistry s pubkey withdrawalCredentials amount = .ok t) :
-    FlagsGrowBelow s t := by
-  unfold addValidatorToRegistry at computed
-  split at computed
-  · simp only [addValidatorToRegistryAltair, liftAccessor_ok, bind_ok_iff, pure, Except.pure,
-      Except.ok.injEq] at computed
-    obtain ⟨index, indexOk, _, _, _, _, previous, previousOk, current, currentOk, _, _, rfl⟩ :=
-      computed
-    have atEnd := (getIndexForNewValidator_ok_iff.mp indexOk).2
-    intro _ i _ inside
-    have other : i ≠ index.toNat := by omega
-    refine ⟨fun set => ?_, fun set => ?_⟩
-    · dsimp only
-      simpa only [setOrAppendList_getElem? previousOk, other, ↓reduceIte] using set
-    · dsimp only
-      simpa only [setOrAppendList_getElem? currentOk, other, ↓reduceIte] using set
-  split at computed
-  · cases computed
-    exact (FlagsGrow.of_eq).below
-  · cases computed
-
-/-- A step that clears no flag of an existing validator, and never shrinks the registry. -/
-private def Grows (s t : BeaconState preset fork) : Prop :=
-  FlagsGrowBelow s t ∧ s.validators.data.size ≤ t.validators.data.size
-
-/-- The steps of an epoch that `EpochFrameLaws` names clear no flag of an existing validator. -/
-private theorem growsLaws : EpochFrameLaws (@Grows preset fork) where
-  refl s := ⟨(FlagsGrow.refl s).below, Nat.le_refl _⟩
-  trans one two := ⟨one.1.trans two.1 one.2, Nat.le_trans one.2 two.2⟩
+/-- The steps of an epoch that `EpochFrameLaws` names keep each flag of an existing validator. -/
+private theorem growsLaws : EpochFrameLaws (@FlagKeeps preset fork) where
+  refl s := FlagKeeps.refl s
+  trans one two := one.trans two
   setValidatorAt set _ _ _ _ _ := by
     have size := Nat.le_of_eq (sameSizes_setValidatorAt set).1.symm
     obtain ⟨_, rfl⟩ := setValidatorAt_ok set
-    exact ⟨(FlagsGrow.of_eq).below, size⟩
-  increaseBalance ok := ⟨(grow_increaseBalance ok).below, (frame_increaseBalance ok).registryGrows⟩
-  decreaseBalance ok := ⟨(grow_decreaseBalance ok).below, (frame_decreaseBalance ok).registryGrows⟩
+    exact FlagKeeps.of_flags size ⟨rfl, rfl⟩
+  increaseBalance ok :=
+    FlagKeeps.of_flags (frame_increaseBalance ok).registryGrows (flags_increase ok)
+  decreaseBalance ok :=
+    FlagKeeps.of_flags (frame_decreaseBalance ok).registryGrows (flags_decrease ok)
   initiateValidatorExit ok :=
-    ⟨(grow_initiateValidatorExit ok).below, (frame_initiateValidatorExit ok).registryGrows⟩
+    FlagKeeps.of_flags (frame_initiateValidatorExit ok).registryGrows (fixed_exit ok).flags
   addValidatorToRegistry ok fresh :=
-    ⟨growBelow_addValidatorToRegistry ok, (frame_addValidatorToRegistry ok fresh).registryGrows⟩
-  eth1DataVotes _ _ := ⟨(FlagsGrow.of_eq).below, Nat.le_refl _⟩
-  inactivityScores _ _ := ⟨(FlagsGrow.of_eq).below, Nat.le_refl _⟩
-  slashings _ _ := ⟨(FlagsGrow.of_eq).below, Nat.le_refl _⟩
-  randaoMixes _ _ := ⟨(FlagsGrow.of_eq).below, Nat.le_refl _⟩
-  historicalRoots _ _ := ⟨(FlagsGrow.of_eq).below, Nat.le_refl _⟩
-  historicalSummaries _ _ := ⟨(FlagsGrow.of_eq).below, Nat.le_refl _⟩
-  participationRecords _ := ⟨(FlagsGrow.of_eq).below, Nat.le_refl _⟩
-  pendingDeposits _ _ _ := ⟨(FlagsGrow.of_eq).below, Nat.le_refl _⟩
-  pendingConsolidations _ _ := ⟨(FlagsGrow.of_eq).below, Nat.le_refl _⟩
-  syncCommittees _ _ _ := ⟨(FlagsGrow.of_eq).below, Nat.le_refl _⟩
-  proposerLookahead _ _ := ⟨(FlagsGrow.of_eq).below, Nat.le_refl _⟩
-  ptcWindow _ _ := ⟨(FlagsGrow.of_eq).below, Nat.le_refl _⟩
-
-/-- A deposit clears no flag of an existing validator.
-
-A new validator writes its zero flags at the position after the registry.
-
-That position may already hold flags when the lists are longer than the registry. -/
-private theorem grow_processDeposit {before : fork < .hegota} {deposit : Deposit}
-    (computed : processDeposit config checks before s deposit = .ok t) : FlagsGrowBelow s t := by
-  obtain ⟨_, _, next, _, applied⟩ := processDeposit_ok computed
-  exact FlagsGrowBelow.trans (u := { s with eth1DepositIndex := fun _ => next })
-    (FlagsGrow.of_eq).below (growsLaws.applyDeposit applied).1 (Nat.le_refl _)
+    FlagKeeps.of_below (frame_addValidatorToRegistry ok fresh).registryGrows (flagsBelow_add ok)
+  eth1DataVotes _ _ := FlagKeeps.of_flags (Nat.le_refl _) ⟨rfl, rfl⟩
+  inactivityScores _ _ := FlagKeeps.of_flags (Nat.le_refl _) ⟨rfl, rfl⟩
+  slashings _ _ := FlagKeeps.of_flags (Nat.le_refl _) ⟨rfl, rfl⟩
+  randaoMixes _ _ := FlagKeeps.of_flags (Nat.le_refl _) ⟨rfl, rfl⟩
+  historicalRoots _ _ := FlagKeeps.of_flags (Nat.le_refl _) ⟨rfl, rfl⟩
+  historicalSummaries _ _ := FlagKeeps.of_flags (Nat.le_refl _) ⟨rfl, rfl⟩
+  participationRecords _ := FlagKeeps.of_flags (Nat.le_refl _) ⟨rfl, rfl⟩
+  pendingDeposits _ _ _ := FlagKeeps.of_flags (Nat.le_refl _) ⟨rfl, rfl⟩
+  pendingConsolidations _ _ := FlagKeeps.of_flags (Nat.le_refl _) ⟨rfl, rfl⟩
+  syncCommittees _ _ _ := FlagKeeps.of_flags (Nat.le_refl _) ⟨rfl, rfl⟩
+  proposerLookahead _ _ := FlagKeeps.of_flags (Nat.le_refl _) ⟨rfl, rfl⟩
+  ptcWindow _ _ := FlagKeeps.of_flags (Nat.le_refl _) ⟨rfl, rfl⟩
 
 /-- From Altair an attestation credits the proposer of the slot its reward, and nothing else.
 
@@ -2409,7 +2206,7 @@ private structure Credited {fork : Fork} (o t : BeaconState preset fork)
     (other slash : ValidatorIndex → ℕ) : Prop where
   ledger : Ledger o t ∅ conv 0 other slash
   kept : Kept o t
-  grow : FlagsGrowBelow o t
+  grow : FlagKeeps o t
   read : 0 < credit ∨ slashed.Nonempty → getBeaconProposerIndex o = .ok proposer
   credited : ∀ v, other v ≤ if v = proposer then
     credit + ∑ x ∈ slashed, effectiveAt ⟨fork, t⟩ x.toNat /
@@ -2432,7 +2229,7 @@ variable {fork : Fork} {o u t : BeaconState preset fork}
 
 /-- A kept step that moves no balance credits nothing. -/
 private theorem Credited.of_ledger (ledger : Ledger o t ∅ ∅ 0 0 0) (kept : Kept o t)
-    (grow : FlagsGrowBelow o t) : Credited o t 0 0 ∅ ∅ 0 0 where
+    (grow : FlagKeeps o t) : Credited o t 0 0 ∅ ∅ 0 0 where
   ledger := ledger
   kept := kept
   grow := grow
@@ -2477,7 +2274,7 @@ private theorem Credited.trans {proposer proposer' : ValidatorIndex} {credit cre
     Finset.sum_congr rfl fun x member => by rw [kept x member]
   have proposerSame : getBeaconProposerIndex u = getBeaconProposerIndex o := one.kept.proposer
   refine ⟨by simpa using one.ledger.trans two.ledger, one.kept.trans two.kept,
-    one.grow.trans two.grow one.kept.frame.registryGrows, ?_, ?_, ?_, ?_, ?_, ?_⟩
+    one.grow.trans two.grow, ?_, ?_, ?_, ?_, ?_, ?_⟩
   · intro positive
     split
     · rename_i later
@@ -2586,7 +2383,7 @@ private theorem Credited.foldlM {α ε : Type} {step : BeaconState preset fork �
     ∃ p c sl o' sh, Credited o t p c sl ∅ o' sh := by
   refine foldlM_ok_invariant (fun b => ∃ p c sl o' sh, Credited o b p c sl ∅ o' sh)
     (fun a x b ⟨_, _, _, _, _, before⟩ ok => ?_)
-    ⟨0, 0, ∅, 0, 0, Credited.of_ledger (Ledger.refl o) (Kept.refl o) (FlagsGrow.refl o).below⟩
+    ⟨0, 0, ∅, 0, 0, Credited.of_ledger (Ledger.refl o) (Kept.refl o) (FlagKeeps.refl o)⟩
     computed
   obtain ⟨_, _, _, _, _, next⟩ := each a x b (before.kept.frame.balancesMatch matched) ok
   have joined := before.trans next
@@ -2611,7 +2408,7 @@ private theorem credited_processProposerSlashing {slashing : ProposerSlashing}
   obtain ⟨proposer, slashed, validator, read, found, unslashed, ⟨later, laterFound, marked⟩,
     ledger, eligible⟩ := ledger_processProposerSlashing early computed
   have kept := kept_processProposerSlashing computed
-  have grow := (FlagsGrow.of_flags (flags_proposerSlashing computed)).below
+  have grow := FlagKeeps.of_flags kept.frame.registryGrows (flags_proposerSlashing computed)
   have effective : effectiveAt ⟨fork, t⟩ slashed.toNat = validator.effectiveBalance.toNat :=
     (effectiveAt_of_kept kept found).trans (effectiveAt_eq_of_found found)
   refine ⟨proposer, 0, {slashed}, _, _, ledger, kept, grow, fun _ => read,
@@ -2635,7 +2432,7 @@ private theorem credited_processAttesterSlashing {slashing : AttesterSlashing pr
   obtain ⟨proposer, slashed, read, newly, eligibles, ledger⟩ :=
     ledger_processAttesterSlashing early computed
   have kept := kept_processAttesterSlashing computed
-  have grow := (FlagsGrow.of_flags (flags_attesterSlashing computed)).below
+  have grow := FlagKeeps.of_flags kept.frame.registryGrows (flags_attesterSlashing computed)
   have effective : ∀ v ∈ slashed, effectiveAt ⟨fork, t⟩ v.toNat = effectiveAt ⟨fork, s⟩ v.toNat :=
     fun v member => by
       obtain ⟨validator, _, found, _⟩ := newly v member
@@ -2663,7 +2460,7 @@ private theorem credited_processAttestation {attestation : Attestation preset fo
     ∃ p c sl o sh, Credited s t p c sl ∅ o sh := by
   obtain ⟨proposer, credit, read, ledger, potential⟩ := attestation_credit altair early computed
   exact ⟨proposer, credit, ∅, _, _, ledger, kept_processAttestation computed,
-    (grow_processAttestation early computed).below, fun _ => read,
+    flagKeeps_processAttestation computed, fun _ => read,
     fun v => by simp, fun v => by simp, fun v member => absurd member (Finset.notMem_empty v),
     fun _ base count big reads _ => potential base big reads,
     fun v member => absurd member (Finset.notMem_empty v)⟩
@@ -2673,13 +2470,15 @@ private theorem credited_processDeposit {before : fork < .hegota} {deposit : Dep
     (computed : processDeposit config checks before s deposit = .ok t) :
     ∃ p c sl o sh, Credited s t p c sl ∅ o sh :=
   ⟨_, _, _, _, _, Credited.of_ledger (ledger_processDeposit electra matched computed)
-    (kept_processDeposit electra computed) (grow_processDeposit computed)⟩
+    (kept_processDeposit electra computed)
+    (FlagKeeps.of_below (frame_processDeposit computed).registryGrows
+      (flagsBelow_deposit computed))⟩
 
 private theorem credited_processVoluntaryExit {signed : SignedVoluntaryExit}
     (computed : processVoluntaryExit config checks s signed = .ok t) :
     ∃ p c sl o sh, Credited s t p c sl ∅ o sh :=
   ⟨_, _, _, _, _, Credited.of_ledger (ledger_processVoluntaryExit computed)
-    (kept_processVoluntaryExit computed) (growsLaws.processVoluntaryExit computed).1⟩
+    (kept_processVoluntaryExit computed) (growsLaws.processVoluntaryExit computed)⟩
 
 private theorem credited_processBlsToExecutionChanges {body : BeaconBlockBody preset fork}
     (computed : processBlsToExecutionChanges config checks s body = .ok t) :
@@ -2691,9 +2490,9 @@ private theorem credited_processBlsToExecutionChanges {body : BeaconBlockBody pr
       split at computed
       · rw [← Array.foldlM_toList] at computed
         exact (growsLaws.foldlM (fun _ _ _ ok => growsLaws.processBlsToExecutionChange ok)
-          computed).1
+          computed)
       · cases computed
-        exact (FlagsGrow.refl _).below)⟩
+        exact FlagKeeps.refl _)⟩
 
 private theorem credited_processExecutionRequests {body : BeaconBlockBody preset fork}
     {electra : .pectra ≤ fork ∧ fork < .glamsterdam}
@@ -2701,7 +2500,8 @@ private theorem credited_processExecutionRequests {body : BeaconBlockBody preset
     ∃ conv, Credited s t 0 0 ∅ conv 0 0 ∧
       conv.card ≤ preset.MAX_CONSOLIDATION_REQUESTS_PER_PAYLOAD.toNat := by
   obtain ⟨conv, ledger, count⟩ := ledger_processExecutionRequests computed
-  have grow := (FlagsGrow.of_flags (flags_processExecutionRequests computed)).below
+  have grow := FlagKeeps.of_flags (frame_processExecutionRequests computed).registryGrows
+    (flags_processExecutionRequests computed)
   exact ⟨conv, ⟨ledger, kept_processExecutionRequests computed, grow, fun hyp => by simp at hyp,
     fun v => by simp, fun v => by simp, fun v member => absurd member (Finset.notMem_empty v),
     fun altair base count _ _ support => by
@@ -2915,7 +2715,7 @@ private theorem block_balances {engine : ExecutionEngine preset fork}
       (steady_processBlockExecution early executedOk).trans <|
         (steady_processRandao revealedOk).trans (steady_processEth1Data votedOk)
   -- The steps before the operations are master's operations input, which keeps both flag lists.
-  have growVoted : FlagsGrow s voted := .of_flags <| flags_operationsInput
+  have growVoted : Flags s voted := flags_operationsInput
     ⟨s, headed, executed, revealed, by simp [notGloas]; rfl, headedOk,
       by simpa [bellatrix] using executedOk, revealedOk, by simpa [hegota] using votedOk⟩
   have frameVoted : Frame s voted :=
@@ -3012,10 +2812,13 @@ private theorem block_balances {engine : ExecutionEngine preset fork}
     exact ⟨total, per, totalValue.trans totalSame, perOk, perValue⟩
   · intro altair' base count big reads support
     have votedReads : Reads voted base := steadyVoted.reads reads
-    have first := flagPotential_mono growVoted altair' base count
+    -- The steps before the operations keep both lists of flags, so the potential stays.
+    have first : flagPotential s altair' base count ≤ flagPotential voted altair' base count := by
+      unfold flagPotential
+      rw [growVoted.1, growVoted.2]
     have second := ops.potential altair' base count big votedReads fun i outside =>
       support i (Nat.le_trans frameVoted.registryGrows outside)
-    have third := flagPotential_mono_below syncGrow.1 altair' base count fun i outside =>
+    have third := flagPotential_mono_below syncGrow altair' base count fun i outside =>
       support i (Nat.le_trans frameVoted.registryGrows
         (Nat.le_trans ops.kept.frame.registryGrows outside))
     omega
@@ -3548,13 +3351,11 @@ private theorem Tally.block {a s t : BeaconState preset fork} {engine : Executio
 private theorem flagPotential_le (s : BeaconState preset fork) (altair : .altair ≤ fork)
     (base : ℕ → ℕ) (count : ℕ) :
     flagPotential s altair base count ≤ 108 * ∑ i ∈ Finset.range count, base i := by
-  unfold flagPotential flagSumOf
+  have one := flagSumOf_le base count (s.previousEpochParticipation altair)
+  have two := flagSumOf_le base count (s.currentEpochParticipation altair)
   rw [Finset.sum_eq_multiset_sum, Finset.range_val, ← Multiset.coe_range, Multiset.map_coe,
-    Multiset.sum_coe, ← List.sum_map_mul_left, ← List.sum_map_add]
-  refine List.sum_le_sum fun i _ => ?_
-  rw [flagTerm, flagTerm]
-  have one := flagValue_le (((s.previousEpochParticipation altair).data[i]?).getD 0) (base i)
-  have two := flagValue_le (((s.currentEpochParticipation altair).data[i]?).getD 0) (base i)
+    Multiset.sum_coe]
+  unfold flagPotential
   omega
 
 /-- A sum of quotients is at most the quotient of the sum. -/
