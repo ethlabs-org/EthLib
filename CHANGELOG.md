@@ -35,7 +35,7 @@ Not yet released.
   The pin's drift bound reads it.
 
 - `preActivation_waiting` shows that each validator put back into the activation queue at an upgrade has no activation epoch.
-  The exit-order walk, `queues_preActivation_fold` in the churn bounds and `balanceDrift_preActivation_excludes` in the balance drift now read it.
+  The exit-order walk, `queues_preActivation_fold` in the churn bounds and `balanceDrift_preActivation_excludes` in the balance drift read it.
 
 - The quorum drift bound adds these facts of runs.
   `Run.blockCount` counts the blocks of a run, `Run.blockCount_append` adds them over two runs, and `Run.blocks_le_slots` bounds them by one per slot.
@@ -48,6 +48,8 @@ Not yet released.
   Their readers are the count of the keys that a branch credits, and the bound on the sync-seat holders that a branch debits, in the pin reserve bound.
   `pending_deposit_rises` bounds the positions whose balance the pending-deposit pass raises by the deposits that it may read, and `pending_deposit_bound` is its projection.
   `Step.slot_deposit_site` says that a deposit event of a slot step is the pending-deposit pass at some state with matching sizes.
+  The slot ends an epoch, and it records at most one deposit event.
+  `epochReplay_deposit_count` says that the replay of an epoch records at most one deposit event.
   Their reader is the count of the keys that a branch credits, in the pin reserve bound.
   `Run.withdrawableKept_of_same_epoch` and `withdrawableKept_processRegistryUpdates` keep `WithdrawableKept` inside an epoch and through the registry updates.
   `Genesis.invariant` gives the invariant of a genesis built from deposits, and `Run.invariant` keeps it along a run.

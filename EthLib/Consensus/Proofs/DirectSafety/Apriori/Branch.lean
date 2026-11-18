@@ -22,6 +22,158 @@ variable {preset : Preset} {config : Config} {checks : SignatureChecks}
 
 noncomputable section
 
+/-! ## The events of an epoch replay
+
+The stages of an epoch after the rewards record slashing, deposit and consolidation events only.
+
+Only the pending-deposit stage records a deposit event, and it records at most one.
+-/
+
+/-- The stages of an epoch after the rewards append only slashing, deposit and consolidation events.
+
+Only the pending-deposit stage appends a deposit event, and it appends at most one. -/
+private theorem epochReplayAction_sources {f : Fork} {k : EpochStage}
+    (later : k ∈ [EpochStage.registry, .slashings, .eth1Reset, .pendingDeposits,
+      .pendingConsolidations]) {pre post : BalanceReplay preset f}
+    (ok : epochReplayAction (config := config) (checks := checks) k pre = .ok post) :
+    ∃ added, post.2 = pre.2 ++ added ∧ (∀ e ∈ added,
+      e.source = .slashings ∨ e.source = .deposits ∨ e.source = .consolidations) ∧
+      (added.filter fun e => e.source = .deposits).length ≤ 1 ∧
+      (k ≠ .pendingDeposits → (added.filter fun e => e.source = .deposits).length = 0) := by
+  simp only [List.mem_cons, List.not_mem_nil, or_false] at later
+  rcases later with rfl | rfl | rfl | rfl | rfl <;> simp only [epochReplayAction] at ok
+  · simp only [carryBalance, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at ok
+    obtain ⟨_, _, rfl⟩ := ok
+    exact ⟨[], by simp, by simp, by simp, fun _ => by simp⟩
+  · simp only [recordBalance, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at ok
+    obtain ⟨_, _, _, _, rfl⟩ := ok
+    exact ⟨_, rfl, by simp, (List.length_filter_le _ _).trans (by simp), fun _ => by simp⟩
+  all_goals
+    split at ok
+    · simp only [carryBalance, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at ok
+      obtain ⟨_, _, rfl⟩ := ok
+      first
+        | exact ⟨_, rfl, by simp, (List.length_filter_le _ _).trans (by simp),
+            fun h => by first | exact absurd rfl h | simp⟩
+        | exact ⟨[], by simp, by simp, by simp, fun _ => by simp⟩
+    · cases ok
+      exact ⟨[], by simp, by simp, by simp, fun _ => by simp⟩
+
+/-- The replay of an epoch, from Altair, runs justification and inactivity, then the rewards.
+
+Its events are those of the rewards pass, replayed from the state after the score update.
+
+They are followed by slashing, deposit and consolidation events only.
+
+The rewards pass records reward, penalty and inactivity events only.
+
+The later stages record at most one deposit event. -/
+private theorem epochReplay_events_core {f : Fork} (altair : .altair ≤ f)
+    {cached : BeaconState preset f} {post : BalanceReplay preset f}
+    (trace : EpochTrace (epochReplayAction (config := config) (checks := checks))
+      EpochStage.prefixStages (cached, []) post) :
+    ∃ just pass rewarded later, EpochStage.Edge config checks .justification cached just ∧
+      EpochStage.Edge config checks .inactivity just pass ∧
+      replayRewards (config := config) (pass, []) = .ok rewarded ∧
+      post.2 = rewarded.2 ++ later ∧
+      (∀ e ∈ later, e.source = .slashings ∨ e.source = .deposits ∨ e.source = .consolidations) ∧
+      (∀ e ∈ rewarded.2, e.source = .rewards ∨ e.source = .penalties ∨ e.source = .inactivity) ∧
+      (later.filter fun e => e.source = .deposits).length ≤ 1 := by
+  simp only [EpochStage.prefixStages] at trace
+  cases trace with | cons one trace =>
+  cases trace with | cons two trace =>
+  cases trace with | cons three trace =>
+  cases trace with | cons four trace =>
+  cases trace with | cons five trace =>
+  cases trace with | cons six trace =>
+  cases trace with | cons seven trace =>
+  cases trace with | cons eight trace =>
+  cases trace
+  simp only [epochReplayAction, carryBalance, bind_ok_iff, pure, Except.pure,
+    Except.ok.injEq] at one
+  obtain ⟨just, justOk, rfl⟩ := one
+  simp only [epochReplayAction, altair, ↓reduceDIte, carryBalance, bind_ok_iff, pure,
+    Except.pure, Except.ok.injEq] at two
+  obtain ⟨pass, passOk, rfl⟩ := two
+  simp only [epochReplayAction] at three
+  -- The rewards record rewards and penalties only.
+  have sources := replayRewards_induction (fun pre => ∀ e ∈ pre.2,
+      e.source = .rewards ∨ e.source = .penalties ∨ e.source = .inactivity)
+    (fun held ok => by
+      simp only [recordBalance, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at ok
+      obtain ⟨_, _, _, _, rfl⟩ := ok
+      intro e member
+      rcases List.mem_append.mp member with old | new
+      · exact held e old
+      · obtain rfl := List.mem_singleton.mp new
+        exact .inl rfl)
+    (fun penalty held ok => by
+      simp only [recordBalance, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at ok
+      obtain ⟨_, _, _, _, rfl⟩ := ok
+      intro e member
+      rcases List.mem_append.mp member with old | new
+      · exact held e old
+      · obtain rfl := List.mem_singleton.mp new
+        exact .inr penalty)
+    (by simp) three
+  obtain ⟨a4, e4, s4, c4⟩ := epochReplayAction_sources (by simp) four
+  obtain ⟨a5, e5, s5, c5⟩ := epochReplayAction_sources (by simp) five
+  obtain ⟨a6, e6, s6, c6⟩ := epochReplayAction_sources (by simp) six
+  obtain ⟨a7, e7, s7, c7⟩ := epochReplayAction_sources (by simp) seven
+  obtain ⟨a8, e8, s8, c8⟩ := epochReplayAction_sources (by simp) eight
+  refine ⟨just, pass, _, a4 ++ a5 ++ a6 ++ a7 ++ a8, justOk,
+    by simp only [EpochStage.Edge, altair, ↓reduceDIte]; exact passOk, three,
+    by rw [e8, e7, e6, e5, e4]; simp only [List.append_assoc], ?_, sources, ?_⟩
+  · intro e member
+    simp only [List.mem_append] at member
+    rcases member with (((m | m) | m) | m) | m
+    exacts [s4 e m, s5 e m, s6 e m, s7 e m, s8 e m]
+  · simp only [List.filter_append, List.length_append]
+    have z4 := c4.2 nofun
+    have z5 := c5.2 nofun
+    have z6 := c6.2 nofun
+    have z8 := c8.2 nofun
+    have o7 := c7.1
+    omega
+
+/-- The replay of an epoch, from Altair, runs justification and inactivity, then the rewards.
+
+Its events are those of the rewards pass, replayed from the state after the score update.
+
+They are followed by slashing, deposit and consolidation events only.
+
+The rewards pass records reward, penalty and inactivity events only. -/
+theorem epochReplay_events {f : Fork} (altair : .altair ≤ f)
+    {cached : BeaconState preset f} {post : BalanceReplay preset f}
+    (trace : EpochTrace (epochReplayAction (config := config) (checks := checks))
+      EpochStage.prefixStages (cached, []) post) :
+    ∃ just pass rewarded later, EpochStage.Edge config checks .justification cached just ∧
+      EpochStage.Edge config checks .inactivity just pass ∧
+      replayRewards (config := config) (pass, []) = .ok rewarded ∧
+      post.2 = rewarded.2 ++ later ∧
+      (∀ e ∈ later, e.source = .slashings ∨ e.source = .deposits ∨ e.source = .consolidations) ∧
+      ∀ e ∈ rewarded.2, e.source = .rewards ∨ e.source = .penalties ∨ e.source = .inactivity := by
+  obtain ⟨just, pass, rewarded, later, justOk, passOk, replayed, split, laterSources,
+    rewardSources, -⟩ := epochReplay_events_core altair trace
+  exact ⟨just, pass, rewarded, later, justOk, passOk, replayed, split, laterSources,
+    rewardSources⟩
+
+/-- The replay of an epoch, from Altair, records at most one deposit event.
+
+Only the pending-deposit stage records one, and the rewards pass records none. -/
+theorem epochReplay_deposit_count {f : Fork} (altair : .altair ≤ f)
+    {cached : BeaconState preset f} {post : BalanceReplay preset f}
+    (trace : EpochTrace (epochReplayAction (config := config) (checks := checks))
+      EpochStage.prefixStages (cached, []) post) :
+    (post.2.filter fun e => e.source = .deposits).length ≤ 1 := by
+  obtain ⟨_, _, rewarded, later, _, _, _, split, _, rewardSources, count⟩ :=
+    epochReplay_events_core altair trace
+  have none : (rewarded.2.filter fun e => e.source = .deposits).length = 0 :=
+    List.length_eq_zero_iff.mpr (List.filter_eq_nil_iff.mpr fun e member => by
+      rcases rewardSources e member with s | s | s <;> simp [s])
+  rw [split, List.filter_append, List.length_append]
+  omega
+
 /-! ## No deposit credit to a withdrawable consolidation source
 
 The withdrawn-source credit of an event is what a deposit event credits to pending sources.
@@ -276,22 +428,23 @@ private theorem stepBalanceEvents_deposits {checks : SignatureChecks}
     (genesis : Genesis (config := config) (checks := checks) g) (step : Step config checks x y)
     (early : y.fork < .glamsterdam)
     (delay : 0 < config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat)
-    {events : List (BalanceEvent preset)} (ok : step.balanceEvents = .ok events)
-    (bounded : EventsBounded events) :
-    (∀ e ∈ events, e.source = .deposits → withdrawnConsolidationCredit e = 0) ∧
+    {events : List (BalanceEvent preset)} (ok : step.balanceEvents = .ok events) :
+    (EventsBounded events →
+      ∀ e ∈ events, e.source = .deposits → withdrawnConsolidationCredit e = 0) ∧
     ∀ (across : advanceSlotAcross config checks x = .ok y), step = Step.slot across →
       (∀ e ∈ events, e.source = .deposits →
         ∃ (electra : .pectra ≤ x.fork) (u v : BeaconState preset x.fork),
           BalancesMatch u ∧ processPendingDeposits config checks u electra = .ok v ∧
             e.before = ⟨x.fork, u⟩ ∧ e.after = ⟨x.fork, v⟩) ∧
       ((∃ e ∈ events, e.source = .deposits) →
-        (getCurrentEpoch y.state).toNat = (getCurrentEpoch x.state).toNat + 1) := by
+        (getCurrentEpoch y.state).toNat = (getCurrentEpoch x.state).toNat + 1) ∧
+      (events.filter fun e => e.source = .deposits).length ≤ 1 := by
   have sourceEarly := Nat.lt_of_le_of_lt step.chainStep.fork_le early
   cases step with
   | block engine signed due blockOk =>
     have quiet := funding_block_events sourceEarly engine signed.message
       (Step.balanceEvents_block sourceEarly ok)
-    refine ⟨fun e mem deposit => ?_, fun across same => by cases same⟩
+    refine ⟨fun bounded e mem deposit => ?_, fun across same => by cases same⟩
     by_cases electra : .pectra ≤ e.before.fork
     · have zero := quiet e mem deposit electra
       have within := (bounded e mem).1
@@ -320,7 +473,8 @@ private theorem stepBalanceEvents_deposits {checks : SignatureChecks}
           cached := by
         obtain ⟨_, _, _, _, rfl⟩ := processSlot_ok cachedOk
         exact shared.pendingConsolidationsOrdered genesis sourceEarly delay
-      refine ⟨fun e mem deposit => ?_, fun across' same => ⟨fun e mem deposit => ?_, fun _ => ?_⟩⟩
+      refine ⟨fun _ e mem deposit => ?_,
+        fun across' same => ⟨fun e mem deposit => ?_, fun _ => ?_, ?_⟩⟩
       · rcases List.mem_append.mp mem with mem | mem
         · exact (epochBalanceReplay_deposits ordered replayOk).1 e mem deposit
         · exact absurd deposit (crossed e mem)
@@ -342,14 +496,34 @@ private theorem stepBalanceEvents_deposits {checks : SignatureChecks}
           rw [← advancedEq]
         rw [getCurrentEpoch_toNat, getCurrentEpoch_toNat, slotEq, advancedSlot, nextVal]
         exact Nat.succ_div_of_dvd divides
+      · -- Only the pending-deposit stage records a deposit, so an epoch replay records one at most.
+        have none : (crossings.filter fun e => e.source = .deposits).length = 0 :=
+          List.length_eq_zero_iff.mpr (List.filter_eq_nil_iff.mpr fun e mem => by
+            simpa using crossed e mem)
+        rw [List.filter_append, List.length_append, none, Nat.add_zero]
+        by_cases any : ∃ e ∈ epochEvents, e.source = .deposits
+        · obtain ⟨e, mem, deposit⟩ := any
+          obtain ⟨electra, -⟩ := (epochBalanceReplay_deposits ordered replayOk).2 matched e mem
+            deposit
+          exact epochReplay_deposit_count (Nat.le_trans (by decide) electra)
+            (epochBalanceReplay_trace replayOk)
+        · have none : (epochEvents.filter fun e => e.source = .deposits).length = 0 :=
+            List.length_eq_zero_iff.mpr (List.filter_eq_nil_iff.mpr fun e mem => by
+              simpa using fun deposit => any ⟨e, mem, deposit⟩)
+          omega
     · have replayed : (Step.slot across).balanceEvents = .ok ([] ++ crossings) := by
         simp only [Step.balanceEvents, cachedOk, nextOk, last, ↓reduceIte, advanceOk,
           crossingOk, bind, Except.bind, pure, Except.pure]
       rw [replayed] at ok
       cases ok
-      exact ⟨fun e mem deposit => absurd deposit (crossed e (by simpa using mem)),
+      exact ⟨fun _ e mem deposit => absurd deposit (crossed e (by simpa using mem)),
         fun across' same => ⟨fun e mem deposit => absurd deposit (crossed e (by simpa using mem)),
-          fun ⟨e, mem, deposit⟩ => absurd deposit (crossed e (by simpa using mem))⟩⟩
+          fun ⟨e, mem, deposit⟩ => absurd deposit (crossed e (by simpa using mem)),
+          by
+            rw [List.nil_append]
+            exact Nat.le_trans (Nat.le_of_eq (List.length_eq_zero_iff.mpr
+              (List.filter_eq_nil_iff.mpr fun e mem => by simpa using crossed e mem)))
+              (Nat.zero_le _)⟩⟩
 
 /-- The deposit events of one step before Gloas credit no withdrawable pending source.
 
@@ -364,22 +538,24 @@ private theorem stepBalanceEvents_withdrawnConsolidationCredit {checks : Signatu
     {events : List (BalanceEvent preset)} (ok : step.balanceEvents = .ok events)
     (bounded : EventsBounded events) :
     ∀ e ∈ events, e.source = .deposits → withdrawnConsolidationCredit e = 0 :=
-  (stepBalanceEvents_deposits shared genesis step early delay ok bounded).1
+  (stepBalanceEvents_deposits shared genesis step early delay ok).1 bounded
 
-/-- A deposit event of a slot step is a pending-deposit pass, in a slot that ends an epoch. -/
+/-- A deposit event of a slot step is a pending-deposit pass, in a slot that ends an epoch.
+
+A slot step records at most one deposit event. -/
 theorem Step.slot_deposit_site {checks : SignatureChecks} {g x y : ForkedBeaconState preset}
     (shared : Run config checks g x) (genesis : Genesis (config := config) (checks := checks) g)
     (across : advanceSlotAcross config checks x = .ok y) (early : y.fork < .glamsterdam)
     (delay : 0 < config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat)
-    {events : List (BalanceEvent preset)} (ok : (Step.slot across).balanceEvents = .ok events)
-    (bounded : EventsBounded events) :
+    {events : List (BalanceEvent preset)} (ok : (Step.slot across).balanceEvents = .ok events) :
     (∀ e ∈ events, e.source = .deposits →
       ∃ (electra : .pectra ≤ x.fork) (u v : BeaconState preset x.fork),
         BalancesMatch u ∧ processPendingDeposits config checks u electra = .ok v ∧
           e.before = ⟨x.fork, u⟩ ∧ e.after = ⟨x.fork, v⟩) ∧
     ((∃ e ∈ events, e.source = .deposits) →
-      (getCurrentEpoch y.state).toNat = (getCurrentEpoch x.state).toNat + 1) :=
-  (stepBalanceEvents_deposits shared genesis (Step.slot across) early delay ok bounded).2 across rfl
+      (getCurrentEpoch y.state).toNat = (getCurrentEpoch x.state).toNat + 1) ∧
+    (events.filter fun e => e.source = .deposits).length ≤ 1 :=
+  (stepBalanceEvents_deposits shared genesis (Step.slot across) early delay ok).2 across rfl
 
 /-- Lemma WC: on a run from genesis, no deposit event credits a withdrawable pending source.
 
