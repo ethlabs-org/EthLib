@@ -1254,7 +1254,8 @@ theorem bud_queues (h : Setting config checks g split fin pulled anc counted V)
       obtain ⟨u, w, step, contained, _, same⟩ := consolidationSite_rate tailC h.early site member
       obtain ⟨pre, post, _, uEarly, uEpoch⟩ := Run.contains_step_facts contained h.early
       have uEpoch' : (getCurrentEpoch u.state).toNat ≤ (getCurrentEpoch counted).toNat := uEpoch
-      exact consRate_le uEarly _ (band u (fromFin.append pre) uEarly (by omega)) (same rate computed)
+      exact consRate_le uEarly _ (band u (fromFin.append pre) uEarly (by omega))
+        (same rate computed)
     have consFin : ∀ site ∈ fromFin.consolidationSites, ∀ (_h : .pectra ≤ site.fork) (rate : Gwei),
         getConsolidationChurnLimit config site.state = .ok rate →
           rate.toNat ≤ pinCons preset config (pinWide pulled) := by
@@ -1287,7 +1288,8 @@ theorem bud_queues (h : Setting config checks g split fin pulled anc counted V)
         (split.earliestExitEpoch electra).toNat ≤ depth := by omega
     have secondLe : (getCurrentEpoch counted).toNat - 1 + 2 - max (getCurrentEpoch split).toNat
         (split.earliestConsolidationEpoch electra).toNat ≤ depth := by omega
-    have exitTerm : (if (split.earliestExitEpoch electra).toNat ≤ (getCurrentEpoch counted).toNat - 1 + 1
+    have exitTerm : (if (split.earliestExitEpoch electra).toNat ≤
+          (getCurrentEpoch counted).toNat - 1 + 1
         then (split.exitBalanceToConsume electra).toNat else 0) ≤
         max preset.MAX_EFFECTIVE_BALANCE_ELECTRA.toNat
           config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat := by
@@ -1380,7 +1382,8 @@ private theorem exitQ_floor (h : Setting config checks g split fin pulled anc co
     Nat.lt_of_le_of_lt (fork_le_of_chainSteps stop.post.chainSteps) h.early
   have near := h.near
   have toEnd := UInt64.le_iff_toNat_le.mp (currentEpoch_le_of_chainSteps stop.post.chainSteps)
-  have endpoint : (getCurrentEpoch stop.state.state).toNat ≤ (getCurrentEpoch pulled).toNat + 1 := by
+  have endpoint :
+      (getCurrentEpoch stop.state.state).toNat ≤ (getCurrentEpoch pulled).toNat + 1 := by
     simp only at toEnd
     omega
   obtain ⟨before, beforeOk, isPrefix⟩ := Run.balanceEvents_prefix stop.pre stop.post
@@ -1531,14 +1534,16 @@ theorem bud_exitingRise (h : Setting config checks g split fin pulled anc counte
     simp only [pinTerms, decide_eq_true_eq]
   have apart : Disjoint
       ((K5 counted V).filter fun v => (pinTerms config pulled anc fin).exitingB v.toNat = true)
-      ((K6 pulled counted).filter fun v => (pinTerms config pulled anc fin).exitingB v.toNat = true) := by
+      ((K6 pulled counted).filter fun v =>
+        (pinTerms config pulled anc fin).exitingB v.toNat = true) := by
     refine Finset.disjoint_left.mpr fun v first second => ?_
     have active := (Finset.mem_filter.mp (Finset.mem_filter.mp second).1).1
     exact (Finset.mem_filter.mp (Finset.mem_filter.mp first).1).2.1 active
   rw [← Finset.sum_union apart, exitingRise]
   refine sum_toNat_le (pinTerms config pulled anc fin).rise fun v selected => ?_
   have exiting : (pinTerms config pulled anc fin).exitingB v.toNat = true := by
-    rcases Finset.mem_union.mp selected with chosen | chosen <;> exact (Finset.mem_filter.mp chosen).2
+    rcases Finset.mem_union.mp selected with chosen | chosen <;>
+      exact (Finset.mem_filter.mp chosen).2
   have found : ∃ w, pulled.validators.data[v.toNat]? = some w := by
     obtain ⟨-, -, read⟩ := (by simpa only [pinTerms, decide_eq_true_eq] using exiting :
       _ ∧ _ ∧ ((pulled.validators.data[v.toNat]?).map fun w =>
@@ -1738,7 +1743,8 @@ theorem bud_sync (h : Setting config checks g split fin pulled anc counted V)
       exact total_band_of_guard shared h.genesis h.parameters h.caps h.aligned h.twoSlots electra
         h.guard (fromFin.append toPulled) h.early (Nat.le_succ _)
         (fromFin.append (pre.snoc step)) wEarly (by omega) pulledOk read
-    have moves := (PinSplit5.Run.syncDebits_le t h.fulu h.early highE replayed pulledTotal.toNat band keys).2
+    have moves := (PinSplit5.Run.syncDebits_le t h.fulu h.early highE replayed pulledTotal.toNat
+      band keys).2
     exact (Finset.sum_le_sum fun i _ => (syncF_eq evs i).le).trans moves
   -- the four sets are pairwise disjoint
   have voters : ∀ v ∈ V, v ∈ AR pulled := fun v member => (h.voting v member).1
@@ -1816,9 +1822,11 @@ theorem bud_rise (h : Setting config checks g split fin pulled anc counted V) :
   generalize PinSplit5.syncEnvelope preset pulledTotal.toNat = env at *
   generalize env * PROPOSER_WEIGHT.toNat / (WEIGHT_DENOMINATOR.toNat - PROPOSER_WEIGHT.toNat) =
     share at *
-  have firstDepth : (getCurrentEpoch pulled).toNat + 1 - (getCurrentEpoch split).toNat ≤ depth := by
+  have firstDepth :
+      (getCurrentEpoch pulled).toNat + 1 - (getCurrentEpoch split).toNat ≤ depth := by
     omega
-  have secondDepth : (getCurrentEpoch counted).toNat + 1 - (getCurrentEpoch split).toNat ≤ depth := by
+  have secondDepth :
+      (getCurrentEpoch counted).toNat + 1 - (getCurrentEpoch split).toNat ≤ depth := by
     omega
   have firstLe := first.trans (Nat.mul_le_mul_right _ (Nat.mul_le_mul_right _
     (Nat.mul_le_mul_right _ firstDepth)))
