@@ -69,6 +69,11 @@ Not yet released.
   Three times their stake is at least twice the total active balance plus the margin of the count.
   `quorum_of_count` and `headState_epoch_le` are now public.
 
+- `Execution.receiverWindowExitsNear_of_sourceOnParentChain` proves `ReceiverWindowExitsNear` when the call's balance source is on the parent's chain (`SourceOnParentChain`), or names a block collision between honest stores.
+  The checkpoint's epoch is at most two epochs before the parent's, and the preset satisfies `Preset.ExitWindowFixed`.
+  Each near receiver's head state keeps the source's activity three epochs ahead, so `windowExitBound_of_activeKept` bounds each full epoch of its window by `exitReserve`.
+  `historical_stores_or_collision`, the split of honest stores into agreement or a collision, is now public; the proof reads it.
+
 - `Store.Reachable.blockState_slot_eq` states that a known block's state is at the block's slot, when the anchor block is at the anchor state's slot.
 
 - `le_computeStartSlotAtEpoch_of_isStartSlotAtEpoch` shows that a slot at the start of an epoch is at most the first slot of the epoch of each later slot.
@@ -262,6 +267,13 @@ Not yet released.
   - `KeyPath.KeyPathError.invalidRoot root` carries the text before the first `/`, and `tooShort count` the number of segments after `m`.
   - `Gcm.checkLengths_shortTag`, `Gcm.encrypt_shortTag`, `Gcm.decrypt_shortTag` and `ChaCha20Poly1305.crypt_eq_error_of_counter_exhausted` state the error with its fields.
   - `Aes.Gcm.Error.code_injective` now concludes that two errors with one code share a constructor, `e₁.ctorIdx = e₂.ctorIdx`, as the KZG and secp256k1 forms do.
+
+- `exitReserve` is now the active source stake already scheduled to exit within three epochs of the source, the reach of a confirmation's near window, and nothing else.
+  It counted two epochs and added the churn terms of the source's epoch.
+  `Preset.ExitWindowFixed` asks for a seed lookahead of at least three epochs; mainnet and minimal satisfy it.
+  Under it, `exitStake_le_exitReserve` shows that no other source stake leaves by then, in any later state that keeps the source's fixed activity.
+  `SourceWindowReserve` and `WindowExitBound` read the new value; a caller that proves `SourceWindowReserve` proves it for the new reserve.
+  A caller that proves `WindowExitBound` bounds each near epoch with `windowExitBound_of_activeKept`; `exitReserve` no longer reads its `Config`.
 
 - The DER and e2store errors carry the values that their failed check compared.
   Codes are unchanged, and each error fires on the same inputs as before.
