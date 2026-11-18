@@ -579,30 +579,13 @@ private theorem lives_processVoluntaryExit {signed : SignedVoluntaryExit}
   obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, exited⟩ := computed
   exact lives_initiateValidatorExit exited
 
-private theorem lives_requestPartialWithdrawal {electra : .pectra ≤ fork}
-    {index : ValidatorIndex} {validator : Validator} {amount owed : Gwei}
-    (computed : requestPartialWithdrawal config s electra index validator amount owed = .ok t) :
-    Lives s t := by
-  simp only [requestPartialWithdrawal, bind_ok_iff, liftAccessor_ok, pure, Except.pure] at computed
-  obtain ⟨_, _, _, _, computed⟩ := computed
-  split at computed
-  · simp only [bind_ok_iff, liftAccessor_ok, Except.ok.injEq] at computed
-    obtain ⟨⟨_, _⟩, churned, _, _, _, _, rfl⟩ := computed
-    exact Lives.of_data (by rw [(computeExitEpochAndUpdateChurn_earliest churned).2.1])
-  · cases computed
-    exact Lives.refl _
-
 private theorem lives_processWithdrawalRequest {electra : .pectra ≤ fork}
     {request : WithdrawalRequest}
     (computed : processWithdrawalRequest config s electra request = .ok t) : Lives s t := by
-  unfold processWithdrawalRequest at computed
-  simp only [bind, Except.bind, pure, Except.pure] at computed
-  repeat' split at computed
-  all_goals first
-    | (cases computed; done)
-    | (cases computed; exact Lives.refl _)
-    | exact lives_initiateValidatorExit (liftAccessor_ok.mp computed)
-    | exact lives_requestPartialWithdrawal computed
+  rcases withdrawalRequest_cases computed with rfl | ⟨_, exited⟩ | ⟨_, _, _, requested⟩
+  · exact Lives.refl _
+  · exact lives_initiateValidatorExit exited
+  · exact Lives.of_data (congrArg (·.data) (requestPartialWithdrawal_kept requested).1)
 
 private theorem lives_switchToCompoundingValidator {electra : .pectra ≤ fork}
     {index : ValidatorIndex}
@@ -632,15 +615,11 @@ private theorem lives_queueConsolidation {electra : .pectra ≤ fork} {sourceInd
 private theorem lives_processConsolidationRequest {electra : .pectra ≤ fork}
     {request : ConsolidationRequest}
     (computed : processConsolidationRequest config s electra request = .ok t) : Lives s t := by
-  unfold processConsolidationRequest at computed
-  simp only [bind, Except.bind, pure, Except.pure] at computed
-  repeat' split at computed
-  all_goals first
-    | (cases computed; done)
-    | (cases computed; exact Lives.refl _)
-    | exact lives_switchToCompoundingValidator (liftAccessor_ok.mp computed)
-    | exact lives_queueConsolidation (getElem?_toNat_of_ofNatChecked (by assumption))
-        (by clear computed; simp_all) computed
+  rcases consolidationRequest_cases computed with rfl | ⟨_, switched⟩ |
+    ⟨_, _, _, _, accepted, queued⟩
+  · exact Lives.refl _
+  · exact lives_switchToCompoundingValidator switched
+  · exact lives_queueConsolidation accepted.sourceAt accepted.sourceStays queued
 
 private theorem lives_processExecutionRequests {body : BeaconBlockBody preset fork}
     {electra : .pectra ≤ fork ∧ fork < .glamsterdam}
@@ -1562,23 +1541,12 @@ private theorem ledger_processExecutionRequests {body : BeaconBlockBody preset f
       (by rw [(processDepositRequest_ok ok).2.1])) deposits
   have two : Ledger deposited withdrawn ∅ ∅ 0 0 0 := by
     refine Ledger.foldlM (fun _ _ _ ok => ?_) withdrawals
-    unfold processWithdrawalRequest at ok
-    simp only [bind, Except.bind, pure, Except.pure] at ok
-    repeat' split at ok
-    all_goals try first
-      | (cases ok; done)
-      | (cases ok; exact Ledger.refl _)
-      | exact Ledger.exit (liftAccessor_ok.mp ok)
-    -- A partial withdrawal only spends exit churn and queues the withdrawal.
-    simp only [requestPartialWithdrawal, bind_ok_iff, liftAccessor_ok, pure, Except.pure] at ok
-    obtain ⟨_, _, _, _, ok⟩ := ok
-    split at ok
-    · simp only [bind_ok_iff, liftAccessor_ok, Except.ok.injEq] at ok
-      obtain ⟨⟨_, _⟩, churned, _, _, _, _, rfl⟩ := ok
-      have same := computeExitEpochAndUpdateChurn_earliest churned
-      exact Ledger.of_eq (by rw [same.2.2]) (by rw [same.2.1])
-    · cases ok
-      exact Ledger.refl _
+    rcases withdrawalRequest_cases ok with rfl | ⟨_, exited⟩ | ⟨_, _, _, requested⟩
+    · exact Ledger.refl _
+    · exact Ledger.exit exited
+    -- A partial withdrawal keeps the registry and the balances.
+    · have kept := requestPartialWithdrawal_kept requested
+      exact Ledger.of_eq (congrArg (·.data) kept.2.1) (congrArg (·.data) kept.1)
   -- Each consolidation request converts at most one validator.
   have three : ∀ (requests : List ConsolidationRequest) (u : BeaconState preset fork),
       requests.foldlM (processConsolidationRequest config · electra.1 ·) u = .ok t →

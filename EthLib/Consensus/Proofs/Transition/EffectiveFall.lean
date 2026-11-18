@@ -1232,30 +1232,26 @@ private theorem credentials_partialsSame {fork : Fork} {s t : BeaconState preset
 private theorem consolidationRequest_partialsSame {fork : Fork} {s t : BeaconState preset fork}
     {electra : .pectra ≤ fork} {request : ConsolidationRequest}
     (ok : processConsolidationRequest config s electra request = .ok t) : PartialsSame s t := by
-  unfold processConsolidationRequest at ok
-  simp only [bind, Except.bind, pure, Except.pure] at ok
-  repeat' split at ok
-  all_goals first
-    | (cases ok; exact PartialsSame.refl _)
-    | cases ok
-    | (intro e; simp only [switchToCompoundingValidator, queueExcessActiveBalance, bind_ok_iff,
-        liftAccessor_ok] at ok
-       obtain ⟨_, _, _, set, _, _, queued⟩ := ok
-       obtain ⟨_, rfl⟩ := setValidator_ok set
-       split at queued
-       · simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at queued
-         obtain ⟨_, _, _, _, _, set, rfl⟩ := queued
-         exact partialsSame_setBalance set e
-       · cases queued; rfl)
-    | (intro e
-       simp only [queueConsolidation, bind_ok_iff, liftAccessor_ok, pure, Except.pure,
-         Except.ok.injEq] at ok
-       obtain ⟨⟨_, _⟩, scheduled, _, _, _, set, _, _, rfl⟩ := ok
-       obtain ⟨_, rfl⟩ := setValidator_ok set
-       simp only [computeConsolidationEpochAndUpdateChurn, bind_ok_iff, pure, Except.pure,
-         Except.ok.injEq, Prod.mk.injEq] at scheduled
-       obtain ⟨_, _, _, _, ⟨_, _⟩, _, rfl, _⟩ := scheduled
-       rfl)
+  rcases consolidationRequest_cases ok with rfl | ⟨_, switched⟩ | ⟨_, _, _, _, -, queued⟩
+  · exact PartialsSame.refl _
+  · intro e
+    simp only [switchToCompoundingValidator, queueExcessActiveBalance, bind_ok_iff] at switched
+    obtain ⟨_, _, _, set, _, _, queued⟩ := switched
+    obtain ⟨_, rfl⟩ := setValidator_ok set
+    split at queued
+    · simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at queued
+      obtain ⟨_, _, _, _, _, set, rfl⟩ := queued
+      exact partialsSame_setBalance set e
+    · cases queued; rfl
+  · intro e
+    simp only [queueConsolidation, bind_ok_iff, liftAccessor_ok, pure, Except.pure,
+      Except.ok.injEq] at queued
+    obtain ⟨⟨_, _⟩, scheduled, _, _, _, set, _, _, rfl⟩ := queued
+    obtain ⟨_, rfl⟩ := setValidator_ok set
+    simp only [computeConsolidationEpochAndUpdateChurn, bind_ok_iff, pure, Except.pure,
+      Except.ok.injEq, Prod.mk.injEq] at scheduled
+    obtain ⟨_, _, _, _, ⟨_, _⟩, _, rfl, _⟩ := scheduled
+    rfl
 
 private theorem executionRequests_queueAppend {fork : Fork} {s t : BeaconState preset fork}
     {body : BeaconBlockBody preset fork} {electra : .pectra ≤ fork ∧ fork < .glamsterdam}
