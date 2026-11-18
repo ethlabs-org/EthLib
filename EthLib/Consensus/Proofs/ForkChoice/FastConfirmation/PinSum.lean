@@ -349,7 +349,8 @@ def pinTerms (config : Config) (state ancestor finalizedState : BeaconState pres
   let newKeyFloor := 2 * preset.MAX_EFFECTIVE_BALANCE.toNat / 3 -
     preset.MAX_EFFECTIVE_BALANCE.toNat / p.MIN_SLASHING_PENALTY_QUOTIENT.toNat -
       preset.downwardBand - inc
-  let newKeySlack := newKeyFloor - (config.EJECTION_BALANCE.toNat - inc)
+  let exitFloor := max 1 (min (config.EJECTION_BALANCE.toNat - inc) newKeyFloor)
+  let newKeySlack := newKeyFloor - exitFloor
   let lowKeys := (positions.filter fun i =>
     (validator i).any (fun v => decide (finalized < v.withdrawableEpoch.toNat) &&
       decide (v.activationEpoch.toNat ≤ epoch.toNat)) ∧
@@ -368,7 +369,7 @@ def pinTerms (config : Config) (state ancestor finalizedState : BeaconState pres
   let newKeySeats := depthFin * slots * preset.SYNC_COMMITTEE_SIZE.toNat * syncEnvelope /
     max 1 newKeySlack
   let queueKeys := (depth * (exitChurn + consolidationChurn) + exitCarry + consolidationCarry) /
-    (config.EJECTION_BALANCE.toNat - inc) + 2 + lowKeys + newKeySeats
+    exitFloor + 2 + lowKeys + newKeySeats
   -- The largest gain rate of one key, its gain rate at the largest effective balance.
   let gainRateMax := capMax / inc * perIncrement *
     (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum / WEIGHT_DENOMINATOR.toNat
@@ -427,8 +428,16 @@ def pinTerms (config : Config) (state ancestor finalizedState : BeaconState pres
     (effective i + rise i)
   let consolidationGain := consolidationsX / inc * perIncrement *
     (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum / WEIGHT_DENOMINATOR.toNat
+  let otherCredits := 3 * (2 * ((∑ i ∈ positions, ebUp i) +
+        depthFin * preset.MAX_PENDING_DEPOSITS_PER_EPOCH.toNat * capMax +
+        consolidationsX + depth * proposerCredit +
+        depth * slots * preset.SYNC_COMMITTEE_SIZE.toNat * syncEnvelope) /
+          p.WHISTLEBLOWER_REWARD_QUOTIENT.toNat +
+      depth * slots * preset.SYNC_COMMITTEE_SIZE.toNat * syncEnvelope + depth * syncProposer)
+  let otherGain := otherCredits / inc * perIncrement *
+    (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum / WEIGHT_DENOMINATOR.toNat
   let creditGain := if 11 * depth * gainRateMax < capMax
-    then (33 * depth * consolidationGain + 9) / 10
+    then (33 * depth * consolidationGain + 11 * depth * otherGain + 9) / 10
     else depthFin * preset.MAX_PENDING_DEPOSITS_PER_EPOCH.toNat * capMax
   let pendingR := if tight then 0 else
     ∑ i ∈ positions with (validator i).any (fun v =>
@@ -1703,10 +1712,8 @@ The proposer's share of the sync credits is in `syncF`, so the bound adds the `s
 that `credits`, `exitingCredits` and `branchR` leave. -/
 theorem bud_sync (h : Setting config checks g split fin pulled anc counted V)
     (tail : Run config checks ⟨fork, split⟩ ⟨fork, pulled⟩) (high : ℕ)
-    (endEpoch : (getCurrentEpoch pulled).toNat ≤ high + 1)
     {events : List (BalanceEvent preset)} (replayed : tail.balanceEvents high = .ok events)
     (tailC : Run config checks ⟨fork, split⟩ ⟨fork, counted⟩) (highC : ℕ)
-    (endEpochC : (getCurrentEpoch counted).toNat ≤ highC + 1)
     {eventsC : List (BalanceEvent preset)} (replayedC : tailC.balanceEvents highC = .ok eventsC) :
     3 * ((∑ v ∈ V, (syncF events v.toNat + syncF eventsC v.toNat)) + (∑ v ∈ (K4 pulled counted V), (syncF events v.toNat + syncF eventsC v.toNat)) +
       (∑ v ∈ (K5 counted V), (syncF events v.toNat + syncF eventsC v.toNat))) +
@@ -1941,7 +1948,7 @@ theorem pinDrift_le_of_stubs (h : Setting config checks g split fin pulled anc c
   have b3 := bud_queues (config := config) h tailC
   have b4 := bud_credits (config := config) h tailC highC endEpochC replayedC
   have b5 := bud_branchR (config := config) h tail high endEpoch replayed
-  have b6 := bud_sync (config := config) h tail high endEpoch replayed tailC highC endEpochC replayedC
+  have b6 := bud_sync (config := config) h tail high replayed tailC highC replayedC
   have b7 := bud_fall (config := config) h
   have b8 := bud_rise (config := config) h
   have b10 := bud_deposits (config := config) h tail high endEpoch replayed
