@@ -72,6 +72,9 @@ Not yet released.
   They are also `Unassigned`, `UnassignedFrom`, `unassignedFrom_size`, `UnassignedKept` and `UnassignedKept.processDeposit`.
   `DirectSafety.total_active_congr` moves from `DirectSafety/DepartureQueue.lean` to `Transition/BalanceDrift.lean`, with its name and statement unchanged.
   `DirectSafety.queueCarry_le_of_run` bounds the exit and consolidation capacity that the queues carry at the end of a run from a state of a run from genesis.
+  `replayRewards_passes` is public too, with an unchanged statement.
+  `replayDeltas_flows` bounds what one pass of deltas debits and credits at one position, and `rewardCredit` is the credit of an event there.
+  The old `replayDeltas_debits` is now its projection.
 
 - `queueConsolidation_steps` states the steps of queueing a consolidation once ([#2334](https://github.com/ethereum/EthLib/issues/2334)).
   The churn call writes only the churn left and the earliest consolidation epoch.

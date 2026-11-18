@@ -960,15 +960,17 @@ private theorem flagReward_le {f : Fork} (altair : .altair ≤ f) {state : Beaco
     {total : Gwei} (active : getTotalActiveBalance state = .ok total) (P v : ℕ)
     (inside : v < state.validators.data.size)
     (rate : ∀ perIncrement : Gwei, getBaseRewardPerIncrement preset total = .ok perIncrement →
-      perIncrement.toNat * ((∑ i ∈ (getActiveValidatorIndices state (getPreviousEpoch state)).toFinset,
-          balanceAt state i.toNat) / preset.EFFECTIVE_BALANCE_INCREMENT.toNat) ≤
+      perIncrement.toNat *
+          ((∑ i ∈ (getActiveValidatorIndices state (getPreviousEpoch state)).toFinset,
+            balanceAt state i.toNat) / preset.EFFECTIVE_BALANCE_INCREMENT.toNat) ≤
         P * (total.toNat / preset.EFFECTIVE_BALANCE_INCREMENT.toNat)) :
     (rewards.getD v 0).toNat *
         (total.toNat / preset.EFFECTIVE_BALANCE_INCREMENT.toNat * WEIGHT_DENOMINATOR.toNat) ≤
       balanceAt state v / preset.EFFECTIVE_BALANCE_INCREMENT.toNat *
         PARTICIPATION_FLAG_WEIGHTS[flag].toNat *
         (P * (total.toNat / preset.EFFECTIVE_BALANCE_INCREMENT.toNat)) ∧
-    (total.toNat / preset.EFFECTIVE_BALANCE_INCREMENT.toNat = 0 → (rewards.getD v 0).toNat = 0) := by
+    (total.toNat / preset.EFFECTIVE_BALANCE_INCREMENT.toNat = 0 →
+      (rewards.getD v 0).toNat = 0) := by
   obtain ⟨participating, participatingBalance, total', flaggedOk, weighed, totalOk, perKey⟩ :=
     getFlagIndexDeltas_getD within computed
   obtain rfl : total = total' := Except.ok.inj (active.symm.trans totalOk)
@@ -979,7 +981,8 @@ private theorem flagReward_le {f : Fork} (altair : .altair ≤ f) {state : Beaco
       balanceAt state v / preset.EFFECTIVE_BALANCE_INCREMENT.toNat *
         PARTICIPATION_FLAG_WEIGHTS[flag].toNat *
         (P * (total.toNat / preset.EFFECTIVE_BALANCE_INCREMENT.toNat)) ∧
-      (total.toNat / preset.EFFECTIVE_BALANCE_INCREMENT.toNat = 0 → (rewards.getD v 0).toNat = 0) :=
+      (total.toNat / preset.EFFECTIVE_BALANCE_INCREMENT.toNat = 0 →
+        (rewards.getD v 0).toNat = 0) :=
     ⟨by rw [h, Nat.zero_mul]; exact Nat.zero_le _, fun _ => h⟩
   by_cases isEligible : eligible = true
   swap
@@ -1069,8 +1072,9 @@ private theorem flagReward_le {f : Fork} (altair : .altair ≤ f) {state : Beaco
 
 /-- The three flags pay a key, in a rewards replay of a state, at most its stake times `P`.
 
-The bound is read per active increment: the credit times `64` times the active increments is at
-most the key's increments times `54` times `P` times the active increments.
+The credit is scaled by `64` and by the active increments.
+
+It is at most the key's increments times `54`, `P` and the active increments.
 
 A state with no active increment pays nothing. -/
 private theorem replayRewards_credit_le {f : Fork} (altair : .altair ≤ f)
@@ -1080,8 +1084,9 @@ private theorem replayRewards_credit_le {f : Fork} (altair : .altair ≤ f)
     (inside : v < pass.validators.data.size)
     (rate : ∀ total perIncrement : Gwei, getTotalActiveBalance pass = .ok total →
       getBaseRewardPerIncrement preset total = .ok perIncrement →
-      perIncrement.toNat * ((∑ i ∈ (getActiveValidatorIndices pass (getPreviousEpoch pass)).toFinset,
-          balanceAt pass i.toNat) / preset.EFFECTIVE_BALANCE_INCREMENT.toNat) ≤
+      perIncrement.toNat *
+          ((∑ i ∈ (getActiveValidatorIndices pass (getPreviousEpoch pass)).toFinset,
+            balanceAt pass i.toNat) / preset.EFFECTIVE_BALANCE_INCREMENT.toNat) ≤
         P * (total.toNat / preset.EFFECTIVE_BALANCE_INCREMENT.toNat)) :
     (rewarded.2.map (DirectSafety.Apriori.Internal.rewardCredit v)).sum = 0 ∨
       ∃ total : Gwei, getTotalActiveBalance pass = .ok total ∧
@@ -1107,8 +1112,8 @@ private theorem replayRewards_credit_le {f : Fork} (altair : .altair ≤ f)
   have one := flagBound ⟨0, by decide⟩ sourceOk
   have two := flagBound ⟨1, by decide⟩ targetOk
   have three := flagBound ⟨2, by decide⟩ headOk
-  have flows (deltas : Array Gwei × Array Gwei) {pre post : BalanceReplay preset f} (src : BalanceSource)
-      (ok : replayDeltas src deltas pre = .ok post) :=
+  have flows (deltas : Array Gwei × Array Gwei) {pre post : BalanceReplay preset f}
+      (src : BalanceSource) (ok : replayDeltas src deltas pre = .ok post) :=
     (DirectSafety.Apriori.Internal.replayDeltas_flows src deltas ok v).2
   have s1 := flows source .penalties firstOk
   have s2 := flows target .penalties secondOk
@@ -1162,8 +1167,9 @@ open DirectSafety.Apriori.Internal in
 
 The step is a slot, and it ends an epoch exactly when it runs the epoch's pass.
 
-The key's stake at the start is at most `E`, and `P` bounds the rate read at the active stake, with
-the previous epoch's active stake over the active one. -/
+The key's stake at the start is at most `E`.
+
+`P` bounds the rate read at the active stake, scaled by the previous epoch's share of it. -/
 private theorem epochRewards_le {m n : ForkedBeaconState preset}
     (step : Step config checks m n) (altair : .altair ≤ m.fork) (early : n.fork < .glamsterdam)
     (v : ℕ) (inside : v < m.state.validators.data.size) (E P : ℕ)

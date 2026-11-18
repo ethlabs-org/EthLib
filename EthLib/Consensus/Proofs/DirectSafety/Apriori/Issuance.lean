@@ -339,7 +339,7 @@ private theorem debit_le_balanceDebits {f : Fork} (s t : BeaconState preset f) (
 
 /-- The credit of one event at one position, when the event is a reward.
 
-It is the rise of that position's balance, for the one source of the rewards pass that raises one. -/
+It is the rise of that position's balance in a reward event. -/
 def rewardCredit (j : Nat) (event : BalanceEvent preset) : Nat :=
   if event.source = .rewards then
     actualBalanceAt event.after j - actualBalanceAt event.before j
