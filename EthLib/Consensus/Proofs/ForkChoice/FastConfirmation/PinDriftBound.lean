@@ -4247,8 +4247,9 @@ private theorem run_syncDebits_le {x y : ForkedBeaconState preset} (tail : Run c
     (fulu : .fusaka ≤ x.fork) (early : y.fork < .glamsterdam) (high : ℕ)
     {events : List (BalanceEvent preset)} (replayed : tail.balanceEvents high = .ok events)
     (total : ℕ)
-    (band : ∀ z ∈ tail.balancePath, ∀ t : Gwei, getTotalActiveBalance z.state = .ok t →
-      2 * t.toNat ≤ 3 * total)
+    (band : ∀ {u w : ForkedBeaconState preset} (step : Step config checks u w),
+      tail.Contains step → ∀ t : Gwei, getTotalActiveBalance w.state = .ok t →
+        2 * t.toNat ≤ 3 * total)
     (keys : Finset ℕ) :
     ∑ i ∈ keys, (events.map (syncDebit i)).sum ≤
       tail.blockCount * (preset.SYNC_COMMITTEE_SIZE.toNat * syncEnvelope preset total) ∧
@@ -4266,9 +4267,8 @@ private theorem run_syncDebits_le {x y : ForkedBeaconState preset} (tail : Run c
       Nat.le_trans fulu (fork_le_of_chainSteps pre.chainSteps)
     simp only [Run.balanceEvents, bind_ok_iff] at replayed
     obtain ⟨prior, priorOk, rest⟩ := replayed
-    obtain ⟨priorDebits, priorMoves⟩ := ih earlyMiddle priorOk (fun z member => band z (by
-      simp only [Run.balancePath, List.mem_append]
-      exact .inl member))
+    obtain ⟨priorDebits, priorMoves⟩ := ih earlyMiddle priorOk
+      (fun inner member => band inner (Run.Contains.earlier member step))
     split at rest
     · simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at rest
       obtain ⟨added, addedOk, rfl⟩ := rest
@@ -4294,7 +4294,7 @@ private theorem run_syncDebits_le {x y : ForkedBeaconState preset} (tail : Run c
           Nat.le_trans (show Fork.altair ≤ Fork.fusaka by decide) fuluMiddle
         have replay := Step.balanceEvents_block early addedOk
         obtain ⟨bound, boundMoves⟩ := block_syncDebits_le early altair replay total
-          (fun T hT => band ⟨fork, after⟩ (by simp [Run.balancePath, Step.balancePath]) T hT) keys
+          (fun T hT => band _ (Run.Contains.last pre _) T hT) keys
         simp only [Run.blockCount, Nat.add_mul, Nat.one_mul]
         exact ⟨by omega, by omega⟩
     · simp only [pure, Except.pure, Except.ok.injEq] at rest
@@ -4366,8 +4366,9 @@ private theorem Run.syncDebits_le {x y : ForkedBeaconState preset} (tail : Run c
     (fulu : .fusaka ≤ x.fork) (early : y.fork < .glamsterdam) (high : ℕ)
     {events : List (BalanceEvent preset)} (replayed : tail.balanceEvents high = .ok events)
     (total : ℕ) (_positive : 0 < total)
-    (band : ∀ z ∈ tail.balancePath, ∀ t : Gwei, getTotalActiveBalance z.state = .ok t →
-      2 * t.toNat ≤ 3 * total)
+    (band : ∀ {u w : ForkedBeaconState preset} (step : Step config checks u w),
+      tail.Contains step → ∀ t : Gwei, getTotalActiveBalance w.state = .ok t →
+        2 * t.toNat ≤ 3 * total)
     (keys : Finset ℕ) :
     ∑ i ∈ keys, (events.map (syncDebit i)).sum ≤
       ((getCurrentEpoch y.state).toNat + 1 - (getCurrentEpoch x.state).toNat) *
