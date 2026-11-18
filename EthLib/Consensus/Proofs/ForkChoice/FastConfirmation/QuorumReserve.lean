@@ -631,8 +631,9 @@ def pinReserve (config : Config) (state ancestor finalizedState : BeaconState pr
   --
   -- There a K5 key whose exit the call reads has its consolidation credit's gains charged thrice.
   --
-  -- Every key's whistleblower and sync credits on the other branch are charged their gains too,
-  -- read at every key slashable there, its credits, and the seats.
+  -- Every key's whistleblower and sync credits on the other branch are charged their gains too.
+  --
+  -- They are read at every key slashable there, its credits, and the seats.
   --
   -- Past that bound, `rise`'s headroom pays a consolidation target's.
   --
