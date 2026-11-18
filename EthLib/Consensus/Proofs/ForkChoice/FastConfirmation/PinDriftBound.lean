@@ -3692,14 +3692,6 @@ private theorem syncReward_le_envelope {fork : Fork} {s : BeaconState preset for
   exact Nat.div_le_div_right (Nat.div_le_div_right (Nat.div_le_div_right
     (Nat.mul_le_mul_right 2 baseLe)))
 
-/-- Move a fork-conditional replay before its common continuation. -/
-private theorem except_dite_bind {α β : Type} (p : Prop) [Decidable p]
-    (yes : p → Except TransitionError α) (no : ¬p → Except TransitionError α)
-    (next : α → Except TransitionError β) :
-    (if h : p then yes h >>= next else no h >>= next) =
-      ((if h : p then yes h else no h) >>= next) := by
-  split <;> rfl
-
 /-- The events of a replay record no sync pass. -/
 private def NoSync {fork : Fork} (pre : BalanceReplay preset fork) : Prop :=
   ∀ e ∈ pre.2, e.source ≠ .sync
@@ -3741,7 +3733,7 @@ private theorem block_syncDebits_le {fork : Fork} {a t : BeaconState preset fork
   have normalized := replay
   unfold blockBalanceReplay at normalized
   simp only [altair, ↓reduceDIte] at normalized
-  simp only [← bind_assoc, except_dite_bind] at normalized
+  simp only [← bind_assoc, DirectSafety.Apriori.Internal.except_dite_bind] at normalized
   simp only [bind_assoc] at normalized
   simp only [bind_ok_iff, ensure_ok_iff] at normalized
   obtain ⟨headed, headedOk, executed, executedOk, revealed, revealedOk, voted, votedOk, _, _, _,
