@@ -13,6 +13,9 @@ Not yet released.
   Within the withdrawal delay of the finalized block's state, the pin reserve pays the drift, so the counting quorum outside the pinned set is below two thirds.
   Deeper, `deep_reserve_covers_active` shows the pinned premise cannot hold; it is that lemma's reader.
   `Store.Reachable.getCheckpointBlock_of_processed` reads a counted state's history roots on its held root's chain.
+  `PinDriftWithin` is the drift obligation of the shallow window, within the withdrawal delay of the finalized block's state, and a premise of `Execution.justifiedPinned`.
+  `deep_reserve_covers_active` is a public lemma in its own right: deeper, the pin reserve holds three times the stake of the call's active set.
+  `getBlockRootAtSlot_of_processSlot` is now public, with its statement unchanged.
 
 - `Execution.exists_signer_of_counted` finds a signer of a store's later justified checkpoint in any set of validators, given the held root and the path of each counting state ([#2656](https://github.com/ethereum/EthLib/issues/2656)).
   It assumes that, in each state that counts votes for it, the quorum voters outside the set hold less than two thirds of the total.
