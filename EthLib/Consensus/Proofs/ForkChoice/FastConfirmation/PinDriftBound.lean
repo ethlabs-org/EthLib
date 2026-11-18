@@ -201,6 +201,8 @@ private theorem penaltyDebit_sum_zero {events : List (BalanceEvent preset)}
 /-- The penalties of one key in one segment of a branch fit its pass rate, if the segment ends an
 epoch, and are zero otherwise.
 
+The rate is asked only at the last pass state, and only when it has a total active balance.
+
 Every step of the segment starts at the epoch of its start `m`.
 
 Inside the epoch only blocks run, and they record no penalty.
@@ -208,16 +210,16 @@ Inside the epoch only blocks run, and they record no penalty.
 The slot that ends the epoch runs the rewards pass, read at its last state.
 
 So a segment that stays in its epoch pays nothing. -/
-private theorem segment_passDebit_le {m n : ForkedBeaconState preset}
+private theorem segment_passDebit_le_guarded {m n : ForkedBeaconState preset}
     (mid : Run config checks m n) (early : n.fork < .glamsterdam) (altair : .altair ≤ m.fork)
     (high : ℕ) (endEpoch : (getCurrentEpoch n.state).toNat ≤ high + 1)
     (starts : ∀ {u w : ForkedBeaconState preset} (step : Step config checks u w),
       mid.Contains step → getCurrentEpoch u.state = getCurrentEpoch m.state)
     {v : ℕ} (inside : v < m.state.validators.data.size) (pen : ℕ)
     (rate : ∀ {z : ForkedBeaconState preset} (pre : Run config checks m z)
-      (post : Run config checks z n), mid = pre.append post →
+      (ok : advanceSlotAcross config checks z = .ok n), mid = pre.snoc (Step.slot ok) →
       (getCurrentEpoch z.state).toNat < (getCurrentEpoch n.state).toNat →
-      passPenaltyRate config z v ≤ pen)
+      (∃ total, getTotalActiveBalance z.state = .ok total) → passPenaltyRate config z v ≤ pen)
     {found : List (BalanceEvent preset)} (replayed : mid.balanceEvents high = .ok found) :
     (found.map (penaltyDebit v)).sum ≤
       if getCurrentEpoch m.state < getCurrentEpoch n.state then pen else 0 := by
@@ -302,8 +304,11 @@ private theorem segment_passDebit_le {m n : ForkedBeaconState preset}
       have : old.toNat = score := by simp [scoreDef, altairU, olds]
       omega)
   simp only [Finset.sum_singleton] at bound
-  refine bound.trans (le_trans ?_ (rate inner (.snoc .nil (.slot boundary)) rfl
-    (UInt64.lt_iff_toNat_lt.mp crossing)))
+  have totalU : getTotalActiveBalance u.state = .ok total := by
+    simpa only [getTotalActiveBalance, getActiveValidatorIndicesChecked, getTotalBalance,
+      validators, passEpoch] using passTotal
+  refine bound.trans (le_trans ?_ (rate inner boundary rfl
+    (UInt64.lt_iff_toNat_lt.mp crossing) ⟨total, totalU⟩))
   -- The pass's reads are those of `u`.
   have weight : eligibleWeight pass v ≤ effectiveAt u v := by
     unfold eligibleWeight
@@ -324,6 +329,32 @@ private theorem segment_passDebit_le {m n : ForkedBeaconState preset}
     exact Nat.mul_le_mul_left _ weight
   · apply Nat.div_le_div_right
     exact Nat.mul_le_mul_right _ weight
+
+/-- The penalties of one key in one segment of a branch fit its pass rate, if the segment ends an
+epoch, and are zero otherwise.
+
+Every step of the segment starts at the epoch of its start `m`.
+
+Inside the epoch only blocks run, and they record no penalty.
+
+The slot that ends the epoch runs the rewards pass, read at its last state.
+
+So a segment that stays in its epoch pays nothing. -/
+private theorem segment_passDebit_le {m n : ForkedBeaconState preset}
+    (mid : Run config checks m n) (early : n.fork < .glamsterdam) (altair : .altair ≤ m.fork)
+    (high : ℕ) (endEpoch : (getCurrentEpoch n.state).toNat ≤ high + 1)
+    (starts : ∀ {u w : ForkedBeaconState preset} (step : Step config checks u w),
+      mid.Contains step → getCurrentEpoch u.state = getCurrentEpoch m.state)
+    {v : ℕ} (inside : v < m.state.validators.data.size) (pen : ℕ)
+    (rate : ∀ {z : ForkedBeaconState preset} (pre : Run config checks m z)
+      (post : Run config checks z n), mid = pre.append post →
+      (getCurrentEpoch z.state).toNat < (getCurrentEpoch n.state).toNat →
+      passPenaltyRate config z v ≤ pen)
+    {found : List (BalanceEvent preset)} (replayed : mid.balanceEvents high = .ok found) :
+    (found.map (penaltyDebit v)).sum ≤
+      if getCurrentEpoch m.state < getCurrentEpoch n.state then pen else 0 := by
+  refine segment_passDebit_le_guarded mid early altair high endEpoch starts inside pen
+    (fun pre ok split before _ => rate pre (Run.nil.snoc (Step.slot ok)) split before) replayed
 
 /-- The first `k` of the first `j` terms each count `pen`. -/
 private theorem sum_range_ite_lt (pen k : ℕ) :
