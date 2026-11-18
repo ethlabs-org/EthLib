@@ -5040,7 +5040,7 @@ private theorem CapStep.step {s t : ForkedBeaconState preset}
     obtain ⟨last, assigned, _⟩ := CapStep.upgrades activation compounding upgrades
     exact ⟨first.trans last, fun c => assigned early c ∘ partials c⟩
 
-private theorem minimum_cap
+theorem minimum_cap
     (activation : preset.MAX_EFFECTIVE_BALANCE ≤ preset.MIN_ACTIVATION_BALANCE)
     (compounding : preset.MIN_ACTIVATION_BALANCE ≤ preset.MAX_EFFECTIVE_BALANCE_ELECTRA)
     {h : Fork} (v : Validator) :
