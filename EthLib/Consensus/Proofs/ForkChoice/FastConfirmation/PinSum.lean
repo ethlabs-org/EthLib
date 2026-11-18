@@ -898,6 +898,70 @@ theorem bud_exitedR (h : Setting config checks g split fin pulled anc counted V)
       (eR pulled v + (pinTerms config pulled anc fin).rise v.toNat)) ≤
         (pinTerms config pulled anc fin).exitedR := sorry
 
+/-- Selecting more events can only add to the sum of a nonnegative function. -/
+private theorem sum_filter_mono {α : Type} (l : List α) (p q : α → Bool) (f : α → ℕ)
+    (h : ∀ a, p a = true → q a = true) :
+    ((l.filter p).map f).sum ≤ ((l.filter q).map f).sum := by
+  induction l with
+  | nil => simp
+  | cons a rest ih =>
+    by_cases hp : p a = true
+    · have hq := h a hp
+      simp only [List.filter_cons, hp, hq, ↓reduceIte, List.map_cons, List.sum_cons]
+      omega
+    · by_cases hq : q a = true
+      · simp only [List.filter_cons, hp, hq, ↓reduceIte, List.map_cons, List.sum_cons]
+        omega
+      · simp only [List.filter_cons, hp, hq]
+        exact ih
+
+/-- The credits of a run to a key, read as a scan, add over `append`. -/
+private theorem creditScan_append (blockP slotP : BalanceSource → Bool) (v high : ℕ)
+    {x m y : ForkedBeaconState preset} (pre : Run config checks x m)
+    (post : Run config checks m y) :
+    (creditScan blockP slotP v high (pre.append post)).1 =
+      (creditScan blockP slotP v high pre).1 + (creditScan blockP slotP v high post).1 := by
+  induction post with
+  | nil => simp [Run.append, creditScan]
+  | snoc post step ih =>
+    simp only [Run.append, creditScan]
+    split
+    · simp only [ih]
+      omega
+    · exact ih
+
+/-- The credits that a scan reads from a run are at most the matching credits of its events. -/
+private theorem creditScan_le_events (blockP slotP : BalanceSource → Bool) (v high : ℕ)
+    {x y : ForkedBeaconState preset} (tail : Run config checks x y)
+    {events : List (BalanceEvent preset)} (replayed : tail.balanceEvents high = .ok events) :
+    (creditScan blockP slotP v high tail).1 ≤
+      ((events.filter fun e => blockP e.source || slotP e.source).map (keyCredit v)).sum := by
+  induction tail generalizing events with
+  | nil =>
+    cases replayed
+    simp [creditScan]
+  | @snoc m l pre step ih =>
+    simp only [Run.balanceEvents, bind_ok_iff] at replayed
+    obtain ⟨prior, priorOk, rest⟩ := replayed
+    have before := ih priorOk
+    simp only [creditScan]
+    split at rest
+    · rename_i within
+      simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at rest
+      obtain ⟨added, addedOk, rfl⟩ := rest
+      simp only [within, ↓reduceIte, List.filter_append, List.map_append, List.sum_append]
+      have credit : stepCredit blockP slotP v step ≤
+          ((added.filter fun e => blockP e.source || slotP e.source).map (keyCredit v)).sum := by
+        unfold stepCredit
+        simp only [addedOk, Except.toOption, Option.getD_some]
+        cases step
+        · exact sum_filter_mono added _ _ _ fun a ha => by simp [ha]
+        · exact sum_filter_mono added _ _ _ fun a ha => by simp [ha]
+      omega
+    · cases rest
+      simp only [‹¬_›, ↓reduceIte]
+      exact before
+
 /-- R1 (branchR): R's credits to V keys since the split, weight 3.
 
 The `syncProposer` part of `proposerCredit` is not used by `credR`, which leaves out sync events, so
