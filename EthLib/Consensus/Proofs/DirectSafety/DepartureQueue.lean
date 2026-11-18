@@ -1719,14 +1719,6 @@ private theorem ExitRateBelow.of_validators {fork : Fork} {s t : BeaconState pre
     ⟨Nat.le_of_eq (congrArg Array.size validators).symm,
       ActiveStep.of_validators validators slot, effectiveKept_data validators⟩ below
 
-/-- A step of a run that ends before Gloas starts before Gloas. -/
-private theorem contains_fork_lt {x y u w : ForkedBeaconState preset} (tail : Run config checks x y)
-    (step : Step config checks u w) (contained : tail.Contains step)
-    (early : y.fork < .glamsterdam) : u.fork < .glamsterdam := by
-  obtain ⟨_, post, _⟩ := tail.contains_split step contained
-  exact Nat.lt_of_le_of_lt (Nat.le_trans step.chainStep.fork_le
-    (fork_le_of_chainSteps post.chainSteps)) early
-
 private theorem exitUpdate_consolidationFrame {fork : Fork} {s t : BeaconState preset fork}
     (electra : .pectra ≤ fork) {amount : Gwei} {epoch : Epoch}
     (ok : computeExitEpochAndUpdateChurn config s electra amount = .ok (t, epoch)) :
@@ -4118,8 +4110,9 @@ private theorem run_indexedTrace_sites {x y : ForkedBeaconState preset}
         (x.state.pendingPartialWithdrawals electra).data.toList ++
           exits.filterMap (·.entry) :=
   run_indexedTrace_sites_cap tail electra early targetElectra cap _
-    (fun {u _} step contained =>
-      ExitRateBelow.of_max (contains_fork_lt tail step contained early) u.state) rates
+    (fun {u _} _ contained =>
+      let ⟨_, _, _, uEarly, _⟩ := Run.contains_step_facts contained early
+      ExitRateBelow.of_max uEarly u.state) rates
 
 /-- The entries of the calls hold the amounts of the calls with no index. -/
 private theorem partials_entries_sum (calls : List (IndexedDepartureCall preset config)) :
@@ -4261,8 +4254,9 @@ private theorem exit_calls_le_window_electra {x y : ForkedBeaconState preset}
         (high + 2 - max (getCurrentEpoch x.state).toNat
           (x.state.earliestConsolidationEpoch electra).toNat) * cap :=
   exit_calls_le_window_electra_cap tail electra early high cap _
-    (fun {u _} step contained =>
-      ExitRateBelow.of_max (contains_fork_lt tail step contained early) u.state) rates
+    (fun {u _} _ contained =>
+      let ⟨_, _, _, uEarly, _⟩ := Run.contains_step_facts contained early
+      ExitRateBelow.of_max uEarly u.state) rates
 
 /-- Post-Electra departures spend only carry-in capacity and eligible epochs in the window.
 
@@ -4309,8 +4303,9 @@ private theorem departure_charges_le_window_electra {x y : ForkedBeaconState pre
       (high + 2 - max (getCurrentEpoch x.state).toNat
         (x.state.earliestConsolidationEpoch electra).toNat) * cap :=
   departure_charges_le_window_electra_cap tail electra early high cap _
-    (fun {_ _} step contained _ computed =>
-      exitChurnLimit_le_cap (contains_fork_lt tail step contained early) computed) rates
+    (fun {_ _} _ contained _ computed =>
+      let ⟨_, _, _, uEarly, _⟩ := Run.contains_step_facts contained early
+      exitChurnLimit_le_cap uEarly computed) rates
 
 /-- Every finite exit cohort holds at most the larger of its base count and a cap.
 
@@ -7413,10 +7408,7 @@ theorem run_joint_partial_window
     intro site member electra rate computed
     obtain ⟨_, _, step, contained, forks, same⟩ := consolidationSite_rate tail early site member
     have computed := same rate computed
-    obtain ⟨pre, post, split⟩ := tail.contains_split step contained
-    have sourceEarly := Nat.lt_of_le_of_lt
-      (Nat.le_trans step.chainStep.fork_le
-        (fork_le_of_chainSteps post.chainSteps)) early
+    obtain ⟨_, _, _, sourceEarly, _⟩ := Run.contains_step_facts contained early
     obtain ⟨total, read⟩ := consolidationChurnLimit_total sourceEarly computed
     exact rates step contained (forks electra) total read rate computed
   obtain ⟨calls, matched, queues, _, budget⟩ :=
