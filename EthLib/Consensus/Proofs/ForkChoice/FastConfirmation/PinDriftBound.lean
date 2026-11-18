@@ -745,14 +745,34 @@ private structure PinPresetFacts (preset : Preset) : Prop where
   /-- (preset fact) An increment is at least 900 times the slashings vector. -/
   rounding : 900 * preset.EPOCHS_PER_SLASHINGS_VECTOR.toNat ≤
     preset.EFFECTIVE_BALANCE_INCREMENT.toNat
+  /-- (preset fact) An increment is at least 14 times the slashing quotient. -/
+  slash : 14 * (EthLib.Consensus.parameters preset .fusaka).MIN_SLASHING_PENALTY_QUOTIENT.toNat ≤
+    preset.EFFECTIVE_BALANCE_INCREMENT.toNat
+  /-- (preset fact) The slashings vector has at least four epochs. -/
+  vector : 4 ≤ preset.EPOCHS_PER_SLASHINGS_VECTOR.toNat
+  /-- (preset fact) The base reward factor is positive. -/
+  reward : 1 ≤ preset.BASE_REWARD_FACTOR.toNat
+  /-- (preset fact) The slashing quotient is at least two. -/
+  quotient : 2 ≤ (EthLib.Consensus.parameters preset .fusaka).MIN_SLASHING_PENALTY_QUOTIENT.toNat
+  /-- (preset fact) The margin leaves room for the climb after a third of the stake is lost.
+
+  It reads the maximum effective balance, the band, and the slashing quotient. -/
+  margin : 2400 * (2 * preset.MAX_EFFECTIVE_BALANCE.toNat / 3 -
+      preset.MAX_EFFECTIVE_BALANCE.toNat /
+        (EthLib.Consensus.parameters preset .fusaka).MIN_SLASHING_PENALTY_QUOTIENT.toNat -
+      preset.downwardBand - 1) + 2400 * preset.downwardBand +
+    2400 * ((preset.MAX_EFFECTIVE_BALANCE.toNat + preset.downwardBand +
+      (EthLib.Consensus.parameters preset .fusaka).MIN_SLASHING_PENALTY_QUOTIENT.toNat - 1) /
+        (EthLib.Consensus.parameters preset .fusaka).MIN_SLASHING_PENALTY_QUOTIENT.toNat) ≤
+    1591 * (preset.MAX_EFFECTIVE_BALANCE.toNat + preset.downwardBand)
 
 /-- The mainnet preset has the preset facts of the pin. -/
 private theorem PinPresetFacts.mainnet : PinPresetFacts Preset.mainnet :=
-  ⟨by decide, by decide, by decide⟩
+  ⟨by decide, by decide, by decide, by decide, by decide, by decide, by decide, by decide⟩
 
 /-- The minimal preset has the preset facts of the pin. -/
 private theorem PinPresetFacts.minimal : PinPresetFacts Preset.minimal :=
-  ⟨by decide, by decide, by decide⟩
+  ⟨by decide, by decide, by decide, by decide, by decide, by decide, by decide, by decide⟩
 
 /-- From Electra and before Gloas, the floor of the window at its start leaves room for the window.
 
@@ -762,14 +782,18 @@ The ceiling is at least an increment, and the floor falls with the epoch of the 
 
 So the first floor is at least two thirds of an increment.
 
-The window is shorter than the slashings vector, and an increment is at least 900 vectors. -/
-private theorem room_of_guard {g x : ForkedBeaconState preset} {high : ℕ}
+The window is shorter than the slashings vector, and an increment is at least 900 vectors.
+
+An increment is also at least 14 slashing quotients, so the first floor is at least 9 quotients. -/
+private theorem first_floor_of_guard {g x : ForkedBeaconState preset} {high : ℕ}
     (shared : Run config checks g x) (genesis : Genesis (config := config) (checks := checks) g)
     (aligned : MaxEffectiveBalancesAligned preset)
     (xEarly : x.fork < .glamsterdam)
     (electra : .pectra ≤ x.fork) (guard : aprioriGuardAt config x high)
     (facts : PinPresetFacts preset) :
-    600 * (high + 2 - (getCurrentEpoch x.state).toNat) ≤ stakeFloorAt config x high 0 := by
+    600 * (high + 2 - (getCurrentEpoch x.state).toNat) ≤ stakeFloorAt config x high 0 ∧
+      9 * (EthLib.Consensus.parameters preset .fusaka).MIN_SLASHING_PENALTY_QUOTIENT.toNat ≤
+        stakeFloorAt config x high 0 := by
   have notBefore : ¬ x.fork < .pectra := Nat.not_lt_of_ge electra
   have zero : preElectraEpochs config x high = 0 := by simp [preElectraEpochs, notBefore]
   obtain ⟨-, -, -, -, -, -, -, -, -, -, window, -, ratioGuard, -⟩ := id guard
@@ -781,9 +805,35 @@ private theorem room_of_guard {g x : ForkedBeaconState preset} {high : ℕ}
   have anti := stakeFloorAt_anti (config := config) (x := x) (high := high)
     (Nat.zero_le (high + 1 - (getCurrentEpoch x.state).toNat))
   have rounding := facts.rounding
+  have slash := facts.slash
   simp only [stakeCeilingAt, stakeFloorAt, zero] at unit anti ratio ⊢
   unfold driftHorizon at window
-  omega
+  constructor <;> omega
+
+/-- From Electra and before Gloas, the floor of the window at its start leaves room for the window.
+
+It is the first conclusion of `first_floor_of_guard`. -/
+private theorem room_of_guard {g x : ForkedBeaconState preset} {high : ℕ}
+    (shared : Run config checks g x) (genesis : Genesis (config := config) (checks := checks) g)
+    (aligned : MaxEffectiveBalancesAligned preset)
+    (xEarly : x.fork < .glamsterdam)
+    (electra : .pectra ≤ x.fork) (guard : aprioriGuardAt config x high)
+    (facts : PinPresetFacts preset) :
+    600 * (high + 2 - (getCurrentEpoch x.state).toNat) ≤ stakeFloorAt config x high 0 :=
+  (first_floor_of_guard shared genesis aligned xEarly electra guard facts).1
+
+/-- From Electra and before Gloas, the floor of the window at its start is large.
+
+It is at least nine slashing quotients, the second conclusion of `first_floor_of_guard`. -/
+private theorem big_of_guard {g x : ForkedBeaconState preset} {high : ℕ}
+    (shared : Run config checks g x) (genesis : Genesis (config := config) (checks := checks) g)
+    (aligned : MaxEffectiveBalancesAligned preset)
+    (xEarly : x.fork < .glamsterdam)
+    (electra : .pectra ≤ x.fork) (guard : aprioriGuardAt config x high)
+    (facts : PinPresetFacts preset) :
+    9 * (EthLib.Consensus.parameters preset .fusaka).MIN_SLASHING_PENALTY_QUOTIENT.toNat ≤
+      stakeFloorAt config x high 0 :=
+  (first_floor_of_guard shared genesis aligned xEarly electra guard facts).2
 
 end Band
 
