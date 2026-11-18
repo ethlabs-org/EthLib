@@ -1018,8 +1018,8 @@ private theorem succ_div_le (a c : ℕ) : (a + 1) / c ≤ a / c + 1 := by
 private theorem credited_pieces {g : ForkedBeaconState preset}
     (genesis : Genesis config checks g) {y : ForkedBeaconState preset}
     (early : y.fork < .glamsterdam) (high : ℕ) :
-    ∀ (n : ℕ) {x : ForkedBeaconState preset} (shared : Run config checks g x)
-      (r : Run config checks x y) (fulu : .fusaka ≤ x.fork),
+    ∀ (n : ℕ) {x : ForkedBeaconState preset}, Run config checks g x →
+      ∀ (r : Run config checks x y), .fusaka ≤ x.fork →
     (getCurrentEpoch y.state).toNat / max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat =
       (getCurrentEpoch x.state).toNat / max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat + n →
     ∃ B S : Finset ℕ, B.card ≤ r.blockCount ∧
