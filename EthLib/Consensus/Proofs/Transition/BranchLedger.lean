@@ -564,23 +564,13 @@ private theorem lives_processDeposit {before : fork < .hegota} {deposit : Deposi
         rw [Array.getElem?_eq_getElem inside] at none; cases none) read).1
   obtain ⟨_, _, next, _, applied⟩ := processDeposit_ok computed
   intro index old found
-  unfold applyDeposit at applied
-  simp only [electra, ↓reduceDIte] at applied
-  unfold applyDepositElectra at applied
-  split at applied
-  · simp only [bind_ok_iff] at applied
-    obtain ⟨_, _, applied⟩ := applied
-    split at applied
-    · simp only [bind_ok_iff, liftAccessor_ok] at applied
-      obtain ⟨_, added, pushed⟩ := applied
-      obtain ⟨_, rfl⟩ := addPendingDeposit_eq pushed
-      have inside := (Array.getElem?_eq_some_iff.mp found).1
-      simpa [addValidatorToRegistry_validators_eq_push added, Array.getElem?_push,
-        Nat.ne_of_lt inside] using found
-    · cases applied
-      exact found
-  · obtain ⟨_, rfl⟩ := addPendingDeposit_eq (liftAccessor_ok.mp applied)
-    exact found
+  rcases applyDeposit_cases applied with rfl | ⟨_, _, _, rfl | added, rfl⟩ | ⟨early, _⟩
+  · exact found
+  · exact found
+  · have inside := (Array.getElem?_eq_some_iff.mp found).1
+    simpa [addValidatorToRegistry_validators_eq_push added, Array.getElem?_push,
+      Nat.ne_of_lt inside] using found
+  · exact absurd electra (Nat.not_le_of_lt early)
 
 private theorem lives_processVoluntaryExit {signed : SignedVoluntaryExit}
     (computed : processVoluntaryExit config checks s signed = .ok t) : Lives s t := by
@@ -1360,38 +1350,28 @@ private theorem ledger_processDeposit {before : fork < .hegota} {deposit : Depos
     unfold BalancesMatch at matched ⊢; rw [balances', validators']; exact matched
   have actual' (i : ℕ) : actualBalanceAt ⟨fork, s'⟩ i = actualBalanceAt ⟨fork, s⟩ i := by
     simp only [actualBalanceAt, balances']
-  unfold applyDeposit at applied
-  simp only [electra, ↓reduceDIte] at applied
-  unfold applyDepositElectra at applied
-  split at applied
-  · simp only [bind_ok_iff] at applied
-    obtain ⟨_, _, applied⟩ := applied
-    split at applied
-    · simp only [bind_ok_iff, liftAccessor_ok] at applied
-      obtain ⟨registered, added, queued⟩ := applied
-      obtain ⟨_, queuedEq⟩ := addPendingDeposit_eq queued
-      obtain ⟨validatorsPushed, balancesPushed⟩ := addValidatorToRegistry_push added matched'
-      have finalBalances : t.balances.data = s'.balances.data.push 0 := by
-        rw [queuedEq]; exact balancesPushed
-      refine Ledger.of_append (.inr ⟨_, by rw [queuedEq, ← validators']; exact validatorsPushed⟩)
-        fun v => ?_
-      -- An appended zero balance reads like no balance.
-      have zero : actualBalanceAt ⟨fork, t⟩ v.toNat = actualBalanceAt ⟨fork, s⟩ v.toNat := by
-        rw [actualBalanceAt_push finalBalances, ← actual' v.toNat]
-        split
-        · rename_i at_end
-          simp [actualBalanceAt, at_end]
-        · rfl
-      exact ⟨by simp [zero], by omega⟩
-    · cases applied
-      exact Ledger.of_append (.inl (by rw [validators'])) fun v => by
-        have := actual' v.toNat; exact ⟨by simp; omega, by omega⟩
-  · obtain ⟨_, queuedEq⟩ := addPendingDeposit_eq (liftAccessor_ok.mp applied)
-    have finalBalances : t.balances = s'.balances := by rw [queuedEq]
-    exact Ledger.of_append (.inl (by rw [queuedEq, validators'])) fun v => by
+  rcases applyDeposit_cases applied with rfl | ⟨_, _, _, rfl | added, queuedEq⟩ | ⟨early, _⟩
+  · exact Ledger.of_append (.inl (by rw [validators'])) fun v => by
+      have := actual' v.toNat; exact ⟨by simp; omega, by omega⟩
+  · subst queuedEq
+    exact Ledger.of_append (.inl (by rw [validators'])) fun v => by
       have := actual' v.toNat
-      simp only [actualBalanceAt, finalBalances] at this ⊢
+      simp only [actualBalanceAt] at this ⊢
       exact ⟨by simp; omega, by omega⟩
+  · obtain ⟨validatorsPushed, balancesPushed⟩ := addValidatorToRegistry_push added matched'
+    have finalBalances : t.balances.data = s'.balances.data.push 0 := by
+      rw [queuedEq]; exact balancesPushed
+    refine Ledger.of_append (.inr ⟨_, by rw [queuedEq, ← validators']; exact validatorsPushed⟩)
+      fun v => ?_
+    -- An appended zero balance reads like no balance.
+    have zero : actualBalanceAt ⟨fork, t⟩ v.toNat = actualBalanceAt ⟨fork, s⟩ v.toNat := by
+      rw [actualBalanceAt_push finalBalances, ← actual' v.toNat]
+      split
+      · rename_i at_end
+        simp [actualBalanceAt, at_end]
+      · rfl
+    exact ⟨by simp [zero], by omega⟩
+  · exact absurd electra (Nat.not_le_of_lt early)
 
 /-- Writing a validator that compounds exactly when the old one did moves no balance. -/
 private theorem Ledger.setValidator {i : ValidatorIndex} {old new : Validator}
@@ -2357,22 +2337,12 @@ private theorem payloadInputs_processDeposit' {before : fork < .hegota} {deposit
   obtain ⟨_, _, next, _, applied⟩ := processDeposit_ok computed
   refine PayloadInputs.trans (second := { s with eth1DepositIndex := fun _ => next })
     ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl⟩ ?_
-  unfold applyDeposit at applied
-  simp only [electra, ↓reduceDIte] at applied
-  unfold applyDepositElectra at applied
-  split at applied
-  · simp only [bind_ok_iff] at applied
-    obtain ⟨_, _, applied⟩ := applied
-    split at applied
-    · simp only [bind_ok_iff, liftAccessor_ok] at applied
-      obtain ⟨_, added, pushed⟩ := applied
-      obtain ⟨_, rfl⟩ := addPendingDeposit_eq pushed
-      exact (payloadInputs_addValidatorToRegistry' added).trans
-        ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl⟩
-    · cases applied
-      exact PayloadInputs.refl _
-  · obtain ⟨_, rfl⟩ := addPendingDeposit_eq (liftAccessor_ok.mp applied)
-    exact ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl⟩
+  rcases applyDeposit_cases applied with rfl | ⟨_, _, _, rfl | added, rfl⟩ | ⟨early, _⟩
+  · exact PayloadInputs.refl _
+  · exact ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl⟩
+  · exact (payloadInputs_addValidatorToRegistry' added).trans
+      ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl⟩
+  · exact absurd electra (Nat.not_le_of_lt early)
 
 private theorem kept_processDeposit {before : fork < .hegota} {deposit : Deposit}
     (electra : .pectra ≤ fork) (computed : processDeposit config checks before s deposit = .ok t) :
