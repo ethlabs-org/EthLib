@@ -9,7 +9,12 @@ Not yet released.
 
 ### Proof additions
 
-- `Execution.exists_signer_of_counted` finds a signer of a store's later justified checkpoint in any set of validators ([#2656](https://github.com/ethereum/EthLib/issues/2656)).
+- `Execution.justifiedPinned` proves `JustifiedPinned` from `PinDriftWithin`, or gives `CrossStoreDirectSafetyEvidence` ([#2058](https://github.com/ethereum/EthLib/issues/2058)).
+  Within the withdrawal delay of the finalized block's state, the pin reserve pays the drift, so the counting quorum outside the pinned set is below two thirds.
+  Deeper, `deep_reserve_covers_active` shows the pinned premise cannot hold; it is that lemma's reader.
+  `Store.Reachable.getCheckpointBlock_of_processed` reads a counted state's history roots on its held root's chain.
+
+- `Execution.exists_signer_of_counted` finds a signer of a store's later justified checkpoint in any set of validators, given the held root and the path of each counting state ([#2656](https://github.com/ethereum/EthLib/issues/2656)).
   It assumes that, in each state that counts votes for it, the quorum voters outside the set hold less than two thirds of the total.
   `Execution.justifiedHonestlySigned` is its case of the honest set, and keeps its statement.
 

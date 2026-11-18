@@ -96,6 +96,8 @@ The checkpoint was set by one count of votes, in a state the store holds or on t
 
 That state is at the checkpoint's epoch or the next, and not after the store's epoch.
 
+It is a held state, or that state after empty slots under the store's signature checks.
+
 There the stake of the quorum voters outside the set is below two thirds of the total.
 
 So the count passed with a voter of the set, who voted for the checkpoint.
@@ -129,7 +131,9 @@ theorem Execution.exists_signer_of_counted (V : Set ValidatorIndex) [DecidablePr
     {w : ValidatorIndex} (honest : w ∈ J) {k : ℕ} (high : (e.world k).time ≤ last)
     {slot : Slot} (slotOk : ((e.world k).state w).getCurrentSlot config = .ok slot)
     (later : epoch < ((e.world k).state w).justifiedCheckpoint.epoch)
-    (few : ∀ (counted : BeaconState preset fork) (total : Gwei),
+    (few : ∀ (root : Root) (base counted : BeaconState preset fork) (total : Gwei),
+      ((e.world k).state w).blockStates[root]? = some base →
+      (counted = base ∨ ∃ slot, processSlots config checks base slot = .ok counted) →
       CountedState ((e.world k).state w) config counted →
       ((e.world k).state w).justifiedCheckpoint.epoch ≤ getCurrentEpoch counted →
       (getCurrentEpoch counted).toNat ≤ ((e.world k).state w).justifiedCheckpoint.epoch.toNat + 1 →
@@ -236,8 +240,8 @@ theorem Execution.exists_signer_of_counted (V : Set ValidatorIndex) [DecidablePr
     intro total totalOk
     rcases shape with rfl | ⟨state, childRoot, child, childFound, parent, before, path, -,
       countedOk⟩
-    · exact few counted total ⟨root, counted, held, .inl rfl⟩ countedEpoch.2 countedEpoch.1
-        countedNow rootRead totalOk
+    · exact few root counted counted total held (.inl rfl) ⟨root, counted, held, .inl rfl⟩
+        countedEpoch.2 countedEpoch.1 countedNow rootRead totalOk
     · -- The state before caching reads the checkpoint's root too, less than a buffer back.
       have stateRoot : getBlockRoot state ((e.world k).state w).justifiedCheckpoint.epoch =
           .ok ((e.world k).state w).justifiedCheckpoint.root := by
@@ -261,7 +265,8 @@ theorem Execution.exists_signer_of_counted (V : Set ValidatorIndex) [DecidablePr
         · refine .inr ⟨checks, reached, childRoot, child, childFound, parent, ?_, slotsOk⟩
           rw [← (processSlots_slot slotsOk).2]
           exact UInt64.le_of_lt before
-      exact few state total counts countedEpoch.2 countedEpoch.1 countedNow stateRoot totalOk
+      exact few root base state total held path counts countedEpoch.2 countedEpoch.1 countedNow
+        stateRoot totalOk
   -- The count's active stake is above one and a half increments.
   have large := counted_stake_large anchored start anchorSlot genesis pre absent heldEarly enough
     terminal honest high held shape countedLater upper
@@ -353,7 +358,7 @@ theorem Execution.justifiedHonestlySigned [DecidablePred (· ∈ J)] {anchor : S
   exact e.exists_signer_of_counted J anchored start anchorSlot anchorHeader anchorZero slots
     parameters delay genesis pre roots absent heldEarly bounded enough terminal afterAnchor honest
     high slotOk later
-    fun counted total counts atLeast _ _ _ totalOk =>
+    fun _ _ counted total _ _ counts atLeast _ _ _ totalOk =>
       byzantine w honest k counted total low high upToDate counts
         (UInt64.lt_of_lt_of_le later atLeast) totalOk
 
