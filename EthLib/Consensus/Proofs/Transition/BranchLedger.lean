@@ -1827,11 +1827,11 @@ private theorem flagValue_mono {a b : ParticipationFlags} (base : ℕ)
 
 /-- Flags of existing validators that are kept raise a potential weighed on existing validators.
 -/
-private theorem flagPotential_mono_below {fork : Fork} {s t : BeaconState preset fork}
+private theorem recentFlagSum_mono_below {fork : Fork} {s t : BeaconState preset fork}
     (grow : FlagKeeps s t) (altair : .altair ≤ fork) (base : ℕ → ℕ) (count : ℕ)
     (support : ∀ i, s.validators.data.size ≤ i → base i = 0) :
-    flagPotential s altair base count ≤ flagPotential t altair base count := by
-  unfold flagPotential flagSumOf
+    recentFlagSum s altair base count ≤ recentFlagSum t altair base count := by
+  unfold recentFlagSum flagSumOf
   refine Nat.add_le_add (List.sum_le_sum fun i _ => ?_) (List.sum_le_sum fun i _ => ?_)
   all_goals
     rw [flagTerm, flagTerm]
@@ -1896,8 +1896,8 @@ private theorem attestation_credit {attestation : Attestation preset fork}
           total.toNat = activeTotal s → getBaseReward s total index = .ok reward →
           reward.toNat = base index.toNat) →
         credit * ((WEIGHT_DENOMINATOR.toNat - PROPOSER_WEIGHT.toNat) * WEIGHT_DENOMINATOR.toNat /
-            PROPOSER_WEIGHT.toNat) + flagPotential s altair base count ≤
-          flagPotential t altair base count := by
+            PROPOSER_WEIGHT.toNat) + recentFlagSum s altair base count ≤
+          recentFlagSum t altair base count := by
   have registry := (processAttestation_registry computed).1
   simp only [processAttestation, altair, ↓reduceDIte, processAttestationAltair, bind_ok_iff,
     ensure_ok_iff, liftAccessor_ok] at computed
@@ -1954,7 +1954,7 @@ private theorem attestation_credit {attestation : Attestation preset fork}
   obtain ⟨_, set⟩ := increaseBalance_ok raisedOk
   obtain ⟨_, rfl⟩ := setBalance_ok set
   simp only [UInt64.toNat_zero, Nat.zero_add] at more
-  unfold flagPotential setEpochParticipation
+  unfold recentFlagSum setEpochParticipation
   split
   · rename_i current
     simp only [current, ↓reduceIte] at more
@@ -2218,8 +2218,8 @@ private structure Credited {fork : Fork} (o t : BeaconState preset fork)
     ∃ later, t.validators.data[v.toNat]? = some later ∧ later.slashed = true
   potential : ∀ (altair : .altair ≤ fork) (base : ℕ → ℕ) (count : ℕ), 2 ^ 64 ≤ count →
     Reads o base → (∀ i, o.validators.data.size ≤ i → base i = 0) →
-    credit * proposerDenominator + flagPotential o altair base count ≤
-      flagPotential t altair base count
+    credit * proposerDenominator + recentFlagSum o altair base count ≤
+      recentFlagSum t altair base count
   eligible : ∀ v ∈ slashed, ∃ old, o.validators.data[v.toNat]? = some old ∧
     Eligible (getCurrentEpoch o) old
 
@@ -2238,7 +2238,7 @@ private theorem Credited.of_ledger (ledger : Ledger o t ∅ ∅ 0 0 0) (kept : K
   penalized v := by simp
   newly v member := absurd member (Finset.notMem_empty v)
   potential altair base count _ _ support := by
-    simpa using flagPotential_mono_below grow altair base count support
+    simpa using recentFlagSum_mono_below grow altair base count support
   eligible v member := absurd member (Finset.notMem_empty v)
 
 /-- An effective balance at a later kept state is the one before, for an existing validator. -/
@@ -2421,7 +2421,7 @@ private theorem credited_processProposerSlashing {slashing : ProposerSlashing}
   · rw [Finset.mem_singleton.mp member]
     exact ⟨fun other found' => by rw [found] at found'; cases found'; exact unslashed,
       later, laterFound, marked⟩
-  · simpa using flagPotential_mono_below grow altair base count support
+  · simpa using recentFlagSum_mono_below grow altair base count support
   · rw [Finset.mem_singleton.mp member]
     exact ⟨validator, found, eligible⟩
 
@@ -2452,7 +2452,7 @@ private theorem credited_processAttesterSlashing {slashing : AttesterSlashing pr
   · obtain ⟨validator, later, found, unslashed, laterFound, marked⟩ := newly v member
     exact ⟨fun other found' => by rw [found] at found'; cases found'; exact unslashed,
       later, laterFound, marked⟩
-  · simpa using flagPotential_mono_below grow altair base count support
+  · simpa using recentFlagSum_mono_below grow altair base count support
 
 private theorem credited_processAttestation {attestation : Attestation preset fork}
     {parent : Slot} (early : fork < .glamsterdam) (altair : .altair ≤ fork)
@@ -2505,7 +2505,7 @@ private theorem credited_processExecutionRequests {body : BeaconBlockBody preset
   exact ⟨conv, ⟨ledger, kept_processExecutionRequests computed, grow, fun hyp => by simp at hyp,
     fun v => by simp, fun v => by simp, fun v member => absurd member (Finset.notMem_empty v),
     fun altair base count _ _ support => by
-      simpa using flagPotential_mono_below grow altair base count support,
+      simpa using recentFlagSum_mono_below grow altair base count support,
     fun v member => absurd member (Finset.notMem_empty v)⟩, count⟩
 
 /-- From Fulu and before Gloas, the operations of a block credit like operations.
@@ -2686,8 +2686,8 @@ private theorem block_balances {engine : ExecutionEngine preset fork}
       PerIncrementRead s ∧
       (∀ (altair : .altair ≤ fork) (base : ℕ → ℕ) (count : ℕ), 2 ^ 64 ≤ count → Reads s base →
         (∀ i, s.validators.data.size ≤ i → base i = 0) →
-        credit * proposerDenominator + flagPotential s altair base count ≤
-          flagPotential t altair base count) ∧
+        credit * proposerDenominator + recentFlagSum s altair base count ≤
+          recentFlagSum t altair base count) ∧
       Lives s t ∧ RegistryLifecycle s t ∧
       (∀ v ∈ slashed, ∃ old, s.validators.data[v.toNat]? = some old ∧
         Eligible (getCurrentEpoch s) old) := by
@@ -2813,12 +2813,12 @@ private theorem block_balances {engine : ExecutionEngine preset fork}
   · intro altair' base count big reads support
     have votedReads : Reads voted base := steadyVoted.reads reads
     -- The steps before the operations keep both lists of flags, so the potential stays.
-    have first : flagPotential s altair' base count ≤ flagPotential voted altair' base count := by
-      unfold flagPotential
+    have first : recentFlagSum s altair' base count ≤ recentFlagSum voted altair' base count := by
+      unfold recentFlagSum
       rw [growVoted.1, growVoted.2]
     have second := ops.potential altair' base count big votedReads fun i outside =>
       support i (Nat.le_trans frameVoted.registryGrows outside)
-    have third := flagPotential_mono_below syncGrow altair' base count fun i outside =>
+    have third := recentFlagSum_mono_below syncGrow altair' base count fun i outside =>
       support i (Nat.le_trans frameVoted.registryGrows
         (Nat.le_trans ops.kept.frame.registryGrows outside))
     omega
@@ -3072,8 +3072,8 @@ private structure Tally (a s : BeaconState preset fork) (n : ℕ)
     (parameters preset fork).WHISTLEBLOWER_REWARD_QUOTIENT.toNat
   potential : ∀ (altair : .altair ≤ fork) (base : ℕ → ℕ) (count : ℕ), 2 ^ 64 ≤ count →
     Reads a base → (∀ i, a.validators.data.size ≤ i → base i = 0) →
-    credits * proposerDenominator + flagPotential a altair base count ≤
-      flagPotential s altair base count
+    credits * proposerDenominator + recentFlagSum a altair base count ≤
+      recentFlagSum s altair base count
   share : shares ≤ n * (preset.SYNC_COMMITTEE_SIZE.toNat *
     (rewardRead a * PROPOSER_WEIGHT.toNat / (WEIGHT_DENOMINATOR.toNat - PROPOSER_WEIGHT.toNat)))
   newly : ∀ v ∈ sl, (∀ validator, a.validators.data[v.toNat]? = some validator →
@@ -3348,14 +3348,14 @@ private theorem Tally.block {a s t : BeaconState preset fork} {engine : Executio
       exact tally.lives.back tally.life tally.persists found eligible
 
 /-- The flag potential is at most `108` times the sum of the weights it reads. -/
-private theorem flagPotential_le (s : BeaconState preset fork) (altair : .altair ≤ fork)
+private theorem recentFlagSum_le (s : BeaconState preset fork) (altair : .altair ≤ fork)
     (base : ℕ → ℕ) (count : ℕ) :
-    flagPotential s altair base count ≤ 108 * ∑ i ∈ Finset.range count, base i := by
+    recentFlagSum s altair base count ≤ 108 * ∑ i ∈ Finset.range count, base i := by
   have one := flagSumOf_le base count (s.previousEpochParticipation altair)
   have two := flagSumOf_le base count (s.currentEpochParticipation altair)
   rw [Finset.sum_eq_multiset_sum, Finset.range_val, ← Multiset.coe_range, Multiset.map_coe,
     Multiset.sum_coe]
-  unfold flagPotential
+  unfold recentFlagSum
   omega
 
 /-- A sum of quotients is at most the quotient of the sum. -/
@@ -3602,7 +3602,7 @@ theorem branchCorrections {x y : ForkedBeaconState preset} (tail : Run config ch
       · exact ite_eq_right isRecent
     have bound := tally.potential altair weight (2 ^ 64) (Nat.le_refl _)
       (tally.within.reads_back readsB) support
-    have upper := flagPotential_le b altair weight (2 ^ 64)
+    have upper := recentFlagSum_le b altair weight (2 ^ 64)
     have sumEq : ∑ i ∈ Finset.range (2 ^ 64), weight i =
         ∑ i ∈ positions with recent i, base i := by
       rw [show ∑ i ∈ Finset.range (2 ^ 64), weight i =
