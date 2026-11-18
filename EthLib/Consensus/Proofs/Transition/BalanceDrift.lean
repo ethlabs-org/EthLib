@@ -852,6 +852,40 @@ theorem balanceDrift_upgrades_upper {s t : ForkedBeaconState preset}
       (Nat.lt_of_le_of_lt (processUpgrades_fork_le rest) early) i)
   | case2 s notDue => cases ok; exact Nat.le_refl _
 
+/-- A slot inside one epoch only caches the slot.
+
+It runs no epoch transition and no upgrade, so it keeps the fork. -/
+theorem slot_same_epoch {middle last : ForkedBeaconState preset}
+    (ok : advanceSlotAcross config checks middle = .ok last)
+    (same : getCurrentEpoch last.state = getCurrentEpoch middle.state) :
+    ∃ (cached : BeaconState preset middle.fork) (next : Slot),
+      processSlot middle.state = .ok cached ∧
+        last = ⟨middle.fork, { cached with slot := next }⟩ := by
+  obtain ⟨next, advanced, upgraded⟩ := bind_ok_iff.mp ok
+  have epoch : getCurrentEpoch next = getCurrentEpoch middle.state := by
+    have slot : last.state.slot = next.slot := processUpgrades_induction
+      (property := fun t => t.state.slot = next.slot)
+      (fun prior ok => (upgradeFrame_upgradeNext ok).slot.trans prior) rfl upgraded
+    have eq : getCurrentEpoch last.state = getCurrentEpoch next := by
+      simp only [getCurrentEpoch, slot]
+    exact eq.symm.trans same
+  obtain ⟨slot, cached, epoched, sum, cachedOk, epochOk, rfl⟩ := advanceSlot_ok advanced
+  have notFirst : slot % preset.SLOTS_PER_EPOCH ≠ 0 := by
+    intro firstSlot
+    have rem : slot.toNat % preset.SLOTS_PER_EPOCH.toNat = 0 := by
+      simpa only [UInt64.toNat_mod, UInt64.toNat_zero] using congrArg UInt64.toNat firstSlot
+    have eq := congrArg UInt64.toNat epoch
+    simp only [getCurrentEpoch_toNat] at eq
+    have divide := Nat.mod_add_div slot.toNat preset.SLOTS_PER_EPOCH.toNat
+    have before := Nat.mod_add_div middle.state.slot.toNat preset.SLOTS_PER_EPOCH.toNat
+    rw [eq] at divide
+    omega
+  rw [processUpgrades_of_not_due (upgradeDue_of_not_first notFirst)] at upgraded
+  cases upgraded
+  simp only [epochIfLast, ite_eq_right notFirst, pure, Except.pure, Except.ok.injEq] at epochOk
+  subst epoched
+  exact ⟨cached, slot, cachedOk, rfl⟩
+
 /-- Induct over a run inside one epoch, with the run so far.
 
 Inside one epoch no slot crosses an epoch boundary.
@@ -889,30 +923,10 @@ theorem Run.induction_of_same_epoch {x : ForkedBeaconState preset}
     cases step with
     | block engine signed due ok => exact blockStep engine signed due ok pre early prior
     | slot ok =>
-      obtain ⟨next, advanced, upgraded⟩ := bind_ok_iff.mp ok
-      have epoch : getCurrentEpoch next = getCurrentEpoch middle.state := by
-        have slot : last.state.slot = next.slot := processUpgrades_induction
-          (property := fun t => t.state.slot = next.slot)
-          (fun prior ok => (upgradeFrame_upgradeNext ok).slot.trans prior) rfl upgraded
-        have eq : getCurrentEpoch last.state = getCurrentEpoch next := by
-          simp only [getCurrentEpoch, slot]
-        exact eq.symm.trans (same.trans midEpoch.symm)
-      obtain ⟨slot, cached, epoched, sum, cachedOk, epochOk, rfl⟩ := advanceSlot_ok advanced
-      have notFirst : slot % preset.SLOTS_PER_EPOCH ≠ 0 := by
-        intro firstSlot
-        have rem : slot.toNat % preset.SLOTS_PER_EPOCH.toNat = 0 := by
-          simpa only [UInt64.toNat_mod, UInt64.toNat_zero] using congrArg UInt64.toNat firstSlot
-        have eq := congrArg UInt64.toNat epoch
-        simp only [getCurrentEpoch_toNat] at eq
-        have divide := Nat.mod_add_div slot.toNat preset.SLOTS_PER_EPOCH.toNat
-        have before := Nat.mod_add_div middle.state.slot.toNat preset.SLOTS_PER_EPOCH.toNat
-        rw [eq] at divide
-        omega
-      rw [processUpgrades_of_not_due (upgradeDue_of_not_first notFirst)] at upgraded
-      have lastEq := (Except.ok.inj upgraded).symm
-      simp only [epochIfLast, ite_eq_right notFirst, pure, Except.pure, Except.ok.injEq] at epochOk
-      subst epoched
-      exact slotStep pre ok lastEq cachedOk epoch prior
+      have kept := same.trans midEpoch.symm
+      obtain ⟨cached, next, cachedOk, lastEq⟩ := slot_same_epoch ok kept
+      rw [lastEq] at kept
+      exact slotStep pre ok lastEq cachedOk kept prior
 
 /-- Within one epoch before Gloas, each existing index keeps its effective balance. -/
 theorem Run.effectiveKept_of_same_epoch {x y : ForkedBeaconState preset}
