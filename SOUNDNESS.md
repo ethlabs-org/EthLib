@@ -3182,9 +3182,13 @@ An accepted root of an earlier epoch is realized as justified by the head's stat
 `CallRolloverRead` assumes the caller's head read at each rollover for the current target of its head, through `CallerHeadAt` above.
 `JustifiedHonestlySigned` assumes the signer of each justified checkpoint after the anchor's epoch, which `Execution.justifiedHonestlySigned` derives from a Byzantine bound.
 `QuorumDriftWithin` assumes that an honest voter set of a call keeps its stake in each counting state, up to the call's quorum reserve.
-`Execution.quorumDriftWithin` proves it with BLS checks, before Gloas from Fulu.
-It reads `Preset.ExitWindowFixed`, the bands `IncrementWithinUpwardBand`, a withdrawal delay of at least one epoch and the Electra caps.
-It also reads the guards `HonestStoreEpochsBounded` and `HonestBlocksAgree`, and a horizon before the next fork.
+`Execution.quorumDriftWithin` proves it for an honest fork choice with BLS checks, before Gloas from Fulu.
+Its anchor store comes from a successful `getForkchoiceStore`, every honest participant starts at it, and `anchorBlock.slot = anchorState.slot`.
+`SLOT_DURATION_MS` is positive, and the preset satisfies `DirectSafety.Parameters`.
+A deposited `Genesis` under BLS checks reaches `anchorState` by a `Run` under BLS checks.
+The horizon is before the next fork, and `HonestStoreEpochsBounded` and `HonestBlocksAgree` hold up to the time bound.
+The preset satisfies `Preset.ExitWindowFixed` and `IncrementWithinUpwardBand`.
+The withdrawal delay is at least one epoch, `MAX_EFFECTIVE_BALANCE = MIN_ACTIVATION_BALANCE`, and `MIN_ACTIVATION_BALANCE <= MAX_EFFECTIVE_BALANCE_ELECTRA`.
 `Execution.rootViable_of_checked_call` still takes `QuorumDriftWithin` as a premise.
 The model's genesis time must be the anchor state's (`secondsToMilliseconds anchorState.genesisTime = genesisTimeMs`), a fact of the configuration that holds for every real anchor.
 The theorems derive the agreement of justified checkpoints across honest stores (`Execution.selectedCheckpointsAgree_or_evidence`), or return `CrossStoreJustifiedEvidence`.
