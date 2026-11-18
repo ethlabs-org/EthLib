@@ -1069,8 +1069,8 @@ theorem Run.induction_of_same_period {x : ForkedBeaconState preset} (period : Ep
       refine slotStep pre ok early ?_ prior
       rcases epoch_same_or_not_start high (same.trans midSame.symm) with equal | inside
       · exact .inl (UInt64.toNat_inj.mp equal)
-      · exact .inr fun zero => inside (by simpa only [UInt64.toNat_mod, UInt64.toNat_zero] using
-          congrArg UInt64.toNat zero)
+      · refine .inr fun zero => inside ?_
+        simpa only [UInt64.toNat_mod, UInt64.toNat_zero] using congrArg UInt64.toNat zero
 
 /-- Induct over a run inside one epoch, with the run so far.
 
@@ -1104,7 +1104,7 @@ theorem Run.induction_of_same_epoch {x : ForkedBeaconState preset}
   have kept : getCurrentEpoch last.state = getCurrentEpoch middle.state := by
     rcases inside with equal | inside
     · exact equal
-    · exact (inside (UInt64.toNat_inj.mp (by simp [UInt64.toNat_mod]))).elim
+    · exact (inside (UInt64.toNat_inj.mp (by simp))).elim
   obtain ⟨cached, next, cachedOk, lastEq⟩ := advanceSlotAcross_of_same_epoch ok kept
   rw [lastEq] at kept
   exact slotStep pre ok lastEq cachedOk kept prior
