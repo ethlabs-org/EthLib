@@ -226,14 +226,10 @@ private theorem riseStep_processConsolidationRequest {electra : .pectra ≤ f}
   have life := registryLifecycle_processConsolidationRequest ok
   suffices new : QueueGrows s t from ⟨frame, life, new⟩
   clear frame life
-  unfold processConsolidationRequest at ok
-  simp only [bind, Except.bind, pure, Except.pure] at ok
-  repeat' split at ok
-  all_goals try first
-    | (cases ok; done)
-    | (cases ok; exact QueueGrows.of_same fun _ => rfl)
-    | exact QueueGrows.of_same fun _ => SamePendingQueue.compounding (liftAccessor_ok.mp ok)
-  exact queueStep_queueConsolidation delay ok
+  rcases consolidationRequest_cases ok with rfl | ⟨_, switched⟩ | ⟨_, _, _, _, -, queued⟩
+  · exact QueueGrows.of_same fun _ => rfl
+  · exact QueueGrows.of_same fun _ => SamePendingQueue.compounding switched
+  · exact queueStep_queueConsolidation delay queued
 
 /-- The requests of the execution layer keep the frame, the lifecycle and the queue. -/
 private theorem riseStep_processExecutionRequests {body : BeaconBlockBody preset f}
