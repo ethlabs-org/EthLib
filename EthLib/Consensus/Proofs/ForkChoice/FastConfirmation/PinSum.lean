@@ -1592,14 +1592,16 @@ private theorem riseQ_le (h : Setting config checks g split fin pulled anc count
 
 /-- The keys of `K5` that are not exiting at the call and that C's branch charges are few.
 
+A key is charged if the run has a departure charge at its position.
+
 They are at most the keys that `queueKeys` counts.
 
 Those are the keys with a large charge, the window's two ends, the low keys and the new keys. -/
 private theorem charged_count (h : Setting config checks g split fin pulled anc counted V)
-    (tailC : Run config checks ⟨fork, split⟩ ⟨fork, counted⟩) (highC : ℕ) :
+    (tailC : Run config checks ⟨fork, split⟩ ⟨fork, counted⟩) :
     (((K5 counted V).filter fun v =>
       (pinTerms config pulled anc fin).exitingB v.toNat = false).filter
-        fun v => riseQ tailC highC v.toNat ≠ 0).card ≤
+        fun v => ∃ c ∈ tailC.departureCharges, c.index = v.toNat).card ≤
       (pinTerms config pulled anc fin).queueKeys :=
   sorry
 
@@ -1649,7 +1651,12 @@ theorem bud_queueRise (h : Setting config checks g split fin pulled anc counted 
       (preset.upwardBand + (pinTerms config pulled anc fin).depth *
         (pinTerms config pulled anc fin).gainRateMax)
       fun v _ => riseQ_le h tailC highC endEpochC v.toNat
-    have count := charged_count h tailC highC
+    have count := (Finset.card_le_card (fun v member => by
+      obtain ⟨inside, nonzero⟩ := Finset.mem_filter.mp member
+      refine Finset.mem_filter.mpr ⟨inside, ?_⟩
+      by_contra none
+      exact nonzero (riseQ_eq_zero tailC highC v.toNat fun c charged same =>
+        none ⟨c, charged, same⟩))).trans (charged_count h tailC)
     rw [smul_eq_mul] at each
     rw [← sumEq]
     calc _ ≤ 3 * (((((K5 counted V).filter fun v =>
