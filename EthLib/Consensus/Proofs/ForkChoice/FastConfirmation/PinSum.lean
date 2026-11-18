@@ -499,7 +499,7 @@ theorem slashedR_eq (config : Config) (state ancestor finalizedState : BeaconSta
     (pinTerms config state ancestor finalizedState).slashedR =
       ((pinTerms config state ancestor finalizedState).positions.filter fun i =>
         (pinTerms config state ancestor finalizedState).slashedRB i = true).card := by
-  simp [pinTerms]
+  rfl
 
 /-- The copy splits `queues` into its deposit part and its exit and consolidation part. -/
 theorem queues_split (config : Config) (state ancestor finalizedState : BeaconState preset fork) :
@@ -530,7 +530,7 @@ theorem lowKeys_eq (config : Config) (state ancestor finalizedState : BeaconStat
     (pinTerms config state ancestor finalizedState).lowKeys =
       ((pinTerms config state ancestor finalizedState).positions.filter fun i =>
         (pinTerms config state ancestor finalizedState).lowB i = true).card := by
-  simp [pinTerms]
+  rfl
 
 /-! ## D-1's setting -/
 
@@ -1111,22 +1111,20 @@ private def pinExit (preset : Preset) (config : Config) (wide : ℕ) : ℕ :=
 private def pinCons (preset : Preset) (config : Config) (wide : ℕ) : ℕ :=
   pinBalance preset config wide - pinExit preset config wide
 
-/-- Before Gloas, `queueExit` is zero in the tight window.
-
-Otherwise it is three times the depth's exit and consolidation churn, and the two carries. -/
-private theorem queueExit_unfold (early : fork < .glamsterdam) (config : Config)
+/-- Before Gloas, `queueWindow` is the depth's exit and consolidation churn and the two carries. -/
+private theorem queueWindow_unfold (early : fork < .glamsterdam) (config : Config)
     (state ancestor finalizedState : BeaconState preset fork) :
-    (pinTerms config state ancestor finalizedState).queueExit =
-      if (pinTerms config state ancestor finalizedState).tight = true then 0 else
-        3 * ((pinTerms config state ancestor finalizedState).depth *
-          (pinExit preset config (pinWide state) + pinCons preset config (pinWide state)) +
-          max preset.MAX_EFFECTIVE_BALANCE_ELECTRA.toNat
-            config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat +
-          max (if electra : .pectra ≤ fork then
-            (finalizedState.consolidationBalanceToConsume electra).toNat else 0)
-            (pinCons preset config (pinWide state))) := by
+    (pinTerms config state ancestor finalizedState).queueWindow =
+      (pinTerms config state ancestor finalizedState).depth *
+        (pinExit preset config (pinWide state) + pinCons preset config (pinWide state)) +
+        max preset.MAX_EFFECTIVE_BALANCE_ELECTRA.toNat
+          config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat +
+        max (if electra : .pectra ≤ fork then
+          (finalizedState.consolidationBalanceToConsume electra).toNat else 0)
+          (pinCons preset config (pinWide state)) := by
   have notGloas : ¬ .glamsterdam ≤ fork := Nat.not_le_of_lt early
-  simp [pinTerms, notGloas, pinWide, pinCons, pinExit, pinBalance]
+  unfold pinTerms
+  simp only [notGloas, pinWide, pinCons, pinExit, pinBalance, ↓reduceIte]
 
 /-- A state with a total of at most `wide` has an exit churn limit of at most the pin's. -/
 private theorem exitRate_le {fork' : Fork} {s : BeaconState preset fork'}
@@ -1350,7 +1348,10 @@ theorem bud_queues (h : Setting config checks g split fin pulled anc counted V)
     refine Finset.disjoint_left.mpr fun v first second => ?_
     exact (Finset.mem_filter.mp (Finset.mem_filter.mp second).1).2.2
       (Finset.mem_filter.mp first).1
-  rw [← Finset.sum_union apart, queueExit_unfold early]
+  have queueExit_eq : (pinTerms config pulled anc fin).queueExit =
+      if (pinTerms config pulled anc fin).tight = true then 0 else
+        3 * (pinTerms config pulled anc fin).queueWindow := rfl
+  rw [← Finset.sum_union apart, queueExit_eq]
   by_cases tight : (pinTerms config pulled anc fin).tight = true
   · -- the tight window has no exit of a counting key
     simp only [tight, ↓reduceIte]
@@ -1374,7 +1375,6 @@ theorem bud_queues (h : Setting config checks g split fin pulled anc counted V)
     simp [none]
   · simp only [tight, Bool.false_eq_true, ↓reduceIte]
     have window := charges_le_queueWindow h tailC
-    rw [queueWindow_unfold early] at window
     have kept := sum_exitQ_le tailC ((getCurrentEpoch counted).toNat - 1 + 1)
       (by simp only; omega) ((VN counted V) ∪
         ((K5 counted V).filter fun v => (pinTerms config pulled anc fin).exitingB v.toNat = false))
