@@ -4783,22 +4783,43 @@ private theorem ChainStep.epoch_le_succ {a b : ForkedBeaconState preset}
     simp only [getCurrentEpoch, same]
     exact Nat.le_succ _
 
+/-- A run from an epoch to a later one has a slot step that leaves a given epoch between them. -/
+private theorem Run.cross_split {x y : ForkedBeaconState preset} (tail : Run config checks x y)
+    (k : ℕ) (low : (getCurrentEpoch x.state).toNat ≤ k)
+    (high : k < (getCurrentEpoch y.state).toNat) :
+    ∃ (z n : ForkedBeaconState preset) (pre : Run config checks x z)
+      (ok : advanceSlotAcross config checks z = .ok n) (rest : Run config checks n y),
+      tail = (pre.snoc (Step.slot ok)).append rest ∧ (getCurrentEpoch z.state).toNat = k ∧
+        (getCurrentEpoch n.state).toNat = k + 1 := by
+  induction tail with
+  | nil => omega
+  | @snoc middle last pre step ih =>
+    by_cases inside : k < (getCurrentEpoch middle.state).toNat
+    · obtain ⟨z, n, a, ok, rest, split, hz, hn⟩ := ih inside
+      refine ⟨z, n, a, ok, rest.snoc step, ?_, hz, hn⟩
+      rw [split]
+      rfl
+    · have bound := ChainStep.epoch_le_succ step.chainStep
+      cases step with
+      | slot ok => exact ⟨middle, last, pre, ok, .nil, rfl, by omega, by omega⟩
+      | @block fork before after engine signed due ok =>
+        have same := processBlock_slot (applySignedBlock_ok ok).2.1
+        have e : (getCurrentEpoch after).toNat = (getCurrentEpoch before).toNat := by
+          simp only [getCurrentEpoch, same]
+        simp only at high inside
+        omega
+
 /-- A run that starts at or before an epoch and ends at or after it passes a state of that epoch. -/
 private theorem Run.exists_epoch_split {x y : ForkedBeaconState preset}
     (tail : Run config checks x y) (k : ℕ)
     (low : (getCurrentEpoch x.state).toNat ≤ k) (high : k ≤ (getCurrentEpoch y.state).toNat) :
     ∃ (z : ForkedBeaconState preset) (pre : Run config checks x z) (post : Run config checks z y),
       (getCurrentEpoch z.state).toNat = k ∧ tail = pre.append post := by
-  induction tail with
-  | nil => exact ⟨x, .nil, .nil, by omega, rfl⟩
-  | @snoc middle last pre step ih =>
-    by_cases inside : k ≤ (getCurrentEpoch middle.state).toNat
-    · obtain ⟨z, a, b, epoch, split⟩ := ih inside
-      refine ⟨z, a, b.snoc step, epoch, ?_⟩
-      rw [split]
-      rfl
-    · have bound := ChainStep.epoch_le_succ step.chainStep
-      exact ⟨last, pre.snoc step, .nil, by omega, rfl⟩
+  by_cases last : k = (getCurrentEpoch y.state).toNat
+  · exact ⟨y, tail, .nil, last.symm, rfl⟩
+  · obtain ⟨z, n, pre, ok, rest, split, hz, -⟩ := Run.cross_split tail k low (by omega)
+    exact ⟨z, pre, (Run.nil.snoc (Step.slot ok)).append rest, hz, by
+      rw [split, Run.append_assoc]; rfl⟩
 
 /-- A key that is active at the end of a run is scheduled two epochs before its activation.
 
@@ -4870,7 +4891,8 @@ private theorem Run.start_state {x y : ForkedBeaconState preset} (tail : Run con
 /-- Right after a slot step that moves the epoch on, the effective balances lie within the bands.
 
 The step ran the epoch transition, and its upgrades keep the bands. -/
-def EpochStartHysteresis (preset : Preset) (config : Config) (checks : SignatureChecks) : Prop :=
+private def EpochStartHysteresis (preset : Preset) (config : Config)
+    (checks : SignatureChecks) : Prop :=
   ∀ {a b : ForkedBeaconState preset} (_step : Step config checks a b),
     getCurrentEpoch a.state < getCurrentEpoch b.state → Hysteresis b.state
 
@@ -5188,16 +5210,6 @@ private def EpochClaim (x z : ForkedBeaconState preset) (high i : ℕ) {m : Fork
       3 * (preset.MAX_EFFECTIVE_BALANCE.toNat + preset.downwardBand) *
         ((getCurrentEpoch m.state).toNat - (getCurrentEpoch z.state).toNat)
 
-/-- Every cap is at least `MAX_EFFECTIVE_BALANCE`. -/
-private theorem minimum_cap (caps : CapOrder preset) {h : Fork} (v : Validator) :
-    preset.MAX_EFFECTIVE_BALANCE ≤ withdrawalMaxEffectiveBalance preset h v := by
-  unfold withdrawalMaxEffectiveBalance getMaxEffectiveBalance
-  split
-  · split
-    · exact UInt64.le_trans caps.activation caps.compounding
-    · exact caps.activation
-  · exact UInt64.le_refl _
-
 /-- The rounded-up quotient `Bq` covers its numerator. -/
 private theorem ceil_div_cover (a Q : ℕ) (positive : 0 < Q) : a ≤ Q * ((a + Q - 1) / Q) := by
   have h1 := Nat.div_add_mod (a + Q - 1) Q
@@ -5254,7 +5266,7 @@ private theorem Ctx.cross {g x m n z : ForkedBeaconState preset} {high : ℕ}
   have xm := UInt64.le_iff_toNat_le.mp (currentEpoch_le_of_chainSteps hm.chainSteps)
   have capLe : preset.MAX_EFFECTIVE_BALANCE.toNat ≤
       (withdrawalMaxEffectiveBalance preset m.fork val).toNat :=
-    UInt64.le_iff_toNat_le.mp (minimum_cap c.caps val)
+    UInt64.le_iff_toNat_le.mp (Internal.minimum_cap c.caps.activation c.caps.compounding val)
   have positiveQ :
       0 < (EthLib.Consensus.parameters preset .fusaka).MIN_SLASHING_PENALTY_QUOTIENT.toNat := by
     have := c.quotientTwo
@@ -5415,7 +5427,7 @@ private theorem Ctx.inside {g x m n : ForkedBeaconState preset} {high : ℕ}
   have shared' := c.shared.append hm
   have capLe : preset.MAX_EFFECTIVE_BALANCE.toNat ≤
       (withdrawalMaxEffectiveBalance preset m.fork val).toNat :=
-    UInt64.le_iff_toNat_le.mp (minimum_cap c.caps val)
+    UInt64.le_iff_toNat_le.mp (Internal.minimum_cap c.caps.activation c.caps.compounding val)
   have positiveQ :
       0 < (EthLib.Consensus.parameters preset .fusaka).MIN_SLASHING_PENALTY_QUOTIENT.toNat := by
     have := c.quotientTwo
@@ -5460,32 +5472,6 @@ private theorem Ctx.inside {g x m n : ForkedBeaconState preset} {high : ℕ}
     · rw [ite_eq_right h, ite_eq_right h]
       simp
   omega
-
-/-- A run from an epoch to a later one has a slot step that leaves a given epoch between them. -/
-private theorem Run.cross_split {x y : ForkedBeaconState preset} (tail : Run config checks x y)
-    (k : ℕ) (low : (getCurrentEpoch x.state).toNat ≤ k)
-    (high : k < (getCurrentEpoch y.state).toNat) :
-    ∃ (z n : ForkedBeaconState preset) (pre : Run config checks x z)
-      (ok : advanceSlotAcross config checks z = .ok n) (rest : Run config checks n y),
-      tail = (pre.snoc (Step.slot ok)).append rest ∧ (getCurrentEpoch z.state).toNat = k ∧
-        (getCurrentEpoch n.state).toNat = k + 1 := by
-  induction tail with
-  | nil => omega
-  | @snoc middle last pre step ih =>
-    by_cases inside : k < (getCurrentEpoch middle.state).toNat
-    · obtain ⟨z, n, a, ok, rest, split, hz, hn⟩ := ih inside
-      refine ⟨z, n, a, ok, rest.snoc step, ?_, hz, hn⟩
-      rw [split]
-      rfl
-    · have bound := ChainStep.epoch_le_succ step.chainStep
-      cases step with
-      | slot ok => exact ⟨middle, last, pre, ok, .nil, rfl, by omega, by omega⟩
-      | @block fork before after engine signed due ok =>
-        have same := processBlock_slot (applySignedBlock_ok ok).2.1
-        have e : (getCurrentEpoch after).toNat = (getCurrentEpoch before).toNat := by
-          simp only [getCurrentEpoch, same]
-        simp only at high inside
-        omega
 
 /-- Right after an epoch transition, the effective balance of a key is within the band.
 
@@ -6297,7 +6283,8 @@ private theorem Run.new_key_effective_floor {g x y : ForkedBeaconState preset}
       omega)
     (fun p member => by
       obtain ⟨⟨val, found⟩, -⟩ := floors p member
-      have := UInt64.le_iff_toNat_le.mp (minimum_cap caps (h := p.fork) val)
+      have := UInt64.le_iff_toNat_le.mp
+        (Internal.minimum_cap caps.activation caps.compounding (h := p.fork) val)
       simpa [capAt, found] using this)
   have sameEff : effectiveAt y i = effectiveAt n i := by
     have inside : i < n.state.validators.data.size := by
