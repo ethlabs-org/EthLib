@@ -509,14 +509,18 @@ def pinReserve (config : Config) (state ancestor finalizedState : BeaconState pr
   let newKeyFloor := 2 * preset.MAX_EFFECTIVE_BALANCE.toNat / 3 -
     preset.MAX_EFFECTIVE_BALANCE.toNat / p.MIN_SLASHING_PENALTY_QUOTIENT.toNat -
       preset.downwardBand - inc
-  let newKeySlack := newKeyFloor - (config.EJECTION_BALANCE.toNat - inc)
+  -- An exit outside these counts consumes at least `exitFloor` of churn.
+  --
+  -- It is the ejection balance less an increment, kept positive and at most `newKeyFloor`.
+  let exitFloor := max 1 (min (config.EJECTION_BALANCE.toNat - inc) newKeyFloor)
+  let newKeySlack := newKeyFloor - exitFloor
   let lowKeys := (positions.filter fun i =>
     (validator i).any (fun v => decide (finalized < v.withdrawableEpoch.toNat) &&
       decide (v.activationEpoch.toNat ≤ epoch.toNat)) ∧
       lowEB i < newKeyFloor).card
   -- Outside the tight window, keys can start to exit on the other branch.
   --
-  -- The queues admit at most this many keys at the ejection balance less an increment each.
+  -- The queues admit at most this many keys at `exitFloor` each.
   --
   -- The `+ 2` counts one key at each end of the window that the churn covers only in part.
   --
@@ -525,7 +529,7 @@ def pinReserve (config : Config) (state ancestor finalizedState : BeaconState pr
   -- A key not active by this epoch here, or created there, keeps at least `newKeyFloor` from its
   -- activation, less its own sync-seat debits and pending partial payments in the window.
   --
-  -- One whose effective balance ends below the bound has those debits above `newKeySlack`.
+  -- One whose effective balance ends below `exitFloor` has those debits above `newKeySlack`.
   --
   -- So has an existing key whose `lowEB` is at least `newKeyFloor`.
   --
@@ -543,7 +547,7 @@ def pinReserve (config : Config) (state ancestor finalizedState : BeaconState pr
     max 1 newKeySlack
   -- A carry is a balance that can let several keys exit, so it counts by the ejection balance too.
   let queueKeys := (depth * (exitChurn + consolidationChurn) + exitCarry + consolidationCarry) /
-    (config.EJECTION_BALANCE.toNat - inc) + 2 + lowKeys + newKeySeats
+    exitFloor + 2 + lowKeys + newKeySeats
   -- The largest gain rate of one key, its gain rate at the largest effective balance.
   let gainRateMax := capMax / inc * perIncrement *
     (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum / WEIGHT_DENOMINATOR.toNat
