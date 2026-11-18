@@ -701,6 +701,58 @@ private theorem total_band_of_guard {g x y z : ForkedBeaconState preset} {high :
   simp only [stakeCeilingAt, stakeFloorAt, zero] at yLow zHigh ⊢
   omega
 
+/-- The preset facts that the producer of the pin needs.
+
+Each field is a fact about the preset alone, and a deployed preset has it. -/
+private structure PinPresetFacts (preset : Preset) : Prop where
+  /-- (preset fact) One epoch's base reward factor at an increment is at least `2 ^ 33`. -/
+  room : 2 ^ 33 ≤ preset.EFFECTIVE_BALANCE_INCREMENT.toNat * preset.BASE_REWARD_FACTOR.toNat
+  /-- (preset fact) The downward band is below an increment. -/
+  below : preset.downwardBand < preset.EFFECTIVE_BALANCE_INCREMENT.toNat
+  /-- (preset fact) An increment is at least 900 times the slashings vector. -/
+  rounding : 900 * preset.EPOCHS_PER_SLASHINGS_VECTOR.toNat ≤
+    preset.EFFECTIVE_BALANCE_INCREMENT.toNat
+
+/-- The mainnet preset has the preset facts of the pin. -/
+private theorem PinPresetFacts.mainnet : PinPresetFacts Preset.mainnet :=
+  ⟨by decide, by decide, by decide⟩
+
+/-- The minimal preset has the preset facts of the pin. -/
+private theorem PinPresetFacts.minimal : PinPresetFacts Preset.minimal :=
+  ⟨by decide, by decide, by decide⟩
+
+/-- From Electra and before Gloas, the floor of the window at its start leaves room for the window.
+
+The guard asks that twice the last ceiling be at most three times the last floor.
+
+The ceiling is at least an increment, and the floor falls with the epoch of the window.
+
+So the first floor is at least two thirds of an increment.
+
+The window is shorter than the slashings vector, and an increment is at least 900 vectors. -/
+private theorem room_of_guard {g x y : ForkedBeaconState preset} {high : ℕ}
+    (shared : Run config checks g x) (genesis : Genesis (config := config) (checks := checks) g)
+    (aligned : MaxEffectiveBalancesAligned preset)
+    (electra : .pectra ≤ x.fork) (guard : aprioriGuardAt config x high)
+    (toY : Run config checks x y) (yEarly : y.fork < .glamsterdam)
+    (facts : PinPresetFacts preset) :
+    600 * (high + 2 - (getCurrentEpoch x.state).toNat) ≤ stakeFloorAt config x high 0 := by
+  have xEarly := Nat.lt_of_le_of_lt (fork_le_of_chainSteps toY.chainSteps) yEarly
+  have notBefore : ¬ x.fork < .pectra := Nat.not_lt_of_ge electra
+  have zero : preElectraEpochs config x high = 0 := by simp [preElectraEpochs, notBefore]
+  obtain ⟨-, -, -, -, -, -, -, -, -, -, window, -, ratioGuard, -⟩ := id guard
+  rw [zero] at ratioGuard
+  have ratio := ratioGuard (high + 1 - (getCurrentEpoch x.state).toNat) (Nat.zero_le _)
+    (by unfold driftHorizon; omega)
+  have unit := (ceiling_unit_of_guard shared genesis aligned xEarly electra guard).trans
+    (stakeCeilingAt_mono electra (Nat.zero_le (high + 1 - (getCurrentEpoch x.state).toNat)))
+  have anti := stakeFloorAt_anti (config := config) (x := x) (high := high)
+    (Nat.zero_le (high + 1 - (getCurrentEpoch x.state).toNat))
+  have rounding := facts.rounding
+  simp only [stakeCeilingAt, stakeFloorAt, zero] at unit anti ratio ⊢
+  unfold driftHorizon at window
+  omega
+
 end Band
 
 
