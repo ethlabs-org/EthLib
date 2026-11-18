@@ -9,6 +9,10 @@ Not yet released.
 
 ### Proof additions
 
+- `queueConsolidation_steps` states the steps of queueing a consolidation once ([#2334](https://github.com/ethereum/EthLib/issues/2334)).
+  The churn call writes only the churn left and the earliest consolidation epoch.
+  The source then gets its exit and withdrawable epochs, and the consolidation joins the queue.
+
 - `Execution.honestTargetVotes_signed_of_checked` shows that an accepted current-target test has honest signers with two thirds of the active balance ([#2058](https://github.com/ethereum/EthLib/issues/2058), Theorem 2).
   Each signer votes for the target before the start of the next epoch, unless two honest stores collide on a block.
   It assumes the honest count, honest heads above a block of the target's epoch until then, and the caller's head at that time.
