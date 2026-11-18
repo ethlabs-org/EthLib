@@ -857,6 +857,7 @@ private theorem block_credit_keys {g : ForkedBeaconState preset}
   have creditedLe : creditedKeys.card ≤ 1 := by
     refine creditedCard.trans ?_
     simp [blocksOne, electra, hegota]
+    split <;> omega
   refine ⟨creditedKeys.image UInt64.toNat, Finset.card_image_le.trans creditedLe,
     fun i increased => ?_⟩
   have inside : i < t.balances.data.size := by
@@ -878,7 +879,7 @@ private theorem block_credit_keys {g : ForkedBeaconState preset}
   have zero := electraZero electra v
   by_cases member : v ∈ creditedKeys
   · exact .inl (Finset.mem_image.mpr ⟨v, member, hv⟩)
-  · obtain ⟨-, -⟩ := zeroOff v member
+  · obtain ⟨pcZero, -⟩ := zeroOff v member
     refine .inr ⟨altair, ?_⟩
     by_contra none
     have seats : syncSeats t altair i = 0 := Nat.eq_zero_of_not_pos none
@@ -958,18 +959,19 @@ private theorem credited_piece {g : ForkedBeaconState preset}
           · unfold syncSeats at seats
             obtain ⟨key, hkey⟩ := List.length_pos_iff_exists_mem.mp seats
             obtain ⟨keyMem, test⟩ := List.mem_filter.mp hkey
-            cases hv : t.validators.data[i]? with
-            | none =>
-              rw [hv] at test
-              simp at test
-            | some w =>
-              rw [hv] at test
-              simp only [Option.any_some, beq_iff_eq] at test
-              have committee := (Run.snoc pre (Step.block engine signed due ok)
-                  ).currentSyncCommittee_eq_of_same_period early same altair' altair
-              refine .inr ⟨w, hv, ?_⟩
-              rw [test, ← committee]
-              exact keyMem
+            obtain ⟨w, hv⟩ : ∃ w, t.validators.data[i]? = some w := by
+              cases found : t.validators.data[i]? with
+              | none =>
+                rw [found] at test
+                simp at test
+              | some w => exact ⟨w, rfl⟩
+            rw [hv] at test
+            simp only [Option.any_some, beq_iff_eq] at test
+            have committee := (Run.snoc pre (Step.block engine signed due ok)
+                ).currentSyncCommittee_eq_of_same_period early same altair' altair
+            refine .inr ⟨w, hv, ?_⟩
+            rw [test, ← committee]
+            exact keyMem
 
 
 /-- The positions that hold a key of a committee are at most the size of the committee. -/
@@ -994,7 +996,7 @@ private theorem seat_positions {g : ForkedBeaconState preset}
         obtain ⟨w', found', -⟩ := (Finset.mem_filter.mp mj).2
         simp only [keyAt, found, found', Option.map_some, Option.getD_some] at eq
         exact distinct.index_eq found found' eq
-    exact mapped.trans (List.toFinset_card_le.trans (by simp [L]))
+    exact mapped.trans ((List.toFinset_card_le L).trans (by simp [L]))
   · intro i w found mem
     exact Finset.mem_filter.mpr ⟨Finset.mem_range.mpr (Array.getElem?_eq_some_iff.mp found).1,
       w, found, mem⟩
@@ -1024,7 +1026,8 @@ private theorem credited_pieces {g : ForkedBeaconState preset}
   induction n with
   | zero =>
     intro x shared r fulu count
-    have altair : .altair ≤ x.fork := Nat.le_trans (by decide) (Nat.le_trans (by decide) fulu)
+    have electra : .pectra ≤ x.fork := Nat.le_trans (by decide) fulu
+    have altair : .altair ≤ x.fork := Nat.le_trans (by decide) electra
     obtain ⟨B, cardB, hB⟩ := credited_piece genesis shared r fulu altair early high
       (by simpa using count)
     obtain ⟨S, cardS, hS⟩ := seat_positions genesis shared r altair
@@ -1034,7 +1037,8 @@ private theorem credited_pieces {g : ForkedBeaconState preset}
     · exact .inr (hS i w found mem)
   | succ n ih =>
     intro x shared r fulu count
-    have altair : .altair ≤ x.fork := Nat.le_trans (by decide) (Nat.le_trans (by decide) fulu)
+    have electra : .pectra ≤ x.fork := Nat.le_trans (by decide) fulu
+    have altair : .altair ≤ x.fork := Nat.le_trans (by decide) electra
     obtain ⟨m, v, pre, step, post, split, hm, hv⟩ := Run.split_at_flip r
       (fun z => (getCurrentEpoch x.state).toNat /
           max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat <
