@@ -435,7 +435,7 @@ private theorem rise_consolidationRequest {s t : BeaconState preset fork}
     simp only [switchToCompoundingValidator, bind_ok_iff] at switched
     obtain ⟨_, _, _, set, queued⟩ := switched
     exact (fixed_setValidator set).rise.trans (rise_queueExcess queued)
-  rcases consolidationRequest_cases ok with rfl | ⟨_, switched⟩ | ⟨_, _, _, _, _, queued⟩
+  rcases consolidationRequest_cases ok with rfl | ⟨_, _, _, switched⟩ | ⟨_, _, _, _, _, queued⟩
   · exact Rise.refl _
   · exact compounding switched
   · exact (fixed_queueConsolidation queued).rise
@@ -810,7 +810,7 @@ private theorem flags_consolidationRequest {s t : BeaconState preset fork}
     simp only [switchToCompoundingValidator, bind_ok_iff] at switched
     obtain ⟨_, _, _, set, queued⟩ := switched
     exact (fixed_setValidator set).flags.trans (flags_queueExcess queued)
-  rcases consolidationRequest_cases ok with rfl | ⟨_, switched⟩ | ⟨_, _, _, _, _, queued⟩
+  rcases consolidationRequest_cases ok with rfl | ⟨_, _, _, switched⟩ | ⟨_, _, _, _, _, queued⟩
   · exact Flags.refl _
   · exact compounding switched
   · exact (fixed_queueConsolidation queued).flags

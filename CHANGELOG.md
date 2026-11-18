@@ -84,6 +84,10 @@ Not yet released.
 
 ### Changes that break callers
 
+- In Lean, the switch case of `consolidationRequest_cases` records the switched validator in `SwitchAccepted` ([#2334](https://github.com/ethereum/EthLib/issues/2334)).
+  The request names one key twice, the index is the first with that key, and the validator there passes `isValidSwitchToCompoundingRequest`.
+  A caller that matched the case as `⟨index, switched⟩` writes `⟨index, validator, accepted, switched⟩`.
+
 - In Lean, the compressed encoding of a point of `G2` has its 96 bytes in its type ([#2189](https://github.com/ethereum/EthLib/issues/2189)).
   `G2.compress` and `G2.infinityBytes` are a `Vector UInt8 96`, and `G2.uncompress` takes one.
   A caller that holds bytes of another length reads them with `exactBytes? 96` and rejects `none`, as decompression did.
