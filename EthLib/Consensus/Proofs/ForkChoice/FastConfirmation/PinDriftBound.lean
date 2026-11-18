@@ -8,6 +8,7 @@ import EthLib.Consensus.Proofs.Transition.SlashedExit
 import EthLib.Consensus.Proofs.Transition.SlashedPersistence
 import EthLib.Consensus.Proofs.Transition.EpochPassAtCall
 import EthLib.Consensus.Proofs.DirectSafety.Apriori.Penalties
+import EthLib.Consensus.Proofs.DirectSafety.Apriori.Contracts.Ledger
 
 /-!
 # The quorum of a call drifts by at most its pin reserve, on another branch
@@ -405,5 +406,45 @@ private theorem Run.balanceFloor {g x y : ForkedBeaconState preset}
     rfl
   rw [balance, debt, split] at floor
   omega
+
+/-- The partial payments to one key are a cost that selects that key's queued entries. -/
+private theorem partialCost_key (v : ValidatorIndex) :
+    PartialCost (config := config) (checks := checks) (floorPartialDebit (preset := preset) v)
+      (fun entry => decide (entry.validatorIndex = v)) where
+  quiet e source := by simp [floorPartialDebit, source]
+  paid := by
+    intro _ _ _ electra _ _ _ _ _ _ computed
+    simpa [floorPartialDebit, electra, computed] using
+      (getPendingPartialWithdrawals_taken computed).2 v
+  slot ok early _ replayed := List.sum_eq_zero fun _ member => by
+    obtain ⟨e, present, rfl⟩ := List.mem_map.mp member
+    simp [floorPartialDebit, slot_events_no_withdrawals ok early replayed e present]
+
+/-- The partial payments to one key over a branch from Electra are its entries of the queue at
+the start that are due by the cutoff, while the cutoff is within the withdrawal delay of the start.
+
+An entry appended along the branch is due no earlier than the delay after the start. -/
+private theorem Run.partialDebit_le {x y : ForkedBeaconState preset}
+    (tail : Run config checks x y) (electra : .pectra ≤ x.fork) (early : y.fork < .glamsterdam)
+    (high cutoff : ℕ) (endpoint : (getCurrentEpoch y.state).toNat ≤ cutoff)
+    (short : cutoff < (getCurrentEpoch x.state).toNat +
+      config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat)
+    (v : ValidatorIndex) {events : List (BalanceEvent preset)}
+    (replayed : tail.balanceEvents high = .ok events) :
+    (events.map (floorPartialDebit v)).sum ≤
+      ((((x.state.pendingPartialWithdrawals electra).data.toList.filter
+        fun entry => decide (entry.validatorIndex = v)).filter
+          (fun entry => entry.withdrawableEpoch.toNat ≤ cutoff)).map (·.amount.toNat)).sum := by
+  obtain ⟨added, late, bound⟩ :=
+    run_partial_queue_kept (partialCost_key v) high cutoff electra tail early replayed endpoint
+  have none : ((added.filter fun entry => decide (entry.validatorIndex = v)).filter
+      (fun entry => entry.withdrawableEpoch.toNat ≤ cutoff)) = [] := by
+    apply List.filter_eq_nil_iff.mpr
+    intro entry member
+    have := late entry (List.mem_of_mem_filter member)
+    simp only [decide_eq_true_eq]
+    omega
+  rw [none] at bound
+  simpa using bound
 
 end EthLib.Consensus.Models.Network
