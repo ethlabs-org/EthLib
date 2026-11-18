@@ -467,9 +467,8 @@ def pinReserve (config : Config) (state ancestor finalizedState : BeaconState pr
   --
   -- `credits` charges those credits once at eleven tenths and their bands once.
   --
-  -- These charge them twice more, also at eleven tenths, rounded up.
-  let exitingCredits := (22 * (depth * proposerCredit + dueStake) + 9) / 10 +
-    2 * (depth * slots + due.length) * preset.upwardBand
+  -- These charge them twice more, also at eleven tenths, rounded up; `exitingBands` has the bands.
+  let exitingCredits := (22 * (depth * proposerCredit + dueStake) + 9) / 10
   -- A lower bound on a key's effective balance on another branch, up to the counting state.
   --
   -- It starts at the finalized block's state, which lies on every branch, and at most this one's.
