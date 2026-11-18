@@ -9,6 +9,10 @@ Not yet released.
 
 ### Proof additions
 
+- `Execution.exists_signer_of_counted` finds a signer of a store's later justified checkpoint in any set of validators ([#2656](https://github.com/ethereum/EthLib/issues/2656)).
+  It assumes that, in each state that counts votes for it, the quorum voters outside the set hold less than two thirds of the total.
+  `Execution.justifiedHonestlySigned` is its case of the honest set, and keeps its statement.
+
 - `quorumDrift_le_quorumReserve` bounds the drift of a fast-confirmation call's quorum by `quorumReserve` ([#2058](https://github.com/ethereum/EthLib/issues/2058)).
   It compares the call's pulled-up state with a later state in the target's epoch or the next, before Gloas from Fulu.
   `Execution.quorumDriftWithin` builds those runs from the stores and proves `QuorumDriftWithin` with BLS checks.

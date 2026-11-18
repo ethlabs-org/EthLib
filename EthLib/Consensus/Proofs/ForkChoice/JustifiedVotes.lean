@@ -351,7 +351,7 @@ theorem Store.ForwardReachableWith.justified_counted {store : Store preset fork}
 The cache writes only the position of the state's own slot.
 
 A slot exactly one buffer length earlier shares that position, so it is excluded. -/
-private theorem getBlockRootAtSlot_of_processSlot {state counted : BeaconState preset fork}
+theorem getBlockRootAtSlot_of_processSlot {state counted : BeaconState preset fork}
     {query : Slot} {root : Root}
     (cached : processSlot state = .ok counted)
     (read : getBlockRootAtSlot counted query = .ok root)
@@ -422,6 +422,52 @@ private theorem Store.Reachable.processSlots_history_ancestor {store : Store pre
     exact reachable.lookahead_history_ancestor_of_held (UInt64.le_of_eq anchorSlot) nonzero
       reachable stored found lookahead read later _
 
+/-- A block root that a state on the way from a held state reads after the anchor slot is held.
+
+The state is the held state, or the held state after empty slots under any signature checks.
+
+The store's checkpoint block of the held root at the epoch is that root.
+
+The anchor's latest header must be the anchor block's, with a zero state root.
+
+The anchor store checks neither. -/
+theorem Store.Reachable.getCheckpointBlock_of_processed {store : Store preset fork}
+    (reachable : Store.Reachable config anchorState anchorBlock store)
+    (anchorSlot : anchorBlock.slot = anchorState.slot)
+    (anchorHeader : anchorState.latestBlockHeader.slot = anchorBlock.slot ∧
+      anchorState.latestBlockHeader.proposerIndex = anchorBlock.proposerIndex ∧
+      anchorState.latestBlockHeader.parentRoot = anchorBlock.parentRoot ∧
+      SszType.hashTreeRoot anchorBlock.body = .ok anchorState.latestBlockHeader.bodyRoot)
+    (anchorZero : anchorState.latestBlockHeader.stateRoot = Vector.replicate 32 0)
+    (nonzero : ∀ (r : Root) (b : BeaconBlock preset fork), store.blocks[r]? = some b →
+      b.stateRoot ≠ Vector.replicate 32 0)
+    {root readRoot : Root} {base state : BeaconState preset fork} {epoch : Epoch}
+    (held : store.blockStates[root]? = some base)
+    (advanced : state = base ∨ ∃ (checks' : SignatureChecks) (slot : Slot),
+      processSlots config checks' base slot = .ok state)
+    (read : getBlockRoot state epoch = .ok readRoot)
+    (afterAnchor : ∀ start, computeStartSlotAtEpoch preset epoch = .ok start →
+      anchorState.slot ≤ start) :
+    (∃ b, store.blocks[readRoot]? = some b) ∧
+      store.getCheckpointBlock root epoch = .ok readRoot := by
+  obtain ⟨start, startOk, startRead⟩ := getBlockRoot_ok_iff.mp read
+  have later := afterAnchor start startOk
+  -- Both cases reduce to the walk from the held root at the start of the epoch.
+  have walk : (·.root) <$> store.getAncestor ⟨root, .pending⟩ start = .ok readRoot := by
+    rcases advanced with rfl | ⟨checks', slot, slotsOk⟩
+    · exact reachable.blockState_history_ancestor (UInt64.le_of_eq anchorSlot) nonzero held
+        startRead later _
+    · exact reachable.processSlots_history_ancestor (checks := checks') anchorSlot anchorHeader
+        anchorZero nonzero held slotsOk startRead later
+  cases ancestor : store.getAncestor ⟨root, .pending⟩ start with
+  | error error => simp [ancestor, Functor.map, Except.map] at walk
+  | ok node =>
+    simp only [ancestor, Functor.map, Except.map, Except.ok.injEq] at walk
+    obtain ⟨block, found, -⟩ := Store.getAncestor_le ancestor
+    refine ⟨⟨block, walk ▸ found⟩, ?_⟩
+    simp [Store.getCheckpointBlock, startOk, ancestor, walk, Except.mapError, bind,
+      Except.bind, pure, Except.pure]
+
 /-- A block root that a counted state reads after the anchor slot is held.
 
 The store's walk from the held root reaches it.
@@ -461,27 +507,16 @@ theorem Store.ForwardReachableWith.counted_history {store : Store preset fork}
     (∃ b, store.blocks[readRoot]? = some b) ∧
       store.getCheckpointBlock root epoch = .ok readRoot := by
   have reachable := reached.reachable
+  rcases cached with rfl | cachedOk
+  · exact reachable.getCheckpointBlock_of_processed anchorSlot anchorHeader anchorZero nonzero
+      held (.inl rfl) read afterAnchor
+  -- Caching the slot keeps the root read at the start of the epoch.
   obtain ⟨start, startOk, startRead⟩ := getBlockRoot_ok_iff.mp read
-  have later := afterAnchor start startOk
-  have ancestorLe := UInt64.le_of_eq anchorSlot
-  -- Every case reduces to the walk from the held root at the start of the epoch.
-  have walk : (·.root) <$> store.getAncestor ⟨root, .pending⟩ start = .ok readRoot := by
-    rcases cached with rfl | cachedOk
-    · exact reachable.blockState_history_ancestor ancestorLe nonzero held startRead later _
-    · have stateRead := getBlockRootAtSlot_of_processSlot cachedOk startRead
-        (recent cachedOk start startOk)
-      rcases advanced with rfl | slotsOk
-      · exact reachable.blockState_history_ancestor ancestorLe nonzero held stateRead later _
-      · exact reachable.processSlots_history_ancestor anchorSlot anchorHeader anchorZero nonzero
-          held slotsOk stateRead later
-  cases ancestor : store.getAncestor ⟨root, .pending⟩ start with
-  | error error => simp [ancestor, Functor.map, Except.map] at walk
-  | ok node =>
-    simp only [ancestor, Functor.map, Except.map, Except.ok.injEq] at walk
-    obtain ⟨block, found, -⟩ := Store.getAncestor_le ancestor
-    refine ⟨⟨block, walk ▸ found⟩, ?_⟩
-    simp [Store.getCheckpointBlock, startOk, ancestor, walk, Except.mapError, bind,
-      Except.bind, pure, Except.pure]
+  have stateRead := getBlockRootAtSlot_of_processSlot cachedOk startRead
+    (recent cachedOk start startOk)
+  exact reachable.getCheckpointBlock_of_processed anchorSlot anchorHeader anchorZero nonzero held
+    (advanced.imp_right fun slotsOk => ⟨checks, slot, slotsOk⟩)
+    (getBlockRoot_ok_iff.mpr ⟨start, startOk, stateRead⟩) afterAnchor
 
 /-! ## The state of a vote's target, and the vote as a statement -/
 
