@@ -40,6 +40,17 @@ A key pays penalties only in the rewards pass at the end of each epoch.
 The pass reads the total, the key's effective balance and its score at the epoch's last state.
 
 So a bound on that rate at each such state bounds the key's penalties over the branch.
+
+## The band of totals
+
+The reserve reads its rates at the call's total, so it needs every total on both branches nearby.
+
+`aprioriGuardAt` at the finalized state bounds each total of a branch from it by a floor and a
+ceiling.
+
+Before Gloas, twice the last ceiling of the window is at most three times its last floor.
+
+So two totals of the window are within three halves of each other.
 -/
 
 @[expose] public section
@@ -446,5 +457,96 @@ private theorem Run.partialDebit_le {x y : ForkedBeaconState preset}
     omega
   rw [none] at bound
   simpa using bound
+
+/-! ## The band of totals from the guard at the finalized state -/
+
+section Band
+
+open DirectSafety.Apriori
+
+/-- From Electra, the ceiling of a window grows with the epoch of the window. -/
+private theorem stakeCeilingAt_mono {x : ForkedBeaconState preset} {high : ℕ}
+    (electra : .pectra ≤ x.fork) {s t : ℕ} (le : s ≤ t) :
+    stakeCeilingAt config x high s ≤ stakeCeilingAt config x high t := by
+  have notBefore : ¬ x.fork < .pectra := Nat.not_lt_of_ge electra
+  have zero : preElectraEpochs config x high = 0 := by simp [preElectraEpochs, notBefore]
+  induction le with
+  | refl => exact Nat.le_refl _
+  | step _ ih =>
+    refine ih.trans ?_
+    simp only [stakeCeilingAt, stakeCeiling, zero, Nat.lt_irrefl, false_and, ↓reduceIte]
+    omega
+
+/-- The floor of a window falls with the epoch of the window. -/
+private theorem stakeFloorAt_anti {x : ForkedBeaconState preset} {high : ℕ} {s t : ℕ}
+    (le : s ≤ t) : stakeFloorAt config x high t ≤ stakeFloorAt config x high s := by
+  induction le with
+  | refl => exact Nat.le_refl _
+  | step _ ih =>
+    refine Nat.le_trans ?_ ih
+    simp only [stakeFloorAt, stakeFloor, stakeFloorPath]
+    omega
+
+/-- From Electra and before Gloas, a state reached from a guarded state within its window has its
+total between the window's last floor and last ceiling.
+
+The window's last index is the epoch after `high`, counted from the guarded state's epoch. -/
+private theorem total_within_guard {g x z : ForkedBeaconState preset} {high : ℕ}
+    (shared : Run config checks g x) (genesis : Genesis (config := config) (checks := checks) g)
+    (parameters : DirectSafety.Parameters preset) (caps : CapOrder preset)
+    (aligned : MaxEffectiveBalancesAligned preset) (twoSlots : 2 ≤ preset.SLOTS_PER_EPOCH.toNat)
+    (electra : .pectra ≤ x.fork) (guard : aprioriGuardAt config x high)
+    (run : Run config checks x z) (early : z.fork < .glamsterdam)
+    (within : (getCurrentEpoch z.state).toNat ≤ high + 1) {total : Gwei}
+    (totalOk : getTotalActiveBalance z.state = .ok total) :
+    let last := high + 1 - (getCurrentEpoch x.state).toNat
+    stakeFloorAt config x high last ≤ total.toNat ∧
+      total.toNat ≤ stakeCeilingAt config x high last := by
+  intro last
+  have index : ix x z ≤ last := by
+    simp only [ix, last]
+    omega
+  obtain ⟨ceiling, -, floor⟩ := ceilingFloor_electra shared run high
+    ⟨genesis, parameters, caps, aligned, early, within, guard⟩ twoSlots electra
+  have xEarly := Nat.lt_of_le_of_lt (fork_le_of_chainSteps run.chainSteps) early
+  have unit := (ceiling_unit_of_guard shared genesis aligned xEarly electra guard).trans
+    (stakeCeilingAt_mono electra (Nat.zero_le last))
+  refine ⟨(stakeFloorAt_anti index).trans (floor total totalOk), ?_⟩
+  obtain ⟨-, -, value⟩ := getTotalBalance_ok_iff_stake.mp (getTotalActiveBalance_ok totalOk)
+  rw [value]
+  exact max_le unit (Nat.le_trans ceiling (stakeCeilingAt_mono electra index))
+
+/-- From Electra and before Gloas, two states reached from a guarded state within its window have
+totals within three halves of each other.
+
+Both lie between the window's last floor and ceiling, and the guard asks that twice that ceiling
+be at most three times that floor. -/
+private theorem total_band_of_guard {g x y z : ForkedBeaconState preset} {high : ℕ}
+    (shared : Run config checks g x) (genesis : Genesis (config := config) (checks := checks) g)
+    (parameters : DirectSafety.Parameters preset) (caps : CapOrder preset)
+    (aligned : MaxEffectiveBalancesAligned preset) (twoSlots : 2 ≤ preset.SLOTS_PER_EPOCH.toNat)
+    (electra : .pectra ≤ x.fork) (guard : aprioriGuardAt config x high)
+    (toY : Run config checks x y) (yEarly : y.fork < .glamsterdam)
+    (yWithin : (getCurrentEpoch y.state).toNat ≤ high + 1)
+    (toZ : Run config checks x z) (zEarly : z.fork < .glamsterdam)
+    (zWithin : (getCurrentEpoch z.state).toNat ≤ high + 1) {yTotal zTotal : Gwei}
+    (yOk : getTotalActiveBalance y.state = .ok yTotal)
+    (zOk : getTotalActiveBalance z.state = .ok zTotal) :
+    2 * zTotal.toNat ≤ 3 * yTotal.toNat := by
+  have notBefore : ¬ x.fork < .pectra := Nat.not_lt_of_ge electra
+  have zero : preElectraEpochs config x high = 0 := by simp [preElectraEpochs, notBefore]
+  obtain ⟨-, -, -, -, -, -, -, -, -, -, -, -, ratioGuard, -⟩ := id guard
+  rw [zero] at ratioGuard
+  have ratio := ratioGuard (high + 1 - (getCurrentEpoch x.state).toNat) (Nat.zero_le _)
+    (by unfold driftHorizon; omega)
+  obtain ⟨yLow, -⟩ := total_within_guard shared genesis parameters caps aligned twoSlots electra
+    guard toY yEarly yWithin yOk
+  obtain ⟨-, zHigh⟩ := total_within_guard shared genesis parameters caps aligned twoSlots electra
+    guard toZ zEarly zWithin zOk
+  simp only [stakeCeilingAt, stakeFloorAt, zero] at yLow zHigh ⊢
+  omega
+
+end Band
+
 
 end EthLib.Consensus.Models.Network
