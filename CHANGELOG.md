@@ -33,7 +33,7 @@ Not yet released.
   It covers executions whose honest stores verify signatures with BLS (`checks = .bls`), because the specification's pulled-up head state processes slots with BLS checks.
   Each call assumes `CallObligations`, with `MemberObligations` for each member of its walk.
   The run assumes `JustifiedPinned`, `JustifiedHonestlySigned`, `TargetIncluded` and `StaleHeadVotersInWindow`; `SOUNDNESS.md` describes them.
-  `Execution.callInvariant_step` is the step: one call keeps `CallInvariant`, given the invariant at every earlier call.
+  Its proof is a private step: one call keeps `CallInvariant`, given the invariant at every earlier call.
   `CallAt` names one call in a run of calls by one validator.
   The step reads these new or newly public lemmas:
   - `Store.parentRoot_of_getAncestorRoots` and `Store.isAncestor_terminal_of_getAncestorRoots` give the parent and ancestry of each walked root.
