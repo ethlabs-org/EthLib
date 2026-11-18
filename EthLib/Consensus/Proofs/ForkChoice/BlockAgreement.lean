@@ -3,7 +3,9 @@ module
 public import EthLib.Consensus.Proofs.ForkChoiceNetworkModel
 public import EthLib.Consensus.Proofs.ForkChoice.BlockStates
 public import EthLib.Consensus.Proofs.ForkChoice.SharedAncestry
+import EthLib.Consensus.Proofs.ForkChoice.BlockRuns
 import EthLib.Consensus.Proofs.ForkChoice.Checkpoints
+import EthLib.Consensus.Proofs.ForkChoice.StoreEntries
 
 /-!
 # Agreement of held block states
@@ -13,6 +15,8 @@ Honest stores run the same checks and execution engine from one anchor.
 When their held blocks agree at shared roots, the corresponding states agree too.
 
 The shared store dichotomy supplies agreement or names a collision, without hash injectivity.
+
+From Gloas, synchrony also delivers each verified payload, through the envelope that verified it.
 -/
 
 @[expose] public section
@@ -259,6 +263,122 @@ theorem Execution.blockStates_eq (e : Execution (forkChoice config checks source
       rw [rmsg] at rprocess
       exact Except.ok.inj (lprocess.symm.trans rprocess)
 
+/-- From Gloas, a verified payload was verified at the start, or came from an accepted envelope.
+
+The envelope was in the holder's view, and the handler accepted it at an earlier event. -/
+private theorem Execution.exists_envelope_of_verified
+    (e : Execution (forkChoice config checks sources signed sends) J)
+    (gloas : .glamsterdam ≤ fork) {v : ν} {n : ℕ} {root : Root}
+    (verified : ((e.world n).state v).isPayloadVerified gloas root = true) :
+    (e.start v).isPayloadVerified gloas root = true ∨
+      ∃ i, i < n ∧ ∃ envelope : SignedExecutionPayloadEnvelope preset fork, ∃ after,
+        .envelope gloas envelope ∈ (e.world i).view v ∧
+        envelope.message.beaconBlockRoot = root ∧
+        ((e.world i).state v).onExecutionPayloadEnvelope config checks sources gloas envelope =
+          .ok after := by
+  induction n with
+  | zero => exact .inl verified
+  | succ n ih =>
+    by_cases held : ((e.world n).state v).isPayloadVerified gloas root = true
+    · rcases ih held with old | ⟨i, lt, rest⟩
+      · exact .inl old
+      · exact .inr ⟨i, Nat.lt_succ_of_lt lt, rest⟩
+    -- A step that keeps the payloads cannot verify a new one.
+    have kept {s t : Store preset fork} (same : t.payloads gloas = s.payloads gloas)
+        (old : s = (e.world n).state v) (new : t = (e.world (n + 1)).state v) : False := by
+      subst s t
+      apply held
+      unfold Store.isPayloadVerified at verified ⊢
+      rw [← same]
+      exact verified
+    rcases e.state_succ n v with same | ⟨_, moved⟩
+    · exact absurd (same ▸ verified) held
+    cases moved with
+    | tick _ _ h => exact (kept (Store.onTick_payloads h gloas) rfl rfl).elim
+    | block _ h => exact (kept (Store.onBlock_payloads h gloas) rfl rfl).elim
+    | blockAttestation _ _ _ _ h => exact (kept (Store.onAttestation_payloads h gloas) rfl rfl).elim
+    | blockAttesterSlashing _ _ _ _ h =>
+      exact (kept (Store.onAttesterSlashing_payloads h gloas) rfl rfl).elim
+    | attestation _ h => exact (kept (Store.onAttestation_payloads h gloas) rfl rfl).elim
+    | attesterSlashing _ h => exact (kept (Store.onAttesterSlashing_payloads h gloas) rfl rfl).elim
+    | payloadAttestation _ h =>
+      obtain ⟨_, _, same⟩ := Store.onPayloadAttestationMessage_onlyPtcVotes h
+      exact (kept (by rw [same]) rfl rfl).elim
+    | @inclusionList heze _ _ h =>
+      obtain ⟨_, _, same⟩ := Store.onInclusionList_ok heze h
+      exact (kept (by rw [same]) rfl rfl).elim
+    | @envelope _ envelope mem h =>
+      by_cases same : envelope.message.beaconBlockRoot = root
+      · exact .inr ⟨n, Nat.lt_succ_self n, envelope, _, mem, same, h⟩
+      -- An envelope for another block leaves this payload as it was.
+      obtain ⟨_, _, _, _, recorded, record, after⟩ := Store.onExecutionPayloadEnvelope_ok h
+      obtain ⟨_, rfl⟩ := Store.recordEnvelope_frame record
+      rw [after] at verified
+      apply absurd _ held
+      simpa [Store.isPayloadVerified, Std.TreeMap.contains_insert, same] using verified
+
+/-- A walk of one store succeeds in a second store that holds its start.
+
+Both stores come from one anchor, whose block is not after its state, and agree on their blocks. -/
+private theorem getAncestor_of_reachable {anchorState : BeaconState preset fork}
+    {anchorBlock : BeaconBlock preset fork} (anchorSlot : anchorBlock.slot ≤ anchorState.slot)
+    {first second : Store preset fork}
+    (firstReachable : Store.Reachable config anchorState anchorBlock first)
+    (secondReachable : Store.Reachable config anchorState anchorBlock second)
+    (same : ∀ (r : Root) b c, first.blocks[r]? = some b → second.blocks[r]? = some c → b = c)
+    {node ancestor : ForkChoiceNode} {slot : Slot}
+    (walk : first.getAncestor node slot = .ok ancestor)
+    (known : ∃ b, second.blocks[node.root]? = some b) :
+    second.getAncestor node slot = .ok ancestor := by
+  induction node using Store.getAncestor.induct (store := first) (slot := slot) with
+  | case1 node found =>
+    rw [Store.getAncestor] at walk
+    split at walk <;> simp_all [throw, throwThe, MonadExceptOf.throw]
+  | case2 node block found le =>
+    rw [Store.getAncestor_of_le found le] at walk
+    cases walk
+    obtain ⟨c, cFound⟩ := known
+    obtain rfl := same _ _ _ found cFound
+    exact Store.getAncestor_of_le cFound le
+  | case3 node block found above parentFound =>
+    rw [Store.getAncestor] at walk
+    split at walk
+    · simp_all
+    · rename_i b sameBlock
+      rw [found, Option.some.injEq] at sameBlock
+      subst sameBlock
+      simp only [above, ↓reduceIte] at walk
+      split at walk <;> simp_all [throw, throwThe, MonadExceptOf.throw]
+  | case4 node block found above parent parentFound lower ih =>
+    rw [Store.getAncestor_step found above parentFound lower] at walk
+    obtain ⟨c, cFound⟩ := known
+    obtain rfl := same _ _ _ found cFound
+    -- The anchor block has no parent below it in the first store, so this block has a parent.
+    have notAnchor : block ≠ anchorBlock := by
+      rintro rfl
+      exact absurd lower (UInt64.not_lt.mpr
+        (Store.Reachable.anchorSlot_le anchorSlot firstReachable parentFound))
+    obtain ⟨_, _, -, fromParent⟩ := secondReachable.blockStatesFromParents cFound
+    obtain ⟨_, _, _, _, -, -, parentHeld, -⟩ := fromParent notAnchor
+    obtain ⟨q, qFound⟩ := secondReachable.known_of_blockState parentHeld
+    obtain rfl := same _ _ _ parentFound qFound
+    rw [Store.getAncestor_step cFound above qFound lower]
+    exact ih walk ⟨_, qFound⟩
+  | case5 node block found above parent parentFound notLower =>
+    rw [Store.getAncestor] at walk
+    split at walk
+    · simp_all
+    · rename_i b sameBlock
+      rw [found, Option.some.injEq] at sameBlock
+      subst sameBlock
+      simp only [above, ↓reduceIte] at walk
+      split at walk
+      · simp_all
+      · rename_i p sameParent
+        rw [parentFound, Option.some.injEq] at sameParent
+        subst sameParent
+        simp [notLower] at walk
+
 end ForkChoice
 
 variable {config : Config} {checks : SignatureChecks} {sources : BlockSources preset fork}
@@ -491,5 +611,96 @@ theorem Execution.blocks_of_partiallySynchronous {GST Δ last : ℕ}
     rw [f, t]
     exact Nat.mul_le_mul_right _ (UInt64.le_iff_toNat_le.mp higher)
   exact ⟨target, targetOk, node, (agree target slotLe).trans nodeOk, rootOk⟩
+
+/-- From Gloas, synchrony delivers a verified payload to a later up-to-date honest store.
+
+That store must hold the state of the payload's block.
+
+The anchor block must not be after the anchor state.
+
+So no later walk reaches the parent of the anchor block, and the receiver repeats the sender's walk.
+
+Otherwise two honest stores at bounded times name a collision. -/
+theorem Execution.payloadVerified_of_partiallySynchronous {GST Δ last : ℕ}
+    (sync : e.PartiallySynchronous GST Δ) (gloas : .glamsterdam ≤ fork)
+    (anchorSlot : anchorBlock.slot ≤ anchorState.slot) {anchor : Store preset fork}
+    (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (start : ∀ u ∈ J, e.start u = anchor) {v u : ValidatorIndex} (honest : v ∈ J)
+    (receiver : u ∈ J) {n k : ℕ}
+    (late : max (e.world n).time GST + Δ ≤ (e.world k).time) (bounded : (e.world k).time ≤ last)
+    (upToDate : UpToDate config checks sources (e.world k).time ((e.world k).view u)
+      ((e.world k).state u))
+    {root : Root} (verified : ((e.world n).state v).isPayloadVerified gloas root = true)
+    (held : ∃ state, ((e.world k).state u).blockStates[root]? = some state) :
+    ((e.world k).state u).isPayloadVerified gloas root = true ∨
+    ∃ u ∈ J, ∃ v ∈ J, ∃ n m, (e.world n).time ≤ last ∧ (e.world m).time ≤ last ∧
+      ∃ root collision, Store.findBlockCollision ((e.world n).state u)
+        ((e.world m).state v) [root] = some collision := by
+  rcases Store.blocks_agree_or_collision
+      (fun i : ValidatorIndex × ℕ => (e.world i.2).state i.1)
+      (fun i => i.1 ∈ J ∧ (e.world i.2).time ≤ last) with agree | collision
+  swap
+  · obtain ⟨⟨u, n⟩, ⟨hu, hn⟩, ⟨v, m⟩, ⟨hv, hm⟩, root, collision, found⟩ := collision
+    exact .inr ⟨u, hu, v, hv, n, m, hn, hm, root, collision, found⟩
+  have oneBlock v hv u hu n k hn hk := agree (v, n) ⟨hv, hn⟩ (u, k) ⟨hu, hk⟩
+  left
+  have reached (w : ValidatorIndex) (h : w ∈ J) (i : ℕ) :=
+    e.reachable (fun w hw => (start w hw).symm ▸ Store.Reachable.anchor anchored) i w h
+  -- The payload came from an envelope that the sender accepted before.
+  rcases e.exists_envelope_of_verified gloas verified with
+    initial | ⟨i, before, envelope, _, mem, rfl, handled⟩
+  · obtain ⟨_, -, -, -, fields⟩ := getForkchoiceStore_fields anchored
+    rw [start v honest] at initial
+    simp [Store.isPayloadVerified, (fields gloas).2.1] at initial
+  have iTime : (e.world i).time ≤ (e.world n).time := e.monotone_time (Nat.le_of_lt before)
+  have ordered : i ≤ k := by
+    by_contra! after
+    have time := e.monotone_time (Nat.le_of_lt after)
+    change (e.world k).time ≤ (e.world i).time at time
+    have positive := sync.1
+    omega
+  have iBound : (e.world i).time ≤ last := by omega
+  -- Synchrony puts the envelope in the receiver's view.
+  have memK := sync.2.2 i k ordered v honest u receiver _ mem (by omega)
+  obtain ⟨state, stateFound, dataOk, envelopeOk, recorded, record, -⟩ :=
+    Store.onExecutionPayloadEnvelope_ok handled
+  obtain ⟨other, otherFound⟩ := held
+  have sameState : state = other := e.blockStates_eq anchored honest receiver (start v honest)
+    (start u receiver) (oneBlock v honest u receiver i k iBound bounded) stateFound otherFound
+  subst sameState
+  -- The receiver records the envelope as the sender did.
+  obtain ⟨recordedHere, recordHere⟩ : ∃ recordedHere, ((e.world k).state u).recordEnvelope
+      sources envelope.message.beaconBlockRoot envelope.message.payload = .ok recordedHere := by
+    unfold Store.recordEnvelope at record ⊢
+    split
+    · rename_i heze
+      simp only [heze, dite_true, Store.recordPayloadInclusionListSatisfaction, bind_ok_iff,
+        mapError_ok_iff, pure, Except.pure, Except.ok.injEq] at record
+      obtain ⟨block, blockOk, slot, slotOk, dependent, dependentOk, -⟩ := record
+      simp only [Store.getShufflingDependentRoot, bind_ok_iff, mapError_ok_iff, pure,
+        Except.pure, Except.ok.injEq] at dependentOk
+      obtain ⟨dependentSlot, dependentSlotOk, ancestor, walk, -⟩ := dependentOk
+      -- The receiver holds the block, so the sender's walk from it succeeds there too.
+      obtain ⟨here, hereFound⟩ := (reached u receiver k).known_of_blockState otherFound
+      obtain rfl := oneBlock v honest u receiver i k iBound bounded _ _ _
+        (Store.block_ok_iff.mp blockOk) hereFound
+      have walkHere := getAncestor_of_reachable anchorSlot (reached v honest i)
+        (reached u receiver k) (oneBlock v honest u receiver i k iBound bounded) walk
+        ⟨_, hereFound⟩
+      exact ⟨_, by simp [Store.recordPayloadInclusionListSatisfaction,
+        Store.block_ok_iff.mpr hereFound, slotOk, Store.getShufflingDependentRoot,
+        dependentSlotOk, walkHere, bind, Except.bind, pure, Except.pure, Except.mapError]; rfl⟩
+    · exact ⟨_, rfl⟩
+  have acceptedHere : ((e.world k).state u).onExecutionPayloadEnvelope config checks sources gloas
+      envelope = .ok { recordedHere with payloads := fun _ => ((recordedHere.payloads gloas).insert
+        envelope.message.beaconBlockRoot envelope.message) } := by
+    unfold Store.onExecutionPayloadEnvelope
+    simp only [Store.blockState_ok_iff.mpr otherFound, bind, Except.bind]
+    rw [dataOk]
+    simp only [Except.mapError, envelopeOk, recordHere, pure, Except.pure]
+  -- The receiver is up to date, so the envelope leaves its store as it is.
+  have fixed := upToDate.2 _ (.envelope memK acceptedHere)
+  rw [← fixed]
+  simp [Store.isPayloadVerified]
 
 end EthLib.Consensus.Models.Network
