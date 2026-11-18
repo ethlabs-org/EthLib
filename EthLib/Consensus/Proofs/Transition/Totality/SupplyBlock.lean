@@ -1365,7 +1365,7 @@ private theorem flagSum_foldlM_addAttesterFlags {s first : BeaconState preset fo
 /-- The flag sums of both recent epochs of a state, over its first `count` positions.
 
 Position `j` weighs its flags by the base reward `base j`. -/
-def flagPotential (s : BeaconState preset fork) (altair : .altair ≤ fork) (base : Nat → Nat)
+def recentFlagSum (s : BeaconState preset fork) (altair : .altair ≤ fork) (base : Nat → Nat)
     (count : Nat) : Nat :=
   flagSumOf base count (s.previousEpochParticipation altair) +
     flagSumOf base count (s.currentEpochParticipation altair)
@@ -1384,7 +1384,7 @@ theorem flagSumOf_le (base : Nat → Nat) (count : Nat)
 /-- The flag sums of the two recent epochs of a state, over a fixed registry. -/
 private def potential (altair : .altair ≤ fork) (first : BeaconState preset fork)
     (perIncrement : Nat) (s : BeaconState preset fork) : Nat :=
-  flagPotential s altair (baseAt first perIncrement) first.validators.data.size
+  recentFlagSum s altair (baseAt first perIncrement) first.validators.data.size
 
 /-- The potential is the flag sum of each recent epoch. -/
 private theorem potential_eq (altair : .altair ≤ fork) (first : BeaconState preset fork)
