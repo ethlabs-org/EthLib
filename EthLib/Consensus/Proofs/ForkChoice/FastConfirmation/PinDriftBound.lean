@@ -337,6 +337,114 @@ private theorem sum_range_ite_lt (pen k : ℕ) :
     · have atLeast : k ≤ j := Nat.le_of_not_lt below
       simp [below, Nat.min_eq_right atLeast, Nat.min_eq_right (Nat.le_succ_of_le atLeast)]
 
+/-- The terms below an index count their value, and the others count zero. -/
+private theorem sum_range_ite_lt_fn (pen : ℕ → ℕ) (k : ℕ) :
+    ∀ j, ∑ t ∈ Finset.range j, (if t < k then pen t else 0) = ∑ t ∈ Finset.range (min j k), pen t
+  | 0 => by simp
+  | j + 1 => by
+    rw [Finset.sum_range_succ, sum_range_ite_lt_fn pen k j]
+    by_cases below : j < k
+    · simp [below, Nat.min_eq_left (Nat.le_of_lt below),
+        Nat.min_eq_left (Nat.succ_le_of_lt below), Finset.sum_range_succ]
+    · have atLeast : k ≤ j := Nat.le_of_not_lt below
+      simp [below, Nat.min_eq_right atLeast, Nat.min_eq_right (Nat.le_succ_of_le atLeast)]
+
+/-- A sum over an interval of naturals is the sum over the offsets from its start. -/
+private theorem sum_Ico_offsets (pen : ℕ → ℕ) (a b : ℕ) :
+    ∑ t ∈ Finset.Ico a b, pen t = ∑ t ∈ Finset.range (b - a), pen (a + t) := by
+  refine Finset.sum_nbij' (fun t => t - a) (fun t => a + t) ?_ ?_ ?_ ?_ ?_
+  · intro t member
+    simp only [Finset.mem_Ico, Finset.mem_range] at member ⊢
+    omega
+  · intro t member
+    simp only [Finset.mem_Ico, Finset.mem_range] at member ⊢
+    omega
+  · intro t member
+    simp only [Finset.mem_Ico] at member
+    omega
+  · intro t member
+    omega
+  · intro t member
+    simp only [Finset.mem_Ico] at member
+    congr 1
+    omega
+
+/-- A sum over a list of the first terms is the sum over the finite set of the first terms. -/
+private theorem list_range_sum (pen : ℕ → ℕ) :
+    ∀ j, ((List.range j).map pen).sum = ∑ t ∈ Finset.range j, pen t
+  | 0 => by simp
+  | j + 1 => by
+    rw [List.range_succ, List.map_append, List.sum_append, list_range_sum pen j,
+      Finset.sum_range_succ]
+    simp
+
+/-- A state of a segment that is followed by a step of the segment is in the epoch of its start. -/
+private theorem segment_epoch_eq {m n z : ForkedBeaconState preset}
+    (mid : Run config checks m n) (pre : Run config checks m z) (post : Run config checks z n)
+    (split : mid = pre.append post)
+    (starts : ∀ {u w : ForkedBeaconState preset} (step : Step config checks u w),
+      mid.Contains step → getCurrentEpoch u.state = getCurrentEpoch m.state)
+    (before : (getCurrentEpoch z.state).toNat < (getCurrentEpoch n.state).toNat) :
+    getCurrentEpoch z.state = getCurrentEpoch m.state := by
+  subst split
+  cases post with
+  | nil => exact absurd before (Nat.lt_irrefl _)
+  | @snoc u _ inner step =>
+    have atU : getCurrentEpoch u.state = getCurrentEpoch m.state :=
+      starts step (.last (pre.append inner) step)
+    exact UInt64.le_antisymm
+      (atU ▸ currentEpoch_le_of_chainSteps inner.chainSteps)
+      (currentEpoch_le_of_chainSteps pre.chainSteps)
+
+/-- The penalties of one key over a branch from Altair are at most the sum of its pass rates.
+
+The rate must hold at each state of the branch before the epoch of its end, at that state's epoch.
+
+The branch ends `epoch y - epoch x` epochs, and each runs one rewards pass.
+
+The cut induction of the a priori bound, `run_cuts_le`, sums the segments. -/
+private theorem Run.passDebit_le_rates {x y : ForkedBeaconState preset}
+    (tail : Run config checks x y)
+    (early : y.fork < .glamsterdam) (altair : .altair ≤ x.fork) (high : ℕ)
+    (endEpoch : (getCurrentEpoch y.state).toNat ≤ high + 1)
+    {v : ℕ} (inside : v < x.state.validators.data.size) (pen : ℕ → ℕ)
+    (rate : ∀ {z : ForkedBeaconState preset} (pre : Run config checks x z)
+      (post : Run config checks z y), tail = pre.append post →
+      (getCurrentEpoch z.state).toNat < (getCurrentEpoch y.state).toNat →
+      passPenaltyRate config z v ≤ pen (getCurrentEpoch z.state).toNat)
+    {events : List (BalanceEvent preset)} (replayed : tail.balanceEvents high = .ok events) :
+    (events.map (penaltyDebit v)).sum ≤
+      ∑ t ∈ Finset.Ico (getCurrentEpoch x.state).toNat (getCurrentEpoch y.state).toNat, pen t := by
+  have total := run_cuts_le high tail early
+    (fun z => passPenaltyRate config z v ≤ pen (getCurrentEpoch z.state).toNat)
+    (penaltyDebit v)
+    (fun t => if t < ix x y then pen ((getCurrentEpoch x.state).toNat + t) else 0) rate
+    (fun {m n} toM mid rest starts rates {found} found_ok => by
+      have nEarly := Nat.lt_of_le_of_lt (fork_le_of_chainSteps rest.chainSteps) early
+      have ny := UInt64.le_iff_toNat_le.mp (currentEpoch_le_of_chainSteps rest.chainSteps)
+      have segment := segment_passDebit_le mid nEarly
+        (Nat.le_trans altair (fork_le_of_chainSteps toM.chainSteps)) high (by omega) starts
+        (Nat.lt_of_lt_of_le inside (registryGrows_of_chainSteps toM.chainSteps))
+        (pen (getCurrentEpoch m.state).toNat)
+        (fun {z} preZ postZ split before => by
+          have same := segment_epoch_eq mid preZ postZ split starts before
+          rw [← same]
+          exact rates preZ postZ split before)
+        found_ok
+      refine segment.trans ?_
+      split
+      · rename_i before
+        have := UInt64.lt_iff_toNat_lt.mp before
+        have xm := UInt64.le_iff_toNat_le.mp (currentEpoch_le_of_chainSteps toM.chainSteps)
+        simp only [ix]
+        rw [ite_eq_left (by omega), Nat.add_sub_cancel' xm]
+      · exact Nat.zero_le _)
+    (ix x y + 1) (fun step member => steps_before_end tail step member) replayed
+  rw [list_range_sum, sum_range_ite_lt_fn (fun t => pen ((getCurrentEpoch x.state).toNat + t))
+    (ix x y) (ix x y + 1), Nat.min_eq_right (Nat.le_succ _)] at total
+  rw [sum_Ico_offsets]
+  simpa [ix] using total
+
 /-- The penalties of one key over a branch from Altair are at most its pass rate per epoch ended.
 
 The rate must hold at each state of the branch before the epoch of its end.
@@ -355,30 +463,72 @@ private theorem Run.passDebit_le {x y : ForkedBeaconState preset} (tail : Run co
     {events : List (BalanceEvent preset)} (replayed : tail.balanceEvents high = .ok events) :
     (events.map (penaltyDebit v)).sum ≤
       ((getCurrentEpoch y.state).toNat - (getCurrentEpoch x.state).toNat) * pen := by
-  have total := run_cuts_le high tail early (fun z => passPenaltyRate config z v ≤ pen)
-    (penaltyDebit v) (fun t => if t < ix x y then pen else 0) rate
-    (fun {m n} toM mid rest starts rates {found} found_ok => by
-      have nEarly := Nat.lt_of_le_of_lt (fork_le_of_chainSteps rest.chainSteps) early
-      have ny := UInt64.le_iff_toNat_le.mp (currentEpoch_le_of_chainSteps rest.chainSteps)
-      have segment := segment_passDebit_le mid nEarly
-        (Nat.le_trans altair (fork_le_of_chainSteps toM.chainSteps)) high (by omega) starts
-        (Nat.lt_of_lt_of_le inside (registryGrows_of_chainSteps toM.chainSteps)) pen rates
-        found_ok
-      refine segment.trans ?_
-      split
-      · rename_i before
-        have := UInt64.lt_iff_toNat_lt.mp before
-        have xm := UInt64.le_iff_toNat_le.mp (currentEpoch_le_of_chainSteps toM.chainSteps)
-        simp only [ix]
-        rw [ite_eq_left (by omega)]
-      · exact Nat.zero_le _)
-    (ix x y + 1) (fun step member => steps_before_end tail step member) replayed
-  rw [sum_range_ite_lt, Nat.min_eq_right (Nat.le_succ _)] at total
-  exact total
+  simpa using Run.passDebit_le_rates tail early altair high endEpoch inside (fun _ => pen) rate
+    replayed
 
 /-- The sync debit of one key in one event. -/
 private def syncDebit (v : ℕ) (event : BalanceEvent preset) : ℕ :=
   if event.source = .sync then actualBalanceAt event.before v - actualBalanceAt event.after v else 0
+
+/-- The balance of a key that stays unslashed falls over a branch only by its debits.
+
+It starts from the smaller of its balance and its largest effective balance.
+
+A sweep of its excess and a switch to compounding leave at least that much.
+
+The debits are its passes, its sync penalties and its partial withdrawals.
+
+The passes are at most its pass rates at the epochs ended.
+
+The guards are those of the per-key floor of the a priori bound, `FloorTrace.run_of_le_cap`. -/
+private theorem Run.balanceFloor_rates {g x y : ForkedBeaconState preset}
+    (shared : Run config checks g x) (tail : Run config checks x y)
+    (genesis : Genesis (config := config) (checks := checks) g) (caps : CapOrder preset)
+    (delay : 0 < config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat)
+    (early : y.fork < .glamsterdam) (altair : .altair ≤ x.fork) (high : ℕ)
+    (endEpoch : (getCurrentEpoch y.state).toNat ≤ high + 1)
+    (v : ValidatorIndex) (val : Validator) (initial : x.state.validators.data[v.toNat]? = some val)
+    (unslashed : val.slashed = false) (activated : val.activationEpoch ≠ FAR_FUTURE_EPOCH)
+    (quotient : ℕ) (positive : 0 < quotient)
+    (guards : ∀ {m n : ForkedBeaconState preset} (pre : Run config checks x m)
+      (step : Step config checks m n) (post : Run config checks n y),
+      (pre.snoc step).append post = tail → ∀ w, n.state.validators.data[v.toNat]? = some w →
+      high + 1 < w.exitEpoch.toNat ∧
+      (getCurrentEpoch m.state).toNat < (getCurrentEpoch x.state).toNat +
+        preset.EPOCHS_PER_SLASHINGS_VECTOR.toNat -
+          (preset.EPOCHS_PER_SLASHINGS_VECTOR / 2).toNat ∧
+      quotient ≤ (EthLib.Consensus.parameters preset m.fork).MIN_SLASHING_PENALTY_QUOTIENT.toNat ∧
+      ∀ events, step.balanceEvents = .ok events → ∀ e ∈ events, e.source ≠ .crossing)
+    (stays : ∀ w, y.state.validators.data[v.toNat]? = some w → w.slashed = false)
+    (pen : ℕ → ℕ)
+    (rate : ∀ {z : ForkedBeaconState preset} (pre : Run config checks x z)
+      (post : Run config checks z y), tail = pre.append post →
+      (getCurrentEpoch z.state).toNat < (getCurrentEpoch y.state).toNat →
+      passPenaltyRate config z v.toNat ≤ pen (getCurrentEpoch z.state).toNat)
+    {events : List (BalanceEvent preset)} (replayed : tail.balanceEvents high = .ok events) :
+    min (actualBalanceAt x v.toNat) (withdrawalMaxEffectiveBalance preset x.fork val).toNat ≤
+      actualBalanceAt y v.toNat +
+        ∑ t ∈ Finset.Ico (getCurrentEpoch x.state).toNat (getCurrentEpoch y.state).toNat, pen t +
+        (events.map (syncDebit v.toNat)).sum + (events.map (floorPartialDebit v)).sum := by
+  obtain ⟨last, trace, balance, debt, -, w, final, -, used, -⟩ :=
+    FloorTrace.run_of_le_cap shared tail genesis caps delay early high endEpoch v val initial
+      unslashed
+      activated (min (actualBalanceAt x v.toNat)
+        (withdrawalMaxEffectiveBalance preset x.fork val).toNat) 0 quotient
+      (Nat.min_le_right _ _) positive guards replayed
+  have clean : last.slashedHigh = none := by
+    cases flag : last.slashedHigh with
+    | none => rfl
+    | some _ => simp [flag, stays w final] at used
+  have floor := FloorTrace.unslashed_balance_floor trace (by simp) clean
+  have inside := (Array.getElem?_eq_some_iff.mp initial).1
+  have passes := Run.passDebit_le_rates tail early altair high endEpoch inside pen rate replayed
+  have split : (events.map (floorPenaltyDebit v.toNat)).sum =
+      (events.map (penaltyDebit v.toNat)).sum + (events.map (syncDebit v.toNat)).sum := by
+    rw [← List.sum_map_add]
+    rfl
+  rw [balance, debt, split] at floor
+  omega
 
 /-- The balance of a key that stays unslashed falls over a branch only by its debits.
 
@@ -419,25 +569,9 @@ private theorem Run.balanceFloor {g x y : ForkedBeaconState preset}
       actualBalanceAt y v.toNat +
         ((getCurrentEpoch y.state).toNat - (getCurrentEpoch x.state).toNat) * pen +
         (events.map (syncDebit v.toNat)).sum + (events.map (floorPartialDebit v)).sum := by
-  obtain ⟨last, trace, balance, debt, -, w, final, -, used, -⟩ :=
-    FloorTrace.run_of_le_cap shared tail genesis caps delay early high endEpoch v val initial
-      unslashed
-      activated (min (actualBalanceAt x v.toNat)
-        (withdrawalMaxEffectiveBalance preset x.fork val).toNat) 0 quotient
-      (Nat.min_le_right _ _) positive guards replayed
-  have clean : last.slashedHigh = none := by
-    cases flag : last.slashedHigh with
-    | none => rfl
-    | some _ => simp [flag, stays w final] at used
-  have floor := FloorTrace.unslashed_balance_floor trace (by simp) clean
-  have inside := (Array.getElem?_eq_some_iff.mp initial).1
-  have passes := Run.passDebit_le tail early altair high endEpoch inside pen rate replayed
-  have split : (events.map (floorPenaltyDebit v.toNat)).sum =
-      (events.map (penaltyDebit v.toNat)).sum + (events.map (syncDebit v.toNat)).sum := by
-    rw [← List.sum_map_add]
-    rfl
-  rw [balance, debt, split] at floor
-  omega
+  have rates := Run.balanceFloor_rates shared tail genesis caps delay early altair high endEpoch v
+    val initial unslashed activated quotient positive guards stays (fun _ => pen) rate replayed
+  simpa using rates
 
 /-- The partial payments to one key are a cost that selects that key's queued entries. -/
 private theorem partialCost_key (v : ValidatorIndex) :
