@@ -441,40 +441,6 @@ theorem processRewardsAndPenalties_balance_le_of_inactivityUpdates
   exact ⟨up, down.trans (Nat.add_le_add_left (Nat.div_le_div_right
     (Nat.mul_le_mul_left _ raised)) _)⟩
 
-/-- A slot inside one epoch only caches the slot.
-
-It runs no epoch transition and no upgrade, so it keeps the fork. -/
-private theorem slot_same_epoch {middle last : ForkedBeaconState preset}
-    (ok : advanceSlotAcross config checks middle = .ok last)
-    (same : getCurrentEpoch last.state = getCurrentEpoch middle.state) :
-    ∃ (cached : BeaconState preset middle.fork) (next : Slot),
-      processSlot middle.state = .ok cached ∧
-        last = ⟨middle.fork, { cached with slot := next }⟩ := by
-  obtain ⟨next, advanced, upgraded⟩ := bind_ok_iff.mp ok
-  have epoch : getCurrentEpoch next = getCurrentEpoch middle.state := by
-    have slot : last.state.slot = next.slot := processUpgrades_induction
-      (property := fun t => t.state.slot = next.slot)
-      (fun prior ok => (upgradeFrame_upgradeNext ok).slot.trans prior) rfl upgraded
-    have eq : getCurrentEpoch last.state = getCurrentEpoch next := by
-      simp only [getCurrentEpoch, slot]
-    exact eq.symm.trans same
-  obtain ⟨slot, cached, epoched, sum, cachedOk, epochOk, rfl⟩ := advanceSlot_ok advanced
-  have notFirst : slot % preset.SLOTS_PER_EPOCH ≠ 0 := by
-    intro firstSlot
-    have rem : slot.toNat % preset.SLOTS_PER_EPOCH.toNat = 0 := by
-      simpa only [UInt64.toNat_mod, UInt64.toNat_zero] using congrArg UInt64.toNat firstSlot
-    have eq := congrArg UInt64.toNat epoch
-    simp only [getCurrentEpoch_toNat] at eq
-    have divide := Nat.mod_add_div slot.toNat preset.SLOTS_PER_EPOCH.toNat
-    have before := Nat.mod_add_div middle.state.slot.toNat preset.SLOTS_PER_EPOCH.toNat
-    rw [eq] at divide
-    omega
-  rw [processUpgrades_of_not_due (upgradeDue_of_not_first notFirst)] at upgraded
-  cases upgraded
-  simp only [epochIfLast, ite_eq_right notFirst, pure, Except.pure, Except.ok.injEq] at epochOk
-  subst epoched
-  exact ⟨cached, slot, cachedOk, rfl⟩
-
 /-- Take a run that ends one epoch after it starts.
 
 It stays in its first epoch up to one slot, and in the next epoch after that slot. -/
