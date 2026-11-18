@@ -926,9 +926,8 @@ private theorem processEpochStep
       exact CommitteeStep.refl _
   case payments =>
     split at edge
-    · have rewritten := processBuilderPendingPayments_eq edge
-      subst rewritten
-      exact ⟨fun held => held.transfer ⟨rfl, rfl⟩ (List.prefix_refl _) (.of_data rfl), slot,
+    · rw [processBuilderPendingPayments_eq edge]
+      exact ⟨fun held => held.transfer ⟨rfl, rfl⟩ (List.prefix_refl _) (.of_data rfl), rfl,
         fun _ => rfl⟩
     · subst edge
       exact CommitteeStep.refl _
@@ -1026,9 +1025,9 @@ private theorem advanceSlotStep
     split at epochedOk
     · rename_i last
       -- The epoch transition runs, so the slot after starts the next epoch.
-      have divides : preset.SLOTS_PER_EPOCH.toNat ∣ next.toNat :=
-        Nat.dvd_of_mod_eq_zero (by simpa only [UInt64.toNat_mod, UInt64.toNat_zero] using
-          congrArg UInt64.toNat last)
+      have remainder : next.toNat % preset.SLOTS_PER_EPOCH.toNat = 0 := by
+        simpa only [UInt64.toNat_mod, UInt64.toNat_zero] using congrArg UInt64.toNat last
+      have divides := Nat.dvd_of_mod_eq_zero remainder
       have stateEpoch := getCurrentEpoch_toNat state
       have nextEpoch : (getCurrentEpoch ({ epoched with slot := next } : BeaconState preset fork)).toNat =
           (getCurrentEpoch state).toNat + 1 := by
@@ -1144,7 +1143,7 @@ private theorem upgradeNextStep {pre : ForkedBeaconState preset}
   case phase0 =>
     simp only [Consensus.upgradeNext, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at ok
     obtain ⟨_, upgraded, rfl⟩ := ok
-    exact ⟨fun _ => upgradeToAltair upgraded, fun _ _ a' => absurd a' (by decide)⟩
+    exact ⟨fun _ => upgradeToAltair upgraded, fun _ _ a' => absurd a' (by change ¬ Fork.altair ≤ Fork.phase0; decide)⟩
   case altair | bellatrix | shapella =>
     simp only [Consensus.upgradeNext, pure, Except.pure, Except.ok.injEq] at ok
     subst ok
@@ -1161,20 +1160,23 @@ private theorem upgradeNextStep {pre : ForkedBeaconState preset}
     simp only [Consensus.upgradeToFulu, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at upgraded
     obtain ⟨_, _, rfl⟩ := upgraded
     exact ⟨fun holds => carryFields (config := config) (post := .fusaka)
-      (by dsimp; decide) (by decide) (by dsimp; decide) holds, fun _ a a' => carryFields_current (config := config) (post := .fusaka)
-      (by dsimp; decide) (by decide) a' a⟩
+      (by dsimp; decide) (by decide) (by dsimp; decide) holds,
+      fun _ a a' => carryFields_current (config := config) (post := .fusaka)
+        (by decide) (by decide) a' a⟩
   case fusaka =>
     simp only [Consensus.upgradeNext, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at ok
     obtain ⟨_, upgraded, rfl⟩ := ok
     simp only [Consensus.upgradeToGloas, bind_ok_iff] at upgraded
     obtain ⟨_, _, _, _, onboarded⟩ := upgraded
     obtain ⟨⟨_, _, rfl⟩, _⟩ := onboardBuildersFromPendingDeposits_spec onboarded
-    exact ⟨fun holds _ => holds (by dsimp; decide), fun early => absurd early (by decide)⟩
+    exact ⟨fun holds _ => holds (by dsimp; decide),
+      fun early => absurd early (by change ¬ Fork.glamsterdam < Fork.glamsterdam; decide)⟩
   case glamsterdam =>
     simp only [Consensus.upgradeNext, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at ok
     obtain ⟨_, upgraded, rfl⟩ := ok
     obtain ⟨_, rfl⟩ := upgradeToHeze_ok_iff.mp upgraded
-    exact ⟨fun holds _ => holds (by dsimp; decide), fun early => absurd early (by decide)⟩
+    exact ⟨fun holds _ => holds (by dsimp; decide),
+      fun early => absurd early (by change ¬ Fork.hegota < Fork.glamsterdam; decide)⟩
   all_goals simp only [Consensus.upgradeNext] at ok; cases ok
 
 /-- Each upgrade either samples the first committees or carries their keys into the new registry. -/
