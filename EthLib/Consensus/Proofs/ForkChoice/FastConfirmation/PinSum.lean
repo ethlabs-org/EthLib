@@ -1324,6 +1324,29 @@ private theorem charges_le_queueWindow (h : Setting config checks g split fin pu
   rw [Nat.mul_add depth E C]
   omega
 
+/-- The keys with a charge of at least `exitFloor` are at most the window over `exitFloor`. -/
+private theorem card_big_charges_le (h : Setting config checks g split fin pulled anc counted V)
+    (tailC : Run config checks ⟨fork, split⟩ ⟨fork, counted⟩) (S : Finset ValidatorIndex) :
+    (S.filter fun v => (pinTerms config pulled anc fin).exitFloor ≤ exitQ tailC v.toNat).card ≤
+      (pinTerms config pulled anc fin).queueWindow /
+        (pinTerms config pulled anc fin).exitFloor := by
+  classical
+  have positive : 0 < (pinTerms config pulled anc fin).exitFloor := by
+    unfold pinTerms
+    exact lt_max_of_lt_left Nat.one_pos
+  rw [Nat.le_div_iff_mul_le positive]
+  have each := Finset.card_nsmul_le_sum
+    (S.filter fun v => (pinTerms config pulled anc fin).exitFloor ≤ exitQ tailC v.toNat)
+    (fun v => exitQ tailC v.toNat) (pinTerms config pulled anc fin).exitFloor
+    fun v member => (Finset.mem_filter.mp member).2
+  have subset := Finset.sum_le_sum_of_subset (f := fun v => exitQ tailC v.toNat)
+    (Finset.filter_subset (fun v => (pinTerms config pulled anc fin).exitFloor ≤
+      exitQ tailC v.toNat) S)
+  have kept := sum_exitQ_le tailC ((getCurrentEpoch counted).toNat - 1 + 1)
+    (by simp only; omega) S
+  have window := charges_le_queueWindow h tailC
+  simp only [smul_eq_mul] at each
+  omega
 /-- D-8 (queues): exits and consolidations initiated on C's branch (none in the tight window). -/
 theorem bud_queues (h : Setting config checks g split fin pulled anc counted V)
     (tailC : Run config checks ⟨fork, split⟩ ⟨fork, counted⟩) :
