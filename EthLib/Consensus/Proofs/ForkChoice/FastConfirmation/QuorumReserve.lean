@@ -446,7 +446,9 @@ def pinReserve (config : Config) (state ancestor finalizedState : BeaconState pr
   --
   -- It activates only with at least the activation balance, which it keeps until then.
   --
-  -- No lemma here proves yet that it stays above that bound through the window.
+  -- From its activation it is meant to keep `newKeyFloor`, less its sync-seat debits and partials.
+  --
+  -- No lemma here proves that yet.
   let lowKeys := (positions.filter fun i =>
     (validator i).any (fun v => decide (finalized < v.withdrawableEpoch.toNat) &&
       decide (v.activationEpoch.toNat ≤ epoch.toNat)) ∧
@@ -459,11 +461,31 @@ def pinReserve (config : Config) (state ancestor finalizedState : BeaconState pr
   --
   -- `lowKeys` adds every key whose effective balance can fall below that.
   --
+  -- A key not active by this epoch here, or created there, is meant to keep `newKeyFloor`.
+  --
+  -- That is from its activation, less its own sync-seat debits and partial payments in the window.
+  --
+  -- One whose effective balance ends below the bound has those debits above `newKeySlack`.
+  --
+  -- The seats of the window debit at most `depthFin·slots·SIZE·syncEnvelope` in all.
+  --
+  -- So `newKeySeats` counts the keys that sync debits can bring below the bound.
+  --
+  -- Within `partialDelay`, a key not active by this epoch is paid no pending partial in the window.
+  --
+  -- Deeper, the count is moot: `fall` charges every key's whole effective balance at this depth.
+  --
   -- After an exit starts, the key's proposer and due-consolidation credits are in `exitingCredits`.
   --
   -- Its whistleblower credits are in `reserveW`, `flagged` and the drift's slashed keys.
+  let newKeyFloor := 2 * preset.MAX_EFFECTIVE_BALANCE.toNat / 3 -
+    preset.MAX_EFFECTIVE_BALANCE.toNat / p.MIN_SLASHING_PENALTY_QUOTIENT.toNat -
+      preset.downwardBand - inc
+  let newKeySlack := newKeyFloor - (config.EJECTION_BALANCE.toNat - inc)
+  let newKeySeats := depthFin * slots * preset.SYNC_COMMITTEE_SIZE.toNat * syncEnvelope /
+    max 1 newKeySlack
   let queueKeys := depth * (exitChurn + consolidationChurn) /
-    (config.EJECTION_BALANCE.toNat - inc) + 2 + lowKeys
+    (config.EJECTION_BALANCE.toNat - inc) + 2 + lowKeys + newKeySeats
   -- The largest gain rate of one key, its gain rate at the largest effective balance.
   let gainRateMax := capMax / inc * perIncrement *
     (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum / WEIGHT_DENOMINATOR.toNat
@@ -524,11 +546,24 @@ def pinReserve (config : Config) (state ancestor finalizedState : BeaconState pr
   --
   -- Twice the debits of every seat in the window covers what they take from the test.
   let seatShortfall := 2 * (depth * slots * preset.SYNC_COMMITTEE_SIZE.toNat * syncEnvelope)
+  -- A key can start an exit on this branch after the split and not on the other.
+  --
+  -- With an exit epoch before this one it is inactive here, but active in the other quorum.
+  --
+  -- Its exit was set here after the split, at the finalized epoch or later.
+  --
+  -- So it lands at the earliest `MAX_SEED_LOOKAHEAD + 1` epochs later; the tight window has none.
+  --
+  -- Its effective balance there is at most its effective balance here and its rise.
+  let exitedR := ∑ i ∈ positions with (validator i).any (fun v =>
+      decide (finalized + 1 + preset.MAX_SEED_LOOKAHEAD.toNat ≤ v.exitEpoch.toNat) &&
+        decide (v.exitEpoch.toNat + 1 ≤ epoch.toNat)),
+    (effective i + rise i)
   quorumReserve config state ancestor + (3 * exiting + queues + credits + branchR + late +
     syncSeats + (∑ i ∈ positions with current i = true, rise i) +
     3 * (∑ i ∈ positions with current i = true, fall i) +
     3 * exitingRise + exitingCredits + queueRise + reserveW + flagged + seatShortfall +
-    (33 * consolidationsX + 9) / 10)
+    (33 * consolidationsX + 9) / 10 + exitedR)
 
 /-- The pin reserve contains the quorum reserve. -/
 theorem quorumReserve_le_pinReserve (config : Config)
