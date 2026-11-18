@@ -1315,6 +1315,21 @@ private theorem K6_class {g : ForkedBeaconState preset}
           · have delayed := fresh_slashed h found (by omega) slashed
             omega
 
+/-- The keys that join at R's next epoch are charged their stake in `joining`. -/
+private theorem joining_eq (config : Config) (pulled anc fin : BeaconState preset fork) :
+    (pinTerms config pulled anc fin).joining =
+      ∑ i ∈ (pinTerms config pulled anc fin).positions with
+        (isActiveAt pulled (getCurrentEpoch pulled) i = false ∧
+          isActiveAt pulled (getCurrentEpoch pulled + 1) i = true), balanceAt pulled i := rfl
+
+/-- The keys that join at R's next epoch are charged their rise in `joinRise`. -/
+private theorem joinRise_eq (config : Config) (pulled anc fin : BeaconState preset fork) :
+    (pinTerms config pulled anc fin).joinRise =
+      ∑ i ∈ (pinTerms config pulled anc fin).positions with
+        (isActiveAt pulled (getCurrentEpoch pulled) i = false ∧
+          isActiveAt pulled (getCurrentEpoch pulled + 1) i = true),
+            (pinTerms config pulled anc fin).rise i := rfl
+
 /-- D-8 (activations): keys counted in C and not active at R.
 
 A key whose exit started on R's branch after the split is inactive at R and active in C (L10).
@@ -1345,7 +1360,158 @@ theorem stub_J (h : Setting config checks g split fin pulled anc counted V)
       (∑ v ∈ (K6 pulled counted) with (pinTerms config pulled anc fin).pendingRB v.toNat = true,
         (eR pulled v + (pinTerms config pulled anc fin).rise v.toNat)) +
       (if (pinTerms config pulled anc fin).gainHigh then (pinTerms config pulled anc fin).creditGain
-        else 0)) : ℕ) := sorry
+        else 0)) : ℕ) := by
+  classical
+  -- `cJ` is the stake in C of the keys of `K6`.
+  have cJ_eq : cJ pulled counted = ((∑ v ∈ K6 pulled counted, eC counted v : ℕ) : ℤ) := by
+    unfold cJ
+    push_cast
+    rw [← Finset.sum_filter]
+    refine Finset.sum_congr ?_ fun _ _ => rfl
+    ext v
+    simp only [Finset.mem_filter, K6, U, Finset.mem_union]
+    tauto
+  rw [cJ_eq, Nat.cast_le]
+  -- The keys at or beyond R's registry are paid by `creditGain` and the credits.
+  have beyond : ∑ v ∈ (K6 pulled counted) with pulled.validators.data.size ≤ v.toNat,
+        eC counted v ≤
+      (∑ v ∈ (K6 pulled counted) with pulled.validators.data.size ≤ v.toNat,
+        (((credC tailC highC v.toNat + credN tailC highC v.toNat / 10) +
+            whistC tailC highC v.toNat) +
+          (syncF events v.toNat + syncF eventsC v.toNat) +
+          (slashR (pinTerms config pulled anc fin) v.toNat + bandC tailC highC v.toNat +
+            bandR events v.toNat))) +
+        (if (pinTerms config pulled anc fin).gainHigh then
+          (pinTerms config pulled anc fin).creditGain else 0) := sorry
+  -- The keys inside R's registry rise by `key_core`, and R's record puts each in a class.
+  have core : ∀ v ∈ (K6 pulled counted) with v.toNat < pulled.validators.data.size,
+      eC counted v ≤ (eR pulled v + (pinTerms config pulled anc fin).rise v.toNat) +
+        (((credC tailC highC v.toNat + credN tailC highC v.toNat / 10) +
+            whistC tailC highC v.toNat) +
+          (syncF events v.toNat + syncF eventsC v.toNat) +
+          (slashR (pinTerms config pulled anc fin) v.toNat + bandC tailC highC v.toNat +
+            bandR events v.toNat)) := by
+    intro v hv
+    have := key_core (config := config) h tail high endEpoch replayed tailC highC endEpochC
+      replayedC v.toNat (Finset.mem_filter.mp hv).2
+    change balanceAt counted v.toNat ≤ _
+    omega
+  have classes : ∀ v ∈ (K6 pulled counted) with v.toNat < pulled.validators.data.size,
+      eR pulled v + (pinTerms config pulled anc fin).rise v.toNat ≤
+        ((if (isActiveAt pulled (getCurrentEpoch pulled) v.toNat = false ∧
+              isActiveAt pulled (getCurrentEpoch pulled + 1) v.toNat = true) then
+            eR pulled v + (pinTerms config pulled anc fin).rise v.toNat else 0) +
+          (if (pinTerms config pulled anc fin).lateB v.toNat = true then
+            3 * eR pulled v + (pinTerms config pulled anc fin).rise v.toNat else 0) +
+          (if (pinTerms config pulled anc fin).exitedRB v.toNat = true then
+            eR pulled v + (pinTerms config pulled anc fin).rise v.toNat else 0) +
+          (if (pinTerms config pulled anc fin).exitingB v.toNat = true then
+            eR pulled v + (pinTerms config pulled anc fin).rise v.toNat else 0) +
+          (if (pinTerms config pulled anc fin).pendingRB v.toNat = true then
+            eR pulled v + (pinTerms config pulled anc fin).rise v.toNat else 0)) := by
+    intro v hv
+    obtain ⟨hK, hin⟩ := Finset.mem_filter.mp hv
+    obtain ⟨w, found⟩ : ∃ w, pulled.validators.data[v.toNat]? = some w :=
+      ⟨_, Array.getElem?_eq_getElem hin⟩
+    rcases K6_class h hK found with c | c | c | c | c
+    · rw [if_pos c]; omega
+    · rw [if_pos c]; omega
+    · rw [if_pos c]; omega
+    · rw [if_pos c]; omega
+    · rw [if_pos c]; omega
+  -- Sum the classes over the keys inside R's registry.
+  set inside := (K6 pulled counted).filter (fun v => v.toNat < pulled.validators.data.size)
+    with hInside
+  have partition := Finset.sum_filter_add_sum_filter_not (K6 pulled counted)
+    (fun v => v.toNat < pulled.validators.data.size) (eC counted)
+  have notInside : (K6 pulled counted).filter (fun v => ¬ v.toNat < pulled.validators.data.size) =
+      (K6 pulled counted).filter (fun v => pulled.validators.data.size ≤ v.toNat) := by
+    refine Finset.filter_congr fun v _ => ?_
+    omega
+  rw [notInside] at partition
+  have insideSum : ∑ v ∈ inside, eC counted v ≤
+      ∑ v ∈ inside, (((eR pulled v + (pinTerms config pulled anc fin).rise v.toNat) +
+        (((credC tailC highC v.toNat + credN tailC highC v.toNat / 10) +
+            whistC tailC highC v.toNat) +
+          (syncF events v.toNat + syncF eventsC v.toNat) +
+          (slashR (pinTerms config pulled anc fin) v.toNat + bandC tailC highC v.toNat +
+            bandR events v.toNat)))) :=
+    Finset.sum_le_sum core
+  rw [Finset.sum_add_distrib] at insideSum
+  have classSum : ∑ v ∈ inside, (eR pulled v + (pinTerms config pulled anc fin).rise v.toNat) ≤
+      (∑ v ∈ inside with (isActiveAt pulled (getCurrentEpoch pulled) v.toNat = false ∧
+          isActiveAt pulled (getCurrentEpoch pulled + 1) v.toNat = true),
+        (eR pulled v + (pinTerms config pulled anc fin).rise v.toNat)) +
+      (∑ v ∈ inside with (pinTerms config pulled anc fin).lateB v.toNat = true,
+        (3 * eR pulled v + (pinTerms config pulled anc fin).rise v.toNat)) +
+      (∑ v ∈ inside with (pinTerms config pulled anc fin).exitedRB v.toNat = true,
+        (eR pulled v + (pinTerms config pulled anc fin).rise v.toNat)) +
+      (∑ v ∈ inside with (pinTerms config pulled anc fin).exitingB v.toNat = true,
+        (eR pulled v + (pinTerms config pulled anc fin).rise v.toNat)) +
+      (∑ v ∈ inside with (pinTerms config pulled anc fin).pendingRB v.toNat = true,
+        (eR pulled v + (pinTerms config pulled anc fin).rise v.toNat)) := by
+    refine Nat.le_trans (Finset.sum_le_sum classes) (Nat.le_of_eq ?_)
+    simp only [Finset.sum_add_distrib, Finset.sum_filter]
+  -- Each class of inside keys is within the matching class of `K6`.
+  have restrict : ∀ (p : ValidatorIndex → Prop) [DecidablePred p] (f : ValidatorIndex → ℕ),
+      ∑ v ∈ inside with p v, f v ≤ ∑ v ∈ (K6 pulled counted) with p v, f v := fun p _ f =>
+    Finset.sum_le_sum_of_subset (Finset.filter_subset_filter _ (Finset.filter_subset _ _))
+  have joinStake : ∑ v ∈ inside with (isActiveAt pulled (getCurrentEpoch pulled) v.toNat = false ∧
+        isActiveAt pulled (getCurrentEpoch pulled + 1) v.toNat = true), eR pulled v ≤
+      (pinTerms config pulled anc fin).joining := by
+    rw [joining_eq]
+    refine sum_toNat_le (fun i => balanceAt pulled i) fun v hv => ?_
+    obtain ⟨hi, hj⟩ := Finset.mem_filter.mp hv
+    obtain ⟨hK, hin⟩ := Finset.mem_filter.mp hi
+    exact mem_positions_filter config pulled anc fin (Array.getElem?_eq_getElem hin) hj
+  have joinRise : ∑ v ∈ inside with (isActiveAt pulled (getCurrentEpoch pulled) v.toNat = false ∧
+        isActiveAt pulled (getCurrentEpoch pulled + 1) v.toNat = true),
+        (pinTerms config pulled anc fin).rise v.toNat ≤
+      (pinTerms config pulled anc fin).joinRise := by
+    rw [joinRise_eq]
+    refine sum_toNat_le (fun i => (pinTerms config pulled anc fin).rise i) fun v hv => ?_
+    obtain ⟨hi, hj⟩ := Finset.mem_filter.mp hv
+    obtain ⟨hK, hin⟩ := Finset.mem_filter.mp hi
+    exact mem_positions_filter config pulled anc fin (Array.getElem?_eq_getElem hin) hj
+  have joinSplit : ∑ v ∈ inside with (isActiveAt pulled (getCurrentEpoch pulled) v.toNat = false ∧
+        isActiveAt pulled (getCurrentEpoch pulled + 1) v.toNat = true),
+        (eR pulled v + (pinTerms config pulled anc fin).rise v.toNat) =
+      (∑ v ∈ inside with (isActiveAt pulled (getCurrentEpoch pulled) v.toNat = false ∧
+        isActiveAt pulled (getCurrentEpoch pulled + 1) v.toNat = true), eR pulled v) +
+      ∑ v ∈ inside with (isActiveAt pulled (getCurrentEpoch pulled) v.toNat = false ∧
+        isActiveAt pulled (getCurrentEpoch pulled + 1) v.toNat = true),
+        (pinTerms config pulled anc fin).rise v.toNat := Finset.sum_add_distrib
+  have late := restrict (fun v => (pinTerms config pulled anc fin).lateB v.toNat = true)
+    (fun v => 3 * eR pulled v + (pinTerms config pulled anc fin).rise v.toNat)
+  have exited := restrict (fun v => (pinTerms config pulled anc fin).exitedRB v.toNat = true)
+    (fun v => eR pulled v + (pinTerms config pulled anc fin).rise v.toNat)
+  have exiting := restrict (fun v => (pinTerms config pulled anc fin).exitingB v.toNat = true)
+    (fun v => eR pulled v + (pinTerms config pulled anc fin).rise v.toNat)
+  have pending := restrict (fun v => (pinTerms config pulled anc fin).pendingRB v.toNat = true)
+    (fun v => eR pulled v + (pinTerms config pulled anc fin).rise v.toNat)
+  -- The credits, sync flows and slash bands over `K6` split at R's registry.
+  have bounds := Finset.sum_filter_add_sum_filter_not (K6 pulled counted)
+    (fun v => v.toNat < pulled.validators.data.size)
+    (fun v => (((credC tailC highC v.toNat + credN tailC highC v.toNat / 10) +
+            whistC tailC highC v.toNat) +
+          (syncF events v.toNat + syncF eventsC v.toNat) +
+          (slashR (pinTerms config pulled anc fin) v.toNat + bandC tailC highC v.toNat +
+            bandR events v.toNat)))
+  rw [notInside] at bounds
+  have boundSplit : ∑ v ∈ K6 pulled counted,
+      (((credC tailC highC v.toNat + credN tailC highC v.toNat / 10) +
+            whistC tailC highC v.toNat) +
+          (syncF events v.toNat + syncF eventsC v.toNat) +
+          (slashR (pinTerms config pulled anc fin) v.toNat + bandC tailC highC v.toNat +
+            bandR events v.toNat)) =
+      (∑ v ∈ K6 pulled counted, ((credC tailC highC v.toNat + credN tailC highC v.toNat / 10) +
+        whistC tailC highC v.toNat)) +
+      (∑ v ∈ K6 pulled counted, (syncF events v.toNat + syncF eventsC v.toNat)) +
+      ∑ v ∈ K6 pulled counted, (slashR (pinTerms config pulled anc fin) v.toNat +
+        bandC tailC highC v.toNat + bandR events v.toNat) := by
+    simp only [Finset.sum_add_distrib]
+  omega
+
 
 /-- K5 bands: the two bands beyond `credits`' one of each credited K5 key, weight 3.
 
