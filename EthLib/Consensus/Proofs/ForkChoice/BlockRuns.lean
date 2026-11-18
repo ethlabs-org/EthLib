@@ -130,7 +130,7 @@ private theorem Store.Reachable.relation_of_getAncestor_with {allowed : Signatur
         subst same
         simp [notLower, throw, throwThe, MonadExceptOf.throw] at walk
 
-/-- The ancestor traversal composes a relation along the block transitions of the store. -/
+/-- The existing ancestor traversal composes a relation along actual block transitions. -/
 theorem Store.Reachable.relation_of_getAncestor
     (R : BeaconState preset fork → BeaconState preset fork → Prop)
     (refl : ∀ s, R s s)
