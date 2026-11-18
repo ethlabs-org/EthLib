@@ -545,7 +545,7 @@ def pinReserve (config : Config) (state ancestor finalizedState : BeaconState pr
   -- Its whistleblower credits are in `reserveW`, `flagged` and the drift's slashed keys.
   let newKeySeats := depthFin * slots * preset.SYNC_COMMITTEE_SIZE.toNat * syncEnvelope /
     max 1 newKeySlack
-  -- A carry is a balance that can let several keys exit, so it counts by the ejection balance too.
+  -- A carry is a balance that can let several keys exit, so it counts by `exitFloor` too.
   let queueKeys := (depth * (exitChurn + consolidationChurn) + exitCarry + consolidationCarry) /
     exitFloor + 2 + lowKeys + newKeySeats
   -- The largest gain rate of one key, its gain rate at the largest effective balance.
@@ -631,7 +631,8 @@ def pinReserve (config : Config) (state ancestor finalizedState : BeaconState pr
   --
   -- There a K5 key whose exit the call reads has its consolidation credit's gains charged thrice.
   --
-  -- So have its whistleblower and sync credits, read at every key slashable there and its seats.
+  -- Every key's whistleblower and sync credits on the other branch are charged their gains too,
+  -- read at every key slashable there, its credits, and the seats.
   --
   -- Past that bound, `rise`'s headroom pays a consolidation target's.
   --
@@ -640,9 +641,11 @@ def pinReserve (config : Config) (state ancestor finalizedState : BeaconState pr
   -- This closes a proof route at degenerate totals; no reachable run is known to need it.
   let consolidationGain := consolidationsX / inc * perIncrement *
     (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum / WEIGHT_DENOMINATOR.toNat
-  let otherCredits := 3 * (((∑ i ∈ positions, ebUp i) +
-      depthFin * preset.MAX_PENDING_DEPOSITS_PER_EPOCH.toNat * capMax) /
-        p.WHISTLEBLOWER_REWARD_QUOTIENT.toNat +
+  let otherCredits := 3 * (2 * ((∑ i ∈ positions, ebUp i) +
+        depthFin * preset.MAX_PENDING_DEPOSITS_PER_EPOCH.toNat * capMax +
+        consolidationsX + depth * proposerCredit +
+        depth * slots * preset.SYNC_COMMITTEE_SIZE.toNat * syncEnvelope) /
+          p.WHISTLEBLOWER_REWARD_QUOTIENT.toNat +
       depth * slots * preset.SYNC_COMMITTEE_SIZE.toNat * syncEnvelope + depth * syncProposer)
   let otherGain := otherCredits / inc * perIncrement *
     (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum / WEIGHT_DENOMINATOR.toNat
