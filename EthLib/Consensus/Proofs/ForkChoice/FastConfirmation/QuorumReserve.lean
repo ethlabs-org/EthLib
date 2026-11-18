@@ -631,6 +631,8 @@ def pinReserve (config : Config) (state ancestor finalizedState : BeaconState pr
   --
   -- There a K5 key whose exit the call reads has its consolidation credit's gains charged thrice.
   --
+  -- So have its whistleblower and sync credits, read at every key slashable there and its seats.
+  --
   -- Past that bound, `rise`'s headroom pays a consolidation target's.
   --
   -- There each deposit the window can apply to a new key is charged up to the cap.
@@ -638,8 +640,14 @@ def pinReserve (config : Config) (state ancestor finalizedState : BeaconState pr
   -- This closes a proof route at degenerate totals; no reachable run is known to need it.
   let consolidationGain := consolidationsX / inc * perIncrement *
     (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum / WEIGHT_DENOMINATOR.toNat
+  let otherCredits := 3 * (((∑ i ∈ positions, ebUp i) +
+      depthFin * preset.MAX_PENDING_DEPOSITS_PER_EPOCH.toNat * capMax) /
+        p.WHISTLEBLOWER_REWARD_QUOTIENT.toNat +
+      depth * slots * preset.SYNC_COMMITTEE_SIZE.toNat * syncEnvelope + depth * syncProposer)
+  let otherGain := otherCredits / inc * perIncrement *
+    (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum / WEIGHT_DENOMINATOR.toNat
   let creditGain := if 11 * depth * gainRateMax < capMax
-    then (33 * depth * consolidationGain + 9) / 10
+    then (33 * depth * consolidationGain + 11 * depth * otherGain + 9) / 10
     else depthFin * preset.MAX_PENDING_DEPOSITS_PER_EPOCH.toNat * capMax
   -- A key here that is not yet eligible can be topped up on the other branch alone.
   --
