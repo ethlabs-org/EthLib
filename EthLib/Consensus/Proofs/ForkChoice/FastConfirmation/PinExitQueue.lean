@@ -574,6 +574,8 @@ open DirectSafety.Apriori.Internal in
 
 The run starts at `m` and ends at `n`, from Fulu and before Gloas.
 
+It ends in the epoch of `m`, or at the first slot of the next epoch.
+
 The key must be assigned an activation at `m`, and not exit by the epoch of `n`.
 
 If it is slashed at `m`, its delayed slashing penalty must not be due by the epoch of `n`.
@@ -590,11 +592,13 @@ The last is its initial slashing penalty, if the run slashes it.
 
 That penalty is the effective balance at `m` over the slashing quotient.
 
-The effective balance changes only at the end of an epoch, after any slashing in it. -/
+The effective balance changes only at the boundary, after any slashing before it. -/
 def EpochFloorStatement (preset : Preset) (config : Config) (checks : SignatureChecks) : Prop :=
   ∀ {m n : ForkedBeaconState preset} (r : Run config checks m n),
     .fusaka ≤ m.fork → n.fork < .glamsterdam →
-    (getCurrentEpoch n.state).toNat ≤ (getCurrentEpoch m.state).toNat + 1 →
+    (getCurrentEpoch n.state = getCurrentEpoch m.state ∨
+      ((getCurrentEpoch n.state).toNat = (getCurrentEpoch m.state).toNat + 1 ∧
+        n.state.slot % preset.SLOTS_PER_EPOCH = 0)) →
     ∀ (i : ℕ) (val : Validator), m.state.validators.data[i]? = some val →
     val.activationEpoch ≠ FAR_FUTURE_EPOCH →
     (∀ w, n.state.validators.data[i]? = some w →
