@@ -1023,25 +1023,192 @@ public theorem slotStart_le_clock {store : Store preset fork}
   have read := mapError_ok_iff.mp currentOk
   change computeSlotAtTimeMs config _ _ = .ok current at read
   rw [genesisEq] at read
-  simp only [computeSlotAtTimeMs, bind_ok_iff] at read
-  obtain ⟨elapsed, elapsedOk, quotient⟩ := read
-  obtain ⟨_, elapsedNat⟩ := subChecked_ok_iff.mp elapsedOk
-  obtain ⟨_, quotientNat⟩ := divChecked_ok_iff.mp quotient
-  have floor := Nat.div_mul_le_self elapsed.toNat config.SLOT_DURATION_MS.toNat
-  have targetLe := Nat.mul_le_mul_right config.SLOT_DURATION_MS.toNat
-    (UInt64.le_iff_toNat_le.mp before)
-  rw [quotientNat] at targetLe
-  have clock := store.timeMs.toNat_lt
-  have productFits : target.toNat * config.SLOT_DURATION_MS.toNat < 2 ^ 64 := by omega
-  have productOk := mulChecked_of_lt productFits
-  have productNat := (mulChecked_ok_iff.mp productOk).2
-  have sumFits : genesisTimeMs.toNat + (target * config.SLOT_DURATION_MS).toNat < 2 ^ 64 := by
-    rw [productNat]
+  exact slotStart_le_of_slotAtTime read before
+
+/-- The slot after one before a store's current slot exists, and starts by the store's clock.
+
+The store must follow the model's time of genesis. -/
+private theorem nextSlotStart_le_clock {store : Store preset fork}
+    (genesisEq : store.genesisTimeMs = genesisTimeMs) {current slot : Slot}
+    (currentOk : store.getCurrentSlot config = .ok current) (before : slot < current) :
+    addChecked slot 1 = .ok (slot + 1) ∧ ∃ following,
+      computeTimeAtSlotMs config genesisTimeMs (slot + 1) = .ok following ∧
+      following.toNat ≤ store.timeMs.toNat := by
+  have read := mapError_ok_iff.mp currentOk
+  change computeSlotAtTimeMs config _ _ = .ok current at read
+  rw [genesisEq] at read
+  exact nextSlotStart_le_of_slotAtTime read before
+
+/-- An honest duty lies between the call and a store's time.
+
+Its slot is at or after the call's slot and before the store's current slot.
+
+So the duty starts at or after the call's time.
+
+The signer signs at its deadline, before the next slot starts, so before the store's clock. -/
+public theorem duty_window_of_slot_le {anchor : Store preset fork} {Δ : ℕ}
+    {callSlot current : Slot} {callStart : UInt64} {w v : ValidatorIndex} {k k' : ℕ}
+    {data : AttestationData}
+    (start : ∀ w ∈ J, e.start w = anchor) (fits : DelayFits fork config genesisTimeMs Δ)
+    (callStartOk : computeTimeAtSlotMs config genesisTimeMs callSlot = .ok callStart)
+    (receiver : w ∈ J)
+    (upToDate : UpToDate config checks sources (e.world k).time ((e.world k).view w)
+      ((e.world k).state w))
+    (currentOk : ((e.world k).state w).getCurrentSlot config = .ok current) (honest : v ∈ J)
+    (duty : MaySign config checks sources anchorState anchorBlock assignment genesisTimeMs v
+      (e.world k').time ((e.world k').view v) ((e.world k').state v) data)
+    (after : callSlot ≤ data.slot) (before : data.slot < current) :
+    callStart.toNat ≤ (e.world k').time ∧ (e.world k').time < (e.world k).time := by
+  obtain ⟨_, -, deadline, genesis, -, -, -⟩ := duty
+  have deadlineCopy := deadline
+  obtain ⟨dutyStart, due, dutyStartOk, -, timeEq⟩ := deadlineCopy
+  obtain ⟨callStart', callStartOk', -, callLe⟩ := exists_timeAtSlotMs_of_le after dutyStartOk
+  rw [callStartOk, Except.ok.injEq] at callStartOk'
+  subst callStart'
+  -- The store follows the signer's time of genesis.
+  have senderGenesis := (e.clock_bounds v k').1
+  have receiverGenesis := (e.clock_bounds w k).1
+  rw [start v honest] at senderGenesis
+  rw [start w receiver] at receiverGenesis
+  -- The deadline and the delay fall before the next slot, which starts by the store's clock.
+  obtain ⟨nextOk, following, followingOk, followingLe⟩ := nextSlotStart_le_clock
+    (receiverGenesis.trans (senderGenesis.symm.trans genesis)) currentOk before
+  have bound := fits.before_boundary nextOk dutyStartOk followingOk deadline
+  refine ⟨?_, ?_⟩
+  · have := UInt64.le_iff_toNat_le.mp callLe
     omega
-  have sumOk := addChecked_of_lt sumFits
-  refine ⟨_, by simp only [computeTimeAtSlotMs, productOk, bind, Except.bind]; exact sumOk, ?_⟩
-  rw [(addChecked_ok_iff.mp sumOk).2, productNat]
-  omega
+  · rw [← upToDate.1]
+    omega
+
+/-- A checkpoint read on a head above a block is above the block.
+
+The block must be at or before the first slot of the checkpoint's epoch. -/
+public theorem isAncestor_of_getCheckpointBlock_above {store : Store preset fork}
+    (before : fork < .glamsterdam) {head root checkpoint : Root}
+    {rootBlock : BeaconBlock preset fork} {epoch : Epoch}
+    (rootKnown : store.blocks[root]? = some rootBlock)
+    (supports : store.isAncestor ⟨head, .pending⟩ ⟨root, .pending⟩ = .ok true)
+    (read : store.getCheckpointBlock head epoch = .ok checkpoint)
+    (blockLe : rootBlock.slot.toNat ≤ epoch.toNat * preset.SLOTS_PER_EPOCH.toNat) :
+    store.isAncestor ⟨checkpoint, .pending⟩ ⟨root, .pending⟩ = .ok true := by
+  have rootWalk := Store.getAncestor_of_isAncestor_of_lt before rootKnown supports
+  have split := read
+  unfold Store.getCheckpointBlock at split
+  simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at split
+  obtain ⟨boundary, boundaryOk, reached, boundaryWalk, reachedRoot⟩ := split
+  have blockBelow : rootBlock.slot ≤ boundary := by
+    apply UInt64.le_iff_toNat_le.mpr
+    rw [(computeStartSlotAtEpoch_ok_iff.mp (mapError_ok_iff.mp boundaryOk)).2]
+    exact blockLe
+  have reachedPending := Store.getAncestor_pending_of_lt before rfl boundaryWalk
+  have reachedEq : reached = ⟨checkpoint, .pending⟩ := by
+    obtain ⟨r, s⟩ := reached
+    simp only at reachedRoot reachedPending
+    rw [reachedRoot, reachedPending]
+  rw [reachedEq] at boundaryWalk
+  have through := Store.getAncestor_trans blockBelow boundaryWalk
+  rw [rootWalk] at through
+  exact Store.isAncestor_of_getAncestor through.symm
+
+/-- An honest duty's signer reads the duty's target on a head above a covered root.
+
+The duty falls inside the stretch that the root is covered over.
+
+An honest store holds the target's block. -/
+public theorem signerHead_of_duty {anchor : Store preset fork}
+    (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (start : ∀ w ∈ J, e.start w = anchor) (anchorSlot : anchorBlock.slot = anchorState.slot)
+    (anchorBoundary : isStartSlotAtEpoch preset anchorBlock.slot = .ok true)
+    (preGloas : fork < .glamsterdam) {time first T : ℕ}
+    (roots : HeldBlockStateRootsNonzero (e := e) time)
+    {root : Root} (covers : HonestHeadsCover (e := e) root first T)
+    {v w : ValidatorIndex} (honest : v ∈ J) (receiver : w ∈ J) {k k' : ℕ}
+    {data : AttestationData}
+    (duty : MaySign config checks sources anchorState anchorBlock assignment genesisTimeMs v
+      (e.world k').time ((e.world k').view v) ((e.world k').state v) data)
+    (low : first ≤ (e.world k').time) (lt : (e.world k').time < T)
+    (k'Bound : (e.world k').time ≤ time) {checkpointBlock : BeaconBlock preset fork}
+    (checkpointKnown : ((e.world k).state w).blocks[data.target.root]? = some checkpointBlock) :
+    ∃ head, ((e.world k').state v).isAncestor ⟨head, .pending⟩ ⟨root, .pending⟩ = .ok true ∧
+      ((e.world k').state v).getCheckpointBlock head data.target.epoch = .ok data.target.root := by
+  obtain ⟨_, -, -, -, current, honestData, -⟩ := duty
+  have reachedV := e.reachable (fun a ha => (start a ha) ▸ Store.Reachable.anchor anchored) k' v
+    honest
+  have reachedW := e.reachable (fun a ha => (start a ha) ▸ Store.Reachable.anchor anchored) k w
+    receiver
+  obtain ⟨signerHead, signerHeadOk, targetRead⟩ := honestData.target_read reachedV anchorSlot
+    anchorBoundary (roots v honest k' k'Bound) reachedW checkpointKnown
+  have supports := covers (e.world k').time low lt v honest k' signerHead rfl current signerHeadOk
+  have pending : signerHead = ⟨signerHead.root, .pending⟩ := by
+    have p := Store.getHead_pending preGloas signerHeadOk
+    cases signerHead
+    simp_all
+  rw [pending] at supports
+  exact ⟨signerHead.root, supports, targetRead⟩
+
+/-- A store's justified checkpoint descends from a root, given an honest duty vote for it.
+
+The duty falls between the call and the store's time.
+
+The root's block is at or before the first slot of the checkpoint's epoch.
+
+The coverage at the duty puts the signer's head above the root.
+
+The checkpoint is that head's block at the first slot of its epoch, so it sits above the root.
+
+The store agrees with the signer on that walk, as honest stores agree on blocks.
+
+Otherwise two honest stores collide on a block. -/
+public theorem justified_descends_of_duty {anchor : Store preset fork} {time T : ℕ}
+    {root : Root} {u : ValidatorIndex} {n : ℕ} {block : BeaconBlock preset fork}
+    (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (start : ∀ w ∈ J, e.start w = anchor) (anchorSlot : anchorBlock.slot = anchorState.slot)
+    (anchorBoundary : isStartSlotAtEpoch preset anchorBlock.slot = .ok true)
+    (preGloas : fork < .glamsterdam) (roots : HeldBlockStateRootsNonzero (e := e) time)
+    (caller : u ∈ J) (callerHeld : ((e.world n).state u).blocks[root]? = some block)
+    (callerTime : (e.world n).time ≤ time)
+    (covers : HonestHeadsCover (e := e) root (e.world n).time T) (high : T ≤ time)
+    {w : ValidatorIndex} (receiver : w ∈ J) {k : ℕ} (atTime : (e.world k).time = T)
+    (justifiedKnown : ∃ b, ((e.world k).state w).blocks[
+      ((e.world k).state w).justifiedCheckpoint.root]? = some b)
+    (blockLe : block.slot.toNat ≤
+      ((e.world k).state w).justifiedCheckpoint.epoch.toNat * preset.SLOTS_PER_EPOCH.toNat)
+    {v : ValidatorIndex} (honest : v ∈ J) {k' : ℕ} {data : AttestationData}
+    (duty : MaySign config checks sources anchorState anchorBlock assignment genesisTimeMs v
+      (e.world k').time ((e.world k').view v) ((e.world k').state v) data)
+    (target : data.target = ((e.world k).state w).justifiedCheckpoint)
+    (afterCall : (e.world n).time ≤ (e.world k').time)
+    (beforeStore : (e.world k').time < (e.world k).time) :
+    ((e.world k).state w).isAncestor
+      ⟨((e.world k).state w).justifiedCheckpoint.root, .pending⟩ ⟨root, .pending⟩ = .ok true ∨
+      HonestCollision (e := e) time := by
+  rcases e.blocksAgree_or_collision time with agree | collision
+  swap
+  · exact .inr collision
+  refine .inl ?_
+  have k'Bound : (e.world k').time ≤ time := by omega
+  have reachedV := e.reachable (fun a ha => (start a ha) ▸ Store.Reachable.anchor anchored) k' v
+    honest
+  have reachedW := e.reachable (fun a ha => (start a ha) ▸ Store.Reachable.anchor anchored) k w
+    receiver
+  -- The store holds its justified block, which is the signer's target.
+  obtain ⟨justifiedBlock, justifiedKnown⟩ := justifiedKnown
+  rw [← target] at justifiedKnown blockLe ⊢
+  obtain ⟨head, supports, targetRead⟩ := signerHead_of_duty anchored start anchorSlot
+    anchorBoundary preGloas roots covers honest receiver duty afterCall (by omega) k'Bound
+    justifiedKnown
+  -- The signer holds the root, as the same block as the caller.
+  have rootRead := supports
+  unfold Store.isAncestor at rootRead
+  obtain ⟨b', b'Ok, -⟩ := bind_ok_iff.mp rootRead
+  have b'Found := Store.block_ok_iff.mp b'Ok
+  rw [agree v honest u caller k' n k'Bound callerTime root b' block b'Found callerHeld] at b'Found
+  -- The target is the head's ancestor at the first slot of its epoch, which is above the block.
+  have up := isAncestor_of_getCheckpointBlock_above preGloas b'Found supports targetRead blockLe
+  -- The store agrees with the signer on the walk.
+  exact Store.isAncestor_of_same_blocks reachedW preGloas
+    (agree v honest w receiver k' k k'Bound (by omega)) b'Found
+    (reachedV.anchorSlot_le (UInt64.le_of_eq anchorSlot) b'Found) ⟨_, justifiedKnown⟩ up
 
 /-- An honest signature delivered by a time comes from the signer's validated duty vote.
 
@@ -1694,6 +1861,42 @@ public theorem headState_epoch_le {store : Store preset fork}
   have le := forward.slot_le_of_blockState_of_getCurrentSlot
     (Store.blockState_ok_iff.mp headRead) currentOk
   exact epoch_le_of_slot_le _ _ (UInt64.le_iff_toNat_le.mp le)
+
+/-- A counted voter outside the past committees has no duty before the call's slot. -/
+public theorem duty_after_call {time : ℕ} {anchor : Store preset fork}
+    (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (start : ∀ w ∈ J, e.start w = anchor) (positive : 0 < preset.SLOTS_PER_EPOCH.toNat)
+    (retained : preset.MIN_SEED_LOOKAHEAD.toNat + 2 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
+    (windows : AssignmentWindowAgreement (e := e) time)
+    {u : ValidatorIndex} (caller : u ∈ J) {n : ℕ} (nBound : (e.world n).time ≤ time)
+    {head : ForkChoiceNode} (headOk : ((e.world n).state u).getHead config = .ok head)
+    {current first last : Slot} {participants : Std.TreeSet ValidatorIndex}
+    (currentOk : ((e.world n).state u).getCurrentSlot config = .ok current)
+    (firstOk : computeStartSlotAtEpoch preset (computeEpochAtSlot preset current) = .ok first)
+    (lastOk : subChecked current 1 = .ok last)
+    (participantsOk : ((e.world n).state u).getCommitteesBetweenSlots head.root first last =
+      .ok participants)
+    {v : ValidatorIndex} (honest : v ∈ J) (unseen : v ∉ participants)
+    {slot : Slot} {index : CommitteeIndex} (low : first ≤ slot)
+    (duty : assignment.committee v slot = some index) :
+    current ≤ slot := by
+  have forward := e.forwardReachable
+    (fun a ha => (start a ha) ▸ Store.ForwardReachable.anchor anchored) n u caller
+  have lastNat := (subChecked_ok_iff.mp lastOk).2
+  have lastPos := (subChecked_ok_iff.mp lastOk).1
+  simp only [UInt64.toNat_one] at lastNat lastPos
+  have past : last < current := UInt64.lt_iff_toNat_lt.mpr (by omega)
+  have epochFirst := computeEpochAtSlot_computeStartSlotAtEpoch
+    (UInt64.lt_iff_toNat_lt.mpr positive) firstOk
+  by_contra early
+  have high : slot ≤ last := UInt64.le_iff_toNat_le.mpr (by
+    have := UInt64.lt_iff_toNat_lt.mp (UInt64.not_le.mp early)
+    omega)
+  exact unseen ((windows u caller n nBound head current first last participants headOk currentOk
+    past (fun found foundOk => by
+      have le := headState_epoch_le forward currentOk foundOk
+      rw [epochFirst]
+      omega) participantsOk v honest).mpr ⟨slot, index, low, high, duty⟩)
 
 /-- An honest parent voter of the caller supports the root or the parent at the receiver.
 
@@ -2852,5 +3055,155 @@ public theorem Execution.source_surplus_or_historical_evidence [DecidablePred (�
       exact List.mem_toFinset.mpr
         (mem_unslashedActiveBalances_of_found validatorFound activeV unslashedV)]
   exact surplus
+
+/-- A caller margin with the window reserve has an honest supporter of the root.
+
+That supporter sent a vote, by the call, for a block above the root, before the call's slot.
+
+The discount is at most the window's weight, since the root is not a future block.
+
+So without an honest supporter the adversary pays for every supporter, against the margin.
+
+The reserve bounds the Byzantine stake of the adversary's window, which ends by `finish`.
+
+The supporter's latest message gives the vote, which the caller saw. -/
+public theorem Execution.honest_vote_of_caller_margin [DecidablePred (· ∈ J)]
+    (slots : 0 < config.SLOT_DURATION_MS)
+    (minLookahead : 1 ≤ preset.MIN_SEED_LOOKAHEAD.toNat)
+    (maxLookahead : 1 ≤ preset.MAX_SEED_LOOKAHEAD.toNat)
+    (ring : preset.MIN_SEED_LOOKAHEAD.toNat + 3 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
+    (preGloas : fork < .glamsterdam) {time : ℕ} {anchor : Store preset fork}
+    (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (anchorSlot : anchorBlock.slot = anchorState.slot)
+    (start : ∀ w ∈ J, e.start w = anchor) {u : ValidatorIndex} (caller : u ∈ J) {n : ℕ}
+    {head root : Root} {source : BeaconState preset fork}
+    {slot first last : Slot} {block parent : BeaconBlock preset fork} {boost maximum : Gwei}
+    (slotOk : ((e.world n).state u).getCurrentSlot config = .ok slot)
+    (blockOk : ((e.world n).state u).block root = .ok block)
+    (parentOk : ((e.world n).state u).block block.parentRoot = .ok parent)
+    (firstOk : addChecked parent.slot 1 = .ok first) (lastOk : subChecked slot 1 = .ok last)
+    (maximumOk : ((e.world n).state u).computeCommitteeWeightBetweenSlots head source first last =
+      .ok maximum)
+    {shift : ℕ} {support discount adversary : Gwei} (registry : source.RegistryWithinLimit)
+    (aligned : EffectiveBalancesAligned source)
+    (increment : preset.EFFECTIVE_BALANCE_INCREMENT.toNat % 100 = 0)
+    (supportOk : ((e.world n).state u).scoreFromTally (((e.world n).state u).tallyVotes source)
+      ⟨root, .pending⟩ = .ok support)
+    (discountOk : ((e.world n).state u).computeEmptySlotSupportDiscount config head source root =
+      .ok discount)
+    (adversaryOk : ((e.world n).state u).getAdversarialWeight config head source root =
+      .ok adversary)
+    (margin : maximum.toNat + boost.toNat + 2 * adversary.toNat + shift <
+      discount.toNat + 2 * support.toNat)
+    (callerTime : (e.world n).time ≤ time)
+    {finish : Slot}
+    (reserve : SourceWindowReserve (J := J) (config := config) ((e.world n).state u) head source
+      first finish)
+    {x : ValidatorIndex} (reference : x ∈ J) {m : ℕ} (referenceTime : time ≤ (e.world m).time)
+    (referenceUpToDate : UpToDate config checks sources (e.world m).time ((e.world m).view x)
+      ((e.world m).state x))
+    {referenceSlot : Slot}
+    (referenceSlotOk : ((e.world m).state x).getCurrentSlot config = .ok referenceSlot)
+    (finishOk : subChecked referenceSlot 1 = .ok finish)
+    (headDescends : ((e.world n).state u).isAncestor ⟨head, .pending⟩ ⟨root, .pending⟩ = .ok true)
+    {historical : Root} {callerEpoch historicalEpoch : Epoch}
+    (historicalBelow : ((e.world n).state u).isAncestor ⟨block.parentRoot, .pending⟩
+      ⟨historical, .pending⟩ = .ok true)
+    (callerEpochOk : ((e.world n).state u).getCurrentStoreEpoch config = .ok callerEpoch)
+    (historicalEpochOk : ((e.world n).state u).getBlockEpoch historical = .ok historicalEpoch)
+    (near : callerEpoch.toNat ≤ historicalEpoch.toNat + 1)
+    (absent : AnchorParentAbsent (e := e) time) :
+    ∃ v ∈ J, ∃ i, (e.world i).time ≤ (e.world n).time ∧ ∃ m ∈ (e.world i).sent, ∃ data,
+      (v, data) ∈ statements config checks anchorState anchorBlock m ∧ data.slot < slot ∧
+      ((e.world n).state u).isAncestor ⟨data.beaconBlockRoot, .pending⟩ ⟨root, .pending⟩ =
+        .ok true := by
+  classical
+  have reached := e.forwardReachableWith
+    (fun a ha => (start a ha) ▸ Store.ForwardReachableWith.anchor anchored) n u caller
+  have parentFound := Store.block_ok_iff.mp parentOk
+  -- The call's epoch is at most one after the parent's, through the historical block.
+  have callerEq : computeEpochAtSlot preset slot = callerEpoch := by
+    simpa [Store.getCurrentStoreEpoch, slotOk, bind, Except.bind, pure, Except.pure]
+      using callerEpochOk
+  subst callerEq
+  obtain ⟨historicalBlock, historicalBlockOk, historicalEq⟩ :
+      ∃ b, ((e.world n).state u).block historical = .ok b ∧
+        computeEpochAtSlot preset b.slot = historicalEpoch := by
+    simp only [Store.getBlockEpoch, bind_ok_iff, pure, Except.pure, Except.ok.injEq]
+      at historicalEpochOk
+    exact historicalEpochOk
+  obtain ⟨parent', parentFound', historicalLe⟩ :=
+    Store.slot_le_of_isAncestor (Store.block_ok_iff.mp historicalBlockOk) historicalBelow
+  rw [parentFound, Option.some.injEq] at parentFound'
+  subst parentFound'
+  have historicalParent := epoch_le_of_slot_le (preset := preset) historicalBlock.slot
+    parent.slot (UInt64.le_iff_toNat_le.mp historicalLe)
+  rw [historicalEq] at historicalParent
+  have nearParent : (computeEpochAtSlot preset slot).toNat ≤
+      (computeEpochAtSlot preset parent.slot).toNat + 1 := by omega
+  obtain ⟨startSlot, advParticipants, I, firstLe, ordered, advOk, supportEq, supIn, equivIn,
+    equivAre, apart, cover⟩ := caller_margin_sets (UInt64.le_of_eq anchorSlot) reached
+      (absent u caller n callerTime) preGloas minLookahead maxLookahead ring slotOk blockOk
+      parentOk firstOk lastOk headDescends nearParent registry aligned increment supportOk
+      adversaryOk
+  -- The adversary's window ends by the reserve's end.
+  have lastLe : last ≤ finish := e.previousSlot_le_of_time_le start caller reference
+    (callerTime.trans referenceTime) referenceUpToDate slotOk referenceSlotOk lastOk finishOk
+  have reserveAdv : stake (fun v => balanceAt source v.toNat)
+      (Store.activeMembers source advParticipants) = 0 ∨
+      100 * stake (fun v => balanceAt source v.toNat)
+        {v ∈ Store.activeMembers source advParticipants | v ∉ J} ≤
+      config.CONFIRMATION_BYZANTINE_THRESHOLD.toNat *
+        stake (fun v => balanceAt source v.toNat) (Store.activeMembers source advParticipants) := by
+    rcases ordered with ordered | empty
+    · have bound := reserve startSlot last advParticipants firstLe ordered lastLe advOk
+      exact .inr (by omega)
+    · left
+      rw [empty]
+      rfl
+  -- No known equivocator is honest.
+  have dishonest : ∀ v ∈ I, v ∉ J := fun v member =>
+    e.equivocatingIndices_honest slots (fun a ha v member => by
+      simp [start a ha, Store.getForkchoiceStore_equivocatingIndices anchored] at member)
+      n caller v (equivAre v member)
+  -- The discount is at most the window's weight, as the root is not a future block.
+  obtain ⟨current, currentOk, blocksLe, -⟩ := reached.forwardReachable.slots_le_current slots
+    (UInt64.le_of_eq anchorSlot)
+  rw [slotOk, Except.ok.injEq] at currentOk
+  subst currentOk
+  have discountLe := UInt64.le_iff_toNat_le.mp
+    (Store.computeEmptySlotSupportDiscount_le blockOk parentOk firstOk lastOk maximumOk discountOk
+      (blocksLe root block (Store.block_ok_iff.mp blockOk)))
+  -- Without an honest supporter, the Byzantine supporters are paid by the adversary.
+  have supporter : ∃ v ∈ ((e.world n).state u).supportersOf source ⟨root, .pending⟩, v ∈ J := by
+    by_contra none
+    have noHonest : {v ∈ ((e.world n).state u).supportersOf source ⟨root, .pending⟩ | v ∉ J} =
+        ((e.world n).state u).supportersOf source ⟨root, .pending⟩ :=
+      Finset.filter_true_of_mem fun v member honest => none ⟨v, member, honest⟩
+    have byzantine := ForkChoice.byzantine_support_add_le (w := fun v => balanceAt source v.toNat)
+      (J := J) supIn equivIn apart dishonest
+    rw [noHonest, ← supportEq] at byzantine
+    have byzLe : stake (fun v => balanceAt source v.toNat)
+        {v ∈ Store.activeMembers source advParticipants | v ∉ J} ≤
+        stake (fun v => balanceAt source v.toNat) (Store.activeMembers source advParticipants) :=
+      stake_mono (Finset.filter_subset _ _)
+    generalize config.CONFIRMATION_BYZANTINE_THRESHOLD.toNat *
+      stake (fun v => balanceAt source v.toNat) (Store.activeMembers source advParticipants) = P
+      at cover reserveAdv
+    rcases reserveAdv with zero | reserveAdv <;> omega
+  obtain ⟨v, member, honest⟩ := supporter
+  -- The supporter's latest vote comes from a message the caller saw, before the call slot.
+  obtain ⟨message, supported, latest, -, supportedOk, descends⟩ :=
+    ((e.world n).state u).exists_of_voteCountsFor (Store.voteCountsFor_of_mem_supportersOf member)
+  obtain ⟨attestation, sent, seen, same, signed, origin⟩ :=
+    e.exists_signed_origin_of_latestMessages anchored start caller latest
+  obtain ⟨readSlot, readOk, past⟩ := origin.past
+  rw [slotOk, Except.ok.injEq] at readOk
+  subst readOk
+  rw [Store.getSupportedNode_of_lt preGloas, Except.ok.injEq] at supportedOk
+  subst supportedOk
+  subst same
+  exact ⟨v, honest, n, le_rfl, sent, e.view_subset_sent n u seen, attestation.data, signed, past,
+    descends⟩
 
 end EthLib.Consensus.Models.Network
