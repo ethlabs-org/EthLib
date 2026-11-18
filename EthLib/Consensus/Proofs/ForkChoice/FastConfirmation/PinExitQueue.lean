@@ -437,6 +437,186 @@ private theorem retain_arith (φ d : ℕ → ℕ) (e T : ℕ) (pos : ∀ t < T, 
           omega
       _ = (2 * d (j + 1) * φ 0 + 3 * e * (j + 1)) * φ j := by ring
 
+/-! ## One epoch of a key against the floor path -/
+
+/-- One epoch of a key keeps the fraction of its potential that the floor keeps.
+
+The potential is the least of the balance and `K`, plus the downward band.
+
+The epoch loses at most its pass.
+
+The pass is charged at the effective balance `EB`.
+
+That balance lies within the band above the balance, and below the cap.
+
+The pass rate is at most `EB * (pen + 2) / φt`.
+
+Here `φt = φt1 + pen` is the floor before the epoch, and `φt1` the floor after it.
+
+The error is `2 (K + band)`, from the two roundings. -/
+private theorem step_arith (b' b cap K band pass X φt φt1 pen EB : ℕ)
+    (hcap : K ≤ cap)
+    (seg : min b' cap ≤ b + pass + X)
+    (hyst : EB ≤ b' + band) (hcapEB : EB ≤ cap)
+    (pr : pass * φt ≤ EB * (pen + 2))
+    (ph : φt = φt1 + pen) (hφ : 2 ≤ φt1) :
+    (min b' K + band) * φt1 ≤ (min b K + band) * φt + 2 * (K + band) + X * φt := by
+  set C := min b' cap with hC
+  have hEB : EB ≤ C + band := by
+    rcases le_total b' cap with h | h
+    · have : C = b' := min_eq_left h
+      omega
+    · have : C = cap := min_eq_right h
+      omega
+  have hcle : min b' K ≤ C := by
+    apply le_min (min_le_left _ _)
+    exact (min_le_right _ _).trans hcap
+  -- the key's balance after the epoch, scaled
+  have bound : C * φt ≤ b * φt + (C + band) * (pen + 2) + X * φt := by
+    have h1 : C * φt ≤ (b + pass + X) * φt := Nat.mul_le_mul_right _ seg
+    have h2 : pass * φt ≤ (C + band) * (pen + 2) :=
+      pr.trans (Nat.mul_le_mul_right _ hEB)
+    nlinarith
+  by_cases big : K ≤ b
+  · have : min b K = K := min_eq_right big
+    rw [this]
+    have : min b' K ≤ K := min_le_right _ _
+    have : φt1 ≤ φt := by omega
+    nlinarith
+  · have small : b < K := Nat.lt_of_not_ge big
+    have : min b K = b := min_eq_left small.le
+    rw [this]
+    -- c ≤ C, and the bound on C·φt1
+    set c := min b' K with hc
+    have hcK : c ≤ K := min_le_right _ _
+    have key : C * φt ≤ b * φt + (C + band) * (pen + 2) + X * φt := bound
+    -- (C + band) * (pen + 2) = (C + band) * pen + 2 * (C + band)
+    have e1 : (C + band) * (pen + 2) = (C + band) * pen + 2 * (C + band) := by ring
+    -- C * φt - (C+band) pen = C * φt1 - band * pen
+    have e2 : C * φt = C * φt1 + C * pen := by rw [ph]; ring
+    have lower : (C + band) * φt1 ≤ (b + band) * φt + 2 * (C + band) + X * φt := by
+      rw [ph] at key ⊢
+      nlinarith
+    -- replace C by c: C could exceed K, then use the shape of the loss
+    by_cases cK : C ≤ K
+    · have hcC : c = C := le_antisymm hcle (le_min (min_le_left _ _) cK)
+      rw [hcC]
+      have : 2 * (C + band) ≤ 2 * (K + band) := by omega
+      omega
+    · have above : K < C := Nat.lt_of_not_ge cK
+      have h3 : C * φt1 ≤ b * φt + 2 * C + band * (pen + 2) + X * φt := by
+        rw [ph] at key
+        nlinarith
+      have h4 : K * φt1 + 2 * C ≤ C * φt1 + 2 * K := by
+        have : K * (φt1 - 2) ≤ C * (φt1 - 2) := Nat.mul_le_mul_right _ above.le
+        have e1 : K * (φt1 - 2) + 2 * K = K * φt1 := by
+          have := Nat.mul_le_mul_left K hφ
+          rw [Nat.mul_sub]; omega
+        have e2 : C * (φt1 - 2) + 2 * C = C * φt1 := by
+          have := Nat.mul_le_mul_left C hφ
+          rw [Nat.mul_sub]; omega
+        omega
+      have h5 : (c + band) * φt1 ≤ (K + band) * φt1 := Nat.mul_le_mul_right _ (by omega)
+      rw [ph]
+      nlinarith
+
+/-- One epoch of a key, with the initial penalty of a slashing in it.
+
+The penalty is at most `EB / Q`, and the epoch is charged `Bq` for it, with `K + band ≤ Q * Bq`.
+
+The floor after the epoch stays at least `6 Q` and within three halves of the floor before. -/
+private theorem step_arith_slash (b' b cap K band pass X sl Q Bq φt φt1 pen EB : ℕ)
+    (hcap : K ≤ cap) (hQ : 2 ≤ Q) (hB : K + band ≤ Q * Bq)
+    (seg : min b' cap ≤ b + pass + X + sl) (hsl : Q * sl ≤ EB)
+    (hyst : EB ≤ b' + band) (hcapEB : EB ≤ cap)
+    (pr : pass * φt ≤ EB * (pen + 2))
+    (ph : φt = φt1 + pen) (hφ : 6 * Q ≤ φt1) (hband : 2 * φt ≤ 3 * φt1) :
+    (min b' K + band) * φt1 ≤
+      (min b K + band) * φt + 2 * (K + band) + (X + (if sl = 0 then 0 else Bq)) * φt := by
+  by_cases noSlash : sl = 0
+  · subst noSlash
+    simp only [ite_true, Nat.add_zero, Nat.add_zero] at seg ⊢
+    have := step_arith b' b cap K band pass X φt φt1 pen EB hcap (by simpa using seg) hyst
+      hcapEB pr ph (by omega)
+    simpa using this
+  · simp only [noSlash, ite_false]
+    set C := min b' cap with hC
+    have hEB : EB ≤ C + band := by
+      rcases le_total b' cap with h | h
+      · have : C = b' := min_eq_left h
+        omega
+      · have : C = cap := min_eq_right h
+        omega
+    have hcle : min b' K ≤ C := le_min (min_le_left _ _) ((min_le_right _ _).trans hcap)
+    by_cases cK : C ≤ K
+    · -- the penalty is at most `Bq`, and the case is that without slashing
+      have slB : sl ≤ Bq := by
+        have : Q * sl ≤ Q * Bq := by omega
+        exact Nat.le_of_mul_le_mul_left this (by omega)
+      have := step_arith b' b cap K band pass (X + sl) φt φt1 pen EB hcap
+        (by omega) hyst hcapEB pr ph (by omega)
+      have h2 : (X + sl) * φt ≤ (X + Bq) * φt := Nat.mul_le_mul_right _ (by omega)
+      omega
+    · have above : K < C := Nat.lt_of_not_ge cK
+      by_cases big : K ≤ b
+      · have : min b K = K := min_eq_right big
+        rw [this]
+        have : min b' K ≤ K := min_le_right _ _
+        have : φt1 ≤ φt := by omega
+        nlinarith
+      · have small : b < K := Nat.lt_of_not_ge big
+        have : min b K = b := min_eq_left small.le
+        rw [this]
+        have hc : min b' K ≤ K := min_le_right _ _
+        obtain ⟨h, hh⟩ : ∃ h, Q * φt1 = h + 2 * Q + φt := by
+          refine ⟨Q * φt1 - 2 * Q - φt, ?_⟩
+          have : 3 * (Q * φt1) ≥ 2 * Q * φt := by nlinarith
+          have : Q * φt1 ≥ 2 * Q + φt := by nlinarith
+          omega
+        have h1 : Q * C * φt ≤ Q * b * φt + Q * (C + band) * (pen + 2) + Q * X * φt +
+            (C + band) * φt := by
+          have a1 : C * φt ≤ (b + pass + X + sl) * φt := Nat.mul_le_mul_right _ seg
+          have a2 : pass * φt ≤ (C + band) * (pen + 2) := pr.trans (Nat.mul_le_mul_right _ hEB)
+          have a3 : Q * sl ≤ C + band := hsl.trans hEB
+          have a4 : Q * (sl * φt) ≤ (C + band) * φt := by
+            rw [← Nat.mul_assoc]; exact Nat.mul_le_mul_right _ a3
+          have a5 : Q * (pass * φt) ≤ Q * ((C + band) * (pen + 2)) := Nat.mul_le_mul_left _ a2
+          have a6 : Q * (C * φt) ≤ Q * ((b + pass + X + sl) * φt) := Nat.mul_le_mul_left _ a1
+          have a7 : Q * ((b + pass + X + sl) * φt) =
+              Q * (b * φt) + Q * (pass * φt) + Q * (X * φt) + Q * (sl * φt) := by ring
+          have a8 : Q * C * φt = Q * (C * φt) := by ring
+          have a9 : Q * b * φt = Q * (b * φt) := by ring
+          have a10 : Q * (C + band) * (pen + 2) = Q * ((C + band) * (pen + 2)) := by ring
+          have a11 : Q * X * φt = Q * (X * φt) := by ring
+          rw [a8, a9, a10, a11]
+          omega
+        have e1 : Q * C * φt = Q * C * φt1 + Q * C * pen := by rw [ph]; ring
+        have e2 : Q * (C + band) * (pen + 2) =
+            Q * C * pen + 2 * Q * C + Q * band * pen + 2 * Q * band := by ring
+        have e3 : C * (Q * φt1) = C * h + C * (2 * Q) + C * φt := by rw [hh]; ring
+        have e4 : (C + band) * φt = C * φt + band * φt := by ring
+        have hC : C * h ≤ Q * b * φt + Q * band * pen + 2 * Q * band + Q * X * φt + band * φt := by
+          linarith [h1, e1, e2, e3, e4]
+        have h2 : K * h ≤ C * h := Nat.mul_le_mul_right _ above.le
+        have e5 : K * (Q * φt1) = K * h + K * (2 * Q) + K * φt := by rw [hh]; ring
+        have e6 : Q * band * φt = Q * band * φt1 + Q * band * pen := by rw [ph]; ring
+        have h3 : Q * K * φt1 + Q * band * φt1 ≤
+            Q * b * φt + Q * band * φt + 2 * Q * (K + band) + Q * X * φt + (K + band) * φt := by
+          have e7 : (K + band) * φt = K * φt + band * φt := by ring
+          have e8 : 2 * Q * (K + band) = 2 * Q * K + 2 * Q * band := by ring
+          linarith [hC, h2, e5, e6, e7, e8]
+        have h4 : (K + band) * φt ≤ Q * Bq * φt := Nat.mul_le_mul_right _ hB
+        have h5 : (min b' K + band) * φt1 ≤ (K + band) * φt1 := Nat.mul_le_mul_right _ (by omega)
+        have h6 : Q * ((K + band) * φt1) ≤
+            Q * ((b + band) * φt + 2 * (K + band) + (X + Bq) * φt) := by
+          have e9 : Q * ((K + band) * φt1) = Q * K * φt1 + Q * band * φt1 := by ring
+          have e10 : Q * ((b + band) * φt + 2 * (K + band) + (X + Bq) * φt) =
+              Q * b * φt + Q * band * φt + 2 * Q * (K + band) + Q * X * φt + Q * Bq * φt := by ring
+          rw [e9, e10]
+          omega
+        have h7 := Nat.le_of_mul_le_mul_left h6 (by omega)
+        omega
+
 /-! ## The state before a new key is scheduled -/
 
 /-- One step of a chain moves the current epoch on by at most one. -/
