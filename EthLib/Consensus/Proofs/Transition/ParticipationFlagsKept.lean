@@ -5,7 +5,7 @@ public import EthLib.Consensus.Proofs.Transition.Invariants
 import EthLib.Consensus.Proofs.PayloadTimeliness
 import EthLib.Consensus.Proofs.Transition.BlockRewards
 import EthLib.Consensus.Proofs.Transition.RegistryLifecycle
-import EthLib.Consensus.Proofs.Transition.Totality.SupplyBlock
+public import EthLib.Consensus.Proofs.Transition.Totality.SupplyBlock
 
 /-!
 # Proofs: a block keeps the target flags it finds
@@ -72,7 +72,7 @@ private theorem FlagKeeps.of_below
 /-! ## Steps that keep both lists of flags -/
 
 /-- From Electra to Fulu, the requests of a block keep both lists of flags. -/
-private theorem flags_processExecutionRequests {body : BeaconBlockBody preset fork}
+theorem flags_processExecutionRequests {body : BeaconBlockBody preset fork}
     {electra : .pectra ≤ fork ∧ fork < .glamsterdam}
     (computed : processExecutionRequests config state body electra = .ok after) :
     Flags state after := by
