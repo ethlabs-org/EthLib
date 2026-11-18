@@ -3183,11 +3183,12 @@ An accepted root of an earlier epoch is realized as justified by the head's stat
 `JustifiedHonestlySigned` assumes the signer of each justified checkpoint after the anchor's epoch, which `Execution.justifiedHonestlySigned` derives from a Byzantine bound.
 `QuorumDriftWithin` assumes that an honest voter set of a call keeps its stake in each counting state, up to the call's quorum reserve.
 `Execution.quorumDriftWithin` proves it for an honest fork choice with BLS checks, before Gloas from Fulu.
+Otherwise it gives `HonestCollision`: two honest stores collide on a block.
 Its anchor store comes from a successful `getForkchoiceStore`, every honest participant starts at it, and `anchorBlock.slot = anchorState.slot`.
 `SLOT_DURATION_MS` is positive, and the preset satisfies `DirectSafety.Parameters`.
 A deposited `Genesis` under BLS checks reaches `anchorState` by a `Run` under BLS checks.
 `Execution.rootViable_of_checked_call` takes the same genesis and run for any signature checks, and this theorem fixes them to BLS.
-The horizon is before the next fork, and `HonestStoreEpochsBounded` and `HonestBlocksAgree` hold up to the time bound.
+The horizon is before the next fork, and `HonestStoreEpochsBounded` holds up to the time bound.
 The preset satisfies `Preset.ExitWindowFixed` and `IncrementWithinUpwardBand`.
 The withdrawal delay is at least one epoch, and `MAX_EFFECTIVE_BALANCE` equals `MIN_ACTIVATION_BALANCE`.
 `MIN_ACTIVATION_BALANCE` is at most `MAX_EFFECTIVE_BALANCE_ELECTRA`.
