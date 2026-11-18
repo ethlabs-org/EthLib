@@ -1102,12 +1102,105 @@ theorem bud_deposits (h : Setting config checks g split fin pulled anc counted V
     {events : List (BalanceEvent preset)} (replayed : tail.balanceEvents high = .ok events) :
     3 * (∑ v ∈ V, credDepR events v.toNat) ≤ (pinTerms config pulled anc fin).queueDep := sorry
 
+/-- A run has a charge at a position exactly when `riseScan` has seen one. -/
+private theorem riseScan_fst {x : ForkedBeaconState preset} (v high : ℕ)
+    {y : ForkedBeaconState preset} (tail : Run config checks x y) :
+    (riseScan (config := config) (checks := checks) v high tail).1 = true ↔
+      ∃ c ∈ tail.departureCharges, c.index = v := by
+  induction tail with
+  | nil => simp [riseScan, Run.departureCharges]
+  | snoc pre step ih =>
+    simp only [riseScan, Run.departureCharges, Bool.or_eq_true, ih, List.any_eq_true,
+      List.mem_append, beq_iff_eq]
+    constructor
+    · rintro (⟨c, member, same⟩ | ⟨c, member, same⟩)
+      · exact ⟨c, .inl member, same⟩
+      · exact ⟨c, .inr member, same⟩
+    · rintro ⟨c, member | member, same⟩
+      · exact .inl ⟨c, member, same⟩
+      · exact .inr ⟨c, member, same⟩
+
+/-- A key with no charge on the run has no rise after its exit. -/
+private theorem riseQ_eq_zero {x y : ForkedBeaconState preset} (tail : Run config checks x y)
+    (high v : ℕ) (none : ∀ c ∈ tail.departureCharges, c.index ≠ v) : riseQ tail high v = 0 := by
+  have unseen : (riseScan (config := config) (checks := checks) v high tail).1 ≠ true := fun seen =>
+    let ⟨c, member, same⟩ := (riseScan_fst v high tail).mp seen
+    none c member same
+  simp [riseQ, unseen]
+
+/-- A key of `K5` that has a charge on the run exits by the run's last epoch. -/
+private theorem charge_epoch_le_of_K5 (early : fork < .glamsterdam)
+    {x : ForkedBeaconState preset} (tail : Run config checks x ⟨fork, counted⟩)
+    {v : ValidatorIndex} (member : v ∈ K5 counted V) :
+    ∀ c ∈ tail.departureCharges, c.index = v.toNat →
+      c.epoch ≤ (getCurrentEpoch counted).toNat := by
+  intro c charged same
+  obtain ⟨w, found, assigned, epoch⟩ := Run.departure_charge_exit tail c charged
+  have within := BeaconState.registryWithinLimit_of_lt early counted
+  have inK5 := Finset.mem_filter.mp member
+  simp only [Q, quorumVoters, Finset.mem_filter, List.mem_toFinset, List.mem_append] at inK5
+  obtain ⟨⟨listed, -⟩, notActive, -⟩ := inK5
+  have notCurrent : v ∉ getActiveValidatorIndices counted (getCurrentEpoch counted) := fun now =>
+    notActive (by simpa [AC, activeVoters] using now)
+  rcases listed with now | before
+  · exact absurd now notCurrent
+  obtain ⟨u, foundU, activeBefore⟩ := (mem_getActiveValidatorIndices within).mp before
+  rw [same] at found
+  have equal : u = w := Option.some.inj (foundU.symm.trans found)
+  subst equal
+  have notNow : isActiveValidator u (getCurrentEpoch counted) = false := by
+    cases now : isActiveValidator u (getCurrentEpoch counted)
+    · rfl
+    · exact absurd ((mem_getActiveValidatorIndices within).mpr ⟨u, foundU, now⟩) notCurrent
+  have previous := getPreviousEpoch_toNat counted
+  simp only [isActiveValidator, Bool.and_eq_true, decide_eq_true_eq] at activeBefore
+  simp only [isActiveValidator, Bool.and_eq_false_iff, decide_eq_false_iff_not] at notNow
+  have low := UInt64.le_iff_toNat_le.mp activeBefore.1
+  rw [← epoch]
+  rcases notNow with notLow | notHigh
+  · exact absurd (UInt64.le_iff_toNat_le.mpr (by omega)) notLow
+  · have : ¬ (getCurrentEpoch counted).toNat < u.exitEpoch.toNat :=
+      fun lt => notHigh (UInt64.lt_iff_toNat_lt.mpr lt)
+    omega
+
 /-- K5 (`queueRise`): the rise of exiting keys after their exit starts on C's branch. -/
 theorem bud_queueRise (h : Setting config checks g split fin pulled anc counted V)
     (tailC : Run config checks ⟨fork, split⟩ ⟨fork, counted⟩) (highC : ℕ)
     (endEpochC : (getCurrentEpoch counted).toNat ≤ highC + 1) :
     3 * (∑ v ∈ (K5 counted V) with (pinTerms config pulled anc fin).exitingB v.toNat = false, riseQ tailC highC v.toNat) ≤
-      (pinTerms config pulled anc fin).queueRise := sorry
+      (pinTerms config pulled anc fin).queueRise := by
+  classical
+  obtain ⟨K, G, unfold⟩ : ∃ K G : ℕ, (pinTerms config pulled anc fin).queueRise =
+      if (pinTerms config pulled anc fin).tight = true then 0 else
+        3 * K * (preset.upwardBand + (pinTerms config pulled anc fin).depth * G) := ⟨_, _, rfl⟩
+  rw [unfold]
+  have electra : .pectra ≤ fork := Nat.le_trans (by decide) h.fulu
+  have finalized := UInt64.le_iff_toNat_le.mp h.finalized
+  have called := UInt64.le_iff_toNat_le.mp h.called
+  have near := h.near
+  have later := UInt64.le_iff_toNat_le.mp h.later
+  by_cases tight : (pinTerms config pulled anc fin).tight = true
+  · simp only [tight, ↓reduceIte]
+    have tightLe : (pinTerms config pulled anc fin).depth ≤ 1 + preset.MAX_SEED_LOOKAHEAD.toNat :=
+      of_decide_eq_true tight
+    have depthEq : (pinTerms config pulled anc fin).depth =
+        (getCurrentEpoch pulled).toNat + 2 - anc.finalizedCheckpoint.epoch.toNat := rfl
+    rw [depthEq] at tightLe
+    have none : ∀ v ∈ (K5 counted V).filter
+        (fun v => (pinTerms config pulled anc fin).exitingB v.toNat = false),
+        riseQ tailC highC v.toNat = 0 := by
+      intro v member
+      apply riseQ_eq_zero
+      intro c charged same
+      have inside := charge_epoch_le_of_K5 h.early tailC (Finset.mem_filter.mp member).1 c
+        charged same
+      have far : (getCurrentEpoch split).toNat + 1 + preset.MAX_SEED_LOOKAHEAD.toNat ≤ c.epoch :=
+        charge_epoch_ge tailC electra h.early c charged
+      omega
+    rw [Finset.sum_eq_zero none]
+    simp
+  · simp only [tight, Bool.false_eq_true, ↓reduceIte]
+    sorry
 
 /-- K5 (`exitingRise`): the keys whose exit R reads. -/
 theorem bud_exitingRise (h : Setting config checks g split fin pulled anc counted V) :
