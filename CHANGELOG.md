@@ -149,6 +149,10 @@ Not yet released.
 
 ### Changes that break callers
 
+- In Lean, the switch case of `consolidationRequest_cases` records the switched validator in `SwitchAccepted` ([#2334](https://github.com/ethereum/EthLib/issues/2334)).
+  The request names one key twice, the index is the first with that key, and the validator there passes `isValidSwitchToCompoundingRequest`.
+  A caller that matched the case as `⟨index, switched⟩` writes `⟨index, validator, accepted, switched⟩`.
+
 - In Lean, `Execution.honestHeadsCover_of_byzantine_bound` moves from `HistoricalSigners.lean` to `HistoricalCoverage.lean`, with the same statement, so that the checked-call headlines can read `Execution.justifiedHonestlySigned`.
   A caller that imports `HistoricalSigners.lean` alone imports `HistoricalCoverage.lean` instead.
 
