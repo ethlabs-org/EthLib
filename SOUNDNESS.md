@@ -3190,7 +3190,12 @@ A deposited `Genesis` under BLS checks reaches `anchorState` by a `Run` under BL
 The horizon is before the next fork, and `HonestStoreEpochsBounded` and `HonestBlocksAgree` hold up to the time bound.
 The preset satisfies `Preset.ExitWindowFixed` and `IncrementWithinUpwardBand`.
 The withdrawal delay is at least one epoch, `MAX_EFFECTIVE_BALANCE = MIN_ACTIVATION_BALANCE`, and `MIN_ACTIVATION_BALANCE <= MAX_EFFECTIVE_BALANCE_ELECTRA`.
-`Execution.rootViable_of_checked_call` still takes `QuorumDriftWithin` as a premise.
+`Execution.rootViable_of_checked_call` and `Execution.honestHeadsCover_of_checked_call` still take `QuorumDriftWithin` as a premise.
+`Execution.rootViable_of_checked_call_of_drift_bound` and `Execution.honestHeadsCover_of_checked_call_of_drift_bound` discharge it, with BLS checks from Fulu to before Gloas.
+Seven premises replace it.
+They are Fulu or later, a horizon before the next fork, `Preset.ExitWindowFixed` and `IncrementWithinUpwardBand`.
+The others are a withdrawal delay of at least one epoch and the two Electra balance conditions.
+They read `Execution.quorumDriftWithin`, which returns a collision when two honest stores disagree on a block.
 The model's genesis time must be the anchor state's (`secondsToMilliseconds anchorState.genesisTime = genesisTimeMs`), a fact of the configuration that holds for every real anchor.
 The theorems derive the agreement of justified checkpoints across honest stores (`Execution.selectedCheckpointsAgree_or_evidence`), or return `CrossStoreJustifiedEvidence`.
 
