@@ -857,7 +857,9 @@ private theorem block_credit_keys {g : ForkedBeaconState preset}
   have creditedLe : creditedKeys.card ≤ 1 := by
     refine creditedCard.trans ?_
     simp [blocksOne, electra, hegota]
-    split <;> omega
+    have atMost : ∀ (P : Prop) (d : Decidable P), (@ite ℕ P d 0 1) ≤ 1 := fun P d => by
+      cases d <;> simp
+    exact atMost _ _
   refine ⟨creditedKeys.image UInt64.toNat, Finset.card_image_le.trans creditedLe,
     fun i increased => ?_⟩
   have inside : i < t.balances.data.size := by
@@ -1039,13 +1041,13 @@ private theorem credited_pieces {g : ForkedBeaconState preset}
     intro x shared r fulu count
     have electra : .pectra ≤ x.fork := Nat.le_trans (by decide) fulu
     have altair : .altair ≤ x.fork := Nat.le_trans (by decide) electra
-    obtain ⟨m, v, pre, step, post, split, hm, hv⟩ := Run.split_at_flip r
+    obtain ⟨m, v, pre, step, post, split, hm, hv⟩ := PinSplit.Run.split_at_flip r
       (fun z => (getCurrentEpoch x.state).toNat /
           max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat <
         (getCurrentEpoch z.state).toNat / max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat)
       (Nat.lt_irrefl _) (by omega)
     have low := UInt64.le_iff_toNat_le.mp (currentEpoch_le_of_chainSteps pre.chainSteps)
-    have up := ChainStep.epoch_le_succ step.chainStep
+    have up := PinSplit.ChainStep.epoch_le_succ step.chainStep
     have mSame : (getCurrentEpoch m.state).toNat /
         max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat =
           (getCurrentEpoch x.state).toNat /
