@@ -12,6 +12,7 @@ Not yet released.
 - `quorumDrift_le_quorumReserve` bounds the drift of a fast-confirmation call's quorum by `quorumReserve` ([#2058](https://github.com/ethereum/EthLib/issues/2058)).
   It compares the call's pulled-up state with a later state in the target's epoch or the next, before Gloas from Fulu.
   `Execution.quorumDriftWithin` builds those runs from the stores and proves `QuorumDriftWithin` with BLS checks.
+  Otherwise it gives `HonestCollision`: two honest stores collide on a block.
   The anchor state is reached by a run with BLS checks from a genesis built from deposits, and the preset meets `DirectSafety.Parameters`.
   `Execution.rootViable_of_checked_call` takes the same genesis and run for any signature checks; this theorem fixes them to BLS.
   The other premises are the anchor store and slot, and positive slot durations.
