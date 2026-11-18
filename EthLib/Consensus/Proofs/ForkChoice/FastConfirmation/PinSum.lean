@@ -1043,15 +1043,6 @@ theorem bud_late (h : Setting config checks g split fin pulled anc counted V) :
     3 * (∑ v ∈ (VN counted V) with (pinTerms config pulled anc fin).lateB v.toNat = true, eR pulled v) +
       3 * (∑ v ∈ (K6 pulled counted) with (pinTerms config pulled anc fin).lateB v.toNat = true, eR pulled v) ≤ (pinTerms config pulled anc fin).late := sorry
 
-/-- Rounding down to a multiple of `m` is monotone. -/
-private theorem round_mono (m : ℕ) {a b : ℕ} (le : a ≤ b) : a - a % m ≤ b - b % m := by
-  rcases Nat.eq_zero_or_pos m with rfl | positive
-  · simp
-  have first := Nat.div_add_mod a m
-  have second := Nat.div_add_mod b m
-  have quotient := Nat.mul_le_mul_left m (Nat.div_le_div_right (c := m) le)
-  omega
-
 /-- The pin's bound on another branch's total: three halves of the call's total. -/
 private def pinWide (state : BeaconState preset fork) : ℕ :=
   3 * ((getTotalActiveBalance state).toOption.getD 0).toNat / 2
@@ -1107,7 +1098,7 @@ private theorem exitRate_le {fork' : Fork} {s : BeaconState preset fork'}
     simpa [exitChurnLimit, notGloas, getActivationExitChurnLimit,
       getBalanceChurnLimit, read, bind, Except.bind, pure, Except.pure] using computed.symm
   rw [value, Uint64.toNat_min, toNat_roundToIncrement, Uint64.toNat_max, UInt64.toNat_div]
-  exact min_le_min_left _ (round_mono _ (max_le_max_left _
+  exact min_le_min_left _ (rounded_mono _ (max_le_max_left _
     (Nat.div_le_div_right le)))
 
 /-- A state with a total of at most `wide` has a consolidation churn limit of at most the pin's.
@@ -1141,7 +1132,7 @@ private theorem consRate_le {fork' : Fork} {s : BeaconState preset fork'}
     UInt64.le_iff_toNat_le.mpr (by rw [Uint64.toNat_min]; exact Nat.min_le_right _ _)
   rw [value, UInt64.toNat_sub_of_le _ _ fits, Uint64.toNat_min, toNat_roundToIncrement,
     Uint64.toNat_max, UInt64.toNat_div]
-  have rounded := round_mono preset.EFFECTIVE_BALANCE_INCREMENT.toNat (max_le_max_left
+  have rounded := rounded_mono preset.EFFECTIVE_BALANCE_INCREMENT.toNat (max_le_max_left
     config.MIN_PER_EPOCH_CHURN_LIMIT_ELECTRA.toNat
     (Nat.div_le_div_right (c := config.CHURN_LIMIT_QUOTIENT.toNat) le))
   unfold pinCons pinExit pinBalance
@@ -1191,12 +1182,6 @@ private theorem sum_exitQ_le {x y : ForkedBeaconState preset} (tail : Run config
   rw [← swap]
   exact List.sum_le_sum fun c _ => by split <;> simp
 
-/-- A departure charge of a run exits no earlier than the activation-exit epoch of its start. -/
-private theorem charge_epoch_ge {x y : ForkedBeaconState preset} (tail : Run config checks x y)
-    (electra : .pectra ≤ x.fork) (early : y.fork < .glamsterdam) :
-    ∀ c ∈ tail.departureCharges,
-      (getCurrentEpoch x.state).toNat + 1 + preset.MAX_SEED_LOOKAHEAD.toNat ≤ c.epoch := sorry
-
 /-- D-8 (queues): exits and consolidations initiated on C's branch (none in the tight window). -/
 theorem bud_queues (h : Setting config checks g split fin pulled anc counted V)
     (tailC : Run config checks ⟨fork, split⟩ ⟨fork, counted⟩) :
@@ -1237,7 +1222,7 @@ theorem bud_queues (h : Setting config checks g split fin pulled anc counted V)
         rw [List.find?_eq_none]
         intro c member
         have far : (getCurrentEpoch split).toNat + 1 + preset.MAX_SEED_LOOKAHEAD.toNat ≤ c.epoch :=
-          charge_epoch_ge tailC electra early c member
+          DirectSafety.Run.departureCharges_epoch_ge_start tailC electra early c member
         simp only [Bool.and_eq_true, beq_iff_eq, decide_eq_true_eq, not_and]
         intro _
         omega
@@ -1324,15 +1309,11 @@ theorem bud_deposits (h : Setting config checks g split fin pulled anc counted V
     {events : List (BalanceEvent preset)} (replayed : tail.balanceEvents high = .ok events) :
     3 * (∑ v ∈ V, credDepR events v.toNat) ≤ (pinTerms config pulled anc fin).queueDep := sorry
 
-/-- The indices of the charges of a run are distinct, since an exit is assigned once. -/
-private theorem charge_indices_nodup {x y : ForkedBeaconState preset} (tail : Run config checks x y) :
-    (tail.departureCharges.map (·.index)).Nodup := sorry
-
 /-- Two charges of a run at one position are the same charge. -/
 private theorem charge_unique {x y : ForkedBeaconState preset} (tail : Run config checks x y)
     {c d : DepartureCharge} (hc : c ∈ tail.departureCharges) (hd : d ∈ tail.departureCharges)
     (same : c.index = d.index) : c = d :=
-  List.inj_on_of_nodup_map (charge_indices_nodup tail) hc hd same
+  List.inj_on_of_nodup_map (DirectSafety.departureCharges_run_indices tail) hc hd same
 
 open DirectSafety.Apriori DirectSafety.Apriori.Internal in
 /-- The effective balance of a key at its exit call, from the finalized state.
@@ -1528,7 +1509,7 @@ theorem bud_queueRise (h : Setting config checks g split fin pulled anc counted 
       have inside := charge_epoch_le_of_K5 h.early tailC (Finset.mem_filter.mp member).1 c
         charged same
       have far : (getCurrentEpoch split).toNat + 1 + preset.MAX_SEED_LOOKAHEAD.toNat ≤ c.epoch :=
-        charge_epoch_ge tailC electra h.early c charged
+        DirectSafety.Run.departureCharges_epoch_ge_start tailC electra h.early c charged
       omega
     rw [Finset.sum_eq_zero none]
     simp
@@ -1695,6 +1676,22 @@ theorem bud_branchR (h : Setting config checks g split fin pulled anc counted V)
           (slashR (pinTerms config pulled anc fin) v.toNat + bandR events v.toNat)) ≤
       (pinTerms config pulled anc fin).branchR := sorry
 
+/-- The sync movement of a key is its sync credits plus its sync debits over the events. -/
+private theorem syncF_eq (events : List (BalanceEvent preset)) (v : ℕ) :
+    syncF events v = (events.map (PinSplit5.syncCredit v)).sum +
+      (events.map (PinSplit5.syncDebit v)).sum := by
+  induction events with
+  | nil => simp [syncF]
+  | cons e rest ih =>
+    unfold syncF at ih ⊢
+    by_cases sync : e.source = .sync
+    · simp only [List.filter_cons, sync, decide_true, ↓reduceIte, List.map_cons, List.sum_cons,
+        PinSplit5.syncCredit, PinSplit5.syncDebit, keyCredit, keyDebit] at ih ⊢
+      omega
+    · simp only [List.filter_cons, sync, decide_false, Bool.false_eq_true, ↓reduceIte,
+        List.map_cons, List.sum_cons, PinSplit5.syncCredit, PinSplit5.syncDebit] at ih ⊢
+      omega
+
 /-- S1 (syncSeats): every seat, weight 3 for V, K4 and K5 and 1 for K6.
 
 The proposer's share of the sync credits is in `syncF`, so the bound adds the `syncProposer` part
@@ -1728,7 +1725,7 @@ theorem bud_sync (h : Setting config checks g split fin pulled anc counted V)
       ∀ keys : Finset ℕ, ∑ i ∈ keys, syncF evs i ≤
         ((getCurrentEpoch e).toNat + 1 - (getCurrentEpoch split).toNat) *
           preset.SLOTS_PER_EPOCH.toNat * preset.SYNC_COMMITTEE_SIZE.toNat *
-            syncSeatEnvelope preset pulledTotal.toNat := by
+            PinSplit5.syncSeatEnvelope preset pulledTotal.toNat := by
     intro e t within highE evs replayed keys
     have band : ∀ {u w : ForkedBeaconState preset} (step : Step config checks u w),
         t.Contains step → ∀ T : Gwei, getTotalActiveBalance w.state = .ok T →
@@ -1741,7 +1738,7 @@ theorem bud_sync (h : Setting config checks g split fin pulled anc counted V)
       exact total_band_of_guard shared h.genesis h.parameters h.caps h.aligned h.twoSlots electra
         h.guard (fromFin.append toPulled) h.early (Nat.le_succ _)
         (fromFin.append (pre.snoc step)) wEarly (by omega) pulledOk read
-    have moves := (Run.syncDebits_le t h.fulu h.early highE replayed pulledTotal.toNat band keys).2
+    have moves := (PinSplit5.Run.syncDebits_le t h.fulu h.early highE replayed pulledTotal.toNat band keys).2
     exact (Finset.sum_le_sum fun i _ => (syncF_eq evs i).le).trans moves
   -- the four sets are pairwise disjoint
   have voters : ∀ v ∈ V, v ∈ AR pulled := fun v member => (h.voting v member).1
@@ -1782,7 +1779,62 @@ theorem bud_fall (h : Setting config checks g split fin pulled anc counted V) :
 /-- Glue: (K4 pulled counted V) keys are current at R. -/
 theorem bud_rise (h : Setting config checks g split fin pulled anc counted V) :
     (∑ v ∈ (K4 pulled counted V), (pinTerms config pulled anc fin).rise v.toNat) ≤ ∑ i ∈ (pinTerms config pulled anc fin).positions with (pinTerms config pulled anc fin).current i = true, (pinTerms config pulled anc fin).rise i :=
-  sorry
+  have sets : ∑ v ∈ V, (syncF events v.toNat + syncF eventsC v.toNat) +
+      ∑ v ∈ K4 pulled counted V, (syncF events v.toNat + syncF eventsC v.toNat) +
+      ∑ v ∈ K5 counted V, (syncF events v.toNat + syncF eventsC v.toNat) +
+      ∑ v ∈ K6 pulled counted, (syncF events v.toNat + syncF eventsC v.toNat) =
+      ∑ v ∈ V ∪ K4 pulled counted V ∪ K5 counted V ∪ K6 pulled counted,
+        (syncF events v.toNat + syncF eventsC v.toNat) := by
+    rw [Finset.sum_union d3, Finset.sum_union d2, Finset.sum_union d1]
+  have covered := sum_toNat_le (S := V ∪ K4 pulled counted V ∪ K5 counted V ∪ K6 pulled counted)
+    (P := (V ∪ K4 pulled counted V ∪ K5 counted V ∪ K6 pulled counted).image
+      fun v : ValidatorIndex => v.toNat)
+    (fun i => syncF events i + syncF eventsC i) fun v member => Finset.mem_image_of_mem _ member
+  rw [Finset.sum_add_distrib] at covered
+  have first := run tail (Nat.le_succ _) high replayed
+    ((V ∪ K4 pulled counted V ∪ K5 counted V ∪ K6 pulled counted).image
+      fun v : ValidatorIndex => v.toNat)
+  have second := run tailC near highC replayedC
+    ((V ∪ K4 pulled counted V ∪ K5 counted V ∪ K6 pulled counted).image
+      fun v : ValidatorIndex => v.toNat)
+  have totalEq : ((getTotalActiveBalance pulled).toOption.getD 0).toNat = pulledTotal.toNat := by
+    simp [pulledOk]
+  have seats : (pinTerms config pulled anc fin).syncSeats =
+      3 * (2 * (pinTerms config pulled anc fin).depth * preset.SLOTS_PER_EPOCH.toNat *
+        preset.SYNC_COMMITTEE_SIZE.toNat * PinSplit5.syncEnvelope preset
+          ((getTotalActiveBalance pulled).toOption.getD 0).toNat) := rfl
+  have proposer : (pinTerms config pulled anc fin).syncProposer =
+      preset.SLOTS_PER_EPOCH.toNat * preset.SYNC_COMMITTEE_SIZE.toNat *
+        (PinSplit5.syncEnvelope preset ((getTotalActiveBalance pulled).toOption.getD 0).toNat *
+          PROPOSER_WEIGHT.toNat / (WEIGHT_DENOMINATOR.toNat - PROPOSER_WEIGHT.toNat)) := rfl
+  have depthEq : (pinTerms config pulled anc fin).depth =
+      (getCurrentEpoch pulled).toNat + 2 - anc.finalizedCheckpoint.epoch.toNat := rfl
+  rw [totalEq] at seats proposer
+  rw [seats, proposer]
+  unfold PinSplit5.syncSeatEnvelope at first second
+  generalize (pinTerms config pulled anc fin).depth = depth at depthEq ⊢
+  generalize PinSplit5.syncEnvelope preset pulledTotal.toNat = env at *
+  generalize env * PROPOSER_WEIGHT.toNat / (WEIGHT_DENOMINATOR.toNat - PROPOSER_WEIGHT.toNat) =
+    share at *
+  have firstDepth : (getCurrentEpoch pulled).toNat + 1 - (getCurrentEpoch split).toNat ≤ depth := by
+    omega
+  have secondDepth : (getCurrentEpoch counted).toNat + 1 - (getCurrentEpoch split).toNat ≤ depth := by
+    omega
+  have firstLe := first.trans (Nat.mul_le_mul_right _ (Nat.mul_le_mul_right _
+    (Nat.mul_le_mul_right _ firstDepth)))
+  have secondLe := second.trans (Nat.mul_le_mul_right _ (Nat.mul_le_mul_right _
+    (Nat.mul_le_mul_right _ secondDepth)))
+  have union : ∑ v ∈ V, (syncF events v.toNat + syncF eventsC v.toNat) +
+      ∑ v ∈ K4 pulled counted V, (syncF events v.toNat + syncF eventsC v.toNat) +
+      ∑ v ∈ K5 counted V, (syncF events v.toNat + syncF eventsC v.toNat) +
+      ∑ v ∈ K6 pulled counted, (syncF events v.toNat + syncF eventsC v.toNat) ≤
+        2 * (depth * preset.SLOTS_PER_EPOCH.toNat * preset.SYNC_COMMITTEE_SIZE.toNat *
+          (env + share)) := by
+    rw [sets]
+    omega
+  calc _ ≤ 3 * (2 * (depth * preset.SLOTS_PER_EPOCH.toNat * preset.SYNC_COMMITTEE_SIZE.toNat *
+        (env + share))) := by omega
+    _ = _ := by ring
 
 /-- `quorumReserve` holds `joining` (its gain term). -/
 theorem bud_joining : (pinTerms config pulled anc fin).joining ≤ (pinTerms config pulled anc fin).quorum := sorry
