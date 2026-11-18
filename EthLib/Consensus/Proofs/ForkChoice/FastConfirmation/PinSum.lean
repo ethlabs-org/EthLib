@@ -898,24 +898,13 @@ theorem stub_J (h : Setting config checks g split fin pulled anc counted V)
       exact_mod_cast this
   have joining : ∑ v ∈ (K6 pulled counted).filter joins, eR pulled v ≤
       (pinTerms config pulled anc fin).joining := by
-    have inj : Set.InjOn (fun v : ValidatorIndex => v.toNat)
-        (((K6 pulled counted).filter joins : Finset ValidatorIndex) : Set ValidatorIndex) :=
-      fun a _ b _ e => UInt64.toNat_inj.mp e
-    have e : ∑ v ∈ (K6 pulled counted).filter joins, eR pulled v =
-        ∑ i ∈ ((K6 pulled counted).filter joins).image (fun v : ValidatorIndex => v.toNat),
-          balanceAt pulled i :=
-      (Finset.sum_image (f := fun i => balanceAt pulled i) inj).symm
-    rw [e]
     show _ ≤ ∑ i ∈ (pinTerms config pulled anc fin).positions with
       ((pinTerms config pulled anc fin).current i = false ∧
         isActiveAt pulled (getCurrentEpoch pulled + 1) i = true), balanceAt pulled i
-    apply Finset.sum_le_sum_of_subset
-    intro i hi
-    obtain ⟨v, hv, rfl⟩ := Finset.mem_image.mp hi
-    have hj := (Finset.mem_filter.mp hv).2
-    refine Finset.mem_filter.mpr ⟨?_, hj⟩
-    obtain ⟨w, found, -⟩ := isActiveAt_eq_true_iff.mp hj.2
-    exact Finset.mem_range.mpr (Array.getElem?_eq_some_iff.mp found).1
+    exact sum_toNat_le (fun i => balanceAt pulled i) fun v hv => by
+      have hj := (Finset.mem_filter.mp hv).2
+      obtain ⟨w, found, -⟩ := isActiveAt_eq_true_iff.mp hj.2
+      exact mem_positions_filter config pulled anc fin found hj
   have split : ∑ v ∈ K6 pulled counted, cost v =
       ∑ v ∈ (K6 pulled counted).filter joins, eR pulled v +
       (∑ v ∈ (K6 pulled counted) with (pinTerms config pulled anc fin).lateB v.toNat = true,
@@ -968,15 +957,6 @@ private theorem late_eq (config : Config) (pulled anc fin : BeaconState preset f
       if (pinTerms config pulled anc fin).tight = true then 0 else
         3 * ∑ i ∈ (pinTerms config pulled anc fin).positions with
           (pinTerms config pulled anc fin).lateB i = true, balanceAt pulled i := rfl
-
-/-- A voter active at R's epoch holds a validator there that is active at that epoch. -/
-private theorem active_of_activeVoters (early : fork < .glamsterdam)
-    {s : BeaconState preset fork} {v : ValidatorIndex} (member : v ∈ activeVoters s) :
-    ∃ w, s.validators.data[v.toNat]? = some w ∧
-      isActiveValidator w (getCurrentEpoch s) = true := by
-  have listed : v ∈ getActiveValidatorIndices s (getCurrentEpoch s) := by
-    simpa [activeVoters] using member
-  exact (mem_getActiveValidatorIndices (s.validators.bound early)).mp listed
 
 /-- Late activations, weight 3 for V keys and 1 for new keys. -/
 theorem bud_late (h : Setting config checks g split fin pulled anc counted V) :
@@ -1057,25 +1037,13 @@ theorem bud_late (h : Setting config checks g split fin pulled anc counted V) :
     have disj : Disjoint A B :=
       Finset.disjoint_of_subset_left (Finset.filter_subset _ _)
         (Finset.disjoint_of_subset_right (Finset.filter_subset _ _) disjoint)
-    have inj : Set.InjOn (fun v : ValidatorIndex => v.toNat)
-        ((A ∪ B : Finset ValidatorIndex) : Set _) := fun a _ b _ e => UInt64.toNat_inj.mp e
-    have e : ∑ v ∈ A ∪ B, eR pulled v =
-        ∑ i ∈ (A ∪ B).image (fun v : ValidatorIndex => v.toNat), balanceAt pulled i :=
-      (Finset.sum_image (f := fun i => balanceAt pulled i) inj).symm
-    have sub : (A ∪ B).image (fun v : ValidatorIndex => v.toNat) ⊆
-        (pinTerms config pulled anc fin).positions.filter
-          fun i => (pinTerms config pulled anc fin).lateB i = true := by
-      intro i hi
-      obtain ⟨v, hv, rfl⟩ := Finset.mem_image.mp hi
-      have flag : (pinTerms config pulled anc fin).lateB v.toNat = true := by
-        rcases Finset.mem_union.mp hv with hv | hv <;> exact (Finset.mem_filter.mp hv).2
-      refine Finset.mem_filter.mpr ⟨?_, flag⟩
-      obtain ⟨w, found, -⟩ := (lateB_iff config pulled anc fin v.toNat).mp flag
-      exact Finset.mem_range.mpr (Array.getElem?_eq_some_iff.mp found).1
     have le : ∑ v ∈ A ∪ B, eR pulled v ≤ ∑ i ∈ (pinTerms config pulled anc fin).positions.filter
-        (fun i => (pinTerms config pulled anc fin).lateB i = true), balanceAt pulled i := by
-      rw [e]
-      exact Finset.sum_le_sum_of_subset sub
+        (fun i => (pinTerms config pulled anc fin).lateB i = true), balanceAt pulled i :=
+      sum_toNat_le (fun i => balanceAt pulled i) fun v hv => by
+        have flag : (pinTerms config pulled anc fin).lateB v.toNat = true := by
+          rcases Finset.mem_union.mp hv with hv | hv <;> exact (Finset.mem_filter.mp hv).2
+        obtain ⟨w, found, -⟩ := (lateB_iff config pulled anc fin v.toNat).mp flag
+        exact mem_positions_filter config pulled anc fin found flag
     rw [Finset.sum_union disj] at le
     change 3 * ∑ v ∈ A, eR pulled v + ∑ v ∈ B, eR pulled v ≤ _
     omega
@@ -1197,31 +1165,17 @@ theorem bud_exitedR (h : Setting config checks g split fin pulled anc counted V)
     (∑ v ∈ (K6 pulled counted) with (pinTerms config pulled anc fin).exitedRB v.toNat = true,
       (eR pulled v + (pinTerms config pulled anc fin).rise v.toNat)) ≤
         (pinTerms config pulled anc fin).exitedR := by
-  classical
   have _ := h
   rw [exitedR_eq]
-  have inj : Set.InjOn (fun v : ValidatorIndex => v.toNat)
-      (K6 pulled counted : Set ValidatorIndex) := fun a _ b _ e => UInt64.toNat_inj.mp e
-  set S := (K6 pulled counted).filter
-    fun v => (pinTerms config pulled anc fin).exitedRB v.toNat = true with hS
-  have injS : Set.InjOn (fun v : ValidatorIndex => v.toNat) (S : Set ValidatorIndex) :=
-    inj.mono (by intro a ha; exact (Finset.mem_filter.mp ha).1)
-  have e : ∑ v ∈ S, (eR pulled v + (pinTerms config pulled anc fin).rise v.toNat) =
-      ∑ i ∈ S.image (fun v : ValidatorIndex => v.toNat), (balanceAt pulled i +
-        (pinTerms config pulled anc fin).rise i) :=
-    (Finset.sum_image (f := fun i => balanceAt pulled i + (pinTerms config pulled anc fin).rise i)
-      injS).symm
-  rw [Finset.sum_filter, ← Finset.sum_filter, ← hS, e]
-  apply Finset.sum_le_sum_of_subset
-  intro i hi
-  obtain ⟨v, hv, rfl⟩ := Finset.mem_image.mp hi
+  refine sum_toNat_le (fun i => balanceAt pulled i + (pinTerms config pulled anc fin).rise i)
+    fun v hv => ?_
   have flag := (Finset.mem_filter.mp hv).2
-  refine Finset.mem_filter.mpr ⟨?_, flag⟩
-  simp only [pinTerms] at flag ⊢
-  rw [Finset.mem_range]
-  cases found : pulled.validators.data[v.toNat]? with
-  | none => simp [found] at flag
-  | some w => exact (Array.getElem?_eq_some_iff.mp found).1
+  obtain ⟨w, found⟩ : ∃ w, pulled.validators.data[v.toNat]? = some w := by
+    simp only [pinTerms] at flag
+    cases f : pulled.validators.data[v.toNat]? with
+    | none => simp [f] at flag
+    | some w => exact ⟨w, rfl⟩
+  exact mem_positions_filter config pulled anc fin found flag
 
 /-- R1 (branchR): R's credits to V keys since the split, weight 3.
 
