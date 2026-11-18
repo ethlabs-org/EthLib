@@ -1683,18 +1683,18 @@ theorem bud_branchR (h : Setting config checks g split fin pulled anc counted V)
 
 /-- The sync movement of a key is its sync credits plus its sync debits over the events. -/
 private theorem syncF_eq (events : List (BalanceEvent preset)) (v : ℕ) :
-    syncF events v = (events.map (PinSplit5.syncCredit v)).sum +
-      (events.map (PinSplit5.syncDebit v)).sum := by
+    syncF events v = (events.map (syncCredit v)).sum +
+      (events.map (syncDebit v)).sum := by
   induction events with
   | nil => simp [syncF]
   | cons e rest ih =>
     unfold syncF at ih ⊢
     by_cases sync : e.source = .sync
     · simp only [List.filter_cons, sync, decide_true, ↓reduceIte, List.map_cons, List.sum_cons,
-        PinSplit5.syncCredit, PinSplit5.syncDebit, keyCredit, keyDebit] at ih ⊢
+        syncCredit, syncDebit, keyCredit, keyDebit] at ih ⊢
       omega
     · simp only [List.filter_cons, sync, decide_false, Bool.false_eq_true, ↓reduceIte,
-        List.map_cons, List.sum_cons, PinSplit5.syncCredit, PinSplit5.syncDebit] at ih ⊢
+        List.map_cons, List.sum_cons, syncCredit, syncDebit] at ih ⊢
       omega
 
 /-- S1 (syncSeats): every seat, weight 3 for V, K4 and K5 and 1 for K6.
@@ -1739,7 +1739,8 @@ theorem bud_sync (h : Setting config checks g split fin pulled anc counted V)
       obtain ⟨pre, post, _, _, _⟩ := Run.contains_step_facts member h.early
       have wEarly : w.fork < .glamsterdam :=
         Nat.lt_of_le_of_lt (fork_le_of_chainSteps post.chainSteps) h.early
-      have wEpoch := UInt64.le_iff_toNat_le.mp (currentEpoch_le_of_chainSteps post.chainSteps)
+      have wEpoch : (getCurrentEpoch w.state).toNat ≤ (getCurrentEpoch e).toNat :=
+        UInt64.le_iff_toNat_le.mp (currentEpoch_le_of_chainSteps post.chainSteps)
       exact total_band_of_guard shared h.genesis h.parameters h.caps h.aligned h.twoSlots electra
         h.guard (fromFin.append toPulled) h.early (Nat.le_succ _)
         (fromFin.append (pre.snoc step)) wEarly (by omega) pulledOk read
@@ -1764,27 +1765,6 @@ theorem bud_sync (h : Setting config checks g split fin pulled anc counted V)
         · exact notR (voters v inV)
         · exact notR (Finset.mem_filter.mp inK4).2.1
       · exact (Finset.mem_filter.mp inK5).2.1 active
-  sorry
-/-- W (`reserveW`, `flagged`, `seatShortfall`, K7, cS): whistleblower rewards on C's branch,
-weight 3, are paid by the slashed key's own slack, or charged. -/
-theorem bud_whistle (h : Setting config checks g split fin pulled anc counted V)
-    (tailC : Run config checks ⟨fork, split⟩ ⟨fork, counted⟩) (highC : ℕ)
-    (endEpochC : (getCurrentEpoch counted).toNat ≤ highC + 1)
-    {eventsC : List (BalanceEvent preset)} (replayedC : tailC.balanceEvents highC = .ok eventsC) :
-    3 * ((∑ v ∈ (K4 pulled counted V), (whistC tailC highC v.toNat : ℤ)) +
-      (∑ v ∈ (K5 counted V), (whistC tailC highC v.toNat : ℤ)) +
-      (∑ v ∈ (K6 pulled counted), (whistC tailC highC v.toNat : ℤ))) ≤
-      -cK7 pulled counted - cS pulled counted V + (pinTerms config pulled anc fin).reserveW +
-        (pinTerms config pulled anc fin).flagged + (pinTerms config pulled anc fin).seatShortfall :=
-  sorry
-
-/-- Glue: V keys are current at R, and distinct keys have distinct positions. -/
-theorem bud_fall (h : Setting config checks g split fin pulled anc counted V) :
-    (∑ v ∈ V, (pinTerms config pulled anc fin).fall v.toNat) ≤ ∑ i ∈ (pinTerms config pulled anc fin).positions with (pinTerms config pulled anc fin).current i = true, (pinTerms config pulled anc fin).fall i := sorry
-
-/-- Glue: (K4 pulled counted V) keys are current at R. -/
-theorem bud_rise (h : Setting config checks g split fin pulled anc counted V) :
-    (∑ v ∈ (K4 pulled counted V), (pinTerms config pulled anc fin).rise v.toNat) ≤ ∑ i ∈ (pinTerms config pulled anc fin).positions with (pinTerms config pulled anc fin).current i = true, (pinTerms config pulled anc fin).rise i :=
   have sets : ∑ v ∈ V, (syncF events v.toNat + syncF eventsC v.toNat) +
       ∑ v ∈ K4 pulled counted V, (syncF events v.toNat + syncF eventsC v.toNat) +
       ∑ v ∈ K5 counted V, (syncF events v.toNat + syncF eventsC v.toNat) +
@@ -1843,6 +1823,28 @@ theorem bud_rise (h : Setting config checks g split fin pulled anc counted V) :
   calc _ ≤ 3 * (2 * (depth * preset.SLOTS_PER_EPOCH.toNat * preset.SYNC_COMMITTEE_SIZE.toNat *
         (env + share))) := by omega
     _ = _ := by ring
+
+/-- W (`reserveW`, `flagged`, `seatShortfall`, K7, cS): whistleblower rewards on C's branch,
+weight 3, are paid by the slashed key's own slack, or charged. -/
+theorem bud_whistle (h : Setting config checks g split fin pulled anc counted V)
+    (tailC : Run config checks ⟨fork, split⟩ ⟨fork, counted⟩) (highC : ℕ)
+    (endEpochC : (getCurrentEpoch counted).toNat ≤ highC + 1)
+    {eventsC : List (BalanceEvent preset)} (replayedC : tailC.balanceEvents highC = .ok eventsC) :
+    3 * ((∑ v ∈ (K4 pulled counted V), (whistC tailC highC v.toNat : ℤ)) +
+      (∑ v ∈ (K5 counted V), (whistC tailC highC v.toNat : ℤ)) +
+      (∑ v ∈ (K6 pulled counted), (whistC tailC highC v.toNat : ℤ))) ≤
+      -cK7 pulled counted - cS pulled counted V + (pinTerms config pulled anc fin).reserveW +
+        (pinTerms config pulled anc fin).flagged + (pinTerms config pulled anc fin).seatShortfall :=
+  sorry
+
+/-- Glue: V keys are current at R, and distinct keys have distinct positions. -/
+theorem bud_fall (h : Setting config checks g split fin pulled anc counted V) :
+    (∑ v ∈ V, (pinTerms config pulled anc fin).fall v.toNat) ≤ ∑ i ∈ (pinTerms config pulled anc fin).positions with (pinTerms config pulled anc fin).current i = true, (pinTerms config pulled anc fin).fall i := sorry
+
+/-- Glue: (K4 pulled counted V) keys are current at R. -/
+theorem bud_rise (h : Setting config checks g split fin pulled anc counted V) :
+    (∑ v ∈ (K4 pulled counted V), (pinTerms config pulled anc fin).rise v.toNat) ≤ ∑ i ∈ (pinTerms config pulled anc fin).positions with (pinTerms config pulled anc fin).current i = true, (pinTerms config pulled anc fin).rise i :=
+  sorry
 
 /-- `quorumReserve` holds `joining` (its gain term). -/
 theorem bud_joining : (pinTerms config pulled anc fin).joining ≤ (pinTerms config pulled anc fin).quorum := sorry
