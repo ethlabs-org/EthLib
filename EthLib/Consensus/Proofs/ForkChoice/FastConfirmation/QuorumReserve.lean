@@ -209,6 +209,10 @@ pinReserve = quorumReserve                         the call's branch
   That depth is at most the seed lookahead plus one.
   Every such epoch in that window was fixed before the branches split.
 - Rates are read at a quarter of the call's total active balance.
+- The exit and consolidation churns are read at three halves of the call's total active balance.
+  A counting state on another branch can spend churn at a total up to that much.
+- A key's fall starts from the lesser of its balance and its cap.
+  So a sweep to the cap, or a switch to compounding, on another branch is charged.
 - Inactivity scores and the queue of partial withdrawals are read at the finalized block's state.
 - From Fulu, every Electra and Altair field it reads exists.
 
@@ -262,8 +266,22 @@ def pinReserve (config : Config) (state ancestor finalizedState : BeaconState pr
   let perIncrement := inc * preset.BASE_REWARD_FACTOR.toNat / root
   let base (i : ℕ) := effective i / inc * perIncrement
   let depositChurn := config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat
-  let exitChurn := ((exitChurnLimit config state).toOption.getD 0).toNat
-  let consolidationChurn := ((getConsolidationChurnLimit config state).toOption.getD 0).toNat
+  -- The exit and consolidation churns are read at three halves of the call's total.
+  --
+  -- A counting state on another branch can spend churn at a total up to that much.
+  let wide := 3 * total / 2
+  let round (amount : ℕ) := amount - amount % inc
+  let balanceChurn := round (max config.MIN_PER_EPOCH_CHURN_LIMIT_ELECTRA.toNat
+    (wide / config.CHURN_LIMIT_QUOTIENT.toNat))
+  let activationExitChurn :=
+    min config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat balanceChurn
+  let exitChurn := if .glamsterdam ≤ fork then
+      round (max config.MIN_PER_EPOCH_CHURN_LIMIT_ELECTRA.toNat
+        (wide / config.CHURN_LIMIT_QUOTIENT_GLOAS.toNat))
+    else activationExitChurn
+  let consolidationChurn := if .glamsterdam ≤ fork then
+      round (wide / config.CONSOLIDATION_CHURN_LIMIT_QUOTIENT.toNat)
+    else balanceChurn - activationExitChurn
   let queues := 3 * (depth * depositChurn + capMax) +
     (if tight then 0 else 3 * (depth * (exitChurn + consolidationChurn) + 2 * capMax))
   let seatReward := total / inc * perIncrement * SYNC_REWARD_WEIGHT.toNat /
@@ -302,7 +320,7 @@ def pinReserve (config : Config) (state ancestor finalizedState : BeaconState pr
   let partialsDue (i : ℕ) := if depth ≤ partialDelay + 1 then max (partialsX i) (partialsR i)
     else max (max (partialsX i) (partialsR i)) (actual i - preset.MIN_ACTIVATION_BALANCE.toNat)
   let fall (i : ℕ) :=
-    let low := actual i - (depth * (leak i + gainRate i) + partialsDue i)
+    let low := min (actual i) (cap i) - (depth * (leak i + gainRate i) + partialsDue i)
     if effective i ≤ low + preset.downwardBand then 0 else effective i - (low - low % inc)
   let capFor (i : ℕ) := if depth * gainRate i < inc then cap i else capMax
   let rise (i : ℕ) :=
