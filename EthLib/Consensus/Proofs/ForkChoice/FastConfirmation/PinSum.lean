@@ -1149,16 +1149,6 @@ private theorem finalized_le_current {g : ForkedBeaconState preset}
   exact UInt64.le_trans valid.ordered.1 (UInt64.le_trans valid.ordered.2
     (UInt64.le_trans valid.settled (getPreviousEpoch_le pulled)))
 
-/-- A validator slashed on R's branch at an index that the split's registry lacks waits the
-slashings vector from the split. -/
-private theorem fresh_slashed {g : ForkedBeaconState preset}
-    {split fin pulled anc counted : BeaconState preset fork} {V : Finset ValidatorIndex}
-    (h : Setting config checks g split fin pulled anc counted V) {i : ℕ} {w : Validator}
-    (found : pulled.validators.data[i]? = some w) (fresh : split.validators.data.size ≤ i)
-    (slashed : w.slashed = true) :
-    (getCurrentEpoch split).toNat + preset.EPOCHS_PER_SLASHINGS_VECTOR.toNat ≤
-      w.withdrawableEpoch.toNat := sorry
-
 /-- A key counted in C and inactive at R, read at R's record, is in one of five classes.
 
 It joins at R's next epoch, activates late, has exited at R, is exiting at R, or is not yet
@@ -1301,23 +1291,9 @@ private theorem K6_class {g : ForkedBeaconState preset}
         · exact .inl unslashed
         · right
           have slashed : w.slashed = true := by simpa using unslashed
-          by_cases inside : v.toNat < split.validators.data.size
-          · have oldFound : split.validators.data[v.toNat]? =
-                some split.validators.data[v.toNat] := Array.getElem?_eq_getElem inside
-            cases oldSlashed : split.validators.data[v.toNat].slashed
-            · have delayed : (getCurrentEpoch split).toNat +
-                  preset.EPOCHS_PER_SLASHINGS_VECTOR.toNat ≤ w.withdrawableEpoch.toNat :=
-                (rp.newly_slashed_withdrawableEpoch h.caps.activation h.caps.compounding
-                  h.early h.delay v.toNat _ w oldFound found oldSlashed slashed).2
-              omega
-            · obtain ⟨now, nowFound, nowSlashed⟩ :=
-                rc.slashedPersistence v.toNat _ oldFound oldSlashed
-              rw [foundU] at nowFound
-              cases nowFound
-              rw [uUnslashed] at nowSlashed
-              cases nowSlashed
-          · have delayed := fresh_slashed h found (by omega) slashed
-            omega
+          have delayed := slashed_waits rp rc h.early h.caps h.delay found slashed
+            (by simp [foundU, uUnslashed])
+          omega
 
 /-- The keys that join at R's next epoch are charged their stake in `joining`. -/
 private theorem joining_eq (config : Config) (pulled anc fin : BeaconState preset fork) :
@@ -1333,6 +1309,31 @@ private theorem joinRise_eq (config : Config) (pulled anc fin : BeaconState pres
         (isActiveAt pulled (getCurrentEpoch pulled) i = false ∧
           isActiveAt pulled (getCurrentEpoch pulled + 1) i = true),
             (pinTerms config pulled anc fin).rise i := rfl
+
+/-- The keys of `K6` beyond R's registry are paid by the credits and, in the high regime, by
+`creditGain`.
+
+They joined the registry on C's branch, so their stake is the credits that reach them.
+
+The credits compound by a tenth, which `credN / 10` charges, when the gain rate is low.
+
+Otherwise `creditGain` charges the deposits up to the cap. -/
+private theorem beyond_keys (h : Setting config checks g split fin pulled anc counted V)
+    (tail : Run config checks ⟨fork, split⟩ ⟨fork, pulled⟩) (high : ℕ)
+    (endEpoch : (getCurrentEpoch pulled).toNat ≤ high + 1)
+    {events : List (BalanceEvent preset)} (replayed : tail.balanceEvents high = .ok events)
+    (tailC : Run config checks ⟨fork, split⟩ ⟨fork, counted⟩) (highC : ℕ)
+    (endEpochC : (getCurrentEpoch counted).toNat ≤ highC + 1)
+    {eventsC : List (BalanceEvent preset)} (replayedC : tailC.balanceEvents highC = .ok eventsC) :
+    ∑ v ∈ (K6 pulled counted) with pulled.validators.data.size ≤ v.toNat, eC counted v ≤
+      (∑ v ∈ (K6 pulled counted) with pulled.validators.data.size ≤ v.toNat,
+        (((credC tailC highC v.toNat + credN tailC highC v.toNat / 10) +
+            whistC tailC highC v.toNat) +
+          (syncF events v.toNat + syncF eventsC v.toNat) +
+          (slashR (pinTerms config pulled anc fin) v.toNat + bandC tailC highC v.toNat +
+            bandR events v.toNat))) +
+        (if (pinTerms config pulled anc fin).gainHigh then
+          (pinTerms config pulled anc fin).creditGain else 0) := sorry
 
 /-- D-8 (activations): keys counted in C and not active at R.
 
@@ -1377,16 +1378,7 @@ theorem stub_J (h : Setting config checks g split fin pulled anc counted V)
     tauto
   rw [cJ_eq, Nat.cast_le]
   -- The keys at or beyond R's registry are paid by `creditGain` and the credits.
-  have beyond : ∑ v ∈ (K6 pulled counted) with pulled.validators.data.size ≤ v.toNat,
-        eC counted v ≤
-      (∑ v ∈ (K6 pulled counted) with pulled.validators.data.size ≤ v.toNat,
-        (((credC tailC highC v.toNat + credN tailC highC v.toNat / 10) +
-            whistC tailC highC v.toNat) +
-          (syncF events v.toNat + syncF eventsC v.toNat) +
-          (slashR (pinTerms config pulled anc fin) v.toNat + bandC tailC highC v.toNat +
-            bandR events v.toNat))) +
-        (if (pinTerms config pulled anc fin).gainHigh then
-          (pinTerms config pulled anc fin).creditGain else 0) := sorry
+  have beyond := beyond_keys h tail high endEpoch replayed tailC highC endEpochC replayedC
   -- The keys inside R's registry rise by `key_core`, and R's record puts each in a class.
   have core : ∀ v ∈ K6 pulled counted, v.toNat < pulled.validators.data.size →
       eC counted v ≤ (eR pulled v + (pinTerms config pulled anc fin).rise v.toNat) +
