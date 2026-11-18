@@ -717,7 +717,7 @@ theorem stub_V (h : Setting config checks g split fin pulled anc counted V)
     cV1 pulled counted V + cV2 pulled counted V ≤
       ((∑ v ∈ V, (pinTerms config pulled anc fin).fall v.toNat) + (∑ v ∈ V, credR tail high v.toNat) +
         (∑ v ∈ V, (syncF events v.toNat + syncF eventsC v.toNat)) + (∑ v ∈ V, credDepR events v.toNat) +
-        (∑ v ∈ V, consAmt events v.toNat) +
+        (∑ v ∈ V, consAmt events v.toNat) + preset.upwardBand * dueAt fin high V +
         (∑ v ∈ (VN counted V), exitQ tailC v.toNat) +
         (∑ v ∈ (VN counted V) with (pinTerms config pulled anc fin).exitingB v.toNat = true, eR pulled v) +
         (∑ v ∈ (VN counted V) with (pinTerms config pulled anc fin).lateB v.toNat = true, eR pulled v) : ℕ) := sorry
@@ -758,6 +758,9 @@ Its stake in C is at most its stake at R and its rise.
 
 So is the stake of a key whose exit R reads, which `exiting` and `exitingRise` charge. -/
 theorem stub_J (h : Setting config checks g split fin pulled anc counted V)
+    (tail : Run config checks ⟨fork, split⟩ ⟨fork, pulled⟩) (high : ℕ)
+    (endEpoch : (getCurrentEpoch pulled).toNat ≤ high + 1)
+    {events : List (BalanceEvent preset)} (replayed : tail.balanceEvents high = .ok events)
     (tailC : Run config checks ⟨fork, split⟩ ⟨fork, counted⟩) (highC : ℕ)
     (endEpochC : (getCurrentEpoch counted).toNat ≤ highC + 1)
     {eventsC : List (BalanceEvent preset)} (replayedC : tailC.balanceEvents highC = .ok eventsC) :
@@ -766,7 +769,8 @@ theorem stub_J (h : Setting config checks g split fin pulled anc counted V)
         (eR pulled v + (pinTerms config pulled anc fin).rise v.toNat)) +
       (∑ v ∈ (K6 pulled counted) with (pinTerms config pulled anc fin).exitingB v.toNat = true,
         (eR pulled v + (pinTerms config pulled anc fin).rise v.toNat)) +
-      (∑ v ∈ (K6 pulled counted), (credC tailC highC v.toNat + whistC tailC highC v.toNat))) : ℕ) := sorry
+      (∑ v ∈ (K6 pulled counted), (credC tailC highC v.toNat + whistC tailC highC v.toNat)) +
+      (∑ v ∈ (K6 pulled counted), (syncF events v.toNat + syncF eventsC v.toNat))) : ℕ) := sorry
 
 /-- D-4: the keys whose exit R reads. -/
 theorem bud_exiting (h : Setting config checks g split fin pulled anc counted V) :
@@ -1068,7 +1072,7 @@ theorem bud_branchR (h : Setting config checks g split fin pulled anc counted V)
         3 * ((pinTerms config pulled anc fin).depth * (pinTerms config pulled anc fin).syncProposer) ≤
       (pinTerms config pulled anc fin).branchR := sorry
 
-/-- S1 (syncSeats): every seat, weight 3.
+/-- S1 (syncSeats): every seat, weight 3 for V, K4 and K5 and 1 for K6.
 
 The proposer's share of the sync credits is in `syncF`, so the bound adds the `syncProposer` part
 that `credits`, `exitingCredits` and `branchR` leave. -/
@@ -1080,7 +1084,8 @@ theorem bud_sync (h : Setting config checks g split fin pulled anc counted V)
     (endEpochC : (getCurrentEpoch counted).toNat ≤ highC + 1)
     {eventsC : List (BalanceEvent preset)} (replayedC : tailC.balanceEvents highC = .ok eventsC) :
     3 * ((∑ v ∈ V, (syncF events v.toNat + syncF eventsC v.toNat)) + (∑ v ∈ (K4 pulled counted V), (syncF events v.toNat + syncF eventsC v.toNat)) +
-      (∑ v ∈ (K5 counted V), (syncF events v.toNat + syncF eventsC v.toNat))) ≤
+      (∑ v ∈ (K5 counted V), (syncF events v.toNat + syncF eventsC v.toNat))) +
+      (∑ v ∈ (K6 pulled counted), (syncF events v.toNat + syncF eventsC v.toNat)) ≤
         (pinTerms config pulled anc fin).syncSeats +
           6 * ((pinTerms config pulled anc fin).depth * (pinTerms config pulled anc fin).syncProposer) := sorry
 
@@ -1192,7 +1197,7 @@ theorem pinDrift_le_of_stubs (h : Setting config checks g split fin pulled anc c
   have sV := two_le_three (stub_V (config := config) h tail high endEpoch replayed tailC highC endEpochC replayedC)
   have sN := stub_N (config := config) h tail high endEpoch replayed tailC highC endEpochC replayedC
   have sP := stub_P (config := config) h tail high endEpoch replayed tailC highC endEpochC replayedC
-  have sJ := stub_J (config := config) h tailC highC endEpochC replayedC
+  have sJ := stub_J (config := config) h tail high endEpoch replayed tailC highC endEpochC replayedC
   have b1 := bud_exiting (config := config) h
   have b2 := bud_late (config := config) h
   have b3 := bud_queues (config := config) h tailC
@@ -1209,7 +1214,14 @@ theorem pinDrift_le_of_stubs (h : Setting config checks g split fin pulled anc c
   have b15 := bud_consolidations (config := config) h fromFin tail high endEpoch replayed highLeR
     tailC highC endEpochC replayedC highLe shallow band
   have b16 := bud_exitedR (config := config) h
-  have b15' := Nat.le_trans (Nat.le_add_right _ _) b15
+  -- The band of each due entry naming a V key is paid by `bud_consolidations`' V share.
+  have bandV : 3 * (preset.upwardBand * dueAt fin high V) ≤
+      preset.upwardBand * (dueAt fin highC (K4 pulled counted V) +
+        dueAt fin highC (K6 pulled counted) + 3 * dueAt fin highC (K5 counted V) +
+        3 * dueAt fin high V) := by
+    rw [Nat.mul_left_comm]
+    exact Nat.mul_le_mul_left _ (by omega)
+  have b15' := Nat.le_trans (Nat.add_le_add_left bandV _) b15
   have qs := queues_split config pulled anc fin
   have b14 := bud_whistle (config := config) h tailC highC endEpochC replayedC
   have w4 : 0 ≤ ∑ v ∈ (K4 pulled counted V), (whistC tailC highC v.toNat : ℤ) :=
