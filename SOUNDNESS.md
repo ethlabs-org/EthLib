@@ -3133,7 +3133,8 @@ Then three times the voters' stake is at least twice the total active balance pl
 
 `Execution.honestTargetVotes_signed_of_checked` in `Consensus/Proofs/ForkChoice/FastConfirmation/RootViability.lean` turns that count into signatures, for the current target ([#2058](https://github.com/ethereum/EthLib/issues/2058), Theorem 2).
 The caller's store is up to date at a slot start of the target's epoch, and its head passes the two-thirds test.
-The theorem concludes that honest validators with two thirds of the pulled-up head state's active balance each sent a `SignsTarget` statement before the start of the next epoch.
+The theorem concludes that honest validators with two thirds of the pulled-up head state's active balance each sent a `SignsTarget` statement.
+Each sent it before the start of the next epoch.
 Three times their stake is at least twice that balance plus the margin of the count.
 Each of them lies in `activeVoters` of that state, the validators active in its current epoch.
 Otherwise the theorem names two honest stores, up to the horizon, whose blocks collide at one root.
@@ -3197,7 +3198,8 @@ Each accepted root has a realized justification at most one epoch before its own
 An accepted root of an earlier epoch is realized as justified by the head's state.
 `CallRolloverRead` is the caller's head read at each rollover for the current target of its head, through `CallerHeadAt` above.
 `Execution.rootInFilteredTree_of_checked` assumes it, and the headlines derive it through `Execution.callRolloverRead_or_evidence`, so they do not take it.
-`QuorumDriftWithin` assumes that an honest voter set of a call keeps its stake in each counting state, up to the call's quorum reserve, unless two honest stores collide.
+`QuorumDriftWithin` assumes that an honest voter set of a call keeps its stake in each counting state, up to the call's quorum reserve.
+Its alternative is a collision of two honest stores.
 No theorem here derives it, and whether the reserve bounds the drift on mainnet is not established.
 The model's genesis time must be the anchor state's (`secondsToMilliseconds anchorState.genesisTime = genesisTimeMs`), a fact of the configuration that holds for every real anchor.
 
