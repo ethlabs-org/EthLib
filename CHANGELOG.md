@@ -18,6 +18,10 @@ Not yet released.
   The preset keeps the bands of hysteresis and `Preset.ExitWindowFixed`, and the withdrawal delay is at least one epoch.
   `MAX_EFFECTIVE_BALANCE` must equal `MIN_ACTIVATION_BALANCE`, which is at most `MAX_EFFECTIVE_BALANCE_ELECTRA`.
   `Preset.exitWindowFixed_mainnet` and `Preset.exitWindowFixed_minimal` show that premise holds on both presets, as `Config.committeeWindowsFit_mainnet` does for its bundle.
+  `Execution.rootViable_of_checked_call_of_drift_bound` and `Execution.honestHeadsCover_of_checked_call_of_drift_bound` are the two checked-call headlines with `QuorumDriftWithin` discharged, with BLS checks from Fulu to before Gloas.
+  Seven premises replace it.
+  They are Fulu or later, a horizon before the next fork, `Preset.ExitWindowFixed` and `IncrementWithinUpwardBand`.
+  The others are a withdrawal delay of at least one epoch and the two Electra balance conditions.
   `effectiveRise_le` bounds the rise of the active effective balances over an epoch end, and `effectiveFall_le` the fall of a voter's.
   `branchCorrections` bounds the balances along a branch inside one epoch.
   `Hysteresis`, `Run.blockCount`, `Run.blocks_le_slots` and `run_of_stateTransition` are general steps.
