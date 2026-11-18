@@ -824,7 +824,32 @@ theorem bud_consolidations (h : Setting config checks g split fin pulled anc cou
 theorem bud_exitedR (h : Setting config checks g split fin pulled anc counted V) :
     (∑ v ∈ (K6 pulled counted) with (pinTerms config pulled anc fin).exitedRB v.toNat = true,
       (eR pulled v + (pinTerms config pulled anc fin).rise v.toNat)) ≤
-        (pinTerms config pulled anc fin).exitedR := sorry
+        (pinTerms config pulled anc fin).exitedR := by
+  classical
+  have _ := h
+  rw [exitedR_eq]
+  have inj : Set.InjOn (fun v : ValidatorIndex => v.toNat) (K6 pulled counted : Set ValidatorIndex) :=
+    fun a _ b _ e => UInt64.toNat_inj.mp e
+  set S := (K6 pulled counted).filter
+    fun v => (pinTerms config pulled anc fin).exitedRB v.toNat = true with hS
+  have injS : Set.InjOn (fun v : ValidatorIndex => v.toNat) (S : Set ValidatorIndex) :=
+    inj.mono (by intro a ha; exact (Finset.mem_filter.mp ha).1)
+  have e : ∑ v ∈ S, (eR pulled v + (pinTerms config pulled anc fin).rise v.toNat) =
+      ∑ i ∈ S.image (fun v : ValidatorIndex => v.toNat), (balanceAt pulled i +
+        (pinTerms config pulled anc fin).rise i) :=
+    (Finset.sum_image (f := fun i => balanceAt pulled i + (pinTerms config pulled anc fin).rise i)
+      injS).symm
+  rw [Finset.sum_filter, ← Finset.sum_filter, ← hS, e]
+  apply Finset.sum_le_sum_of_subset
+  intro i hi
+  obtain ⟨v, hv, rfl⟩ := Finset.mem_image.mp hi
+  have flag := (Finset.mem_filter.mp hv).2
+  refine Finset.mem_filter.mpr ⟨?_, flag⟩
+  simp only [pinTerms] at flag ⊢
+  rw [Finset.mem_range]
+  cases found : pulled.validators.data[v.toNat]? with
+  | none => simp [found] at flag
+  | some w => exact (Array.getElem?_eq_some_iff.mp found).1
 
 /-- R1 (branchR): R's credits to V keys since the split, weight 3. -/
 theorem bud_branchR (h : Setting config checks g split fin pulled anc counted V)
