@@ -177,7 +177,7 @@ Every epoch of that window was fixed before the branches split.
 
 Rates are read at a quarter of the call's total active balance.
 
-A key's leak and gain are read at a computed upper bound on its effective balance on any branch.
+A key's leak and gain are read at a computed envelope of its effective balance on any branch.
 
 The exit and consolidation churns are bounded by their values at a larger total.
 
@@ -198,6 +198,14 @@ A key's rise is its headroom once eleven times its gain over the depth reaches i
 Below that, its gain and the credits are scaled by eleven tenths, rounded up.
 
 A key active from the next epoch earns a proposer credit too.
+
+A key whose exit the call reads can be active only in the previous epoch of a counting state.
+
+There it weighs three times, so its rise and its credits are charged three times.
+
+A key slashed on another branch pays for its whistleblower reward from its own effective balance.
+
+That fails only for a key that has exited or whose effective balance can fall low, which is charged.
 
 Inactivity scores and the queue of partial withdrawals are read at the finalized block's state. -/
 def pinReserve (config : Config) (state ancestor finalizedState : BeaconState preset fork) : ℕ :=
@@ -289,7 +297,7 @@ def pinReserve (config : Config) (state ancestor finalizedState : BeaconState pr
         w.validatorIndex.toNat = i ∧ w.withdrawableEpoch.toNat ≤ epoch.toNat + 1).map
           (·.amount.toNat)).sum
     else 0
-  -- The rates are read at a computed upper bound on the key's effective balance on any branch.
+  -- The rates are read at a computed envelope of the key's effective balance on any branch.
   --
   -- That is at least its effective balance here and at the finalized block's state.
   --
@@ -398,27 +406,78 @@ def pinReserve (config : Config) (state ancestor finalizedState : BeaconState pr
   --
   -- `exiting` reads it here, so its rise since the split also weighs three times.
   --
-  -- That rise is its gains, the call's branch's penalties and the other branch's proposer credits.
+  -- That rise is its gains, the call's branch's penalties and the other branch's credits.
   --
-  -- A credit raises a balance by at most itself plus the upward band.
+  -- A credit raises an effective balance by at most itself plus the upward band.
   let exitingRise := ∑ i ∈ positions with (before i || current i) = true ∧
       (slashed i = false ∨ recentSlashing i = true) ∧
       ((validator i).map fun v => decide (v.exitEpoch.toNat ≤ epoch.toNat + 1)).getD false = true,
     rise i
-  let exitingCredits := 2 * depth * (proposerCredit + slots * preset.upwardBand)
+  -- An exiting key can still be credited as a proposer or as the target of a due consolidation.
+  --
+  -- `credits` charges those credits once at eleven tenths and their bands once.
+  --
+  -- These charge them twice more, also at eleven tenths, rounded up.
+  let exitingCredits := (22 * (depth * proposerCredit + dueStake) + 9) / 10 +
+    2 * (depth * slots + due.length) * preset.upwardBand
   -- Outside the tight window, keys can start to exit on the other branch.
   --
   -- The queues hold at most this many, each with at least the ejection balance less an increment.
+  --
+  -- The `+ 2` counts one key at each end of the window that the churn covers only in part.
   let queueKeys := depth * (exitChurn + consolidationChurn) /
     (config.EJECTION_BALANCE.toNat - inc) + 2
+  -- The largest gain rate of one key, its gain rate at the largest effective balance.
   let gainRateMax := capMax / inc * perIncrement *
     (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum / WEIGHT_DENOMINATOR.toNat
   let queueRise := if tight then 0 else
     3 * queueKeys * (preset.upwardBand + depth * gainRateMax)
+  -- A key slashed on another branch credits its whistleblower, the block's proposer.
+  --
+  -- A key still active there pays three times that reward from its own effective balance.
+  --
+  -- A key that has exited there by then has no such balance in the count, so it is charged here.
+  --
+  -- Those are the keys whose exit the call reads.
+  --
+  -- Outside the tight window, they include the keys that the queues let exit on the other branch.
+  let exitedSlashable := ∑ i ∈ positions with slashed i = false ∧
+      ((validator i).map fun v => decide (v.exitEpoch.toNat ≤ epoch.toNat + 1)).getD false = true ∧
+      (validator i).any (fun v => decide (finalized < v.withdrawableEpoch.toNat)),
+    (effective i + rise i)
+  let reserveW := 3 * (exitedSlashable + (if tight then 0 else
+      depth * (exitChurn + consolidationChurn) + 2 * capMax +
+        queueKeys * (preset.upwardBand + depth * gainRateMax))) /
+    p.WHISTLEBLOWER_REWARD_QUOTIENT.toNat
+  -- A key active there pays for its reward unless its effective balance there can be low.
+  --
+  -- `lowEB` bounds that balance from below, before the slashing penalty and sync-seat debits.
+  --
+  -- It starts at the finalized block's state, which lies on every branch, and at most this one's.
+  --
+  -- Leak over the depth from there, partials, the band and one increment of rounding are drops.
+  --
+  -- A partial in that state's own epoch can be paid before it, but leaves the activation balance.
+  --
+  -- A key that fails the test is charged its reward three times.
+  let slashable (i : ℕ) := slashed i = false ∧ (validator i).any (fun v =>
+    decide (v.activationEpoch.toNat ≤ epoch.toNat + 1) &&
+      decide (finalized < v.withdrawableEpoch.toNat))
+  let drop (i : ℕ) := depthFin * leak i + preset.downwardBand + inc
+  let lowEB (i : ℕ) := min (min (effective i) (finEB i) - partialsDue i)
+    preset.MIN_ACTIVATION_BALANCE.toNat - drop i
+  let flagged := ∑ i ∈ positions with slashable i ∧
+      2 * (lowEB i - ebUp i / p.MIN_SLASHING_PENALTY_QUOTIENT.toNat) <
+        3 * (ebUp i / p.WHISTLEBLOWER_REWARD_QUOTIENT.toNat),
+    3 * (ebUp i / p.WHISTLEBLOWER_REWARD_QUOTIENT.toNat)
+  -- No key's sync-seat debits are bounded from what the call reads, so they are charged together.
+  --
+  -- Twice the debits of every seat in the window covers what they take from the test.
+  let seatShortfall := 2 * (depth * slots * preset.SYNC_COMMITTEE_SIZE.toNat * syncEnvelope)
   quorumReserve config state ancestor + (3 * exiting + queues + credits + branchR + late +
     syncSeats + (∑ i ∈ positions with current i = true, rise i) +
     3 * (∑ i ∈ positions with current i = true, fall i) +
-    3 * exitingRise + exitingCredits + queueRise)
+    3 * exitingRise + exitingCredits + queueRise + reserveW + flagged + seatShortfall)
 
 /-- The pin reserve contains the quorum reserve. -/
 theorem quorumReserve_le_pinReserve (config : Config)
