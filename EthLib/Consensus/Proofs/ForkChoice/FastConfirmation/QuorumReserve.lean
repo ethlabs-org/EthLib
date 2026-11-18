@@ -213,7 +213,7 @@ Below that, its gain and the credits are scaled by eleven tenths, rounded up.
 
 Another branch can keep a higher effective balance that this branch's update lowered.
 
-So below the upward band, a key's rise still reaches its balance plus the downward band, rounded.
+So a key's rise reaches its rounded balance plus the downward band, or its finalized balance.
 
 A key active from the next epoch earns a proposer credit too.
 
@@ -287,20 +287,19 @@ def pinReserve (config : Config) (state ancestor finalizedState : BeaconState pr
   -- Another branch's consolidation carry was set from one epoch's churn, possibly before finality.
   --
   -- So it is charged at the larger of the finalized block's carry and the churn here.
-  --
-  -- The exit carry is at most one epoch's exit churn, which `depositChurn` caps.
   let consolidationCarry := max (if electra : .pectra ≤ fork then
       (finalizedState.consolidationBalanceToConsume electra).toNat else 0) consolidationChurn
+  -- The exit carry is at most one epoch's exit churn, which `depositChurn` caps.
+  let exitCarry := max capMax depositChurn
   let depthFin := epoch.toNat + 2 - (getCurrentEpoch finalizedState).toNat
   -- A deposit postponed at the head of the queue lets the deposits behind it spend the carry.
   --
   -- So the deposits applied from the finalized block's state are at most its carry and the churn.
   let depositCarry := if electra : .pectra ≤ fork then
       (finalizedState.depositBalanceToConsume electra).toNat else 0
-  let queues := 3 * (depthFin * depositChurn + capMax + depositCarry) +
+  let queues := 3 * (depthFin * depositChurn + depositCarry) +
     (if tight then 0 else
-      3 * (depth * (exitChurn + consolidationChurn) + max capMax depositChurn +
-        consolidationCarry))
+      3 * (depth * (exitChurn + consolidationChurn) + exitCarry + consolidationCarry))
   -- A sync seat's reward is bounded by its envelope at three halves of the call's total.
   --
   -- The integer reward is not monotone in the total, and the envelope is.
@@ -380,10 +379,9 @@ def pinReserve (config : Config) (state ancestor finalizedState : BeaconState pr
       -- It is at most the balance at that update plus the downward band, rounded down.
       --
       -- It is also its effective balance at the finalized block's state or a rounded balance since.
-      else if high ≤ effective i + preset.upwardBand then
+      else
         let kept := high + preset.downwardBand
         min (capFor i) (min (kept - kept % inc) (max (finEB i) (high - high % inc))) - effective i
-      else min (capFor i) (high - high % inc) - effective i
     else capFor i - effective i
   -- This follows `syncProposerReward` on natural numbers, at the envelope.
   --
@@ -525,7 +523,8 @@ def pinReserve (config : Config) (state ancestor finalizedState : BeaconState pr
   let newKeySlack := newKeyFloor - (config.EJECTION_BALANCE.toNat - inc)
   let newKeySeats := depthFin * slots * preset.SYNC_COMMITTEE_SIZE.toNat * syncEnvelope /
     max 1 newKeySlack
-  let queueKeys := depth * (exitChurn + consolidationChurn) /
+  -- A carry is a balance that can let several keys exit, so it counts by the ejection balance too.
+  let queueKeys := (depth * (exitChurn + consolidationChurn) + exitCarry + consolidationCarry) /
     (config.EJECTION_BALANCE.toNat - inc) + 2 + lowKeys + newKeySeats
   -- The largest gain rate of one key, its gain rate at the largest effective balance.
   let gainRateMax := capMax / inc * perIncrement *
@@ -546,7 +545,7 @@ def pinReserve (config : Config) (state ancestor finalizedState : BeaconState pr
       (validator i).any (fun v => decide (finalized < v.withdrawableEpoch.toNat)),
     (effective i + rise i)
   let reserveW := 3 * (exitedSlashable + (if tight then 0 else
-      depth * (exitChurn + consolidationChurn) + 2 * capMax +
+      depth * (exitChurn + consolidationChurn) + exitCarry + consolidationCarry +
         queueKeys * (preset.upwardBand + depth * gainRateMax))) /
     p.WHISTLEBLOWER_REWARD_QUOTIENT.toNat
   -- A key active there is meant to pay for its reward unless its effective balance can be low.
