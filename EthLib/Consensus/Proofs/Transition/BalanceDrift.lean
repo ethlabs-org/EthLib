@@ -855,7 +855,7 @@ theorem balanceDrift_upgrades_upper {s t : ForkedBeaconState preset}
 /-- A slot inside one epoch only caches the slot.
 
 It runs no epoch transition and no upgrade, so it keeps the fork. -/
-theorem slot_same_epoch {middle last : ForkedBeaconState preset}
+theorem advanceSlotAcross_of_same_epoch {middle last : ForkedBeaconState preset}
     (ok : advanceSlotAcross config checks middle = .ok last)
     (same : getCurrentEpoch last.state = getCurrentEpoch middle.state) :
     ∃ (cached : BeaconState preset middle.fork) (next : Slot),
@@ -924,7 +924,7 @@ theorem Run.induction_of_same_epoch {x : ForkedBeaconState preset}
     | block engine signed due ok => exact blockStep engine signed due ok pre early prior
     | slot ok =>
       have kept := same.trans midEpoch.symm
-      obtain ⟨cached, next, cachedOk, lastEq⟩ := slot_same_epoch ok kept
+      obtain ⟨cached, next, cachedOk, lastEq⟩ := advanceSlotAcross_of_same_epoch ok kept
       rw [lastEq] at kept
       exact slotStep pre ok lastEq cachedOk kept prior
 
