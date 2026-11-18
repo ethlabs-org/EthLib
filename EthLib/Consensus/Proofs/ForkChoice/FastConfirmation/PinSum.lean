@@ -278,9 +278,10 @@ def pinTerms (config : Config) (state ancestor finalizedState : BeaconState pres
       effective i) / p.WHISTLEBLOWER_REWARD_QUOTIENT.toNat
   let slashedR := (positions.filter fun i => slashed i = true ∧ recentSlashing i = true).card
   let late := if tight then 0 else
-    3 * ∑ i ∈ positions with (validator i).any (fun v =>
+    ∑ i ∈ positions with (validator i).any (fun v =>
       decide (v.activationEligibilityEpoch.toNat ≤ epoch.toNat) &&
-        decide (finalized + preset.MAX_SEED_LOOKAHEAD.toNat < v.activationEpoch.toNat)), effective i
+        decide (finalized + preset.MAX_SEED_LOOKAHEAD.toNat < v.activationEpoch.toNat)),
+      (3 * effective i + rise i)
   let period := max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat
   -- Every seat of every sync committee in the window counts, at the seat's envelope.
   --
@@ -498,8 +499,7 @@ They are the keys slashed on this branch after the finalized epoch. -/
 theorem slashedR_eq (config : Config) (state ancestor finalizedState : BeaconState preset fork) :
     (pinTerms config state ancestor finalizedState).slashedR =
       ((pinTerms config state ancestor finalizedState).positions.filter fun i =>
-        (pinTerms config state ancestor finalizedState).slashedRB i = true).card := by
-  rfl
+        (pinTerms config state ancestor finalizedState).slashedRB i = true).card := rfl
 
 /-- The copy splits `queues` into its deposit part and its exit and consolidation part. -/
 theorem queues_split (config : Config) (state ancestor finalizedState : BeaconState preset fork) :
@@ -529,8 +529,7 @@ theorem queueKeys_unfold (config : Config)
 theorem lowKeys_eq (config : Config) (state ancestor finalizedState : BeaconState preset fork) :
     (pinTerms config state ancestor finalizedState).lowKeys =
       ((pinTerms config state ancestor finalizedState).positions.filter fun i =>
-        (pinTerms config state ancestor finalizedState).lowB i = true).card := by
-  rfl
+        (pinTerms config state ancestor finalizedState).lowB i = true).card := rfl
 
 /-! ## D-1's setting -/
 
