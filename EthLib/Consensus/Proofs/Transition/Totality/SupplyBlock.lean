@@ -266,7 +266,8 @@ private theorem fixed_setValidator {s t : BeaconState preset fork} {i : Validato
   obtain ⟨_, rfl⟩ := setValidator_ok ok
   exact Fixed.refl _
 
-private theorem fixed_exit {s t : BeaconState preset fork} {i : ValidatorIndex}
+/-- Starting an exit keeps the balances, the queues, the slashings and the flags. -/
+theorem fixed_exit {s t : BeaconState preset fork} {i : ValidatorIndex}
     (ok : initiateValidatorExit config s i = .ok t) : Fixed s t := by
   obtain ⟨_, _, ⟨_, rfl⟩ | ⟨_, _, _, _, queue, _, set⟩⟩ := initiateValidatorExit_ok ok
   · exact Fixed.refl _
@@ -782,11 +783,13 @@ private theorem flags_setBalance {s t : BeaconState preset fork} {i : ValidatorI
   obtain ⟨_, rfl⟩ := setBalance_ok ok
   exact ⟨rfl, rfl⟩
 
-private theorem flags_increase {s t : BeaconState preset fork} {i : ValidatorIndex} {d : Gwei}
+/-- A balance increase keeps both lists of flags. -/
+theorem flags_increase {s t : BeaconState preset fork} {i : ValidatorIndex} {d : Gwei}
     (ok : increaseBalance s i d = .ok t) : Flags s t :=
   flags_setBalance (increaseBalance_ok ok).choose_spec
 
-private theorem flags_decrease {s t : BeaconState preset fork} {i : ValidatorIndex} {d : Gwei}
+/-- A balance decrease keeps both lists of flags. -/
+theorem flags_decrease {s t : BeaconState preset fork} {i : ValidatorIndex} {d : Gwei}
     (ok : decreaseBalance s i d = .ok t) : Flags s t :=
   flags_setBalance (decreaseBalance_ok ok).choose_spec
 
@@ -977,7 +980,7 @@ private theorem Tail.of_flags {a b : BeaconState preset fork}
   ⟨grows, kept, fun _ _ _ => ⟨by rw [flags.1], by rw [flags.2]⟩⟩
 
 /-- A new validator takes the position at the end of the registry, and keeps the earlier flags. -/
-private theorem flagsBelow_add {s t : BeaconState preset fork} {key : Cryptography.Bls.BLSPubkey}
+theorem flagsBelow_add {s t : BeaconState preset fork} {key : Cryptography.Bls.BLSPubkey}
     {credentials : Bytes32} {amount : Gwei}
     (ok : addValidatorToRegistry s key credentials amount = .ok t) : FlagsBelow s t := by
   intro altair j inside
@@ -1359,11 +1362,36 @@ private theorem flagSum_foldlM_addAttesterFlags {s first : BeaconState preset fo
   rwa [flagSumOf_baseAt_of_le (Nat.le_add_right _ _),
     flagSumOf_baseAt_of_le (Nat.le_add_right _ _)] at wide
 
+/-- The flag sums of both recent epochs of a state, over its first `count` positions.
+
+Position `j` weighs its flags by the base reward `base j`. -/
+def flagPotential (s : BeaconState preset fork) (altair : .altair ≤ fork) (base : Nat → Nat)
+    (count : Nat) : Nat :=
+  flagSumOf base count (s.previousEpochParticipation altair) +
+    flagSumOf base count (s.currentEpochParticipation altair)
+
+/-- The flags of one epoch weigh at most 54 base rewards at each position. -/
+theorem flagSumOf_le (base : Nat → Nat) (count : Nat)
+    (participation : EpochParticipation preset fork) :
+    flagSumOf base count participation ≤ ((List.range count).map base).sum * 54 := by
+  unfold flagSumOf
+  rw [← sum_map_mul_right]
+  refine sum_map_le_sum_map fun j _ => ?_
+  cases participation.data[j]? with
+  | none => exact Nat.zero_le _
+  | some flags => exact flagValue_le flags (base j)
+
 /-- The flag sums of the two recent epochs of a state, over a fixed registry. -/
 private def potential (altair : .altair ≤ fork) (first : BeaconState preset fork)
     (perIncrement : Nat) (s : BeaconState preset fork) : Nat :=
-  flagSum first perIncrement (s.previousEpochParticipation altair) +
-    flagSum first perIncrement (s.currentEpochParticipation altair)
+  flagPotential s altair (baseAt first perIncrement) first.validators.data.size
+
+/-- The potential is the flag sum of each recent epoch. -/
+private theorem potential_eq (altair : .altair ≤ fork) (first : BeaconState preset fork)
+    (perIncrement : Nat) (s : BeaconState preset fork) :
+    potential altair first perIncrement s =
+      flagSum first perIncrement (s.previousEpochParticipation altair) +
+        flagSum first perIncrement (s.currentEpochParticipation altair) := rfl
 
 /-- From Altair, an attestation pays its proposer at most the rise of the flag sums over 448.
 
@@ -1420,7 +1448,7 @@ private theorem rise_attestation (altair : .altair ≤ fork) {first s t : Beacon
     split <;> exact ⟨rfl, rfl⟩
   have moved : numerator.toNat + potential altair first perIncrement.toNat s ≤
       potential altair first perIncrement.toNat t := by
-    unfold potential
+    simp only [potential_eq]
     rw [tail.1, tail.2.1, kept.1, kept.2]
     by_cases current : (attestation.data.target.epoch == getCurrentEpoch s) = true
     · simp only [current, ↓reduceIte, UInt64.toNat_zero, Nat.zero_add] at flags
@@ -1442,21 +1470,10 @@ private theorem flagSum_le (first : BeaconState preset fork) (perIncrement : Nat
     flagSum first perIncrement participation ≤
       effectiveBalanceSum first / preset.EFFECTIVE_BALANCE_INCREMENT.toNat *
         (perIncrement * 54) := by
-  unfold flagSum flagSumOf
-  have each := sum_map_le_sum_map (xs := List.range first.validators.data.size)
-    (f := fun j => ((participation.data[j]?).map
-      (flagValue · (baseAt first perIncrement j))).getD 0)
-    (g := fun j => effectiveAt ⟨fork, first⟩ j / preset.EFFECTIVE_BALANCE_INCREMENT.toNat *
-      (perIncrement * 54)) fun j _ => by
-      cases participation.data[j]? with
-      | none => exact Nat.zero_le _
-      | some flags =>
-        have := flagValue_le flags (baseAt first perIncrement j)
-        simp only [Option.map_some, Option.getD_some]
-        unfold baseAt at this
-        rw [← Nat.mul_assoc]
-        exact this
-  refine each.trans ?_
+  refine (flagSumOf_le _ _ _).trans ?_
+  rw [← Nat.mul_assoc]
+  refine Nat.mul_le_mul_right 54 ?_
+  unfold baseAt
   rw [sum_map_mul_right
     (fun j => effectiveAt ⟨fork, first⟩ j / preset.EFFECTIVE_BALANCE_INCREMENT.toNat)]
   refine Nat.mul_le_mul_right _ ?_
@@ -1479,7 +1496,7 @@ private theorem potential_le (altair : .altair ≤ fork) (first : BeaconState pr
       effectiveBalanceSum first / preset.EFFECTIVE_BALANCE_INCREMENT.toNat *
         (perIncrement * 54) := by
     rw [Nat.mul_assoc, Nat.mul_assoc, Nat.two_mul]
-  unfold potential
+  simp only [potential_eq]
   omega
 
 end Flags
@@ -1917,7 +1934,7 @@ private theorem potential_le_of_tail (altair : .altair ≤ fork) (perIncrement :
       fun j member => ?_))) (sum_range_le_of_le _ tail.1)
     have inside := List.mem_range.mp member
     simp only [baseAt, same j inside, tail.2.1 j inside]
-  unfold potential
+  simp only [potential_eq]
   have previous := one (fun s => s.previousEpochParticipation altair)
     fun j inside => (tail.2.2 altair j inside).1
   have current := one (fun s => s.currentEpochParticipation altair)
@@ -1979,7 +1996,7 @@ private theorem processBlock_rise {engine : ExecutionEngine preset fork}
       potential altair first perIncrement.toNat attested, ?_, grown, ?_, ?_, ?_⟩
     · -- The flags and the registry are those of the state before the block.
       rw [flagRewardWeight_eq altair]
-      unfold potential
+      simp only [potential_eq]
       rw [flagSum_congr steady.2.2 steady.2.1, flagSum_congr steady.2.2 steady.2.1, flags.1,
         flags.2]
     · -- The tail of the block keeps the flags of the registry at the attestations.
@@ -1992,7 +2009,7 @@ private theorem processBlock_rise {engine : ExecutionEngine preset fork}
         exact ⟨Nat.le_refl _, effectiveKept_data rfl, fun _ _ _ => ⟨rfl, rfl⟩⟩
       rw [flagRewardWeight_eq altair]
       have later := potential_le_of_tail altair perIncrement.toNat (tailKept.trans ends)
-      unfold potential at later ⊢
+      simp only [potential_eq] at later ⊢
       rw [← flagSum_congr sameSize sameKept, ← flagSum_congr sameSize sameKept]
       exact later
     · rw [← steady.effectiveBalanceSum_eq]
