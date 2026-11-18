@@ -120,73 +120,6 @@ private theorem updatedEffectiveBalance_fall {largest balance effective result :
     generalize balance.toNat % preset.EFFECTIVE_BALANCE_INCREMENT.toNat = r at *
     split <;> omega
 
-/-! ## The pending consolidations of an epoch -/
-
-/-- A pass over pending consolidations lowers no balance of a validator that cannot yet leave.
-
-Each consolidation from that validator finds it not yet withdrawable, so the pass stops there. -/
-private theorem passConsolidations_floor {f : Fork} {nextEpoch : Epoch} {index : Nat} :
-    ∀ {consolidations : List PendingConsolidation} {state : BeaconState preset f} {result},
-      passPendingConsolidations nextEpoch state consolidations = .ok result →
-      (∀ c ∈ consolidations, c.sourceIndex.toNat = index → ∀ w,
-        state.validators.data[index]? = some w → nextEpoch < w.withdrawableEpoch) →
-      BalanceNotLowered index state result.1
-  | [], _, _, computed, _ => by
-    simp only [passPendingConsolidations, pure, Except.pure, Except.ok.injEq] at computed
-    subst computed
-    exact BalanceNotLowered.refl index _
-  | consolidation :: rest, state, result, computed, apart => by
-    have others : ∀ c ∈ rest, c.sourceIndex.toNat = index → ∀ w,
-        state.validators.data[index]? = some w → nextEpoch < w.withdrawableEpoch :=
-      fun c member => apart c (List.mem_cons_of_mem _ member)
-    unfold passPendingConsolidations at computed
-    simp only [bind, Except.bind, pure, Except.pure] at computed
-    split at computed
-    · cases computed
-    rename_i source sourceOk
-    have sourceRead := getValidator_eq_ok_iff.mp (liftAccessor_ok.mp sourceOk)
-    split at computed
-    · split at computed
-      · cases computed
-      rename_i recur
-      cases computed
-      exact (passConsolidations_floor recur others :)
-    split at computed
-    · cases computed
-      exact BalanceNotLowered.refl index _
-    rename_i notWithdrawable
-    split at computed
-    · cases computed
-    split at computed
-    · cases computed
-    rename_i lowered loweredOk
-    split at computed
-    · cases computed
-    rename_i raised raisedOk
-    split at computed
-    · cases computed
-    rename_i recur
-    cases computed
-    have lowerOk := liftAccessor_ok.mp loweredOk
-    have raiseOk := liftAccessor_ok.mp raisedOk
-    -- The source is not the validator, which is not yet withdrawable.
-    have other : consolidation.sourceIndex.toNat ≠ index := by
-      intro same
-      rw [same] at sourceRead
-      exact notWithdrawable (apart consolidation List.mem_cons_self same source sourceRead)
-    have step : BalanceNotLowered index state raised := by
-      intro earlier found
-      obtain ⟨kept, keptAt, keptEq⟩ := balance_decreaseBalance lowerOk found
-      rw [ite_eq_right_iff.mpr (fun h => absurd h other)] at keptEq
-      obtain ⟨grown, grownAt, grownEq⟩ := balance_increaseBalance raiseOk keptAt
-      refine ⟨grown, grownAt, UInt64.le_iff_toNat_le.mpr ?_⟩
-      rw [grownEq, keptEq]
-      exact Nat.le_add_right _ _
-    have validators : raised.validators = state.validators :=
-      (increaseBalance_validators raiseOk).trans (decreaseBalance_validators lowerOk)
-    exact step.trans (passConsolidations_floor recur fun c member same w read =>
-      others c member same w (by rw [← validators]; exact read) :)
-
 /-! ## The epoch transition of a voter -/
 
 /-- From Altair and before Gloas, take an epoch transition.
@@ -338,8 +271,8 @@ private theorem epoch_fall {f : Fork} {c t : BeaconState preset f} (altair : .al
     · rename_i electra
       obtain ⟨result, passed, balances, -⟩ := processPendingConsolidations_pass edge
       intro earlier atEarlier
-      obtain ⟨later, atLater, low⟩ := passConsolidations_floor passed (fun cons member same w
-          read => by
+      obtain ⟨later, atLater, low⟩ := passPendingConsolidations_balanceNotLowered_of_waiting passed
+        (fun cons member same w read => by
         -- The invariant puts the source's exit after its activation, with the delay.
         have invariant : PendingConsolidationInvariant config deposited := by
           have one := justifiedEdge.pendingConsolidationInvariant holds
