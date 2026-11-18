@@ -858,7 +858,9 @@ private theorem block_credit_keys {g : ForkedBeaconState preset}
     refine creditedCard.trans ?_
     simp [blocksOne, electra, hegota]
     have atMost : ∀ (P : Prop) (d : Decidable P), (@ite ℕ P d 0 1) ≤ 1 := fun P d => by
-      cases d <;> simp
+      cases d with
+      | isTrue _ => exact Nat.zero_le _
+      | isFalse _ => exact Nat.le_refl _
     exact atMost _ _
   refine ⟨creditedKeys.image UInt64.toNat, Finset.card_image_le.trans creditedLe,
     fun i increased => ?_⟩
@@ -1083,8 +1085,16 @@ private theorem credited_pieces {g : ForkedBeaconState preset}
         have same := processBlock_slot (applySignedBlock_ok ok).2.1
         have e : (getCurrentEpoch after).toNat = (getCurrentEpoch before).toNat := by
           simp only [getCurrentEpoch, same]
-        dsimp only at hm hv
-        omega
+        have hm' : ¬ (getCurrentEpoch x.state).toNat /
+            max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat <
+              (getCurrentEpoch before).toNat /
+                max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat := hm
+        have hv' : (getCurrentEpoch x.state).toNat /
+            max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat <
+              (getCurrentEpoch after).toNat /
+                max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat := hv
+        rw [e] at hv'
+        exact hm' hv'
     obtain ⟨ok, rfl⟩ := slotStep
     subst split
     refine ⟨B₁ ∪ B₂, S₁ ∪ S₂, ?_, ?_, fun i pos => ?_⟩
@@ -1095,7 +1105,7 @@ private theorem credited_pieces {g : ForkedBeaconState preset}
             preset.SYNC_COMMITTEE_SIZE.toNat * (n + 1) := Nat.add_le_add cardS₁ cardS₂
         _ = _ := by ring
     · rw [netScan_append] at pos
-      by_cases first : 0 < netScan i high (pre.snoc step)
+      by_cases first : 0 < netScan i high (pre.snoc (Step.slot ok))
       · have prior : 0 < netScan i high pre := by
           rw [netScan_snoc] at first
           split at first
