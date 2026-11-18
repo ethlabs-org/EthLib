@@ -962,9 +962,11 @@ private theorem sum_exitQ_le {x y : ForkedBeaconState preset} (tail : Run config
         fun c => if c.index = v.toNat then c.amount else 0).sum :=
     fun v _ => exitQ_amount_le _ _ b v.toNat le
   refine (Finset.sum_le_sum each).trans ?_
-  rw [← Finset.sum_image (f := fun n => ((tail.departureCharges.filter fun c => c.epoch ≤ b).map
+  refine (sum_toNat_le (S := S) (P := S.image fun v : ValidatorIndex => v.toNat)
+    (fun n => ((tail.departureCharges.filter fun c => c.epoch ≤ b).map
       fun c => if c.index = n then c.amount else 0).sum)
-    (fun a _ b _ same => UInt64.toNat_inj.mp same), sum_indicator_swap]
+    fun v member => Finset.mem_image_of_mem _ member).trans ?_
+  rw [sum_indicator_swap]
   exact List.sum_le_sum fun c _ => by split <;> simp
 
 /-- A departure charge of a run exits no earlier than the activation-exit epoch of its start. -/
@@ -1126,21 +1128,19 @@ theorem bud_exitingRise (h : Setting config checks g split fin pulled anc counte
     refine Finset.disjoint_left.mpr fun v first second => ?_
     have active := (Finset.mem_filter.mp (Finset.mem_filter.mp second).1).1
     exact (Finset.mem_filter.mp (Finset.mem_filter.mp first).1).2.1 active
-  rw [← Finset.sum_union apart, exitingRise,
-    ← Finset.sum_image (f := (pinTerms config pulled anc fin).rise)
-      (fun a _ b _ same => UInt64.toNat_inj.mp same)]
-  apply Finset.sum_le_sum_of_subset
-  intro i member
-  obtain ⟨v, selected, rfl⟩ := Finset.mem_image.mp member
+  rw [← Finset.sum_union apart, exitingRise]
+  refine sum_toNat_le (pinTerms config pulled anc fin).rise fun v selected => ?_
   have exiting : (pinTerms config pulled anc fin).exitingB v.toNat = true := by
     rcases Finset.mem_union.mp selected with chosen | chosen <;> exact (Finset.mem_filter.mp chosen).2
-  refine Finset.mem_filter.mpr ⟨?_, exiting⟩
-  simp only [pinTerms, decide_eq_true_eq] at exiting ⊢
-  refine Finset.mem_range.mpr ?_
-  obtain ⟨-, -, found⟩ := exiting
-  cases validator : pulled.validators.data[v.toNat]? with
-  | none => simp [validator] at found
-  | some _ => exact (Array.getElem?_eq_some_iff.mp validator).1
+  have found : ∃ w, pulled.validators.data[v.toNat]? = some w := by
+    obtain ⟨-, -, read⟩ := (by simpa only [pinTerms, decide_eq_true_eq] using exiting :
+      _ ∧ _ ∧ ((pulled.validators.data[v.toNat]?).map fun w =>
+        decide (w.exitEpoch.toNat ≤ (getCurrentEpoch pulled).toNat + 1)).getD false = true)
+    cases validator : pulled.validators.data[v.toNat]? with
+    | none => simp [validator] at read
+    | some w => exact ⟨w, rfl⟩
+  obtain ⟨w, found⟩ := found
+  exact mem_positions_filter config pulled anc fin found exiting
 
 /-- K5 (`exitingCredits` with `credits`): C's proposer credits to K5 keys, weight 3.
 
