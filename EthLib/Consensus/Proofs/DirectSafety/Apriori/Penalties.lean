@@ -408,7 +408,7 @@ A property of the states before the epoch of `y` passes to the states of each se
 
 A cost of the events of the branch is one measure.
 
-The credits that a step scan reads are another. -/
+The credits of the block steps of the branch are another. -/
 theorem run_cuts_measure_le {x y : ForkedBeaconState preset}
     (tail : Run config checks x y) (early : y.fork < .glamsterdam)
     (measure : ∀ {a b : ForkedBeaconState preset}, Run config checks a b → Nat)
