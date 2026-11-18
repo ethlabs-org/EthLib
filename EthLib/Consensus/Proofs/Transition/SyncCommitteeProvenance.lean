@@ -1160,9 +1160,10 @@ private theorem upgradeNextStep {pre : ForkedBeaconState preset}
     simp only [Consensus.upgradeToFulu, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at upgraded
     obtain ⟨_, _, rfl⟩ := upgraded
     exact ⟨fun holds => carryFields (config := config) (post := .fusaka)
-      (by dsimp; decide) (by decide) (by dsimp; decide) holds,
+      (by change Fork.pectra < Fork.fusaka; decide) (by decide)
+      (by change Fork.altair ≤ Fork.pectra; decide) holds,
       fun _ a a' => carryFields_current (config := config) (post := .fusaka)
-        (by decide) (by decide) a' a⟩
+        (by change Fork.pectra < Fork.fusaka; decide) (by decide) a' a⟩
   case fusaka =>
     simp only [Consensus.upgradeNext, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at ok
     obtain ⟨_, upgraded, rfl⟩ := ok
