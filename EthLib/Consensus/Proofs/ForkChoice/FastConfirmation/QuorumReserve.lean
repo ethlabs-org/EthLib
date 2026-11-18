@@ -287,6 +287,8 @@ def pinReserve (config : Config) (state ancestor finalizedState : BeaconState pr
   -- Another branch's consolidation carry was set from one epoch's churn, possibly before finality.
   --
   -- So it is charged at the larger of the finalized block's carry and the churn here.
+  --
+  -- The exit carry is at most one epoch's exit churn, which `depositChurn` caps.
   let consolidationCarry := max (if electra : .pectra ≤ fork then
       (finalizedState.consolidationBalanceToConsume electra).toNat else 0) consolidationChurn
   let depthFin := epoch.toNat + 2 - (getCurrentEpoch finalizedState).toNat
@@ -297,7 +299,8 @@ def pinReserve (config : Config) (state ancestor finalizedState : BeaconState pr
       (finalizedState.depositBalanceToConsume electra).toNat else 0
   let queues := 3 * (depthFin * depositChurn + capMax + depositCarry) +
     (if tight then 0 else
-      3 * (depth * (exitChurn + consolidationChurn) + capMax + consolidationCarry))
+      3 * (depth * (exitChurn + consolidationChurn) + max capMax depositChurn +
+        consolidationCarry))
   -- A sync seat's reward is bounded by its envelope at three halves of the call's total.
   --
   -- The integer reward is not monotone in the total, and the envelope is.
