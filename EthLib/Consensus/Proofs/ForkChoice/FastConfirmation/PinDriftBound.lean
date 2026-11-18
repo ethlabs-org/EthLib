@@ -11,7 +11,7 @@ import EthLib.Consensus.Proofs.DirectSafety.Apriori.Penalties
 import EthLib.Consensus.Proofs.DirectSafety.Apriori.Contracts.Ledger
 import EthLib.Consensus.Proofs.Transition.EpochPending
 import EthLib.Consensus.Proofs.Transition.Operations
-import EthLib.Consensus.Proofs.Transition.BalanceNotRaisedBlock
+import EthLib.Consensus.Proofs.DirectSafety.Apriori.Reserved.Operations
 import EthLib.Consensus.Proofs.Transition.Block
 
 /-!
@@ -560,49 +560,36 @@ end Band
 The validators only grow at the end. -/
 private theorem applyPendingDeposit_frame {s s' : BeaconState preset fork}
     {deposit : PendingDeposit}
+    (altair : .altair ≤ fork)
     (computed : applyPendingDeposit config checks s deposit = .ok s') {i : ℕ}
-    (inside : i < s.validators.data.size) (inBalances : i < s.balances.data.size)
+    (inside : i < s.validators.data.size)
     (other : s.validators.data.findIdx? (·.pubkey == deposit.pubkey) ≠ some i) :
     s'.balances.data[i]? = s.balances.data[i]? ∧
       ∃ suffix : List Validator,
         s'.validators.data.toList = s.validators.data.toList ++ suffix := by
-  unfold applyPendingDeposit at computed
-  generalize hf : s.validators.data.findIdx? (·.pubkey == deposit.pubkey) = r at computed
-  cases r with
+  cases hf : s.validators.data.findIdx? (·.pubkey == deposit.pubkey) with
+  | some j =>
+    have ne : i ≠ j := fun same => other (same ▸ hf)
+    exact ⟨(applyPendingDeposit_known_balances hf computed).2 i ne, [], by
+      rw [(applyPendingDeposit_known hf computed).2, List.append_nil]⟩
   | none =>
-    simp only at computed
-    split at computed
-    · cases computed
-      exact ⟨rfl, [], by simp⟩
-    simp only [bind_ok_iff] at computed
-    obtain ⟨_, _, computed⟩ := computed
-    split at computed
-    · have pushed := addValidatorToRegistry_validators_eq_push computed
-      have hb : s.balances.data[i]? = some s.balances.data[i] :=
-        Array.getElem?_eq_getElem inBalances
-      refine ⟨by rw [hb]; exact addValidatorToRegistry_balance computed inside hb,
-        [getValidatorFromDeposit preset fork deposit.pubkey deposit.withdrawalCredentials
-          deposit.amount], ?_⟩
-      rw [pushed, Array.toList_push]
-    · cases computed
-      exact ⟨rfl, [], by simp⟩
-  | some position =>
-    simp only [liftAccessor_ok, bind_ok_iff, liftArith, mapError_ok_iff] at computed
-    obtain ⟨index, indexOk, raised⟩ := computed
-    obtain ⟨-, indexNat⟩ := ofNatChecked_ok_iff.mp indexOk
-    obtain ⟨within, -, rfl⟩ := increaseBalance_eq_ok_iff.mp raised
-    have ne : index.toNat ≠ i := fun same => other (by rw [hf, ← indexNat, same])
-    exact ⟨Array.getElem?_set_ne within ne, [], by simp [BeaconState.putBalance]⟩
+    refine ⟨DirectSafety.Apriori.Internal.applyPendingDeposit_absent_balances altair hf computed
+      inside, ?_⟩
+    rcases applyPendingDeposit_cases computed with rfl | ⟨_, raised⟩ | ⟨_, added⟩
+    · exact ⟨[], by simp⟩
+    · exact ⟨[], by rw [increaseBalance_validators raised, List.append_nil]⟩
+    · exact ⟨[getValidatorFromDeposit preset fork deposit.pubkey deposit.withdrawalCredentials
+        deposit.amount], by rw [addValidatorToRegistry_validators_eq_push added, Array.toList_push]⟩
 
-/-- From Electra, the pending deposits of an epoch leave the balance of a key alone while it exits
-and is not yet withdrawable.
+/-- From Electra, the pending deposits of an epoch leave a key's balance alone.
+
+This holds while the key exits and is not yet withdrawable.
 
 Such a key's deposits are postponed (`processPendingDeposits_postponed_epochs`). -/
 private theorem processPendingDeposits_exited_balance {state after : BeaconState preset fork}
     {electra : .pectra ≤ fork}
     (computed : processPendingDeposits config checks state electra = .ok after)
     {i : ℕ} {v : Validator} (found : state.validators.data[i]? = some v)
-    (inBalances : i < state.balances.data.size)
     (exited : v.exitEpoch.toNat < 2 ^ 64 - 1)
     (held : (getCurrentEpoch state).toNat < v.withdrawableEpoch.toNat) :
     after.balances.data[i]? = state.balances.data[i]? := by
@@ -620,10 +607,6 @@ private theorem processPendingDeposits_exited_balance {state after : BeaconState
       have := congrArg List.length pre
       simp only [Array.length_toList, List.length_append] at this
       omega
-    have balSome : i < s.balances.data.size := by
-      by_contra out
-      rw [Array.getElem?_eq_none (by omega), Array.getElem?_eq_getElem inBalances] at bal
-      cases bal
     have get : ∀ j (hj : j < state.validators.data.size) (hs : j < s.validators.data.size),
         s.validators.data[j] = state.validators.data[j] := by
       intro j hj hs
@@ -650,8 +633,9 @@ private theorem processPendingDeposits_exited_balance {state after : BeaconState
       simp only [Option.any_some, Bool.not_eq_true', Bool.and_eq_false_iff,
         decide_eq_false_iff_not] at kept
       omega
-    obtain ⟨bal', suffix', pre2⟩ := applyPendingDeposit_frame step (Nat.lt_of_lt_of_le inside sizeV)
-      balSome other
+    obtain ⟨bal', suffix', pre2⟩ := applyPendingDeposit_frame
+      (Nat.le_trans (show Fork.altair ≤ Fork.pectra by decide) electra) step
+      (Nat.lt_of_lt_of_le inside sizeV) other
     exact ⟨bal'.trans bal, suffix ++ suffix', by rw [pre2, pre, List.append_assoc]⟩
   exact final.1
 
