@@ -1580,6 +1580,27 @@ private theorem charge_epoch_le_of_K5 (early : fork < .glamsterdam)
       fun lt => notHigh (UInt64.lt_iff_toNat_lt.mpr lt)
     omega
 
+/-- The rise of a charged key on C's branch is one band and the depth's gains at the largest rate.
+
+The gains are the epoch rewards of the key after its exit starts, over the epochs of the run. -/
+private theorem riseQ_le (h : Setting config checks g split fin pulled anc counted V)
+    (tailC : Run config checks ⟨fork, split⟩ ⟨fork, counted⟩) (highC : ℕ) (v : ℕ) :
+    riseQ tailC highC v ≤ preset.upwardBand + (pinTerms config pulled anc fin).depth *
+      (pinTerms config pulled anc fin).gainRateMax := sorry
+
+/-- The keys of `K5` that are not exiting at the call and that C's branch charges are few.
+
+They are at most the keys that `queueKeys` counts.
+
+Those are the keys with a large charge, the window's two ends, the low keys and the new keys. -/
+private theorem charged_count (h : Setting config checks g split fin pulled anc counted V)
+    (tailC : Run config checks ⟨fork, split⟩ ⟨fork, counted⟩) (highC : ℕ) :
+    (((K5 counted V).filter fun v =>
+      (pinTerms config pulled anc fin).exitingB v.toNat = false).filter
+        fun v => riseQ tailC highC v.toNat ≠ 0).card ≤
+      (pinTerms config pulled anc fin).queueKeys :=
+  sorry
+
 /-- K5 (`queueRise`): the rise of exiting keys after their exit starts on C's branch. -/
 theorem bud_queueRise (h : Setting config checks g split fin pulled anc counted V)
     (tailC : Run config checks ⟨fork, split⟩ ⟨fork, counted⟩) (highC : ℕ)
@@ -1587,10 +1608,7 @@ theorem bud_queueRise (h : Setting config checks g split fin pulled anc counted 
     3 * (∑ v ∈ (K5 counted V) with (pinTerms config pulled anc fin).exitingB v.toNat = false, riseQ tailC highC v.toNat) ≤
       (pinTerms config pulled anc fin).queueRise := by
   classical
-  obtain ⟨K, G, unfold⟩ : ∃ K G : ℕ, (pinTerms config pulled anc fin).queueRise =
-      if (pinTerms config pulled anc fin).tight = true then 0 else
-        3 * K * (preset.upwardBand + (pinTerms config pulled anc fin).depth * G) := ⟨_, _, rfl⟩
-  rw [unfold]
+  rw [queueRise_unfold]
   have electra : .pectra ≤ fork := Nat.le_trans (by decide) h.fulu
   have finalized := UInt64.le_iff_toNat_le.mp h.finalized
   have called := UInt64.le_iff_toNat_le.mp h.called
@@ -1617,7 +1635,29 @@ theorem bud_queueRise (h : Setting config checks g split fin pulled anc counted 
     rw [Finset.sum_eq_zero none]
     simp
   · simp only [tight, Bool.false_eq_true, ↓reduceIte]
-    sorry
+    have sumEq := Finset.sum_filter_ne_zero
+      (s := (K5 counted V).filter fun v =>
+        (pinTerms config pulled anc fin).exitingB v.toNat = false)
+      (f := fun v : ValidatorIndex => riseQ tailC highC v.toNat)
+    have each := Finset.sum_le_card_nsmul
+      (((K5 counted V).filter fun v =>
+        (pinTerms config pulled anc fin).exitingB v.toNat = false).filter
+          fun v => riseQ tailC highC v.toNat ≠ 0)
+      (fun v : ValidatorIndex => riseQ tailC highC v.toNat)
+      (preset.upwardBand + (pinTerms config pulled anc fin).depth *
+        (pinTerms config pulled anc fin).gainRateMax)
+      fun v _ => riseQ_le h tailC highC v.toNat
+    have count := charged_count h tailC highC
+    rw [smul_eq_mul] at each
+    rw [← sumEq]
+    calc _ ≤ 3 * (((((K5 counted V).filter fun v =>
+            (pinTerms config pulled anc fin).exitingB v.toNat = false)).filter
+          fun v => riseQ tailC highC v.toNat ≠ 0).card *
+        (preset.upwardBand + (pinTerms config pulled anc fin).depth *
+          (pinTerms config pulled anc fin).gainRateMax)) := Nat.mul_le_mul_left _ each
+      _ ≤ _ := by
+        rw [Nat.mul_assoc]
+        exact Nat.mul_le_mul_left _ (Nat.mul_le_mul_right _ count)
 
 /-- K5 (`exitingRise`): the keys whose exit R reads. -/
 theorem bud_exitingRise (h : Setting config checks g split fin pulled anc counted V) :
