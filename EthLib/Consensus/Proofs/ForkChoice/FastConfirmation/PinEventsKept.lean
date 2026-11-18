@@ -246,7 +246,7 @@ private theorem Grew.trans {f : Fork} {p q r : BalanceReplay preset f} (one : Gr
     · exact .inr other
 
 /-- A recorded pass appends one event of its source to the events, after its action. -/
-private theorem recordBalance_cases {f : Fork} {source : BalanceSource}
+theorem recordBalance_cases {f : Fork} {source : BalanceSource}
     {limits : BeaconState preset f → Except TransitionError (Nat × Nat)}
     {action : BeaconState preset f → Except TransitionError (BeaconState preset f)}
     {p q : BalanceReplay preset f} (ok : recordBalance source limits action p = .ok q) :
@@ -259,7 +259,7 @@ private theorem recordBalance_cases {f : Fork} {source : BalanceSource}
   · exact .inr (by rw [List.mem_singleton.mp added])
 
 /-- A carried pass changes the state by its action and records nothing. -/
-private theorem carryBalance_cases {f : Fork}
+theorem carryBalance_cases {f : Fork}
     {action : BeaconState preset f → Except TransitionError (BeaconState preset f)}
     {p q : BalanceReplay preset f} (ok : carryBalance action p = .ok q) :
     action p.1 = .ok q.1 ∧ q.2 = p.2 := by
