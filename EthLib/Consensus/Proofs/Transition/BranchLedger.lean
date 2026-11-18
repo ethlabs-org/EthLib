@@ -331,9 +331,7 @@ variable {fork : Fork} {s u t : BeaconState preset fork}
 
 It moves only when the later record is slashed.
 
-The states may be of different forks.
-
-Reader: EffectiveRise. -/
+The states may be of different forks. -/
 def WithdrawableKept {f g : Fork} (s : BeaconState preset f) (t : BeaconState preset g) : Prop :=
   ∀ (i : ℕ) (v w : Validator), s.validators.data[i]? = some v → t.validators.data[i]? = some w →
     v.exitEpoch ≠ FAR_FUTURE_EPOCH →
@@ -901,9 +899,7 @@ private theorem validators_processBlockExecution {engine : ExecutionEngine prese
     · cases computed
       rfl
 
-/-- A balance increase adds its amount at its own index and keeps every other balance.
-
-Readers: EffectiveRise. -/
+/-- A balance increase adds its amount at its own index and keeps every other balance. -/
 theorem actualBalanceAt_increaseBalance {u w : BeaconState preset fork}
     {index : ValidatorIndex} {delta : Gwei} (computed : increaseBalance u index delta = .ok w)
     (j : Nat) : actualBalanceAt ⟨fork, w⟩ j =
@@ -920,9 +916,7 @@ theorem actualBalanceAt_increaseBalance {u w : BeaconState preset fork}
     obtain ⟨raised, located, value⟩ := balance_increaseBalance computed found
     simp only [actualBalanceAt, found, located, Option.map_some, Option.getD_some, value]
 
-/-- A balance decrease subtracts its amount at its own index and keeps every other balance.
-
-Readers: EffectiveRise. -/
+/-- A balance decrease subtracts its amount at its own index and keeps every other balance. -/
 theorem actualBalanceAt_decreaseBalance {u w : BeaconState preset fork}
     {index : ValidatorIndex} {delta : Gwei} (computed : decreaseBalance u index delta = .ok w)
     (j : Nat) : actualBalanceAt ⟨fork, w⟩ j =
@@ -3641,9 +3635,7 @@ private theorem Run.tally {F : Fork} {a : BeaconState preset F} {y : ForkedBeaco
 
 /-- Inside one epoch, from Fulu and before Gloas, take each validator with an exit set.
 
-Its withdrawable epoch only rises, and moves only for a slashed validator.
-
-Reader: EffectiveRise. -/
+Its withdrawable epoch only rises, and moves only for a slashed validator. -/
 theorem Run.withdrawableKept_of_same_epoch {x y : ForkedBeaconState preset}
     (tail : Run config checks x y) (early : y.fork < .glamsterdam) (fulu : .fusaka ≤ y.fork)
     (same : getCurrentEpoch y.state = getCurrentEpoch x.state) (matched : BalancesMatch x.state) :
@@ -3659,20 +3651,16 @@ theorem Run.withdrawableKept_of_same_epoch {x y : ForkedBeaconState preset}
 
 They are read from its last state.
 
-This is the branch correction of the fast confirmation rule.
-
-It is read by `quorumDrift_le_quorumReserve`.
-
 The run moves through the blocks of one epoch.
 
 Read at its last state:
 
-- (BC-g) Off a set of debited validators, a balance falls by at most the sum of its penalties.
+- Off a set of debited validators, a balance falls by at most the sum of its penalties.
   These are the initial slashing penalty and the sync penalties of the blocks.
   The debited validators are those that a withdrawal pays or a consolidation request converts.
   Their number is at most the payload limits per block.
   Off them the largest effective balance stays.
-- (BC-l) A balance rises by at most the sync rewards of the blocks and its other credits.
+- A balance rises by at most the sync rewards of the blocks and its other credits.
   The other credits are zero off a set of credited validators.
   That set holds the proposers of the blocks that can credit anything.
   From Electra, deposits credit no balance in a block, so the deposit amounts are zero.
@@ -3685,7 +3673,7 @@ Read at its last state:
   The proposer credit counts the proposer share apart from the participant sync rewards.
   The bound also holds with only the validators slashed within the run.
   Each of those was slashable at the first state, which needs the exits to be ordered there.
-- (L4a) A validator whose largest effective balance changed was converted.
+- A validator whose largest effective balance changed was converted.
   Its balance then ends at most the activation balance above its later credits.
 - Effective balances stay. -/
 theorem branchCorrections {x y : ForkedBeaconState preset} (tail : Run config checks x y)
@@ -3979,9 +3967,7 @@ theorem branchCorrections {x y : ForkedBeaconState preset} (tail : Run config ch
       by simp only [withdrawalMaxEffectiveBalance, getMaxEffectiveBalance, same]⟩
 
 
-/-- From Electra, the registry updates keep the withdrawable epochs of assigned exits.
-
-Reader: EffectiveRise. -/
+/-- From Electra, the registry updates keep the withdrawable epochs of assigned exits. -/
 theorem withdrawableKept_processRegistryUpdates {f : Fork} {s t : BeaconState preset f}
     (electra : .pectra ≤ f) (ok : processRegistryUpdates config s = .ok t) :
     WithdrawableKept s t := by
