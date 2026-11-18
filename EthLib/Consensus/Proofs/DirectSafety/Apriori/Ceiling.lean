@@ -170,37 +170,33 @@ private theorem upgradeBalanceReplay_credits {s t : ForkedBeaconState preset}
     simp [sourceCredits]
 
 /-- The stages of an epoch after the rewards append only slashing, deposit and consolidation events.
--/
+
+Only the pending-deposit stage appends a deposit event, and it appends at most one. -/
 private theorem epochReplayAction_sources {f : Fork} {k : EpochStage}
     (later : k ∈ [EpochStage.registry, .slashings, .eth1Reset, .pendingDeposits,
       .pendingConsolidations]) {pre post : BalanceReplay preset f}
     (ok : epochReplayAction (config := config) (checks := checks) k pre = .ok post) :
-    ∃ added, post.2 = pre.2 ++ added ∧ ∀ e ∈ added,
-      e.source = .slashings ∨ e.source = .deposits ∨ e.source = .consolidations := by
+    ∃ added, post.2 = pre.2 ++ added ∧ (∀ e ∈ added,
+      e.source = .slashings ∨ e.source = .deposits ∨ e.source = .consolidations) ∧
+      (added.filter fun e => e.source = .deposits).length ≤
+        if k = .pendingDeposits then 1 else 0 := by
   simp only [List.mem_cons, List.not_mem_nil, or_false] at later
   rcases later with rfl | rfl | rfl | rfl | rfl <;> simp only [epochReplayAction] at ok
   · simp only [carryBalance, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at ok
     obtain ⟨_, _, rfl⟩ := ok
-    exact ⟨[], by simp, by simp⟩
+    exact ⟨[], by simp, by simp, by simp⟩
   · simp only [recordBalance, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at ok
     obtain ⟨_, _, _, _, rfl⟩ := ok
-    exact ⟨_, rfl, by simp⟩
+    exact ⟨_, rfl, by simp, by simp⟩
   all_goals
     split at ok
     · simp only [carryBalance, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at ok
       obtain ⟨_, _, rfl⟩ := ok
       first
-        | exact ⟨_, rfl, by simp⟩
-        | exact ⟨[], by simp, by simp⟩
+        | exact ⟨_, rfl, by simp, by simp⟩
+        | exact ⟨[], by simp, by simp, by simp⟩
     · cases ok
-      exact ⟨[], by simp, by simp⟩
-
-/-- A list with no event of a source records no credit of that source. -/
-private theorem sourceCredits_eq_zero {source : BalanceSource} {events : List (BalanceEvent preset)}
-    (absent : ∀ e ∈ events, e.source ≠ source) : sourceCredits source events = 0 :=
-  List.sum_eq_zero fun _ member => by
-    obtain ⟨e, inside, rfl⟩ := List.mem_map.mp member
-    simp [absent e inside]
+      exact ⟨[], by simp, by simp, by simp⟩
 
 /-- The replay of an epoch, from Altair, runs justification and inactivity, then the rewards.
 
@@ -208,8 +204,10 @@ Its events are those of the rewards pass, replayed from the state after the scor
 
 They are followed by slashing, deposit and consolidation events only.
 
-The rewards pass records reward, penalty and inactivity events only. -/
-theorem epochReplay_events {f : Fork} (altair : .altair ≤ f)
+The rewards pass records reward, penalty and inactivity events only.
+
+The later stages record at most one deposit event. -/
+private theorem epochReplay_events_core {f : Fork} (altair : .altair ≤ f)
     {cached : BeaconState preset f} {post : BalanceReplay preset f}
     (trace : EpochTrace (epochReplayAction (config := config) (checks := checks))
       EpochStage.prefixStages (cached, []) post) :
@@ -218,7 +216,8 @@ theorem epochReplay_events {f : Fork} (altair : .altair ≤ f)
       replayRewards (config := config) (pass, []) = .ok rewarded ∧
       post.2 = rewarded.2 ++ later ∧
       (∀ e ∈ later, e.source = .slashings ∨ e.source = .deposits ∨ e.source = .consolidations) ∧
-      ∀ e ∈ rewarded.2, e.source = .rewards ∨ e.source = .penalties ∨ e.source = .inactivity := by
+      (∀ e ∈ rewarded.2, e.source = .rewards ∨ e.source = .penalties ∨ e.source = .inactivity) ∧
+      (later.filter fun e => e.source = .deposits).length ≤ 1 := by
   simp only [EpochStage.prefixStages] at trace
   cases trace with | cons one trace =>
   cases trace with | cons two trace =>
@@ -256,18 +255,60 @@ theorem epochReplay_events {f : Fork} (altair : .altair ≤ f)
       · obtain rfl := List.mem_singleton.mp new
         exact .inr penalty)
     (by simp) three
-  obtain ⟨a4, e4, s4⟩ := epochReplayAction_sources (by simp) four
-  obtain ⟨a5, e5, s5⟩ := epochReplayAction_sources (by simp) five
-  obtain ⟨a6, e6, s6⟩ := epochReplayAction_sources (by simp) six
-  obtain ⟨a7, e7, s7⟩ := epochReplayAction_sources (by simp) seven
-  obtain ⟨a8, e8, s8⟩ := epochReplayAction_sources (by simp) eight
+  obtain ⟨a4, e4, s4, c4⟩ := epochReplayAction_sources (by simp) four
+  obtain ⟨a5, e5, s5, c5⟩ := epochReplayAction_sources (by simp) five
+  obtain ⟨a6, e6, s6, c6⟩ := epochReplayAction_sources (by simp) six
+  obtain ⟨a7, e7, s7, c7⟩ := epochReplayAction_sources (by simp) seven
+  obtain ⟨a8, e8, s8, c8⟩ := epochReplayAction_sources (by simp) eight
   refine ⟨just, pass, _, a4 ++ a5 ++ a6 ++ a7 ++ a8, justOk,
     by simp only [EpochStage.Edge, altair, ↓reduceDIte]; exact passOk, three,
-    by rw [e8, e7, e6, e5, e4]; simp only [List.append_assoc], ?_, sources⟩
-  intro e member
-  simp only [List.mem_append] at member
-  rcases member with (((m | m) | m) | m) | m
-  exacts [s4 e m, s5 e m, s6 e m, s7 e m, s8 e m]
+    by rw [e8, e7, e6, e5, e4]; simp only [List.append_assoc], ?_, sources, ?_⟩
+  · intro e member
+    simp only [List.mem_append] at member
+    rcases member with (((m | m) | m) | m) | m
+    exacts [s4 e m, s5 e m, s6 e m, s7 e m, s8 e m]
+  · simp only [List.filter_append, List.length_append]
+    simp only [reduceCtorEq, ↓reduceIte, Nat.le_zero] at c4 c5 c6 c8
+    simp only [↓reduceIte] at c7
+    omega
+
+/-- The replay of an epoch, from Altair, runs justification and inactivity, then the rewards.
+
+Its events are those of the rewards pass, replayed from the state after the score update.
+
+They are followed by slashing, deposit and consolidation events only.
+
+The rewards pass records reward, penalty and inactivity events only. -/
+theorem epochReplay_events {f : Fork} (altair : .altair ≤ f)
+    {cached : BeaconState preset f} {post : BalanceReplay preset f}
+    (trace : EpochTrace (epochReplayAction (config := config) (checks := checks))
+      EpochStage.prefixStages (cached, []) post) :
+    ∃ just pass rewarded later, EpochStage.Edge config checks .justification cached just ∧
+      EpochStage.Edge config checks .inactivity just pass ∧
+      replayRewards (config := config) (pass, []) = .ok rewarded ∧
+      post.2 = rewarded.2 ++ later ∧
+      (∀ e ∈ later, e.source = .slashings ∨ e.source = .deposits ∨ e.source = .consolidations) ∧
+      ∀ e ∈ rewarded.2, e.source = .rewards ∨ e.source = .penalties ∨ e.source = .inactivity := by
+  obtain ⟨just, pass, rewarded, later, justOk, passOk, replayed, split, laterSources,
+    rewardSources, -⟩ := epochReplay_events_core altair trace
+  exact ⟨just, pass, rewarded, later, justOk, passOk, replayed, split, laterSources,
+    rewardSources⟩
+
+/-- The replay of an epoch, from Altair, records at most one deposit event.
+
+Only the pending-deposit stage records one, and the rewards pass records none. -/
+theorem epochReplay_deposit_count {f : Fork} (altair : .altair ≤ f)
+    {cached : BeaconState preset f} {post : BalanceReplay preset f}
+    (trace : EpochTrace (epochReplayAction (config := config) (checks := checks))
+      EpochStage.prefixStages (cached, []) post) :
+    (post.2.filter fun e => e.source = .deposits).length ≤ 1 := by
+  obtain ⟨_, _, rewarded, later, _, _, _, split, _, rewardSources, count⟩ :=
+    epochReplay_events_core altair trace
+  have none : (rewarded.2.filter fun e => e.source = .deposits).length = 0 :=
+    List.length_eq_zero_iff.mpr (List.filter_eq_nil_iff.mpr fun e member => by
+      rcases rewardSources e member with s | s | s <;> simp [s])
+  rw [split, List.filter_append, List.length_append]
+  omega
 
 /-- The replay of an epoch, from Altair, runs justification and inactivity, then the rewards.
 
