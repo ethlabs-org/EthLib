@@ -1162,6 +1162,148 @@ private theorem creditScan_le_events (blockP slotP : BalanceSource → Bool) (v 
       · cases rest
         exact before
 
+/-- The credits to some keys at one event add up to at most the credits of the event.
+
+A key beyond the balance array has no credit. -/
+private theorem sum_keyCredit_le_credits (S : Finset ValidatorIndex) (e : BalanceEvent preset) :
+    ∑ v ∈ S, keyCredit v.toNat e ≤ e.credits := by
+  classical
+  have trim : ∑ v ∈ S.filter (fun v => v.toNat < e.after.state.balances.data.size),
+      keyCredit v.toNat e = ∑ v ∈ S, keyCredit v.toNat e := by
+    refine Finset.sum_filter_of_ne fun v _ nonzero => ?_
+    by_contra outside
+    apply nonzero
+    have missing : actualBalanceAt e.after v.toNat = 0 := by
+      simp [actualBalanceAt, Array.getElem?_eq_none (not_lt.mp outside)]
+    simp [keyCredit, missing]
+  rw [← trim]
+  exact sum_toNat_le (fun i => actualBalanceAt e.after i - actualBalanceAt e.before i)
+    (fun v member => Finset.mem_range.mpr (Finset.mem_filter.mp member).2)
+
+/-- The credits to one key at one event are at most the credits of the event. -/
+private theorem keyCredit_le_credits (i : ℕ) (e : BalanceEvent preset) :
+    keyCredit i e ≤ e.credits := by
+  by_cases inside : i < e.after.state.balances.data.size
+  · exact Finset.single_le_sum (f := fun j => actualBalanceAt e.after j - actualBalanceAt e.before j)
+      (fun _ _ => Nat.zero_le _) (Finset.mem_range.mpr inside)
+  · have missing : actualBalanceAt e.after i = 0 := by
+      simp [actualBalanceAt, Array.getElem?_eq_none (not_lt.mp inside)]
+    simp [keyCredit, missing]
+
+/-- If every selected item is also selected by one of two tests, or adds nothing, then the sum over
+the first test is at most the two sums over the others. -/
+private theorem sum_filter_split {α : Type} (l : List α) (p q r : α → Bool) (f : α → ℕ)
+    (h : ∀ a ∈ l, p a = true → q a = true ∨ r a = true ∨ f a = 0) :
+    ((l.filter p).map f).sum ≤ ((l.filter q).map f).sum + ((l.filter r).map f).sum := by
+  induction l with
+  | nil => simp
+  | cons a rest ih =>
+    have tail := ih fun b member => h b (List.mem_cons_of_mem _ member)
+    by_cases hp : p a = true
+    · rcases h a List.mem_cons_self hp with hq | hr | hz
+      · by_cases hr : r a = true
+        · rw [List.filter_cons_of_pos hp, List.filter_cons_of_pos hq, List.filter_cons_of_pos hr]
+          simp only [List.map_cons, List.sum_cons]
+          omega
+        · rw [List.filter_cons_of_pos hp, List.filter_cons_of_pos hq, List.filter_cons_of_neg hr]
+          simp only [List.map_cons, List.sum_cons]
+          omega
+      · by_cases hq : q a = true
+        · rw [List.filter_cons_of_pos hp, List.filter_cons_of_pos hq, List.filter_cons_of_pos hr]
+          simp only [List.map_cons, List.sum_cons]
+          omega
+        · rw [List.filter_cons_of_pos hp, List.filter_cons_of_neg hq, List.filter_cons_of_pos hr]
+          simp only [List.map_cons, List.sum_cons]
+          omega
+      · rw [List.filter_cons_of_pos hp]
+        simp only [List.map_cons, List.sum_cons, hz]
+        by_cases hq : q a = true <;> by_cases hr : r a = true
+        · rw [List.filter_cons_of_pos hq, List.filter_cons_of_pos hr]
+          simp only [List.map_cons, List.sum_cons]
+          omega
+        · rw [List.filter_cons_of_pos hq, List.filter_cons_of_neg hr]
+          simp only [List.map_cons, List.sum_cons]
+          omega
+        · rw [List.filter_cons_of_neg hq, List.filter_cons_of_pos hr]
+          simp only [List.map_cons, List.sum_cons]
+          omega
+        · rw [List.filter_cons_of_neg hq, List.filter_cons_of_neg hr]
+          omega
+    · rw [List.filter_cons_of_neg hp]
+      by_cases hq : q a = true <;> by_cases hr : r a = true
+      · rw [List.filter_cons_of_pos hq, List.filter_cons_of_pos hr]
+        simp only [List.map_cons, List.sum_cons]
+        omega
+      · rw [List.filter_cons_of_pos hq, List.filter_cons_of_neg hr]
+        simp only [List.map_cons, List.sum_cons]
+        omega
+      · rw [List.filter_cons_of_neg hq, List.filter_cons_of_pos hr]
+        simp only [List.map_cons, List.sum_cons]
+        omega
+      · rw [List.filter_cons_of_neg hq, List.filter_cons_of_neg hr]
+        exact tail
+
+/-- A step's block credits from one source test are at most those from two others, with the slot
+credits left out, when each of its events that the first test selects is selected by one of the
+others or credits the key nothing. -/
+private theorem stepCredit_split (p q r : BalanceSource → Bool) (v : ℕ)
+    {x y : ForkedBeaconState preset} (step : Step config checks x y)
+    {added : List (BalanceEvent preset)} (addedOk : step.balanceEvents = .ok added)
+    (h : ∀ e ∈ added, p e.source = true →
+      q e.source = true ∨ r e.source = true ∨ keyCredit v e = 0) :
+    stepCredit p (fun _ => false) v step ≤
+      stepCredit q (fun _ => false) v step + stepCredit r (fun _ => false) v step := by
+  cases step with
+  | slot ok =>
+    show ((((Step.slot (config := config) (checks := checks) ok).balanceEvents.toOption.getD
+      []).filter ((fun _ => false) ·.source)).map (keyCredit v)).sum ≤
+        ((((Step.slot (config := config) (checks := checks) ok).balanceEvents.toOption.getD
+      []).filter ((fun _ => false) ·.source)).map (keyCredit v)).sum +
+        ((((Step.slot (config := config) (checks := checks) ok).balanceEvents.toOption.getD
+      []).filter ((fun _ => false) ·.source)).map (keyCredit v)).sum
+    omega
+  | block engine signed due ok =>
+    show ((((Step.block engine signed due ok : Step config checks _ _).balanceEvents.toOption.getD
+      []).filter (p ·.source)).map (keyCredit v)).sum ≤
+        ((((Step.block engine signed due ok : Step config checks _ _).balanceEvents.toOption.getD
+      []).filter (q ·.source)).map (keyCredit v)).sum +
+        ((((Step.block engine signed due ok : Step config checks _ _).balanceEvents.toOption.getD
+      []).filter (r ·.source)).map (keyCredit v)).sum
+    rw [addedOk]
+    exact sum_filter_split added (p ·.source) (q ·.source) (r ·.source) (keyCredit v) h
+
+/-- The block credits of a run from one source test are at most those from two others, when every
+event of the run that the first test selects is selected by one of the others or credits the key
+nothing. -/
+private theorem creditScan_split (p q r : BalanceSource → Bool) (v high : ℕ)
+    {x y : ForkedBeaconState preset} (tail : Run config checks x y)
+    {events : List (BalanceEvent preset)} (replayed : tail.balanceEvents high = .ok events)
+    (h : ∀ e ∈ events, p e.source = true →
+      q e.source = true ∨ r e.source = true ∨ keyCredit v e = 0) :
+    (creditScan p (fun _ => false) v high tail).1 ≤
+      (creditScan q (fun _ => false) v high tail).1 +
+        (creditScan r (fun _ => false) v high tail).1 := by
+  induction tail generalizing events with
+  | nil => exact Nat.zero_le _
+  | @snoc m l pre step ih =>
+    simp only [Run.balanceEvents, bind_ok_iff] at replayed
+    obtain ⟨prior, priorOk, rest⟩ := replayed
+    rw [creditScan_snoc_fst, creditScan_snoc_fst, creditScan_snoc_fst]
+    split at rest
+    · rename_i within
+      simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at rest
+      obtain ⟨added, addedOk, rfl⟩ := rest
+      have before := ih priorOk fun e member => h e (List.mem_append_left _ member)
+      have credit := stepCredit_split p q r v step addedOk fun e member =>
+        h e (List.mem_append_right _ member)
+      simp only [within, ↓reduceIte]
+      omega
+    · rename_i outside
+      cases rest
+      have before := ih priorOk h
+      simp only [outside, ↓reduceIte]
+      exact before
+
 /-- The per-epoch base rewards of the keys recent at `pulled`, at a quarter of its total.
 
 It is the sum inside `proposerCredit` of `pinTerms`, without the sync part. -/
