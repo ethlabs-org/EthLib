@@ -1277,18 +1277,15 @@ theorem bud_deposits (h : Setting config checks g split fin pulled anc counted V
     {events : List (BalanceEvent preset)} (replayed : tail.balanceEvents high = .ok events) :
     3 * (∑ v ∈ V, credDepR events v.toNat) ≤ (pinTerms config pulled anc fin).queueDep := sorry
 
-/-- Two charges of a run at one position are the same charge.
+/-- The indices of the charges of a run are distinct, since an exit is assigned once. -/
+private theorem charge_indices_nodup {x y : ForkedBeaconState preset} (tail : Run config checks x y) :
+    (tail.departureCharges.map (·.index)).Nodup := sorry
 
-An exit is assigned once, so the indices of the charges of a run are distinct. -/
+/-- Two charges of a run at one position are the same charge. -/
 private theorem charge_unique {x y : ForkedBeaconState preset} (tail : Run config checks x y)
     {c d : DepartureCharge} (hc : c ∈ tail.departureCharges) (hd : d ∈ tail.departureCharges)
-    (same : c.index = d.index) : c = d := sorry
-
-/-- The sum over a prefix of the events is at most the sum over all of them. -/
-private theorem sum_prefix_le {α : Type} {a b : List α} (le : a <+: b) (f : α → ℕ) :
-    (a.map f).sum ≤ (b.map f).sum := by
-  obtain ⟨t, rfl⟩ := le
-  simp
+    (same : c.index = d.index) : c = d :=
+  List.inj_on_of_nodup_map (charge_indices_nodup tail) hc hd same
 
 open DirectSafety.Apriori DirectSafety.Apriori.Internal in
 /-- The effective balance of a key at its exit call, from the finalized state.
@@ -1383,8 +1380,10 @@ private theorem exitQ_floor (h : Setting config checks g split fin pulled anc co
             (fork_le_of_chainSteps pre.chainSteps))) replay)
   have bound : (if FirstDown stop.pre v.toNat then preset.EFFECTIVE_BALANCE_INCREMENT.toNat
       else 0) ≤ preset.EFFECTIVE_BALANCE_INCREMENT.toNat := by split <;> omega
-  have penalties := sum_prefix_le isPrefix (floorPenaltyDebit v.toNat)
-  have partials := sum_prefix_le isPrefix (floorPartialDebit v)
+  have penalties :=
+    (isPrefix.sublist.map (floorPenaltyDebit v.toNat)).sum_le_sum fun _ _ => Nat.zero_le _
+  have partials :=
+    (isPrefix.sublist.map (floorPartialDebit v)).sum_le_sum fun _ _ => Nat.zero_le _
   rw [amount0] at *
   omega
 
