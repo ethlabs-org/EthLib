@@ -770,7 +770,137 @@ theorem stub_J (h : Setting config checks g split fin pulled anc counted V)
       (∑ v ∈ (K6 pulled counted) with (pinTerms config pulled anc fin).exitingB v.toNat = true,
         (eR pulled v + (pinTerms config pulled anc fin).rise v.toNat)) +
       (∑ v ∈ (K6 pulled counted), (credC tailC highC v.toNat + whistC tailC highC v.toNat)) +
-      (∑ v ∈ (K6 pulled counted), (syncF events v.toNat + syncF eventsC v.toNat))) : ℕ) := sorry
+      (∑ v ∈ (K6 pulled counted), (syncF events v.toNat + syncF eventsC v.toNat))) : ℕ) := by
+  classical
+  -- The keys of K6 that R joins next epoch, which `joining` charges.
+  let joins : ValidatorIndex → Prop := fun v =>
+    (pinTerms config pulled anc fin).current v.toNat = false ∧
+      isActiveAt pulled (getCurrentEpoch pulled + 1) v.toNat = true
+  let cost (v : ValidatorIndex) : ℕ :=
+    (if joins v then eR pulled v else 0) +
+    (if (pinTerms config pulled anc fin).lateB v.toNat = true then eR pulled v else 0) +
+    (if (pinTerms config pulled anc fin).exitedRB v.toNat = true then
+      eR pulled v + (pinTerms config pulled anc fin).rise v.toNat else 0) +
+    (if (pinTerms config pulled anc fin).exitingB v.toNat = true then
+      eR pulled v + (pinTerms config pulled anc fin).rise v.toNat else 0) +
+    (credC tailC highC v.toNat + whistC tailC highC v.toNat) +
+    (syncF events v.toNat + syncF eventsC v.toNat)
+  have hJ : cJ pulled counted = ∑ v ∈ K6 pulled counted, (eC counted v : ℤ) := by
+    unfold cJ
+    rw [← Finset.sum_filter]
+    refine Finset.sum_congr ?_ (fun _ _ => rfl)
+    ext v
+    unfold K6 U
+    simp only [Finset.mem_filter, Finset.mem_union]
+    constructor
+    · rintro ⟨-, a, b, c⟩
+      exact ⟨a, b, c⟩
+    · rintro ⟨a, b, c⟩
+      exact ⟨.inl (.inr a), a, b, c⟩
+  -- The per-key bound: what each key of K6 adds to the drift is charged by one of these terms.
+  -- A key of K6 in R's registry is bounded by `key_core`, from R's balance and its rise.
+  have core : ∀ i : ℕ, i < pulled.validators.data.size →
+      balanceAt counted i ≤ balanceAt pulled i + (pinTerms config pulled anc fin).rise i +
+        credC tailC highC i + whistC tailC highC i + (syncF events i + syncF eventsC i) := by
+    sorry
+  -- A key of K6 that R joins or reads as late rises by no gain, so `rise` is not needed.
+  have quiet : ∀ v ∈ K6 pulled counted, v.toNat < pulled.validators.data.size →
+      (joins v ∨ (pinTerms config pulled anc fin).lateB v.toNat = true) →
+      eC counted v ≤ eR pulled v + credC tailC highC v.toNat + whistC tailC highC v.toNat +
+        (syncF events v.toNat + syncF eventsC v.toNat) := by
+    sorry
+  -- A key of K6 in R's registry that is not yet eligible at R is charged by no sum of R's flags.
+  --
+  -- It can become eligible and active on C's branch only.
+  --
+  -- This case waits for the ruling on the `lateB` flag.
+  let pendingElig (v : ValidatorIndex) : Prop := ∃ w, pulled.validators.data[v.toNat]? = some w ∧
+    (getCurrentEpoch pulled).toNat < w.activationEligibilityEpoch.toNat
+  have pending : ∀ v ∈ K6 pulled counted, v.toNat < pulled.validators.data.size →
+      pendingElig v → eC counted v ≤ cost v := by
+    sorry
+  -- Any other key of K6 in R's registry is charged by one of the four sums of R's flags.
+  have charged : ∀ v ∈ K6 pulled counted, v.toNat < pulled.validators.data.size →
+      ¬ pendingElig v → joins v ∨ (pinTerms config pulled anc fin).lateB v.toNat = true ∨
+        (pinTerms config pulled anc fin).exitedRB v.toNat = true ∨
+        (pinTerms config pulled anc fin).exitingB v.toNat = true := by
+    sorry
+  -- A key of K6 that is not in R's registry was created on C's branch.
+  have beyond : ∀ v ∈ K6 pulled counted, ¬ v.toNat < pulled.validators.data.size →
+      eC counted v ≤ credC tailC highC v.toNat + whistC tailC highC v.toNat +
+        (syncF events v.toNat + syncF eventsC v.toNat) := by
+    sorry
+  have key : ∀ v ∈ K6 pulled counted, (eC counted v : ℤ) ≤ (cost v : ℤ) := by
+    intro v hv
+    by_cases inside : v.toNat < pulled.validators.data.size
+    · by_cases pend : pendingElig v
+      · exact_mod_cast pending v hv inside pend
+      have c := core v.toNat inside
+      have c' : eC counted v ≤ eR pulled v + (pinTerms config pulled anc fin).rise v.toNat +
+          credC tailC highC v.toNat + whistC tailC highC v.toNat +
+          (syncF events v.toNat + syncF eventsC v.toNat) := c
+      by_cases ex : (pinTerms config pulled anc fin).exitedRB v.toNat = true
+      · have : eC counted v ≤ cost v := by simp only [cost, ex, ite_true]; omega
+        exact_mod_cast this
+      by_cases ing : (pinTerms config pulled anc fin).exitingB v.toNat = true
+      · have : eC counted v ≤ cost v := by simp only [cost, ing, ite_true]; omega
+        exact_mod_cast this
+      have q := quiet v hv inside (by
+        rcases charged v hv inside pend with a | a | a | a
+        · exact .inl a
+        · exact .inr a
+        · exact absurd a ex
+        · exact absurd a ing)
+      rcases charged v hv inside pend with a | a | a | a
+      · have : eC counted v ≤ cost v := by simp only [cost, a, ite_true]; omega
+        exact_mod_cast this
+      · have : eC counted v ≤ cost v := by simp only [cost, a, ite_true]; omega
+        exact_mod_cast this
+      · exact absurd a ex
+      · exact absurd a ing
+    · have : eC counted v ≤ cost v := by
+        have := beyond v hv inside
+        simp only [cost]
+        omega
+      exact_mod_cast this
+  have joining : ∑ v ∈ (K6 pulled counted).filter joins, eR pulled v ≤
+      (pinTerms config pulled anc fin).joining := by
+    have inj : Set.InjOn (fun v : ValidatorIndex => v.toNat)
+        (((K6 pulled counted).filter joins : Finset ValidatorIndex) : Set ValidatorIndex) :=
+      fun a _ b _ e => UInt64.toNat_inj.mp e
+    have e : ∑ v ∈ (K6 pulled counted).filter joins, eR pulled v =
+        ∑ i ∈ ((K6 pulled counted).filter joins).image (fun v : ValidatorIndex => v.toNat),
+          balanceAt pulled i :=
+      (Finset.sum_image (f := fun i => balanceAt pulled i) inj).symm
+    rw [e]
+    show _ ≤ ∑ i ∈ (pinTerms config pulled anc fin).positions with
+      ((pinTerms config pulled anc fin).current i = false ∧
+        isActiveAt pulled (getCurrentEpoch pulled + 1) i = true), balanceAt pulled i
+    apply Finset.sum_le_sum_of_subset
+    intro i hi
+    obtain ⟨v, hv, rfl⟩ := Finset.mem_image.mp hi
+    have hj := (Finset.mem_filter.mp hv).2
+    refine Finset.mem_filter.mpr ⟨?_, hj⟩
+    obtain ⟨w, found, -⟩ := isActiveAt_eq_true_iff.mp hj.2
+    exact Finset.mem_range.mpr (Array.getElem?_eq_some_iff.mp found).1
+  have split : ∑ v ∈ K6 pulled counted, cost v =
+      ∑ v ∈ (K6 pulled counted).filter joins, eR pulled v +
+      (∑ v ∈ (K6 pulled counted) with (pinTerms config pulled anc fin).lateB v.toNat = true,
+        eR pulled v) +
+      (∑ v ∈ (K6 pulled counted) with (pinTerms config pulled anc fin).exitedRB v.toNat = true,
+        (eR pulled v + (pinTerms config pulled anc fin).rise v.toNat)) +
+      (∑ v ∈ (K6 pulled counted) with (pinTerms config pulled anc fin).exitingB v.toNat = true,
+        (eR pulled v + (pinTerms config pulled anc fin).rise v.toNat)) +
+      (∑ v ∈ (K6 pulled counted), (credC tailC highC v.toNat + whistC tailC highC v.toNat)) +
+      (∑ v ∈ (K6 pulled counted), (syncF events v.toNat + syncF eventsC v.toNat)) := by
+    simp only [cost]
+    rw [Finset.sum_add_distrib, Finset.sum_add_distrib, Finset.sum_add_distrib,
+      Finset.sum_add_distrib, Finset.sum_add_distrib]
+    simp only [Finset.sum_filter]
+  rw [hJ]
+  refine (Finset.sum_le_sum key).trans ?_
+  rw [← Nat.cast_sum]
+  exact_mod_cast (split.le.trans (by omega))
 
 /-- D-4: the keys whose exit R reads. -/
 theorem bud_exiting (h : Setting config checks g split fin pulled anc counted V) :
