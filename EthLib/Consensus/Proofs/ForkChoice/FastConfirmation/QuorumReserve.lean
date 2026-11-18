@@ -179,6 +179,8 @@ The sync seats count on both branches, each at an envelope of its reward at that
 
 A key's fall starts from the lesser of its balance and its cap.
 
+Past the withdrawability delay, a key's whole balance is charged as its fall.
+
 A key's rise is its headroom once eleven times its gain over the depth reaches that largest balance.
 
 Below that, its gain and the credits are scaled by eleven tenths, rounded up.
@@ -225,6 +227,8 @@ def pinReserve (config : Config) (state ancestor finalizedState : BeaconState pr
   -- A counting state on another branch can spend churn at a total up to that much.
   --
   -- They follow `exitChurnLimit` and `getConsolidationChurnLimit` on natural numbers.
+  --
+  -- `wide` is a natural-number bound on another branch's total, not a copy of a read.
   let wide := 3 * total / 2
   let round (amount : ℕ) := amount - amount % inc
   let balanceChurn := round (max config.MIN_PER_EPOCH_CHURN_LIMIT_ELECTRA.toNat
@@ -285,25 +289,25 @@ def pinReserve (config : Config) (state ancestor finalizedState : BeaconState pr
   -- A partial due by the next epoch was queued at least `partialDelay` epochs before it.
   --
   -- Within that depth it predates finality and sits in the queue of the finalized block's state.
-  --
-  -- Deeper, another branch can queue new partials, which withdraw at most the key's excess.
   let partialDelay := config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat
-  let partialsDue (i : ℕ) := if depth ≤ partialDelay + 1 then max (partialsX i) (partialsR i)
-    else max (max (partialsX i) (partialsR i)) (actual i - preset.MIN_ACTIVATION_BALANCE.toNat)
-  let fall (i : ℕ) :=
-    let low := min (actual i) (cap i) - (depth * (leak i + gainRate i) + partialsDue i)
-    if effective i ≤ low + preset.downwardBand then 0 else effective i - (low - low % inc)
-  let capFor (i : ℕ) := if depth * gainRate i < inc then cap i else capMax
+  let partialsDue (i : ℕ) := max (partialsX i) (partialsR i)
+  -- Deeper than `partialDelay`, a key can fall to nothing, so its whole balance is charged.
+  let fall (i : ℕ) := if depth ≤ partialDelay then
+      let low := min (actual i) (cap i) - (depth * (leak i + gainRate i) + partialsDue i)
+      if effective i ≤ low + preset.downwardBand then 0 else effective i - (low - low % inc)
+    else effective i
   -- Gains compound across the window, so the rise reads the gain at eleven tenths, rounded up.
   let gainScaled (i : ℕ) := (11 * gainRate i + 9) / 10
+  let capFor (i : ℕ) :=
+    if depth * gainScaled i < inc ∧ 11 * depth * gainRate i < ebUp i then cap i else capMax
   let rise (i : ℕ) :=
     let high := actual i + depth * (gainScaled i + leak i) + (partialsX i - partialsR i)
-    -- Deeper than `partialDelay + 1`, the call's branch can pay partials that neither queue holds.
+    -- Deeper than `partialDelay`, the call's branch can pay partials that neither queue holds.
     --
     -- So the rise is the key's whole headroom.
     --
     -- It is too once eleven times the gain over the depth reaches the key's largest balance.
-    if depth ≤ partialDelay + 1 then
+    if depth ≤ partialDelay then
       if 11 * depth * gainRate i ≥ ebUp i then capFor i - effective i
       else if high ≤ effective i + preset.upwardBand then 0
       else min (capFor i) (high - high % inc) - effective i
