@@ -797,6 +797,181 @@ def riseQ {x y : ForkedBeaconState preset} (tail : Run config checks x y) (high 
 
 /-! ### The keys that a run credits -/
 
+/-- The net credits to a key in the block steps of a run, after one more step. -/
+private theorem netScan_snoc (v high : ℕ) {x m y : ForkedBeaconState preset}
+    (pre : Run config checks x m) (step : Step config checks m y) :
+    netScan v high (pre.snoc step) =
+      if (getCurrentEpoch m.state).toNat ≤ high + 1 then
+        netScan v high pre + (match step with
+          | .block .. => actualBalanceAt y v - actualBalanceAt m v
+          | .slot _ => 0)
+      else netScan v high pre := rfl
+
+/-- The net credits to a key in the block steps of a run add over `append`. -/
+private theorem netScan_append (v high : ℕ) {x m y : ForkedBeaconState preset}
+    (pre : Run config checks x m) (post : Run config checks m y) :
+    netScan v high (pre.append post) = netScan v high pre + netScan v high post := by
+  induction post with
+  | nil => rfl
+  | snoc post step ih =>
+    change netScan v high ((pre.append post).snoc step) = _
+    rw [netScan_snoc, netScan_snoc, ih]
+    split <;> omega
+
+/-- A key keeps its public key at its position along a run. -/
+private theorem key_persists {x y : ForkedBeaconState preset} (run : Run config checks x y)
+    {i : ℕ} {w : Validator} (found : x.state.validators.data[i]? = some w) :
+    ∃ w', y.state.validators.data[i]? = some w' ∧ w'.pubkey = w.pubkey :=
+  validators_getElem?_of_validatorKeys_prefix
+    (validatorKeys_prefix_and_distinct_of_chainSteps run.chainSteps).1 found
+
+/-- A block step that raises the balance of a key has the key among its proposers or sync seats. -/
+private theorem block_credit_keys {g : ForkedBeaconState preset}
+    (genesis : Genesis config checks g) {f : Fork} {s t : BeaconState preset f}
+    (engine : ExecutionEngine preset f) (signed : SignedBeaconBlock preset f)
+    (due : upgradeDue config ⟨f, s⟩ = false)
+    (ok : applySignedBlock config checks engine s signed true = .ok t)
+    (shared : Run config checks g ⟨f, s⟩) (fulu : .fusaka ≤ f) (early : f < .glamsterdam) :
+    ∃ K : Finset ℕ, K.card ≤ 1 ∧ ∀ i : ℕ,
+      actualBalanceAt (⟨f, s⟩ : ForkedBeaconState preset) i <
+        actualBalanceAt (⟨f, t⟩ : ForkedBeaconState preset) i →
+      i ∈ K ∨ ∃ altair : .altair ≤ f, 0 < syncSeats t altair i := by
+  classical
+  have invariant := (run_justified_separated shared genesis).1
+  have processed := (applySignedBlock_ok ok).2.1
+  have same : getCurrentEpoch (⟨f, t⟩ : ForkedBeaconState preset).state =
+      getCurrentEpoch (⟨f, s⟩ : ForkedBeaconState preset).state := by
+    simp only [getCurrentEpoch, processBlock_slot processed]
+  obtain ⟨-, creditedKeys, pc, deposit, -, creditedCard, -, rise, zeroOff, electraZero, -⟩ :=
+    (Run.nil.snoc (Step.block engine signed due ok) :
+        Run config checks (⟨f, s⟩ : ForkedBeaconState preset) ⟨f, t⟩).balanceCorrections_of_same_epoch
+      early fulu same invariant.balancesMatch invariant.exitsOrdered
+  have blocksOne : (Run.nil.snoc (Step.block engine signed due ok) :
+      Run config checks (⟨f, s⟩ : ForkedBeaconState preset) ⟨f, t⟩).blockCount = 1 := rfl
+  have electra : .pectra ≤ f := Nat.le_trans (by decide) fulu
+  have altair : .altair ≤ f := Nat.le_trans (by decide) electra
+  have hegota : f < .hegota := Nat.lt_trans early (by decide)
+  have matchedT : BalancesMatch t :=
+    (frame_processBlock processed).balancesMatch invariant.balancesMatch
+  have limit := t.registryWithinLimit_of_lt early
+  have creditedLe : creditedKeys.card ≤ 1 := by
+    refine creditedCard.trans ?_
+    simp [blocksOne, electra, hegota]
+  refine ⟨creditedKeys.image UInt64.toNat, Finset.card_image_le.trans creditedLe,
+    fun i increased => ?_⟩
+  have inside : i < t.balances.data.size := by
+    by_contra outside
+    have missing : actualBalanceAt (⟨f, t⟩ : ForkedBeaconState preset) i = 0 := by
+      simp [actualBalanceAt, Array.getElem?_eq_none (Nat.le_of_not_lt outside)]
+    omega
+  have below : i < 2 ^ 64 := by
+    have sizes := matchedT
+    unfold BalancesMatch at sizes
+    have registry : i < t.validators.data.size := by omega
+    unfold BeaconState.RegistryWithinLimit at limit
+    have bound := preset.VALIDATOR_REGISTRY_LIMIT.toNat_lt
+    omega
+  obtain ⟨v, hv⟩ : ∃ v : ValidatorIndex, v.toNat = i :=
+    ⟨UInt64.ofNat i, UInt64.toNat_ofNat_of_lt' below⟩
+  have bound := rise v
+  rw [hv] at bound
+  have zero := electraZero electra v
+  by_cases member : v ∈ creditedKeys
+  · exact .inl (Finset.mem_image.mpr ⟨v, member, hv⟩)
+  · obtain ⟨-, -⟩ := zeroOff v member
+    refine .inr ⟨altair, ?_⟩
+    by_contra none
+    have seats : syncSeats t altair i = 0 := Nat.eq_zero_of_not_pos none
+    dsimp only at bound
+    simp [altair, seats, blocksOne] at bound
+    omega
+
+/-- The keys credited in the block steps of a run inside one period of sync committees.
+
+A key credited by a block is a proposer, at most one for each block, or it holds a seat of the
+committee that the run starts with. -/
+private theorem credited_piece {g : ForkedBeaconState preset}
+    (genesis : Genesis config checks g) {x y : ForkedBeaconState preset}
+    (shared : Run config checks g x) (r : Run config checks x y)
+    (fulu : .fusaka ≤ x.fork) (altair : .altair ≤ x.fork) (early : y.fork < .glamsterdam)
+    (high : ℕ)
+    (same : (getCurrentEpoch y.state).toNat / max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat =
+      (getCurrentEpoch x.state).toNat / max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat) :
+    ∃ B : Finset ℕ, B.card ≤ r.blockCount ∧ ∀ i, 0 < netScan i high r →
+      i ∈ B ∨ ∃ w, y.state.validators.data[i]? = some w ∧
+        w.pubkey ∈ (x.state.currentSyncCommittee altair).value.pubkeys.toList := by
+  classical
+  induction r with
+  | nil => exact ⟨∅, by simp, fun i pos => (Nat.lt_irrefl 0 pos).elim⟩
+  | @snoc u l pre step ih =>
+    have uEarly : u.fork < .glamsterdam := Nat.lt_of_le_of_lt step.chainStep.fork_le early
+    have low := UInt64.le_iff_toNat_le.mp (currentEpoch_le_of_chainSteps pre.chainSteps)
+    have up := UInt64.le_iff_toNat_le.mp step.chainStep.currentEpoch_le
+    have uSame : (getCurrentEpoch u.state).toNat /
+        max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat =
+          (getCurrentEpoch x.state).toNat /
+            max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat := by
+      have above := Nat.div_le_div_right
+        (c := max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat) up
+      have under := Nat.div_le_div_right
+        (c := max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat) low
+      omega
+    obtain ⟨B, cardB, hB⟩ := ih uEarly uSame
+    have carry : ∀ (i : ℕ) (w : Validator), u.state.validators.data[i]? = some w →
+        w.pubkey ∈ (x.state.currentSyncCommittee altair).value.pubkeys.toList →
+          ∃ w', l.state.validators.data[i]? = some w' ∧
+            w'.pubkey ∈ (x.state.currentSyncCommittee altair).value.pubkeys.toList := by
+      intro i w found mem
+      obtain ⟨w', found', same'⟩ := key_persists (Run.nil.snoc step) found
+      exact ⟨w', found', same' ▸ mem⟩
+    cases step with
+    | slot ok =>
+      refine ⟨B, cardB, fun i pos => ?_⟩
+      rw [netScan_snoc] at pos
+      have prior : 0 < netScan i high pre := by
+        split at pos
+        · simpa using pos
+        · exact pos
+      rcases hB i prior with member | ⟨w, found, mem⟩
+      · exact .inl member
+      · exact .inr (carry i w found mem)
+    | @block f s t engine signed due ok =>
+      have fulu' : .fusaka ≤ f := Nat.le_trans fulu (fork_le_of_chainSteps pre.chainSteps)
+      obtain ⟨K, cardK, hK⟩ := block_credit_keys genesis engine signed due ok (shared.append pre)
+        fulu' uEarly
+      refine ⟨B ∪ K, ?_, fun i pos => ?_⟩
+      · exact (Finset.card_union_le _ _).trans (Nat.add_le_add cardB cardK)
+      · rw [netScan_snoc] at pos
+        have either : 0 < netScan i high pre ∨
+            actualBalanceAt (⟨f, s⟩ : ForkedBeaconState preset) i <
+              actualBalanceAt (⟨f, t⟩ : ForkedBeaconState preset) i := by
+          split at pos
+          · simp only [] at pos
+            omega
+          · exact .inl pos
+        rcases either with prior | risen
+        · rcases hB i prior with member | ⟨w, found, mem⟩
+          · exact .inl (Finset.mem_union_left _ member)
+          · exact .inr (carry i w found mem)
+        · rcases hK i risen with member | ⟨altair', seats⟩
+          · exact .inl (Finset.mem_union_right _ member)
+          · unfold syncSeats at seats
+            obtain ⟨key, hkey⟩ := List.length_pos_iff_exists_mem.mp seats
+            obtain ⟨keyMem, test⟩ := List.mem_filter.mp hkey
+            cases hv : t.validators.data[i]? with
+            | none =>
+              rw [hv] at test
+              simp at test
+            | some w =>
+              rw [hv] at test
+              simp only [Option.any_some, beq_iff_eq] at test
+              have committee := (Run.snoc pre (Step.block engine signed due ok)
+                  ).currentSyncCommittee_eq_of_same_period early same altair' altair
+              refine .inr ⟨w, hv, ?_⟩
+              rw [test, ← committee]
+              exact keyMem
+
+
 /-- The keys that a run from the split credits.
 
 They are at most its proposers, its seat holders and its deposit recipients.
