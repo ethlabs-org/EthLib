@@ -739,11 +739,11 @@ theorem Execution.quorumDriftWithin
 
 It holds for executions whose honest stores check signatures with BLS, from Fulu to before Gloas.
 
-So `genesis` and `pre` are runs with BLS checks.
+So `genesis` uses BLS checks, and `pre` is a run with BLS checks.
 
 `Execution.quorumDriftWithin` proves the premise, unless two honest stores collide on a root.
 
-A collision is already the first alternative of the conclusion.
+A collision is an existing evidence alternative of the conclusion.
 
 Seven premises replace `QuorumDriftWithin`:
 
@@ -895,11 +895,11 @@ theorem Execution.honestHeadsCover_of_checked_call_of_drift_bound [DecidablePred
 
 It holds for executions whose honest stores check signatures with BLS, from Fulu to before Gloas.
 
-So `genesis` and `pre` are runs with BLS checks.
+So `genesis` uses BLS checks, and `pre` is a run with BLS checks.
 
 `Execution.quorumDriftWithin` proves the premise, unless two honest stores collide on a root.
 
-A collision is already the first alternative of the conclusion.
+A collision is an existing evidence alternative of the conclusion.
 
 Seven premises replace `QuorumDriftWithin`:
 

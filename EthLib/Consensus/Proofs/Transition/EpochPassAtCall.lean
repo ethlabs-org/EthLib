@@ -489,7 +489,7 @@ theorem Run.fork_eq_of_same_epoch {x y : ForkedBeaconState preset}
     cases step with
     | block engine signed due ok => exact prior
     | slot ok =>
-      obtain ⟨cached, next, -, rfl⟩ := slot_same_epoch ok (same.trans midEpoch.symm)
+      obtain ⟨cached, next, -, rfl⟩ := advanceSlotAcross_of_same_epoch ok (same.trans midEpoch.symm)
       exact prior
 
 /-- Inside one epoch before Gloas, the keys of the current sync committee stay.
