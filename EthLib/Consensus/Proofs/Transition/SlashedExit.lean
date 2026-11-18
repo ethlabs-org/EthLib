@@ -49,7 +49,7 @@ private theorem Internal.CapStep.slashed_exit_assigned {f h : Fork} {s : BeaconS
     | false => exact ((step.withdrawal i _ w before after).2 delay oldFlag flag).1
     | true => exact ((step.withdrawal i _ w before after).1 oldFlag
         (held i _ before oldFlag)).2.1
-  · exact step.appended delay i w (by omega) after flag
+  · exact (step.appended delay i w (by omega) after flag).1
 
 /-- Proposer and attester slashings keep the exit of every slashed validator assigned. -/
 theorem processSlashing_slashed_exit_assigned
@@ -163,7 +163,23 @@ theorem run_slashed_exit_assigned {g x : ForkedBeaconState preset}
       Array.getElem?_eq_some_iff.mpr ⟨inside, rfl⟩
     exact ((kept.withdrawal i _ w before found).2 delay
       (clean _ (Array.mem_of_getElem? before)) slashed).1
-  · exact kept.appended delay i w (by omega) found slashed
+  · exact (kept.appended delay i w (by omega) found slashed).1
+
+/-- A validator that joins the registry in the run and is slashed also waits the slashings vector.
+
+It waits from the run's start epoch, and its exit epoch is assigned. -/
+theorem Run.fresh_slashed_withdrawableEpoch {x y : ForkedBeaconState preset}
+    (run : Run config checks x y)
+    (activation : preset.MAX_EFFECTIVE_BALANCE ≤ preset.MIN_ACTIVATION_BALANCE)
+    (compounding : preset.MIN_ACTIVATION_BALANCE ≤ preset.MAX_EFFECTIVE_BALANCE_ELECTRA)
+    (early : y.fork < .glamsterdam)
+    (delay : 0 < config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat)
+    (i : Nat) (w : Validator) (fresh : x.state.validators.data.size ≤ i)
+    (after : y.state.validators.data[i]? = some w) (slashed : w.slashed = true) :
+    w.exitEpoch ≠ FAR_FUTURE_EPOCH ∧
+      (getCurrentEpoch x.state).toNat + preset.EPOCHS_PER_SLASHINGS_VECTOR.toNat ≤
+        w.withdrawableEpoch.toNat :=
+  (CapStep.run run activation compounding early).1.appended delay i w fresh after slashed
 
 /-- Before the epoch sentinel, a slashed validator has an assigned activation epoch. -/
 theorem Run.slashed_activation_assigned {g x : ForkedBeaconState preset}

@@ -1485,7 +1485,9 @@ structure CapStep (config : Config) {f h : Fork} (s : BeaconState preset f)
           w.withdrawableEpoch.toNat)
   appended : 0 < config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat →
     ∀ j w, s.validators.data.size ≤ j → t.validators.data[j]? = some w →
-      w.slashed = true → w.exitEpoch ≠ FAR_FUTURE_EPOCH
+      w.slashed = true → w.exitEpoch ≠ FAR_FUTURE_EPOCH ∧
+        (getCurrentEpoch s).toNat + preset.EPOCHS_PER_SLASHINGS_VECTOR.toNat ≤
+          w.withdrawableEpoch.toNat
   frozen : ∀ (i : Nat) (v w : Validator), s.validators.data[i]? = some v →
     t.validators.data[i]? = some w → v.exitEpoch ≠ FAR_FUTURE_EPOCH →
     w.exitEpoch = v.exitEpoch ∧
@@ -1553,12 +1555,18 @@ theorem CapStep.trans {f h k : Fork} {s : BeaconState preset f}
     · have middle : t.validators.data[j]? = some t.validators.data[j] :=
         Array.getElem?_eq_some_iff.mpr ⟨inside, rfl⟩
       generalize t.validators.data[j] = w at middle
+      have forward := UInt64.le_iff_toNat_le.mp one.forward
       cases flag : w.slashed with
-      | false => exact ((two.withdrawal j w z middle after).2 delay flag slashed).1
+      | false =>
+        obtain ⟨assigned, bound⟩ := (two.withdrawal j w z middle after).2 delay flag slashed
+        exact ⟨assigned, by omega⟩
       | true =>
-        exact ((two.withdrawal j w z middle after).1 flag
-          (one.appended delay j w outside middle flag)).2.1
-    · exact two.appended delay j z (by omega) after slashed
+        obtain ⟨assigned, bound⟩ := one.appended delay j w outside middle flag
+        obtain ⟨_, assigned', later⟩ := (two.withdrawal j w z middle after).1 flag assigned
+        exact ⟨assigned', Nat.le_trans bound (UInt64.le_iff_toNat_le.mp later)⟩
+    · obtain ⟨assigned, bound⟩ := two.appended delay j z (by omega) after slashed
+      have forward := UInt64.le_iff_toNat_le.mp one.forward
+      exact ⟨assigned, by omega⟩
   frozen i v z before after assigned := by
     obtain ⟨w, middle, _⟩ := one.monotone i v before
     obtain ⟨exit, credentials⟩ := one.frozen i v w before middle assigned
