@@ -421,6 +421,15 @@ theorem isAncestor_self {node : ForkChoiceNode} {block : BeaconBlock preset fork
     store.isAncestor node node = .ok true :=
   isAncestor_of_getAncestor (getAncestor_of_le found (UInt64.le_refl _))
 
+/-- A node that descends from another node has a known block at the root of that node. -/
+theorem known_of_isAncestor {node ancestor : ForkChoiceNode}
+    (descends : store.isAncestor node ancestor = .ok true) :
+    ∃ block, store.blocks[ancestor.root]? = some block := by
+  simp only [isAncestor, bind, Except.bind] at descends
+  cases known : store.block ancestor.root with
+  | error e => simp [known] at descends
+  | ok block => exact ⟨block, block_ok_iff.mp known⟩
+
 /-- A node that descends from a known node is a known block, at the slot of that node or later. -/
 theorem slot_le_of_isAncestor {node ancestor : ForkChoiceNode} {block : BeaconBlock preset fork}
     (found : store.blocks[ancestor.root]? = some block)
