@@ -53,7 +53,8 @@ Not yet released.
   `flagSumOf` states the flag sums of `SupplyBlock` for any base reward, and `recentFlagSum` adds both recent epochs; `flagRewardWeight` keeps its value.
   `flagSumOf_le` bounds a flag sum by 54 base rewards per position, and `flagSumOf_foldlM_addAttesterFlags` raises it by at least the numerator its attesters gain.
   `processAttestation_keepsFlag` keeps each flag an attestation finds, and `flags_exit` and `flags_processExecutionRequests` keep both lists of flags.
-  `processSlots_pendingPartialWithdrawals` keeps the queue of pending partial withdrawals across slot steps from Altair, and `hysteresis_of_advanceSlot` and `hysteresis_of_processSlots` put a state reached at the first slot of an epoch within the bands of hysteresis.
+  `processSlots_pendingPartialWithdrawals` keeps the queue of pending partial withdrawals across slot steps from Altair.
+  `hysteresis_of_advanceSlot` and `hysteresis_of_processSlots` put a state at the first slot of an epoch within the bands of hysteresis.
   `Store.ForwardReachableWith.relation_of_checkpointPrefix_with` composes a relation that needs to hold only for transitions with the store's checks.
 
 - Some earlier private declarations are now public, with unchanged statements.
