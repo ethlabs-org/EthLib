@@ -177,19 +177,23 @@ Every epoch of that window was fixed before the branches split.
 
 Rates are read at a quarter of the call's total active balance.
 
-A key's leak and gain are read at an upper bound on the effective balance it reaches on any branch.
+A key's leak and gain are read at a computed upper bound on its effective balance on any branch.
 
-The exit and consolidation churns are bounded by their values at three halves of that total.
+The exit and consolidation churns are bounded by their values at a larger total.
+
+That total is three halves of the call's total active balance.
 
 Those bounds do not model the error branch of the checked churn reads.
 
-The sync seats count on both branches, each at an envelope of its reward at that total.
+The sync seats count on both branches, each at an envelope of its reward.
+
+The envelope is read at three halves of the call's total active balance.
 
 A key's fall starts from the lesser of its balance and its cap.
 
 Past the withdrawability delay, a key's whole balance is charged as its fall.
 
-A key's rise is its headroom once eleven times its gain over the depth reaches that bound.
+A key's rise is its headroom once eleven times its gain over the depth reaches its balance bound.
 
 Below that, its gain and the credits are scaled by eleven tenths, rounded up.
 
@@ -230,7 +234,7 @@ def pinReserve (config : Config) (state ancestor finalizedState : BeaconState pr
   let perIncrement := ((getBaseRewardPerIncrement preset quarter).toOption.getD 0).toNat
   let base (i : ℕ) := effective i / inc * perIncrement
   let depositChurn := config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT.toNat
-  -- The exit and consolidation churns are bounded by their values at three halves of the total.
+  -- The exit and consolidation churns are bounded at three halves of the call's total.
   --
   -- A counting state on another branch can spend churn at a total up to that much.
   --
@@ -239,6 +243,8 @@ def pinReserve (config : Config) (state ancestor finalizedState : BeaconState pr
   -- They do not model the error branch of those reads.
   --
   -- `wide` is a natural-number bound on another branch's total, not a copy of a read.
+  --
+  -- It holds within the band of totals that the producer of the pin premise assumes.
   let wide := 3 * total / 2
   let round (amount : ℕ) := amount - amount % inc
   let balanceChurn := round (max config.MIN_PER_EPOCH_CHURN_LIMIT_ELECTRA.toNat
@@ -283,7 +289,7 @@ def pinReserve (config : Config) (state ancestor finalizedState : BeaconState pr
         w.validatorIndex.toNat = i ∧ w.withdrawableEpoch.toNat ≤ epoch.toNat + 1).map
           (·.amount.toNat)).sum
     else 0
-  -- The rates are read at an upper bound on the effective balance the key reaches on any branch.
+  -- The rates are read at a computed upper bound on the key's effective balance on any branch.
   --
   -- That is at least its effective balance here and at the finalized block's state.
   --
@@ -322,6 +328,9 @@ def pinReserve (config : Config) (state ancestor finalizedState : BeaconState pr
       else if high ≤ effective i + preset.upwardBand then 0
       else min (capFor i) (high - high % inc) - effective i
     else capFor i - effective i
+  -- This follows `syncProposerReward` on natural numbers, at the envelope.
+  --
+  -- It is a bound on the reward, not a read.
   let syncProposer := slots * preset.SYNC_COMMITTEE_SIZE.toNat *
     (syncEnvelope * PROPOSER_WEIGHT.toNat / (WEIGHT_DENOMINATOR.toNat - PROPOSER_WEIGHT.toNat))
   let proposerCredit :=
