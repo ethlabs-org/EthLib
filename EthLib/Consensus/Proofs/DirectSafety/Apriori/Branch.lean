@@ -101,7 +101,7 @@ private theorem withdrawnConsolidationCredit_eq_zero_of_ordered {s t : BeaconSta
     · rfl
   · rfl
 
-/-- The deposit events of the epoch replay of an ordered state credit no withdrawable pending source.
+/-- The deposit events of an ordered state's epoch replay credit no withdrawable pending source.
 
 Each stage keeps the order at the current epoch, so the deposit event starts at an ordered state.
 
@@ -146,7 +146,8 @@ private theorem epochBalanceReplay_deposits {checks : SignatureChecks}
     rwa [List.append_nil] at settled
   have done : Settled post := by
     refine (epochBalanceReplay_trace ok).transport (fun a b => Settled a → Settled b)
-      (fun _ => id) (fun one two => two ∘ one) ?_ ⟨holds, fun _ mem => by cases mem, fun _ mem => by cases mem⟩
+      (fun _ => id) (fun one two => two ∘ one) ?_
+      ⟨holds, fun _ mem => by cases mem, fun _ mem => by cases mem⟩
     intro k member pre next step held
     cases k <;> simp only [epochReplayAction] at step
     case justification => exact carried (k := .justification) held id step
