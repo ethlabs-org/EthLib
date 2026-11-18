@@ -388,6 +388,139 @@ private theorem penalties_succ (x : ForkedBeaconState preset) (high t : Nat) :
             t := by
   simp [windowPenalties, List.range_succ, List.map_append, List.sum_append]
 
+/-- A measure of the runs of a branch that adds over the cuts of the branch fits the sum of a bound.
+
+Let every step of the branch start before the epoch `epoch x + t`.
+
+The measure of the branch then fits the sum of a bound over its first `t` epochs.
+
+The measure of a run must add over `append`, from a branch that ends before Gloas.
+
+It must also be zero on the empty run.
+
+Each segment of one epoch must fit the bound at its offset from `x`.
+
+The branch from `x` to `y` splits after its last step starting at each epoch `epoch x + t`.
+
+The steps between two such cuts start at one epoch, and so form one segment.
+
+A property of the states before the epoch of `y` passes to the states of each segment.
+
+A cost of the events of the branch is one measure.
+
+The credits that a step scan reads are another. -/
+theorem run_cuts_measure_le {x y : ForkedBeaconState preset}
+    (tail : Run config checks x y) (early : y.fork < .glamsterdam)
+    (measure : ∀ {a b : ForkedBeaconState preset}, Run config checks a b → Nat)
+    (zero : ∀ {a : ForkedBeaconState preset}, measure (Run.nil : Run config checks a a) = 0)
+    (additive : ∀ {a m b : ForkedBeaconState preset} (pre : Run config checks a m)
+      (post : Run config checks m b), b.fork < .glamsterdam →
+      measure (pre.append post) = measure pre + measure post)
+    (P : ForkedBeaconState preset → Prop) (bound : Nat → Nat)
+    (eligible : ∀ {z : ForkedBeaconState preset} (pre : Run config checks x z)
+      (post : Run config checks z y), tail = pre.append post →
+      (getCurrentEpoch z.state).toNat < (getCurrentEpoch y.state).toNat → P z)
+    (segment : ∀ {m n : ForkedBeaconState preset} (_toM : Run config checks x m)
+      (mid : Run config checks m n) (_ : Run config checks n y),
+      (∀ {u w : ForkedBeaconState preset} (step : Step config checks u w), mid.Contains step →
+        getCurrentEpoch u.state = getCurrentEpoch m.state) →
+      (∀ {z : ForkedBeaconState preset} (pre : Run config checks m z)
+        (post : Run config checks z n), mid = pre.append post →
+        (getCurrentEpoch z.state).toNat < (getCurrentEpoch n.state).toNat → P z) →
+      measure mid ≤ bound (ix x m))
+    (t : Nat) (bounded : ∀ {u w : ForkedBeaconState preset} (step : Step config checks u w),
+      tail.Contains step → (getCurrentEpoch u.state).toNat < (getCurrentEpoch x.state).toNat + t) :
+    measure tail ≤ ((List.range t).map bound).sum := by
+  -- A run with no step is the empty run.
+  have emptyZero : ∀ {a b : ForkedBeaconState preset} (r : Run config checks a b),
+      (∀ {u w : ForkedBeaconState preset} (step : Step config checks u w), ¬ r.Contains step) →
+        measure r = 0 := by
+    intro a b r empty
+    cases r with
+    | nil => exact zero
+    | snoc pre step => exact absurd (.last _ _) (empty step)
+  let start := (getCurrentEpoch x.state).toNat
+  -- After `t + 1` cuts, the first part pays at most the penalties of `t + 1` epochs.
+  have key : ∀ t, ∃ (m : ForkedBeaconState preset) (cut : Run config checks x m)
+      (rest : Run config checks m y), tail = cut.append rest ∧
+      (∀ {u w : ForkedBeaconState preset} (step : Step config checks u w), rest.Contains step →
+        start + t < (getCurrentEpoch u.state).toNat) ∧
+      (start + t < (getCurrentEpoch m.state).toNat ∨
+        ∀ {u w : ForkedBeaconState preset} (step : Step config checks u w), ¬ rest.Contains step) ∧
+      measure cut ≤ ((List.range (t + 1)).map bound).sum := by
+    intro t
+    induction t with
+    | zero =>
+      obtain ⟨m, cut, rest, same, inside, outside, -, begins⟩ := window_cut tail early start
+      refine ⟨m, cut, rest, same, outside, begins, ?_⟩
+      rw [List.range_succ, List.map_append, List.sum_append]
+      have bound := segment .nil cut rest (fun step member => by
+        have inner := contains_epochs cut member
+        have low := UInt64.le_iff_toNat_le.mp inner.1
+        exact UInt64.toNat_inj.mp (Nat.le_antisymm (inside step member) low))
+        (fun pre post split before => by
+          have ny := UInt64.le_iff_toNat_le.mp (currentEpoch_le_of_chainSteps rest.chainSteps)
+          exact eligible pre (post.append rest)
+            (by rw [same, split]; exact (Run.append_assoc _ _ _).symm)
+            (by omega))
+      simpa [ix] using bound
+    | succ t ih =>
+      obtain ⟨m, cut, rest, rfl, later, begins, bound⟩ := ih
+      obtain ⟨n, mid, last, rfl, inside, outside, -, ends⟩ :=
+        window_cut rest early (start + (t + 1))
+      have nEarly := Nat.lt_of_le_of_lt (fork_le_of_chainSteps last.chainSteps) early
+      refine ⟨n, cut.append mid, last, Run.append_assoc _ _ _, outside, ends, ?_⟩
+      rw [additive cut mid nEarly, List.range_succ, List.map_append, List.sum_append]
+      refine Nat.add_le_add bound ?_
+      by_cases empty : ∀ {u w : ForkedBeaconState preset} (step : Step config checks u w),
+          ¬ mid.Contains step
+      · rw [emptyZero mid empty]
+        exact Nat.zero_le _
+      -- A step of the segment starts after `start + t`, so the segment starts there too.
+      simp only [not_forall, not_not] at empty
+      obtain ⟨u, w, step, member⟩ := empty
+      have first := later step ((Run.contains_append mid last step).mpr (.inl member))
+      have mStart : (getCurrentEpoch m.state).toNat = start + (t + 1) := by
+        rcases begins with after | none
+        · have low := UInt64.le_iff_toNat_le.mp (contains_epochs mid member).1
+          have high' := inside step member
+          omega
+        · exact absurd ((Run.contains_append mid last step).mpr (.inl member)) (none step)
+      have index : ix x m = t + 1 := by
+        simp only [ix]
+        omega
+      have each := segment cut mid last (fun step' member' => by
+        have low := later step' ((Run.contains_append mid last step').mpr (.inl member'))
+        have up := inside step' member'
+        exact UInt64.toNat_inj.mp (by omega))
+        (fun pre post split before => by
+          have ny := UInt64.le_iff_toNat_le.mp (currentEpoch_le_of_chainSteps last.chainSteps)
+          exact eligible (cut.append pre) (post.append last)
+            (by rw [split, ← Run.append_assoc pre post last, Run.append_assoc cut pre])
+            (by omega))
+      simpa [index] using each
+  cases t with
+  | zero =>
+    -- No step starts before the epoch of `x`, so the branch is empty.
+    have empty : ∀ {u w : ForkedBeaconState preset} (step : Step config checks u w),
+        ¬ tail.Contains step := fun step member => by
+      have low := UInt64.le_iff_toNat_le.mp (contains_epochs tail member).1
+      have up := bounded step member
+      omega
+    rw [emptyZero tail empty]
+    simp
+  | succ t =>
+    obtain ⟨m, cut, rest, rfl, after, -, bound⟩ := key t
+    -- No step of the branch starts at the epoch `epoch x + t + 1` or later.
+    have empty : ∀ {u w : ForkedBeaconState preset} (step : Step config checks u w),
+        ¬ rest.Contains step := fun step member => by
+      have late := after step member
+      have up := bounded step ((Run.contains_append cut rest step).mpr (.inr member))
+      simp only [start] at late
+      omega
+    rw [additive cut rest early, emptyZero rest empty, Nat.add_zero]
+    exact bound
+
 /-- Let every step of a branch start before the epoch `epoch x + t`.
 
 Then a cost of the events of the branch fits the sum of a bound over its first `t` epochs.
@@ -421,95 +554,27 @@ theorem run_cuts_le {x y : ForkedBeaconState preset}
       tail.Contains step → (getCurrentEpoch u.state).toNat < (getCurrentEpoch x.state).toNat + t)
     {events : List (BalanceEvent preset)} (replayed : tail.balanceEvents high = .ok events) :
     (events.map cost).sum ≤ ((List.range t).map bound).sum := by
-  let start := (getCurrentEpoch x.state).toNat
-  -- After `t + 1` cuts, the first part pays at most the penalties of `t + 1` epochs.
-  have key : ∀ t, ∃ (m : ForkedBeaconState preset) (cut : Run config checks x m)
-      (rest : Run config checks m y), tail = cut.append rest ∧
-      (∀ {u w : ForkedBeaconState preset} (step : Step config checks u w), rest.Contains step →
-        start + t < (getCurrentEpoch u.state).toNat) ∧
-      (start + t < (getCurrentEpoch m.state).toNat ∨
-        ∀ {u w : ForkedBeaconState preset} (step : Step config checks u w), ¬ rest.Contains step) ∧
-      ∃ found, cut.balanceEvents high = .ok found ∧
-        (found.map cost).sum ≤ ((List.range (t + 1)).map bound).sum := by
-    intro t
-    induction t with
-    | zero =>
-      obtain ⟨m, cut, rest, same, inside, outside, -, begins⟩ := window_cut tail early start
-      have mEarly := Nat.lt_of_le_of_lt (fork_le_of_chainSteps rest.chainSteps) early
-      obtain ⟨found, foundOk⟩ := cut.balanceEvents_ok mEarly high
-      refine ⟨m, cut, rest, same, outside, begins, found, foundOk, ?_⟩
-      rw [List.range_succ, List.map_append, List.sum_append]
-      have bound := segment .nil cut rest (fun step member => by
-        have inner := contains_epochs cut member
-        have low := UInt64.le_iff_toNat_le.mp inner.1
-        exact UInt64.toNat_inj.mp (Nat.le_antisymm (inside step member) low))
-        (fun pre post split before => by
-          have ny := UInt64.le_iff_toNat_le.mp (currentEpoch_le_of_chainSteps rest.chainSteps)
-          exact eligible pre (post.append rest)
-            (by rw [same, split]; exact (Run.append_assoc _ _ _).symm)
-            (by omega)) foundOk
-      simpa [ix] using bound
-    | succ t ih =>
-      obtain ⟨m, cut, rest, rfl, later, begins, found, foundOk, bound⟩ := ih
-      obtain ⟨n, mid, last, rfl, inside, outside, -, ends⟩ :=
-        window_cut rest early (start + (t + 1))
-      have nEarly := Nat.lt_of_le_of_lt (fork_le_of_chainSteps last.chainSteps) early
-      obtain ⟨midEvents, midOk⟩ := mid.balanceEvents_ok nEarly high
-      refine ⟨n, cut.append mid, last, Run.append_assoc _ _ _, outside, ends,
-        found ++ midEvents, balanceEvents_append cut mid high foundOk midOk, ?_⟩
-      rw [List.range_succ, List.map_append, List.sum_append, List.map_append, List.sum_append]
-      refine Nat.add_le_add bound ?_
-      by_cases empty : ∀ {u w : ForkedBeaconState preset} (step : Step config checks u w),
-          ¬ mid.Contains step
-      · obtain rfl := Except.ok.inj (midOk.symm.trans (balanceEvents_of_empty mid empty high))
-        exact Nat.zero_le _
-      -- A step of the segment starts after `start + t`, so the segment starts there too.
-      simp only [not_forall, not_not] at empty
-      obtain ⟨u, w, step, member⟩ := empty
-      have first := later step ((Run.contains_append mid last step).mpr (.inl member))
-      have mStart : (getCurrentEpoch m.state).toNat = start + (t + 1) := by
-        rcases begins with after | none
-        · have low := UInt64.le_iff_toNat_le.mp (contains_epochs mid member).1
-          have high' := inside step member
-          omega
-        · exact absurd ((Run.contains_append mid last step).mpr (.inl member)) (none step)
-      have index : ix x m = t + 1 := by
-        simp only [ix]
-        omega
-      have each := segment cut mid last (fun step' member' => by
-        have low := later step' ((Run.contains_append mid last step').mpr (.inl member'))
-        have up := inside step' member'
-        exact UInt64.toNat_inj.mp (by omega))
-        (fun pre post split before => by
-          have ny := UInt64.le_iff_toNat_le.mp (currentEpoch_le_of_chainSteps last.chainSteps)
-          exact eligible (cut.append pre) (post.append last)
-            (by rw [split, ← Run.append_assoc pre post last, Run.append_assoc cut pre])
-            (by omega)) midOk
-      simpa [index] using each
-  cases t with
-  | zero =>
-    -- No step starts before the epoch of `x`, so the branch is empty.
-    have empty : ∀ {u w : ForkedBeaconState preset} (step : Step config checks u w),
-        ¬ tail.Contains step := fun step member => by
-      have low := UInt64.le_iff_toNat_le.mp (contains_epochs tail member).1
-      have up := bounded step member
-      omega
-    obtain rfl := Except.ok.inj (replayed.symm.trans (balanceEvents_of_empty tail empty high))
-    simp
-  | succ t =>
-    obtain ⟨m, cut, rest, rfl, after, -, found, foundOk, bound⟩ := key t
-    -- No step of the branch starts at the epoch `epoch x + t + 1` or later.
-    have empty : ∀ {u w : ForkedBeaconState preset} (step : Step config checks u w),
-        ¬ rest.Contains step := fun step member => by
-      have late := after step member
-      have up := bounded step ((Run.contains_append cut rest step).mpr (.inr member))
-      simp only [start] at late
-      omega
-    have whole := balanceEvents_append cut rest high foundOk
-      (balanceEvents_of_empty rest empty high)
-    rw [List.append_nil] at whole
-    obtain rfl := Except.ok.inj (replayed.symm.trans whole)
-    exact bound
+  have nEarly : ∀ {n : ForkedBeaconState preset}, Run config checks n y → n.fork < .glamsterdam :=
+    fun last => Nat.lt_of_le_of_lt (fork_le_of_chainSteps last.chainSteps) early
+  let measure : ∀ {a b : ForkedBeaconState preset}, Run config checks a b → Nat := fun r =>
+    match r.balanceEvents high with
+    | .ok found => (found.map cost).sum
+    | .error _ => 0
+  have bound := run_cuts_measure_le tail early measure
+    (by intro a; simp [measure, Run.balanceEvents, pure, Except.pure])
+    (fun {a m b} pre post bEarly => by
+      have mEarly' : m.fork < .glamsterdam :=
+        Nat.lt_of_le_of_lt (fork_le_of_chainSteps post.chainSteps) bEarly
+      obtain ⟨first, firstOk⟩ := pre.balanceEvents_ok mEarly' high
+      obtain ⟨second, secondOk⟩ := post.balanceEvents_ok bEarly high
+      simp only [measure, balanceEvents_append pre post high firstOk secondOk, firstOk, secondOk,
+        List.map_append, List.sum_append])
+    P bound eligible
+    (fun {m n} toM mid last starts rates => by
+      obtain ⟨found, foundOk⟩ := mid.balanceEvents_ok (nEarly last) high
+      simpa only [measure, foundOk] using segment toM mid last starts rates foundOk)
+    t bounded
+  simpa only [measure, replayed] using bound
 
 /-- The penalty and sync debits of the cohort over a branch fit the penalties of `t` epochs.
 
