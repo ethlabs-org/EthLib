@@ -201,7 +201,7 @@ The sync seats count on both branches, each at an envelope of its reward.
 
 The envelope is read at three halves of the call's total active balance.
 
-A key's fall starts from the lesser of its balance and its cap.
+A key's fall starts from the lesser of its balance at the finalized block's state and its cap.
 
 Another branch can keep a lower effective balance that this branch's update raised.
 
@@ -354,8 +354,15 @@ def pinReserve (config : Config) (state ancestor finalizedState : BeaconState pr
   --
   -- A partial requested after that state can then be paid on a branch and sit in no queue read
   -- here, so its whole balance is charged.
+  --
+  -- The floor reads the finalized block's balance.
+  --
+  -- The call reads no state between the finalized block and the split.
+  --
+  -- Both branches can share a dip there that this branch's later credits would hide.
+  let actualFin (i : ℕ) := ((finalizedState.balances.data[i]?).map (·.toNat)).getD 0
   let fall (i : ℕ) := if depthFin ≤ partialDelay then
-      let low := min (actual i) (cap i) - (depthFin * (leak i + gainRate i) + partialsDue i)
+      let low := min (actualFin i) (cap i) - (depthFin * (leak i + gainRate i) + partialsDue i)
       -- On another branch the key can keep an effective balance that this branch's update raised.
       --
       -- Away from the downward band of the envelope, it keeps its finalized effective balance.
@@ -482,7 +489,13 @@ def pinReserve (config : Config) (state ancestor finalizedState : BeaconState pr
     preset.MIN_ACTIVATION_BALANCE.toNat - drop i
   -- A key can exit on the other branch with an effective balance below the ejection balance.
   --
-  -- Such a key uses little churn, so each one whose `lowEB` falls below that bound is counted.
+  -- Such a key uses little churn, so each one whose `lowEB` falls below `newKeyFloor` is counted.
+  --
+  -- `lowEB` leaves out sync-seat debits.
+  --
+  -- A key at or above `newKeyFloor` falls below the bound only with sync debits over `newKeySlack`.
+  --
+  -- `newKeySeats` counts those keys by the same Markov step as new keys.
   --
   -- Every key not yet withdrawable after the finalized epoch counts.
   --
@@ -493,22 +506,28 @@ def pinReserve (config : Config) (state ancestor finalizedState : BeaconState pr
   --
   -- No lemma here proves yet that it keeps at least `newKeyFloor` from its activation, less its
   -- own sync-seat debits and pending partial payments.
+  let newKeyFloor := 2 * preset.MAX_EFFECTIVE_BALANCE.toNat / 3 -
+    preset.MAX_EFFECTIVE_BALANCE.toNat / p.MIN_SLASHING_PENALTY_QUOTIENT.toNat -
+      preset.downwardBand - inc
+  let newKeySlack := newKeyFloor - (config.EJECTION_BALANCE.toNat - inc)
   let lowKeys := (positions.filter fun i =>
     (validator i).any (fun v => decide (finalized < v.withdrawableEpoch.toNat) &&
       decide (v.activationEpoch.toNat ≤ epoch.toNat)) ∧
-      lowEB i < config.EJECTION_BALANCE.toNat - inc).card
+      lowEB i < newKeyFloor).card
   -- Outside the tight window, keys can start to exit on the other branch.
   --
   -- The queues admit at most this many keys at the ejection balance less an increment each.
   --
   -- The `+ 2` counts one key at each end of the window that the churn covers only in part.
   --
-  -- `lowKeys` adds every key whose effective balance can fall below that.
+  -- `lowKeys` adds every key whose `lowEB` is below `newKeyFloor`.
   --
   -- A key not active by this epoch here, or created there, keeps at least `newKeyFloor` from its
   -- activation, less its own sync-seat debits and pending partial payments in the window.
   --
   -- One whose effective balance ends below the bound has those debits above `newKeySlack`.
+  --
+  -- So has an existing key whose `lowEB` is at least `newKeyFloor`.
   --
   -- The seats of the window debit at most `depthFin·slots·SIZE·syncEnvelope` in all, so
   -- `newKeySeats` counts the keys that sync debits can bring below.
@@ -520,10 +539,6 @@ def pinReserve (config : Config) (state ancestor finalizedState : BeaconState pr
   -- After an exit starts, the key's proposer and due-consolidation credits are in `exitingCredits`.
   --
   -- Its whistleblower credits are in `reserveW`, `flagged` and the drift's slashed keys.
-  let newKeyFloor := 2 * preset.MAX_EFFECTIVE_BALANCE.toNat / 3 -
-    preset.MAX_EFFECTIVE_BALANCE.toNat / p.MIN_SLASHING_PENALTY_QUOTIENT.toNat -
-      preset.downwardBand - inc
-  let newKeySlack := newKeyFloor - (config.EJECTION_BALANCE.toNat - inc)
   let newKeySeats := depthFin * slots * preset.SYNC_COMMITTEE_SIZE.toNat * syncEnvelope /
     max 1 newKeySlack
   -- A carry is a balance that can let several keys exit, so it counts by the ejection balance too.
@@ -606,12 +621,21 @@ def pinReserve (config : Config) (state ancestor finalizedState : BeaconState pr
       decide (finalized + 1 + preset.MAX_SEED_LOOKAHEAD.toNat ≤ v.exitEpoch.toNat) &&
         decide (v.exitEpoch.toNat + 1 ≤ epoch.toNat)),
     (effective i + rise i)
-  -- A key created on the other branch compounds its gains from its deposit.
+  -- A credit on the other branch alone compounds its gains over the rest of the window.
   --
-  -- The credits' eleven tenths pay them while eleven gains over the depth stay below the cap.
+  -- While eleven gains over the depth stay below the cap, `credits`' eleven tenths pay a new key's.
   --
-  -- Past that, each deposit the window can apply is charged up to the cap.
-  let newKeyRise := if 11 * depth * gainRateMax < capMax then 0
+  -- There a K5 key whose exit the call reads has its consolidation credit's gains charged thrice.
+  --
+  -- Past that bound, `rise`'s headroom pays a consolidation target's.
+  --
+  -- There each deposit the window can apply to a new key is charged up to the cap.
+  --
+  -- This closes a proof route at degenerate totals; no reachable run is known to need it.
+  let consolidationGain := consolidationsX / inc * perIncrement *
+    (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum / WEIGHT_DENOMINATOR.toNat
+  let creditGain := if 11 * depth * gainRateMax < capMax
+    then (33 * depth * consolidationGain + 9) / 10
     else depthFin * preset.MAX_PENDING_DEPOSITS_PER_EPOCH.toNat * capMax
   -- A key here that is not yet eligible can be topped up on the other branch alone.
   --
@@ -627,7 +651,7 @@ def pinReserve (config : Config) (state ancestor finalizedState : BeaconState pr
     3 * (∑ i ∈ positions with current i = true, fall i) +
     3 * exitingRise + exitingCredits + exitingBands + queueRise + reserveW + flagged +
     seatShortfall + (33 * consolidationsX + 9) / 10 + exitedR + pendingR +
-    newKeyRise)
+    creditGain)
 
 /-- The pin reserve contains the quorum reserve. -/
 theorem quorumReserve_le_pinReserve (config : Config)
