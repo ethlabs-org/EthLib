@@ -79,6 +79,8 @@ Not yet released.
   The bound is the epoch of the start, plus one epoch and the seed lookahead.
   `DirectSafety.departureCharges_run_indices` shows that the departure charges of a run name each registry index at most once.
   The pin's drift bound reads it for its exit-queue terms.
+  `sync_bounds_combined` bounds a sync aggregate's credits plus debits by the committee size times a reward and its share.
+  PinDriftBound's sync-debit bound reads it.
 
 - `queueConsolidation_steps` states the steps of queueing a consolidation once ([#2334](https://github.com/ethereum/EthLib/issues/2334)).
   The churn call writes only the churn left and the earliest consolidation epoch.
