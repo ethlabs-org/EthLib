@@ -58,6 +58,10 @@ private def KeepsExiting {f g : Fork} (s : BeaconState preset f) (t : BeaconStat
 private def Quiet (events : List (BalanceEvent preset)) : Prop :=
   ∀ e ∈ events, e.source = .deposits → KeepsExiting e.before.state e.after.state
 
+/-- The event raises no balance of the registry. -/
+private def Unconditional (e : BalanceEvent preset) : Prop :=
+  ∀ i, actualBalanceAt e.after i ≤ actualBalanceAt e.before i
+
 private theorem quiet_nil : Quiet ([] : List (BalanceEvent preset)) := fun _ mem => by
   simp at mem
 
@@ -83,18 +87,31 @@ private theorem quiet_record {f : Fork} {source : BalanceSource}
   · obtain rfl := List.mem_singleton.mp new
     exact keeps sourceEq t actionOk
 
-/-- From Electra, a block deposit leaves every balance of the registry alone. -/
-private theorem processDeposit_keeps {f : Fork} {s t : BeaconState preset f}
+/-- A new validator with no balance never raises a balance. -/
+private theorem addValidatorToRegistry_zero_balance {f : Fork} {s t : BeaconState preset f}
+    (altair : .altair ≤ f) {pubkey : Cryptography.Bls.BLSPubkey} {credentials : Bytes32}
+    (ok : addValidatorToRegistry s pubkey credentials 0 = .ok t) (i : ℕ) :
+    ((t.balances.data[i]?).map (·.toNat)).getD 0 ≤
+      ((s.balances.data[i]?).map (·.toNat)).getD 0 := by
+  unfold addValidatorToRegistry at ok
+  simp only [altair, ↓reduceDIte, addValidatorToRegistryAltair, liftAccessor_ok, bind_ok_iff,
+    pure, Except.pure, Except.ok.injEq] at ok
+  obtain ⟨_, _, _, _, _, balancesOk, _, _, _, _, _, _, rfl⟩ := ok
+  show ((_ : Option Gwei).map (·.toNat)).getD 0 ≤ _
+  rw [setOrAppendList_getElem? balancesOk]
+  split <;> simp
+
+/-- From Electra, a block deposit raises no balance. -/
+private theorem processDeposit_balance_le {f : Fork} {s t : BeaconState preset f}
     (electra : .pectra ≤ f) {before : f < .hegota} {dep : Deposit}
-    (ok : processDeposit config checks before s dep = .ok t) : KeepsExiting s t := by
-  intro i v found _ _
-  have inside := (Array.getElem?_eq_some_iff.mp found).1
+    (ok : processDeposit config checks before s dep = .ok t) (i : ℕ) :
+    actualBalanceAt ⟨f, t⟩ i ≤ actualBalanceAt ⟨f, s⟩ i := by
   obtain ⟨-, -, next, -, applied⟩ := processDeposit_ok ok
   rcases applyDeposit_cases applied with rfl | ⟨_, middle, pending, rfl | added, rfl⟩ |
       ⟨early, _⟩
-  · rfl
-  · rfl
-  · exact (addValidatorToRegistry_kept (Nat.le_trans (by decide) electra) added inside).2.1
+  · exact Nat.le_refl _
+  · exact Nat.le_refl _
+  · exact addValidatorToRegistry_zero_balance (Nat.le_trans (by decide) electra) added i
   · exact absurd (Nat.lt_of_lt_of_le early electra) (Nat.lt_irrefl _)
 
 /-- A property of the events of a block replay that each recorded event keeps.
@@ -174,13 +191,16 @@ private theorem blockReplay_invariant {f : Fork} (electra : .pectra ≤ f) (earl
   simp only [altair, ↓reduceDIte] at rest
   exact record (by decide : BalanceSource.sync ≠ .deposits) (by decide) requestedQuiet rest
 
-/-- From Electra, the deposit events of a block replay leave the balance of an exiting key alone. -/
-private theorem blockReplay_quiet {f : Fork} (electra : .pectra ≤ f) (early : f < .glamsterdam)
+/-- From Electra, the deposit events of a block replay raise no balance. -/
+private theorem blockReplay_unconditional {f : Fork} (electra : .pectra ≤ f)
+    (early : f < .glamsterdam)
     (engine : ExecutionEngine preset f) (s : BeaconState preset f)
     (block : BeaconBlock preset f) {post : BalanceReplay preset f}
     (ok : blockBalanceReplay (config := config) (checks := checks)
-      early engine s block = .ok post) : Quiet post.2 :=
-  blockReplay_invariant electra early Quiet quiet_nil
+      early engine s block = .ok post) :
+    ∀ e ∈ post.2, e.source = .deposits → Unconditional e :=
+  blockReplay_invariant electra early (fun l => ∀ e ∈ l, e.source = .deposits → Unconditional e)
+    (fun _ h => by simp at h)
     (fun l e notDeposit _ held e' member sourceEq => by
       rcases List.mem_append.mp member with old | new
       · exact held e' old sourceEq
@@ -189,7 +209,7 @@ private theorem blockReplay_quiet {f : Fork} (electra : .pectra ≤ f) (early : 
       rcases List.mem_append.mp member with old | new
       · exact held e' old sourceEq
       · obtain rfl := List.mem_singleton.mp new
-        exact processDeposit_keeps electra computed)
+        exact fun i => processDeposit_balance_le electra computed i)
     engine s block ok
 
 /-- No operation of a block records a consolidation event. -/
@@ -258,41 +278,51 @@ private theorem epochReplay_quiet (exitedBalance : PendingDepositsKeepExited (pr
     · cases step; exact held
   all_goals simp [EpochStage.prefixStages] at member
 
-/-- The deposit events of a step leave the balance of an exiting key alone. -/
-private theorem step_quiet (exitedBalance : PendingDepositsKeepExited (preset := preset)
+/-- The deposit events of a slot step leave the balance of an exiting key alone. -/
+private theorem slot_quiet (exitedBalance : PendingDepositsKeepExited (preset := preset)
       config checks)
-    {x y : ForkedBeaconState preset} (step : Step config checks x y)
-    (electra : .pectra ≤ x.fork) (early : y.fork < .glamsterdam)
-    {events : List (BalanceEvent preset)} (replayed : step.balanceEvents = .ok events) :
+    {x y : ForkedBeaconState preset} (ok : advanceSlotAcross config checks x = .ok y)
+    (early : y.fork < .glamsterdam)
+    {events : List (BalanceEvent preset)} (replayed : (Step.slot ok).balanceEvents = .ok events) :
     Quiet events := by
-  cases step with
-  | block engine signed due ok =>
-    exact blockReplay_quiet electra early engine _ _ (Step.balanceEvents_block early replayed)
-  | slot ok =>
-    obtain ⟨advanced, cached, crossings, -, -, -, crossingOk, split⟩ :=
-      Step.balanceEvents_slot ok early replayed
-    have crossed : Quiet crossings := fun e member sourceEq => by
-      cases (upgradeBalanceReplay_crossing crossingOk e member).symm.trans sourceEq
-    rcases split with ⟨-, rfl⟩ | ⟨middle, updated, recorded, recordOk, -, -, -, rfl, -⟩
-    · exact crossed
-    · intro e member sourceEq
-      rcases List.mem_append.mp member with old | new
-      · exact epochReplay_quiet exitedBalance recordOk e old sourceEq
-      · exact crossed e new sourceEq
+  obtain ⟨advanced, cached, crossings, -, -, -, crossingOk, split⟩ :=
+    Step.balanceEvents_slot ok early replayed
+  have crossed : Quiet crossings := fun e member sourceEq => by
+    cases (upgradeBalanceReplay_crossing crossingOk e member).symm.trans sourceEq
+  rcases split with ⟨-, rfl⟩ | ⟨middle, updated, recorded, recordOk, -, -, -, rfl, -⟩
+  · exact crossed
+  · intro e member sourceEq
+    rcases List.mem_append.mp member with old | new
+    · exact epochReplay_quiet exitedBalance recordOk e old sourceEq
+    · exact crossed e new sourceEq
 
-/-- The deposit events of a run leave the balance of an exiting key alone. -/
-private theorem run_quiet (exitedBalance : PendingDepositsKeepExited (preset := preset)
+/-- A deposit event of a run raises no balance, or it is an epoch's deposit event of a slot step.
+
+Then it leaves the balance of an exiting key alone. -/
+private def Located {x y : ForkedBeaconState preset} (tail : Run config checks x y)
+    (e : BalanceEvent preset) : Prop :=
+  Unconditional e ∨ ∃ (u w : ForkedBeaconState preset)
+    (ok : advanceSlotAcross config checks u = .ok w) (es : List (BalanceEvent preset)),
+    tail.Contains (Step.slot ok) ∧ (Step.slot ok : Step config checks u w).balanceEvents = .ok es ∧
+      e ∈ es ∧ KeepsExiting e.before.state e.after.state
+
+/-- Locate each deposit event of a run. -/
+private theorem run_located (exitedBalance : PendingDepositsKeepExited (preset := preset)
       config checks)
     {x y : ForkedBeaconState preset} (tail : Run config checks x y)
     (electra : .pectra ≤ x.fork) (early : y.fork < .glamsterdam) (high : ℕ)
     {events : List (BalanceEvent preset)} (replayed : tail.balanceEvents high = .ok events) :
-    Quiet events := by
+    ∀ e ∈ events, e.source = .deposits → Located tail e := by
   induction tail generalizing events with
-  | nil => cases replayed; exact quiet_nil
+  | nil => cases replayed; intro e member; simp at member
   | @snoc middle last pre step ih =>
     simp only [Run.balanceEvents, bind_ok_iff] at replayed
     obtain ⟨prior, priorOk, rest⟩ := replayed
-    have priorQuiet := ih (Nat.lt_of_le_of_lt step.chainStep.fork_le early) priorOk
+    have priorLocated := ih (Nat.lt_of_le_of_lt step.chainStep.fork_le early) priorOk
+    have lift : ∀ e, Located pre e → Located (pre.snoc step) e := by
+      rintro e (unconditional | ⟨u, w, ok, es, contains, replayedEs, member, keeps⟩)
+      · exact .inl unconditional
+      · exact .inr ⟨u, w, ok, es, .earlier contains step, replayedEs, member, keeps⟩
     by_cases selected : (getCurrentEpoch middle.state).toNat ≤ high + 1
     · simp only [selected, ↓reduceIte, bind_ok_iff, pure, Except.pure,
         Except.ok.injEq] at rest
@@ -301,11 +331,18 @@ private theorem run_quiet (exitedBalance : PendingDepositsKeepExited (preset := 
         Nat.le_trans electra (fork_le_of_chainSteps pre.chainSteps)
       intro e member sourceEq
       rcases List.mem_append.mp member with old | new
-      · exact priorQuiet e old sourceEq
-      · exact step_quiet exitedBalance step inFork early addedOk e new sourceEq
+      · exact lift e (priorLocated e old sourceEq)
+      · cases step with
+        | block engine signed due ok =>
+          exact .inl (blockReplay_unconditional inFork early engine _ _
+            (Step.balanceEvents_block early addedOk) e new sourceEq)
+        | slot ok =>
+          exact .inr ⟨_, _, ok, added, .last pre _, addedOk, new,
+            slot_quiet exitedBalance ok early addedOk e new sourceEq⟩
     · simp only [selected, ↓reduceIte, pure, Except.pure, Except.ok.injEq] at rest
       subst rest
-      exact priorQuiet
+      intro e member sourceEq
+      exact lift e (priorLocated e member sourceEq)
 
 /-! ## Consolidation credits of one pass -/
 
@@ -660,7 +697,9 @@ The key stays not withdrawable through the run's end.
 
 `exitedBalance` is PinDriftBound's private `processPendingDeposits_exited_balance`.
 
-`kept` is the run-level withdrawable-kept fact at the state before each event.
+`kept` is the withdrawable-kept fact at the state before each deposit event of a slot step.
+
+A block deposit needs none: from Electra it raises no balance.
 
 It says that an assigned exit stays (`RegistryLifecycle`).
 
@@ -676,29 +715,36 @@ theorem Run.exiting_deposit_credit_zero {x y : ForkedBeaconState preset}
     (high : ℕ) {events : List (BalanceEvent preset)}
     (replayed : tail.balanceEvents high = .ok events)
     (exitedBalance : PendingDepositsKeepExited (preset := preset) config checks)
-    (kept : ∀ e ∈ events, RegistryLifecycle x.state e.before.state ∧
-      WithdrawableKept x.state e.before.state ∧
-      getCurrentEpoch e.before.state ≤ getCurrentEpoch y.state)
+    (kept : ∀ {u w : ForkedBeaconState preset} (ok : advanceSlotAcross config checks u = .ok w),
+      tail.Contains (Step.slot ok) → ∀ {es : List (BalanceEvent preset)},
+        (Step.slot ok : Step config checks u w).balanceEvents = .ok es →
+        ∀ e ∈ es, e.source = .deposits →
+          RegistryLifecycle x.state e.before.state ∧ WithdrawableKept x.state e.before.state ∧
+          getCurrentEpoch e.before.state ≤ getCurrentEpoch y.state)
     (i : ℕ) (v : Validator) (found : x.state.validators.data[i]? = some v)
     (exited : v.exitEpoch.toNat < 2 ^ 64 - 1)
     (held : (getCurrentEpoch y.state).toNat < v.withdrawableEpoch.toNat) :
     ((events.filter (·.source = .deposits)).map (keyCredit i)).sum = 0 := by
-  have quiet := run_quiet exitedBalance tail electra early high replayed
+  have located := run_located exitedBalance tail electra early high replayed
   apply List.sum_eq_zero
   intro n member
   obtain ⟨e, filtered, rfl⟩ := List.mem_map.mp member
   obtain ⟨inEvents, sourceEq⟩ := List.mem_filter.mp filtered
   simp only [decide_eq_true_eq] at sourceEq
-  obtain ⟨life, withdrawal, epoch⟩ := kept e inEvents
-  obtain ⟨w, read, lifecycle⟩ := life.validators i v found
-  have assigned : v.exitEpoch ≠ FAR_FUTURE_EPOCH := fun far => by
-    rw [far] at exited
-    exact absurd exited (Nat.lt_irrefl _)
-  have sameExit := lifecycle.exitEpoch assigned
-  have later := UInt64.le_iff_toNat_le.mp (withdrawal i v w found read assigned).1
-  have now := UInt64.le_iff_toNat_le.mp epoch
-  have keeps := quiet e inEvents sourceEq i w read (by rw [sameExit]; exact exited)
-    (by omega)
-  simp [keyCredit, actualBalanceAt, keeps]
+  rcases located e inEvents sourceEq with unconditional | ⟨u, w, ok, es, contains, replayedEs,
+      inStep, keeps⟩
+  · have := unconditional i
+    simp only [keyCredit]
+    omega
+  · obtain ⟨life, withdrawal, epoch⟩ := kept ok contains replayedEs e inStep sourceEq
+    obtain ⟨w, read, lifecycle⟩ := life.validators i v found
+    have assigned : v.exitEpoch ≠ FAR_FUTURE_EPOCH := fun far => by
+      rw [far] at exited
+      exact absurd exited (Nat.lt_irrefl _)
+    have sameExit := lifecycle.exitEpoch assigned
+    have later := UInt64.le_iff_toNat_le.mp (withdrawal i v w found read assigned).1
+    have now := UInt64.le_iff_toNat_le.mp epoch
+    have same := keeps i w read (by rw [sameExit]; exact exited) (by omega)
+    simp [keyCredit, actualBalanceAt, same]
 
 end EthLib.Consensus.Models.Network.PinSplit
