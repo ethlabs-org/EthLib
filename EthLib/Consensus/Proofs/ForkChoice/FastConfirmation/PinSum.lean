@@ -1221,6 +1221,117 @@ theorem bud_deposits (h : Setting config checks g split fin pulled anc counted V
     {events : List (BalanceEvent preset)} (replayed : tail.balanceEvents high = .ok events) :
     3 * (∑ v ∈ V, credDepR events v.toNat) ≤ (pinTerms config pulled anc fin).queueDep := sorry
 
+/-- Two charges of a run at one position are the same charge.
+
+An exit is assigned once, so the indices of the charges of a run are distinct. -/
+private theorem charge_unique {x y : ForkedBeaconState preset} (tail : Run config checks x y)
+    {c d : DepartureCharge} (hc : c ∈ tail.departureCharges) (hd : d ∈ tail.departureCharges)
+    (same : c.index = d.index) : c = d := sorry
+
+/-- The sum over a prefix of the events is at most the sum over all of them. -/
+private theorem sum_prefix_le {α : Type} {a b : List α} (le : a <+: b) (f : α → ℕ) :
+    (a.map f).sum ≤ (b.map f).sum := by
+  obtain ⟨t, rfl⟩ := le
+  simp
+
+open DirectSafety.Apriori DirectSafety.Apriori.Internal in
+/-- The effective balance of a key at its exit call, from the finalized state.
+
+It is at most the amount of the key's departure charge on the run from the finalized state, plus the
+balance shortfall at that state, the debits of the key and one increment.
+
+The debits are its penalties, its sync debits and the partial payments to it. -/
+private theorem exitQ_floor (h : Setting config checks g split fin pulled anc counted V)
+    (facts : PinPresetFacts preset)
+    (fromFin : Run config checks ⟨fork, fin⟩ ⟨fork, split⟩)
+    (tailC : Run config checks ⟨fork, split⟩ ⟨fork, counted⟩)
+    {events : List (BalanceEvent preset)}
+    (replayed : (fromFin.append tailC).balanceEvents (getCurrentEpoch pulled).toNat = .ok events)
+    (v : ValidatorIndex) (val : Validator) (initial : fin.validators.data[v.toNat]? = some val)
+    (activated : val.activationEpoch ≠ FAR_FUTURE_EPOCH)
+    (clean : ∀ w, counted.validators.data[v.toNat]? = some w → w.slashed = false)
+    (charged : exitQ tailC v.toNat ≠ 0) :
+    effectiveAt ⟨fork, fin⟩ v.toNat ≤ exitQ tailC v.toNat +
+      (effectiveAt ⟨fork, fin⟩ v.toNat - actualBalanceAt ⟨fork, fin⟩ v.toNat) +
+      ((events.map (floorPenaltyDebit v.toNat)).sum + (events.map (floorPartialDebit v)).sum) +
+        preset.EFFECTIVE_BALANCE_INCREMENT.toNat := by
+  classical
+  obtain ⟨shared⟩ := h.toFin
+  obtain ⟨stop⟩ := Stop.exists (fromFin.append tailC) v.toNat
+  -- the charge of `tailC`
+  obtain ⟨c0, member0, index0, amount0⟩ : ∃ c ∈ tailC.departureCharges,
+      c.index = v.toNat ∧ exitQ tailC v.toNat = c.amount := by
+    cases found : tailC.departureCharges.find? fun c =>
+        c.index == v.toNat && decide (c.epoch ≤ (getCurrentEpoch counted).toNat) with
+    | none => simp [exitQ, found] at charged
+    | some c =>
+      have both := List.find?_some found
+      simp only [Bool.and_eq_true, beq_iff_eq] at both
+      exact ⟨c, List.mem_of_find?_eq_some found, both.1, by simp [exitQ, found]⟩
+  have inTail : c0 ∈ (fromFin.append tailC).departureCharges := by
+    rw [Run.departureCharges_append]
+    exact List.mem_append_right _ member0
+  obtain ⟨c, chosen⟩ : ∃ c, stop.charge = some c := by
+    cases hc : stop.charge with
+    | none =>
+      have selected := stop.selected
+      rw [hc] at selected
+      exact absurd index0 (selected.2 c0 inTail)
+    | some c => exact ⟨c, rfl⟩
+  have selected := stop.selected
+  rw [chosen] at selected
+  have cEq : c = c0 := charge_unique _ selected.1 inTail (selected.2.1.trans index0.symm)
+  subst cEq
+  -- the ends
+  obtain ⟨w, final, _⟩ := (fromFin.append tailC).registryLifecycle.validators v.toNat val initial
+  have cleanEnd := clean w final
+  have unslashed : val.slashed = false := by
+    cases flag : val.slashed with
+    | false => rfl
+    | true =>
+      obtain ⟨last, located, marked⟩ :=
+        (fromFin.append tailC).slashedPersistence v.toNat val initial flag
+      have same := Option.some.inj (located.symm.trans final)
+      subst last
+      simp [cleanEnd] at marked
+  have stopEarly : stop.state.fork < .glamsterdam :=
+    Nat.lt_of_le_of_lt (fork_le_of_chainSteps stop.post.chainSteps) h.early
+  have near := h.near
+  have toEnd := UInt64.le_iff_toNat_le.mp (currentEpoch_le_of_chainSteps stop.post.chainSteps)
+  have endpoint : (getCurrentEpoch stop.state.state).toNat ≤ (getCurrentEpoch pulled).toNat + 1 := by
+    simp only at toEnd
+    omega
+  obtain ⟨before, beforeOk, isPrefix⟩ := Run.balanceEvents_prefix stop.pre stop.post
+    (getCurrentEpoch pulled).toNat events (by rw [stop.split]; exact replayed)
+  obtain ⟨-, -, -, -, -, -, -, -, -, -, window, -, -, -⟩ := id h.guard
+  have loss := Stop.selected_charge_loss stop chosen shared h.genesis h.caps h.bands.1 h.twoSlots
+    h.delay stopEarly val w initial final unslashed cleanEnd activated endpoint beforeOk 0
+    (EthLib.Consensus.parameters preset .fusaka).MIN_SLASHING_PENALTY_QUOTIENT.toNat
+    (by have := facts.quotient; omega)
+    (fun {m n} pre step post split => by
+      have mOrder := UInt64.le_iff_toNat_le.mp
+        (currentEpoch_le_of_chainSteps ((Run.nil.snoc step).append post).chainSteps)
+      have xOrder := UInt64.le_iff_toNat_le.mp (currentEpoch_le_of_chainSteps pre.chainSteps)
+      refine ⟨?_, ?_, ?_⟩
+      · unfold driftHorizon at window
+        simp only at window mOrder toEnd xOrder ⊢
+        have half : (preset.EPOCHS_PER_SLASHINGS_VECTOR / 2).toNat =
+          preset.EPOCHS_PER_SLASHINGS_VECTOR.toNat / 2 := by simp
+        rw [half]
+        omega
+      · rw [PinSplit6.mspq_fusaka (Nat.le_trans h.fulu (fork_le_of_chainSteps pre.chainSteps))]
+      · intro found replay
+        exact no_crossing_of_regime shared pre h.genesis h.caps step
+          (Nat.lt_of_le_of_lt (fork_le_of_chainSteps post.chainSteps) stopEarly)
+          (.inl (Nat.le_trans (Nat.le_trans (by decide) h.fulu)
+            (fork_le_of_chainSteps pre.chainSteps))) replay)
+  have bound : (if FirstDown stop.pre v.toNat then preset.EFFECTIVE_BALANCE_INCREMENT.toNat
+      else 0) ≤ preset.EFFECTIVE_BALANCE_INCREMENT.toNat := by split <;> omega
+  have penalties := sum_prefix_le isPrefix (floorPenaltyDebit v.toNat)
+  have partials := sum_prefix_le isPrefix (floorPartialDebit v)
+  rw [amount0] at *
+  omega
+
 /-- A run has a charge at a position exactly when `riseScan` has seen one. -/
 private theorem riseScan_fst {x : ForkedBeaconState preset} (v high : ℕ)
     {y : ForkedBeaconState preset} (tail : Run config checks x y) :
@@ -1348,9 +1459,7 @@ theorem bud_exitingRise (h : Setting config checks g split fin pulled anc counte
     obtain ⟨-, -, read⟩ := (by simpa only [pinTerms, decide_eq_true_eq] using exiting :
       _ ∧ _ ∧ ((pulled.validators.data[v.toNat]?).map fun w =>
         decide (w.exitEpoch.toNat ≤ (getCurrentEpoch pulled).toNat + 1)).getD false = true)
-    cases validator : pulled.validators.data[v.toNat]? with
-    | none => simp [validator] at read
-    | some w => exact ⟨w, rfl⟩
+    exact validator_of_flag (.inr read)
   obtain ⟨w, found⟩ := found
   exact mem_positions_filter config pulled anc fin found exiting
 
