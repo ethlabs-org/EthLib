@@ -972,6 +972,137 @@ private theorem credited_piece {g : ForkedBeaconState preset}
               exact keyMem
 
 
+/-- The positions that hold a key of a committee are at most the size of the committee. -/
+private theorem seat_positions {g : ForkedBeaconState preset}
+    (genesis : Genesis config checks g) {x y : ForkedBeaconState preset}
+    (shared : Run config checks g x) (r : Run config checks x y) (altair : .altair ≤ x.fork) :
+    ∃ S : Finset ℕ, S.card ≤ preset.SYNC_COMMITTEE_SIZE.toNat ∧ ∀ (i : ℕ) (w : Validator),
+      y.state.validators.data[i]? = some w →
+        w.pubkey ∈ (x.state.currentSyncCommittee altair).value.pubkeys.toList → i ∈ S := by
+  classical
+  have distinct := (shared.append r).pubkeysDistinct genesis
+  let L := (x.state.currentSyncCommittee altair).value.pubkeys.toList
+  refine ⟨(Finset.range y.state.validators.data.size).filter fun i =>
+      ∃ w, y.state.validators.data[i]? = some w ∧ w.pubkey ∈ L, ?_, ?_⟩
+  · have mapped : ((Finset.range y.state.validators.data.size).filter fun i =>
+        ∃ w, y.state.validators.data[i]? = some w ∧ w.pubkey ∈ L).card ≤ L.toFinset.card := by
+      refine Finset.card_le_card_of_injOn (keyAt y.state) (fun i member => ?_) (fun i mi j mj eq => ?_)
+      · obtain ⟨w, found, mem⟩ := (Finset.mem_filter.mp member).2
+        simp only [keyAt, found, Option.map_some, Option.getD_some]
+        exact List.mem_toFinset.mpr mem
+      · obtain ⟨w, found, -⟩ := (Finset.mem_filter.mp mi).2
+        obtain ⟨w', found', -⟩ := (Finset.mem_filter.mp mj).2
+        simp only [keyAt, found, found', Option.map_some, Option.getD_some] at eq
+        exact distinct.index_eq found found' eq
+    exact mapped.trans (List.toFinset_card_le.trans (by simp [L]))
+  · intro i w found mem
+    exact Finset.mem_filter.mpr ⟨Finset.mem_range.mpr (Array.getElem?_eq_some_iff.mp found).1,
+      w, found, mem⟩
+
+/-- A later epoch of a period is in the same period or the next one. -/
+private theorem succ_div_le (a c : ℕ) : (a + 1) / c ≤ a / c + 1 := by
+  rcases Nat.eq_zero_or_pos c with zero | positive
+  · subst zero
+    simp
+  · apply Nat.div_le_of_le_mul
+    have := Nat.lt_mul_div_succ a positive
+    omega
+
+/-- The keys credited in the block steps of a run, counted by the periods that it touches. -/
+private theorem credited_pieces {g : ForkedBeaconState preset}
+    (genesis : Genesis config checks g) {y : ForkedBeaconState preset}
+    (early : y.fork < .glamsterdam) (high : ℕ) :
+    ∀ (n : ℕ) {x : ForkedBeaconState preset} (shared : Run config checks g x)
+      (r : Run config checks x y) (fulu : .fusaka ≤ x.fork),
+    (getCurrentEpoch y.state).toNat / max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat =
+      (getCurrentEpoch x.state).toNat / max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat + n →
+    ∃ B S : Finset ℕ, B.card ≤ r.blockCount ∧
+      S.card ≤ preset.SYNC_COMMITTEE_SIZE.toNat * (n + 1) ∧
+      ∀ i, 0 < netScan i high r → i ∈ B ∨ i ∈ S := by
+  classical
+  intro n
+  induction n with
+  | zero =>
+    intro x shared r fulu count
+    have altair : .altair ≤ x.fork := Nat.le_trans (by decide) (Nat.le_trans (by decide) fulu)
+    obtain ⟨B, cardB, hB⟩ := credited_piece genesis shared r fulu altair early high
+      (by simpa using count)
+    obtain ⟨S, cardS, hS⟩ := seat_positions genesis shared r altair
+    refine ⟨B, S, cardB, by simpa using cardS, fun i pos => ?_⟩
+    rcases hB i pos with member | ⟨w, found, mem⟩
+    · exact .inl member
+    · exact .inr (hS i w found mem)
+  | succ n ih =>
+    intro x shared r fulu count
+    have altair : .altair ≤ x.fork := Nat.le_trans (by decide) (Nat.le_trans (by decide) fulu)
+    obtain ⟨m, v, pre, step, post, split, hm, hv⟩ := Run.split_at_flip r
+      (fun z => (getCurrentEpoch x.state).toNat /
+          max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat <
+        (getCurrentEpoch z.state).toNat / max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat)
+      (Nat.lt_irrefl _) (by omega)
+    have low := UInt64.le_iff_toNat_le.mp (currentEpoch_le_of_chainSteps pre.chainSteps)
+    have up := ChainStep.epoch_le_succ step.chainStep
+    have mSame : (getCurrentEpoch m.state).toNat /
+        max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat =
+          (getCurrentEpoch x.state).toNat /
+            max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat := by
+      have under := Nat.div_le_div_right
+        (c := max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat) low
+      omega
+    have vNext : (getCurrentEpoch v.state).toNat /
+        max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat =
+          (getCurrentEpoch x.state).toNat /
+            max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat + 1 := by
+      have above := Nat.div_le_div_right
+        (c := max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat) up
+      have step' := succ_div_le (getCurrentEpoch m.state).toNat
+        (max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat)
+      omega
+    have mEarly : m.fork < .glamsterdam :=
+      Nat.lt_of_le_of_lt (Nat.le_trans step.chainStep.fork_le
+        (fork_le_of_chainSteps post.chainSteps)) early
+    have vFulu : .fusaka ≤ v.fork :=
+      Nat.le_trans fulu (fork_le_of_chainSteps (pre.snoc step).chainSteps)
+    obtain ⟨B₁, cardB₁, hB₁⟩ := credited_piece genesis shared pre fulu altair mEarly high
+      (by simpa using mSame)
+    obtain ⟨S₁, cardS₁, hS₁⟩ := seat_positions genesis shared pre altair
+    obtain ⟨B₂, S₂, cardB₂, cardS₂, hB₂⟩ := ih (x := v) (shared.append (pre.snoc step)) post vFulu
+      (by omega)
+    -- The step leaves an epoch, so it is a slot step: a block step keeps its epoch.
+    have slotStep : ∃ ok, step = Step.slot ok := by
+      cases step with
+      | slot ok => exact ⟨ok, rfl⟩
+      | @block f before after engine signed due ok =>
+        exfalso
+        have same := processBlock_slot (applySignedBlock_ok ok).2.1
+        have e : (getCurrentEpoch after).toNat = (getCurrentEpoch before).toNat := by
+          simp only [getCurrentEpoch, same]
+        dsimp only at hm hv
+        omega
+    obtain ⟨ok, rfl⟩ := slotStep
+    subst split
+    refine ⟨B₁ ∪ B₂, S₁ ∪ S₂, ?_, ?_, fun i pos => ?_⟩
+    · rw [Run.blockCount_append]
+      exact (Finset.card_union_le _ _).trans (Nat.add_le_add cardB₁ cardB₂)
+    · refine (Finset.card_union_le _ _).trans ?_
+      calc _ ≤ preset.SYNC_COMMITTEE_SIZE.toNat +
+            preset.SYNC_COMMITTEE_SIZE.toNat * (n + 1) := Nat.add_le_add cardS₁ cardS₂
+        _ = _ := by ring
+    · rw [netScan_append] at pos
+      by_cases first : 0 < netScan i high (pre.snoc step)
+      · have prior : 0 < netScan i high pre := by
+          rw [netScan_snoc] at first
+          split at first
+          · simpa using first
+          · exact first
+        rcases hB₁ i prior with member | ⟨w, found, mem⟩
+        · exact .inl (Finset.mem_union_left _ member)
+        · exact .inr (Finset.mem_union_left _ (hS₁ i w found mem))
+      · have later : 0 < netScan i high post := by omega
+        rcases hB₂ i later with member | member
+        · exact .inl (Finset.mem_union_right _ member)
+        · exact .inr (Finset.mem_union_right _ member)
+
 /-- The keys that a run from the split credits.
 
 They are at most its proposers, its seat holders and its deposit recipients.
