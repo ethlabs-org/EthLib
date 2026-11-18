@@ -191,6 +191,10 @@ Those bounds do not model the error branch of the checked churn reads.
 
 Another branch's consolidation carry is charged at its finalized value or one epoch's churn.
 
+A key not yet eligible here is charged once outside the tight window.
+
+Another branch can top it up and activate it.
+
 The deposits applied on a branch are charged from the finalized block's carry, over its depth.
 
 The sync seats count on both branches, each at an envelope of its reward.
@@ -594,11 +598,20 @@ def pinReserve (config : Config) (state ancestor finalizedState : BeaconState pr
       decide (finalized + 1 + preset.MAX_SEED_LOOKAHEAD.toNat ≤ v.exitEpoch.toNat) &&
         decide (v.exitEpoch.toNat + 1 ≤ epoch.toNat)),
     (effective i + rise i)
+  -- A key here that is not yet eligible can be topped up on the other branch alone.
+  --
+  -- It can then become eligible there and activate deep in the window, while inactive here.
+  --
+  -- Its effective balance here is charged once; the top-up is the other branch's credit.
+  let pendingR := if tight then 0 else
+    ∑ i ∈ positions with (validator i).any (fun v =>
+      decide (epoch.toNat < v.activationEligibilityEpoch.toNat) &&
+        v.activationEpoch == FAR_FUTURE_EPOCH), effective i
   quorumReserve config state ancestor + (3 * exiting + queues + credits + branchR + late +
     syncSeats + (∑ i ∈ positions with current i = true, rise i) +
     3 * (∑ i ∈ positions with current i = true, fall i) +
     3 * exitingRise + exitingCredits + queueRise + reserveW + flagged + seatShortfall +
-    (33 * consolidationsX + 9) / 10 + exitedR)
+    (33 * consolidationsX + 9) / 10 + exitedR + pendingR)
 
 /-- The pin reserve contains the quorum reserve. -/
 theorem quorumReserve_le_pinReserve (config : Config)
