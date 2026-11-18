@@ -86,7 +86,7 @@ private theorem list_sum_comm (S : Finset Nat) (f : Nat → BalanceEvent preset 
     simp only [List.map_cons, List.sum_cons, list_sum_comm S f rest, Finset.sum_add_distrib]
 
 /-- The debits of one event over a set of keys are at most its debits over the registry. -/
-private theorem keys_debits_le (S : Finset Nat) (e : BalanceEvent preset) :
+theorem keys_debits_le (S : Finset Nat) (e : BalanceEvent preset) :
     ∑ j ∈ S, (actualBalanceAt e.before j - actualBalanceAt e.after j) ≤ e.debits := by
   unfold BalanceEvent.debits
   refine Finset.sum_le_sum_of_ne_zero fun j _ positive => Finset.mem_range.mpr ?_
