@@ -6,20 +6,18 @@ public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmation.HistoricalStat
 /-!
 # The pin premise and its deep window
 
-`PinDriftWithin` is the drift premise of the pin reserve for a counting state that may be on
-another branch.
+`PinDriftWithin` is the drift premise of the pin reserve, for a counting state on any branch.
+
 It covers calls within the withdrawal delay of the finalized block's state.
 
-Deeper calls are covered by `deep_reserve_covers_active`: there the reserve holds three times the
-stake of the call's active set.
+`deep_reserve_covers_active` covers deeper calls: the reserve then holds three times the stake.
 
 This file is a temporary home.
-Both declarations move unchanged to `FastConfirmation/PinDriftBound.lean`, their ruled home, when
-the pin's producer lands after DR.
-The CHANGELOG line naming `Execution.justifiedPinned` as the reader of
-`deep_reserve_covers_active` goes with them.
--/
 
+Both declarations move unchanged to `FastConfirmation/PinDriftBound.lean` after DR.
+
+The CHANGELOG line that names `Execution.justifiedPinned` as their reader moves with them.
+-/
 @[expose] public section
 
 namespace EthLib.Consensus.Models.Network
@@ -31,18 +29,19 @@ variable {preset : Preset} {fork : Fork} {config : Config} {checks : SignatureCh
   {anchorBlock : BeaconBlock preset fork} {assignment : Assignment preset}
   {genesisTimeMs : UInt64} {J : Set ValidatorIndex}
 
-/-- Deeper than the withdrawal delay from the finalized block's state, the pin reserve holds three
-times the stake of the call's active set.
+/-- Past the withdrawal delay from the finalized state, the reserve holds three times the stake.
 
-There `fall` charges every current key its whole effective balance, and the reserve adds three times
-their sum.
+That stake is the stake of the call's active set.
+
+There `fall` charges every current key its whole effective balance, three times over.
 
 The active voters of the call are its current keys, read at their effective balances.
 
-A total that is computed has no active index past `2 ^ 64`, so the voters name distinct keys.
+A computed total has no active index past `2 ^ 64`, so the voters name distinct keys.
 
-A deeper call therefore has no honest set with three times its stake above the reserve: the
-consumer of the pin premise covers it by this lemma, and `PinDriftWithin` excludes it. -/
+So no honest set of a deeper call has three times its stake above the reserve.
+
+The consumer of the pin premise covers such a call by this lemma. -/
 theorem deep_reserve_covers_active {pulled anc fin : BeaconState preset fork} {pulledTotal : Gwei}
     (pulledOk : getTotalActiveBalance pulled = .ok pulledTotal)
     (deep : config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat <
@@ -81,30 +80,37 @@ variable {e : Execution (honestForkChoice config checks sources anchorState anch
 
 The call reads the pulled-up state of its store's head and its current target.
 
-The counting state belongs to an honest store, and may be on another branch since the finalized
-checkpoint of the target block's state.
+The counting state belongs to an honest store.
+
+It may be on another branch since the finalized checkpoint of the target block's state.
 
 Once finality has passed the anchor, the counting state's chain reads that checkpoint.
 
-The counting state is the state of that chain's block or a later slot of it, in the target's epoch
-or the next.
+The counting state is the state of that chain's block or a later slot of it.
 
-Its slots need not stop at a child block of that chain; the epoch bounds limit them, and the
-state is still a `CountedState`.
+Its epoch is the target's epoch or the next.
 
-Then three times the stake of the counting state's quorum and of the voters at the call is at most
-twice the counting total, plus the call's total and the pin reserve, plus three times the stake
-of the voters in that quorum.
+Its slots need not stop at a child block of that chain; the epoch bounds limit them.
+
+The state is still a `CountedState`.
+
+The conclusion bounds three times two stakes: the counting quorum and the voters at the call.
+
+Their sum is at most twice the counting total, plus the call's total and the pin reserve.
+
+It also adds three times the stake of the voters in that quorum.
 
 The reserve reads the call's blocks, so two honest stores may collide instead.
 
-This is the shallow-window obligation: it asks that the call's epoch be within the withdrawal delay
-of the finalized block's state, `depthFin ≤ partialDelay` in `pinReserve`.
+This is the shallow-window obligation.
+
+It asks that the call's epoch be within the withdrawal delay of the finalized block's state.
+
+That is the gate `depthFin ≤ partialDelay` of `pinReserve`.
 
 Deeper calls are not covered here.
 
-There `pinReserve` holds three times the stake of the call's active set
-(`deep_reserve_covers_active`), and the consumer covers them by that lemma. -/
+The consumer covers them by `deep_reserve_covers_active`. -/
 def PinDriftWithin (horizon : Epoch) (last : ℕ) : Prop :=
   .fusaka ≤ fork →
   ∀ u ∈ J, ∀ n (head : Root) (pulled anc fin : BeaconState preset fork)
