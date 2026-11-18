@@ -348,7 +348,8 @@ def pinTerms (config : Config) (state ancestor finalizedState : BeaconState pres
   let newKeyFloor := 2 * preset.MAX_EFFECTIVE_BALANCE.toNat / 3 -
     preset.MAX_EFFECTIVE_BALANCE.toNat / p.MIN_SLASHING_PENALTY_QUOTIENT.toNat -
       preset.downwardBand - inc
-  let newKeySlack := newKeyFloor - (config.EJECTION_BALANCE.toNat - inc)
+  let exitFloor := max 1 (min (config.EJECTION_BALANCE.toNat - inc) newKeyFloor)
+  let newKeySlack := newKeyFloor - exitFloor
   let lowKeys := (positions.filter fun i =>
     (validator i).any (fun v => decide (finalized < v.withdrawableEpoch.toNat) &&
       decide (v.activationEpoch.toNat ≤ epoch.toNat)) ∧
@@ -367,7 +368,7 @@ def pinTerms (config : Config) (state ancestor finalizedState : BeaconState pres
   let newKeySeats := depthFin * slots * preset.SYNC_COMMITTEE_SIZE.toNat * syncEnvelope /
     max 1 newKeySlack
   let queueKeys := (depth * (exitChurn + consolidationChurn) + exitCarry + consolidationCarry) /
-    (config.EJECTION_BALANCE.toNat - inc) + 2 + lowKeys + newKeySeats
+    exitFloor + 2 + lowKeys + newKeySeats
   -- The largest gain rate of one key, its gain rate at the largest effective balance.
   let gainRateMax := capMax / inc * perIncrement *
     (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum / WEIGHT_DENOMINATOR.toNat
@@ -426,8 +427,16 @@ def pinTerms (config : Config) (state ancestor finalizedState : BeaconState pres
     (effective i + rise i)
   let consolidationGain := consolidationsX / inc * perIncrement *
     (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum / WEIGHT_DENOMINATOR.toNat
+  let otherCredits := 3 * (2 * ((∑ i ∈ positions, ebUp i) +
+        depthFin * preset.MAX_PENDING_DEPOSITS_PER_EPOCH.toNat * capMax +
+        consolidationsX + depth * proposerCredit +
+        depth * slots * preset.SYNC_COMMITTEE_SIZE.toNat * syncEnvelope) /
+          p.WHISTLEBLOWER_REWARD_QUOTIENT.toNat +
+      depth * slots * preset.SYNC_COMMITTEE_SIZE.toNat * syncEnvelope + depth * syncProposer)
+  let otherGain := otherCredits / inc * perIncrement *
+    (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum / WEIGHT_DENOMINATOR.toNat
   let creditGain := if 11 * depth * gainRateMax < capMax
-    then (33 * depth * consolidationGain + 9) / 10
+    then (33 * depth * consolidationGain + 11 * depth * otherGain + 9) / 10
     else depthFin * preset.MAX_PENDING_DEPOSITS_PER_EPOCH.toNat * capMax
   let pendingR := if tight then 0 else
     ∑ i ∈ positions with (validator i).any (fun v =>
@@ -501,6 +510,8 @@ structure Setting (config : Config) (checks : SignatureChecks) (g : ForkedBeacon
   aligned : MaxEffectiveBalancesAligned preset
   twoSlots : 2 ≤ preset.SLOTS_PER_EPOCH.toNat
   delay : 0 < config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat
+  shallow : (getCurrentEpoch pulled).toNat + 2 - (getCurrentEpoch fin).toNat ≤
+    config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat
   pulledTotal : ∃ t, getTotalActiveBalance pulled = .ok t
   room : 2 ^ 32 ≤ preset.EFFECTIVE_BALANCE_INCREMENT.toNat * preset.BASE_REWARD_FACTOR.toNat
   below : preset.downwardBand < preset.EFFECTIVE_BALANCE_INCREMENT.toNat
@@ -1029,7 +1040,7 @@ theorem bud_pendingR (h : Setting config checks g split fin pulled anc counted V
         (pinTerms config pulled anc fin).pendingR := sorry
 
 /-- D-4: the keys whose exit R reads. -/
-theorem bud_exiting (h : Setting config checks g split fin pulled anc counted V) :
+theorem bud_exiting :
     (∑ v ∈ (VN counted V) with (pinTerms config pulled anc fin).exitingB v.toNat = true, eR pulled v) +
       (∑ v ∈ (K5 counted V) with (pinTerms config pulled anc fin).exitingB v.toNat = true, eR pulled v) +
       (∑ v ∈ (K6 pulled counted) with (pinTerms config pulled anc fin).exitingB v.toNat = true,
@@ -1167,7 +1178,7 @@ theorem bud_consolidations (h : Setting config checks g split fin pulled anc cou
         (33 * (pinTerms config pulled anc fin).consolidationsX + 9) / 10 := sorry
 
 /-- L10: the keys whose exit started on R's branch after the split, in `K6`. -/
-theorem bud_exitedR (h : Setting config checks g split fin pulled anc counted V) :
+theorem bud_exitedR :
     (∑ v ∈ (K6 pulled counted) with (pinTerms config pulled anc fin).exitedRB v.toNat = true,
       (eR pulled v + (pinTerms config pulled anc fin).rise v.toNat)) ≤
         (pinTerms config pulled anc fin).exitedR := sorry
@@ -1936,8 +1947,6 @@ theorem pinDrift_le_of_stubs (h : Setting config checks g split fin pulled anc c
     {eventsC : List (BalanceEvent preset)} (replayedC : tailC.balanceEvents highC = .ok eventsC)
     (highLe : highC ≤ (getCurrentEpoch pulled).toNat)
     (highLeR : high ≤ (getCurrentEpoch pulled).toNat)
-    (shallow : (getCurrentEpoch pulled).toNat + 2 - (getCurrentEpoch fin).toNat ≤
-      config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat)
     (band : 10 * preset.upwardBand ≤ preset.MAX_EFFECTIVE_BALANCE.toNat)
     {total pulledTotal : Gwei} (totalOk : getTotalActiveBalance counted = .ok total)
     (pulledOk : getTotalActiveBalance pulled = .ok pulledTotal) :
@@ -1952,7 +1961,8 @@ theorem pinDrift_le_of_stubs (h : Setting config checks g split fin pulled anc c
   have sN := stub_N (config := config) h tail high endEpoch replayed tailC highC endEpochC replayedC
   have sP := stub_P (config := config) h tail high endEpoch replayed tailC highC endEpochC replayedC
   have sJ := stub_J (config := config) h tail high endEpoch replayed tailC highC endEpochC replayedC
-  have b1 := bud_exiting (config := config) h
+  have b1 := bud_exiting (config := config) (pulled := pulled) (anc := anc) (fin := fin)
+    (counted := counted) (V := V)
   have b2 := bud_late (config := config) h
   have b3 := bud_queues (config := config) h tailC
   have b4 := bud_credits (config := config) h tailC highC endEpochC replayedC
@@ -1973,8 +1983,9 @@ theorem pinDrift_le_of_stubs (h : Setting config checks g split fin pulled anc c
     split <;> omega
   obtain ⟨fromFin⟩ := h.fromFin
   have b15 := bud_consolidations (config := config) h fromFin tail high endEpoch replayed highLeR
-    tailC highC endEpochC replayedC highLe shallow band
-  have b16 := bud_exitedR (config := config) h
+    tailC highC endEpochC replayedC highLe h.shallow band
+  have b16 := bud_exitedR (config := config) (pulled := pulled) (anc := anc) (fin := fin)
+    (counted := counted)
   -- The band of each due entry naming a V key is paid by `bud_consolidations`' V share.
   have bandV : 3 * (preset.upwardBand * dueAt fin high V) ≤
       preset.upwardBand * (dueAt fin highC (K4 pulled counted V) +

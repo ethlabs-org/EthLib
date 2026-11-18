@@ -23,12 +23,18 @@ Not yet released.
   `effectiveRise_le` bounds the rise of the active effective balances over an epoch end, and `effectiveFall_le` the fall of a voter's.
   `Run.balanceCorrections_of_same_epoch` bounds the balances along a branch inside one epoch.
 
+- `Run.exit_activation_gap` shows that an assigned exit in a run from genesis comes at least the seed lookahead and one epoch after the activation.
+  The pin's drift bound reads it.
+
 - The quorum drift bound adds these facts of runs.
   `Run.blockCount` counts the blocks of a run, `Run.blockCount_append` adds them over two runs, and `Run.blocks_le_slots` bounds them by one per slot.
   `run_of_stateTransition` and `run_of_processSlots` give a run for one block or for the slots before it, when the slot is before the next fork.
   `Run.split_next` splits a run that ends one epoch after it starts at the slot where its epoch changes.
   `Run.induction_of_same_epoch` inducts over a run inside one epoch, and `advanceSlotAcross_of_same_epoch` shows such a slot only caches the slot.
   Inside one epoch, `Run.fork_eq_of_same_epoch` keeps the fork, `Run.currentSyncCommittee_eq_of_same_epoch` the keys of the sync committee, and `Run.effectiveKept_of_same_epoch` each effective balance.
+  `Run.induction_of_same_period` inducts over a run inside one period of epochs, and `Run.induction_of_same_epoch` is its instance for one epoch.
+  `Run.currentSyncCommittee_eq_of_same_period` keeps the keys of the current sync committee inside one period of the committee rotation, and `advanceSlotAcross_currentSyncCommittee` is its slot step.
+  Their readers are the count of the keys that a branch credits, and the bound on the sync-seat holders that a branch debits, in the pin reserve bound.
   `Run.withdrawableKept_of_same_epoch` and `withdrawableKept_processRegistryUpdates` keep `WithdrawableKept` inside an epoch and through the registry updates.
   `Genesis.invariant` gives the invariant of a genesis built from deposits, and `Run.invariant` keeps it along a run.
 
@@ -72,6 +78,10 @@ Not yet released.
   They are also `Unassigned`, `UnassignedFrom`, `unassignedFrom_size`, `UnassignedKept` and `UnassignedKept.processDeposit`.
   `DirectSafety.total_active_congr` moves from `DirectSafety/DepartureQueue.lean` to `Transition/BalanceDrift.lean`, with its name and statement unchanged.
   `DirectSafety.queueCarry_le_of_run` bounds the exit and consolidation capacity that the queues carry at the end of a run from a state of a run from genesis.
+  `DirectSafety.Run.departureCharges_epoch_ge_start` bounds the exit epoch of each departure charge of a run from Electra from below.
+  The bound is the epoch of the start, plus one epoch and the seed lookahead.
+  `DirectSafety.departureCharges_run_indices` shows that the departure charges of a run name each registry index at most once.
+  The pin's drift bound reads it for its exit-queue terms.
 
 - `queueConsolidation_steps` states the steps of queueing a consolidation once ([#2334](https://github.com/ethereum/EthLib/issues/2334)).
   The churn call writes only the churn left and the earliest consolidation epoch.
