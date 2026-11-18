@@ -1290,8 +1290,9 @@ private theorem charge_unique {x y : ForkedBeaconState preset} (tail : Run confi
 open DirectSafety.Apriori DirectSafety.Apriori.Internal in
 /-- The effective balance of a key at its exit call, from the finalized state.
 
-It is at most the amount of the key's departure charge on the run from the finalized state, plus the
-balance shortfall at that state, the debits of the key and one increment.
+It is at most the amount of the key's departure charge on the run from the finalized state.
+
+It is also at most the balance shortfall at that state, the debits of the key and one increment.
 
 The debits are its penalties, its sync debits and the partial payments to it. -/
 private theorem exitQ_floor (h : Setting config checks g split fin pulled anc counted V)
