@@ -1593,7 +1593,8 @@ private theorem withdrawalRequest_indexedTrace {fork : Fork} {s t : BeaconState 
         old.exitEpoch = FAR_FUTURE_EPOCH → next.exitEpoch ≠ FAR_FUTURE_EPOCH →
         ∃ called ∈ calls, called.index = some other.toNat ∧
           called.call.epoch = next.exitEpoch ∧ called.call.amount = old.effectiveBalance := by
-  rcases withdrawalRequest_cases ok with same | ⟨index, exited⟩ | ⟨index, v, owed, withdrawn⟩
+  rcases withdrawalRequest_cases ok with same | ⟨index, _, _, exited⟩ |
+    ⟨index, v, owed, _, withdrawn⟩
   · subst t
     refine ⟨[], by simp [DepartureCallsFrom], .nil _ _, by simp, .of_kept rfl, ?_⟩
     intro other old next before after unset assigned
@@ -2281,7 +2282,7 @@ private theorem withdrawalRequest_consolidationFrame {fork : Fork}
     (ok : processWithdrawalRequest config s electra request = .ok t) :
     ((departureQueues electra t).2.2.1, (departureQueues electra t).2.2.2.1) =
       ((departureQueues electra s).2.2.1, (departureQueues electra s).2.2.2.1) := by
-  rcases withdrawalRequest_cases ok with rfl | ⟨index, initiated⟩ | ⟨index, v, owed, paid⟩
+  rcases withdrawalRequest_cases ok with rfl | ⟨index, _, _, initiated⟩ | ⟨index, v, owed, _, paid⟩
   · rfl
   · have frame := initiateExit_consolidationFrame electra initiated
     rw [frame]
@@ -5158,7 +5159,8 @@ private theorem withdrawal_request_exit_site {fork : Fork} {s t : BeaconState pr
       DepartureCoverage s t calls ∧ PartialsAppended electra s t calls ∧
       ∀ called ∈ calls, exitChurnLimit config s = .ok called.call.rate ∧
         computeActivationExitEpoch preset (getCurrentEpoch s) = .ok called.call.first := by
-  rcases withdrawalRequest_cases ok with same | ⟨index, exited⟩ | ⟨index, v, owed, withdrawn⟩
+  rcases withdrawalRequest_cases ok with same | ⟨index, _, _, exited⟩ |
+    ⟨index, v, owed, _, withdrawn⟩
   · subst t
     exact ⟨[], .nil _ _, .of_data rfl, .of_kept rfl, by simp⟩
   · obtain ⟨calls, trace, appended, sites, covered⟩ := initiate_exit_site electra exited
