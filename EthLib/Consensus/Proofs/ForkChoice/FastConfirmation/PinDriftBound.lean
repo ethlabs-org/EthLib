@@ -9,6 +9,10 @@ import EthLib.Consensus.Proofs.Transition.SlashedPersistence
 import EthLib.Consensus.Proofs.Transition.EpochPassAtCall
 import EthLib.Consensus.Proofs.DirectSafety.Apriori.Penalties
 import EthLib.Consensus.Proofs.DirectSafety.Apriori.Contracts.Ledger
+import EthLib.Consensus.Proofs.Transition.EpochPending
+import EthLib.Consensus.Proofs.Transition.Operations
+import EthLib.Consensus.Proofs.Transition.BalanceNotRaisedBlock
+import EthLib.Consensus.Proofs.Transition.Block
 
 /-!
 # The quorum of a call drifts by at most its pin reserve, on another branch
@@ -548,5 +552,107 @@ private theorem total_band_of_guard {g x y z : ForkedBeaconState preset} {high :
 
 end Band
 
+
+/-! ## Credits to exiting keys -/
+
+/-- A pending deposit leaves a balance alone unless its key is first found at that position.
+
+The validators only grow at the end. -/
+private theorem applyPendingDeposit_frame {s s' : BeaconState preset fork}
+    {deposit : PendingDeposit}
+    (computed : applyPendingDeposit config checks s deposit = .ok s') {i : ℕ}
+    (inside : i < s.validators.data.size) (inBalances : i < s.balances.data.size)
+    (other : s.validators.data.findIdx? (·.pubkey == deposit.pubkey) ≠ some i) :
+    s'.balances.data[i]? = s.balances.data[i]? ∧
+      ∃ suffix : List Validator,
+        s'.validators.data.toList = s.validators.data.toList ++ suffix := by
+  unfold applyPendingDeposit at computed
+  generalize hf : s.validators.data.findIdx? (·.pubkey == deposit.pubkey) = r at computed
+  cases r with
+  | none =>
+    simp only at computed
+    split at computed
+    · cases computed
+      exact ⟨rfl, [], by simp⟩
+    simp only [bind_ok_iff] at computed
+    obtain ⟨_, _, computed⟩ := computed
+    split at computed
+    · have pushed := addValidatorToRegistry_validators_eq_push computed
+      have hb : s.balances.data[i]? = some s.balances.data[i] :=
+        Array.getElem?_eq_getElem inBalances
+      refine ⟨by rw [hb]; exact addValidatorToRegistry_balance computed inside hb,
+        [getValidatorFromDeposit preset fork deposit.pubkey deposit.withdrawalCredentials
+          deposit.amount], ?_⟩
+      rw [pushed, Array.toList_push]
+    · cases computed
+      exact ⟨rfl, [], by simp⟩
+  | some position =>
+    simp only [liftAccessor_ok, bind_ok_iff, liftArith, mapError_ok_iff] at computed
+    obtain ⟨index, indexOk, raised⟩ := computed
+    obtain ⟨-, indexNat⟩ := ofNatChecked_ok_iff.mp indexOk
+    obtain ⟨within, -, rfl⟩ := increaseBalance_eq_ok_iff.mp raised
+    have ne : index.toNat ≠ i := fun same => other (by rw [hf, ← indexNat, same])
+    exact ⟨Array.getElem?_set_ne within ne, [], by simp [BeaconState.putBalance]⟩
+
+/-- From Electra, the pending deposits of an epoch leave the balance of a key alone while it exits
+and is not yet withdrawable.
+
+Such a key's deposits are postponed (`processPendingDeposits_postponed_epochs`). -/
+private theorem processPendingDeposits_exited_balance {state after : BeaconState preset fork}
+    {electra : .pectra ≤ fork}
+    (computed : processPendingDeposits config checks state electra = .ok after)
+    {i : ℕ} {v : Validator} (found : state.validators.data[i]? = some v)
+    (inBalances : i < state.balances.data.size)
+    (exited : v.exitEpoch.toNat < 2 ^ 64 - 1)
+    (held : (getCurrentEpoch state).toNat < v.withdrawableEpoch.toNat) :
+    after.balances.data[i]? = state.balances.data[i]? := by
+  obtain ⟨read, rest, next, pending, carried, -, -, -, folded, rfl⟩ :=
+    processPendingDeposits_postponed_epochs computed
+  have inside : i < state.validators.data.size := (Array.getElem?_eq_some_iff.mp found).1
+  have vAt : state.validators.data[i] = v := (Array.getElem?_eq_some_iff.mp found).2
+  let P : BeaconState preset fork → Prop := fun s =>
+    s.balances.data[i]? = state.balances.data[i]? ∧
+      ∃ suffix : List Validator, s.validators.data.toList = state.validators.data.toList ++ suffix
+  have final : P next := by
+    refine foldlM_ok_invariant_of_mem P (fun s d s' member ⟨bal, suffix, pre⟩ step => ?_)
+      ⟨rfl, [], by simp⟩ folded
+    have sizeV : state.validators.data.size ≤ s.validators.data.size := by
+      have := congrArg List.length pre
+      simp only [Array.length_toList, List.length_append] at this
+      omega
+    have balSome : i < s.balances.data.size := by
+      by_contra out
+      rw [Array.getElem?_eq_none (by omega), Array.getElem?_eq_getElem inBalances] at bal
+      cases bal
+    have get : ∀ j (hj : j < state.validators.data.size) (hs : j < s.validators.data.size),
+        s.validators.data[j] = state.validators.data[j] := by
+      intro j hj hs
+      have := congrArg (·[j]?) pre
+      rw [List.getElem?_append_left (by rw [Array.length_toList]; exact hj),
+        Array.getElem?_toList, Array.getElem?_toList, Array.getElem?_eq_getElem hs,
+        Array.getElem?_eq_getElem hj] at this
+      exact Option.some.inj this
+    -- The deposit does not go to position `i`: its key would find `v`, which is postponed.
+    have other : s.validators.data.findIdx? (·.pubkey == d.pubkey) ≠ some i := by
+      intro hit
+      obtain ⟨h, hitMatch, before⟩ := Array.findIdx?_eq_some_iff_getElem.mp hit
+      have atI : s.validators.data[i] = v := (get i inside h).trans vAt
+      have firstMatch : state.validators.data.find? (·.pubkey == d.pubkey) = some v := by
+        rw [← Array.find?_toList, List.find?_eq_some_iff_getElem]
+        refine ⟨atI ▸ hitMatch, i, by rw [Array.length_toList]; exact inside,
+          by simp [vAt], fun j hj => ?_⟩
+        have hjs : j < state.validators.data.size := by omega
+        have := before j hj
+        rw [get j hjs (by omega)] at this
+        simpa using this
+      have kept := (List.mem_filter.mp member).2
+      rw [firstMatch] at kept
+      simp only [Option.any_some, Bool.not_eq_true', Bool.and_eq_false_iff,
+        decide_eq_false_iff_not] at kept
+      omega
+    obtain ⟨bal', suffix', pre2⟩ := applyPendingDeposit_frame step (Nat.lt_of_lt_of_le inside sizeV)
+      balSome other
+    exact ⟨bal'.trans bal, suffix ++ suffix', by rw [pre2, pre, List.append_assoc]⟩
+  exact final.1
 
 end EthLib.Consensus.Models.Network
