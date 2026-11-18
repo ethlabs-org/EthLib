@@ -1726,6 +1726,55 @@ private theorem Ctx.advance {g x z m p n : ForkedBeaconState preset} {high : ℕ
   rw [e2]
   exact stepIneq
 
+/-- The potential claim carries over the slot step that ends the epoch of a climb state.
+
+The new epoch start also lies within the band of hysteresis, since the step ran the transition. -/
+private theorem Ctx.inv_step {g x z y q p' m : ForkedBeaconState preset} {high : ℕ}
+    (c : Ctx config checks g x high) (hz : Run config checks x z)
+    (early : y.fork < .glamsterdam) (within : (getCurrentEpoch y.state).toNat ≤ high + 1)
+    (i : ℕ) (v0 : Validator) (found0 : z.state.validators.data[i]? = some v0)
+    (unslashed0 : v0.slashed = false) (activated0 : v0.activationEpoch ≠ FAR_FUTURE_EPOCH)
+    (exitLate : ∀ (n : ForkedBeaconState preset) (_rest : Run config checks n y) (w : Validator),
+      n.state.validators.data[i]? = some w → (getCurrentEpoch y.state).toNat < w.exitEpoch.toNat)
+    (ok : advanceSlotAcross config checks q = .ok p') (rest : Run config checks p' y)
+    (rm : Run config checks z m) (ins : Run config checks m q)
+    (cm : getCurrentEpoch m.state = getCurrentEpoch q.state)
+    (hyst : effectiveAt m i ≤ actualBalanceAt m i + preset.downwardBand)
+    (claim : EpochClaim (config := config) (checks := checks) x z high i rm)
+    (stepQ : (getCurrentEpoch p'.state).toNat = (getCurrentEpoch q.state).toNat + 1) :
+    EpochClaim (config := config) (checks := checks) x z high i
+      (rm.append (ins.snoc (Step.slot ok))) ∧
+    effectiveAt p' i ≤ actualBalanceAt p' i + preset.downwardBand := by
+  have restEpoch := UInt64.le_iff_toNat_le.mp (currentEpoch_le_of_chainSteps rest.chainSteps)
+  have pEarly : p'.fork < .glamsterdam :=
+    Nat.lt_of_le_of_lt (fork_le_of_chainSteps rest.chainSteps) early
+  have cmN : (getCurrentEpoch m.state).toNat = (getCurrentEpoch q.state).toNat :=
+    congrArg UInt64.toNat cm
+  obtain ⟨val, found, life⟩ := rm.registryLifecycle.validators i v0 found0
+  have activated : val.activationEpoch ≠ FAR_FUTURE_EPOCH := by
+    rw [life.activationEpoch activated0]
+    exact activated0
+  have mEarly : m.fork < .glamsterdam :=
+    Nat.lt_of_le_of_lt (Nat.le_trans (fork_le_of_chainSteps ins.chainSteps)
+      (Step.slot ok).chainStep.fork_le) pEarly
+  have slashedCond := c.slashed_window hz rm mEarly i v0 val found0 found unslashed0
+    (getCurrentEpoch p'.state).toNat (by omega)
+  have sameQ : getCurrentEpoch q.state = getCurrentEpoch m.state := cm.symm
+  have stepP : (getCurrentEpoch p'.state).toNat = (getCurrentEpoch m.state).toNat + 1 := by
+    omega
+  have exit' : ∀ w, p'.state.validators.data[i]? = some w →
+      (getCurrentEpoch m.state).toNat + 1 < w.exitEpoch.toNat := fun w hw => by
+    have := exitLate p' rest w hw
+    omega
+  have claim' := Ctx.advance c hz rm ins ok pEarly (by omega) sameQ stepP i val found
+    activated exit' slashedCond hyst claim
+  obtain ⟨val', found', -⟩ := (rm.append (ins.snoc (Step.slot ok))).registryLifecycle.validators
+    i v0 found0
+  have lt : getCurrentEpoch q.state < getCurrentEpoch p'.state :=
+    UInt64.lt_iff_toNat_lt.mpr (by omega)
+  exact ⟨claim', Ctx.hyst_start c (hz.append (rm.append (ins.snoc (Step.slot ok))))
+    (c.hysteresis (Step.slot ok) lt) found'⟩
+
 /-- The potential claim holds at the start of the epoch of every state of the climb.
 
 The climb runs from `z`, where the key holds the maximum effective balance and is unslashed.
@@ -1778,40 +1827,42 @@ private theorem Ctx.inv {g x z y : ForkedBeaconState preset} {high : ℕ}
         apply same
         simp only [getCurrentEpoch, processBlock_slot (applySignedBlock_ok ok).2.1]
       | slot ok =>
-        have restEpoch := UInt64.le_iff_toNat_le.mp
-          (currentEpoch_le_of_chainSteps rest.chainSteps)
-        have pEarly : p'.fork < .glamsterdam :=
-          Nat.lt_of_le_of_lt (fork_le_of_chainSteps rest.chainSteps) early
-        have cmN : (getCurrentEpoch m.state).toNat = (getCurrentEpoch q.state).toNat :=
-          congrArg UInt64.toNat cm
-        obtain ⟨val, found, life⟩ := rm.registryLifecycle.validators i v0 found0
-        have activated : val.activationEpoch ≠ FAR_FUTURE_EPOCH := by
-          rw [life.activationEpoch activated0]
-          exact activated0
-        have mEarly : m.fork < .glamsterdam :=
-          Nat.lt_of_le_of_lt (Nat.le_trans (fork_le_of_chainSteps ins.chainSteps)
-            (Step.slot ok).chainStep.fork_le) pEarly
-        have slashedCond := c.slashed_window hz rm mEarly i v0 val found0 found unslashed0
-          (getCurrentEpoch p'.state).toNat (by omega)
-        have sameQ : getCurrentEpoch q.state = getCurrentEpoch m.state := cm.symm
-        have stepP : (getCurrentEpoch p'.state).toNat = (getCurrentEpoch m.state).toNat + 1 := by
-          omega
-        have exit' : ∀ w, p'.state.validators.data[i]? = some w →
-            (getCurrentEpoch m.state).toNat + 1 < w.exitEpoch.toNat := fun w hw => by
-          have := exitLate p' rest w hw
-          omega
-        have claim' := Ctx.advance c hz rm ins ok pEarly (by omega) sameQ stepP i val found
-          activated exit' slashedCond hyst claim
-        have grown : Run config checks z p' := rm.append (ins.snoc (Step.slot ok))
-        obtain ⟨val', found', -⟩ := (rm.append (ins.snoc (Step.slot ok))).registryLifecycle.validators
-          i v0 found0
-        have lt : getCurrentEpoch q.state < getCurrentEpoch p'.state :=
-          UInt64.lt_iff_toNat_lt.mpr (by omega)
-        have hystP := Ctx.hyst_start c (hz.append (rm.append (ins.snoc (Step.slot ok))))
-          (c.hysteresis (Step.slot ok) lt) found'
+        obtain ⟨claim', hystP⟩ := Ctx.inv_step c hz early within i v0 found0 unslashed0 activated0
+          exitLate ok rest rm ins cm hyst claim (by omega)
         refine ⟨p', rm.append (ins.snoc (Step.slot ok)), .nil, ?_, rfl, hystP, claim'⟩
         rw [eq]
         rfl
+
+/-- The arithmetic of the climb: the potential claim gives the floor of the pin.
+
+The claim starts at the epoch `cz` and ends at the epoch `ck`, within the window. -/
+private theorem Ctx.arith {g x : ForkedBeaconState preset} {high : ℕ}
+    (c : Ctx config checks g x high) (xEarly : x.fork < .glamsterdam) (cz ck : ℕ)
+    (xz : (getCurrentEpoch x.state).toNat ≤ cz) (zk : cz ≤ ck) (inside : ck ≤ high + 1)
+    (B kd sc : ℕ) (hsc : sc ≤ newBq preset)
+    (claim : 2 * (preset.MAX_EFFECTIVE_BALANCE.toNat + preset.downwardBand) *
+        stakeFloorAt config x high (ck - (getCurrentEpoch x.state).toNat) ≤
+      2 * (B + preset.downwardBand + (kd + sc)) *
+        stakeFloorAt config x high (cz - (getCurrentEpoch x.state).toNat) +
+      3 * (preset.MAX_EFFECTIVE_BALANCE.toNat + preset.downwardBand) * (ck - cz)) :
+    2 * preset.MAX_EFFECTIVE_BALANCE.toNat / 3 -
+        preset.MAX_EFFECTIVE_BALANCE.toNat /
+          (EthLib.Consensus.parameters preset .fusaka).MIN_SLASHING_PENALTY_QUOTIENT.toNat -
+        preset.downwardBand - 1 ≤ B + kd := by
+  have cxIn : (getCurrentEpoch x.state).toNat ≤ high + 1 := by omega
+  have ratio0 := c.ratio xEarly (s := cz - (getCurrentEpoch x.state).toNat) (by omega) cxIn
+  have ratioK := c.ratio xEarly (s := ck - (getCurrentEpoch x.state).toNat) (by omega) cxIn
+  have hzero : stakeFloorAt config x high (cz - (getCurrentEpoch x.state).toNat) ≤
+      stakeFloorAt config x high 0 := c.anti (Nat.zero_le _)
+  have roomT := c.room
+  have unitJ : 1 ≤ high + 2 - (getCurrentEpoch x.state).toNat := by omega
+  have phi : 2 * stakeFloorAt config x high (cz - (getCurrentEpoch x.state).toNat) ≤
+      3 * stakeFloorAt config x high (ck - (getCurrentEpoch x.state).toNat) := by omega
+  exact final_arith preset.MAX_EFFECTIVE_BALANCE.toNat preset.downwardBand (newBq preset) B kd
+    (kd + sc) (stakeFloorAt config x high (cz - (getCurrentEpoch x.state).toNat))
+    (stakeFloorAt config x high (ck - (getCurrentEpoch x.state).toNat)) (ck - cz)
+    (high + 2 - (getCurrentEpoch x.state).toNat) _ claim phi (by omega) (by omega) (by omega)
+    (by omega) c.margin
 
 /-- The least of a key's balance and the maximum, plus the debits, stays above the floor of the pin.
 
@@ -1872,29 +1923,6 @@ private theorem Ctx.claimAt {g x z y p : ForkedBeaconState preset} {high : ℕ}
     Nat.lt_of_le_of_lt (Nat.le_trans (fork_le_of_chainSteps hz.chainSteps)
       (Nat.le_trans (fork_le_of_chainSteps rm.chainSteps) (fork_le_of_chainSteps ins.chainSteps)))
       pEarly
-  have cxIn : (getCurrentEpoch x.state).toNat ≤ high + 1 := by omega
-  have ratio0 := c.ratio xEarly (s := (getCurrentEpoch z.state).toNat -
-    (getCurrentEpoch x.state).toNat) (by omega) cxIn
-  have ratioK := c.ratio xEarly (s := (getCurrentEpoch m.state).toNat -
-    (getCurrentEpoch x.state).toNat) (by omega) cxIn
-  have hzero : stakeFloorAt config x high
-      ((getCurrentEpoch z.state).toNat - (getCurrentEpoch x.state).toNat) ≤
-        stakeFloorAt config x high 0 := c.anti (Nat.zero_le _)
-  have roomT := c.room
-  have unitJ : 1 ≤ high + 2 - (getCurrentEpoch x.state).toNat := by omega
-  have e1 : 2 * (preset.MAX_EFFECTIVE_BALANCE.toNat + preset.downwardBand) *
-      stakeFloorAt config x high
-        ((getCurrentEpoch m.state).toNat - (getCurrentEpoch x.state).toNat) ≤
-      2 * (min (actualBalanceAt m i) preset.MAX_EFFECTIVE_BALANCE.toNat + preset.downwardBand +
-        keyDebits i events + slashedCharge preset m i) *
-        stakeFloorAt config x high
-          ((getCurrentEpoch z.state).toNat - (getCurrentEpoch x.state).toNat) +
-      3 * (preset.MAX_EFFECTIVE_BALANCE.toNat + preset.downwardBand) *
-        ((getCurrentEpoch m.state).toNat - (getCurrentEpoch z.state).toNat) := ih
-  have phi : 2 * stakeFloorAt config x high
-      ((getCurrentEpoch z.state).toNat - (getCurrentEpoch x.state).toNat) ≤
-      3 * stakeFloorAt config x high
-        ((getCurrentEpoch m.state).toNat - (getCurrentEpoch x.state).toNat) := by omega
   have e2 : min (actualBalanceAt m i) preset.MAX_EFFECTIVE_BALANCE.toNat ≤ actualBalanceAt p i +
       (keyDebits i eins + (if val.slashed = false ∧ ∃ w, p.state.validators.data[i]? = some w ∧
         w.slashed = true then newBq preset else 0)) := by
@@ -1902,53 +1930,160 @@ private theorem Ctx.claimAt {g x z y p : ForkedBeaconState preset} {high : ℕ}
     unfold keyDebits
     unfold newBq
     simpa using this
-  have h1 : 2 * (preset.MAX_EFFECTIVE_BALANCE.toNat + preset.downwardBand) *
-      stakeFloorAt config x high
-        ((getCurrentEpoch m.state).toNat - (getCurrentEpoch x.state).toNat) ≤
-      2 * (actualBalanceAt p i + preset.downwardBand + keyDebits i (events ++ eins) +
-        slashedCharge preset p i) *
-        stakeFloorAt config x high
-          ((getCurrentEpoch z.state).toNat - (getCurrentEpoch x.state).toNat) +
-      3 * (preset.MAX_EFFECTIVE_BALANCE.toNat + preset.downwardBand) *
-        ((getCurrentEpoch m.state).toNat - (getCurrentEpoch z.state).toNat) := by
-    refine e1.trans ?_
-    have step : min (actualBalanceAt m i) preset.MAX_EFFECTIVE_BALANCE.toNat +
-        preset.downwardBand + keyDebits i events + slashedCharge preset m i ≤
-        actualBalanceAt p i + preset.downwardBand + keyDebits i (events ++ eins) +
-          slashedCharge preset p i := by
-      rw [keyDebits_append, charge]
-      omega
-    have := Nat.mul_le_mul_right (stakeFloorAt config x high
-      ((getCurrentEpoch z.state).toNat - (getCurrentEpoch x.state).toNat))
-      (Nat.mul_le_mul_left 2 step)
+  have step : min (actualBalanceAt m i) preset.MAX_EFFECTIVE_BALANCE.toNat +
+      preset.downwardBand + keyDebits i events + slashedCharge preset m i ≤
+      actualBalanceAt p i + preset.downwardBand + keyDebits i (events ++ eins) +
+        slashedCharge preset p i := by
+    rw [keyDebits_append, charge]
     omega
   have chargeLe : slashedCharge preset p i ≤ newBq preset := by
     unfold slashedCharge
     split <;> omega
-  have h1' : 2 * (preset.MAX_EFFECTIVE_BALANCE.toNat + preset.downwardBand) *
+  have h1 : 2 * (preset.MAX_EFFECTIVE_BALANCE.toNat + preset.downwardBand) *
       stakeFloorAt config x high
-        ((getCurrentEpoch m.state).toNat - (getCurrentEpoch x.state).toNat) ≤
+        ((getCurrentEpoch p.state).toNat - (getCurrentEpoch x.state).toNat) ≤
       2 * (actualBalanceAt p i + preset.downwardBand +
         (keyDebits i (events ++ eins) + slashedCharge preset p i)) *
         stakeFloorAt config x high
           ((getCurrentEpoch z.state).toNat - (getCurrentEpoch x.state).toNat) +
       3 * (preset.MAX_EFFECTIVE_BALANCE.toNat + preset.downwardBand) *
-        ((getCurrentEpoch m.state).toNat - (getCurrentEpoch z.state).toNat) := by
+        ((getCurrentEpoch p.state).toNat - (getCurrentEpoch z.state).toNat) := by
+    rw [← cmN]
+    refine ih.trans ?_
+    have := Nat.mul_le_mul_right (stakeFloorAt config x high
+      ((getCurrentEpoch z.state).toNat - (getCurrentEpoch x.state).toNat))
+      (Nat.mul_le_mul_left 2 step)
     have e : actualBalanceAt p i + preset.downwardBand + keyDebits i (events ++ eins) +
         slashedCharge preset p i = actualBalanceAt p i + preset.downwardBand +
           (keyDebits i (events ++ eins) + slashedCharge preset p i) := by omega
-    rw [e] at h1
-    exact h1
-  exact final_arith preset.MAX_EFFECTIVE_BALANCE.toNat preset.downwardBand (newBq preset)
-    (actualBalanceAt p i) (keyDebits i (events ++ eins))
-    (keyDebits i (events ++ eins) + slashedCharge preset p i)
-    (stakeFloorAt config x high
-      ((getCurrentEpoch z.state).toNat - (getCurrentEpoch x.state).toNat))
-    (stakeFloorAt config x high
-      ((getCurrentEpoch m.state).toNat - (getCurrentEpoch x.state).toNat))
-    ((getCurrentEpoch m.state).toNat - (getCurrentEpoch z.state).toNat)
-    (high + 2 - (getCurrentEpoch x.state).toNat) _ h1' phi (by omega) (by omega) (by omega)
-    (by omega) c.margin
+    rw [e] at this
+    omega
+  exact c.arith xEarly (getCurrentEpoch z.state).toNat (getCurrentEpoch p.state).toNat xz
+    (by omega) (by omega) _ _ _ chargeLe h1
+
+/-- A state on the balance path of a run is a state of the run, or the state inside a slot step.
+
+The state inside a slot step comes after the slot and its epoch transition, before the upgrades. -/
+private theorem Run.mem_balancePath_split {z w : ForkedBeaconState preset}
+    (r : Run config checks z w) {p : ForkedBeaconState preset} (member : p ∈ r.balancePath) :
+    (∃ (rp : Run config checks z p) (rest : Run config checks p w), r = rp.append rest) ∨
+    (∃ (q n : ForkedBeaconState preset) (rq : Run config checks z q)
+      (ok : advanceSlotAcross config checks q = .ok n) (rest : Run config checks n w)
+      (adv : BeaconState preset q.fork), r = (rq.snoc (Step.slot ok)).append rest ∧
+        advanceSlot config checks q.state = .ok adv ∧ p = ⟨q.fork, adv⟩ ∧
+        processUpgrades config checks ⟨q.fork, adv⟩ = .ok n) := by
+  induction r with
+  | nil =>
+    simp only [Run.balancePath, List.mem_singleton] at member
+    subst member
+    exact .inl ⟨.nil, .nil, rfl⟩
+  | @snoc q last pre step ih =>
+    simp only [Run.balancePath, List.mem_append] at member
+    rcases member with member | member
+    · rcases ih member with ⟨rp, rest, eq⟩ | ⟨q', n, rq, ok, rest, adv, eq, adv_ok, hp, up⟩
+      · exact .inl ⟨rp, rest.snoc step, by rw [eq]; rfl⟩
+      · exact .inr ⟨q', n, rq, ok, rest.snoc step, adv, by rw [eq]; rfl, adv_ok, hp, up⟩
+    · cases step with
+      | block engine signed due ok =>
+        simp only [Step.balancePath, List.mem_cons, List.not_mem_nil, or_false] at member
+        rcases member with rfl | rfl
+        · exact .inl ⟨pre, (Run.nil.snoc (.block engine signed due ok)), rfl⟩
+        · exact .inl ⟨pre.snoc (.block engine signed due ok), .nil, rfl⟩
+      | slot ok =>
+        have unfold_ok := ok
+        obtain ⟨adv, advOk, upgrades⟩ := bind_ok_iff.mp unfold_ok
+        simp only [Step.balancePath, advOk, Except.toOption, List.mem_cons, List.not_mem_nil,
+          or_false] at member
+        rcases member with rfl | rfl | rfl
+        · exact .inl ⟨pre, (Run.nil.snoc (.slot ok)), rfl⟩
+        · exact .inr ⟨_, last, pre, ok, .nil, adv, rfl, advOk, rfl, upgrades⟩
+        · exact .inl ⟨pre.snoc (.slot ok), .nil, rfl⟩
+
+private theorem keyDebits_le_of_prefix (i : ℕ) {a b : List (BalanceEvent preset)} (h : a <+: b) :
+    keyDebits i a ≤ keyDebits i b := by
+  obtain ⟨t, rfl⟩ := h
+  rw [keyDebits_append]
+  omega
+
+/-- A state of the climb that precedes its end has the floor of the pin, up to the debits of the
+run that contains it. -/
+private theorem Ctx.floorRun {g x z y p w : ForkedBeaconState preset} {high : ℕ}
+    (c : Ctx config checks g x high) (hz : Run config checks x z)
+    (early : y.fork < .glamsterdam) (within : (getCurrentEpoch y.state).toNat ≤ high + 1)
+    (i : ℕ) (v0 : Validator) (found0 : z.state.validators.data[i]? = some v0)
+    (unslashed0 : v0.slashed = false) (activated0 : v0.activationEpoch ≠ FAR_FUTURE_EPOCH)
+    (bal0 : preset.MAX_EFFECTIVE_BALANCE.toNat ≤ actualBalanceAt z i)
+    (hystZ : effectiveAt z i ≤ actualBalanceAt z i + preset.downwardBand)
+    (exitLate : ∀ (n : ForkedBeaconState preset) (_rest : Run config checks n y) (w : Validator),
+      n.state.validators.data[i]? = some w → (getCurrentEpoch y.state).toNat < w.exitEpoch.toNat)
+    (rp : Run config checks z p) (rest : Run config checks p w) (restY : Run config checks p y)
+    (lt : (getCurrentEpoch p.state).toNat < (getCurrentEpoch y.state).toNat)
+    {Ef : List (BalanceEvent preset)} (hEf : (rp.append rest).balanceEvents high = .ok Ef) :
+    2 * preset.MAX_EFFECTIVE_BALANCE.toNat / 3 -
+        preset.MAX_EFFECTIVE_BALANCE.toNat /
+          (EthLib.Consensus.parameters preset .fusaka).MIN_SLASHING_PENALTY_QUOTIENT.toNat -
+        preset.downwardBand - 1 ≤ actualBalanceAt p i + keyDebits i Ef := by
+  obtain ⟨events, replay, bound⟩ := c.claimAt hz early within i v0 found0 unslashed0 activated0
+    bal0 hystZ exitLate rp restY lt
+  obtain ⟨before, beforeOk, prefix_⟩ := Run.balanceEvents_prefix rp rest high Ef hEf
+  rw [replay] at beforeOk
+  cases beforeOk
+  have := keyDebits_le_of_prefix i prefix_
+  omega
+
+/-- The end of the climb, the first state of the last epoch, has the floor of the pin too. -/
+private theorem Ctx.claimEnd {g x z y zz n : ForkedBeaconState preset} {high : ℕ}
+    (c : Ctx config checks g x high) (hz : Run config checks x z)
+    (early : y.fork < .glamsterdam) (within : (getCurrentEpoch y.state).toNat ≤ high + 1)
+    (i : ℕ) (v0 : Validator) (found0 : z.state.validators.data[i]? = some v0)
+    (unslashed0 : v0.slashed = false) (activated0 : v0.activationEpoch ≠ FAR_FUTURE_EPOCH)
+    (bal0 : preset.MAX_EFFECTIVE_BALANCE.toNat ≤ actualBalanceAt z i)
+    (hystZ : effectiveAt z i ≤ actualBalanceAt z i + preset.downwardBand)
+    (exitLate : ∀ (n : ForkedBeaconState preset) (_rest : Run config checks n y) (w : Validator),
+      n.state.validators.data[i]? = some w → (getCurrentEpoch y.state).toNat < w.exitEpoch.toNat)
+    (pre0 : Run config checks z zz) (ok : advanceSlotAcross config checks zz = .ok n)
+    (rest0 : Run config checks n y)
+    (stepN : (getCurrentEpoch n.state).toNat = (getCurrentEpoch zz.state).toNat + 1)
+    {Ef : List (BalanceEvent preset)}
+    (hEf : (pre0.snoc (Step.slot ok)).balanceEvents high = .ok Ef) :
+    2 * preset.MAX_EFFECTIVE_BALANCE.toNat / 3 -
+        preset.MAX_EFFECTIVE_BALANCE.toNat /
+          (EthLib.Consensus.parameters preset .fusaka).MIN_SLASHING_PENALTY_QUOTIENT.toNat -
+        preset.downwardBand - 1 ≤ actualBalanceAt n i + keyDebits i Ef := by
+  obtain ⟨m, rm, ins, eq, cm, hyst, claim⟩ := c.inv hz early within i v0 found0 unslashed0
+    activated0 bal0 hystZ exitLate pre0 ((Run.nil.snoc (Step.slot ok)).append rest0)
+  obtain ⟨claim', -⟩ := Ctx.inv_step c hz early within i v0 found0 unslashed0 activated0
+    exitLate ok rest0 rm ins cm hyst claim stepN
+  obtain ⟨events, replay, ineq⟩ := claim'
+  have same : pre0.snoc (Step.slot ok) = rm.append (ins.snoc (Step.slot ok)) := by
+    rw [eq]
+    rfl
+  rw [same, replay] at hEf
+  cases hEf
+  have nEarly : n.fork < .glamsterdam :=
+    Nat.lt_of_le_of_lt (fork_le_of_chainSteps rest0.chainSteps) early
+  have xz := UInt64.le_iff_toNat_le.mp (currentEpoch_le_of_chainSteps hz.chainSteps)
+  have zk := UInt64.le_iff_toNat_le.mp (currentEpoch_le_of_chainSteps
+    (pre0.snoc (Step.slot ok)).chainSteps)
+  have xEarly : x.fork < .glamsterdam :=
+    Nat.lt_of_le_of_lt (Nat.le_trans (fork_le_of_chainSteps hz.chainSteps)
+      (fork_le_of_chainSteps (pre0.snoc (Step.slot ok)).chainSteps)) nEarly
+  have restEpoch := UInt64.le_iff_toNat_le.mp (currentEpoch_le_of_chainSteps rest0.chainSteps)
+  have chargeLe : slashedCharge preset n i ≤ newBq preset := by
+    unfold slashedCharge
+    split <;> omega
+  have := c.arith xEarly (getCurrentEpoch z.state).toNat (getCurrentEpoch n.state).toNat xz zk
+    (by omega) (min (actualBalanceAt n i) preset.MAX_EFFECTIVE_BALANCE.toNat) (keyDebits i Ef) _
+    chargeLe
+    (by
+      have e : min (actualBalanceAt n i) preset.MAX_EFFECTIVE_BALANCE.toNat + preset.downwardBand +
+          (keyDebits i Ef + slashedCharge preset n i) =
+          min (actualBalanceAt n i) preset.MAX_EFFECTIVE_BALANCE.toNat + preset.downwardBand +
+            keyDebits i Ef + slashedCharge preset n i := by omega
+      rw [e]
+      exact ineq)
+  have := Nat.min_le_left (actualBalanceAt n i) preset.MAX_EFFECTIVE_BALANCE.toNat
+  omega
 
 end Epoch
 
