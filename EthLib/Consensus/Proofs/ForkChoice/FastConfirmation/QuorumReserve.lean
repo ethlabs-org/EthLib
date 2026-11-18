@@ -289,6 +289,7 @@ def pinReserve (config : Config) (state ancestor finalizedState : BeaconState pr
   -- So it is charged at the larger of the finalized block's carry and the churn here.
   let consolidationCarry := max (if electra : .pectra ≤ fork then
       (finalizedState.consolidationBalanceToConsume electra).toNat else 0) consolidationChurn
+  let depthFin := epoch.toNat + 2 - (getCurrentEpoch finalizedState).toNat
   -- A deposit postponed at the head of the queue lets the deposits behind it spend the carry.
   --
   -- So the deposits applied from the finalized block's state are at most its carry and the churn.
@@ -311,7 +312,6 @@ def pinReserve (config : Config) (state ancestor finalizedState : BeaconState pr
   -- So this bounds the score of a counting state, whose score can rise while the call's falls.
   let scoreFin (i : ℕ) := if altair : .altair ≤ fork then
       (((finalizedState.inactivityScores altair).data[i]?).map (·.toNat)).getD 0 else 0
-  let depthFin := epoch.toNat + 2 - (getCurrentEpoch finalizedState).toNat
   -- Sync-seat penalties are charged in aggregate, by the sync-seat terms, not per key.
   let leakAt (eb : ℕ) (i : ℕ) := 2 * (eb / inc * perIncrement) +
     eb * (scoreFin i + depthFin * config.INACTIVITY_SCORE_BIAS.toNat) /
