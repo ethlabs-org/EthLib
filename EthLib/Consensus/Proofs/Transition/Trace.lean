@@ -292,7 +292,7 @@ theorem Run.blocks_le_slots {first last : ForkedBeaconState preset}
   split at this <;> omega
 
 /-- A later epoch of the same period is the same epoch, or it does not start a period. -/
-private theorem epoch_same_or_not_start {period earlier later : ℕ} (le : earlier ≤ later)
+private theorem epoch_same_or_not_start {period earlier later : Nat} (le : earlier ≤ later)
     (same : later / max 1 period = earlier / max 1 period) :
     later = earlier ∨ later % period ≠ 0 := by
   by_cases start : later % period = 0
