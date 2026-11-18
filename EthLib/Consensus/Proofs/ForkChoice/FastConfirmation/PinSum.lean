@@ -768,6 +768,19 @@ private theorem mem_positions_filter (config : Config)
     i ∈ (pinTerms config state ancestor finalizedState).positions.filter p :=
   Finset.mem_filter.mpr ⟨Finset.mem_range.mpr (Array.getElem?_eq_some_iff.mp found).1, test⟩
 
+/-- A flag read from the validator at a position can hold only where the position holds one.
+
+The flag is the `any` of the validator, or its `map` read with a default of `false`. -/
+private theorem validator_of_flag {state : BeaconState preset fork} {i : ℕ} {f : Validator → Bool}
+    (flag : (state.validators.data[i]?).any f = true ∨
+      ((state.validators.data[i]?).map f).getD false = true) :
+    ∃ w, state.validators.data[i]? = some w := by
+  cases found : state.validators.data[i]? with
+  | none =>
+    rw [found] at flag
+    simp at flag
+  | some w => exact ⟨w, rfl⟩
+
 /-- A voter active at the epoch of a state holds a validator there that is active at that epoch. -/
 private theorem active_of_activeVoters (early : fork < .glamsterdam)
     {s : BeaconState preset fork} {v : ValidatorIndex} (member : v ∈ activeVoters s) :
@@ -922,12 +935,7 @@ private theorem sum_le_exiting (config : Config)
   dsimp only [pinTerms]
   refine sum_toNat_le (fun i => balanceAt state i) fun v hv => ?_
   have mark := of_decide_eq_true (member v hv)
-  obtain ⟨w, found⟩ : ∃ w, state.validators.data[v.toNat]? = some w := by
-    cases gone : state.validators.data[v.toNat]? with
-    | none =>
-      have read := mark.2.2
-      simp [gone] at read
-    | some w => exact ⟨w, rfl⟩
+  obtain ⟨w, found⟩ := validator_of_flag (state := state) (Or.inr mark.2.2)
   exact mem_positions_filter config state ancestor finalizedState found mark
 
 /-- D-4: the keys whose exit R reads. -/
