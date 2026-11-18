@@ -7,10 +7,15 @@ public import EthLib.Consensus.Proofs.Transition.FfgStake
 import EthLib.Base.Proofs.MapM
 import EthLib.Consensus.Proofs.Containers.State
 import EthLib.Consensus.Proofs.ForkChoice.AttestationScores
+import EthLib.Consensus.Proofs.DirectSafety.IntervalBounds
 import EthLib.Consensus.Proofs.ForkChoice.BlockStates
+import EthLib.Consensus.Proofs.ForkChoice.Checkpoints
 import EthLib.Consensus.Proofs.ForkChoice.Ghost
 import EthLib.Consensus.Proofs.ForkChoice.StoreEntries
 import EthLib.Consensus.Proofs.ForkChoice.Supporters
+import EthLib.Consensus.Proofs.Transition.Slot
+import EthLib.Consensus.Proofs.Transition.StateTransition
+import EthLib.Consensus.Proofs.Transition.Totality.RegistryLoadBlock
 
 /-!
 # Proofs: the head of the fork choice can be computed
@@ -44,6 +49,10 @@ It must also hold each equivocator that is active in a held state.
 The committees must read, so each held state has its registry within the limit.
 
 An empty tree of viable nodes gives the empty node of the justified block.
+
+From Gloas, a block adds no validator, so each held registry has at most the anchor's validators.
+
+It may add the pending deposits of one epoch for each epoch since the anchor.
 
 This is part of [#2060][issue].
 
@@ -1102,6 +1111,122 @@ theorem getHead_exists_of_gloas (gloas : .glamsterdam ≤ fork)
     (fun _ _ f => tiebreaker_exists_of_gloas gloas forward anchorSlot weights f) _ justified
     justifiedFound
   exact ⟨head, by simp [getHead, tree, headOk, bind, Except.bind]⟩
+
+/-! ## From Gloas: the registry grows by at most one epoch of deposits per epoch -/
+
+/-- Two growth bounds in a row, each over a span of epochs, give one over the whole span. -/
+private theorem growth_trans {a b c ea eb ec perEpoch : ℕ} (first : ea ≤ eb) (second : eb ≤ ec)
+    (one : b ≤ a + perEpoch * (eb - ea)) (two : c ≤ b + (ec - eb) * perEpoch) :
+    c ≤ a + perEpoch * (ec - ea) := by
+  have split : perEpoch * (ec - ea) = perEpoch * (eb - ea) + (ec - eb) * perEpoch := by
+    rw [Nat.mul_comm (ec - eb), ← Nat.mul_add]
+    congr 1
+    omega
+  omega
+
+/-- Slots add at most one epoch of pending deposits to the registry for each epoch they cross. -/
+private theorem advanceSlots_validators_size_le {config : Config} {checks : SignatureChecks} :
+    ∀ (count : ℕ) {s t : BeaconState preset fork}, advanceSlots config checks count s = .ok t →
+      (getCurrentEpoch s).toNat ≤ (getCurrentEpoch t).toNat ∧
+        t.validators.data.size ≤ s.validators.data.size +
+          ((getCurrentEpoch t).toNat - (getCurrentEpoch s).toNat) *
+            preset.MAX_PENDING_DEPOSITS_PER_EPOCH.toNat
+  | 0, s, t, ok => by
+    simp only [advanceSlots, pure, Except.pure, Except.ok.injEq] at ok
+    subst ok
+    simp
+  | count + 1, s, t, ok => by
+    simp only [advanceSlots, bind_ok_iff] at ok
+    obtain ⟨next, step, rest⟩ := ok
+    obtain ⟨slotEq, grow⟩ := DirectSafety.advanceSlot_validators_size_le step
+    obtain ⟨later, growRest⟩ := advanceSlots_validators_size_le count rest
+    have earlier : (getCurrentEpoch s).toNat ≤ (getCurrentEpoch next).toNat := by
+      rw [getCurrentEpoch_toNat, getCurrentEpoch_toNat, slotEq]
+      exact Nat.div_le_div_right (Nat.le_succ _)
+    refine ⟨earlier.trans later, ?_⟩
+    have split : (getCurrentEpoch t).toNat - (getCurrentEpoch s).toNat =
+        ((getCurrentEpoch t).toNat - (getCurrentEpoch next).toNat) +
+          ((getCurrentEpoch next).toNat - (getCurrentEpoch s).toNat) := by omega
+    rw [split, Nat.add_mul]
+    omega
+
+/-- Processing slots adds at most one epoch of pending deposits for each epoch it crosses. -/
+private theorem processSlots_validators_size_le {config : Config} {checks : SignatureChecks}
+    {s t : BeaconState preset fork} {slot : Slot}
+    (ok : processSlots config checks s slot = .ok t) :
+    (getCurrentEpoch s).toNat ≤ (getCurrentEpoch t).toNat ∧
+      t.validators.data.size ≤ s.validators.data.size +
+        ((getCurrentEpoch t).toNat - (getCurrentEpoch s).toNat) *
+          preset.MAX_PENDING_DEPOSITS_PER_EPOCH.toNat := by
+  unfold processSlots at ok
+  simp only [bind_ok_iff, ensure_ok_iff] at ok
+  obtain ⟨_, _, advanced⟩ := ok
+  exact advanceSlots_validators_size_le _ advanced
+
+/-- From Gloas, a block adds no validator, so its transition adds only what its slots add. -/
+private theorem stateTransition_validators_size_le (gloas : .glamsterdam ≤ fork)
+    {config : Config} {checks : SignatureChecks} {engine : ExecutionEngine preset fork}
+    {s t : BeaconState preset fork} {signed : SignedBeaconBlock preset fork}
+    {validateResult : Bool}
+    (ok : stateTransition config checks engine s signed validateResult = .ok t) :
+    (getCurrentEpoch s).toNat ≤ (getCurrentEpoch t).toNat ∧
+      t.validators.data.size ≤ s.validators.data.size +
+        ((getCurrentEpoch t).toNat - (getCurrentEpoch s).toNat) *
+          preset.MAX_PENDING_DEPOSITS_PER_EPOCH.toNat := by
+  obtain ⟨advanced, slotsOk, -, -, blockOk, -⟩ := stateTransition_ok ok
+  obtain ⟨later, grow⟩ := processSlots_validators_size_le slotsOk
+  have block := processBlock_validators_size_le blockOk
+  have none : blockDepositCount signed.message.body = 0 := by
+    unfold blockDepositCount
+    exact dite_eq_right_of_eq_false (eq_false (Nat.not_lt_of_le gloas))
+  have sameEpoch : getCurrentEpoch t = getCurrentEpoch advanced := by
+    simp only [getCurrentEpoch, processBlock_slot blockOk]
+  rw [sameEpoch]
+  exact ⟨later, by omega⟩
+
+/-- From Gloas, the registry of a reachable store grows only by its epochs of pending deposits.
+
+Each held block state and checkpoint state starts from the anchor's validators.
+
+Each epoch since the anchor adds at most the pending deposits of one epoch. -/
+theorem Reachable.validators_size_le_of_gloas (gloas : .glamsterdam ≤ fork)
+    {anchorState : BeaconState preset fork} {anchorBlock : BeaconBlock preset fork}
+    (reachable : Reachable config anchorState anchorBlock store) :
+    (∀ (root : Root) (state : BeaconState preset fork), store.blockStates[root]? = some state →
+      state.validators.data.size ≤ anchorState.validators.data.size +
+        preset.MAX_PENDING_DEPOSITS_PER_EPOCH.toNat *
+          ((getCurrentEpoch state).toNat - (getCurrentEpoch anchorState).toNat)) ∧
+    (∀ (checkpoint : Checkpoint) (state : BeaconState preset fork),
+      store.checkpointStates[checkpoint]? = some state →
+      state.validators.data.size ≤ anchorState.validators.data.size +
+        preset.MAX_PENDING_DEPOSITS_PER_EPOCH.toNat *
+          ((getCurrentEpoch state).toNat - (getCurrentEpoch anchorState).toNat)) := by
+  -- Each held state is at or after the anchor's epoch, and the bound passes along each block.
+  have blocks : ∀ (root : Root) (state : BeaconState preset fork),
+      store.blockStates[root]? = some state →
+      (getCurrentEpoch anchorState).toNat ≤ (getCurrentEpoch state).toNat ∧
+        state.validators.data.size ≤ anchorState.validators.data.size +
+          preset.MAX_PENDING_DEPOSITS_PER_EPOCH.toNat *
+            ((getCurrentEpoch state).toNat - (getCurrentEpoch anchorState).toNat) := by
+    intro root state held
+    refine reachable.blockState_induction reachable.blockStatesFromParents
+      (fun _ state => (getCurrentEpoch anchorState).toNat ≤ (getCurrentEpoch state).toNat ∧
+        state.validators.data.size ≤ anchorState.validators.data.size +
+          preset.MAX_PENDING_DEPOSITS_PER_EPOCH.toNat *
+            ((getCurrentEpoch state).toNat - (getCurrentEpoch anchorState).toNat))
+      (fun _ _ => ⟨Nat.le_refl _, by simp⟩) ?_ held
+    intro _ _ _ _ _ _ _ _ _ _ _ _ _ transitioned ⟨first, one⟩
+    obtain ⟨second, two⟩ := stateTransition_validators_size_le gloas transitioned
+    exact ⟨first.trans second, growth_trans first second one two⟩
+  refine ⟨fun root state held => (blocks root state held).2, ?_⟩
+  -- A checkpoint state is a held block state, or that state with its slots processed.
+  intro checkpoint state found
+  obtain ⟨base, start, baseHeld, -, kept⟩ := reachable.checkpointStatesFromBlocks found
+  obtain ⟨first, one⟩ := blocks _ base baseHeld
+  rcases kept with ⟨-, rfl⟩ | ⟨-, checks, -, slots⟩
+  · exact one
+  · obtain ⟨second, two⟩ := processSlots_validators_size_le slots
+    exact growth_trans first second one two
 
 end Store
 
