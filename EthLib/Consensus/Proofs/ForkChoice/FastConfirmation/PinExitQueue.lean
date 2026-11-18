@@ -3,6 +3,7 @@ module
 public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmation.PinDriftBound
 public import EthLib.Consensus.Proofs.DirectSafety.IntervalFunding
 public import EthLib.Consensus.Proofs.DirectSafety.Apriori.Bound
+public import EthLib.Consensus.Proofs.DirectSafety.Apriori.Ceiling
 
 /-!
 # Exit counts, gain rate and preset facts for the pin split
@@ -397,6 +398,73 @@ theorem Run.exits_started_le {x y : ForkedBeaconState preset} (tail : Run config
   have sub : (owned.map (·.amount)).sum ≤ (kept.map (·.amount)).sum :=
     ((List.filter_sublist).map _).sum_le_sum fun _ _ => Nat.zero_le _
   exact (Nat.mul_le_mul_right bound cardLe).trans (owns.trans sub)
+
+/-! ## The floor of one epoch of a key -/
+
+/-- The sync debit of one key in one event (PinDriftBound's private `syncDebit`, verbatim). -/
+def keySyncDebit (v : ℕ) (event : BalanceEvent preset) : ℕ :=
+  if event.source = .sync then actualBalanceAt event.before v - actualBalanceAt event.after v else 0
+
+/-- The rate at which one rewards pass can debit a key, read at the last state of the epoch.
+
+It is PinDriftBound's private `passPenaltyRate`, verbatim. -/
+def passRate (config : Config) (z : ForkedBeaconState preset) (v : ℕ) : ℕ :=
+  let total := max preset.EFFECTIVE_BALANCE_INCREMENT.toNat
+    (∑ i ∈ (Finset.range z.state.validators.data.size).filter
+        (fun i => isActiveAt z.state (getCurrentEpoch z.state) i = true),
+      ((z.state.validators.data[i]?).map (·.effectiveBalance.toNat)).getD 0)
+  let score := if altair : .altair ≤ z.fork then
+      (((z.state.inactivityScores altair).data[v]?).map (·.toNat)).getD 0 else 0
+  (TIMELY_SOURCE_WEIGHT.toNat + TIMELY_TARGET_WEIGHT.toNat) * preset.BASE_REWARD_FACTOR.toNat *
+      effectiveAt z v / (WEIGHT_DENOMINATOR.toNat * total.sqrt) +
+    effectiveAt z v * (score + config.INACTIVITY_SCORE_BIAS.toNat) /
+      (config.INACTIVITY_SCORE_BIAS.toNat *
+        (EthLib.Consensus.parameters preset z.fork).INACTIVITY_PENALTY_QUOTIENT.toNat)
+
+open DirectSafety.Apriori.Internal in
+/-- The floor of one key over a run that crosses at most one epoch boundary.
+
+The run starts at `m` and ends at `n`, from Fulu and before Gloas.
+
+The key must be assigned an activation at `m`, and not exit by the epoch of `n`.
+
+If it is slashed at `m`, its delayed slashing penalty must not be due by the epoch of `n`.
+
+Take any `C` below the key's largest effective balance at `m`.
+
+The least of the balance at `m` and `C` is at most the balance at `n`, plus its debits.
+
+The first debit is the pass at the last state `z` of the first epoch, if the run crosses its end.
+
+The others are the key's sync debits and its payments from the queue of partial withdrawals.
+
+The last is its initial slashing penalty, if the run slashes it.
+
+That penalty is the effective balance at `m` over the slashing quotient.
+
+The effective balance changes only at the end of an epoch, after any slashing in it. -/
+def EpochFloorStatement (preset : Preset) (config : Config) (checks : SignatureChecks) : Prop :=
+  ∀ {m n : ForkedBeaconState preset} (r : Run config checks m n),
+    .fusaka ≤ m.fork → n.fork < .glamsterdam →
+    (getCurrentEpoch n.state).toNat ≤ (getCurrentEpoch m.state).toNat + 1 →
+    ∀ (i : ℕ) (val : Validator), m.state.validators.data[i]? = some val →
+    val.activationEpoch ≠ FAR_FUTURE_EPOCH →
+    (∀ w, n.state.validators.data[i]? = some w →
+      (getCurrentEpoch n.state).toNat < w.exitEpoch.toNat) →
+    (val.slashed = true → (getCurrentEpoch n.state).toNat +
+      preset.EPOCHS_PER_SLASHINGS_VECTOR.toNat / 2 < val.withdrawableEpoch.toNat) →
+    ∀ C : ℕ, C ≤ (withdrawalMaxEffectiveBalance preset m.fork val).toNat →
+    ∀ {events : List (BalanceEvent preset)},
+      r.balanceEvents (getCurrentEpoch m.state).toNat = .ok events →
+    ∃ (z : ForkedBeaconState preset) (pre : Run config checks m z) (post : Run config checks z n),
+      r = pre.append post ∧ getCurrentEpoch z.state = getCurrentEpoch m.state ∧
+      min (actualBalanceAt m i) C ≤ actualBalanceAt n i +
+        (if getCurrentEpoch m.state < getCurrentEpoch n.state then passRate config z i else 0) +
+        (events.map (keySyncDebit i)).sum + (events.map (floorPartialDebit i.toUInt64)).sum +
+        (if val.slashed = false ∧ ∃ w, n.state.validators.data[i]? = some w ∧ w.slashed = true
+          then effectiveAt m i /
+            (EthLib.Consensus.parameters preset m.fork).MIN_SLASHING_PENALTY_QUOTIENT.toNat
+          else 0)
 
 /-- C2 (item 16).
 
