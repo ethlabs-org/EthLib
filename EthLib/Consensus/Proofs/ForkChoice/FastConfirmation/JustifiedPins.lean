@@ -192,20 +192,23 @@ private theorem finalized_read_of_counted {anchor : Store preset fork}
     simp [Store.getCheckpointBlock, boundaryOk, moved, Except.mapError, bind, Except.bind, pure,
       Except.pure]
   -- The held root reads the counting store's justified checkpoint at its epoch.
+  have ancJust :
+      anc.finalizedCheckpoint.epoch ≤ ((e.world k).state w).justifiedCheckpoint.epoch := by
+    rw [justEpoch]
+    exact ancNow
   obtain ⟨-, rootJust⟩ := reachedW.reachable.getCheckpointBlock_of_processed anchorSlot
     anchorHeader anchorZero (roots w hw k high) held
     (advanced.imp_right fun ⟨slot, slotsOk⟩ => ⟨checks, slot, slotsOk⟩) rootRead
     fun startSlot startOk => by
       have startNat := (computeStartSlotAtEpoch_ok_iff.mp startOk).2
-      have guardNat := UInt64.lt_iff_toNat_lt.mp (UInt64.lt_of_lt_of_le guard
-        (by rw [justEpoch]; exact ancNow))
+      have guardNat := UInt64.lt_iff_toNat_lt.mp (UInt64.lt_of_lt_of_le guard ancJust)
       rw [getCurrentEpoch_toNat] at guardNat
       have := Nat.mul_le_mul_right preset.SLOTS_PER_EPOCH.toNat (Nat.succ_le_of_lt guardNat)
       rw [Nat.succ_mul] at this
       have := Nat.lt_div_mul_add (a := anchorState.slot.toNat) positive
       rw [UInt64.le_iff_toNat_le, startNat]
       omega
-  rw [Store.getCheckpointBlock_trans preGloas rootJust (by rw [justEpoch]; exact ancNow),
+  rw [Store.getCheckpointBlock_trans preGloas rootJust ancJust,
     Store.getCheckpointBlock_trans preGloas justRead ancLe]
   exact finalAncW
 
