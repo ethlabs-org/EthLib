@@ -1385,7 +1385,7 @@ private theorem Run.effective_floor_of_balance_floor {x y : ForkedBeaconState pr
     min (effectiveAt x i) (min capLow (floor + 1 - preset.EFFECTIVE_BALANCE_INCREMENT.toNat)) ≤
       effectiveAt y i := by
   have remainder := Nat.mod_lt floor bands.1
-  refine Nat.le_trans (Nat.min_le_min (Nat.le_refl _) (Nat.min_le_min (Nat.le_refl _) ?_))
+  refine Nat.le_trans ?_
     (Run.effective_floor_rounded tail early fulu i inside floor capLow balanceFloor capFloor)
   omega
 
