@@ -797,6 +797,7 @@ theorem stub_J (h : Setting config checks g split fin pulled anc counted V)
     · rintro ⟨a, b, c⟩
       exact ⟨.inl (.inr a), a, b, c⟩
   -- The per-key bound: what each key of K6 adds to the drift is charged by one of these terms.
+  --
   -- A key of K6 in R's registry is bounded by `key_core`, from R's balance and its rise.
   have core : ∀ i : ℕ, i < pulled.validators.data.size →
       balanceAt counted i ≤ balanceAt pulled i + (pinTerms config pulled anc fin).rise i +
