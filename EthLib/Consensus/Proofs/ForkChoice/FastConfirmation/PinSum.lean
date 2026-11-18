@@ -1145,6 +1145,73 @@ private theorem creditScan_le_events (blockP slotP : BalanceSource → Bool) (v 
       · cases rest
         exact before
 
+/-- The per-epoch base rewards of the keys recent at `pulled`, at a quarter of its total.
+
+It is the sum inside `proposerCredit` of `pinTerms`, without the sync part. -/
+private def baseSum (pulled : BeaconState preset fork) : ℕ :=
+  let inc := preset.EFFECTIVE_BALANCE_INCREMENT.toNat
+  let epoch := getCurrentEpoch pulled
+  let totalGwei := (getTotalActiveBalance pulled).toOption.getD 0
+  let quarter := max preset.EFFECTIVE_BALANCE_INCREMENT (totalGwei / 4)
+  let perIncrement := ((getBaseRewardPerIncrement preset quarter).toOption.getD 0).toNat
+  ∑ i ∈ Finset.range pulled.validators.data.size with
+      (isActiveAt pulled (getPreviousEpoch pulled) i || isActiveAt pulled epoch i ||
+        isActiveAt pulled (epoch + 1) i) = true,
+    balanceAt pulled i / inc * perIncrement
+
+/-- A total with a successful read of the reward per increment lets any positive total read it. -/
+private theorem perIncrement_ok_of {a b pa : Gwei}
+    (ok : getBaseRewardPerIncrement preset a = .ok pa) (positive : 0 < b.toNat) :
+    ∃ pb, getBaseRewardPerIncrement preset b = .ok pb := by
+  have unfolded := ok
+  simp only [getBaseRewardPerIncrement, liftArith, mapError_ok_iff, bind_ok_iff] at unfolded
+  obtain ⟨scaled, scaledOk, -⟩ := unfolded
+  have fits := (mulChecked_ok_iff.mp scaledOk).1
+  have root := toNat_integerSquareroot b
+  have nonzero : integerSquareroot b ≠ 0 := fun zero => by
+    rw [zero, UInt64.toNat_zero] at root
+    have := Nat.sqrt_pos.mpr positive
+    omega
+  refine ⟨preset.EFFECTIVE_BALANCE_INCREMENT * preset.BASE_REWARD_FACTOR /
+    integerSquareroot b, ?_⟩
+  simp only [getBaseRewardPerIncrement, liftArith, mulChecked_of_lt fits, bind, Except.bind,
+    divChecked, nonzero, ite_false, Except.mapError]
+
+/-- The base rewards of the recent keys are at least the reward per increment of the quarter
+total times the active increments. -/
+private theorem baseSum_ge {pulled : BeaconState preset fork} (early : fork < .glamsterdam)
+    (incPos : 0 < preset.EFFECTIVE_BALANCE_INCREMENT.toNat)
+    (aligned : EffectiveBalancesAligned pulled) {per : Gwei}
+    (perOk : getBaseRewardPerIncrement preset
+      (max preset.EFFECTIVE_BALANCE_INCREMENT
+        (((getTotalActiveBalance pulled).toOption.getD 0) / 4)) = .ok per) :
+    per.toNat * ((∑ v ∈ activeVoters pulled, balanceAt pulled v.toNat) /
+      preset.EFFECTIVE_BALANCE_INCREMENT.toNat) ≤ baseSum pulled := by
+  classical
+  have sumEq : (∑ v ∈ activeVoters pulled, balanceAt pulled v.toNat) =
+      preset.EFFECTIVE_BALANCE_INCREMENT.toNat *
+        ∑ v ∈ activeVoters pulled, balanceAt pulled v.toNat /
+          preset.EFFECTIVE_BALANCE_INCREMENT.toNat := by
+    rw [Finset.mul_sum]
+    exact Finset.sum_congr rfl fun v _ =>
+      (Nat.mul_div_cancel' (dvd_balanceAt_of_aligned aligned dvd_rfl v.toNat)).symm
+  rw [sumEq, Nat.mul_div_cancel_left _ incPos, Finset.mul_sum]
+  unfold baseSum
+  simp only [perOk, Except.toOption, Option.getD_some]
+  have swap : ∑ v ∈ activeVoters pulled, per.toNat *
+      (balanceAt pulled v.toNat / preset.EFFECTIVE_BALANCE_INCREMENT.toNat) =
+      ∑ v ∈ activeVoters pulled, balanceAt pulled v.toNat /
+        preset.EFFECTIVE_BALANCE_INCREMENT.toNat * per.toNat :=
+    Finset.sum_congr rfl fun _ _ => Nat.mul_comm _ _
+  rw [swap]
+  refine sum_toNat_le (fun i => balanceAt pulled i / preset.EFFECTIVE_BALANCE_INCREMENT.toNat *
+    per.toNat) fun v member => ?_
+  obtain ⟨w, found, active⟩ := active_of_activeVoters early member
+  rw [Finset.mem_filter]
+  refine ⟨Finset.mem_range.mpr (Array.getElem?_eq_some_iff.mp found).1, ?_⟩
+  have current := isActiveAt_eq_true_iff.mpr ⟨w, found, active⟩
+  simp [current]
+
 /-- R1 (branchR): R's credits to V keys since the split, weight 3.
 
 The slashing of a key on R's branch is charged here for the keys of `K4` and `K5`.
