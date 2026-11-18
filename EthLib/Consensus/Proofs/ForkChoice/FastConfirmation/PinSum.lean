@@ -945,8 +945,8 @@ private theorem sum_filter_rewards (events : List (BalanceEvent preset)) (v : �
   | nil => rfl
   | cons e rest ih =>
     by_cases rewards : e.source = .rewards
-    · simp [List.filter_cons, rewards, keyCredit, DirectSafety.Apriori.Internal.rewardCredit, ih]
-    · simp [List.filter_cons, rewards, DirectSafety.Apriori.Internal.rewardCredit, ih]
+    · simp [rewards, keyCredit, DirectSafety.Apriori.Internal.rewardCredit, ih]
+    · simp [rewards, DirectSafety.Apriori.Internal.rewardCredit, ih]
 
 /-- A flag pays a key at most its base reward times the weight of the flag, over the active stake.
 
@@ -971,7 +971,7 @@ private theorem flagReward_le {f : Fork} (altair : .altair ≤ f) {state : Beaco
     (total.toNat / preset.EFFECTIVE_BALANCE_INCREMENT.toNat = 0 → (rewards.getD v 0).toNat = 0) := by
   obtain ⟨participating, participatingBalance, total', flaggedOk, weighed, totalOk, perKey⟩ :=
     getFlagIndexDeltas_getD within computed
-  obtain rfl : total' = total := Except.ok.inj (totalOk.symm.trans active)
+  obtain rfl : total = total' := Except.ok.inj (active.symm.trans totalOk)
   obtain ⟨eligible, -, notEligible, eligibleCase⟩ := perKey v inside
   have zero (h : (rewards.getD v 0).toNat = 0) :
       (rewards.getD v 0).toNat *
@@ -1184,9 +1184,9 @@ private theorem epochRewards_le {m n : ForkedBeaconState preset}
       Nat.lt_of_le_of_lt (Step.slot ok).chainStep.fork_le early
     simp only [epochRewards]
     cases hev : (Step.slot (config := config) (checks := checks) ok).balanceEvents with
-    | error err => simp [hev]
+    | error err => simp [Except.toOption]
     | ok events =>
-      simp only [hev, Except.toOption, Option.getD_some]
+      simp only [Except.toOption, Option.getD_some]
       rw [sum_filter_rewards]
       obtain ⟨advanced, cached, crossings, -, upgrades, cachedOk, crossingOk, kind⟩ :=
         Step.balanceEvents_slot ok early hev
@@ -1215,7 +1215,7 @@ private theorem epochRewards_le {m n : ForkedBeaconState preset}
       have epochs : (getCurrentEpoch n.state).toNat - (getCurrentEpoch m.state).toNat = 1 := by
         have boundary := nextSlot_epoch_of_boundary nextEq last
         rw [getCurrentEpoch_toNat, getCurrentEpoch_toNat, nSlot, boundary]
-        exact Nat.add_sub_cancel_left
+        exact Nat.add_sub_cancel_left _ _
       rw [epochs, Nat.one_mul]
       -- The pass reads the registry and the epoch of the start.
       obtain ⟨-, effectiveEq, -, validatorsEq, slotEq⟩ :=
@@ -1384,7 +1384,6 @@ theorem bud_exiting :
       (∑ v ∈ (K5 counted V) with (pinTerms config pulled anc fin).exitingB v.toNat = true, eR pulled v) +
       (∑ v ∈ (K6 pulled counted) with (pinTerms config pulled anc fin).exitingB v.toNat = true,
         eR pulled v) ≤ (pinTerms config pulled anc fin).exiting := by
-  clear h
   have apartVK5 : Disjoint (VN counted V) (K5 counted V) := by
     rw [Finset.disjoint_left]
     intro v inV inK5
