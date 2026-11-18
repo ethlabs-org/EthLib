@@ -1149,8 +1149,8 @@ private structure Ctx (config : Config) (checks : SignatureChecks) {preset : Pre
   guard : aprioriGuardAt config x high
   delay : 0 < config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat
   vector : 4 ≤ preset.EPOCHS_PER_SLASHINGS_VECTOR.toNat
-  quotient :
-    6 * (EthLib.Consensus.parameters preset .fusaka).MIN_SLASHING_PENALTY_QUOTIENT.toNat ≤ 400
+  big : 9 * (EthLib.Consensus.parameters preset .fusaka).MIN_SLASHING_PENALTY_QUOTIENT.toNat ≤
+    stakeFloorAt config x high 0
   factor : 1 ≤ preset.BASE_REWARD_FACTOR.toNat
   quotientTwo :
     2 ≤ (EthLib.Consensus.parameters preset .fusaka).MIN_SLASHING_PENALTY_QUOTIENT.toNat
@@ -1402,8 +1402,7 @@ private theorem Ctx.cross {g x m n z : ForkedBeaconState preset} {high : ℕ}
   have ratio := c.ratio xEarly (s := t + 1) (by omega) cxIn
   have roomT := c.room
   have hφ : 6 * Q ≤ stakeFloorAt config x high (t + 1) := by
-    have := c.quotient
-    have : 1 ≤ high + 2 - (getCurrentEpoch x.state).toNat := by omega
+    have := c.big
     omega
   have hband' : 2 * stakeFloorAt config x high t ≤ 3 * stakeFloorAt config x high (t + 1) := by
     omega
@@ -2183,6 +2182,39 @@ private theorem Ctx.floors {g x z y zz n : ForkedBeaconState preset} {high : ℕ
         exitLate pre0 ok rest0 stepN hEf⟩
 
 end Epoch
+
+/-! ## C3: the effective balance of a new key -/
+
+/-- The preset facts that the floor of a new key reads.
+
+The slashings vector has at least four epochs, and the base reward factor is positive.
+
+The slashing quotient is at least two.
+
+The margin leaves room for the rounding of the climb after the loss of a third of the stake.
+
+The margin reads the maximum effective balance, the band, and the slashing quotient. -/
+def NewKeyPresetFacts (preset : Preset) : Prop :=
+  4 ≤ preset.EPOCHS_PER_SLASHINGS_VECTOR.toNat ∧ 1 ≤ preset.BASE_REWARD_FACTOR.toNat ∧
+  2 ≤ (EthLib.Consensus.parameters preset .fusaka).MIN_SLASHING_PENALTY_QUOTIENT.toNat ∧
+  2400 * (2 * preset.MAX_EFFECTIVE_BALANCE.toNat / 3 -
+      preset.MAX_EFFECTIVE_BALANCE.toNat /
+        (EthLib.Consensus.parameters preset .fusaka).MIN_SLASHING_PENALTY_QUOTIENT.toNat -
+      preset.downwardBand - 1) + 2400 * preset.downwardBand +
+    2400 * ((preset.MAX_EFFECTIVE_BALANCE.toNat + preset.downwardBand +
+      (EthLib.Consensus.parameters preset .fusaka).MIN_SLASHING_PENALTY_QUOTIENT.toNat - 1) /
+        (EthLib.Consensus.parameters preset .fusaka).MIN_SLASHING_PENALTY_QUOTIENT.toNat) ≤
+    1591 * (preset.MAX_EFFECTIVE_BALANCE.toNat + preset.downwardBand)
+
+/-- The preset facts of the floor of a new key, mainnet. -/
+theorem newKeyPresetFacts_mainnet : NewKeyPresetFacts Preset.mainnet := by
+  unfold NewKeyPresetFacts
+  decide
+
+/-- The preset facts of the floor of a new key, minimal. -/
+theorem newKeyPresetFacts_minimal : NewKeyPresetFacts Preset.minimal := by
+  unfold NewKeyPresetFacts
+  decide
 
 /-- C2 (item 16).
 
