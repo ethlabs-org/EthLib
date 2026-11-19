@@ -9046,21 +9046,12 @@ private theorem wShare_le (facts : PinPresetFacts preset) (x : ℕ) : wShare pre
   show 33 * x + 10 * W - 1 < (x + 1) * (10 * W)
   omega
 
-/-- The band of a key is its upward band for each due entry that names it, and these add over keys.
-
-The due entries of a set of targets are the due entries of its keys.
+/-- The due entries of a set of targets are those of its keys.
 
 Each entry names one target. -/
-private theorem bandX_sum (X : BeaconState preset fork) (electra : .pectra ≤ fork) (high : ℕ)
-    (T : Finset ValidatorIndex) :
-    ∑ v ∈ T, bandX X high v.toNat = preset.upwardBand * dueAt X high T := by
+private theorem dueAt_sum (X : BeaconState preset fork) (electra : .pectra ≤ fork) (high : ℕ)
+    (T : Finset ValidatorIndex) : ∑ v ∈ T, dueAt X high {v} = dueAt X high T := by
   classical
-  have single (v : ValidatorIndex) :
-      bandX X high v.toNat = preset.upwardBand * dueAt X high {v} := by
-    simp [bandX]
-  simp only [single]
-  rw [← Finset.mul_sum]
-  congr 1
   induction T using Finset.induction_on with
   | empty =>
     rw [dueAt_eq X electra high]
@@ -9069,6 +9060,19 @@ private theorem bandX_sum (X : BeaconState preset fork) (electra : .pectra ≤ f
     rw [Finset.sum_insert ha, ih, dueAt_eq X electra high, dueAt_eq X electra high,
       dueAt_eq X electra high, show insert a s = {a} ∪ s from rfl,
       dueList_length_union X electra high (Finset.disjoint_singleton_left.mpr ha)]
+
+/-- The band of a key is its upward band for each due entry that names it, and these add over keys.
+
+The due entries of a set of targets are the due entries of its keys. -/
+private theorem bandX_sum (X : BeaconState preset fork) (electra : .pectra ≤ fork) (high : ℕ)
+    (T : Finset ValidatorIndex) :
+    ∑ v ∈ T, bandX X high v.toNat = preset.upwardBand * dueAt X high T := by
+  classical
+  have single (v : ValidatorIndex) :
+      bandX X high v.toNat = preset.upwardBand * dueAt X high {v} := by
+    simp [bandX]
+  simp only [single]
+  rw [← Finset.mul_sum, dueAt_sum X electra high T]
 
 /-- The classes `K4`, `K5` and `K6` share no key with each other or with `V`. -/
 private theorem classes_disjoint (h : Setting config checks g split fin pulled anc counted V) :
@@ -9724,6 +9728,44 @@ private theorem cons_due_bound (h : Setting config checks g split fin pulled anc
   rw [← Finset.sum_image (f := fun i => consAmt (eventsF ++ events) i)
     (fun _ _ _ _ e => UInt64.toNat_inj.mp e)]
   exact bound
+
+/-- The keys that a consolidation of X's queue credits on C's run are at most its due entries.
+
+Each such key is the target of a due entry, and each entry names one target. -/
+private theorem cons_keys_le (h : Setting config checks g split fin pulled anc counted V)
+    (fromFin : Run config checks ⟨fork, fin⟩ ⟨fork, split⟩)
+    (tailC : Run config checks ⟨fork, split⟩ ⟨fork, counted⟩) (highC : ℕ)
+    (endEpochC : (getCurrentEpoch counted).toNat ≤ highC + 1)
+    (highLe : highC ≤ (getCurrentEpoch pulled).toNat)
+    {eventsF eventsC : List (BalanceEvent preset)}
+    (replayedF : fromFin.balanceEvents highC = .ok eventsF)
+    (replayedC : tailC.balanceEvents highC = .ok eventsC) (T : Finset ValidatorIndex)
+    (credited : ∀ v ∈ T, 0 < consAmt eventsC v.toNat) :
+    T.card ≤ (pinTerms config pulled anc fin).consolidationsXCount := by
+  classical
+  have shallow := h.shallow
+  have electra : .pectra ≤ fork := Nat.le_trans (by decide) h.fulu
+  have each (v : ValidatorIndex) (hv : v ∈ T) : 1 ≤ dueAt fin highC {v} := by
+    have bound := cons_due_bound h fromFin tailC highC endEpochC highLe replayedF replayedC {v}
+    rw [dueAt_eq fin electra highC]
+    by_contra none
+    have empty : dueList fin electra highC {v} = [] := List.length_eq_zero_iff.mp (by omega)
+    simp only [Finset.sum_singleton, empty, List.map_nil, List.sum_nil] at bound
+    have positive := credited v hv
+    unfold consAmt at positive bound
+    simp only [List.filter_append, List.map_append, List.sum_append] at bound
+    omega
+  calc T.card = ∑ v ∈ T, 1 := by simp
+    _ ≤ ∑ v ∈ T, dueAt fin highC {v} := Finset.sum_le_sum each
+    _ = dueAt fin highC T := dueAt_sum fin electra highC T
+    _ ≤ (dueList fin electra (getCurrentEpoch pulled).toNat T).length := by
+      rw [dueAt_eq fin electra highC]
+      exact dueList_length_mono fin electra highLe T
+    _ ≤ _ := by
+      unfold pinTerms
+      dsimp only
+      simp only [shallow, electra, ↓reduceIte, ↓reduceDIte]
+      simpa using dueList_sum_le_all fin electra (getCurrentEpoch pulled).toNat T fun _ => 1
 
 /-- The consolidation credits of C's branch, charged to `consolidationsX` (the S9 ruling).
 
