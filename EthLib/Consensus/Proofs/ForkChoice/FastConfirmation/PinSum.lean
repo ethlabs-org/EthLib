@@ -14559,18 +14559,23 @@ A key that is not active at C and has a departure charge on C's branch is also r
 
 That reading is the charge, the key's rise after it, and the slack.
 
+A charge in the split's own epoch reads the balance before the credits of `pre`.
+
+So the key's proposer, whistleblower and sync credits over `pre` are read too.
+
 The slashing starts the key's exit, or finds the exit that an earlier charge started. -/
 private def whistleRead (t : PinTerms preset) (pulled anc counted : BeaconState preset fork)
     {x y : ForkedBeaconState preset} (tail : Run config checks x y)
-    {x' y' : ForkedBeaconState preset} (rrun : Run config checks x' y') (highC high : ℕ)
-    (eventsC eventsF events : List (BalanceEvent preset)) (fin : BeaconState preset fork)
+    {x' y' : ForkedBeaconState preset} (rrun : Run config checks x' y')
+    {x'' y'' : ForkedBeaconState preset} (pre : Run config checks x'' y'') (highC high : ℕ)
+    (eventsC eventsF events eventsP : List (BalanceEvent preset)) (fin : BeaconState preset fork)
     (i : ℕ) : ℕ :=
   if ¬ isActiveAt counted (getCurrentEpoch counted) i = true ∧
       (tail.departureCharges.any fun c => c.index == i) = true then
     min (whistleEnv t pulled anc fin i +
         whistleSlack t tail rrun highC high eventsC eventsF events fin i)
-      (chargeAmt tail i + riseQ tail highC i +
-        whistleSlack t tail rrun highC high eventsC eventsF events fin i)
+      (chargeAmt tail i + riseQ tail highC i + (propN pre highC i + whistC pre highC i +
+        syncCr eventsP i) + whistleSlack t tail rrun highC high eventsC eventsF events fin i)
   else
     whistleEnv t pulled anc fin i + whistleSlack t tail rrun highC high eventsC eventsF events fin i
 
@@ -14642,6 +14647,16 @@ A key created after the split that is active at C is read at `createdCeil`.
 
 A key created after the split that has exited by C is read at its charge and credits.
 
+A charge in the split's own epoch also reads the credits of `pre`.
+
+That is the run to the split from the state of that epoch's start.
+
+The facts that tie `pre` to the run are premises of the proof of `registryCharge`.
+
+They are its cut, its epoch and the earlier steps.
+
+This lemma does not use them.
+
 Each term of the sums is at most the largest cap, which a slashing reads at its balance. -/
 private theorem whistle_core (h : Setting config checks g split fin pulled anc counted V)
     (fromFin : Run config checks ⟨fork, fin⟩ ⟨fork, split⟩)
@@ -14650,6 +14665,8 @@ private theorem whistle_core (h : Setting config checks g split fin pulled anc c
     (tailC : Run config checks ⟨fork, split⟩ ⟨fork, counted⟩) (highC : ℕ)
     (endEpochC : (getCurrentEpoch counted).toNat ≤ highC + 1)
     {eventsC : List (BalanceEvent preset)} (replayedC : tailC.balanceEvents highC = .ok eventsC)
+    {b : BeaconState preset fork} (pre : Run config checks ⟨fork, b⟩ ⟨fork, split⟩)
+    {eventsP : List (BalanceEvent preset)}
     (registry : ∀ {a b : ForkedBeaconState preset} (step : Step config checks a b),
       tailC.Contains step → ∀ i, i < split.validators.data.size →
         (split.validators.data[i]?.map (·.slashed)).getD false = false →
@@ -14665,13 +14682,14 @@ private theorem whistle_core (h : Setting config checks g split fin pulled anc c
           (b.state.validators.data[i]?.map (·.slashed)).getD false) = true →
         (tailC.departureCharges.any fun c => c.index == i) = true →
           effectiveAt a i ≤ chargeAmt tailC i + riseQ tailC highC i +
+            (propN pre highC i + whistC pre highC i + syncCr eventsP i) +
             whistleSlack (pinTerms config pulled anc fin) tailC (fromFin.append tail) highC high
               eventsC eventsF events fin i)
     (S : Finset ValidatorIndex) :
     ∑ v ∈ S, whistC tailC highC v.toNat ≤
       (∑ i ∈ (slashedOnC split counted).filter (fun i => i < split.validators.data.size),
         min (whistleRead (pinTerms config pulled anc fin) pulled anc counted tailC
-            (fromFin.append tail) highC high eventsC eventsF events fin i)
+            (fromFin.append tail) pre highC high eventsC eventsF events eventsP fin i)
           preset.MAX_EFFECTIVE_BALANCE_ELECTRA.toNat /
             (parameters preset fork).WHISTLEBLOWER_REWARD_QUOTIENT.toNat) +
       (∑ i ∈ ((slashedOnC split counted).filter (fun i => ¬ i < split.validators.data.size)).filter
@@ -14692,7 +14710,7 @@ private theorem whistle_core (h : Setting config checks g split fin pulled anc c
   obtain ⟨E, hE⟩ : ∃ E : ℕ → ℕ, ∀ i, E i =
       if (split.validators.data[i]?.map (·.slashed)).getD false = false then
         min (whistleRead (pinTerms config pulled anc fin) pulled anc counted tailC
-            (fromFin.append tail) highC high eventsC eventsF events fin i)
+            (fromFin.append tail) pre highC high eventsC eventsF events eventsP fin i)
           preset.MAX_EFFECTIVE_BALANCE_ELECTRA.toNat
       else preset.MAX_EFFECTIVE_BALANCE_ELECTRA.toNat := ⟨_, fun _ => rfl⟩
   obtain ⟨cr, hcr⟩ : ∃ cr : ℕ → ℕ, ∀ i, cr i =
@@ -14930,11 +14948,19 @@ private theorem whistle_slack (h : Setting config checks g split fin pulled anc 
     {eventsF : List (BalanceEvent preset)} (replayedF : fromFin.balanceEvents high = .ok eventsF)
     (tailC : Run config checks ⟨fork, split⟩ ⟨fork, counted⟩) (highC : ℕ)
     (endEpochC : (getCurrentEpoch counted).toNat ≤ highC + 1)
-    {eventsC : List (BalanceEvent preset)} (replayedC : tailC.balanceEvents highC = .ok eventsC) :
+    {eventsC : List (BalanceEvent preset)} (replayedC : tailC.balanceEvents highC = .ok eventsC)
+    (toFin : Run config checks g ⟨fork, fin⟩)
+    {b : BeaconState preset fork} (toB : Run config checks g ⟨fork, b⟩)
+    (pre : Run config checks ⟨fork, b⟩ ⟨fork, split⟩)
+    (cut : toB.append pre = toFin.append fromFin)
+    (sameEpoch : getCurrentEpoch split = getCurrentEpoch b)
+    (earlier : ∀ {u w : ForkedBeaconState preset} (step : Step config checks u w),
+      toB.Contains step → (getCurrentEpoch u.state).toNat < (getCurrentEpoch b).toNat)
+    {eventsP : List (BalanceEvent preset)} (replayedP : pre.balanceEvents highC = .ok eventsP) :
     3 * (∑ i ∈ ((slashedOnC split counted).filter (fun i => i < split.validators.data.size)), min
         (whistleRead (pinTerms config pulled anc fin) pulled anc counted tailC (fromFin.append tail)
-        highC high
-          eventsC eventsF events fin i) preset.MAX_EFFECTIVE_BALANCE_ELECTRA.toNat / (parameters
+        pre highC high eventsC eventsF events eventsP fin i)
+        preset.MAX_EFFECTIVE_BALANCE_ELECTRA.toNat / (parameters
               preset fork).WHISTLEBLOWER_REWARD_QUOTIENT.toNat) +
       3 * (∑ i ∈ (((slashedOnC split counted).filter (fun i => ¬ i <
           split.validators.data.size)).filter (fun i => isActiveAt counted (getCurrentEpoch counted)
@@ -15147,6 +15173,14 @@ private theorem bud_whistle_of (h : Setting config checks g split fin pulled anc
     (tailC : Run config checks ⟨fork, split⟩ ⟨fork, counted⟩) (highC : ℕ)
     (endEpochC : (getCurrentEpoch counted).toNat ≤ highC + 1)
     {eventsC : List (BalanceEvent preset)} (replayedC : tailC.balanceEvents highC = .ok eventsC)
+    (toFin : Run config checks g ⟨fork, fin⟩)
+    {b : BeaconState preset fork} (toB : Run config checks g ⟨fork, b⟩)
+    (pre : Run config checks ⟨fork, b⟩ ⟨fork, split⟩)
+    (cut : toB.append pre = toFin.append fromFin)
+    (sameEpoch : getCurrentEpoch split = getCurrentEpoch b)
+    (earlier : ∀ {u w : ForkedBeaconState preset} (step : Step config checks u w),
+      toB.Contains step → (getCurrentEpoch u.state).toNat < (getCurrentEpoch b).toNat)
+    {eventsP : List (BalanceEvent preset)} (replayedP : pre.balanceEvents highC = .ok eventsP)
     (registry : ∀ {a b : ForkedBeaconState preset} (step : Step config checks a b),
       tailC.Contains step → ∀ i, i < split.validators.data.size →
         (split.validators.data[i]?.map (·.slashed)).getD false = false →
@@ -15162,6 +15196,7 @@ private theorem bud_whistle_of (h : Setting config checks g split fin pulled anc
           (b.state.validators.data[i]?.map (·.slashed)).getD false) = true →
         (tailC.departureCharges.any fun c => c.index == i) = true →
           effectiveAt a i ≤ chargeAmt tailC i + riseQ tailC highC i +
+            (propN pre highC i + whistC pre highC i + syncCr eventsP i) +
             whistleSlack (pinTerms config pulled anc fin) tailC (fromFin.append tail) highC high
                 eventsC eventsF events fin i) :
     3 * ((∑ v ∈ (K4 pulled counted V), (whistC tailC highC v.toNat : ℤ)) +
@@ -15223,7 +15258,7 @@ private theorem bud_whistle_of (h : Setting config checks g split fin pulled anc
   classical
   have quotient := h.facts.whistleblower fork
   -- the whistleblower credits of the classes and of `CS` are bounded by the reward base
-  have core := whistle_core h fromFin tail high tailC highC endEpochC replayedC registry
+  have core := whistle_core h fromFin tail high tailC highC endEpochC replayedC pre registry
     registryCharge ((K4 pulled counted V ∪ K5 counted V ∪ K6 pulled counted) ∪ SC pulled counted
       split ∪ CS counted split)
   obtain ⟨dK, -⟩ := cs_disjoint h
@@ -15235,7 +15270,7 @@ private theorem bud_whistle_of (h : Setting config checks g split fin pulled anc
     sum_SC_positions h (fun i => whistC tailC highC i)] at core
   -- the part of the reward base that each payer takes
   have slack := whistle_slack h tail high endEpoch replayed fromFin replayedF tailC highC
-    endEpochC replayedC
+    endEpochC replayedC toFin toB pre cut sameEpoch earlier replayedP
   have exited := whistle_exited h tailC highC
   have free := whistle_free h high endEpoch fromFin replayedF tailC highC endEpochC replayedC
   -- the keys that R slashes pay `branchR`'s claim
