@@ -38,7 +38,9 @@ private theorem step_passDebit_le {m n : ForkedBeaconState preset} (step : Step 
     (startEpoch : (getCurrentEpoch m.state).toNat ≤ high + 1) {v : ℕ}
     (inside : v < m.state.validators.data.size) (pen : ℕ)
     (rate : (getCurrentEpoch m.state).toNat < (getCurrentEpoch n.state).toNat →
-      (∃ total, getTotalActiveBalance m.state = .ok total) → passPenaltyRate config m v ≤ pen)
+      (∃ total perIncrement, getTotalActiveBalance m.state = .ok total ∧
+        getBaseRewardPerIncrement preset total = .ok perIncrement) →
+      passPenaltyRate config m v ≤ pen)
     {evs : List (BalanceEvent preset)} (replayed : step.balanceEvents = .ok evs) :
     (evs.map (penaltyDebit v)).sum ≤ pen := by
   have run : (Run.nil.snoc step : Run config checks m n).balanceEvents high = .ok evs := by
@@ -94,12 +96,7 @@ private theorem pass_of_leak (h : Setting config checks g split fin pulled anc c
     (i : ValidatorIndex) (initial : ∃ val, fin.validators.data[i.toNat]? = some val)
     (ρn ρd : ℕ)
     (leaky : ∀ eb : ℕ, preset.EFFECTIVE_BALANCE_INCREMENT.toNat ∣ eb →
-      (pinTerms config pulled anc fin).leakAt eb i.toNat ≤ ρn * eb / ρd)
-    (quarter : ∃ pq, getBaseRewardPerIncrement preset
-      (if 18 * preset.EFFECTIVE_BALANCE_INCREMENT.toNat ≤
-          ((getTotalActiveBalance pulled).toOption.getD 0).toNat then
-        (getTotalActiveBalance pulled).toOption.getD 0 / 4
-      else preset.EFFECTIVE_BALANCE_INCREMENT / 5) = .ok pq) :
+      (pinTerms config pulled anc fin).leakAt eb i.toNat ≤ ρn * eb / ρd) :
     ∀ {m n : ForkedBeaconState preset} (before : Run config checks ⟨fork, fin⟩ m)
       (step : Step config checks m n) (after : Run config checks n ⟨fork, e⟩),
       (before.snoc step).append after = whole → ∀ evs, step.balanceEvents = .ok evs →
@@ -131,8 +128,9 @@ private theorem pass_of_leak (h : Setting config checks g split fin pulled anc c
     Nat.lt_of_lt_of_le (Array.getElem?_eq_some_iff.mp initial).1 mSize
   refine step_passDebit_le step nEarly altair (getCurrentEpoch pulled).toNat endE startE inside
     (ρn * effectiveAt ⟨mf, ms⟩ i.toNat / ρd) (fun _ total => ?_) ok
-  obtain ⟨T, totalOk⟩ := total
-  obtain ⟨pq, pqOk⟩ := quarter
+  obtain ⟨T, perIncrement, totalOk, perOk⟩ := total
+  obtain ⟨pq, pqOk⟩ :=
+    quarter_base_ok h.facts perOk ((getTotalActiveBalance pulled).toOption.getD 0)
   have rate := passRate_le_leakAt h pre startE totalOk pqOk i.toNat
   exact rate.trans (leaky _ (Nat.dvd_of_mod_eq_zero
     (effective_aligned (shared.append pre) h.genesis h.aligned i.toNat)))
@@ -178,12 +176,7 @@ private theorem exitQ_at (h : Setting config checks g split fin pulled anc count
     (far : ∀ w, sd.state.validators.data[v.toNat]? = some w → w.exitEpoch = FAR_FUTURE_EPOCH)
     (ρn ρd : ℕ)
     (leaky : ∀ eb : ℕ, preset.EFFECTIVE_BALANCE_INCREMENT.toNat ∣ eb →
-      (pinTerms config pulled anc fin).leakAt eb v.toNat ≤ ρn * eb / ρd)
-    (quarter : ∃ pq, getBaseRewardPerIncrement preset
-      (if 18 * preset.EFFECTIVE_BALANCE_INCREMENT.toNat ≤
-          ((getTotalActiveBalance pulled).toOption.getD 0).toNat then
-        (getTotalActiveBalance pulled).toOption.getD 0 / 4
-      else preset.EFFECTIVE_BALANCE_INCREMENT / 5) = .ok pq) :
+      (pinTerms config pulled anc fin).leakAt eb v.toNat ≤ ρn * eb / ρd) :
     min (effectiveAt (⟨fork, fin⟩ : ForkedBeaconState preset) v.toNat)
         (min (withdrawalMaxEffectiveBalance preset fork val).toNat
           (potentialFloor ρn ρd ((getCurrentEpoch counted).toNat - (getCurrentEpoch fin).toNat)
@@ -253,7 +246,7 @@ private theorem exitQ_at (h : Setting config checks g split fin pulled anc count
         actualBalanceAt (⟨fork, fin⟩ : ForkedBeaconState preset) v.toNat))
       ((before.map (syncDebit v.toNat)).sum + (before.map (floorPartialDebit v)).sum))
     (by omega)
-    (pass_of_leak h pre near v ⟨val, initial⟩ ρn ρd leaky quarter)
+    (pass_of_leak h pre near v ⟨val, initial⟩ ρn ρd leaky)
     (fun a D k hk hD closed => by
       have mono : ρd - ρn * ((getCurrentEpoch counted).toNat - (getCurrentEpoch fin).toNat) ≤
           ρd - ρn * k :=
@@ -280,12 +273,7 @@ private theorem exitQ_potential (h : Setting config checks g split fin pulled an
     (charged : ∃ c ∈ tailC.departureCharges, c.index = v.toNat)
     (ρn ρd : ℕ)
     (leaky : ∀ eb : ℕ, preset.EFFECTIVE_BALANCE_INCREMENT.toNat ∣ eb →
-      (pinTerms config pulled anc fin).leakAt eb v.toNat ≤ ρn * eb / ρd)
-    (quarter : ∃ pq, getBaseRewardPerIncrement preset
-      (if 18 * preset.EFFECTIVE_BALANCE_INCREMENT.toNat ≤
-          ((getTotalActiveBalance pulled).toOption.getD 0).toNat then
-        (getTotalActiveBalance pulled).toOption.getD 0 / 4
-      else preset.EFFECTIVE_BALANCE_INCREMENT / 5) = .ok pq) :
+      (pinTerms config pulled anc fin).leakAt eb v.toNat ≤ ρn * eb / ρd) :
     min (effectiveAt (⟨fork, fin⟩ : ForkedBeaconState preset) v.toNat)
         (min (withdrawalMaxEffectiveBalance preset fork val).toNat
           (potentialFloor ρn ρd ((getCurrentEpoch counted).toNat - (getCurrentEpoch fin).toNat)
@@ -331,7 +319,7 @@ private theorem exitQ_potential (h : Setting config checks g split fin pulled an
     exact unset
   rw [amount0, ← amount]
   exact exitQ_at h fromFin tailC replayed stop.pre stop.post stop.split v member val initial far
-    ρn ρd leaky quarter
+    ρn ρd leaky
 
 /-- The leak of an aligned effective balance is at most a rate times it. -/
 private theorem leak_rate (config : Config) (pulled anc fin : BeaconState preset fork)
