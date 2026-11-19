@@ -2502,10 +2502,14 @@ private theorem exitFloor_add_slack (h : Setting config checks g split fin pulle
       (pinTerms config pulled anc fin).newKeyFloor := by
   have newKey := h.facts.newKey fork
   have size := h.facts.incrementSize
-  have floor : (pinTerms config pulled anc fin).exitFloor ≤
-      (pinTerms config pulled anc fin).newKeyFloor := by
-    show max 1 _ ≤ _
-    omega
+  have floorEq : (pinTerms config pulled anc fin).newKeyFloor =
+      2 * preset.MAX_EFFECTIVE_BALANCE.toNat / 3 -
+        preset.MAX_EFFECTIVE_BALANCE.toNat /
+          (EthLib.Consensus.parameters preset fork).MIN_SLASHING_PENALTY_QUOTIENT.toNat -
+        preset.downwardBand - preset.EFFECTIVE_BALANCE_INCREMENT.toNat := rfl
+  have exitEq : (pinTerms config pulled anc fin).exitFloor =
+      max 1 (min (config.EJECTION_BALANCE.toNat - preset.EFFECTIVE_BALANCE_INCREMENT.toNat)
+        (pinTerms config pulled anc fin).newKeyFloor) := rfl
   have slack : (pinTerms config pulled anc fin).newKeySlack =
       (pinTerms config pulled anc fin).newKeyFloor -
         (pinTerms config pulled anc fin).exitFloor := rfl
