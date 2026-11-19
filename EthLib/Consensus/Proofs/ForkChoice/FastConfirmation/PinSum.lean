@@ -1218,7 +1218,10 @@ private theorem credited_deposits {g : ForkedBeaconState preset}
           · refine Finset.mem_union_right _ (Finset.mem_filter.mpr ?_)
             have mono : ∃ e ∈ events, e.source = .deposits ∧ 0 < keyCredit i e := by
               by_contra none
-              push_neg at none
+              have none' : ∀ e ∈ events, e.source = .deposits → keyCredit i e = 0 :=
+                fun e mem dep => by
+                  by_contra ne
+                  exact none ⟨e, mem, dep, Nat.pos_of_ne_zero ne⟩
               have zero : stepCredit (fun _ => false) (fun s => decide (s = .deposits)) i
                   (Step.slot across : Step config checks u l) = 0 := by
                 show (((((Step.slot (config := config) (checks := checks)
@@ -1228,7 +1231,7 @@ private theorem credited_deposits {g : ForkedBeaconState preset}
                 exact List.sum_eq_zero fun _ member => by
                   obtain ⟨e, inside, rfl⟩ := List.mem_map.mp member
                   obtain ⟨mem, test⟩ := List.mem_filter.mp inside
-                  have := none e mem (by simpa using test)
+                  have := none' e mem (by simpa using test)
                   omega
               omega
             obtain ⟨e, mem, dep, positive⟩ := mono
