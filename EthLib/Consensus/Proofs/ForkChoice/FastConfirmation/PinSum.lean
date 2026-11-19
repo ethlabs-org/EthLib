@@ -13841,6 +13841,123 @@ private def createdCeil (t : PinTerms preset) {x y : ForkedBeaconState preset}
       WEIGHT_DENOMINATOR.toNat) + t.depth * (rate / WEIGHT_DENOMINATOR.toNat + 2) +
         preset.downwardBand
 
+/-- A created key active at C is bounded by `createdCeil` at its slashing.
+
+It follows from P's `created_ceiling` as `ceiling`, the credit flows of C's run and the slashing
+facts.
+
+`ceiling` bounds the key at every state from its creation, at the depth of the call.
+
+It also says that before its creation the key is not yet active.
+
+`flip` says that a key slashed in a step is already activated, so the step comes after its creation.
+
+The key is active at C, so `activeVoters` holds it, and it is read at its credits.
+
+`flows` is the credit bound that `created_ceiling` takes, for any key. -/
+private theorem created_active_of (h : Setting config checks g split fin pulled anc counted V)
+    (tailC : Run config checks ⟨fork, split⟩ ⟨fork, counted⟩) (highC : ℕ)
+    {eventsC : List (BalanceEvent preset)}
+    (ceiling : ∀ {v : ValidatorIndex}, v ∈ activeVoters counted →
+      split.validators.data.size ≤ v.toNat → ∀ P : ℕ,
+      P = ((getBaseRewardPerIncrement preset
+        (if 18 * preset.EFFECTIVE_BALANCE_INCREMENT.toNat ≤
+            ((getTotalActiveBalance pulled).toOption.getD 0).toNat then
+          (getTotalActiveBalance pulled).toOption.getD 0 / 4
+        else preset.EFFECTIVE_BALANCE_INCREMENT / 5)).toOption.getD 0).toNat →
+      11 * (min (pinTerms config pulled anc fin).depth
+        ((getCurrentEpoch pulled).toNat + 2 - (getCurrentEpoch fin).toNat)) *
+        (P * (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum) <
+          WEIGHT_DENOMINATOR.toNat * preset.EFFECTIVE_BALANCE_INCREMENT.toNat →
+      ∀ {Z : ℕ}, grossScan v.toNat highC tailC +
+        (creditScan (fun _ => false) (fun s => decide (s ≠ .rewards)) v.toNat highC tailC).1 ≤ Z →
+      ∃ (z : ForkedBeaconState preset) (pre : Run config checks ⟨fork, split⟩ z)
+        (post : Run config checks z ⟨fork, counted⟩), tailC = pre.append post ∧ 0 < Z ∧
+        (∀ p ∈ pre.balancePath, ∀ w : Validator, p.state.validators.data[v.toNat]? = some w →
+          w.activationEpoch ≠ FAR_FUTURE_EPOCH →
+          (getCurrentEpoch p.state).toNat + 1 < w.activationEpoch.toNat) ∧
+        ∀ p ∈ post.balancePath, effectiveAt p v.toNat ≤ Z +
+          (min (pinTerms config pulled anc fin).depth
+            ((getCurrentEpoch pulled).toNat + 2 - (getCurrentEpoch fin).toNat)) *
+            (11 * Z / (10 * preset.EFFECTIVE_BALANCE_INCREMENT.toNat) * P *
+              (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum / WEIGHT_DENOMINATOR.toNat) +
+          (min (pinTerms config pulled anc fin).depth
+            ((getCurrentEpoch pulled).toNat + 2 - (getCurrentEpoch fin).toNat)) *
+            (P * (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum / WEIGHT_DENOMINATOR.toNat + 2) +
+          preset.downwardBand)
+    (flows : ∀ v : ℕ, grossScan v highC tailC +
+      (creditScan (fun _ => false) (fun s => decide (s ≠ .rewards)) v highC tailC).1 ≤
+        credC tailC highC v + whistC tailC highC v + syncCr eventsC v)
+    (flip : ∀ {a b : ForkedBeaconState preset} (step : Step config checks a b),
+      tailC.Contains step → ∀ i : ℕ, (!(a.state.validators.data[i]?.map (·.slashed)).getD false &&
+        (b.state.validators.data[i]?.map (·.slashed)).getD false) = true →
+        ∃ w : Validator, a.state.validators.data[i]? = some w ∧
+          w.activationEpoch ≠ FAR_FUTURE_EPOCH ∧
+          w.activationEpoch.toNat ≤ (getCurrentEpoch a.state).toNat)
+    {a b : ForkedBeaconState preset} (step : Step config checks a b) (member : tailC.Contains step)
+    (i : ℕ) (created : ¬ i < split.validators.data.size)
+    (active : isActiveAt counted (getCurrentEpoch counted) i = true)
+    (flag : (!(a.state.validators.data[i]?.map (·.slashed)).getD false &&
+      (b.state.validators.data[i]?.map (·.slashed)).getD false) = true) :
+    effectiveAt a i ≤ createdCeil (pinTerms config pulled anc fin) tailC highC eventsC i := by
+  obtain ⟨shared⟩ := h.toFin
+  obtain ⟨fromFin⟩ := h.fromFin
+  obtain ⟨pre', post', hsplit, aEarly, -⟩ := Run.contains_step_facts member h.early
+  unfold createdCeil
+  dsimp only
+  split_ifs with high
+  · exact PinSplit5.effectiveAt_le_capMax ((shared.append fromFin).append pre') h.genesis h.caps
+      aEarly i
+  -- below a high gain rate, `key` holds at the depth of the call
+  have lowGain : 11 * (pinTerms config pulled anc fin).depth *
+      ((pinTerms config pulled anc fin).gainRateMax + 1) ≤
+        preset.MAX_EFFECTIVE_BALANCE_ELECTRA.toNat := by
+    have same : (pinTerms config pulled anc fin).gainHigh = !decide (11 *
+      (pinTerms config pulled anc fin).depth * ((pinTerms config pulled anc fin).gainRateMax + 1) ≤
+        preset.MAX_EFFECTIVE_BALANCE_ELECTRA.toNat) := rfl
+    rw [same] at high
+    simpa using high
+  have alignedMax := (cap_values_aligned h.aligned).2
+  have low : 11 * (pinTerms config pulled anc fin).depth *
+      ((pinTerms config pulled anc fin).perIncrement *
+        (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum) <
+      WEIGHT_DENOMINATOR.toNat * preset.EFFECTIVE_BALANCE_INCREMENT.toNat :=
+    rate_per_increment _ _ _ _ _ _ h.bands.1 (by decide) alignedMax lowGain
+  -- the key as a validator index
+  have limit := BeaconState.registryWithinLimit_of_lt h.early counted
+  unfold BeaconState.RegistryWithinLimit at limit
+  have limitBound := preset.VALIDATOR_REGISTRY_LIMIT.toNat_lt
+  obtain ⟨u, foundC, -⟩ := isActiveAt_eq_true_iff.mp active
+  have inside := (Array.getElem?_eq_some_iff.mp foundC).1
+  have below : i < 2 ^ 64 := by omega
+  obtain ⟨v, hvi⟩ : ∃ v : ValidatorIndex, v.toNat = i :=
+    ⟨UInt64.ofNat i, UInt64.toNat_ofNat_of_lt' below⟩
+  subst hvi
+  have voter : v ∈ activeVoters counted :=
+    List.mem_toFinset.mpr (mem_getActiveValidatorIndices_of_isActiveAt active)
+  have depthLe : min (pinTerms config pulled anc fin).depth
+      ((getCurrentEpoch pulled).toNat + 2 - (getCurrentEpoch fin).toNat) ≤
+        (pinTerms config pulled anc fin).depth := Nat.min_le_left _ _
+  obtain ⟨z, pre, post, splitEq, -, ahead, bound⟩ := ceiling voter (Nat.not_lt.mp created)
+    (pinTerms config pulled anc fin).perIncrement rfl
+    (Nat.lt_of_le_of_lt (Nat.mul_le_mul_right _ (Nat.mul_le_mul_left _ depthLe)) low)
+    (flows v.toNat)
+  -- the step comes after the creation state, because a slashed key is activated
+  have onPath : a ∈ tailC.balancePath := by
+    rw [hsplit, Run.balancePath_append, Run.balancePath]
+    refine List.mem_append.mpr (.inl (List.mem_append.mpr (.inr ?_)))
+    exact List.mem_of_mem_head? (Step.balancePath_ends step).1
+  have afterZ : a ∈ post.balancePath := by
+    rw [splitEq, Run.balancePath_append] at onPath
+    rcases List.mem_append.mp onPath with before | later
+    · obtain ⟨w, found, assigned, activated⟩ := flip step member v.toNat flag
+      have := ahead a before w found assigned
+      omega
+    · exact List.mem_of_mem_tail later
+  refine (bound a afterZ).trans ?_
+  simp only [Nat.mul_assoc]
+  gcongr
+
 /-- A key created after the split that is active at C has the bound `createdCeil` at its slashing.
 
 Its credits since its creation are credits of C's branch, which P's `created_ceiling` reads.
