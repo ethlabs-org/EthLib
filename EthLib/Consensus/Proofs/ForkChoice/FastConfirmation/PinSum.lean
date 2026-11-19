@@ -6336,6 +6336,7 @@ private theorem V_left (h : Setting config checks g split fin pulled anc counted
       have exitC := exitOf c mem idx
       have shallow := h.shallow
       have finOrder := UInt64.le_iff_toNat_le.mp (currentEpoch_le_of_chainSteps fromFin.chainSteps)
+      simp only at finOrder
       obtain ⟨sd, pre, post, cut, far, amount⟩ := exit_stop fromFin tailC v.toNat ⟨c, mem, idx⟩
         (fun c' mem' idx' => by have := exitOf c' mem' idx'; omega)
       have sync := V_sync_le eventsF eventsC v.toNat
@@ -6363,6 +6364,7 @@ private theorem V_left (h : Setting config checks g split fin pulled anc counted
     have finCur := UInt64.le_iff_toNat_le.mp (finalized_le_current h)
     have late := (lateB_iff config pulled anc fin v.toNat).mpr ⟨w, foundW, by
       have := UInt64.le_iff_toNat_le.mp eligible
+      simp only at this
       omega, by omega⟩
     simp only [late, ↓reduceIte]
     omega
@@ -6388,6 +6390,7 @@ theorem stub_V (h : Setting config checks g split fin pulled anc counted V)
           eR pulled v) +
         (∑ v ∈ (VN counted V) with (pinTerms config pulled anc fin).lateB v.toNat = true,
           eR pulled v) : ℕ) := by
+  clear replayed
   have base := stub_V_of h tailC
     (V_active h fromFin tailC high highC endEpoch endEpochC replayedF replayedC)
     (V_left h fromFin tailC high highC endEpoch endEpochC replayedF replayedC)
