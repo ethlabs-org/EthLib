@@ -12,25 +12,6 @@ variable {preset : Preset} {fork : Fork} {config : Config} {checks : SignatureCh
 variable {g : ForkedBeaconState preset} {split fin pulled anc counted : BeaconState preset fork}
   {V : Finset ValidatorIndex}
 
-/-- A key of `K5` with a charge on the run has its first counted charge as its `exitQ`. -/
-private theorem exitQ_eq_charge (early : fork < .glamsterdam) {x : ForkedBeaconState preset}
-    (tail : Run config checks x ⟨fork, counted⟩) {v : ValidatorIndex} (member : v ∈ K5 counted V)
-    (charged : ∃ c ∈ tail.departureCharges, c.index = v.toNat) :
-    ∃ c ∈ tail.departureCharges, c.index = v.toNat ∧ exitQ tail v.toNat = c.amount := by
-  obtain ⟨c, mem, idx⟩ := charged
-  have le := charge_epoch_le_of_K5 early tail member c mem idx
-  refine ⟨c, mem, idx, ?_⟩
-  cases found : tail.departureCharges.find? fun c =>
-      c.index == v.toNat && decide (c.epoch ≤ (getCurrentEpoch counted).toNat) with
-  | none =>
-    have := List.find?_eq_none.mp found c mem
-    simp [idx, le] at this
-  | some d =>
-    have both := List.find?_some found
-    simp only [Bool.and_eq_true, beq_iff_eq] at both
-    have same := charge_unique tail (List.mem_of_find?_eq_some found) mem (both.1.trans idx.symm)
-    simp [exitQ, found, same]
-
 /-- The penalties of one key in one step fit a rate read at the start of the step. -/
 private theorem step_passDebit_le {m n : ForkedBeaconState preset} (step : Step config checks m n)
     (early : n.fork < .glamsterdam) (altair : .altair ≤ m.fork) (high : ℕ)
@@ -298,7 +279,14 @@ private theorem exitQ_potential (h : Setting config checks g split fin pulled an
               preset.EFFECTIVE_BALANCE_INCREMENT.toNat)) ≤
       exitQ tailC v.toNat := by
   classical
-  obtain ⟨c0, member0, index0, amount0⟩ := exitQ_eq_charge h.early tailC member charged
+  obtain ⟨c0, member0, index0, -, amount0⟩ : ∃ c ∈ tailC.departureCharges,
+      c.index = v.toNat ∧ c.epoch ≤ (getCurrentEpoch counted).toNat ∧
+        exitQ tailC v.toNat = c.amount := by
+    obtain ⟨c, mem, idx⟩ := charged
+    have le := charge_epoch_le_of_K5 h.early tailC member c mem idx
+    rcases exitQ_cases tailC v.toNat with ⟨none, -⟩ | found
+    · exact absurd le (none c mem idx)
+    · exact found
   obtain ⟨stop, chosen⟩ := stop_of_charge fromFin tailC member0 index0
   have selected := stop.selected
   rw [chosen] at selected

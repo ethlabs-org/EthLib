@@ -4345,6 +4345,26 @@ private theorem charge_unique {x y : ForkedBeaconState preset} (tail : Run confi
     (same : c.index = d.index) : c = d :=
   List.inj_on_of_nodup_map (DirectSafety.departureCharges_run_indices tail) hc hd same
 
+/-- A run has no counted charge of a key and `exitQ` is zero, or `exitQ` is a counted charge's amount.
+
+The counted charges are those whose exit epoch is at most the run's last epoch. -/
+private theorem exitQ_cases {x y : ForkedBeaconState preset} (tail : Run config checks x y)
+    (v : ℕ) :
+    ((∀ c ∈ tail.departureCharges, c.index = v → ¬ c.epoch ≤ (getCurrentEpoch y.state).toNat) ∧
+      exitQ tail v = 0) ∨
+    ∃ c ∈ tail.departureCharges, c.index = v ∧ c.epoch ≤ (getCurrentEpoch y.state).toNat ∧
+      exitQ tail v = c.amount := by
+  cases found : tail.departureCharges.find? fun c =>
+      c.index == v && decide (c.epoch ≤ (getCurrentEpoch y.state).toNat) with
+  | none =>
+    refine .inl ⟨fun c mem idx le => ?_, by simp [exitQ, found]⟩
+    have := List.find?_eq_none.mp found c mem
+    simp [idx, le] at this
+  | some c =>
+    have both := List.find?_some found
+    simp only [Bool.and_eq_true, beq_iff_eq, decide_eq_true_eq] at both
+    exact .inr ⟨c, List.mem_of_find?_eq_some found, both.1, both.2, by simp [exitQ, found]⟩
+
 open DirectSafety.Apriori DirectSafety.Apriori.Internal in
 /-- A charge of a run is the charge of the stop at its position, on the run after a prefix.
 
@@ -4395,15 +4415,12 @@ private theorem exitQ_floor (h : Setting config checks g split fin pulled anc co
   classical
   obtain ⟨shared⟩ := h.toFin
   -- the charge of `tailC`
-  obtain ⟨c0, member0, index0, amount0⟩ : ∃ c ∈ tailC.departureCharges,
-      c.index = v.toNat ∧ exitQ tailC v.toNat = c.amount := by
-    cases found : tailC.departureCharges.find? fun c =>
-        c.index == v.toNat && decide (c.epoch ≤ (getCurrentEpoch counted).toNat) with
-    | none => simp [exitQ, found] at charged
-    | some c =>
-      have both := List.find?_some found
-      simp only [Bool.and_eq_true, beq_iff_eq] at both
-      exact ⟨c, List.mem_of_find?_eq_some found, both.1, by simp [exitQ, found]⟩
+  obtain ⟨c0, member0, index0, -, amount0⟩ : ∃ c ∈ tailC.departureCharges,
+      c.index = v.toNat ∧ c.epoch ≤ (getCurrentEpoch counted).toNat ∧
+        exitQ tailC v.toNat = c.amount := by
+    rcases exitQ_cases tailC v.toNat with ⟨-, zero⟩ | found
+    · exact absurd zero charged
+    · exact found
   obtain ⟨stop, chosen⟩ := stop_of_charge fromFin tailC member0 index0
   -- the ends
   obtain ⟨w, final, _⟩ := (fromFin.append tailC).registryLifecycle.validators v.toNat val initial
