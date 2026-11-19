@@ -3634,7 +3634,10 @@ private theorem card_seat_keys_le (h : Setting config checks g split fin pulled 
   obtain ⟨pulledTotal, pulledOk⟩ := h.pulledTotal
   have near := h.near
   have called := UInt64.le_iff_toNat_le.mp h.called
-  have band := step_band_of_guard h (fromFin.append tailC) near pulledOk
+  have band : ∀ {u w : ForkedBeaconState preset} (step : Step config checks u w),
+      (fromFin.append tailC).Contains step → ∀ T : Gwei, getTotalActiveBalance w.state = .ok T →
+        2 * T.toNat ≤ 3 * pulledTotal.toNat :=
+    step_band_of_guard h (fromFin.append tailC) near pulledOk
   have debits := (PinSplit5.Run.syncDebits_le (fromFin.append tailC) h.fulu h.early
     (getCurrentEpoch pulled).toNat replayed pulledTotal.toNat band
     (B.image fun v : ValidatorIndex => v.toNat)).1
