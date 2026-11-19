@@ -13,6 +13,10 @@ Not yet released.
   `run_cuts_le` is its instance for the cost of the replayed events.
   The pin's proposer-credit bound reads it for the credits of the block steps.
 
+- `Run.pendingConsolidation_targets` says that each pending consolidation of a state of a run from genesis, before Gloas, has its target in the registry.
+  A request finds its target by pubkey in the registry, which only grows.
+  The pin reads it to exclude a created key that only a consolidation funds.
+
 - `DirectSafety.Apriori.Internal.effectiveAt_le_withdrawalMax` says that a key's effective balance at a state of a run from genesis is at most the largest one its credentials allow.
   The pin's floors read it.
 
