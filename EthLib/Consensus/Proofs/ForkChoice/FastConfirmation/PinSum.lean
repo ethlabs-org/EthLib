@@ -1651,12 +1651,19 @@ theorem bud_queueRise (h : Setting config checks g split fin pulled anc counted 
       (preset.upwardBand + (pinTerms config pulled anc fin).depth *
         (pinTerms config pulled anc fin).gainRateMax)
       fun v _ => riseQ_le h tailC highC endEpochC v.toNat
-    have count := (Finset.card_le_card (fun v member => by
+    have subset : (((K5 counted V).filter fun v =>
+        (pinTerms config pulled anc fin).exitingB v.toNat = false).filter
+          fun v => riseQ tailC highC v.toNat ≠ 0) ⊆
+        (((K5 counted V).filter fun v =>
+          (pinTerms config pulled anc fin).exitingB v.toNat = false).filter
+            fun v => ∃ c ∈ tailC.departureCharges, c.index = v.toNat) := by
+      intro v member
       obtain ⟨inside, nonzero⟩ := Finset.mem_filter.mp member
       refine Finset.mem_filter.mpr ⟨inside, ?_⟩
       by_contra none
       exact nonzero (riseQ_eq_zero tailC highC v.toNat fun c charged same =>
-        none ⟨c, charged, same⟩))).trans (charged_count h tailC)
+        none ⟨c, charged, same⟩)
+    have count := (Finset.card_le_card subset).trans (charged_count h tailC)
     rw [smul_eq_mul] at each
     rw [← sumEq]
     calc _ ≤ 3 * (((((K5 counted V).filter fun v =>
