@@ -1607,6 +1607,25 @@ private theorem sync_debit_seat {f : Fork} {c t : BeaconState preset f} (altair 
   simp only [actualBalanceAt, held, atFinal, Option.map_some, Option.getD_some] at lowered
   omega
 
+private theorem probe_replay {fork : Fork} {a t : BeaconState preset fork}
+    (electra : .pectra ≤ fork) (early : fork < .glamsterdam)
+    {engine : ExecutionEngine preset fork} {block : BeaconBlock preset fork}
+    {events : List (BalanceEvent preset)}
+    (replay : blockBalanceReplay (config := config) (checks := checks) early engine a block =
+      .ok (t, events)) : False := by
+  have altair : .altair ≤ fork := Nat.le_trans (by decide) electra
+  have bellatrix : .bellatrix ≤ fork := Nat.le_trans (by decide) electra
+  have normalized := replay
+  unfold blockBalanceReplay at normalized
+  simp only [altair, bellatrix, electra, ↓reduceDIte] at normalized
+  simp only [← bind_assoc, DirectSafety.Apriori.Internal.except_dite_bind] at normalized
+  simp only [bind_assoc] at normalized
+  simp only [bind_ok_iff, ensure_ok_iff] at normalized
+  obtain ⟨headed, headedOk, executed, executedOk, revealed, revealedOk, voted, votedOk, x1, x2, x3,
+    x4, proposed, proposedOk, rest⟩ := normalized
+  trace_state
+  sorry
+
 /-- A list of at most one element has equal members. -/
 private theorem list_eq_of_length_le_one {α : Type} {L : List α} (short : L.length ≤ 1) {a b : α}
     (ha : a ∈ L) (hb : b ∈ L) : a = b := by
