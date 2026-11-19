@@ -11136,6 +11136,7 @@ private theorem key_core_created (h : Setting config checks g split fin pulled a
       bandR events v.toNat + bandX fin highC v.toNat :=
   sorry
 
+open DirectSafety.Apriori DirectSafety.Apriori.Internal in
 /-- The per-key core of the rise.
 
 A key of R's registry rises from R to C by at most its rise term.
