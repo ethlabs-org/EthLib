@@ -1845,8 +1845,6 @@ private theorem blockReplay_proposer_credits {fork : Fork} {a t : BeaconState pr
 
 /-- A key that an event of a block step credits is its proposer, or a seat holder for a sync event.
 
-The seat is in the committee at the end of the step.
-
 The mixes must span more than the seed lookahead plus two epochs. -/
 private theorem block_gross_keys {g : ForkedBeaconState preset}
     (genesis : Genesis config checks g)
@@ -1884,11 +1882,12 @@ private theorem block_gross_keys {g : ForkedBeaconState preset}
         · exact credited (.inl h)
         · exact notConsolidation h
       have noSync : syncCredit i e = 0 := by simp [syncCredit, notSync]
-      simp only [noRewards, fun h => credited (.inr h), noSync, ↓reduceIte] at each
+      have noSlash : ¬ e.source = .slashings := fun h => credited (.inr h)
+      simp only [noRewards, noSlash, noSync, ↓reduceIte] at each
       omega
   · obtain rfl := List.mem_singleton.mp inSync
     simp only [keyCredit] at positive
-    rcases sync_moved_seat altair synced matchedT (by omega) with seat | ⟨p, found, same, -⟩
+    rcases sync_moved_seat (i := i) altair synced matchedT (by omega) with seat | ⟨p, found, same, -⟩
     · exact .inr ⟨rfl, altair, seat⟩
     · exact .inl (Finset.mem_singleton.mpr (by rw [read] at found; cases found; exact same.symm))
 
