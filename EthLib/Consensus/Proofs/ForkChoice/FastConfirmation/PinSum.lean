@@ -891,9 +891,7 @@ def slashR (t : PinTerms preset) (i : ℕ) : ℕ :=
 
 /-- The gross credits to the key in the block steps of a run, from rewards, slashings and sync.
 
-A block step counts the credits of its events from those sources, whatever the step takes back.
-
-The steps count as in `netScan`, from the one whose start epoch is at most `high + 1`. -/
+A block step counts the credits of its events from those sources, whatever the step takes back. -/
 private def grossScan (v high : ℕ) {x y : ForkedBeaconState preset} (tail : Run config checks x y) :
     ℕ :=
   (creditScan (fun s => decide (s = .rewards ∨ s = .slashings ∨ s = .sync)) (fun _ => false) v
@@ -1926,9 +1924,7 @@ private theorem block_gross_keys {g : ForkedBeaconState preset}
     · exact .inr ⟨rfl, altair, h⟩
     · exact .inl (Finset.mem_singleton.mpr (by rw [read] at found; cases found; exact same.symm))
 
-/-- A key that a block step credits is its proposer, or holds a seat at the end of the step.
-
-The credits are those of rewards, slashings and sync. -/
+/-- A key that rewards, slashings or sync credit in a block step is a proposer or a seat holder. -/
 private theorem block_step_gross_keys {g : ForkedBeaconState preset}
     (genesis : Genesis config checks g)
     (apart : preset.MIN_SEED_LOOKAHEAD.toNat + 2 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
@@ -10720,6 +10716,39 @@ private theorem slot_idle_step {g m n : ForkedBeaconState preset}
   simp only [List.filter_false, List.map_nil, List.sum_nil] at sources
   omega
 
+/-- A block step raises the balance of a key by at most its gross credits. -/
+private theorem block_balance_le_gross {g : ForkedBeaconState preset} {f : Fork}
+    {s t : BeaconState preset f} {engine : ExecutionEngine preset f}
+    {signed : SignedBeaconBlock preset f} {due : upgradeDue config ⟨f, s⟩ = false}
+    {ok : applySignedBlock config checks engine s signed true = .ok t}
+    (shared : Run config checks g ⟨f, s⟩) (genesis : Genesis config checks g)
+    (early : f < .glamsterdam) (electra : .pectra ≤ f) (i : ℕ) :
+    actualBalanceAt (⟨f, t⟩ : ForkedBeaconState preset) i ≤
+      actualBalanceAt (⟨f, s⟩ : ForkedBeaconState preset) i + stepCredit
+        (fun s => decide (s = .rewards ∨ s = .slashings ∨ s = .sync)) (fun _ => false) i
+        (Step.block engine signed due ok) := by
+  obtain ⟨events, replayed⟩ := (Step.block engine signed due ok :
+    Step config checks ⟨f, s⟩ ⟨f, t⟩).balanceEvents_ok early
+  have base := PinSplit2.step_balance_le_events (Step.block engine signed due ok :
+    Step config checks ⟨f, s⟩ ⟨f, t⟩) early i replayed
+  have bounded := step_events_bounded shared genesis (Step.block engine signed due ok) early
+    replayed
+  have noCons := blockReplay_noConsolidations electra early engine s signed.message
+    (Step.balanceEvents_block early replayed)
+  have split : (events.map (keyCredit i)).sum ≤ ((events.filter fun e => decide
+      (e.source = .rewards ∨ e.source = .slashings ∨ e.source = .sync)).map (keyCredit i)).sum := by
+    simpa using sum_credits_split events (keyCredit i) (fun _ => 0) (fun _ => true)
+      (fun s => decide (s = .rewards ∨ s = .slashings ∨ s = .sync)) (fun _ => false)
+      fun e member _ => by
+        have each := block_event_credit shared genesis early electra i replayed bounded e member
+        by_cases kept : e.source = .rewards ∨ e.source = .slashings ∨ e.source = .sync
+        · simp [kept]
+        · simp only [not_or] at kept
+          simp [kept.1, kept.2.1, kept.2.2, noCons e member, syncCredit] at each ⊢
+          omega
+  simp only [stepCredit, replayed, Except.toOption, Option.getD_some]
+  omega
+
 /-- A key that is idle along a prefix of C's run has a balance at most its credits there.
 
 The key is two epochs from its activation at the end of the run.
@@ -10738,7 +10767,7 @@ private theorem key_idle_walk (h : Setting config checks g split fin pulled anc 
         (getCurrentEpoch m.state).toNat + 1 < w.activationEpoch.toNat)
     (start : actualBalanceAt (⟨fork, split⟩ : ForkedBeaconState preset) v = 0) :
     ∀ {m : ForkedBeaconState preset} (pre : Run config checks ⟨fork, split⟩ m),
-      Run config checks m z → actualBalanceAt m v ≤ netScan v highC pre +
+      Run config checks m z → actualBalanceAt m v ≤ grossScan v highC pre +
         (creditScan (fun _ => false) (fun s => decide (s = .deposits)) v highC pre).1 +
         (creditScan (fun _ => false) (fun s => decide (s = .consolidations)) v highC pre).1 := by
   obtain ⟨toFin⟩ := h.toFin
@@ -10758,13 +10787,15 @@ private theorem key_idle_walk (h : Setting config checks g split fin pulled anc 
     have middleFork := fork_le_of_chainSteps afterStep.chainSteps
     have lastFork := fork_le_of_chainSteps post.chainSteps
     have selected : (getCurrentEpoch middle.state).toNat ≤ highC + 1 := by omega
-    rw [netScan_snoc, creditScan_snoc_fst, creditScan_snoc_fst]
+    rw [grossScan_snoc, creditScan_snoc_fst, creditScan_snoc_fst]
     simp only [selected, ↓reduceIte]
     have before := ih afterStep
     have lastEarly : last.fork < .glamsterdam := Nat.lt_of_le_of_lt lastFork zEarly
     cases step with
     | block engine signed due ok =>
-      simp only [stepNet]
+      have gross := block_balance_le_gross (engine := engine) (signed := signed) (due := due)
+        (ok := ok) shared h.genesis lastEarly
+        (Nat.le_trans electra (fork_le_of_chainSteps pre.chainSteps)) v
       omega
     | slot ok =>
       have middleElectra : .pectra ≤ middle.fork :=
@@ -10818,7 +10849,7 @@ private theorem created_start (h : Setting config checks g split fin pulled anc 
       preset.MAX_EFFECTIVE_BALANCE.toNat ≤ actualBalanceAt z v.toNat ∧
       effectiveAt z v.toNat ≤ actualBalanceAt z v.toNat + preset.downwardBand ∧
       preset.MAX_EFFECTIVE_BALANCE.toNat ≤ effectiveAt z v.toNat ∧
-      actualBalanceAt z v.toNat ≤ netScan v.toNat highC pre +
+      actualBalanceAt z v.toNat ≤ grossScan v.toNat highC pre +
         (creditScan (fun _ => false) (fun s => decide (s = .deposits)) v.toNat highC pre).1 +
         (creditScan (fun _ => false) (fun s => decide (s = .consolidations)) v.toNat highC
           pre).1 := by
@@ -10900,7 +10931,7 @@ private theorem created_credited (h : Setting config checks g split fin pulled a
   by_contra notCredited
   obtain ⟨notFlag, notCons⟩ := not_or.mp notCredited
   have consZero : consAmt eventsC v.toNat = 0 := Nat.eq_zero_of_not_pos notCons
-  have scansZero : netScan v.toNat highC tailC = 0 ∧
+  have scansZero : grossScan v.toNat highC tailC = 0 ∧
       (creditScan (fun _ => false) (fun s => decide (s = .deposits)) v.toNat highC tailC).1 =
         0 := by
     simp only [creditedKey, decide_eq_true_eq, not_lt, Nat.le_zero] at notFlag
@@ -10923,7 +10954,7 @@ private theorem created_credited (h : Setting config checks g split fin pulled a
     simp only [Nat.mul_zero, Nat.zero_div, Nat.zero_sub, Nat.le_zero] at newKey
     omega
   subst splitEq
-  rw [netScan_append] at scansZero
+  rw [grossScan_append] at scansZero
   have depSplit := creditScan_append (fun _ => false) (fun s => decide (s = .deposits))
     v.toNat highC pre post
   have consSplit := creditScan_append (fun _ => false) (fun s => decide (s = .consolidations))
