@@ -13013,6 +13013,28 @@ private theorem syncF_run_le (h : Setting config checks g split fin pulled anc c
     band keys).2.1
   exact (Finset.sum_le_sum fun i _ => (syncF_eq evs i).le).trans moves
 
+/-- The sync movement of keys on the shared run's end inside the split's epoch is within an envelope.
+
+The run `pre` starts at a state `b` of the split's epoch, so it has at most one epoch of blocks.
+
+The envelope is one epoch's seats at the seat envelope of the pulled total.
+
+The state `b` is after the finalized state, or before it in its epoch, where the total is the same.
+
+The run is the end of the shared run, so a call that cuts it at `b` reads this for its credits. -/
+private theorem syncF_pre_le (h : Setting config checks g split fin pulled anc counted V)
+    {b : BeaconState preset fork} (toB : Run config checks g ⟨fork, b⟩)
+    (link : Nonempty (Run config checks ⟨fork, fin⟩ ⟨fork, b⟩) ∨
+      ∃ _ : Run config checks ⟨fork, b⟩ ⟨fork, fin⟩, getCurrentEpoch fin = getCurrentEpoch b)
+    (pre : Run config checks ⟨fork, b⟩ ⟨fork, split⟩)
+    (sameEpoch : getCurrentEpoch split = getCurrentEpoch b)
+    (pulledTotal : Gwei) (pulledOk : getTotalActiveBalance pulled = .ok pulledTotal)
+    (high : ℕ) {evs : List (BalanceEvent preset)} (replayed : pre.balanceEvents high = .ok evs)
+    (keys : Finset ℕ) :
+    ∑ i ∈ keys, syncF evs i ≤
+      preset.SLOTS_PER_EPOCH.toNat * preset.SYNC_COMMITTEE_SIZE.toNat *
+        PinSplit5.syncSeatEnvelope preset pulledTotal.toNat := sorry
+
 /-- A key that exited by the epoch of a run's start is inactive at the end of the run.
 
 The run keeps an assigned exit epoch, and the epoch of its end is not before that of its start. -/
