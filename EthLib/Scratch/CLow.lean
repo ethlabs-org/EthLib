@@ -343,5 +343,74 @@ private theorem leak_rate (config : Config) (pulled anc fin : BeaconState preset
     (parameters preset fork).INACTIVITY_PENALTY_QUOTIENT.toNat incPos
   exact ⟨ρn, ρd, positive, fun eb aligned => bound eb aligned⟩
 
+/-- The low bound of an existing key, against the rev 2.5.4 form of `lowEB` and `drop`.
+
+The key is in `K5`, activated at the finalized state, and charged on the run from the split.
+
+The bound is its effective balance at the call, less its sync debits.
+
+The form of `drop` carries the shortfall of the balance below the stored effective balance once,
+and the leak at the base for each epoch of the depth. -/
+private theorem existing_low_or_floor_new (h : Setting config checks g split fin pulled anc counted V)
+    (fromFin : Run config checks ⟨fork, fin⟩ ⟨fork, split⟩)
+    (tailC : Run config checks ⟨fork, split⟩ ⟨fork, counted⟩)
+    {events : List (BalanceEvent preset)}
+    (replayed : (fromFin.append tailC).balanceEvents (getCurrentEpoch pulled).toNat = .ok events)
+    (v : ValidatorIndex) (member : v ∈ K5 counted V) (val : Validator)
+    (initial : fin.validators.data[v.toNat]? = some val)
+    (charged : ∃ c ∈ tailC.departureCharges, c.index = v.toNat) :
+    min (min (min (balanceAt pulled v.toNat) (balanceAt fin v.toNat))
+          (actualBalanceAt (⟨fork, fin⟩ : ForkedBeaconState preset) v.toNat) -
+        (pinTerms config pulled anc fin).partialsDue v.toNat)
+      preset.MIN_ACTIVATION_BALANCE.toNat -
+      (((pinTerms config pulled anc fin).leakAt
+          (balanceAt fin v.toNat - actualBalanceAt (⟨fork, fin⟩ : ForkedBeaconState preset) v.toNat +
+            preset.EFFECTIVE_BALANCE_INCREMENT.toNat) v.toNat + 1) +
+        ((getCurrentEpoch pulled).toNat + 2 - (getCurrentEpoch fin).toNat) *
+          ((pinTerms config pulled anc fin).leakAt
+            (min (actualBalanceAt (⟨fork, fin⟩ : ForkedBeaconState preset) v.toNat)
+              (withdrawalMaxEffectiveBalance preset fork val).toNat +
+              preset.EFFECTIVE_BALANCE_INCREMENT.toNat) v.toNat + 1) +
+        preset.downwardBand + preset.EFFECTIVE_BALANCE_INCREMENT.toNat) ≤
+      exitQ tailC v.toNat + (events.map (syncDebit v.toNat)).sum := by
+  obtain ⟨ρn, ρd, positive, leaky⟩ := leak_rate config pulled anc fin h.bands.1 v.toNat
+  have potential := exitQ_potential h fromFin tailC replayed v member val initial charged ρn ρd
+    leaky
+  have finEB : balanceAt fin v.toNat = effectiveAt (⟨fork, fin⟩ : ForkedBeaconState preset) v.toNat :=
+    rfl
+  -- The evaluation: the potential floor, rounded, is at least the bound less the sync debits.
+  have eval : min (min (min (balanceAt pulled v.toNat) (balanceAt fin v.toNat))
+          (actualBalanceAt (⟨fork, fin⟩ : ForkedBeaconState preset) v.toNat) -
+        (pinTerms config pulled anc fin).partialsDue v.toNat)
+      preset.MIN_ACTIVATION_BALANCE.toNat -
+      (((pinTerms config pulled anc fin).leakAt
+          (balanceAt fin v.toNat - actualBalanceAt (⟨fork, fin⟩ : ForkedBeaconState preset) v.toNat +
+            preset.EFFECTIVE_BALANCE_INCREMENT.toNat) v.toNat + 1) +
+        ((getCurrentEpoch pulled).toNat + 2 - (getCurrentEpoch fin).toNat) *
+          ((pinTerms config pulled anc fin).leakAt
+            (min (actualBalanceAt (⟨fork, fin⟩ : ForkedBeaconState preset) v.toNat)
+              (withdrawalMaxEffectiveBalance preset fork val).toNat +
+              preset.EFFECTIVE_BALANCE_INCREMENT.toNat) v.toNat + 1) +
+        preset.downwardBand + preset.EFFECTIVE_BALANCE_INCREMENT.toNat) ≤
+      min (effectiveAt (⟨fork, fin⟩ : ForkedBeaconState preset) v.toNat)
+        (min (withdrawalMaxEffectiveBalance preset fork val).toNat
+          (potentialFloor ρn ρd ((getCurrentEpoch counted).toNat - (getCurrentEpoch fin).toNat)
+              (min (actualBalanceAt (⟨fork, fin⟩ : ForkedBeaconState preset) v.toNat)
+                (withdrawalMaxEffectiveBalance preset fork val).toNat)
+              (preset.downwardBand + (effectiveAt (⟨fork, fin⟩ : ForkedBeaconState preset) v.toNat -
+                actualBalanceAt (⟨fork, fin⟩ : ForkedBeaconState preset) v.toNat))
+              ((events.map (syncDebit v.toNat)).sum +
+                (pinTerms config pulled anc fin).partialsDue v.toNat) -
+            potentialFloor ρn ρd ((getCurrentEpoch counted).toNat - (getCurrentEpoch fin).toNat)
+              (min (actualBalanceAt (⟨fork, fin⟩ : ForkedBeaconState preset) v.toNat)
+                (withdrawalMaxEffectiveBalance preset fork val).toNat)
+              (preset.downwardBand + (effectiveAt (⟨fork, fin⟩ : ForkedBeaconState preset) v.toNat -
+                actualBalanceAt (⟨fork, fin⟩ : ForkedBeaconState preset) v.toNat))
+              ((events.map (syncDebit v.toNat)).sum +
+                (pinTerms config pulled anc fin).partialsDue v.toNat) %
+              preset.EFFECTIVE_BALANCE_INCREMENT.toNat)) +
+        (events.map (syncDebit v.toNat)).sum := sorry
+  omega
+
 end PinSum
 end EthLib.Consensus.Models.Network
