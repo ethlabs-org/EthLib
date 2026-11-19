@@ -7000,15 +7000,6 @@ private theorem lowB_intro (config : Config) (state ancestor finalizedState : Be
     (pinTerms config state ancestor finalizedState).lowB i = true :=
   decide_eq_true ⟨first, low⟩
 
-/-- A key of `K5` is unslashed in C's state. -/
-private theorem K5_unslashed {v : ValidatorIndex} (member : v ∈ K5 counted V) :
-    ∀ w, counted.validators.data[v.toNat]? = some w → w.slashed = false := by
-  intro w found
-  have inK5 := Finset.mem_filter.mp member
-  simp only [Q, quorumVoters, Finset.mem_filter, List.mem_toFinset, List.mem_append] at inK5
-  obtain ⟨⟨-, flag⟩, -, -⟩ := inK5
-  simpa [slashedFlagAt, found] using flag
-
 /-- A key whose exit starts on a run is activated at the start of the step that starts it.
 
 The hypothesis `site` is the split of the run at the step that assigns the charged exit.
@@ -7282,7 +7273,7 @@ private theorem exitQ_at (h : Setting config checks g split fin pulled anc count
     {sd : ForkedBeaconState preset} (pre : Run config checks ⟨fork, fin⟩ sd)
     (post : Run config checks sd ⟨fork, counted⟩)
     (cut : pre.append post = fromFin.append tailC)
-    (v : ValidatorIndex) (member : v ∈ K5 counted V) (val : Validator)
+    (v : ValidatorIndex) (val : Validator)
     (initial : fin.validators.data[v.toNat]? = some val)
     (far : ∀ w, sd.state.validators.data[v.toNat]? = some w → w.exitEpoch = FAR_FUTURE_EPOCH)
     (ρn ρd : ℕ)
@@ -7306,7 +7297,7 @@ private theorem exitQ_at (h : Setting config checks g split fin pulled anc count
                 (pinTerms config pulled anc fin).partialsDue v.toNat) %
               preset.EFFECTIVE_BALANCE_INCREMENT.toNat)) ≤
       effectiveAt sd v.toNat := by
-  have cleanC := K5_unslashed member
+  obtain ⟨toFin⟩ := h.toFin
   have nearC := h.near
   obtain ⟨sf, se⟩ := sd
   have above : fork ≤ sf := Nat.le_trans (le_refl _) (fork_le_of_chainSteps pre.chainSteps)
@@ -7323,9 +7314,8 @@ private theorem exitQ_at (h : Setting config checks g split fin pulled anc count
     cases flag : w.slashed with
     | false => rfl
     | true =>
-      obtain ⟨last, located, marked⟩ := post.slashedPersistence v.toNat w found flag
-      have := cleanC last located
-      simp [this] at marked
+      exact absurd (far w found) (run_slashed_exit_assigned (toFin.append pre) h.genesis
+        h.caps.activation h.caps.compounding h.early h.delay v.toNat w found flag)
   have retained : ∀ {m n : ForkedBeaconState preset} (b : Run config checks ⟨fork, fin⟩ m)
       (step : Step config checks m n) (a : Run config checks n ⟨fork, se⟩),
       (b.snoc step).append a = pre → ∀ w, n.state.validators.data[v.toNat]? = some w →
@@ -7434,7 +7424,7 @@ private theorem exitQ_potential (h : Setting config checks g split fin pulled an
   obtain ⟨sd, pre, post, cut, far, amount⟩ := exit_stop fromFin tailC v.toNat charged
     (charge_epoch_le_of_K5 h.early tailC member)
   rw [amount]
-  exact exitQ_at h fromFin tailC replayed pre post cut v member val initial far ρn ρd leaky
+  exact exitQ_at h fromFin tailC replayed pre post cut v val initial far ρn ρd leaky
 
 /-- The leak of an aligned effective balance is at most a rate times it.
 
