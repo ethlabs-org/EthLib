@@ -2412,6 +2412,102 @@ private theorem lowB_found (config : Config) (state ancestor finalizedState : Be
       decide (v.activationEpoch.toNat ≤ (getCurrentEpoch state).toNat)) (.inl ?_)
   exact (of_decide_eq_true low).1
 
+/-- A key is low if it is activated and not withdrawable at R and its low bound is below the floor. -/
+private theorem lowB_intro (config : Config) (state ancestor finalizedState : BeaconState preset fork)
+    {i : ℕ}
+    (first : ((state.validators.data[i]?).any fun v =>
+      decide (ancestor.finalizedCheckpoint.epoch.toNat < v.withdrawableEpoch.toNat) &&
+        decide (v.activationEpoch.toNat ≤ (getCurrentEpoch state).toNat)) = true)
+    (low : (pinTerms config state ancestor finalizedState).lowEB i <
+      (pinTerms config state ancestor finalizedState).newKeyFloor) :
+    (pinTerms config state ancestor finalizedState).lowB i = true :=
+  decide_eq_true ⟨first, low⟩
+
+/-- A key of `K5` is unslashed in C's state. -/
+private theorem K5_unslashed {v : ValidatorIndex} (member : v ∈ K5 counted V) :
+    ∀ w, counted.validators.data[v.toNat]? = some w → w.slashed = false := by
+  intro w found
+  have inK5 := Finset.mem_filter.mp member
+  simp only [Q, quorumVoters, Finset.mem_filter, List.mem_toFinset, List.mem_append] at inK5
+  obtain ⟨⟨-, flag⟩, -, -⟩ := inK5
+  simpa [slashedFlagAt, found] using flag
+
+/-- A key that is not yet activated at the finalized state and has a small charge loses seats.
+
+The key is missing at the finalized state, or its activation there is unassigned.
+
+It activates on the run from the finalized state, so it keeps at least `newKeyFloor` of effective
+balance less its sync debits, from `Run.new_key_effective_floor`.
+
+A small charge is below `exitFloor`, so the debits exceed `newKeySlack`.
+
+It has no partial withdrawals queued, since a request needs an active key. -/
+private theorem pending_key_claim (h : Setting config checks g split fin pulled anc counted V)
+    (fromFin : Run config checks ⟨fork, fin⟩ ⟨fork, split⟩)
+    (tailC : Run config checks ⟨fork, split⟩ ⟨fork, counted⟩)
+    {events : List (BalanceEvent preset)}
+    (replayed : (fromFin.append tailC).balanceEvents (getCurrentEpoch pulled).toNat = .ok events)
+    (v : ValidatorIndex) (member : v ∈ K5 counted V)
+    (charged : ∃ c ∈ tailC.departureCharges, c.index = v.toNat)
+    (small : exitQ tailC v.toNat < (pinTerms config pulled anc fin).exitFloor)
+    (fresh : fin.validators.data[v.toNat]? = none ∨
+      ∃ w, fin.validators.data[v.toNat]? = some w ∧ w.activationEpoch = FAR_FUTURE_EPOCH) :
+    (pinTerms config pulled anc fin).newKeySlack < (events.map (syncDebit v.toNat)).sum :=
+  sorry
+
+/-- A key of `K5` that is activated at the finalized state is active and not withdrawable at R.
+
+Its activation at R is that of C, which is at most the epoch before C's: an assigned activation
+does not change.
+
+It is not withdrawable by the finalized epoch at R, since then it would be exited on both branches.
+
+This is the argument of `slashed_waits` for any key, with the exit and withdrawable epochs that
+the split fixes. -/
+private theorem activated_key_at_pulled (h : Setting config checks g split fin pulled anc counted V)
+    (v : ValidatorIndex) (member : v ∈ K5 counted V) {w : Validator}
+    (found : fin.validators.data[v.toNat]? = some w) (activated : w.activationEpoch ≠ FAR_FUTURE_EPOCH) :
+    ((pulled.validators.data[v.toNat]?).any fun u =>
+      decide (anc.finalizedCheckpoint.epoch.toNat < u.withdrawableEpoch.toNat) &&
+        decide (u.activationEpoch.toNat ≤ (getCurrentEpoch pulled).toNat)) = true :=
+  sorry
+
+/-- The low bound of an existing key is covered by its exit charge and its sync debits.
+
+The key is activated at the finalized state, unslashed at C, and charged on the run.
+
+The charge is its effective balance at the exit call.
+
+The bound reads the floor of its balance from the finalized state, with the penalties covered by
+`drop`, the partials by `partialsDue`, and the hysteresis by the activation balance. -/
+private theorem existing_low_or_floor (h : Setting config checks g split fin pulled anc counted V)
+    (fromFin : Run config checks ⟨fork, fin⟩ ⟨fork, split⟩)
+    (tailC : Run config checks ⟨fork, split⟩ ⟨fork, counted⟩)
+    {events : List (BalanceEvent preset)}
+    (replayed : (fromFin.append tailC).balanceEvents (getCurrentEpoch pulled).toNat = .ok events)
+    (v : ValidatorIndex) (val : Validator) (initial : fin.validators.data[v.toNat]? = some val)
+    (activated : val.activationEpoch ≠ FAR_FUTURE_EPOCH)
+    (clean : ∀ w, counted.validators.data[v.toNat]? = some w → w.slashed = false)
+    (charged : exitQ tailC v.toNat ≠ 0) :
+    (pinTerms config pulled anc fin).lowEB v.toNat ≤
+      exitQ tailC v.toNat + (events.map (syncDebit v.toNat)).sum :=
+  sorry
+
+/-- The low and new-key floors are ordered: `newKeyFloor` is `newKeySlack` above `exitFloor`. -/
+private theorem exitFloor_add_slack (h : Setting config checks g split fin pulled anc counted V) :
+    (pinTerms config pulled anc fin).exitFloor + (pinTerms config pulled anc fin).newKeySlack =
+      (pinTerms config pulled anc fin).newKeyFloor := by
+  have newKey := h.facts.newKey fork
+  have size := h.facts.incrementSize
+  have floor : (pinTerms config pulled anc fin).exitFloor ≤
+      (pinTerms config pulled anc fin).newKeyFloor := by
+    show max 1 _ ≤ _
+    omega
+  have slack : (pinTerms config pulled anc fin).newKeySlack =
+      (pinTerms config pulled anc fin).newKeyFloor -
+        (pinTerms config pulled anc fin).exitFloor := rfl
+  omega
+
 /-- A key of `K5` that is not exiting at the call and has a small charge is low or loses seats.
 
 A small charge is below `exitFloor`.
@@ -2420,9 +2516,11 @@ The key is then a low key, or its sync debits from the finalized state exceed `n
 
 The debits are those of the replay of the run from the finalized state to C's state.
 
-An existing key reads the floor of its balance at the exit call, from `exitQ_floor`.
+A key that is not activated at the finalized state loses seats, by `pending_key_claim`.
 
-A new key reads the floor of a key that activates on the run, from `Run.new_key_effective_floor`. -/
+An activated key is active and not withdrawable at R, by `activated_key_at_pulled`.
+
+Its low bound is covered by its charge and its debits, by `existing_low_or_floor`. -/
 private theorem small_charge_claim (h : Setting config checks g split fin pulled anc counted V)
     (fromFin : Run config checks ⟨fork, fin⟩ ⟨fork, split⟩)
     (tailC : Run config checks ⟨fork, split⟩ ⟨fork, counted⟩)
@@ -2433,8 +2531,24 @@ private theorem small_charge_claim (h : Setting config checks g split fin pulled
     (charged : ∃ c ∈ tailC.departureCharges, c.index = v.toNat)
     (small : exitQ tailC v.toNat < (pinTerms config pulled anc fin).exitFloor) :
     (pinTerms config pulled anc fin).lowB v.toNat = true ∨
-      (pinTerms config pulled anc fin).newKeySlack < (events.map (syncDebit v.toNat)).sum :=
-  sorry
+      (pinTerms config pulled anc fin).newKeySlack < (events.map (syncDebit v.toNat)).sum := by
+  classical
+  by_cases fresh : fin.validators.data[v.toNat]? = none ∨
+      ∃ w, fin.validators.data[v.toNat]? = some w ∧ w.activationEpoch = FAR_FUTURE_EPOCH
+  · exact .inr (pending_key_claim h fromFin tailC replayed v member charged small fresh)
+  obtain ⟨absent, notFar⟩ := not_or.mp fresh
+  obtain ⟨w, found⟩ := Option.ne_none_iff_exists'.mp absent
+  have activated : w.activationEpoch ≠ FAR_FUTURE_EPOCH := fun far => notFar ⟨w, found, far⟩
+  by_cases rich : (pinTerms config pulled anc fin).newKeySlack < (events.map (syncDebit v.toNat)).sum
+  · exact .inr rich
+  refine .inl (lowB_intro config pulled anc fin
+    (activated_key_at_pulled h v member found activated) ?_)
+  have nonzero : exitQ tailC v.toNat ≠ 0 := by
+    sorry
+  have floor := existing_low_or_floor h fromFin tailC replayed v w found activated
+    (K5_unslashed member) nonzero
+  have order := exitFloor_add_slack h
+  omega
 
 /-- The keys whose sync debits from the finalized state exceed `newKeySlack` are at most the seats.
 
