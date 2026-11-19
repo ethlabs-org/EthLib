@@ -16293,6 +16293,91 @@ private theorem same_epoch_balance_le (i high : ℕ) {c a : ForkedBeaconState pr
     simp only [stepNet, actualBalanceAt] at before ⊢
     omega
 
+/-- A slot step that stays in its epoch records no balance event.
+
+It is no epoch's last slot, so no epoch pass runs, and from Electra the upgrades record no
+crossing. -/
+private theorem slot_events_nil {u w : ForkedBeaconState preset}
+    (ok : advanceSlotAcross config checks u = .ok w) (electra : .pectra ≤ u.fork)
+    (early : w.fork < .glamsterdam) (same : getCurrentEpoch w.state = getCurrentEpoch u.state)
+    {events : List (BalanceEvent preset)}
+    (replayed : (Step.slot ok : Step config checks u w).balanceEvents = .ok events) :
+    events = [] := by
+  obtain ⟨advanced, cached, crossings, advanceOk, upgrades, cachedOk, crossingOk, branch⟩ :=
+    Step.balanceEvents_slot ok early replayed
+  have noCrossings : crossings = [] :=
+    DirectSafety.Apriori.Internal.upgradeBalanceReplay_electra_nil
+      (u := ⟨u.fork, advanced⟩) electra crossingOk
+  rcases branch with ⟨_, eventsEq⟩ | ⟨middle, updated, recorded, recordOk, updatedOk,
+      validatorsEq, _, eventsEq, next, nextNat, nextSlot, nextMod, -⟩
+  · rw [eventsEq, noCrossings]
+  · exfalso
+    have mod0 := congrArg UInt64.toNat nextMod
+    rw [UInt64.toNat_mod] at mod0
+    have sameNat := congrArg UInt64.toNat same
+    rw [getCurrentEpoch_toNat, getCurrentEpoch_toNat,
+      (processUpgrades_slot upgrades).trans nextSlot, nextNat, Nat.succ_div] at sameNat
+    rw [nextNat] at mod0
+    have dvd := Nat.dvd_of_mod_eq_zero mod0
+    simp only [dvd, ↓reduceIte] at sameNat
+    omega
+
+/-- Within one epoch, a key has no consolidation credit and no deposit credit.
+
+A slot step inside the epoch records no event.
+
+A block step records no consolidation, and its deposits credit no balance. -/
+private theorem same_epoch_no_epoch_credits (i high : ℕ) {c a : ForkedBeaconState preset}
+    (r : Run config checks c a) (electra : .pectra ≤ c.fork) (early : a.fork < .glamsterdam)
+    (same : getCurrentEpoch a.state = getCurrentEpoch c.state) :
+    (creditScan (fun s => decide (s = .consolidations)) (fun s => decide (s = .consolidations))
+        i high r).1 = 0 ∧
+      (creditScan (fun _ => false) (fun s => decide (s = .deposits)) i high r).1 = 0 := by
+  refine Run.induction_of_same_epoch (fun z r' => z.fork < .glamsterdam →
+      (creditScan (fun s => decide (s = .consolidations)) (fun s => decide (s = .consolidations))
+        i high r').1 = 0 ∧
+      (creditScan (fun _ => false) (fun s => decide (s = .deposits)) i high r').1 = 0)
+    (fun _ => by simp [creditScan_nil_fst]) ?_ ?_ r early same early
+  · intro f s t engine signed due ok pre' fEarly prior _
+    have prior := prior fEarly
+    have fElectra : .pectra ≤ f := Nat.le_trans electra (fork_le_of_chainSteps pre'.chainSteps)
+    obtain ⟨events, replayed⟩ := (Step.block engine signed due ok :
+      Step config checks ⟨f, s⟩ ⟨f, t⟩).balanceEvents_ok fEarly
+    have noCons := blockReplay_noConsolidations fElectra fEarly engine s signed.message
+      (Step.balanceEvents_block fEarly replayed)
+    have first := creditScan_snoc_fst (fun s => decide (s = .consolidations))
+      (fun s => decide (s = .consolidations)) i high pre' (Step.block engine signed due ok)
+    have second := creditScan_snoc_fst (fun _ => false) (fun s => decide (s = .deposits)) i high
+      pre' (Step.block engine signed due ok)
+    have zero : stepCredit (fun s => decide (s = .consolidations))
+        (fun s => decide (s = .consolidations)) i (Step.block engine signed due ok) = 0 := by
+      simp only [stepCredit, replayed, Except.toOption, Option.getD_some]
+      exact List.sum_eq_zero fun n member => by
+        obtain ⟨e, filtered, rfl⟩ := List.mem_map.mp member
+        have := List.mem_filter.mp filtered
+        exact absurd (of_decide_eq_true this.2) (noCons e this.1)
+    have zero' : stepCredit (fun _ => false) (fun s => decide (s = .deposits)) i
+        (Step.block engine signed due ok) = 0 := by
+      simp [stepCredit]
+    rw [first, second, zero, zero']
+    split_ifs <;> simp_all
+  · intro middle last cached next pre' ok lastEq cachedOk kept prior within
+    have middleEarly : middle.fork < .glamsterdam := by rw [lastEq] at within; exact within
+    have prior := prior middleEarly
+    have middleElectra : .pectra ≤ middle.fork :=
+      Nat.le_trans electra (fork_le_of_chainSteps pre'.chainSteps)
+    obtain ⟨events, replayed⟩ := (Step.slot ok : Step config checks middle last).balanceEvents_ok
+      within
+    have nothing := slot_events_nil ok middleElectra within (by rw [lastEq]; exact kept) replayed
+    have first := creditScan_snoc_fst (fun s => decide (s = .consolidations))
+      (fun s => decide (s = .consolidations)) i high pre' (Step.slot ok)
+    have second := creditScan_snoc_fst (fun _ => false) (fun s => decide (s = .deposits)) i high
+      pre' (Step.slot ok)
+    simp only [stepCredit, replayed, nothing, Except.toOption, Option.getD_some,
+      List.filter_nil, List.map_nil, List.sum_nil] at first second
+    rw [first, second]
+    split_ifs <;> simp_all
+
 /-- The start-of-epoch half of the charge arm, for a charge after the split's epoch.
 
 The run to the charge crosses an epoch boundary, at the state `c`.
