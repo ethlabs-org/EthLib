@@ -9422,10 +9422,6 @@ private theorem key_idle_walk (h : Setting config checks g split fin pulled anc 
       have middleElectra : .pectra ≤ middle.fork :=
         Nat.le_trans electra (fork_le_of_chainSteps pre.chainSteps)
       have middleEarly : middle.fork < .glamsterdam := Nat.lt_of_le_of_lt middleFork zEarly
-      have finite : getCurrentEpoch middle.state < FAR_FUTURE_EPOCH :=
-        UInt64.lt_iff_toNat_lt.mpr (by
-          have far : FAR_FUTURE_EPOCH.toNat = 2 ^ 64 - 1 := rfl
-          omega)
       have known : v < middle.state.validators.data.size ∨ BalancesMatch middle.state := by
         by_cases inside : v < middle.state.validators.data.size
         · exact .inl inside
@@ -9450,13 +9446,11 @@ private theorem key_idle_walk (h : Setting config checks g split fin pulled anc 
       exact slot_idle_step shared h.genesis ok lastEarly middleElectra v known idle |>.trans
         (by omega)
 
-/-- A key of `K6` beyond R's registry holds the activation reserve at a state two epochs before it.
+/-- A key of `K6` beyond R's registry holds the activation reserve at a state of C's run.
 
 The run from the split reaches that state first, and then C.
 
 The key is active at C and absent at the split.
-
-Its activation was assigned two epochs before it.
 
 At that state its balance is at least `MAX_EFFECTIVE_BALANCE`.
 
