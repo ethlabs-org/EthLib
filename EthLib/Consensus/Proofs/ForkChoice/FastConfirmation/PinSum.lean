@@ -8491,8 +8491,9 @@ private theorem sc_disjoint (h : Setting config checks g split fin pulled anc co
     rw [hs.2.1] at unslashed
     simp at unslashed
 
-/-- The keys created after the pulled state and slashed at C are in no class of C's quorum, in
-`SC`, or in `V`. -/
+/-- The keys created after the pulled state and slashed at C are in no class of C's quorum.
+
+They are not in `SC` or in `V` either. -/
 private theorem cs_disjoint (h : Setting config checks g split fin pulled anc counted V) :
     Disjoint (V ∪ K4 pulled counted V ∪ K5 counted V ∪ K6 pulled counted ∪
       SC pulled counted split) (CS pulled counted) := by
