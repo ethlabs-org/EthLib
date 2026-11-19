@@ -2867,6 +2867,172 @@ private theorem band_sum_le (h : Setting config checks g split fin pulled anc co
         Nat.mul_le_mul_left _ (Nat.mul_le_mul_left _ total)
     _ = _ := by ring
 
+/-- The non-deposit, non-sync, non-consolidation credits to a key are rewards or slashing credits. -/
+private theorem classify_credits (h : Setting config checks g split fin pulled anc counted V)
+    (tail : Run config checks ⟨fork, split⟩ ⟨fork, pulled⟩) (high : ℕ)
+    {events : List (BalanceEvent preset)} (replayed : tail.balanceEvents high = .ok events)
+    (v : ℕ) :
+    (creditScan (fun s => decide (s ≠ .deposits ∧ s ≠ .sync ∧ s ≠ .consolidations))
+        (fun _ => false) v high tail).1 ≤
+      (creditScan (fun s => decide (s = .rewards)) (fun _ => false) v high tail).1 +
+        (creditScan (fun s => decide (s = .slashings)) (fun _ => false) v high tail).1 := by
+  obtain ⟨toFin⟩ := h.toFin
+  obtain ⟨fromFin⟩ := h.fromFin
+  have shared : Run config checks g ⟨fork, split⟩ := toFin.append fromFin
+  obtain ⟨found, foundOk, bounded⟩ := shared.balanceEvents_bounded tail h.genesis h.early high
+  rw [replayed] at foundOk
+  cases foundOk
+  have sources := shared.withdrawnConsolidationCredit_eq_zero tail h.genesis h.early h.delay
+    replayed
+  refine creditScan_split _ _ _ v high tail replayed fun e member nds => ?_
+  by_cases zero : keyCredit v e = 0
+  · exact .inr (.inr zero)
+  · have positive : 0 < e.creditLimit := by
+      have single := PinSplit5.keys_credits_le {v} e
+      simp only [Finset.sum_singleton] at single
+      have within := (bounded e member).1
+      have : keyCredit v e ≤ e.credits := single
+      omega
+    rcases (sources e member).2.1 positive with s | s | s | s | s
+    · exact .inl (by simp [s])
+    · exact absurd (by simpa [s] using nds) (by simp)
+    · exact .inr (.inl (by simp [s]))
+    · exact absurd (by simpa [s] using nds) (by simp)
+    · exact absurd (by simpa [s] using nds) (by simp)
+
+/-- `branchR` is the whistleblower, slashed, proposer and rounding charges, with weight three. -/
+private theorem branchR_eq (config : Config)
+    (state ancestor finalizedState : BeaconState preset fork) :
+    (pinTerms config state ancestor finalizedState).branchR =
+      3 * ((∑ i ∈ Finset.range state.validators.data.size with
+            ((((state.validators.data[i]?).map (·.slashed)).getD false = true) ∧
+              ((state.validators.data[i]?).any fun v => decide (
+                ancestor.finalizedCheckpoint.epoch.toNat +
+                  preset.EPOCHS_PER_SLASHINGS_VECTOR.toNat ≤
+                    v.withdrawableEpoch.toNat)) = true), balanceAt state i) /
+          (parameters preset fork).WHISTLEBLOWER_REWARD_QUOTIENT.toNat +
+        preset.EFFECTIVE_BALANCE_INCREMENT.toNat *
+          (pinTerms config state ancestor finalizedState).slashedR +
+        ((getCurrentEpoch state).toNat + 2 - ancestor.finalizedCheckpoint.epoch.toNat) *
+          (pinTerms config state ancestor finalizedState).proposerCredit +
+        (preset.EFFECTIVE_BALANCE_INCREMENT.toNat + preset.downwardBand - 1) *
+          (((getCurrentEpoch state).toNat + 2 - ancestor.finalizedCheckpoint.epoch.toNat) *
+              preset.SLOTS_PER_EPOCH.toNat +
+            ((getCurrentEpoch state).toNat + 2 - ancestor.finalizedCheckpoint.epoch.toNat) *
+              preset.MAX_PENDING_DEPOSITS_PER_EPOCH.toNat +
+            preset.SYNC_COMMITTEE_SIZE.toNat *
+              (((getCurrentEpoch state).toNat + 1) /
+                  max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat -
+                ancestor.finalizedCheckpoint.epoch.toNat /
+                  max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat + 1 +
+                ((getCurrentEpoch state).toNat + 2 - ancestor.finalizedCheckpoint.epoch.toNat) /
+                  max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat))) := rfl
+
+/-- `depth` is the epochs from the finalized epoch to the one after the next. -/
+private theorem depth_eq (config : Config)
+    (state ancestor finalizedState : BeaconState preset fork) :
+    (pinTerms config state ancestor finalizedState).depth =
+      (getCurrentEpoch state).toNat + 2 - ancestor.finalizedCheckpoint.epoch.toNat := rfl
+
+/-- R1 from its two open steps: the rewards of V and the whistleblower credits of V.
+
+The rewards of `V` are at most one `baseSum` for each epoch, which is `rewards_le_total`.
+
+The whistleblower credits of `V` are at most the pin's whistleblower charge. -/
+private theorem bud_branchR_of (h : Setting config checks g split fin pulled anc counted V)
+    (tail : Run config checks ⟨fork, split⟩ ⟨fork, pulled⟩) (high : ℕ)
+    {events : List (BalanceEvent preset)} (replayed : tail.balanceEvents high = .ok events)
+    (rewards : ∑ v ∈ V, (creditScan (fun s => decide (s = .rewards)) (fun _ => false) v.toNat high
+      tail).1 ≤ ((getCurrentEpoch pulled).toNat - (getCurrentEpoch split).toNat + 1) *
+        baseSum pulled)
+    (whistle : ∑ v ∈ V, (creditScan (fun s => decide (s = .slashings)) (fun _ => false) v.toNat
+      high tail).1 ≤ (∑ i ∈ Finset.range pulled.validators.data.size with
+            ((((pulled.validators.data[i]?).map (·.slashed)).getD false = true) ∧
+              ((pulled.validators.data[i]?).any fun v => decide (
+                anc.finalizedCheckpoint.epoch.toNat +
+                  preset.EPOCHS_PER_SLASHINGS_VECTOR.toNat ≤
+                    v.withdrawableEpoch.toNat)) = true), balanceAt pulled i) /
+          (parameters preset fork).WHISTLEBLOWER_REWARD_QUOTIENT.toNat) :
+    3 * (∑ v ∈ V, credR tail high v.toNat) +
+        3 * ((pinTerms config pulled anc fin).depth *
+          (pinTerms config pulled anc fin).syncProposer) +
+        (∑ v ∈ (K4 pulled counted V),
+          (slashR (pinTerms config pulled anc fin) v.toNat + bandR events v.toNat)) +
+        3 * (∑ v ∈ (K5 counted V),
+          (slashR (pinTerms config pulled anc fin) v.toNat + bandR events v.toNat)) +
+        (∑ v ∈ (K6 pulled counted),
+          (slashR (pinTerms config pulled anc fin) v.toNat + bandR events v.toNat)) ≤
+      (pinTerms config pulled anc fin).branchR := by
+  classical
+  obtain ⟨d45, d46, d56, -, -, -⟩ := classes_disjoint h
+  rw [branchR_eq, depth_eq]
+  -- The credits of V split into rewards, slashing credits and the rounding band.
+  have eV : ∑ v ∈ V, credR tail high v.toNat =
+      (∑ v ∈ V, (creditScan (fun s => decide (s ≠ .deposits ∧ s ≠ .sync ∧ s ≠ .consolidations))
+        (fun _ => false) v.toNat high tail).1) +
+      ∑ v ∈ V, (if netScan v.toNat high tail = 0 ∧
+        (creditScan (fun _ => false) (fun s => decide (s = .deposits)) v.toNat high tail).1 = 0
+          then 0 else preset.EFFECTIVE_BALANCE_INCREMENT.toNat + preset.downwardBand - 1) := by
+    unfold credR
+    rw [Finset.sum_add_distrib]
+  have classes : (∑ v ∈ V, (creditScan (fun s => decide (s ≠ .deposits ∧ s ≠ .sync ∧
+        s ≠ .consolidations)) (fun _ => false) v.toNat high tail).1) ≤
+      (∑ v ∈ V, (creditScan (fun s => decide (s = .rewards)) (fun _ => false) v.toNat high
+        tail).1) + ∑ v ∈ V, (creditScan (fun s => decide (s = .slashings)) (fun _ => false)
+          v.toNat high tail).1 := by
+    rw [← Finset.sum_add_distrib]
+    exact Finset.sum_le_sum fun v _ => classify_credits h tail high replayed v.toNat
+  -- The rewards fit the proposer credit.
+  have finalized : anc.finalizedCheckpoint.epoch.toNat ≤ (getCurrentEpoch split).toNat :=
+    UInt64.le_iff_toNat_le.mp h.finalized
+  have called : (getCurrentEpoch split).toNat ≤ (getCurrentEpoch pulled).toNat :=
+    UInt64.le_iff_toNat_le.mp h.called
+  have epochs : (getCurrentEpoch pulled).toNat - (getCurrentEpoch split).toNat + 1 ≤
+      (getCurrentEpoch pulled).toNat + 2 - anc.finalizedCheckpoint.epoch.toNat := by omega
+  have credit := baseSum_le_credit config pulled anc fin h.facts h.pulledTotal
+  have e1 := Nat.mul_le_mul_right (baseSum pulled) epochs
+  have e2 := Nat.mul_le_mul_left ((getCurrentEpoch pulled).toNat + 2 -
+    anc.finalizedCheckpoint.epoch.toNat) credit
+  have e3 := Nat.mul_add ((getCurrentEpoch pulled).toNat + 2 -
+    anc.finalizedCheckpoint.epoch.toNat) (baseSum pulled)
+    (pinTerms config pulled anc fin).syncProposer
+  -- The slash charges, with the weights of the classes.
+  have slashes := weighted_le (A := K4 pulled counted V) (B := K5 counted V)
+    (C := K6 pulled counted) (fun v => slashR (pinTerms config pulled anc fin) v.toNat) d45 d46
+    d56
+  have slashBound := slashR_le config pulled anc fin
+    (K4 pulled counted V ∪ K5 counted V ∪ K6 pulled counted)
+  -- The rounding bands.
+  have bands := band_sum_le h tail high replayed
+  have bandsEq : 3 * ((preset.EFFECTIVE_BALANCE_INCREMENT.toNat + preset.downwardBand - 1) *
+        ((getCurrentEpoch pulled).toNat + 2 - anc.finalizedCheckpoint.epoch.toNat) *
+          (preset.SLOTS_PER_EPOCH.toNat + preset.MAX_PENDING_DEPOSITS_PER_EPOCH.toNat) +
+        (preset.EFFECTIVE_BALANCE_INCREMENT.toNat + preset.downwardBand - 1) *
+          (preset.SYNC_COMMITTEE_SIZE.toNat *
+            (((getCurrentEpoch pulled).toNat + 1) /
+                max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat -
+              anc.finalizedCheckpoint.epoch.toNat /
+                max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat + 1 +
+              ((getCurrentEpoch pulled).toNat + 2 - anc.finalizedCheckpoint.epoch.toNat) /
+                max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat))) =
+      3 * ((preset.EFFECTIVE_BALANCE_INCREMENT.toNat + preset.downwardBand - 1) *
+          (((getCurrentEpoch pulled).toNat + 2 - anc.finalizedCheckpoint.epoch.toNat) *
+              preset.SLOTS_PER_EPOCH.toNat +
+            ((getCurrentEpoch pulled).toNat + 2 - anc.finalizedCheckpoint.epoch.toNat) *
+              preset.MAX_PENDING_DEPOSITS_PER_EPOCH.toNat +
+            preset.SYNC_COMMITTEE_SIZE.toNat *
+              (((getCurrentEpoch pulled).toNat + 1) /
+                  max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat -
+                anc.finalizedCheckpoint.epoch.toNat /
+                  max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat + 1 +
+                ((getCurrentEpoch pulled).toNat + 2 - anc.finalizedCheckpoint.epoch.toNat) /
+                  max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat))) := by
+    ring
+  rw [bandsEq] at bands
+  rw [eV]
+  simp only [Finset.sum_add_distrib]
+  omega
+
 /-- R1 (branchR): R's credits to V keys since the split, weight 3.
 
 The slashing of a key on R's branch is charged here for the keys of `K4` and `K5`.
