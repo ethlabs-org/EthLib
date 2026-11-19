@@ -471,14 +471,13 @@ private theorem Execution.justifiedState_or_evidence {Δ : ℕ} (sync : e.Synchr
   have kept := e.checkpointStates_of_le w arrivalLe (Store.checkpointState_ok_iff.mp stateOk)
   exact Store.checkpointState_ok_iff.mpr kept
 
-/-- Every up-to-date honest store in the interval whose viable nodes can be computed has a head. -/
+/-- Every up-to-date honest store in the interval has a head. -/
 def HonestHeadsExist (first last : Nat) : Prop :=
-  ∀ w ∈ J, ∀ k (nodes : List ForkChoiceNode), first ≤ (e.world k).time → (e.world k).time ≤ last →
+  ∀ w ∈ J, ∀ k, first ≤ (e.world k).time → (e.world k).time ≤ last →
     UpToDate config checks sources (e.world k).time ((e.world k).view w) ((e.world k).state w) →
-    ((e.world k).state w).getFilteredNodeTree config = .ok nodes →
     ∃ hd, ((e.world k).state w).getHead config = .ok hd
 
-/-- Before Gloas, an up-to-date honest store up to `last` with a readable filtered tree has a head.
+/-- Before Gloas, every up-to-date honest store up to `last` has a head.
 
 Otherwise two honest stores collide by `last`, or direct-safety evidence holds.
 
@@ -487,7 +486,7 @@ The evidence is relative to the anchor.
 The claim holds from every start time. -/
 theorem Execution.honestHeadsExist_or_evidence {Δ : ℕ} (sync : e.Synchronous Δ)
     (slots : 0 < config.SLOT_DURATION_MS)
-    (positive : 0 < preset.SLOTS_PER_EPOCH.toNat)
+    (history : 2 ≤ preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
     (preGloas : fork < .glamsterdam) {last : ℕ} (admitted : BlocksAdmitted e 0 Δ last)
     (fits : DelayFits fork config genesisTimeMs Δ) (prompt : Prompt e last)
     (votes : ValidatedDutyVotes (e := e) last) {anchor : Store preset fork}
@@ -503,7 +502,8 @@ theorem Execution.honestHeadsExist_or_evidence {Δ : ℕ} (sync : e.Synchronous 
     (enough : HeldRunStakeFloor (e := e) pre horizon last)
     (terminal : HeldTerminalStakeFloor (e := e) horizon last)
     (ceiling : CheckpointStakeCeiling (e := e) (2 * 10 ^ 17) last)
-    (scoreFits : config.ProposerScoreFits preset (2 * 10 ^ 17)) (first : ℕ) :
+    (scoreFits : config.ProposerScoreFits preset (2 * 10 ^ 17))
+    (fit : config.CommitteeWindowsFit preset) (first : ℕ) :
     HonestHeadsExist (e := e) first last ∨
     HonestCollision (e := e) last ∨
     HistoricalDirectSafetyEvidence (e := e) pre last := by
@@ -512,13 +512,22 @@ theorem Execution.honestHeadsExist_or_evidence {Δ : ℕ} (sync : e.Synchronous 
       anchorSlot anchorBoundary signed roots absent bounded parameters genesis pre heldEarly
       enough terminal with states | alternative
   · left
-    intro w hw k nodes _ inTime upToDate tree
+    have sound : Invariant anchorState := (DirectSafety.run_justified_separated pre genesis).1
+    intro w hw k _ inTime upToDate
+    have forward := e.forwardReachable
+      (fun u hu => (start u hu) ▸ Store.ForwardReachable.anchor anchored) k w hw
+    have reached := e.forwardReachableWith
+      (fun u hu => (start u hu) ▸ Store.ForwardReachableWith.anchor anchored) k w hw
     obtain ⟨state, stateOk⟩ := states w hw k inTime upToDate
+    -- The justified block is held, as the store holds the justified state.
+    obtain ⟨base, -, baseFound, -⟩ :=
+      reached.checkpointStatesFromBlocks (Store.checkpointState_ok_iff.mp stateOk)
+    obtain ⟨nodes, tree⟩ := getFilteredNodeTree_exists preGloas forward sound slots anchorSlot
+      anchorBoundary (absent w hw k inTime) fit history
+      (forward.reachable.known_of_blockState baseFound)
     -- The stake ceiling and the fit of the proposer boost keep every weight below `2^64`.
-    exact Store.getHead_exists preGloas
-      (e.forwardReachable (fun u hu => (start u hu) ▸ Store.ForwardReachable.anchor anchored) k w
-        hw) (UInt64.le_of_eq anchorSlot) (absent w hw k inTime) positive scoreFits tree stateOk
-      (ceiling w hw k _ state inTime stateOk)
+    exact Store.getHead_exists preGloas forward (UInt64.le_of_eq anchorSlot) (absent w hw k inTime)
+      fit.positive scoreFits tree stateOk (ceiling w hw k _ state inTime stateOk)
   · exact .inr alternative
 
 /-- Before Gloas, the caller of a checked call reads its head at each rollover up to `last`.
@@ -550,32 +559,14 @@ theorem Execution.callRolloverRead_or_evidence {Δ : ℕ} (sync : e.Synchronous 
     CallRolloverRead (e := e) u n head last ∨
     HonestCollision (e := e) last ∨
     HistoricalDirectSafetyEvidence (e := e) pre last := by
-  rcases e.justifiedState_or_evidence sync slots preGloas admitted fits prompt votes anchored start
-      anchorSlot anchorBoundary signed roots absent bounded parameters genesis pre heldEarly
-      enough terminal with states | alternative
-  swap
-  · exact .inr alternative
-  rcases e.honestHeadsExist_or_evidence sync slots fit.positive preGloas admitted fits prompt votes
+  rcases e.honestHeadsExist_or_evidence sync slots history preGloas admitted fits prompt votes
       anchored start anchorSlot anchorBoundary signed roots absent bounded parameters genesis pre
-      heldEarly enough terminal ceiling scoreFits 0 with heads | alternative
+      heldEarly enough terminal ceiling scoreFits fit 0 with heads | alternative
   swap
   · exact .inr alternative
-  -- At each rollover the caller is up to date, so it holds its justified state and has a head.
+  -- At each rollover the caller is up to date, so it has a head.
   left
-  have sound : Invariant anchorState := (DirectSafety.run_justified_separated pre genesis).1
   intro _ _ _ begin _ _ _ _ beginLe k atTime upToDate
-  have inTime : (e.world k).time ≤ last := atTime ▸ beginLe
-  have forward := e.forwardReachable
-    (fun w hw => (start w hw) ▸ Store.ForwardReachable.anchor anchored) k u caller
-  have reached := e.forwardReachableWith
-    (fun w hw => (start w hw) ▸ Store.ForwardReachableWith.anchor anchored) k u caller
-  -- The justified block is held, as the store holds the justified state.
-  obtain ⟨state, stateOk⟩ := states u caller k inTime upToDate
-  obtain ⟨base, -, baseFound, -⟩ :=
-    reached.checkpointStatesFromBlocks (Store.checkpointState_ok_iff.mp stateOk)
-  obtain ⟨nodes, tree⟩ := getFilteredNodeTree_exists preGloas forward sound slots anchorSlot
-    anchorBoundary (absent u caller k inTime) fit history
-    (forward.reachable.known_of_blockState baseFound)
-  exact heads u caller k nodes (Nat.zero_le _) inTime upToDate tree
+  exact heads u caller k (Nat.zero_le _) (atTime ▸ beginLe) upToDate
 
 end EthLib.Consensus.Models.Network

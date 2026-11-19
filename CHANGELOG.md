@@ -313,7 +313,7 @@ Not yet released.
 - Up-to-date honest stores before Gloas have a head ([#2060](https://github.com/ethereum/EthLib/issues/2060), for pre-Gloas forks).
   `Store.getHead_exists` computes the head of a store that the handlers built from its anchor, under the anchor conditions of the handlers.
   The store holds its justified state, that state has at most `2 * 10^17` Gwei of active stake, and the proposer boost fits that cap.
-  `Execution.honestHeadsExist_or_evidence` shows `HonestHeadsExist`: every up-to-date honest store whose filtered tree reads has a head.
+  `Execution.honestHeadsExist_or_evidence` shows `HonestHeadsExist`: every up-to-date honest store has a head.
   The alternatives are a collision of two honest stores and `HistoricalDirectSafetyEvidence`.
   `Execution.callRolloverRead_or_evidence` derives `CallRolloverRead` with the same alternatives.
   The store holds its justified state because an honest vote for that checkpoint reaches it by the next slot (`VoteAt.accepted_at_next_slot`), and `Handles.checkpointStates_of_found` keeps it.
@@ -322,6 +322,11 @@ Not yet released.
   `Store.nextSlotStart_le_clock` in `ForkChoice/ForwardClock.lean` shows that the slot after one before the current slot exists and starts by the store's clock.
 
 ### Changes that break callers
+
+- In Lean, `HonestHeadsExist` no longer takes the store's filtered tree: every up-to-date honest store in the interval has a head ([#3352](https://github.com/ethereum/EthLib/issues/3352)).
+  `Execution.honestHeadsExist_or_evidence` derives the filtered tree from `Config.CommitteeWindowsFit`, a history of mixes of at least two epochs and the held justified block.
+  It takes `history : 2 ≤ preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat` in place of `positive`, and `fit : config.CommitteeWindowsFit preset` after `scoreFits`; `fit.positive` is the old `positive`.
+  A caller that applied `HonestHeadsExist` to `nodes` and `tree` drops both arguments, and a caller of `Execution.honestHeadsExist_or_evidence` passes `history` and `fit` in place of `positive`.
 
 - The post-quantum key registration of EIP-8450 is removed, because it is not planned for mainnet.
   Its containers, its gossip checks, its proof of possession and their proofs are gone from Lean.
