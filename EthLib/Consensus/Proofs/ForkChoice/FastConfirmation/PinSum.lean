@@ -10463,8 +10463,7 @@ private theorem keyCredit_sum_le (S : Finset ValidatorIndex) (e : BalanceEvent p
   exact Finset.sum_le_sum_of_subset fun i member => Finset.mem_range.mpr
     (Finset.mem_filter.mp member).2
 
-/-- The whistleblower credits of a set of keys over a run are at most the credit limits of the
-slashing events of its replay. -/
+/-- The whistleblower credits of a set of keys over a run fit the limits of its slashing events. -/
 private theorem whistC_sum_le_limits {g m y : ForkedBeaconState preset}
     (shared : Run config checks g m) (genesis : Genesis config checks g)
     (tail : Run config checks m y) (early : y.fork < .glamsterdam) (high : ℕ)
