@@ -63,7 +63,7 @@ Not yet released.
   `Run.withdrawableKept_of_same_epoch` and `withdrawableKept_processRegistryUpdates` keep `WithdrawableKept` inside an epoch and through the registry updates.
   `Genesis.invariant` gives the invariant of a genesis built from deposits, and `Run.invariant` keeps it along a run.
   `syncRewards_bounds` bounds the sync rewards at a position.
-  They do not raise it without a signer or a paid proposer there, and do not lower it without a member there.
+  They do not raise it without a signer or a paid proposer there, and do not lower it without an unsigned member there.
   The pin's drift bound reads it for the keys that hold no seat.
 
 - Its transition facts are in `Transition/BlockLedger.lean`, `Transition/BlockCredits.lean`, `Transition/BranchLedger.lean`, `Transition/EffectiveRise.lean`, `Transition/EffectiveFall.lean`, `Transition/EpochReads.lean` and their neighbours.

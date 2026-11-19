@@ -942,7 +942,7 @@ private theorem sync_debit_seat {f : Fork} {c t : BeaconState preset f} (altair 
   obtain ⟨final, atFinal, value⟩ := balances i b held
   have kept := (syncRewards_bounds (reward := reward.toNat)
     (proposerReward := proposerReward.toNat) (index := i) (chosen := chosen) _ b.toNat).2
-    (fun member inside => seatless member.2 member inside rfl)
+    (fun member inside _ => seatless member.2 member inside rfl)
   rw [← value] at kept
   simp only [actualBalanceAt, held, atFinal, Option.map_some, Option.getD_some] at lowered
   omega

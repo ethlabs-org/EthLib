@@ -1282,9 +1282,7 @@ private theorem kept_processEth1Data {before : fork < .hegota} {body : BeaconBlo
 
 /-! ## The sync aggregate -/
 
-/-- Sync rewards at a position: no rise without a signer or paid proposer there.
-
-There is no fall without a member there. -/
+/-- Sync rewards at a position: no rise without a signer, no fall without an unsigned member. -/
 theorem syncRewards_bounds {reward proposerReward index : Nat} {chosen : ValidatorIndex} :
     ∀ (members : List (ValidatorIndex × Bool)) (balance : Nat),
       ((∀ member ∈ members, member.2 = true → member.1.toNat ≠ index ∧ chosen.toNat ≠ index) →
@@ -1292,7 +1290,7 @@ theorem syncRewards_bounds {reward proposerReward index : Nat} {chosen : Validat
           if member.2 then balance + (if member.1.toNat = index then reward else 0) +
             (if chosen.toNat = index then proposerReward else 0)
           else if member.1.toNat = index then balance - reward else balance) balance ≤ balance) ∧
-      ((∀ member ∈ members, member.1.toNat ≠ index) →
+      ((∀ member ∈ members, member.2 = false → member.1.toNat ≠ index) →
         balance ≤ members.foldl (fun balance member =>
           if member.2 then balance + (if member.1.toNat = index then reward else 0) +
             (if chosen.toNat = index then proposerReward else 0)
@@ -1314,9 +1312,11 @@ theorem syncRewards_bounds {reward proposerReward index : Nat} {chosen : Validat
     · intro apart
       refine Nat.le_trans ?_ ((syncRewards_bounds members _).2
         fun other inside => apart other (List.mem_cons_of_mem _ inside))
+      have head := apart member List.mem_cons_self
       split
-      · simp
-      · simp
+      · exact Nat.le_trans (Nat.le_add_right _ _) (Nat.le_add_right _ _)
+      · rename_i unset
+        simp [head (by simpa using unset)]
 
 /-- The sync rewards do not raise a balance when no signer and no paid proposer sit at it. -/
 private theorem syncRewards_le {reward proposerReward index : Nat} {chosen : ValidatorIndex} :
