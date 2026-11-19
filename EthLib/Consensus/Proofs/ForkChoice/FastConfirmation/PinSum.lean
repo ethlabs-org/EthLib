@@ -16478,6 +16478,89 @@ private theorem registry_headroom (h : Setting config checks g split fin pulled 
   unfold whistleEnv
   split_ifs <;> omega
 
+open DirectSafety.Apriori DirectSafety.Apriori.Internal in
+/-- A key that the shared segment created is bounded at each slashing step on C's branch.
+
+The key is in the split's registry, beyond the finalized one, and unslashed at the split.
+
+`whistleEnv` reads R's number for the key at that index, which is the same key.
+
+The slack pays C's own credits.
+
+A key off the kept arm is bounded by the largest cap.
+
+A key on it is closed by the frozen core.
+
+The core starts at the first state of the key on the shared segment and ends at the step's state. -/
+private theorem registry_created (h : Setting config checks g split fin pulled anc counted V)
+    (tail : Run config checks ⟨fork, split⟩ ⟨fork, pulled⟩) (high : ℕ)
+    (endEpoch : (getCurrentEpoch pulled).toNat ≤ high + 1) {events : List (BalanceEvent preset)}
+    (replayed : tail.balanceEvents high = .ok events)
+    (fromFin : Run config checks ⟨fork, fin⟩ ⟨fork, split⟩) {eventsF : List (BalanceEvent preset)}
+    (replayedF : fromFin.balanceEvents high = .ok eventsF)
+    (tailC : Run config checks ⟨fork, split⟩ ⟨fork, counted⟩) (highC : ℕ)
+    (endEpochC : (getCurrentEpoch counted).toNat ≤ highC + 1)
+    {eventsC : List (BalanceEvent preset)} (replayedC : tailC.balanceEvents highC = .ok eventsC)
+    {a b : ForkedBeaconState preset} (step : Step config checks a b) (member : tailC.Contains step)
+    (i : ℕ)
+    (beyondFin : fin.validators.data.size ≤ i) (inSplit : i < split.validators.data.size)
+    (unslashed : (split.validators.data[i]?.map (·.slashed)).getD false = false)
+    (flag : (!(a.state.validators.data[i]?.map (·.slashed)).getD false &&
+      (b.state.validators.data[i]?.map (·.slashed)).getD false) = true)
+    (addend : ℕ) (hA : 0 < slashW (pinTerms config pulled anc fin) i →
+      (pinTerms config pulled anc fin).unitGain ≤ addend) :
+    effectiveAt a i ≤ whistleEnv (pinTerms config pulled anc fin) pulled anc i +
+      whistleSlack (pinTerms config pulled anc fin) tailC (fromFin.append tail) highC high eventsC
+        eventsF events fin i + addend := by
+  classical
+  by_cases kept : (pinTerms config pulled anc fin).keptArm i = true
+  · sorry
+  · have := registry_headroom (config := config) h tailC step member i kept
+      (whistleSlack (pinTerms config pulled anc fin) tailC (fromFin.append tail) highC high
+        eventsC eventsF events fin i + addend)
+    omega
+
+open DirectSafety.Apriori DirectSafety.Apriori.Internal in
+/-- A key of the finalized registry that is late or pending at R is bounded at each slashing step.
+
+`whistleEnv` reads such a key at its balance and rise, and at `bF`, without `ebUp`.
+
+The key is in the finalized registry, so the start state is the finalized state.
+
+A key off the kept arm is bounded by the largest cap, and a key on it by the frozen core. -/
+private theorem registry_late (h : Setting config checks g split fin pulled anc counted V)
+    (tail : Run config checks ⟨fork, split⟩ ⟨fork, pulled⟩) (high : ℕ)
+    (endEpoch : (getCurrentEpoch pulled).toNat ≤ high + 1) {events : List (BalanceEvent preset)}
+    (replayed : tail.balanceEvents high = .ok events)
+    (fromFin : Run config checks ⟨fork, fin⟩ ⟨fork, split⟩) {eventsF : List (BalanceEvent preset)}
+    (replayedF : fromFin.balanceEvents high = .ok eventsF)
+    (tailC : Run config checks ⟨fork, split⟩ ⟨fork, counted⟩) (highC : ℕ)
+    (endEpochC : (getCurrentEpoch counted).toNat ≤ highC + 1)
+    {eventsC : List (BalanceEvent preset)} (replayedC : tailC.balanceEvents highC = .ok eventsC)
+    {a b : ForkedBeaconState preset} (step : Step config checks a b) (member : tailC.Contains step)
+    (i : ℕ)
+    (inFin : i < fin.validators.data.size)
+    (shape : (pinTerms config pulled anc fin).tight = false ∧
+      ((pinTerms config pulled anc fin).lateB i = true ∨
+        (pinTerms config pulled anc fin).pendingRB i = true))
+    (exitAfterFin : ∀ w, pulled.validators.data[i]? = some w →
+      (getCurrentEpoch fin).toNat ≤ w.exitEpoch.toNat)
+    (unslashed : (split.validators.data[i]?.map (·.slashed)).getD false = false)
+    (flag : (!(a.state.validators.data[i]?.map (·.slashed)).getD false &&
+      (b.state.validators.data[i]?.map (·.slashed)).getD false) = true)
+    (addend : ℕ) (hA : 0 < slashW (pinTerms config pulled anc fin) i →
+      (pinTerms config pulled anc fin).unitGain ≤ addend) :
+    effectiveAt a i ≤ whistleEnv (pinTerms config pulled anc fin) pulled anc i +
+      whistleSlack (pinTerms config pulled anc fin) tailC (fromFin.append tail) highC high eventsC
+        eventsF events fin i + addend := by
+  classical
+  by_cases kept : (pinTerms config pulled anc fin).keptArm i = true
+  · sorry
+  · have := registry_headroom (config := config) h tailC step member i kept
+      (whistleSlack (pinTerms config pulled anc fin) tailC (fromFin.append tail) highC high
+        eventsC eventsF events fin i + addend)
+    omega
+
 /-- The per-key core of the rise for a key on the headroom arm.
 
 Its rise is its whole headroom, to the largest cap.
