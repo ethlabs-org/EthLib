@@ -7696,8 +7696,8 @@ private theorem c_ceiling (h : Setting config checks g split fin pulled anc coun
   have alignedC : PinSplit2.capAt (⟨fork, counted⟩ : ForkedBeaconState preset) i %
       preset.EFFECTIVE_BALANCE_INCREMENT.toNat = 0 := by
     rcases kindC with e | e <;> rw [e] <;> assumption
-  have src := credits_le_sources (shared.append fromFin) h.genesis tailC h.early electra i highC
-    replayedC
+  have src := (credits_le_sources (shared.append fromFin) h.genesis tailC h.early electra i highC
+    replayedC).1
   have startKey : 11 * D * (P * (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum) <
       WEIGHT_DENOMINATOR.toNat * preset.EFFECTIVE_BALANCE_INCREMENT.toNat :=
     rate_per_increment preset.EFFECTIVE_BALANCE_INCREMENT.toNat WEIGHT_DENOMINATOR.toNat
@@ -13181,7 +13181,7 @@ private theorem key_core_frozen (h : Setting config checks g split fin pulled an
     obtain ⟨zf, zs⟩ := z
     have same : fork = zf := (fork_eq_of_run r1 r2 (Nat.le_refl _)).symm
     subst same
-    exact cap_le_cap_of_run h r2 v.toNat
+    exact cap_le_cap_of_run h.caps r2 h.early v.toNat
   have capC : PinSplit2.capAt (⟨fork, counted⟩ : ForkedBeaconState preset) v.toNat ≤
       PinSplit2.capAt (⟨fork, pulled⟩ : ForkedBeaconState preset) v.toNat := by omega
   -- the floor of each state of R's run, and the largest effective balance on it
@@ -13220,15 +13220,15 @@ private theorem key_core_frozen (h : Setting config checks g split fin pulled an
   have late := voter_late h fromFin v voter
   have capSplit : PinSplit2.capAt (⟨fork, split⟩ : ForkedBeaconState preset) v.toNat =
       PinSplit2.capAt (⟨fork, pulled⟩ : ForkedBeaconState preset) v.toNat := by
-    have := cap_le_cap_of_run h fromFin v.toNat
-    have := cap_le_cap_of_run h toPulled v.toNat
+    have := cap_le_cap_of_run h.caps fromFin h.early v.toNat
+    have := cap_le_cap_of_run h.caps toPulled h.early v.toNat
     omega
   have envAll := envelope_of_voter h fromFin tail replayedF replayed v voter
     (Run.nil : Run config checks ⟨fork, fin⟩ ⟨fork, fin⟩) fromFin (run_nil_append fromFin) inFin
     (effective_fin_le_ebUp h v.toNat) late
   have startEff := envAll (⟨fork, split⟩ : ForkedBeaconState preset) memberSplit
   have floorR : min (actualBalanceAt (⟨fork, split⟩ : ForkedBeaconState preset) v.toNat)
-      (PinSplit2.capAt (⟨fork, pulled⟩ : ForkedBeaconState preset) v.toNat) ≤
+      (PinSplit2.capAt (⟨fork, split⟩ : ForkedBeaconState preset) v.toNat) ≤
       actualBalanceAt (⟨fork, pulled⟩ : ForkedBeaconState preset) v.toNat +
         ((events.map (penaltyDebit v.toNat)).sum + (events.map (floorPartialDebit v)).sum) +
         (events.map (syncDebit v.toNat)).sum + slashW (pinTerms config pulled anc fin) v.toNat := by
@@ -13247,11 +13247,35 @@ private theorem key_core_frozen (h : Setting config checks g split fin pulled an
         (getTotalActiveBalance pulled).toOption.getD 0 / 4
       else preset.EFFECTIVE_BALANCE_INCREMENT / 5)).toOption.getD 0).toNat := ⟨_, rfl⟩
   obtain ⟨gc, hform, hgc, bound⟩ := c_ceiling h fromFin tailC highC endEpochC P hP v splitSize
-    (slashW (pinTerms config pulled anc fin) v.toNat)
-    (PinSplit2.capAt (⟨fork, pulled⟩ : ForkedBeaconState preset) v.toNat) (Nat.le_refl _)
-    alignedCap alignedCap
-    (effective_le_cap_pulled h fromFin tail v.toNat)
-    (fun z member => Nat.le_trans (capPath tailC z member) capC) startEff floorR debitsCap rateLow
+    (slashW (pinTerms config pulled anc fin) v.toNat) replayedC startEff floorR debitsCap rateLow
+  -- the frozen cap is constant along C's run
+  have capEq : ∀ z ∈ tailC.balancePath, PinSplit2.capAt z v.toNat =
+      PinSplit2.capAt (⟨fork, pulled⟩ : ForkedBeaconState preset) v.toNat := by
+    intro z member
+    obtain ⟨r1, r2, -⟩ := balancePath_endpoint tailC
+      (Run.nil : Run config checks ⟨fork, counted⟩ ⟨fork, counted⟩) (Nat.le_refl _) member
+    obtain ⟨zf, zs⟩ := z
+    have same : fork = zf := (fork_eq_of_run r1 r2 (Nat.le_refl _)).symm
+    subst same
+    have := cap_le_cap_of_run h.caps r1 h.early v.toNat
+    have := capPath tailC _ member
+    omega
+  have bound : ∀ z ∈ tailC.balancePath,
+      min (actualBalanceAt z v.toNat)
+        (PinSplit2.capAt (⟨fork, pulled⟩ : ForkedBeaconState preset) v.toNat) ≤
+      actualBalanceAt (⟨fork, pulled⟩ : ForkedBeaconState preset) v.toNat +
+        ((events.map (penaltyDebit v.toNat)).sum + (events.map (floorPartialDebit v)).sum) +
+        (events.map (syncDebit v.toNat)).sum + slashW (pinTerms config pulled anc fin) v.toNat +
+        ((credC tailC highC v.toNat + whistC tailC highC v.toNat +
+          (eventsC.map (syncCredit v.toNat)).sum)) +
+        (gc + (min (pinTerms config pulled anc fin).depth
+            ((getCurrentEpoch pulled).toNat + 2 - (getCurrentEpoch fin).toNat) *
+          (pinTerms config pulled anc fin).gainRate v.toNat +
+          min (pinTerms config pulled anc fin).depth
+            ((getCurrentEpoch pulled).toNat + 2 - (getCurrentEpoch fin).toNat))) := by
+    intro z member
+    have := bound z member
+    rwa [capEq z member] at this
   -- the names of the parts of the ceilings
   obtain ⟨Df, hDf⟩ : ∃ Df, Df = (getCurrentEpoch pulled).toNat + 2 - (getCurrentEpoch fin).toNat :=
     ⟨_, rfl⟩
@@ -13278,7 +13302,7 @@ private theorem key_core_frozen (h : Setting config checks g split fin pulled an
     obtain ⟨zf, zs⟩ := z
     have same : fork = zf := (fork_eq_of_run r1 r2 (Nat.le_refl _)).symm
     subst same
-    have capLow := cap_le_cap_of_run h r1 v.toNat
+    have capLow := cap_le_cap_of_run h.caps r1 h.early v.toNat
     have := prefix_ceiling h fromFin tail (getCurrentEpoch pulled).toNat (Nat.le_succ _) replayedF
       replayed v (slashW (pinTerms config pulled anc fin) v.toNat) M below r1 r2 cutZ
       (Nat.le_trans inFin (registryGrows_of_chainSteps r1.chainSteps))
