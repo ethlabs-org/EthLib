@@ -17363,6 +17363,146 @@ private theorem key_core_frozen_from (h : Setting config checks g split fin pull
     rateLow maxLe (effectiveAt (⟨fork, c⟩ : ForkedBeaconState preset) v.toNat) startLe stay
     cappedY creditsLe noCredit
 
+/-- A balance within the finalized one is within `whistleEnv` and any slack.
+
+Stub: R's `short_end`. -/
+private theorem short_end (h : Setting config checks g split fin pulled anc counted V)
+    (i : ℕ) {X : ℕ} (hfin : X ≤ balanceAt fin i) (slack : ℕ) :
+    X ≤ whistleEnv (pinTerms config pulled anc fin) pulled anc i + slack :=
+  sorry
+
+open DirectSafety.Apriori DirectSafety.Apriori.Internal in
+/-- The effective balance of a key at the state before its slashing on C's run is within the bound.
+
+The key is unslashed at the split and slashed by the step, so it is unslashed before the step.
+
+It starts at a state `c` of the shared segment, and its cap may move on either run.
+
+Its balance at the state is closed by the core at the end of C's run up to that state.
+
+The credits of that prefix are within `whistleSlack`'s, and its flows are within a tenth of them.
+
+The replays are read at `high`, which the callers keep free. -/
+private theorem registry_flip (h : Setting config checks g split fin pulled anc counted V)
+    (tail : Run config checks ⟨fork, split⟩ ⟨fork, pulled⟩) (high : ℕ)
+    (endEpoch : (getCurrentEpoch pulled).toNat ≤ high + 1)
+    {events : List (BalanceEvent preset)} (replayed : tail.balanceEvents high = .ok events)
+    (fromFin : Run config checks ⟨fork, fin⟩ ⟨fork, split⟩)
+    {eventsF : List (BalanceEvent preset)} (replayedF : fromFin.balanceEvents high = .ok eventsF)
+    (tailC : Run config checks ⟨fork, split⟩ ⟨fork, counted⟩) (highC : ℕ)
+    (endEpochC : (getCurrentEpoch counted).toNat ≤ highC + 1)
+    {eventsC : List (BalanceEvent preset)} (replayedC : tailC.balanceEvents highC = .ok eventsC)
+    {a b : ForkedBeaconState preset} (step : Step config checks a b) (member : tailC.Contains step)
+    (i : ℕ) {c : BeaconState preset fork} (toC : Run config checks ⟨fork, fin⟩ ⟨fork, c⟩)
+    (fromC : Run config checks ⟨fork, c⟩ ⟨fork, split⟩) (cutC : toC.append fromC = fromFin)
+    (inside : i < c.validators.data.size)
+    (before : ∀ p ∈ toC.balancePath, p = ⟨fork, c⟩ ∨ effectiveAt p i = 0)
+    (start : (effectiveAt (⟨fork, c⟩ : ForkedBeaconState preset) i ≤
+          (pinTerms config pulled anc fin).ebUp i ∧
+        effectiveAt (⟨fork, c⟩ : ForkedBeaconState preset) i ≤ balanceAt fin i) ∨
+      effectiveAt (⟨fork, c⟩ : ForkedBeaconState preset) i ≤
+        actualBalanceAt (⟨fork, c⟩ : ForkedBeaconState preset) i -
+          actualBalanceAt (⟨fork, c⟩ : ForkedBeaconState preset) i %
+            preset.EFFECTIVE_BALANCE_INCREMENT.toNat)
+    (unslashed : (split.validators.data[i]?.map (·.slashed)).getD false = false)
+    (flag : (!(a.state.validators.data[i]?.map (·.slashed)).getD false &&
+      (b.state.validators.data[i]?.map (·.slashed)).getD false) = true)
+    (exitAfterFin : ∀ w, pulled.validators.data[i]? = some w →
+      (getCurrentEpoch fin).toNat ≤ w.exitEpoch.toNat)
+    (kept : (pinTerms config pulled anc fin).keptArm i = true)
+    (addend : ℕ)
+    (hA : 0 < slashW (pinTerms config pulled anc fin) i →
+      (pinTerms config pulled anc fin).unitGain ≤ addend) :
+    effectiveAt a i ≤ whistleEnv (pinTerms config pulled anc fin) pulled anc i +
+      whistleSlack (pinTerms config pulled anc fin) tailC (fromFin.append tail) highC high
+        eventsC eventsF events fin i + addend := by
+  classical
+  have electra : .pectra ≤ fork := Nat.le_trans (by decide) h.fulu
+  have calledNat := UInt64.le_iff_toNat_le.mp h.called
+  obtain ⟨toFin⟩ := h.toFin
+  -- the replays are read at R's epoch
+  have replayedF' : fromFin.balanceEvents (getCurrentEpoch pulled).toNat = .ok eventsF := by
+    rw [balanceEvents_eq_of_endpoint_le fromFin (localHigh := high) (by simp only; omega)
+      (by simp only; omega)]
+    exact replayedF
+  have replayed' : tail.balanceEvents (getCurrentEpoch pulled).toNat = .ok events := by
+    rw [balanceEvents_eq_of_endpoint_le tail (localHigh := high) (by simp only; omega)
+      (by simp only; omega)]
+    exact replayed
+  -- the key as a validator index
+  have sizeFin := registryGrows_of_chainSteps fromC.chainSteps
+  have sizeSplit := registryGrows_of_chainSteps tail.chainSteps
+  have insidePulled : i < pulled.validators.data.size :=
+    Nat.lt_of_lt_of_le (Nat.lt_of_lt_of_le inside sizeFin) sizeSplit
+  have limit := BeaconState.registryWithinLimit_of_lt h.early pulled
+  unfold BeaconState.RegistryWithinLimit at limit
+  have limitBound := preset.VALIDATOR_REGISTRY_LIMIT.toNat_lt
+  have below : i < 2 ^ 64 := by omega
+  obtain ⟨v, hv⟩ : ∃ v : ValidatorIndex, v.toNat = i :=
+    ⟨UInt64.ofNat i, UInt64.toNat_ofNat_of_lt' below⟩
+  subst hv
+  -- C's run splits at the step into the run before it, the step and the run after it
+  obtain ⟨pre, post, hsplit, aEarly, aEpoch⟩ := Run.contains_step_facts member h.early
+  subst hsplit
+  obtain ⟨fa, sa⟩ := a
+  have sameA : fork = fa :=
+    (fork_eq_of_run pre ((Run.nil.snoc step).append post) (Nat.le_refl _)).symm
+  subst sameA
+  obtain ⟨eventsPre, replayedPre⟩ := pre.balanceEvents_ok aEarly highC
+  have endEpochPre : (getCurrentEpoch sa).toNat ≤ highC + 1 := by
+    simp only at aEpoch
+    omega
+  have nearPre : (getCurrentEpoch sa).toNat ≤ (getCurrentEpoch pulled).toNat + 1 := by
+    have := h.near
+    simp only at aEpoch
+    omega
+  -- the key keeps R's registry, and exits after the finalized epoch
+  have late : ∀ w, pulled.validators.data[v.toNat]? = some w →
+      (getCurrentEpoch pulled).toNat + 1 <
+        w.exitEpoch.toNat + config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat :=
+    late_of_exitAfterFin h v.toNat exitAfterFin
+  -- a short end with the finalized start keeps its balance at `c`, which is within R's bound
+  by_cases leftShort : ((getCurrentEpoch sa).toNat ≤ (getCurrentEpoch c).toNat ∧
+      (getCurrentEpoch sa).toNat < (getCurrentEpoch pulled).toNat) ∧
+    (effectiveAt (⟨fork, c⟩ : ForkedBeaconState preset) v.toNat ≤
+        (pinTerms config pulled anc fin).ebUp v.toNat ∧
+      effectiveAt (⟨fork, c⟩ : ForkedBeaconState preset) v.toNat ≤ balanceAt fin v.toNat)
+  · have sameEpoch : getCurrentEpoch sa = getCurrentEpoch c := by
+      have later := UInt64.le_iff_toNat_le.mp
+        (currentEpoch_le_of_chainSteps (fromC.append pre).chainSteps)
+      exact UInt64.toNat_inj.mp (by simp only at later ⊢; omega)
+    have kept' := run_same_epoch_effective (fromC.append pre) aEarly sameEpoch v.toNat inside
+    have hfin : effectiveAt (⟨fork, sa⟩ : ForkedBeaconState preset) v.toNat ≤
+        balanceAt fin v.toNat := by
+      rw [kept']
+      exact leftShort.2.2
+    have bound := short_end h v.toNat hfin
+      (whistleSlack (pinTerms config pulled anc fin) ((pre.snoc step).append post)
+        (fromFin.append tail) highC high eventsC eventsF events fin v.toNat + addend)
+    omega
+  have core := key_core_frozen_from h tail replayed' fromFin replayedF' pre highC endEpochPre
+    nearPre replayedPre v unslashed late toC fromC cutC inside before start
+    (fun lt le S U slack ceiling => by
+      rcases start with ⟨within, atFin⟩ | floorC
+      · exact absurd ⟨⟨le, lt⟩, within, atFin⟩ leftShort
+      · have capped := effective_le_cap_at (toFin.append toC) h.genesis h.caps h.early v.toNat
+        have capsLater := cap_le_cap_of_run h.caps (fromC.append tail) h.early v.toNat
+        have forOf := capAt_le_capForOf (pinTerms config pulled anc fin) pulled v.toNat
+          (capAt_le_capMax h.caps electra v.toNat)
+        exact ⟨by omega, short_start_floor h.bands.1
+          (FloorTrace.effective_aligned (toFin.append toC) h.genesis h.aligned v.toNat) capped
+          ceiling floorC slack⟩)
+    kept
+  -- the prefix's credits are within those of the whole run
+  obtain ⟨hcredC, hwhist, hband⟩ := prefix_credits_mono pre step post highC v.toNat
+  have hsync := syncCr_prefix_le pre step post highC replayedPre replayedC v.toNat
+  have hcredN := credC_prefix_le h pre step post highC replayedC v.toNat flag
+  have hsyncRaw : (eventsPre.map (syncCredit v.toNat)).sum ≤ syncCr eventsC v.toNat := hsync
+  exact whistle_of_close h _ rfl pre ((pre.snoc step).append post) (fromFin.append tail) highC high
+    eventsC eventsPre eventsF events v.toNat _
+    (effectiveAt (⟨fork, sa⟩ : ForkedBeaconState preset) v.toNat) addend core (by omega) hcredC
+    hcredN hwhist hsync hband kept hA
+
 open DirectSafety.Apriori DirectSafety.Apriori.Internal in
 /-- The per-key core of the rise for a counted voter on its kept arm, from a start state `c`.
 
