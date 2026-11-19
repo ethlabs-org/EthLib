@@ -14816,7 +14816,8 @@ private theorem bud_whistle_of (h : Setting config checks g split fin pulled anc
               else 0)) : ℕ) : ℤ) +
         ((3 * ∑ v ∈ SC pulled counted split with (pinTerms config pulled anc fin).slashedRB v.toNat
             = true,
-          ((balanceAt pulled v.toNat + (pinTerms config pulled anc fin).rise v.toNat) / (parameters
+          ((max (balanceAt pulled v.toNat + (pinTerms config pulled anc fin).rise v.toNat)
+            (balanceAt fin v.toNat)) / (parameters
               preset fork).WHISTLEBLOWER_REWARD_QUOTIENT.toNat +
             (preset.EFFECTIVE_BALANCE_INCREMENT.toNat + (parameters preset
                 fork).WHISTLEBLOWER_REWARD_QUOTIENT.toNat - 1) / (parameters preset
@@ -14850,13 +14851,15 @@ private theorem bud_whistle_of (h : Setting config checks g split fin pulled anc
       fork).WHISTLEBLOWER_REWARD_QUOTIENT.toNat ≤
       3 * ∑ v ∈ SC pulled counted split with (pinTerms config pulled anc fin).slashedRB v.toNat =
           true,
-        ((balanceAt pulled v.toNat + (pinTerms config pulled anc fin).rise v.toNat) / (parameters
+        ((max (balanceAt pulled v.toNat + (pinTerms config pulled anc fin).rise v.toNat)
+            (balanceAt fin v.toNat)) / (parameters
             preset fork).WHISTLEBLOWER_REWARD_QUOTIENT.toNat +
           (preset.EFFECTIVE_BALANCE_INCREMENT.toNat + (parameters preset
               fork).WHISTLEBLOWER_REWARD_QUOTIENT.toNat - 1) / (parameters preset
               fork).WHISTLEBLOWER_REWARD_QUOTIENT.toNat) := by
     rw [sum_SC_filter_positions h (fun i => (pinTerms config pulled anc fin).slashedRB i = true)
-      (fun i => (balanceAt pulled i + (pinTerms config pulled anc fin).rise i) / (parameters preset
+      (fun i => (max (balanceAt pulled i + (pinTerms config pulled anc fin).rise i)
+          (balanceAt fin i)) / (parameters preset
           fork).WHISTLEBLOWER_REWARD_QUOTIENT.toNat +
         (preset.EFFECTIVE_BALANCE_INCREMENT.toNat + (parameters preset
             fork).WHISTLEBLOWER_REWARD_QUOTIENT.toNat - 1) / (parameters preset
@@ -14865,9 +14868,13 @@ private theorem bud_whistle_of (h : Setting config checks g split fin pulled anc
     have slashedR : (pinTerms config pulled anc fin).slashedRB i = true := (Finset.mem_filter.mp
         member).2
     simp only [slashedR, whistleEnv, ite_true]
-    exact floor_add_ceil_le (balanceAt pulled i + (pinTerms config pulled anc fin).rise i)
-      preset.EFFECTIVE_BALANCE_INCREMENT.toNat (parameters preset
-          fork).WHISTLEBLOWER_REWARD_QUOTIENT.toNat (by omega)
+    exact (Nat.div_le_div_right (by omega : max (balanceAt pulled i +
+      (pinTerms config pulled anc fin).rise i + preset.EFFECTIVE_BALANCE_INCREMENT.toNat)
+      (balanceAt fin i) ≤ max (balanceAt pulled i + (pinTerms config pulled anc fin).rise i)
+      (balanceAt fin i) + preset.EFFECTIVE_BALANCE_INCREMENT.toNat)).trans
+      (floor_add_ceil_le (max (balanceAt pulled i + (pinTerms config pulled anc fin).rise i)
+        (balanceAt fin i)) preset.EFFECTIVE_BALANCE_INCREMENT.toNat (parameters preset
+          fork).WHISTLEBLOWER_REWARD_QUOTIENT.toNat (by omega))
   -- the keys that C leaves active, read at their rise, their rows and their seat debits
   have activeKeys : ∑ v ∈ SC pulled counted split with (¬ (pinTerms config pulled anc fin).slashedRB
       v.toNat = true ∧
