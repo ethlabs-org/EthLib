@@ -1639,14 +1639,17 @@ private theorem div_sub_le (a b c : ℕ) : a / c - b / c ≤ (a - b) / c + 1 := 
     simp
   · by_cases order : a ≤ b
     · have := Nat.div_le_div_right (c := c) order
+      have nonneg := Nat.zero_le ((a - b) / c)
       omega
     · obtain ⟨d, rfl⟩ : ∃ d, a = b + d := ⟨a - b, by omega⟩
-      have ha := Nat.lt_mul_div_succ b positive
-      have hd := Nat.lt_mul_div_succ d positive
-      have bound : (b + d) / c < b / c + d / c + 2 := by
-        rw [Nat.div_lt_iff_lt_mul positive]
-        have : c * (b / c + d / c + 2) = c * (b / c + 1) + c * (d / c + 1) := by ring
-        omega
+      have hb := Nat.div_add_mod b c
+      have hd := Nat.div_add_mod d c
+      have mb := Nat.mod_lt b positive
+      have md := Nat.mod_lt d positive
+      have expand : c * (b / c + d / c + 2) = c * (b / c) + c * (d / c) + 2 * c := by ring
+      have bound : (b + d) / c < b / c + d / c + 2 :=
+        Nat.div_lt_of_lt_mul (by rw [expand]; omega)
+      have nonneg := Nat.zero_le (d / c)
       rw [Nat.add_sub_cancel_left]
       omega
 
@@ -1736,14 +1739,13 @@ private theorem seat_union_card (h : Setting config checks g split fin pulled an
   generalize hLnext : (split.nextSyncCommittee altairF).value.pubkeys.toList = Lnext at *
   have sizeOf : ∀ {f : Fork} (alt : .altair ≤ f) (b : BeaconState preset f),
       (b.currentSyncCommittee alt).value.pubkeys.toList.length =
-        preset.SYNC_COMMITTEE_SIZE.toNat := fun _ _ => Vector.length_toList _
+        preset.SYNC_COMMITTEE_SIZE.toNat := fun _ _ => Vector.length_toList
   -- R's first two committees are the current and next ones at the split
   have firstR : LsR 0 = Lcur := by
     obtain ⟨z, r1, r2, alt, cut, per, hL⟩ := familyR 0 (Nat.zero_le _)
     have earlyZ : z.fork < .glamsterdam :=
       Nat.lt_of_le_of_lt (fork_le_of_chainSteps r2.chainSteps) h.early
     rw [hL, ← hLcur]
-    rw [← hP] at per
     exact r1.currentSyncCommittee_eq_of_same_period earlyZ (by rw [hP]; simpa using per) alt
       altairF
   have secondR : 1 ≤ nR → LsR 1 = Lnext := fun one => by
@@ -1762,9 +1764,9 @@ private theorem seat_union_card (h : Setting config checks g split fin pulled an
     rw [hL, ← hLcur]
     rcases Run.prefix_total r1 r2 fromFin tailC cut rfl with ⟨r, -⟩ | ⟨r, -⟩
     · exact (r.currentSyncCommittee_eq_of_same_period h.early
-        (by rw [hP]; simp only at per; omega) altairF alt).symm
+        (by rw [hP]; omega) altairF alt).symm
     · exact r.currentSyncCommittee_eq_of_same_period earlyZ
-        (by rw [hP]; simp only at per; omega) alt altairF
+        (by rw [hP]; omega) alt altairF
   have secondC : 1 ≤ nR → ∃ j ≤ nC, LsC j = Lnext := fun one => by
     refine ⟨(getCurrentEpoch split).toNat / P - (getCurrentEpoch fin).toNat / P + 1,
       by omega, ?_⟩
@@ -1776,10 +1778,10 @@ private theorem seat_union_card (h : Setting config checks g split fin pulled an
     rcases Run.prefix_total r1 r2 fromFin tailC cut rfl with ⟨r, -⟩ | ⟨r, -⟩
     · exfalso
       have order := UInt64.le_iff_toNat_le.mp (currentEpoch_le_of_chainSteps r.chainSteps)
-      simp only at order per
+      try simp only at order
       have := Nat.div_le_div_right (c := P) order
       omega
-    · exact rotation r earlyZ (by simp only at per; omega) alt altairF
+    · exact rotation r earlyZ (by omega) alt altairF
   -- the positions that hold a key of the committees of each run
   have distinctR : PubkeysDistinct pulled :=
     ((toFin.append fromFin).append tail).pubkeysDistinct h.genesis
@@ -1807,13 +1809,8 @@ private theorem seat_union_card (h : Setting config checks g split fin pulled an
   rw [List.length_map, List.length_range'] at cardR
   have keptR := (validatorKeys_prefix_and_distinct_of_chainSteps tail.chainSteps).1
   have keptC := (validatorKeys_prefix_and_distinct_of_chainSteps tailC.chainSteps).1
-  refine le_trans (Finset.card_le_card (t := ((Finset.range counted.validators.data.size).filter
-      fun i => ∃ w, counted.validators.data[i]? = some w ∧
-        ∃ L ∈ (List.range (nC + 1)).map LsC, w.pubkey ∈ L) ∪
-      ((Finset.range pulled.validators.data.size).filter fun i =>
-        ∃ w, pulled.validators.data[i]? = some w ∧
-          ∃ L ∈ (List.range' 2 (nR - 1)).map LsR, w.pubkey ∈ L)) ?_)
-    (le_trans (Finset.card_union_le _ _) (le_trans (Nat.add_le_add cardC cardR) ?_))
+  have union_le := le_trans (Finset.card_union_le _ _) (Nat.add_le_add cardC cardR)
+  refine le_trans (Finset.card_le_card ?_) (le_trans union_le ?_)
   · intro i member
     rcases Finset.mem_union.mp member with inV | inK
     · obtain ⟨-, w, j, found, hj, mem⟩ := debitC (eventsF ++ eventsC) replayedRC i
