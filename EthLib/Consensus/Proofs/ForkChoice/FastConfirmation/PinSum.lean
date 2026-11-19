@@ -1583,6 +1583,57 @@ private theorem credited_pieces {g : ForkedBeaconState preset}
   exact ⟨B, S, D, cardB, cardS, cardD, hBS, hDep,
     fun events replayed i pos => (hSD events replayed i pos).1⟩
 
+/-- The positions of a registry that hold a key of some committee of a list are at most the keys of
+the list.
+
+The registry has distinct keys, and each committee has at most `SYNC_COMMITTEE_SIZE` keys. -/
+private theorem listed_positions_card (state : BeaconState preset fork)
+    (distinct : PubkeysDistinct state) (Ls : List (List Cryptography.Bls.BLSPubkey))
+    (each : ∀ L ∈ Ls, L.length ≤ preset.SYNC_COMMITTEE_SIZE.toNat) :
+    ((Finset.range state.validators.data.size).filter fun i =>
+        ∃ w, state.validators.data[i]? = some w ∧ ∃ L ∈ Ls, w.pubkey ∈ L).card ≤
+      preset.SYNC_COMMITTEE_SIZE.toNat * Ls.length := by
+  classical
+  have mapped : ((Finset.range state.validators.data.size).filter fun i =>
+      ∃ w, state.validators.data[i]? = some w ∧ ∃ L ∈ Ls, w.pubkey ∈ L).card ≤
+        Ls.flatten.toFinset.card := by
+    refine Finset.card_le_card_of_injOn (keyAt state) (fun i member => ?_)
+      (fun i mi j mj eq => ?_)
+    · obtain ⟨w, found, L, hL, mem⟩ := (Finset.mem_filter.mp member).2
+      simp only [keyAt, found, Option.map_some, Option.getD_some]
+      exact List.mem_toFinset.mpr (List.mem_flatten.mpr ⟨L, hL, mem⟩)
+    · obtain ⟨w, found, -⟩ := (Finset.mem_filter.mp mi).2
+      obtain ⟨w', found', -⟩ := (Finset.mem_filter.mp mj).2
+      simp only [keyAt, found, found', Option.map_some, Option.getD_some] at eq
+      exact distinct.index_eq found found' eq
+  have total : Ls.flatten.length ≤ preset.SYNC_COMMITTEE_SIZE.toNat * Ls.length := by
+    rw [List.length_flatten]
+    have := List.sum_le_card_nsmul (Ls.map List.length) preset.SYNC_COMMITTEE_SIZE.toNat
+      (fun a ha => by
+        obtain ⟨L, hL, rfl⟩ := List.mem_map.mp ha
+        exact each L hL)
+    simpa [List.length_map, smul_eq_mul, Nat.mul_comm] using this
+  exact mapped.trans ((List.toFinset_card_le _).trans total)
+
+/-- A key of an earlier registry that a later registry holds at a position is at that position in
+the earlier one.
+
+The later registry has distinct keys, and the earlier keys are a prefix of the later ones. -/
+private theorem position_in_prefix {f f' : Fork} {x : BeaconState preset f}
+    {t : BeaconState preset f'} (kept : validatorKeys x <+: validatorKeys t)
+    (distinct : PubkeysDistinct t) {pk : Cryptography.Bls.BLSPubkey}
+    (mem : pk ∈ validatorKeys x) {i : ℕ} {w : Validator}
+    (found : t.validators.data[i]? = some w) (same : w.pubkey = pk) :
+    ∃ v, x.validators.data[i]? = some v ∧ v.pubkey = pk := by
+  simp only [validatorKeys] at mem
+  obtain ⟨v, hv, rfl⟩ := List.mem_map.mp mem
+  obtain ⟨j, hj⟩ := List.mem_iff_getElem?.mp hv
+  have foundX : x.validators.data[j]? = some v := by simpa using hj
+  obtain ⟨cur, foundT, same'⟩ := validators_getElem?_of_validatorKeys_prefix kept foundX
+  have index := distinct.index_eq found foundT (same.trans same'.symm)
+  subst index
+  exact ⟨v, foundX, rfl⟩
+
 /-- The keys that a run from the split credits or debits through a sync seat.
 
 They are at most its proposers, its seat holders and its deposit recipients.
