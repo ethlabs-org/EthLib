@@ -1336,7 +1336,7 @@ private theorem K6_class {g : ForkedBeaconState preset}
         · exact .inl unslashed
         · right
           have slashed : w.slashed = true := by simpa using unslashed
-          have delayed := slashed_waits rp rc h.early h.caps h.delay found slashed
+          have delayed := slashed_waits (rf.append rs) h.genesis rp rc h.early h.caps h.delay found slashed
             (by simp [foundU, uUnslashed])
           omega
 
