@@ -1315,7 +1315,7 @@ private theorem block_credit_le_sources {g m n : ForkedBeaconState preset}
       simpa using sum_credits_split events (keyCredit i) (syncCredit i) (fun _ => true)
         (fun s => decide (s = .rewards ∨ s = .consolidations)) (fun s => decide (s = .slashings))
         (fun e m _ => by simpa using each e m)
-    simp only [stepCredit, replayed, Except.toOption, Option.getD_some, sum_filter_none] at split ⊢
+    simp only [stepCredit, replayed, Except.toOption, Option.getD_some, List.filter_true] at split ⊢
     exact split
   | slot ok => exact absurd rfl (notSlot ok)
 
@@ -1336,7 +1336,7 @@ private theorem step_credit_le_sources {g m n : ForkedBeaconState preset}
     have split := block_credit_le_sources shared genesis (Step.block engine signed due ok)
       (by intro ok' h; cases h) early electra i replayed
     simp only [stepNet, stepCredit, replayed, Except.toOption, Option.getD_some,
-      sum_filter_none] at base split ⊢
+      sum_filter_none, List.filter_true] at base split ⊢
     omega
   | slot ok =>
     have each := slot_event_credit shared genesis early i replayed bounded
@@ -11100,8 +11100,8 @@ private theorem sources_part {x m n y : ForkedBeaconState preset} (P : Run confi
     Nat.lt_of_le_of_lt (fork_le_of_chainSteps R.chainSteps) nEarly
   obtain ⟨eP, replayedP⟩ := P.balanceEvents_ok mEarly high
   obtain ⟨eQ, replayedQ⟩ := Q.balanceEvents_ok early high
-  have whole := balanceEvents_append P (R.append Q) high replayedP
-    (balanceEvents_append R Q high replayedR replayedQ)
+  have whole := DirectSafety.Apriori.Internal.balanceEvents_append P (R.append Q) high replayedP
+    (DirectSafety.Apriori.Internal.balanceEvents_append R Q high replayedR replayedQ)
   rw [whole] at replayedW
   obtain rfl := Except.ok.inj replayedW
   unfold credC whistC
@@ -11130,7 +11130,9 @@ private theorem flip_credits_le_sources {g x s s' y : ForkedBeaconState preset}
   obtain ⟨e2, replayed2⟩ := post.balanceEvents_ok early high
   have snoc : (pre.snoc step).balanceEvents high = .ok (e1 ++ es) := by
     simp [Run.balanceEvents, replayed1, replayedS, inside]
-  have whole := balanceEvents_append (pre.snoc step) post high snoc replayed2
+    rfl
+  have whole := DirectSafety.Apriori.Internal.balanceEvents_append (pre.snoc step) post high snoc
+    replayed2
   rw [whole] at replayed
   obtain rfl := Except.ok.inj replayed
   have first := credits_le_sources shared genesis pre sEarly electra i high replayed1
