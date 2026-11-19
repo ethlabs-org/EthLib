@@ -72,6 +72,14 @@ Not yet released.
   They are also `Unassigned`, `UnassignedFrom`, `unassignedFrom_size`, `UnassignedKept` and `UnassignedKept.processDeposit`.
   `DirectSafety.total_active_congr` moves from `DirectSafety/DepartureQueue.lean` to `Transition/BalanceDrift.lean`, with its name and statement unchanged.
 
+- The inactivity-score, balance-floor and run lemmas of the departure charge bounds are general.
+  `DirectSafety.Apriori.Internal.FloorTrace.step_general` shows that a step of a run extends the per-key floor trace and keeps its carried account.
+  The key is unslashed at the start of the run, or slashed with an assigned exit, and its delayed penalty is not due in the epoch of the step.
+  `FloorTrace.step` reads it.
+  `addValidatorToRegistry_keeps` shows that, from Altair, adding a validator keeps each balance, score and consolidation, and gives the new score zero.
+  `scoresKept_processEpochAltair` and `scoresKept_processBlock` keep the inactivity score at each position of the registry through an epoch after its update and through a block.
+  `DirectSafety.Apriori.Internal.Run.contains_step_facts` moves from `DirectSafety/Apriori/Contracts/FirstDrop.lean` to `Transition/Trace.lean`, with its name and statement unchanged.
+
 - `queueConsolidation_steps` states the steps of queueing a consolidation once ([#2334](https://github.com/ethereum/EthLib/issues/2334)).
   The churn call writes only the churn left and the earliest consolidation epoch.
   The source then gets its exit and withdrawable epochs, and the consolidation joins the queue.
