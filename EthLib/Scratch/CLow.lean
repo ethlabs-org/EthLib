@@ -299,21 +299,9 @@ private theorem exitQ_potential (h : Setting config checks g split fin pulled an
       exitQ tailC v.toNat := by
   classical
   obtain ⟨c0, member0, index0, amount0⟩ := exitQ_eq_charge h.early tailC member charged
-  have inTail : c0 ∈ (fromFin.append tailC).departureCharges := by
-    rw [Run.departureCharges_append]
-    exact List.mem_append_right _ member0
-  obtain ⟨stop⟩ := Stop.exists (fromFin.append tailC) v.toNat
-  obtain ⟨c, chosen⟩ : ∃ c, stop.charge = some c := by
-    cases hc : stop.charge with
-    | none =>
-      have selected := stop.selected
-      rw [hc] at selected
-      exact absurd index0 (selected.2 c0 inTail)
-    | some c => exact ⟨c, rfl⟩
+  obtain ⟨stop, chosen⟩ := stop_of_charge fromFin tailC member0 index0
   have selected := stop.selected
   rw [chosen] at selected
-  have cEq : c = c0 := charge_unique _ selected.1 inTail (selected.2.1.trans index0.symm)
-  subst cEq
   obtain ⟨-, -, amount, next, assignedStep, rest, split', charged', vv, w, atStop, atNext,
     unset, assigned, epoch⟩ := selected
   have far : ∀ w', stop.state.state.validators.data[v.toNat]? = some w' →

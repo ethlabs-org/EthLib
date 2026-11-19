@@ -4345,6 +4345,31 @@ private theorem charge_unique {x y : ForkedBeaconState preset} (tail : Run confi
     (same : c.index = d.index) : c = d :=
   List.inj_on_of_nodup_map (DirectSafety.departureCharges_run_indices tail) hc hd same
 
+/-- A charge of a run is the charge of the stop at its position, on the run after a prefix.
+
+The stop is the state before the step that assigns the exit, and the charge reads its balance. -/
+private theorem stop_of_charge {x s y : ForkedBeaconState preset} (fromX : Run config checks x s)
+    (tail : Run config checks s y) {c0 : DepartureCharge} (member : c0 ∈ tail.departureCharges)
+    {i : ℕ} (index : c0.index = i) :
+    ∃ stop : Stop (fromX.append tail) i, stop.charge = some c0 := by
+  subst index
+  have inTail : c0 ∈ (fromX.append tail).departureCharges := by
+    rw [Run.departureCharges_append]
+    exact List.mem_append_right _ member
+  obtain ⟨stop⟩ := Stop.exists (fromX.append tail) c0.index
+  obtain ⟨c, chosen⟩ : ∃ c, stop.charge = some c := by
+    cases hc : stop.charge with
+    | none =>
+      have selected := stop.selected
+      rw [hc] at selected
+      exact absurd rfl (selected.2 c0 inTail)
+    | some c => exact ⟨c, rfl⟩
+  have selected := stop.selected
+  rw [chosen] at selected
+  have cEq : c = c0 := charge_unique _ selected.1 inTail selected.2.1
+  subst cEq
+  exact ⟨stop, chosen⟩
+
 open DirectSafety.Apriori DirectSafety.Apriori.Internal in
 /-- The effective balance of a key at its exit call, from the finalized state.
 
@@ -4368,7 +4393,6 @@ private theorem exitQ_floor (h : Setting config checks g split fin pulled anc co
         preset.EFFECTIVE_BALANCE_INCREMENT.toNat := by
   classical
   obtain ⟨shared⟩ := h.toFin
-  obtain ⟨stop⟩ := Stop.exists (fromFin.append tailC) v.toNat
   -- the charge of `tailC`
   obtain ⟨c0, member0, index0, amount0⟩ : ∃ c ∈ tailC.departureCharges,
       c.index = v.toNat ∧ exitQ tailC v.toNat = c.amount := by
@@ -4379,20 +4403,7 @@ private theorem exitQ_floor (h : Setting config checks g split fin pulled anc co
       have both := List.find?_some found
       simp only [Bool.and_eq_true, beq_iff_eq] at both
       exact ⟨c, List.mem_of_find?_eq_some found, both.1, by simp [exitQ, found]⟩
-  have inTail : c0 ∈ (fromFin.append tailC).departureCharges := by
-    rw [Run.departureCharges_append]
-    exact List.mem_append_right _ member0
-  obtain ⟨c, chosen⟩ : ∃ c, stop.charge = some c := by
-    cases hc : stop.charge with
-    | none =>
-      have selected := stop.selected
-      rw [hc] at selected
-      exact absurd index0 (selected.2 c0 inTail)
-    | some c => exact ⟨c, rfl⟩
-  have selected := stop.selected
-  rw [chosen] at selected
-  have cEq : c = c0 := charge_unique _ selected.1 inTail (selected.2.1.trans index0.symm)
-  subst cEq
+  obtain ⟨stop, chosen⟩ := stop_of_charge fromFin tailC member0 index0
   -- the ends
   obtain ⟨w, final, _⟩ := (fromFin.append tailC).registryLifecycle.validators v.toNat val initial
   have cleanEnd := clean w final
