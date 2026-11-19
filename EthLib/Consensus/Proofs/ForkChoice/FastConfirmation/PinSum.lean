@@ -5892,8 +5892,10 @@ private theorem floorC_stay (h : Setting config checks g split fin pulled anc co
     finEB ≤ effectiveAt z i.toNat := by
   obtain ⟨toFin⟩ := h.toFin
   have incPos := h.bands.1
-  have aligned := FloorTrace.effective_aligned toFin h.genesis h.aligned i.toNat
-  rw [← hfin] at aligned
+  have alignedFin := FloorTrace.effective_aligned toFin h.genesis h.aligned i.toNat
+  have aligned : finEB % preset.EFFECTIVE_BALANCE_INCREMENT.toNat = 0 := by
+    rw [hfin]
+    exact alignedFin
   by_cases small : finEB < preset.EFFECTIVE_BALANCE_INCREMENT.toNat
   · have zero : finEB = 0 := by rw [← Nat.mod_eq_of_lt small]; exact aligned
     omega
@@ -5921,7 +5923,7 @@ private theorem floorC_stay (h : Setting config checks g split fin pulled anc co
     simpa [effectiveAt, initial] using UInt64.le_iff_toNat_le.mp cap
   rw [hfin]
   refine (PinSplit2.Run.effective_floor_pair rp (forkEnd rest) h.fulu i.toNat inside 0 0 0 0 0
-    0).2.1 aligned ?_ ?_
+    0).2.1 alignedFin ?_ ?_
   · intro m n before step after cut' below
     obtain ⟨mF, mS⟩ := m
     obtain ⟨nF, nS⟩ := n
@@ -5929,11 +5931,11 @@ private theorem floorC_stay (h : Setting config checks g split fin pulled anc co
       (fork_le_of_chainSteps rest.chainSteps)
     have nSame : nF = fork := Fork.ctorIdx_injective (Nat.le_antisymm afterRest
       (Nat.le_trans (fork_le_of_chainSteps before.chainSteps) step.chainStep.fork_le))
-    obtain rfl : nF = fork := nSame
+    obtain rfl : fork = nF := nSame.symm
     have mSame : mF = fork := Fork.ctorIdx_injective (Nat.le_antisymm
       (Nat.le_trans step.chainStep.fork_le afterRest)
       (fork_le_of_chainSteps before.chainSteps))
-    obtain rfl : mF = fork := mSame
+    obtain rfl : fork = mF := mSame.symm
     have eqn : (before.snoc step).append (after.append rest) = fromFin.append tailC := by
       rw [Run.append_assoc, cut', cut]
     have atN := floorAt (before.snoc step) (after.append rest) eqn
@@ -5949,7 +5951,7 @@ private theorem floorC_stay (h : Setting config checks g split fin pulled anc co
     obtain ⟨wF, wS⟩ := w
     have wSame : wF = fork := Fork.ctorIdx_injective (Nat.le_antisymm
       (fork_le_of_chainSteps post.chainSteps) (fork_le_of_chainSteps pre.chainSteps))
-    obtain rfl : wF = fork := wSame
+    obtain rfl : fork = wF := wSame.symm
     obtain ⟨valW, initialW, -⟩ := pre.registryLifecycle.validators i.toNat val initial
     have hwhole : (pre.append (post.snoc step)).append (after.append rest) =
         fromFin.append tailC := by
