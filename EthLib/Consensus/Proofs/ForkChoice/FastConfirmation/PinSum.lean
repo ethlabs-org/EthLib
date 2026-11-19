@@ -4685,6 +4685,41 @@ private theorem K5_unslashed {v : ValidatorIndex} (member : v ∈ K5 counted V) 
   obtain ⟨⟨-, flag⟩, -, -⟩ := inK5
   simpa [slashedFlagAt, found] using flag
 
+/-- A key whose exit starts on a run is activated at the start of the step that starts it.
+
+The run splits at that step, and the charge reads the key's effective balance there. -/
+private theorem charge_activated {x y : ForkedBeaconState preset} (electra : .pectra ≤ x.fork)
+    (tail : Run config checks x y) (c : DepartureCharge) (member : c ∈ tail.departureCharges) :
+    ∃ (u u' : ForkedBeaconState preset) (pre : Run config checks x u)
+      (step : Step config checks u u') (post : Run config checks u' y) (v : Validator),
+      (pre.snoc step).append post = tail ∧ u.state.validators.data[c.index]? = some v ∧
+        v.exitEpoch = FAR_FUTURE_EPOCH ∧ v.activationEpoch ≤ getCurrentEpoch u.state ∧
+        v.effectiveBalance.toNat = c.amount := by
+  induction tail with
+  | nil => simp [Run.departureCharges] at member
+  | @snoc middle last pre step ih =>
+    rcases List.mem_append.mp member with earlier | latest
+    · obtain ⟨u, u', before, split, post, v, equal, rest⟩ := ih earlier
+      exact ⟨u, u', before, split, post.snoc step, v, by
+        change ((before.snoc split).append post).snoc step = pre.snoc step
+        rw [equal], rest⟩
+    · obtain ⟨⟨old, i⟩, listed, added⟩ := List.mem_filterMap.mp latest
+      dsimp only at added
+      split at added
+      · cases added
+      · rename_i next later
+        split at added
+        · rename_i assigned
+          obtain rfl := Option.some.inj added
+          simp only [Bool.and_eq_true, beq_iff_eq, bne_iff_ne] at assigned
+          have found : middle.state.validators.data[i]? = some old := by
+            simpa only [List.mem_zipIdx_iff_getElem?, Array.getElem?_toList] using listed
+          have electra' : .pectra ≤ middle.fork :=
+            Nat.le_trans electra (fork_le_of_chainSteps pre.chainSteps)
+          exact ⟨middle, last, pre, step, .nil, old, rfl, found, assigned.1,
+            step.chainStep.exit_assigned_activated electra' found later assigned.1 assigned.2, rfl⟩
+        · cases added
+
 /-- A key that is not yet activated at the finalized state and has a small charge loses seats.
 
 The key is missing at the finalized state, or its activation there is unassigned.
