@@ -9661,10 +9661,12 @@ private theorem created_credited (h : Setting config checks g split fin pulled a
       induction L with
       | nil => rfl
       | cons e rest ih =>
-        simp only [consAmt] at ih ⊢
+        simp only [consAmt, Bool.false_eq_true, false_or, decide_eq_true_eq] at ih ⊢
         by_cases consolidation : e.source = .consolidations
-        · simp [List.filter_cons, consolidation, ih]
-        · simp [List.filter_cons, consolidation, ih]
+        · simp only [List.map_cons, List.sum_cons, List.filter_cons, consolidation, decide_true,
+            ↓reduceIte, ih]
+        · simp only [List.map_cons, List.sum_cons, List.filter_cons, consolidation, decide_false,
+            Bool.false_eq_true, ↓reduceIte, ih, Nat.zero_add]
     rw [Finset.sum_singleton] at scan
     exact le_of_le_of_eq scan (only eventsC)
   rw [consZero] at consScan
