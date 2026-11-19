@@ -15,8 +15,8 @@ private theorem ceiling_closed (I WD F P e0 D Cr Cr' S W C q r : ℕ)
     (hq : q = e0 / I * P * F / WD) (hr : r = P * F / WD) (hI : 0 < I)
     (hWD : 0 < WD) (alignedE : e0 % I = 0) (alignedC : C % I = 0)
     (hC : (11 * Cr' + 9) / 10 ≤ C)
-    (small : D * ((11 * q + 9) / 10) < I) (rateLow : 11 * D * (q + 1) ≤ e0)
-    (start : S + Cr ≤ e0 + Cr' + W) (hW : W + 2 * D ≤ I) :
+    (small : D * ((11 * q + 9) / 10 + 2) < I) (rateLow : 11 * D * (q + 1) ≤ e0)
+    (start : S + Cr + 2 * D ≤ e0 + Cr' + W) (hW : W ≤ I) :
     S + Cr + (D * ((C + I - 1) / I * P * F / WD) + (D * q + D * (r + 2))) <
       e0 + C + I + I := by
   subst hq hr
@@ -69,7 +69,10 @@ private theorem ceiling_closed (I WD F P e0 D Cr Cr' S W C q r : ℕ)
     calc 11 * (D * (e0 / I * P * F / WD)) = D * (11 * (e0 / I * P * F / WD)) := by ring
       _ ≤ D * (10 * ((11 * (e0 / I * P * F / WD) + 9) / 10)) := Nat.mul_le_mul_left _ h1
       _ = 10 * (D * ((11 * (e0 / I * P * F / WD) + 9) / 10)) := by ring
-      _ < 10 * I := by omega
+      _ < 10 * I := by
+        have := small
+        rw [Nat.mul_add] at this
+        omega
   have unit : 11 * (D * (P * F / WD)) < I := by
     have fl : WD * (P * F / WD) ≤ P * F := Nat.mul_div_le _ _
     have h1 : WD * (11 * (D * (P * F / WD))) < WD * I := by
@@ -124,9 +127,9 @@ private theorem c_ceiling_abstract {n y : ForkedBeaconState preset}
     (startEff : effectiveAt n i ≤ e0)
     (credits : netScan i high post +
       (creditScan (fun _ => false) (fun s => decide (s ≠ .rewards)) i high post).1 ≤ Cr)
-    (small : depth * ((11 * q + 9) / 10) < preset.EFFECTIVE_BALANCE_INCREMENT.toNat)
+    (small : depth * ((11 * q + 9) / 10 + 2) < preset.EFFECTIVE_BALANCE_INCREMENT.toNat)
     (rateLow : 11 * depth * (q + 1) ≤ e0)
-    (start : S + Cr ≤ e0 + Cr' + W) (hW : W + 2 * depth ≤ preset.EFFECTIVE_BALANCE_INCREMENT.toNat) :
+    (start : S + Cr + 2 * depth ≤ e0 + Cr' + W) (hW : W ≤ preset.EFFECTIVE_BALANCE_INCREMENT.toNat) :
     ∀ z ∈ post.balancePath, min (actualBalanceAt z i) capHigh ≤ S + Cr +
       (gainOn preset depth P C + (depth * q + depth * (r + 2))) := by
   have weight : 0 < WEIGHT_DENOMINATOR.toNat := by decide
