@@ -10035,6 +10035,19 @@ private theorem slashedRB_lt (config : Config)
   rw [slashedRB_eq] at h
   simp [none] at h
 
+/-- The keys of a set that the pin counts as slashed on this branch are at most `slashedR`. -/
+private theorem slashedRB_card_le (config : Config)
+    (state ancestor finalizedState : BeaconState preset fork) (W : Finset ValidatorIndex) :
+    (W.filter fun v => (pinTerms config state ancestor finalizedState).slashedRB v.toNat =
+      true).card ≤ (pinTerms config state ancestor finalizedState).slashedR := by
+  classical
+  rw [slashedR_eq]
+  refine Finset.card_le_card_of_injOn UInt64.toNat (fun v member => ?_)
+    (fun a _ b _ same => UInt64.toNat_inj.mp same)
+  obtain ⟨_, flag⟩ := Finset.mem_filter.mp member
+  exact Finset.mem_filter.mpr ⟨Finset.mem_range.mpr (slashedRB_lt config state ancestor
+    finalizedState flag), flag⟩
+
 /-- The keys slashed on this branch after the finalized epoch cost one increment each, once. -/
 private theorem slashR_le (config : Config)
     (state ancestor finalizedState : BeaconState preset fork)
@@ -10049,13 +10062,7 @@ private theorem slashR_le (config : Config)
     rw [Finset.sum_filter]
     rfl
   rw [sum, Finset.sum_const, smul_eq_mul, Nat.mul_comm]
-  refine Nat.mul_le_mul_left _ ?_
-  rw [slashedR_eq]
-  refine Finset.card_le_card_of_injOn UInt64.toNat (fun v member => ?_)
-    (fun a _ b _ same => UInt64.toNat_inj.mp same)
-  obtain ⟨_, flag⟩ := Finset.mem_filter.mp member
-  exact Finset.mem_filter.mpr ⟨Finset.mem_range.mpr (slashedRB_lt config state ancestor
-    finalizedState flag), flag⟩
+  exact Nat.mul_le_mul_left _ (slashedRB_card_le config state ancestor finalizedState W)
 
 /-- The rounding bands of a set of keys are the band for each key with a sync debit. -/
 private theorem sum_bandR (events : List (BalanceEvent preset)) (T : Finset ValidatorIndex) :
