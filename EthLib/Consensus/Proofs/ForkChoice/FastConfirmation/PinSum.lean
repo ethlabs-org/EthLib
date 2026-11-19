@@ -13058,7 +13058,8 @@ theorem bud_branchR (h : Setting config checks g split fin pulled anc counted V)
     {eventsF : List (BalanceEvent preset)} (replayedF : fromFin.balanceEvents high = .ok eventsF)
     (tailC : Run config checks ⟨fork, split⟩ ⟨fork, counted⟩) (highC : ℕ)
     (endEpochC : (getCurrentEpoch counted).toNat ≤ highC + 1)
-    {eventsC : List (BalanceEvent preset)} (replayedC : tailC.balanceEvents highC = .ok eventsC) :
+    {eventsC : List (BalanceEvent preset)} (replayedC : tailC.balanceEvents highC = .ok eventsC)
+    {eventsP : List (BalanceEvent preset)} (replayedP : pre.balanceEvents highC = .ok eventsP) :
     3 * ((pinTerms config pulled anc fin).slashedR *
         (2 * (pinTerms config pulled anc fin).depthFin *
           flagRate (pinTerms config pulled anc fin))) +
@@ -13082,7 +13083,7 @@ theorem bud_branchR (h : Setting config checks g split fin pulled anc counted V)
         3 * (∑ v ∈ ((Finset.range pulled.validators.data.size).image UInt64.ofNat).filter
             (fun v => ((split.validators.data[v.toNat]?).map (·.slashed)).getD false = true ∧
               (pinTerms config pulled anc fin).slashedRB v.toNat = true),
-          (syncD eventsF v.toNat + syncD events v.toNat)) := by
+          (syncD eventsF v.toNat + syncD eventsP v.toNat + syncD events v.toNat)) := by
   sorry
 
 /-- The sync movement of a key is its sync credits plus its sync debits over the events. -/
@@ -13144,6 +13145,8 @@ The shared segment's debits are one weighted sum over the disjoint classes.
 
 `Kc` holds the keys slashed at the split that R's call reads as slashed, at the same weight.
 
+Its debits before the finalized state are in `pre`, so `syncD eventsP` joins them.
+
 `bud_branchR` rounds their rewards up, and the debits pay the rounding.
 
 The sync credits of `pre` ride with R's tail, since `pre` and the tail are one run in the epoch.
@@ -13168,7 +13171,7 @@ theorem bud_sync (h : Setting config checks g split fin pulled anc counted V)
         (∑ v ∈ ((Finset.range pulled.validators.data.size).image UInt64.ofNat).filter
             (fun v => ((split.validators.data[v.toNat]?).map (·.slashed)).getD false = true ∧
               (pinTerms config pulled anc fin).slashedRB v.toNat = true),
-          (syncD eventsF v.toNat + syncD events v.toNat))) +
+          (syncD eventsF v.toNat + syncD eventsP v.toNat + syncD events v.toNat))) +
       (∑ v ∈ (K6 pulled counted), syncD eventsF v.toNat) +
       (∑ v ∈ (K6 pulled counted), (syncF events v.toNat + syncF eventsC v.toNat)) +
       wShare preset fork (∑ v ∈ SC pulled counted split, syncCr eventsC v.toNat) +
@@ -15262,7 +15265,7 @@ theorem pinDrift_le_of_stubs (h : Setting config checks g split fin pulled anc c
   have b3 := bud_queues (config := config) h tailC
   have b4 := bud_credits (config := config) h toB link pre sameEpoch tailC highC endEpochC replayedC
   have b5 := bud_branchR (config := config) h tail high endEpoch replayed fromFin toFin toB pre
-    cut sameEpoch replayedF tailC highC endEpochC replayedC
+    cut sameEpoch replayedF tailC highC endEpochC replayedC replayedP
   have b6 := bud_sync (config := config) h fromFin pre sameEpoch high replayedF tail high replayed
     tailC highC replayedC replayedP
   have b7 := bud_fall (config := config) h
