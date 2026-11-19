@@ -13686,6 +13686,14 @@ private def scSlashedReward (config : Config)
 
 They are the keys that the shared run slashes in its last epoch, and some before it.
 
+The withdrawable epoch at R is a slashing vector past the finalized state's epoch.
+
+The anchor's finalized epoch can lag that of the finalized state.
+
+So this leaves out a key slashed before the finalized state's epoch.
+
+Its correlation penalty can fall in the window.
+
 None is in `SC`, which holds keys that are unslashed at the split.
 
 None is in C's quorum, since a flag set at the split persists to C. -/
@@ -13693,7 +13701,10 @@ private def cutKeys (config : Config) (pulled anc fin split : BeaconState preset
     Finset ValidatorIndex :=
   ((Finset.range pulled.validators.data.size).image UInt64.ofNat).filter fun v =>
     ((split.validators.data[v.toNat]?).map (·.slashed)).getD false = true ∧
-      (pinTerms config pulled anc fin).slashedRB v.toNat = true
+      (pinTerms config pulled anc fin).slashedRB v.toNat = true ∧
+      ((pulled.validators.data[v.toNat]?).any fun w =>
+        decide ((getCurrentEpoch fin).toNat + preset.EPOCHS_PER_SLASHINGS_VECTOR.toNat ≤
+          w.withdrawableEpoch.toNat)) = true
 
 /-- R1 from the count of its rounding bands.
 
@@ -13813,6 +13824,9 @@ Otherwise R's tail takes its penalties and sync debits, and the leak that `rise`
 `bud_branchR` reads the quotient of this bound, and pays its rounding with the debits. -/
 private theorem cut_balance_le (h : Setting config checks g split fin pulled anc counted V)
     (fromFin : Run config checks ⟨fork, fin⟩ ⟨fork, split⟩)
+    {b : BeaconState preset fork} (pre : Run config checks ⟨fork, b⟩ ⟨fork, split⟩)
+    (order : (∃ fromB : Run config checks ⟨fork, fin⟩ ⟨fork, b⟩, fromFin = fromB.append pre) ∨
+      ∃ toFinB : Run config checks ⟨fork, b⟩ ⟨fork, fin⟩, pre = toFinB.append fromFin)
     (tail : Run config checks ⟨fork, split⟩ ⟨fork, pulled⟩) (high : ℕ)
     (endEpoch : (getCurrentEpoch pulled).toNat ≤ high + 1)
     {eventsF events : List (BalanceEvent preset)}
@@ -13878,6 +13892,8 @@ theorem bud_branchR (h : Setting config checks g split fin pulled anc counted V)
     (pre : Run config checks ⟨fork, b⟩ ⟨fork, split⟩)
     (cut : toB.append pre = toFin.append fromFin)
     (sameEpoch : getCurrentEpoch split = getCurrentEpoch b)
+    (shape : (∃ fromB : Run config checks ⟨fork, fin⟩ ⟨fork, b⟩, fromFin = fromB.append pre) ∨
+      ∃ toFinB : Run config checks ⟨fork, b⟩ ⟨fork, fin⟩, pre = toFinB.append fromFin)
     {eventsF : List (BalanceEvent preset)} (replayedF : fromFin.balanceEvents high = .ok eventsF)
     (tailC : Run config checks ⟨fork, split⟩ ⟨fork, counted⟩) (highC : ℕ)
     (endEpochC : (getCurrentEpoch counted).toNat ≤ highC + 1)
@@ -18594,7 +18610,7 @@ theorem pinDrift_le_of_stubs (h : Setting config checks g split fin pulled anc c
   have b3 := bud_queues (config := config) h tailC
   have b4 := bud_credits (config := config) h toB link pre sameEpoch tailC highC endEpochC replayedC
   have b5 := bud_branchR (config := config) h tail high endEpoch replayed fromFin toFin toB pre
-    cut sameEpoch replayedF tailC highC endEpochC replayedC replayedP
+    cut sameEpoch shape replayedF tailC highC endEpochC replayedC replayedP
   have replayedPHigh : pre.balanceEvents high = .ok eventsP := by
     have called := UInt64.le_iff_toNat_le.mp h.called
     have later := UInt64.le_iff_toNat_le.mp h.later
