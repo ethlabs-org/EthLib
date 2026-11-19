@@ -9661,8 +9661,8 @@ private theorem scan_le_events (blockP slotP : BalanceSource → Bool) (p : Bala
   | nil => rfl
   | cons e rest ih =>
     by_cases c : p e.source
-    · simp [List.filter_cons, c, (selects _).mpr c, ih]
-    · simp [List.filter_cons, c, mt (selects _).mp c, ih]
+    · simp [c, (selects _).mpr c, ih]
+    · simp [c, mt (selects _).mp c, ih]
 
 /-- The credits of a key on C's branch fit its proposer credits, deposits and consolidations.
 
@@ -9780,11 +9780,16 @@ private theorem bud_credits_of (h : Setting config checks g split fin pulled anc
   have t4 := sum_div_ten (K4 pulled counted V) fun v => credN tailC highC v.toNat
   have t6 := sum_div_ten (K6 pulled counted) fun v => credN tailC highC v.toNat
   have t5 := sum_div_ten (K5 counted V) fun v => propN tailC highC v.toNat
-  have w1 := wShare_le (fork := fork) h.facts (∑ v ∈ SC pulled counted split,
-    (propN tailC highC v.toNat + depPre eventsC v.toNat))
-  have w2 := wShare_le (fork := fork) h.facts (∑ v ∈ CS pulled counted,
-    (propN tailC highC v.toNat + depPre eventsC v.toNat))
-  simp only [Finset.sum_add_distrib] at w1 w2
+  have w1 : wShare preset fork (∑ v ∈ SC pulled counted split,
+      (propN tailC highC v.toNat + depPre eventsC v.toNat)) ≤
+      (∑ v ∈ SC pulled counted split, propN tailC highC v.toNat) +
+        ∑ v ∈ SC pulled counted split, depPre eventsC v.toNat :=
+    (wShare_le (fork := fork) h.facts _).trans (le_of_eq Finset.sum_add_distrib)
+  have w2 : wShare preset fork (∑ v ∈ CS pulled counted,
+      (propN tailC highC v.toNat + depPre eventsC v.toNat)) ≤
+      (∑ v ∈ CS pulled counted, propN tailC highC v.toNat) +
+        ∑ v ∈ CS pulled counted, depPre eventsC v.toNat :=
+    (wShare_le (fork := fork) h.facts _).trans (le_of_eq Finset.sum_add_distrib)
   have bands : (∑ v ∈ K4 pulled counted V, bandC tailC highC v.toNat) +
       (∑ v ∈ K5 counted V, bandC tailC highC v.toNat) +
       (∑ v ∈ K6 pulled counted, bandC tailC highC v.toNat) +
