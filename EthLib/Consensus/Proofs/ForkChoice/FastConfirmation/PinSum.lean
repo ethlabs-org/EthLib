@@ -1072,7 +1072,7 @@ private theorem credited_piece {g : ForkedBeaconState preset}
             exact carry i w found mem
           · have here : 0 < (added.map (syncDebit i)).sum := by omega
             have altair' : .altair ≤ f := Nat.le_trans (by decide) fulu'
-            obtain ⟨c, rest', aggregate, credit, debit, rfl, -, silent, synced⟩ :=
+            obtain ⟨c, rest', aggregate, credit, debit, rfl, silent, synced⟩ :=
               PinSplit5.blockReplay_sync_split (show f < .glamsterdam from uEarly) altair'
                 (Step.balanceEvents_block uEarly addedOk)
             simp only [List.map_append, List.sum_append, silent, syncDebit, ↓reduceIte,
