@@ -630,7 +630,8 @@ private theorem UnassignedEligibleBalance.ineligible {f : Fork} {s : BeaconState
     · exact Or.inl later
   simp [isEligibleValidator, inactive, unslashed, pure, Except.pure]
 
-private theorem rewardsAltair_ineligible_balance {f : Fork}
+/-- The rewards and penalties of an epoch leave the balance of an ineligible key unchanged. -/
+theorem rewardsAltair_ineligible_balance {f : Fork}
     {s t : BeaconState preset f} (altair : .altair ≤ f) (early : f < .glamsterdam)
     (ok : processRewardsAndPenalties config s = .ok t) {i : Nat} {v : Validator} {b : Gwei}
     (found : s.validators.data[i]? = some v)
