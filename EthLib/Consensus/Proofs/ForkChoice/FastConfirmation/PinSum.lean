@@ -9465,6 +9465,7 @@ private theorem created_start (h : Setting config checks g split fin pulled anc 
       (post : Run config checks z ⟨fork, counted⟩), tailC = pre.append post ∧
       z.fork < .glamsterdam ∧ z.fork ≤ fork ∧
       (getCurrentEpoch z.state).toNat ≤ (getCurrentEpoch counted).toNat ∧
+      v.toNat < z.state.validators.data.size ∧
       preset.MAX_EFFECTIVE_BALANCE.toNat ≤ actualBalanceAt z v.toNat ∧
       effectiveAt z v.toNat ≤ actualBalanceAt z v.toNat + preset.downwardBand ∧
       preset.MAX_EFFECTIVE_BALANCE.toNat ≤ effectiveAt z v.toNat ∧
@@ -9519,7 +9520,8 @@ private theorem created_start (h : Setting config checks g split fin pulled anc 
     simp only [actualBalanceAt, Array.getElem?_eq_none (show
       split.balances.data.size ≤ v.toNat by omega), Option.map_none,
       Option.getD_none]
-  refine ⟨z, pre, post, splitEq, zEarly, zFork, zCounted, funded, hysteresis, reserve, ?_⟩
+  refine ⟨z, pre, post, splitEq, zEarly, zFork, zCounted,
+    (Array.getElem?_eq_some_iff.mp found0).1, funded, hysteresis, reserve, ?_⟩
   exact key_idle_walk h v.toNat v.toNat_lt highC zEarly (by omega)
     (fun m run w found assigned => by
       obtain ⟨later, foundLater, life⟩ := run.registryLifecycle.validators v.toNat w found
@@ -9569,7 +9571,7 @@ private theorem created_credited (h : Setting config checks g split fin pulled a
     rw [Finset.sum_singleton] at scan
     exact le_of_le_of_eq scan only
   rw [consZero] at consScan
-  obtain ⟨z, pre, post, splitEq, -, -, -, funded, -, -, walk⟩ :=
+  obtain ⟨z, pre, post, splitEq, -, -, -, -, funded, -, -, walk⟩ :=
     created_start h tailC highC endEpochC member created
   have positive : 0 < preset.MAX_EFFECTIVE_BALANCE.toNat := by
     have newKey := h.facts.newKey .fusaka
@@ -9587,6 +9589,120 @@ private theorem created_credited (h : Setting config checks g split fin pulled a
     v.toNat highC pre post
   omega
 
+/-- The effective balance at C of a key created on C's branch is at most its credits and gains.
+
+The run from the split reaches a state where the key holds the activation reserve, and then C.
+
+The ceiling at the largest cap closes from that state, at the depth of the call.
+
+The depth times the reward rate for each increment is small, since the gain rate is low there.
+
+The credits before that state are at least the balance there, as the key is idle until then.
+
+The slack above the base stake is the downward band. -/
+private theorem created_ceiling (h : Setting config checks g split fin pulled anc counted V)
+    (tailC : Run config checks ⟨fork, split⟩ ⟨fork, counted⟩) (highC : ℕ)
+    (endEpochC : (getCurrentEpoch counted).toNat ≤ highC + 1)
+    {v : ValidatorIndex} (member : v ∈ K6 pulled counted)
+    (created : pulled.validators.data.size ≤ v.toNat)
+    (lowTest : 11 * (pinTerms config pulled anc fin).depth *
+      ((pinTerms config pulled anc fin).gainRateMax + 1) ≤
+        preset.MAX_EFFECTIVE_BALANCE_ELECTRA.toNat) :
+    ∃ (z : ForkedBeaconState preset) (pre : Run config checks ⟨fork, split⟩ z)
+      (post : Run config checks z ⟨fork, counted⟩) (P e0 : ℕ), tailC = pre.append post ∧
+      P = ((getBaseRewardPerIncrement preset
+        (if 18 * preset.EFFECTIVE_BALANCE_INCREMENT.toNat ≤
+            ((getTotalActiveBalance pulled).toOption.getD 0).toNat then
+          (getTotalActiveBalance pulled).toOption.getD 0 / 4
+        else preset.EFFECTIVE_BALANCE_INCREMENT / 5)).toOption.getD 0).toNat ∧
+      preset.MAX_EFFECTIVE_BALANCE.toNat ≤ e0 ∧
+      10 * effectiveAt (⟨fork, counted⟩ : ForkedBeaconState preset) v.toNat + e0 ≤
+        11 * ((netScan v.toNat highC post +
+          (creditScan (fun _ => false) (fun s => decide (s ≠ .rewards)) v.toNat highC post).1) +
+          (netScan v.toNat highC pre +
+            (creditScan (fun _ => false) (fun s => decide (s = .deposits)) v.toNat highC pre).1 +
+            (creditScan (fun _ => false) (fun s => decide (s = .consolidations)) v.toNat highC
+              pre).1) +
+          preset.downwardBand +
+          (pinTerms config pulled anc fin).depth *
+            (e0 / preset.EFFECTIVE_BALANCE_INCREMENT.toNat * P *
+              (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum / WEIGHT_DENOMINATOR.toNat) +
+          (pinTerms config pulled anc fin).depth) := by
+  classical
+  obtain ⟨z, pre, post, splitEq, zEarly, zFork, zCounted, inside, -, hysteresis, reserve, walk⟩ :=
+    created_start h tailC highC endEpochC member created
+  obtain ⟨toFin⟩ := h.toFin
+  obtain ⟨fromFin⟩ := h.fromFin
+  have shared : Run config checks g ⟨fork, split⟩ := toFin.append fromFin
+  have incPos := h.bands.1
+  have alignedMax : preset.MAX_EFFECTIVE_BALANCE_ELECTRA.toNat %
+      preset.EFFECTIVE_BALANCE_INCREMENT.toNat = 0 := by
+    simpa [UInt64.toNat_mod] using congrArg UInt64.toNat h.aligned.2.2
+  have fuluZ : .fusaka ≤ z.fork := Nat.le_trans h.fulu (fork_le_of_chainSteps pre.chainSteps)
+  have electraZ : .pectra ≤ z.fork := Nat.le_trans (by decide) fuluZ
+  obtain ⟨P, hP, rate⟩ := key_rate_forked h
+  have ends (p : ForkedBeaconState preset) (member : p ∈ post.balancePath) :
+      ∃ (r1 : Run config checks z p) (r2 : Run config checks p ⟨fork, counted⟩), True := by
+    obtain ⟨r1, r2, -⟩ := balancePath_endpoint post
+      (Run.nil : Run config checks ⟨fork, counted⟩ ⟨fork, counted⟩)
+      (fork_le_of_chainSteps pre.chainSteps) member
+    exact ⟨r1, r2, trivial⟩
+  have splitZ := UInt64.le_iff_toNat_le.mp (currentEpoch_le_of_chainSteps pre.chainSteps)
+  have near := h.near
+  have finalized := UInt64.le_iff_toNat_le.mp h.finalized
+  have depthEq : (pinTerms config pulled anc fin).depth =
+      (getCurrentEpoch pulled).toNat + 2 - anc.finalizedCheckpoint.epoch.toNat := rfl
+  have gainMax : (pinTerms config pulled anc fin).gainRateMax =
+      preset.MAX_EFFECTIVE_BALANCE_ELECTRA.toNat / preset.EFFECTIVE_BALANCE_INCREMENT.toNat * P *
+        (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum / WEIGHT_DENOMINATOR.toNat := by
+    rw [hP]
+    rfl
+  obtain ⟨e0, he0⟩ : ∃ e0, e0 = effectiveAt z v.toNat := ⟨_, rfl⟩
+  obtain ⟨S, hS⟩ : ∃ S, S = actualBalanceAt z v.toNat := ⟨_, rfl⟩
+  obtain ⟨Cr, hCr⟩ : ∃ Cr, Cr = netScan v.toNat highC post +
+    (creditScan (fun _ => false) (fun s => decide (s ≠ .rewards)) v.toNat highC post).1 :=
+    ⟨_, rfl⟩
+  obtain ⟨W, hW⟩ : ∃ W, W = S + preset.downwardBand - e0 := ⟨_, rfl⟩
+  obtain ⟨q, hq⟩ : ∃ q, q = e0 / preset.EFFECTIVE_BALANCE_INCREMENT.toNat * P *
+      (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum / WEIGHT_DENOMINATOR.toNat := ⟨_, rfl⟩
+  obtain ⟨C, hC⟩ : ∃ C, C = preset.EFFECTIVE_BALANCE_INCREMENT.toNat *
+      (11 * (Cr + W + (pinTerms config pulled anc fin).depth * q +
+        (pinTerms config pulled anc fin).depth) /
+          (10 * preset.EFFECTIVE_BALANCE_INCREMENT.toNat)) := ⟨_, rfl⟩
+  have core := c_ceiling_abstract post h.early fuluZ v.toNat inside highC P
+    preset.MAX_EFFECTIVE_BALANCE_ELECTRA.toNat alignedMax
+    (PinSplit5.effectiveAt_le_capMax (shared.append pre) h.genesis h.caps zEarly v.toNat)
+    (fun p member => by
+      obtain ⟨r1, -, -⟩ := ends p member
+      exact capAt_le_capMax h.caps (Nat.le_trans electraZ (fork_le_of_chainSteps r1.chainSteps))
+        v.toNat)
+    (fun p member total perIncrement totalOk perOk => by
+      obtain ⟨r1, r2, -⟩ := ends p member
+      have order := UInt64.le_iff_toNat_le.mp (currentEpoch_le_of_chainSteps r2.chainSteps)
+      exact rate p (pre.append r1) (fork_le_of_chainSteps r2.chainSteps) (by
+        simp only at order ⊢
+        omega) total perIncrement totalOk perOk)
+    endEpochC incPos (pinTerms config pulled anc fin).depth Cr Cr e0 C S W
+    (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum q rfl hq
+    (by
+      rw [he0]
+      exact FloorTrace.effective_aligned (shared.append pre) h.genesis h.aligned v.toNat)
+    hC (by omega) (by rw [hS]; exact Nat.min_le_left _ _) (by omega) (le_of_eq hCr.symm)
+    (rate_per_increment preset.EFFECTIVE_BALANCE_INCREMENT.toNat WEIGHT_DENOMINATOR.toNat
+      (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum P
+      preset.MAX_EFFECTIVE_BALANCE_ELECTRA.toNat (pinTerms config pulled anc fin).depth incPos
+      (by decide) alignedMax (by rw [← gainMax]; exact lowTest))
+    (by omega)
+  obtain ⟨gc, -, -, -, final⟩ := core
+  have rounded : 10 * C ≤ 11 * (Cr + W + (pinTerms config pulled anc fin).depth * q +
+      (pinTerms config pulled anc fin).depth) := by
+    rw [hC, ← Nat.mul_assoc, Nat.mul_comm 10, Nat.mul_assoc]
+    exact Nat.mul_div_le _ _
+  refine ⟨z, pre, post, P, e0, splitEq, hP, ?_, ?_⟩
+  · rw [he0]
+    exact reserve
+  · rw [← hq]
+    omega
 /-- The consolidation credits of C's branch, charged to `consolidationsX` (the S9 ruling).
 
 The run from the finalized block's state X to C's state has the run from the split as its tail.
