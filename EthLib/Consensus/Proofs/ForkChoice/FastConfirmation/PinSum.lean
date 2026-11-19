@@ -16019,8 +16019,9 @@ private theorem cut_balance_core (h : Setting config checks g split fin pulled a
     (start : (getCurrentEpoch split).toNat ≤ (getCurrentEpoch c).toNat →
       effectiveAt (⟨fork, c⟩ : ForkedBeaconState preset) v.toNat ≤
         actualBalanceAt (⟨fork, c⟩ : ForkedBeaconState preset) v.toNat + preset.downwardBand)
-    (pathEnv : ∀ p ∈ toC.balancePath, effectiveAt p v.toNat ≤
-      (pinTerms config pulled anc fin).ebUp v.toNat) :
+    (pathEnv : syncD eventsF v.toNat + syncD events v.toNat = 0 →
+      ∀ p ∈ toC.balancePath, effectiveAt p v.toNat ≤
+        (pinTerms config pulled anc fin).ebUp v.toNat) :
     balanceAt split v.toNat ≤ balanceAt pulled v.toNat +
       (pinTerms config pulled anc fin).rise v.toNat + preset.EFFECTIVE_BALANCE_INCREMENT.toNat +
       (if 0 < syncD eventsF v.toNat + syncD events v.toNat then
@@ -16189,7 +16190,7 @@ private theorem cut_balance_core (h : Setting config checks g split fin pulled a
       have startEnv : effectiveAt (⟨fork, c⟩ : ForkedBeaconState preset) v.toNat ≤
           (pinTerms config pulled anc fin).ebUp v.toNat := by
         obtain ⟨front, atEnd⟩ := Run.balancePath_last toC
-        exact pathEnv _ (by rw [atEnd]; simp)
+        exact pathEnv (by omega) _ (by rw [atEnd]; simp)
       have env := prefix_envelope h fromFin tail high endEpoch replayedF replayed v toC fromC cutC
         insideC W startEnv
         (fun {zs} pre rest cutR {evs} ev => by
@@ -16217,7 +16218,7 @@ private theorem cut_balance_core (h : Setting config checks g split fin pulled a
           exact hz
         rw [Run.balancePath_append] at full
         rcases List.mem_append.mp full with front | later
-        · exact pathEnv z front
+        · exact pathEnv (by omega) z front
         · have e := env z (List.mem_of_mem_tail later)
           rw [sums, Nat.div_eq_of_lt (by omega : 0 + W < preset.EFFECTIVE_BALANCE_INCREMENT.toNat),
             Nat.mul_zero, Nat.add_zero] at e
@@ -16327,7 +16328,7 @@ private theorem cut_balance_le (h : Setting config checks g split fin pulled anc
     · refine le_max_of_le_right (cut_balance_core h fromFin tail high endEpoch replayedF replayed
         v hW (Run.nil : Run config checks ⟨fork, fin⟩ ⟨fork, fin⟩) fromFin
         (run_nil_append fromFin) inFin ?_ (fun hle => absurd hle flat)
-        (fun p hp => by
+        (fun _ p hp => by
           have : p = ⟨fork, fin⟩ := by simpa [Run.balancePath] using hp
           subst this
           exact effective_fin_le_ebUp h v.toNat))
@@ -16347,7 +16348,70 @@ private theorem cut_balance_le (h : Setting config checks g split fin pulled anc
             rw [foundU] at fu'
             cases fu'
             simpa using sl) wP foundP slashedP rb r1 r2 ev
-  · sorry
+  · -- a key created after the finalized state is anchored at the first state that holds it
+    have first : ∃ (c : BeaconState preset fork) (toC : Run config checks ⟨fork, fin⟩ ⟨fork, c⟩)
+        (fromC : Run config checks ⟨fork, c⟩ ⟨fork, split⟩), toC.append fromC = fromFin ∧
+        v.toNat < c.validators.data.size ∧
+        (∀ u, c.validators.data[v.toNat]? = some u → u.slashed = false) ∧
+        (∀ p ∈ toC.balancePath, p = ⟨fork, c⟩ ∨ effectiveAt p v.toNat = 0) ∧
+        effectiveAt (⟨fork, c⟩ : ForkedBeaconState preset) v.toNat ≤
+          actualBalanceAt (⟨fork, c⟩ : ForkedBeaconState preset) v.toNat -
+            actualBalanceAt (⟨fork, c⟩ : ForkedBeaconState preset) v.toNat %
+              preset.EFFECTIVE_BALANCE_INCREMENT.toNat := sorry
+    obtain ⟨c, toC, fromC, cutC, insideC, clean, before, startEB⟩ := first
+    have incPos := h.bands.1
+    have remainder := Nat.mod_le (actualBalanceAt (⟨fork, c⟩ : ForkedBeaconState preset) v.toNat)
+      preset.EFFECTIVE_BALANCE_INCREMENT.toNat
+    refine le_max_of_le_right (cut_balance_core h fromFin tail high endEpoch replayedF replayed v hW
+      toC fromC cutC insideC ?_ (fun _ => by omega) ?_)
+    · intro zs r1 r2 evs ev
+      exact slash_floor_across h v toC insideC clean wP foundP slashedP rb r1 r2 ev
+    · intro sums p hp
+      rcases before p hp with rfl | zero
+      · -- the first state is within `ebUp`, by its balance and the floor of its run
+        obtain ⟨u, foundC⟩ : ∃ u, c.validators.data[v.toNat]? = some u :=
+          ⟨_, Array.getElem?_eq_getElem insideC⟩
+        obtain ⟨A, hA⟩ : ∃ A, A = actualBalanceAt (⟨fork, pulled⟩ : ForkedBeaconState preset)
+              v.toNat + ((getCurrentEpoch pulled).toNat + 2 - (getCurrentEpoch fin).toNat) *
+            (pinTerms config pulled anc fin).leakAt
+              (PinSplit2.capAt (⟨fork, pulled⟩ : ForkedBeaconState preset) v.toNat) v.toNat +
+          (dueAmount fin electra v.toNat ((getCurrentEpoch pulled).toNat + 1) -
+            dueAmount pulled electra v.toNat ((getCurrentEpoch pulled).toNat + 1)) := ⟨_, rfl⟩
+        obtain ⟨tt, ht⟩ : ∃ tt, tt = A + preset.downwardBand +
+            preset.EFFECTIVE_BALANCE_INCREMENT.toNat - 1 := ⟨_, rfl⟩
+        have up := ebUp_eq config pulled anc fin electra v.toNat tt (by omega)
+        have ceilC := prefix_ceiling h fromFin tail high endEpoch replayedF replayed v
+          (slashW (pinTerms config pulled anc fin) v.toNat)
+          (PinSplit2.capAt (⟨fork, pulled⟩ : ForkedBeaconState preset) v.toNat)
+          (fun pre post _ => effective_le_cap_pulled h pre post v.toNat) toC
+          (fromC.append tail) ((Run.append_assoc toC fromC tail).trans (by rw [cutC])) insideC
+          (fun {evs} ev => by
+            have ev' : (fromC.append tail).balanceEvents (getCurrentEpoch pulled).toNat =
+                .ok evs := by
+              rw [balanceEvents_eq_of_endpoint_le (fromC.append tail) (localHigh := high)
+                (by simp only; omega) (by simp only; omega)]
+              exact ev
+            exact slash_floor_across h v toC insideC clean wP foundP slashedP rb Run.nil
+              (fromC.append tail) ev')
+        obtain ⟨toFin⟩ := h.toFin
+        have e2 := effective_le_cap_at h toC v.toNat
+        have capLe : PinSplit2.capAt (⟨fork, c⟩ : ForkedBeaconState preset) v.toNat ≤
+            PinSplit2.capAt (⟨fork, pulled⟩ : ForkedBeaconState preset) v.toNat :=
+          cap_le_cap_of_run h.caps (fromC.append tail) h.early v.toNat
+        unfold syncD at sums
+        have alignedEB : effectiveAt (⟨fork, c⟩ : ForkedBeaconState preset) v.toNat %
+            preset.EFFECTIVE_BALANCE_INCREMENT.toNat = 0 :=
+          FloorTrace.effective_aligned (toFin.append toC) h.genesis h.aligned v.toNat
+        have within : effectiveAt (⟨fork, c⟩ : ForkedBeaconState preset) v.toNat ≤ tt := by
+          have := hW
+          omega
+        have rounded := rounded_mono preset.EFFECTIVE_BALANCE_INCREMENT.toNat within
+        rw [alignedEB] at rounded
+        rw [up]
+        exact Nat.le_trans (Nat.le_min.mpr ⟨Nat.le_trans e2 capLe, by simpa using rounded⟩)
+          (Nat.le_max_right _ _)
+      · rw [zero]
+        exact Nat.zero_le _
 
 /-- D-7 (rise): other keys active in both. -/
 theorem stub_N (h : Setting config checks g split fin pulled anc counted V)
