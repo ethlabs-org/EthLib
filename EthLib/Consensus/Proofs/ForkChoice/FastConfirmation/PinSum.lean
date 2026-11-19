@@ -2541,6 +2541,217 @@ private theorem rewards_le_total (h : Setting config checks g split fin pulled a
     simp [List.map_const', List.sum_replicate]
   exact cuts.trans sumConst.le
 
+/-- The sync debits of a key, as events, are the key debits of its sync events. -/
+private theorem bandR_eq (events : List (BalanceEvent preset)) (v : ℕ) :
+    bandR events v = if 0 < (events.map (syncDebit v)).sum then
+      preset.EFFECTIVE_BALANCE_INCREMENT.toNat + preset.downwardBand - 1 else 0 := by
+  have sums : ((events.filter (·.source = .sync)).map (keyDebit v)).sum =
+      (events.map (syncDebit v)).sum := by
+    induction events with
+    | nil => rfl
+    | cons e rest ih =>
+      by_cases hs : e.source = .sync
+      · simp [List.filter_cons, hs, syncDebit, keyDebit, ih]
+      · simp [List.filter_cons, hs, syncDebit, ih]
+  unfold bandR
+  rw [sums]
+
+/-- Three sets with disjoint keys: the weights one, three and one are at most three. -/
+private theorem weighted_le {A B C : Finset ValidatorIndex} (f : ValidatorIndex → ℕ)
+    (ab : Disjoint A B) (ac : Disjoint A C) (bc : Disjoint B C) :
+    ∑ v ∈ A, f v + 3 * ∑ v ∈ B, f v + ∑ v ∈ C, f v ≤ 3 * ∑ v ∈ A ∪ B ∪ C, f v := by
+  rw [Finset.sum_union (Finset.disjoint_union_left.mpr ⟨ac, bc⟩), Finset.sum_union ab]
+  omega
+
+/-- A key that the pin counts as slashed on this branch holds a position of the registry. -/
+private theorem slashedRB_lt (config : Config)
+    (state ancestor finalizedState : BeaconState preset fork)
+    {i : ℕ} (h : (pinTerms config state ancestor finalizedState).slashedRB i = true) :
+    i < state.validators.data.size := by
+  by_contra out
+  have none : state.validators.data[i]? = none := Array.getElem?_eq_none (Nat.le_of_not_lt out)
+  simp [pinTerms, none] at h
+
+/-- The keys slashed on this branch after the finalized epoch cost one increment each, once. -/
+private theorem slashR_le (config : Config)
+    (state ancestor finalizedState : BeaconState preset fork)
+    (W : Finset ValidatorIndex) :
+    ∑ v ∈ W, slashR (pinTerms config state ancestor finalizedState) v.toNat ≤
+      preset.EFFECTIVE_BALANCE_INCREMENT.toNat *
+        (pinTerms config state ancestor finalizedState).slashedR := by
+  classical
+  have sum : ∑ v ∈ W, slashR (pinTerms config state ancestor finalizedState) v.toNat =
+      ∑ v ∈ W.filter (fun v => (pinTerms config state ancestor finalizedState).slashedRB v.toNat
+        = true), preset.EFFECTIVE_BALANCE_INCREMENT.toNat := by
+    rw [Finset.sum_filter]
+    rfl
+  rw [sum, Finset.sum_const, smul_eq_mul, Nat.mul_comm]
+  refine Nat.mul_le_mul_right _ ?_
+  rw [slashedR_eq]
+  refine Finset.card_le_card_of_injOn UInt64.toNat (fun v member => ?_)
+    (fun a _ b _ same => UInt64.toNat_inj.mp same)
+  obtain ⟨_, flag⟩ := Finset.mem_filter.mp member
+  exact Finset.mem_filter.mpr ⟨Finset.mem_range.mpr (slashedRB_lt config state ancestor
+    finalizedState flag), flag⟩
+
+/-- The classes `K4`, `K5` and `K6` share no key with each other or with `V`. -/
+private theorem classes_disjoint (h : Setting config checks g split fin pulled anc counted V) :
+    Disjoint (K4 pulled counted V) (K5 counted V) ∧
+    Disjoint (K4 pulled counted V) (K6 pulled counted) ∧
+    Disjoint (K5 counted V) (K6 pulled counted) ∧
+    Disjoint V (K4 pulled counted V) ∧ Disjoint V (K5 counted V) ∧
+    Disjoint V (K6 pulled counted) := by
+  refine ⟨?_, ?_, ?_, ?_, ?_, ?_⟩ <;> refine Finset.disjoint_left.mpr fun v a b => ?_
+  · simp only [K4, K5, Finset.mem_filter] at a b
+    exact b.2.1 a.1
+  · simp only [K4, K6, Finset.mem_filter] at a b
+    exact b.2.2 a.2.1
+  · simp only [K5, K6, Finset.mem_filter] at a b
+    exact a.2.1 b.1
+  · simp only [K4, Finset.mem_filter] at b
+    exact b.2.2.2 a
+  · simp only [K5, Finset.mem_filter] at b
+    exact b.2.2 a
+  · simp only [K6, Finset.mem_filter] at b
+    exact b.2.2 (h.voting v a).1
+
+/-- The rounding bands of R's credited keys and of its sync-debited keys fit `branchR`'s keys.
+
+A credited key of `V` and a debited key of the other classes each count for one band.
+
+The weights are three for `V` and `K5`, and one for `K4` and `K6`. -/
+private theorem band_sum_le (h : Setting config checks g split fin pulled anc counted V)
+    (tail : Run config checks ⟨fork, split⟩ ⟨fork, pulled⟩) (high : ℕ)
+    {events : List (BalanceEvent preset)} (replayed : tail.balanceEvents high = .ok events) :
+    3 * (∑ v ∈ V, if netScan v.toNat high tail = 0 ∧
+        (creditScan (fun _ => false) (fun s => decide (s = .deposits)) v.toNat high tail).1 = 0
+          then 0 else preset.EFFECTIVE_BALANCE_INCREMENT.toNat + preset.downwardBand - 1) +
+      (∑ v ∈ K4 pulled counted V, bandR events v.toNat) +
+      3 * (∑ v ∈ K5 counted V, bandR events v.toNat) +
+      (∑ v ∈ K6 pulled counted, bandR events v.toNat) ≤
+      3 * ((preset.EFFECTIVE_BALANCE_INCREMENT.toNat + preset.downwardBand - 1) *
+        ((getCurrentEpoch pulled).toNat + 2 - anc.finalizedCheckpoint.epoch.toNat) *
+          (preset.SLOTS_PER_EPOCH.toNat + preset.MAX_PENDING_DEPOSITS_PER_EPOCH.toNat) +
+        (preset.EFFECTIVE_BALANCE_INCREMENT.toNat + preset.downwardBand - 1) *
+          (preset.SYNC_COMMITTEE_SIZE.toNat *
+            (((getCurrentEpoch pulled).toNat + 1) /
+                max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat -
+              anc.finalizedCheckpoint.epoch.toNat /
+                max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat + 1 +
+              ((getCurrentEpoch pulled).toNat + 2 - anc.finalizedCheckpoint.epoch.toNat) /
+                max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat))) := by
+  classical
+  obtain ⟨d45, d46, d56, dv4, dv5, dv6⟩ := classes_disjoint h
+  set β := preset.EFFECTIVE_BALANCE_INCREMENT.toNat + preset.downwardBand - 1 with hβ
+  -- Each class pays the band once for each key with a credit or a sync debit.
+  have countV : (∑ v ∈ V, if netScan v.toNat high tail = 0 ∧
+      (creditScan (fun _ => false) (fun s => decide (s = .deposits)) v.toNat high tail).1 = 0
+        then 0 else β) = β * (V.filter fun v => ¬ (netScan v.toNat high tail = 0 ∧
+      (creditScan (fun _ => false) (fun s => decide (s = .deposits)) v.toNat high tail).1 = 0)
+        ).card := by
+    rw [Finset.card_filter, Finset.mul_sum]
+    refine Finset.sum_congr rfl fun v _ => ?_
+    by_cases c : netScan v.toNat high tail = 0 ∧
+      (creditScan (fun _ => false) (fun s => decide (s = .deposits)) v.toNat high tail).1 = 0
+    · simp [c]
+    · simp [c]
+  have countK (K : Finset ValidatorIndex) : (∑ v ∈ K, bandR events v.toNat) =
+      β * (K.filter fun v => 0 < (events.map (syncDebit v.toNat)).sum).card := by
+    rw [Finset.card_filter, Finset.mul_sum]
+    refine Finset.sum_congr rfl fun v _ => ?_
+    rw [bandR_eq]
+    by_cases c : 0 < (events.map (syncDebit v.toNat)).sum
+    · simp [c, hβ]
+    · simp [c]
+  set Vc := V.filter fun v => ¬ (netScan v.toNat high tail = 0 ∧
+      (creditScan (fun _ => false) (fun s => decide (s = .deposits)) v.toNat high tail).1 = 0)
+    with hVc
+  set K4s := (K4 pulled counted V).filter fun v => 0 < (events.map (syncDebit v.toNat)).sum
+  set K5s := (K5 counted V).filter fun v => 0 < (events.map (syncDebit v.toNat)).sum
+  set K6s := (K6 pulled counted).filter fun v => 0 < (events.map (syncDebit v.toNat)).sum
+  have disjoint45 : Disjoint K4s K5s :=
+    d45.mono (Finset.filter_subset _ _) (Finset.filter_subset _ _)
+  have disjoint46 : Disjoint K4s K6s :=
+    d46.mono (Finset.filter_subset _ _) (Finset.filter_subset _ _)
+  have disjoint56 : Disjoint K5s K6s :=
+    d56.mono (Finset.filter_subset _ _) (Finset.filter_subset _ _)
+  have disjointV4 : Disjoint Vc K4s :=
+    dv4.mono (Finset.filter_subset _ _) (Finset.filter_subset _ _)
+  have disjointV5 : Disjoint Vc K5s :=
+    dv5.mono (Finset.filter_subset _ _) (Finset.filter_subset _ _)
+  have disjointV6 : Disjoint Vc K6s :=
+    dv6.mono (Finset.filter_subset _ _) (Finset.filter_subset _ _)
+  -- The credited and debited keys are positions that the run credits or debits.
+  have keys : (Vc ∪ K4s ∪ K5s ∪ K6s).image UInt64.toNat |>.card ≤
+      ((getCurrentEpoch pulled).toNat - (getCurrentEpoch split).toNat + 1) *
+          (preset.SLOTS_PER_EPOCH.toNat + preset.MAX_PENDING_DEPOSITS_PER_EPOCH.toNat) +
+        preset.SYNC_COMMITTEE_SIZE.toNat *
+          ((getCurrentEpoch pulled).toNat / max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat -
+            (getCurrentEpoch split).toNat / max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat +
+              1) := by
+    refine banded_keys_le h tail high replayed _ fun i member => ?_
+    obtain ⟨v, inside, rfl⟩ := Finset.mem_image.mp member
+    simp only [Finset.mem_union] at inside
+    rcases inside with ((inV | in4) | in5) | in6
+    · have := (Finset.mem_filter.mp inV).2
+      omega
+    · have := (Finset.mem_filter.mp in4).2
+      omega
+    · have := (Finset.mem_filter.mp in5).2
+      omega
+    · have := (Finset.mem_filter.mp in6).2
+      omega
+  have cardUnion : (Vc ∪ K4s ∪ K5s ∪ K6s).card = Vc.card + K4s.card + K5s.card + K6s.card := by
+    rw [Finset.card_union_of_disjoint (Finset.disjoint_union_left.mpr
+        ⟨Finset.disjoint_union_left.mpr ⟨disjointV6, disjoint46⟩, disjoint56⟩),
+      Finset.card_union_of_disjoint (Finset.disjoint_union_left.mpr ⟨disjointV5, disjoint45⟩),
+      Finset.card_union_of_disjoint disjointV4]
+  rw [Finset.card_image_of_injective _ (fun a b same => UInt64.toNat_inj.mp same),
+    cardUnion] at keys
+  -- The keys are within the window's epochs and periods.
+  have finalized : anc.finalizedCheckpoint.epoch.toNat ≤ (getCurrentEpoch split).toNat :=
+    UInt64.le_iff_toNat_le.mp h.finalized
+  have called : (getCurrentEpoch split).toNat ≤ (getCurrentEpoch pulled).toNat :=
+    UInt64.le_iff_toNat_le.mp h.called
+  have periodUp := Nat.div_le_div_right (c := max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat)
+    (Nat.le_succ (getCurrentEpoch pulled).toNat)
+  have periodDown := Nat.div_le_div_right (c := max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat)
+    finalized
+  have epochs : (getCurrentEpoch pulled).toNat - (getCurrentEpoch split).toNat + 1 ≤
+      (getCurrentEpoch pulled).toNat + 2 - anc.finalizedCheckpoint.epoch.toNat := by omega
+  have fits := Nat.mul_le_mul_right
+    (preset.SLOTS_PER_EPOCH.toNat + preset.MAX_PENDING_DEPOSITS_PER_EPOCH.toNat) epochs
+  rw [countV, countK, countK, countK]
+  have weights : 3 * Vc.card + K4s.card + 3 * K5s.card + K6s.card ≤
+      3 * (Vc.card + K4s.card + K5s.card + K6s.card) := by omega
+  have total : Vc.card + K4s.card + K5s.card + K6s.card ≤
+      ((getCurrentEpoch pulled).toNat + 2 - anc.finalizedCheckpoint.epoch.toNat) *
+          (preset.SLOTS_PER_EPOCH.toNat + preset.MAX_PENDING_DEPOSITS_PER_EPOCH.toNat) +
+        preset.SYNC_COMMITTEE_SIZE.toNat *
+          (((getCurrentEpoch pulled).toNat + 1) /
+              max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat -
+            anc.finalizedCheckpoint.epoch.toNat /
+              max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat + 1 +
+            ((getCurrentEpoch pulled).toNat + 2 - anc.finalizedCheckpoint.epoch.toNat) /
+              max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat) := by
+    refine keys.trans (Nat.add_le_add fits ?_)
+    refine Nat.mul_le_mul_left _ ?_
+    omega
+  calc 3 * (β * Vc.card) + β * K4s.card + 3 * (β * K5s.card) + β * K6s.card
+      = β * (3 * Vc.card + K4s.card + 3 * K5s.card + K6s.card) := by ring
+    _ ≤ β * (3 * (Vc.card + K4s.card + K5s.card + K6s.card)) := Nat.mul_le_mul_left _ weights
+    _ ≤ β * (3 * (((getCurrentEpoch pulled).toNat + 2 - anc.finalizedCheckpoint.epoch.toNat) *
+          (preset.SLOTS_PER_EPOCH.toNat + preset.MAX_PENDING_DEPOSITS_PER_EPOCH.toNat) +
+        preset.SYNC_COMMITTEE_SIZE.toNat *
+          (((getCurrentEpoch pulled).toNat + 1) /
+              max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat -
+            anc.finalizedCheckpoint.epoch.toNat /
+              max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat + 1 +
+            ((getCurrentEpoch pulled).toNat + 2 - anc.finalizedCheckpoint.epoch.toNat) /
+              max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat))) :=
+        Nat.mul_le_mul_left _ (Nat.mul_le_mul_left _ total)
+    _ = _ := by ring
+
 /-- R1 (branchR): R's credits to V keys since the split, weight 3.
 
 The slashing of a key on R's branch is charged here for the keys of `K4` and `K5`.
