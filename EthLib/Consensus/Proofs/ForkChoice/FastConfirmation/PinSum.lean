@@ -1787,23 +1787,26 @@ The floor leaves out the key's sync debits from the finalized block, and their r
 
 The second is for a V key that is not active in C: the same, and the charges that the sum names.
 
-The sum of the keys' bounds is the statement's, once the sync movement of the shared run is added.
+The shared run from the finalized block adds the key's sync debits to the sum.
+
+C's tail adds its sync movement.
 -/
 private theorem stub_V_of (h : Setting config checks g split fin pulled anc counted V)
     (tailC : Run config checks ⟨fork, split⟩ ⟨fork, counted⟩)
     {eventsF eventsC : List (BalanceEvent preset)}
     (active : ∀ v ∈ V, v ∈ AC counted → (eR pulled v : ℤ) - eC counted v ≤
       ((pinTerms config pulled anc fin).fall v.toNat : ℤ) +
-        (syncF eventsF v.toNat + syncF eventsC v.toNat) + bandR (eventsF ++ eventsC) v.toNat)
+        ((eventsF.map (syncDebit v.toNat)).sum + syncF eventsC v.toNat) +
+          bandR (eventsF ++ eventsC) v.toNat)
     (left : ∀ v ∈ VN counted V, (eR pulled v : ℤ) ≤
       ((pinTerms config pulled anc fin).fall v.toNat +
-        (syncF eventsF v.toNat + syncF eventsC v.toNat) + bandR (eventsF ++ eventsC) v.toNat +
-        exitQ tailC v.toNat +
+        ((eventsF.map (syncDebit v.toNat)).sum + syncF eventsC v.toNat) +
+        bandR (eventsF ++ eventsC) v.toNat + exitQ tailC v.toNat +
         (if (pinTerms config pulled anc fin).exitingB v.toNat = true then eR pulled v else 0) +
         (if (pinTerms config pulled anc fin).lateB v.toNat = true then eR pulled v else 0) : ℕ)) :
     cV1 pulled counted V + cV2 pulled counted V ≤
       ((∑ v ∈ V, (pinTerms config pulled anc fin).fall v.toNat) +
-        (∑ v ∈ V, (syncF eventsF v.toNat + syncF eventsC v.toNat)) +
+        (∑ v ∈ V, ((eventsF.map (syncDebit v.toNat)).sum + syncF eventsC v.toNat)) +
         (∑ v ∈ V, bandR (eventsF ++ eventsC) v.toNat) +
         (∑ v ∈ (VN counted V), exitQ tailC v.toNat) +
         (∑ v ∈ (VN counted V) with (pinTerms config pulled anc fin).exitingB v.toNat = true,
@@ -1815,7 +1818,8 @@ private theorem stub_V_of (h : Setting config checks g split fin pulled anc coun
   -- the bound of each key that does not depend on how it left
   let P : ValidatorIndex → ℕ := fun v =>
     (pinTerms config pulled anc fin).fall v.toNat +
-      (syncF eventsF v.toNat + syncF eventsC v.toNat) + bandR (eventsF ++ eventsC) v.toNat
+      ((eventsF.map (syncDebit v.toNat)).sum + syncF eventsC v.toNat) +
+        bandR (eventsF ++ eventsC) v.toNat
   let X : ValidatorIndex → ℕ := fun v =>
     exitQ tailC v.toNat +
       (if (pinTerms config pulled anc fin).exitingB v.toNat = true then eR pulled v else 0) +
@@ -1841,7 +1845,7 @@ private theorem stub_V_of (h : Setting config checks g split fin pulled anc coun
     exact (Finset.sum_filter_add_sum_filter_not V (· ∈ AC counted) _).symm
   have total : ∑ v ∈ V, (P v : ℤ) =
       ((∑ v ∈ V, (pinTerms config pulled anc fin).fall v.toNat) +
-        (∑ v ∈ V, (syncF eventsF v.toNat + syncF eventsC v.toNat)) +
+        (∑ v ∈ V, ((eventsF.map (syncDebit v.toNat)).sum + syncF eventsC v.toNat)) +
         (∑ v ∈ V, bandR (eventsF ++ eventsC) v.toNat) : ℕ) := by
     simp only [P]
     push_cast
