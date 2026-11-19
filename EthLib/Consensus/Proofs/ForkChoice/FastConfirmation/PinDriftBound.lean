@@ -189,8 +189,8 @@ private theorem slashed_waits {g : ForkedBeaconState preset}
       (Nat.le_of_not_lt notYet) arrivedFound
     have delayed := (post.newly_slashed_withdrawableEpoch caps.activation caps.compounding early
       withdrawDelay i w validator arrivedFound found unslashedAtN slashed).2
-    have forward := UInt64.le_iff_toNat_le.mp
-      (currentEpoch_le_of_chainSteps (pre.snoc step).chainSteps)
+    have forward : (getCurrentEpoch split).toNat ≤ (getCurrentEpoch n.state).toNat :=
+      UInt64.le_iff_toNat_le.mp (currentEpoch_le_of_chainSteps (pre.snoc step).chainSteps)
     omega
 
 /-- A key in the counting state's quorum that is not active at its epoch is in `exiting`.
