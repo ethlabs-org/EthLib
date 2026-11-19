@@ -149,11 +149,11 @@ private theorem partials_le_due (electra : .pectra ≤ fork) (v : ValidatorIndex
       (pinTerms config pulled anc fin).partialsDue v.toNat := by
   refine le_trans ?_ (le_max_left (_ : ℕ) _)
   dsimp only
-  rw [dif_pos electra, List.filter_filter]
+  simp only [electra, ↓reduceDIte, List.filter_filter]
   refine le_of_eq ?_
   congr 3
   funext entry
-  simp [decide_and, UInt64.toNat_inj]
+  simp [Bool.decide_and, UInt64.toNat_inj, Bool.and_comm]
 
 /-- The effective balance of a key at a state of the run from the finalized state, before its exit.
 
@@ -203,8 +203,8 @@ private theorem exitQ_at (h : Setting config checks g split fin pulled anc count
   have shallow := h.shallow
   have nearC := h.near
   obtain ⟨sf, se⟩ := sd
-  have same : sf = fork := Fork.ctorIdx_injective
-    (Nat.le_antisymm (fork_le_of_chainSteps post.chainSteps) (fork_le_of_chainSteps pre.chainSteps))
+  have same : fork = sf := (Fork.ctorIdx_injective
+    (Nat.le_antisymm (fork_le_of_chainSteps post.chainSteps) (fork_le_of_chainSteps pre.chainSteps))).symm
   subst same
   have toCounted := UInt64.le_iff_toNat_le.mp (currentEpoch_le_of_chainSteps post.chainSteps)
   simp only at toCounted finSplit called
@@ -317,7 +317,7 @@ private theorem exitQ_potential (h : Setting config checks g split fin pulled an
     have same := Option.some.inj (found.symm.trans atStop)
     subst same
     exact unset
-  rw [amount0, ← amount]
+  rw [amount0, amount]
   exact exitQ_at h fromFin tailC replayed stop.pre stop.post stop.split v member val initial far
     ρn ρd leaky
 
