@@ -10,47 +10,6 @@ open Base Uint64 Models DirectSafety PinSplit
 
 variable {preset : Preset} {fork : Fork} {config : Config} {checks : SignatureChecks}
 
-/-- The gain of `C` credited gwei over `depth` epochs, at the reward rate `P`. -/
-private def gainOn (preset : Preset) (depth P C : ℕ) : ℕ :=
-  depth * ((((C + preset.EFFECTIVE_BALANCE_INCREMENT.toNat - 1) /
-      preset.EFFECTIVE_BALANCE_INCREMENT.toNat) * P *
-    (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum) / WEIGHT_DENOMINATOR.toNat)
-
-private theorem gain_split (I WD F P e0 C k depth : ℕ) (hI : 0 < I) (hk : k ≤ depth) :
-    k * ((e0 + C + I) / I * P * F / WD) ≤
-      depth * ((C + I - 1) / I * P * F / WD) +
-        (depth * (e0 / I * P * F / WD) + depth * (P * F / WD + 2)) := by
-  have hq : (e0 + C + I) / I ≤ e0 / I + (C + I - 1) / I + 1 := by
-    rw [← Nat.lt_succ_iff, Nat.div_lt_iff_lt_mul hI]
-    have h1 := Nat.div_add_mod e0 I
-    have h2 := Nat.mod_lt e0 hI
-    have h3 := Nat.div_add_mod (C + I - 1) I
-    have h4 := Nat.mod_lt (C + I - 1) hI
-    have e : (e0 / I + (C + I - 1) / I + 1).succ * I =
-        I * (e0 / I) + I * ((C + I - 1) / I) + 2 * I := by
-      simp only [Nat.succ_eq_add_one]
-      ring
-    rw [e]
-    omega
-  have step : k * ((e0 + C + I) / I * P * F / WD) ≤
-      depth * ((e0 / I + (C + I - 1) / I + 1) * P * F / WD) :=
-    Nat.mul_le_mul hk (Nat.div_le_div_right (Nat.mul_le_mul_right F (Nat.mul_le_mul_right P hq)))
-  have split3 : (e0 / I + (C + I - 1) / I + 1) * P * F =
-      e0 / I * P * F + (C + I - 1) / I * P * F + P * F := by ring
-  have floors : (e0 / I * P * F + (C + I - 1) / I * P * F + P * F) / WD ≤
-      e0 / I * P * F / WD + (C + I - 1) / I * P * F / WD + P * F / WD + 2 := by
-    have one := Nat.add_div_le_div_add_div_add_one
-      (e0 / I * P * F + (C + I - 1) / I * P * F) (P * F) WD
-    have two := Nat.add_div_le_div_add_div_add_one (e0 / I * P * F) ((C + I - 1) / I * P * F) WD
-    omega
-  rw [split3] at step
-  calc k * ((e0 + C + I) / I * P * F / WD)
-      ≤ depth * ((e0 / I * P * F + (C + I - 1) / I * P * F + P * F) / WD) := step
-    _ ≤ depth * (e0 / I * P * F / WD + (C + I - 1) / I * P * F / WD + P * F / WD + 2) :=
-        Nat.mul_le_mul_left _ floors
-    _ = depth * ((C + I - 1) / I * P * F / WD) +
-        (depth * (e0 / I * P * F / WD) + depth * (P * F / WD + 2)) := by ring
-
 /-- A key's balance along a run from a stake bound, the credits and the gain at the bound. -/
 private theorem c_ceiling_abstract {n y : ForkedBeaconState preset}
     (post : Run config checks n y) (early : y.fork < .glamsterdam) (fulu : .fusaka ≤ n.fork)
