@@ -11,12 +11,12 @@ open Base Uint64 Models DirectSafety PinSplit
 variable {preset : Preset} {fork : Fork} {config : Config} {checks : SignatureChecks}
 
 /-- The closure test of the credit ceiling is arithmetic in the rate, the credits and the stake. -/
-private theorem ceiling_closed (I WD F P e0 D Df Cr Cr' S W band C q r : ℕ) (hDf : D ≤ Df)
+private theorem ceiling_closed (I WD F P e0 D Df Cr Cr' S W C q r : ℕ) (hDf : D ≤ Df)
     (hq : q = e0 / I * P * F / WD) (hr : r = P * F / WD) (hI : 0 < I)
     (hWD : 0 < WD) (alignedE : e0 % I = 0) (alignedC : C % I = 0)
     (hC : (11 * Cr' + 9) / 10 ≤ C)
-    (small : Df * ((11 * q + 9) / 10 + 2) < I) (rateLow : 11 * D * (q + 1) ≤ e0)
-    (start : S + Cr + band ≤ e0 + Cr' + W) (hW : W ≤ I) (hband : 2 * Df ≤ 11 * band) :
+    (small : Df * ((11 * q + 9) / 10 + 3) < I) (rateLow : 11 * D * (q + 1) ≤ e0)
+    (start : S + Cr ≤ e0 + Cr' + W) (hW : W ≤ I) :
     S + Cr + (D * ((C + I - 1) / I * P * F / WD) + (D * q + D * (r + 2))) <
       e0 + C + I + I := by
   subst hq hr
@@ -63,7 +63,7 @@ private theorem ceiling_closed (I WD F P e0 D Df Cr Cr' S W band C q r : ℕ) (h
     have := gain (C / I)
     have e : I * (C / I) = C := Nat.mul_div_cancel' (Nat.dvd_of_mod_eq_zero alignedC)
     omega
-  have base : 11 * (D * (e0 / I * P * F / WD)) + 20 * Df + 10 ≤ 10 * I := by
+  have base : 11 * (D * (e0 / I * P * F / WD)) + 30 * Df + 10 ≤ 10 * I := by
     have h1 : 11 * (e0 / I * P * F / WD) ≤ 10 * ((11 * (e0 / I * P * F / WD) + 9) / 10) := by
       omega
     have h2 : 11 * (D * (e0 / I * P * F / WD)) ≤
@@ -118,7 +118,7 @@ private theorem c_ceiling_abstract {n y : ForkedBeaconState preset}
         P * (total.toNat / preset.EFFECTIVE_BALANCE_INCREMENT.toNat))
     (endEpoch : (getCurrentEpoch y.state).toNat ≤ high + 1)
     (incPos : 0 < preset.EFFECTIVE_BALANCE_INCREMENT.toNat)
-    (depth depthFin Cr Cr' e0 C S W band F q r : ℕ) (hDf : depth ≤ depthFin)
+    (depth depthFin Cr Cr' e0 C S W F q r : ℕ) (hDf : depth ≤ depthFin)
     (hF : F = (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum)
     (hq : q = e0 / preset.EFFECTIVE_BALANCE_INCREMENT.toNat * P * F / WEIGHT_DENOMINATOR.toNat)
     (hr : r = P * F / WEIGHT_DENOMINATOR.toNat)
@@ -130,16 +130,15 @@ private theorem c_ceiling_abstract {n y : ForkedBeaconState preset}
     (startEff : effectiveAt n i ≤ e0)
     (credits : netScan i high post +
       (creditScan (fun _ => false) (fun s => decide (s ≠ .rewards)) i high post).1 ≤ Cr)
-    (small : depthFin * ((11 * q + 9) / 10 + 2) < preset.EFFECTIVE_BALANCE_INCREMENT.toNat)
+    (small : depthFin * ((11 * q + 9) / 10 + 3) < preset.EFFECTIVE_BALANCE_INCREMENT.toNat)
     (rateLow : 11 * depth * (q + 1) ≤ e0)
-    (start : S + Cr + band ≤ e0 + Cr' + W) (hW : W ≤ preset.EFFECTIVE_BALANCE_INCREMENT.toNat)
-    (hband : 2 * depthFin ≤ 11 * band) :
+    (start : S + Cr ≤ e0 + Cr' + W) (hW : W ≤ preset.EFFECTIVE_BALANCE_INCREMENT.toNat) :
     ∀ z ∈ post.balancePath, min (actualBalanceAt z i) capHigh ≤ S + Cr +
       (gainOn preset depth P C + (depth * q + depth * (r + 2))) := by
   have weight : 0 < WEIGHT_DENOMINATOR.toNat := by decide
   have closed := ceiling_closed preset.EFFECTIVE_BALANCE_INCREMENT.toNat WEIGHT_DENOMINATOR.toNat
-    F P e0 depth depthFin Cr Cr' S W band C q r hDf hq hr incPos weight alignedE0 alignedC hC small rateLow
-    start hW hband
+    F P e0 depth depthFin Cr Cr' S W C q r hDf hq hr incPos weight alignedE0 alignedC hC small rateLow
+    start hW
   subst hF
   have alignedE : (e0 + C + preset.EFFECTIVE_BALANCE_INCREMENT.toNat) %
       preset.EFFECTIVE_BALANCE_INCREMENT.toNat = 0 :=
