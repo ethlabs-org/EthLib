@@ -8820,7 +8820,7 @@ The `syncProposer` part of the bound is not here: `bud_sync` uses it.
 
 The bound is scaled by ten, to take the eleven tenths and the rounding of `exitingCredits`.
 
-The compounding of the credits, a tenth of each key's amount rounded down, is in the bound.
+The compounding of the credits, a tenth of the keys' total rounded down once, is in the bound.
 
 The two further bands of each credited K5 key are in `bud_exitingBands`. -/
 theorem bud_exitingCredits (h : Setting config checks g split fin pulled anc counted V)
@@ -8828,7 +8828,7 @@ theorem bud_exitingCredits (h : Setting config checks g split fin pulled anc cou
     (endEpochC : (getCurrentEpoch counted).toNat ≤ highC + 1)
     {eventsC : List (BalanceEvent preset)} (replayedC : tailC.balanceEvents highC = .ok eventsC) :
     10 * (2 * ((∑ v ∈ (K5 counted V), propC tailC highC v.toNat) +
-      (∑ v ∈ (K5 counted V), propN tailC highC v.toNat / 10))) +
+      (∑ v ∈ (K5 counted V), propN tailC highC v.toNat) / 10)) +
         22 * ((pinTerms config pulled anc fin).depth * (pinTerms config pulled anc fin).syncProposer) ≤
       10 * (pinTerms config pulled anc fin).exitingCredits +
         20 * (∑ v ∈ (K5 counted V), consAmt eventsC v.toNat) := sorry
@@ -8841,7 +8841,7 @@ The `syncProposer` part of `credits` is not here: `bud_sync` uses it.
 
 The bound is scaled by ten, to take the eleven tenths and the rounding of `credits`.
 
-The compounding of the credits, a tenth of each key's amount rounded down, is in the bound.
+The compounding of the credits, a tenth of the keys' total rounded down once, is in the bound.
 
 The rounding slacks of the credited keys of `K4` and `K5` are paid by `creditedKeys`. -/
 theorem bud_credits (h : Setting config checks g split fin pulled anc counted V)
@@ -8851,9 +8851,9 @@ theorem bud_credits (h : Setting config checks g split fin pulled anc counted V)
     10 * ((∑ v ∈ (K4 pulled counted V), credC tailC highC v.toNat) +
       (∑ v ∈ (K6 pulled counted), credC tailC highC v.toNat) +
       (∑ v ∈ (K5 counted V), propC tailC highC v.toNat) +
-      (∑ v ∈ (K4 pulled counted V), credN tailC highC v.toNat / 10) +
-      (∑ v ∈ (K6 pulled counted), credN tailC highC v.toNat / 10) +
-      (∑ v ∈ (K5 counted V), propN tailC highC v.toNat / 10) +
+      ((∑ v ∈ (K4 pulled counted V), credN tailC highC v.toNat) +
+        (∑ v ∈ (K6 pulled counted), credN tailC highC v.toNat) +
+        (∑ v ∈ (K5 counted V), propN tailC highC v.toNat)) / 10 +
       (∑ v ∈ (K4 pulled counted V), bandC tailC highC v.toNat) +
       (∑ v ∈ (K5 counted V), bandC tailC highC v.toNat) +
       (∑ v ∈ (K6 pulled counted), bandC tailC highC v.toNat) +
@@ -10927,7 +10927,7 @@ theorem bud_joining : (pinTerms config pulled anc fin).joining ≤ (pinTerms con
 
 /-- The flow gains of the counted keys, at their weights, fit the low part of `creditGain`.
 
-They also take `slashCharge`'s surplus over R's slashed keys and a tenth of each key's own credits.
+They also take `slashCharge`'s surplus over R's slashed keys and a tenth of the keys' credits.
 
 One floor of all of a key's flows bounds its gain, and each split by kind costs one step. -/
 private theorem flow_split (h : Setting config checks g split fin pulled anc counted V)
@@ -10949,9 +10949,10 @@ private theorem flow_split (h : Setting config checks g split fin pulled anc cou
         3 * ((pinTerms config pulled anc fin).slashedR *
           (2 * (pinTerms config pulled anc fin).depthFin *
             flagRate (pinTerms config pulled anc fin))) +
-        ((∑ v ∈ (K4 pulled counted V), credN tailC highC v.toNat / 10) +
-          3 * (∑ v ∈ (K5 counted V), propN tailC highC v.toNat / 10) +
-          (∑ v ∈ (K6 pulled counted), credN tailC highC v.toNat / 10)) :=
+        (((∑ v ∈ (K4 pulled counted V), credN tailC highC v.toNat) +
+          (∑ v ∈ (K6 pulled counted), credN tailC highC v.toNat) +
+          (∑ v ∈ (K5 counted V), propN tailC highC v.toNat)) / 10 +
+          2 * ((∑ v ∈ (K5 counted V), propN tailC highC v.toNat) / 10)) :=
   sorry
 
 /-- The units of the counted keys, at their weights, fit the unit terms of `pinReserve`.
