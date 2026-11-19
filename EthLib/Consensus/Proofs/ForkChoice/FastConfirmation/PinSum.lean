@@ -2310,32 +2310,10 @@ private theorem riseScan_snd_le (v high R : ℕ) {x : ForkedBeaconState preset}
       omega
     · exact prior.trans (Nat.mul_le_mul_right _ (by omega))
 
-/-- The effective balance of a key at a state of a run from genesis is at most the largest cap. -/
-private theorem effectiveAt_le_capMax {g m : ForkedBeaconState preset}
-    (run : Run config checks g m) (genesis : Genesis (config := config) (checks := checks) g)
-    (caps : CapOrder preset) (early : m.fork < .glamsterdam) (v : ℕ) :
-    effectiveAt m v ≤ preset.MAX_EFFECTIVE_BALANCE_ELECTRA.toNat := by
-  unfold effectiveAt
-  cases found : m.state.validators.data[v]? with
-  | none => simp
-  | some w =>
-    obtain ⟨inside, rfl⟩ := Array.getElem?_eq_some_iff.mp found
-    have bound := run.effectiveBalance_capped genesis caps.activation caps.compounding early _
-      (Array.getElem_mem inside)
-    have activation := UInt64.le_iff_toNat_le.mp caps.activation
-    have compounding := UInt64.le_iff_toNat_le.mp caps.compounding
-    rw [UInt64.le_iff_toNat_le] at bound
-    unfold withdrawalMaxEffectiveBalance getMaxEffectiveBalance at bound
-    simp only [Option.map_some, Option.getD_some]
-    split at bound
-    · split at bound <;> omega
-    · omega
-
 /-- The rise of a charged key on C's branch is one band and the depth's gains at the largest rate.
 
 The gains are the epoch rewards of the key after its exit starts, over the epochs of the run. -/
-private theorem riseQ_le (facts : PinPresetFacts preset)
-    (h : Setting config checks g split fin pulled anc counted V)
+private theorem riseQ_le (h : Setting config checks g split fin pulled anc counted V)
     (tailC : Run config checks ⟨fork, split⟩ ⟨fork, counted⟩) (highC : ℕ)
     (endEpochC : (getCurrentEpoch counted).toNat ≤ highC + 1) (v : ℕ) :
     riseQ tailC highC v ≤ preset.upwardBand + (pinTerms config pulled anc fin).depth *
@@ -2376,8 +2354,8 @@ private theorem riseQ_le (facts : PinPresetFacts preset)
         getBaseRewardPerIncrement preset total = .ok perIncrement
     · obtain ⟨total, perIncrement, perOk⟩ := anyOk
       obtain ⟨pq, pqOk⟩ :=
-        quarter_base_ok facts perOk ((getTotalActiveBalance pulled).toOption.getD 0)
-      refine ⟨pq.toNat, ?_, fun toM inside => rate_of_guard facts h toM inside pqOk⟩
+        quarter_base_ok h.facts perOk ((getTotalActiveBalance pulled).toOption.getD 0)
+      refine ⟨pq.toNat, ?_, fun toM inside => rate_of_guard h.facts h toM inside pqOk⟩
       rw [gainMax, pqOk]
       simp only [Except.toOption, Option.getD_some, le_refl]
     · refine ⟨0, ?_, fun _ _ total perIncrement _ perOk =>
@@ -2399,7 +2377,7 @@ private theorem riseQ_le (facts : PinPresetFacts preset)
         Nat.lt_of_le_of_lt (fork_le_of_chainSteps post.chainSteps) h.early
       exact epochRewards_le step altair nEarly v inside
         preset.MAX_EFFECTIVE_BALANCE_ELECTRA.toNat P
-        (effectiveAt_le_capMax (shared.append (fromFin.append pre)) h.genesis h.caps mEarly v)
+        (PinSplit5.effectiveAt_le_capMax (shared.append (fromFin.append pre)) h.genesis h.caps mEarly v)
         (rateAll (fromFin.append pre) (by simp only at mEpoch ⊢; omega)))
   have depthEq : (pinTerms config pulled anc fin).depth =
       (getCurrentEpoch pulled).toNat + 2 - anc.finalizedCheckpoint.epoch.toNat := rfl
@@ -2623,7 +2601,7 @@ theorem bud_queueRise (h : Setting config checks g split fin pulled anc counted 
       (fun v : ValidatorIndex => riseQ tailC highC v.toNat)
       (preset.upwardBand + (pinTerms config pulled anc fin).depth *
         (pinTerms config pulled anc fin).gainRateMax)
-      fun v _ => riseQ_le h.facts h tailC highC endEpochC v.toNat
+      fun v _ => riseQ_le h tailC highC endEpochC v.toNat
     have subset : (((K5 counted V).filter fun v =>
         (pinTerms config pulled anc fin).exitingB v.toNat = false).filter
           fun v => riseQ tailC highC v.toNat ≠ 0) ⊆
