@@ -17255,7 +17255,33 @@ theorem bud_csUnits (h : Setting config checks g split fin pulled anc counted V)
         isActiveAt counted (getCurrentEpoch counted) v.toNat = true).card *
           (pinTerms config pulled anc fin).unitGain) ≤
       ∑ v ∈ CS counted split,
-        unitK (pinTerms config pulled anc fin) tailC highC eventsC events eventsF v.toNat := sorry
+        unitK (pinTerms config pulled anc fin) tailC highC eventsC events eventsF v.toNat := by
+  split_ifs
+  · exact Nat.zero_le _
+  obtain ⟨_, replayedF⟩ := fromFin.balanceEvents_ok h.early (getCurrentEpoch pulled).toNat
+  rw [sum_unitK _ tailC highC eventsC events eventsF _ fun v => credC tailC highC v.toNat,
+    Nat.mul_comm]
+  refine Nat.mul_le_mul_left _ (Finset.card_le_card fun v member => ?_)
+  obtain ⟨inCS, active⟩ := Finset.mem_filter.mp member
+  refine Finset.mem_filter.mpr ⟨inCS, ?_⟩
+  obtain ⟨-, absent, -⟩ := Finset.mem_filter.mp inCS
+  obtain ⟨w, found, live⟩ := isActiveAt_eq_true_iff.mp active
+  simp only [isActiveValidator, Bool.and_eq_true, decide_eq_true_eq] at live
+  have activated : ∃ w, counted.validators.data[v.toNat]? = some w ∧
+      w.activationEpoch ≠ FAR_FUTURE_EPOCH ∧ w.activationEpoch ≤ getCurrentEpoch counted := by
+    refine ⟨w, found, fun far => ?_, live.1⟩
+    have low := UInt64.le_iff_toNat_le.mp live.1
+    have exit := UInt64.lt_iff_toNat_lt.mp live.2
+    have bound := w.exitEpoch.toNat_lt
+    rw [far] at low
+    have : FAR_FUTURE_EPOCH.toNat = 2 ^ 64 - 1 := rfl
+    omega
+  have deposit := created_deposit h fromFin replayedF tailC highC endEpochC replayedC activated
+    absent
+  have cSplit := credC_split tailC highC v.toNat
+  have nSplit := credN_split tailC highC v.toNat
+  unfold flowCredit
+  omega
 
 /-- The keys of `CS` that are active at C fit the deposit slots that the keys beyond R leave.
 
