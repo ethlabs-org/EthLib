@@ -1032,7 +1032,7 @@ private theorem credited_piece {g : ForkedBeaconState preset}
       · simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at rest
         obtain ⟨added, addedOk, rfl⟩ := rest
         have quiet := PinSplit5.slot_noSync
-          (Nat.le_trans (by decide) (Nat.le_trans (by decide) fulu')) ok early addedOk
+          (Nat.le_trans (show Fork.pectra ≤ Fork.fusaka by decide) fulu') ok early addedOk
         have zero : (added.map (syncDebit i)).sum = 0 :=
           List.sum_eq_zero fun v member => by
             obtain ⟨e, inside, rfl⟩ := List.mem_map.mp member
@@ -1105,7 +1105,7 @@ private theorem credited_piece {g : ForkedBeaconState preset}
             have matchedT : BalancesMatch t :=
               (frame_processBlock (applySignedBlock_ok ok).2.1).balancesMatch
                 (run_justified_separated (shared.append pre) genesis).1.balancesMatch
-            obtain ⟨w, hv, mem⟩ := sync_debit_seat altair' synced matchedT (by omega)
+            obtain ⟨w, hv, mem⟩ := sync_debit_seat (i := i) altair' synced matchedT (by omega)
             have committee := (Run.snoc pre (Step.block engine signed due ok)
                 ).currentSyncCommittee_eq_of_same_period early same altair' altair
             refine ⟨w, hv, ?_⟩
@@ -1280,8 +1280,8 @@ private theorem credited_pieces {g : ForkedBeaconState preset}
         · simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at rest
           obtain ⟨added, addedOk, rfl⟩ := rest
           have quiet := PinSplit5.slot_noSync
-            (Nat.le_trans (by decide) (Nat.le_trans (by decide)
-              (Nat.le_trans fulu (fork_le_of_chainSteps pre.chainSteps)))) ok vEarly addedOk
+            (Nat.le_trans (show Fork.pectra ≤ Fork.fusaka by decide)
+              (Nat.le_trans fulu (fork_le_of_chainSteps pre.chainSteps))) ok vEarly addedOk
           have zero : (added.map (syncDebit i)).sum = 0 :=
             List.sum_eq_zero fun a member => by
               obtain ⟨e, inside, rfl⟩ := List.mem_map.mp member
