@@ -13827,42 +13827,32 @@ private theorem bud_branchR_of (h : Setting config checks g split fin pulled anc
 
 /-- A key that the shared run slashes is bounded by its finalized balance or by R's balance.
 
-The bound by R's balance reads its rise and one increment.
+The bound by R's balance reads its rise, one increment and the debits and induced leak.
+
+A second increment pays the rounding of the balance when the debits or the leak are not zero.
 
 The balance at the split is the key's effective balance at the epoch start, up to the downward band.
 
 A queued partial paid before the finalized state leaves the balance at the finalized one.
 
-Then `rise` no longer holds the partial.
-
 Otherwise R's tail takes its penalties and sync debits, and the leak that `rise` reads covers them.
-
-The key's initial penalty on `pre` is at most an increment less the band.
 
 `bud_branchR` reads the quotient of this bound, and pays its rounding with the debits. -/
 private theorem cut_balance_le (h : Setting config checks g split fin pulled anc counted V)
-    (toFin : Run config checks g ⟨fork, fin⟩)
     (fromFin : Run config checks ⟨fork, fin⟩ ⟨fork, split⟩)
-    {b : BeaconState preset fork} (toB : Run config checks g ⟨fork, b⟩)
-    (pre : Run config checks ⟨fork, b⟩ ⟨fork, split⟩)
-    (cut : toB.append pre = toFin.append fromFin)
-    (sameEpoch : getCurrentEpoch split = getCurrentEpoch b)
-    (earlier : ∀ {u w : ForkedBeaconState preset} (step : Step config checks u w),
-      toB.Contains step → (getCurrentEpoch u.state).toNat < (getCurrentEpoch b).toNat)
-    (order : (∃ fromB : Run config checks ⟨fork, fin⟩ ⟨fork, b⟩, fromFin = fromB.append pre) ∨
-      ∃ toFinB : Run config checks ⟨fork, b⟩ ⟨fork, fin⟩, pre = toFinB.append fromFin)
     (tail : Run config checks ⟨fork, split⟩ ⟨fork, pulled⟩) (high : ℕ)
     (endEpoch : (getCurrentEpoch pulled).toNat ≤ high + 1)
-    {eventsF eventsP events : List (BalanceEvent preset)}
+    {eventsF events : List (BalanceEvent preset)}
     (replayedF : fromFin.balanceEvents high = .ok eventsF)
-    (replayedP : pre.balanceEvents high = .ok eventsP)
     (replayed : tail.balanceEvents high = .ok events)
-    (v : ValidatorIndex) (member : v ∈ cutKeys config pulled anc fin split)
-    (unslashedB : ((b.validators.data[v.toNat]?).map (·.slashed)).getD false = false) :
+    (v : ValidatorIndex) (member : v ∈ cutKeys config pulled anc fin split) :
     balanceAt split v.toNat ≤ max (balanceAt fin v.toNat)
       (balanceAt pulled v.toNat + (pinTerms config pulled anc fin).rise v.toNat +
         preset.EFFECTIVE_BALANCE_INCREMENT.toNat +
-        (syncD eventsF v.toNat + syncD eventsP v.toNat + syncD events v.toNat +
+        (if 0 < syncD eventsF v.toNat + syncD events v.toNat +
+            inducedR (pinTerms config pulled anc fin) (fromFin.append tail) v.toNat then
+          preset.EFFECTIVE_BALANCE_INCREMENT.toNat else 0) +
+        (syncD eventsF v.toNat + syncD events v.toNat +
           inducedR (pinTerms config pulled anc fin) (fromFin.append tail) v.toNat)) := by
   sorry
 
@@ -13944,7 +13934,7 @@ theorem bud_branchR (h : Setting config checks g split fin pulled anc counted V)
       (pinTerms config pulled anc fin).branchR +
         -- The cut keys' sync debits and induced leak, paid by `bud_sync` and `bud_syncLeak`.
         3 * (∑ v ∈ cutKeys config pulled anc fin split,
-          (syncD eventsF v.toNat + syncD eventsP v.toNat + syncD events v.toNat +
+          (syncD eventsF v.toNat + syncD events v.toNat +
             inducedR (pinTerms config pulled anc fin) (fromFin.append tail) v.toNat)) := by
   sorry
 
@@ -13988,8 +13978,6 @@ The shared segment's debits are one weighted sum over the disjoint classes.
 
 `cutKeys` holds the keys slashed at the split that R's call reads as slashed, at the same weight.
 
-Its debits before the finalized state are in `pre`, so `syncD eventsP` joins them.
-
 `bud_branchR` rounds their rewards up, and the debits pay the rounding.
 
 The sync credits of `pre` ride with R's tail, since `pre` and the tail are one run in the epoch.
@@ -14006,14 +13994,14 @@ theorem bud_sync (h : Setting config checks g split fin pulled anc counted V)
     {eventsF : List (BalanceEvent preset)} (replayedF : fromFin.balanceEvents high = .ok eventsF)
     (tailC : Run config checks ⟨fork, split⟩ ⟨fork, counted⟩) (highC : ℕ)
     {eventsC : List (BalanceEvent preset)} (replayedC : tailC.balanceEvents highC = .ok eventsC)
-    {eventsP : List (BalanceEvent preset)} (replayedP : pre.balanceEvents highC = .ok eventsP) :
+    {eventsP : List (BalanceEvent preset)} (replayedP : pre.balanceEvents high = .ok eventsP) :
     3 * ((∑ v ∈ V, (syncD eventsF v.toNat + (syncF events v.toNat + syncF eventsC v.toNat))) +
         (∑ v ∈ (K4 pulled counted V), syncD eventsF v.toNat) +
         (∑ v ∈ (K4 pulled counted V), (syncF events v.toNat + syncF eventsC v.toNat)) +
         (∑ v ∈ (K5 counted V), (syncD eventsF v.toNat + syncCr eventsP v.toNat)) +
         (∑ v ∈ (K5 counted V), (syncF events v.toNat + syncF eventsC v.toNat)) +
         (∑ v ∈ cutKeys config pulled anc fin split,
-          (syncD eventsF v.toNat + syncD eventsP v.toNat + syncD events v.toNat))) +
+          (syncD eventsF v.toNat + syncD events v.toNat))) +
       (∑ v ∈ (K6 pulled counted), syncD eventsF v.toNat) +
       (∑ v ∈ (K6 pulled counted), (syncF events v.toNat + syncF eventsC v.toNat)) +
       wShare preset fork (∑ v ∈ SC pulled counted split, syncCr eventsC v.toNat) +
@@ -18679,8 +18667,14 @@ theorem pinDrift_le_of_stubs (h : Setting config checks g split fin pulled anc c
   have b4 := bud_credits (config := config) h toB link pre sameEpoch tailC highC endEpochC replayedC
   have b5 := bud_branchR (config := config) h tail high endEpoch replayed fromFin toFin toB pre
     cut sameEpoch replayedF tailC highC endEpochC replayedC replayedP
+  have replayedPHigh : pre.balanceEvents high = .ok eventsP := by
+    have called := UInt64.le_iff_toNat_le.mp h.called
+    have later := UInt64.le_iff_toNat_le.mp h.later
+    rw [DirectSafety.Apriori.Internal.balanceEvents_eq_of_endpoint_le pre (localHigh := highC)
+      (by simp only; omega) (by simp only; omega)]
+    exact replayedP
   have b6 := bud_sync (config := config) h tail high replayed fromFin pre sameEpoch shape replayedF
-    tailC highC replayedC replayedP
+    tailC highC replayedC replayedPHigh
   have b7 := bud_fall (config := config) h
   have b8 := bud_rise (config := config) h
   have b10 := bud_deposits (config := config) h tail high endEpoch replayed
