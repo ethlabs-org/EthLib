@@ -9481,21 +9481,14 @@ private theorem created_credited (h : Setting config checks g split fin pulled a
       highC tailC).1 ≤ consAmt eventsC v.toNat := by
     have scan := creditScan_sum_le {v} (fun _ => false) (fun s => decide (s = .consolidations))
       highC (fun e => keyCredit v.toNat e) tailC replayedC (fun e _ _ => by simp)
-    have only : ∀ L : List (BalanceEvent preset),
-        (L.map fun e => if (false = true ∨ decide (e.source = .consolidations) = true) then
-          keyCredit v.toNat e else 0).sum = consAmt L v.toNat := by
-      intro L
-      induction L with
-      | nil => rfl
-      | cons e rest ih =>
-        simp only [consAmt, Bool.false_eq_true, false_or, decide_eq_true_eq] at ih ⊢
-        by_cases consolidation : e.source = .consolidations
-        · simp only [List.map_cons, List.sum_cons, List.filter_cons, consolidation, decide_true,
-            ↓reduceIte, ih]
-        · simp only [List.map_cons, List.sum_cons, List.filter_cons, consolidation, decide_false,
-            Bool.false_eq_true, ↓reduceIte, ih, Nat.zero_add]
+    have only : (eventsC.map fun e => if (false = true ∨ decide (e.source = .consolidations) = true)
+        then keyCredit v.toNat e else 0).sum = consAmt eventsC v.toNat := by
+      simp only [Bool.false_eq_true, false_or, decide_eq_true_eq, consAmt]
+      rw [List.sum_map_ite (fun e : BalanceEvent preset => e.source = .consolidations)
+        (keyCredit v.toNat) (fun _ => 0)]
+      simp
     rw [Finset.sum_singleton] at scan
-    exact le_of_le_of_eq scan (only eventsC)
+    exact le_of_le_of_eq scan only
   rw [consZero] at consScan
   obtain ⟨toFin⟩ := h.toFin
   obtain ⟨fromFin⟩ := h.fromFin
