@@ -3093,7 +3093,8 @@ private theorem key_rate_pre (h : Setting config checks g split fin pulled anc c
       ((getTotalActiveBalance pulled).toOption.getD 0)
     refine ⟨pq.toNat, fun z member total' perIncrement' totalOk perOk' => ?_⟩
     obtain ⟨fromFin⟩ := h.fromFin
-    obtain ⟨r1, r2, -⟩ := balancePath_endpoint pre Run.nil (by exact le_refl _) member
+    obtain ⟨r1, r2, -⟩ := balancePath_endpoint pre Run.nil
+      (fork_le_of_chainSteps (Run.nil : Run config checks ⟨fork, a⟩ ⟨fork, a⟩).chainSteps) member
     obtain ⟨zf, zs⟩ := z
     have sameFork : zf = fork := Fork.ctorIdx_injective
       (Nat.le_antisymm (fork_le_of_chainSteps r2.chainSteps)
