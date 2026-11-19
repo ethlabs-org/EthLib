@@ -13019,6 +13019,42 @@ private theorem bud_branchR_of (h : Setting config checks g split fin pulled anc
   rw [hW]
   omega
 
+/-- A key that the shared run slashes in its last epoch is bounded by R's balance and rise.
+
+The balance at the split is the key's effective balance at the epoch start, up to the downward band.
+
+R's tail then takes its penalties and sync debits.
+
+The leak that `rise` reads at the bound covers the penalties.
+
+The key's initial penalty on `pre` is at most an increment less the band.
+
+The sync debits of the shared run and of `pre` and of R's tail join it, with the induced leak.
+
+`bud_branchR` reads the quotient of this bound, and pays its rounding with the debits. -/
+private theorem cut_balance_le (h : Setting config checks g split fin pulled anc counted V)
+    (toFin : Run config checks g ⟨fork, fin⟩)
+    (fromFin : Run config checks ⟨fork, fin⟩ ⟨fork, split⟩)
+    {b : BeaconState preset fork} (toB : Run config checks g ⟨fork, b⟩)
+    (pre : Run config checks ⟨fork, b⟩ ⟨fork, split⟩)
+    (cut : toB.append pre = toFin.append fromFin)
+    (sameEpoch : getCurrentEpoch split = getCurrentEpoch b)
+    (earlier : ∀ {u w : ForkedBeaconState preset} (step : Step config checks u w),
+      toB.Contains step → (getCurrentEpoch u.state).toNat < (getCurrentEpoch b).toNat)
+    (tail : Run config checks ⟨fork, split⟩ ⟨fork, pulled⟩) (high : ℕ)
+    (endEpoch : (getCurrentEpoch pulled).toNat ≤ high + 1)
+    {eventsF eventsP events : List (BalanceEvent preset)}
+    (replayedF : fromFin.balanceEvents high = .ok eventsF)
+    (replayedP : pre.balanceEvents high = .ok eventsP)
+    (replayed : tail.balanceEvents high = .ok events)
+    (v : ValidatorIndex) (member : v ∈ cutKeys config pulled anc fin split)
+    (unslashedB : ((b.validators.data[v.toNat]?).map (·.slashed)).getD false = false) :
+    balanceAt split v.toNat ≤ balanceAt pulled v.toNat +
+      (pinTerms config pulled anc fin).rise v.toNat + preset.EFFECTIVE_BALANCE_INCREMENT.toNat +
+      (syncD eventsF v.toNat + syncD eventsP v.toNat + syncD events v.toNat +
+        inducedR (pinTerms config pulled anc fin) (fromFin.append tail) v.toNat) := by
+  sorry
+
 /-- R1 (branchR): R's credits to V keys since the split, weight 3.
 
 The slashing of a key on R's branch is charged here for the keys of `K4` and `K5`.
@@ -13092,9 +13128,10 @@ theorem bud_branchR (h : Setting config checks g split fin pulled anc counted V)
         3 * scSlashedReward config pulled anc fin counted split +
         (∑ v ∈ SC pulled counted split, bandR (eventsF ++ events) v.toNat) ≤
       (pinTerms config pulled anc fin).branchR +
-        -- The cut keys' sync debits, which `bud_sync` pays, keep the rounding of their rewards.
+        -- The cut keys' sync debits and induced leak, paid by `bud_sync` and `bud_syncLeak`.
         3 * (∑ v ∈ cutKeys config pulled anc fin split,
-          (syncD eventsF v.toNat + syncD eventsP v.toNat + syncD events v.toNat)) := by
+          (syncD eventsF v.toNat + syncD eventsP v.toNat + syncD events v.toNat +
+            inducedR (pinTerms config pulled anc fin) (fromFin.append tail) v.toNat)) := by
   sorry
 
 /-- The sync movement of a key is its sync credits plus its sync debits over the events. -/
@@ -14060,7 +14097,9 @@ private theorem bud_units (h : Setting config checks g split fin pulled anc coun
 
 /-- The leak that the counted keys' sync debits on R's branch induce, at their weights.
 
-It fits `syncLeak`, and the leak of one increment for each key slashed on R's branch. -/
+It fits `syncLeak`, and the leak of one increment for each key slashed on R's branch.
+
+The cut keys weigh three, for the leak that `bud_branchR` reads in their balance at the split. -/
 private theorem bud_syncLeak (h : Setting config checks g split fin pulled anc counted V)
     (tail : Run config checks ⟨fork, split⟩ ⟨fork, pulled⟩) (high : ℕ)
     (endEpoch : (getCurrentEpoch pulled).toNat ≤ high + 1)
@@ -14075,7 +14114,9 @@ private theorem bud_syncLeak (h : Setting config checks g split fin pulled anc c
       3 * (∑ v ∈ (K5 counted V), inducedR (pinTerms config pulled anc fin) (fromFin.append tail)
           v.toNat) +
       (∑ v ∈ (K6 pulled counted), inducedR (pinTerms config pulled anc fin) (fromFin.append tail)
-          v.toNat) ≤
+          v.toNat) +
+      3 * (∑ v ∈ cutKeys config pulled anc fin split,
+        inducedR (pinTerms config pulled anc fin) (fromFin.append tail) v.toNat) ≤
       (pinTerms config pulled anc fin).syncLeak +
         3 * ((pinTerms config pulled anc fin).slashedR *
           slashLeak config fork (pinTerms config pulled anc fin)) :=
