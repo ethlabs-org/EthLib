@@ -2085,7 +2085,6 @@ It is also at most the balance shortfall at that state, the debits of the key an
 
 The debits are its penalties, its sync debits and the partial payments to it. -/
 private theorem exitQ_floor (h : Setting config checks g split fin pulled anc counted V)
-    (facts : PinPresetFacts preset)
     (fromFin : Run config checks ⟨fork, fin⟩ ⟨fork, split⟩)
     (tailC : Run config checks ⟨fork, split⟩ ⟨fork, counted⟩)
     {events : List (BalanceEvent preset)}
@@ -2151,7 +2150,7 @@ private theorem exitQ_floor (h : Setting config checks g split fin pulled anc co
   have loss := Stop.selected_charge_loss stop chosen shared h.genesis h.caps h.bands.1 h.twoSlots
     h.delay stopEarly val w initial final unslashed cleanEnd activated endpoint beforeOk 0
     (EthLib.Consensus.parameters preset .fusaka).MIN_SLASHING_PENALTY_QUOTIENT.toNat
-    (by have := facts.quotient; omega)
+    (by have := h.facts.quotient; omega)
     (fun {m n} pre step post split => by
       have mOrder := UInt64.le_iff_toNat_le.mp
         (currentEpoch_le_of_chainSteps ((Run.nil.snoc step).append post).chainSteps)
