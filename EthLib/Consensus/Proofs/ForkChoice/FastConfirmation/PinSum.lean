@@ -11198,9 +11198,6 @@ private theorem key_core_frozen (h : Setting config checks g split fin pulled an
       List.mem_map.mpr ⟨_, member, rfl⟩
     rw [hM]
     exact le_foldl_max_of_mem mapped 0
-  have ceilR := prefix_ceiling h fromFin tail (getCurrentEpoch pulled).toNat (Nat.le_succ _)
-    replayedF replayed v inFin (slashW (pinTerms config pulled anc fin) v.toNat) M
-    (voter_floorAt h fromFin tail v voter inFin frozen) below
   -- the credit ceiling of C's run, from the floor and the debits of R's
   have splitSize : v.toNat < split.validators.data.size := Nat.lt_of_lt_of_le inFin sizeFin
   have debitsM := debits_le_top h fromFin tail (getCurrentEpoch pulled).toNat (Nat.le_succ _)
@@ -11242,6 +11239,37 @@ private theorem key_core_frozen (h : Setting config checks g split fin pulled an
     (slashW (pinTerms config pulled anc fin) v.toNat) alignedCap
     (effective_le_cap_pulled h fromFin tail v.toNat)
     (fun z member => Nat.le_trans (capPath tailC z member) capC) startEff floorR debitsCap rateLow
+  -- the names of the parts of the ceilings
+  obtain ⟨Df, hDf⟩ : ∃ Df, Df = (getCurrentEpoch pulled).toNat + 2 - (getCurrentEpoch fin).toNat :=
+    ⟨_, rfl⟩
+  obtain ⟨D, hD⟩ : ∃ D, D = min (pinTerms config pulled anc fin).depth Df := ⟨_, rfl⟩
+  obtain ⟨q, hq⟩ : ∃ q, q = (pinTerms config pulled anc fin).gainRate v.toNat := ⟨_, rfl⟩
+  obtain ⟨Cr, hCr⟩ : ∃ Cr, Cr = netScan v.toNat highC tailC +
+    (creditScan (fun _ => false) (fun s => decide (s ≠ .rewards)) v.toNat highC tailC).1 :=
+    ⟨_, rfl⟩
+  rw [← hDf, ← hD, ← hq, ← hCr] at hform hgc bound
+  rw [← hDf] at debitsM
+  -- R's run has the ceiling on its balance, and C's run adds its credits and gains
+  have onR : ∀ z ∈ (fromFin.append tail).balancePath,
+      min (actualBalanceAt z v.toNat)
+          (PinSplit2.capAt (⟨fork, pulled⟩ : ForkedBeaconState preset) v.toNat) ≤
+        actualBalanceAt (⟨fork, pulled⟩ : ForkedBeaconState preset) v.toNat +
+          (Df * (pinTerms config pulled anc fin).leakAt M v.toNat +
+            (dueAmount fin electra v.toNat ((getCurrentEpoch pulled).toNat + 1) -
+              dueAmount pulled electra v.toNat ((getCurrentEpoch pulled).toNat + 1))) +
+          ((eventsF.map (syncDebit v.toNat)).sum + (events.map (syncDebit v.toNat)).sum +
+            slashW (pinTerms config pulled anc fin) v.toNat) := by
+    intro z member
+    obtain ⟨r1, r2, cutZ⟩ := balancePath_endpoint (fromFin.append tail)
+      (Run.nil : Run config checks ⟨fork, pulled⟩ ⟨fork, pulled⟩) (Nat.le_refl _) member
+    obtain ⟨zf, zs⟩ := z
+    have same : fork = zf := (fork_eq_of_run r1 r2 (Nat.le_refl _)).symm
+    subst same
+    have := prefix_ceiling h fromFin tail (getCurrentEpoch pulled).toNat (Nat.le_succ _) replayedF
+      replayed v inFin (slashW (pinTerms config pulled anc fin) v.toNat) M
+      (voter_floorAt h fromFin tail v voter inFin frozen) below r1 r2 cutZ
+    rw [hDf]
+    exact this
   sorry
 
 /-- The per-key core of the rise.
