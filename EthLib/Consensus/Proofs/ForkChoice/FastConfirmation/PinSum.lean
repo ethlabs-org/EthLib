@@ -3809,6 +3809,20 @@ private theorem capAt_of_found {z : ForkedBeaconState preset} {i : ℕ} {v : Val
   by_cases compounds : hasCompoundingWithdrawalCredential v = true <;>
     simp [withdrawalMaxEffectiveBalance, electra, getMaxEffectiveBalance, compounds]
 
+/-- A key's cap is a whole number of increments. -/
+private theorem capAt_aligned (aligned : MaxEffectiveBalancesAligned preset)
+    {z : ForkedBeaconState preset} (electra : .pectra ≤ z.fork) {i : ℕ} {w : Validator}
+    (found : z.state.validators.data[i]? = some w) :
+    PinSplit2.capAt z i % preset.EFFECTIVE_BALANCE_INCREMENT.toNat = 0 := by
+  rw [capAt_of_found electra found]
+  have aMin : preset.MIN_ACTIVATION_BALANCE.toNat %
+      preset.EFFECTIVE_BALANCE_INCREMENT.toNat = 0 := by
+    simpa [UInt64.toNat_mod] using congrArg UInt64.toNat aligned.2.1
+  have aMax : preset.MAX_EFFECTIVE_BALANCE_ELECTRA.toNat %
+      preset.EFFECTIVE_BALANCE_INCREMENT.toNat = 0 := by
+    simpa [UInt64.toNat_mod] using congrArg UInt64.toNat aligned.2.2
+  split <;> assumption
+
 /-- From Fusaka, a slot step before Gloas keeps whether each validator of its first state compounds.
 
 It keeps the position of each such validator. -/
@@ -11111,20 +11125,6 @@ private theorem keptArm_eq (config : Config)
           ((pinTerms config state ancestor finalizedState).gainRate i + 1) ≤
             (pinTerms config state ancestor finalizedState).ebUp i)) := rfl
 
-/-- A key's cap is a whole number of increments. -/
-private theorem capAt_aligned (aligned : MaxEffectiveBalancesAligned preset)
-    {z : ForkedBeaconState preset} (electra : .pectra ≤ z.fork) {i : ℕ} {w : Validator}
-    (found : z.state.validators.data[i]? = some w) :
-    PinSplit2.capAt z i % preset.EFFECTIVE_BALANCE_INCREMENT.toNat = 0 := by
-  rw [capAt_of_found electra found]
-  have aMin : preset.MIN_ACTIVATION_BALANCE.toNat %
-      preset.EFFECTIVE_BALANCE_INCREMENT.toNat = 0 := by
-    simpa [UInt64.toNat_mod] using congrArg UInt64.toNat aligned.2.1
-  have aMax : preset.MAX_EFFECTIVE_BALANCE_ELECTRA.toNat %
-      preset.EFFECTIVE_BALANCE_INCREMENT.toNat = 0 := by
-    simpa [UInt64.toNat_mod] using congrArg UInt64.toNat aligned.2.2
-  split <;> assumption
-
 open DirectSafety.Apriori DirectSafety.Apriori.Internal in
 /-- The per-key core of the rise for a key of R's finalized registry whose cap is frozen.
 
@@ -11181,7 +11181,6 @@ private theorem key_core_frozen (h : Setting config checks g split fin pulled an
   have capC : PinSplit2.capAt (⟨fork, counted⟩ : ForkedBeaconState preset) v.toNat ≤
       PinSplit2.capAt (⟨fork, pulled⟩ : ForkedBeaconState preset) v.toNat := by omega
   -- the floor of each state of R's run, and the largest effective balance on it
-  have floorAt := voter_floorAt h fromFin tail v voter inFin frozen
   obtain ⟨M, hM⟩ : ∃ M, M = ((fromFin.append tail).balancePath.map
       fun z => effectiveAt z v.toNat).foldl max 0 := ⟨_, rfl⟩
   have below : ∀ {zs : BeaconState preset fork} (pre : Run config checks ⟨fork, fin⟩ ⟨fork, zs⟩)
@@ -11196,10 +11195,9 @@ private theorem key_core_frozen (h : Setting config checks g split fin pulled an
       simp
     rw [hM]
     exact le_foldl_max_of_mem (List.mem_map.mpr ⟨_, member, rfl⟩) 0
-  obtain ⟨W, hW⟩ : ∃ W, W = slashW (pinTerms config pulled anc fin) v.toNat := ⟨_, rfl⟩
-  rw [← hW] at floorAt
   have ceilR := prefix_ceiling h fromFin tail (getCurrentEpoch pulled).toNat (Nat.le_succ _)
-    replayedF replayed v inFin W M floorAt below
+    replayedF replayed v inFin (slashW (pinTerms config pulled anc fin) v.toNat) M
+    (voter_floorAt h fromFin tail v voter inFin frozen) below
   sorry
 
 /-- The per-key core of the rise.
