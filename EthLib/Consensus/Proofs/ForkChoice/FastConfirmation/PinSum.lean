@@ -5847,8 +5847,9 @@ private theorem aligned_gap {E M inc : ℕ} (e : E % inc = 0) (m : M % inc = 0) 
 
 The key has no sync debits on the run, and the test of its floor holds.
 
-The proof runs conjunct (2) of the floor pair: a downward update fires only at a step whose balance
-after it is still at least the finalized effective balance.
+The proof runs conjunct (2) of the floor pair.
+
+A downward update fires only at a step whose balance after it is at least the finalized balance.
 
 Such an update is from an effective balance above the finalized one, set at an update `w`.
 
