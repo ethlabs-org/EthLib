@@ -3708,6 +3708,65 @@ private theorem rate_of_guard
   rw [quarter]
   exact rate_arith h.facts.rewardScale h.facts.incrementSize h.facts.reward clamp high band stake
 
+/-- The top of a key at R before the downward band, as `rise` reads it.
+
+It is `pinTerms`' `high` in `rise`.
+
+It adds the leak and the gain of the window, and the net partials, to the balance at R. -/
+private def riseTop (t : PinTerms preset) (state : BeaconState preset fork) (i : ℕ) : ℕ :=
+  actualBalanceAt (⟨fork, state⟩ : ForkedBeaconState preset) i +
+    t.depthFin * ((11 * t.gainRate i + 9) / 10 + 3 + t.leakAt (t.ebUp i) i) +
+      (t.partialsX i - t.partialsR i)
+
+/-- The cap of a key as `rise` reads it: its own cap when its gain is low, else the largest.
+
+It is `pinTerms`' `capFor`. -/
+private def capForOf (t : PinTerms preset) (state : BeaconState preset fork) (i : ℕ) : ℕ :=
+  if (decide (t.depthFin * ((11 * t.gainRate i + 9) / 10 + 3) <
+        preset.EFFECTIVE_BALANCE_INCREMENT.toNat) &&
+      decide (11 * t.depth * (t.gainRate i + 1) ≤ t.ebUp i)) = true then
+    PinSplit2.capAt (⟨fork, state⟩ : ForkedBeaconState preset) i
+  else preset.MAX_EFFECTIVE_BALANCE_ELECTRA.toNat
+
+/-- The cap that `rise` reads is at least the key's own cap. -/
+private theorem capAt_le_capForOf (t : PinTerms preset) (state : BeaconState preset fork) (i : ℕ)
+    (capMax : PinSplit2.capAt (⟨fork, state⟩ : ForkedBeaconState preset) i ≤
+      preset.MAX_EFFECTIVE_BALANCE_ELECTRA.toNat) :
+    PinSplit2.capAt (⟨fork, state⟩ : ForkedBeaconState preset) i ≤ capForOf t state i := by
+  unfold capForOf
+  split
+  · exact Nat.le_refl _
+  · exact capMax
+
+/-- The rise of a key on its kept arm is the least of its cap, its rounded top and its headroom.
+
+The rounded top adds the downward band to `riseTop`.
+
+The headroom starts from the finalized balance.
+
+The rise is that less the effective balance at R. -/
+private theorem rise_kept (config : Config) (pulled anc fin : BeaconState preset fork) (i : ℕ)
+    (kept : (pinTerms config pulled anc fin).keptArm i = true) :
+    (pinTerms config pulled anc fin).rise i =
+      min (capForOf (pinTerms config pulled anc fin) pulled i)
+        (min (riseTop (pinTerms config pulled anc fin) pulled i + preset.downwardBand -
+            (riseTop (pinTerms config pulled anc fin) pulled i + preset.downwardBand) %
+              preset.EFFECTIVE_BALANCE_INCREMENT.toNat)
+          (max (balanceAt fin i) (riseTop (pinTerms config pulled anc fin) pulled i -
+            riseTop (pinTerms config pulled anc fin) pulled i %
+              preset.EFFECTIVE_BALANCE_INCREMENT.toNat))) - balanceAt pulled i := by
+  have unfold : (pinTerms config pulled anc fin).rise i =
+      if (pinTerms config pulled anc fin).keptArm i = true then
+        min (capForOf (pinTerms config pulled anc fin) pulled i)
+          (min (riseTop (pinTerms config pulled anc fin) pulled i + preset.downwardBand -
+              (riseTop (pinTerms config pulled anc fin) pulled i + preset.downwardBand) %
+                preset.EFFECTIVE_BALANCE_INCREMENT.toNat)
+            (max (balanceAt fin i) (riseTop (pinTerms config pulled anc fin) pulled i -
+              riseTop (pinTerms config pulled anc fin) pulled i %
+                preset.EFFECTIVE_BALANCE_INCREMENT.toNat))) - balanceAt pulled i
+      else capForOf (pinTerms config pulled anc fin) pulled i - balanceAt pulled i := rfl
+  rw [unfold, ite_cond_eq_true _ _ (eq_true kept)]
+
 /-- The effective balance of a key that stays on its path is at most the rise of the main regime. -/
 private theorem rise_arith {inc band capFor high finEB eR eC Bc capHigh S U : Nat}
     (incPos : 0 < inc)
