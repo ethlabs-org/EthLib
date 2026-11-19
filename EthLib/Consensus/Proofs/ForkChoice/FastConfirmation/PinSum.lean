@@ -14575,8 +14575,6 @@ The credits hold the key's own whistleblower credits.
 
 Its unit of gain and the leak that its sync debits induce on R's run come on top, unscaled.
 
-A second unit pays the joint floor that R's slashing penalty can tip.
-
 `bud_whistle` pays them with the sets that it counts.
 
 The seat debits are those of the two runs that R shares with C.
@@ -14584,7 +14582,7 @@ The seat debits are those of the two runs that R shares with C.
 A key that exited before the finalized state also holds its credits on the shared segment.
 
 A sync credit there has the band of its rounding. -/
-private def whistleSlack (t : PinTerms preset) {x y : ForkedBeaconState preset}
+private def whistleSlackBase (t : PinTerms preset) {x y : ForkedBeaconState preset}
     (tail : Run config checks x y) {x' y' : ForkedBeaconState preset}
     (rrun : Run config checks x' y') (highC high : ℕ)
     (eventsC eventsF events : List (BalanceEvent preset)) (fin : BeaconState preset fork)
@@ -14593,11 +14591,21 @@ private def whistleSlack (t : PinTerms preset) {x y : ForkedBeaconState preset}
     consAmt eventsC i + syncD eventsF i + syncD events i) + 9) / 10 + bandC tail highC i +
     bandX fin highC i + bandR (eventsF ++ events) i +
     unitK t tail highC eventsC events eventsF i + inducedR t rrun i +
-    (if 0 < slashW t i then t.unitGain else 0) +
   if t.exitBeforeFin i = true then
     (11 * (syncCr eventsF i + consAmt eventsF i) + 9) / 10 + bandX fin high i +
       (if 0 < syncCr eventsF i then preset.upwardBand else 0)
   else 0
+
+/-- The credits of `whistleSlackBase`, and a second unit of gain for a key that R slashes.
+
+The second unit pays the joint floor that R's slashing penalty can tip. -/
+private def whistleSlack (t : PinTerms preset) {x y : ForkedBeaconState preset}
+    (tail : Run config checks x y) {x' y' : ForkedBeaconState preset}
+    (rrun : Run config checks x' y') (highC high : ℕ)
+    (eventsC eventsF events : List (BalanceEvent preset)) (fin : BeaconState preset fork)
+    (i : ℕ) : ℕ :=
+  whistleSlackBase t tail rrun highC high eventsC eventsF events fin i +
+    (if 0 < slashW t i then t.unitGain else 0)
 
 /-- What a created key's charge adds to the effective balance of the key at an earlier exit.
 
