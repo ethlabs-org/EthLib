@@ -29,7 +29,7 @@ private theorem ceiling_closed (I WD F P e0 D Cr Cr' S W band C : ℕ) (hI : 0 <
       rw [e] at rate'
       have big : 11 ≤ e0 := Nat.le_trans (by
         have := Nat.mul_le_mul (show 11 ≤ 11 * D by omega)
-          (show 1 ≤ m * P * F / WD + 1 by omega)
+          (Nat.le_add_left 1 (m * P * F / WD))
         simpa using this) rate'
       have mPos : 0 < m := Nat.pos_of_ne_zero (fun z => by rw [z] at hm; omega)
       have a : m * P * F < WD * (m * P * F / WD + 1) := Nat.lt_mul_div_succ _ hWD
@@ -150,7 +150,9 @@ private theorem c_ceiling_abstract {n y : ForkedBeaconState preset}
       preset.EFFECTIVE_BALANCE_INCREMENT.toNat
     have lt : PinSplit2.creditBound post i high (e0 + C + preset.EFFECTIVE_BALANCE_INCREMENT.toNat)
         P capHigh < e0 + C + preset.EFFECTIVE_BALANCE_INCREMENT.toNat +
-          preset.EFFECTIVE_BALANCE_INCREMENT.toNat := by omega
+          preset.EFFECTIVE_BALANCE_INCREMENT.toNat := by
+      unfold gainOn at bound
+      omega
     generalize PinSplit2.creditBound post i high (e0 + C + preset.EFFECTIVE_BALANCE_INCREMENT.toNat)
       P capHigh = B at lt div ⊢
     generalize e0 + C + preset.EFFECTIVE_BALANCE_INCREMENT.toNat = E at lt div hu ⊢
