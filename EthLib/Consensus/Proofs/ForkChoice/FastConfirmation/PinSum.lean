@@ -11273,7 +11273,7 @@ private theorem earlier_charge (h : Setting config checks g split fin pulled anc
       (creditScan (fun _ => false) (fun s => decide (s ≠ .rewards)) i highC tail2).1 ≤
       netScan i highC tailC +
         (creditScan (fun _ => false) (fun s => decide (s ≠ .rewards)) i highC tailC).1 := by
-    have eqC : tailC = ((toCC.append tail2).snoc step).append post := by
+    have eqC : tailC = (((pre0.snoc (Step.slot ok)).append tail2).snoc step).append post := by
       rw [cut, whole]
     rw [eqC]
     simp only [netScan_append, creditScan_append, netScan_snoc, creditScan_snoc_fst]
