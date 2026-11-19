@@ -2345,6 +2345,11 @@ def SC (split : BeaconState preset fork) : Finset ValidatorIndex :=
   ((Finset.range pulled.validators.data.size).image UInt64.ofNat).filter fun v =>
     slashedFlagAt counted v.toNat = some true ∧ slashedFlagAt split v.toNat = some false
 
+/-- CS, keys created after the pulled state and slashed at C. -/
+def CS : Finset ValidatorIndex :=
+  ((Finset.range counted.validators.data.size).image UInt64.ofNat).filter fun v =>
+    pulled.validators.data.size ≤ v.toNat ∧ slashedFlagAt counted v.toNat = some true
+
 end Costs
 
 /-! ## Sums over validator indices, read at positions -/
@@ -8450,38 +8455,68 @@ private theorem classes_disjoint (h : Setting config checks g split fin pulled a
   · simp only [K6, Finset.mem_filter] at b
     exact b.2.2 (h.voting v a).1
 
-/-- The keys slashed at C and not at the split are in no class of C's quorum, and not in `V`. -/
-private theorem sc_disjoint (h : Setting config checks g split fin pulled anc counted V) :
-    Disjoint (K4 pulled counted V ∪ K5 counted V ∪ K6 pulled counted) (SC pulled counted split) ∧
-    Disjoint V (SC pulled counted split) := by
-  have qS : ∀ v ∈ Q counted, slashedFlagAt counted v.toNat ≠ some true := by
-    intro v hv hs
-    simp only [Q, quorumVoters, Finset.mem_filter] at hv
-    have unslashed := hv.2
-    unfold slashedFlagAt at hs
-    rw [hs] at unslashed
-    simp at unslashed
-  have inQ : ∀ v ∈ K4 pulled counted V ∪ K5 counted V ∪ K6 pulled counted, v ∈ Q counted := by
-    intro v hv
-    simp only [Finset.mem_union] at hv
-    rcases hv with (h4 | h5) | h6
+/-- The keys of `K4`, `K5` and `K6` are unslashed at C, being voters of its quorum. -/
+private theorem classes_unslashed {v : ValidatorIndex}
+    (member : v ∈ K4 pulled counted V ∪ K5 counted V ∪ K6 pulled counted) :
+    slashedFlagAt counted v.toNat ≠ some true := by
+  have inQ : v ∈ Q counted := by
+    simp only [Finset.mem_union] at member
+    rcases member with (h4 | h5) | h6
     · simp only [K4, Finset.mem_filter] at h4
       exact h4.2.2.1
     · simp only [K5, Finset.mem_filter] at h5
       exact h5.1
     · simp only [K6, Finset.mem_filter] at h6
       exact h6.2.1
+  intro hs
+  simp only [Q, quorumVoters, Finset.mem_filter] at inQ
+  have unslashed := inQ.2
+  unfold slashedFlagAt at hs
+  rw [hs] at unslashed
+  simp at unslashed
+
+/-- The keys slashed at C and not at the split are in no class of C's quorum, and not in `V`. -/
+private theorem sc_disjoint (h : Setting config checks g split fin pulled anc counted V) :
+    Disjoint (K4 pulled counted V ∪ K5 counted V ∪ K6 pulled counted) (SC pulled counted split) ∧
+    Disjoint V (SC pulled counted split) := by
   refine ⟨?_, ?_⟩
   · rw [Finset.disjoint_left]
     intro v hk hs
     simp only [SC, Finset.mem_filter] at hs
-    exact qS v (inQ v hk) hs.2.1
+    exact classes_unslashed hk hs.2.1
   · rw [Finset.disjoint_left]
     intro v hv hs
     simp only [SC, Finset.mem_filter] at hs
     have unslashed := (h.voting v hv).2
     rw [hs.2.1] at unslashed
     simp at unslashed
+
+/-- The keys created after the pulled state and slashed at C are in no class of C's quorum, in
+`SC`, or in `V`. -/
+private theorem cs_disjoint (h : Setting config checks g split fin pulled anc counted V) :
+    Disjoint (V ∪ K4 pulled counted V ∪ K5 counted V ∪ K6 pulled counted ∪
+      SC pulled counted split) (CS pulled counted) := by
+  obtain ⟨toPulled⟩ := h.toPulled
+  have grows : split.validators.data.size ≤ pulled.validators.data.size :=
+    registryGrows_of_chainSteps toPulled.chainSteps
+  rw [Finset.disjoint_left]
+  intro v member created
+  simp only [CS, Finset.mem_filter] at created
+  have flag := created.2.2
+  simp only [Finset.mem_union] at member
+  rcases member with (((inV | in4) | in5) | in6) | inSC
+  · have unslashed := (h.voting v inV).2
+    rw [flag] at unslashed
+    simp at unslashed
+  · exact classes_unslashed (Finset.mem_union.mpr (.inl (Finset.mem_union.mpr (.inl in4)))) flag
+  · exact classes_unslashed (Finset.mem_union.mpr (.inl (Finset.mem_union.mpr (.inr in5)))) flag
+  · exact classes_unslashed (Finset.mem_union.mpr (.inr in6)) flag
+  · have unslashedSplit := (Finset.mem_filter.mp inSC).2.2
+    simp only [slashedFlagAt, Option.map_eq_some_iff] at unslashedSplit
+    obtain ⟨w, found, -⟩ := unslashedSplit
+    have inside := (Array.getElem?_eq_some_iff.mp found).1
+    have := created.2.1
+    omega
 
 /-- A key that a run credits.
 
@@ -9478,7 +9513,8 @@ theorem bud_sync (h : Setting config checks g split fin pulled anc counted V)
       (∑ v ∈ (K6 pulled counted), (syncF events v.toNat + syncF eventsC v.toNat)) +
       wShare preset fork (∑ v ∈ SC pulled counted split, syncCr eventsC v.toNat) +
       wShare preset fork
-        (∑ v ∈ SC pulled counted split, (syncD eventsF v.toNat + syncD events v.toNat)) ≤
+        (∑ v ∈ SC pulled counted split, (syncD eventsF v.toNat + syncD events v.toNat)) +
+      wShare preset fork (∑ v ∈ CS pulled counted, syncCr eventsC v.toNat) ≤
         (pinTerms config pulled anc fin).syncSeats +
           6 * ((pinTerms config pulled anc fin).depth *
             (pinTerms config pulled anc fin).syncProposer) := by
@@ -9492,6 +9528,7 @@ theorem bud_sync (h : Setting config checks g split fin pulled anc counted V)
   -- the five sets are pairwise disjoint
   obtain ⟨d45, d46, d56, d1, d15, d16⟩ := classes_disjoint h
   obtain ⟨dS, dVS⟩ := sc_disjoint h
+  have dCS := cs_disjoint h
   have d2 : Disjoint (V ∪ K4 pulled counted V) (K5 counted V) :=
     Finset.disjoint_union_left.mpr ⟨d15, d45⟩
   have d3 : Disjoint (V ∪ K4 pulled counted V ∪ K5 counted V) (K6 pulled counted) :=
@@ -9509,14 +9546,16 @@ theorem bud_sync (h : Setting config checks g split fin pulled anc counted V)
         slashed
     · exact Finset.disjoint_left.mp dS (Finset.mem_union_right _ in6) slashed
   obtain ⟨U, hU⟩ : ∃ U : Finset ValidatorIndex,
-      U = V ∪ K4 pulled counted V ∪ K5 counted V ∪ K6 pulled counted ∪ SC pulled counted split :=
+      U = V ∪ K4 pulled counted V ∪ K5 counted V ∪ K6 pulled counted ∪ SC pulled counted split ∪
+        CS pulled counted :=
     ⟨_, rfl⟩
   obtain ⟨g, hg⟩ : ∃ g : ValidatorIndex → ℕ, ∀ v, g v =
       syncD eventsF v.toNat + syncF events v.toNat + syncF eventsC v.toNat := ⟨_, fun _ => rfl⟩
   have sumU : ∑ v ∈ U, g v = ∑ v ∈ V, g v + ∑ v ∈ K4 pulled counted V, g v +
       ∑ v ∈ K5 counted V, g v + ∑ v ∈ K6 pulled counted, g v +
-      ∑ v ∈ SC pulled counted split, g v := by
-    rw [hU, Finset.sum_union d4, Finset.sum_union d3, Finset.sum_union d2, Finset.sum_union d1]
+      ∑ v ∈ SC pulled counted split, g v + ∑ v ∈ CS pulled counted, g v := by
+    rw [hU, Finset.sum_union dCS, Finset.sum_union d4, Finset.sum_union d3, Finset.sum_union d2,
+      Finset.sum_union d1]
   -- each class is weighed at most three times its movement, and the shares at most their own
   have classV : ∑ v ∈ V, (syncD eventsF v.toNat + (syncF events v.toNat + syncF eventsC v.toNat)) =
       ∑ v ∈ V, g v :=
@@ -9542,6 +9581,13 @@ theorem bud_sync (h : Setting config checks g split fin pulled anc counted V)
     (wShare_le h.facts _).trans (Finset.sum_le_sum fun v _ => by
       unfold syncD
       rw [syncF_eq]
+      omega)
+  have creditsCS : wShare preset fork (∑ v ∈ CS pulled counted, syncCr eventsC v.toNat) ≤
+      ∑ v ∈ CS pulled counted, g v :=
+    (wShare_le h.facts _).trans (Finset.sum_le_sum fun v _ => by
+      rw [hg]
+      unfold syncCr
+      rw [syncF_eq eventsC]
       omega)
   have shares : ∑ v ∈ SC pulled counted split, syncF eventsC v.toNat +
       ∑ v ∈ SC pulled counted split, (syncD eventsF v.toNat + syncF events v.toNat) =
