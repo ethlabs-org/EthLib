@@ -6623,12 +6623,15 @@ private theorem leakAt_add_le (config : Config) (pulled anc fin : BeaconState pr
       (pinTerms config pulled anc fin).leakAt eb i +
         2 * ((pinTerms config pulled anc fin).perIncrement * m) +
         (preset.EFFECTIVE_BALANCE_INCREMENT.toNat * m *
-          ((if altair : .altair ≤ fork then
-            ((fin.inactivityScores altair).data.toList.map (·.toNat)).foldl max 0 else 0) +
+          ((pinTerms config pulled anc fin).scoreMaxFin +
             (pinTerms config pulled anc fin).depthFin * config.INACTIVITY_SCORE_BIAS.toNat) /
           (config.INACTIVITY_SCORE_BIAS.toNat *
             (parameters preset fork).INACTIVITY_PENALTY_QUOTIENT.toNat) + 1) := by
-  rw [leakAt_eq, leakAt_eq]
+  have scoreMax : (pinTerms config pulled anc fin).scoreMaxFin = (if altair : .altair ≤ fork then
+      ((fin.inactivityScores altair).data.toList.map (·.toNat)).foldl max 0 else 0) := by
+    unfold pinTerms
+    rfl
+  rw [leakAt_eq, leakAt_eq, scoreMax]
   have score := score_le_scoreMax fin i
   generalize (if altair : .altair ≤ fork then
     (((fin.inactivityScores altair).data[i]?).map (·.toNat)).getD 0 else 0) = S at score ⊢
