@@ -6127,7 +6127,7 @@ private theorem fall_floor (h : Setting config checks g split fin pulled anc cou
       split
       · exact zero
       · rw [zero]
-        exact Nat.min_zero _
+        exact Nat.zero_min _
     omega
   · omega
 
@@ -6283,7 +6283,7 @@ private theorem V_left (h : Setting config checks g split fin pulled anc counted
   obtain ⟨member, notAC⟩ := Finset.mem_filter.mp hv
   obtain ⟨toFin⟩ := h.toFin
   obtain ⟨toPulled⟩ := h.toPulled
-  obtain ⟨activeBase, foundW, activeWb⟩ := active_of_activeVoters h.early (h.voting v member).1
+  obtain ⟨w, foundW, activeWb⟩ := active_of_activeVoters h.early (h.voting v member).1
   have activeW := activeWb
   simp only [isActiveValidator, Bool.and_eq_true, decide_eq_true_eq, UInt64.le_iff_toNat_le,
     UInt64.lt_iff_toNat_lt] at activeW
@@ -6352,7 +6352,6 @@ private theorem V_left (h : Setting config checks g split fin pulled anc counted
           have floor := V_floor h fromFin tailC
             (V_events h fromFin tailC high highC endEpoch endEpochC replayedF replayedC) v val
             initial clean (retained_of_exit h fromFin tailC v foundU (by omega)) pre post cut
-          rw [amount] at floor
           exact .inr (by omega))
       omega
   · -- R activated the key after finalizing the split, so it reads the key as late
@@ -6395,8 +6394,8 @@ theorem stub_V (h : Setting config checks g split fin pulled anc counted V)
   have sync : ∑ v ∈ V, ((eventsF.map (syncDebit v.toNat)).sum + syncF eventsC v.toNat) ≤
       ∑ v ∈ V, (syncD eventsF v.toNat + (syncF events v.toNat + syncF eventsC v.toNat)) :=
     Finset.sum_le_sum fun v _ => by unfold syncD; omega
-  simp only [Finset.sum_add_distrib] at base sync ⊢
-  push_cast at base ⊢
+  refine le_trans base (Int.ofNat_le.mpr ?_)
+  simp only [syncD, Finset.sum_add_distrib] at sync ⊢
   omega
 
 end LowBound
