@@ -1942,7 +1942,7 @@ private theorem block_step_gross_keys {g : ForkedBeaconState preset}
       i ∈ K ∨ ∃ altair : .altair ≤ f, ∃ w, t.validators.data[i]? = some w ∧
         w.pubkey ∈ (t.currentSyncCommittee altair).value.pubkeys.toList := by
   cases replayed : (Step.block engine signed due ok).balanceEvents with
-  | error err => exact ⟨∅, by simp, fun i pos => by simp [stepCredit, replayed] at pos⟩
+  | error err => exact ⟨∅, by simp, fun i pos => by simp [stepCredit, replayed, Except.toOption] at pos⟩
   | ok events =>
     obtain ⟨K, card, keys⟩ := block_gross_keys genesis apart shared fulu early replayed
     refine ⟨K, card, fun i pos => ?_⟩
@@ -2157,8 +2157,8 @@ private theorem credited_piece {g : ForkedBeaconState preset}
         exact carry i w found mem
     | @block f s t engine signed due ok =>
       have fulu' : .fusaka ≤ f := Nat.le_trans fulu (fork_le_of_chainSteps pre.chainSteps)
-      obtain ⟨K, cardK, hK⟩ := block_step_gross_keys genesis apart (shared.append pre) fulu'
-        uEarly
+      obtain ⟨K, cardK, hK⟩ := block_step_gross_keys (engine := engine) (signed := signed)
+        (due := due) (ok := ok) genesis apart (shared.append pre) fulu' uEarly
       refine ⟨B ∪ K, D ∪ Ds, ?_, cardUnion, fun i pos => ?_, depMem, ?_⟩
       · exact (Finset.card_union_le _ _).trans (Nat.add_le_add cardB cardK)
       · rw [grossScan_snoc] at pos
