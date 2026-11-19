@@ -834,6 +834,7 @@ private theorem credited_processOperations {body : BeaconBlockBody preset fork} 
     (computed : processOperations config checks s body parent = .ok t) :
     ∃ p c sl cv o sh, Credited s t p c sl cv o sh ∧
       cv.card ≤ preset.MAX_CONSOLIDATION_REQUESTS_PER_PAYLOAD.toNat := by
+  have electra : .pectra ≤ fork := Nat.le_trans (by decide) fulu
   unfold processOperations at computed
   split at computed
   · rename_i later
