@@ -12687,6 +12687,231 @@ private theorem prefix_leads {x m n : ForkedBeaconState preset} (pre : Run confi
     exact ⟨(Run.nil.snoc step1).append rest⟩
 
 open DirectSafety.Apriori DirectSafety.Apriori.Internal in
+/-- The floor of a key slashed at R, from a state of R's run, across the step that slashes it.
+
+The key is unslashed at `c`, and the pin counts it as slashed on R's branch.
+
+The run from the state splits at the step that slashes the key.
+
+Before the step the key is unslashed, and its withdrawable epoch is beyond the epoch of that step.
+
+After it the key is slashed, so its withdrawable epoch is beyond R's horizon.
+
+The floor is R's balance, the run's debits, and the one slack of the slashing that `slashW` holds.
+
+A key slashed at the state needs no step, and takes `slashed_floor` from that state. -/
+private theorem slash_floor_across (h : Setting config checks g split fin pulled anc counted V)
+    (v : ValidatorIndex) {c : BeaconState preset fork}
+    (toC : Run config checks ⟨fork, fin⟩ ⟨fork, c⟩) (inside : v.toNat < c.validators.data.size)
+    (clean : ∀ u, c.validators.data[v.toNat]? = some u → u.slashed = false)
+    (wP : Validator) (foundP : pulled.validators.data[v.toNat]? = some wP)
+    (slashedP : wP.slashed = true)
+    (rb : (pinTerms config pulled anc fin).slashedRB v.toNat = true)
+    {zs : BeaconState preset fork} (pre : Run config checks ⟨fork, c⟩ ⟨fork, zs⟩)
+    (rest : Run config checks ⟨fork, zs⟩ ⟨fork, pulled⟩)
+    {evs : List (BalanceEvent preset)}
+    (ev : rest.balanceEvents (getCurrentEpoch pulled).toNat = .ok evs) :
+    min (actualBalanceAt (⟨fork, zs⟩ : ForkedBeaconState preset) v.toNat)
+        (PinSplit2.capAt (⟨fork, zs⟩ : ForkedBeaconState preset) v.toNat) ≤
+      actualBalanceAt (⟨fork, pulled⟩ : ForkedBeaconState preset) v.toNat +
+        (evs.map (penaltyDebit v.toNat)).sum + (evs.map (syncDebit v.toNat)).sum +
+        (evs.map (floorPartialDebit v)).sum +
+          slashW (pinTerms config pulled anc fin) v.toNat := by
+  classical
+  obtain ⟨shared⟩ := h.toFin
+  have electra : .pectra ≤ fork := Nat.le_trans (by decide) h.fulu
+  obtain ⟨uB, foundB⟩ : ∃ uB, c.validators.data[v.toNat]? = some uB :=
+    ⟨_, Array.getElem?_eq_getElem inside⟩
+  have cleanB : uB.slashed = false := clean uB foundB
+  have finC := UInt64.le_iff_toNat_le.mp (currentEpoch_le_of_chainSteps toC.chainSteps)
+  obtain ⟨val, foundZ⟩ : ∃ val, zs.validators.data[v.toNat]? = some val :=
+    ⟨_, Array.getElem?_eq_getElem
+      (Nat.lt_of_lt_of_le inside (registryGrows_of_chainSteps pre.chainSteps))⟩
+  -- the cap of the voter at the state is the cap that the floor reads
+  have atZ : PinSplit2.capAt (⟨fork, zs⟩ : ForkedBeaconState preset) v.toNat =
+      (withdrawalMaxEffectiveBalance preset fork val).toNat := by
+    simp [PinSplit2.capAt, foundZ]
+  have topDiv : PinSplit2.capAt (⟨fork, pulled⟩ : ForkedBeaconState preset) v.toNat /
+      (parameters preset fork).MIN_SLASHING_PENALTY_QUOTIENT.toNat ≤
+      slashW (pinTerms config pulled anc fin) v.toNat := by
+    have hW : slashW (pinTerms config pulled anc fin) v.toNat =
+        preset.MAX_EFFECTIVE_BALANCE_ELECTRA.toNat /
+          (EthLib.Consensus.parameters preset .fusaka).MIN_SLASHING_PENALTY_QUOTIENT.toNat := by
+      simp [slashW, rb]
+    rw [hW, parameters_of_fusaka h.fulu h.early]
+    exact Nat.div_le_div_right (capAt_le_capMax h.caps electra v.toNat)
+  have half := depthFin_lt_half h
+  -- a slashed record of a state from `c` is withdrawable beyond R's horizon
+  have slashedW : ∀ {a : ForkedBeaconState preset} (run : Run config checks ⟨fork, c⟩ a)
+      (low : a.fork < .glamsterdam) (u : Validator),
+      a.state.validators.data[v.toNat]? = some u → u.slashed = true →
+      (getCurrentEpoch pulled).toNat + 1 < u.withdrawableEpoch.toNat := by
+    intro a run low u foundU flag
+    have lower := (run.newly_slashed_withdrawableEpoch h.caps.activation h.caps.compounding
+      low h.delay v.toNat uB u foundB foundU cleanB flag).2
+    simp only at finC lower
+    omega
+  -- the floor of a slashed key from a state to R
+  have slashedTail : ∀ {a : BeaconState preset fork}
+      (runA : Run config checks ⟨fork, c⟩ ⟨fork, a⟩)
+      (restA : Run config checks ⟨fork, a⟩ ⟨fork, pulled⟩) {evsA : List (BalanceEvent preset)},
+      restA.balanceEvents (getCurrentEpoch pulled).toNat = .ok evsA → ∀ ua : Validator,
+      a.validators.data[v.toNat]? = some ua → ua.slashed = true →
+      min (actualBalanceAt (⟨fork, a⟩ : ForkedBeaconState preset) v.toNat)
+          (PinSplit2.capAt (⟨fork, a⟩ : ForkedBeaconState preset) v.toNat) ≤
+        actualBalanceAt (⟨fork, pulled⟩ : ForkedBeaconState preset) v.toNat +
+          (evsA.map (penaltyDebit v.toNat)).sum + (evsA.map (syncDebit v.toNat)).sum +
+          (evsA.map (floorPartialDebit v)).sum := by
+    intro a runA restA evsA evA ua foundA flagA
+    have floor := slashed_floor h (toC.append runA) (e := pulled) (Nat.le_succ _) restA
+      (getCurrentEpoch pulled).toNat (Nat.le_succ _) evA v ua foundA
+      (fun flag => by
+        have lower := (runA.newly_slashed_withdrawableEpoch h.caps.activation
+          h.caps.compounding h.early h.delay v.toNat uB ua foundB foundA cleanB flag).2
+        simp only at finC lower
+        omega)
+      (PinSplit2.capAt (⟨fork, pulled⟩ : ForkedBeaconState preset) v.toNat)
+      (fun z member => by
+        obtain ⟨q1, q2, -⟩ := balancePath_endpoint restA
+          (Run.nil : Run config checks ⟨fork, pulled⟩ ⟨fork, pulled⟩) (Nat.le_refl _) member
+        obtain ⟨zf, zs'⟩ := z
+        have same : fork = zf := (fork_eq_of_run q1 q2 (Nat.le_refl _)).symm
+        subst same
+        exact effective_le_cap_pulled h ((toC.append runA).append q1) q2 v.toNat)
+      (fun before step after _ _ _ => .inr fun u foundU => by
+        obtain ⟨w', foundW', flagW'⟩ := before.slashedPersistence v.toNat ua foundA flagA
+        have same := Option.some.inj (foundW'.symm.trans foundU)
+        have low := Nat.lt_of_le_of_lt
+          (fork_le_of_chainSteps ((Run.nil.snoc step).append after).chainSteps) h.early
+        exact slashedW (runA.append before) low u foundU (same ▸ flagW'))
+    have capEq : PinSplit2.capAt (⟨fork, a⟩ : ForkedBeaconState preset) v.toNat =
+        (withdrawalMaxEffectiveBalance preset fork ua).toNat := by
+      simp [PinSplit2.capAt, foundA]
+    rw [ite_eq_left flagA] at floor
+    omega
+  by_cases startSlashed : val.slashed = true
+  · -- the key is slashed already at the state
+    have := slashedTail pre rest ev val foundZ startSlashed
+    omega
+  · have cleanZ : val.slashed = false := by simpa using startSlashed
+    -- the run splits at the step that slashes the key
+    obtain ⟨m, n, pre', step, post, split', notYet, arrived⟩ := Run.split_at_flip rest
+      (fun z => ∃ w, z.state.validators.data[v.toNat]? = some w ∧ w.slashed = true)
+      (fun hx => by
+        obtain ⟨w, found, flag⟩ := hx
+        have found' : zs.validators.data[v.toNat]? = some w := found
+        rw [foundZ] at found'
+        cases found'
+        simp [cleanZ] at flag)
+      ⟨wP, foundP, slashedP⟩
+    subst split'
+    have forkM : m.fork = fork :=
+      fork_eq_of_run pre' ((Run.nil.snoc step).append post) (Nat.le_refl _)
+    have forkN : n.fork = fork := fork_eq_of_run (pre'.snoc step) post (Nat.le_refl _)
+    obtain ⟨mf, mS⟩ := m
+    obtain ⟨nf, nS⟩ := n
+    have forkM' : fork = mf := forkM.symm
+    have forkN' : fork = nf := forkN.symm
+    subst forkM'
+    subst forkN'
+    obtain ⟨valM, foundM⟩ : ∃ valM, mS.validators.data[v.toNat]? = some valM :=
+      ⟨_, Array.getElem?_eq_getElem (Nat.lt_of_lt_of_le
+        (Array.getElem?_eq_some_iff.mp foundZ).1 (registryGrows_of_chainSteps pre'.chainSteps))⟩
+    have cleanM : valM.slashed = false := by
+      by_contra flag
+      exact notYet ⟨valM, foundM, by simpa using flag⟩
+    obtain ⟨valN, foundN, slashedN⟩ := arrived
+    have flagM : (slashedFlagAt mS v.toNat).getD false = false := by
+      simp [slashedFlagAt, foundM, cleanM]
+    have flagN : (slashedFlagAt nS v.toNat).getD false = true := by
+      simp [slashedFlagAt, foundN, slashedN]
+    -- the slashing step is a block, so it stays in its epoch
+    have sameEpoch : (getCurrentEpoch nS).toNat = (getCurrentEpoch mS).toNat :=
+      step_slash_epoch step h.early h.fulu v.toNat flagM flagN
+    have nearN : (getCurrentEpoch nS).toNat ≤ (getCurrentEpoch pulled).toNat :=
+      UInt64.le_iff_toNat_le.mp (currentEpoch_le_of_chainSteps post.chainSteps)
+    -- the key is not yet withdrawable when the step slashes it
+    have slashable : (getCurrentEpoch mS).toNat < valM.withdrawableEpoch.toNat := by
+      by_cases exited : valM.exitEpoch ≤ getCurrentEpoch mS
+      · exact UInt64.lt_iff_toNat_lt.mp
+          ((Run.nil.snoc step).newly_slashed_initial_exited_unwithdrawable h.caps.activation
+            h.caps.compounding h.early v.toNat valM valN foundM foundN cleanM slashedN exited)
+      · have ordered := UInt64.le_iff_toNat_le.mp
+          ((Run.invariant h.genesis.invariant
+            (shared.append (toC.append (pre.append pre')))).exitsOrdered valM
+            (Array.mem_of_getElem? foundM))
+        have before := UInt64.lt_iff_toNat_lt.mp (UInt64.not_le.mp exited)
+        omega
+    -- before the step the key is withdrawable beyond the epoch of the step
+    have wide : ∀ {m1 : ForkedBeaconState preset} (toM1 : Run config checks ⟨fork, c⟩ m1)
+        (toM : Run config checks m1 ⟨fork, mS⟩) (u : Validator),
+        m1.state.validators.data[v.toNat]? = some u →
+        (getCurrentEpoch mS).toNat - 1 + 1 < u.withdrawableEpoch.toNat := by
+      intro m1 toM1 toM u foundU
+      have low : m1.fork < .glamsterdam :=
+        Nat.lt_of_le_of_lt (fork_le_of_chainSteps toM.chainSteps) h.early
+      have reach : (getCurrentEpoch mS).toNat ≤ (getCurrentEpoch pulled).toNat := by omega
+      by_cases flag : u.slashed = true
+      · have := slashedW toM1 low u foundU flag
+        omega
+      · have clean : u.slashed = false := by simpa using flag
+        have farBound := getCurrentEpoch_succ_lt_farFuture h.twoSlots pulled
+        rcases (shared.append (toC.append toM1)).withdrawable_eq_exit_delay h.genesis v.toNat u
+          foundU clean with ⟨-, far⟩ | eqW
+        · rw [far]
+          omega
+        · by_cases assigned : u.exitEpoch = FAR_FUTURE_EPOCH
+          · rw [assigned] at eqW
+            omega
+          · obtain ⟨mm, foundMM, life⟩ := toM.registryLifecycle.validators v.toNat u foundU
+            have mmEq : mm = valM := Option.some.inj (foundMM.symm.trans foundM)
+            have exM : valM.exitEpoch = u.exitEpoch := by
+              rw [← mmEq]
+              exact life.exitEpoch assigned
+            rcases (shared.append (toC.append (pre.append pre'))).withdrawable_eq_exit_delay
+              h.genesis v.toNat valM foundM cleanM with ⟨farM, -⟩ | exactM
+            · exact absurd (exM.symm.trans farM) assigned
+            · have lower := (shared.append (toC.append toM1)).exit_withdrawable_delay h.genesis
+                v.toNat u foundU assigned
+              have gap := (shared.append (toC.append toM1)).exit_activation_gap h.genesis
+                v.toNat u foundU assigned
+              have delayPos := h.delay
+              rw [exM] at exactM
+              omega
+    -- the floor of the run up to the slashed state
+    obtain ⟨evs1, ok1⟩ := (pre'.snoc step).balanceEvents_ok h.early
+      ((getCurrentEpoch mS).toNat - 1)
+    obtain ⟨evs2, ok2⟩ := post.balanceEvents_ok h.early (getCurrentEpoch pulled).toNat
+    have ok1' : (pre'.snoc step).balanceEvents (getCurrentEpoch pulled).toNat = .ok evs1 := by
+      rw [balanceEvents_eq_of_endpoint_le (pre'.snoc step)
+        (localHigh := (getCurrentEpoch mS).toNat - 1) (by simp only; omega)
+        (by simp only; omega)]
+      exact ok1
+    have evEq : evs = evs1 ++ evs2 :=
+      Except.ok.inj (ev.symm.trans (balanceEvents_append (pre'.snoc step) post _ ok1' ok2))
+    have floor1 := slashed_floor h (toC.append pre) (e := nS) (by omega) (pre'.snoc step)
+      ((getCurrentEpoch mS).toNat - 1) (by omega) ok1 v val foundZ
+      (fun flag => absurd flag startSlashed)
+      (PinSplit2.capAt (⟨fork, pulled⟩ : ForkedBeaconState preset) v.toNat)
+      (fun z member => by
+        obtain ⟨q1, q2, -⟩ := balancePath_endpoint (pre'.snoc step) post (Nat.le_refl _) member
+        obtain ⟨zf, zs'⟩ := z
+        have same : fork = zf := (fork_eq_of_run q1 q2 (Nat.le_refl _)).symm
+        subst same
+        exact effective_le_cap_pulled h ((toC.append pre).append q1) q2 v.toNat)
+      (fun before step1 after1 cutB _ _ => .inr fun u foundU => by
+        obtain ⟨toM⟩ := prefix_leads pre' step before step1 after1 cutB
+        exact wide (pre.append before) toM u foundU)
+    rw [ite_eq_right startSlashed] at floor1
+    have floor2 := slashedTail (pre.append (pre'.snoc step)) post ok2 valN foundN slashedN
+    have capMono := cap_le_cap_of_run h.caps (pre'.snoc step) h.early v.toNat
+    rw [atZ] at capMono
+    rw [evEq]
+    simp only [List.map_append, List.sum_append] at floor1 floor2 ⊢
+    rw [atZ]
+    omega
+
+open DirectSafety.Apriori DirectSafety.Apriori.Internal in
 /-- The floor of a key unslashed at the split at each state of R's run from a state `c`.
 
 The run from `c` is the rest of the run from the finalized state to the split, then the run to R.
@@ -12784,185 +13009,8 @@ private theorem voter_floorAt (h : Setting config checks g split fin pulled anc 
       have key : anc.finalizedCheckpoint.epoch.toNat + preset.EPOCHS_PER_SLASHINGS_VECTOR.toNat ≤
           wP.withdrawableEpoch.toNat := by omega
       simpa [foundP, slashedP] using key
-    have topDiv : PinSplit2.capAt (⟨fork, pulled⟩ : ForkedBeaconState preset) v.toNat /
-        (parameters preset fork).MIN_SLASHING_PENALTY_QUOTIENT.toNat ≤
-        slashW (pinTerms config pulled anc fin) v.toNat := by
-      have hW : slashW (pinTerms config pulled anc fin) v.toNat =
-          preset.MAX_EFFECTIVE_BALANCE_ELECTRA.toNat /
-            (EthLib.Consensus.parameters preset .fusaka).MIN_SLASHING_PENALTY_QUOTIENT.toNat := by
-        simp [slashW, rb]
-      rw [hW, parameters_of_fusaka h.fulu h.early]
-      exact Nat.div_le_div_right (capAt_le_capMax h.caps electra v.toNat)
-    have half := depthFin_lt_half h
-    -- a slashed record of a state from `c` is withdrawable beyond R's horizon
-    have slashedW : ∀ {a : ForkedBeaconState preset} (run : Run config checks ⟨fork, c⟩ a)
-        (low : a.fork < .glamsterdam) (u : Validator),
-        a.state.validators.data[v.toNat]? = some u → u.slashed = true →
-        (getCurrentEpoch pulled).toNat + 1 < u.withdrawableEpoch.toNat := by
-      intro a run low u foundU flag
-      have lower := (run.newly_slashed_withdrawableEpoch h.caps.activation h.caps.compounding
-        low h.delay v.toNat uB u foundB foundU cleanB flag).2
-      simp only at finC lower
-      omega
-    -- the floor of a slashed key from a state to R
-    have slashedTail : ∀ {a : BeaconState preset fork}
-        (runA : Run config checks ⟨fork, c⟩ ⟨fork, a⟩)
-        (restA : Run config checks ⟨fork, a⟩ ⟨fork, pulled⟩) {evsA : List (BalanceEvent preset)},
-        restA.balanceEvents (getCurrentEpoch pulled).toNat = .ok evsA → ∀ ua : Validator,
-        a.validators.data[v.toNat]? = some ua → ua.slashed = true →
-        min (actualBalanceAt (⟨fork, a⟩ : ForkedBeaconState preset) v.toNat)
-            (PinSplit2.capAt (⟨fork, a⟩ : ForkedBeaconState preset) v.toNat) ≤
-          actualBalanceAt (⟨fork, pulled⟩ : ForkedBeaconState preset) v.toNat +
-            (evsA.map (penaltyDebit v.toNat)).sum + (evsA.map (syncDebit v.toNat)).sum +
-            (evsA.map (floorPartialDebit v)).sum := by
-      intro a runA restA evsA evA ua foundA flagA
-      have floor := slashed_floor h (toC.append runA) (e := pulled) (Nat.le_succ _) restA
-        (getCurrentEpoch pulled).toNat (Nat.le_succ _) evA v ua foundA
-        (fun flag => by
-          have lower := (runA.newly_slashed_withdrawableEpoch h.caps.activation
-            h.caps.compounding h.early h.delay v.toNat uB ua foundB foundA cleanB flag).2
-          simp only at finC lower
-          omega)
-        (PinSplit2.capAt (⟨fork, pulled⟩ : ForkedBeaconState preset) v.toNat)
-        (fun z member => by
-          obtain ⟨q1, q2, -⟩ := balancePath_endpoint restA
-            (Run.nil : Run config checks ⟨fork, pulled⟩ ⟨fork, pulled⟩) (Nat.le_refl _) member
-          obtain ⟨zf, zs'⟩ := z
-          have same : fork = zf := (fork_eq_of_run q1 q2 (Nat.le_refl _)).symm
-          subst same
-          exact effective_le_cap_pulled h ((toC.append runA).append q1) q2 v.toNat)
-        (fun before step after _ _ _ => .inr fun u foundU => by
-          obtain ⟨w', foundW', flagW'⟩ := before.slashedPersistence v.toNat ua foundA flagA
-          have same := Option.some.inj (foundW'.symm.trans foundU)
-          have low := Nat.lt_of_le_of_lt
-            (fork_le_of_chainSteps ((Run.nil.snoc step).append after).chainSteps) h.early
-          exact slashedW (runA.append before) low u foundU (same ▸ flagW'))
-      have capEq : PinSplit2.capAt (⟨fork, a⟩ : ForkedBeaconState preset) v.toNat =
-          (withdrawalMaxEffectiveBalance preset fork ua).toNat := by
-        simp [PinSplit2.capAt, foundA]
-      rw [ite_eq_left flagA] at floor
-      omega
-    by_cases startSlashed : val.slashed = true
-    · -- the key is slashed already at the state
-      have := slashedTail pre rest ev val foundZ startSlashed
-      omega
-    · have cleanZ : val.slashed = false := by simpa using startSlashed
-      -- the run splits at the step that slashes the key
-      obtain ⟨m, n, pre', step, post, split', notYet, arrived⟩ := Run.split_at_flip rest
-        (fun z => ∃ w, z.state.validators.data[v.toNat]? = some w ∧ w.slashed = true)
-        (fun hx => by
-          obtain ⟨w, found, flag⟩ := hx
-          have found' : zs.validators.data[v.toNat]? = some w := found
-          rw [foundZ] at found'
-          cases found'
-          simp [cleanZ] at flag)
-        ⟨wP, foundP, slashedP⟩
-      subst split'
-      have forkM : m.fork = fork :=
-        fork_eq_of_run pre' ((Run.nil.snoc step).append post) (Nat.le_refl _)
-      have forkN : n.fork = fork := fork_eq_of_run (pre'.snoc step) post (Nat.le_refl _)
-      obtain ⟨mf, mS⟩ := m
-      obtain ⟨nf, nS⟩ := n
-      have forkM' : fork = mf := forkM.symm
-      have forkN' : fork = nf := forkN.symm
-      subst forkM'
-      subst forkN'
-      obtain ⟨valM, foundM⟩ : ∃ valM, mS.validators.data[v.toNat]? = some valM :=
-        ⟨_, Array.getElem?_eq_getElem (Nat.lt_of_lt_of_le
-          (Array.getElem?_eq_some_iff.mp foundZ).1 (registryGrows_of_chainSteps pre'.chainSteps))⟩
-      have cleanM : valM.slashed = false := by
-        by_contra flag
-        exact notYet ⟨valM, foundM, by simpa using flag⟩
-      obtain ⟨valN, foundN, slashedN⟩ := arrived
-      have flagM : (slashedFlagAt mS v.toNat).getD false = false := by
-        simp [slashedFlagAt, foundM, cleanM]
-      have flagN : (slashedFlagAt nS v.toNat).getD false = true := by
-        simp [slashedFlagAt, foundN, slashedN]
-      -- the slashing step is a block, so it stays in its epoch
-      have sameEpoch : (getCurrentEpoch nS).toNat = (getCurrentEpoch mS).toNat :=
-        step_slash_epoch step h.early h.fulu v.toNat flagM flagN
-      have nearN : (getCurrentEpoch nS).toNat ≤ (getCurrentEpoch pulled).toNat :=
-        UInt64.le_iff_toNat_le.mp (currentEpoch_le_of_chainSteps post.chainSteps)
-      -- the key is not yet withdrawable when the step slashes it
-      have slashable : (getCurrentEpoch mS).toNat < valM.withdrawableEpoch.toNat := by
-        by_cases exited : valM.exitEpoch ≤ getCurrentEpoch mS
-        · exact UInt64.lt_iff_toNat_lt.mp
-            ((Run.nil.snoc step).newly_slashed_initial_exited_unwithdrawable h.caps.activation
-              h.caps.compounding h.early v.toNat valM valN foundM foundN cleanM slashedN exited)
-        · have ordered := UInt64.le_iff_toNat_le.mp
-            ((Run.invariant h.genesis.invariant
-              (shared.append (toC.append (pre.append pre')))).exitsOrdered valM
-              (Array.mem_of_getElem? foundM))
-          have before := UInt64.lt_iff_toNat_lt.mp (UInt64.not_le.mp exited)
-          omega
-      -- before the step the key is withdrawable beyond the epoch of the step
-      have wide : ∀ {m1 : ForkedBeaconState preset} (toM1 : Run config checks ⟨fork, c⟩ m1)
-          (toM : Run config checks m1 ⟨fork, mS⟩) (u : Validator),
-          m1.state.validators.data[v.toNat]? = some u →
-          (getCurrentEpoch mS).toNat - 1 + 1 < u.withdrawableEpoch.toNat := by
-        intro m1 toM1 toM u foundU
-        have low : m1.fork < .glamsterdam :=
-          Nat.lt_of_le_of_lt (fork_le_of_chainSteps toM.chainSteps) h.early
-        have reach : (getCurrentEpoch mS).toNat ≤ (getCurrentEpoch pulled).toNat := by omega
-        by_cases flag : u.slashed = true
-        · have := slashedW toM1 low u foundU flag
-          omega
-        · have clean : u.slashed = false := by simpa using flag
-          have farBound := getCurrentEpoch_succ_lt_farFuture h.twoSlots pulled
-          rcases (shared.append (toC.append toM1)).withdrawable_eq_exit_delay h.genesis v.toNat u
-            foundU clean with ⟨-, far⟩ | eqW
-          · rw [far]
-            omega
-          · by_cases assigned : u.exitEpoch = FAR_FUTURE_EPOCH
-            · rw [assigned] at eqW
-              omega
-            · obtain ⟨mm, foundMM, life⟩ := toM.registryLifecycle.validators v.toNat u foundU
-              have mmEq : mm = valM := Option.some.inj (foundMM.symm.trans foundM)
-              have exM : valM.exitEpoch = u.exitEpoch := by
-                rw [← mmEq]
-                exact life.exitEpoch assigned
-              rcases (shared.append (toC.append (pre.append pre'))).withdrawable_eq_exit_delay
-                h.genesis v.toNat valM foundM cleanM with ⟨farM, -⟩ | exactM
-              · exact absurd (exM.symm.trans farM) assigned
-              · have lower := (shared.append (toC.append toM1)).exit_withdrawable_delay h.genesis
-                  v.toNat u foundU assigned
-                have gap := (shared.append (toC.append toM1)).exit_activation_gap h.genesis
-                  v.toNat u foundU assigned
-                have delayPos := h.delay
-                rw [exM] at exactM
-                omega
-      -- the floor of the run up to the slashed state
-      obtain ⟨evs1, ok1⟩ := (pre'.snoc step).balanceEvents_ok h.early
-        ((getCurrentEpoch mS).toNat - 1)
-      obtain ⟨evs2, ok2⟩ := post.balanceEvents_ok h.early (getCurrentEpoch pulled).toNat
-      have ok1' : (pre'.snoc step).balanceEvents (getCurrentEpoch pulled).toNat = .ok evs1 := by
-        rw [balanceEvents_eq_of_endpoint_le (pre'.snoc step)
-          (localHigh := (getCurrentEpoch mS).toNat - 1) (by simp only; omega)
-          (by simp only; omega)]
-        exact ok1
-      have evEq : evs = evs1 ++ evs2 :=
-        Except.ok.inj (ev.symm.trans (balanceEvents_append (pre'.snoc step) post _ ok1' ok2))
-      have floor1 := slashed_floor h (toC.append pre) (e := nS) (by omega) (pre'.snoc step)
-        ((getCurrentEpoch mS).toNat - 1) (by omega) ok1 v val foundZ
-        (fun flag => absurd flag startSlashed)
-        (PinSplit2.capAt (⟨fork, pulled⟩ : ForkedBeaconState preset) v.toNat)
-        (fun z member => by
-          obtain ⟨q1, q2, -⟩ := balancePath_endpoint (pre'.snoc step) post (Nat.le_refl _) member
-          obtain ⟨zf, zs'⟩ := z
-          have same : fork = zf := (fork_eq_of_run q1 q2 (Nat.le_refl _)).symm
-          subst same
-          exact effective_le_cap_pulled h ((toC.append pre).append q1) q2 v.toNat)
-        (fun before step1 after1 cutB _ _ => .inr fun u foundU => by
-          obtain ⟨toM⟩ := prefix_leads pre' step before step1 after1 cutB
-          exact wide (pre.append before) toM u foundU)
-      rw [ite_eq_right startSlashed] at floor1
-      have floor2 := slashedTail (pre.append (pre'.snoc step)) post ok2 valN foundN slashedN
-      have capMono := cap_le_cap_of_run h.caps (pre'.snoc step) h.early v.toNat
-      rw [atZ] at capMono
-      rw [evEq]
-      simp only [List.map_append, List.sum_append] at floor1 floor2 ⊢
-      rw [atZ]
-      omega
+    exact slash_floor_across h v toC inside (fun u fu => only foundB cleanB u fu) wP foundP slashedP
+      rb pre rest ev
   · have cleanP : wP.slashed = false := by simpa using slashedP
     have cleanZ : val.slashed = false := unslashed_of_run rest foundZ (only foundP cleanP)
     -- its exit is late, since its withdrawable epoch is beyond R's horizon
