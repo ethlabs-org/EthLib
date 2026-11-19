@@ -2551,8 +2551,8 @@ private theorem bandR_eq (events : List (BalanceEvent preset)) (v : ℕ) :
     | nil => rfl
     | cons e rest ih =>
       by_cases hs : e.source = .sync
-      · simp [List.filter_cons, hs, syncDebit, keyDebit, ih]
-      · simp [List.filter_cons, hs, syncDebit, ih]
+      · simp [hs, syncDebit, keyDebit, ih]
+      · simp [hs, syncDebit, ih]
   unfold bandR
   rw [sums]
 
@@ -2563,6 +2563,15 @@ private theorem weighted_le {A B C : Finset ValidatorIndex} (f : ValidatorIndex 
   rw [Finset.sum_union (Finset.disjoint_union_left.mpr ⟨ac, bc⟩), Finset.sum_union ab]
   omega
 
+/-- `slashedRB` reads the slashed flag and the withdrawable epoch of the key's record. -/
+private theorem slashedRB_eq (config : Config)
+    (state ancestor finalizedState : BeaconState preset fork) (i : ℕ) :
+    (pinTerms config state ancestor finalizedState).slashedRB i =
+      decide ((((state.validators.data[i]?).map (·.slashed)).getD false = true) ∧
+        ((state.validators.data[i]?).any fun v => decide (
+          ancestor.finalizedCheckpoint.epoch.toNat + preset.EPOCHS_PER_SLASHINGS_VECTOR.toNat ≤
+            v.withdrawableEpoch.toNat)) = true) := rfl
+
 /-- A key that the pin counts as slashed on this branch holds a position of the registry. -/
 private theorem slashedRB_lt (config : Config)
     (state ancestor finalizedState : BeaconState preset fork)
@@ -2570,7 +2579,8 @@ private theorem slashedRB_lt (config : Config)
     i < state.validators.data.size := by
   by_contra out
   have none : state.validators.data[i]? = none := Array.getElem?_eq_none (Nat.le_of_not_lt out)
-  simp [pinTerms, none] at h
+  rw [slashedRB_eq] at h
+  simp [none] at h
 
 /-- The keys slashed on this branch after the finalized epoch cost one increment each, once. -/
 private theorem slashR_le (config : Config)
@@ -2586,7 +2596,7 @@ private theorem slashR_le (config : Config)
     rw [Finset.sum_filter]
     rfl
   rw [sum, Finset.sum_const, smul_eq_mul, Nat.mul_comm]
-  refine Nat.mul_le_mul_right _ ?_
+  refine Nat.mul_le_mul_left _ ?_
   rw [slashedR_eq]
   refine Finset.card_le_card_of_injOn UInt64.toNat (fun v member => ?_)
     (fun a _ b _ same => UInt64.toNat_inj.mp same)
@@ -2682,7 +2692,7 @@ private theorem band_sum_le (h : Setting config checks g split fin pulled anc co
   have disjointV6 : Disjoint Vc K6s :=
     dv6.mono (Finset.filter_subset _ _) (Finset.filter_subset _ _)
   -- The credited and debited keys are positions that the run credits or debits.
-  have keys : (Vc ∪ K4s ∪ K5s ∪ K6s).image UInt64.toNat |>.card ≤
+  have keys : ((Vc ∪ K4s ∪ K5s ∪ K6s).image UInt64.toNat).card ≤
       ((getCurrentEpoch pulled).toNat - (getCurrentEpoch split).toNat + 1) *
           (preset.SLOTS_PER_EPOCH.toNat + preset.MAX_PENDING_DEPOSITS_PER_EPOCH.toNat) +
         preset.SYNC_COMMITTEE_SIZE.toNat *
