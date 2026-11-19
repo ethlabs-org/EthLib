@@ -301,10 +301,7 @@ def pinReserve (config : Config) (state ancestor finalizedState : BeaconState pr
       (finalizedState.consolidationBalanceToConsume electra).toNat else 0) consolidationChurn
   -- The exit carry is at most one epoch's exit churn, which `depositChurn` caps.
   let exitCarry := max capMax depositChurn
-  -- The finalized block's state can sit at an epoch below the finalized checkpoint's.
-  --
-  -- The depth from it is read as at least the depth from the checkpoint.
-  let depthFin := max depth (epoch.toNat + 2 - (getCurrentEpoch finalizedState).toNat)
+  let depthFin := epoch.toNat + 2 - (getCurrentEpoch finalizedState).toNat
   -- A deposit postponed at the head of the queue lets the deposits behind it spend the carry.
   --
   -- So the deposits applied from the finalized block's state are at most its carry and the churn.
