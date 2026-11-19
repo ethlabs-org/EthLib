@@ -203,8 +203,9 @@ private theorem exitQ_at (h : Setting config checks g split fin pulled anc count
   have shallow := h.shallow
   have nearC := h.near
   obtain ⟨sf, se⟩ := sd
-  have same : fork = sf := (Fork.ctorIdx_injective
-    (Nat.le_antisymm (fork_le_of_chainSteps post.chainSteps) (fork_le_of_chainSteps pre.chainSteps))).symm
+  have above : fork ≤ sf := Nat.le_trans (le_refl _) (fork_le_of_chainSteps pre.chainSteps)
+  have below : sf ≤ fork := Nat.le_trans (le_refl _) (fork_le_of_chainSteps post.chainSteps)
+  have same : fork = sf := (Fork.ctorIdx_injective (Nat.le_antisymm below above)).symm
   subst same
   have toCounted := UInt64.le_iff_toNat_le.mp (currentEpoch_le_of_chainSteps post.chainSteps)
   simp only at toCounted finSplit called
