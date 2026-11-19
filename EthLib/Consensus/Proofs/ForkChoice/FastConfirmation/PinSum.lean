@@ -15442,7 +15442,11 @@ private theorem created_key_ceiling (h : Setting config checks g split fin pulle
 
 /-- The per-key core of the rise for a counted voter created after the finalized state.
 
-R's registry holds the key beyond the finalized registry.
+The key is active at C and absent from the finalized registry, and its rise is on the kept arm.
+
+A key created on C's branch after the split is bounded by its credits and their gains.
+
+The kept arm bounds the key's gain rate, which is the rate that bound reads.
 
 The replays are read at R's epoch. -/
 private theorem key_core_created (h : Setting config checks g split fin pulled anc counted V)
@@ -15455,12 +15459,42 @@ private theorem key_core_created (h : Setting config checks g split fin pulled a
     (tailC : Run config checks ⟨fork, split⟩ ⟨fork, counted⟩) (highC : ℕ)
     (endEpochC : (getCurrentEpoch counted).toNat ≤ highC + 1)
     {eventsC : List (BalanceEvent preset)} (replayedC : tailC.balanceEvents highC = .ok eventsC)
-    (v : ValidatorIndex) (voter : v ∈ Q counted)
+    (v : ValidatorIndex) (active : v ∈ activeVoters counted)
     (inside : v.toNat < pulled.validators.data.size)
     (created : fin.validators.data.size ≤ v.toNat)
     (kept : (pinTerms config pulled anc fin).keptArm v.toNat = true) :
-    keyCeiling anc (fromFin.append tail) tailC highC eventsC events eventsF v.toNat :=
-  sorry
+    keyCeiling anc (fromFin.append tail) tailC highC eventsC events eventsF v.toNat := by
+  classical
+  by_cases absent : split.validators.data.size ≤ v.toNat
+  · have incPos := h.bands.1
+    have rateLow : 11 * (pinTerms config pulled anc fin).depth *
+        ((pinTerms config pulled anc fin).ebUp v.toNat /
+            preset.EFFECTIVE_BALANCE_INCREMENT.toNat *
+          (pinTerms config pulled anc fin).perIncrement *
+            (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum / WEIGHT_DENOMINATOR.toNat + 1) ≤
+          (pinTerms config pulled anc fin).ebUp v.toNat := by
+      rw [keptArm_eq] at kept
+      simp only [Bool.and_eq_true, decide_eq_true_eq] at kept
+      exact kept.2
+    have wide := rate_per_increment preset.EFFECTIVE_BALANCE_INCREMENT.toNat
+      WEIGHT_DENOMINATOR.toNat (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum
+      (pinTerms config pulled anc fin).perIncrement
+      ((pinTerms config pulled anc fin).ebUp v.toNat) (pinTerms config pulled anc fin).depth
+      incPos (by decide) (ebUp_aligned h v.toNat) rateLow
+    have key : 11 * (min (pinTerms config pulled anc fin).depth
+        ((getCurrentEpoch pulled).toNat + 2 - (getCurrentEpoch fin).toNat)) *
+          ((pinTerms config pulled anc fin).perIncrement *
+            (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum) <
+        WEIGHT_DENOMINATOR.toNat * preset.EFFECTIVE_BALANCE_INCREMENT.toNat :=
+      Nat.lt_of_le_of_lt (Nat.mul_le_mul_right _ (Nat.mul_le_mul_left 11 (Nat.min_le_left _ _)))
+        wide
+    have core := created_key_ceiling (events := events) (eventsF := eventsF) h tail fromFin tailC
+      highC endEpochC replayedC active absent key (Or.inl kept)
+      (created_band h fromFin (getCurrentEpoch pulled).toNat (Nat.le_succ _) replayedF tailC highC
+        endEpochC replayedC active absent)
+    unfold keyCeiling
+    omega
+  · sorry
 
 open DirectSafety.Apriori DirectSafety.Apriori.Internal in
 /-- The per-key core of the rise.
@@ -15488,7 +15522,8 @@ private theorem key_core (h : Setting config checks g split fin pulled anc count
     (endEpochC : (getCurrentEpoch counted).toNat ≤ highC + 1)
     {eventsC : List (BalanceEvent preset)} (replayedC : tailC.balanceEvents highC = .ok eventsC)
     (i : ℕ) (inside : i < pulled.validators.data.size)
-    (voter : (UInt64.ofNat i : ValidatorIndex) ∈ Q counted) :
+    (voter : (UInt64.ofNat i : ValidatorIndex) ∈ Q counted)
+    (active : (UInt64.ofNat i : ValidatorIndex) ∈ activeVoters counted) :
     keyCeiling anc (fromFin.append tail) tailC highC eventsC events eventsF i := by
   classical
   have calledNat := UInt64.le_iff_toNat_le.mp h.called
@@ -15506,7 +15541,7 @@ private theorem key_core (h : Setting config checks g split fin pulled anc count
   unfold BeaconState.RegistryWithinLimit at limit
   have limitBound := preset.VALIDATOR_REGISTRY_LIMIT.toNat_lt
   have below : i < 2 ^ 64 := by omega
-  generalize hv : (UInt64.ofNat i : ValidatorIndex) = v at voter
+  generalize hv : (UInt64.ofNat i : ValidatorIndex) = v at voter active
   have hvi : v.toNat = i := by
     rw [← hv]
     exact UInt64.toNat_ofNat_of_lt' below
@@ -15522,7 +15557,7 @@ private theorem key_core (h : Setting config checks g split fin pulled anc count
       · exact key_core_flip h tail replayed' fromFin replayedF' tailC highC endEpochC replayedC
           v voter inFin frozen kept
     · exact key_core_created h tail replayed' fromFin replayedF' tailC highC endEpochC replayedC
-        v voter inside (Nat.le_of_not_lt inFin) kept
+        v active inside (Nat.le_of_not_lt inFin) kept
   · exact key_core_headroom h tail fromFin tailC highC v kept
 
 /-- D-7 (rise): other keys active in both. -/
@@ -15557,6 +15592,7 @@ theorem stub_N (h : Setting config checks g split fin pulled anc counted V)
     have core := key_core h tail high endEpoch replayed fromFin replayedF tailC highC endEpochC
       replayedC v.toNat (Array.getElem?_eq_some_iff.mp found).1
       (by rw [UInt64.ofNat_toNat]; exact (Finset.mem_filter.mp member).2.2.1)
+      (by rw [UInt64.ofNat_toNat]; exact (Finset.mem_filter.mp member).1)
     simp only [eC, eR]
     push_cast
     unfold keyCeiling at core
@@ -15777,6 +15813,7 @@ theorem stub_J (h : Setting config checks g split fin pulled anc counted V)
     have := key_core (config := config) h tail high endEpoch replayed fromFin replayedF tailC highC
       endEpochC replayedC v.toNat hin
       (by rw [UInt64.ofNat_toNat]; exact (Finset.mem_filter.mp hv).2.1)
+      (by rw [UInt64.ofNat_toNat]; exact (Finset.mem_filter.mp hv).1)
     unfold eC eR
     unfold keyCeiling at this
     omega
