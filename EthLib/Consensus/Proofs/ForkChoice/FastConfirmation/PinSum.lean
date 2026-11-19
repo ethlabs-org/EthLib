@@ -16231,6 +16231,7 @@ private theorem key_core_frozen (h : Setting config checks g split fin pulled an
     (kept : (pinTerms config pulled anc fin).keptArm v.toNat = true) :
     keyCeiling anc (fromFin.append tail) tailC highC eventsC events eventsF v.toNat := by
   classical
+  obtain ⟨toFin⟩ := h.toFin
   obtain ⟨toPulled⟩ := h.toPulled
   have electra : .pectra ≤ fork := Nat.le_trans (by decide) h.fulu
   have sizeFin := registryGrows_of_chainSteps fromFin.chainSteps
@@ -16419,7 +16420,6 @@ private theorem key_core_frozen (h : Setting config checks g split fin pulled an
     intro x hx
     obtain ⟨z, hz, rfl⟩ := List.mem_map.mp hx
     exact envAll z hz
-  obtain ⟨toFin⟩ := h.toFin
   obtain ⟨credits, netLe, creditsSlot⟩ := credits_le_sources (toFin.append fromFin) h.genesis tailC
     h.early electra v.toNat highC replayedC
   have creditsLe : Cr ≤ credC tailC highC v.toNat + whistC tailC highC v.toNat +
@@ -17243,9 +17243,8 @@ No gross block credit reaches it before its activation, so a deposit or a consol
 
 A consolidation needs an entry of the finalized queue, whose target is inside that registry. -/
 private theorem created_deposit (h : Setting config checks g split fin pulled anc counted V)
-    (fromFin : Run config checks ⟨fork, fin⟩ ⟨fork, split⟩) (high : ℕ)
-    (endEpoch : (getCurrentEpoch pulled).toNat ≤ high + 1)
-    {eventsF : List (BalanceEvent preset)} (replayedF : fromFin.balanceEvents high = .ok eventsF)
+    (fromFin : Run config checks ⟨fork, fin⟩ ⟨fork, split⟩) {eventsF : List (BalanceEvent preset)}
+    (replayedF : fromFin.balanceEvents (getCurrentEpoch pulled).toNat = .ok eventsF)
     (tailC : Run config checks ⟨fork, split⟩ ⟨fork, counted⟩) (highC : ℕ)
     (endEpochC : (getCurrentEpoch counted).toNat ≤ highC + 1)
     {eventsC : List (BalanceEvent preset)} (replayedC : tailC.balanceEvents highC = .ok eventsC)
@@ -17270,10 +17269,9 @@ private theorem created_deposit (h : Setting config checks g split fin pulled an
     v.toNat highC pre post
   have consSplit := creditScan_append (fun _ => false) (fun s => decide (s = .consolidations))
     v.toNat highC pre post
-  have due := cons_credit_due h fromFin high endEpoch replayedF (pre.append post) highC endEpochC
-    replayedC v (by omega)
-  rw [dueAt_eq_zero_of_targets fin highC (toFin.pendingConsolidation_targets h.genesis h.early
-    h.delay) (by omega)] at due
+  have noCons := consAmt_zero h fromFin replayedF (pre.append post) highC endEpochC replayedC v
+    (dueAt_eq_zero_of_targets fin highC (toFin.pendingConsolidation_targets h.genesis h.early
+      h.delay) (by omega))
   omega
 
 /-- The keys of `K6` beyond R's registry are paid by the credits.
