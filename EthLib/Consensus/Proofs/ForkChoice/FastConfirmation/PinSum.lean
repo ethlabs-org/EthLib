@@ -9722,7 +9722,7 @@ private theorem cons_due_bound (h : Setting config checks g split fin pulled anc
     (checks := checks) shared h.genesis h.caps (fromFin.append tail)
     (Nat.le_trans (by decide) h.fulu) h.early high
     (Apriori.Internal.balanceEvents_append fromFin tail high replayedF replayed) endEpoch
-    (by omega) (by omega) (T.image UInt64.toNat)
+    (by simp only; omega) (by omega) (T.image UInt64.toNat)
   have injective : Function.Injective UInt64.toNat := fun _ _ same => UInt64.toNat_inj.mp same
   simp only [injective.mem_finset_image] at bound
   rw [← Finset.sum_image (f := fun i => consAmt (eventsF ++ events) i)
