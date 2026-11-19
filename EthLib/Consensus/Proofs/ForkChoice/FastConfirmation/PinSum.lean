@@ -15447,6 +15447,91 @@ private theorem slack_le (h : Setting config checks g split fin pulled anc count
     nlinarith [prop, sync]
   omega
 
+/-- The keys of a set that hold a deposit scan on C's run are at most the deposit recipients.
+
+An epoch pass applies at most `MAX_PENDING_DEPOSITS_PER_EPOCH` deposits.
+
+C's run has at most the epochs from the finalized state. -/
+private theorem deposit_scan_card_le (h : Setting config checks g split fin pulled anc counted V)
+    (tailC : Run config checks ⟨fork, split⟩ ⟨fork, counted⟩) (highC : ℕ) (T : Finset ℕ)
+    (positive : ∀ i ∈ T,
+      0 < (creditScan (fun _ => false) (fun s => decide (s = .deposits)) i highC tailC).1) :
+    T.card ≤ (pinTerms config pulled anc fin).depthFin *
+      preset.MAX_PENDING_DEPOSITS_PER_EPOCH.toNat := by
+  classical
+  obtain ⟨toFin⟩ := h.toFin
+  obtain ⟨fromFin⟩ := h.fromFin
+  have shared : Run config checks g ⟨fork, split⟩ := toFin.append fromFin
+  have low : (getCurrentEpoch split).toNat ≤ (getCurrentEpoch counted).toNat :=
+    UInt64.le_iff_toNat_le.mp (currentEpoch_le_of_chainSteps tailC.chainSteps)
+  have finSplit : (getCurrentEpoch fin).toNat ≤ (getCurrentEpoch split).toNat :=
+    UInt64.le_iff_toNat_le.mp (currentEpoch_le_of_chainSteps fromFin.chainSteps)
+  have near := h.near
+  have periodLe := Nat.div_le_div_right
+    (c := max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat) low
+  have periods : (getCurrentEpoch counted).toNat /
+      max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat =
+      (getCurrentEpoch split).toNat / max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat +
+        ((getCurrentEpoch counted).toNat / max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat -
+          (getCurrentEpoch split).toNat /
+            max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat) := by omega
+  obtain ⟨B, S, D, cardB, cardS, cardD, hBS, hD, hSD⟩ := credited_pieces h.genesis
+    h.parameters.lookahead (y := ⟨fork, counted⟩) h.early h.delay highC
+    ((getCurrentEpoch counted).toNat / max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat -
+      (getCurrentEpoch split).toNat / max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat)
+    shared tailC h.fulu periods
+  have inD : T ⊆ D := fun i member => hD i (positive i member)
+  refine (Finset.card_le_card inD).trans (cardD.trans ?_)
+  have epochs : (getCurrentEpoch counted).toNat - (getCurrentEpoch split).toNat ≤
+      (pinTerms config pulled anc fin).depthFin := by
+    show _ ≤ (getCurrentEpoch pulled).toNat + 2 - (getCurrentEpoch fin).toNat
+    omega
+  rw [Nat.mul_comm]
+  exact Nat.mul_le_mul_right _ epochs
+
+/-- The deposited keys of R's registry and the created keys that C slashes fit the recipients.
+
+A key that a deposit credits before its slashing has a positive deposit scan.
+
+`created` is that scan for the keys created on C's branch and slashed there. -/
+private theorem whist_count (h : Setting config checks g split fin pulled anc counted V)
+    (tailC : Run config checks ⟨fork, split⟩ ⟨fork, counted⟩) (highC : ℕ)
+    (endEpochC : (getCurrentEpoch counted).toNat ≤ highC + 1)
+    {eventsC : List (BalanceEvent preset)} (replayedC : tailC.balanceEvents highC = .ok eventsC)
+    (created : ∀ i ∈ (slashedOnC split counted).filter
+        (fun i => ¬ i < split.validators.data.size),
+      0 < (creditScan (fun _ => false) (fun s => decide (s = .deposits)) i highC tailC).1) :
+    ((((slashedOnC split counted).filter
+          (fun i => i < split.validators.data.size)).filter
+            (fun i => 0 < depPre eventsC i)).card +
+        (((slashedOnC split counted).filter (fun i => ¬ i < split.validators.data.size)).filter
+          (fun i => isActiveAt counted (getCurrentEpoch counted) i = true)).card +
+        (((slashedOnC split counted).filter (fun i => ¬ i < split.validators.data.size)).filter
+          (fun i => ¬ isActiveAt counted (getCurrentEpoch counted) i = true)).card) ≤
+      (pinTerms config pulled anc fin).depthFin *
+        preset.MAX_PENDING_DEPOSITS_PER_EPOCH.toNat := by
+  classical
+  have apart : Disjoint
+      (((slashedOnC split counted).filter (fun i => i < split.validators.data.size)).filter
+        (fun i => 0 < depPre eventsC i))
+      ((slashedOnC split counted).filter (fun i => ¬ i < split.validators.data.size)) :=
+    Finset.disjoint_left.mpr fun i registry beyond =>
+      (Finset.mem_filter.mp beyond).2 (Finset.mem_filter.mp (Finset.mem_filter.mp registry).1).2
+  have all := deposit_scan_card_le h tailC highC
+    ((((slashedOnC split counted).filter (fun i => i < split.validators.data.size)).filter
+        (fun i => 0 < depPre eventsC i)) ∪
+      (slashedOnC split counted).filter (fun i => ¬ i < split.validators.data.size))
+    fun i member => by
+      rcases Finset.mem_union.mp member with deposited | beyond
+      · exact depPre_pos_scan h tailC highC endEpochC replayedC i
+          (Finset.mem_filter.mp deposited).2
+      · exact created i beyond
+  rw [Finset.card_union_of_disjoint apart] at all
+  have split2 := Finset.card_filter_add_card_filter_not
+    (s := (slashedOnC split counted).filter (fun i => ¬ i < split.validators.data.size))
+    (fun i => isActiveAt counted (getCurrentEpoch counted) i = true)
+  omega
+
 open DirectSafety.Apriori DirectSafety.Apriori.Internal in
 /-- The whistleblower credits of any keys are at most the whistleblower base of `otherCredits`.
 
