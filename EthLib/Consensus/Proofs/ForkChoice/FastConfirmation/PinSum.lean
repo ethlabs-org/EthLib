@@ -129,6 +129,8 @@ structure PinTerms (preset : Preset) where
   gainRate : ℕ → ℕ
   floorC : ℕ → ℕ
   drop : ℕ → ℕ
+  depthFin : ℕ
+  perIncrement : ℕ
 
 /-- `pinReserve` as the sum of its named terms, with the code's weights. -/
 def PinTerms.total (t : PinTerms preset) : ℕ :=
@@ -610,7 +612,7 @@ def pinTerms (config : Config) (state ancestor finalizedState : BeaconState pres
       decide (finalized < v.withdrawableEpoch.toNat) &&
         decide (v.activationEpoch.toNat ≤ epoch.toNat)) ∧ lowEB i < newKeyFloor),
     lowEB, newKeySeats, newKeySlack, newKeyFloor, leakAt, ebUp, leak, partialsDue, base0, gainRate,
-    floorC, drop }
+    floorC, drop, depthFin, perIncrement }
 /-- The copy is faithful: the named terms sum to `pinReserve`. -/
 theorem pinReserve_eq_total (config : Config) (state ancestor finalizedState : BeaconState preset fork) :
     pinReserve config state ancestor finalizedState =
@@ -833,6 +835,17 @@ The effective-balance drop of R's initial penalty is at most one increment, by `
 `branchR` charges each such key `slashCharge`, at least one increment. -/
 def slashR (t : PinTerms preset) (i : ℕ) : ℕ :=
   if t.slashedRB i = true then preset.EFFECTIVE_BALANCE_INCREMENT.toNat else 0
+
+/-- The gain of a key slashed on R's branch on the slack of its slashing penalty.
+
+The slack is at most one increment, and the gain is the unit gain of the keys of its window.
+
+`branchR` charges each such key `slashCharge`, which covers `slashR` and this gain. -/
+private def slashGain (t : PinTerms preset) (i : ℕ) : ℕ :=
+  if t.slashedRB i = true then
+    t.depthFin * (t.perIncrement * (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum /
+      WEIGHT_DENOMINATOR.toNat)
+  else 0
 
 /-- The rounding slack of a key with any C-side credit, once for each key.
 
@@ -9652,19 +9665,19 @@ private theorem slashedRB_lt (config : Config)
   rw [slashedRB_eq] at h
   simp [none] at h
 
-/-- The keys slashed on this branch after the finalized epoch cost one increment each, once. -/
-private theorem slashR_le (config : Config)
-    (state ancestor finalizedState : BeaconState preset fork)
+/-- The keys slashed on this branch after the finalized epoch cost `c` each, once. -/
+private theorem slashed_sum_le (config : Config)
+    (state ancestor finalizedState : BeaconState preset fork) (c : ℕ)
     (W : Finset ValidatorIndex) :
-    ∑ v ∈ W, slashR (pinTerms config state ancestor finalizedState) v.toNat ≤
-      preset.EFFECTIVE_BALANCE_INCREMENT.toNat *
-        (pinTerms config state ancestor finalizedState).slashedR := by
+    ∑ v ∈ W, (if (pinTerms config state ancestor finalizedState).slashedRB v.toNat = true
+        then c else 0) ≤
+      c * (pinTerms config state ancestor finalizedState).slashedR := by
   classical
-  have sum : ∑ v ∈ W, slashR (pinTerms config state ancestor finalizedState) v.toNat =
+  have sum : ∑ v ∈ W, (if (pinTerms config state ancestor finalizedState).slashedRB v.toNat = true
+        then c else 0) =
       ∑ v ∈ W.filter (fun v => (pinTerms config state ancestor finalizedState).slashedRB v.toNat
-        = true), preset.EFFECTIVE_BALANCE_INCREMENT.toNat := by
+        = true), c := by
     rw [Finset.sum_filter]
-    rfl
   rw [sum, Finset.sum_const, smul_eq_mul, Nat.mul_comm]
   refine Nat.mul_le_mul_left _ ?_
   rw [slashedR_eq]
@@ -9673,6 +9686,37 @@ private theorem slashR_le (config : Config)
   obtain ⟨_, flag⟩ := Finset.mem_filter.mp member
   exact Finset.mem_filter.mpr ⟨Finset.mem_range.mpr (slashedRB_lt config state ancestor
     finalizedState flag), flag⟩
+
+/-- The keys slashed on this branch after the finalized epoch cost one increment each, once. -/
+private theorem slashR_le (config : Config)
+    (state ancestor finalizedState : BeaconState preset fork)
+    (W : Finset ValidatorIndex) :
+    ∑ v ∈ W, slashR (pinTerms config state ancestor finalizedState) v.toNat ≤
+      preset.EFFECTIVE_BALANCE_INCREMENT.toNat *
+        (pinTerms config state ancestor finalizedState).slashedR :=
+  slashed_sum_le config state ancestor finalizedState _ W
+
+/-- The keys slashed on this branch gain at most the window's per-increment reward, once. -/
+private theorem slashGain_le (config : Config)
+    (state ancestor finalizedState : BeaconState preset fork)
+    (W : Finset ValidatorIndex) :
+    ∑ v ∈ W, slashGain (pinTerms config state ancestor finalizedState) v.toNat ≤
+      (pinTerms config state ancestor finalizedState).slashedR *
+        ((pinTerms config state ancestor finalizedState).depthFin *
+          (pinTerms config state ancestor finalizedState).perIncrement) := by
+  have weights : (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum ≤ WEIGHT_DENOMINATOR.toNat := by
+    decide
+  have share : (pinTerms config state ancestor finalizedState).perIncrement *
+      (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum / WEIGHT_DENOMINATOR.toNat ≤
+        (pinTerms config state ancestor finalizedState).perIncrement :=
+    (Nat.div_le_div_right (Nat.mul_le_mul_left _ weights)).trans
+      (Nat.mul_div_cancel _ (by decide : 0 < WEIGHT_DENOMINATOR.toNat)).le
+  have bound := slashed_sum_le config state ancestor finalizedState
+    ((pinTerms config state ancestor finalizedState).depthFin *
+      ((pinTerms config state ancestor finalizedState).perIncrement *
+        (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum / WEIGHT_DENOMINATOR.toNat)) W
+  exact bound.trans ((Nat.mul_comm _ _).le.trans
+    (Nat.mul_le_mul_left _ (Nat.mul_le_mul_left _ share)))
 
 /-- The rounding bands of a set of keys are the band for each key with a sync debit. -/
 private theorem sum_bandR (events : List (BalanceEvent preset)) (T : Finset ValidatorIndex) :
@@ -9762,7 +9806,9 @@ private theorem bands_seats (h : Setting config checks g split fin pulled anc co
 
 /-- `branchR` is a whistleblower charge and the slashed, proposer and rounding charges.
 
-The slashed, proposer and rounding charges have weight three, as has the whistleblower charge. -/
+The slashed, proposer and rounding charges have weight three, as has the whistleblower charge.
+
+The rest of the slashed charge joins the whistleblower charge, and it pays `slashGain`. -/
 private theorem branchR_split (config : Config)
     (state ancestor finalizedState : BeaconState preset fork) :
     ∃ W : ℕ, (pinTerms config state ancestor finalizedState).branchR =
@@ -9780,9 +9826,13 @@ private theorem branchR_split (config : Config)
                 (getCurrentEpoch finalizedState).toNat /
                   max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat + 1 +
                 (pinTerms config state ancestor finalizedState).depth /
-                  max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat))) := by
+                  max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat))) ∧
+      (pinTerms config state ancestor finalizedState).slashedR *
+        ((pinTerms config state ancestor finalizedState).depthFin *
+          (pinTerms config state ancestor finalizedState).perIncrement) ≤ W := by
   -- The slashed charge is an increment and the leak of the dropped balance; the leak joins `W`.
-  obtain ⟨W, D, split⟩ : ∃ W D : ℕ, (pinTerms config state ancestor finalizedState).branchR =
+  have grow : ∀ a x : ℕ, a ≤ 2 * (2 * a) + x + 1 := fun a x => by omega
+  obtain ⟨W, D, split, gain⟩ : ∃ W D : ℕ, (pinTerms config state ancestor finalizedState).branchR =
       3 * (W + (preset.EFFECTIVE_BALANCE_INCREMENT.toNat + D) *
           (pinTerms config state ancestor finalizedState).slashedR +
         (pinTerms config state ancestor finalizedState).depth *
@@ -9797,9 +9847,14 @@ private theorem branchR_split (config : Config)
                 (getCurrentEpoch finalizedState).toNat /
                   max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat + 1 +
                 (pinTerms config state ancestor finalizedState).depth /
-                  max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat))) :=
-    ⟨_, _, rfl⟩
-  exact ⟨W + D * (pinTerms config state ancestor finalizedState).slashedR, by rw [split]; ring⟩
+                  max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat))) ∧
+      (pinTerms config state ancestor finalizedState).depthFin *
+        (pinTerms config state ancestor finalizedState).perIncrement ≤ D := by
+    refine ⟨_, _, rfl, ?_⟩
+    exact Nat.mul_le_mul_left _ (grow _ _)
+  exact ⟨W + D * (pinTerms config state ancestor finalizedState).slashedR,
+    by rw [split]; ring,
+    (Nat.mul_comm _ _).le.trans ((Nat.mul_le_mul_right _ gain).trans (Nat.le_add_left _ _))⟩
 
 /-- The sync part of the proposer credit is at most the proposer credit. -/
 private theorem syncProposer_le_credit (config : Config)
@@ -9811,6 +9866,8 @@ private theorem syncProposer_le_credit (config : Config)
 /-- R1 from the count of its rounding bands.
 
 The slash charges of the classes fit the slashed keys of `branchR`, with the weights of the classes.
+
+Each slashed key pays its `slashR` and its `slashGain`, which `slashCharge` covers.
 
 The sync part of the proposer credit fits the proposer credit of each epoch.
 
@@ -9836,19 +9893,24 @@ private theorem bud_branchR_of (h : Setting config checks g split fin pulled anc
         3 * ((pinTerms config pulled anc fin).depth *
           (pinTerms config pulled anc fin).syncProposer) +
         (∑ v ∈ (K4 pulled counted V),
-          (slashR (pinTerms config pulled anc fin) v.toNat + bandR events v.toNat)) +
+          (slashR (pinTerms config pulled anc fin) v.toNat +
+            slashGain (pinTerms config pulled anc fin) v.toNat + bandR events v.toNat)) +
         3 * (∑ v ∈ (K5 counted V),
-          (slashR (pinTerms config pulled anc fin) v.toNat + bandR events v.toNat)) +
+          (slashR (pinTerms config pulled anc fin) v.toNat +
+            slashGain (pinTerms config pulled anc fin) v.toNat + bandR events v.toNat)) +
         (∑ v ∈ (K6 pulled counted),
-          (slashR (pinTerms config pulled anc fin) v.toNat + bandR events v.toNat)) ≤
+          (slashR (pinTerms config pulled anc fin) v.toNat +
+            slashGain (pinTerms config pulled anc fin) v.toNat + bandR events v.toNat)) ≤
       (pinTerms config pulled anc fin).branchR := by
   classical
-  obtain ⟨W, hW⟩ := branchR_split config pulled anc fin
+  obtain ⟨W, hW, gainW⟩ := branchR_split config pulled anc fin
   obtain ⟨d45, d46, d56, -, -, -⟩ := classes_disjoint h
   have slashes := weighted_le (A := K4 pulled counted V) (B := K5 counted V)
-    (C := K6 pulled counted) (fun v => slashR (pinTerms config pulled anc fin) v.toNat) d45 d46
-    d56
+    (C := K6 pulled counted) (fun v => slashR (pinTerms config pulled anc fin) v.toNat +
+      slashGain (pinTerms config pulled anc fin) v.toNat) d45 d46 d56
   have slashBound := slashR_le config pulled anc fin
+    (K4 pulled counted V ∪ K5 counted V ∪ K6 pulled counted)
+  have gainBound := slashGain_le config pulled anc fin
     (K4 pulled counted V ∪ K5 counted V ∪ K6 pulled counted)
   have credit := Nat.mul_le_mul_left (pinTerms config pulled anc fin).depth
     (syncProposer_le_credit config pulled anc fin)
@@ -9859,6 +9921,8 @@ private theorem bud_branchR_of (h : Setting config checks g split fin pulled anc
 /-- R1 (branchR): R's credits to V keys since the split, weight 3.
 
 The slashing of a key on R's branch is charged here for the keys of `K4` and `K5`.
+
+So is the gain on its slashing slack, `slashGain`.
 
 So is a sync debit of R that `rise` omits.
 
@@ -9879,11 +9943,14 @@ theorem bud_branchR (h : Setting config checks g split fin pulled anc counted V)
         3 * ((pinTerms config pulled anc fin).depth *
           (pinTerms config pulled anc fin).syncProposer) +
         (∑ v ∈ (K4 pulled counted V),
-          (slashR (pinTerms config pulled anc fin) v.toNat + bandR events v.toNat)) +
+          (slashR (pinTerms config pulled anc fin) v.toNat +
+            slashGain (pinTerms config pulled anc fin) v.toNat + bandR events v.toNat)) +
         3 * (∑ v ∈ (K5 counted V),
-          (slashR (pinTerms config pulled anc fin) v.toNat + bandR events v.toNat)) +
+          (slashR (pinTerms config pulled anc fin) v.toNat +
+            slashGain (pinTerms config pulled anc fin) v.toNat + bandR events v.toNat)) +
         (∑ v ∈ (K6 pulled counted),
-          (slashR (pinTerms config pulled anc fin) v.toNat + bandR events v.toNat)) ≤
+          (slashR (pinTerms config pulled anc fin) v.toNat +
+            slashGain (pinTerms config pulled anc fin) v.toNat + bandR events v.toNat)) ≤
       (pinTerms config pulled anc fin).branchR := by
   have calledNat := UInt64.le_iff_toNat_le.mp h.called
   have nearC := h.near
