@@ -1,5 +1,6 @@
 module
 
+import all EthLib.Consensus.Proofs.ForkChoice.FastConfirmation.PinDriftBound
 import all EthLib.Consensus.Proofs.ForkChoice.FastConfirmation.PinSum
 
 namespace EthLib.Consensus.Models.Network
