@@ -1607,7 +1607,7 @@ private theorem listed_positions_card (state : BeaconState preset fork)
       exact distinct.index_eq found found' eq
   have total : Ls.flatten.length ≤ preset.SYNC_COMMITTEE_SIZE.toNat * Ls.length := by
     rw [List.length_flatten]
-    have := List.sum_le_card_nsmul (Ls.map List.length) preset.SYNC_COMMITTEE_SIZE.toNat
+    have := List.sum_le_length_nsmul (Ls.map List.length) preset.SYNC_COMMITTEE_SIZE.toNat
       (fun a ha => by
         obtain ⟨L, hL, rfl⟩ := List.mem_map.mp ha
         exact each L hL)
@@ -1631,6 +1631,230 @@ private theorem position_in_prefix {f f' : Fork} {x : BeaconState preset f}
   have index := distinct.index_eq found foundT (same.trans same'.symm)
   subst index
   exact ⟨v, foundX, rfl⟩
+
+/-- A difference of quotients is at most the quotient of the difference, and one. -/
+private theorem div_sub_le (a b c : ℕ) : a / c - b / c ≤ (a - b) / c + 1 := by
+  rcases Nat.eq_zero_or_pos c with zero | positive
+  · subst zero
+    simp
+  · by_cases order : a ≤ b
+    · have := Nat.div_le_div_right (c := c) order
+      omega
+    · obtain ⟨d, rfl⟩ : ∃ d, a = b + d := ⟨a - b, by omega⟩
+      have ha := Nat.lt_mul_div_succ b positive
+      have hd := Nat.lt_mul_div_succ d positive
+      have bound : (b + d) / c < b / c + d / c + 2 := by
+        rw [Nat.div_lt_iff_lt_mul positive]
+        have : c * (b / c + d / c + 2) = c * (b / c + 1) + c * (d / c + 1) := by ring
+        omega
+      rw [Nat.add_sub_cancel_left]
+      omega
+
+open DirectSafety.Apriori DirectSafety.Apriori.Internal in
+/-- The keys that a sync aggregate debits on the two branches fit the committees of their periods.
+
+The keys of C's run from the finalized block are counted in its committees.
+
+The keys of R's run from the split hold a seat of its committees.
+
+Its first two committees are the current and next ones at the split, which C's run holds too.
+
+So each key counts once, and the later committees of R's run count after C's.
+
+The rotation of the next committee into the current one is the hypothesis `rotation`. -/
+private theorem seat_union_card (h : Setting config checks g split fin pulled anc counted V)
+    (rotation : ∀ {x y : ForkedBeaconState preset} (_ : Run config checks x y)
+      (_ : y.fork < .glamsterdam)
+      (_ : (getCurrentEpoch y.state).toNat / max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat =
+        (getCurrentEpoch x.state).toNat / max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat + 1)
+      (altair : .altair ≤ y.fork) (altair' : .altair ≤ x.fork),
+      (y.state.currentSyncCommittee altair).value.pubkeys.toList =
+        (x.state.nextSyncCommittee altair').value.pubkeys.toList)
+    (fromFin : Run config checks ⟨fork, fin⟩ ⟨fork, split⟩)
+    (tail : Run config checks ⟨fork, split⟩ ⟨fork, pulled⟩)
+    (tailC : Run config checks ⟨fork, split⟩ ⟨fork, counted⟩) (high : ℕ)
+    {events eventsF eventsC : List (BalanceEvent preset)}
+    (replayed : tail.balanceEvents high = .ok events)
+    (replayedF : fromFin.balanceEvents high = .ok eventsF)
+    (replayedC : tailC.balanceEvents high = .ok eventsC)
+    (AV AK : Finset ℕ)
+    (debitsC : ∀ i ∈ AV, 0 < ((eventsF ++ eventsC).map (syncDebit i)).sum)
+    (debitsR : ∀ i ∈ AK, 0 < (events.map (syncDebit i)).sum) :
+    (AV ∪ AK).card ≤ preset.SYNC_COMMITTEE_SIZE.toNat *
+      (((getCurrentEpoch pulled).toNat + 1) /
+          max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat -
+        (getCurrentEpoch fin).toNat / max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat + 1 +
+      ((getCurrentEpoch pulled).toNat + 2 - anc.finalizedCheckpoint.epoch.toNat) /
+        max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat) := by
+  classical
+  obtain ⟨toFin⟩ := h.toFin
+  have altairF : .altair ≤ fork := Nat.le_trans (by decide) h.fulu
+  have finSplit := UInt64.le_iff_toNat_le.mp (currentEpoch_le_of_chainSteps fromFin.chainSteps)
+  have splitPulled := UInt64.le_iff_toNat_le.mp h.called
+  have pulledCounted := UInt64.le_iff_toNat_le.mp h.later
+  have near := h.near
+  have finalized := UInt64.le_iff_toNat_le.mp h.finalized
+  simp only at finSplit
+  generalize hP : max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat = P at *
+  -- the periods of the two runs
+  have divFS := Nat.div_le_div_right (c := P) finSplit
+  have divSP := Nat.div_le_div_right (c := P) splitPulled
+  have divPC := Nat.div_le_div_right (c := P) pulledCounted
+  have divCN := Nat.div_le_div_right (c := P) near
+  have divSC : (getCurrentEpoch split).toNat / P ≤ (getCurrentEpoch counted).toNat / P :=
+    Nat.div_le_div_right (Nat.le_trans splitPulled pulledCounted)
+  have divRS := div_sub_le (getCurrentEpoch pulled).toNat (getCurrentEpoch split).toNat P
+  have divDepth : ((getCurrentEpoch pulled).toNat - (getCurrentEpoch split).toNat) / P ≤
+      ((getCurrentEpoch pulled).toNat + 2 - anc.finalizedCheckpoint.epoch.toNat) / P :=
+    Nat.div_le_div_right (by omega)
+  have periodsR : (getCurrentEpoch pulled).toNat / P =
+      (getCurrentEpoch split).toNat / P +
+        ((getCurrentEpoch pulled).toNat / P - (getCurrentEpoch split).toNat / P) := by omega
+  have periodsC : (getCurrentEpoch counted).toNat / P =
+      (getCurrentEpoch fin).toNat / P +
+        ((getCurrentEpoch counted).toNat / P - (getCurrentEpoch fin).toNat / P) := by omega
+  obtain ⟨LsR, -, -, -, -, -, -, -, -, debitR, familyR⟩ :=
+    credited_pieces_seated h.genesis (y := ⟨fork, pulled⟩) h.early h.delay high
+      ((getCurrentEpoch pulled).toNat / max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat -
+        (getCurrentEpoch split).toNat / max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat)
+      (toFin.append fromFin) tail h.fulu (by rw [hP]; exact periodsR)
+  obtain ⟨LsC, -, -, -, -, -, -, -, -, debitC, familyC⟩ :=
+    credited_pieces_seated h.genesis (y := ⟨fork, counted⟩) h.early h.delay high
+      ((getCurrentEpoch counted).toNat / max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat -
+        (getCurrentEpoch fin).toNat / max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat)
+      toFin (fromFin.append tailC) h.fulu (by rw [hP]; exact periodsC)
+  simp only [hP] at familyR familyC
+  have replayedRC : (fromFin.append tailC).balanceEvents high = .ok (eventsF ++ eventsC) :=
+    DirectSafety.Apriori.Internal.balanceEvents_append fromFin tailC high replayedF replayedC
+  generalize hnR : (getCurrentEpoch pulled).toNat / P - (getCurrentEpoch split).toNat / P = nR
+    at *
+  generalize hnC : (getCurrentEpoch counted).toNat / P - (getCurrentEpoch fin).toNat / P = nC
+    at *
+  -- the current and next committees at the split
+  have keysSplit := (toFin.append fromFin).syncCommittee_keys h.genesis altairF
+  generalize hLcur : (split.currentSyncCommittee altairF).value.pubkeys.toList = Lcur at *
+  generalize hLnext : (split.nextSyncCommittee altairF).value.pubkeys.toList = Lnext at *
+  have sizeOf : ∀ {f : Fork} (alt : .altair ≤ f) (b : BeaconState preset f),
+      (b.currentSyncCommittee alt).value.pubkeys.toList.length =
+        preset.SYNC_COMMITTEE_SIZE.toNat := fun _ _ => Vector.length_toList _
+  -- R's first two committees are the current and next ones at the split
+  have firstR : LsR 0 = Lcur := by
+    obtain ⟨z, r1, r2, alt, cut, per, hL⟩ := familyR 0 (Nat.zero_le _)
+    have earlyZ : z.fork < .glamsterdam :=
+      Nat.lt_of_le_of_lt (fork_le_of_chainSteps r2.chainSteps) h.early
+    rw [hL, ← hLcur]
+    rw [← hP] at per
+    exact r1.currentSyncCommittee_eq_of_same_period earlyZ (by rw [hP]; simpa using per) alt
+      altairF
+  have secondR : 1 ≤ nR → LsR 1 = Lnext := fun one => by
+    obtain ⟨z, r1, r2, alt, cut, per, hL⟩ := familyR 1 one
+    have earlyZ : z.fork < .glamsterdam :=
+      Nat.lt_of_le_of_lt (fork_le_of_chainSteps r2.chainSteps) h.early
+    rw [hL, ← hLnext]
+    exact rotation r1 earlyZ (by simpa using per) alt altairF
+  -- C's committees hold them too
+  have firstC : ∃ j ≤ nC, LsC j = Lcur := by
+    refine ⟨(getCurrentEpoch split).toNat / P - (getCurrentEpoch fin).toNat / P, by omega, ?_⟩
+    obtain ⟨z, r1, r2, alt, cut, per, hL⟩ := familyC
+      ((getCurrentEpoch split).toNat / P - (getCurrentEpoch fin).toNat / P) (by omega)
+    have earlyZ : z.fork < .glamsterdam :=
+      Nat.lt_of_le_of_lt (fork_le_of_chainSteps r2.chainSteps) h.early
+    rw [hL, ← hLcur]
+    rcases Run.prefix_total r1 r2 fromFin tailC cut rfl with ⟨r, -⟩ | ⟨r, -⟩
+    · exact (r.currentSyncCommittee_eq_of_same_period h.early
+        (by rw [hP]; simp only at per; omega) altairF alt).symm
+    · exact r.currentSyncCommittee_eq_of_same_period earlyZ
+        (by rw [hP]; simp only at per; omega) alt altairF
+  have secondC : 1 ≤ nR → ∃ j ≤ nC, LsC j = Lnext := fun one => by
+    refine ⟨(getCurrentEpoch split).toNat / P - (getCurrentEpoch fin).toNat / P + 1,
+      by omega, ?_⟩
+    obtain ⟨z, r1, r2, alt, cut, per, hL⟩ := familyC
+      ((getCurrentEpoch split).toNat / P - (getCurrentEpoch fin).toNat / P + 1) (by omega)
+    have earlyZ : z.fork < .glamsterdam :=
+      Nat.lt_of_le_of_lt (fork_le_of_chainSteps r2.chainSteps) h.early
+    rw [hL, ← hLnext]
+    rcases Run.prefix_total r1 r2 fromFin tailC cut rfl with ⟨r, -⟩ | ⟨r, -⟩
+    · exfalso
+      have order := UInt64.le_iff_toNat_le.mp (currentEpoch_le_of_chainSteps r.chainSteps)
+      simp only at order per
+      have := Nat.div_le_div_right (c := P) order
+      omega
+    · exact rotation r earlyZ (by simp only at per; omega) alt altairF
+  -- the positions that hold a key of the committees of each run
+  have distinctR : PubkeysDistinct pulled :=
+    ((toFin.append fromFin).append tail).pubkeysDistinct h.genesis
+  have distinctC : PubkeysDistinct counted :=
+    (toFin.append (fromFin.append tailC)).pubkeysDistinct h.genesis
+  have eachC : ∀ L ∈ (List.range (nC + 1)).map LsC, L.length ≤ preset.SYNC_COMMITTEE_SIZE.toNat :=
+    fun L member => by
+      obtain ⟨j, hj, rfl⟩ := List.mem_map.mp member
+      obtain ⟨z, r1, r2, alt, cut, per, hL⟩ := familyC j (by
+        have := List.mem_range.mp hj
+        omega)
+      rw [hL]
+      exact (sizeOf alt z.state).le
+  have eachR : ∀ L ∈ (List.range' 2 (nR - 1)).map LsR,
+      L.length ≤ preset.SYNC_COMMITTEE_SIZE.toNat := fun L member => by
+    obtain ⟨j, hj, rfl⟩ := List.mem_map.mp member
+    obtain ⟨z, r1, r2, alt, cut, per, hL⟩ := familyR j (by
+      have := List.mem_range'_1.mp hj
+      omega)
+    rw [hL]
+    exact (sizeOf alt z.state).le
+  have cardC := listed_positions_card counted distinctC _ eachC
+  have cardR := listed_positions_card pulled distinctR _ eachR
+  rw [List.length_map, List.length_range] at cardC
+  rw [List.length_map, List.length_range'] at cardR
+  have keptR := (validatorKeys_prefix_and_distinct_of_chainSteps tail.chainSteps).1
+  have keptC := (validatorKeys_prefix_and_distinct_of_chainSteps tailC.chainSteps).1
+  refine le_trans (Finset.card_le_card (t := ((Finset.range counted.validators.data.size).filter
+      fun i => ∃ w, counted.validators.data[i]? = some w ∧
+        ∃ L ∈ (List.range (nC + 1)).map LsC, w.pubkey ∈ L) ∪
+      ((Finset.range pulled.validators.data.size).filter fun i =>
+        ∃ w, pulled.validators.data[i]? = some w ∧
+          ∃ L ∈ (List.range' 2 (nR - 1)).map LsR, w.pubkey ∈ L)) ?_)
+    (le_trans (Finset.card_union_le _ _) (le_trans (Nat.add_le_add cardC cardR) ?_))
+  · intro i member
+    rcases Finset.mem_union.mp member with inV | inK
+    · obtain ⟨-, w, j, found, hj, mem⟩ := debitC (eventsF ++ eventsC) replayedRC i
+        (debitsC i inV)
+      exact Finset.mem_union_left _ (Finset.mem_filter.mpr
+        ⟨Finset.mem_range.mpr (Array.getElem?_eq_some_iff.mp found).1, w, found, LsC j,
+          List.mem_map.mpr ⟨j, List.mem_range.mpr (by omega), rfl⟩, mem⟩)
+    · obtain ⟨-, w, j, found, hj, mem⟩ := debitR events replayed i (debitsR i inK)
+      by_cases late : 2 ≤ j
+      · exact Finset.mem_union_right _ (Finset.mem_filter.mpr
+          ⟨Finset.mem_range.mpr (Array.getElem?_eq_some_iff.mp found).1, w, found, LsR j,
+            List.mem_map.mpr ⟨j, List.mem_range'_1.mpr (by omega), rfl⟩, mem⟩)
+      · -- a seat of the first two committees: the key is at its position in the split
+        have inSplit : w.pubkey ∈ validatorKeys split ∧
+            ∃ L ∈ (List.range (nC + 1)).map LsC, w.pubkey ∈ L := by
+          rcases Nat.lt_or_ge j 1 with zero | one
+          · have j0 : j = 0 := by omega
+            subst j0
+            rw [firstR] at mem
+            obtain ⟨L, hL, hLmem⟩ : ∃ L ∈ (List.range (nC + 1)).map LsC, L = Lcur := by
+              obtain ⟨jc, hjc, e⟩ := firstC
+              exact ⟨LsC jc, List.mem_map.mpr ⟨jc, List.mem_range.mpr (by omega), rfl⟩, e⟩
+            exact ⟨keysSplit.1 w.pubkey (by rw [hLcur]; exact mem), L, hL, by rw [hLmem]; exact mem⟩
+          · have j1 : j = 1 := by omega
+            subst j1
+            have oneR : 1 ≤ nR := hj
+            rw [secondR oneR] at mem
+            obtain ⟨L, hL, hLmem⟩ : ∃ L ∈ (List.range (nC + 1)).map LsC, L = Lnext := by
+              obtain ⟨jc, hjc, e⟩ := secondC oneR
+              exact ⟨LsC jc, List.mem_map.mpr ⟨jc, List.mem_range.mpr (by omega), rfl⟩, e⟩
+            exact ⟨keysSplit.2 w.pubkey (by rw [hLnext]; exact mem), L, hL,
+              by rw [hLmem]; exact mem⟩
+        obtain ⟨inKeys, L, hL, hLmem⟩ := inSplit
+        obtain ⟨v, foundS, sameS⟩ := position_in_prefix keptR distinctR inKeys found rfl
+        obtain ⟨c, foundC, sameC⟩ := validators_getElem?_of_validatorKeys_prefix keptC foundS
+        exact Finset.mem_union_left _ (Finset.mem_filter.mpr
+          ⟨Finset.mem_range.mpr (Array.getElem?_eq_some_iff.mp foundC).1, c, foundC, L, hL,
+            by rw [sameC, sameS]; exact hLmem⟩)
+  · rw [← Nat.mul_add]
+    refine Nat.mul_le_mul_left _ ?_
+    omega
 
 /-- The keys that a run from the split credits or debits through a sync seat.
 
