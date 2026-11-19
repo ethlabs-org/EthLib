@@ -5153,20 +5153,35 @@ private theorem pendingR_eq (config : Config) (pulled anc fin : BeaconState pres
           (pinTerms config pulled anc fin).pendingRB i = true,
           (balanceAt pulled i + (pinTerms config pulled anc fin).rise i) := rfl
 
-/-- K6 keys of R's registry that are not yet eligible at R: their stake at R and their rise. -/
-private theorem pending_base (h : Setting config checks g split fin pulled anc counted V) :
+/-- K6 keys of R's registry that are not yet eligible at R, and the keys of a set `C` apart from K6:
+their stake at R and their rise.
+
+In the tight window no key of K6 or `C` counts, since `pendingR` is 0 and the sum over `C` is
+guarded by the window's width. -/
+private theorem pending_base (h : Setting config checks g split fin pulled anc counted V)
+    (C : Finset ValidatorIndex) (apartK6 : Disjoint (K6 pulled counted) C) :
     (∑ v ∈ (K6 pulled counted) with (pinTerms config pulled anc fin).pendingRB v.toNat = true,
-      (eR pulled v + (pinTerms config pulled anc fin).rise v.toNat)) ≤
+      (eR pulled v + (pinTerms config pulled anc fin).rise v.toNat)) +
+      (∑ v ∈ C with ((pinTerms config pulled anc fin).tight = false ∧
+          (pinTerms config pulled anc fin).pendingRB v.toNat = true),
+        (eR pulled v + (pinTerms config pulled anc fin).rise v.toNat)) ≤
         (pinTerms config pulled anc fin).pendingR := by
   classical
   rw [pendingR_eq]
   by_cases tight : (pinTerms config pulled anc fin).tight = true
-  · -- Tight: no key of K6 is pending, since activity near the split is shared.
+  · -- Tight: no key of K6 is pending, since activity near the split is shared, and `C` is empty.
     rw [ite_eq_left tight]
     have fin_le := UInt64.le_iff_toNat_le.mp h.finalized
     have called := UInt64.le_iff_toNat_le.mp h.called
     have bound := (tight_iff config pulled anc fin).mp tight
     have near : (getCurrentEpoch counted).toNat ≤ (getCurrentEpoch pulled).toNat + 1 := h.near
+    have zeroC : ∑ v ∈ C with ((pinTerms config pulled anc fin).tight = false ∧
+          (pinTerms config pulled anc fin).pendingRB v.toNat = true),
+        (eR pulled v + (pinTerms config pulled anc fin).rise v.toNat) = 0 :=
+      Finset.sum_eq_zero fun v hv => by
+        have := (Finset.mem_filter.mp hv).2.1
+        simp [tight] at this
+    rw [zeroC, Nat.add_zero]
     apply Nat.le_of_eq
     apply Finset.sum_eq_zero
     intro v hv
@@ -5179,9 +5194,19 @@ private theorem pending_base (h : Setting config checks g split fin pulled anc c
     have farValue : FAR_FUTURE_EPOCH.toNat = 2 ^ 64 - 1 := rfl
     omega
   · rw [ite_eq_right tight]
+    have disj : Disjoint ((K6 pulled counted).filter fun v =>
+          (pinTerms config pulled anc fin).pendingRB v.toNat = true)
+        (C.filter fun v => (pinTerms config pulled anc fin).tight = false ∧
+          (pinTerms config pulled anc fin).pendingRB v.toNat = true) :=
+      Finset.disjoint_of_subset_left (Finset.filter_subset _ _)
+        (Finset.disjoint_of_subset_right (Finset.filter_subset _ _) apartK6)
+    rw [← Finset.sum_union disj]
     refine sum_toNat_le (fun i => balanceAt pulled i + (pinTerms config pulled anc fin).rise i)
       fun v hv => ?_
-    have flag := (Finset.mem_filter.mp hv).2
+    have flag : (pinTerms config pulled anc fin).pendingRB v.toNat = true := by
+      rcases Finset.mem_union.mp hv with hv | hv
+      · exact (Finset.mem_filter.mp hv).2
+      · exact (Finset.mem_filter.mp hv).2.2
     obtain ⟨w, found, -⟩ := (pendingRB_iff config pulled anc fin v.toNat).mp flag
     exact mem_positions_filter config pulled anc fin found flag
 
@@ -5434,11 +5459,21 @@ private theorem late_eq (config : Config) (pulled anc fin : BeaconState preset f
           (pinTerms config pulled anc fin).lateB i = true,
             (3 * balanceAt pulled i + (pinTerms config pulled anc fin).rise i) := rfl
 
-/-- Late activations, weight 3 for V keys and for new keys. -/
-private theorem late_base (h : Setting config checks g split fin pulled anc counted V) :
+/-- Late activations, weight 3 for V keys and for new keys, and for the keys of a set `C` apart
+from both.
+
+In the tight window no key of VN, K6 or `C` counts, since `late` is 0 and the sum over `C` is
+guarded by the window's width. -/
+private theorem late_base (h : Setting config checks g split fin pulled anc counted V)
+    (C : Finset ValidatorIndex) (apartK6 : Disjoint (K6 pulled counted) C)
+    (apartV : Disjoint V C) :
     3 * (∑ v ∈ (VN counted V) with (pinTerms config pulled anc fin).lateB v.toNat = true, eR pulled v) +
       (∑ v ∈ (K6 pulled counted) with (pinTerms config pulled anc fin).lateB v.toNat = true,
-        (3 * eR pulled v + (pinTerms config pulled anc fin).rise v.toNat)) ≤ (pinTerms config pulled anc fin).late := by
+        (3 * eR pulled v + (pinTerms config pulled anc fin).rise v.toNat)) +
+      (∑ v ∈ C with ((pinTerms config pulled anc fin).tight = false ∧
+          (pinTerms config pulled anc fin).lateB v.toNat = true),
+        (3 * eR pulled v + (pinTerms config pulled anc fin).rise v.toNat)) ≤
+      (pinTerms config pulled anc fin).late := by
   classical
   rw [late_eq]
   have disjoint : Disjoint (VN counted V) (K6 pulled counted) := by
@@ -5448,7 +5483,7 @@ private theorem late_base (h : Setting config checks g split fin pulled anc coun
     exact (Finset.mem_filter.mp hk).2.2 (h.voting v inV).1
   by_cases tight : (pinTerms config pulled anc fin).tight = true
   · rw [ite_eq_left tight]
-    -- Tight: no key of VN or K6 is late.
+    -- Tight: no key of VN or K6 is late, and the sum over `C` is empty.
     have fin_le := UInt64.le_iff_toNat_le.mp h.finalized
     have called := UInt64.le_iff_toNat_le.mp h.called
     have bound := (tight_iff config pulled anc fin).mp tight
@@ -5484,26 +5519,45 @@ private theorem late_base (h : Setting config checks g split fin pulled anc coun
       intro v hv
       have := none v (Finset.mem_union_right _ (Finset.mem_filter.mp hv).1)
       simp [(Finset.mem_filter.mp hv).2] at this
-    rw [zeroA, zeroB]
+    have zeroC : ∑ v ∈ C with ((pinTerms config pulled anc fin).tight = false ∧
+          (pinTerms config pulled anc fin).lateB v.toNat = true),
+        (3 * eR pulled v + (pinTerms config pulled anc fin).rise v.toNat) = 0 :=
+      Finset.sum_eq_zero fun v hv => by
+        have := (Finset.mem_filter.mp hv).2.1
+        simp [tight] at this
+    rw [zeroA, zeroB, zeroC]
   · rw [ite_eq_right tight]
     set A := (VN counted V).filter fun v => (pinTerms config pulled anc fin).lateB v.toNat = true
       with hA
     set B := (K6 pulled counted).filter
       fun v => (pinTerms config pulled anc fin).lateB v.toNat = true with hB
-    have disj : Disjoint A B :=
+    set D := C.filter fun v => (pinTerms config pulled anc fin).tight = false ∧
+        (pinTerms config pulled anc fin).lateB v.toNat = true with hD
+    have disjAB : Disjoint A B :=
       Finset.disjoint_of_subset_left (Finset.filter_subset _ _)
         (Finset.disjoint_of_subset_right (Finset.filter_subset _ _) disjoint)
-    have le : ∑ v ∈ A ∪ B, (3 * eR pulled v + (pinTerms config pulled anc fin).rise v.toNat) ≤
+    have disjAD : Disjoint A D :=
+      Finset.disjoint_of_subset_left
+        ((Finset.filter_subset _ _).trans (Finset.filter_subset _ _))
+        (Finset.disjoint_of_subset_right (Finset.filter_subset _ _) apartV)
+    have disjBD : Disjoint B D :=
+      Finset.disjoint_of_subset_left (Finset.filter_subset _ _)
+        (Finset.disjoint_of_subset_right (Finset.filter_subset _ _) apartK6)
+    have le : ∑ v ∈ A ∪ B ∪ D, (3 * eR pulled v +
+          (pinTerms config pulled anc fin).rise v.toNat) ≤
         ∑ i ∈ (pinTerms config pulled anc fin).positions.filter
           (fun i => (pinTerms config pulled anc fin).lateB i = true),
             (3 * balanceAt pulled i + (pinTerms config pulled anc fin).rise i) :=
       sum_toNat_le (fun i => 3 * balanceAt pulled i + (pinTerms config pulled anc fin).rise i)
         fun v hv => by
         have flag : (pinTerms config pulled anc fin).lateB v.toNat = true := by
-          rcases Finset.mem_union.mp hv with hv | hv <;> exact (Finset.mem_filter.mp hv).2
+          rcases Finset.mem_union.mp hv with hv | hv
+          · rcases Finset.mem_union.mp hv with hv | hv <;> exact (Finset.mem_filter.mp hv).2
+          · exact (Finset.mem_filter.mp hv).2.2
         obtain ⟨w, found, -⟩ := (lateB_iff config pulled anc fin v.toNat).mp flag
         exact mem_positions_filter config pulled anc fin found flag
-    rw [Finset.sum_union disj] at le
+    rw [Finset.sum_union (Finset.disjoint_union_left.mpr ⟨disjAD, disjBD⟩),
+      Finset.sum_union disjAB] at le
     have split : ∑ v ∈ A, (3 * eR pulled v + (pinTerms config pulled anc fin).rise v.toNat) =
         3 * ∑ v ∈ A, eR pulled v + ∑ v ∈ A, (pinTerms config pulled anc fin).rise v.toNat := by
       rw [Finset.sum_add_distrib, Finset.mul_sum]
@@ -12927,7 +12981,7 @@ A key of `SC` outside the tight window pays its stake three times and its rise.
 
 In the tight window `late` is 0, and the sum over `SC` is empty, since its guard is false.
 
-`late_base` is the part for V and K6. -/
+`late_base` is the whole claim, for any set that is apart from V and K6. -/
 theorem bud_late (h : Setting config checks g split fin pulled anc counted V) :
     3 * (∑ v ∈ (VN counted V) with (pinTerms config pulled anc fin).lateB v.toNat = true,
         eR pulled v) +
@@ -12937,13 +12991,18 @@ theorem bud_late (h : Setting config checks g split fin pulled anc counted V) :
         ((pinTerms config pulled anc fin).tight = false ∧
           (pinTerms config pulled anc fin).lateB v.toNat = true),
         (3 * eR pulled v + (pinTerms config pulled anc fin).rise v.toNat)) ≤
-      (pinTerms config pulled anc fin).late := sorry
+      (pinTerms config pulled anc fin).late :=
+  late_base h (sc3a config pulled anc fin counted split)
+    (Finset.disjoint_of_subset_right (Finset.filter_subset _ _)
+      (Finset.disjoint_of_subset_left (fun v hv => by
+        simp only [Finset.mem_union]; exact Or.inr hv) (sc_disjoint h).1))
+    (Finset.disjoint_of_subset_right (Finset.filter_subset _ _) (sc_disjoint h).2)
 
 /-- K6 keys and `SC` keys of R's registry that are not yet eligible at R: their stake and rise.
 
 In the tight window `pendingR` is 0, and the sum over `SC` is empty, since its guard is false.
 
-`pending_base` is the part for K6. -/
+`pending_base` is the whole claim, for any set that is apart from K6. -/
 theorem bud_pendingR (h : Setting config checks g split fin pulled anc counted V) :
     (∑ v ∈ (K6 pulled counted) with (pinTerms config pulled anc fin).pendingRB v.toNat = true,
       (eR pulled v + (pinTerms config pulled anc fin).rise v.toNat)) +
@@ -12951,7 +13010,11 @@ theorem bud_pendingR (h : Setting config checks g split fin pulled anc counted V
         ((pinTerms config pulled anc fin).tight = false ∧
           (pinTerms config pulled anc fin).pendingRB v.toNat = true),
         (eR pulled v + (pinTerms config pulled anc fin).rise v.toNat)) ≤
-      (pinTerms config pulled anc fin).pendingR := sorry
+      (pinTerms config pulled anc fin).pendingR :=
+  pending_base h (sc3a config pulled anc fin counted split)
+    (Finset.disjoint_of_subset_right (Finset.filter_subset _ _)
+      (Finset.disjoint_of_subset_left (fun v hv => by
+        simp only [Finset.mem_union]; exact Or.inr hv) (sc_disjoint h).1))
 
 /-- The charged keys of `SC` are current, upcoming-only, late or pending, and each pays that entry.
 
