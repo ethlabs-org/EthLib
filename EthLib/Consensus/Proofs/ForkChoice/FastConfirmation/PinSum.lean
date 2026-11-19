@@ -12779,8 +12779,12 @@ private theorem key_core_frozen (h : Setting config checks g split fin pulled an
   have fW : slashW (pinTerms config pulled anc fin) v.toNat ≤
       slashR (pinTerms config pulled anc fin) v.toNat := by
     have := hWdb
-    unfold slashW slashR at this ⊢
+    unfold slashW at this ⊢
+    unfold slashR
     split_ifs at this ⊢ <;> omega
+  have incPos : 1 < preset.EFFECTIVE_BALANCE_INCREMENT.toNat := by
+    have := h.facts.incrementSize
+    omega
   have bandsOne : 0 < bandC tailC highC v.toNat ∨ 0 < bandR (eventsF ++ events) v.toNat ∨
       0 < bandX fin highC v.toNat → preset.EFFECTIVE_BALANCE_INCREMENT.toNat ≤
         bandC tailC highC v.toNat + bandR (eventsF ++ events) v.toNat +
@@ -12792,8 +12796,9 @@ private theorem key_core_frozen (h : Setting config checks g split fin pulled an
     · unfold bandR at pos ⊢
       split_ifs at pos ⊢ <;> omega
     · unfold bandX at pos ⊢
-      have := Nat.le_mul_of_pos_right preset.upwardBand
-        (Nat.pos_of_ne_zero fun z => by simp [z] at pos)
+      have dpos : 0 < dueAt fin highC {UInt64.ofNat v.toNat} :=
+        Nat.pos_of_ne_zero fun z => by rw [z, Nat.mul_zero] at pos; exact Nat.lt_irrefl _ pos
+      have := Nat.le_mul_of_pos_right preset.upwardBand dpos
       omega
   unfold keyCeiling keyExtra
   by_cases bands : 0 < bandC tailC highC v.toNat ∨ 0 < bandR (eventsF ++ events) v.toNat ∨
@@ -12879,6 +12884,7 @@ private theorem key_core_frozen (h : Setting config checks g split fin pulled an
       have := h.facts.vectorSmall
       omega)
     rw [← hεn] at small
+    rw [hZkW] at gcEq
     have ceilII : Bc ≤ H + (slashW (pinTerms config pulled anc fin) v.toNat + εn) := by
       rw [hBc, hHeq, Nat.mul_add Df _ _]
       omega
