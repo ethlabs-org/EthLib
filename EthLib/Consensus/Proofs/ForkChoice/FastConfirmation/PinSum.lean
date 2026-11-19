@@ -14393,7 +14393,8 @@ private theorem credits_prefix_le (h : Setting config checks g split fin pulled 
   obtain ⟨gross, net, -⟩ := credits_le_sources (toFin.append fromFin) h.genesis pre aEarly electra
     v.toNat highC replayed1
   have cons := scan_le_events (fun s => decide (s = .consolidations))
-    (fun s => decide (s = .consolidations)) (· = .consolidations) (by intro s; simp) pre highC v replayed1
+    (fun s => decide (s = .consolidations)) (· = .consolidations) (by intro s; simp) pre highC v
+    replayed1
   have deps := scan_le_events (fun _ => false) (fun s => decide (s = .deposits)) (· = .deposits)
     (by intro s; simp) pre highC v replayed1
   -- Each deposit of the prefix that credits the key finds it unslashed.
