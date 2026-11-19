@@ -152,12 +152,12 @@ private theorem isViableLeaf_exists
   simp only [epochOk, sourceOk, checkpointOk, boundOk, bind, Except.bind, Except.mapError]
   split <;> exact ⟨_, rfl⟩
 
-/-- Before Gloas, the viable nodes of a forward-reachable store can be computed.
+/-- The viable nodes of a forward-reachable store can be computed.
 
 The store must hold its justified block, and the parameters of the committee windows must fit.
 
 The history of mixes must span two epochs, the grace of a voting source. -/
-private theorem getFilteredNodeTree_exists (preGloas : fork < .glamsterdam)
+private theorem getFilteredNodeTree_exists
     (forward : Store.ForwardReachable config anchorState anchorBlock store)
     (sound : Invariant anchorState) (slots : 0 < config.SLOT_DURATION_MS)
     (anchorSlot : anchorBlock.slot = anchorState.slot)
@@ -167,7 +167,6 @@ private theorem getFilteredNodeTree_exists (preGloas : fork < .glamsterdam)
     (history : 2 ≤ preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
     (justifiedHeld : ∃ block, store.blocks[store.justifiedCheckpoint.root]? = some block) :
     ∃ nodes, store.getFilteredNodeTree config = .ok nodes := by
-  have notGloas : ¬ .glamsterdam ≤ fork := Nat.not_le_of_lt preGloas
   have reachable := forward.reachable
   have lower := reachable.parentsBelow (UInt64.le_of_eq anchorSlot) unknown
   obtain ⟨current, currentOk, -, -⟩ := forward.slots_le_current slots (UInt64.le_of_eq anchorSlot)
@@ -230,8 +229,7 @@ private theorem getFilteredNodeTree_exists (preGloas : fork < .glamsterdam)
   induction hrank : store.nodeRank node using Nat.strong_induction_on generalizing node with
   | _ rank ih =>
   intro block found
-  obtain ⟨children, childrenOk⟩ : ∃ children, store.getNodeChildren node = .ok children := by
-    simp [Store.getNodeChildren, notGloas, pure, Except.pure]
+  obtain ⟨children, childrenOk, heldChildren⟩ := Store.getNodeChildren_held lower found
   rw [Store.filterNodeTree, childrenOk]
   simp only [bind, Except.bind]
   split
@@ -249,15 +247,7 @@ private theorem getFilteredNodeTree_exists (preGloas : fork < .glamsterdam)
           store.filterNodeTree config child
         else throw (.parentSlotNotLower child.root)) = .ok below := by
       intro child member
-      obtain ⟨childPending, childBlock, childFound, parentRoot⟩ :=
-        (Store.mem_getNodeChildren preGloas childrenOk).mp member
-      have below : block.slot < childBlock.slot := lower _ childBlock block childFound
-        (parentRoot ▸ found)
-      have lowerRank : store.nodeRank child < store.nodeRank node := by
-        simp only [Store.nodeRank, childFound, found, childPending, ↓reduceIte]
-        have := UInt64.lt_iff_toNat_lt.mp below
-        have := childBlock.slot.toNat_lt
-        split <;> omega
+      obtain ⟨childBlock, childFound, lowerRank⟩ := heldChildren child member
       simp only [lowerRank, ↓reduceDIte]
       exact ih _ (hrank ▸ lowerRank) child rfl childBlock childFound
     obtain ⟨viable, viableOk⟩ := flatMapM_exists_ok each
@@ -573,7 +563,7 @@ theorem Execution.callRolloverRead_or_evidence {Δ : ℕ} (sync : e.Synchronous 
   obtain ⟨state, stateOk⟩ := states u caller k inTime upToDate
   obtain ⟨base, -, baseFound, -⟩ :=
     reached.checkpointStatesFromBlocks (Store.checkpointState_ok_iff.mp stateOk)
-  obtain ⟨nodes, tree⟩ := getFilteredNodeTree_exists preGloas forward sound slots anchorSlot
+  obtain ⟨nodes, tree⟩ := getFilteredNodeTree_exists forward sound slots anchorSlot
     anchorBoundary (absent u caller k inTime) fit history
     (forward.reachable.known_of_blockState baseFound)
   exact heads u caller k nodes (Nat.zero_le _) inTime upToDate tree
