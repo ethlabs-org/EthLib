@@ -1183,8 +1183,8 @@ private theorem credited_piece {g : ForkedBeaconState preset}
       split at rest
       · simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at rest
         obtain ⟨added, addedOk, rfl⟩ := rest
-        have zero := PinSplit5.slot_syncDebit_zero
-          (Nat.le_trans (show Fork.pectra ≤ Fork.fusaka by decide) fulu') ok early addedOk i
+        have zero := (PinSplit5.slot_syncDebit_zero
+          (Nat.le_trans (show Fork.pectra ≤ Fork.fusaka by decide) fulu') ok early addedOk i).1
         simp only [List.map_append, List.sum_append, zero, Nat.add_zero] at pos
         obtain ⟨w, found, mem⟩ := hS prior priorOk i pos
         exact carry i w found mem
@@ -1453,9 +1453,9 @@ private theorem credited_pieces {g : ForkedBeaconState preset}
         split at rest
         · simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at rest
           obtain ⟨added, addedOk, rfl⟩ := rest
-          have zero := PinSplit5.slot_syncDebit_zero
+          have zero := (PinSplit5.slot_syncDebit_zero
             (Nat.le_trans (show Fork.pectra ≤ Fork.fusaka by decide)
-              (Nat.le_trans fulu (fork_le_of_chainSteps pre.chainSteps))) ok vEarly addedOk i
+              (Nat.le_trans fulu (fork_le_of_chainSteps pre.chainSteps))) ok vEarly addedOk i).1
           simp only [List.map_append, List.sum_append, zero, Nat.add_zero] at first
           obtain ⟨w, found, mem⟩ := hD₁ prior priorOk i first
           exact hS₁ i w found mem
