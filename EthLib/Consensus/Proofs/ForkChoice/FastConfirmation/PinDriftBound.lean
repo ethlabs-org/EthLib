@@ -1355,23 +1355,7 @@ private theorem effective_update_at {f : Fork} {s t : BeaconState preset f}
   have found : ∃ v, s.validators.data[i]? = some v :=
     ⟨_, Array.getElem?_eq_getElem inside⟩
   obtain ⟨v, found⟩ := found
-  have owned : ∃ balance, s.balances.data[i]? = some balance := by
-    have computed := ok
-    unfold processEffectiveBalanceUpdates at computed
-    obtain ⟨middle, next, prefixOk, atIndex, -⟩ :=
-      (foldlM_ok_steps (fun _ _ => True) (fun _ => trivial) (fun _ _ => trivial)
-        (fun _ _ _ _ => trivial) computed).2 i (by simpa using inside)
-    have balances : middle.balances = s.balances :=
-      foldlM_ok_invariant (fun c : BeaconState preset f => c.balances = s.balances)
-        (fun _ _ _ kept step => by
-          simp only [updateEffectiveBalance, bind_ok_iff, liftAccessor_ok] at step
-          obtain ⟨_, _, _, _, _, _, set⟩ := step
-          obtain ⟨_, rfl⟩ := setValidatorAt_ok set
-          exact kept) rfl prefixOk
-    simp only [updateEffectiveBalance, bind_ok_iff, liftAccessor_ok, List.getElem_range] at atIndex
-    obtain ⟨_, _, balance, read, _⟩ := atIndex
-    exact ⟨balance, balances ▸ getBalanceAt_eq_ok_iff.mp read⟩
-  obtain ⟨balance, owned⟩ := owned
+  obtain ⟨balance, owned⟩ := processEffectiveBalanceUpdates_owned ok found
   obtain ⟨new, read, updated⟩ := processEffectiveBalanceUpdates_effectiveBalance_eq ok found owned
   exact ⟨v, balance, new, found, owned, read, processEffectiveBalanceUpdates_balances ok, updated⟩
 
@@ -6128,11 +6112,14 @@ private theorem Run.start_state {x y : ForkedBeaconState preset} (tail : Run con
 
 /-- Right after a slot step that moves the epoch on, the effective balances lie within the bands.
 
-The step ran the epoch transition, and its upgrades keep the bands. -/
+The step ran the epoch transition, and its upgrades keep the bands.
+
+That holds from Fusaka and before Gloas, where the upgrades leave the state as it is. -/
 private def EpochStartHysteresis (preset : Preset) (config : Config)
     (checks : SignatureChecks) : Prop :=
-  ∀ {a b : ForkedBeaconState preset} (_step : Step config checks a b),
-    getCurrentEpoch a.state < getCurrentEpoch b.state → Hysteresis b.state
+  ∀ {a b : ForkedBeaconState preset} (_step : Step config checks a b), .fusaka ≤ a.fork →
+    b.fork < .glamsterdam → getCurrentEpoch a.state < getCurrentEpoch b.state →
+      Hysteresis b.state
 
 /-! ## The pass rate against the floor path -/
 
@@ -6943,8 +6930,10 @@ private theorem Ctx.inv_step {g x z y q p' m : ForkedBeaconState preset} {high :
     i v0 found0
   have lt : getCurrentEpoch q.state < getCurrentEpoch p'.state :=
     UInt64.lt_iff_toNat_lt.mpr (by omega)
+  have fuluQ : .fusaka ≤ q.fork :=
+    Nat.le_trans c.fulu (fork_le_of_chainSteps (hz.append (rm.append ins)).chainSteps)
   exact ⟨claim', Ctx.hyst_start c (hz.append (rm.append (ins.snoc (Step.slot ok))))
-    (c.hysteresis (Step.slot ok) lt) found'⟩
+    (c.hysteresis (Step.slot ok) fuluQ pEarly lt) found'⟩
 
 /-- The potential claim holds at the start of the epoch of every state of the climb.
 
