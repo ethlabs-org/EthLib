@@ -23,6 +23,7 @@ import EthLib.Consensus.Proofs.DirectSafety.Apriori.Whistleblower
 import EthLib.Consensus.Proofs.DirectSafety.BalanceSources
 import EthLib.Consensus.Proofs.Mutators
 import EthLib.Consensus.Proofs.Transition.Trace
+import EthLib.Consensus.Proofs.Transition.LookaheadActive
 import Mathlib.Data.Nat.ModEq
 import Mathlib.Data.Nat.Notation
 import EthLib.Consensus.Proofs.Transition.EpochUpdates
@@ -10124,8 +10125,51 @@ theorem bud_sync (h : Setting config checks g split fin pulled anc counted V)
         2 * T.toNat ≤ 3 * pulledTotal.toNat :=
     step_band_of_guard h fromFin (by omega) pulledOk
   -- no block of the shared segment has a proposer among the keys of EK (the lookahead walk)
+  have covers : preset.MIN_SEED_LOOKAHEAD.toNat + 1 ≤ preset.MAX_SEED_LOOKAHEAD.toNat := sorry
+  obtain ⟨toFin⟩ := h.toFin
+  obtain ⟨toPulled⟩ := h.toPulled
+  have electra : .pectra ≤ fork := Nat.le_trans (by decide) h.fulu
   have apartK : ∀ {u w : ForkedBeaconState preset} (step : Step config checks u w),
-      fromFin.Contains step → PinSplit5.stepApart PK step := sorry
+      fromFin.Contains step → PinSplit5.stepApart PK step := by
+    intro u w step member
+    cases step with
+    | slot _ => trivial
+    | @block f before after engine signed due ok =>
+      obtain ⟨pre, post, -, -, -⟩ := fromFin.contains_step_facts member h.early
+      intro p found inK
+      obtain ⟨v, inEK, same⟩ := Finset.mem_image.mp (hPK ▸ inK)
+      -- v exits at R by the finalized epoch, so the finalized state has its record and exit
+      obtain ⟨w0, foundPulled, exited⟩ : ∃ w0, pulled.validators.data[v.toNat]? = some w0 ∧
+          w0.exitEpoch.toNat ≤ (getCurrentEpoch fin).toNat := by
+        have flag := (Finset.mem_filter.mp inEK).2
+        cases found0 : pulled.validators.data[v.toNat]? with
+        | none => simp [pinTerms, found0] at flag
+        | some w0 =>
+          simp [pinTerms, found0] at flag
+          exact ⟨w0, rfl, flag⟩
+      have assigned : w0.exitEpoch ≠ FAR_FUTURE_EPOCH := fun far => by
+        have := getCurrentEpoch_succ_lt_farFuture h.twoSlots fin
+        have := congrArg UInt64.toNat far
+        omega
+      obtain ⟨u0, foundFin⟩ : ∃ u0, fin.validators.data[v.toNat]? = some u0 := by
+        by_contra missing
+        push_neg at missing
+        obtain ⟨c, member, -, epoch⟩ := PinSplit.Run.charge_of_exit (fromFin.append toPulled)
+          electra h.early v.toNat (fun u0 found0 => absurd found0 (missing u0)) w0 foundPulled
+          assigned
+        have late := DirectSafety.Run.departureCharges_epoch_ge_start (fromFin.append toPulled)
+          electra h.early c member
+        omega
+      have kept := exit_kept_of_le_fin h foundFin foundPulled exited
+      have inactive := inactive_of_exited h.twoSlots (pre.snoc (Step.block engine signed due ok))
+        foundFin (by rw [kept]; exact exited)
+      have look := Run.lookaheadActive covers h.genesis
+        (toFin.append (pre.snoc (Step.block engine signed due ok)))
+        (Nat.lt_of_le_of_lt (fork_le_of_chainSteps post.chainSteps) h.early)
+      have active := look.proposer_active (Nat.le_trans h.fulu
+        (fork_le_of_chainSteps (pre.snoc (Step.block engine signed due ok)).chainSteps)) found
+      rw [← same, inactive] at active
+      exact Bool.false_ne_true active
   have sharedRun := (PinSplit5.Run.syncDebits_le fromFin h.fulu h.early highF replayedF
     pulledTotal.toNat band ∅).2.2 PD PK dP apartK
   unfold PinSplit5.syncSeatMoves at sharedRun
