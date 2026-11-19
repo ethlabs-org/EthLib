@@ -1315,6 +1315,37 @@ private theorem credited_piece {g : ForkedBeaconState preset}
           obtain ⟨w, found, mem⟩ := hS _ priorOk i pos
           exact carry i w found mem
 
+/-- The positions that hold a key of a committee of a list are at most the keys of the list.
+
+The registry has distinct keys, and each committee has at most `SYNC_COMMITTEE_SIZE` keys. -/
+private theorem listed_positions_card (state : BeaconState preset fork)
+    (distinct : PubkeysDistinct state) (Ls : List (List Cryptography.Bls.BLSPubkey))
+    (each : ∀ L ∈ Ls, L.length ≤ preset.SYNC_COMMITTEE_SIZE.toNat) :
+    ((Finset.range state.validators.data.size).filter fun i =>
+        ∃ w, state.validators.data[i]? = some w ∧ ∃ L ∈ Ls, w.pubkey ∈ L).card ≤
+      preset.SYNC_COMMITTEE_SIZE.toNat * Ls.length := by
+  classical
+  have mapped : ((Finset.range state.validators.data.size).filter fun i =>
+      ∃ w, state.validators.data[i]? = some w ∧ ∃ L ∈ Ls, w.pubkey ∈ L).card ≤
+        Ls.flatten.toFinset.card := by
+    refine Finset.card_le_card_of_injOn (keyAt state) (fun i member => ?_)
+      (fun i mi j mj eq => ?_)
+    · obtain ⟨w, found, L, hL, mem⟩ := (Finset.mem_filter.mp member).2
+      simp only [keyAt, found, Option.map_some, Option.getD_some]
+      exact List.mem_toFinset.mpr (List.mem_flatten.mpr ⟨L, hL, mem⟩)
+    · obtain ⟨w, found, -⟩ := (Finset.mem_filter.mp mi).2
+      obtain ⟨w', found', -⟩ := (Finset.mem_filter.mp mj).2
+      simp only [keyAt, found, found', Option.map_some, Option.getD_some] at eq
+      exact distinct.index_eq found found' eq
+  have total : Ls.flatten.length ≤ preset.SYNC_COMMITTEE_SIZE.toNat * Ls.length := by
+    rw [List.length_flatten]
+    have := List.sum_le_length_nsmul (Ls.map List.length) preset.SYNC_COMMITTEE_SIZE.toNat
+      (fun a ha => by
+        obtain ⟨L, hL, rfl⟩ := List.mem_map.mp ha
+        exact each L hL)
+    simpa [List.length_map, smul_eq_mul, Nat.mul_comm] using this
+  exact mapped.trans ((List.toFinset_card_le _).trans total)
+
 /-- The positions that hold a key of a committee are at most the size of the committee. -/
 private theorem seat_positions {g : ForkedBeaconState preset}
     (genesis : Genesis config checks g) {x y : ForkedBeaconState preset}
@@ -1327,18 +1358,12 @@ private theorem seat_positions {g : ForkedBeaconState preset}
   let L := (x.state.currentSyncCommittee altair).value.pubkeys.toList
   refine ⟨(Finset.range y.state.validators.data.size).filter fun i =>
       ∃ w, y.state.validators.data[i]? = some w ∧ w.pubkey ∈ L, ?_, ?_⟩
-  · have mapped : ((Finset.range y.state.validators.data.size).filter fun i =>
-        ∃ w, y.state.validators.data[i]? = some w ∧ w.pubkey ∈ L).card ≤ L.toFinset.card := by
-      refine Finset.card_le_card_of_injOn (keyAt y.state) (fun i member => ?_)
-        (fun i mi j mj eq => ?_)
-      · obtain ⟨w, found, mem⟩ := (Finset.mem_filter.mp member).2
-        simp only [keyAt, found, Option.map_some, Option.getD_some]
-        exact List.mem_toFinset.mpr mem
-      · obtain ⟨w, found, -⟩ := (Finset.mem_filter.mp mi).2
-        obtain ⟨w', found', -⟩ := (Finset.mem_filter.mp mj).2
-        simp only [keyAt, found, found', Option.map_some, Option.getD_some] at eq
-        exact distinct.index_eq found found' eq
-    exact mapped.trans ((List.toFinset_card_le L).trans (by simp [L]))
+  · have listed := listed_positions_card y.state distinct [L] (by simp [L])
+    rw [List.length_singleton, Nat.mul_one] at listed
+    refine le_trans (Finset.card_le_card ?_) listed
+    intro i member
+    obtain ⟨inside, w, found, mem⟩ := Finset.mem_filter.mp member
+    exact Finset.mem_filter.mpr ⟨inside, w, found, L, List.mem_singleton_self L, mem⟩
   · intro i w found mem
     exact Finset.mem_filter.mpr ⟨Finset.mem_range.mpr (Array.getElem?_eq_some_iff.mp found).1,
       w, found, mem⟩
@@ -1582,37 +1607,6 @@ private theorem credited_pieces {g : ForkedBeaconState preset}
     credited_pieces_seated genesis early delay high n shared r fulu count
   exact ⟨B, S, D, cardB, cardS, cardD, hBS, hDep,
     fun events replayed i pos => (hSD events replayed i pos).1⟩
-
-/-- The positions that hold a key of a committee of a list are at most the keys of the list.
-
-The registry has distinct keys, and each committee has at most `SYNC_COMMITTEE_SIZE` keys. -/
-private theorem listed_positions_card (state : BeaconState preset fork)
-    (distinct : PubkeysDistinct state) (Ls : List (List Cryptography.Bls.BLSPubkey))
-    (each : ∀ L ∈ Ls, L.length ≤ preset.SYNC_COMMITTEE_SIZE.toNat) :
-    ((Finset.range state.validators.data.size).filter fun i =>
-        ∃ w, state.validators.data[i]? = some w ∧ ∃ L ∈ Ls, w.pubkey ∈ L).card ≤
-      preset.SYNC_COMMITTEE_SIZE.toNat * Ls.length := by
-  classical
-  have mapped : ((Finset.range state.validators.data.size).filter fun i =>
-      ∃ w, state.validators.data[i]? = some w ∧ ∃ L ∈ Ls, w.pubkey ∈ L).card ≤
-        Ls.flatten.toFinset.card := by
-    refine Finset.card_le_card_of_injOn (keyAt state) (fun i member => ?_)
-      (fun i mi j mj eq => ?_)
-    · obtain ⟨w, found, L, hL, mem⟩ := (Finset.mem_filter.mp member).2
-      simp only [keyAt, found, Option.map_some, Option.getD_some]
-      exact List.mem_toFinset.mpr (List.mem_flatten.mpr ⟨L, hL, mem⟩)
-    · obtain ⟨w, found, -⟩ := (Finset.mem_filter.mp mi).2
-      obtain ⟨w', found', -⟩ := (Finset.mem_filter.mp mj).2
-      simp only [keyAt, found, found', Option.map_some, Option.getD_some] at eq
-      exact distinct.index_eq found found' eq
-  have total : Ls.flatten.length ≤ preset.SYNC_COMMITTEE_SIZE.toNat * Ls.length := by
-    rw [List.length_flatten]
-    have := List.sum_le_length_nsmul (Ls.map List.length) preset.SYNC_COMMITTEE_SIZE.toNat
-      (fun a ha => by
-        obtain ⟨L, hL, rfl⟩ := List.mem_map.mp ha
-        exact each L hL)
-    simpa [List.length_map, smul_eq_mul, Nat.mul_comm] using this
-  exact mapped.trans ((List.toFinset_card_le _).trans total)
 
 /-- A key of an earlier registry has the same position in a later registry.
 
