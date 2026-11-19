@@ -16,6 +16,10 @@ Not yet released.
 - `DirectSafety.Apriori.Internal.effectiveAt_le_withdrawalMax` says that a key's effective balance at a state of a run from genesis is at most the largest one its credentials allow.
   The pin's floors read it.
 
+- `DirectSafety.Apriori.Internal.FloorTrace.run_potential_floor_slash` bounds the balance of a key that is unslashed at the start of a run, whether or not the run slashes it.
+  A slash charges a share `1 / M` of the potential, and the closed form of the unslashed floor holds with one more pass.
+  The pin's whistleblower floor reads it.
+
 - `quorumDrift_le_quorumReserve` bounds the drift of a fast-confirmation call's quorum by `quorumReserve` ([#2058](https://github.com/ethereum/EthLib/issues/2058)).
   It compares the call's pulled-up state with a later state in the target's epoch or the next, before Gloas from Fulu.
   `Execution.quorumDriftWithin` builds those runs from the stores and proves `QuorumDriftWithin` with BLS checks.
