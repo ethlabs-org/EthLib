@@ -1164,7 +1164,9 @@ private theorem credited_pieces {g : ForkedBeaconState preset}
       (getCurrentEpoch x.state).toNat / max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat + n →
     ∃ B S : Finset ℕ, B.card ≤ r.blockCount ∧
       S.card ≤ preset.SYNC_COMMITTEE_SIZE.toNat * (n + 1) ∧
-      ∀ i, 0 < netScan i high r → i ∈ B ∨ i ∈ S := by
+      (∀ i, 0 < netScan i high r → i ∈ B ∨ i ∈ S) ∧
+      ∀ events, r.balanceEvents high = .ok events → ∀ i, 0 < (events.map (syncDebit i)).sum →
+        i ∈ S := by
   classical
   intro n
   induction n with
@@ -1172,13 +1174,16 @@ private theorem credited_pieces {g : ForkedBeaconState preset}
     intro x shared r fulu count
     have electra : .pectra ≤ x.fork := Nat.le_trans (by decide) fulu
     have altair : .altair ≤ x.fork := Nat.le_trans (by decide) electra
-    obtain ⟨B, cardB, hB, -⟩ := credited_piece genesis shared r fulu altair early high
+    obtain ⟨B, cardB, hB, hD⟩ := credited_piece genesis shared r fulu altair early high
       (by simpa using count)
     obtain ⟨S, cardS, hS⟩ := seat_positions genesis shared r altair
-    refine ⟨B, S, cardB, by simpa using cardS, fun i pos => ?_⟩
-    rcases hB i pos with member | ⟨w, found, mem⟩
-    · exact .inl member
-    · exact .inr (hS i w found mem)
+    refine ⟨B, S, cardB, by simpa using cardS, fun i pos => ?_, ?_⟩
+    · rcases hB i pos with member | ⟨w, found, mem⟩
+      · exact .inl member
+      · exact .inr (hS i w found mem)
+    · intro events replayed i pos
+      obtain ⟨w, found, mem⟩ := hD events replayed i pos
+      exact hS i w found mem
   | succ n ih =>
     intro x shared r fulu count
     have electra : .pectra ≤ x.fork := Nat.le_trans (by decide) fulu
@@ -1211,10 +1216,10 @@ private theorem credited_pieces {g : ForkedBeaconState preset}
         (fork_le_of_chainSteps post.chainSteps)) early
     have vFulu : .fusaka ≤ v.fork :=
       Nat.le_trans fulu (fork_le_of_chainSteps (pre.snoc step).chainSteps)
-    obtain ⟨B₁, cardB₁, hB₁, -⟩ := credited_piece genesis shared pre fulu altair mEarly high
+    obtain ⟨B₁, cardB₁, hB₁, hD₁⟩ := credited_piece genesis shared pre fulu altair mEarly high
       (by simpa using mSame)
     obtain ⟨S₁, cardS₁, hS₁⟩ := seat_positions genesis shared pre altair
-    obtain ⟨B₂, S₂, cardB₂, cardS₂, hB₂⟩ := ih (x := v) (shared.append (pre.snoc step)) post vFulu
+    obtain ⟨B₂, S₂, cardB₂, cardS₂, hB₂, hD₂⟩ := ih (x := v) (shared.append (pre.snoc step)) post vFulu
       (by omega)
     -- The step leaves an epoch, so it is a slot step: a block step keeps its epoch.
     have slotStep : ∃ ok, step = Step.slot ok := by
@@ -1237,7 +1242,7 @@ private theorem credited_pieces {g : ForkedBeaconState preset}
         exact hm' hv'
     obtain ⟨ok, rfl⟩ := slotStep
     subst split
-    refine ⟨B₁ ∪ B₂, S₁ ∪ S₂, ?_, ?_, fun i pos => ?_⟩
+    refine ⟨B₁ ∪ B₂, S₁ ∪ S₂, ?_, ?_, fun i pos => ?_, ?_⟩
     · rw [Run.blockCount_append]
       exact (Finset.card_union_le _ _).trans (Nat.add_le_add cardB₁ cardB₂)
     · refine (Finset.card_union_le _ _).trans ?_
@@ -1258,6 +1263,37 @@ private theorem credited_pieces {g : ForkedBeaconState preset}
         rcases hB₂ i later with member | member
         · exact .inl (Finset.mem_union_right _ member)
         · exact .inr (Finset.mem_union_right _ member)
+    · intro events replayed i pos
+      have vEarly : v.fork < .glamsterdam :=
+        Nat.lt_of_le_of_lt (fork_le_of_chainSteps post.chainSteps) early
+      obtain ⟨e1, ok1⟩ := (pre.snoc (Step.slot ok)).balanceEvents_ok vEarly high
+      obtain ⟨e2, ok2⟩ := post.balanceEvents_ok early high
+      rw [DirectSafety.Apriori.Internal.balanceEvents_append _ _ high ok1 ok2] at replayed
+      have joined := Except.ok.inj replayed
+      subst joined
+      simp only [List.map_append, List.sum_append] at pos
+      by_cases first : 0 < ((e1.map (syncDebit i))).sum
+      · refine Finset.mem_union_left _ ?_
+        simp only [Run.balanceEvents, bind_ok_iff] at ok1
+        obtain ⟨prior, priorOk, rest⟩ := ok1
+        split at rest
+        · simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at rest
+          obtain ⟨added, addedOk, rfl⟩ := rest
+          have quiet := PinSplit5.slot_noSync
+            (Nat.le_trans (by decide) (Nat.le_trans (by decide)
+              (Nat.le_trans fulu (fork_le_of_chainSteps pre.chainSteps)))) ok vEarly addedOk
+          have zero : (added.map (syncDebit i)).sum = 0 :=
+            List.sum_eq_zero fun a member => by
+              obtain ⟨e, inside, rfl⟩ := List.mem_map.mp member
+              simp [syncDebit, quiet e inside]
+          simp only [List.map_append, List.sum_append, zero, Nat.add_zero] at first
+          obtain ⟨w, found, mem⟩ := hD₁ prior priorOk i first
+          exact hS₁ i w found mem
+        · simp only [pure, Except.pure, Except.ok.injEq] at rest
+          subst rest
+          obtain ⟨w, found, mem⟩ := hD₁ _ priorOk i first
+          exact hS₁ i w found mem
+      · exact Finset.mem_union_right _ (hD₂ e2 ok2 i (by omega))
 
 /-- The credits that a scan reads from a run, after one more step. -/
 private theorem creditScan_snoc_fst (blockP slotP : BalanceSource → Bool) (v high : ℕ)
