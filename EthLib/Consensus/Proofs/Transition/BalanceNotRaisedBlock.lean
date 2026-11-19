@@ -1282,7 +1282,7 @@ private theorem kept_processEth1Data {before : fork < .hegota} {body : BeaconBlo
 
 /-! ## The sync aggregate -/
 
-/-- Sync rewards at a position: no rise without a signer, no fall without an unsigned member. -/
+/-- Sync rewards: no rise without a signer or paid proposer there, no fall without a non-signer. -/
 theorem syncRewards_bounds {reward proposerReward index : Nat} {chosen : ValidatorIndex} :
     ∀ (members : List (ValidatorIndex × Bool)) (balance : Nat),
       ((∀ member ∈ members, member.2 = true → member.1.toNat ≠ index ∧ chosen.toNat ≠ index) →
