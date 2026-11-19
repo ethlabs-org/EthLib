@@ -1416,7 +1416,7 @@ private theorem credited_deposits {g : ForkedBeaconState preset}
                 exact absurd ⟨e, mem, by simpa using test⟩ any
             omega
 
-/-- The keys that a run from the split credits.
+/-- The keys that a run from the split credits or debits through a sync seat.
 
 They are at most its proposers, its seat holders and its deposit recipients.
 
@@ -1426,12 +1426,16 @@ A block step has one proposer, and an epoch has at most one block for each slot.
 
 The seat holders are those of one sync committee for each period that the run touches.
 
-An epoch pass applies at most `MAX_PENDING_DEPOSITS_PER_EPOCH` deposits. -/
-private theorem credited_keys_le (h : Setting config checks g split fin pulled anc counted V)
-    {x : BeaconState preset fork} (tail : Run config checks ⟨fork, split⟩ ⟨fork, x⟩) (high : ℕ) :
-    ((Finset.range x.validators.data.size).filter fun i =>
-        0 < netScan i high tail +
-          (creditScan (fun _ => false) (fun s => decide (s = .deposits)) i high tail).1).card ≤
+An epoch pass applies at most `MAX_PENDING_DEPOSITS_PER_EPOCH` deposits.
+
+A key that a sync aggregate debits holds a seat of the committee of its period. -/
+private theorem banded_keys_le (h : Setting config checks g split fin pulled anc counted V)
+    {x : BeaconState preset fork} (tail : Run config checks ⟨fork, split⟩ ⟨fork, x⟩) (high : ℕ)
+    {events : List (BalanceEvent preset)} (replayed : tail.balanceEvents high = .ok events)
+    (keys : Finset ℕ) (banded : ∀ i ∈ keys, 0 < netScan i high tail +
+      (creditScan (fun _ => false) (fun s => decide (s = .deposits)) i high tail).1 +
+        (events.map (syncDebit i)).sum) :
+    keys.card ≤
       ((getCurrentEpoch x).toNat - (getCurrentEpoch split).toNat + 1) *
           (preset.SLOTS_PER_EPOCH.toNat + preset.MAX_PENDING_DEPOSITS_PER_EPOCH.toNat) +
         preset.SYNC_COMMITTEE_SIZE.toNat *
@@ -1453,23 +1457,23 @@ private theorem credited_keys_le (h : Setting config checks g split fin pulled a
         ((getCurrentEpoch x).toNat / max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat -
           (getCurrentEpoch split).toNat /
             max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat) := by omega
-  obtain ⟨B, S, cardB, cardS, hBS, -⟩ := credited_pieces h.genesis (y := ⟨fork, x⟩) h.early high
+  obtain ⟨B, S, cardB, cardS, hBS, hSD⟩ := credited_pieces h.genesis (y := ⟨fork, x⟩) h.early high
     ((getCurrentEpoch x).toNat / max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat -
       (getCurrentEpoch split).toNat / max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat)
     shared tail h.fulu periods
   obtain ⟨D, cardD, hD⟩ := credited_deposits h.genesis shared tail h.early h.delay high
   have cardD' : D.card ≤ preset.MAX_PENDING_DEPOSITS_PER_EPOCH.toNat *
       ((getCurrentEpoch x).toNat - (getCurrentEpoch split).toNat) := cardD
-  have subset : ((Finset.range x.validators.data.size).filter fun i =>
-        0 < netScan i high tail +
-          (creditScan (fun _ => false) (fun s => decide (s = .deposits)) i high tail).1) ⊆
-      B ∪ S ∪ D := fun i member => by
-    have pos := (Finset.mem_filter.mp member).2
+  have subset : keys ⊆ B ∪ S ∪ D := fun i member => by
+    have pos := banded i member
     by_cases net : 0 < netScan i high tail
     · rcases hBS i net with inB | inS
       · exact Finset.mem_union_left _ (Finset.mem_union_left _ inB)
       · exact Finset.mem_union_left _ (Finset.mem_union_right _ inS)
-    · exact Finset.mem_union_right _ (hD i (by omega))
+    · by_cases dep : 0 < (creditScan (fun _ => false) (fun s => decide (s = .deposits)) i high
+          tail).1
+      · exact Finset.mem_union_right _ (hD i dep)
+      · exact Finset.mem_union_left _ (Finset.mem_union_right _ (hSD events replayed i (by omega)))
   -- The blocks of the run are at most one for each slot of its epochs.
   have blocks : tail.blockCount ≤
       ((getCurrentEpoch x).toNat - (getCurrentEpoch split).toNat + 1) *
@@ -1508,6 +1512,25 @@ private theorem credited_keys_le (h : Setting config checks g split fin pulled a
             ((getCurrentEpoch x).toNat - (getCurrentEpoch split).toNat) +
               preset.MAX_PENDING_DEPOSITS_PER_EPOCH.toNat := by ring
   omega
+
+/-- The keys that a run from the split credits.
+
+They are at most its proposers, its seat holders and its deposit recipients. -/
+private theorem credited_keys_le (h : Setting config checks g split fin pulled anc counted V)
+    {x : BeaconState preset fork} (tail : Run config checks ⟨fork, split⟩ ⟨fork, x⟩) (high : ℕ) :
+    ((Finset.range x.validators.data.size).filter fun i =>
+        0 < netScan i high tail +
+          (creditScan (fun _ => false) (fun s => decide (s = .deposits)) i high tail).1).card ≤
+      ((getCurrentEpoch x).toNat - (getCurrentEpoch split).toNat + 1) *
+          (preset.SLOTS_PER_EPOCH.toNat + preset.MAX_PENDING_DEPOSITS_PER_EPOCH.toNat) +
+        preset.SYNC_COMMITTEE_SIZE.toNat *
+          ((getCurrentEpoch x).toNat / max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat -
+            (getCurrentEpoch split).toNat / max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat +
+              1) := by
+  obtain ⟨events, replayed⟩ := tail.balanceEvents_ok h.early high
+  exact banded_keys_le h tail high replayed _ fun i member => by
+    have pos := (Finset.mem_filter.mp member).2
+    omega
 
 /-! ## The classes of keys and their costs -/
 
