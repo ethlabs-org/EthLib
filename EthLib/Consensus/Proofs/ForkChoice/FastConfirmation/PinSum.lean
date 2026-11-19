@@ -14057,6 +14057,16 @@ private def slashedOnC (split counted : BeaconState preset fork) : Finset ℕ :=
     (split.validators.data[i]?.map (·.slashed)).getD false = false ∧
       (counted.validators.data[i]?.map (·.slashed)).getD false = true
 
+/-- The keys of R's registry that are not slashed at R and that `exitedSlashable` counts.
+
+They exit by R's next epoch and are not withdrawable by the finalized epoch. -/
+private def exitedSlashable (anc pulled : BeaconState preset fork) (i : ℕ) : Bool :=
+  decide ((pulled.validators.data[i]?.map (·.slashed)).getD false = false ∧
+    ((pulled.validators.data[i]?).map fun v =>
+      decide (v.exitEpoch.toNat ≤ (getCurrentEpoch pulled).toNat + 1)).getD false = true ∧
+    ((pulled.validators.data[i]?).any fun v =>
+      decide (anc.finalizedCheckpoint.epoch.toNat < v.withdrawableEpoch.toNat)) = true)
+
 /-- The bound on the effective balance of a key of R's registry that R's call reads.
 
 It is the key's effective balance, its rise and one increment, if R's branch slashes it.
@@ -14069,6 +14079,8 @@ A prefix state of the finalized epoch can reach that balance.
 
 A key that `exitedSlashable`, `late` or `pendingR` charges is read at its balance and rise, or `bF`.
 
+It is also read at its effective balance at the finalized state.
+
 It is read without `ebUp`, which can exceed them.
 
 Otherwise it is also at least the key's bound `ebUp`. -/
@@ -14076,13 +14088,9 @@ private def whistleEnv (t : PinTerms preset) (pulled anc fin : BeaconState prese
     ℕ :=
   if t.slashedRB i = true then
     max (balanceAt pulled i + t.rise i + preset.EFFECTIVE_BALANCE_INCREMENT.toNat) (balanceAt fin i)
-  else if ((pulled.validators.data[i]?.map (·.slashed)).getD false = false ∧
-      ((pulled.validators.data[i]?.map fun v =>
-        decide (v.exitEpoch.toNat ≤ (getCurrentEpoch pulled).toNat + 1)).getD false = true) ∧
-      ((pulled.validators.data[i]?).any fun v =>
-        decide (anc.finalizedCheckpoint.epoch.toNat < v.withdrawableEpoch.toNat)) = true) ∨
+  else if exitedSlashable anc pulled i = true ∨
       (t.tight = false ∧ (t.lateB i = true ∨ t.pendingRB i = true)) then
-    max (balanceAt pulled i + t.rise i) (t.bF i)
+    max (balanceAt pulled i + t.rise i) (max (t.bF i) (balanceAt fin i))
   else max (max (t.ebUp i) (balanceAt pulled i + t.rise i)) (t.bF i)
 
 /-- The credits that raise the effective balance of a key of R's registry on C's branch.
@@ -14470,16 +14478,6 @@ private theorem floor_add_ceil_le (a b Q : ℕ) (pos : 0 < Q) :
   have : (qa + qb).succ * Q = Q * qa + Q * qb + Q := by rw [Nat.succ_mul]; ring
   rw [this]
   omega
-/-- The keys of R's registry that are not slashed at R and that `exitedSlashable` counts.
-
-They exit by R's next epoch and are not withdrawable by the finalized epoch. -/
-private def exitedSlashable (anc pulled : BeaconState preset fork) (i : ℕ) : Bool :=
-  decide ((pulled.validators.data[i]?.map (·.slashed)).getD false = false ∧
-    ((pulled.validators.data[i]?).map fun v =>
-      decide (v.exitEpoch.toNat ≤ (getCurrentEpoch pulled).toNat + 1)).getD false = true ∧
-    ((pulled.validators.data[i]?).any fun v =>
-      decide (anc.finalizedCheckpoint.epoch.toNat < v.withdrawableEpoch.toNat)) = true)
-
 /-- (W-S) The slack and the rounding of the slashed keys' rewards are paid by the shares and bands.
 
 A key of the split's registry is read at its bound and the slack that `registry` adds.
