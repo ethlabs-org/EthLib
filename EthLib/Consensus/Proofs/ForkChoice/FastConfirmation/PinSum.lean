@@ -1716,12 +1716,12 @@ private theorem seat_union_card (h : Setting config checks g split fin pulled an
   have periodsC : (getCurrentEpoch counted).toNat / P =
       (getCurrentEpoch fin).toNat / P +
         ((getCurrentEpoch counted).toNat / P - (getCurrentEpoch fin).toNat / P) := by omega
-  obtain ⟨LsR, -, -, -, -, -, -, -, -, debitR, familyR⟩ :=
+  obtain ⟨LsR, BR, SR, DR, -, -, -, -, -, debitR, familyR⟩ :=
     credited_pieces_seated h.genesis (y := ⟨fork, pulled⟩) h.early h.delay high
       ((getCurrentEpoch pulled).toNat / max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat -
         (getCurrentEpoch split).toNat / max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat)
       (toFin.append fromFin) tail h.fulu (by rw [hP]; exact periodsR)
-  obtain ⟨LsC, -, -, -, -, -, -, -, -, debitC, familyC⟩ :=
+  obtain ⟨LsC, BC, SC, DC, -, -, -, -, -, debitC, familyC⟩ :=
     credited_pieces_seated h.genesis (y := ⟨fork, counted⟩) h.early h.delay high
       ((getCurrentEpoch counted).toNat / max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat -
         (getCurrentEpoch fin).toNat / max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat)
@@ -1729,6 +1729,11 @@ private theorem seat_union_card (h : Setting config checks g split fin pulled an
   simp only [hP] at familyR familyC
   have replayedRC : (fromFin.append tailC).balanceEvents high = .ok (eventsF ++ eventsC) :=
     DirectSafety.Apriori.Internal.balanceEvents_append fromFin tailC high replayedF replayedC
+  have arith : ((getCurrentEpoch counted).toNat / P - (getCurrentEpoch fin).toNat / P + 1) +
+      ((getCurrentEpoch pulled).toNat / P - (getCurrentEpoch split).toNat / P - 1) ≤
+      ((getCurrentEpoch pulled).toNat + 1) / P - (getCurrentEpoch fin).toNat / P + 1 +
+        ((getCurrentEpoch pulled).toNat + 2 - anc.finalizedCheckpoint.epoch.toNat) / P := by
+    omega
   generalize hnR : (getCurrentEpoch pulled).toNat / P - (getCurrentEpoch split).toNat / P = nR
     at *
   generalize hnC : (getCurrentEpoch counted).toNat / P - (getCurrentEpoch fin).toNat / P = nC
@@ -1764,9 +1769,9 @@ private theorem seat_union_card (h : Setting config checks g split fin pulled an
     rw [hL, ← hLcur]
     rcases Run.prefix_total r1 r2 fromFin tailC cut rfl with ⟨r, -⟩ | ⟨r, -⟩
     · exact (r.currentSyncCommittee_eq_of_same_period h.early
-        (by rw [hP]; omega) altairF alt).symm
+        (by rw [hP]; simp only; omega) altairF alt).symm
     · exact r.currentSyncCommittee_eq_of_same_period earlyZ
-        (by rw [hP]; omega) alt altairF
+        (by rw [hP]; simp only; omega) alt altairF
   have secondC : 1 ≤ nR → ∃ j ≤ nC, LsC j = Lnext := fun one => by
     refine ⟨(getCurrentEpoch split).toNat / P - (getCurrentEpoch fin).toNat / P + 1,
       by omega, ?_⟩
@@ -1781,7 +1786,7 @@ private theorem seat_union_card (h : Setting config checks g split fin pulled an
       try simp only at order
       have := Nat.div_le_div_right (c := P) order
       omega
-    · exact rotation r earlyZ (by omega) alt altairF
+    · exact rotation r earlyZ (by simp only; omega) alt altairF
   -- the positions that hold a key of the committees of each run
   have distinctR : PubkeysDistinct pulled :=
     ((toFin.append fromFin).append tail).pubkeysDistinct h.genesis
@@ -1850,8 +1855,7 @@ private theorem seat_union_card (h : Setting config checks g split fin pulled an
           ⟨Finset.mem_range.mpr (Array.getElem?_eq_some_iff.mp foundC).1, c, foundC, L, hL,
             by rw [sameC, sameS]; exact hLmem⟩)
   · rw [← Nat.mul_add]
-    refine Nat.mul_le_mul_left _ ?_
-    omega
+    exact Nat.mul_le_mul_left _ arith
 
 /-- The keys that a run from the split credits or debits through a sync seat.
 
