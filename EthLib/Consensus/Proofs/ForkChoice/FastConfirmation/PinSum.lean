@@ -6237,6 +6237,45 @@ private theorem ebUp_eq (config : Config) (pulled anc fin : BeaconState preset f
   rfl
 
 open DirectSafety.Apriori.Internal in
+/-- The bound `ebUp` on a key's effective balance is a whole number of increments.
+
+It is the greatest of the effective balances at R and at the finalized state, and a rounded top.
+
+The cap in the rounded top is aligned. -/
+private theorem ebUp_aligned (h : Setting config checks g split fin pulled anc counted V)
+    (fromFin : Run config checks ⟨fork, fin⟩ ⟨fork, split⟩) (v : ValidatorIndex)
+    (alignedCap : PinSplit2.capAt (⟨fork, pulled⟩ : ForkedBeaconState preset) v.toNat %
+      preset.EFFECTIVE_BALANCE_INCREMENT.toNat = 0) :
+    (pinTerms config pulled anc fin).ebUp v.toNat %
+      preset.EFFECTIVE_BALANCE_INCREMENT.toNat = 0 := by
+  obtain ⟨shared⟩ := h.toFin
+  obtain ⟨toPulled⟩ := h.toPulled
+  have electra : .pectra ≤ fork := Nat.le_trans (by decide) h.fulu
+  obtain ⟨t, ht⟩ : ∃ t, (pinTerms config pulled anc fin).ebUp v.toNat =
+      max (max (balanceAt pulled v.toNat) (balanceAt fin v.toNat))
+        (min (PinSplit2.capAt (⟨fork, pulled⟩ : ForkedBeaconState preset) v.toNat)
+          (t - t % preset.EFFECTIVE_BALANCE_INCREMENT.toNat)) :=
+    ⟨_, ebUp_eq config pulled anc fin electra v.toNat _ rfl⟩
+  have a1 : balanceAt pulled v.toNat % preset.EFFECTIVE_BALANCE_INCREMENT.toNat = 0 :=
+    FloorTrace.effective_aligned (shared.append (fromFin.append toPulled)) h.genesis h.aligned
+      v.toNat
+  have a2 : balanceAt fin v.toNat % preset.EFFECTIVE_BALANCE_INCREMENT.toNat = 0 :=
+    FloorTrace.effective_aligned shared h.genesis h.aligned v.toNat
+  have a3 : (t - t % preset.EFFECTIVE_BALANCE_INCREMENT.toNat) %
+      preset.EFFECTIVE_BALANCE_INCREMENT.toNat = 0 :=
+    Nat.sub_mod_eq_zero_of_mod_eq (Nat.mod_mod _ _).symm
+  have maxAligned : ∀ a b : ℕ, a % preset.EFFECTIVE_BALANCE_INCREMENT.toNat = 0 →
+      b % preset.EFFECTIVE_BALANCE_INCREMENT.toNat = 0 →
+      max a b % preset.EFFECTIVE_BALANCE_INCREMENT.toNat = 0 := fun a b ha hb => by
+    rcases max_choice a b with e | e <;> rw [e] <;> assumption
+  have minAligned : ∀ a b : ℕ, a % preset.EFFECTIVE_BALANCE_INCREMENT.toNat = 0 →
+      b % preset.EFFECTIVE_BALANCE_INCREMENT.toNat = 0 →
+      min a b % preset.EFFECTIVE_BALANCE_INCREMENT.toNat = 0 := fun a b ha hb => by
+    rcases min_choice a b with e | e <;> rw [e] <;> assumption
+  rw [ht]
+  exact maxAligned _ _ (maxAligned _ _ a1 a2) (minAligned _ _ alignedCap a3)
+
+open DirectSafety.Apriori.Internal in
 /-- A key's balance on C's branch is at most R's balance, its debits, its credits and the gains.
 
 The key is in the low regime, so its effective balance bound `ebUp` closes the ceiling.
@@ -6335,16 +6374,11 @@ private theorem c_ceiling (h : Setting config checks g split fin pulled anc coun
       omega
     rw [ebUp_eq config pulled anc fin electra v.toNat _ rfl]
     exact le_trans (min_le_min le_rfl (key _)) (le_max_right _ _)
-  have eb : ∃ t, (pinTerms config pulled anc fin).ebUp v.toNat =
-      max (max (balanceAt pulled v.toNat) (balanceAt fin v.toNat))
-        (min (PinSplit2.capAt (⟨fork, pulled⟩ : ForkedBeaconState preset) v.toNat)
-          (t - t % preset.EFFECTIVE_BALANCE_INCREMENT.toNat)) :=
-    ⟨_, ebUp_eq config pulled anc fin electra v.toNat _ rfl⟩
   obtain ⟨i, hi⟩ : ∃ i, i = v.toNat := ⟨_, rfl⟩
-  rw [← hi] at inside alignedCap startCap capCeil startEff floorR debits rateLow top eb ⊢
+  rw [← hi] at inside alignedCap startCap capCeil startEff floorR debits rateLow top ⊢
   obtain ⟨capI, hcap0⟩ : ∃ capI, capI =
       PinSplit2.capAt (⟨fork, pulled⟩ : ForkedBeaconState preset) i := ⟨_, rfl⟩
-  rw [← hcap0] at alignedCap startCap capCeil floorR debits top eb ⊢
+  rw [← hcap0] at alignedCap startCap capCeil floorR debits top ⊢
   obtain ⟨pd, hpd⟩ : ∃ pd, pd = dueAmount fin electra i ((getCurrentEpoch pulled).toNat + 1) -
       dueAmount pulled electra i ((getCurrentEpoch pulled).toNat + 1) := ⟨_, rfl⟩
   rw [← hpd] at debits top
@@ -6356,8 +6390,6 @@ private theorem c_ceiling (h : Setting config checks g split fin pulled anc coun
   rw [← hDs] at floorR startEff ⊢
   rw [← hDsF] at startEff ⊢
   classical
-  obtain ⟨shared⟩ := h.toFin
-  obtain ⟨toPulled⟩ := h.toPulled
   have near := h.near
   have finalized := UInt64.le_iff_toNat_le.mp h.finalized
   have finSplit : (getCurrentEpoch fin).toNat ≤ (getCurrentEpoch split).toNat :=
@@ -6391,24 +6423,8 @@ private theorem c_ceiling (h : Setting config checks g split fin pulled anc coun
       (show 10 * (DsF + Ds + W) ≤ 11 * (Cr + Ds + DsF + W + D * q + D) by omega)
     rwa [Nat.mul_div_mul_left _ _ (by norm_num : 0 < 10)] at le
   have alignedE0 : e0 % preset.EFFECTIVE_BALANCE_INCREMENT.toNat = 0 := by
-    obtain ⟨t, ht⟩ := eb
-    have a1 : balanceAt pulled i % preset.EFFECTIVE_BALANCE_INCREMENT.toNat = 0 :=
-      FloorTrace.effective_aligned (shared.append (fromFin.append toPulled)) h.genesis h.aligned i
-    have a2 : balanceAt fin i % preset.EFFECTIVE_BALANCE_INCREMENT.toNat = 0 :=
-      FloorTrace.effective_aligned shared h.genesis h.aligned i
-    have a3 : (t - t % preset.EFFECTIVE_BALANCE_INCREMENT.toNat) %
-        preset.EFFECTIVE_BALANCE_INCREMENT.toNat = 0 :=
-      Nat.sub_mod_eq_zero_of_mod_eq (Nat.mod_mod _ _).symm
-    have maxAligned : ∀ a b : ℕ, a % preset.EFFECTIVE_BALANCE_INCREMENT.toNat = 0 →
-        b % preset.EFFECTIVE_BALANCE_INCREMENT.toNat = 0 →
-        max a b % preset.EFFECTIVE_BALANCE_INCREMENT.toNat = 0 := fun a b ha hb => by
-      rcases max_choice a b with e | e <;> rw [e] <;> assumption
-    have minAligned : ∀ a b : ℕ, a % preset.EFFECTIVE_BALANCE_INCREMENT.toNat = 0 →
-        b % preset.EFFECTIVE_BALANCE_INCREMENT.toNat = 0 →
-        min a b % preset.EFFECTIVE_BALANCE_INCREMENT.toNat = 0 := fun a b ha hb => by
-      rcases min_choice a b with e | e <;> rw [e] <;> assumption
-    rw [he0, ht]
-    exact maxAligned _ _ (maxAligned _ _ a1 a2) (minAligned _ _ alignedCap a3)
+    rw [he0, hi]
+    exact ebUp_aligned h fromFin v (by rw [← hi, ← hcap0]; exact alignedCap)
   obtain ⟨P', hP', rateAll⟩ := key_rate_pre h tailC h.near
   rw [hP'.trans hP.symm] at rateAll
   have hDle : D ≤ (pinTerms config pulled anc fin).depth := hD ▸ min_le_left _ _
@@ -10193,16 +10209,8 @@ private theorem envelope_of_voter (h : Setting config checks g split fin pulled 
     rw [balanceEvents_eq_of_endpoint_le tail (localHigh := high) (by simp only; omega)
       (by simp only; omega)]
     exact replayed
-  have alignedCap : PinSplit2.capAt (⟨fork, pulled⟩ : ForkedBeaconState preset) v.toNat %
-      preset.EFFECTIVE_BALANCE_INCREMENT.toNat = 0 := by
-    rw [capAt_of_found (z := (⟨fork, pulled⟩ : ForkedBeaconState preset)) electra foundP]
-    have aMin : preset.MIN_ACTIVATION_BALANCE.toNat %
-        preset.EFFECTIVE_BALANCE_INCREMENT.toNat = 0 := by
-      simpa [UInt64.toNat_mod] using congrArg UInt64.toNat h.aligned.2.1
-    have aMax : preset.MAX_EFFECTIVE_BALANCE_ELECTRA.toNat %
-        preset.EFFECTIVE_BALANCE_INCREMENT.toNat = 0 := by
-      simpa [UInt64.toNat_mod] using congrArg UInt64.toNat h.aligned.2.2
-    split <;> assumption
+  have alignedCap := capAt_aligned h.aligned (z := (⟨fork, pulled⟩ : ForkedBeaconState preset))
+    electra foundP
   exact prefix_envelope h fromFin tail (getCurrentEpoch pulled).toNat (Nat.le_succ _) replayedF'
     replayed' v inFin (slashW (pinTerms config pulled anc fin) v.toNat) alignedCap
     (voter_floorAt h fromFin tail v voter inFin frozen)
@@ -11077,6 +11085,45 @@ private theorem bud_syncLeak (h : Setting config checks g split fin pulled anc c
         3 * ((pinTerms config pulled anc fin).slashedR *
           slashLeak config fork (pinTerms config pulled anc fin)) :=
   sorry
+
+/-- A number of a list is at most the fold of the list by `max`. -/
+private theorem le_foldl_max_of_mem {l : List ℕ} {x : ℕ} (member : x ∈ l) (b : ℕ) :
+    x ≤ l.foldl max b := by
+  induction l generalizing b with
+  | nil => cases member
+  | cons a rest ih =>
+    simp only [List.foldl_cons]
+    rcases List.mem_cons.mp member with rfl | later
+    · have grow : ∀ (rest : List ℕ) (b : ℕ), b ≤ rest.foldl max b := fun rest => by
+        induction rest with
+        | nil => exact fun b => Nat.le_refl b
+        | cons c more ih' => exact fun b => Nat.le_trans (Nat.le_max_left b c) (ih' (max b c))
+      exact Nat.le_trans (Nat.le_max_right b _) (grow rest _)
+    · exact ih later (max b a)
+
+/-- The low-rate arm of `rise` is chosen when the depth is within the delay and the gain is low. -/
+private theorem keptArm_eq (config : Config)
+    (state ancestor finalizedState : BeaconState preset fork) (i : ℕ) :
+    (pinTerms config state ancestor finalizedState).keptArm i =
+      (decide ((pinTerms config state ancestor finalizedState).depthFin ≤
+          config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat) &&
+        decide (11 * (pinTerms config state ancestor finalizedState).depth *
+          ((pinTerms config state ancestor finalizedState).gainRate i + 1) ≤
+            (pinTerms config state ancestor finalizedState).ebUp i)) := rfl
+
+/-- A key's cap is a whole number of increments. -/
+private theorem capAt_aligned (aligned : MaxEffectiveBalancesAligned preset)
+    {z : ForkedBeaconState preset} (electra : .pectra ≤ z.fork) {i : ℕ} {w : Validator}
+    (found : z.state.validators.data[i]? = some w) :
+    PinSplit2.capAt z i % preset.EFFECTIVE_BALANCE_INCREMENT.toNat = 0 := by
+  rw [capAt_of_found electra found]
+  have aMin : preset.MIN_ACTIVATION_BALANCE.toNat %
+      preset.EFFECTIVE_BALANCE_INCREMENT.toNat = 0 := by
+    simpa [UInt64.toNat_mod] using congrArg UInt64.toNat aligned.2.1
+  have aMax : preset.MAX_EFFECTIVE_BALANCE_ELECTRA.toNat %
+      preset.EFFECTIVE_BALANCE_INCREMENT.toNat = 0 := by
+    simpa [UInt64.toNat_mod] using congrArg UInt64.toNat aligned.2.2
+  split <;> assumption
 
 /-- The per-key core of the rise.
 
