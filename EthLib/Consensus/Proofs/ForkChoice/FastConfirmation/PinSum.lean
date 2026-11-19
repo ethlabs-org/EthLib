@@ -1771,13 +1771,13 @@ private theorem length_filter_targets {α : Type} (target : α → ValidatorInde
     intro S c L
     by_cases hS : target c ∈ S
     · cases hf : f c with
-      | none => simp [List.filter_cons, hS, hf]
+      | none => simp [hS, hf]
       | some x =>
         by_cases hx : p x = true
-        · simp [List.filter_cons, hS, hf, hx]
+        · simp [hS, hf, hx]
           omega
-        · simp [List.filter_cons, hS, hf, hx]
-    · simp [List.filter_cons, hS]
+        · simp [hS, hf, hx]
+    · simp [hS]
   induction L with
   | nil => simp
   | cons c L ih =>
@@ -1788,8 +1788,6 @@ private theorem length_filter_targets {α : Type} (target : α → ValidatorInde
     by_cases hT : target c ∈ T
     · simp [hT, Finset.mem_singleton, Finset.sum_ite_eq]
     · simp [hT, Finset.mem_singleton]
-      intro v hv
-      exact fun hvc => hT (hvc ▸ hv)
 
 /-- The due consolidations into a set of targets are those into each of its keys, added. -/
 private theorem dueAt_sum_singleton (X : BeaconState preset fork) (high : ℕ)
@@ -1798,8 +1796,8 @@ private theorem dueAt_sum_singleton (X : BeaconState preset fork) (high : ℕ)
   unfold dueAt
   by_cases electra : .pectra ≤ fork
   · simp only [electra, ↓reduceDIte]
-    exact (length_filter_targets (fun c => c.targetIndex)
-      (fun c => X.validators.data[c.sourceIndex.toNat]?)
+    exact (length_filter_targets (fun c : PendingConsolidation => c.targetIndex)
+      (fun c : PendingConsolidation => X.validators.data[c.sourceIndex.toNat]?)
       (fun v => !v.slashed && decide (v.withdrawableEpoch.toNat ≤ high + 1)) T _).symm
   · simp [electra]
 
@@ -1868,15 +1866,19 @@ private theorem stub_V_of (h : Setting config checks g split fin pulled anc coun
     refine Finset.sum_le_sum fun v hv => ?_
     obtain ⟨member, act⟩ := Finset.mem_filter.mp hv
     have := active v member act
+    have nonneg : (0 : ℤ) ≤ ((preset.upwardBand * dueAt fin high {v} : ℕ) : ℤ) :=
+      Int.natCast_nonneg _
     simp only [P]
-    push_cast
+    push_cast at this nonneg ⊢
     omega
   have second : ∑ v ∈ VN counted V, (eR pulled v : ℤ) ≤
       ∑ v ∈ VN counted V, ((P v : ℤ) + X v) := by
     refine Finset.sum_le_sum fun v hv => ?_
     have := left v hv
+    have nonneg : (0 : ℤ) ≤ ((preset.upwardBand * dueAt fin high {v} : ℕ) : ℤ) :=
+      Int.natCast_nonneg _
     simp only [P, X]
-    push_cast at this ⊢
+    push_cast at this nonneg ⊢
     omega
   have partition : ∑ v ∈ V, (P v : ℤ) =
       ∑ v ∈ V.filter (· ∈ AC counted), (P v : ℤ) + ∑ v ∈ VN counted V, (P v : ℤ) := by
