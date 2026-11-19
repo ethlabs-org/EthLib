@@ -1220,9 +1220,9 @@ private theorem intervalLoss_LateReplay.rewards {bound : Nat} {fork : Fork}
     (ok : replayRewards (config := config) pre = .ok post) :
     intervalLoss_LateReplay bound start post :=
   replayRewards_induction (fun next => intervalLoss_LateReplay bound start next)
-    (fun prior ok => prior.record (fun t computed => .of_data (congrArg (·.data)
+    (fun prior ok => prior.record (fun _ computed => .of_data (congrArg (·.data)
       (increaseBalance_validators (liftAccessor_ok.mp computed)))) ok)
-    (fun _ prior ok => prior.record (fun t computed => .of_data (congrArg (·.data)
+    (fun _ prior ok => prior.record (fun _ computed => .of_data (congrArg (·.data)
       (decreaseBalance_validators (liftAccessor_ok.mp computed)))) ok) prior ok
 
 /-- Applying the pending deposits keeps each withdrawable epoch of the registry. -/
