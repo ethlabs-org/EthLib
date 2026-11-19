@@ -2895,10 +2895,10 @@ private theorem classify_credits (h : Setting config checks g split fin pulled a
       omega
     rcases (sources e member).2.1 positive with s | s | s | s | s
     · exact .inl (by simp [s])
-    · exact absurd (by simpa [s] using nds) (by simp)
+    · simp [s] at nds
     · exact .inr (.inl (by simp [s]))
-    · exact absurd (by simpa [s] using nds) (by simp)
-    · exact absurd (by simpa [s] using nds) (by simp)
+    · simp [s] at nds
+    · simp [s] at nds
 
 /-- `branchR` is the whistleblower, slashed, proposer and rounding charges, with weight three. -/
 private theorem branchR_eq (config : Config)
