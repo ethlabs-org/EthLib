@@ -9461,6 +9461,31 @@ private theorem syncF_run_le (h : Setting config checks g split fin pulled anc c
     band keys).2.1
   exact (Finset.sum_le_sum fun i _ => (syncF_eq evs i).le).trans moves
 
+/-- A key that exited by the epoch of a run's start is inactive at the end of the run.
+
+The run keeps an assigned exit epoch, and the epoch of its end is not before that of its start. -/
+private theorem inactive_of_exited (twoSlots : 2 ≤ preset.SLOTS_PER_EPOCH.toNat)
+    {x y : ForkedBeaconState preset} (tail : Run config checks x y) {i : ℕ} {v : Validator}
+    (found : x.state.validators.data[i]? = some v)
+    (exited : v.exitEpoch.toNat ≤ (getCurrentEpoch x.state).toNat) :
+    isActiveAt y.state (getCurrentEpoch y.state) i = false := by
+  have assigned : v.exitEpoch ≠ FAR_FUTURE_EPOCH := by
+    intro same
+    rw [same] at exited
+    have farNat : FAR_FUTURE_EPOCH.toNat = 2 ^ 64 - 1 := rfl
+    have bound := (getCurrentEpoch x.state).toNat_lt_size
+    simp only [UInt64.size] at bound
+    exact getCurrentEpoch_ne_farFuture twoSlots x.state (UInt64.toNat_inj.mp (by omega))
+  obtain ⟨later, foundLater, kept⟩ := tail.registryLifecycle.validators i v found
+  have exitLater := kept.exitEpoch assigned
+  have forward := UInt64.le_iff_toNat_le.mp (currentEpoch_le_of_chainSteps tail.chainSteps)
+  have reached : later.exitEpoch ≤ getCurrentEpoch y.state :=
+    UInt64.le_iff_toNat_le.mpr (by rw [exitLater]; exact Nat.le_trans exited forward)
+  have inactive : isActiveValidator later (getCurrentEpoch y.state) = false := by
+    unfold isActiveValidator
+    simp [not_lt.mpr reached]
+  simp [isActiveAt, foundLater, inactive]
+
 /-- S1 (syncSeats): every seat, weight 3 for V, K4 and K5 and 1 for K6.
 
 The proposer's share of the sync credits is in `syncF`, so the bound adds the `syncProposer` part
