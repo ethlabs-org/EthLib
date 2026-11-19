@@ -11270,6 +11270,65 @@ private theorem key_core_frozen (h : Setting config checks g split fin pulled an
       (voter_floorAt h fromFin tail v voter inFin frozen) below r1 r2 cutZ
     rw [hDf]
     exact this
+  obtain ⟨Bc, hBc⟩ : ∃ Bc, Bc = actualBalanceAt (⟨fork, pulled⟩ : ForkedBeaconState preset)
+        v.toNat + (Df * (pinTerms config pulled anc fin).leakAt M v.toNat +
+          (dueAmount fin electra v.toNat ((getCurrentEpoch pulled).toNat + 1) -
+            dueAmount pulled electra v.toNat ((getCurrentEpoch pulled).toNat + 1))) +
+      ((eventsF.map (syncDebit v.toNat)).sum + (events.map (syncDebit v.toNat)).sum +
+        slashW (pinTerms config pulled anc fin) v.toNat) + (Cr + (gc + (D * q + D))) :=
+    ⟨_, rfl⟩
+  have onC : ∀ z ∈ (fromFin.append tailC).balancePath,
+      min (actualBalanceAt z v.toNat)
+        (PinSplit2.capAt (⟨fork, pulled⟩ : ForkedBeaconState preset) v.toNat) ≤ Bc := by
+    intro z member
+    rw [Run.balancePath_append] at member
+    rcases List.mem_append.mp member with front | later
+    · have inR : z ∈ (fromFin.append tail).balancePath := by
+        rw [Run.balancePath_append]
+        exact List.mem_append_left _ front
+      have := onR z inR
+      omega
+    · have := bound z (List.mem_of_mem_tail later)
+      omega
+  -- the gain of the flows, and of the base stake, is the flow gain with a unit and the base gain
+  have alignedE0 := ebUp_aligned h fromFin v alignedCap
+  have hDle : D ≤ (pinTerms config pulled anc fin).depth := hD ▸ min_le_left _ _
+  have hq' : q = (pinTerms config pulled anc fin).ebUp v.toNat /
+      preset.EFFECTIVE_BALANCE_INCREMENT.toNat * P *
+        (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum / WEIGHT_DENOMINATOR.toNat := by
+    rw [hq, hP]
+    rfl
+  have key := rate_per_increment preset.EFFECTIVE_BALANCE_INCREMENT.toNat
+    WEIGHT_DENOMINATOR.toNat (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum P
+    ((pinTerms config pulled anc fin).ebUp v.toNat) D h.bands.1 (by decide) alignedE0
+    (by
+      rw [← hq']
+      exact Nat.le_trans (Nat.mul_le_mul_right _ (Nat.mul_le_mul_left 11 hDle)) rateLow)
+  have credits := credits_le_sources (shared.append fromFin) h.genesis tailC h.early electra
+    v.toNat highC replayedC
+  rw [← hCr] at credits
+  have hperIncrement : (pinTerms config pulled anc fin).perIncrement = P := by
+    rw [hP]
+    rfl
+  have gainBound : gc + (D * q + D) ≤
+      flowGain (pinTerms config pulled anc fin) tailC highC eventsC events eventsF v.toNat +
+        unitK (pinTerms config pulled anc fin) tailC highC eventsC events eventsF v.toNat +
+        Df * ((11 * q + 9) / 10 + 3) := by
+    have split := flow_gain_split preset.EFFECTIVE_BALANCE_INCREMENT.toNat
+      WEIGHT_DENOMINATOR.toNat (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum P D
+      (pinTerms config pulled anc fin).depth Df q
+      (Cr + (events.map (syncDebit v.toNat)).sum + (eventsF.map (syncDebit v.toNat)).sum +
+        slashW (pinTerms config pulled anc fin) v.toNat)
+      (flowCredit (pinTerms config pulled anc fin) tailC highC eventsC events eventsF v.toNat)
+      key hDle (hD ▸ min_le_right _ _) (by unfold flowCredit syncCr syncD; omega)
+    have gcEq : gc = D * (11 * ((Cr + (events.map (syncDebit v.toNat)).sum +
+        (eventsF.map (syncDebit v.toNat)).sum + slashW (pinTerms config pulled anc fin) v.toNat) +
+        (D * q + D)) / (10 * preset.EFFECTIVE_BALANCE_INCREMENT.toNat) * P *
+          (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum / WEIGHT_DENOMINATOR.toNat) := by
+      rw [hform, Nat.add_assoc _ (D * q) D]
+    unfold flowGain unitK
+    rw [hperIncrement, gcEq]
+    exact split
   sorry
 
 /-- The per-key core of the rise.
