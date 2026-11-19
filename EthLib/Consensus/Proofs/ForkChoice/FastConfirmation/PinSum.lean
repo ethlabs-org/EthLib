@@ -6711,16 +6711,15 @@ private theorem leakAt_mono (config : Config) (pulled anc fin : BeaconState pres
     (Nat.div_le_div_right (Nat.mul_le_mul_right _ le))
 
 /-- A key's cap does not fall along a run. -/
-private theorem cap_le_cap_of_run (h : Setting config checks g split fin pulled anc counted V)
-    {z y : BeaconState preset fork} (post : Run config checks ⟨fork, z⟩ ⟨fork, y⟩) (i : ℕ) :
-    PinSplit2.capAt (⟨fork, z⟩ : ForkedBeaconState preset) i ≤
-      PinSplit2.capAt (⟨fork, y⟩ : ForkedBeaconState preset) i := by
+private theorem cap_le_cap_of_run (caps : CapOrder preset) {z y : ForkedBeaconState preset}
+    (post : Run config checks z y) (early : y.fork < .glamsterdam) (i : ℕ) :
+    PinSplit2.capAt z i ≤ PinSplit2.capAt y i := by
   unfold PinSplit2.capAt
-  cases found : z.validators.data[i]? with
+  cases found : z.state.validators.data[i]? with
   | none => simp
   | some w =>
-    obtain ⟨w', found', mono⟩ := post.validatorCap_mono h.caps.activation h.caps.compounding
-      h.early i w found
+    obtain ⟨w', found', mono⟩ := post.validatorCap_mono caps.activation caps.compounding early i
+      w found
     simp only [found', Option.map_some, Option.getD_some]
     exact UInt64.le_iff_toNat_le.mp mono
 
@@ -6731,7 +6730,7 @@ private theorem effective_le_cap_pulled (h : Setting config checks g split fin p
     effectiveAt (⟨fork, z⟩ : ForkedBeaconState preset) i ≤
       PinSplit2.capAt (⟨fork, pulled⟩ : ForkedBeaconState preset) i := by
   obtain ⟨shared⟩ := h.toFin
-  refine Nat.le_trans ?_ (cap_le_cap_of_run h post i)
+  refine Nat.le_trans ?_ (cap_le_cap_of_run h.caps post h.early i)
   cases found : z.validators.data[i]? with
   | none => simp [effectiveAt, found]
   | some w =>
@@ -6950,7 +6949,7 @@ private theorem prefix_envelope (h : Setting config checks g split fin pulled an
       exact ceiling s1 s2 cut)
     (fun z' member' => by
       obtain ⟨zs', s1, s2, rfl, cut⟩ := atPath z' member'
-      exact cap_le_cap_of_run h s2 v.toNat)
+      exact cap_le_cap_of_run h.caps s2 h.early v.toNat)
   obtain ⟨origin, -⟩ := bound
   -- the envelope `ebUp` and the rounding
   obtain ⟨t, ht⟩ :
@@ -10566,8 +10565,8 @@ private theorem voter_floorAt (h : Setting config checks g split fin pulled anc 
   -- the cap is the same at every state of R's run, by monotonicity
   have capEq : (withdrawalMaxEffectiveBalance preset fork val).toNat =
       PinSplit2.capAt (⟨fork, pulled⟩ : ForkedBeaconState preset) v.toNat := by
-    have lo := cap_le_cap_of_run h pre v.toNat
-    have hi := cap_le_cap_of_run h rest v.toNat
+    have lo := cap_le_cap_of_run h.caps pre h.early v.toNat
+    have hi := cap_le_cap_of_run h.caps rest h.early v.toNat
     have atZ : PinSplit2.capAt (⟨fork, zs⟩ : ForkedBeaconState preset) v.toNat =
         (withdrawalMaxEffectiveBalance preset fork val).toNat := by
       simp [PinSplit2.capAt, foundZ]
