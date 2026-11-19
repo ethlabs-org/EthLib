@@ -6499,6 +6499,69 @@ private theorem rate_per_increment (I WD F P e0 D : ℕ) (hI : 0 < I) (hWD : 0 <
         _ = (WD * I) * m := by rw [hm]; ring
     exact Nat.lt_of_mul_lt_mul_right f
 
+/-- The base reward per increment is at least four, when the quarter total reads at all.
+
+The root of a quarter total is below `2 ^ 31`, and `room` makes the scaled factor at least `2 ^ 33`.
+
+Below the small total the root is at most a fifth of an increment, which the factor covers.
+
+It is nonzero exactly when the read succeeds, which needs the scaled factor to fit in a `Gwei`. -/
+private theorem four_le_perIncrement (h : Setting config checks g split fin pulled anc counted V)
+    (nonzero : (pinTerms config pulled anc fin).perIncrement ≠ 0) :
+    4 ≤ (pinTerms config pulled anc fin).perIncrement := by
+  have definition : (pinTerms config pulled anc fin).perIncrement =
+      ((getBaseRewardPerIncrement preset
+        (if 18 * preset.EFFECTIVE_BALANCE_INCREMENT.toNat ≤
+            ((getTotalActiveBalance pulled).toOption.getD 0).toNat then
+          (getTotalActiveBalance pulled).toOption.getD 0 / 4
+        else preset.EFFECTIVE_BALANCE_INCREMENT / 5)).toOption.getD 0).toNat := rfl
+  obtain ⟨q, hq⟩ : ∃ q : Gwei, q = (if 18 * preset.EFFECTIVE_BALANCE_INCREMENT.toNat ≤
+        ((getTotalActiveBalance pulled).toOption.getD 0).toNat then
+          (getTotalActiveBalance pulled).toOption.getD 0 / 4
+        else preset.EFFECTIVE_BALANCE_INCREMENT / 5) := ⟨_, rfl⟩
+  rw [← hq] at definition
+  have small : q.toNat < 2 ^ 62 ∨ 5 * q.toNat ≤ preset.EFFECTIVE_BALANCE_INCREMENT.toNat := by
+    rw [hq]
+    split_ifs
+    · left
+      have : ((getTotalActiveBalance pulled).toOption.getD 0).toNat < 2 ^ 64 :=
+        ((getTotalActiveBalance pulled).toOption.getD 0).toNat_lt
+      rw [UInt64.toNat_div]
+      simp only [UInt64.reduceToNat]
+      omega
+    · right
+      rw [UInt64.toNat_div]
+      simp only [UInt64.reduceToNat]
+      omega
+  have reward := h.facts.room
+  have factor := h.facts.reward
+  cases computed : getBaseRewardPerIncrement preset q with
+  | error e =>
+    rw [computed] at definition
+    exact absurd definition nonzero
+  | ok per =>
+    rw [computed] at definition
+    simp only [Except.toOption, Option.getD_some] at definition
+    have formula := toNat_getBaseRewardPerIncrement computed
+    have rootPos : 0 < q.toNat.sqrt := by
+      refine Nat.pos_of_ne_zero fun zero => nonzero ?_
+      rw [definition, formula, zero, Nat.div_zero]
+    have rootSmall : 4 * q.toNat.sqrt ≤ preset.EFFECTIVE_BALANCE_INCREMENT.toNat *
+        preset.BASE_REWARD_FACTOR.toNat := by
+      rcases small with low | tiny
+      · have : q.toNat.sqrt < 2 ^ 31 := Nat.sqrt_lt'.mpr (by norm_num at low ⊢; omega)
+        omega
+      · have : q.toNat.sqrt ≤ q.toNat := Nat.sqrt_le_self _
+        have : preset.EFFECTIVE_BALANCE_INCREMENT.toNat ≤
+            preset.EFFECTIVE_BALANCE_INCREMENT.toNat * preset.BASE_REWARD_FACTOR.toNat :=
+          Nat.le_mul_of_pos_right _ factor
+        omega
+    have four : 4 ≤ per.toNat := by
+      rw [formula]
+      exact (Nat.le_div_iff_mul_le rootPos).mpr rootSmall
+    rw [definition]
+    exact four
+
 /-- Rounding up a whole number of increments gives it back. -/
 private theorem div_round_mul (I u : ℕ) (hI : 0 < I) : (I * u + I - 1) / I = u := by
   rw [show I * u + I - 1 = I * u + (I - 1) by omega, Nat.mul_add_div hI,
