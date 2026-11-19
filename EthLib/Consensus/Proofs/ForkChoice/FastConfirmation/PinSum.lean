@@ -12807,6 +12807,82 @@ private theorem slashed_withdrawable_of_clean
   have finalizedNat := UInt64.le_iff_toNat_le.mp finalized
   omega
 
+open DirectSafety.Apriori DirectSafety.Apriori.Internal in
+/-- A key unslashed at the split that R holds slashed is slashed on R's branch for the pin.
+
+Its slashing is after the split.
+
+So its withdrawable epoch is a slashings vector past the split's epoch.
+
+That epoch is at or after the finalized epoch. -/
+private theorem slashedRB_of_slashed (h : Setting config checks g split fin pulled anc counted V)
+    (tail : Run config checks ⟨fork, split⟩ ⟨fork, pulled⟩) {i : ℕ}
+    (inside : i < split.validators.data.size)
+    (unslashed : (split.validators.data[i]?.map (·.slashed)).getD false = false)
+    {w : Validator} (found : pulled.validators.data[i]? = some w) (slashed : w.slashed = true) :
+    (pinTerms config pulled anc fin).slashedRB i = true := by
+  have limit := BeaconState.registryWithinLimit_of_lt h.early split
+  have index : i.toUInt64.toNat = i := toNat_toUInt64_of_lt limit inside
+  have vector := slashed_withdrawable_of_clean h tail i.toUInt64
+    (fun u read => by
+      rw [index] at read
+      simpa [read] using unslashed)
+    (by rw [index]; exact inside) h.finalized
+  have recent := vector w (by rw [index]; exact found) slashed
+  simp only [pinTerms]
+  simp [found, slashed]
+  exact recent
+
+open DirectSafety.Apriori DirectSafety.Apriori.Internal in
+/-- A key of R's registry that activates no earlier than the finalized epoch exits no earlier.
+
+An unassigned exit is the far future.
+
+An assigned exit is at least one epoch and the seed lookahead after the activation. -/
+private theorem exitAfterFin_of_activation
+    (h : Setting config checks g split fin pulled anc counted V) {i : ℕ} {w : Validator}
+    (found : pulled.validators.data[i]? = some w)
+    (activates : (getCurrentEpoch fin).toNat ≤ w.activationEpoch.toNat) :
+    (getCurrentEpoch fin).toNat ≤ w.exitEpoch.toNat := by
+  obtain ⟨toFin⟩ := h.toFin
+  obtain ⟨fromFin⟩ := h.fromFin
+  obtain ⟨toPulled⟩ := h.toPulled
+  by_cases assigned : w.exitEpoch = FAR_FUTURE_EPOCH
+  · have far := getCurrentEpoch_succ_lt_farFuture h.twoSlots fin
+    have := congrArg UInt64.toNat assigned
+    omega
+  · have gap := (toFin.append (fromFin.append toPulled)).exit_activation_gap h.genesis i w found
+      assigned
+    omega
+
+/-- A pending key of the pin has its activation in the far future, so it exits no earlier. -/
+private theorem exitAfterFin_of_pending (h : Setting config checks g split fin pulled anc counted V)
+    {i : ℕ} (pending : (pinTerms config pulled anc fin).pendingRB i = true) :
+    ∀ w, pulled.validators.data[i]? = some w → (getCurrentEpoch fin).toNat ≤ w.exitEpoch.toNat := by
+  intro w found
+  have far := getCurrentEpoch_succ_lt_farFuture h.twoSlots fin
+  simp only [pinTerms] at pending
+  rw [found] at pending
+  simp only [Option.any_some, Bool.and_eq_true, decide_eq_true_eq] at pending
+  have act : w.activationEpoch = FAR_FUTURE_EPOCH := beq_iff_eq.mp pending.2
+  have := congrArg UInt64.toNat act
+  exact exitAfterFin_of_activation h found (by omega)
+
+/-- A late key of the pin exits no earlier than the finalized epoch.
+
+Its activation is beyond the seed lookahead of the finalized checkpoint.
+
+The state of the finalized block is not after one epoch past that checkpoint. -/
+private theorem exitAfterFin_of_late (h : Setting config checks g split fin pulled anc counted V)
+    (finEpoch : (getCurrentEpoch fin).toNat ≤ anc.finalizedCheckpoint.epoch.toNat + 1)
+    {i : ℕ} (late : (pinTerms config pulled anc fin).lateB i = true) :
+    ∀ w, pulled.validators.data[i]? = some w → (getCurrentEpoch fin).toNat ≤ w.exitEpoch.toNat := by
+  intro w found
+  simp only [pinTerms] at late
+  rw [found] at late
+  simp only [Option.any_some, Bool.and_eq_true, decide_eq_true_eq] at late
+  exact exitAfterFin_of_activation h found (by omega)
+
 /-- Under the guard, the window from the finalized epoch through R's horizon is under half a vector.
 
 It is the short window of the guard, read at R's horizon. -/
