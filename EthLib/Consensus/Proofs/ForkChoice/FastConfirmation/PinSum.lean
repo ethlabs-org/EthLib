@@ -1726,13 +1726,22 @@ private theorem seat_union_card (h : Setting config checks g split fin pulled an
       ((getCurrentEpoch counted).toNat / max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat -
         (getCurrentEpoch fin).toNat / max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat)
       toFin (fromFin.append tailC) h.fulu (by rw [hP]; exact periodsC)
-  simp only [hP] at familyR familyC
+  simp only [hP] at familyR familyC debitR debitC
   have replayedRC : (fromFin.append tailC).balanceEvents high = .ok (eventsF ++ eventsC) :=
     DirectSafety.Apriori.Internal.balanceEvents_append fromFin tailC high replayedF replayedC
   have arith : ((getCurrentEpoch counted).toNat / P - (getCurrentEpoch fin).toNat / P + 1) +
       ((getCurrentEpoch pulled).toNat / P - (getCurrentEpoch split).toNat / P - 1) ≤
       ((getCurrentEpoch pulled).toNat + 1) / P - (getCurrentEpoch fin).toNat / P + 1 +
         ((getCurrentEpoch pulled).toNat + 2 - anc.finalizedCheckpoint.epoch.toNat) / P := by
+    generalize (getCurrentEpoch counted).toNat / P = A at divCN ⊢
+    generalize ((getCurrentEpoch pulled).toNat + 1) / P = B at divCN ⊢
+    generalize (getCurrentEpoch fin).toNat / P = F
+    generalize (getCurrentEpoch pulled).toNat / P = E at divRS ⊢
+    generalize (getCurrentEpoch split).toNat / P = T at divRS ⊢
+    generalize ((getCurrentEpoch pulled).toNat - (getCurrentEpoch split).toNat) / P = D1
+      at divRS divDepth
+    generalize ((getCurrentEpoch pulled).toNat + 2 - anc.finalizedCheckpoint.epoch.toNat) / P = D2
+      at divDepth ⊢
     omega
   generalize hnR : (getCurrentEpoch pulled).toNat / P - (getCurrentEpoch split).toNat / P = nR
     at *
@@ -1838,7 +1847,8 @@ private theorem seat_union_card (h : Setting config checks g split fin pulled an
             obtain ⟨L, hL, hLmem⟩ : ∃ L ∈ (List.range (nC + 1)).map LsC, L = Lcur := by
               obtain ⟨jc, hjc, e⟩ := firstC
               exact ⟨LsC jc, List.mem_map.mpr ⟨jc, List.mem_range.mpr (by omega), rfl⟩, e⟩
-            exact ⟨keysSplit.1 w.pubkey (by rw [hLcur]; exact mem), L, hL, by rw [hLmem]; exact mem⟩
+            exact ⟨keysSplit.1 w.pubkey (by first | exact mem | simpa [hLcur] using mem), L, hL,
+              by rw [hLmem]; exact mem⟩
           · have j1 : j = 1 := by omega
             subst j1
             have oneR : 1 ≤ nR := hj
@@ -1846,7 +1856,7 @@ private theorem seat_union_card (h : Setting config checks g split fin pulled an
             obtain ⟨L, hL, hLmem⟩ : ∃ L ∈ (List.range (nC + 1)).map LsC, L = Lnext := by
               obtain ⟨jc, hjc, e⟩ := secondC oneR
               exact ⟨LsC jc, List.mem_map.mpr ⟨jc, List.mem_range.mpr (by omega), rfl⟩, e⟩
-            exact ⟨keysSplit.2 w.pubkey (by rw [hLnext]; exact mem), L, hL,
+            exact ⟨keysSplit.2 w.pubkey (by first | exact mem | simpa [hLnext] using mem), L, hL,
               by rw [hLmem]; exact mem⟩
         obtain ⟨inKeys, L, hL, hLmem⟩ := inSplit
         obtain ⟨v, foundS, sameS⟩ := position_in_prefix keptR distinctR inKeys found rfl
