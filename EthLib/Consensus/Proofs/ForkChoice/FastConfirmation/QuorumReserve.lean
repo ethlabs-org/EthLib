@@ -773,9 +773,10 @@ def pinReserve (config : Config) (state ancestor finalizedState : BeaconState pr
       depth * slots * preset.SYNC_COMMITTEE_SIZE.toNat * syncEnvelope + depth * syncProposer)
   let otherGain := otherCredits / inc * perIncrement *
     (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum / WEIGHT_DENOMINATOR.toNat
-  let creditGain := if 11 * depth * (gainRateMax + 1) ≤ capMax
-    then (33 * depth * consolidationGain + 11 * depth * otherGain + 9) / 10
-    else depthFin * preset.MAX_PENDING_DEPOSITS_PER_EPOCH.toNat * capMax
+  let creditGain :=
+    (33 * depth * consolidationGain + 11 * depth * otherGain + 9) / 10 +
+      (if 11 * depth * (gainRateMax + 1) ≤ capMax then 0
+        else depthFin * preset.MAX_PENDING_DEPOSITS_PER_EPOCH.toNat * capMax)
   -- A credit can raise a key's effective balance by one more increment than its amount rounds to.
   --
   -- That increment earns the flag rewards over the depth, plus two units per epoch for the floors.
