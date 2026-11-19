@@ -4629,6 +4629,16 @@ private theorem sum_syncMoves_append (keys : Finset ℕ) (first second : List (B
   simp only [List.map_append, List.sum_append]
   omega
 
+/-- A slot step debits no key for the sync committee. -/
+private theorem slot_syncDebit_zero {x y : ForkedBeaconState preset} (electra : .pectra ≤ x.fork)
+    (ok : advanceSlotAcross config checks x = .ok y) (early : y.fork < .glamsterdam)
+    {events : List (BalanceEvent preset)}
+    (replayed : (Step.slot ok : Step config checks x y).balanceEvents = .ok events) (i : ℕ) :
+    (events.map (syncDebit i)).sum = 0 :=
+  List.sum_eq_zero fun v member => by
+    obtain ⟨e, inside, rfl⟩ := List.mem_map.mp member
+    simp [syncDebit, slot_noSync electra ok early replayed e inside]
+
 /-- The sync debits of a run fit the committee size times the envelope for each block of the run.
 
 The credits and debits together fit one envelope and proposer share for each seat and block. -/
@@ -4668,11 +4678,8 @@ private theorem run_syncDebits_le {x y : ForkedBeaconState preset} (tail : Run c
       rw [debitsSplit, sum_syncMoves_append]
       cases step with
       | slot ok =>
+        have zero := slot_syncDebit_zero (Nat.le_trans (by decide) fuluMiddle) ok early addedOk
         have quiet := slot_noSync (Nat.le_trans (by decide) fuluMiddle) ok early addedOk
-        have zero : ∀ i, (added.map (syncDebit i)).sum = 0 := fun i =>
-          List.sum_eq_zero fun v member => by
-            obtain ⟨e, inside, rfl⟩ := List.mem_map.mp member
-            simp [syncDebit, quiet e inside]
         have zeroCredit : ∀ i, (added.map (syncCredit i)).sum = 0 := fun i =>
           List.sum_eq_zero fun v member => by
             obtain ⟨e, inside, rfl⟩ := List.mem_map.mp member
