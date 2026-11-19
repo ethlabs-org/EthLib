@@ -3362,7 +3362,7 @@ private theorem riseQ_le (h : Setting config checks g split fin pulled anc count
     · obtain ⟨total, perIncrement, perOk⟩ := anyOk
       obtain ⟨pq, pqOk⟩ :=
         quarter_base_ok h.facts perOk ((getTotalActiveBalance pulled).toOption.getD 0)
-      refine ⟨pq.toNat, ?_, fun toM inside => rate_of_guard h.facts h toM inside pqOk⟩
+      refine ⟨pq.toNat, ?_, fun toM inside => rate_of_guard h toM inside pqOk⟩
       rw [gainMax, pqOk]
       simp only [Except.toOption, Option.getD_some, le_refl]
     · refine ⟨0, ?_, fun _ _ total perIncrement _ perOk =>
