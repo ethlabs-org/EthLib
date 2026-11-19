@@ -2223,8 +2223,8 @@ private theorem floorC_at (h : Setting config checks g split fin pulled anc coun
     floorC ≤ effectiveAt z i.toNat + (events.map (syncDebit i.toNat)).sum +
       bandR events i.toNat := by
   obtain ⟨slack, ρn, ρd, start, pass, arith⟩ := margin
-  have eff := cfloor_endpoint h counted (fromFin.append tailC) h.near replayed i val initial clean retained
-    slack ρn ρd
+  have eff := cfloor_endpoint h counted (fromFin.append tailC) h.near replayed i val initial clean
+    retained slack ρn ρd
     (low - (events.map (syncDebit i.toNat)).sum) start pass arith rp rest cut
   have incPos := h.bands.1
   have bandEq : bandR events i.toNat = if 0 < (events.map (syncDebit i.toNat)).sum then
