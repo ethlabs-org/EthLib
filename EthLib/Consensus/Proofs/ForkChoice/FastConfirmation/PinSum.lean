@@ -6380,6 +6380,7 @@ private theorem debits_le_top (h : Setting config checks g split fin pulled anc 
     (PinSplit2.capAt (⟨fork, pulled⟩ : ForkedBeaconState preset) v.toNat) v.toNat) epochs
   omega
 
+open DirectSafety.Apriori DirectSafety.Apriori.Internal in
 /-- The effective balance of a key at a state of R's prefix is within `ebUp` and a few increments.
 
 The increments are the whole ones of its sync debits and its slashing slack.
@@ -6418,10 +6419,10 @@ private theorem prefix_envelope (h : Setting config checks g split fin pulled an
     have := h.below
     omega
   obtain ⟨shared⟩ := h.toFin
-  have refl : (⟨fork, pulled⟩ : ForkedBeaconState preset).fork ≤
-      (⟨fork, split⟩ : ForkedBeaconState preset).fork := Nat.le_refl _
-  have refl' : (⟨fork, pulled⟩ : ForkedBeaconState preset).fork ≤
-      (⟨fork, fin⟩ : ForkedBeaconState preset).fork := Nat.le_refl _
+  have forkRefl : (⟨fork, pulled⟩ : ForkedBeaconState preset).fork ≤
+      (⟨fork, split⟩ : ForkedBeaconState preset).fork := Nat.le_forkRefl _
+  have forkRefl' : (⟨fork, pulled⟩ : ForkedBeaconState preset).fork ≤
+      (⟨fork, fin⟩ : ForkedBeaconState preset).fork := Nat.le_forkRefl _
   have whole := Apriori.Internal.balanceEvents_append fromFin tail high replayedF replayed
   obtain ⟨B, hB⟩ : ∃ B, B = actualBalanceAt (⟨fork, pulled⟩ : ForkedBeaconState preset) v.toNat +
       (((getCurrentEpoch pulled).toNat + 2 - (getCurrentEpoch fin).toNat) *
@@ -6440,10 +6441,10 @@ private theorem prefix_envelope (h : Setting config checks g split fin pulled an
         (r2 : Run config checks ⟨fork, zs⟩ ⟨fork, pulled⟩),
         z' = ⟨fork, zs⟩ ∧ r1.append r2 = fromFin.append tail := by
     intro z0 q1 q2 cut z' member
-    obtain ⟨r1, r2, cut'⟩ := balancePath_endpoint (fromFin.append q1) q2 refl' member
+    obtain ⟨r1, r2, cut'⟩ := balancePath_endpoint (fromFin.append q1) q2 forkRefl' member
     obtain ⟨zf, zs⟩ := z'
-    have same : zf = fork := Fork.ctorIdx_injective
-      (Nat.le_antisymm (fork_le_of_chainSteps r2.chainSteps) (fork_le_of_chainSteps r1.chainSteps))
+    have same : fork = zf := (Fork.ctorIdx_injective
+      (Nat.le_antisymm (fork_le_of_chainSteps r2.chainSteps) (fork_le_of_chainSteps r1.chainSteps))).symm
     subst same
     refine ⟨zs, r1, r2, rfl, ?_⟩
     rw [cut', ← Run.append_assoc, cut]
@@ -6468,17 +6469,17 @@ private theorem prefix_envelope (h : Setting config checks g split fin pulled an
         omega
       omega
     · have zero : actualBalanceAt (⟨fork, zs⟩ : ForkedBeaconState preset) v.toNat = 0 := by
-        have sizes := (Run.invariant h.genesis.invariant (shared.append r1)).balancesMatch
-        unfold BalancesMatch at sizes
+        have sizes : zs.balances.data.size = zs.validators.data.size :=
+          (Run.invariant h.genesis.invariant (shared.append r1)).balancesMatch
         simp [actualBalanceAt,
           Array.getElem?_eq_none (show zs.balances.data.size ≤ v.toNat by omega)]
       omega
   intro z member
   obtain ⟨q1, q2, cutT⟩ := balancePath_endpoint tail
-    (Run.nil : Run config checks ⟨fork, pulled⟩ ⟨fork, pulled⟩) refl member
+    (Run.nil : Run config checks ⟨fork, pulled⟩ ⟨fork, pulled⟩) forkRefl member
   obtain ⟨zf, zs⟩ := z
-  have same : zf = fork := Fork.ctorIdx_injective
-    (Nat.le_antisymm (fork_le_of_chainSteps q2.chainSteps) (fork_le_of_chainSteps q1.chainSteps))
+  have same : fork = zf := (Fork.ctorIdx_injective
+    (Nat.le_antisymm (fork_le_of_chainSteps q2.chainSteps) (fork_le_of_chainSteps q1.chainSteps))).symm
   subst same
   have cutT' : q1.append q2 = tail := cutT
   have startCap : effectiveAt (⟨fork, fin⟩ : ForkedBeaconState preset) v.toNat ≤
