@@ -14181,17 +14181,20 @@ private theorem whistle_slack (h : Setting config checks g split fin pulled anc 
     (endEpochC : (getCurrentEpoch counted).toNat ≤ highC + 1)
     {eventsC : List (BalanceEvent preset)} (replayedC : tailC.balanceEvents highC = .ok eventsC) :
     3 * (∑ i ∈ ((slashedOnC split counted).filter (fun i => i < split.validators.data.size)),
-        (whistleEnv (pinTerms config pulled anc fin) pulled i + whistleSlack (pinTerms config pulled
-        anc fin) tailC highC high eventsC eventsF events fin i) / (parameters preset
+        min (whistleEnv (pinTerms config pulled anc fin) pulled i + whistleSlack (pinTerms config
+        pulled anc fin) tailC highC high eventsC eventsF events fin i)
+        preset.MAX_EFFECTIVE_BALANCE_ELECTRA.toNat / (parameters preset
         fork).WHISTLEBLOWER_REWARD_QUOTIENT.toNat) +
       3 * (∑ i ∈ (((slashedOnC split counted).filter (fun i => ¬ i <
           split.validators.data.size)).filter (fun i => isActiveAt counted (getCurrentEpoch counted)
-          i = true)), createdCeil (pinTerms config pulled anc fin) tailC highC eventsC i /
+          i = true)), min (createdCeil (pinTerms config pulled anc fin) tailC highC eventsC i)
+          preset.MAX_EFFECTIVE_BALANCE_ELECTRA.toNat /
           (parameters preset fork).WHISTLEBLOWER_REWARD_QUOTIENT.toNat) +
       3 * (∑ i ∈ (((slashedOnC split counted).filter (fun i => ¬ i <
           split.validators.data.size)).filter (fun i => ¬ isActiveAt counted (getCurrentEpoch
-          counted) i = true)), (chargeAmt tailC i + whistleExtra (pinTerms config pulled anc fin)
-          tailC highC eventsC i) / (parameters preset fork).WHISTLEBLOWER_REWARD_QUOTIENT.toNat) ≤
+          counted) i = true)), min (chargeAmt tailC i + whistleExtra (pinTerms config pulled anc
+          fin) tailC highC eventsC i) preset.MAX_EFFECTIVE_BALANCE_ELECTRA.toNat /
+          (parameters preset fork).WHISTLEBLOWER_REWARD_QUOTIENT.toNat) ≤
       3 * (∑ i ∈ ((slashedOnC split counted).filter (fun i => i < split.validators.data.size)),
           whistleEnv (pinTerms config pulled anc fin) pulled i / (parameters preset
           fork).WHISTLEBLOWER_REWARD_QUOTIENT.toNat) +
