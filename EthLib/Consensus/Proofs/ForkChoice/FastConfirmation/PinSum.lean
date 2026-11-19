@@ -2377,7 +2377,8 @@ private theorem riseQ_le (h : Setting config checks g split fin pulled anc count
         Nat.lt_of_le_of_lt (fork_le_of_chainSteps post.chainSteps) h.early
       exact epochRewards_le step altair nEarly v inside
         preset.MAX_EFFECTIVE_BALANCE_ELECTRA.toNat P
-        (PinSplit5.effectiveAt_le_capMax (shared.append (fromFin.append pre)) h.genesis h.caps mEarly v)
+        (PinSplit5.effectiveAt_le_capMax (shared.append (fromFin.append pre)) h.genesis h.caps
+          mEarly v)
         (rateAll (fromFin.append pre) (by simp only at mEpoch ⊢; omega)))
   have depthEq : (pinTerms config pulled anc fin).depth =
       (getCurrentEpoch pulled).toNat + 2 - anc.finalizedCheckpoint.epoch.toNat := rfl
@@ -2424,11 +2425,13 @@ private theorem small_charge_claim (h : Setting config checks g split fin pulled
 
 /-- The keys whose sync debits from the finalized state exceed `newKeySlack` are at most the seats.
 
-The sync debits of any keys over the run from the finalized state to C's state fit one envelope for
-each seat and slot of the window.
+The sync debits of any keys over the run from the finalized state to C's state fit one envelope.
 
-A key over the slack has at least one more than the slack, so the keys number at most the debits
-over the slack. -/
+The envelope is for each seat and slot of the window.
+
+A key over the slack has at least one more than the slack.
+
+So the keys number at most the debits over the slack. -/
 private theorem card_seat_keys_le (h : Setting config checks g split fin pulled anc counted V)
     (fromFin : Run config checks ⟨fork, fin⟩ ⟨fork, split⟩)
     (tailC : Run config checks ⟨fork, split⟩ ⟨fork, counted⟩)
@@ -2465,7 +2468,8 @@ private theorem card_seat_keys_le (h : Setting config checks g split fin pulled 
     (fun i => (events.map (syncDebit i)).sum) fun v member => Finset.mem_image_of_mem _ member
   have each : B.card * ((pinTerms config pulled anc fin).newKeySlack + 1) ≤
       ∑ v ∈ B, (events.map (syncDebit v.toNat)).sum := by
-    have := Finset.card_nsmul_le_sum B (fun v : ValidatorIndex => (events.map (syncDebit v.toNat)).sum)
+    have := Finset.card_nsmul_le_sum B
+      (fun v : ValidatorIndex => (events.map (syncDebit v.toNat)).sum)
       ((pinTerms config pulled anc fin).newKeySlack + 1) fun v member => seats v member
     simpa [smul_eq_mul] using this
   have seatsEq : (pinTerms config pulled anc fin).newKeySeats =
