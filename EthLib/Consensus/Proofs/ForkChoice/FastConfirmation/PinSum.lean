@@ -10008,8 +10008,8 @@ private theorem envelope_of_voter (h : Setting config checks g split fin pulled 
           slashW (pinTerms config pulled anc fin) v.toNat := by
         have hW : slashW (pinTerms config pulled anc fin) v.toNat =
             preset.MAX_EFFECTIVE_BALANCE_ELECTRA.toNat /
-              (EthLib.Consensus.parameters preset .fusaka).MIN_SLASHING_PENALTY_QUOTIENT.toNat :=
-          if_pos rb
+              (EthLib.Consensus.parameters preset .fusaka).MIN_SLASHING_PENALTY_QUOTIENT.toNat := by
+          simp [slashW, rb]
         rw [hW, parameters_of_fusaka h.fulu h.early]
         exact Nat.div_le_div_right (capAt_le_capMax h.caps electra v.toNat)
       have floor := slashed_floor h pre (e := pulled) (Nat.le_succ _) rest
