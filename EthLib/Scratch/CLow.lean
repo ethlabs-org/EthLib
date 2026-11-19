@@ -209,6 +209,9 @@ private theorem exitQ_at (h : Setting config checks g split fin pulled anc count
   subst same
   have toCounted := UInt64.le_iff_toNat_le.mp (currentEpoch_le_of_chainSteps post.chainSteps)
   simp only at toCounted finSplit called
+  have short : (getCurrentEpoch pulled).toNat + 1 <
+      (getCurrentEpoch fin).toNat + config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat := by
+    omega
   have near : (getCurrentEpoch se).toNat ≤ (getCurrentEpoch pulled).toNat + 1 := by omega
   obtain ⟨before, beforeOk, isPrefix⟩ := Run.balanceEvents_prefix pre post
     (getCurrentEpoch pulled).toNat events (by rw [cut]; exact replayed)
@@ -235,7 +238,7 @@ private theorem exitQ_at (h : Setting config checks g split fin pulled anc count
   have partialLe : (before.map (floorPartialDebit v)).sum ≤
       (pinTerms config pulled anc fin).partialsDue v.toNat :=
     (Run.partialDebit_le pre electra h.early (getCurrentEpoch pulled).toNat
-      ((getCurrentEpoch pulled).toNat + 1) near (by omega) v beforeOk).trans
+      ((getCurrentEpoch pulled).toNat + 1) near short v beforeOk).trans
       (partials_le_due electra v)
   have final := cfloor_endpoint h se pre near beforeOk v val initial clean retained
     (effectiveAt (⟨fork, fin⟩ : ForkedBeaconState preset) v.toNat -
