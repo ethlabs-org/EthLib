@@ -10005,6 +10005,7 @@ private theorem inactive_of_exited (twoSlots : 2 ≤ preset.SLOTS_PER_EPOCH.toNa
     exact fun _ => reached
   simp [isActiveAt, foundLater, inactive]
 
+set_option maxHeartbeats 400000 in
 /-- S1 (syncSeats): every seat, weight 3 for V, K4 and K5 and 1 for K6.
 
 The proposer's share of the sync credits is in `syncF`, so the bound adds the `syncProposer` part
@@ -10151,11 +10152,13 @@ theorem bud_sync (h : Setting config checks g split fin pulled anc counted V)
       -- v exits at R by the finalized epoch, so the finalized state has its record and exit
       obtain ⟨w0, foundPulled, exited⟩ : ∃ w0, pulled.validators.data[v.toNat]? = some w0 ∧
           w0.exitEpoch.toNat ≤ (getCurrentEpoch fin).toNat := by
-        have flag := (Finset.mem_filter.mp inEK).2
+        have flag : ((pulled.validators.data[v.toNat]?).any fun w =>
+            decide (w.exitEpoch.toNat ≤ (getCurrentEpoch fin).toNat)) = true :=
+          (Finset.mem_filter.mp inEK).2
         cases found0 : pulled.validators.data[v.toNat]? with
-        | none => simp [pinTerms, found0] at flag
+        | none => simp [found0] at flag
         | some w0 =>
-          simp [pinTerms, found0] at flag
+          simp [found0] at flag
           exact ⟨w0, rfl, flag⟩
       obtain ⟨u0, foundFin, kept⟩ := exit_kept_of_le_fin h foundPulled exited
       have inactive := inactive_of_exited h.twoSlots (pre.snoc (Step.block engine signed due ok))
