@@ -16351,9 +16351,7 @@ private theorem bud_syncLeak (h : Setting config checks g split fin pulled anc c
           v.toNat) +
       (∑ v ∈ (SC pulled counted split), inducedR (pinTerms config pulled anc fin)
           (fromFin.append tail) v.toNat) +
-      3 * (∑ v ∈ ((Finset.range pulled.validators.data.size).image UInt64.ofNat).filter
-            (fun v => ((split.validators.data[v.toNat]?).map (·.slashed)).getD false = true ∧
-              (pinTerms config pulled anc fin).slashedRB v.toNat = true),
+      3 * (∑ v ∈ cutKeys config pulled anc fin split,
           inducedR (pinTerms config pulled anc fin) (fromFin.append tail) v.toNat) ≤
       (pinTerms config pulled anc fin).syncLeak +
         3 * ((pinTerms config pulled anc fin).slashedR *
