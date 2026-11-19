@@ -1182,7 +1182,7 @@ private theorem creditScan_sum_le (S : Finset ValidatorIndex) (blockP slotP : Ba
   | nil =>
     simp only [Run.balanceEvents, pure, Except.pure, Except.ok.injEq] at replayed
     subst replayed
-    simp [creditScan]
+    exact Nat.le_zero.mpr (Finset.sum_eq_zero fun v _ => rfl)
   | @snoc middle last pre step ih =>
     simp only [Run.balanceEvents, bind_ok_iff] at replayed
     obtain ⟨prior, priorOk, rest⟩ := replayed
