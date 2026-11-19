@@ -11154,8 +11154,9 @@ private theorem key_core_frozen (h : Setting config checks g split fin pulled an
       (credC tailC highC v.toNat +
           keyExtra (pinTerms config pulled anc fin) (fromFin.append tail) tailC highC
             eventsC events eventsF v.toNat) + whistC tailC highC v.toNat +
-      (syncF events v.toNat + syncF eventsC v.toNat) + slashR (pinTerms config pulled anc fin) v.toNat +
-      bandC tailC highC v.toNat + bandR events v.toNat := by
+      (syncF events v.toNat + syncF eventsC v.toNat) +
+      slashR (pinTerms config pulled anc fin) v.toNat + bandC tailC highC v.toNat +
+      bandR events v.toNat := by
   classical
   obtain ⟨toPulled⟩ := h.toPulled
   have electra : .pectra ≤ fork := Nat.le_trans (by decide) h.fulu
@@ -11196,8 +11197,9 @@ private theorem key_core_frozen (h : Setting config checks g split fin pulled an
     rw [hM]
     exact le_foldl_max_of_mem (List.mem_map.mpr ⟨_, member, rfl⟩) 0
   obtain ⟨W, hW⟩ : ∃ W, W = slashW (pinTerms config pulled anc fin) v.toNat := ⟨_, rfl⟩
+  rw [← hW] at floorAt
   have ceilR := prefix_ceiling h fromFin tail (getCurrentEpoch pulled).toNat (Nat.le_succ _)
-    replayedF replayed v inFin W M (hW ▸ floorAt) below
+    replayedF replayed v inFin W M floorAt below
   sorry
 
 /-- The per-key core of the rise.
