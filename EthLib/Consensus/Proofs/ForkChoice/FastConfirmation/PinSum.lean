@@ -12647,7 +12647,7 @@ private theorem key_core_frozen (h : Setting config checks g split fin pulled an
           dueAmount pulled electra v.toNat ((getCurrentEpoch pulled).toNat + 1)) := by
     rw [hH, hq, hDf]
     unfold riseTop
-    simp only [dif_pos electra]
+    simp only [electra, ↓reduceDIte]
     rfl
   have gap : Bc ≤ H + (syncD eventsF v.toNat + syncD events v.toNat +
       slashW (pinTerms config pulled anc fin) v.toNat + Cr +
