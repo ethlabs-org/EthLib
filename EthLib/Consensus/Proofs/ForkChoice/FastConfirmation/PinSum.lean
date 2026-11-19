@@ -2751,7 +2751,8 @@ private theorem band_sum_le (h : Setting config checks g split fin pulled anc co
               max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat) := by
     refine keys.trans (Nat.add_le_add fits ?_)
     refine Nat.mul_le_mul_left _ ?_
-    omega
+    exact Nat.le_trans (Nat.add_le_add_right (Nat.sub_le_sub periodUp periodDown) 1)
+      (Nat.le_add_right _ _)
   calc 3 * (β * Vc.card) + β * K4s.card + 3 * (β * K5s.card) + β * K6s.card
       = β * (3 * Vc.card + K4s.card + 3 * K5s.card + K6s.card) := by ring
     _ ≤ β * (3 * (Vc.card + K4s.card + K5s.card + K6s.card)) := Nat.mul_le_mul_left _ weights
