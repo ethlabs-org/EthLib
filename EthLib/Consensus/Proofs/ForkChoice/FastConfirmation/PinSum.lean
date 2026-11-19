@@ -3876,6 +3876,13 @@ private theorem passRate_le_leakAt (h : Setting config checks g split fin pulled
   refine Nat.le_of_eq ?_
   rw [perIncrement]
 
+/-- A call's cutoff is within the withdrawal delay of the finalized state. -/
+private theorem window_short (h : Setting config checks g split fin pulled anc counted V) :
+    (getCurrentEpoch pulled).toNat + 1 <
+      (getCurrentEpoch fin).toNat + config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat := by
+  have shallow := h.shallow
+  omega
+
 /-- The amounts of a key's queued partial withdrawals that are due by a cutoff. -/
 private def dueAmount (state : BeaconState preset fork) (electra : .pectra ≤ fork)
     (v : ValidatorIndex) (cutoff : ℕ) : ℕ :=
@@ -3914,6 +3921,7 @@ private theorem effective_le_cap_pulled (h : Setting config checks g split fin p
     simp only [found', Option.map_some, Option.getD_some]
     exact capped.trans (UInt64.le_iff_toNat_le.mp mono)
 
+open DirectSafety.Apriori DirectSafety.Apriori.Internal in
 /-- The debits of a key on R's branch that the pin charges at the top: its passes and its partials.
 
 The passes cost at most the leak at R's cap for each epoch from the finalized state's.
@@ -5869,13 +5877,6 @@ private theorem partials_le_due (electra : .pectra ≤ fork) (v : ValidatorIndex
   congr 3
   funext entry
   simp [Bool.decide_and, UInt64.toNat_inj, Bool.and_comm]
-
-/-- A call's cutoff is within the withdrawal delay of the finalized state. -/
-private theorem window_short (h : Setting config checks g split fin pulled anc counted V) :
-    (getCurrentEpoch pulled).toNat + 1 <
-      (getCurrentEpoch fin).toNat + config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat := by
-  have shallow := h.shallow
-  omega
 
 /-- The partials paid to a key over a run from the finalized state are at most those due.
 
