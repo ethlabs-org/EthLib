@@ -669,7 +669,7 @@ private def PotentialFloor {x y : ForkedBeaconState preset} (tail : Run config c
           else ρn * slack
 
 /-- The per-key floor trace of a branch, for an activated key or a branch from Fulu. -/
-private theorem FloorTrace.run_of_le_cap_general_or_fulu
+theorem FloorTrace.run_of_le_cap_general_or_fulu
     (shared : Run config checks g x) (tail : Run config checks x y)
     (genesis : Genesis (config := config) (checks := checks) g) (caps : CapOrder preset)
     (delay : 0 < config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat)
