@@ -1758,49 +1758,6 @@ theorem glue_quorum (h : Setting config checks g split fin pulled anc counted V)
   simp only [Q, quorumVoters, Finset.mem_filter, List.mem_toFinset, List.mem_append]
   exact ⟨.inl listed, flag⟩
 
-/-- The entries of a list that name a target in a set, counted by the keys of the set. -/
-private theorem length_filter_targets {α : Type} (target : α → ValidatorIndex)
-    (f : α → Option Validator) (p : Validator → Bool) (T : Finset ValidatorIndex) (L : List α) :
-    (((L.filter fun c => decide (target c ∈ T)).filterMap f).filter p).length =
-      ∑ v ∈ T, (((L.filter fun c => decide (target c ∈ ({v} : Finset ValidatorIndex))).filterMap
-        f).filter p).length := by
-  have step : ∀ (S : Finset ValidatorIndex) (c : α) (L : List α),
-      ((((c :: L).filter fun d => decide (target d ∈ S)).filterMap f).filter p).length =
-        (if target c ∈ S then (match f c with | some x => if p x then 1 else 0 | none => 0)
-          else 0) + (((L.filter fun d => decide (target d ∈ S)).filterMap f).filter p).length := by
-    intro S c L
-    by_cases hS : target c ∈ S
-    · cases hf : f c with
-      | none => simp [hS, hf]
-      | some x =>
-        by_cases hx : p x = true
-        · simp [hS, hf, hx]
-          omega
-        · simp [hS, hf, hx]
-    · simp [hS]
-  induction L with
-  | nil => simp
-  | cons c L ih =>
-    rw [step, ih]
-    simp_rw [step]
-    rw [Finset.sum_add_distrib]
-    congr 1
-    by_cases hT : target c ∈ T
-    · simp [hT, Finset.mem_singleton, Finset.sum_ite_eq]
-    · simp [hT, Finset.mem_singleton]
-
-/-- The due consolidations into a set of targets are those into each of its keys, added. -/
-private theorem dueAt_sum_singleton (X : BeaconState preset fork) (high : ℕ)
-    (T : Finset ValidatorIndex) :
-    ∑ v ∈ T, dueAt X high {v} = dueAt X high T := by
-  unfold dueAt
-  by_cases electra : .pectra ≤ fork
-  · simp only [electra, ↓reduceDIte]
-    exact (length_filter_targets (fun c : PendingConsolidation => c.targetIndex)
-      (fun c : PendingConsolidation => X.validators.data[c.sourceIndex.toNat]?)
-      (fun v => !v.slashed && decide (v.withdrawableEpoch.toNat ≤ high + 1)) T _).symm
-  · simp [electra]
-
 /-- The two costs of V keys are the fall of those active in C and the stake of the others. -/
 private theorem cV_split (h : Setting config checks g split fin pulled anc counted V) :
     cV1 pulled counted V + cV2 pulled counted V =
@@ -1824,39 +1781,41 @@ private theorem cV_split (h : Setting config checks g split fin pulled anc count
 
 /-- D-5/D-6 (fall, V) from its per-key facts.
 
-The first fact is the fall of a V key that is active in C, at most its fall plus its sync debits.
+The first fact is for a V key that is active in C: its fall and what C's floor leaves out.
 
-The second is the stake of a V key that is not active in C, at most the charges that the sum names.
+The floor leaves out the key's sync debits from the finalized block, and their rounding band.
 
-The sum of the keys' bounds is the statement's, with the due consolidations counted by target. -/
+The second is for a V key that is not active in C: the same, and the charges that the sum names.
+
+The sum of the keys' bounds is the statement's, once the sync movement of the shared run is added.
+-/
 private theorem stub_V_of (h : Setting config checks g split fin pulled anc counted V)
-    (tail : Run config checks ⟨fork, split⟩ ⟨fork, pulled⟩) (high : ℕ)
-    {events : List (BalanceEvent preset)}
     (tailC : Run config checks ⟨fork, split⟩ ⟨fork, counted⟩)
-    {eventsC : List (BalanceEvent preset)}
+    {eventsF eventsC : List (BalanceEvent preset)}
     (active : ∀ v ∈ V, v ∈ AC counted → (eR pulled v : ℤ) - eC counted v ≤
-      ((pinTerms config pulled anc fin).fall v.toNat : ℤ) + syncF eventsC v.toNat)
+      ((pinTerms config pulled anc fin).fall v.toNat : ℤ) +
+        (syncF eventsF v.toNat + syncF eventsC v.toNat) + bandR (eventsF ++ eventsC) v.toNat)
     (left : ∀ v ∈ VN counted V, (eR pulled v : ℤ) ≤
-      ((pinTerms config pulled anc fin).fall v.toNat + credR tail high v.toNat +
-        (syncF events v.toNat + syncF eventsC v.toNat) + credDepR events v.toNat +
-        consAmt events v.toNat + preset.upwardBand * dueAt fin high {v} +
+      ((pinTerms config pulled anc fin).fall v.toNat +
+        (syncF eventsF v.toNat + syncF eventsC v.toNat) + bandR (eventsF ++ eventsC) v.toNat +
         exitQ tailC v.toNat +
         (if (pinTerms config pulled anc fin).exitingB v.toNat = true then eR pulled v else 0) +
         (if (pinTerms config pulled anc fin).lateB v.toNat = true then eR pulled v else 0) : ℕ)) :
     cV1 pulled counted V + cV2 pulled counted V ≤
-      ((∑ v ∈ V, (pinTerms config pulled anc fin).fall v.toNat) + (∑ v ∈ V, credR tail high v.toNat) +
-        (∑ v ∈ V, (syncF events v.toNat + syncF eventsC v.toNat)) + (∑ v ∈ V, credDepR events v.toNat) +
-        (∑ v ∈ V, consAmt events v.toNat) + preset.upwardBand * dueAt fin high V +
+      ((∑ v ∈ V, (pinTerms config pulled anc fin).fall v.toNat) +
+        (∑ v ∈ V, (syncF eventsF v.toNat + syncF eventsC v.toNat)) +
+        (∑ v ∈ V, bandR (eventsF ++ eventsC) v.toNat) +
         (∑ v ∈ (VN counted V), exitQ tailC v.toNat) +
-        (∑ v ∈ (VN counted V) with (pinTerms config pulled anc fin).exitingB v.toNat = true, eR pulled v) +
-        (∑ v ∈ (VN counted V) with (pinTerms config pulled anc fin).lateB v.toNat = true, eR pulled v) : ℕ) := by
+        (∑ v ∈ (VN counted V) with (pinTerms config pulled anc fin).exitingB v.toNat = true,
+          eR pulled v) +
+        (∑ v ∈ (VN counted V) with (pinTerms config pulled anc fin).lateB v.toNat = true,
+          eR pulled v) : ℕ) := by
   classical
   rw [cV_split h]
   -- the bound of each key that does not depend on how it left
   let P : ValidatorIndex → ℕ := fun v =>
-    (pinTerms config pulled anc fin).fall v.toNat + credR tail high v.toNat +
-      (syncF events v.toNat + syncF eventsC v.toNat) + credDepR events v.toNat +
-      consAmt events v.toNat + preset.upwardBand * dueAt fin high {v}
+    (pinTerms config pulled anc fin).fall v.toNat +
+      (syncF eventsF v.toNat + syncF eventsC v.toNat) + bandR (eventsF ++ eventsC) v.toNat
   let X : ValidatorIndex → ℕ := fun v =>
     exitQ tailC v.toNat +
       (if (pinTerms config pulled anc fin).exitingB v.toNat = true then eR pulled v else 0) +
@@ -1866,19 +1825,15 @@ private theorem stub_V_of (h : Setting config checks g split fin pulled anc coun
     refine Finset.sum_le_sum fun v hv => ?_
     obtain ⟨member, act⟩ := Finset.mem_filter.mp hv
     have := active v member act
-    have nonneg : (0 : ℤ) ≤ ((preset.upwardBand * dueAt fin high {v} : ℕ) : ℤ) :=
-      Int.natCast_nonneg _
     simp only [P]
-    push_cast at this nonneg ⊢
+    push_cast at this ⊢
     omega
   have second : ∑ v ∈ VN counted V, (eR pulled v : ℤ) ≤
       ∑ v ∈ VN counted V, ((P v : ℤ) + X v) := by
     refine Finset.sum_le_sum fun v hv => ?_
     have := left v hv
-    have nonneg : (0 : ℤ) ≤ ((preset.upwardBand * dueAt fin high {v} : ℕ) : ℤ) :=
-      Int.natCast_nonneg _
     simp only [P, X]
-    push_cast at this nonneg ⊢
+    push_cast at this ⊢
     omega
   have partition : ∑ v ∈ V, (P v : ℤ) =
       ∑ v ∈ V.filter (· ∈ AC counted), (P v : ℤ) + ∑ v ∈ VN counted V, (P v : ℤ) := by
@@ -1886,14 +1841,11 @@ private theorem stub_V_of (h : Setting config checks g split fin pulled anc coun
     exact (Finset.sum_filter_add_sum_filter_not V (· ∈ AC counted) _).symm
   have total : ∑ v ∈ V, (P v : ℤ) =
       ((∑ v ∈ V, (pinTerms config pulled anc fin).fall v.toNat) +
-        (∑ v ∈ V, credR tail high v.toNat) +
-        (∑ v ∈ V, (syncF events v.toNat + syncF eventsC v.toNat)) +
-        (∑ v ∈ V, credDepR events v.toNat) + (∑ v ∈ V, consAmt events v.toNat) +
-        preset.upwardBand * dueAt fin high V : ℕ) := by
+        (∑ v ∈ V, (syncF eventsF v.toNat + syncF eventsC v.toNat)) +
+        (∑ v ∈ V, bandR (eventsF ++ eventsC) v.toNat) : ℕ) := by
     simp only [P]
-    rw [← dueAt_sum_singleton fin high V]
     push_cast
-    simp only [Finset.sum_add_distrib, Finset.mul_sum]
+    simp only [Finset.sum_add_distrib]
   have exits : ∑ v ∈ VN counted V, (X v : ℤ) =
       ((∑ v ∈ (VN counted V), exitQ tailC v.toNat) +
         (∑ v ∈ (VN counted V) with (pinTerms config pulled anc fin).exitingB v.toNat = true,
