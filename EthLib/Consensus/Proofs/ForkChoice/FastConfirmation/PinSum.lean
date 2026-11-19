@@ -2194,6 +2194,15 @@ private theorem key_floorR (h : Setting config checks g split fin pulled anc cou
   exact key_floorR_from h fromFin tail high endEpoch replayed i val initial unslashed stays
     retained
 
+
+/-- The floor debit of a replay is its penalties plus its sync debits. -/
+private theorem floorPenaltyDebit_sum (i : ℕ) (events : List (BalanceEvent preset)) :
+    (events.map (DirectSafety.Apriori.Internal.floorPenaltyDebit i)).sum =
+      (events.map (DirectSafety.Apriori.Internal.penaltyDebit i)).sum +
+        (events.map (syncDebit i)).sum := by
+  rw [← List.sum_map_add]
+  rfl
+
 /-- C's balance of a key that C may slash falls only by its debit events and one slashing penalty.
 
 The floor starts from the smaller of the key's balance at the split and its largest balance.
@@ -2270,12 +2279,7 @@ private theorem slashed_floorC (h : Setting config checks g split fin pulled anc
       have capped := below s flag
       simp only [Option.elim]
       omega
-  have splitDebit : (eventsC.map (DirectSafety.Apriori.Internal.floorPenaltyDebit i.toNat)).sum =
-      (eventsC.map (DirectSafety.Apriori.Internal.penaltyDebit i.toNat)).sum +
-        (eventsC.map (syncDebit i.toNat)).sum := by
-    rw [← List.sum_map_add]
-    rfl
-  rw [balance, debt, splitDebit] at floor
+  rw [balance, debt, floorPenaltyDebit_sum] at floor
   have same : DirectSafety.Apriori.minSlashingPenaltyQuotient preset
       (DirectSafety.Apriori.preElectraEpochs config ⟨fork, split⟩ (getCurrentEpoch pulled).toNat) =
         (parameters preset fork).MIN_SLASHING_PENALTY_QUOTIENT.toNat :=
@@ -2471,10 +2475,7 @@ private theorem cfloor_balance (h : Setting config checks g split fin pulled anc
     (fun before' step after cut' evs ok => pass before' step (after.append r2)
       (by rw [Run.append_assoc, cut', whole]) evs ok)
     beforeOk
-  have splitDebit : (before.map (floorPenaltyDebit i.toNat)).sum =
-      (before.map (penaltyDebit i.toNat)).sum + (before.map (syncDebit i.toNat)).sum := by
-    rw [← List.sum_map_add]
-    rfl
+  have splitDebit := floorPenaltyDebit_sum i.toNat before
   obtain ⟨rest', rfl⟩ := isPrefix
   have syncSum : ((before ++ rest').map (syncDebit i.toNat)).sum =
       (before.map (syncDebit i.toNat)).sum + (rest'.map (syncDebit i.toNat)).sum := by
@@ -5553,11 +5554,8 @@ private theorem existing_low_explicit
     leaky
   have finEB : balanceAt fin v.toNat =
       effectiveAt (⟨fork, fin⟩ : ForkedBeaconState preset) v.toNat := rfl
-  have capped : effectiveAt (⟨fork, fin⟩ : ForkedBeaconState preset) v.toNat ≤
-      (withdrawalMaxEffectiveBalance preset fork val).toNat := by
-    have cap := shared.effectiveBalance_capped h.genesis h.caps.activation h.caps.compounding
-      h.early val (Array.mem_of_getElem? initial)
-    simpa [effectiveAt, initial] using UInt64.le_iff_toNat_le.mp cap
+  have capped := DirectSafety.Apriori.Internal.effectiveAt_le_withdrawalMax shared h.genesis
+    h.caps h.early initial
   have toCounted := UInt64.le_iff_toNat_le.mp h.later
   have nearC := h.near
   have arith := low_arith preset.EFFECTIVE_BALANCE_INCREMENT.toNat preset.downwardBand ρn ρd
@@ -5824,11 +5822,8 @@ private theorem floorC_stay (h : Setting config checks g split fin pulled anc co
       p.fork < .glamsterdam := fun r2 =>
     Nat.lt_of_le_of_lt (fork_le_of_chainSteps r2.chainSteps) h.early
   have inside : i.toNat < fin.validators.data.size := (Array.getElem?_eq_some_iff.mp initial).1
-  have cappedFin : effectiveAt (⟨fork, fin⟩ : ForkedBeaconState preset) i.toNat ≤
-      (withdrawalMaxEffectiveBalance preset fork val).toNat := by
-    have cap := toFin.effectiveBalance_capped h.genesis h.caps.activation h.caps.compounding
-      h.early val (Array.mem_of_getElem? initial)
-    simpa [effectiveAt, initial] using UInt64.le_iff_toNat_le.mp cap
+  have cappedFin := DirectSafety.Apriori.Internal.effectiveAt_le_withdrawalMax toFin h.genesis
+    h.caps h.early initial
   rw [hfin]
   refine (PinSplit2.Run.effective_floor_pair rp (forkEnd rest) h.fulu i.toNat inside 0 0 0 0 0
     0).2.1 alignedFin ?_ ?_
@@ -5901,15 +5896,9 @@ private theorem floorC_stay (h : Setting config checks g split fin pulled anc co
     have partialSeg : (segEv.map (floorPartialDebit i)).sum ≤
         (events.map (floorPartialDebit i)).sum :=
       (sub.map (floorPartialDebit i)).sum_le_sum fun _ _ => Nat.zero_le _
-    have splitDebit : (segEv.map (floorPenaltyDebit i.toNat)).sum =
-        (segEv.map (penaltyDebit i.toNat)).sum + (segEv.map (syncDebit i.toNat)).sum := by
-      rw [← List.sum_map_add]
-      rfl
-    have cappedW : effectiveAt (⟨fork, wS⟩ : ForkedBeaconState preset) i.toNat ≤
-        (withdrawalMaxEffectiveBalance preset fork valW).toNat := by
-      have cap := (toFin.append pre).effectiveBalance_capped h.genesis h.caps.activation
-        h.caps.compounding h.early valW (Array.mem_of_getElem? initialW)
-      simpa [effectiveAt, initialW] using UInt64.le_iff_toNat_le.mp cap
+    have splitDebit := floorPenaltyDebit_sum i.toNat segEv
+    have cappedW := DirectSafety.Apriori.Internal.effectiveAt_le_withdrawalMax (toFin.append pre)
+      h.genesis h.caps h.early initialW
     have preEpoch := UInt64.le_iff_toNat_le.mp (currentEpoch_le_of_chainSteps pre.chainSteps)
     have restEpoch := UInt64.le_iff_toNat_le.mp
       (currentEpoch_le_of_chainSteps (after.append rest).chainSteps)
