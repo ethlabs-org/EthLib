@@ -8903,6 +8903,80 @@ private theorem sc_disjoint (h : Setting config checks g split fin pulled anc co
     rw [hs.2.1] at unslashed
     simp at unslashed
 
+/-- A sum over the events of the sources in `P` is at most that over `Q`.
+
+An event of a source in `P` and not in `Q` must credit nothing. -/
+private theorem sum_filter_le_of_zero (events : List (BalanceEvent preset))
+    (f : BalanceEvent preset → ℕ) (P Q : BalanceSource → Bool)
+    (zero : ∀ e ∈ events, P e.source = true → Q e.source = false → f e = 0) :
+    ((events.filter (P ·.source)).map f).sum ≤ ((events.filter (Q ·.source)).map f).sum := by
+  induction events with
+  | nil => simp
+  | cons e rest ih =>
+    have tail := ih fun e' member => zero e' (List.mem_cons_of_mem _ member)
+    have head := zero e List.mem_cons_self
+    by_cases p : P e.source = true <;> by_cases q : Q e.source = true
+    · simp only [List.filter_cons, p, q, ↓reduceIte, List.map_cons, List.sum_cons]
+      omega
+    · have none : f e = 0 := head p (by simpa using q)
+      simp only [List.filter_cons, p, q, ↓reduceIte, List.map_cons, List.sum_cons]
+      omega
+    · simp only [List.filter_cons, p, q, ↓reduceIte, List.map_cons, List.sum_cons]
+      omega
+    · simp only [List.filter_cons, p, q, ↓reduceIte]
+      exact tail
+
+/-- A step credits a key by a source other than rewards and consolidations only by a deposit.
+
+A slot step's other sources have a zero credit limit, and it records no sync pass.
+
+A block step has no slot credits. -/
+private theorem step_credit_le_deposits {g m n : ForkedBeaconState preset}
+    (shared : Run config checks g m) (genesis : Genesis config checks g)
+    (step : Step config checks m n) (early : n.fork < .glamsterdam) (electra : .pectra ≤ m.fork)
+    (v : ℕ) :
+    stepCredit (fun _ => false) (fun s => decide (s ≠ .rewards ∧ s ≠ .consolidations)) v step ≤
+      stepCredit (fun _ => false) (fun s => decide (s = .deposits)) v step := by
+  cases step with
+  | block engine signed due ok => simp [stepCredit]
+  | slot ok =>
+    obtain ⟨events, replayed⟩ := (Step.slot ok : Step config checks m n).balanceEvents_ok early
+    have bounded := step_events_bounded shared genesis (Step.slot ok : Step config checks m n)
+      early replayed
+    have each := slot_event_credit shared genesis early v replayed bounded
+    have noSync := PinSplit5.slot_noSync electra ok early replayed
+    simp only [stepCredit, replayed, Except.toOption, Option.getD_some]
+    refine sum_filter_le_of_zero events (keyCredit v) _ _ fun e member p q => ?_
+    have source := each e member (by simpa using p.1)
+    have notSync : syncCredit v e = 0 := by simp [syncCredit, noSync e member]
+    have notDeposit : ¬ e.source = .deposits := by simpa using q
+    have notConsolidation : ¬ e.source = .consolidations := by simpa using p.2
+    simp only [notDeposit, notConsolidation, or_self, ↓reduceIte, notSync] at source
+    omega
+
+/-- The slot credits of a run, from the sources other than rewards and consolidations, are deposits.
+
+The scan reads them as at most its deposits. -/
+private theorem creditScan_le_deposits {g x y : ForkedBeaconState preset}
+    (shared : Run config checks g x) (genesis : Genesis config checks g)
+    (tail : Run config checks x y) (early : y.fork < .glamsterdam) (electra : .pectra ≤ x.fork)
+    (high v : ℕ) :
+    (creditScan (fun _ => false) (fun s => decide (s ≠ .rewards ∧ s ≠ .consolidations)) v high
+        tail).1 ≤
+      (creditScan (fun _ => false) (fun s => decide (s = .deposits)) v high tail).1 := by
+  induction tail with
+  | nil => simp [creditScan_nil_fst]
+  | @snoc middle last pre step ih =>
+    have previous := ih (Nat.lt_of_le_of_lt step.chainStep.fork_le early)
+    have one := step_credit_le_deposits (shared.append pre) genesis step early
+      (Nat.le_trans electra (fork_le_of_chainSteps pre.chainSteps)) v
+    rw [creditScan_snoc_fst, creditScan_snoc_fst]
+    by_cases selected : (getCurrentEpoch middle.state).toNat ≤ high + 1
+    · simp only [selected, ↓reduceIte]
+      omega
+    · simp only [selected, ↓reduceIte]
+      exact previous
+
 /-- A key that a run credits.
 
 A block step nets it a credit, or a pending-deposit pass credits it. -/
