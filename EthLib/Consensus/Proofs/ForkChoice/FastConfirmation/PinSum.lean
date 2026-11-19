@@ -14985,7 +14985,6 @@ private theorem bud_syncLeak (h : Setting config checks g split fin pulled anc c
     inducedR (pinTerms config pulled anc fin) (fromFin.append tail) v.toNat) d45 d46 d56
   beta_reduce at weights
   rw [Finset.sum_union (Finset.disjoint_union_left.mpr ⟨dK, dS⟩), Finset.sum_union dKS] at whole
-  beta_reduce at whole
   refine ⟨?_, ?_⟩
   · change _ + _ + _ + _ + 3 * (∑ x ∈ Kc, inducedR (pinTerms config pulled anc fin)
       (fromFin.append tail) (UInt64.toNat x)) ≤ _
