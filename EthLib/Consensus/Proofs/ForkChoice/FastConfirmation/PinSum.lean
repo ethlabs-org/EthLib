@@ -13380,7 +13380,7 @@ private theorem bud_branchR_of (h : Setting config checks g split fin pulled anc
 
 The bound by R's balance reads its rise, one increment and the debits and induced leak.
 
-A second increment pays the rounding of the balance when the debits or the leak are not zero.
+A second increment pays the rounding of the balance when it has a sync debit.
 
 The balance at the split is the key's effective balance at the epoch start, up to the downward band.
 
@@ -13403,8 +13403,7 @@ private theorem cut_balance_le (h : Setting config checks g split fin pulled anc
     balanceAt split v.toNat ≤ max (balanceAt fin v.toNat)
       (balanceAt pulled v.toNat + (pinTerms config pulled anc fin).rise v.toNat +
         preset.EFFECTIVE_BALANCE_INCREMENT.toNat +
-        (if 0 < syncD eventsF v.toNat + syncD events v.toNat +
-            inducedR (pinTerms config pulled anc fin) (fromFin.append tail) v.toNat then
+        (if 0 < syncD eventsF v.toNat + syncD events v.toNat then
           preset.EFFECTIVE_BALANCE_INCREMENT.toNat else 0) +
         (syncD eventsF v.toNat + syncD events v.toNat +
           inducedR (pinTerms config pulled anc fin) (fromFin.append tail) v.toNat)) := by
