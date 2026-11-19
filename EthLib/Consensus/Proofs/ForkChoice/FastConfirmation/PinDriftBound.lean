@@ -1230,13 +1230,14 @@ So an event of the run is counted at most once.
 The sync credits of a key over the events are at most its scan, if `blockP` holds the sync source.
 
 That holds for a run from Electra to before Glamsterdam whose slot steps record no sync credit. -/
-private theorem creditScan_bounds (S : Finset ValidatorIndex) (blockP slotP : BalanceSource → Bool)
-    (high : ℕ) (T : BalanceEvent preset → ℕ) {x y : ForkedBeaconState preset}
+private theorem creditScan_bounds {ι : Type} (S : Finset ι) (key : ι → ℕ)
+    (blockP slotP : BalanceSource → Bool) (high : ℕ) (T : BalanceEvent preset → ℕ)
+    {x y : ForkedBeaconState preset}
     (tail : Run config checks x y) {events : List (BalanceEvent preset)}
     (replayed : tail.balanceEvents high = .ok events)
     (each : ∀ e ∈ events, (blockP e.source = true ∨ slotP e.source = true) →
-      ∑ v ∈ S, keyCredit v.toNat e ≤ T e) :
-    (∑ v ∈ S, (creditScan blockP slotP v.toNat high tail).1 ≤
+      ∑ v ∈ S, keyCredit (key v) e ≤ T e) :
+    (∑ v ∈ S, (creditScan blockP slotP (key v) high tail).1 ≤
       (events.map fun e =>
         if blockP e.source = true ∨ slotP e.source = true then T e else 0).sum) ∧
     (blockP .sync = true → .pectra ≤ x.fork → y.fork < .glamsterdam →
@@ -1258,17 +1259,17 @@ private theorem creditScan_bounds (S : Finset ValidatorIndex) (blockP slotP : Ba
       obtain ⟨added, addedOk, rfl⟩ := rest
       obtain ⟨previous, previousSync⟩ :=
         ih priorOk fun e member => each e (List.mem_append_left _ member)
-      have swap (L : List (BalanceEvent preset)) : ∑ v ∈ S, (L.map (keyCredit v.toNat)).sum =
-          (L.map fun e => ∑ v ∈ S, keyCredit v.toNat e).sum := by
+      have swap (L : List (BalanceEvent preset)) : ∑ v ∈ S, (L.map (keyCredit (key v))).sum =
+          (L.map fun e => ∑ v ∈ S, keyCredit (key v) e).sum := by
         simpa using (Multiset.sum_map_sum (m := (L : Multiset (BalanceEvent preset)))
-          (s := S) (f := fun e v => keyCredit v.toNat e)).symm
+          (s := S) (f := fun e v => keyCredit (key v) e)).symm
       have part (p : BalanceSource → Bool)
           (sub : ∀ s, p s = true → blockP s = true ∨ slotP s = true) :
-          ∑ v ∈ S, ((added.filter fun x => p x.source).map (keyCredit v.toNat)).sum ≤
+          ∑ v ∈ S, ((added.filter fun x => p x.source).map (keyCredit (key v))).sum ≤
             (added.map fun e =>
               if blockP e.source = true ∨ slotP e.source = true then T e else 0).sum := by
         rw [swap]
-        calc ((added.filter fun x => p x.source).map fun e => ∑ v ∈ S, keyCredit v.toNat e).sum
+        calc ((added.filter fun x => p x.source).map fun e => ∑ v ∈ S, keyCredit (key v) e).sum
             ≤ ((added.filter fun x => p x.source).map T).sum := List.sum_le_sum fun e member =>
               each e (List.mem_append_right _ (List.mem_filter.mp member).1)
                 (sub _ (by simpa using (List.mem_filter.mp member).2))
@@ -1281,7 +1282,7 @@ private theorem creditScan_bounds (S : Finset ValidatorIndex) (blockP slotP : Ba
               · have := sub _ hp
                 simp [hp, this]
               · simp [hp]
-      have step_le : ∑ v ∈ S, stepCredit blockP slotP v.toNat step ≤
+      have step_le : ∑ v ∈ S, stepCredit blockP slotP (key v) step ≤
           (added.map fun e =>
             if blockP e.source = true ∨ slotP e.source = true then T e else 0).sum := by
         cases step with
@@ -1324,16 +1325,17 @@ A block step counts the events of `blockP`.
 A slot step counts the events of `slotP`.
 
 So an event of the run is counted at most once. -/
-private theorem creditScan_sum_le (S : Finset ValidatorIndex) (blockP slotP : BalanceSource → Bool)
-    (high : ℕ) (T : BalanceEvent preset → ℕ) {x y : ForkedBeaconState preset}
+private theorem creditScan_sum_le {ι : Type} (S : Finset ι) (key : ι → ℕ)
+    (blockP slotP : BalanceSource → Bool) (high : ℕ) (T : BalanceEvent preset → ℕ)
+    {x y : ForkedBeaconState preset}
     (tail : Run config checks x y) {events : List (BalanceEvent preset)}
     (replayed : tail.balanceEvents high = .ok events)
     (each : ∀ e ∈ events, (blockP e.source = true ∨ slotP e.source = true) →
-      ∑ v ∈ S, keyCredit v.toNat e ≤ T e) :
-    ∑ v ∈ S, (creditScan blockP slotP v.toNat high tail).1 ≤
+      ∑ v ∈ S, keyCredit (key v) e ≤ T e) :
+    ∑ v ∈ S, (creditScan blockP slotP (key v) high tail).1 ≤
       (events.map fun e =>
         if blockP e.source = true ∨ slotP e.source = true then T e else 0).sum :=
-  (creditScan_bounds S blockP slotP high T tail replayed each).1
+  (creditScan_bounds S key blockP slotP high T tail replayed each).1
 
 /-- The net rise of a key in one step.
 
