@@ -10032,7 +10032,11 @@ private theorem branchR_split (config : Config)
   refine ⟨W + D * (pinTerms config state ancestor finalizedState).slashedR +
     (pinTerms config state ancestor finalizedState).unitGain *
       (pinTerms config state ancestor finalizedState).slashedR, by rw [split]; ring, ?_⟩
-  have := Nat.mul_le_mul_left (pinTerms config state ancestor finalizedState).slashedR gain
+  have step : (pinTerms config state ancestor finalizedState).slashedR *
+      (2 * (pinTerms config state ancestor finalizedState).depthFin *
+        flagRate (pinTerms config state ancestor finalizedState)) ≤
+      D * (pinTerms config state ancestor finalizedState).slashedR :=
+    (Nat.mul_comm _ _).le.trans (Nat.mul_le_mul_right _ gain)
   omega
 
 /-- The sync part of the proposer credit is at most the proposer credit. -/
