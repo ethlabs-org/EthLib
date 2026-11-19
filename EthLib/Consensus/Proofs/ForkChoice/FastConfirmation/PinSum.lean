@@ -14955,6 +14955,41 @@ theorem stub_P (h : Setting config checks g split fin pulled anc counted V)
         slashR (pinTerms config pulled anc fin) v.toNat + bandC tailC highC v.toNat +
         bandR (eventsF ++ events) v.toNat + bandX fin highC v.toNat)) : ℕ) := sorry
 
+/-- The whistleblower credits of the shared run's last epoch fit the keys that it slashes.
+
+The run `pre` is the part of the finalized-to-split run that starts at `b`, in the split's epoch.
+
+A whistleblower credit lands in the proposer's block, so a key of any class can receive it.
+
+Each key slashed along `pre` pays at most the quotient of its largest effective balance on `pre`.
+
+That balance is at most its effective balance at the pulled state, its rise and one increment.
+
+The increment covers the key's initial penalty, which can drop R's effective balance below it.
+
+R's call reads each such key as slashed, since its withdrawable epoch is a slashing vector away.
+
+The sum is over keys that `SC` leaves out, because they are slashed at the split. -/
+private theorem cut_whistle (h : Setting config checks g split fin pulled anc counted V)
+    (toFin : Run config checks g ⟨fork, fin⟩)
+    (fromFin : Run config checks ⟨fork, fin⟩ ⟨fork, split⟩)
+    {b : BeaconState preset fork} (toB : Run config checks g ⟨fork, b⟩)
+    (pre : Run config checks ⟨fork, b⟩ ⟨fork, split⟩)
+    (cut : toB.append pre = toFin.append fromFin)
+    (sameEpoch : getCurrentEpoch split = getCurrentEpoch b)
+    (tail : Run config checks ⟨fork, split⟩ ⟨fork, pulled⟩) (high : ℕ)
+    (endEpoch : (getCurrentEpoch pulled).toNat ≤ high + 1)
+    {events : List (BalanceEvent preset)} (replayed : tail.balanceEvents high = .ok events)
+    (keys : Finset ℕ) :
+    ∑ i ∈ keys, whistC pre high i ≤
+      ∑ v ∈ ((Finset.range pulled.validators.data.size).image UInt64.ofNat).filter
+          (fun v => ((b.validators.data[v.toNat]?).map (·.slashed)).getD false = false ∧
+            ((split.validators.data[v.toNat]?).map (·.slashed)).getD false = true ∧
+            (pinTerms config pulled anc fin).slashedRB v.toNat = true),
+        (balanceAt pulled v.toNat + (pinTerms config pulled anc fin).rise v.toNat +
+          preset.EFFECTIVE_BALANCE_INCREMENT.toNat) /
+          (parameters preset fork).WHISTLEBLOWER_REWARD_QUOTIENT.toNat := sorry
+
 /-- The keys of `K6` beyond R's registry are paid by the credits.
 
 In the high regime they are also paid by `creditCap`.
