@@ -1162,27 +1162,6 @@ private theorem creditScan_append (blockP slotP : BalanceSource → Bool) (v hig
     · omega
     · exact ih
 
-/-- A scan over a run is at most another if each of its steps is, with the steps after it.
-
-The steps are those that lead on to the end of the run. -/
-private theorem creditScan_le_of_steps {x y : ForkedBeaconState preset}
-    (bp sp bq sq : BalanceSource → Bool) (v high : ℕ) (tail : Run config checks x y)
-    (each : ∀ {m n : ForkedBeaconState preset}, Run config checks x m →
-      ∀ step : Step config checks m n, Nonempty (Run config checks n y) →
-        stepCredit bp sp v step ≤ stepCredit bq sq v step) :
-    (creditScan bp sp v high tail).1 ≤ (creditScan bq sq v high tail).1 := by
-  induction tail with
-  | nil => simp [creditScan_nil_fst]
-  | @snoc middle last pre step ih =>
-    have previous := ih fun {m n} run one ⟨post⟩ => each run one ⟨post.snoc step⟩
-    have here := each pre step ⟨Run.nil⟩
-    rw [creditScan_snoc_fst, creditScan_snoc_fst]
-    by_cases selected : (getCurrentEpoch middle.state).toNat ≤ high + 1
-    · simp only [selected, ↓reduceIte]
-      omega
-    · simp only [selected, ↓reduceIte]
-      exact previous
-
 /-- The net rise of a key in one step.
 
 A block step counts the rise of the key's balance across it, and a slot step counts nothing. -/
@@ -1222,6 +1201,27 @@ private theorem netScan_nil (v high : ℕ) {x : ForkedBeaconState preset} :
 private theorem creditScan_nil_fst (blockP slotP : BalanceSource → Bool) (v high : ℕ)
     {x : ForkedBeaconState preset} :
     (creditScan blockP slotP v high (Run.nil : Run config checks x x)).1 = 0 := rfl
+
+/-- A scan over a run is at most another if each of its steps is, with the steps after it.
+
+The steps are those that lead on to the end of the run. -/
+private theorem creditScan_le_of_steps {x y : ForkedBeaconState preset}
+    (bp sp bq sq : BalanceSource → Bool) (v high : ℕ) (tail : Run config checks x y)
+    (each : ∀ {m n : ForkedBeaconState preset}, Run config checks x m →
+      ∀ step : Step config checks m n, Nonempty (Run config checks n y) →
+        stepCredit bp sp v step ≤ stepCredit bq sq v step) :
+    (creditScan bp sp v high tail).1 ≤ (creditScan bq sq v high tail).1 := by
+  induction tail with
+  | nil => simp [creditScan_nil_fst]
+  | @snoc middle last pre step ih =>
+    have previous := ih fun {m n} run one ⟨post⟩ => each run one ⟨post.snoc step⟩
+    have here := each pre step ⟨Run.nil⟩
+    rw [creditScan_snoc_fst, creditScan_snoc_fst]
+    by_cases selected : (getCurrentEpoch middle.state).toNat ≤ high + 1
+    · simp only [selected, ↓reduceIte]
+      omega
+    · simp only [selected, ↓reduceIte]
+      exact previous
 
 /-- One slashing credits at most the slashed key's effective balance over the quotient.
 

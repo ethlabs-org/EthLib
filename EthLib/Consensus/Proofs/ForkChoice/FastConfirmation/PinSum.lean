@@ -8917,12 +8917,13 @@ private theorem sum_filter_le_of_zero (events : List (BalanceEvent preset))
     have head := zero e List.mem_cons_self
     by_cases p : P e.source = true <;> by_cases q : Q e.source = true
     · simp only [List.filter_cons, p, q, ↓reduceIte, List.map_cons, List.sum_cons]
-      omega
+      exact Nat.add_le_add_left tail _
     · have none : f e = 0 := head p (by simpa using q)
-      simp only [List.filter_cons, p, q, ↓reduceIte, List.map_cons, List.sum_cons]
-      omega
+      simp only [List.filter_cons, p, q, ↓reduceIte, List.map_cons, List.sum_cons, none,
+        Nat.zero_add]
+      exact tail
     · simp only [List.filter_cons, p, q, ↓reduceIte, List.map_cons, List.sum_cons]
-      omega
+      exact Nat.le_trans tail (Nat.le_add_left _ _)
     · simp only [List.filter_cons, p, q, ↓reduceIte]
       exact tail
 
@@ -8946,7 +8947,9 @@ private theorem step_credit_le_deposits {g m n : ForkedBeaconState preset}
     have each := slot_event_credit shared genesis early v replayed bounded
     have noSync := PinSplit5.slot_noSync electra ok early replayed
     simp only [stepCredit, replayed, Except.toOption, Option.getD_some]
-    refine sum_filter_le_of_zero events (keyCredit v) _ _ fun e member p q => ?_
+    refine sum_filter_le_of_zero events (keyCredit v)
+      (fun s => decide (s ≠ .rewards ∧ s ≠ .consolidations)) (fun s => decide (s = .deposits))
+      fun e member p q => ?_
     have source := each e member (by simpa using p.1)
     have notSync : syncCredit v e = 0 := by simp [syncCredit, noSync e member]
     have notDeposit : ¬ e.source = .deposits := by simpa using q
