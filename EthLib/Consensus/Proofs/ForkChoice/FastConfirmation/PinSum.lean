@@ -1022,8 +1022,8 @@ private theorem floor_guards (h : Setting config checks g split fin pulled anc c
     (endpoint : (getCurrentEpoch y).toNat ≤ (getCurrentEpoch pulled).toNat + 1) :
     0 < DirectSafety.Apriori.minSlashingPenaltyQuotient preset
       (DirectSafety.Apriori.preElectraEpochs config ⟨fork, zs⟩ (getCurrentEpoch pulled).toNat) ∧
-    ∀ {m n : ForkedBeaconState preset} (before : Run config checks ⟨fork, zs⟩ m)
-      (step : Step config checks m n) (after : Run config checks n ⟨fork, y⟩),
+    ∀ {m n : ForkedBeaconState preset} (_ : Run config checks ⟨fork, zs⟩ m)
+      (step : Step config checks m n) (_ : Run config checks n ⟨fork, y⟩),
       (getCurrentEpoch m.state).toNat < (getCurrentEpoch zs).toNat +
         preset.EPOCHS_PER_SLASHINGS_VECTOR.toNat -
           (preset.EPOCHS_PER_SLASHINGS_VECTOR / 2).toNat ∧
