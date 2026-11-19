@@ -828,6 +828,13 @@ private theorem sum_syncDebit_eq (events : List (BalanceEvent preset)) (v : ℕ)
       ((events.filter (·.source = .sync)).map (keyDebit v)).sum :=
   sum_map_sync events (keyDebit v)
 
+/-- The rounding band of a key is the band if the key has a sync debit, and zero otherwise. -/
+private theorem bandR_eq (events : List (BalanceEvent preset)) (v : ℕ) :
+    bandR events v = if 0 < (events.map (syncDebit v)).sum then
+      preset.EFFECTIVE_BALANCE_INCREMENT.toNat + preset.downwardBand - 1 else 0 := by
+  unfold bandR
+  rw [← sum_syncDebit_eq]
+
 /-- The key's effective balance when its exit starts on a run, or 0.
 
 It is the amount of the key's departure charge, which reads the effective balance at the exit call.
@@ -1653,6 +1660,17 @@ private theorem div_sub_le (a b c : ℕ) : a / c - b / c ≤ (a - b) / c + 1 := 
       rw [Nat.add_sub_cancel_left]
       omega
 
+/-- A run into the next period of sync committees has the current committee of the next one.
+
+The current committee at its end is the next committee at its start. -/
+private def SyncRotation (preset : Preset) (config : Config) (checks : SignatureChecks) : Prop :=
+  ∀ {x y : ForkedBeaconState preset} (_ : Run config checks x y) (_ : y.fork < .glamsterdam)
+    (_ : (getCurrentEpoch y.state).toNat / max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat =
+      (getCurrentEpoch x.state).toNat / max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat + 1)
+    (altair : .altair ≤ y.fork) (altair' : .altair ≤ x.fork),
+    (y.state.currentSyncCommittee altair).value.pubkeys.toList =
+      (x.state.nextSyncCommittee altair').value.pubkeys.toList
+
 open DirectSafety.Apriori DirectSafety.Apriori.Internal in
 /-- The keys that a sync aggregate debits on the two branches fit the committees of their periods.
 
@@ -1666,13 +1684,7 @@ So each key counts once, and the later committees of R's run count after C's.
 
 The rotation of the next committee into the current one is the hypothesis `rotation`. -/
 private theorem seat_union_card (h : Setting config checks g split fin pulled anc counted V)
-    (rotation : ∀ {x y : ForkedBeaconState preset} (_ : Run config checks x y)
-      (_ : y.fork < .glamsterdam)
-      (_ : (getCurrentEpoch y.state).toNat / max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat =
-        (getCurrentEpoch x.state).toNat / max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat + 1)
-      (altair : .altair ≤ y.fork) (altair' : .altair ≤ x.fork),
-      (y.state.currentSyncCommittee altair).value.pubkeys.toList =
-        (x.state.nextSyncCommittee altair').value.pubkeys.toList)
+    (rotation : SyncRotation preset config checks)
     (fromFin : Run config checks ⟨fork, fin⟩ ⟨fork, split⟩)
     (tail : Run config checks ⟨fork, split⟩ ⟨fork, pulled⟩)
     (tailC : Run config checks ⟨fork, split⟩ ⟨fork, counted⟩) (high : ℕ)
@@ -1866,6 +1878,93 @@ private theorem seat_union_card (h : Setting config checks g split fin pulled an
             by rw [sameC, sameS]; exact hLmem⟩)
   · rw [← Nat.mul_add]
     exact Nat.mul_le_mul_left _ arith
+
+/-- The rounding bands of a set of keys are the band for each key with a sync debit. -/
+private theorem sum_bandR (events : List (BalanceEvent preset)) (T : Finset ValidatorIndex) :
+    ∑ v ∈ T, bandR events v.toNat =
+      (preset.EFFECTIVE_BALANCE_INCREMENT.toNat + preset.downwardBand - 1) *
+        (T.filter fun v => 0 < (events.map (syncDebit v.toNat)).sum).card := by
+  classical
+  simp only [bandR_eq]
+  rw [← Finset.sum_filter, Finset.sum_const, smul_eq_mul, Nat.mul_comm]
+
+/-- The rounding bands of the classes of keys fit the seats of the committees of the periods.
+
+The keys of `V` are on C's run, and those of `K4`, `K5` and `K6` are on R's run.
+
+The keys of `V` weigh three, as do those of `K5`, and the others weigh one.
+
+Each key that has a band holds a seat, and the seats of the two runs are counted together. -/
+private theorem bands_seats (h : Setting config checks g split fin pulled anc counted V)
+    (rotation : SyncRotation preset config checks)
+    (fromFin : Run config checks ⟨fork, fin⟩ ⟨fork, split⟩)
+    (tail : Run config checks ⟨fork, split⟩ ⟨fork, pulled⟩)
+    (tailC : Run config checks ⟨fork, split⟩ ⟨fork, counted⟩) (high : ℕ)
+    {events eventsF eventsC : List (BalanceEvent preset)}
+    (replayed : tail.balanceEvents high = .ok events)
+    (replayedF : fromFin.balanceEvents high = .ok eventsF)
+    (replayedC : tailC.balanceEvents high = .ok eventsC) :
+    3 * (∑ v ∈ V, bandR (eventsF ++ eventsC) v.toNat) +
+        (∑ v ∈ K4 pulled counted V, bandR events v.toNat) +
+        3 * (∑ v ∈ K5 counted V, bandR events v.toNat) +
+        (∑ v ∈ K6 pulled counted, bandR events v.toNat) ≤
+      3 * ((preset.EFFECTIVE_BALANCE_INCREMENT.toNat + preset.downwardBand - 1) *
+        (preset.SYNC_COMMITTEE_SIZE.toNat *
+          (((getCurrentEpoch pulled).toNat + 1) /
+              max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat -
+            (getCurrentEpoch fin).toNat / max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat + 1 +
+          ((getCurrentEpoch pulled).toNat + 2 - anc.finalizedCheckpoint.epoch.toNat) /
+            max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat))) := by
+  classical
+  obtain ⟨d45, d46, d56, d4v, d5v, d6v⟩ := classes_disjoint h
+  rw [sum_bandR, sum_bandR, sum_bandR, sum_bandR]
+  generalize preset.EFFECTIVE_BALANCE_INCREMENT.toNat + preset.downwardBand - 1 = β
+  generalize hSeats : preset.SYNC_COMMITTEE_SIZE.toNat *
+    (((getCurrentEpoch pulled).toNat + 1) / max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat -
+      (getCurrentEpoch fin).toNat / max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat + 1 +
+    ((getCurrentEpoch pulled).toNat + 2 - anc.finalizedCheckpoint.epoch.toNat) /
+      max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat) = seats
+  set fV := V.filter fun v => 0 < ((eventsF ++ eventsC).map (syncDebit v.toNat)).sum with hfV
+  set f4 := (K4 pulled counted V).filter fun v => 0 < (events.map (syncDebit v.toNat)).sum
+    with hf4
+  set f5 := (K5 counted V).filter fun v => 0 < (events.map (syncDebit v.toNat)).sum with hf5
+  set f6 := (K6 pulled counted).filter fun v => 0 < (events.map (syncDebit v.toNat)).sum
+    with hf6
+  have d45' : Disjoint f4 f5 := d45.mono (Finset.filter_subset _ _) (Finset.filter_subset _ _)
+  have d46' : Disjoint f4 f6 := d46.mono (Finset.filter_subset _ _) (Finset.filter_subset _ _)
+  have d56' : Disjoint f5 f6 := d56.mono (Finset.filter_subset _ _) (Finset.filter_subset _ _)
+  have d4f : Disjoint fV f4 := d4v.mono (Finset.filter_subset _ _) (Finset.filter_subset _ _)
+  have d5f : Disjoint fV f5 := d5v.mono (Finset.filter_subset _ _) (Finset.filter_subset _ _)
+  have d6f : Disjoint fV f6 := d6v.mono (Finset.filter_subset _ _) (Finset.filter_subset _ _)
+  have inj : Function.Injective fun v : ValidatorIndex => v.toNat := fun a b same =>
+    UInt64.toNat_inj.mp same
+  have union := seat_union_card h rotation fromFin tail tailC high replayed replayedF replayedC
+    (fV.image fun v => v.toNat) ((f4 ∪ f5 ∪ f6).image fun v => v.toNat)
+    (fun i hi => by
+      obtain ⟨v, hv, rfl⟩ := Finset.mem_image.mp hi
+      exact (Finset.mem_filter.mp hv).2)
+    (fun i hi => by
+      obtain ⟨v, hv, rfl⟩ := Finset.mem_image.mp hi
+      rcases Finset.mem_union.mp hv with hv | hv
+      · rcases Finset.mem_union.mp hv with hv | hv
+        · exact (Finset.mem_filter.mp hv).2
+        · exact (Finset.mem_filter.mp hv).2
+      · exact (Finset.mem_filter.mp hv).2)
+  rw [hSeats] at union
+  have disjoint : Disjoint (fV.image fun v => v.toNat) ((f4 ∪ f5 ∪ f6).image fun v => v.toNat) := by
+    rw [Finset.disjoint_image inj]
+    rw [Finset.disjoint_union_right, Finset.disjoint_union_right]
+    exact ⟨⟨d4f, d5f⟩, d6f⟩
+  rw [Finset.card_union_of_disjoint disjoint, Finset.card_image_of_injective _ inj,
+    Finset.card_image_of_injective _ inj,
+    Finset.card_union_of_disjoint (Finset.disjoint_union_left.mpr ⟨d46', d56'⟩),
+    Finset.card_union_of_disjoint d45'] at union
+  have linear : 3 * fV.card + f4.card + 3 * f5.card + f6.card ≤ 3 * seats := by omega
+  have scaled := Nat.mul_le_mul_left β linear
+  calc 3 * (β * fV.card) + β * f4.card + 3 * (β * f5.card) + β * f6.card
+      = β * (3 * fV.card + f4.card + 3 * f5.card + f6.card) := by ring
+    _ ≤ β * (3 * seats) := scaled
+    _ = 3 * (β * seats) := by ring
 
 /-- The keys that a run from the split credits or debits through a sync seat.
 
@@ -2567,10 +2666,7 @@ private theorem floorC_at (h : Setting config checks g split fin pulled anc coun
   have eff := cfloor_endpoint h fromFin tailC replayed i val initial clean retained slack ρn ρd
     (low - (events.map (syncDebit i.toNat)).sum) start pass arith rp rest cut
   have incPos := h.bands.1
-  have bandEq : bandR events i.toNat = if 0 < (events.map (syncDebit i.toNat)).sum then
-      preset.EFFECTIVE_BALANCE_INCREMENT.toNat + preset.downwardBand - 1 else 0 := by
-    unfold bandR
-    rw [← sum_syncDebit_eq]
+  have bandEq := bandR_eq events i.toNat
   have lowLe : low ≤ (withdrawalMaxEffectiveBalance preset fork val).toNat := by
     have := Nat.min_le_right (actualBalanceAt (⟨fork, fin⟩ : ForkedBeaconState preset) i.toNat)
       (withdrawalMaxEffectiveBalance preset fork val).toNat
