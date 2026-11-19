@@ -8951,6 +8951,25 @@ theorem bud_exitingRise (h : Setting config checks g split fin pulled anc counte
   obtain ⟨w, found⟩ := found
   exact mem_positions_filter config pulled anc fin found exiting
 
+/-- SCRATCH stub of A's `proposer_rewards_le`, dropped when A lands it. -/
+private theorem proposer_rewards_le (h : Setting config checks g split fin pulled anc counted V)
+    (tailC : Run config checks ⟨fork, split⟩ ⟨fork, counted⟩) (highC : ℕ)
+    (endEpochC : (getCurrentEpoch counted).toNat ≤ highC + 1) (S : Finset ValidatorIndex) :
+    (∑ v ∈ S, propN tailC highC v.toNat) +
+        (pinTerms config pulled anc fin).depth * (pinTerms config pulled anc fin).syncProposer ≤
+      (pinTerms config pulled anc fin).depth * (pinTerms config pulled anc fin).proposerCredit :=
+  sorry
+
+/-- SCRATCH stub of A's `credit_parts_le` (proof/fcr-pin-d1-a-cred6), dropped when A lands it. -/
+private theorem credit_parts_le {x y : ForkedBeaconState preset} (tail : Run config checks x y)
+    (high : ℕ) (v : ValidatorIndex) {events : List (BalanceEvent preset)}
+    (replayed : tail.balanceEvents high = .ok events) :
+    credN tail high v.toNat ≤ propN tail high v.toNat + credDepR events v.toNat ∧
+    credC tail high v.toNat ≤ propN tail high v.toNat + credDepR events v.toNat +
+      consAmt events v.toNat ∧
+    propC tail high v.toNat ≤ propN tail high v.toNat + consAmt events v.toNat :=
+  sorry
+
 /-- K5 (`exitingCredits` with `credits`): C's proposer credits to K5 keys, weight 3.
 
 The consolidation amounts are not here: `bud_consolidations` charges them, so they are added to the
