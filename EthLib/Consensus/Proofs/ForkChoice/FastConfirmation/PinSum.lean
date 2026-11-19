@@ -2054,7 +2054,8 @@ private theorem block_gross_keys {g : ForkedBeaconState preset}
     (shared : Run config checks g ⟨f, s⟩) (fulu : .fusaka ≤ f) (early : f < .glamsterdam)
     {events : List (BalanceEvent preset)}
     (replayed : (Step.block engine signed due ok).balanceEvents = .ok events) :
-    ∃ K : Finset ℕ, K.card ≤ 1 ∧ ∀ e ∈ events, ∀ i, 0 < keyCredit i e →
+    ∃ K : Finset ℕ, K.card ≤ 1 ∧ (∀ i ∈ K, i = signed.message.proposerIndex.toNat) ∧
+      ∀ e ∈ events, ∀ i, 0 < keyCredit i e →
       i ∈ K ∨ (e.source = .sync ∧ ∃ altair : .altair ≤ f, ∃ w, t.validators.data[i]? = some w ∧
         w.pubkey ∈ (t.currentSyncCommittee altair).value.pubkeys.toList) := by
   have electra : .pectra ≤ f := Nat.le_trans (by decide) fulu
@@ -2065,7 +2066,8 @@ private theorem block_gross_keys {g : ForkedBeaconState preset}
   have matchedT : BalancesMatch t :=
     (frame_processBlock (applySignedBlock_ok ok).2.1).balancesMatch
       (run_justified_separated shared genesis).1.balancesMatch
-  refine ⟨{signed.message.proposerIndex.toNat}, by simp, fun e member i positive => ?_⟩
+  refine ⟨{signed.message.proposerIndex.toNat}, by simp,
+    fun i member => Finset.mem_singleton.mp member, fun e member i positive => ?_⟩
   have member' := member
   rw [split] at member'
   rcases List.mem_append.mp member' with inRest | inSync
@@ -2098,17 +2100,19 @@ private theorem block_step_gross_keys {g : ForkedBeaconState preset}
     {signed : SignedBeaconBlock preset f} {due : upgradeDue config ⟨f, s⟩ = false}
     {ok : applySignedBlock config checks engine s signed true = .ok t}
     (shared : Run config checks g ⟨f, s⟩) (fulu : .fusaka ≤ f) (early : f < .glamsterdam) :
-    ∃ K : Finset ℕ, K.card ≤ 1 ∧ ∀ i, 0 < stepCredit
+    ∃ K : Finset ℕ, K.card ≤ 1 ∧ (∀ i ∈ K, i = signed.message.proposerIndex.toNat) ∧
+      ∀ i, 0 < stepCredit
         (fun s => decide (s = .rewards ∨ s = .slashings ∨ s = .sync)) (fun _ => false) i
         (Step.block engine signed due ok) →
       i ∈ K ∨ ∃ altair : .altair ≤ f, ∃ w, t.validators.data[i]? = some w ∧
         w.pubkey ∈ (t.currentSyncCommittee altair).value.pubkeys.toList := by
   cases replayed : (Step.block engine signed due ok).balanceEvents with
   | error _ =>
-    exact ⟨∅, by simp, fun i pos => by simp [stepCredit, replayed, Except.toOption] at pos⟩
+    exact ⟨∅, by simp, by simp, fun i pos => by
+      simp [stepCredit, replayed, Except.toOption] at pos⟩
   | ok events =>
-    obtain ⟨K, card, keys⟩ := block_gross_keys genesis apart shared fulu early replayed
-    refine ⟨K, card, fun i pos => ?_⟩
+    obtain ⟨K, card, proposer, keys⟩ := block_gross_keys genesis apart shared fulu early replayed
+    refine ⟨K, card, proposer, fun i pos => ?_⟩
     simp only [stepCredit, replayed, Except.toOption, Option.getD_some] at pos
     by_contra none
     refine absurd (List.sum_eq_zero fun x member => ?_) (Nat.pos_iff_ne_zero.mp pos)
@@ -2320,7 +2324,7 @@ private theorem credited_piece {g : ForkedBeaconState preset}
         exact carry i w found mem
     | @block f s t engine signed due ok =>
       have fulu' : .fusaka ≤ f := Nat.le_trans fulu (fork_le_of_chainSteps pre.chainSteps)
-      obtain ⟨K, cardK, hK⟩ := block_step_gross_keys (engine := engine) (signed := signed)
+      obtain ⟨K, cardK, -, hK⟩ := block_step_gross_keys (engine := engine) (signed := signed)
         (due := due) (ok := ok) genesis apart (shared.append pre) fulu' uEarly
       refine ⟨B ∪ K, D ∪ Ds, ?_, cardUnion, fun i pos => ?_, depMem, ?_⟩
       · exact (Finset.card_union_le _ _).trans (Nat.add_le_add cardB cardK)
@@ -11876,6 +11880,46 @@ private theorem slot_idle_step {g m n : ForkedBeaconState preset}
     syncZero] at base sources ⊢
   simp only [List.filter_false, List.map_nil, List.sum_nil] at sources
   omega
+
+/-- A block step gives no gross credit to a key that is not active and holds no seat.
+
+A key that is not active at the epoch of the step is not its proposer.
+
+A key whose activation is too late for a committee to sample it holds no seat. -/
+private theorem block_idle_step {g : ForkedBeaconState preset}
+    (genesis : Genesis config checks g)
+    (apart : preset.MIN_SEED_LOOKAHEAD.toNat + 2 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
+    (covers : preset.MIN_SEED_LOOKAHEAD.toNat + 1 ≤ preset.MAX_SEED_LOOKAHEAD.toNat)
+    {f : Fork} {s t : BeaconState preset f} {engine : ExecutionEngine preset f}
+    {signed : SignedBeaconBlock preset f} {due : upgradeDue config ⟨f, s⟩ = false}
+    {ok : applySignedBlock config checks engine s signed true = .ok t}
+    (shared : Run config checks g ⟨f, s⟩) (fulu : .fusaka ≤ f) (early : f < .glamsterdam) (v : ℕ)
+    (notActive : ∀ w, s.validators.data[v]? = some w →
+      isActiveValidator w (getCurrentEpoch s) = false)
+    (notSeated : ∀ w, t.validators.data[v]? = some w → w.activationEpoch = FAR_FUTURE_EPOCH ∨
+      (getCurrentEpoch t).toNat + 1 < w.activationEpoch.toNat) :
+    stepCredit (fun s => decide (s = .rewards ∨ s = .slashings ∨ s = .sync)) (fun _ => false) v
+      (Step.block engine signed due ok) = 0 := by
+  obtain ⟨K, -, proposer, keys⟩ := block_step_gross_keys genesis apart shared fulu early
+    (engine := engine) (signed := signed) (due := due) (ok := ok)
+  by_contra nonzero
+  rcases keys v (Nat.pos_of_ne_zero nonzero) with member | ⟨altair, w, found, seat⟩
+  · obtain ⟨headed, headerOk⟩ := processBlock_header_of_lt_gloas early (applySignedBlock_ok ok).2.1
+    have read := (processBlockHeader_checks headerOk).2.2.1
+    have active := (Run.lookaheadActive covers genesis shared early).proposer_active fulu read
+    rw [← proposer v member] at active
+    obtain ⟨w, found, isActive⟩ := isActiveAt_eq_true_iff.mp active
+    rw [notActive w found] at isActive
+    exact Bool.false_ne_true isActive
+  · have run := shared.snoc (Step.block engine signed due ok)
+    obtain ⟨j, w', found', keyed, assigned, late⟩ :=
+      (run.syncCommittee_activation_bounded genesis altair).1 w.pubkey seat
+    obtain rfl := (run.pubkeysDistinct genesis).index_eq found found' keyed.symm
+    obtain rfl := Option.some.inj (found.symm.trans found')
+    rcases notSeated w found with far | later
+    · exact assigned far
+    · have bound : w.activationEpoch.toNat ≤ (getCurrentEpoch t).toNat + 1 := late
+      omega
 
 /-- A key that is idle along a prefix of C's run has a balance at most its credits there.
 
