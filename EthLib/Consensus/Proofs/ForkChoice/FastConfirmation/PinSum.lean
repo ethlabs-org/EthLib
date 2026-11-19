@@ -11797,13 +11797,19 @@ private theorem key_core_frozen (h : Setting config checks g split fin pulled an
     WEIGHT_DENOMINATOR.toNat (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum P
     ((pinTerms config pulled anc fin).ebUp v.toNat) D h.bands.1 (by decide) alignedE0
     (by
-      rw [← hq']
+      rw [← hq', hq]
       exact Nat.le_trans (Nat.mul_le_mul_right _ (Nat.mul_le_mul_left 11 hDle)) rateLow)
-  have credits := credits_le_sources (shared.append fromFin) h.genesis tailC h.early electra
+  obtain ⟨toFin⟩ := h.toFin
+  have credits := credits_le_sources (toFin.append fromFin) h.genesis tailC h.early electra
     v.toNat highC replayedC
   rw [← hCr] at credits
   have hperIncrement : (pinTerms config pulled anc fin).perIncrement = P := by
     rw [hP]
+    rfl
+  have hunit : (pinTerms config pulled anc fin).unitGain =
+      (pinTerms config pulled anc fin).depth * (P * (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum /
+        WEIGHT_DENOMINATOR.toNat + 2) := by
+    rw [← hperIncrement]
     rfl
   have gainBound : gc + (D * q + D) ≤
       flowGain (pinTerms config pulled anc fin) tailC highC eventsC events eventsF v.toNat +
@@ -11822,7 +11828,7 @@ private theorem key_core_frozen (h : Setting config checks g split fin pulled an
           (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum / WEIGHT_DENOMINATOR.toNat) := by
       rw [hform, Nat.add_assoc _ (D * q) D]
     unfold flowGain unitK
-    rw [hperIncrement, gcEq]
+    rw [hunit, hperIncrement, gcEq]
     exact split
   sorry
 
