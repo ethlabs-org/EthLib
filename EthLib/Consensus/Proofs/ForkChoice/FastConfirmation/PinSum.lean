@@ -2075,6 +2075,14 @@ private theorem position_in_prefix {f f' : Fork} {x : BeaconState preset f}
   subst index
   exact ⟨v, foundX, rfl⟩
 
+/-- The periods between two epochs are at most the periods of their distance, and one more. -/
+private theorem period_span (x y p : ℕ) (le : x ≤ y) : y / p - x / p ≤ (y - x) / p + 1 := by
+  have := Nat.add_div_le_div_add_div_add_one (y - x) x p
+  rw [Nat.sub_add_cancel le] at this
+  have mono := Nat.div_le_div_right (c := p) le
+  have nonneg := Nat.zero_le ((y - x) / p)
+  omega
+
 open DirectSafety.Apriori DirectSafety.Apriori.Internal in
 /-- The keys that a sync aggregate debits on the two branches fit the committees of their periods.
 
@@ -2129,11 +2137,7 @@ private theorem seat_union_card (h : Setting config checks g split fin pulled an
       have nonneg :=
         Nat.zero_le (((getCurrentEpoch pulled).toNat - (getCurrentEpoch split).toNat) / P)
       omega
-    · obtain ⟨d, hd⟩ := Nat.exists_eq_add_of_le order
-      rw [hd, Nat.add_sub_cancel_left]
-      have := Nat.add_div_le_div_add_div_add_one (getCurrentEpoch split).toNat d P
-      have nonneg := Nat.zero_le (d / P)
-      omega
+    · exact period_span _ _ _ order
   have divDepth : ((getCurrentEpoch pulled).toNat - (getCurrentEpoch split).toNat) / P ≤
       ((getCurrentEpoch pulled).toNat + 2 - anc.finalizedCheckpoint.epoch.toNat) / P :=
     Nat.div_le_div_right (by omega)
@@ -9231,13 +9235,11 @@ private theorem debit_keys_le (h : Setting config checks g split fin pulled anc 
     UInt64.le_iff_toNat_le.mp (currentEpoch_le_of_chainSteps fromFin.chainSteps)
   have splitPulled : (getCurrentEpoch split).toNat ≤ (getCurrentEpoch pulled).toNat :=
     UInt64.le_iff_toNat_le.mp h.called
-  have periods := Nat.add_div_le_div_add_div_add_one
-    ((getCurrentEpoch pulled).toNat + 2 - (getCurrentEpoch fin).toNat) (getCurrentEpoch fin).toNat
-    (max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat)
+  have periods := period_span (getCurrentEpoch fin).toNat ((getCurrentEpoch pulled).toNat + 2)
+    (max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat) (by omega)
   have shift : ((getCurrentEpoch pulled).toNat + 1) /
       max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat ≤ ((getCurrentEpoch pulled).toNat + 2) /
       max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat := Nat.div_le_div_right (by omega)
-  rw [Nat.sub_add_cancel (by omega)] at periods
   have depthEq : (pinTerms config pulled anc fin).depth =
       (getCurrentEpoch pulled).toNat + 2 - anc.finalizedCheckpoint.epoch.toNat := rfl
   have depthFinEq : (pinTerms config pulled anc fin).depthFin =
@@ -9331,10 +9333,8 @@ private theorem credited_classes_le (h : Setting config checks g split fin pulle
   simp only at monotone
   have wide : (getCurrentEpoch counted).toNat - (getCurrentEpoch split).toNat + 1 ≤
       (getCurrentEpoch pulled).toNat + 2 - anc.finalizedCheckpoint.epoch.toNat := by omega
-  have periods := Nat.add_div_le_div_add_div_add_one
-    ((getCurrentEpoch counted).toNat - (getCurrentEpoch split).toNat)
-    (getCurrentEpoch split).toNat (max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat)
-  rw [Nat.sub_add_cancel monotone] at periods
+  have periods := period_span (getCurrentEpoch split).toNat (getCurrentEpoch counted).toNat
+    (max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat) monotone
   have periodsLe := Nat.div_le_div_right
     (c := max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat)
     (show (getCurrentEpoch counted).toNat - (getCurrentEpoch split).toNat ≤
