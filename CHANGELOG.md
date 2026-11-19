@@ -9,6 +9,18 @@ Not yet released.
 
 ### Proof additions
 
+- `Run.slashed_withdrawable_eq` says that a validator that is slashed, with an assigned exit, keeps its withdrawable epoch along a run.
+  The pin's floors read it for the keys that C slashes before the split.
+
+- `Run.withdrawable_eq_exit_delay` says that a validator reached from genesis, if it is not slashed, has no withdrawable epoch before its exit is assigned.
+  After the exit is assigned, its withdrawable epoch is exactly the withdrawal delay after it.
+  It extends `Run.exit_withdrawable_delay` with the upper bound, and the pin's floors read it for the keys that C exits.
+  The private invariant `ActivationExitOrder.Holds` gains the upper bound as a fifth conjunct.
+  The new `Holds` implies the old one, so each reader of the old four conjuncts is unchanged.
+
+- `DirectSafety.Apriori.Internal.FloorTrace.run_potential_floor_slash` is public: a key unslashed at the start of a run keeps its balance within the closed form of a slash, over one more epoch.
+  The pin's `segment_potential_slash` reads it for the floor of a key that C's run slashes.
+
 - `DirectSafety.Apriori.Internal.perIncrement_exists` is public: the base reward per increment exists at a positive total when the scaled factor fits.
   The pin reads it to show that its base reward per increment is at least four.
   The pin's preset facts gain `fits`, that the scaled base reward factor fits in a `Gwei`, which both presets meet.
