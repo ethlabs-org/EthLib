@@ -15302,6 +15302,9 @@ private theorem key_core_cap (h : Setting config checks g split fin pulled anc c
   have noCredit : bandC tailC highC v.toNat = 0 → bandX fin highC v.toNat = 0 → Cr = 0 := by
     intro hbC hbX
     have up := h.bands.2
+    have incPos : 1 < preset.EFFECTIVE_BALANCE_INCREMENT.toNat := by
+      have := h.facts.incrementSize
+      omega
     have scans : grossScan v.toNat highC tailC = 0 ∧
         (creditScan (fun _ => false) (fun s => decide (s = .deposits)) v.toNat highC tailC).1 =
           0 := by
@@ -15362,7 +15365,7 @@ private theorem key_core_cap (h : Setting config checks g split fin pulled anc c
       have capFor : capForOf (pinTerms config pulled anc fin) pulled v.toNat =
           PinSplit2.capAt (⟨fork, pulled⟩ : ForkedBeaconState preset) v.toNat := by
         unfold capForOf
-        rw [if_pos lowArm]
+        simp only [lowArm, ↓reduceIte]
       have pulledSize : v.toNat < pulled.validators.data.size :=
         Nat.lt_of_lt_of_le splitSize (registryGrows_of_chainSteps tail.chainSteps)
       have aligned : PinSplit2.capAt (⟨fork, pulled⟩ : ForkedBeaconState preset) v.toNat %
