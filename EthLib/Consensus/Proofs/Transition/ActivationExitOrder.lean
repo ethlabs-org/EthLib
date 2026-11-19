@@ -838,6 +838,349 @@ private theorem processBlock {block : BeaconBlock preset fork}
 
 end Kept
 
+private theorem active_ne_far {v : Validator} {e : Epoch}
+    (active : isActiveValidator v e = true) : v.activationEpoch ≠ FAR_FUTURE_EPOCH := by
+  simp only [isActiveValidator, Bool.and_eq_true, decide_eq_true_eq] at active
+  intro far
+  have first := UInt64.le_iff_toNat_le.mp active.1
+  have second := UInt64.lt_iff_toNat_lt.mp active.2
+  have := v.exitEpoch.toNat_lt
+  rw [far] at first
+  change 18446744073709551615 ≤ e.toNat at first
+  change e.toNat < v.exitEpoch.toNat at second
+  omega
+
+private theorem slashable_ne_far {v : Validator} {e : Epoch}
+    (slashable : isSlashableValidator v e = true) : v.activationEpoch ≠ FAR_FUTURE_EPOCH := by
+  simp only [isSlashableValidator, Bool.and_eq_true, decide_eq_true_eq] at slashable
+  intro far
+  have first := UInt64.le_iff_toNat_le.mp slashable.1.2
+  have second := UInt64.lt_iff_toNat_lt.mp slashable.2
+  have := v.withdrawableEpoch.toNat_lt
+  rw [far] at first
+  change 18446744073709551615 ≤ e.toNat at first
+  change e.toNat < v.withdrawableEpoch.toNat at second
+  omega
+
+/-- A step that never gives an activation epoch to a validator without one.
+
+It assigns an exit only to a validator that has an activation epoch.
+
+Within a block both hold across the steps of the block, since a block never queues an activation. -/
+private def Moves (s t : BeaconState preset fork) : Prop :=
+  s.validators.data.size ≤ t.validators.data.size ∧
+  ∀ (i : Nat) (v w : Validator), s.validators.data[i]? = some v → t.validators.data[i]? = some w →
+    (v.activationEpoch = FAR_FUTURE_EPOCH → w.activationEpoch = FAR_FUTURE_EPOCH) ∧
+    (v.exitEpoch = FAR_FUTURE_EPOCH → w.exitEpoch ≠ FAR_FUTURE_EPOCH →
+      v.activationEpoch ≠ FAR_FUTURE_EPOCH)
+
+namespace Moves
+
+private theorem refl (s : BeaconState preset fork) : Moves s s := by
+  refine ⟨Nat.le_refl _, fun i v w found after => ?_⟩
+  obtain rfl := Option.some.inj (found.symm.trans after)
+  exact ⟨id, fun unset set => absurd unset set⟩
+
+private theorem trans {s t u : BeaconState preset fork} (one : Moves s t) (two : Moves t u) :
+    Moves s u := by
+  refine ⟨Nat.le_trans one.1 two.1, fun i v w found after => ?_⟩
+  have inside : i < t.validators.data.size :=
+    Nat.lt_of_lt_of_le (Array.getElem?_eq_some_iff.mp found).1 one.1
+  obtain ⟨x, middle⟩ : ∃ x, t.validators.data[i]? = some x :=
+    ⟨_, Array.getElem?_eq_some_iff.mpr ⟨inside, rfl⟩⟩
+  have first := one.2 i v x found middle
+  have second := two.2 i x w middle after
+  refine ⟨fun far => second.1 (first.1 far), fun unset set => ?_⟩
+  by_cases assigned : x.exitEpoch = FAR_FUTURE_EPOCH
+  · intro far
+    exact second.2 assigned set (first.1 far)
+  · exact first.2 unset assigned
+
+private theorem of_data {t : BeaconState preset fork}
+    (same : t.validators.data = state.validators.data := by rfl) : Moves state t := by
+  refine ⟨Nat.le_of_eq (by rw [same]), fun i v w found after => ?_⟩
+  rw [same] at after
+  obtain rfl := Option.some.inj (found.symm.trans after)
+  exact ⟨id, fun unset set => absurd unset set⟩
+
+private theorem setValidator {i : ValidatorIndex} {old v : Validator}
+    (found : getValidator state i = .ok old) (set : state.setValidator i v = .ok after)
+    (act : old.activationEpoch = FAR_FUTURE_EPOCH → v.activationEpoch = FAR_FUTURE_EPOCH)
+    (exit : old.exitEpoch = FAR_FUTURE_EPOCH → v.exitEpoch ≠ FAR_FUTURE_EPOCH →
+      old.activationEpoch ≠ FAR_FUTURE_EPOCH) :
+    Moves state after := by
+  obtain ⟨inside, rfl⟩ := setValidator_ok set
+  have read := getValidator_eq_ok_iff.mp found
+  refine ⟨by simp [BeaconState.putValidator, RootedForkList.data_set], fun j a b before later => ?_⟩
+  simp only [BeaconState.putValidator, RootedForkList.data_set, Array.getElem?_set] at later
+  by_cases same : i.toNat = j
+  · subst same
+    simp only [↓reduceIte] at later
+    obtain rfl := Option.some.inj later
+    obtain rfl := Option.some.inj (before.symm.trans read)
+    exact ⟨act, exit⟩
+  · simp only [same, ↓reduceIte] at later
+    obtain rfl := Option.some.inj (before.symm.trans later)
+    exact ⟨id, fun unset set => absurd unset set⟩
+
+private theorem append {v : Validator}
+    (added : after.validators.data = state.validators.data.push v) : Moves state after := by
+  refine ⟨by rw [added]; simp, fun j a b before later => ?_⟩
+  rw [added] at later
+  have inside := (Array.getElem?_eq_some_iff.mp before).1
+  rw [Array.getElem?_push_lt inside, ← Array.getElem?_eq_getElem inside] at later
+  obtain rfl := Option.some.inj (before.symm.trans later)
+  exact ⟨id, fun unset set => absurd unset set⟩
+
+private theorem increaseBalance {i : ValidatorIndex} {amount : Gwei}
+    (ok : Consensus.increaseBalance state i amount = .ok after) : Moves state after :=
+  of_data (congrArg (·.data) (increaseBalance_validators ok))
+
+private theorem decreaseBalance {i : ValidatorIndex} {amount : Gwei}
+    (ok : Consensus.decreaseBalance state i amount = .ok after) : Moves state after :=
+  of_data (congrArg (·.data) (decreaseBalance_validators ok))
+
+private theorem initiateValidatorExit {i : ValidatorIndex} {v : Validator}
+    (found : getValidator state i = .ok v) (assigned : v.activationEpoch ≠ FAR_FUTURE_EPOCH)
+    (ok : Consensus.initiateValidatorExit config state i = .ok after) : Moves state after := by
+  obtain ⟨old, read, unchanged | ⟨_, queued, _, _, queue, delayed, set⟩⟩ :=
+    initiateValidatorExit_ok ok
+  · rw [unchanged.2]; exact refl _
+  · have equal := Except.ok.inj (read.symm.trans found)
+    have same := (exitQueue_validators queue).1
+    exact (of_data (congrArg (·.data) same)).trans <|
+      setValidator ((getValidator_of_validators_eq same i).trans read) set id
+        (fun _ _ => by subst equal; exact assigned)
+
+private theorem slashValidator {i : ValidatorIndex} {v : Validator}
+    {whistleblower : Option ValidatorIndex}
+    (found : getValidator state i = .ok v) (assigned : v.activationEpoch ≠ FAR_FUTURE_EPOCH)
+    (ok : Consensus.slashValidator config state i whistleblower = .ok after) :
+    Moves state after := by
+  obtain ⟨_, _, _, marked, _, _, slashings, _, _, _, _, last, exited, read, _, set,
+    _, _, _, lowered, _, _, raised, paid, rfl⟩ := slashValidator_ok ok
+  have first := (initiateValidatorExit (config := config) found assigned exited).trans
+    (setValidator read set id (fun unset set => absurd unset set))
+  have second := (of_data (state := marked)
+    (t := { marked with slashings })).trans
+    ((decreaseBalance lowered).trans ((increaseBalance raised).trans (increaseBalance paid)))
+  apply (first.trans second).trans
+  split <;> exact of_data
+
+private theorem processProposerSlashing {slashing : ProposerSlashing}
+    (ok : Consensus.processProposerSlashing config checks state slashing = .ok after) :
+    Moves state after := by
+  simp only [Consensus.processProposerSlashing, bind_ok_iff, ensure_ok_iff, liftAccessor_ok] at ok
+  obtain ⟨_, _, _, _, _, _, v, found, _, slashable, _, _, _, _, slashed⟩ := ok
+  exact slashValidator (config := config) found (slashable_ne_far slashable) slashed
+
+private theorem slashIfSlashable {step next : BeaconState preset fork × Bool}
+    {index : ValidatorIndex} (ok : Consensus.slashIfSlashable config step index = .ok next) :
+    Moves step.1 next.1 := by
+  obtain ⟨state, slashedAny⟩ := step
+  simp only [Consensus.slashIfSlashable, bind_ok_iff, liftAccessor_ok] at ok
+  obtain ⟨v, found, ok⟩ := ok
+  split at ok
+  · rename_i slashable
+    simp only [bind_ok_iff, liftAccessor_ok, pure, Except.pure, Except.ok.injEq] at ok
+    obtain ⟨_, slashed, rfl⟩ := ok
+    exact slashValidator (config := config) found (slashable_ne_far slashable) slashed
+  · cases ok; exact refl _
+
+private theorem processAttesterSlashing {slashing : AttesterSlashing preset fork}
+    (ok : Consensus.processAttesterSlashing config checks state slashing = .ok after) :
+    Moves state after := by
+  simp only [Consensus.processAttesterSlashing, bind_ok_iff, ensure_ok_iff, pure, Except.pure,
+    Except.ok.injEq] at ok
+  obtain ⟨_, _, _, _, _, _, _, _, _, _, _, folded, _, _, rfl⟩ := ok
+  exact foldlM_ok_invariant (fun step => Moves state step.1)
+    (fun _ _ _ before ok => before.trans (slashIfSlashable (config := config) ok))
+    (show Moves state (state, false).1 from refl state) folded
+
+private theorem processVoluntaryExit {signed : SignedVoluntaryExit}
+    (ok : Consensus.processVoluntaryExit config checks state signed = .ok after) :
+    Moves state after := by
+  unfold Consensus.processVoluntaryExit at ok
+  simp only [bind_ok_iff, ensure_ok_iff, liftAccessor_ok, liftSsz_ok] at ok
+  obtain ⟨v, found, _, active, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, exited⟩ := ok
+  exact initiateValidatorExit found (active_ne_far active) exited
+
+private theorem foldlM {α ε : Type} {step : BeaconState preset fork → α → Except ε _}
+    (keeps : ∀ s a t, step s a = .ok t → Moves s t) {xs : List α}
+    (ok : xs.foldlM step state = .ok after) : Moves state after :=
+  foldlM_ok_invariant (Moves state) (fun _ _ _ h ok => h.trans (keeps _ _ _ ok))
+    (refl state) ok
+
+private theorem applyPendingDeposit {deposit : PendingDeposit}
+    (ok : Consensus.applyPendingDeposit config checks state deposit = .ok after) :
+    Moves state after := by
+  rcases applyPendingDeposit_cases ok with rfl | ⟨_, ok⟩ | ⟨_, ok⟩
+  · exact refl _
+  · exact increaseBalance ok
+  · exact append (addValidatorToRegistry_validators_eq_push ok)
+
+private theorem applyDeposit {pubkey : BLSPubkey} {credentials : Bytes32} {amount : Gwei}
+    {signature : BLSSignature}
+    (ok : Consensus.applyDeposit config checks state pubkey credentials amount signature =
+      .ok after) : Moves state after := by
+  rcases applyDeposit_cases ok with rfl | ⟨_, _, _, rfl | added, rfl⟩ | ⟨_, ok⟩
+  · exact refl _
+  · exact of_data
+  · exact (append (addValidatorToRegistry_validators_eq_push added)).trans of_data
+  · exact applyPendingDeposit ok
+
+private theorem processDeposit {before : fork < .hegota} {deposit : Deposit}
+    (ok : Consensus.processDeposit config checks before state deposit = .ok after) :
+    Moves state after := by
+  obtain ⟨_, _, next, _, credited⟩ := processDeposit_ok ok
+  exact (of_data (state := state)
+    (t := { state with eth1DepositIndex := fun _ => next })).trans (applyDeposit credited)
+
+private theorem processBlsToExecutionChange {signed : SignedBLSToExecutionChange}
+    (ok : Consensus.processBlsToExecutionChange config checks state signed = .ok after) :
+    Moves state after := by
+  obtain ⟨_, found, _, _, _, set⟩ := processBlsToExecutionChange_ok ok
+  exact setValidator found set id (fun unset set => absurd unset set)
+
+private theorem queueExcessActiveBalance {electra : .pectra ≤ fork} {index : ValidatorIndex}
+    (ok : Consensus.queueExcessActiveBalance state electra index = .ok after) :
+    Moves state after := by
+  simp only [Consensus.queueExcessActiveBalance, bind_ok_iff] at ok
+  obtain ⟨_, _, ok⟩ := ok
+  split at ok
+  · simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at ok
+    obtain ⟨_, _, _, _, _, set, rfl⟩ := ok
+    obtain ⟨_, rfl⟩ := setBalance_ok set
+    exact of_data
+  · cases ok; exact refl _
+
+private theorem switchToCompoundingValidator {electra : .pectra ≤ fork} {index : ValidatorIndex}
+    (ok : Consensus.switchToCompoundingValidator state electra index = .ok after) :
+    Moves state after := by
+  simp only [Consensus.switchToCompoundingValidator, bind_ok_iff] at ok
+  obtain ⟨_, found, _, set, queued⟩ := ok
+  exact (setValidator found set id (fun unset set => absurd unset set)).trans
+    (queueExcessActiveBalance queued)
+
+private theorem processWithdrawalRequest {electra : .pectra ≤ fork} {request : WithdrawalRequest}
+    (ok : Consensus.processWithdrawalRequest config state electra request = .ok after) :
+    Moves state after := by
+  unfold Consensus.processWithdrawalRequest at ok
+  simp only [bind, Except.bind, pure, Except.pure] at ok
+  repeat' split at ok
+  all_goals first
+    | (cases ok; done)
+    | (cases ok; exact refl _)
+    | exact of_data (congrArg (·.data) (requestPartialWithdrawal_kept ok).1)
+    | (apply initiateValidatorExit (config := config)
+         (by rw [getValidator, getElem?_toNat_of_ofNatChecked (by assumption)])
+         ?_ (liftAccessor_ok.mp ok)
+       rename_i position _ _ _ _ _ _ _ _ _ _ _ _ _ _
+       have accepted : canRequest config state state.validators.data[position] = .ok true := by
+         simp_all
+       unfold canRequest at accepted
+       dsimp only at accepted
+       split at accepted
+       · cases accepted
+       · rename_i active
+         apply active_ne_far
+         simp at active
+         exact active.1)
+
+private theorem queueConsolidation {electra : .pectra ≤ fork}
+    {sourceIndex targetIndex : ValidatorIndex} {source : Validator}
+    (found : state.validators.data[sourceIndex.toNat]? = some source)
+    (assigned : source.activationEpoch ≠ FAR_FUTURE_EPOCH)
+    (ok : Consensus.queueConsolidation config state electra sourceIndex source targetIndex =
+      .ok after) : Moves state after := by
+  obtain ⟨exitEpoch, withdrawable, rest, written, _, churn, delayed, set, _, rfl⟩ :=
+    queueConsolidation_steps ok
+  exact (of_data (state := state)
+    (t := { state with
+      consolidationBalanceToConsume := fun _ => rest
+      earliestConsolidationEpoch := fun _ => exitEpoch }) rfl).trans <|
+    (setValidator (old := source)
+      (getValidator_eq_ok_iff.mpr (by simpa using found)) set id
+      (fun _ _ => assigned)).trans of_data
+
+private theorem processConsolidationRequest {electra : .pectra ≤ fork}
+    {request : ConsolidationRequest}
+    (ok : Consensus.processConsolidationRequest config state electra request = .ok after) :
+    Moves state after := by
+  rcases consolidationRequest_cases ok with rfl | ⟨_, _, _, switched⟩ |
+    ⟨_, _, _, _, accepted, queued⟩
+  · exact refl _
+  · exact switchToCompoundingValidator switched
+  · exact queueConsolidation accepted.sourceAt (active_ne_far accepted.sourceActive) queued
+
+private theorem processDepositRequest {electra : .pectra ≤ fork} {request : DepositRequest}
+    (ok : Consensus.processDepositRequest state electra request = .ok after) :
+    Moves state after :=
+  of_data (congrArg (·.data) (processDepositRequest_ok ok).2.1)
+
+private theorem processExecutionRequests {body : BeaconBlockBody preset fork}
+    {electra : .pectra ≤ fork ∧ fork < .glamsterdam}
+    (ok : Consensus.processExecutionRequests config state body electra = .ok after) :
+    Moves state after := by
+  simp only [Consensus.processExecutionRequests, bind_ok_iff, ← Array.foldlM_toList] at ok
+  obtain ⟨_, deposits, _, withdrawals, consolidations⟩ := ok
+  exact (foldlM (fun _ _ _ ok => processDepositRequest ok) deposits).trans <|
+    (foldlM (fun _ _ _ ok => processWithdrawalRequest (config := config) ok) withdrawals).trans
+      (foldlM (fun _ _ _ ok => processConsolidationRequest (config := config) ok) consolidations)
+
+private theorem blockHeader {block : BeaconBlock preset fork}
+    (ok : processBlockHeader state block = .ok after) : Moves state after := by
+  obtain ⟨_, _, rfl⟩ := processBlockHeader_eq ok
+  exact of_data
+
+private theorem randao {body : BeaconBlockBody preset fork}
+    (ok : processRandao config checks state body = .ok after) : Moves state after := by
+  obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, _, rfl⟩ := processRandao_eq ok
+  exact of_data
+
+private theorem eth1Data {before : fork < .hegota} {body : BeaconBlockBody preset fork}
+    (ok : processEth1Data before state body = .ok after) : Moves state after := by
+  obtain ⟨_, _, rest⟩ := processEth1Data_eq ok
+  exact of_data (by rw [← rest])
+
+/-- A block never gives an activation to a validator without one and exits only activated ones. -/
+private theorem processBlock {block : BeaconBlock preset fork}
+    (ok : Consensus.processBlock config checks engine state block = .ok after) :
+    Moves state after := by
+  have keep {a b : BeaconState preset fork} (frame : BlockFrame a b)
+      (same : b.validators = a.validators) : Moves a b :=
+    of_data (congrArg (·.data) same)
+  obtain ⟨input, last, started, operated, -, synced⟩ := processBlock_operationsInput ok
+  have head : Moves state input :=
+    OperationsInput.step_of Moves refl (fun one two => one.trans two)
+      (fun _ paid => processParentExecutionPayload_step_of Moves refl
+        (fun one two => one.trans two)
+        keep (processWithdrawalRequest (config := config))
+        (processConsolidationRequest (config := config)) paid)
+      blockHeader
+      (fun _ executed => of_data (congrArg (·.data) (processBlockExecution_validators executed)))
+      (randao (config := config) (checks := checks)) (fun _ voted => eth1Data voted) started
+  obtain ⟨_, _, _, proposersOk, slashingsOk, attestedOk, rest⟩ :=
+    processOperations_folds_of Moves refl (fun one two => one.trans two)
+      (processDeposit (config := config) (checks := checks))
+      (processVoluntaryExit (config := config) (checks := checks))
+      (processBlsToExecutionChange (config := config) (checks := checks))
+      (processExecutionRequests (config := config))
+      (fun paid => by rw [processPayloadAttestation_eq paid]; exact refl _) operated
+  have tail : Moves last after := by
+    split at synced
+    · obtain ⟨_, rfl⟩ := processSyncAggregate_eq synced
+      exact of_data
+    · cases synced
+      exact refl _
+  exact head.trans <| (foldlM (fun _ _ _ ok => processProposerSlashing (config := config) ok)
+      proposersOk).trans <|
+    (foldlM (fun _ _ _ ok => processAttesterSlashing (config := config) ok) slashingsOk).trans <|
+    (foldlM (fun _ _ _ ok => of_data (congrArg (·.data) (processAttestation_registry ok).1))
+      attestedOk).trans <| rest.trans tail
+
+end Moves
+
 /-- All four properties that the walk carries. -/
 private def Holds (config : Config) (s : BeaconState preset fork) : Prop :=
   ExitGap s ∧ ActivationExitOrder s ∧ ExitDelay config s ∧ Eligible s
