@@ -925,7 +925,7 @@ private theorem sync_debit_seat {f : Fork} {c t : BeaconState preset f} (altair 
       actualBalanceAt (⟨f, c⟩ : ForkedBeaconState preset) i) :
     ∃ w, t.validators.data[i]? = some w ∧
       w.pubkey ∈ (t.currentSyncCommittee altair).value.pubkeys.toList := by
-  obtain ⟨vals, comm⟩ := processSyncAggregate_kept synced
+  obtain ⟨vals, comm⟩ := BlockLedger.processSyncAggregate_kept synced
   have sizes := sameSizes_processSyncAggregate synced
   have matchedC : BalancesMatch c := by
     unfold BalancesMatch at matched ⊢
@@ -1031,8 +1031,8 @@ private theorem credited_piece {g : ForkedBeaconState preset}
       split at rest
       · simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at rest
         obtain ⟨added, addedOk, rfl⟩ := rest
-        have quiet := slot_noSync (Nat.le_trans (by decide) (Nat.le_trans (by decide) fulu'))
-          ok early addedOk
+        have quiet := PinSplit5.slot_noSync
+          (Nat.le_trans (by decide) (Nat.le_trans (by decide) fulu')) ok early addedOk
         have zero : (added.map (syncDebit i)).sum = 0 :=
           List.sum_eq_zero fun v member => by
             obtain ⟨e, inside, rfl⟩ := List.mem_map.mp member
@@ -1093,7 +1093,7 @@ private theorem credited_piece {g : ForkedBeaconState preset}
           · have here : 0 < (added.map (syncDebit i)).sum := by omega
             have altair' : .altair ≤ f := Nat.le_trans (by decide) fulu'
             obtain ⟨c, rest', aggregate, credit, debit, rfl, quiet, synced⟩ :=
-              blockReplay_sync_split (show f < .glamsterdam from uEarly) altair'
+              PinSplit5.blockReplay_sync_split (show f < .glamsterdam from uEarly) altair'
                 (Step.balanceEvents_block uEarly addedOk)
             have silent : (rest'.map (syncDebit i)).sum = 0 :=
               List.sum_eq_zero fun v member => by
