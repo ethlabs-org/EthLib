@@ -242,6 +242,9 @@ Not yet released.
 
 ### Changes that break callers
 
+- In Lean, `DirectSafety.Apriori.Internal.ScoresBelow.step` drops its premise `inside : n ≤ m.state.validators.data.size`, which its proof did not use.
+  A caller drops that argument.
+
 - In Lean, the exit and partial-withdrawal cases of `withdrawalRequest_cases` record the validator in `WithdrawalAccepted` ([#2334](https://github.com/ethereum/EthLib/issues/2334)).
   The index is the first with the key of the request.
   The validator there has execution credentials from the address of the request, and it may make a request.
