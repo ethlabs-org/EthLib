@@ -9,6 +9,11 @@ Not yet released.
 
 ### Proof additions
 
+- `Run.slashed_withdrawable_eq` says that a validator that is slashed, with an assigned exit, keeps its withdrawable epoch along a run.
+  The pin's floors read it for the keys that C slashes before the split.
+  The `withdrawal` field of `CapStep` now says that the withdrawable epoch of such a validator stays equal, where it said that it does not fall.
+  The new field implies the old one, so each reader of the old field reads it through `le_of_eq`.
+
 - `Run.withdrawable_eq_exit_delay` says that a validator reached from genesis, if it is not slashed, has no withdrawable epoch before its exit is assigned.
   After the exit is assigned, its withdrawable epoch is exactly the withdrawal delay after it.
   It extends `Run.exit_withdrawable_delay` with the upper bound, and the pin's floors read it for the keys that C exits.
