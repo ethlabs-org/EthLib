@@ -86,5 +86,95 @@ private theorem leak_linear (inc pi score depth bias quotient : ℕ) (incPos : 0
         Nat.mul_div_mul_left _ _ incPos, Nat.mul_add_div positive]
     rw [lhs, rhs]
 
+
+/-- The potential floor of a key's balance at a state of the run from the finalized state.
+
+The balance and the debits that are no pass penalties keep a fraction of the start.
+
+The start is the smaller of the balance and the cap at the finalized state, plus its band and the
+shortfall of the balance below the stored effective balance. -/
+private theorem run_state_floor (h : Setting config checks g split fin pulled anc counted V)
+    {z : BeaconState preset fork} (rp : Run config checks ⟨fork, fin⟩ ⟨fork, z⟩)
+    (nearZ : (getCurrentEpoch z).toNat ≤ (getCurrentEpoch pulled).toNat + 1)
+    (v : ValidatorIndex) (val : Validator) (initial : fin.validators.data[v.toNat]? = some val)
+    (clean : ∀ w, z.validators.data[v.toNat]? = some w → w.slashed = false)
+    (far : ∀ w, z.validators.data[v.toNat]? = some w → w.exitEpoch = FAR_FUTURE_EPOCH)
+    {evz : List (BalanceEvent preset)}
+    (replayed : rp.balanceEvents (getCurrentEpoch pulled).toNat = .ok evz)
+    (ρn ρd : ℕ)
+    (leaky : ∀ eb : ℕ, preset.EFFECTIVE_BALANCE_INCREMENT.toNat ∣ eb →
+      (pinTerms config pulled anc fin).leakAt eb v.toNat ≤ ρn * eb / ρd)
+    (quarter : ∃ pq, getBaseRewardPerIncrement preset
+      (if 18 * preset.EFFECTIVE_BALANCE_INCREMENT.toNat ≤
+          ((getTotalActiveBalance pulled).toOption.getD 0).toNat then
+        (getTotalActiveBalance pulled).toOption.getD 0 / 4
+      else preset.EFFECTIVE_BALANCE_INCREMENT / 5) = .ok pq) :
+    (ρd - ρn * ((getCurrentEpoch z).toNat - (getCurrentEpoch fin).toNat)) *
+        (min (actualBalanceAt ⟨fork, fin⟩ v.toNat)
+            (withdrawalMaxEffectiveBalance preset fork val).toNat +
+          (preset.downwardBand + (effectiveAt ⟨fork, fin⟩ v.toNat -
+            actualBalanceAt ⟨fork, fin⟩ v.toNat))) ≤
+      ρd * (actualBalanceAt ⟨fork, z⟩ v.toNat +
+        ((evz.map (syncDebit v.toNat)).sum + (evz.map (floorPartialDebit v)).sum) +
+        (preset.downwardBand + (effectiveAt ⟨fork, fin⟩ v.toNat -
+          actualBalanceAt ⟨fork, fin⟩ v.toNat))) := by
+  obtain ⟨shared⟩ := h.toFin
+  have altair : .altair ≤ fork := Nat.le_trans (by decide) h.fulu
+  obtain ⟨positive, guards⟩ :=
+    floor_guards h (Run.nil : Run config checks ⟨fork, fin⟩ ⟨fork, fin⟩) (y := z) nearZ
+  have retained : ∀ {m n : ForkedBeaconState preset} (pre : Run config checks ⟨fork, fin⟩ m)
+      (step : Step config checks m n) (post : Run config checks n ⟨fork, z⟩),
+      (pre.snoc step).append post = rp → ∀ w, n.state.validators.data[v.toNat]? = some w →
+      (getCurrentEpoch pulled).toNat + 1 < w.exitEpoch.toNat := by
+    intro m n pre step post cut w found
+    obtain ⟨last, located, kept⟩ := post.registryLifecycle.validators v.toNat w found
+    by_cases e : w.exitEpoch = FAR_FUTURE_EPOCH
+    · rw [e]
+      exact getCurrentEpoch_succ_lt_farFuture h.twoSlots pulled
+    · exact absurd ((kept.exitEpoch e).symm.trans (far last located)) e
+  obtain ⟨D, split, closed⟩ := FloorTrace.run_potential_floor shared rp h.genesis h.caps h.delay
+    h.early h.fulu h.bands (getCurrentEpoch pulled).toNat nearZ v val initial clean _ positive
+    (fun {m n} pre step post cut w found =>
+      ⟨retained pre step post cut w found, guards pre step post⟩)
+    replayed (effectiveAt ⟨fork, fin⟩ v.toNat - actualBalanceAt ⟨fork, fin⟩ v.toNat) ρn ρd
+    (by omega)
+    (fun {m n} pre step post cut evs ok => by
+      have above : fork ≤ m.fork :=
+        Nat.le_trans (le_refl _) (fork_le_of_chainSteps pre.chainSteps)
+      have below : m.fork ≤ fork :=
+        Nat.le_trans step.chainStep.fork_le (fork_le_of_chainSteps post.chainSteps)
+      have startE : (getCurrentEpoch m.state).toNat ≤ (getCurrentEpoch pulled).toNat + 1 := by
+        have := UInt64.le_iff_toNat_le.mp
+          (currentEpoch_le_of_chainSteps ((Run.nil.snoc step).append post).chainSteps)
+        simp only at this
+        omega
+      have endE : (getCurrentEpoch n.state).toNat ≤ (getCurrentEpoch pulled).toNat + 1 := by
+        have := UInt64.le_iff_toNat_le.mp (currentEpoch_le_of_chainSteps post.chainSteps)
+        simp only at this
+        omega
+      have nEarly : n.fork < .glamsterdam :=
+        Nat.lt_of_le_of_lt (fork_le_of_chainSteps post.chainSteps) h.early
+      have mSize := registryGrows_of_chainSteps pre.chainSteps
+      obtain ⟨mf, ms⟩ := m
+      have same : mf = fork := Fork.ctorIdx_injective (Nat.le_antisymm below above)
+      subst same
+      have inside : v.toNat < ms.validators.data.size :=
+        Nat.lt_of_lt_of_le (Array.getElem?_eq_some_iff.mp initial).1 mSize
+      refine step_passDebit_le step nEarly altair (getCurrentEpoch pulled).toNat endE startE inside
+        (ρn * effectiveAt ⟨mf, ms⟩ v.toNat / ρd) (fun _ total => ?_) ok
+      obtain ⟨T, totalOk⟩ := total
+      obtain ⟨pq, pqOk⟩ := quarter
+      have rate := passRate_le_leakAt h pre startE totalOk pqOk v.toNat
+      exact rate.trans (leaky _ (Nat.dvd_of_mod_eq_zero
+        (effective_aligned (shared.append pre) h.genesis h.aligned v.toNat))))
+  have splitDebit : (evz.map (floorPenaltyDebit v.toNat)).sum =
+      (evz.map (penaltyDebit v.toNat)).sum + (evz.map (syncDebit v.toNat)).sum := by
+    rw [← List.sum_map_add]
+    rfl
+  have hD : D = (evz.map (syncDebit v.toNat)).sum + (evz.map (floorPartialDebit v)).sum := by
+    omega
+  rw [hD] at closed
+  exact closed
+
 end PinSum
 end EthLib.Consensus.Models.Network
