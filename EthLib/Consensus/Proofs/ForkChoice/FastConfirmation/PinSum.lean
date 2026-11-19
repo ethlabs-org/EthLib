@@ -11125,6 +11125,81 @@ private theorem capAt_aligned (aligned : MaxEffectiveBalancesAligned preset)
     simpa [UInt64.toNat_mod] using congrArg UInt64.toNat aligned.2.2
   split <;> assumption
 
+open DirectSafety.Apriori DirectSafety.Apriori.Internal in
+/-- The per-key core of the rise for a key of R's finalized registry whose cap is frozen.
+
+The key keeps its cap from the finalized state to R and C, and its rise is on the kept arm.
+
+The credit ceiling of C's run, the floor of R's run and the induced leak bound its balance.
+
+`rise_arith` turns them into the bound on its effective balance. -/
+private theorem key_core_frozen (h : Setting config checks g split fin pulled anc counted V)
+    (tail : Run config checks ⟨fork, split⟩ ⟨fork, pulled⟩)
+    {events : List (BalanceEvent preset)}
+    (replayed : tail.balanceEvents (getCurrentEpoch pulled).toNat = .ok events)
+    (fromFin : Run config checks ⟨fork, fin⟩ ⟨fork, split⟩)
+    {eventsF : List (BalanceEvent preset)}
+    (replayedF : fromFin.balanceEvents (getCurrentEpoch pulled).toNat = .ok eventsF)
+    (tailC : Run config checks ⟨fork, split⟩ ⟨fork, counted⟩) (highC : ℕ)
+    (endEpochC : (getCurrentEpoch counted).toNat ≤ highC + 1)
+    {eventsC : List (BalanceEvent preset)} (replayedC : tailC.balanceEvents highC = .ok eventsC)
+    (v : ValidatorIndex) (voter : v ∈ Q counted) (inFin : v.toNat < fin.validators.data.size)
+    (frozen : PinSplit2.capAt (⟨fork, fin⟩ : ForkedBeaconState preset) v.toNat =
+      PinSplit2.capAt (⟨fork, pulled⟩ : ForkedBeaconState preset) v.toNat)
+    (frozenC : PinSplit2.capAt (⟨fork, counted⟩ : ForkedBeaconState preset) v.toNat ≤
+      PinSplit2.capAt (⟨fork, fin⟩ : ForkedBeaconState preset) v.toNat)
+    (kept : (pinTerms config pulled anc fin).keptArm v.toNat = true) :
+    balanceAt counted v.toNat ≤ balanceAt pulled v.toNat +
+      (pinTerms config pulled anc fin).rise v.toNat +
+      (credC tailC highC v.toNat +
+          keyExtra (pinTerms config pulled anc fin) (fromFin.append tail) tailC highC
+            eventsC events eventsF v.toNat) + whistC tailC highC v.toNat +
+      (syncF events v.toNat + syncF eventsC v.toNat) + slashR (pinTerms config pulled anc fin) v.toNat +
+      bandC tailC highC v.toNat + bandR events v.toNat := by
+  classical
+  obtain ⟨toPulled⟩ := h.toPulled
+  have electra : .pectra ≤ fork := Nat.le_trans (by decide) h.fulu
+  have sizeFin := registryGrows_of_chainSteps fromFin.chainSteps
+  have sizeSplit := registryGrows_of_chainSteps toPulled.chainSteps
+  obtain ⟨wP, foundP⟩ : ∃ wP, pulled.validators.data[v.toNat]? = some wP :=
+    ⟨_, Array.getElem?_eq_getElem
+      (Nat.lt_of_lt_of_le (Nat.lt_of_lt_of_le inFin sizeFin) sizeSplit)⟩
+  have alignedCap := capAt_aligned h.aligned (z := (⟨fork, pulled⟩ : ForkedBeaconState preset))
+    electra foundP
+  -- the caps agree along both runs
+  have capPath : ∀ {a b : BeaconState preset fork} (r : Run config checks ⟨fork, a⟩ ⟨fork, b⟩),
+      ∀ z ∈ r.balancePath, PinSplit2.capAt z v.toNat ≤
+        PinSplit2.capAt (⟨fork, b⟩ : ForkedBeaconState preset) v.toNat := by
+    intro a b r z member
+    obtain ⟨r1, r2, -⟩ := balancePath_endpoint r
+      (Run.nil : Run config checks ⟨fork, b⟩ ⟨fork, b⟩) (Nat.le_refl _) member
+    obtain ⟨zf, zs⟩ := z
+    have same : fork = zf := (fork_eq_of_run r1 r2 (Nat.le_refl _)).symm
+    subst same
+    exact cap_le_cap_of_run h r2 v.toNat
+  have capC : PinSplit2.capAt (⟨fork, counted⟩ : ForkedBeaconState preset) v.toNat ≤
+      PinSplit2.capAt (⟨fork, pulled⟩ : ForkedBeaconState preset) v.toNat := by omega
+  -- the floor of each state of R's run, and the largest effective balance on it
+  have floorAt := voter_floorAt h fromFin tail v voter inFin frozen
+  obtain ⟨M, hM⟩ : ∃ M, M = ((fromFin.append tail).balancePath.map
+      fun z => effectiveAt z v.toNat).foldl max 0 := ⟨_, rfl⟩
+  have below : ∀ {zs : BeaconState preset fork} (pre : Run config checks ⟨fork, fin⟩ ⟨fork, zs⟩)
+      (post : Run config checks ⟨fork, zs⟩ ⟨fork, pulled⟩), pre.append post = fromFin.append tail →
+      effectiveAt (⟨fork, zs⟩ : ForkedBeaconState preset) v.toNat ≤ M := by
+    intro zs pre post cut
+    obtain ⟨front, atEnd⟩ := Run.balancePath_last pre
+    have path := Run.balancePath_append pre post
+    rw [cut] at path
+    have member : (⟨fork, zs⟩ : ForkedBeaconState preset) ∈ (fromFin.append tail).balancePath := by
+      rw [path, atEnd]
+      simp
+    rw [hM]
+    exact le_foldl_max_of_mem (List.mem_map.mpr ⟨_, member, rfl⟩) 0
+  obtain ⟨W, hW⟩ : ∃ W, W = slashW (pinTerms config pulled anc fin) v.toNat := ⟨_, rfl⟩
+  have ceilR := prefix_ceiling h fromFin tail (getCurrentEpoch pulled).toNat (Nat.le_succ _)
+    replayedF replayed v inFin W M (hW ▸ floorAt) below
+  sorry
+
 /-- The per-key core of the rise.
 
 A key of R's registry rises from R to C by at most its rise term.
