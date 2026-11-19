@@ -9139,28 +9139,6 @@ private theorem proposer_rewards_le (h : Setting config checks g split fin pulle
       (pinTerms config pulled anc fin).depth * (pinTerms config pulled anc fin).proposerCredit :=
   sorry
 
-/-- K5 (`exitingCredits` with `credits`): C's proposer credits to K5 keys, weight 3.
-
-The consolidation amounts are not here: `bud_consolidations` charges them, so they are added to the
-bound.
-
-The `syncProposer` part of the bound is not here: `bud_sync` uses it.
-
-The bound is scaled by ten, to take the eleven tenths and the rounding of `exitingCredits`.
-
-The compounding of the credits, an exact tenth of the keys' total, is in the bound.
-
-The two further bands of each credited K5 key are in `bud_exitingBands`. -/
-theorem bud_exitingCredits (h : Setting config checks g split fin pulled anc counted V)
-    (tailC : Run config checks ⟨fork, split⟩ ⟨fork, counted⟩) (highC : ℕ)
-    (endEpochC : (getCurrentEpoch counted).toNat ≤ highC + 1)
-    {eventsC : List (BalanceEvent preset)} (replayedC : tailC.balanceEvents highC = .ok eventsC) :
-    10 * (2 * (∑ v ∈ (K5 counted V), propC tailC highC v.toNat)) +
-      2 * (∑ v ∈ (K5 counted V), propN tailC highC v.toNat) +
-        22 * ((pinTerms config pulled anc fin).depth * (pinTerms config pulled anc fin).syncProposer) ≤
-      10 * (pinTerms config pulled anc fin).exitingCredits +
-        20 * (∑ v ∈ (K5 counted V), consAmt eventsC v.toNat) := sorry
-
 /-- D-7 (credits): C's non-attestation credits to keys counted once.
 
 The consolidation amounts are not here either: `bud_consolidations` charges them.
@@ -9662,6 +9640,40 @@ private theorem credit_parts_le {x y : ForkedBeaconState preset} (tail : Run con
   have c := credC_split tail high v.toNat
   have p := propC_split tail high v.toNat
   exact ⟨by unfold consAmt; omega, by unfold consAmt; omega⟩
+
+/-- K5 (`exitingCredits` with `credits`): C's proposer credits to K5 keys, weight 3.
+
+The consolidation amounts are not here: `bud_consolidations` charges them, so they are added to the
+bound.
+
+The `syncProposer` part of the bound is not here: `bud_sync` uses it.
+
+The bound is scaled by ten, to take the eleven tenths and the rounding of `exitingCredits`.
+
+The compounding of the credits, an exact tenth of the keys' total, is in the bound.
+
+The two further bands of each credited K5 key are in `bud_exitingBands`. -/
+theorem bud_exitingCredits (h : Setting config checks g split fin pulled anc counted V)
+    (tailC : Run config checks ⟨fork, split⟩ ⟨fork, counted⟩) (highC : ℕ)
+    (endEpochC : (getCurrentEpoch counted).toNat ≤ highC + 1)
+    {eventsC : List (BalanceEvent preset)} (replayedC : tailC.balanceEvents highC = .ok eventsC) :
+    10 * (2 * (∑ v ∈ (K5 counted V), propC tailC highC v.toNat)) +
+      2 * (∑ v ∈ (K5 counted V), propN tailC highC v.toNat) +
+        22 * ((pinTerms config pulled anc fin).depth * (pinTerms config pulled anc fin).syncProposer) ≤
+      10 * (pinTerms config pulled anc fin).exitingCredits +
+        20 * (∑ v ∈ (K5 counted V), consAmt eventsC v.toNat) := by
+  -- The proposer credits fit the pin's per-epoch bound, and their consolidation part is `consAmt`.
+  have rewards := proposer_rewards_le h tailC highC (K5 counted V)
+  have parts : ∑ v ∈ (K5 counted V), propC tailC highC v.toNat ≤
+      ∑ v ∈ (K5 counted V), propN tailC highC v.toNat +
+        ∑ v ∈ (K5 counted V), consAmt eventsC v.toNat := by
+    rw [← Finset.sum_add_distrib]
+    exact Finset.sum_le_sum fun v _ => (credit_parts_le tailC highC v replayedC).2
+  have exiting : (pinTerms config pulled anc fin).exitingCredits =
+      (22 * ((pinTerms config pulled anc fin).depth *
+        (pinTerms config pulled anc fin).proposerCredit) + 9) / 10 := rfl
+  rw [exiting]
+  omega
 
 /-- `credits` holds the proposer credit, the deposit queue and the credited-key slots.
 
