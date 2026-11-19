@@ -12156,8 +12156,58 @@ private theorem voter_late (h : Setting config checks g split fin pulled anc cou
       exact Bool.false_ne_true act
   · omega
 
+/-- The pin reads a key's exit at R, so a key with none by the finalized epoch is late at R. -/
+private theorem exitBeforeFin_eq (config : Config)
+    (state ancestor finalizedState : BeaconState preset fork) (i : ℕ) :
+    (pinTerms config state ancestor finalizedState).exitBeforeFin i =
+      ((state.validators.data[i]?).any fun v =>
+        decide (v.exitEpoch.toNat ≤ (getCurrentEpoch finalizedState).toNat)) := rfl
+
+/-- A key whose exit at R is after the finalized epoch is late for the whole run.
+
+The call's cutoff is within the withdrawal delay of the finalized epoch.
+
+`voter_late` gives the same for a counted voter. -/
+private theorem late_of_notExited (h : Setting config checks g split fin pulled anc counted V)
+    (i : ℕ) (notExited : (pinTerms config pulled anc fin).exitBeforeFin i = false) :
+    ∀ w, pulled.validators.data[i]? = some w →
+      (getCurrentEpoch pulled).toNat + 1 <
+        w.exitEpoch.toNat + config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat := by
+  intro w found
+  rw [exitBeforeFin_eq, found] at notExited
+  simp only [Option.any_some, decide_eq_false_iff_not] at notExited
+  have short := window_short h
+  omega
+
+/-- A counted voter is unslashed at the split.
+
+It is unslashed at `counted`, and a slashing stays. -/
+private theorem voter_unslashed (h : Setting config checks g split fin pulled anc counted V)
+    (v : ValidatorIndex) (voter : v ∈ Q counted) :
+    (split.validators.data[v.toNat]?.map (·.slashed)).getD false = false := by
+  classical
+  obtain ⟨tailC⟩ := h.toCounted
+  have within := BeaconState.registryWithinLimit_of_lt h.early counted
+  have inQ := voter
+  simp only [Q, quorumVoters, Finset.mem_filter, List.mem_toFinset, List.mem_append] at inQ
+  obtain ⟨listed, unslashedC⟩ := inQ
+  obtain ⟨uC, foundC⟩ : ∃ uC, counted.validators.data[v.toNat]? = some uC := by
+    rcases listed with now | before
+    · obtain ⟨u, foundU, -⟩ := (mem_getActiveValidatorIndices within).mp now
+      exact ⟨u, foundU⟩
+    · obtain ⟨u, foundU, -⟩ := (mem_getActiveValidatorIndices within).mp before
+      exact ⟨u, foundU⟩
+  have cleanC : uC.slashed = false := by simpa [foundC] using unslashedC
+  cases foundS : split.validators.data[v.toNat]? with
+  | none => rfl
+  | some uS =>
+    simp [unslashed_of_run tailC foundS (fun u read => by
+      rw [foundC] at read
+      cases read
+      exact cleanC)]
+
 open DirectSafety.Apriori DirectSafety.Apriori.Internal in
-/-- The floor of a counted voter at each state of R's run from a state `c`.
+/-- The floor of a key unslashed at the split at each state of R's run from a state `c`.
 
 The run from `c` is the rest of the run from the finalized state to the split, then the run to R.
 
@@ -12171,19 +12221,21 @@ A voter unslashed at R takes it from `key_floorR_from`.
 
 A voter slashed at R takes it from `slashed_floor`, with the slack that `slashW` holds.
 
-The voter is unslashed at `counted`, so at the split and at `c`.
+The key is unslashed at the split, so at `c`.
 
-A voter slashed on R was slashed after the split.
+A key slashed on R was slashed after the split.
 
 The pin counts it, so `slashW` holds the slack.
 
-The exit of the voter at R is late for the whole run.
+The exit of the key at R is late for the whole run.
 
-`voter_late` gives that for a finalized key. -/
+`voter_late` and `late_of_notExited` give that for a finalized key. -/
 private theorem voter_floorAt (h : Setting config checks g split fin pulled anc counted V)
     (fromFin : Run config checks ⟨fork, fin⟩ ⟨fork, split⟩)
     (tail : Run config checks ⟨fork, split⟩ ⟨fork, pulled⟩)
-    (v : ValidatorIndex) (voter : v ∈ Q counted) {c : BeaconState preset fork}
+    (v : ValidatorIndex)
+    (unslashed : (split.validators.data[v.toNat]?.map (·.slashed)).getD false = false)
+    {c : BeaconState preset fork}
     (toC : Run config checks ⟨fork, fin⟩ ⟨fork, c⟩)
     (fromC : Run config checks ⟨fork, c⟩ ⟨fork, split⟩) (cutC : toC.append fromC = fromFin)
     (inside : v.toNat < c.validators.data.size)
@@ -12201,24 +12253,11 @@ private theorem voter_floorAt (h : Setting config checks g split fin pulled anc 
         (evs.map (floorPartialDebit v)).sum +
           slashW (pinTerms config pulled anc fin) v.toNat := by
   classical
-  obtain ⟨tailC⟩ := h.toCounted
   obtain ⟨toPulled⟩ := h.toPulled
   have electra : .pectra ≤ fork := Nat.le_trans (by decide) h.fulu
   have calledNat := UInt64.le_iff_toNat_le.mp h.called
   have laterNat := UInt64.le_iff_toNat_le.mp h.later
-  -- the voter's records at the four states
-  have within := BeaconState.registryWithinLimit_of_lt h.early counted
-  have inQ := voter
-  simp only [Q, quorumVoters, Finset.mem_filter, List.mem_toFinset, List.mem_append] at inQ
-  obtain ⟨listed, unslashedC⟩ := inQ
-  obtain ⟨uC, foundC⟩ : ∃ uC, counted.validators.data[v.toNat]? = some uC := by
-    rcases listed with now | before
-    · obtain ⟨u, foundU, -⟩ := (mem_getActiveValidatorIndices within).mp now
-      exact ⟨u, foundU⟩
-    · obtain ⟨u, foundU, -⟩ := (mem_getActiveValidatorIndices within).mp before
-      exact ⟨u, foundU⟩
-  have cleanC : uC.slashed = false := by
-    simpa [foundC] using unslashedC
+  -- the key's records at the four states
   have sizeC := registryGrows_of_chainSteps fromC.chainSteps
   have sizeSplit := registryGrows_of_chainSteps toPulled.chainSteps
   obtain ⟨uB, foundB⟩ : ∃ uB, c.validators.data[v.toNat]? = some uB :=
@@ -12236,7 +12275,7 @@ private theorem voter_floorAt (h : Setting config checks g split fin pulled anc 
       rw [fu] at fw
       cases fw
       exact cu
-  have cleanS : uS.slashed = false := unslashed_of_run tailC foundS (only foundC cleanC)
+  have cleanS : uS.slashed = false := by simpa [foundS] using unslashed
   have cleanB : uB.slashed = false := unslashed_of_run fromC foundB (only foundS cleanS)
   have finC := UInt64.le_iff_toNat_le.mp (currentEpoch_le_of_chainSteps toC.chainSteps)
   have lateP := late wP foundP
@@ -12325,7 +12364,7 @@ private theorem effective_fin_le_ebUp (h : Setting config checks g split fin pul
   exact Nat.le_trans (Nat.le_max_right _ _) (Nat.le_max_left _ _)
 
 open DirectSafety.Apriori DirectSafety.Apriori.Internal in
-/-- The effective balance of a counted voter at each state of R's run from a state `c`.
+/-- The effective balance of a key unslashed at the split at each state of R's run from a state `c`.
 
 The run from `c` is the rest of the run from the finalized state to the split, then the run to R.
 
@@ -12342,7 +12381,9 @@ private theorem envelope_of_voter (h : Setting config checks g split fin pulled 
     {eventsF events : List (BalanceEvent preset)}
     (replayedF : fromFin.balanceEvents (getCurrentEpoch pulled).toNat = .ok eventsF)
     (replayed : tail.balanceEvents (getCurrentEpoch pulled).toNat = .ok events)
-    (v : ValidatorIndex) (voter : v ∈ Q counted) {c : BeaconState preset fork}
+    (v : ValidatorIndex)
+    (unslashed : (split.validators.data[v.toNat]?.map (·.slashed)).getD false = false)
+    {c : BeaconState preset fork}
     (toC : Run config checks ⟨fork, fin⟩ ⟨fork, c⟩)
     (fromC : Run config checks ⟨fork, c⟩ ⟨fork, split⟩) (cutC : toC.append fromC = fromFin)
     (inside : v.toNat < c.validators.data.size)
@@ -12359,7 +12400,7 @@ private theorem envelope_of_voter (h : Setting config checks g split fin pulled 
             preset.EFFECTIVE_BALANCE_INCREMENT.toNat) := by
   exact prefix_envelope h fromFin tail (getCurrentEpoch pulled).toNat (Nat.le_succ _) replayedF
     replayed v toC fromC cutC inside (slashW (pinTerms config pulled anc fin) v.toNat) start
-    (voter_floorAt h fromFin tail v voter toC fromC cutC inside late)
+    (voter_floorAt h fromFin tail v unslashed toC fromC cutC inside late)
 
 /-- The keys of a set that the pin counts as slashed on this branch are at most `slashedR`. -/
 private theorem slashedRB_card_le (config : Config)
@@ -14063,13 +14104,14 @@ private theorem key_core_frozen (h : Setting config checks g split fin pulled an
     obtain ⟨front, atEnd⟩ := Run.balancePath_last fromFin
     rw [Run.balancePath_append, atEnd]
     simp
+  have unslashed := voter_unslashed h v voter
   have late := voter_late h fromFin v voter
   have capSplit : PinSplit2.capAt (⟨fork, split⟩ : ForkedBeaconState preset) v.toNat =
       PinSplit2.capAt (⟨fork, pulled⟩ : ForkedBeaconState preset) v.toNat := by
     have := cap_le_cap_of_run h.caps fromFin h.early v.toNat
     have := cap_le_cap_of_run h.caps toPulled h.early v.toNat
     omega
-  have envAll := envelope_of_voter h fromFin tail replayedF replayed v voter
+  have envAll := envelope_of_voter h fromFin tail replayedF replayed v unslashed
     (Run.nil : Run config checks ⟨fork, fin⟩ ⟨fork, fin⟩) fromFin (run_nil_append fromFin) inFin
     (effective_fin_le_ebUp h v.toNat) late
   have startEff := envAll (⟨fork, split⟩ : ForkedBeaconState preset) memberSplit
@@ -14078,8 +14120,8 @@ private theorem key_core_frozen (h : Setting config checks g split fin pulled an
       actualBalanceAt (⟨fork, pulled⟩ : ForkedBeaconState preset) v.toNat +
         ((events.map (penaltyDebit v.toNat)).sum + (events.map (floorPartialDebit v)).sum) +
         (events.map (syncDebit v.toNat)).sum + slashW (pinTerms config pulled anc fin) v.toNat := by
-    have := voter_floorAt h fromFin tail v voter Run.nil fromFin (run_nil_append fromFin) inFin
-      late fromFin tail rfl replayed
+    have := voter_floorAt h fromFin tail v unslashed Run.nil fromFin (run_nil_append fromFin)
+      inFin late fromFin tail rfl replayed
     omega
   have rateLow : 11 * (pinTerms config pulled anc fin).depth *
       ((pinTerms config pulled anc fin).gainRate v.toNat + 1) ≤
@@ -14147,8 +14189,8 @@ private theorem key_core_frozen (h : Setting config checks g split fin pulled an
     have := prefix_ceiling h fromFin tail (getCurrentEpoch pulled).toNat (Nat.le_succ _) replayedF
       replayed v (slashW (pinTerms config pulled anc fin) v.toNat) M below r1 r2 cutZ
       (Nat.le_trans inFin (registryGrows_of_chainSteps r1.chainSteps))
-      (fun ok => voter_floorAt h fromFin tail v voter Run.nil fromFin (run_nil_append fromFin)
-        inFin late r1 r2 cutZ ok)
+      (fun ok => voter_floorAt h fromFin tail v unslashed Run.nil fromFin
+        (run_nil_append fromFin) inFin late r1 r2 cutZ ok)
     rw [hDf]
     omega
   obtain ⟨Bc, hBc⟩ : ∃ Bc, Bc = actualBalanceAt (⟨fork, pulled⟩ : ForkedBeaconState preset)
