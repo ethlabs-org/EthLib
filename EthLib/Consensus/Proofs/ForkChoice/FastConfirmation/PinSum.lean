@@ -780,6 +780,24 @@ def bandR (events : List (BalanceEvent preset)) (v : ℕ) : ℕ :=
   if 0 < ((events.filter (·.source = .sync)).map (keyDebit v)).sum then
     preset.EFFECTIVE_BALANCE_INCREMENT.toNat + preset.downwardBand - 1 else 0
 
+/-- A quantity of the sync events, summed over all events with the others at zero. -/
+private theorem sum_map_sync (events : List (BalanceEvent preset))
+    (k : BalanceEvent preset → ℕ) :
+    (events.map fun e => if e.source = .sync then k e else 0).sum =
+      ((events.filter (·.source = .sync)).map k).sum := by
+  induction events with
+  | nil => rfl
+  | cons e rest ih =>
+    by_cases sync : e.source = .sync
+    · simp [sync, ih]
+    · simp [sync, ih]
+
+/-- The sync debits of a key over a list of events are the debits of its sync events. -/
+private theorem sum_syncDebit_eq (events : List (BalanceEvent preset)) (v : ℕ) :
+    (events.map (syncDebit v)).sum =
+      ((events.filter (·.source = .sync)).map (keyDebit v)).sum :=
+  sum_map_sync events (keyDebit v)
+
 /-- The key's effective balance when its exit starts on a run, or 0.
 
 It is the amount of the key's departure charge, which reads the effective balance at the exit call.
@@ -1273,33 +1291,26 @@ private theorem cfloor_endpoint (h : Setting config checks g split fin pulled an
       (forkEnd r2) i.toNat val initial
     simpa [PinSplit2.capAt, found] using UInt64.le_iff_toNat_le.mp mono
 
-/-- The sync debits of a key over a list of events are the debits of its sync events. -/
-private theorem sum_syncDebit_eq (events : List (BalanceEvent preset)) (v : ℕ) :
-    (events.map (syncDebit v)).sum =
-      ((events.filter (·.source = .sync)).map (keyDebit v)).sum := by
-  induction events with
-  | nil => rfl
-  | cons e rest ih =>
-    by_cases sync : e.source = .sync
-    · simp [sync, syncDebit, keyDebit, ih]
-    · simp [sync, syncDebit, ih]
-
 open DirectSafety.Apriori DirectSafety.Apriori.Internal in
-/-- C's effective balance of a key at a state of its run from the finalized block is above the
-floor of its fall, less its sync debits and their band.
+/-- A key's effective balance on C's run is above the floor of its fall.
+
+The run starts at the finalized block, and the bound holds at each state of it.
+
+It is above that floor less the key's sync debits and their band.
 
 The floor starts from the smaller of the key's balance and its cap at the finalized block.
 
 It falls by what `fall` charges, in `X`: the leak and the gain over the depth, and the partials.
 
-If the test of `fall` holds, the balance stays within a band of the envelope, and the effective
-balance stays at its finalized value, by `stay`.
+If the test of `fall` holds, the balance stays within a band of the envelope.
+
+Then the effective balance stays at its finalized value, by `stay`.
 
 Otherwise the floor is rounded down to an increment, by `cfloor_endpoint`.
 
-The step `margin` fits the closed form of the potential floor to the floor of the fall.
+The hypothesis `margin` fits the closed form of the potential floor to the floor of the fall.
 
-It is the margin step, which waits for the spec of `fall`, and `stay` is the credit case. -/
+The hypothesis `stay` keeps the effective balance at its finalized value if the test holds. -/
 private theorem floorC_at (h : Setting config checks g split fin pulled anc counted V)
     (fromFin : Run config checks ⟨fork, fin⟩ ⟨fork, split⟩)
     (tailC : Run config checks ⟨fork, split⟩ ⟨fork, counted⟩)
@@ -4599,18 +4610,8 @@ theorem bud_branchR (h : Setting config checks g split fin pulled anc counted V)
 /-- The sync movement of a key is its sync credits plus its sync debits over the events. -/
 private theorem syncF_eq (events : List (BalanceEvent preset)) (v : ℕ) :
     syncF events v = (events.map (syncCredit v)).sum +
-      (events.map (syncDebit v)).sum := by
-  induction events with
-  | nil => simp [syncF]
-  | cons e rest ih =>
-    unfold syncF at ih ⊢
-    by_cases sync : e.source = .sync
-    · simp only [List.filter_cons, sync, decide_true, ↓reduceIte, List.map_cons, List.sum_cons,
-        syncCredit, syncDebit, keyCredit, keyDebit] at ih ⊢
-      omega
-    · simp only [List.filter_cons, sync, decide_false, Bool.false_eq_true, ↓reduceIte,
-        List.map_cons, List.sum_cons, syncCredit, syncDebit] at ih ⊢
-      omega
+      (events.map (syncDebit v)).sum :=
+  congrArg₂ (· + ·) (sum_map_sync events (keyCredit v)).symm (sum_syncDebit_eq events v).symm
 
 /-- S1 (syncSeats): every seat, weight 3 for V, K4 and K5 and 1 for K6.
 
