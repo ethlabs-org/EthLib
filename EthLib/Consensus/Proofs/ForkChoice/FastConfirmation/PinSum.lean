@@ -5430,14 +5430,14 @@ private theorem slashed_deposit_held (h : Setting config checks g split fin pull
       obtain ⟨later, readL, lifeL⟩ := life.validators i a found
       obtain rfl : later = wc := Option.some.inj (readL.symm.trans readC)
       have exitC := congrArg UInt64.toNat (lifeL.exitEpoch assigned)
-      obtain ⟨charge, member, -, charged⟩ := ((Run.nil.snoc (Step.slot ok)).append post).
-        departure_charge_of_assigned i au later foundU readC unset
-          (by rw [lifeL.exitEpoch assigned]; exact assigned)
+      obtain ⟨charge, member, -, charged⟩ := Run.departure_charge_of_assigned
+        ((Run.nil.snoc (Step.slot ok)).append post) i au later foundU readC unset
+        (by rw [lifeL.exitEpoch assigned]; exact assigned)
       have late := DirectSafety.Run.departureCharges_epoch_ge_start
         ((Run.nil.snoc (Step.slot ok)).append post) (Nat.le_trans (by decide) fuluU) h.early charge
         member
       omega
-  · have keptM := PinSplit4.kept_run toU h.genesis fuluU ((Run.nil.snoc (Step.slot ok)).append preR)
+  · have keptM := PinSplit4.kept_run toU h.genesis fuluU preR
       (Nat.lt_of_le_of_lt step.chainStep.fork_le earlyN)
     obtain ⟨le1, moved1⟩ := wdKept i au a foundU found unset
     obtain ⟨le2, moved2⟩ := keptM.withdrawable i au bm foundU foundM unset
