@@ -12937,7 +12937,64 @@ theorem bud_late (h : Setting config checks g split fin pulled anc counted V) :
         ((pinTerms config pulled anc fin).tight = false ∧
           (pinTerms config pulled anc fin).lateB v.toNat = true),
         (3 * eR pulled v + (pinTerms config pulled anc fin).rise v.toNat)) ≤
-      (pinTerms config pulled anc fin).late := sorry
+      (pinTerms config pulled anc fin).late := by
+  classical
+  by_cases tight : (pinTerms config pulled anc fin).tight = true
+  · -- tight: the sum over `SC` is empty, and `late_base` is the rest
+    have empty : ∑ v ∈ (sc3a config pulled anc fin counted split) with
+        ((pinTerms config pulled anc fin).tight = false ∧
+          (pinTerms config pulled anc fin).lateB v.toNat = true),
+        (3 * eR pulled v + (pinTerms config pulled anc fin).rise v.toNat) = 0 :=
+      Finset.sum_eq_zero fun v hv => by
+        have := (Finset.mem_filter.mp hv).2.1
+        simp [tight] at this
+    rw [empty, Nat.add_zero]
+    exact late_base h
+  · rw [late_eq, ite_eq_right tight]
+    obtain ⟨apart, apartV⟩ := sc_disjoint h
+    set A := (VN counted V).filter fun v => (pinTerms config pulled anc fin).lateB v.toNat = true
+      with hA
+    set B := (K6 pulled counted).filter
+      fun v => (pinTerms config pulled anc fin).lateB v.toNat = true with hB
+    set C := (sc3a config pulled anc fin counted split).filter fun v =>
+      (pinTerms config pulled anc fin).tight = false ∧
+        (pinTerms config pulled anc fin).lateB v.toNat = true with hC
+    have inSC : ∀ v ∈ C, v ∈ SC pulled counted split := fun v hv =>
+      (Finset.mem_filter.mp (Finset.mem_filter.mp hv).1).1
+    have disjAB : Disjoint A B := by
+      rw [Finset.disjoint_left]
+      intro v hv hk
+      exact (Finset.mem_filter.mp (Finset.mem_filter.mp hk).1).2.2
+        (h.voting v (Finset.mem_filter.mp (Finset.mem_filter.mp hv).1).1).1
+    have disjAC : Disjoint A C := by
+      rw [Finset.disjoint_left]
+      intro v hv hc
+      exact Finset.disjoint_left.mp apartV (Finset.mem_filter.mp (Finset.mem_filter.mp hv).1).1
+        (inSC v hc)
+    have disjBC : Disjoint B C := by
+      rw [Finset.disjoint_left]
+      intro v hv hc
+      exact Finset.disjoint_left.mp apart
+        (Finset.mem_union_right _ (Finset.mem_filter.mp hv).1) (inSC v hc)
+    have le : ∑ v ∈ A ∪ B ∪ C, (3 * eR pulled v +
+          (pinTerms config pulled anc fin).rise v.toNat) ≤
+        ∑ i ∈ (pinTerms config pulled anc fin).positions.filter
+          (fun i => (pinTerms config pulled anc fin).lateB i = true),
+            (3 * balanceAt pulled i + (pinTerms config pulled anc fin).rise i) :=
+      sum_toNat_le (fun i => 3 * balanceAt pulled i + (pinTerms config pulled anc fin).rise i)
+        fun v hv => by
+        have flag : (pinTerms config pulled anc fin).lateB v.toNat = true := by
+          rcases Finset.mem_union.mp hv with hv | hv
+          · rcases Finset.mem_union.mp hv with hv | hv <;> exact (Finset.mem_filter.mp hv).2
+          · exact (Finset.mem_filter.mp hv).2.2
+        obtain ⟨w, found, -⟩ := (lateB_iff config pulled anc fin v.toNat).mp flag
+        exact mem_positions_filter config pulled anc fin found flag
+    rw [Finset.sum_union (Finset.disjoint_union_left.mpr ⟨disjAC, disjBC⟩),
+      Finset.sum_union disjAB] at le
+    have split : ∑ v ∈ A, (3 * eR pulled v + (pinTerms config pulled anc fin).rise v.toNat) =
+        3 * ∑ v ∈ A, eR pulled v + ∑ v ∈ A, (pinTerms config pulled anc fin).rise v.toNat := by
+      rw [Finset.sum_add_distrib, Finset.mul_sum]
+    omega
 
 /-- K6 keys and `SC` keys of R's registry that are not yet eligible at R: their stake and rise.
 
@@ -12951,7 +13008,41 @@ theorem bud_pendingR (h : Setting config checks g split fin pulled anc counted V
         ((pinTerms config pulled anc fin).tight = false ∧
           (pinTerms config pulled anc fin).pendingRB v.toNat = true),
         (eR pulled v + (pinTerms config pulled anc fin).rise v.toNat)) ≤
-      (pinTerms config pulled anc fin).pendingR := sorry
+      (pinTerms config pulled anc fin).pendingR := by
+  classical
+  by_cases tight : (pinTerms config pulled anc fin).tight = true
+  · -- tight: the sum over `SC` is empty, and `pending_base` is the rest
+    have empty : ∑ v ∈ (sc3a config pulled anc fin counted split) with
+        ((pinTerms config pulled anc fin).tight = false ∧
+          (pinTerms config pulled anc fin).pendingRB v.toNat = true),
+        (eR pulled v + (pinTerms config pulled anc fin).rise v.toNat) = 0 :=
+      Finset.sum_eq_zero fun v hv => by
+        have := (Finset.mem_filter.mp hv).2.1
+        simp [tight] at this
+    rw [empty, Nat.add_zero]
+    exact pending_base h
+  · rw [pendingR_eq, ite_eq_right tight]
+    have apart := (sc_disjoint h).1
+    have disj : Disjoint ((K6 pulled counted).filter fun v =>
+          (pinTerms config pulled anc fin).pendingRB v.toNat = true)
+        ((sc3a config pulled anc fin counted split).filter fun v =>
+          (pinTerms config pulled anc fin).tight = false ∧
+            (pinTerms config pulled anc fin).pendingRB v.toNat = true) := by
+      rw [Finset.disjoint_left]
+      intro v hv hc
+      exact Finset.disjoint_left.mp apart
+        (Finset.mem_union_right _ (Finset.mem_filter.mp hv).1)
+        (Finset.mem_filter.mp (Finset.mem_filter.mp hc).1).1
+    rw [← Finset.sum_union disj]
+    refine sum_toNat_le (fun i => balanceAt pulled i + (pinTerms config pulled anc fin).rise i)
+      fun v hv => ?_
+    have flag : (pinTerms config pulled anc fin).pendingRB v.toNat = true := by
+      rcases Finset.mem_union.mp hv with hv | hv
+      · exact (Finset.mem_filter.mp hv).2
+      · exact (Finset.mem_filter.mp hv).2.2
+    obtain ⟨w, found, -⟩ := (pendingRB_iff config pulled anc fin v.toNat).mp flag
+    exact mem_positions_filter config pulled anc fin found flag
+
 
 /-- The charged keys of `SC` are current, upcoming-only, late or pending, and each pays that entry.
 
