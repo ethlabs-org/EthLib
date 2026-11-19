@@ -14874,6 +14874,32 @@ private theorem whistle_free (h : Setting config checks g split fin pulled anc c
             ∨ (pinTerms config pulled anc fin).pendingRB i = true)))), syncD eventsF i : ℕ) : ℤ) :=
   sorry
 
+/-- A key active at C has no exit by the finalized epoch at R, so its `bF` is zero.
+
+Such an exit is already set at the finalized state, which would leave the key inactive at C. -/
+private theorem bF_zero_of_active (h : Setting config checks g split fin pulled anc counted V)
+    {i : ℕ} (active : isActiveAt counted (getCurrentEpoch counted) i = true) :
+    (pinTerms config pulled anc fin).bF i = 0 := by
+  obtain ⟨fromFin⟩ := h.fromFin
+  obtain ⟨tailC⟩ := h.toCounted
+  have stays : (pinTerms config pulled anc fin).exitBeforeFin i = false := by
+    show (pulled.validators.data[i]?).any
+      (fun v => decide (v.exitEpoch.toNat ≤ (getCurrentEpoch fin).toNat)) = false
+    cases found : pulled.validators.data[i]? with
+    | none => rfl
+    | some w =>
+      simp only [Option.any_some, decide_eq_false_iff_not]
+      intro exited
+      obtain ⟨w0, foundFin, kept⟩ := exit_kept_of_le_fin h found exited
+      have inactive := inactive_of_exited h.twoSlots (fromFin.append tailC) foundFin
+        (by rw [kept]; exact exited)
+      simp only at inactive
+      rw [inactive] at active
+      exact Bool.false_ne_true active
+  show (if (pinTerms config pulled anc fin).exitBeforeFin i = true then _ else 0) = 0
+  rw [stays]
+  rfl
+
 /-- (W-L) A key of the split's registry that only C activates pays from its row of R.
 
 At R it is in `late` or in `pendingR`, which only `stub_J`'s keys of `K6` claim.
@@ -14898,8 +14924,27 @@ private theorem whistle_late (h : Setting config checks g split fin pulled anc c
           fin).tight = false ∧ (pinTerms config pulled anc fin).lateB i = true then 3 * balanceAt
           pulled i else 0) +
         (if (pinTerms config pulled anc fin).tight = false ∧ (pinTerms config pulled anc
-            fin).pendingRB i = true then balanceAt pulled i else 0)) :=
-  sorry
+            fin).pendingRB i = true then balanceAt pulled i else 0)) := by
+  rw [Finset.mul_sum]
+  refine Finset.sum_le_sum fun i member => ?_
+  simp only [Finset.mem_filter] at member
+  obtain ⟨⟨⟨-, notRB⟩, active⟩, late⟩ := member
+  rw [whistleEnv, ite_eq_right_of_eq_false _ _ (eq_false notRB.1),
+    ite_eq_left_of_eq_true _ _ (eq_true (Or.inr late)), bF_zero_of_active h active,
+    max_eq_left (Nat.zero_le _)]
+  have quotient := h.facts.whistleblower fork
+  have three : 3 * ((balanceAt pulled i + (pinTerms config pulled anc fin).rise i) /
+      (parameters preset fork).WHISTLEBLOWER_REWARD_QUOTIENT.toNat) ≤
+      balanceAt pulled i + (pinTerms config pulled anc fin).rise i :=
+    (Nat.mul_le_mul_right _ (by omega)).trans (Nat.mul_div_le _ _)
+  split_ifs
+  · omega
+  · omega
+  · omega
+  · rename_i notLate notPending
+    rcases late.2 with lateKey | pendingKey
+    · exact absurd ⟨late.1, lateKey⟩ notLate
+    · exact absurd ⟨late.1, pendingKey⟩ notPending
 
 /-- W from the keys' payers.
 
