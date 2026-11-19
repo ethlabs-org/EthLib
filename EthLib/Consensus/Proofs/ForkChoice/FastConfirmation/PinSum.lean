@@ -11193,8 +11193,11 @@ private theorem key_core_frozen (h : Setting config checks g split fin pulled an
     have member : (⟨fork, zs⟩ : ForkedBeaconState preset) ∈ (fromFin.append tail).balancePath := by
       rw [path, atEnd]
       simp
+    have mapped : effectiveAt (⟨fork, zs⟩ : ForkedBeaconState preset) v.toNat ∈
+        (fromFin.append tail).balancePath.map fun z => effectiveAt z v.toNat :=
+      List.mem_map.mpr ⟨_, member, rfl⟩
     rw [hM]
-    exact le_foldl_max_of_mem (List.mem_map.mpr ⟨_, member, rfl⟩) 0
+    exact le_foldl_max_of_mem mapped 0
   have ceilR := prefix_ceiling h fromFin tail (getCurrentEpoch pulled).toNat (Nat.le_succ _)
     replayedF replayed v inFin (slashW (pinTerms config pulled anc fin) v.toNat) M
     (voter_floorAt h fromFin tail v voter inFin frozen) below
