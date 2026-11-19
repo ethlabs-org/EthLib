@@ -1292,6 +1292,33 @@ private theorem step_events_bounded {g m n : ForkedBeaconState preset}
   cases foundOk
   exact fun e member => (bounded e member).1
 
+/-- The credits of a block step to a key are at most those of `credC`, `whistC` and sync. -/
+private theorem block_credit_le_sources {g m n : ForkedBeaconState preset}
+    (shared : Run config checks g m) (genesis : Genesis config checks g)
+    (step : Step config checks m n) (notSlot : ∀ ok, step ≠ Step.slot ok)
+    (early : n.fork < .glamsterdam) (electra : .pectra ≤ m.fork) (i : ℕ)
+    {events : List (BalanceEvent preset)} (replayed : step.balanceEvents = .ok events) :
+    stepCredit (fun _ => true) (fun _ => true) i step ≤
+      stepCredit (fun s => decide (s = .rewards ∨ s = .consolidations))
+        (fun s => decide (s = .consolidations ∨ s = .deposits)) i step +
+      stepCredit (fun s => decide (s = .slashings)) (fun _ => false) i step +
+      (events.map (syncCredit i)).sum := by
+  have bounded := step_events_bounded shared genesis step early replayed
+  cases step with
+  | block engine signed due ok =>
+    have each := block_event_credit shared genesis early electra i replayed bounded
+    have split : (events.map (keyCredit i)).sum ≤
+        ((events.filter fun x => decide (x.source = .rewards ∨ x.source = .consolidations)).map
+          (keyCredit i)).sum +
+        ((events.filter fun x => decide (x.source = .slashings)).map (keyCredit i)).sum +
+        (events.map (syncCredit i)).sum := by
+      simpa using sum_credits_split events (keyCredit i) (syncCredit i) (fun _ => true)
+        (fun s => decide (s = .rewards ∨ s = .consolidations)) (fun s => decide (s = .slashings))
+        (fun e m _ => by simpa using each e m)
+    simp only [stepCredit, replayed, Except.toOption, Option.getD_some, sum_filter_none] at split ⊢
+    exact split
+  | slot ok => exact absurd rfl (notSlot ok)
+
 /-- The credits of a step, net for a block step, are at most those of `credC`, `whistC` and sync. -/
 private theorem step_credit_le_sources {g m n : ForkedBeaconState preset}
     (shared : Run config checks g m) (genesis : Genesis config checks g)
@@ -1306,17 +1333,10 @@ private theorem step_credit_le_sources {g m n : ForkedBeaconState preset}
   have base := PinSplit2.step_balance_le_events step early i replayed
   cases step with
   | block engine signed due ok =>
-    have each := block_event_credit shared genesis early electra i replayed bounded
-    have split : (events.map (keyCredit i)).sum ≤
-        ((events.filter fun x => decide (x.source = .rewards ∨ x.source = .consolidations)).map
-          (keyCredit i)).sum +
-        ((events.filter fun x => decide (x.source = .slashings)).map (keyCredit i)).sum +
-        (events.map (syncCredit i)).sum := by
-      simpa using sum_credits_split events (keyCredit i) (syncCredit i) (fun _ => true)
-        (fun s => decide (s = .rewards ∨ s = .consolidations)) (fun s => decide (s = .slashings))
-        (fun e m _ => by simpa using each e m)
+    have split := block_credit_le_sources shared genesis (Step.block engine signed due ok)
+      (by intro ok' h; cases h) early electra i replayed
     simp only [stepNet, stepCredit, replayed, Except.toOption, Option.getD_some,
-      sum_filter_none] at base ⊢
+      sum_filter_none] at base split ⊢
     omega
   | slot ok =>
     have each := slot_event_credit shared genesis early i replayed bounded
@@ -11066,6 +11086,65 @@ private theorem effectiveAt_le_capAt {g z : ForkedBeaconState preset} (shared : 
   have := effectiveAt_le_withdrawalMax shared genesis caps early found
   simpa [PinSplit2.capAt, found] using this
 
+/-- The sources of a part of a run are at most the sources of the run. -/
+private theorem sources_part {x m n y : ForkedBeaconState preset} (P : Run config checks x m)
+    (R : Run config checks m n) (Q : Run config checks n y) (early : y.fork < .glamsterdam)
+    (i high : ℕ) {eR eW : List (BalanceEvent preset)} (replayedR : R.balanceEvents high = .ok eR)
+    (replayedW : (P.append (R.append Q)).balanceEvents high = .ok eW) :
+    credC R high i + whistC R high i + (eR.map (syncCredit i)).sum ≤
+      credC (P.append (R.append Q)) high i + whistC (P.append (R.append Q)) high i +
+        (eW.map (syncCredit i)).sum := by
+  have nEarly : n.fork < .glamsterdam :=
+    Nat.lt_of_le_of_lt (fork_le_of_chainSteps Q.chainSteps) early
+  have mEarly : m.fork < .glamsterdam :=
+    Nat.lt_of_le_of_lt (fork_le_of_chainSteps R.chainSteps) nEarly
+  obtain ⟨eP, replayedP⟩ := P.balanceEvents_ok mEarly high
+  obtain ⟨eQ, replayedQ⟩ := Q.balanceEvents_ok early high
+  have whole := balanceEvents_append P (R.append Q) high replayedP
+    (balanceEvents_append R Q high replayedR replayedQ)
+  rw [whole] at replayedW
+  obtain rfl := Except.ok.inj replayedW
+  unfold credC whistC
+  rw [creditScan_append, creditScan_append, creditScan_append, creditScan_append]
+  simp only [List.map_append, List.sum_append]
+  omega
+
+/-- The credits of a switch step, whole, and of the runs around it are at most the sources. -/
+private theorem flip_credits_le_sources {g x s s' y : ForkedBeaconState preset}
+    (shared : Run config checks g x) (genesis : Genesis config checks g)
+    (pre : Run config checks x s) (step : Step config checks s s') (post : Run config checks s' y)
+    (notSlot : ∀ ok, step ≠ Step.slot ok) (early : y.fork < .glamsterdam)
+    (electra : .pectra ≤ x.fork) (i high : ℕ) (inside : (getCurrentEpoch s.state).toNat ≤ high + 1)
+    {events : List (BalanceEvent preset)}
+    (replayed : ((pre.snoc step).append post).balanceEvents high = .ok events) :
+    netScan i high pre + (creditScan (fun _ => false) (fun s => decide (s ≠ .rewards)) i high
+        pre).1 + stepCredit (fun _ => true) (fun _ => true) i step +
+      (netScan i high post + (creditScan (fun _ => false) (fun s => decide (s ≠ .rewards)) i high
+        post).1) ≤ credC ((pre.snoc step).append post) high i +
+      whistC ((pre.snoc step).append post) high i + (events.map (syncCredit i)).sum := by
+  have s'Early : s'.fork < .glamsterdam :=
+    Nat.lt_of_le_of_lt (fork_le_of_chainSteps post.chainSteps) early
+  have sEarly : s.fork < .glamsterdam := Nat.lt_of_le_of_lt step.chainStep.fork_le s'Early
+  obtain ⟨e1, replayed1⟩ := pre.balanceEvents_ok sEarly high
+  obtain ⟨es, replayedS⟩ := step.balanceEvents_ok s'Early
+  obtain ⟨e2, replayed2⟩ := post.balanceEvents_ok early high
+  have snoc : (pre.snoc step).balanceEvents high = .ok (e1 ++ es) := by
+    simp [Run.balanceEvents, replayed1, replayedS, inside]
+  have whole := balanceEvents_append (pre.snoc step) post high snoc replayed2
+  rw [whole] at replayed
+  obtain rfl := Except.ok.inj replayed
+  have first := credits_le_sources shared genesis pre sEarly electra i high replayed1
+  have last := credits_le_sources (shared.append (pre.snoc step)) genesis post early
+    (Nat.le_trans electra (fork_le_of_chainSteps (pre.snoc step).chainSteps)) i high replayed2
+  have middle := block_credit_le_sources (shared.append pre) genesis step notSlot s'Early
+    (Nat.le_trans electra (fork_le_of_chainSteps pre.chainSteps)) i replayedS
+  unfold credC whistC
+  rw [creditScan_append, creditScan_append, creditScan_snoc_fst, creditScan_snoc_fst, if_pos inside,
+    if_pos inside]
+  unfold credC whistC at first last
+  simp only [List.map_append, List.sum_append] at first last ⊢
+  omega
+
 open DirectSafety.Apriori DirectSafety.Apriori.Internal in
 /-- A run from a state after the split bounds a key's balance and effective balance by its credits.
 
@@ -11159,14 +11238,14 @@ In that case the effective balance is at the old cap. -/
 private theorem earlier_charge (h : Setting config checks g split fin pulled anc counted V)
     (tailC : Run config checks ⟨fork, split⟩ ⟨fork, counted⟩) (highC : ℕ)
     (endEpochC : (getCurrentEpoch counted).toNat ≤ highC + 1)
+    {eventsC : List (BalanceEvent preset)} (replayedC : tailC.balanceEvents highC = .ok eventsC)
     {a b : ForkedBeaconState preset} (step : Step config checks a b) (member : tailC.Contains step)
     (i : ℕ) (created : pulled.validators.data.size ≤ i) (old : Validator)
     (foundA : a.state.validators.data[i]? = some old)
     (assigned : old.exitEpoch ≠ FAR_FUTURE_EPOCH) :
     effectiveAt a i ≤ chargeAmt tailC i + (preset.upwardBand +
       (pinTerms config pulled anc fin).depth * (pinTerms config pulled anc fin).gainRateMax +
-      (netScan i highC tailC +
-        (creditScan (fun _ => false) (fun s => decide (s ≠ .rewards)) i highC tailC).1)) := by
+      (credC tailC highC i + whistC tailC highC i + (eventsC.map (syncCredit i)).sum)) := by
   classical
   obtain ⟨shared⟩ := h.toFin
   obtain ⟨fromFin⟩ := h.fromFin
@@ -11278,6 +11357,8 @@ private theorem earlier_charge (h : Setting config checks g split fin pulled anc
     rw [eqC]
     simp only [netScan_append, creditScan_append, netScan_snoc, creditScan_snoc_fst]
     split_ifs <;> omega
+  have sources := credits_le_sources (shared.append fromFin) h.genesis tailC h.early electra i highC
+    replayedC
   have finalized := UInt64.le_iff_toNat_le.mp h.finalized
   have called := UInt64.le_iff_toNat_le.mp h.called
   have ccLow : (getCurrentEpoch split).toNat ≤ (getCurrentEpoch cc.state).toNat :=
@@ -11334,14 +11415,20 @@ private theorem earlier_charge (h : Setting config checks g split fin pulled anc
       (effectiveAt cc i + stepCredit (fun _ => true) (fun _ => true) i step1) (by omega)
       (capCeil_path post1 h.caps aEarly (Nat.le_trans aFork
         (fork_le_of_chainSteps (toCC.append (pre1.snoc step1)).chainSteps)) i)
-    -- the credits of the three parts are at most those of the run, which is held for the form of `extra`
-    have credits : netScan i highC pre1 +
-        (creditScan (fun _ => false) (fun s => decide (s ≠ .rewards)) i highC pre1).1 +
-        stepCredit (fun _ => true) (fun _ => true) i step1 +
-        (netScan i highC post1 +
-          (creditScan (fun _ => false) (fun s => decide (s ≠ .rewards)) i highC post1).1) ≤
-        netScan i highC tailC +
-          (creditScan (fun _ => false) (fun s => decide (s ≠ .rewards)) i highC tailC).1 := sorry
+    -- the credits of the three parts are at most the sources of C's run
+    have notSlot : ∀ ok, step1 ≠ Step.slot ok := sorry
+    obtain ⟨eT, replayedT⟩ := tail2.balanceEvents_ok aEarly highC
+    have eqC' : tailC = (pre0.snoc (Step.slot ok)).append
+        (tail2.append ((Run.nil.snoc step).append post)) := by
+      rw [cut, whole, Run.append_assoc, Run.append_assoc]
+      rfl
+    have part := sources_part (pre0.snoc (Step.slot ok)) tail2 ((Run.nil.snoc step).append post)
+      h.early i highC replayedT (by rw [← eqC']; exact replayedC)
+    rw [← eqC'] at part
+    have around := flip_credits_le_sources (shared.append (fromFin.append toCC)) h.genesis pre1
+      step1 post1 notSlot aEarly (Nat.le_trans electra cFork) i highC (by omega)
+      (by rw [eq1]; exact replayedT)
+    rw [eq1] at around
     have epochs : (getCurrentEpoch s.state).toNat - (getCurrentEpoch cc.state).toNat +
         ((getCurrentEpoch a.state).toNat - (getCurrentEpoch s'.state).toNat) ≤
         (pinTerms config pulled anc fin).depth := by omega
