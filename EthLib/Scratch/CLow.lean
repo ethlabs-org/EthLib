@@ -176,5 +176,53 @@ private theorem run_state_floor (h : Setting config checks g split fin pulled an
   rw [hD] at closed
   exact closed
 
+
+/-- The floor of the potential, in naturals: the closed form less the shortfall and the debits. -/
+private def potentialFloor (ρn ρd K X c cost : ℕ) : ℕ :=
+  (ρd - ρn * K) * (X + c) / ρd - (c + cost)
+
+/-- The potential floor at a state of the run from the finalized state to the counted state. -/
+private theorem floor_at_state (h : Setting config checks g split fin pulled anc counted V)
+    {p : ForkedBeaconState preset} (rp : Run config checks ⟨fork, fin⟩ p)
+    (rest : Run config checks p ⟨fork, counted⟩)
+    (v : ValidatorIndex) (val : Validator) (initial : fin.validators.data[v.toNat]? = some val)
+    (cleanC : ∀ w, counted.validators.data[v.toNat]? = some w → w.slashed = false)
+    (far : ∀ w, p.state.validators.data[v.toNat]? = some w → w.exitEpoch = FAR_FUTURE_EPOCH)
+    {evz : List (BalanceEvent preset)}
+    (replayed : rp.balanceEvents (getCurrentEpoch pulled).toNat = .ok evz)
+    (ρn ρd : ℕ)
+    (leaky : ∀ eb : ℕ, preset.EFFECTIVE_BALANCE_INCREMENT.toNat ∣ eb →
+      (pinTerms config pulled anc fin).leakAt eb v.toNat ≤ ρn * eb / ρd)
+    (quarter : ∃ pq, getBaseRewardPerIncrement preset
+      (if 18 * preset.EFFECTIVE_BALANCE_INCREMENT.toNat ≤
+          ((getTotalActiveBalance pulled).toOption.getD 0).toNat then
+        (getTotalActiveBalance pulled).toOption.getD 0 / 4
+      else preset.EFFECTIVE_BALANCE_INCREMENT / 5) = .ok pq) :
+    (ρd - ρn * ((getCurrentEpoch p.state).toNat - (getCurrentEpoch fin).toNat)) *
+        (min (actualBalanceAt ⟨fork, fin⟩ v.toNat)
+            (withdrawalMaxEffectiveBalance preset fork val).toNat +
+          (preset.downwardBand + (effectiveAt ⟨fork, fin⟩ v.toNat -
+            actualBalanceAt ⟨fork, fin⟩ v.toNat))) ≤
+      ρd * (actualBalanceAt p v.toNat +
+        ((evz.map (syncDebit v.toNat)).sum + (evz.map (floorPartialDebit v)).sum) +
+        (preset.downwardBand + (effectiveAt ⟨fork, fin⟩ v.toNat -
+          actualBalanceAt ⟨fork, fin⟩ v.toNat))) := by
+  have toCounted := UInt64.le_iff_toNat_le.mp (currentEpoch_le_of_chainSteps rest.chainSteps)
+  have near := h.near
+  obtain ⟨pf, ps⟩ := p
+  have same : pf = fork := Fork.ctorIdx_injective
+    (Nat.le_antisymm (fork_le_of_chainSteps rest.chainSteps) (fork_le_of_chainSteps rp.chainSteps))
+  subst same
+  have clean : ∀ w, ps.validators.data[v.toNat]? = some w → w.slashed = false := by
+    intro w found
+    cases flag : w.slashed with
+    | false => rfl
+    | true =>
+      obtain ⟨last, located, marked⟩ := rest.slashedPersistence v.toNat w found flag
+      have := cleanC last located
+      simp [this] at marked
+  simp only at toCounted
+  exact run_state_floor h rp (by omega) v val initial clean far replayed ρn ρd leaky quarter
+
 end PinSum
 end EthLib.Consensus.Models.Network
