@@ -13823,6 +13823,144 @@ private def whistleRead (t : PinTerms preset) (pulled anc counted : BeaconState 
         whistleSlack t tail rrun highC high eventsC eventsF events fin i)
   else whistleEnv t pulled anc i + whistleSlack t tail rrun highC high eventsC eventsF events fin i
 
+/-- The gain of the flows `Z0` and a penalty `W` is within a tenth of `Z0`, rounded up, and a unit.
+
+The gain of the flows alone is within a tenth of them, by `key`.
+
+A penalty below an increment adds at most one increment to the floor of the flows' gain.
+
+That increment gains at most one unit. -/
+private theorem flow_gain_slack {I WD F P D Z0 W U : ℕ} (hI : 0 < I)
+    (key : 11 * D * (P * F) < WD * I) (hW : 11 * W < 10 * I)
+    (unit : D * (P * F / WD + 2) ≤ U) :
+    D * (11 * (Z0 + W) / (10 * I) * P * F / WD) ≤ (Z0 + 9) / 10 + (if 0 < W then U else 0) := by
+  have hWD : 0 < WD := by
+    rcases Nat.eq_zero_or_pos WD with z | p
+    · subst z
+      simp at key
+    · exact p
+  have base : ∀ Z : ℕ, 10 * (D * (11 * Z / (10 * I) * P * F / WD)) ≤ Z := by
+    intro Z
+    obtain ⟨x, hx⟩ : ∃ x, x = 11 * Z / (10 * I) := ⟨_, rfl⟩
+    rw [← hx]
+    obtain ⟨q, hq⟩ : ∃ q, q = x * P * F / WD := ⟨_, rfl⟩
+    rw [← hq]
+    have h1 : WD * q ≤ x * P * F := by
+      rw [hq]
+      exact Nat.mul_div_le _ _
+    have h2 : x * (10 * I) ≤ 11 * Z := by
+      rw [hx]
+      exact Nat.div_mul_le_self _ _
+    have h3 : 11 * D * (P * F) + 1 ≤ WD * I := key
+    have h4 : 11 * (D * q * WD) ≤ 11 * (D * (x * P * F)) :=
+      Nat.mul_le_mul_left _ (by nlinarith)
+    have h5 : 11 * (D * (x * P * F)) * 10 ≤ WD * (x * (10 * I)) := by nlinarith
+    have h6 : 11 * (10 * (D * q)) * WD ≤ 11 * Z * WD := by nlinarith
+    exact Nat.le_of_mul_le_mul_right
+      (Nat.le_of_mul_le_mul_left (by nlinarith) (by norm_num : 0 < 11)) hWD
+  have g0 := base Z0
+  by_cases w : 0 < W
+  · simp only [w, ↓reduceIte]
+    obtain ⟨x0, hx0⟩ : ∃ x0, x0 = 11 * Z0 / (10 * I) := ⟨_, rfl⟩
+    have hx : 11 * (Z0 + W) / (10 * I) ≤ x0 + 1 := by
+      have : 11 * (Z0 + W) ≤ 11 * Z0 + 10 * I := by omega
+      calc 11 * (Z0 + W) / (10 * I) ≤ (11 * Z0 + 10 * I) / (10 * I) :=
+            Nat.div_le_div_right this
+        _ = x0 + 1 := by rw [hx0, Nat.add_div_right _ (by omega)]
+    have step : 11 * (Z0 + W) / (10 * I) * P * F / WD ≤ x0 * P * F / WD + P * F / WD + 1 := by
+      calc 11 * (Z0 + W) / (10 * I) * P * F / WD ≤ (x0 + 1) * P * F / WD :=
+            Nat.div_le_div_right (Nat.mul_le_mul_right _ (Nat.mul_le_mul_right _ hx))
+        _ = (x0 * P * F + P * F) / WD := by
+            congr 1
+            ring
+        _ ≤ x0 * P * F / WD + P * F / WD + 1 := Nat.add_div_le_div_add_div_add_one _ _ _
+    have g1 : D * (11 * (Z0 + W) / (10 * I) * P * F / WD) ≤
+        D * (x0 * P * F / WD) + D * (P * F / WD + 2) := by
+      calc D * (11 * (Z0 + W) / (10 * I) * P * F / WD)
+          ≤ D * (x0 * P * F / WD + P * F / WD + 1) := Nat.mul_le_mul_left _ step
+        _ ≤ D * (x0 * P * F / WD) + D * (P * F / WD + 2) := by
+            rw [← Nat.mul_add]
+            exact Nat.mul_le_mul_left _ (by omega)
+    rw [← hx0] at g0
+    omega
+  · simp only [w, ↓reduceIte]
+    have : W = 0 := by omega
+    subst this
+    simp only [Nat.add_zero]
+    omega
+
+/-- The explicit closing of a key at its slashing state is within `whistleEnv` and `whistleSlack`.
+
+`pre` is C's run up to the state before the slashing, and `tailC` is the whole run.
+
+The slashing's increment is `whistleEnv`'s when R's branch slashes the key.
+
+`Cr` and the sync debits are credits of the slack.
+
+The flows' gain is within a tenth of them, rounded up, with a unit for the penalty `addend`.
+
+The key's bands and unit of the prefix are within those of the whole run. -/
+private theorem whistle_of_close (t : PinTerms preset) (pulled anc : BeaconState preset fork)
+    {x y x' y' r r' : ForkedBeaconState preset}
+    (pre : Run config checks x y) (tailC : Run config checks x' y')
+    (rrun : Run config checks r r') (highC high : ℕ)
+    (eventsC eventsF events : List (BalanceEvent preset)) (fin : BeaconState preset fork)
+    (i Cr X addend : ℕ)
+    (close : X ≤ balanceAt pulled i + t.rise i +
+      (syncD eventsF i + syncD events i + Cr + inducedR t rrun i +
+        flowK t pre highC eventsC events eventsF i + unitK t pre highC eventsC events eventsF i) +
+      (bandC pre highC i + bandR (eventsF ++ events) i + bandX fin highC i + slashR t i))
+    (hCr : Cr ≤ propN tailC highC i + depPre eventsC i + whistC tailC highC i +
+      syncCr eventsC i + consAmt eventsC i)
+    (hcredC : credC pre highC i ≤ credC tailC highC i)
+    (hcredN : credC pre highC i ≤ propN tailC highC i + depPre eventsC i + consAmt eventsC i)
+    (hwhist : whistC pre highC i ≤ whistC tailC highC i)
+    (hband : bandC pre highC i ≤ bandC tailC highC i)
+    (kept : t.keptArm i = true) (incPos : 0 < preset.EFFECTIVE_BALANCE_INCREMENT.toNat)
+    (key : 11 * min t.depth t.depthFin * (t.perIncrement *
+      (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum) <
+        WEIGHT_DENOMINATOR.toNat * preset.EFFECTIVE_BALANCE_INCREMENT.toNat)
+    (hunit : t.unitGain = t.depth * (t.perIncrement *
+      (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum / WEIGHT_DENOMINATOR.toNat + 2))
+    (hW : 11 * slashW t i < 10 * preset.EFFECTIVE_BALANCE_INCREMENT.toNat)
+    (hA : 0 < slashW t i → t.unitGain ≤ addend) :
+    X ≤ whistleEnv t pulled anc i +
+      whistleSlack t tailC rrun highC high eventsC eventsF events fin i + addend := by
+  have envLe : balanceAt pulled i + t.rise i + slashR t i ≤ whistleEnv t pulled anc i := by
+    unfold whistleEnv slashR
+    split_ifs <;> omega
+  have fK : flowK t pre highC eventsC events eventsF i =
+      flowGain t pre highC eventsC events eventsF i := by
+    simp [flowK, kept]
+  have gain := flow_gain_slack (I := preset.EFFECTIVE_BALANCE_INCREMENT.toNat)
+    (WD := WEIGHT_DENOMINATOR.toNat) (F := (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum)
+    (P := t.perIncrement) (D := min t.depth t.depthFin)
+    (Z0 := credC pre highC i + whistC pre highC i + syncCr eventsC i + syncD events i +
+      syncD eventsF i) (W := slashW t i) (U := t.unitGain) incPos key hW
+    (by rw [hunit]; exact Nat.mul_le_mul_right _ (min_le_left _ _))
+  have gainEq : flowGain t pre highC eventsC events eventsF i =
+      min t.depth t.depthFin * (11 * (credC pre highC i + whistC pre highC i +
+        syncCr eventsC i + syncD events i + syncD eventsF i + slashW t i) /
+          (10 * preset.EFFECTIVE_BALANCE_INCREMENT.toNat) * t.perIncrement *
+            (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum / WEIGHT_DENOMINATOR.toNat) := by
+    unfold flowGain flowCredit
+    rfl
+  have unitLe : unitK t pre highC eventsC events eventsF i ≤
+      unitK t tailC highC eventsC events eventsF i := by
+    unfold unitK flowCredit
+    split_ifs with p q
+    · exact Nat.le_refl _
+    · omega
+    · exact Nat.zero_le _
+    · exact Nat.le_refl _
+  have extra : (if 0 < slashW t i then t.unitGain else 0) ≤ addend := by
+    split_ifs with p
+    · exact hA p
+    · exact Nat.zero_le _
+  unfold whistleSlack
+  rw [fK, gainEq] at close
+  omega
+
 /-- The bound on the effective balance at its slashing of a key created after the split.
 
 The key is active at C.
