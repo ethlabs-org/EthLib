@@ -2059,16 +2059,6 @@ private theorem creditScan_le_events (blockP slotP : BalanceSource → Bool) (v 
       · cases rest
         exact before
 
-/-- The credits to one key at one event are at most the credits of the event. -/
-private theorem keyCredit_le_credits (i : ℕ) (e : BalanceEvent preset) :
-    keyCredit i e ≤ e.credits := by
-  by_cases inside : i < e.after.state.balances.data.size
-  · exact Finset.single_le_sum (f := fun j => actualBalanceAt e.after j - actualBalanceAt e.before j)
-      (fun _ _ => Nat.zero_le _) (Finset.mem_range.mpr inside)
-  · have missing : actualBalanceAt e.after i = 0 := by
-      simp [actualBalanceAt, Array.getElem?_eq_none (not_lt.mp inside)]
-    simp [keyCredit, missing]
-
 /-- If every selected item is also selected by one of two tests, or adds nothing, then the sum over
 the first test is at most the two sums over the others. -/
 private theorem sum_filter_split {α : Type} (l : List α) (p q r : α → Bool) (f : α → ℕ)
