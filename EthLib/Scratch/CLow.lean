@@ -114,7 +114,7 @@ private theorem pass_of_leak (h : Setting config checks g split fin pulled anc c
     quarter_base_ok h.facts perOk ((getTotalActiveBalance pulled).toOption.getD 0)
   have rate := passRate_le_leakAt h pre startE totalOk pqOk i.toNat
   exact rate.trans (leaky _ (Nat.dvd_of_mod_eq_zero
-    (effective_aligned (shared.append pre) h.genesis h.aligned i.toNat)))
+    (FloorTrace.effective_aligned (shared.append pre) h.genesis h.aligned i.toNat)))
 
 /-- The floor of the potential, in naturals: the closed form less the debits, the band and the
 carried shortfall. -/
