@@ -11201,6 +11201,47 @@ private theorem key_core_frozen (h : Setting config checks g split fin pulled an
   have ceilR := prefix_ceiling h fromFin tail (getCurrentEpoch pulled).toNat (Nat.le_succ _)
     replayedF replayed v inFin (slashW (pinTerms config pulled anc fin) v.toNat) M
     (voter_floorAt h fromFin tail v voter inFin frozen) below
+  -- the credit ceiling of C's run, from the floor and the debits of R's
+  have splitSize : v.toNat < split.validators.data.size := Nat.lt_of_lt_of_le inFin sizeFin
+  have debitsM := debits_le_top h fromFin tail (getCurrentEpoch pulled).toNat (Nat.le_succ _)
+    replayedF replayed v splitSize M
+    (fun pre post same => below (fromFin.append pre) post
+      (by rw [← Run.append_assoc, ← same]))
+  have debitsCap := debits_le_top h fromFin tail (getCurrentEpoch pulled).toNat (Nat.le_succ _)
+    replayedF replayed v splitSize
+    (PinSplit2.capAt (⟨fork, pulled⟩ : ForkedBeaconState preset) v.toNat)
+    (fun pre post _ => effective_le_cap_pulled h (fromFin.append pre) post v.toNat)
+  have memberSplit : (⟨fork, split⟩ : ForkedBeaconState preset) ∈
+      (fromFin.append tail).balancePath := by
+    obtain ⟨front, atEnd⟩ := Run.balancePath_last fromFin
+    rw [Run.balancePath_append, atEnd]
+    simp
+  have startEff := prefix_envelope h fromFin tail (getCurrentEpoch pulled).toNat (Nat.le_succ _)
+    replayedF replayed v inFin (slashW (pinTerms config pulled anc fin) v.toNat) alignedCap
+    (voter_floorAt h fromFin tail v voter inFin frozen) (⟨fork, split⟩ : ForkedBeaconState preset)
+    memberSplit
+  have floorR : min (actualBalanceAt (⟨fork, split⟩ : ForkedBeaconState preset) v.toNat)
+      (PinSplit2.capAt (⟨fork, pulled⟩ : ForkedBeaconState preset) v.toNat) ≤
+      actualBalanceAt (⟨fork, pulled⟩ : ForkedBeaconState preset) v.toNat +
+        ((events.map (penaltyDebit v.toNat)).sum + (events.map (floorPartialDebit v)).sum) +
+        (events.map (syncDebit v.toNat)).sum + slashW (pinTerms config pulled anc fin) v.toNat := by
+    have := voter_floorAt h fromFin tail v voter inFin frozen fromFin tail rfl replayed
+    omega
+  have rateLow : 11 * (pinTerms config pulled anc fin).depth *
+      ((pinTerms config pulled anc fin).gainRate v.toNat + 1) ≤
+        (pinTerms config pulled anc fin).ebUp v.toNat := by
+    rw [keptArm_eq] at kept
+    simp only [Bool.and_eq_true, decide_eq_true_eq] at kept
+    exact kept.2
+  obtain ⟨P, hP⟩ : ∃ P, P = ((getBaseRewardPerIncrement preset
+      (if 18 * preset.EFFECTIVE_BALANCE_INCREMENT.toNat ≤
+          ((getTotalActiveBalance pulled).toOption.getD 0).toNat then
+        (getTotalActiveBalance pulled).toOption.getD 0 / 4
+      else preset.EFFECTIVE_BALANCE_INCREMENT / 5)).toOption.getD 0).toNat := ⟨_, rfl⟩
+  obtain ⟨gc, hform, hgc, bound⟩ := c_ceiling h fromFin tailC highC endEpochC P hP v splitSize
+    (slashW (pinTerms config pulled anc fin) v.toNat) alignedCap
+    (effective_le_cap_pulled h fromFin tail v.toNat)
+    (fun z member => Nat.le_trans (capPath tailC z member) capC) startEff floorR debitsCap rateLow
   sorry
 
 /-- The per-key core of the rise.
