@@ -5207,7 +5207,7 @@ theorem bud_sync (h : Setting config checks g split fin pulled anc counted V)
         (((getCurrentEpoch pulled).toNat + 2 - (getCurrentEpoch fin).toNat) *
           preset.SLOTS_PER_EPOCH.toNat * preset.SYNC_COMMITTEE_SIZE.toNat * env +
         depth * preset.SLOTS_PER_EPOCH.toNat * preset.SYNC_COMMITTEE_SIZE.toNat * share)) := by
-      omega
+        omega
     _ = _ := by ring
 
 /-- W (`reserveW`, `flagged`, `seatShortfall`, K7, cS): whistleblower rewards on C's branch,
