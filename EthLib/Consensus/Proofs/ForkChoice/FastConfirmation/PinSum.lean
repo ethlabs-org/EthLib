@@ -9483,7 +9483,8 @@ private theorem inactive_of_exited (twoSlots : 2 ≤ preset.SLOTS_PER_EPOCH.toNa
     UInt64.le_iff_toNat_le.mpr (by rw [exitLater]; exact Nat.le_trans exited forward)
   have inactive : isActiveValidator later (getCurrentEpoch y.state) = false := by
     unfold isActiveValidator
-    simp [not_lt.mpr reached]
+    simp
+    exact fun _ => reached
   simp [isActiveAt, foundLater, inactive]
 
 /-- S1 (syncSeats): every seat, weight 3 for V, K4 and K5 and 1 for K6.
