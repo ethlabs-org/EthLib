@@ -1150,8 +1150,7 @@ private theorem slashed_floorC (h : Setting config checks g split fin pulled anc
   obtain ⟨-, below⟩ := ceiling top start fun pre step post cut =>
     envelope _ (member pre step post cut)
   have floor := DirectSafety.Apriori.Internal.FloorTrace.balance_floor_general trace
-    (by simpa using Nat.min_le_left (actualBalanceAt ⟨fork, split⟩ i.toNat)
-      (withdrawalMaxEffectiveBalance preset fork val).toNat)
+    (by simp)
   have penalty : last.slashedHigh.elim 0 (fun s =>
       top / DirectSafety.Apriori.minSlashingPenaltyQuotient preset
         (DirectSafety.Apriori.preElectraEpochs config ⟨fork, split⟩
