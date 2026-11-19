@@ -11794,14 +11794,7 @@ private theorem created_credited (h : Setting config checks g split fin pulled a
     registryGrows_of_chainSteps toPulled.chainSteps
   obtain ⟨z, pre, post, splitEq, -, -, -, -, funded, -, -, walk⟩ :=
     created_start h tailC highC endEpochC (Finset.mem_filter.mp member).1 (by omega)
-  have positive : 0 < preset.MAX_EFFECTIVE_BALANCE.toNat := by
-    have newKey := h.facts.newKey .fusaka
-    have size := h.facts.incrementSize
-    by_contra zero
-    have none : preset.MAX_EFFECTIVE_BALANCE.toNat = 0 := by omega
-    rw [none] at newKey
-    simp only [Nat.mul_zero, Nat.zero_div, Nat.zero_sub, Nat.le_zero] at newKey
-    omega
+  have positive := maxEffectiveBalance_pos h
   subst splitEq
   rw [grossScan_append] at scansZero
   have depSplit := creditScan_append (fun _ => false) (fun s => decide (s = .deposits))
@@ -15052,6 +15045,84 @@ private theorem created_ceiling (h : Setting config checks g split fin pulled an
     omega
   · have stays := same (by omega)
     omega
+
+open DirectSafety.Apriori DirectSafety.Apriori.Internal in
+/-- A key that C's run credits by a consolidation is the target of a due entry of X's queue.
+
+The horizons are read at the least of C's and R's epochs, which the credits of the run cover.
+
+The due entries only grow with the horizon, so the key has one at the horizon of the scans. -/
+private theorem cons_credit_due (h : Setting config checks g split fin pulled anc counted V)
+    (fromFin : Run config checks ⟨fork, fin⟩ ⟨fork, split⟩) (high : ℕ)
+    (endEpoch : (getCurrentEpoch pulled).toNat ≤ high + 1)
+    {eventsF : List (BalanceEvent preset)} (replayedF : fromFin.balanceEvents high = .ok eventsF)
+    (tailC : Run config checks ⟨fork, split⟩ ⟨fork, counted⟩) (highC : ℕ)
+    (endEpochC : (getCurrentEpoch counted).toNat ≤ highC + 1)
+    {eventsC : List (BalanceEvent preset)} (replayedC : tailC.balanceEvents highC = .ok eventsC)
+    (v : ValidatorIndex) (credited : 0 < consAmt eventsC v.toNat) :
+    1 ≤ dueAt fin highC {v} := by
+  classical
+  have electra : .pectra ≤ fork := Nat.le_trans (by decide) h.fulu
+  have calledNat := UInt64.le_iff_toNat_le.mp h.called
+  have laterNat := UInt64.le_iff_toNat_le.mp h.later
+  have nearC := h.near
+  have replayedF' : fromFin.balanceEvents (min highC (getCurrentEpoch pulled).toNat) =
+      .ok eventsF := by
+    rw [balanceEvents_eq_of_endpoint_le fromFin (localHigh := high) (by simp only; omega)
+      (by simp only; omega)]
+    exact replayedF
+  have replayedC' : tailC.balanceEvents (min highC (getCurrentEpoch pulled).toNat) =
+      .ok eventsC := by
+    rw [balanceEvents_eq_of_endpoint_le tailC (localHigh := highC) (by simp only; omega)
+      (by simp only; omega)]
+    exact replayedC
+  have bound := cons_due_bound h fromFin tailC (min highC (getCurrentEpoch pulled).toNat)
+    (by omega) (Nat.min_le_right _ _) replayedF' replayedC' {v}
+  have atMin : 1 ≤ dueAt fin (min highC (getCurrentEpoch pulled).toNat) {v} := by
+    rw [dueAt_eq fin electra]
+    by_contra none
+    have empty : dueList fin electra (min highC (getCurrentEpoch pulled).toNat) {v} = [] :=
+      List.length_eq_zero_iff.mp (by omega)
+    simp only [Finset.sum_singleton, empty, List.map_nil, List.sum_nil] at bound
+    unfold consAmt at credited bound
+    simp only [List.filter_append, List.map_append, List.sum_append] at bound
+    omega
+  refine Nat.le_trans atMin ?_
+  rw [dueAt_eq fin electra, dueAt_eq fin electra]
+  exact dueList_length_mono fin electra (Nat.min_le_left _ _) {v}
+
+/-- A key of `K6` beyond R's registry pays one upward band with its credit band or its due band.
+
+A key credited by a block or a deposit has the credit band.
+
+Otherwise a consolidation credits it, and it is the target of a due entry, which has the due band.
+
+Both bands are an upward band at least, since a credited key's band is one and each entry adds one. -/
+private theorem created_band (h : Setting config checks g split fin pulled anc counted V)
+    (fromFin : Run config checks ⟨fork, fin⟩ ⟨fork, split⟩) (high : ℕ)
+    (endEpoch : (getCurrentEpoch pulled).toNat ≤ high + 1)
+    {eventsF : List (BalanceEvent preset)} (replayedF : fromFin.balanceEvents high = .ok eventsF)
+    (tailC : Run config checks ⟨fork, split⟩ ⟨fork, counted⟩) (highC : ℕ)
+    (endEpochC : (getCurrentEpoch counted).toNat ≤ highC + 1)
+    {eventsC : List (BalanceEvent preset)} (replayedC : tailC.balanceEvents highC = .ok eventsC)
+    {v : ValidatorIndex} (member : v ∈ K6 pulled counted)
+    (created : pulled.validators.data.size ≤ v.toNat) :
+    preset.upwardBand ≤ bandC tailC highC v.toNat + bandX fin highC v.toNat := by
+  by_cases consolidated : 0 < consAmt eventsC v.toNat
+  · have due := cons_credit_due h fromFin high endEpoch replayedF tailC highC endEpochC
+      replayedC v consolidated
+    unfold bandX
+    rw [UInt64.ofNat_toNat]
+    exact Nat.le_trans (Nat.le_mul_of_pos_right _ due) (Nat.le_add_left _ _)
+  · rcases created_credited h tailC highC endEpochC replayedC member created with credited | cons
+    · have positive : 0 < netScan v.toNat highC tailC +
+          (creditScan (fun _ => false) (fun s => decide (s = .deposits)) v.toNat highC tailC).1 := by
+        simpa [creditedKey] using credited
+      have band : bandC tailC highC v.toNat = preset.upwardBand := by
+        unfold bandC
+        simp [positive]
+      omega
+    · exact absurd cons consolidated
 
 /-- The per-key core of the rise for a counted voter created after the finalized state.
 
