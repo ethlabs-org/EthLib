@@ -1131,7 +1131,7 @@ The key is unslashed at the split, and its effective balance stays at most `top`
 
 The slashing penalty is then at most `top` over the slashing quotient, whenever C slashes the key.
 
-The guards of the floor trace come from the setting's guard at the finalized block.
+The guards of the floor trace are `floor_guards`, from the setting's guard at the finalized block.
 
 Nothing in the statement needs the key to be slashed, so it holds for a key that stays unslashed.
 
@@ -1158,20 +1158,7 @@ private theorem slashed_floorC (h : Setting config checks g split fin pulled anc
   obtain ⟨toFin⟩ := h.toFin
   obtain ⟨fromFin⟩ := h.fromFin
   have electra : .pectra ≤ fork := Nat.le_trans (by decide) h.fulu
-  have finSplit : (getCurrentEpoch fin).toNat ≤ (getCurrentEpoch split).toNat :=
-    UInt64.le_iff_toNat_le.mp (currentEpoch_le_of_chainSteps fromFin.chainSteps)
-  have atFin := DirectSafety.Apriori.Internal.slashing_quotient_of_electra (config := config)
-    (checks := checks) (high := (getCurrentEpoch pulled).toNat)
-    (Run.nil : Run config checks ⟨fork, fin⟩ ⟨fork, fin⟩) electra
-  have atSplit := DirectSafety.Apriori.Internal.slashing_quotient_of_electra (config := config)
-    (checks := checks) (high := (getCurrentEpoch pulled).toNat)
-    (Run.nil : Run config checks ⟨fork, split⟩ ⟨fork, split⟩) electra
-  have positive : 0 < DirectSafety.Apriori.minSlashingPenaltyQuotient preset
-      (DirectSafety.Apriori.preElectraEpochs config ⟨fork, split⟩
-        (getCurrentEpoch pulled).toNat) := by
-    obtain ⟨_, _, _, _, _, _, _, quotient, _⟩ := h.guard
-    rw [atSplit, ← atFin]
-    exact quotient
+  obtain ⟨positive, guards⟩ := floor_guards h fromFin (y := counted) h.near
   have member : ∀ {m n : ForkedBeaconState preset} (pre : Run config checks ⟨fork, split⟩ m)
       (step : Step config checks m n) (post : Run config checks n ⟨fork, counted⟩),
       (pre.snoc step).append post = tailC → m ∈ tailC.balancePath := by
@@ -1190,20 +1177,10 @@ private theorem slashed_floorC (h : Setting config checks g split fin pulled anc
       (min (actualBalanceAt ⟨fork, split⟩ i.toNat)
         (withdrawalMaxEffectiveBalance preset fork val).toNat) top _
       (Nat.min_le_right _ _) positive
-      (by
-        intro m n pre step post cut w found
-        refine ⟨retained pre step post cut w found, ⟨fun _ => ?_, fun s => absurd s
-          (by simp [unslashed])⟩, ?_, ?_⟩
-        · have window := DirectSafety.Apriori.Internal.short_window_of_guard h.guard
-            h.near ((Run.nil.snoc step).append post)
-          simp only at window ⊢
-          omega
-        · exact (DirectSafety.Apriori.Internal.slashing_quotient_of_electra pre electra).le
-        · intro added addedOk
-          exact DirectSafety.Apriori.Internal.no_crossing_of_regime (toFin.append fromFin) pre
-            h.genesis h.caps step
-            (Nat.lt_of_le_of_lt (fork_le_of_chainSteps post.chainSteps) h.early)
-            (.inl (Nat.le_trans electra (fork_le_of_chainSteps pre.chainSteps))) addedOk)
+      (fun pre step post cut w found =>
+        ⟨retained pre step post cut w found,
+          ⟨fun _ => (guards pre step post).1, fun s => absurd s (by simp [unslashed])⟩,
+          (guards pre step post).2⟩)
       replayedC
   obtain ⟨-, below⟩ := ceiling top start fun pre step post cut =>
     envelope _ (member pre step post cut)
@@ -1230,7 +1207,10 @@ private theorem slashed_floorC (h : Setting config checks g split fin pulled anc
   rw [balance, debt, splitDebit] at floor
   have same : DirectSafety.Apriori.minSlashingPenaltyQuotient preset
       (DirectSafety.Apriori.preElectraEpochs config ⟨fork, split⟩ (getCurrentEpoch pulled).toNat) =
-        (parameters preset fork).MIN_SLASHING_PENALTY_QUOTIENT.toNat := atSplit
+        (parameters preset fork).MIN_SLASHING_PENALTY_QUOTIENT.toNat :=
+    DirectSafety.Apriori.Internal.slashing_quotient_of_electra (config := config)
+      (checks := checks) (high := (getCurrentEpoch pulled).toNat)
+      (Run.nil : Run config checks ⟨fork, split⟩ ⟨fork, split⟩) electra
   rw [← same]
   omega
 
