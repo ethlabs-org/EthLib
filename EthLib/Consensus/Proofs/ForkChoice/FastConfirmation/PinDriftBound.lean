@@ -180,7 +180,7 @@ private theorem slashed_waits {g : ForkedBeaconState preset}
         toCounted.slashedPersistence i _ oldFound oldSlashed
       simp [nowFound, nowSlashed] at unslashedC
   · have lacking : ¬ i < split.validators.data.size := inside
-    obtain ⟨m, n, pre, step, post, -, notYet, arrived⟩ := toPulled.split_at_flip
+    obtain ⟨m, n, pre, step, post, -, notYet, arrived⟩ := Run.split_at_flip toPulled
       (fun z => i < z.state.validators.data.size) lacking
       (Array.getElem?_eq_some_iff.mp found).1
     obtain ⟨w, arrivedFound⟩ : ∃ w, n.state.validators.data[i]? = some w :=
