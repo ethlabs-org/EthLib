@@ -9230,8 +9230,9 @@ private theorem debit_keys_le (h : Setting config checks g split fin pulled anc 
   have periods := Nat.add_div_le_div_add_div_add_one
     ((getCurrentEpoch pulled).toNat + 2 - (getCurrentEpoch fin).toNat) (getCurrentEpoch fin).toNat
     (max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat)
-  have shift := Nat.div_le_div_right (c := max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat)
-    (Nat.le_succ ((getCurrentEpoch pulled).toNat + 1))
+  have shift : ((getCurrentEpoch pulled).toNat + 1) /
+      max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat ≤ ((getCurrentEpoch pulled).toNat + 2) /
+      max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat := Nat.div_le_div_right (by omega)
   rw [Nat.sub_add_cancel (by omega)] at periods
   have depthEq : (pinTerms config pulled anc fin).depth =
       (getCurrentEpoch pulled).toNat + 2 - anc.finalizedCheckpoint.epoch.toNat := rfl
