@@ -6175,8 +6175,8 @@ private theorem V_active (h : Setting config checks g split fin pulled anc count
     obtain ⟨slack, margin⟩ := floorC_margin h fromFin tailC replayed v val initial ρn ρd positive
       leaky above base0 X (base0 - X) hbase0 rfl hfall
     have floorC := floorC_at h fromFin tailC replayed v val initial clean
-      (retained_of_active h fromFin tailC v foundC exitAfter) base0 X (base0 - X) (balanceAt fin v.toNat) ((pinTerms config pulled anc fin).floorC v.toNat) hbase0
-      rfl hfin hfloorC (fromFin.append tailC) Run.nil rfl ⟨slack, ρn, ρd, margin⟩
+      (retained_of_active h fromFin tailC v foundC exitAfter) base0 X (base0 - X)
+      (balanceAt fin v.toNat) ((pinTerms config pulled anc fin).floorC v.toNat) hbase0 rfl hfin hfloorC (fromFin.append tailC) Run.nil rfl ⟨slack, ρn, ρd, margin⟩
       (fun test sync => floorC_stay h fromFin tailC replayed v val initial clean
         (retained_of_active h fromFin tailC v foundC exitAfter)
         h.facts.quarterBand ρn ρd positive leaky above base0 X (base0 - X) (balanceAt fin v.toNat)
