@@ -40,35 +40,62 @@ private theorem step_passDebit_le {m n : ForkedBeaconState preset} (step : Step 
   refine bound.trans ?_
   split <;> simp
 
-/-- A rate that is linear in an aligned effective balance bounds the two terms of a leak. -/
+/-- A rate that is linear in the effective balance bounds the two terms of a leak.
+
+It bounds the leak of an aligned balance, and the leak of any balance an increment above, less one.
+-/
 private theorem leak_linear (inc pi score depth bias quotient : ℕ) (incPos : 0 < inc) :
-    ∃ ρn ρd : ℕ, 0 < ρd ∧ ∀ eb : ℕ, inc ∣ eb →
-      2 * (eb / inc * pi) + eb * (score + depth * bias) / (bias * quotient) ≤ ρn * eb / ρd := by
+    ∃ ρn ρd : ℕ, 0 < ρd ∧
+      (∀ eb : ℕ, inc ∣ eb →
+        2 * (eb / inc * pi) + eb * (score + depth * bias) / (bias * quotient) ≤ ρn * eb / ρd) ∧
+      ∀ x : ℕ, ρn * x ≤ ρd * (2 * ((x + inc) / inc * pi) +
+        (x + inc) * (score + depth * bias) / (bias * quotient) + 1) := by
+  have under : ∀ x : ℕ, x ≤ inc * ((x + inc) / inc) := fun x => by
+    rw [Nat.add_div_right _ incPos]
+    exact (Nat.lt_mul_div_succ x incPos).le
   by_cases zero : bias * quotient = 0
-  · refine ⟨2 * pi, inc, incPos, fun eb aligned => ?_⟩
-    obtain ⟨u, rfl⟩ := aligned
-    simp only [zero, Nat.div_zero, Nat.add_zero]
-    rw [Nat.mul_div_cancel_left _ incPos, show 2 * pi * (inc * u) = inc * (2 * pi * u) by ring,
-      Nat.mul_div_cancel_left _ incPos]
-    ring_nf
-    exact le_refl _
+  · refine ⟨2 * pi, inc, incPos, fun eb aligned => ?_, fun x => ?_⟩
+    · obtain ⟨u, rfl⟩ := aligned
+      simp only [zero, Nat.div_zero, Nat.add_zero]
+      rw [Nat.mul_div_cancel_left _ incPos, show 2 * pi * (inc * u) = inc * (2 * pi * u) by ring,
+        Nat.mul_div_cancel_left _ incPos]
+      ring_nf
+      exact le_refl _
+    · simp only [zero, Nat.div_zero, Nat.add_zero]
+      calc 2 * pi * x ≤ 2 * pi * (inc * ((x + inc) / inc)) := Nat.mul_le_mul_left _ (under x)
+        _ = inc * (2 * ((x + inc) / inc * pi)) := by ring
+        _ ≤ inc * (2 * ((x + inc) / inc * pi) + 1) := Nat.mul_le_mul_left _ (by omega)
   · have positive : 0 < bias * quotient := Nat.pos_of_ne_zero zero
     refine ⟨2 * pi * (bias * quotient) + (score + depth * bias) * inc, inc * (bias * quotient),
-      Nat.mul_pos incPos positive, fun eb aligned => ?_⟩
-    obtain ⟨u, rfl⟩ := aligned
-    have lhs : 2 * (inc * u / inc * pi) + inc * u * (score + depth * bias) / (bias * quotient) =
-        2 * (u * pi) + (score + depth * bias) * inc * u / (bias * quotient) := by
-      rw [Nat.mul_div_cancel_left _ incPos]
-      congr 2
-      ring
-    have rhs : (2 * pi * (bias * quotient) + (score + depth * bias) * inc) * (inc * u) /
-        (inc * (bias * quotient)) =
-        2 * (u * pi) + (score + depth * bias) * inc * u / (bias * quotient) := by
-      rw [show (2 * pi * (bias * quotient) + (score + depth * bias) * inc) * (inc * u) =
-        inc * ((bias * quotient) * (2 * (u * pi)) + (score + depth * bias) * inc * u) by ring,
-        Nat.mul_div_mul_left _ _ incPos, Nat.mul_add_div positive]
-    rw [lhs, rhs]
-
+      Nat.mul_pos incPos positive, fun eb aligned => ?_, fun x => ?_⟩
+    · obtain ⟨u, rfl⟩ := aligned
+      have lhs : 2 * (inc * u / inc * pi) + inc * u * (score + depth * bias) / (bias * quotient) =
+          2 * (u * pi) + (score + depth * bias) * inc * u / (bias * quotient) := by
+        rw [Nat.mul_div_cancel_left _ incPos]
+        congr 2
+        ring
+      have rhs : (2 * pi * (bias * quotient) + (score + depth * bias) * inc) * (inc * u) /
+          (inc * (bias * quotient)) =
+          2 * (u * pi) + (score + depth * bias) * inc * u / (bias * quotient) := by
+        rw [show (2 * pi * (bias * quotient) + (score + depth * bias) * inc) * (inc * u) =
+          inc * ((bias * quotient) * (2 * (u * pi)) + (score + depth * bias) * inc * u) by ring,
+          Nat.mul_div_mul_left _ _ incPos, Nat.mul_add_div positive]
+      rw [lhs, rhs]
+    · have first := Nat.mul_le_mul_left (bias * quotient * (2 * pi)) (under x)
+      have second : (score + depth * bias) * x ≤
+          bias * quotient * ((x + inc) * (score + depth * bias) / (bias * quotient) + 1) := by
+        have := Nat.lt_mul_div_succ ((x + inc) * (score + depth * bias)) positive
+        have mono : (score + depth * bias) * x ≤ (x + inc) * (score + depth * bias) := by
+          nlinarith
+        omega
+      have third := Nat.mul_le_mul_left inc second
+      calc (2 * pi * (bias * quotient) + (score + depth * bias) * inc) * x
+          = bias * quotient * (2 * pi) * x + inc * ((score + depth * bias) * x) := by ring
+        _ ≤ bias * quotient * (2 * pi) * (inc * ((x + inc) / inc)) +
+            inc * (bias * quotient * ((x + inc) * (score + depth * bias) / (bias * quotient) + 1)) :=
+          Nat.add_le_add first third
+        _ = inc * (bias * quotient) * (2 * ((x + inc) / inc * pi) +
+            (x + inc) * (score + depth * bias) / (bias * quotient) + 1) := by ring
 
 /-- The pass premise of the potential floor, from a rate that is linear in aligned balances. -/
 private theorem pass_of_leak (h : Setting config checks g split fin pulled anc counted V)
@@ -302,12 +329,17 @@ private theorem exitQ_potential (h : Setting config checks g split fin pulled an
   exact exitQ_at h fromFin tailC replayed stop.pre stop.post stop.split v member val initial far
     ρn ρd leaky
 
-/-- The leak of an aligned effective balance is at most a rate times it. -/
+/-- The leak of an aligned effective balance is at most a rate times it.
+
+The rate times any balance is at most the leak an increment above, plus one. -/
 private theorem leak_rate (config : Config) (pulled anc fin : BeaconState preset fork)
     (incPos : 0 < preset.EFFECTIVE_BALANCE_INCREMENT.toNat) (v : ℕ) :
-    ∃ ρn ρd : ℕ, 0 < ρd ∧ ∀ eb : ℕ, preset.EFFECTIVE_BALANCE_INCREMENT.toNat ∣ eb →
-      (pinTerms config pulled anc fin).leakAt eb v ≤ ρn * eb / ρd := by
-  obtain ⟨ρn, ρd, positive, bound⟩ := leak_linear preset.EFFECTIVE_BALANCE_INCREMENT.toNat
+    ∃ ρn ρd : ℕ, 0 < ρd ∧
+      (∀ eb : ℕ, preset.EFFECTIVE_BALANCE_INCREMENT.toNat ∣ eb →
+        (pinTerms config pulled anc fin).leakAt eb v ≤ ρn * eb / ρd) ∧
+      ∀ x : ℕ, ρn * x ≤ ρd * ((pinTerms config pulled anc fin).leakAt
+        (x + preset.EFFECTIVE_BALANCE_INCREMENT.toNat) v + 1) := by
+  obtain ⟨ρn, ρd, positive, bound, above⟩ := leak_linear preset.EFFECTIVE_BALANCE_INCREMENT.toNat
     ((getBaseRewardPerIncrement preset
       (if 18 * preset.EFFECTIVE_BALANCE_INCREMENT.toNat ≤
           ((getTotalActiveBalance pulled).toOption.getD 0).toNat then
@@ -318,7 +350,63 @@ private theorem leak_rate (config : Config) (pulled anc fin : BeaconState preset
     ((getCurrentEpoch pulled).toNat + 2 - (getCurrentEpoch fin).toNat)
     config.INACTIVITY_SCORE_BIAS.toNat
     (parameters preset fork).INACTIVITY_PENALTY_QUOTIENT.toNat incPos
-  exact ⟨ρn, ρd, positive, fun eb aligned => bound eb aligned⟩
+  exact ⟨ρn, ρd, positive, fun eb aligned => bound eb aligned, fun x => above x⟩
+
+/-- The arithmetic of the low bound of an existing key.
+
+The potential floor, rounded down to an increment, is at least the bound less the sync debits.
+
+`L1` and `L2` are the leaks an increment above the base and above the shortfall, and the rate bounds
+the base and the shortfall by them, plus one each.
+
+`R` is the bound before its drop, and it is at most the base less the partials due. -/
+private theorem low_arith (inc band ρn ρd K depth X s R pd sync L1 L2 E0 cap : ℕ)
+    (positive : 0 < ρd) (incPos : 0 < inc)
+    (first : ρn * X ≤ ρd * (L1 + 1)) (second : ρn * s ≤ ρd * (L2 + 1)) (epochs : K ≤ depth)
+    (baseLe : R ≤ X - pd) (effLe : R ≤ E0) (capLe : E0 ≤ cap) :
+    R - ((L2 + 1) + depth * (L1 + 1) + band + inc) ≤
+      min E0 (min cap
+        (((ρd - ρn * K) * (X + band) - ρn * s) / ρd - (band + (sync + pd)) -
+          (((ρd - ρn * K) * (X + band) - ρn * s) / ρd - (band + (sync + pd))) % inc)) + sync := by
+  have depthMul : K * (L1 + 1) ≤ depth * (L1 + 1) := Nat.mul_le_mul_right _ epochs
+  refine le_min (by omega) (le_min (by omega) ?_)
+  generalize hF : ((ρd - ρn * K) * (X + band) - ρn * s) / ρd - (band + (sync + pd)) = F
+  have modLt := Nat.mod_lt F incPos
+  have modLe := Nat.mod_le F inc
+  by_cases big : ρd ≤ ρn * K
+  · -- the closed form is vacuous, and the leak already covers the base
+    have zero : ρd - ρn * K = 0 := Nat.sub_eq_zero_of_le big
+    rw [zero, Nat.zero_mul, Nat.zero_sub, Nat.zero_div, Nat.zero_sub] at hF
+    have step : ρd * X ≤ ρd * (K * (L1 + 1)) := by
+      calc ρd * X ≤ (ρn * K) * X := Nat.mul_le_mul_right _ big
+        _ = K * (ρn * X) := by ring
+        _ ≤ K * (ρd * (L1 + 1)) := Nat.mul_le_mul_left _ first
+        _ = ρd * (K * (L1 + 1)) := by ring
+    have base := Nat.le_of_mul_le_mul_left step positive
+    omega
+  · have small : ρn * K < ρd := Nat.lt_of_not_ge big
+    have keep : (ρd - ρn * K) + ρn * K = ρd := Nat.sub_add_cancel small.le
+    have bandLe : ρn * K * band ≤ ρd * band := Nat.mul_le_mul_right _ small.le
+    have baseLe' : ρn * K * X ≤ ρd * (K * (L1 + 1)) := by
+      calc ρn * K * X = K * (ρn * X) := by ring
+        _ ≤ K * (ρd * (L1 + 1)) := Nat.mul_le_mul_left _ first
+        _ = ρd * (K * (L1 + 1)) := by ring
+    have bound := Nat.lt_mul_div_succ
+      ((ρd - ρn * K) * (X + band) - ρn * s) positive
+    have total : ρd * (X + band) ≤ ((ρd - ρn * K) * (X + band) - ρn * s) + ρn * s +
+        ρn * K * X + ρn * K * band := by
+      calc ρd * (X + band) = ((ρd - ρn * K) + ρn * K) * (X + band) := by rw [keep]
+        _ = (ρd - ρn * K) * (X + band) + ρn * K * X + ρn * K * band := by ring
+        _ ≤ _ := by omega
+    have lt : ρd * (X + band) < ρd * (((ρd - ρn * K) * (X + band) - ρn * s) / ρd + 1 +
+        (L2 + 1) + K * (L1 + 1) + band) := by
+      calc ρd * (X + band) ≤ _ := total
+        _ < ρd * (((ρd - ρn * K) * (X + band) - ρn * s) / ρd + 1) + ρd * (L2 + 1) +
+              ρd * (K * (L1 + 1)) + ρd * band := by omega
+        _ = _ := by ring
+    have cancel := Nat.lt_of_mul_lt_mul_left lt
+    generalize ((ρd - ρn * K) * (X + band) - ρn * s) / ρd = W at cancel hF
+    omega
 
 /-- The low bound of an existing key, against the rev 2.5.4 form of `lowEB` and `drop`.
 
@@ -350,44 +438,45 @@ private theorem existing_low_or_floor_new (h : Setting config checks g split fin
               preset.EFFECTIVE_BALANCE_INCREMENT.toNat) v.toNat + 1) +
         preset.downwardBand + preset.EFFECTIVE_BALANCE_INCREMENT.toNat) ≤
       exitQ tailC v.toNat + (events.map (syncDebit v.toNat)).sum := by
-  obtain ⟨ρn, ρd, positive, leaky⟩ := leak_rate config pulled anc fin h.bands.1 v.toNat
+  obtain ⟨shared⟩ := h.toFin
+  obtain ⟨ρn, ρd, positive, leaky, above⟩ := leak_rate config pulled anc fin h.bands.1 v.toNat
   have potential := exitQ_potential h fromFin tailC replayed v member val initial charged ρn ρd
     leaky
   have finEB : balanceAt fin v.toNat = effectiveAt (⟨fork, fin⟩ : ForkedBeaconState preset) v.toNat :=
     rfl
-  -- The evaluation: the potential floor, rounded, is at least the bound less the sync debits.
-  have eval : min (min (min (balanceAt pulled v.toNat) (balanceAt fin v.toNat))
+  have capped : effectiveAt (⟨fork, fin⟩ : ForkedBeaconState preset) v.toNat ≤
+      (withdrawalMaxEffectiveBalance preset fork val).toNat := by
+    have cap := shared.effectiveBalance_capped h.genesis h.caps.activation h.caps.compounding
+      h.early val (Array.mem_of_getElem? initial)
+    simpa [effectiveAt, initial] using UInt64.le_iff_toNat_le.mp cap
+  have toCounted := UInt64.le_iff_toNat_le.mp h.later
+  have nearC := h.near
+  simp only at toCounted
+  have arith := low_arith preset.EFFECTIVE_BALANCE_INCREMENT.toNat preset.downwardBand ρn ρd
+    ((getCurrentEpoch counted).toNat - (getCurrentEpoch fin).toNat)
+    ((getCurrentEpoch pulled).toNat + 2 - (getCurrentEpoch fin).toNat)
+    (min (actualBalanceAt (⟨fork, fin⟩ : ForkedBeaconState preset) v.toNat)
+      (withdrawalMaxEffectiveBalance preset fork val).toNat)
+    (effectiveAt (⟨fork, fin⟩ : ForkedBeaconState preset) v.toNat -
+      actualBalanceAt (⟨fork, fin⟩ : ForkedBeaconState preset) v.toNat)
+    (min (min (min (balanceAt pulled v.toNat) (balanceAt fin v.toNat))
           (actualBalanceAt (⟨fork, fin⟩ : ForkedBeaconState preset) v.toNat) -
         (pinTerms config pulled anc fin).partialsDue v.toNat)
-      preset.MIN_ACTIVATION_BALANCE.toNat -
-      (((pinTerms config pulled anc fin).leakAt
-          (balanceAt fin v.toNat - actualBalanceAt (⟨fork, fin⟩ : ForkedBeaconState preset) v.toNat +
-            preset.EFFECTIVE_BALANCE_INCREMENT.toNat) v.toNat + 1) +
-        ((getCurrentEpoch pulled).toNat + 2 - (getCurrentEpoch fin).toNat) *
-          ((pinTerms config pulled anc fin).leakAt
-            (min (actualBalanceAt (⟨fork, fin⟩ : ForkedBeaconState preset) v.toNat)
-              (withdrawalMaxEffectiveBalance preset fork val).toNat +
-              preset.EFFECTIVE_BALANCE_INCREMENT.toNat) v.toNat + 1) +
-        preset.downwardBand + preset.EFFECTIVE_BALANCE_INCREMENT.toNat) ≤
-      min (effectiveAt (⟨fork, fin⟩ : ForkedBeaconState preset) v.toNat)
-        (min (withdrawalMaxEffectiveBalance preset fork val).toNat
-          (potentialFloor ρn ρd ((getCurrentEpoch counted).toNat - (getCurrentEpoch fin).toNat)
-              (min (actualBalanceAt (⟨fork, fin⟩ : ForkedBeaconState preset) v.toNat)
-                (withdrawalMaxEffectiveBalance preset fork val).toNat)
-              preset.downwardBand (effectiveAt (⟨fork, fin⟩ : ForkedBeaconState preset) v.toNat -
-                actualBalanceAt (⟨fork, fin⟩ : ForkedBeaconState preset) v.toNat)
-              ((events.map (syncDebit v.toNat)).sum +
-                (pinTerms config pulled anc fin).partialsDue v.toNat) -
-            potentialFloor ρn ρd ((getCurrentEpoch counted).toNat - (getCurrentEpoch fin).toNat)
-              (min (actualBalanceAt (⟨fork, fin⟩ : ForkedBeaconState preset) v.toNat)
-                (withdrawalMaxEffectiveBalance preset fork val).toNat)
-              preset.downwardBand (effectiveAt (⟨fork, fin⟩ : ForkedBeaconState preset) v.toNat -
-                actualBalanceAt (⟨fork, fin⟩ : ForkedBeaconState preset) v.toNat)
-              ((events.map (syncDebit v.toNat)).sum +
-                (pinTerms config pulled anc fin).partialsDue v.toNat) %
-              preset.EFFECTIVE_BALANCE_INCREMENT.toNat)) +
-        (events.map (syncDebit v.toNat)).sum := sorry
-  omega
+      preset.MIN_ACTIVATION_BALANCE.toNat)
+    ((pinTerms config pulled anc fin).partialsDue v.toNat) (events.map (syncDebit v.toNat)).sum
+    ((pinTerms config pulled anc fin).leakAt
+      (min (actualBalanceAt (⟨fork, fin⟩ : ForkedBeaconState preset) v.toNat)
+        (withdrawalMaxEffectiveBalance preset fork val).toNat +
+        preset.EFFECTIVE_BALANCE_INCREMENT.toNat) v.toNat)
+    ((pinTerms config pulled anc fin).leakAt
+      (effectiveAt (⟨fork, fin⟩ : ForkedBeaconState preset) v.toNat -
+        actualBalanceAt (⟨fork, fin⟩ : ForkedBeaconState preset) v.toNat +
+        preset.EFFECTIVE_BALANCE_INCREMENT.toNat) v.toNat)
+    (effectiveAt (⟨fork, fin⟩ : ForkedBeaconState preset) v.toNat)
+    (withdrawalMaxEffectiveBalance preset fork val).toNat positive h.bands.1 (above _) (above _)
+    (by omega) (by omega) (by omega) capped
+  simp only [potentialFloor] at potential
+  exact le_trans arith (Nat.add_le_add_right potential _)
 
 end PinSum
 end EthLib.Consensus.Models.Network
