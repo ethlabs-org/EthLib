@@ -7023,19 +7023,13 @@ private theorem V_active (h : Setting config checks g split fin pulled anc count
 
 /-- A V key that left C's active set is charged by its exit, its late activation or its floor.
 
-Its activation is at most R's epoch.
+The split is on R's activation epoch, against the seed lookahead after the split.
 
-If that is within the seed lookahead of the split, the two branches agree on its activity there.
+In the first case, C's own key at that position is active at R's activation epoch.
 
-Then C's record exits it by C's epoch, which R reads as exiting or C charges.
+So C's record exits it by C's epoch, and R reads it as exiting or C charges its exit.
 
-Otherwise R activated it after finalizing the split, and R reads it as late.
-
-R's registry may hold a key that C's does not, since the registries differ by position.
-
-Then `h.voting` holds with the unslashed flag read as false.
-
-Such a key activates late at R, so it is in the second case. -/
+In the second case, R's key alone reads as late, by its activation after the finalized epoch. -/
 private theorem V_left (h : Setting config checks g split fin pulled anc counted V)
     (fromFin : Run config checks ⟨fork, fin⟩ ⟨fork, split⟩)
     (tailC : Run config checks ⟨fork, split⟩ ⟨fork, counted⟩)
@@ -8405,11 +8399,11 @@ The keys of `K4` weigh one, and those of `K5` weigh three.
 The `syncProposer` part of `proposerCredit` is not used by `credR`, which leaves out sync events, so
 `bud_sync` takes it. -/
 theorem bud_branchR (h : Setting config checks g split fin pulled anc counted V)
-    (fromFin : Run config checks ⟨fork, fin⟩ ⟨fork, split⟩) (highF : ℕ)
-    {eventsF : List (BalanceEvent preset)} (replayedF : fromFin.balanceEvents highF = .ok eventsF)
     (tail : Run config checks ⟨fork, split⟩ ⟨fork, pulled⟩) (high : ℕ)
     (endEpoch : (getCurrentEpoch pulled).toNat ≤ high + 1)
     {events : List (BalanceEvent preset)} (replayed : tail.balanceEvents high = .ok events)
+    (fromFin : Run config checks ⟨fork, fin⟩ ⟨fork, split⟩)
+    {eventsF : List (BalanceEvent preset)} (replayedF : fromFin.balanceEvents high = .ok eventsF)
     (tailC : Run config checks ⟨fork, split⟩ ⟨fork, counted⟩) (highC : ℕ)
     (endEpochC : (getCurrentEpoch counted).toNat ≤ highC + 1)
     {eventsC : List (BalanceEvent preset)} (replayedC : tailC.balanceEvents highC = .ok eventsC) :
@@ -8422,7 +8416,26 @@ theorem bud_branchR (h : Setting config checks g split fin pulled anc counted V)
           (slashR (pinTerms config pulled anc fin) v.toNat + bandR events v.toNat)) +
         (∑ v ∈ (K6 pulled counted),
           (slashR (pinTerms config pulled anc fin) v.toNat + bandR events v.toNat)) ≤
-      (pinTerms config pulled anc fin).branchR := sorry
+      (pinTerms config pulled anc fin).branchR := by
+  have calledNat := UInt64.le_iff_toNat_le.mp h.called
+  have nearC := h.near
+  have transport : ∀ {x y : ForkedBeaconState preset} (r : Run config checks x y) (a : ℕ),
+      a ≤ max high highC → ∀ {es : List (BalanceEvent preset)},
+      (getCurrentEpoch y.state).toNat ≤ a + 1 →
+      r.balanceEvents a = .ok es → r.balanceEvents (max high highC) = .ok es := by
+    intro x y r a le es endpoint ok
+    rw [DirectSafety.Apriori.Internal.balanceEvents_eq_of_endpoint_le r (localHigh := a)
+      (by omega) endpoint]
+    exact ok
+  have bands := bands_seats h fromFin tail tailC (max high highC)
+    (transport tail high (le_max_left _ _) endEpoch replayed)
+    (transport fromFin high (le_max_left _ _) (by simp only; omega) replayedF)
+    (transport tailC highC (le_max_right _ _) endEpochC replayedC)
+  have depthEq : (pinTerms config pulled anc fin).depth =
+      (getCurrentEpoch pulled).toNat + 2 - anc.finalizedCheckpoint.epoch.toNat := rfl
+  refine bud_branchR_of h (le_trans bands ?_)
+  rw [depthEq]
+  exact Nat.mul_le_mul_left _ (Nat.mul_le_mul_left _ (Nat.le_add_left _ _))
 
 /-- The sync movement of a key is its sync credits plus its sync debits over the events. -/
 private theorem syncF_eq (events : List (BalanceEvent preset)) (v : ℕ) :
@@ -8847,7 +8860,7 @@ theorem pinDrift_le_of_stubs (h : Setting config checks g split fin pulled anc c
   have b2 := bud_late (config := config) h
   have b3 := bud_queues (config := config) h tailC
   have b4 := bud_credits (config := config) h tailC highC endEpochC replayedC
-  have b5 := bud_branchR (config := config) h fromFin high replayedF tail high endEpoch replayed
+  have b5 := bud_branchR (config := config) h tail high endEpoch replayed fromFin replayedF
     tailC highC endEpochC replayedC
   have b6 := bud_sync (config := config) h fromFin high replayedF tail high replayed tailC highC
     replayedC
