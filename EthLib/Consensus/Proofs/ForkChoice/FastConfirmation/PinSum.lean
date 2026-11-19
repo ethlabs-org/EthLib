@@ -18878,7 +18878,7 @@ Both add C's proposer credits and sync seats.
 
 A key with a charge pays no deposit credit after it, so `propC` stands for its credits.
 
-The run `pre` is the shared run from the start of the split's epoch, cut by `cut`.
+The run `pre` is the shared run from the start of the split's epoch.
 
 No block of that epoch precedes its start, by `earlier`.
 
@@ -18890,10 +18890,8 @@ theorem stub_P (h : Setting config checks g split fin pulled anc counted V)
     (endEpoch : (getCurrentEpoch pulled).toNat ≤ high + 1)
     {events : List (BalanceEvent preset)} (replayed : tail.balanceEvents high = .ok events)
     (fromFin : Run config checks ⟨fork, fin⟩ ⟨fork, split⟩)
-    (toFin : Run config checks g ⟨fork, fin⟩)
     {b : BeaconState preset fork} (toB : Run config checks g ⟨fork, b⟩)
     (pre : Run config checks ⟨fork, b⟩ ⟨fork, split⟩)
-    (cut : toB.append pre = toFin.append fromFin)
     (sameEpoch : getCurrentEpoch split = getCurrentEpoch b)
     (earlier : ∀ {u w : ForkedBeaconState preset} (step : Step config checks u w),
       toB.Contains step → (getCurrentEpoch u.state).toNat < (getCurrentEpoch b).toNat)
@@ -19393,7 +19391,7 @@ theorem pinDrift_le_of_stubs (h : Setting config checks g split fin pulled anc c
     tailC highC endEpochC replayedC)
   have sN := stub_N (config := config) h tail high endEpoch replayed fromFin replayedF tailC highC
     endEpochC replayedC
-  have sP := stub_P (config := config) h tail high endEpoch replayed fromFin toFin toB pre cut
+  have sP := stub_P (config := config) h tail high endEpoch replayed fromFin toB pre
     sameEpoch earlier replayedF tailC highC endEpochC replayedC replayedP
   have sJ := stub_J (config := config) h tail high endEpoch replayed fromFin replayedF tailC highC
     endEpochC replayedC
