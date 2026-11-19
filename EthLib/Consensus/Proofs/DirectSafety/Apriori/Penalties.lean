@@ -388,8 +388,7 @@ private theorem penalties_succ (x : ForkedBeaconState preset) (high t : Nat) :
             t := by
   simp [windowPenalties, List.range_succ, List.map_append, List.sum_append]
 
-/-- A quantity of a branch that adds over `Run.append` fits the sum of a bound over its first `t`
-epochs, if each one-epoch segment fits the bound at its offset. -/
+/-- A quantity that adds over `Run.append` fits a bound summed over a branch's first `t` epochs. -/
 theorem run_cuts_of_additive {x y : ForkedBeaconState preset}
     (tail : Run config checks x y) (early : y.fork < .glamsterdam)
     (P : ForkedBeaconState preset → Prop)
