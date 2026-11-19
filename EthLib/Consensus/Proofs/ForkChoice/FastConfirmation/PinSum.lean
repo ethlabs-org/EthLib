@@ -14547,6 +14547,48 @@ private def exitedSlashable (anc pulled : BeaconState preset fork) (i : ℕ) : B
     ((pulled.validators.data[i]?).any fun v =>
       decide (anc.finalizedCheckpoint.epoch.toNat < v.withdrawableEpoch.toNat)) = true)
 
+/-- No key of the split's registry is slashed on C's branch and withdrawable at R.
+
+Here withdrawable means by the finalized epoch.
+
+Both records are unslashed before C's slashing, and the key is unslashed at R.
+
+If the split has no exit for it, C's slashing assigns one, and a run never charges an exit twice.
+
+Otherwise R's withdrawable epoch is the split's, so the key is retired at the split.
+
+A retired key stays unslashed on C's run. -/
+private theorem sc3a_unwithdrawn (h : Setting config checks g split fin pulled anc counted V)
+    {i : ℕ} {s w u : Validator} (foundS : split.validators.data[i]? = some s)
+    (foundP : pulled.validators.data[i]? = some w)
+    (foundC : counted.validators.data[i]? = some u)
+    (cleanS : s.slashed = false) (slashedC : u.slashed = true) (cleanP : w.slashed = false)
+    (settled : w.withdrawableEpoch.toNat ≤ anc.finalizedCheckpoint.epoch.toNat) : False := by
+  obtain ⟨rf⟩ := h.toFin
+  obtain ⟨rs⟩ := h.fromFin
+  obtain ⟨tailR⟩ := h.toPulled
+  obtain ⟨tailC⟩ := h.toCounted
+  have finSplit := UInt64.le_iff_toNat_le.mp h.finalized
+  obtain ⟨uAssigned, -⟩ := tailC.newly_slashed_withdrawableEpoch h.caps.activation
+    h.caps.compounding h.early h.delay i s u foundS foundC cleanS slashedC
+  by_cases unset : s.exitEpoch = FAR_FUTURE_EPOCH
+  · obtain ⟨c, member, index, -⟩ := tailC.departure_charge_of_assigned i s u foundS foundC unset
+      uAssigned
+    exact no_charge_of_settled h tailC (Array.getElem?_eq_some_iff.mp foundS).1 foundP settled c
+      member index
+  · have kept := PinSplit4.kept_run (rf.append rs) h.genesis h.fulu tailR h.early
+    obtain ⟨-, moved⟩ := kept.withdrawable i s w foundS foundP unset
+    have same := congrArg UInt64.toNat (moved.resolve_left (by simp [cleanP]))
+    have ordered := UInt64.le_iff_toNat_le.mp
+      ((Run.invariant (Genesis.invariant h.genesis) (rf.append rs)).exitsOrdered s
+        (Array.mem_of_getElem? foundS))
+    have exited : s.exitEpoch.toNat ≤ (getCurrentEpoch split).toNat := by omega
+    have withdrawn : s.withdrawableEpoch.toNat ≤ (getCurrentEpoch split).toNat := by omega
+    have clean := (Run.retired_validator tailC h.caps.activation h.caps.compounding h.early i s u
+      foundS foundC (UInt64.le_iff_toNat_le.mpr exited) cleanS
+      (UInt64.le_iff_toNat_le.mpr withdrawn)).1
+    simp [slashedC] at clean
+
 /-- (W-S) The slack and the rounding of the slashed keys' rewards are paid by the shares and bands.
 
 A key of the split's registry is read at its bound and the slack that `registry` adds.
