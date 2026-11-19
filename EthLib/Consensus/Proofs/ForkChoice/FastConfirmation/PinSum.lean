@@ -91,6 +91,7 @@ structure PinTerms (preset : Preset) where
   positions : Finset ℕ
   current : ℕ → Bool
   joining : ℕ
+  joinRise : ℕ
   exitingB : ℕ → Bool
   lateB : ℕ → Bool
   exitedRB : ℕ → Bool
@@ -111,7 +112,7 @@ structure PinTerms (preset : Preset) where
 /-- `pinReserve` as the sum of its named terms, with the code's weights. -/
 def PinTerms.total (t : PinTerms preset) : ℕ :=
   t.quorum + (3 * t.exiting + t.queues + t.credits + t.branchR + t.late +
-    t.syncSeats + (∑ i ∈ t.positions with t.current i = true, t.rise i) +
+    t.syncSeats + (∑ i ∈ t.positions with t.current i = true, t.rise i) + t.joinRise +
     3 * (∑ i ∈ t.positions with t.current i = true, t.fall i) +
     3 * t.exitingRise + t.exitingCredits + t.exitingBands + t.queueRise + t.reserveW + t.flagged +
     t.seatShortfall + (33 * t.consolidationsX + 9) / 10 + t.exitedR + t.pendingR + t.creditGain)
@@ -472,6 +473,7 @@ def pinTerms (config : Config) (state ancestor finalizedState : BeaconState pres
       decide (epoch.toNat < v.activationEligibilityEpoch.toNat) &&
         v.activationEpoch == FAR_FUTURE_EPOCH),
     joining := ∑ i ∈ positions with current i = false ∧ upcoming i = true, effective i,
+    joinRise := ∑ i ∈ positions with current i = false ∧ upcoming i = true, rise i,
     exitingB := fun i => decide ((before i || current i) = true ∧
       (slashed i = false ∨ recentSlashing i = true) ∧
       ((validator i).map fun v => decide (v.exitEpoch.toNat ≤ epoch.toNat + 1)).getD false = true),
@@ -565,6 +567,7 @@ structure Setting (config : Config) (checks : SignatureChecks) (g : ForkedBeacon
   pulledTotal : ∃ t, getTotalActiveBalance pulled = .ok t
   room : 2 ^ 32 ≤ preset.EFFECTIVE_BALANCE_INCREMENT.toNat * preset.BASE_REWARD_FACTOR.toNat
   below : preset.downwardBand < preset.EFFECTIVE_BALANCE_INCREMENT.toNat
+  facts : PinPresetFacts preset
   guard : DirectSafety.Apriori.aprioriGuardAt config ⟨fork, fin⟩ (getCurrentEpoch pulled).toNat
   finalized : anc.finalizedCheckpoint.epoch ≤ getCurrentEpoch split
   called : getCurrentEpoch split ≤ getCurrentEpoch pulled
@@ -1556,7 +1559,7 @@ epoch's active increments, is at most the pin's rate times the active increments
 private theorem rate_of_guard (facts : PinPresetFacts preset)
     (h : Setting config checks g split fin pulled anc counted V)
     {m : BeaconState preset fork} (toM : Run config checks ⟨fork, fin⟩ ⟨fork, m⟩)
-    (inside : (getCurrentEpoch m).toNat ≤ (getCurrentEpoch pulled).toNat)
+    (inside : (getCurrentEpoch m).toNat ≤ (getCurrentEpoch pulled).toNat + 1)
     {pq : Gwei} (pqOk : getBaseRewardPerIncrement preset
       (if 18 * preset.EFFECTIVE_BALANCE_INCREMENT.toNat ≤
           ((getTotalActiveBalance pulled).toOption.getD 0).toNat then
@@ -1577,10 +1580,10 @@ private theorem rate_of_guard (facts : PinPresetFacts preset)
   have electra : .pectra ≤ fork := Nat.le_trans (by decide) h.fulu
   have toP := fromFin.append toPulled
   have band := total_band_of_guard shared h.genesis h.parameters h.caps h.aligned h.twoSlots
-    electra h.guard toM h.early (Nat.le_succ_of_le inside) toP h.early (Nat.le_succ _)
+    electra h.guard toM h.early inside toP h.early (Nat.le_succ _)
     totalOk pulledOk
   have stake := prevStake_band_of_guard shared h.genesis h.parameters h.caps h.aligned h.twoSlots
-    electra h.guard toM h.early (Nat.le_succ_of_le inside) toM h.early (Nat.le_succ_of_le inside)
+    electra h.guard toM h.early inside toM h.early inside
     totalOk
   have clamp : preset.EFFECTIVE_BALANCE_INCREMENT.toNat ≤ total.toNat := by
     obtain ⟨-, -, value⟩ := getTotalBalance_ok_iff_stake.mp (getTotalActiveBalance_ok totalOk)
@@ -1670,7 +1673,8 @@ theorem stub_J (h : Setting config checks g split fin pulled anc counted V)
     (tailC : Run config checks ⟨fork, split⟩ ⟨fork, counted⟩) (highC : ℕ)
     (endEpochC : (getCurrentEpoch counted).toNat ≤ highC + 1)
     {eventsC : List (BalanceEvent preset)} (replayedC : tailC.balanceEvents highC = .ok eventsC) :
-    cJ pulled counted ≤ (((pinTerms config pulled anc fin).joining + (∑ v ∈ (K6 pulled counted) with (pinTerms config pulled anc fin).lateB v.toNat = true,
+    cJ pulled counted ≤ (((pinTerms config pulled anc fin).joining +
+      (pinTerms config pulled anc fin).joinRise + (∑ v ∈ (K6 pulled counted) with (pinTerms config pulled anc fin).lateB v.toNat = true,
         (3 * eR pulled v + (pinTerms config pulled anc fin).rise v.toNat)) +
       (∑ v ∈ (K6 pulled counted) with (pinTerms config pulled anc fin).exitedRB v.toNat = true,
         (eR pulled v + (pinTerms config pulled anc fin).rise v.toNat)) +
