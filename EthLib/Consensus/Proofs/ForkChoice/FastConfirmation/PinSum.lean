@@ -3029,6 +3029,78 @@ private theorem envelope_arith {I cap capFor high kept S CB finEB e0 effX : ℕ}
   have r3 := rounded_mono I keptLe
   omega
 
+/-- Layer 1 of the key core: the effective balance of a key at a prefix of C's tail is within the
+envelope.
+
+The prefix is `pre`, a run from the split to the state `a`, and `e0` is `ebUp i`.
+
+The bound is `rise`'s, plus the credits of the prefix rounded up to increments.
+
+The credits are the net credits of the prefix and the sync debits of R, at eleven tenths.
+
+K2 gives the ceiling on the balance, and `rise` reads the same `high` that the ceiling does. -/
+private theorem key_ceiling_pre (h : Setting config checks g split fin pulled anc counted V)
+    (tail : Run config checks ⟨fork, split⟩ ⟨fork, pulled⟩) (high : ℕ)
+    (endEpoch : (getCurrentEpoch pulled).toNat ≤ high + 1)
+    {events : List (BalanceEvent preset)} (replayed : tail.balanceEvents high = .ok events)
+    {a : BeaconState preset fork} (pre : Run config checks ⟨fork, split⟩ ⟨fork, a⟩) (highC : ℕ)
+    (endEpochPre : (getCurrentEpoch a).toNat ≤ highC + 1)
+    (highLe : highC ≤ (getCurrentEpoch pulled).toNat)
+    (i : ℕ) (inside : i < fin.validators.data.size)
+    (e0 capHigh capFor Cr' : ℕ)
+    (hCr' : Cr' = netScan i highC pre +
+      (creditScan (fun _ => false) (fun s => decide (s ≠ .rewards)) i highC pre).1 +
+        (events.map (syncDebit i)).sum)
+    (capLe : capHigh ≤ capFor) :
+    effectiveAt (⟨fork, a⟩ : ForkedBeaconState preset) i ≤
+      max e0 (effectiveAt (⟨fork, pulled⟩ : ForkedBeaconState preset) i +
+        (pinTerms config pulled anc fin).rise i) +
+      preset.EFFECTIVE_BALANCE_INCREMENT.toNat *
+        (((11 * Cr' + 9) / 10 + preset.EFFECTIVE_BALANCE_INCREMENT.toNat - 1) /
+          preset.EFFECTIVE_BALANCE_INCREMENT.toNat) := by
+  have incPos : 0 < preset.EFFECTIVE_BALANCE_INCREMENT.toNat := by
+    have := h.below
+    omega
+  obtain ⟨fromFin⟩ := h.fromFin
+  have insideSplit : i < (⟨fork, split⟩ : ForkedBeaconState preset).state.validators.data.size :=
+    Nat.lt_of_lt_of_le inside fromFin.registryLifecycle.size_le
+  -- The pin's rate bounds the reward rate at every state of the prefix (check on `P`, named).
+  have rate : ∃ P : ℕ, ∀ z ∈ pre.balancePath, ∀ total perIncrement : Gwei,
+      getTotalActiveBalance z.state = .ok total →
+      getBaseRewardPerIncrement preset total = .ok perIncrement →
+      perIncrement.toNat * ((∑ j ∈ (getActiveValidatorIndices z.state
+        (getPreviousEpoch z.state)).toFinset, effectiveAt z j.toNat) /
+          preset.EFFECTIVE_BALANCE_INCREMENT.toNat) ≤
+        P * (total.toNat / preset.EFFECTIVE_BALANCE_INCREMENT.toNat) := sorry
+  obtain ⟨P, rateP⟩ := rate
+  -- `rise`'s shape: the same `high` as the ceiling, a `kept` above it, and the largest balance.
+  have riseShape : ∃ high' kept finEB : ℕ, high' ≤ kept ∧
+      effectiveAt (⟨fork, pulled⟩ : ForkedBeaconState preset) i +
+          (pinTerms config pulled anc fin).rise i =
+        min capFor (min (kept - kept % preset.EFFECTIVE_BALANCE_INCREMENT.toNat)
+          (max finEB (high' - high' % preset.EFFECTIVE_BALANCE_INCREMENT.toNat))) := sorry
+  obtain ⟨high', kept, finEB, keptLe, riseEq⟩ := riseShape
+  -- The cap is aligned, the start is below it, and the caps along the prefix stay below it.
+  have alignedCap : capHigh % preset.EFFECTIVE_BALANCE_INCREMENT.toNat = 0 := sorry
+  have startCap : effectiveAt (⟨fork, split⟩ : ForkedBeaconState preset) i ≤ capHigh := sorry
+  have capCeil : ∀ z ∈ pre.balancePath, PinSplit2.capAt z i ≤ capHigh := sorry
+  -- The envelope `E`, with its fixpoint (check 1 and `lowRate`, named).
+  obtain ⟨E, closed, ceiling, start⟩ : ∃ E : ℕ,
+      max (effectiveAt (⟨fork, split⟩ : ForkedBeaconState preset) i)
+        (min capHigh (PinSplit2.creditBound pre i highC E P capHigh -
+          PinSplit2.creditBound pre i highC E P capHigh %
+            preset.EFFECTIVE_BALANCE_INCREMENT.toNat)) ≤ E ∧
+      PinSplit2.creditBound pre i highC E P capHigh ≤ high' + (11 * Cr' + 9) / 10 ∧
+      effectiveAt (⟨fork, split⟩ : ForkedBeaconState preset) i ≤ e0 := sorry
+  obtain ⟨-, -, third, fourth⟩ := PinSplit2.Run.effective_floor_pair pre h.early h.fulu i
+    insideSplit 0 0 0 capHigh highC E P
+  have balances := fourth alignedCap startCap capCeil rateP endEpochPre closed
+  have eff := (third _ alignedCap startCap (fun z member => balances z member) capCeil).1
+  have final := envelope_arith (cap := capHigh) (capFor := capFor) (high := high') (kept := kept)
+    (S := (11 * Cr' + 9) / 10) (finEB := finEB) (e0 := e0) incPos ceiling capLe keptLe start
+  rw [riseEq]
+  exact eff.trans final
+
 /-- A key's effective balance on C's branch is at most R's plus the main rise and the slacks. -/
 private theorem key_rise_main {g : ForkedBeaconState preset}
     {fin pulled counted : BeaconState preset fork} (shared : Run config checks g ⟨fork, fin⟩)
