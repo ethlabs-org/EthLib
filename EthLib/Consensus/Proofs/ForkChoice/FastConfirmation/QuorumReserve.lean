@@ -400,11 +400,11 @@ def pinReserve (config : Config) (state ancestor finalizedState : BeaconState pr
   --
   -- Two more units per epoch pay the floors of the rates.
   let gainScaled (i : ℕ) := (11 * gainRate i + 9) / 10 + 2
-  -- A key's rate is low when its gain over the depth stays below one increment.
+  -- A key's rate is low when its gain from the finalized block's state stays below an increment.
   --
   -- Eleven times its gain plus one over the depth must also stay within its bound.
   let lowRate (i : ℕ) : Bool :=
-    decide (depth * gainScaled i < inc) && decide (11 * depth * (gainRate i + 1) ≤ ebUp i)
+    decide (depthFin * gainScaled i < inc) && decide (11 * depth * (gainRate i + 1) ≤ ebUp i)
   let capFor (i : ℕ) :=
     if lowRate i then cap i else capMax
   -- The rise bounds the balance from the finalized block's state on, as `ebUp` does.
