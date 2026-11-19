@@ -444,7 +444,7 @@ A validator that is unslashed in the later state was unslashed before.
 Its withdrawable epoch is then the same.
 
 Only a slashing moves the withdrawable epoch of an exited validator, and it sets the flag. -/
-private def WithdrawalKept {f g : Fork} (s : BeaconState preset f)
+def WithdrawalKept {f g : Fork} (s : BeaconState preset f)
     (t : BeaconState preset g) : Prop :=
   ∀ (i : Nat) (v : Validator), s.validators.data[i]? = some v →
     v.exitEpoch ≠ FAR_FUTURE_EPOCH →
@@ -622,7 +622,7 @@ private theorem slash {i : ValidatorIndex} {whistleblower : Option ValidatorInde
     (registryLifecycle_initiateValidatorExit exitedOk)
 
 /-- Effective-balance updates write only effective balances. -/
-private theorem effectiveUpdates
+theorem effectiveUpdates
     (ok : processEffectiveBalanceUpdates state = .ok after) : WithdrawalKept state after := by
   refine fold (fun _ _ _ ok => ?_) (fun _ _ _ ok => ?_) ok
   · simp only [updateEffectiveBalance, bind_ok_iff, liftAccessor_ok] at ok

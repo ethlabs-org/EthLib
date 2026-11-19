@@ -7,6 +7,11 @@ public import EthLib.Consensus.Proofs.DirectSafety.Apriori.Ceiling
 
 From Electra, the credits other than rewards and sync credits fit an allowance of the window.
 
+Times one less than the whistleblower quotient, they are also at most the slashable base.
+
+That base is read at the reference state, and it is joined by the reward, sync and deposit
+funding credits of the window.
+
 The allowance reads only the reference state and the length of the window.
 -/
 
@@ -431,6 +436,985 @@ theorem otherCredit_le_allowance_electra {g x y : ForkedBeaconState preset}
   obtain ⟨-, -, -, -, -, -, -, -, -, delay, -, -, -, -⟩ := guard
   rw [otherCredit_sum_electra shared tail genesis electra early (by omega) replayed]
   exact allowance
+
+/-! ## The slashable base along a branch -/
+
+/-- A registry position that is unslashed, with its withdrawable epoch after the current epoch. -/
+private def pooled (u : ForkedBeaconState preset) (i : Nat) : Bool :=
+  (u.state.validators.data[i]?.map fun v =>
+    !v.slashed && decide (getCurrentEpoch u.state < v.withdrawableEpoch)).getD false
+
+/-- The larger of the effective and the actual balance at a registry position. -/
+private abbrev weight (u : ForkedBeaconState preset) (i : Nat) : Nat :=
+  max (effectiveAt u i) (actualBalanceAt u i)
+
+/-- The balance increases of some events at one position. -/
+private def creditOf (events : List (BalanceEvent preset)) (i : Nat) : Nat :=
+  (events.map fun e => actualBalanceAt e.after i - actualBalanceAt e.before i).sum
+
+/-- The increases of an event at the keys of the slashable base of `v`. -/
+private def poolCredit (v : ForkedBeaconState preset) (e : BalanceEvent preset) : Nat :=
+  ∑ i ∈ Finset.range v.state.validators.data.size,
+    if pooled v i then actualBalanceAt e.after i - actualBalanceAt e.before i else 0
+
+/-- The slashing credit limits of some events. -/
+private def slashCredits (events : List (BalanceEvent preset)) : Nat :=
+  (events.map fun e => if e.source = .slashings then e.creditLimit else 0).sum
+
+/-- The slashable base sums the weights of the keys in it. -/
+private theorem slashableBase_eq (u : ForkedBeaconState preset) :
+    slashableBase u = ∑ i ∈ Finset.range u.state.validators.data.size,
+      if pooled u i then weight u i else 0 := by
+  unfold slashableBase
+  apply Finset.sum_congr rfl
+  intro i _
+  cases found : u.state.validators.data[i]? with
+  | none => simp [pooled, found]
+  | some v =>
+    simp only [pooled, found, Option.map_some, Option.getD_some]
+
+/-- The balance at the end of a path is at most the balance at its start and its increases. -/
+private theorem balance_le_pathCredits (i : Nat) :
+    ∀ (path : List (ForkedBeaconState preset)) (a b : ForkedBeaconState preset),
+      path.head? = some a → path.getLast? = some b →
+        actualBalanceAt b i ≤ actualBalanceAt a i + pathCredits i path
+  | [], _, _, first, _ => by simp at first
+  | [c], a, b, first, last => by
+    simp only [List.head?_cons, Option.some.injEq, List.getLast?_singleton] at first last
+    subst first last
+    omega
+  | c :: d :: rest, a, b, first, last => by
+    simp only [List.head?_cons, Option.some.injEq] at first
+    subst first
+    have tail := balance_le_pathCredits i (d :: rest) d b rfl
+      (by simpa [List.getLast?_cons_cons] using last)
+    simp only [pathCredits]
+    omega
+
+/-- The events of one step, read as the events of the one-step run. -/
+private theorem single_balanceEvents {u v : ForkedBeaconState preset}
+    (step : Step config checks u v) {events : List (BalanceEvent preset)}
+    (replayed : step.balanceEvents = .ok events) :
+    (Run.nil.snoc step).balanceEvents (getCurrentEpoch v.state).toNat = .ok events := by
+  have within := UInt64.le_iff_toNat_le.mp step.chainStep.currentEpoch_le
+  simp only [Run.balanceEvents, pure, Except.pure, bind, Except.bind,
+    show (getCurrentEpoch u.state).toNat ≤ (getCurrentEpoch v.state).toNat + 1 by omega,
+    ↓reduceIte, replayed, List.nil_append]
+
+/-- Over one step, the weight of a position rises by at most its credits.
+
+A position new in the step starts from nothing. -/
+private theorem step_weight {g u v : ForkedBeaconState preset}
+    (shared : Run config checks g u) (genesis : Genesis (config := config) (checks := checks) g)
+    (step : Step config checks u v) (early : v.fork < .glamsterdam)
+    (delay : 0 < config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat)
+    {events : List (BalanceEvent preset)} (replayed : step.balanceEvents = .ok events) (i : Nat) :
+    weight v i ≤
+      (if i < u.state.validators.data.size then weight u i else 0) + creditOf events i := by
+  let run : Run config checks u v := Run.nil.snoc step
+  have covered := coverage_run run early _ (Nat.le_succ _) (single_balanceEvents step replayed)
+    false i
+  simp only [coveragePath, coverageDelta, Bool.false_eq_true, ↓reduceIte] at covered
+  change pathCredits i run.balancePath ≤ creditOf events i at covered
+  obtain ⟨first, last⟩ := Run.balancePath_ends run
+  have balance := balance_le_pathCredits i run.balancePath u v first last
+  unfold weight
+  split
+  · rename_i present
+    have gain := effective_gain_from_balance run early i present
+    omega
+  · rename_i absent
+    have join := joining_growth_from_admission shared run genesis early delay i (by omega)
+    have matched := (run_justified_separated shared genesis).1.balancesMatch
+    have none : actualBalanceAt u i = 0 := by
+      have outside : u.state.balances.data[i]? = none :=
+        Array.getElem?_eq_none (by unfold BalancesMatch at matched; omega)
+      simp [actualBalanceAt, outside]
+    omega
+
+/-- A position unslashed before a step is in the slashable base before it.
+
+This holds when it is in the base after the step, or slashed after it. -/
+private theorem pooled_of_step {u v : ForkedBeaconState preset}
+    (step : Step config checks u v) (caps : CapOrder preset) (early : v.fork < .glamsterdam)
+    (holds : Invariant u.state) (i : Nat) (w : Validator)
+    (found : u.state.validators.data[i]? = some w) (unslashed : w.slashed = false)
+    (later : pooled v i = true ∨ (v.state.validators.data[i]?.map (·.slashed)).getD false = true) :
+    pooled u i = true := by
+  simp only [pooled, found, Option.map_some, Option.getD_some, unslashed, Bool.not_false,
+    Bool.true_and, decide_eq_true_eq]
+  by_contra withdrawn
+  have kept := (EthLib.Consensus.Internal.CapStep.run (Run.nil.snoc step) caps.activation
+    caps.compounding early).1
+  obtain ⟨z, read, _⟩ := kept.monotone i w found
+  have exited : w.exitEpoch ≤ getCurrentEpoch u.state :=
+    UInt64.le_trans (holds.exitsOrdered w (Array.mem_of_getElem? found))
+      (UInt64.not_lt.mp withdrawn)
+  obtain ⟨flag, _, same⟩ := kept.retired i w z found read exited unslashed
+    (UInt64.not_lt.mp withdrawn)
+  have forward := kept.forward
+  rcases later with inPool | slashed
+  · simp only [pooled, read, Option.map_some, Option.getD_some, flag, Bool.not_false,
+      Bool.true_and, decide_eq_true_eq, same] at inPool
+    exact withdrawn (UInt64.lt_of_le_of_lt forward inPool)
+  · simp [read, flag] at slashed
+
+/-- The increases of an event over any positions are at most its credits. -/
+private theorem credits_subset_le (e : BalanceEvent preset) (s : Finset Nat) :
+    ∑ i ∈ s, (actualBalanceAt e.after i - actualBalanceAt e.before i) ≤ e.credits := by
+  unfold BalanceEvent.credits
+  apply Finset.sum_le_sum_of_ne_zero
+  intro i _ positive
+  apply Finset.mem_range.mpr
+  by_contra outside
+  have none : e.after.state.balances.data[i]? = none := Array.getElem?_eq_none (by omega)
+  simp [actualBalanceAt, none] at positive
+
+/-- The credits of some positions, summed event by event. -/
+private theorem creditOf_exchange (events : List (BalanceEvent preset)) (s : Finset Nat)
+    (keep : Nat → Bool) :
+    (∑ i ∈ s, if keep i then creditOf events i else 0) =
+      (events.map fun e => ∑ i ∈ s,
+        if keep i then actualBalanceAt e.after i - actualBalanceAt e.before i else 0).sum := by
+  induction events with
+  | nil => simp [creditOf]
+  | cons e rest ih =>
+    simp only [creditOf, List.map_cons, List.sum_cons] at ih ⊢
+    rw [← ih, ← Finset.sum_add_distrib]
+    apply Finset.sum_congr rfl
+    intro i _
+    split <;> simp
+
+/-- Over one step, the slashable base falls by its keys that leave and rises by its credits. -/
+private theorem step_base_split {g u v : ForkedBeaconState preset}
+    (shared : Run config checks g u) (genesis : Genesis (config := config) (checks := checks) g)
+    (step : Step config checks u v) (caps : CapOrder preset) (early : v.fork < .glamsterdam)
+    (delay : 0 < config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat)
+    {events : List (BalanceEvent preset)} (replayed : step.balanceEvents = .ok events) :
+    slashableBase v + (∑ i ∈ Finset.range u.state.validators.data.size,
+        if pooled u i && !pooled v i then weight u i else 0) ≤
+      slashableBase u + ∑ i ∈ Finset.range v.state.validators.data.size,
+        if pooled v i then creditOf events i else 0 := by
+  have holds := (run_justified_separated shared genesis).1
+  have grows := (RegistryLifecycle.chainStep step.chainStep).size_le
+  let kept (i : Nat) := if pooled u i && pooled v i then weight u i else 0
+  have pointwise : ∀ i ∈ Finset.range v.state.validators.data.size,
+      (if pooled v i then weight v i else 0) ≤
+        (if i < u.state.validators.data.size then kept i else 0) +
+          if pooled v i then creditOf events i else 0 := by
+    intro i _
+    cases member : pooled v i
+    · simp
+    · have bound := step_weight shared genesis step early delay replayed i
+      simp only [↓reduceIte]
+      split
+      · rename_i present
+        have found : u.state.validators.data[i]? = some u.state.validators.data[i] := by
+          simp [present]
+        have unslashed : u.state.validators.data[i].slashed = false := by
+          cases flag : u.state.validators.data[i].slashed with
+          | false => rfl
+          | true =>
+            obtain ⟨z, read, marked⟩ := step.slashedPersistence i _ found flag
+            simp [pooled, read, marked] at member
+        have before := pooled_of_step step caps early holds i _ found unslashed (.inl member)
+        simpa [kept, before, member, present] using bound
+      · rename_i absent
+        simpa [absent] using bound
+  have summed := Finset.sum_le_sum pointwise
+  rw [Finset.sum_add_distrib] at summed
+  have restrict : (∑ i ∈ Finset.range v.state.validators.data.size,
+      if i < u.state.validators.data.size then kept i else 0) =
+      ∑ i ∈ Finset.range u.state.validators.data.size, kept i := by
+    rw [← Finset.sum_subset (Finset.range_mono grows) (fun i _ outside => by
+      simp [Nat.not_lt.mp (fun h => outside (Finset.mem_range.mpr h))])]
+    exact Finset.sum_congr rfl fun i member => by simp [Finset.mem_range.mp member]
+  have whole : slashableBase u = (∑ i ∈ Finset.range u.state.validators.data.size, kept i) +
+      ∑ i ∈ Finset.range u.state.validators.data.size,
+        if pooled u i && !pooled v i then weight u i else 0 := by
+    rw [slashableBase_eq, ← Finset.sum_add_distrib]
+    apply Finset.sum_congr rfl
+    intro i _
+    cases hu : pooled u i <;> cases hv : pooled v i <;> simp [kept, hu, hv]
+  rw [slashableBase_eq v, whole]
+  rw [restrict] at summed
+  omega
+
+/-- From Electra, the slashing credits of one step times `WQ` fit the weight of the keys that
+leave the slashable base in it. -/
+private theorem step_slashing_le {g u v : ForkedBeaconState preset}
+    (shared : Run config checks g u) (genesis : Genesis (config := config) (checks := checks) g)
+    (step : Step config checks u v) (caps : CapOrder preset) (electra : .pectra ≤ u.fork)
+    (early : v.fork < .glamsterdam)
+    {events : List (BalanceEvent preset)} (replayed : step.balanceEvents = .ok events) :
+    preset.WHISTLEBLOWER_REWARD_QUOTIENT_ELECTRA.toNat * slashCredits events ≤
+      ∑ i ∈ Finset.range u.state.validators.data.size,
+        if pooled u i && !pooled v i then weight u i else 0 := by
+  have holds := (run_justified_separated shared genesis).1
+  have sites := step.balanceEvents_sites early holds caps.compounding replayed
+  have quotient : (EthLib.Consensus.parameters preset u.fork).WHISTLEBLOWER_REWARD_QUOTIENT =
+      preset.WHISTLEBLOWER_REWARD_QUOTIENT_ELECTRA := by
+    simp [EthLib.Consensus.parameters, electra]
+  let quotientN := preset.WHISTLEBLOWER_REWARD_QUOTIENT_ELECTRA.toNat
+  let newly (i : Nat) : Prop := i < u.state.validators.data.size ∧
+    (u.state.validators.data[i]?.map (·.slashed)).getD true = false ∧
+    (v.state.validators.data[i]?.map (·.slashed)).getD false = true
+  let charge (i : Nat) : Nat := if newly i then effectiveAt u i / quotientN else 0
+  let chosen (e : BalanceEvent preset) (i : Nat) : Bool :=
+    !(e.before.state.validators.data[i]?.map (·.slashed)).getD true &&
+      (e.after.state.validators.data[i]?.map (·.slashed)).getD false
+  have supported : ∀ e ∈ events, (if e.source = .slashings then e.creditLimit else 0) ≤
+      ∑ i ∈ Finset.range v.state.validators.data.size, if chosen e i then charge i else 0 := by
+    intro e member
+    obtain ⟨-, -, -, -, -, -, -, -, -, during, outOfAfter, intoBeforeSlashed, -,
+      afterSlashed, -, support, bridge, fork, -⟩ := sites e member
+    by_cases source : e.source = .slashings
+    · simp only [source, ↓reduceIte]
+      by_cases positive : 0 < e.creditLimit
+      · obtain sameEffective := bridge source positive
+        have sameFork := fork source positive
+        apply (support source).trans
+        apply le_trans (Finset.sum_le_sum fun i _ => ?_)
+          (Finset.sum_le_sum_of_subset (Finset.range_mono
+            ((during.trans outOfAfter).size_le)))
+        change (if chosen e i then _ else _) ≤ if chosen e i then _ else _
+        split
+        · rename_i picked
+          rw [sameEffective i, sameFork, quotient]
+          by_cases present : i < u.state.validators.data.size
+          · have flags : (e.before.state.validators.data[i]?.map (·.slashed)).getD true = false ∧
+                (e.after.state.validators.data[i]?.map (·.slashed)).getD false = true := by
+              simpa only [chosen, Bool.and_eq_true, Bool.not_eq_true'] using picked
+            have found : u.state.validators.data[i]? = some u.state.validators.data[i] := by
+              simp [present]
+            have before : u.state.validators.data[i].slashed = false := by
+              cases flag : u.state.validators.data[i].slashed with
+              | false => rfl
+              | true =>
+                obtain ⟨z, read, marked⟩ := intoBeforeSlashed i _ found flag
+                simp [read, marked] at flags
+            have after : (v.state.validators.data[i]?.map (·.slashed)).getD false = true := by
+              cases read : e.after.state.validators.data[i]? with
+              | none => simp [read] at flags
+              | some z =>
+                have marked : z.slashed = true := by simpa [read] using flags.2
+                obtain ⟨w, final, flag⟩ := afterSlashed i z read marked
+                simp [final, flag]
+            have isNewly : newly i := ⟨present, by simp [found, before], after⟩
+            simp [charge, isNewly, quotientN]
+          · have zero : effectiveAt u i = 0 := by
+              simp [effectiveAt, Array.getElem?_eq_none (Nat.le_of_not_lt present)]
+            simp [zero]
+        · exact Nat.le_refl _
+      · simp only [show e.creditLimit = 0 by omega]
+        exact Nat.zero_le _
+    · simp [source]
+  have once : ∀ i ∈ Finset.range v.state.validators.data.size,
+      (events.countP fun e => chosen e i) ≤ 1 := by
+    intro i _
+    cases events with
+    | nil => simp
+    | cons e rest =>
+      obtain ⟨-, -, -, -, -, -, -, -, -, -, -, -, -, -, single, -⟩ := sites e List.mem_cons_self
+      exact single i
+  have charged := once_only_charge_le events _ chosen _ charge supported once
+  change preset.WHISTLEBLOWER_REWARD_QUOTIENT_ELECTRA.toNat * slashCredits events ≤ _
+  unfold slashCredits
+  apply (Nat.mul_le_mul_left quotientN charged).trans
+  rw [Finset.mul_sum]
+  let freed (i : Nat) : Nat := if pooled u i && !pooled v i then weight u i else 0
+  have pointwise : ∀ i ∈ Finset.range v.state.validators.data.size,
+      quotientN * charge i ≤ freed i := by
+    intro i _
+    by_cases isNewly : newly i
+    · have chargeEq : charge i = effectiveAt u i / quotientN := by simp [charge, isNewly]
+      obtain ⟨present, unslashed, slashed⟩ := isNewly
+      have found : u.state.validators.data[i]? = some u.state.validators.data[i] := by
+        simp [present]
+      have flag : u.state.validators.data[i].slashed = false := by simpa [found] using unslashed
+      have before := pooled_of_step step caps early holds i _ found flag (.inr slashed)
+      have after : pooled v i = false := by
+        cases read : v.state.validators.data[i]? with
+        | none => simp [read] at slashed
+        | some z =>
+          have marked : z.slashed = true := by simpa [read] using slashed
+          simp [pooled, read, marked]
+      simp only [freed, chargeEq, before, after, Bool.not_false, Bool.and_self, ↓reduceIte]
+      exact (Nat.mul_div_le _ _).trans (Nat.le_max_left _ _)
+    · simp [charge, isNewly]
+  apply (Finset.sum_le_sum pointwise).trans
+  apply Finset.sum_le_sum_of_ne_zero
+  intro i _ nonzero
+  apply Finset.mem_range.mpr
+  by_contra outside
+  have absent : u.state.validators.data[i]? = none := Array.getElem?_eq_none (by omega)
+  simp [freed, pooled, absent] at nonzero
+
+/-- The reward, sync and slashing credit limit of an event. -/
+private def fundCredit (e : BalanceEvent preset) : Nat :=
+  if e.source = .rewards ∨ e.source = .sync ∨ e.source = .slashings then e.creditLimit else 0
+
+/-- The fund credits are the reward, sync and slashing credit limits. -/
+private theorem fundCredit_sum (events : List (BalanceEvent preset)) :
+    (events.map fundCredit).sum = sourceCredits .rewards events + sourceCredits .sync events +
+      slashCredits events := by
+  induction events with
+  | nil => simp [sourceCredits, slashCredits]
+  | cons e rest ih =>
+    simp only [sourceCredits, slashCredits, List.map_cons, List.sum_cons] at ih ⊢
+    have single : fundCredit e = (if e.source = .rewards then e.creditLimit else 0) +
+        (if e.source = .sync then e.creditLimit else 0) +
+          (if e.source = .slashings then e.creditLimit else 0) := by
+      obtain ⟨source, _, _, _, _⟩ := e
+      cases source <;> simp [fundCredit]
+    omega
+
+/-- The increases of an event at some positions, within its credit limit. -/
+private theorem kept_credits_le (e : BalanceEvent preset) (s : Finset Nat) (keep : Nat → Bool)
+    (bounded : e.credits ≤ e.creditLimit) :
+    (∑ i ∈ s, if keep i then actualBalanceAt e.after i - actualBalanceAt e.before i else 0) ≤
+      e.creditLimit :=
+  le_trans (Finset.sum_le_sum fun i _ => by split <;> omega)
+    ((credits_subset_le e s).trans bounded)
+
+/-- An event that is neither a deposit nor a pending consolidation credits its fund credit. -/
+private theorem kept_credits_le_fund (e : BalanceEvent preset) (s : Finset Nat)
+    (keep : Nat → Bool) (bounded : e.credits ≤ e.creditLimit)
+    (sources : 0 < e.creditLimit → e.source = .rewards ∨ e.source = .sync ∨
+      e.source = .slashings ∨ e.source = .deposits ∨ e.source = .consolidations)
+    (deposit : e.source ≠ .deposits ∨ e.creditLimit = 0)
+    (transfer : e.source ≠ .consolidations ∨ e.creditLimit = 0) :
+    (∑ i ∈ s, if keep i then actualBalanceAt e.after i - actualBalanceAt e.before i else 0) ≤
+      fundCredit e := by
+  have within := kept_credits_le e s keep bounded
+  by_cases positive : 0 < e.creditLimit
+  · have funded : fundCredit e = e.creditLimit := by
+      rcases sources positive with h | h | h | h | h
+      · simp [fundCredit, h]
+      · simp [fundCredit, h]
+      · simp [fundCredit, h]
+      · rcases deposit with d | d
+        · exact absurd h d
+        · omega
+      · rcases transfer with d | d
+        · exact absurd h d
+        · omega
+    omega
+  · omega
+
+/-- The events of one step are within their limits, and their credits have five sources. -/
+private theorem step_event_limits {g u v : ForkedBeaconState preset}
+    (shared : Run config checks g u) (genesis : Genesis (config := config) (checks := checks) g)
+    (step : Step config checks u v) (early : v.fork < .glamsterdam)
+    {events : List (BalanceEvent preset)} (replayed : step.balanceEvents = .ok events) :
+    ∀ e ∈ events, e.credits ≤ e.creditLimit ∧ u.fork ≤ e.before.fork ∧
+      (0 < e.creditLimit → e.source = .rewards ∨ e.source = .sync ∨
+        e.source = .slashings ∨ e.source = .deposits ∨ e.source = .consolidations) := by
+  obtain ⟨found, foundOk, bounded⟩ := Run.balanceEvents_bounded shared (Run.nil.snoc step)
+    genesis early (getCurrentEpoch v.state).toNat
+  rw [single_balanceEvents step replayed, Except.ok.injEq] at foundOk
+  subst foundOk
+  intro e member
+  have sources := step.balanceEvents_credit_sources early
+    (run_justified_separated shared genesis).1 replayed e member
+  exact ⟨(bounded e member).1, sources.1, sources.2⟩
+
+/-- From Electra, a block credits the slashable base at most its fund credits.
+
+A block records no pending consolidation, and its deposit events credit nothing. -/
+private theorem block_credits_le {g : ForkedBeaconState preset} {fork : Fork}
+    {s t : BeaconState preset fork} {engine : ExecutionEngine preset fork}
+    {signed : SignedBeaconBlock preset fork} {due : upgradeDue config ⟨fork, s⟩ = false}
+    {ok : applySignedBlock config checks engine s signed true = .ok t}
+    (shared : Run config checks g ⟨fork, s⟩)
+    (genesis : Genesis (config := config) (checks := checks) g)
+    (caps : CapOrder preset) (electra : .pectra ≤ fork) (early : fork < .glamsterdam)
+    {events : List (BalanceEvent preset)}
+    (replayed : (Step.block engine signed due ok).balanceEvents = .ok events)
+    (keys : Finset Nat) (keep : Nat → Bool) :
+    ∀ e ∈ events, (∑ i ∈ keys,
+      if keep i then actualBalanceAt e.after i - actualBalanceAt e.before i else 0) ≤
+        fundCredit e := by
+  let step : Step config checks ⟨fork, s⟩ ⟨fork, t⟩ := .block engine signed due ok
+  have limits := step_event_limits shared genesis step early replayed
+  have noDeposits := funding_block_events early engine signed.message
+    (Step.balanceEvents_block early replayed)
+  have sites := step.balanceEvents_sites early (run_justified_separated shared genesis).1
+    caps.compounding replayed
+  have slot : t.slot = s.slot := (frame_processBlock (applySignedBlock_ok ok).2.1).slot
+  intro e member
+  obtain ⟨bounded, forkLe, sources⟩ := limits e member
+  refine kept_credits_le_fund e keys keep bounded sources ?_ ?_
+  · by_cases source : e.source = .deposits
+    · exact .inr (noDeposits e member source (Nat.le_trans electra forkLe))
+    · exact .inl source
+  · left
+    intro source
+    obtain ⟨-, -, -, -, -, -, -, -, -, -, -, -, -, -, -, -, -, -, -, passEpoch, -⟩ :=
+      sites e member
+    have later := passEpoch source
+    obtain ⟨-, -, -, -, -, lower, -⟩ := replay_event_provenance shared (Run.nil.snoc step)
+      genesis early _ (Nat.le_succ _) events (single_balanceEvents step replayed) e member
+    have same : getCurrentEpoch t = getCurrentEpoch s := by simp [getCurrentEpoch, slot]
+    change (getCurrentEpoch e.before.state).toNat < (getCurrentEpoch t).toNat at later
+    change (getCurrentEpoch s).toNat ≤ (getCurrentEpoch e.before.state).toNat at lower
+    rw [same] at later
+    omega
+
+/-- From Electra, the slot cache and the epoch stages before the pending deposits keep the
+registry size and the epoch, and keep each withdrawable epoch after the epoch. -/
+private theorem prefix_withdrawable {fork : Fork}
+    {s cached justified scored rewarded registered slashed reset : BeaconState preset fork}
+    (electra : .pectra ≤ fork) (cachedOk : processSlot s = .ok cached)
+    (justifiedOk : EpochStage.Edge config checks .justification cached justified)
+    (scoredOk : EpochStage.Edge config checks .inactivity justified scored)
+    (rewardedOk : processRewardsAndPenalties config scored = .ok rewarded)
+    (registeredOk : processRegistryUpdates config rewarded = .ok registered)
+    (slashedOk : processSlashings registered = .ok slashed)
+    (resetOk : EpochStage.Edge config checks .eth1Reset slashed reset) :
+    reset.validators.data.size = s.validators.data.size ∧
+      getCurrentEpoch reset = getCurrentEpoch s ∧
+      ∀ (i : Nat) (v : Validator), s.validators.data[i]? = some v →
+        getCurrentEpoch s < v.withdrawableEpoch →
+          ∃ w, reset.validators.data[i]? = some w ∧
+            getCurrentEpoch reset < w.withdrawableEpoch := by
+  obtain ⟨_, _, _, _, rfl⟩ := processSlot_ok cachedOk
+  have one := justifiedOk.records ⟨nofun, nofun, nofun, nofun, nofun, nofun⟩
+  have two := scoredOk.records ⟨nofun, nofun, nofun, nofun, nofun, nofun⟩
+  have three := EpochStage.Edge.validators_eq (stage := .rewards) (config := config)
+    (checks := checks) rewardedOk ⟨nofun, nofun, nofun⟩
+  have threeSlot := (frame_processRewardsAndPenalties rewardedOk).slot
+  have fourSlot := (frame_processRegistryUpdates registeredOk).slot
+  have fourSize := (sameSizes_processRegistryUpdates registeredOk).1
+  have five := EpochStage.Edge.validators_eq (stage := .slashings) (config := config)
+    (checks := checks) slashedOk ⟨nofun, nofun, nofun⟩
+  have fiveSlot := (frame_processSlashings slashedOk).slot
+  have six := resetOk.records ⟨nofun, nofun, nofun, nofun, nofun, nofun⟩
+  have epoch : getCurrentEpoch reset = getCurrentEpoch s := by
+    simp only [getCurrentEpoch, six.2.2.2.2, fiveSlot, fourSlot, threeSlot, two.2.2.2.2,
+      one.2.2.2.2]
+  have rewardedEpoch : getCurrentEpoch rewarded = getCurrentEpoch s := by
+    simp only [getCurrentEpoch, threeSlot, two.2.2.2.2, one.2.2.2.2]
+  refine ⟨?_, epoch, fun i v found late => ?_⟩
+  · rw [six.1, five, fourSize, three, two.1, one.1]
+  · have atRewarded : rewarded.validators.data[i]? = some v := by
+      rw [three, two.1, one.1]; exact found
+    have atReset (w : Validator) (read : registered.validators.data[i]? = some w) :
+        reset.validators.data[i]? = some w := by
+      rw [six.1, five]; exact read
+    rw [epoch]
+    by_cases assigned : v.exitEpoch = FAR_FUTURE_EPOCH
+    · obtain ⟨w, read, same | after⟩ := processRegistryUpdates_withdrawableEpoch_of_unassigned
+        electra registeredOk i v atRewarded assigned
+      · exact ⟨w, atReset w read, same ▸ late⟩
+      · exact ⟨w, atReset w read, rewardedEpoch ▸ after⟩
+    · obtain ⟨w, read, same⟩ := processRegistryUpdates_withdrawableEpoch_of_assigned
+        electra registeredOk i v atRewarded assigned
+      exact ⟨w, atReset w read, same ▸ late⟩
+
+/-- A key of the slashable base after a step, present before it, was in the base before it. -/
+private theorem pooled_before {g u v : ForkedBeaconState preset}
+    (shared : Run config checks g u) (genesis : Genesis (config := config) (checks := checks) g)
+    (step : Step config checks u v) (caps : CapOrder preset) (early : v.fork < .glamsterdam)
+    (i : Nat) (present : i < u.state.validators.data.size) (member : pooled v i = true) :
+    pooled u i = true := by
+  have found : u.state.validators.data[i]? = some u.state.validators.data[i] := by
+    simp [present]
+  have unslashed : u.state.validators.data[i].slashed = false := by
+    cases flag : u.state.validators.data[i].slashed with
+    | false => rfl
+    | true =>
+      obtain ⟨z, read, marked⟩ := step.slashedPersistence i _ found flag
+      simp [pooled, read, marked] at member
+  exact pooled_of_step step caps early (run_justified_separated shared genesis).1 i _ found
+    unslashed (.inl member)
+
+/-- From Electra, the pending deposits of an epoch credit the keys of the slashable base at the
+end of the slot at most the deposit funding credit of their event. -/
+private theorem deposit_le_funding {g u v : ForkedBeaconState preset}
+    (shared : Run config checks g u) (genesis : Genesis (config := config) (checks := checks) g)
+    (step : Step config checks u v) (caps : CapOrder preset) (electra : .pectra ≤ u.fork)
+    (early : v.fork < .glamsterdam)
+    {events : List (BalanceEvent preset)} (replayed : step.balanceEvents = .ok events)
+    {cached justified scored rewarded registered slashed reset deposited :
+      BeaconState preset u.fork}
+    (cachedOk : processSlot u.state = .ok cached)
+    (justifiedOk : EpochStage.Edge config checks .justification cached justified)
+    (scoredOk : EpochStage.Edge config checks .inactivity justified scored)
+    (rewardedOk : processRewardsAndPenalties config scored = .ok rewarded)
+    (registeredOk : processRegistryUpdates config rewarded = .ok registered)
+    (slashedOk : processSlashings registered = .ok slashed)
+    (resetOk : EpochStage.Edge config checks .eth1Reset slashed reset)
+    (member : (⟨.deposits, ⟨u.fork, reset⟩, ⟨u.fork, deposited⟩,
+      consumedDeposits reset deposited electra, 0⟩ : BalanceEvent preset) ∈ events) :
+    (∑ i ∈ Finset.range v.state.validators.data.size, if pooled v i then
+        actualBalanceAt ⟨u.fork, deposited⟩ i - actualBalanceAt ⟨u.fork, reset⟩ i else 0) ≤
+      funding_deposit_credit (⟨.deposits, ⟨u.fork, reset⟩, ⟨u.fork, deposited⟩,
+        consumedDeposits reset deposited electra, 0⟩ : BalanceEvent preset) := by
+  obtain ⟨size, epoch, kept⟩ := prefix_withdrawable electra cachedOk justifiedOk scoredOk
+    rewardedOk registeredOk slashedOk resetOk
+  obtain ⟨-, -, -, -, matched, -, -⟩ := replay_event_provenance shared (Run.nil.snoc step)
+    genesis early _ (Nat.le_succ _) events (single_balanceEvents step replayed) _ member
+  simp only [funding_deposit_credit, electra, and_self, ↓reduceIte]
+  let credit (i : Nat) : Nat :=
+    if (reset.validators.data[i]?.map fun w =>
+        decide (w.withdrawableEpoch.toNat ≤ (getCurrentEpoch reset).toNat)).getD false then 0
+    else actualBalanceAt ⟨u.fork, deposited⟩ i - actualBalanceAt ⟨u.fork, reset⟩ i
+  have pointwise : ∀ i ∈ Finset.range v.state.validators.data.size,
+      (if pooled v i then
+        actualBalanceAt ⟨u.fork, deposited⟩ i - actualBalanceAt ⟨u.fork, reset⟩ i else 0) ≤
+        credit i := by
+    intro i _
+    cases member : pooled v i
+    · exact Nat.zero_le _
+    · have waiting : (reset.validators.data[i]?.map fun w =>
+          decide (w.withdrawableEpoch.toNat ≤ (getCurrentEpoch reset).toNat)).getD false =
+            false := by
+        by_cases present : i < u.state.validators.data.size
+        · have before := pooled_before shared genesis step caps early i present member
+          have found : u.state.validators.data[i]? = some u.state.validators.data[i] := by
+            simp [present]
+          simp only [pooled, found, Option.map_some, Option.getD_some, Bool.and_eq_true,
+            Bool.not_eq_true', decide_eq_true_eq] at before
+          obtain ⟨w, read, late⟩ := kept i _ found before.2
+          simp only [read, Option.map_some, Option.getD_some, decide_eq_false_iff_not,
+            Nat.not_le]
+          exact UInt64.lt_iff_toNat_lt.mp late
+        · have absent : reset.validators.data[i]? = none :=
+            Array.getElem?_eq_none (by omega)
+          simp [absent]
+      simp [credit, waiting]
+  apply (Finset.sum_le_sum pointwise).trans
+  apply Finset.sum_le_sum_of_ne_zero
+  intro i _ nonzero
+  apply Finset.mem_range.mpr
+  by_contra outside
+  have absent : deposited.balances.data[i]? = none :=
+    Array.getElem?_eq_none (by unfold BalancesMatch at matched; simp at matched; omega)
+  simp [credit, actualBalanceAt, absent] at nonzero
+
+/-- The front a pass consumes is the front of sources that are slashed or can withdraw next. -/
+private theorem consumed_eq_takeWhile {fork : Fork} {s t : BeaconState preset fork}
+    (electra : .pectra ≤ fork) (ok : processPendingConsolidations s electra = .ok t) :
+    consumedConsolidations s t electra =
+      (((s.pendingConsolidations electra).data.toList.takeWhile fun c =>
+          s.validators.data[c.sourceIndex.toNat]?.any fun source =>
+            source.slashed || source.withdrawableEpoch ≤ getCurrentEpoch s + 1).map
+        fun c => match s.validators.data[c.sourceIndex.toNat]? with
+          | none => 0
+          | some v => if v.slashed then 0 else v.effectiveBalance.toNat).sum := by
+  have queue := processPendingConsolidations_queue ok
+  unfold consumedConsolidations
+  congr 2
+  have whole := List.takeWhile_append_dropWhile (l := (s.pendingConsolidations electra).data.toList)
+    (p := fun c => s.validators.data[c.sourceIndex.toNat]?.any fun source =>
+      source.slashed || source.withdrawableEpoch ≤ getCurrentEpoch s + 1)
+  have sizes : (t.pendingConsolidations electra).data.size =
+      ((s.pendingConsolidations electra).data.toList.dropWhile fun c =>
+        s.validators.data[c.sourceIndex.toNat]?.any fun source =>
+          source.slashed || source.withdrawableEpoch ≤ getCurrentEpoch s + 1).length := by
+    rw [← queue, Array.length_toList]
+  rw [sizes, ← Array.length_toList]
+  generalize (s.pendingConsolidations electra).data.toList = l at whole ⊢
+  have length := congrArg List.length whole
+  rw [List.length_append] at length
+  rw [← length, Nat.add_sub_cancel]
+  conv => lhs; arg 2; rw [← whole]
+  exact List.take_left' rfl
+
+/-- From Electra, the pending consolidations of an epoch move at most the weight of their
+sources at the start of the slot, and those sources leave the slashable base in it.
+
+A source that is a target earlier in the same pass still moves at most its effective balance at
+the start of the pass. -/
+private theorem pass_le_freed {g u v : ForkedBeaconState preset}
+    (shared : Run config checks g u) (genesis : Genesis (config := config) (checks := checks) g)
+    (step : Step config checks u v) (caps : CapOrder preset) (electra : .pectra ≤ u.fork)
+    (early : v.fork < .glamsterdam) (delay : 0 < config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat)
+    {events : List (BalanceEvent preset)} (replayed : step.balanceEvents = .ok events)
+    {deposited middle updated : BeaconState preset u.fork}
+    (passOk : processPendingConsolidations deposited electra = .ok middle)
+    (member : (⟨.consolidations, ⟨u.fork, deposited⟩, ⟨u.fork, middle⟩,
+      consumedConsolidations deposited middle electra,
+      consumedConsolidations deposited middle electra⟩ : BalanceEvent preset) ∈ events)
+    (queue : deposited.pendingConsolidations electra = u.state.pendingConsolidations electra)
+    (effective : ∀ i, i < u.state.validators.data.size →
+      effectiveAt ⟨u.fork, deposited⟩ i = effectiveAt u i)
+    (epochEq : getCurrentEpoch deposited = getCurrentEpoch u.state)
+    (updatedOk : processEffectiveBalanceUpdates middle = .ok updated)
+    (final : v.state.validators.data = updated.validators.data)
+    (nextEpoch : (getCurrentEpoch v.state).toNat = (getCurrentEpoch u.state).toNat + 1) :
+    consumedConsolidations deposited middle electra ≤
+      ∑ i ∈ Finset.range u.state.validators.data.size,
+        if pooled u i && !pooled v i then weight u i else 0 := by
+  have uEarly := Nat.lt_of_le_of_lt step.chainStep.fork_le early
+  have invariant := Run.pendingConsolidation_invariant shared genesis uEarly electra delay
+  have ordered := ((Run.pendingConsolidationsOrdered shared genesis uEarly delay).2 electra).2
+  have sites := step.balanceEvents_sites early (run_justified_separated shared genesis).1
+    caps.compounding replayed
+  obtain ⟨-, -, -, -, -, -, -, -, lifeInto, -, -, slashedInto, -⟩ := sites _ member
+  have passedValidators := (processPendingConsolidations_kept passOk).1
+  have kept := WithdrawalKept.effectiveUpdates updatedOk
+  let freed (i : Nat) : Nat := if pooled u i && !pooled v i then weight u i else 0
+  let p := fun c : PendingConsolidation =>
+    deposited.validators.data[c.sourceIndex.toNat]?.any fun source =>
+      source.slashed || source.withdrawableEpoch ≤ getCurrentEpoch deposited + 1
+  let front := (deposited.pendingConsolidations electra).data.toList.takeWhile p
+  have sub : front.Sublist (u.state.pendingConsolidations electra).data.toList := by
+    rw [← queue]; exact List.takeWhile_sublist p
+  have noOverflow : (getCurrentEpoch deposited + 1).toNat =
+      (getCurrentEpoch deposited).toNat + 1 := by
+    have bound := (getCurrentEpoch v.state).toNat_lt
+    rw [epochEq]
+    exact toNat_add_of_lt (by simp; omega)
+  have pointwise : ∀ c ∈ front,
+      (match deposited.validators.data[c.sourceIndex.toNat]? with
+        | none => 0
+        | some v => if v.slashed then 0 else v.effectiveBalance.toNat) ≤
+        freed c.sourceIndex.toNat := by
+    intro c inFront
+    have inQueue := sub.subset inFront
+    have consumed : p c = true := List.all_eq_true.mp List.all_takeWhile c inFront
+    obtain ⟨initial, initialFound, -, -, assigned⟩ := invariant.2 c inQueue
+    have late := (ordered c inQueue initial initialFound).2.2
+    cases depositedFound : deposited.validators.data[c.sourceIndex.toNat]? with
+    | none => exact Nat.zero_le _
+    | some w =>
+      simp only
+      split
+      · exact Nat.zero_le _
+      · rename_i unslashed
+        have unslashedW : w.slashed = false := by simpa using unslashed
+        have present : c.sourceIndex.toNat < u.state.validators.data.size :=
+          (Array.getElem?_eq_some_iff.mp initialFound).1
+        have initialUnslashed : initial.slashed = false := by
+          cases flag : initial.slashed with
+          | false => rfl
+          | true =>
+            obtain ⟨z, read, marked⟩ := slashedInto _ initial initialFound flag
+            rw [depositedFound, Option.some.injEq] at read
+            subst read
+            simp [unslashedW] at marked
+        have before : pooled u c.sourceIndex.toNat = true := by
+          simp only [pooled, initialFound, Option.map_some, Option.getD_some, initialUnslashed,
+            Bool.not_false, Bool.true_and, decide_eq_true_eq]
+          exact UInt64.lt_iff_toNat_lt.mpr late
+        have due : w.withdrawableEpoch.toNat ≤ (getCurrentEpoch deposited).toNat + 1 := by
+          have := consumed
+          simp only [p, depositedFound, Option.any_some, unslashedW, Bool.false_or,
+            decide_eq_true_eq] at this
+          rw [← noOverflow]
+          exact UInt64.le_iff_toNat_le.mp this
+        obtain ⟨lifeW, lifeRead, lifeKept⟩ := lifeInto.validators _ initial initialFound
+        rw [depositedFound, Option.some.injEq] at lifeRead
+        subst lifeRead
+        have exitW : w.exitEpoch ≠ FAR_FUTURE_EPOCH := by
+          rw [lifeKept.exitEpoch assigned]; exact assigned
+        have middleFound : middle.validators.data[c.sourceIndex.toNat]? = some w := by
+          rw [passedValidators]; exact depositedFound
+        obtain ⟨z, updatedFound, _, exact⟩ := kept _ w middleFound exitW
+        have after : pooled v c.sourceIndex.toNat = false := by
+          simp only [pooled, final, updatedFound, Option.map_some, Option.getD_some]
+          cases flag : z.slashed with
+          | true => simp
+          | false =>
+            obtain ⟨_, same⟩ := exact flag
+            simp only [Bool.not_false, Bool.true_and, decide_eq_false_iff_not, same,
+              UInt64.lt_iff_toNat_lt]
+            rw [epochEq] at due
+            omega
+        simp only [freed, before, after, Bool.not_false, Bool.and_self, ↓reduceIte]
+        have value : w.effectiveBalance.toNat = effectiveAt u c.sourceIndex.toNat := by
+          rw [← effective _ present]
+          simp [effectiveAt, depositedFound]
+        rw [value]
+        exact Nat.le_max_left _ _
+  rw [consumed_eq_takeWhile electra passOk]
+  change (front.map _).sum ≤ ∑ i ∈ Finset.range u.state.validators.data.size, freed i
+  apply (List.sum_le_sum pointwise).trans
+  have nodup : (front.map fun c => c.sourceIndex.toNat).Nodup := by
+    have base := List.Nodup.map (f := UInt64.toNat) (fun _ _ eq => UInt64.toNat_inj.mp eq)
+      (invariant.1.sublist (sub.map (·.sourceIndex)))
+    simpa [List.map_map, Function.comp_def] using base
+  have reorder : front.map (fun c => freed c.sourceIndex.toNat) =
+      (front.map fun c => c.sourceIndex.toNat).map freed := by
+    simp [List.map_map, Function.comp_def]
+  rw [reorder, ← List.sum_toFinset _ nodup]
+  apply Finset.sum_le_sum_of_ne_zero
+  intro i _ nonzero
+  apply Finset.mem_range.mpr
+  by_contra outside
+  have absent : u.state.validators.data[i]? = none := Array.getElem?_eq_none (by omega)
+  simp [pooled, absent] at nonzero
+
+/-- From Electra, a slot pays no slashing credit.
+
+It credits the slashable base at its end at most its fund credits, the deposit funding credits,
+and the weight of the keys that leave the base in it. -/
+private theorem slot_credits_le {g u v : ForkedBeaconState preset}
+    (shared : Run config checks g u) (genesis : Genesis (config := config) (checks := checks) g)
+    (ok : advanceSlotAcross config checks u = .ok v) (caps : CapOrder preset)
+    (electra : .pectra ≤ u.fork) (early : v.fork < .glamsterdam)
+    (delay : 0 < config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat)
+    {events : List (BalanceEvent preset)} (replayed : (Step.slot ok).balanceEvents = .ok events) :
+    slashCredits events = 0 ∧ (events.map (poolCredit v)).sum ≤
+      (∑ i ∈ Finset.range u.state.validators.data.size,
+        if pooled u i && !pooled v i then weight u i else 0) +
+        (events.map fundCredit).sum + (events.map funding_deposit_credit).sum := by
+  let step : Step config checks u v := .slot ok
+  have limits := step_event_limits shared genesis step early replayed
+  have ordinary (e : BalanceEvent preset) (member : e ∈ events)
+      (notDeposit : e.source ≠ .deposits) (notTransfer : e.source ≠ .consolidations) :
+      poolCredit v e ≤ fundCredit e :=
+    kept_credits_le_fund e _ _ (limits e member).1 (limits e member).2.2 (.inl notDeposit)
+      (.inl notTransfer)
+  have noSlash (e : BalanceEvent preset) (notSlash : e.source ≠ .slashings) :
+      (if e.source = .slashings then e.creditLimit else 0) = 0 := by simp [notSlash]
+  obtain ⟨advanced, cached, crossings, advanceOk, upgrades, cachedOk, crossed, shape⟩ :=
+    Step.balanceEvents_slot ok early replayed
+  have crossing := upgradeBalanceReplay_crossing crossed
+  rcases shape with ⟨_, rfl⟩ | ⟨middle, updated, recorded, replay, updatedOk, advancedValidators,
+    -, rfl, next, sum, advancedSlot, last, beforeOk⟩
+  · refine ⟨List.sum_eq_zero fun n member => ?_, ?_⟩
+    · obtain ⟨e, inside, rfl⟩ := List.mem_map.mp member
+      exact noSlash e (by rw [crossing e inside]; decide)
+    · refine (List.sum_le_sum fun e member => ordinary e member
+        (by rw [crossing e member]; decide) (by rw [crossing e member]; decide)).trans ?_
+      omega
+  obtain ⟨justified, scored, rewarded, registered, slashed, reset, deposited, rewardEvents, limit,
+    -, justifiedOk, scoredOk, rewardedOk, registeredOk, slashedOk, resetOk, depositedOk,
+    consolidatedOk, rewardReplay, shapeEq⟩ := funding_epoch_site beforeOk replay
+  simp only [electra, ↓reduceDIte] at shapeEq
+  subst shapeEq
+  simp only [EpochStage.Edge, electra, ↓reduceDIte] at depositedOk consolidatedOk
+  have rewardSources : ∀ e ∈ rewardEvents,
+      e.source = .rewards ∨ e.source = .penalties ∨ e.source = .inactivity := by
+    have held := replayRewards_induction
+      (fun pre : BalanceReplay preset u.fork => ∀ e ∈ pre.2,
+        e.source = .rewards ∨ e.source = .penalties ∨ e.source = .inactivity)
+      (fun prior ok => by
+        simp only [recordBalance, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at ok
+        obtain ⟨_, _, _, _, rfl⟩ := ok
+        intro e member
+        rcases List.mem_append.mp member with old | new
+        · exact prior e old
+        · rw [List.mem_singleton.mp new]; exact .inl rfl)
+      (fun penalty prior ok => by
+        simp only [recordBalance, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at ok
+        obtain ⟨_, _, _, _, rfl⟩ := ok
+        intro e member
+        rcases List.mem_append.mp member with old | new
+        · exact prior e old
+        · rw [List.mem_singleton.mp new]
+          rcases penalty with h | h <;> simp [h])
+      (by simp) rewardReplay
+    exact held
+  have depMember : (⟨.deposits, ⟨u.fork, reset⟩, ⟨u.fork, deposited⟩,
+      consumedDeposits reset deposited electra, 0⟩ : BalanceEvent preset) ∈
+      rewardEvents ++ [⟨.slashings, ⟨u.fork, registered⟩, ⟨u.fork, slashed⟩, 0, limit⟩] ++
+        [⟨.deposits, ⟨u.fork, reset⟩, ⟨u.fork, deposited⟩,
+          consumedDeposits reset deposited electra, 0⟩,
+        ⟨.consolidations, ⟨u.fork, deposited⟩, ⟨u.fork, middle⟩,
+          consumedConsolidations deposited middle electra,
+          consumedConsolidations deposited middle electra⟩] ++ crossings := by simp
+  have consMember : (⟨.consolidations, ⟨u.fork, deposited⟩, ⟨u.fork, middle⟩,
+      consumedConsolidations deposited middle electra,
+      consumedConsolidations deposited middle electra⟩ : BalanceEvent preset) ∈
+      rewardEvents ++ [⟨.slashings, ⟨u.fork, registered⟩, ⟨u.fork, slashed⟩, 0, limit⟩] ++
+        [⟨.deposits, ⟨u.fork, reset⟩, ⟨u.fork, deposited⟩,
+          consumedDeposits reset deposited electra, 0⟩,
+        ⟨.consolidations, ⟨u.fork, deposited⟩, ⟨u.fork, middle⟩,
+          consumedConsolidations deposited middle electra,
+          consumedConsolidations deposited middle electra⟩] ++ crossings := by simp
+  have deposit := deposit_le_funding shared genesis step caps electra early replayed cachedOk
+    justifiedOk scoredOk rewardedOk registeredOk slashedOk resetOk depMember
+  -- The pass reads the queue, the effective balances and the epoch at the start of the slot.
+  obtain ⟨_, epochReset, _⟩ := prefix_withdrawable electra cachedOk justifiedOk scoredOk
+    rewardedOk registeredOk slashedOk resetOk
+  have cachedSame : cached.validators = u.state.validators ∧
+      cached.pendingConsolidations = u.state.pendingConsolidations := by
+    obtain ⟨_, _, _, _, rfl⟩ := processSlot_ok cachedOk
+    exact ⟨rfl, rfl⟩
+  have queue : deposited.pendingConsolidations electra = u.state.pendingConsolidations electra := by
+    have one := justifiedOk.records ⟨nofun, nofun, nofun, nofun, nofun, nofun⟩
+    have two := scoredOk.records ⟨nofun, nofun, nofun, nofun, nofun, nofun⟩
+    have three : rewarded.pendingConsolidations = scored.pendingConsolidations :=
+      EpochStage.Edge.samePendingQueue (stage := .rewards) (config := config) (checks := checks)
+        rewardedOk nofun
+    have four := (processRegistryUpdates_kept registeredOk).2
+    have five : slashed.pendingConsolidations = registered.pendingConsolidations :=
+      EpochStage.Edge.samePendingQueue (stage := .slashings) (config := config)
+        (checks := checks) slashedOk nofun
+    have six := resetOk.records ⟨nofun, nofun, nofun, nofun, nofun, nofun⟩
+    have seven : deposited.pendingConsolidations = reset.pendingConsolidations :=
+      EpochStage.Edge.samePendingQueue (stage := .pendingDeposits) (config := config)
+        (checks := checks) (by simpa only [EpochStage.Edge, electra, ↓reduceDIte] using depositedOk)
+        nofun
+    rw [seven, six.2.2.1, five, four, three, two.2.2.1, one.2.2.1, cachedSame.2]
+  have effective : ∀ i, i < u.state.validators.data.size →
+      effectiveAt ⟨u.fork, deposited⟩ i = effectiveAt u i := by
+    intro i present
+    have kept := effectiveKept_epochBeforePayments beforeOk i
+      (by rw [cachedSame.1]; exact present)
+    have passed := (processPendingConsolidations_kept consolidatedOk).1
+    have sameDeposited : effectiveAt ⟨u.fork, deposited⟩ i = effectiveAt ⟨u.fork, middle⟩ i := by
+      simp [effectiveAt, passed]
+    have sameCached : effectiveAt ⟨u.fork, cached⟩ i = effectiveAt u i := by
+      simp [effectiveAt, cachedSame.1]
+    rw [sameDeposited, kept, sameCached]
+  have epochDeposited : getCurrentEpoch deposited = getCurrentEpoch u.state := by
+    rw [← epochReset]
+    simp [getCurrentEpoch, (frame_processPendingDeposits depositedOk).slot]
+  have final : v.state.validators.data = updated.validators.data := by
+    rw [processUpgrades_validators_of_electra (s := ⟨u.fork, advanced⟩) electra early upgrades,
+      advancedValidators]
+  have nextEpoch : (getCurrentEpoch v.state).toNat = (getCurrentEpoch u.state).toNat + 1 := by
+    rw [getCurrentEpoch_toNat, getCurrentEpoch_toNat,
+      show v.state.slot = next from (processUpgrades_slot upgrades).trans advancedSlot]
+    exact nextSlot_epoch_of_boundary sum last
+  have transfer := pass_le_freed shared genesis step caps electra early delay replayed
+    consolidatedOk consMember queue effective epochDeposited updatedOk final nextEpoch
+  have consKeep := (kept_credits_le _ (Finset.range v.state.validators.data.size) (pooled v)
+    (limits _ consMember).1).trans transfer
+  constructor
+  · simp only [slashCredits, List.map_append, List.sum_append, List.map_cons, List.map_nil,
+      List.sum_cons, List.sum_nil]
+    have rewardsZero : (rewardEvents.map fun e =>
+        if e.source = .slashings then e.creditLimit else 0).sum = 0 :=
+      List.sum_eq_zero fun n member => by
+        obtain ⟨e, inside, rfl⟩ := List.mem_map.mp member
+        exact noSlash e (by rcases rewardSources e inside with h | h | h <;> rw [h] <;> decide)
+    have crossingsZero : (crossings.map fun e =>
+        if e.source = .slashings then e.creditLimit else 0).sum = 0 :=
+      List.sum_eq_zero fun n member => by
+        obtain ⟨e, inside, rfl⟩ := List.mem_map.mp member
+        exact noSlash e (by rw [crossing e inside]; decide)
+    simp only [rewardsZero, crossingsZero]
+    simp
+  · have rewardsBound := List.sum_le_sum fun e (member : e ∈ rewardEvents) =>
+      ordinary e (by simp [member])
+        (by rcases rewardSources e member with h | h | h <;> rw [h] <;> decide)
+        (by rcases rewardSources e member with h | h | h <;> rw [h] <;> decide)
+    have crossingsBound := List.sum_le_sum fun e (member : e ∈ crossings) =>
+      ordinary e (by simp [member]) (by rw [crossing e member]; decide)
+        (by rw [crossing e member]; decide)
+    have slashBound := ordinary ⟨.slashings, ⟨u.fork, registered⟩, ⟨u.fork, slashed⟩, 0, limit⟩
+      (by simp) nofun nofun
+    simp only [List.map_append, List.sum_append, List.map_cons, List.map_nil, List.sum_cons,
+      List.sum_nil] at rewardsBound crossingsBound ⊢
+    simp only [poolCredit] at rewardsBound crossingsBound slashBound consKeep ⊢
+    omega
+
+/-- From Electra, one step raises the slashable base by at most its fund and deposit funding
+credits, less `WQ` times its slashing credits. -/
+private theorem step_base_bound {g u v : ForkedBeaconState preset}
+    (shared : Run config checks g u) (genesis : Genesis (config := config) (checks := checks) g)
+    (step : Step config checks u v) (caps : CapOrder preset) (electra : .pectra ≤ u.fork)
+    (early : v.fork < .glamsterdam) (delay : 0 < config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat)
+    {events : List (BalanceEvent preset)} (replayed : step.balanceEvents = .ok events) :
+    preset.WHISTLEBLOWER_REWARD_QUOTIENT_ELECTRA.toNat * slashCredits events + slashableBase v ≤
+      slashableBase u + (events.map fundCredit).sum + (events.map funding_deposit_credit).sum := by
+  have split := step_base_split shared genesis step caps early delay replayed
+  rw [creditOf_exchange] at split
+  change _ ≤ _ + (events.map (poolCredit v)).sum at split
+  cases step with
+  | @block fork s t engine signed due ok =>
+    have slashing := step_slashing_le shared genesis (.block engine signed due ok) caps electra
+      early replayed
+    have credits := List.sum_le_sum fun e member =>
+      block_credits_le shared genesis caps electra early replayed
+        (Finset.range t.validators.data.size) (pooled ⟨fork, t⟩) e member
+    change (events.map (poolCredit ⟨fork, t⟩)).sum ≤ _ at credits
+    omega
+  | slot ok =>
+    obtain ⟨zero, credits⟩ := slot_credits_le shared genesis ok caps electra early delay replayed
+    rw [zero, Nat.mul_zero]
+    omega
+
+/-- From Electra, a branch raises the slashable base by at most its fund and deposit funding
+credits, less `WQ` times its slashing credits. -/
+private theorem run_base_bound {g x y : ForkedBeaconState preset}
+    (shared : Run config checks g x) (genesis : Genesis (config := config) (checks := checks) g)
+    (tail : Run config checks x y) (caps : CapOrder preset) (electra : .pectra ≤ x.fork)
+    (early : y.fork < .glamsterdam) (delay : 0 < config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat)
+    (high : Nat) (endEpoch : (getCurrentEpoch y.state).toNat ≤ high + 1)
+    {events : List (BalanceEvent preset)} (replayed : tail.balanceEvents high = .ok events) :
+    preset.WHISTLEBLOWER_REWARD_QUOTIENT_ELECTRA.toNat * slashCredits events + slashableBase y ≤
+      slashableBase x + (events.map fundCredit).sum + (events.map funding_deposit_credit).sum := by
+  induction tail generalizing events with
+  | nil =>
+    cases replayed
+    simp [slashCredits]
+  | @snoc middle last pre step ih =>
+    have selected := (UInt64.le_iff_toNat_le.mp step.chainStep.currentEpoch_le).trans endEpoch
+    simp only [Run.balanceEvents, bind_ok_iff] at replayed
+    obtain ⟨prior, priorOk, rest⟩ := replayed
+    simp only [selected, ↓reduceIte, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at rest
+    obtain ⟨added, addedOk, rfl⟩ := rest
+    have previous := ih (Nat.lt_of_le_of_lt step.chainStep.fork_le early) selected priorOk
+    have current := step_base_bound (shared.append pre) genesis step caps
+      (Nat.le_trans electra (fork_le_of_chainSteps pre.chainSteps)) early delay addedOk
+    simp only [slashCredits, List.map_append, List.sum_append] at previous current ⊢
+    rw [Nat.mul_add]
+    omega
+
+/-- From Electra, the slashing credits of a branch times `WQ - 1` are at most the slashable
+base at `x` plus the branch's reward, sync and deposit funding credits. -/
+private theorem slashingCredits_le_base {g x y : ForkedBeaconState preset}
+    (shared : Run config checks g x) (genesis : Genesis (config := config) (checks := checks) g)
+    (tail : Run config checks x y) (caps : CapOrder preset) (electra : .pectra ≤ x.fork)
+    (early : y.fork < .glamsterdam) (delay : 0 < config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat)
+    (high : Nat) (endEpoch : (getCurrentEpoch y.state).toNat ≤ high + 1)
+    {events : List (BalanceEvent preset)} (replayed : tail.balanceEvents high = .ok events) :
+    (preset.WHISTLEBLOWER_REWARD_QUOTIENT_ELECTRA.toNat - 1) *
+        (events.map fun e => if e.source = .slashings then e.creditLimit else 0).sum ≤
+      slashableBase x + sourceCredits .rewards events + sourceCredits .sync events +
+        (events.map funding_deposit_credit).sum := by
+  have bound := run_base_bound shared genesis tail caps electra early delay high endEpoch replayed
+  rw [fundCredit_sum] at bound
+  change _ * slashCredits events ≤ _
+  generalize slashCredits events = paid at bound ⊢
+  cases quotient : preset.WHISTLEBLOWER_REWARD_QUOTIENT_ELECTRA.toNat with
+  | zero => simp
+  | succ k =>
+    rw [quotient, Nat.succ_mul] at bound
+    simp only [Nat.add_sub_cancel]
+    omega
+
+/-- From Electra, the whistleblower allowance read at `x` pays every other funding credit.
+
+The reward and sync credits must fit the issuance envelope, and the deposit funding credits
+the deposit carry and the exit flow of the window. -/
+theorem otherCredit_le_allowanceAt_electra {g x y : ForkedBeaconState preset}
+    (shared : Run config checks g x) (genesis : Genesis (config := config) (checks := checks) g)
+    (tail : Run config checks x y) (caps : CapOrder preset)
+    (aligned : MaxEffectiveBalancesAligned preset) (electra : .pectra ≤ x.fork)
+    (early : y.fork < .glamsterdam) (twoSlots : 2 ≤ preset.SLOTS_PER_EPOCH.toNat)
+    (high : Nat) (endEpoch : (getCurrentEpoch y.state).toNat ≤ high + 1)
+    (guard : aprioriGuardAt config x high)
+    {events : List (BalanceEvent preset)} (replayed : tail.balanceEvents high = .ok events)
+    (issued : sourceCredits .rewards events + sourceCredits .sync events ≤
+      windowIssuance (config := config) x high)
+    (deposited : (events.map funding_deposit_credit).sum + fundingCarry y ≤ fundingCarry x +
+      ((List.range (driftHorizon x high + 1)).map (exitFlowAt (config := config) x high)).sum) :
+    (events.map otherCredit).sum ≤ whistleblowerAllowanceAt (config := config) x high := by
+  have omega := otherCredit_le_allowance_electra shared genesis tail caps aligned electra early
+    twoSlots high endEpoch guard replayed
+  have notElectra : ¬ x.fork < .pectra := Nat.not_lt_of_ge electra
+  have zero : preElectraEpochs config x high = 0 := by simp [preElectraEpochs, notElectra]
+  simp only [whistleblowerAllowanceAt, zero, Nat.lt_irrefl, ↓reduceIte]
+  rw [zero] at omega
+  split
+  · rename_i quotient
+    refine le_min omega ?_
+    obtain ⟨-, -, -, -, -, -, -, -, -, delay, -, -, -, -⟩ := guard
+    have base := slashingCredits_le_base shared genesis tail caps electra early (by omega) high
+      endEpoch replayed
+    rw [otherCredit_sum_electra shared tail genesis electra early (by omega) replayed]
+    apply (Nat.le_div_iff_mul_le (by omega)).mpr
+    rw [Nat.mul_comm]
+    omega
+  · exact omega
 
 /-- The count path grows by at most the final count churn at each epoch. -/
 private theorem countPath_growth_le (config : Config) (start horizon : Nat) :

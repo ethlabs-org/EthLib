@@ -1540,8 +1540,10 @@ private theorem selectedReleaseProducer_of_run {g x y : ForkedBeaconState preset
     ⟨initialEq, creditBound, releasesEq,
       deposits shared tail high supported twoSlots electra events replayed,
       issuance_electra shared tail high supported twoSlots electra replayed,
-      otherCredit_le_allowance_electra shared genesis tail caps aligned electra early twoSlots
-        high endEpoch guard replayed,
+      otherCredit_le_allowanceAt_electra shared genesis tail caps aligned electra early twoSlots
+        high endEpoch guard replayed
+        (issuance_electra shared tail high supported twoSlots electra replayed)
+        (deposits shared tail high supported twoSlots electra events replayed),
       capacity shared tail high supported twoSlots events replayed electra selected payments tags
         actual chosen queue consumed runCalls ⟨allPayments, coverReplay, tagsEq, paymentsEq⟩
         freshTags,
