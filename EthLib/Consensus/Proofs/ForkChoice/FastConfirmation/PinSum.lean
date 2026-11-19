@@ -3420,8 +3420,9 @@ private theorem segment_guards (h : Setting config checks g split fin pulled anc
   simp only at order
   have endEpoch : (getCurrentEpoch pS).toNat ≤ (getCurrentEpoch pulled).toNat + 1 := by omega
   obtain ⟨positive, guards⟩ := floor_guards h (zs := wS) (y := pS) pre endEpoch
-  exact ⟨endEpoch, _, positive, slashing_quotient_of_electra (high := (getCurrentEpoch pulled).toNat)
-    (Run.nil : Run config checks ⟨fork, wS⟩ ⟨fork, wS⟩) (Nat.le_trans (by decide) h.fulu),
+  exact ⟨endEpoch, _, positive,
+    slashing_quotient_of_electra (high := (getCurrentEpoch pulled).toNat)
+      (Run.nil : Run config checks ⟨fork, wS⟩ ⟨fork, wS⟩) (Nat.le_trans (by decide) h.fulu),
     fun before step after cut w found =>
       ⟨retained before step after cut w found, guards before step after⟩⟩
 
