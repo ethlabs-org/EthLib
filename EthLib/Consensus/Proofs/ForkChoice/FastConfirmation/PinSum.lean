@@ -3193,7 +3193,7 @@ private theorem block_flip_balance {engine : ExecutionEngine preset fork}
   unfold blockBalanceReplay at replayed
   try dsimp only at replayed
   obtain ⟨p1, h1, replayed⟩ := bind_ok_iff.mp replayed
-  rw [dite_cond_eq_true (eq_true bellatrix)] at replayed
+  rw [dite_eq_left_of_eq_true (eq_true bellatrix)] at replayed
   obtain ⟨p2, h2, replayed⟩ := bind_ok_iff.mp replayed
   obtain ⟨p3, h3, replayed⟩ := bind_ok_iff.mp replayed
   obtain ⟨p4, h4, replayed⟩ := bind_ok_iff.mp replayed
@@ -3206,11 +3206,11 @@ private theorem block_flip_balance {engine : ExecutionEngine preset fork}
   obtain ⟨p8, h8, replayed⟩ := bind_ok_iff.mp replayed
   obtain ⟨p9, h9, replayed⟩ := bind_ok_iff.mp replayed
   obtain ⟨p10, h10, replayed⟩ := bind_ok_iff.mp replayed
-  rw [dite_cond_eq_true (eq_true electra)] at replayed
+  rw [dite_eq_left_of_eq_true (eq_true electra)] at replayed
   obtain ⟨p11, h11, replayed⟩ := bind_ok_iff.mp replayed
   obtain ⟨p12, h12, replayed⟩ := bind_ok_iff.mp replayed
   obtain ⟨⟨rN, E1⟩, hfold, replayed⟩ := bind_ok_iff.mp replayed
-  rw [dite_cond_eq_true (eq_true altair)] at replayed
+  rw [dite_eq_left_of_eq_true (eq_true altair)] at replayed
   -- The states before the consolidation requests.
   obtain ⟨u1, hu1, rfl⟩ := carry_inv h1
   obtain ⟨_, _, u2, hu2, rfl⟩ := record_inv h2
@@ -3244,7 +3244,7 @@ private theorem block_flip_balance {engine : ExecutionEngine preset fork}
   obtain ⟨_, _, u, hu, heq⟩ := record_inv replayed
   simp only [Prod.mk.injEq] at heq
   obtain ⟨rfl, rfl⟩ := heq
-  have kept := (processSyncAggregate_kept hu).1
+  have kept := (BlockLedger.processSyncAggregate_kept hu).1
   rw [kept] at foundT
   have bound := switchedBound v0 found0 (same0.trans plain) w foundT switched
   simp only [List.map_append, List.sum_append, List.map_cons, List.map_nil, List.sum_cons,
