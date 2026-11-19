@@ -17328,7 +17328,7 @@ private theorem K5_charged_held (h : Setting config checks g split fin pulled an
 
 Its balance at the epoch's start is before the split.
 
-So the credits since come through the shared suffix of the split's epoch.
+So the credits since come through the shared suffix `pre` of the split's epoch.
 
 The statement waits for the shared-suffix header, whose terms pay those credits. -/
 private theorem K5_charged_split_epoch
@@ -17337,18 +17337,27 @@ private theorem K5_charged_split_epoch
     (endEpoch : (getCurrentEpoch pulled).toNat ≤ high + 1)
     {events : List (BalanceEvent preset)} (replayed : tail.balanceEvents high = .ok events)
     (fromFin : Run config checks ⟨fork, fin⟩ ⟨fork, split⟩)
+    (toFin : Run config checks g ⟨fork, fin⟩)
+    {b : BeaconState preset fork} (toB : Run config checks g ⟨fork, b⟩)
+    (pre : Run config checks ⟨fork, b⟩ ⟨fork, split⟩)
+    (cut : toB.append pre = toFin.append fromFin)
+    (sameEpoch : getCurrentEpoch split = getCurrentEpoch b)
+    (earlier : ∀ {u w : ForkedBeaconState preset} (step : Step config checks u w),
+      toB.Contains step → (getCurrentEpoch u.state).toNat < (getCurrentEpoch b).toNat)
     {eventsF : List (BalanceEvent preset)} (replayedF : fromFin.balanceEvents high = .ok eventsF)
     (tailC : Run config checks ⟨fork, split⟩ ⟨fork, counted⟩) (highC : ℕ)
     (endEpochC : (getCurrentEpoch counted).toNat ≤ highC + 1)
     {eventsC : List (BalanceEvent preset)} (replayedC : tailC.balanceEvents highC = .ok eventsC)
+    {eventsP : List (BalanceEvent preset)} (replayedP : pre.balanceEvents highC = .ok eventsP)
     {v : ValidatorIndex} (member : v ∈ K5 counted V)
-    {a b : ForkedBeaconState preset} (pre : Run config checks ⟨fork, split⟩ a)
-    (step : Step config checks a b) (post : Run config checks b ⟨fork, counted⟩)
-    (site : (pre.snoc step).append post = tailC)
+    {a c : ForkedBeaconState preset} (front : Run config checks ⟨fork, split⟩ a)
+    (step : Step config checks a c) (post : Run config checks c ⟨fork, counted⟩)
+    (site : (front.snoc step).append post = tailC)
     (charged : step.departureCharges.any (·.index == v.toNat) = true)
     (inSplitEpoch : ¬ (getCurrentEpoch split).toNat < (getCurrentEpoch a.state).toNat) :
     eC counted v ≤ exitQ tailC v.toNat + riseQ tailC highC v.toNat +
-      ((propC tailC highC v.toNat +
+      ((propN pre highC v.toNat + whistC pre highC v.toNat + syncCr eventsP v.toNat +
+          propC tailC highC v.toNat +
           keyExtra (pinTerms config pulled anc fin) (fromFin.append tail) tailC highC
             eventsC events eventsF v.toNat (propC tailC highC v.toNat)) +
         whistC tailC highC v.toNat +
@@ -17485,7 +17494,8 @@ theorem stub_P (h : Setting config checks g split fin pulled anc counted V)
         slashR (pinTerms config pulled anc fin) v.toNat + bandC tailC highC v.toNat +
         bandR (eventsF ++ events) v.toNat + bandX fin highC v.toNat)) : ℕ) := by
   obtain ⟨shared⟩ := h.toFin
-  set T : ValidatorIndex → ℕ := fun v => (propC tailC highC v.toNat +
+  set T : ValidatorIndex → ℕ := fun v => (propN pre highC v.toNat + whistC pre highC v.toNat +
+          syncCr eventsP v.toNat + propC tailC highC v.toNat +
           keyExtra (pinTerms config pulled anc fin) (fromFin.append tail) tailC highC
             eventsC events eventsF v.toNat (propC tailC highC v.toNat)) +
         whistC tailC highC v.toNat +
@@ -17496,22 +17506,23 @@ theorem stub_P (h : Setting config checks g split fin pulled anc counted V)
   have charged : ∀ v ∈ K5 counted V, (∃ c ∈ tailC.departureCharges, c.index = v.toNat) →
       eC counted v ≤ exitQ tailC v.toNat + riseQ tailC highC v.toNat + T v := by
     intro v member ch
-    obtain ⟨a, b, pre, step, post, site, hcharge, unset, hin, hexit⟩ :=
+    obtain ⟨a, c, front, step, post, site, hcharge, unset, hin, hexit⟩ :=
       K5_charge_site h tailC member ch
     subst site
     by_cases started : (getCurrentEpoch split).toNat < (getCurrentEpoch a.state).toNat
     swap
-    · exact K5_charged_split_epoch h tail high endEpoch replayed fromFin replayedF _ highC
-        endEpochC replayedC member pre step post rfl hcharge started
+    · exact K5_charged_split_epoch h tail high endEpoch replayed fromFin toFin toB pre cut
+        sameEpoch earlier replayedF _ highC endEpochC replayedC replayedP member front step post
+        rfl hcharge started
     have bound := charge_effective_bound h (y := ⟨fork, counted⟩) rfl _ highC endEpochC replayedC
-      pre step post rfl hcharge started (K5_charged_held h member pre step post hcharge)
-    have rise : riseQ ((pre.snoc step).append post) highC v.toNat =
-        preset.upwardBand + (riseScan v.toNat highC ((pre.snoc step).append post)).2 := by
+      front step post rfl hcharge started (K5_charged_held h member front step post hcharge)
+    have rise : riseQ ((front.snoc step).append post) highC v.toNat =
+        preset.upwardBand + (riseScan v.toNat highC ((front.snoc step).append post)).2 := by
       simp only [riseQ, (riseScan_fst _ _ _).mpr ch, ↓reduceIte]
     have sync := syncF_eq eventsC v.toNat
     unfold syncCr at bound
-    have slack : propC ((pre.snoc step).append post) highC v.toNat +
-        whistC ((pre.snoc step).append post) highC v.toNat + syncF eventsC v.toNat ≤ T v := by
+    have slack : propC ((front.snoc step).append post) highC v.toNat +
+        whistC ((front.snoc step).append post) highC v.toNat + syncF eventsC v.toNat ≤ T v := by
       simp only [hT]
       omega
     have eCeq : eC counted v = effectiveAt (⟨fork, counted⟩ : ForkedBeaconState preset) v.toNat :=
@@ -17547,8 +17558,10 @@ theorem stub_P (h : Setting config checks g split fin pulled anc counted V)
     rw [← Finset.sum_add_distrib]
     refine Finset.sum_le_sum fun v hv => ?_
     obtain ⟨member, none⟩ := Finset.mem_filter.mp hv
-    exact K5_uncharged_key h tail high endEpoch replayed fromFin replayedF tailC highC endEpochC
-      replayedC member none
+    have key := K5_uncharged_key h tail high endEpoch replayed fromFin replayedF tailC highC
+      endEpochC replayedC member none
+    simp only [hT]
+    omega
   omega
 
 /-- The keys of `K6` beyond R's registry are paid by the credits.
