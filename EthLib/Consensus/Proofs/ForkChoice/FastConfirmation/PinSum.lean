@@ -1453,7 +1453,7 @@ private theorem credited_keys_le (h : Setting config checks g split fin pulled a
         ((getCurrentEpoch x).toNat / max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat -
           (getCurrentEpoch split).toNat /
             max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat) := by omega
-  obtain ⟨B, S, cardB, cardS, hBS⟩ := credited_pieces h.genesis (y := ⟨fork, x⟩) h.early high
+  obtain ⟨B, S, cardB, cardS, hBS, -⟩ := credited_pieces h.genesis (y := ⟨fork, x⟩) h.early high
     ((getCurrentEpoch x).toNat / max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat -
       (getCurrentEpoch split).toNat / max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat)
     shared tail h.fulu periods

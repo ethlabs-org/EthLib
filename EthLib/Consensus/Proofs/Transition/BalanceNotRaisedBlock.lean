@@ -1314,10 +1314,16 @@ theorem syncRewards_bounds {reward proposerReward index : Nat} {chosen : Validat
     · intro apart
       refine Nat.le_trans ?_ ((syncRewards_bounds members _).2
         fun other inside => apart other (List.mem_cons_of_mem _ inside))
+<<<<<<< HEAD
       have head := apart member List.mem_cons_self
       split
       · simp [head]
       · simp [head]
+=======
+      split
+      · simp
+      · simp
+>>>>>>> e6f78d7d7bfc703869e81844505f746b0da8a655
 
 /-- The sync rewards do not raise a balance when no signer and no paid proposer sit at it. -/
 private theorem syncRewards_le {reward proposerReward index : Nat} {chosen : ValidatorIndex} :
