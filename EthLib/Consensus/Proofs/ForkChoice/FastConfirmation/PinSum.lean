@@ -897,10 +897,10 @@ private theorem sum_filter_or (L : List (BalanceEvent preset)) (p q : BalanceSou
         cases h : q a.source
         · rfl
         · exact absurd ⟨hp, h⟩ (apart a.source)
-      simp [List.filter_cons, hp, hq, ih] <;> omega
+      simp [hp, hq, ih]; omega
     · by_cases hq : q a.source = true
-      · simp [List.filter_cons, hp, hq, ih] <;> omega
-      · simp [List.filter_cons, hp, hq, ih]
+      · simp [hp, hq, ih]; omega
+      · simp [hp, hq, ih]
 
 /-- The credits of a run that a scan reads add over two apart sets of sources.
 
@@ -930,7 +930,8 @@ private theorem credN_split {x y : ForkedBeaconState preset} (tail : Run config 
     credN tail high v = propN tail high v +
       (creditScan (fun _ => false) (fun s => decide (s = .deposits)) v high tail).1 :=
   creditScan_or _ _ (fun s => decide (s = .rewards)) (fun _ => false) (fun _ => false)
-    (fun s => decide (s = .deposits)) (fun s => by simp) (fun s => by simp)
+    (fun s => decide (s = .deposits)) (fun s => by cases s <;> decide)
+    (fun s => by cases s <;> decide)
     (fun s h => by simp at h) (fun s h => by simp at h) v high tail
 
 /-- The credits of a key with the consolidations are its `credN` and its consolidation credits. -/
@@ -941,7 +942,7 @@ private theorem credC_split {x y : ForkedBeaconState preset} (tail : Run config 
         (fun s => decide (s = .consolidations)) v high tail).1 :=
   creditScan_or _ _ (fun s => decide (s = .rewards)) (fun s => decide (s = .consolidations))
     (fun s => decide (s = .deposits)) (fun s => decide (s = .consolidations))
-    (fun s => by simp [decide_or]) (fun s => by simp [decide_or])
+    (fun s => by cases s <;> decide) (fun s => by cases s <;> decide)
     (fun s h => by simp at h; exact absurd (h.1.symm.trans h.2) (by decide))
     (fun s h => by simp at h; exact absurd (h.1.symm.trans h.2) (by decide)) v high tail
 
@@ -953,7 +954,7 @@ private theorem propC_split {x y : ForkedBeaconState preset} (tail : Run config 
         (fun s => decide (s = .consolidations)) v high tail).1 :=
   creditScan_or _ _ (fun s => decide (s = .rewards)) (fun s => decide (s = .consolidations))
     (fun _ => false) (fun s => decide (s = .consolidations))
-    (fun s => by simp [decide_or]) (fun s => by simp)
+    (fun s => by cases s <;> decide) (fun s => by cases s <;> decide)
     (fun s h => by simp at h; exact absurd (h.1.symm.trans h.2) (by decide))
     (fun s h => by simp at h) v high tail
 
