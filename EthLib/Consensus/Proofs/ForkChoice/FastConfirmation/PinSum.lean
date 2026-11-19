@@ -961,6 +961,124 @@ private theorem sync_debit_seat {f : Fork} {c t : BeaconState preset f} (altair 
   simp only [actualBalanceAt, held, atFinal, Option.map_some, Option.getD_some] at lowered
   omega
 
+/-- The credits that a scan reads from a run, after one more step. -/
+private theorem creditScan_snoc_fst (blockP slotP : BalanceSource → Bool) (v high : ℕ)
+    {x m y : ForkedBeaconState preset} (pre : Run config checks x m)
+    (step : Step config checks m y) :
+    (creditScan blockP slotP v high (pre.snoc step)).1 =
+      if (getCurrentEpoch m.state).toNat ≤ high + 1 then
+        (creditScan blockP slotP v high pre).1 + stepCredit blockP slotP v step
+      else (creditScan blockP slotP v high pre).1 := by
+  change (if (getCurrentEpoch m.state).toNat ≤ high + 1 then
+      ((creditScan blockP slotP v high pre).1 + stepCredit blockP slotP v step, _)
+    else creditScan blockP slotP v high pre).1 = _
+  split_ifs <;> rfl
+
+/-- A list of at most one element has equal members. -/
+private theorem list_eq_of_length_le_one {α : Type} {L : List α} (short : L.length ≤ 1) {a b : α}
+    (ha : a ∈ L) (hb : b ∈ L) : a = b := by
+  cases L with
+  | nil => simp at ha
+  | cons c rest =>
+    cases rest with
+    | nil =>
+      rw [List.mem_singleton] at ha hb
+      rw [ha, hb]
+    | cons d rest => exact absurd short (by simp)
+
+/-- The keys that one step credits by a pending-deposit pass.
+
+An epoch pass applies at most `MAX_PENDING_DEPOSITS_PER_EPOCH` deposits, in one slot step.
+
+So the keys are at most that many for each epoch that the step leaves. -/
+private theorem step_deposit_keys {g : ForkedBeaconState preset}
+    (genesis : Genesis config checks g) {x y : ForkedBeaconState preset}
+    (shared : Run config checks g x) (step : Step config checks x y)
+    (early : y.fork < .glamsterdam)
+    (delay : 0 < config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat) :
+    ∃ D : Finset ℕ, D.card ≤ preset.MAX_PENDING_DEPOSITS_PER_EPOCH.toNat *
+        ((getCurrentEpoch y.state).toNat - (getCurrentEpoch x.state).toNat) ∧
+      ∀ i, 0 < stepCredit (fun _ => false) (fun s => decide (s = .deposits)) i step → i ∈ D := by
+  classical
+  cases step with
+  | block engine signed due ok =>
+    refine ⟨∅, by simp, fun i here => ?_⟩
+    exfalso
+    have zero : stepCredit (fun _ => false) (fun s => decide (s = .deposits)) i
+        (Step.block engine signed due ok : Step config checks _ _) = 0 := by
+      show ((((Step.block (config := config) (checks := checks) engine signed due
+        ok).balanceEvents.toOption.getD []).filter ((fun _ => false) ·.source)).map
+          (keyCredit i)).sum = 0
+      rw [List.filter_eq_nil_iff.mpr (fun a _ => by simp)]
+      rfl
+    omega
+  | slot across =>
+    obtain ⟨events, eventsOk⟩ :=
+      (Step.slot across : Step config checks x y).balanceEvents_ok early
+    by_cases any : ∃ e ∈ events, e.source = .deposits
+    · obtain ⟨sites, ends, single⟩ :=
+        DirectSafety.Apriori.Internal.Step.slot_deposit_site shared genesis across early delay
+          eventsOk
+      have epochNext := ends any
+      obtain ⟨e0, mem0, dep0⟩ := any
+      obtain ⟨electra, a, b, matched, deposited, before0, after0⟩ := sites e0 mem0 dep0
+      obtain ⟨-, -, rises⟩ := pending_deposit_rises a b matched electra deposited
+      have oneEpoch : (getCurrentEpoch y.state).toNat - (getCurrentEpoch x.state).toNat = 1 := by
+        omega
+      refine ⟨(Finset.range b.balances.data.size).filter fun i =>
+          actualBalanceAt (⟨x.fork, a⟩ : ForkedBeaconState preset) i <
+            actualBalanceAt (⟨x.fork, b⟩ : ForkedBeaconState preset) i, ?_, fun i here => ?_⟩
+      · rw [oneEpoch, Nat.mul_one]
+        exact rises
+      · refine Finset.mem_filter.mpr ?_
+        have mono : ∃ e ∈ events, e.source = .deposits ∧ 0 < keyCredit i e := by
+          by_contra none
+          have none' : ∀ e ∈ events, e.source = .deposits → keyCredit i e = 0 :=
+            fun e mem dep => by
+              by_contra ne
+              exact none ⟨e, mem, dep, Nat.pos_of_ne_zero ne⟩
+          have zero : stepCredit (fun _ => false) (fun s => decide (s = .deposits)) i
+              (Step.slot across : Step config checks x y) = 0 := by
+            show (((((Step.slot (config := config) (checks := checks)
+              across).balanceEvents.toOption.getD []).filter
+                ((fun s => decide (s = .deposits)) ·.source))).map (keyCredit i)).sum = 0
+            simp only [eventsOk, Except.toOption, Option.getD_some]
+            exact List.sum_eq_zero fun _ member => by
+              obtain ⟨e, inside, rfl⟩ := List.mem_map.mp member
+              obtain ⟨mem, test⟩ := List.mem_filter.mp inside
+              have := none' e mem (by simpa using test)
+              omega
+          omega
+        obtain ⟨e, mem, dep, positive⟩ := mono
+        -- A slot step records one deposit event, so it is the one that the site names.
+        have same : e = e0 := list_eq_of_length_le_one single
+          (List.mem_filter.mpr ⟨mem, by simpa using dep⟩)
+          (List.mem_filter.mpr ⟨mem0, by simpa using dep0⟩)
+        subst same
+        unfold keyCredit at positive
+        rw [before0, after0] at positive
+        refine ⟨?_, ?_⟩
+        · by_contra outside
+          have outside' : ¬ i < b.balances.data.size := fun h =>
+            outside (Finset.mem_range.mpr h)
+          have missing : actualBalanceAt (⟨x.fork, b⟩ : ForkedBeaconState preset) i = 0 := by
+            simp [actualBalanceAt, Array.getElem?_eq_none (Nat.le_of_not_lt outside')]
+          omega
+        · omega
+    · refine ⟨∅, by simp, fun i here => ?_⟩
+      exfalso
+      have zero : stepCredit (fun _ => false) (fun s => decide (s = .deposits)) i
+          (Step.slot across : Step config checks x y) = 0 := by
+        show (((((Step.slot (config := config) (checks := checks)
+          across).balanceEvents.toOption.getD []).filter
+            ((fun s => decide (s = .deposits)) ·.source))).map (keyCredit i)).sum = 0
+        simp only [eventsOk, Except.toOption, Option.getD_some]
+        exact List.sum_eq_zero fun _ member => by
+          obtain ⟨e, inside, rfl⟩ := List.mem_map.mp member
+          obtain ⟨mem, test⟩ := List.mem_filter.mp inside
+          exact absurd ⟨e, mem, by simpa using test⟩ any
+      omega
+
 /-- The keys credited in the block steps of a run inside one period of sync committees.
 
 A key credited by a block is a proposer, at most one for each block, or it holds a seat of the
@@ -969,19 +1087,25 @@ private theorem credited_piece {g : ForkedBeaconState preset}
     (genesis : Genesis config checks g) {x y : ForkedBeaconState preset}
     (shared : Run config checks g x) (r : Run config checks x y)
     (fulu : .fusaka ≤ x.fork) (altair : .altair ≤ x.fork) (early : y.fork < .glamsterdam)
-    (high : ℕ)
+    (delay : 0 < config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat) (high : ℕ)
     (same : (getCurrentEpoch y.state).toNat / max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat =
       (getCurrentEpoch x.state).toNat / max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat) :
-    ∃ B : Finset ℕ, B.card ≤ r.blockCount ∧ (∀ i, 0 < netScan i high r →
+    ∃ B D : Finset ℕ, B.card ≤ r.blockCount ∧
+      D.card ≤ preset.MAX_PENDING_DEPOSITS_PER_EPOCH.toNat *
+        ((getCurrentEpoch y.state).toNat - (getCurrentEpoch x.state).toNat) ∧
+      (∀ i, 0 < netScan i high r →
       i ∈ B ∨ ∃ w, y.state.validators.data[i]? = some w ∧
         w.pubkey ∈ (x.state.currentSyncCommittee altair).value.pubkeys.toList) ∧
+      (∀ i, 0 < (creditScan (fun _ => false) (fun s => decide (s = .deposits)) i high r).1 →
+        i ∈ D) ∧
       ∀ events, r.balanceEvents high = .ok events → ∀ i, 0 < (events.map (syncDebit i)).sum →
         ∃ w, y.state.validators.data[i]? = some w ∧
           w.pubkey ∈ (x.state.currentSyncCommittee altair).value.pubkeys.toList := by
   classical
   induction r with
   | nil =>
-    refine ⟨∅, by simp, fun i pos => (Nat.lt_irrefl 0 pos).elim, ?_⟩
+    refine ⟨∅, ∅, by simp, by simp, fun i pos => (Nat.lt_irrefl 0 pos).elim,
+      fun i pos => (Nat.lt_irrefl 0 pos).elim, ?_⟩
     intro events replayed i pos
     simp only [Run.balanceEvents, pure, Except.pure, Except.ok.injEq] at replayed
     subst replayed
@@ -999,7 +1123,26 @@ private theorem credited_piece {g : ForkedBeaconState preset}
       have under := Nat.div_le_div_right
         (c := max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat) low
       omega
-    obtain ⟨B, cardB, hB, hS⟩ := ih uEarly uSame
+    obtain ⟨B, D, cardB, cardD, hB, hDep, hS⟩ := ih uEarly uSame
+    obtain ⟨Ds, cardDs, hDs⟩ := step_deposit_keys genesis (shared.append pre) step early delay
+    have cardUnion : (D ∪ Ds).card ≤ preset.MAX_PENDING_DEPOSITS_PER_EPOCH.toNat *
+        ((getCurrentEpoch l.state).toNat - (getCurrentEpoch x.state).toNat) := by
+      have joined := Nat.mul_le_mul_left preset.MAX_PENDING_DEPOSITS_PER_EPOCH.toNat
+        (show (getCurrentEpoch u.state).toNat - (getCurrentEpoch x.state).toNat +
+          ((getCurrentEpoch l.state).toNat - (getCurrentEpoch u.state).toNat) ≤
+            (getCurrentEpoch l.state).toNat - (getCurrentEpoch x.state).toNat by omega)
+      rw [Nat.mul_add] at joined
+      exact (Finset.card_union_le _ _).trans (Nat.le_trans (Nat.add_le_add cardD cardDs) joined)
+    have depMem : ∀ i, 0 < (creditScan (fun _ => false) (fun s => decide (s = .deposits)) i high
+        (pre.snoc step)).1 → i ∈ D ∪ Ds := by
+      intro i pos
+      rw [creditScan_snoc_fst] at pos
+      split at pos
+      · by_cases prior : 0 < (creditScan (fun _ => false) (fun s => decide (s = .deposits)) i
+            high pre).1
+        · exact Finset.mem_union_left _ (hDep i prior)
+        · exact Finset.mem_union_right _ (hDs i (by omega))
+      · exact Finset.mem_union_left _ (hDep i pos)
     have carry : ∀ (i : ℕ) (w : Validator), u.state.validators.data[i]? = some w →
         w.pubkey ∈ (x.state.currentSyncCommittee altair).value.pubkeys.toList →
           ∃ w', l.state.validators.data[i]? = some w' ∧
@@ -1010,7 +1153,7 @@ private theorem credited_piece {g : ForkedBeaconState preset}
     cases step with
     | slot ok =>
       have fulu' : .fusaka ≤ u.fork := Nat.le_trans fulu (fork_le_of_chainSteps pre.chainSteps)
-      refine ⟨B, cardB, fun i pos => ?_, ?_⟩
+      refine ⟨B, D ∪ Ds, cardB, cardUnion, fun i pos => ?_, depMem, ?_⟩
       rw [netScan_snoc] at pos
       have prior : 0 < netScan i high pre := by
         split at pos
@@ -1038,7 +1181,7 @@ private theorem credited_piece {g : ForkedBeaconState preset}
       have fulu' : .fusaka ≤ f := Nat.le_trans fulu (fork_le_of_chainSteps pre.chainSteps)
       obtain ⟨K, cardK, hK⟩ := block_credit_keys genesis engine signed due ok (shared.append pre)
         fulu' uEarly
-      refine ⟨B ∪ K, ?_, fun i pos => ?_, ?_⟩
+      refine ⟨B ∪ K, D ∪ Ds, ?_, cardUnion, fun i pos => ?_, depMem, ?_⟩
       · exact (Finset.card_union_le _ _).trans (Nat.add_le_add cardB cardK)
       · rw [netScan_snoc] at pos
         have either : 0 < netScan i high pre ∨
@@ -1143,14 +1286,19 @@ private theorem succ_div_le (a c : ℕ) : (a + 1) / c ≤ a / c + 1 := by
 /-- The keys credited in the block steps of a run, counted by the periods that it touches. -/
 private theorem credited_pieces {g : ForkedBeaconState preset}
     (genesis : Genesis config checks g) {y : ForkedBeaconState preset}
-    (early : y.fork < .glamsterdam) (high : ℕ) :
+    (early : y.fork < .glamsterdam)
+    (delay : 0 < config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat) (high : ℕ) :
     ∀ (n : ℕ) {x : ForkedBeaconState preset}, Run config checks g x →
       ∀ (r : Run config checks x y), .fusaka ≤ x.fork →
     (getCurrentEpoch y.state).toNat / max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat =
       (getCurrentEpoch x.state).toNat / max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat + n →
-    ∃ B S : Finset ℕ, B.card ≤ r.blockCount ∧
+    ∃ B S D : Finset ℕ, B.card ≤ r.blockCount ∧
       S.card ≤ preset.SYNC_COMMITTEE_SIZE.toNat * (n + 1) ∧
+      D.card ≤ preset.MAX_PENDING_DEPOSITS_PER_EPOCH.toNat *
+        ((getCurrentEpoch y.state).toNat - (getCurrentEpoch x.state).toNat) ∧
       (∀ i, 0 < netScan i high r → i ∈ B ∨ i ∈ S) ∧
+      (∀ i, 0 < (creditScan (fun _ => false) (fun s => decide (s = .deposits)) i high r).1 →
+        i ∈ D) ∧
       ∀ events, r.balanceEvents high = .ok events → ∀ i, 0 < (events.map (syncDebit i)).sum →
         i ∈ S := by
   classical
@@ -1160,10 +1308,10 @@ private theorem credited_pieces {g : ForkedBeaconState preset}
     intro x shared r fulu count
     have electra : .pectra ≤ x.fork := Nat.le_trans (by decide) fulu
     have altair : .altair ≤ x.fork := Nat.le_trans (by decide) electra
-    obtain ⟨B, cardB, hB, hD⟩ := credited_piece genesis shared r fulu altair early high
-      (by simpa using count)
+    obtain ⟨B, D, cardB, cardD, hB, hDep, hD⟩ := credited_piece genesis shared r fulu altair
+      early delay high (by simpa using count)
     obtain ⟨S, cardS, hS⟩ := seat_positions genesis shared r altair
-    refine ⟨B, S, cardB, by simpa using cardS, fun i pos => ?_, ?_⟩
+    refine ⟨B, S, D, cardB, by simpa using cardS, cardD, fun i pos => ?_, hDep, ?_⟩
     · rcases hB i pos with member | ⟨w, found, mem⟩
       · exact .inl member
       · exact .inr (hS i w found mem)
@@ -1202,10 +1350,11 @@ private theorem credited_pieces {g : ForkedBeaconState preset}
         (fork_le_of_chainSteps post.chainSteps)) early
     have vFulu : .fusaka ≤ v.fork :=
       Nat.le_trans fulu (fork_le_of_chainSteps (pre.snoc step).chainSteps)
-    obtain ⟨B₁, cardB₁, hB₁, hD₁⟩ := credited_piece genesis shared pre fulu altair mEarly high
-      (by simpa using mSame)
+    obtain ⟨B₁, D₁, cardB₁, cardD₁, hB₁, hDep₁, hD₁⟩ := credited_piece genesis shared pre fulu
+      altair mEarly delay high (by simpa using mSame)
     obtain ⟨S₁, cardS₁, hS₁⟩ := seat_positions genesis shared pre altair
-    obtain ⟨B₂, S₂, cardB₂, cardS₂, hB₂, hD₂⟩ := ih (x := v) (shared.append (pre.snoc step)) post vFulu
+    obtain ⟨B₂, S₂, D₂, cardB₂, cardS₂, cardD₂, hB₂, hDep₂, hD₂⟩ := ih (x := v)
+      (shared.append (pre.snoc step)) post vFulu
       (by omega)
     -- The step leaves an epoch, so it is a slot step: a block step keeps its epoch.
     have slotStep : ∃ ok, step = Step.slot ok := by
@@ -1228,13 +1377,28 @@ private theorem credited_pieces {g : ForkedBeaconState preset}
         exact hm' hv'
     obtain ⟨ok, rfl⟩ := slotStep
     subst split
-    refine ⟨B₁ ∪ B₂, S₁ ∪ S₂, ?_, ?_, fun i pos => ?_, ?_⟩
+    have vEarly : v.fork < .glamsterdam :=
+      Nat.lt_of_le_of_lt (fork_le_of_chainSteps post.chainSteps) early
+    obtain ⟨Ds, cardDs, hDs⟩ := step_deposit_keys genesis (shared.append pre) (Step.slot ok)
+      vEarly delay
+    have stepUp := UInt64.le_iff_toNat_le.mp
+      (Step.slot ok : Step config checks m v).chainStep.currentEpoch_le
+    have postUp := UInt64.le_iff_toNat_le.mp (currentEpoch_le_of_chainSteps post.chainSteps)
+    refine ⟨B₁ ∪ B₂, S₁ ∪ S₂, D₁ ∪ Ds ∪ D₂, ?_, ?_, ?_, fun i pos => ?_, fun i pos => ?_, ?_⟩
     · rw [Run.blockCount_append]
       exact (Finset.card_union_le _ _).trans (Nat.add_le_add cardB₁ cardB₂)
     · refine (Finset.card_union_le _ _).trans ?_
       calc _ ≤ preset.SYNC_COMMITTEE_SIZE.toNat +
             preset.SYNC_COMMITTEE_SIZE.toNat * (n + 1) := Nat.add_le_add cardS₁ cardS₂
         _ = _ := by ring
+    · have joined := Nat.mul_le_mul_left preset.MAX_PENDING_DEPOSITS_PER_EPOCH.toNat
+        (show ((getCurrentEpoch m.state).toNat - (getCurrentEpoch x.state).toNat) +
+          ((getCurrentEpoch v.state).toNat - (getCurrentEpoch m.state).toNat) +
+            ((getCurrentEpoch y.state).toNat - (getCurrentEpoch v.state).toNat) ≤
+              (getCurrentEpoch y.state).toNat - (getCurrentEpoch x.state).toNat by omega)
+      rw [Nat.mul_add, Nat.mul_add] at joined
+      exact (Finset.card_union_le _ _).trans (Nat.le_trans (Nat.add_le_add
+        ((Finset.card_union_le _ _).trans (Nat.add_le_add cardD₁ cardDs)) cardD₂) joined)
     · rw [netScan_append] at pos
       by_cases first : 0 < netScan i high (pre.snoc (Step.slot ok))
       · have prior : 0 < netScan i high pre := by
@@ -1249,9 +1413,18 @@ private theorem credited_pieces {g : ForkedBeaconState preset}
         rcases hB₂ i later with member | member
         · exact .inl (Finset.mem_union_right _ member)
         · exact .inr (Finset.mem_union_right _ member)
+    · rw [creditScan_append] at pos
+      by_cases first : 0 < (creditScan (fun _ => false) (fun s => decide (s = .deposits)) i high
+          (pre.snoc (Step.slot ok))).1
+      · rw [creditScan_snoc_fst] at first
+        split at first
+        · by_cases prior : 0 < (creditScan (fun _ => false)
+              (fun s => decide (s = .deposits)) i high pre).1
+          · exact Finset.mem_union_left _ (Finset.mem_union_left _ (hDep₁ i prior))
+          · exact Finset.mem_union_left _ (Finset.mem_union_right _ (hDs i (by omega)))
+        · exact Finset.mem_union_left _ (Finset.mem_union_left _ (hDep₁ i first))
+      · exact Finset.mem_union_right _ (hDep₂ i (by omega))
     · intro events replayed i pos
-      have vEarly : v.fork < .glamsterdam :=
-        Nat.lt_of_le_of_lt (fork_le_of_chainSteps post.chainSteps) early
       obtain ⟨e1, ok1⟩ := (pre.snoc (Step.slot ok)).balanceEvents_ok vEarly high
       obtain ⟨e2, ok2⟩ := post.balanceEvents_ok early high
       rw [DirectSafety.Apriori.Internal.balanceEvents_append _ _ high ok1 ok2] at replayed
@@ -1276,151 +1449,6 @@ private theorem credited_pieces {g : ForkedBeaconState preset}
           obtain ⟨w, found, mem⟩ := hD₁ _ priorOk i first
           exact hS₁ i w found mem
       · exact Finset.mem_union_right _ (hD₂ e2 ok2 i (by omega))
-
-/-- The credits that a scan reads from a run, after one more step. -/
-private theorem creditScan_snoc_fst (blockP slotP : BalanceSource → Bool) (v high : ℕ)
-    {x m y : ForkedBeaconState preset} (pre : Run config checks x m)
-    (step : Step config checks m y) :
-    (creditScan blockP slotP v high (pre.snoc step)).1 =
-      if (getCurrentEpoch m.state).toNat ≤ high + 1 then
-        (creditScan blockP slotP v high pre).1 + stepCredit blockP slotP v step
-      else (creditScan blockP slotP v high pre).1 := by
-  change (if (getCurrentEpoch m.state).toNat ≤ high + 1 then
-      ((creditScan blockP slotP v high pre).1 + stepCredit blockP slotP v step, _)
-    else creditScan blockP slotP v high pre).1 = _
-  split_ifs <;> rfl
-
-/-- A list of at most one element has equal members. -/
-private theorem list_eq_of_length_le_one {α : Type} {L : List α} (short : L.length ≤ 1) {a b : α}
-    (ha : a ∈ L) (hb : b ∈ L) : a = b := by
-  cases L with
-  | nil => simp at ha
-  | cons c rest =>
-    cases rest with
-    | nil =>
-      rw [List.mem_singleton] at ha hb
-      rw [ha, hb]
-    | cons d rest => exact absurd short (by simp)
-
-/-- The keys that a run credits by a pending-deposit pass.
-
-An epoch pass applies at most `MAX_PENDING_DEPOSITS_PER_EPOCH` deposits, in one slot step.
-
-So the keys are at most that many for each epoch that the run leaves. -/
-private theorem credited_deposits {g : ForkedBeaconState preset}
-    (genesis : Genesis config checks g) {x y : ForkedBeaconState preset}
-    (shared : Run config checks g x) (r : Run config checks x y) (early : y.fork < .glamsterdam)
-    (delay : 0 < config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat) (high : ℕ) :
-    ∃ D : Finset ℕ, D.card ≤ preset.MAX_PENDING_DEPOSITS_PER_EPOCH.toNat *
-        ((getCurrentEpoch y.state).toNat - (getCurrentEpoch x.state).toNat) ∧
-      ∀ i, 0 < (creditScan (fun _ => false) (fun s => decide (s = .deposits)) i high r).1 →
-        i ∈ D := by
-  classical
-  induction r with
-  | nil => exact ⟨∅, by simp, fun i pos => (Nat.lt_irrefl 0 pos).elim⟩
-  | @snoc u l pre step ih =>
-    have uEarly : u.fork < .glamsterdam := Nat.lt_of_le_of_lt step.chainStep.fork_le early
-    obtain ⟨D, cardD, hD⟩ := ih uEarly
-    have low := UInt64.le_iff_toNat_le.mp (currentEpoch_le_of_chainSteps pre.chainSteps)
-    have up := UInt64.le_iff_toNat_le.mp step.chainStep.currentEpoch_le
-    -- A step that records no deposit credit leaves the set as it is.
-    have keep : ∀ i, (0 < (creditScan (fun _ => false) (fun s => decide (s = .deposits)) i high
-        (pre.snoc step)).1 → 0 < (creditScan (fun _ => false)
-          (fun s => decide (s = .deposits)) i high pre).1 ∨
-        0 < stepCredit (fun _ => false) (fun s => decide (s = .deposits)) i step) := by
-      intro i pos
-      rw [creditScan_snoc_fst] at pos
-      split at pos
-      · omega
-      · exact .inl pos
-    cases step with
-    | block engine signed due ok =>
-      refine ⟨D, ?_, fun i pos => ?_⟩
-      · exact cardD.trans (Nat.mul_le_mul_left _ (by omega))
-      · rcases keep i pos with prior | here
-        · exact hD i prior
-        · exfalso
-          have zero : stepCredit (fun _ => false) (fun s => decide (s = .deposits)) i
-              (Step.block engine signed due ok : Step config checks _ _) = 0 := by
-            show ((((Step.block (config := config) (checks := checks) engine signed due
-              ok).balanceEvents.toOption.getD []).filter ((fun _ => false) ·.source)).map
-                (keyCredit i)).sum = 0
-            rw [List.filter_eq_nil_iff.mpr (fun a _ => by simp)]
-            rfl
-          omega
-    | slot across =>
-      obtain ⟨events, eventsOk⟩ :=
-        (Step.slot across : Step config checks u l).balanceEvents_ok early
-      by_cases any : ∃ e ∈ events, e.source = .deposits
-      · obtain ⟨sites, ends, single⟩ :=
-          DirectSafety.Apriori.Internal.Step.slot_deposit_site (shared.append pre) genesis across
-          early delay eventsOk
-        have epochNext := ends any
-        obtain ⟨e0, mem0, dep0⟩ := any
-        obtain ⟨electra, a, b, matched, deposited, before0, after0⟩ := sites e0 mem0 dep0
-        obtain ⟨-, -, rises⟩ := pending_deposit_rises a b matched electra deposited
-        refine ⟨D ∪ (Finset.range b.balances.data.size).filter fun i =>
-            actualBalanceAt (⟨u.fork, a⟩ : ForkedBeaconState preset) i <
-              actualBalanceAt (⟨u.fork, b⟩ : ForkedBeaconState preset) i, ?_, fun i pos => ?_⟩
-        · refine (Finset.card_union_le _ _).trans ?_
-          have grown := Nat.mul_le_mul_left preset.MAX_PENDING_DEPOSITS_PER_EPOCH.toNat
-            (show (getCurrentEpoch u.state).toNat - (getCurrentEpoch x.state).toNat + 1 ≤
-              (getCurrentEpoch l.state).toNat - (getCurrentEpoch x.state).toNat by omega)
-          rw [Nat.mul_add, Nat.mul_one] at grown
-          omega
-        · rcases keep i pos with prior | here
-          · exact Finset.mem_union_left _ (hD i prior)
-          · refine Finset.mem_union_right _ (Finset.mem_filter.mpr ?_)
-            have mono : ∃ e ∈ events, e.source = .deposits ∧ 0 < keyCredit i e := by
-              by_contra none
-              have none' : ∀ e ∈ events, e.source = .deposits → keyCredit i e = 0 :=
-                fun e mem dep => by
-                  by_contra ne
-                  exact none ⟨e, mem, dep, Nat.pos_of_ne_zero ne⟩
-              have zero : stepCredit (fun _ => false) (fun s => decide (s = .deposits)) i
-                  (Step.slot across : Step config checks u l) = 0 := by
-                show (((((Step.slot (config := config) (checks := checks)
-                  across).balanceEvents.toOption.getD []).filter
-                    ((fun s => decide (s = .deposits)) ·.source))).map (keyCredit i)).sum = 0
-                simp only [eventsOk, Except.toOption, Option.getD_some]
-                exact List.sum_eq_zero fun _ member => by
-                  obtain ⟨e, inside, rfl⟩ := List.mem_map.mp member
-                  obtain ⟨mem, test⟩ := List.mem_filter.mp inside
-                  have := none' e mem (by simpa using test)
-                  omega
-              omega
-            obtain ⟨e, mem, dep, positive⟩ := mono
-            -- A slot step records one deposit event, so it is the one that the site names.
-            have same : e = e0 := list_eq_of_length_le_one single
-              (List.mem_filter.mpr ⟨mem, by simpa using dep⟩)
-              (List.mem_filter.mpr ⟨mem0, by simpa using dep0⟩)
-            subst same
-            unfold keyCredit at positive
-            rw [before0, after0] at positive
-            refine ⟨?_, ?_⟩
-            · by_contra outside
-              have outside' : ¬ i < b.balances.data.size := fun h =>
-                outside (Finset.mem_range.mpr h)
-              have missing : actualBalanceAt (⟨u.fork, b⟩ : ForkedBeaconState preset) i = 0 := by
-                simp [actualBalanceAt, Array.getElem?_eq_none (Nat.le_of_not_lt outside')]
-              omega
-            · omega
-      · refine ⟨D, ?_, fun i pos => ?_⟩
-        · exact cardD.trans (Nat.mul_le_mul_left _ (by omega))
-        · rcases keep i pos with prior | here
-          · exact hD i prior
-          · exfalso
-            have zero : stepCredit (fun _ => false) (fun s => decide (s = .deposits)) i
-                (Step.slot across : Step config checks u l) = 0 := by
-              show (((((Step.slot (config := config) (checks := checks)
-                across).balanceEvents.toOption.getD []).filter
-                  ((fun s => decide (s = .deposits)) ·.source))).map (keyCredit i)).sum = 0
-              simp only [eventsOk, Except.toOption, Option.getD_some]
-              exact List.sum_eq_zero fun _ member => by
-                obtain ⟨e, inside, rfl⟩ := List.mem_map.mp member
-                obtain ⟨mem, test⟩ := List.mem_filter.mp inside
-                exact absurd ⟨e, mem, by simpa using test⟩ any
-            omega
 
 /-- The keys that a run from the split credits or debits through a sync seat.
 
@@ -1463,11 +1491,11 @@ private theorem banded_keys_le (h : Setting config checks g split fin pulled anc
         ((getCurrentEpoch x).toNat / max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat -
           (getCurrentEpoch split).toNat /
             max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat) := by omega
-  obtain ⟨B, S, cardB, cardS, hBS, hSD⟩ := credited_pieces h.genesis (y := ⟨fork, x⟩) h.early high
+  obtain ⟨B, S, D, cardB, cardS, cardD, hBS, hD, hSD⟩ := credited_pieces h.genesis (y := ⟨fork, x⟩)
+    h.early h.delay high
     ((getCurrentEpoch x).toNat / max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat -
       (getCurrentEpoch split).toNat / max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat)
     shared tail h.fulu periods
-  obtain ⟨D, cardD, hD⟩ := credited_deposits h.genesis shared tail h.early h.delay high
   have cardD' : D.card ≤ preset.MAX_PENDING_DEPOSITS_PER_EPOCH.toNat *
       ((getCurrentEpoch x).toNat - (getCurrentEpoch split).toNat) := cardD
   have subset : keys ⊆ B ∪ S ∪ D := fun i member => by
