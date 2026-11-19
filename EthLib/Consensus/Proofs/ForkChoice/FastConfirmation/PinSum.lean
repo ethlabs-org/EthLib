@@ -1025,12 +1025,8 @@ private theorem credited_piece {g : ForkedBeaconState preset}
       split at rest
       · simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at rest
         obtain ⟨added, addedOk, rfl⟩ := rest
-        have quiet := PinSplit5.slot_noSync
-          (Nat.le_trans (show Fork.pectra ≤ Fork.fusaka by decide) fulu') ok early addedOk
-        have zero : (added.map (syncDebit i)).sum = 0 :=
-          List.sum_eq_zero fun v member => by
-            obtain ⟨e, inside, rfl⟩ := List.mem_map.mp member
-            simp [syncDebit, quiet e inside]
+        have zero := PinSplit5.slot_syncDebit_zero
+          (Nat.le_trans (show Fork.pectra ≤ Fork.fusaka by decide) fulu') ok early addedOk i
         simp only [List.map_append, List.sum_append, zero, Nat.add_zero] at pos
         obtain ⟨w, found, mem⟩ := hS prior priorOk i pos
         exact carry i w found mem
@@ -1269,13 +1265,9 @@ private theorem credited_pieces {g : ForkedBeaconState preset}
         split at rest
         · simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at rest
           obtain ⟨added, addedOk, rfl⟩ := rest
-          have quiet := PinSplit5.slot_noSync
+          have zero := PinSplit5.slot_syncDebit_zero
             (Nat.le_trans (show Fork.pectra ≤ Fork.fusaka by decide)
-              (Nat.le_trans fulu (fork_le_of_chainSteps pre.chainSteps))) ok vEarly addedOk
-          have zero : (added.map (syncDebit i)).sum = 0 :=
-            List.sum_eq_zero fun a member => by
-              obtain ⟨e, inside, rfl⟩ := List.mem_map.mp member
-              simp [syncDebit, quiet e inside]
+              (Nat.le_trans fulu (fork_le_of_chainSteps pre.chainSteps))) ok vEarly addedOk i
           simp only [List.map_append, List.sum_append, zero, Nat.add_zero] at first
           obtain ⟨w, found, mem⟩ := hD₁ prior priorOk i first
           exact hS₁ i w found mem
@@ -2039,24 +2031,6 @@ private theorem creditScan_le_events (blockP slotP : BalanceSource → Bool) (v 
       · cases rest
         exact before
 
-/-- The credits to some keys at one event add up to at most the credits of the event.
-
-A key beyond the balance array has no credit. -/
-private theorem sum_keyCredit_le_credits (S : Finset ValidatorIndex) (e : BalanceEvent preset) :
-    ∑ v ∈ S, keyCredit v.toNat e ≤ e.credits := by
-  classical
-  have trim : ∑ v ∈ S.filter (fun v => v.toNat < e.after.state.balances.data.size),
-      keyCredit v.toNat e = ∑ v ∈ S, keyCredit v.toNat e := by
-    refine Finset.sum_filter_of_ne fun v _ nonzero => ?_
-    by_contra outside
-    apply nonzero
-    have missing : actualBalanceAt e.after v.toNat = 0 := by
-      simp [actualBalanceAt, Array.getElem?_eq_none (not_lt.mp outside)]
-    simp [keyCredit, missing]
-  rw [← trim]
-  exact sum_toNat_le (fun i => actualBalanceAt e.after i - actualBalanceAt e.before i)
-    (fun v member => Finset.mem_range.mpr (Finset.mem_filter.mp member).2)
-
 /-- The credits to one key at one event are at most the credits of the event. -/
 private theorem keyCredit_le_credits (i : ℕ) (e : BalanceEvent preset) :
     keyCredit i e ≤ e.credits := by
@@ -2504,7 +2478,10 @@ private theorem keyCredits_le_limits (S : Finset ValidatorIndex) (q : BalanceEve
   | cons a rest ih =>
     have tail := ih fun e member => bounded e (List.mem_cons_of_mem _ member)
     have head := bounded a List.mem_cons_self
-    have single := sum_keyCredit_le_credits S a
+    have single : ∑ v ∈ S, keyCredit v.toNat a ≤ a.credits := by
+      have := keys_credits_le (S.image UInt64.toNat) a
+      rw [Finset.sum_image fun x _ y _ same => UInt64.toNat_inj.mp same] at this
+      exact this
     by_cases hq : q a = true
     · rw [List.filter_cons_of_pos hq]
       simp only [List.map_cons, List.sum_cons, Finset.sum_add_distrib]
