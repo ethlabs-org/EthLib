@@ -1942,7 +1942,8 @@ private theorem block_step_gross_keys {g : ForkedBeaconState preset}
       i ∈ K ∨ ∃ altair : .altair ≤ f, ∃ w, t.validators.data[i]? = some w ∧
         w.pubkey ∈ (t.currentSyncCommittee altair).value.pubkeys.toList := by
   cases replayed : (Step.block engine signed due ok).balanceEvents with
-  | error err => exact ⟨∅, by simp, fun i pos => by simp [stepCredit, replayed, Except.toOption] at pos⟩
+  | error _ =>
+    exact ⟨∅, by simp, fun i pos => by simp [stepCredit, replayed, Except.toOption] at pos⟩
   | ok events =>
     obtain ⟨K, card, keys⟩ := block_gross_keys genesis apart shared fulu early replayed
     refine ⟨K, card, fun i pos => ?_⟩
