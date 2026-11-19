@@ -12909,6 +12909,19 @@ private def scSlashedReward (config : Config)
           (parameters preset fork).WHISTLEBLOWER_REWARD_QUOTIENT.toNat - 1) /
         (parameters preset fork).WHISTLEBLOWER_REWARD_QUOTIENT.toNat)
 
+/-- The keys of R's registry that are slashed at the split and that R's call reads as slashed.
+
+They are the keys that the shared run slashes in its last epoch, and some before it.
+
+None is in `SC`, which holds keys that are unslashed at the split.
+
+None is in C's quorum, since a flag set at the split persists to C. -/
+private def cutKeys (config : Config) (pulled anc fin split : BeaconState preset fork) :
+    Finset ValidatorIndex :=
+  ((Finset.range pulled.validators.data.size).image UInt64.ofNat).filter fun v =>
+    ((split.validators.data[v.toNat]?).map (·.slashed)).getD false = true ∧
+      (pinTerms config pulled anc fin).slashedRB v.toNat = true
+
 /-- R1 from the count of its rounding bands.
 
 The slash charges of the classes fit the slashed keys of `branchR`, with the weights of the classes.
@@ -13080,9 +13093,7 @@ theorem bud_branchR (h : Setting config checks g split fin pulled anc counted V)
         (∑ v ∈ SC pulled counted split, bandR (eventsF ++ events) v.toNat) ≤
       (pinTerms config pulled anc fin).branchR +
         -- The cut keys' sync debits, which `bud_sync` pays, keep the rounding of their rewards.
-        3 * (∑ v ∈ ((Finset.range pulled.validators.data.size).image UInt64.ofNat).filter
-            (fun v => ((split.validators.data[v.toNat]?).map (·.slashed)).getD false = true ∧
-              (pinTerms config pulled anc fin).slashedRB v.toNat = true),
+        3 * (∑ v ∈ cutKeys config pulled anc fin split,
           (syncD eventsF v.toNat + syncD eventsP v.toNat + syncD events v.toNat)) := by
   sorry
 
@@ -13156,6 +13167,8 @@ theorem bud_sync (h : Setting config checks g split fin pulled anc counted V)
     (fromFin : Run config checks ⟨fork, fin⟩ ⟨fork, split⟩)
     {b : BeaconState preset fork} (pre : Run config checks ⟨fork, b⟩ ⟨fork, split⟩)
     (sameEpoch : getCurrentEpoch split = getCurrentEpoch b)
+    (shape : (∃ fromB : Run config checks ⟨fork, fin⟩ ⟨fork, b⟩, fromFin = fromB.append pre) ∨
+      ∃ toFinB : Run config checks ⟨fork, b⟩ ⟨fork, fin⟩, pre = toFinB.append fromFin)
     (highF : ℕ)
     {eventsF : List (BalanceEvent preset)} (replayedF : fromFin.balanceEvents highF = .ok eventsF)
     (tail : Run config checks ⟨fork, split⟩ ⟨fork, pulled⟩) (high : ℕ)
@@ -13168,9 +13181,7 @@ theorem bud_sync (h : Setting config checks g split fin pulled anc counted V)
         (∑ v ∈ (K4 pulled counted V), (syncF events v.toNat + syncF eventsC v.toNat)) +
         (∑ v ∈ (K5 counted V), (syncD eventsF v.toNat + syncCr eventsP v.toNat)) +
         (∑ v ∈ (K5 counted V), (syncF events v.toNat + syncF eventsC v.toNat)) +
-        (∑ v ∈ ((Finset.range pulled.validators.data.size).image UInt64.ofNat).filter
-            (fun v => ((split.validators.data[v.toNat]?).map (·.slashed)).getD false = true ∧
-              (pinTerms config pulled anc fin).slashedRB v.toNat = true),
+        (∑ v ∈ cutKeys config pulled anc fin split,
           (syncD eventsF v.toNat + syncD eventsP v.toNat + syncD events v.toNat))) +
       (∑ v ∈ (K6 pulled counted), syncD eventsF v.toNat) +
       (∑ v ∈ (K6 pulled counted), (syncF events v.toNat + syncF eventsC v.toNat)) +
@@ -15241,7 +15252,7 @@ theorem pinDrift_le_of_stubs (h : Setting config checks g split fin pulled anc c
   have tR := stake_le_total pulledOk
   obtain ⟨toFin⟩ := h.toFin
   obtain ⟨fromFin⟩ := h.fromFin
-  obtain ⟨b, toB, pre, cut, sameEpoch, link, earlier, -⟩ := split_epoch_start toFin fromFin
+  obtain ⟨b, toB, pre, cut, sameEpoch, link, earlier, shape⟩ := split_epoch_start toFin fromFin
   obtain ⟨eventsF, replayedF⟩ := fromFin.balanceEvents_ok h.early high
   obtain ⟨eventsP, replayedP⟩ := pre.balanceEvents_ok h.early highC
   have sV := two_le_three (stub_V (config := config) h high endEpoch events fromFin replayedF
@@ -15266,8 +15277,8 @@ theorem pinDrift_le_of_stubs (h : Setting config checks g split fin pulled anc c
   have b4 := bud_credits (config := config) h toB link pre sameEpoch tailC highC endEpochC replayedC
   have b5 := bud_branchR (config := config) h tail high endEpoch replayed fromFin toFin toB pre
     cut sameEpoch replayedF tailC highC endEpochC replayedC replayedP
-  have b6 := bud_sync (config := config) h fromFin pre sameEpoch high replayedF tail high replayed
-    tailC highC replayedC replayedP
+  have b6 := bud_sync (config := config) h fromFin pre sameEpoch shape high replayedF tail high
+    replayed tailC highC replayedC replayedP
   have b7 := bud_fall (config := config) h
   have b8 := bud_rise (config := config) h
   have b10 := bud_deposits (config := config) h tail high endEpoch replayed
