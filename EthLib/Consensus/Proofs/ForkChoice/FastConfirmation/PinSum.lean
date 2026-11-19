@@ -8576,6 +8576,37 @@ private theorem pending_key_claim (h : Setting config checks g split fin pulled 
     omega
   omega
 
+/-- A key that is not activated at the finalized state and is active at C pays three rewards.
+
+Its effective balance at C plus its sync debits is at least `newKeyFloor`, by `fresh_key_floor`.
+
+Two floors pay three rewards at the largest balance, by the preset fact `whistleNewKey`.
+
+So its slashing reward at any effective balance is paid by twice its stake at C and its debits. -/
+private theorem beta_pays (h : Setting config checks g split fin pulled anc counted V)
+    (fromFin : Run config checks ⟨fork, fin⟩ ⟨fork, split⟩)
+    (tailC : Run config checks ⟨fork, split⟩ ⟨fork, counted⟩)
+    {events : List (BalanceEvent preset)}
+    (replayed : (fromFin.append tailC).balanceEvents (getCurrentEpoch pulled).toNat = .ok events)
+    (v : ValidatorIndex)
+    (fresh : fin.validators.data[v.toNat]? = none ∨
+      ∃ w, fin.validators.data[v.toNat]? = some w ∧ w.activationEpoch = FAR_FUTURE_EPOCH)
+    (active : isActiveAt counted (getCurrentEpoch counted) v.toNat = true) :
+    3 * (preset.MAX_EFFECTIVE_BALANCE_ELECTRA.toNat /
+        (EthLib.Consensus.parameters preset .fusaka).WHISTLEBLOWER_REWARD_QUOTIENT.toNat) ≤
+      2 * (eC counted v + (events.map (syncDebit v.toNat)).sum) := by
+  have floor := fresh_key_floor h (fromFin.append tailC) h.early h.near v fresh active replayed
+  have newKey := h.facts.whistleNewKey
+  have floorEq : (pinTerms config pulled anc fin).newKeyFloor =
+      2 * preset.MAX_EFFECTIVE_BALANCE.toNat / 3 -
+        preset.MAX_EFFECTIVE_BALANCE.toNat /
+          (EthLib.Consensus.parameters preset fork).MIN_SLASHING_PENALTY_QUOTIENT.toNat -
+        preset.downwardBand - preset.EFFECTIVE_BALANCE_INCREMENT.toNat := rfl
+  rw [parameters_of_fusaka h.fulu h.early] at floorEq
+  have stake : eC counted v = effectiveAt (⟨fork, counted⟩ : ForkedBeaconState preset) v.toNat :=
+    rfl
+  omega
+
 /-- A key of `K5` that is not exiting at the call and has a small charge is low or loses seats.
 
 A small charge is below `exitFloor`.
