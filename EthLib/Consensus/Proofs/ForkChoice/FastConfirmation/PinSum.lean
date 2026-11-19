@@ -10670,7 +10670,7 @@ private theorem rise_from_epoch_start (h : Setting config checks g split fin pul
   classical
   obtain ⟨P, hP, gainLe, -⟩ := pin_rate_exists h
   obtain ⟨P', hP', rateAll⟩ := key_rate_forked h
-  obtain rfl : P' = P := hP'.trans hP.symm
+  rw [hP'.trans hP.symm] at rateAll
   have cFork : fork ≤ c.fork := fork_le_of_chainSteps toC.chainSteps
   have fulu : .fusaka ≤ c.fork := Nat.le_trans h.fulu cFork
   have rate : ∀ z ∈ tail.balancePath, i.toUInt64 ∉ getActiveValidatorIndices z.state
@@ -10821,7 +10821,8 @@ private theorem earlier_charge (h : Setting config checks g split fin pulled anc
   obtain ⟨tail2, h2⟩ : ∃ t : Run config checks cc a, t = (rest0.snoc step').append post' :=
     ⟨_, rfl⟩
   have whole : pre = (pre0.snoc (Step.slot ok)).append tail2 := by
-    rw [← cut', h2, Run.append_assoc] <;> rfl
+    rw [← cut', h2, Run.append_assoc]
+    rfl
   have aElectra : .pectra ≤ a.fork := Nat.le_trans electra (fork_le_of_chainSteps pre.chainSteps)
   have capEnd := capAt_le_capMax h.caps aElectra i
   have startEff : effectiveAt cc i ≤ PinSplit2.capAt cc i := by
