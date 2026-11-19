@@ -14449,6 +14449,8 @@ private theorem syncLeak_of_envelope (h : Setting config checks g split fin pull
 
 /-- The leak that the counted keys' sync debits on R's branch induce, at their weights.
 
+The keys that are slashed at C and not at the split are counted too, at weight one.
+
 It fits `syncLeak`, and the leak of one increment for each key slashed on R's branch. -/
 private theorem bud_syncLeak (h : Setting config checks g split fin pulled anc counted V)
     (tail : Run config checks ⟨fork, split⟩ ⟨fork, pulled⟩) (high : ℕ)
@@ -14464,7 +14466,9 @@ private theorem bud_syncLeak (h : Setting config checks g split fin pulled anc c
       3 * (∑ v ∈ (K5 counted V), inducedR (pinTerms config pulled anc fin) (fromFin.append tail)
           v.toNat) +
       (∑ v ∈ (K6 pulled counted), inducedR (pinTerms config pulled anc fin) (fromFin.append tail)
-          v.toNat) ≤
+          v.toNat) +
+      (∑ v ∈ (SC pulled counted split), inducedR (pinTerms config pulled anc fin)
+          (fromFin.append tail) v.toNat) ≤
       (pinTerms config pulled anc fin).syncLeak +
         3 * ((pinTerms config pulled anc fin).slashedR *
           slashLeak config fork (pinTerms config pulled anc fin)) :=
@@ -15618,6 +15622,10 @@ theorem pinDrift_le_of_stubs (h : Setting config checks g split fin pulled anc c
   have riseK6 : 0 ≤ ∑ v ∈ K6 pulled counted with
       (pinTerms config pulled anc fin).exitingB v.toNat = true,
         ((pinTerms config pulled anc fin).rise v.toNat : ℤ) :=
+    Finset.sum_nonneg fun _ _ => Int.natCast_nonneg _
+  -- The keys slashed at C add a nonnegative leak to the left side of `bud_syncLeak`.
+  have leakSC : 0 ≤ ∑ v ∈ SC pulled counted split,
+      (inducedR (pinTerms config pulled anc fin) (fromFin.append tail) v.toNat : ℤ) :=
     Finset.sum_nonneg fun _ _ => Int.natCast_nonneg _
   linarith
 
