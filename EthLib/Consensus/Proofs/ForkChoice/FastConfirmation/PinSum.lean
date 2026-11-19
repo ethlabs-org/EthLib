@@ -3685,41 +3685,6 @@ private theorem rounded_add_floor_le (I x y : ℕ) (hI : 0 < I) :
   rw [quotient, shifted, modulo]
   omega
 
-/-- Rounding down after a credit adds at most the credit rounded up to increments. -/
-private theorem rounded_add_ceil_le (I h S : ℕ) (hI : 0 < I) :
-    (h + S) - (h + S) % I ≤ (h - h % I) + I * ((S + I - 1) / I) := by
-  have one := Nat.mod_add_div h I
-  have two := Nat.mod_add_div (h + S) I
-  have three := Nat.mod_add_div (S + I - 1) I
-  have lt1 := Nat.mod_lt h hI
-  have lt3 := Nat.mod_lt (S + I - 1) hI
-  have le : (h + S) / I ≤ h / I + (S + I - 1) / I := by
-    rw [← Nat.lt_succ_iff, Nat.div_lt_iff_lt_mul hI]
-    have e : (h / I + (S + I - 1) / I).succ * I =
-        I * (h / I) + I * ((S + I - 1) / I) + I := by
-      simp only [Nat.succ_eq_add_one]
-      ring
-    rw [e]
-    omega
-  have four := Nat.mul_le_mul_left I le
-  rw [Nat.mul_add] at four
-  omega
-
-/-- A ceiling on the balance puts the effective balance within the envelope of `rise`.
-
-The ceiling is `high` plus the credits `S`, and `rise` reads `high`.
-
-The credits add their rounding up to increments. -/
-private theorem envelope_arith {I cap capFor high kept S CB finEB e0 effX : ℕ} (hI : 0 < I)
-    (ceiling : CB ≤ high + S) (capLe : cap ≤ capFor) (keptLe : high ≤ kept) (start : effX ≤ e0) :
-    max effX (min (CB - CB % I) cap) ≤
-      max e0 (min capFor (min (kept - kept % I) (max finEB (high - high % I)))) +
-        I * ((S + I - 1) / I) := by
-  have r1 := rounded_mono I ceiling
-  have r2 := rounded_add_ceil_le I high S hI
-  have r3 := rounded_mono I keptLe
-  omega
-
 /-- A cap above the activation balance belongs to a validator with compounding credentials. -/
 private theorem compounding_of_cap {z : ForkedBeaconState preset} {i : ℕ}
     (electra : .pectra ≤ z.fork)
@@ -6534,75 +6499,6 @@ private theorem prefix_envelope (h : Setting config checks g split fin pulled an
     exact Nat.le_max_right _ _
   rw [← hB] at floorRound
   omega
-
-/-- Layer 1 of the key core.
-
-The effective balance of a key at a prefix of C's tail is within the envelope.
-
-The prefix is `pre`, a run from the split to the state `a`, and `e0` is `ebUp i`.
-
-The bound is `rise`'s, plus the credits of the prefix rounded up to increments.
-
-The credits are the net credits of the prefix and the sync debits of R, at eleven tenths.
-
-The cap `capHigh` is the caller's.
-
-It is aligned, at least the start effective balance, and at least C's caps along the prefix.
-
-K2 gives the ceiling on the balance, and `rise` reads the same `high` that the ceiling does. -/
-private theorem key_ceiling_pre (h : Setting config checks g split fin pulled anc counted V)
-    (fromFin : Run config checks ⟨fork, fin⟩ ⟨fork, split⟩)
-    (tail : Run config checks ⟨fork, split⟩ ⟨fork, pulled⟩) (high : ℕ)
-    (endEpoch : (getCurrentEpoch pulled).toNat ≤ high + 1)
-    {eventsF : List (BalanceEvent preset)} (replayedF : fromFin.balanceEvents high = .ok eventsF)
-    {events : List (BalanceEvent preset)} (replayed : tail.balanceEvents high = .ok events)
-    {a : BeaconState preset fork} (pre : Run config checks ⟨fork, split⟩ ⟨fork, a⟩) (highC : ℕ)
-    (endEpochPre : (getCurrentEpoch a).toNat ≤ highC + 1)
-    (highLe : highC ≤ (getCurrentEpoch pulled).toNat)
-    (i : ℕ) (inside : i < fin.validators.data.size)
-    (e0 capHigh capFor Cr' : ℕ)
-    (hCr' : Cr' = netScan i highC pre +
-      (creditScan (fun _ => false) (fun s => decide (s ≠ .rewards)) i highC pre).1 +
-        (eventsF.map (syncDebit i)).sum + (events.map (syncDebit i)).sum)
-    (alignedCap : capHigh % preset.EFFECTIVE_BALANCE_INCREMENT.toNat = 0)
-    (startCap : effectiveAt (⟨fork, split⟩ : ForkedBeaconState preset) i ≤ capHigh)
-    (capCeil : ∀ z ∈ pre.balancePath, PinSplit2.capAt z i ≤ capHigh)
-    (capLe : capHigh ≤ capFor) :
-    effectiveAt (⟨fork, a⟩ : ForkedBeaconState preset) i ≤
-      max e0 (effectiveAt (⟨fork, pulled⟩ : ForkedBeaconState preset) i +
-        (pinTerms config pulled anc fin).rise i) +
-      preset.EFFECTIVE_BALANCE_INCREMENT.toNat *
-        (((11 * Cr' + 9) / 10 + preset.EFFECTIVE_BALANCE_INCREMENT.toNat - 1) /
-          preset.EFFECTIVE_BALANCE_INCREMENT.toNat) := by
-  have incPos : 0 < preset.EFFECTIVE_BALANCE_INCREMENT.toNat := by
-    have := h.below
-    omega
-  have insideSplit : i < (⟨fork, split⟩ : ForkedBeaconState preset).state.validators.data.size :=
-    Nat.lt_of_lt_of_le inside fromFin.registryLifecycle.size_le
-  obtain ⟨P, -, rateP⟩ := key_rate_pre h pre (by omega)
-  -- `rise`'s shape: the same `high` as the ceiling, a `kept` above it, and the largest balance.
-  have riseShape : ∃ high' kept finEB : ℕ, high' ≤ kept ∧
-      effectiveAt (⟨fork, pulled⟩ : ForkedBeaconState preset) i +
-          (pinTerms config pulled anc fin).rise i =
-        min capFor (min (kept - kept % preset.EFFECTIVE_BALANCE_INCREMENT.toNat)
-          (max finEB (high' - high' % preset.EFFECTIVE_BALANCE_INCREMENT.toNat))) := sorry
-  obtain ⟨high', kept, finEB, keptLe, riseEq⟩ := riseShape
-  -- The envelope `E`, with its fixpoint (check 1 and `lowRate`, named).
-  obtain ⟨E, closed, ceiling, start⟩ : ∃ E : ℕ,
-      max (effectiveAt (⟨fork, split⟩ : ForkedBeaconState preset) i)
-        (min capHigh (PinSplit2.creditBound pre i highC E P capHigh -
-          PinSplit2.creditBound pre i highC E P capHigh %
-            preset.EFFECTIVE_BALANCE_INCREMENT.toNat)) ≤ E ∧
-      PinSplit2.creditBound pre i highC E P capHigh ≤ high' + (11 * Cr' + 9) / 10 ∧
-      effectiveAt (⟨fork, split⟩ : ForkedBeaconState preset) i ≤ e0 := sorry
-  obtain ⟨-, -, third, fourth⟩ := PinSplit2.Run.effective_floor_pair pre h.early h.fulu i
-    insideSplit 0 0 capHigh highC E P
-  have balances := fourth alignedCap startCap capCeil rateP endEpochPre closed
-  have eff := (third _ alignedCap startCap (fun z member => balances z member) capCeil).1
-  have final := envelope_arith (cap := capHigh) (capFor := capFor) (high := high') (kept := kept)
-    (S := (11 * Cr' + 9) / 10) (finEB := finEB) (e0 := e0) incPos ceiling capLe keptLe start
-  rw [riseEq]
-  exact eff.trans final
 
 /-- The epoch rewards of a key over a run are at most the rate for each epoch of the run.
 
