@@ -4345,6 +4345,7 @@ private theorem charge_unique {x y : ForkedBeaconState preset} (tail : Run confi
     (same : c.index = d.index) : c = d :=
   List.inj_on_of_nodup_map (DirectSafety.departureCharges_run_indices tail) hc hd same
 
+open DirectSafety.Apriori DirectSafety.Apriori.Internal in
 /-- A charge of a run is the charge of the stop at its position, on the run after a prefix.
 
 The stop is the state before the step that assigns the exit, and the charge reads its balance. -/
