@@ -5585,7 +5585,7 @@ private theorem run_syncDebits_le {x y : ForkedBeaconState preset} (tail : Run c
   | nil =>
     simp only [Run.balanceEvents, pure, Except.pure, Except.ok.injEq] at replayed
     subst replayed
-    simp [Run.blockCount]
+    simp [Run.blockCount, syncSeatMoves]
   | @snoc middle last pre step ih =>
     have earlyMiddle : middle.fork < .glamsterdam :=
       Nat.lt_of_le_of_lt step.chainStep.fork_le early
