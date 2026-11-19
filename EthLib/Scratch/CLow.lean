@@ -6,7 +6,7 @@ import all EthLib.Consensus.Proofs.ForkChoice.FastConfirmation.PinSum
 namespace EthLib.Consensus.Models.Network
 namespace PinSum
 
-open Base Uint64 Models DirectSafety
+open Base Uint64 Models DirectSafety DirectSafety.Apriori DirectSafety.Apriori.Internal
 
 variable {preset : Preset} {fork : Fork} {config : Config} {checks : SignatureChecks}
 variable {g : ForkedBeaconState preset} {split fin pulled anc counted : BeaconState preset fork}
@@ -82,8 +82,8 @@ private theorem leak_linear (inc pi score depth bias quotient : ℕ) (incPos : 0
         (inc * (bias * quotient)) =
         2 * (u * pi) + (score + depth * bias) * inc * u / (bias * quotient) := by
       rw [show (2 * pi * (bias * quotient) + (score + depth * bias) * inc) * (inc * u) =
-        inc * ((2 * (u * pi)) * (bias * quotient) + (score + depth * bias) * inc * u) by ring,
-        Nat.mul_div_mul_left _ _ incPos, Nat.add_mul_div_right _ _ positive]
+        inc * ((bias * quotient) * (2 * (u * pi)) + (score + depth * bias) * inc * u) by ring,
+        Nat.mul_div_mul_left _ _ incPos, Nat.mul_add_div positive]
     rw [lhs, rhs]
 
 end PinSum
