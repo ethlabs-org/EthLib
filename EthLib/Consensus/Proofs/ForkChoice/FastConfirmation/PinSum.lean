@@ -10771,9 +10771,12 @@ private theorem bud_syncLeak (h : Setting config checks g split fin pulled anc c
     (tailC : Run config checks ⟨fork, split⟩ ⟨fork, counted⟩) (highC : ℕ)
     (endEpochC : (getCurrentEpoch counted).toNat ≤ highC + 1)
     {eventsC : List (BalanceEvent preset)} (replayedC : tailC.balanceEvents highC = .ok eventsC) :
-    (∑ v ∈ (K4 pulled counted V), inducedR (pinTerms config pulled anc fin) tail v.toNat) +
-      3 * (∑ v ∈ (K5 counted V), inducedR (pinTerms config pulled anc fin) tail v.toNat) +
-      (∑ v ∈ (K6 pulled counted), inducedR (pinTerms config pulled anc fin) tail v.toNat) ≤
+    (∑ v ∈ (K4 pulled counted V), inducedR (pinTerms config pulled anc fin) (fromFin.append tail)
+          v.toNat) +
+      3 * (∑ v ∈ (K5 counted V), inducedR (pinTerms config pulled anc fin) (fromFin.append tail)
+          v.toNat) +
+      (∑ v ∈ (K6 pulled counted), inducedR (pinTerms config pulled anc fin) (fromFin.append tail)
+          v.toNat) ≤
       (pinTerms config pulled anc fin).syncLeak +
         3 * ((pinTerms config pulled anc fin).slashedR *
           slashLeak config fork (pinTerms config pulled anc fin)) :=
@@ -10806,8 +10809,8 @@ private theorem key_core (h : Setting config checks g split fin pulled anc count
     (i : ℕ) (inside : i < pulled.validators.data.size) :
     balanceAt counted i ≤ balanceAt pulled i + (pinTerms config pulled anc fin).rise i +
       (credC tailC highC i +
-          keyExtra (pinTerms config pulled anc fin) tail tailC highC eventsC events eventsF
-            i) + whistC tailC highC i +
+          keyExtra (pinTerms config pulled anc fin) (fromFin.append tail) tailC highC
+            eventsC events eventsF i) + whistC tailC highC i +
       (syncF events i + syncF eventsC i) + slashR (pinTerms config pulled anc fin) i +
       bandC tailC highC i + bandR events i :=
   sorry
@@ -10824,16 +10827,17 @@ theorem stub_N (h : Setting config checks g split fin pulled anc counted V)
     {eventsC : List (BalanceEvent preset)} (replayedC : tailC.balanceEvents highC = .ok eventsC) :
     cN pulled counted V ≤ ((∑ v ∈ (K4 pulled counted V), ((pinTerms config pulled anc fin).rise v.toNat +
       (credC tailC highC v.toNat +
-          keyExtra (pinTerms config pulled anc fin) tail tailC highC eventsC events eventsF
-            v.toNat) + whistC tailC highC v.toNat + (syncF events v.toNat + syncF eventsC v.toNat) +
+          keyExtra (pinTerms config pulled anc fin) (fromFin.append tail) tailC highC
+            eventsC events eventsF v.toNat) + whistC tailC highC v.toNat +
+      (syncF events v.toNat + syncF eventsC v.toNat) +
       slashR (pinTerms config pulled anc fin) v.toNat + bandC tailC highC v.toNat +
       bandR events v.toNat)) : ℕ) := by
   have early := h.early
   have term : ∀ v ∈ K4 pulled counted V, ((eC counted v : ℤ) - eR pulled v) ≤
       (((pinTerms config pulled anc fin).rise v.toNat +
         (credC tailC highC v.toNat +
-            keyExtra (pinTerms config pulled anc fin) tail tailC highC eventsC events eventsF
-              v.toNat) +
+            keyExtra (pinTerms config pulled anc fin) (fromFin.append tail) tailC highC
+              eventsC events eventsF v.toNat) +
         whistC tailC highC v.toNat + (syncF events v.toNat + syncF eventsC v.toNat) +
         slashR (pinTerms config pulled anc fin) v.toNat + bandC tailC highC v.toNat +
         bandR events v.toNat : ℕ) : ℤ) := by
@@ -10877,8 +10881,8 @@ theorem stub_P (h : Setting config checks g split fin pulled anc counted V)
       (∑ v ∈ (K5 counted V) with (pinTerms config pulled anc fin).exitingB v.toNat = false,
         (exitQ tailC v.toNat + riseQ tailC highC v.toNat)) +
       (∑ v ∈ (K5 counted V), ((propC tailC highC v.toNat +
-          keyExtra (pinTerms config pulled anc fin) tail tailC highC eventsC events eventsF
-            v.toNat) +
+          keyExtra (pinTerms config pulled anc fin) (fromFin.append tail) tailC highC
+            eventsC events eventsF v.toNat) +
         whistC tailC highC v.toNat +
         (syncF events v.toNat + syncF eventsC v.toNat) +
         slashR (pinTerms config pulled anc fin) v.toNat + bandC tailC highC v.toNat +
@@ -10905,8 +10909,8 @@ private theorem beyond_keys (h : Setting config checks g split fin pulled anc co
     ∑ v ∈ (K6 pulled counted) with pulled.validators.data.size ≤ v.toNat, eC counted v ≤
       (∑ v ∈ (K6 pulled counted) with pulled.validators.data.size ≤ v.toNat,
         (((credC tailC highC v.toNat +
-            keyExtra (pinTerms config pulled anc fin) tail tailC highC eventsC events eventsF
-              v.toNat) +
+            keyExtra (pinTerms config pulled anc fin) (fromFin.append tail) tailC highC
+              eventsC events eventsF v.toNat) +
             whistC tailC highC v.toNat) +
           (syncF events v.toNat + syncF eventsC v.toNat) +
           (slashR (pinTerms config pulled anc fin) v.toNat + bandC tailC highC v.toNat +
@@ -10937,8 +10941,8 @@ theorem stub_J (h : Setting config checks g split fin pulled anc counted V)
       (∑ v ∈ (K6 pulled counted) with (pinTerms config pulled anc fin).exitingB v.toNat = true,
         (eR pulled v + (pinTerms config pulled anc fin).rise v.toNat)) +
       (∑ v ∈ (K6 pulled counted), ((credC tailC highC v.toNat +
-          keyExtra (pinTerms config pulled anc fin) tail tailC highC eventsC events eventsF
-            v.toNat) +
+          keyExtra (pinTerms config pulled anc fin) (fromFin.append tail) tailC highC
+            eventsC events eventsF v.toNat) +
         whistC tailC highC v.toNat)) +
       (∑ v ∈ (K6 pulled counted), (syncF events v.toNat + syncF eventsC v.toNat)) +
       (∑ v ∈ (K6 pulled counted),
@@ -10965,8 +10969,8 @@ theorem stub_J (h : Setting config checks g split fin pulled anc counted V)
   have core : ∀ v ∈ K6 pulled counted, v.toNat < pulled.validators.data.size →
       eC counted v ≤ (eR pulled v + (pinTerms config pulled anc fin).rise v.toNat) +
         (((credC tailC highC v.toNat +
-            keyExtra (pinTerms config pulled anc fin) tail tailC highC eventsC events eventsF
-              v.toNat) +
+            keyExtra (pinTerms config pulled anc fin) (fromFin.append tail) tailC highC
+              eventsC events eventsF v.toNat) +
             whistC tailC highC v.toNat) +
           (syncF events v.toNat + syncF eventsC v.toNat) +
           (slashR (pinTerms config pulled anc fin) v.toNat + bandC tailC highC v.toNat +
@@ -11011,8 +11015,8 @@ theorem stub_J (h : Setting config checks g split fin pulled anc counted V)
   have insideSum : ∑ v ∈ inside, eC counted v ≤
       ∑ v ∈ inside, (((eR pulled v + (pinTerms config pulled anc fin).rise v.toNat) +
         (((credC tailC highC v.toNat +
-            keyExtra (pinTerms config pulled anc fin) tail tailC highC eventsC events eventsF
-              v.toNat) +
+            keyExtra (pinTerms config pulled anc fin) (fromFin.append tail) tailC highC
+              eventsC events eventsF v.toNat) +
             whistC tailC highC v.toNat) +
           (syncF events v.toNat + syncF eventsC v.toNat) +
           (slashR (pinTerms config pulled anc fin) v.toNat + bandC tailC highC v.toNat +
@@ -11077,8 +11081,8 @@ theorem stub_J (h : Setting config checks g split fin pulled anc counted V)
   have bounds := Finset.sum_filter_add_sum_filter_not (K6 pulled counted)
     (fun v => v.toNat < pulled.validators.data.size)
     (fun v => (((credC tailC highC v.toNat +
-        keyExtra (pinTerms config pulled anc fin) tail tailC highC eventsC events eventsF
-          v.toNat) +
+        keyExtra (pinTerms config pulled anc fin) (fromFin.append tail) tailC highC
+          eventsC events eventsF v.toNat) +
             whistC tailC highC v.toNat) +
           (syncF events v.toNat + syncF eventsC v.toNat) +
           (slashR (pinTerms config pulled anc fin) v.toNat + bandC tailC highC v.toNat +
@@ -11086,15 +11090,15 @@ theorem stub_J (h : Setting config checks g split fin pulled anc counted V)
   rw [notInside, ← hInside] at bounds
   have boundSplit : ∑ v ∈ K6 pulled counted,
       (((credC tailC highC v.toNat +
-          keyExtra (pinTerms config pulled anc fin) tail tailC highC eventsC events eventsF
-            v.toNat) +
+          keyExtra (pinTerms config pulled anc fin) (fromFin.append tail) tailC highC
+            eventsC events eventsF v.toNat) +
             whistC tailC highC v.toNat) +
           (syncF events v.toNat + syncF eventsC v.toNat) +
           (slashR (pinTerms config pulled anc fin) v.toNat + bandC tailC highC v.toNat +
             bandR events v.toNat)) =
       (∑ v ∈ K6 pulled counted, ((credC tailC highC v.toNat +
-          keyExtra (pinTerms config pulled anc fin) tail tailC highC eventsC events eventsF
-            v.toNat) +
+          keyExtra (pinTerms config pulled anc fin) (fromFin.append tail) tailC highC
+            eventsC events eventsF v.toNat) +
         whistC tailC highC v.toNat)) +
       (∑ v ∈ K6 pulled counted, (syncF events v.toNat + syncF eventsC v.toNat)) +
       ∑ v ∈ K6 pulled counted, (slashR (pinTerms config pulled anc fin) v.toNat +
