@@ -4196,14 +4196,18 @@ private theorem round_add_le {inc x S U : ℕ} (incPos : 0 < inc)
 /-- The effective balance of a key that stays on its path is at most the rise of the main regime. -/
 private theorem rise_arith {inc band capFor high finEB start eR eC Bc capHigh S U : Nat}
     (incPos : 0 < inc)
-    (stay : eC = eR ∨ (eC ≤ Bc + band ∧ eC ≤ max start (min (Bc - Bc % inc) capHigh)))
+    (stay : eC = eR ∨
+      (eC ≤ start ∧ start ≤ capFor + S + U ∧ start ≤ (high + band) - (high + band) % inc + S + U) ∨
+      (eC ≤ Bc + band ∧ eC ≤ max start (min (Bc - Bc % inc) capHigh)))
     (startLe : start ≤ max finEB ((high + S) - (high + S) % inc))
     (aligned : eC % inc = 0) (capped : eC ≤ capFor + S + U) (ceiling : Bc ≤ high + S)
     (slack : S = 0 ∨ inc ≤ U + 1 ∨ (S < inc ∧ inc ≤ S + U)) :
     eC ≤ eR + (min capFor (min (high + band - (high + band) % inc)
       (max finEB (high - high % inc))) - eR) + S + U := by
-  rcases stay with same | ⟨boundary, update⟩
+  rcases stay with same | ⟨atStart, viaCap, viaTop⟩ | ⟨boundary, update⟩
   · omega
+  · have b := round_add_le (x := high) incPos slack
+    omega
   · have alignedLe : ∀ x, eC ≤ x → eC ≤ x - x % inc := fun x le => by
       have := rounded_mono inc le
       rw [aligned] at this
@@ -7233,8 +7237,12 @@ private theorem rise_close (config : Config) (pulled anc fin : BeaconState prese
     (alignedC : eC % preset.EFFECTIVE_BALANCE_INCREMENT.toNat = 0)
     (startLe : start ≤ max (balanceAt fin i)
       ((H + S) - (H + S) % preset.EFFECTIVE_BALANCE_INCREMENT.toNat))
-    (stay : eC = balanceAt pulled i ∨ (eC ≤ Bc + preset.downwardBand ∧
-      eC ≤ max start (min (Bc - Bc % preset.EFFECTIVE_BALANCE_INCREMENT.toNat) capHigh)))
+    (stay : eC = balanceAt pulled i ∨
+      (eC ≤ start ∧ start ≤ capForOf (pinTerms config pulled anc fin) pulled i + S + U ∧
+        start ≤ (H + preset.downwardBand) -
+          (H + preset.downwardBand) % preset.EFFECTIVE_BALANCE_INCREMENT.toNat + S + U) ∨
+      (eC ≤ Bc + preset.downwardBand ∧
+        eC ≤ max start (min (Bc - Bc % preset.EFFECTIVE_BALANCE_INCREMENT.toNat) capHigh)))
     (capped : eC ≤ capForOf (pinTerms config pulled anc fin) pulled i + S + U)
     (ceiling : Bc ≤ H + S)
     (slack : S = 0 ∨ preset.EFFECTIVE_BALANCE_INCREMENT.toNat ≤ U + 1 ∨
@@ -14559,6 +14567,15 @@ private theorem key_close (h : Setting config checks g split fin pulled anc coun
           (riseTop (pinTerms config pulled anc fin) pulled fin v.toNat + S) %
             preset.EFFECTIVE_BALANCE_INCREMENT.toNat))
     (stay : balanceAt ending v.toNat = balanceAt pulled v.toNat ∨
+      (balanceAt ending v.toNat ≤ start ∧ ∀ S U : ℕ,
+        Bc ≤ riseTop (pinTerms config pulled anc fin) pulled fin v.toNat + S →
+        (S = 0 ∨ preset.EFFECTIVE_BALANCE_INCREMENT.toNat ≤ U + 1 ∨
+          (S < preset.EFFECTIVE_BALANCE_INCREMENT.toNat ∧
+            preset.EFFECTIVE_BALANCE_INCREMENT.toNat ≤ S + U)) →
+        start ≤ capForOf (pinTerms config pulled anc fin) pulled v.toNat + S + U ∧
+          start ≤ (riseTop (pinTerms config pulled anc fin) pulled fin v.toNat +
+            preset.downwardBand) - (riseTop (pinTerms config pulled anc fin) pulled fin v.toNat +
+            preset.downwardBand) % preset.EFFECTIVE_BALANCE_INCREMENT.toNat + S + U) ∨
       (balanceAt ending v.toNat ≤ Bc + preset.downwardBand ∧
         balanceAt ending v.toNat ≤ max start
           (min (Bc - Bc % preset.EFFECTIVE_BALANCE_INCREMENT.toNat) capHigh)))
@@ -14700,7 +14717,10 @@ private theorem key_close (h : Setting config checks g split fin pulled anc coun
       balanceAt ending v.toNat ≤
         balanceAt pulled v.toNat + (pinTerms config pulled anc fin).rise v.toNat + S + U :=
     fun S U ceiling slack cap => rise_close config pulled anc fin v.toNat hH h.bands.1 kept
-      alignedC (by subst hH; exact startLe S ceiling) stay cap ceiling slack
+      alignedC (by subst hH; exact startLe S ceiling)
+      (stay.imp_right fun st => st.elim
+        (fun ⟨atStart, bounds⟩ => Or.inl ⟨atStart, by subst hH; exact bounds S U ceiling slack⟩)
+        Or.inr) cap ceiling slack
   have fK : flowK (pinTerms config pulled anc fin) tailC highC eventsC events eventsF v.toNat =
       flowGain (pinTerms config pulled anc fin) tailC highC eventsC events eventsF v.toNat := by
     simp [flowK, kept]
@@ -15165,7 +15185,8 @@ private theorem key_core_frozen_from (h : Setting config checks g split fin pull
       (by omega) (Nat.le_trans atC ceiling) start
   exact keyCeiling_of_close anc (fromFin.append tail) tailC highC eventsC events eventsF v.toNat Cr
     (key_close h tail fromFin tailC highC v kept P hP Df D q gc Cr M Bc _ hDf hD hq hM hform hBc
-    rateLow maxLe (effectiveAt (⟨fork, c⟩ : ForkedBeaconState preset) v.toNat) startLe stay
+    rateLow maxLe (effectiveAt (⟨fork, c⟩ : ForkedBeaconState preset) v.toNat) startLe
+    (Or.imp_right Or.inr stay)
     (fun _ => Nat.le_trans cappedC (Nat.le_add_right _ _)) creditsLe noCredit) creditsLe
 
 open DirectSafety.Apriori DirectSafety.Apriori.Internal in
