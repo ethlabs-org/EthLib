@@ -2723,10 +2723,15 @@ private theorem band_sum_le (h : Setting config checks g split fin pulled anc co
     UInt64.le_iff_toNat_le.mp h.finalized
   have called : (getCurrentEpoch split).toNat ≤ (getCurrentEpoch pulled).toNat :=
     UInt64.le_iff_toNat_le.mp h.called
-  have periodUp := Nat.div_le_div_right (c := max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat)
-    (Nat.le_succ (getCurrentEpoch pulled).toNat)
-  have periodDown := Nat.div_le_div_right (c := max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat)
-    finalized
+  have periodUp : (getCurrentEpoch pulled).toNat /
+      max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat ≤
+        ((getCurrentEpoch pulled).toNat + 1) /
+          max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat :=
+    Nat.div_le_div_right (Nat.le_succ _)
+  have periodDown : anc.finalizedCheckpoint.epoch.toNat /
+      max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat ≤
+        (getCurrentEpoch split).toNat / max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat :=
+    Nat.div_le_div_right finalized
   have epochs : (getCurrentEpoch pulled).toNat - (getCurrentEpoch split).toNat + 1 ≤
       (getCurrentEpoch pulled).toNat + 2 - anc.finalizedCheckpoint.epoch.toNat := by omega
   have fits := Nat.mul_le_mul_right
