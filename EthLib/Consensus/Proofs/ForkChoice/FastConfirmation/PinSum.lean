@@ -5904,8 +5904,12 @@ private theorem floorC_stay (h : Setting config checks g split fin pulled anc co
   have partialLe := run_partials_le_due h (fromFin.append tailC) h.near i replayed
   obtain ⟨slack, start, pass, arith⟩ := floorC_margin h fromFin tailC replayed i val initial ρn ρd
     positive leaky above base0 X low hbase0 hlow fall
-  have floorAt := cfloor_balance h counted (fromFin.append tailC) h.near replayed i val initial
-    clean retained slack ρn ρd (low - (events.map (syncDebit i.toNat)).sum) start pass arith
+  have floorAt : ∀ {p : ForkedBeaconState preset} (r1 : Run config checks ⟨fork, fin⟩ p)
+      (r2 : Run config checks p ⟨fork, counted⟩), r1.append r2 = fromFin.append tailC →
+      low - (events.map (syncDebit i.toNat)).sum ≤ actualBalanceAt p i.toNat :=
+    fun r1 r2 whole => cfloor_balance h counted (fromFin.append tailC) h.near replayed i val
+      initial clean retained slack ρn ρd (low - (events.map (syncDebit i.toNat)).sum) start pass
+      arith r1 r2 whole
   have forkEnd : ∀ {p : ForkedBeaconState preset} (r2 : Run config checks p ⟨fork, counted⟩),
       p.fork < .glamsterdam := fun r2 =>
     Nat.lt_of_le_of_lt (fork_le_of_chainSteps r2.chainSteps) h.early
