@@ -15064,6 +15064,20 @@ private theorem inc_le_ebUp (h : Setting config checks g split fin pulled anc co
   refine le_max_of_le_right (le_min capLe (floor _ ?_))
   omega
 
+/-- The bound that the core reads for a key of R's registry is at most its bound and its slack. -/
+private theorem whistleRead_le (t : PinTerms preset) (pulled anc counted : BeaconState preset fork)
+    {x y : ForkedBeaconState preset} (tail : Run config checks x y)
+    {x' y' : ForkedBeaconState preset} (rrun : Run config checks x' y') (highC high : ℕ)
+    (eventsC eventsF events : List (BalanceEvent preset)) (fin : BeaconState preset fork)
+    (i : ℕ) :
+    whistleRead t pulled anc counted tail rrun highC high eventsC eventsF events fin i ≤
+      whistleEnv t pulled anc i +
+        whistleSlack t tail rrun highC high eventsC eventsF events fin i := by
+  unfold whistleRead
+  split_ifs
+  · exact min_le_left _ _
+  · exact le_rfl
+
 /-- A key of R's registry is read at most twice the largest of its bounds by `whistleEnv`.
 
 The increment that a key slashed on R's branch adds is at most its bound `ebUp`.
@@ -15321,7 +15335,9 @@ The bands of the consolidation targets are at most a fifth of the consolidation 
 
 The bands of the credited keys are the upward band for each slot of the window.
 
-`SB` is the bands of the keys that hold a seat on the shared segment or on R's run. -/
+`SB` is the bands of the keys that hold a seat on the shared segment or on R's run.
+
+`SU` is the units and the induced leak of the keys. -/
 private theorem slack_le (h : Setting config checks g split fin pulled anc counted V)
     (fromFin : Run config checks ⟨fork, fin⟩ ⟨fork, split⟩)
     (tail : Run config checks ⟨fork, split⟩ ⟨fork, pulled⟩) (high : ℕ)
@@ -15334,12 +15350,14 @@ private theorem slack_le (h : Setting config checks g split fin pulled anc count
     {eventsC : List (BalanceEvent preset)} (replayedC : tailC.balanceEvents highC = .ok eventsC)
     (highLe : highC ≤ (getCurrentEpoch pulled).toNat)
     (T : Finset ℕ) (inside : ∀ i ∈ T, i < split.validators.data.size)
-    (quiet : ∀ i ∈ T, depPre eventsC i = 0) (SB : ℕ)
+    (quiet : ∀ i ∈ T, depPre eventsC i = 0) (SB SU : ℕ)
     (seat : ∑ i ∈ T, (bandR (eventsF ++ events) i +
       if (pinTerms config pulled anc fin).exitBeforeFin i = true then
-        (if 0 < syncCr eventsF i then preset.upwardBand else 0) else 0) ≤ SB) :
-    ∑ i ∈ T, whistleSlack (pinTerms config pulled anc fin) tailC highC high eventsC eventsF events
-        fin i ≤
+        (if 0 < syncCr eventsF i then preset.upwardBand else 0) else 0) ≤ SB)
+    (units : ∑ i ∈ T, (unitK (pinTerms config pulled anc fin) tailC highC eventsC events eventsF i +
+      inducedR (pinTerms config pulled anc fin) (fromFin.append tail) i) ≤ SU) :
+    ∑ i ∈ T, whistleSlack (pinTerms config pulled anc fin) tailC (fromFin.append tail) highC high
+        eventsC eventsF events fin i ≤
       2 * ((11 * ((pinTerms config pulled anc fin).consolidationsX +
         (pinTerms config pulled anc fin).depth * (pinTerms config pulled anc fin).proposerCredit +
         (pinTerms config pulled anc fin).depth * preset.SLOTS_PER_EPOCH.toNat *
@@ -15356,7 +15374,7 @@ private theorem slack_le (h : Setting config checks g split fin pulled anc count
           max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat + 2) *
             preset.SYNC_COMMITTEE_SIZE.toNat +
         (pinTerms config pulled anc fin).depth * preset.MAX_PENDING_DEPOSITS_PER_EPOCH.toNat) +
-      SB := by
+      SB + SU := by
   classical
   obtain ⟨toPulled⟩ := h.toPulled
   have grows : split.validators.data.size ≤ counted.validators.data.size := by
@@ -15369,15 +15387,17 @@ private theorem slack_le (h : Setting config checks g split fin pulled anc count
     Nat.lt_trans (Nat.lt_of_lt_of_le (inside i member) grows) within
   have conv := sum_image_ofNat T small
   -- each credit is rounded to at most its double
-  have pointwise : ∀ i ∈ T, whistleSlack (pinTerms config pulled anc fin) tailC highC high eventsC
-      eventsF events fin i ≤
+  have pointwise : ∀ i ∈ T, whistleSlack (pinTerms config pulled anc fin) tailC
+      (fromFin.append tail) highC high eventsC eventsF events fin i ≤
       2 * (propN tailC highC i + whistC tailC highC i +
         (syncCr eventsC i + syncCr eventsF i + syncD eventsF i + syncD events i) +
         (consAmt eventsC i + consAmt eventsF i)) +
       bandC tailC highC i + bandX fin highC i + bandX fin high i +
       (bandR (eventsF ++ events) i +
         if (pinTerms config pulled anc fin).exitBeforeFin i = true then
-          (if 0 < syncCr eventsF i then preset.upwardBand else 0) else 0) := by
+          (if 0 < syncCr eventsF i then preset.upwardBand else 0) else 0) +
+      (unitK (pinTerms config pulled anc fin) tailC highC eventsC events eventsF i +
+        inducedR (pinTerms config pulled anc fin) (fromFin.append tail) i) := by
     intro i member
     have dep := quiet i member
     unfold whistleSlack
@@ -15385,9 +15405,12 @@ private theorem slack_le (h : Setting config checks g split fin pulled anc count
     split_ifs <;> omega
   have total := Finset.sum_le_sum pointwise
   simp only [Finset.sum_add_distrib, ← Finset.mul_sum] at total
-  simp only [Finset.sum_add_distrib] at seat
+  simp only [Finset.sum_add_distrib] at seat units
   -- the sums of the credits
-  have prop := proposer_rewards_le h tailC highC (T.image UInt64.ofNat)
+  obtain ⟨toFin⟩ := h.toFin
+  have prop := proposer_rewards_le h (toFin.append fromFin) (.inl ⟨fromFin⟩) Run.nil rfl tailC highC
+    (T.image UInt64.ofNat)
+  rw [run_nil_append] at prop
   have c1 := conv fun i => propN tailC highC i
   beta_reduce at c1
   rw [c1] at prop
@@ -15441,6 +15464,8 @@ It holds their whistleblower credits twice, because their rounding is at most th
 
 Those credits are bounded by the base itself, so `Q * W ≤ Zt + 2 * Q` and `Q ≤ Zt / (W - 2)`. -/
 private theorem flow_whist_of (h : Setting config checks g split fin pulled anc counted V)
+    (fromFin : Run config checks ⟨fork, fin⟩ ⟨fork, split⟩)
+    (tail : Run config checks ⟨fork, split⟩ ⟨fork, pulled⟩)
     {eventsF events : List (BalanceEvent preset)} (high : ℕ)
     (tailC : Run config checks ⟨fork, split⟩ ⟨fork, counted⟩) (highC : ℕ)
     (endEpochC : (getCurrentEpoch counted).toNat ≤ highC + 1)
@@ -15448,9 +15473,20 @@ private theorem flow_whist_of (h : Setting config checks g split fin pulled anc 
     (registry : ∀ {a b : ForkedBeaconState preset} (step : Step config checks a b),
       tailC.Contains step → ∀ i, i < split.validators.data.size →
         (split.validators.data[i]?.map (·.slashed)).getD false = false →
+        (!(a.state.validators.data[i]?.map (·.slashed)).getD false &&
+          (b.state.validators.data[i]?.map (·.slashed)).getD false) = true →
           effectiveAt a i ≤ whistleEnv (pinTerms config pulled anc fin) pulled anc i +
-            whistleSlack (pinTerms config pulled anc fin) tailC highC high eventsC eventsF events
-              fin i)
+            whistleSlack (pinTerms config pulled anc fin) tailC (fromFin.append tail) highC high
+              eventsC eventsF events fin i)
+    (registryCharge : ∀ {a b : ForkedBeaconState preset} (step : Step config checks a b),
+      tailC.Contains step → ∀ i, i < split.validators.data.size →
+        (split.validators.data[i]?.map (·.slashed)).getD false = false →
+        (!(a.state.validators.data[i]?.map (·.slashed)).getD false &&
+          (b.state.validators.data[i]?.map (·.slashed)).getD false) = true →
+        (tailC.departureCharges.any fun c => c.index == i) = true →
+          effectiveAt a i ≤ chargeAmt tailC i + riseQ tailC highC i +
+            whistleSlack (pinTerms config pulled anc fin) tailC (fromFin.append tail) highC high
+              eventsC eventsF events fin i)
     (Sx Y ck : ℕ)
     (hSx : Sx = ∑ i ∈ (pinTerms config pulled anc fin).positions,
       max (max ((pinTerms config pulled anc fin).ebUp i)
@@ -15466,8 +15502,8 @@ private theorem flow_whist_of (h : Setting config checks g split fin pulled anc 
       (pinTerms config pulled anc fin).depthFin * preset.MAX_PENDING_DEPOSITS_PER_EPOCH.toNat)
     (slack : (∑ i ∈ ((slashedOnC split counted).filter
           (fun i => i < split.validators.data.size)).filter (fun i => ¬ 0 < depPre eventsC i),
-        whistleSlack (pinTerms config pulled anc fin) tailC highC high eventsC eventsF events
-          fin i) +
+        whistleSlack (pinTerms config pulled anc fin) tailC (fromFin.append tail) highC high
+          eventsC eventsF events fin i) +
       preset.MAX_EFFECTIVE_BALANCE_ELECTRA.toNat *
         ((pinTerms config pulled anc fin).depthFin *
           preset.MAX_PENDING_DEPOSITS_PER_EPOCH.toNat) ≤
@@ -15483,7 +15519,8 @@ private theorem flow_whist_of (h : Setting config checks g split fin pulled anc 
   obtain ⟨toPulled⟩ := h.toPulled
   have grows : split.validators.data.size ≤ pulled.validators.data.size :=
     registryGrows_of_chainSteps toPulled.chainSteps
-  have core := whistle_core h high tailC highC endEpochC replayedC registry
+  have core := whistle_core h fromFin tail high tailC highC endEpochC replayedC registry
+    registryCharge
   obtain ⟨T1, hT1⟩ : ∃ T, T = (slashedOnC split counted).filter
       (fun i => i < split.validators.data.size) := ⟨_, rfl⟩
   obtain ⟨T2, hT2⟩ : ∃ T, T = ((slashedOnC split counted).filter
@@ -15510,25 +15547,26 @@ private theorem flow_whist_of (h : Setting config checks g split fin pulled anc 
       rw [Nat.add_mul]
       exact Nat.add_le_add (Nat.div_mul_le_self a W) (Nat.div_mul_le_self b W))
   -- the registry keys without a deposit on C's branch pay their bound and their credits
-  have x1 : ∑ i ∈ T1, min (whistleEnv t pulled anc i +
-        whistleSlack t tailC highC high eventsC eventsF events fin i) M ≤
+  have x1 : ∑ i ∈ T1, min (whistleRead t pulled anc counted tailC (fromFin.append tail) highC high
+        eventsC eventsF events fin i) M ≤
       (∑ i ∈ T1, whistleEnv t pulled anc i) +
         (∑ i ∈ T1.filter (fun i => ¬ 0 < depPre eventsC i),
-          whistleSlack t tailC highC high eventsC eventsF events fin i) +
+          whistleSlack t tailC (fromFin.append tail) highC high eventsC eventsF events fin i) +
         M * (T1.filter (fun i => 0 < depPre eventsC i)).card := by
     rw [← Finset.sum_filter_add_sum_filter_not T1 (fun i => 0 < depPre eventsC i)]
-    have deposited : ∑ i ∈ T1.filter (fun i => 0 < depPre eventsC i), min (whistleEnv t pulled anc i
-        + whistleSlack t tailC highC high eventsC eventsF events fin i) M ≤
+    have deposited : ∑ i ∈ T1.filter (fun i => 0 < depPre eventsC i), min (whistleRead t pulled anc
+        counted tailC (fromFin.append tail) highC high eventsC eventsF events fin i) M ≤
           M * (T1.filter (fun i => 0 < depPre eventsC i)).card :=
       (Finset.sum_le_sum fun i _ => min_le_right _ _).trans (by
         rw [Finset.sum_const, smul_eq_mul, Nat.mul_comm])
-    have quiet : ∑ i ∈ T1.filter (fun i => ¬ 0 < depPre eventsC i), min (whistleEnv t pulled anc i +
-        whistleSlack t tailC highC high eventsC eventsF events fin i) M ≤
+    have quiet : ∑ i ∈ T1.filter (fun i => ¬ 0 < depPre eventsC i), min (whistleRead t pulled anc
+        counted tailC (fromFin.append tail) highC high eventsC eventsF events fin i) M ≤
           (∑ i ∈ T1.filter (fun i => ¬ 0 < depPre eventsC i), whistleEnv t pulled anc i) +
           ∑ i ∈ T1.filter (fun i => ¬ 0 < depPre eventsC i),
-            whistleSlack t tailC highC high eventsC eventsF events fin i := by
+            whistleSlack t tailC (fromFin.append tail) highC high eventsC eventsF events fin i := by
       rw [← Finset.sum_add_distrib]
-      exact Finset.sum_le_sum fun i _ => min_le_left _ _
+      exact Finset.sum_le_sum fun i _ =>
+        (min_le_left _ _).trans (whistleRead_le _ _ _ _ _ _ _ _ _ _ _ _ _)
     have sub : ∑ i ∈ T1.filter (fun i => ¬ 0 < depPre eventsC i), whistleEnv t pulled anc i ≤
         ∑ i ∈ T1, whistleEnv t pulled anc i :=
       Finset.sum_le_sum_of_subset (Finset.filter_subset _ _)
@@ -15547,7 +15585,7 @@ private theorem flow_whist_of (h : Setting config checks g split fin pulled anc 
   -- the numerator of the three sums, which every set of keys is bounded by over `W`
   obtain ⟨N, hN⟩ : ∃ N, N = (∑ i ∈ T1, whistleEnv t pulled anc i) +
       (∑ i ∈ T1.filter (fun i => ¬ 0 < depPre eventsC i),
-        whistleSlack t tailC highC high eventsC eventsF events fin i) +
+        whistleSlack t tailC (fromFin.append tail) highC high eventsC eventsF events fin i) +
       M * (T1.filter (fun i => 0 < depPre eventsC i)).card + M * T2.card + M * T3.card :=
     ⟨_, rfl⟩
   have bound : ∀ S' : Finset ValidatorIndex, ∑ v ∈ S', whistC tailC highC v.toNat ≤ N / W := by
