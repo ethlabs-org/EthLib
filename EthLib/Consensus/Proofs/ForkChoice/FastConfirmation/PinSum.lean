@@ -10139,8 +10139,6 @@ theorem bud_sync (h : Setting config checks g split fin pulled anc counted V)
   -- no block of the shared segment has a proposer among the keys of EK (the lookahead walk)
   have covers : preset.MIN_SEED_LOOKAHEAD.toNat + 1 ≤ preset.MAX_SEED_LOOKAHEAD.toNat := sorry
   obtain ⟨toFin⟩ := h.toFin
-  obtain ⟨toPulled⟩ := h.toPulled
-  have electra : .pectra ≤ fork := Nat.le_trans (by decide) h.fulu
   have apartK : ∀ {u w : ForkedBeaconState preset} (step : Step config checks u w),
       fromFin.Contains step → PinSplit5.stepApart PK step := by
     intro u w step member
@@ -10159,20 +10157,7 @@ theorem bud_sync (h : Setting config checks g split fin pulled anc counted V)
         | some w0 =>
           simp [pinTerms, found0] at flag
           exact ⟨w0, rfl, flag⟩
-      have assigned : w0.exitEpoch ≠ FAR_FUTURE_EPOCH := fun far => by
-        have := getCurrentEpoch_succ_lt_farFuture h.twoSlots fin
-        have := congrArg UInt64.toNat far
-        omega
-      obtain ⟨u0, foundFin⟩ : ∃ u0, fin.validators.data[v.toNat]? = some u0 := by
-        by_contra missing
-        push_neg at missing
-        obtain ⟨c, member, -, epoch⟩ := PinSplit.Run.charge_of_exit (fromFin.append toPulled)
-          electra h.early v.toNat (fun u0 found0 => absurd found0 (missing u0)) w0 foundPulled
-          assigned
-        have late := DirectSafety.Run.departureCharges_epoch_ge_start (fromFin.append toPulled)
-          electra h.early c member
-        omega
-      have kept := exit_kept_of_le_fin h foundFin foundPulled exited
+      obtain ⟨u0, foundFin, kept⟩ := exit_kept_of_le_fin h foundPulled exited
       have inactive := inactive_of_exited h.twoSlots (pre.snoc (Step.block engine signed due ok))
         foundFin (by rw [kept]; exact exited)
       have look := Run.lookaheadActive covers h.genesis
