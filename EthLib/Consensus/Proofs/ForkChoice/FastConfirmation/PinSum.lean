@@ -12482,13 +12482,14 @@ private def slashedOnC (split counted : BeaconState preset fork) : Finset ℕ :=
 
 /-- The bound on the effective balance of a key of R's registry that R's call reads.
 
-It is the key's effective balance and its rise, if R's branch slashes it.
+It is the key's effective balance, its rise and one increment, if R's branch slashes it.
 
-`branchR` pays that bound for such a key.
+`branchR` pays that bound for such a key, and its increment covers the drop of R's penalty.
 
 Otherwise it is also at least the key's bound `ebUp` and its balance `bF` at the finalized state. -/
 private def whistleEnv (t : PinTerms preset) (pulled : BeaconState preset fork) (i : ℕ) : ℕ :=
-  if t.slashedRB i = true then balanceAt pulled i + t.rise i
+  if t.slashedRB i = true then
+    balanceAt pulled i + t.rise i + preset.EFFECTIVE_BALANCE_INCREMENT.toNat
   else max (max (t.ebUp i) (balanceAt pulled i + t.rise i)) (t.bF i)
 
 /-- The credits that raise the effective balance of a key of R's registry on C's branch.
