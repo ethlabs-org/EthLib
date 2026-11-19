@@ -377,6 +377,7 @@ private theorem processWithdrawalRequest {electra : .pectra ≤ fork} {request :
   · exact initiateValidatorExit (config := config) (getValidator_eq_ok_iff.mpr accepted.found)
       (active_le (isActiveValidator_of_canRequest accepted.allowed)) exited
   · exact of_data (congrArg (·.data) (requestPartialWithdrawal_kept withdrawn).1)
+      (frame_requestPartialWithdrawal withdrawn).finalized
 
 private theorem queueConsolidation {electra : .pectra ≤ fork}
     {sourceIndex targetIndex : ValidatorIndex} {source : Validator}
