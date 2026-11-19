@@ -9,6 +9,9 @@ Not yet released.
 
 ### Proof additions
 
+- `genesis_hysteresis_up` bounds the balance of a genesis key below its cap by its effective balance plus the upward band.
+  Genesis rounds each balance down to an increment, so the rest is less than one increment.
+
 - `DirectSafety.Apriori.Internal.perIncrement_exists` is public: the base reward per increment exists at a positive total when the scaled factor fits.
   The pin reads it to show that its base reward per increment is at least four.
   The pin's preset facts gain `fits`, that the scaled base reward factor fits in a `Gwei`, which both presets meet.
