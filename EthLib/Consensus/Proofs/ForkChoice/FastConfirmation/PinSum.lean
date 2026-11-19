@@ -6662,8 +6662,8 @@ private theorem ebUp_aligned (h : Setting config checks g split fin pulled anc c
       preset.EFFECTIVE_BALANCE_INCREMENT.toNat = 0 := by
     cases found : pulled.validators.data[i]? with
     | none => simp [PinSplit2.capAt, found]
-    | some w => exact capAt_aligned h.aligned (z := (⟨fork, pulled⟩ : ForkedBeaconState preset))
-        electra found
+    | some w =>
+      exact capAt_aligned h.aligned (z := (⟨fork, pulled⟩ : ForkedBeaconState preset)) electra found
   have maxAligned : ∀ a b : ℕ, a % preset.EFFECTIVE_BALANCE_INCREMENT.toNat = 0 →
       b % preset.EFFECTIVE_BALANCE_INCREMENT.toNat = 0 →
       max a b % preset.EFFECTIVE_BALANCE_INCREMENT.toNat = 0 := fun a b ha hb => by
