@@ -93,6 +93,7 @@ structure PinTerms (preset : Preset) where
   consolidationsXCount : ℕ
   exitBeforeFin : ℕ → Bool
   bF : ℕ → ℕ
+  finProposals : ℕ
   gainHigh : Bool
   pendingRB : ℕ → Bool
   credits : ℕ
@@ -137,7 +138,7 @@ def PinTerms.total (t : PinTerms preset) : ℕ :=
     3 * (∑ i ∈ t.positions with t.current i = true, t.fall i) +
     3 * t.exitingRise + t.exitingCredits + t.exitingBands + t.queueRise + t.reserveW + t.flagged +
     t.seatShortfall + (33 * t.consolidationsX + 9) / 10 + t.exitedR + t.pendingR + t.creditGain +
-    t.creditUnits + t.syncLeak + 3 * t.unitGain * t.consolidationsXCount)
+    t.creditUnits + t.syncLeak + 3 * t.unitGain * t.consolidationsXCount + t.finProposals)
 
 /-- A verbatim copy of `pinReserve`'s lets (spec rev 2.5.3), returning the named terms. -/
 def pinTerms (config : Config) (state ancestor finalizedState : BeaconState preset fork) :
@@ -391,6 +392,11 @@ def pinTerms (config : Config) (state ancestor finalizedState : BeaconState pres
   let syncProposer := slots * preset.SYNC_COMMITTEE_SIZE.toNat *
     (syncEnvelope * PROPOSER_WEIGHT.toNat / (WEIGHT_DENOMINATOR.toNat - PROPOSER_WEIGHT.toNat))
   let proposerCredit := proposerBase + attesterExcess * perIncrement + syncProposer
+  -- Proposer credits on the finalized block's segment to keys that exited before it.
+  --
+  -- The spec gives them none; the proof bounds them by every proposal of the segment.
+  let finProposals := (3 * depthFin * proposerCredit + p.WHISTLEBLOWER_REWARD_QUOTIENT.toNat - 1) /
+    p.WHISTLEBLOWER_REWARD_QUOTIENT.toNat
   -- The slashable keys of the window that the quorum reserve's whistleblower term leaves out.
   --
   -- Those are keys active from the next epoch, or withdrawable after the finalized epoch.
@@ -585,7 +591,7 @@ def pinTerms (config : Config) (state ancestor finalizedState : BeaconState pres
     branchR, late, syncSeats, rise, fall, positions, current, exitingRise, exitingCredits,
     queueRise, reserveW, flagged, seatShortfall, consolidationsX, exitedR, depth, syncProposer,
     proposerCredit, exitingBands, pendingR, creditGain, creditUnits, syncLeak, unitGain,
-    consolidationsXCount, exitBeforeFin, bF,
+    consolidationsXCount, exitBeforeFin, bF, finProposals,
     gainHigh := !decide (11 * depth * (gainRateMax + 1) ≤ capMax),
     pendingRB := fun i => (validator i).any (fun v =>
       decide (epoch.toNat < v.activationEligibilityEpoch.toNat) &&
