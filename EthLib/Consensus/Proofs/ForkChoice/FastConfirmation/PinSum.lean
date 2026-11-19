@@ -803,6 +803,15 @@ The tenth is rounded down, so that the tenths of several keys add up to at most 
 def credN {x y : ForkedBeaconState preset} (tail : Run config checks x y) (high v : ℕ) : ℕ :=
   (creditScan (fun s => decide (s = .rewards)) (fun s => decide (s = .deposits)) v high tail).1
 
+/-- The deposits credited to a key by events whose state before them does not hold it slashed.
+
+A slashed key's whistleblower reward reads its effective balance at the slashing.
+
+Only these deposits and its proposer credits can raise that balance. -/
+private def depPre (events : List (BalanceEvent preset)) (v : ℕ) : ℕ :=
+  ((events.filter fun e => e.source = .deposits ∧
+      ¬ (slashedFlagAt e.before.state v = some true)).map (keyCredit v)).sum
+
 /-- Non-attestation credits to the key on C's branch since the split, whistleblower and sync credits
 excluded: proposer, deposits applied and consolidations.
 
@@ -8728,9 +8737,11 @@ theorem bud_credits (h : Setting config checks g split fin pulled anc counted V)
       (∑ v ∈ (K4 pulled counted V), bandC tailC highC v.toNat) +
       (∑ v ∈ (K5 counted V), bandC tailC highC v.toNat) +
       (∑ v ∈ (K6 pulled counted), bandC tailC highC v.toNat) +
-      wShare preset fork (∑ v ∈ SC pulled counted split, credN tailC highC v.toNat) +
+      wShare preset fork (∑ v ∈ SC pulled counted split,
+        (propN tailC highC v.toNat + depPre eventsC v.toNat)) +
       (∑ v ∈ SC pulled counted split, bandC tailC highC v.toNat) +
-      wShare preset fork (∑ v ∈ CS pulled counted, credN tailC highC v.toNat) +
+      wShare preset fork (∑ v ∈ CS pulled counted,
+        (propN tailC highC v.toNat + depPre eventsC v.toNat)) +
       (∑ v ∈ CS pulled counted, bandC tailC highC v.toNat)) +
         11 * ((pinTerms config pulled anc fin).depth * (pinTerms config pulled anc fin).syncProposer) ≤
       10 * (pinTerms config pulled anc fin).credits +
@@ -10545,14 +10556,16 @@ theorem bud_whistle (h : Setting config checks g split fin pulled anc counted V)
       (∑ v ∈ (K6 pulled counted), (whistC tailC highC v.toNat : ℤ))) ≤
       -cK7 pulled counted - cS pulled counted V + (pinTerms config pulled anc fin).reserveW +
         (pinTerms config pulled anc fin).flagged + (pinTerms config pulled anc fin).seatShortfall +
-        ((wShare preset fork (∑ v ∈ SC pulled counted split, credN tailC highC v.toNat) +
+        ((wShare preset fork (∑ v ∈ SC pulled counted split,
+            (propN tailC highC v.toNat + depPre eventsC v.toNat)) +
           wShare preset fork (∑ v ∈ SC pulled counted split, syncCr eventsC v.toNat) +
           wShare preset fork (∑ v ∈ SC pulled counted split, consAmt eventsC v.toNat) +
           wShare preset fork
             (∑ v ∈ SC pulled counted split, (syncD eventsF v.toNat + syncD events v.toNat)) +
           (∑ v ∈ SC pulled counted split, bandC tailC highC v.toNat) +
           (∑ v ∈ SC pulled counted split, bandX fin highC v.toNat) +
-          wShare preset fork (∑ v ∈ CS pulled counted, credN tailC highC v.toNat) +
+          wShare preset fork (∑ v ∈ CS pulled counted,
+            (propN tailC highC v.toNat + depPre eventsC v.toNat)) +
           wShare preset fork (∑ v ∈ CS pulled counted, syncCr eventsC v.toNat) +
           wShare preset fork (∑ v ∈ CS pulled counted, consAmt eventsC v.toNat) +
           (∑ v ∈ CS pulled counted, bandC tailC highC v.toNat) +
