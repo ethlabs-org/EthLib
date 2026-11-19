@@ -8963,19 +8963,11 @@ private theorem creditScan_le_deposits {g x y : ForkedBeaconState preset}
     (high v : ℕ) :
     (creditScan (fun _ => false) (fun s => decide (s ≠ .rewards ∧ s ≠ .consolidations)) v high
         tail).1 ≤
-      (creditScan (fun _ => false) (fun s => decide (s = .deposits)) v high tail).1 := by
-  induction tail with
-  | nil => simp [creditScan_nil_fst]
-  | @snoc middle last pre step ih =>
-    have previous := ih (Nat.lt_of_le_of_lt step.chainStep.fork_le early)
-    have one := step_credit_le_deposits (shared.append pre) genesis step early
+      (creditScan (fun _ => false) (fun s => decide (s = .deposits)) v high tail).1 :=
+  creditScan_le_of_steps _ _ _ _ v high tail fun pre step ⟨post⟩ =>
+    step_credit_le_deposits (shared.append pre) genesis step
+      (Nat.lt_of_le_of_lt (fork_le_of_chainSteps post.chainSteps) early)
       (Nat.le_trans electra (fork_le_of_chainSteps pre.chainSteps)) v
-    rw [creditScan_snoc_fst, creditScan_snoc_fst]
-    by_cases selected : (getCurrentEpoch middle.state).toNat ≤ high + 1
-    · simp only [selected, ↓reduceIte]
-      omega
-    · simp only [selected, ↓reduceIte]
-      exact previous
 
 /-- A key that a run credits.
 
