@@ -6113,10 +6113,16 @@ private theorem V_active (h : Setting config checks g split fin pulled anc count
     cases found
     exact flag
   have fallEq := fall_eq config pulled anc fin v.toNat
-  rw [if_pos h.shallow] at fallEq
+  simp only [h.shallow, ↓reduceIte] at fallEq
   have floorLe : (pinTerms config pulled anc fin).floorC v.toNat ≤ balanceAt fin v.toNat := by
-    simp only [pinTerms]
-    split <;> simp
+    obtain ⟨low, base, shape⟩ : ∃ low base : ℕ, (pinTerms config pulled anc fin).floorC v.toNat =
+        if max (balanceAt fin v.toNat) base ≤ low + preset.downwardBand then balanceAt fin v.toNat
+        else min (balanceAt fin v.toNat) (low - low % preset.EFFECTIVE_BALANCE_INCREMENT.toNat) :=
+      ⟨_, _, rfl⟩
+    rw [shape]
+    split
+    · exact Nat.le_refl _
+    · exact Nat.min_le_left _ _
   have syncLe : (eventsC.map (syncDebit v.toNat)).sum ≤ syncF eventsC v.toNat := by
     rw [sum_syncDebit_eq]
     unfold syncF
@@ -6183,7 +6189,8 @@ private theorem V_active (h : Setting config checks g split fin pulled anc count
         (retained_of_active h fromFin tailC v foundC exitAfter)
         h.facts.quarterBand ρn ρd positive leaky above base0 X (base0 - X) (balanceAt fin v.toNat)
         hbase0 rfl hfin hfall sync test (fromFin.append tailC) Run.nil rfl)
-    simp only [eCdef, eRdef] at *
+    have effEq : effectiveAt (⟨fork, counted⟩ : ForkedBeaconState preset) v.toNat =
+        balanceAt counted v.toNat := rfl
     omega
 
 end LowBound
