@@ -3340,40 +3340,6 @@ private theorem envelope_arith {I cap capFor high kept S CB finEB e0 effX : ℕ}
   have r3 := rounded_mono I keptLe
   omega
 
-/-- The quarter of any total has a base reward per increment, if any total has one.
-
-The factor times the increment fits in a `UInt64` for every total, and the quarter is positive.
--/
-private theorem quarter_base_ok (facts : PinPresetFacts preset) {total perIncrement : Gwei}
-    (perOk : getBaseRewardPerIncrement preset total = .ok perIncrement) (T : Gwei) :
-    ∃ pq, getBaseRewardPerIncrement preset
-      (if 18 * preset.EFFECTIVE_BALANCE_INCREMENT.toNat ≤ T.toNat then T / 4
-        else preset.EFFECTIVE_BALANCE_INCREMENT / 5) = .ok pq := by
-  have size := facts.incrementSize
-  have positive : 0 < (if 18 * preset.EFFECTIVE_BALANCE_INCREMENT.toNat ≤ T.toNat then T / 4
-      else preset.EFFECTIVE_BALANCE_INCREMENT / 5 : Gwei).toNat := by
-    split
-    · rename_i big
-      simp only [UInt64.toNat_div]
-      show 0 < T.toNat / 4
-      omega
-    · simp only [UInt64.toNat_div]
-      show 0 < preset.EFFECTIVE_BALANCE_INCREMENT.toNat / 5
-      omega
-  generalize (if 18 * preset.EFFECTIVE_BALANCE_INCREMENT.toNat ≤ T.toNat then T / 4
-    else preset.EFFECTIVE_BALANCE_INCREMENT / 5 : Gwei) = q at positive ⊢
-  simp only [getBaseRewardPerIncrement, liftArith, mapError_ok_iff, bind_ok_iff] at perOk
-  obtain ⟨scaled, scaledOk, -⟩ := perOk
-  have root : integerSquareroot q ≠ 0 := fun zero => by
-    have value := toNat_integerSquareroot q
-    rw [zero] at value
-    have := Nat.sqrt_pos.mpr positive
-    simp only [UInt64.toNat_zero] at value
-    omega
-  refine ⟨scaled / integerSquareroot q, ?_⟩
-  simp only [getBaseRewardPerIncrement, liftArith, mapError_ok_iff, bind_ok_iff]
-  exact ⟨scaled, scaledOk, divChecked_ok_iff.mpr ⟨root, by rw [UInt64.toNat_div]⟩⟩
-
 /-- A cap above the activation balance belongs to a validator with compounding credentials. -/
 private theorem compounding_of_cap {z : ForkedBeaconState preset} {i : ℕ}
     (electra : .pectra ≤ z.fork)
