@@ -8509,9 +8509,9 @@ private theorem cs_disjoint (h : Setting config checks g split fin pulled anc co
   · have unslashed := (h.voting v inV).2
     rw [flag] at unslashed
     simp at unslashed
-  · exact classes_unslashed (Finset.mem_union.mpr (.inl (Finset.mem_union.mpr (.inl in4)))) flag
-  · exact classes_unslashed (Finset.mem_union.mpr (.inl (Finset.mem_union.mpr (.inr in5)))) flag
-  · exact classes_unslashed (Finset.mem_union.mpr (.inr in6)) flag
+  · exact classes_unslashed (pulled := pulled) (by simp [in4]) flag
+  · exact classes_unslashed (pulled := pulled) (by simp [in5]) flag
+  · exact classes_unslashed (pulled := pulled) (by simp [in6]) flag
   · have unslashedSplit := (Finset.mem_filter.mp inSC).2.2
     simp only [slashedFlagAt, Option.map_eq_some_iff] at unslashedSplit
     obtain ⟨w, found, -⟩ := unslashedSplit
