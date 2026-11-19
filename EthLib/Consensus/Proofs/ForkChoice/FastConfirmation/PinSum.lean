@@ -430,11 +430,16 @@ def pinTerms (config : Config) (state ancestor finalizedState : BeaconState pres
   let slashedR := (positions.filter fun i => slashed i = true ∧ recentSlashing i = true).card
   let gainRateMax := capMax / inc * perIncrement *
     (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum / WEIGHT_DENOMINATOR.toNat
+  -- A key active by the finalized state can have a larger balance there, and its reward is charged.
+  --
+  -- The margin check prices that term at zero on every row (f1f20b0f8, section 33).
   let late := if tight then 0 else
     ∑ i ∈ positions with (validator i).any (fun v =>
       decide (v.activationEligibilityEpoch.toNat ≤ epoch.toNat) &&
         decide (finalized + preset.MAX_SEED_LOOKAHEAD.toNat < v.activationEpoch.toNat)),
-      (3 * effective i + rise i)
+      (3 * effective i + rise i +
+        3 * ((finEB i - effective i - rise i + (p.WHISTLEBLOWER_REWARD_QUOTIENT.toNat - 1)) /
+          p.WHISTLEBLOWER_REWARD_QUOTIENT.toNat))
   -- Every seat of every sync committee in the window counts, at the seat's envelope.
   --
   -- The window can include the call's previous period, which its state does not store.
@@ -5485,13 +5490,18 @@ theorem bud_exiting (h : Setting config checks g split fin pulled anc counted V)
           (Finset.mem_filter.mp member).2
     · exact (Finset.mem_filter.mp member).2
 
-/-- Outside the tight window, `late` is three times the stake of the late keys and their rise. -/
+/-- Outside the tight window, `late` is three times the stake of the late keys and their rise.
+
+It also holds the reward of what the finalized balance exceeds them by. -/
 private theorem late_eq (config : Config) (pulled anc fin : BeaconState preset fork) :
     (pinTerms config pulled anc fin).late =
       if (pinTerms config pulled anc fin).tight = true then 0 else
         ∑ i ∈ (pinTerms config pulled anc fin).positions with
           (pinTerms config pulled anc fin).lateB i = true,
-            (3 * balanceAt pulled i + (pinTerms config pulled anc fin).rise i) := rfl
+            (3 * balanceAt pulled i + (pinTerms config pulled anc fin).rise i +
+              3 * ((balanceAt fin i - balanceAt pulled i - (pinTerms config pulled anc fin).rise i +
+                ((parameters preset fork).WHISTLEBLOWER_REWARD_QUOTIENT.toNat - 1)) /
+                (parameters preset fork).WHISTLEBLOWER_REWARD_QUOTIENT.toNat)) := rfl
 
 /-- Late activations, weight 3 for V keys and for new keys. -/
 private theorem late_base (h : Setting config checks g split fin pulled anc counted V) :
@@ -5566,6 +5576,16 @@ private theorem late_base (h : Setting config checks g split fin pulled anc coun
     have split : ∑ v ∈ A, (3 * eR pulled v + (pinTerms config pulled anc fin).rise v.toNat) =
         3 * ∑ v ∈ A, eR pulled v + ∑ v ∈ A, (pinTerms config pulled anc fin).rise v.toNat := by
       rw [Finset.sum_add_distrib, Finset.mul_sum]
+    have grow : ∑ i ∈ (pinTerms config pulled anc fin).positions.filter
+          (fun i => (pinTerms config pulled anc fin).lateB i = true),
+            (3 * balanceAt pulled i + (pinTerms config pulled anc fin).rise i) ≤
+        ∑ i ∈ (pinTerms config pulled anc fin).positions.filter
+          (fun i => (pinTerms config pulled anc fin).lateB i = true),
+            (3 * balanceAt pulled i + (pinTerms config pulled anc fin).rise i +
+              3 * ((balanceAt fin i - balanceAt pulled i - (pinTerms config pulled anc fin).rise i +
+                ((parameters preset fork).WHISTLEBLOWER_REWARD_QUOTIENT.toNat - 1)) /
+                (parameters preset fork).WHISTLEBLOWER_REWARD_QUOTIENT.toNat)) :=
+      Finset.sum_le_sum fun i _ => Nat.le_add_right _ _
     omega
 
 /-- The pin's bound on another branch's total: three halves of the call's total. -/
