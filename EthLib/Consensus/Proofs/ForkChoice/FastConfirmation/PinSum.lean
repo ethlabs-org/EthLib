@@ -8989,8 +8989,9 @@ Their credits join those of `K4`, `K5` and `K6` in the bound.
 
 The keys of `CS` are created after R's registry and slashed at C.
 
-So they are in none of those sets either, and their credits join the bound with the same share and
-bands.
+So they are in none of those sets either.
+
+Their credits join the bound with the same share and bands.
 
 A whistleblower's share of the amounts of `SC` and `CS` is at most the amounts.
 
