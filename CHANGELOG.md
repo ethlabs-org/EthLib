@@ -28,6 +28,13 @@ Not yet released.
   `processUpgrades_eq_of_window` states that the upgrades from Fulu up to before Gloas leave the state as it is.
   The pin's drift bound reads them for keys that are not yet active.
 
+- `FloorTrace.run_potential_floor` bounds the balance of a key that stays unslashed along a run from Fusaka before Gloas.
+  The key's balance after the run, plus the sync and partial debits that no pass penalty accounts for, stays above a closed form.
+  The closed form loses at most a given rate of the effective balance for each epoch of the run, and it is vacuous once that loss reaches the whole floor.
+  It takes the same guards as `FloorTrace.run_of_le_cap_general_or_fulu`, and a bound on each step's pass penalty.
+  The preset keeps the bands of hysteresis.
+  The pin's low-balance floor and its fall floor read it.
+
 - `processRegistryUpdates_withdrawableEpoch_of_unassigned_late` says what registry updates do to the withdrawable epoch of a key with no exit.
   They keep it, or set it after the current epoch, the seed lookahead and the withdrawal delay.
   The existing `processRegistryUpdates_withdrawableEpoch_of_unassigned` is its weaker case.
@@ -93,6 +100,8 @@ Not yet released.
   `processSlots_pendingPartialWithdrawals` keeps the queue of pending partial withdrawals across slot steps from Altair.
   `hysteresis_of_advanceSlot` and `hysteresis_of_processSlots` put a state at the first slot of an epoch within the bands of hysteresis.
   `Store.ForwardReachableWith.relation_of_checkpointPrefix_with` composes a relation that needs to hold only for transitions with the store's checks.
+  `runScore_le_start` bounds the inactivity score of a key along a run by its start score plus a bias for each epoch.
+  The pin's bound on the penalty of one rewards pass at a state reads it.
 
 - Some earlier private declarations are now public, with unchanged statements.
   They are the flag frames `flags_operationsInput`, `flags_proposerSlashing`, `flags_attesterSlashing`, `flags_increase`, `flags_decrease`, `flagsBelow_add` and `flagsBelow_deposit`.
