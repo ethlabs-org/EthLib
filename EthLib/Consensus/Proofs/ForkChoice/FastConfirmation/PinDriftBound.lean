@@ -454,14 +454,23 @@ private theorem Run.passDebit_le_rates {x y : ForkedBeaconState preset}
     {events : List (BalanceEvent preset)} (replayed : tail.balanceEvents high = .ok events) :
     (events.map (penaltyDebit v)).sum ≤
       ∑ t ∈ Finset.Ico (getCurrentEpoch x.state).toNat (getCurrentEpoch y.state).toNat, pen t := by
-  have total := run_cuts_le high tail early
+  have total := run_cuts_of_additive tail early
     (fun z => (∃ total perIncrement, getTotalActiveBalance z.state = .ok total ∧
         getBaseRewardPerIncrement preset total = .ok perIncrement) →
       passPenaltyRate config z v ≤ pen (getCurrentEpoch z.state).toNat)
-    (penaltyDebit v)
-    (fun t => if t < ix x y then pen ((getCurrentEpoch x.state).toNat + t) else 0) rate
-    (fun {m n} toM mid rest starts rates {found} found_ok => by
+    (fun r => (((r.balanceEvents high).toOption.getD []).map (penaltyDebit v)).sum)
+    (fun t => if t < ix x y then pen ((getCurrentEpoch x.state).toNat + t) else 0)
+    (fun {a m n} pre post nEarly => by
+      obtain ⟨one, oneOk⟩ := pre.balanceEvents_ok
+        (Nat.lt_of_le_of_lt (fork_le_of_chainSteps post.chainSteps) nEarly) high
+      obtain ⟨two, twoOk⟩ := post.balanceEvents_ok nEarly high
+      simp [balanceEvents_append pre post high oneOk twoOk, oneOk, twoOk, Except.toOption])
+    rate
+    (fun {m n} toM mid rest starts rates => by
       have nEarly := Nat.lt_of_le_of_lt (fork_le_of_chainSteps rest.chainSteps) early
+      obtain ⟨found, found_ok⟩ := mid.balanceEvents_ok nEarly high
+      rw [show (((mid.balanceEvents high).toOption.getD []).map (penaltyDebit v)).sum =
+        (found.map (penaltyDebit v)).sum by simp [found_ok, Except.toOption]]
       have ny := UInt64.le_iff_toNat_le.mp (currentEpoch_le_of_chainSteps rest.chainSteps)
       have segment := segment_passDebit_le_guarded mid nEarly
         (Nat.le_trans altair (fork_le_of_chainSteps toM.chainSteps)) high (by omega) starts
@@ -480,7 +489,8 @@ private theorem Run.passDebit_le_rates {x y : ForkedBeaconState preset}
         simp only [ix]
         rw [ite_eq_left (by omega), Nat.add_sub_cancel' xm]
       · exact Nat.zero_le _)
-    (ix x y + 1) (fun step member => steps_before_end tail step member) replayed
+    (ix x y + 1) (fun step member => steps_before_end tail step member)
+  simp only [replayed, Except.toOption, Option.getD_some] at total
   rw [list_range_sum, sum_range_ite_lt_fn (fun t => pen ((getCurrentEpoch x.state).toNat + t))
     (ix x y) (ix x y + 1), Nat.min_eq_right (Nat.le_succ _)] at total
   rw [sum_Ico_offsets]

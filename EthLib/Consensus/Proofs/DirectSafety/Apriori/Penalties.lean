@@ -508,7 +508,7 @@ theorem run_cuts_of_additive {x y : ForkedBeaconState preset}
 Then a cost of the events of the branch fits the sum of a bound over its first `t` epochs.
 
 This is `run_cuts_of_additive` for the sum of a cost over the replayed events. -/
-theorem run_cuts_le {x y : ForkedBeaconState preset}
+private theorem run_cuts_le {x y : ForkedBeaconState preset}
     (high : Nat)
     (tail : Run config checks x y) (early : y.fork < .glamsterdam)
     (P : ForkedBeaconState preset → Prop) (cost : BalanceEvent preset → Nat) (bound : Nat → Nat)
