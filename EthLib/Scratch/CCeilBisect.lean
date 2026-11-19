@@ -134,6 +134,8 @@ private theorem bis1 {n y : ForkedBeaconState preset}
           depth * (P * (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum /
             WEIGHT_DENOMINATOR.toNat + 2))) := by
   have weight : 0 < WEIGHT_DENOMINATOR.toNat := by decide
+  have closed := ceiling_closed preset.EFFECTIVE_BALANCE_INCREMENT.toNat WEIGHT_DENOMINATOR.toNat
+    (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum P e0 depth Cr Cr' S W band C incPos weight
   sorry
 
 /-- A key's balance along a run from a stake bound, the credits and the gain at the bound. -/
@@ -176,8 +178,7 @@ private theorem bis2 {n y : ForkedBeaconState preset}
             WEIGHT_DENOMINATOR.toNat + 2))) := by
   have weight : 0 < WEIGHT_DENOMINATOR.toNat := by decide
   have closed := ceiling_closed preset.EFFECTIVE_BALANCE_INCREMENT.toNat WEIGHT_DENOMINATOR.toNat
-    (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum P e0 depth Cr Cr' S W band C incPos weight
-    alignedE0 alignedC hC small rateLow start hW hD
+    (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum P e0 depth Cr Cr' S W band C incPos weight alignedE0 alignedC
   sorry
 
 /-- A key's balance along a run from a stake bound, the credits and the gain at the bound. -/
@@ -220,12 +221,7 @@ private theorem bis3 {n y : ForkedBeaconState preset}
             WEIGHT_DENOMINATOR.toNat + 2))) := by
   have weight : 0 < WEIGHT_DENOMINATOR.toNat := by decide
   have closed := ceiling_closed preset.EFFECTIVE_BALANCE_INCREMENT.toNat WEIGHT_DENOMINATOR.toNat
-    (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum P e0 depth Cr Cr' S W band C incPos weight
-    alignedE0 alignedC hC small rateLow start hW hD
-  have alignedE : (e0 + C + preset.EFFECTIVE_BALANCE_INCREMENT.toNat) %
-      preset.EFFECTIVE_BALANCE_INCREMENT.toNat = 0 :=
-    Nat.mod_eq_zero_of_dvd (Nat.dvd_add (Nat.dvd_add (Nat.dvd_of_mod_eq_zero alignedE0)
-      (Nat.dvd_of_mod_eq_zero alignedC)) (Nat.dvd_refl _))
+    (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum P e0 depth Cr Cr' S W band C incPos weight alignedE0 alignedC hC
   sorry
 
 /-- A key's balance along a run from a stake bound, the credits and the gain at the bound. -/
@@ -268,15 +264,7 @@ private theorem bis4 {n y : ForkedBeaconState preset}
             WEIGHT_DENOMINATOR.toNat + 2))) := by
   have weight : 0 < WEIGHT_DENOMINATOR.toNat := by decide
   have closed := ceiling_closed preset.EFFECTIVE_BALANCE_INCREMENT.toNat WEIGHT_DENOMINATOR.toNat
-    (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum P e0 depth Cr Cr' S W band C incPos weight
-    alignedE0 alignedC hC small rateLow start hW hD
-  have alignedE : (e0 + C + preset.EFFECTIVE_BALANCE_INCREMENT.toNat) %
-      preset.EFFECTIVE_BALANCE_INCREMENT.toNat = 0 :=
-    Nat.mod_eq_zero_of_dvd (Nat.dvd_add (Nat.dvd_add (Nat.dvd_of_mod_eq_zero alignedE0)
-      (Nat.dvd_of_mod_eq_zero alignedC)) (Nat.dvd_refl _))
-  have split := gain_split preset.EFFECTIVE_BALANCE_INCREMENT.toNat WEIGHT_DENOMINATOR.toNat
-    (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum P e0 C
-    ((getCurrentEpoch y.state).toNat - (getCurrentEpoch n.state).toNat) depth incPos epochs
+    (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum P e0 depth Cr Cr' S W band C incPos weight alignedE0 alignedC hC small
   sorry
 
 /-- A key's balance along a run from a stake bound, the credits and the gain at the bound. -/
@@ -319,23 +307,7 @@ private theorem bis5 {n y : ForkedBeaconState preset}
             WEIGHT_DENOMINATOR.toNat + 2))) := by
   have weight : 0 < WEIGHT_DENOMINATOR.toNat := by decide
   have closed := ceiling_closed preset.EFFECTIVE_BALANCE_INCREMENT.toNat WEIGHT_DENOMINATOR.toNat
-    (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum P e0 depth Cr Cr' S W band C incPos weight
-    alignedE0 alignedC hC small rateLow start hW hD
-  have alignedE : (e0 + C + preset.EFFECTIVE_BALANCE_INCREMENT.toNat) %
-      preset.EFFECTIVE_BALANCE_INCREMENT.toNat = 0 :=
-    Nat.mod_eq_zero_of_dvd (Nat.dvd_add (Nat.dvd_add (Nat.dvd_of_mod_eq_zero alignedE0)
-      (Nat.dvd_of_mod_eq_zero alignedC)) (Nat.dvd_refl _))
-  have split := gain_split preset.EFFECTIVE_BALANCE_INCREMENT.toNat WEIGHT_DENOMINATOR.toNat
-    (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum P e0 C
-    ((getCurrentEpoch y.state).toNat - (getCurrentEpoch n.state).toNat) depth incPos epochs
-  have bound : PinSplit2.creditBound post i high (e0 + C + preset.EFFECTIVE_BALANCE_INCREMENT.toNat)
-      P capHigh ≤ S + Cr + (gainOn preset depth P C +
-        (depth * (e0 / preset.EFFECTIVE_BALANCE_INCREMENT.toNat * P *
-          (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum / WEIGHT_DENOMINATOR.toNat) +
-          depth * (P * (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum /
-            WEIGHT_DENOMINATOR.toNat + 2))) := by
-    unfold PinSplit2.creditBound
-    exact credit_sum_le startBal credits split
+    (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum P e0 depth Cr Cr' S W band C incPos weight alignedE0 alignedC hC small rateLow
   sorry
 
 /-- A key's balance along a run from a stake bound, the credits and the gain at the bound. -/
@@ -378,32 +350,7 @@ private theorem bis6 {n y : ForkedBeaconState preset}
             WEIGHT_DENOMINATOR.toNat + 2))) := by
   have weight : 0 < WEIGHT_DENOMINATOR.toNat := by decide
   have closed := ceiling_closed preset.EFFECTIVE_BALANCE_INCREMENT.toNat WEIGHT_DENOMINATOR.toNat
-    (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum P e0 depth Cr Cr' S W band C incPos weight
-    alignedE0 alignedC hC small rateLow start hW hD
-  have alignedE : (e0 + C + preset.EFFECTIVE_BALANCE_INCREMENT.toNat) %
-      preset.EFFECTIVE_BALANCE_INCREMENT.toNat = 0 :=
-    Nat.mod_eq_zero_of_dvd (Nat.dvd_add (Nat.dvd_add (Nat.dvd_of_mod_eq_zero alignedE0)
-      (Nat.dvd_of_mod_eq_zero alignedC)) (Nat.dvd_refl _))
-  have split := gain_split preset.EFFECTIVE_BALANCE_INCREMENT.toNat WEIGHT_DENOMINATOR.toNat
-    (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum P e0 C
-    ((getCurrentEpoch y.state).toNat - (getCurrentEpoch n.state).toNat) depth incPos epochs
-  have bound : PinSplit2.creditBound post i high (e0 + C + preset.EFFECTIVE_BALANCE_INCREMENT.toNat)
-      P capHigh ≤ S + Cr + (gainOn preset depth P C +
-        (depth * (e0 / preset.EFFECTIVE_BALANCE_INCREMENT.toNat * P *
-          (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum / WEIGHT_DENOMINATOR.toNat) +
-          depth * (P * (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum /
-            WEIGHT_DENOMINATOR.toNat + 2))) := by
-    unfold PinSplit2.creditBound
-    exact credit_sum_le startBal credits split
-  have fixpoint : max (effectiveAt n i) (min capHigh
-      (PinSplit2.creditBound post i high (e0 + C + preset.EFFECTIVE_BALANCE_INCREMENT.toNat) P
-          capHigh -
-        PinSplit2.creditBound post i high (e0 + C + preset.EFFECTIVE_BALANCE_INCREMENT.toNat) P
-          capHigh % preset.EFFECTIVE_BALANCE_INCREMENT.toNat)) ≤
-      e0 + C + preset.EFFECTIVE_BALANCE_INCREMENT.toNat :=
-    max_le (Nat.le_trans startEff (Nat.le_add_right_of_le (Nat.le_add_right e0 C)))
-      (Nat.le_trans (Nat.min_le_right _ _)
-        (floor_le_of_lt incPos alignedE (Nat.lt_of_le_of_lt bound closed)))
+    (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum P e0 depth Cr Cr' S W band C incPos weight alignedE0 alignedC hC small rateLow start hW hD
   sorry
 
 end PinSum
