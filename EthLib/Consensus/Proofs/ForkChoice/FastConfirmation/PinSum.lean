@@ -894,6 +894,79 @@ private theorem block_credit_keys {g : ForkedBeaconState preset}
     simp [altair, seats, blocksOne] at bound
     omega
 
+/-- A sync aggregate never lowers the balance of a position that no member holds. -/
+private theorem syncRewards_ge {reward proposerReward index : Nat} {chosen : ValidatorIndex} :
+    ∀ (members : List (ValidatorIndex × Bool)) (balance : Nat),
+      (∀ member ∈ members, member.1.toNat ≠ index) →
+      balance ≤ members.foldl (fun balance member =>
+        if member.2 then balance + (if member.1.toNat = index then reward else 0) +
+          (if chosen.toNat = index then proposerReward else 0)
+        else if member.1.toNat = index then balance - reward else balance) balance
+  | [], _, _ => Nat.le_refl _
+  | member :: members, balance, apart => by
+    rw [List.foldl_cons]
+    have head := apart member List.mem_cons_self
+    refine Nat.le_trans ?_ (syncRewards_ge members _
+      (fun other inside => apart other (List.mem_cons_of_mem _ inside)))
+    by_cases signed : member.2 = true
+    · simp only [signed, ↓reduceIte, head]
+      omega
+    · simp only [signed, Bool.false_eq_true, ↓reduceIte, head]
+      exact Nat.le_refl _
+
+/-- A sync aggregate lowers the balance of a position only if its key is in the committee.
+
+The position is then the one of a validator that holds a seat, which the committee keeps. -/
+private theorem sync_debit_seat {f : Fork} {c t : BeaconState preset f} (altair : .altair ≤ f)
+    {aggregate : SyncAggregate preset}
+    (synced : processSyncAggregate config checks c altair aggregate = .ok t)
+    (matched : BalancesMatch t) {i : ℕ}
+    (lowered : actualBalanceAt (⟨f, t⟩ : ForkedBeaconState preset) i <
+      actualBalanceAt (⟨f, c⟩ : ForkedBeaconState preset) i) :
+    ∃ w, t.validators.data[i]? = some w ∧
+      w.pubkey ∈ (t.currentSyncCommittee altair).value.pubkeys.toList := by
+  obtain ⟨vals, comm⟩ := processSyncAggregate_kept synced
+  have sizes := sameSizes_processSyncAggregate synced
+  have matchedC : BalancesMatch c := by
+    unfold BalancesMatch at matched ⊢
+    rw [← sizes.1, ← sizes.2]
+    exact matched
+  have inside : i < c.balances.data.size := by
+    by_contra outside
+    have missing : actualBalanceAt (⟨f, c⟩ : ForkedBeaconState preset) i = 0 := by
+      simp [actualBalanceAt, Array.getElem?_eq_none (Nat.le_of_not_lt outside)]
+    omega
+  have insideV : i < c.validators.data.size := by
+    unfold BalancesMatch at matchedC
+    omega
+  obtain ⟨w, found⟩ : ∃ w, c.validators.data[i]? = some w :=
+    ⟨_, Array.getElem?_eq_getElem insideV⟩
+  have foundT : t.validators.data[i]? = some w := by rw [vals]; exact found
+  refine ⟨w, foundT, ?_⟩
+  by_contra none
+  have unseated : w.pubkey ∉ (c.currentSyncCommittee altair).value.pubkeys.toList := by
+    rw [← congrFun comm altair]
+    exact none
+  obtain ⟨reward, proposerReward, members, chosen, -, -, membersOk, -, balances⟩ :=
+    processSyncAggregate_balance synced
+  have seatless : ∀ bit : Bool, ∀ member ∈ (members.zip
+      aggregate.syncCommitteeBits.bits.toArray).toList, member.2 = bit →
+      member.1.toNat ≠ i := by
+    intro bit
+    refine signers_elsewhere membersOk found fun member inside _ same => unseated ?_
+    rw [Array.toList_zip] at inside
+    rw [← same, ← Vector.toList_toArray]
+    exact List.of_mem_zip inside |>.1
+  obtain ⟨b, held⟩ : ∃ b, c.balances.data[i]? = some b :=
+    ⟨_, Array.getElem?_eq_getElem inside⟩
+  obtain ⟨final, atFinal, value⟩ := balances i b held
+  have kept := syncRewards_ge (reward := reward.toNat) (proposerReward := proposerReward.toNat)
+    (index := i) (chosen := chosen) _ b.toNat
+    (fun member inside => seatless member.2 member inside rfl)
+  rw [← value] at kept
+  simp only [actualBalanceAt, held, atFinal, Option.map_some, Option.getD_some] at lowered
+  omega
+
 /-- The keys credited in the block steps of a run inside one period of sync committees.
 
 A key credited by a block is a proposer, at most one for each block, or it holds a seat of the
@@ -905,12 +978,20 @@ private theorem credited_piece {g : ForkedBeaconState preset}
     (high : ℕ)
     (same : (getCurrentEpoch y.state).toNat / max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat =
       (getCurrentEpoch x.state).toNat / max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat) :
-    ∃ B : Finset ℕ, B.card ≤ r.blockCount ∧ ∀ i, 0 < netScan i high r →
+    ∃ B : Finset ℕ, B.card ≤ r.blockCount ∧ (∀ i, 0 < netScan i high r →
       i ∈ B ∨ ∃ w, y.state.validators.data[i]? = some w ∧
-        w.pubkey ∈ (x.state.currentSyncCommittee altair).value.pubkeys.toList := by
+        w.pubkey ∈ (x.state.currentSyncCommittee altair).value.pubkeys.toList) ∧
+      ∀ events, r.balanceEvents high = .ok events → ∀ i, 0 < (events.map (syncDebit i)).sum →
+        ∃ w, y.state.validators.data[i]? = some w ∧
+          w.pubkey ∈ (x.state.currentSyncCommittee altair).value.pubkeys.toList := by
   classical
   induction r with
-  | nil => exact ⟨∅, by simp, fun i pos => (Nat.lt_irrefl 0 pos).elim⟩
+  | nil =>
+    refine ⟨∅, by simp, fun i pos => (Nat.lt_irrefl 0 pos).elim, ?_⟩
+    intro events replayed i pos
+    simp only [Run.balanceEvents, pure, Except.pure, Except.ok.injEq] at replayed
+    subst replayed
+    simp at pos
   | @snoc u l pre step ih =>
     have uEarly : u.fork < .glamsterdam := Nat.lt_of_le_of_lt step.chainStep.fork_le early
     have low := UInt64.le_iff_toNat_le.mp (currentEpoch_le_of_chainSteps pre.chainSteps)
@@ -924,7 +1005,7 @@ private theorem credited_piece {g : ForkedBeaconState preset}
       have under := Nat.div_le_div_right
         (c := max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat) low
       omega
-    obtain ⟨B, cardB, hB⟩ := ih uEarly uSame
+    obtain ⟨B, cardB, hB, hS⟩ := ih uEarly uSame
     have carry : ∀ (i : ℕ) (w : Validator), u.state.validators.data[i]? = some w →
         w.pubkey ∈ (x.state.currentSyncCommittee altair).value.pubkeys.toList →
           ∃ w', l.state.validators.data[i]? = some w' ∧
@@ -934,7 +1015,8 @@ private theorem credited_piece {g : ForkedBeaconState preset}
       exact ⟨w', found', same' ▸ mem⟩
     cases step with
     | slot ok =>
-      refine ⟨B, cardB, fun i pos => ?_⟩
+      have fulu' : .fusaka ≤ u.fork := Nat.le_trans fulu (fork_le_of_chainSteps pre.chainSteps)
+      refine ⟨B, cardB, fun i pos => ?_, ?_⟩
       rw [netScan_snoc] at pos
       have prior : 0 < netScan i high pre := by
         split at pos
@@ -943,11 +1025,30 @@ private theorem credited_piece {g : ForkedBeaconState preset}
       rcases hB i prior with member | ⟨w, found, mem⟩
       · exact .inl member
       · exact .inr (carry i w found mem)
+      intro events replayed i pos
+      simp only [Run.balanceEvents, bind_ok_iff] at replayed
+      obtain ⟨prior, priorOk, rest⟩ := replayed
+      split at rest
+      · simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at rest
+        obtain ⟨added, addedOk, rfl⟩ := rest
+        have quiet := slot_noSync (Nat.le_trans (by decide) (Nat.le_trans (by decide) fulu'))
+          ok early addedOk
+        have zero : (added.map (syncDebit i)).sum = 0 :=
+          List.sum_eq_zero fun v member => by
+            obtain ⟨e, inside, rfl⟩ := List.mem_map.mp member
+            simp [syncDebit, quiet e inside]
+        simp only [List.map_append, List.sum_append, zero, Nat.add_zero] at pos
+        obtain ⟨w, found, mem⟩ := hS prior priorOk i pos
+        exact carry i w found mem
+      · simp only [pure, Except.pure, Except.ok.injEq] at rest
+        subst rest
+        obtain ⟨w, found, mem⟩ := hS _ priorOk i pos
+        exact carry i w found mem
     | @block f s t engine signed due ok =>
       have fulu' : .fusaka ≤ f := Nat.le_trans fulu (fork_le_of_chainSteps pre.chainSteps)
       obtain ⟨K, cardK, hK⟩ := block_credit_keys genesis engine signed due ok (shared.append pre)
         fulu' uEarly
-      refine ⟨B ∪ K, ?_, fun i pos => ?_⟩
+      refine ⟨B ∪ K, ?_, fun i pos => ?_, ?_⟩
       · exact (Finset.card_union_le _ _).trans (Nat.add_le_add cardB cardK)
       · rw [netScan_snoc] at pos
         have either : 0 < netScan i high pre ∨
@@ -979,6 +1080,41 @@ private theorem credited_piece {g : ForkedBeaconState preset}
             refine .inr ⟨w, hv, ?_⟩
             rw [test, ← committee]
             exact keyMem
+      · intro events replayed i pos
+        simp only [Run.balanceEvents, bind_ok_iff] at replayed
+        obtain ⟨prior, priorOk, rest⟩ := replayed
+        split at rest
+        · simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at rest
+          obtain ⟨added, addedOk, rfl⟩ := rest
+          simp only [List.map_append, List.sum_append] at pos
+          by_cases first : 0 < (prior.map (syncDebit i)).sum
+          · obtain ⟨w, found, mem⟩ := hS prior priorOk i first
+            exact carry i w found mem
+          · have here : 0 < (added.map (syncDebit i)).sum := by omega
+            have altair' : .altair ≤ f := Nat.le_trans (by decide) fulu'
+            obtain ⟨c, rest', aggregate, credit, debit, rfl, quiet, synced⟩ :=
+              blockReplay_sync_split (show f < .glamsterdam from uEarly) altair'
+                (Step.balanceEvents_block uEarly addedOk)
+            have silent : (rest'.map (syncDebit i)).sum = 0 :=
+              List.sum_eq_zero fun v member => by
+                obtain ⟨e, inside, rfl⟩ := List.mem_map.mp member
+                simp [syncDebit, quiet e inside]
+            simp only [List.map_append, List.sum_append, silent, syncDebit, ↓reduceIte,
+              List.map_cons, List.map_nil, List.sum_cons, List.sum_nil, Nat.zero_add,
+              Nat.add_zero] at here
+            have matchedT : BalancesMatch t :=
+              (frame_processBlock (applySignedBlock_ok ok).2.1).balancesMatch
+                (run_justified_separated (shared.append pre) genesis).1.balancesMatch
+            obtain ⟨w, hv, mem⟩ := sync_debit_seat altair' synced matchedT (by omega)
+            have committee := (Run.snoc pre (Step.block engine signed due ok)
+                ).currentSyncCommittee_eq_of_same_period early same altair' altair
+            refine ⟨w, hv, ?_⟩
+            rw [← committee]
+            exact mem
+        · simp only [pure, Except.pure, Except.ok.injEq] at rest
+          subst rest
+          obtain ⟨w, found, mem⟩ := hS _ priorOk i pos
+          exact carry i w found mem
 
 
 /-- The positions that hold a key of a committee are at most the size of the committee. -/
@@ -1036,7 +1172,7 @@ private theorem credited_pieces {g : ForkedBeaconState preset}
     intro x shared r fulu count
     have electra : .pectra ≤ x.fork := Nat.le_trans (by decide) fulu
     have altair : .altair ≤ x.fork := Nat.le_trans (by decide) electra
-    obtain ⟨B, cardB, hB⟩ := credited_piece genesis shared r fulu altair early high
+    obtain ⟨B, cardB, hB, -⟩ := credited_piece genesis shared r fulu altair early high
       (by simpa using count)
     obtain ⟨S, cardS, hS⟩ := seat_positions genesis shared r altair
     refine ⟨B, S, cardB, by simpa using cardS, fun i pos => ?_⟩
@@ -1075,7 +1211,7 @@ private theorem credited_pieces {g : ForkedBeaconState preset}
         (fork_le_of_chainSteps post.chainSteps)) early
     have vFulu : .fusaka ≤ v.fork :=
       Nat.le_trans fulu (fork_le_of_chainSteps (pre.snoc step).chainSteps)
-    obtain ⟨B₁, cardB₁, hB₁⟩ := credited_piece genesis shared pre fulu altair mEarly high
+    obtain ⟨B₁, cardB₁, hB₁, -⟩ := credited_piece genesis shared pre fulu altair mEarly high
       (by simpa using mSame)
     obtain ⟨S₁, cardS₁, hS₁⟩ := seat_positions genesis shared pre altair
     obtain ⟨B₂, S₂, cardB₂, cardS₂, hB₂⟩ := ih (x := v) (shared.append (pre.snoc step)) post vFulu
