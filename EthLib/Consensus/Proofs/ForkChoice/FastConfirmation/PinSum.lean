@@ -5948,7 +5948,7 @@ The gain on that raise and on the credits is at most an eleventh of each.
 
 So the credits' tenth and the raise cover the gain at the base stake, and the slack is left. -/
 private theorem ceiling_closed_high (I WD F P e0 D Cr Cr' S W C Gh q r : ℕ)
-    (hq : q = e0 / I * P * F / WD) (hr : r = P * F / WD) (hI : 0 < I) (hWD : 0 < WD)
+    (hq : q = e0 / I * P * F / WD) (hI : 0 < I) (hWD : 0 < WD)
     (alignedE : e0 % I = 0) (alignedC : C % I = 0) (alignedG : Gh % I = 0)
     (hC : (11 * Cr' + 9) / 10 ≤ C) (cover : 11 * (D * q + D * (r + 3)) ≤ 10 * Gh)
     (rateLow : 11 * D * (q + 1) ≤ e0) (start : S + Cr ≤ e0 + Cr' + W) (hW : W ≤ I) :
