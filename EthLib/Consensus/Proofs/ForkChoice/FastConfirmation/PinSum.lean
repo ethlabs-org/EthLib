@@ -1792,7 +1792,7 @@ private theorem seat_union_card (h : Setting config checks g split fin pulled an
     rcases Run.prefix_total r1 r2 fromFin tailC cut rfl with ⟨r, -⟩ | ⟨r, -⟩
     · exfalso
       have order := UInt64.le_iff_toNat_le.mp (currentEpoch_le_of_chainSteps r.chainSteps)
-      try simp only at order
+      simp only at order
       have := Nat.div_le_div_right (c := P) order
       omega
     · exact rotation r earlyZ (by simp only; omega) alt altairF
@@ -1847,7 +1847,7 @@ private theorem seat_union_card (h : Setting config checks g split fin pulled an
             obtain ⟨L, hL, hLmem⟩ : ∃ L ∈ (List.range (nC + 1)).map LsC, L = Lcur := by
               obtain ⟨jc, hjc, e⟩ := firstC
               exact ⟨LsC jc, List.mem_map.mpr ⟨jc, List.mem_range.mpr (by omega), rfl⟩, e⟩
-            exact ⟨keysSplit.1 w.pubkey (by first | exact mem | simpa [hLcur] using mem), L, hL,
+            exact ⟨keysSplit.1 w.pubkey mem, L, hL,
               by rw [hLmem]; exact mem⟩
           · have j1 : j = 1 := by omega
             subst j1
@@ -1856,7 +1856,7 @@ private theorem seat_union_card (h : Setting config checks g split fin pulled an
             obtain ⟨L, hL, hLmem⟩ : ∃ L ∈ (List.range (nC + 1)).map LsC, L = Lnext := by
               obtain ⟨jc, hjc, e⟩ := secondC oneR
               exact ⟨LsC jc, List.mem_map.mpr ⟨jc, List.mem_range.mpr (by omega), rfl⟩, e⟩
-            exact ⟨keysSplit.2 w.pubkey (by first | exact mem | simpa [hLnext] using mem), L, hL,
+            exact ⟨keysSplit.2 w.pubkey mem, L, hL,
               by rw [hLmem]; exact mem⟩
         obtain ⟨inKeys, L, hL, hLmem⟩ := inSplit
         obtain ⟨v, foundS, sameS⟩ := position_in_prefix keptR distinctR inKeys found rfl
