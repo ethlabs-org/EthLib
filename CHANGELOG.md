@@ -27,6 +27,11 @@ Not yet released.
   The private invariant `ActivationExitOrder.Holds` gains the upper bound as a fifth conjunct.
   The new `Holds` implies the old one, so each reader of the old four conjuncts is unchanged.
 
+- `Run.exit_activated` says that a validator with an assigned exit, in a run from genesis, has reached its activation epoch.
+  It lets a reader of `Step.slashed_activated` discharge its `exited` premise.
+  The private invariant `ActivationExitOrder.Holds` gains it as a sixth conjunct.
+  The new `Holds` implies the old one, so each reader of the old five conjuncts is unchanged.
+
 - `DirectSafety.Apriori.Internal.perIncrement_exists` is public: the base reward per increment exists at a positive total when the scaled factor fits.
   The pin reads it to show that its base reward per increment is at least four.
   The pin's preset facts gain `fits`, that the scaled base reward factor fits in a `Gwei`, which both presets meet.
