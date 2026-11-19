@@ -27,6 +27,9 @@ Not yet released.
   The private invariant `ActivationExitOrder.Holds` gains the upper bound as a fifth conjunct.
   The new `Holds` implies the old one, so each reader of the old four conjuncts is unchanged.
 
+- `DirectSafety.Apriori.Internal.FloorTrace.run_potential_floor_slash` is public: a key unslashed at the start of a run keeps its balance within the closed form of a slash, over one more epoch.
+  The pin's `segment_potential_slash` reads it for the floor of a key that C's run slashes.
+
 - `DirectSafety.Apriori.Internal.perIncrement_exists` is public: the base reward per increment exists at a positive total when the scaled factor fits.
   The pin reads it to show that its base reward per increment is at least four.
   The pin's preset facts gain `fits`, that the scaled base reward factor fits in a `Gwei`, which both presets meet.
