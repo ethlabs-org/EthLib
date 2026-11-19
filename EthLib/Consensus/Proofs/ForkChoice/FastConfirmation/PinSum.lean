@@ -9239,6 +9239,8 @@ private theorem debit_keys_le (h : Setting config checks g split fin pulled anc 
   have depthFinEq : (pinTerms config pulled anc fin).depthFin =
       (getCurrentEpoch pulled).toNat + 2 - (getCurrentEpoch fin).toNat := rfl
   refine union.trans ?_
+  have nonneg := Nat.zero_le (((getCurrentEpoch pulled).toNat + 2 - (getCurrentEpoch fin).toNat) /
+    max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat)
   rw [depthEq, depthFinEq, Nat.mul_comm]
   exact Nat.mul_le_mul_right _ (by omega)
 
