@@ -14364,7 +14364,6 @@ private theorem floor_add_ceil_le (a b Q : ℕ) (pos : 0 < Q) :
   have : (qa + qb).succ * Q = Q * qa + Q * qb + Q := by rw [Nat.succ_mul]; ring
   rw [this]
   omega
-
 /-- The keys of R's registry that are not slashed at R and that `exitedSlashable` counts.
 
 They exit by R's next epoch and are not withdrawable by the finalized epoch. -/
@@ -14385,6 +14384,12 @@ A created key that has exited is read at its charge and its credits.
 
 A created key active at C is read at `createdCeil`.
 
+The slashing credits of the slack are the slashed keys' own.
+
+The left side of `bud_whistle_of` gives them up.
+
+The unit, the induced leak and the bands of the slack are the term `slackBands`.
+
 Its credits are paid by the shares, with a tenth for their gains.
 
 Its unit, or its largest cap at a high rate, is the term `capSlots`.
@@ -14395,19 +14400,19 @@ The credits of a slashed created key are its proposer credits.
 
 They are also its deposits before the slashing and its consolidations. -/
 private theorem whistle_slack (h : Setting config checks g split fin pulled anc counted V)
-    (fromFin : Run config checks ⟨fork, fin⟩ ⟨fork, split⟩) (highF : ℕ)
-    {eventsF : List (BalanceEvent preset)} (replayedF : fromFin.balanceEvents highF = .ok eventsF)
     (tail : Run config checks ⟨fork, split⟩ ⟨fork, pulled⟩) (high : ℕ)
     (endEpoch : (getCurrentEpoch pulled).toNat ≤ high + 1)
     {events : List (BalanceEvent preset)} (replayed : tail.balanceEvents high = .ok events)
+    (fromFin : Run config checks ⟨fork, fin⟩ ⟨fork, split⟩)
+    {eventsF : List (BalanceEvent preset)} (replayedF : fromFin.balanceEvents high = .ok eventsF)
     (tailC : Run config checks ⟨fork, split⟩ ⟨fork, counted⟩) (highC : ℕ)
     (endEpochC : (getCurrentEpoch counted).toNat ≤ highC + 1)
     {eventsC : List (BalanceEvent preset)} (replayedC : tailC.balanceEvents highC = .ok eventsC) :
     3 * (∑ i ∈ ((slashedOnC split counted).filter (fun i => i < split.validators.data.size)), min
-        (whistleEnv (pinTerms config pulled anc fin) pulled i + whistleSlack (pinTerms config pulled
-        anc fin) tailC highC high eventsC eventsF events fin i)
-        preset.MAX_EFFECTIVE_BALANCE_ELECTRA.toNat / (parameters preset
-            fork).WHISTLEBLOWER_REWARD_QUOTIENT.toNat) +
+        (whistleRead (pinTerms config pulled anc fin) pulled anc counted tailC (fromFin.append tail)
+        highC high
+          eventsC eventsF events fin i) preset.MAX_EFFECTIVE_BALANCE_ELECTRA.toNat / (parameters
+              preset fork).WHISTLEBLOWER_REWARD_QUOTIENT.toNat) +
       3 * (∑ i ∈ (((slashedOnC split counted).filter (fun i => ¬ i <
           split.validators.data.size)).filter (fun i => isActiveAt counted (getCurrentEpoch counted)
           i = true)), min (createdCeil (pinTerms config pulled anc fin) tailC highC eventsC i)
@@ -14421,23 +14426,25 @@ private theorem whistle_slack (h : Setting config checks g split fin pulled anc 
             fork).WHISTLEBLOWER_REWARD_QUOTIENT.toNat) ≤
       3 * (∑ i ∈ (((slashedOnC split counted).filter (fun i => i <
           split.validators.data.size)).filter (fun i => (pinTerms config pulled anc fin).slashedRB i
-          = true)), whistleEnv (pinTerms config pulled anc fin) pulled i / (parameters preset
+          = true)), whistleEnv (pinTerms config pulled anc fin) pulled anc i / (parameters preset
           fork).WHISTLEBLOWER_REWARD_QUOTIENT.toNat + ∑ i ∈ (((slashedOnC split counted).filter (fun
           i => i < split.validators.data.size)).filter (fun i => exitedSlashable anc pulled i =
-          true)), whistleEnv (pinTerms config pulled anc fin) pulled i / (parameters preset
+          true)), whistleEnv (pinTerms config pulled anc fin) pulled anc i / (parameters preset
           fork).WHISTLEBLOWER_REWARD_QUOTIENT.toNat + ∑ i ∈ (((((slashedOnC split counted).filter
           (fun i => i < split.validators.data.size)).filter (fun i => ¬ (pinTerms config pulled anc
           fin).slashedRB i = true ∧ ¬ exitedSlashable anc pulled i = true)).filter (fun i =>
           isActiveAt counted (getCurrentEpoch counted) i = true)).filter (fun i => ¬ ((pinTerms
-          config pulled anc fin).lateB i = true ∨ (pinTerms config pulled anc fin).pendingRB i =
-          true))), whistleEnv (pinTerms config pulled anc fin) pulled i / (parameters preset
+          config pulled anc fin).tight = false ∧ ((pinTerms config pulled anc fin).lateB i = true ∨
+          (pinTerms config pulled anc fin).pendingRB i = true)))), whistleEnv (pinTerms config
+          pulled anc fin) pulled anc i / (parameters preset
           fork).WHISTLEBLOWER_REWARD_QUOTIENT.toNat +
         ∑ i ∈ (((((slashedOnC split counted).filter (fun i => i <
             split.validators.data.size)).filter (fun i => ¬ (pinTerms config pulled anc
             fin).slashedRB i = true ∧ ¬ exitedSlashable anc pulled i = true)).filter (fun i =>
             isActiveAt counted (getCurrentEpoch counted) i = true)).filter (fun i => ((pinTerms
-            config pulled anc fin).lateB i = true ∨ (pinTerms config pulled anc fin).pendingRB i =
-            true))), whistleEnv (pinTerms config pulled anc fin) pulled i / (parameters preset
+            config pulled anc fin).tight = false ∧ ((pinTerms config pulled anc fin).lateB i = true
+            ∨ (pinTerms config pulled anc fin).pendingRB i = true)))), whistleEnv (pinTerms config
+            pulled anc fin) pulled anc i / (parameters preset
             fork).WHISTLEBLOWER_REWARD_QUOTIENT.toNat) +
         3 * (∑ i ∈ ((((slashedOnC split counted).filter (fun i => i <
             split.validators.data.size)).filter (fun i => ¬ (pinTerms config pulled anc
@@ -14449,8 +14456,7 @@ private theorem whistle_slack (h : Setting config checks g split fin pulled anc 
             counted) i = true)), (chargeAmt tailC i + preset.upwardBand + (pinTerms config pulled
             anc fin).depth * (pinTerms config pulled anc fin).gainRateMax) / (parameters preset
             fork).WHISTLEBLOWER_REWARD_QUOTIENT.toNat) +
-        3 * (∑ i ∈ ((slashedOnC split counted).filter (fun i => ¬ i < split.validators.data.size)),
-            whistC tailC highC i) +
+        3 * (∑ i ∈ slashedOnC split counted, whistC tailC highC i) +
         (wShare preset fork ((∑ v ∈ SC pulled counted split, propN tailC highC v.toNat) +
             ∑ v ∈ SC pulled counted split, depPre eventsC v.toNat) +
           wShare preset fork (∑ v ∈ SC pulled counted split, syncCr eventsC v.toNat) +
@@ -14473,6 +14479,12 @@ private theorem whistle_slack (h : Setting config checks g split fin pulled anc 
           (∑ v ∈ SC pulled counted split with
             (pinTerms config pulled anc fin).exitBeforeFin v.toNat = true, bandX fin high v.toNat) :
             ℕ) +
+        (∑ v ∈ SC pulled counted split, (unitK (pinTerms config pulled anc fin) tailC highC eventsC
+            events eventsF v.toNat +
+            inducedR (pinTerms config pulled anc fin) (fromFin.append tail) v.toNat + bandR (eventsF
+                ++ events) v.toNat +
+            if (pinTerms config pulled anc fin).exitBeforeFin v.toNat = true then
+              (if 0 < syncCr eventsF v.toNat then preset.upwardBand else 0) else 0) : ℕ) +
         ((CS counted split).filter fun v => isActiveAt counted (getCurrentEpoch counted) v.toNat =
           true).card * (if (pinTerms config pulled anc fin).gainHigh = true then
               preset.MAX_EFFECTIVE_BALANCE_ELECTRA.toNat
@@ -14500,7 +14512,7 @@ private theorem whistle_exited (h : Setting config checks g split fin pulled anc
     (tailC : Run config checks ⟨fork, split⟩ ⟨fork, counted⟩) (highC : ℕ) :
     3 * (∑ i ∈ (((slashedOnC split counted).filter (fun i => i < split.validators.data.size)).filter
         (fun i => exitedSlashable anc pulled i = true)), whistleEnv (pinTerms config pulled anc fin)
-        pulled i / (parameters preset fork).WHISTLEBLOWER_REWARD_QUOTIENT.toNat) +
+        pulled anc i / (parameters preset fork).WHISTLEBLOWER_REWARD_QUOTIENT.toNat) +
       3 * (∑ i ∈ ((((slashedOnC split counted).filter (fun i => i <
           split.validators.data.size)).filter (fun i => ¬ (pinTerms config pulled anc fin).slashedRB
           i = true ∧ ¬ exitedSlashable anc pulled i = true)).filter (fun i => ¬ isActiveAt counted
@@ -14528,8 +14540,9 @@ The seat debits of the shared segment are the last term, which `bud_sync` pays.
 
 The excess of the bound over `ebUp` is the key's own `rise`. -/
 private theorem whistle_free (h : Setting config checks g split fin pulled anc counted V)
-    (fromFin : Run config checks ⟨fork, fin⟩ ⟨fork, split⟩) (highF : ℕ)
-    {eventsF : List (BalanceEvent preset)} (replayedF : fromFin.balanceEvents highF = .ok eventsF)
+    (high : ℕ) (endEpoch : (getCurrentEpoch pulled).toNat ≤ high + 1)
+    (fromFin : Run config checks ⟨fork, fin⟩ ⟨fork, split⟩)
+    {eventsF : List (BalanceEvent preset)} (replayedF : fromFin.balanceEvents high = .ok eventsF)
     (tailC : Run config checks ⟨fork, split⟩ ⟨fork, counted⟩) (highC : ℕ)
     (endEpochC : (getCurrentEpoch counted).toNat ≤ highC + 1)
     {eventsC : List (BalanceEvent preset)} (replayedC : tailC.balanceEvents highC = .ok eventsC) :
@@ -14537,22 +14550,23 @@ private theorem whistle_free (h : Setting config checks g split fin pulled anc c
         split.validators.data.size)).filter (fun i => ¬ (pinTerms config pulled anc fin).slashedRB i
         = true ∧ ¬ exitedSlashable anc pulled i = true)).filter (fun i => isActiveAt counted
         (getCurrentEpoch counted) i = true)).filter (fun i => ¬ ((pinTerms config pulled anc
-        fin).lateB i = true ∨ (pinTerms config pulled anc fin).pendingRB i = true))), whistleEnv
-        (pinTerms config pulled anc fin) pulled i / (parameters preset
-        fork).WHISTLEBLOWER_REWARD_QUOTIENT.toNat) : ℕ) : ℤ) ≤
+        fin).tight = false ∧ ((pinTerms config pulled anc fin).lateB i = true ∨ (pinTerms config
+        pulled anc fin).pendingRB i = true)))), whistleEnv (pinTerms config pulled anc fin) pulled
+        anc i / (parameters preset fork).WHISTLEBLOWER_REWARD_QUOTIENT.toNat) : ℕ) : ℤ) ≤
       -cK7 pulled counted - cS pulled counted V + (pinTerms config pulled anc fin).flagged +
           (pinTerms config pulled anc fin).seatShortfall +
         ((∑ i ∈ (((((slashedOnC split counted).filter (fun i => i <
             split.validators.data.size)).filter (fun i => ¬ (pinTerms config pulled anc
             fin).slashedRB i = true ∧ ¬ exitedSlashable anc pulled i = true)).filter (fun i =>
             isActiveAt counted (getCurrentEpoch counted) i = true)).filter (fun i => ¬ ((pinTerms
-            config pulled anc fin).lateB i = true ∨ (pinTerms config pulled anc fin).pendingRB i =
-            true))), (pinTerms config pulled anc fin).rise i + 2 * ∑ i ∈ (((((slashedOnC split
-            counted).filter (fun i => i < split.validators.data.size)).filter (fun i => ¬ (pinTerms
-            config pulled anc fin).slashedRB i = true ∧ ¬ exitedSlashable anc pulled i =
-            true)).filter (fun i => isActiveAt counted (getCurrentEpoch counted) i = true)).filter
-            (fun i => ¬ ((pinTerms config pulled anc fin).lateB i = true ∨ (pinTerms config pulled
-            anc fin).pendingRB i = true))), syncD eventsF i : ℕ) : ℤ) :=
+            config pulled anc fin).tight = false ∧ ((pinTerms config pulled anc fin).lateB i = true
+            ∨ (pinTerms config pulled anc fin).pendingRB i = true)))), (pinTerms config pulled anc
+            fin).rise i + 2 * ∑ i ∈ (((((slashedOnC split counted).filter (fun i => i <
+            split.validators.data.size)).filter (fun i => ¬ (pinTerms config pulled anc
+            fin).slashedRB i = true ∧ ¬ exitedSlashable anc pulled i = true)).filter (fun i =>
+            isActiveAt counted (getCurrentEpoch counted) i = true)).filter (fun i => ¬ ((pinTerms
+            config pulled anc fin).tight = false ∧ ((pinTerms config pulled anc fin).lateB i = true
+            ∨ (pinTerms config pulled anc fin).pendingRB i = true)))), syncD eventsF i : ℕ) : ℤ) :=
   sorry
 
 /-- (W-L) A key of the split's registry that only C activates pays from its row of R.
@@ -14567,16 +14581,19 @@ private theorem whistle_late (h : Setting config checks g split fin pulled anc c
         split.validators.data.size)).filter (fun i => ¬ (pinTerms config pulled anc fin).slashedRB i
         = true ∧ ¬ exitedSlashable anc pulled i = true)).filter (fun i => isActiveAt counted
         (getCurrentEpoch counted) i = true)).filter (fun i => ((pinTerms config pulled anc
-        fin).lateB i = true ∨ (pinTerms config pulled anc fin).pendingRB i = true))), whistleEnv
-        (pinTerms config pulled anc fin) pulled i / (parameters preset
-        fork).WHISTLEBLOWER_REWARD_QUOTIENT.toNat) ≤
+        fin).tight = false ∧ ((pinTerms config pulled anc fin).lateB i = true ∨ (pinTerms config
+        pulled anc fin).pendingRB i = true)))), whistleEnv (pinTerms config pulled anc fin) pulled
+        anc i / (parameters preset fork).WHISTLEBLOWER_REWARD_QUOTIENT.toNat) ≤
       ∑ i ∈ (((((slashedOnC split counted).filter (fun i => i < split.validators.data.size)).filter
           (fun i => ¬ (pinTerms config pulled anc fin).slashedRB i = true ∧ ¬ exitedSlashable anc
           pulled i = true)).filter (fun i => isActiveAt counted (getCurrentEpoch counted) i =
-          true)).filter (fun i => ((pinTerms config pulled anc fin).lateB i = true ∨ (pinTerms
-          config pulled anc fin).pendingRB i = true))), ((pinTerms config pulled anc fin).rise i +
-          (if (pinTerms config pulled anc fin).lateB i = true then 3 * balanceAt pulled i else 0) +
-        (if (pinTerms config pulled anc fin).pendingRB i = true then balanceAt pulled i else 0)) :=
+          true)).filter (fun i => ((pinTerms config pulled anc fin).tight = false ∧ ((pinTerms
+          config pulled anc fin).lateB i = true ∨ (pinTerms config pulled anc fin).pendingRB i =
+          true)))), ((pinTerms config pulled anc fin).rise i + (if (pinTerms config pulled anc
+          fin).tight = false ∧ (pinTerms config pulled anc fin).lateB i = true then 3 * balanceAt
+          pulled i else 0) +
+        (if (pinTerms config pulled anc fin).tight = false ∧ (pinTerms config pulled anc
+            fin).pendingRB i = true then balanceAt pulled i else 0)) :=
   sorry
 
 /-- W from the keys' payers.
@@ -14595,20 +14612,31 @@ The keys slashed at C are those of `whistle_core`.
 
 The keys that R slashes are paid by `branchR`'s claim. -/
 private theorem bud_whistle_of (h : Setting config checks g split fin pulled anc counted V)
-    (fromFin : Run config checks ⟨fork, fin⟩ ⟨fork, split⟩) (highF : ℕ)
-    {eventsF : List (BalanceEvent preset)} (replayedF : fromFin.balanceEvents highF = .ok eventsF)
     (tail : Run config checks ⟨fork, split⟩ ⟨fork, pulled⟩) (high : ℕ)
     (endEpoch : (getCurrentEpoch pulled).toNat ≤ high + 1)
     {events : List (BalanceEvent preset)} (replayed : tail.balanceEvents high = .ok events)
+    (fromFin : Run config checks ⟨fork, fin⟩ ⟨fork, split⟩)
+    {eventsF : List (BalanceEvent preset)} (replayedF : fromFin.balanceEvents high = .ok eventsF)
     (tailC : Run config checks ⟨fork, split⟩ ⟨fork, counted⟩) (highC : ℕ)
     (endEpochC : (getCurrentEpoch counted).toNat ≤ highC + 1)
     {eventsC : List (BalanceEvent preset)} (replayedC : tailC.balanceEvents highC = .ok eventsC)
     (registry : ∀ {a b : ForkedBeaconState preset} (step : Step config checks a b),
       tailC.Contains step → ∀ i, i < split.validators.data.size →
         (split.validators.data[i]?.map (·.slashed)).getD false = false →
-          effectiveAt a i ≤ whistleEnv (pinTerms config pulled anc fin) pulled i +
-            whistleSlack (pinTerms config pulled anc fin) tailC highC high eventsC eventsF events
-                fin i) :
+        (!(a.state.validators.data[i]?.map (·.slashed)).getD false &&
+          (b.state.validators.data[i]?.map (·.slashed)).getD false) = true →
+          effectiveAt a i ≤ whistleEnv (pinTerms config pulled anc fin) pulled anc i +
+            whistleSlack (pinTerms config pulled anc fin) tailC (fromFin.append tail) highC high
+                eventsC eventsF events fin i)
+    (registryCharge : ∀ {a b : ForkedBeaconState preset} (step : Step config checks a b),
+      tailC.Contains step → ∀ i, i < split.validators.data.size →
+        (split.validators.data[i]?.map (·.slashed)).getD false = false →
+        (!(a.state.validators.data[i]?.map (·.slashed)).getD false &&
+          (b.state.validators.data[i]?.map (·.slashed)).getD false) = true →
+        (tailC.departureCharges.any fun c => c.index == i) = true →
+          effectiveAt a i ≤ chargeAmt tailC i + riseQ tailC highC i +
+            whistleSlack (pinTerms config pulled anc fin) tailC (fromFin.append tail) highC high
+                eventsC eventsF events fin i) :
     3 * ((∑ v ∈ (K4 pulled counted V), (whistC tailC highC v.toNat : ℤ)) +
       (∑ v ∈ (K5 counted V), (whistC tailC highC v.toNat : ℤ)) +
       (∑ v ∈ (K6 pulled counted), (whistC tailC highC v.toNat : ℤ))) ≤
@@ -14636,16 +14664,23 @@ private theorem bud_whistle_of (h : Setting config checks g split fin pulled anc
           (∑ v ∈ SC pulled counted split with
             (pinTerms config pulled anc fin).exitBeforeFin v.toNat = true, bandX fin high v.toNat) :
             ℕ) : ℤ) +
+        ((∑ v ∈ SC pulled counted split, (unitK (pinTerms config pulled anc fin) tailC highC eventsC
+            events eventsF v.toNat +
+            inducedR (pinTerms config pulled anc fin) (fromFin.append tail) v.toNat + bandR (eventsF
+                ++ events) v.toNat +
+            if (pinTerms config pulled anc fin).exitBeforeFin v.toNat = true then
+              (if 0 < syncCr eventsF v.toNat then preset.upwardBand else 0) else 0) : ℕ) : ℤ) +
         ((∑ v ∈ SC pulled counted split with (¬ (pinTerms config pulled anc fin).slashedRB v.toNat =
             true ∧
           ¬ exitedSlashable anc pulled v.toNat = true) ∧
           isActiveAt counted (getCurrentEpoch counted) v.toNat = true, ((pinTerms config pulled anc
               fin).rise v.toNat +
-            2 * syncD eventsF v.toNat + (if (pinTerms config pulled anc fin).lateB v.toNat = true
-                then
+            2 * syncD eventsF v.toNat + (if (pinTerms config pulled anc fin).tight = false ∧
+                (pinTerms config pulled anc fin).lateB v.toNat = true then
               3 * balanceAt pulled v.toNat else 0) +
-            (if (pinTerms config pulled anc fin).pendingRB v.toNat = true then balanceAt pulled
-                v.toNat else 0)) : ℕ) : ℤ) +
+            (if (pinTerms config pulled anc fin).tight = false ∧ (pinTerms config pulled anc
+                fin).pendingRB v.toNat = true then balanceAt pulled v.toNat
+              else 0)) : ℕ) : ℤ) +
         ((3 * ∑ v ∈ SC pulled counted split with (pinTerms config pulled anc fin).slashedRB v.toNat
             = true,
           ((balanceAt pulled v.toNat + (pinTerms config pulled anc fin).rise v.toNat) / (parameters
@@ -14660,22 +14695,25 @@ private theorem bud_whistle_of (h : Setting config checks g split fin pulled anc
   classical
   have quotient := h.facts.whistleblower fork
   -- the whistleblower credits of the classes and of `CS` are bounded by the reward base
-  have core := whistle_core h high tailC highC endEpochC replayedC registry
-    ((K4 pulled counted V ∪ K5 counted V ∪ K6 pulled counted) ∪ CS counted split)
+  have core := whistle_core h fromFin tail high tailC highC endEpochC replayedC registry
+    registryCharge ((K4 pulled counted V ∪ K5 counted V ∪ K6 pulled counted) ∪ SC pulled counted
+      split ∪ CS counted split)
   obtain ⟨dK, -⟩ := cs_disjoint h
+  obtain ⟨dS, -⟩ := sc_disjoint h
   obtain ⟨d45, d46, d56, -⟩ := classes_disjoint h
-  rw [Finset.sum_union (Finset.disjoint_of_subset_left Finset.subset_union_left dK),
+  rw [Finset.sum_union dK, Finset.sum_union dS,
     Finset.sum_union (Finset.disjoint_union_left.mpr ⟨d46, d56⟩), Finset.sum_union d45,
-    sum_CS_positions h (fun i => whistC tailC highC i)] at core
+    sum_CS_positions h (fun i => whistC tailC highC i),
+    sum_SC_positions h (fun i => whistC tailC highC i)] at core
   -- the part of the reward base that each payer takes
-  have slack := whistle_slack h fromFin highF replayedF tail high endEpoch replayed tailC highC
+  have slack := whistle_slack h tail high endEpoch replayed fromFin replayedF tailC highC
     endEpochC replayedC
   have exited := whistle_exited h tailC highC
-  have free := whistle_free h fromFin highF replayedF tailC highC endEpochC replayedC
+  have free := whistle_free h high endEpoch fromFin replayedF tailC highC endEpochC replayedC
   -- the keys that R slashes pay `branchR`'s claim
   have slashedKeys : 3 * ∑ i ∈ (((slashedOnC split counted).filter (fun i => i <
       split.validators.data.size)).filter (fun i => (pinTerms config pulled anc fin).slashedRB i =
-      true)), whistleEnv (pinTerms config pulled anc fin) pulled i / (parameters preset
+      true)), whistleEnv (pinTerms config pulled anc fin) pulled anc i / (parameters preset
       fork).WHISTLEBLOWER_REWARD_QUOTIENT.toNat ≤
       3 * ∑ v ∈ SC pulled counted split with (pinTerms config pulled anc fin).slashedRB v.toNat =
           true,
@@ -14703,89 +14741,101 @@ private theorem bud_whistle_of (h : Setting config checks g split fin pulled anc
         ¬ exitedSlashable anc pulled v.toNat = true) ∧
         isActiveAt counted (getCurrentEpoch counted) v.toNat = true, ((pinTerms config pulled anc
             fin).rise v.toNat +
-          2 * syncD eventsF v.toNat + (if (pinTerms config pulled anc fin).lateB v.toNat = true then
+          2 * syncD eventsF v.toNat + (if (pinTerms config pulled anc fin).tight = false ∧ (pinTerms
+              config pulled anc fin).lateB v.toNat = true then
             3 * balanceAt pulled v.toNat else 0) +
-          (if (pinTerms config pulled anc fin).pendingRB v.toNat = true then balanceAt pulled
-              v.toNat else 0)) =
+          (if (pinTerms config pulled anc fin).tight = false ∧ (pinTerms config pulled anc
+              fin).pendingRB v.toNat = true then balanceAt pulled v.toNat
+            else 0)) =
       ∑ i ∈ ((((slashedOnC split counted).filter (fun i => i < split.validators.data.size)).filter
           (fun i => ¬ (pinTerms config pulled anc fin).slashedRB i = true ∧ ¬ exitedSlashable anc
           pulled i = true)).filter (fun i => isActiveAt counted (getCurrentEpoch counted) i =
           true)), ((pinTerms config pulled anc fin).rise i + 2 * syncD eventsF i + (if (pinTerms
-          config pulled anc fin).lateB i = true then
-        3 * balanceAt pulled i else 0) + (if (pinTerms config pulled anc fin).pendingRB i = true
-            then balanceAt pulled i
+          config pulled anc fin).tight = false ∧ (pinTerms config pulled anc fin).lateB i = true
+          then
+        3 * balanceAt pulled i else 0) + (if (pinTerms config pulled anc fin).tight = false ∧
+            (pinTerms config pulled anc fin).pendingRB i = true then balanceAt pulled i
         else 0)) := by
     rw [sum_SC_filter_positions h (fun i => (¬ (pinTerms config pulled anc fin).slashedRB i = true ∧
       ¬ exitedSlashable anc pulled i = true) ∧ isActiveAt counted (getCurrentEpoch counted) i =
           true)
       (fun i => (pinTerms config pulled anc fin).rise i + 2 * syncD eventsF i + (if (pinTerms config
-          pulled anc fin).lateB i = true then
-        3 * balanceAt pulled i else 0) + (if (pinTerms config pulled anc fin).pendingRB i = true
-            then balanceAt pulled i else 0))]
+          pulled anc fin).tight = false ∧ (pinTerms config pulled anc fin).lateB i = true then
+        3 * balanceAt pulled i else 0) + (if (pinTerms config pulled anc fin).tight = false ∧
+            (pinTerms config pulled anc fin).pendingRB i = true then balanceAt pulled i else 0))]
     simp only [Finset.filter_filter, and_assoc]
   have late := whistle_late h
   have partition := Finset.sum_filter_add_sum_filter_not ((((slashedOnC split counted).filter (fun i
       => i < split.validators.data.size)).filter (fun i => ¬ (pinTerms config pulled anc
       fin).slashedRB i = true ∧ ¬ exitedSlashable anc pulled i = true)).filter (fun i => isActiveAt
-      counted (getCurrentEpoch counted) i = true)) (fun i => ((pinTerms config pulled anc fin).lateB
-      i = true ∨ (pinTerms config pulled anc fin).pendingRB i = true))
+      counted (getCurrentEpoch counted) i = true)) (fun i => ((pinTerms config pulled anc fin).tight
+      = false ∧ ((pinTerms config pulled anc fin).lateB i = true ∨ (pinTerms config pulled anc
+      fin).pendingRB i = true)))
     (fun i => (pinTerms config pulled anc fin).rise i + 2 * syncD eventsF i + (if (pinTerms config
-        pulled anc fin).lateB i = true then
-      3 * balanceAt pulled i else 0) + (if (pinTerms config pulled anc fin).pendingRB i = true then
-          balanceAt pulled i else 0))
+        pulled anc fin).tight = false ∧ (pinTerms config pulled anc fin).lateB i = true then
+      3 * balanceAt pulled i else 0) + (if (pinTerms config pulled anc fin).tight = false ∧
+          (pinTerms config pulled anc fin).pendingRB i = true then balanceAt pulled i else 0))
   have freeKeys : ∑ i ∈ (((((slashedOnC split counted).filter (fun i => i <
       split.validators.data.size)).filter (fun i => ¬ (pinTerms config pulled anc fin).slashedRB i =
       true ∧ ¬ exitedSlashable anc pulled i = true)).filter (fun i => isActiveAt counted
       (getCurrentEpoch counted) i = true)).filter (fun i => ¬ ((pinTerms config pulled anc
-      fin).lateB i = true ∨ (pinTerms config pulled anc fin).pendingRB i = true))), (pinTerms config
-      pulled anc fin).rise i + 2 * ∑ i ∈ (((((slashedOnC split counted).filter (fun i => i <
-      split.validators.data.size)).filter (fun i => ¬ (pinTerms config pulled anc fin).slashedRB i =
-      true ∧ ¬ exitedSlashable anc pulled i = true)).filter (fun i => isActiveAt counted
-      (getCurrentEpoch counted) i = true)).filter (fun i => ¬ ((pinTerms config pulled anc
-      fin).lateB i = true ∨ (pinTerms config pulled anc fin).pendingRB i = true))), syncD eventsF i
-      ≤
+      fin).tight = false ∧ ((pinTerms config pulled anc fin).lateB i = true ∨ (pinTerms config
+      pulled anc fin).pendingRB i = true)))), (pinTerms config pulled anc fin).rise i + 2 * ∑ i ∈
+      (((((slashedOnC split counted).filter (fun i => i < split.validators.data.size)).filter (fun i
+      => ¬ (pinTerms config pulled anc fin).slashedRB i = true ∧ ¬ exitedSlashable anc pulled i =
+      true)).filter (fun i => isActiveAt counted (getCurrentEpoch counted) i = true)).filter (fun i
+      => ¬ ((pinTerms config pulled anc fin).tight = false ∧ ((pinTerms config pulled anc fin).lateB
+      i = true ∨ (pinTerms config pulled anc fin).pendingRB i = true)))), syncD eventsF i ≤
       ∑ i ∈ (((((slashedOnC split counted).filter (fun i => i < split.validators.data.size)).filter
           (fun i => ¬ (pinTerms config pulled anc fin).slashedRB i = true ∧ ¬ exitedSlashable anc
           pulled i = true)).filter (fun i => isActiveAt counted (getCurrentEpoch counted) i =
-          true)).filter (fun i => ¬ ((pinTerms config pulled anc fin).lateB i = true ∨ (pinTerms
-          config pulled anc fin).pendingRB i = true))), ((pinTerms config pulled anc fin).rise i + 2
-          * syncD eventsF i + (if (pinTerms config pulled anc fin).lateB i = true then
-        3 * balanceAt pulled i else 0) + (if (pinTerms config pulled anc fin).pendingRB i = true
-            then balanceAt pulled i
+          true)).filter (fun i => ¬ ((pinTerms config pulled anc fin).tight = false ∧ ((pinTerms
+          config pulled anc fin).lateB i = true ∨ (pinTerms config pulled anc fin).pendingRB i =
+          true)))), ((pinTerms config pulled anc fin).rise i + 2 * syncD eventsF i + (if (pinTerms
+          config pulled anc fin).tight = false ∧ (pinTerms config pulled anc fin).lateB i = true
+          then
+        3 * balanceAt pulled i else 0) + (if (pinTerms config pulled anc fin).tight = false ∧
+            (pinTerms config pulled anc fin).pendingRB i = true then balanceAt pulled i
         else 0)) := by
     rw [Finset.mul_sum, ← Finset.sum_add_distrib]
-    exact Finset.sum_le_sum fun i _ => by omega
+    exact Finset.sum_le_sum fun i _ => by split_ifs <;> omega
   have lateKeys : ∑ i ∈ (((((slashedOnC split counted).filter (fun i => i <
       split.validators.data.size)).filter (fun i => ¬ (pinTerms config pulled anc fin).slashedRB i =
       true ∧ ¬ exitedSlashable anc pulled i = true)).filter (fun i => isActiveAt counted
-      (getCurrentEpoch counted) i = true)).filter (fun i => ((pinTerms config pulled anc fin).lateB
-      i = true ∨ (pinTerms config pulled anc fin).pendingRB i = true))), ((pinTerms config pulled
-      anc fin).rise i + (if (pinTerms config pulled anc fin).lateB i = true then 3 * balanceAt
-      pulled i
-        else 0) + (if (pinTerms config pulled anc fin).pendingRB i = true then balanceAt pulled i
-            else 0)) ≤
+      (getCurrentEpoch counted) i = true)).filter (fun i => ((pinTerms config pulled anc fin).tight
+      = false ∧ ((pinTerms config pulled anc fin).lateB i = true ∨ (pinTerms config pulled anc
+      fin).pendingRB i = true)))), ((pinTerms config pulled anc fin).rise i + (if (pinTerms config
+      pulled anc fin).tight = false ∧ (pinTerms config pulled anc fin).lateB i = true then 3 *
+      balanceAt pulled i
+        else 0) + (if (pinTerms config pulled anc fin).tight = false ∧ (pinTerms config pulled anc
+            fin).pendingRB i = true then balanceAt pulled i else 0)) ≤
       ∑ i ∈ (((((slashedOnC split counted).filter (fun i => i < split.validators.data.size)).filter
           (fun i => ¬ (pinTerms config pulled anc fin).slashedRB i = true ∧ ¬ exitedSlashable anc
           pulled i = true)).filter (fun i => isActiveAt counted (getCurrentEpoch counted) i =
-          true)).filter (fun i => ((pinTerms config pulled anc fin).lateB i = true ∨ (pinTerms
-          config pulled anc fin).pendingRB i = true))), ((pinTerms config pulled anc fin).rise i + 2
-          * syncD eventsF i + (if (pinTerms config pulled anc fin).lateB i = true then
-        3 * balanceAt pulled i else 0) + (if (pinTerms config pulled anc fin).pendingRB i = true
-            then balanceAt pulled i
+          true)).filter (fun i => ((pinTerms config pulled anc fin).tight = false ∧ ((pinTerms
+          config pulled anc fin).lateB i = true ∨ (pinTerms config pulled anc fin).pendingRB i =
+          true)))), ((pinTerms config pulled anc fin).rise i + 2 * syncD eventsF i + (if (pinTerms
+          config pulled anc fin).tight = false ∧ (pinTerms config pulled anc fin).lateB i = true
+          then
+        3 * balanceAt pulled i else 0) + (if (pinTerms config pulled anc fin).tight = false ∧
+            (pinTerms config pulled anc fin).pendingRB i = true then balanceAt pulled i
         else 0)) :=
-    Finset.sum_le_sum fun i _ => by omega
-  zify at core slack exited free late slashedKeys activeKeys partition freeKeys lateKeys
+    Finset.sum_le_sum fun i _ => by split_ifs <;> omega
+  have wSplit := (Finset.sum_filter_add_sum_filter_not (slashedOnC split counted)
+    (fun i => i < split.validators.data.size) (fun i => whistC tailC highC i)).symm
+  zify at core slack exited free late slashedKeys activeKeys partition freeKeys lateKeys wSplit ⊢
   push_cast at core slack exited free late slashedKeys activeKeys partition freeKeys lateKeys ⊢
+  push_cast at wSplit
   linarith
 
 /-- W (`reserveW`, `flagged`, `seatShortfall`, K7, cS): whistleblower rewards on C's branch,
 weight 3, are paid by the slashed key's own slack, or charged. -/
 theorem bud_whistle (h : Setting config checks g split fin pulled anc counted V)
-    (fromFin : Run config checks ⟨fork, fin⟩ ⟨fork, split⟩) (highF : ℕ)
-    {eventsF : List (BalanceEvent preset)} (replayedF : fromFin.balanceEvents highF = .ok eventsF)
     (tail : Run config checks ⟨fork, split⟩ ⟨fork, pulled⟩) (high : ℕ)
     (endEpoch : (getCurrentEpoch pulled).toNat ≤ high + 1)
     {events : List (BalanceEvent preset)} (replayed : tail.balanceEvents high = .ok events)
+    (fromFin : Run config checks ⟨fork, fin⟩ ⟨fork, split⟩)
+    {eventsF : List (BalanceEvent preset)} (replayedF : fromFin.balanceEvents high = .ok eventsF)
     (tailC : Run config checks ⟨fork, split⟩ ⟨fork, counted⟩) (highC : ℕ)
     (endEpochC : (getCurrentEpoch counted).toNat ≤ highC + 1)
     {eventsC : List (BalanceEvent preset)} (replayedC : tailC.balanceEvents highC = .ok eventsC) :
@@ -15128,11 +15178,13 @@ private theorem flow_rate (h : Setting config checks g split fin pulled anc coun
 
 `WB` is the whistleblower base of `otherCredits`. -/
 private theorem flow_whist (h : Setting config checks g split fin pulled anc counted V)
-    (fromFin : Run config checks ⟨fork, fin⟩ ⟨fork, split⟩) (highF : ℕ)
-    {eventsF : List (BalanceEvent preset)} (replayedF : fromFin.balanceEvents highF = .ok eventsF)
     (tail : Run config checks ⟨fork, split⟩ ⟨fork, pulled⟩) (high : ℕ)
+    (endEpoch : (getCurrentEpoch pulled).toNat ≤ high + 1)
     {events : List (BalanceEvent preset)} (replayed : tail.balanceEvents high = .ok events)
+    (fromFin : Run config checks ⟨fork, fin⟩ ⟨fork, split⟩)
+    {eventsF : List (BalanceEvent preset)} (replayedF : fromFin.balanceEvents high = .ok eventsF)
     (tailC : Run config checks ⟨fork, split⟩ ⟨fork, counted⟩) (highC : ℕ)
+    (endEpochC : (getCurrentEpoch counted).toNat ≤ highC + 1)
     {eventsC : List (BalanceEvent preset)} (replayedC : tailC.balanceEvents highC = .ok eventsC) :
     ∃ WB : ℕ, (pinTerms config pulled anc fin).otherGain =
         (3 * (WB + (((pinTerms config pulled anc fin).depth +
@@ -15207,8 +15259,8 @@ private theorem flow_split (h : Setting config checks g split fin pulled anc cou
         t.perIncrement * (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum / WEIGHT_DENOMINATOR.toNat ∧
       ∀ keys : Finset ℕ, ∑ i ∈ keys, (whistC tailC highC i +
         (syncCr eventsC i + syncD events i + syncD eventsF i)) ≤ B := by
-    obtain ⟨WB, hOther, hWhist⟩ := flow_whist h fromFin high replayedF tail high replayed tailC
-      highC replayedC
+    obtain ⟨WB, hOther, hWhist⟩ := flow_whist h tail high endEpoch replayed fromFin replayedF tailC
+      highC endEpochC replayedC
     refine ⟨WB + _, hOther, fun keys => ?_⟩
     rw [Finset.sum_add_distrib]
     exact Nat.add_le_add (hWhist keys)
@@ -17063,7 +17115,7 @@ theorem pinDrift_le_of_stubs (h : Setting config checks g split fin pulled anc c
     ring
   have b15' := Nat.le_trans (Nat.add_le_add_left (Nat.le_of_eq bandV) _) b15
   have qs := queues_split config pulled anc fin
-  have b14 := bud_whistle (config := config) h fromFin high replayedF tail high endEpoch replayed
+  have b14 := bud_whistle (config := config) h tail high endEpoch replayed fromFin replayedF
     tailC highC endEpochC replayedC
   have w4 : 0 ≤ ∑ v ∈ (K4 pulled counted V), (whistC tailC highC v.toNat : ℤ) :=
     Finset.sum_nonneg fun _ _ => Int.natCast_nonneg _
