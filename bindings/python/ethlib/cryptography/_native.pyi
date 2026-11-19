@@ -1200,18 +1200,6 @@ def consensus_digests_identify(name: str, config: dict[str, Any] | None, genesis
     """Whether the digest of each epoch at which it can change reads back the fork at that epoch."""
     ...
 
-def pq_keys_ssz(type: str, data: bytes) -> tuple[bytes, bytes]:
-    """The root of the value that the bytes encode, and the bytes of that value, as a pair."""
-    ...
-
-def pq_keys_possession_signing_root(name: str, genesis_validators_root: bytes, pubkey: bytes, xmss_public_key: bytes) -> bytes:
-    """The root that a proof of possession signs, on the chain with the given genesis validators."""
-    ...
-
-def pq_keys_is_valid_possession_proof(name: str, genesis_validators_root: bytes, pubkey: bytes, xmss_public_key: bytes, proof: bytes) -> bool:
-    """Whether a proof of possession of a leanXMSS key for a BLS key is valid, with Keccak-256."""
-    ...
-
 def consensus_verify_data_column_sidecar(name: str, fork: str, data: bytes, block: bytes, config: dict[str, Any] | None) -> bool:
     """Whether a sidecar, given as bytes, has a valid shape."""
     ...
@@ -2054,6 +2042,10 @@ def engine_exchange_capabilities(request: dict) -> list[str]:
 
 def engine_get_client_version(code: str, name: str, version: str, commit: bytes, request: dict) -> list[dict[str, str]]:
     """The answer to an `engine_getClientVersionV1` request, from a version object."""
+    ...
+
+def engine_error_object(code: int) -> str:
+    """The error object of the Engine API error with a code: its negative code, message and data."""
     ...
 
 def engine_rewrite_params(method: str, params: list[Any]) -> list[Any]:

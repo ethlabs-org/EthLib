@@ -64,7 +64,6 @@ Most of these theorems are about correctness: an honest run gives the expected a
 
 Some of them state a security property.
 The unforgeability of leanXMSS holds for EthLib's own definitions.
-The binding of an EIP-8450 proof of possession follows from it.
 The unforgeability of leanSPHINCS holds for EthLib's own definitions too.
 The unforgeability of BLS signatures holds for a scheme that EthLib's signing and verification compute.
 The accountable safety and the plausible liveness of Casper FFG hold for an abstract model of votes.
@@ -83,6 +82,11 @@ The correctness theorem is `verify_keyGen_sign` (`Proofs/Xmss/Correctness.lean`)
 If `keyGen seed` returns a key pair, and `sign` returns a signature for a message at a leaf index, then `verify` accepts that signature under that public key.
 It says nothing about unforgeability.
 
+The hash calls of key generation and signing are bounded in `Proofs/Xmss/Cost.lean`, on every path, when each call of `H` makes at most one query.
+Key generation makes at most `13434881` calls and signing at most `8616804556`.
+Verification makes at most `384` calls (`isQueryBoundP_verifyWith`, `Proofs/Xmss/QueryBound.lean`).
+Under a fixed answer function, key generation makes exactly `13434881` calls, when each call of `H` makes exactly one query.
+
 In the random oracle model, signing fails with probability at most `2 exp(-4000)` (`prEvent_signWith_error_le`, `Proofs/Xmss/SignatureFailure.lean`).
 The theorem assumes that the oracle's cache holds no trial input of the two keys that sign when signing starts, as an empty cache does.
 It proves that the signer's own calls before each search add none.
@@ -94,6 +98,15 @@ Unforgeability is `Unforgeability.unforgeable` (`Proofs/Xmss/Unforgeability.lean
 In the random oracle model, an adversary whose experiment makes at most `q >= 1` hash calls forges a signature with probability at most `q / 2^127`.
 Its game runs EthLib's `keyGenWith`, `signWith` and `verifyWith`, with the hash `H` a query to the random oracle.
 `keyGen`, `sign` and `verify` are the same definitions with Keccak-256 as `H`.
+
+The budget `q` counts the calls of key generation, the signer and the final verification too.
+`Unforgeability.forgeAdvantage_le_adversaryBudget` (`Proofs/Xmss/Unforgeability/AdversaryBudget.lean`) counts only the adversary's own calls instead.
+Take an adversary that makes at most `qH` calls of `H` and `r` signing requests on every public key and every run.
+It forges with probability at most `Q / 2^127`, where `Q = 205 * 2^16 + 1 + qH + r (2^33 + 410 * 2^16 + 204) + 384`.
+The constants are proved upper bounds on the calls of key generation, of one signing request, and of the verification.
+With `r <= 2^32`, `Unforgeability.forgeAdvantage_le_lifetime` gives `(qH + 2^65 + 410 * 2^48 + 204 * 2^32 + 205 * 2^16 + 385) / 2^127`.
+A request's bound includes two searches of `2^32` trials each, so this constant keeps the bound above `2^-62`.
+The library proves no smaller bound on the calls of a request.
 
 The proof is adapted from leanerVM's, and `Proofs/Xmss/Security/README.md` lists what changed here.
 It reasons over EthLib's algorithms.
@@ -114,23 +127,6 @@ It bounds every run, including the unlucky ones, so the bound is weaker than `2^
 
 The bound is classical: the adversary queries the oracle as a classical algorithm.
 The statement is written with VCVio's oracle computations and probabilities, so their definitions are part of what it says.
-
-### EIP-8450 proof of possession
-
-A proof of possession is a leanXMSS signature, at leaf index 0, of a root that names a BLS key and the leanXMSS key.
-Completeness is `isValidPqPossessionProof_sign` (`Consensus/Proofs/PqKeys/Possession.lean`): a key generated from a seed that signs its possession root at leaf 0 gives a proof that the check accepts.
-`isValidPqPossessionProofWith_of_index_ne` shows that a proof at any other leaf index fails.
-
-Binding is `possession_binding` (`Consensus/Proofs/PqKeys/PossessionBinding.lean`).
-Its game is the leanXMSS game, except that the adversary returns a BLS key and a proof.
-It wins when the check accepts the proof for that BLS key and the honest leanXMSS key.
-And no signing request for their possession root returned that proof.
-Such an adversary turns into a leanXMSS adversary with the same hash calls that wins whenever it wins, so the bound is again `q / 2^127`.
-The game checks a proof as the specification does, and `possessionVerdict_eq` shows that the two verdicts agree for every hash.
-
-The theorem says nothing about two BLS keys whose possession roots collide under SHA-256.
-A proof that the key holder made for one of them is then valid for the other.
-The game does not count that as a win.
 
 ### Merkle trees
 
@@ -425,6 +421,10 @@ If `keyGen seed` returns a key pair, and `sign` returns a signature for a messag
 
 The Python suite checks one signature that an independent implementation computed, with its public key, through the bindings.
 
+The hash calls of each algorithm, under a fixed answer function, are in `Proofs/Sphincs/Cost.lean`, when each call of `H` makes exactly one query.
+Key generation makes exactly `264193` calls, and signing at most `12885372483`.
+Verification makes at most `491` calls, and exactly `491` when it accepts.
+
 In the random oracle model, all `2^32` counters of one search miss the code with probability below `exp(-2^18)` (`prEvent_findCounter_none_le`, `Proofs/Sphincs/CodewordSearch.lean`).
 The theorem assumes that the oracle's cache holds none of the counters' inputs when the search starts.
 
@@ -448,6 +448,16 @@ The bridge in `Proofs/Sphincs/Unforgeability/Bridge/` connects the model to EthL
 An EthLib forgery is a model forgery of a translated adversary (`forgeAdvantage_le`).
 Under every fixed answer of the oracle, a signing request costs the model at most what it costs EthLib (`hashCalls_sign_le`).
 So the adversary's budget of `q` hash calls carries over unchanged, and the model's theorem `h26_layered` gives the bound.
+
+A second theorem, `Unforgeability.Bridge.unforgeable_adversary`, counts only the adversary's own hash calls.
+Take an adversary that makes at most `q` hash calls of its own and at most `r` signing requests in every run of its game.
+It forges with probability at most `(q + C) / 2^127`, where `C = 264193 + r * (470595 + 3 * 2^32) + 491`.
+At the model's cap of 1,182,000,000 requests, `C` is about `2^63.7`, so the bound is never below about `2^-63.3`.
+At EthLib's cap of `2^30` requests, `C` is about `2^63.6`.
+`r` is not capped: a run past `2^30` requests loses, but its signer calls still enter `C`.
+Key generation makes 264193 calls, and a signing request at most `470595 + 3 * 2^32`, when every counter search tries all `2^32` counters.
+A verification makes at most 491 calls; the three counts are the theorems of `Proofs/Sphincs/Cost.lean`.
+The game with the adversary's counter is the game above with its counts forgotten (`gameCore_eq_map`, `forgeAdvantage_eq`), so both theorems bound the same forging probability.
 
 ### VRF tree
 
@@ -1285,6 +1295,39 @@ The theorems below tie the code to the model, and only a reader who checks the m
 `digest_absorb_absorb` (`Proofs/Hash/Keccak/Hasher.lean`) proves that the incremental hasher gives Keccak-256 of the two pieces it absorbed, wherever the message is cut.
 `size_pending_lt` proves that every hasher reached from the empty one keeps fewer pending bytes than the rate, so its digest pads them into one block.
 The Python tests (`bindings/python/tests/keccak`) check the hashes and the permutation against pinned vectors.
+
+`Proofs/Hash/Keccak/OneBlock.lean` bounds collisions and preimages of Keccak-256 on messages of at most 135 bytes.
+There Keccak-f[1600] is replaced by a uniform permutation of the 2^1600 states, which the adversary evaluates forward and backward.
+`spongeAbsorb_of_size_lt` proves that, below 136 bytes, the absorbing phase is one call to the permutation.
+The call is on the padded block with a zero capacity, whatever the permutation is.
+`oneCallHash_eq` proves that the hash of the games is that sponge, with only the permutation swapped.
+Let the adversary make `q` calls to the permutation and its inverse.
+`keccak256_collisionAdvantage_le` bounds its chance of a collision by `(Q (Q - 1) / 2 * 2^1344 + Q * 2^1088) / (2^1600 - Q)` with `Q = q + 2`, about `Q (Q - 1) / 2^257 + Q / 2^512`.
+`keccak256_preimageAdvantage_le` bounds its chance of a preimage of any given digest by `Q (2^1344 + 2^1088) / (2^1600 - Q)` with `Q = q + 1`, about `Q / 2^256 + Q / 2^512`.
+These bounds hold in the random permutation model only.
+Keccak-f[1600] is one fixed permutation, and treating it as a uniform one is a heuristic that EthLib assumes and does not prove.
+
+The bounds that model Keccak-256 as a random oracle on byte strings can be carried to the sponge over a uniform permutation.
+That carrying rests on the hypothesis below.
+`Proofs/Indifferentiability.lean` defines indifferentiability from a random oracle, after Definition 1 of [Bertoni, Daemen, Peeters and Van Assche](https://keccak.team/files/SpongeIndifferentiability.pdf), §2, without its bounds on running times.
+Its simulator asks the random oracle at most once per call.
+The simulator of their §4.3, Algorithm 3, does so, adapted to a 256-bit oracle that leaves it to draw the other output bits.
+`realProb_le_romProb_add` is the composition for single-stage games, Theorem 3.1 of [Ristenpart, Shacham and Shrimpton](https://hovav.net/ucsd/dist/revindiff.pdf).
+Their §4 shows that the composition fails for multi-stage games.
+Let each hash call cost at least 1.
+`isQueryBoundP_romGame` proves that the random-oracle image of a game of cost `N` then asks the oracle at most `N` times.
+`Keccak256Indifferentiable` (`Proofs/Hash/Keccak/Indifferentiability.lean`) is the hypothesis for Keccak-256.
+Its bound is the closed form of equation (6) of Bertoni et al.
+For a cost `N`, it is `((1 - 2^-1088) N^2 + (1 + 2^-1088) N) / 2^513`.
+Their Theorem 2 rests on the exact term of their Lemma 5, `spongeExact`.
+Their equation (6) approximates that term by the closed form, for `N` well below `2^512`.
+`spongeExact_le_spongeBound` (`Proofs/Indifferentiability.lean`) proves that the closed form bounds the exact term, at every rate, capacity and cost.
+So `keccak256Indifferentiable_of_spongeExact` derives the hypothesis from the same statement with the exact term.
+EthLib proves the hypothesis in neither form, and no theorem of the XMSS, SPHINCS, VRF or trie proofs uses it yet.
+The source writes its proof for the padding of its §3.3, while Keccak-256 pads with pad10*1.
+Its §3.3 asks only for an injective padding whose last block is not zero, which pad10*1 meets.
+The distinguisher here asks only for 256-bit outputs of byte strings.
+The definition bounds no running time, so only random-oracle bounds that count queries alone carry over.
 
 ### KZG
 
@@ -2284,15 +2327,18 @@ The trie commits to a map from byte keys to byte values under one 32-byte root.
 Two theorems in `Execution/Proofs/Trie/Binding.lean` describe what the root binds, for every hash.
 
 The first is `verifyProof_binding`, about two Merkle proofs of one key that verify against one root.
-They are one proof and give the key one value.
+They read as one list of nodes and give the key one value.
 Otherwise `findProofCollision` returns two different nodes of the proofs with one hash.
+A proof reads as itself, except the proof of no nodes against the root of the empty trie.
+The empty trie has no node, so that proof reads as the encoding of its root node, `0x80`, which `readNodes` writes.
 The second is `root_binding`, about two tries with one root.
 They give every key one value, or `findCollision` returns such a collision in the proofs of that key.
 Both searches are proved to return only collisions, and to return none for an input compared with itself.
 
 `verifyProof_sound`, in the same file, compares a proof with the proof that the trie builds for the key.
-The proof is that honest proof and gives the trie's value of the key.
-Otherwise `findProofCollision` returns a collision between the two proofs.
+The proof reads as that honest proof and gives the trie's value of the key.
+Otherwise `findProofCollision` returns a collision between the nodes that the proof reads as and the honest proof.
+`verifyProof_nil_eq_ok_iff` proves that the proof of no nodes verifies only against the root of the empty trie, where it shows the key unset.
 
 A secured trie hashes each key into its path, so two of its keys can have one path.
 `root_binding` and `verifyProof_sound` name that case too.
@@ -3191,12 +3237,33 @@ Their additional conclusion supplies held states and runs for which reference un
 This alternative is outside the store-collision witnesses and provides no a priori drift bound or unconditional one-third slashing guarantee.
 The drift counts from the anchor, so on a long execution with enough churn since the anchor the alternative holds with no accountable key.
 
-`Consensus/Proofs/ForkChoice/FastConfirmation/TargetVotes.lean` states the assumed honest target-vote count, `HonestTargetVotes`.
-`SignsTarget`, in the network file above, describes a signing witness by a bounded time inside that count; it is not an additional hypothesis on its own.
-The count gives active honest voters, each of whom signs the target or lies outside the committees of the epoch so far, and three times their stake is at least three times the computed support plus the margin.
-`quorum_of_no_conflicting_checkpoint` takes that count as a hypothesis and, when the one-third test passes, applies it; no theorem derives the count from a bound on Byzantine stake, or shows that the target is justified.
+`Consensus/Proofs/ForkChoice/FastConfirmation/TargetVotes.lean` states the honest target-vote count, `HonestTargetVotes`.
+`SignsTarget`, in the network file above, describes a signing witness by a bounded time inside that count.
+It is not an additional hypothesis on its own.
+The count gives active honest voters.
+Each of them signs the target or lies outside the committees of the epoch so far.
+Three times their stake is at least three times the computed support plus the margin.
+`quorum_of_no_conflicting_checkpoint` takes that count as a hypothesis and, when the one-third test passes, applies it; it does not show that the target is justified.
 `quorum_of_current_target` applies the count in the same way when the two-thirds test passes.
 Then three times the voters' stake is at least twice the total active balance plus the margin of the count.
+`Execution.honestTargetVotes_of_byzantineStakeAtMost` (`Consensus/Proofs/ForkChoice/FastConfirmation/TargetCount.lean`) derives the count from `TargetCountBounds`.
+`TargetCountBounds` is stated for the pulled-up state of the head.
+It assumes that the Byzantine stake is at most the threshold share of the active members of the committees so far, as in Assumption 2.
+Those are the committees of the epoch so far.
+It also assumes that the honest validators of the slots still to come hold the share that the rule counts for them.
+They hold a third of the margin on top of it.
+The rule checks none of these; they are assumptions on the run.
+The theorem takes an anchored store from an anchor state with `Invariant`, a positive slot duration and a fork before Gloas.
+It takes two seed lookaheads of at least one epoch, and a ring of mixes longer than the minimum lookahead plus one.
+It takes an increment that is a whole number of 100 Gwei, and `MaxEffectiveBalancesAligned`.
+From the second it derives the aligned balances of the head's pulled-up state.
+Take a head whose block is before the start of the current epoch and at least two epochs before it.
+The rule reads the committees of the current epoch from a state that has not processed the epochs in between.
+For such a head the theorem assumes `StaleHeadVotersInWindow`: a voter for the head's own current target is among those committees.
+For every other head it proves the membership.
+It is an assumption on the run: runs where those committees miss a voter for the head's target are not covered.
+Shuffling these committees from the pulled-up state of the head would remove the premise.
+That is a change of the rule, which this theorem does not make.
 
 `Execution.honestTargetVotes_signed_of_checked` in `Consensus/Proofs/ForkChoice/FastConfirmation/RootViability.lean` turns that count into signatures, for the current target ([#2058](https://github.com/ethereum/EthLib/issues/2058), Theorem 2).
 The caller's store is up to date at a slot start of the target's epoch, and its head passes the two-thirds test.
@@ -3223,8 +3290,10 @@ At each up-to-date honest store up to `time`, the root is in the filtered tree o
 The alternatives are a collision between blocks held by honest stores, or accountable-safety evidence.
 That evidence is `HistoricalDirectSafetyEvidence`, `CrossStoreJustifiedEvidence` or `HeldStateFinalityEvidence`.
 Each such store has a head, by `Execution.honestHeadsExist_or_evidence` in `HonestHeads.lean`, up to the same alternatives ([#2060](https://github.com/ethereum/EthLib/issues/2060), for pre-Gloas forks).
-It reads `CheckpointStakeCeiling`, `ProposerScoreFits` and the network and duty premises that the headline already takes.
+It reads `CheckpointStakeCeiling`, `ProposerScoreFits`, the bound of `Config.CommitteeWindowsFit.seeds` on the epoch of the largest 64-bit time and the network and duty premises that the headline already takes.
 The store holds its justified state because an honest vote for that checkpoint reaches it by the next slot and is accepted.
+So the store holds its justified block, and its filtered tree computes without error.
+That is why `HonestHeadsExist` needs no premise on the tree.
 Each evidence alternative is relative to the anchor, and its drift counts from the anchor.
 So with enough churn since the anchor it holds with no accountable key.
 `HeldStateFinalityEvidence` is evidence from runs to two held states, one with an honest store's finality and one justified at that epoch or later.
@@ -3238,7 +3307,7 @@ Its other premises are those of that headline, with the root fixed to the root t
 The root is held by every up-to-date honest store from the call on.
 An honest supporter behind the caller's margin sent a vote above the root before the call's slot (`Execution.honest_vote_of_caller_margin`).
 `Execution.rootHeld_of_honest_vote` then delivers the root.
-The root's viability at each time is a private step of the same file.
+`Execution.rootViableAt_of_checked` in the same file gives the root's viability at each time.
 A justified checkpoint of the call's epoch or before is comparable with the root (`Execution.justified_comparable_of_checked`).
 If the root strictly descends from it, `Execution.rootInFilteredTree_of_checked` keeps the root in the filtered tree.
 A later justified checkpoint has an honest signer, which puts it above the root (`justified_descends_of_duty`).
@@ -3259,12 +3328,14 @@ Off the epoch's first slot the call's count is reserved.
 At the epoch's first slot, the root is of an earlier epoch, and the call's epoch is at least two and after the anchor's.
 The rule does not check the reserved count, the first-slot condition or the epoch bounds; they are assumptions on the run.
 Its record of an earlier call's target check, `TargetChecked`, includes coverage of honest heads by that call's origin.
-No theorem derives that coverage, nor `startCovers`, the coverage by the start of the call's walk up to `time`.
+These theorems take that coverage and `startCovers`, the coverage by the start of the call's walk up to `time`, as premises.
+`Execution.confirmedRoot_covers` derives both for each call of a run, through its call invariant.
 `AcceptedRealizedRecent` and `AcceptedRealizedHead` restrict the runs in scope; the rule does not check them.
 Each accepted root has a realized justification at most one epoch before its own.
 An accepted root of an earlier epoch is realized as justified by the head's state.
 `CallRolloverRead` is the caller's head read at each rollover for the current target of its head, through `CallerHeadAt` above.
-`Execution.rootInFilteredTree_of_checked` assumes it, and the headlines derive it through `Execution.callRolloverRead_or_evidence`, so they do not take it.
+`Execution.rootInFilteredTree_of_checked` and `Execution.rootViableAt_of_checked` assume it.
+The headlines and `Execution.confirmedRoot_covers` derive it through `Execution.callRolloverRead_or_evidence`, so they do not take it.
 `QuorumDriftWithin` assumes that an honest voter set of a call keeps its stake in each counting state, up to the call's quorum reserve.
 Its alternative is a collision of two honest stores.
 `Execution.quorumDriftWithin` proves it for an honest fork choice with BLS checks, before Gloas from Fulu.
@@ -3280,6 +3351,7 @@ The theorem bounds the drift by the reserve, but whether the reserve is small en
 `Execution.rootViable_of_checked_call` and `Execution.honestHeadsCover_of_checked_call` still take `QuorumDriftWithin` as a premise.
 A caller with BLS checks from Fulu to before Gloas discharges it with `Execution.quorumDriftWithin`.
 `Execution.heldStatesBeforeUpgrade_of_bounded` likewise discharges `HeldStatesBeforeUpgrade` from the horizon and `HonestStoreEpochsBounded`.
+`Execution.confirmedRoot_covers` below discharges both the same way, so it takes neither `QuorumDriftWithin` nor `HeldStatesBeforeUpgrade` as a premise.
 The model's genesis time must be the anchor state's (`secondsToMilliseconds anchorState.genesisTime = genesisTimeMs`), a fact of the configuration that holds for every real anchor.
 
 `JustifiedPinned` is a further premise, absent from the signed-justification headline.
@@ -3301,6 +3373,51 @@ The paper's conclusion is a seed whose unrealized justification is the target or
 The premise also allows two honest stores that collide, since the seed reads the call's block at the target root.
 Votes for the target of epoch E count until start(E+1) − 1, and the conclusion applies once a receiver's epoch is E + 2 or later.
 
+`Execution.confirmedRoot_covers` in `Consensus/Proofs/ForkChoice/FastConfirmation/ConfirmedCallStep.lean` addresses Theorem 1 of [#1458](https://github.com/ethereum/EthLib/issues/1458).
+It takes consecutive calls of the rule by one honest validator, one per slot from `firstSlot`, run from the anchor store.
+The first slot's epoch is at least two and after the anchor state's epoch.
+The rule does not check this; it is an assumption on the run, and runs whose first call is earlier are not covered.
+After the last call, the confirmed root is on every up-to-date honest head from the next slot to the horizon.
+The alternatives are a collision between blocks held by honest stores, or accountable-safety evidence.
+That evidence is `HistoricalDirectSafetyEvidence`, `CrossStoreDirectSafetyEvidence`, `CrossStoreJustifiedEvidence` or `HeldStateFinalityEvidence`.
+Each evidence alternative is relative to the anchor, so with enough churn since the anchor it holds with no accountable key.
+The theorem covers executions whose honest stores verify signatures with BLS (`checks = .bls`).
+The specification's pulled-up head state processes slots with BLS checks, and a run under other checks can differ from it.
+The fork is Fulu or later and before Gloas.
+A private step of the same file shows that each call keeps the call invariant, given the invariant at every earlier call.
+The call invariant and the walk of a call are in `ConfirmedCalls.lean`.
+The step derives `QuorumDriftWithin` with `Execution.quorumDriftWithin`, and the honest target count with `Execution.honestTargetVotes_of_byzantineStakeAtMost`.
+So the endpoint takes neither as a premise.
+In their place it takes the parameter facts that the drift bound reads, among them `CapOrder` and `ActivationWithinMaxEffective`.
+For the seed lookahead it takes `Preset.SeedLookaheadAtLeastThree` instead, a lookahead of at least three epochs.
+The drift bound needs a lookahead of one epoch, and the near exit bound below needs three.
+The endpoint derives `HeldStatesBeforeUpgrade` itself, with `Execution.heldStatesBeforeUpgrade_of_bounded`, and does not take it either.
+
+The endpoint assumes `CallObligations` of each call.
+They apply when a call walks from its head to the start it selected.
+Then they assume the source reads of the later windows (`SourceWindowReads`).
+They also assume `TargetCountBounds` with the call's pin reserve, and the realized guards `AcceptedRealizedRecent` and `AcceptedRealizedHead`.
+The rule checks neither the count bounds nor the realized guards; they are assumptions on the run.
+No theorem derives the source reads yet.
+They do not include the head read at each rollover (`CallRolloverRead`).
+The step derives it through `Execution.callRolloverRead_or_evidence`, up to a collision of two honest stores or `HistoricalDirectSafetyEvidence`.
+For each walked member they assume `MemberObligations`.
+That is the member's margin over its committee weight, which pays for the drift of each later window, and the reserve of each later window.
+That reserve is `exitReserveNear`, the active source stake already scheduled to exit within three epochs, not `exitReserve`.
+Under `Preset.SeedLookaheadAtLeastThree`, `Execution.receiverWindowExitsNear_of_sourceOnParentChain` bounds each near receiver's exits by it.
+An exit that starts at the source's epoch or later lands at least `MAX_SEED_LOOKAHEAD + 1` epochs after it.
+The near window reaches three epochs past the source, so the proof needs a lookahead of three to keep each such exit out of it.
+No theorem derives the margin's drift bound, `WindowMarginDrift`, yet.
+A planned follow-up charges it from the source state, for the receivers that the proof reads.
+With a positive excess, the member's margin asks more than the rule's one-confirmation test.
+`MemberObligations` also includes `LateDutyMajority` and `NewlyActiveVotersInHeadWindow` for the member's parent; they are assumptions on the run.
+A call that keeps its start walks no roots, and assumes nothing.
+The run also assumes `JustifiedPinned` at margin 0, `ByzantineCountedStake anchorEpoch 0 limit`, `TargetIncluded` and `StaleHeadVotersInWindow`, which are described above.
+The endpoint derives the signed justification inside, as the historical-anchor headlines do.
+It derives it from the Byzantine bound, a positive inclusion delay and the two conditions on the anchor.
+The Byzantine bound and the two conditions on the anchor are assumptions on the run; the anchor store checks neither condition.
+No theorem derives `JustifiedPinned` yet.
+
 `Consensus/Proofs/ForkChoice/FastConfirmation/ConfirmedRoot.lean` states where the confirmed block of a slot comes from.
 `Store.onFastConfirmation_confirmedRoot` shows that the rule starts from the block stored before, the finalized block or the observed justified block.
 It keeps the block stored before only when that block is in the chain of the head, and at the first slot of an epoch only when `isConfirmedChainSafe` accepts it.
@@ -3309,9 +3426,9 @@ That block must then be in the epoch before the current one, and its checkpoint 
 The rule stores that block, or a later root of the walk of `getAncestorRoots` from that block to the head.
 That root and each root before it in the walk then pass `isOneConfirmed`, with the votes of the state of the observed justified checkpoint.
 The rule makes two walks, and `Store.getAncestorRoots_of_append` in `Consensus/Proofs/ForkChoice/AncestorRoots.lean` shows that the second walk is the part of the first walk after the root where the first walk stopped.
-No theorem yet shows that the roots of a walk are in the chain of the head.
 
-These theorems prove no safety: no theorem yet shows that a start is safe, or that a one-confirmed walk keeps a block in the chain of every honest head.
+`Store.parentRoot_of_getAncestorRoots` in `Consensus/Proofs/ForkChoice/AncestorRoots.lean` shows that the roots of a walk are in the chain of the head.
+These theorems prove no safety on their own; `Execution.confirmedRoot_covers` above does, under its premises.
 `Store.onFastConfirmation_confirmedRoot` and `Store.getLatestConfirmed_eq_or` do not record every check of the rule.
 For the start they leave out the other checks that compare the epochs and the slots of the blocks.
 For the walks they leave out the checks on the epochs of the start and of the walked blocks.
@@ -4285,6 +4402,13 @@ A payload and its block determine each other.
 
 The checks of `engine_newPayload` answer by the version of the method and the fork of the payload.
 `exists_acceptsFork_iff` (`Proofs/NewPayload.lean`) shows that some version takes a fork exactly when the fork is from Paris to Glamsterdam.
+`acceptsFork_eq_true_iff` gives the forks of each version.
+From version 3, a version takes the forks from the one that adds its last parameter, and none from the one that adds the next.
+Those parameters are the blob hashes and the beacon root of Dencun, the requests of Pectra, and the payload of Glamsterdam with its access list and slot.
+Version 2 takes Paris and Shapella, and version 1 Paris alone.
+`acceptsGetPayloadFork_eq_true_iff` (`Proofs/GetPayload.lean`) states the same rule for the payloads that `engine_getPayload` returns.
+Its fields are the bundle of Dencun, the requests of Pectra, the cell proofs of Fusaka, and the access list and the slot of Glamsterdam.
+So version 5 returns Fusaka and the BPO forks, and some version returns each fork from Paris to Glamsterdam (`exists_acceptsGetPayloadFork_iff`).
 `validRequests_iff` states when the execution requests of version 4 and later pass.
 Each request must have more than one byte, and their first bytes must strictly increase along the list.
 `status_of_checkNewPayload` shows that a payload that fails the checks is `INVALID`, or `INVALID_BLOCK_HASH` only at version 1, with no latest valid hash.
@@ -4550,6 +4674,9 @@ The next and last are those of the first and last fork times after the head whos
 The reported fork ID is the EIP-6122 `FORK_HASH` that the node announces at that configuration's activation (`configObject_forkId`, `Proofs/Rpc/Config.lean`).
 The block that represents the Merge in the fork ID is an explicit input, distinct from the actual Paris activation block.
 The report's precompile addresses are exactly those that transaction processing warms (`configObject_precompiles`).
+`mem_configSystemContracts_iff` gives the system contracts of each fork.
+The beacon roots contract counts from Cancun.
+From Prague the history storage contract, the chain's deposit contract and the request contracts of the fork count too.
 Its blob schedule is `chainBlobSchedule` at the configuration's activation (`configObject_blobSchedule`).
 The named BPO forks keep Osaka's precompile names and system contracts (`configPrecompiles_bpo`, `configSystemContracts_bpo`).
 
@@ -6318,12 +6445,11 @@ The Python bindings expose the block cipher, CTR and GCM, as `encrypt_block`, `d
 A security theorem rests on a model, such as a random oracle for a hash.
 Each such theorem of EthLib rests on the idealisations listed below, and on any hypothesis that its statement names.
 The two theorems of Casper FFG share one bullet, as do the signature theorems of the light client.
-The binding of a proof of possession shares the bullet of leanXMSS, and the codeword searches of each scheme share the bullet of that scheme:
+The codeword searches of each scheme share the bullet of that scheme:
 
 - leanXMSS: the hash `H`, Keccak-256, is a random oracle on byte strings.
   The theorem says nothing about an attack that uses the structure of Keccak.
-  The binding of an EIP-8450 proof of possession rests on the same oracle.
-  So do the failure bounds of the codeword searches of leanXMSS.
+  The failure bounds of the codeword searches of leanXMSS rest on the same oracle.
 - leanSPHINCS: the hash `H`, Keccak-256, is a random oracle on byte strings, as for leanXMSS.
   The unforgeability theorem says nothing about an attack that uses the structure of Keccak.
   It counts classical queries only, so it says nothing about a quantum adversary.
@@ -6447,12 +6573,12 @@ A proof is unaffected unless it uses one of the tactics of C2.
 Between the Lean exports and Python sits a layer of hand-written C.
 
 <!-- generated: exports -->
-Lean exports 526 operations and 51 size constants.
-The Python extension calls 526 of the operations and 51 of the constants.
+Lean exports 524 operations and 51 size constants.
+The Python extension calls 524 of the operations and 51 of the constants.
 <!-- end generated -->
 
 <!-- generated: c-lines -->
-11851 lines of hand-written C sit between them and Python: `aes.c` (119), `blocks.c` (364), `bls.c` (426), `chacha20_poly1305.c` (75), `chain.c` (45), `consensus.c` (2652), `crc32.c` (34), `crc32c.c` (34), `deposit_tree.c` (84), `devp2p.c` (79), `discv4.c` (78), `discv5.c` (303), `engine.c` (207), `enr.c` (177), `era.c` (12), `era1.c` (12), `eth.c` (263), `ethash.c` (65), `evm.c` (114), `fees.c` (56), `forkid.c` (101), `gossip.c` (158), `hmac.c` (122), `keccak.c` (85), `keystore.c` (30), `kzg.c` (511), `libp2p.c` (187), `module.c` (1589), `noise.c` (111), `password_kdf.c` (105), `pow.c` (73), `precompile.c` (85), `pyvalue.c` (421), `quic.c` (271), `reqresp.c` (130), `rlp.c` (156), `rlpx.c` (184), `rpc.c` (84), `secp256k1.c` (169), `secp256r1.c` (42), `sha256.c` (38), `snap.c` (159), `snappy.c` (146), `sphincs.c` (85), `ssz.c` (86), `state.c` (108), `transactions.c` (181), `trie.c` (115), `vrf.c` (141), `wrappers.h` (824), `x25519.c` (21), `xmss.c` (134).
+11787 lines of hand-written C sit between them and Python: `aes.c` (119), `blocks.c` (364), `bls.c` (426), `chacha20_poly1305.c` (75), `chain.c` (45), `consensus.c` (2585), `crc32.c` (34), `crc32c.c` (34), `deposit_tree.c` (84), `devp2p.c` (79), `discv4.c` (78), `discv5.c` (303), `engine.c` (216), `enr.c` (177), `era.c` (12), `era1.c` (12), `eth.c` (263), `ethash.c` (65), `evm.c` (114), `fees.c` (56), `forkid.c` (101), `gossip.c` (158), `hmac.c` (122), `keccak.c` (85), `keystore.c` (30), `kzg.c` (511), `libp2p.c` (187), `module.c` (1585), `noise.c` (111), `password_kdf.c` (105), `pow.c` (73), `precompile.c` (85), `pyvalue.c` (421), `quic.c` (271), `reqresp.c` (130), `rlp.c` (156), `rlpx.c` (184), `rpc.c` (84), `secp256k1.c` (169), `secp256r1.c` (42), `sha256.c` (38), `snap.c` (159), `snappy.c` (146), `sphincs.c` (85), `ssz.c` (86), `state.c` (108), `transactions.c` (181), `trie.c` (115), `vrf.c` (141), `wrappers.h` (822), `x25519.c` (21), `xmss.c` (134).
 <!-- end generated -->
 
 That C converts arguments, owns and frees Lean objects, and turns errors into Python exceptions.
@@ -6589,7 +6715,6 @@ The files named `Proofs.lean` are roots that gather the proofs of a domain, so t
 - `EthLib/Consensus/Proofs/DepositRandomOracleAccepted.lean`
 - `EthLib/Consensus/Proofs/Gossip/`
 - `EthLib/Consensus/Proofs/LightClient/`
-- `EthLib/Consensus/Proofs/PqKeys/`
 - `EthLib/Consensus/Proofs/SigningRandomOracle.lean`
 - `EthLib/Cryptography/Proofs/Aes/`
 - `EthLib/Cryptography/Proofs/BadOnBudget.lean`
@@ -6598,14 +6723,17 @@ The files named `Proofs.lean` are roots that gather the proofs of a domain, so t
 - `EthLib/Cryptography/Proofs/DerivationTable.lean`
 - `EthLib/Cryptography/Proofs/EvalDistEq.lean`
 - `EthLib/Cryptography/Proofs/ExceptTAnswers.lean`
+- `EthLib/Cryptography/Proofs/Hash/`
 - `EthLib/Cryptography/Proofs/HashSig/`
 - `EthLib/Cryptography/Proofs/IndependentAnswers.lean`
 - `EthLib/Cryptography/Proofs/IndependentOutside.lean`
+- `EthLib/Cryptography/Proofs/Indifferentiability.lean`
 - `EthLib/Cryptography/Proofs/Kzg/`
 - `EthLib/Cryptography/Proofs/LazyPermutation.lean`
 - `EthLib/Cryptography/Proofs/LogKeys.lean`
 - `EthLib/Cryptography/Proofs/LoggedUntilBad.lean`
 - `EthLib/Cryptography/Proofs/Merkle/`
+- `EthLib/Cryptography/Proofs/OneCallPermutation.lean`
 - `EthLib/Cryptography/Proofs/ProgrammedPermutation.lean`
 - `EthLib/Cryptography/Proofs/QueryAvoidance.lean`
 - `EthLib/Cryptography/Proofs/RandomOracleFromCache.lean`
