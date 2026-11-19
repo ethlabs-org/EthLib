@@ -16610,7 +16610,7 @@ private theorem voter_not_withdrawn (h : Setting config checks g split fin pulle
     (tail : Run config checks ⟨fork, split⟩ ⟨fork, pulled⟩)
     (v : ValidatorIndex)
     (unslashed : (split.validators.data[v.toNat]?.map (·.slashed)).getD false = false)
-    (late : ∀ w, pulled.validators.data[v.toNat]? = some w →
+    (late : ∀ w, pulled.validators.data[v.toNat]? = some w → w.slashed = false →
       (getCurrentEpoch pulled).toNat + 1 <
         w.exitEpoch.toNat + config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat)
     (inSplit : v.toNat < split.validators.data.size) :
@@ -16623,7 +16623,6 @@ private theorem voter_not_withdrawn (h : Setting config checks g split fin pulle
   obtain ⟨wP, foundP⟩ : ∃ wP, pulled.validators.data[v.toNat]? = some wP :=
     ⟨_, Array.getElem?_eq_getElem (Nat.lt_of_lt_of_le inSplit sizeSplit)⟩
   have cleanS : uS.slashed = false := by simpa [foundS] using unslashed
-  have late := late wP foundP
   have half := depthFin_lt_half h
   have finSplit : (getCurrentEpoch fin).toNat ≤ (getCurrentEpoch split).toNat :=
     epoch_le_of_slot_le fin.slot split.slot (Run.slot_le fromFin)
@@ -16636,6 +16635,7 @@ private theorem voter_not_withdrawn (h : Setting config checks g split fin pulle
           wP.withdrawableEpoch.toNat := newly
       omega
     · have cleanP : wP.slashed = false := by simpa using slashedP
+      have late := late wP foundP cleanP
       rcases Run.withdrawable_eq_exit_delay (shared.append (fromFin.append tail)) h.genesis
         v.toNat wP foundP cleanP with ⟨exitFar, withdrawFar⟩ | eq
       · have := congrArg UInt64.toNat withdrawFar
@@ -17189,6 +17189,8 @@ The caps along the runs are those of each state, so a switch to compounding on e
 
 The credits `Cr` are all of C's, so they cover the cap's rise on C's run.
 
+`late` is read only for a key that is unslashed at R.
+
 A key at an end before R's epoch and no later than `c` keeps its effective balance at `c`.
 
 `shortStart` bounds that balance by the cap and the rounded top, for every slack.
@@ -17212,7 +17214,7 @@ private theorem key_core_frozen_from (h : Setting config checks g split fin pull
     {eventsC : List (BalanceEvent preset)} (replayedC : tailC.balanceEvents highC = .ok eventsC)
     (v : ValidatorIndex)
     (unslashed : (split.validators.data[v.toNat]?.map (·.slashed)).getD false = false)
-    (late : ∀ w, pulled.validators.data[v.toNat]? = some w →
+    (late : ∀ w, pulled.validators.data[v.toNat]? = some w → w.slashed = false →
       (getCurrentEpoch pulled).toNat + 1 <
         w.exitEpoch.toNat + config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat)
     {c : BeaconState preset fork} (toC : Run config checks ⟨fork, fin⟩ ⟨fork, c⟩)
@@ -17303,7 +17305,7 @@ private theorem key_core_frozen_from (h : Setting config checks g split fin pull
     fun u foundU => unslashed_of_run fromC foundU cleanSplit
   have slashedLate := slashed_withdrawable_of_clean h tail v cleanSplit splitSize h.finalized
   have envAll := envelope_of_voter h fromFin tail replayedF replayed v toC (fromC.append tail)
-    cutRest clean slashedLate inside start (fun w fw _ => late w fw)
+    cutRest clean slashedLate inside start late
   have memberSplitC : (⟨fork, split⟩ : ForkedBeaconState preset) ∈
       (fromC.append tail).balancePath := by
     obtain ⟨front, atEnd⟩ := Run.balancePath_last fromC
@@ -17316,7 +17318,7 @@ private theorem key_core_frozen_from (h : Setting config checks g split fin pull
         ((events.map (penaltyDebit v.toNat)).sum + (events.map (floorPartialDebit v)).sum) +
         (events.map (syncDebit v.toNat)).sum + slashW (pinTerms config pulled anc fin) v.toNat := by
     have := voter_floorAt h fromFin tail v toC (fromC.append tail) cutRest clean slashedLate inside
-      (fun w fw _ => late w fw) fromC tail rfl replayed
+      late fromC tail rfl replayed
     omega
   have rateLow : 11 * (pinTerms config pulled anc fin).depth *
       ((pinTerms config pulled anc fin).gainRate v.toNat + 1) ≤
@@ -17385,7 +17387,7 @@ private theorem key_core_frozen_from (h : Setting config checks g split fin pull
       replayed v (slashW (pinTerms config pulled anc fin) v.toNat) M below (toC.append r1) r2
       cutZ (Nat.le_trans inside (registryGrows_of_chainSteps r1.chainSteps))
       (fun ok => voter_floorAt h fromFin tail v toC (fromC.append tail) cutRest clean slashedLate
-        inside (fun w fw _ => late w fw) r1 r2 cutZ' ok)
+        inside late r1 r2 cutZ' ok)
     rw [hDf]
     omega
   obtain ⟨Bc, hBc⟩ : ∃ Bc, Bc = actualBalanceAt (⟨fork, pulled⟩ : ForkedBeaconState preset)
@@ -17608,7 +17610,7 @@ private theorem key_core_cap (h : Setting config checks g split fin pulled anc c
     keyCeiling anc (fromFin.append tail) tailC highC eventsC events eventsF v.toNat :=
   keyCeiling_of_close anc (fromFin.append tail) tailC highC eventsC events eventsF v.toNat _
     (key_core_frozen_from h tail replayed fromFin replayedF tailC highC endEpochC h.near replayedC
-      v unslashed late toC fromC cutC inside before start
+      v unslashed (fun w fw _ => late w fw) toC fromC cutC inside before start
       (fun lt => absurd lt (by
         have := UInt64.le_iff_toNat_le.mp h.later
         omega)) kept)
