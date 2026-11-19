@@ -434,6 +434,47 @@ theorem initializeBeaconStateFromEth1_unassigned_eligibility {eth1BlockHash : Ha
     deposits root _ depositedOk).2.2.2 original (Array.mem_of_getElem? read)
   exact ⟨same.1.trans eligibility, same.2.trans unslashed.1⟩
 
+/-- A genesis key below its cap holds at most its effective balance plus the upward band.
+
+Genesis sets each effective balance to the balance rounded down to an increment, capped.
+
+Below the cap, the balance exceeds it by less than one increment. -/
+theorem initializeBeaconStateFromEth1_hysteresis_up {eth1BlockHash : Hash32}
+    {eth1Timestamp : UInt64} {deposits : Array Deposit} {after : BeaconState preset fork}
+    (computed : initializeBeaconStateFromEth1 config checks eth1BlockHash eth1Timestamp deposits =
+      .ok after) (bands : preset.IncrementWithinUpwardBand)
+    (position : ℕ) (validator : Validator) (balance : Gwei)
+    (found : after.validators.data[position]? = some validator)
+    (bal : after.balances.data[position]? = some balance)
+    (below : validator.effectiveBalance < withdrawalMaxEffectiveBalance preset fork validator) :
+    balance.toNat ≤ validator.effectiveBalance.toNat + preset.upwardBand := by
+  obtain ⟨before, _, _, deposited, activated, _, _, activatedOk, equal⟩ :=
+    initializeBeaconStateFromEth1_ok computed
+  rw [equal] at found bal
+  change activated.validators.data[position]? = some validator at found
+  change activated.balances.data[position]? = some balance at bal
+  obtain ⟨balances, _, size, effective⟩ :=
+    foldlM_activateAtGenesis (Nat.lt_trans before (by decide)) activatedOk
+  have inside : position < deposited.validators.data.size := by
+    have := (Array.getElem?_eq_some_iff.mp found).1
+    omega
+  have value := effective position inside
+  rw [found, ← balances, bal] at value
+  simp only [Option.map_some, Option.some.injEq] at value
+  simp only [withdrawalMaxEffectiveBalance, not_pectra_of_lt_altair before, ↓reduceIte] at below
+  have lt := UInt64.lt_iff_toNat_lt.mp below
+  rw [value, Uint64.toNat_min] at lt ⊢
+  have sub : (balance - balance % preset.EFFECTIVE_BALANCE_INCREMENT).toNat =
+      balance.toNat - balance.toNat % preset.EFFECTIVE_BALANCE_INCREMENT.toNat := by
+    rw [UInt64.toNat_sub_of_le _ _ (UInt64.le_iff_toNat_le.mpr (by
+      rw [UInt64.toNat_mod]
+      exact Nat.mod_le _ _)), UInt64.toNat_mod]
+  rw [sub] at lt ⊢
+  have remainder := Nat.mod_lt balance.toNat bands.1
+  have kept := Nat.mod_le balance.toNat preset.EFFECTIVE_BALANCE_INCREMENT.toNat
+  have narrow := bands.2
+  omega
+
 /-- Genesis assigns only the genesis activation epoch; all other keys remain unassigned. -/
 theorem initializeBeaconStateFromEth1_activation_epochs {eth1BlockHash : Hash32}
     {eth1Timestamp : UInt64} {deposits : Array Deposit} {after : BeaconState preset fork}
