@@ -5377,7 +5377,7 @@ private theorem block_syncDebits_le {fork : Fork} {a t : BeaconState preset fork
   · -- The proposer is read from the slot and the lookahead, which the sync pass leaves alone.
     have same : getBeaconProposerIndex ({ c with balances } : BeaconState preset fork) =
         getBeaconProposerIndex c := by
-      first | rfl | simp [getBeaconProposerIndex]
+      rfl
     obtain ⟨reward', rewardOk', moves'⟩ := processSyncAggregate_moved_le altair _ synced keys
       fun p found => apart p (same.trans found)
     obtain rfl : reward' = reward := Except.ok.inj (rewardOk'.symm.trans rewardOk)
