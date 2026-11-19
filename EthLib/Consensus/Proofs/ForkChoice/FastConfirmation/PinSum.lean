@@ -10645,8 +10645,11 @@ open DirectSafety.Apriori DirectSafety.Apriori.Internal in
 
 The run ends within the span of the setting.
 
-The effective balance at the end is at most that at the start, one upward band, the gains at the
-largest rate over the epochs of the run, and the other credits that the run scans.
+The effective balance at the end is at most that at the start plus four terms.
+
+They are one upward band, the gains at the largest rate over the epochs of the run, and the credits.
+
+The credits are the net block credits and the other credits that the run scans.
 
 The balance at the start, up to the cap at the end, is within the band of its effective balance.
 
@@ -10720,19 +10723,22 @@ The key is active at that step, so the run crosses an epoch boundary before it.
 
 The key is in the registry at the first state after the boundary.
 
-There the balance is within the upward band of the effective balance, which stays through the
-epoch.
+There the balance is within the upward band of the effective balance.
+
+The effective balance stays through the epoch.
 
 From there the ceiling over the run to the key's state bounds the effective balance.
 
-The case of a key whose cap rose after the boundary, with the effective balance at the old cap, is
-left to the step fact on the switch to compounding. -/
+The case of a key whose cap rose after the boundary is left to the step fact on the switch.
+
+In that case the effective balance is at the old cap. -/
 private theorem earlier_charge (h : Setting config checks g split fin pulled anc counted V)
     (tailC : Run config checks ⟨fork, split⟩ ⟨fork, counted⟩) (highC : ℕ)
     (endEpochC : (getCurrentEpoch counted).toNat ≤ highC + 1)
     {a b : ForkedBeaconState preset} (step : Step config checks a b) (member : tailC.Contains step)
     (i : ℕ) (created : pulled.validators.data.size ≤ i) (old : Validator)
-    (foundA : a.state.validators.data[i]? = some old) (assigned : old.exitEpoch ≠ FAR_FUTURE_EPOCH) :
+    (foundA : a.state.validators.data[i]? = some old)
+    (assigned : old.exitEpoch ≠ FAR_FUTURE_EPOCH) :
     effectiveAt a i ≤ chargeAmt tailC i + (preset.upwardBand +
       (pinTerms config pulled anc fin).depth * (pinTerms config pulled anc fin).gainRateMax +
       (netScan i highC tailC +
