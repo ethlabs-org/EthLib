@@ -3037,6 +3037,40 @@ private theorem envelope_arith {I cap capFor high kept S CB finEB e0 effX : ℕ}
   have r3 := rounded_mono I keptLe
   omega
 
+/-- The pin's rate bounds the reward rate at every state of a prefix of C's tail.
+
+The prefix ends at most one epoch after the call.
+
+Each state of its balance path is the end of a run from the finalized block, so the guard applies. -/
+private theorem key_rate_pre (h : Setting config checks g split fin pulled anc counted V)
+    {a : BeaconState preset fork} (pre : Run config checks ⟨fork, split⟩ ⟨fork, a⟩)
+    (near : (getCurrentEpoch a).toNat ≤ (getCurrentEpoch pulled).toNat + 1) :
+    ∃ P : ℕ, ∀ z ∈ pre.balancePath, ∀ total perIncrement : Gwei,
+      getTotalActiveBalance z.state = .ok total →
+      getBaseRewardPerIncrement preset total = .ok perIncrement →
+      perIncrement.toNat * ((∑ j ∈ (getActiveValidatorIndices z.state
+        (getPreviousEpoch z.state)).toFinset, effectiveAt z j.toNat) /
+          preset.EFFECTIVE_BALANCE_INCREMENT.toNat) ≤
+        P * (total.toNat / preset.EFFECTIVE_BALANCE_INCREMENT.toNat) := by
+  by_cases anyOk : ∃ total perIncrement : Gwei,
+      getBaseRewardPerIncrement preset total = .ok perIncrement
+  · obtain ⟨total, perIncrement, perOk⟩ := anyOk
+    obtain ⟨pq, pqOk⟩ := quarter_base_ok h.facts perOk
+      ((getTotalActiveBalance pulled).toOption.getD 0)
+    refine ⟨pq.toNat, fun z member total' perIncrement' totalOk perOk' => ?_⟩
+    obtain ⟨fromFin⟩ := h.fromFin
+    obtain ⟨r1, r2, -⟩ := balancePath_endpoint pre Run.nil (le_refl _) member
+    obtain ⟨zf, zs⟩ := z
+    have sameFork : zf = fork := Fork.ctorIdx_injective
+      (Nat.le_antisymm (fork_le_of_chainSteps r2.chainSteps)
+        (fork_le_of_chainSteps r1.chainSteps))
+    subst sameFork
+    have order := UInt64.le_iff_toNat_le.mp (currentEpoch_le_of_chainSteps r2.chainSteps)
+    simp only at order totalOk perOk' ⊢
+    exact rate_of_guard h (fromFin.append r1) (by omega) pqOk total' perIncrement' totalOk perOk'
+  · exact ⟨0, fun _ _ total perIncrement _ perOk =>
+      absurd ⟨total, perIncrement, perOk⟩ anyOk⟩
+
 /-- Layer 1 of the key core: the effective balance of a key at a prefix of C's tail is within the
 envelope.
 
@@ -3046,10 +3080,15 @@ The bound is `rise`'s, plus the credits of the prefix rounded up to increments.
 
 The credits are the net credits of the prefix and the sync debits of R, at eleven tenths.
 
+The cap `capHigh` is the caller's: it is aligned, at least the start effective balance, and at least
+C's caps along the prefix.
+
 K2 gives the ceiling on the balance, and `rise` reads the same `high` that the ceiling does. -/
 private theorem key_ceiling_pre (h : Setting config checks g split fin pulled anc counted V)
+    (fromFin : Run config checks ⟨fork, fin⟩ ⟨fork, split⟩)
     (tail : Run config checks ⟨fork, split⟩ ⟨fork, pulled⟩) (high : ℕ)
     (endEpoch : (getCurrentEpoch pulled).toNat ≤ high + 1)
+    {eventsF : List (BalanceEvent preset)} (replayedF : fromFin.balanceEvents high = .ok eventsF)
     {events : List (BalanceEvent preset)} (replayed : tail.balanceEvents high = .ok events)
     {a : BeaconState preset fork} (pre : Run config checks ⟨fork, split⟩ ⟨fork, a⟩) (highC : ℕ)
     (endEpochPre : (getCurrentEpoch a).toNat ≤ highC + 1)
@@ -3058,7 +3097,10 @@ private theorem key_ceiling_pre (h : Setting config checks g split fin pulled an
     (e0 capHigh capFor Cr' : ℕ)
     (hCr' : Cr' = netScan i highC pre +
       (creditScan (fun _ => false) (fun s => decide (s ≠ .rewards)) i highC pre).1 +
-        (events.map (syncDebit i)).sum)
+        (eventsF.map (syncDebit i)).sum + (events.map (syncDebit i)).sum)
+    (alignedCap : capHigh % preset.EFFECTIVE_BALANCE_INCREMENT.toNat = 0)
+    (startCap : effectiveAt (⟨fork, split⟩ : ForkedBeaconState preset) i ≤ capHigh)
+    (capCeil : ∀ z ∈ pre.balancePath, PinSplit2.capAt z i ≤ capHigh)
     (capLe : capHigh ≤ capFor) :
     effectiveAt (⟨fork, a⟩ : ForkedBeaconState preset) i ≤
       max e0 (effectiveAt (⟨fork, pulled⟩ : ForkedBeaconState preset) i +
@@ -3069,18 +3111,9 @@ private theorem key_ceiling_pre (h : Setting config checks g split fin pulled an
   have incPos : 0 < preset.EFFECTIVE_BALANCE_INCREMENT.toNat := by
     have := h.below
     omega
-  obtain ⟨fromFin⟩ := h.fromFin
   have insideSplit : i < (⟨fork, split⟩ : ForkedBeaconState preset).state.validators.data.size :=
     Nat.lt_of_lt_of_le inside fromFin.registryLifecycle.size_le
-  -- The pin's rate bounds the reward rate at every state of the prefix (check on `P`, named).
-  have rate : ∃ P : ℕ, ∀ z ∈ pre.balancePath, ∀ total perIncrement : Gwei,
-      getTotalActiveBalance z.state = .ok total →
-      getBaseRewardPerIncrement preset total = .ok perIncrement →
-      perIncrement.toNat * ((∑ j ∈ (getActiveValidatorIndices z.state
-        (getPreviousEpoch z.state)).toFinset, effectiveAt z j.toNat) /
-          preset.EFFECTIVE_BALANCE_INCREMENT.toNat) ≤
-        P * (total.toNat / preset.EFFECTIVE_BALANCE_INCREMENT.toNat) := sorry
-  obtain ⟨P, rateP⟩ := rate
+  obtain ⟨P, rateP⟩ := key_rate_pre h pre (by omega)
   -- `rise`'s shape: the same `high` as the ceiling, a `kept` above it, and the largest balance.
   have riseShape : ∃ high' kept finEB : ℕ, high' ≤ kept ∧
       effectiveAt (⟨fork, pulled⟩ : ForkedBeaconState preset) i +
@@ -3088,10 +3121,6 @@ private theorem key_ceiling_pre (h : Setting config checks g split fin pulled an
         min capFor (min (kept - kept % preset.EFFECTIVE_BALANCE_INCREMENT.toNat)
           (max finEB (high' - high' % preset.EFFECTIVE_BALANCE_INCREMENT.toNat))) := sorry
   obtain ⟨high', kept, finEB, keptLe, riseEq⟩ := riseShape
-  -- The cap is aligned, the start is below it, and the caps along the prefix stay below it.
-  have alignedCap : capHigh % preset.EFFECTIVE_BALANCE_INCREMENT.toNat = 0 := sorry
-  have startCap : effectiveAt (⟨fork, split⟩ : ForkedBeaconState preset) i ≤ capHigh := sorry
-  have capCeil : ∀ z ∈ pre.balancePath, PinSplit2.capAt z i ≤ capHigh := sorry
   -- The envelope `E`, with its fixpoint (check 1 and `lowRate`, named).
   obtain ⟨E, closed, ceiling, start⟩ : ∃ E : ℕ,
       max (effectiveAt (⟨fork, split⟩ : ForkedBeaconState preset) i)
