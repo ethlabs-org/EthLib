@@ -85,8 +85,10 @@ private theorem leak_linear (inc pi score depth bias quotient : ℕ) (incPos : 0
       have second : (score + depth * bias) * x ≤
           bias * quotient * ((x + inc) * (score + depth * bias) / (bias * quotient) + 1) := by
         have := Nat.lt_mul_div_succ ((x + inc) * (score + depth * bias)) positive
-        have mono : (score + depth * bias) * x ≤ (x + inc) * (score + depth * bias) := by
-          nlinarith
+        have mono : (score + depth * bias) * x ≤ (x + inc) * (score + depth * bias) :=
+          calc (score + depth * bias) * x = x * (score + depth * bias) := Nat.mul_comm _ _
+            _ ≤ (x + inc) * (score + depth * bias) :=
+              Nat.mul_le_mul_right _ (Nat.le_add_right _ _)
         omega
       have third := Nat.mul_le_mul_left inc second
       calc (2 * pi * (bias * quotient) + (score + depth * bias) * inc) * x
@@ -369,7 +371,10 @@ private theorem low_arith (inc band ρn ρd K depth X s R pd sync L1 L2 E0 cap :
         (((ρd - ρn * K) * (X + band) - ρn * s) / ρd - (band + (sync + pd)) -
           (((ρd - ρn * K) * (X + band) - ρn * s) / ρd - (band + (sync + pd))) % inc)) + sync := by
   have depthMul : K * (L1 + 1) ≤ depth * (L1 + 1) := Nat.mul_le_mul_right _ epochs
-  refine le_min (by omega) (le_min (by omega) ?_)
+  suffices rounded : R - ((L2 + 1) + depth * (L1 + 1) + band + inc) ≤
+      (((ρd - ρn * K) * (X + band) - ρn * s) / ρd - (band + (sync + pd)) -
+        (((ρd - ρn * K) * (X + band) - ρn * s) / ρd - (band + (sync + pd))) % inc) + sync by
+    omega
   generalize hF : ((ρd - ρn * K) * (X + band) - ρn * s) / ρd - (band + (sync + pd)) = F
   have modLt := Nat.mod_lt F incPos
   have modLe := Nat.mod_le F inc
@@ -451,7 +456,6 @@ private theorem existing_low_or_floor_new (h : Setting config checks g split fin
     simpa [effectiveAt, initial] using UInt64.le_iff_toNat_le.mp cap
   have toCounted := UInt64.le_iff_toNat_le.mp h.later
   have nearC := h.near
-  simp only at toCounted
   have arith := low_arith preset.EFFECTIVE_BALANCE_INCREMENT.toNat preset.downwardBand ρn ρd
     ((getCurrentEpoch counted).toNat - (getCurrentEpoch fin).toNat)
     ((getCurrentEpoch pulled).toNat + 2 - (getCurrentEpoch fin).toNat)
