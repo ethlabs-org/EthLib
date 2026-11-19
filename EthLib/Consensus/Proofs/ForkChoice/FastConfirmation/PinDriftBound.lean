@@ -508,11 +508,10 @@ private theorem Run.passDebit_le {x y : ForkedBeaconState preset} (tail : Run co
 private def syncDebit (v : ℕ) (event : BalanceEvent preset) : ℕ :=
   if event.source = .sync then actualBalanceAt event.before v - actualBalanceAt event.after v else 0
 
-<<<<<<< HEAD
 /-- The sync credit of a key in one event. -/
 private def syncCredit (v : ℕ) (event : BalanceEvent preset) : ℕ :=
   if event.source = .sync then actualBalanceAt event.after v - actualBalanceAt event.before v else 0
-=======
+
 /-- The balance of a key that stays unslashed falls over a branch only by its debits, as events.
 
 It starts from the smaller of its balance and its largest effective balance.
@@ -564,7 +563,6 @@ private theorem Run.balanceFloor_events_or_fulu {g x y : ForkedBeaconState prese
     rfl
   rw [balance, debt, split] at floor
   omega
->>>>>>> ethlabs/proof/fcr-pin-d1-base
 
 /-- The balance of a key that stays unslashed falls over a branch only by its debits.
 
