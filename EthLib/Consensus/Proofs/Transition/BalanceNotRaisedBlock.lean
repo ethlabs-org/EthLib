@@ -769,7 +769,7 @@ private theorem steady_slashValidator {slashedIndex : ValidatorIndex}
     (frame_slashValidator computed).registryGrows
 
 /-- A slashing with no whistleblower raises only the balance of the proposer after it. -/
-private theorem down_slashValidator {slashedIndex proposer : ValidatorIndex}
+theorem down_slashValidator {slashedIndex proposer : ValidatorIndex}
     (apart : preset.MIN_SEED_LOOKAHEAD.toNat + 2 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
     (computed : slashValidator config state slashedIndex none = .ok after)
     (read : getBeaconProposerIndex after = .ok proposer) {index : Nat}
