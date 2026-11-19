@@ -1557,8 +1557,7 @@ private theorem credited_pieces_seated {g : ForkedBeaconState preset}
         refine ⟨z, (pre.snoc (Step.slot ok)).append r1, r2, alt, ?_, ?_, ?_⟩
         · rw [← Run.append_assoc, cut]
         · omega
-        · rw [if_neg j0]
-          exact hL
+        · simpa [j0] using hL
 
 /-- The keys credited in the block steps of a run, counted by the periods that it touches. -/
 private theorem credited_pieces {g : ForkedBeaconState preset}
@@ -1579,7 +1578,7 @@ private theorem credited_pieces {g : ForkedBeaconState preset}
       ∀ events, r.balanceEvents high = .ok events → ∀ i, 0 < (events.map (syncDebit i)).sum →
         i ∈ S := by
   intro n x shared r fulu count
-  obtain ⟨-, B, S, D, cardB, cardS, cardD, hBS, hDep, hSD, -⟩ :=
+  obtain ⟨_, B, S, D, cardB, cardS, cardD, hBS, hDep, hSD, _⟩ :=
     credited_pieces_seated genesis early delay high n shared r fulu count
   exact ⟨B, S, D, cardB, cardS, cardD, hBS, hDep,
     fun events replayed i pos => (hSD events replayed i pos).1⟩
