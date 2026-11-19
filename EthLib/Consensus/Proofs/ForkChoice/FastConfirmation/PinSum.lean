@@ -8385,6 +8385,88 @@ private theorem parameters_of_fusaka {fork : Fork} (fusaka : .fusaka ≤ fork)
     | exact absurd fusaka (by decide)
     | exact absurd early (by decide)
 
+/-- A key that is not yet activated at the finalized state keeps `newKeyFloor` once it is active.
+
+The key is missing at the finalized state, or its activation there is unassigned.
+
+Its effective balance plus its sync debits is at least `newKeyFloor`, from
+`Run.new_key_effective_floor`.
+
+It has no partial withdrawals queued, since a request needs an active key. -/
+private theorem fresh_key_floor (h : Setting config checks g split fin pulled anc counted V)
+    {a : ForkedBeaconState preset} (tail : Run config checks ⟨fork, fin⟩ a)
+    (aEarly : a.fork < .glamsterdam)
+    (aInside : (getCurrentEpoch a.state).toNat ≤ (getCurrentEpoch pulled).toNat + 1)
+    (v : ValidatorIndex)
+    (fresh : fin.validators.data[v.toNat]? = none ∨
+      ∃ w, fin.validators.data[v.toNat]? = some w ∧ w.activationEpoch = FAR_FUTURE_EPOCH)
+    (active : isActiveAt a.state (getCurrentEpoch a.state) v.toNat = true)
+    {prior : List (BalanceEvent preset)}
+    (priorOk : tail.balanceEvents (getCurrentEpoch pulled).toNat = .ok prior) :
+    (pinTerms config pulled anc fin).newKeyFloor ≤
+      effectiveAt a v.toNat + (prior.map (syncDebit v.toNat)).sum := by
+  classical
+  obtain ⟨toFin⟩ := h.toFin
+  have electra : .pectra ≤ fork := Nat.le_trans (by decide) h.fulu
+  have pending : ∀ u, fin.validators.data[v.toNat]? = some u →
+      (getCurrentEpoch (⟨fork, fin⟩ : ForkedBeaconState preset).state).toNat + 1 <
+        u.activationEpoch.toNat := by
+    intro u foundFin
+    rcases fresh with none | ⟨u', foundFin', far⟩
+    · rw [none] at foundFin
+      cases foundFin
+    · obtain rfl := Option.some.inj (foundFin.symm.trans foundFin')
+      rw [far]
+      exact getCurrentEpoch_succ_lt_farFuture h.twoSlots fin
+  have floor := PinSplit.Run.new_key_effective_floor toFin h.genesis h.parameters h.caps h.aligned
+    h.twoSlots electra h.fulu (getCurrentEpoch pulled).toNat h.guard tail aEarly
+    aInside h.window h.delay h.bands h.facts v.toNat pending active
+    (fun step fulu early crossing =>
+      DirectSafety.Apriori.Internal.hysteresis_of_crossing_slot
+        (DirectSafety.Apriori.Internal.slot_of_crossing step
+          (UInt64.lt_iff_toNat_lt.mp crossing)) h.bands fulu early
+        (UInt64.lt_iff_toNat_lt.mp crossing)) priorOk
+  -- no queued partial withdrawal names the key at the finalized state, which has no activation
+  have genesisPartials : Internal.AssignedPartials g.state := by
+    obtain ⟨_, _, _, initialized⟩ := h.genesis
+    have before := (initializeBeaconStateFromEth1_ok initialized).1
+    intro fork
+    exact (Nat.not_le_of_lt before (Nat.le_trans (by decide) fork)).elim
+  have finPartials : Internal.AssignedPartials fin :=
+    (Internal.CapStep.run toFin h.caps.activation h.caps.compounding h.early).2.1 genesisPartials
+  have noEntry : ((((fin.pendingPartialWithdrawals electra).data.toList.filter
+      fun entry => decide (entry.validatorIndex = v)).filter
+        (fun entry => entry.withdrawableEpoch.toNat ≤ (getCurrentEpoch pulled).toNat + 1)).map
+          (·.amount.toNat)).sum = 0 := by
+    have none : (fin.pendingPartialWithdrawals electra).data.toList.filter
+        (fun entry => decide (entry.validatorIndex = v)) = [] := by
+      apply List.filter_eq_nil_iff.mpr
+      intro entry member same
+      obtain ⟨u, foundU, assignedU⟩ := finPartials electra entry member
+      rw [of_decide_eq_true same] at foundU
+      rcases fresh with absent | ⟨u', foundU', far⟩
+      · rw [absent] at foundU
+        cases foundU
+      · obtain rfl := Option.some.inj (foundU.symm.trans foundU')
+        exact assignedU far
+    rw [none]
+    rfl
+  have debits := Run.partialDebit_le tail electra aEarly
+    (getCurrentEpoch pulled).toNat ((getCurrentEpoch pulled).toNat + 1) aInside
+    (window_short h) v priorOk
+  have toUInt : v.toNat.toUInt64 = v := by simp
+  have partials : (prior.map (DirectSafety.Apriori.Internal.floorPartialDebit
+      v.toNat.toUInt64)).sum = 0 := by
+    rw [toUInt]
+    exact Nat.le_zero.mp (noEntry ▸ debits)
+  have floorEq : (pinTerms config pulled anc fin).newKeyFloor =
+      2 * preset.MAX_EFFECTIVE_BALANCE.toNat / 3 -
+        preset.MAX_EFFECTIVE_BALANCE.toNat /
+          (EthLib.Consensus.parameters preset fork).MIN_SLASHING_PENALTY_QUOTIENT.toNat -
+        preset.downwardBand - preset.EFFECTIVE_BALANCE_INCREMENT.toNat := rfl
+  rw [parameters_of_fusaka h.fulu h.early] at floorEq
+  omega
+
 /-- A key that is not yet activated at the finalized state and has a small charge loses seats.
 
 The key is missing at the finalized state, or its activation there is unassigned.
@@ -8418,7 +8500,6 @@ private theorem pending_key_claim (h : Setting config checks g split fin pulled 
   --
   -- An entry queued later is not due in the window.
   classical
-  obtain ⟨toFin⟩ := h.toFin
   have electra : .pectra ≤ fork := Nat.le_trans (by decide) h.fulu
   obtain ⟨c, cMember, cIndex⟩ := charged
   obtain ⟨a, b, pre, step, post, split', vv, w, found, foundB, unset, set, activated, amount,
@@ -8483,64 +8564,8 @@ private theorem pending_key_claim (h : Setting config checks g split fin pulled 
     refine isActiveAt_eq_true_iff.mpr ⟨vv, found, ?_⟩
     simp only [isActiveValidator, Bool.and_eq_true, decide_eq_true_eq]
     exact ⟨activated, by rw [unset]; exact UInt64.lt_iff_toNat_lt.mpr finite⟩
-  have pending : ∀ u, fin.validators.data[v.toNat]? = some u →
-      (getCurrentEpoch (⟨fork, fin⟩ : ForkedBeaconState preset).state).toNat + 1 <
-        u.activationEpoch.toNat := by
-    intro u foundFin
-    rcases fresh with none | ⟨u', foundFin', far⟩
-    · rw [none] at foundFin
-      cases foundFin
-    · obtain rfl := Option.some.inj (foundFin.symm.trans foundFin')
-      rw [far]
-      exact getCurrentEpoch_succ_lt_farFuture h.twoSlots fin
-  have floor := PinSplit.Run.new_key_effective_floor toFin h.genesis h.parameters h.caps h.aligned
-    h.twoSlots electra h.fulu (getCurrentEpoch pulled).toNat h.guard (fromFin.append pre) aEarly
-    aInside h.window h.delay h.bands h.facts v.toNat pending active
-    (fun step fulu early crossing =>
-      DirectSafety.Apriori.Internal.hysteresis_of_crossing_slot
-        (DirectSafety.Apriori.Internal.slot_of_crossing step
-          (UInt64.lt_iff_toNat_lt.mp crossing)) h.bands fulu early
-        (UInt64.lt_iff_toNat_lt.mp crossing)) priorOk
-  -- no queued partial withdrawal names the key at the finalized state, which has no activation
-  have genesisPartials : Internal.AssignedPartials g.state := by
-    obtain ⟨_, _, _, initialized⟩ := h.genesis
-    have before := (initializeBeaconStateFromEth1_ok initialized).1
-    intro fork
-    exact (Nat.not_le_of_lt before (Nat.le_trans (by decide) fork)).elim
-  have finPartials : Internal.AssignedPartials fin :=
-    (Internal.CapStep.run toFin h.caps.activation h.caps.compounding h.early).2.1 genesisPartials
-  have noEntry : ((((fin.pendingPartialWithdrawals electra).data.toList.filter
-      fun entry => decide (entry.validatorIndex = v)).filter
-        (fun entry => entry.withdrawableEpoch.toNat ≤ (getCurrentEpoch pulled).toNat + 1)).map
-          (·.amount.toNat)).sum = 0 := by
-    have none : (fin.pendingPartialWithdrawals electra).data.toList.filter
-        (fun entry => decide (entry.validatorIndex = v)) = [] := by
-      apply List.filter_eq_nil_iff.mpr
-      intro entry member same
-      obtain ⟨u, foundU, assignedU⟩ := finPartials electra entry member
-      rw [of_decide_eq_true same] at foundU
-      rcases fresh with absent | ⟨u', foundU', far⟩
-      · rw [absent] at foundU
-        cases foundU
-      · obtain rfl := Option.some.inj (foundU.symm.trans foundU')
-        exact assignedU far
-    rw [none]
-    rfl
-  have debits := Run.partialDebit_le (fromFin.append pre) electra aEarly
-    (getCurrentEpoch pulled).toNat ((getCurrentEpoch pulled).toNat + 1) aInside
-    (window_short h) v priorOk
-  have toUInt : v.toNat.toUInt64 = v := by simp
-  have partials : (prior.map (DirectSafety.Apriori.Internal.floorPartialDebit
-      v.toNat.toUInt64)).sum = 0 := by
-    rw [toUInt]
-    exact Nat.le_zero.mp (noEntry ▸ debits)
+  have floor := fresh_key_floor h (fromFin.append pre) aEarly aInside v fresh active priorOk
   have order := exitFloor_add_slack h
-  have floorEq : (pinTerms config pulled anc fin).newKeyFloor =
-      2 * preset.MAX_EFFECTIVE_BALANCE.toNat / 3 -
-        preset.MAX_EFFECTIVE_BALANCE.toNat /
-          (EthLib.Consensus.parameters preset fork).MIN_SLASHING_PENALTY_QUOTIENT.toNat -
-        preset.downwardBand - preset.EFFECTIVE_BALANCE_INCREMENT.toNat := rfl
-  rw [parameters_of_fusaka h.fulu h.early] at floorEq
   have effective : effectiveAt a v.toNat = c.amount := by
     simp only [effectiveAt, found, Option.map_some, Option.getD_some]
     exact amount.symm
