@@ -15091,11 +15091,17 @@ private theorem key_core_frozen (h : Setting config checks g split fin pulled an
     rateLow maxLe (balanceAt fin v.toNat) (fun _ => Nat.le_max_left _ _) stay
     (fun _ => Nat.le_trans cappedC (Nat.le_add_right _ _)) creditsLe noCredit) creditsLe
 
-/-- The per-key core of the rise for a counted voter of R's finalized registry whose cap moves.
+/-- The per-key core of the rise for a counted voter whose cap moves, from a state `c`.
 
-The key's cap rises on R's branch after the finalized state, or on C's branch.
+The key is in the registry at the state `c` of the shared segment, and unslashed at the split.
+
+The state `c` is the first that holds the key: before it the key is absent.
+
+Its cap at `c` is not that at R, or its cap at C is above it.
 
 Its credentials switch to compounding at a step of one of the runs.
+
+The finalized state is the case `c = fin`.
 
 The replays are read at R's epoch. -/
 private theorem key_core_flip (h : Setting config checks g split fin pulled anc counted V)
@@ -15108,12 +15114,26 @@ private theorem key_core_flip (h : Setting config checks g split fin pulled anc 
     (tailC : Run config checks ⟨fork, split⟩ ⟨fork, counted⟩) (highC : ℕ)
     (endEpochC : (getCurrentEpoch counted).toNat ≤ highC + 1)
     {eventsC : List (BalanceEvent preset)} (replayedC : tailC.balanceEvents highC = .ok eventsC)
-    (v : ValidatorIndex) (voter : v ∈ Q counted)
-    (inFin : v.toNat < fin.validators.data.size)
-    (moves : ¬ (PinSplit2.capAt (⟨fork, fin⟩ : ForkedBeaconState preset) v.toNat =
+    (v : ValidatorIndex)
+    (unslashed : (split.validators.data[v.toNat]?.map (·.slashed)).getD false = false)
+    (late : ∀ w, pulled.validators.data[v.toNat]? = some w →
+      (getCurrentEpoch pulled).toNat + 1 <
+        w.exitEpoch.toNat + config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat)
+    {c : BeaconState preset fork} (toC : Run config checks ⟨fork, fin⟩ ⟨fork, c⟩)
+    (fromC : Run config checks ⟨fork, c⟩ ⟨fork, split⟩) (cutC : toC.append fromC = fromFin)
+    (inside : v.toNat < c.validators.data.size)
+    (before : ∀ p ∈ toC.balancePath, p = ⟨fork, c⟩ ∨ effectiveAt p v.toNat = 0)
+    (start : (effectiveAt (⟨fork, c⟩ : ForkedBeaconState preset) v.toNat ≤
+          (pinTerms config pulled anc fin).ebUp v.toNat ∧
+        effectiveAt (⟨fork, c⟩ : ForkedBeaconState preset) v.toNat ≤ balanceAt fin v.toNat) ∨
+      effectiveAt (⟨fork, c⟩ : ForkedBeaconState preset) v.toNat ≤
+        actualBalanceAt (⟨fork, c⟩ : ForkedBeaconState preset) v.toNat -
+          actualBalanceAt (⟨fork, c⟩ : ForkedBeaconState preset) v.toNat %
+            preset.EFFECTIVE_BALANCE_INCREMENT.toNat)
+    (moves : ¬ (PinSplit2.capAt (⟨fork, c⟩ : ForkedBeaconState preset) v.toNat =
         PinSplit2.capAt (⟨fork, pulled⟩ : ForkedBeaconState preset) v.toNat ∧
       PinSplit2.capAt (⟨fork, counted⟩ : ForkedBeaconState preset) v.toNat ≤
-        PinSplit2.capAt (⟨fork, fin⟩ : ForkedBeaconState preset) v.toNat))
+        PinSplit2.capAt (⟨fork, c⟩ : ForkedBeaconState preset) v.toNat))
     (kept : (pinTerms config pulled anc fin).keptArm v.toNat = true) :
     keyCeiling anc (fromFin.append tail) tailC highC eventsC events eventsF v.toNat :=
   sorry
@@ -15818,7 +15838,10 @@ private theorem key_core (h : Setting config checks g split fin pulled anc count
       · exact key_core_frozen h tail replayed' fromFin replayedF' tailC highC endEpochC
           replayedC v voter inFin frozen.1 frozen.2 kept
       · exact key_core_flip h tail replayed' fromFin replayedF' tailC highC endEpochC replayedC
-          v voter inFin frozen kept
+          v (voter_unslashed h v voter) (voter_late h fromFin v voter) Run.nil fromFin
+          (run_nil_append fromFin) inFin
+          (fun p member => Or.inl (by simpa [Run.balancePath] using member))
+          (.inl ⟨effective_fin_le_ebUp h v.toNat, Nat.le_refl _⟩) frozen kept
     · exact key_core_created h tail replayed' fromFin replayedF' tailC highC endEpochC replayedC
         v active inside (Nat.le_of_not_lt inFin) kept
   · exact key_core_headroom h tail fromFin tailC highC v kept
