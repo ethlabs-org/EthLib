@@ -6821,6 +6821,46 @@ private theorem ebUp_eq (config : Config) (pulled anc fin : BeaconState preset f
   simp only [pinTerms, dueAmount, electra, ↓reduceDIte]
   rfl
 
+/-- The aligned effective balances make the bound `ebUp` of a key a whole number of increments. -/
+private theorem ebUp_aligned (h : Setting config checks g split fin pulled anc counted V) (i : ℕ) :
+    (pinTerms config pulled anc fin).ebUp i % preset.EFFECTIVE_BALANCE_INCREMENT.toNat = 0 := by
+  have electra : .pectra ≤ fork := Nat.le_trans (by decide) h.fulu
+  obtain ⟨shared⟩ := h.toFin
+  obtain ⟨fromFin⟩ := h.fromFin
+  obtain ⟨toPulled⟩ := h.toPulled
+  obtain ⟨t, ht⟩ : ∃ t, (pinTerms config pulled anc fin).ebUp i =
+      max (max (balanceAt pulled i) (balanceAt fin i))
+        (min (PinSplit2.capAt (⟨fork, pulled⟩ : ForkedBeaconState preset) i)
+          (t - t % preset.EFFECTIVE_BALANCE_INCREMENT.toNat)) :=
+    ⟨_, ebUp_eq config pulled anc fin electra i _ rfl⟩
+  have a1 : balanceAt pulled i % preset.EFFECTIVE_BALANCE_INCREMENT.toNat = 0 :=
+    DirectSafety.Apriori.Internal.FloorTrace.effective_aligned
+      (shared.append (fromFin.append toPulled)) h.genesis h.aligned i
+  have a2 : balanceAt fin i % preset.EFFECTIVE_BALANCE_INCREMENT.toNat = 0 :=
+    DirectSafety.Apriori.Internal.FloorTrace.effective_aligned shared h.genesis h.aligned i
+  have a3 : (t - t % preset.EFFECTIVE_BALANCE_INCREMENT.toNat) %
+      preset.EFFECTIVE_BALANCE_INCREMENT.toNat = 0 :=
+    Nat.sub_mod_eq_zero_of_mod_eq (Nat.mod_mod _ _).symm
+  have capAligned : PinSplit2.capAt (⟨fork, pulled⟩ : ForkedBeaconState preset) i %
+      preset.EFFECTIVE_BALANCE_INCREMENT.toNat = 0 := by
+    unfold PinSplit2.capAt
+    cases found : pulled.validators.data[i]? with
+    | none => simp
+    | some v =>
+      have := congrArg UInt64.toNat (withdrawalMaxEffectiveBalance_aligned (fork := fork)
+        h.aligned v)
+      simpa [UInt64.toNat_mod] using this
+  have maxAligned : ∀ a b : ℕ, a % preset.EFFECTIVE_BALANCE_INCREMENT.toNat = 0 →
+      b % preset.EFFECTIVE_BALANCE_INCREMENT.toNat = 0 →
+      max a b % preset.EFFECTIVE_BALANCE_INCREMENT.toNat = 0 := fun a b ha hb => by
+    rcases max_choice a b with e | e <;> rw [e] <;> assumption
+  have minAligned : ∀ a b : ℕ, a % preset.EFFECTIVE_BALANCE_INCREMENT.toNat = 0 →
+      b % preset.EFFECTIVE_BALANCE_INCREMENT.toNat = 0 →
+      min a b % preset.EFFECTIVE_BALANCE_INCREMENT.toNat = 0 := fun a b ha hb => by
+    rcases min_choice a b with e | e <;> rw [e] <;> assumption
+  rw [ht]
+  exact maxAligned _ _ (maxAligned _ _ a1 a2) (minAligned _ _ capAligned a3)
+
 open DirectSafety.Apriori.Internal in
 /-- A key's balance on C's branch is at most R's balance, its debits, its credits and the gains.
 
@@ -13159,7 +13199,11 @@ private theorem created_key_ceiling (h : Setting config checks g split fin pulle
 
 /-- The per-key core of the rise for a counted voter created after the finalized state.
 
-R's registry holds the key beyond the finalized registry.
+The key is active at C and absent from the finalized registry, and its rise is on the kept arm.
+
+A key created on C's branch after the split is bounded by its credits and their gains.
+
+The kept arm bounds the key's gain rate, which is the rate that bound reads.
 
 The replays are read at R's epoch. -/
 private theorem key_core_created (h : Setting config checks g split fin pulled anc counted V)
@@ -13172,12 +13216,42 @@ private theorem key_core_created (h : Setting config checks g split fin pulled a
     (tailC : Run config checks ⟨fork, split⟩ ⟨fork, counted⟩) (highC : ℕ)
     (endEpochC : (getCurrentEpoch counted).toNat ≤ highC + 1)
     {eventsC : List (BalanceEvent preset)} (replayedC : tailC.balanceEvents highC = .ok eventsC)
-    (v : ValidatorIndex) (voter : v ∈ Q counted)
+    (v : ValidatorIndex) (active : v ∈ activeVoters counted)
     (inside : v.toNat < pulled.validators.data.size)
     (created : fin.validators.data.size ≤ v.toNat)
     (kept : (pinTerms config pulled anc fin).keptArm v.toNat = true) :
-    keyCeiling anc (fromFin.append tail) tailC highC eventsC events eventsF v.toNat :=
-  sorry
+    keyCeiling anc (fromFin.append tail) tailC highC eventsC events eventsF v.toNat := by
+  classical
+  by_cases absent : split.validators.data.size ≤ v.toNat
+  · have incPos := h.bands.1
+    have rateLow : 11 * (pinTerms config pulled anc fin).depth *
+        ((pinTerms config pulled anc fin).ebUp v.toNat /
+            preset.EFFECTIVE_BALANCE_INCREMENT.toNat *
+          (pinTerms config pulled anc fin).perIncrement *
+            (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum / WEIGHT_DENOMINATOR.toNat + 1) ≤
+          (pinTerms config pulled anc fin).ebUp v.toNat := by
+      unfold pinTerms at kept
+      simp only [Bool.and_eq_true, decide_eq_true_eq] at kept
+      exact kept.2
+    have wide := rate_per_increment preset.EFFECTIVE_BALANCE_INCREMENT.toNat
+      WEIGHT_DENOMINATOR.toNat (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum
+      (pinTerms config pulled anc fin).perIncrement
+      ((pinTerms config pulled anc fin).ebUp v.toNat) (pinTerms config pulled anc fin).depth
+      incPos (by decide) (ebUp_aligned h v.toNat) rateLow
+    have key : 11 * (min (pinTerms config pulled anc fin).depth
+        ((getCurrentEpoch pulled).toNat + 2 - (getCurrentEpoch fin).toNat)) *
+          ((pinTerms config pulled anc fin).perIncrement *
+            (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum) <
+        WEIGHT_DENOMINATOR.toNat * preset.EFFECTIVE_BALANCE_INCREMENT.toNat :=
+      Nat.lt_of_le_of_lt (Nat.mul_le_mul_right _ (Nat.mul_le_mul_left 11 (Nat.min_le_left _ _)))
+        wide
+    have core := created_key_ceiling (events := events) (eventsF := eventsF) h tail fromFin tailC
+      highC endEpochC replayedC active absent key (Or.inl kept)
+      (created_band h fromFin (getCurrentEpoch pulled).toNat (Nat.le_succ _) replayedF tailC highC
+        endEpochC replayedC active absent)
+    unfold keyCeiling
+    omega
+  · sorry
 
 open DirectSafety.Apriori DirectSafety.Apriori.Internal in
 /-- The per-key core of the rise.
@@ -13205,7 +13279,8 @@ private theorem key_core (h : Setting config checks g split fin pulled anc count
     (endEpochC : (getCurrentEpoch counted).toNat ≤ highC + 1)
     {eventsC : List (BalanceEvent preset)} (replayedC : tailC.balanceEvents highC = .ok eventsC)
     (i : ℕ) (inside : i < pulled.validators.data.size)
-    (voter : (UInt64.ofNat i : ValidatorIndex) ∈ Q counted) :
+    (voter : (UInt64.ofNat i : ValidatorIndex) ∈ Q counted)
+    (active : (UInt64.ofNat i : ValidatorIndex) ∈ activeVoters counted) :
     keyCeiling anc (fromFin.append tail) tailC highC eventsC events eventsF i := by
   classical
   have calledNat := UInt64.le_iff_toNat_le.mp h.called
@@ -13223,7 +13298,7 @@ private theorem key_core (h : Setting config checks g split fin pulled anc count
   unfold BeaconState.RegistryWithinLimit at limit
   have limitBound := preset.VALIDATOR_REGISTRY_LIMIT.toNat_lt
   have below : i < 2 ^ 64 := by omega
-  generalize hv : (UInt64.ofNat i : ValidatorIndex) = v at voter
+  generalize hv : (UInt64.ofNat i : ValidatorIndex) = v at voter active
   have hvi : v.toNat = i := by
     rw [← hv]
     exact UInt64.toNat_ofNat_of_lt' below
@@ -13239,7 +13314,7 @@ private theorem key_core (h : Setting config checks g split fin pulled anc count
       · exact key_core_flip h tail replayed' fromFin replayedF' tailC highC endEpochC replayedC
           v voter inFin frozen kept
     · exact key_core_created h tail replayed' fromFin replayedF' tailC highC endEpochC replayedC
-        v voter inside (Nat.le_of_not_lt inFin) kept
+        v active inside (Nat.le_of_not_lt inFin) kept
   · exact key_core_headroom h tail fromFin tailC highC v kept
 
 /-- D-7 (rise): other keys active in both. -/
@@ -13274,6 +13349,7 @@ theorem stub_N (h : Setting config checks g split fin pulled anc counted V)
     have core := key_core h tail high endEpoch replayed fromFin replayedF tailC highC endEpochC
       replayedC v.toNat (Array.getElem?_eq_some_iff.mp found).1
       (by rw [UInt64.ofNat_toNat]; exact (Finset.mem_filter.mp member).2.2.1)
+      (by rw [UInt64.ofNat_toNat]; exact (Finset.mem_filter.mp member).1)
     simp only [eC, eR]
     push_cast
     unfold keyCeiling at core
@@ -13495,6 +13571,7 @@ theorem stub_J (h : Setting config checks g split fin pulled anc counted V)
     have := key_core (config := config) h tail high endEpoch replayed fromFin replayedF tailC highC
       endEpochC replayedC v.toNat hin
       (by rw [UInt64.ofNat_toNat]; exact (Finset.mem_filter.mp hv).2.1)
+      (by rw [UInt64.ofNat_toNat]; exact (Finset.mem_filter.mp hv).1)
     unfold eC eR
     unfold keyCeiling at this
     omega
