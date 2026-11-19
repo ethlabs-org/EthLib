@@ -18292,6 +18292,209 @@ private theorem riseScan_append_of_none (v high : ℕ) {x m y : ForkedBeaconStat
   | nil => exact riseScan_of_none v high pre none
   | snoc post step ih => simp only [Run.append, riseScan, ih]
 
+/-- The effective balance at its slashing of a charged key of the split's registry.
+
+The charge of the key is on C's run, in an epoch after the split's.
+
+If the slashing step assigns the exit, that step is the charge.
+
+If an earlier step assigned it, the balance before the slashing is bounded by the charge step.
+
+It is the balance before that step, an upward band, the credits since, and the exact rise.
+
+The key is not withdrawable at the slashing, since it is still slashable there.
+
+The credits are at most the slack's credits, at eleven tenths. -/
+private theorem registry_charge (h : Setting config checks g split fin pulled anc counted V)
+    (fromFin : Run config checks ⟨fork, fin⟩ ⟨fork, split⟩)
+    (tail : Run config checks ⟨fork, split⟩ ⟨fork, pulled⟩)
+    {eventsF events : List (BalanceEvent preset)} (high : ℕ)
+    (tailC : Run config checks ⟨fork, split⟩ ⟨fork, counted⟩) (highC : ℕ)
+    (endEpochC : (getCurrentEpoch counted).toNat ≤ highC + 1)
+    {eventsC : List (BalanceEvent preset)} (replayedC : tailC.balanceEvents highC = .ok eventsC)
+    {a b : ForkedBeaconState preset} (step : Step config checks a b) (member : tailC.Contains step)
+    (i : ℕ) (inside : i < split.validators.data.size)
+    (unslashed : (split.validators.data[i]?.map (·.slashed)).getD false = false)
+    (flag : (!(a.state.validators.data[i]?.map (·.slashed)).getD false &&
+      (b.state.validators.data[i]?.map (·.slashed)).getD false) = true)
+    (charged : (tailC.departureCharges.any fun c => c.index == i) = true)
+    (started : ∀ {p q : ForkedBeaconState preset}
+      (cfront : Run config checks ⟨fork, split⟩ p) (cstep : Step config checks p q)
+      (cpost : Run config checks q ⟨fork, counted⟩),
+      (cfront.snoc cstep).append cpost = tailC → cstep.departureCharges.any (·.index == i) = true →
+        (getCurrentEpoch split).toNat < (getCurrentEpoch p.state).toNat) :
+    effectiveAt a i ≤ chargeAmt tailC i + riseQ tailC highC i +
+      whistleSlack (pinTerms config pulled anc fin) tailC (fromFin.append tail) highC high
+        eventsC eventsF events fin i := by
+  classical
+  obtain ⟨shared⟩ := h.toFin
+  have electra : .pectra ≤ fork := Nat.le_trans (by decide) h.fulu
+  simp only [Bool.and_eq_true, Bool.not_eq_true'] at flag
+  obtain ⟨flagA, flagB⟩ := flag
+  obtain ⟨pre, post, cut, aEarly, aEpoch⟩ := Run.contains_step_facts member h.early
+  have insideA : i < a.state.validators.data.size :=
+    Nat.lt_of_lt_of_le inside pre.registryLifecycle.size_le
+  have insideB : i < b.state.validators.data.size :=
+    Nat.lt_of_lt_of_le insideA (Run.nil.snoc step : Run config checks a b).registryLifecycle.size_le
+  obtain ⟨old, foundA⟩ : ∃ w, a.state.validators.data[i]? = some w :=
+    ⟨_, Array.getElem?_eq_getElem insideA⟩
+  obtain ⟨new, foundB⟩ : ∃ w, b.state.validators.data[i]? = some w :=
+    ⟨_, Array.getElem?_eq_getElem insideB⟩
+  have cleanA : old.slashed = false := by simpa [foundA] using flagA
+  have markedB : new.slashed = true := by simpa [foundB] using flagB
+  by_cases unset : old.exitEpoch = FAR_FUTURE_EPOCH
+  · -- the slashing assigns the exit, so it is the charge
+    have := slash_exit_charge h fromFin tailC step member i old new foundA foundB unset markedB
+    omega
+  -- an earlier step assigned the exit
+  subst cut
+  have bEarly : b.fork < .glamsterdam :=
+    Nat.lt_of_le_of_lt (fork_le_of_chainSteps post.chainSteps) h.early
+  obtain ⟨v, rfl⟩ : ∃ v : ValidatorIndex, v.toNat = i := ⟨UInt64.ofNat i, by
+    have := BeaconState.validators_size_lt_of_lt_glamsterdam bEarly b.state
+    exact UInt64.toNat_ofNat_of_lt' (by rw [UInt64.size]; omega)⟩
+  have aFork : a.fork = fork :=
+    fork_eq_of_run pre ((Run.nil.snoc step).append post) (Nat.le_refl _)
+  have unsetSplit : ∀ w, (⟨fork, split⟩ : ForkedBeaconState preset).state.validators.data[
+      v.toNat]? = some w → w.exitEpoch = FAR_FUTURE_EPOCH := by
+    intro w0 found0
+    by_contra assigned0
+    obtain ⟨c, cMember, cIndex⟩ := List.any_eq_true.mp charged
+    have cIndex' : c.index = v.toNat := by simpa using cIndex
+    obtain ⟨p', q', pre', step', post', -, vv, ww, foundP, -, unsetP, -, -, -⟩ :=
+      ((pre.snoc step).append post).departure_charge_site c cMember
+    rw [cIndex'] at foundP
+    obtain ⟨x, foundX, life⟩ := pre'.registryLifecycle.validators v.toNat w0 found0
+    obtain rfl : x = vv := Option.some.inj (foundX.symm.trans foundP)
+    exact assigned0 (by rw [← life.exitEpoch assigned0]; exact unsetP)
+  obtain ⟨c0, c0Member, c0Index, -⟩ :=
+    PinSplit.Run.charge_of_exit pre electra aEarly v.toNat unsetSplit old foundA unset
+  obtain ⟨p, q, pre', step', post', cut', vv, ww, foundP, foundQ, unsetP, setQ, amount, -⟩ :=
+    pre.departure_charge_site c0 c0Member
+  rw [c0Index] at foundP foundQ
+  have inRun : c0 ∈ ((pre.snoc step).append post).departureCharges := by
+    rw [Run.departureCharges_append]
+    simp [Run.departureCharges, c0Member]
+  have chargeEq : chargeAmt ((pre.snoc step).append post) v.toNat = c0.amount := by
+    unfold chargeAmt
+    rw [find_charge inRun (by simp [c0Index])
+      (fun d inD hd =>
+        charge_unique ((pre.snoc step).append post) inD inRun (by simpa [c0Index] using hd))]
+    rfl
+  have amountEq : c0.amount = effectiveAt p v.toNat := by simp [amount, effectiveAt, foundP]
+  -- the charge step, and the epoch of its start
+  obtain ⟨d, dMember, dIndex, -⟩ :=
+    (Run.nil.snoc step').departure_charge_of_assigned v.toNat vv ww foundP foundQ unsetP setQ
+  have hcharge : step'.departureCharges.any (·.index == v.toNat) = true :=
+    List.any_eq_true.mpr ⟨d, by simpa [Run.departureCharges] using dMember, by simpa using dIndex⟩
+  have site : (pre'.snoc step').append ((post'.snoc step).append post) =
+      (pre.snoc step).append post := by
+    rw [← cut']
+    exact Run.append_assoc _ _ _
+  have later := started pre' step' _ site hcharge
+  -- the key is not withdrawable at the slashing
+  have held : ∀ w, q.state.validators.data[v.toNat]? = some w →
+      (getCurrentEpoch a.state).toNat < w.withdrawableEpoch.toNat := by
+    intro w foundW
+    have eqW : w = ww := Option.some.inj (foundW.symm.trans foundQ)
+    have lateA : (getCurrentEpoch a.state).toNat < old.withdrawableEpoch.toNat := by
+      have holds := Run.invariant (Genesis.invariant h.genesis) (shared.append (fromFin.append pre))
+      have ordered := UInt64.le_iff_toNat_le.mp
+        (holds.exitsOrdered old (Array.mem_of_getElem? foundA))
+      by_cases exited : old.exitEpoch ≤ getCurrentEpoch a.state
+      · have slashable := (Run.nil.snoc step).newly_slashed_initial_exited_unwithdrawable
+          h.caps.activation h.caps.compounding bEarly v.toNat old new foundA foundB cleanA markedB
+          exited
+        exact UInt64.lt_iff_toNat_lt.mp slashable
+      · have := UInt64.lt_iff_toNat_lt.mp (UInt64.not_le.mp exited)
+        omega
+    have kept := PinSplit4.kept_run (shared.append (fromFin.append (pre'.snoc step'))) h.genesis
+      (Nat.le_trans h.fulu (fork_le_of_chainSteps (pre'.snoc step').chainSteps)) post' aEarly
+    obtain ⟨-, wdEq⟩ := kept.withdrawable v.toNat ww old foundQ foundA setQ
+    have same : old.withdrawableEpoch = ww.withdrawableEpoch :=
+      wdEq.resolve_left (by simp [cleanA])
+    rw [eqW, ← same]
+    exact lateA
+  -- the events of the run before the slashing are a prefix of the events of C's run
+  obtain ⟨eventsS, replayedS, prefixS⟩ :=
+    (pre.snoc step).balanceEvents_prefix post highC eventsC replayedC
+  obtain ⟨eventsY, replayedY, prefixY⟩ :=
+    pre.balanceEvents_prefix (Run.nil.snoc step) highC eventsS (by exact replayedS)
+  have aEpoch' : (getCurrentEpoch a.state).toNat ≤ (getCurrentEpoch counted).toNat := aEpoch
+  have bound := charge_effective_bound h (y := a) aFork pre highC (by omega) replayedY
+    pre' step' post' cut' hcharge later held
+  -- the rise of the whole run is at least the rise before the slashing
+  obtain ⟨seenC, riseMono, -⟩ := rise_fold v.toNat highC (pre.snoc step)
+    ((riseScan_fst _ _ _).mpr ⟨c0, by simp [Run.departureCharges, c0Member], c0Index⟩) post
+    h.early endEpochC
+  have riseSnoc : (riseScan v.toNat highC pre).2 ≤ (riseScan v.toNat highC (pre.snoc step)).2 := by
+    simp only [riseScan]
+    split_ifs <;> omega
+  have rise : riseQ ((pre.snoc step).append post) highC v.toNat =
+      preset.upwardBand + (riseScan v.toNat highC ((pre.snoc step).append post)).2 := by
+    simp only [riseQ, seenC, ↓reduceIte]
+  -- the credits before the slashing are at most those of the run
+  have scanMono : ∀ blockP slotP : BalanceSource → Bool,
+      (creditScan blockP slotP v.toNat highC pre).1 ≤
+        (creditScan blockP slotP v.toNat highC ((pre.snoc step).append post)).1 := by
+    intro blockP slotP
+    rw [creditScan_append, creditScan_snoc_fst]
+    split <;> omega
+  have propLe := scanMono (fun s => decide (s = .rewards ∨ s = .consolidations))
+    (fun s => decide (s = .consolidations))
+  have whistLe := scanMono (fun s => decide (s = .slashings)) (fun _ => false)
+  have parts := (credit_parts_le ((pre.snoc step).append post) highC v replayedC).2
+  have syncLe : syncCr eventsY v.toNat ≤ syncCr eventsC v.toNat := by
+    obtain ⟨rest, restEq⟩ := prefixY.trans prefixS
+    rw [← restEq]
+    unfold syncCr
+    simp [List.map_append, List.sum_append]
+  unfold whistleSlack
+  simp only [propC, whistC] at bound parts ⊢
+  omega
+
+/-- The effective balance at its slashing of a charged key whose charge is in the split's epoch.
+
+The balance at the epoch's start is before the split, so the credits since come through `pre`.
+
+`pre` is the shared run from the start of the split's epoch, and no block of that epoch precedes it.
+
+The credits of `pre` are the proposer, whistleblower and sync credits.
+
+The other sources credit only at epoch processing. -/
+private theorem registry_charge_split_epoch
+    (h : Setting config checks g split fin pulled anc counted V)
+    (fromFin : Run config checks ⟨fork, fin⟩ ⟨fork, split⟩)
+    (tail : Run config checks ⟨fork, split⟩ ⟨fork, pulled⟩)
+    {eventsF events : List (BalanceEvent preset)} (high : ℕ)
+    (toFin : Run config checks g ⟨fork, fin⟩)
+    {t : BeaconState preset fork} (toT : Run config checks g ⟨fork, t⟩)
+    (pre : Run config checks ⟨fork, t⟩ ⟨fork, split⟩)
+    (cut : toT.append pre = toFin.append fromFin)
+    (sameEpoch : getCurrentEpoch split = getCurrentEpoch t)
+    (earlier : ∀ {u w : ForkedBeaconState preset} (step : Step config checks u w),
+      toT.Contains step → (getCurrentEpoch u.state).toNat < (getCurrentEpoch t).toNat)
+    (tailC : Run config checks ⟨fork, split⟩ ⟨fork, counted⟩) (highC : ℕ)
+    (endEpochC : (getCurrentEpoch counted).toNat ≤ highC + 1)
+    {eventsC : List (BalanceEvent preset)} (replayedC : tailC.balanceEvents highC = .ok eventsC)
+    {eventsP : List (BalanceEvent preset)} (replayedP : pre.balanceEvents highC = .ok eventsP)
+    {a b : ForkedBeaconState preset} (step : Step config checks a b) (member : tailC.Contains step)
+    (i : ℕ) (inside : i < split.validators.data.size)
+    (unslashed : (split.validators.data[i]?.map (·.slashed)).getD false = false)
+    (flag : (!(a.state.validators.data[i]?.map (·.slashed)).getD false &&
+      (b.state.validators.data[i]?.map (·.slashed)).getD false) = true)
+    (charged : (tailC.departureCharges.any fun c => c.index == i) = true)
+    {p q : ForkedBeaconState preset} (cfront : Run config checks ⟨fork, split⟩ p)
+    (cstep : Step config checks p q) (cpost : Run config checks q ⟨fork, counted⟩)
+    (site : (cfront.snoc cstep).append cpost = tailC)
+    (charge : cstep.departureCharges.any (·.index == i) = true)
+    (inSplitEpoch : ¬ (getCurrentEpoch split).toNat < (getCurrentEpoch p.state).toNat) :
+    effectiveAt a i ≤ chargeAmt tailC i + riseQ tailC highC i +
+      (propN pre highC i + whistC pre highC i + syncCr eventsP i +
+        whistleSlack (pinTerms config pulled anc fin) tailC (fromFin.append tail) highC high
+          eventsC eventsF events fin i) :=
+  sorry
+
 /-- A charged key of `K5` whose charge is in the split's epoch.
 
 The epoch's start `b` is on the shared run, before the split.
