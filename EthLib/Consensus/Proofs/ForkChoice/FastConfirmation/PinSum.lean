@@ -7169,19 +7169,18 @@ private theorem cap_le_cap_of_run (caps : CapOrder preset) {z y : ForkedBeaconSt
     simp only [found', Option.map_some, Option.getD_some]
     exact UInt64.le_iff_toNat_le.mp mono
 
-/-- A key's effective balance at the end of a run from the finalized state is at most its cap.
+/-- A key's effective balance at the end of a run from genesis is at most its cap there.
 
 The cap is the one at that state. -/
-private theorem effective_le_cap_at (h : Setting config checks g split fin pulled anc counted V)
-    {z : BeaconState preset fork} (toZ : Run config checks ⟨fork, fin⟩ ⟨fork, z⟩) (i : ℕ) :
-    effectiveAt (⟨fork, z⟩ : ForkedBeaconState preset) i ≤
-      PinSplit2.capAt (⟨fork, z⟩ : ForkedBeaconState preset) i := by
-  obtain ⟨shared⟩ := h.toFin
-  cases found : z.validators.data[i]? with
+private theorem effective_le_cap_at {g z : ForkedBeaconState preset}
+    (shared : Run config checks g z)
+    (genesis : Genesis (config := config) (checks := checks) g) (caps : CapOrder preset)
+    (early : z.fork < .glamsterdam) (i : ℕ) : effectiveAt z i ≤ PinSplit2.capAt z i := by
+  cases found : z.state.validators.data[i]? with
   | none => simp [effectiveAt, found]
   | some w =>
-    have capped := DirectSafety.Apriori.Internal.effectiveAt_le_withdrawalMax (shared.append toZ)
-      h.genesis h.caps h.early found
+    have capped := DirectSafety.Apriori.Internal.effectiveAt_le_withdrawalMax shared genesis caps
+      early found
     simpa [PinSplit2.capAt, found] using capped
 
 /-- On R's branch a key's effective balance is at most its cap at R. -/
@@ -7189,8 +7188,10 @@ private theorem effective_le_cap_pulled (h : Setting config checks g split fin p
     {z : BeaconState preset fork} (toZ : Run config checks ⟨fork, fin⟩ ⟨fork, z⟩)
     (post : Run config checks ⟨fork, z⟩ ⟨fork, pulled⟩) (i : ℕ) :
     effectiveAt (⟨fork, z⟩ : ForkedBeaconState preset) i ≤
-      PinSplit2.capAt (⟨fork, pulled⟩ : ForkedBeaconState preset) i :=
-  Nat.le_trans (effective_le_cap_at h toZ i) (cap_le_cap_of_run h.caps post h.early i)
+      PinSplit2.capAt (⟨fork, pulled⟩ : ForkedBeaconState preset) i := by
+  obtain ⟨shared⟩ := h.toFin
+  exact Nat.le_trans (effective_le_cap_at (shared.append toZ) h.genesis h.caps h.early i)
+    (cap_le_cap_of_run h.caps post h.early i)
 
 /-- A state of the balance path of a run between two states of one fork is a state of that fork.
 
@@ -7598,7 +7599,7 @@ private theorem c_ceiling (h : Setting config checks g split fin pulled anc coun
   have capSP : PinSplit2.capAt (⟨fork, split⟩ : ForkedBeaconState preset) i ≤ capI :=
     hcap0 ▸ cap_le_cap_of_run h.caps toPulled h.early i
   have capCeil := capCeil_path tailC h.caps h.early (Nat.le_refl _) i
-  have effS := effective_le_cap_at h fromFin i
+  have effS := effective_le_cap_at (shared.append fromFin) h.genesis h.caps h.early i
   have minMax := UInt64.le_iff_toNat_le.mp h.caps.compounding
   obtain ⟨kindS, aMin, aMax⟩ := capAt_kind h i inside
   obtain ⟨kindC, -, -⟩ := capAt_kind h i sizeC
@@ -7912,7 +7913,8 @@ private theorem prefix_envelope (h : Setting config checks g split fin pulled an
     (PinSplit2.capAt (⟨fork, pulled⟩ : ForkedBeaconState preset) v.toNat)
     (fun z' member' => by
       obtain ⟨zs', s1, s2, rfl, cut⟩ := atPath z' member'
-      exact effective_le_cap_at h (toC.append s1) v.toNat)
+      exact effective_le_cap_at (shared.append (toC.append s1)) h.genesis h.caps h.early
+        v.toNat)
     (fun z' member' => by
       obtain ⟨zs', s1, s2, rfl, cut⟩ := atPath z' member'
       exact cap_le_cap_of_run h.caps s2 h.early v.toNat)
