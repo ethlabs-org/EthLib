@@ -757,6 +757,15 @@ split. -/
 def credDepR (events : List (BalanceEvent preset)) (v : ℕ) : ℕ :=
   ((events.filter (·.source = .deposits)).map (keyCredit v)).sum
 
+/-- The deposits credited to the key by events whose state before them does not hold it slashed.
+
+The deposits that a key takes after its slashing are not in it.
+
+They are the part of the key's credits that the whistleblower's share of the key can read. -/
+def depPre (events : List (BalanceEvent preset)) (v : ℕ) : ℕ :=
+  ((events.filter fun e => e.source = .deposits ∧
+    ¬ (slashedFlagAt e.before.state v = some true)).map (keyCredit v)).sum
+
 /-- The consolidation credits to the key over the replayed events of a run.
 
 It is the quantity that `Run.consolidation_credits_le_X_targets` bounds, summed over targets. -/
@@ -9613,6 +9622,177 @@ private theorem credited_classes_le (h : Setting config checks g split fin pulle
           preset.MAX_PENDING_DEPOSITS_PER_EPOCH.toNat :=
     (Nat.add_le_add first second).trans_eq (by ring)
   rw [depthEq]
+  omega
+
+/-- Tenths rounded down for each key add up to at most a tenth of the sum. -/
+private theorem sum_div_ten (S : Finset ValidatorIndex) (f : ValidatorIndex → ℕ) :
+    10 * ∑ v ∈ S, f v / 10 ≤ ∑ v ∈ S, f v := by
+  rw [Finset.mul_sum]
+  exact Finset.sum_le_sum fun v _ => Nat.mul_div_le _ _
+
+/-- The rounding slacks of a set of keys are the upward band for each credited key. -/
+private theorem band_sum {x y : ForkedBeaconState preset} (tail : Run config checks x y)
+    (high : ℕ) (S : Finset ValidatorIndex) :
+    ∑ v ∈ S, bandC tail high v.toNat =
+      preset.upwardBand * (S.filter fun v => creditedKey tail high v = true).card := by
+  rw [Finset.card_filter, Finset.mul_sum]
+  refine Finset.sum_congr rfl fun v _ => ?_
+  unfold bandC creditedKey
+  by_cases credited : 0 < netScan v.toNat high tail +
+    (creditScan (fun _ => false) (fun s => decide (s = .deposits)) v.toNat high tail).1 <;>
+    simp [credited]
+
+/-- The credits that a scan reads for a key are at most the credits of its source's events.
+
+The sources of the scan, block and slot, are those that `p` selects. -/
+private theorem scan_le_events (blockP slotP : BalanceSource → Bool) (p : BalanceSource → Prop)
+    [DecidablePred p] (selects : ∀ s, (blockP s = true ∨ slotP s = true) ↔ p s)
+    {x y : ForkedBeaconState preset} (tail : Run config checks x y) (high : ℕ)
+    (v : ValidatorIndex) {events : List (BalanceEvent preset)}
+    (replayed : tail.balanceEvents high = .ok events) :
+    (creditScan blockP slotP v.toNat high tail).1 ≤
+      ((events.filter fun e => p e.source).map (keyCredit v.toNat)).sum := by
+  have scan := creditScan_sum_le {v} blockP slotP high (keyCredit v.toNat) tail replayed
+    fun e _ _ => by simp
+  simp only [Finset.sum_singleton] at scan
+  refine scan.trans (le_of_eq ?_)
+  clear scan replayed
+  induction events with
+  | nil => rfl
+  | cons e rest ih =>
+    by_cases c : p e.source
+    · simp [List.filter_cons, c, (selects _).mpr c, ih]
+    · simp [List.filter_cons, c, mt (selects _).mp c, ih]
+
+/-- The credits of a key on C's branch fit its proposer credits, deposits and consolidations.
+
+The deposits and consolidations are those of the replayed events. -/
+private theorem credit_parts_le {x y : ForkedBeaconState preset} (tail : Run config checks x y)
+    (high : ℕ) (v : ValidatorIndex) {events : List (BalanceEvent preset)}
+    (replayed : tail.balanceEvents high = .ok events) :
+    credN tail high v.toNat ≤ propN tail high v.toNat + credDepR events v.toNat ∧
+    credC tail high v.toNat ≤ propN tail high v.toNat + credDepR events v.toNat +
+      consAmt events v.toNat ∧
+    propC tail high v.toNat ≤ propN tail high v.toNat + consAmt events v.toNat := by
+  have dep := scan_le_events (fun _ => false) (fun s => decide (s = .deposits))
+    (· = .deposits) (by intro s; simp) tail high v replayed
+  have cons := scan_le_events (fun s => decide (s = .consolidations))
+    (fun s => decide (s = .consolidations)) (· = .consolidations) (by intro s; simp) tail high v
+    replayed
+  have n := credN_split tail high v.toNat
+  have c := credC_split tail high v.toNat
+  have p := propC_split tail high v.toNat
+  exact ⟨by unfold credDepR; omega, by unfold credDepR consAmt; omega,
+    by unfold consAmt; omega⟩
+
+/-- `credits` holds the proposer credit, the deposit queue and the credited-key slots.
+
+`queueDep` is the same queue, three times. -/
+private theorem credits_budget (config : Config) (pulled anc fin : BeaconState preset fork) :
+    ∃ carry churn wb ck : ℕ, (pinTerms config pulled anc fin).queueDep = 3 * (churn + carry) ∧
+      (pinTerms config pulled anc fin).credits =
+        (11 * ((pinTerms config pulled anc fin).depth *
+          (pinTerms config pulled anc fin).proposerCredit + carry + churn + wb) + 9) / 10 +
+          ck * preset.upwardBand ∧
+      (pinTerms config pulled anc fin).depth * preset.SLOTS_PER_EPOCH.toNat +
+        ((pinTerms config pulled anc fin).depth /
+          max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat + 2) *
+            preset.SYNC_COMMITTEE_SIZE.toNat +
+        (pinTerms config pulled anc fin).depth * preset.MAX_PENDING_DEPOSITS_PER_EPOCH.toNat ≤
+        ck := by
+  dsimp only [pinTerms]
+  exact ⟨_, _, _, _, rfl, rfl, Nat.le_add_right _ _⟩
+
+/-- D-7 (credits) from the proposer rewards, the deposits and the credited keys of its classes.
+
+The consolidation amounts are charged by `bud_consolidations`, and the sync part by `bud_sync`.
+
+The deposits of a key slashed at C count only those before its slashing, in its share.
+
+`rewards` is the proposer credits of the five classes and the sync part against `proposerCredit`.
+
+`deposits` is the deposits of the classes against the deposit queue, at weight three.
+
+`cards` is the credited keys of the classes against the credited-key slots. -/
+private theorem bud_credits_of (h : Setting config checks g split fin pulled anc counted V)
+    (tailC : Run config checks ⟨fork, split⟩ ⟨fork, counted⟩) (highC : ℕ)
+    {eventsC : List (BalanceEvent preset)} (replayedC : tailC.balanceEvents highC = .ok eventsC)
+    (rewards : (∑ v ∈ K4 pulled counted V, propN tailC highC v.toNat) +
+      (∑ v ∈ K5 counted V, propN tailC highC v.toNat) +
+      (∑ v ∈ K6 pulled counted, propN tailC highC v.toNat) +
+      (∑ v ∈ SC pulled counted split, propN tailC highC v.toNat) +
+      (∑ v ∈ CS pulled counted, propN tailC highC v.toNat) +
+      (pinTerms config pulled anc fin).depth * (pinTerms config pulled anc fin).syncProposer ≤
+      (pinTerms config pulled anc fin).depth * (pinTerms config pulled anc fin).proposerCredit)
+    (deposits : 3 * ((∑ v ∈ K4 pulled counted V, credDepR eventsC v.toNat) +
+      (∑ v ∈ K6 pulled counted, credDepR eventsC v.toNat) +
+      (∑ v ∈ SC pulled counted split, depPre eventsC v.toNat) +
+      (∑ v ∈ CS pulled counted, depPre eventsC v.toNat)) ≤
+      (pinTerms config pulled anc fin).queueDep)
+    (cards : ((K4 pulled counted V).filter fun v => creditedKey tailC highC v = true).card +
+      ((K5 counted V).filter fun v => creditedKey tailC highC v = true).card +
+      ((K6 pulled counted).filter fun v => creditedKey tailC highC v = true).card +
+      ((SC pulled counted split).filter fun v => creditedKey tailC highC v = true).card +
+      ((CS pulled counted).filter fun v => creditedKey tailC highC v = true).card ≤
+      (pinTerms config pulled anc fin).depth * preset.SLOTS_PER_EPOCH.toNat +
+        ((pinTerms config pulled anc fin).depth /
+          max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat + 2) *
+            preset.SYNC_COMMITTEE_SIZE.toNat +
+        (pinTerms config pulled anc fin).depth * preset.MAX_PENDING_DEPOSITS_PER_EPOCH.toNat) :
+    10 * ((∑ v ∈ (K4 pulled counted V), credC tailC highC v.toNat) +
+      (∑ v ∈ (K6 pulled counted), credC tailC highC v.toNat) +
+      (∑ v ∈ (K5 counted V), propC tailC highC v.toNat) +
+      (∑ v ∈ (K4 pulled counted V), credN tailC highC v.toNat / 10) +
+      (∑ v ∈ (K6 pulled counted), credN tailC highC v.toNat / 10) +
+      (∑ v ∈ (K5 counted V), propN tailC highC v.toNat / 10) +
+      (∑ v ∈ (K4 pulled counted V), bandC tailC highC v.toNat) +
+      (∑ v ∈ (K5 counted V), bandC tailC highC v.toNat) +
+      (∑ v ∈ (K6 pulled counted), bandC tailC highC v.toNat) +
+      wShare preset fork (∑ v ∈ SC pulled counted split,
+        (propN tailC highC v.toNat + depPre eventsC v.toNat)) +
+      (∑ v ∈ SC pulled counted split, bandC tailC highC v.toNat) +
+      wShare preset fork (∑ v ∈ CS pulled counted,
+        (propN tailC highC v.toNat + depPre eventsC v.toNat)) +
+      (∑ v ∈ CS pulled counted, bandC tailC highC v.toNat)) +
+        11 * ((pinTerms config pulled anc fin).depth *
+          (pinTerms config pulled anc fin).syncProposer) ≤
+      10 * (pinTerms config pulled anc fin).credits +
+        10 * ((∑ v ∈ (K4 pulled counted V), consAmt eventsC v.toNat) +
+          (∑ v ∈ (K6 pulled counted), consAmt eventsC v.toNat) +
+          (∑ v ∈ (K5 counted V), consAmt eventsC v.toNat)) := by
+  classical
+  obtain ⟨carry, churn, wb, ck, queue, credits, slots⟩ := credits_budget config pulled anc fin
+  have parts (S : Finset ValidatorIndex) := fun v (_ : v ∈ S) => credit_parts_le tailC highC v
+    replayedC
+  have sumLe (S : Finset ValidatorIndex) (f g : ValidatorIndex → ℕ)
+      (le : ∀ v ∈ S, f v ≤ g v) : ∑ v ∈ S, f v ≤ ∑ v ∈ S, g v := Finset.sum_le_sum le
+  have n4 := sumLe (K4 pulled counted V) _ (fun v => propN tailC highC v.toNat +
+    credDepR eventsC v.toNat) fun v m => (parts _ v m).1
+  have n6 := sumLe (K6 pulled counted) _ (fun v => propN tailC highC v.toNat +
+    credDepR eventsC v.toNat) fun v m => (parts _ v m).1
+  have c4 := sumLe (K4 pulled counted V) _ (fun v => (propN tailC highC v.toNat +
+    credDepR eventsC v.toNat) + consAmt eventsC v.toNat) fun v m => (parts _ v m).2.1
+  have c6 := sumLe (K6 pulled counted) _ (fun v => (propN tailC highC v.toNat +
+    credDepR eventsC v.toNat) + consAmt eventsC v.toNat) fun v m => (parts _ v m).2.1
+  have c5 := sumLe (K5 counted V) _ (fun v => propN tailC highC v.toNat +
+    consAmt eventsC v.toNat) fun v m => (parts _ v m).2.2
+  simp only [Finset.sum_add_distrib] at n4 n6 c4 c6 c5
+  have t4 := sum_div_ten (K4 pulled counted V) fun v => credN tailC highC v.toNat
+  have t6 := sum_div_ten (K6 pulled counted) fun v => credN tailC highC v.toNat
+  have t5 := sum_div_ten (K5 counted V) fun v => propN tailC highC v.toNat
+  have w1 := wShare_le (fork := fork) h.facts (∑ v ∈ SC pulled counted split,
+    (propN tailC highC v.toNat + depPre eventsC v.toNat))
+  have w2 := wShare_le (fork := fork) h.facts (∑ v ∈ CS pulled counted,
+    (propN tailC highC v.toNat + depPre eventsC v.toNat))
+  simp only [Finset.sum_add_distrib] at w1 w2
+  have bands : (∑ v ∈ K4 pulled counted V, bandC tailC highC v.toNat) +
+      (∑ v ∈ K5 counted V, bandC tailC highC v.toNat) +
+      (∑ v ∈ K6 pulled counted, bandC tailC highC v.toNat) +
+      (∑ v ∈ SC pulled counted split, bandC tailC highC v.toNat) +
+      (∑ v ∈ CS pulled counted, bandC tailC highC v.toNat) ≤ ck * preset.upwardBand := by
+    simp only [band_sum, ← Nat.mul_add]
+    rw [Nat.mul_comm]
+    exact Nat.mul_le_mul_right _ (cards.trans slots)
   omega
 
 /-- The credited keys of `K4`, `K5` and `K6`, with `K5` at weight three, fit the credited-key slots.
