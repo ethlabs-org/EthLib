@@ -9233,8 +9233,12 @@ private theorem debit_keys_le (h : Setting config checks g split fin pulled anc 
   have shift := Nat.div_le_div_right (c := max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat)
     (Nat.le_succ ((getCurrentEpoch pulled).toNat + 1))
   rw [Nat.sub_add_cancel (by omega)] at periods
+  have depthEq : (pinTerms config pulled anc fin).depth =
+      (getCurrentEpoch pulled).toNat + 2 - anc.finalizedCheckpoint.epoch.toNat := rfl
+  have depthFinEq : (pinTerms config pulled anc fin).depthFin =
+      (getCurrentEpoch pulled).toNat + 2 - (getCurrentEpoch fin).toNat := rfl
   refine union.trans ?_
-  rw [Nat.mul_comm]
+  rw [depthEq, depthFinEq, Nat.mul_comm]
   exact Nat.mul_le_mul_right _ (by omega)
 
 /-- The credited keys of `K4`, `K5`, `K6` and `SC` fit the credited-key slots of the window.
