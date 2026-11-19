@@ -43,12 +43,11 @@ private theorem whistC_sum_le (S : Finset ValidatorIndex) (high : ℕ)
             rw [List.sum_map_ite (fun e : BalanceEvent preset => e.source = .slashings) T
               (fun _ => 0)]
             simp
-          rw [show ∑ v ∈ S, ((added.filter fun x => decide (x.source = .slashings)).map
-              (keyCredit v.toNat)).sum = ((added.filter fun x => decide (x.source = .slashings)).map
-              fun e => ∑ v ∈ S, keyCredit v.toNat e).sum by
-            simpa using (Multiset.sum_map_sum
-              (m := (↑(added.filter fun x => decide (x.source = .slashings)) : Multiset _))
-              (s := S) (f := fun e v => keyCredit v.toNat e)).symm, ← ite]
+          have swap (L : List (BalanceEvent preset)) : ∑ v ∈ S, (L.map (keyCredit v.toNat)).sum =
+              (L.map fun e => ∑ v ∈ S, keyCredit v.toNat e).sum := by
+            simpa using (Multiset.sum_map_sum (m := (L : Multiset (BalanceEvent preset)))
+              (s := S) (f := fun e v => keyCredit v.toNat e)).symm
+          rw [swap, ← ite]
           exact List.sum_le_sum fun e member => each e
             (List.mem_append_right _ (List.mem_filter.mp member).1)
             (by simpa using (List.mem_filter.mp member).2)
