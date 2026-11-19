@@ -13961,6 +13961,87 @@ private theorem whistle_of_close (t : PinTerms preset) (pulled anc : BeaconState
   rw [fK, gainEq] at close
   omega
 
+/-- A run split at a step is the run before it and then the run from the step. -/
+private theorem snoc_append_eq {a b c : ForkedBeaconState preset}
+    (pre : Run config checks ⟨fork, split⟩ a) (step : Step config checks a b)
+    (post : Run config checks b c) :
+    (pre.snoc step).append post = pre.append ((Run.nil.snoc step).append post) :=
+  (Run.append_assoc pre (Run.nil.snoc step) post).symm
+
+open DirectSafety.Apriori DirectSafety.Apriori.Internal in
+/-- The deposits that credit a key before its slashing are within `depPre` of the whole run.
+
+A deposit event of a block credits no balance.
+
+One of a slot step starts from a state that does not hold the key slashed, since a slashed key
+stays slashed up to the step's slashing. -/
+private theorem dep_prefix_le (h : Setting config checks g split fin pulled anc counted V)
+    {a b : ForkedBeaconState preset} (pre : Run config checks ⟨fork, split⟩ a)
+    (step : Step config checks a b) (post : Run config checks b ⟨fork, counted⟩) (highC : ℕ)
+    {eventsC : List (BalanceEvent preset)}
+    (replayedC : ((pre.snoc step).append post).balanceEvents highC = .ok eventsC)
+    (v : ValidatorIndex)
+    (flag : (!(a.state.validators.data[v.toNat]?.map (·.slashed)).getD false &&
+      (b.state.validators.data[v.toNat]?.map (·.slashed)).getD false) = true) :
+    (creditScan (fun _ => false) (fun s => decide (s = .deposits)) v.toNat highC pre).1 ≤
+      depPre eventsC v.toNat := by
+  obtain ⟨toFin⟩ := h.toFin
+  obtain ⟨fromFin⟩ := h.fromFin
+  have electra : .pectra ≤ fork := Nat.le_trans (by decide) h.fulu
+  have aEarly : a.fork < .glamsterdam :=
+    Nat.lt_of_le_of_lt (fork_le_of_chainSteps ((Run.nil.snoc step).append post).chainSteps)
+      h.early
+  have unslashedA : (a.state.validators.data[v.toNat]?.map (·.slashed)).getD false = false := by
+    simpa using (Bool.and_eq_true_iff.mp flag).1
+  rw [snoc_append_eq] at replayedC
+  obtain ⟨before, beforeOk, prefixed⟩ := Run.balanceEvents_prefix pre _ highC eventsC replayedC
+  have located := run_located pre electra aEarly highC beforeOk
+  obtain ⟨t, rfl⟩ := prefixed
+  let g : BalanceEvent preset → ℕ := fun e =>
+    if e.source = .deposits ∧ ¬ slashedFlagAt e.before.state v.toNat = some true then
+      keyCredit v.toNat e else 0
+  have scan := creditScan_sum_le {v} (fun _ => false) (fun s => decide (s = .deposits)) highC g
+    pre beforeOk fun e member selected => by
+      have deposit : e.source = .deposits := by simpa using selected
+      simp only [Finset.sum_singleton]
+      rcases located e member deposit with
+        unconditional | ⟨u, w, ok, es, contains, replayedEs, inEs, -⟩
+      · rw [show keyCredit v.toNat e = 0 from Nat.sub_eq_zero_of_le (unconditional _)]
+        exact Nat.zero_le _
+      · obtain ⟨p, q, cut⟩ := pre.contains_split _ contains
+        have wEarly : w.fork < .glamsterdam :=
+          Nat.lt_of_le_of_lt (fork_le_of_chainSteps q.chainSteps) aEarly
+        have holds := (run_justified_separated ((toFin.append fromFin).append p) h.genesis).1
+        have sites := (Step.slot ok : Step config checks u w).balanceEvents_sites wEarly holds
+          h.caps.compounding replayedEs e inEs
+        obtain ⟨_, _, _, _, _, _, _, _, _, _, _, _, onward, last, _⟩ := sites
+        have clean : ¬ slashedFlagAt e.before.state v.toNat = some true := by
+          intro slashed
+          unfold slashedFlagAt at slashed
+          cases found : e.before.state.validators.data[v.toNat]? with
+          | none => simp [found] at slashed
+          | some x =>
+            have marked : x.slashed = true := by simpa [found] using slashed
+            obtain ⟨y1, found1, marked1⟩ := onward v.toNat x found marked
+            obtain ⟨y2, found2, marked2⟩ := last v.toNat y1 found1 marked1
+            obtain ⟨z, foundA, markedA⟩ := q.slashedPersistence v.toNat y2 found2 marked2
+            simp [foundA, markedA] at unslashedA
+        simp only [g, deposit, clean, not_false_eq_true, and_self, ↓reduceIte, le_refl]
+  simp only [Finset.sum_singleton] at scan
+  have whole : ((before ++ t).map g).sum = depPre (before ++ t) v.toNat := by
+    unfold depPre
+    rw [List.sum_map_ite (fun e : BalanceEvent preset =>
+      e.source = .deposits ∧ ¬ slashedFlagAt e.before.state v.toNat = some true)
+      (keyCredit v.toNat) (fun _ => 0)]
+    simp
+  calc _ ≤ _ := scan
+    _ ≤ (before.map g).sum := List.sum_le_sum fun e _ => by
+        split_ifs <;> first | exact le_rfl | exact Nat.zero_le _
+    _ ≤ ((before ++ t).map g).sum := by
+        simp only [List.map_append, List.sum_append]
+        omega
+    _ = _ := whole
+
 /-- The credits of C's run before a key's slashing are within the credit terms of `whistleSlack`.
 
 They are the key's block credits from rewards and its consolidation and deposit credits.
@@ -13980,8 +14061,36 @@ private theorem credC_prefix_le (h : Setting config checks g split fin pulled an
     (flag : (!(a.state.validators.data[i]?.map (·.slashed)).getD false &&
       (b.state.validators.data[i]?.map (·.slashed)).getD false) = true) :
     credC pre highC i ≤
-      propN ((pre.snoc step).append post) highC i + depPre eventsC i + consAmt eventsC i :=
-  sorry
+      propN ((pre.snoc step).append post) highC i + depPre eventsC i + consAmt eventsC i := by
+  have bEarly : b.fork < .glamsterdam :=
+    Nat.lt_of_le_of_lt (fork_le_of_chainSteps post.chainSteps) h.early
+  have present : (b.state.validators.data[i]?.map (·.slashed)).getD false = true :=
+    (Bool.and_eq_true_iff.mp flag).2
+  have inside : i < b.state.validators.data.size := by
+    by_contra out
+    simp [Array.getElem?_eq_none (Nat.le_of_not_lt out)] at present
+  have limit := b.state.registryWithinLimit_of_lt bEarly
+  unfold BeaconState.RegistryWithinLimit at limit
+  have limitBound := preset.VALIDATOR_REGISTRY_LIMIT.toNat_lt
+  have below : i < 2 ^ 64 := by omega
+  obtain ⟨v, rfl⟩ : ∃ v : ValidatorIndex, v.toNat = i :=
+    ⟨UInt64.ofNat i, UInt64.toNat_ofNat_of_lt' below⟩
+  have dep := dep_prefix_le h pre step post highC replayedC v flag
+  have whole := snoc_append_eq pre step post
+  have propScan := creditScan_append (fun s => decide (s = .rewards)) (fun _ => false) v.toNat highC
+    pre ((Run.nil.snoc step).append post)
+  have consScan := creditScan_append (fun s => decide (s = .consolidations))
+    (fun s => decide (s = .consolidations)) v.toNat highC pre ((Run.nil.snoc step).append post)
+  have consEvents := scan_le_events (fun s => decide (s = .consolidations))
+    (fun s => decide (s = .consolidations)) (· = .consolidations) (by intro s; simp)
+    ((pre.snoc step).append post) highC v replayedC
+  rw [whole] at consEvents
+  have split1 := credC_split pre highC v.toNat
+  have split2 := credN_split pre highC v.toNat
+  unfold propN at split2 ⊢
+  unfold consAmt
+  rw [whole]
+  omega
 
 /-- The credits, whistleblower credits and credit band of a prefix are within the whole run's. -/
 private theorem prefix_credits_mono {a b : ForkedBeaconState preset}
@@ -13989,8 +14098,25 @@ private theorem prefix_credits_mono {a b : ForkedBeaconState preset}
     (post : Run config checks b ⟨fork, counted⟩) (highC i : ℕ) :
     credC pre highC i ≤ credC ((pre.snoc step).append post) highC i ∧
       whistC pre highC i ≤ whistC ((pre.snoc step).append post) highC i ∧
-      bandC pre highC i ≤ bandC ((pre.snoc step).append post) highC i :=
-  sorry
+      bandC pre highC i ≤ bandC ((pre.snoc step).append post) highC i := by
+  rw [snoc_append_eq pre step post]
+  have credits := creditScan_append (fun s => decide (s = .rewards ∨ s = .consolidations))
+    (fun s => decide (s = .consolidations ∨ s = .deposits)) i highC pre
+    ((Run.nil.snoc step).append post)
+  have whist := creditScan_append (fun s => decide (s = .slashings)) (fun _ => false) i highC pre
+    ((Run.nil.snoc step).append post)
+  have gross := creditScan_append
+    (fun s => decide (s = .rewards ∨ s = .slashings ∨ s = .sync)) (fun _ => false) i highC pre
+    ((Run.nil.snoc step).append post)
+  have deposits := creditScan_append (fun _ => false) (fun s => decide (s = .deposits)) i highC pre
+    ((Run.nil.snoc step).append post)
+  refine ⟨?_, ?_, ?_⟩
+  · unfold credC
+    omega
+  · unfold whistC
+    omega
+  · unfold bandC grossScan
+    split_ifs <;> omega
 
 /-- The bound on the effective balance at its slashing of a key created after the split.
 
