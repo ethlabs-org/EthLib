@@ -13393,6 +13393,25 @@ private theorem beyond_key (h : Setting config checks g split fin pulled anc cou
     (Or.inr ⟨notPosition, lowGain⟩)
     (created_band h fromFin high endEpoch replayedF tailC highC endEpochC replayedC active absent)
 
+/-- A key of `K6` beyond R's registry has a deposit credit on C's run.
+
+It holds the activation reserve at its start.
+
+No gross block credit reaches it before its activation, so a deposit or a consolidation pays it.
+
+A consolidation needs an entry of the finalized queue, whose target is inside that registry. -/
+private theorem created_deposit (h : Setting config checks g split fin pulled anc counted V)
+    (fromFin : Run config checks ⟨fork, fin⟩ ⟨fork, split⟩) (high : ℕ)
+    (endEpoch : (getCurrentEpoch pulled).toNat ≤ high + 1)
+    {eventsF : List (BalanceEvent preset)} (replayedF : fromFin.balanceEvents high = .ok eventsF)
+    (tailC : Run config checks ⟨fork, split⟩ ⟨fork, counted⟩) (highC : ℕ)
+    (endEpochC : (getCurrentEpoch counted).toNat ≤ highC + 1)
+    {eventsC : List (BalanceEvent preset)} (replayedC : tailC.balanceEvents highC = .ok eventsC)
+    {v : ValidatorIndex} (member : v ∈ K6 pulled counted)
+    (created : pulled.validators.data.size ≤ v.toNat) :
+    0 < (creditScan (fun _ => false) (fun s => decide (s = .deposits)) v.toNat highC tailC).1 :=
+  sorry
+
 /-- The keys of `K6` beyond R's registry are paid by the credits.
 
 In the high regime they are also paid by `creditCap`.
@@ -13429,7 +13448,54 @@ private theorem beyond_keys (h : Setting config checks g split fin pulled anc co
     obtain ⟨inK6, beyond⟩ := Finset.mem_filter.mp member
     exact beyond_key h tail high endEpoch fromFin replayedF tailC highC endEpochC replayedC low
       inK6 beyond
-  · sorry
+  · -- The keys are at most the cap each, and a deposit credits each, which the epochs count.
+    obtain ⟨shared⟩ := h.toFin
+    have finSplit := UInt64.le_iff_toNat_le.mp (currentEpoch_le_of_chainSteps fromFin.chainSteps)
+    have splitPulled := UInt64.le_iff_toNat_le.mp h.called
+    have pulledCounted := UInt64.le_iff_toNat_le.mp h.later
+    have near := h.near
+    simp only at finSplit
+    have periodLe := Nat.div_le_div_right
+      (c := max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat)
+      (Nat.le_trans splitPulled pulledCounted)
+    obtain ⟨-, -, D, -, -, cardD, -, hD, -⟩ := credited_pieces h.genesis
+      (y := (⟨fork, counted⟩ : ForkedBeaconState preset)) h.early h.delay highC
+      ((getCurrentEpoch counted).toNat / max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat -
+        (getCurrentEpoch split).toNat / max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat)
+      (shared.append fromFin) tailC h.fulu (by dsimp only; omega)
+    have cardD' : D.card ≤ preset.MAX_PENDING_DEPOSITS_PER_EPOCH.toNat *
+        ((getCurrentEpoch counted).toNat - (getCurrentEpoch split).toNat) := cardD
+    have count : ((K6 pulled counted).filter fun v => pulled.validators.data.size ≤ v.toNat).card ≤
+        D.card := by
+      refine Finset.card_le_card_of_injOn (fun v : ValidatorIndex => v.toNat) (fun v hv => ?_)
+        (fun a _ b _ same => UInt64.toNat_inj.mp same)
+      obtain ⟨inK6, beyond⟩ := Finset.mem_filter.mp hv
+      exact hD v.toNat (created_deposit h fromFin high endEpoch replayedF tailC highC endEpochC
+        replayedC inK6 beyond)
+    have capped (v : ValidatorIndex) : eC counted v ≤ preset.MAX_EFFECTIVE_BALANCE_ELECTRA.toNat :=
+      PinSplit5.effectiveAt_le_capMax (shared.append (fromFin.append tailC)) h.genesis h.caps
+        h.early v.toNat
+    have cap : (pinTerms config pulled anc fin).creditCap =
+        ((getCurrentEpoch pulled).toNat + 2 - (getCurrentEpoch fin).toNat) *
+          preset.MAX_PENDING_DEPOSITS_PER_EPOCH.toNat *
+            preset.MAX_EFFECTIVE_BALANCE_ELECTRA.toNat := by
+      show (if 11 * (pinTerms config pulled anc fin).depth *
+          ((pinTerms config pulled anc fin).gainRateMax + 1) ≤
+            preset.MAX_EFFECTIVE_BALANCE_ELECTRA.toNat then 0 else
+              (pinTerms config pulled anc fin).depthFin *
+                preset.MAX_PENDING_DEPOSITS_PER_EPOCH.toNat *
+                  preset.MAX_EFFECTIVE_BALANCE_ELECTRA.toNat) = _
+      rw [ite_eq_right_of_eq_false _ _ (eq_false low)]
+      rfl
+    have total := Finset.sum_le_card_nsmul
+      ((K6 pulled counted).filter fun v => pulled.validators.data.size ≤ v.toNat) (eC counted)
+      preset.MAX_EFFECTIVE_BALANCE_ELECTRA.toNat fun v _ => capped v
+    rw [smul_eq_mul] at total
+    refine Nat.le_trans total (Nat.le_trans ?_ (Nat.le_add_left _ _))
+    rw [cap]
+    refine Nat.mul_le_mul_right _ (Nat.le_trans count (Nat.le_trans cardD' ?_))
+    rw [Nat.mul_comm]
+    exact Nat.mul_le_mul_right _ (by omega)
 
 /-- D-8 (activations): keys counted in C and not active at R.
 
