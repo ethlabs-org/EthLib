@@ -2994,6 +2994,41 @@ private theorem key_capped_credits {n y : ForkedBeaconState preset}
   refine Nat.le_trans ceiling (max_le (by omega) (Nat.le_trans (Nat.min_le_left _ _) ?_))
   omega
 
+/-- Rounding down after a credit adds at most the credit rounded up to increments. -/
+private theorem rounded_add_ceil_le (I h S : ℕ) (hI : 0 < I) :
+    (h + S) - (h + S) % I ≤ (h - h % I) + I * ((S + I - 1) / I) := by
+  have one := Nat.mod_add_div h I
+  have two := Nat.mod_add_div (h + S) I
+  have three := Nat.mod_add_div (S + I - 1) I
+  have lt1 := Nat.mod_lt h hI
+  have lt3 := Nat.mod_lt (S + I - 1) hI
+  have le : (h + S) / I ≤ h / I + (S + I - 1) / I := by
+    rw [← Nat.lt_succ_iff, Nat.div_lt_iff_lt_mul hI]
+    have e : (h / I + (S + I - 1) / I).succ * I =
+        I * (h / I) + I * ((S + I - 1) / I) + I := by
+      simp only [Nat.succ_eq_add_one]
+      ring
+    rw [e]
+    omega
+  have four := Nat.mul_le_mul_left I le
+  rw [Nat.mul_add] at four
+  omega
+
+/-- A ceiling on the balance puts the effective balance within the envelope of `rise`.
+
+The ceiling is `high` plus the credits `S`, and `rise` reads `high`.
+
+The credits add their rounding up to increments. -/
+private theorem envelope_arith {I cap capFor high kept S CB finEB e0 effX : ℕ} (hI : 0 < I)
+    (ceiling : CB ≤ high + S) (capLe : cap ≤ capFor) (keptLe : high ≤ kept) (start : effX ≤ e0) :
+    max effX (min (CB - CB % I) cap) ≤
+      max e0 (min capFor (min (kept - kept % I) (max finEB (high - high % I)))) +
+        I * ((S + I - 1) / I) := by
+  have r1 := rounded_mono I ceiling
+  have r2 := rounded_add_ceil_le I high S hI
+  have r3 := rounded_mono I keptLe
+  omega
+
 /-- A key's effective balance on C's branch is at most R's plus the main rise and the slacks. -/
 private theorem key_rise_main {g : ForkedBeaconState preset}
     {fin pulled counted : BeaconState preset fork} (shared : Run config checks g ⟨fork, fin⟩)
