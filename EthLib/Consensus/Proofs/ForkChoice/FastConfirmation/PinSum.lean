@@ -1164,7 +1164,7 @@ private theorem credited_pieces {g : ForkedBeaconState preset}
     intro x shared r fulu count
     have electra : .pectra ≤ x.fork := Nat.le_trans (by decide) fulu
     have altair : .altair ≤ x.fork := Nat.le_trans (by decide) electra
-    obtain ⟨m, v, pre, step, post, split, hm, hv⟩ := PinSplit.Run.split_at_flip r
+    obtain ⟨m, v, pre, step, post, split, hm, hv⟩ := Run.split_at_flip r
       (fun z => (getCurrentEpoch x.state).toNat /
           max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat <
         (getCurrentEpoch z.state).toNat / max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat)
