@@ -13,7 +13,7 @@ variable {preset : Preset} {fork : Fork} {config : Config} {checks : SignatureCh
 /-- The closure test of the credit ceiling is arithmetic in the rate, the credits and the stake. -/
 private theorem ceiling_closed (I WD F P e0 D Cr Cr' S W band C : ℕ) (hI : 0 < I)
     (hWD : 0 < WD) (alignedE : e0 % I = 0) (alignedC : C % I = 0)
-    (hC : (11 * Cr' + 9) / 10 ≤ C) (hCr : Cr ≤ Cr')
+    (hC : (11 * Cr' + 9) / 10 ≤ C)
     (small : D * ((11 * (e0 / I * P * F / WD) + 9) / 10) < I)
     (rateLow : 11 * D * (e0 / I * P * F / WD + 1) ≤ e0)
     (start : S + Cr + band ≤ e0 + Cr' + W) (hW : W ≤ I) (hD : 2 * D ≤ band) :
@@ -80,6 +80,21 @@ private theorem ceiling_closed (I WD F P e0 D Cr Cr' S W band C : ℕ) (hI : 0 <
   rw [split]
   omega
 
+/-- A bound that adds a start, a gain and the credits of a run, from a bound on each. -/
+private theorem credit_sum_le {a k g N Cs S Cr G : ℕ} (start : a ≤ S) (credits : N + Cs ≤ Cr)
+    (gain : k * g ≤ G) : a + k * g + N + Cs ≤ S + Cr + G := by omega
+
+/-- A number below an aligned bound by less than an increment rounds down to at most the bound. -/
+private theorem floor_le_of_lt {B E I : ℕ} (hI : 0 < I) (aligned : E % I = 0)
+    (lt : B < E + I) : B - B % I ≤ E := by
+  obtain ⟨u, hu⟩ := Nat.dvd_of_mod_eq_zero aligned
+  have qlt : B / I < u + 1 := (Nat.div_lt_iff_lt_mul hI).mpr (by
+    have : (u + 1) * I = E + I := by rw [hu]; ring
+    omega)
+  have mul : I * (B / I) ≤ I * u := Nat.mul_le_mul_left _ (by omega)
+  have div := Nat.div_add_mod B I
+  omega
+
 /-- A key's balance along a run from a stake bound, the credits and the gain at the bound. -/
 private theorem c_ceiling_abstract {n y : ForkedBeaconState preset}
     (post : Run config checks n y) (early : y.fork < .glamsterdam) (fulu : .fusaka ≤ n.fork)
@@ -99,7 +114,7 @@ private theorem c_ceiling_abstract {n y : ForkedBeaconState preset}
     (depth Cr Cr' e0 C S W band : ℕ)
     (alignedE0 : e0 % preset.EFFECTIVE_BALANCE_INCREMENT.toNat = 0)
     (alignedC : C % preset.EFFECTIVE_BALANCE_INCREMENT.toNat = 0)
-    (hC : (11 * Cr' + 9) / 10 ≤ C) (hCr : Cr ≤ Cr')
+    (hC : (11 * Cr' + 9) / 10 ≤ C)
     (epochs : (getCurrentEpoch y.state).toNat - (getCurrentEpoch n.state).toNat ≤ depth)
     (startBal : min (actualBalanceAt n i) capHigh ≤ S)
     (startEff : effectiveAt n i ≤ e0)
@@ -121,7 +136,7 @@ private theorem c_ceiling_abstract {n y : ForkedBeaconState preset}
   have weight : 0 < WEIGHT_DENOMINATOR.toNat := by decide
   have closed := ceiling_closed preset.EFFECTIVE_BALANCE_INCREMENT.toNat WEIGHT_DENOMINATOR.toNat
     (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum P e0 depth Cr Cr' S W band C incPos weight
-    alignedE0 alignedC hC hCr small rateLow start hW hD
+    alignedE0 alignedC hC small rateLow start hW hD
   have alignedE : (e0 + C + preset.EFFECTIVE_BALANCE_INCREMENT.toNat) %
       preset.EFFECTIVE_BALANCE_INCREMENT.toNat = 0 :=
     Nat.mod_eq_zero_of_dvd (Nat.dvd_add (Nat.dvd_add (Nat.dvd_of_mod_eq_zero alignedE0)
@@ -135,33 +150,17 @@ private theorem c_ceiling_abstract {n y : ForkedBeaconState preset}
           (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum / WEIGHT_DENOMINATOR.toNat) +
           depth * (P * (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum /
             WEIGHT_DENOMINATOR.toNat + 2))) := by
-    unfold PinSplit2.creditBound gainOn
-    omega
+    unfold PinSplit2.creditBound
+    exact credit_sum_le startBal credits split
   have fixpoint : max (effectiveAt n i) (min capHigh
       (PinSplit2.creditBound post i high (e0 + C + preset.EFFECTIVE_BALANCE_INCREMENT.toNat) P
           capHigh -
         PinSplit2.creditBound post i high (e0 + C + preset.EFFECTIVE_BALANCE_INCREMENT.toNat) P
           capHigh % preset.EFFECTIVE_BALANCE_INCREMENT.toNat)) ≤
-      e0 + C + preset.EFFECTIVE_BALANCE_INCREMENT.toNat := by
-    refine max_le (by omega) (Nat.le_trans (Nat.min_le_right _ _) ?_)
-    obtain ⟨u, hu⟩ := Nat.dvd_of_mod_eq_zero alignedE
-    have div := Nat.div_add_mod (PinSplit2.creditBound post i high
-      (e0 + C + preset.EFFECTIVE_BALANCE_INCREMENT.toNat) P capHigh)
-      preset.EFFECTIVE_BALANCE_INCREMENT.toNat
-    have lt : PinSplit2.creditBound post i high (e0 + C + preset.EFFECTIVE_BALANCE_INCREMENT.toNat)
-        P capHigh < e0 + C + preset.EFFECTIVE_BALANCE_INCREMENT.toNat +
-          preset.EFFECTIVE_BALANCE_INCREMENT.toNat := by
-      unfold gainOn at bound
-      omega
-    generalize PinSplit2.creditBound post i high (e0 + C + preset.EFFECTIVE_BALANCE_INCREMENT.toNat)
-      P capHigh = B at lt div ⊢
-    generalize e0 + C + preset.EFFECTIVE_BALANCE_INCREMENT.toNat = E at lt div hu ⊢
-    generalize preset.EFFECTIVE_BALANCE_INCREMENT.toNat = I at lt div incPos hu
-    have qlt : B / I < u + 1 := (Nat.div_lt_iff_lt_mul incPos).mpr (by
-      have : (u + 1) * I = E + I := by rw [hu]; ring
-      omega)
-    have mul : I * (B / I) ≤ I * u := Nat.mul_le_mul_left _ (by omega)
-    omega
+      e0 + C + preset.EFFECTIVE_BALANCE_INCREMENT.toNat :=
+    max_le (Nat.le_trans startEff (Nat.le_add_right_of_le (Nat.le_add_right e0 C)))
+      (Nat.le_trans (Nat.min_le_right _ _)
+        (floor_le_of_lt incPos alignedE (Nat.lt_of_le_of_lt bound closed)))
   obtain ⟨-, -, -, fourth⟩ := PinSplit2.Run.effective_floor_pair post early fulu i inside 0 0 0
     capHigh high (e0 + C + preset.EFFECTIVE_BALANCE_INCREMENT.toNat) P
   have balances := fourth alignedCap startCap capCeil rate endEpoch fixpoint
