@@ -9590,7 +9590,8 @@ theorem bud_sync (h : Setting config checks g split fin pulled anc counted V)
       unfold syncD
       rw [syncF_eq]
       omega)
-  have creditsF := wShare_le h.facts (∑ v ∈ EK, syncCr eventsF v.toNat)
+  have creditsF : wShare preset fork (∑ v ∈ EK, syncCr eventsF v.toNat) ≤
+      ∑ v ∈ EK, syncCr eventsF v.toNat := wShare_le h.facts _
   have shares : ∑ v ∈ SC pulled counted split, syncF eventsC v.toNat +
       ∑ v ∈ SC pulled counted split, syncF events v.toNat =
       ∑ v ∈ SC pulled counted split, g v := by
