@@ -193,7 +193,7 @@ def pinTerms (config : Config) (state ancestor finalizedState : BeaconState pres
   let consolidationCarry := max (if electra : .pectra ≤ fork then
       (finalizedState.consolidationBalanceToConsume electra).toNat else 0) consolidationChurn
   let exitCarry := max capMax depositChurn
-  let depthFin := epoch.toNat + 2 - (getCurrentEpoch finalizedState).toNat
+  let depthFin := max depth (epoch.toNat + 2 - (getCurrentEpoch finalizedState).toNat)
   let depositCarry := if electra : .pectra ≤ fork then
       (finalizedState.depositBalanceToConsume electra).toNat else 0
   let queueDep := 3 * (depthFin * depositChurn + depositCarry)
@@ -505,9 +505,13 @@ def pinTerms (config : Config) (state ancestor finalizedState : BeaconState pres
   let consolidationGain := consolidationsX / inc * perIncrement *
     (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum / WEIGHT_DENOMINATOR.toNat
   let otherCredits := 3 * (2 * ((∑ i ∈ positions, max (ebUp i) (effective i + rise i)) +
-        depthFin * preset.MAX_PENDING_DEPOSITS_PER_EPOCH.toNat * capMax +
-        consolidationsX + depth * proposerCredit +
-        depth * slots * preset.SYNC_COMMITTEE_SIZE.toNat * syncEnvelope + creditedKeys * inc) /
+        (11 * (depthFin * preset.MAX_PENDING_DEPOSITS_PER_EPOCH.toNat * capMax +
+          consolidationsX + depth * proposerCredit +
+          -- C's seat rewards.
+          depth * slots * preset.SYNC_COMMITTEE_SIZE.toNat * syncEnvelope +
+          -- The shared segment's and R's seat debits.
+          depthFin * slots * preset.SYNC_COMMITTEE_SIZE.toNat * syncEnvelope) + 9) / 10 +
+        creditedKeys * inc) /
           p.WHISTLEBLOWER_REWARD_QUOTIENT.toNat +
       depth * slots * preset.SYNC_COMMITTEE_SIZE.toNat * syncEnvelope + depth * syncProposer)
   let otherGain := otherCredits / inc * perIncrement *
