@@ -8990,7 +8990,19 @@ theorem bud_exitingCredits (h : Setting config checks g split fin pulled anc cou
       2 * (∑ v ∈ (K5 counted V), propN tailC highC v.toNat) +
         22 * ((pinTerms config pulled anc fin).depth * (pinTerms config pulled anc fin).syncProposer) ≤
       10 * (pinTerms config pulled anc fin).exitingCredits +
-        20 * (∑ v ∈ (K5 counted V), consAmt eventsC v.toNat) := sorry
+        20 * (∑ v ∈ (K5 counted V), consAmt eventsC v.toNat) := by
+  -- The proposer credits fit the pin's per-epoch bound, and their consolidation part is `consAmt`.
+  have rewards := proposer_rewards_le h tailC highC endEpochC (K5 counted V)
+  have parts : ∑ v ∈ (K5 counted V), propC tailC highC v.toNat ≤
+      ∑ v ∈ (K5 counted V), propN tailC highC v.toNat +
+        ∑ v ∈ (K5 counted V), consAmt eventsC v.toNat := by
+    rw [← Finset.sum_add_distrib]
+    exact Finset.sum_le_sum fun v _ => (credit_parts_le tailC highC v replayedC).2.2
+  have exiting : (pinTerms config pulled anc fin).exitingCredits =
+      (22 * ((pinTerms config pulled anc fin).depth *
+        (pinTerms config pulled anc fin).proposerCredit) + 9) / 10 := rfl
+  rw [exiting]
+  omega
 
 /-- D-7 (credits): C's non-attestation credits to keys counted once.
 
