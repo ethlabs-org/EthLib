@@ -5760,6 +5760,22 @@ private theorem fork_eq_of_run {x m y : ForkedBeaconState preset} (r1 : Run conf
   Fork.ctorIdx_injective (Nat.le_antisymm
     (Nat.le_trans (fork_le_of_chainSteps r2.chainSteps) back) (fork_le_of_chainSteps r1.chainSteps))
 
+/-- A run from a registry that lacks an index to one that holds it splits at the step that adds it.
+
+The step is a block or a slot.
+
+It holds the index in its second state, and not in its first. -/
+private theorem Run.split_at_creation {x y : ForkedBeaconState preset}
+    (tail : Run config checks x y) (i : ℕ) (absent : x.state.validators.data.size ≤ i)
+    (present : i < y.state.validators.data.size) :
+    ∃ (m n : ForkedBeaconState preset) (pre : Run config checks x m)
+      (step : Step config checks m n) (post : Run config checks n y),
+      tail = (pre.snoc step).append post ∧ m.state.validators.data.size ≤ i ∧
+        i < n.state.validators.data.size := by
+  obtain ⟨m, n, pre, step, post, split, before, after⟩ :=
+    Run.split_at_flip tail (fun z => i < z.state.validators.data.size) (by omega) present
+  exact ⟨m, n, pre, step, post, split, by omega, after⟩
+
 /-- The pin's rate bounds the reward rate at each state of a prefix of C's tail.
 
 The prefix ends at most one epoch after the call, and its states are of the fork of the setting. -/
