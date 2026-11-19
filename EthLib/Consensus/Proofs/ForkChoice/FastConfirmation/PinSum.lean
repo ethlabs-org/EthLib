@@ -21588,22 +21588,22 @@ private theorem registry_charge (h : Setting config checks g split fin pulled an
 
 /-- The effective balance at its slashing of a charged key whose charge is in the split's epoch.
 
-The balance at the epoch's start is before the split, so the credits since come through `pre`.
+The epoch's start `t` is on the shared run, before the split.
 
-`pre` is the shared run from the start of the split's epoch, and no block of that epoch precedes it.
+The key's credits from `t` come through the shared suffix `pre`, and then through C's run.
 
-The credits of `pre` are the proposer, whistleblower and sync credits.
+`pre` holds no consolidation or deposit credit, since it is inside one epoch.
 
-The other sources credit only at epoch processing. -/
+So its credits are the proposer, whistleblower and sync credits.
+
+The bands of hysteresis at `t` come from the slot step that crossed into its epoch. -/
 private theorem registry_charge_split_epoch
     (h : Setting config checks g split fin pulled anc counted V)
     (fromFin : Run config checks ⟨fork, fin⟩ ⟨fork, split⟩)
     (tail : Run config checks ⟨fork, split⟩ ⟨fork, pulled⟩)
     {eventsF events : List (BalanceEvent preset)} (high : ℕ)
-    (toFin : Run config checks g ⟨fork, fin⟩)
     {t : BeaconState preset fork} (toT : Run config checks g ⟨fork, t⟩)
     (pre : Run config checks ⟨fork, t⟩ ⟨fork, split⟩)
-    (cut : toT.append pre = toFin.append fromFin)
     (sameEpoch : getCurrentEpoch split = getCurrentEpoch t)
     (earlier : ∀ {u w : ForkedBeaconState preset} (step : Step config checks u w),
       toT.Contains step → (getCurrentEpoch u.state).toNat < (getCurrentEpoch t).toNat)
@@ -21616,16 +21616,32 @@ private theorem registry_charge_split_epoch
     (flag : (!(a.state.validators.data[i]?.map (·.slashed)).getD false &&
       (b.state.validators.data[i]?.map (·.slashed)).getD false) = true)
     (charged : (tailC.departureCharges.any fun c => c.index == i) = true)
-    {p q : ForkedBeaconState preset} (cfront : Run config checks ⟨fork, split⟩ p)
-    (cstep : Step config checks p q) (cpost : Run config checks q ⟨fork, counted⟩)
-    (site : (cfront.snoc cstep).append cpost = tailC)
+    {cp cq : ForkedBeaconState preset} (cfront : Run config checks ⟨fork, split⟩ cp)
+    (cstep : Step config checks cp cq) (cpost : Run config checks cq ⟨fork, counted⟩)
+    (csite : (cfront.snoc cstep).append cpost = tailC)
     (charge : cstep.departureCharges.any (·.index == i) = true)
-    (inSplitEpoch : ¬ (getCurrentEpoch split).toNat < (getCurrentEpoch p.state).toNat) :
+    (inSplitEpoch : ¬ (getCurrentEpoch split).toNat < (getCurrentEpoch cp.state).toNat) :
     effectiveAt a i ≤ chargeAmt tailC i + riseQ tailC highC i +
-      (propN pre highC i + whistC pre highC i + syncCr eventsP i +
-        whistleSlack (pinTerms config pulled anc fin) tailC (fromFin.append tail) highC high
-          eventsC eventsF events fin i) :=
-  sorry
+      (propN pre highC i + whistC pre highC i + syncCr eventsP i) +
+      whistleSlack (pinTerms config pulled anc fin) tailC (fromFin.append tail) highC high
+        eventsC eventsF events fin i := by
+  obtain ⟨v, rfl⟩ : ∃ v : ValidatorIndex, v.toNat = i := ⟨UInt64.ofNat i, by
+    have := BeaconState.validators_size_lt_of_lt_glamsterdam h.early split
+    exact UInt64.toNat_ofNat_of_lt' (by rw [UInt64.size]; omega)⟩
+  refine registry_charge_of h fromFin tail high pre sameEpoch tailC highC endEpochC replayedC step
+    member v inside flag charged ?_
+  intro front post p q eventsY cf step' post' cut' site hcharge aFork aEpoch replayedY held
+  have sameStart := charge_site_start cf step' _ site cfront cstep cpost csite hcharge charge
+  have notStarted : ¬ (getCurrentEpoch split).toNat < (getCurrentEpoch p.state).toNat := by
+    rw [sameStart]
+    exact inSplitEpoch
+  have start := split_epoch_start_data h highC toT pre sameEpoch earlier cf step'
+    ((post'.snoc step).append post) endEpochC notStarted hcharge
+  exact charge_effective_bound_of h toT (y := a) aFork (pre.append front) highC aEpoch
+    (DirectSafety.Apriori.Internal.balanceEvents_append pre front highC replayedP replayedY)
+    (pre.append cf) step' post'
+    (by rw [← cut']; exact (Run.append_assoc pre (cf.snoc step') post').symm) hcharge
+    start held
 
 /-- A charged key of `K5` whose charge is in the split's epoch.
 
