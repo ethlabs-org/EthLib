@@ -11108,9 +11108,9 @@ private theorem key_core_headroom (h : Setting config checks g split fin pulled 
       bandR events v.toNat + bandX fin highC v.toNat :=
   sorry
 
-/-- The per-key core of the rise for a counted voter that R's registry holds beyond the finalized one.
+/-- The per-key core of the rise for a counted voter created after the finalized state.
 
-The key was created after the finalized state.
+R's registry holds the key beyond the finalized registry.
 
 The replays are read at R's epoch. -/
 private theorem key_core_created (h : Setting config checks g split fin pulled anc counted V)
