@@ -13033,7 +13033,54 @@ private theorem syncF_pre_le (h : Setting config checks g split fin pulled anc c
     (keys : Finset ℕ) :
     ∑ i ∈ keys, syncF evs i ≤
       preset.SLOTS_PER_EPOCH.toNat * preset.SYNC_COMMITTEE_SIZE.toNat *
-        PinSplit5.syncSeatEnvelope preset pulledTotal.toNat := sorry
+        PinSplit5.syncSeatEnvelope preset pulledTotal.toNat := by
+  obtain ⟨shared⟩ := h.toFin
+  obtain ⟨fromFin⟩ := h.fromFin
+  obtain ⟨toPulled⟩ := h.toPulled
+  have electra : .pectra ≤ fork := Nat.le_trans (by decide) h.fulu
+  have calledNat := UInt64.le_iff_toNat_le.mp h.called
+  have finSplit := UInt64.le_iff_toNat_le.mp (currentEpoch_le_of_chainSteps fromFin.chainSteps)
+  simp only at finSplit
+  have band : ∀ {u w : ForkedBeaconState preset} (step : Step config checks u w),
+      pre.Contains step → ∀ T : Gwei, getTotalActiveBalance w.state = .ok T →
+        2 * T.toNat ≤ 3 * pulledTotal.toNat := by
+    intro u w step member T read
+    rcases link with ⟨⟨finToB⟩⟩ | ⟨toFin, finEpoch⟩
+    · exact step_band_of_guard h (finToB.append pre) (by omega) pulledOk step
+        ((Run.contains_append _ _ _).mpr (.inr member)) T read
+    -- `b` is before the finalized state, in its epoch: the total there is that of `w`
+    obtain ⟨toU, post, _, _, _⟩ := Run.contains_step_facts member h.early
+    have wEarly : w.fork < .glamsterdam :=
+      Nat.lt_of_le_of_lt (fork_le_of_chainSteps post.chainSteps) h.early
+    have bw := UInt64.le_iff_toNat_le.mp (currentEpoch_le_of_chainSteps (toU.snoc step).chainSteps)
+    have ws := UInt64.le_iff_toNat_le.mp (currentEpoch_le_of_chainSteps post.chainSteps)
+    simp only at bw ws
+    rw [sameEpoch] at ws
+    have totalB := DirectSafety.Apriori.Internal.total_same_epoch (toU.snoc step) electra wEarly
+      (UInt64.toNat_inj.mp (by simp only; omega)) read
+    have stakeB : ∑ i ∈ (getActiveValidatorIndices b (getCurrentEpoch b)).toFinset,
+        effectiveAt (⟨fork, b⟩ : ForkedBeaconState preset) i.toNat < 2 ^ 64 :=
+      (getTotalBalance_ok_iff_stake.mp (getTotalActiveBalance_ok totalB)).2.1
+    have equal := DirectSafety.Apriori.Internal.activeStake_eq_of_same_epoch toFin h.early finEpoch
+      (getCurrentEpoch b) (UInt64.le_refl _)
+    obtain ⟨finTotal, finOk⟩ := getTotalActiveBalance_exists
+      (BeaconState.registryWithinLimit_of_lt h.early fin) (by
+        rw [finEpoch]
+        change ∑ i ∈ (getActiveValidatorIndices fin (getCurrentEpoch b)).toFinset,
+          effectiveAt (⟨fork, fin⟩ : ForkedBeaconState preset) i.toNat < 2 ^ 64
+        rw [equal]
+        exact stakeB)
+    have same : finTotal = T := Except.ok.inj
+      ((DirectSafety.Apriori.Internal.total_same_epoch toFin electra h.early finEpoch
+        finOk).symm.trans totalB)
+    subst same
+    exact total_band_of_guard shared h.genesis h.parameters h.caps h.aligned h.twoSlots electra
+      h.guard (fromFin.append toPulled) h.early (Nat.le_succ _) .nil h.early (by simp only; omega)
+      pulledOk finOk
+  have moves := (PinSplit5.Run.syncDebits_le pre h.fulu h.early high replayed
+    pulledTotal.toNat band keys).2.1
+  simp only [sameEpoch, Nat.add_sub_cancel_left, Nat.one_mul] at moves
+  exact (Finset.sum_le_sum fun i _ => (syncF_eq evs i).le).trans moves
 
 /-- A key that exited by the epoch of a run's start is inactive at the end of the run.
 
