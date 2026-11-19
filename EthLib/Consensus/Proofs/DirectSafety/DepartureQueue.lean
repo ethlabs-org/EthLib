@@ -139,7 +139,7 @@ private theorem departureCharges_step_indices {x y : ForkedBeaconState preset}
     exact List.pairwise_map.mp unique
 
 /-- A run charges each registry index at most once. -/
-theorem departureCharges_run_indices {x y : ForkedBeaconState preset}
+private theorem departureCharges_run_indices {x y : ForkedBeaconState preset}
     (tail : Run config checks x y) : (tail.departureCharges.map (·.index)).Nodup := by
   induction tail with
   | nil => simp [Run.departureCharges]
@@ -4224,7 +4224,7 @@ theorem departureCharges_epoch_ge {x y : ForkedBeaconState preset}
       · cases added
 
 /-- Each departure charge of a run exits at least the seed lookahead after the next epoch. -/
-theorem Run.departureCharges_epoch_ge_start {x y : ForkedBeaconState preset}
+private theorem Run.departureCharges_epoch_ge_start {x y : ForkedBeaconState preset}
     (tail : Run config checks x y) (electra : .pectra ≤ x.fork)
     (early : y.fork < .glamsterdam) :
     ∀ c ∈ tail.departureCharges,
@@ -4884,7 +4884,7 @@ The exit capacity at `y` is at most the largest per-epoch exit churn.
 The consolidation capacity at `y` is at most the larger of its capacity at `x` and `cap`.
 
 Here `cap` bounds the consolidation churn at each site of the run from `x`. -/
-theorem queueCarry_le_of_run {g x y : ForkedBeaconState preset}
+private theorem queueCarry_le_of_run {g x y : ForkedBeaconState preset}
     (shared : Run config checks g x) (genesis : Genesis (config := config) (checks := checks) g)
     (tail : Run config checks x y) (electra : .pectra ≤ x.fork)
     (early : y.fork < .glamsterdam) (targetElectra : .pectra ≤ y.fork) (cap : Nat)
