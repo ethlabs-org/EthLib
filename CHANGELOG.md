@@ -7,13 +7,19 @@ The version is the same in `pyproject.toml` and `lakefile.lean`.
 
 Not yet released.
 
+### Breaking changes
+
+- The `withdrawal` field of `EthLib.Consensus.Internal.CapStep` is stronger.
+  For a slashed validator with an assigned exit, it now says that `withdrawableEpoch` is equal after the step.
+  It said that the epoch does not fall.
+  Migration: constructors of `CapStep` must now prove `withdrawableEpoch` is unchanged after slashing.
+  The new field implies the old one, so a reader of the old field reads the new one through `le_of_eq`.
+  `CapStep.refl`, `CapStep.trans` and `CapStep.data` carry the new field, and the readers in this repository keep their statements.
+
 ### Proof additions
 
-- `Run.withdrawable_eq_exit_delay` says that a validator reached from genesis, if it is not slashed, has no withdrawable epoch before its exit is assigned.
-  After the exit is assigned, its withdrawable epoch is exactly the withdrawal delay after it.
-  It extends `Run.exit_withdrawable_delay` with the upper bound, and the pin's floors read it for the keys that C exits.
-  The private invariant `ActivationExitOrder.Holds` gains the upper bound as a fifth conjunct.
-  The new `Holds` implies the old one, so each reader of the old four conjuncts is unchanged.
+- `Run.slashed_withdrawable_eq` says that a validator that is slashed, with an assigned exit, keeps its withdrawable epoch along a run.
+  The pin's floors read it for the keys that C slashes before the split.
 
 - `DirectSafety.Apriori.Internal.perIncrement_exists` is public: the base reward per increment exists at a positive total when the scaled factor fits.
   The pin reads it to show that its base reward per increment is at least four.
