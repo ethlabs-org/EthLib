@@ -10,14 +10,6 @@ open Base Uint64 Models DirectSafety PinSplit
 
 variable {preset : Preset} {fork : Fork} {config : Config} {checks : SignatureChecks}
 
-/-- A sum over keys of the sums of a list adds in either order. -/
-private theorem sum_list_comm (S : Finset ValidatorIndex) (L : List (BalanceEvent preset))
-    (f : ℕ → BalanceEvent preset → ℕ) :
-    ∑ v ∈ S, (L.map (f v.toNat)).sum = (L.map fun e => ∑ v ∈ S, f v.toNat e).sum := by
-  induction L with
-  | nil => simp
-  | cons e rest ih => simp only [List.map_cons, List.sum_cons, Finset.sum_add_distrib, ih]
-
 /-- The whistleblower credits of a set of keys over a run are at most a bound on the slashing
 events that the run replays, when each slashing event credits the set within its bound. -/
 private theorem whistC_sum_le (S : Finset ValidatorIndex) (high : ℕ)
@@ -51,7 +43,12 @@ private theorem whistC_sum_le (S : Finset ValidatorIndex) (high : ℕ)
             rw [List.sum_map_ite (fun e : BalanceEvent preset => e.source = .slashings) T
               (fun _ => 0)]
             simp
-          rw [sum_list_comm S _ keyCredit, ← ite]
+          rw [show ∑ v ∈ S, ((added.filter fun x => decide (x.source = .slashings)).map
+              (keyCredit v.toNat)).sum = ((added.filter fun x => decide (x.source = .slashings)).map
+              fun e => ∑ v ∈ S, keyCredit v.toNat e).sum by
+            simpa using (Multiset.sum_map_sum
+              (m := (↑(added.filter fun x => decide (x.source = .slashings)) : Multiset _))
+              (s := S) (f := fun e v => keyCredit v.toNat e)).symm, ← ite]
           exact List.sum_le_sum fun e member => each e
             (List.mem_append_right _ (List.mem_filter.mp member).1)
             (by simpa using (List.mem_filter.mp member).2)
