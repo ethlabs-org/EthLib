@@ -432,6 +432,11 @@ def pinReserve (config : Config) (state ancestor finalizedState : BeaconState pr
     decide (depthFin * gainScaled i < inc) && decide (11 * depth * (gainRate i + 1) ≤ ebUp i)
   let capFor (i : ℕ) :=
     if lowRate i then cap i else capMax
+  -- A key keeps its own path when its gain stays within its bound and partials stay queued.
+  --
+  -- Its rise is then its rounded balance; otherwise it is its whole headroom.
+  let keptArm (i : ℕ) : Bool :=
+    decide (depthFin ≤ partialDelay) && decide (11 * depth * (gainRate i + 1) ≤ ebUp i)
   -- The rise bounds the balance from the finalized block's state on, as `ebUp` does.
   let rise (i : ℕ) :=
     let high := actual i + depthFin * (gainScaled i + leak i) + (partialsX i - partialsR i)
@@ -440,16 +445,14 @@ def pinReserve (config : Config) (state ancestor finalizedState : BeaconState pr
     -- So the rise is the key's whole headroom.
     --
     -- It is too once eleven times the gain plus one over the depth exceeds that bound.
-    if depthFin ≤ partialDelay then
-      if ¬ (11 * depth * (gainRate i + 1) ≤ ebUp i) then capFor i - effective i
+    if keptArm i then
       -- On another branch the key can keep an effective balance that this branch's update lowered.
       --
       -- It is at most the balance at that update plus the downward band, rounded down.
       --
       -- It is also its effective balance at the finalized block's state or a rounded balance since.
-      else
-        let kept := high + preset.downwardBand
-        min (capFor i) (min (kept - kept % inc) (max (finEB i) (high - high % inc))) - effective i
+      let kept := high + preset.downwardBand
+      min (capFor i) (min (kept - kept % inc) (max (finEB i) (high - high % inc))) - effective i
     else capFor i - effective i
   let period := max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat
   let due := if electra : .pectra ≤ fork then
@@ -585,9 +588,18 @@ def pinReserve (config : Config) (state ancestor finalizedState : BeaconState pr
   let slashCharge := inc + depthFin * (2 * (2 * perIncrement) +
     2 * inc * (scoreMaxFin + depthFin * config.INACTIVITY_SCORE_BIAS.toNat) /
       (config.INACTIVITY_SCORE_BIAS.toNat * p.INACTIVITY_PENALTY_QUOTIENT.toNat) + 1)
+  -- A credit can raise a key's effective balance by one more increment than its amount rounds to.
+  --
+  -- That increment earns the flag rewards over the depth, plus two units per epoch for the floors.
+  --
+  -- Each credited key pays it once, and a key pays two more if the call reads its exit.
+  let unitGain := depth * (perIncrement * (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum /
+    WEIGHT_DENOMINATOR.toNat + 2)
+  -- A key slashed on this branch can also take one more increment, which earns `unitGain`.
+  --
   -- The rounding is weighted 3 exactly once, by the `3 *` of this branch term.
-  let branchR := 3 * (whistleblowerR + slashCharge * slashedR + depth * proposerCredit +
-    (inc + preset.downwardBand - 1) * roundedKeys)
+  let branchR := 3 * (whistleblowerR + (slashCharge + unitGain) * slashedR +
+    depth * proposerCredit + (inc + preset.downwardBand - 1) * roundedKeys)
   -- A key previous-epoch-only in a counting state weighs three times there, at its balance there.
   --
   -- `exiting` reads it here, so its rise since the split also weighs three times.
@@ -741,7 +753,7 @@ def pinReserve (config : Config) (state ancestor finalizedState : BeaconState pr
   --
   -- While eleven gains over the depth stay below the cap, `credits`' eleven tenths pay a new key's.
   --
-  -- There a K5 key whose exit the call reads has its consolidation credit's gains charged thrice.
+  -- A consolidation credit's gains are charged at weight three, for every target.
   --
   -- Every key's whistleblower and sync credits on the other branch are charged their gains too.
   --
@@ -754,6 +766,8 @@ def pinReserve (config : Config) (state ancestor finalizedState : BeaconState pr
   -- Its seat debits from the finalized block's state count as a second seat term.
   --
   -- A key whose own gain stays low compounds past that bound too, so its gains count in both.
+  --
+  -- One floor of all a key's flows bounds its gains, and each split by kind costs an increment's.
   --
   -- Past that bound, each deposit the window can apply to a new key is also charged up to the cap.
   --
@@ -770,21 +784,24 @@ def pinReserve (config : Config) (state ancestor finalizedState : BeaconState pr
           depthFin * slots * preset.SYNC_COMMITTEE_SIZE.toNat * syncEnvelope) + 9) / 10 +
         creditedKeys * inc) /
           p.WHISTLEBLOWER_REWARD_QUOTIENT.toNat +
-      depth * slots * preset.SYNC_COMMITTEE_SIZE.toNat * syncEnvelope + depth * syncProposer)
+      -- C's seat flows, and R's and the shared segment's seat debits.
+      (depth + depthFin) * slots * preset.SYNC_COMMITTEE_SIZE.toNat * syncEnvelope +
+        depth * syncProposer)
   let otherGain := otherCredits / inc * perIncrement *
     (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum / WEIGHT_DENOMINATOR.toNat
   let creditGain :=
-    (33 * depth * consolidationGain + 11 * depth * otherGain + 9) / 10 +
+    (33 * depth * consolidationGain + 11 * depth * otherGain +
+      30 * depth * (perIncrement * (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum /
+        WEIGHT_DENOMINATOR.toNat + 1) + 9) / 10 +
       (if 11 * depth * (gainRateMax + 1) ≤ capMax then 0
         else depthFin * preset.MAX_PENDING_DEPOSITS_PER_EPOCH.toNat * capMax)
-  -- A credit can raise a key's effective balance by one more increment than its amount rounds to.
+  -- A key whose only flows are seat debits pays a unit too.
   --
-  -- That increment earns the flag rewards over the depth, plus two units per epoch for the floors.
+  -- Its seats are those of the call's branch beyond the two shared at the split.
   --
-  -- Each credited key pays it once, and a key pays two more if the call reads its exit.
-  let unitGain := depth * (perIncrement * (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum /
-    WEIGHT_DENOMINATOR.toNat + 2)
-  let creditUnits := (creditedKeys + 2 * (exitingCount + queueKeys)) * unitGain
+  -- They are also those of the shared segment.
+  let seatUnits := (depth / period + (depthFin / period + 2)) * preset.SYNC_COMMITTEE_SIZE.toNat
+  let creditUnits := (creditedKeys + seatUnits + 2 * (exitingCount + queueKeys)) * unitGain
   -- A key here that is not yet eligible can be topped up on the other branch alone.
   --
   -- It can then become eligible there and activate deep in the window, while inactive here.

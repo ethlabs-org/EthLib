@@ -93,6 +93,12 @@ structure PinTerms (preset : Preset) where
   consolidationsXCount : ℕ
   exitBeforeFin : ℕ → Bool
   bF : ℕ → ℕ
+  perIncrement : ℕ
+  depthFin : ℕ
+  slashCharge : ℕ
+  consolidationGain : ℕ
+  otherGain : ℕ
+  keptArm : ℕ → Bool
   gainHigh : Bool
   pendingRB : ℕ → Bool
   credits : ℕ
@@ -304,6 +310,11 @@ def pinTerms (config : Config) (state ancestor finalizedState : BeaconState pres
     decide (depthFin * gainScaled i < inc) && decide (11 * depth * (gainRate i + 1) ≤ ebUp i)
   let capFor (i : ℕ) :=
     if lowRate i then cap i else capMax
+  -- A key keeps its own path when its gain stays within its bound and partials stay queued.
+  --
+  -- Its rise is then its rounded balance; otherwise it is its whole headroom.
+  let keptArm (i : ℕ) : Bool :=
+    decide (depthFin ≤ partialDelay) && decide (11 * depth * (gainRate i + 1) ≤ ebUp i)
   let rise (i : ℕ) :=
     let high := actual i + depthFin * (gainScaled i + leak i) + (partialsX i - partialsR i)
     -- Deeper than `partialDelay`, the call's branch can pay partials that neither queue holds.
@@ -311,11 +322,9 @@ def pinTerms (config : Config) (state ancestor finalizedState : BeaconState pres
     -- So the rise is the key's whole headroom.
     --
     -- It is too once eleven times the gain plus one over the depth exceeds that bound.
-    if depthFin ≤ partialDelay then
-      if ¬ (11 * depth * (gainRate i + 1) ≤ ebUp i) then capFor i - effective i
-      else
-        let kept := high + preset.downwardBand
-        min (capFor i) (min (kept - kept % inc) (max (finEB i) (high - high % inc))) - effective i
+    if keptArm i then
+      let kept := high + preset.downwardBand
+      min (capFor i) (min (kept - kept % inc) (max (finEB i) (high - high % inc))) - effective i
     else capFor i - effective i
   let period := max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat
   let due := if electra : .pectra ≤ fork then
@@ -439,9 +448,13 @@ def pinTerms (config : Config) (state ancestor finalizedState : BeaconState pres
   let slashCharge := inc + depthFin * (2 * (2 * perIncrement) +
     2 * inc * (scoreMaxFin + depthFin * config.INACTIVITY_SCORE_BIAS.toNat) /
       (config.INACTIVITY_SCORE_BIAS.toNat * p.INACTIVITY_PENALTY_QUOTIENT.toNat) + 1)
+  let unitGain := depth * (perIncrement * (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum /
+    WEIGHT_DENOMINATOR.toNat + 2)
+  -- A key slashed on this branch can also take one more increment, which earns `unitGain`.
+  --
   -- The rounding is weighted 3 exactly once, by the `3 *` of this branch term.
-  let branchR := 3 * (whistleblowerR + slashCharge * slashedR + depth * proposerCredit +
-    (inc + preset.downwardBand - 1) * roundedKeys)
+  let branchR := 3 * (whistleblowerR + (slashCharge + unitGain) * slashedR +
+    depth * proposerCredit + (inc + preset.downwardBand - 1) * roundedKeys)
   -- A key previous-epoch-only in a counting state weighs three times there, at its balance there.
   --
   -- `exiting` reads it here, so its rise since the split also weighs three times.
@@ -567,16 +580,24 @@ def pinTerms (config : Config) (state ancestor finalizedState : BeaconState pres
           depthFin * slots * preset.SYNC_COMMITTEE_SIZE.toNat * syncEnvelope) + 9) / 10 +
         creditedKeys * inc) /
           p.WHISTLEBLOWER_REWARD_QUOTIENT.toNat +
-      depth * slots * preset.SYNC_COMMITTEE_SIZE.toNat * syncEnvelope + depth * syncProposer)
+      -- C's seat flows, and R's and the shared segment's seat debits.
+      (depth + depthFin) * slots * preset.SYNC_COMMITTEE_SIZE.toNat * syncEnvelope +
+        depth * syncProposer)
   let otherGain := otherCredits / inc * perIncrement *
     (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum / WEIGHT_DENOMINATOR.toNat
   let creditGain :=
-    (33 * depth * consolidationGain + 11 * depth * otherGain + 9) / 10 +
+    (33 * depth * consolidationGain + 11 * depth * otherGain +
+      30 * depth * (perIncrement * (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum /
+        WEIGHT_DENOMINATOR.toNat + 1) + 9) / 10 +
       (if 11 * depth * (gainRateMax + 1) ≤ capMax then 0
         else depthFin * preset.MAX_PENDING_DEPOSITS_PER_EPOCH.toNat * capMax)
-  let unitGain := depth * (perIncrement * (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum /
-    WEIGHT_DENOMINATOR.toNat + 2)
-  let creditUnits := (creditedKeys + 2 * (exitingCount + queueKeys)) * unitGain
+  -- A key whose only flows are seat debits pays a unit too.
+  --
+  -- Its seats are those of the call's branch beyond the two shared at the split.
+  --
+  -- They are also those of the shared segment.
+  let seatUnits := (depth / period + (depthFin / period + 2)) * preset.SYNC_COMMITTEE_SIZE.toNat
+  let creditUnits := (creditedKeys + seatUnits + 2 * (exitingCount + queueKeys)) * unitGain
   let pendingR := if tight then 0 else
     ∑ i ∈ positions with (validator i).any (fun v =>
       decide (epoch.toNat < v.activationEligibilityEpoch.toNat) &&
@@ -585,7 +606,8 @@ def pinTerms (config : Config) (state ancestor finalizedState : BeaconState pres
     branchR, late, syncSeats, rise, fall, positions, current, exitingRise, exitingCredits,
     queueRise, reserveW, flagged, seatShortfall, consolidationsX, exitedR, depth, syncProposer,
     proposerCredit, exitingBands, pendingR, creditGain, creditUnits, syncLeak, unitGain,
-    consolidationsXCount, exitBeforeFin, bF,
+    consolidationsXCount, exitBeforeFin, bF, perIncrement, depthFin, slashCharge, consolidationGain,
+    otherGain, keptArm,
     gainHigh := !decide (11 * depth * (gainRateMax + 1) ≤ capMax),
     pendingRB := fun i => (validator i).any (fun v =>
       decide (epoch.toNat < v.activationEligibilityEpoch.toNat) &&
@@ -883,6 +905,47 @@ def wShare (preset : Preset) (fork : Fork) (x : ℕ) : ℕ :=
 /-- The band of each due consolidation entry of the state `X` that targets the key. -/
 def bandX (X : BeaconState preset fork) (high v : ℕ) : ℕ :=
   preset.upwardBand * dueAt X high {UInt64.ofNat v}
+
+/-- The flag reward of one increment over one epoch, at the pin's rate. -/
+private def flagRate (t : PinTerms preset) : ℕ :=
+  t.perIncrement * (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum / WEIGHT_DENOMINATOR.toNat
+
+/-- The initial slashing penalty of a key slashed on R's branch after the split, at the cap. -/
+private def slashW (t : PinTerms preset) (i : ℕ) : ℕ :=
+  if t.slashedRB i = true then
+    preset.MAX_EFFECTIVE_BALANCE_ELECTRA.toNat /
+      (EthLib.Consensus.parameters preset .fusaka).MIN_SLASHING_PENALTY_QUOTIENT.toNat
+  else 0
+
+/-- The leak a key's sync debits on R's branch induce above `ebUp`, over the window.
+
+It is the leak at the largest effective balance on the run, less the leak at `ebUp`. -/
+private def inducedR (config : Config) (pulled anc fin : BeaconState preset fork)
+    {x y : ForkedBeaconState preset} (tail : Run config checks x y) (i : ℕ) : ℕ :=
+  (pinTerms config pulled anc fin).depthFin *
+    ((pinTerms config pulled anc fin).leakAt
+        ((tail.balancePath.map fun z => effectiveAt z i).foldl max 0) i -
+      (pinTerms config pulled anc fin).leakAt ((pinTerms config pulled anc fin).ebUp i) i)
+
+/-- The flows that can raise a key's balance on C above R's base, besides its epoch rewards.
+
+They are its credits on C's branch and its sync debits on R's branch and on the shared segment.
+
+They also include the initial penalty of a slashing on R's branch. -/
+private def flowCredit (t : PinTerms preset) {x y : ForkedBeaconState preset}
+    (tailC : Run config checks x y) (high : ℕ)
+    (eventsC events eventsF : List (BalanceEvent preset)) (i : ℕ) : ℕ :=
+  credC tailC high i + whistC tailC high i + syncCr eventsC i + syncD events i + syncD eventsF i +
+    slashW t i
+
+/-- The gain of a key's flows over the window, at eleven tenths in whole increments.
+
+It is one floor of all the flows; the closure splits it by kind in aggregate. -/
+private def flowGain (t : PinTerms preset) {x y : ForkedBeaconState preset}
+    (tailC : Run config checks x y) (high : ℕ)
+    (eventsC events eventsF : List (BalanceEvent preset)) (i : ℕ) : ℕ :=
+  t.depth * (11 * flowCredit t tailC high eventsC events eventsF i /
+    (10 * preset.EFFECTIVE_BALANCE_INCREMENT.toNat) * flagRate t)
 
 /-- A quantity of the sync events, summed over all events with the others at zero. -/
 private theorem sum_map_sync (events : List (BalanceEvent preset))
@@ -2345,6 +2408,11 @@ def K6 : Finset ValidatorIndex := (AC counted).filter fun v => v ∈ Q counted �
 def SC (split : BeaconState preset fork) : Finset ValidatorIndex :=
   ((Finset.range pulled.validators.data.size).image UInt64.ofNat).filter fun v =>
     slashedFlagAt counted v.toNat = some true ∧ slashedFlagAt split v.toNat = some false
+
+/-- Keys created beyond R's registry and slashed at C. -/
+def CS : Finset ValidatorIndex :=
+  ((Finset.range counted.validators.data.size).image UInt64.ofNat).filter fun v =>
+    pulled.validators.data.size ≤ v.toNat ∧ slashedFlagAt counted v.toNat = some true
 
 end Costs
 
@@ -6437,7 +6505,7 @@ open DirectSafety.Apriori DirectSafety.Apriori.Internal in
 
 The passes cost at most the leak at `M` for each epoch from the finalized state's.
 
-The bound `M` is at least the key's effective balance at each state of R's branch after the split.
+The bound `M` is at least the key's effective balance at each state of the run to R.
 
 The partials paid are at most those queued at the finalized state less those still queued at R. -/
 private theorem debits_le_top (h : Setting config checks g split fin pulled anc counted V)

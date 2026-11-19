@@ -927,20 +927,31 @@ private structure PinPresetFacts (preset : Preset) : Prop where
   divisors : preset.DivisorsPositive
   /-- (preset fact) Four downward bands fit in an increment. -/
   quarterBand : 4 * preset.downwardBand ≤ preset.EFFECTIVE_BALANCE_INCREMENT.toNat
+  /-- (preset fact) The proposer lookahead ends before activity stops being fixed. -/
+  covers : preset.MIN_SEED_LOOKAHEAD.toNat + 1 ≤ preset.MAX_SEED_LOOKAHEAD.toNat
+  /-- (preset fact) A new key's floor pays three whistleblower rewards at the largest balance.
+
+  It rules out a key created on another branch whose slashing reward its own balance cannot pay. -/
+  whistleNewKey : 3 * (preset.MAX_EFFECTIVE_BALANCE_ELECTRA.toNat /
+      (EthLib.Consensus.parameters preset .fusaka).WHISTLEBLOWER_REWARD_QUOTIENT.toNat) ≤
+    2 * (2 * preset.MAX_EFFECTIVE_BALANCE.toNat / 3 -
+      preset.MAX_EFFECTIVE_BALANCE.toNat /
+        (EthLib.Consensus.parameters preset .fusaka).MIN_SLASHING_PENALTY_QUOTIENT.toNat -
+      preset.downwardBand - preset.EFFECTIVE_BALANCE_INCREMENT.toNat)
 
 /-- The mainnet preset has the preset facts of the pin. -/
 private theorem PinPresetFacts.mainnet : PinPresetFacts Preset.mainnet :=
   ⟨by decide, by decide, by decide, by decide, by decide, by decide, by decide, by decide,
     by decide, by decide, by decide, fun fork => by cases fork <;> decide,
     fun fork => by cases fork <;> decide, by decide, by decide, Preset.divisorsPositive_mainnet,
-    by decide⟩
+    by decide, by decide, by decide⟩
 
 /-- The minimal preset has the preset facts of the pin. -/
 private theorem PinPresetFacts.minimal : PinPresetFacts Preset.minimal :=
   ⟨by decide, by decide, by decide, by decide, by decide, by decide, by decide, by decide,
     by decide, by decide, by decide, fun fork => by cases fork <;> decide,
     fun fork => by cases fork <;> decide, by decide, by decide, Preset.divisorsPositive_minimal,
-    by decide⟩
+    by decide, by decide, by decide⟩
 
 /-- From Electra and before Gloas, the floor of the window at its start leaves room for the window.
 
