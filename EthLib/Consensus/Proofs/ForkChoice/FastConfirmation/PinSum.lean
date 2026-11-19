@@ -1887,7 +1887,7 @@ private theorem block_gross_keys {g : ForkedBeaconState preset}
       omega
   · obtain rfl := List.mem_singleton.mp inSync
     simp only [keyCredit] at positive
-    rcases sync_moved_seat (i := i) altair synced matchedT (by omega) with seat | ⟨p, found, same, -⟩
+    rcases sync_moved_seat (i := i) altair synced matchedT (by omega) with seat | ⟨_, found, same, -⟩
     · exact .inr ⟨rfl, altair, seat⟩
     · exact .inl (Finset.mem_singleton.mpr (by rw [read] at found; cases found; exact same.symm))
 
