@@ -13744,18 +13744,16 @@ private def cutKeys (config : Config) (pulled anc fin split : BeaconState preset
         decide ((getCurrentEpoch fin).toNat + preset.EPOCHS_PER_SLASHINGS_VECTOR.toNat ≤
           w.withdrawableEpoch.toNat)) = true
 
-open Classical in
-/-- The keys of `SC` that C's run charges to depart in the split's epoch.
+/-- The keys of `SC` that C's run charges to depart.
 
-The charge is of a step that starts in the split's epoch.
+A key charged in the split's epoch reads the balance before the credits of `pre` that follow it.
 
-So it reads the balance before the credits of `pre` that come after it. -/
-private noncomputable def scCharged (pulled counted split : BeaconState preset fork)
+A key charged later holds those credits in its charge, so reading them is an overpayment.
+
+The overpayment fits the one application of `cut_whistle` over these keys and those of `K5`. -/
+private def scCharged (pulled counted split : BeaconState preset fork)
     {x y : ForkedBeaconState preset} (tailC : Run config checks x y) : Finset ValidatorIndex :=
-  (SC pulled counted split).filter fun v =>
-    ∃ (u w : ForkedBeaconState preset) (step : Step config checks u w), tailC.Contains step ∧
-      getCurrentEpoch u.state = getCurrentEpoch split ∧
-        ∃ c ∈ step.departureCharges, c.index = v.toNat
+  (SC pulled counted split).filter fun v => ∃ c ∈ tailC.departureCharges, c.index = v.toNat
 
 /-- R1 from the count of its rounding bands.
 
