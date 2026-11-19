@@ -1580,8 +1580,10 @@ private theorem sync_moved_seat {f : Fork} {c t : BeaconState preset f} (altair 
     by_contra outside
     have missing : actualBalanceAt (⟨f, c⟩ : ForkedBeaconState preset) i = 0 := by
       simp [actualBalanceAt, Array.getElem?_eq_none (Nat.le_of_not_lt outside)]
+    have outT : t.balances.data[i]? = none :=
+      Array.getElem?_eq_none (by have := sizes.2; omega)
     have missingT : actualBalanceAt (⟨f, t⟩ : ForkedBeaconState preset) i = 0 := by
-      simp [actualBalanceAt, Array.getElem?_eq_none (by rw [sizes.2]; omega)]
+      simp [actualBalanceAt, outT]
     omega
   have insideV : i < c.validators.data.size := by
     unfold BalancesMatch at matchedC
@@ -1741,7 +1743,7 @@ private theorem blockReplay_proposer_credits {fork : Fork} {a t : BeaconState pr
   have normalized := replay
   unfold blockBalanceReplay at normalized
   simp only [altair, bellatrix, electra, ↓reduceDIte] at normalized
-  simp only [← bind_assoc, DirectSafety.Apriori.Internal.except_dite_bind] at normalized
+  simp only [← bind_assoc] at normalized
   simp only [bind_assoc] at normalized
   simp only [bind_ok_iff, ensure_ok_iff] at normalized
   obtain ⟨headed, headedOk, executed, executedOk, revealed, revealedOk, voted, votedOk, x1, x2, x3,
@@ -1775,9 +1777,9 @@ private theorem blockReplay_proposer_credits {fork : Fork} {a t : BeaconState pr
       (PinSplit4.carryBalance_cases withdrawnOk).1, cOk⟩
   have link := (processOperations_proposer apart operated).1.trans read
   -- The passes before the operations record no credit but the proposer's.
+  have base : PassCredits block.proposerIndex.toNat (a, []).2 := fun e member => by simp at member
   have start : PassCredits block.proposerIndex.toNat voted.2 :=
-    ((((fun e member => by simp at member : PassCredits block.proposerIndex.toNat
-        (a, []).2).carry headedOk).record executedOk (by decide) (by decide)
+    (((base.carry headedOk).record executedOk (by decide) (by decide)
       fun h => absurd h (by decide)).carry revealedOk).carry votedOk
   have step : ∀ {source : BalanceSource}
       {limits : BeaconState preset fork → Except TransitionError (Nat × Nat)}
