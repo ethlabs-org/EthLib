@@ -18259,18 +18259,15 @@ through C's run.
 The bands of hysteresis at `b` come from the slot step that crossed into its epoch. -/
 private theorem K5_charged_split_epoch
     (h : Setting config checks g split fin pulled anc counted V)
-    (tail : Run config checks ⟨fork, split⟩ ⟨fork, pulled⟩) (high : ℕ)
-    (endEpoch : (getCurrentEpoch pulled).toNat ≤ high + 1)
-    {events : List (BalanceEvent preset)} (replayed : tail.balanceEvents high = .ok events)
+    (tail : Run config checks ⟨fork, split⟩ ⟨fork, pulled⟩)
+    {events : List (BalanceEvent preset)}
     (fromFin : Run config checks ⟨fork, fin⟩ ⟨fork, split⟩)
-    (toFin : Run config checks g ⟨fork, fin⟩)
     {b : BeaconState preset fork} (toB : Run config checks g ⟨fork, b⟩)
     (pre : Run config checks ⟨fork, b⟩ ⟨fork, split⟩)
-    (cut : toB.append pre = toFin.append fromFin)
     (sameEpoch : getCurrentEpoch split = getCurrentEpoch b)
     (earlier : ∀ {u w : ForkedBeaconState preset} (step : Step config checks u w),
       toB.Contains step → (getCurrentEpoch u.state).toNat < (getCurrentEpoch b).toNat)
-    {eventsF : List (BalanceEvent preset)} (replayedF : fromFin.balanceEvents high = .ok eventsF)
+    {eventsF : List (BalanceEvent preset)}
     (tailC : Run config checks ⟨fork, split⟩ ⟨fork, counted⟩) (highC : ℕ)
     (endEpochC : (getCurrentEpoch counted).toNat ≤ highC + 1)
     {eventsC : List (BalanceEvent preset)} (replayedC : tailC.balanceEvents highC = .ok eventsC)
@@ -18535,9 +18532,8 @@ theorem stub_P (h : Setting config checks g split fin pulled anc counted V)
     subst site
     by_cases started : (getCurrentEpoch split).toNat < (getCurrentEpoch a.state).toNat
     swap
-    · exact K5_charged_split_epoch h tail high endEpoch replayed fromFin toFin toB pre cut
-        sameEpoch earlier replayedF _ highC endEpochC replayedC replayedP member front step post
-        rfl hcharge started hexit
+    · exact K5_charged_split_epoch h tail fromFin toB pre sameEpoch earlier _ highC endEpochC
+        replayedC replayedP member front step post rfl hcharge started hexit
     have bound := charge_effective_bound h (y := ⟨fork, counted⟩) rfl _ highC endEpochC replayedC
       front step post rfl hcharge started (K5_charged_held h member front step post hcharge)
     have rise : riseQ ((front.snoc step).append post) highC v.toNat =
