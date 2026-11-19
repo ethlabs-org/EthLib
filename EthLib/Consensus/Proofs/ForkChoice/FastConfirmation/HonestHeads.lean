@@ -534,7 +534,13 @@ theorem Execution.honestHeadsExist_or_evidence {Δ : ℕ} (sync : e.Synchronous 
 
 Otherwise two honest stores collide by `last`, or direct-safety evidence holds.
 
-The evidence is relative to the anchor. -/
+The evidence is relative to the anchor.
+
+This read gives the `rollover` premise of `Execution.rootInFilteredTree_of_checked`.
+
+It gives `CallerHeadAt` of `Execution.honestTargetVotes_signed_of_checked` too.
+
+Both steps then hold up to these alternatives. -/
 theorem Execution.callRolloverRead_or_evidence {Δ : ℕ} (sync : e.Synchronous Δ)
     (slots : 0 < config.SLOT_DURATION_MS)
     (history : 2 ≤ preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
