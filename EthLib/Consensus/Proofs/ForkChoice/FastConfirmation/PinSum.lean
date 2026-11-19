@@ -14266,8 +14266,9 @@ It exits by R's next epoch.
 
 It is read at its balance and rise, or at its finalized balance.
 
-A key of the split's registry that is neither slashed at R nor active at C, and not such a term,
-had its exit assigned on C's branch.
+A key of the split's registry that is none of those, and not active at C, is not slashed at R.
+
+Its exit was assigned on C's branch.
 
 It pays its charge and its rise after it, by `rise_after_charge`, from the window.
 
@@ -14292,8 +14293,9 @@ private theorem whistle_exited (h : Setting config checks g split fin pulled anc
       (pinTerms config pulled anc fin).reserveW :=
   sorry
 
-/-- (W-F) The other keys of the split's registry that are active at both branches pay from their
-own stake.
+/-- (W-F) The other active keys of the split's registry pay from their own stake.
+
+They are active at both branches.
 
 A slashable key whose floor does not cover its reward is flagged, and `flagged` pays it at `ebUp`.
 
