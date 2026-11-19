@@ -11,11 +11,11 @@ open Base Uint64 Models DirectSafety PinSplit
 variable {preset : Preset} {fork : Fork} {config : Config} {checks : SignatureChecks}
 
 /-- The closure test of the credit ceiling is arithmetic in the rate, the credits and the stake. -/
-private theorem ceiling_closed (I WD F P e0 D Cr Cr' S W C q r : ℕ)
+private theorem ceiling_closed (I WD F P e0 D Df Cr Cr' S W C q r : ℕ) (hDf : D ≤ Df)
     (hq : q = e0 / I * P * F / WD) (hr : r = P * F / WD) (hI : 0 < I)
     (hWD : 0 < WD) (alignedE : e0 % I = 0) (alignedC : C % I = 0)
     (hC : (11 * Cr' + 9) / 10 ≤ C)
-    (small : D * ((11 * q + 9) / 10 + 2) < I) (rateLow : 11 * D * (q + 1) ≤ e0)
+    (small : Df * ((11 * q + 9) / 10 + 2) < I) (rateLow : 11 * D * (q + 1) ≤ e0)
     (start : S + Cr + 2 * D ≤ e0 + Cr' + W) (hW : W ≤ I) :
     S + Cr + (D * ((C + I - 1) / I * P * F / WD) + (D * q + D * (r + 2))) <
       e0 + C + I + I := by
@@ -72,6 +72,8 @@ private theorem ceiling_closed (I WD F P e0 D Cr Cr' S W C q r : ℕ)
       _ < 10 * I := by
         have := small
         rw [Nat.mul_add] at this
+        have mono : D * ((11 * (e0 / I * P * F / WD) + 9) / 10) ≤
+            Df * ((11 * (e0 / I * P * F / WD) + 9) / 10) := Nat.mul_le_mul_right _ hDf
         omega
   have unit : 11 * (D * (P * F / WD)) < I := by
     have fl : WD * (P * F / WD) ≤ P * F := Nat.mul_div_le _ _
@@ -115,7 +117,7 @@ private theorem c_ceiling_abstract {n y : ForkedBeaconState preset}
         P * (total.toNat / preset.EFFECTIVE_BALANCE_INCREMENT.toNat))
     (endEpoch : (getCurrentEpoch y.state).toNat ≤ high + 1)
     (incPos : 0 < preset.EFFECTIVE_BALANCE_INCREMENT.toNat)
-    (depth Cr Cr' e0 C S W F q r : ℕ)
+    (depth depthFin Cr Cr' e0 C S W F q r : ℕ) (hDf : depth ≤ depthFin)
     (hF : F = (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum)
     (hq : q = e0 / preset.EFFECTIVE_BALANCE_INCREMENT.toNat * P * F / WEIGHT_DENOMINATOR.toNat)
     (hr : r = P * F / WEIGHT_DENOMINATOR.toNat)
@@ -127,14 +129,14 @@ private theorem c_ceiling_abstract {n y : ForkedBeaconState preset}
     (startEff : effectiveAt n i ≤ e0)
     (credits : netScan i high post +
       (creditScan (fun _ => false) (fun s => decide (s ≠ .rewards)) i high post).1 ≤ Cr)
-    (small : depth * ((11 * q + 9) / 10 + 2) < preset.EFFECTIVE_BALANCE_INCREMENT.toNat)
+    (small : depthFin * ((11 * q + 9) / 10 + 2) < preset.EFFECTIVE_BALANCE_INCREMENT.toNat)
     (rateLow : 11 * depth * (q + 1) ≤ e0)
     (start : S + Cr + 2 * depth ≤ e0 + Cr' + W) (hW : W ≤ preset.EFFECTIVE_BALANCE_INCREMENT.toNat) :
     ∀ z ∈ post.balancePath, min (actualBalanceAt z i) capHigh ≤ S + Cr +
       (gainOn preset depth P C + (depth * q + depth * (r + 2))) := by
   have weight : 0 < WEIGHT_DENOMINATOR.toNat := by decide
   have closed := ceiling_closed preset.EFFECTIVE_BALANCE_INCREMENT.toNat WEIGHT_DENOMINATOR.toNat
-    F P e0 depth Cr Cr' S W C q r hq hr incPos weight alignedE0 alignedC hC small rateLow
+    F P e0 depth depthFin Cr Cr' S W C q r hDf hq hr incPos weight alignedE0 alignedC hC small rateLow
     start hW
   subst hF
   have alignedE : (e0 + C + preset.EFFECTIVE_BALANCE_INCREMENT.toNat) %
