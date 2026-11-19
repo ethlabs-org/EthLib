@@ -14824,8 +14824,6 @@ private theorem bud_whistle_of (h : Setting config checks g split fin pulled anc
   have wSplit := (Finset.sum_filter_add_sum_filter_not (slashedOnC split counted)
     (fun i => i < split.validators.data.size) (fun i => whistC tailC highC i)).symm
   zify at core slack exited free late slashedKeys activeKeys partition freeKeys lateKeys wSplit ⊢
-  push_cast at core slack exited free late slashedKeys activeKeys partition freeKeys lateKeys ⊢
-  push_cast at wSplit
   linarith
 
 /-- W (`reserveW`, `flagged`, `seatShortfall`, K7, cS): whistleblower rewards on C's branch,
