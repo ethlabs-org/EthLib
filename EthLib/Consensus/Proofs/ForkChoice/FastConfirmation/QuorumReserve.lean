@@ -755,6 +755,8 @@ def pinReserve (config : Config) (state ancestor finalizedState : BeaconState pr
   --
   -- A key whose own gain stays low compounds past that bound too, so its gains count in both.
   --
+  -- One floor of all a key's flows bounds its gains, and each split by kind costs an increment's.
+  --
   -- Past that bound, each deposit the window can apply to a new key is also charged up to the cap.
   --
   -- This closes a proof route at degenerate totals; no reachable run is known to need it.
@@ -774,7 +776,9 @@ def pinReserve (config : Config) (state ancestor finalizedState : BeaconState pr
   let otherGain := otherCredits / inc * perIncrement *
     (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum / WEIGHT_DENOMINATOR.toNat
   let creditGain :=
-    (33 * depth * consolidationGain + 11 * depth * otherGain + 9) / 10 +
+    (33 * depth * consolidationGain + 11 * depth * otherGain +
+      30 * depth * (perIncrement * (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum /
+        WEIGHT_DENOMINATOR.toNat + 1) + 9) / 10 +
       (if 11 * depth * (gainRateMax + 1) ≤ capMax then 0
         else depthFin * preset.MAX_PENDING_DEPOSITS_PER_EPOCH.toNat * capMax)
   -- A credit can raise a key's effective balance by one more increment than its amount rounds to.
