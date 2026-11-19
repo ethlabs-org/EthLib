@@ -12592,6 +12592,46 @@ private theorem key_core_frozen (h : Setting config checks g split fin pulled an
     unfold flowGain unitK
     rw [hunit, hperIncrement, gcEq]
     exact split
+  -- R's rise closes the balance ceiling of C's run, up to the flows and their slack
+  obtain ⟨H, hH⟩ : ∃ H, H = riseTop (pinTerms config pulled anc fin) pulled fin v.toNat :=
+    ⟨_, rfl⟩
+  have startFin : effectiveAt (⟨fork, fin⟩ : ForkedBeaconState preset) v.toNat ≤
+      PinSplit2.capAt (⟨fork, pulled⟩ : ForkedBeaconState preset) v.toNat := by
+    have := effective_le_cap_at h (Run.nil : Run config checks ⟨fork, fin⟩ ⟨fork, fin⟩) v.toNat
+    omega
+  have stay := key_stay (fromFin.append tailC) (fromFin.append tail) h.early h.fulu
+    (UInt64.le_iff_toNat_le.mp h.later) v.toNat inFin Bc
+    (PinSplit2.capAt (⟨fork, pulled⟩ : ForkedBeaconState preset) v.toNat) _
+    (PinSplit2.capAt (⟨fork, pulled⟩ : ForkedBeaconState preset) v.toNat) alignedCap startFin
+    alignedCap startFin onC (fun z member => Nat.le_trans (capPath _ z member) capC) onR
+    (fun z member => capPath _ z member)
+  have hdf : (pinTerms config pulled anc fin).depthFin = Df := hDf.symm
+  have induced : Df * (pinTerms config pulled anc fin).leakAt M v.toNat ≤
+      Df * (pinTerms config pulled anc fin).leak v.toNat +
+        inducedR (pinTerms config pulled anc fin) (fromFin.append tail) v.toNat := by
+    unfold inducedR
+    rw [hdf, ← hM, ← Nat.mul_add]
+    exact Nat.mul_le_mul_left _ (by
+      have := (pinTerms config pulled anc fin).leak v.toNat
+      show _ ≤ (pinTerms config pulled anc fin).leakAt ((pinTerms config pulled anc fin).ebUp
+        v.toNat) v.toNat + _
+      omega)
+  have hHeq : H = actualBalanceAt (⟨fork, pulled⟩ : ForkedBeaconState preset) v.toNat +
+      Df * ((11 * q + 9) / 10 + 3 + (pinTerms config pulled anc fin).leak v.toNat) +
+        (dueAmount fin electra v.toNat ((getCurrentEpoch pulled).toNat + 1) -
+          dueAmount pulled electra v.toNat ((getCurrentEpoch pulled).toNat + 1)) := by
+    rw [hH, hq, hDf]
+    unfold riseTop
+    simp only [dif_pos electra]
+    rfl
+  have gap : Bc ≤ H + (syncD eventsF v.toNat + syncD events v.toNat +
+      slashW (pinTerms config pulled anc fin) v.toNat + Cr +
+      inducedR (pinTerms config pulled anc fin) (fromFin.append tail) v.toNat +
+      (flowGain (pinTerms config pulled anc fin) tailC highC eventsC events eventsF v.toNat +
+        unitK (pinTerms config pulled anc fin) tailC highC eventsC events eventsF v.toNat)) := by
+    unfold syncD
+    rw [hBc, hHeq, Nat.mul_add (Df) _ _]
+    omega
   sorry
 
 /-- The per-key core of the rise for a counted voter of R's finalized registry whose cap moves.
