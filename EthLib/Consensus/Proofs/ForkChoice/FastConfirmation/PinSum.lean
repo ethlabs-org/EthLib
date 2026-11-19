@@ -13961,6 +13961,37 @@ private theorem whistle_of_close (t : PinTerms preset) (pulled anc : BeaconState
   rw [fK, gainEq] at close
   omega
 
+/-- The credits of C's run before a key's slashing are within the credit terms of `whistleSlack`.
+
+They are the key's block credits from rewards and its consolidation and deposit credits.
+
+They are those up to the step.
+
+The proposer credits are within `propN` of the whole run.
+
+The deposits before the step are those of `depPre`, since the key is unslashed before it.
+
+The consolidation credits are within `consAmt`. -/
+private theorem credC_prefix_le (h : Setting config checks g split fin pulled anc counted V)
+    {a b : ForkedBeaconState preset} (pre : Run config checks ⟨fork, split⟩ a)
+    (step : Step config checks a b) (post : Run config checks b ⟨fork, counted⟩) (highC : ℕ)
+    {eventsC : List (BalanceEvent preset)}
+    (replayedC : ((pre.snoc step).append post).balanceEvents highC = .ok eventsC) (i : ℕ)
+    (flag : (!(a.state.validators.data[i]?.map (·.slashed)).getD false &&
+      (b.state.validators.data[i]?.map (·.slashed)).getD false) = true) :
+    credC pre highC i ≤
+      propN ((pre.snoc step).append post) highC i + depPre eventsC i + consAmt eventsC i :=
+  sorry
+
+/-- The credits, whistleblower credits and credit band of a prefix are within the whole run's. -/
+private theorem prefix_credits_mono {a b : ForkedBeaconState preset}
+    (pre : Run config checks ⟨fork, split⟩ a) (step : Step config checks a b)
+    (post : Run config checks b ⟨fork, counted⟩) (highC i : ℕ) :
+    credC pre highC i ≤ credC ((pre.snoc step).append post) highC i ∧
+      whistC pre highC i ≤ whistC ((pre.snoc step).append post) highC i ∧
+      bandC pre highC i ≤ bandC ((pre.snoc step).append post) highC i :=
+  sorry
+
 /-- The bound on the effective balance at its slashing of a key created after the split.
 
 The key is active at C.
