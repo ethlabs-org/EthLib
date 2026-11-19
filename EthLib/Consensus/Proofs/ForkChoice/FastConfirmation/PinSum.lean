@@ -5365,6 +5365,38 @@ private theorem tight_iff (config : Config) (pulled anc fin : BeaconState preset
         1 + preset.MAX_SEED_LOOKAHEAD.toNat := by
   simp only [pinTerms, decide_eq_true_eq]
 
+/-- Outside the tight window, a key of R's registry that activates after R's next epoch is late or
+pending.
+
+Without an activation epoch it is pending, if it is not yet eligible, and otherwise late.
+
+With one, its eligibility is by the finalized epoch, which the seed lookahead precedes. -/
+private theorem late_or_pending (h : Setting config checks g split fin pulled anc counted V)
+    {i : ℕ} {w : Validator} (found : pulled.validators.data[i]? = some w)
+    (loose : (pinTerms config pulled anc fin).tight = false)
+    (after : (getCurrentEpoch pulled).toNat + 1 < w.activationEpoch.toNat) :
+    (pinTerms config pulled anc fin).lateB i = true ∨
+      (pinTerms config pulled anc fin).pendingRB i = true := by
+  obtain ⟨rf⟩ := h.toFin
+  obtain ⟨rs⟩ := h.fromFin
+  obtain ⟨rp⟩ := h.toPulled
+  have farNat : FAR_FUTURE_EPOCH.toNat = 2 ^ 64 - 1 := rfl
+  have below := getCurrentEpoch_succ_lt_farFuture h.twoSlots pulled
+  have bound : ¬ (getCurrentEpoch pulled).toNat + 2 - anc.finalizedCheckpoint.epoch.toNat ≤
+      1 + preset.MAX_SEED_LOOKAHEAD.toNat := fun near =>
+    Bool.false_ne_true (loose.symm.trans ((tight_iff config pulled anc fin).mpr near))
+  by_cases far : w.activationEpoch = FAR_FUTURE_EPOCH
+  · by_cases elig : (getCurrentEpoch pulled).toNat < w.activationEligibilityEpoch.toNat
+    · exact .inr ((pendingRB_iff config pulled anc fin i).mpr ⟨w, found, elig, far⟩)
+    · refine .inl ((lateB_iff config pulled anc fin i).mpr ⟨w, found, by omega, ?_⟩)
+      rw [far, farNat]
+      omega
+  · have eligible := Run.eligibility_le_finalized ((rf.append rs).append rp) h.genesis i w found far
+    have eligNat : w.activationEligibilityEpoch.toNat ≤ pulled.finalizedCheckpoint.epoch.toNat :=
+      UInt64.le_iff_toNat_le.mp eligible
+    have finCur := UInt64.le_iff_toNat_le.mp (finalized_le_current h)
+    exact .inl ((lateB_iff config pulled anc fin i).mpr ⟨w, found, by omega, by omega⟩)
+
 /-- Outside the tight window, `pendingR` is the stake and rise of the pending keys. -/
 private theorem pendingR_eq (config : Config) (pulled anc fin : BeaconState preset fork) :
     (pinTerms config pulled anc fin).pendingR =
@@ -14917,10 +14949,13 @@ private theorem sc3a_unwithdrawn (h : Setting config checks g split fin pulled a
       (UInt64.le_iff_toNat_le.mpr withdrawn)).1
     simp [slashedC] at clean
 
-/-- The reward of a bound that exceeds an aligned bound by an increment or more costs at most that.
+/-- Three rewards at a bound above an aligned bound cost at most the excess more.
 
-An excess below an increment can raise the floor of the quotient by one, which three rewards weigh
-more than the excess itself. -/
+The excess is zero or an increment, since both bounds are whole numbers of increments.
+
+An excess below an increment could raise the quotient's floor by one.
+
+Three rewards weigh that more than the excess itself. -/
 private theorem floor_excess {E V r Q inc : ℕ} (quotient : 30 ≤ Q) (big : 4 ≤ inc)
     (alignedE : E % inc = 0) (alignedV : V % inc = 0) (within : V ≤ E + r) :
     3 * (max E V / Q) ≤ 3 * (E / Q) + r := by
@@ -14983,8 +15018,11 @@ private theorem eR_rise_aligned (h : Setting config checks g split fin pulled an
 
 /-- A key that W-F pays is slashable at R, as `flagged` reads the term.
 
-It is in R's registry, unslashed there, activated by R's next epoch and not yet withdrawable at the
-finalized epoch.
+It is in R's registry and unslashed there.
+
+It is activated by R's next epoch.
+
+It is not yet withdrawable at the finalized epoch.
 
 Slashed at R, an unslashed key of the split would be a term of `slashedRB`.
 
@@ -15006,12 +15044,9 @@ private theorem free_slashable (h : Setting config checks g split fin pulled anc
       w.activationEpoch.toNat ≤ (getCurrentEpoch pulled).toNat + 1 ∧
       anc.finalizedCheckpoint.epoch.toNat < w.withdrawableEpoch.toNat := by
   classical
-  obtain ⟨rf⟩ := h.toFin
-  obtain ⟨rs⟩ := h.fromFin
   obtain ⟨rp⟩ := h.toPulled
   have finSplit := UInt64.le_iff_toNat_le.mp h.finalized
   have near := h.near
-  have farNat : FAR_FUTURE_EPOCH.toNat = 2 ^ 64 - 1 := rfl
   have roundTrip : (UInt64.ofNat i).toNat = i := UInt64.toNat_ofNat_of_lt' below
   have oldFound := Array.getElem?_eq_getElem inside
   have oldUnslashed : split.validators.data[i].slashed = false := by
@@ -15029,7 +15064,6 @@ private theorem free_slashable (h : Setting config checks g split fin pulled anc
     omega
   have activated : w.activationEpoch.toNat ≤ (getCurrentEpoch pulled).toNat + 1 := by
     by_contra late
-    have below := getCurrentEpoch_succ_lt_farFuture h.twoSlots pulled
     by_cases tight : (pinTerms config pulled anc fin).tight = true
     · have bound := (tight_iff config pulled anc fin).mp tight
       have memberAC : (UInt64.ofNat i : ValidatorIndex) ∈ AC counted := by
@@ -15037,24 +15071,8 @@ private theorem free_slashable (h : Setting config checks g split fin pulled anc
           (by rw [roundTrip]; exact active)
       have le := activation_le_of_active h (by omega) memberAC (by rw [roundTrip]; exact foundR)
       omega
-    · have notTight : (pinTerms config pulled anc fin).tight = false := by simpa using tight
-      have bound : ¬ (getCurrentEpoch pulled).toNat + 2 - anc.finalizedCheckpoint.epoch.toNat ≤
-          1 + preset.MAX_SEED_LOOKAHEAD.toNat := fun far => tight ((tight_iff config pulled anc
-            fin).mpr far)
-      apply notLate
-      refine ⟨notTight, ?_⟩
-      by_cases far : w.activationEpoch = FAR_FUTURE_EPOCH
-      · by_cases elig : (getCurrentEpoch pulled).toNat < w.activationEligibilityEpoch.toNat
-        · exact .inr ((pendingRB_iff config pulled anc fin i).mpr ⟨w, foundR, elig, far⟩)
-        · refine .inl ((lateB_iff config pulled anc fin i).mpr ⟨w, foundR, by omega, ?_⟩)
-          rw [far, farNat]
-          omega
-      · have eligible := Run.eligibility_le_finalized ((rf.append rs).append rp) h.genesis i w
-          foundR far
-        have eligNat : w.activationEligibilityEpoch.toNat ≤
-            pulled.finalizedCheckpoint.epoch.toNat := UInt64.le_iff_toNat_le.mp eligible
-        have finCur := UInt64.le_iff_toNat_le.mp (finalized_le_current h)
-        exact .inl ((lateB_iff config pulled anc fin i).mpr ⟨w, foundR, by omega, by omega⟩)
+    · have loose : (pinTerms config pulled anc fin).tight = false := by simpa using tight
+      exact notLate ⟨loose, late_or_pending h foundR loose (by omega)⟩
   have settled : anc.finalizedCheckpoint.epoch.toNat < w.withdrawableEpoch.toNat := by
     by_contra waited
     cases foundC : counted.validators.data[i]? with
@@ -15067,10 +15085,15 @@ private theorem free_slashable (h : Setting config checks g split fin pulled anc
 
 /-- A key that W-F pays is paid by `flagged` or by its stake at C and its seat debits.
 
-Its bound is `ebUp` or its balance and rise, and the excess over `ebUp` is at most its `rise`.
+Its bound is `ebUp` or its balance and rise.
 
-If the floor test fails, `flagged` pays `ebUp`'s reward, and otherwise `lowEB_slashed` bounds the
-reward by the key's balance at C and its seat debits on both runs. -/
+The excess over `ebUp` is at most its `rise`.
+
+If the floor test fails, `flagged` pays the reward at `ebUp`.
+
+Otherwise `lowEB_slashed` bounds the reward by the key's balance at C.
+
+It also adds the key's seat debits on both runs. -/
 private theorem free_key (h : Setting config checks g split fin pulled anc counted V)
     (high : ℕ) (endEpoch : (getCurrentEpoch pulled).toNat ≤ high + 1)
     (fromFin : Run config checks ⟨fork, fin⟩ ⟨fork, split⟩)
@@ -15111,7 +15134,8 @@ private theorem free_key (h : Setting config checks g split fin pulled anc count
   obtain ⟨fin0⟩ := h.toFin
   have electra : .pectra ≤ fork := Nat.le_trans (by decide) h.fulu
   have below : v.toNat < 2 ^ 64 := v.toNat_lt
-  obtain ⟨w, foundR, -, -, -⟩ := free_slashable h inside below unslashedS slashedC notSlashedR active notLate
+  obtain ⟨w, foundR, -, -, -⟩ := free_slashable h inside below unslashedS slashedC notSlashedR
+    active notLate
   have bound := bF_zero_of_active h active
   -- the bound of the key is `ebUp` or its balance and rise
   have env : whistleEnv (pinTerms config pulled anc fin) pulled anc v.toNat =
