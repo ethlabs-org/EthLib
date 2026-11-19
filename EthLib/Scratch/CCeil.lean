@@ -11,14 +11,15 @@ open Base Uint64 Models DirectSafety PinSplit
 variable {preset : Preset} {fork : Fork} {config : Config} {checks : SignatureChecks}
 
 /-- The closure test of the credit ceiling is arithmetic in the rate, the credits and the stake. -/
-private theorem ceiling_closed (I WD F P e0 D Cr Cr' S W band C : ℕ) (hI : 0 < I)
+private theorem ceiling_closed (I WD F P e0 D Cr Cr' S W band C q r : ℕ)
+    (hq : q = e0 / I * P * F / WD) (hr : r = P * F / WD) (hI : 0 < I)
     (hWD : 0 < WD) (alignedE : e0 % I = 0) (alignedC : C % I = 0)
     (hC : (11 * Cr' + 9) / 10 ≤ C)
-    (small : D * ((11 * (e0 / I * P * F / WD) + 9) / 10) < I)
-    (rateLow : 11 * D * (e0 / I * P * F / WD + 1) ≤ e0)
+    (small : D * ((11 * q + 9) / 10) < I) (rateLow : 11 * D * (q + 1) ≤ e0)
     (start : S + Cr + band ≤ e0 + Cr' + W) (hW : W ≤ I) (hD : 2 * D ≤ band) :
-    S + Cr + (D * ((C + I - 1) / I * P * F / WD) +
-      (D * (e0 / I * P * F / WD) + D * (P * F / WD + 2))) < e0 + C + I + I := by
+    S + Cr + (D * ((C + I - 1) / I * P * F / WD) + (D * q + D * (r + 2))) <
+      e0 + C + I + I := by
+  subst hq hr
   have key : 11 * D * (P * F) < WD * I := by
     rcases Nat.eq_zero_or_pos D with zero | pos
     · subst zero
@@ -111,7 +112,10 @@ private theorem c_ceiling_abstract {n y : ForkedBeaconState preset}
         P * (total.toNat / preset.EFFECTIVE_BALANCE_INCREMENT.toNat))
     (endEpoch : (getCurrentEpoch y.state).toNat ≤ high + 1)
     (incPos : 0 < preset.EFFECTIVE_BALANCE_INCREMENT.toNat)
-    (depth Cr Cr' e0 C S W band : ℕ)
+    (depth Cr Cr' e0 C S W band F q r : ℕ)
+    (hF : F = (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum)
+    (hq : q = e0 / preset.EFFECTIVE_BALANCE_INCREMENT.toNat * P * F / WEIGHT_DENOMINATOR.toNat)
+    (hr : r = P * F / WEIGHT_DENOMINATOR.toNat)
     (alignedE0 : e0 % preset.EFFECTIVE_BALANCE_INCREMENT.toNat = 0)
     (alignedC : C % preset.EFFECTIVE_BALANCE_INCREMENT.toNat = 0)
     (hC : (11 * Cr' + 9) / 10 ≤ C)
@@ -120,23 +124,17 @@ private theorem c_ceiling_abstract {n y : ForkedBeaconState preset}
     (startEff : effectiveAt n i ≤ e0)
     (credits : netScan i high post +
       (creditScan (fun _ => false) (fun s => decide (s ≠ .rewards)) i high post).1 ≤ Cr)
-    (small : depth * ((11 * (e0 / preset.EFFECTIVE_BALANCE_INCREMENT.toNat * P *
-        (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum / WEIGHT_DENOMINATOR.toNat) + 9) / 10) <
-      preset.EFFECTIVE_BALANCE_INCREMENT.toNat)
-    (rateLow : 11 * depth * (e0 / preset.EFFECTIVE_BALANCE_INCREMENT.toNat * P *
-        (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum / WEIGHT_DENOMINATOR.toNat + 1) ≤ e0)
+    (small : depth * ((11 * q + 9) / 10) < preset.EFFECTIVE_BALANCE_INCREMENT.toNat)
+    (rateLow : 11 * depth * (q + 1) ≤ e0)
     (start : S + Cr + band ≤ e0 + Cr' + W) (hW : W ≤ preset.EFFECTIVE_BALANCE_INCREMENT.toNat)
     (hD : 2 * depth ≤ band) :
     ∀ z ∈ post.balancePath, min (actualBalanceAt z i) capHigh ≤ S + Cr +
-      (gainOn preset depth P C +
-        (depth * (e0 / preset.EFFECTIVE_BALANCE_INCREMENT.toNat * P *
-          (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum / WEIGHT_DENOMINATOR.toNat) +
-          depth * (P * (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum /
-            WEIGHT_DENOMINATOR.toNat + 2))) := by
+      (gainOn preset depth P C + (depth * q + depth * (r + 2))) := by
   have weight : 0 < WEIGHT_DENOMINATOR.toNat := by decide
   have closed := ceiling_closed preset.EFFECTIVE_BALANCE_INCREMENT.toNat WEIGHT_DENOMINATOR.toNat
-    (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum P e0 depth Cr Cr' S W band C incPos weight
-    alignedE0 alignedC hC small rateLow start hW hD
+    F P e0 depth Cr Cr' S W band C q r hq hr incPos weight alignedE0 alignedC hC small rateLow
+    start hW hD
+  subst hF
   have alignedE : (e0 + C + preset.EFFECTIVE_BALANCE_INCREMENT.toNat) %
       preset.EFFECTIVE_BALANCE_INCREMENT.toNat = 0 :=
     Nat.mod_eq_zero_of_dvd (Nat.dvd_add (Nat.dvd_add (Nat.dvd_of_mod_eq_zero alignedE0)
@@ -144,12 +142,9 @@ private theorem c_ceiling_abstract {n y : ForkedBeaconState preset}
   have split := gain_split preset.EFFECTIVE_BALANCE_INCREMENT.toNat WEIGHT_DENOMINATOR.toNat
     (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum P e0 C
     ((getCurrentEpoch y.state).toNat - (getCurrentEpoch n.state).toNat) depth incPos epochs
+  rw [← hq, ← hr] at split
   have bound : PinSplit2.creditBound post i high (e0 + C + preset.EFFECTIVE_BALANCE_INCREMENT.toNat)
-      P capHigh ≤ S + Cr + (gainOn preset depth P C +
-        (depth * (e0 / preset.EFFECTIVE_BALANCE_INCREMENT.toNat * P *
-          (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum / WEIGHT_DENOMINATOR.toNat) +
-          depth * (P * (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum /
-            WEIGHT_DENOMINATOR.toNat + 2))) := by
+      P capHigh ≤ S + Cr + (gainOn preset depth P C + (depth * q + depth * (r + 2))) := by
     unfold PinSplit2.creditBound
     exact credit_sum_le startBal credits split
   have fixpoint : max (effectiveAt n i) (min capHigh
