@@ -12260,6 +12260,18 @@ private theorem slashedRB_lt (config : Config)
   rw [slashedRB_eq] at h
   simp [none] at h
 
+/-- A slashed key counts in `slashedRB` when its withdrawable epoch is late enough.
+
+That epoch must be a slashing vector past the finalized epoch. -/
+private theorem slashedRB_of_withdrawable (config : Config)
+    (state ancestor finalizedState : BeaconState preset fork) {i : ℕ} {w : Validator}
+    (found : state.validators.data[i]? = some w) (slashed : w.slashed = true)
+    (late : ancestor.finalizedCheckpoint.epoch.toNat + preset.EPOCHS_PER_SLASHINGS_VECTOR.toNat ≤
+      w.withdrawableEpoch.toNat) :
+    (pinTerms config state ancestor finalizedState).slashedRB i = true := by
+  rw [slashedRB_eq]
+  simpa [found, slashed] using late
+
 open DirectSafety.Apriori DirectSafety.Apriori.Internal in
 /-- The exit of a counted voter of the finalized registry is late at R.
 
@@ -12431,11 +12443,8 @@ private theorem voter_floorAt (h : Setting config checks g split fin pulled anc 
     have newly' : (getCurrentEpoch split).toNat + preset.EPOCHS_PER_SLASHINGS_VECTOR.toNat ≤
         wP.withdrawableEpoch.toNat := newly
     have finalizedNat := UInt64.le_iff_toNat_le.mp h.finalized
-    have rb : (pinTerms config pulled anc fin).slashedRB v.toNat = true := by
-      rw [slashedRB_eq]
-      have key : anc.finalizedCheckpoint.epoch.toNat + preset.EPOCHS_PER_SLASHINGS_VECTOR.toNat ≤
-          wP.withdrawableEpoch.toNat := by omega
-      simpa [foundP, slashedP] using key
+    have rb : (pinTerms config pulled anc fin).slashedRB v.toNat = true :=
+      slashedRB_of_withdrawable config pulled anc fin foundP slashedP (by omega)
     have topDiv : PinSplit2.capAt (⟨fork, pulled⟩ : ForkedBeaconState preset) v.toNat /
         (parameters preset fork).MIN_SLASHING_PENALTY_QUOTIENT.toNat ≤
         slashW (pinTerms config pulled anc fin) v.toNat := by
@@ -14981,7 +14990,7 @@ private theorem balanceEvents_late {f : Fork} {b : BeaconState preset f}
 open DirectSafety.Apriori DirectSafety.Apriori.Internal in
 /-- The whistleblower credits of the shared run's last epoch fit the keys that it slashes.
 
-The run `pre` is the part of the finalized-to-split run that starts at `b`, in the split's epoch.
+The run `pre` goes from `b` to the split, inside the split's epoch.
 
 A whistleblower credit lands in the proposer's block, so a key of any class can receive it.
 
@@ -15064,10 +15073,7 @@ private theorem cut_whistle (h : Setting config checks g split fin pulled anc co
         | none => rfl
         | some v =>
           simp [unslashed_of_run before foundB (fun z read => by simp_all)]
-      · rw [slashedRB_eq]
-        have key : anc.finalizedCheckpoint.epoch.toNat + preset.EPOCHS_PER_SLASHINGS_VECTOR.toNat ≤
-            wP.withdrawableEpoch.toNat := by omega
-        simpa [foundP, markedP] using key
+      · exact slashedRB_of_withdrawable config pulled anc fin foundP markedP (by omega)
     have sameEpochA : getCurrentEpoch split = getCurrentEpoch a.state :=
       UInt64.toNat_inj.mp (by omega)
     have kept := rest.effectiveKept_of_same_epoch h.early sameEpochA j
