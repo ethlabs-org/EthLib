@@ -2199,6 +2199,97 @@ private theorem perIncrement_ok_of {a b pa : Gwei}
   simp only [getBaseRewardPerIncrement, liftArith, mulChecked_of_lt fits, bind, Except.bind,
     divChecked, nonzero, ite_false, Except.mapError]
 
+/-- A smaller positive total reads a reward per increment at least as large. -/
+private theorem perIncrement_antitone {a b pa pb : Gwei}
+    (ha : getBaseRewardPerIncrement preset a = .ok pa)
+    (hb : getBaseRewardPerIncrement preset b = .ok pb) (le : b.toNat ≤ a.toNat)
+    (positive : 0 < b.toNat) : pa.toNat ≤ pb.toNat := by
+  rw [toNat_getBaseRewardPerIncrement ha, toNat_getBaseRewardPerIncrement hb]
+  exact Nat.div_le_div_left (Nat.sqrt_le_sqrt le) (Nat.sqrt_pos.mpr positive)
+
+/-- `proposerCredit` is the base rewards of the recent keys at the pin's quarter and a sync part. -/
+private theorem proposerCredit_eq (config : Config)
+    (state ancestor finalizedState : BeaconState preset fork) :
+    (pinTerms config state ancestor finalizedState).proposerCredit =
+      (∑ i ∈ Finset.range state.validators.data.size with
+          (isActiveAt state (getPreviousEpoch state) i ||
+            isActiveAt state (getCurrentEpoch state) i ||
+            isActiveAt state (getCurrentEpoch state + 1) i) = true,
+        balanceAt state i / preset.EFFECTIVE_BALANCE_INCREMENT.toNat *
+          ((getBaseRewardPerIncrement preset
+            (if 18 * preset.EFFECTIVE_BALANCE_INCREMENT.toNat ≤
+                ((getTotalActiveBalance state).toOption.getD 0).toNat then
+              (getTotalActiveBalance state).toOption.getD 0 / 4
+            else preset.EFFECTIVE_BALANCE_INCREMENT / 5)).toOption.getD 0).toNat) +
+        (pinTerms config state ancestor finalizedState).syncProposer := rfl
+
+/-- The pin's proposer credit covers `baseSum` and its sync part.
+
+The pin reads the reward per increment at a quarter that is at most the quarter of `baseSum`. -/
+private theorem baseSum_le_credit (config : Config) (pulled anc fin : BeaconState preset fork)
+    (facts : PinPresetFacts preset) (total : ∃ t, getTotalActiveBalance pulled = .ok t) :
+    baseSum pulled + (pinTerms config pulled anc fin).syncProposer ≤
+      (pinTerms config pulled anc fin).proposerCredit := by
+  classical
+  obtain ⟨Tp, TpOk⟩ := total
+  have totalEq : (getTotalActiveBalance pulled).toOption.getD 0 = Tp := by
+    rw [TpOk]
+    rfl
+  have incBig : 3600 ≤ preset.EFFECTIVE_BALANCE_INCREMENT.toNat := by
+    have := facts.rounding
+    have := facts.vector
+    omega
+  have totalLow : preset.EFFECTIVE_BALANCE_INCREMENT.toNat ≤ Tp.toNat := by
+    obtain ⟨-, -, value⟩ := getTotalBalance_ok_iff_stake.mp (getTotalActiveBalance_ok TpOk)
+    rw [value]
+    exact le_max_left _ _
+  rw [proposerCredit_eq, totalEq]
+  suffices baseSum pulled ≤ ∑ i ∈ Finset.range pulled.validators.data.size with
+      (isActiveAt pulled (getPreviousEpoch pulled) i || isActiveAt pulled (getCurrentEpoch pulled) i
+        || isActiveAt pulled (getCurrentEpoch pulled + 1) i) = true,
+      balanceAt pulled i / preset.EFFECTIVE_BALANCE_INCREMENT.toNat *
+        ((getBaseRewardPerIncrement preset
+          (if 18 * preset.EFFECTIVE_BALANCE_INCREMENT.toNat ≤ Tp.toNat then Tp / 4
+            else preset.EFFECTIVE_BALANCE_INCREMENT / 5)).toOption.getD 0).toNat by omega
+  have rate : ((getBaseRewardPerIncrement preset
+        (max preset.EFFECTIVE_BALANCE_INCREMENT (Tp / 4))).toOption.getD 0).toNat ≤
+      ((getBaseRewardPerIncrement preset
+        (if 18 * preset.EFFECTIVE_BALANCE_INCREMENT.toNat ≤ Tp.toNat then Tp / 4
+          else preset.EFFECTIVE_BALANCE_INCREMENT / 5)).toOption.getD 0).toNat := by
+    cases hb : getBaseRewardPerIncrement preset
+        (max preset.EFFECTIVE_BALANCE_INCREMENT (Tp / 4)) with
+    | error _ => simp [Except.toOption]
+    | ok pb =>
+      have quarterLow : preset.EFFECTIVE_BALANCE_INCREMENT.toNat ≤
+          (max preset.EFFECTIVE_BALANCE_INCREMENT (Tp / 4)).toNat := by
+        rw [toNat_max]
+        exact le_max_left _ _
+      by_cases big : 18 * preset.EFFECTIVE_BALANCE_INCREMENT.toNat ≤ Tp.toNat
+      · have same : max preset.EFFECTIVE_BALANCE_INCREMENT (Tp / 4) = Tp / 4 := by
+          refine max_eq_right (UInt64.le_iff_toNat_le.mpr ?_)
+          rw [UInt64.toNat_div]
+          change preset.EFFECTIVE_BALANCE_INCREMENT.toNat ≤ Tp.toNat / 4
+          omega
+        rw [same] at hb
+        simp only [big, ↓reduceIte, same, hb, Except.toOption, Option.getD_some]
+        exact Nat.le_refl _
+      · have smallPos : 0 < (preset.EFFECTIVE_BALANCE_INCREMENT / 5).toNat := by
+          rw [UInt64.toNat_div]
+          change 0 < preset.EFFECTIVE_BALANCE_INCREMENT.toNat / 5
+          omega
+        obtain ⟨ps, psOk⟩ := perIncrement_ok_of hb smallPos
+        have smallLe : (preset.EFFECTIVE_BALANCE_INCREMENT / 5).toNat ≤
+            (max preset.EFFECTIVE_BALANCE_INCREMENT (Tp / 4)).toNat := by
+          rw [UInt64.toNat_div]
+          change preset.EFFECTIVE_BALANCE_INCREMENT.toNat / 5 ≤ _
+          omega
+        simp only [big, ↓reduceIte, hb, psOk, Except.toOption, Option.getD_some]
+        exact perIncrement_antitone hb psOk smallLe smallPos
+  unfold baseSum
+  dsimp only
+  rw [totalEq]
+  exact Finset.sum_le_sum fun i _ => Nat.mul_le_mul_left _ rate
+
 /-- The base rewards of the recent keys are at least the reward per increment of the quarter
 total times the active increments. -/
 private theorem baseSum_ge {pulled : BeaconState preset fork} (early : fork < .glamsterdam)
@@ -2327,8 +2418,7 @@ private theorem proposerCredits_le_baseSum
     exact Nat.lt_of_lt_of_le incPos (le_max_left _ _)
   obtain ⟨pq, pqOk⟩ := perIncrement_ok_of pmOk quarterPos
   have rate : pm.toNat ≤ pq.toNat := by
-    rw [toNat_getBaseRewardPerIncrement pmOk, toNat_getBaseRewardPerIncrement pqOk]
-    exact Nat.div_le_div_left (Nat.sqrt_le_sqrt quarterLe) (Nat.sqrt_pos.mpr quarterPos)
+    exact perIncrement_antitone pmOk pqOk quarterLe quarterPos
   -- The base rewards of the recent keys hold one quarter-rate reward for each active increment.
   have alignedP : EffectiveBalancesAligned pulled :=
     (run_justified_separated (toFin.append fullP) h.genesis).1.aligned h.aligned
