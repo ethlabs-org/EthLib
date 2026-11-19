@@ -3466,8 +3466,45 @@ private theorem activated_key_at_pulled (h : Setting config checks g split fin p
     (activated : w.activationEpoch ≠ FAR_FUTURE_EPOCH) :
     ((pulled.validators.data[v.toNat]?).any fun u =>
       decide (anc.finalizedCheckpoint.epoch.toNat < u.withdrawableEpoch.toNat) &&
-        decide (u.activationEpoch.toNat ≤ (getCurrentEpoch pulled).toNat)) = true :=
-  sorry
+        decide (u.activationEpoch.toNat ≤ (getCurrentEpoch pulled).toNat)) = true := by
+  classical
+  obtain ⟨fromFin⟩ := h.fromFin
+  obtain ⟨toPulled⟩ := h.toPulled
+  have near := h.near
+  -- the key at the split, at R and at C, with the activation of the finalized state
+  obtain ⟨x, foundSplit, lifeFin⟩ := fromFin.registryLifecycle.validators v.toNat w found
+  obtain ⟨u, foundPulled, lifeSplit⟩ := toPulled.registryLifecycle.validators v.toNat x foundSplit
+  have actSplit : x.activationEpoch = w.activationEpoch := lifeFin.activationEpoch activated
+  have actPulled : u.activationEpoch = w.activationEpoch :=
+    (lifeSplit.activationEpoch (actSplit ▸ activated)).trans actSplit
+  obtain ⟨c, foundCounted, lifeAll⟩ :=
+    (fromFin.append tailC).registryLifecycle.validators v.toNat w found
+  have actCounted : c.activationEpoch = w.activationEpoch := lifeAll.activationEpoch activated
+  -- the key is active in the epoch before C's, so its activation is at most R's epoch
+  have inK5 := Finset.mem_filter.mp member
+  simp only [Q, quorumVoters, Finset.mem_filter, List.mem_toFinset, List.mem_append] at inK5
+  obtain ⟨⟨listed, -⟩, notActive, -⟩ := inK5
+  have notCurrent : v ∉ getActiveValidatorIndices counted (getCurrentEpoch counted) := fun now =>
+    notActive (by simpa [AC, activeVoters] using now)
+  rcases listed with now | before
+  · exact absurd now notCurrent
+  have within := BeaconState.registryWithinLimit_of_lt h.early counted
+  obtain ⟨c', foundC', activeBefore⟩ := (mem_getActiveValidatorIndices within).mp before
+  have same : c' = c := Option.some.inj (foundC'.symm.trans foundCounted)
+  subst same
+  simp only [isActiveValidator, Bool.and_eq_true, decide_eq_true_eq] at activeBefore
+  have low := UInt64.le_iff_toNat_le.mp activeBefore.1
+  have previous := getPreviousEpoch_toNat counted
+  have atPulled : u.activationEpoch.toNat ≤ (getCurrentEpoch pulled).toNat := by
+    rw [actPulled, ← actCounted]
+    omega
+  -- the key is not withdrawable by the finalized epoch at R, since it has a charge on C's run
+  have settled : anc.finalizedCheckpoint.epoch.toNat < u.withdrawableEpoch.toNat := by
+    by_contra not
+    obtain ⟨d, member, index⟩ := charged
+    exact no_charge_of_settled h tailC
+      (Array.getElem?_eq_some_iff.mp foundSplit).1 foundPulled (by omega) d member index
+  simp [foundPulled, settled, atPulled]
 
 /-- The low bound of an existing key is covered by its exit charge and its sync debits.
 
