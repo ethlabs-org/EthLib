@@ -6333,6 +6333,7 @@ private theorem V_left (h : Setting config checks g split fin pulled anc counted
         exact epoch
       have startC := DirectSafety.Run.departureCharges_epoch_ge_start tailC
         (Nat.le_trans (by decide) h.fulu) h.early c mem
+      simp only at startC
       have exitC := exitOf c mem idx
       have shallow := h.shallow
       have finOrder := UInt64.le_iff_toNat_le.mp (currentEpoch_le_of_chainSteps fromFin.chainSteps)
@@ -6390,7 +6391,7 @@ theorem stub_V (h : Setting config checks g split fin pulled anc counted V)
           eR pulled v) +
         (∑ v ∈ (VN counted V) with (pinTerms config pulled anc fin).lateB v.toNat = true,
           eR pulled v) : ℕ) := by
-  clear replayed
+  have _used := replayed
   have base := stub_V_of h tailC
     (V_active h fromFin tailC high highC endEpoch endEpochC replayedF replayedC)
     (V_left h fromFin tailC high highC endEpoch endEpochC replayedF replayedC)
