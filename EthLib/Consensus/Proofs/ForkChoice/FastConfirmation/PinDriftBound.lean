@@ -5653,8 +5653,9 @@ Each block debits the keys at most one participant reward per seat.
 
 Each block moves the keys at most one participant reward and its proposer share per seat.
 
-If no block's proposer is among the keys, each block moves them at most one participant reward per
-seat. -/
+If no block's proposer is among the keys, each block moves them at most one participant reward.
+
+That reward is per seat. -/
 private theorem Run.syncDebits_le {x y : ForkedBeaconState preset} (tail : Run config checks x y)
     (fulu : .fusaka ≤ x.fork) (early : y.fork < .glamsterdam) (high : ℕ)
     {events : List (BalanceEvent preset)} (replayed : tail.balanceEvents high = .ok events)
