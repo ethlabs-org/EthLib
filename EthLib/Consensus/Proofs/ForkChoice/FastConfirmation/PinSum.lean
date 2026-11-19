@@ -1030,6 +1030,18 @@ private theorem step_deposit_keys {g : ForkedBeaconState preset}
   | slot across =>
     obtain ⟨events, eventsOk⟩ :=
       (Step.slot across : Step config checks x y).balanceEvents_ok early
+    -- A slot step credits a key by deposits only if one of its deposit events does.
+    have quiet : ∀ i, (∀ e ∈ events, e.source = .deposits → keyCredit i e = 0) →
+        stepCredit (fun _ => false) (fun s => decide (s = .deposits)) i
+          (Step.slot across : Step config checks x y) = 0 := fun i none' => by
+      show (((((Step.slot (config := config) (checks := checks)
+        across).balanceEvents.toOption.getD []).filter
+          ((fun s => decide (s = .deposits)) ·.source))).map (keyCredit i)).sum = 0
+      simp only [eventsOk, Except.toOption, Option.getD_some]
+      exact List.sum_eq_zero fun _ member => by
+        obtain ⟨e, inside, rfl⟩ := List.mem_map.mp member
+        obtain ⟨mem, test⟩ := List.mem_filter.mp inside
+        exact none' e mem (by simpa using test)
     by_cases any : ∃ e ∈ events, e.source = .deposits
     · obtain ⟨sites, ends, single⟩ :=
         DirectSafety.Apriori.Internal.Step.slot_deposit_site shared genesis across early delay
@@ -1052,17 +1064,7 @@ private theorem step_deposit_keys {g : ForkedBeaconState preset}
             fun e mem dep => by
               by_contra ne
               exact none ⟨e, mem, dep, Nat.pos_of_ne_zero ne⟩
-          have zero : stepCredit (fun _ => false) (fun s => decide (s = .deposits)) i
-              (Step.slot across : Step config checks x y) = 0 := by
-            show (((((Step.slot (config := config) (checks := checks)
-              across).balanceEvents.toOption.getD []).filter
-                ((fun s => decide (s = .deposits)) ·.source))).map (keyCredit i)).sum = 0
-            simp only [eventsOk, Except.toOption, Option.getD_some]
-            exact List.sum_eq_zero fun _ member => by
-              obtain ⟨e, inside, rfl⟩ := List.mem_map.mp member
-              obtain ⟨mem, test⟩ := List.mem_filter.mp inside
-              have := none' e mem (by simpa using test)
-              omega
+          have := quiet i none'
           omega
         obtain ⟨e, mem, dep, positive⟩ := mono
         -- A slot step records one deposit event, so it is the one that the site names.
@@ -1082,16 +1084,7 @@ private theorem step_deposit_keys {g : ForkedBeaconState preset}
         · omega
     · refine ⟨∅, by simp, fun i here => ?_⟩
       exfalso
-      have zero : stepCredit (fun _ => false) (fun s => decide (s = .deposits)) i
-          (Step.slot across : Step config checks x y) = 0 := by
-        show (((((Step.slot (config := config) (checks := checks)
-          across).balanceEvents.toOption.getD []).filter
-            ((fun s => decide (s = .deposits)) ·.source))).map (keyCredit i)).sum = 0
-        simp only [eventsOk, Except.toOption, Option.getD_some]
-        exact List.sum_eq_zero fun _ member => by
-          obtain ⟨e, inside, rfl⟩ := List.mem_map.mp member
-          obtain ⟨mem, test⟩ := List.mem_filter.mp inside
-          exact absurd ⟨e, mem, by simpa using test⟩ any
+      have := quiet i fun e mem dep => absurd ⟨e, mem, dep⟩ any
       omega
 
 /-- The keys credited in the block steps of a run inside one period of sync committees.
@@ -3090,19 +3083,12 @@ theorem bud_whistle (h : Setting config checks g split fin pulled anc counted V)
 theorem bud_fall (h : Setting config checks g split fin pulled anc counted V) :
     (∑ v ∈ V, (pinTerms config pulled anc fin).fall v.toNat) ≤ ∑ i ∈ (pinTerms config pulled anc fin).positions with (pinTerms config pulled anc fin).current i = true, (pinTerms config pulled anc fin).fall i := by
   have within := BeaconState.registryWithinLimit_of_lt h.early pulled
-  have sub : V.image UInt64.toNat ⊆ (pinTerms config pulled anc fin).positions.filter
-      (fun i => (pinTerms config pulled anc fin).current i = true) := by
-    intro i member
-    obtain ⟨v, voter, rfl⟩ := Finset.mem_image.mp member
-    have listed : v ∈ getActiveValidatorIndices pulled (getCurrentEpoch pulled) := by
-      simpa [activeVoters] using (h.voting v voter).1
-    obtain ⟨validator, found, active⟩ := (mem_getActiveValidatorIndices within).mp listed
-    rw [Finset.mem_filter]
-    exact ⟨Finset.mem_range.mpr (Array.getElem?_eq_some_iff.mp found).1,
-      isActiveAt_eq_true_iff.mpr ⟨validator, found, active⟩⟩
-  rw [← Finset.sum_image (f := (pinTerms config pulled anc fin).fall)
-    fun a _ b _ same => UInt64.toNat_inj.mp same]
-  exact Finset.sum_le_sum_of_subset sub
+  refine sum_toNat_le (pinTerms config pulled anc fin).fall fun v voter => ?_
+  have listed : v ∈ getActiveValidatorIndices pulled (getCurrentEpoch pulled) := by
+    simpa [activeVoters] using (h.voting v voter).1
+  obtain ⟨validator, found, active⟩ := (mem_getActiveValidatorIndices within).mp listed
+  exact mem_positions_filter config pulled anc fin found
+    (isActiveAt_eq_true_iff.mpr ⟨validator, found, active⟩)
 
 /-- Glue: (K4 pulled counted V) keys are current at R. -/
 theorem bud_rise (h : Setting config checks g split fin pulled anc counted V) :
