@@ -9689,6 +9689,42 @@ private theorem created_credited (h : Setting config checks g split fin pulled a
     startZero pre Run.nil (by omega) (by omega) (by omega)
   omega
 
+/-- The consolidation credits of a run after the shared segment fit the due entries.
+
+The keys of a set are credited at most the caps of the due entries of X's queue that name them.
+
+The run from X to the end is the shared segment and then the run from the split.
+
+The horizon is within the withdrawal delay of X, as `shallow` says. -/
+private theorem cons_due_bound (h : Setting config checks g split fin pulled anc counted V)
+    (fromFin : Run config checks ⟨fork, fin⟩ ⟨fork, split⟩)
+    {z : BeaconState preset fork} (tail : Run config checks ⟨fork, split⟩ ⟨fork, z⟩) (high : ℕ)
+    (endEpoch : (getCurrentEpoch z).toNat ≤ high + 1)
+    (highLe : high ≤ (getCurrentEpoch pulled).toNat)
+    {events eventsF : List (BalanceEvent preset)}
+    (replayedF : fromFin.balanceEvents high = .ok eventsF)
+    (replayed : tail.balanceEvents high = .ok events) (T : Finset ValidatorIndex) :
+    ∑ v ∈ T, consAmt (eventsF ++ events) v.toNat ≤
+      ((dueList fin (Nat.le_trans (by decide) h.fulu) high T).map fun v =>
+        (withdrawalMaxEffectiveBalance preset fork v).toNat).sum := by
+  classical
+  have shallow := h.shallow
+  obtain ⟨shared⟩ := h.toFin
+  have finEpoch : (getCurrentEpoch fin).toNat ≤ (getCurrentEpoch split).toNat :=
+    UInt64.le_iff_toNat_le.mp (currentEpoch_le_of_chainSteps fromFin.chainSteps)
+  have splitPulled : (getCurrentEpoch split).toNat ≤ (getCurrentEpoch pulled).toNat :=
+    UInt64.le_iff_toNat_le.mp h.called
+  have bound := PinSplit.Run.consolidation_credits_le_X_targets (config := config)
+    (checks := checks) shared h.genesis h.caps (fromFin.append tail)
+    (Nat.le_trans (by decide) h.fulu) h.early high
+    (Apriori.Internal.balanceEvents_append fromFin tail high replayedF replayed) endEpoch
+    (by omega) (by omega) (T.image UInt64.toNat)
+  have injective : Function.Injective UInt64.toNat := fun _ _ same => UInt64.toNat_inj.mp same
+  simp only [injective.mem_finset_image] at bound
+  rw [← Finset.sum_image (f := fun i => consAmt (eventsF ++ events) i)
+    (fun _ _ _ _ e => UInt64.toNat_inj.mp e)]
+  exact bound
+
 /-- The consolidation credits of C's branch, charged to `consolidationsX` (the S9 ruling).
 
 The run from the finalized block's state X to C's state has the run from the split as its tail.
@@ -9760,16 +9796,10 @@ private theorem bud_consolidations_base
   have shallow := h.shallow
   have early := h.early
   have electra : .pectra ≤ fork := Nat.le_trans (by decide) h.fulu
-  obtain ⟨shared⟩ := h.toFin
   have finEpoch : (getCurrentEpoch fin).toNat ≤ (getCurrentEpoch split).toNat :=
     UInt64.le_iff_toNat_le.mp (currentEpoch_le_of_chainSteps fromFin.chainSteps)
   have splitPulled : (getCurrentEpoch split).toNat ≤ (getCurrentEpoch pulled).toNat :=
     UInt64.le_iff_toNat_le.mp h.called
-  have delay : 0 < config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat := by omega
-  have withinC : highC + 2 ≤ (getCurrentEpoch fin).toNat +
-      config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat := by omega
-  have withinR : high + 2 ≤ (getCurrentEpoch fin).toNat +
-      config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat := by omega
   obtain ⟨eventsFin, replayedFin⟩ := fromFin.balanceEvents_ok early highC
   have sameF : eventsFin = eventsF := by
     have splitC := UInt64.le_iff_toNat_le.mp (currentEpoch_le_of_chainSteps tailC.chainSteps)
@@ -9780,19 +9810,11 @@ private theorem bud_consolidations_base
     rw [same, replayedF] at replayedFin
     exact (Except.ok.inj replayedFin).symm
   subst sameF
-  have wholeC := Apriori.Internal.balanceEvents_append fromFin tailC highC replayedFin replayedC
-  have wholeR := Apriori.Internal.balanceEvents_append fromFin tail high replayedF replayed
   obtain ⟨Kall, hKall⟩ : ∃ K : Finset ValidatorIndex,
       K = K4 pulled counted V ∪ K5 counted V ∪ K6 pulled counted ∪ SC pulled counted split ∪
         CS pulled counted := ⟨_, rfl⟩
-  have boundC := PinSplit.Run.consolidation_credits_le_X_targets (config := config)
-    (checks := checks) shared h.genesis h.caps (fromFin.append tailC) electra early highC wholeC
-    endEpochC withinC delay (Kall.image UInt64.toNat)
-  have boundR := PinSplit.Run.consolidation_credits_le_X_targets (config := config)
-    (checks := checks) shared h.genesis h.caps (fromFin.append tail) electra early high wholeR
-    endEpoch withinR delay (V.image UInt64.toNat)
-  have injective : Function.Injective UInt64.toNat := fun _ _ same => UInt64.toNat_inj.mp same
-  simp only [injective.mem_finset_image] at boundC boundR
+  have boundC := cons_due_bound h fromFin tailC highC endEpochC highLe replayedFin replayedC Kall
+  have boundR := cons_due_bound h fromFin tail high endEpoch highLeR replayedF replayed V
   -- The shared segment's amounts of the keys of `SC` that exited before the finalized epoch.
   set S' := (SC pulled counted split).filter fun v =>
     (pinTerms config pulled anc fin).exitBeforeFin v.toNat = true with hS'
@@ -9806,18 +9828,12 @@ private theorem bud_consolidations_base
         ∑ v ∈ Kall, if v ∈ S' then consAmt eventsFin v.toNat else 0 := by
       rw [Finset.sum_ite_mem, Finset.inter_eq_right.mpr subS]
     rw [into, ← Finset.sum_add_distrib]
-    calc _ = ∑ i ∈ Kall.image UInt64.toNat, (consAmt eventsC i +
-          if i ∈ S'.image UInt64.toNat then consAmt eventsFin i else 0) := by
-          rw [Finset.sum_image (fun _ _ _ _ e => UInt64.toNat_inj.mp e)]
-          simp [injective.mem_finset_image]
-      _ ≤ _ := le_trans (Finset.sum_le_sum fun i _ => ?_) boundC
+    refine le_trans (Finset.sum_le_sum fun i _ => ?_) boundC
     simp only [consAmt, List.filter_append, List.map_append, List.sum_append]
     split_ifs <;> omega
   have amountR : (∑ v ∈ V, consAmt events v.toNat) ≤
       ((dueList fin electra high V).map fun v =>
         (withdrawalMaxEffectiveBalance preset fork v).toNat).sum := by
-    rw [← Finset.sum_image (f := fun i => consAmt events i)
-      (fun _ _ _ _ e => UInt64.toNat_inj.mp e)]
     refine le_trans (Finset.sum_le_sum fun i _ => ?_) boundR
     simp only [consAmt, List.filter_append, List.map_append, List.sum_append]
     exact Nat.le_add_left _ _
