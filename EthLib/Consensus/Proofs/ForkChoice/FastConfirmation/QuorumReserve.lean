@@ -764,8 +764,8 @@ def pinReserve (config : Config) (state ancestor finalizedState : BeaconState pr
           max (max (ebUp i) (effective i + rise i)) (bF i)) +
         (11 * (depthFin * preset.MAX_PENDING_DEPOSITS_PER_EPOCH.toNat * capMax +
           consolidationsX + depth * proposerCredit +
-          -- C's seat rewards.
-          depth * slots * preset.SYNC_COMMITTEE_SIZE.toNat * syncEnvelope +
+          -- The seat rewards of C's branch and of the finalized block's segment.
+          (depth + depthFin) * slots * preset.SYNC_COMMITTEE_SIZE.toNat * syncEnvelope +
           -- The shared segment's and R's seat debits.
           depthFin * slots * preset.SYNC_COMMITTEE_SIZE.toNat * syncEnvelope) + 9) / 10 +
         creditedKeys * inc) /
