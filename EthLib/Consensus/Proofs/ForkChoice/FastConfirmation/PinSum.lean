@@ -5986,7 +5986,7 @@ private theorem branchR_split (config : Config)
             preset.SYNC_COMMITTEE_SIZE.toNat *
               (((getCurrentEpoch state).toNat + 1) /
                   max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat -
-                ancestor.finalizedCheckpoint.epoch.toNat /
+                (getCurrentEpoch finalizedState).toNat /
                   max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat + 1 +
                 (pinTerms config state ancestor finalizedState).depth /
                   max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat))) :=
@@ -6005,7 +6005,7 @@ The slash charges of the classes fit the slashed keys of `branchR`, with the wei
 
 The sync part of the proposer credit fits the proposer credit of each epoch.
 
-The bands of the classes fit the rounded keys of `branchR`, which is the hypothesis `bands`. -/
+The bands of the classes fit the seats among `branchR`'s rounded keys, which is `bands`. -/
 private theorem bud_branchR_of (h : Setting config checks g split fin pulled anc counted V)
     {events eventsF eventsC : List (BalanceEvent preset)}
     (bands : 3 * (∑ v ∈ V, bandR (eventsF ++ eventsC) v.toNat) +
@@ -6013,16 +6013,12 @@ private theorem bud_branchR_of (h : Setting config checks g split fin pulled anc
         3 * (∑ v ∈ K5 counted V, bandR events v.toNat) +
         (∑ v ∈ K6 pulled counted, bandR events v.toNat) ≤
       3 * ((preset.EFFECTIVE_BALANCE_INCREMENT.toNat + preset.downwardBand - 1) *
-        ((pinTerms config pulled anc fin).depth * preset.SLOTS_PER_EPOCH.toNat +
-          (pinTerms config pulled anc fin).depth *
-            preset.MAX_PENDING_DEPOSITS_PER_EPOCH.toNat +
-          preset.SYNC_COMMITTEE_SIZE.toNat *
-            (((getCurrentEpoch pulled).toNat + 1) /
-                max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat -
-              anc.finalizedCheckpoint.epoch.toNat /
-                max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat + 1 +
-              (pinTerms config pulled anc fin).depth /
-                max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat)))) :
+        (preset.SYNC_COMMITTEE_SIZE.toNat *
+          (((getCurrentEpoch pulled).toNat + 1) /
+              max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat -
+            (getCurrentEpoch fin).toNat / max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat + 1 +
+          (pinTerms config pulled anc fin).depth /
+            max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat))) :
     3 * (∑ v ∈ V, bandR (eventsF ++ eventsC) v.toNat) +
         3 * ((pinTerms config pulled anc fin).depth *
           (pinTerms config pulled anc fin).syncProposer) +
@@ -6043,6 +6039,14 @@ private theorem bud_branchR_of (h : Setting config checks g split fin pulled anc
     (K4 pulled counted V ∪ K5 counted V ∪ K6 pulled counted)
   have credit := Nat.mul_le_mul_left (pinTerms config pulled anc fin).depth
     (syncProposer_le_credit config pulled anc fin)
+  have rounded := Nat.mul_le_mul_left
+    (preset.EFFECTIVE_BALANCE_INCREMENT.toNat + preset.downwardBand - 1)
+    (Nat.le_add_left (preset.SYNC_COMMITTEE_SIZE.toNat *
+      (((getCurrentEpoch pulled).toNat + 1) / max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat -
+        (getCurrentEpoch fin).toNat / max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat + 1 +
+      (pinTerms config pulled anc fin).depth / max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat))
+      ((pinTerms config pulled anc fin).depth * preset.SLOTS_PER_EPOCH.toNat +
+        (pinTerms config pulled anc fin).depth * preset.MAX_PENDING_DEPOSITS_PER_EPOCH.toNat))
   simp only [Finset.sum_add_distrib] at *
   rw [hW]
   omega
