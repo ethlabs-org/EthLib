@@ -13024,6 +13024,44 @@ private theorem earlier_charge (h : Setting config checks g split fin pulled anc
     rw [chargeEq]
     omega
 
+/-- The credits of a set of distinct keys in one event are at most the credits of the event.
+
+A key past the balances of the event has no credit.
+
+The keys are read at their positions, which are distinct. -/
+private theorem keyCredit_sum_le (S : Finset ValidatorIndex) (e : BalanceEvent preset) :
+    ∑ v ∈ S, keyCredit v.toNat e ≤ e.credits := by
+  classical
+  rw [← Finset.sum_image (f := fun i => keyCredit i e) (s := S)
+    (g := fun v : ValidatorIndex => v.toNat) fun a _ b _ same => UInt64.toNat_inj.mp same,
+    ← Finset.sum_filter_add_sum_filter_not (S.image fun v : ValidatorIndex => v.toNat)
+      (fun i => i < e.after.state.balances.data.size)]
+  have missing : ∑ i ∈ (S.image fun v : ValidatorIndex => v.toNat).filter
+      (fun i => ¬ i < e.after.state.balances.data.size), keyCredit i e = 0 :=
+    Finset.sum_eq_zero fun i member => by
+      have out := (Finset.mem_filter.mp member).2
+      have none : actualBalanceAt e.after i = 0 := by
+        simp [actualBalanceAt, Array.getElem?_eq_none (Nat.le_of_not_lt out)]
+      simp [keyCredit, none]
+  rw [missing, Nat.add_zero]
+  exact Finset.sum_le_sum_of_subset fun i member => Finset.mem_range.mpr
+    (Finset.mem_filter.mp member).2
+
+/-- The whistleblower credits of a set of keys over a run fit the limits of its slashing events. -/
+private theorem whistC_sum_le_limits {g m y : ForkedBeaconState preset}
+    (shared : Run config checks g m) (genesis : Genesis config checks g)
+    (tail : Run config checks m y) (early : y.fork < .glamsterdam) (high : ℕ)
+    {events : List (BalanceEvent preset)} (replayed : tail.balanceEvents high = .ok events)
+    (S : Finset ValidatorIndex) :
+    ∑ v ∈ S, whistC tail high v.toNat ≤
+      (events.map fun e => if e.source = .slashings then e.creditLimit else 0).sum := by
+  obtain ⟨found, foundOk, bounded⟩ := Run.balanceEvents_bounded shared tail genesis early high
+  rw [replayed] at foundOk
+  cases foundOk
+  simpa [whistC] using creditScan_sum_le S (fun s => decide (s = .slashings)) (fun _ => false)
+    high (fun e => e.creditLimit) tail replayed fun e member _ =>
+      (keyCredit_sum_le S e).trans (bounded e member).1
+
 /-- W (`reserveW`, `flagged`, `seatShortfall`, K7, cS): whistleblower rewards on C's branch,
 weight 3, are paid by the slashed key's own slack, or charged. -/
 theorem bud_whistle (h : Setting config checks g split fin pulled anc counted V)
