@@ -6500,11 +6500,11 @@ private theorem prefix_envelope (h : Setting config checks g split fin pulled an
   obtain ⟨origin, -⟩ := bound
   -- the envelope `ebUp` and the rounding
   obtain ⟨t, ht⟩ : ∃ t, t = actualBalanceAt (⟨fork, pulled⟩ : ForkedBeaconState preset) v.toNat +
-      (((getCurrentEpoch pulled).toNat + 2 - (getCurrentEpoch fin).toNat) *
+      ((getCurrentEpoch pulled).toNat + 2 - (getCurrentEpoch fin).toNat) *
           (pinTerms config pulled anc fin).leakAt
             (PinSplit2.capAt (⟨fork, pulled⟩ : ForkedBeaconState preset) v.toNat) v.toNat +
         (dueAmount fin electra v.toNat ((getCurrentEpoch pulled).toNat + 1) -
-          dueAmount pulled electra v.toNat ((getCurrentEpoch pulled).toNat + 1))) +
+          dueAmount pulled electra v.toNat ((getCurrentEpoch pulled).toNat + 1)) +
       preset.downwardBand + preset.EFFECTIVE_BALANCE_INCREMENT.toNat - 1 := ⟨_, rfl⟩
   have up := ebUp_eq config pulled anc fin electra v.toNat t ht
   have floorRound := rounded_add_floor_le preset.EFFECTIVE_BALANCE_INCREMENT.toNat
