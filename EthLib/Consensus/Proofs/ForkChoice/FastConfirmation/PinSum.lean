@@ -3191,14 +3191,13 @@ private theorem block_flip_balance {engine : ExecutionEngine preset fork}
   have electra : .pectra ≤ fork := Nat.le_trans (by decide) fulu
   have bellatrix : .bellatrix ≤ fork := Nat.le_trans (by decide) fulu
   unfold blockBalanceReplay at replayed
-  try dsimp only at replayed
+  dsimp only at replayed
   obtain ⟨p1, h1, replayed⟩ := bind_ok_iff.mp replayed
   rw [dite_eq_left_of_eq_true (eq_true bellatrix)] at replayed
   obtain ⟨p2, h2, replayed⟩ := bind_ok_iff.mp replayed
   obtain ⟨p3, h3, replayed⟩ := bind_ok_iff.mp replayed
   obtain ⟨p4, h4, replayed⟩ := bind_ok_iff.mp replayed
   obtain ⟨_, -, replayed⟩ := bind_ok_iff.mp replayed
-  try dsimp only at replayed
   obtain ⟨_, -, replayed⟩ := bind_ok_iff.mp replayed
   obtain ⟨p5, h5, replayed⟩ := bind_ok_iff.mp replayed
   obtain ⟨p6, h6, replayed⟩ := bind_ok_iff.mp replayed
