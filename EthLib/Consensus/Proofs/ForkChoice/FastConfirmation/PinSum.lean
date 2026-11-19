@@ -6222,7 +6222,8 @@ theorem bud_consolidations (h : Setting config checks g split fin pulled anc cou
       (fun v => (withdrawalMaxEffectiveBalance preset fork v).toNat)
     rw [hcX]
     omega
-  have shareS := wShare_le h.facts (∑ v ∈ SC pulled counted split, consAmt eventsC v.toNat)
+  have shareS := wShare_le (fork := fork) h.facts
+    (∑ v ∈ SC pulled counted split, consAmt eventsC v.toNat)
   rw [bandX_sum fin electra highC (SC pulled counted split)]
   rw [dueAt_eq fin electra highC, dueAt_eq fin electra highC, dueAt_eq fin electra highC,
     dueAt_eq fin electra highC, dueAt_eq fin electra high]
