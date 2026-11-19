@@ -2465,8 +2465,11 @@ It is not withdrawable by the finalized epoch at R, since then it would be exite
 This is the argument of `slashed_waits` for any key, with the exit and withdrawable epochs that
 the split fixes. -/
 private theorem activated_key_at_pulled (h : Setting config checks g split fin pulled anc counted V)
-    (v : ValidatorIndex) (member : v ∈ K5 counted V) {w : Validator}
-    (found : fin.validators.data[v.toNat]? = some w) (activated : w.activationEpoch ≠ FAR_FUTURE_EPOCH) :
+    (tailC : Run config checks ⟨fork, split⟩ ⟨fork, counted⟩) (v : ValidatorIndex)
+    (member : v ∈ K5 counted V) {w : Validator}
+    (charged : ∃ c ∈ tailC.departureCharges, c.index = v.toNat)
+    (found : fin.validators.data[v.toNat]? = some w)
+    (activated : w.activationEpoch ≠ FAR_FUTURE_EPOCH) :
     ((pulled.validators.data[v.toNat]?).any fun u =>
       decide (anc.finalizedCheckpoint.epoch.toNat < u.withdrawableEpoch.toNat) &&
         decide (u.activationEpoch.toNat ≤ (getCurrentEpoch pulled).toNat)) = true :=
@@ -2474,7 +2477,7 @@ private theorem activated_key_at_pulled (h : Setting config checks g split fin p
 
 /-- The low bound of an existing key is covered by its exit charge and its sync debits.
 
-The key is activated at the finalized state, unslashed at C, and charged on the run.
+The key is in `K5`, so unslashed at C, activated at the finalized state, and charged on the run.
 
 The charge is its effective balance at the exit call.
 
@@ -2485,10 +2488,10 @@ private theorem existing_low_or_floor (h : Setting config checks g split fin pul
     (tailC : Run config checks ⟨fork, split⟩ ⟨fork, counted⟩)
     {events : List (BalanceEvent preset)}
     (replayed : (fromFin.append tailC).balanceEvents (getCurrentEpoch pulled).toNat = .ok events)
-    (v : ValidatorIndex) (val : Validator) (initial : fin.validators.data[v.toNat]? = some val)
+    (v : ValidatorIndex) (member : v ∈ K5 counted V) (val : Validator)
+    (initial : fin.validators.data[v.toNat]? = some val)
     (activated : val.activationEpoch ≠ FAR_FUTURE_EPOCH)
-    (clean : ∀ w, counted.validators.data[v.toNat]? = some w → w.slashed = false)
-    (charged : exitQ tailC v.toNat ≠ 0) :
+    (charged : ∃ c ∈ tailC.departureCharges, c.index = v.toNat) :
     (pinTerms config pulled anc fin).lowEB v.toNat ≤
       exitQ tailC v.toNat + (events.map (syncDebit v.toNat)).sum :=
   sorry
@@ -2527,7 +2530,6 @@ private theorem small_charge_claim (h : Setting config checks g split fin pulled
     {events : List (BalanceEvent preset)}
     (replayed : (fromFin.append tailC).balanceEvents (getCurrentEpoch pulled).toNat = .ok events)
     (v : ValidatorIndex) (member : v ∈ K5 counted V)
-    (notExiting : (pinTerms config pulled anc fin).exitingB v.toNat = false)
     (charged : ∃ c ∈ tailC.departureCharges, c.index = v.toNat)
     (small : exitQ tailC v.toNat < (pinTerms config pulled anc fin).exitFloor) :
     (pinTerms config pulled anc fin).lowB v.toNat = true ∨
@@ -2542,11 +2544,8 @@ private theorem small_charge_claim (h : Setting config checks g split fin pulled
   by_cases rich : (pinTerms config pulled anc fin).newKeySlack < (events.map (syncDebit v.toNat)).sum
   · exact .inr rich
   refine .inl (lowB_intro config pulled anc fin
-    (activated_key_at_pulled h v member found activated) ?_)
-  have nonzero : exitQ tailC v.toNat ≠ 0 := by
-    sorry
-  have floor := existing_low_or_floor h fromFin tailC replayed v w found activated
-    (K5_unslashed member) nonzero
+    (activated_key_at_pulled h tailC v member charged found activated) ?_)
+  have floor := existing_low_or_floor h fromFin tailC replayed v member w found activated charged
   have order := exitFloor_add_slack h
   omega
 
@@ -2650,8 +2649,8 @@ private theorem charged_count (h : Setting config checks g split fin pulled anc 
     intro v member
     obtain ⟨inS, notBig⟩ := Finset.mem_filter.mp member
     obtain ⟨inK5, charged⟩ := Finset.mem_filter.mp inS
-    obtain ⟨inFilter, notExiting⟩ := Finset.mem_filter.mp inK5
-    exact small_charge_claim h fromFin tailC replayed v inFilter notExiting charged
+    obtain ⟨inFilter, -⟩ := Finset.mem_filter.mp inK5
+    exact small_charge_claim h fromFin tailC replayed v inFilter charged
       (Nat.lt_of_not_ge notBig)
   have seats := card_seat_keys_le h fromFin tailC replayed
     (small.filter fun v => ¬ (pinTerms config pulled anc fin).lowB v.toNat = true) (by
