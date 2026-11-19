@@ -1777,7 +1777,8 @@ private theorem blockReplay_proposer_credits {fork : Fork} {a t : BeaconState pr
       (PinSplit4.carryBalance_cases withdrawnOk).1, cOk⟩
   have link := (processOperations_proposer apart operated).1.trans read
   -- The passes before the operations record no credit but the proposer's.
-  have base : PassCredits block.proposerIndex.toNat (a, []).2 := fun e member => by simp at member
+  have base : PassCredits block.proposerIndex.toNat ([] : List (BalanceEvent preset)) :=
+    fun e member => by simp at member
   have start : PassCredits block.proposerIndex.toNat voted.2 :=
     (((base.carry headedOk).record executedOk (by decide) (by decide)
       fun h => absurd h (by decide)).carry revealedOk).carry votedOk
