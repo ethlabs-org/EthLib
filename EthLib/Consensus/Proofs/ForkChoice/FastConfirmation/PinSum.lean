@@ -395,8 +395,9 @@ def pinTerms (config : Config) (state ancestor finalizedState : BeaconState pres
   -- Proposer credits on the finalized block's segment to keys that exited before it.
   --
   -- The spec gives them none; the proof bounds them by every proposal of the segment.
-  let finProposals := (3 * depthFin * proposerCredit + p.WHISTLEBLOWER_REWARD_QUOTIENT.toNat - 1) /
-    p.WHISTLEBLOWER_REWARD_QUOTIENT.toNat
+  let finProposals :=
+    (33 * depthFin * proposerCredit + 10 * p.WHISTLEBLOWER_REWARD_QUOTIENT.toNat - 1) /
+      (10 * p.WHISTLEBLOWER_REWARD_QUOTIENT.toNat)
   -- The slashable keys of the window that the quorum reserve's whistleblower term leaves out.
   --
   -- Those are keys active from the next epoch, or withdrawable after the finalized epoch.
