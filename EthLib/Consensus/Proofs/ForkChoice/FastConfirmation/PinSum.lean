@@ -3713,10 +3713,13 @@ private theorem rate_of_guard
 It is `pinTerms`' `high` in `rise`.
 
 It adds the leak and the gain of the window, and the net partials, to the balance at R. -/
-private def riseTop (t : PinTerms preset) (state : BeaconState preset fork) (i : ℕ) : ℕ :=
-  actualBalanceAt (⟨fork, state⟩ : ForkedBeaconState preset) i +
+private def riseTop (t : PinTerms preset) (pulled fin : BeaconState preset fork) (i : ℕ) : ℕ :=
+  actualBalanceAt (⟨fork, pulled⟩ : ForkedBeaconState preset) i +
     t.depthFin * ((11 * t.gainRate i + 9) / 10 + 3 + t.leakAt (t.ebUp i) i) +
-      (t.partialsX i - t.partialsR i)
+      ((if electra : .pectra ≤ fork then
+          dueAmount fin electra i ((getCurrentEpoch pulled).toNat + 1) else 0) -
+        (if electra : .pectra ≤ fork then
+          dueAmount pulled electra i ((getCurrentEpoch pulled).toNat + 1) else 0))
 
 /-- The cap of a key as `rise` reads it: its own cap when its gain is low, else the largest.
 
@@ -3737,65 +3740,6 @@ private theorem capAt_le_capForOf (t : PinTerms preset) (state : BeaconState pre
   split
   · exact Nat.le_refl _
   · exact capMax
-
-/-- The rise of a key on its kept arm is the least of its cap, its rounded top and its headroom.
-
-The rounded top adds the downward band to `riseTop`.
-
-The headroom starts from the finalized balance.
-
-The rise is that less the effective balance at R. -/
-private theorem rise_kept (config : Config) (pulled anc fin : BeaconState preset fork) (i : ℕ)
-    {H : ℕ} (hH : H = riseTop (pinTerms config pulled anc fin) pulled i)
-    (kept : (pinTerms config pulled anc fin).keptArm i = true) :
-    (pinTerms config pulled anc fin).rise i =
-      min (capForOf (pinTerms config pulled anc fin) pulled i)
-        (min (H + preset.downwardBand - (H + preset.downwardBand) %
-              preset.EFFECTIVE_BALANCE_INCREMENT.toNat)
-          (max (balanceAt fin i) (H - H % preset.EFFECTIVE_BALANCE_INCREMENT.toNat))) -
-        balanceAt pulled i := by
-  have unfold : (pinTerms config pulled anc fin).rise i =
-      if (pinTerms config pulled anc fin).keptArm i = true then
-        min (capForOf (pinTerms config pulled anc fin) pulled i)
-          (min (H + preset.downwardBand - (H + preset.downwardBand) %
-                preset.EFFECTIVE_BALANCE_INCREMENT.toNat)
-            (max (balanceAt fin i) (H - H % preset.EFFECTIVE_BALANCE_INCREMENT.toNat))) -
-          balanceAt pulled i
-      else capForOf (pinTerms config pulled anc fin) pulled i - balanceAt pulled i := by
-    rw [hH]
-    rfl
-  rw [unfold, ite_cond_eq_true _ _ (eq_true kept)]
-
-/-- A key on its kept arm has an effective balance within its rise, the flows and their slack.
-
-The key's effective balance stays at that of R or within the ceiling of its balance.
-
-The ceiling is within `riseTop` and the flows, and the slack is paid when there are flows.
-
-It starts from any state: `start` bounds the effective balance there. -/
-private theorem rise_close (config : Config) (pulled anc fin : BeaconState preset fork) (i : ℕ)
-    {H : ℕ} (hH : H = riseTop (pinTerms config pulled anc fin) pulled i)
-    (incPos : 0 < preset.EFFECTIVE_BALANCE_INCREMENT.toNat)
-    (capMax : PinSplit2.capAt (⟨fork, pulled⟩ : ForkedBeaconState preset) i ≤
-      preset.MAX_EFFECTIVE_BALANCE_ELECTRA.toNat)
-    (kept : (pinTerms config pulled anc fin).keptArm i = true)
-    {eC Bc S U start capHigh : ℕ}
-    (alignedC : eC % preset.EFFECTIVE_BALANCE_INCREMENT.toNat = 0)
-    (startLe : start ≤ max (balanceAt fin i) (H - H % preset.EFFECTIVE_BALANCE_INCREMENT.toNat))
-    (stay : eC = balanceAt pulled i ∨ (eC ≤ Bc + preset.downwardBand ∧
-      eC ≤ max start (min (Bc - Bc % preset.EFFECTIVE_BALANCE_INCREMENT.toNat) capHigh)))
-    (capped : eC ≤ PinSplit2.capAt (⟨fork, pulled⟩ : ForkedBeaconState preset) i + S + U)
-    (ceiling : Bc ≤ H + S)
-    (slack : S = 0 ∨ preset.EFFECTIVE_BALANCE_INCREMENT.toNat ≤ U + 1) :
-    eC ≤ balanceAt pulled i + (pinTerms config pulled anc fin).rise i + S + U := by
-  rw [rise_kept config pulled anc fin i hH kept]
-  have cap := capAt_le_capForOf (pinTerms config pulled anc fin) pulled i capMax
-  have arith := rise_arith (finEB := max (balanceAt fin i)
-      (H - H % preset.EFFECTIVE_BALANCE_INCREMENT.toNat))
-    (capFor := capForOf (pinTerms config pulled anc fin) pulled i) incPos
-    (Or.imp_right (fun ⟨near, below⟩ => ⟨near, Nat.le_trans below (max_le_max startLe
-      (Nat.le_refl _))⟩) stay) alignedC (by omega) ceiling slack
-  rwa [max_assoc, max_self] at arith
 
 /-- The effective balance of a key that stays on its path is at most the rise of the main regime. -/
 private theorem rise_arith {inc band capFor high finEB eR eC Bc capHigh S U : Nat}
@@ -3837,6 +3781,68 @@ private theorem rise_arith {inc band capFor high finEB eR eC Bc capHigh S U : Na
           omega
       omega
     omega
+
+/-- The rise of a key on its kept arm is the least of its cap, its rounded top and its headroom.
+
+The rounded top adds the downward band to `riseTop`.
+
+The headroom starts from the finalized balance.
+
+The rise is that less the effective balance at R. -/
+private theorem rise_kept (config : Config) (pulled anc fin : BeaconState preset fork) (i : ℕ)
+    {H : ℕ} (hH : H = riseTop (pinTerms config pulled anc fin) pulled fin i)
+    (kept : (pinTerms config pulled anc fin).keptArm i = true) :
+    (pinTerms config pulled anc fin).rise i =
+      min (capForOf (pinTerms config pulled anc fin) pulled i)
+        (min (H + preset.downwardBand - (H + preset.downwardBand) %
+              preset.EFFECTIVE_BALANCE_INCREMENT.toNat)
+          (max (balanceAt fin i) (H - H % preset.EFFECTIVE_BALANCE_INCREMENT.toNat))) -
+        balanceAt pulled i := by
+  have unfold : (pinTerms config pulled anc fin).rise i =
+      if (pinTerms config pulled anc fin).keptArm i = true then
+        min (capForOf (pinTerms config pulled anc fin) pulled i)
+          (min (H + preset.downwardBand - (H + preset.downwardBand) %
+                preset.EFFECTIVE_BALANCE_INCREMENT.toNat)
+            (max (balanceAt fin i) (H - H % preset.EFFECTIVE_BALANCE_INCREMENT.toNat))) -
+          balanceAt pulled i
+      else capForOf (pinTerms config pulled anc fin) pulled i - balanceAt pulled i := by
+    rw [hH]
+    rfl
+  rw [unfold]
+  split
+  · rfl
+  · exact absurd kept ‹_›
+
+/-- A key on its kept arm has an effective balance within its rise, the flows and their slack.
+
+The key's effective balance stays at that of R or within the ceiling of its balance.
+
+The ceiling is within `riseTop` and the flows, and the slack is paid when there are flows.
+
+It starts from any state: `start` bounds the effective balance there. -/
+private theorem rise_close (config : Config) (pulled anc fin : BeaconState preset fork) (i : ℕ)
+    {H : ℕ} (hH : H = riseTop (pinTerms config pulled anc fin) pulled fin i)
+    (incPos : 0 < preset.EFFECTIVE_BALANCE_INCREMENT.toNat)
+    (capMax : PinSplit2.capAt (⟨fork, pulled⟩ : ForkedBeaconState preset) i ≤
+      preset.MAX_EFFECTIVE_BALANCE_ELECTRA.toNat)
+    (kept : (pinTerms config pulled anc fin).keptArm i = true)
+    {eC Bc S U start capHigh : ℕ}
+    (alignedC : eC % preset.EFFECTIVE_BALANCE_INCREMENT.toNat = 0)
+    (startLe : start ≤ max (balanceAt fin i) (H - H % preset.EFFECTIVE_BALANCE_INCREMENT.toNat))
+    (stay : eC = balanceAt pulled i ∨ (eC ≤ Bc + preset.downwardBand ∧
+      eC ≤ max start (min (Bc - Bc % preset.EFFECTIVE_BALANCE_INCREMENT.toNat) capHigh)))
+    (capped : eC ≤ PinSplit2.capAt (⟨fork, pulled⟩ : ForkedBeaconState preset) i + S + U)
+    (ceiling : Bc ≤ H + S)
+    (slack : S = 0 ∨ preset.EFFECTIVE_BALANCE_INCREMENT.toNat ≤ U + 1) :
+    eC ≤ balanceAt pulled i + (pinTerms config pulled anc fin).rise i + S + U := by
+  rw [rise_kept config pulled anc fin i hH kept]
+  have cap := capAt_le_capForOf (pinTerms config pulled anc fin) pulled i capMax
+  have arith := rise_arith (finEB := max (balanceAt fin i)
+      (H - H % preset.EFFECTIVE_BALANCE_INCREMENT.toNat))
+    (capFor := capForOf (pinTerms config pulled anc fin) pulled i) incPos
+    (Or.imp_right (fun ⟨near, below⟩ => ⟨near, Nat.le_trans below (max_le_max startLe
+      (Nat.le_refl _))⟩) stay) alignedC (by omega) ceiling slack
+  rwa [max_assoc, max_self] at arith
 
 /-- On C's branch a key keeps R's effective balance, or stays within the ceiling of its balance. -/
 private theorem key_stay {fin pulled counted : BeaconState preset fork}
