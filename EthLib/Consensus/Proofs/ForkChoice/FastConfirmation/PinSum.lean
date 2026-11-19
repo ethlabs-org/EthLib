@@ -8389,8 +8389,9 @@ private theorem parameters_of_fusaka {fork : Fork} (fusaka : .fusaka ≤ fork)
 
 The key is missing at the finalized state, or its activation there is unassigned.
 
-Its effective balance plus its sync debits is at least `newKeyFloor`, from
-`Run.new_key_effective_floor`.
+Its effective balance plus its sync debits is at least `newKeyFloor`.
+
+That is `Run.new_key_effective_floor`.
 
 It has no partial withdrawals queued, since a request needs an active key. -/
 private theorem fresh_key_floor (h : Setting config checks g split fin pulled anc counted V)
