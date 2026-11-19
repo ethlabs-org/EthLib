@@ -5681,13 +5681,14 @@ private theorem deposits_active_le (h : Setting config checks g split fin pulled
   refine deposits_scan_le h tailC highC endEpochC replayedC S fun e member dep => ?_
   have forkLe := ((toFin.append fromFin).withdrawnConsolidationCredit_eq_zero tailC h.genesis
     h.early h.delay replayedC e member).2.2
-  obtain ⟨-, life, life', ordered, matched, -, -⟩ := replay_event_provenance
+  obtain ⟨-, life, life', ordered, matched, -, epoch⟩ := replay_event_provenance
     (toFin.append fromFin) tailC h.genesis h.early highC endEpochC _ replayedC e member
   refine deposit_each_le e S dep (Nat.le_trans (Nat.le_trans (by decide) h.fulu) forkLe) matched
     fun v inS w found => ?_
   obtain ⟨wC, foundC, late⟩ := active v inS
   obtain ⟨u, foundU, lifeU⟩ := (life.trans life').validators v.toNat w found
   obtain rfl : u = wC := Option.some.inj (foundU.symm.trans foundC)
+  have epoch' : (getCurrentEpoch e.before.state).toNat ≤ (getCurrentEpoch counted).toNat := epoch
   have bound := UInt64.le_iff_toNat_le.mp (ordered w (Array.mem_of_getElem? found))
   have far := getCurrentEpoch_succ_lt_farFuture h.twoSlots e.before.state
   by_cases unset : w.exitEpoch = FAR_FUTURE_EPOCH
