@@ -267,5 +267,89 @@ private theorem exitQ_at (h : Setting config checks g split fin pulled anc count
   unfold potentialFloor
   omega
 
+/-- The key's effective balance at its exit call, from the potential floor of the run to the call.
+
+The key is in `K5`, activated at the finalized state, and charged on the run from the split. -/
+private theorem exitQ_potential (h : Setting config checks g split fin pulled anc counted V)
+    (fromFin : Run config checks ⟨fork, fin⟩ ⟨fork, split⟩)
+    (tailC : Run config checks ⟨fork, split⟩ ⟨fork, counted⟩)
+    {events : List (BalanceEvent preset)}
+    (replayed : (fromFin.append tailC).balanceEvents (getCurrentEpoch pulled).toNat = .ok events)
+    (v : ValidatorIndex) (member : v ∈ K5 counted V) (val : Validator)
+    (initial : fin.validators.data[v.toNat]? = some val)
+    (charged : ∃ c ∈ tailC.departureCharges, c.index = v.toNat)
+    (ρn ρd : ℕ)
+    (leaky : ∀ eb : ℕ, preset.EFFECTIVE_BALANCE_INCREMENT.toNat ∣ eb →
+      (pinTerms config pulled anc fin).leakAt eb v.toNat ≤ ρn * eb / ρd)
+    (quarter : ∃ pq, getBaseRewardPerIncrement preset
+      (if 18 * preset.EFFECTIVE_BALANCE_INCREMENT.toNat ≤
+          ((getTotalActiveBalance pulled).toOption.getD 0).toNat then
+        (getTotalActiveBalance pulled).toOption.getD 0 / 4
+      else preset.EFFECTIVE_BALANCE_INCREMENT / 5) = .ok pq) :
+    min (effectiveAt (⟨fork, fin⟩ : ForkedBeaconState preset) v.toNat)
+        (min (withdrawalMaxEffectiveBalance preset fork val).toNat
+          (potentialFloor ρn ρd ((getCurrentEpoch counted).toNat - (getCurrentEpoch fin).toNat)
+              (min (actualBalanceAt (⟨fork, fin⟩ : ForkedBeaconState preset) v.toNat)
+                (withdrawalMaxEffectiveBalance preset fork val).toNat)
+              (preset.downwardBand + (effectiveAt (⟨fork, fin⟩ : ForkedBeaconState preset) v.toNat -
+                actualBalanceAt (⟨fork, fin⟩ : ForkedBeaconState preset) v.toNat))
+              ((events.map (syncDebit v.toNat)).sum +
+                (pinTerms config pulled anc fin).partialsDue v.toNat) -
+            potentialFloor ρn ρd ((getCurrentEpoch counted).toNat - (getCurrentEpoch fin).toNat)
+              (min (actualBalanceAt (⟨fork, fin⟩ : ForkedBeaconState preset) v.toNat)
+                (withdrawalMaxEffectiveBalance preset fork val).toNat)
+              (preset.downwardBand + (effectiveAt (⟨fork, fin⟩ : ForkedBeaconState preset) v.toNat -
+                actualBalanceAt (⟨fork, fin⟩ : ForkedBeaconState preset) v.toNat))
+              ((events.map (syncDebit v.toNat)).sum +
+                (pinTerms config pulled anc fin).partialsDue v.toNat) %
+              preset.EFFECTIVE_BALANCE_INCREMENT.toNat)) ≤
+      exitQ tailC v.toNat := by
+  classical
+  obtain ⟨c0, member0, index0, amount0⟩ := exitQ_eq_charge h.early tailC member charged
+  have inTail : c0 ∈ (fromFin.append tailC).departureCharges := by
+    rw [Run.departureCharges_append]
+    exact List.mem_append_right _ member0
+  obtain ⟨stop⟩ := Stop.exists (fromFin.append tailC) v.toNat
+  obtain ⟨c, chosen⟩ : ∃ c, stop.charge = some c := by
+    cases hc : stop.charge with
+    | none =>
+      have selected := stop.selected
+      rw [hc] at selected
+      exact absurd index0 (selected.2 c0 inTail)
+    | some c => exact ⟨c, rfl⟩
+  have selected := stop.selected
+  rw [chosen] at selected
+  have cEq : c = c0 := charge_unique _ selected.1 inTail (selected.2.1.trans index0.symm)
+  subst cEq
+  obtain ⟨-, -, amount, next, assignedStep, rest, split', charged', vv, w, atStop, atNext,
+    unset, assigned, epoch⟩ := selected
+  have far : ∀ w', stop.state.state.validators.data[v.toNat]? = some w' →
+      w'.exitEpoch = FAR_FUTURE_EPOCH := by
+    intro w' found
+    have same := Option.some.inj (found.symm.trans atStop)
+    subst same
+    exact unset
+  rw [amount0, ← amount]
+  exact exitQ_at h fromFin tailC replayed stop.pre stop.post stop.split v member val initial far
+    ρn ρd leaky quarter
+
+/-- The leak of an aligned effective balance is at most a rate times it. -/
+private theorem leak_rate (config : Config) (pulled anc fin : BeaconState preset fork)
+    (incPos : 0 < preset.EFFECTIVE_BALANCE_INCREMENT.toNat) (v : ℕ) :
+    ∃ ρn ρd : ℕ, 0 < ρd ∧ ∀ eb : ℕ, preset.EFFECTIVE_BALANCE_INCREMENT.toNat ∣ eb →
+      (pinTerms config pulled anc fin).leakAt eb v ≤ ρn * eb / ρd := by
+  obtain ⟨ρn, ρd, positive, bound⟩ := leak_linear preset.EFFECTIVE_BALANCE_INCREMENT.toNat
+    ((getBaseRewardPerIncrement preset
+      (if 18 * preset.EFFECTIVE_BALANCE_INCREMENT.toNat ≤
+          ((getTotalActiveBalance pulled).toOption.getD 0).toNat then
+        (getTotalActiveBalance pulled).toOption.getD 0 / 4
+      else preset.EFFECTIVE_BALANCE_INCREMENT / 5)).toOption.getD 0).toNat
+    (if altair : .altair ≤ fork then
+      (((fin.inactivityScores altair).data[v]?).map (·.toNat)).getD 0 else 0)
+    ((getCurrentEpoch pulled).toNat + 2 - (getCurrentEpoch fin).toNat)
+    config.INACTIVITY_SCORE_BIAS.toNat
+    (parameters preset fork).INACTIVITY_PENALTY_QUOTIENT.toNat incPos
+  exact ⟨ρn, ρd, positive, fun eb aligned => bound eb aligned⟩
+
 end PinSum
 end EthLib.Consensus.Models.Network
