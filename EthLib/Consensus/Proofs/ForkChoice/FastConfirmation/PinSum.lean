@@ -5912,6 +5912,7 @@ private theorem wShare_le (facts : PinPresetFacts preset) (x : ℕ) : wShare pre
   refine Nat.lt_succ_iff.mp ((Nat.div_lt_iff_lt_mul pos).mpr ?_)
   have big : 33 * x ≤ 10 * W * x := Nat.mul_le_mul_right _ (by omega)
   have two : (x + 1) * (10 * W) = 10 * W * x + 10 * W := by ring
+  show 33 * x + 10 * W - 1 < (x + 1) * (10 * W)
   omega
 
 /-- The band of a key is its upward band for each due entry that names it, and these add over keys.
@@ -6119,9 +6120,14 @@ theorem bud_consolidations (h : Setting config checks g split fin pulled anc cou
           fin.validators.data[c.sourceIndex.toNat]?).filter fun v =>
             !v.slashed && decide (v.withdrawableEpoch.toNat ≤ (getCurrentEpoch pulled).toNat + 1)).map
               fun v => (withdrawalMaxEffectiveBalance preset fork v).toNat)).sum := by
+      have depthLe : (getCurrentEpoch pulled).toNat + 2 - anc.finalizedCheckpoint.epoch.toNat ≤
+          config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat := sorry
+      have cond : max ((getCurrentEpoch pulled).toNat + 2 - anc.finalizedCheckpoint.epoch.toNat)
+          ((getCurrentEpoch pulled).toNat + 2 - (getCurrentEpoch fin).toNat) ≤
+            config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat := max_le depthLe shallow
       unfold pinTerms
       dsimp only
-      simp only [shallow, electra, ↓reduceIte, ↓reduceDIte]
+      simp only [cond, electra, ↓reduceIte, ↓reduceDIte]
     have laterC := dueList_sum_mono fin electra highLe Kall
       (fun v => (withdrawalMaxEffectiveBalance preset fork v).toNat)
     have laterR := dueList_sum_mono fin electra highLeR V
