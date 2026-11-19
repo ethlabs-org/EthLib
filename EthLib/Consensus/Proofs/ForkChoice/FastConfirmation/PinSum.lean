@@ -1445,6 +1445,54 @@ private theorem credits_le_sources {g x y : ForkedBeaconState preset}
       simp only [selected, ↓reduceIte]
       exact previous
 
+/-- A step's slot credits, but for the epoch rewards, are those of consolidations and deposits.
+
+From Electra a slot step records no sync pass, so the sync credit of `slot_event_credit` is zero. -/
+private theorem step_slot_credit_le {g m n : ForkedBeaconState preset}
+    (shared : Run config checks g m) (genesis : Genesis config checks g)
+    (step : Step config checks m n) (early : n.fork < .glamsterdam) (electra : .pectra ≤ m.fork)
+    (i : ℕ) {events : List (BalanceEvent preset)} (replayed : step.balanceEvents = .ok events) :
+    stepCredit (fun _ => false) (fun s => decide (s ≠ .rewards)) i step ≤
+      stepCredit (fun _ => false)
+        (fun s => decide (s = .consolidations ∨ s = .deposits)) i step := by
+  have bounded := step_events_bounded shared genesis step early replayed
+  cases step with
+  | block engine signed due ok => simp [stepCredit, sum_filter_none]
+  | slot ok =>
+    have each := slot_event_credit shared genesis early i replayed bounded
+    have split := sum_credits_split events (keyCredit i) (syncCredit i)
+      (fun s => decide (s ≠ .rewards)) (fun s => decide (s = .consolidations ∨ s = .deposits))
+      (fun _ => false) (fun e m notRewards => by simpa using each e m (by simpa using notRewards))
+    have zero := (slot_syncDebit_zero electra ok early replayed i).2
+    simp only [stepCredit, replayed, Except.toOption, Option.getD_some, sum_filter_none] at split ⊢
+    omega
+
+/-- The slot credits of a run, but for the epoch rewards, are consolidations and deposits. -/
+private theorem slot_credits_le {g x y : ForkedBeaconState preset}
+    (shared : Run config checks g x) (genesis : Genesis config checks g)
+    (tail : Run config checks x y) (early : y.fork < .glamsterdam) (electra : .pectra ≤ x.fork)
+    (i high : ℕ) {events : List (BalanceEvent preset)}
+    (replayed : tail.balanceEvents high = .ok events) :
+    (creditScan (fun _ => false) (fun s => decide (s ≠ .rewards)) i high tail).1 ≤
+      (creditScan (fun _ => false)
+        (fun s => decide (s = .consolidations ∨ s = .deposits)) i high tail).1 := by
+  induction tail generalizing events with
+  | nil => simp [creditScan_nil_fst]
+  | @snoc middle last pre step ih =>
+    simp only [Run.balanceEvents, bind_ok_iff] at replayed
+    obtain ⟨prior, priorOk, rest⟩ := replayed
+    have previous := ih (Nat.lt_of_le_of_lt step.chainStep.fork_le early) priorOk
+    rw [creditScan_snoc_fst, creditScan_snoc_fst]
+    by_cases selected : (getCurrentEpoch middle.state).toNat ≤ high + 1
+    · simp only [selected, ↓reduceIte, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at rest
+      obtain ⟨added, addedOk, rfl⟩ := rest
+      have one := step_slot_credit_le (shared.append pre) genesis step early
+        (Nat.le_trans electra (fork_le_of_chainSteps pre.chainSteps)) i addedOk
+      simp only [selected, ↓reduceIte]
+      omega
+    · simp only [selected, ↓reduceIte]
+      exact previous
+
 /-- The key's effective balance when its exit starts on a run, or 0.
 
 It is the amount of the key's departure charge, which reads the effective balance at the exit call.
@@ -10867,6 +10915,36 @@ private theorem cons_keys_le (h : Setting config checks g split fin pulled anc c
       dsimp only
       simp only [shallow, electra, ↓reduceIte, ↓reduceDIte]
       simpa using dueList_sum_le_all fin electra (getCurrentEpoch pulled).toNat T fun _ => 1
+
+/-- A key with no due consolidation entry takes no consolidation credit on C's run.
+
+The horizon of the due entries is cut to R's epoch, which C's replay does not read. -/
+private theorem consAmt_zero (h : Setting config checks g split fin pulled anc counted V)
+    (fromFin : Run config checks ⟨fork, fin⟩ ⟨fork, split⟩) {eventsF : List (BalanceEvent preset)}
+    (replayedF : fromFin.balanceEvents (getCurrentEpoch pulled).toNat = .ok eventsF)
+    (tailC : Run config checks ⟨fork, split⟩ ⟨fork, counted⟩) (highC : ℕ)
+    (endEpochC : (getCurrentEpoch counted).toNat ≤ highC + 1)
+    {eventsC : List (BalanceEvent preset)} (replayedC : tailC.balanceEvents highC = .ok eventsC)
+    (v : ValidatorIndex) (none : dueAt fin highC {v} = 0) : consAmt eventsC v.toNat = 0 := by
+  classical
+  have electra : .pectra ≤ fork := Nat.le_trans (by decide) h.fulu
+  have near := h.near
+  have called := UInt64.le_iff_toNat_le.mp h.called
+  have later := UInt64.le_iff_toNat_le.mp h.later
+  obtain ⟨hc, hhc⟩ : ∃ hc, hc = min highC (getCurrentEpoch pulled).toNat := ⟨_, rfl⟩
+  rw [balanceEvents_eq_of_endpoint_le fromFin (localHigh := hc) (by simp only; omega)
+    (by simp only; omega)] at replayedF
+  rw [balanceEvents_eq_of_endpoint_le tailC (localHigh := hc) (by simp only; omega)
+    (by simp only; omega)] at replayedC
+  have bound := cons_due_bound h fromFin tailC hc (by omega) (by omega) replayedF replayedC {v}
+  have empty : dueList fin electra hc {v} = [] := List.length_eq_zero_iff.mp (by
+    have := dueList_length_mono fin electra (show hc ≤ highC by omega) {v}
+    rw [dueAt_eq fin electra highC] at none
+    omega)
+  simp only [Finset.sum_singleton, empty, List.map_nil, List.sum_nil] at bound
+  unfold consAmt at bound ⊢
+  simp only [List.filter_append, List.map_append, List.sum_append] at bound
+  omega
 
 /-- The consolidation credits of C's branch, charged to `consolidationsX` (the S9 ruling).
 
