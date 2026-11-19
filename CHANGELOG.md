@@ -65,6 +65,8 @@ Not yet released.
   `syncRewards_bounds` bounds the sync rewards at a position.
   They do not raise it without a signer or a paid proposer there, and do not lower it without an unsigned member there.
   The pin's drift bound reads it for the keys that hold no seat.
+  `run_cuts_measure_le` bounds any measure of the runs of a branch that adds over `append`.
+  The bound is a sum over the epochs of the branch, and the pin's drift bound reads it for the credits of the block steps.
 
 - Its transition facts are in `Transition/BlockLedger.lean`, `Transition/BlockCredits.lean`, `Transition/BranchLedger.lean`, `Transition/EffectiveRise.lean`, `Transition/EffectiveFall.lean`, `Transition/EpochReads.lean` and their neighbours.
   The ledger of a block's balances is in `BlockLedger`, its proposer and deposit credits in `BlockCredits`, and the tally of an epoch's blocks in `BranchLedger`.

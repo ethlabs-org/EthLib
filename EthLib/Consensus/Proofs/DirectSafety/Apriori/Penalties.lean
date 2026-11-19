@@ -388,27 +388,7 @@ private theorem penalties_succ (x : ForkedBeaconState preset) (high t : Nat) :
             t := by
   simp [windowPenalties, List.range_succ, List.map_append, List.sum_append]
 
-/-- A measure of the runs of a branch that adds over the cuts of the branch fits the sum of a bound.
-
-Let every step of the branch start before the epoch `epoch x + t`.
-
-The measure of the branch then fits the sum of a bound over its first `t` epochs.
-
-The measure of a run must add over `append`, from a branch that ends before Gloas.
-
-It must also be zero on the empty run.
-
-Each segment of one epoch must fit the bound at its offset from `x`.
-
-The branch from `x` to `y` splits after its last step starting at each epoch `epoch x + t`.
-
-The steps between two such cuts start at one epoch, and so form one segment.
-
-A property of the states before the epoch of `y` passes to the states of each segment.
-
-A cost of the events of the branch is one measure.
-
-The credits of the block steps of the branch are another. -/
+/-- A measure of a branch's runs that adds over its cuts fits a sum of a bound over its epochs. -/
 theorem run_cuts_measure_le {x y : ForkedBeaconState preset}
     (tail : Run config checks x y) (early : y.fork < .glamsterdam)
     (measure : ∀ {a b : ForkedBeaconState preset}, Run config checks a b → Nat)
