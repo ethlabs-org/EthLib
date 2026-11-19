@@ -17051,7 +17051,7 @@ private theorem key_core_created (h : Setting config checks g split fin pulled a
     (tailC : Run config checks ⟨fork, split⟩ ⟨fork, counted⟩) (highC : ℕ)
     (endEpochC : (getCurrentEpoch counted).toNat ≤ highC + 1)
     {eventsC : List (BalanceEvent preset)} (replayedC : tailC.balanceEvents highC = .ok eventsC)
-    (v : ValidatorIndex) (active : v ∈ activeVoters counted)
+    (v : ValidatorIndex) (voter : v ∈ Q counted) (active : v ∈ activeVoters counted)
     (inside : v.toNat < pulled.validators.data.size)
     (created : fin.validators.data.size ≤ v.toNat)
     (kept : (pinTerms config pulled anc fin).keptArm v.toNat = true) :
@@ -17086,7 +17086,20 @@ private theorem key_core_created (h : Setting config checks g split fin pulled a
         endEpochC replayedC active absent)
     unfold keyCeiling
     omega
-  · sorry
+  · -- the key is created on the shared segment, and its envelope starts at its first state
+    have splitSize : v.toNat < split.validators.data.size := Nat.lt_of_not_le absent
+    obtain ⟨c, toC, fromC, cutC, insideC, before, floorStart⟩ := created_first_state h fromFin
+      tailC (activated_of_activeVoters h.early active) created splitSize
+    by_cases frozen : PinSplit2.capAt (⟨fork, c⟩ : ForkedBeaconState preset) v.toNat =
+        PinSplit2.capAt (⟨fork, pulled⟩ : ForkedBeaconState preset) v.toNat ∧
+      PinSplit2.capAt (⟨fork, counted⟩ : ForkedBeaconState preset) v.toNat ≤
+        PinSplit2.capAt (⟨fork, c⟩ : ForkedBeaconState preset) v.toNat
+    · exact key_core_frozen_from h tail replayed fromFin replayedF tailC highC endEpochC replayedC v
+        (voter_unslashed h v voter) (created_late h created) toC fromC cutC insideC before
+        (Or.inr floorStart) frozen.1 frozen.2 kept
+    · exact key_core_flip h tail replayed fromFin replayedF tailC highC endEpochC replayedC v
+        (voter_unslashed h v voter) (created_late h created) toC fromC cutC insideC before
+        (Or.inr floorStart) frozen kept
 
 open DirectSafety.Apriori DirectSafety.Apriori.Internal in
 /-- The per-key core of the rise.
@@ -17152,7 +17165,7 @@ private theorem key_core (h : Setting config checks g split fin pulled anc count
           (fun p member => Or.inl (by simpa [Run.balancePath] using member))
           (.inl ⟨effective_fin_le_ebUp h v.toNat, Nat.le_refl _⟩) frozen kept
     · exact key_core_created h tail replayed' fromFin replayedF' tailC highC endEpochC replayedC
-        v active inside (Nat.le_of_not_lt inFin) kept
+        v voter active inside (Nat.le_of_not_lt inFin) kept
   · exact key_core_headroom h tail fromFin tailC highC v kept
 
 /-- D-7 (rise): other keys active in both. -/
