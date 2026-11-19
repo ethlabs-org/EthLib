@@ -10260,8 +10260,6 @@ private theorem envelope_of_voter (h : Setting config checks g split fin pulled 
         have exitAfter := UInt64.lt_iff_toNat_lt.mp act.2
         omega
     · omega
-  have retained0 := retained_of_exit h fromFin tail (getCurrentEpoch pulled).toNat (Nat.le_refl _) v
-    foundP late
   -- the replays at R's epoch
   have replayedF' : fromFin.balanceEvents (getCurrentEpoch pulled).toNat = .ok eventsF := by
     rw [balanceEvents_eq_of_endpoint_le fromFin (localHigh := high) (by simp only; omega)
@@ -10273,7 +10271,7 @@ private theorem envelope_of_voter (h : Setting config checks g split fin pulled 
     exact replayed
   have alignedCap : PinSplit2.capAt (⟨fork, pulled⟩ : ForkedBeaconState preset) v.toNat %
       preset.EFFECTIVE_BALANCE_INCREMENT.toNat = 0 := by
-    rw [capAt_of_found electra foundP]
+    rw [capAt_of_found (z := (⟨fork, pulled⟩ : ForkedBeaconState preset)) electra foundP]
     have aMin : preset.MIN_ACTIVATION_BALANCE.toNat %
         preset.EFFECTIVE_BALANCE_INCREMENT.toNat = 0 := by
       simpa [UInt64.toNat_mod] using congrArg UInt64.toNat h.aligned.2.1
@@ -10312,7 +10310,8 @@ private theorem envelope_of_voter (h : Setting config checks g split fin pulled 
           ∀ u, m.state.validators.data[v.toNat]? = some u →
             (getCurrentEpoch pulled).toNat + 1 < u.withdrawableEpoch.toNat) :=
       fun before step after cutB w foundW =>
-        retained0 (pre.append before) step after
+        retained_of_exit h fromFin tail (getCurrentEpoch pulled).toNat (Nat.le_refl _) v foundP late
+          (pre.append before) step after
           (by rw [← cut, ← cutB]; exact (Run.append_assoc pre (before.snoc step) after).symm)
           w foundW
     by_cases slashedP : wP.slashed = true
@@ -10330,8 +10329,11 @@ private theorem envelope_of_voter (h : Setting config checks g split fin pulled 
       have topDiv : PinSplit2.capAt (⟨fork, pulled⟩ : ForkedBeaconState preset) v.toNat /
           (parameters preset fork).MIN_SLASHING_PENALTY_QUOTIENT.toNat ≤
           slashW (pinTerms config pulled anc fin) v.toNat := by
-        simp only [slashW, rb, ↓reduceIte]
-        rw [parameters_of_fusaka h.fulu h.early]
+        have hW : slashW (pinTerms config pulled anc fin) v.toNat =
+            preset.MAX_EFFECTIVE_BALANCE_ELECTRA.toNat /
+              (EthLib.Consensus.parameters preset .fusaka).MIN_SLASHING_PENALTY_QUOTIENT.toNat :=
+          if_pos rb
+        rw [hW, parameters_of_fusaka h.fulu h.early]
         exact Nat.div_le_div_right (capAt_le_capMax h.caps electra v.toNat)
       have floor := slashed_floor h pre (e := pulled) (Nat.le_succ _) rest
         (getCurrentEpoch pulled).toNat (Nat.le_succ _) ev v val foundZ
