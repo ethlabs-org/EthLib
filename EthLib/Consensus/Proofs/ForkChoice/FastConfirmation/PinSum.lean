@@ -6018,7 +6018,7 @@ private theorem bud_branchR_of (h : Setting config checks g split fin pulled anc
               max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat -
             (getCurrentEpoch fin).toNat / max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat + 1 +
           (pinTerms config pulled anc fin).depth /
-            max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat))) :
+            max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat)))) :
     3 * (∑ v ∈ V, bandR (eventsF ++ eventsC) v.toNat) +
         3 * ((pinTerms config pulled anc fin).depth *
           (pinTerms config pulled anc fin).syncProposer) +
