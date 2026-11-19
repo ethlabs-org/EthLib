@@ -12995,6 +12995,30 @@ private def scCharged (pulled counted split : BeaconState preset fork)
     {x y : ForkedBeaconState preset} (tailC : Run config checks x y) : Finset ValidatorIndex :=
   (SC pulled counted split).filter fun v => ∃ c ∈ tailC.departureCharges, c.index = v.toNat
 
+/-- The keys of R's registry that are slashed at the split and that R's call reads as slashed.
+
+They are the keys that the shared run slashes in its last epoch, and some before it.
+
+The withdrawable epoch at R is a slashing vector past the finalized state's epoch.
+
+The anchor's finalized epoch can lag that of the finalized state.
+
+So this leaves out a key slashed before the finalized state's epoch.
+
+Its correlation penalty can fall in the window.
+
+None is in `SC`, which holds keys that are unslashed at the split.
+
+None is in C's quorum, since a flag set at the split persists to C. -/
+private def cutKeys (config : Config) (pulled anc fin split : BeaconState preset fork) :
+    Finset ValidatorIndex :=
+  ((Finset.range pulled.validators.data.size).image UInt64.ofNat).filter fun v =>
+    ((split.validators.data[v.toNat]?).map (·.slashed)).getD false = true ∧
+      (pinTerms config pulled anc fin).slashedRB v.toNat = true ∧
+      ((pulled.validators.data[v.toNat]?).any fun w =>
+        decide ((getCurrentEpoch fin).toNat + preset.EPOCHS_PER_SLASHINGS_VECTOR.toNat ≤
+          w.withdrawableEpoch.toNat)) = true
+
 /-- The rounding bands of the classes of keys fit the seats of the committees of the periods.
 
 The keys of `V` are on C's run, and those of `K4`, `K5` and `K6` are on R's run.
@@ -13187,7 +13211,11 @@ A key that proposed in `pre` pays it from one of the proposer slots of an epoch,
 
 Any other key holds a seat, by its sync credit, and pays it from the spare of its seat.
 
-`bands_seats_base` is the claim without that band. -/
+A cut key with a sync debit holds a seat and pays the rounding of an increment's reward there.
+
+C's run is read at `highC`, and the shared segment and R's run at `high`.
+
+`bands_seats_base` is the claim without those bands. -/
 private theorem bands_seats (h : Setting config checks g split fin pulled anc counted V)
     (fromFin : Run config checks ⟨fork, fin⟩ ⟨fork, split⟩)
     (tail : Run config checks ⟨fork, split⟩ ⟨fork, pulled⟩)
@@ -13196,7 +13224,7 @@ private theorem bands_seats (h : Setting config checks g split fin pulled anc co
     {events eventsF eventsC eventsP : List (BalanceEvent preset)}
     (replayed : tail.balanceEvents high = .ok events)
     (replayedF : fromFin.balanceEvents high = .ok eventsF)
-    (replayedC : tailC.balanceEvents high = .ok eventsC)
+    (replayedC : tailC.balanceEvents highC = .ok eventsC)
     (replayedP : pre.balanceEvents highC = .ok eventsP) :
     3 * (∑ v ∈ V, bandR (eventsF ++ eventsC) v.toNat) +
         (∑ v ∈ K4 pulled counted V, bandR (eventsF ++ events) v.toNat) +
@@ -13208,7 +13236,12 @@ private theorem bands_seats (h : Setting config checks g split fin pulled anc co
             (if 0 < syncCr eventsF v.toNat then preset.upwardBand else 0) else 0) +
         (∑ v ∈ scCharged pulled counted split tailC,
           if 0 < propN pre highC v.toNat + whistC pre highC v.toNat + syncCr eventsP v.toNat then
-            preset.upwardBand else 0) ≤
+            preset.upwardBand else 0) +
+        3 * (∑ v ∈ cutKeys config pulled anc fin split,
+          if 0 < syncD eventsF v.toNat + syncD events v.toNat then
+            (preset.EFFECTIVE_BALANCE_INCREMENT.toNat +
+              (parameters preset fork).WHISTLEBLOWER_REWARD_QUOTIENT.toNat - 1) /
+                (parameters preset fork).WHISTLEBLOWER_REWARD_QUOTIENT.toNat else 0) ≤
       3 * ((preset.EFFECTIVE_BALANCE_INCREMENT.toNat + preset.downwardBand - 1) *
         (preset.SYNC_COMMITTEE_SIZE.toNat *
           (((getCurrentEpoch pulled).toNat + 1) /
@@ -13771,30 +13804,6 @@ private def scSlashedReward (config : Config)
           (parameters preset fork).WHISTLEBLOWER_REWARD_QUOTIENT.toNat - 1) /
         (parameters preset fork).WHISTLEBLOWER_REWARD_QUOTIENT.toNat)
 
-/-- The keys of R's registry that are slashed at the split and that R's call reads as slashed.
-
-They are the keys that the shared run slashes in its last epoch, and some before it.
-
-The withdrawable epoch at R is a slashing vector past the finalized state's epoch.
-
-The anchor's finalized epoch can lag that of the finalized state.
-
-So this leaves out a key slashed before the finalized state's epoch.
-
-Its correlation penalty can fall in the window.
-
-None is in `SC`, which holds keys that are unslashed at the split.
-
-None is in C's quorum, since a flag set at the split persists to C. -/
-private def cutKeys (config : Config) (pulled anc fin split : BeaconState preset fork) :
-    Finset ValidatorIndex :=
-  ((Finset.range pulled.validators.data.size).image UInt64.ofNat).filter fun v =>
-    ((split.validators.data[v.toNat]?).map (·.slashed)).getD false = true ∧
-      (pinTerms config pulled anc fin).slashedRB v.toNat = true ∧
-      ((pulled.validators.data[v.toNat]?).any fun w =>
-        decide ((getCurrentEpoch fin).toNat + preset.EPOCHS_PER_SLASHINGS_VECTOR.toNat ≤
-          w.withdrawableEpoch.toNat)) = true
-
 /-- R1 from the count of its rounding bands.
 
 The slash charges of the classes fit the slashed keys of `branchR`, with the weights of the classes.
@@ -13820,7 +13829,12 @@ private theorem bud_branchR_of (h : Setting config checks g split fin pulled anc
             (if 0 < syncCr eventsF v.toNat then preset.upwardBand else 0) else 0) +
         (∑ v ∈ scCharged pulled counted split tailC,
           if 0 < propN pre highC v.toNat + whistC pre highC v.toNat + syncCr eventsP v.toNat then
-            preset.upwardBand else 0) ≤
+            preset.upwardBand else 0) +
+        3 * (∑ v ∈ cutKeys config pulled anc fin split,
+          if 0 < syncD eventsF v.toNat + syncD events v.toNat then
+            (preset.EFFECTIVE_BALANCE_INCREMENT.toNat +
+              (parameters preset fork).WHISTLEBLOWER_REWARD_QUOTIENT.toNat - 1) /
+                (parameters preset fork).WHISTLEBLOWER_REWARD_QUOTIENT.toNat else 0) ≤
       3 * ((preset.EFFECTIVE_BALANCE_INCREMENT.toNat + preset.downwardBand - 1) *
         ((pinTerms config pulled anc fin).depth * preset.SLOTS_PER_EPOCH.toNat +
           (pinTerms config pulled anc fin).depth *
@@ -13854,7 +13868,12 @@ private theorem bud_branchR_of (h : Setting config checks g split fin pulled anc
             (if 0 < syncCr eventsF v.toNat then preset.upwardBand else 0) else 0) +
         (∑ v ∈ scCharged pulled counted split tailC,
           if 0 < propN pre highC v.toNat + whistC pre highC v.toNat + syncCr eventsP v.toNat then
-            preset.upwardBand else 0) ≤
+            preset.upwardBand else 0) +
+        3 * (∑ v ∈ cutKeys config pulled anc fin split,
+          if 0 < syncD eventsF v.toNat + syncD events v.toNat then
+            (preset.EFFECTIVE_BALANCE_INCREMENT.toNat +
+              (parameters preset fork).WHISTLEBLOWER_REWARD_QUOTIENT.toNat - 1) /
+                (parameters preset fork).WHISTLEBLOWER_REWARD_QUOTIENT.toNat else 0) ≤
       (pinTerms config pulled anc fin).branchR := by
   classical
   unfold scSlashedReward
