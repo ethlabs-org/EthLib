@@ -1007,6 +1007,12 @@ private theorem propC_split {x y : ForkedBeaconState preset} (tail : Run config 
     (fun s h => by simp at h; exact absurd (h.1.symm.trans h.2) (by decide))
     (fun s h => by simp at h) v high tail
 
+/-- The proposer credits of two runs, one after the other, add. -/
+private theorem propN_append {x m y : ForkedBeaconState preset} (pre : Run config checks x m)
+    (post : Run config checks m y) (high v : ℕ) :
+    propN (pre.append post) high v = propN pre high v + propN post high v :=
+  creditScan_append _ _ v high pre post
+
 /-- The gain of `C` credited gwei over `depth` epochs, at the reward rate `P`.
 
 The credits count in whole increments rounded up, and each epoch's gain is rounded down. -/
@@ -11299,22 +11305,30 @@ The bound is scaled by ten, to take the eleven tenths and the rounding of `exiti
 
 The compounding of the credits, an exact tenth of the keys' total, is in the bound.
 
-The two further bands of each credited K5 key are in `bud_exitingBands`. -/
+The two further bands of each credited K5 key are in `bud_exitingBands`.
+
+The run `pre` starts at the split's epoch, so its credits are proposer credits only.
+
+Consolidations and deposits credit at epoch processing, so none falls inside `pre`. -/
 theorem bud_exitingCredits (h : Setting config checks g split fin pulled anc counted V)
+    {b : BeaconState preset fork} (toB : Run config checks g ⟨fork, b⟩)
+    (link : Nonempty (Run config checks ⟨fork, fin⟩ ⟨fork, b⟩) ∨
+      ∃ _ : Run config checks ⟨fork, b⟩ ⟨fork, fin⟩, getCurrentEpoch fin = getCurrentEpoch b)
+    (pre : Run config checks ⟨fork, b⟩ ⟨fork, split⟩)
+    (sameEpoch : getCurrentEpoch split = getCurrentEpoch b)
     (tailC : Run config checks ⟨fork, split⟩ ⟨fork, counted⟩) (highC : ℕ)
     {eventsC : List (BalanceEvent preset)} (replayedC : tailC.balanceEvents highC = .ok eventsC) :
-    10 * (2 * (∑ v ∈ (K5 counted V), propC tailC highC v.toNat)) +
-      2 * (∑ v ∈ (K5 counted V), propN tailC highC v.toNat) +
+    10 * (2 * ((∑ v ∈ (K5 counted V), propN pre highC v.toNat) +
+        ∑ v ∈ (K5 counted V), propC tailC highC v.toNat)) +
+      2 * ((∑ v ∈ (K5 counted V), propN pre highC v.toNat) +
+        ∑ v ∈ (K5 counted V), propN tailC highC v.toNat) +
         22 * ((pinTerms config pulled anc fin).depth *
           (pinTerms config pulled anc fin).syncProposer) ≤
       10 * (pinTerms config pulled anc fin).exitingCredits +
         20 * (∑ v ∈ (K5 counted V), consAmt eventsC v.toNat) := by
   -- The proposer credits fit the pin's per-epoch bound, and their consolidation part is `consAmt`.
-  obtain ⟨toFin⟩ := h.toFin
-  obtain ⟨fromFin⟩ := h.fromFin
-  have rewards := proposer_rewards_le h (toFin.append fromFin) (.inl ⟨fromFin⟩) Run.nil rfl tailC
-    highC (K5 counted V)
-  rw [run_nil_append] at rewards
+  have rewards := proposer_rewards_le h toB link pre sameEpoch tailC highC (K5 counted V)
+  simp only [propN_append, Finset.sum_add_distrib] at rewards
   have parts : ∑ v ∈ (K5 counted V), propC tailC highC v.toNat ≤
       ∑ v ∈ (K5 counted V), propN tailC highC v.toNat +
         ∑ v ∈ (K5 counted V), consAmt eventsC v.toNat := by
@@ -11392,9 +11406,11 @@ The deposits of a key slashed at C count only those before its slashing, in its 
 
 `cards` is the credited keys of the classes against the credited-key slots. -/
 private theorem bud_credits_of (h : Setting config checks g split fin pulled anc counted V)
+    {b : BeaconState preset fork} (pre : Run config checks ⟨fork, b⟩ ⟨fork, split⟩)
     (tailC : Run config checks ⟨fork, split⟩ ⟨fork, counted⟩) (highC : ℕ)
     {eventsC : List (BalanceEvent preset)} (replayedC : tailC.balanceEvents highC = .ok eventsC)
     (rewards : (∑ v ∈ K4 pulled counted V, propN tailC highC v.toNat) +
+      (∑ v ∈ K5 counted V, propN pre highC v.toNat) +
       (∑ v ∈ K5 counted V, propN tailC highC v.toNat) +
       (∑ v ∈ K6 pulled counted, propN tailC highC v.toNat) +
       (∑ v ∈ SC pulled counted split, propN tailC highC v.toNat) +
@@ -11417,6 +11433,7 @@ private theorem bud_credits_of (h : Setting config checks g split fin pulled anc
         (pinTerms config pulled anc fin).depth * preset.MAX_PENDING_DEPOSITS_PER_EPOCH.toNat) :
     10 * ((∑ v ∈ (K4 pulled counted V), credC tailC highC v.toNat) +
       (∑ v ∈ (K6 pulled counted), credC tailC highC v.toNat) +
+      (∑ v ∈ (K5 counted V), propN pre highC v.toNat) +
       (∑ v ∈ (K5 counted V), propC tailC highC v.toNat) +
       (∑ v ∈ (K4 pulled counted V), bandC tailC highC v.toNat) +
       (∑ v ∈ (K5 counted V), bandC tailC highC v.toNat) +
@@ -11429,6 +11446,7 @@ private theorem bud_credits_of (h : Setting config checks g split fin pulled anc
       (∑ v ∈ CS counted split, bandC tailC highC v.toNat)) +
       ((∑ v ∈ (K4 pulled counted V), credN tailC highC v.toNat) +
         (∑ v ∈ (K6 pulled counted), credN tailC highC v.toNat) +
+        (∑ v ∈ (K5 counted V), propN pre highC v.toNat) +
         (∑ v ∈ (K5 counted V), propN tailC highC v.toNat)) +
         11 * ((pinTerms config pulled anc fin).depth *
           (pinTerms config pulled anc fin).syncProposer) ≤
@@ -11487,13 +11505,21 @@ The bound is scaled by ten, to take the eleven tenths and the rounding of `credi
 
 The compounding of the credits, an exact tenth of the keys' total, is in the bound.
 
-The rounding slacks of the credited keys of `K4` and `K5` are paid by `creditedKeys`. -/
+The rounding slacks of the credited keys of `K4` and `K5` are paid by `creditedKeys`.
+
+`K5` also reads the proposer credits of `pre`, the run to the split from the start of its epoch. -/
 theorem bud_credits (h : Setting config checks g split fin pulled anc counted V)
+    {b : BeaconState preset fork} (toB : Run config checks g ⟨fork, b⟩)
+    (link : Nonempty (Run config checks ⟨fork, fin⟩ ⟨fork, b⟩) ∨
+      ∃ _ : Run config checks ⟨fork, b⟩ ⟨fork, fin⟩, getCurrentEpoch fin = getCurrentEpoch b)
+    (pre : Run config checks ⟨fork, b⟩ ⟨fork, split⟩)
+    (sameEpoch : getCurrentEpoch split = getCurrentEpoch b)
     (tailC : Run config checks ⟨fork, split⟩ ⟨fork, counted⟩) (highC : ℕ)
     (endEpochC : (getCurrentEpoch counted).toNat ≤ highC + 1)
     {eventsC : List (BalanceEvent preset)} (replayedC : tailC.balanceEvents highC = .ok eventsC) :
     10 * ((∑ v ∈ (K4 pulled counted V), credC tailC highC v.toNat) +
       (∑ v ∈ (K6 pulled counted), credC tailC highC v.toNat) +
+      (∑ v ∈ (K5 counted V), propN pre highC v.toNat) +
       (∑ v ∈ (K5 counted V), propC tailC highC v.toNat) +
       (∑ v ∈ (K4 pulled counted V), bandC tailC highC v.toNat) +
       (∑ v ∈ (K5 counted V), bandC tailC highC v.toNat) +
@@ -11506,6 +11532,7 @@ theorem bud_credits (h : Setting config checks g split fin pulled anc counted V)
       (∑ v ∈ CS counted split, bandC tailC highC v.toNat)) +
       ((∑ v ∈ (K4 pulled counted V), credN tailC highC v.toNat) +
         (∑ v ∈ (K6 pulled counted), credN tailC highC v.toNat) +
+        (∑ v ∈ (K5 counted V), propN pre highC v.toNat) +
         (∑ v ∈ (K5 counted V), propN tailC highC v.toNat)) +
         11 * ((pinTerms config pulled anc fin).depth *
           (pinTerms config pulled anc fin).syncProposer) ≤
@@ -11513,18 +11540,17 @@ theorem bud_credits (h : Setting config checks g split fin pulled anc counted V)
         10 * ((∑ v ∈ (K4 pulled counted V), consAmt eventsC v.toNat) +
           (∑ v ∈ (K6 pulled counted), consAmt eventsC v.toNat) +
           (∑ v ∈ (K5 counted V), consAmt eventsC v.toNat)) :=
-  bud_credits_of h tailC highC replayedC
+  bud_credits_of h pre tailC highC replayedC
     (by
       obtain ⟨d45, d46, d56, -, -, -⟩ := classes_disjoint h
-      obtain ⟨toFin⟩ := h.toFin
-      obtain ⟨fromFin⟩ := h.fromFin
-      have := proposer_rewards_le h (toFin.append fromFin) (.inl ⟨fromFin⟩) Run.nil rfl tailC highC
+      have := proposer_rewards_le h toB link pre sameEpoch tailC highC
         (K4 pulled counted V ∪ K5 counted V ∪
         K6 pulled counted ∪ SC pulled counted split ∪ CS counted split)
-      rw [run_nil_append] at this
-      rwa [Finset.sum_union (cs_disjoint h).1, Finset.sum_union (sc_disjoint h).1,
-        Finset.sum_union (Finset.disjoint_union_left.mpr ⟨d46, d56⟩), Finset.sum_union d45]
-        at this)
+      simp only [propN_append, Finset.sum_add_distrib] at this
+      simp only [Finset.sum_union (cs_disjoint h).1, Finset.sum_union (sc_disjoint h).1,
+        Finset.sum_union (Finset.disjoint_union_left.mpr ⟨d46, d56⟩),
+        Finset.sum_union d45] at this
+      omega)
     (deposits_union_le h tailC highC endEpochC replayedC) (credited_classes_le h tailC highC)
 
 /-- The keys of `K5` are at most the keys that R reads as exiting and the queue keys.
@@ -16641,12 +16667,20 @@ Any other key has its exit assigned before the split, so it is at its balance at
 
 Both add C's proposer credits and sync seats.
 
-A key with a charge pays no deposit credit after it, so `propC` stands for its credits. -/
+A key with a charge pays no deposit credit after it, so `propC` stands for its credits.
+
+The run `pre` is the shared run from the start of the split's epoch, cut by `cut`.
+
+Its proposer credits are read too, since a charge in that epoch reads the balance before them. -/
 theorem stub_P (h : Setting config checks g split fin pulled anc counted V)
     (tail : Run config checks ⟨fork, split⟩ ⟨fork, pulled⟩) (high : ℕ)
     (endEpoch : (getCurrentEpoch pulled).toNat ≤ high + 1)
     {events : List (BalanceEvent preset)} (replayed : tail.balanceEvents high = .ok events)
     (fromFin : Run config checks ⟨fork, fin⟩ ⟨fork, split⟩)
+    (toFin : Run config checks g ⟨fork, fin⟩)
+    {b : BeaconState preset fork} (toB : Run config checks g ⟨fork, b⟩)
+    (pre : Run config checks ⟨fork, b⟩ ⟨fork, split⟩)
+    (cut : toB.append pre = toFin.append fromFin)
     {eventsF : List (BalanceEvent preset)} (replayedF : fromFin.balanceEvents high = .ok eventsF)
     (tailC : Run config checks ⟨fork, split⟩ ⟨fork, counted⟩) (highC : ℕ)
     (endEpochC : (getCurrentEpoch counted).toNat ≤ highC + 1)
@@ -16656,7 +16690,7 @@ theorem stub_P (h : Setting config checks g split fin pulled anc counted V)
         (eR pulled v + (pinTerms config pulled anc fin).rise v.toNat)) +
       (∑ v ∈ (K5 counted V) with ∃ c ∈ tailC.departureCharges, c.index = v.toNat,
         (exitQ tailC v.toNat + riseQ tailC highC v.toNat)) +
-      (∑ v ∈ (K5 counted V), ((propC tailC highC v.toNat +
+      (∑ v ∈ (K5 counted V), ((propN pre highC v.toNat + propC tailC highC v.toNat +
           keyExtra (pinTerms config pulled anc fin) (fromFin.append tail) tailC highC
             eventsC events eventsF v.toNat (propC tailC highC v.toNat)) +
         whistC tailC highC v.toNat +
@@ -17034,14 +17068,16 @@ theorem pinDrift_le_of_stubs (h : Setting config checks g split fin pulled anc c
   have key := drift_le_costs h
   have tC := stake_le_total totalOk
   have tR := stake_le_total pulledOk
+  obtain ⟨toFin⟩ := h.toFin
   obtain ⟨fromFin⟩ := h.fromFin
+  obtain ⟨b, toB, pre, cut, sameEpoch, link⟩ := split_epoch_start toFin fromFin
   obtain ⟨eventsF, replayedF⟩ := fromFin.balanceEvents_ok h.early high
   have sV := two_le_three (stub_V (config := config) h high endEpoch events fromFin replayedF
     tailC highC endEpochC replayedC)
   have sN := stub_N (config := config) h tail high endEpoch replayed fromFin replayedF tailC highC
     endEpochC replayedC
-  have sP := stub_P (config := config) h tail high endEpoch replayed fromFin replayedF tailC highC
-    endEpochC replayedC
+  have sP := stub_P (config := config) h tail high endEpoch replayed fromFin toFin toB pre cut
+    replayedF tailC highC endEpochC replayedC
   have sJ := stub_J (config := config) h tail high endEpoch replayed fromFin replayedF tailC highC
     endEpochC replayedC
   -- The terms that `keyExtra` adds are paid by the flow split, the units and the induced leak.
@@ -17057,7 +17093,7 @@ theorem pinDrift_le_of_stubs (h : Setting config checks g split fin pulled anc c
   have b1 := bud_exiting (config := config) h tailC
   have b2 := bud_late (config := config) h
   have b3 := bud_queues (config := config) h tailC
-  have b4 := bud_credits (config := config) h tailC highC endEpochC replayedC
+  have b4 := bud_credits (config := config) h toB link pre sameEpoch tailC highC endEpochC replayedC
   have b5 := bud_branchR (config := config) h tail high endEpoch replayed fromFin replayedF
     tailC highC endEpochC replayedC
   have b6 := bud_sync (config := config) h tail high replayed fromFin replayedF tailC highC
@@ -17067,7 +17103,7 @@ theorem pinDrift_le_of_stubs (h : Setting config checks g split fin pulled anc c
   have b10 := bud_deposits (config := config) h tail high endEpoch replayed
   have b11 := bud_queueRise (config := config) h tailC highC endEpochC
   have b12 := bud_exitingRise (config := config) h tailC
-  have b13 := bud_exitingCredits (config := config) h tailC highC replayedC
+  have b13 := bud_exitingCredits (config := config) h toB link pre sameEpoch tailC highC replayedC
   have b17 := bud_exitingBands (config := config) h tailC highC
   have b18 := bud_pendingR (config := config) h
   have b15 := bud_consolidations (config := config) h fromFin tail high endEpoch replayed replayedF
@@ -17116,6 +17152,9 @@ theorem pinDrift_le_of_stubs (h : Setting config checks g split fin pulled anc c
     Finset.sum_nonneg fun _ _ => Int.natCast_nonneg _
   have unitPosCS : 0 ≤ ∑ x ∈ CS counted split,
       (unitK (pinTerms config pulled anc fin) tailC highC eventsC events eventsF x.toNat : ℤ) :=
+    Finset.sum_nonneg fun _ _ => Int.natCast_nonneg _
+  -- The compounding in `bud_credits` pays a tenth of the shared credits that `stub_P` reads.
+  have proposerPre : 0 ≤ ∑ x ∈ K5 counted V, (propN pre highC x.toNat : ℤ) :=
     Finset.sum_nonneg fun _ _ => Int.natCast_nonneg _
   have xPos : 0 ≤ (33 * ((pinTerms config pulled anc fin).consolidationsX : ℤ) + 9) / 10 := by
     positivity
