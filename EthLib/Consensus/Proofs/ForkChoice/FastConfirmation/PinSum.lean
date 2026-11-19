@@ -14468,12 +14468,14 @@ private theorem key_close (h : Setting config checks g split fin pulled anc coun
   -- the cap that `capFor` reads is the largest one off the low rate, and otherwise `cappedY`'s
   have capped : ∀ S U : ℕ, ((preset.EFFECTIVE_BALANCE_INCREMENT.toNat ≤ U + 1 ∧ Cr + Fl ≤ S ∧
         gc + (D * q + D) ≤ Fl + Df * ((11 * q + 9) / 10 + 3)) ∨
-      (Cr = 0 ∧ (events.map (syncDebit v.toNat)).sum = 0 ∧ (eventsF.map (syncDebit v.toNat)).sum = 0 ∧
+      (Cr = 0 ∧ (events.map (syncDebit v.toNat)).sum = 0 ∧
+        (eventsF.map (syncDebit v.toNat)).sum = 0 ∧
         slashW (pinTerms config pulled anc fin) v.toNat <
           preset.EFFECTIVE_BALANCE_INCREMENT.toNat ∧
         (0 < slashW (pinTerms config pulled anc fin) v.toNat →
           preset.EFFECTIVE_BALANCE_INCREMENT.toNat ≤ S + U))) →
-      balanceAt counted v.toNat ≤ capForOf (pinTerms config pulled anc fin) pulled v.toNat + S + U := by
+      balanceAt counted v.toNat ≤
+        capForOf (pinTerms config pulled anc fin) pulled v.toNat + S + U := by
     intro S U cases
     by_cases lowG : Df * ((11 * q + 9) / 10 + 3) < preset.EFFECTIVE_BALANCE_INCREMENT.toNat
     · have y := y_floor_le preset.EFFECTIVE_BALANCE_INCREMENT.toNat WEIGHT_DENOMINATOR.toNat
