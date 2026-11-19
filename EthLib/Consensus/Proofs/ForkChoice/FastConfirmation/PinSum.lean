@@ -9606,8 +9606,9 @@ theorem bud_sync (h : Setting config checks g split fin pulled anc counted V)
   obtain ⟨PD, hPD⟩ : ∃ PD, PD = (V ∪ NF).image fun v : ValidatorIndex => v.toNat := ⟨_, rfl⟩
   obtain ⟨PK, hPK⟩ : ∃ PK, PK = EK.image fun v : ValidatorIndex => v.toNat := ⟨_, rfl⟩
   have dP : Disjoint PD PK := by
-    rw [hPD, hPK, Finset.disjoint_image fun a b (same : a.toNat = b.toNat) =>
-      UInt64.toNat_inj.mp same]
+    have injective : Function.Injective fun v : ValidatorIndex => v.toNat :=
+      fun a b same => UInt64.toNat_inj.mp same
+    rw [hPD, hPK, Finset.disjoint_image injective]
     exact Finset.disjoint_union_left.mpr ⟨dVE, dNE⟩
   have posD := sum_toNat_le (S := V ∪ NF) (P := PD) (fun i => syncD eventsF i)
     fun v member => by rw [hPD]; exact Finset.mem_image_of_mem _ member
