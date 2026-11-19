@@ -3004,7 +3004,7 @@ private theorem compounding_of_cap {z : ForkedBeaconState preset} {i : ℕ}
   cases found : z.state.validators.data[i]? with
   | none => simp [found] at large
   | some v =>
-    refine ⟨v, found, ?_⟩
+    refine ⟨v, rfl, ?_⟩
     by_contra not
     have plain : hasCompoundingWithdrawalCredential v = false := by simpa using not
     simp [found, withdrawalMaxEffectiveBalance, electra, getMaxEffectiveBalance, plain] at large
@@ -3170,7 +3170,7 @@ private theorem CompKept.of_ledger {f : Fork} {s t : BeaconState preset f}
     (ledger : BlockLedger.Ledger s t paid ∅ sync other slash) : CompKept s t :=
   fun v validator located => ledger.kept v validator (Finset.notMem_empty v) located
 
-/-- From Fulu and before Gloas, a block's replay leaves a switched key within the activation balance.
+/-- From Fulu and before Gloas, a block's replay leaves a switched key within activation balance.
 
 The key switches by a consolidation request.
 
@@ -3193,7 +3193,7 @@ private theorem block_flip_balance {engine : ExecutionEngine preset fork}
   unfold blockBalanceReplay at replayed
   try dsimp only at replayed
   obtain ⟨p1, h1, replayed⟩ := bind_ok_iff.mp replayed
-  rw [dif_pos bellatrix] at replayed
+  rw [dite_cond_eq_true (eq_true bellatrix)] at replayed
   obtain ⟨p2, h2, replayed⟩ := bind_ok_iff.mp replayed
   obtain ⟨p3, h3, replayed⟩ := bind_ok_iff.mp replayed
   obtain ⟨p4, h4, replayed⟩ := bind_ok_iff.mp replayed
@@ -3206,12 +3206,11 @@ private theorem block_flip_balance {engine : ExecutionEngine preset fork}
   obtain ⟨p8, h8, replayed⟩ := bind_ok_iff.mp replayed
   obtain ⟨p9, h9, replayed⟩ := bind_ok_iff.mp replayed
   obtain ⟨p10, h10, replayed⟩ := bind_ok_iff.mp replayed
-  rw [dif_pos electra] at replayed
-  obtain ⟨⟨rN, E1⟩, hreq, replayed⟩ := bind_ok_iff.mp replayed
-  rw [dif_pos altair] at replayed
-  try dsimp only at hreq
-  obtain ⟨p11, h11, hreq⟩ := bind_ok_iff.mp hreq
-  obtain ⟨p12, h12, hfold⟩ := bind_ok_iff.mp hreq
+  rw [dite_cond_eq_true (eq_true electra)] at replayed
+  obtain ⟨p11, h11, replayed⟩ := bind_ok_iff.mp replayed
+  obtain ⟨p12, h12, replayed⟩ := bind_ok_iff.mp replayed
+  obtain ⟨⟨rN, E1⟩, hfold, replayed⟩ := bind_ok_iff.mp replayed
+  rw [dite_cond_eq_true (eq_true altair)] at replayed
   -- The states before the consolidation requests.
   obtain ⟨u1, hu1, rfl⟩ := carry_inv h1
   obtain ⟨_, _, u2, hu2, rfl⟩ := record_inv h2
@@ -3302,10 +3301,10 @@ private theorem step_flip_balance {m n : ForkedBeaconState preset} (step : Step 
       have inside : i < s.validators.data.size := (Array.getElem?_eq_some_iff.mp found).1
       have bound := preset.VALIDATOR_REGISTRY_LIMIT.toNat_lt
       obtain ⟨key, hkey⟩ : ∃ key : ValidatorIndex, key.toNat = i :=
-        ⟨UInt64.ofNat i, UInt64.toNat_ofNat_of_lt' (by omega)⟩
+        ⟨UInt64.ofNat i, UInt64.toNat_ofNat_of_lt' (show i < 2 ^ 64 by omega)⟩
       subst hkey
-      exact block_flip_balance (fork := f) early fulu invariant.balancesMatch replay key found plain foundN
-        switched
+      exact block_flip_balance (fork := f) early fulu invariant.balancesMatch replay key found
+        plain foundN switched
 
 /-- A run from a key without compounding credentials to a key with them splits at a step.
 
