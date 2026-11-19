@@ -12417,7 +12417,11 @@ private theorem inactive_of_exited (twoSlots : 2 ≤ preset.SLOTS_PER_EPOCH.toNa
 
 /-- S1 (syncSeats), in the third window: the base bound with the shared segment's K debits.
 
-It also holds the shares of `CS` and of the shared segment's exited keys of `SC`. -/
+It also holds the shares of `CS` and of the shared segment's exited keys of `SC`.
+
+It holds twice the shared segment's debits of `SC` as well, which `whistle_free` reads.
+
+A key of `SC` weighs three, as the keys of `V`, `K4` and `K5` do. -/
 theorem bud_sync (h : Setting config checks g split fin pulled anc counted V)
     (fromFin : Run config checks ⟨fork, fin⟩ ⟨fork, split⟩) (highF : ℕ)
     {eventsF : List (BalanceEvent preset)} (replayedF : fromFin.balanceEvents highF = .ok eventsF)
@@ -12435,6 +12439,7 @@ theorem bud_sync (h : Setting config checks g split fin pulled anc counted V)
       wShare preset fork (∑ v ∈ SC pulled counted split, syncCr eventsC v.toNat) +
       wShare preset fork
         (∑ v ∈ SC pulled counted split, (syncD eventsF v.toNat + syncD events v.toNat)) +
+      2 * (∑ v ∈ SC pulled counted split, syncD eventsF v.toNat) +
       wShare preset fork (∑ v ∈ CS counted split, syncCr eventsC v.toNat) +
       wShare preset fork (∑ v ∈ SC pulled counted split with
         (pinTerms config pulled anc fin).exitBeforeFin v.toNat = true, syncCr eventsF v.toNat) ≤
@@ -14552,6 +14557,8 @@ theorem pinDrift_le_of_stubs (h : Setting config checks g split fin pulled anc c
     Finset.sum_nonneg fun _ _ => Int.natCast_nonneg _
   -- `bud_sync` weighs the shared segment's debits of `K4` three times, and `stub_N` once.
   have syncPosF : 0 ≤ ∑ x ∈ K4 pulled counted V, (syncD eventsF x.toNat : ℤ) :=
+    Finset.sum_nonneg fun _ _ => Int.natCast_nonneg _
+  have syncPosSC : 0 ≤ ∑ x ∈ SC pulled counted split, (syncD eventsF x.toNat : ℤ) :=
     Finset.sum_nonneg fun _ _ => Int.natCast_nonneg _
   have xPos : 0 ≤ (33 * ((pinTerms config pulled anc fin).consolidationsX : ℤ) + 9) / 10 := by
     positivity
