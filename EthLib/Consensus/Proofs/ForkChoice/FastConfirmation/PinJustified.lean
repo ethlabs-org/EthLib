@@ -1,6 +1,11 @@
 module
 
 public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmation.CheckpointConsistency
+import all EthLib.Consensus.Proofs.ForkChoice.FastConfirmation.PinSum
+import EthLib.Consensus.Proofs.ForkChoice.FastConfirmation.HistoricalSigners
+import EthLib.Consensus.Proofs.ForkChoice.FastConfirmation.QuorumDrift
+import EthLib.Consensus.Proofs.DirectSafety.IntervalFunding
+import EthLib.Consensus.Proofs.Transition.FfgJustification
 
 /-!
 # The pin's finalized block is on the justified chain of an honest store
@@ -10,16 +15,26 @@ The pin of a fast-confirmation call reads the finalized block of the call's targ
 A counting state on another branch must pass through that block.
 
 This file shows that, from the two checkpoint facts of the honest stores, with no new assumption.
+
+Then it proves that the voters of a call pin the justified checkpoints of the call's epoch.
+
+That reader runs the pin on the counting state of each justification.
+
+Until the fold of PinSum, the file reads PinSum by `import all`, so no library module imports it.
 -/
 
 @[expose] public section
 
 namespace EthLib.Consensus.Models.Network
 
-open Base Uint64 Models
+open Base Uint64 Models Serialization.Ssz
 
-variable {preset : Preset} {fork : Fork} {config : Config}
-  {anchorState : BeaconState preset fork} {anchorBlock : BeaconBlock preset fork}
+variable {preset : Preset} {fork : Fork} {config : Config} {checks : SignatureChecks}
+  {sources : BlockSources preset fork} {anchorState : BeaconState preset fork}
+  {anchorBlock : BeaconBlock preset fork} {assignment : Assignment preset}
+  {genesisTimeMs : UInt64} {J : Set ValidatorIndex}
+  {e : Execution (honestForkChoice config checks sources anchorState anchorBlock assignment
+    genesisTimeMs) J}
 
 /-- The finalized checkpoint of the call's target state is on the justified chain of another store.
 
@@ -92,5 +107,176 @@ private theorem pin_finRead {A B : Store preset fork}
     ⟨finalizedBlock, finalizedHeld⟩ middle
   rw [Store.getCheckpointBlock_trans preGloas justifiedRead ancLe]
   exact received
+
+/-- The a priori guard at a call's finalized state, and a finality lag within the withdrawal delay.
+
+They are the two conditions that the pin's `Setting` assumes of the call's finalized state.
+
+The call's pulled-up state, target state and finalized state are those of an honest store.
+
+The guard is `aprioriGuardAt` at the finalized state, for the call's epoch.
+
+The lag is the call's epoch, plus two, less the finalized state's epoch. -/
+private def PinGuarded (last : ℕ) : Prop :=
+  ∀ u ∈ J, ∀ n (head : Root) (pulled anc fin : BeaconState preset fork) (target : Checkpoint),
+    (e.world n).time ≤ last →
+    ((e.world n).state u).getPulledUpHeadState config head = .ok pulled →
+    ((e.world n).state u).getCurrentTarget config head = .ok target →
+    ((e.world n).state u).blockStates[target.root]? = some anc →
+    (getCurrentEpoch anchorState < anc.finalizedCheckpoint.epoch →
+      ((e.world n).state u).blockStates[anc.finalizedCheckpoint.root]? = some fin) →
+    (anc.finalizedCheckpoint.epoch ≤ getCurrentEpoch anchorState → fin = anchorState) →
+    DirectSafety.Apriori.aprioriGuardAt config ⟨fork, fin⟩ (getCurrentEpoch pulled).toNat ∧
+    (getCurrentEpoch pulled).toNat + 2 - (getCurrentEpoch fin).toNat ≤
+      config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat
+
+/-- The voters of a call pin the justified checkpoints of the call's epoch.
+
+A set of honest voters, with stake over a third of the total, reserve and margin, pins them.
+
+The pin bounds the drift of the quorum from the call's pulled-up state to a counting state.
+
+So the quorum voters outside the set hold less than two thirds of the total there.
+
+A justified checkpoint of the call's epoch then has a signer among the voters.
+
+The counting state runs from a split state, and the justified chain passes the finalized block.
+
+That is `pin_finRead`, from the finality facts. -/
+private theorem justifiedPinned_of_setting [DecidablePred (· ∈ J)] {anchor : Store preset fork}
+    {g : ForkedBeaconState preset} {horizon anchorEpoch : Epoch} {margin first last : ℕ}
+    (bls : checks = .bls)
+    (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (start : ∀ w ∈ J, e.start w = anchor) (anchorSlot : anchorBlock.slot = anchorState.slot)
+    (anchorEpochOk : anchor.justifiedCheckpoint.epoch = anchorEpoch)
+    (anchorHeader : anchorState.latestBlockHeader.slot = anchorBlock.slot ∧
+      anchorState.latestBlockHeader.proposerIndex = anchorBlock.proposerIndex ∧
+      anchorState.latestBlockHeader.parentRoot = anchorBlock.parentRoot ∧
+      SszType.hashTreeRoot anchorBlock.body = .ok anchorState.latestBlockHeader.bodyRoot)
+    (anchorZero : anchorState.latestBlockHeader.stateRoot = Vector.replicate 32 0)
+    (slots : 0 < config.SLOT_DURATION_MS) (parameters : DirectSafety.Parameters preset)
+    (delay : preset.InclusionDelayPositive)
+    (genesis : Genesis config checks g) (pre : Run config checks g ⟨fork, anchorState⟩)
+    (roots : HeldBlockStateRootsNonzero (e := e) last) (absent : AnchorParentAbsent (e := e) last)
+    (heldEarly : HeldStatesBeforeUpgrade (e := e) last)
+    (bounded : HonestStoreEpochsBounded (e := e) horizon last)
+    (enough : HeldRunStakeFloor (e := e) pre horizon last)
+    (terminal : HeldTerminalStakeFloor (e := e) horizon last)
+    (unslashed : HonestCountedStatesUnslashed (e := e) last)
+    (agree : ∀ a ∈ J, ∀ b ∈ J, ∀ i j, (e.world i).time ≤ last → (e.world j).time ≤ last →
+      ∀ (r : Root) (left right : BeaconBlock preset fork),
+      ((e.world i).state a).blocks[r]? = some left →
+      ((e.world j).state b).blocks[r]? = some right → left = right)
+    (finality : ∀ a ∈ J, ∀ b ∈ J, ∀ i j, (e.world i).time ≤ last → (e.world j).time ≤ last →
+      ((e.world i).state a).finalizedCheckpoint.epoch ≤
+        ((e.world j).state b).justifiedCheckpoint.epoch →
+      ((e.world j).state b).getCheckpointBlock ((e.world j).state b).justifiedCheckpoint.root
+        ((e.world i).state a).finalizedCheckpoint.epoch =
+          .ok ((e.world i).state a).finalizedCheckpoint.root)
+    (chain : ∀ w ∈ J, ∀ i k, i ≤ k → (e.world k).time ≤ last →
+      ((e.world k).state w).getCheckpointBlock ((e.world k).state w).justifiedCheckpoint.root
+        ((e.world i).state w).finalizedCheckpoint.epoch =
+          .ok ((e.world i).state w).finalizedCheckpoint.root)
+    (guarded : PinGuarded (e := e) last)
+    (preGloas : fork < .glamsterdam) (fusaka : .fusaka ≤ fork)
+    (forkWindow : ∀ next ∈ config.nextFork fork, horizon.toNat < next.2.toNat)
+    (bands : preset.IncrementWithinUpwardBand) (caps : CapOrder preset)
+    (activation : ActivationWithinMaxEffective preset)
+    (exitWindow : preset.SeedLookaheadAtLeastThree)
+    (maxAligned : MaxEffectiveBalancesAligned preset)
+    (withdrawDelay : 1 ≤ config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat)
+    (twoSlots : 2 ≤ preset.SLOTS_PER_EPOCH.toNat)
+    (room : 2 ^ 32 ≤ preset.EFFECTIVE_BALANCE_INCREMENT.toNat * preset.BASE_REWARD_FACTOR.toNat)
+    (below : preset.downwardBand < preset.EFFECTIVE_BALANCE_INCREMENT.toNat)
+    (facts : PinPresetFacts preset) :
+    JustifiedPinned (e := e) anchorEpoch margin first last := by
+  subst bls
+  obtain ⟨sound, -, -⟩ := DirectSafety.run_justified_separated pre genesis
+  have positive : 0 < preset.SLOTS_PER_EPOCH.toNat := by have := parameters.slots; omega
+  intro u caller n head pulled total epoch voters callTime headRead pulledOk totalOk epochOk
+    target anc fin targetOk ancOk finHeld finAnchor votersOk quorum w receiver k slot low high
+    upToDate slotOk justifiedEpoch afterAnchorEpoch
+  left
+  obtain ⟨node, nodeOk, rfl⟩ := headRead
+  obtain ⟨anchorRoot, -, -, -, anchorJustified, -⟩ := getForkchoiceStore_anchor anchored
+  have anchorEpochEq : getCurrentEpoch anchorState = anchorEpoch := by
+    rw [← anchorEpochOk, anchorJustified]
+  have later : getCurrentEpoch anchorState <
+      ((e.world k).state w).justifiedCheckpoint.epoch := by
+    rw [anchorEpochEq, justifiedEpoch]
+    exact afterAnchorEpoch
+  have reachedA := e.forwardReachableWith (anchorState := anchorState) (anchorBlock := anchorBlock)
+    (fun a member => (start a member) ▸ Store.ForwardReachableWith.anchor anchored) n u caller
+  have reachedB := e.forwardReachableWith (anchorState := anchorState) (anchorBlock := anchorBlock)
+    (fun a member => (start a member) ▸ Store.ForwardReachableWith.anchor anchored) k w receiver
+  have nonzeroA := roots u caller n callTime
+  have targetEpoch : target.epoch = epoch := Store.epoch_eq_of_getCurrentTarget epochOk targetOk
+  -- The caller's finalized epoch is at most its store's epoch, which is the receiver's justified.
+  have finalizedLe : ((e.world n).state u).finalizedCheckpoint.epoch ≤ epoch :=
+    UInt64.le_trans (reachedA.reachable.finalized_le_justified sound)
+      (reachedA.forwardReachable.justified_epoch_le_current sound slots
+        (UInt64.le_of_eq anchorSlot) epochOk).1
+  have justifiedLe : ((e.world n).state u).finalizedCheckpoint.epoch ≤
+      ((e.world k).state w).justifiedCheckpoint.epoch := justifiedEpoch ▸ finalizedLe
+  have ancLe : anc.finalizedCheckpoint.epoch ≤ ((e.world n).state u).finalizedCheckpoint.epoch :=
+    ((reachedA.reachable.ordered_finalized sound).2) ancOk
+  obtain ⟨-, -, -, ancReads⟩ :=
+    Store.Reachable.finalizedState_of_blockState reachedA.reachable sound anchorSlot parameters
+      nonzeroA ancOk
+  have signed := Execution.justifiedSigned_at (epoch := getCurrentEpoch anchorState) anchored
+    start anchorSlot anchorHeader anchorZero slots parameters delay genesis pre roots absent
+    heldEarly bounded enough terminal (UInt64.le_refl _) receiver high slotOk later
+    (· ∈ voters)
+    fun root base state totalC held shape rootRead _ justifiedLe' near inside totalOkC => by
+    -- The receiver's chain at the counting root passes the finalized block of the target state.
+    have finReadRoot : getCurrentEpoch anchorState < anc.finalizedCheckpoint.epoch →
+        ((e.world k).state w).getCheckpointBlock root anc.finalizedCheckpoint.epoch =
+          .ok anc.finalizedCheckpoint.root := by
+      intro laterAnc
+      have justifiedRead := pin_finRead reachedA.reachable reachedB.reachable preGloas sound
+        anchorSlot parameters nonzeroA (absent u caller n callTime)
+        (agree u caller w receiver n k callTime high)
+        (chain u caller n n (Nat.le_refl _) callTime)
+        (finality u caller w receiver n k callTime high) nodeOk epochOk targetOk ancOk laterAnc
+        finalizedLe justifiedLe
+      rw [Store.getCheckpointBlock_trans preGloas rootRead (UInt64.le_trans ancLe justifiedLe)]
+      exact justifiedRead
+    have counts : CountedState ((e.world k).state w) config state :=
+      ⟨root, base, held, shape.imp id fun ⟨slot', childRoot, child, found, parent, le, ok⟩ =>
+        ⟨.bls, slot', childRoot, child, found, parent, le, ok⟩⟩
+    obtain ⟨pulledEpoch, split, ⟨toFin⟩, ⟨fromFin⟩, ⟨toPulled⟩, ⟨toCounted⟩, finalizedS, calledS,
+        laterS⟩ :=
+      setting_runs_of_call anchored start anchorSlot slots positive genesis pre preGloas fusaka
+        forkWindow bounded agree bands caps activation sound caller callTime pulledOk targetOk
+        ancOk finHeld finAnchor ancReads receiver high held
+        (shape.imp id fun ⟨slot', _, _, _, _, _, ok⟩ => ⟨slot', ok⟩) finReadRoot
+        (by rw [targetEpoch, ← justifiedEpoch]; exact justifiedLe')
+        (UInt64.le_iff_toNat_le.mpr inside)
+    have nearPulled : (getCurrentEpoch state).toNat ≤ (getCurrentEpoch pulled).toNat + 1 := by
+      rw [pulledEpoch, targetEpoch]
+      rw [justifiedEpoch] at near
+      exact near
+    have guard := guarded u caller n node.root pulled anc fin target callTime pulledOk targetOk
+      ancOk finHeld finAnchor
+    have setting : PinSum.Setting config .bls g split fin pulled anc state voters :=
+      ⟨genesis, ⟨toFin⟩, ⟨fromFin⟩, ⟨toPulled⟩, ⟨toCounted⟩, preGloas, fusaka, bands, caps,
+        exitWindow, parameters, maxAligned, twoSlots, withdrawDelay, guard.2, ⟨total, totalOk⟩,
+        room, below, facts, guard.1, finalizedS, calledS, laterS, nearPulled,
+        fun v member => ⟨(votersOk v member).2,
+          unslashed w receiver k state high counts v (votersOk v member).1⟩⟩
+    obtain ⟨events, replayed⟩ :=
+      toPulled.balanceEvents_ok preGloas (getCurrentEpoch pulled).toNat
+    obtain ⟨eventsC, replayedC⟩ :=
+      toCounted.balanceEvents_ok preGloas (getCurrentEpoch pulled).toNat
+    have pin := PinSum.pinDrift_le_of_stubs setting toPulled (getCurrentEpoch pulled).toNat
+      (Nat.le_succ _) replayed toCounted (getCurrentEpoch pulled).toNat nearPulled replayedC
+      (Nat.le_refl _) (Nat.le_refl _) facts.band totalOkC totalOk
+    have splitStake := Finset.sum_filter_add_sum_filter_not (quorumVoters state) (· ∈ voters)
+      (fun v => balanceAt state v.toNat)
+    unfold Models.stake at pin quorum ⊢
+    beta_reduce at pin quorum ⊢
+    omega
+  obtain ⟨v, voter, i, before, m, sent, data, member, target', slotLt⟩ := signed
+  exact ⟨v, voter, i, before, m, sent, data, member, target', slotLt⟩
 
 end EthLib.Consensus.Models.Network
