@@ -5940,6 +5940,46 @@ private theorem ceiling_closed (I WD F P e0 D Df Cr Cr' S W C q r : ℕ) (hDf : 
   rw [split]
   omega
 
+/-- The closure test of the credit ceiling at a high rate, from the second test of the low rate.
+
+The base stake is raised by `Gh`, whole increments that cover the gain at the base stake.
+
+The gain on that raise and on the credits is at most an eleventh of each.
+
+So the credits' tenth and the raise cover the gain at the base stake, and the slack is left. -/
+private theorem ceiling_closed_high (I WD F P e0 D Cr Cr' S W C Gh q r : ℕ)
+    (hq : q = e0 / I * P * F / WD) (hr : r = P * F / WD) (hI : 0 < I) (hWD : 0 < WD)
+    (alignedE : e0 % I = 0) (alignedC : C % I = 0) (alignedG : Gh % I = 0)
+    (hC : (11 * Cr' + 9) / 10 ≤ C) (cover : 11 * (D * q + D * (r + 3)) ≤ 10 * Gh)
+    (rateLow : 11 * D * (q + 1) ≤ e0) (start : S + Cr ≤ e0 + Cr' + W) (hW : W ≤ I) :
+    S + Cr + (D * ((C + I - 1) / I * P * F / WD) +
+        (D * ((e0 + Gh) / I * P * F / WD) + D * (r + 2))) < e0 + Gh + C + I + I := by
+  have key := rate_per_increment I WD F P e0 D hI hWD alignedE (hq ▸ rateLow)
+  have credit := gain_credit_le I WD F P D C hI alignedC key
+  obtain ⟨u, hu⟩ := Nat.dvd_of_mod_eq_zero alignedG
+  subst hu
+  have raise := gain_credit_le I WD F P D (I * u) hI alignedG key
+  rw [div_round_mul I u hI] at raise
+  have sub : ∀ x y : ℕ, (x + y) / WD ≤ x / WD + y / WD + 1 := fun x y => by
+    have hx := Nat.lt_mul_div_succ x hWD
+    have hy := Nat.lt_mul_div_succ y hWD
+    have : (x + y) / WD < x / WD + y / WD + 2 := by
+      rw [Nat.div_lt_iff_lt_mul hWD]
+      have e : (x / WD + y / WD + 2) * WD = WD * (x / WD + 1) + WD * (y / WD + 1) := by ring
+      omega
+    omega
+  have split : (e0 + I * u) / I = e0 / I + u := Nat.add_mul_div_left e0 u hI
+  have inner : (e0 + I * u) / I * P * F / WD ≤ q + u * P * F / WD + 1 := by
+    rw [split, Nat.add_mul, Nat.add_mul, hq]
+    exact sub _ _
+  have gainRaise : D * ((e0 + I * u) / I * P * F / WD) ≤ D * q + D * (u * P * F / WD) + D := by
+    calc D * ((e0 + I * u) / I * P * F / WD) ≤ D * (q + u * P * F / WD + 1) :=
+          Nat.mul_le_mul_left _ inner
+      _ = D * q + D * (u * P * F / WD) + D := by ring
+  have e1 : D * (r + 3) = D * r + 3 * D := by ring
+  have e2 : D * (r + 2) = D * r + 2 * D := by ring
+  omega
+
 /-- A number below an aligned bound by less than an increment rounds down to at most the bound.
 
 Rounding down is to a multiple of the increment. -/
@@ -5957,9 +5997,9 @@ private theorem floor_le_of_lt {B E I : ℕ} (hI : 0 < I) (aligned : E % I = 0)
 
 The bound `e0` on the effective balance, with the rounded credits and an increment, is closed.
 
-The rate premises are those of the low regime, at the finalized depth and at the depth of the call.
+The closure is a premise, so a low or a high rate regime each proves its own.
 
-The gain is read at `e0`, with one increment's gain and two units for each epoch. -/
+The gain is read at `e0`, with two units for each epoch. -/
 private theorem c_ceiling_abstract {n y : ForkedBeaconState preset}
     (post : Run config checks n y) (early : y.fork < .glamsterdam) (fulu : .fusaka ≤ n.fork)
     (i : ℕ) (inside : i < n.state.validators.data.size) (high P capHigh : ℕ)
@@ -5975,27 +6015,24 @@ private theorem c_ceiling_abstract {n y : ForkedBeaconState preset}
         P * (total.toNat / preset.EFFECTIVE_BALANCE_INCREMENT.toNat))
     (endEpoch : (getCurrentEpoch y.state).toNat ≤ high + 1)
     (incPos : 0 < preset.EFFECTIVE_BALANCE_INCREMENT.toNat)
-    (depth depthFin Cr Cr' e0 C S W F q r : ℕ) (hDf : depth ≤ depthFin)
+    (depth Cr e0 C S F q r : ℕ)
     (hF : F = (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum)
     (hq : q = e0 / preset.EFFECTIVE_BALANCE_INCREMENT.toNat * P * F / WEIGHT_DENOMINATOR.toNat)
     (hr : r = P * F / WEIGHT_DENOMINATOR.toNat)
     (alignedE0 : e0 % preset.EFFECTIVE_BALANCE_INCREMENT.toNat = 0)
     (alignedC : C % preset.EFFECTIVE_BALANCE_INCREMENT.toNat = 0)
-    (hC : (11 * Cr' + 9) / 10 ≤ C)
     (epochs : (getCurrentEpoch y.state).toNat - (getCurrentEpoch n.state).toNat ≤ depth)
     (startBal : min (actualBalanceAt n i) capHigh ≤ S)
     (startEff : effectiveAt n i ≤ e0 + C)
     (credits : netScan i high post +
       (creditScan (fun _ => false) (fun s => decide (s ≠ .rewards)) i high post).1 ≤ Cr)
-    (small : depthFin * ((11 * q + 9) / 10 + 3) < preset.EFFECTIVE_BALANCE_INCREMENT.toNat)
-    (rateLow : 11 * depth * (q + 1) ≤ e0)
-    (start : S + Cr ≤ e0 + Cr' + W) (hW : W ≤ preset.EFFECTIVE_BALANCE_INCREMENT.toNat) :
+    (closed : S + Cr + (depth * ((C + preset.EFFECTIVE_BALANCE_INCREMENT.toNat - 1) /
+        preset.EFFECTIVE_BALANCE_INCREMENT.toNat * P * F / WEIGHT_DENOMINATOR.toNat) +
+      (depth * q + depth * (r + 2))) <
+        e0 + C + preset.EFFECTIVE_BALANCE_INCREMENT.toNat +
+          preset.EFFECTIVE_BALANCE_INCREMENT.toNat) :
     ∀ z ∈ post.balancePath, min (actualBalanceAt z i) capHigh ≤ S + Cr +
       (gainOn preset depth P C + (depth * q + depth * (r + 2))) := by
-  have weight : 0 < WEIGHT_DENOMINATOR.toNat := by decide
-  have closed := ceiling_closed preset.EFFECTIVE_BALANCE_INCREMENT.toNat WEIGHT_DENOMINATOR.toNat
-    F P e0 depth depthFin Cr Cr' S W C q r hDf hq hr incPos weight alignedE0 alignedC hC small
-    rateLow start hW
   subst hF
   have alignedE : (e0 + C + preset.EFFECTIVE_BALANCE_INCREMENT.toNat) %
       preset.EFFECTIVE_BALANCE_INCREMENT.toNat = 0 :=
@@ -6236,13 +6273,18 @@ private theorem c_ceiling (h : Setting config checks g split fin pulled anc coun
     rw [hD]
     exact Nat.le_min.mpr ⟨by omega, by omega⟩
   have core := c_ceiling_abstract tailC h.early h.fulu i inside highC P capI alignedCap startCap
-    capCeil rateAll endEpochC incPos D Df Cr (Cr + Ds + DsF) e0 C
-    (min (actualBalanceAt (⟨fork, pulled⟩ : ForkedBeaconState preset) i + Dp + Ds + W) capI) W
+    capCeil rateAll endEpochC incPos D Cr e0 C
+    (min (actualBalanceAt (⟨fork, pulled⟩ : ForkedBeaconState preset) i + Dp + Ds + W) capI)
     (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum q
-    (P * (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum / WEIGHT_DENOMINATOR.toNat) hDDf rfl hq'
-    rfl alignedE0 alignedC coverC epochs (le_min floorR (min_le_right _ _)) (by omega)
-    hCr.ge small (Nat.le_trans (Nat.mul_le_mul_right _ (Nat.mul_le_mul_left 11 hDle)) rateLow)
-    (by omega) hW
+    (P * (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum / WEIGHT_DENOMINATOR.toNat) rfl hq'
+    rfl alignedE0 alignedC epochs (le_min floorR (min_le_right _ _)) (by omega) hCr.ge
+    (ceiling_closed preset.EFFECTIVE_BALANCE_INCREMENT.toNat WEIGHT_DENOMINATOR.toNat
+      (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum P e0 D Df Cr (Cr + Ds + DsF)
+      (min (actualBalanceAt (⟨fork, pulled⟩ : ForkedBeaconState preset) i + Dp + Ds + W) capI)
+      W C q (P * (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum / WEIGHT_DENOMINATOR.toNat)
+      hDDf hq' rfl incPos (by decide) alignedE0 alignedC coverC small
+      (Nat.le_trans (Nat.mul_le_mul_right _ (Nat.mul_le_mul_left 11 hDle)) rateLow)
+      (by omega) hW)
   have rounded : gainOn preset D P C =
       gainOn preset D P ((11 * (Cr + Ds + DsF) + 9) / 10) := by
     rw [hC]
