@@ -474,25 +474,29 @@ private theorem Run.passDebit_le_rates {x y : ForkedBeaconState preset}
     (rate : ∀ {z : ForkedBeaconState preset} (pre : Run config checks x z)
       (post : Run config checks z y), tail = pre.append post →
       (getCurrentEpoch z.state).toNat < (getCurrentEpoch y.state).toNat →
+      (∃ total perIncrement, getTotalActiveBalance z.state = .ok total ∧
+        getBaseRewardPerIncrement preset total = .ok perIncrement) →
       passPenaltyRate config z v ≤ pen (getCurrentEpoch z.state).toNat)
     {events : List (BalanceEvent preset)} (replayed : tail.balanceEvents high = .ok events) :
     (events.map (penaltyDebit v)).sum ≤
       ∑ t ∈ Finset.Ico (getCurrentEpoch x.state).toNat (getCurrentEpoch y.state).toNat, pen t := by
   have total := run_cuts_le high tail early
-    (fun z => passPenaltyRate config z v ≤ pen (getCurrentEpoch z.state).toNat)
+    (fun z => (∃ total perIncrement, getTotalActiveBalance z.state = .ok total ∧
+        getBaseRewardPerIncrement preset total = .ok perIncrement) →
+      passPenaltyRate config z v ≤ pen (getCurrentEpoch z.state).toNat)
     (penaltyDebit v)
     (fun t => if t < ix x y then pen ((getCurrentEpoch x.state).toNat + t) else 0) rate
     (fun {m n} toM mid rest starts rates {found} found_ok => by
       have nEarly := Nat.lt_of_le_of_lt (fork_le_of_chainSteps rest.chainSteps) early
       have ny := UInt64.le_iff_toNat_le.mp (currentEpoch_le_of_chainSteps rest.chainSteps)
-      have segment := segment_passDebit_le mid nEarly
+      have segment := segment_passDebit_le_guarded mid nEarly
         (Nat.le_trans altair (fork_le_of_chainSteps toM.chainSteps)) high (by omega) starts
         (Nat.lt_of_lt_of_le inside (registryGrows_of_chainSteps toM.chainSteps))
         (pen (getCurrentEpoch m.state).toNat)
-        (fun {z} preZ postZ split before => by
-          have same := segment_epoch_eq mid preZ postZ split starts before
+        (fun {z} preZ ok split before totals => by
+          have same := segment_epoch_eq mid preZ (Run.nil.snoc (Step.slot ok)) split starts before
           rw [← same]
-          exact rates preZ postZ split before)
+          exact rates preZ (Run.nil.snoc (Step.slot ok)) split before totals)
         found_ok
       refine segment.trans ?_
       split
@@ -522,6 +526,8 @@ private theorem Run.passDebit_le {x y : ForkedBeaconState preset} (tail : Run co
     (rate : ∀ {z : ForkedBeaconState preset} (pre : Run config checks x z)
       (post : Run config checks z y), tail = pre.append post →
       (getCurrentEpoch z.state).toNat < (getCurrentEpoch y.state).toNat →
+      (∃ total perIncrement, getTotalActiveBalance z.state = .ok total ∧
+        getBaseRewardPerIncrement preset total = .ok perIncrement) →
       passPenaltyRate config z v ≤ pen)
     {events : List (BalanceEvent preset)} (replayed : tail.balanceEvents high = .ok events) :
     (events.map (penaltyDebit v)).sum ≤
@@ -637,7 +643,8 @@ private theorem Run.balanceFloor_rates_or_fulu {g x y : ForkedBeaconState preset
   have floor := Run.balanceFloor_events_or_fulu shared tail genesis caps delay early high endEpoch
     v val initial unslashed activated quotient positive guards stays replayed
   have inside := (Array.getElem?_eq_some_iff.mp initial).1
-  have passes := Run.passDebit_le_rates tail early altair high endEpoch inside pen rate replayed
+  have passes := Run.passDebit_le_rates tail early altair high endEpoch inside pen
+    (fun pre post cut before _ => rate pre post cut before) replayed
   omega
 
 /-- The balance of a key that stays unslashed falls over a branch only by its debits.
