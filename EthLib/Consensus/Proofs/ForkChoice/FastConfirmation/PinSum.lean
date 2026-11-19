@@ -1149,6 +1149,62 @@ private theorem finalized_le_current {g : ForkedBeaconState preset}
   exact UInt64.le_trans valid.ordered.1 (UInt64.le_trans valid.ordered.2
     (UInt64.le_trans valid.settled (getPreviousEpoch_le pulled)))
 
+/-- A key of `K6` in R's registry has no exit, or an exit after the split's lookahead.
+
+An exit at or before the split's epoch plus the seed lookahead is on the shared prefix of the runs.
+
+Both runs then agree on the key's activity up to that exit, so C would not count the key. -/
+private theorem K6_exit_late {g : ForkedBeaconState preset}
+    {split fin pulled anc counted : BeaconState preset fork} {V : Finset ValidatorIndex}
+    (h : Setting config checks g split fin pulled anc counted V) {v : ValidatorIndex}
+    (member : v ∈ K6 pulled counted) {w : Validator}
+    (found : pulled.validators.data[v.toNat]? = some w) :
+    w.exitEpoch = FAR_FUTURE_EPOCH ∨
+      (getCurrentEpoch split).toNat + preset.MAX_SEED_LOOKAHEAD.toNat < w.exitEpoch.toNat := by
+  classical
+  by_cases far : w.exitEpoch = FAR_FUTURE_EPOCH
+  · exact .inl far
+  refine .inr ?_
+  by_contra early
+  obtain ⟨memberAC, -, notAR⟩ := Finset.mem_filter.mp member
+  obtain ⟨rf⟩ := h.toFin
+  obtain ⟨rs⟩ := h.fromFin
+  obtain ⟨rp⟩ := h.toPulled
+  have chain := (rf.append rs).append rp
+  have gap := Run.exit_activation_gap chain h.genesis v.toNat w found far
+  have called := UInt64.le_iff_toNat_le.mp h.called
+  have later := UInt64.le_iff_toNat_le.mp h.later
+  obtain ⟨u, foundU, activeU⟩ := active_of_activeVoters h.early memberAC
+  simp only [isActiveValidator, Bool.and_eq_true, decide_eq_true_eq] at activeU
+  have uExit := UInt64.lt_iff_toNat_lt.mp activeU.2
+  have rActive : ∀ e : Epoch, isActiveAt pulled e v.toNat = true ↔
+      (w.activationEpoch.toNat ≤ e.toNat ∧ e.toNat < w.exitEpoch.toNat) := by
+    intro e
+    simp [isActiveAt, found, isActiveValidator, UInt64.le_iff_toNat_le, UInt64.lt_iff_toNat_lt]
+  have cActive : ∀ e : Epoch, isActiveAt counted e v.toNat = true ↔
+      (u.activationEpoch.toNat ≤ e.toNat ∧ e.toNat < u.exitEpoch.toNat) := by
+    intro e
+    simp [isActiveAt, foundU, isActiveValidator, UInt64.le_iff_toNat_le, UInt64.lt_iff_toNat_lt]
+  -- R does not hold the key active at its epoch, so that epoch is past the exit.
+  have notActive : ¬ (w.activationEpoch.toNat ≤ (getCurrentEpoch pulled).toNat ∧
+      (getCurrentEpoch pulled).toNat < w.exitEpoch.toNat) := by
+    intro both
+    apply notAR
+    simpa [AR, activeVoters] using
+      mem_getActiveValidatorIndices_of_isActiveAt ((rActive _).mpr both)
+  have shareA := activity_shared h (e := w.activationEpoch) (by omega) v.toNat
+  have shareX := activity_shared h (e := w.exitEpoch) (by omega) v.toNat
+  have activeA : isActiveAt pulled w.activationEpoch v.toNat = true :=
+    (rActive _).mpr ⟨Nat.le_refl _, by omega⟩
+  have atA := (cActive _).mp (shareA.symm.trans activeA)
+  have notX : ¬ isActiveAt counted w.exitEpoch v.toNat = true := by
+    rw [← shareX]
+    intro active
+    have := (rActive _).mp active
+    omega
+  have ended := mt (cActive w.exitEpoch).mpr notX
+  omega
+
 /-- A key counted in C and inactive at R, read at R's record, is in one of five classes.
 
 It joins at R's next epoch, activates late, has exited at R, is exiting at R, or is not yet
@@ -1261,22 +1317,11 @@ private theorem K6_class {g : ForkedBeaconState preset}
       rw [far, farNat] at exited
       omega
     have gap := Run.exit_activation_gap chain h.genesis v.toNat w found exitNear
-    -- An exit that the split already holds would end the activity at C too.
     have afterFin : anc.finalizedCheckpoint.epoch.toNat + 1 +
         preset.MAX_SEED_LOOKAHEAD.toNat ≤ w.exitEpoch.toNat := by
-      by_contra early
-      have shareA := activity_shared h (e := w.activationEpoch) (by omega) v.toNat
-      have shareX := activity_shared h (e := w.exitEpoch) (by omega) v.toNat
-      have activeA : isActiveAt pulled w.activationEpoch v.toNat = true :=
-        (rActive _).mpr ⟨Nat.le_refl _, by omega⟩
-      have inactiveX : isActiveAt pulled w.exitEpoch v.toNat = false :=
-        Bool.eq_false_iff.mpr fun active => by have := (rActive _).mp active; omega
-      have atA := (cActive _).mp (shareA.symm.trans activeA)
-      have notX : ¬ isActiveAt counted w.exitEpoch v.toNat = true := by
-        rw [← shareX, inactiveX]
-        nofun
-      have := mt (cActive w.exitEpoch).mpr notX
-      omega
+      rcases K6_exit_late h member found with far | late
+      · exact absurd far exitNear
+      · omega
     by_cases settled : w.exitEpoch.toNat + 1 ≤ (getCurrentEpoch pulled).toNat
     · exact .inr (.inr (.inl ((exitedRB_iff config pulled anc fin v.toNat).mpr
         ⟨w, found, afterFin, settled⟩)))
