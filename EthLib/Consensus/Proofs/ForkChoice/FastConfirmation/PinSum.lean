@@ -1583,8 +1583,7 @@ private theorem credited_pieces {g : ForkedBeaconState preset}
   exact ⟨B, S, D, cardB, cardS, cardD, hBS, hDep,
     fun events replayed i pos => (hSD events replayed i pos).1⟩
 
-/-- The positions of a registry that hold a key of some committee of a list are at most the keys of
-the list.
+/-- The positions that hold a key of a committee of a list are at most the keys of the list.
 
 The registry has distinct keys, and each committee has at most `SYNC_COMMITTEE_SIZE` keys. -/
 private theorem listed_positions_card (state : BeaconState preset fork)
@@ -1615,8 +1614,7 @@ private theorem listed_positions_card (state : BeaconState preset fork)
     simpa [List.length_map, smul_eq_mul, Nat.mul_comm] using this
   exact mapped.trans ((List.toFinset_card_le _).trans total)
 
-/-- A key of an earlier registry that a later registry holds at a position is at that position in
-the earlier one.
+/-- A key of an earlier registry has the same position in a later registry.
 
 The later registry has distinct keys, and the earlier keys are a prefix of the later ones. -/
 private theorem position_in_prefix {f f' : Fork} {x : BeaconState preset f}
