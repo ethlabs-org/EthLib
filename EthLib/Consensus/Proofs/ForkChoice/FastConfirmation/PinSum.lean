@@ -894,26 +894,6 @@ private theorem block_credit_keys {g : ForkedBeaconState preset}
     simp [altair, seats, blocksOne] at bound
     omega
 
-/-- A sync aggregate never lowers the balance of a position that no member holds. -/
-private theorem syncRewards_ge {reward proposerReward index : Nat} {chosen : ValidatorIndex} :
-    ∀ (members : List (ValidatorIndex × Bool)) (balance : Nat),
-      (∀ member ∈ members, member.1.toNat ≠ index) →
-      balance ≤ members.foldl (fun balance member =>
-        if member.2 then balance + (if member.1.toNat = index then reward else 0) +
-          (if chosen.toNat = index then proposerReward else 0)
-        else if member.1.toNat = index then balance - reward else balance) balance
-  | [], _, _ => Nat.le_refl _
-  | member :: members, balance, apart => by
-    rw [List.foldl_cons]
-    have head := apart member List.mem_cons_self
-    refine Nat.le_trans ?_ (syncRewards_ge members _
-      (fun other inside => apart other (List.mem_cons_of_mem _ inside)))
-    by_cases signed : member.2 = true
-    · simp only [signed, ↓reduceIte, head]
-      omega
-    · simp only [signed, Bool.false_eq_true, ↓reduceIte, head]
-      exact Nat.le_refl _
-
 /-- A sync aggregate lowers the balance of a position only if its key is in the committee.
 
 The position is then the one of a validator that holds a seat, which the committee keeps. -/
@@ -960,8 +940,8 @@ private theorem sync_debit_seat {f : Fork} {c t : BeaconState preset f} (altair 
   obtain ⟨b, held⟩ : ∃ b, c.balances.data[i]? = some b :=
     ⟨_, Array.getElem?_eq_getElem inside⟩
   obtain ⟨final, atFinal, value⟩ := balances i b held
-  have kept := syncRewards_ge (reward := reward.toNat) (proposerReward := proposerReward.toNat)
-    (index := i) (chosen := chosen) _ b.toNat
+  have kept := (syncRewards_bounds (reward := reward.toNat)
+    (proposerReward := proposerReward.toNat) (index := i) (chosen := chosen) _ b.toNat).2
     (fun member inside => seatless member.2 member inside rfl)
   rw [← value] at kept
   simp only [actualBalanceAt, held, atFinal, Option.map_some, Option.getD_some] at lowered
