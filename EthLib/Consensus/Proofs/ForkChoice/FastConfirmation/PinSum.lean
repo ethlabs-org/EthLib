@@ -2239,14 +2239,177 @@ private theorem charge_epoch_le_of_K5 (early : fork < .glamsterdam)
       fun lt => notHigh (UInt64.lt_iff_toNat_lt.mpr lt)
     omega
 
+/-- The quarter of any total has a base reward per increment, if any total has one.
+
+The factor times the increment fits in a `UInt64` for every total, and the quarter is positive.
+-/
+private theorem quarter_base_ok (facts : PinPresetFacts preset) {total perIncrement : Gwei}
+    (perOk : getBaseRewardPerIncrement preset total = .ok perIncrement) (T : Gwei) :
+    ∃ pq, getBaseRewardPerIncrement preset
+      (if 18 * preset.EFFECTIVE_BALANCE_INCREMENT.toNat ≤ T.toNat then T / 4
+        else preset.EFFECTIVE_BALANCE_INCREMENT / 5) = .ok pq := by
+  have size := facts.incrementSize
+  have positive : 0 < (if 18 * preset.EFFECTIVE_BALANCE_INCREMENT.toNat ≤ T.toNat then T / 4
+      else preset.EFFECTIVE_BALANCE_INCREMENT / 5 : Gwei).toNat := by
+    split
+    · rename_i big
+      simp only [UInt64.toNat_div]
+      show 0 < T.toNat / 4
+      omega
+    · simp only [UInt64.toNat_div]
+      show 0 < preset.EFFECTIVE_BALANCE_INCREMENT.toNat / 5
+      omega
+  generalize (if 18 * preset.EFFECTIVE_BALANCE_INCREMENT.toNat ≤ T.toNat then T / 4
+    else preset.EFFECTIVE_BALANCE_INCREMENT / 5 : Gwei) = q at positive ⊢
+  simp only [getBaseRewardPerIncrement, liftArith, mapError_ok_iff, bind_ok_iff] at perOk
+  obtain ⟨scaled, scaledOk, -⟩ := perOk
+  have root : integerSquareroot q ≠ 0 := fun zero => by
+    have value := toNat_integerSquareroot q
+    rw [zero] at value
+    have := Nat.sqrt_pos.mpr positive
+    simp only [UInt64.toNat_zero] at value
+    omega
+  refine ⟨scaled / integerSquareroot q, ?_⟩
+  simp only [getBaseRewardPerIncrement, liftArith, mapError_ok_iff, bind_ok_iff]
+  exact ⟨scaled, scaledOk, divChecked_ok_iff.mpr ⟨root, by rw [UInt64.toNat_div]⟩⟩
+
+/-- The epoch rewards of a key over a run are at most the rate for each epoch of the run.
+
+Only the steps after the key's departure charge count, and the key is in the registry from then.
+
+So the bound is needed for a step only when the key is in the registry at its start. -/
+private theorem riseScan_snd_le (v high R : ℕ) {x : ForkedBeaconState preset}
+    {y : ForkedBeaconState preset} (tail : Run config checks x y)
+    (bound : ∀ {m n : ForkedBeaconState preset} (step : Step config checks m n),
+      tail.Contains step → v < m.state.validators.data.size →
+        epochRewards v step ≤
+          ((getCurrentEpoch n.state).toNat - (getCurrentEpoch m.state).toNat) * R) :
+    (riseScan (config := config) (checks := checks) v high tail).2 ≤
+      ((getCurrentEpoch y.state).toNat - (getCurrentEpoch x.state).toNat) * R := by
+  induction tail with
+  | nil => simp [riseScan]
+  | @snoc m n pre step ih =>
+    have prior := ih fun inner member inside => bound inner (.earlier member step) inside
+    have xm := UInt64.le_iff_toNat_le.mp (currentEpoch_le_of_chainSteps pre.chainSteps)
+    have mn := UInt64.le_iff_toNat_le.mp
+      (currentEpoch_le_of_chainSteps (Run.nil.snoc step : Run config checks m n).chainSteps)
+    simp only [riseScan]
+    split
+    · rename_i cond
+      obtain ⟨seen, -⟩ := cond
+      obtain ⟨c, member, same⟩ := (riseScan_fst v high pre).mp seen
+      obtain ⟨w, found, -, -⟩ := pre.departure_charge_exit c member
+      have inside : v < m.state.validators.data.size := by
+        rw [same] at found
+        exact (Array.getElem?_eq_some_iff.mp found).1
+      have one := bound step (.last pre step) inside
+      have split : (getCurrentEpoch n.state).toNat - (getCurrentEpoch x.state).toNat =
+          ((getCurrentEpoch m.state).toNat - (getCurrentEpoch x.state).toNat) +
+            ((getCurrentEpoch n.state).toNat - (getCurrentEpoch m.state).toNat) := by omega
+      rw [split, Nat.add_mul]
+      omega
+    · exact prior.trans (Nat.mul_le_mul_right _ (by omega))
+
+/-- The effective balance of a key at a state of a run from genesis is at most the largest cap. -/
+private theorem effectiveAt_le_capMax {g m : ForkedBeaconState preset}
+    (run : Run config checks g m) (genesis : Genesis (config := config) (checks := checks) g)
+    (caps : CapOrder preset) (early : m.fork < .glamsterdam) (v : ℕ) :
+    effectiveAt m v ≤ preset.MAX_EFFECTIVE_BALANCE_ELECTRA.toNat := by
+  unfold effectiveAt
+  cases found : m.state.validators.data[v]? with
+  | none => simp
+  | some w =>
+    obtain ⟨inside, rfl⟩ := Array.getElem?_eq_some_iff.mp found
+    have bound := run.effectiveBalance_capped genesis caps.activation caps.compounding early _
+      (Array.getElem_mem inside)
+    have activation := UInt64.le_iff_toNat_le.mp caps.activation
+    have compounding := UInt64.le_iff_toNat_le.mp caps.compounding
+    rw [UInt64.le_iff_toNat_le] at bound
+    unfold withdrawalMaxEffectiveBalance getMaxEffectiveBalance at bound
+    simp only [Option.map_some, Option.getD_some]
+    split at bound
+    · split at bound <;> omega
+    · omega
+
 /-- The rise of a charged key on C's branch is one band and the depth's gains at the largest rate.
 
 The gains are the epoch rewards of the key after its exit starts, over the epochs of the run. -/
-private theorem riseQ_le (h : Setting config checks g split fin pulled anc counted V)
+private theorem riseQ_le (facts : PinPresetFacts preset)
+    (h : Setting config checks g split fin pulled anc counted V)
     (tailC : Run config checks ⟨fork, split⟩ ⟨fork, counted⟩) (highC : ℕ)
     (endEpochC : (getCurrentEpoch counted).toNat ≤ highC + 1) (v : ℕ) :
     riseQ tailC highC v ≤ preset.upwardBand + (pinTerms config pulled anc fin).depth *
-      (pinTerms config pulled anc fin).gainRateMax := sorry
+      (pinTerms config pulled anc fin).gainRateMax := by
+  classical
+  obtain ⟨shared⟩ := h.toFin
+  obtain ⟨fromFin⟩ := h.fromFin
+  have altair : .altair ≤ fork := Nat.le_trans (by decide) h.fulu
+  have finalized := UInt64.le_iff_toNat_le.mp h.finalized
+  have called := UInt64.le_iff_toNat_le.mp h.called
+  have near := h.near
+  unfold riseQ
+  split
+  swap
+  · exact Nat.zero_le _
+  have gainMax : (pinTerms config pulled anc fin).gainRateMax =
+      preset.MAX_EFFECTIVE_BALANCE_ELECTRA.toNat / preset.EFFECTIVE_BALANCE_INCREMENT.toNat *
+        ((getBaseRewardPerIncrement preset
+          (if 18 * preset.EFFECTIVE_BALANCE_INCREMENT.toNat ≤
+              ((getTotalActiveBalance pulled).toOption.getD 0).toNat then
+            (getTotalActiveBalance pulled).toOption.getD 0 / 4
+          else preset.EFFECTIVE_BALANCE_INCREMENT / 5)).toOption.getD 0).toNat *
+        (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum / WEIGHT_DENOMINATOR.toNat := rfl
+  obtain ⟨P, gainLe, rateAll⟩ : ∃ P : ℕ,
+      preset.MAX_EFFECTIVE_BALANCE_ELECTRA.toNat / preset.EFFECTIVE_BALANCE_INCREMENT.toNat * P *
+        (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum / WEIGHT_DENOMINATOR.toNat ≤
+          (pinTerms config pulled anc fin).gainRateMax ∧
+      ∀ {m : BeaconState preset fork} (_toM : Run config checks ⟨fork, fin⟩ ⟨fork, m⟩),
+        (getCurrentEpoch m).toNat ≤ (getCurrentEpoch pulled).toNat + 1 →
+        ∀ total perIncrement : Gwei, getTotalActiveBalance m = .ok total →
+          getBaseRewardPerIncrement preset total = .ok perIncrement →
+          perIncrement.toNat *
+              ((∑ i ∈ (getActiveValidatorIndices m (getPreviousEpoch m)).toFinset,
+                effectiveAt (⟨fork, m⟩ : ForkedBeaconState preset) i.toNat) /
+                  preset.EFFECTIVE_BALANCE_INCREMENT.toNat) ≤
+            P * (total.toNat / preset.EFFECTIVE_BALANCE_INCREMENT.toNat) := by
+    by_cases anyOk : ∃ total perIncrement : Gwei,
+        getBaseRewardPerIncrement preset total = .ok perIncrement
+    · obtain ⟨total, perIncrement, perOk⟩ := anyOk
+      obtain ⟨pq, pqOk⟩ :=
+        quarter_base_ok facts perOk ((getTotalActiveBalance pulled).toOption.getD 0)
+      refine ⟨pq.toNat, ?_, fun toM inside => rate_of_guard facts h toM inside pqOk⟩
+      rw [gainMax, pqOk]
+      simp only [Except.toOption, Option.getD_some, le_refl]
+    · refine ⟨0, ?_, fun _ _ total perIncrement _ perOk =>
+        absurd ⟨total, perIncrement, perOk⟩ anyOk⟩
+      simp
+  have scan := riseScan_snd_le (config := config) (checks := checks) v highC
+    (preset.MAX_EFFECTIVE_BALANCE_ELECTRA.toNat / preset.EFFECTIVE_BALANCE_INCREMENT.toNat * P *
+      (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum / WEIGHT_DENOMINATOR.toNat) tailC
+    (fun {m n} step member inside => by
+      obtain ⟨pre, post, _, mEarly, mEpoch⟩ := Run.contains_step_facts member h.early
+      have above : fork ≤ m.fork := Nat.le_trans (by exact le_refl _)
+        (fork_le_of_chainSteps pre.chainSteps)
+      have below : m.fork ≤ fork := Nat.le_trans step.chainStep.fork_le
+        (fork_le_of_chainSteps post.chainSteps)
+      obtain ⟨mf, ms⟩ := m
+      have same : mf = fork := Fork.ctorIdx_injective (Nat.le_antisymm below above)
+      subst same
+      have nEarly : n.fork < .glamsterdam :=
+        Nat.lt_of_le_of_lt (fork_le_of_chainSteps post.chainSteps) h.early
+      exact epochRewards_le step altair nEarly v inside
+        preset.MAX_EFFECTIVE_BALANCE_ELECTRA.toNat P
+        (effectiveAt_le_capMax (shared.append (fromFin.append pre)) h.genesis h.caps mEarly v)
+        (rateAll (fromFin.append pre) (by simp only at mEpoch ⊢; omega)))
+  have depthEq : (pinTerms config pulled anc fin).depth =
+      (getCurrentEpoch pulled).toNat + 2 - anc.finalizedCheckpoint.epoch.toNat := rfl
+  have epochs : (getCurrentEpoch counted).toNat - (getCurrentEpoch split).toNat ≤
+      (pinTerms config pulled anc fin).depth := by omega
+  calc _ ≤ preset.upwardBand + (pinTerms config pulled anc fin).depth *
+        (preset.MAX_EFFECTIVE_BALANCE_ELECTRA.toNat / preset.EFFECTIVE_BALANCE_INCREMENT.toNat *
+          P * (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum / WEIGHT_DENOMINATOR.toNat) :=
+        Nat.add_le_add_left (scan.trans (Nat.mul_le_mul_right _ epochs)) _
+    _ ≤ _ := Nat.add_le_add_left (Nat.mul_le_mul_left _ gainLe) _
 
 /-- The keys of `K5` that are not exiting at the call and that C's branch charges are few.
 
@@ -2308,7 +2471,7 @@ theorem bud_queueRise (h : Setting config checks g split fin pulled anc counted 
       (fun v : ValidatorIndex => riseQ tailC highC v.toNat)
       (preset.upwardBand + (pinTerms config pulled anc fin).depth *
         (pinTerms config pulled anc fin).gainRateMax)
-      fun v _ => riseQ_le h tailC highC endEpochC v.toNat
+      fun v _ => riseQ_le h.facts h tailC highC endEpochC v.toNat
     have subset : (((K5 counted V).filter fun v =>
         (pinTerms config pulled anc fin).exitingB v.toNat = false).filter
           fun v => riseQ tailC highC v.toNat ≠ 0) ⊆
