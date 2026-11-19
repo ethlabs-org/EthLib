@@ -3273,31 +3273,29 @@ private theorem replay_stage {f : Fork} (electra : .pectra ≤ f) {k : EpochStag
       subst ok
       exact Grew.refl _
 
-/-- A later state has no exit that an earlier one lacks, at the indices of the earlier registry.
-
-A key without an exit epoch in the earlier state has none in the later state. -/
+/-- A later state has the exit and withdrawable epochs of an earlier one at its indices. -/
 private def ExitsStay {f g : Fork} (s : BeaconState preset f) (t : BeaconState preset g) : Prop :=
   ∀ (i : ℕ) (v : Validator), s.validators.data[i]? = some v →
-    ∃ w, t.validators.data[i]? = some w ∧
-      (v.exitEpoch = FAR_FUTURE_EPOCH → w.exitEpoch = FAR_FUTURE_EPOCH)
+    ∃ w, t.validators.data[i]? = some w ∧ w.exitEpoch = v.exitEpoch ∧
+      w.withdrawableEpoch = v.withdrawableEpoch
 
 private theorem ExitsStay.trans {f g h : Fork} {s : BeaconState preset f} {t : BeaconState preset g}
     {u : BeaconState preset h} (one : ExitsStay s t) (two : ExitsStay t u) : ExitsStay s u :=
   fun i v found => by
-    obtain ⟨m, mFound, far⟩ := one i v found
-    obtain ⟨w, wFound, far'⟩ := two i m mFound
-    exact ⟨w, wFound, fun unset => far' (far unset)⟩
+    obtain ⟨m, mFound, exit, wd⟩ := one i v found
+    obtain ⟨w, wFound, exit', wd'⟩ := two i m mFound
+    exact ⟨w, wFound, exit'.trans exit, wd'.trans wd⟩
 
 /-- A state with the same validators has the same exits. -/
 private theorem ExitsStay.of_data {f g : Fork} {s : BeaconState preset f} {t : BeaconState preset g}
     (same : t.validators.data = s.validators.data) : ExitsStay s t :=
-  fun i v found => ⟨v, by rw [same]; exact found, fun far => far⟩
+  fun i v found => ⟨v, by rw [same]; exact found, rfl, rfl⟩
 
 /-- The state at the input of a slot step's pending deposits, for a deposit event of the step.
 
 It keeps the registry of the step's start, at its epoch and with at most its size.
 
-The step's end state has no exit epoch where that input has none. -/
+The step's end state has the exit and withdrawable epochs of that input. -/
 private theorem Step.deposit_input {u w : ForkedBeaconState preset}
     (ok : advanceSlotAcross config checks u = .ok w) (fulu : .fusaka ≤ u.fork)
     (early : w.fork < .glamsterdam) {events : List (BalanceEvent preset)}
@@ -3352,14 +3350,14 @@ private theorem Step.deposit_input {u w : ForkedBeaconState preset}
           have same : getCurrentEpoch six.1 = getCurrentEpoch u.state := by
             simp only [getCurrentEpoch, grew.slot, cachedSlot]
           have deposits : ExitsStay six.1 deposited := fun i v found =>
-            ⟨v, pendingDeposits_entries depositOk i v found, fun far => far⟩
+            ⟨v, pendingDeposits_entries depositOk i v found, rfl, rfl⟩
           have consolidations : ExitsStay deposited consolidated :=
             .of_data (congrArg (·.data) (processPendingConsolidations_fields consolidatedOk).1)
           have updates : ExitsStay consolidated updated := fun i v found => by
             obtain ⟨balance, owned⟩ := processEffectiveBalanceUpdates_owned updatedOk found
             obtain ⟨_, read, -⟩ :=
               processEffectiveBalanceUpdates_effectiveBalance_eq updatedOk found owned
-            exact ⟨_, read, fun far => far⟩
+            exact ⟨_, read, rfl, rfl⟩
           have upgraded : ExitsStay updated w.state := .of_data
             ((processUpgrades_validators_of_electra (s := ⟨u.fork, advanced⟩) electraU early
               upgrades).trans (congrArg (·.data) validatorsEq))
@@ -4770,6 +4768,37 @@ private theorem capBound_sum (x : ForkedBeaconState preset) (high : ℕ)
 
 /-! ## Group A: credits to exiting keys -/
 
+/-- No deposit credits a key that is exited and not withdrawable at each deposit event of a run.
+
+`exitedAt` is that fact at the state before each deposit event of a slot step.
+
+A block deposit needs none: from Electra it raises no balance. -/
+private theorem Run.exiting_deposit_credit_zero_of_exited {x y : ForkedBeaconState preset}
+    (tail : Run config checks x y) (electra : .pectra ≤ x.fork) (early : y.fork < .glamsterdam)
+    (high : ℕ) {events : List (BalanceEvent preset)}
+    (replayed : tail.balanceEvents high = .ok events) (i : ℕ)
+    (exitedAt : ∀ {u w : ForkedBeaconState preset} (ok : advanceSlotAcross config checks u = .ok w),
+      tail.Contains (Step.slot ok) → ∀ {es : List (BalanceEvent preset)},
+        (Step.slot ok : Step config checks u w).balanceEvents = .ok es →
+        ∀ e ∈ es, e.source = .deposits → ∃ v : Validator,
+          e.before.state.validators.data[i]? = some v ∧ v.exitEpoch.toNat < 2 ^ 64 - 1 ∧
+          (getCurrentEpoch e.before.state).toNat < v.withdrawableEpoch.toNat) :
+    ((events.filter (·.source = .deposits)).map (keyCredit i)).sum = 0 := by
+  have located := run_located tail electra early high replayed
+  apply List.sum_eq_zero
+  intro n member
+  obtain ⟨e, filtered, rfl⟩ := List.mem_map.mp member
+  obtain ⟨inEvents, sourceEq⟩ := List.mem_filter.mp filtered
+  simp only [decide_eq_true_eq] at sourceEq
+  rcases located e inEvents sourceEq with unconditional | ⟨u, w, ok, es, contains, replayedEs,
+      inStep, keeps⟩
+  · have := unconditional i
+    simp only [keyCredit]
+    omega
+  · obtain ⟨v, read, exited, held⟩ := exitedAt ok contains replayedEs e inStep sourceEq
+    have same := keeps i v read exited held
+    simp [keyCredit, actualBalanceAt, same]
+
 /-- A1 (item 14, run lift).
 
 Along C's run, no deposit credits a key that exits at the run's start.
@@ -4802,28 +4831,19 @@ private theorem Run.exiting_deposit_credit_zero_of_kept {x y : ForkedBeaconState
     (i : ℕ) (v : Validator) (found : x.state.validators.data[i]? = some v)
     (exited : v.exitEpoch.toNat < 2 ^ 64 - 1)
     (held : (getCurrentEpoch y.state).toNat < v.withdrawableEpoch.toNat) :
-    ((events.filter (·.source = .deposits)).map (keyCredit i)).sum = 0 := by
-  have located := run_located tail electra early high replayed
-  apply List.sum_eq_zero
-  intro n member
-  obtain ⟨e, filtered, rfl⟩ := List.mem_map.mp member
-  obtain ⟨inEvents, sourceEq⟩ := List.mem_filter.mp filtered
-  simp only [decide_eq_true_eq] at sourceEq
-  rcases located e inEvents sourceEq with unconditional | ⟨u, w, ok, es, contains, replayedEs,
-      inStep, keeps⟩
-  · have := unconditional i
-    simp only [keyCredit]
-    omega
-  · obtain ⟨life, withdrawal, epoch⟩ := kept ok contains replayedEs e inStep sourceEq
-    obtain ⟨w, read, lifecycle⟩ := life.validators i v found
-    have assigned : v.exitEpoch ≠ FAR_FUTURE_EPOCH := fun far => by
-      rw [far] at exited
-      exact absurd exited (Nat.lt_irrefl _)
-    have sameExit := lifecycle.exitEpoch assigned
-    have later := UInt64.le_iff_toNat_le.mp (withdrawal i v w found read assigned).1
-    have now := UInt64.le_iff_toNat_le.mp epoch
-    have same := keeps i w read (by rw [sameExit]; exact exited) (by omega)
-    simp [keyCredit, actualBalanceAt, same]
+    ((events.filter (·.source = .deposits)).map (keyCredit i)).sum = 0 :=
+  Run.exiting_deposit_credit_zero_of_exited tail electra early high replayed i
+    (by
+      intro u w ok contains es replayedEs e inStep sourceEq
+      obtain ⟨life, withdrawal, epoch⟩ := kept ok contains replayedEs e inStep sourceEq
+      obtain ⟨w, read, lifecycle⟩ := life.validators i v found
+      have assigned : v.exitEpoch ≠ FAR_FUTURE_EPOCH := fun far => by
+        rw [far] at exited
+        exact absurd exited (Nat.lt_irrefl _)
+      have sameExit := lifecycle.exitEpoch assigned
+      have later := UInt64.le_iff_toNat_le.mp (withdrawal i v w found read assigned).1
+      have now := UInt64.le_iff_toNat_le.mp epoch
+      exact ⟨w, read, by rw [sameExit]; exact exited, by omega⟩)
 
 /-- Along C's run from Fulu, no deposit credits a key that exits at the run's start.
 
@@ -4845,6 +4865,72 @@ private theorem Run.exiting_deposit_credit_zero {g x y : ForkedBeaconState prese
         e member source
       ⟨kept.1, kept.2.1, kept.2.2.1⟩)
     i v found exited held
+
+/-- A step that starts a key's exit credits no deposit to it.
+
+A slot step's pending deposits come after its registry updates, which postpone the key.
+
+The exit and withdrawable epochs at the step's end are those at the input of its deposits. -/
+private theorem Step.charge_deposit_credit_zero {a b : ForkedBeaconState preset}
+    (step : Step config checks a b) (fulu : .fusaka ≤ a.fork) (early : b.fork < .glamsterdam)
+    {events : List (BalanceEvent preset)} (replayed : step.balanceEvents = .ok events)
+    (i : ℕ) (inside : i < a.state.validators.data.size) (w : Validator)
+    (found : b.state.validators.data[i]? = some w) (exited : w.exitEpoch.toNat < 2 ^ 64 - 1)
+    (held : (getCurrentEpoch b.state).toNat < w.withdrawableEpoch.toNat) :
+    ((events.filter (·.source = .deposits)).map (keyCredit i)).sum = 0 := by
+  refine Run.exiting_deposit_credit_zero_of_exited (Run.nil.snoc step)
+    (Nat.le_trans (by decide) fulu) early (getCurrentEpoch b.state).toNat
+    (PinSplit2.run_one_step_events step replayed) i ?_
+  intro u w' ok contains es replayedEs e member source
+  cases contains with
+  | last =>
+    obtain ⟨kept, size, same, stay⟩ :=
+      PinSplit4.Step.deposit_input ok fulu early replayedEs e member source
+    obtain ⟨v, readV⟩ : ∃ v, e.before.state.validators.data[i]? = some v :=
+      ⟨_, Array.getElem?_eq_getElem (Nat.lt_of_lt_of_le inside kept.life.size_le)⟩
+    obtain ⟨w'', read, exit, wd⟩ := stay i v readV
+    rw [found, Option.some.injEq] at read
+    subst read
+    have epochLe := UInt64.le_iff_toNat_le.mp
+      (Step.slot ok : Step config checks a b).chainStep.currentEpoch_le
+    refine ⟨v, readV, by rw [← exit]; exact exited, ?_⟩
+    rw [same, ← wd]
+    omega
+  | earlier member _ => cases member
+
+/-- Along a run from the step that starts a key's exit, no deposit credits the key.
+
+The key is exited and not withdrawable at the run's end.
+
+The step is counted by the replay. -/
+private theorem Run.charge_deposit_credit_zero {g a b y : ForkedBeaconState preset}
+    (shared : Run config checks g a) (genesis : Genesis (config := config) (checks := checks) g)
+    (step : Step config checks a b) (post : Run config checks b y) (fulu : .fusaka ≤ a.fork)
+    (early : y.fork < .glamsterdam) (high : ℕ)
+    (counted : (getCurrentEpoch a.state).toNat ≤ high + 1) {events : List (BalanceEvent preset)}
+    (replayed : ((Run.nil.snoc step).append post).balanceEvents high = .ok events)
+    (i : ℕ) (inside : i < a.state.validators.data.size) (w : Validator)
+    (found : b.state.validators.data[i]? = some w) (exited : w.exitEpoch.toNat < 2 ^ 64 - 1)
+    (held : (getCurrentEpoch y.state).toNat < w.withdrawableEpoch.toNat) :
+    ((events.filter (·.source = .deposits)).map (keyCredit i)).sum = 0 := by
+  have bEarly : b.fork < .glamsterdam :=
+    Nat.lt_of_le_of_lt (fork_le_of_chainSteps post.chainSteps) early
+  obtain ⟨es, replayedS⟩ := step.balanceEvents_ok bEarly
+  obtain ⟨later, replayedP⟩ := post.balanceEvents_ok early high
+  have one : (Run.nil.snoc step : Run config checks a b).balanceEvents high = .ok es := by
+    simp [Run.balanceEvents, counted, replayedS, pure, Except.pure]
+    rfl
+  rw [DirectSafety.Apriori.Internal.balanceEvents_append _ _ high one replayedP] at replayed
+  obtain rfl := Except.ok.inj replayed
+  have heldB : (getCurrentEpoch b.state).toNat < w.withdrawableEpoch.toNat :=
+    Nat.lt_of_le_of_lt (UInt64.le_iff_toNat_le.mp (currentEpoch_le_of_chainSteps post.chainSteps))
+      held
+  have first := Step.charge_deposit_credit_zero step fulu bEarly replayedS i inside w found exited
+    heldB
+  have second := Run.exiting_deposit_credit_zero (shared.append (Run.nil.snoc step)) genesis post
+    (Nat.le_trans fulu step.chainStep.fork_le) early high replayedP i w found exited held
+  simp only [List.filter_append, List.map_append, List.sum_append]
+  omega
 
 /-- A2'' (rev 2.5.1).
 
