@@ -1122,6 +1122,19 @@ private theorem credited_pieces {g : ForkedBeaconState preset}
         · exact .inl (Finset.mem_union_right _ member)
         · exact .inr (Finset.mem_union_right _ member)
 
+/-- The credits that a scan reads from a run, after one more step. -/
+private theorem creditScan_snoc_fst (blockP slotP : BalanceSource → Bool) (v high : ℕ)
+    {x m y : ForkedBeaconState preset} (pre : Run config checks x m)
+    (step : Step config checks m y) :
+    (creditScan blockP slotP v high (pre.snoc step)).1 =
+      if (getCurrentEpoch m.state).toNat ≤ high + 1 then
+        (creditScan blockP slotP v high pre).1 + stepCredit blockP slotP v step
+      else (creditScan blockP slotP v high pre).1 := by
+  change (if (getCurrentEpoch m.state).toNat ≤ high + 1 then
+      ((creditScan blockP slotP v high pre).1 + stepCredit blockP slotP v step, _)
+    else creditScan blockP slotP v high pre).1 = _
+  split_ifs <;> rfl
+
 /-- A list of at most one element has equal members. -/
 private theorem list_eq_of_length_le_one {α : Type} {L : List α} (short : L.length ≤ 1) {a b : α}
     (ha : a ∈ L) (hb : b ∈ L) : a = b := by
@@ -1149,7 +1162,7 @@ private theorem credited_deposits {g : ForkedBeaconState preset}
         i ∈ D := by
   classical
   induction r with
-  | nil => exact ⟨∅, by simp, fun i pos => by simp [creditScan] at pos⟩
+  | nil => exact ⟨∅, by simp, fun i pos => (Nat.lt_irrefl 0 pos).elim⟩
   | @snoc u l pre step ih =>
     have uEarly : u.fork < .glamsterdam := Nat.lt_of_le_of_lt step.chainStep.fork_le early
     obtain ⟨D, cardD, hD⟩ := ih uEarly
@@ -1184,7 +1197,8 @@ private theorem credited_deposits {g : ForkedBeaconState preset}
       obtain ⟨events, eventsOk⟩ :=
         (Step.slot across : Step config checks u l).balanceEvents_ok early
       by_cases any : ∃ e ∈ events, e.source = .deposits
-      · obtain ⟨sites, ends, single⟩ := Step.slot_deposit_site (shared.append pre) genesis across
+      · obtain ⟨sites, ends, single⟩ :=
+          DirectSafety.Apriori.Internal.Step.slot_deposit_site (shared.append pre) genesis across
           early delay eventsOk
         have epochNext := ends any
         obtain ⟨e0, mem0, dep0⟩ := any
@@ -1278,14 +1292,22 @@ private theorem credited_keys_le (h : Setting config checks g split fin pulled a
   have shared : Run config checks g ⟨fork, split⟩ := toFin.append fromFin
   have slots := h.twoSlots
   have positive : 0 < preset.SLOTS_PER_EPOCH.toNat := by omega
-  have low := UInt64.le_iff_toNat_le.mp (currentEpoch_le_of_chainSteps tail.chainSteps)
+  have low : (getCurrentEpoch split).toNat ≤ (getCurrentEpoch x).toNat :=
+    UInt64.le_iff_toNat_le.mp (currentEpoch_le_of_chainSteps tail.chainSteps)
   have periodLe := Nat.div_le_div_right
     (c := max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat) low
+  have periods : (getCurrentEpoch x).toNat / max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat =
+      (getCurrentEpoch split).toNat / max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat +
+        ((getCurrentEpoch x).toNat / max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat -
+          (getCurrentEpoch split).toNat /
+            max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat) := by omega
   obtain ⟨B, S, cardB, cardS, hBS⟩ := credited_pieces h.genesis (y := ⟨fork, x⟩) h.early high
     ((getCurrentEpoch x).toNat / max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat -
       (getCurrentEpoch split).toNat / max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat)
-    shared tail h.fulu (by simp only []; omega)
+    shared tail h.fulu periods
   obtain ⟨D, cardD, hD⟩ := credited_deposits h.genesis shared tail h.early h.delay high
+  have cardD' : D.card ≤ preset.MAX_PENDING_DEPOSITS_PER_EPOCH.toNat *
+      ((getCurrentEpoch x).toNat - (getCurrentEpoch split).toNat) := cardD
   have subset : ((Finset.range x.validators.data.size).filter fun i =>
         0 < netScan i high tail +
           (creditScan (fun _ => false) (fun s => decide (s = .deposits)) i high tail).1) ⊆
@@ -1307,10 +1329,15 @@ private theorem credited_keys_le (h : Setting config checks g split fin pulled a
     have finish : x.slot.toNat <
         ((getCurrentEpoch x).toNat + 1) * preset.SLOTS_PER_EPOCH.toNat := by
       rw [getCurrentEpoch_toNat]
-      exact Nat.lt_mul_div_succ _ positive
+      exact lt_of_lt_of_eq (Nat.lt_mul_div_succ _ positive) (Nat.mul_comm _ _)
+    have last : x.slot.toNat ≤
+        ((getCurrentEpoch x).toNat + 1) * preset.SLOTS_PER_EPOCH.toNat - 1 := by omega
     have count := tail.blocks_le_slots (a := (getCurrentEpoch split).toNat *
       preset.SLOTS_PER_EPOCH.toNat) (b := ((getCurrentEpoch x).toNat + 1) *
-        preset.SLOTS_PER_EPOCH.toNat - 1) start (by omega)
+        preset.SLOTS_PER_EPOCH.toNat - 1) start last
+    have gap := Nat.mul_le_mul_right preset.SLOTS_PER_EPOCH.toNat
+      (show (getCurrentEpoch split).toNat + 1 ≤ (getCurrentEpoch x).toNat + 1 by omega)
+    rw [Nat.add_mul, Nat.one_mul] at gap
     have shape : ((getCurrentEpoch x).toNat - (getCurrentEpoch split).toNat + 1) *
         preset.SLOTS_PER_EPOCH.toNat = ((getCurrentEpoch x).toNat + 1) *
           preset.SLOTS_PER_EPOCH.toNat - (getCurrentEpoch split).toNat *
@@ -1318,6 +1345,7 @@ private theorem credited_keys_le (h : Setting config checks g split fin pulled a
       rw [← Nat.sub_mul]
       congr 1
       omega
+    rw [shape]
     omega
   have total := (Finset.card_le_card subset).trans
     ((Finset.card_union_le _ _).trans (Nat.add_le_add_right (Finset.card_union_le _ _) _))
@@ -1754,19 +1782,6 @@ private theorem sum_filter_mono {α : Type} (l : List α) (p q : α → Bool) (f
         omega
       · rw [List.filter_cons_of_neg hp, List.filter_cons_of_neg hq]
         exact ih
-
-/-- The credits that a scan reads from a run, after one more step. -/
-private theorem creditScan_snoc_fst (blockP slotP : BalanceSource → Bool) (v high : ℕ)
-    {x m y : ForkedBeaconState preset} (pre : Run config checks x m)
-    (step : Step config checks m y) :
-    (creditScan blockP slotP v high (pre.snoc step)).1 =
-      if (getCurrentEpoch m.state).toNat ≤ high + 1 then
-        (creditScan blockP slotP v high pre).1 + stepCredit blockP slotP v step
-      else (creditScan blockP slotP v high pre).1 := by
-  change (if (getCurrentEpoch m.state).toNat ≤ high + 1 then
-      ((creditScan blockP slotP v high pre).1 + stepCredit blockP slotP v step, _)
-    else creditScan blockP slotP v high pre).1 = _
-  split_ifs <;> rfl
 
 /-- The credits of a run to a key, read as a scan, add over `append`. -/
 private theorem creditScan_append (blockP slotP : BalanceSource → Bool) (v high : ℕ)
