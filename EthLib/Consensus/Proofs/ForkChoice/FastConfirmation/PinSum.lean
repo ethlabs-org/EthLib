@@ -4610,8 +4610,10 @@ theorem bud_branchR (h : Setting config checks g split fin pulled anc counted V)
 /-- The sync movement of a key is its sync credits plus its sync debits over the events. -/
 private theorem syncF_eq (events : List (BalanceEvent preset)) (v : ℕ) :
     syncF events v = (events.map (syncCredit v)).sum +
-      (events.map (syncDebit v)).sum :=
-  congrArg₂ (· + ·) (sum_map_sync events (keyCredit v)).symm (sum_syncDebit_eq events v).symm
+      (events.map (syncDebit v)).sum := by
+  unfold syncF
+  rw [← sum_syncDebit_eq events v]
+  exact congrArg (· + ((events.map (syncDebit v)).sum)) (sum_map_sync events (keyCredit v)).symm
 
 /-- S1 (syncSeats): every seat, weight 3 for V, K4 and K5 and 1 for K6.
 
