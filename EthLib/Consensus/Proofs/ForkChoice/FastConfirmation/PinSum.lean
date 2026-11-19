@@ -2066,7 +2066,8 @@ private theorem cfloor_endpoint (h : Setting config checks g split fin pulled an
       (getCurrentEpoch pulled).toNat + 1 < w.exitEpoch.toNat)
     (slack ρn ρd floor : ℕ)
     (start : effectiveAt (⟨fork, fin⟩ : ForkedBeaconState preset) i.toNat ≤
-      actualBalanceAt (⟨fork, fin⟩ : ForkedBeaconState preset) i.toNat + slack)
+      actualBalanceAt (⟨fork, fin⟩ : ForkedBeaconState preset) i.toNat +
+        (preset.downwardBand + slack))
     (pass : ∀ {m n : ForkedBeaconState preset} (before : Run config checks ⟨fork, fin⟩ m)
       (step : Step config checks m n) (after : Run config checks n ⟨fork, e⟩),
       (before.snoc step).append after = wholeRun → ∀ evs,
@@ -2077,7 +2078,7 @@ private theorem cfloor_endpoint (h : Setting config checks g split fin pulled an
       D ≤ (events.map (syncDebit i.toNat)).sum + (events.map (floorPartialDebit i)).sum →
       (ρd - ρn * k) * (min (actualBalanceAt (⟨fork, fin⟩ : ForkedBeaconState preset) i.toNat)
           (withdrawalMaxEffectiveBalance preset fork val).toNat +
-        (preset.downwardBand + slack)) ≤ ρd * (a + D + (preset.downwardBand + slack)) →
+        preset.downwardBand) ≤ ρd * (a + D + preset.downwardBand) + ρn * slack →
       floor ≤ a)
     {z : ForkedBeaconState preset} (rp : Run config checks ⟨fork, fin⟩ z)
     (rest : Run config checks z ⟨fork, e⟩) (cut : rp.append rest = wholeRun) :
@@ -2117,7 +2118,7 @@ private theorem cfloor_endpoint (h : Setting config checks g split fin pulled an
       · obtain ⟨u, foundU, marked⟩ := r2.slashedPersistence i.toNat w found flag
         have := clean u foundU
         simp [marked] at this
-    obtain ⟨D, split, closed⟩ := FloorTrace.run_potential_floor toFin r1 h.genesis h.caps
+    obtain ⟨D, split, closed⟩ := FloorTrace.run_potential_floor_once toFin r1 h.genesis h.caps
       h.delay early h.fulu h.bands (getCurrentEpoch pulled).toNat endEpoch i val initial cleanP
       _ positive
       (fun before' step after cut' w found => by
@@ -2205,7 +2206,8 @@ private theorem floorC_at (h : Setting config checks g split fin pulled anc coun
     (rest : Run config checks z ⟨fork, counted⟩) (cut : rp.append rest = fromFin.append tailC)
     (margin : ∃ slack ρn ρd : ℕ,
       effectiveAt (⟨fork, fin⟩ : ForkedBeaconState preset) i.toNat ≤
-        actualBalanceAt (⟨fork, fin⟩ : ForkedBeaconState preset) i.toNat + slack ∧
+        actualBalanceAt (⟨fork, fin⟩ : ForkedBeaconState preset) i.toNat +
+          (preset.downwardBand + slack) ∧
       (∀ {m n : ForkedBeaconState preset} (before : Run config checks ⟨fork, fin⟩ m)
         (step : Step config checks m n) (after : Run config checks n ⟨fork, counted⟩),
         (before.snoc step).append after = fromFin.append tailC → ∀ evs,
@@ -2215,7 +2217,7 @@ private theorem floorC_at (h : Setting config checks g split fin pulled anc coun
         D ≤ (events.map (syncDebit i.toNat)).sum + (events.map (floorPartialDebit i)).sum →
         (ρd - ρn * k) * (min (actualBalanceAt (⟨fork, fin⟩ : ForkedBeaconState preset) i.toNat)
             (withdrawalMaxEffectiveBalance preset fork val).toNat +
-          (preset.downwardBand + slack)) ≤ ρd * (a + D + (preset.downwardBand + slack)) →
+          preset.downwardBand) ≤ ρd * (a + D + preset.downwardBand) + ρn * slack →
         low - (events.map (syncDebit i.toNat)).sum ≤ a)
     (stay : max ebUp base0 ≤ low + preset.downwardBand →
       finEB ≤ effectiveAt z i.toNat + (events.map (syncDebit i.toNat)).sum +
