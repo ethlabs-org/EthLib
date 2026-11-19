@@ -233,8 +233,6 @@ A key whose exit was set by the finalized block's state can be swept here and sl
 
 Those charges also read its finalized effective balance and its rounded finalized balance.
 
-A due consolidation can raise its target by one more increment, whose gains count three times.
-
 Inactivity scores and the queue of partial withdrawals are read at the finalized block's state.
 
 The reserve grows as the total active balance shrinks.
@@ -476,16 +474,6 @@ def pinReserve (config : Config) (state ancestor finalizedState : BeaconState pr
           finalizedState.validators.data[c.sourceIndex.toNat]?).filter fun v =>
             !v.slashed && decide (v.withdrawableEpoch.toNat ≤ epoch.toNat + 1)).map fun v =>
               (withdrawalMaxEffectiveBalance preset fork v).toNat).sum
-      else 0)
-    else 0
-  -- Each entry of `consolidationsX` can raise its target by one more increment.
-  --
-  -- That increment earns `unitGain`, three times.
-  let consolidationsXCount := if depthFin ≤ partialDelay then
-      (if electra : .pectra ≤ fork then
-        (((finalizedState.pendingConsolidations electra).data.toList.filterMap fun c =>
-          finalizedState.validators.data[c.sourceIndex.toNat]?).filter fun v =>
-            !v.slashed && decide (v.withdrawableEpoch.toNat ≤ epoch.toNat + 1)).length
       else 0)
     else 0
   -- Each sync seat of the window debits at most its envelope on each branch.
@@ -777,14 +765,6 @@ def pinReserve (config : Config) (state ancestor finalizedState : BeaconState pr
     (33 * depth * consolidationGain + 11 * depth * otherGain + 9) / 10 +
       (if 11 * depth * (gainRateMax + 1) ≤ capMax then 0
         else depthFin * preset.MAX_PENDING_DEPOSITS_PER_EPOCH.toNat * capMax)
-  -- A credit can raise a key's effective balance by one more increment than its amount rounds to.
-  --
-  -- That increment earns the flag rewards over the depth, plus two units per epoch for the floors.
-  --
-  -- Each credited key pays it once, and a key pays two more if the call reads its exit.
-  let unitGain := depth * (perIncrement * (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum /
-    WEIGHT_DENOMINATOR.toNat + 2)
-  let creditUnits := (creditedKeys + 2 * (exitingCount + queueKeys)) * unitGain
   -- A key here that is not yet eligible can be topped up on the other branch alone.
   --
   -- It can then become eligible there and activate deep in the window, while inactive here.
@@ -803,7 +783,7 @@ def pinReserve (config : Config) (state ancestor finalizedState : BeaconState pr
     3 * (∑ i ∈ positions with current i = true, fall i) +
     3 * exitingRise + exitingCredits + exitingBands + queueRise + reserveW + flagged +
     seatShortfall + (33 * consolidationsX + 9) / 10 + exitedR + pendingR +
-    creditGain + creditUnits + syncLeak + 3 * unitGain * consolidationsXCount)
+    creditGain + syncLeak)
 
 /-- The pin reserve contains the quorum reserve. -/
 theorem quorumReserve_le_pinReserve (config : Config)

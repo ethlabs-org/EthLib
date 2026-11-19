@@ -137,7 +137,7 @@ def PinTerms.total (t : PinTerms preset) : ℕ :=
     3 * (∑ i ∈ t.positions with t.current i = true, t.fall i) +
     3 * t.exitingRise + t.exitingCredits + t.exitingBands + t.queueRise + t.reserveW + t.flagged +
     t.seatShortfall + (33 * t.consolidationsX + 9) / 10 + t.exitedR + t.pendingR + t.creditGain +
-    t.creditUnits + t.syncLeak + 3 * t.unitGain * t.consolidationsXCount)
+    t.syncLeak)
 
 /-- A verbatim copy of `pinReserve`'s lets (spec rev 2.5.3), returning the named terms. -/
 def pinTerms (config : Config) (state ancestor finalizedState : BeaconState preset fork) :
