@@ -974,6 +974,21 @@ private theorem creditScan_snoc_fst (blockP slotP : BalanceSource → Bool) (v h
     else creditScan blockP slotP v high pre).1 = _
   split_ifs <;> rfl
 
+/-- The credits of a run to a key, read as a scan, add over `append`. -/
+private theorem creditScan_append (blockP slotP : BalanceSource → Bool) (v high : ℕ)
+    {x m y : ForkedBeaconState preset} (pre : Run config checks x m)
+    (post : Run config checks m y) :
+    (creditScan blockP slotP v high (pre.append post)).1 =
+      (creditScan blockP slotP v high pre).1 + (creditScan blockP slotP v high post).1 := by
+  induction post with
+  | nil => rfl
+  | snoc post step ih =>
+    change (creditScan blockP slotP v high ((pre.append post).snoc step)).1 = _
+    rw [creditScan_snoc_fst, creditScan_snoc_fst]
+    split
+    · omega
+    · exact ih
+
 /-- A list of at most one element has equal members. -/
 private theorem list_eq_of_length_le_one {α : Type} {L : List α} (short : L.length ≤ 1) {a b : α}
     (ha : a ∈ L) (hb : b ∈ L) : a = b := by
@@ -1992,21 +2007,6 @@ private theorem sum_filter_mono {α : Type} (l : List α) (p q : α → Bool) (f
       · rw [List.filter_cons_of_neg hp, List.filter_cons_of_neg hq]
         exact ih
 
-/-- The credits of a run to a key, read as a scan, add over `append`. -/
-private theorem creditScan_append (blockP slotP : BalanceSource → Bool) (v high : ℕ)
-    {x m y : ForkedBeaconState preset} (pre : Run config checks x m)
-    (post : Run config checks m y) :
-    (creditScan blockP slotP v high (pre.append post)).1 =
-      (creditScan blockP slotP v high pre).1 + (creditScan blockP slotP v high post).1 := by
-  induction post with
-  | nil => rfl
-  | snoc post step ih =>
-    change (creditScan blockP slotP v high ((pre.append post).snoc step)).1 = _
-    rw [creditScan_snoc_fst, creditScan_snoc_fst]
-    split
-    · omega
-    · exact ih
-
 /-- A step's scanned credit is at most the matching credits of its events. -/
 private theorem stepCredit_le (blockP slotP : BalanceSource → Bool) (v : ℕ)
     {x y : ForkedBeaconState preset} (step : Step config checks x y)
@@ -2272,12 +2272,12 @@ private theorem baseSum_le_credit (config : Config) (pulled anc fin : BeaconStat
         exact le_max_left _ _
       by_cases big : 18 * preset.EFFECTIVE_BALANCE_INCREMENT.toNat ≤ Tp.toNat
       · have same : max preset.EFFECTIVE_BALANCE_INCREMENT (Tp / 4) = Tp / 4 := by
-          refine max_eq_right (UInt64.le_iff_toNat_le.mpr ?_)
-          rw [UInt64.toNat_div]
-          change preset.EFFECTIVE_BALANCE_INCREMENT.toNat ≤ Tp.toNat / 4
-          omega
+          refine UInt64.toNat_inj.mp ?_
+          rw [toNat_max, UInt64.toNat_div]
+          change max preset.EFFECTIVE_BALANCE_INCREMENT.toNat (Tp.toNat / 4) = Tp.toNat / 4
+          exact max_eq_right (by omega)
         rw [same] at hb
-        simp only [big, ↓reduceIte, same, hb, Except.toOption, Option.getD_some]
+        simp only [big, ↓reduceIte, hb, Except.toOption, Option.getD_some]
         exact Nat.le_refl _
       · have smallPos : 0 < (preset.EFFECTIVE_BALANCE_INCREMENT / 5).toNat := by
           rw [UInt64.toNat_div]
@@ -2289,7 +2289,7 @@ private theorem baseSum_le_credit (config : Config) (pulled anc fin : BeaconStat
           rw [UInt64.toNat_div]
           change preset.EFFECTIVE_BALANCE_INCREMENT.toNat / 5 ≤ _
           omega
-        simp only [big, ↓reduceIte, hb, psOk, Except.toOption, Option.getD_some]
+        simp only [big, ↓reduceIte, psOk, Except.toOption, Option.getD_some]
         exact perIncrement_antitone hb psOk smallLe smallPos
   unfold baseSum
   dsimp only
@@ -2497,7 +2497,7 @@ private theorem keyCredits_le_limits (S : Finset ValidatorIndex) (q : BalanceEve
     have tail := ih fun e member => bounded e (List.mem_cons_of_mem _ member)
     have head := bounded a List.mem_cons_self
     have single : ∑ v ∈ S, keyCredit v.toNat a ≤ a.credits := by
-      have := keys_credits_le (S.image UInt64.toNat) a
+      have := PinSplit5.keys_credits_le (S.image UInt64.toNat) a
       rw [Finset.sum_image fun x _ y _ same => UInt64.toNat_inj.mp same] at this
       exact this
     by_cases hq : q a = true
@@ -2850,8 +2850,8 @@ private theorem band_sum_le (h : Setting config checks g split fin pulled anc co
               max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat) := by
     refine keys.trans (Nat.add_le_add fits ?_)
     refine Nat.mul_le_mul_left _ ?_
-    exact Nat.le_trans (Nat.add_le_add_right (Nat.sub_le_sub periodUp periodDown) 1)
-      (Nat.le_add_right _ _)
+    have gap := Nat.le_trans (Nat.sub_le_sub_right periodUp _) (Nat.sub_le_sub_left periodDown _)
+    exact Nat.le_trans (Nat.add_le_add_right gap 1) (Nat.le_add_right _ _)
   calc 3 * (β * Vc.card) + β * K4s.card + 3 * (β * K5s.card) + β * K6s.card
       = β * (3 * Vc.card + K4s.card + 3 * K5s.card + K6s.card) := by ring
     _ ≤ β * (3 * (Vc.card + K4s.card + K5s.card + K6s.card)) := Nat.mul_le_mul_left _ weights
