@@ -3093,7 +3093,7 @@ private theorem key_rate_pre (h : Setting config checks g split fin pulled anc c
       ((getTotalActiveBalance pulled).toOption.getD 0)
     refine ⟨pq.toNat, fun z member total' perIncrement' totalOk perOk' => ?_⟩
     obtain ⟨fromFin⟩ := h.fromFin
-    obtain ⟨r1, r2, -⟩ := balancePath_endpoint pre Run.nil (le_refl _) member
+    obtain ⟨r1, r2, -⟩ := balancePath_endpoint pre Run.nil (by exact le_refl _) member
     obtain ⟨zf, zs⟩ := z
     have sameFork : zf = fork := Fork.ctorIdx_injective
       (Nat.le_antisymm (fork_le_of_chainSteps r2.chainSteps)
@@ -3164,7 +3164,7 @@ private theorem key_ceiling_pre (h : Setting config checks g split fin pulled an
       PinSplit2.creditBound pre i highC E P capHigh ≤ high' + (11 * Cr' + 9) / 10 ∧
       effectiveAt (⟨fork, split⟩ : ForkedBeaconState preset) i ≤ e0 := sorry
   obtain ⟨-, -, third, fourth⟩ := PinSplit2.Run.effective_floor_pair pre h.early h.fulu i
-    insideSplit 0 0 0 capHigh highC E P
+    insideSplit 0 0 capHigh highC E P
   have balances := fourth alignedCap startCap capCeil rateP endEpochPre closed
   have eff := (third _ alignedCap startCap (fun z member => balances z member) capCeil).1
   have final := envelope_arith (cap := capHigh) (capFor := capFor) (high := high') (kept := kept)
