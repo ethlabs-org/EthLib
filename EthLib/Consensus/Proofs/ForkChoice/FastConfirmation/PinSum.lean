@@ -14831,6 +14831,50 @@ private theorem whistle_exited (h : Setting config checks g split fin pulled anc
       (pinTerms config pulled anc fin).reserveW :=
   sorry
 
+/-- A key off the kept arm rises by its whole headroom to the largest cap.
+
+Within the withdrawal delay, the kept arm fails only at the gain test, which `lowRate` repeats.
+
+So `capFor` reads the largest cap. -/
+private theorem rise_of_notKept (h : Setting config checks g split fin pulled anc counted V) (i : ℕ)
+    (notKept : ¬ (pinTerms config pulled anc fin).keptArm i = true) :
+    (pinTerms config pulled anc fin).rise i =
+      preset.MAX_EFFECTIVE_BALANCE_ELECTRA.toNat - balanceAt pulled i := by
+  have shallow := h.shallow
+  unfold pinTerms at notKept ⊢
+  simp only at notKept ⊢
+  rw [ite_eq_right notKept]
+  simp only [Bool.and_eq_true, decide_eq_true_eq, not_and] at notKept
+  rw [ite_eq_right]
+  intro low
+  exact notKept shallow (of_decide_eq_true (Bool.and_eq_true_iff.mp low).2)
+
+/-- A key active at C has no exit by the finalized epoch at R, so its `bF` is zero.
+
+Such an exit is already set at the finalized state, which would leave the key inactive at C. -/
+private theorem bF_zero_of_active (h : Setting config checks g split fin pulled anc counted V)
+    {i : ℕ} (active : isActiveAt counted (getCurrentEpoch counted) i = true) :
+    (pinTerms config pulled anc fin).bF i = 0 := by
+  obtain ⟨fromFin⟩ := h.fromFin
+  obtain ⟨tailC⟩ := h.toCounted
+  have stays : (pinTerms config pulled anc fin).exitBeforeFin i = false := by
+    show (pulled.validators.data[i]?).any
+      (fun v => decide (v.exitEpoch.toNat ≤ (getCurrentEpoch fin).toNat)) = false
+    cases found : pulled.validators.data[i]? with
+    | none => rfl
+    | some w =>
+      simp only [Option.any_some, decide_eq_false_iff_not]
+      intro exited
+      obtain ⟨w0, foundFin, kept⟩ := exit_kept_of_le_fin h found exited
+      have inactive := inactive_of_exited h.twoSlots (fromFin.append tailC) foundFin
+        (by rw [kept]; exact exited)
+      simp only at inactive
+      rw [inactive] at active
+      exact Bool.false_ne_true active
+  show (if (pinTerms config pulled anc fin).exitBeforeFin i = true then _ else 0) = 0
+  rw [stays]
+  rfl
+
 /-- (W-F) The other active keys of the split's registry pay from their own stake.
 
 They are active at both branches.
@@ -14873,32 +14917,6 @@ private theorem whistle_free (h : Setting config checks g split fin pulled anc c
             config pulled anc fin).tight = false ∧ ((pinTerms config pulled anc fin).lateB i = true
             ∨ (pinTerms config pulled anc fin).pendingRB i = true)))), syncD eventsF i : ℕ) : ℤ) :=
   sorry
-
-/-- A key active at C has no exit by the finalized epoch at R, so its `bF` is zero.
-
-Such an exit is already set at the finalized state, which would leave the key inactive at C. -/
-private theorem bF_zero_of_active (h : Setting config checks g split fin pulled anc counted V)
-    {i : ℕ} (active : isActiveAt counted (getCurrentEpoch counted) i = true) :
-    (pinTerms config pulled anc fin).bF i = 0 := by
-  obtain ⟨fromFin⟩ := h.fromFin
-  obtain ⟨tailC⟩ := h.toCounted
-  have stays : (pinTerms config pulled anc fin).exitBeforeFin i = false := by
-    show (pulled.validators.data[i]?).any
-      (fun v => decide (v.exitEpoch.toNat ≤ (getCurrentEpoch fin).toNat)) = false
-    cases found : pulled.validators.data[i]? with
-    | none => rfl
-    | some w =>
-      simp only [Option.any_some, decide_eq_false_iff_not]
-      intro exited
-      obtain ⟨w0, foundFin, kept⟩ := exit_kept_of_le_fin h found exited
-      have inactive := inactive_of_exited h.twoSlots (fromFin.append tailC) foundFin
-        (by rw [kept]; exact exited)
-      simp only at inactive
-      rw [inactive] at active
-      exact Bool.false_ne_true active
-  show (if (pinTerms config pulled anc fin).exitBeforeFin i = true then _ else 0) = 0
-  rw [stays]
-  rfl
 
 /-- (W-L) A key of the split's registry that only C activates pays from its row of R.
 
@@ -16537,24 +16555,6 @@ private theorem key_core_flip (h : Setting config checks g split fin pulled anc 
     (kept : (pinTerms config pulled anc fin).keptArm v.toNat = true) :
     keyCeiling anc (fromFin.append tail) tailC highC eventsC events eventsF v.toNat :=
   sorry
-
-/-- A key off the kept arm rises by its whole headroom to the largest cap.
-
-Within the withdrawal delay, the kept arm fails only at the gain test, which `lowRate` repeats.
-
-So `capFor` reads the largest cap. -/
-private theorem rise_of_notKept (h : Setting config checks g split fin pulled anc counted V) (i : ℕ)
-    (notKept : ¬ (pinTerms config pulled anc fin).keptArm i = true) :
-    (pinTerms config pulled anc fin).rise i =
-      preset.MAX_EFFECTIVE_BALANCE_ELECTRA.toNat - balanceAt pulled i := by
-  have shallow := h.shallow
-  unfold pinTerms at notKept ⊢
-  simp only at notKept ⊢
-  rw [ite_eq_right notKept]
-  simp only [Bool.and_eq_true, decide_eq_true_eq, not_and] at notKept
-  rw [ite_eq_right]
-  intro low
-  exact notKept shallow (of_decide_eq_true (Bool.and_eq_true_iff.mp low).2)
 
 open DirectSafety.Apriori DirectSafety.Apriori.Internal in
 /-- A key of the split's registry that is off the kept arm is bounded by the largest cap.
