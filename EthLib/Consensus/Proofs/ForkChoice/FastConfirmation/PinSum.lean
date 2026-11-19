@@ -8254,9 +8254,7 @@ private theorem exited_ceiling (h : Setting config checks g split fin pulled anc
   have incPos := h.bands.1
   have inside : i < fin.validators.data.size := (Array.getElem?_eq_some_iff.mp found).1
   obtain ⟨shared⟩ := h.toFin
-  have alignedMax : preset.MAX_EFFECTIVE_BALANCE_ELECTRA.toNat %
-      preset.EFFECTIVE_BALANCE_INCREMENT.toNat = 0 := by
-    simpa [UInt64.toNat_mod] using congrArg UInt64.toNat h.aligned.2.2
+  have alignedMax := (cap_values_aligned h.aligned).2
   have startCap := PinSplit5.effectiveAt_le_capMax shared h.genesis h.caps h.early i
   have capCeil : ∀ z ∈ run.balancePath,
       PinSplit2.capAt z i ≤ preset.MAX_EFFECTIVE_BALANCE_ELECTRA.toNat := fun z member => by
@@ -14508,7 +14506,7 @@ private theorem key_core_frozen (h : Setting config checks g split fin pulled an
     ⟨_, rfl⟩
   have startFin : effectiveAt (⟨fork, fin⟩ : ForkedBeaconState preset) v.toNat ≤
       PinSplit2.capAt (⟨fork, pulled⟩ : ForkedBeaconState preset) v.toNat := by
-    have := effective_le_cap_at h (Run.nil : Run config checks ⟨fork, fin⟩ ⟨fork, fin⟩) v.toNat
+    have := effective_le_cap_at toFin h.genesis h.caps h.early v.toNat
     omega
   have stay := key_stay (fromFin.append tailC) (fromFin.append tail) h.early h.fulu
     (UInt64.le_iff_toNat_le.mp h.later) v.toNat inFin Bc
@@ -14549,7 +14547,8 @@ private theorem key_core_frozen (h : Setting config checks g split fin pulled an
     FloorTrace.effective_aligned (toFin.append (fromFin.append tailC)) h.genesis h.aligned v.toNat
   have cappedC : balanceAt counted v.toNat ≤
       capForOf (pinTerms config pulled anc fin) pulled v.toNat :=
-    Nat.le_trans (effective_le_cap_at h (fromFin.append tailC) v.toNat) (Nat.le_trans capC
+    Nat.le_trans (effective_le_cap_at (toFin.append (fromFin.append tailC)) h.genesis h.caps
+      h.early v.toNat) (Nat.le_trans capC
       (capAt_le_capForOf _ pulled v.toNat (capAt_le_capMax h.caps electra v.toNat)))
   have close : ∀ S U : ℕ, Bc ≤ H + S → (S = 0 ∨ preset.EFFECTIVE_BALANCE_INCREMENT.toNat ≤ U + 1 ∨
       (S < preset.EFFECTIVE_BALANCE_INCREMENT.toNat ∧
