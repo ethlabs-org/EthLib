@@ -16247,9 +16247,13 @@ private theorem cut_balance_core (h : Setting config checks g split fin pulled a
 
 /-- The keys of R's registry that are slashed at the split and that R's call reads as slashed.
 
-Their withdrawable epoch at R is a slashing vector past the finalized state's epoch.
+They are the keys that the shared run slashes in its last epoch, and some before it.
 
-That leaves out a key slashed before the finalized state's epoch.
+The withdrawable epoch at R is a slashing vector past the finalized state's epoch.
+
+The anchor's finalized epoch can lag that of the finalized state.
+
+So this leaves out a key slashed before the finalized state's epoch.
 
 Its correlation penalty can fall in the window.
 
@@ -16266,15 +16270,19 @@ private def cutKeys (config : Config) (pulled anc fin split : BeaconState preset
           w.withdrawableEpoch.toNat)) = true
 
 open DirectSafety.Apriori DirectSafety.Apriori.Internal in
-/-- The balance of a cut key at the split is at most the finalized state's or R's with its rise.
+/-- A key that the shared run slashes is bounded by its finalized balance or by R's balance.
 
-R's side adds one increment, and the sync debits of the shared run and of R's tail.
+The bound by R's balance reads its rise, one increment and the debits and induced leak.
 
-A key with a sync debit adds a second increment for the rounding of its rise.
+A second increment pays the rounding of the balance when it has a sync debit.
 
-A key unslashed at the finalized state takes `slash_floor_across`.
+The balance at the split is the key's effective balance at the epoch start, up to the downward band.
 
-A key slashed there takes `slash_floor_from_slashed`. -/
+A queued partial paid before the finalized state leaves the balance at the finalized one.
+
+Otherwise R's tail takes its penalties and sync debits, and the leak that `rise` reads covers them.
+
+`bud_branchR` reads the quotient of this bound, and pays its rounding with the debits. -/
 private theorem cut_balance_le (h : Setting config checks g split fin pulled anc counted V)
     (fromFin : Run config checks ⟨fork, fin⟩ ⟨fork, split⟩)
     (tail : Run config checks ⟨fork, split⟩ ⟨fork, pulled⟩) (high : ℕ)
