@@ -3662,9 +3662,11 @@ private theorem prevStake_band_of_guard {g x z : ForkedBeaconState preset} {high
   simp only [stakeCeilingAt, stakeFloorAt, zero] at low previous mono ⊢
   omega
 
-/-- The reward per increment at a state of a run from the finalized state, times the increments
-active at its previous epoch or at its current one, is at most the pin's rate times the active
-increments. -/
+/-- The reward per increment at a state of a run from the finalized state is at most the pin's rate.
+
+It is read times the increments active at the previous epoch or at the current one.
+
+The pin's rate is read times the active increments. -/
 private theorem rate_of_guard
     (h : Setting config checks g split fin pulled anc counted V)
     {m : BeaconState preset fork} (toM : Run config checks ⟨fork, fin⟩ ⟨fork, m⟩)
@@ -9078,8 +9080,9 @@ private theorem propN_arith {inc c pi pq a b total T : ℕ} (incPos : 0 < inc)
     _ = 324 * (pq * (T / inc)) + 216 * pq := by ring
 
 open DirectSafety.Apriori DirectSafety.Apriori.Internal in
-/-- The proposer credits of a set of keys over a run inside one epoch of C's branch fit the pin's
-rate on the pulled total, with eight hundred and ninety-six times the credits on the left.
+/-- The proposer credits of a set of keys over a run inside one epoch of C's branch are bounded.
+
+The bound is the pin's rate on the pulled total, with `896` times the credits on the left.
 
 The block steps of the run credit at most `54 / 448` of the rate on the active increments.
 
@@ -9141,11 +9144,13 @@ private theorem propN_epoch_le (h : Setting config checks g split fin pulled anc
     (propN_arith incPos credits prev curr band)
 
 open DirectSafety.Apriori DirectSafety.Apriori.Internal in
-/-- The proposer credits of a set of keys over a one-epoch segment of C's branch fit the pin's rate
-on the pulled total, with eight hundred and ninety-six times the credits on the left.
+/-- The proposer credits of a set of keys over a one-epoch segment of C's branch are bounded.
 
-The slot that ends the segment adds no block credit, so the segment fits as its run before it
-does. -/
+The bound is the pin's rate on the pulled total, with `896` times the credits on the left.
+
+The slot that ends the segment adds no block credit.
+
+So the segment fits as its run before that slot does. -/
 private theorem propN_segment_le (h : Setting config checks g split fin pulled anc counted V)
     (highC : ℕ) (S : Finset ValidatorIndex) {T : Gwei}
     (pulledOk : getTotalActiveBalance pulled = .ok T) {m n : ForkedBeaconState preset}
@@ -9201,8 +9206,9 @@ private theorem stake_le_base {α : Type} {inc pq : ℕ} {P : Finset ℕ} {f : �
   · obtain ⟨a, inA, rfl⟩ := Finset.mem_image.mp member
     exact inside a inA
 
-/-- The epoch bound of the pin's rate on the pulled total is at most the proposer base and one
-more increment's rate, which the other credited keys of `attesterExcess` pay. -/
+/-- The epoch bound of the pin's rate on the pulled total is at most the proposer credit.
+
+The proposer base pays the bound, and `attesterExcess` pays one more increment's rate. -/
 private theorem credit_arith {inc pi E T P A : ℕ} (incPos : 0 < inc) (hT : T = max inc E)
     (hP : pi * (E / inc) ≤ P) (hA : 1 ≤ A) :
     (324 * (pi * (T / inc)) + 216 * pi) / 896 ≤ P + A * pi := by
@@ -9219,11 +9225,13 @@ private theorem credit_arith {inc pi E T P A : ℕ} (incPos : 0 < inc) (hT : T =
   nlinarith
 
 open DirectSafety.Apriori DirectSafety.Apriori.Internal in
-/-- C's proposer credits to any set of keys, with the sync part of the bound, fit the proposer
-credit of each epoch of the window.
+/-- C's proposer credits to any set of keys, with the sync part of the bound, are bounded.
 
-The credits of each epoch are cut over the blocks, so the flag rewards of its epoch pass are not
-read. -/
+The bound is the proposer credit of each epoch of the window.
+
+The credits of each epoch are cut over the blocks.
+
+So the flag rewards of its epoch pass are not read. -/
 private theorem proposer_rewards_le (h : Setting config checks g split fin pulled anc counted V)
     (tailC : Run config checks ⟨fork, split⟩ ⟨fork, counted⟩) (highC : ℕ)
     (endEpochC : (getCurrentEpoch counted).toNat ≤ highC + 1) (S : Finset ValidatorIndex) :
