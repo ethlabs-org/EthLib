@@ -9,6 +9,11 @@ Not yet released.
 
 ### Proof additions
 
+- `hysteresis_of_run_slot` says that a slot step of a run from genesis ends within the bands of hysteresis.
+  The step must reach the first slot of an epoch.
+  It composes the epoch transition with the upgrades of the slot, which keep the bands because every effective balance is at most its cap.
+  `run_boundaryEpoch` and the pin's charge lemmas read it.
+
 - `DirectSafety.Apriori.Internal.perIncrement_exists` is public: the base reward per increment exists at a positive total when the scaled factor fits.
   The pin reads it to show that its base reward per increment is at least four.
   The pin's preset facts gain `fits`, that the scaled base reward factor fits in a `Gwei`, which both presets meet.
