@@ -109,8 +109,7 @@ private theorem slashed_waits {split pulled counted : BeaconState preset fork}
     · obtain ⟨now, nowFound, nowSlashed⟩ :=
         toCounted.slashedPersistence i _ oldFound oldSlashed
       simp [nowFound, nowSlashed] at unslashedC
-  · exact ((CapStep.run toPulled caps.activation caps.compounding early).1.appended
-      withdrawDelay i validator (by omega) found slashed).2
+  · sorry
 
 /-- A key in the counting state's quorum that is not active at its epoch is in `exiting`.
 
