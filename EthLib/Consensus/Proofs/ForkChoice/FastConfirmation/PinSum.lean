@@ -6420,9 +6420,9 @@ private theorem prefix_envelope (h : Setting config checks g split fin pulled an
     omega
   obtain ⟨shared⟩ := h.toFin
   have forkRefl : (⟨fork, pulled⟩ : ForkedBeaconState preset).fork ≤
-      (⟨fork, split⟩ : ForkedBeaconState preset).fork := Nat.le_forkRefl _
+      (⟨fork, split⟩ : ForkedBeaconState preset).fork := Nat.le_refl _
   have forkRefl' : (⟨fork, pulled⟩ : ForkedBeaconState preset).fork ≤
-      (⟨fork, fin⟩ : ForkedBeaconState preset).fork := Nat.le_forkRefl _
+      (⟨fork, fin⟩ : ForkedBeaconState preset).fork := Nat.le_refl _
   have whole := Apriori.Internal.balanceEvents_append fromFin tail high replayedF replayed
   obtain ⟨B, hB⟩ : ∃ B, B = actualBalanceAt (⟨fork, pulled⟩ : ForkedBeaconState preset) v.toNat +
       (((getCurrentEpoch pulled).toNat + 2 - (getCurrentEpoch fin).toNat) *
@@ -6443,8 +6443,9 @@ private theorem prefix_envelope (h : Setting config checks g split fin pulled an
     intro z0 q1 q2 cut z' member
     obtain ⟨r1, r2, cut'⟩ := balancePath_endpoint (fromFin.append q1) q2 forkRefl' member
     obtain ⟨zf, zs⟩ := z'
-    have same : fork = zf := (Fork.ctorIdx_injective
-      (Nat.le_antisymm (fork_le_of_chainSteps r2.chainSteps) (fork_le_of_chainSteps r1.chainSteps))).symm
+    have above : fork ≤ zf := fork_le_of_chainSteps r1.chainSteps
+    have below : zf ≤ fork := fork_le_of_chainSteps r2.chainSteps
+    have same : fork = zf := Fork.ctorIdx_injective (Nat.le_antisymm above below)
     subst same
     refine ⟨zs, r1, r2, rfl, ?_⟩
     rw [cut', ← Run.append_assoc, cut]
@@ -6478,8 +6479,9 @@ private theorem prefix_envelope (h : Setting config checks g split fin pulled an
   obtain ⟨q1, q2, cutT⟩ := balancePath_endpoint tail
     (Run.nil : Run config checks ⟨fork, pulled⟩ ⟨fork, pulled⟩) forkRefl member
   obtain ⟨zf, zs⟩ := z
-  have same : fork = zf := (Fork.ctorIdx_injective
-    (Nat.le_antisymm (fork_le_of_chainSteps q2.chainSteps) (fork_le_of_chainSteps q1.chainSteps))).symm
+  have above : fork ≤ zf := fork_le_of_chainSteps q1.chainSteps
+  have below : zf ≤ fork := fork_le_of_chainSteps q2.chainSteps
+  have same : fork = zf := Fork.ctorIdx_injective (Nat.le_antisymm above below)
   subst same
   have cutT' : q1.append q2 = tail := cutT
   have startCap : effectiveAt (⟨fork, fin⟩ : ForkedBeaconState preset) v.toNat ≤
