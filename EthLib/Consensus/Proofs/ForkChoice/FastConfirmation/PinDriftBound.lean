@@ -3203,6 +3203,101 @@ private theorem replay_stage {f : Fork} (electra : .pectra ≤ f) {k : EpochStag
       subst ok
       exact Grew.refl _
 
+/-- A later state has no exit that an earlier one lacks, at the indices of the earlier registry.
+
+A key without an exit epoch in the earlier state has none in the later state. -/
+private def ExitsStay {f g : Fork} (s : BeaconState preset f) (t : BeaconState preset g) : Prop :=
+  ∀ (i : ℕ) (v : Validator), s.validators.data[i]? = some v →
+    ∃ w, t.validators.data[i]? = some w ∧
+      (v.exitEpoch = FAR_FUTURE_EPOCH → w.exitEpoch = FAR_FUTURE_EPOCH)
+
+private theorem ExitsStay.trans {f g h : Fork} {s : BeaconState preset f} {t : BeaconState preset g}
+    {u : BeaconState preset h} (one : ExitsStay s t) (two : ExitsStay t u) : ExitsStay s u :=
+  fun i v found => by
+    obtain ⟨m, mFound, far⟩ := one i v found
+    obtain ⟨w, wFound, far'⟩ := two i m mFound
+    exact ⟨w, wFound, fun unset => far' (far unset)⟩
+
+/-- A state with the same validators has the same exits. -/
+private theorem ExitsStay.of_data {f g : Fork} {s : BeaconState preset f} {t : BeaconState preset g}
+    (same : t.validators.data = s.validators.data) : ExitsStay s t :=
+  fun i v found => ⟨v, by rw [same]; exact found, fun far => far⟩
+
+/-- The state at the input of a slot step's pending deposits, for a deposit event of the step.
+
+It keeps the registry of the step's start, at its epoch and with at most its size.
+
+The step's end state has no exit epoch where that input has none. -/
+private theorem Step.deposit_input {u w : ForkedBeaconState preset}
+    (ok : advanceSlotAcross config checks u = .ok w) (fulu : .fusaka ≤ u.fork)
+    (early : w.fork < .glamsterdam) {events : List (BalanceEvent preset)}
+    (replayed : (Step.slot ok : Step config checks u w).balanceEvents = .ok events) :
+    ∀ e ∈ events, e.source = .deposits →
+      Kept u.state e.before.state ∧
+      e.before.state.validators.data.size ≤ u.state.validators.data.size ∧
+      getCurrentEpoch e.before.state = getCurrentEpoch u.state ∧
+      ExitsStay e.before.state w.state := by
+  intro e member source
+  have electraU : .pectra ≤ u.fork := Nat.le_trans (by decide) fulu
+  obtain ⟨advanced, cached, crossings, advanceOk, upgrades, cachedOk, crossingOk, branch⟩ :=
+    Step.balanceEvents_slot ok early replayed
+  have noCrossings : crossings = [] :=
+    DirectSafety.Apriori.Internal.upgradeBalanceReplay_electra_nil
+      (u := ⟨u.fork, advanced⟩) electraU crossingOk
+  rcases branch with ⟨_, eventsEq⟩ | ⟨middle, updated, recorded, recordOk, updatedOk,
+      validatorsEq, _, eventsEq, _⟩
+  · rw [eventsEq, noCrossings] at member
+    cases member
+  rw [eventsEq, noCrossings, List.append_nil] at member
+  have cachedKept : Kept u.state cached := by
+    obtain ⟨_, _, _, _, rfl⟩ := processSlot_ok cachedOk
+    exact Kept.of_data rfl
+  have cachedSlot : cached.slot = u.state.slot := (frame_processSlot cachedOk).slot
+  have trace := epochBalanceReplay_trace recordOk
+  change EpochTrace _ ([EpochStage.justification, .inactivity, .rewards, .registry, .slashings,
+    .eth1Reset] ++ [.pendingDeposits, .pendingConsolidations]) _ _ at trace
+  obtain ⟨six, head, rest⟩ := EpochTrace.append_iff.mp trace
+  have grew : Grew (cached, []) six := head.transport (fun p q => Grew p q) Grew.refl Grew.trans
+    (fun _ member _ _ computed => replay_stage electraU member computed)
+  cases rest with
+  | cons first rest =>
+    cases rest with
+    | cons second rest =>
+      cases rest
+      simp only [epochReplayAction, electraU, ↓reduceDIte, bind_ok_iff, pure, Except.pure,
+        Except.ok.injEq] at first second
+      obtain ⟨deposited, depositOk, rfl⟩ := first
+      obtain ⟨consolidated, consolidatedOk, same⟩ := second
+      simp only [Prod.mk.injEq] at same
+      obtain ⟨rfl, rfl⟩ := same
+      rcases List.mem_append.mp member with old | last
+      · rcases List.mem_append.mp old with old | added
+        · rcases grew.events e old with listed | other
+          · cases listed
+          · exact absurd source other
+        · rw [List.mem_singleton.mp added]
+          have cachedSize : cached.validators.data.size = u.state.validators.data.size := by
+            obtain ⟨_, _, _, _, rfl⟩ := processSlot_ok cachedOk
+            rfl
+          have same : getCurrentEpoch six.1 = getCurrentEpoch u.state := by
+            simp only [getCurrentEpoch, grew.slot, cachedSlot]
+          have deposits : ExitsStay six.1 deposited := fun i v found =>
+            ⟨v, pendingDeposits_entries depositOk i v found, fun far => far⟩
+          have consolidations : ExitsStay deposited consolidated :=
+            .of_data (congrArg (·.data) (processPendingConsolidations_fields consolidatedOk).1)
+          have updates : ExitsStay consolidated updated := fun i v found => by
+            obtain ⟨balance, owned⟩ := processEffectiveBalanceUpdates_owned updatedOk found
+            obtain ⟨_, read, -⟩ :=
+              processEffectiveBalanceUpdates_effectiveBalance_eq updatedOk found owned
+            exact ⟨_, read, fun far => far⟩
+          have upgraded : ExitsStay updated w.state := .of_data
+            ((processUpgrades_validators_of_electra (s := ⟨u.fork, advanced⟩) electraU early
+              upgrades).trans (congrArg (·.data) validatorsEq))
+          exact ⟨cachedKept.trans grew.kept, (grew.size.trans cachedSize).le, same,
+            deposits.trans (consolidations.trans (updates.trans upgraded))⟩
+      · rw [List.mem_singleton.mp last] at source
+        cases source
+
 /-- Every deposit event of a slot step of the run starts at a state that keeps the registry.
 
 A slot step records a deposit event only for the pending deposits of its epoch pass.
@@ -3243,58 +3338,15 @@ private theorem Run.events_kept {g x y : ForkedBeaconState preset}
     Nat.lt_of_le_of_lt (fork_le_of_chainSteps post.chainSteps) early
   have earlyU : u.fork < .glamsterdam := Nat.lt_of_le_of_lt stepFork earlyW
   have fuluU : .fusaka ≤ u.fork := Nat.le_trans fulu (fork_le_of_chainSteps pre.chainSteps)
-  have electraU : .pectra ≤ u.fork := Nat.le_trans (by decide) fuluU
   have run : Kept x.state u.state := kept_run shared genesis fulu pre earlyU
   have epochLe : getCurrentEpoch u.state ≤ getCurrentEpoch y.state :=
     currentEpoch_le_of_chainSteps
       (Relation.ReflTransGen.head (Step.slot ok : Step config checks u w).chainStep
         post.chainSteps)
-  obtain ⟨advanced, cached, crossings, advanceOk, upgrades, cachedOk, crossingOk, branch⟩ :=
-    Step.balanceEvents_slot ok earlyW replayed
-  have noCrossings : crossings = [] :=
-    DirectSafety.Apriori.Internal.upgradeBalanceReplay_electra_nil
-      (u := ⟨u.fork, advanced⟩) electraU crossingOk
-  rcases branch with ⟨_, eventsEq⟩ | ⟨middle, updated, recorded, recordOk, _, _, _, eventsEq, _⟩
-  · rw [eventsEq, noCrossings] at member
-    cases member
-  rw [eventsEq, noCrossings, List.append_nil] at member
-  have cachedKept : Kept u.state cached := by
-    obtain ⟨_, _, _, _, rfl⟩ := processSlot_ok cachedOk
-    exact Kept.of_data rfl
-  have cachedSlot : cached.slot = u.state.slot := (frame_processSlot cachedOk).slot
-  have trace := epochBalanceReplay_trace recordOk
-  change EpochTrace _ ([EpochStage.justification, .inactivity, .rewards, .registry, .slashings,
-    .eth1Reset] ++ [.pendingDeposits, .pendingConsolidations]) _ _ at trace
-  obtain ⟨six, head, rest⟩ := EpochTrace.append_iff.mp trace
-  have grew : Grew (cached, []) six := head.transport (fun p q => Grew p q) Grew.refl Grew.trans
-    (fun _ member _ _ computed => replay_stage electraU member computed)
-  cases rest with
-  | cons first rest =>
-    cases rest with
-    | cons second rest =>
-      cases rest
-      simp only [epochReplayAction, electraU, ↓reduceDIte, bind_ok_iff, pure, Except.pure,
-        Except.ok.injEq] at first second
-      obtain ⟨deposited, _, rfl⟩ := first
-      obtain ⟨consolidated, _, same⟩ := second
-      simp only [Prod.mk.injEq] at same
-      obtain ⟨-, rfl⟩ := same
-      rcases List.mem_append.mp member with old | last
-      · rcases List.mem_append.mp old with old | added
-        · rcases grew.events e old with listed | other
-          · cases listed
-          · exact absurd source other
-        · rw [List.mem_singleton.mp added]
-          have total : Kept x.state six.1 := run.trans (cachedKept.trans grew.kept)
-          have cachedSize : cached.validators.data.size = u.state.validators.data.size := by
-            obtain ⟨_, _, _, _, rfl⟩ := processSlot_ok cachedOk
-            rfl
-          have same : getCurrentEpoch six.1 = getCurrentEpoch u.state := by
-            simp only [getCurrentEpoch, grew.slot, cachedSlot]
-          exact ⟨total.life, total.withdrawable, same ▸ epochLe,
-            (grew.size.trans cachedSize).le, (cachedKept.trans grew.kept).slashed, same⟩
-      · rw [List.mem_singleton.mp last] at source
-        cases source
+  obtain ⟨kept, size, same, -⟩ := Step.deposit_input ok fuluU earlyW replayed e member source
+  have total := run.trans kept
+  exact ⟨total.life, total.withdrawable, same ▸ epochLe, size, kept.slashed, same⟩
+
 end PinSplit4
 
 end GroupD
