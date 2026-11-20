@@ -676,7 +676,7 @@ theorem viable_of_ancestor {config : Config} {root member : Root}
   rcases viable with below | inTree
   · -- The justified block descends from the root, so from the member too.
     obtain ⟨rootBlock, rootFound, -⟩ := slot_le_of_isAncestor memberFound descends
-    exact .inl (isAncestor_trans_of_lt before rootFound memberFound below descends)
+    exact .inl (isAncestor_trans rootFound memberFound below descends)
   -- Walk down the filtered tree from the root, by the slot of the node, until the member.
   have walkDown : ∀ s, ∀ n ∈ nodes, ∀ block : BeaconBlock preset fork,
       store.blocks[n.root]? = some block → block.slot.toNat = s →
