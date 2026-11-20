@@ -9,6 +9,8 @@ Not yet released.
 
 ### Proof additions
 
+- In Lean, `payloadInputs_processExecutionRequests` (PayloadInputs.lean) shows that before Gloas the requests of the execution layer in a block keep the inputs of a payload.
+
 - `Unforgeability.Bridge.unforgeable_capped` charges the SPHINCS signer's counter searches apart from the adversary's queries ([#3375](https://github.com/ethereum/EthLib/issues/3375)).
   An adversary with at most `q` hash calls of its own and `r` signing requests forges with probability at most `(q + cappedCalls (2^22) r + 1) / 2^127`.
   `cappedCalls T r` charges each request `470595 + 3 T` calls and one request `3 * 2^32` more; at `2^30` requests the floor drops from about `2^-63.4` to `2^-73.4`.
@@ -414,6 +416,10 @@ Not yet released.
   `Store.nextSlotStart_le_clock` in `ForkChoice/ForwardClock.lean` shows that the slot after one before the current slot exists and starts by the store's clock.
 
 ### Changes that break callers
+
+- In Lean, `payloadInputs_processOperations` holds at every fork and no longer takes `gloas : .glamsterdam ≤ fork`.
+  Before Gloas the deposits and the requests of the execution layer keep the inputs of a payload too.
+  A caller drops the first explicit argument.
 
 - In Lean, eight more laws of the epoch steps move to the base laws, with the same conclusions and a weaker laws premise.
   Each takes `EpochBaseLaws R` in place of `EpochStepLaws R`, which provides it.
