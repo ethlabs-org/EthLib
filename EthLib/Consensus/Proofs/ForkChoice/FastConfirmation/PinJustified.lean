@@ -109,7 +109,7 @@ They are the two conditions that the pin's `Setting` assumes of the call's final
 
 The call's pulled-up state, target state and finalized state are those of an honest store.
 
-The a priori guard bounds stake drift from the finalized state through the call's window.
+The guard is `aprioriGuardAt` at the finalized state, for the call's epoch.
 
 The lag is the call's epoch, plus two, less the finalized state's epoch. -/
 def PinGuarded (last : ℕ) : Prop :=
@@ -131,9 +131,9 @@ The theorem covers only `fusaka ≤ fork < glamsterdam`.
 
 `PinGuarded` supplies the a priori guard at the selected head's finalized state.
 
-The cross-store `finality` premise links one honest store's finalized block to another's chain.
+The cross-store `finality` premise links one store's finalized block to another's justified chain.
 
-That chain starts at the other store's justified block, whose epoch must be at least as recent.
+The link is required when the other store's justified epoch is at least the finalized epoch.
 
 Take honest voters whose stake exceeds a third of the sum of the total, margin and pin reserve.
 

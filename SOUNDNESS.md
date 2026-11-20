@@ -3476,7 +3476,8 @@ Its conclusion allows a collision of two honest stores.
 It assumes the nonzero roots of the held block states and the absent parent of the anchor.
 It assumes the bounded honest store epochs, the stake floors and the unslashed counted voters.
 `PinGuarded` supplies the a priori guard at the selected head's finalized state.
-The cross-store `finality` premise requires that an honest store's justified chain contains another honest store's finalized block when the justified epoch is at least the finalized epoch.
+The cross-store `finality` premise links one honest store's finalized block to another's justified chain.
+The chain must contain the finalized block if the justified epoch is at least the finalized epoch.
 The theorem also requires the next fork to be past the horizon.
 The endpoint above still assumes `JustifiedPinned`.
 Only the two preset theorems `justifiedPinned_of_setting.mainnet` and `.minimal` call `justifiedPinned_of_setting`, and no endpoint calls any of them.
