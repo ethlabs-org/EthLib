@@ -415,6 +415,10 @@ Not yet released.
 
 ### Changes that break callers
 
+- In Lean, `payloadInputs_processOperations` holds at every fork and no longer takes `gloas : .glamsterdam ≤ fork`.
+  Before Gloas the deposits and the requests of the execution layer keep the inputs of a payload too.
+  A caller drops the first explicit argument.
+
 - In Lean, eight more laws of the epoch steps move to the base laws, with the same conclusions and a weaker laws premise.
   Each takes `EpochBaseLaws R` in place of `EpochStepLaws R`, which provides it.
   `EpochStepLaws.processVoluntaryExit`, `EpochStepLaws.processBlsToExecutionChange`, `EpochStepLaws.applySyncReward`, `EpochStepLaws.processSyncAggregate`, `EpochStepLaws.processHistoricalRootsUpdate`, `EpochStepLaws.processParticipationRecordUpdates`, `EpochStepLaws.processSyncCommitteeUpdates` and `EpochStepLaws.processPtcWindow` are renamed `EpochBaseLaws.processVoluntaryExit`, `EpochBaseLaws.processBlsToExecutionChange`, `EpochBaseLaws.applySyncReward`, `EpochBaseLaws.processSyncAggregate`, `EpochBaseLaws.processHistoricalRootsUpdate`, `EpochBaseLaws.processParticipationRecordUpdates`, `EpochBaseLaws.processSyncCommitteeUpdates` and `EpochBaseLaws.processPtcWindow`, and each takes `EpochBaseLaws`.
