@@ -417,6 +417,9 @@ Not yet released.
 
 ### Changes that break callers
 
+- In Lean, `processInactivityUpdates_frame` moves from `EthLib.Consensus.Proofs.Transition.EpochParticipation` to `EthLib.Consensus.Proofs.Transition.EpochUpdates`, next to the other frame facts of the epoch steps.
+  Its name and statement are unchanged; a caller that imports only the former adds `import EthLib.Consensus.Proofs.Transition.EpochUpdates`.
+
 - In Lean, `payloadInputs_processOperations` holds at every fork and no longer takes `gloas : .glamsterdam ≤ fork`.
   Before Gloas the deposits and the requests of the execution layer keep the inputs of a payload too.
   A caller drops the first explicit argument.
