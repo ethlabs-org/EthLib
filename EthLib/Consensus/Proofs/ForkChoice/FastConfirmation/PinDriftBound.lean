@@ -15299,7 +15299,8 @@ private theorem exited_ceiling (h : Setting config checks g split fin pulled anc
 private theorem charge_exits {m n : ForkedBeaconState preset} (step : Step config checks m n)
     {v : ℕ} (charged : step.departureCharges.any (·.index == v) = true) :
     ∃ u w, m.state.validators.data[v]? = some u ∧ n.state.validators.data[v]? = some w ∧
-      u.exitEpoch = FAR_FUTURE_EPOCH ∧ w.exitEpoch ≠ FAR_FUTURE_EPOCH := by
+      (∀ u', m.state.validators.data[v]? = some u' → u'.exitEpoch = FAR_FUTURE_EPOCH) ∧
+      w.exitEpoch ≠ FAR_FUTURE_EPOCH := by
   obtain ⟨c, member, same⟩ := List.any_eq_true.mp charged
   obtain ⟨⟨u, j⟩, found, picked⟩ := List.mem_filterMap.mp member
   have found : m.state.validators.data[j]? = some u := by
@@ -15314,7 +15315,10 @@ private theorem charge_exits {m n : ForkedBeaconState preset} (step : Step confi
       simp only [Bool.and_eq_true, beq_iff_eq, bne_iff_ne] at assigned
       have : j = v := by simpa using same
       subst this
-      exact ⟨u, w, found, located, assigned.1, assigned.2⟩
+      refine ⟨u, w, found, located, ?_, assigned.2⟩
+      intro u' read
+      obtain rfl := Option.some.inj (found.symm.trans read)
+      exact assigned.1
     · cases picked
 
 /-- A step that charges a key has it in the registry at its start. -/
@@ -31803,12 +31807,8 @@ private theorem charge_effective_bound_of
     effectiveAt y v.toNat ≤ effectiveAt a v.toNat + preset.upwardBand +
       (propC tailY highC v.toNat + whistC tailY highC v.toNat + syncCr eventsY v.toNat) +
       (riseScan v.toNat highC tailY).2 := by
-  obtain ⟨u0, w0, foundA0, foundB0, unset0, set0⟩ := charge_exits step hcharge
+  obtain ⟨u0, -, foundA0, -, unset, -⟩ := charge_exits step hcharge
   have hin : v.toNat < a.state.validators.data.size := (Array.getElem?_eq_some_iff.mp foundA0).1
-  have unset : ∀ w, a.state.validators.data[v.toNat]? = some w → w.exitEpoch = FAR_FUTURE_EPOCH :=
-    fun w foundA => by
-      obtain rfl := Option.some.inj (foundA0.symm.trans foundA)
-      exact unset0
   subst site
   have electra : .pectra ≤ fork := Nat.le_trans (by decide) h.fulu
   have yBack : y.fork ≤ fork := by rw [yFork]; exact Nat.le_refl _
@@ -31937,15 +31937,11 @@ private theorem charge_effective_bound (h : Setting config checks g split fin pu
       (riseScan v.toNat highC tailY).2 := by
   obtain ⟨shared⟩ := h.toFin
   obtain ⟨fromFin⟩ := h.fromFin
-  obtain ⟨u0, w0, foundA0, foundB0, unset0, set0⟩ := charge_exits step hcharge
+  obtain ⟨u0, -, foundA0, -, unset, -⟩ := charge_exits step hcharge
   exact charge_effective_bound_of h (shared.append fromFin) yFork tailY highC endEpochY replayedY
     pre step post site hcharge
     (charge_epoch_start h highC yFork pre step post v.toNat
-      (Array.getElem?_eq_some_iff.mp foundA0).1
-      (fun w foundA => by
-        obtain rfl := Option.some.inj (foundA0.symm.trans foundA)
-        exact unset0)
-      started endEpochY hcharge) held
+      (Array.getElem?_eq_some_iff.mp foundA0).1 unset started endEpochY hcharge) held
 
 /-- A charged key of `K5` is not yet withdrawable at C, in the state after its charge step.
 
@@ -32057,12 +32053,8 @@ private theorem split_epoch_start_data (h : Setting config checks g split fin pu
         actualBalanceAt c v.toNat ≤ effectiveAt c v.toNat + preset.upwardBand) ∧
       actualBalanceAt p v.toNat ≤ actualBalanceAt c v.toNat + netScan v.toNat highC r +
         (creditScan (fun _ => false) (fun s => decide (s ≠ .rewards)) v.toNat highC r).1 := by
-  obtain ⟨u0, w0, foundP, -, unset0, -⟩ := charge_exits step charged
+  obtain ⟨u0, -, foundP, -, unset, -⟩ := charge_exits step charged
   have hin : v.toNat < p.state.validators.data.size := (Array.getElem?_eq_some_iff.mp foundP).1
-  have unset : ∀ w, p.state.validators.data[v.toNat]? = some w → w.exitEpoch = FAR_FUTURE_EPOCH :=
-    fun w found => by
-      obtain rfl := Option.some.inj (foundP.symm.trans found)
-      exact unset0
   have pFork : p.fork = fork :=
     fork_eq_of_run cf ((Run.nil.snoc step).append rest) (Nat.le_refl _)
   have pEarly : p.fork < .glamsterdam := by rw [pFork]; exact h.early
@@ -32094,8 +32086,8 @@ private theorem charge_site_start {x y p q cp cq : ForkedBeaconState preset}
     (cpost : Run config checks cq y) (csite : (cfront.snoc cstep).append cpost = tail) {i : ℕ}
     (charges : step.departureCharges.any (·.index == i) = true)
     (cCharges : cstep.departureCharges.any (·.index == i) = true) : p = cp := by
-  obtain ⟨u, w, foundP, foundQ, unset, assigned⟩ := charge_exits step charges
-  obtain ⟨cu, cw, foundCp, foundCq, cUnset, cAssigned⟩ := charge_exits cstep cCharges
+  obtain ⟨-, w, -, foundQ, unset, assigned⟩ := charge_exits step charges
+  obtain ⟨-, cw, -, foundCq, cUnset, cAssigned⟩ := charge_exits cstep cCharges
   rcases Run.prefix_total (cfront.snoc cstep) cpost (front.snoc step) post csite site with
     ⟨r, extended⟩ | ⟨r, extended⟩
   · rcases Run.prefix_snoc (cfront.snoc cstep) r front step extended with
@@ -32103,15 +32095,13 @@ private theorem charge_site_start {x y p q cp cq : ForkedBeaconState preset}
     · cases eq_of_heq same
       rfl
     · obtain ⟨later, foundLater, life⟩ := r'.registryLifecycle.validators i cw foundCq
-      obtain rfl : later = u := Option.some.inj (foundLater.symm.trans foundP)
-      exact absurd (by rw [← life.exitEpoch cAssigned]; exact unset) cAssigned
+      exact absurd (by rw [← life.exitEpoch cAssigned]; exact unset later foundLater) cAssigned
   · rcases Run.prefix_snoc (front.snoc step) r cfront cstep extended with
       ⟨rfl, same⟩ | ⟨r', earlier⟩
     · cases eq_of_heq same
       rfl
     · obtain ⟨later, foundLater, life⟩ := r'.registryLifecycle.validators i w foundQ
-      obtain rfl : later = cu := Option.some.inj (foundLater.symm.trans foundCp)
-      exact absurd (by rw [← life.exitEpoch assigned]; exact cUnset) assigned
+      exact absurd (by rw [← life.exitEpoch assigned]; exact cUnset later foundLater) assigned
 
 /-- The effective balance at its slashing of a charged key of the split's registry.
 
@@ -32617,7 +32607,7 @@ private theorem K5_charged_split_epoch
         bandR (eventsF ++ events) v.toNat + bandX fin highC v.toNat) := by
   have electra : .pectra ≤ fork := Nat.le_trans (by decide) h.fulu
   subst site
-  obtain ⟨u0, w0, foundA0, foundB0, unset0, set0⟩ := charge_exits step charged
+  obtain ⟨-, -, -, -, unset, -⟩ := charge_exits step charged
   have charges : ∃ c ∈ ((front.snoc step).append post).departureCharges, c.index = v.toNat := by
     obtain ⟨charge, member, index⟩ := List.any_eq_true.mp charged
     exact ⟨charge, by simp [Run.departureCharges_append, Run.departureCharges, member],
@@ -32635,10 +32625,8 @@ private theorem K5_charged_split_epoch
     intro c member index
     obtain ⟨w, foundS, assigned, -⟩ := pre.departure_charge_exit c member
     obtain ⟨later, foundLater, life⟩ := front.registryLifecycle.validators c.index w foundS
-    obtain rfl : later = u0 := by
-      rw [index] at foundLater
-      exact Option.some.inj (foundLater.symm.trans foundA0)
-    exact assigned (by rw [← life.exitEpoch assigned]; exact unset0)
+    rw [index] at foundLater
+    exact assigned (by rw [← life.exitEpoch assigned]; exact unset later foundLater)
   obtain ⟨propSplit, whistSplit, riseSame⟩ := prefix_append_credits v highC pre
     ((front.snoc step).append post) electra h.early sameEpoch noneBefore
   have rise : riseQ ((front.snoc step).append post) highC v.toNat =
