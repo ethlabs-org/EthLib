@@ -7905,8 +7905,6 @@ private def pinTerms (config : Config) (state ancestor finalizedState : BeaconSt
   -- Its effective balance can exceed what it is here by its rise, or by sync debits it had here.
   --
   -- It can also be its balance at the finalized state, after in-epoch debits before that state.
-  --
-  -- The margin check prices that term at zero on every row (5f2e34c5f, section 33).
   let whistleblowerR := ((∑ i ∈ positions with slashed i = true ∧ recentSlashing i = true,
       max (effective i + rise i) (finEB i)) + seatExcess * inc) /
     p.WHISTLEBLOWER_REWARD_QUOTIENT.toNat
@@ -7914,8 +7912,6 @@ private def pinTerms (config : Config) (state ancestor finalizedState : BeaconSt
   let gainRateMax := capMax / inc * perIncrement *
     (PARTICIPATION_FLAG_WEIGHTS.map (·.toNat)).sum / WEIGHT_DENOMINATOR.toNat
   -- A key active by the finalized state can have a larger balance there, and its reward is charged.
-  --
-  -- The margin check prices that term at zero on every row (f1f20b0f8, section 33).
   let late := if tight then 0 else
     ∑ i ∈ positions with (validator i).any (fun v =>
       decide (v.activationEligibilityEpoch.toNat ≤ epoch.toNat) &&
@@ -8042,8 +8038,6 @@ private def pinTerms (config : Config) (state ancestor finalizedState : BeaconSt
   -- A key's balance at the finalized state can exceed its balance and rise here.
   --
   -- Its debits between the start of that epoch and the finalized state are in neither.
-  --
-  -- The margin check prices that term at zero on every row (5f2e34c5f, section 33).
   let exitedSlashable := ∑ i ∈ positions with slashed i = false ∧
       ((validator i).map fun v => decide (v.exitEpoch.toNat ≤ epoch.toNat + 1)).getD false = true ∧
       (validator i).any (fun v => decide (finalized < v.withdrawableEpoch.toNat)),
@@ -8122,8 +8116,6 @@ private def pinTerms (config : Config) (state ancestor finalizedState : BeaconSt
       (if 11 * depth * (gainRateMax + 1) ≤ capMax then 0
         else depthFin * preset.MAX_PENDING_DEPOSITS_PER_EPOCH.toNat * capMax)
   -- A key active by the finalized state can have a larger balance there, and its reward is charged.
-  --
-  -- The margin check prices that term at zero on every row (64739ed98, section 33).
   let pendingR := if tight then 0 else
     ∑ i ∈ positions with (validator i).any (fun v =>
       decide (epoch.toNat < v.activationEligibilityEpoch.toNat) &&
