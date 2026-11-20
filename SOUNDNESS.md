@@ -3412,7 +3412,8 @@ It assumes an honest set of a call's voters that pins the justified checkpoints 
 Three times its stake exceeds the total of the call's pulled-up head state plus `margin` plus the call's pin reserve `pinReserve`.
 So its stake exceeds a third of that sum.
 The pinned-checkpoint step pays for cross-state drift with that per-call reserve, carried by the count.
-The reserve grows with the number of epochs since the finalized checkpoint of the target block's state.
+The drift bound covers only `fusaka ≤ fork < glamsterdam` under the pin's assumptions below.
+The reserve's other fork branches are not proved to bound cross-state drift.
 No figure in the repository measures its cost on mainnet.
 
 `TargetIncluded` is a network-model premise.
@@ -3469,13 +3470,14 @@ The run also assumes `JustifiedPinned` at margin 0, `ByzantineCountedStake ancho
 The endpoint derives the signed justification inside, as the historical-anchor headlines do.
 It derives it from the Byzantine bound, a positive inclusion delay and the two conditions on the anchor.
 The Byzantine bound and the two conditions on the anchor are assumptions on the run; the anchor store checks neither condition.
-`justifiedPinned_of_setting` proves `JustifiedPinned` at any margin, as `justifiedPinned_of_setting.mainnet` and `.minimal` on the two deployed presets.
+`justifiedPinned_of_setting` proves `JustifiedPinned` at any margin for `fusaka ≤ fork < glamsterdam`.
+Its mainnet and minimal instances discharge the preset conditions, not the assumptions on the run.
 Its conclusion allows a collision of two honest stores.
 It assumes the nonzero roots of the held block states and the absent parent of the anchor.
 It assumes the bounded honest store epochs, the stake floors and the unslashed counted voters.
-It also assumes the finality of honest stores and the guard `PinGuarded` at each call's finalized state.
-The fork is from Fusaka and before Gloas, and the next fork is past the horizon.
-It derives the agreement of honest blocks, the held states before the next fork and the justified chain of each store itself.
+`PinGuarded` supplies the a priori guard at the selected head's finalized state.
+The cross-store `finality` premise requires that an honest store's justified chain contains another honest store's finalized block when the justified epoch is at least the finalized epoch.
+The theorem also requires the next fork to be past the horizon.
 The endpoint above still assumes `JustifiedPinned`.
 Only the two preset theorems `justifiedPinned_of_setting.mainnet` and `.minimal` call `justifiedPinned_of_setting`, and no endpoint calls any of them.
 

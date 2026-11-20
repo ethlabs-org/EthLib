@@ -17,11 +17,9 @@ import EthLib.Consensus.Proofs.Transition.FfgJustification
 /-!
 # The voters of a call pin the justification
 
-The pin of a fast-confirmation call bounds the drift of its quorum.
+The pin reserve bounds quorum drift even when another store counts the votes on a different branch.
 
-This file turns that bound into the reader `justifiedPinned_of_setting`.
-
-The reader proves `JustifiedPinned`.
+With enough stake left after that drift, the call's voters intersect the justified quorum.
 -/
 
 @[expose] public section
@@ -111,7 +109,7 @@ They are the two conditions that the pin's `Setting` assumes of the call's final
 
 The call's pulled-up state, target state and finalized state are those of an honest store.
 
-The guard is `aprioriGuardAt` at the finalized state, for the call's epoch.
+The a priori guard bounds stake drift from the finalized state through the call's window.
 
 The lag is the call's epoch, plus two, less the finalized state's epoch. -/
 def PinGuarded (last : ℕ) : Prop :=
@@ -128,6 +126,14 @@ def PinGuarded (last : ℕ) : Prop :=
       config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat
 
 /-- The voters of a call pin the justified checkpoints of the call's epoch.
+
+The theorem covers only `fusaka ≤ fork < glamsterdam`.
+
+`PinGuarded` supplies the a priori guard at the selected head's finalized state.
+
+The cross-store `finality` premise links one honest store's finalized block to another's chain.
+
+That chain starts at the other store's justified block, whose epoch must be at least as recent.
 
 Take honest voters whose stake exceeds a third of the sum of the total, margin and pin reserve.
 
