@@ -1203,19 +1203,6 @@ private theorem bandR_eq (events : List (BalanceEvent preset)) (v : ℕ) :
   unfold bandR
   rw [← sum_syncDebit_eq]
 
-/-- A key's credit in an event is at most the event's credit limit. -/
-private theorem keyCredit_le_creditLimit (i : ℕ) (e : BalanceEvent preset)
-    (bounded : e.credits ≤ e.creditLimit) : keyCredit i e ≤ e.creditLimit := by
-  refine le_trans ?_ bounded
-  unfold keyCredit
-  by_cases within : i < e.after.state.balances.data.size
-  · exact Finset.single_le_sum (f := fun j =>
-      actualBalanceAt e.after j - actualBalanceAt e.before j)
-      (fun _ _ => Nat.zero_le _) (Finset.mem_range.mpr within)
-  · have missing : actualBalanceAt e.after i = 0 := by
-      simp [actualBalanceAt, Array.getElem?_eq_none (Nat.le_of_not_lt within)]
-    omega
-
 /-- The stages of an epoch replay record no slashing event with a credit limit. -/
 private theorem epochReplayAction_slashing_credit {fork : Fork} (k : EpochStage)
     {pre post : BalanceReplay preset fork}

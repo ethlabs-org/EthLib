@@ -1145,6 +1145,19 @@ variable {preset : Preset} {fork : Fork} {config : Config} {checks : SignatureCh
 private def keyCredit (i : ℕ) (e : BalanceEvent preset) : ℕ :=
   actualBalanceAt e.after i - actualBalanceAt e.before i
 
+/-- A key's credit in an event is at most the event's credit limit. -/
+private theorem keyCredit_le_creditLimit (i : ℕ) (e : BalanceEvent preset)
+    (bounded : e.credits ≤ e.creditLimit) : keyCredit i e ≤ e.creditLimit := by
+  refine le_trans ?_ bounded
+  unfold keyCredit
+  by_cases within : i < e.after.state.balances.data.size
+  · exact Finset.single_le_sum (f := fun j =>
+      actualBalanceAt e.after j - actualBalanceAt e.before j)
+      (fun _ _ => Nat.zero_le _) (Finset.mem_range.mpr within)
+  · have missing : actualBalanceAt e.after i = 0 := by
+      simp [actualBalanceAt, Array.getElem?_eq_none (Nat.le_of_not_lt within)]
+    omega
+
 /-- The credits to the key in one step, from the sources that count at that kind of step. -/
 private def stepCredit (blockP slotP : BalanceSource → Bool) (v : ℕ)
     {x y : ForkedBeaconState preset} (step : Step config checks x y) : ℕ :=
@@ -5948,6 +5961,111 @@ private theorem slot_syncDebit_zero {x y : ForkedBeaconState preset} (electra : 
     List.sum_eq_zero fun v member => by
       obtain ⟨e, inside, rfl⟩ := List.mem_map.mp member
       simp [syncCredit, slot_noSync electra ok early replayed e inside]⟩
+
+/-- The events of a block's balance replay all start at the block's fork. -/
+private theorem block_events_atFork {f : Fork} {s : BeaconState preset f}
+    (early : f < .glamsterdam) (engine : ExecutionEngine preset f)
+    (block : BeaconBlock preset f) {post : BalanceReplay preset f}
+    (ok : blockBalanceReplay (config := config) (checks := checks)
+      early engine s block = .ok post) : ∀ e ∈ post.2, e.before.fork = f := by
+  have record {pre post : BalanceReplay preset f} {source : BalanceSource}
+      {limits : BeaconState preset f → Except TransitionError (Nat × Nat)}
+      {action : BeaconState preset f → Except TransitionError (BeaconState preset f)}
+      (initial : ∀ e ∈ pre.2, e.before.fork = f)
+      (ok : recordBalance source limits action pre = .ok post) :
+      ∀ e ∈ post.2, e.before.fork = f := by
+    simp only [recordBalance, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at ok
+    obtain ⟨⟨credit, debit⟩, _, _, _, rfl⟩ := ok
+    intro e member
+    rcases List.mem_append.mp member with old | new
+    · exact initial e old
+    · obtain rfl := List.mem_singleton.mp new
+      rfl
+  have carry {pre post : BalanceReplay preset f}
+      {action : BeaconState preset f → Except TransitionError (BeaconState preset f)}
+      (initial : ∀ e ∈ pre.2, e.before.fork = f) (ok : carryBalance action pre = .ok post) :
+      ∀ e ∈ post.2, e.before.fork = f := by
+    simp only [carryBalance, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at ok
+    obtain ⟨_, _, rfl⟩ := ok
+    exact initial
+  unfold blockBalanceReplay at ok
+  obtain ⟨headed, headedOk, rest⟩ := bind_ok_iff.mp ok
+  have headedHeld := carry (by simp) headedOk
+  by_cases bellatrix : .bellatrix ≤ f
+  case' pos =>
+    simp only [bellatrix, ↓reduceDIte] at rest
+    obtain ⟨executed, executedOk, rest⟩ := bind_ok_iff.mp rest
+    have executedHeld := record headedHeld executedOk
+  case' neg =>
+    simp only [bellatrix, ↓reduceDIte, pure, Except.pure, bind_ok_iff,
+      Except.ok.injEq, exists_eq_left'] at rest
+    have executedHeld := headedHeld
+  all_goals
+    try simp only [bind_ok_iff] at rest
+    obtain ⟨randao, randaoOk, voted, votedOk, expected, _, _, _,
+      proposed, proposedOk, attested, attestedOk, rewarded, rewardedOk, deposited, depositOk,
+      exited, exitOk, changed, changedOk, rest⟩ := rest
+    have randaoHeld := carry executedHeld randaoOk
+    have votedHeld := carry randaoHeld votedOk
+    have proposedHeld := foldlM_ok_invariant (fun p => ∀ e ∈ p.2, e.before.fork = f)
+      (fun _ _ _ h ok => record h ok) votedHeld proposedOk
+    have attestedHeld := foldlM_ok_invariant (fun p => ∀ e ∈ p.2, e.before.fork = f)
+      (fun _ _ _ h ok => record h ok) proposedHeld attestedOk
+    have rewardedHeld := foldlM_ok_invariant (fun p => ∀ e ∈ p.2, e.before.fork = f)
+      (fun _ _ _ h ok => record h ok) attestedHeld rewardedOk
+    have depositedHeld := foldlM_ok_invariant (fun p => ∀ e ∈ p.2, e.before.fork = f)
+      (fun _ _ _ h ok => record h ok) rewardedHeld depositOk
+    have exitedHeld := carry depositedHeld exitOk
+    have changedHeld := carry exitedHeld changedOk
+    by_cases electra : .pectra ≤ f
+    case' pos =>
+      simp only [electra, ↓reduceDIte, bind_ok_iff] at rest
+      obtain ⟨deposits, depositRequestOk, withdrawals, withdrawalOk,
+        requested, consolidations, rest⟩ := rest
+      have depositsHeld := carry changedHeld depositRequestOk
+      have withdrawalsHeld := carry depositsHeld withdrawalOk
+      have requestedHeld := foldlM_ok_invariant (fun p => ∀ e ∈ p.2, e.before.fork = f)
+        (fun _ _ _ h ok => record h ok) withdrawalsHeld consolidations
+    case' neg =>
+      simp only [electra, ↓reduceDIte, pure, Except.pure, bind_ok_iff,
+        Except.ok.injEq, exists_eq_left'] at rest
+      have requestedHeld := changedHeld
+    all_goals
+      split at rest
+      · exact record requestedHeld rest
+      · cases rest; exact requestedHeld
+
+/-- From Electra, a block step records no credit from the deposits source.
+
+In Electra, deposits are credited in the epoch processing, so in slot steps.
+
+A block step only queues deposit requests.
+
+This is `funding_block_events` read at the fork of the block's events.
+
+`block_events_atFork` gives that fork.
+
+It folds into `funding_block_events` once that lemma gains the conjunct. -/
+private theorem block_deposit_zero {f : Fork} {u w : BeaconState preset f}
+    {engine : ExecutionEngine preset f} {signed : SignedBeaconBlock preset f}
+    {due : upgradeDue config ⟨f, u⟩ = false}
+    {ok : applySignedBlock config checks engine u signed true = .ok w}
+    {es : List (BalanceEvent preset)} (electra : .pectra ≤ f) (early : f < .glamsterdam)
+    (matched : BalancesMatch u)
+    (replayed : (Step.block engine signed due ok : Step config checks ⟨f, u⟩ ⟨f, w⟩).balanceEvents =
+      .ok es) (i : ℕ) :
+    ((es.filter fun e => decide (e.source = .deposits)).map (PinSplit.keyCredit i)).sum = 0 := by
+  have replay := Step.balanceEvents_block early replayed
+  have noDeposits := funding_block_events early engine signed.message replay
+  have atFork := block_events_atFork early engine signed.message replay
+  have bounded := blockBalanceReplay_bounded early engine signed.message matched replay
+  refine List.sum_eq_zero fun c member => ?_
+  obtain ⟨e, inFilter, rfl⟩ := List.mem_map.mp member
+  obtain ⟨inList, isDeposit⟩ := List.mem_filter.mp inFilter
+  have deposit : e.source = .deposits := of_decide_eq_true isDeposit
+  have zero := noDeposits e inList deposit (by rw [atFork e inList]; exact electra)
+  have := PinSplit.keyCredit_le_creditLimit i e (bounded e inList).1
+  omega
 
 /-- A block step is apart from keys if the proposer at its end is not among them.
 
