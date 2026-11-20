@@ -107,7 +107,7 @@ It is also at least the key's effective balance at the finalized state.
 
 A prefix state of the finalized epoch can reach that balance.
 
-`branchR` pays that bound for such a key, and its increment covers the drop of R's penalty.
+R's branch budget supplies that bound and an increment to cover the slashing penalty.
 
 A key that `exitedSlashable`, `late` or `pendingR` charges is read at its balance and rise, or `bF`.
 
@@ -593,13 +593,11 @@ theorem _root_.EthLib.Consensus.Models.Network.PinDrift.Internal.key_of_kept (h 
     (Nat.le_trans (Nat.mul_le_mul_right _ (Nat.mul_le_mul_left 11 depth)) (Internal.keptArm_eq i
         kept))
 
-/-- A key created after the split that is active at C has the bound `createdCeil` at its slashing.
+/-- The effective balance at slashing of a key created after the split and active at C.
 
-Only C's branch supplies credits after the key's creation.
+At a high gain rate the bound uses the largest cap.
 
-The credits of the run are at most `credC`, `whistC` and the seat credits, so the bound reads them.
-
-The low-rate case bounds how much the credits can compound. -/
+At a low rate it uses the branch's credits, their gains over the window and a rounding band. -/
 private theorem created_active (h : Setting config checks g split fin pulled anc counted V)
     (tailC : Run config checks ⟨fork, split⟩ ⟨fork, counted⟩) (highC : ℕ)
     (endEpochC : (getCurrentEpoch counted).toNat ≤ highC + 1)
@@ -688,13 +686,13 @@ A key of R's registry that is also slashed on R's branch is a term of the first 
 
 A consumer that pays those terms by another budget splits that sum by the key's slashing on R.
 
-A key created after the split is read at `createdCeil` if it is active at C.
+A new key active at C is bounded by the largest cap or by its credits, gains and rounding band.
 
 If it has exited by C, it is read at its charge and credits.
 
 A charge in the split's own epoch also reads the credits of `pre`, the run from that epoch's start.
 
-`registryCharge` takes the facts that tie `pre` to the run, and this lemma does not use them. -/
+The bound for a charged key accounts for how that prefix joins the run. -/
 private theorem whistle_core (h : Setting config checks g split fin pulled anc counted V)
     (fromFin : Run config checks ⟨fork, fin⟩ ⟨fork, split⟩)
     (tail : Run config checks ⟨fork, split⟩ ⟨fork, pulled⟩)
@@ -1012,7 +1010,7 @@ private theorem slashedC_retained (h : Setting config checks g split fin pulled 
     cut w
     found
 
-/-- A key that R holds withdrawable by the next epoch is a key with `withdrawnRB`. -/
+/-- The withdrawal test includes keys withdrawable by R's next epoch. -/
 theorem _root_.EthLib.Consensus.Models.Network.PinDrift.Internal.withdrawnRB_of_le (config : Config)
   (pulled anc fin : BeaconState preset fork)
     {i : ℕ} {w : Validator} (found : pulled.validators.data[i]? = some w)
@@ -1021,7 +1019,7 @@ theorem _root_.EthLib.Consensus.Models.Network.PinDrift.Internal.withdrawnRB_of_
   simp only [pinTerms]
   simp [found, le]
 
-/-- The deposit credits of some events are within `depPre` when each credited one is unslashed. -/
+/-- Deposits to a key unslashed before each credit count toward its pre-slashing deposits. -/
 theorem _root_.EthLib.Consensus.Models.Network.PinDrift.Internal.deposits_le_depPre (L : List
   (BalanceEvent preset)) (i : ℕ)
     (clean : ∀ e ∈ L, e.source = .deposits →
@@ -1424,7 +1422,7 @@ private theorem induced_debited (h : Setting config checks g split fin pulled an
   simp at bound
   omega
 
-/-- The deposits of `depPre` are among the deposits of the events. -/
+/-- Pre-slashing deposits are bounded by all deposits in the replay. -/
 private theorem depPre_le_deposits (L : List (BalanceEvent preset)) (i : ℕ) :
     Internal.depPre L i ≤ ((L.filter fun e => e.source = .deposits).map (Internal.keyCredit i)).sum
       := by
@@ -2265,7 +2263,7 @@ private theorem created_credC_le (h : Setting config checks g split fin pulled a
 open DirectSafety.Apriori DirectSafety.Apriori.Internal in
 /-- The reward of one key of `CS` is within its charge, its shares and its bands, at ten quotients.
 
-A key active at C is read at `createdCeil`, and one that has exited at its charge and credits.
+The active key uses the cap or credit bound, and the exited key uses its charge and credits.
 
 The credits of a slashed created key are its proposer credits, deposits and consolidations. -/
 private theorem cs_key_round (h : Setting config checks g split fin pulled anc counted V)
@@ -2440,7 +2438,7 @@ private theorem cs_key_round (h : Setting config checks g split fin pulled anc c
 
 A created key that has exited is read at its charge and its credits.
 
-A created key active at C is read at `createdCeil`.
+A created key active at C is charged for its credits and their gains, or at the largest cap.
 
 Its credits are paid by the shares, with a tenth for their gains.
 
@@ -2648,7 +2646,7 @@ private theorem charged_window (h : Setting config checks g split fin pulled anc
     exact ⟨(charge_due h tailC inactive inRun index).2.2,
       fun d dRun dIndex => (charge_due h tailC inactive dRun dIndex).2.1, c, inRun, index⟩
 
-/-- The keys that R exits are paid by `reserveW`, with the queue window of the created ones.
+/-- The reward reserve covers keys that R exits, with a queue allowance for newly created keys.
 
 A key of the split's registry that is not slashed at R is a term of `exitedSlashable`.
 
@@ -2664,7 +2662,7 @@ It pays its charge and its rise after it, from the window.
 
 A created key that has exited by C pays its charge from the window.
 
-Each key that `queueKeys` counts adds its band and the gains of the largest rate. -/
+Each key the queues can exit adds a rounding band and gains at the largest rate. -/
 private theorem whistle_exited (h : Setting config checks g split fin pulled anc counted V)
     (tailC : Run config checks ⟨fork, split⟩ ⟨fork, counted⟩) (highC : ℕ) :
     3 * (∑ i ∈ (((Internal.slashedOnC split counted).filter (fun i => i <
@@ -3073,7 +3071,7 @@ private theorem free_key (h : Setting config checks g split fin pulled anc count
         omega
     omega
 
-/-- The stake at C of keys active at C and outside its quorum is paid twice by `cK7`. -/
+/-- The reward budget counts the stake of active keys outside C's quorum twice. -/
 private theorem free_k7 (T : Finset ValidatorIndex)
     (member : ∀ v ∈ T, v ∈ Internal.AC counted ∧ v ∉ Internal.Q counted) :
     ((2 * ∑ v ∈ T, balanceAt counted v.toNat : ℕ) : ℤ) ≤ -Internal.cK7 pulled counted := by
@@ -3108,9 +3106,9 @@ They are active at both branches.
 
 A slashable key whose floor does not cover its reward is flagged, and `flagged` pays it at `ebUp`.
 
-The others pay from their stake at C and its seat debits, by `cK7`.
+The other keys draw on their stake at C and their seat debits.
 
-The seat debits of C's branch are paid by `seatShortfall`.
+C's branch has a separate allowance for seat debits.
 
 The sync budget covers the seat debits of the shared segment.
 
@@ -3392,7 +3390,7 @@ private theorem whistle_late (h : Setting config checks g split fin pulled anc c
 
 /-- W from the keys' payers.
 
-The slashed keys' rewards are paid by the shares, `reserveW`, `flagged`, `cK7` and `cS`.
+The reserve covers the rewards through the keys' shares and the separate slashing charges.
 
 The seat debits, the keys' own `rise` and R's slashing of the key pay the rest.
 
@@ -3814,7 +3812,7 @@ theorem _root_.EthLib.Consensus.Models.Network.PinDrift.Internal.flow_slash (h :
     exact le_trans (Nat.le_add_right _ _) this
   · exact le_rfl
 
-/-- The sync flows of any keys fit the sync part of `otherCredits`.
+/-- The sync budget bounds the flows of any set of keys.
 
 The flows are C's credits and the debits of R's run and of the shared segment.
 
@@ -4365,9 +4363,9 @@ theorem _root_.EthLib.Consensus.Models.Network.PinDrift.Internal.whist_count (h 
   omega
 
 open DirectSafety.Apriori DirectSafety.Apriori.Internal in
-/-- The whistleblower credits of any keys are at most the whistleblower base of `otherCredits`.
+/-- The whistleblower budget bounds the credits of any set of keys.
 
-The base is `Sx`, the credit total `Y` and the band total `Ck` of `otherCredits`.
+The bound uses base stake `Sx`, total credits `Y` and total rounding bands `Ck`.
 
 A key that received a deposit on C's branch, or was created there, is read at the largest cap.
 
