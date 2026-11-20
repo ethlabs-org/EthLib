@@ -14538,6 +14538,41 @@ private theorem bands_seats_base (h : Setting config checks g split fin pulled a
   have bandE : UP * fE.card ≤ 2 * β * U.card := Nat.mul_le_mul bandUp subE
   nlinarith
 
+/-- The cut keys are in no class of `bud_sync`.
+
+A cut key is slashed at the split, and the flag persists to C.
+
+So it is not in `V` or a quorum class, and it is not in `SC`, which is unslashed at the split.
+
+It is in the split's registry, so it is not in `CS`. -/
+private theorem cut_disjoint (h : Setting config checks g split fin pulled anc counted V) :
+    Disjoint (cutKeys config pulled anc fin split) (V ∪ K4 pulled counted V ∪ K5 counted V ∪
+      K6 pulled counted ∪ SC pulled counted split ∪ CS counted split) := by
+  rw [Finset.disjoint_left]
+  intro v cut member
+  simp only [cutKeys, Finset.mem_filter] at cut
+  obtain ⟨w, found, marked⟩ : ∃ w, split.validators.data[v.toNat]? = some w ∧ w.slashed = true := by
+    cases hw : split.validators.data[v.toNat]? <;> simp_all
+  obtain ⟨toCounted⟩ := h.toCounted
+  obtain ⟨u, foundC, markedC⟩ := toCounted.slashedPersistence v.toNat w found marked
+  have atCounted : slashedFlagAt counted v.toNat = some true := by
+    simp [slashedFlagAt, foundC, markedC]
+  simp only [Finset.mem_union] at member
+  rcases member with ((((inV | in4) | in5) | in6) | inSC) | inCS
+  · have unslashed := (h.voting v inV).2
+    simp [atCounted] at unslashed
+  · exact classes_unslashed (Finset.mem_union_left _ (Finset.mem_union_left _ in4))
+      atCounted
+  · exact classes_unslashed (pulled := pulled)
+      (Finset.mem_union_left _ (Finset.mem_union_right _ in5)) atCounted
+  · exact classes_unslashed (V := V) (Finset.mem_union_right _ in6) atCounted
+  · simp only [SC, Finset.mem_filter] at inSC
+    have fresh := inSC.2.2
+    simp [slashedFlagAt, found, marked] at fresh
+  · simp only [CS, Finset.mem_filter] at inCS
+    have := (Array.getElem?_eq_some_iff.mp found).1
+    omega
+
 /-- The rounding bands of the classes and of the charged keys of `SC` fit the seats and slots.
 
 The keys of `scCharged` with a credit on `pre` also pay an upward band.
@@ -16162,41 +16197,6 @@ private theorem syncF_run_le (h : Setting config checks g split fin pulled anc c
   refine (Finset.sum_le_sum fun i _ => (syncF_eq evs i).le).trans (moves.trans (le_of_eq ?_))
   dsimp only
   rw [sameEpoch]
-
-/-- The cut keys are in no class of `bud_sync`.
-
-A cut key is slashed at the split, and the flag persists to C.
-
-So it is not in `V` or a quorum class, and it is not in `SC`, which is unslashed at the split.
-
-It is in the split's registry, so it is not in `CS`. -/
-private theorem cut_disjoint (h : Setting config checks g split fin pulled anc counted V) :
-    Disjoint (cutKeys config pulled anc fin split) (V ∪ K4 pulled counted V ∪ K5 counted V ∪
-      K6 pulled counted ∪ SC pulled counted split ∪ CS counted split) := by
-  rw [Finset.disjoint_left]
-  intro v cut member
-  simp only [cutKeys, Finset.mem_filter] at cut
-  obtain ⟨w, found, marked⟩ : ∃ w, split.validators.data[v.toNat]? = some w ∧ w.slashed = true := by
-    cases hw : split.validators.data[v.toNat]? <;> simp_all
-  obtain ⟨toCounted⟩ := h.toCounted
-  obtain ⟨u, foundC, markedC⟩ := toCounted.slashedPersistence v.toNat w found marked
-  have atCounted : slashedFlagAt counted v.toNat = some true := by
-    simp [slashedFlagAt, foundC, markedC]
-  simp only [Finset.mem_union] at member
-  rcases member with ((((inV | in4) | in5) | in6) | inSC) | inCS
-  · have unslashed := (h.voting v inV).2
-    simp [atCounted] at unslashed
-  · exact classes_unslashed (Finset.mem_union_left _ (Finset.mem_union_left _ in4))
-      atCounted
-  · exact classes_unslashed (pulled := pulled)
-      (Finset.mem_union_left _ (Finset.mem_union_right _ in5)) atCounted
-  · exact classes_unslashed (V := V) (Finset.mem_union_right _ in6) atCounted
-  · simp only [SC, Finset.mem_filter] at inSC
-    have fresh := inSC.2.2
-    simp [slashedFlagAt, found, marked] at fresh
-  · simp only [CS, Finset.mem_filter] at inCS
-    have := (Array.getElem?_eq_some_iff.mp found).1
-    omega
 
 /-- S1 (syncSeats), in the third window: the base bound with the shared segment's K debits.
 
