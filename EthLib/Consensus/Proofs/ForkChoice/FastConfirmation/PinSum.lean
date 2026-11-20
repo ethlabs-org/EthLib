@@ -15062,16 +15062,7 @@ private theorem sc3a_class (h : Setting config checks g split fin pulled anc cou
         apply notR1
         rw [succNat]
         exact ⟨by omega, by omega⟩
-      by_cases far : w.activationEpoch = FAR_FUTURE_EPOCH
-      · by_cases elig : (getCurrentEpoch pulled).toNat < w.activationEligibilityEpoch.toNat
-        · exact .inr ((pendingRB_iff config pulled anc fin v.toNat).mpr ⟨w, found, elig, far⟩)
-        · refine .inl ((lateB_iff config pulled anc fin v.toNat).mpr ⟨w, found, by omega, ?_⟩)
-          rw [far, farNat]
-          omega
-      · have eligible := Run.eligibility_le_finalized chain h.genesis v.toNat w found far
-        have eligNat : w.activationEligibilityEpoch.toNat ≤
-            pulled.finalizedCheckpoint.epoch.toNat := UInt64.le_iff_toNat_le.mp eligible
-        exact .inl ((lateB_iff config pulled anc fin v.toNat).mpr ⟨w, found, by omega, by omega⟩)
+      exact late_or_pending h found loose afterA
 
 /-- The charged keys of `SC` are current, upcoming-only, late or pending, and each pays that entry.
 
