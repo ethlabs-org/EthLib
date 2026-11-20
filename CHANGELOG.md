@@ -787,6 +787,12 @@ Not yet released.
 
 ### Changes that break callers
 
+- In Lean, the abbreviated helpers of the pin reserve bound in `PinDrift.Internal` take descriptive names ([#2770](https://github.com/ethereum/EthLib/pull/2770) added them).
+  Migration for the definitions: `AC` → `countedActiveVoters`, `AR` → `pulledActiveVoters`, `Q` → `countedQuorum`, `U` → `costKeys`, `eC` → `countedBalance`, `eR` → `pulledBalance`, `cV1` → `voterFallCost`, `cV2` → `inactiveVoterCost`, `cN` → `stayingRiseCost`, `cP` → `previousOnlyCost`, `cJ` → `joinedCost`, `cK7` → `outsideQuorumCost`, `cS` → `departedCost`, `VN` → `countedInactiveVoters`, `K4` → `stayingKeys`, `K5` → `previousOnlyKeys`, `K6` → `joinedKeys`, `SC` → `newlySlashed`, `CS` → `createdSlashed`, `sc3a` → `activeNewlySlashed`, `scCharged` → `chargedNewlySlashed`, `scSlashedReward` → `newlySlashedWhistleReward`.
+  Migration for the lemmas named after them: `K5_charged` → `previousOnlyKeys_charged`, `K5_exiting_of_not_charged` → `previousOnlyKeys_exiting_of_not_charged`, `K5_previous_only` → `previousOnlyKeys_previous_only`, `K5_unslashed` → `previousOnlyKeys_unslashed`, `K6_class` → `joinedKeys_class`, `cJ_le` → `joinedCost_le`, `cN_le` → `stayingRiseCost_le`, `cP_le` → `previousOnlyCost_le`, `card_K5_le` → `card_previousOnlyKeys_le`, `charge_epoch_le_of_K5` → `charge_epoch_le_of_previousOnlyKeys`, `classes_mem_Q` → `classes_mem_countedQuorum`, `cs_disjoint` → `createdSlashed_disjoint`, `sc3a_unwithdrawn` → `activeNewlySlashed_unwithdrawn`, `sc_3a_split` → `newlySlashed_active_split`, `sc_disjoint` → `newlySlashed_disjoint`, `sum_eq_U` → `sum_eq_costKeys`.
+  Migration for the budget lemmas: each `bud_X` is `budget_X`, such as `bud_fall` → `budget_fall`.
+  No statement changes.
+
 - In Lean, `DirectSafety.Apriori.Internal.ScoresBelow.step` no longer takes the hypothesis `inside : n ≤ m.state.validators.data.size`.
   Its proof does not read it.
   Migration: a caller drops that argument.
