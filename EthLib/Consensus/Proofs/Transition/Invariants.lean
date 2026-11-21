@@ -1806,6 +1806,20 @@ def OperationsInput (config : Config) (checks : SignatureChecks) {fork : Fork}
     (if early : fork < .hegota then processEth1Data early revealed block.body
       else pure revealed) = .ok input
 
+/-- A state that a block reaches when the steps before its attester slashing at a position succeed.
+
+Those steps are the ones before its operations, its proposer slashings and its earlier ones.
+
+When the block has fewer attester slashings than the position, the folds run all of them. -/
+def SlashingTurn (config : Config) (checks : SignatureChecks) {fork : Fork}
+    (engine : ExecutionEngine preset fork) (state : BeaconState preset fork)
+    (block : BeaconBlock preset fork) (j : Nat) (turn : BeaconState preset fork) : Prop :=
+  ∃ input proposed, OperationsInput config checks engine state block input ∧
+    block.body.proposerSlashings.data.foldlM (processProposerSlashing config checks) input =
+      .ok proposed ∧
+    (block.body.attesterSlashings.data.toList.take j).foldlM
+      (processAttesterSlashing config checks) proposed = .ok turn
+
 /-- The steps of a block before its operations are a step.
 
 The step holds of each part of the block that runs before its operations.
