@@ -791,6 +791,15 @@ Not yet released.
 
 ### Changes that break callers
 
+- In Lean, `Store.isAncestor_trans_of_lt` is renamed `Store.isAncestor_trans` and holds at every fork.
+  It no longer takes `before : fork < .glamsterdam`.
+  Migration: a caller takes the new name and drops that argument.
+  The new statement implies the old one.
+
+- In Lean, `Store.getCheckpointBlock_of_isAncestor`, `Store.getCheckpointBlock_of_ancestor_epoch`, `Store.isAncestor_of_same_blocks` and `Store.isAncestor_of_parent` hold at every fork and no longer take `before : fork < .glamsterdam`.
+  Migration: a caller drops that argument.
+  The new statements imply the old ones.
+
 - In Lean, the step of a call builds its calling frame with the new `Evm.callerFrame` and its message with the new `Evm.callMessage`.
   `genericCall` no longer empties the return data, since `callerFrame` does; the step computes what it computed before.
   `callStep_child_of_routes`, `callStep_child`, `callStep_call`, `callStep_staticcall` and `callStep_value` state one equation on these two values instead of 23 conjuncts.
