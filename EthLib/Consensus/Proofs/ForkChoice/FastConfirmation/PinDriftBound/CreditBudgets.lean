@@ -2795,19 +2795,9 @@ It is unslashed at `counted`, and a slashing stays. -/
 theorem voter_unslashed (h : Setting config checks g split fin pulled anc counted V)
     (v : ValidatorIndex) (voter : v ∈ countedQuorum counted) :
     (split.validators.data[v.toNat]?.map (·.slashed)).getD false = false := by
-  classical
   obtain ⟨tailC⟩ := h.toCounted
-  have within := BeaconState.registryWithinLimit_of_lt h.early counted
-  have inQ := voter
-  simp only [countedQuorum, quorumVoters, Finset.mem_filter, List.mem_toFinset,
-      List.mem_append] at inQ
-  obtain ⟨listed, unslashedC⟩ := inQ
-  obtain ⟨uC, foundC⟩ : ∃ uC, counted.validators.data[v.toNat]? = some uC := by
-    rcases listed with now | before
-    · obtain ⟨u, foundU, -⟩ := (mem_getActiveValidatorIndices within).mp now
-      exact ⟨u, foundU⟩
-    · obtain ⟨u, foundU, -⟩ := (mem_getActiveValidatorIndices within).mp before
-      exact ⟨u, foundU⟩
+  have unslashedC := (Finset.mem_filter.mp (voter : v ∈ quorumVoters counted)).2
+  obtain ⟨uC, foundC, -, -⟩ := Internal.activated_of_quorum h.early voter
   have cleanC : uC.slashed = false := by simpa [foundC] using unslashedC
   cases foundS : split.validators.data[v.toNat]? with
   | none => rfl
@@ -2817,7 +2807,23 @@ theorem voter_unslashed (h : Setting config checks g split fin pulled anc counte
       cases read
       exact cleanC)]
 
-open DirectSafety.Apriori DirectSafety.Apriori.Internal in
+/-- A key unslashed at `c` and slashed at a later state is withdrawable a vector past `c`. -/
+private theorem withdrawable_of_clean_run
+    (h : Setting config checks g split fin pulled anc counted V) (v : ValidatorIndex)
+    {c : BeaconState preset fork} (inside : v.toNat < c.validators.data.size)
+    (clean : ∀ u, c.validators.data[v.toNat]? = some u → u.slashed = false)
+    {a : ForkedBeaconState preset} (run : Run config checks ⟨fork, c⟩ a)
+    (low : a.fork < .glamsterdam) (u : Validator)
+    (foundU : a.state.validators.data[v.toNat]? = some u) (flag : u.slashed = true) :
+    (getCurrentEpoch c).toNat + preset.EPOCHS_PER_SLASHINGS_VECTOR.toNat ≤
+      u.withdrawableEpoch.toNat := by
+  obtain ⟨uC, foundC⟩ : ∃ uC, c.validators.data[v.toNat]? = some uC :=
+    ⟨_, Array.getElem?_eq_getElem inside⟩
+  have lower := (run.newly_slashed_withdrawableEpoch h.caps.activation h.caps.compounding
+    low (Internal.Setting.delay h) v.toNat uC u foundC foundU (clean uC foundC) flag).2
+  simp only at lower
+  exact lower
+
 /-- A key slashed at R after a state of its run, where it is unslashed, is withdrawable late.
 
 It is withdrawable a slashings vector after that state.
@@ -2833,12 +2839,7 @@ theorem slashed_withdrawable_of_clean
       anc.finalizedCheckpoint.epoch.toNat + preset.EPOCHS_PER_SLASHINGS_VECTOR.toNat ≤
         w.withdrawableEpoch.toNat := by
   intro wP foundP slashedP
-  obtain ⟨uD, foundD⟩ : ∃ uD, d.validators.data[v.toNat]? = some uD :=
-    ⟨_, Array.getElem?_eq_getElem inside⟩
-  have newly := (run.newly_slashed_withdrawableEpoch h.caps.activation h.caps.compounding
-    h.early (Internal.Setting.delay h) v.toNat uD wP foundD foundP (clean uD foundD) slashedP).2
-  have newly' : (getCurrentEpoch d).toNat + preset.EPOCHS_PER_SLASHINGS_VECTOR.toNat ≤
-      wP.withdrawableEpoch.toNat := newly
+  have newly := withdrawable_of_clean_run h v inside clean run h.early wP foundP slashedP
   have finalizedNat := UInt64.le_iff_toNat_le.mp finalized
   omega
 
@@ -2902,12 +2903,9 @@ private theorem slashed_withdrawable_vector
     (foundU : a.state.validators.data[v.toNat]? = some u) (flag : u.slashed = true) :
     (getCurrentEpoch fin).toNat + preset.EPOCHS_PER_SLASHINGS_VECTOR.toNat ≤
       u.withdrawableEpoch.toNat := by
-  obtain ⟨uB, foundB⟩ : ∃ uB, c.validators.data[v.toNat]? = some uB :=
-    ⟨_, Array.getElem?_eq_getElem inside⟩
   have finC := UInt64.le_iff_toNat_le.mp (currentEpoch_le_of_chainSteps toC.chainSteps)
-  have lower := (run.newly_slashed_withdrawableEpoch h.caps.activation h.caps.compounding
-    low (Internal.Setting.delay h) v.toNat uB u foundB foundU (clean uB foundB) flag).2
-  simp only at finC lower
+  have lower := withdrawable_of_clean_run h v inside clean run low u foundU flag
+  simp only at finC
   omega
 
 /-- A key unslashed at `c` and slashed at a later state is withdrawable beyond R's horizon.
@@ -3707,8 +3705,8 @@ private theorem pre_credit_seat (h : Setting config checks g split fin pulled an
       exact mem
 
 /-- The rounding of an increment's reward is at most a third of a band, from quotient thirty. -/
-private theorem whistle_round_le (inc W down : ℕ) (quotient : 30 ≤ W) (large : 3600 ≤ inc) :
-    3 * ((inc + W - 1) / W) ≤ inc + down - 1 := by
+private theorem whistle_round_le (inc W : ℕ) (quotient : 30 ≤ W) (large : 3600 ≤ inc) :
+    3 * ((inc + W - 1) / W) ≤ inc - 1 := by
   have le := Nat.div_mul_le_self (inc + W - 1) W
   generalize (inc + W - 1) / W = c at le ⊢
   rcases c with _ | k
@@ -3897,7 +3895,8 @@ theorem bands_seats (h : Setting config checks g split fin pulled anc counted V)
       preset.EFFECTIVE_BALANCE_INCREMENT.toNat + preset.downwardBand - 1 := by
     have rounding := h.facts.rounding
     have vector := h.facts.vector
-    exact whistle_round_le _ _ _ whistleblower (by omega)
+    have := whistle_round_le preset.EFFECTIVE_BALANCE_INCREMENT.toNat _ whistleblower (by omega)
+    omega
   -- the upward band of a shared credit is paid by each exited newly slashed key with such a credit
   set fE := (newlySlashed pulled counted split).filter fun v =>
     (pinTerms config pulled anc fin).exitBeforeFin v.toNat = true ∧
