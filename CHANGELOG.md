@@ -9,6 +9,9 @@ Not yet released.
 
 ### Proof additions
 
+- `PinDrift.Internal.total_band_of_setting` is public: in the pin's setting, the total of a state on a run from the finalized state, by R's next epoch, is within three halves of R's total.
+  `CreditBudgets` and `HeaderSupplies` read it instead of the guard's band with every premise of the setting.
+
 - `DirectSafety.exitChurnLimit_total` is public: it gives the total active balance read by a successful exit churn limit before Gloas.
   `ExitCharges` reads it for the pin reserve, and `BlockFold` reads it for the deposit churn bound.
 

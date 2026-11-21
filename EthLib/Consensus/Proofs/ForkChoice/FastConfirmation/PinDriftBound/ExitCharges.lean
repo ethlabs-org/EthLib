@@ -1294,7 +1294,10 @@ private theorem prevStake_band_of_guard {g x z : ForkedBeaconState preset} {high
   simp only [stakeCeilingAt, stakeFloorAt, zero] at low previous mono anti ratio ⊢
   omega
 
-private theorem total_band_of_setting (h : Setting config checks g split fin pulled anc counted V)
+/-- A state of a run from the finalized state, by R's next epoch, has a total near R's.
+
+Each total is at most three halves of the other, by the guard of the setting. -/
+theorem total_band_of_setting (h : Setting config checks g split fin pulled anc counted V)
     {m : ForkedBeaconState preset} (toM : Run config checks ⟨fork, fin⟩ m)
     (early : m.fork < .glamsterdam)
     (inside : (getCurrentEpoch m.state).toNat ≤ (getCurrentEpoch pulled).toNat + 1)
