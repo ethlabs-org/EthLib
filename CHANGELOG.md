@@ -9,6 +9,16 @@ Not yet released.
 
 ### Proof additions
 
+- `Store.isAncestor_getHeadFrom_of_sibling_bound` (`ForkChoice/PayloadGhost.lean`) shows that, from Gloas, the head walk from a node of the path descends from a viable target node.
+  Below each node from that start to the target, the child toward the target must outweigh every viable rival that is not a payload decision of the previous slot.
+  When any distinct viable rival exists, that child must also have positive weight.
+  `Store.siblingBound_of_majority` gives that bound from a target whose votes exceed half of the stake plus the boost.
+  `Store.getHeadFrom_of_visited` shows that, from Gloas, a head walk passing a node ends where the walk from that node ends.
+
+- `Store.FullParentsVerified` (`ForkChoice/PayloadGhost.lean`) says that, from Gloas, each held block that builds on a held full parent finds its payload verified.
+  `Store.Reachable.fullParentsVerified` (`ForkChoice/StoreEntries.lean`) proves it for a reachable store that holds no block at the anchor's parent root.
+  `Store.onBlock_validateParentPayload` (`ForkChoice/Handlers.lean`) shows that a new block the handler accepts passed the check of its parent's payload.
+
 - In Lean, the laws of a four-word Montgomery field are proved once in `Word64.Montgomery`, from the laws of its sum, difference and product that an instance of `Word64.Montgomery.Laws` gives ([#3827](https://github.com/ethereum/EthLib/issues/3827)).
   They are the bridge `toMont` to the shared field on eight limbs with its laws, `toFin_val_eq`, the read-back laws `toFin_zero` to `toFin_ofFin`, and the new `ofFin_toFin`.
   The helpers `element_ext`, `mont_ext`, `modulus_odd` and `eq_of_radix_mul_mod` are public there.
@@ -820,6 +830,19 @@ Not yet released.
   `ValidatorStep`, `PinDriftBound.CreditBudgets` and `PinDriftBound.PreviousEpochRise` use it.
 
 ### Changes that break callers
+
+- In Lean, `Store.Reachable.realized_le_source` and `Store.getCheckpointBlock_of_shared_origin` hold at every fork and no longer take `before : fork < .glamsterdam`.
+  Migration: a caller drops that argument.
+  The new statements imply the old ones.
+
+- In Lean, `Store.exists_leaf_above_mem_filterNodeTree` holds at every fork.
+  It no longer takes `before : fork < .glamsterdam`; it takes `verified : ∀ gloas : .glamsterdam ≤ fork, store.FullParentsVerified gloas` in its place.
+  Migration: before Gloas, pass `fun gloas => absurd gloas (Nat.not_le_of_lt before)`; for a reachable store, pass `fun gloas => reachable.fullParentsVerified absent gloas`.
+  The new statement implies the old one.
+
+- In Lean, `Store.getNodeChildren_held` moves from `EthLib.Consensus.Proofs.ForkChoice.HeadTotality` to `EthLib.Consensus.Proofs.ForkChoice.Ghost`.
+  Its name and statement are unchanged.
+  Existing imports remain sufficient; for a direct import of the lemma, use `EthLib.Consensus.Proofs.ForkChoice.Ghost`.
 
 - In Lean, the IPv6 reader of the builder API reads hex digits with the reader of Base, and its own copy is removed ([#3837](https://github.com/ethereum/EthLib/issues/3837)).
   `BuilderApi.hexDigitValue?` is removed, and `BuilderApi.mem_hexGroup` now states that each character of a group has a value under `Base.hexValue?`, a byte.

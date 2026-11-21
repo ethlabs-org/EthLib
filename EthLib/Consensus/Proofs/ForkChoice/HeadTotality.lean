@@ -154,49 +154,6 @@ private theorem getAttestationScore_exists
     (by simp only [UInt64.size]; omega)
   exact ⟨_, rfl, by rw [scoreEq]; exact bound, by rw [scoreEq, stake_supportersOf_eq_sum within]⟩
 
-/-- The children of a held node can be computed, when parents sit below their children.
-
-Each child is a held node of lower rank. -/
-theorem getNodeChildren_held (lower : store.ParentsBelow) {node : ForkChoiceNode}
-    {block : BeaconBlock preset fork} (found : store.blocks[node.root]? = some block) :
-    ∃ children, store.getNodeChildren node = .ok children ∧ ∀ child ∈ children,
-      ∃ childBlock, store.blocks[child.root]? = some childBlock ∧
-        store.nodeRank child < store.nodeRank node := by
-  -- A child block sits at a later slot than its parent, so its rank is lower.
-  have climbs : ∀ (child : ForkChoiceNode) (childBlock : BeaconBlock preset fork),
-      child.payloadStatus = .pending → store.blocks[child.root]? = some childBlock →
-      childBlock.parentRoot = node.root → store.nodeRank child < store.nodeRank node := by
-    intro child childBlock pending childFound parent
-    have below : childBlock.slot.toNat > block.slot.toNat :=
-      UInt64.lt_iff_toNat_lt.mp (lower _ childBlock block childFound (parent ▸ found))
-    have := childBlock.slot.toNat_lt
-    simp only [nodeRank, childFound, found, pending, ↓reduceIte]
-    split <;> omega
-  by_cases gloas : .glamsterdam ≤ fork
-  · by_cases pending : node.payloadStatus = .pending
-    · -- A pending node has the empty node and maybe the full node of its block.
-      refine ⟨_, getNodeChildren_of_pending gloas pending, fun child member => ⟨block, ?_, ?_⟩⟩ <;>
-        · simp only [List.mem_cons] at member
-          rcases member with rfl | member
-          · simp [nodeRank, found, pending]
-          · split at member
-            · rw [List.mem_singleton.mp member]
-              simp [nodeRank, found, pending]
-            · cases member
-    · obtain ⟨children, childrenOk⟩ :=
-        getNodeChildren_ok_of_known (status := node.payloadStatus) found
-      refine ⟨children, childrenOk, fun child member => ?_⟩
-      obtain ⟨childPending, childBlock, -, childFound, parent, -⟩ :=
-        (mem_getNodeChildren_of_gloas gloas pending childrenOk).mp member
-      exact ⟨childBlock, childFound, climbs child childBlock childPending childFound parent⟩
-  · have before : fork < .glamsterdam := Nat.lt_of_not_le gloas
-    obtain ⟨children, childrenOk⟩ :=
-      getNodeChildren_ok_of_known (status := node.payloadStatus) found
-    refine ⟨children, childrenOk, fun child member => ?_⟩
-    obtain ⟨childPending, childBlock, childFound, parent⟩ :=
-      (mem_getNodeChildren before childrenOk).mp member
-    exact ⟨childBlock, childFound, climbs child childBlock childPending childFound parent⟩
-
 /-- The walk from a held node can be computed when every held node weighs and has a tiebreaker. -/
 private theorem getHeadFrom_exists (lower : store.ParentsBelow)
     {tally : Except ForkChoiceError VoteTally} {nodes : List ForkChoiceNode}

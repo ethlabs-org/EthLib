@@ -266,7 +266,7 @@ theorem includedVotes_votingSource_ge {config : Config} {checks : SignatureCheck
       (above : store.isAncestor ⟨tip, .pending⟩ ⟨root, .pending⟩ = .ok true)
       (read : store.getVotingSource config tip = .ok source) :
       base.currentJustifiedCheckpoint.epoch ≤ source.epoch :=
-    reachable.realized_le_source sound (UInt64.le_of_eq anchorSlot) preGloas held stored above read
+    reachable.realized_le_source sound (UInt64.le_of_eq anchorSlot) held stored above read
   rcases seedVotes with realizedSeed | seedVotes
   · exact UInt64.le_trans realizedSeed (realizedLeSource seedHeld seedStored tipAbove sourceOk)
   have seedEpochEq : getCurrentEpoch seedState = computeEpochAtSlot preset seedBlock.slot := by

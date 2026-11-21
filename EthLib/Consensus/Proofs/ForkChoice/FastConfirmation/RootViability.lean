@@ -604,7 +604,6 @@ Each voting source above the root is at least the root's realized justification.
 
 That justification is at most one epoch older than the root. -/
 private theorem early_receiver_source {anchor : Store preset fork} {time T : ℕ}
-    (preGloas : fork < .glamsterdam)
     (anchorStore : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
     (sound : Invariant anchorState) (anchorSlot : anchorBlock.slot = anchorState.slot)
     (anchored : ∀ w ∈ J, e.start w = anchor)
@@ -640,7 +639,7 @@ private theorem early_receiver_source {anchor : Store preset fork} {time T : ℕ
     rootFound, ?_⟩
   intro tip source epoch above epochOk sourceOk
   have lower := UInt64.le_iff_toNat_le.mp
-    (reached.realized_le_source sound (UInt64.le_of_eq anchorSlot) preGloas rootFound stored above
+    (reached.realized_le_source sound (UInt64.le_of_eq anchorSlot) rootFound stored above
         sourceOk)
   have epochEq : computeEpochAtSlot preset current = epoch := by
     simpa [Store.getCurrentStoreEpoch, currentOk, bind, Except.bind, pure, Except.pure]
@@ -1225,7 +1224,7 @@ private theorem late_previous_receiver_source {anchor : Store preset fork} {Δ t
   -- Every tip above the head reads the receiver's justified epoch as its source.
   refine ⟨head.root, headBlock, headHeld, headAboveW, ?_⟩
   intro tip source epoch above _ sourceOk
-  have lower := reachedW.realized_le_source sound (UInt64.le_of_eq anchorSlot) preGloas headHeld
+  have lower := reachedW.realized_le_source sound (UInt64.le_of_eq anchorSlot) headHeld
       receiverHeadStored above
     sourceOk
   have anchorLower : getCurrentEpoch anchorState ≤
@@ -1512,7 +1511,7 @@ private theorem late_current_receiver_source {anchor : Store preset fork} {Δ ti
     inputs.2.1 rootAboveOrigin
   have targetN : ((e.world n).state u).getCurrentTarget config head.root = .ok target :=
     Store.getCurrentTarget_eq_ok_iff.mpr ⟨target.epoch, target.root, targetEpoch ▸ epochOk,
-      Store.getCheckpointBlock_of_shared_origin reachedQ reachedN anchorSlot sameQN preGloas
+      Store.getCheckpointBlock_of_shared_origin reachedQ reachedN anchorSlot sameQN
           targetRead originHeldQ
         originBelow originEpochNat headAboveOrigin, rfl⟩
   have nextOk' : addChecked target.epoch 1 = .ok next := targetEpoch ▸ nextOk
@@ -1532,7 +1531,7 @@ private theorem late_current_receiver_source {anchor : Store preset fork} {Δ ti
     simp [Store.getBlockEpoch, Store.block_ok_iff.mpr rootFound, sameEpoch, targetEpoch, bind,
       Except.bind, pure, Except.pure]
   have rootReadK := Store.getCheckpointBlock_of_shared_origin reachedQ reachedK anchorSlot sameQK
-      preGloas targetRead
+      targetRead
     originHeldQ originBelow originEpochNat rootAboveOriginK
   obtain ⟨seed, seedBlock, seedState, seedHeld, seedStored, seedAbove, seedLower, seedUpper,
       seedRead, seedVotes⟩ :=
@@ -1583,7 +1582,7 @@ private theorem late_current_receiver_source {anchor : Store preset fork} {Δ ti
     have clean : ∀ v ∈ voters, (slashedFlagAt W v.toNat).getD false = false := fun v member =>
       unslashed w receiver k W receiverBound counted v (members v member).1
     have checkRead := Store.getCheckpointBlock_of_shared_origin reachedQ reachedK anchorSlot sameQK
-        preGloas targetRead
+        targetRead
       originHeldQ originBelow originEpochNat (aboveOriginOf above)
     have epochWEq : getCurrentEpoch W = computeEpochAtSlot preset seedBlock.slot :=
       epochW.trans seedEpochEq
@@ -1693,7 +1692,7 @@ private theorem receiver_source_above_root {anchor : Store preset fork} {Δ time
     (forward k w receiver).slots_le_current slots (UInt64.le_of_eq anchorSlot)
   by_cases isEarly : (computeEpochAtSlot preset current).toNat ≤
       (computeEpochAtSlot preset rootBlock.slot).toNat + 1
-  · exact early_receiver_source preGloas anchorStore sound anchorSlot anchored agree caller realized
+  · exact early_receiver_source anchorStore sound anchorSlot anchored agree caller realized
       low high receiver atTime
       rootFound currentOk isEarly
   have isLate := Nat.lt_of_not_ge isEarly
@@ -1945,7 +1944,8 @@ private theorem root_mem_filtered_of_reads {anchor : Store preset fork} {Δ time
     descends).mp rfl
   have topPath := (Store.isAncestor_iff (lower := lower) preGloas rootFound rfl topAbove).mp rfl
   obtain ⟨leaf, leafBlock, leafFound, leafPath, ⟨verdict, read⟩, member⟩ :=
-    Store.exists_leaf_above_mem_filterNodeTree (lower := lower) preGloas rootFound topFound
+    Store.exists_leaf_above_mem_filterNodeTree (lower := lower)
+      (fun gloas => absurd gloas (Nat.not_le_of_lt preGloas)) rootFound topFound
         rootPath topPath
       tree
   have leafTop := Store.isAncestor_of_blockTree_ancestor preGloas leafFound topFound
