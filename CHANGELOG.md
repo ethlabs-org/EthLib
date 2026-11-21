@@ -18,6 +18,11 @@ Not yet released.
   There a counted vote for a known node comes from an attestation at or after its block's slot.
   `Store.VotesHaveOrigins.slot_lt_of_voteCountsFor` adds that the block is before the current slot.
 
+- `Store.filterNodeTree_root_ancestor` (`ForkChoice/PayloadGhost.lean`) holds at every fork.
+  If parents have lower slots and filtering from a start node succeeds, each returned node's block root descends from the start's block root.
+
+- `Store.getNodeChildren_ok_of_known` (`ForkChoice/Head.lean`) shows that the children of a node can be computed when the store holds its block.
+
 - `Store.getSupportedNode_exists` (`ForkChoice/Head.lean`) shows that a vote for a held block supports a node of the store, at every fork.
 
 - `PinDrift.Internal.total_band_of_setting` is public, in `PinDriftBound/Setting.lean`.
@@ -801,6 +806,20 @@ Not yet released.
   `ValidatorStep`, `PinDriftBound.CreditBudgets` and `PinDriftBound.PreviousEpochRise` use it.
 
 ### Changes that break callers
+
+- In Lean, `Store.isAncestor_getHead_of_duty_support` holds at every fork.
+  It no longer takes `before : fork < .glamsterdam`; it takes `early : .glamsterdam ≤ fork → ∃ current, store.getCurrentSlot config = .ok current ∧ block.slot < current` after `known`.
+  Migration: before Gloas, drop `before` and pass `fun gloas => absurd gloas (Nat.not_le_of_lt before)` for `early`.
+  The new statement implies the old one.
+
+- In Lean, `rootFinal_or_justified_covers` holds at every fork and no longer takes `preGloas : fork < .glamsterdam`.
+  Migration: a caller drops that argument.
+  The new statement implies the old one.
+
+- In Lean, `Execution.isAncestor_getHead_of_duty_epoch` and `Execution.isAncestor_getHead_of_duty_epoch_or_accountable` hold at every fork.
+  They no longer take `preGloas : fork < .glamsterdam`; they take `room : .glamsterdam ≤ fork → AnchorRegistryRoom preset anchorState horizon` after `inHorizon`.
+  Migration: before Gloas, drop `preGloas` and pass `fun gloas => absurd gloas (Nat.not_le_of_lt preGloas)` for `room`.
+  The new statements imply the old ones.
 
 - In Lean, `Store.voteCountsFor_eq_false_of_slot_eq_current` is removed.
   Migration: use `Store.VotesHaveOrigins.slot_lt_of_voteCountsFor` with `forward.votesHaveOrigins`, which gives `block.slot < current` for a counted vote.
