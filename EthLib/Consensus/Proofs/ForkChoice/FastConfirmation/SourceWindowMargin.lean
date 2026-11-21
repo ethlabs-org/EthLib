@@ -882,16 +882,6 @@ variable {config : Config} {checks : SignatureChecks}
   {e : Execution (honestForkChoice config checks sources anchorState anchorBlock assignment
     genesisTimeMs) J}
 
-/-- A checkpoint read is a walk back to the first slot of the epoch. -/
-private theorem getCheckpointBlock_walk {store : Store preset fork} {root checkpoint : Root}
-    {epoch : Epoch} (read : store.getCheckpointBlock root epoch = .ok checkpoint) :
-    ∃ start ancestor, computeStartSlotAtEpoch preset epoch = .ok start ∧
-      store.getAncestor ⟨root, .pending⟩ start = .ok ancestor ∧ ancestor.root = checkpoint := by
-  unfold Store.getCheckpointBlock at read
-  simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at read
-  obtain ⟨start, startOk, ancestor, walk, eq⟩ := read
-  exact ⟨start, ancestor, mapError_ok_iff.mp startOk, walk, eq⟩
-
 /-- A block below a descendant reads the descendant's checkpoint block at an earlier epoch. -/
 private theorem getCheckpointBlock_of_below {store : Store preset fork}
     (before : fork < .glamsterdam)
@@ -902,7 +892,7 @@ private theorem getCheckpointBlock_of_below {store : Store preset fork}
     (within : start ≤ belowBlock.slot)
     (read : store.getCheckpointBlock tip epoch = .ok checkpoint) :
     store.getCheckpointBlock below epoch = .ok checkpoint := by
-  obtain ⟨start', ancestor, startOk', walk, rooted⟩ := getCheckpointBlock_walk read
+  obtain ⟨start', ancestor, startOk', walk, rooted⟩ := Store.getCheckpointBlock_walk_root read
   rw [startOk, Except.ok.injEq] at startOk'
   subst start'
   have toBelow := Store.getAncestor_of_isAncestor_of_lt before belowFound descends
@@ -1823,7 +1813,7 @@ private theorem caller_parent_voter_reaches {Δ : ℕ} (sync : e.Synchronous Δ)
     by_cases below : boundary ≤ parent.slot
     · exact .inl (.inl ⟨boundary, boundaryOk, below,
         getCheckpointBlock_of_below preGloas parentKnown rootParent boundaryOk below checkpoint⟩)
-    obtain ⟨boundary', ancestor, boundaryOk', walk, rooted⟩ := getCheckpointBlock_walk checkpoint
+    obtain ⟨boundary', ancestor, boundaryOk', walk, rooted⟩ := Store.getCheckpointBlock_walk_root checkpoint
     rw [boundaryOk, Except.ok.injEq] at boundaryOk'
     subst boundaryOk'
     by_cases atBlock : block.slot ≤ boundary

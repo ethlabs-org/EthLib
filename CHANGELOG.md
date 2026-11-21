@@ -15,6 +15,10 @@ Not yet released.
   `Store.siblingBound_of_majority` gives that bound from a target whose votes exceed half of the stake plus the boost.
   `Store.getHeadFrom_of_visited` shows that, from Gloas, a head walk passing a node ends where the walk from that node ends.
 
+- `Store.isAncestor_getHead_root` (`ForkChoice/FastConfirmation/Supporters.lean`) shows that the head's ancestry at a pending node reads only the head's root, at every fork.
+  `Store.getCheckpointBlock_walk_root` (`ForkChoice/Store.lean`) shows that a checkpoint read is the root of a walk back to the first slot of the epoch, at every fork.
+  `HonestRegistriesWithinLimit` and `Execution.honestRegistries_of_room` (`ForkChoice/FastConfirmation/HistoricalStatements.lean`) are now public, unchanged: from Gloas, honest registries stay within the limit while the stores' epochs stay bounded.
+
 - `Store.FullParentsVerified` (`ForkChoice/PayloadGhost.lean`) says that, from Gloas, each held block that builds on a held full parent finds its payload verified.
   `Store.Reachable.fullParentsVerified` (`ForkChoice/StoreEntries.lean`) proves it for a reachable store that holds no block at the anchor's parent root.
   `Store.onBlock_validateParentPayload` (`ForkChoice/Handlers.lean`) shows that a new block the handler accepts passed the check of its parent's payload.
@@ -830,6 +834,12 @@ Not yet released.
   `ValidatorStep`, `PinDriftBound.CreditBudgets` and `PinDriftBound.PreviousEpochRise` use it.
 
 ### Changes that break callers
+
+- In Lean, `Store.isAncestor_iff`, `Store.comparable_of_ancestors`, `Store.eq_of_isAncestor_antisymm`, `Store.isAncestor_of_getCheckpointBlock_above` and `Store.isAncestor_of_blockTree_ancestor` hold at every fork and no longer take `before : fork < .glamsterdam`.
+  `signerHead_of_duty` and `justified_descends_of_duty` (`ForkChoice/FastConfirmation/DutyWindows.lean`) no longer take `preGloas : fork < .glamsterdam`.
+  `Store.ForwardReachableWith.weight_add_weight_add_stake_le_withBoost` and `Store.ForwardReachableWith.weight_add_weight_le_withBoost` no longer take `before : fork < .glamsterdam`.
+  Migration: a caller drops that argument.
+  The new statements imply the old ones.
 
 - In Lean, `Store.Reachable.realized_le_source` and `Store.getCheckpointBlock_of_shared_origin` hold at every fork and no longer take `before : fork < .glamsterdam`.
   Migration: a caller drops that argument.

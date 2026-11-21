@@ -241,7 +241,6 @@ private theorem comparable_of_target_read {sender receiver : Store preset fork}
     (anchorSlot : anchorBlock.slot = anchorState.slot)
     (senderReached : Store.Reachable config anchorState anchorBlock sender)
     (reached : Store.Reachable config anchorState anchorBlock receiver)
-    (before : fork < .glamsterdam)
     (same : ∀ (r : Root) (b c : BeaconBlock preset fork),
       sender.blocks[r]? = some b → receiver.blocks[r]? = some c → b = c)
     {head root : Root} {checkpoint : Checkpoint}
@@ -254,7 +253,7 @@ private theorem comparable_of_target_read {sender receiver : Store preset fork}
       receiver.isAncestor ⟨root, .pending⟩ ⟨checkpoint.root, .pending⟩ = .ok true := by
   obtain ⟨_, block, _, held, _, targetAbove⟩ := Store.isAncestor_of_getCheckpointBlock read
   obtain ⟨rb, rk⟩ := Store.held_of_isAncestor supports
-  rcases Store.comparable_of_ancestors before held rk targetAbove supports with h | h
+  rcases Store.comparable_of_ancestors held rk targetAbove supports with h | h
   · exact .inl (copy_ancestor anchorSlot senderReached reached same checkpointKnown h)
   · exact .inr (copy_ancestor anchorSlot senderReached reached same known h)
 
@@ -382,7 +381,7 @@ private theorem comparable_of_duty {anchor : Store preset fork}
     (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
     (start : ∀ w ∈ J, e.start w = anchor) (anchorSlot : anchorBlock.slot = anchorState.slot)
     (anchorBoundary : isStartSlotAtEpoch preset anchorBlock.slot = .ok true)
-    (preGloas : fork < .glamsterdam) {time first T : ℕ}
+    {time first T : ℕ}
     (roots : HeldBlockStateRootsNonzero (e := e) time)
     (agree : ∀ a ∈ J, ∀ b ∈ J, ∀ i j, (e.world i).time ≤ time → (e.world j).time ≤ time →
       ∀ (r : Root) (left right : BeaconBlock preset fork),
@@ -407,8 +406,8 @@ private theorem comparable_of_duty {anchor : Store preset fork}
   have reachedW := e.reachable (fun a ha => (start a ha) ▸ Store.Reachable.anchor anchored) k w
     receiver
   obtain ⟨head, supports, targetRead⟩ := signerHead_of_duty anchored start anchorSlot
-    anchorBoundary preGloas roots covers honest receiver duty low lt k'Bound checkpointKnown
-  exact comparable_of_target_read anchorSlot reachedV reachedW preGloas
+    anchorBoundary roots covers honest receiver duty low lt k'Bound checkpointKnown
+  exact comparable_of_target_read anchorSlot reachedV reachedW
     (agree v honest w receiver k' k k'Bound kBound) known checkpointKnown supports targetRead
 
 /-- An honest duty for a checkpoint places its held block at or before the epoch's boundary.
@@ -552,12 +551,12 @@ private theorem justified_comparable_of_pin {anchor : Store preset fork} {Δ tim
   obtain ⟨jb, jk⟩ := Store.held_of_isAncestor receiverJ
   obtain ⟨rootBlock, known⟩ := holds w receiver k (by omega) kBound ready
   -- Compare the base with the root before comparing the receiver's justification with the base.
-  rcases Store.comparable_of_ancestors preGloas sk rk callerBase rootAbove with below | above
+  rcases Store.comparable_of_ancestors sk rk callerBase rootAbove with below | above
   · have copied := copy_ancestor anchorSlot sr rr common rsk below
     have supported := Store.isAncestor_trans rsk known receiverBase copied
-    exact Store.comparable_of_ancestors preGloas jk known receiverJ supported
+    exact Store.comparable_of_ancestors jk known receiverJ supported
   have baseBelow := copy_ancestor anchorSlot sr rr common known above
-  rcases Store.comparable_of_ancestors preGloas jk rsk receiverJ receiverBase with aboveJ | belowJ
+  rcases Store.comparable_of_ancestors jk rsk receiverJ receiverBase with aboveJ | belowJ
   swap
   · exact .inr (Store.isAncestor_trans rsk jk baseBelow belowJ)
   by_cases reverse : ((e.world k).state w).isAncestor ⟨base, .pending⟩
@@ -657,7 +656,7 @@ private theorem justified_comparable_of_pin {anchor : Store preset fork} {Δ tim
       exact jk
     have low' : (e.world n).time ≤ (e.world k').time := by omega
     have lt' : (e.world k').time < T := by omega
-    have result := comparable_of_duty anchored start anchorSlot anchorBoundary preGloas roots agree
+    have result := comparable_of_duty anchored start anchorSlot anchorBoundary roots agree
       covers high honest receiver duty low' lt' kBound known jk'
     rwa [dataTarget] at result
   -- At the epoch's first slot, the justification's own signer votes from the call on.
@@ -710,7 +709,7 @@ private theorem justified_comparable_of_pin {anchor : Store preset fork} {Δ tim
         targetEpoch members quorum currentOk cpEpoch with
       eq | ⟨v, voter, unseen, i, -, m, sent, data, member, dataTarget, dataBefore⟩
     · rw [← eq] at read
-      exact comparable_of_target_read anchorSlot sr rr preGloas common known jk onChain read
+      exact comparable_of_target_read anchorSlot sr rr common known jk onChain read
     · obtain ⟨honest, -, -⟩ := members v voter
       obtain ⟨k', -, duty⟩ := e.exists_maySign_of_signed sent member honest
       have dutyCopy := duty
@@ -756,7 +755,7 @@ private theorem justified_comparable_of_pin {anchor : Store preset fork} {Δ tim
       have same := selected w receiver u caller k n kBound nBound _ _ (.inl rfl) (.inr rfl)
         (by rw [eq, cpEpoch]) cpHorizon
       rw [same, eq] at jk ⊢
-      exact comparable_of_target_read anchorSlot sr rr preGloas common known jk onChain read
+      exact comparable_of_target_read anchorSlot sr rr common known jk onChain read
     · obtain ⟨target', slot', first, last, participants, voters, targetOk, slotOk', targetEpochOk,
         firstOk, lastOk, participantsOk, read, members, bound⟩ :=
         quorum_of_count count stateOk supportOk

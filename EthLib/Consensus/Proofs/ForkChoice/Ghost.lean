@@ -372,34 +372,41 @@ theorem getAncestor_root_eq {start node ancestor : ForkChoiceNode}
     subst rFound
     exact absurd rAbove (UInt64.lt_irrefl _)
 
-/-- Before Gloas, a pending node descends from a known pending node exactly as in the tree. -/
+/-- A pending node descends from a known pending node exactly as in the tree. -/
 theorem isAncestor_iff {root : Root} {node : ForkChoiceNode} {block : BeaconBlock preset fork}
-    {result : Bool} (before : fork < .glamsterdam) (found : store.blocks[node.root]? = some block)
+    {result : Bool} (found : store.blocks[node.root]? = some block)
     (pending : node.payloadStatus = .pending)
     (computed : store.isAncestor ⟨root, .pending⟩ node = .ok result) :
     result = true ↔ (blockTree lower).Ancestor (some node.root) (some root) := by
   have known : store.block node.root = .ok block := block_ok_iff.mpr found
-  have later : ¬ .glamsterdam ≤ fork := Nat.not_le_of_lt before
-  simp only [isAncestor, known, later, ↓reduceIte, bind, Except.bind] at computed
   cases walk : store.getAncestor ⟨root, .pending⟩ block.slot with
-  | error e => simp [walk] at computed
+  | error e => simp [isAncestor, known, walk, bind, Except.bind] at computed
   | ok ancestor =>
-    simp only [walk, pure, Except.pure, Except.ok.injEq] at computed
+  obtain ⟨chain, origin, -⟩ := getAncestor_climbs (lower := lower) walk
+  by_cases gloas : .glamsterdam ≤ fork
+  · -- From Gloas the check reads only the root at a pending node.
+    simp only [isAncestor, known, walk, gloas, pending, ↓reduceIte, bind, Except.bind, pure,
+      Except.pure, Except.ok.injEq, beq_self_eq_true, Bool.or_true, Bool.and_true] at computed
     subst computed
-    obtain ⟨chain, origin, -⟩ := getAncestor_climbs (lower := lower) walk
-    have ancestorPending : ancestor.payloadStatus = .pending := by
-      rcases origin with rfl | ⟨_, _, _, _, _, _, status, _⟩
-      · rfl
-      · exact status ▸ parentPayloadStatus_of_lt before
     rw [beq_iff_eq]
-    constructor
-    · rintro rfl
-      exact chain
-    · intro above
-      have sameRoot := getAncestor_root_eq found walk above
-      cases ancestor
-      cases node
-      simp_all
+    exact ⟨fun same => same ▸ chain, getAncestor_root_eq found walk⟩
+  simp only [isAncestor, known, walk, gloas, ↓reduceIte, bind, Except.bind, pure, Except.pure,
+    Except.ok.injEq] at computed
+  subst computed
+  have before : fork < .glamsterdam := Nat.lt_of_not_le gloas
+  have ancestorPending : ancestor.payloadStatus = .pending := by
+    rcases origin with rfl | ⟨_, _, _, _, _, _, status, _⟩
+    · rfl
+    · exact status ▸ parentPayloadStatus_of_lt before
+  rw [beq_iff_eq]
+  constructor
+  · rintro rfl
+    exact chain
+  · intro above
+    have sameRoot := getAncestor_root_eq found walk above
+    cases ancestor
+    cases node
+    simp_all
 
 /-! ## Votes and weights -/
 
@@ -543,7 +550,7 @@ theorem getAttestationScore_eq_weight {node : ForkChoiceNode} {block : BeaconBlo
   · simp only [latestVote, equivocating, ↓reduceIte]
   · rw [getSupportedNode_of_lt before, Except.ok.injEq] at supportedOk
     subst supportedOk
-    rw [isAncestor_iff (lower := lower) before found pending computed']
+    rw [isAncestor_iff (lower := lower) found pending computed']
     simp only [latestVote, honest, Bool.false_eq_true, ↓reduceIte, message', Option.map_some]
     simp
 
@@ -981,7 +988,7 @@ theorem getWeight_eq_weight_withBoost {node : ForkChoiceNode} {block : BeaconBlo
   -- The boost counts exactly when the boosted block descends from the node.
   have counts : (∃ m, store.boostedRoot = some m ∧ (blockTree lower).Ancestor (some node.root) m) ↔
       result = true := by
-    simp [boostedRoot, zero, isAncestor_iff (lower := lower) before found pending check]
+    simp [boostedRoot, zero, isAncestor_iff (lower := lower) found pending check]
   cases result with
   | false =>
     simp only [Bool.false_eq_true, iff_false] at counts
@@ -1461,7 +1468,7 @@ theorem isAncestor_getHead_of_majority_withBoost {nodes : List ForkChoiceNode}
     simp [isAncestor, block_ok_iff.mpr nodeFound, later, walk, bind, Except.bind, pure,
       Except.pure]
   have same :=
-    (isAncestor_iff (lower := lower) before nodeFound nodePending computed).mpr ⟨n, step⟩
+    (isAncestor_iff (lower := lower) nodeFound nodePending computed).mpr ⟨n, step⟩
   obtain ⟨root, status⟩ := head
   simp only at headPending
   subst headPending

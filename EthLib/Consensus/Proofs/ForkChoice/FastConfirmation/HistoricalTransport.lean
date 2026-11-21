@@ -491,7 +491,7 @@ private theorem mem_window_of_mem_supporters {since last n : Nat} {u : Validator
     (honest : u ∈ J) (after : since ≤ (e.world n).time) (time : (e.world n).time ≤ last)
     (reached : Store.ForwardReachableWith config checks anchorState anchorBlock
       ((e.world n).state u))
-    (before : fork < .glamsterdam) (lower : ((e.world n).state u).ParentsBelow)
+    (lower : ((e.world n).state u).ParentsBelow)
     {head : ForkChoiceNode} {parent : BeaconBlock preset fork}
     {current first finish : Slot} {epoch : Epoch} {members : Std.TreeSet ValidatorIndex}
     {nodes : List ForkChoiceNode} {state : BeaconState preset fork} {c : Option Root} {i : Nat}
@@ -516,7 +516,7 @@ private theorem mem_window_of_mem_supporters {since last n : Nat} {u : Validator
   obtain ⟨voted, votedFound, -⟩ := origin.voted
   have isChild : (Store.blockTree lower).IsChild (some childRoot) (some parentRoot) :=
     Store.blockTree_isChild_iff.mpr ⟨childBlock, childFound, childParent⟩
-  have voteDescends := Store.isAncestor_of_blockTree_ancestor (lower := lower) before
+  have voteDescends := Store.isAncestor_of_blockTree_ancestor (lower := lower)
     votedFound parentFound (isChild.ancestor.trans above)
   exact membership u honest n after time parent members _ attestation
     ⟨head, current, first, finish, epoch, headRead, parentFound, descends, slotRead, epochRead,
@@ -544,7 +544,7 @@ private theorem honest_supporters_le_weight [DecidablePred (· ∈ J)]
       store.exists_of_voteCountsFor counts
     rw [Store.getSupportedNode_of_lt before, Except.ok.injEq] at supportedOk
     subst supported
-    have ancestry := (Store.isAncestor_iff (lower := lower) before found rfl descends).mp rfl
+    have ancestry := (Store.isAncestor_iff (lower := lower) found rfl descends).mp rfl
     simp only [Store.supportersOf, List.mem_toFinset, List.mem_map, List.mem_filter] at supporter
     obtain ⟨⟨index, balance⟩, ⟨entry, _⟩, same⟩ := supporter
     simp only at same
@@ -618,7 +618,7 @@ private theorem sibling_weight_lt_of_window_margin [DecidablePred (· ∈ J)]
     (after : since ≤ (e.world n).time) (time : (e.world n).time ≤ last)
     (reached : Store.ForwardReachableWith config checks anchorState anchorBlock
       ((e.world n).state u))
-    (before : fork < .glamsterdam) (lower : ((e.world n).state u).ParentsBelow)
+    (lower : ((e.world n).state u).ParentsBelow)
     {head : ForkChoiceNode} {state : BeaconState preset fork}
     (within : state.RegistryWithinLimit)
     (nodes : List ForkChoiceNode) (boosted : Option (Option Root)) (score : Nat)
@@ -661,7 +661,7 @@ private theorem sibling_weight_lt_of_window_margin [DecidablePred (· ∈ J)]
         · exact ⟨_, Store.blockTree_isChild_iff.mpr ⟨block, found, rfl⟩, first⟩
         · exact ⟨_, (mem_children.mp siblingChild).2, second⟩
       obtain ⟨c, isChild, supporter⟩ := child
-      have member := mem_window_of_mem_supporters membership honest after time reached before
+      have member := mem_window_of_mem_supporters membership honest after time reached
         lower headRead parentFound descends slotRead epochRead horizon firstOk lastOk window
         isChild supporter
       obtain ⟨below, validator, atIndex, active⟩ :=
@@ -922,18 +922,18 @@ public theorem ancestor_head_of_window_margin [DecidablePred (· ∈ J)]
     · rw [← same, ← ghostEq]
       exact Models.ForkChoice.ancestor_ghost _ _ _ _ _
     · rw [Store.blockTree_parent_of found] at above
-      have visited := (Store.isAncestor_iff (lower := lower) before parentFound rfl descends).mp rfl
+      have visited := (Store.isAncestor_iff (lower := lower) parentFound rfl descends).mp rfl
       rw [← ghostEq]
       apply ancestor_ghost_of_visited_parent _ _
         ((Store.view lower nodes).withBoost store.boostedRoot) _
         (Models.ForkChoice.mem_children.mpr ⟨inView, child⟩) above
         (ghostEq ▸ visited)
       intro sibling member distinct
-      exact sibling_weight_lt_of_window_margin membership honest later time reached before
+      exact sibling_weight_lt_of_window_margin membership honest later time reached
         lower within nodes store.boostedRoot
         (store.boostScore config) headRead found parentFound descends slotRead
         epochRead horizon firstOk lastOk window shortWindow shortBefore member distinct modelMargin
-  have answer := Store.isAncestor_of_blockTree_ancestor (lower := lower) before headKnown
+  have answer := Store.isAncestor_of_blockTree_ancestor (lower := lower) headKnown
     found result
   obtain ⟨headRoot, status⟩ := head
   simp only at pending

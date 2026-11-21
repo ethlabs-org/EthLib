@@ -689,7 +689,7 @@ It pins it to the call's target, or a voter unseen by the call signs it from the
 private theorem late_justified_not_in_call_epoch {anchor : Store preset fork} {Δ time : ℕ}
     {T : ℕ} {anchorEpoch horizon : Epoch} {margin : ℕ}
     (slots : 0 < config.SLOT_DURATION_MS) (positive : 0 < preset.SLOTS_PER_EPOCH.toNat)
-    (preGloas : fork < .glamsterdam) (fits : DelayFits fork config genesisTimeMs Δ)
+    (fits : DelayFits fork config genesisTimeMs Δ)
     (windows : AssignmentWindowAgreement (e := e) time) (params : DirectSafety.Parameters preset)
     (ring : preset.MIN_SEED_LOOKAHEAD.toNat + 3 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
     (anchorStore : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
@@ -799,12 +799,12 @@ private theorem late_justified_not_in_call_epoch {anchor : Store preset fork} {�
   have close : ((e.world k).state w).isAncestor
       ⟨((e.world k).state w).justifiedCheckpoint.root, .pending⟩ ⟨root, .pending⟩ = .ok true →
       False := fun up =>
-    strict (Store.eq_of_isAncestor_antisymm preGloas rootFound justifiedFound descends up)
+    strict (Store.eq_of_isAncestor_antisymm rootFound justifiedFound descends up)
   -- A read of the justified checkpoint on the caller's head above the root contradicts it too.
   have viaCaller (read : ((e.world n).state u).getCheckpointBlock head.root
       ((e.world k).state w).justifiedCheckpoint.epoch =
         .ok ((e.world k).state w).justifiedCheckpoint.root) : False := by
-    have up := Store.isAncestor_of_getCheckpointBlock_above preGloas callerFound headAbove read
+    have up := Store.isAncestor_of_getCheckpointBlock_above callerFound headAbove read
       (slot_le_of_epoch_lt positive above)
     exact close (Store.isAncestor_of_same_blocks reachedW oneBlock callerFound
       (reachedU.anchorSlot_le (UInt64.le_of_eq anchorSlot) callerFound)
@@ -813,7 +813,7 @@ private theorem late_justified_not_in_call_epoch {anchor : Store preset fork} {�
   have viaDuty := fun {v} (honest : v ∈ J) {k' data} duty target after before =>
     let window := duty_window_of_slot_le (k' := k') (data := data) anchored fits callBeginOk
       receiver ready currentOk honest duty after before
-    (justified_descends_of_duty anchorStore anchored anchorSlot anchorBoundary preGloas roots
+    (justified_descends_of_duty anchorStore anchored anchorSlot anchorBoundary roots
       caller callerFound callerBound covers high receiver atTime ⟨_, justifiedFound⟩
       (slot_le_of_epoch_lt positive above) honest duty target (atCall.trans_le window.1)
       window.2).resolve_right (e.not_honestCollision_of_agree agree)
@@ -924,7 +924,7 @@ A checkpoint after the call's epoch has an honest signer with a duty after the c
 That duty puts the checkpoint above the root, against the strict descent. -/
 private theorem late_justified_le_root {anchor : Store preset fork} {Δ time T : ℕ}
     {anchorEpoch horizon : Epoch} {margin : ℕ} (slots : 0 < config.SLOT_DURATION_MS)
-    (positive : 0 < preset.SLOTS_PER_EPOCH.toNat) (preGloas : fork < .glamsterdam)
+    (positive : 0 < preset.SLOTS_PER_EPOCH.toNat)
     (fits : DelayFits fork config genesisTimeMs Δ)
     (windows : AssignmentWindowAgreement (e := e) time) (params : DirectSafety.Parameters preset)
     (ring : preset.MIN_SEED_LOOKAHEAD.toNat + 3 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
@@ -975,7 +975,7 @@ private theorem late_justified_le_root {anchor : Store preset fork} {Δ time T :
   by_cases afterCall : computeEpochAtSlot preset callSlot <
       ((e.world k).state w).justifiedCheckpoint.epoch
   swap
-  · exact late_justified_not_in_call_epoch slots positive preGloas fits windows params ring
+  · exact late_justified_not_in_call_epoch slots positive fits windows params ring
       anchorStore sound anchorSlot anchorBoundary anchored anchorOk inHorizon roots agree selected
       pinned signed caller atSlot headOk inputs walk low high covers receiver atTime ready tree
       descends strict
@@ -1008,11 +1008,11 @@ private theorem late_justified_le_root {anchor : Store preset fork} {Δ time T :
   obtain ⟨justifiedBlock, justifiedFound⟩ := Store.filterNodeTree_known tree
   obtain ⟨low', high'⟩ := duty_window_of_slot_le anchored fits callBeginOk receiver ready currentOk
     honest duty after before
-  have up := (justified_descends_of_duty anchorStore anchored anchorSlot anchorBoundary preGloas
+  have up := (justified_descends_of_duty anchorStore anchored anchorSlot anchorBoundary
     roots caller callerFound callerBound covers high receiver atTime
     ⟨justifiedBlock, justifiedFound⟩ (slot_le_of_epoch_lt positive above) honest duty target
     (atCall.trans_le low') high').resolve_right (e.not_honestCollision_of_agree agree)
-  exact strict (Store.eq_of_isAncestor_antisymm preGloas rootFound justifiedFound descends up)
+  exact strict (Store.eq_of_isAncestor_antisymm rootFound justifiedFound descends up)
 
 /-! ## A late receiver of a root before the call's epoch -/
 
@@ -1084,7 +1084,7 @@ private theorem late_previous_receiver_source {anchor : Store preset fork} {Δ t
   have window : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat := by
     have := params.roots
     omega
-  have justifiedLe := late_justified_le_root slots positive preGloas fits windows params ring
+  have justifiedLe := late_justified_le_root slots positive fits windows params ring
       anchorStore sound anchorSlot anchorBoundary anchored anchorOk inHorizon roots agree selected
       pinned signed caller atSlot headOk inputs walk low high covers receiver atTime ready tree
       descends strict
@@ -1305,7 +1305,7 @@ private theorem late_current_receiver_source {anchor : Store preset fork} {Δ ti
   have window : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat := by
     have := params.roots
     omega
-  have justifiedLe := late_justified_le_root slots positive preGloas fits windows params ring
+  have justifiedLe := late_justified_le_root slots positive fits windows params ring
       anchorStore sound anchorSlot anchorBoundary anchored anchorOk inHorizon roots agree selected
       pinned signed caller atSlot headOk inputs walk low high covers receiver atTime ready tree
       descends strict
@@ -1729,7 +1729,7 @@ private theorem receiver_source_above_root {anchor : Store preset fork} {Δ time
 The root's realized justification is at or after that checkpoint, and it reads it. -/
 private theorem finalized_read_above_root {anchor : Store preset fork} {Δ time T : ℕ}
     {anchorEpoch horizon : Epoch} {margin : ℕ} (slots : 0 < config.SLOT_DURATION_MS)
-    (positive : 0 < preset.SLOTS_PER_EPOCH.toNat) (preGloas : fork < .glamsterdam)
+    (positive : 0 < preset.SLOTS_PER_EPOCH.toNat)
     (fits : DelayFits fork config genesisTimeMs Δ)
     (windows : AssignmentWindowAgreement (e := e) time) (params : DirectSafety.Parameters preset)
     (ring : preset.MIN_SEED_LOOKAHEAD.toNat + 3 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
@@ -1810,7 +1810,7 @@ private theorem finalized_read_above_root {anchor : Store preset fork} {Δ time 
     · rcases forward.finalized_add_two_le_or_anchor sound slots epochOk with old | old
       · omega
       · exact absurd old atAnchor
-    · have justifiedLe := UInt64.le_iff_toNat_le.mp (late_justified_le_root slots positive preGloas
+    · have justifiedLe := UInt64.le_iff_toNat_le.mp (late_justified_le_root slots positive
         fits windows params ring anchorStore sound anchorSlot anchorBoundary anchored anchorOk
         inHorizon roots agree selected pinned signed caller atSlot headOk inputs walk low high
         covers receiver atTime ready tree descends strict rootFound currentOk (by omega))
@@ -1940,17 +1940,17 @@ private theorem root_mem_filtered_of_reads {anchor : Store preset fork} {Δ time
     (anchorParent w receiver k (atTime ▸ high))
   obtain ⟨justifiedBlock, justifiedFound⟩ := Store.filterNodeTree_known tree
   obtain ⟨rootBlock, rootFound, -⟩ := Store.slot_le_of_isAncestor justifiedFound descends
-  have rootPath := (Store.isAncestor_iff (lower := lower) preGloas justifiedFound rfl
+  have rootPath := (Store.isAncestor_iff (lower := lower) justifiedFound rfl
     descends).mp rfl
-  have topPath := (Store.isAncestor_iff (lower := lower) preGloas rootFound rfl topAbove).mp rfl
+  have topPath := (Store.isAncestor_iff (lower := lower) rootFound rfl topAbove).mp rfl
   obtain ⟨leaf, leafBlock, leafFound, leafPath, ⟨verdict, read⟩, member⟩ :=
     Store.exists_leaf_above_mem_filterNodeTree (lower := lower)
       (fun gloas => absurd gloas (Nat.not_le_of_lt preGloas)) rootFound topFound
         rootPath topPath
       tree
-  have leafTop := Store.isAncestor_of_blockTree_ancestor preGloas leafFound topFound
+  have leafTop := Store.isAncestor_of_blockTree_ancestor leafFound topFound
     leafPath
-  have leafRoot := Store.isAncestor_of_blockTree_ancestor preGloas leafFound rootFound
+  have leafRoot := Store.isAncestor_of_blockTree_ancestor leafFound rootFound
     (topPath.trans leafPath)
   have reads := read
   unfold Store.isViableLeaf at reads
@@ -1959,7 +1959,7 @@ private theorem root_mem_filtered_of_reads {anchor : Store preset fork} {Δ time
   apply member
   rw [read, Store.isViableLeaf_eq_true read epochOk votingOk (sourceOk leaf voting epoch leafTop
       epochOk
-    votingOk) (.inr (finalized_read_above_root slots positive preGloas fits windows params ring
+    votingOk) (.inr (finalized_read_above_root slots positive fits windows params ring
         anchorStore sound anchorSlot anchorBoundary anchored anchorOk inHorizon roots anchorParent
         agree selected pinned signed heldReads caller atSlot headOk inputs walk realized low high
         covers receiver atTime ready tree descends strict leafRoot))]

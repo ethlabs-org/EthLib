@@ -77,10 +77,10 @@ namespace Store
 
 variable {lower : store.ParentsBelow}
 
-/-- Before Gloas, a known block that descends from another in the tree descends in the store.
+/-- A known block that descends from another in the tree descends in the store.
 
 The other block must be known too. -/
-theorem isAncestor_of_blockTree_ancestor (before : fork < .glamsterdam) {root ancestor : Root}
+theorem isAncestor_of_blockTree_ancestor {root ancestor : Root}
     {block ancestorBlock : BeaconBlock preset fork} (found : store.blocks[root]? = some block)
     (ancestorFound : store.blocks[ancestor]? = some ancestorBlock)
     (above : (blockTree lower).Ancestor (some ancestor) (some root)) :
@@ -89,10 +89,7 @@ theorem isAncestor_of_blockTree_ancestor (before : fork < .glamsterdam) {root an
   induction n generalizing root block with
   | zero =>
     cases chain
-    have later : ¬ .glamsterdam ≤ fork := Nat.not_le_of_lt before
-    simp only [isAncestor, later, ↓reduceIte, bind, Except.bind, block_ok_iff.mpr ancestorFound,
-      getAncestor_of_le (node := ⟨ancestor, .pending⟩) ancestorFound (UInt64.le_refl _), pure,
-      Except.pure, beq_self_eq_true]
+    exact isAncestor_self (node := ⟨ancestor, .pending⟩) ancestorFound
   | succ n ih =>
     rw [Function.iterate_succ_apply, blockTree_parent_of found] at chain
     cases parentFound : store.blocks[block.parentRoot]? with
@@ -195,7 +192,7 @@ Both lookaheads of the seed must be at least one epoch.
 
 The ring of mixes must be longer than the minimum lookahead plus two epochs. -/
 private theorem mem_committees_of_voteOrigin {checks : SignatureChecks}
-    (before : fork < .glamsterdam) (lower : store.ParentsBelow)
+    (lower : store.ParentsBelow)
     (anchorSlot : anchorBlock.slot ≤ anchorState.slot)
     (reached : Store.ForwardReachableWith config checks anchorState anchorBlock store)
     (minLookahead : 1 ≤ preset.MIN_SEED_LOOKAHEAD.toNat)
@@ -222,7 +219,7 @@ private theorem mem_committees_of_voteOrigin {checks : SignatureChecks}
   obtain ⟨voted, votedFound, -⟩ := origin.voted
   have isChild : (Store.blockTree lower).IsChild (some child) (some parentRoot) :=
     Store.blockTree_isChild_iff.mpr ⟨childBlock, childFound, childParent⟩
-  have voteDescends := Store.isAncestor_of_blockTree_ancestor (lower := lower) before votedFound
+  have voteDescends := Store.isAncestor_of_blockTree_ancestor (lower := lower) votedFound
     parentFound (isChild.ancestor.trans above)
   -- The head has a state, at or before the current slot.
   obtain ⟨headBlock, headBlockFound, -⟩ := Store.slot_le_of_isAncestor parentFound descends
@@ -457,7 +454,7 @@ The ring of mixes must be longer than the minimum lookahead plus two epochs.
 
 The registry of the state must hold at most the validators that the preset allows. -/
 theorem Store.ForwardReachableWith.weight_add_weight_add_stake_le_withBoost
-    {checks : SignatureChecks} (before : fork < .glamsterdam) (lower : store.ParentsBelow)
+    {checks : SignatureChecks} (lower : store.ParentsBelow)
     (anchorSlot : anchorBlock.slot ≤ anchorState.slot)
     (reached : Store.ForwardReachableWith config checks anchorState anchorBlock store)
     (minLookahead : 1 ≤ preset.MIN_SEED_LOOKAHEAD.toNat)
@@ -534,7 +531,7 @@ theorem Store.ForwardReachableWith.weight_add_weight_add_stake_le_withBoost
     reached.exists_voteOrigin_of_mem_supporters cIsChild supporter
   obtain ⟨low, high⟩ := Store.slot_mem_range_of_voteOrigin lower parentFound childFound childParent
     slotOk firstOk lastOk origin above
-  exact mem_committees_of_voteOrigin before lower anchorSlot reached minLookahead maxLookahead
+  exact mem_committees_of_voteOrigin lower anchorSlot reached minLookahead maxLookahead
     ring parentFound childFound childParent descends slotOk firstOk lastOk
     (isFullValidatorSetCovered_eq_false maximumOk (UInt64.le_trans low high) whole)
     participantsOk origin above
@@ -565,7 +562,7 @@ The ring of mixes must be longer than the minimum lookahead plus two epochs.
 
 The registry of the state must hold at most the validators that the preset allows. -/
 theorem Store.ForwardReachableWith.weight_add_weight_le_withBoost
-    {checks : SignatureChecks} (before : fork < .glamsterdam) (lower : store.ParentsBelow)
+    {checks : SignatureChecks} (lower : store.ParentsBelow)
     (anchorSlot : anchorBlock.slot ≤ anchorState.slot)
     (reached : Store.ForwardReachableWith config checks anchorState anchorBlock store)
     (minLookahead : 1 ≤ preset.MIN_SEED_LOOKAHEAD.toNat)
@@ -605,7 +602,7 @@ theorem Store.ForwardReachableWith.weight_add_weight_le_withBoost
     obtain ⟨-, lastValue⟩ := subChecked_ok_iff.mp lastOk
     rw [UInt64.le_iff_toNat_le] at blockLe stateLe ⊢
     omega
-  have bound := reached.weight_add_weight_add_stake_le_withBoost before lower anchorSlot
+  have bound := reached.weight_add_weight_add_stake_le_withBoost lower anchorSlot
     minLookahead maxLookahead ring within nodes boosted score found parentFound siblingChild
     distinct descends slotOk firstOk lastOk maximumOk
     (N := store.parentVotersOf state participants block parentBlock)

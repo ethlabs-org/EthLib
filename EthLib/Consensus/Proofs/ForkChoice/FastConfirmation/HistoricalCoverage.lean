@@ -244,7 +244,7 @@ private theorem justified_descends_of_signer {anchor : Store preset fork} {Δ ti
     (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
     (start : ∀ w ∈ J, e.start w = anchor) (anchorSlot : anchorBlock.slot = anchorState.slot)
     (anchorBoundary : isStartSlotAtEpoch preset anchorBlock.slot = .ok true)
-    (positive : 0 < preset.SLOTS_PER_EPOCH.toNat) (preGloas : fork < .glamsterdam)
+    (positive : 0 < preset.SLOTS_PER_EPOCH.toNat)
     (fits : DelayFits fork config genesisTimeMs Δ)
     (roots : HeldBlockStateRootsNonzero (e := e) time)
     (caller : u ∈ J) (callerHeld : ((e.world n).state u).blocks[root]? = some block)
@@ -287,7 +287,7 @@ private theorem justified_descends_of_signer {anchor : Store preset fork} {Δ ti
     have above := Nat.mul_le_mul_right preset.SLOTS_PER_EPOCH.toNat (Nat.succ_le_of_lt epochLt)
     rw [Nat.succ_mul] at above
     omega
-  exact justified_descends_of_duty anchored start anchorSlot anchorBoundary preGloas roots
+  exact justified_descends_of_duty anchored start anchorSlot anchorBoundary roots
     caller callerHeld callerTime covers high receiver atTime justifiedKnown boundaryLe honest duty
     target (by omega) high'
 
@@ -420,7 +420,7 @@ public theorem Execution.rootViableAt_of_checked [DecidablePred (· ∈ J)]
     rw [slotOk, Except.ok.injEq] at callerCurrentOk
     subst callerCurrentOk
     exact .inl ((justified_descends_of_signer anchored start anchorSlot anchorBoundary fit.positive
-      preGloas fits roots caller callerHeld (low.trans high) beginOk timeEq
+      fits roots caller callerHeld (low.trans high) beginOk timeEq
       (callerBlocks root block callerHeld) rfl covers high receiver atTime upToDate hdOk
       currentOk late signer).resolve_right collide)
 
@@ -990,7 +990,7 @@ public theorem Execution.honestHeadsCover_of_signed_justification [DecidablePred
         obtain ⟨current, currentOk, _, _⟩ :=
           (forward k w receiver).slots_le_current slots (UInt64.le_of_eq anchorSlot)
         exact .inl ((justified_descends_of_signer anchored start anchorSlot anchorBoundary
-          positive preGloas fits roots caller callerHeld callerTime beginOk timeEq blockLe
+          positive fits roots caller callerHeld callerTime beginOk timeEq blockLe
           callEpochEq covers high receiver atTime upToDate headOk currentOk later
           (signed w receiver k current lowK highK upToDate currentOk later)).resolve_right collide)
       · -- An early justified checkpoint: the assumed consistency and the kept leaf.
