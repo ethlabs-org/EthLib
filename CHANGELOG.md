@@ -9,6 +9,11 @@ Not yet released.
 
 ### Proof additions
 
+- `Run.registryWithinLimit_of_room` (`ForkChoice/BlockRuns.lean`) bounds the registry of a run from the anchor at every fork.
+  From Gloas, a run that ends within the horizon keeps its registry within the limit, given the anchor's registry room.
+  Before Gloas, the type bounds it.
+  `Execution.quorumDriftWithin` reads it at the counting state.
+
 - In Lean, the payload of the parent has a balance ledger, and its validators live on, from Gloas.
   `BlockLedger.ledger_processParentExecutionPayload` changes no balance outside a set of converted validators.
   That set has at most the preset's most consolidation requests per payload; no balance rises, and only a conversion lowers one.
@@ -875,6 +880,12 @@ Not yet released.
   `ValidatorStep`, `PinDriftBound.CreditBudgets` and `PinDriftBound.PreviousEpochRise` use it.
 
 ### Changes that break callers
+
+- In Lean, the quorum drift of a call is bounded at every fork.
+  `quorumDrift_le_quorumReserve` takes `within` at the counting state instead of `early`.
+  `Execution.quorumDriftWithin` takes `room`, the anchor's registry room from Gloas, instead of `early`.
+  `setting_runs_of_call` drops `early`.
+  Migration: pass `within := BeaconState.registryWithinLimit_of_lt early state` and `room := fun g => absurd g (Nat.not_le_of_lt early)`, and delete the argument of `setting_runs_of_call`.
 
 - In Lean, `effectiveRise_le` and `effectiveFall_le` bound the effective-balance rise and fall at every fork.
   They take `within`, the registry of the counting state within the limit, instead of `early`.
