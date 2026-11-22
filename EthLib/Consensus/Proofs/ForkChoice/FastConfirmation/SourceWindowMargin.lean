@@ -883,28 +883,6 @@ variable {config : Config} {checks : SignatureChecks}
   {e : Execution (honestForkChoice config checks sources anchorState anchorBlock assignment
     genesisTimeMs) J}
 
-/-- A block below a descendant reads the descendant's checkpoint block at an earlier epoch. -/
-private theorem getCheckpointBlock_of_below {store : Store preset fork}
-    {tip below checkpoint : Root} {belowBlock : BeaconBlock preset fork} {epoch : Epoch}
-    {start : Slot} (belowFound : store.blocks[below]? = some belowBlock)
-    (descends : store.isAncestor ⟨tip, .pending⟩ ⟨below, .pending⟩ = .ok true)
-    (startOk : computeStartSlotAtEpoch preset epoch = .ok start)
-    (within : start ≤ belowBlock.slot)
-    (read : store.getCheckpointBlock tip epoch = .ok checkpoint) :
-    store.getCheckpointBlock below epoch = .ok checkpoint := by
-  obtain ⟨start', ancestor, startOk', walk, rooted⟩ := Store.getCheckpointBlock_walk_root read
-  rw [startOk, Except.ok.injEq] at startOk'
-  subst start'
-  -- The walk to the block's slot reaches its root; below that the walks agree on roots.
-  obtain ⟨reached, toBelow, reachedRoot⟩ := Store.getAncestor_of_isAncestor belowFound descends
-  rw [Store.getAncestor_trans within toBelow] at walk
-  have reachedWalk := Store.getAncestor_root (store := store) reached .pending start
-  rw [reachedRoot, walk] at reachedWalk
-  simp only [Store.getCheckpointBlock, startOk, Except.mapError, bind, Except.bind]
-  change ((fun x => x.root) <$> store.getAncestor ⟨below, .pending⟩ start) = .ok checkpoint
-  rw [← reachedWalk]
-  simp [rooted, Functor.map, Except.map]
-
 /-- From Gloas the pending node of each node of the filtered tree is in the tree too. -/
 private theorem pending_mem_of_mem_filtered {store : Store preset fork}
     (lower : store.ParentsBelow) (gloas : .glamsterdam ≤ fork) {nodes : List ForkChoiceNode}
@@ -1029,10 +1007,11 @@ private theorem caller_fits_below_head {anchor : Store preset fork}
     · -- The justified block descends from the head, so from the block below it.
       have belowJustified := Store.isAncestor_trans (middle := ⟨head.root, .pending⟩)
         headFound belowFound justifiedCovers headPending
-      exact getCheckpointBlock_of_below belowFound belowJustified boundaryOk boundaryLe
+      exact Store.getCheckpointBlock_of_descendant belowFound belowJustified boundaryOk boundaryLe
         justifiedRead
     · obtain ⟨boundary', boundaryOk', -, headFinal⟩ := fits k' le
-      exact getCheckpointBlock_of_below belowFound headPending boundaryOk boundaryLe headFinal
+      exact Store.getCheckpointBlock_of_descendant belowFound headPending boundaryOk boundaryLe
+        headFinal
 
 end Models.Network
 
@@ -1851,7 +1830,7 @@ private theorem caller_parent_voter_reaches {Δ : ℕ} (sync : e.Synchronous Δ)
     · exact .inr covers
     by_cases below : boundary ≤ parent.slot
     · exact .inl (.inl ⟨boundary, boundaryOk, below,
-        getCheckpointBlock_of_below parentKnown rootParent boundaryOk below checkpoint⟩)
+        Store.getCheckpointBlock_of_descendant parentKnown rootParent boundaryOk below checkpoint⟩)
     obtain ⟨boundary', ancestor, boundaryOk', walk, rooted⟩ :=
       Store.getCheckpointBlock_walk_root checkpoint
     rw [boundaryOk, Except.ok.injEq] at boundaryOk'

@@ -23,6 +23,10 @@ Not yet released.
   `Store.getCheckpointBlock_walk_root` (`ForkChoice/Store.lean`) shows that a checkpoint read is the root of a walk back to the first slot of the epoch, at every fork.
   `HonestRegistriesWithinLimit` and `Execution.honestRegistries_of_room` (`ForkChoice/FastConfirmation/HistoricalStatements.lean`) are now public, unchanged: from Gloas, honest registries stay within the limit while the stores' epochs stay bounded.
 
+- `Store.getCheckpointBlock_of_descendant` (`ForkChoice/Store.lean`) shows that a block below a descendant reads the descendant's checkpoint block, at an epoch whose first slot is at or before the block.
+  It is the converse of `Store.getCheckpointBlock_of_isAncestor`.
+  `Store.isPreviousSlotPayloadDecision_eq_false` (`ForkChoice/Head.lean`) shows that a pending node, or a node of a block older than the previous slot, is no payload decision of the previous slot.
+
 - `Store.isAncestor_getSupportedNode` (`ForkChoice/Head.lean`) shows that a supported node descends from a pending node exactly as the vote's block does, at every fork.
 
 - `Store.weight_add_weight_add_stake_le_stake_withBoost_of_isChild` (`ForkChoice/SiblingCap.lean`) bounds two sibling nodes and a set supporting neither by a window plus one boost, for any tree and view of the store's votes.
@@ -884,6 +888,16 @@ Not yet released.
   It no longer takes `early : fork < .glamsterdam`; it takes `registries : .glamsterdam ≤ fork → HonestRegistriesWithinLimit time` in its place.
   Migration: before Gloas, pass `fun gloas => absurd gloas (Nat.not_le_of_lt early)`.
   The new statement implies the old one.
+
+- In Lean, `Store.checkpointState_justified_of_getHead` holds at every fork.
+  It no longer takes `before : fork < .glamsterdam`; it takes `justifiedEarly`, which from Gloas asks that the justified block be older than the previous slot.
+  Migration: before Gloas, drop `before` and pass `fun gloas => absurd gloas (Nat.not_le_of_lt before)`.
+  The new statement implies the old one.
+
+- In Lean, `Execution.rootViableAt_of_checked` and `Execution.honestHeadsCover_of_viableAt` hold at every fork.
+  They no longer take `preGloas : fork < .glamsterdam`; they take `room : .glamsterdam ≤ fork → AnchorRegistryRoom preset anchorState horizon` as their last argument.
+  Migration: drop `preGloas` and pass `fun gloas => absurd gloas (Nat.not_le_of_lt preGloas)` as `room`.
+  The new statements imply the old ones.
 
 - In Lean, `Execution.honest_vote_of_caller_margin` holds at every fork and no longer takes `preGloas : fork < .glamsterdam`.
   `Execution.source_surplus_or_historical_evidence_with` and `Execution.isAncestor_getHead_of_historical_anchor_with` hold at every fork; they no longer take `preGloas` and take `registries : .glamsterdam ≤ fork → HonestRegistriesWithinLimit time` as their last argument.

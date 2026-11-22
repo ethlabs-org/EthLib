@@ -667,6 +667,30 @@ theorem getCheckpointBlock_walk_root {root checkpoint : Root} {epoch : Epoch}
   obtain ⟨start, startOk, ancestor, walk, eq⟩ := read
   exact ⟨start, ancestor, mapError_ok_iff.mp startOk, walk, eq⟩
 
+/-- A block below a descendant reads the descendant's checkpoint block at an earlier epoch.
+
+The epoch's first slot must be at or before the block. -/
+theorem getCheckpointBlock_of_descendant {tip below checkpoint : Root}
+    {belowBlock : BeaconBlock preset fork} {epoch : Epoch} {start : Slot}
+    (belowFound : store.blocks[below]? = some belowBlock)
+    (descends : store.isAncestor ⟨tip, .pending⟩ ⟨below, .pending⟩ = .ok true)
+    (startOk : computeStartSlotAtEpoch preset epoch = .ok start)
+    (within : start ≤ belowBlock.slot)
+    (read : store.getCheckpointBlock tip epoch = .ok checkpoint) :
+    store.getCheckpointBlock below epoch = .ok checkpoint := by
+  obtain ⟨start', ancestor, startOk', walk, rooted⟩ := getCheckpointBlock_walk_root read
+  rw [startOk, Except.ok.injEq] at startOk'
+  subst start'
+  -- The walk to the block's slot reaches its root; below that the walks agree on roots.
+  obtain ⟨reached, toBelow, reachedRoot⟩ := getAncestor_of_isAncestor belowFound descends
+  rw [getAncestor_trans within toBelow] at walk
+  have reachedWalk := getAncestor_root (store := store) reached .pending start
+  rw [reachedRoot, walk] at reachedWalk
+  simp only [getCheckpointBlock, startOk, Except.mapError, bind, Except.bind]
+  change ((fun x => x.root) <$> store.getAncestor ⟨below, .pending⟩ start) = .ok checkpoint
+  rw [← reachedWalk]
+  simp [rooted, Functor.map, Except.map]
+
 /-- A successful checkpoint read names a held ancestor at or before its epoch boundary. -/
 theorem isAncestor_of_getCheckpointBlock {root checkpoint : Root} {epoch : Epoch}
     (read : store.getCheckpointBlock root epoch = .ok checkpoint) :

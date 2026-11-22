@@ -1537,7 +1537,8 @@ theorem walkMembers_cover [DecidablePred (· ∈ J)] {Δ : ℕ} {anchor : Store 
   have rootViable : ∀ T, (e.world n).time ≤ T → T ≤ limit →
       HonestHeadsCover (e := e) after.confirmedRoot (e.world n).time T →
       RootViableAt (e := e) after.confirmedRoot T := fun T low high covers =>
-    (e.rootViableAt_of_checked pre ctx.sync ctx.slots ctx.preGloas ctx.admitted
+    (e.rootViableAt_of_checked (room := fun gloas => absurd gloas (Nat.not_le_of_lt ctx.preGloas))
+      pre ctx.sync ctx.slots ctx.admitted
       ctx.fits ctx.prompt ctx.votes ctx.windows ctx.fit ctx.ring ctx.incrementPositive
       ctx.anchored ctx.sound ctx.anchorSlot ctx.anchorBoundary ctx.start ctx.anchorEpochOk
       ctx.bounded ctx.roots ctx.absent ctx.pinned ctx.signedAll
@@ -1626,8 +1627,9 @@ theorem walkMembers_cover [DecidablePred (· ∈ J)] {Δ : ℕ} {anchor : Store 
       (rootViable T' low (high.trans hT) rootCovers w hw k nodes hd atTime ready receiverHead
         tree)
   -- The member's step at time T.
-  rcases Execution.honestHeadsCover_of_viableAt ctx.sync ctx.slots ctx.minLookahead maxLookahead
-      ctx.ring ctx.preGloas
+  rcases Execution.honestHeadsCover_of_viableAt
+      (room := fun gloas => absurd gloas (Nat.not_le_of_lt ctx.preGloas)) ctx.sync ctx.slots
+      ctx.minLookahead maxLookahead ctx.ring
       (fun v hv w hw n k le => ctx.admitted v hv w hw n k (le.trans hT)) ctx.half
       (fun v hv s c d a b early le => ctx.votes v hv s c d a b early (le.trans hT)) ctx.fits
       (fun w hw s st a b le => ctx.prompt w hw s st a b (le.trans hT))

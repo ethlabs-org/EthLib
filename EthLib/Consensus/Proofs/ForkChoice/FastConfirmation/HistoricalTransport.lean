@@ -706,27 +706,6 @@ private theorem ancestor_ghost_of_visited_parent {ν β ρ : Type*} [DecidableEq
     have same := above.antisymm visited
     exact False.elim (empty ⟨child, same ▸ member⟩)
 
-/-- A pending node is no payload decision of the previous slot.
-
-Neither is a node of a block older than the previous slot. -/
-private theorem isPreviousSlotPayloadDecision_eq_false {store : Store preset fork}
-    {node : ForkChoiceNode} {block : BeaconBlock preset fork} {current : Slot}
-    (found : store.blocks[node.root]? = some block)
-    (slotRead : store.getCurrentSlot config = .ok current) (fits : block.slot.toNat + 1 < 2 ^ 64)
-    (older : node.payloadStatus = .pending ∨ block.slot.toNat + 1 ≠ current.toNat) :
-    store.isPreviousSlotPayloadDecision config node = .ok false := by
-  have nextOk : addChecked block.slot 1 = .ok (block.slot + 1) := Uint64.addChecked_of_lt fits
-  have nextNat : (block.slot + 1).toNat = block.slot.toNat + 1 := Uint64.toNat_add_of_lt fits
-  simp only [Store.isPreviousSlotPayloadDecision, Store.block, found, nextOk, slotRead,
-    Except.mapError, bind, Except.bind, pure, Except.pure, Except.ok.injEq]
-  rcases older with pending | differ
-  · simp [pending]
-  · have ne : (block.slot + 1 == current) = false := by
-      simp only [beq_eq_false_iff_ne, ne_eq]
-      intro same
-      exact differ (by rw [← nextNat, same])
-    simp [ne]
-
 open Models.ForkChoice in
 /-- A node between the two ends of a path of two steps is one of its three nodes. -/
 private theorem eq_of_path_two {β : Type} {T : BlockTree β} {start mid target x : β}
@@ -1360,11 +1339,11 @@ public theorem ancestor_head_of_window_margin [DecidablePred (· ∈ J)]
       rcases eq_of_path_two toMid toStart low high with same | same | same <;>
         simp only [ForkChoiceNode.toModel, start, mid, target, Prod.mk.injEq,
           Option.some.injEq] at same <;> obtain ⟨rfl, statusEq⟩ := same
-      · exact isPreviousSlotPayloadDecision_eq_false parentFound slotRead (by omega)
+      · exact Store.isPreviousSlotPayloadDecision_eq_false parentFound slotRead (by omega)
           (.inl (PayloadStatus.toStatus_injective statusEq))
-      · exact isPreviousSlotPayloadDecision_eq_false parentFound slotRead (by omega)
+      · exact Store.isPreviousSlotPayloadDecision_eq_false parentFound slotRead (by omega)
           (.inr (by omega))
-      · exact isPreviousSlotPayloadDecision_eq_false found slotRead (by omega)
+      · exact Store.isPreviousSlotPayloadDecision_eq_false found slotRead (by omega)
           (.inl (PayloadStatus.toStatus_injective statusEq))
     -- The justified pending node is above the block's; at the block itself the head is above it.
     have closed := Store.filterNodeTree_closed (T := Store.nodeTree lower) (·.toModel) tree
