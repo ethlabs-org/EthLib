@@ -2326,11 +2326,11 @@ private theorem slot_step_targets {g x m last : ForkedBeaconState preset}
     have xEarly : x.fork < .glamsterdam :=
       Nat.lt_of_le_of_lt (fork_le_of_chainSteps pre.chainSteps) beforeFork
     have lifeXM : RegistryLifecycle x.state m.state := pre.registryLifecycle
-    have capXM := (Internal.CapStep.run pre caps.activation caps.compounding beforeFork).1
+    have capXM := (Internal.CapStep.run pre caps.activation caps.compounding).1
     have orderedM : OrderedAt config m.state :=
-      (shared.append pre).pendingConsolidationsOrdered genesis beforeFork delay
-    have orderedX := shared.pendingConsolidationsOrdered genesis xEarly delay
-    have cappedX := shared.effectiveBalance_capped genesis caps.activation caps.compounding xEarly
+      (shared.append pre).pendingConsolidationsOrdered genesis delay
+    have orderedX := shared.pendingConsolidationsOrdered genesis delay
+    have cappedX := shared.effectiveBalance_capped genesis caps.activation caps.compounding
     -- The cached state is the state of the step, up to its roots.
     have lifeMC : RegistryLifecycle m.state cached := .of_data (by rw [cachedEq])
     have slotMC : cached.slot = m.state.slot := by rw [cachedEq]
@@ -2432,14 +2432,14 @@ private theorem slot_step_targets {g x m last : ForkedBeaconState preset}
 
 /-- A block keeps the shape of the queue: it only appends entries that are new since X. -/
 private theorem block_step {f : Fork} {e0 : Epoch} {L : List PendingConsolidation} {n : ℕ}
-    (electra : .pectra ≤ f) (early : f < .glamsterdam)
+    (electra : .pectra ≤ f) (_early : f < .glamsterdam)
     (delay : 1 ≤ config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat)
     {engine : ExecutionEngine preset f} {signed : SignedBeaconBlock preset f}
     {s t : BeaconState preset f}
     (ok : applySignedBlock config checks engine s signed true = .ok t)
     (started : e0 ≤ getCurrentEpoch s) (shape : Shape L e0 n s) : Shape L e0 n t := by
   have grown := ConsolidationQueueRise.appendStep_processBlock (Nat.le_trans (by decide) electra)
-    early delay (applySignedBlock_ok ok).2.1
+    delay (applySignedBlock_ok ok).2.1
   exact shape.grow electra grown.2.2 grown.2.1 started
 
 /-- The consolidation credits of a run from X to the targets in `T` are within the caps.
@@ -3488,7 +3488,7 @@ The cap lies above `MAX_EFFECTIVE_BALANCE` and above the key's effective balance
 
 The charge covers the minimum stake plus the downward band after division by the quotient. -/
 private theorem Ctx.step_facts {g x m : ForkedBeaconState preset} {high : ℕ}
-    (c : Ctx config checks g x high) (hm : Run config checks x m) (mEarly : m.fork < .glamsterdam)
+    (c : Ctx config checks g x high) (hm : Run config checks x m) (_mEarly : m.fork < .glamsterdam)
     {i : ℕ} {val : Validator} (found : m.state.validators.data[i]? = some val) :
     0 < (EthLib.Consensus.parameters preset .fusaka).MIN_SLASHING_PENALTY_QUOTIENT.toNat ∧
       preset.MAX_EFFECTIVE_BALANCE.toNat ≤
@@ -3507,7 +3507,7 @@ private theorem Ctx.step_facts {g x m : ForkedBeaconState preset} {high : ℕ}
     UInt64.le_iff_toNat_le.mp (Internal.minimum_cap c.caps.activation c.caps.compounding val),
     ?_, le_smul_ceilDiv (β := Nat) positiveQ⟩
   have := Run.effectiveBalance_capped (c.shared.append hm) c.genesis c.caps.activation
-    c.caps.compounding mEarly val (Array.mem_of_getElem? found)
+    c.caps.compounding val (Array.mem_of_getElem? found)
   have e : effectiveAt m i = val.effectiveBalance.toNat := by simp [effectiveAt, found]
   rw [e]
   exact UInt64.le_iff_toNat_le.mp this

@@ -700,7 +700,7 @@ private theorem scheduled_effective_le_cap {g x y : ForkedBeaconState preset}
   obtain ⟨w, read, credentials⟩ := tail.compounding_of_exit_assigned caps.activation
     caps.compounding early i v found assigned
   have cap := (shared.append tail).effectiveBalance_capped genesis caps.activation
-    caps.compounding early w (Array.mem_of_getElem? read)
+    caps.compounding w (Array.mem_of_getElem? read)
   have atEnd : effectiveAt y i = w.effectiveBalance.toNat := by simp [effectiveAt, read]
   have regime := (guarded_fork_regime (shared.append tail) genesis high endEpoch guard).2
   have kept : withdrawalMaxEffectiveBalance preset y.fork w ≤

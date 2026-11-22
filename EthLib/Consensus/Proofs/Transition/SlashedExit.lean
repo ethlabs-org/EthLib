@@ -155,11 +155,11 @@ theorem run_slashed_exit_assigned {g x : ForkedBeaconState preset}
     (genesis : Genesis (config := config) (checks := checks) g)
     (activation : preset.MAX_EFFECTIVE_BALANCE ≤ preset.MIN_ACTIVATION_BALANCE)
     (compounding : preset.MIN_ACTIVATION_BALANCE ≤ preset.MAX_EFFECTIVE_BALANCE_ELECTRA)
-    (early : x.fork < .glamsterdam)
+    (_early : x.fork < .glamsterdam)
     (delay : 0 < config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat)
     (i : Nat) (w : Validator) (found : x.state.validators.data[i]? = some w)
     (slashed : w.slashed = true) : w.exitEpoch ≠ FAR_FUTURE_EPOCH := by
-  have kept := (CapStep.run run activation compounding early).1
+  have kept := (CapStep.run run activation compounding).1
   obtain ⟨_, _, _, initialized⟩ := genesis
   have clean := initializeBeaconStateFromEth1_unslashed initialized
   by_cases inside : i < g.state.validators.data.size
@@ -188,7 +188,7 @@ theorem Run.newly_slashed_initial_exited_unwithdrawable {x y : ForkedBeaconState
     (run : Run config checks x y)
     (activation : preset.MAX_EFFECTIVE_BALANCE ≤ preset.MIN_ACTIVATION_BALANCE)
     (compounding : preset.MIN_ACTIVATION_BALANCE ≤ preset.MAX_EFFECTIVE_BALANCE_ELECTRA)
-    (early : y.fork < .glamsterdam) (i : Nat) (v w : Validator)
+    (_early : y.fork < .glamsterdam) (i : Nat) (v w : Validator)
     (before : x.state.validators.data[i]? = some v)
     (after : y.state.validators.data[i]? = some w)
     (unslashed : v.slashed = false) (slashed : w.slashed = true)
@@ -196,7 +196,7 @@ theorem Run.newly_slashed_initial_exited_unwithdrawable {x y : ForkedBeaconState
     getCurrentEpoch x.state < v.withdrawableEpoch := by
   apply UInt64.not_le.mp
   intro withdrawn
-  have flag := ((CapStep.run run activation compounding early).1.retired
+  have flag := ((CapStep.run run activation compounding).1.retired
     i v w before after exited unslashed withdrawn).1
   simp [slashed] at flag
 
@@ -207,7 +207,7 @@ theorem Run.newly_slashed_withdrawableEpoch {x y : ForkedBeaconState preset}
     (run : Run config checks x y)
     (activation : preset.MAX_EFFECTIVE_BALANCE ≤ preset.MIN_ACTIVATION_BALANCE)
     (compounding : preset.MIN_ACTIVATION_BALANCE ≤ preset.MAX_EFFECTIVE_BALANCE_ELECTRA)
-    (early : y.fork < .glamsterdam)
+    (_early : y.fork < .glamsterdam)
     (delay : 0 < config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat)
     (i : Nat) (v w : Validator)
     (before : x.state.validators.data[i]? = some v)
@@ -216,7 +216,7 @@ theorem Run.newly_slashed_withdrawableEpoch {x y : ForkedBeaconState preset}
     w.exitEpoch ≠ FAR_FUTURE_EPOCH ∧
       (getCurrentEpoch x.state).toNat + preset.EPOCHS_PER_SLASHINGS_VECTOR.toNat ≤
         w.withdrawableEpoch.toNat :=
-  ((CapStep.run run activation compounding early).1.withdrawal i v w before after).2
+  ((CapStep.run run activation compounding).1.withdrawal i v w before after).2
     delay unslashed slashed
 
 /-- Before the slashings stage, a slashed validator with an assigned exit keeps that exit.
@@ -264,7 +264,7 @@ theorem Run.slashed_withdrawableEpoch_mono_epoch
     (run : Run config checks x outer)
     (activation : preset.MAX_EFFECTIVE_BALANCE ≤ preset.MIN_ACTIVATION_BALANCE)
     (compounding : preset.MIN_ACTIVATION_BALANCE ≤ preset.MAX_EFFECTIVE_BALANCE_ELECTRA)
-    (early : outer.fork < .glamsterdam)
+    (_early : outer.fork < .glamsterdam)
     (cached : processSlot outer.state = .ok s)
     (trace : EpochTrace (EpochStage.action config checks) stages s t)
     (i : Nat) (v w : Validator)
@@ -272,7 +272,7 @@ theorem Run.slashed_withdrawableEpoch_mono_epoch
     (slashed : v.slashed = true) (assigned : v.exitEpoch ≠ FAR_FUTURE_EPOCH) :
     w.slashed = true ∧ w.exitEpoch ≠ FAR_FUTURE_EPOCH ∧
       v.withdrawableEpoch ≤ w.withdrawableEpoch := by
-  have runStep := (CapStep.run run activation compounding early).1
+  have runStep := (CapStep.run run activation compounding).1
   -- The cache step keeps the registry, the slot and the proposer lookahead.
   have cacheStep : CapStep config outer.state s := by
     obtain ⟨_, _, _, _, rfl⟩ := processSlot_ok cached
@@ -290,12 +290,12 @@ theorem Run.slashed_withdrawable_eq {x y : ForkedBeaconState preset}
     (run : Run config checks x y)
     (activation : preset.MAX_EFFECTIVE_BALANCE ≤ preset.MIN_ACTIVATION_BALANCE)
     (compounding : preset.MIN_ACTIVATION_BALANCE ≤ preset.MAX_EFFECTIVE_BALANCE_ELECTRA)
-    (early : y.fork < .glamsterdam) (i : Nat) (v w : Validator)
+    (_early : y.fork < .glamsterdam) (i : Nat) (v w : Validator)
     (before : x.state.validators.data[i]? = some v)
     (after : y.state.validators.data[i]? = some w)
     (slashed : v.slashed = true) (assigned : v.exitEpoch ≠ FAR_FUTURE_EPOCH) :
     w.slashed = true ∧ w.withdrawableEpoch = v.withdrawableEpoch := by
-  obtain ⟨flag, -, same⟩ := ((CapStep.run run activation compounding early).1.withdrawal i v w
+  obtain ⟨flag, -, same⟩ := ((CapStep.run run activation compounding).1.withdrawal i v w
     before after).1 slashed assigned
   exact ⟨flag, same⟩
 
@@ -336,7 +336,7 @@ theorem Step.slashed_activated {a b : ForkedBeaconState preset} (step : Step con
       (b.state.validators.data[i]?.map (·.slashed)).getD false) = true) :
     ∃ v, a.state.validators.data[i]? = some v ∧ v.activationEpoch ≠ FAR_FUTURE_EPOCH ∧
       v.activationEpoch.toNat ≤ (getCurrentEpoch a.state).toNat := by
-  have capped := (CapStep.run (Run.nil.snoc step) activation compounding early).1
+  have capped := (CapStep.run (Run.nil.snoc step) activation compounding).1
   have chain := step.chainStep
   obtain ⟨before, after⟩ : (a.state.validators.data[i]?.map (·.slashed)).getD false = false ∧
       (b.state.validators.data[i]?.map (·.slashed)).getD false = true := by

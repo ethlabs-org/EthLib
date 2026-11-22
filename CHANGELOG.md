@@ -9,6 +9,12 @@ Not yet released.
 
 ### Proof additions
 
+- In Lean, the payload of the parent has a balance ledger, and its validators live on, from Gloas.
+  `BlockLedger.ledger_processParentExecutionPayload` changes no balance outside a set of converted validators.
+  That set has at most the preset's most consolidation requests per payload; no balance rises, and only a conversion lowers one.
+  `BlockLedger.lives_processParentExecutionPayload` says that an old validator read at both ends is later at the end, and that a new validator is not activated.
+  `BlockCredits.block_balances` reads them.
+
 - In Lean, `Base.hexValue?_toUpper` and `Base.hexBytesFrom?_map_toUpper` state that a hex digit, and a run of hex digits, decode the same in uppercase ([#3837](https://github.com/ethereum/EthLib/issues/3837)).
   The SSZ JSON codec uses them for its case rule.
 
@@ -823,6 +829,29 @@ Not yet released.
   `ValidatorStep`, `PinDriftBound.CreditBudgets` and `PinDriftBound.PreviousEpochRise` use it.
 
 ### Changes that break callers
+
+- In Lean, the block and ledger lemmas of the quorumReserve route extend through Gloas, and their existing lower fork bounds remain.
+  These drop their pre-Gloas binder (`DirectSafety.total_active_congr` drops two, `before` and `after`), with the same conclusion: `DirectSafety.total_active_congr`, `Run.effectiveKept_of_same_epoch`, `hysteresis_of_run_slot`, `balanceDrift_upgrades_upper`, `balanceDrift_upgrades_active`, `BlockLedger.ledger_processBlockExecution`, `BlockLedger.ledger_processProposerSlashing`, `BlockLedger.ledger_processAttesterSlashing`, `processOperations_floor`, `BlockCredits.block_balances`, `Run.withdrawableKept_of_same_epoch`, `Run.balanceCorrections_of_same_epoch`, `Run.effectiveBalance_capped`, `Run.pendingConsolidationsOrdered`, `Run.pendingConsolidation_invariant`, `ConsolidationQueueRise.appendStep_processBlock`, `ConsolidationQueueRise.riseStep_processBlock`, `SamePendingQueue.blockExecution`, `applyWithdrawals_departureQueues`, `attestation_departureQueues` and `slashValidator_departureQueues`.
+  Migration: delete the arguments.
+
+- In Lean, `Run.induction_of_same_epoch` and `Run.induction_of_same_period` induct over runs through Gloas.
+  `Run.induction_of_same_epoch` drops `early` and the pre-Gloas hypothesis of its block callback.
+  `Run.induction_of_same_period` drops `early` and the pre-Gloas hypotheses of both callbacks.
+  Migration: delete `early`; a callback that used the hypothesis keeps it through the motive `fun z pre => z.fork < .glamsterdam → motive z pre`, and the caller applies the result to `early`.
+
+- In Lean, `Internal.CapStep.run` holds through Gloas, and keeps the invariant of the transition through Gloas.
+  It drops `early`; its `AssignedPartials` and `UnassignedEligibleBalance` conjuncts hold before Gloas only, and now take it as a hypothesis.
+  Migration: write `.2.1 early` for `.2.1` and `.2.2.2 early` for `.2.2.2`; `.1` and `.2.2.1` are unchanged.
+
+- In Lean, the withdrawal step and the execution part of a block state their departure queues by the payload of the parent.
+  From Gloas a block whose parent has no payload pays no withdrawals.
+  `withdrawals_departureQueues` and `blockExecution_departureQueues` drop `early`, and conclude with a clause for a full parent, or for any fork before Gloas, and a clause for an empty parent.
+  Migration: before Gloas, take the second half of the first clause; the second clause needs Gloas.
+
+- In Lean, `getExpectedWithdrawals_partials` reads the partial withdrawals after the prior ones.
+  From Gloas the queued builder withdrawals come first, so the read starts after them.
+  It drops `early` and concludes with the prior withdrawals and the start index.
+  Migration: before Gloas, the first clause gives no prior withdrawals and the state's next withdrawal index.
 
 - The configuration reader of the exports refuses an activation, by block or by time, of `2^64` or more, as the reader of a client configuration file already refused such a time ([#3854](https://github.com/ethereum/EthLib/issues/3854)).
   `Base.ACTIVATION_BOUND` is that bound, `2^64`: the fork identifier of EIP-2124 and EIP-6122 hashes each fork block and time as a `uint64`.

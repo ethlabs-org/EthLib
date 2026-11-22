@@ -485,7 +485,7 @@ private theorem stepBalanceEvents_deposits {checks : SignatureChecks}
       have ordered : PendingConsolidationsOrdered config (getCurrentEpoch cached).toNat
           cached := by
         obtain ⟨_, _, _, _, rfl⟩ := processSlot_ok cachedOk
-        exact shared.pendingConsolidationsOrdered genesis sourceEarly delay
+        exact shared.pendingConsolidationsOrdered genesis delay
       refine ⟨fun _ e mem deposit => ?_,
         fun across' same => ⟨fun e mem deposit => ?_, fun _ => ?_, ?_⟩⟩
       · rcases List.mem_append.mp mem with mem | mem
@@ -1370,7 +1370,7 @@ theorem previousStake_le_ceiling {g z w : ForkedBeaconState preset}
     ((frame_processSlot cachedZOk).exitsOrdered holds.exitsOrdered)
     (by rw [cachedZEq]; exact shared.activationExitOrder genesis)
     (by rw [cachedZEq]; exact fun witness =>
-      shared.pendingConsolidation_invariant genesis zEarly witness (by omega))
+      shared.pendingConsolidation_invariant genesis witness (by omega))
     epochOk epochEvents epochReplay
   obtain ⟨crossings, crossingOk, _⟩ := upgradeBalanceReplay_bounded upgrades
   have split := Step.balanceEvents_epoch_slot boundary cachedZOk nextOk last epochReplay

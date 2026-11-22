@@ -1122,12 +1122,12 @@ The run starts at `b`, so each of its steps starts at the epoch of `b` or later.
 Thus a cutoff before the start epoch includes no epoch rewards from the run. -/
 private theorem balanceEvents_late {f : Fork} {b : BeaconState preset f}
     {y : ForkedBeaconState preset} (tail : Run config checks ⟨f, b⟩ y)
-    (early : y.fork < .glamsterdam) (same : getCurrentEpoch y.state = getCurrentEpoch b)
+    (_early : y.fork < .glamsterdam) (same : getCurrentEpoch y.state = getCurrentEpoch b)
     {high : ℕ} (late : high + 1 < (getCurrentEpoch b).toNat) :
     tail.balanceEvents high = .ok [] := by
   refine Run.induction_of_same_epoch (fun _ r => r.balanceEvents high = .ok []) rfl ?_ ?_ tail
-    early same
-  · intro _ s _ _ _ _ _ pre _ prior
+    same
+  · intro _ s _ _ _ _ _ pre prior
     have started : (getCurrentEpoch b).toNat ≤ (getCurrentEpoch s).toNat :=
       UInt64.le_iff_toNat_le.mp (currentEpoch_le_of_chainSteps pre.chainSteps)
     have skipped : ¬ (getCurrentEpoch s).toNat ≤ high + 1 := by omega
@@ -1228,7 +1228,7 @@ private theorem cut_whistle (h : Setting config checks g split fin pulled anc co
       · exact Internal.slashedRB_of_withdrawable config pulled anc fin foundP markedP (by omega)
     have sameEpochA : getCurrentEpoch split = getCurrentEpoch a.state :=
       UInt64.toNat_inj.mp (by omega)
-    have kept := rest.effectiveKept_of_same_epoch h.early sameEpochA j
+    have kept := rest.effectiveKept_of_same_epoch sameEpochA j
       (Array.getElem?_eq_some_iff.mp foundA).1
     have read : balanceAt split j = effectiveAt a j := kept
     simp only [p, ↓reduceIte, quotient, read, sameFork, le_refl]

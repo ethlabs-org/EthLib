@@ -291,10 +291,10 @@ private theorem epochInput_facts {g x u : ForkedBeaconState preset}
   have bounded := getCurrentEpoch_succ_lt_farFuture twoSlots u.state
   obtain ⟨_, _, _, _, rfl⟩ := processSlot_ok cached
   exact ⟨invariant.balancesMatch, invariant.exitsOrdered,
-    run.pendingConsolidationsOrdered genesis early delay,
+    run.pendingConsolidationsOrdered genesis delay,
     run.exit_withdrawable_delay genesis,
     run.activationExitOrder genesis,
-    run.effectiveBalance_capped genesis caps.activation caps.compounding early,
+    run.effectiveBalance_capped genesis caps.activation caps.compounding,
     run.pendingConsolidations_apart genesis early delay,
     pre.registryLifecycle.trans (.of_data rfl), start,
     UInt64.lt_iff_toNat_lt.mpr (by
@@ -536,7 +536,7 @@ private theorem reservedReplay_slot_last {g x : ForkedBeaconState preset} {fork 
       assignment cachedErasure prior cachedRetired cachedCover cachedFuture startLife
       (UInt64.lt_of_le_of_lt startCurrent finite) startCurrent ordered exits finite delayed
       delayTwo activationOrder nextOk twoSlots capped unique apart sources initialZero
-      slashedSpan horizon (Run.pendingConsolidationsOrdered shared genesis earlyX delay)
+      slashedSpan horizon (Run.pendingConsolidationsOrdered shared genesis delay)
       (run_slashed_exit_assigned shared genesis caps.activation caps.compounding earlyX delay)
       provenance
   -- The pass keeps a sublist of the queue, and pays from states with the pass input's registry.
@@ -982,7 +982,7 @@ private theorem reservedReplay_run {g x y : ForkedBeaconState preset}
   obtain ⟨initialOwned, initial, frame, cover, future⟩ :=
     reservedFrame_initial shared genesis xEarly high electraX rounding
   -- The sources of the queue at `x` have their exits assigned there.
-  have initialSources := (shared.pendingConsolidation_invariant genesis xEarly electraX delay).2
+  have initialSources := (shared.pendingConsolidation_invariant genesis electraX delay).2
   revert early endEpoch roundingAt
   induction tail generalizing events with
   | nil =>

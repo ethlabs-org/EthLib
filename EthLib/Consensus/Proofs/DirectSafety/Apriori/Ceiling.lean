@@ -394,7 +394,7 @@ private theorem epoch_issuance_actual {r s w : ForkedBeaconState preset}
   -- The pass reads the total of `r`, and its participants weigh at most the ceiling.
   obtain ⟨activeKept, effectiveKept, passEpoch⟩ := pass_kept inner electra sEarly same cachedOk
     justified scored
-  have totalSame := total_active_congr rEarly sEarly
+  have totalSame := total_active_congr
     (activeKept.mono (getCurrentEpoch_le_activityFixedEpoch _)) passEpoch effectiveKept
   have cases : (∃ total perIncrement, getTotalActiveBalance r.state = .ok total ∧
       getBaseRewardPerIncrement preset total = .ok perIncrement) ∨
@@ -2143,7 +2143,7 @@ private theorem FloorTrace.slot_transport {g x y : ForkedBeaconState preset}
   obtain ⟨u, found, life⟩ := (registryLifecycle_advanceSlot advanceOk).validators i v initial
   have kept : effectiveAt y i = effectiveAt ⟨x.fork, advanced⟩ i := by
     rcases activated with activated | fulu
-    · exact balanceDrift_upgrades_active upgrades early i u found
+    · exact balanceDrift_upgrades_active upgrades i u found
         (by rwa [life.activationEpoch activated])
     · rw [processUpgrades_eq_of_window upgrades fulu early]
   obtain ⟨last, done, balance, debt, slashed, raised⟩ := trace.slot_update advanceOk i
@@ -2154,7 +2154,7 @@ private theorem FloorTrace.slot_transport {g x y : ForkedBeaconState preset}
   have equal := Option.some.inj (located.symm.trans final)
   subst z
   have endpoint := (shared.append tail).effectiveBalance_capped genesis caps.activation
-    caps.compounding early w (Array.mem_of_getElem? final)
+    caps.compounding w (Array.mem_of_getElem? final)
   have old := capped.trans (UInt64.le_iff_toNat_le.mp mono)
   have current : effectiveAt y i ≤ (withdrawalMaxEffectiveBalance preset y.fork w).toNat := by
     simpa [effectiveAt, final] using UInt64.le_iff_toNat_le.mp endpoint
