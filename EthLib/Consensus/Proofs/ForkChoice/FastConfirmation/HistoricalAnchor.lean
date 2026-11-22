@@ -143,10 +143,11 @@ public theorem Execution.isAncestor_getHead_of_historical_anchor_with [Decidable
     receiverParent stateOk currentOk receiverEpochOk receiverNear receiverLastOk windowOk
     participantsOk exit absent
   have applyHead (headRoute) := ancestor_head_of_window_margin anchored start membership
-    receiver (by rw [atTime]) (UInt64.le_of_eq anchorSlot) preGloas absent receiverHeadOk stateOk
+    receiver (by rw [atTime]) (UInt64.le_of_eq anchorSlot) absent receiverHeadOk stateOk
     tree known caller callerTime (by rw [atTime]; exact callerTime) drift
     (Store.block_ok_iff.mp parentOk) currentOk receiverEpochOk receiverNear firstOk receiverLastOk
     windowOk participantsOk beforeOk headRoute scoreOk
+    (fun g => absurd g (Nat.not_le_of_lt preGloas))
   rcases sourceResult with justified | surplus | collision | evidence
   · exact .inl (applyHead (.inl justified))
   · rcases route with justified | viable

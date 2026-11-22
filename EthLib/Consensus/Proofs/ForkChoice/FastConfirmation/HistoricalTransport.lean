@@ -523,6 +523,103 @@ private theorem mem_window_of_mem_supporters {since last n : Nat} {u : Validator
       horizon, firstOk, lastOk, window, origin, voteDescends, low, high⟩
 
 open Models.ForkChoice in
+/-- From Gloas, every supporter of a node strictly below the parent's pending node is in the window.
+
+Its vote is for the parent with a payload status after the parent's slot, or for a later block. -/
+private theorem mem_window_of_mem_nodeSupporters {since last n : Nat} {u : ValidatorIndex}
+    {parentRoot : Root} (membership : VotersInHeadWindow (e := e) parentRoot since last)
+    (honest : u ∈ J) (after : since ≤ (e.world n).time) (time : (e.world n).time ≤ last)
+    (reached : Store.ForwardReachableWith config checks anchorState anchorBlock
+      ((e.world n).state u))
+    (lower : ((e.world n).state u).ParentsBelow) (gloas : .glamsterdam ≤ fork)
+    {head : ForkChoiceNode} {parent : BeaconBlock preset fork}
+    {current first finish : Slot} {epoch : Epoch} {members : Std.TreeSet ValidatorIndex}
+    {nodes : List ForkChoiceNode} {state : BeaconState preset fork}
+    {c : Option Root × Status} {i : Nat}
+    (headRead : ((e.world n).state u).getHead config = .ok head)
+    (parentFound : ((e.world n).state u).blocks[parentRoot]? = some parent)
+    (descends : ((e.world n).state u).isAncestor ⟨head.root, .pending⟩
+      ⟨parentRoot, .pending⟩ = .ok true)
+    (slotRead : ((e.world n).state u).getCurrentSlot config = .ok current)
+    (epochRead : ((e.world n).state u).getCurrentStoreEpoch config = .ok epoch)
+    (horizon : epoch.toNat ≤ (computeEpochAtSlot preset parent.slot).toNat + 2)
+    (firstOk : addChecked parent.slot 1 = .ok first)
+    (lastOk : subChecked current 1 = .ok finish)
+    (window : ((e.world n).state u).getCommitteesBetweenSlots head.root first finish =
+      .ok members)
+    (below : (Store.nodeTree lower).Ancestor (some parentRoot, none) c)
+    (strict : c ≠ (some parentRoot, none))
+    (supporter : i ∈ supporters (Store.voters state) (Store.nodeView lower nodes) c) :
+    i.toUInt64 ∈ members := by
+  classical
+  simp only [supporters, Finset.mem_filter] at supporter
+  obtain ⟨-, m, latest, above⟩ := supporter
+  change ((e.world n).state u).latestNode i.toUInt64 = some m at latest
+  unfold Store.latestNode at latest
+  split at latest
+  · exact absurd latest (by simp)
+  cases messageFound : ((e.world n).state u).latestMessages[i.toUInt64]? with
+  | none => simp [messageFound] at latest
+  | some message =>
+  cases supportedOk : ((e.world n).state u).getSupportedNode message with
+  | error err => simp [messageFound, supportedOk, Except.toOption] at latest
+  | ok node =>
+  simp only [messageFound, supportedOk, Option.bind_some, Except.toOption, Option.map_some,
+    Option.some.injEq] at latest
+  subst latest
+  obtain ⟨attestation, rfl, origin⟩ := reached.forwardReachable.votesHaveOrigins messageFound
+  have rooted : node.root = attestation.data.beaconBlockRoot :=
+    Store.getSupportedNode_root supportedOk
+  have blockBelow : (Store.blockTree lower).Ancestor (some parentRoot)
+      (some attestation.data.beaconBlockRoot) :=
+    rooted ▸ BlockTree.payloadTree_ancestor_fst (below.trans above)
+  obtain ⟨voted, votedFound, votedLe⟩ := origin.voted
+  have voteDescends := Store.isAncestor_of_blockTree_ancestor (lower := lower)
+    votedFound parentFound blockBelow
+  obtain ⟨current', currentOk, past⟩ := origin.past
+  rw [slotRead] at currentOk
+  cases currentOk
+  have firstNat := Uint64.addChecked_ok_iff.mp firstOk
+  obtain ⟨le, eq⟩ := subChecked_ok_iff.mp lastOk
+  have pastNat := UInt64.lt_iff_toNat_lt.mp past
+  simp only [UInt64.toNat_one] at le eq firstNat
+  have high : attestation.data.slot ≤ finish := by
+    rw [UInt64.le_iff_toNat_le]
+    omega
+  -- The vote is after the parent's slot: a payload node of the parent, or a later block.
+  have later : parent.slot < attestation.data.slot := by
+    by_cases same : attestation.data.beaconBlockRoot = parentRoot
+    · by_contra notLater
+      have pending := Store.getSupportedNode_of_same_slot gloas
+        (message := LatestMessage.ofAttestation attestation)
+        (by simpa [LatestMessage.ofAttestation, same] using parentFound)
+        (by simpa [LatestMessage.ofAttestation] using UInt64.not_lt.mp notLater)
+      rw [supportedOk, Except.ok.injEq] at pending
+      subst pending
+      apply strict
+      have top : (ForkChoiceNode.toModel ⟨(LatestMessage.ofAttestation attestation).root,
+          .pending⟩) = (some parentRoot, none) := by
+        simp [ForkChoiceNode.toModel, LatestMessage.ofAttestation, same, PayloadStatus.toStatus]
+      rw [top] at above
+      exact (below.antisymm above).symm
+    · obtain ⟨child, isChild, chain⟩ := blockBelow.exists_child (by simpa using Ne.symm same)
+      rcases child with _ | childRoot
+      · exact absurd rfl isChild.1
+      obtain ⟨childBlock, childFound, childParent⟩ := Store.blockTree_isChild_iff.mp isChild
+      have parentLower := lower _ childBlock parent childFound (childParent ▸ parentFound)
+      have heights := chain.height_le
+      rw [Store.blockTree_height_of childFound, Store.blockTree_height_of votedFound] at heights
+      exact UInt64.lt_of_lt_of_le parentLower
+        (UInt64.le_trans (UInt64.le_iff_toNat_le.mpr (by omega)) votedLe)
+  have low : first ≤ attestation.data.slot := by
+    have := UInt64.lt_iff_toNat_lt.mp later
+    rw [UInt64.le_iff_toNat_le]
+    omega
+  exact membership u honest n after time parent members _ attestation
+    ⟨head, current, first, finish, epoch, headRead, parentFound, descends, slotRead, epochRead,
+      horizon, firstOk, lastOk, window, origin, voteDescends, low, high⟩
+
+open Models.ForkChoice in
 /-- The model weight includes every honest supporter counted by the store. -/
 private theorem honest_supporters_le_weight [DecidablePred (· ∈ J)]
     {store : Store preset fork} {state : BeaconState preset fork} {root : Root}
@@ -616,6 +713,350 @@ private theorem ancestor_ghost_of_visited_parent {ν β ρ : Type*} [DecidableEq
     rw [ghost_of_not_nonempty V w G key empty] at visited
     have same := above.antisymm visited
     exact False.elim (empty ⟨child, same ▸ member⟩)
+
+/-- A pending node is no payload decision of the previous slot.
+
+Neither is a node of a block older than the previous slot. -/
+private theorem isPreviousSlotPayloadDecision_eq_false {store : Store preset fork}
+    {node : ForkChoiceNode} {block : BeaconBlock preset fork} {current : Slot}
+    (found : store.blocks[node.root]? = some block)
+    (slotRead : store.getCurrentSlot config = .ok current) (fits : block.slot.toNat + 1 < 2 ^ 64)
+    (older : node.payloadStatus = .pending ∨ block.slot.toNat + 1 ≠ current.toNat) :
+    store.isPreviousSlotPayloadDecision config node = .ok false := by
+  have nextOk : addChecked block.slot 1 = .ok (block.slot + 1) := Uint64.addChecked_of_lt fits
+  have nextNat : (block.slot + 1).toNat = block.slot.toNat + 1 := Uint64.toNat_add_of_lt fits
+  simp only [Store.isPreviousSlotPayloadDecision, Store.block, found, nextOk, slotRead,
+    Except.mapError, bind, Except.bind, pure, Except.pure, Except.ok.injEq]
+  rcases older with pending | differ
+  · simp [pending]
+  · have ne : (block.slot + 1 == current) = false := by
+      simp only [beq_eq_false_iff_ne, ne_eq]
+      intro same
+      exact differ (by rw [← nextNat, same])
+    simp [ne]
+
+open Models.ForkChoice in
+/-- A node between the two ends of a path of two steps is one of its three nodes. -/
+private theorem eq_of_path_two {β : Type} {T : BlockTree β} {start mid target x : β}
+    (toMid : T.parent target = mid) (toStart : T.parent mid = start)
+    (low : T.Ancestor start x) (high : T.Ancestor x target) :
+    x = start ∨ x = mid ∨ x = target := by
+  obtain ⟨k, walk⟩ := high
+  match k, walk with
+  | 0, walk => exact .inr (.inr walk.symm)
+  | 1, walk => exact .inr (.inl (by simpa [toMid] using walk.symm))
+  | k + 2, walk =>
+    left
+    have up : T.Ancestor x start := ⟨k, by
+      rw [← walk, Function.iterate_add_apply]
+      simp [toMid, toStart]⟩
+    exact up.antisymm low
+
+open Models.ForkChoice in
+/-- From Gloas, a counted voter with a clean vote for a node supports its ancestors in the model.
+
+The model is the tree of nodes. -/
+private theorem toNat_mem_nodeSupporters {store : Store preset fork}
+    (lower : store.ParentsBelow) (gloas : .glamsterdam ≤ fork)
+    {state : BeaconState preset fork} {nodes : List ForkChoiceNode}
+    {target : ForkChoiceNode} {targetBlock : BeaconBlock preset fork}
+    (targetFound : store.blocks[target.root]? = some targetBlock)
+    {v : ValidatorIndex} {validator : Validator}
+    (atIndex : state.validators.data[v.toNat]? = some validator)
+    (active : isActiveValidator validator (getCurrentEpoch state) = true)
+    (unslashed : validator.slashed = false)
+    {message : LatestMessage fork} {supported : ForkChoiceNode}
+    (latest : store.latestMessages[v]? = some message)
+    (clean : store.equivocatingIndices.contains v = false)
+    (supportedOk : store.getSupportedNode message = .ok supported)
+    (descends : store.isAncestor supported target = .ok true) :
+    v.toNat ∈ supporters (Store.voters state) (Store.nodeView lower nodes) target.toModel := by
+  classical
+  have same : v.toNat.toUInt64 = v := UInt64.ofNat_toNat
+  refine Finset.mem_filter.mpr ⟨?_, supported.toModel, ?_,
+    (Store.isAncestor_iff_of_gloas (lower := lower) gloas targetFound descends).mp rfl⟩
+  · simp only [Store.voters, Finset.mem_filter, Finset.mem_range]
+    exact ⟨(Array.getElem?_eq_some_iff.mp atIndex).1, by
+      simp [Store.counts, atIndex, active, unslashed]⟩
+  · show store.latestNode v.toNat.toUInt64 = _
+    rw [same]
+    have notIn : v ∉ store.equivocatingIndices := by simpa using clean
+    simp [Store.latestNode, latest, notIn, supportedOk, Except.toOption]
+
+open Models.ForkChoice in
+/-- From Gloas, a clean latest vote supports only the ancestors of the node it supports. -/
+private theorem ancestor_of_mem_nodeSupporters {store : Store preset fork}
+    {lower : store.ParentsBelow} {state : BeaconState preset fork} {nodes : List ForkChoiceNode}
+    {v : ValidatorIndex} {message : LatestMessage fork} {supported : ForkChoiceNode}
+    {x : Option Root × Status}
+    (latest : store.latestMessages[v]? = some message)
+    (clean : store.equivocatingIndices.contains v = false)
+    (supportedOk : store.getSupportedNode message = .ok supported)
+    (supporter : v.toNat ∈ supporters (Store.voters state) (Store.nodeView lower nodes) x) :
+    (Store.nodeTree lower).Ancestor x supported.toModel := by
+  simp only [supporters, Finset.mem_filter] at supporter
+  obtain ⟨-, m, vote, above⟩ := supporter
+  change store.latestNode v.toNat.toUInt64 = some m at vote
+  simp only [Store.latestNode, UInt64.ofNat_toNat, clean, latest, supportedOk, Except.toOption,
+    Bool.false_eq_true, ↓reduceIte, Option.bind_some, Option.map_some, Option.some.injEq] at vote
+  exact vote ▸ above
+
+open Models.ForkChoice in
+/-- Validators that each support a model node have the stake of their indices there. -/
+private theorem stake_le_of_mem_supporters {β : Type} {T : BlockTree β}
+    (G : Models.ForkChoice.View ℕ β T) {state : BeaconState preset fork}
+    {X : Finset ValidatorIndex} {x : β}
+    (inside : ∀ v ∈ X, v.toNat ∈ Models.ForkChoice.supporters (Store.voters state) G x) :
+    stake (fun v => balanceAt state v.toNat) X ≤
+      Models.ForkChoice.weight (Store.voters state) (balanceAt state) G x := by
+  classical
+  have summed : stake (balanceAt state) (X.image UInt64.toNat) =
+      stake (fun v => balanceAt state v.toNat) X := by
+    unfold stake
+    rw [Finset.sum_image]
+    exact fun _ _ _ _ same => UInt64.toNat_inj.mp same
+  rw [← summed]
+  exact stake_mono fun i member => by
+    obtain ⟨v, inX, rfl⟩ := Finset.mem_image.mp member
+    exact inside v inX
+
+open Models.ForkChoice in
+/-- From Gloas, a receiver margin makes the path child below the parent outweigh each rival.
+
+The path runs from the parent's pending node to the block's pending node.
+
+It passes the node of the status that the block builds on.
+
+The margin counts the window, the score, twice the honest supporters and the honest parent voters.
+
+Every competing voter is a window member outside those sets, and the boost is at most the score. -/
+private theorem sibling_bound_of_window_margin [DecidablePred (· ∈ J)]
+    {store : Store preset fork} (lower : store.ParentsBelow) (gloas : .glamsterdam ≤ fork)
+    {state : BeaconState preset fork} (within : state.RegistryWithinLimit)
+    {nodes : List ForkChoiceNode} {root : Root} {block parent : BeaconBlock preset fork}
+    {members participants : Std.TreeSet ValidatorIndex} {score : Nat}
+    (found : store.blocks[root]? = some block)
+    (parentFound : store.blocks[block.parentRoot]? = some parent)
+    (inWindow : ∀ c, (Store.nodeTree lower).Ancestor (some block.parentRoot, none) c →
+      c ≠ (some block.parentRoot, none) →
+      ∀ i ∈ supporters (Store.voters state) (Store.nodeView lower nodes) c, i.toUInt64 ∈ members)
+    (shortInside : ∀ v ∈ participants, v ∈ members)
+    (boostLe : store.boostScoreOfGloas config gloas ≤ score)
+    (margin : stake (fun v => balanceAt state v.toNat) (Store.activeMembers state members) +
+        score <
+      2 * stake (fun v =>
+        if v ∈ ((unslashedActiveBalances state).map (·.1)).toFinset
+        then balanceAt state v.toNat else 0)
+        {v ∈ store.supportersOf state ⟨root, .pending⟩ | v ∈ J} +
+      stake (fun v =>
+        if v ∈ ((unslashedActiveBalances state).map (·.1)).toFinset
+        then balanceAt state v.toNat else 0)
+        {v ∈ store.parentVotersOf state participants block parent | v ∈ J}) :
+    0 < stake (fun v =>
+        if v ∈ ((unslashedActiveBalances state).map (·.1)).toFinset
+        then balanceAt state v.toNat else 0)
+        {v ∈ store.supportersOf state ⟨root, .pending⟩ | v ∈ J} ∧
+    ∀ p c d : Option Root × Status,
+      (Store.nodeTree lower).Ancestor (some block.parentRoot, none) p →
+      (Store.nodeTree lower).IsChild c p → (Store.nodeTree lower).IsChild d p →
+      (Store.nodeTree lower).Ancestor c (some root, none) → d ≠ c →
+      weight (Store.voters state).insertNone
+          (boostStake (balanceAt state) (store.boostScoreOfGloas config gloas))
+          ((Store.nodeView lower nodes).withBoost (store.boostedNode config gloas)) d <
+        weight (Store.voters state).insertNone
+          (boostStake (balanceAt state) (store.boostScoreOfGloas config gloas))
+          ((Store.nodeView lower nodes).withBoost (store.boostedNode config gloas)) c ∧
+      0 < weight (Store.voters state).insertNone
+          (boostStake (balanceAt state) (store.boostScoreOfGloas config gloas))
+          ((Store.nodeView lower nodes).withBoost (store.boostedNode config gloas)) c := by
+  classical
+  set G := Store.nodeView lower nodes with hG
+  set boost := store.boostScoreOfGloas config gloas
+  let wb := fun x => weight (Store.voters state).insertNone (boostStake (balanceAt state) boost)
+    (G.withBoost (store.boostedNode config gloas)) x
+  set guard := fun v : ValidatorIndex =>
+    if v ∈ ((unslashedActiveBalances state).map (·.1)).toFinset then balanceAt state v.toNat else 0
+    with hguard
+  set S := {v ∈ store.supportersOf state ⟨root, .pending⟩ | v ∈ J} with hS
+  set V := {v ∈ store.parentVotersOf state participants block parent | v ∈ J} with hV
+  set W := Store.activeMembers state members with hW
+  -- The three nodes of the path.
+  set start : Option Root × Status := (some block.parentRoot, none)
+  set mid : Option Root × Status :=
+    (some block.parentRoot, some (Store.parentPayloadStatus block parent == .full))
+  set target : Option Root × Status := (some root, none)
+  have toMid : (Store.nodeTree lower).parent target = mid :=
+    Store.nodeTree_parent_of found parentFound
+  have toStart : (Store.nodeTree lower).parent mid = start := BlockTree.payloadTree_parent_some _ _
+  have targetChild : (Store.nodeTree lower).IsChild target mid :=
+    ⟨fun same => Option.some_ne_none _ (Prod.mk.inj same).1, toMid⟩
+  have midChild : (Store.nodeTree lower).IsChild mid start :=
+    ⟨fun same => Option.some_ne_none _ (Prod.mk.inj same).1, toStart⟩
+  -- Guarded stakes are at most plain stakes.
+  have guardLe (X : Finset ValidatorIndex) :
+      stake guard X ≤ stake (fun v => balanceAt state v.toNat) X := by
+    apply Finset.sum_le_sum
+    intro v _
+    simp only [guard]
+    split
+    · exact Nat.le_refl _
+    · exact Nat.zero_le _
+  -- A parent voter's clean latest vote is for the parent's pending node or for `mid`.
+  have parentVote : ∀ v ∈ V, ∃ message supported, store.latestMessages[v]? = some message ∧
+      store.equivocatingIndices.contains v = false ∧
+      store.getSupportedNode message = .ok supported ∧
+      (Store.nodeTree lower).Ancestor supported.toModel mid := by
+    intro v member
+    obtain ⟨-, -, honestVote, message, supported, latest, supportedOk, isParent⟩ :=
+      Store.mem_parentVotersOf.mp (Finset.mem_filter.mp member).1
+    refine ⟨message, supported, latest, by simpa using honestVote, supportedOk, ?_⟩
+    rcases isParent with rfl | rfl
+    · exact midChild.ancestor
+    · have statusEq : (Store.parentPayloadStatus block parent).toStatus =
+          some (Store.parentPayloadStatus block parent == .full) := by
+        have ne := Store.parentPayloadStatus_ne_pending (block := block) (parent := parent) gloas
+        revert ne
+        cases Store.parentPayloadStatus block parent <;> simp [PayloadStatus.toStatus]
+      show (Store.nodeTree lower).Ancestor (some block.parentRoot, _) mid
+      rw [statusEq]
+      exact .refl _
+  -- So a parent voter supports only ancestors of `mid`.
+  have parentAbove : ∀ v ∈ V, ∀ x, v.toNat ∈ supporters (Store.voters state) G x →
+      (Store.nodeTree lower).Ancestor x mid := by
+    intro v member x supporter
+    obtain ⟨message, supported, latest, clean, supportedOk, up⟩ := parentVote v member
+    exact (ancestor_of_mem_nodeSupporters latest clean supportedOk supporter).trans up
+  -- Each honest supporter of the block supports its pending node in the model.
+  have supportInside : ∀ v ∈ S, v.toNat ∈ supporters (Store.voters state) G target := by
+    intro v member
+    have supported := (Finset.mem_filter.mp member).1
+    obtain ⟨message, node, latest, clean, supportedOk, descends⟩ :=
+      store.exists_of_voteCountsFor (Store.voteCountsFor_of_mem_supportersOf supported)
+    obtain ⟨validator, atIndex, active, unslashed⟩ :=
+      (mem_unslashedActiveBalances_iff within).mp
+        (List.mem_map.mpr (by
+          simp only [Store.supportersOf, List.mem_toFinset, List.mem_map,
+            List.mem_filter] at supported
+          obtain ⟨entry, ⟨inside, -⟩, same⟩ := supported
+          exact ⟨entry, inside, same⟩))
+    exact toNat_mem_nodeSupporters (target := ⟨root, .pending⟩) lower gloas found atIndex active
+      unslashed latest clean supportedOk descends
+  -- Members of the window: competitors below the parent, and parent voters.
+  have activeOf : ∀ i ∈ Store.voters state, i.toUInt64 ∈ members → i.toUInt64 ∈ W := by
+    intro i voter member
+    obtain ⟨small, validator, atIndex, active⟩ := Store.active_of_mem_voters voter
+    have back := toNat_toUInt64_of_lt within small
+    exact Store.mem_activeMembers.mpr ⟨member, validator, by simpa only [back] using atIndex,
+      active⟩
+  have strictInside : ∀ x, (Store.nodeTree lower).Ancestor start x → x ≠ start →
+      ∀ i ∈ supporters (Store.voters state) G x, i.toUInt64 ∈ W :=
+    fun x low ne i member => activeOf i (Finset.mem_of_mem_filter _ member)
+      (inWindow x low ne i member)
+  have parentInside : ∀ X ⊆ V, X ⊆ W := by
+    intro X sub v member
+    obtain ⟨inShort, validator, _⟩ := Store.mem_parentVotersOf.mp
+      (Finset.mem_filter.mp (sub member)).1
+    obtain ⟨entry, atIndex, _, active⟩ := validator
+    exact Store.mem_activeMembers.mpr ⟨shortInside v inShort, entry, atIndex, active⟩
+  have vInside := (guardLe V).trans (stake_mono (parentInside V (subset_refl _)))
+  have positiveS : 0 < stake guard S := by omega
+  refine ⟨positiveS, fun p c d below isChild siblingIsChild onPath distinct => ?_⟩
+  have strictOf : ∀ x, (Store.nodeTree lower).IsChild x p →
+      (Store.nodeTree lower).Ancestor start x ∧ x ≠ start := fun x child =>
+    ⟨below.trans child.ancestor, fun same => by
+      have := (below.trans child.ancestor).height_le
+      have := child.height_lt
+      rw [same] at this
+      exact absurd below.height_le (by omega)⟩
+  have boostedLe : ∀ x, weight (Store.voters state) (balanceAt state) G x ≤ wb x := by
+    intro x
+    simp only [wb, weight_withBoost]
+    omega
+  have totalBound := Store.weight_add_weight_add_stake_le_stake_withBoost_of_isChild G within
+  -- The parent node is the parent's pending node or `mid`.
+  have pAbove : (Store.nodeTree lower).Ancestor p target := isChild.ancestor.trans onPath
+  have pNotTarget : p ≠ target := fun same => by
+    have := isChild.height_lt
+    have := onPath.height_le
+    rw [same] at *
+    omega
+  rcases eq_of_path_two toMid toStart below pAbove with rfl | rfl | rfl
+  · -- At the parent's pending node, the child toward the block is `mid`.
+    have cMid : c = mid := by
+      by_contra ne
+      have cAbove : (Store.nodeTree lower).Ancestor c mid := by
+        rcases onPath.eq_or_parent with same | up
+        · have parentEq := isChild.2
+          rw [same, toMid] at parentEq
+          simp [mid, start] at parentEq
+        · rwa [toMid] at up
+      exact isChild.disjoint midChild ne cAbove (.refl _)
+    subst cMid
+    set M := V.filter fun v => v.toNat ∈ supporters (Store.voters state) G mid
+    set Pend := V.filter fun v => v.toNat ∉ supporters (Store.voters state) G mid
+    have split : stake guard V = stake guard M + stake guard Pend := by
+      simp only [stake, M, Pend]
+      exact (Finset.sum_filter_add_sum_filter_not V _ _).symm
+    have apart : Disjoint S M := by
+      refine Finset.disjoint_left.mpr fun v inS inM => ?_
+      have up := parentAbove v (Finset.mem_filter.mp inM).1 target (supportInside v inS)
+      exact absurd up.height_le (Nat.not_le.mpr targetChild.height_lt)
+    have lowerBound : stake guard S + stake guard M ≤ wb mid := by
+      have unionEq : stake guard (S ∪ M) = stake guard S + stake guard M := Finset.sum_union apart
+      rw [← unionEq]
+      refine (guardLe _).trans ((stake_le_of_mem_supporters G fun v member => ?_).trans
+        (boostedLe mid))
+      rcases Finset.mem_union.mp member with inS | inM
+      · have sup := supportInside v inS
+        simp only [supporters, Finset.mem_filter] at sup ⊢
+        obtain ⟨voter, m, vote, up⟩ := sup
+        exact ⟨voter, m, vote, targetChild.ancestor.trans up⟩
+      · exact (Finset.mem_filter.mp inM).2
+    have bound := totalBound (store.boostedNode config gloas) boost (N := Pend) (window := W)
+      midChild siblingIsChild distinct
+      (fun i member => by
+        rcases Finset.mem_union.mp member with inC | inD
+        · exact strictInside mid midChild.ancestor (fun same => by
+            simp [mid, start] at same) i inC
+        · exact strictInside d siblingIsChild.ancestor (strictOf d siblingIsChild).2 i inD)
+      (parentInside Pend (Finset.filter_subset _ _))
+      (fun v member => ⟨(Finset.mem_filter.mp member).2, fun supporter =>
+        siblingIsChild.disjoint midChild distinct
+          (parentAbove v (Finset.mem_filter.mp member).1 d supporter) (.refl _)⟩)
+    have pendLe := guardLe Pend
+    simp only [wb] at lowerBound
+    constructor <;> omega
+  · -- At `mid`, the child toward the block is the block's pending node.
+    have cTarget : c = target := by
+      by_contra ne
+      exact isChild.disjoint targetChild ne onPath (.refl _)
+    subst cTarget
+    have lowerBound : stake guard S ≤ wb target :=
+      (guardLe S).trans ((stake_le_of_mem_supporters G supportInside).trans (boostedLe target))
+    have bound := totalBound (store.boostedNode config gloas) boost (N := V) (window := W)
+      targetChild siblingIsChild distinct
+      (fun i member => by
+        rcases Finset.mem_union.mp member with inC | inD
+        · exact strictInside target (midChild.ancestor.trans targetChild.ancestor)
+            (fun same => by
+              have := targetChild.height_lt
+              have := midChild.height_lt
+              rw [same] at *; omega) i inC
+        · exact strictInside d (midChild.ancestor.trans siblingIsChild.ancestor)
+            (fun same => by
+              have := siblingIsChild.height_lt
+              have := midChild.height_lt
+              rw [same] at *; omega) i inD)
+      (parentInside V (subset_refl _))
+      (fun v member =>
+        ⟨fun supporter => absurd (parentAbove v member _ supporter).height_le
+          (Nat.not_le.mpr targetChild.height_lt),
+        fun supporter => absurd (parentAbove v member _ supporter).height_le
+          (Nat.not_le.mpr siblingIsChild.height_lt)⟩)
+    have vLe := guardLe V
+    simp only [wb] at lowerBound
+    constructor <;> omega
+  · exact absurd rfl pNotTarget
 
 open Models.ForkChoice in
 /-- A finite-window margin makes a block heavier than a sibling, including the boost. -/
@@ -779,7 +1220,7 @@ public theorem ancestor_head_of_window_margin [DecidablePred (· ∈ J)]
     {last n call : Nat} {u : ValidatorIndex} {root : Root} {block parent : BeaconBlock preset fork}
     (membership : VotersInHeadWindow (e := e) block.parentRoot (e.world call).time last)
     (honest : u ∈ J) (time : (e.world n).time ≤ last)
-    (anchorSlot : anchorBlock.slot ≤ anchorState.slot) (before : fork < .glamsterdam)
+    (anchorSlot : anchorBlock.slot ≤ anchorState.slot)
     (absent : AnchorParentAbsent (e := e) last)
     {head : ForkChoiceNode} {state : BeaconState preset fork}
     {current first finish shortLast : Slot} {epoch : Epoch}
@@ -825,7 +1266,8 @@ public theorem ancestor_head_of_window_margin [DecidablePred (· ∈ J)]
         if v ∈ ((unslashedActiveBalances source).map (·.1)).toFinset
         then balanceAt source v.toNat else 0)
         {v ∈ ((e.world n).state u).parentVotersOf source participants block parent | v ∈ J}))
-    (scoreOk : computeProposerScore config state = .ok (score : Gwei)) :
+    (scoreOk : computeProposerScore config state = .ok (score : Gwei))
+    (registries : .glamsterdam ≤ fork → HonestRegistriesWithinLimit (e := e) last) :
     ((e.world n).state u).isAncestor head ⟨root, .pending⟩ = .ok true ∨
     HonestCollision (e := e) last := by
   classical
@@ -834,7 +1276,7 @@ public theorem ancestor_head_of_window_margin [DecidablePred (· ∈ J)]
       sourceScoreOk, sourceMargin⟩
   · obtain ⟨justified, justifiedKnown⟩ := Store.filterNodeTree_known tree
     exact .inl (Store.isAncestor_trans justifiedKnown found
-      (Store.isAncestor_getHead_of_lt_gloas before headRead) justifiedAbove)
+      (Store.isAncestor_getHead headRead) justifiedAbove)
   let store := (e.world n).state u
   have reached := e.forwardReachableWith
     (fun w member => (anchored w member) ▸ Store.ForwardReachableWith.anchor anchorStore)
@@ -855,7 +1297,7 @@ public theorem ancestor_head_of_window_margin [DecidablePred (· ∈ J)]
     {v ∈ store.parentVotersOf source participants block parent | v ∈ J}
     (fun _ member => (Finset.mem_filter.mp member).2)
     (fun _ member => (Finset.mem_filter.mp member).2)
-  have within := BeaconState.registryWithinLimit_of_lt before state
+  have within := (honestRegistries_of_gated registries u honest n time).2 state stateRead
   have supportTransport := guarded_supporters_le (J := J) (store := store)
     (state := state) (source := source) (node := ⟨root, .pending⟩)
   have parentTransport := guarded_parentVoters_le (J := J) (store := store)
@@ -878,6 +1320,95 @@ public theorem ancestor_head_of_window_margin [DecidablePred (· ∈ J)]
   have lower := reached.reachable.parentsBelow anchorSlot (absent u honest n time)
   have shortBefore := reached.previousBlockSlot_le_previousCurrentSlot anchorSlot
     found slotRead shortLastOk lastOk
+  have boostBound : store.boostScore config ≤ score.toNat := by
+    dsimp only [store]
+    simp only [Store.boostScore]
+    split
+    · exact Nat.zero_le _
+    · simp [Store.getProposerScore, stateRead, scoreOk, bind, Except.bind]
+  by_cases gloas : .glamsterdam ≤ fork
+  · -- From Gloas the head's walk passes the parent's pending node; W1 runs from there.
+    have headDescends : store.isAncestor ⟨head.root, .pending⟩ ⟨block.parentRoot, .pending⟩ =
+        .ok true := by
+      rw [← Store.isAncestor_getHead_root headRead]
+      exact descends
+    obtain ⟨positiveS, bound⟩ := sibling_bound_of_window_margin (J := J) lower gloas within
+      (nodes := nodes) found parentFound
+      (fun c low ne i member => mem_window_of_mem_nodeSupporters membership honest later time
+        reached lower gloas headRead parentFound headDescends slotRead epochRead horizon firstOk
+        lastOk window low ne member)
+      (fun v member => Store.mem_getCommitteesBetweenSlots_of_le shortWindow window shortBefore
+        member)
+      ((Store.boostScoreOfGloas_le_boostScore gloas).trans boostBound) margin
+    -- A supporter's counted vote puts the block before the current slot.
+    obtain ⟨supporter, supporterIn, -⟩ := Finset.exists_ne_zero_of_sum_ne_zero
+      (Nat.pos_iff_ne_zero.mp positiveS)
+    have rootEarly := reached.forwardReachable.votesHaveOrigins.slot_lt_of_voteCountsFor
+      slotRead found (Store.voteCountsFor_of_mem_supportersOf
+        (Finset.mem_filter.mp supporterIn).1)
+    have parentEarly := lower _ block parent found parentFound
+    have currentFits := UInt64.toNat_lt current
+    have rootNat := UInt64.lt_iff_toNat_lt.mp rootEarly
+    have parentNat := UInt64.lt_iff_toNat_lt.mp parentEarly
+    -- The three nodes of the path, from the parent's pending node to the block's.
+    set start : Option Root × Models.ForkChoice.Status := (some block.parentRoot, none)
+    set mid : Option Root × Models.ForkChoice.Status :=
+      (some block.parentRoot, some (Store.parentPayloadStatus block parent == .full))
+    set target : Option Root × Models.ForkChoice.Status := (some root, none)
+    have toMid : (Store.nodeTree lower).parent target = mid :=
+      Store.nodeTree_parent_of found parentFound
+    have toStart : (Store.nodeTree lower).parent mid = start :=
+      Models.ForkChoice.BlockTree.payloadTree_parent_some _ _
+    have onPath : (Store.nodeTree lower).Ancestor start target := ⟨2, by simp [toMid, toStart]⟩
+    have noDecision : ∀ x ∈ nodes, (Store.nodeTree lower).Ancestor start x.toModel →
+        (Store.nodeTree lower).Ancestor x.toModel target →
+        store.isPreviousSlotPayloadDecision config x = .ok false := by
+      intro x _ low high
+      obtain ⟨xRoot, xStatus⟩ := x
+      rcases eq_of_path_two toMid toStart low high with same | same | same <;>
+        simp only [ForkChoiceNode.toModel, start, mid, target, Prod.mk.injEq,
+          Option.some.injEq] at same <;> obtain ⟨rfl, statusEq⟩ := same
+      · exact isPreviousSlotPayloadDecision_eq_false parentFound slotRead (by omega)
+          (.inl (PayloadStatus.toStatus_injective statusEq))
+      · exact isPreviousSlotPayloadDecision_eq_false parentFound slotRead (by omega)
+          (.inr (by omega))
+      · exact isPreviousSlotPayloadDecision_eq_false found slotRead (by omega)
+          (.inl (PayloadStatus.toStatus_injective statusEq))
+    -- The justified pending node is above the block's; at the block itself the head is above it.
+    have closed := Store.filterNodeTree_closed (T := Store.nodeTree lower) (·.toModel) tree
+      fun _ _ _ ok _ mem => Store.isChild_of_mem_getNodeChildren gloas ok mem
+    have rootBelow : (Store.nodeTree lower).Ancestor (some store.justifiedCheckpoint.root, none)
+        target := (closed _ viable).1
+    by_cases atJustified : store.justifiedCheckpoint.root = root
+    · have up := Store.isAncestor_getHead headRead
+      rw [atJustified] at up
+      exact up
+    have justifiedAbove : (Store.nodeTree lower).Ancestor
+        (some store.justifiedCheckpoint.root, none) start := by
+      rcases rootBelow.eq_or_parent with same | up
+      · exact absurd (Option.some.inj (Prod.mk.inj same).1) atJustified
+      rw [toMid] at up
+      rcases up.eq_or_parent with same | up
+      · simp [mid] at same
+      rwa [toStart] at up
+    have nonempty : nodes.isEmpty = false := by
+      cases nodes with
+      | nil => cases viable
+      | cons _ _ => rfl
+    have walk : store.getHeadFrom config store.justifiedTally nodes
+        ⟨store.justifiedCheckpoint.root, .pending⟩ = .ok head := by
+      simpa [Store.getHead, tree, nonempty, bind, Except.bind] using headRead
+    have parentBelowHead : (Store.nodeTree lower).Ancestor start head.toModel :=
+      (Store.isAncestor_iff_of_gloas (lower := lower) gloas parentFound descends).mp rfl
+    have cut := Store.getHeadFrom_of_visited (middle := ⟨block.parentRoot, .pending⟩) lower gloas
+      parentBelowHead walk justifiedAbove
+    exact Store.isAncestor_getHeadFrom_of_sibling_bound (start := ⟨block.parentRoot, .pending⟩)
+      lower gloas tree stateRead viable
+      justifiedAbove onPath noDecision
+      (fun _ _ _ _ _ _ low isChild siblingIsChild path distinct =>
+        ⟨fun _ => (bound _ _ _ low isChild siblingIsChild path distinct).1,
+          (bound _ _ _ low isChild siblingIsChild path distinct).2⟩) cut
+  have before : fork < .glamsterdam := Nat.lt_of_not_le gloas
   have pending := Store.getHead_pending before headRead
   have pendingHead : (⟨head.root, .pending⟩ : ForkChoiceNode) = head := by
     cases head
@@ -885,12 +1416,6 @@ public theorem ancestor_head_of_window_margin [DecidablePred (· ∈ J)]
   rw [← pendingHead] at descends
   -- The visited parent makes the head known.
   obtain ⟨headBlock, headKnown, _⟩ := Store.slot_le_of_isAncestor parentFound descends
-  have boostBound : store.boostScore config ≤ score.toNat := by
-    dsimp only [store]
-    simp only [Store.boostScore]
-    split
-    · exact Nat.zero_le _
-    · simp [Store.getProposerScore, stateRead, scoreOk, bind, Except.bind]
   have supportBound := honest_supporters_le_weight (J := J) lower within found nodes
   have boostedBound := Models.ForkChoice.weight_withBoost
     (V := Store.voters state) (w := balanceAt state) (G := Store.view lower nodes)

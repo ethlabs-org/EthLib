@@ -343,6 +343,8 @@ theorem Store.active_of_mem_voters {state : BeaconState preset fork} {i : ℕ}
 
 /-- Two siblings and a set supporting neither weigh at most a finite window, plus one boost.
 
+The siblings are children of one node in any tree, with the votes of any view of it.
+
 The window contains every supporter index and every member of the additional set.
 
 The registry limit makes the conversion of supporter indices to validator indices injective.
@@ -353,39 +355,33 @@ It needs no committee read or history of the store.
 
 [fcr]: https://arxiv.org/abs/2405.00549v4
 -/
-theorem Store.weight_add_weight_add_stake_le_stake_withBoost
-    (lower : store.ParentsBelow) {state : BeaconState preset fork}
-    (within : state.RegistryWithinLimit)
-    (nodes : List ForkChoiceNode) (boosted : Option (Option Root)) (score : ℕ)
-    {root parent : Root} {sibling : Option Root} {block : BeaconBlock preset fork}
-    {N window : Finset ValidatorIndex}
-    (found : store.blocks[root]? = some block) (parentRoot : block.parentRoot = parent)
-    (siblingChild : sibling ∈ children (view lower nodes) (some parent))
-    (distinct : sibling ≠ some root)
-    (supportersInside : ∀ i ∈ supporters (voters state) (view lower nodes) (some root) ∪
-      supporters (voters state) (view lower nodes) sibling, i.toUInt64 ∈ window)
+theorem Store.weight_add_weight_add_stake_le_stake_withBoost_of_isChild {β : Type}
+    {T : BlockTree β} (G : View ℕ β T) {state : BeaconState preset fork}
+    (within : state.RegistryWithinLimit) (boosted : Option β) (score : ℕ)
+    {parent child sibling : β} {N window : Finset ValidatorIndex}
+    (isChild : T.IsChild child parent) (siblingIsChild : T.IsChild sibling parent)
+    (distinct : sibling ≠ child)
+    (supportersInside : ∀ i ∈ supporters (voters state) G child ∪
+      supporters (voters state) G sibling, i.toUInt64 ∈ window)
     (inside : N ⊆ window)
-    (neither : ∀ v ∈ N, v.toNat ∉ supporters (voters state) (view lower nodes) (some root) ∧
-      v.toNat ∉ supporters (voters state) (view lower nodes) sibling) :
+    (neither : ∀ v ∈ N, v.toNat ∉ supporters (voters state) G child ∧
+      v.toNat ∉ supporters (voters state) G sibling) :
     weight (voters state).insertNone (boostStake (balanceAt state) score)
-        ((view lower nodes).withBoost boosted) (some root) +
+        (G.withBoost boosted) child +
       weight (voters state).insertNone (boostStake (balanceAt state) score)
-        ((view lower nodes).withBoost boosted) sibling +
+        (G.withBoost boosted) sibling +
       stake (fun v => balanceAt state v.toNat) N ≤
     stake (fun v => balanceAt state v.toNat) window + score := by
   classical
-  have isChild : (Store.blockTree lower).IsChild (some root) (some parent) :=
-    Store.blockTree_isChild_iff.mpr ⟨block, found, parentRoot⟩
-  have siblingIsChild := (mem_children.mp siblingChild).2
   refine (Nat.add_le_add_right (weight_withBoost_add_le isChild siblingIsChild (Ne.symm distinct)
     boosted score) _).trans ?_
   suffices key :
-      weight (Store.voters state) (balanceAt state) (Store.view lower nodes) (some root) +
-      weight (Store.voters state) (balanceAt state) (Store.view lower nodes) sibling +
+      weight (Store.voters state) (balanceAt state) G child +
+      weight (Store.voters state) (balanceAt state) G sibling +
       stake (fun v => balanceAt state v.toNat) N ≤
         stake (fun v => balanceAt state v.toNat) window by omega
-  set S := supporters (Store.voters state) (Store.view lower nodes) (some root) with hS
-  set S' := supporters (Store.voters state) (Store.view lower nodes) sibling with hS'
+  set S := supporters (Store.voters state) G child with hS
+  set S' := supporters (Store.voters state) G sibling with hS'
   -- The registry bound makes each conversion to UInt64 reversible on these supporters.
   have back : ∀ i ∈ S ∪ S', i.toUInt64.toNat = i := by
     intro i member
@@ -412,8 +408,8 @@ theorem Store.weight_add_weight_add_stake_le_stake_withBoost
     have := congrArg UInt64.toNat same
     rwa [back i hi, back j hj] at this
   -- Sum the disjoint supporter images and the additional set before enlarging to the window.
-  have split : weight (Store.voters state) (balanceAt state) (Store.view lower nodes) (some root) +
-      weight (Store.voters state) (balanceAt state) (Store.view lower nodes) sibling +
+  have split : weight (Store.voters state) (balanceAt state) G child +
+      weight (Store.voters state) (balanceAt state) G sibling +
       stake (fun v => balanceAt state v.toNat) N =
       stake (fun v => balanceAt state v.toNat) ((S ∪ S').image Nat.toUInt64 ∪ N) := by
     simp only [weight, stake]
@@ -427,6 +423,33 @@ theorem Store.weight_add_weight_add_stake_le_stake_withBoost
   · obtain ⟨i, hi, rfl⟩ := Finset.mem_image.mp image
     exact supportersInside i hi
   · exact inside hN
+
+/-- Two sibling blocks and a set supporting neither weigh at most a finite window, plus one boost.
+
+The window contains every supporter index and every member of the additional set. -/
+theorem Store.weight_add_weight_add_stake_le_stake_withBoost
+    (lower : store.ParentsBelow) {state : BeaconState preset fork}
+    (within : state.RegistryWithinLimit)
+    (nodes : List ForkChoiceNode) (boosted : Option (Option Root)) (score : ℕ)
+    {root parent : Root} {sibling : Option Root} {block : BeaconBlock preset fork}
+    {N window : Finset ValidatorIndex}
+    (found : store.blocks[root]? = some block) (parentRoot : block.parentRoot = parent)
+    (siblingChild : sibling ∈ children (view lower nodes) (some parent))
+    (distinct : sibling ≠ some root)
+    (supportersInside : ∀ i ∈ supporters (voters state) (view lower nodes) (some root) ∪
+      supporters (voters state) (view lower nodes) sibling, i.toUInt64 ∈ window)
+    (inside : N ⊆ window)
+    (neither : ∀ v ∈ N, v.toNat ∉ supporters (voters state) (view lower nodes) (some root) ∧
+      v.toNat ∉ supporters (voters state) (view lower nodes) sibling) :
+    weight (voters state).insertNone (boostStake (balanceAt state) score)
+        ((view lower nodes).withBoost boosted) (some root) +
+      weight (voters state).insertNone (boostStake (balanceAt state) score)
+        ((view lower nodes).withBoost boosted) sibling +
+      stake (fun v => balanceAt state v.toNat) N ≤
+    stake (fun v => balanceAt state v.toNat) window + score :=
+  weight_add_weight_add_stake_le_stake_withBoost_of_isChild (view lower nodes) within boosted
+    score (Store.blockTree_isChild_iff.mpr ⟨block, found, parentRoot⟩)
+    (mem_children.mp siblingChild).2 distinct supportersInside inside neither
 
 /-- Two children of a block weigh together at most the rule's count, plus the score of the boost.
 

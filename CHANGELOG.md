@@ -23,6 +23,9 @@ Not yet released.
   `Store.getCheckpointBlock_walk_root` (`ForkChoice/Store.lean`) shows that a checkpoint read is the root of a walk back to the first slot of the epoch, at every fork.
   `HonestRegistriesWithinLimit` and `Execution.honestRegistries_of_room` (`ForkChoice/FastConfirmation/HistoricalStatements.lean`) are now public, unchanged: from Gloas, honest registries stay within the limit while the stores' epochs stay bounded.
 
+- `Store.weight_add_weight_add_stake_le_stake_withBoost_of_isChild` (`ForkChoice/SiblingCap.lean`) bounds two sibling nodes and a set supporting neither by a window plus one boost, for any tree and view of the store's votes.
+  `Store.weight_add_weight_add_stake_le_stake_withBoost` is now its case for sibling blocks.
+
 - `honestRegistries_of_gated` (`ForkChoice/FastConfirmation/HistoricalStatements.lean`) gives the honest registry bound at every fork from its Gloas form; before Gloas the type of the registry bounds it.
 
 - `Store.FullParentsVerified` (`ForkChoice/PayloadGhost.lean`) says that, from Gloas, each held block that builds on a held full parent finds its payload verified.
@@ -878,6 +881,12 @@ Not yet released.
 - In Lean, `receiver_fullMaximum_of_head_window` holds at every fork.
   It no longer takes `early : fork < .glamsterdam`; it takes `registries : .glamsterdam ≤ fork → HonestRegistriesWithinLimit time` in its place.
   Migration: before Gloas, pass `fun gloas => absurd gloas (Nat.not_le_of_lt early)`.
+  The new statement implies the old one.
+
+- In Lean, `ancestor_head_of_window_margin` holds at every fork.
+  It no longer takes `before : fork < .glamsterdam`; it takes `registries : .glamsterdam ≤ fork → HonestRegistriesWithinLimit last` as its last argument.
+  From Gloas the head walk is cut at the parent's pending node and read with `Store.isAncestor_getHeadFrom_of_sibling_bound`.
+  Migration: before Gloas, drop `before` and pass `fun gloas => absurd gloas (Nat.not_le_of_lt before)`.
   The new statement implies the old one.
 
 - In Lean, `Store.isAncestor_head_pending` moves from `EthLib.Consensus.Proofs.ForkChoice.FastConfirmation.Basic` to `EthLib.Consensus.Proofs.ForkChoice.Store`.
