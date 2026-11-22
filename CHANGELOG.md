@@ -835,6 +835,11 @@ Not yet released.
 
 ### Changes that break callers
 
+- In Lean, three readers of the confirmed root hold at every fork.
+  `Execution.honestTargetVotes_of_byzantineStakeAtMost` and `Store.viable_of_ancestor` drop their pre-Gloas binder.
+  `Execution.receiverWindowExitsNear_of_sourceOnParentChain` takes `within`, the registry of the source within the limit, instead of `preGloas`.
+  Migration: delete the argument, and pass `within := source.validators.bound preGloas`.
+
 - In Lean, the quorum drift of a call is bounded at every fork.
   `quorumDrift_le_quorumReserve` takes `within` at the counting state instead of `early`.
   `Execution.quorumDriftWithin` takes `room`, the anchor's registry room from Gloas, instead of `early`.

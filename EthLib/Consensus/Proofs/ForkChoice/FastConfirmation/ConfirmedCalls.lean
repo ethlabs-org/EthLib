@@ -1100,7 +1100,7 @@ theorem walk_inputs [DecidablePred (· ∈ J)] {Δ : ℕ} {anchor : Store preset
       have : 3 ≤ preset.MAX_SEED_LOOKAHEAD.toNat := ctx.exitWindow
       omega
     exact Execution.honestTargetVotes_of_byzantineStakeAtMost ctx.anchored ctx.start
-      (UInt64.le_of_eq ctx.anchorSlot) ctx.sound ctx.maxAligned ctx.slots ctx.preGloas
+      (UInt64.le_of_eq ctx.anchorSlot) ctx.sound ctx.maxAligned ctx.slots
       ctx.minLookahead maxLookahead (by have := ctx.ring; omega) ctx.stale ctx.increment ctx.caller
       nBound ⟨head, headOk, rfl⟩ bounds
   · -- The start's checked target is covered up to `limit + 1`, so up to the next instant.
@@ -1587,7 +1587,8 @@ theorem walkMembers_cover [DecidablePred (· ∈ J)] {Δ : ℕ} {anchor : Store 
     simp [parentOrSelf, blockOk]] at parentCovers
   -- The member's near exit bound at time T, or a collision.
   rcases Execution.receiverWindowExitsNear_of_sourceOnParentChain ctx.anchored ctx.start
-      ctx.anchorSlot ctx.positive ctx.exitWindow ctx.preGloas ctx.caller callerTime sourceOk
+      ctx.anchorSlot ctx.positive ctx.exitWindow ctx.caller callerTime sourceOk
+      (BeaconState.registryWithinLimit_of_lt ctx.preGloas source)
       parentOk firstOk (onChainAll m hm block parent blockOk parentOk) parentCovers
     with exits | collision
   swap
@@ -1622,7 +1623,7 @@ theorem walkMembers_cover [DecidablePred (· ∈ J)] {Δ : ℕ} {anchor : Store 
         ((reach n u ctx.caller).anchorSlot_le (UInt64.le_of_eq ctx.anchorSlot)
           (Store.block_ok_iff.mp blockOk))
         (holds w hw k kLow kHigh ready) rootAbove
-    exact Store.viable_of_ancestor ctx.preGloas tree below
+    exact Store.viable_of_ancestor tree below
       (rootViable T' low (high.trans hT) rootCovers w hw k nodes hd atTime ready receiverHead
         tree)
   -- The member's step at time T.
