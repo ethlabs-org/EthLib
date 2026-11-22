@@ -9,6 +9,12 @@ Not yet released.
 
 ### Proof additions
 
+- In Lean, the payload of the parent has a balance ledger from Gloas, and its old validators read at both ends are later.
+  `BlockLedger.ledger_processParentExecutionPayload` changes no balance outside a set of converted validators.
+  That set has at most the preset's most consolidation requests per payload; no balance rises, and only a conversion lowers one.
+  `BlockLedger.lives_processParentExecutionPayload` says that an old validator read at both ends is later at the end, and that a new validator is not activated.
+  `BlockCredits.block_balances` reads them.
+
 - The fresh-slot facts of a change of an account, of new code and of a record of a read are now shared lemmas ([#4235](https://github.com/ethereum/EthLib/issues/4235), second part).
   `TransactionState.freshSlots_modifyState`, `freshSlots_setCode` and `freshSlots_recordAccountRead` in `EthLib.Execution.Proofs.State.FreshSlots` are new public lemmas, taken from private copies in `EthLib.Execution.Proofs.Transactions.StateGasUsed`.
   The new lemma `StateGasMeter.stateGasUsed_absorb_sub` in `EthLib.Execution.Proofs.Evm.Gas.StateGas` gives the net state gas of any merge of a child, and `stateGasUsed_absorb` now follows from it.
@@ -211,8 +217,8 @@ Not yet released.
   `joiningStake` is the stake joining the active set, which `quorumReserve` and `pinTerms` both read, with `quorumReserve`'s value and statement unchanged.
   The pin's drift bound in `PinDriftBound` reads them at other states and totals.
 
-- `ConsolidationQueueRise.Appends` says that the queue of pending consolidations only grows at its end inside a block, and `ConsolidationQueueRise.appendStep_processBlock` proves it for a block from Altair and before Gloas, with the frame and the registry lifecycle.
-  `riseStep_processBlock` now follows from it, and its statement is unchanged.
+- `ConsolidationQueueRise.Appends` says that the queue of pending consolidations only grows at its end inside a block, and `ConsolidationQueueRise.appendStep_processBlock` proves it for a block from Altair, with the frame and the registry lifecycle.
+  `riseStep_processBlock` now follows from it.
   The pin's `block_step` reads it.
 
 - `Execution.justifiedSigned_at` generalizes `Execution.justifiedHonestlySigned` to one receiver and any set of signers.
@@ -265,7 +271,7 @@ Not yet released.
 - `DirectSafety.Apriori.Internal.activeStake_eq_of_same_epoch` says that the effective balances active in an epoch sum the same at two states of one epoch of a run.
   `activeStake_same_epoch` and the pin's proposer-credit bound read it.
 
-- `Run.pendingConsolidation_targets` says that each pending consolidation of a state of a run from genesis, before Gloas, has its target in the registry.
+- `Run.pendingConsolidation_targets` says that each pending consolidation of a state of a run from genesis has its target in the registry.
   A request finds its target by pubkey in the registry, which only grows.
   The pin reads it to exclude a created key that only a consolidation funds.
 
@@ -520,7 +526,7 @@ Not yet released.
   `Store.Reachable.nonempty_run_of_blockState` gives a run from the anchor state to each held state, with the store's setting of the checks.
   `getBaseReward_congr` reads the same base reward for two validators with the same effective balance, in one state or in two.
   `processRewardsAndPenalties_balance_le_of_inactivityUpdates` bounds each balance after the rewards pass, given a bound on each base reward.
-  `processOperations_floor` bounds the balance of an unslashed validator through the operations of a block before Gloas.
+  `processOperations_floor` bounds the balance of an unslashed validator through the operations of a block from Fulu.
   The balance stays at least the smaller of its balance and its effective balance before them.
   `actualBalanceAt_increaseBalance` and `actualBalanceAt_decreaseBalance` change the balance at one index and keep every other, and `actualBalanceAt_push` reads an appended balance.
   `passPendingConsolidations_balanceNotLowered_of_waiting` keeps the balance of a source that cannot yet leave, and `queueConsolidation_queued` records the exit epoch and the queue entry of a consolidation.
@@ -938,6 +944,34 @@ Not yet released.
   `ValidatorStep`, `PinDriftBound.CreditBudgets` and `PinDriftBound.PreviousEpochRise` use it.
 
 ### Changes that break callers
+
+- In Lean, the block and ledger lemmas of the quorumReserve route extend through Gloas, and their existing lower fork bounds remain.
+  These drop their pre-Gloas binder (`DirectSafety.total_active_congr` drops two, `before` and `after`), with the same conclusion: `DirectSafety.total_active_congr`, `Run.effectiveKept_of_same_epoch`, `hysteresis_of_run_slot`, `balanceDrift_upgrades_upper`, `balanceDrift_upgrades_active`, `BlockLedger.ledger_processBlockExecution`, `BlockLedger.ledger_processProposerSlashing`, `BlockLedger.ledger_processAttesterSlashing`, `processOperations_floor`, `BlockCredits.block_balances`, `Run.withdrawableKept_of_same_epoch`, `Run.balanceCorrections_of_same_epoch`, `Run.effectiveBalance_capped`, `Run.pendingConsolidationsOrdered`, `Run.pendingConsolidation_invariant`, `ConsolidationQueueRise.appendStep_processBlock`, `ConsolidationQueueRise.riseStep_processBlock`, `SamePendingQueue.blockExecution`, `applyWithdrawals_departureQueues`, `attestation_departureQueues` and `slashValidator_departureQueues`.
+  Migration: delete the arguments.
+
+- In Lean, lemmas whose proofs read no upper fork bound drop it, with the same conclusion.
+  `Run.effectiveAt_le_of_same_epoch` drops `early : y.fork < .pectra`; the other 23 drop a bound below Gloas.
+  They are `ReservedReplay.fresh_not_initial`, `effectiveAt_le_withdrawalMax`, `step_same_epoch_effective`, `run_same_epoch_effective`, `Run.effectiveAt_le_of_same_epoch`, `Run.pendingConsolidations_apart`, `Run.pendingConsolidation_targets`, `Run.pendingConsolidation_sources`, `Run.retired_validator`, `run_slashed_exit_assigned`, `Run.newly_slashed_initial_exited_unwithdrawable`, `Run.newly_slashed_withdrawableEpoch`, `Run.slashed_withdrawableEpoch_mono_epoch`, `Run.slashed_withdrawable_eq`, `Run.compounding_of_exit_assigned`, `Run.validatorCap_mono`, `pass_kept`, `epochPrefix_slashedSpan`, `cap_le_cap_of_run`, `effective_le_cap_at`, `capCeil_path`, `slashed_waits`, `newly_slashed_unwithdrawable` and `effectiveAt_le_capMax`.
+  Migration: delete the `early` argument.
+
+- In Lean, `Run.induction_of_same_epoch` and `Run.induction_of_same_period` induct over runs through Gloas.
+  `Run.induction_of_same_epoch` drops `early` and the pre-Gloas hypothesis of its block callback.
+  `Run.induction_of_same_period` drops `early` and the pre-Gloas hypotheses of both callbacks.
+  Migration: delete `early`; a callback that used the hypothesis keeps it through the motive `fun z pre => z.fork < .glamsterdam → motive z pre`, and the caller applies the result to `early`.
+
+- In Lean, `Internal.CapStep.run` holds through Gloas, and keeps the invariant of the transition through Gloas.
+  It drops `early`; its `AssignedPartials` and `UnassignedEligibleBalance` conjuncts hold before Gloas only, and now take it as a hypothesis.
+  Migration: write `.2.1 early` for `.2.1` and `.2.2.2 early` for `.2.2.2`; `.1` and `.2.2.1` are unchanged.
+
+- In Lean, the withdrawal step and the execution part of a block state their departure queues by the payload of the parent.
+  From Gloas a block whose parent has no payload pays no withdrawals.
+  `withdrawals_departureQueues` and `blockExecution_departureQueues` drop `early`, and conclude with a clause for a full parent, or for any fork before Gloas, and a clause for an empty parent.
+  Migration: before Gloas, take the second half of the first clause; the second clause needs Gloas.
+
+- In Lean, `getExpectedWithdrawals_partials` reads the partial withdrawals after the prior ones.
+  From Gloas the queued builder withdrawals come first, so the read starts after them.
+  It drops `early` and concludes with the prior withdrawals and the start index.
+  Migration: before Gloas, the first clause gives no prior withdrawals and the state's next withdrawal index.
 
 - The TLS 1.3 key schedule names its Main Secret as [RFC 9846 §7.1](https://www.rfc-editor.org/rfc/rfc9846#section-7.1) does, where it kept the Master Secret of RFC 8446 ([#4242](https://github.com/ethereum/EthLib/issues/4242)).
   In Python, the field `master` of `KeySchedule` is now `main`; the tuple keeps its order, so positional reads are unchanged.
