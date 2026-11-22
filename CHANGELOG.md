@@ -9,6 +9,10 @@ Not yet released.
 
 ### Proof additions
 
+- `Store.getAncestor_pending_root` and `Store.isAncestor_of_getAncestor_root` (`ForkChoice/Store.lean`) are public.
+  The first moves an ancestor walk to the pending node of its start, keeping the root it reaches.
+  The second turns a walk that reaches a known root into descent from it.
+
 - `Store.isAncestor_getHeadFrom_of_sibling_bound` (`ForkChoice/PayloadGhost.lean`) shows that, from Gloas, the head walk from a node of the path descends from a viable target node.
   Below each node from that start to the target, the child toward the target must outweigh every viable rival that is not a payload decision of the previous slot.
   When any distinct viable rival exists, that child must also have positive weight.
@@ -834,6 +838,20 @@ Not yet released.
   `ValidatorStep`, `PinDriftBound.CreditBudgets` and `PinDriftBound.PreviousEpochRise` use it.
 
 ### Changes that break callers
+
+- In Lean, `Execution.honestTargetVotes_signed_of_checked` holds at every fork.
+  It no longer takes `preGloas : fork < .glamsterdam`; it takes `registries : .glamsterdam ≤ fork → HonestRegistriesWithinLimit (e := e) time` in its place.
+  Migration: before Gloas, pass `fun gloas => absurd gloas (Nat.not_le_of_lt preGloas)`.
+  The new statement implies the old one.
+
+- In Lean, `Execution.rootInFilteredTree_of_checked` holds at every fork.
+  It no longer takes `preGloas : fork < .glamsterdam`; it takes `room : .glamsterdam ≤ fork → AnchorRegistryRoom preset anchorState horizon` after `inHorizon`.
+  Migration: before Gloas, drop `preGloas` and pass `fun gloas => absurd gloas (Nat.not_le_of_lt preGloas)` for `room`.
+  The new statement implies the old one.
+
+- In Lean, `includedVotes_votingSource_ge` holds at every fork and no longer takes `preGloas : fork < .glamsterdam`.
+  Migration: a caller drops that argument.
+  The new statement implies the old one.
 
 - In Lean, `Store.isAncestor_iff`, `Store.comparable_of_ancestors`, `Store.eq_of_isAncestor_antisymm`, `Store.isAncestor_of_getCheckpointBlock_above` and `Store.isAncestor_of_blockTree_ancestor` hold at every fork and no longer take `before : fork < .glamsterdam`.
   `signerHead_of_duty` and `justified_descends_of_duty` (`ForkChoice/FastConfirmation/DutyWindows.lean`) no longer take `preGloas : fork < .glamsterdam`.

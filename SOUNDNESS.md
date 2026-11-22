@@ -3622,6 +3622,7 @@ The caller's store is up to date at a slot start of the target's epoch, and its 
 The theorem concludes that honest validators with two thirds of the pulled-up head state's active balance each sent a `SignsTarget` statement.
 Each sent it before the start of the next epoch.
 Three times their stake is at least twice that balance plus the margin of the count.
+It holds at every fork; from Gloas it assumes that the honest stores' held and justified registries stay within the limit up to the bound.
 Each of them lies in `activeVoters` of that state, the validators active in its current epoch.
 Otherwise the theorem names two honest stores, up to the horizon, whose blocks collide at one root.
 It does not show that a later state counts these votes, or that the target is justified.
@@ -3662,6 +3663,7 @@ An honest supporter behind the caller's margin sent a vote above the root before
 `Execution.rootViableAt_of_checked` in the same file gives the root's viability at each time.
 A justified checkpoint of the call's epoch or before is comparable with the root (`Execution.justified_comparable_of_checked`).
 If the root strictly descends from it, `Execution.rootInFilteredTree_of_checked` keeps the root in the filtered tree.
+That theorem holds at every fork; from Gloas it takes the anchor registry's room up to the horizon, from which the registry bound follows.
 A later justified checkpoint has an honest signer, which puts it above the root (`justified_descends_of_duty`).
 Each of these steps may instead give `HonestCollision`, two honest stores that collide on a block.
 Block agreement between honest stores is not assumed: `Execution.blocksAgree_or_collision` splits it from that collision.

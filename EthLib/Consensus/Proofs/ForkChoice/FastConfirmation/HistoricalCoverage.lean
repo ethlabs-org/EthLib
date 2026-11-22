@@ -391,8 +391,9 @@ public theorem Execution.rootViableAt_of_checked [DecidablePred (· ∈ J)]
       headOk callerEpochOk inputs low high startCovers covers holds receiver atTime upToDate hdOk
       early).resolve_right (not_or.mpr ⟨collide, cross⟩)
     exact route_of_split route fun above different =>
-      (e.rootInFilteredTree_of_checked pre sync slots preGloas admitted fits prompt votes
-        windows fit ring anchored sound anchorSlot anchorBoundary start anchorEpochOk bounded roots
+      (e.rootInFilteredTree_of_checked pre sync slots admitted fits prompt votes
+        windows fit ring anchored sound anchorSlot anchorBoundary start anchorEpochOk bounded
+        (fun gloas => absurd gloas (Nat.not_le_of_lt preGloas)) roots
         absent pinned signedAll quorumDrift unslashed terminal anchorGenesis
         parameters genesis heldEarly enough included caller callerUpToDate atSlot headOk
         rollover inputs walked realized realizedHead low high startCovers covers receiver atTime

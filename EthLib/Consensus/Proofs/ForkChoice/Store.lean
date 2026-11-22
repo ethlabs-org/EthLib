@@ -741,7 +741,7 @@ theorem getCurrentStoreEpoch_eq {config : Config} {slot : Slot} {epoch : Epoch}
     using epochOk.symm
 
 /-- A walk from a node reaches, from the pending node of its root, a node with the same root. -/
-private theorem getAncestor_pending_root {node ancestor : ForkChoiceNode} {slot : Slot}
+theorem getAncestor_pending_root {node ancestor : ForkChoiceNode} {slot : Slot}
     (walk : store.getAncestor node slot = .ok ancestor) :
     ∃ reached, store.getAncestor ⟨node.root, .pending⟩ slot = .ok reached ∧
       reached.root = ancestor.root := by
@@ -754,7 +754,7 @@ private theorem getAncestor_pending_root {node ancestor : ForkChoiceNode} {slot 
     exact ⟨reached, rfl, same.symm⟩
 
 /-- A pending walk that reaches a known root at its slot is a descent to its pending node. -/
-private theorem isAncestor_of_getAncestor_root {root : Root} {node reached : ForkChoiceNode}
+theorem isAncestor_of_getAncestor_root {root : Root} {node reached : ForkChoiceNode}
     {block : BeaconBlock preset fork} (found : store.blocks[root]? = some block)
     (pending : node.payloadStatus = .pending)
     (walk : store.getAncestor node block.slot = .ok reached) (rootEq : reached.root = root) :
