@@ -207,6 +207,18 @@ def HonestRegistriesWithinLimit (last : ℕ) : Prop :=
       ((e.world k).state w).checkpointState ((e.world k).state w).justifiedCheckpoint =
         .ok state → state.RegistryWithinLimit
 
+/-- Honest registries stay within the limit at every fork when they do from Gloas.
+
+Before Gloas the type of the registry bounds it. -/
+theorem honestRegistries_of_gated {last : ℕ}
+    (registries : .glamsterdam ≤ fork → HonestRegistriesWithinLimit (e := e) last) :
+    HonestRegistriesWithinLimit (e := e) last := by
+  by_cases gloas : .glamsterdam ≤ fork
+  · exact registries gloas
+  have before : fork < .glamsterdam := Nat.lt_of_not_le gloas
+  exact fun _ _ _ _ => ⟨fun _ state _ => BeaconState.registryWithinLimit_of_lt before state,
+    fun state _ => BeaconState.registryWithinLimit_of_lt before state⟩
+
 /-- From Gloas, honest registries stay within the limit while the stores' epochs stay bounded.
 
 The anchor's registry must leave room up to that bound, and the anchor state must be sound.

@@ -386,7 +386,7 @@ public theorem Execution.rootViableAt_of_checked [DecidablePred (· ∈ J)]
         computeTimeAtSlotMs config genesisTimeMs slot = .ok begin ∧
         (e.world n).time = begin.toNat := ⟨slot, begin, slotOk, beginOk, timeEq⟩
     have route := (e.justified_comparable_of_checked anchored sound anchorSlot anchorBoundary
-      start preGloas slots fits windows parameters incrementPositive anchorEpochOk bounded roots
+      start slots fits windows parameters incrementPositive anchorEpochOk bounded roots
       absent genesis pre heldEarly enough terminal pinned signedAll caller callerUpToDate atSlot
       headOk callerEpochOk inputs low high startCovers covers holds receiver atTime upToDate hdOk
       early).resolve_right (not_or.mpr ⟨collide, cross⟩)
@@ -1291,7 +1291,7 @@ private theorem viableAt_or_alternative_of_checked_call [DecidablePred (· ∈ J
     aligned increment supportOk discountOk adversaryOk marginLt callerTime reserve reference
     referenceTime referenceUpToDate referenceSlotOk finishOk headDescends historicalBelow
     callerEpochOk historicalEpochOk near absent
-  rcases e.rootHeld_of_honest_vote pre sync slots preGloas fits admitted prompt
+  rcases e.rootHeld_of_honest_vote pre sync slots fits admitted prompt
       anchored sound anchorSlot anchorBoundary start bounded roots absent parameters genesis
       heldEarly enough terminal caller beginOk timeEq callerTime known rootStored recency vote with
     holds | collision | heldEvidence

@@ -1405,7 +1405,7 @@ theorem walk_holds [DecidablePred (· ∈ J)] {Δ : ℕ} {anchor : Store preset 
     subst readSlot
     exact ⟨v, honest, n, le_rfl, sentMessage, e.view_subset_sent n u inView, attestation.data,
       signed, past, voteDescends⟩
-  rcases Execution.rootHeld_of_honest_vote pre ctx.sync ctx.slots ctx.preGloas ctx.fits
+  rcases Execution.rootHeld_of_honest_vote pre ctx.sync ctx.slots ctx.fits
       ctx.admitted ctx.prompt ctx.anchored ctx.sound ctx.anchorSlot
       ctx.anchorBoundary ctx.start ctx.bounded ctx.roots ctx.absent ctx.parameters ctx.genesis
       ctx.heldEarly ctx.enough ctx.terminal ctx.caller beginOk timeEq nBound blockFound

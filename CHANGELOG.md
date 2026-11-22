@@ -19,9 +19,11 @@ Not yet released.
   `Store.siblingBound_of_majority` gives that bound from a target whose votes exceed half of the stake plus the boost.
   `Store.getHeadFrom_of_visited` shows that, from Gloas, a head walk passing a node ends where the walk from that node ends.
 
-- `Store.isAncestor_getHead_root` (`ForkChoice/FastConfirmation/Supporters.lean`) shows that the head's ancestry at a pending node reads only the head's root, at every fork.
+- `Store.isAncestor_getHead_root` (`ForkChoice/Ghost.lean`) shows that the head's ancestry at a pending node reads only the head's root, at every fork.
   `Store.getCheckpointBlock_walk_root` (`ForkChoice/Store.lean`) shows that a checkpoint read is the root of a walk back to the first slot of the epoch, at every fork.
   `HonestRegistriesWithinLimit` and `Execution.honestRegistries_of_room` (`ForkChoice/FastConfirmation/HistoricalStatements.lean`) are now public, unchanged: from Gloas, honest registries stay within the limit while the stores' epochs stay bounded.
+
+- `honestRegistries_of_gated` (`ForkChoice/FastConfirmation/HistoricalStatements.lean`) gives the honest registry bound at every fork from its Gloas form; before Gloas the type of the registry bounds it.
 
 - `Store.FullParentsVerified` (`ForkChoice/PayloadGhost.lean`) says that, from Gloas, each held block that builds on a held full parent finds its payload verified.
   `Store.Reachable.fullParentsVerified` (`ForkChoice/StoreEntries.lean`) proves it for a reachable store that holds no block at the anchor's parent root.
@@ -867,6 +869,20 @@ Not yet released.
   It no longer takes `before : fork < .glamsterdam`; it takes `verified : ∀ gloas : .glamsterdam ≤ fork, store.FullParentsVerified gloas` in its place.
   Migration: before Gloas, pass `fun gloas => absurd gloas (Nat.not_le_of_lt before)`; for a reachable store, pass `fun gloas => reachable.fullParentsVerified absent gloas`.
   The new statement implies the old one.
+
+- In Lean, `Execution.rootHeld_of_honest_vote`, `Execution.justified_comparable_of_checked` and `Execution.latest_eq_of_rank_eq` hold at every fork and no longer take `preGloas : fork < .glamsterdam`.
+  From Gloas the rank of a latest vote is its slot.
+  Migration: a caller drops that argument.
+  The new statements imply the old ones.
+
+- In Lean, `receiver_fullMaximum_of_head_window` holds at every fork.
+  It no longer takes `early : fork < .glamsterdam`; it takes `registries : .glamsterdam ≤ fork → HonestRegistriesWithinLimit time` in its place.
+  Migration: before Gloas, pass `fun gloas => absurd gloas (Nat.not_le_of_lt early)`.
+  The new statement implies the old one.
+
+- In Lean, `Store.isAncestor_head_pending` moves from `EthLib.Consensus.Proofs.ForkChoice.FastConfirmation.Basic` to `EthLib.Consensus.Proofs.ForkChoice.Store`.
+  Its name and statement are unchanged.
+  Existing imports remain sufficient; for a direct import of the lemma, use `EthLib.Consensus.Proofs.ForkChoice.Store`.
 
 - In Lean, `Store.getNodeChildren_held` moves from `EthLib.Consensus.Proofs.ForkChoice.HeadTotality` to `EthLib.Consensus.Proofs.ForkChoice.Ghost`.
   Its name and statement are unchanged.

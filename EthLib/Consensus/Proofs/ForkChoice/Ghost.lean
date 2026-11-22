@@ -1198,6 +1198,19 @@ theorem getHead_pending {head : ForkChoiceNode} (before : fork < .glamsterdam)
       · rfl
       · exact pending
 
+/-- The head's ancestry at a pending node reads only the head's root, at every fork. -/
+theorem isAncestor_getHead_root {head : ForkChoiceNode} (found : store.getHead config = .ok head)
+    (root : Root) :
+    store.isAncestor head ⟨root, .pending⟩ =
+      store.isAncestor ⟨head.root, .pending⟩ ⟨root, .pending⟩ := by
+  by_cases gloas : .glamsterdam ≤ fork
+  · exact isAncestor_head_pending gloas head root
+  have pending := getHead_pending (Nat.lt_of_not_le gloas) found
+  obtain ⟨headRoot, status⟩ := head
+  simp only at pending
+  subst pending
+  rfl
+
 /-- Before Gloas, the walk from a pending node ends at a node that descends from what it does. -/
 theorem getHeadFrom_descends {nodes : List ForkChoiceNode} {ancestor : ForkChoiceNode}
     (before : fork < .glamsterdam) :

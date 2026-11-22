@@ -473,6 +473,24 @@ theorem isAncestor_pending (gloas : .glamsterdam ≤ fork) (node : ForkChoiceNod
   · rfl
   · split <;> simp
 
+/-- From Gloas the payload status of the head does not change whether a block is in its chain.
+
+So a head given by its root, as a pending node, answers as the head that the fork choice finds. -/
+theorem isAncestor_head_pending (gloas : .glamsterdam ≤ fork) (head : ForkChoiceNode)
+    (root : Root) :
+    store.isAncestor head ⟨root, .pending⟩ =
+      store.isAncestor ⟨head.root, .pending⟩ ⟨root, .pending⟩ := by
+  rw [isAncestor_pending gloas, isAncestor_pending gloas]
+  simp only [bind, Except.bind]
+  split
+  · rfl
+  · rename_i ancestorBlock _
+    have same := getAncestor_root (store := store) head .pending ancestorBlock.slot
+    revert same
+    cases store.getAncestor head ancestorBlock.slot <;>
+      cases store.getAncestor ⟨head.root, .pending⟩ ancestorBlock.slot <;>
+      simp_all [Functor.map, Except.map, pure, Except.pure]
+
 /-- Each node of a block descends from the pending node of the parent of that block.
 
 The store must hold the block and its parent, the parent at an earlier slot.

@@ -277,7 +277,7 @@ private theorem members_array_insert {committee : Array ValidatorIndex}
 /-- Every member of a successful slot committee is active at that slot in the head state. -/
 private theorem active_of_slotCommittee {store : Store preset fork} {head : Root} {slot : Slot}
     {state : BeaconState preset fork} {members : Std.TreeSet ValidatorIndex}
-    (early : fork < .glamsterdam) (held : store.blockState head = .ok state)
+    (within : state.RegistryWithinLimit) (held : store.blockState head = .ok state)
     (read : store.getSlotCommittee head slot = .ok members) :
     ∀ v ∈ members, isActiveAt state (computeEpochAtSlot preset slot) v.toNat = true := by
   simp only [Store.getSlotCommittee, held, bind, Except.bind] at read
@@ -289,13 +289,13 @@ private theorem active_of_slotCommittee {store : Store preset fork} {head : Root
   apply members_array_insert _ old
   intro v member
   exact isActiveAt_eq_true_iff.mpr
-    ((mem_getActiveValidatorIndices (BeaconState.registryWithinLimit_of_lt early state)).mp
+    ((mem_getActiveValidatorIndices within).mp
       (mem_getActiveValidatorIndices_of_getBeaconCommittee (mapError_ok_iff.mp computed) member))
 
 /-- A window member is active at a queried epoch of the held head state. -/
 private theorem active_of_committeeWindow {store : Store preset fork} {head : Root}
     {first last : Slot} {state : BeaconState preset fork} {members : Std.TreeSet ValidatorIndex}
-    (early : fork < .glamsterdam) (held : store.blockState head = .ok state)
+    (within : state.RegistryWithinLimit) (held : store.blockState head = .ok state)
     (read : store.getCommitteesBetweenSlots head first last = .ok members) :
     ∀ v ∈ members, ∃ epoch, isActiveAt state epoch v.toNat = true := by
   simp only [Store.getCommitteesBetweenSlots, bind_ok_iff, mapError_ok_iff] at read
@@ -303,7 +303,7 @@ private theorem active_of_committeeWindow {store : Store preset fork} {head : Ro
   intro v member
   rcases (mem_foldlM_committees_iff folded).mp member with empty | ⟨offset, _, set, read, inside⟩
   · simp at empty
-  · exact ⟨_, active_of_slotCommittee early held read v inside⟩
+  · exact ⟨_, active_of_slotCommittee within held read v inside⟩
 
 /-- Lookahead preserves unslashedness without a committee, chain or honest-set premise. -/
 private theorem notSlashed_lookahead {config : Config} {checks : SignatureChecks}
@@ -527,7 +527,7 @@ open Models.ForkChoice in
 private theorem honest_supporters_le_weight [DecidablePred (· ∈ J)]
     {store : Store preset fork} {state : BeaconState preset fork} {root : Root}
     {block : BeaconBlock preset fork} (lower : store.ParentsBelow)
-    (before : fork < .glamsterdam) (within : state.RegistryWithinLimit)
+    (within : state.RegistryWithinLimit)
     (found : store.blocks[root]? = some block) (nodes : List ForkChoiceNode) :
     stake (fun v => balanceAt state v.toNat)
         {v ∈ store.supportersOf state ⟨root, .pending⟩ | v ∈ J} ≤
@@ -542,9 +542,16 @@ private theorem honest_supporters_le_weight [DecidablePred (· ∈ J)]
     have counts := Store.voteCountsFor_of_mem_supportersOf supporter
     obtain ⟨message, supported, latest, clean, supportedOk, descends⟩ :=
       store.exists_of_voteCountsFor counts
-    rw [Store.getSupportedNode_of_lt before, Except.ok.injEq] at supportedOk
-    subst supported
-    have ancestry := (Store.isAncestor_iff (lower := lower) found rfl descends).mp rfl
+    -- The supported node has the vote's root; its descent reads only that root.
+    have rooted := Store.getSupportedNode_root supportedOk
+    have pendingDescends :
+        store.isAncestor ⟨message.root, .pending⟩ ⟨root, .pending⟩ = .ok true := by
+      by_cases gloas : .glamsterdam ≤ fork
+      · rw [← rooted, ← Store.isAncestor_head_pending gloas]
+        exact descends
+      · rw [Store.getSupportedNode_of_lt (Nat.lt_of_not_le gloas), Except.ok.injEq] at supportedOk
+        exact supportedOk ▸ descends
+    have ancestry := (Store.isAncestor_iff (lower := lower) found rfl pendingDescends).mp rfl
     simp only [Store.supportersOf, List.mem_toFinset, List.mem_map, List.mem_filter] at supporter
     obtain ⟨⟨index, balance⟩, ⟨entry, _⟩, same⟩ := supporter
     simp only at same
@@ -884,7 +891,7 @@ public theorem ancestor_head_of_window_margin [DecidablePred (· ∈ J)]
     split
     · exact Nat.zero_le _
     · simp [Store.getProposerScore, stateRead, scoreOk, bind, Except.bind]
-  have supportBound := honest_supporters_le_weight (J := J) lower before within found nodes
+  have supportBound := honest_supporters_le_weight (J := J) lower within found nodes
   have boostedBound := Models.ForkChoice.weight_withBoost
     (V := Store.voters state) (w := balanceAt state) (G := Store.view lower nodes)
     store.boostedRoot (store.boostScore config) (some root)
@@ -1124,8 +1131,8 @@ The cached state may process empty slots beyond the block at that root. -/
 private theorem registry_of_justified_window {anchor : Store preset fork}
     (anchorStore : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
     (anchored : ∀ w ∈ J, e.start w = anchor)
-    (early : fork < .glamsterdam)
     {u : ValidatorIndex} (honest : u ∈ J) {n : Nat}
+    (heldWithin : HeldRegistriesWithinLimit ((e.world n).state u))
     {head : ForkChoiceNode} {state : BeaconState preset fork}
     {first finish : Slot} {members : Std.TreeSet ValidatorIndex}
     (same : head.root = ((e.world n).state u).justifiedCheckpoint.root)
@@ -1140,7 +1147,8 @@ private theorem registry_of_justified_window {anchor : Store preset fork}
   have held : ((e.world n).state u).blockState head.root = .ok base :=
     Store.blockState_ok_iff.mpr (same ▸ baseFound)
   intro v member
-  obtain ⟨epoch, active⟩ := active_of_committeeWindow early held window v member
+  obtain ⟨epoch, active⟩ := active_of_committeeWindow (heldWithin _ _ (same ▸ baseFound)) held
+    window v member
   obtain ⟨validator, found⟩ := registry_of_runKept (runKept_lookahead advanced) active
   exact ⟨validator, validatorAt_ok_iff.mpr found⟩
 
@@ -1150,8 +1158,9 @@ private theorem registry_of_genesis_window {anchor : Store preset fork}
     (anchored : ∀ w ∈ J, e.start w = anchor)
     (anchorInvariant : Invariant anchorState) (anchorSlot : anchorBlock.slot = anchorState.slot)
     (boundary : isStartSlotAtEpoch preset anchorBlock.slot = .ok true)
-    (positive : 0 < preset.SLOTS_PER_EPOCH) (early : fork < .glamsterdam)
+    (positive : 0 < preset.SLOTS_PER_EPOCH)
     {u : ValidatorIndex} (honest : u ∈ J) {n : Nat}
+    (heldWithin : HeldRegistriesWithinLimit ((e.world n).state u))
     {head : ForkChoiceNode} {headBlock : BeaconBlock preset fork}
     {headState state : BeaconState preset fork} {first last : Slot}
     {members : Std.TreeSet ValidatorIndex}
@@ -1186,7 +1195,7 @@ private theorem registry_of_genesis_window {anchor : Store preset fork}
     UInt64.zero_le baseFound advanced headWalk headFound headStateFound
     UInt64.zero_le (by rw [genesis]; decide)
   intro v member
-  obtain ⟨epoch, active⟩ := active_of_committeeWindow early
+  obtain ⟨epoch, active⟩ := active_of_committeeWindow (heldWithin _ _ headStateFound)
     (Store.blockState_ok_iff.mpr headStateFound) window v member
   obtain ⟨validator, found⟩ := inside epoch v.toNat active
   exact ⟨validator, validatorAt_ok_iff.mpr found⟩
@@ -1198,8 +1207,9 @@ private theorem registry_of_nongenesis_window {anchor : Store preset fork}
     (anchorStore : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
     (anchored : ∀ w ∈ J, e.start w = anchor)
     (anchorInvariant : Invariant anchorState) (anchorSlot : anchorBlock.slot = anchorState.slot)
-    (positive : 0 < preset.SLOTS_PER_EPOCH) (early : fork < .glamsterdam)
+    (positive : 0 < preset.SLOTS_PER_EPOCH)
     {u : ValidatorIndex} (honest : u ∈ J) {n : Nat}
+    (heldWithin : HeldRegistriesWithinLimit ((e.world n).state u))
     (walk : ((e.world n).state u).getCheckpointBlock
       ((e.world n).state u).justifiedCheckpoint.root
       ((e.world n).state u).finalizedCheckpoint.epoch =
@@ -1254,7 +1264,8 @@ private theorem registry_of_nongenesis_window {anchor : Store preset fork}
       (fun ok => runKept_processSlots ok) (UInt64.le_of_eq anchorSlot) reached walk found
       startOk bound boundaryBaseFound baseFound advanced
     intro v member
-    obtain ⟨epoch, active⟩ := active_of_committeeWindow early
+    obtain ⟨epoch, active⟩ := active_of_committeeWindow
+      (heldWithin _ _ (same ▸ boundaryBaseFound))
       (Store.blockState_ok_iff.mpr (same ▸ boundaryBaseFound)) window v member
     obtain ⟨validator, held⟩ := registry_of_runKept
       ((runKept_lookahead boundaryRun).trans run) active
@@ -1272,7 +1283,7 @@ private theorem registry_of_nongenesis_window {anchor : Store preset fork}
     (UInt64.le_of_eq anchorSlot) positive startOk walk found
     bound baseFound advanced headWalk headFound headStateFound headBound finite
   intro v member
-  obtain ⟨epoch, active⟩ := active_of_committeeWindow early
+  obtain ⟨epoch, active⟩ := active_of_committeeWindow (heldWithin _ _ headStateFound)
     (Store.blockState_ok_iff.mpr headStateFound) window v member
   obtain ⟨validator, held⟩ := inside epoch v.toNat active
   exact ⟨validator, validatorAt_ok_iff.mpr held⟩
@@ -1283,8 +1294,9 @@ private theorem registry_of_head_window {anchor : Store preset fork}
     (anchored : ∀ w ∈ J, e.start w = anchor)
     (anchorInvariant : Invariant anchorState) (anchorSlot : anchorBlock.slot = anchorState.slot)
     (boundary : isStartSlotAtEpoch preset anchorBlock.slot = .ok true)
-    (positive : 0 < preset.SLOTS_PER_EPOCH) (early : fork < .glamsterdam)
+    (positive : 0 < preset.SLOTS_PER_EPOCH)
     {u : ValidatorIndex} (honest : u ∈ J) {n : Nat}
+    (heldWithin : HeldRegistriesWithinLimit ((e.world n).state u))
     (walk : ((e.world n).state u).getCheckpointBlock
       ((e.world n).state u).justifiedCheckpoint.root
       ((e.world n).state u).finalizedCheckpoint.epoch =
@@ -1302,7 +1314,7 @@ private theorem registry_of_head_window {anchor : Store preset fork}
       .ok members) :
     ∀ v ∈ members, ∃ validator, validatorAt state v = .ok validator := by
   by_cases same : head.root = ((e.world n).state u).justifiedCheckpoint.root
-  · exact registry_of_justified_window anchorStore anchored early honest same cached window
+  · exact registry_of_justified_window anchorStore anchored honest heldWithin same cached window
   have reached := e.forwardReachableWith
     (fun w member => (anchored w member) ▸ Store.ForwardReachableWith.anchor anchorStore)
     n u honest
@@ -1310,14 +1322,14 @@ private theorem registry_of_head_window {anchor : Store preset fork}
     (Store.checkpointState_ok_iff.mp cached)
   obtain ⟨justified, justifiedFound⟩ := reached.reachable.known_of_blockState baseFound
   obtain ⟨headBlock, headFound, _⟩ := Store.slot_le_of_isAncestor justifiedFound
-    (Store.isAncestor_getHead_of_lt_gloas early headRead)
+    (Store.isAncestor_getHead headRead)
   obtain ⟨headState, headStateFound, _, _⟩ := reached.reachable.blockStatesFromParents headFound
   by_cases genesis : ((e.world n).state u).finalizedCheckpoint.epoch = GENESIS_EPOCH
   · exact registry_of_genesis_window anchorStore anchored anchorInvariant anchorSlot boundary
-      positive early honest genesis unknown headFound headStateFound cached window
+      positive honest heldWithin genesis unknown headFound headStateFound cached window
   exact registry_of_nongenesis_window anchorStore anchored anchorInvariant anchorSlot positive
-    early honest walk headRead same genesis headStateFound parentFound unknown parentNext cached
-    window
+    honest heldWithin walk headRead same genesis headStateFound parentFound unknown parentNext
+    cached window
 
 /-- Held-state flags suffice for a cached checkpoint through its fixed-check lookahead origin. -/
 public theorem Execution.notSlashed_checkpointState {anchor : Store preset fork}
@@ -1336,9 +1348,11 @@ public theorem Execution.notSlashed_checkpointState {anchor : Store preset fork}
   intro v member
   exact (notSlashed_lookahead advanced v).mpr (flags checkpoint.root base stored v member)
 
-/-- Equal-rank honest latest votes agree before Gloas, even across different stores. -/
+/-- Equal-rank honest latest votes agree, even across different stores.
+
+From Gloas the rank is the slot. -/
 public theorem Execution.latest_eq_of_rank_eq (slots : 0 < config.SLOT_DURATION_MS)
-    (preGloas : fork < .glamsterdam) {anchor : Store preset fork}
+    {anchor : Store preset fork}
     (anchorStore : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
     (anchored : ∀ w ∈ J, e.start w = anchor)
     {u w v : ValidatorIndex} (caller : u ∈ J) (receiver : w ∈ J) (honest : v ∈ J)
@@ -1346,13 +1360,17 @@ public theorem Execution.latest_eq_of_rank_eq (slots : 0 < config.SLOT_DURATION_
     (firstOk : ((e.world n).state u).latestMessages[v]? = some first)
     (secondOk : ((e.world k).state w).latestMessages[v]? = some second)
     (rank : first.rank = second.rank) : first = second := by
-  obtain ⟨a, firstMessage, seenFirst, rfl, signedFirst, _⟩ :=
+  obtain ⟨a, firstMessage, seenFirst, rfl, signedFirst, firstOrigin⟩ :=
     e.exists_signed_origin_of_latestMessages anchorStore anchored caller firstOk
-  obtain ⟨b, secondMessage, seenSecond, rfl, signedSecond, _⟩ :=
+  obtain ⟨b, secondMessage, seenSecond, rfl, signedSecond, secondOrigin⟩ :=
     e.exists_signed_origin_of_latestMessages anchorStore anchored receiver secondOk
-  have notGloas : ¬ .glamsterdam ≤ fork := Nat.not_le_of_lt preGloas
   have epoch : a.data.target.epoch = b.data.target.epoch := by
-    simpa [LatestMessage.rank, LatestMessage.ofAttestation, notGloas] using rank
+    by_cases gloas : .glamsterdam ≤ fork
+    · -- Equal slots put both targets in the epoch of that slot.
+      have slotEq : a.data.slot = b.data.slot := by
+        simpa [LatestMessage.rank, LatestMessage.ofAttestation, gloas] using rank
+      rw [firstOrigin.targetEpoch, secondOrigin.targetEpoch, slotEq]
+    · simpa [LatestMessage.rank, LatestMessage.ofAttestation, gloas] using rank
   have same := Execution.data_eq_of_signed_of_target_epoch slots
     (e.view_subset_sent n u seenFirst) (e.view_subset_sent k w seenSecond)
     signedFirst signedSecond honest epoch
@@ -1366,9 +1384,9 @@ public theorem receiver_fullMaximum_of_head_window {anchor : Store preset fork}
     (anchored : ∀ w ∈ J, e.start w = anchor)
     (sound : Invariant anchorState) (anchorSlot : anchorBlock.slot = anchorState.slot)
     (boundary : isStartSlotAtEpoch preset anchorBlock.slot = .ok true)
-    (positive : 0 < preset.SLOTS_PER_EPOCH.toNat)
-    (early : fork < .glamsterdam) {time : Nat}
+    (positive : 0 < preset.SLOTS_PER_EPOCH.toNat) {time : Nat}
     (ceiling : CheckpointStakeCeiling (e := e) (2 * 10 ^ 17) time)
+    (registries : .glamsterdam ≤ fork → HonestRegistriesWithinLimit (e := e) time)
     (absent : AnchorParentAbsent (e := e) time)
     {u w : ValidatorIndex} (caller : u ∈ J) (receiver : w ∈ J) {n k : Nat}
     (callerTime : (e.world n).time ≤ time) (inTime : (e.world k).time ≤ time)
@@ -1409,11 +1427,12 @@ public theorem receiver_fullMaximum_of_head_window {anchor : Store preset fork}
   -- Only the range arithmetic is reused; the balance state and committee read are the receiver's.
   obtain ⟨covered, coverage⟩ := coverage_exists_of_maximum nonempty read afterOk
   have stakeBound := ceiling w receiver k _ state inTime cached
+  obtain ⟨heldWithin, within⟩ := honestRegistries_of_gated registries w receiver k inTime
   obtain ⟨total, totalOk⟩ := getTotalActiveBalance_exists
-    (BeaconState.registryWithinLimit_of_lt early state) (by change _ ≤ _ at stakeBound; omega)
+    (within state cached) (by change _ ≤ _ at stakeBound; omega)
   exact maximum_exists_of_total coverage windowOk totalOk
     (registry_of_head_window anchorStore anchored sound anchorSlot boundary
-      (UInt64.lt_iff_toNat_lt.mpr positive) early receiver finalizedRead parentFound
+      (UInt64.lt_iff_toNat_lt.mpr positive) receiver heldWithin finalizedRead parentFound
       (absent w receiver k inTime) firstOk headOk cached windowOk)
 
 end Models.Network

@@ -1571,7 +1571,7 @@ private theorem caller_supporter_reaches {Δ : ℕ} (sync : e.Synchronous Δ)
   rcases UInt64.lt_or_eq_of_le rankLe with greater | same
   swap
   · -- The same rank gives the same vote, which supports the root at the receiver too.
-    have sameVote := Execution.latest_eq_of_rank_eq slots preGloas anchored start caller receiver
+    have sameVote := Execution.latest_eq_of_rank_eq slots anchored start caller receiver
       honest latest receivedOk same
     subst sameVote
     obtain ⟨other, otherIn, otherSeen, otherEq, -, otherOrigin⟩ :=
@@ -1813,7 +1813,8 @@ private theorem caller_parent_voter_reaches {Δ : ℕ} (sync : e.Synchronous Δ)
     by_cases below : boundary ≤ parent.slot
     · exact .inl (.inl ⟨boundary, boundaryOk, below,
         getCheckpointBlock_of_below preGloas parentKnown rootParent boundaryOk below checkpoint⟩)
-    obtain ⟨boundary', ancestor, boundaryOk', walk, rooted⟩ := Store.getCheckpointBlock_walk_root checkpoint
+    obtain ⟨boundary', ancestor, boundaryOk', walk, rooted⟩ :=
+      Store.getCheckpointBlock_walk_root checkpoint
     rw [boundaryOk, Except.ok.injEq] at boundaryOk'
     subst boundaryOk'
     by_cases atBlock : block.slot ≤ boundary
@@ -1869,7 +1870,7 @@ private theorem caller_parent_voter_reaches {Δ : ℕ} (sync : e.Synchronous Δ)
   rcases UInt64.lt_or_eq_of_le rankLe with greater | same
   swap
   · -- The same rank gives the same vote, for the parent at the receiver too.
-    have sameVote := Execution.latest_eq_of_rank_eq slots preGloas anchored start caller receiver
+    have sameVote := Execution.latest_eq_of_rank_eq slots anchored start caller receiver
       honest latest receivedOk same
     subst sameVote
     obtain ⟨historicalParent, historicalParentFound, historicalLe⟩ :=
@@ -2525,7 +2526,8 @@ public theorem Execution.source_surplus_or_historical_evidence_with [DecidablePr
     callerAbsent slotOk blockOk parentOk firstOk lastOk supportOk discountOk margin
   -- The receiver reads its full maximum, then the source maximum and score.
   rcases receiver_fullMaximum_of_head_window anchored start sound anchorSlot anchorBoundary
-      positive preGloas ceiling absent caller receiver callerTime receiverTime
+      positive ceiling (fun g => absurd g (Nat.not_le_of_lt preGloas)) absent caller receiver
+      callerTime receiverTime
       (family w receiver k k le_rfl receiverTime) parentOk receiverParent firstOk receiverHeadOk
       stateOk receiverLastOk windowOk nonempty maximumOk with
     ⟨receiverMaximum, receiverMaximumOk⟩ | collision
