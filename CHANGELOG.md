@@ -16,7 +16,7 @@ Not yet released.
   From Gloas, a run that ends within the horizon keeps its registry within the limit, given the anchor's registry room.
   Before Gloas, the type bounds it.
   `Execution.quorumDriftWithin` reads it at the counting state.
-  `registryWithinLimit_of_anchorRoom` (`ForkChoice/BlockRuns.lean`) is the arithmetic that it shares with `Store.ForwardReachable.registriesWithinLimit_of_room`.
+  `registryWithinLimit_of_anchorRoom` (`ForkChoice/BlockRuns.lean`) is the arithmetic that it shares with `Store.ForwardReachable.registriesWithinLimit_of_room` and the confirmed-root proof.
   A registry at an epoch within the horizon fits the anchor's room if it grew by at most one epoch of pending deposits per epoch.
 
 - In Lean, the payload of the parent has a balance ledger from Gloas, and its old validators read at both ends are later.
@@ -955,6 +955,14 @@ Not yet released.
   `ValidatorStep`, `PinDriftBound.CreditBudgets` and `PinDriftBound.PreviousEpochRise` use it.
 
 ### Changes that break callers
+
+- In Lean, the confirmed root of a run of fast-confirmation calls covers honest heads from Gloas too, and keeps its Fulu floor.
+  `Execution.confirmedRoot_covers` takes `room`, `weights` and `supply`, gated on Gloas, instead of `preGloas`.
+  They are the anchor's registry room, the head-weight bundle, and the head-weight ceiling of honest justified states.
+  `CallsCtx` drops its field `preGloas`, and `StepCtx` carries `room`, `weights` and `supply`.
+  `sourceOnParentChain_of_walk`, `Execution.honestTargetVotes_of_byzantineStakeAtMost` and `Store.viable_of_ancestor` drop their pre-Gloas binder.
+  `Execution.receiverWindowExitsNear_of_sourceOnParentChain` takes `within`, the registry of the source within the limit, instead of `preGloas`.
+  Migration: pass `room`, `weights` and `supply` each as `fun g => absurd g (Nat.not_le_of_lt preGloas)`, delete the other arguments, and pass `within := source.validators.bound preGloas`.
 
 - In Lean, the quorum drift of a call is bounded from Gloas too, and keeps its Fulu floor.
   `quorumDrift_le_quorumReserve` takes `within` at the counting state instead of `early`.
