@@ -3644,6 +3644,8 @@ The alternatives are a collision between blocks held by honest stores, or accoun
 That evidence is `HistoricalDirectSafetyEvidence`, `CrossStoreJustifiedEvidence` or `HeldStateFinalityEvidence`.
 Each such store has a head, by `Execution.honestHeadsExist_or_evidence` in `HonestHeads.lean`, up to the same alternatives ([#2060](https://github.com/ethereum/EthLib/issues/2060), for pre-Gloas forks).
 It reads `CheckpointStakeCeiling`, `ProposerScoreFits`, the bound of `Config.CommitteeWindowsFit.seeds` on the epoch of the largest 64-bit time and the network and duty premises that the headline already takes.
+From Gloas the store has a head by `Execution.honestHeadsExist_or_evidence_of_gated` instead, which also reads the anchor registry's room, `Config.HeadWeightsFit` and `CheckpointHeadWeightCeiling`; the per-call theorems take these three gated from Gloas.
+`CheckpointHeadWeightCeiling` is the Gloas head endpoint's former stake bound, restricted to the validators that the weak-head test reads: those active or known to equivocate.
 The store holds its justified state because an honest vote for that checkpoint reaches it by the next slot and is accepted.
 So the store holds its justified block, and its filtered tree computes without error.
 That is why `HonestHeadsExist` needs no premise on the tree.

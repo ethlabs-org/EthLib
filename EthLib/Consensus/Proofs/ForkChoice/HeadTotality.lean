@@ -679,7 +679,8 @@ private theorem tiebreaker_exists_of_gloas {anchorState : BeaconState preset for
 
 /-- The stake of any set of validators of a state is at most the effective balances of its registry.
 -/
-private theorem stake_le_registry (state : BeaconState preset fork) (T : Finset ValidatorIndex) :
+private theorem stake_le_registry (state : BeaconState preset fork)
+    (T : Finset ValidatorIndex) :
     stake (fun v => balanceAt state v.toNat) T ≤ effectiveBalanceSum state := by
   have whole : stake (balanceAt state) (Finset.range state.validators.data.size) =
       effectiveBalanceSum state := by
@@ -695,6 +696,21 @@ private theorem stake_le_registry (state : BeaconState preset fork) (T : Finset 
   refine Finset.sum_le_sum_of_ne_zero fun n _ nonzero => Finset.mem_range.mpr ?_
   refine Nat.lt_of_not_le fun outside => nonzero ?_
   simp [balanceAt, Array.getElem?_eq_none outside]
+
+variable (store) in
+/-- Every set of validators active in a state or known to equivocate weighs at most a cap there.
+
+The weak-head test of the head adds these weights. -/
+def HeadWeightAtMost (cap : ℕ) (state : BeaconState preset fork) : Prop :=
+  ∀ T : Finset ValidatorIndex, (∀ v ∈ T,
+      v ∈ (getActiveValidatorIndices state (getCurrentEpoch state)).toFinset ∨
+        v ∈ store.equivocatingIndices) →
+    stake (fun v => balanceAt state v.toNat) T ≤ cap
+
+/-- A registry within the cap bounds every weight of the weak-head test. -/
+theorem headWeightAtMost_of_effectiveBalanceSum {cap : ℕ} {state : BeaconState preset fork}
+    (supply : effectiveBalanceSum state ≤ cap) : store.HeadWeightAtMost cap state :=
+  fun T _ => (stake_le_registry state T).trans supply
 
 /-- The equivocator weight of some validators sums the stake of each equivocator among them. -/
 private theorem equivocatorWeight_eq (equivocators : List ValidatorIndex)
@@ -729,19 +745,19 @@ private theorem isHeadWeak_exists {anchorState : BeaconState preset fork}
     (weights : config.HeadWeightsFit preset (2 * 10 ^ 17)) {state : BeaconState preset fork}
     (stateOk : store.checkpointState store.justifiedCheckpoint = .ok state)
     (within : state.RegistryWithinLimit) (held : HeldRegistriesWithinLimit store)
-    (supply : effectiveBalanceSum state ≤ 2 * 10 ^ 17)
+    (bounded : Models.Network.ActiveStakeAtMost (2 * 10 ^ 17) state)
+    (heads : store.HeadWeightAtMost (2 * 10 ^ 17) state)
     (registered : ActiveEquivocatorsRegistered store state) {root : Root}
     {block : BeaconBlock preset fork} (found : store.blocks[root]? = some block) :
     ∃ weak, store.isHeadWeak config root = .ok weak := by
+  unfold Models.Network.ActiveStakeAtMost at bounded
   have justifiedFound := checkpointState_ok_iff.mp stateOk
   obtain ⟨headState, headFound, -, -⟩ := forward.reachable.blockStatesFromParents found
   have headWithin := held root headState headFound
-  have activeLe := (stake_le_registry state
-    (getActiveValidatorIndices state (getCurrentEpoch state)).toFinset).trans supply
   -- The reorg threshold is the proposer score of a config whose boost is that threshold.
   obtain ⟨threshold, thresholdOk⟩ := computeProposerScore_exists
     (config := { config with PROPOSER_SCORE_BOOST := config.REORG_HEAD_WEIGHT_THRESHOLD })
-    ⟨by decide, weights.reorg⟩ fit.positive within activeLe
+    ⟨by decide, weights.reorg⟩ fit.positive within bounded
   obtain ⟨votes, votesOk, -, votesEq⟩ := getAttestationScore_exists (config := config) forward
     anchorSlot unknown (node := ⟨root, .pending⟩) found within (by omega)
   -- The committees of the block's slot read from its state, whose epoch is not past the clock.
@@ -799,7 +815,15 @@ private theorem isHeadWeak_exists {anchorState : BeaconState preset fork}
   have sumLe : votes.toNat + equivocatorWeight store.equivocatingIndices state
       (committees.flatMap Array.toList) ≤ 2 * 10 ^ 17 := by
     rw [votesEq, weightEq, stake, stake, ← Finset.sum_union apart]
-    exact (stake_le_registry state _).trans supply
+    -- Each supporter is active, and each counted member is a known equivocator.
+    refine heads _ fun v member => ?_
+    rcases Finset.mem_union.mp member with supporter | equivocator
+    · left
+      obtain ⟨validator, atIndex, active⟩ := isActiveAt_eq_true_iff.mp
+        (isActiveAt_of_mem_supportersOf within supporter)
+      exact List.mem_toFinset.mpr ((mem_getActiveValidatorIndices within).mpr
+        ⟨validator, atIndex, active⟩)
+    · exact .inr (List.elem_iff.mp (List.mem_filter.mp (List.mem_toFinset.mp equivocator)).2)
   exact ⟨_, isHeadWeak_ok_iff.mpr ⟨state, threshold, headState, block, votes, committees,
     justifiedFound, thresholdOk, headFound, found, votesOk, mapped, known, by omega, rfl⟩⟩
 
@@ -816,7 +840,8 @@ private theorem shouldApplyProposerBoost_exists {anchorState : BeaconState prese
     (weights : config.HeadWeightsFit preset (2 * 10 ^ 17)) {state : BeaconState preset fork}
     (stateOk : store.checkpointState store.justifiedCheckpoint = .ok state)
     (within : state.RegistryWithinLimit) (held : HeldRegistriesWithinLimit store)
-    (supply : effectiveBalanceSum state ≤ 2 * 10 ^ 17)
+    (bounded : Models.Network.ActiveStakeAtMost (2 * 10 ^ 17) state)
+    (heads : store.HeadWeightAtMost (2 * 10 ^ 17) state)
     (registered : ActiveEquivocatorsRegistered store state) :
     ∃ apply, store.shouldApplyProposerBoost config gloas = .ok apply := by
   rcases forward.reachable.boostHeld with zero | ⟨block, parent, found, parentFound⟩
@@ -833,7 +858,7 @@ private theorem shouldApplyProposerBoost_exists {anchorState : BeaconState prese
   by_cases old : parent.slot.toNat + 1 < block.slot.toNat
   · exact ⟨true, shouldApplyProposerBoost_of_old_parent gloas zero found parentFound old⟩
   obtain ⟨weak, weakOk⟩ := isHeadWeak_exists forward anchorSlot unknown fit weights stateOk within
-    held supply registered parentFound
+    held bounded heads registered parentFound
   cases weak
   · exact ⟨true, shouldApplyProposerBoost_of_not_weak gloas zero found parentFound
       (by omega) fits weakOk⟩
@@ -866,20 +891,20 @@ private theorem getWeight_exists_of_gloas {anchorState : BeaconState preset fork
     (weights : config.HeadWeightsFit preset (2 * 10 ^ 17)) {state : BeaconState preset fork}
     (stateOk : store.checkpointState store.justifiedCheckpoint = .ok state)
     (within : state.RegistryWithinLimit) (held : HeldRegistriesWithinLimit store)
-    (supply : effectiveBalanceSum state ≤ 2 * 10 ^ 17)
+    (bounded : Models.Network.ActiveStakeAtMost (2 * 10 ^ 17) state)
+    (heads : store.HeadWeightAtMost (2 * 10 ^ 17) state)
     (registered : ActiveEquivocatorsRegistered store state) {node : ForkChoiceNode}
     {block : BeaconBlock preset fork} (found : store.blocks[node.root]? = some block) :
     ∃ weight, store.getWeight config store.justifiedTally node = .ok weight := by
+  unfold Models.Network.ActiveStakeAtMost at bounded
   obtain ⟨_, _, _, decided⟩ :=
     isPreviousSlotPayloadDecision_ok forward anchorSlot weights.slots found
-  have activeLe := (stake_le_registry state
-    (getActiveValidatorIndices state (getCurrentEpoch state)).toFinset).trans supply
   obtain ⟨votes, votesOk, votesLe, -⟩ := getAttestationScore_exists (config := config) forward
     anchorSlot unknown found within (by omega)
   have scoreOk : store.scoreFromTally (store.tallyVotes state) node = .ok votes := votesOk
   obtain ⟨apply, applyOk⟩ := shouldApplyProposerBoost_exists gloas forward anchorSlot unknown fit
-    weights stateOk within held supply registered
-  obtain ⟨proposer, proposerOk⟩ := computeProposerScore_exists fits fit.positive within activeLe
+    weights stateOk within held bounded heads registered
+  obtain ⟨proposer, proposerOk⟩ := computeProposerScore_exists fits fit.positive within bounded
   have proposerLe := computeProposerScore_le proposerOk
   have getOk : store.getProposerScore config = .ok proposer := by
     simp [getProposerScore, stateOk, proposerOk, bind, Except.bind]
@@ -913,7 +938,9 @@ The viable nodes must be computed, and the store must hold the state of the just
 
 That state must have its registry within the limit.
 
-Its effective balances must add up to at most `2 * 10^17` Gwei.
+Its active stake must be at most `2 * 10^17` Gwei.
+
+So must each set of its validators that are active or known to equivocate.
 
 Each held state must have its registry within the limit too.
 
@@ -931,7 +958,8 @@ theorem getHead_exists_of_gloas (gloas : .glamsterdam ≤ fork)
     (tree : store.getFilteredNodeTree config = .ok nodes) {state : BeaconState preset fork}
     (stateOk : store.checkpointState store.justifiedCheckpoint = .ok state)
     (within : state.RegistryWithinLimit) (held : HeldRegistriesWithinLimit store)
-    (supply : effectiveBalanceSum state ≤ 2 * 10 ^ 17)
+    (bounded : Models.Network.ActiveStakeAtMost (2 * 10 ^ 17) state)
+    (heads : store.HeadWeightAtMost (2 * 10 ^ 17) state)
     (registered : ActiveEquivocatorsRegistered store state) :
     ∃ head, store.getHead config = .ok head := by
   cases nodes with
@@ -942,7 +970,7 @@ theorem getHead_exists_of_gloas (gloas : .glamsterdam ≤ fork)
   obtain ⟨head, headOk⟩ := getHeadFrom_exists (config := config) (nodes := first :: rest)
     (forward.reachable.parentsBelow anchorSlot unknown)
     (fun _ _ f => getWeight_exists_of_gloas gloas forward anchorSlot unknown fit fits weights
-      stateOk within held supply registered f)
+      stateOk within held bounded heads registered f)
     (fun _ _ f => tiebreaker_exists_of_gloas gloas forward anchorSlot weights.slots f) _ justified
     justifiedFound
   exact ⟨head, by simp [getHead, tree, headOk, bind, Except.bind]⟩

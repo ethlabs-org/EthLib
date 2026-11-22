@@ -563,53 +563,6 @@ theorem Execution.honestHeadsExist_or_evidence {Δ : ℕ} (sync : e.Synchronous 
       parameters.slots scoreFits tree stateOk (ceiling w hw k _ state inTime stateOk)
   · exact .inr alternative
 
-/-- Before Gloas, the caller of a checked call reads its head at each rollover up to `last`.
-
-Otherwise two honest stores collide by `last`, or direct-safety evidence holds.
-
-The evidence is relative to the anchor.
-
-The steps of a checked call that read the caller's head take this read.
-
-With it, an accepted current-target test has its honest signers up to these alternatives.
-
-A confirmed root stays in the filtered tree up to these alternatives and that step's own evidence.
-
-That evidence is held-state finality evidence or cross-store justified evidence. -/
-theorem Execution.callRolloverRead_or_evidence {Δ : ℕ} (sync : e.Synchronous Δ)
-    (slots : 0 < config.SLOT_DURATION_MS)
-    (preGloas : fork < .glamsterdam) {last : ℕ} (admitted : BlocksAdmitted e 0 Δ last)
-    (fits : DelayFits fork config genesisTimeMs Δ) (prompt : Prompt e last)
-    (votes : ValidatedDutyVotes (e := e) last) {anchor : Store preset fork}
-    (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
-    (start : ∀ w ∈ J, e.start w = anchor) (anchorSlot : anchorBlock.slot = anchorState.slot)
-    (anchorBoundary : isStartSlotAtEpoch preset anchorBlock.slot = .ok true)
-    (signed : JustifiedHonestlySigned (e := e) anchor.justifiedCheckpoint.epoch 0 last)
-    (roots : HeldBlockStateRootsNonzero (e := e) last) (absent : AnchorParentAbsent (e := e) last)
-    {horizon : Epoch} (bounded : HonestStoreEpochsBounded (e := e) horizon last)
-    (parameters : DirectSafety.Parameters preset) {g : ForkedBeaconState preset}
-    (genesis : Genesis config checks g) (pre : Run config checks g ⟨fork, anchorState⟩)
-    (heldEarly : HeldStatesBeforeUpgrade (e := e) last)
-    (enough : HeldRunStakeFloor (e := e) pre horizon last)
-    (terminal : HeldTerminalStakeFloor (e := e) horizon last)
-    (ceiling : CheckpointStakeCeiling (e := e) (2 * 10 ^ 17) last)
-    (scoreFits : config.ProposerScoreFits preset (2 * 10 ^ 17))
-    (seeds : (2 ^ 64 - 1) / (config.SLOT_DURATION_MS.toNat * preset.SLOTS_PER_EPOCH.toNat) +
-      preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat < 2 ^ 64)
-    {u : ValidatorIndex} (caller : u ∈ J) (n : ℕ) (head : Root) :
-    CallRolloverRead (e := e) u n head last ∨
-    HonestCollision (e := e) last ∨
-    HistoricalDirectSafetyEvidence (e := e) pre last := by
-  rcases e.honestHeadsExist_or_evidence sync slots preGloas admitted fits prompt votes anchored
-      start anchorSlot anchorBoundary signed roots absent bounded parameters genesis pre heldEarly
-      enough terminal ceiling scoreFits seeds 0 with heads | alternative
-  swap
-  · exact .inr alternative
-  -- At each rollover the caller is up to date, so it has a head.
-  left
-  intro _ _ _ begin _ _ _ _ beginLe k atTime upToDate
-  exact heads u caller k (Nat.zero_le _) (atTime ▸ beginLe) upToDate
-
 /-! ## From Gloas: active equivocators are registered or evidence holds -/
 
 /-- A held block reads the store's finalized checkpoint when it comes from the block's state.
@@ -843,6 +796,15 @@ def CheckpointRegistryStakeCeiling (cap last : ℕ) : Prop :=
     ((e.world k).state w).checkpointState ((e.world k).state w).justifiedCheckpoint = .ok state →
     effectiveBalanceSum state ≤ cap
 
+/-- Honest justified states up to time `last` bound each weight of the weak-head test by `cap`.
+
+Each set of their validators that are active or known to the store to equivocate weighs at most it.
+-/
+def CheckpointHeadWeightCeiling (cap last : ℕ) : Prop :=
+  ∀ w ∈ J, ∀ k (state : BeaconState preset fork), (e.world k).time ≤ last →
+    ((e.world k).state w).checkpointState ((e.world k).state w).justifiedCheckpoint = .ok state →
+    ((e.world k).state w).HeadWeightAtMost cap state
+
 /-- From Gloas, an up-to-date honest store up to `last` has a head.
 
 Otherwise two honest stores collide by `last`, or direct-safety evidence holds.
@@ -851,7 +813,9 @@ The evidence is relative to the anchor.
 
 The anchor's registry must leave room up to the horizon.
 
-Every honest justified state must have effective balances that add up to at most `2 * 10^17` Gwei.
+Every honest justified state must bound each weight of the weak-head test by `2 * 10^17` Gwei.
+
+That is each set of its validators that are active or known to equivocate.
 
 The committee windows must fit, and the proposer boost and the head reads must fit that cap.
 
@@ -875,7 +839,7 @@ theorem Execution.honestHeadsExist_or_evidence_of_gloas {Δ : ℕ} (sync : e.Syn
     (fit : config.CommitteeWindowsFit preset)
     (weights : config.HeadWeightsFit preset (2 * 10 ^ 17))
     (room : AnchorRegistryRoom preset anchorState horizon)
-    (supply : CheckpointRegistryStakeCeiling (e := e) (2 * 10 ^ 17) last) (first : ℕ) :
+    (heads : CheckpointHeadWeightCeiling (e := e) (2 * 10 ^ 17) last) (first : ℕ) :
     HonestHeadsExist (e := e) first last ∨
     HonestCollision (e := e) last ∨
     HistoricalDirectSafetyEvidence (e := e) pre last := by
@@ -907,6 +871,108 @@ theorem Execution.honestHeadsExist_or_evidence_of_gloas {Δ : ℕ} (sync : e.Syn
     stateOk
   exact Store.getHead_exists_of_gloas gloas forward (UInt64.le_of_eq anchorSlot)
     (absent w hw k inTime) fit scoreFits weights tree stateOk (within state stateOk) held
-    (supply w hw k state inTime stateOk) (registered w hw k state inTime stateOk)
+    ((heads w hw k state inTime stateOk) _ fun _ active => .inl active)
+    (heads w hw k state inTime stateOk) (registered w hw k state inTime stateOk)
+
+/-- An up-to-date honest store up to `last` has a head, at every fork.
+
+Otherwise two honest stores collide by `last`, or direct-safety evidence holds.
+
+The evidence is relative to the anchor.
+
+Before Gloas it rests on the active-stake ceiling; from Gloas on the Gloas premises.
+
+From Gloas it needs the anchor's registry room and the bound on each weight of the weak-head test.
+
+It also needs the head-weight and committee-window bundles.
+
+The claim holds from every start time. -/
+theorem Execution.honestHeadsExist_or_evidence_of_gated {Δ : ℕ} (sync : e.Synchronous Δ)
+    (slots : 0 < config.SLOT_DURATION_MS) {last : ℕ} (admitted : BlocksAdmitted e 0 Δ last)
+    (fits : DelayFits fork config genesisTimeMs Δ) (prompt : Prompt e last)
+    (votes : ValidatedDutyVotes (e := e) last) {anchor : Store preset fork}
+    (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (start : ∀ w ∈ J, e.start w = anchor) (anchorSlot : anchorBlock.slot = anchorState.slot)
+    (anchorBoundary : isStartSlotAtEpoch preset anchorBlock.slot = .ok true)
+    (signed : JustifiedHonestlySigned (e := e) anchor.justifiedCheckpoint.epoch 0 last)
+    (roots : HeldBlockStateRootsNonzero (e := e) last) (absent : AnchorParentAbsent (e := e) last)
+    {horizon : Epoch} (bounded : HonestStoreEpochsBounded (e := e) horizon last)
+    (parameters : DirectSafety.Parameters preset) {g : ForkedBeaconState preset}
+    (genesis : Genesis config checks g) (pre : Run config checks g ⟨fork, anchorState⟩)
+    (heldEarly : HeldStatesBeforeUpgrade (e := e) last)
+    (enough : HeldRunStakeFloor (e := e) pre horizon last)
+    (terminal : HeldTerminalStakeFloor (e := e) horizon last)
+    (ceiling : CheckpointStakeCeiling (e := e) (2 * 10 ^ 17) last)
+    (scoreFits : config.ProposerScoreFits preset (2 * 10 ^ 17))
+    (seeds : (2 ^ 64 - 1) / (config.SLOT_DURATION_MS.toNat * preset.SLOTS_PER_EPOCH.toNat) +
+      preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat < 2 ^ 64)
+    (room : .glamsterdam ≤ fork → AnchorRegistryRoom preset anchorState horizon)
+    (weights : .glamsterdam ≤ fork → config.HeadWeightsFit preset (2 * 10 ^ 17))
+    (supply : .glamsterdam ≤ fork → CheckpointHeadWeightCeiling (e := e) (2 * 10 ^ 17) last)
+    (fit : .glamsterdam ≤ fork → config.CommitteeWindowsFit preset) (first : ℕ) :
+    HonestHeadsExist (e := e) first last ∨
+    HonestCollision (e := e) last ∨
+    HistoricalDirectSafetyEvidence (e := e) pre last := by
+  by_cases gloas : .glamsterdam ≤ fork
+  · exact e.honestHeadsExist_or_evidence_of_gloas sync gloas admitted fits prompt votes anchored
+      start anchorSlot anchorBoundary signed roots absent bounded parameters genesis pre heldEarly
+      enough terminal scoreFits (fit gloas) (weights gloas) (room gloas) (supply gloas) first
+  · exact e.honestHeadsExist_or_evidence sync slots (Nat.lt_of_not_le gloas) admitted fits prompt
+      votes anchored start anchorSlot anchorBoundary signed roots absent bounded parameters genesis
+      pre heldEarly enough terminal ceiling scoreFits seeds first
+
+/-- The caller of a checked call reads its head at each rollover up to `last`.
+
+From Gloas it needs the anchor's registry room and the bound on each weight of the weak-head test.
+
+It also needs the head-weight and committee-window bundles.
+
+Otherwise two honest stores collide by `last`, or direct-safety evidence holds.
+
+The evidence is relative to the anchor.
+
+The steps of a checked call that read the caller's head take this read.
+
+With it, an accepted current-target test has its honest signers up to these alternatives.
+
+A confirmed root stays in the filtered tree up to these alternatives and that step's own evidence.
+
+That evidence is held-state finality evidence or cross-store justified evidence. -/
+theorem Execution.callRolloverRead_or_evidence {Δ : ℕ} (sync : e.Synchronous Δ)
+    (slots : 0 < config.SLOT_DURATION_MS) {last : ℕ} (admitted : BlocksAdmitted e 0 Δ last)
+    (fits : DelayFits fork config genesisTimeMs Δ) (prompt : Prompt e last)
+    (votes : ValidatedDutyVotes (e := e) last) {anchor : Store preset fork}
+    (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (start : ∀ w ∈ J, e.start w = anchor) (anchorSlot : anchorBlock.slot = anchorState.slot)
+    (anchorBoundary : isStartSlotAtEpoch preset anchorBlock.slot = .ok true)
+    (signed : JustifiedHonestlySigned (e := e) anchor.justifiedCheckpoint.epoch 0 last)
+    (roots : HeldBlockStateRootsNonzero (e := e) last) (absent : AnchorParentAbsent (e := e) last)
+    {horizon : Epoch} (bounded : HonestStoreEpochsBounded (e := e) horizon last)
+    (parameters : DirectSafety.Parameters preset) {g : ForkedBeaconState preset}
+    (genesis : Genesis config checks g) (pre : Run config checks g ⟨fork, anchorState⟩)
+    (heldEarly : HeldStatesBeforeUpgrade (e := e) last)
+    (enough : HeldRunStakeFloor (e := e) pre horizon last)
+    (terminal : HeldTerminalStakeFloor (e := e) horizon last)
+    (ceiling : CheckpointStakeCeiling (e := e) (2 * 10 ^ 17) last)
+    (scoreFits : config.ProposerScoreFits preset (2 * 10 ^ 17))
+    (seeds : (2 ^ 64 - 1) / (config.SLOT_DURATION_MS.toNat * preset.SLOTS_PER_EPOCH.toNat) +
+      preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat < 2 ^ 64)
+    {u : ValidatorIndex} (caller : u ∈ J) (n : ℕ) (head : Root)
+    (room : .glamsterdam ≤ fork → AnchorRegistryRoom preset anchorState horizon)
+    (weights : .glamsterdam ≤ fork → config.HeadWeightsFit preset (2 * 10 ^ 17))
+    (supply : .glamsterdam ≤ fork → CheckpointHeadWeightCeiling (e := e) (2 * 10 ^ 17) last)
+    (fit : .glamsterdam ≤ fork → config.CommitteeWindowsFit preset) :
+    CallRolloverRead (e := e) u n head last ∨
+    HonestCollision (e := e) last ∨
+    HistoricalDirectSafetyEvidence (e := e) pre last := by
+  rcases e.honestHeadsExist_or_evidence_of_gated sync slots admitted fits prompt votes anchored
+      start anchorSlot anchorBoundary signed roots absent bounded parameters genesis pre heldEarly
+      enough terminal ceiling scoreFits seeds room weights supply fit 0 with heads | alternative
+  swap
+  · exact .inr alternative
+  -- At each rollover the caller is up to date, so it has a head.
+  left
+  intro _ _ _ begin _ _ _ _ beginLe k atTime upToDate
+  exact heads u caller k (Nat.zero_le _) (atTime ▸ beginLe) upToDate
 
 end EthLib.Consensus.Models.Network

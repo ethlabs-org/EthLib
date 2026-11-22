@@ -4,8 +4,8 @@ public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmation.HistoricalAnch
 public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmation.HistoricalSigners
 public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmation.RootHeld
 public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmation.RootViability
+public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmation.HonestHeads
 import EthLib.Consensus.Proofs.ForkChoice.FastConfirmation.HistoricalTransport
-import EthLib.Consensus.Proofs.ForkChoice.FastConfirmation.HonestHeads
 import EthLib.Consensus.Proofs.HonestAggregation
 
 /-!
@@ -308,7 +308,9 @@ private theorem route_of_split {store : Store preset fork} {root : Root}
 
 /-- At a time `T`, the confirmed root of a call is viable, given its coverage before `T`.
 
-Otherwise two honest stores collide, or held-state or cross-store evidence holds. -/
+Otherwise two honest stores collide, or held-state or cross-store evidence holds.
+
+From Gloas, the anchor's registry must leave room up to the horizon. -/
 public theorem Execution.rootViableAt_of_checked [DecidablePred (· ∈ J)]
     {anchor : Store preset fork} {Δ time : ℕ} {anchorEpoch horizon : Epoch} {margin : ℕ}
     {g : ForkedBeaconState preset} (pre : Run config checks g ⟨fork, anchorState⟩)
@@ -422,7 +424,9 @@ The viability of the root at a time may read its coverage at every earlier time.
 
 The window reserve and the receivers' exits read one reserve value.
 
-The alternatives are a block collision of honest stores and historical direct-safety evidence. -/
+The alternatives are a block collision of honest stores and historical direct-safety evidence.
+
+From Gloas, the anchor's registry must leave room up to the horizon. -/
 public theorem Execution.honestHeadsCover_of_viableAt [DecidablePred (· ∈ J)] {Δ : ℕ}
     (sync : e.Synchronous Δ) (slots : 0 < config.SLOT_DURATION_MS)
     (minLookahead : 1 ≤ preset.MIN_SEED_LOOKAHEAD.toNat)
@@ -1190,7 +1194,7 @@ private theorem viableAt_or_alternative_of_checked_call [DecidablePred (· ∈ J
     (minLookahead : 1 ≤ preset.MIN_SEED_LOOKAHEAD.toNat)
     (maxLookahead : 1 ≤ preset.MAX_SEED_LOOKAHEAD.toNat)
     (ring : preset.MIN_SEED_LOOKAHEAD.toNat + 3 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
-    (preGloas : fork < .glamsterdam) {time : ℕ} (admitted : BlocksAdmitted e 0 Δ time)
+    {time : ℕ} (admitted : BlocksAdmitted e 0 Δ time)
     (votes : ValidatedDutyVotes (e := e) time) (fits : DelayFits fork config genesisTimeMs Δ)
     (prompt : Prompt e time) (windows : AssignmentWindowAgreement (e := e) time)
     (fit : config.CommitteeWindowsFit preset)
@@ -1275,7 +1279,10 @@ private theorem viableAt_or_alternative_of_checked_call [DecidablePred (· ∈ J
     (realizedHead : AcceptedRealizedHead ((e.world n).state u) config head.root (chain ++ [root]))
     (startCovers : HonestHeadsCover (e := e) startRoot (e.world n).time (time + 1))
     (ceiling : CheckpointStakeCeiling (e := e) (2 * 10 ^ 17) time)
-    (scoreFits : config.ProposerScoreFits preset (2 * 10 ^ 17)) :
+    (scoreFits : config.ProposerScoreFits preset (2 * 10 ^ 17))
+    (room : .glamsterdam ≤ fork → AnchorRegistryRoom preset anchorState horizon)
+    (weights : .glamsterdam ≤ fork → config.HeadWeightsFit preset (2 * 10 ^ 17))
+    (supply : .glamsterdam ≤ fork → CheckpointHeadWeightCeiling (e := e) (2 * 10 ^ 17) time) :
     ((∀ T, (e.world n).time ≤ T → T ≤ time →
       HonestHeadsCover (e := e) root (e.world n).time T → RootViableAt (e := e) root T) ∧
       HonestHeadsExist (e := e) (e.world n).time time) ∨
@@ -1296,16 +1303,18 @@ private theorem viableAt_or_alternative_of_checked_call [DecidablePred (· ∈ J
   -- The caller reads its head at each rollover, and every honest store has a head.
   have signed : JustifiedHonestlySigned (e := e) anchor.justifiedCheckpoint.epoch 0 time :=
     anchorEpochOk ▸ signedAll
-  rcases e.callRolloverRead_or_evidence sync slots preGloas admitted fits prompt votes
+  rcases e.callRolloverRead_or_evidence sync slots admitted fits prompt votes
       anchored start anchorSlot anchorBoundary signed roots absent bounded parameters genesis pre
-      heldEarly enough terminal ceiling scoreFits fit.seeds caller n head.root with
+      heldEarly enough terminal ceiling scoreFits fit.seeds caller n head.root room weights supply
+      (fun _ => fit) with
     rollover | collision | evidence
   rotate_left
   · exact .inr (.inl collision)
   · exact .inr (.inr (.inl evidence))
-  rcases e.honestHeadsExist_or_evidence sync slots preGloas admitted fits prompt votes
+  rcases e.honestHeadsExist_or_evidence_of_gated sync slots admitted fits prompt votes
       anchored start anchorSlot anchorBoundary signed roots absent bounded parameters genesis pre
-      heldEarly enough terminal ceiling scoreFits fit.seeds (e.world n).time with
+      heldEarly enough terminal ceiling scoreFits fit.seeds room weights supply (fun _ => fit)
+      (e.world n).time with
     exist | collision | evidence
   rotate_left
   · exact .inr (.inl collision)
@@ -1353,7 +1362,7 @@ private theorem viableAt_or_alternative_of_checked_call [DecidablePred (· ∈ J
   by_cases heldEvidence : HeldStateFinalityEvidence (e := e) pre time
   · exact .inr (.inr (.inr (.inr heldEvidence)))
   refine .inl ⟨fun T low high covers => ?_, exist⟩
-  exact (e.rootViableAt_of_checked (room := fun gloas => absurd gloas (Nat.not_le_of_lt preGloas))
+  exact (e.rootViableAt_of_checked (room := room)
       pre sync slots admitted fits prompt votes
       windows fit ring incrementPositive anchored sound anchorSlot anchorBoundary start
       anchorEpochOk bounded roots absent pinned signedAll quorumDrift unslashed terminal
@@ -1363,13 +1372,19 @@ private theorem viableAt_or_alternative_of_checked_call [DecidablePred (· ∈ J
 
 /-- Every up-to-date honest head descends from a checked call's confirmed root, up to `time`.
 
-Otherwise two honest stores collide, or historical, cross-store or held-state evidence holds. -/
+Otherwise two honest stores collide, or historical, cross-store or held-state evidence holds.
+
+From Gloas, the anchor's registry must leave room up to the horizon.
+
+From Gloas, the head-weight bundle must fit.
+
+From Gloas, each honest justified state must bound each weak-head weight by `2 * 10^17` Gwei. -/
 public theorem Execution.honestHeadsCover_of_checked_call [DecidablePred (· ∈ J)] {Δ : ℕ}
     (sync : e.Synchronous Δ) (slots : 0 < config.SLOT_DURATION_MS)
     (minLookahead : 1 ≤ preset.MIN_SEED_LOOKAHEAD.toNat)
     (maxLookahead : 1 ≤ preset.MAX_SEED_LOOKAHEAD.toNat)
     (ring : preset.MIN_SEED_LOOKAHEAD.toNat + 3 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
-    (preGloas : fork < .glamsterdam) {time : ℕ} (admitted : BlocksAdmitted e 0 Δ time)
+    {time : ℕ} (admitted : BlocksAdmitted e 0 Δ time)
     (half : 2 * config.CONFIRMATION_BYZANTINE_THRESHOLD.toNat ≤ 100)
     (votes : ValidatedDutyVotes (e := e) time) (fits : DelayFits fork config genesisTimeMs Δ)
     (prompt : Prompt e time) (windows : AssignmentWindowAgreement (e := e) time)
@@ -1473,15 +1488,19 @@ public theorem Execution.honestHeadsCover_of_checked_call [DecidablePred (· ∈
     (exits : ReceiverWindowExitsNear (e := e) (computeEpochAtSlot preset parent.slot) source first
       (e.world n).time time)
     (late : LateDutyMajority (e := e) (computeEpochAtSlot preset parent.slot)
-      (e.world n).time time) :
+      (e.world n).time time)
+    (room : .glamsterdam ≤ fork → AnchorRegistryRoom preset anchorState horizon)
+    (weights : .glamsterdam ≤ fork → config.HeadWeightsFit preset (2 * 10 ^ 17))
+    (supply : .glamsterdam ≤ fork → CheckpointHeadWeightCeiling (e := e) (2 * 10 ^ 17) time) :
     HonestHeadsCover (e := e) root (e.world n).time (time + 1) ∨
       HonestCollision (e := e) time ∨
       HistoricalDirectSafetyEvidence (e := e) pre time ∨
       CrossStoreJustifiedEvidence (e := e) pre time ∨
         HeldStateFinalityEvidence (e := e) pre time := by
   subst headEq
-  rcases viableAt_or_alternative_of_checked_call sync slots minLookahead maxLookahead ring
-      preGloas admitted votes fits prompt windows fit anchored sound anchorSlot anchorBoundary start
+  rcases viableAt_or_alternative_of_checked_call (room := room) (weights := weights)
+      (supply := supply) sync slots minLookahead maxLookahead ring admitted votes fits prompt
+      windows fit anchored sound anchorSlot anchorBoundary start
       caller callerUpToDate slotOk beginOk timeEq blockOk parentOk firstOk lastOk maximumOk
       registry aligned increment supportOk discountOk adversaryOk marginLt callerTime reserve
       reference referenceTime referenceUpToDate referenceSlotOk finishOk bounded roots unslashed
@@ -1493,7 +1512,7 @@ public theorem Execution.honestHeadsCover_of_checked_call [DecidablePred (· ∈
   swap
   · exact .inr alternatives
   rcases Execution.honestHeadsCover_of_viableAt
-    (room := fun gloas => absurd gloas (Nat.not_le_of_lt preGloas)) sync slots minLookahead
+    (room := room) sync slots minLookahead
       maxLookahead ring
       admitted half votes fits prompt windows
       (Execution.votersInHeadWindow_of_newlyActive anchored start (UInt64.le_of_eq anchorSlot)
@@ -1512,13 +1531,19 @@ public theorem Execution.honestHeadsCover_of_checked_call [DecidablePred (· ∈
 
 /-- A checked call's confirmed root is viable at each time from the call up to `time`.
 
-Otherwise two honest stores collide, or historical, cross-store or held-state evidence holds. -/
+Otherwise two honest stores collide, or historical, cross-store or held-state evidence holds.
+
+From Gloas, the anchor's registry must leave room up to the horizon.
+
+From Gloas, the head-weight bundle must fit.
+
+From Gloas, each honest justified state must bound each weak-head weight by `2 * 10^17` Gwei. -/
 public theorem Execution.rootViable_of_checked_call [DecidablePred (· ∈ J)] {Δ : ℕ}
     (sync : e.Synchronous Δ) (slots : 0 < config.SLOT_DURATION_MS)
     (minLookahead : 1 ≤ preset.MIN_SEED_LOOKAHEAD.toNat)
     (maxLookahead : 1 ≤ preset.MAX_SEED_LOOKAHEAD.toNat)
     (ring : preset.MIN_SEED_LOOKAHEAD.toNat + 3 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
-    (preGloas : fork < .glamsterdam) {time : ℕ} (admitted : BlocksAdmitted e 0 Δ time)
+    {time : ℕ} (admitted : BlocksAdmitted e 0 Δ time)
     (half : 2 * config.CONFIRMATION_BYZANTINE_THRESHOLD.toNat ≤ 100)
     (votes : ValidatedDutyVotes (e := e) time) (fits : DelayFits fork config genesisTimeMs Δ)
     (prompt : Prompt e time) (windows : AssignmentWindowAgreement (e := e) time)
@@ -1622,14 +1647,18 @@ public theorem Execution.rootViable_of_checked_call [DecidablePred (· ∈ J)] {
     (exits : ReceiverWindowExitsNear (e := e) (computeEpochAtSlot preset parent.slot) source first
       (e.world n).time time)
     (late : LateDutyMajority (e := e) (computeEpochAtSlot preset parent.slot)
-      (e.world n).time time) :
+      (e.world n).time time)
+    (room : .glamsterdam ≤ fork → AnchorRegistryRoom preset anchorState horizon)
+    (weights : .glamsterdam ≤ fork → config.HeadWeightsFit preset (2 * 10 ^ 17))
+    (supply : .glamsterdam ≤ fork → CheckpointHeadWeightCeiling (e := e) (2 * 10 ^ 17) time) :
     RootViable (e := e) root (e.world n).time time ∨
       HonestCollision (e := e) time ∨
       HistoricalDirectSafetyEvidence (e := e) pre time ∨
       CrossStoreJustifiedEvidence (e := e) pre time ∨
         HeldStateFinalityEvidence (e := e) pre time := by
-  rcases e.honestHeadsCover_of_checked_call sync slots minLookahead maxLookahead ring
-      preGloas admitted half votes fits prompt windows newVoters anchored sound anchorSlot
+  rcases e.honestHeadsCover_of_checked_call (room := room) (weights := weights) (supply := supply)
+      sync slots minLookahead maxLookahead ring admitted half votes fits prompt windows newVoters
+      anchored sound anchorSlot
       anchorBoundary start caller callerUpToDate slotOk beginOk timeEq blockOk parentOk
       sourceOk boostOk firstOk lastOk beforeOk maximumOk parentParticipantsOk registry aligned
       increment supportOk discountOk adversaryOk marginLt callerTime sourceReads drift reserve
@@ -1643,8 +1672,9 @@ public theorem Execution.rootViable_of_checked_call [DecidablePred (· ∈ J)] {
   swap
   · exact .inr alternatives
   subst headEq
-  rcases viableAt_or_alternative_of_checked_call sync slots minLookahead maxLookahead ring
-      preGloas admitted votes fits prompt windows fit anchored sound anchorSlot anchorBoundary start
+  rcases viableAt_or_alternative_of_checked_call (room := room) (weights := weights)
+      (supply := supply) sync slots minLookahead maxLookahead ring admitted votes fits prompt
+      windows fit anchored sound anchorSlot anchorBoundary start
       caller callerUpToDate slotOk beginOk timeEq blockOk parentOk firstOk lastOk maximumOk
       registry aligned increment supportOk discountOk adversaryOk marginLt callerTime reserve
       reference referenceTime referenceUpToDate referenceSlotOk finishOk bounded roots unslashed

@@ -187,11 +187,6 @@ def WindowMarginDrift (call last : Nat) (source : BeaconState preset fork)
       2 * stake receiverWeight p + stake receiverWeight q + sourceMaximum.toNat +
         sourceScore.toNat + shift
 
-/-- The active stake of a balance state is bounded by the supplied cap. -/
-def ActiveStakeAtMost (cap : Nat) (state : BeaconState preset fork) : Prop :=
-  stake (fun v => balanceAt state v.toNat)
-    (getActiveValidatorIndices state (getCurrentEpoch state)).toFinset ≤ cap
-
 /-- Every honest checkpoint state read before the deadline has active stake at most the cap. -/
 def CheckpointStakeCeiling (cap last : Nat) : Prop :=
   ∀ w ∈ J, ∀ k checkpoint state, (e.world k).time ≤ last →

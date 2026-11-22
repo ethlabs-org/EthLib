@@ -25,7 +25,9 @@ variable {preset : Preset} {fork : Fork} {config : Config} {checks : SignatureCh
 
 The caller's window reserve and the receiver's exit bound read one reserve value.
 
-The alternatives are a block collision of honest stores and historical direct-safety evidence. -/
+The alternatives are a block collision of honest stores and historical direct-safety evidence.
+
+From Gloas, honest registries must stay within the limit through `time`. -/
 public theorem Execution.isAncestor_getHead_of_historical_anchor_with [DecidablePred (· ∈ J)]
     {Δ : ℕ}
     (sync : e.Synchronous Δ) (slots : 0 < config.SLOT_DURATION_MS)

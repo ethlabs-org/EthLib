@@ -23,6 +23,12 @@ Not yet released.
   `Store.getCheckpointBlock_walk_root` (`ForkChoice/Store.lean`) shows that a checkpoint read is the root of a walk back to the first slot of the epoch, at every fork.
   `HonestRegistriesWithinLimit` and `Execution.honestRegistries_of_room` (`ForkChoice/FastConfirmation/HistoricalStatements.lean`) are now public, unchanged: from Gloas, honest registries stay within the limit while the stores' epochs stay bounded.
 
+- `Store.HeadWeightAtMost` (`ForkChoice/HeadTotality.lean`) bounds the stake of every set of validators of a state that are active or known to equivocate: the weights that the weak-head test reads.
+  `Store.headWeightAtMost_of_effectiveBalanceSum` derives it from a bound on the registry's effective balances.
+  `CheckpointHeadWeightCeiling` (`ForkChoice/FastConfirmation/HonestHeads.lean`) asks it of every honest justified state up to a time.
+  It is the Gloas head endpoint's former stake bound, restricted to the validators that the weak-head test reads.
+  `Execution.honestHeadsExist_or_evidence_of_gated` gives honest heads at every fork, from the pre-Gloas premises before Gloas and the Gloas ones, gated, from Gloas.
+
 - `Store.getCheckpointBlock_of_descendant` (`ForkChoice/Store.lean`) shows that a block below a descendant reads the descendant's checkpoint block, at an epoch whose first slot is at or before the block.
   It is the converse of `Store.getCheckpointBlock_of_isAncestor`.
   `Store.isPreviousSlotPayloadDecision_eq_false` (`ForkChoice/Head.lean`) shows that a pending node, or a node of a block older than the previous slot, is no payload decision of the previous slot.
@@ -889,6 +895,18 @@ Not yet released.
   Migration: before Gloas, pass `fun gloas => absurd gloas (Nat.not_le_of_lt early)`.
   The new statement implies the old one.
 
+- In Lean, `Store.getHead_exists_of_gloas` no longer takes `supply : effectiveBalanceSum state ≤ 2 * 10 ^ 17`.
+  It takes `bounded : ActiveStakeAtMost (2 * 10 ^ 17) state` and `heads : store.HeadWeightAtMost (2 * 10 ^ 17) state` in its place.
+  `Execution.honestHeadsExist_or_evidence_of_gloas` takes `heads : CheckpointHeadWeightCeiling (2 * 10 ^ 17) last` in place of `supply : CheckpointRegistryStakeCeiling (2 * 10 ^ 17) last`.
+  Migration: from `supply`, pass `Store.headWeightAtMost_of_effectiveBalanceSum (store := store) supply _ fun _ active => .inl active` as `bounded` and `Store.headWeightAtMost_of_effectiveBalanceSum supply` as `heads`; at the endpoint, pass `fun w hw k state time stateOk => Store.headWeightAtMost_of_effectiveBalanceSum (supply w hw k state time stateOk)`.
+  The new statements imply the old ones.
+
+- In Lean, `Execution.callRolloverRead_or_evidence`, `Execution.honestHeadsCover_of_checked_call` and `Execution.rootViable_of_checked_call` hold at every fork and no longer take `preGloas : fork < .glamsterdam`.
+  They take `room`, `weights` and `supply` gated from Gloas as their last arguments, and `callRolloverRead_or_evidence` also a gated `fit`.
+  Their `supply` has the type `CheckpointHeadWeightCeiling (2 * 10 ^ 17) _`, the bound that the Gloas head endpoint now reads.
+  Migration: drop `preGloas` and pass `fun gloas => absurd gloas (Nat.not_le_of_lt preGloas)` for each gated argument.
+  The new statements imply the old ones.
+
 - In Lean, `Store.checkpointState_justified_of_getHead` holds at every fork.
   It no longer takes `before : fork < .glamsterdam`; it takes `justifiedEarly`, which from Gloas asks that the justified block be older than the previous slot.
   Migration: before Gloas, drop `before` and pass `fun gloas => absurd gloas (Nat.not_le_of_lt before)`.
@@ -909,6 +927,9 @@ Not yet released.
   From Gloas the head walk is cut at the parent's pending node and read with `Store.isAncestor_getHeadFrom_of_sibling_bound`.
   Migration: before Gloas, drop `before` and pass `fun gloas => absurd gloas (Nat.not_le_of_lt before)`.
   The new statement implies the old one.
+
+- In Lean, `ActiveStakeAtMost` moves unchanged from `EthLib.Consensus.Proofs.ForkChoice.FastConfirmation.HistoricalStatements` to `EthLib.Consensus.Proofs.ForkChoice.BlockRuns`, so that the Gloas head totality can state its active-stake bound with it.
+  Existing imports remain sufficient.
 
 - In Lean, `Store.isAncestor_head_pending` moves from `EthLib.Consensus.Proofs.ForkChoice.FastConfirmation.Basic` to `EthLib.Consensus.Proofs.ForkChoice.Store`.
   Its name and statement are unchanged.

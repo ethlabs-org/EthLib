@@ -1183,7 +1183,9 @@ private theorem guarded_parentVoters_le [DecidablePred (· ∈ J)]
 
 /-- A source margin and approved drift give head ancestry or a collision at the caller's parent.
 
-The voters below the parent lie in the head's window by the window-membership premise. -/
+The voters below the parent lie in the head's window by the window-membership premise.
+
+From Gloas, honest registries must stay within the limit through `last`. -/
 public theorem ancestor_head_of_window_margin [DecidablePred (· ∈ J)]
     {anchor : Store preset fork}
     (anchorStore : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
@@ -1874,7 +1876,9 @@ public theorem Execution.latest_eq_of_rank_eq (slots : 0 < config.SLOT_DURATION_
 
 /-- A nonempty caller range supplies arithmetic for the receiver's full-window maximum.
 
-The receiver's own finalized checkpoint must be on the chain of its own justified checkpoint. -/
+The receiver's own finalized checkpoint must be on the chain of its own justified checkpoint.
+
+From Gloas, honest registries must stay within the limit through `time`. -/
 public theorem receiver_fullMaximum_of_head_window {anchor : Store preset fork}
     (anchorStore : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
     (anchored : ∀ w ∈ J, e.start w = anchor)

@@ -443,4 +443,14 @@ def HeldRegistriesWithinLimit (store : Store preset fork) : Prop :=
   ∀ (root : Root) (state : BeaconState preset fork),
     store.blockStates[root]? = some state → state.RegistryWithinLimit
 
+
+namespace Models.Network
+
+/-- The active stake of a balance state is bounded by the supplied cap. -/
+def ActiveStakeAtMost (cap : Nat) (state : BeaconState preset fork) : Prop :=
+  stake (fun v => balanceAt state v.toNat)
+    (getActiveValidatorIndices state (getCurrentEpoch state)).toFinset ≤ cap
+
+end Models.Network
+
 end EthLib.Consensus
