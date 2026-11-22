@@ -218,7 +218,7 @@ The heads may be held by two stores that hold the same parent state. -/
 private theorem committeesKept_of_parentState {caller receiver : Store preset fork}
     (callerReached : Store.Reachable config anchorState anchorBlock caller)
     (receiverReached : Store.Reachable config anchorState anchorBlock receiver)
-    (anchorSlot : anchorBlock.slot ≤ anchorState.slot) (before : fork < .glamsterdam)
+    (anchorSlot : anchorBlock.slot ≤ anchorState.slot)
     (maxLookahead : 1 ≤ preset.MAX_SEED_LOOKAHEAD.toNat)
     {parentRoot callerHead receiverHead : Root} {parent : BeaconBlock preset fork}
     {parentState callerState receiverState : BeaconState preset fork}
@@ -242,13 +242,14 @@ private theorem committeesKept_of_parentState {caller receiver : Store preset fo
       getCommitteeCountPerSlot receiverState epoch =
         getCommitteeCountPerSlot callerState epoch := by
   -- Both head states run on from the parent state.
-  have callerWalk := Store.getAncestor_of_isAncestor_of_lt before callerParent callerDescends
-  have receiverWalk := Store.getAncestor_of_isAncestor_of_lt before receiverParent
-    receiverDescends
+  obtain ⟨callerReachedNode, callerWalk, callerRooted⟩ :=
+    Store.getAncestor_of_isAncestor callerParent callerDescends
+  obtain ⟨receiverReachedNode, receiverWalk, receiverRooted⟩ :=
+    Store.getAncestor_of_isAncestor receiverParent receiverDescends
   have toCaller := callerReached.runKept_of_getAncestor anchorSlot callerWalk callerFound
-    callerParentState
+    (callerRooted ▸ callerParentState)
   have toReceiver := receiverReached.runKept_of_getAncestor anchorSlot receiverWalk receiverFound
-    receiverParentState
+    (receiverRooted ▸ receiverParentState)
   -- The parent state is at or after the parent's slot, so the epoch is within its lookahead.
   have parentLe := callerReached.slot_le_of_blockState anchorSlot callerParent callerParentState
   have parentEpoch : (computeEpochAtSlot preset parent.slot).toNat ≤
@@ -884,7 +885,6 @@ variable {config : Config} {checks : SignatureChecks}
 
 /-- A block below a descendant reads the descendant's checkpoint block at an earlier epoch. -/
 private theorem getCheckpointBlock_of_below {store : Store preset fork}
-    (before : fork < .glamsterdam)
     {tip below checkpoint : Root} {belowBlock : BeaconBlock preset fork} {epoch : Epoch}
     {start : Slot} (belowFound : store.blocks[below]? = some belowBlock)
     (descends : store.isAncestor ⟨tip, .pending⟩ ⟨below, .pending⟩ = .ok true)
@@ -895,10 +895,30 @@ private theorem getCheckpointBlock_of_below {store : Store preset fork}
   obtain ⟨start', ancestor, startOk', walk, rooted⟩ := Store.getCheckpointBlock_walk_root read
   rw [startOk, Except.ok.injEq] at startOk'
   subst start'
-  have toBelow := Store.getAncestor_of_isAncestor_of_lt before belowFound descends
+  -- The walk to the block's slot reaches its root; below that the walks agree on roots.
+  obtain ⟨reached, toBelow, reachedRoot⟩ := Store.getAncestor_of_isAncestor belowFound descends
   rw [Store.getAncestor_trans within toBelow] at walk
-  simp [Store.getCheckpointBlock, startOk, walk, rooted, Except.mapError, bind, Except.bind,
-    pure, Except.pure]
+  have reachedWalk := Store.getAncestor_root (store := store) reached .pending start
+  rw [reachedRoot, walk] at reachedWalk
+  simp only [Store.getCheckpointBlock, startOk, Except.mapError, bind, Except.bind]
+  change ((fun x => x.root) <$> store.getAncestor ⟨below, .pending⟩ start) = .ok checkpoint
+  rw [← reachedWalk]
+  simp [rooted, Functor.map, Except.map]
+
+/-- From Gloas the pending node of each node of the filtered tree is in the tree too. -/
+private theorem pending_mem_of_mem_filtered {store : Store preset fork}
+    (lower : store.ParentsBelow) (gloas : .glamsterdam ≤ fork) {nodes : List ForkChoiceNode}
+    (tree : store.getFilteredNodeTree config = .ok nodes) {node : ForkChoiceNode}
+    (member : node ∈ nodes) : (⟨node.root, .pending⟩ : ForkChoiceNode) ∈ nodes := by
+  have closed := Store.filterNodeTree_closed (T := Store.nodeTree lower) (·.toModel) tree
+    fun _ _ _ ok _ mem => Store.isChild_of_mem_getNodeChildren gloas ok mem
+  obtain ⟨below, between⟩ := closed node member
+  have rootBelow := Models.ForkChoice.BlockTree.payloadTree_ancestor_fst below
+  obtain ⟨m, mIn, same⟩ := between (some node.root, none)
+    (Models.ForkChoice.BlockTree.payloadTree_ancestor_none_of rootBelow)
+    (Models.ForkChoice.BlockTree.payloadTree_ancestor_none_of (.refl _))
+  have : m = ⟨node.root, .pending⟩ := ForkChoiceNode.toModel_injective same.symm
+  exact this ▸ mIn
 
 /-- The caller's finalized checkpoints from any earlier event fit a block below its head.
 
@@ -915,7 +935,7 @@ private theorem caller_fits_below_head {anchor : Store preset fork}
     (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
     (start : ∀ w ∈ J, e.start w = anchor) (sound : Invariant anchorState)
     (slots : 0 < config.SLOT_DURATION_MS) (anchorSlot : anchorBlock.slot = anchorState.slot)
-    (before : fork < .glamsterdam) {last : ℕ}
+    {last : ℕ}
     (chain : ∀ w ∈ J, ∀ i k, i ≤ k → (e.world k).time ≤ last →
       ((e.world k).state w).getCheckpointBlock ((e.world k).state w).justifiedCheckpoint.root
         ((e.world i).state w).finalizedCheckpoint.epoch =
@@ -973,38 +993,46 @@ private theorem caller_fits_below_head {anchor : Store preset fork}
   have justifiedRead := chain u caller k' n le bounded
   have lower := reached.parentsBelow (UInt64.le_of_eq anchorSlot) (absent u caller n bounded)
   -- The head is the justified block or a viable node of the filtered tree.
-  have pending := Store.getHead_pending before headOk
-  have notGloas : ¬ .glamsterdam ≤ fork := Nat.not_le_of_lt before
-  obtain ⟨headBlock, headFound, -⟩ := Store.slot_le_of_isAncestor belowFound headDescends
+  have headPending : store.isAncestor ⟨head.root, .pending⟩ ⟨below, .pending⟩ = .ok true := by
+    rw [← Store.isAncestor_getHead_root headOk]
+    exact headDescends
+  obtain ⟨headBlock, headFound, -⟩ := Store.slot_le_of_isAncestor belowFound headPending
+  have headRead := headOk
   unfold Store.getHead at headOk
   cases tree : store.getFilteredNodeTree config with
   | error err => simp [store, tree, bind, Except.bind] at headOk
   | ok nodes =>
-    simp only [store, tree, bind, Except.bind, notGloas, false_and, ↓reduceIte] at headOk
-    have headRoot : head = ⟨head.root, .pending⟩ := by
-      cases head
-      simp_all
+    simp only [store, tree, bind, Except.bind] at headOk
+    have atJustified (same : head.root = store.justifiedCheckpoint.root) :
+        store.isAncestor ⟨store.justifiedCheckpoint.root, .pending⟩ ⟨head.root, .pending⟩ =
+          .ok true := by
+      rw [same]
+      exact Store.isAncestor_self (same ▸ headFound)
     have covered : store.isAncestor ⟨store.justifiedCheckpoint.root, .pending⟩
           ⟨head.root, .pending⟩ = .ok true ∨ (⟨head.root, .pending⟩ : ForkChoiceNode) ∈ nodes := by
+      split at headOk
+      · -- From Gloas with no viable node, the head is the justified block's empty node.
+        simp only [pure, Except.pure, Except.ok.injEq] at headOk
+        exact .inl (atJustified (by rw [← headOk]))
       rcases Store.getHeadFrom_mem headOk with same | member
-      · left
-        have justifiedFound : store.blocks[store.justifiedCheckpoint.root]? = some headBlock := by
-          rw [same] at headFound
-          exact headFound
-        rw [same]
-        exact Store.isAncestor_self justifiedFound
-      · right
-        rwa [← headRoot]
+      · exact .inl (atJustified (by rw [same]))
+      right
+      by_cases gloas : .glamsterdam ≤ fork
+      · exact pending_mem_of_mem_filtered lower gloas tree member
+      · have pending := Store.getHead_pending (Nat.lt_of_not_le gloas) headRead
+        obtain ⟨headRoot, status⟩ := head
+        simp only at pending
+        subst pending
+        exact member
     rcases rootFinal_or_justified_covers anchored start anchorSlot chain caller bounded
         lower headFound tree covered with justifiedCovers | fits
     · -- The justified block descends from the head, so from the block below it.
       have belowJustified := Store.isAncestor_trans (middle := ⟨head.root, .pending⟩)
-        headFound belowFound justifiedCovers (headRoot ▸ headDescends)
-      exact getCheckpointBlock_of_below before belowFound belowJustified boundaryOk boundaryLe
+        headFound belowFound justifiedCovers headPending
+      exact getCheckpointBlock_of_below belowFound belowJustified boundaryOk boundaryLe
         justifiedRead
-    · obtain ⟨boundary', boundaryOk', -, headRead⟩ := fits k' le
-      exact getCheckpointBlock_of_below before belowFound (headRoot ▸ headDescends) boundaryOk
-        boundaryLe headRead
+    · obtain ⟨boundary', boundaryOk', -, headFinal⟩ := fits k' le
+      exact getCheckpointBlock_of_below belowFound headPending boundaryOk boundaryLe headFinal
 
 end Models.Network
 
@@ -1381,7 +1409,7 @@ private theorem receiver_origins_fresh {Δ : ℕ} (sync : e.Synchronous Δ)
   have absentBefore : ∀ a ∈ J, ∀ i, (e.world i).time ≤ (e.world n).time →
       ((e.world i).state a).blocks[anchorBlock.parentRoot]? = none :=
     fun a ha i bounded => absent a ha i (bounded.trans upToTime)
-  have fitsHistorical := caller_fits_below_head anchored start sound slots anchorSlot preGloas
+  have fitsHistorical := caller_fits_below_head anchored start sound slots anchorSlot
     chainBefore absentBefore caller (le_refl _) headOk historicalFound headHistorical
     callerEpochOk near
   rcases latest_rank_of_signed sync slots preGloas
@@ -1812,7 +1840,7 @@ private theorem caller_parent_voter_reaches {Δ : ℕ} (sync : e.Synchronous Δ)
     · exact .inr covers
     by_cases below : boundary ≤ parent.slot
     · exact .inl (.inl ⟨boundary, boundaryOk, below,
-        getCheckpointBlock_of_below preGloas parentKnown rootParent boundaryOk below checkpoint⟩)
+        getCheckpointBlock_of_below parentKnown rootParent boundaryOk below checkpoint⟩)
     obtain ⟨boundary', ancestor, boundaryOk', walk, rooted⟩ :=
       Store.getCheckpointBlock_walk_root checkpoint
     rw [boundaryOk, Except.ok.injEq] at boundaryOk'
@@ -2074,7 +2102,7 @@ Both heads descend from the parent, whose state both stores hold alike.
 Each slot of the range is at most one epoch after the parent.
 
 So the parent state fixes its committees. -/
-private theorem committee_reads_agree (preGloas : fork < .glamsterdam)
+private theorem committee_reads_agree
     (minLookahead : 1 ≤ preset.MIN_SEED_LOOKAHEAD.toNat)
     (maxLookahead : 1 ≤ preset.MAX_SEED_LOOKAHEAD.toNat)
     (ring : preset.MIN_SEED_LOOKAHEAD.toNat + 3 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
@@ -2139,7 +2167,7 @@ private theorem committee_reads_agree (preGloas : fork < .glamsterdam)
     (UInt64.le_iff_toNat_le.mp (UInt64.le_trans above low))
   have slotLast := epoch_le_of_slot_le (preset := preset) slot last (UInt64.le_iff_toNat_le.mp high)
   exact committeesKept_of_parentState (reached u caller n) (reached w receiver k)
-    (UInt64.le_of_eq anchorSlot) preGloas maxLookahead callerParent receiverParent
+    (UInt64.le_of_eq anchorSlot) maxLookahead callerParent receiverParent
     callerParentFound receiverParentFound callerDescends receiverDescends callerStateFound
     receiverStateFound (by omega) minLookahead (by omega) (by omega)
 
@@ -2178,7 +2206,7 @@ private theorem stake_counted_eq {source : BeaconState preset fork}
 
 /-- A caller supporter of a block does not vote for the block's parent. -/
 private theorem not_parentVoter_of_supporter {store : Store preset fork}
-    (preGloas : fork < .glamsterdam) {root : Root} {block parent : BeaconBlock preset fork}
+    {root : Root} {block parent : BeaconBlock preset fork}
     (found : store.blocks[root]? = some block)
     (parentFound : store.blocks[block.parentRoot]? = some parent)
     (lower : parent.slot < block.slot) {source : BeaconState preset fork}
@@ -2193,12 +2221,12 @@ private theorem not_parentVoter_of_supporter {store : Store preset fork}
   subst latest'
   rw [supportedOk, Except.ok.injEq] at supportedOk'
   subst supportedOk'
-  rw [Store.parentPayloadStatus_of_lt preGloas, or_self] at isParent
-  subst isParent
-  obtain ⟨parent', parentFound', above⟩ := Store.slot_le_of_isAncestor found descends
-  rw [parentFound, Option.some.injEq] at parentFound'
-  subst parentFound'
-  exact absurd (UInt64.lt_of_lt_of_le lower above) (UInt64.lt_irrefl _)
+  -- Either parent node has the parent's root, which sits below the block.
+  rcases isParent with rfl | rfl <;>
+  · obtain ⟨parent', parentFound', above⟩ := Store.slot_le_of_isAncestor found descends
+    rw [parentFound, Option.some.injEq] at parentFound'
+    subst parentFound'
+    exact absurd (UInt64.lt_of_lt_of_le lower above) (UInt64.lt_irrefl _)
 
 /-- The reserves and the weight bound of the source surplus, from the reads of both heads.
 
@@ -2613,7 +2641,7 @@ public theorem Execution.source_surplus_or_historical_evidence_with [DecidablePr
   have agreeReads := fun {a b : Slot} (above : parent.slot ≤ a)
       (endNear : (computeEpochAtSlot preset b).toNat ≤
         (computeEpochAtSlot preset parent.slot).toNat + 1) =>
-    committee_reads_agree preGloas minLookahead maxLookahead ring anchored anchorSlot
+    committee_reads_agree minLookahead maxLookahead ring anchored anchorSlot
       start caller receiver callerReceiver parentFound receiverParentFound callerDescends
       (receiverHeadEq ▸ receiverParent) slotOk currentOk (by omega)
       (by rw [receiverEpochEq]; exact receiverNear) above endNear
@@ -2717,7 +2745,7 @@ public theorem Execution.source_surplus_or_historical_evidence_with [DecidablePr
   have callerApart : Disjoint {v ∈ callerStore.supportersOf source ⟨root, .pending⟩ | v ∈ J}
       {v ∈ callerStore.parentVotersOf source parentParticipants block parent | v ∈ J} :=
     Finset.disjoint_left.mpr fun v supporter voter =>
-      not_parentVoter_of_supporter preGloas found parentFound parentBelow
+      not_parentVoter_of_supporter found parentFound parentBelow
         (Finset.mem_filter.mp supporter).1 (Finset.mem_filter.mp voter).1
   have advIn := activeMembers_mono_of_window (source := source) advOk wcCaller firstStart
     (UInt64.le_refl last)
