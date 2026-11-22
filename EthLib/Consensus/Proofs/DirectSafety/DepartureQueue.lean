@@ -1369,7 +1369,7 @@ private theorem ExitRateBelow.of_prefix {fork : Fork} {s t : BeaconState preset 
     (below : ExitRateBelow config exitCap s) : ExitRateBelow config exitCap t := by
   have epoch : getCurrentEpoch t = getCurrentEpoch s := by
     simp only [getCurrentEpoch, kept.active.1]
-  have total := total_active_congr early early
+  have total := total_active_congr
     (kept.active.2.mono (getCurrentEpoch_le_activityFixedEpoch s)) epoch kept.effective
   have notGloas : ¬ .glamsterdam ≤ fork := Nat.not_le_of_lt early
   intro rate computed
@@ -2552,7 +2552,7 @@ private theorem operationsPrefix_coverage {fork : Fork} (electra : .pectra ≤ f
     (fun _ _ _ ok => registryLifecycle_processBlsToExecutionChange ok) changedOk
   have votesFrame : departureQueues electra voted = departureQueues electra attested :=
     foldlM_ok_invariant (fun t => departureQueues electra t = departureQueues electra attested)
-      (fun _ _ _ kept ok => (attestation_departureQueues electra early ok).trans kept) rfl votedOk
+      (fun _ _ _ kept ok => (attestation_departureQueues electra ok).trans kept) rfl votedOk
   have depositsFrame : departureQueues electra deposited = departureQueues electra voted :=
     foldlM_ok_invariant (fun t => departureQueues electra t = departureQueues electra voted)
       (fun _ _ _ kept ok => (deposit_departureQueues electra ok).trans kept) rfl depositedOk
@@ -2627,11 +2627,11 @@ private def blockConsolidationSites {fork : Fork} (config : Config) (checks : Si
   else return []
 
 private theorem slashing_consolidationFrame {fork : Fork} {s t : BeaconState preset fork}
-    (electra : .pectra ≤ fork) (early : fork < .glamsterdam)
+    (electra : .pectra ≤ fork) (_early : fork < .glamsterdam)
     {index : ValidatorIndex} {whistleblower : Option ValidatorIndex}
     (ok : slashValidator config s index whistleblower = .ok t) :
     (departureQueues electra t).2.2 = (departureQueues electra s).2.2 := by
-  obtain ⟨exited, initiated, frame⟩ := slashValidator_departureQueues electra early ok
+  obtain ⟨exited, initiated, frame⟩ := slashValidator_departureQueues electra ok
   exact (congrArg (fun q => q.2.2) frame).trans
     (initiateExit_consolidationFrame electra initiated)
 
@@ -2851,7 +2851,7 @@ private theorem block_indexedTrace_sites {fork : Fork} (electra : .pectra ≤ fo
     have three := foldlM_ok_invariant
       (fun t => (departureQueues electra t).2.2 = (departureQueues electra voted).2.2)
       (fun _ _ _ kept ok =>
-        (congrArg (fun q => q.2.2) (attestation_departureQueues electra early ok)).trans kept)
+        (congrArg (fun q => q.2.2) (attestation_departureQueues electra ok)).trans kept)
       two votedAttOk
     have four := foldlM_ok_invariant
       (fun t => (departureQueues electra t).2.2 = (departureQueues electra voted).2.2)
@@ -2871,7 +2871,8 @@ private theorem block_indexedTrace_sites {fork : Fork} (electra : .pectra ≤ fo
         (congrArg (fun q => q.2.2) (credentials_departureQueues electra ok)).trans kept)
       five changedOk
   obtain ⟨planned, plannedOk, executedFrame⟩ :=
-    blockExecution_departureQueues electra early executedOk
+    ((blockExecution_departureQueues electra executedOk).resolve_right
+      fun ⟨g, _⟩ => Nat.not_le_of_lt early g).2
   have headFrame := blockHead_departureQueues electra headedOk executedFrame revealedOk votedOk
   have taken : blockPartialsTaken s block = planned.processedPartialWithdrawalsCount := by
     simp [blockPartialsTaken, capella, headedOk, plannedOk, Except.toOption, bind, Except.bind]
@@ -3102,7 +3103,7 @@ theorem consolidationQueue_dispatch {fork : Fork} (electra : .pectra ≤ fork)
   have notGloas : ¬ .glamsterdam ≤ fork := Nat.not_le_of_lt early
   refine ⟨?_, fun ⟨_, ok⟩ => kept (proposerSlashing_consolidationFrame electra early ok),
     fun ⟨_, ok⟩ => kept (attesterSlashing_consolidationFrame electra early ok),
-    fun ⟨_, _, ok⟩ => kept (congrArg (·.2.2) (attestation_departureQueues electra early ok)),
+    fun ⟨_, _, ok⟩ => kept (congrArg (·.2.2) (attestation_departureQueues electra ok)),
     fun ⟨_, _, ok⟩ => kept (congrArg (·.2.2) (deposit_departureQueues electra ok)),
     fun ⟨_, ok⟩ => kept (initiateExit_consolidationFrame electra
       (processVoluntaryExit_initiates ok)),
@@ -3116,7 +3117,9 @@ theorem consolidationQueue_dispatch {fork : Fork} (electra : .pectra ≤ fork)
     simp only [notGloas, bellatrix, before, ↓reduceDIte, pure, Except.pure,
       Except.ok.injEq] at paidOk executedOk votedOk
     subst paidOk
-    obtain ⟨planned, _, executedFrame⟩ := blockExecution_departureQueues electra early executedOk
+    obtain ⟨planned, _, executedFrame⟩ :=
+      ((blockExecution_departureQueues electra executedOk).resolve_right
+        fun ⟨g, _⟩ => Nat.not_le_of_lt early g).2
     have frame := blockHead_departureQueues electra headedOk executedFrame revealedOk votedOk
     refine ⟨(congrArg (fun q => q.2.2.1) frame).trans ?_,
       (congrArg (fun q => q.2.2.2.1) frame).trans ?_⟩ <;> rfl
@@ -4245,7 +4248,7 @@ private theorem pre_electra_charge_step_bounds {g x y : ForkedBeaconState preset
       cases Option.some.inj added
       have lower := departureCharges_epoch_ge step targetEarly _ member
       have capped := shared.effectiveBalance_capped genesis caps.activation caps.compounding
-        (Nat.lt_trans early (by decide)) old (Array.mem_of_getElem? found)
+        old (Array.mem_of_getElem? found)
       have notElectra : ¬ .pectra ≤ x.fork := Nat.not_le_of_lt early
       simp only [withdrawalMaxEffectiveBalance, notElectra, ↓reduceIte] at capped
       exact ⟨lower, UInt64.le_iff_toNat_le.mp capped⟩
@@ -4462,10 +4465,10 @@ private theorem crossing_charges_le_window {g x middle y : ForkedBeaconState pre
 /-- A step within one pre-Gloas epoch keeps every existing effective balance. -/
 theorem step_same_epoch_effective {x y : ForkedBeaconState preset}
     (step : Step config checks x y)
-    (early : y.fork < .glamsterdam)
+    (_early : y.fork < .glamsterdam)
     (epoch : getCurrentEpoch y.state = getCurrentEpoch x.state) :
     ∀ i, i < x.state.validators.data.size → effectiveAt y i = effectiveAt x i :=
-  Run.effectiveKept_of_same_epoch (Run.nil.snoc step) early epoch
+  Run.effectiveKept_of_same_epoch (Run.nil.snoc step) epoch
 
 /-- Before Gloas, a run inside one epoch keeps every existing effective balance.
 
@@ -4473,10 +4476,10 @@ Blocks keep them at every fork, and a slot inside the epoch runs no epoch transi
 
 The slot is not an epoch boundary, so it runs no upgrade. -/
 theorem run_same_epoch_effective {x y : ForkedBeaconState preset}
-    (tail : Run config checks x y) (early : y.fork < .glamsterdam)
+    (tail : Run config checks x y) (_early : y.fork < .glamsterdam)
     (epoch : getCurrentEpoch y.state = getCurrentEpoch x.state) :
     ∀ i, i < x.state.validators.data.size → effectiveAt y i = effectiveAt x i :=
-  Run.effectiveKept_of_same_epoch tail early epoch
+  Run.effectiveKept_of_same_epoch tail epoch
 
 private theorem consolidationRequestSites_input {fork : Fork} {s : BeaconState preset fork}
     {electra : .pectra ≤ fork} {request : ConsolidationRequest}
@@ -4570,13 +4573,11 @@ theorem consolidationSite_epoch_total {x y : ForkedBeaconState preset}
             exact currentEpoch_le_of_chainSteps pre.chainSteps
           · intro same
             have first := total_active_congr
-              (Nat.lt_of_le_of_lt (fork_le_of_chainSteps pre.chainSteps) middleEarly)
-              middleEarly
               ((activeKept_of_chainSteps pre.chainSteps).mono
                 (getCurrentEpoch_le_activityFixedEpoch x.state))
               (epoch.symm.trans same)
               (run_same_epoch_effective pre middleEarly (epoch.symm.trans same))
-            have second := total_active_congr middleEarly middleEarly
+            have second := total_active_congr
               (kept.active.2.mono (getCurrentEpoch_le_activityFixedEpoch before)) epoch
               kept.effective
             exact second.trans first
@@ -4607,7 +4608,7 @@ theorem consolidationSite_rate {x y : ForkedBeaconState preset}
           obtain ⟨u, rfl, kept⟩ := blockConsolidationSites_prefix replay site current
           have epoch : getCurrentEpoch u = getCurrentEpoch before := by
             simp only [getCurrentEpoch, kept.active.1]
-          have total := total_active_congr middleEarly middleEarly
+          have total := total_active_congr
             (kept.active.2.mono (getCurrentEpoch_le_activityFixedEpoch before)) epoch
             kept.effective
           refine ⟨_, _, _, .last pre (.block engine signed due applied), id, ?_⟩
@@ -4680,7 +4681,7 @@ private theorem initialized_upgrades {s t : ForkedBeaconState preset}
   have epoch : getCurrentEpoch t.state = getCurrentEpoch s.state := by
     simp only [getCurrentEpoch, processUpgrades_slot ok]
   have sourceEarly := Nat.lt_of_le_of_lt (processUpgrades_fork_le ok) early
-  have total := total_active_congr sourceEarly early (ActiveKept.of_validators data _) epoch
+  have total := total_active_congr (ActiveKept.of_validators data _) epoch
     (by intro i _; simp only [effectiveAt, data])
   have notGloas : ¬ .glamsterdam ≤ t.fork := Nat.not_le_of_lt early
   have sourceNotGloas : ¬ .glamsterdam ≤ s.fork := Nat.not_le_of_lt sourceEarly
@@ -5339,11 +5340,11 @@ theorem trace_window_envelope_from {earliest epoch : Epoch} {available left : Gw
   have spent := Nat.le_trans (Nat.le_add_right _ _) bound
   simpa only [queueEnvelopePotential, queue_capacity_truncate] using spent
 private theorem exit_site_total_eq {fork : Fork} {s site : BeaconState preset fork}
-    (early : fork < .glamsterdam) (kept : SitePrefix s site) :
+    (_early : fork < .glamsterdam) (kept : SitePrefix s site) :
     getTotalActiveBalance site = getTotalActiveBalance s := by
   have epoch : getCurrentEpoch site = getCurrentEpoch s := by
     simp only [getCurrentEpoch, kept.active.1]
-  exact total_active_congr early early
+  exact total_active_congr
     (kept.active.2.mono (getCurrentEpoch_le_activityFixedEpoch s)) epoch kept.effective
 private theorem attester_fold_exit_sites {fork : Fork} {s t : BeaconState preset fork}
     (electra : .pectra ≤ fork) (early : fork < .glamsterdam)
@@ -5511,7 +5512,7 @@ private theorem operations_prefix_exit_sites {fork : Fork} (electra : .pectra �
     (fun _ _ _ ok => registryLifecycle_processBlsToExecutionChange ok) changedOk
   have votesFrame : departureQueues electra voted = departureQueues electra attested :=
     foldlM_ok_invariant (fun t => departureQueues electra t = departureQueues electra attested)
-      (fun _ _ _ kept ok => (attestation_departureQueues electra early ok).trans kept) rfl votedOk
+      (fun _ _ _ kept ok => (attestation_departureQueues electra ok).trans kept) rfl votedOk
   have depositsFrame : departureQueues electra deposited = departureQueues electra voted :=
     foldlM_ok_invariant (fun t => departureQueues electra t = departureQueues electra voted)
       (fun _ _ _ kept ok => (deposit_departureQueues electra ok).trans kept) rfl depositedOk
@@ -5647,7 +5648,7 @@ private theorem operations_covered_exit_sites {fork : Fork} (electra : .pectra �
     have three := foldlM_ok_invariant
       (fun t => (departureQueues electra t).2.2 = (departureQueues electra s).2.2)
       (fun _ _ _ kept h =>
-        (congrArg (fun q => q.2.2) (attestation_departureQueues electra early h)).trans kept)
+        (congrArg (fun q => q.2.2) (attestation_departureQueues electra h)).trans kept)
       two votedOk
     have four := foldlM_ok_invariant
       (fun t => (departureQueues electra t).2.2 = (departureQueues electra s).2.2)
@@ -5746,7 +5747,8 @@ private theorem block_exit_sites {fork : Fork} (electra : .pectra ≤ fork)
     operations_covered_exit_sites electra early operatedOk
   have prior := blockHead_sitePrefix headedOk executedOk revealedOk votedOk
   obtain ⟨planned, plannedOk, executedFrame⟩ :=
-    blockExecution_departureQueues electra early executedOk
+    ((blockExecution_departureQueues electra executedOk).resolve_right
+      fun ⟨g, _⟩ => Nat.not_le_of_lt early g).2
   have headFrame := blockHead_departureQueues electra headedOk executedFrame revealedOk votedOk
   have taken : blockPartialsTaken s block = planned.processedPartialWithdrawalsCount := by
     simp [blockPartialsTaken, capella, headedOk, plannedOk, Except.toOption, bind, Except.bind]
@@ -5966,7 +5968,9 @@ private theorem execution_partial_consumption (charged : PartialCost (config := 
       ∀ entry ∈ (s.pendingPartialWithdrawals electra).data.toList.take
         expected.processedPartialWithdrawalsCount,
         entry.withdrawableEpoch ≤ getCurrentEpoch s := by
-  obtain ⟨expected, expectedOk, queues⟩ := blockExecution_departureQueues electra early ok
+  obtain ⟨expected, expectedOk, queues⟩ :=
+    ((blockExecution_departureQueues electra ok).resolve_right
+      fun ⟨g, _⟩ => Nat.not_le_of_lt early g).2
   have same := congrArg (fun q => q.2.2.2.2) queues
   change (t.pendingPartialWithdrawals electra).data =
     (s.pendingPartialWithdrawals electra).data.extract

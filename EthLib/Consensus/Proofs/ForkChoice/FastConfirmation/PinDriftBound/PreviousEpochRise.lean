@@ -78,7 +78,7 @@ A slot step inside the epoch keeps the balances.
 
 A block step counts the net rise of the balance across it. -/
 private theorem same_epoch_balance_le (i high : ℕ) {c a : ForkedBeaconState preset}
-    (r : Run config checks c a) (early : a.fork < .glamsterdam)
+    (r : Run config checks c a) (_early : a.fork < .glamsterdam)
     (same : getCurrentEpoch a.state = getCurrentEpoch c.state)
     (endEpoch : (getCurrentEpoch a.state).toNat ≤ high + 1) :
     actualBalanceAt a i ≤ actualBalanceAt c i + Internal.netScan i high r +
@@ -86,8 +86,8 @@ private theorem same_epoch_balance_le (i high : ℕ) {c a : ForkedBeaconState pr
   refine Run.induction_of_same_epoch (fun z r' => (getCurrentEpoch z.state).toNat ≤ high + 1 →
       actualBalanceAt z i ≤ actualBalanceAt c i + Internal.netScan i high r' +
         (Internal.creditScan (fun _ => false) (fun s => decide (s ≠ .rewards)) i high r'))
-    (fun _ => by simp [Internal.netScan_nil, Internal.creditScan_nil]) ?_ ?_ r early same endEpoch
-  · intro f s t engine signed due ok pre' _ prior within
+    (fun _ => by simp [Internal.netScan_nil, Internal.creditScan_nil]) ?_ ?_ r same endEpoch
+  · intro f s t engine signed due ok pre' prior within
     have epoch : (getCurrentEpoch t).toNat = (getCurrentEpoch s).toNat := by
       simp only [getCurrentEpoch, processBlock_slot (applySignedBlock_ok ok).2.1]
     have before := prior (by simp only at within ⊢; omega)
@@ -237,7 +237,7 @@ private theorem hysteresis_at_epoch_start
           exact inside (UInt64.toNat_inj.mp (by rw [UInt64.toNat_mod, zero, UInt64.toNat_zero]))
         simp only [getCurrentEpoch_toNat, next, Nat.succ_div, notDvd, ↓reduceIte,
           Nat.add_zero, Nat.lt_irrefl] at crossing
-      exact hysteresis_of_run_slot h.genesis h.bands h.caps h.facts.activation pre' ok h.early
+      exact hysteresis_of_run_slot h.genesis h.bands h.caps h.facts.activation pre' ok
         first
   exact crossed toB rfl earlier
 

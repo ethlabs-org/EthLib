@@ -1684,7 +1684,7 @@ private theorem block_flip_balance {engine : ExecutionEngine preset fork}
       ((frame_processBlockExecution hu2).toFrame.trans
         ((frame_processRandao hu3).toFrame.trans
           (frame_processEth1Data hu4).toFrame))).balancesMatch matched
-  obtain ⟨_, executed, -⟩ := BlockLedger.ledger_processBlockExecution early hu2
+  obtain ⟨_, executed, -⟩ := BlockLedger.ledger_processBlockExecution hu2
   have toInput : CompKept s u4 :=
     (CompKept.of_ledger (BlockLedger.ledger_processBlockHeader hu1)).trans <|
       (CompKept.of_ledger executed).trans <|

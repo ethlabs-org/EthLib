@@ -96,7 +96,7 @@ private theorem slashed_effective_le_cap {g x w : ForkedBeaconState preset}
   rw [fw] at read
   cases read
   have cap := (shared.append tail).effectiveBalance_capped genesis caps.activation
-    caps.compounding early vw (Array.mem_of_getElem? fw)
+    caps.compounding vw (Array.mem_of_getElem? fw)
   -- The cap at `w` is at most the cap at `x`, on either side of Electra.
   have kept : withdrawalMaxEffectiveBalance preset w.fork vw ≤
       withdrawalMaxEffectiveBalance preset x.fork vx := by

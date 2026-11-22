@@ -190,12 +190,12 @@ private theorem kept_block {fork : Fork} {a t : BeaconState preset fork}
     {engine : ExecutionEngine preset fork} {signed : SignedBeaconBlock preset fork}
     {due : upgradeDue config ⟨fork, a⟩ = false}
     {ok : applySignedBlock config checks engine a signed true = .ok t}
-    (fulu : .fusaka ≤ fork) (early : fork < .glamsterdam) (matched : BalancesMatch a) :
+    (fulu : .fusaka ≤ fork) (_early : fork < .glamsterdam) (matched : BalancesMatch a) :
     PinDrift.Internal.Kept a t := by
   have processed := (applySignedBlock_ok ok).2.1
   have frame := frame_processBlock processed
   refine ⟨registryLifecycle_processBlock processed, .of_frame frame, ?_⟩
-  exact Run.withdrawableKept_of_same_epoch (Run.nil.snoc (Step.block engine signed due ok)) early
+  exact Run.withdrawableKept_of_same_epoch (Run.nil.snoc (Step.block engine signed due ok))
     fulu (by simp only [getCurrentEpoch, frame.slot]) matched
 
 /-- From Fulu and before Gloas, a run keeps the registry. -/

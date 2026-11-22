@@ -115,7 +115,7 @@ theorem short_in_fin (h : Setting config checks g split fin pulled anc counted V
     UInt64.le_iff_toNat_le.mp (currentEpoch_le_of_chainSteps (fromC.append pre).chainSteps)
   have same : getCurrentEpoch a.state = getCurrentEpoch c :=
     UInt64.toNat_inj.mp (by omega)
-  have kept := (fromC.append pre).effectiveKept_of_same_epoch early same i inside
+  have kept := (fromC.append pre).effectiveKept_of_same_epoch same i inside
   exact short_end h i (by rw [kept]; exact left) slack
 
 /-- The credits that raise the effective balance of a key of R's registry on C's branch.
@@ -2695,8 +2695,8 @@ private theorem whistle_exited (h : Setting config checks g split fin pulled anc
     | none => simp [foundC] at flags
     | some w =>
       have marked : w.slashed = true := by simpa [foundC] using flags.2
-      have assigned := (Internal.CapStep.run tailC h.caps.activation h.caps.compounding
-        h.early).1.appended (Internal.Setting.delay h) i w (Nat.le_of_not_lt created) foundC marked
+      have assigned := (Internal.CapStep.run tailC h.caps.activation h.caps.compounding).1.appended
+        (Internal.Setting.delay h) i w (Nat.le_of_not_lt created) foundC marked
       obtain ⟨c, inRun, index, -⟩ := Internal.Run.charge_of_exit tailC electra h.early i
         (fun v found => absurd (Array.getElem?_eq_some_iff.mp found).1 created) w foundC assigned
       exact ⟨c, inRun, index⟩

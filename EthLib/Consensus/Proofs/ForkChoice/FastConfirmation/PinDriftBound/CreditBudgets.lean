@@ -181,7 +181,7 @@ private theorem pending_key_claim (h : Setting config checks g split fin pulled 
     intro fork
     exact (Nat.not_le_of_lt before (Nat.le_trans (by decide) fork)).elim
   have finPartials : Internal.AssignedPartials fin :=
-    (Internal.CapStep.run toFin h.caps.activation h.caps.compounding h.early).2.1 genesisPartials
+    (Internal.CapStep.run toFin h.caps.activation h.caps.compounding).2.1 h.early genesisPartials
   have noEntry : ((((fin.pendingPartialWithdrawals electra).data.toList.filter
       fun entry => decide (entry.validatorIndex = v)).filter
         (fun entry => entry.withdrawableEpoch.toNat ≤ (getCurrentEpoch pulled).toNat + 1)).map
