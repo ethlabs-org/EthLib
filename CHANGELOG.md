@@ -867,6 +867,14 @@ Not yet released.
 
 ### Changes that break callers
 
+- In Lean, the confirmed root of a run of fast-confirmation calls covers honest heads at every fork.
+  `Execution.confirmedRoot_covers` takes `room`, `weights` and `supply`, gated on Gloas, instead of `preGloas`.
+  They are the anchor's registry room, the head-weight bundle, and the head-weight ceiling of honest justified states.
+  `CallsCtx` drops its field `preGloas`, and `StepCtx` carries `room`, `weights` and `supply`.
+  `sourceOnParentChain_of_walk`, `Execution.honestTargetVotes_of_byzantineStakeAtMost` and `Store.viable_of_ancestor` drop their pre-Gloas binder.
+  `Execution.receiverWindowExitsNear_of_sourceOnParentChain` takes `within`, the registry of the source within the limit, instead of `preGloas`.
+  Migration: pass `room`, `weights` and `supply` each as `fun g => absurd g (Nat.not_le_of_lt preGloas)`, delete the other arguments, and pass `within := source.validators.bound preGloas`.
+
 - In Lean, the quorum drift of a call is bounded at every fork.
   `quorumDrift_le_quorumReserve` takes `within` at the counting state instead of `early`.
   `Execution.quorumDriftWithin` takes `room`, the anchor's registry room from Gloas, instead of `early`.
