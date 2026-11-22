@@ -1,12 +1,12 @@
 module
 
+public import EthLib.Consensus.Proofs.Transition.BalanceDrift
 public import EthLib.Consensus.Proofs.Transition.Totality.Bound
 public import EthLib.Consensus.Transition.StateTransition
 import EthLib.Consensus.Proofs.Accessors
 import EthLib.Consensus.Proofs.Mutators
 import EthLib.Consensus.Proofs.PayloadTimeliness
 import EthLib.Consensus.Proofs.Transition.ActiveKept
-import EthLib.Consensus.Proofs.Transition.BalanceDrift
 import EthLib.Consensus.Proofs.Transition.Block
 import EthLib.Consensus.Proofs.Transition.BlockRewards
 import EthLib.Consensus.Proofs.Transition.BuilderRequests
@@ -1065,14 +1065,20 @@ private theorem Steady.of_validators {a b : BeaconState preset fork}
   ⟨ActiveStep.of_validators (congrArg (·.data) validators) slot,
     effectiveKept_data (congrArg (·.data) validators), by rw [validators]⟩
 
+/-- A step that keeps the size of the registry and each effective balance keeps their sum. -/
+theorem effectiveBalanceSum_eq_of_effectiveKept {a b : BeaconState preset fork}
+    (sized : b.validators.data.size = a.validators.data.size) (kept : EffectiveKept a b) :
+    effectiveBalanceSum b = effectiveBalanceSum a := by
+  rw [effectiveBalanceSum_eq_sum_range, effectiveBalanceSum_eq_sum_range, sized]
+  congr 1
+  refine List.map_congr_left fun j member => ?_
+  exact kept j (List.mem_range.mp member)
+
 /-- A steady step keeps the sum of the effective balances. -/
 private theorem Steady.effectiveBalanceSum_eq {a b : BeaconState preset fork}
     (steady : Steady a b) :
-    effectiveBalanceSum b = effectiveBalanceSum a := by
-  rw [effectiveBalanceSum_eq_sum_range, effectiveBalanceSum_eq_sum_range, steady.2.2]
-  congr 1
-  refine List.map_congr_left fun j member => ?_
-  exact steady.2.1 j (List.mem_range.mp member)
+    effectiveBalanceSum b = effectiveBalanceSum a :=
+  effectiveBalanceSum_eq_of_effectiveKept steady.2.2 steady.2.1
 
 private theorem Steady.total {a b : BeaconState preset fork} (steady : Steady a b) :
     getTotalActiveBalance b = getTotalActiveBalance a :=
