@@ -867,6 +867,9 @@ Not yet released.
 
 ### Changes that break callers
 
+- In Lean, `Execution.blocks_of_partiallySynchronous` is removed; it has no reader.
+  Migration: use `Execution.blocks_of_partiallySynchronous_of_anchorSlot`, passing `fun gloas => absurd gloas (Nat.not_le_of_lt preGloas)` for `anchorSlot` and `start v honest` and `start u receiver` for the two starts.
+
 - In Lean, the confirmed root of a run of fast-confirmation calls covers honest heads at every fork.
   `Execution.confirmedRoot_covers` takes `room`, `weights` and `supply`, gated on Gloas, instead of `preGloas`.
   They are the anchor's registry room, the head-weight bundle, and the head-weight ceiling of honest justified states.
