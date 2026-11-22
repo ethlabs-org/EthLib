@@ -624,7 +624,7 @@ public theorem Execution.honestHeadsCover_of_viableAt [DecidablePred (· ∈ J)]
         have finality := receiverFinality_of_viable anchored start anchorSlot preGloas absent
           family receiver highK known tree route
         have step := e.isAncestor_getHead_of_historical_anchor_with sync slots positive minLookahead
-          maxLookahead ring preGloas (time := T)
+          maxLookahead ring (time := T)
           (fun v hv w hw i j hj => admitted v hv w hw i j (by omega))
           half (fun v hv s c d a dt b dl => votes v hv s c d a dt b (by omega)) fits
           (prompt.of_le high)
@@ -654,6 +654,7 @@ public theorem Execution.honestHeadsCover_of_viableAt [DecidablePred (· ∈ J)]
           (exits w receiver k receiverHead current receiverLast receiverEpoch lowK highK upToDate
             receiverHeadOk currentOk receiverLastOk receiverEpochOk nearParent)
           (fun a ha i hi => absent a ha i (by omega)) tree route
+          (fun gloas => absurd gloas (Nat.not_le_of_lt preGloas))
         exact step
       · -- Duty-epoch step at time `T`, with the late majority's complete epoch after the call.
         obtain ⟨epoch, epochBegin, epochNext, beginTime, endTime, beginOk', nextOk, beginTimeOk,
@@ -1286,7 +1287,7 @@ private theorem viableAt_or_alternative_of_checked_call [DecidablePred (· ∈ J
   have recency : (computeEpochAtSlot preset slot).toNat ≤
       rootState.currentJustifiedCheckpoint.epoch.toNat + 2 := by omega
   -- The root is held from the call on, from the honest vote behind the margin.
-  have vote := e.honest_vote_of_caller_margin slots minLookahead maxLookahead ring preGloas
+  have vote := e.honest_vote_of_caller_margin slots minLookahead maxLookahead ring
     anchored anchorSlot start caller slotOk blockOk parentOk firstOk lastOk maximumOk registry
     aligned increment supportOk discountOk adversaryOk marginLt callerTime reserve reference
     referenceTime referenceUpToDate referenceSlotOk finishOk headDescends historicalBelow

@@ -23,6 +23,8 @@ Not yet released.
   `Store.getCheckpointBlock_walk_root` (`ForkChoice/Store.lean`) shows that a checkpoint read is the root of a walk back to the first slot of the epoch, at every fork.
   `HonestRegistriesWithinLimit` and `Execution.honestRegistries_of_room` (`ForkChoice/FastConfirmation/HistoricalStatements.lean`) are now public, unchanged: from Gloas, honest registries stay within the limit while the stores' epochs stay bounded.
 
+- `Store.isAncestor_getSupportedNode` (`ForkChoice/Head.lean`) shows that a supported node descends from a pending node exactly as the vote's block does, at every fork.
+
 - `Store.weight_add_weight_add_stake_le_stake_withBoost_of_isChild` (`ForkChoice/SiblingCap.lean`) bounds two sibling nodes and a set supporting neither by a window plus one boost, for any tree and view of the store's votes.
   `Store.weight_add_weight_add_stake_le_stake_withBoost` is now its case for sibling blocks.
 
@@ -882,6 +884,11 @@ Not yet released.
   It no longer takes `early : fork < .glamsterdam`; it takes `registries : .glamsterdam ≤ fork → HonestRegistriesWithinLimit time` in its place.
   Migration: before Gloas, pass `fun gloas => absurd gloas (Nat.not_le_of_lt early)`.
   The new statement implies the old one.
+
+- In Lean, `Execution.honest_vote_of_caller_margin` holds at every fork and no longer takes `preGloas : fork < .glamsterdam`.
+  `Execution.source_surplus_or_historical_evidence_with` and `Execution.isAncestor_getHead_of_historical_anchor_with` hold at every fork; they no longer take `preGloas` and take `registries : .glamsterdam ≤ fork → HonestRegistriesWithinLimit time` as their last argument.
+  Migration: drop `preGloas`; before Gloas, pass `fun gloas => absurd gloas (Nat.not_le_of_lt preGloas)` as `registries`.
+  The new statements imply the old ones.
 
 - In Lean, `ancestor_head_of_window_margin` holds at every fork.
   It no longer takes `before : fork < .glamsterdam`; it takes `registries : .glamsterdam ≤ fork → HonestRegistriesWithinLimit last` as its last argument.

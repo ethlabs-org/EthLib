@@ -193,6 +193,17 @@ theorem getSupportedNode_exists {message : LatestMessage fork}
     · exact ⟨_, getSupportedNode_of_same_slot gloas found (UInt64.not_lt.mp lt)⟩
   · exact ⟨_, getSupportedNode_of_lt (Nat.lt_of_not_le gloas)⟩
 
+/-- A supported node descends from a pending node exactly as the vote's block does, at every fork.
+-/
+theorem isAncestor_getSupportedNode {message : LatestMessage fork} {node : ForkChoiceNode}
+    (supported : store.getSupportedNode message = .ok node) (root : Root) :
+    store.isAncestor node ⟨root, .pending⟩ =
+      store.isAncestor ⟨message.root, .pending⟩ ⟨root, .pending⟩ := by
+  by_cases gloas : .glamsterdam ≤ fork
+  · rw [isAncestor_head_pending gloas, getSupportedNode_root supported]
+  · rw [getSupportedNode_of_lt (Nat.lt_of_not_le gloas), Except.ok.injEq] at supported
+    rw [← supported]
+
 /-- From Gloas a vote for a block the store does not hold supports no node. -/
 theorem getSupportedNode_of_unknown {message : LatestMessage fork} (gloas : .glamsterdam ≤ fork)
     (missing : store.blocks[message.root]? = none) :

@@ -639,15 +639,7 @@ private theorem honest_supporters_le_weight [DecidablePred (· ∈ J)]
     have counts := Store.voteCountsFor_of_mem_supportersOf supporter
     obtain ⟨message, supported, latest, clean, supportedOk, descends⟩ :=
       store.exists_of_voteCountsFor counts
-    -- The supported node has the vote's root; its descent reads only that root.
-    have rooted := Store.getSupportedNode_root supportedOk
-    have pendingDescends :
-        store.isAncestor ⟨message.root, .pending⟩ ⟨root, .pending⟩ = .ok true := by
-      by_cases gloas : .glamsterdam ≤ fork
-      · rw [← rooted, ← Store.isAncestor_head_pending gloas]
-        exact descends
-      · rw [Store.getSupportedNode_of_lt (Nat.lt_of_not_le gloas), Except.ok.injEq] at supportedOk
-        exact supportedOk ▸ descends
+    have pendingDescends := (Store.isAncestor_getSupportedNode supportedOk root) ▸ descends
     have ancestry := (Store.isAncestor_iff (lower := lower) found rfl pendingDescends).mp rfl
     simp only [Store.supportersOf, List.mem_toFinset, List.mem_map, List.mem_filter] at supporter
     obtain ⟨⟨index, balance⟩, ⟨entry, _⟩, same⟩ := supporter
