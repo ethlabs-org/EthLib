@@ -830,6 +830,15 @@ Not yet released.
 
 ### Changes that break callers
 
+- In Lean, `effectiveRise_le` and `effectiveFall_le` bound the effective-balance rise and fall at every fork.
+  They take `within`, the registry of the counting state within the limit, instead of `early`.
+  From Gloas the type of the registry does not give it.
+  Migration: pass `within := y.state.validators.bound early`.
+
+- In Lean, the sync-key lemmas and `depositCarry_processBlock` hold at every fork, with the same conclusion.
+  `Run.currentSyncCommittee_eq_of_same_period`, `Run.currentSyncCommittee_eq_nextSyncCommittee_of_next_period`, `Run.currentSyncCommittee_eq_of_same_epoch` and `depositCarry_processBlock` drop their pre-Gloas binder.
+  Migration: delete the argument.
+
 - In Lean, the block and ledger lemmas of the quorumReserve route extend through Gloas, and their existing lower fork bounds remain.
   These drop their pre-Gloas binder (`DirectSafety.total_active_congr` drops two, `before` and `after`), with the same conclusion: `DirectSafety.total_active_congr`, `Run.effectiveKept_of_same_epoch`, `hysteresis_of_run_slot`, `balanceDrift_upgrades_upper`, `balanceDrift_upgrades_active`, `BlockLedger.ledger_processBlockExecution`, `BlockLedger.ledger_processProposerSlashing`, `BlockLedger.ledger_processAttesterSlashing`, `processOperations_floor`, `BlockCredits.block_balances`, `Run.withdrawableKept_of_same_epoch`, `Run.balanceCorrections_of_same_epoch`, `Run.effectiveBalance_capped`, `Run.pendingConsolidationsOrdered`, `Run.pendingConsolidation_invariant`, `ConsolidationQueueRise.appendStep_processBlock`, `ConsolidationQueueRise.riseStep_processBlock`, `SamePendingQueue.blockExecution`, `applyWithdrawals_departureQueues`, `attestation_departureQueues` and `slashValidator_departureQueues`.
   Migration: delete the arguments.
