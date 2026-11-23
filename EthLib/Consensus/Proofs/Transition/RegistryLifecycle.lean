@@ -658,6 +658,18 @@ theorem registryLifecycle_processConsolidationRequest {electra : .pectra ≤ for
   · exact registryLifecycle_switchToCompoundingValidator switched
   · exact registryLifecycle_queueConsolidation accepted.sourceAt accepted.sourceStays queued
 
+/-- From Gloas, the payload of the parent keeps each existing validator and its assigned epochs.
+
+Its withdrawal and consolidation requests are the only steps that change validators. -/
+theorem registryLifecycle_processParentExecutionPayload {gloas : .glamsterdam ≤ fork}
+    {body : BeaconBlockBody preset fork}
+    (computed : processParentExecutionPayload config checks state gloas body = .ok after) :
+    RegistryLifecycle state after :=
+  processParentExecutionPayload_step_of RegistryLifecycle .refl (fun one two => one.trans two)
+    (fun _ same => .of_data (congrArg (·.data) same))
+    (fun ok => registryLifecycle_processWithdrawalRequest ok)
+    (fun ok => registryLifecycle_processConsolidationRequest ok) computed
+
 theorem registryLifecycle_processExecutionRequests {body : BeaconBlockBody preset fork}
     {electra : .pectra ≤ fork ∧ fork < .glamsterdam}
     (computed : processExecutionRequests config state body electra = .ok after) :
@@ -774,10 +786,7 @@ theorem registryLifecycle_processBlock {block : BeaconBlock preset fork}
   -- From Gloas the payload of the parent runs before the header and applies its requests.
   have head : RegistryLifecycle state input :=
     OperationsInput.step_of RegistryLifecycle .refl (fun one two => one.trans two)
-      (fun _ ok => processParentExecutionPayload_step_of RegistryLifecycle .refl
-        (fun one two => one.trans two) (fun _ same => .of_data (congrArg (·.data) same))
-        (fun ok => registryLifecycle_processWithdrawalRequest ok)
-        (fun ok => registryLifecycle_processConsolidationRequest ok) ok)
+      (fun _ ok => registryLifecycle_processParentExecutionPayload ok)
       registryLifecycle_processBlockHeader
       (fun _ ok => .of_data (congrArg (·.data) (processBlockExecution_validators ok)))
       registryLifecycle_processRandao (fun _ ok => registryLifecycle_processEth1Data ok) started
