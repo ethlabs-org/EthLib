@@ -9,6 +9,11 @@ Not yet released.
 
 ### Proof additions
 
+- `Xmss.chainStarts` builds the 58 chain starts with `Vector.flatMap` over the 29 derivations, and `Xmss.Internal.digit` reads a digit with one shift and `% 4` ([#4255](https://github.com/ethereum/EthLib/pull/4255)).
+  The new lemma `Xmss.getElem_cast_flatMap_halves` in `EthLib.Cryptography.Proofs.Xmss.Ots` gives chain `i` as half `i mod 2` of derivation `floor(i / 2)`.
+  The statements of `Xmss.chainStarts_seedPrf` and `XmssSecurity.Bridge.halves_eq` follow the new body of `chainStarts`.
+  Both functions keep their values, and `Xmss.digit_val` keeps its statement.
+
 - `registryLifecycle_processParentExecutionPayload` (`Transition/RegistryLifecycle.lean`) states that, from Gloas, successful processing of the parent payload preserves each existing validator's index and any assigned activation and exit epochs ([#4243](https://github.com/ethereum/EthLib/issues/4243)).
   `registryLifecycle_processBlock` in the same file, `block_balances` in `Transition/BlockCredits.lean` and the signed-conflict slashing theorem in `DirectSafety/Includable.lean` read it.
   It replaces two inline proofs and is also used by the new slashing proof.
