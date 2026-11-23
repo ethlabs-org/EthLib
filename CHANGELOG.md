@@ -94,7 +94,7 @@ Not yet released.
 - At a state where the facts of a chain hold, an attester slashing of one validator by two signatures on a double or surround vote succeeds at its turn in a block within the limits ([#3431](https://github.com/ethereum/EthLib/issues/3431)).
   Otherwise the validator is already slashed there.
   A slashing that succeeds leaves the validator slashed, with its key, in the state right after it.
-  `DirectSafety.signedConflict_attesterSlashing_accepted_at` (`DirectSafety/Includable.lean`) states it for a key active at a state of a run.
+  `DirectSafety.signedConflict_attesterSlashing_accepted_at` (`DirectSafety/Includable.lean`) states it for a key whose validator is activated and not yet withdrawable at a state of a run.
   The pair of votes is a `DirectSafety.VotePairAt`, and the result is conditional on the inclusion of the slashing and on the success of the steps before it.
   `slashValidator_ok_of_block` (`Totality/ChainBlock.lean`) states that slashing succeeds at that turn, at the state that `SlashingTurn` (`Transition/Invariants.lean`) describes.
   `SlashRoom` with `slashValidator_ok_of_room` (`Totality/SlashValidator.lean`) gives a room that suffices for slashing to succeed.
@@ -960,6 +960,14 @@ Not yet released.
   `ValidatorStep`, `PinDriftBound.CreditBudgets` and `PinDriftBound.PreviousEpochRise` use it.
 
 ### Changes that break callers
+
+- The signed-conflict slashing theorem of [#3431](https://github.com/ethereum/EthLib/issues/3431) now covers a key whose validator has exited but is not yet withdrawable ([#4243](https://github.com/ethereum/EthLib/issues/4243)).
+  `DirectSafety.signedConflict_attesterSlashing_accepted_at` (`DirectSafety/Includable.lean`) takes `lifetime` in place of `member : key ∈ activeKeys x.state`.
+  `lifetime` gives a validator of `x` with the key that is activated and not yet withdrawable at the epoch of `x`.
+  Unlike `activeKeys`, `lifetime` can continue after the validator's exit; unlike slashability, it does not require the validator to be unslashed.
+  An already slashed validator was covered before too, since activity ignores the slashed flag; the theorem returns its left disjunct for it, as before.
+  A caller with `member` builds `lifetime` with `DirectSafety.mem_keysAt_epoch_of_within`, from the registry limit and the order of exits that `holds` gives.
+  The registry limit is `(RunBounded.size_le holds.bounded).trans (holds.run conditions within).load.1`, and the order of exits is `holds.invariant.exitsOrdered`.
 
 - The signed-conflict slashing theorem of [#3431](https://github.com/ethereum/EthLib/issues/3431) now also states that the slashing leaves the validator slashed ([#4244](https://github.com/ethereum/EthLib/issues/4244)).
   In `DirectSafety.signedConflict_attesterSlashing_accepted_at` (`DirectSafety/Includable.lean`), the right disjunct also gives the validator at the index in the state right after the slashing.
