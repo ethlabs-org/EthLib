@@ -988,6 +988,11 @@ Not yet released.
 
 ### Changes that break callers
 
+- In Lean, two lemmas that restated an all-fork lemma under a pre-Gloas premise are removed.
+  `effectiveKept_block` was `effectiveKept_processBlock` with an unused `fork < .glamsterdam` argument.
+  `BlockLedger.validators_processBlockExecution` was `processBlockExecution_validators` restricted to forks before Gloas.
+  Migration: call `effectiveKept_processBlock` and `processBlockExecution_validators`, without the `early` argument.
+
 - In Lean, the leanXMSS addresses take the name the specification gives them: `Xmss.CallSite` is now `Xmss.Address` ([#4278](https://github.com/ethereum/EthLib/pull/4278)).
   The old `Xmss.Address`, an abbreviation for the 16 bytes as `Lanes2`, is removed, and `Address.encode` now returns `Lanes2`.
   `CallSite.tau`, `.mu`, `.hi`, `.lo`, `.encode`, `.encode_injective`, `.toNat_encode_lo`, `.bytes_encode` and `.ne_msg_of_hi` become `Address.tau` and so on, with the same statements.
