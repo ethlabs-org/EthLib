@@ -3681,6 +3681,25 @@ Their `anchorSlot` equality gives it, so they gain no hypothesis.
 From Gloas they assume that the anchor's registry leaves room for the pending deposits of each epoch up to their horizon.
 Before Gloas that assumption is vacuous.
 
+`Consensus/Proofs/ForkChoice/HonestProposal.lean` states the duty of an honest proposer and what a store records of a timely block, at every fork.
+`ProposalAt` is a new block that an honest validator sends at the start of a slot, from an up-to-date store that names it as the proposer of the slot (`IsProposer`), whose head is older than the slot.
+The block builds on the head node of that store, and the block handler of that store accepts it.
+The duty fixes the head as the parent; the honest validator guide also lets a proposer build on the parent of a late head, which `ProposalAt` does not cover.
+`Proposes` assumes that the execution gives each honest validator an up-to-date store at the start of each slot of a range, whether or not it proposes; that is an assumption on the schedule.
+It asks a proposal at the first such event when that store names the validator.
+When the head of that store is already a block of the slot, the duty asks nothing; the honest validator guide has no such condition.
+It also asks that an honest validator send a block only as such a proposal, and in every slot, inside the range or not, at most one.
+The model signs no block, so a Byzantine validator may still send a block that names an honest proposer; `UnforgedProposals` lets only the named proposer send such a block first, and any validator send it again once it was sent, as an assumption on the adversary in place of the signature.
+A store whose head state cannot be advanced to the slot, or whose head is unknown, names no proposer and asks no proposal.
+No execution yet witnesses a proposal, which needs a block that the state transition accepts.
+So `Proposes` is shown satisfiable only where no honest store names its validator, as with checks or sources that refuse every block.
+Under synchrony, `ProposalAt.mem_view` puts the block in the view of every honest validator `Δ` after the start of the slot.
+`Execution.blockTimeliness_eq_true` shows that a store whose clock is in the slot of a held block, before the attestations are due, has recorded that block as timely; the store must not hold the block at the start.
+`Store.addBlock_proposerBoostRoot` shows that such a timely block takes the boost when no block holds it, the head of the store is its parent, and the store holds that parent at an earlier slot; and `Execution.proposerBoostRoot_of_le` keeps a nonzero boost while the clock stays in one slot.
+`Store.ForwardReachable.not_parentRoot_of_current` shows that no held block builds on a block of the current slot, which is the leaf condition of `Store.getHead_eq_of_boost`.
+That lemma is about one store: no theorem yet shows that the head of an honest receiver is the parent of the block when it receives the block, or that no other block of the slot took the boost first.
+So no theorem yet gives the head of every up-to-date honest store at the attestation deadline.
+
 `Execution.finalized_prefix_or_accountable` proves the narrower historical family used by those duty proofs: one honest store's later justified checkpoint reads back its earlier finalized checkpoint, or accountable-safety evidence exists.
 `Execution.mem_supportersOf_of_duty_epoch_or_accountable` and `Execution.isAncestor_getHead_of_duty_epoch_or_accountable` compose this family with the duty proofs, leaving the original statements unchanged.
 The companions retain the other network, duty, stake, ancestry and held-block nonzero conditions.
@@ -6519,6 +6538,8 @@ These cases of code 500 remain without a theorem:
   Under its other bounds, a draw of an epoch with active validators fails only for a product past 64 bits, or at `2^64` steps.
   On mainnet and minimal, `drawFits_presets` and `Run.effectiveBalance_capped` exclude the first along a run from genesis.
   `ProposersDrawEnd.of_atCap` gives the end when an active validator is at the cap of the draw, which no theorem shows along a chain.
+  `Genesis` does not require a state valid for launch, and `initializeBeaconStateFromEth1` has no check that refuses an empty list of deposits.
+  So no theorem excludes a reachable state with no active validator, where, before Fulu and with epochs of at least one slot, both proposer answers get code 500 by `dutiesResponse_proposer_no_active`.
 - No theorem excludes code 500 from the proposer, attester and PTC answers where a bound of their error theorems fails.
   On mainnet and minimal, code 500 from a PTC assignment needs a slot of the state within two epochs of `2^64`.
   Code 500 from an attester assignment needs such a slot, or a registry of more than `2^40` validators.
@@ -6761,6 +6782,12 @@ Each of these three parts is the rise of the proposer's balance over its step; f
 `blockRewards_balance` shows that the operations and the sync aggregate raise the proposer's balance by exactly the total.
 It assumes that the proposer has a balance, and that the block does not slash it, holds no deposit to its key before Electra and, from Electra to Fulu, no consolidation request from its key; the last three change the balance by other amounts.
 It also assumes that the proposer holds no seat in the sync committee, whose reward or penalty its balance would add, and that the mixes span more than the seed lookahead plus two epochs, so that every step reads the same proposer.
+`blockRewards_error_of_processBlock` shows that, on a state where the block applies, the block rewards fail only with the overflow error.
+The steps that they rerun succeed there, so their code 500 comes only from the product of the sync part or a sum of the total past 64 bits, which needs amounts that add up to `2^64` Gwei, about `1.8 * 10^10` ether.
+No theorem bounds the balances of the states that a reachable store holds, so that case stays without a theorem.
+`blockRewards_error_of_fromParents` applies it to each block that a store took, other than the anchor, from the state of its parent advanced to the slot of the block.
+It holds with the checks and the execution engine of the transition that gave the state of the block, which it names; `blockRewards_error_of_reachable` and `blockRewards_error_of_forwardReachableWith` are its forms for a reachable store and for a store built with one setting of the checks.
+The export checks no signature and accepts every payload, and no theorem carries the result to that setting.
 The Python suite (`bindings/python/tests/consensus/test_beacon_api_block_rewards.py`) runs the blocks of the pinned random, finality and sanity vectors.
 It checks the total, the sync part against a share computed from the active balance, and, up to Fulu, the change of the proposer's balance less its withdrawals under the hypotheses above.
 
@@ -6979,7 +7006,7 @@ Points that remain open:
 - The source does not say what the attestations of a block before Altair pay; their proposer earns its share at the end of the epoch, so EthLib reports zero for them.
 - A slashing part is the rise of the proposer's balance; for a block that slashes its own proposer that rise can be less than the whistleblower reward, or zero.
 - The proposer is the whistleblower of the slashings of its block, so a slashing part holds the whole whistleblower reward, not only the share that the transition calls the proposer reward.
-- The source lists codes 400, 404 and 500 for the block rewards; EthLib answers a block that fails its steps with code 500, since the block was imported.
+- The source lists codes 400, 404 and 500 for the block rewards; EthLib answers a block that fails its steps with code 500, since the block was imported, and `blockRewards_error_of_fromParents` shows that such a block fails only by an overflow, under the checks of its import.
 - The block rewards run the block only up to its attestations, and from Altair its other operations; they do not run the sync aggregate step, so an aggregate that the step would refuse still gets a sync part.
 - From Gloas the block also records a payment to a builder; the source does not say whether the total includes it, and EthLib leaves it out, since it does not change the proposer's balance in the block.
 - The reward of a member that is also the proposer leaves out the proposer share of each signature, which the block rewards count.
