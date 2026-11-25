@@ -9,6 +9,8 @@ Not yet released.
 
 ### Proof additions
 
+- In Lean, `upgradeToGloas_payloadAvailability` (`Consensus/Proofs/Transition/Upgrade.lean`) says that after the upgrade to Gloas, the payload of a recent slot counts as available exactly when the slot is not the fork slot ([#3515](https://github.com/ethereum/EthLib/issues/3515)).
+
 - In Lean, the column builder of PeerDAS ([EIP-7594](https://eips.ethereum.org/EIPS/eip-7594)) succeeds on full rows, and the sidecars it builds from blobs pass the batch check ([#4615](https://github.com/ethereum/EthLib/issues/4615)).
   `getDataColumnSidecars_exists_ok` (`Consensus/Proofs/DataAvailability/Column.lean`) needs each row to have a cell and a proof per column, and before Gloas as many rows as commitments.
   `getDataColumnSidecars_exists_ok_of_computed` gives the same for the rows of blobs, under a preset of at most 128 columns, and before Gloas one blob per commitment.
@@ -1091,6 +1093,10 @@ Not yet released.
 
 ### Changes that break callers
 
+- In Lean, the upgrade to Gloas clears the payload availability bit of the fork slot, so the first Gloas payload counts as available only when it arrives ([#3515](https://github.com/ethereum/EthLib/issues/3515)).
+  - `Consensus.upgradeToGloas` (`Consensus/Transition/Upgrade.lean`) clears the bit after it sets the new fields, and before it computes the window of payload committees.
+  - `upgradeToGloas_ok` (`Consensus/Proofs/Transition/Totality/Upgrades.lean`) and `upgradeNext_exists_ok` (`Consensus/Proofs/Transition/Totality/UpgradeNext.lean`) take `[NeZero preset.SLOTS_PER_HISTORICAL_ROOT.toNat]`.
+  Migration: provide that instance, which the run results already carry.
 - In Lean, lane 2 of the leanXMSS security proof charges the final verification once, not twice ([#4710](https://github.com/ethereum/EthLib/pull/4710)).
   Its bound for the adversary's own hash calls drops from `q + 768` to `q + 384` over `2^128`.
   The verification's encoding queries and its structural queries are disjoint, as the adversary's are, so together they are at most the verifier's `384` calls.

@@ -92,6 +92,7 @@ private theorem latestBlockHeader_upgradeNext {pre : ForkedBeaconState preset}
     obtain ⟨after, upgraded, rfl⟩ := computed
     unfold upgradeToGloas at upgraded
     obtain ⟨_, _, rest⟩ := bind_ok_iff.mp upgraded
+    obtain ⟨bits, _, rest⟩ := bind_ok_iff.mp rest
     obtain ⟨_, _, onboarded⟩ := bind_ok_iff.mp rest
     obtain ⟨⟨_, _, rfl⟩, _⟩ := onboardBuildersFromPendingDeposits_spec onboarded
     rfl

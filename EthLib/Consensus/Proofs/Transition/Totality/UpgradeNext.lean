@@ -66,7 +66,10 @@ def UpgradeReady (forked : ForkedBeaconState preset) : Prop :=
   | _ => False
 
 /-- The upgrade to the next fork succeeds under the conditions of that upgrade. -/
-theorem upgradeNext_exists_ok {forked : ForkedBeaconState preset}
+theorem upgradeNext_exists_ok
+    -- The upgrade to Gloas needs a buffer of recent slots with an entry.
+    [NeZero preset.SLOTS_PER_HISTORICAL_ROOT.toNat]
+    {forked : ForkedBeaconState preset}
     (ready : UpgradeReady forked) : ∃ next, upgradeNext config checks forked = .ok next := by
   obtain ⟨fork, pre⟩ := forked
   cases fork with

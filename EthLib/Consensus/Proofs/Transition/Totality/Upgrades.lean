@@ -223,7 +223,10 @@ It draws the committees of the current epoch and of each epoch of the seed looka
 In each of these epochs the draws must end: an assumption, not a bound.
 
 The bounds of the draw are those of the first window, read on the Fulu state. -/
-theorem upgradeToGloas_ok {pre : BeaconState preset .fusaka}
+theorem upgradeToGloas_ok
+    -- The buffer of recent slots must have an entry, to clear the bit of the fork slot.
+    [NeZero preset.SLOTS_PER_HISTORICAL_ROOT.toNat]
+    {pre : BeaconState preset .fusaka}
     (seedRoom : (getCurrentEpoch pre).toNat + preset.MIN_SEED_LOOKAHEAD.toNat +
       preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat < 2 ^ 64)
     (lookahead : preset.MIN_SEED_LOOKAHEAD.toNat < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
@@ -239,10 +242,16 @@ theorem upgradeToGloas_ok {pre : BeaconState preset .fusaka}
   -- The root of the empty requests never fails.
   obtain ⟨root, rooted⟩ :=
     Serialization.Ssz.SszType.hashTreeRoot_total (ExecutionRequests.empty preset .glamsterdam)
+  -- Clearing the bit of the fork slot never fails, since the buffer is not empty.
+  obtain ⟨bits, written⟩ := writeCircular_total
+    ((upgradeFields config pre root).executionPayloadAvailability (by decide)).bits
+    (upgradeFields config pre root).slot false
+  let fields := { upgradeFields config pre root with
+    executionPayloadAvailability := fun _ => ⟨bits⟩ }
   -- The upgrade keeps the registry, the mixes and the slot, so the draws read the same values.
-  have epoch : getCurrentEpoch (upgradeFields config pre root) = getCurrentEpoch pre := rfl
+  have epoch : getCurrentEpoch fields = getCurrentEpoch pre := rfl
   -- The upgrade to Gloas computes the first window of payload timeliness committees.
-  obtain ⟨window, windowOk⟩ := initializePtcWindow_ok (state := upgradeFields config pre root)
+  obtain ⟨window, windowOk⟩ := initializePtcWindow_ok (state := fields)
     (by rw [epoch]; exact seedRoom) lookahead (by rw [epoch]; exact slotRoom) perEpoch
     (fun offset le => by
       rw [epoch]
@@ -254,13 +263,15 @@ theorem upgradeToGloas_ok {pre : BeaconState preset .fusaka}
   -- The checks of the deposit signatures never fail.
   obtain ⟨post, onboarded⟩ := onboardBuildersFromPendingDeposits_ok (config := config)
     (checks := checks)
-    (state := { upgradeFields config pre root with ptcWindow := fun _ => window }) rfl
+    (state := { fields with ptcWindow := fun _ => window }) rfl
     (Nat.lt_of_le_of_lt ((pre.pendingDeposits (by decide)).bound (by decide))
       preset.PENDING_DEPOSITS_LIMIT.toNat_lt)
     funded
   refine ⟨post, ?_⟩
-  simp only [upgradeToGloas, liftSsz, liftAccessor, rooted, windowOk, Except.mapError, bind,
+  simp only [upgradeToGloas, liftSsz, liftAccessor, rooted, written, Except.mapError, bind,
     Except.bind]
+  simp only [fields] at windowOk
+  simp only [windowOk]
   exact onboarded
 
 /-- Setting the earned flags of some attesters never fails when each attester is in range. -/

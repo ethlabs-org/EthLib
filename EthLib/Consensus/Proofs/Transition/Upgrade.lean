@@ -643,6 +643,7 @@ private theorem upgradeToGloas_frame_spec {pre : BeaconState preset .fusaka}
         ⟨pre.forkVersions.currentVersion, config.GLOAS_FORK_VERSION, getCurrentEpoch pre⟩ := by
   unfold upgradeToGloas at computed
   obtain ⟨root, -, rest⟩ := bind_ok_iff.mp computed
+  obtain ⟨bits, -, rest⟩ := bind_ok_iff.mp rest
   obtain ⟨window, -, onboarded⟩ := bind_ok_iff.mp rest
   obtain ⟨⟨builders, pending, rfl⟩, -⟩ := onboardBuildersFromPendingDeposits_spec onboarded
   refine ⟨?_, rfl, rfl, rfl, rfl, rfl⟩
@@ -676,9 +677,39 @@ theorem upgradeToGloas_builderFields {pre : BeaconState preset .fusaka}
       (after.latestExecutionPayloadBid (by decide)).value = 0 := by
   unfold upgradeToGloas at computed
   obtain ⟨root, -, rest⟩ := bind_ok_iff.mp computed
+  obtain ⟨bits, -, rest⟩ := bind_ok_iff.mp rest
   obtain ⟨window, -, onboarded⟩ := bind_ok_iff.mp rest
   obtain ⟨⟨builders, pending, rfl⟩, -⟩ := onboardBuildersFromPendingDeposits_spec onboarded
   exact ⟨rfl, rfl, rfl⟩
+
+/-- After the upgrade to Gloas, the payload bit of the fork slot is clear and every other is set.
+
+The fork slot is the slot of the state, the first slot of the fork epoch. -/
+theorem upgradeToGloas_payloadAvailability {pre : BeaconState preset .fusaka}
+    {after : BeaconState preset .glamsterdam}
+    (computed : upgradeToGloas config checks pre = .ok after)
+    (i : Nat) (inside : i < preset.SLOTS_PER_HISTORICAL_ROOT.toNat) :
+    (after.executionPayloadAvailability (by decide)).bits[i] =
+      decide (i ≠ after.slot.toNat % preset.SLOTS_PER_HISTORICAL_ROOT.toNat) := by
+  unfold upgradeToGloas at computed
+  obtain ⟨root, -, rest⟩ := bind_ok_iff.mp computed
+  obtain ⟨bits, written, rest⟩ := bind_ok_iff.mp rest
+  obtain ⟨window, -, onboarded⟩ := bind_ok_iff.mp rest
+  obtain ⟨⟨builders, pending, rfl⟩, -⟩ := onboardBuildersFromPendingDeposits_spec onboarded
+  -- Before the write, the payload of every recent slot counts as available.
+  have full : ((upgradeFields config pre root).executionPayloadAvailability (by decide)).bits =
+      Vector.replicate _ true := rfl
+  have cleared := liftAccessor_ok.mp written
+  rw [full] at cleared
+  unfold writeCircular at cleared
+  split at cleared
+  · cases cleared
+  · cases cleared
+    dsimp only
+    simp only [Vector.getElem_set, Vector.getElem_replicate, UInt64.toNat_mod]
+    split
+    · next same => simp [same]
+    · next other => simp [Ne.symm other]
 
 /-- The upgraded bid keeps every field of the Gloas bid, and sets no inclusion list bit. -/
 theorem upgradeBidToHeze_spec (bid : ExecutionPayloadBid preset .glamsterdam) :

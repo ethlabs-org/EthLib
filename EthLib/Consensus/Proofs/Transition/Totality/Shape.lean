@@ -460,6 +460,7 @@ theorem upgradeNext_shaped {pre : ForkedBeaconState preset}
     dsimp only at shaped capped matched ⊢
     unfold upgradeToGloas at upgraded
     obtain ⟨root, -, rest⟩ := bind_ok_iff.mp upgraded
+    obtain ⟨bits, -, rest⟩ := bind_ok_iff.mp rest
     obtain ⟨window, -, onboarded⟩ := bind_ok_iff.mp rest
     obtain ⟨⟨builders, pending, rfl⟩, -⟩ := onboardBuildersFromPendingDeposits_spec onboarded
     obtain ⟨validators, -, -, -, consolidations, -⟩ :=
