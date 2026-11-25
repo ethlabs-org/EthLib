@@ -478,6 +478,7 @@ private theorem upgradeNext_pending (P : ∀ {f : Fork}, BeaconState preset f �
   · obtain ⟨_, upgraded, rfl⟩ := ok
     unfold upgradeToGloas at upgraded
     obtain ⟨_, -, rest⟩ := bind_ok_iff.mp upgraded
+    obtain ⟨bits, -, rest⟩ := bind_ok_iff.mp rest
     obtain ⟨_, -, onboarded⟩ := bind_ok_iff.mp rest
     obtain ⟨⟨_, _, rfl⟩, -⟩ := onboardBuildersFromPendingDeposits_spec onboarded
     exact carried (s := state) (show Fork.pectra ≤ .fusaka by decide)

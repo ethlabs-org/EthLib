@@ -35,7 +35,7 @@ The hash of that header becomes the latest block hash, and its fields seed the l
 
 That bid is a self-build for the slot of the latest block, with no value.
 
-The new builder fields start empty, and every payload of the recent slots counts as available.
+The new builder fields start empty, and every availability bit is set but that of the state's slot.
 
 The window of payload committees is computed for the current epoch and the lookahead.
 
@@ -485,12 +485,20 @@ def upgradeFields (config : Config) (pre : BeaconState preset .fusaka) (requests
     payloadExpectedWithdrawals := fun _ => ⟨#[], fun before => absurd before (by decide)⟩
     ptcWindow := fun _ => .ofVector (Vector.replicate _ (Vector.replicate _ 0)) }
 
-/-- The Gloas state of a Fulu state, at the first slot of the fork epoch. -/
+/-- The Gloas state of a Fulu state, at the first slot of the fork epoch.
+
+The availability bit of the state's slot, the fork slot on a scheduled upgrade, is clear. -/
 def upgradeToGloas (config : Config) (checks : SignatureChecks) (pre : BeaconState preset .fusaka) :
     Except TransitionError (BeaconState preset .glamsterdam) := do
   -- The fields carry over, with a self-built latest bid on the root of empty requests.
   let requestsRoot ← liftSsz (SszType.hashTreeRoot (ExecutionRequests.empty preset .glamsterdam))
-  let post := upgradeFields config pre requestsRoot
+  let fields := upgradeFields config pre requestsRoot
+  -- The slot before the fork ended under Fulu rules, so the bit of the fork slot is still set.
+  --
+  -- Bit `s mod SLOTS_PER_HISTORICAL_ROOT` of the fork slot `s` becomes 0.
+  let bits ← liftAccessor
+    (writeCircular (fields.executionPayloadAvailability (by decide)).bits fields.slot false)
+  let post := { fields with executionPayloadAvailability := fun _ => ⟨bits⟩ }
   -- The window of payload committees is computed on the new state.
   let window ← liftAccessor (initializePtcWindow post)
   -- Then the pending deposits of builders become builders, as EIP-7732 specifies.

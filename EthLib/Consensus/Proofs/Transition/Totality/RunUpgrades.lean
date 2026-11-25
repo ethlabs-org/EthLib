@@ -565,9 +565,11 @@ private theorem RunBounded.of_upgradeToGloas {pre : BeaconState preset .fusaka}
     RunBounded config start budget elapsed after := by
   unfold upgradeToGloas at computed
   obtain ⟨root, -, rest⟩ := bind_ok_iff.mp computed
+  obtain ⟨bits, -, rest⟩ := bind_ok_iff.mp rest
   obtain ⟨window, -, onboarded⟩ := bind_ok_iff.mp rest
   obtain ⟨⟨builders, pending, rfl⟩, funded⟩ := onboardBuildersFromPendingDeposits_spec onboarded
   have empty : builderBalanceSum { upgradeFields config pre root with
+      executionPayloadAvailability := fun _ => ⟨bits⟩
       ptcWindow := fun _ => window } (by decide) = 0 := rfl
   have supply : balanceSum pre + pendingAmount (pending (by decide)).data.toList ≤
       balanceSum pre + pendingDepositSum pre := by
