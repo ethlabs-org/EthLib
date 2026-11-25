@@ -345,6 +345,7 @@ theorem upgradeToGloas_registryLoad_le {pre : BeaconState preset .fusaka}
     registryLoad after ≤ registryLoad pre := by
   unfold upgradeToGloas at computed
   obtain ⟨root, -, rest⟩ := bind_ok_iff.mp computed
+  obtain ⟨bits, -, rest⟩ := bind_ok_iff.mp rest
   obtain ⟨window, -, onboarded⟩ := bind_ok_iff.mp rest
   -- It moves the pending deposits of builders to the builders, or drops them.
   --

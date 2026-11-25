@@ -698,6 +698,7 @@ theorem FlagsActive.of_upgradeNext {pre : ForkedBeaconState preset}
     have validators := (upgradeToGloas_spec afterOk).1
     unfold upgradeToGloas at afterOk
     obtain ⟨_, -, rest⟩ := bind_ok_iff.mp afterOk
+    obtain ⟨bits, -, rest⟩ := bind_ok_iff.mp rest
     obtain ⟨_, -, onboarded⟩ := bind_ok_iff.mp rest
     obtain ⟨⟨_, _, rfl⟩, -⟩ := onboardBuildersFromPendingDeposits_spec onboarded
     exact holds.of_upgrade (show Fork.altair ≤ .fusaka by decide) kept slot

@@ -264,6 +264,7 @@ private theorem upgradeNext_quiet {pre : ForkedBeaconState preset}
     obtain ⟨after, afterOk, rfl⟩ := computed
     unfold upgradeToGloas at afterOk
     obtain ⟨_, -, rest⟩ := bind_ok_iff.mp afterOk
+    obtain ⟨bits, -, rest⟩ := bind_ok_iff.mp rest
     obtain ⟨_, -, onboarded⟩ := bind_ok_iff.mp rest
     obtain ⟨⟨_, _, rfl⟩, -⟩ := onboardBuildersFromPendingDeposits_spec onboarded
     exact quiet_of_flags (fork := .fusaka) (fork' := .glamsterdam) (by decide) (by decide)

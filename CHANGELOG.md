@@ -9,6 +9,8 @@ Not yet released.
 
 ### Proof additions
 
+- In Lean, `upgradeToGloas_payloadAvailability` (`Consensus/Proofs/Transition/Upgrade.lean`) says that after the upgrade to Gloas, the payload of a recent slot counts as available exactly when the slot is not the fork slot ([#3515](https://github.com/ethereum/EthLib/issues/3515)).
+
 - In Lean, `Base.pairwise_zip_of_pairwise` (`Base/Proofs/List.lean`) states that a relation that holds pairwise on a list holds pairwise on the first items of its zip.
   `List.takeWhile_eq_take`, `List.dropWhile_eq_drop` and `List.findIdx?_eq_of_nodup` move to `Base/Proofs/List.lean` from `Networking/Proofs/Devp2p/ForkId.lean`.
   `Consensus.mem_array_foldl_insert` (`Consensus/Proofs/ForkChoice/FastConfirmation/Basic.lean`) is public.
@@ -1135,6 +1137,13 @@ Not yet released.
   `ValidatorStep`, `PinDriftBound.CreditBudgets` and `PinDriftBound.PreviousEpochRise` use it.
 
 ### Changes that break callers
+
+- In Lean, the upgrade to Gloas clears the payload availability bit of the fork slot, so the first Gloas payload counts as available only when it arrives ([#3515](https://github.com/ethereum/EthLib/issues/3515)).
+  - `Consensus.upgradeToGloas` (`Consensus/Transition/Upgrade.lean`) clears the bit after it sets the new fields, and before it computes the window of payload committees.
+  - `upgradeToGloas_ok` (`Consensus/Proofs/Transition/Totality/Upgrades.lean`) takes `[NeZero preset.SLOTS_PER_HISTORICAL_ROOT.toNat]`.
+  - `upgradeNext_exists_ok` (`Consensus/Proofs/Transition/Totality/UpgradeNext.lean`) takes `ring : forked.fork = .fusaka → preset.SLOTS_PER_HISTORICAL_ROOT.toNat ≠ 0`, which only the upgrade from Fulu uses.
+  Migration: provide the instance to `upgradeToGloas_ok`, which the run results already carry.
+  A caller of `upgradeNext_exists_ok` that has the instance passes `fun _ => NeZero.ne _`.
 
 - A part of a slot, given in basis points, rounds to the nearest millisecond, a half up, where it rounded down, as consensus-specs v1.7.0-beta.5 does ([#4145](https://github.com/ethereum/EthLib/issues/4145)).
   Before Gloas, on mainnet, an attestation and a sync committee message are due 4000 ms into the slot, up from 3999 ms.

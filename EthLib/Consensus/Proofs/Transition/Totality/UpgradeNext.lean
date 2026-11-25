@@ -67,6 +67,8 @@ def UpgradeReady (forked : ForkedBeaconState preset) : Prop :=
 
 /-- The upgrade to the next fork succeeds under the conditions of that upgrade. -/
 theorem upgradeNext_exists_ok {forked : ForkedBeaconState preset}
+    -- The upgrade to Gloas needs a buffer of recent slots with an entry.
+    (ring : forked.fork = .fusaka → preset.SLOTS_PER_HISTORICAL_ROOT.toNat ≠ 0)
     (ready : UpgradeReady forked) : ∃ next, upgradeNext config checks forked = .ok next := by
   obtain ⟨fork, pre⟩ := forked
   cases fork with
@@ -89,6 +91,7 @@ theorem upgradeNext_exists_ok {forked : ForkedBeaconState preset}
     exact ⟨⟨⟨.fusaka, post⟩, (by decide : Fork.pectra < .fusaka)⟩, by simp [upgradeNext, ok]⟩
   | fusaka =>
     obtain ⟨seedRoom, look, slotRoom, perEpoch, drawable, funded⟩ := ready
+    have : NeZero preset.SLOTS_PER_HISTORICAL_ROOT.toNat := ⟨ring rfl⟩
     obtain ⟨post, ok⟩ := upgradeToGloas_ok (config := config) (checks := checks) seedRoom
       look slotRoom perEpoch drawable funded
     exact ⟨⟨⟨.glamsterdam, post⟩, (by decide : Fork.fusaka < .glamsterdam)⟩,

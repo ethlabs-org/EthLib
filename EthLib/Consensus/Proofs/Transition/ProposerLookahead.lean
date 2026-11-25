@@ -186,7 +186,7 @@ theorem upgradeNext_proposerLookahead {pre : ForkedBeaconState preset}
     simp only [upgradeNext, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at computed
     obtain ⟨_, upgraded, rfl⟩ := computed
     simp only [upgradeToGloas, bind_ok_iff] at upgraded
-    obtain ⟨_, _, _, _, onboarded⟩ := upgraded
+    obtain ⟨_, _, _, _, _, _, onboarded⟩ := upgraded
     obtain ⟨⟨_, _, rfl⟩, _⟩ := onboardBuildersFromPendingDeposits_spec onboarded
     rfl
   case glamsterdam =>

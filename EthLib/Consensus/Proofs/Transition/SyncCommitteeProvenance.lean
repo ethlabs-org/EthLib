@@ -1304,7 +1304,7 @@ private theorem upgradeNextStep {pre : ForkedBeaconState preset}
     simp only [Consensus.upgradeNext, bind_ok_iff, pure, Except.pure, Except.ok.injEq] at ok
     obtain ⟨_, upgraded, rfl⟩ := ok
     simp only [Consensus.upgradeToGloas, bind_ok_iff] at upgraded
-    obtain ⟨_, _, _, _, onboarded⟩ := upgraded
+    obtain ⟨_, _, _, _, _, _, onboarded⟩ := upgraded
     obtain ⟨⟨_, _, rfl⟩, _⟩ := onboardBuildersFromPendingDeposits_spec onboarded
     exact ⟨fun holds _ => holds (by dsimp; decide), fun _ _ => ⟨rfl, rfl⟩⟩
   case glamsterdam =>
