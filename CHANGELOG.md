@@ -9,6 +9,11 @@ Not yet released.
 
 ### Proof additions
 
+- In Lean, the column builder of PeerDAS ([EIP-7594](https://eips.ethereum.org/EIPS/eip-7594)) succeeds on full rows, and its sidecars pass the batch check of their cells ([#4615](https://github.com/ethereum/EthLib/issues/4615)).
+  `getDataColumnSidecars_exists_ok` (`Consensus/Proofs/DataAvailability/Column.lean`) needs each row to have a cell and a proof per column, and before Gloas as many rows as commitments.
+  `verifyDataColumnSidecarKzgProofs_of_getDataColumnSidecars` needs a well-formed trusted setup, and cells, proofs and commitments from the same blobs, in order.
+  Those commitments are the carried ones before Gloas, and those of the bid from Gloas.
+
 - In Lean, `SubmitBlockRequest.servable` (`Consensus/RelayApi.lean`) says whether the block scoring rule lets a relay serve a submission ([#2131](https://github.com/ethereum/EthLib/issues/2131)).
   From Deneb, its bid value must pass the check against the proposer's fee recipient.
   `SubmitBlockRequest.servable_iff` (`Consensus/Proofs/RelayApi.lean`) states that check in Wei, and `SubmitBlockRequest.servable_of_lt_deneb` says that before Deneb the rule sets no condition.
