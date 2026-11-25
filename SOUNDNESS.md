@@ -4396,7 +4396,10 @@ So a slashable pair of signed messages needs two different messages of one type 
 Suppose one run of the signer accepted two slashable votes for one key, and the root that its caller supplied for each vote is the one that `computeSigningRoot` (`Consensus/Signing.lean`) returns for that vote in its domain.
 Then `signingRoot_eq_of_signAttestations` gives the two votes one signing root.
 They are different votes, by `isSlashableAttestationData_self` (`Consensus/Proofs/Transition/Block.lean`), so `computeSigningRoot_ne_or_collision` (`Consensus/Proofs/Signing.lean`) gives a SHA-256 collision, with `AttestationData.commitmentSized` (`Consensus/Proofs/Containers/Misc.lean`) for its size premises.
-No theorem states this argument, or shows that the signer implements the check of `MaySign` (`Consensus/Proofs/ForkChoice/HonestDuties.lean`).
+`findMessageCollision_of_signAttestations` states this argument for a signer that signs the root that `computeSigningRoot` gives for each vote in its domain.
+`findMessageCollision_of_signBlocks` states it for two different headers of one slot that such a signer accepted for one key.
+Each theorem proves that the search `findMessageCollision` returns a collision between the messages of the two signing roots.
+No theorem shows that the signer implements the check of `MaySign` (`Consensus/Proofs/ForkChoice/HonestDuties.lean`).
 
 When the node hash is a random oracle, `prEvent_signingRoot_le_two_pow` (`Consensus/Proofs/SigningRandomOracle.lean`) bounds the chance of finding two different messages of one type with one signing root whose counts fit their words, with the signing roots computed by the oracle.
 The signer takes its signing roots as an argument, so no theorem composes the signer theorems with this bound.

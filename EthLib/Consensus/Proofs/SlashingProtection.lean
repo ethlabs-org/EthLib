@@ -4,10 +4,13 @@ public import EthLib.Base.Except
 public import EthLib.Base.Proofs.Json.Document
 public import EthLib.Consensus.SlashingProtection
 public import EthLib.Consensus.Proofs.Transition.Block
+public import EthLib.Consensus.Proofs.Signing
 public import EthLib.Serialization.Proofs.Ssz.Codec.JsonHex
 public import EthLib.Serialization.Proofs.Ssz.Codec.JsonLaws
+public import EthLib.Serialization.Proofs.Ssz.Merkle.CommitmentTree
 public import Std.Data.TreeMap.Lemmas
 import EthLib.Base.Proofs.Bytes
+import EthLib.Consensus.Proofs.Containers.Misc
 
 /-!
 # Proofs: slashing protection
@@ -1941,5 +1944,72 @@ theorem isSlashableAttestationData_eq_false_of_signAttestations
   isSlashableAttestationData_eq_false_of_importAndSignAttestations
     ((importAndSignAttestations_map_signAttestation ..).trans signed) nonempty older
     (List.mem_map_of_mem member)
+
+/-! ## Collisions of the signing data -/
+
+section Collisions
+
+open Serialization.Ssz SszType
+
+/-- Take two different objects of a lawful type whose variable-size counts fit their 256-bit words.
+
+Equal computed signing roots then make the collision search succeed. -/
+private theorem findMessageCollision_of_computeSigningRoot {α : Type} [SszType α]
+    [LawfulSszType α] {first second : α} {firstDomain secondDomain : Domain}
+    (firstSized : CommitmentSized (desc α) (toValue first))
+    (secondSized : CommitmentSized (desc α) (toValue second)) (differ : first ≠ second)
+    (same : (computeSigningRoot first firstDomain).toOption.getD default =
+      (computeSigningRoot second secondDomain).toOption.getD default) :
+    ∃ a b, findMessageCollision (signingMessages first firstDomain)
+      (signingMessages second secondDomain) = some (a, b) := by
+  -- Both signing roots exist, so the computed roots are those roots.
+  obtain ⟨firstRoot, firstSigned⟩ := computeSigningRoot_total first firstDomain
+  obtain ⟨secondRoot, secondSigned⟩ := computeSigningRoot_total second secondDomain
+  simp only [firstSigned, secondSigned, Except.toOption, Option.getD_some] at same
+  -- Equal roots of different objects leave only a collision of their messages.
+  rcases computeSigningRoot_ne_or_collision firstSized secondSized differ firstSigned
+    secondSigned with differs | ⟨a, aMember, b, bMember, collision⟩
+  · exact absurd same differs
+  · exact findMessageCollision_of_collision aMember bMember collision
+
+/-- Take a signer using computed signing roots that accepts two slashable votes for one key.
+
+Then the search returns a SHA-256 collision. -/
+theorem findMessageCollision_of_signAttestations {domainOf : AttestationData → Domain}
+    {pubkey : BLSPubkey} {start finish : Interchange} {votes : List AttestationData}
+    (signed : signAttestations
+      (fun data => (computeSigningRoot data (domainOf data)).toOption.getD default)
+      pubkey start votes = .ok finish)
+    {data1 data2 : AttestationData} (member1 : data1 ∈ votes) (member2 : data2 ∈ votes)
+    (slashable : isSlashableAttestationData data1 data2 = true) :
+    ∃ a b, findMessageCollision (signingMessages data1 (domainOf data1))
+      (signingMessages data2 (domainOf data2)) = some (a, b) := by
+  -- A slashable pair is two different votes.
+  have differ : data1 ≠ data2 := by
+    rintro rfl
+    rw [isSlashableAttestationData_self] at slashable
+    cases slashable
+  exact findMessageCollision_of_computeSigningRoot (AttestationData.commitmentSized data1)
+    (AttestationData.commitmentSized data2) differ
+    (signingRoot_eq_of_signAttestations signed member1 member2 slashable)
+
+/-- Take a signer using computed signing roots that accepts two distinct headers of one slot.
+
+Both are for one key, and the search then returns a SHA-256 collision. -/
+theorem findMessageCollision_of_signBlocks {domainOf : BeaconBlockHeader → Domain}
+    {pubkey : BLSPubkey} {start finish : Interchange} {headers : List BeaconBlockHeader}
+    (signed : signBlocks
+      (fun header => (computeSigningRoot header (domainOf header)).toOption.getD default)
+      pubkey start headers = .ok finish)
+    {header1 header2 : BeaconBlockHeader} (member1 : header1 ∈ headers)
+    (member2 : header2 ∈ headers) (sameSlot : header1.slot = header2.slot)
+    (differ : header1 ≠ header2) :
+    ∃ a b, findMessageCollision (signingMessages header1 (domainOf header1))
+      (signingMessages header2 (domainOf header2)) = some (a, b) :=
+  findMessageCollision_of_computeSigningRoot (BeaconBlockHeader.commitmentSized header1)
+    (BeaconBlockHeader.commitmentSized header2) differ
+    (signingRoot_eq_of_signBlocks signed member1 member2 sameSlot)
+
+end Collisions
 
 end EthLib.Consensus

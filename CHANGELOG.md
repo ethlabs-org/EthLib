@@ -9,6 +9,12 @@ Not yet released.
 
 ### Proof additions
 
+- In Lean, `findMessageCollision_of_signAttestations` (`Consensus/Proofs/SlashingProtection.lean`) is about an EIP-3076 signer of votes ([#4609](https://github.com/ethereum/EthLib/issues/4609)).
+  It accepts two slashable votes for one key only if SHA-256 collides on their signing data.
+  The signer signs the root that `computeSigningRoot` gives for each vote in the domain of its caller.
+  `findMessageCollision_of_signBlocks` says the same of two different block headers of one slot.
+  Each theorem proves that the search returns a collision between the messages of the two signing roots.
+
 - In Lean, `SubmitBlockRequest.servable` (`Consensus/RelayApi.lean`) says whether the block scoring rule lets a relay serve a submission ([#2131](https://github.com/ethereum/EthLib/issues/2131)).
   From Deneb, its bid value must pass the check against the proposer's fee recipient.
   `SubmitBlockRequest.servable_iff` (`Consensus/Proofs/RelayApi.lean`) states that check in Wei, and `SubmitBlockRequest.servable_of_lt_deneb` says that before Deneb the rule sets no condition.
