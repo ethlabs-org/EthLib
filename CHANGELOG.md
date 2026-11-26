@@ -1111,6 +1111,11 @@ Not yet released.
 
 ### Changes that break callers
 
+- In Lean, the first items of a zip are a prefix of the first list, not only a sublist.
+  - `Base.map_fst_zip_sublist` (`Base/Proofs/List.lean`), which stated `((xs.zip ys).map Prod.fst).Sublist xs`, is renamed `Base.map_fst_zip_prefix` and states `(xs.zip ys).map Prod.fst <+: xs`.
+  - `blockBlobs_sublist`, `ReservedReplay.selected_allocation_round_sum_le`, `ledger_processSyncAggregate` and `syncAggregate_floor` (`Consensus/Proofs/Transition/EffectiveFall.lean`) read its `.sublist`.
+  Migration: replace `map_fst_zip_sublist xs ys` with `(map_fst_zip_prefix xs ys).sublist`.
+
 - In Lean, leanXMSS and leanSPHINCS are stated through one strong-unforgeability game, `Cryptography/Proofs/SufCma.lean` ([#4707](https://github.com/ethereum/EthLib/pull/4707), [#4718](https://github.com/ethereum/EthLib/pull/4718)).
   A scheme (`SufCma.Scheme`) has a signer that keeps its key and may fail, and a rule of use on its requests.
   The game fixes the freshness check, and a model (`SufCma.Model`) answers the coins and the hash.
