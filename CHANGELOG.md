@@ -9,7 +9,10 @@ Not yet released.
 
 ### Proof additions
 
-- In Lean, `upgradeToGloas_payloadAvailability` (`Consensus/Proofs/Transition/Upgrade.lean`) says that after the upgrade to Gloas, the payload of a recent slot counts as available exactly when the slot is not the fork slot ([#3515](https://github.com/ethereum/EthLib/issues/3515)).
+- In Lean, `upgradeToGloas_payloadAvailability` (`Consensus/Proofs/Transition/Upgrade.lean`) describes the availability bits after the upgrade to Gloas ([#3515](https://github.com/ethereum/EthLib/issues/3515)).
+  The bit at a ring index is set exactly when the index is not `after.slot % SLOTS_PER_HISTORICAL_ROOT`.
+  So the bit of the state's slot is clear, and every other bit is set.
+  The state's slot is the fork slot on a scheduled upgrade.
 
 - In Lean, `Base.pairwise_zip_of_pairwise` (`Base/Proofs/List.lean`) states that a relation that holds pairwise on a list holds pairwise on the first items of its zip.
   `List.takeWhile_eq_take`, `List.dropWhile_eq_drop` and `List.findIdx?_eq_of_nodup` move to `Base/Proofs/List.lean` from `Networking/Proofs/Devp2p/ForkId.lean`.
