@@ -9,6 +9,11 @@ Not yet released.
 
 ### Proof additions
 
+- In Lean, `Execution.finalized_ancestor_of_heads_or_evidence` (`Consensus/Proofs/ForkChoice/FastConfirmation/HistoricalReads.lean`) states that the fallback of the fast confirmation rule to the finalized block is safe ([#2059](https://github.com/ethereum/EthLib/issues/2059)).
+  An honest caller's finalized root at the start of a slot is an ancestor of each up-to-date honest head from the next slot through `last`.
+  Otherwise two honest stores collide, or cross-store direct-safety evidence holds.
+  `Execution.carrier_delivered` and `Execution.finalized_epoch_le_justified_of_late`, in the same file, are new public theorems; they were private in `Consensus/Proofs/ForkChoice/FastConfirmation/ConfirmedCallStep.lean`.
+
 - In Lean, `Execution.observedRestart_covers_or_evidence` (`Consensus/Proofs/ForkChoice/FastConfirmation/ConfirmedCallStep.lean`) states that a restart of the fast confirmation rule from the observed justified block is safe ([#2059](https://github.com/ethereum/EthLib/issues/2059)).
   At a call that replaces its base, that block is on every up-to-date honest head from the call through the limit.
   Otherwise two honest stores collide, or cross-store direct-safety or justified evidence holds.
@@ -1151,6 +1156,8 @@ Not yet released.
   `ValidatorStep`, `PinDriftBound.CreditBudgets` and `PinDriftBound.PreviousEpochRise` use it.
 
 ### Changes that break callers
+
+- In Lean, `ConfirmedCalls.anchorState_hash_nonzero` (`Consensus/Proofs/ForkChoice/FastConfirmation/ConfirmedCalls.lean`) is now `anchorState_hash_nonzero` in the namespace `EthLib.Consensus.Models.Network` (`Consensus/Proofs/ForkChoice/FastConfirmation/HistoricalStatements.lean`), with the same statement.
 
 - In Lean, `ConfirmedCalls.finalized_read` (`Consensus/Proofs/ForkChoice/FastConfirmation/ConfirmedCalls.lean`) is now `Store.Reachable.finalized_read` (`Consensus/Proofs/ForkChoice/CheckpointBlocks.lean`), with the same statement.
 
