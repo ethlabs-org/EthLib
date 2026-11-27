@@ -479,7 +479,7 @@ structure Store where
 
   The payload of slot `N + 1` reads them, and it can come during slot `N + 2`.
 
-  This store keeps every list, so it meets that rule. -/
+  This store never prunes a list that it has stored, so it meets that rule. -/
   inclusionLists : Since .hegota fork InclusionListStore
   /-- From Heze: whether the payload of each block satisfied the inclusion lists of the slot before.
 
