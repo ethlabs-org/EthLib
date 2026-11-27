@@ -447,7 +447,9 @@ def getSignedProposerPreferences (config : Config) (store : Store preset fork)
 
 The dependent root is the block that fixes the committees of the epoch of the slot, on that chain.
 
-The transactions are those that the execution layer offers from its mempool. -/
+The transactions are those that the execution layer offers from its mempool.
+
+The member sends the list during its slot, by `getInclusionListDueMs` into the slot. -/
 def getSignedInclusionList (config : Config) (store : Store preset fork)
     (state : BeaconState preset fork) (headRoot : Root) (slot : Slot)
     (validatorIndex : ValidatorIndex) (transactions : List InclusionListTransaction)

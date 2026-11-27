@@ -738,7 +738,11 @@ def onExecutionPayloadEnvelope (checks : SignatureChecks) (sources : BlockSource
   let payloads := (recorded.payloads gloas).insert root signed.message
   return { recorded with payloads := fun _ => payloads }
 
-/-- From Heze: the checks of an inclusion list, which give whether it is timely. -/
+/-- From Heze: the checks of an inclusion list, which give whether it is timely.
+
+A list for a later slot fails with `futureInclusionList`.
+
+The node holds that list and runs these checks again when its slot starts. -/
 def checkInclusionList (checks : SignatureChecks) (signed : SignedInclusionList) :
     Except ForkChoiceError Bool := do
   let list := signed.message
