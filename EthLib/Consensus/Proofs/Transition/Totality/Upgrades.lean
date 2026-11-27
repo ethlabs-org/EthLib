@@ -222,7 +222,7 @@ With `E` the current epoch, it needs `E + L + V < 2^64`, `L < V` and `(E + L + 1
 
 Here `L`, `V` and `S` are the seed lookahead, the randomness vector length and the slots per epoch.
 
-The committees are drawable at each offset through `L`, and the deposits total under `2^64` Gwei. -/
+Committees are drawable at each offset through `L`; pending deposits total under `2^64` Gwei. -/
 theorem upgradeToGloas_ok
     -- The buffer of recent slots must have an entry, to clear the bit of the fork slot.
     [NeZero preset.SLOTS_PER_HISTORICAL_ROOT.toNat]
