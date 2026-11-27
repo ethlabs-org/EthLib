@@ -10,7 +10,7 @@ Not yet released.
 ### Proof additions
 
 - In Lean, `upgradeToGloas_payloadAvailability` (`Consensus/Proofs/Transition/Upgrade.lean`) describes the availability bits after the upgrade to Gloas ([#3515](https://github.com/ethereum/EthLib/issues/3515)).
-  The bit at a ring index is set exactly when the index is not `after.slot % SLOTS_PER_HISTORICAL_ROOT`.
+  If the Fulu-to-Gloas upgrade returns `after`, then for each index `i` below the ring length, its bit is set exactly when `i` differs from `after.slot` modulo that length.
   So the bit of the state's slot is clear, and every other bit is set.
   The state's slot is the fork slot on a scheduled upgrade.
 
@@ -1144,7 +1144,11 @@ Not yet released.
 - In Lean, the upgrade to Gloas clears the payload availability bit of the fork slot, so the first Gloas payload counts as available only when it arrives ([#3515](https://github.com/ethereum/EthLib/issues/3515)).
   - `Consensus.upgradeToGloas` (`Consensus/Transition/Upgrade.lean`) clears the bit after it sets the new fields, and before it computes the window of payload committees.
   - `upgradeToGloas_ok` (`Consensus/Proofs/Transition/Totality/Upgrades.lean`) takes `[NeZero preset.SLOTS_PER_HISTORICAL_ROOT.toNat]`.
+    With it, the upgrade succeeds when the recent-slot ring and the epoch are nonempty (`SLOTS_PER_HISTORICAL_ROOT ≠ 0`, `SLOTS_PER_EPOCH ≠ 0`).
+    It also needs `E + L + V < 2^64`, `L < V` and `(E + L + 1) * S ≤ 2^64`, for `E` the current epoch, `L` = `MIN_SEED_LOOKAHEAD`, `V` = `EPOCHS_PER_HISTORICAL_VECTOR` and `S` = `SLOTS_PER_EPOCH`.
+    The payload committees must be drawable at every offset through `L`, and the pending deposits must total less than `2^64` Gwei.
   - `upgradeNext_exists_ok` (`Consensus/Proofs/Transition/Totality/UpgradeNext.lean`) takes `ring : forked.fork = .fusaka → preset.SLOTS_PER_HISTORICAL_ROOT.toNat ≠ 0`, which only the upgrade from Fulu uses.
+    It succeeds under `UpgradeReady` for the current fork and, if that fork is Fulu, a nonempty recent-slot ring.
   Migration: provide the instance to `upgradeToGloas_ok`, which the run results already carry.
   A caller of `upgradeNext_exists_ok` that has the instance passes `fun _ => NeZero.ne _`.
 

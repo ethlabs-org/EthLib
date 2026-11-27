@@ -26,6 +26,8 @@ variable {preset : Preset} {config : Config} {checks : SignatureChecks}
 
 They are those of the totality theorem of that upgrade.
 
+For Fulu the totality theorem separately requires a nonempty recent-slot ring.
+
 A fork with no next fork, such as Heze, is never ready, since its upgrade always fails. -/
 def UpgradeReady (forked : ForkedBeaconState preset) : Prop :=
   match forked with
@@ -65,7 +67,9 @@ def UpgradeReady (forked : ForkedBeaconState preset) : Prop :=
   | ⟨.glamsterdam, _⟩ => True
   | _ => False
 
-/-- The upgrade to the next fork succeeds under the conditions of that upgrade. -/
+/-- The upgrade succeeds under `UpgradeReady` for the current fork.
+
+If that fork is Fulu, it also needs a nonempty recent-slot ring. -/
 theorem upgradeNext_exists_ok {forked : ForkedBeaconState preset}
     -- The upgrade to Gloas needs a buffer of recent slots with an entry.
     (ring : forked.fork = .fusaka → preset.SLOTS_PER_HISTORICAL_ROOT.toNat ≠ 0)

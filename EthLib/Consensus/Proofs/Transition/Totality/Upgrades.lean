@@ -216,13 +216,13 @@ theorem onboardBuildersFromPendingDeposits_ok {state : BeaconState preset .glams
   rw [foldedOk]
   exact ⟨_, rfl⟩
 
-/-- The upgrade to Gloas succeeds when the first window of payload committees can be drawn.
+/-- The upgrade to Gloas succeeds when the recent-slot ring and the epoch are nonempty, and more.
 
-It draws the committees of the current epoch and of each epoch of the seed lookahead.
+With `E` the current epoch, it needs `E + L + V < 2^64`, `L < V` and `(E + L + 1) * S ≤ 2^64`.
 
-In each of these epochs the draws must end: an assumption, not a bound.
+Here `L`, `V` and `S` are the seed lookahead, the randomness vector length and the slots per epoch.
 
-The bounds of the draw are those of the first window, read on the Fulu state. -/
+The committees are drawable at each offset through `L`, and the deposits total under `2^64` Gwei. -/
 theorem upgradeToGloas_ok
     -- The buffer of recent slots must have an entry, to clear the bit of the fork slot.
     [NeZero preset.SLOTS_PER_HISTORICAL_ROOT.toNat]
@@ -234,6 +234,9 @@ theorem upgradeToGloas_ok
       preset.SLOTS_PER_EPOCH.toNat ≤ 2 ^ 64)
     -- An epoch must have at least one slot.
     (perEpoch : preset.SLOTS_PER_EPOCH ≠ 0)
+    -- The upgrade draws the payload committees of the current epoch and of each lookahead epoch.
+    --
+    -- In each of them the draws must end: an assumption, not a bound read on the Fulu state.
     (drawable : ∀ offset ≤ preset.MIN_SEED_LOOKAHEAD.toNat,
       PtcDrawable pre (getCurrentEpoch pre + offset.toUInt64))
     -- The pending deposits must also hold less than `2^64` Gwei.
