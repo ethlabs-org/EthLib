@@ -684,7 +684,9 @@ theorem upgradeToGloas_builderFields {pre : BeaconState preset .fusaka}
 
 /-- After the Gloas upgrade, the availability bit of the state's slot is clear; every other is set.
 
-The state's slot is the fork slot on a scheduled upgrade. -/
+The state's slot is the fork slot on a scheduled upgrade.
+
+The index `i` is below `SLOTS_PER_HISTORICAL_ROOT`, the length of the recent-slot ring. -/
 theorem upgradeToGloas_payloadAvailability {pre : BeaconState preset .fusaka}
     {after : BeaconState preset .glamsterdam}
     (computed : upgradeToGloas config checks pre = .ok after)
