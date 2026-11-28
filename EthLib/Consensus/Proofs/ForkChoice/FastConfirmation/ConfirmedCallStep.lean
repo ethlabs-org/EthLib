@@ -1178,6 +1178,170 @@ private theorem time_le_following {u : ValidatorIndex} {events : List ℕ} {firs
   rw [timeEqI]
   exact UInt64.le_iff_toNat_le.mp startLe
 
+/-- The call invariant holds at each call of one honest validator by the limit, or evidence holds.
+
+The call is any one of the validator's consecutive calls, at a time by the limit.
+
+The evidence is `Bad`: a collision of honest stores or four kinds of accountable-safety evidence.
+
+The run starts from genesis, verifies signatures with BLS and reaches the anchor state.
+
+The anchor store is built from that state and its block, at an epoch boundary.
+
+Every honest store starts at the anchor store.
+
+The timing assumptions are synchrony, a positive slot duration, prompt blocks and fitting delays.
+
+The preset and configuration facts are the lookahead, ring, threshold, alignment and cap facts.
+
+The store bounds are the epoch horizon, nonzero roots, unslashed counted states and stake floors.
+
+The run assumptions are the pinned justification, the Byzantine bound and target inclusion.
+
+From Gloas the anchor leaves registry room and the head weights fit under the weak-head bound.
+
+Only before Electra it assumes that the quorum drift is within each call's reserve.
+
+Some honest store is up to date at the limit, which gives the reference slot.
+
+The calls are at consecutive slots from a first slot after the anchor and from epoch two.
+
+The validator is up to date at each call, and each call assumes its obligations. -/
+theorem Execution.callInvariant_of_run [DecidablePred (· ∈ J)] {Δ : ℕ} {anchor : Store preset fork}
+    {limit : ℕ} {horizon anchorEpoch : Epoch} {g : ForkedBeaconState preset}
+    -- The execution verifies signatures with BLS, as the pulled-up head state of the rule does.
+    (pre : Run config checks g ⟨fork, anchorState⟩) (bls : checks = .bls)
+    (anchorGenesis : secondsToMilliseconds anchorState.genesisTime = genesisTimeMs)
+    (sync : e.Synchronous Δ) (slots : 0 < config.SLOT_DURATION_MS)
+    (minLookahead : 1 ≤ preset.MIN_SEED_LOOKAHEAD.toNat)
+    (exitWindow : preset.SeedLookaheadAtLeastThree)
+    (ring : preset.MIN_SEED_LOOKAHEAD.toNat + 3 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
+    -- From Gloas, the anchor's registry leaves room up to the horizon, an assumption on the anchor.
+    --
+    -- Like the weak-head bound below, it says nothing before Gloas.
+    (room : .glamsterdam ≤ fork → AnchorRegistryRoom preset anchorState horizon)
+    -- From Gloas the head weights of the configuration fit, a configuration fact.
+    (weights : .glamsterdam ≤ fork → config.HeadWeightsFit preset (2 * 10 ^ 17))
+    -- From Gloas, honest justified states through the limit bound each weak-head weight.
+    --
+    -- The bound is 2·10^17 Gwei, and this assumption says nothing before Gloas.
+    (supply : .glamsterdam ≤ fork → CheckpointHeadWeightCeiling (e := e) (2 * 10 ^ 17) limit)
+    (admitted : BlocksAdmitted e 0 Δ limit)
+    (half : 2 * config.CONFIRMATION_BYZANTINE_THRESHOLD.toNat ≤ 100)
+    (long : 1 < preset.SLOTS_PER_EPOCH)
+    -- The maximum effective balances of the preset are aligned, as they are on mainnet and minimal.
+    (maxAligned : MaxEffectiveBalancesAligned preset)
+    (votes : ValidatedDutyVotes (e := e) limit) (fits : DelayFits fork config genesisTimeMs Δ)
+    (prompt : Prompt e limit) (windows : AssignmentWindowAgreement (e := e) limit)
+    (fit : config.CommitteeWindowsFit preset)
+    (anchored : getForkchoiceStore config anchorState anchorBlock = .ok anchor)
+    (anchorSlot : anchorBlock.slot = anchorState.slot)
+    (anchorBoundary : isStartSlotAtEpoch preset anchorBlock.slot = .ok true)
+    (start : ∀ w ∈ J, e.start w = anchor)
+    (anchorEpochOk : anchor.justifiedCheckpoint.epoch = anchorEpoch)
+    (increment : preset.EFFECTIVE_BALANCE_INCREMENT.toNat % 100 = 0)
+    (bounded : HonestStoreEpochsBounded (e := e) horizon limit)
+    (roots : HeldBlockStateRootsNonzero (e := e) limit)
+    (unslashed : HonestCountedStatesUnslashed (e := e) limit)
+    (ceiling : CheckpointStakeCeiling (e := e) (2 * 10 ^ 17) limit)
+    (scoreFits : config.ProposerScoreFits preset (2 * 10 ^ 17))
+    (parameters : DirectSafety.Parameters preset) (genesis : Genesis config checks g)
+    (enough : HeldRunStakeFloor (e := e) pre horizon limit)
+    (terminal : HeldTerminalStakeFloor (e := e) horizon limit)
+    (absent : AnchorParentAbsent (e := e) limit)
+    -- An assumption on the run: the justification of each call's epoch is pinned.
+    (pinned : JustifiedPinned (e := e) anchorEpoch 0 0 limit)
+    -- An assumption on the run: the anchor's latest header is the anchor block's.
+    --
+    -- Its state root is zero.
+    --
+    -- The anchor store checks neither condition.
+    (anchorHeader : anchorState.latestBlockHeader.slot = anchorBlock.slot ∧
+      anchorState.latestBlockHeader.proposerIndex = anchorBlock.proposerIndex ∧
+      anchorState.latestBlockHeader.parentRoot = anchorBlock.parentRoot ∧
+      SszType.hashTreeRoot anchorBlock.body = .ok anchorState.latestBlockHeader.bodyRoot)
+    (anchorZero : anchorState.latestBlockHeader.stateRoot = Vector.replicate 32 0)
+    -- The inclusion delay is positive on mainnet and minimal.
+    (delay : preset.InclusionDelayPositive)
+    -- An assumption on the run: Byzantine stake is under two thirds in each vote-counting state.
+    --
+    -- It holds after the anchor's justified epoch.
+    --
+    -- It buys the honest signer of each later justification.
+    (byzantine : ByzantineCountedStake (e := e) anchorEpoch 0 limit)
+    -- An assumption on the run: before Electra its quorum drift is within each call's reserve.
+    (beforeElectra : fork < .pectra → QuorumDriftWithin (e := e) horizon limit)
+    (band : preset.IncrementWithinUpwardBand)
+    (withdrawDelay : 1 ≤ config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat)
+    (caps : CapOrder preset) (activation : ActivationWithinMaxEffective preset)
+    (forkWindow : ∀ next ∈ config.nextFork fork, horizon.toNat < next.2.toNat)
+    (included : TargetIncluded (e := e) limit) (stale : StaleHeadVotersInWindow (e := e) limit)
+    (reference : ∃ x ∈ J, ∃ m, ∃ referenceSlot finish : Slot, limit ≤ (e.world m).time ∧
+      UpToDate config checks sources (e.world m).time ((e.world m).view x)
+        ((e.world m).state x) ∧
+      ((e.world m).state x).getCurrentSlot config = .ok referenceSlot ∧
+      subChecked referenceSlot 1 = .ok finish)
+    {u : ValidatorIndex} (caller : u ∈ J) {events : List ℕ} {firstSlot : Slot}
+    -- An assumption on the run: the first slot's epoch is at least two.
+    --
+    -- It is also after the epoch of the anchor state.
+    (confirmationEpoch : 2 ≤ computeEpochAtSlot preset firstSlot)
+    (anchorEpochBefore : getCurrentEpoch anchorState < computeEpochAtSlot preset firstSlot)
+    (upToDate : ∀ n ∈ events, UpToDate config checks sources (e.world n).time
+      ((e.world n).view u) ((e.world n).state u))
+    -- The calls are at consecutive slots from the first slot.
+    (atSlots : ∀ i n, events[i]? = some n → ∃ slot begin,
+      ((e.world n).state u).getCurrentSlot config = .ok slot ∧
+      slot.toNat = firstSlot.toNat + i ∧
+      computeTimeAtSlotMs config genesisTimeMs slot = .ok begin ∧
+      (e.world n).time = begin.toNat)
+    -- Each call assumes its obligations.
+    (obligations : ∀ i n fcr after,
+      CallAt (e := e) u events (getFastConfirmationStore anchor) i n fcr after →
+      CallObligations (e := e) 0 limit u n fcr after)
+    {i n : ℕ} {fcr after : FastConfirmationStore}
+    (calls : CallAt (e := e) u events (getFastConfirmationStore anchor) i n fcr after)
+    (bound : (e.world n).time ≤ limit) :
+    CallInvariant (e := e) 0 limit anchor.finalizedCheckpoint.root u n after.confirmedRoot ∨
+      Bad (e := e) pre limit := by
+  -- Honest stores hold only states before the next fork, from the horizon.
+  have heldEarly := e.heldStatesBeforeUpgrade_of_bounded anchored start anchorSlot slots
+    fit.positive forkWindow bounded
+  -- Honest validators sign each justified checkpoint after the anchor's epoch.
+  have afterAnchor : getCurrentEpoch anchorState ≤ anchorEpoch := by
+    obtain ⟨_, -, -, -, anchorJustified, -⟩ := getForkchoiceStore_anchor anchored
+    rw [← anchorEpochOk, anchorJustified]
+    exact UInt64.le_refl _
+  have signedAll := Execution.justifiedHonestlySigned anchored start anchorSlot anchorHeader
+    anchorZero slots parameters delay genesis pre roots absent heldEarly bounded enough terminal
+    afterAnchor byzantine
+  by_cases bad : Bad (e := e) pre limit
+  · exact .inr bad
+  -- The run's calls are ordered in time, so an earlier call is also by the limit.
+  have window : 2 * preset.SLOTS_PER_EPOCH.toNat ≤ preset.SLOTS_PER_HISTORICAL_ROOT.toNat := by
+    have := parameters.roots
+    omega
+  have ctx : CallsCtx (e := e) anchor u events firstSlot limit :=
+    { anchored, sound := (DirectSafety.run_justified_separated pre genesis).1, anchorSlot,
+      anchorBoundary, start, slots, positive := fit.positive, long, window, roots, absent,
+      caller, anchorEpochBefore, atSlots }
+  refine .inl ?_
+  -- The call invariant holds at every call by the limit, by strong induction on the index.
+  induction i using Nat.strong_induction_on generalizing n fcr after with
+  | _ i earlier =>
+    rcases e.callInvariant_step pre bls anchorGenesis sync slots minLookahead exitWindow ring
+      room weights supply admitted half long maxAligned votes fits prompt windows fit anchored
+      anchorSlot anchorBoundary start anchorEpochOk increment bounded roots unslashed ceiling
+      scoreFits parameters genesis heldEarly enough terminal absent pinned signedAll beforeElectra
+      band withdrawDelay caps activation forkWindow included stale reference caller
+      confirmationEpoch anchorEpochBefore upToDate atSlots calls bound
+      (obligations i n fcr after calls)
+      (fun i' lt n' fcr' after' prev => earlier i' lt prev
+        (Nat.le_trans (Nat.le_of_lt (call_order ctx prev.1 calls.1 lt).2) bound)) with
+      holds | evidence
+    · exact holds
+    · exact absurd evidence bad
+
 /-- The confirmed root of the last of consecutive calls of one honest validator covers honest heads.
 
 Every up-to-date honest head descends from it, from the slot after the last call to the horizon.
@@ -1295,42 +1459,9 @@ theorem Execution.confirmedRoot_covers [DecidablePred (· ∈ J)] {Δ : ℕ} {an
       CrossStoreDirectSafetyEvidence (e := e) pre limit ∨
       CrossStoreJustifiedEvidence (e := e) pre limit ∨
         HeldStateFinalityEvidence (e := e) pre limit := by
-  -- Honest stores hold only states before the next fork, from the horizon.
-  have heldEarly := e.heldStatesBeforeUpgrade_of_bounded anchored start anchorSlot slots
-    fit.positive forkWindow bounded
-  -- Honest validators sign each justified checkpoint after the anchor's epoch.
-  have afterAnchor : getCurrentEpoch anchorState ≤ anchorEpoch := by
-    obtain ⟨_, -, -, -, anchorJustified, -⟩ := getForkchoiceStore_anchor anchored
-    rw [← anchorEpochOk, anchorJustified]
-    exact UInt64.le_refl _
-  have signedAll := Execution.justifiedHonestlySigned anchored start anchorSlot anchorHeader
-    anchorZero slots parameters delay genesis pre roots absent heldEarly bounded enough terminal
-    afterAnchor byzantine
-  by_cases bad : Bad (e := e) pre limit
-  · exact .inr bad
   have timeLe : ∀ i m, events[i]? = some m → (e.world m).time ≤ limit := fun i m event =>
     Nat.le_trans (time_le_following atSlots lastEvent slotOk nextOk followingOk event)
       followingLe
-  -- The cover of the last root reads the call-invariant step at every call of the run.
-  --
-  -- The call invariant holds at every call, by strong induction on the call's index.
-  have invariant : ∀ i n fcr after,
-      CallAt (e := e) u events (getFastConfirmationStore anchor) i n fcr after →
-      CallInvariant (e := e) 0 limit anchor.finalizedCheckpoint.root u n after.confirmedRoot := by
-    intro i
-    induction i using Nat.strong_induction_on with
-    | _ i earlier =>
-      intro n fcr after calls
-      rcases e.callInvariant_step pre bls anchorGenesis sync slots minLookahead exitWindow ring
-        room weights supply admitted half long maxAligned votes fits prompt windows fit anchored
-        anchorSlot anchorBoundary start anchorEpochOk increment bounded roots unslashed ceiling
-        scoreFits parameters genesis heldEarly enough terminal absent pinned signedAll beforeElectra
-        band withdrawDelay caps activation forkWindow included stale reference caller
-        confirmationEpoch anchorEpochBefore upToDate atSlots calls
-        (timeLe i n calls.1) (obligations i n fcr after calls) (fun i' lt => earlier i' lt) with
-        holds | evidence
-      · exact holds
-      · exact absurd evidence bad
   -- The last call is the last step of the run of calls.
   obtain ⟨ys, rfl⟩ := List.getLast?_eq_some_iff.mp lastEvent
   rw [List.map_append, List.foldlM_append] at folded
@@ -1346,6 +1477,16 @@ theorem Execution.confirmedRoot_covers [DecidablePred (· ∈ J)] {Δ : ℕ} {an
       | ok after => simpa [called, pure, Except.pure] using folded
     have calls : CallAt (e := e) u (ys ++ [n]) (getFastConfirmationStore anchor) ys.length n
         fcr last := ⟨by simp, by simpa using prefixOk, callOk⟩
-    exact .inl ((invariant _ _ _ _ calls).1 slot next following slotOk nextOk followingOk)
+    -- The cover of the last root is the first clause of the call invariant at the last call.
+    rcases e.callInvariant_of_run pre bls anchorGenesis sync slots minLookahead exitWindow ring
+      room weights supply admitted half long maxAligned votes fits prompt windows fit anchored
+      anchorSlot anchorBoundary start anchorEpochOk increment bounded roots unslashed ceiling
+      scoreFits parameters genesis enough terminal absent pinned anchorHeader anchorZero delay
+      byzantine beforeElectra band withdrawDelay caps activation forkWindow included stale
+      reference caller confirmationEpoch anchorEpochBefore upToDate atSlots obligations calls
+      (timeLe _ _ calls.1) with
+      holds | bad
+    · exact .inl (holds.1 slot next following slotOk nextOk followingOk)
+    · exact .inr bad
 
 end EthLib.Consensus.Models.Network

@@ -29,6 +29,7 @@ public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmation.Sets
 public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmation.Supporters
 public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmation.TargetCount
 public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmation.TargetVotes
+public import EthLib.Consensus.Proofs.ForkChoice.FastConfirmationSafety
 
 /-!
 # Proofs: the fast confirmation rule
@@ -70,4 +71,6 @@ Another module gives the coverage of a walk of roots from that of its start and 
 The last confirmed root of one honest validator's consecutive calls is on up-to-date honest heads.
 
 That holds from the slot after the last call to a horizon, unless stores collide or evidence holds.
+
+At every fork before Gloas, the root stored at any one of those calls is on those heads after it.
 -/
