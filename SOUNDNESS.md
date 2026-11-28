@@ -4515,10 +4515,12 @@ It asserts nothing after the limit, and nothing at the maximum slot, which has n
 It does not cover a walk that no call of the run makes, and it proves no safety without its premises.
 `Execution.callInvariant_of_run` in `Consensus/Proofs/ForkChoice/FastConfirmation/ConfirmedCallStep.lean` gives the call invariant at each call of the run by the limit, or the same alternatives; both endpoints read it.
 The three theorems share the run, anchor, timing, parameter, store-bound and caller premises of `Execution.confirmedRoot_covers` listed above, and differ in how they name the call.
+Those shared premises include duty-window agreement (`AssignmentWindowAgreement`) and the checkpoint stake ceiling (`CheckpointStakeCeiling`).
 `Execution.confirmedRoot_covers` takes the complete fold of the calls, the last event, its following slot start and that this start is at most the limit.
 `Execution.callInvariant_of_run` takes one call of the run (`CallAt`) and a bound on that call's time, with the three premises from Gloas.
 The new endpoint takes one call, its successor slot and that slot's start time, and needs neither a time bound nor a following start at most the limit.
 It drops the three premises from Gloas and fixes the checks to BLS.
+It also fixes the anchor epoch to `anchor.justifiedCheckpoint.epoch`.
 So it also assumes `CallObligations` of each call of the run.
 They are the source reads of later windows, the target count bounds with the pin reserve and the realized guards.
 For each walked member they include the margin drift bound, the near exit reserve and the late and newly active voters.

@@ -7,7 +7,9 @@ import EthLib.Consensus.Proofs.Time
 /-!
 # The end of a confirming walk of the fast confirmation rule
 
-At every fork before Gloas, Phase 0 included, an honest call stores a root on later honest heads.
+An honest call of the rule stores a root on later up-to-date honest heads.
+
+This holds at every fork before Gloas, Phase 0 included.
 
 It covers them from the start of the following slot through the inclusive time limit.
 
@@ -56,7 +58,9 @@ The anchor store is built from that state and its block, which share a slot at a
 
 Every honest store starts at the anchor store.
 
-The anchor state's latest header matches the anchor block's fields, and its state root is zero.
+The anchor state's latest header has the anchor block's slot, proposer and parent root.
+
+Its body root is the root of the anchor block's body, and its state root is zero.
 
 Timing assumes synchrony, a positive slot duration, fitting delays and prompt processing.
 

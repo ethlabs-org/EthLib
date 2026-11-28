@@ -1198,9 +1198,11 @@ The model's genesis time is the anchor state's genesis time.
 
 The anchor store is built from that state and its block, which share a slot at an epoch boundary.
 
-Every honest store starts at the anchor store, whose latest header is the anchor block's.
+Every honest store starts at the anchor store.
 
-That header's fields match the anchor block's, and its state root is zero.
+The anchor state's latest header has the anchor block's slot, proposer and parent root.
+
+Its body root is the root of the anchor block's body, and its state root is zero.
 
 The anchor epoch is the epoch of the anchor store's justified checkpoint.
 
