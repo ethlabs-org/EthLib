@@ -13,7 +13,9 @@ From Fulu the state keeps the proposers of the current epoch and of the epochs a
 
 Along a run from genesis, each of them is active in its epoch.
 
-So a successful proposer read is active at every fork.
+With `LookaheadActive`, a successful proposer read is active at every fork.
+
+Before Fulu that holds because the proposer is sampled from the active indices.
 -/
 
 @[expose] public section

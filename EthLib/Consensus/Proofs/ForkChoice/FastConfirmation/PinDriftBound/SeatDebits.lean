@@ -657,6 +657,7 @@ theorem Run.syncDebits_le {x y : ForkedBeaconState preset} (tail : Run config ch
       ((getCurrentEpoch y.state).toNat + 1 - (getCurrentEpoch x.state).toNat) *
         preset.SLOTS_PER_EPOCH.toNat * preset.SYNC_COMMITTEE_SIZE.toNat *
           PinDrift.Internal.syncSeatEnvelope preset total ∧
+    -- Only the third bound excludes the post-state proposer from the moving keys.
     (∀ debited moving : Finset ℕ, Disjoint debited moving →
       (∀ {u w : ForkedBeaconState preset} (step : Step config checks u w),
         tail.Contains step → (match step with

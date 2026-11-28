@@ -1515,9 +1515,9 @@ theorem block_gross_keys {g : ForkedBeaconState preset}
     · exact .inr ⟨rfl, altair, h⟩
     · exact .inl (Finset.mem_singleton.mpr (by rw [read] at found; cases found; exact same.symm))
 
-/-- Positive reward, slashing or sync credit in the block step goes to the input proposer or a seat.
+/-- Positive reward, slashing or sync credit in the block step has one of two recipients.
 
-That seat is held by a key seated after the block.
+It goes to the input proposer or a key seated after the block.
 
 The block is from Electra and before Gloas, at a state reached from genesis. -/
 theorem block_step_gross_keys {g : ForkedBeaconState preset}
@@ -1934,7 +1934,9 @@ private theorem seat_positions {g : ForkedBeaconState preset}
 
 Positive block credits from rewards, slashings or sync go to proposers or committee keys.
 
-Positive sync debits in a successful replay go to committee keys.
+A first set holds those proposers, and a second set holds those committee keys.
+
+Positive sync debits in a successful replay go to committee keys of the second set.
 
 Deposits count only at slot steps, and a third set covers slot deposit credits.
 
