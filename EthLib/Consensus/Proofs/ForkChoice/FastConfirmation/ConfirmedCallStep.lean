@@ -1184,29 +1184,59 @@ The call is any one of the validator's consecutive calls, at a time by the limit
 
 The evidence is `Bad`: a collision of honest stores or four kinds of accountable-safety evidence.
 
+Only before Electra it assumes that the quorum drift is within each call's reserve.
+
+That assumption allows a collision of two honest stores in place of the bound.
+
+From Gloas the anchor's registry leaves room up to the horizon.
+
+From Gloas the configured head weights fit, and each weak-head weight read by the limit is capped.
+
 The run starts from genesis, verifies signatures with BLS and reaches the anchor state.
 
-The anchor store is built from that state and its block, at an epoch boundary.
+The model's genesis time is the anchor state's genesis time.
 
-Every honest store starts at the anchor store.
+The anchor store is built from that state and its block, which share a slot at an epoch boundary.
 
-The timing assumptions are synchrony, a positive slot duration, prompt blocks and fitting delays.
+Every honest store starts at the anchor store, whose latest header is the anchor block's.
 
-The preset and configuration facts are the lookahead, ring, threshold, alignment and cap facts.
+That header's fields match the anchor block's, and its state root is zero.
 
-The store bounds are the epoch horizon, nonzero roots, unslashed counted states and stake floors.
+The anchor epoch is the epoch of the anchor store's justified checkpoint.
+
+Timing assumes synchrony, a positive slot duration, fitting delays and prompt processing.
+
+Blocks are admitted after the delay, duty votes are validated and honest duty windows agree.
+
+The parameter facts are the committee windows, the seed lookahead and the ring of RANDAO mixes.
+
+They also include the direct-safety parameters, multi-slot epochs, the upward band and increment.
+
+They also include the threshold, the aligned maximum balances and the cap order.
+
+They also include the inclusion and withdrawal delays and the proposer score fit.
+
+The activation balance is at most the largest effective balance before Electra.
+
+The horizon precedes the next scheduled fork.
+
+The store bounds are the epoch horizon, nonzero held state roots and unslashed counted states.
+
+Through the limit, no honest store holds the anchor's parent, and checkpoint stakes are capped.
+
+The stake floors hold for the held runs and for the terminal states.
 
 The run assumptions are the pinned justification, the Byzantine bound and target inclusion.
 
-From Gloas the anchor leaves registry room and the head weights fit under the weak-head bound.
+They also include stale head voters in the committees that the rule reads.
 
-Only before Electra it assumes that the quorum drift is within each call's reserve.
+Some honest store is up to date at or after the limit, and its slot has a checked predecessor.
 
-Some honest store is up to date at the limit, which gives the reference slot.
+The calls are at the starts of consecutive slots from a first slot.
 
-The calls are at consecutive slots from a first slot after the anchor and from epoch two.
+The first slot's epoch is at least two, and strictly after the epoch of the anchor state.
 
-The validator is up to date at each call, and each call assumes its obligations. -/
+The validator is honest, it is up to date at each call, and each call assumes its obligations. -/
 theorem Execution.callInvariant_of_run [DecidablePred (· ∈ J)] {Δ : ℕ} {anchor : Store preset fork}
     {limit : ℕ} {horizon anchorEpoch : Epoch} {g : ForkedBeaconState preset}
     -- The execution verifies signatures with BLS, as the pulled-up head state of the rule does.

@@ -9,7 +9,7 @@ import EthLib.Consensus.Proofs.Time
 
 At every fork before Gloas, Phase 0 included, an honest call stores a root on later honest heads.
 
-It does so from the slot after the call through a time limit.
+It covers them from the start of the following slot through the inclusive time limit.
 
 Otherwise two honest stores collide, or accountable-safety evidence holds.
 -/
@@ -36,33 +36,61 @@ local notation "Ready" i:arg x:arg =>
 
 This holds at every fork before Gloas, Phase 0 included.
 
-This holds from the following slot through the limit, given the run's call obligations.
+It covers heads from the start of the call's following slot through the inclusive time limit.
 
 The alternatives are an honest-store block collision or one of four kinds of safety evidence.
 
-The call is any one of the validator's consecutive calls; its slot has a checked successor.
+The call is any one of the validator's consecutive calls.
+
+Its slot has a checked successor, whose start time is representable.
 
 Only before Electra it assumes that the quorum drift is within each call's reserve.
 
+That assumption allows a collision of two honest stores in place of the bound.
+
 The run starts from genesis, verifies signatures with BLS and reaches the anchor state.
 
-The anchor store is built from that state and its block, at an epoch boundary.
+The model's genesis time is the anchor state's genesis time.
 
-Every honest store starts at the anchor store, whose latest header is the anchor block's.
+The anchor store is built from that state and its block, which share a slot at an epoch boundary.
 
-The timing assumptions are synchrony, a positive slot duration, prompt blocks and fitting delays.
+Every honest store starts at the anchor store.
 
-The preset and configuration facts are the lookahead, ring, threshold, alignment and cap facts.
+The anchor state's latest header matches the anchor block's fields, and its state root is zero.
 
-The store bounds are the epoch horizon, nonzero roots, unslashed counted states and stake floors.
+Timing assumes synchrony, a positive slot duration, fitting delays and prompt processing.
+
+Blocks are admitted after the delay, duty votes are validated and honest duty windows agree.
+
+The parameter facts are the committee windows, the seed lookahead and the ring of RANDAO mixes.
+
+They also include the direct-safety parameters, multi-slot epochs, the upward band and increment.
+
+They also include the threshold, the aligned maximum balances and the cap order.
+
+They also include the inclusion and withdrawal delays and the proposer score fit.
+
+The activation balance is at most the largest effective balance before Electra.
+
+The horizon precedes the next scheduled fork.
+
+The store bounds are the epoch horizon, nonzero held state roots and unslashed counted states.
+
+Through the limit, no honest store holds the anchor's parent, and checkpoint stakes are capped.
+
+The stake floors hold for the held runs and for the terminal states.
 
 The run assumptions are the pinned justification, the Byzantine bound and target inclusion.
 
-Some honest store is up to date at the limit, which gives the reference slot.
+They also include stale head voters in the committees that the rule reads.
 
-The calls are at consecutive slots from a first slot after the anchor and from epoch two.
+Some honest store is up to date at or after the limit, and its slot has a checked predecessor.
 
-The validator is up to date at each call, and each call assumes its obligations. -/
+The calls are at the starts of consecutive slots from a first slot.
+
+The first slot's epoch is at least two, and strictly after the epoch of the anchor state.
+
+The validator is honest, it is up to date at each call, and each call assumes its obligations. -/
 theorem Execution.confirmedWalk_end_on_honest_heads [DecidablePred (· ∈ J)]
     {Δ limit : ℕ} {horizon : Epoch} {anchor : Store preset fork} {g : ForkedBeaconState preset}
     (before : fork < .glamsterdam)
@@ -153,13 +181,9 @@ theorem Execution.confirmedWalk_end_on_honest_heads [DecidablePred (· ∈ J)]
       byzantine drift band withdrawDelay caps activation forkWindow included stale reference
       caller confirmationEpoch anchorEpochBefore upToDate atSlots obligations calls bound with
       holds | bad
-  · -- The first clause of the call invariant covers the heads, which are pending before Gloas.
+  · -- The first clause of the call invariant covers the heads, whose ancestry reads their roots.
     refine .inl fun w member k hd low high ready headOk => ?_
-    have pending := Store.getHead_pending before headOk
-    have pendingHead : (⟨hd.root, .pending⟩ : ForkChoiceNode) = hd := by
-      cases hd
-      simp_all only
-    rw [pendingHead]
+    rw [← Store.isAncestor_getHead_root headOk]
     exact holds.1 slot next following slotOk nextOk followingOk (T k) low
       (Nat.lt_succ_of_le high) w member k hd rfl ready headOk
   · exact .inr bad

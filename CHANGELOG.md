@@ -10,9 +10,10 @@ Not yet released.
 ### Proof additions
 
 - In Lean, at every fork before Gloas, Phase 0 included, the root that any one call of an honest validator stores lies on later honest heads ([#2056](https://github.com/ethereum/EthLib/issues/2056)).
-  It lies on every up-to-date honest head from the slot after that call through a time limit, unless two honest stores collide or accountable-safety evidence holds.
+  It lies on every up-to-date honest head from the start of the following slot through the inclusive time limit, unless two honest stores collide or accountable-safety evidence holds.
   `Execution.confirmedWalk_end_on_honest_heads` (`Consensus/Proofs/ForkChoice/FastConfirmationSafety.lean`) assumes the obligations of each call of the run.
   It assumes a quorum drift within each call's reserve only before Electra, and derives it from Electra.
+  That assumption allows a collision of two honest stores in place of the bound.
   `Execution.callInvariant_of_run` (`Consensus/Proofs/ForkChoice/FastConfirmation/ConfirmedCallStep.lean`) gives the call invariant at each call by the limit, or that evidence, and `Execution.confirmedRoot_covers` now reads it.
 
 - In Lean, from Glamsterdam the block access list rebuilds the state after a mainnet block in which no creation lands on an account with nonce 0, no code and storage ([#4989](https://github.com/ethereum/EthLib/issues/4989)).
