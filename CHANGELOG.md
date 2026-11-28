@@ -1192,8 +1192,8 @@ Not yet released.
 - `LookaheadActive` says that, from Fulu, each entry of the proposer lookahead of a state is active in its epoch.
   Position `k` is `k / SLOTS_PER_EPOCH` epochs after the current epoch.
   `Run.lookaheadActive` states it along every run from genesis, when `MAX_SEED_LOOKAHEAD` is above `MIN_SEED_LOOKAHEAD`.
-  `LookaheadActive.proposer_active` states that a successful proposer read is active in the epoch of the state, at every fork.
-  It takes `LookaheadActive` at every fork, which constrains nothing before Fulu.
+  With `LookaheadActive`, a successful proposer read returns a validator active in the state's current epoch at every fork (`LookaheadActive.proposer_active`).
+  The invariant is vacuous before Fulu; from Fulu it constrains the cached proposer indices.
   The pin's whistleblower and sync bounds read it to show that a validator that exited before the finalized epoch proposes no block.
 
 - `processBlock_proposerLookahead` states that a successful block leaves the proposer lookahead unchanged.
@@ -1391,14 +1391,19 @@ Not yet released.
 ### Changes that break callers
 
 - In Lean, the replay helpers of the pin's drift bound hold from Electra, not only from Fulu (part of [#2056](https://github.com/ethereum/EthLib/issues/2056)).
-  A successful proposer read is active at every fork.
-  Five theorems take `(electra : .pectra ≤ _)` in place of `(fulu : .fusaka ≤ _)`, with the same position, other premises and conclusion.
-  They are `PinDrift.Internal.block_gross_keys`, `PinDrift.Internal.block_step_gross_keys`, `PinDrift.Internal.credited_pieces_seated` and `PinDrift.Internal.credited_pieces` (`Consensus/Proofs/ForkChoice/FastConfirmation/PinDriftBound/Setting.lean`), and `PinDrift.Internal.Run.syncDebits_le` (`SeatDebits.lean`).
+  With `LookaheadActive`, a successful proposer read returns a validator active in the state's current epoch at every fork.
+  The invariant is vacuous before Fulu; from Fulu it constrains the cached proposer indices.
+  `PinDrift.Internal.block_gross_keys` and `PinDrift.Internal.block_step_gross_keys` (`Consensus/Proofs/ForkChoice/FastConfirmation/PinDriftBound/Setting.lean`) take `(electra : .pectra ≤ _)` in place of `(fulu : .fusaka ≤ _)`, with the same position, other premises and conclusion.
+  `PinDrift.Internal.credited_pieces_seated` and `PinDrift.Internal.credited_pieces` (`Setting.lean`) take `.pectra ≤ x.fork` in place of `.fusaka ≤ x.fork` for the start of the run.
   `PinDrift.Internal.credited_piece` (`Setting.lean`) takes `(electra : .pectra ≤ x.fork)` in place of `(fulu : .fusaka ≤ x.fork) (altair : .altair ≤ x.fork)`, and reads the starting committee at the Altair floor that Electra gives.
+  `PinDrift.Internal.Run.syncDebits_le` (`SeatDebits.lean`) takes the Electra floor too, and its premises narrow to the blocks of the replay.
+  Only blocks starting by epoch `high + 1` need the post-state three-halves total bound and, for the movement bound, post-state proposer exclusion.
+  Existing callers may specialize their all-step proofs by ignoring the selection evidence.
   `LookaheadActive.proposer_active` (`Consensus/Proofs/Transition/LookaheadActive.lean`) drops its premise `(fulu : .fusaka ≤ fork)`.
   The pin's endpoint keeps its Fulu floor, so `JustifiedPinned` stays without a proof at Electra.
-  Migration: with `fulu` the former proof of `.fusaka ≤ _`, pass `Nat.le_trans (by decide : Fork.pectra ≤ .fusaka) fulu` to each of the five.
-  For `credited_piece`, pass the same term in place of `fulu` and delete the `altair` argument; for `LookaheadActive.proposer_active`, delete the `fulu` argument.
+  Migration: with `fulu` the former proof of `.fusaka ≤ _`, pass `Nat.le_trans (by decide : Fork.pectra ≤ .fusaka) fulu` in place of it to `block_gross_keys`, `block_step_gross_keys`, `credited_pieces_seated`, `credited_pieces` and `Run.syncDebits_le`.
+  For `Run.syncDebits_le`, pass `fun step member _ => band step member` for the old `band`, and the same form for the movement bound's apartness.
+  For `credited_piece`, pass the Electra term in place of `fulu` and delete the `altair` argument; for `LookaheadActive.proposer_active`, delete the `fulu` argument.
 
 - From Gloas, a proposer refuses a fetched bid whose block hash equals its parent hash, as the Builder API now requires ([#5025](https://github.com/ethereum/EthLib/issues/5025)).
   `BuilderApi.ValidateBidError` gains `repeatsParentHash`, which gives that hash, and `BuilderApi.validateBid` checks the rule after the parent hash.

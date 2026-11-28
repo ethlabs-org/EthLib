@@ -3213,7 +3213,9 @@ private theorem whistle_free (h : Setting config checks g split fin pulled anc c
     have finSplit := UInt64.le_iff_toNat_le.mp h.finalized
     have debits := (Internal.Run.syncDebits_le tailC (Nat.le_trans (by decide) h.fulu)
       h.early highC replayedC
-      pulledTotal.toNat (Internal.step_band_of_tail h fromFin tailC h.near pulledOk) FW).1
+      pulledTotal.toNat
+      (fun step member _ => Internal.step_band_of_tail h fromFin tailC h.near pulledOk step member)
+      FW).1
     have totalEq := Internal.getD_total_eq pulledOk
     have seatEq : (pinTerms config pulled anc fin).seatShortfall =
         2 * ((pinTerms config pulled anc fin).depth * preset.SLOTS_PER_EPOCH.toNat *
@@ -3815,10 +3817,13 @@ theorem flow_sync (h : Setting config checks g split fin pulled anc counted V)
   have credits := Internal.syncCredits_le h tailC highC replayedC keys
   have shared := (Internal.Run.syncDebits_le fromFin (Nat.le_trans (by decide) h.fulu)
     h.early high replayedF
-    pulledTotal.toNat (Internal.step_band_of_guard h fromFin (by omega) pulledOk) keys).1
+    pulledTotal.toNat
+    (fun step member _ => Internal.step_band_of_guard h fromFin (by omega) pulledOk step member)
+    keys).1
   have own := (Internal.Run.syncDebits_le tail (Nat.le_trans (by decide) h.fulu)
     h.early high replayed pulledTotal.toNat
-    (Internal.step_band_of_tail h fromFin tail (Nat.le_succ _) pulledOk) keys).1
+    (fun step member _ =>
+      Internal.step_band_of_tail h fromFin tail (Nat.le_succ _) pulledOk step member) keys).1
   have epochs := Internal.pin_epochs h fromFin
   rw [totalEq]
   simp only [Finset.sum_add_distrib]
@@ -4014,10 +4019,13 @@ private theorem sync_flows_le (h : Setting config checks g split fin pulled anc 
   have credits := Internal.syncCredits_le h tailC highC replayedC keys
   have pair := (Internal.Run.syncDebits_le fromFin (Nat.le_trans (by decide) h.fulu)
     h.early highF replayedF
-    pulledTotal.toNat (Internal.step_band_of_guard h fromFin (by omega) pulledOk) keys).2.1
+    pulledTotal.toNat
+    (fun step member _ => Internal.step_band_of_guard h fromFin (by omega) pulledOk step member)
+    keys).2.1
   have own := (Internal.Run.syncDebits_le tail (Nat.le_trans (by decide) h.fulu)
     h.early high replayed pulledTotal.toNat
-    (Internal.step_band_of_tail h fromFin tail (Nat.le_succ _) pulledOk) keys).1
+    (fun step member _ =>
+      Internal.step_band_of_tail h fromFin tail (Nat.le_succ _) pulledOk step member) keys).1
   have epochs := Internal.pin_epochs h fromFin
   have proposer := Internal.syncProposer_eq config pulled anc fin
   rw [proposer] at credits ⊢

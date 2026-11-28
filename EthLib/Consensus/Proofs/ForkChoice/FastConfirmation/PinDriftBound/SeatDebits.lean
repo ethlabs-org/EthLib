@@ -502,7 +502,10 @@ private theorem run_syncDebits_le {x y : ForkedBeaconState preset} (tail : Run c
     {events : List (BalanceEvent preset)} (replayed : tail.balanceEvents high = .ok events)
     (total : ℕ)
     (band : ∀ {u w : ForkedBeaconState preset} (step : Step config checks u w),
-      tail.Contains step → ∀ t : Gwei, getTotalActiveBalance w.state = .ok t →
+      tail.Contains step → (match step with
+        | .slot _ => False
+        | .block .. => (getCurrentEpoch u.state).toNat ≤ high + 1) →
+      ∀ t : Gwei, getTotalActiveBalance w.state = .ok t →
         2 * t.toNat ≤ 3 * total)
     (keys : Finset ℕ) :
     ∑ i ∈ keys, (events.map (PinDrift.Internal.syncDebit i)).sum ≤
@@ -513,7 +516,10 @@ private theorem run_syncDebits_le {x y : ForkedBeaconState preset} (tail : Run c
         preset total) ∧
     (∀ debited moving : Finset ℕ, Disjoint debited moving →
       (∀ {u w : ForkedBeaconState preset} (step : Step config checks u w),
-        tail.Contains step → PinDrift.Internal.stepApart moving step) →
+        tail.Contains step → (match step with
+          | .slot _ => False
+          | .block .. => (getCurrentEpoch u.state).toNat ≤ high + 1) →
+        PinDrift.Internal.stepApart moving step) →
       PinDrift.Internal.syncSeatMoves debited moving events ≤
         tail.blockCount *
           (preset.SYNC_COMMITTEE_SIZE.toNat * PinTerms.syncEnvelope preset total)) := by
@@ -521,7 +527,9 @@ private theorem run_syncDebits_le {x y : ForkedBeaconState preset} (tail : Run c
   | nil =>
     simp only [Run.balanceEvents, pure, Except.pure, Except.ok.injEq] at replayed
     subst replayed
-    simp [Run.blockCount, PinDrift.Internal.syncSeatMoves]
+    -- The selection guard is a `match` on the step, so `simp` must not see it.
+    exact ⟨by simp [Run.blockCount], by simp [Run.blockCount],
+      fun _ _ _ _ => by simp [Run.blockCount, PinDrift.Internal.syncSeatMoves]⟩
   | @snoc middle last pre step ih =>
     have earlyMiddle : middle.fork < .glamsterdam :=
       Nat.lt_of_le_of_lt step.chainStep.fork_le early
@@ -530,14 +538,18 @@ private theorem run_syncDebits_le {x y : ForkedBeaconState preset} (tail : Run c
     simp only [Run.balanceEvents, bind_ok_iff] at replayed
     obtain ⟨prior, priorOk, rest⟩ := replayed
     obtain ⟨priorDebits, priorMoves, priorApart⟩ := ih earlyMiddle priorOk
-      (fun inner member => band inner (Run.Contains.earlier member step))
+      (fun inner member selected => band inner (Run.Contains.earlier member step) selected)
     have priorApart' := fun (debited moving : Finset ℕ) (apartSets : Disjoint debited moving)
         (apart : ∀ {u w : ForkedBeaconState preset} (inner : Step config checks u w),
-          (pre.snoc step).Contains inner → PinDrift.Internal.stepApart moving inner) =>
-      priorApart debited moving apartSets fun inner member =>
-        apart inner (Run.Contains.earlier member step)
+          (pre.snoc step).Contains inner → (match inner with
+            | .slot _ => False
+            | .block .. => (getCurrentEpoch u.state).toNat ≤ high + 1) →
+          PinDrift.Internal.stepApart moving inner) =>
+      priorApart debited moving apartSets fun inner member selected =>
+        apart inner (Run.Contains.earlier member step) selected
     split at rest
-    · simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at rest
+    · rename_i selected
+      simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at rest
       obtain ⟨added, addedOk, rfl⟩ := rest
       have debitsSplit : ∑ i ∈ keys, ((prior ++ added).map (PinDrift.Internal.syncDebit i)).sum =
           ∑ i ∈ keys, (prior.map (PinDrift.Internal.syncDebit i)).sum +
@@ -557,16 +569,23 @@ private theorem run_syncDebits_le {x y : ForkedBeaconState preset} (tail : Run c
         · simpa [fun i => (zero i).1, fun i => (zero i).2, Run.blockCount] using priorDebits
         · simpa [fun i => (zero i).1, fun i => (zero i).2, Run.blockCount] using priorMoves
         · rw [syncSeatMoves_append, none]
-          simpa [Run.blockCount] using priorApart' debited moving apartSets apart
+          have prior := priorApart' debited moving apartSets apart
+          simp only [Run.blockCount, Nat.add_zero] at prior ⊢
+          exact prior
       | @block fork before after engine signed due ok =>
         have altair : Fork.altair ≤ fork :=
           Nat.le_trans (show Fork.altair ≤ Fork.pectra by decide) electraMiddle
         have replay := Step.balanceEvents_block early addedOk
         obtain ⟨bound, boundMoves, boundApart⟩ := block_syncDebits_le early altair replay total
-          (fun T hT => band _ (Run.Contains.last pre _) T hT) keys
-        simp only [Run.blockCount, Nat.add_mul, Nat.one_mul]
-        refine ⟨by omega, by omega, fun debited moving apartSets apart => ?_⟩
-        have here := boundApart debited moving apartSets (apart _ (Run.Contains.last pre _))
+          (fun T hT => band _ (Run.Contains.last pre _) selected T hT) keys
+        have count : (pre.snoc (Step.block engine signed due ok)).blockCount =
+            pre.blockCount + 1 := rfl
+        rw [count]
+        refine ⟨by rw [Nat.add_mul, Nat.one_mul]; omega, by rw [Nat.add_mul, Nat.one_mul]; omega,
+          fun debited moving apartSets apart => ?_⟩
+        rw [Nat.add_mul, Nat.one_mul]
+        have here := boundApart debited moving apartSets
+          (apart _ (Run.Contains.last pre _) selected)
         have before := priorApart' debited moving apartSets apart
         rw [syncSeatMoves_append]
         omega
@@ -574,7 +593,11 @@ private theorem run_syncDebits_le {x y : ForkedBeaconState preset} (tail : Run c
       subst rest
       cases step with
       | slot ok =>
-        simpa [Run.blockCount] using And.intro priorDebits (And.intro priorMoves priorApart')
+        refine ⟨by simpa [Run.blockCount] using priorDebits, by simpa [Run.blockCount] using
+          priorMoves, fun debited moving apartSets apart => ?_⟩
+        have prior := priorApart' debited moving apartSets apart
+        simp only [Run.blockCount] at prior ⊢
+        exact prior
       | block =>
         exact ⟨priorDebits.trans (Nat.mul_le_mul_right _ (Nat.le_succ _)),
           priorMoves.trans (Nat.mul_le_mul_right _ (Nat.le_succ _)),
@@ -598,20 +621,29 @@ private theorem Run.blockCount_mul_le {x y : ForkedBeaconState preset}
         Nat.mul_le_mul_right _ (Run.blockCount_le_epochs tail (Nat.pos_of_ne_zero empty))
     _ = _ := by ring
 
-/-- A successful replay bounds sync debits, and sync credits plus debits, over the selected keys.
+/-- A successful replay bounds sync debits, and sync credits plus debits, for the given keys.
 
-The run starts from Electra and ends before Gloas.
+It counts the steps whose input epoch is at most `high + 1`.
 
-The separate movement bound requires disjoint key sets.
+The budgets count the slots of all epochs touched by the run.
 
-It also excludes each block's post-state proposer from the moving keys. -/
+The run starts at or after Electra and ends before Gloas.
+
+Only selected blocks need the three-halves total bound at their post-state.
+
+The movement bound also requires disjoint key sets.
+
+It excludes each selected block's post-state proposer from the moving keys. -/
 theorem Run.syncDebits_le {x y : ForkedBeaconState preset} (tail : Run config checks x y)
     (electra : .pectra ≤ x.fork) (early : y.fork < .glamsterdam) (high : ℕ)
     {events : List (BalanceEvent preset)} (replayed : tail.balanceEvents high = .ok events)
     (total : ℕ)
-    -- Every successful total read at a step's end is at most three halves of `total`.
+    -- At each selected block's end, every successful total read is at most three halves of `total`.
     (band : ∀ {u w : ForkedBeaconState preset} (step : Step config checks u w),
-      tail.Contains step → ∀ t : Gwei, getTotalActiveBalance w.state = .ok t →
+      tail.Contains step → (match step with
+        | .slot _ => False
+        | .block .. => (getCurrentEpoch u.state).toNat ≤ high + 1) →
+      ∀ t : Gwei, getTotalActiveBalance w.state = .ok t →
         2 * t.toNat ≤ 3 * total)
     (keys : Finset ℕ) :
     -- Each block debits the keys at most one participant reward per seat.
@@ -627,7 +659,10 @@ theorem Run.syncDebits_le {x y : ForkedBeaconState preset} (tail : Run config ch
           PinDrift.Internal.syncSeatEnvelope preset total ∧
     (∀ debited moving : Finset ℕ, Disjoint debited moving →
       (∀ {u w : ForkedBeaconState preset} (step : Step config checks u w),
-        tail.Contains step → PinDrift.Internal.stepApart moving step) →
+        tail.Contains step → (match step with
+          | .slot _ => False
+          | .block .. => (getCurrentEpoch u.state).toNat ≤ high + 1) →
+        PinDrift.Internal.stepApart moving step) →
       PinDrift.Internal.syncSeatMoves debited moving events ≤
         ((getCurrentEpoch y.state).toNat + 1 - (getCurrentEpoch x.state).toNat) *
           preset.SLOTS_PER_EPOCH.toNat * preset.SYNC_COMMITTEE_SIZE.toNat *

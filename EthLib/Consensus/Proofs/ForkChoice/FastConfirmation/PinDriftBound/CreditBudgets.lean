@@ -304,7 +304,8 @@ theorem syncDebits_window_le (h : Setting config checks g split fin pulled anc c
     Internal.step_band_of_guard h run within pulledOk
   have debits := (Internal.Run.syncDebits_le run (Nat.le_trans (by decide) h.fulu)
     h.early (getCurrentEpoch pulled).toNat
-    replayed pulledTotal.toNat band (S.image fun v : ValidatorIndex => v.toNat)).1
+    replayed pulledTotal.toNat (fun step member _ => band step member)
+    (S.image fun v : ValidatorIndex => v.toNat)).1
   rw [Finset.sum_image fun _ _ _ _ same => UInt64.toNat_inj.mp same] at debits
   rwa [pulledOk]
 

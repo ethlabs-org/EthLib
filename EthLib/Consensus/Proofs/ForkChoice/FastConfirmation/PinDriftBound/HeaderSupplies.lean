@@ -1693,7 +1693,7 @@ private theorem syncF_run_le (h : Setting config checks g split fin pulled anc c
     · exact guarded step ((Run.contains_append _ _ _).mpr (.inr inTail)) T read
   have moves := (Internal.Run.syncDebits_le (pre.append t) (Nat.le_trans (by decide) h.fulu)
     h.early highE replayed
-    pulledTotal.toNat band keys).2.1
+    pulledTotal.toNat (fun step member _ => band step member) keys).2.1
   refine (Finset.sum_le_sum fun i _ => (Internal.syncF_eq evs i).le).trans (moves.trans (le_of_eq
       ?_))
   dsimp only
@@ -2028,7 +2028,8 @@ theorem budget_sync (h : Setting config checks g split fin pulled anc counted V)
         (pre.snoc (Step.block engine signed due ok)) p found same.symm
   have sharedRun := (Internal.Run.syncDebits_le fromFin (Nat.le_trans (by decide) h.fulu)
     h.early high replayedF
-    pulledTotal.toNat band ∅).2.2 PD PK dP apartK
+    pulledTotal.toNat (fun step member _ => band step member) ∅).2.2 PD PK dP
+    fun step member _ => apartK step member
   unfold Internal.syncSeatMoves at sharedRun
   have sharedS : S + ∑ v ∈ Internal.cutKeys config pulled anc fin split, Internal.syncD eventsF
     v.toNat ≤

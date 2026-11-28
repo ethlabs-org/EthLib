@@ -202,13 +202,11 @@ theorem Run.lookaheadActive {g x : ForkedBeaconState preset}
     exact fun fulu => (Nat.not_le_of_lt before (Nat.le_trans (by decide) fulu)).elim
   | snoc pre step ih => exact LookaheadActive.chainStep covers step.chainStep ih
 
-/-- A successful proposer read returns a validator that is active at the state's current epoch.
+/-- With `LookaheadActive`, a successful proposer read returns an active validator at every fork.
 
-This holds at every fork.
+The validator is active in the state's current epoch.
 
-The lookahead invariant `h` is taken at every fork, but it constrains nothing before Fulu.
-
-From Fulu the read returns a cached index, and `h` says that each cached index is active. -/
+The invariant is vacuous before Fulu; from Fulu it constrains the cached proposer indices. -/
 theorem LookaheadActive.proposer_active {state : BeaconState preset fork}
     (h : LookaheadActive state) {proposer : ValidatorIndex}
     (ok : getBeaconProposerIndex state = .ok proposer) :

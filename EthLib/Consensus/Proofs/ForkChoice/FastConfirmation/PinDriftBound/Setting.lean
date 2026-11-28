@@ -1460,11 +1460,13 @@ private theorem blockReplay_proposer_credits {fork : Fork} {a t : BeaconState pr
   exact ⟨consolidated.1, consolidated.2, altair, _, credit, debit, events, link, synced,
     consolidatedC, processBlockHeader_proposer headerOk⟩
 
-/-- Each positive key credit of a block replay goes to the input proposer, or is a sync credit.
+/-- Each positive key credit in the replay is for the input proposer or is a sync credit.
 
-A sync credit goes to a key that holds a seat of the committee after the block.
+That sync credit is for a key seated after the block.
 
-The block is replayed from Electra and before Gloas, at a state that a run from genesis reaches.
+A sync credit to the proposer need not establish that the proposer holds a seat.
+
+The block is replayed from Electra and before Gloas, at a state reached from genesis.
 
 The mixes must span more than the seed lookahead plus two epochs. -/
 theorem block_gross_keys {g : ForkedBeaconState preset}
@@ -1513,11 +1515,11 @@ theorem block_gross_keys {g : ForkedBeaconState preset}
     · exact .inr ⟨rfl, altair, h⟩
     · exact .inl (Finset.mem_singleton.mpr (by rw [read] at found; cases found; exact same.symm))
 
-/-- Positive reward, slashing or sync credit of a block step goes to the input proposer or a seat.
+/-- Positive reward, slashing or sync credit in the block step goes to the input proposer or a seat.
 
-The seat is one of the committee after the block.
+That seat is held by a key seated after the block.
 
-The block is from Electra and before Gloas, at a state that a run from genesis reaches. -/
+The block is from Electra and before Gloas, at a state reached from genesis. -/
 theorem block_step_gross_keys {g : ForkedBeaconState preset}
     (genesis : Genesis config checks g)
     (apart : preset.MIN_SEED_LOOKAHEAD.toNat + 2 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
@@ -1707,13 +1709,19 @@ private theorem step_deposit_keys {g : ForkedBeaconState preset}
       have := quiet i fun e mem dep => absurd ⟨e, mem, dep⟩ any
       omega
 
-/-- Within one sync period, positive gross credits go to block proposers or to starting seats.
+/-- The run stays in one sync period.
 
-The keys with a deposit credit number at most the pending-deposit cap times the elapsed epochs.
+The scans and replay include only steps whose input epoch is at most `high + 1`.
 
-The keys with a positive sync debit in a successful replay hold a seat of the starting committee.
+Positive block credits from rewards, slashings or sync go to proposers or starting committee keys.
 
-The run starts from Electra, at a state that a run from genesis reaches, and ends before Gloas. -/
+Positive sync debits in a successful replay go to starting committee keys.
+
+Slot deposit credits are bounded in number of keys by the per-epoch cap times the elapsed epochs.
+
+Those epochs, like the whole block count that bounds the proposer keys, are the whole run's.
+
+The run starts at or after Electra at a state reached from genesis and ends before Gloas. -/
 theorem credited_piece {g : ForkedBeaconState preset}
     (genesis : Genesis config checks g)
     (apart : preset.MIN_SEED_LOOKAHEAD.toNat + 2 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
@@ -1922,13 +1930,17 @@ private theorem seat_positions {g : ForkedBeaconState preset}
     exact Finset.mem_filter.mpr ⟨Finset.mem_range.mpr (Array.getElem?_eq_some_iff.mp found).1,
       w, found, mem⟩
 
-/-- With `n` sync-period changes, the credited keys are proposers, deposits or `n + 1` committees.
+/-- The scans and replay include only steps whose input epoch is at most `high + 1`.
 
-Each committee is the current one at a state of the run, in the period of its index.
+Positive block credits from rewards, slashings or sync go to proposers or committee keys.
 
-The keys with a positive sync debit in a successful replay hold a seat of one of them.
+Positive sync debits in a successful replay go to committee keys.
 
-The run starts from Electra, at a state that a run from genesis reaches, and ends before Gloas. -/
+Deposits count only at slot steps, and a third set covers slot deposit credits.
+
+The cardinality bounds use the whole run, with a committee witnessed in each of its `n + 1` periods.
+
+The run starts at or after Electra at a state reached from genesis and ends before Gloas. -/
 theorem credited_pieces_seated {g : ForkedBeaconState preset}
     (genesis : Genesis config checks g)
     (apart : preset.MIN_SEED_LOOKAHEAD.toNat + 2 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
@@ -2146,13 +2158,19 @@ theorem credited_pieces_seated {g : ForkedBeaconState preset}
         · omega
         · simpa [j0] using hL
 
-/-- Positive gross credits lie in two sets, bounded by the block count and by the seats of a run.
+/-- The scans and replay include only steps whose input epoch is at most `high + 1`.
 
-The seat set also holds the keys with a positive sync debit in a successful replay.
+Two sets cover positive block credits from rewards, slashings or sync.
 
-The keys with a deposit credit number at most the pending-deposit cap times the elapsed epochs.
+The second also covers positive sync debits in a successful replay.
 
-The run starts from Electra, at a state that a run from genesis reaches, and ends before Gloas. -/
+A third covers slot deposit credits.
+
+Their cardinality bounds use the block count, seats across all periods and elapsed epochs.
+
+Each of those counts is of the whole run.
+
+The run starts at or after Electra at a state reached from genesis and ends before Gloas. -/
 theorem credited_pieces {g : ForkedBeaconState preset}
     (genesis : Genesis config checks g)
     (apart : preset.MIN_SEED_LOOKAHEAD.toNat + 2 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
