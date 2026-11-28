@@ -498,7 +498,7 @@ def stepApart (keys : Finset ℕ) :
 
 The credits and debits together fit one envelope and proposer share for each seat and block. -/
 private theorem run_syncDebits_le {x y : ForkedBeaconState preset} (tail : Run config checks x y)
-    (fulu : .fusaka ≤ x.fork) (early : y.fork < .glamsterdam) (high : ℕ)
+    (electra : .pectra ≤ x.fork) (early : y.fork < .glamsterdam) (high : ℕ)
     {events : List (BalanceEvent preset)} (replayed : tail.balanceEvents high = .ok events)
     (total : ℕ)
     (band : ∀ {u w : ForkedBeaconState preset} (step : Step config checks u w),
@@ -525,8 +525,8 @@ private theorem run_syncDebits_le {x y : ForkedBeaconState preset} (tail : Run c
   | @snoc middle last pre step ih =>
     have earlyMiddle : middle.fork < .glamsterdam :=
       Nat.lt_of_le_of_lt step.chainStep.fork_le early
-    have fuluMiddle : .fusaka ≤ middle.fork :=
-      Nat.le_trans fulu (fork_le_of_chainSteps pre.chainSteps)
+    have electraMiddle : .pectra ≤ middle.fork :=
+      Nat.le_trans electra (fork_le_of_chainSteps pre.chainSteps)
     simp only [Run.balanceEvents, bind_ok_iff] at replayed
     obtain ⟨prior, priorOk, rest⟩ := replayed
     obtain ⟨priorDebits, priorMoves, priorApart⟩ := ih earlyMiddle priorOk
@@ -546,7 +546,7 @@ private theorem run_syncDebits_le {x y : ForkedBeaconState preset} (tail : Run c
       rw [debitsSplit, sum_syncMoves_append]
       cases step with
       | slot ok =>
-        have zero := PinDrift.Internal.slot_syncDebit_zero (Nat.le_trans (by decide) fuluMiddle) ok
+        have zero := PinDrift.Internal.slot_syncDebit_zero electraMiddle ok
           early addedOk
         have none : ∀ debited moving : Finset ℕ, PinDrift.Internal.syncSeatMoves debited moving
           added = 0 := by
@@ -560,7 +560,7 @@ private theorem run_syncDebits_le {x y : ForkedBeaconState preset} (tail : Run c
           simpa [Run.blockCount] using priorApart' debited moving apartSets apart
       | @block fork before after engine signed due ok =>
         have altair : Fork.altair ≤ fork :=
-          Nat.le_trans (show Fork.altair ≤ Fork.fusaka by decide) fuluMiddle
+          Nat.le_trans (show Fork.altair ≤ Fork.pectra by decide) electraMiddle
         have replay := Step.balanceEvents_block early addedOk
         obtain ⟨bound, boundMoves, boundApart⟩ := block_syncDebits_le early altair replay total
           (fun T hT => band _ (Run.Contains.last pre _) T hT) keys
@@ -598,14 +598,18 @@ private theorem Run.blockCount_mul_le {x y : ForkedBeaconState preset}
         Nat.mul_le_mul_right _ (Run.blockCount_le_epochs tail (Nat.pos_of_ne_zero empty))
     _ = _ := by ring
 
-/-- The sync debits of any set of keys over a run from Fulu fit one envelope per seat per slot.
+/-- A successful replay bounds sync debits, and sync credits plus debits, over the selected keys.
 
-The slots are those of the epochs that the run touches. -/
+The run starts from Electra and ends before Gloas.
+
+The separate movement bound requires disjoint key sets.
+
+It also excludes each block's post-state proposer from the moving keys. -/
 theorem Run.syncDebits_le {x y : ForkedBeaconState preset} (tail : Run config checks x y)
-    (fulu : .fusaka ≤ x.fork) (early : y.fork < .glamsterdam) (high : ℕ)
+    (electra : .pectra ≤ x.fork) (early : y.fork < .glamsterdam) (high : ℕ)
     {events : List (BalanceEvent preset)} (replayed : tail.balanceEvents high = .ok events)
     (total : ℕ)
-    -- Every total along the run is within three halves of `total`.
+    -- Every successful total read at a step's end is at most three halves of `total`.
     (band : ∀ {u w : ForkedBeaconState preset} (step : Step config checks u w),
       tail.Contains step → ∀ t : Gwei, getTotalActiveBalance w.state = .ok t →
         2 * t.toNat ≤ 3 * total)
@@ -621,11 +625,6 @@ theorem Run.syncDebits_le {x y : ForkedBeaconState preset} (tail : Run config ch
       ((getCurrentEpoch y.state).toNat + 1 - (getCurrentEpoch x.state).toNat) *
         preset.SLOTS_PER_EPOCH.toNat * preset.SYNC_COMMITTEE_SIZE.toNat *
           PinDrift.Internal.syncSeatEnvelope preset total ∧
-    -- Assume that no block's proposer is among the keys.
-    --
-    -- Then each block moves them at most one participant reward.
-    --
-    -- That reward is per seat.
     (∀ debited moving : Finset ℕ, Disjoint debited moving →
       (∀ {u w : ForkedBeaconState preset} (step : Step config checks u w),
         tail.Contains step → PinDrift.Internal.stepApart moving step) →
@@ -638,7 +637,7 @@ theorem Run.syncDebits_le {x y : ForkedBeaconState preset} (tail : Run config ch
     unfold PinTerms.syncEnvelope
     rw [empty]
     simp
-  have bounds := run_syncDebits_le tail fulu early high replayed total band keys
+  have bounds := run_syncDebits_le tail electra early high replayed total band keys
   exact ⟨bounds.1.trans (Run.blockCount_mul_le tail _ empty),
     bounds.2.1.trans (Run.blockCount_mul_le tail _ fun e => by
       unfold PinDrift.Internal.syncSeatEnvelope

@@ -1691,7 +1691,8 @@ private theorem syncF_run_le (h : Setting config checks g split fin pulled anc c
             h.early (by dsimp only; omega) okFin pulledOk).2
         · exact guarded step ((Run.contains_append _ _ _).mpr (.inl inFin)) T read
     · exact guarded step ((Run.contains_append _ _ _).mpr (.inr inTail)) T read
-  have moves := (Internal.Run.syncDebits_le (pre.append t) h.fulu h.early highE replayed
+  have moves := (Internal.Run.syncDebits_le (pre.append t) (Nat.le_trans (by decide) h.fulu)
+    h.early highE replayed
     pulledTotal.toNat band keys).2.1
   refine (Finset.sum_le_sum fun i _ => (Internal.syncF_eq evs i).le).trans (moves.trans (le_of_eq
       ?_))
@@ -2001,7 +2002,6 @@ theorem budget_sync (h : Setting config checks g split fin pulled anc counted V)
         2 * T.toNat ≤ 3 * pulledTotal.toNat :=
     Internal.step_band_of_guard h fromFin (by omega) pulledOk
   -- no block of the shared segment has a proposer among the keys of EK
-  obtain ⟨toFin⟩ := h.toFin
   have apartK : ∀ {u w : ForkedBeaconState preset} (step : Step config checks u w),
       fromFin.Contains step → Internal.stepApart PK step := by
     intro u w step member
@@ -2023,17 +2023,11 @@ theorem budget_sync (h : Setting config checks g split fin pulled anc counted V)
         | some w0 =>
           simp [found0] at flag
           exact ⟨w0, rfl, flag⟩
-      obtain ⟨u0, foundFin, kept⟩ := Internal.exit_kept_of_le_fin h foundPulled exited
-      have inactive := Internal.inactive_of_exited h.twoSlots (pre.snoc (Step.block engine signed
-        due ok))
-        foundFin (by rw [kept]; exact exited)
-      have look := Run.lookaheadActive h.facts.covers h.genesis
-        (toFin.append (pre.snoc (Step.block engine signed due ok)))
-      have active := look.proposer_active (Nat.le_trans h.fulu
-        (fork_le_of_chainSteps (pre.snoc (Step.block engine signed due ok)).chainSteps)) found
-      rw [← same, inactive] at active
-      exact Bool.false_ne_true active
-  have sharedRun := (Internal.Run.syncDebits_le fromFin h.fulu h.early high replayedF
+      -- An exited key proposes no block of the run from the finalized state.
+      exact Internal.exited_not_proposer h foundPulled exited _
+        (pre.snoc (Step.block engine signed due ok)) p found same.symm
+  have sharedRun := (Internal.Run.syncDebits_le fromFin (Nat.le_trans (by decide) h.fulu)
+    h.early high replayedF
     pulledTotal.toNat band ∅).2.2 PD PK dP apartK
   unfold Internal.syncSeatMoves at sharedRun
   have sharedS : S + ∑ v ∈ Internal.cutKeys config pulled anc fin split, Internal.syncD eventsF

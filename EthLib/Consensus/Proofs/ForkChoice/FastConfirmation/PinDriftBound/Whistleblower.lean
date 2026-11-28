@@ -3211,7 +3211,8 @@ private theorem whistle_free (h : Setting config checks g split fin pulled anc c
   have seats : 2 * ∑ i ∈ FW, Internal.syncD eventsC i ≤ (pinTerms config pulled anc
     fin).seatShortfall := by
     have finSplit := UInt64.le_iff_toNat_le.mp h.finalized
-    have debits := (Internal.Run.syncDebits_le tailC h.fulu h.early highC replayedC
+    have debits := (Internal.Run.syncDebits_le tailC (Nat.le_trans (by decide) h.fulu)
+      h.early highC replayedC
       pulledTotal.toNat (Internal.step_band_of_tail h fromFin tailC h.near pulledOk) FW).1
     have totalEq := Internal.getD_total_eq pulledOk
     have seatEq : (pinTerms config pulled anc fin).seatShortfall =
@@ -3812,9 +3813,11 @@ theorem flow_sync (h : Setting config checks g split fin pulled anc counted V)
   have totalEq := Internal.getD_total_eq pulledOk
   have called := UInt64.le_iff_toNat_le.mp (Internal.Setting.called h)
   have credits := Internal.syncCredits_le h tailC highC replayedC keys
-  have shared := (Internal.Run.syncDebits_le fromFin h.fulu h.early high replayedF
+  have shared := (Internal.Run.syncDebits_le fromFin (Nat.le_trans (by decide) h.fulu)
+    h.early high replayedF
     pulledTotal.toNat (Internal.step_band_of_guard h fromFin (by omega) pulledOk) keys).1
-  have own := (Internal.Run.syncDebits_le tail h.fulu h.early high replayed pulledTotal.toNat
+  have own := (Internal.Run.syncDebits_le tail (Nat.le_trans (by decide) h.fulu)
+    h.early high replayed pulledTotal.toNat
     (Internal.step_band_of_tail h fromFin tail (Nat.le_succ _) pulledOk) keys).1
   have epochs := Internal.pin_epochs h fromFin
   rw [totalEq]
@@ -4009,9 +4012,11 @@ private theorem sync_flows_le (h : Setting config checks g split fin pulled anc 
   have totalEq := Internal.getD_total_eq pulledOk
   have called := UInt64.le_iff_toNat_le.mp (Internal.Setting.called h)
   have credits := Internal.syncCredits_le h tailC highC replayedC keys
-  have pair := (Internal.Run.syncDebits_le fromFin h.fulu h.early highF replayedF
+  have pair := (Internal.Run.syncDebits_le fromFin (Nat.le_trans (by decide) h.fulu)
+    h.early highF replayedF
     pulledTotal.toNat (Internal.step_band_of_guard h fromFin (by omega) pulledOk) keys).2.1
-  have own := (Internal.Run.syncDebits_le tail h.fulu h.early high replayed pulledTotal.toNat
+  have own := (Internal.Run.syncDebits_le tail (Nat.le_trans (by decide) h.fulu)
+    h.early high replayed pulledTotal.toNat
     (Internal.step_band_of_tail h fromFin tail (Nat.le_succ _) pulledOk) keys).1
   have epochs := Internal.pin_epochs h fromFin
   have proposer := Internal.syncProposer_eq config pulled anc fin
@@ -4272,7 +4277,7 @@ theorem deposit_scan_card_le (h : Setting config checks g split fin pulled anc c
     h.parameters.lookahead (y := ⟨fork, counted⟩) h.early (Internal.Setting.delay h) highC
     ((getCurrentEpoch counted).toNat / max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat -
       (getCurrentEpoch split).toNat / max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat)
-    shared tailC h.fulu periods
+    shared tailC (Nat.le_trans (by decide) h.fulu) periods
   have inD : T ⊆ D := fun i member => hD i (positive i member)
   refine (Finset.card_le_card inD).trans (cardD.trans ?_)
   have epochs : (getCurrentEpoch counted).toNat - (getCurrentEpoch split).toNat ≤

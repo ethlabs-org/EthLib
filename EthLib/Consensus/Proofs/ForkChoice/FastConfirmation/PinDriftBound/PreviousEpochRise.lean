@@ -2067,7 +2067,8 @@ private theorem whist_seat (h : Setting config checks g split fin pulled anc cou
       (Internal.Setting.delay h) high ((getCurrentEpoch pulled).toNat /
           max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat -
         (getCurrentEpoch fin).toNat / max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat)
-      toFin (fromFin.append tail) h.fulu (by rw [hP]; exact periods)
+      toFin (fromFin.append tail) (Nat.le_trans (by decide) h.fulu)
+      (by rw [hP]; exact periods)
   rw [hP] at cardS
   -- the keys with a band hold a seat of the run
   obtain ⟨term, hterm⟩ : ∃ term : ℕ → ℕ, ∀ i, term i = Internal.bandR (eventsF ++ events) i +

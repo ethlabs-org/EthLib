@@ -302,7 +302,8 @@ theorem syncDebits_window_le (h : Setting config checks g split fin pulled anc c
       run.Contains step → ∀ T : Gwei, getTotalActiveBalance w.state = .ok T →
         2 * T.toNat ≤ 3 * pulledTotal.toNat :=
     Internal.step_band_of_guard h run within pulledOk
-  have debits := (Internal.Run.syncDebits_le run h.fulu h.early (getCurrentEpoch pulled).toNat
+  have debits := (Internal.Run.syncDebits_le run (Nat.le_trans (by decide) h.fulu)
+    h.early (getCurrentEpoch pulled).toNat
     replayed pulledTotal.toNat band (S.image fun v : ValidatorIndex => v.toNat)).1
   rw [Finset.sum_image fun _ _ _ _ same => UInt64.toNat_inj.mp same] at debits
   rwa [pulledOk]
@@ -1871,7 +1872,7 @@ private theorem block_idle_step {g : ForkedBeaconState preset}
     {f : Fork} {s t : BeaconState preset f} {engine : ExecutionEngine preset f}
     {signed : SignedBeaconBlock preset f} {due : upgradeDue config ⟨f, s⟩ = false}
     {ok : applySignedBlock config checks engine s signed true = .ok t}
-    (shared : Run config checks g ⟨f, s⟩) (fulu : .fusaka ≤ f) (early : f < .glamsterdam) (v : ℕ)
+    (shared : Run config checks g ⟨f, s⟩) (electra : .pectra ≤ f) (early : f < .glamsterdam) (v : ℕ)
     (notActive : ∀ w, s.validators.data[v]? = some w →
       isActiveValidator w (getCurrentEpoch s) = false)
     (notSeated : ∀ w, t.validators.data[v]? = some w → w.activationEpoch = FAR_FUTURE_EPOCH ∨
@@ -1879,12 +1880,12 @@ private theorem block_idle_step {g : ForkedBeaconState preset}
     Internal.stepCredit (fun s => decide (s = .rewards ∨ s = .slashings ∨ s = .sync)) (fun _ =>
       false) v
       (Step.block engine signed due ok) = 0 := by
-  obtain ⟨K, -, proposer, keys⟩ := Internal.block_step_gross_keys genesis apart shared fulu early
+  obtain ⟨K, -, proposer, keys⟩ := Internal.block_step_gross_keys genesis apart shared electra early
     (engine := engine) (signed := signed) (due := due) (ok := ok)
   by_contra nonzero
   rcases keys v (Nat.pos_of_ne_zero nonzero) with member | ⟨altair, w, found, seat⟩
   · obtain ⟨p, read, same⟩ := proposer v member
-    have active := (Run.lookaheadActive covers genesis shared).proposer_active fulu read
+    have active := (Run.lookaheadActive covers genesis shared).proposer_active read
     rw [same] at active
     obtain ⟨w, found, isActive⟩ := isActiveAt_eq_true_iff.mp active
     rw [notActive w found] at isActive
@@ -1956,7 +1957,7 @@ private theorem key_idle_walk (h : Setting config checks g split fin pulled anc 
         (Nat.le_trans electra (fork_le_of_chainSteps pre.chainSteps)) v
       have zero := block_idle_step (engine := engine) (signed := signed) (due := due) (ok := ok)
         h.genesis h.parameters.lookahead h.facts.covers shared
-        (Nat.le_trans h.fulu (fork_le_of_chainSteps pre.chainSteps)) lastEarly v
+        (Nat.le_trans electra (fork_le_of_chainSteps pre.chainSteps)) lastEarly v
         (fun w found => inactive _ afterStep w found _ (Nat.le_refl _))
         (fun w found => by
           by_cases assigned : w.activationEpoch = FAR_FUTURE_EPOCH
@@ -3446,8 +3447,7 @@ theorem exited_not_proposer (h : Setting config checks g split fin pulled anc co
   obtain ⟨w0, foundFin, kept⟩ := Internal.exit_kept_of_le_fin h foundPulled exited
   have inactive := Internal.inactive_of_exited h.twoSlots run foundFin (by rw [kept]; exact exited)
   have look := Run.lookaheadActive h.facts.covers h.genesis (toFin.append run)
-  have active := look.proposer_active
-    (Nat.le_trans h.fulu (fork_le_of_chainSteps run.chainSteps)) proposer
+  have active := look.proposer_active proposer
   rw [same, inactive] at active
   exact Bool.false_ne_true active
 
@@ -3635,7 +3635,7 @@ private theorem pre_credit_seat (h : Setting config checks g split fin pulled an
     rw [sameEpoch]
   obtain ⟨B, D, cardB, -, gross, -, -, -⟩ := Internal.credited_piece h.genesis
     h.parameters.lookahead toB
-    pre h.fulu altair h.early (Internal.Setting.delay h) highC samePeriod
+    pre (Nat.le_trans (by decide) h.fulu) h.early (Internal.Setting.delay h) highC samePeriod
   refine ⟨B, ?_, fun i pos => ?_⟩
   · -- the blocks of `pre` are at most one in each slot of the epoch
     have positive : 0 < preset.SLOTS_PER_EPOCH.toNat := by have := h.twoSlots; omega

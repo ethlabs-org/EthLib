@@ -57,14 +57,14 @@ private theorem block_proposer_credit_zero {g : ForkedBeaconState preset}
     {f : Fork} {s t : BeaconState preset f} {engine : ExecutionEngine preset f}
     {signed : SignedBeaconBlock preset f} {due : upgradeDue config ⟨f, s⟩ = false}
     {ok : applySignedBlock config checks engine s signed true = .ok t}
-    (shared : Run config checks g ⟨f, s⟩) (fulu : .fusaka ≤ f) (early : f < .glamsterdam) (v : ℕ)
+    (shared : Run config checks g ⟨f, s⟩) (electra : .pectra ≤ f) (early : f < .glamsterdam) (v : ℕ)
     (notProposer : ∀ p, getBeaconProposerIndex s = .ok p → p.toNat ≠ v)
     (blockP slotP : BalanceSource → Bool)
     (sources : ∀ x, blockP x = true → x = .rewards ∨ x = .slashings) :
     Internal.stepCredit blockP slotP v (Step.block engine signed due ok) = 0 := by
   obtain ⟨events, replayed⟩ := (Step.block engine signed due ok :
     Step config checks ⟨f, s⟩ ⟨f, t⟩).balanceEvents_ok early
-  obtain ⟨K, -, proposer, keys⟩ := Internal.block_gross_keys genesis apart shared fulu early
+  obtain ⟨K, -, proposer, keys⟩ := Internal.block_gross_keys genesis apart shared electra early
     replayed
   simp only [Internal.stepCredit, replayed, Except.toOption, Option.getD_some]
   refine List.sum_eq_zero fun c member => ?_
@@ -98,7 +98,8 @@ private theorem exited_proposer_credits_zero
         obtain ⟨pre, -, -, mEarly, -⟩ :=
           DirectSafety.Apriori.Internal.Run.contains_step_facts member early
         exact block_proposer_credit_zero h.genesis h.parameters.lookahead (toFin.append pre)
-          (Nat.le_trans h.fulu (fork_le_of_chainSteps pre.chainSteps)) mEarly i
+          (Nat.le_trans (Nat.le_trans (by decide) h.fulu) (fork_le_of_chainSteps pre.chainSteps))
+          mEarly i
           (fun p read => Internal.exited_not_proposer h foundPulled exited _ pre p read)
             blockP _
           sources

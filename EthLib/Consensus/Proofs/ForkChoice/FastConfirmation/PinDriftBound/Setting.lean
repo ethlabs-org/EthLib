@@ -1460,7 +1460,11 @@ private theorem blockReplay_proposer_credits {fork : Fork} {a t : BeaconState pr
   exact ⟨consolidated.1, consolidated.2, altair, _, credit, debit, events, link, synced,
     consolidatedC, processBlockHeader_proposer headerOk⟩
 
-/-- A key that an event of a block step credits is its proposer, or a seat holder for a sync event.
+/-- Each positive key credit of a block replay goes to the input proposer, or is a sync credit.
+
+A sync credit goes to a key that holds a seat of the committee after the block.
+
+The block is replayed from Electra and before Gloas, at a state that a run from genesis reaches.
 
 The mixes must span more than the seed lookahead plus two epochs. -/
 theorem block_gross_keys {g : ForkedBeaconState preset}
@@ -1469,14 +1473,13 @@ theorem block_gross_keys {g : ForkedBeaconState preset}
     {f : Fork} {s t : BeaconState preset f} {engine : ExecutionEngine preset f}
     {signed : SignedBeaconBlock preset f} {due : upgradeDue config ⟨f, s⟩ = false}
     {ok : applySignedBlock config checks engine s signed true = .ok t}
-    (shared : Run config checks g ⟨f, s⟩) (fulu : .fusaka ≤ f) (early : f < .glamsterdam)
+    (shared : Run config checks g ⟨f, s⟩) (electra : .pectra ≤ f) (early : f < .glamsterdam)
     {events : List (BalanceEvent preset)}
     (replayed : (Step.block engine signed due ok).balanceEvents = .ok events) :
     ∃ K : Finset ℕ, K.card ≤ 1 ∧ (∀ k ∈ K, ∃ p, getBeaconProposerIndex s = .ok p ∧ p.toNat = k) ∧
       ∀ e ∈ events, ∀ i, 0 < Internal.keyCredit i e →
       i ∈ K ∨ (e.source = .sync ∧ ∃ altair : .altair ≤ f, ∃ w, t.validators.data[i]? = some w ∧
         w.pubkey ∈ (t.currentSyncCommittee altair).value.pubkeys.toList) := by
-  have electra : .pectra ≤ f := Nat.le_trans (by decide) fulu
   obtain ⟨c, rest, altair, aggregate, credit, debit, split, read, synced, passes, header⟩ :=
     blockReplay_proposer_credits apart electra early (Step.balanceEvents_block early replayed)
   have bounded := step_events_bounded shared genesis (Step.block engine signed due ok) early
@@ -1510,14 +1513,18 @@ theorem block_gross_keys {g : ForkedBeaconState preset}
     · exact .inr ⟨rfl, altair, h⟩
     · exact .inl (Finset.mem_singleton.mpr (by rw [read] at found; cases found; exact same.symm))
 
-/-- A key that rewards, slashings or sync credit in a block step is a proposer or a seat holder. -/
+/-- Positive reward, slashing or sync credit of a block step goes to the input proposer or a seat.
+
+The seat is one of the committee after the block.
+
+The block is from Electra and before Gloas, at a state that a run from genesis reaches. -/
 theorem block_step_gross_keys {g : ForkedBeaconState preset}
     (genesis : Genesis config checks g)
     (apart : preset.MIN_SEED_LOOKAHEAD.toNat + 2 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
     {f : Fork} {s t : BeaconState preset f} {engine : ExecutionEngine preset f}
     {signed : SignedBeaconBlock preset f} {due : upgradeDue config ⟨f, s⟩ = false}
     {ok : applySignedBlock config checks engine s signed true = .ok t}
-    (shared : Run config checks g ⟨f, s⟩) (fulu : .fusaka ≤ f) (early : f < .glamsterdam) :
+    (shared : Run config checks g ⟨f, s⟩) (electra : .pectra ≤ f) (early : f < .glamsterdam) :
     ∃ K : Finset ℕ, K.card ≤ 1 ∧ (∀ k ∈ K, ∃ p, getBeaconProposerIndex s = .ok p ∧ p.toNat = k) ∧
       ∀ i, 0 < Internal.stepCredit
         (fun s => decide (s = .rewards ∨ s = .slashings ∨ s = .sync)) (fun _ => false) i
@@ -1529,8 +1536,8 @@ theorem block_step_gross_keys {g : ForkedBeaconState preset}
     exact ⟨∅, by simp, by simp, fun i pos => by simp [Internal.stepCredit, replayed,
       Except.toOption] at pos⟩
   | ok events =>
-    obtain ⟨K, card, proposers, keys⟩ := Internal.block_gross_keys genesis apart shared fulu early
-      replayed
+    obtain ⟨K, card, proposers, keys⟩ := Internal.block_gross_keys genesis apart shared electra
+      early replayed
     refine ⟨K, card, proposers, fun i pos => ?_⟩
     simp only [Internal.stepCredit, replayed, Except.toOption, Option.getD_some] at pos
     by_contra none
@@ -1700,17 +1707,20 @@ private theorem step_deposit_keys {g : ForkedBeaconState preset}
       have := quiet i fun e mem dep => absurd ⟨e, mem, dep⟩ any
       omega
 
-/-- The keys credited in the block steps of a run inside one period of sync committees.
+/-- Within one sync period, positive gross credits go to block proposers or to starting seats.
 
-A key credited by a block is a proposer, at most one for each block.
+The keys with a deposit credit number at most the pending-deposit cap times the elapsed epochs.
 
-Otherwise it holds a seat of the committee that the run starts with. -/
+The keys with a positive sync debit in a successful replay hold a seat of the starting committee.
+
+The run starts from Electra, at a state that a run from genesis reaches, and ends before Gloas. -/
 theorem credited_piece {g : ForkedBeaconState preset}
     (genesis : Genesis config checks g)
     (apart : preset.MIN_SEED_LOOKAHEAD.toNat + 2 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
     {x y : ForkedBeaconState preset}
     (shared : Run config checks g x) (r : Run config checks x y)
-    (fulu : .fusaka ≤ x.fork) (altair : .altair ≤ x.fork) (early : y.fork < .glamsterdam)
+    (electra : .pectra ≤ x.fork) (early : y.fork < .glamsterdam)
+    -- The count of deposit keys reads a positive withdrawal delay.
     (delay : 0 < config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat) (high : ℕ)
     (same : (getCurrentEpoch y.state).toNat / max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat =
       (getCurrentEpoch x.state).toNat / max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat) :
@@ -1719,16 +1729,19 @@ theorem credited_piece {g : ForkedBeaconState preset}
         ((getCurrentEpoch y.state).toNat - (getCurrentEpoch x.state).toNat) ∧
       (∀ i, 0 < Internal.grossScan i high r →
       i ∈ B ∨ ∃ w, y.state.validators.data[i]? = some w ∧
-        w.pubkey ∈ (x.state.currentSyncCommittee altair).value.pubkeys.toList) ∧
+        w.pubkey ∈ (x.state.currentSyncCommittee
+          (Nat.le_trans (by decide : Fork.altair ≤ Fork.pectra) electra)).value.pubkeys.toList) ∧
       (∀ i, 0 < (Internal.creditScan (fun _ => false) (fun s => decide (s = .deposits)) i high r) →
         i ∈ D) ∧
       (∀ events, r.balanceEvents high = .ok events → ∀ i, 0 < (events.map (Internal.syncDebit
         i)).sum →
         ∃ w, y.state.validators.data[i]? = some w ∧
-          w.pubkey ∈ (x.state.currentSyncCommittee altair).value.pubkeys.toList) ∧
+          w.pubkey ∈ (x.state.currentSyncCommittee
+          (Nat.le_trans (by decide : Fork.altair ≤ Fork.pectra) electra)).value.pubkeys.toList) ∧
       ∀ i ∈ B, ∃ (u : ForkedBeaconState preset) (_ : Run config checks x u) (p : ValidatorIndex),
         u.fork < .glamsterdam ∧ getBeaconProposerIndex u.state = .ok p ∧ p.toNat = i := by
   classical
+  have altair : .altair ≤ x.fork := Nat.le_trans (by decide : Fork.altair ≤ Fork.pectra) electra
   induction r with
   | nil =>
     refine ⟨∅, ∅, by simp, by simp, fun i pos => (Nat.lt_irrefl 0 pos).elim,
@@ -1781,7 +1794,8 @@ theorem credited_piece {g : ForkedBeaconState preset}
       exact ⟨w', found', same' ▸ mem⟩
     cases step with
     | slot ok =>
-      have fulu' : .fusaka ≤ u.fork := Nat.le_trans fulu (fork_le_of_chainSteps pre.chainSteps)
+      have electra' : .pectra ≤ u.fork :=
+        Nat.le_trans electra (fork_le_of_chainSteps pre.chainSteps)
       refine ⟨B, D ∪ Ds, cardB, cardUnion, fun i pos => ?_, depMem, ?_, hP⟩
       have prior := grossScan_slot_pos i high pre ok pos
       rcases hB i prior with member | ⟨w, found, mem⟩
@@ -1793,8 +1807,7 @@ theorem credited_piece {g : ForkedBeaconState preset}
       split at rest
       · simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at rest
         obtain ⟨added, addedOk, rfl⟩ := rest
-        have zero := (Internal.slot_syncDebit_zero
-          (Nat.le_trans (show Fork.pectra ≤ Fork.fusaka by decide) fulu') ok early addedOk i).1
+        have zero := (Internal.slot_syncDebit_zero electra' ok early addedOk i).1
         simp only [List.map_append, List.sum_append, zero, Nat.add_zero] at pos
         obtain ⟨w, found, mem⟩ := hS prior priorOk i pos
         exact carry i w found mem
@@ -1803,10 +1816,10 @@ theorem credited_piece {g : ForkedBeaconState preset}
         obtain ⟨w, found, mem⟩ := hS _ priorOk i pos
         exact carry i w found mem
     | @block f s t engine signed due ok =>
-      have fulu' : .fusaka ≤ f := Nat.le_trans fulu (fork_le_of_chainSteps pre.chainSteps)
+      have electra' : .pectra ≤ f := Nat.le_trans electra (fork_le_of_chainSteps pre.chainSteps)
       obtain ⟨K, cardK, hKp, hK⟩ := Internal.block_step_gross_keys (engine := engine) (signed :=
         signed)
-        (due := due) (ok := ok) genesis apart (shared.append pre) fulu' uEarly
+        (due := due) (ok := ok) genesis apart (shared.append pre) electra' uEarly
       refine ⟨B ∪ K, D ∪ Ds, ?_, cardUnion, fun i pos => ?_, depMem, ?_, fun i hi => ?_⟩
       · exact (Finset.card_union_le _ _).trans (Nat.add_le_add cardB cardK)
       · rw [Internal.grossScan_snoc] at pos
@@ -1830,7 +1843,7 @@ theorem credited_piece {g : ForkedBeaconState preset}
           · obtain ⟨w, found, mem⟩ := hS prior priorOk i first
             exact carry i w found mem
           · have here : 0 < (added.map (Internal.syncDebit i)).sum := by omega
-            have altair' : .altair ≤ f := Nat.le_trans (by decide) fulu'
+            have altair' : .altair ≤ f := Nat.le_trans (by decide) electra'
             obtain ⟨c, rest', aggregate, credit, debit, rfl, silent, -, synced⟩ :=
               Internal.blockReplay_sync_split (show f < .glamsterdam from uEarly) altair'
                 (Step.balanceEvents_block uEarly addedOk)
@@ -1909,19 +1922,22 @@ private theorem seat_positions {g : ForkedBeaconState preset}
     exact Finset.mem_filter.mpr ⟨Finset.mem_range.mpr (Array.getElem?_eq_some_iff.mp found).1,
       w, found, mem⟩
 
-/-- The keys credited in the block steps of a run, counted by the periods that it touches.
+/-- With `n` sync-period changes, the credited keys are proposers, deposits or `n + 1` committees.
 
-The keys that a sync aggregate debits hold a seat of one committee for each period of the run.
+Each committee is the current one at a state of the run, in the period of its index.
 
-Each committee is the current one at a state of the run, in the period of its index. -/
+The keys with a positive sync debit in a successful replay hold a seat of one of them.
+
+The run starts from Electra, at a state that a run from genesis reaches, and ends before Gloas. -/
 theorem credited_pieces_seated {g : ForkedBeaconState preset}
     (genesis : Genesis config checks g)
     (apart : preset.MIN_SEED_LOOKAHEAD.toNat + 2 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
     {y : ForkedBeaconState preset}
     (early : y.fork < .glamsterdam)
+    -- The count of deposit keys reads a positive withdrawal delay.
     (delay : 0 < config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat) (high : ℕ) :
     ∀ (n : ℕ) {x : ForkedBeaconState preset}, Run config checks g x →
-      ∀ (r : Run config checks x y), .fusaka ≤ x.fork →
+      ∀ (r : Run config checks x y), .pectra ≤ x.fork →
     (getCurrentEpoch y.state).toNat / max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat =
       (getCurrentEpoch x.state).toNat / max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat + n →
     ∃ (Ls : ℕ → List Cryptography.Bls.BLSPubkey) (B S D : Finset ℕ), B.card ≤ r.blockCount ∧
@@ -1948,12 +1964,10 @@ theorem credited_pieces_seated {g : ForkedBeaconState preset}
   intro n
   induction n with
   | zero =>
-    intro x shared r fulu count
-    have electra : .pectra ≤ x.fork := Nat.le_trans (by decide) fulu
+    intro x shared r electra count
     have altair : .altair ≤ x.fork := Nat.le_trans (by decide) electra
     obtain ⟨B, D, cardB, cardD, hB, hDep, hD, hP⟩ := Internal.credited_piece genesis apart shared r
-      fulu
-      altair early delay high (by simpa using count)
+      electra early delay high (by simpa using count)
     obtain ⟨S, cardS, hS⟩ := seat_positions genesis shared r altair
     refine ⟨fun _ => (x.state.currentSyncCommittee altair).value.pubkeys.toList, B, S, D, cardB,
       by simpa using cardS, cardD, fun i pos => ?_, hDep,
@@ -1969,8 +1983,7 @@ theorem credited_pieces_seated {g : ForkedBeaconState preset}
       obtain rfl : j = 0 := by omega
       exact ⟨x, Run.nil, r, altair, Run.nil_append r, (Nat.add_zero _).symm, rfl⟩
   | succ n ih =>
-    intro x shared r fulu count
-    have electra : .pectra ≤ x.fork := Nat.le_trans (by decide) fulu
+    intro x shared r electra count
     have altair : .altair ≤ x.fork := Nat.le_trans (by decide) electra
     obtain ⟨m, v, pre, step, post, split, hm, hv⟩ := Run.split_at_flip r
       (fun z => (getCurrentEpoch x.state).toNat /
@@ -1997,15 +2010,14 @@ theorem credited_pieces_seated {g : ForkedBeaconState preset}
     have mEarly : m.fork < .glamsterdam :=
       Nat.lt_of_le_of_lt (Nat.le_trans step.chainStep.fork_le
         (fork_le_of_chainSteps post.chainSteps)) early
-    have vFulu : .fusaka ≤ v.fork :=
-      Nat.le_trans fulu (fork_le_of_chainSteps (pre.snoc step).chainSteps)
+    have vElectra : .pectra ≤ v.fork :=
+      Nat.le_trans electra (fork_le_of_chainSteps (pre.snoc step).chainSteps)
     obtain ⟨B₁, D₁, cardB₁, cardD₁, hB₁, hDep₁, hD₁, hP₁⟩ := Internal.credited_piece genesis apart
       shared pre
-      fulu
-      altair mEarly delay high (by simpa using mSame)
+      electra mEarly delay high (by simpa using mSame)
     obtain ⟨S₁, cardS₁, hS₁⟩ := seat_positions genesis shared pre altair
     obtain ⟨Ls₂, B₂, S₂, D₂, cardB₂, cardS₂, cardD₂, hB₂, hDep₂, hG₂, hP₂, hD₂, hz₂⟩ := ih (x := v)
-      (shared.append (pre.snoc step)) post vFulu
+      (shared.append (pre.snoc step)) post vElectra
       (by omega)
     -- The step leaves an epoch, so it is a slot step: a block step keeps its epoch.
     have slotStep : ∃ ok, step = Step.slot ok := by
@@ -2108,8 +2120,7 @@ theorem credited_pieces_seated {g : ForkedBeaconState preset}
           · simp only [bind_ok_iff, pure, Except.pure, Except.ok.injEq] at rest
             obtain ⟨added, addedOk, rfl⟩ := rest
             have zero := (Internal.slot_syncDebit_zero
-              (Nat.le_trans (show Fork.pectra ≤ Fork.fusaka by decide)
-                (Nat.le_trans fulu (fork_le_of_chainSteps pre.chainSteps))) ok vEarly addedOk i).1
+              (Nat.le_trans electra (fork_le_of_chainSteps pre.chainSteps)) ok vEarly addedOk i).1
             simp only [List.map_append, List.sum_append, zero, Nat.add_zero] at first
             exact hD₁ prior priorOk i first
           · simp only [pure, Except.pure, Except.ok.injEq] at rest
@@ -2135,15 +2146,22 @@ theorem credited_pieces_seated {g : ForkedBeaconState preset}
         · omega
         · simpa [j0] using hL
 
-/-- The keys credited in the block steps of a run, counted by the periods that it touches. -/
+/-- Positive gross credits lie in two sets, bounded by the block count and by the seats of a run.
+
+The seat set also holds the keys with a positive sync debit in a successful replay.
+
+The keys with a deposit credit number at most the pending-deposit cap times the elapsed epochs.
+
+The run starts from Electra, at a state that a run from genesis reaches, and ends before Gloas. -/
 theorem credited_pieces {g : ForkedBeaconState preset}
     (genesis : Genesis config checks g)
     (apart : preset.MIN_SEED_LOOKAHEAD.toNat + 2 < preset.EPOCHS_PER_HISTORICAL_VECTOR.toNat)
     {y : ForkedBeaconState preset}
     (early : y.fork < .glamsterdam)
+    -- The count of deposit keys reads a positive withdrawal delay.
     (delay : 0 < config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY.toNat) (high : ℕ) :
     ∀ (n : ℕ) {x : ForkedBeaconState preset}, Run config checks g x →
-      ∀ (r : Run config checks x y), .fusaka ≤ x.fork →
+      ∀ (r : Run config checks x y), .pectra ≤ x.fork →
     (getCurrentEpoch y.state).toNat / max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat =
       (getCurrentEpoch x.state).toNat / max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat + n →
     ∃ B S D : Finset ℕ, B.card ≤ r.blockCount ∧
@@ -2156,9 +2174,9 @@ theorem credited_pieces {g : ForkedBeaconState preset}
       ∀ events, r.balanceEvents high = .ok events → ∀ i, 0 < (events.map (Internal.syncDebit i)).sum
         →
         i ∈ S := by
-  intro n x shared r fulu count
+  intro n x shared r electra count
   obtain ⟨_, B, S, D, cardB, cardS, cardD, hBS, hDep, -, -, hSD, _⟩ :=
-    Internal.credited_pieces_seated genesis apart early delay high n shared r fulu count
+    Internal.credited_pieces_seated genesis apart early delay high n shared r electra count
   exact ⟨B, S, D, cardB, cardS, cardD, hBS, hDep,
     fun events replayed i pos => (hSD events replayed i pos).1⟩
 
@@ -2259,13 +2277,15 @@ theorem seat_union_card (h : Setting config checks g split fin pulled anc counte
       (Internal.Setting.delay h) high
       ((getCurrentEpoch pulled).toNat / max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat -
         (getCurrentEpoch split).toNat / max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat)
-      (toFin.append fromFin) tail h.fulu (by rw [hP]; exact periodsR)
+      (toFin.append fromFin) tail (Nat.le_trans (by decide) h.fulu)
+      (by rw [hP]; exact periodsR)
   obtain ⟨LsC, BC, SC, DC, -, -, -, -, -, grossC, propC, debitC, familyC⟩ :=
     Internal.credited_pieces_seated h.genesis apart (y := ⟨fork, counted⟩) h.early
       (Internal.Setting.delay h) highC
       ((getCurrentEpoch counted).toNat / max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat -
         (getCurrentEpoch fin).toNat / max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat)
-      toFin (fromFin.append tailC) h.fulu (by rw [hP]; exact periodsC)
+      toFin (fromFin.append tailC) (Nat.le_trans (by decide) h.fulu)
+      (by rw [hP]; exact periodsC)
   simp only [hP] at familyR familyC debitR debitC grossC
   have replayedRC : (fromFin.append tailC).balanceEvents highC = .ok (eventsF ++ eventsC) :=
     DirectSafety.Apriori.Internal.balanceEvents_append fromFin tailC highC replayedF replayedC
@@ -2458,7 +2478,7 @@ private theorem banded_keys_le (h : Setting config checks g split fin pulled anc
     (y := ⟨fork, x⟩) h.early (Internal.Setting.delay h) high
     ((getCurrentEpoch x).toNat / max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat -
       (getCurrentEpoch split).toNat / max 1 preset.EPOCHS_PER_SYNC_COMMITTEE_PERIOD.toNat)
-    shared tail h.fulu periods
+    shared tail (Nat.le_trans (by decide) h.fulu) periods
   have cardD' : D.card ≤ preset.MAX_PENDING_DEPOSITS_PER_EPOCH.toNat *
       ((getCurrentEpoch x).toNat - (getCurrentEpoch split).toNat) := cardD
   have subset : keys ⊆ B ∪ S ∪ D := fun i member => by

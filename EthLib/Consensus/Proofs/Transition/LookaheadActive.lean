@@ -12,6 +12,8 @@ import EthLib.Consensus.Proofs.Transition.ProposerLookahead
 From Fulu the state keeps the proposers of the current epoch and of the epochs after it.
 
 Along a run from genesis, each of them is active in its epoch.
+
+So a successful proposer read is active at every fork.
 -/
 
 @[expose] public section
@@ -200,21 +202,33 @@ theorem Run.lookaheadActive {g x : ForkedBeaconState preset}
     exact fun fulu => (Nat.not_le_of_lt before (Nat.le_trans (by decide) fulu)).elim
   | snoc pre step ih => exact LookaheadActive.chainStep covers step.chainStep ih
 
-/-- A proposer read from the lookahead of a state is active in the epoch of the state. -/
+/-- A successful proposer read returns a validator that is active at the state's current epoch.
+
+This holds at every fork.
+
+The lookahead invariant `h` is taken at every fork, but it constrains nothing before Fulu.
+
+From Fulu the read returns a cached index, and `h` says that each cached index is active. -/
 theorem LookaheadActive.proposer_active {state : BeaconState preset fork}
-    (fulu : .fusaka ≤ fork) (h : LookaheadActive state) {proposer : ValidatorIndex}
+    (h : LookaheadActive state) {proposer : ValidatorIndex}
     (ok : getBeaconProposerIndex state = .ok proposer) :
     isActiveAt state (getCurrentEpoch state) proposer.toNat = true := by
-  -- The proposer of a block is read from the lookahead, so it is active in the epoch of its slot.
-  unfold getBeaconProposerIndex at ok
-  simp only [fulu, ↓reduceDIte] at ok
-  split at ok
-  · cases ok
-  · rename_i nonzero
-    simp only [pure, Except.pure, Except.ok.injEq] at ok
-    subst ok
-    have small := toNat_mod_lt (i := state.slot) nonzero
-    exact h fulu _ (Nat.lt_of_lt_of_le small (Nat.le_mul_of_pos_left _ (Nat.succ_pos _)))
-      _ (by rw [Nat.div_eq_of_lt small]; rfl)
+  by_cases fulu : .fusaka ≤ fork
+  · -- From Fulu the proposer is read from the lookahead, so it is active in the epoch of its slot.
+    unfold getBeaconProposerIndex at ok
+    simp only [fulu, ↓reduceDIte] at ok
+    split at ok
+    · cases ok
+    · rename_i nonzero
+      simp only [pure, Except.pure, Except.ok.injEq] at ok
+      subst ok
+      have small := toNat_mod_lt (i := state.slot) nonzero
+      exact h fulu _ (Nat.lt_of_lt_of_le small (Nat.le_mul_of_pos_left _ (Nat.succ_pos _)))
+        _ (by rw [Nat.div_eq_of_lt small]; rfl)
+  · -- Before Fulu the proposer is sampled from the active indices, in a bounded registry.
+    have early : fork < .glamsterdam := Nat.lt_trans (Nat.lt_of_not_le fulu) (by decide)
+    exact isActiveAt_eq_true_iff.mpr ((mem_getActiveValidatorIndices
+      (state.validators.bound early)).mp (mem_getActiveValidatorIndices_of_getBeaconProposerIndex
+        fulu ok))
 
 end EthLib.Consensus
